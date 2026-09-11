@@ -9,6 +9,9 @@ CREATE OR REPLACE FUNCTION public.promote_tool_usage_stats_hot_to_partition(
 RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE moved bigint := 0; month_rec record;
 BEGIN
+  -- 698: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 694-pinned ensure_* target was created for.
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
   IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
   IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
   -- Rows route by created_at, so pre-ensure those months; the retention

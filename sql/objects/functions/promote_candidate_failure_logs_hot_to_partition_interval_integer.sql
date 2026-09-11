@@ -13,6 +13,9 @@ DECLARE
     moved bigint := 0;
     month_rec record;
 BEGIN
+    -- 698: group months under Asia/Shanghai so boundary rows land in the
+    -- same month group the 694-pinned ensure_* target was created for.
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
     IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN
         RAISE EXCEPTION 'p_retention must be positive';
     END IF;

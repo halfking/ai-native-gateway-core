@@ -370,6 +370,9 @@ var requestLogsViewSystemFingerprintMigration696 []byte
 //go:embed embeddata/startup/697_request_logs_promote_system_fingerprint.sql
 var requestLogsPromoteSystemFingerprintMigration697 []byte
 
+//go:embed embeddata/startup/698_promote_hot_partition_timezone_pin.sql
+var promoteHotPartitionTimezonePinMigration698 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -488,6 +491,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/695_request_logs_promote_final_success_self_heal.sql":                   requestLogsPromoteFinalSuccessSelfHealMigration695,
 	"startup/696_request_logs_view_system_fingerprint.sql":                           requestLogsViewSystemFingerprintMigration696,
 	"startup/697_request_logs_promote_system_fingerprint.sql":                        requestLogsPromoteSystemFingerprintMigration697,
+	"startup/698_promote_hot_partition_timezone_pin.sql":                             promoteHotPartitionTimezonePinMigration698,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 

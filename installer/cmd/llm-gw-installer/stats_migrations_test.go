@@ -112,6 +112,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"695_request_logs_promote_final_success_self_heal.sql": requestLogsPromoteFinalSuccessSelfHealMigration695,
 		"696_request_logs_view_system_fingerprint.sql":         requestLogsViewSystemFingerprintMigration696,
 		"697_request_logs_promote_system_fingerprint.sql":      requestLogsPromoteSystemFingerprintMigration697,
+		"698_promote_hot_partition_timezone_pin.sql":           promoteHotPartitionTimezonePinMigration698,
 	}
 
 	for name, embedded := range expected {
