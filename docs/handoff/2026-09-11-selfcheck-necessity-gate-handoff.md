@@ -310,32 +310,53 @@
 - **验证记录（如实区分）**：**通过**——合并态复核（两段增量定性、necessity 文件逐一在位、五件套逐项复验、handoff 区间零改动、生产基线祖先实证）、bg 基线重测全流程（CRLF 口径先校验后应用 → 全量 17 例集合与 fails_r9 一致 → fails_r10.txt 留档）、定向守卫族 + 扩展守卫、deploy 契约两包复跑。**环境受限**——16 例源文本断言 + 1 例 symlink 在 CRLF 检出下无法 Windows 通过（Linux CI 职责）；win/arm64 `-race` 不支持未跑；promtool 与 Grafana 导入不可用（沿用第八/九/十轮口径）。**未验证**——本特性告警/面板是否已被运维实际 provisioning、necessity 三指标生产值（无通道；2086/2087 上线 ≠ provisioning 完成）。
 - **遗留风险**：与第十五至二十二轮相同，无新增。剩余开启项全部外部门控：TTL 抑制 ← 生产 failed_total 数据；显示侧治本 ← 运维反馈；孤儿行批量 SQL 执行前 ← 只读副本核数；工作区脏文件 ← 原作者确认。环境注记：bg 基线四度被外部提交移动（fails_r6→r7→r8→r9→r10），触碰 bg 前先以"最后一个移动 bg/ 的已知提交"（现为 83bf582dd）为基准 diff 确认口径仍有效；deploy/ 整体零变化判据自本轮作废，改以 deploy/{grafana,prometheus}/ 子树为准。
 
+## 本轮记录（2026-09-12 第二十四轮，上线观察轮第十八轮——无输入记录阻塞 + 合并态复核 + bg 基线随外部变更重测）
+
+- **输入缺失声明（按 D 项要求如实区分）**：任务书未携带生产 /metrics 数据或告警触发记录，运维反馈未到达。按分派规则 **A 不触发**（TTL 抑制继续锁在数据门后）、**B 不触发**（显示侧治本修复继续锁在运维反馈门后，应急口径三层已就绪）、**C 维持关闭**（无乱序完成反例）。本轮零特性代码改动，产出 = main 合并态复核（alias 线推送收敛 + 697 telemetry 线增量定性）+ bg/ 基线重测（fails_r11.txt 留档）+ deploy 契约复跑 + 协作环境验活 + 本记录。
+- **main 合并态复核（只读，git fetch 实查）**：origin/main 自 6b769063d 前进七提交至 **8af09c799**，两段增量：
+  - **alias 线推送收敛（本地分叉消除）**：c6676f304（alias ON CONFLICT (raw_name) 根治——**移动 bg/**：`bg/taxonomy_sync.go` +43/-4 + 新增 `bg/taxonomy_sync_alias_upsert_live_test.go` +160，即第二十一/二十二轮记录的脏文件与未跟踪文件转正）+ d60511146（release bump **2088-c6676f304**，提交说明自述 "live on **local** deploy"——本地部署，非生产节点事件）+ 17ecc8ada（govern docs）+ c183aa30b / 83fc3530f（第二十三轮记录与补注自身）+ 147939cb7（merge origin/main——第二十三轮记录的"本地 main 与 origin/main 分叉 3/5"就此收敛，本地 main 现为 147939cb7、严格落后 origin/main 可 fast-forward）。
+  - **697 telemetry 线**：d03f0ada4（X-System-Fingerprint 写入路径接线：request_logs 列 + promote 携带，新迁移 697 三件 + `domains/hooks/observability/telemetry/client.go` + `domains/streaming/handler.go` + `deploy/sql/schemas/baseline/01-schema.sql` + installer embeddata + scripts/apply-db-revision-sequence.sh + docs/changelogs）+ 8af09c799（promote 695→697 intentional function chain 注册：scripts + migration_697_test + changelog 补注）——系 696 线（第二十三轮记录的"休眠列"）的写入侧跟进，与本特性零交集。
+  - **增量定性**：`git diff 83bf582dd..origin/main -- bg/` 仅上述 2 个 taxonomy 文件——**necessity gate 全部文件零变化**（probe_necessity.go、probe_necessity_test.go、probe_service.go、node_probe.go、node_probe_submit_gate_test.go `cat-file -e` 逐一在位）；`git diff d249604c7..origin/main -- deploy/grafana/ deploy/prometheus/` **为空**——deploy 契约结论有效并已复跑留档；697 线触 deploy/sql/schemas/baseline（非契约判据面）。本 handoff 在区间内的改动 = c183aa30b + 83fc3530f 两提交（`git log -- <本文件>` 实查，即第二十三轮自身；alias/697 线均未触碰）。观测五件套在 origin/main（8af09c799）逐项复验在位：alerts.yml 告警 1 处、alerts_test.go 契约钉 1 处、面板 uid 1 处、dashboard_test.go 恰 3 个 Test 函数、README 引用 2 处。
+  - **生产连续性**：`merge-base --is-ancestor` 证实 3c1195f2c（本特性生产基线）仍是 8af09c799 祖先；区间内唯一 release bump 2088 为**本地部署**（提交说明自述），origin/main 线无新生产部署事件——245/154 生产节点沿用第十九轮以来实证（3c1195f2c → 2086-5c58bf34 在跑 → 607a785f6 2087）。
+- **bg/ 基线重测（本轮确定性产出；按任务书警示执行；"最后一个移动 bg/ 的已知提交"由 83bf582dd 更新为 **c6676f304**）**：
+  - 同步方法（CRLF 同口径，先校验后应用）：先以 83bf582dd 版本 `git show <rev>:<file> | unix2dos` 对副本既有 `bg/taxonomy_sync.go` cmp 逐字节校验（完全一致，证明副本处于第二十三轮同步态且转换口径正确），并确认 live test 文件在副本不存在；再以 origin/main 版本同口径覆盖两个文件。
+  - 新 live 测试语义核实：`TestTaxonomyUpsertAlias_Live` 无 `TEST_DATABASE_URL` 时 `t.Skip`（文件头注释自述 live-DB regression，需真实 PG 才跑）——本地全量套件中自动跳过，不影响失败集口径。
+  - 结果：全量 `go test -mod=vendor -count=1 ./bg/`（CGO_ENABLED=1 CC=aarch64-w64-mingw32-gcc GOPROXY=off）→ **17 例失败，排序无关集合与 fails_r10.txt 完全一致**——c6676f304 未改变 Windows 预存失败面（16 例源文本断言 + 1 例 symlink 权限，Linux CI 不受影响）。**lgw-p2test/fails_r11.txt 留档为当前基线，fails_r10.txt 作废**（集合相同，按"每次 bg 移动后重留档"惯例重留档）。
+  - 定向守卫族 26 例全绿（第六轮 25 例正则 + 扩展守卫 `TestRecentWindowReadsUseCurrentMonthSurface`）；deploy 契约复跑 `./deploy/grafana/ ./deploy/prometheus/rules/` → **两包 ok**（复跑前以 LF 归一 hash 逐一核对副本 5 个契约文件与 origin/main 完全一致）。
+  - 交叉编译：`GOOS=linux GOARCH=arm64` zig cc（-buildvcs=false）`./bg/` 通过——覆盖 c6676f304 移动的 bg 代码在部署目标的编译面；`./cmd/gateway/...` 本轮**未重验**（其依赖面 domains/streaming/handler.go、telemetry client 属 697 线且未同步副本，编译只会验证陈旧内容，如实标注不覆盖；697 线自验职责）。
+- **环境注记（fetch 维护性失败，留观不处置）**：本轮 `git fetch` 成功（refs/对象正常更新）但随后的 geometric repack 失败（"failed to clear multi-pack-index ... failed to perform geometric repack"）——SMB 网络盘上 git 自动维护的已知脆弱点，不影响 refs 与本轮任何操作结论；共享仓库不宜单方跑 gc/修复，留观，若后续 fetch 报对象缺失再行处置。
+- **协作环境验活（本轮通过）**：`git worktree list` + worktree 内 `git status` → lgw-necessity-p2 存活且干净，检出 docs/necessity-gate-round23（=83fc3530f，其两提交已随 147939cb7 进入 origin/main），本轮已在其上 `-B` 出 **docs/necessity-gate-round24**（=8af09c799）；go-cost worktree 仍标 prunable（deploy-lib 线对象，未处置）。C: 副本 lgw-p2test 与 fails_r6–r11.txt 基线留档均在位，fails_r11.txt 实测 17 例失败行。主工作区脏文件清单与 git status 起始快照一致（vendor_pricing_table.py D/?? 对、incidents 文档 M、deploy-lib D + 两个 *.lnk），维持严禁触碰。
+- **C 项**：`lastProbeRun` 保持 `started_at DESC`，无反例，维持关闭。
+- **验证记录（如实区分）**：**通过**——合并态复核（两段增量定性、necessity 文件逐一在位、五件套逐项复验、handoff 区间改动=第二十三轮自身、生产基线祖先实证）、bg 基线重测全流程（CRLF 口径先校验后应用 → 全量 17 例集合与 fails_r10 一致 → fails_r11.txt 留档）、定向守卫族 26 例、deploy 契约两包复跑（副本契约文件 hash 先行核对）、交叉编译 ./bg/。**环境受限**——16 例源文本断言 + 1 例 symlink 在 CRLF 检出下无法 Windows 通过（Linux CI 职责）；win/arm64 `-race` 不支持未跑；promtool 与 Grafana 导入不可用（沿用第八/九/十轮口径）；cmd/gateway 交叉编译未覆盖（见上，697 线自验）。**未验证**——本特性告警/面板是否已被运维实际 provisioning、necessity 三指标生产值（无通道；2086/2087 生产在跑、2088 本地部署 ≠ provisioning 完成）。
+- **遗留风险**：与第十五至二十三轮相同，无新增。剩余开启项全部外部门控：TTL 抑制 ← 生产 failed_total 数据；显示侧治本 ← 运维反馈；孤儿行批量 SQL 执行前 ← 只读副本核数；工作区脏文件 ← 原作者确认。环境注记：bg 基线五度被外部提交移动（fails_r6→r7→r8→r9→r10→r11），触碰 bg 前先以"最后一个移动 bg/ 的已知提交"（现为 c6676f304）为基准 diff 确认口径仍有效；deploy 判据维持 deploy/{grafana,prometheus}/ 子树；fetch geometric repack 失败留观（见上）。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
-请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第十八轮）。
+请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第十九轮）。
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
 先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
 第六轮"（runbook 与孤儿行三层清理口径）、"本轮记录 第八轮"（告警+面板已随仓库交付）、
 "审计记录 第九轮"（告警契约已钉入 alerts_test.go）、"本轮记录 第十轮"（面板契约
 已钉入 deploy/grafana/dashboard_test.go——观测链路全部工件均有 CI 防回归保护）、
-"本轮记录 第二十三轮"（6b769063d 合并态复核：origin/main 自 1ade98450 三段前进——
-DB 分区时区线三提交（新迁移 694 + installer 同步，动了 deploy/sql/schemas/baseline）
-+ 迁移 696 线一提交（bg/ 动 2 文件：drift scanner 切 request_logs_with_current_month
-+ recent_surface 守卫翻转）+ 696 docs 收尾一提交（docs-only；其 "production applied"
-指 DB 迁移应用于生产共享库，非网关构建部署）；bg/ 基线已重测留档 lgw-p2test/fails_r10.txt（17 例，
-集合与 fails_r9 完全一致，fails_r9 作废），"最后一个移动 bg/ 的已知提交"现为
-83bf582dd；deploy/ 整体零变化判据作废，契约判据改用 deploy/grafana/ +
+"本轮记录 第二十四轮"（8af09c799 合并态复核：origin/main 自 6b769063d 两段前进——
+alias 线推送收敛七提交中的五提交（c6676f304 根治 alias ON CONFLICT 并**移动 bg/**：
+taxonomy_sync.go +43/-4 + 新增 live 测试文件；2088-d60511146 为**本地部署**；
+147939cb7 merge 后本地 main 分叉已收敛、现严格落后 origin/main）+ 697 telemetry 线
+两提交（d03f0ada4 迁移 697 + streaming/telemetry 写入接线 + deploy/sql/schemas/baseline，
+8af09c799 promote 695→697 函数链注册；均不触契约判据面）；bg/ 基线已重测留档
+lgw-p2test/fails_r11.txt（17 例，集合与 fails_r10 完全一致，fails_r10 作废），
+"最后一个移动 bg/ 的已知提交"现为 c6676f304；deploy 契约判据维持 deploy/grafana/ +
 deploy/prometheus/ 子树 diff（自 d249604c7 起仍零变化，契约两包 ok 已复跑）；
-necessity gate 文件与本 handoff 零涉及；观测五件套 1/1/1/3/2 复验在位；生产连续性
-沿用：3c1195f2c→2086-5c58bf34（245/154 在跑）→607a785f6（2087），区间无新部署
-事件；本地 main 分叉（alias 线 c6676f304 + 2088 bump 未推送）属 alias 线，本特性
-一切以 origin/main 为准）、遗留任务第 6 项。
-背景：观测工件齐全且已全部合入 main（第二十三轮在 6b769063d 复验）；main 代码头以
+necessity gate 文件零涉及、handoff 区间改动=第二十三轮自身；观测五件套 1/1/1/3/2
+复验在位；生产连续性沿用：3c1195f2c→2086-5c58bf34（245/154 在跑）→607a785f6
+（2087），区间唯一 bump 2088 属本地部署；fetch 时 geometric repack 失败属 SMB 维护性
+问题已留观）、遗留任务第 6 项。
+背景：观测工件齐全且已全部合入 main（第二十四轮在 8af09c799 复验）；main 代码头以
 git fetch 实查为准。bg/ 后续仍可能被外部提交移动——跑 bg 套件前先
-`git diff 83bf582dd..<新头> -- bg/` 确认（83bf582dd 是最后一个移动 bg/ 的已知
-提交）；bg/ 没变直接以 lgw-p2test/fails_r10.txt（17 例）为回归判据，变了先 CRLF
+`git diff c6676f304..<新头> -- bg/` 确认（c6676f304 是最后一个移动 bg/ 的已知
+提交）；bg/ 没变直接以 lgw-p2test/fails_r11.txt（17 例）为回归判据，变了先 CRLF
 同口径重测基线再跑。deploy 契约同理先 diff deploy/grafana/ 与 deploy/prometheus/。
 生产已运行本特性（245/154 在 2086-5c58bf34，基线含 3c1195f2c）——拿到 /metrics
 数据或告警触发记录后按第六轮 runbook 判读。告警
@@ -345,11 +366,11 @@ provisioning 流程加载后即自动告警，无需人工 curl。孤儿行应�
 自然恢复 / POST /api/admin/probe/tasks 提交一次探测即删行（自 6490fd981 起同时
 留一条 success=false 取证行，属预期信号非异常）/ 批量 SQL；显示侧
 治本预案（queryProbeNodeTasks WHERE 并入绑定链 EXISTS）就绪未实施。
-注意：主工作区现检出本地分叉的 main（含 alias 线未推送提交）；工作区遗留脏文件
-（docs 下多处、scripts/deploy-lib、*.lnk）严禁 add/clean/恢复。继续用 git
-worktree 从 origin/main 拉独立分支实施（开工先验活：`git worktree list` +
-worktree 内 git status，元数据被清即 rm 重建；lgw-necessity-p2 现检出
-docs/necessity-gate-round23，路径在 //Mac/Home 同源盘、Windows 侧可正常访问，
+注意：主工作区检出 main（=147939cb7，alias 分叉已收敛、落后 origin/main 可 ff）；
+工作区遗留脏文件（docs 下多处、scripts/deploy-lib、*.lnk）严禁 add/clean/恢复。
+继续用 git worktree 从 origin/main 拉独立分支实施（开工先验活：`git worktree list`
++ worktree 内 git status，元数据被清即 rm 重建；lgw-necessity-p2 现检出
+docs/necessity-gate-round24，路径在 //Mac/Home 同源盘、Windows 侧可正常访问，
 可直接 `checkout -B` 到本轮分支）；Windows 验证用 C: 副本 lgw-p2test
 （C:\Users\xutaohuang\AppData\Local\lgw-p2test；仅 cp 变更文件；deploy 包验证需
 同步 deploy/grafana/ 的 README.md 与面板 JSON；基线对照务必 CRLF 同口径
@@ -375,4 +396,4 @@ D. 验证如实区分通过/环境受限/未验证。
 
 ## 验证环境说明
 
-本工作区（Z: 网络盘）无 Go/Docker/WSL。便携工具链保留在 `C:\Users\xutaohuang\AppData\Local\golang-dist`（Go 1.27.1 / llvm-mingw / zig）。Windows 本地验证用 C: 本地打桩副本 **`C:\Users\xutaohuang\AppData\Local\lgw-p2test`**（第十六轮审计补全路径；历轮基线留档 fails_r6/r7/r8/r9/r10.txt 同目录，**当前判据为 fails_r10.txt 17 例**，fails_r6–r9 已作废）。`bg` 包含 Linux 专属 `syscall.Statfs_t`，Windows 本地验证需在副本中将 `storage_retention_worker.go` 的 `diskUsagePercent` 打桩后再 `go test -mod=vendor ./bg/`（CGO_ENABLED=1 CC=aarch64-w64-mingw32-gcc）。部署目标验证用 `GOOS=linux GOARCH=arm64` + `zig cc -target aarch64-linux-musl` 交叉编译（C: 副本非 git 仓库，`go build` 须加 `-buildvcs=false`）。
+本工作区（Z: 网络盘）无 Go/Docker/WSL。便携工具链保留在 `C:\Users\xutaohuang\AppData\Local\golang-dist`（Go 1.27.1 / llvm-mingw / zig）。Windows 本地验证用 C: 本地打桩副本 **`C:\Users\xutaohuang\AppData\Local\lgw-p2test`**（第十六轮审计补全路径；历轮基线留档 fails_r6–r11.txt 同目录，**当前判据为 fails_r11.txt 17 例**，fails_r6–r10 已作废）。`bg` 包含 Linux 专属 `syscall.Statfs_t`，Windows 本地验证需在副本中将 `storage_retention_worker.go` 的 `diskUsagePercent` 打桩后再 `go test -mod=vendor ./bg/`（CGO_ENABLED=1 CC=aarch64-w64-mingw32-gcc）。部署目标验证用 `GOOS=linux GOARCH=arm64` + `zig cc -target aarch64-linux-musl` 交叉编译（C: 副本非 git 仓库，`go build` 须加 `-buildvcs=false`）。
