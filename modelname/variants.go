@@ -2,6 +2,7 @@ package modelname
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -102,6 +103,12 @@ func versionPunctuationCartesian(v string) []string {
 	for k := range seen {
 		out = append(out, k)
 	}
+	// Deterministic order: every consumer (NormalizeRouteKeyAliases →
+	// canonical resolution) does first-hit-wins over this slice, so map
+	// iteration order here would make the same input resolve to different
+	// canonicals across processes/restarts when two punctuation-spelled
+	// canonicals coexist in the catalog (f494d0695 follow-up).
+	sort.Strings(out)
 	return out
 }
 
