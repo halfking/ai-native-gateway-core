@@ -256,3 +256,45 @@ func TestPumpDueStatesSQLAppliesAutomaticEligibilityGate(t *testing.T) {
 		}
 	}
 }
+
+// TestPumpDueStatesSQLFiltersMissingBindingPairs pins the P3 fix (handoff
+// 2026-09-11-selfcheck-necessity-gate 遗留项 5): the pump is the ONLY recurring
+// scheduler that ignores the binding chain, so a node_probe_state row whose
+// binding chain is broken (no credential_model_bindings row, dangling
+// provider_model_id, or provider_models.raw_model_name mismatch) keeps being
+// re-enqueued: resolveDirectTarget fails endpoint-build with "no rows", Run's
+// missing-binding short-circuit drops the state best-effort, and if that
+// DELETE fails the surviving row is pumped again — a full doomed probe
+// lifecycle (claim → in-flight tile → audit row) per pump tick for as long
+// as the delete keeps failing. Every credential_recovery path is
+// binding-anchored (reconcileStaleNodeProbeStateSQL / lookbackCandidateSQL
+// both JOIN the binding chain), so filtering the pair at the pump source
+// closes the loop; a (re)created binding lets the row re-enter the pump
+// naturally, mirroring the eligibility gate's re-entry semantics.
+func TestPumpDueStatesSQLFiltersMissingBindingPairs(t *testing.T) {
+	sql := pumpDueStatesSQL()
+	// The filter must reference BOTH mirror columns (drift guard against a
+	// credential-only or model-only filter) and must JOIN provider_models so
+	// a dangling cmb.provider_model_id is filtered too — the exact two
+	// structural shapes resolveDirectTarget's "no rows" covers for
+	// already-eligible credentials.
+	for _, want := range []string{
+		"FROM credential_model_bindings cmb",
+		"JOIN provider_models pm ON pm.id = cmb.provider_model_id",
+		"cmb.credential_id = nps.credential_id",
+		"pm.raw_model_name = nps.raw_model_name",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("pump SQL missing binding-chain filter fragment %q:\n%s", want, sql)
+		}
+	}
+	// Like the eligibility gate, the binding filter must sit in WHERE
+	// (before ORDER BY/LIMIT) so binding-less rows do not consume
+	// nodeProbeQueuePumpBatch slots.
+	filterPos := strings.Index(sql, "credential_model_bindings cmb")
+	orderByPos := strings.Index(sql, "ORDER BY")
+	limitPos := strings.Index(sql, "LIMIT $1")
+	if filterPos < 0 || orderByPos < 0 || limitPos < 0 || filterPos > orderByPos || orderByPos > limitPos {
+		t.Fatalf("binding-chain filter must be applied before ORDER BY/LIMIT (filter=%d order=%d limit=%d)", filterPos, orderByPos, limitPos)
+	}
+}

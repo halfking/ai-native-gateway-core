@@ -1015,6 +1015,25 @@ func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
 // semantics are unchanged, the futile enqueue attempts are gone. The outer
 // alias is `cred` so it cannot shadow the EXISTS fragment's own
 // `credentials c` / `providers p` aliases.
+//
+// 2026-09-11 P3 (handoff 2026-09-11-selfcheck-necessity-gate 遗留项 5): the
+// pump also filters rows whose binding chain is broken — no
+// credential_model_bindings row, dangling cmb.provider_model_id, or
+// provider_models.raw_model_name mismatch. resolveDirectTarget returns "no
+// rows" for exactly these pairs, so each pumped row ran a full doomed probe
+// lifecycle (claim → in-flight tile → endpoint-build failure → audit row)
+// and the missing-binding short-circuit in ProbeService.Run then dropped the
+// state with a best-effort DELETE — which, on failure, left the row behind
+// for the next pump tick to re-enqueue: the same churn loop the necessity
+// skip path had, minus the retry or the counters. The pump is the ONLY
+// recurring scheduler that ignored the binding chain (every
+// credential_recovery path — recoverExpiredBindings, the stale-state
+// reconciler, the lookback scan — JOINs it), so filtering here closes the
+// loop at its source. The predicate is deliberate EXISTENCE ONLY (no
+// available/manual gates): resolveDirectTarget probes any pair whose binding
+// merely exists, so a stricter filter would stop pumping probeable rows, and
+// a (re)created binding lets the row re-enter the pump automatically —
+// mirroring the eligibility gate's re-entry semantics.
 func pumpDueStatesSQL() string {
 	return `
 		SELECT nps.credential_id, nps.raw_model_name, COALESCE(cred.tenant_id, 'default')
@@ -1022,6 +1041,13 @@ func pumpDueStatesSQL() string {
 		JOIN credentials cred ON cred.id = nps.credential_id
 		WHERE nps.paused = FALSE AND nps.next_retry_at <= now()
 		  AND ` + automaticProbeEligibilityExistsSQL("nps.credential_id") + `
+		  AND EXISTS (
+			SELECT 1
+			FROM credential_model_bindings cmb
+			JOIN provider_models pm ON pm.id = cmb.provider_model_id
+			WHERE cmb.credential_id = nps.credential_id
+			  AND pm.raw_model_name = nps.raw_model_name
+		  )
 		ORDER BY nps.next_retry_at
 		LIMIT $1`
 }
