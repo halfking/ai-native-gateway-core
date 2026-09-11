@@ -71,3 +71,17 @@
   - `ursm.TestScriptSizes`（lua 脚本字节数与 `script_sizes.go` 不符，报 `go generate ./...` 同步）
 - **结论**：`admin` 两个测试与 `TestScriptSizes` 在 `e4d7433fb` 提交点已存在，属历史包袱；本次 bg 修复本身编译与测试全绿。
 - **待决**：是否（a）收紧门禁只跑 `go test ./bg/ ./cmd/...`，（b）先修历史失败再晋级，（c）接受风险直跳 154，（d）暂停部署先等 P1/P2/P3 调查结论。
+
+## 7. 生产只读验证结论（2026-09-11 23:40–23:45 复查）
+
+154 已由并行部署方于 **21:30:46** 换上 **build_seq=2081 / git_sha=ab2a3c8e**（蓝绿切至 8782 实例；ab2a3c8e 含 `e763544df` 探活修复，不含 `e04197ec8` 强启清 key 缓存）。只读 SQL/journalctl 复查结果：
+
+| 项 | 结论 | 证据 |
+|---|---|---|
+| P3 probeSubmitter 接线 | ✅ 已解决 | 启动即见 `credRecovery: expired-binding probe submitter wired (authoritative)`（21:31:01）；48h 内 `probeSubmitter not wired` = 0；`expired-binding-recovery` 探测提交持续流转 |
+| P1 误降级（本修复目标） | ✅ 生产已消失 | cred 42 全部 4 模型 `consecutive_failures=0`、`last_direct_ok=t`、`last_gateway_ok=t`（MiniMax-M3 最近一次 23:40）；cred 21 MiniMax-M3 同样双绿 cf=0 |
+| P1 网关腿 401 根因 | ⚠️ 现象消失、根因未定位 | 事发时直连 200/网关 401 并存；当前网关腿恢复双绿。`e04197ec8`（force-enable 清 key 缓存+rotator）尚未部署，属下一轮部署的加固项 |
+| cred 21 MiniMax-Text-01 | ℹ️ 真实故障非误降级 | cf=10 / http_429（direct 也失败），availability=suspended(reason=network, 23:42)——梯子按设计工作 |
+| P2 冷迁移停滞 | ❌ 仍存在 | 父表 `max(ts)=2026-09-09 17:16`（95,665 行）；hot 实时（92,589 行，23:42）；视图=两者之和 ✓；**近 6h 父表 0 行新增 → promotion worker 未在搬运**，hot 表将持续增长，需单独排查 promote 调度 |
+
+附注：8781 实例 21:31:34 的 failed 状态是蓝绿切换时旧实例 drain 超时被 SIGKILL 的痕迹（stop-sigterm timed out → 9/KILL），非崩溃；可留意优雅停止超时是否偏紧。154 上的临时只读诊断脚本（`/tmp/gw-readonly.py`、`/tmp/incident.sql`）已清理。
