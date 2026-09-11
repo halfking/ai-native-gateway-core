@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// Migration 694 reinstalls promote_request_logs_hot_to_partition with a
+// Migration 695 reinstalls promote_request_logs_hot_to_partition with a
 // promote-side final-success self-heal. Production incident (2026-09-12 P2
 // cold-migration stall): the claim guard's main.go wiring was lost in merge
 // d2cbaf88b (2026-08-26), so a long-lived session (>8h promote boundary)
@@ -16,11 +16,11 @@ import (
 // for 2.5 days — batches are ts-ascending, so the poisoned row sits in batch
 // #1 forever and zero rows move.
 //
-// The 694 demote block runs before the CTE: hot TRUE rows past retention whose
+// The 695 demote block runs before the CTE: hot TRUE rows past retention whose
 // session already holds the claim in a heap partition are flipped to FALSE
 // (superseded, claim first-come semantics) so the backlog self-drains.
-func TestMigration694FinalSuccessSelfHeal(t *testing.T) {
-	migration, err := os.ReadFile("694_request_logs_promote_final_success_self_heal.sql")
+func TestMigration695FinalSuccessSelfHeal(t *testing.T) {
+	migration, err := os.ReadFile("695_request_logs_promote_final_success_self_heal.sql")
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestMigration694FinalSuccessSelfHeal(t *testing.T) {
 		"COMMIT;",
 	} {
 		if !strings.Contains(body, required) {
-			t.Fatalf("migration 694 missing %q", required)
+			t.Fatalf("migration 695 missing %q", required)
 		}
 	}
 
@@ -54,7 +54,7 @@ func TestMigration694FinalSuccessSelfHeal(t *testing.T) {
 		"RAISE WARNING",
 	} {
 		if !strings.Contains(body, required) {
-			t.Fatalf("migration 694 demote block missing %q", required)
+			t.Fatalf("migration 695 demote block missing %q", required)
 		}
 	}
 
@@ -62,10 +62,10 @@ func TestMigration694FinalSuccessSelfHeal(t *testing.T) {
 	// demoting fresh (< retention) claims would race the claim guard and
 	// rewrite rows the promote never touches.
 	if !strings.Contains(body, "h.ts < statement_timestamp() - $1") {
-		t.Fatalf("migration 694 demote must scope to retention-eligible rows")
+		t.Fatalf("migration 695 demote must scope to retention-eligible rows")
 	}
 	if !strings.Contains(body, `COALESCE(h.gw_session_id, '''') <> ''''`) {
-		t.Fatalf("migration 694 demote must skip empty-session rows")
+		t.Fatalf("migration 695 demote must skip empty-session rows")
 	}
 
 	// Ordering: ensure-partition loop → demote → atomic CTE. The demote must
@@ -75,22 +75,22 @@ func TestMigration694FinalSuccessSelfHeal(t *testing.T) {
 	demoteIdx := strings.Index(body, "SET is_final_success = FALSE")
 	cteIdx := strings.Index(body, "WITH batch AS (")
 	if ensureIdx < 0 || demoteIdx < 0 || cteIdx < 0 {
-		t.Fatalf("migration 694 structure anchors not found")
+		t.Fatalf("migration 695 structure anchors not found")
 	}
 	if !(ensureIdx < demoteIdx && demoteIdx < cteIdx) {
-		t.Fatalf("migration 694 must order ensure (%d) < demote (%d) < atomic CTE (%d)", ensureIdx, demoteIdx, cteIdx)
+		t.Fatalf("migration 695 must order ensure (%d) < demote (%d) < atomic CTE (%d)", ensureIdx, demoteIdx, cteIdx)
 	}
 
 	// The demote must not reintroduce the swallowed-failure pattern.
 	if strings.Contains(body, "EXCEPTION WHEN OTHERS") {
-		t.Fatalf("migration 694 must not swallow errors (EXCEPTION WHEN OTHERS)")
+		t.Fatalf("migration 695 must not swallow errors (EXCEPTION WHEN OTHERS)")
 	}
 }
 
 // The three explicit column lists must stay positionally identical after the
-// 694 re-install (2026-08-25 positional-drift incident class).
-func TestMigration694ColumnListsAligned(t *testing.T) {
-	migration, err := os.ReadFile("694_request_logs_promote_final_success_self_heal.sql")
+// 695 re-install (2026-08-25 positional-drift incident class).
+func TestMigration695ColumnListsAligned(t *testing.T) {
+	migration, err := os.ReadFile("695_request_logs_promote_final_success_self_heal.sql")
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestMigration694ColumnListsAligned(t *testing.T) {
 		t.Fatalf("expected the full shared column list, got %d", len(returning))
 	}
 
-	// The whole point of 694: the claim marker must survive promotion.
+	// The whole point of 695: the claim marker must survive promotion.
 	found := false
 	for _, c := range returning {
 		if c == "is_final_success" {

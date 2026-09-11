@@ -270,12 +270,15 @@ files=(
   # （IF NOT EXISTS 守卫 + DO 块），db.go 侧另有 ensureProviderModelsCanonicalClearedAt
   # 自愈镜像兜底。
   "$ROOT_DIR/sql/migrations/startup/693_provider_models_canonical_cleared_at.sql"
-  # 2026-09-12 同款升级通道缺口：694（promote final-success 冲突自愈，P2
+  # 2026-09-12 同款升级通道缺口：695 promote final-success 冲突自愈（P2
   # 冷迁移停滞根因的数据面修复）同样只存在于仓库文件，db.go 无 ensure 镜像、
-  # 本序列此前止于 693。纯 CREATE OR REPLACE promote_request_logs_hot_to_partition
+  # 本序列此前止于 693。原编号 694 在共享 252 PG 的迁移账本里已被其他项目
+  # 的 694_partition_ensure_timezone.sql 占用（2026-09-11 21:28），deploy
+  # pending 判定按账本记录跳过、自愈永不生效，故 2026-09-12 重编号为 695。
+  # 纯 CREATE OR REPLACE promote_request_logs_hot_to_partition
   # （688 体 + demote 步骤），幂等收敛，down 无。必须在 693 之后（无依赖，
   # 顺序仅为序列递增约定）。
-  "$ROOT_DIR/sql/migrations/startup/694_request_logs_promote_final_success_self_heal.sql"
+  "$ROOT_DIR/sql/migrations/startup/695_request_logs_promote_final_success_self_heal.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
