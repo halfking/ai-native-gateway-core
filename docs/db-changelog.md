@@ -463,3 +463,10 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 |-----------|------|---------|--------|
 | 695 | `695_request_logs_promote_final_success_self_heal.sql` | `a81814190b118ce91a8eede5f8714d508b5e5afb5f6db99dfc42bd2bc7ff1a4a` | applied+verified |
 
+## 2026-09-12T05:58:00Z — startup sequence apply (d03f0ada4)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 696 | `696_request_logs_view_system_fingerprint.sql` | `05fff36e2030d87d5707c464cd57464657cf7cbb21ee2def9fc655e92045e3b3` | applied+verified |
+| 697 | `697_request_logs_promote_system_fingerprint.sql` | `3e9ccbf539eb541740ed55c0525a78001c5c1594d44823cb4fd1635a5bbc260c` | applied+verified |
+

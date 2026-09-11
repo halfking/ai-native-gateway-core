@@ -16,6 +16,6 @@
 
 1. **review `free`（models_canonical id 2664333）定夺**：`govern-junk-canonical` 诊断唯一的剩余 suspect（review 级，证据 glm-5.2:free / inkling:free / minimax-m3:free 等 0.99 同分）。先查 `openrouter/free`（provider 21，pm 2661145）的实际语义与流量（request_logs 按 raw_model_name 查 90 天），再定夺：若确认是 OpenRouter 免费池伪模型则保留并加白名单说明；若确认应指向具体模型则按 manual 模板单事务处置并复测。
 2. **全局别名卫生轮（范围先探后定）**：`SELECT raw_name, string_agg(...) FROM model_aliases ma JOIN models_canonical mc ... WHERE status='active' GROUP BY raw_name HAVING count(DISTINCT canonical_id) > 1` 找出全部多目的地活跃别名；区分 (a) 目的地都是 canonical 自名（resolver 精确匹配拦截，惰性）与 (b) 非 canonical 拼写的真歧义（`LIMIT 1` 不确定路由，如 `deepseek-v4` → 120 与 260425 快照行）。只处置 (b)，逐条定夺，禁止批量盲改。
-3. **本机部署升级 2082→2084 线**：deploy-local.sh 配方见记忆 local-deploy-gotchas（.env.local 从 bin/current/env 重建、先 docker stop）；注意新 migration 694（request_logs promote self-heal）会随二进制启动应用，升级后核对 schema_migrations 与 gateway_db_revision_sequences。
+3. **本机部署升级 2082→2084 线**：deploy-local.sh 配方见记忆 local-deploy-gotchas（.env.local 从 bin/current/env 重建、先 docker stop）；注意新 migration 694（request_logs promote self-heal，后重编号 695）会随二进制启动应用，升级后核对 schema_migrations 与 gateway_db_revision_sequences。
 
 约束：不自动开新一轮审计；数据操作先 pg_dump 三表备份、单事务、事务内复核后 COMMIT；测试数据操规照旧；浏览器验证用 cua 坐标点行首列、evaluate 现已可用（滚动仍禁用 cua/dom_cua.scroll）。建议 skills：handoff、session-audit-gate、browser-use:control-browser

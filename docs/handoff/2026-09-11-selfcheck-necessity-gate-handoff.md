@@ -348,6 +348,7 @@
 - **验证记录（如实区分）**：**通过**——新契约测试先红后绿；`go test -mod=vendor -count=1 ./deploy/grafana/ ./deploy/prometheus/rules/`（C: 副本，5 个变更文件同步后）= **grafana 4 例 + rules 6 例全 PASS**；prometheus.yml 以 vendored yaml.v3 解析复验 OK（4 jobs 不变）；发现 5 的运维事实均有仓库文档出处（2083 收尾 / 09-10 自检恢复审计 / NATIVE-245-DEPLOY）。**环境受限**——promtool 本机不可用（245 上有 2.47.0，接入步骤已含 `promtool check config`，并沿用该文档"以 /-/reload 实际结果为准"的教训）；Grafana 导入未实测（无实例）；win/arm64 `-race` 不支持未跑。**未验证**——245 侧实际接入（/opt/monitoring 编辑 + reload）需运维上机执行；154 自 245 的网络可达性、两机 admin key 同值性均未知（接入步骤含预检）；接入完成前生产 necessity 指标依旧无通道。
 - **遗留项 6 状态更新**：观测目标已钉定（245/154 双机 × 双槽位，instance=gateway-<node>-<slot>）；**A 项判读等待"245 侧接入完成后的首批数据"**，判读规则不变（第六轮 runbook），按 instance 分节点执行；新增前置链：运维接入（NATIVE 文档节）→ Prometheus `/api/v1/series` 验收 → 数据判读。
 - **遗留风险**：①245 侧接入是运维手工步骤，未执行前告警/面板对双机均无数据——本轮交付的是"接入即可用"的全部仓库侧材料；②154 可达性与 key 同值性两个前置未验证；③Grafana 落点未定，面板生产可用性待定（Prometheus UI/`api/v1` 判读不受影响）；④若运维直接启用模板而跳过 instance 钉定，`sum by (instance)` 将回落 host:port 形态（轮换后断系列）——模板与 NATIVE 文档均已写明钉定要求；⑤既往风险（TTL 抑制/显示侧治本/批量 SQL/脏文件门控）不变。
+- **补注（同轮推送窗口内的 main 前进与 bg 第六度移动，已吸收）**：round-25 记录提交（7124fcf1f）推送时 origin/main 已前进七提交至 055cecc78（694 rollback replace-safe、695 installer 同步、logging frameIndex、**65782814 bg candidate_failure_logs 分区预构建**、modelname alias 顺序、24h 审计文档、merge）——rebase 干净后以 **17de96f12** ff 合入 main 并推送。增量定性：外部 bg 变更仅 `bg/partition_manager.go`(+13)/`_test.go`(+4)，**necessity gate 文件与 deploy 契约面零涉及**（deploy 五文件 diff 全为本轮自身提交）。bg 基线随之重测：两 partition 文件先校验（副本 == d0d5b7e45 逐字节一致）后应用 origin/main；全量套件**首轮出现 2 例新增失败**（TestProbeServiceLeaseHeartbeatExtendsDuringRun / TestProbeServiceHeartbeatExtendsLeasePeriodically，报"heartbeat 0 次/never fired"，窗口仅 0.07/0.13s）——定向复跑 **3/3 过**、全量复跑 **17 例集合与 fails_r11 完全一致**，确证为并发编译/测试负载下的**时序偶发**而非 65782814 引入（两例 ticker goroutine 与测试窗口竞争）。**fails_r12.txt 留档为当前基线，fails_r11 作废（集合相同）**。守卫族 26 例绿；交叉编译 ./bg/（含新 partition 内容）通过。**新环境观察：两例租约心跳测试时序敏感，本机重负载下会抖——后续轮次遇失败集合失配，先定向复跑再定性，勿直接判回归。**主工作区脏文件清单再扩大（并行线活跃）：新增 M `admin/models.go`、M `bg/taxonomy_sync.go`、M `bg/taxonomy_sync_alias_upsert_live_test.go`、M `discovery/alias_sync.go`、M `scripts/govern-junk-canonical/plan_test.go`（系 modelname/alias 线在途改动）——维持严禁触碰。本轮最终复核点 = **17de96f12**（bg 已在该内容上重测留档）。
 
 ## 下一轮提示词（可直接复制）
 
@@ -366,8 +367,10 @@ NATIVE 文档新增"双机观测接入"节（接入步骤/预检 curl/验收命�
 TestSelfcheckNecessityDashboardSkipPanelBreaksDownByInstance 先红后绿（grafana 4 例
 + rules 6 例全 PASS）；第二十四轮提示词的 bg-diff 基准 c6676f304 有 merge 拓扑缺陷
 （早于 83bf582dd，会误报 696 变更）——**bg 增量复核一律以上一轮复核点为 diff 基准**，
-本轮复核点 = d0d5b7e45（开工实查 bg/ 与 deploy 契约子树零变化）；fails_r11.txt
-（17 例）为 bg 回归判据）、遗留任务第 6 项。
+本轮最终复核点 = 17de96f12（补注：推送窗口内 main 七提交已被吸收，65782814 移动
+bg/ 的 partition_manager 两文件已重测）；fails_r12.txt（17 例，集合=fails_r11）为
+bg 回归判据；若见 TestProbeService*LeaseHeartbeat* 两例新增失败先定向复跑再定性
+（时序敏感，负载下会抖））、遗留任务第 6 项。
 背景：观测仓库侧工件全部就绪（模板 + NATIVE 接入节 + per-instance 面板 + 契约
 4+6），**A 项数据门 = 245 侧运维接入完成**（/opt/monitoring 编辑 + reload +
 api/v1 验收，步骤在 NATIVE 文档节）；拿到双机 /metrics 数据或告警触发记录后按
@@ -413,4 +416,4 @@ D. 验证如实区分通过/环境受限/未验证。
 
 ## 验证环境说明
 
-本工作区（Z: 网络盘）无 Go/Docker/WSL。便携工具链保留在 `C:\Users\xutaohuang\AppData\Local\golang-dist`（Go 1.27.1 / llvm-mingw / zig）。Windows 本地验证用 C: 本地打桩副本 **`C:\Users\xutaohuang\AppData\Local\lgw-p2test`**（第十六轮审计补全路径；历轮基线留档 fails_r6–r11.txt 同目录，**当前判据为 fails_r11.txt 17 例**，fails_r6–r10 已作废）。`bg` 包含 Linux 专属 `syscall.Statfs_t`，Windows 本地验证需在副本中将 `storage_retention_worker.go` 的 `diskUsagePercent` 打桩后再 `go test -mod=vendor ./bg/`（CGO_ENABLED=1 CC=aarch64-w64-mingw32-gcc）。部署目标验证用 `GOOS=linux GOARCH=arm64` + `zig cc -target aarch64-linux-musl` 交叉编译（C: 副本非 git 仓库，`go build` 须加 `-buildvcs=false`）。
+本工作区（Z: 网络盘）无 Go/Docker/WSL。便携工具链保留在 `C:\Users\xutaohuang\AppData\Local\golang-dist`（Go 1.27.1 / llvm-mingw / zig）。Windows 本地验证用 C: 本地打桩副本 **`C:\Users\xutaohuang\AppData\Local\lgw-p2test`**（第十六轮审计补全路径；历轮基线留档 fails_r6–r12.txt 同目录，**当前判据为 fails_r12.txt 17 例**，fails_r6–r11 已作废；两例 `TestProbeService*LeaseHeartbeat*` 时序敏感，重负载下偶发新增失败——集合失配先定向复跑再定性）。`bg` 包含 Linux 专属 `syscall.Statfs_t`，Windows 本地验证需在副本中将 `storage_retention_worker.go` 的 `diskUsagePercent` 打桩后再 `go test -mod=vendor ./bg/`（CGO_ENABLED=1 CC=aarch64-w64-mingw32-gcc）。部署目标验证用 `GOOS=linux GOARCH=arm64` + `zig cc -target aarch64-linux-musl` 交叉编译（C: 副本非 git 仓库，`go build` 须加 `-buildvcs=false`）。
