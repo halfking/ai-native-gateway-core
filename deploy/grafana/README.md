@@ -83,6 +83,20 @@
 
 ---
 
+### 5. 自检必要性闸门面板 (Self-check Necessity Gate)
+**文件:** `selfcheck-necessity-dashboard.json`
+
+自检（node_probe）必要性闸门的观测面板（2026-09-11，遗留项 6 观测工具）。
+
+**主要可视化内容:**
+- Necessity Skips by Reason（按 skip 原因的 5 分钟增量，`llmgw_node_probe_necessity_skip_total`）
+- Mirror Delete In-cycle Retries（镜像删除同轮重试/瞬时吸收量，`llmgw_node_probe_necessity_mirror_delete_retry_total`）
+- Mirror Delete Post-retry Failures（重试后仍失败/持续失败告警源，`llmgw_node_probe_necessity_mirror_delete_failed_total`，红色阈值 5 与告警表达式一致）
+
+**使用场景:** 上线观察（handoff 遗留项 6 判读规则：retry 偶发增长为设计内吸收；failed 持续增长触发 `NodeProbeNecessityMirrorDeleteFailedHigh` 告警）；skip 异常偏高时优先排查 Redis 键 schema（legacy/k2/dual）与 tenant 归属
+
+---
+
 ## 导入步骤
 
 ### 方法 1: 通过 Grafana UI 导入
@@ -95,6 +109,7 @@
    - `proxy-subscription-dashboard.json`
    - `proxy-node-dashboard.json`
    - `proxy-performance-dashboard.json`
+   - `selfcheck-necessity-dashboard.json`
 5. 选择数据源：Prometheus
 6. 点击 "Import"
 
@@ -179,6 +194,11 @@ docker-compose restart grafana
 - `llm_gateway_proxy_node_selection_duration_seconds` - 节点选择耗时（直方图）
 - `llm_gateway_proxy_transport_cache_size` - Transport 缓存大小
 - `llm_gateway_proxy_transport_invalidations_total` - Transport 失效次数
+
+### 自检必要性指标
+- `llmgw_node_probe_necessity_skip_total{reason}` - 必要性闸门跳过的自检探测计数（按原因：not_necessary_all_nodes_healthy / not_necessary_last_probe_healthy）
+- `llmgw_node_probe_necessity_mirror_delete_retry_total` - skip 路径镜像删除的同轮即时重试计数（瞬时吸收量）
+- `llmgw_node_probe_necessity_mirror_delete_failed_total` - 镜像删除重试后仍失败计数（持续失败告警源，对应告警 `NodeProbeNecessityMirrorDeleteFailedHigh`）
 
 ---
 
