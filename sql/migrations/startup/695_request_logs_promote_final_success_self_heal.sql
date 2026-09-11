@@ -1,4 +1,4 @@
--- Migration 694: promote_request_logs_hot_to_partition 自愈 final-success 冲突
+-- Migration 695: promote_request_logs_hot_to_partition 自愈 final-success 冲突
 --
 -- Motivation (2026-09-12 P2 冷迁移停滞根因, 生产 154 只读取证):
 --   2026-08-26 merge d2cbaf88b 回退了 main.go 的 telemetry.SetClaimClient
@@ -37,7 +37,7 @@
 --
 -- Idempotent: YES (纯 CREATE OR REPLACE; demote 后冲突状态消失, 重跑无副作用).
 -- Down: 无. 紧急回滚 = 重放 688 中该函数的定义 (无 demote 版本).
--- Verified: migration_694_test.go SQL 形状断言 (三列清单一致 + demote 块 +
+-- Verified: migration_695_test.go SQL 形状断言 (三列清单一致 + demote 块 +
 --   688 原有语义标记); 生产只读 SQL 确认 7 对冲突行全部命中 demote 谓词.
 
 \set ON_ERROR_STOP on
@@ -109,7 +109,7 @@ BEGIN
     END LOOP;
     IF v_demoted > 0 THEN
         RAISE WARNING
-            'promote_request_logs_hot_to_partition: demoted % hot final-success claim(s) superseded by the promoted winner (migration 694 self-heal)',
+            'promote_request_logs_hot_to_partition: demoted % hot final-success claim(s) superseded by the promoted winner (migration 695 self-heal)',
             v_demoted;
     END IF;
 
