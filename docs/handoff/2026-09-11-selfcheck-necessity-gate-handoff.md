@@ -328,7 +328,26 @@
 - **协作环境验活（本轮通过）**：`git worktree list` + worktree 内 `git status` → lgw-necessity-p2 存活且干净，检出 docs/necessity-gate-round23（=83fc3530f，其两提交已随 147939cb7 进入 origin/main），本轮已在其上 `-B` 出 **docs/necessity-gate-round24**（=8af09c799）；go-cost worktree 仍标 prunable（deploy-lib 线对象，未处置）。C: 副本 lgw-p2test 与 fails_r6–r11.txt 基线留档均在位，fails_r11.txt 实测 17 例失败行。主工作区脏文件清单与 git status 起始快照一致（vendor_pricing_table.py D/?? 对、incidents 文档 M、deploy-lib D + 两个 *.lnk），维持严禁触碰。
 - **C 项**：`lastProbeRun` 保持 `started_at DESC`，无反例，维持关闭。
 - **验证记录（如实区分）**：**通过**——合并态复核（两段增量定性、necessity 文件逐一在位、五件套逐项复验、handoff 区间改动=第二十三轮自身、生产基线祖先实证）、bg 基线重测全流程（CRLF 口径先校验后应用 → 全量 17 例集合与 fails_r10 一致 → fails_r11.txt 留档）、定向守卫族 26 例、deploy 契约两包复跑（副本契约文件 hash 先行核对）、交叉编译 ./bg/。**环境受限**——16 例源文本断言 + 1 例 symlink 在 CRLF 检出下无法 Windows 通过（Linux CI 职责）；win/arm64 `-race` 不支持未跑；promtool 与 Grafana 导入不可用（沿用第八/九/十轮口径）；cmd/gateway 交叉编译未覆盖（见上，697 线自验）。**未验证**——本特性告警/面板是否已被运维实际 provisioning、necessity 三指标生产值（无通道；2086/2087 生产在跑、2088 本地部署 ≠ provisioning 完成）。
-- **遗留风险**：与第十五至二十三轮相同，无新增。剩余开启项全部外部门控：TTL 抑制 ← 生产 failed_total 数据；显示侧治本 ← 运维反馈；孤儿行批量 SQL 执行前 ← 只读副本核数；工作区脏文件 ← 原作者确认。环境注记：bg 基线五度被外部提交移动（fails_r6→r7→r8→r9→r10→r11），触碰 bg 前先以"最后一个移动 bg/ 的已知提交"（现为 c6676f304）为基准 diff 确认口径仍有效；deploy 判据维持 deploy/{grafana,prometheus}/ 子树；fetch geometric repack 失败留观（见上）。
+- **遗留风险**：与第十五至二十三轮相同，无新增。剩余开启项全部外部门控：TTL 抑制 ← 生产 failed_total 数据；显示侧治本 ← 运维反馈；孤儿行批量 SQL 执行前 ← 只读副本核数；工作区脏文件 ← 原作者确认。环境注记：bg 基线五度被外部提交移动（fails_r6→r7→r8→r9→r10→r11），触碰 bg 前先以"最后一个移动 bg/ 的已知提交"（现为 c6676f304）为基准 diff 确认口径仍有效【第二十五轮审计修正：bg-mover 指针仅作历史标注；**diff 基准一律用当轮复核点**——c6676f304 经 147939cb7 merge 合入且早于 83bf582dd，直接以其为基准会把 696 线的 bg 变更误报为"新增移动"（本轮实测复现）】；deploy 判据维持 deploy/{grafana,prometheus}/ 子树；fetch geometric repack 失败留观（见上）。
+
+## 本轮记录（2026-09-12 第二十五轮，运维输入落地——观测需求钉定 245/154 双机 + 观测链路审计与修正）
+
+- **输入到达声明（与既往"无输入"轮的区别）**：任务书到达运维指令"需要观察 **154 与 245** 这两台机器"——构成遗留项 6 观测需求的**目标钉定**。注意边界：这是目标输入而非指标数据输入，A 项触发条件（拿到 /metrics 数值或告警触发记录）本轮依旧未满足，TTL 抑制继续锁在数据门后。本轮产出 = 需求修正（抓取面/runbook/面板口径全部钉到双机）+ 观测链路端到端审计（3 处实质缺口 + 1 处上轮指引缺陷）+ 修正实施（deploy 工件 + test-only，零网关代码）。
+- **审计发现（结合现有方案：`deploy/prometheus/NATIVE-245-DEPLOY.md` 记载的 245 原生 Prometheus 栈）**：
+  - **发现 1（实质，抓取面缺口）**：生产 Prometheus 实际常驻 245（原生 systemd `/opt/monitoring/`，2026-08-18 credential-17 加固链交付，**非** deploy/prometheus 的 compose 栈）；其适配版 prometheus.yml 只有一个网关目标 `127.0.0.1:8781`——①**154 完全在抓取面外**（双机需求的半边盲区）；②**固定 8781 端口在蓝绿轮换后落空**（2083 收尾文档实测：切换后 active 端口 8781/8782 轮换，"直连 8781 的探测会落空"）——抓取恰在发版窗口集体致盲，且序列断流后 `increase[10m]+for 5m` 告警静默 resolve，属"最需要监控时失效"形态。
+  - **发现 2（实质，面板口径缺口）**：skip 面板 expr 为 `sum by (reason)`——跨实例聚合，两台机的 per-node skip 异常互相淹没；retry/failed 面板图例为静态文本，双机两系列将同名混淆。与"观察两台机器"直接冲突。
+  - **发现 3（文档缺口）**：deploy/prometheus/README 的 provisioning 流程是 compose 形态；生产实际惯例是 NATIVE-245-DEPLOY 的"规则与仓库同源 → promtool check → POST /-/reload"。necessity 告警与双机抓取在 245 原生栈的接入步骤此前无落地文档。另：**Grafana 不在 245 原生栈内**（只有 Prometheus + Alertmanager）——面板的生产可用性受 Grafana 落点限制，须如实标注而非沿用"导入即验"。
+  - **发现 4（上轮指引缺陷，已修正）**：第二十四轮下一轮提示词的 bg-diff 基准 `git diff c6676f304..<新头> -- bg/` 有 merge 拓扑缺陷——c6676f304（alias 线，经 147939cb7 合入）**早于** 83bf582dd（696 线），从它 diff 会把 696 的 bg 变更误报为"又移动"（本轮开工实测复现：该 diff 非空，含 integrity_fingerprint_drift.go）。修正：**bg 增量复核一律以上一轮复核点为 diff 基准**（本轮复核点 = d0d5b7e45，开工实查 bg/ 与 deploy 契约子树零变化）；"最后移动 bg/ 的提交"指针仅作历史标注。round-24 遗留风险行已就地加注。
+  - **发现 5（运维事实核验，支撑修正）**：两机 systemd 单元名不同（245=`llmgo-245-canary@<port>`、154=`llm-gateway-go-canary@<port>`，2083 收尾与 09-10 审计文档双证）；/metrics 与业务同端口监听（8781/8782）；245 原生栈 admin token 已落盘 `/opt/monitoring/prometheus/secrets/admin_token`；**两机 `LLM_GATEWAY_ADMIN_API_KEY` 是否同值未验证**（接入步骤含 401 分叉处置：不同则 154 需拆专属 job + 独立 token 文件）。
+- **修正实施（4 文件，deploy 工件 + test-only）**：
+  1. `deploy/prometheus/prometheus.yml`：末尾新增 `llm-gateway-prod` **注释模板**——245+154 双节点 × a/b 双槽位共 4 目标，`instance` 标签钉为 `gateway-<node>-<slot>`（轮换不漂移），bearer_token_file 说明，双机抓取的蓝绿原理注释；注释形态对 compose 栈零影响（yaml 解析复验仍 4 jobs）。
+  2. `deploy/prometheus/NATIVE-245-DEPLOY.md`：新增"自检必要性（necessity gate）双机观测接入（2026-09-12）"节——245 原生栈落地版抓取块（`<HOST_154_ADDR>` 占位）、`promtool check config` + `/-/reload` 接入步骤、连通性/鉴权预检 curl（含 401=两机 key 不同、000=网络不通的分叉语义）、接入后 `api/v1/series` 与 `api/v1/rules` 验收命令、按 instance 分节点判读规则（对齐第六轮 runbook）、蓝绿轮换后计数器从 0 重新累计的预期语义、Grafana 边界声明。
+  3. `deploy/grafana/selfcheck-necessity-dashboard.json`：skip 面板 expr 改 `sum by (instance, reason)`、图例 `{{instance}} {{reason}}`；retry/failed 图例加 `{{instance}}` 前缀。**契约测试先行**：新增 `TestSelfcheckNecessityDashboardSkipPanelBreaksDownByInstance`（钉 skip expr 必须保留 instance 维度），改动前实测红（"does not contain sum by (instance, reason)"）→ 改后绿。
+  4. `deploy/grafana/README.md`：面板节补"双机观测口径"段（instance 钉定要求 + 未接入时面板为空属未接入非故障）。
+- **硬条件核对**：网关代码/SQL/闸门路径零改动；alerts.yml 零改动（告警本身 per-series 语义正确，instance 钉定后自动带节点标签触发）；compose 栈行为零变化（prometheus.yml 仅追加注释）。
+- **验证记录（如实区分）**：**通过**——新契约测试先红后绿；`go test -mod=vendor -count=1 ./deploy/grafana/ ./deploy/prometheus/rules/`（C: 副本，5 个变更文件同步后）= **grafana 4 例 + rules 6 例全 PASS**；prometheus.yml 以 vendored yaml.v3 解析复验 OK（4 jobs 不变）；发现 5 的运维事实均有仓库文档出处（2083 收尾 / 09-10 自检恢复审计 / NATIVE-245-DEPLOY）。**环境受限**——promtool 本机不可用（245 上有 2.47.0，接入步骤已含 `promtool check config`，并沿用该文档"以 /-/reload 实际结果为准"的教训）；Grafana 导入未实测（无实例）；win/arm64 `-race` 不支持未跑。**未验证**——245 侧实际接入（/opt/monitoring 编辑 + reload）需运维上机执行；154 自 245 的网络可达性、两机 admin key 同值性均未知（接入步骤含预检）；接入完成前生产 necessity 指标依旧无通道。
+- **遗留项 6 状态更新**：观测目标已钉定（245/154 双机 × 双槽位，instance=gateway-<node>-<slot>）；**A 项判读等待"245 侧接入完成后的首批数据"**，判读规则不变（第六轮 runbook），按 instance 分节点执行；新增前置链：运维接入（NATIVE 文档节）→ Prometheus `/api/v1/series` 验收 → 数据判读。
+- **遗留风险**：①245 侧接入是运维手工步骤，未执行前告警/面板对双机均无数据——本轮交付的是"接入即可用"的全部仓库侧材料；②154 可达性与 key 同值性两个前置未验证；③Grafana 落点未定，面板生产可用性待定（Prometheus UI/`api/v1` 判读不受影响）；④若运维直接启用模板而跳过 instance 钉定，`sum by (instance)` 将回落 host:port 形态（轮换后断系列）——模板与 NATIVE 文档均已写明钉定要求；⑤既往风险（TTL 抑制/显示侧治本/批量 SQL/脏文件门控）不变。
 
 ## 下一轮提示词（可直接复制）
 
@@ -337,56 +356,54 @@
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
 先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
-第六轮"（runbook 与孤儿行三层清理口径）、"本轮记录 第八轮"（告警+面板已随仓库交付）、
-"审计记录 第九轮"（告警契约已钉入 alerts_test.go）、"本轮记录 第十轮"（面板契约
-已钉入 deploy/grafana/dashboard_test.go——观测链路全部工件均有 CI 防回归保护）、
-"本轮记录 第二十四轮"（8af09c799 合并态复核：origin/main 自 6b769063d 两段前进——
-alias 线推送收敛七提交中的五提交（c6676f304 根治 alias ON CONFLICT 并**移动 bg/**：
-taxonomy_sync.go +43/-4 + 新增 live 测试文件；2088-d60511146 为**本地部署**；
-147939cb7 merge 后本地 main 分叉已收敛、现严格落后 origin/main）+ 697 telemetry 线
-两提交（d03f0ada4 迁移 697 + streaming/telemetry 写入接线 + deploy/sql/schemas/baseline，
-8af09c799 promote 695→697 函数链注册；均不触契约判据面）；bg/ 基线已重测留档
-lgw-p2test/fails_r11.txt（17 例，集合与 fails_r10 完全一致，fails_r10 作废），
-"最后一个移动 bg/ 的已知提交"现为 c6676f304；deploy 契约判据维持 deploy/grafana/ +
-deploy/prometheus/ 子树 diff（自 d249604c7 起仍零变化，契约两包 ok 已复跑）；
-necessity gate 文件零涉及、handoff 区间改动=第二十三轮自身；观测五件套 1/1/1/3/2
-复验在位；生产连续性沿用：3c1195f2c→2086-5c58bf34（245/154 在跑）→607a785f6
-（2087），区间唯一 bump 2088 属本地部署；fetch 时 geometric repack 失败属 SMB 维护性
-问题已留观）、遗留任务第 6 项。
-背景：观测工件齐全且已全部合入 main（第二十四轮在 8af09c799 复验）；main 代码头以
-git fetch 实查为准。bg/ 后续仍可能被外部提交移动——跑 bg 套件前先
-`git diff c6676f304..<新头> -- bg/` 确认（c6676f304 是最后一个移动 bg/ 的已知
-提交）；bg/ 没变直接以 lgw-p2test/fails_r11.txt（17 例）为回归判据，变了先 CRLF
-同口径重测基线再跑。deploy 契约同理先 diff deploy/grafana/ 与 deploy/prometheus/。
-生产已运行本特性（245/154 在 2086-5c58bf34，基线含 3c1195f2c）——拿到 /metrics
-数据或告警触发记录后按第六轮 runbook 判读。告警
-NodeProbeNecessityMirrorDeleteFailedHigh（failed_total 10m 增量 >5，warning）
-+ 面板 selfcheck-necessity-dashboard.json——运维按 deploy/prometheus/README 的
-provisioning 流程加载后即自动告警，无需人工 curl。孤儿行应急口径三层：绑定重建
-自然恢复 / POST /api/admin/probe/tasks 提交一次探测即删行（自 6490fd981 起同时
-留一条 success=false 取证行，属预期信号非异常）/ 批量 SQL；显示侧
-治本预案（queryProbeNodeTasks WHERE 并入绑定链 EXISTS）就绪未实施。
-注意：主工作区检出 main（=147939cb7，alias 分叉已收敛、落后 origin/main 可 ff）；
-工作区遗留脏文件（docs 下多处、scripts/deploy-lib、*.lnk）严禁 add/clean/恢复。
-继续用 git worktree 从 origin/main 拉独立分支实施（开工先验活：`git worktree list`
-+ worktree 内 git status，元数据被清即 rm 重建；lgw-necessity-p2 现检出
-docs/necessity-gate-round24，路径在 //Mac/Home 同源盘、Windows 侧可正常访问，
-可直接 `checkout -B` 到本轮分支）；Windows 验证用 C: 副本 lgw-p2test
+第六轮"（runbook 判读规则与孤儿行三层清理口径）、"本轮记录 第二十五轮"（运维指令
+已把观测目标钉定为 245/154 两台生产机：审计发现生产 Prometheus 常驻 245 原生栈
+（NATIVE-245-DEPLOY.md），原抓取面只含 127.0.0.1:8781——154 不在抓取面内 + 固定
+端口蓝绿轮换后落空 + skip 面板跨实例聚合三缺口，已修正：prometheus.yml 新增
+llm-gateway-prod 注释模板（双节点×双槽位 4 目标、instance 钉 gateway-<node>-<slot>）、
+NATIVE 文档新增"双机观测接入"节（接入步骤/预检 curl/验收命令/分节点判读/Grafana
+边界）、面板 expr 改 sum by (instance, reason) + 图例带 instance、新契约测试
+TestSelfcheckNecessityDashboardSkipPanelBreaksDownByInstance 先红后绿（grafana 4 例
++ rules 6 例全 PASS）；第二十四轮提示词的 bg-diff 基准 c6676f304 有 merge 拓扑缺陷
+（早于 83bf582dd，会误报 696 变更）——**bg 增量复核一律以上一轮复核点为 diff 基准**，
+本轮复核点 = d0d5b7e45（开工实查 bg/ 与 deploy 契约子树零变化）；fails_r11.txt
+（17 例）为 bg 回归判据）、遗留任务第 6 项。
+背景：观测仓库侧工件全部就绪（模板 + NATIVE 接入节 + per-instance 面板 + 契约
+4+6），**A 项数据门 = 245 侧运维接入完成**（/opt/monitoring 编辑 + reload +
+api/v1 验收，步骤在 NATIVE 文档节）；拿到双机 /metrics 数据或告警触发记录后按
+第六轮 runbook + 第二十五轮 instance 分节点口径判读：平稳 → 关闭遗留项 6；
+failed_total 单 instance 持续增长 → 短 TTL 抑制（先失败测试，硬条件不变）。
+告警 NodeProbeNecessityMirrorDeleteFailedHigh 已在 alerts.yml（与 245 原生栈
+/opt/monitoring/prometheus/rules/ 同源同步后生效）；面板 selfcheck-necessity-
+dashboard.json 需 Grafana 实例（不在 245 原生栈内，落点待运维定夺，不影响
+Prometheus UI 判读）。孤儿行应急口径三层：绑定重建自然恢复 / POST
+/api/admin/probe/tasks 提交一次探测即删行（自 6490fd981 起同时留 success=false
+取证行，属预期信号非异常）/ 批量 SQL；显示侧治本预案（queryProbeNodeTasks WHERE
+并入绑定链 EXISTS）就绪未实施。
+注意：主工作区检出 main；工作区遗留脏文件（docs 下多处、scripts/deploy-lib、*.lnk）
+严禁 add/clean/恢复。继续用 git worktree 从 origin/main 拉独立分支实施（开工先验活：
+`git worktree list` + worktree 内 git status，元数据被清即 rm 重建；lgw-necessity-p2
+现检出 feat/necessity-two-node-observation，路径在 //Mac/Home 同源盘、Windows 侧可
+正常访问，可直接 `checkout -B` 到本轮分支）；Windows 验证用 C: 副本 lgw-p2test
 （C:\Users\xutaohuang\AppData\Local\lgw-p2test；仅 cp 变更文件；deploy 包验证需
-同步 deploy/grafana/ 的 README.md 与面板 JSON；基线对照务必 CRLF 同口径
-——`git show <rev>:<file> | unix2dos`；副本上 `go build` 交叉编译需
--buildvcs=false）。
+同步 deploy/grafana/ 的 README.md 与面板 JSON 及 deploy/prometheus/ 的 yml/文档；
+基线对照务必 CRLF 同口径——`git show <rev>:<file> | unix2dos`；副本上 `go build`
+交叉编译需 -buildvcs=false）。
 
 本轮任务（按输入分派，无输入则如实记录阻塞）：
-A. 若已获得生产 /metrics 数据或告警触发记录（runbook 判读规则）：
-   - mirror_delete_failed_total 持续增长 / 告警 firing → 实施短 TTL 抑制（硬条件
-     不变：不漏真实故障探测、证据错误 fail-open、manual/admin 绕过、lease 丢失
-     不删新 owner 状态），先补失败测试；
+A. 若已获得 245/154 双机的 /metrics 数据或告警触发记录（第六轮 runbook + instance
+   分节点判读）：
+   - mirror_delete_failed_total 单 instance 持续增长 / 告警 firing → 实施短 TTL
+     抑制（硬条件不变：不漏真实故障探测、证据错误 fail-open、manual/admin 绕过、
+     lease 丢失不删新 owner 状态），先补失败测试；
    - 两者平稳 → 在 handoff 记录结论并关闭遗留项 6。
 B. 若运维确认"模型解绑/改名后自检 tab 长期显示陈旧节点"：先给应急口径（admin API
    提交一次探测即删行，或批量 SQL），再按预案实施显示侧治本修复（queryProbeNodeTasks
    WHERE 并入绑定链 EXISTS，SQL 抽取可守卫 + 先红后绿测试），实施前与反馈方确认
    面板口径（node-tasks 泳道 vs SSE 流）。
+B'. 若运维反馈"按 NATIVE 文档接入后 api/v1/series 验收不过"（401/000/target down），
+   按 401=两机 key 不同（154 拆专属 job + 独立 token 文件）、000=网络不通（上报
+   运维，勿在仓库侧猜测拓扑）分叉处置并记录。
 C. lastProbeRun 维持关闭；除非出现乱序完成记录反例。
 D. 验证如实区分通过/环境受限/未验证。
 

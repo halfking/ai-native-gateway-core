@@ -79,6 +79,73 @@ cat /opt/monitoring/smoke/received.log    # 应看到 receiver=credential-team �
 # 收尾：恢复 webhook.env、systemctl stop smoke-webhook
 ```
 
+## 自检必要性（necessity gate）双机观测接入（2026-09-12）
+
+> 需求来源：`docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md` 遗留项 6 /
+> 第二十五轮——生产观测目标钉定为 **245 与 154 两台网关机**，necessity 三指标
+> （skip/retry/failed）与告警 `NodeProbeNecessityMirrorDeleteFailedHigh` 需要对两台机
+> 的**每个蓝绿槽位**都有数据。本节是仓库 `deploy/prometheus/prometheus.yml` 末尾
+> `llm-gateway-prod` 注释模板在 245 原生栈上的落地版。
+
+**为什么不能沿用现有 `127.0.0.1:8781` 单目标**：
+
+1. 只覆盖 245 本机，**154 完全在抓取面外**——154 上的 necessity 指标与告警数据不存在；
+2. 蓝绿切换后 active 端口在 8781/8782 **轮换**（2083 收尾文档实测），固定 8781 的抓取
+   恰在发版时刻集体落空（target DOWN），监控在最需要它的窗口致盲；
+3. 每节点抓**两个槽位**（`a`=8781，`b`=8782）：非 active 槽位 target DOWN 属预期噪声；
+   `instance` 标签钉死为 `节点-槽位`（不随轮换漂移），面板与告警按 instance 分系列。
+
+**接入步骤（在 245 上执行）**：
+
+```bash
+# 1. 抓取目标：/opt/monitoring/prometheus/prometheus.yml 的 scrape_configs 追加
+#    （<HOST_154_ADDR> 换成 245 可达的 154 地址；先验证连通性，见第 4 步）
+#      - job_name: 'llm-gateway-prod'
+#        scrape_interval: 15s
+#        static_configs:
+#          - targets: ['127.0.0.1:8781']
+#            labels: { instance: 'gateway-245-a', service: 'llm-gateway' }
+#          - targets: ['127.0.0.1:8782']
+#            labels: { instance: 'gateway-245-b', service: 'llm-gateway' }
+#          - targets: ['<HOST_154_ADDR>:8781']
+#            labels: { instance: 'gateway-154-a', service: 'llm-gateway' }
+#          - targets: ['<HOST_154_ADDR>:8782']
+#            labels: { instance: 'gateway-154-b', service: 'llm-gateway' }
+#        bearer_token_file: '/opt/monitoring/prometheus/secrets/admin_token'
+#    （admin_token 文件已存在=245 的 LLM_GATEWAY_ADMIN_API_KEY；154 网关的
+#      key 若与 245 不同，须另建 token 文件并拆出 154 专属 job——先 curl 验证）
+# 2. 校验 + 热加载
+/opt/monitoring/prometheus/promtool check config /opt/monitoring/prometheus/prometheus.yml
+curl -X POST 127.0.0.1:9090/-/reload
+# 3. 告警规则：仓库 deploy/prometheus/rules/alerts.yml 与 /opt/monitoring/prometheus/rules/
+#    同步（含 NodeProbeNecessityMirrorDeleteFailedHigh）后按上方惯例 reload
+# 4. 连通性/鉴权预检（在 245 上对 4 个目标各来一次）
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat /opt/monitoring/prometheus/secrets/admin_token)" http://127.0.0.1:8781/metrics
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat /opt/monitoring/prometheus/secrets/admin_token)" http://<HOST_154_ADDR>:8781/metrics   # 期望 200；401=两机 key 不同；000/超时=网络不通
+```
+
+**接入后验收（Prometheus 侧）**：
+
+```bash
+# 4 个 instance 各应有 llmgw_node_probe_necessity_skip_total 系列（计数器注册即预热）
+curl -s '127.0.0.1:9090/api/v1/series?match[]=llmgw_node_probe_necessity_skip_total' | python3 -m json.tool | grep instance
+# 告警规则已加载（应含 NodeProbeNecessityMirrorDeleteFailedHigh）
+curl -s '127.0.0.1:9090/api/v1/rules' | python3 -c 'import sys,json;d=json.load(sys.stdin);print([r["name"] for g in d["data"]["groups"] for r in g["rules"] if "Necessity" in r["name"]])'
+```
+
+**判读规则**（与 handoff 第六轮 runbook 一致，按 instance 分节点判）：
+`mirror_delete_retry_total` 偶发增长=瞬时失败被同轮吸收（设计内）；`failed_total` 在
+**同一 instance 上** 10m 增量 >5（即告警阈值）=该节点有 (cred,model) 镜像删除翻动循环
+→ 按 handoff 遗留项 6 升级短 TTL 抑制；`skip_total` 单节点异常高 → 排查该节点 Redis
+键 schema（legacy/k2/dual）与 tenant 归属。蓝绿轮换后计数器从 0 重新累计属预期
+（新进程），`increase()` 自动处理清零；轮换后请在 **active 槽位的新 instance 系列**
+上继续判读。
+
+**边界（如实记录）**：Grafana 不在 245 原生栈内（本文件只覆盖 Prometheus +
+Alertmanager）——`selfcheck-necessity-dashboard.json` 面板需要 Grafana 实例方可导入
+（compose 栈内有；生产双机观测当前以 Prometheus UI / api/v1 查询为准，面板导入待
+Grafana 落点定夺）。
+
 ## 已知状态（2026-08-18）
 
 - **`CREDENTIAL_TEAM_WEBHOOK_URL` 尚未提供**：webhook 保持 `https://placeholder.invalid/##...##`

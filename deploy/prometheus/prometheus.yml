@@ -76,3 +76,42 @@ scrape_configs:
           service: 'llm-gateway'
           component: 'gateway'
     bearer_token_file: '/etc/prometheus/secrets/admin_token'
+
+  # 2026-09-12: two-node production observation (gateways on hosts 245 and 154,
+  # see docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md round 25).
+  # The production gateways run as native systemd units (NOT this compose
+  # stack): unit names llmgo-245-canary@<port> / llm-gateway-go-canary@<port>,
+  # blue-green active port ROTATES between 8781 and 8782 on every switch —
+  # a single fixed-port target goes blind exactly at release time. Scrape BOTH
+  # slots of BOTH nodes; the inactive slot is simply "down" (harmless) and the
+  # active slot's series survives rotation because the `instance` label is
+  # pinned to node+slot, not host:port. /metrics needs the node's
+  # LLM_GATEWAY_ADMIN_API_KEY in bearer_token_file (503/401 otherwise).
+  # Enable this job on the 245-native Prometheus stack (the instance that can
+  # reach both nodes) per deploy/prometheus/NATIVE-245-DEPLOY.md — kept
+  # commented here so the compose stack is untouched until then.
+  # - job_name: 'llm-gateway-prod'
+  #   scrape_interval: 15s
+  #   static_configs:
+  #     # 245 (Prometheus runs on this host → loopback)
+  #     - targets: ['127.0.0.1:8781', '127.0.0.1:8782']
+  #       labels:
+  #         service: 'llm-gateway'
+  #         component: 'gateway'
+  #     # 154 (replace with its address reachable from 245)
+  #     - targets: ['<HOST_154_ADDR>:8781', '<HOST_154_ADDR>:8782']
+  #       labels:
+  #         service: 'llm-gateway'
+  #         component: 'gateway'
+  #   bearer_token_file: '/etc/prometheus/secrets/admin_token'
+  #   # Pin instance to node+slot (override the default host:port) — do this
+  #   # per target via relabel_configs, or split each node/slot into its own
+  #   # static_config with an explicit `instance:` label, e.g.:
+  #   #   - targets: ['127.0.0.1:8781']
+  #   #     labels: { instance: 'gateway-245-a', service: 'llm-gateway' }
+  #   #   - targets: ['127.0.0.1:8782']
+  #   #     labels: { instance: 'gateway-245-b', service: 'llm-gateway' }
+  #   #   - targets: ['<HOST_154_ADDR>:8781']
+  #   #     labels: { instance: 'gateway-154-a', service: 'llm-gateway' }
+  #   #   - targets: ['<HOST_154_ADDR>:8782']
+  #   #     labels: { instance: 'gateway-154-b', service: 'llm-gateway' }
