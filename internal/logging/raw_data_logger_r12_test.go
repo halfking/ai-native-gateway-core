@@ -363,3 +363,37 @@ func TestRawDataLogger_CleanupOldFilesKeepBoundary(t *testing.T) {
 		}
 	}
 }
+
+// 2026-09-12 审计：rawFrameIndex 此前只增不删，高并发下按请求数无界增长。
+// 锁定三件事：超限后条目总数有界；最旧条目被淘汰（lookup miss）；最新
+// 条目仍可命中且位置精确。
+func TestRawFrameIndex_BoundedEviction(t *testing.T) {
+	var fi rawFrameIndex
+	entry := makeRawEntry("upstream_request", "rid", "openai-chat", []byte("x"), nil, "post_conversion", RawCorrelationEnvelope{})
+	postWrite := func() (string, int64) { return "f.jsonl", int64(len(entry.RawDataEncodingJSON())) + 1 }
+
+	for i := 0; i < rawFrameIndexMax+rawFrameIndexMax/10; i++ {
+		entry.RequestID = fmt.Sprintf("r-%d", i)
+		// 切片元素是结构体副本，必须在改完 RequestID 后重建，
+		// 否则 record 看到的仍是旧 key（这正是本测试最初写错的形态）。
+		fi.record([]RawDataEntry{entry}, postWrite)
+	}
+
+	// 总量必须收敛到上限附近（淘汰保留最近 1/4 上限，插入仍在增长，
+	// 允许一个批次宽量）。
+	if got := fi.count.Load(); got > rawFrameIndexMax+10 {
+		t.Fatalf("frame index unbounded: %d entries > cap %d", got, rawFrameIndexMax)
+	}
+	// 最旧的远端 key 已被淘汰。
+	if _, _, ok := fi.lookup("r-0", "upstream_request"); ok {
+		t.Fatalf("r-0 should have been evicted")
+	}
+	// 最新的 key 仍命中。
+	file, offset, ok := fi.lookup(fmt.Sprintf("r-%d", rawFrameIndexMax+rawFrameIndexMax/10-1), "upstream_request")
+	if !ok {
+		t.Fatalf("newest entry evicted prematurely")
+	}
+	if file != "f.jsonl" || offset != 0 {
+		t.Fatalf("newest entry location drifted: file=%s offset=%d", file, offset)
+	}
+}
