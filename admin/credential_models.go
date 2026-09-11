@@ -71,6 +71,12 @@ func (h *Handler) listCredentialModels(w http.ResponseWriter, ctx context.Contex
 		}
 		offers = append(offers, o)
 	}
+	// 2026-09-11 audit: surface mid-iteration failures instead of returning a
+	// silently truncated list (same guard as getProviderModels).
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, offers)
 }
 
@@ -250,4 +256,3 @@ func (h *Handler) refreshCredentialModels(w http.ResponseWriter, r *http.Request
 		"provider_id":        providerID,
 	})
 }
-

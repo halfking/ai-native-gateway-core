@@ -32,7 +32,10 @@ const offerListSQLColumns = `
 		       mc.standard_iq::float8,
 		       niq.overall_score::float8, niq.avg_score::float8,
 		       COALESCE(niq.sample_count, 0), niq.tested_at,
-		       COALESCE(NULLIF(mc.canonical_name,''), mo.standardized_name),
+		       -- 2026-09-11 audit: same NULL guard as getProviderModels — a
+		       -- never-matched offer (canonical_id NULL + standardized_name
+		       -- NULL) must not NULL this non-pointer string column.
+		       COALESCE(NULLIF(mc.canonical_name,''), mo.standardized_name, ''),
 		       COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
 		       mo.context_window_override,
 		       COALESCE(NULLIF(TRIM(mc.modality), ''), COALESCE(NULLIF(TRIM(mo.provider_modality), ''), 'text')),
