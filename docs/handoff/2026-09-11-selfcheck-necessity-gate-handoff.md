@@ -282,23 +282,32 @@
 - **验证记录（如实区分）**：**通过**——合并态复核（增量=第二十轮 docs 提交自身、bg/deploy 双空 diff、necessity 文件逐一在位、五件套逐项复验、handoff 改动面=第二十轮提交自身）、worktree/副本/基线留档验活。**环境受限**——promtool 与 Grafana 导入不可用（沿用第八/九/十轮口径）；win/arm64 `-race` 不支持未跑。**未验证**——本特性告警/面板是否已被运维实际 provisioning、necessity 三指标生产值（无通道；2086/2087 上线 ≠ provisioning 完成）。
 - **遗留风险**：与第十五至二十轮相同，无新增。剩余开启项全部外部门控：TTL 抑制 ← 生产 failed_total 数据；显示侧治本 ← 运维反馈；孤儿行批量 SQL 执行前 ← 只读副本核数；工作区脏文件 ← 原作者确认。环境注记：bg 基线三度被外部提交移动（fails_r6→r7→r8→r9），触碰 bg 前先以"最后一个移动 bg/ 的已知提交"（现为 d249604c7）为基准 diff 确认口径仍有效。
 
+## 本轮记录（2026-09-12 第二十二轮，上线观察轮第十六轮——无输入记录阻塞 + 合并态复核）
+
+- **输入缺失声明（按 D 项要求如实区分）**：任务书未携带生产 /metrics 数据或告警触发记录，运维反馈未到达。按分派规则 **A 不触发**（TTL 抑制继续锁在数据门后）、**B 不触发**（显示侧治本修复继续锁在运维反馈门后，应急口径三层已就绪）、**C 维持关闭**（无乱序完成反例）。本轮零代码改动，产出 = main 合并态复核 + 协作环境验活 + 本记录。
+- **main 合并态复核（只读，git fetch 实查）**：origin/main 自 d507b0f60 前进一跳至 **b366964c4**——即第二十一轮 handoff 提交本身（docs-only，提交清单口径，本 handoff 单文件 +13/-4；第二十一轮分支 docs/necessity-gate-round21 已进入 main）。`git diff d249604c7..origin/main -- bg/ deploy/` **双双为空**——fails_r9.txt（17 例）基线口径继续有效（无需重测）、deploy 契约测试结论沿用第十八轮（两包 ok）；necessity gate 四文件（probe_necessity.go、probe_necessity_test.go、probe_service.go、node_probe.go）`cat-file -e` 逐一在位。本 handoff 在区间内的改动 = b366964c4 一提交（`git log d507b0f60..origin/main -- <本文件>` 仅此一提交，即第二十一轮记录自身）；并行线未触碰本文件。观测五件套在 origin/main（b366964c4）逐项复验在位：alerts.yml 告警 1 处、alerts_test.go 契约钉 1 处（三断言：告警名 + expr 指标 + for）、面板 uid 1 处、dashboard_test.go 恰 3 个 Test 函数、README 引用 2 处。生产连续性沿用第十九至二十一轮实证（3c1195f2c → 2086-5c58bf34 在跑 245/154 → 607a785f 2087 基线），本轮窗口内无新部署事件、无新生产信号。
+- **协作环境验活（本轮通过）**：`git worktree list` + worktree 内 `git status` → lgw-necessity-p2 存活且干净，检出 docs/necessity-gate-round21（=b366964c4，与 origin/main 同步——第二十一轮提交即在该分支上完成并已进入 main），本轮已在其上 `-B` 出 **docs/necessity-gate-round22**（=b366964c4）；go-cost worktree 仍标 prunable（deploy-lib 线对象，未处置）。C: 副本 lgw-p2test 与 fails_r6–r9.txt 四份基线留档均在位，fails_r9.txt 实测 17 例失败行。主工作区脏文件清单与第二十一轮记录一致（bg/taxonomy_sync.go、discovery/alias_sync.go 两处 M + 两个未跟踪 *_live_test.go + docs 两处 + *.lnk），维持不处置。本轮无代码改动且 bg/deploy 零变化，未重跑任何测试套件——被验证对象与第十八/二十/二十一轮验证对象逐字节一致，结论沿用；win/arm64 `-race` 不支持、promtool/Grafana 导入不可用口径不变。
+- **C 项**：`lastProbeRun` 保持 `started_at DESC`，无反例，维持关闭。
+- **验证记录（如实区分）**：**通过**——合并态复核（增量=第二十一轮 docs 提交自身、bg/deploy 双空 diff、necessity 文件逐一在位、五件套逐项复验、handoff 改动面=第二十一轮提交自身）、worktree/副本/基线留档验活。**环境受限**——promtool 与 Grafana 导入不可用（沿用第八/九/十轮口径）；win/arm64 `-race` 不支持未跑。**未验证**——本特性告警/面板是否已被运维实际 provisioning、necessity 三指标生产值（无通道；2086/2087 上线 ≠ provisioning 完成）。
+- **遗留风险**：与第十五至二十一轮相同，无新增。剩余开启项全部外部门控：TTL 抑制 ← 生产 failed_total 数据；显示侧治本 ← 运维反馈；孤儿行批量 SQL 执行前 ← 只读副本核数；工作区脏文件 ← 原作者确认。环境注记：bg 基线三度被外部提交移动（fails_r6→r7→r8→r9），触碰 bg 前先以"最后一个移动 bg/ 的已知提交"（现为 d249604c7）为基准 diff 确认口径仍有效。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
-请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第十六轮）。
+请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第十七轮）。
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
 先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
 第六轮"（runbook 与孤儿行三层清理口径）、"本轮记录 第八轮"（告警+面板已随仓库交付）、
 "审计记录 第九轮"（告警契约已钉入 alerts_test.go）、"本轮记录 第十轮"（面板契约
 已钉入 deploy/grafana/dashboard_test.go——观测链路全部工件均有 CI 防回归保护）、
-"本轮记录 第二十一轮"（d507b0f60 合并态复核：origin/main 自 be3baaaad 仅前进第二十
-轮 docs 提交自身；自 d249604c7 起 bg/ 与 deploy/ 零变化——fails_r9.txt（17 例）
+"本轮记录 第二十二轮"（b366964c4 合并态复核：origin/main 自 d507b0f60 仅前进第二十
+一轮 docs 提交自身；自 d249604c7 起 bg/ 与 deploy/ 零变化——fails_r9.txt（17 例）
 判据与 deploy 契约结论继续有效；necessity gate 文件与本 handoff 零涉及；观测
 五件套 1/1/1/3/2 复验在位；生产连续性沿用：3c1195f2c→2086-5c58bf34（245/154
 在跑）→607a785f6（2087），本轮无新部署事件；R15 线 P4/P5 已关闭、与本特性零
 交集；R14/R15 生产日志采样不含 necessity 三指标）、遗留任务第 6 项。
-背景：观测工件齐全且已全部合入 main（第二十一轮在 d507b0f60 复验）；main 代码头以
+背景：观测工件齐全且已全部合入 main（第二十二轮在 b366964c4 复验）；main 代码头以
 git fetch 实查为准。bg/ 后续仍可能被外部提交移动——跑 bg 套件前先
 `git diff d249604c7..<新头> -- bg/` 确认（d249604c7 是最后一个移动 bg/ 的已知
 提交）；bg/ 没变直接以 lgw-p2test/fails_r9.txt（17 例）为回归判据，变了先 CRLF
@@ -314,7 +323,7 @@ provisioning 流程加载后即自动告警，无需人工 curl。孤儿行应�
 注意：主工作区现检出 main；工作区遗留脏文件（docs 两处、scripts/deploy-lib、
 *.lnk）严禁 add/clean/恢复。继续用 git worktree 从 origin/main 拉独立分支实施
 （开工先验活：`git worktree list` + worktree 内 git status，元数据被清即 rm 重建；
-lgw-necessity-p2 现检出 docs/necessity-gate-round21，路径在 //Mac/Home 同源盘、
+lgw-necessity-p2 现检出 docs/necessity-gate-round22，路径在 //Mac/Home 同源盘、
 Windows 侧可正常访问，可直接 `checkout -B` 到本轮分支）；Windows 验证用 C: 副本
 lgw-p2test（C:\Users\xutaohuang\AppData\Local\lgw-p2test；仅 cp 变更文件；deploy
 包验证需同步 deploy/grafana/ 的 README.md 与面板 JSON；基线对照务必 CRLF 同口径
