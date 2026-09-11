@@ -81,3 +81,35 @@
 - `cmd/gateway/main.go`（69420603b）：authoritative 分支 credRecovery 接线补齐（+21 行）。
 - 245 `.env`：USE_NEW_PROBE_MODE 纠偏 + 损坏行清理（节点侧变更，不入库）。
 - DB：迁移 693（`provider_models_canonical_cleared_at`）已应用并登记 schema_migrations（05:32:46，列由锁窗口守护预加、记账由部署 runner 完成）；cred 41 status 经 admin API 置 active（审计走 admin 链路）。
+
+## closeout 后复核（2026-09-11 07:20–08:35）
+
+### 状态延续确认（journald 实测；unit 名：245=llmgo-245-canary@8781，154=llm-gateway-go-canary@8781）
+
+- 245（PID 910109）/154（PID 14264）healthz 200 ready:true，5:48/5:51 启动后持续运行。
+- `probeSubmitter not wired` 两节点 **0 条**；`postgres disabled` **0 条**。
+- `credential_recovery: stale node_probe_state rows handed to probe queue` 30s 周期持续（pairs 40–50 / unique_credentials 9–11）；`balance_quota_probe` 每 2min count=10；`periodic_quota_probe` 5min 周期；`credential_selfcheck_worker: model ok` 正常。
+- cred 41 `balance_last_checked_at=07:41:09` 持续被 BalanceQuotaProbe 按设计探测，MiniMax 仍 402 —— 与上文上游定性一致，无新变化。
+
+### 本轮新发现（转 R12 候选）
+
+| 级别 | 发现 | 证据 | 处置建议 |
+|---|---|---|---|
+| P2 | `node_probe_runs` audit insert 违反 `attempt_check`（attempt BETWEEN 1 AND 7，migration 341/415），legacy runOne 整体失败、该次探测丢失（154 cred 59 claude-sonnet-4-6，trigger_kind=request_failure，SQLSTATE 23514） | 154 journald 07:28:40 | 审计插入失败不应中止 runOne：降级 WARN 丢行，或插入前 clamp attempt；另需定位 attempt 越界来源（0 或 >7） |
+| P3 | 154 collector → `POST /api/v1/collect/runtime` 404：该路由注册在 license-authority（`cmd/license-authority/collect_handler.go:90`），gateway 未注册；collector 的 authorityURL 指向 `https://llm.kxpms.cn`，nginx 未把 `/api/v1/collect/*` 分流给 license-authority → 154 运行时指标上报全丢（分钟级 404 WARN） | 154 journald http_request | 拓扑修正候选：nginx 加 `location /api/v1/collect/` → license-authority，或 collector authorityURL 改指 authority 专口 |
+| P3 | residual failed unit 污染 systemd 列表（245 `llmgo-245-canary@8782` 上一轮回滚残留 / 154 `llm-gateway-go.service` legacy 弃用单元） | `systemctl list-units --state=failed` | ✅ 本轮已 `systemctl reset-failed` 清零，运行中服务未受影响（154 canary healthz 200 复验） |
+
+### 巡检方法修正（自我纠错，供后续会话）
+
+本复核会话初期曾三次误判（均未落入已提交文档，此处记录避免复发）：①误判两节点服务下线——查询了不存在的 unit 名（245 正确名 `llmgo-245-canary@<port>`，154 为 `llm-gateway-go-canary@<port>`）；②误判 journald 自 09-10 空窗——同因；③误判 slot 缺 state/version 文件是部署边缘态——蓝绿契约下 `slots/<port>` 本就是指向 release 的裸 symlink（unit 遵循 active symlink），无 per-slot 元数据文件。教训：巡检一律先 `systemctl list-units --type=service | grep -iE 'llm|canary'` 定位真实 unit 名，再查日志与状态。
+
+### 版本漂移记录（部署收口后 main 继续前进，未部署）
+
+部署基线 2080=`69420603b`。其后 main 新增（建议下一窗口以 2081 批量部署）：
+
+- `93c2025ac` docs：cred 41 上游定性（本文档上文已含）。
+- `42e507ce7` merge：自检必要性门控 end-to-end（`11af45216`，`bg/probe_necessity.go` +373 行、双 ProbeService 接线点、URSM probe evidence 层；fail-open 设计，16 用例全绿）。
+- `dc8463e28` perf：ursm `ProbeHealthEvidence` redis pipeline 批量化（消除 ~1000 RTT/次 preflight）。
+- `5367d6f84` test：removeSkippedProbe 分支序 pin + typed-nil trap 修复（`bg/probe_necessity.go`）。
+
+部署决策留待下一窗口：necessity gate 为 fail-open、测试全绿，但 245/154 刚稳定约 2h 且 cred 恢复链路正在产出证据，不建议立即追部署；等 cred 41 上游充值归属确认后一并上 2081。
