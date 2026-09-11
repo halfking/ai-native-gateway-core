@@ -1,6 +1,30 @@
+-- Migration 697: promote 函数列清单补 system_fingerprint——指纹写路径贯通
 --
--- Name: promote_request_logs_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
+-- Motivation (2026-09-12, 挂账闭环):
+--   X-System-Fingerprint 响应头由 streaming integrity 捕获后只写入 detector 的
+--   context JSONB,migration 603 给 request_logs_hot/parent 建的专用列自建成起
+--   全表零行(写路径从未接线),7 天指纹漂移检测器(integrity_fingerprint_drift)
+--   自 2026-07-28 起在空集上空转。本次同批变更把捕获的指纹落到
+--   request_logs_hot.system_fingerprint(telemetry 事务内独立小 UPDATE,仿
+--   upsertProtocolMetadata 先例);promote 的显式列清单(602/688/695 三列表)
+--   此前不含该列,晋升行会静默丢指纹(父表默认 NULL),8h 保留窗口之外漂移
+--   检测随即失明——本迁移把 system_fingerprint 追加进 RETURNING/INSERT/SELECT
+--   三个清单尾部,位置对齐由 migration_697_test.go 的
+--   TestMigration697ColumnListsAligned 钉住。
 --
+-- Fix: 函数体整段承 695(含 final-success 冲突自愈 demote 与 DEFAULT '8 hours'),
+--   仅三列清单尾部追加 system_fingerprint。列在 hot(603)与 parent(487)均已存在。
+--
+-- Impact: 每批多搬运一列 TEXT(绝大多数行 NULL,TOAST 开销可忽略)。语义零变化。
+--
+-- Idempotent: YES (纯 CREATE OR REPLACE)。
+-- Down: 无。紧急回滚 = 重放 695 中该函数的定义。
+-- 编号: 697 在生产双账本(schema_migrations + gateway_db_revision_sequences)
+--   均未被本库或其他项目占用(2026-09-12 查证)。
+
+\set ON_ERROR_STOP on
+
+BEGIN;
 
 CREATE OR REPLACE FUNCTION public.promote_request_logs_hot_to_partition(p_retention interval DEFAULT '8 hours'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
     LANGUAGE plpgsql
@@ -181,3 +205,5 @@ BEGIN
     RETURN moved;
 END;
 $$;
+
+COMMIT;
