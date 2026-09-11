@@ -218,7 +218,13 @@ func TestDiagnoseIdempotentOnRemediatedDB(t *testing.T) {
 // score is shared by DIFFERENT target rows (junk "free" tying at 0.99 with
 // "glm-5.2:free", "minimax-m3:free", …) the corpus disagrees about where
 // the name belongs — the row is reported as review, never auto-remediated.
+// `free` is on OperatorWhitelist, so this test clears the whitelist to
+// exercise the tie→review path in isolation.
 func TestDiagnoseAmbiguousTargetsRelegatedToReview(t *testing.T) {
+	saved := OperatorWhitelist
+	OperatorWhitelist = nil
+	defer func() { OperatorWhitelist = saved }()
+
 	canonical := append(fixtureCanonical(),
 		CanonicalRow{ID: 11, Name: "glm-5.2:free", Status: "active", Source: "provider_refresh"},
 		CanonicalRow{ID: 12, Name: "minimax-m3:free", Status: "active", Source: "provider_refresh"},
@@ -245,6 +251,51 @@ func TestDiagnoseAmbiguousTargetsRelegatedToReview(t *testing.T) {
 	}
 	if plans := BuildApplyPlan(d, modelname.AutoLinkThreshold); len(plans) != 2 {
 		t.Errorf("apply plans = %d, want 2 (the review row must not produce a plan)", len(plans))
+	}
+}
+
+// TestDiagnoseWhitelistOverridesReview replays the production `free` case
+// (OpenRouter free-pool pseudo-model, targets tied at 0.99) WITH the
+// operator whitelist in place: the row stays reported — as whitelisted,
+// with the recorded rationale — but is never remediated, and it must never
+// appear as a redirect target for any other suspect.
+func TestDiagnoseWhitelistOverridesReview(t *testing.T) {
+	if _, ok := OperatorWhitelist["free"]; !ok {
+		t.Fatalf("precondition: `free` must be on OperatorWhitelist")
+	}
+	canonical := append(fixtureCanonical(),
+		CanonicalRow{ID: 11, Name: "glm-5.2:free", Status: "active", Source: "provider_refresh"},
+		CanonicalRow{ID: 12, Name: "minimax-m3:free", Status: "active", Source: "provider_refresh"},
+		CanonicalRow{ID: 13, Name: "free", Status: "active", Source: "provider_refresh"},
+	)
+	corpus := append(fixtureCorpus(), "openrouter/free", "z-ai/glm-5.2:free", "minimax/minimax-m3:free")
+	d := Diagnose(canonical, fixtureAliases(), fixtureRefs(), corpus, modelname.AutoLinkThreshold)
+
+	s := suspectByName(d, "free")
+	if s == nil {
+		t.Fatal("whitelisted row must still be reported, not silently dropped")
+	}
+	if s.Verdict != VerdictWhitelisted {
+		t.Errorf("free verdict = %q, want whitelisted", s.Verdict)
+	}
+	if s.WhitelistReason == "" {
+		t.Error("whitelisted row must carry its rationale")
+	}
+	if s.Target == nil {
+		t.Error("whitelisted row still reports its evidence target for transparency")
+	}
+	if plans := BuildApplyPlan(d, modelname.AutoLinkThreshold); len(plans) != 2 {
+		t.Errorf("apply plans = %d, want 2 (whitelisted row must not produce a plan)", len(plans))
+	}
+	for _, p := range BuildApplyPlan(d, modelname.AutoLinkThreshold) {
+		if p.TargetID == 13 {
+			t.Errorf("redirect plan targets the whitelisted row: %+v", p)
+		}
+		for _, r := range p.RefRedirects {
+			if r.ToCanonicalID == 13 {
+				t.Errorf("redirect lands on the whitelisted row: %+v", r)
+			}
+		}
 	}
 }
 
