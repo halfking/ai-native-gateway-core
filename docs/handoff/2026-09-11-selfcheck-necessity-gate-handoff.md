@@ -132,22 +132,50 @@
 ## 本轮记录（2026-09-11 第八轮，观测工具补齐）
 
 - **任务选择说明**：第七轮提示词按输入分派（生产指标数据 / 运维反馈），两者本轮仍未到达。与其第三轮记录阻塞，本轮落地第六/七轮已标记的遗留风险①的补齐手段——necessity 三指标的告警与面板（纯 deploy 工件，**零网关/探测行为改动**）；TTL 抑制等真正的行为升级仍严格锁在数据门后。
-- **告警规则**（`deploy/prometheus/rules/alerts.yml`，node-probe 家族所在组）：`NodeProbeNecessityMirrorDeleteFailedHigh` = `increase(llmgw_node_probe_necessity_mirror_delete_failed_total[10m]) > 5`，`for: 5m`，severity warning。阈值依据：单 (cred,model) 卡住时 pump 按周期（约 30s holdoff）重提，每轮 ≥1 次失败计数，10 分钟 >5 即代表至少一对处于翻动循环；零星 <5 的增量是 DB 瞬时抖动的如实计数，不告警——与第六轮 runbook 判读规则一致。形状刻意对齐同组既有 `NodeProbeQueueSubmissionFailuresHigh`。
+- **告警规则**（`deploy/prometheus/rules/alerts.yml`，node-probe 家族所在组）：`NodeProbeNecessityMirrorDeleteFailedHigh` = `increase(llmgw_node_probe_necessity_mirror_delete_failed_total[10m]) > 5`，`for: 5m`，severity warning。阈值依据：单 (cred,model) 卡住时 pump 反复重提（tick 30s、行级 holdoff 45s，实际周期约 60s ≈ 10 次/10 分钟；第九轮审计修正——原表述"约 30s holdoff"有误），每轮 ≥1 次失败计数，10 分钟 >5 即代表至少一对处于翻动循环；零星 <5 的增量是 DB 瞬时抖动的如实计数，不告警——与第六轮 runbook 判读规则一致。形状刻意对齐同组既有 `NodeProbeQueueSubmissionFailuresHigh`。
 - **Grafana 面板**（`deploy/grafana/selfcheck-necessity-dashboard.json`，新文件，uid `llm-gateway-selfcheck-necessity`）：三个 timeseries——skip 按原因（5m）、镜像删除同轮重试（10m）、重试后仍失败（10m，红色阈值 5 与告警表达式一致）。schema 惯例（Grafana 8.0、字符串 datasource、panel 结构）逐项对照 `proxy-overview-dashboard.json`。`deploy/grafana/README.md` 同步：面板清单新增第 5 节、导入文件列表、指标说明新增"自检必要性指标"小节。
-- **验证记录**：便携 Go + vendored `yaml.v3` / `encoding/json` 结构化校验——alerts.yml 解析为 6 groups 且新告警 expr/for/severity 完整；面板 JSON 有效、3 个 timeseries target 非空。**环境受限（如实标注）**：`promtool` 不可用（无 Docker），PromQL 未经 promtool check——但 expr 与同组既有告警同形（`increase(counter[10m]) > N`），指标名逐一对照 `bg/probe_necessity.go` 注册名核实；Grafana 导入未实测（无实例），导入即验。无 Go/SQL 改动，不涉及测试套件与交叉编译。
+- **验证记录**：便携 Go + vendored `yaml.v3` / `encoding/json` 结构化校验——alerts.yml 解析为 6 groups 且新告警 expr/for/severity 完整；面板 JSON 有效、3 个 timeseries target 非空。**环境受限（如实标注）**：`promtool` 不可用（无 Docker），PromQL 未经 promtool check——但 expr 与同组既有告警同形（`increase(counter[10m]) > N`），指标名逐一对照 `bg/probe_necessity.go` 注册名核实；Grafana 导入未实测（无实例），导入即验。（第九轮审计补充：仓库自带 `deploy/prometheus/rules/alerts_test.go` 契约测试当时被遗漏，第九轮已补跑并通过，并把新告警钉入该测试——见审计记录第九轮。）无 Go/SQL 改动，不涉及测试套件与交叉编译。
 - **硬条件核对**：网关代码、SQL、闸门路径、探测语义零改动；本轮只是把"人工记得 curl"变成"告警自动触发"，不预支任何按数据才定的升级。
 - **范围界定**：`web/src/views/probe/ProbeHealthPanel.vue:203` 的陈旧 POST 注释（第七轮发现）本轮**未**修——web 目录单独改动不值得混入 deploy 工件提交，留作记录；运维侧需按 `deploy/prometheus/README.md` 的 provisioning/UI 流程实际加载规则与面板后，观测链路才生效。
+
+## 审计记录（2026-09-11 第九轮，针对 a6bf4389d 第八轮观测工具）
+
+- **发现 1（验证遗漏，已补）**：第八轮把告警校验途径归于"promtool（不可用）"，遗漏了仓库自带的 **`deploy/prometheus/rules/alerts_test.go`**——yaml.v3 结构解析 + `hot_table_promote_alerts` 组逐告警指标契约 + 全文件低基数守卫（全文禁止 `tenant=` / `model=` 子串，防止高基数标签混入告警）。第九轮补跑该包全部 6 例（含 client_token/routing_*/response_body 等同目录契约测试）全绿，并按既有惯例把新告警钉入该测试（expr 含 `llmgw_node_probe_necessity_mirror_delete_failed_total` + `for: 5m`）——此后指标改名/规则被删会在 CI 直接红。
+- **发现 2（数字错误，已修正）**：第八轮告警注释与 handoff 记录写"pump 按周期（约 30s holdoff）重提"——实际 `nodeProbeQueuePumpHoldoff = 45s`、`nodeProbeQueuePumpInterval = 30s`（tick），行因 holdoff 未到期会跳过 30s 的 tick，实际重提周期约 60s ≈ 10 次/10 分钟/对。**阈值 >5/10m 无需改动**（单卡住对约 10 次/10 分钟，裕度充分；单次瞬时抖动 1-2 次不触发）；alerts.yml 注释与第八轮记录已就地修正。
+- **正向确认**：新告警 expr/描述不含 `tenant=`/`model=`（通过全文件低基数守卫）；面板三个 expr 同样干净；rules 包其余 5 例契约测试不受影响；无 Go 运行时/SQL/闸门路径改动。
+- **验证记录**：`go test -mod=vendor -count=1 ./deploy/prometheus/rules/`（C: 副本 lgw-p2test，alerts.yml + alerts_test.go 同步后）→ **6 例全 PASS**。promtool 与 Grafana 导入依旧环境受限（表述同第八轮）。
+- **范围界定**：alerts.yml 注释修正 + alerts_test.go 追加契约钉（test-only）+ handoff 修正；面板 JSON、README 无需改动。
+
+## 本轮记录（2026-09-11 第十轮，上线观察轮第四轮——无输入记录阻塞 + 面板契约钉）
+
+- **输入缺失声明（按 D 项要求如实区分）**：`git fetch` 复核 origin/main 仍为 8bfd402ca（无新提交），任务书未携带生产 /metrics 数据或告警触发记录，运维反馈未到达。按分派规则 **A 不触发**（TTL 抑制继续锁在数据门后）、**B 不触发**（显示侧治本修复继续锁在运维反馈门后，应急口径三层已就绪）、**C 维持关闭**（无乱序完成反例）。本轮代码产出 = 一项不依赖输入的确定性收尾（见下）；无任何网关/探测/SQL 行为改动。
+- **面板侧契约测试（`deploy/grafana/dashboard_test.go`，新文件，test-only）**：第九轮把告警契约钉入 `alerts_test.go` 后，第八轮交付的面板 JSON 仍只有一次性脚本校验（tmp_yamlcheck，未提交）——指标改名、面板删除、结构破坏都不会在 CI 红。新增 3 例补齐观测链路最后一处无防回归保护的工件：①`TestSelfcheckNecessityDashboardPinsAllThreeCounters`——uid=`llm-gateway-selfcheck-necessity`、恰好 3 个 timeseries、三个 necessity 指标各恰有一个 expr 引用、expr 低基数守卫（禁 `tenant=`/`model=`，对齐 alerts_test.go 全文件守卫语义，仅作用于 expr 字段以免误伤 description 文本）；②`TestSelfcheckNecessityDashboardFailureThresholdMatchesAlert`——failed_total 面板红色阈值必须 = 5，与 `NodeProbeNecessityMirrorDeleteFailedHigh` 的 `increase(...[10m]) > 5` 保持第八轮刻意对齐的契约；③`TestGrafanaReadmeListsSelfcheckNecessityDashboard`——README 必须引用面板文件名（防改名失联）。
+- **意外发现（副本卫生，顺带证明测试有效）**：lgw-p2test 的 `deploy/grafana/README.md` 是旧版（第八轮只同步了 alerts.yml 与面板 JSON，README 未同步）——README 契约测试首跑即红并暴露该滞后，同步后绿。变异验证（先红后绿）：把面板 JSON 中 `skip_total` 临时改名 → `TestSelfcheckNecessityDashboardPinsAllThreeCounters` 红（"expected exactly one panel expr"）→ 恢复 → 绿。
+- **验证记录（C: 副本 lgw-p2test，同步 dashboard_test.go + 面板 JSON + README）**：`go test -mod=vendor -count=1 ./deploy/grafana/ ./deploy/prometheus/rules/` → **grafana 3 例 + rules 6 例全 PASS**（rules 包重跑确认第九轮告警契约不受影响）。环境受限（与第八/九轮相同）：promtool 与 Grafana 导入仍不可用，PromQL/导入未实测——但 expr 指标名现已由本契约测试钉住，改名即 CI 红。无 Go 运行时/SQL/闸门路径改动，不涉及 bg 套件与交叉编译（b37b68b51 与第五/六轮同一代码提交，结论沿用）。
+- **遗留风险**：与第九轮相同，无新增。观测链路（告警+面板）等运维按 deploy/prometheus/README provisioning 流程加载后生效；TTL 抑制、显示侧治本等升级继续等待对应输入。
+
+## 本轮记录（2026-09-11 第十一轮，上线观察轮第五轮——无输入记录阻塞 + 合并态复核）
+
+- **输入缺失声明（按 D 项要求如实区分）**：任务书未携带生产 /metrics 数据或告警触发记录，运维反馈未到达。按分派规则 **A 不触发**（TTL 抑制继续锁在数据门后）、**B 不触发**（显示侧治本修复继续锁在运维反馈门后，应急口径三层已就绪）、**C 维持关闭**（无乱序完成反例）。本轮零代码改动，产出 = main 合并态复核 + 本记录。
+- **main 合并态复核（只读，本轮确定性产出）**：`git fetch` 后 origin/main 前进至 f7c59617d，增量核对：第十轮提交 1a19dc1ea 已在 origin/main 历史中（`merge-base --is-ancestor` 通过）——观测链路全部工件（`alerts.yml` 告警、`alerts_test.go` 契约、`selfcheck-necessity-dashboard.json`、`dashboard_test.go` 契约、grafana README）**均已随 main 交付，无未合并内容**；f7c59617d 本身是另一工作线的审计文档（`docs/audit/2026-09-11-node-degrade-false-positive-fix.md`，node 强启误降级修复门禁记录），与本特性无关。网关/探测/SQL 代码自 b37b68b51 起零变化，第五/六/十轮的测试与交叉编译结论全部沿用。
+- **虚警排除（合并态复核顺带）**：本地 main 检出（fix/r13-logging-hygiene，落后 origin）与观测分支的 diff 中出现 `deploy/...conf.20260821-spa-fallback-only`，核实属已合并的 nginx 修复提交 48487ec74（另一工作线），非本特性遗留，未处置。
+- **验证记录（如实区分）**：本轮除 handoff 文档外零改动，未重跑测试/编译——被验证对象与本轮复核对象逐字节一致（1a19dc1ea 的 deploy 契约测试 3+6 例、bg 定向守卫 25 例、交叉编译结论沿用第十轮）。观测链路是否已被运维按 deploy/prometheus/README 实际 provisioning（告警/面板是否生效）无生产通道可查，**未验证**。
+- **遗留风险**：与第十轮相同，无新增。剩余开启项全部外部门控：TTL 抑制 ← 生产 failed_total 数据；显示侧治本 ← 运维反馈；孤儿行批量 SQL 执行前 ← 只读副本核数；工作区脏文件 ← 原作者确认。
 
 ## 下一轮提示词（可直接复制）
 
 ```text
-请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第四轮）。
+请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第六轮）。
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
 先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
-第六轮"（runbook 与孤儿行三层清理口径）、"审计记录 第七轮"、"本轮记录 第八轮"
-（告警+面板已随仓库交付））、遗留任务第 6 项。
-背景：代码最新 b37b68b51，deploy 工件至第八轮提交。观测链路已齐：告警
+第六轮"（runbook 与孤儿行三层清理口径）、"本轮记录 第八轮"（告警+面板已随仓库交付）、
+"审计记录 第九轮"（告警契约已钉入 alerts_test.go）、"本轮记录 第十轮"（面板契约
+已钉入 deploy/grafana/dashboard_test.go——观测链路全部工件均有 CI 防回归保护）、
+"本轮记录 第十一轮"（全部观测工件已确认合入 origin/main，无未合并内容））、
+遗留任务第 6 项。
+背景：代码最新 b37b68b51，观测工件至第十轮提交且已全部合入 main（第十一轮复核）。
+告警
 NodeProbeNecessityMirrorDeleteFailedHigh（failed_total 10m 增量 >5，warning）+
 面板 selfcheck-necessity-dashboard.json——运维按 deploy/prometheus/README 的
 provisioning 流程加载后即自动告警，无需人工 curl。孤儿行应急口径三层：绑定重建
@@ -156,8 +184,8 @@ provisioning 流程加载后即自动告警，无需人工 curl。孤儿行应�
 注意：主工作区检出的 fix/r13-logging-hygiene 属于并行 R13 日志工作，不要混入本任务；
 工作区遗留脏文件（docs 两处、scripts/deploy-lib、*.lnk）严禁 add/clean/恢复。
 继续用 git worktree 从 origin/main 拉独立分支实施；Windows 验证用 C: 副本
-lgw-p2test（仅 cp 变更文件；基线对照务必 CRLF 同口径，17 例预存失败名单见
-lgw-p2test/fails_r6.txt）。
+lgw-p2test（仅 cp 变更文件；deploy 包验证需同步 deploy/grafana/ 的 README.md
+与面板 JSON；基线对照务必 CRLF 同口径，17 例预存失败名单见 lgw-p2test/fails_r6.txt）。
 
 本轮任务（按输入分派，无输入则如实记录阻塞）：
 A. 若已获得生产 /metrics 数据或告警触发记录（runbook 判读规则）：

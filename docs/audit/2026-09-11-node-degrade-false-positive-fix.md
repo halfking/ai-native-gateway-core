@@ -62,3 +62,12 @@
 
 - 154 只读诊断脚本模式：`/tmp/minimax-incident-readonly.py`（systemd MainPID /proc environ 取 `LLM_GATEWAY_DATABASE_URL`，`default_transaction_read_only=on` + statement_timeout，按需重放）。
 - `routing_audit_log` 在事发窗口无 force_enable 记录（0 行）——审计链路本身也有缺口，未列入本轮。
+
+## 6. 部署门禁结果（2026-09-11 追加）
+
+- **Local 门禁失败**：`make test` 报 3 项历史失败，与本次 bg 修复无关：
+  - `admin.TestModelOfferSuggestions_ConfidentMatch`（期望 canonical_id=112，实际 0）
+  - `admin.TestUpdateModelOffer_ClearCanonical_UsesBindingJoin`（期望 SQL 含 `FROM public.model_offer_canonical_binding`，实际 `UPDATE model_name_registry`）
+  - `ursm.TestScriptSizes`（lua 脚本字节数与 `script_sizes.go` 不符，报 `go generate ./...` 同步）
+- **结论**：`admin` 两个测试与 `TestScriptSizes` 在 `e4d7433fb` 提交点已存在，属历史包袱；本次 bg 修复本身编译与测试全绿。
+- **待决**：是否（a）收紧门禁只跑 `go test ./bg/ ./cmd/...`，（b）先修历史失败再晋级，（c）接受风险直跳 154，（d）暂停部署先等 P1/P2/P3 调查结论。
