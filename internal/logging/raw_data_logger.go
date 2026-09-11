@@ -21,7 +21,17 @@ import (
 const (
 	maxRawLogFileSize  = 100 * 1024 * 1024 // 100MB/文件
 	maxRawLogKeepCount = 10                // 保留最近 10 个文件
+
+	// rawDataLoggerRotateAttempts bounds the collision retry loop. A collision
+	// is expected only when the filesystem clock is coarser than the filename
+	// timestamp, so a short bounded loop is enough without delaying failures
+	// caused by permissions or an unavailable directory.
+	rawDataLoggerRotateAttempts = 8
 )
+
+// rawDataLoggerNow is package-scoped so rotation collision tests can hold the
+// clock stable while exercising the sequence-suffix fallback.
+var rawDataLoggerNow = time.Now
 
 // 特性：
 //   - 回转日志文件，单个文件最大 100MB（rule 11 §3 红线）
@@ -387,21 +397,41 @@ func (l *RawDataLogger) sinkEnabled() bool {
 
 // rotate 回转日志文件
 func (l *RawDataLogger) rotate() error {
-	// 关闭当前文件
+	// 关闭当前文件，并立即清空引用，避免失败路径留下已关闭句柄。
 	if l.file != nil {
-		if err := l.file.Close(); err != nil {
+		oldFile := l.file
+		l.file = nil
+		if err := oldFile.Close(); err != nil {
 			slog.Warn("raw_data_logger: failed to close old log file", "err", err)
 		}
 	}
 
-	// 生成唯一文件名，避免同一秒内轮转时重新打开旧文件。
-	timestamp := time.Now().UTC().Format("20060102_150405.000000000")
-	filename := fmt.Sprintf("raw_data_%s_%d.jsonl", timestamp, time.Now().UnixNano())
-	filePath := filepath.Join(l.baseDir, filename)
+	// 生成唯一文件名，避免同一时钟 tick 内轮转时 O_EXCL 撞名。
+	var (
+		file     *os.File
+		filePath string
+		err      error
+	)
+	for attempt := 0; attempt < rawDataLoggerRotateAttempts; attempt++ {
+		now := rawDataLoggerNow()
+		timestamp := now.UTC().Format("20060102_150405.000000000")
+		filename := fmt.Sprintf("raw_data_%s_%d", timestamp, now.UnixNano())
+		if attempt > 0 {
+			filename += fmt.Sprintf("_%d", attempt)
+		}
+		filename += ".jsonl"
+		filePath = filepath.Join(l.baseDir, filename)
 
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+		file, err = os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+		if err == nil {
+			break
+		}
+		if !os.IsExist(err) {
+			return fmt.Errorf("failed to create raw data log file: %w", err)
+		}
+	}
 	if err != nil {
-		return fmt.Errorf("failed to create raw data log file: %w", err)
+		return fmt.Errorf("failed to create raw data log file after %d attempts: %w", rawDataLoggerRotateAttempts, err)
 	}
 
 	l.file = file
