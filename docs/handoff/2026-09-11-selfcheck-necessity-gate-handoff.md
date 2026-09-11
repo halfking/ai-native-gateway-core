@@ -132,11 +132,19 @@
 ## 本轮记录（2026-09-11 第八轮，观测工具补齐）
 
 - **任务选择说明**：第七轮提示词按输入分派（生产指标数据 / 运维反馈），两者本轮仍未到达。与其第三轮记录阻塞，本轮落地第六/七轮已标记的遗留风险①的补齐手段——necessity 三指标的告警与面板（纯 deploy 工件，**零网关/探测行为改动**）；TTL 抑制等真正的行为升级仍严格锁在数据门后。
-- **告警规则**（`deploy/prometheus/rules/alerts.yml`，node-probe 家族所在组）：`NodeProbeNecessityMirrorDeleteFailedHigh` = `increase(llmgw_node_probe_necessity_mirror_delete_failed_total[10m]) > 5`，`for: 5m`，severity warning。阈值依据：单 (cred,model) 卡住时 pump 按周期（约 30s holdoff）重提，每轮 ≥1 次失败计数，10 分钟 >5 即代表至少一对处于翻动循环；零星 <5 的增量是 DB 瞬时抖动的如实计数，不告警——与第六轮 runbook 判读规则一致。形状刻意对齐同组既有 `NodeProbeQueueSubmissionFailuresHigh`。
+- **告警规则**（`deploy/prometheus/rules/alerts.yml`，node-probe 家族所在组）：`NodeProbeNecessityMirrorDeleteFailedHigh` = `increase(llmgw_node_probe_necessity_mirror_delete_failed_total[10m]) > 5`，`for: 5m`，severity warning。阈值依据：单 (cred,model) 卡住时 pump 反复重提（tick 30s、行级 holdoff 45s，实际周期约 60s ≈ 10 次/10 分钟；第九轮审计修正——原表述"约 30s holdoff"有误），每轮 ≥1 次失败计数，10 分钟 >5 即代表至少一对处于翻动循环；零星 <5 的增量是 DB 瞬时抖动的如实计数，不告警——与第六轮 runbook 判读规则一致。形状刻意对齐同组既有 `NodeProbeQueueSubmissionFailuresHigh`。
 - **Grafana 面板**（`deploy/grafana/selfcheck-necessity-dashboard.json`，新文件，uid `llm-gateway-selfcheck-necessity`）：三个 timeseries——skip 按原因（5m）、镜像删除同轮重试（10m）、重试后仍失败（10m，红色阈值 5 与告警表达式一致）。schema 惯例（Grafana 8.0、字符串 datasource、panel 结构）逐项对照 `proxy-overview-dashboard.json`。`deploy/grafana/README.md` 同步：面板清单新增第 5 节、导入文件列表、指标说明新增"自检必要性指标"小节。
-- **验证记录**：便携 Go + vendored `yaml.v3` / `encoding/json` 结构化校验——alerts.yml 解析为 6 groups 且新告警 expr/for/severity 完整；面板 JSON 有效、3 个 timeseries target 非空。**环境受限（如实标注）**：`promtool` 不可用（无 Docker），PromQL 未经 promtool check——但 expr 与同组既有告警同形（`increase(counter[10m]) > N`），指标名逐一对照 `bg/probe_necessity.go` 注册名核实；Grafana 导入未实测（无实例），导入即验。无 Go/SQL 改动，不涉及测试套件与交叉编译。
+- **验证记录**：便携 Go + vendored `yaml.v3` / `encoding/json` 结构化校验——alerts.yml 解析为 6 groups 且新告警 expr/for/severity 完整；面板 JSON 有效、3 个 timeseries target 非空。**环境受限（如实标注）**：`promtool` 不可用（无 Docker），PromQL 未经 promtool check——但 expr 与同组既有告警同形（`increase(counter[10m]) > N`），指标名逐一对照 `bg/probe_necessity.go` 注册名核实；Grafana 导入未实测（无实例），导入即验。（第九轮审计补充：仓库自带 `deploy/prometheus/rules/alerts_test.go` 契约测试当时被遗漏，第九轮已补跑并通过，并把新告警钉入该测试——见审计记录第九轮。）无 Go/SQL 改动，不涉及测试套件与交叉编译。
 - **硬条件核对**：网关代码、SQL、闸门路径、探测语义零改动；本轮只是把"人工记得 curl"变成"告警自动触发"，不预支任何按数据才定的升级。
 - **范围界定**：`web/src/views/probe/ProbeHealthPanel.vue:203` 的陈旧 POST 注释（第七轮发现）本轮**未**修——web 目录单独改动不值得混入 deploy 工件提交，留作记录；运维侧需按 `deploy/prometheus/README.md` 的 provisioning/UI 流程实际加载规则与面板后，观测链路才生效。
+
+## 审计记录（2026-09-11 第九轮，针对 a6bf4389d 第八轮观测工具）
+
+- **发现 1（验证遗漏，已补）**：第八轮把告警校验途径归于"promtool（不可用）"，遗漏了仓库自带的 **`deploy/prometheus/rules/alerts_test.go`**——yaml.v3 结构解析 + `hot_table_promote_alerts` 组逐告警指标契约 + 全文件低基数守卫（全文禁止 `tenant=` / `model=` 子串，防止高基数标签混入告警）。第九轮补跑该包全部 6 例（含 client_token/routing_*/response_body 等同目录契约测试）全绿，并按既有惯例把新告警钉入该测试（expr 含 `llmgw_node_probe_necessity_mirror_delete_failed_total` + `for: 5m`）——此后指标改名/规则被删会在 CI 直接红。
+- **发现 2（数字错误，已修正）**：第八轮告警注释与 handoff 记录写"pump 按周期（约 30s holdoff）重提"——实际 `nodeProbeQueuePumpHoldoff = 45s`、`nodeProbeQueuePumpInterval = 30s`（tick），行因 holdoff 未到期会跳过 30s 的 tick，实际重提周期约 60s ≈ 10 次/10 分钟/对。**阈值 >5/10m 无需改动**（单卡住对约 10 次/10 分钟，裕度充分；单次瞬时抖动 1-2 次不触发）；alerts.yml 注释与第八轮记录已就地修正。
+- **正向确认**：新告警 expr/描述不含 `tenant=`/`model=`（通过全文件低基数守卫）；面板三个 expr 同样干净；rules 包其余 5 例契约测试不受影响；无 Go 运行时/SQL/闸门路径改动。
+- **验证记录**：`go test -mod=vendor -count=1 ./deploy/prometheus/rules/`（C: 副本 lgw-p2test，alerts.yml + alerts_test.go 同步后）→ **6 例全 PASS**。promtool 与 Grafana 导入依旧环境受限（表述同第八轮）。
+- **范围界定**：alerts.yml 注释修正 + alerts_test.go 追加契约钉（test-only）+ handoff 修正；面板 JSON、README 无需改动。
 
 ## 下一轮提示词（可直接复制）
 
@@ -146,8 +154,9 @@
 
 先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
 第六轮"（runbook 与孤儿行三层清理口径）、"审计记录 第七轮"、"本轮记录 第八轮"
-（告警+面板已随仓库交付））、遗留任务第 6 项。
-背景：代码最新 b37b68b51，deploy 工件至第八轮提交。观测链路已齐：告警
+（告警+面板已随仓库交付）、"审计记录 第九轮"（告警契约已钉入 alerts_test.go））、
+遗留任务第 6 项。
+背景：代码最新 b37b68b51，deploy 工件至第九轮提交。观测链路已齐：告警
 NodeProbeNecessityMirrorDeleteFailedHigh（failed_total 10m 增量 >5，warning）+
 面板 selfcheck-necessity-dashboard.json——运维按 deploy/prometheus/README 的
 provisioning 流程加载后即自动告警，无需人工 curl。孤儿行应急口径三层：绑定重建
