@@ -39,7 +39,7 @@
    同一 dedup_key 不允许并发 ready/running，实践中与 `completed_at DESC` 等价且索引友好；未发现任何真实反例，此项按原方案关闭，仅在出现乱序完成记录的反例时重开。
 
 6. **运维观察项（上线后）**
-   观察：`llmgw_node_probe_necessity_skip_total` 增速、自检 tab "skipped_not_necessary" 磁贴占比、以及 `llmgw_node_probe_necessity_mirror_delete_retry_total`（瞬时失败吸收量）与 `llmgw_node_probe_necessity_mirror_delete_failed_total`（**持续失败告警源**）。若 failed_total 持续增长（说明某 (cred,model) 的镜像 DELETE 长期不收敛、磁贴仍按 pump 周期翻动），按原方案升级：对刚被跳过的 (credential_id, raw_model) 引入短 TTL 抑制（pump 侧或闸门侧均可，抑制窗口必须短于真实故障的重探测需求）。若 skip 率异常高，优先排查 Redis 键 schema（legacy/k2/dual）与 tenant 归属是否一致。
+   观察：`llmgw_node_probe_necessity_skip_total` 增速、自检 tab "skipped_not_necessary" 磁贴占比、以及 `llmgw_node_probe_necessity_mirror_delete_retry_total`（瞬时失败吸收量）与 `llmgw_node_probe_necessity_mirror_delete_failed_total`（**持续失败告警源**）。若 failed_total 持续增长（说明某 (cred,model) 的镜像 DELETE 长期不收敛、磁贴仍按 pump 周期翻动），按原方案升级：对刚被跳过的 (credential_id, raw_model) 引入短 TTL 抑制（pump 侧或闸门侧均可，抑制窗口必须短于真实故障的重探测需求）。若 skip 率异常高，优先排查 Redis 键 schema（legacy/k2/dual）与 tenant 归属是否一致。**抓取命令与判读规则见"本轮记录（第六轮）"的观测 runbook。**
 
 7. **工作区遗留脏文件（非本特性，未处置，需原作者确认）**
    - `D docs/02-resources/research/pricing/scripts/vendor_pricing_table.py`
@@ -97,38 +97,59 @@
 - **范围界定**：本轮不改 `Submit` 的事件驱动语义、不改 candidate_failure_logs 写入侧（写入本就是历史事实记录，过滤责任在消费侧调度口）；`daily_probe_audit_test.go` 为新建守卫文件（此前该 worker 无测试）。
 - **验证记录**：C: 本地打桩副本（lgw-p2test）`go test -mod=vendor -count=1 ./bg/`：守卫 4 例（pump 3 + daily audit 1）全绿；全量套件 17 例失败与 CRLF 同口径基线完全一致（16 例源文本断言 + 1 例 symlink 权限，预存环境限制，Linux CI 不受影响）。`GOOS=linux GOARCH=arm64` zig cc 交叉编译 `./bg/... ./cmd/gateway/...` 通过。win/arm64 不支持 `-race`，未跑（与既往轮次相同）。
 
+## 本轮记录（2026-09-11 第六轮，上线观察轮——零代码改动）
+
+- **输入缺失声明（按 D 项要求如实区分）**：本工作区无生产环境/指标抓取通道，运维反馈渠道不在会话内。任务 A 的"部署后观察"与任务 B 的触发条件（运维反馈）本轮均无数据输入，故**代码零改动**；本轮产出 = B 项的无条件静态排查（不依赖数据、结论确定性成立）+ A 项可执行观测 runbook 与升级判据 + main 合并态复核。
+- **main 合并态复核（只读）**：origin/main 仍为 b37b68b51（与第五轮验证对象同一提交，交叉编译结论沿用，未重跑）。三个指标均以 promauto 注册（`bg/probe_necessity.go`）；pump 绑定链过滤（`pumpDueStatesSQL`）、daily audit 绑定链过滤（`dailyProbeAuditSQL`）、skip 路径有界重试与计数器在位。
+- **A 项观测 runbook（部署后执行）**：
+  - 抓取：`/metrics` 挂在 admin 端口且需 admin token（`cmd/gateway/main.go` NET-008 注释处）——`curl -s -H "Authorization: Bearer <admin-key>" http://<admin-host>:<admin-port>/metrics | grep llmgw_node_probe_necessity`。注意仓库 Grafana 仪表盘（`deploy/grafana/*.json`）**尚未包含**这三个指标，观测期用原始抓取，如需面板需另行添加。
+  - 判读：`mirror_delete_retry_total` 偶发增长 = 瞬时失败被同轮吸收（设计行为）；`mirror_delete_failed_total` 持续增长（24h 窗口）→ 按遗留项 6 升级短 TTL 抑制（硬条件不变：不漏真实故障探测、证据错误 fail-open、manual/admin 绕过、lease 丢失不删新 owner 状态）；两者平稳且 skipped 磁贴占比稳定 → 记录结论、关闭观察项；`skip_total{reason}` 异常高 → 排查 Redis 键 schema（legacy/k2/dual）与 tenant 归属。
+- **B 项静态排查（本轮完成；结论先于运维反馈，供触发时直接使用）**：
+  - **显示面机制**：自检 tab 逐节点泳道 `GET /api/admin/probe/node-tasks`（`admin/probe_dashboard.go` `queryProbeNodeTasks`）**直读 `node_probe_state`、无绑定链过滤**——孤儿行（绑定断裂）满足其 WHERE（未暂停且 next_retry_at 到期）→ 以**永久 'pending' 磁贴**长期显示，last_direct_ok/latency 等列为陈旧值。这是 381fbf50d pump 过滤引入的**确定性显示面变化**：过滤前孤儿行被 pump 周期重提→探测→missing-binding 丢弃（删除通常成功，磁贴走完生命周期后消失）；过滤后永不再被调度，磁贴常驻。即第四轮"无 churn，可接受"的残余面在 tab 上的真实形态是"常驻陈旧磁贴"，当时未记录，本轮补记。
+  - **清理口径全量清点**（生产代码仅两处 `DELETE FROM node_probe_state`）：missing-binding 丢弃（`bg/node_probe.go:1799`）对孤儿行**不可达**（不再被任何调度口提交）；skip 路径镜像删除（`bg/probe_service.go:752`）仅对已提交任务生效。`handleNodeProbeStateReset`（`admin/probe_history.go`）只 UPDATE 重置、不删除；`TriggerAllSync` 从 cmb 枚举（绑定锚定），既不重提也不清理孤儿；`MarkNodeProbeHealthy` 仅在业务请求成功时写行，解绑后无业务请求不会重建行（唯一理论残留：解绑瞬间的在途请求，有界）。**结论：孤儿行现状口径 = 等绑定重建自然恢复（EXISTS 变真 → pump 重提 → 正常探测或丢弃）或运维手工 SQL 删除，无自动回收路径。**
+  - **运维临时清理 SQL（反馈属实且等不及绑定重建时）**：
+    ```sql
+    DELETE FROM node_probe_state nps
+    WHERE NOT EXISTS (
+      SELECT 1 FROM credential_model_bindings cmb
+      JOIN provider_models pm ON pm.id = cmb.provider_model_id
+      WHERE cmb.credential_id = nps.credential_id
+        AND pm.raw_model_name = nps.raw_model_name);
+    ```
+  - **升级设计预案（运维反馈属实时实施，先失败测试）**：首选**显示侧**——`queryProbeNodeTasks` 的 WHERE 并入绑定链 EXISTS（与 pumpDueStatesSQL 同谓词形态：双列关联、JOIN pm、只查存在性），磁贴只显示"存在可执行任务"的行，绑定重建后磁贴自然回归；SQL 抽取为可守卫函数（同 `dailyProbeAuditSQL` 模式）+ 文本守卫测试，零数据风险。备选**数据侧周期 GC**（宽限期删除，如绑定断裂且 updated_at < now()-7d，保守起见 paused 行不动）——新增调度面，风险高于显示侧，仅在表膨胀成为实际问题时考虑，默认不做。运维反馈到达时还需与反馈方确认"自检 tab"具体指哪个面板（node-tasks 泳道 vs SSE 实时流——SSE 流对孤儿行本就不产生事件，常驻陈旧磁贴只能是泳道）。
+- **C 项**：`lastProbeRun` 保持 `started_at DESC`，无反例，维持关闭。
+- **验证记录（C: 本地打桩副本 lgw-p2test，bg/ 与 origin/main 逐文件一致、仅 `diskUsagePercent` 桩差异）**：定向守卫族 `go test -mod=vendor -count=1 -run 'TestDailyProbeAuditSQL|TestPumpDueStatesSQL|TestProbeNecessity|TestSkipMirrorDelete|TestSkipRemoval|TestSkipPersistence|TestRemoveSkipped' ./bg/` → **25 例全 PASS**；全量 `./bg/` → 17 例失败，**逐一核对与既知基线完全一致**（16 例 CRLF 源文本断言 + 1 例 symlink 权限；本年以来失败名单首次完整留档于 `lgw-p2test/fails_r6.txt`）。本轮零代码改动，未重跑交叉编译（b37b68b51 与第五轮同一提交，结论沿用）；win/arm64 `-race` 依旧不支持，未跑。
+- **遗留风险**：①观测依赖人工抓取（无面板、无告警规则），failed_total 持续增长可能晚发现——若运维接受可后续补 Grafana 面板或告警；②孤儿行常驻磁贴问题已证成但未修复（等触发），升级预案与临时 SQL 就绪；③本记录的清理口径清点基于静态审读，若运维手工 SQL 执行前应先在只读副本核数。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
-请继续 llm-gateway-go 自检必要性闸门（necessity gate）的收尾工作。
+请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第二轮）。
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
-先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"审计记录
-第五轮"与"未完成的遗留任务"）、bg/node_probe.go（pumpDueStatesSQL 的绑定链过滤）、
-bg/daily_probe_audit.go（dailyProbeAuditSQL 的绑定链过滤）。
-背景：闸门/证据批量化/skip 路径 churn 抑制/missing-binding pump 过滤/第五轮审计
-（daily audit 绑定链过滤）均已合入 main（62e8f6f41、11af45216、dc8463e28、
-ef3280194、5e65c21f1、381fbf50d 及审计提交）。审计结论：除 manual/admin 外，
-无任何调度入口会提交绑定链断裂的 (cred, model) 对。
+先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
+第六轮"——含观测 runbook、孤儿行清理口径排查结论与升级设计预案）、遗留任务第 6 项。
+背景：全部代码跟进已合入 main（最新 b37b68b51），第六轮为零代码改动轮：B 项静态
+排查已完成——自检 tab 泳道 queryProbeNodeTasks 直读 node_probe_state 无绑定过滤，
+孤儿行会以永久 pending 磁贴常驻；清理口径 = 绑定重建自然恢复或运维手工 SQL；
+显示侧/数据侧升级预案已写入 handoff。指标 /metrics 在 admin 端口需 admin token，
+仓库 Grafana 面板尚未包含 necessity 三指标。
 注意：主工作区检出的 fix/r13-logging-hygiene 属于并行 R13 日志工作，不要混入本任务；
 工作区遗留脏文件（docs 两处、scripts/deploy-lib、*.lnk）严禁 add/clean/恢复。
-建议用 git worktree 从 origin/main 拉独立分支实施；Windows 验证按 handoff
-"验证环境说明"打桩 diskUsagePercent（C: 本地副本 lgw-p2test 可复用，仅 cp 变更文件；
-基线对照务必把基线文件按 autocrlf 口径转 CRLF 再跑，否则源文本断言出现假差异）。
+继续用 git worktree 从 origin/main 拉独立分支实施；Windows 验证用 C: 副本
+lgw-p2test（bg/ 已与 b37b68b51 一致，仅 cp 变更文件；基线对照务必 CRLF 同口径）。
 
-本轮任务（上线观察为主，按数据定升级）：
-A. 部署后观察 llmgw_node_probe_necessity_mirror_delete_retry_total /
-   mirror_delete_failed_total 与 skipped 磁贴占比：
-   - failed_total 持续增长 → 对刚被跳过的 (credential_id, raw_model) 实施短 TTL
-     抑制；硬条件不变：不得漏掉真实故障探测、证据错误 fail-open、manual/admin
-     绕过、lease 丢失不删新 owner 状态。
-   - 两者都平稳 → 仅记录结论，无需改动。
-B. 若运维反馈"模型解绑/改名后自检 tab 长期显示陈旧节点"：排查 node_probe_state
-   孤儿行的清理口径（pump 已不再重提绑定缺失对，孤儿行只能等绑定重建或运维清理），
-   必要时补显式孤儿行回收路径（同样先补失败测试）。
-C. lastProbeRun 保持 started_at DESC 已按原方案关闭，除非出现乱序完成记录反例。
-D. 验证如实区分通过/环境受限/未验证；bg 全量在 Windows 本地的 17 例预存失败
-   （16 例 CRLF 源文本断言 + 1 例 symlink 权限）见 handoff 本轮记录验证段。
+本轮任务（按输入分派，无输入则如实记录阻塞）：
+A. 若已获得生产 /metrics 抓取数据（第六轮 runbook 的判读规则）：
+   - mirror_delete_failed_total 持续增长 → 实施短 TTL 抑制（硬条件不变：不漏真实
+     故障探测、证据错误 fail-open、manual/admin 绕过、lease 丢失不删新 owner 状态）；
+   - 两者平稳 → 在 handoff 记录结论并关闭遗留项 6（可顺带评估补 Grafana 面板）。
+B. 若运维确认"模型解绑/改名后自检 tab 长期显示陈旧节点"：按第六轮预案实施显示侧
+   修复（queryProbeNodeTasks WHERE 并入绑定链 EXISTS，SQL 抽取可守卫 + 先红后绿
+   测试）；先与反馈方确认面板口径。实施前可给出临时 SQL 供运维清急。
+C. lastProbeRun 维持关闭；除非出现乱序完成记录反例。
+D. 验证如实区分通过/环境受限/未验证；bg 全量 Windows 本地 17 例预存失败
+   （16 例 CRLF 源文本断言 + 1 例 symlink 权限）名单见 lgw-p2test/fails_r6.txt。
 
 完成后输出：结论/根因、改动文件与关键行为、测试命令与结果、遗留风险、
 更新本 handoff、下一轮提示词。
