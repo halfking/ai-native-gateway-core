@@ -171,25 +171,38 @@
 - **范围界定**：本轮纯文档审计修正（handoff），零代码/SQL/deploy 工件改动；不重跑测试套件（无新被测对象；bg 新基线重测留给下次触碰 bg 的轮次，已在下一轮提示词以"bg/ 基线警示"标注）。
 - **验证记录（如实区分）**：全部断言基于 `git diff` / `git show | grep` / `git merge-base --is-ancestor` 只读取证（origin/main=8488a0838；SMB 上用路径限定命令）。未运行任何测试套件——本轮没有可运行的新验证对象，环境受限说明同"验证环境说明"节。
 
+## 本轮记录（2026-09-11 第十三轮，上线观察轮第七轮——无输入记录阻塞 + bg 基线重测）
+
+- **输入缺失声明（按 D 项要求如实区分）**：任务书未携带生产 /metrics 数据或告警触发记录，运维反馈未到达。按分派规则 **A 不触发**（TTL 抑制继续锁在数据门后）、**B 不触发**（显示侧治本修复继续锁在运维反馈门后，应急口径三层已就绪）、**C 维持关闭**（无乱序完成反例）。本轮代码零改动，产出 = bg/ 基线重测（第十二轮明确留下的确定性收尾）+ main 合并态复核。
+- **main 合并态复核（只读）**：`git fetch` 后 origin/main = **b6ae27f9f**（第十二轮审计提交本身，docs-only 单文件），第十二轮推送后无新提交。观测五件套复验在位：alerts.yml 告警 1 处、面板 uid 1 处、alerts_test.go 契约钉 1 处、dashboard_test.go 恰 3 例。网关/探测/SQL 代码自 6490fd981 起零变化（`git diff b37b68b51 origin/main -- bg/ domains/ internal/ cmd/ deploy/sql/ web/` 仅 bg/node_probe.go +17/-1 与 bg/node_probe_test.go +15，即 6490fd981 已知变更面）。
+- **bg/ 基线重测（本轮确定性产出；解除任务书警示框）**：fails_r6.txt 的 17 例名单是 b37b68b51 口径，本轮以当前 origin/main 重测并留档 **lgw-p2test/fails_r7.txt**——后续任何触碰 bg 的轮次以 fails_r7.txt 为回归判据，fails_r6.txt 作废。
+  - **同步方法（CRLF 同口径，先校验后应用）**：lgw-p2test 的 `bg/node_probe.go`、`bg/node_probe_test.go` 以 `git show origin/main:<file> | unix2dos` 覆盖。转换口径先用 b37b68b51 版本对副本既有文件做 cmp 逐字节校验（完全一致）后才应用到 origin/main 版本——排除第四轮记录的"LF 直出假差异"坑。`storage_retention_worker.go` 的 `diskUsagePercent` 桩保留（差异面用逐文件 hash 清点确认：副本相对 origin/main 仅上述两文件 + 桩文件三处不同）。
+  - **结果**：全量 `go test -mod=vendor -count=1 ./bg/`（CGO_ENABLED=1 CC=aarch64-w64-mingw32-gcc GOPROXY=off）→ **17 例失败，排序无关集合与 fails_r6.txt 完全一致**（16 例源文本断言 + 1 例 TestWalkDirSafe symlink 权限）——6490fd981 的 bg/ 变更**未改变** Windows 预存失败面。
+  - **定向守卫族 25 例全绿**（第六轮同一 `-run 'TestDailyProbeAuditSQL|TestPumpDueStatesSQL|TestProbeNecessity|TestSkipMirrorDelete|TestSkipRemoval|TestSkipPersistence|TestRemoveSkipped'` 正则）——necessity gate 全部关键测试在 6490fd981 后的 bg/ 代码上依旧通过，补上第十二轮发现 1-②"新 bg/ 代码无本地守卫留档"的缺口。
+  - **附带核实**：`TestRunOneMissingBindingDropsOrphanStateRow`（6490fd981 扩展的测试）仍在失败集，但其失败点是 DELETE 语句源文本断言（CRLF 失配），6490fd981 新增的取证行（success=false INSERT）行为断言位于其后**未执行到**——该行为在 Windows 本地未验证，属 Linux CI 职责（6490fd981 自验 green），与本特性无关。
+- **C 项**：`lastProbeRun` 保持 `started_at DESC`，无反例，维持关闭。
+- **验证记录（如实区分）**：**通过**——全量 bg 新基线对照（17 例集合与 fails_r6.txt 一致，fails_r7.txt 留档）、定向守卫 25 例 PASS、CRLF 转换口径 cmp 校验。**环境受限**——源文本断言类测试在 CRLF 检出下无法在 Windows 通过（由 Linux CI 覆盖）；win/arm64 `-race` 不支持未跑（与既往轮次相同）；promtool/Grafana 导入不可用（沿用第八/九轮口径）。**未验证**——观测链路是否已被运维实际 provisioning、生产指标状态（无通道）。
+- **遗留风险**：与第十二轮相同，无新增。剩余开启项全部外部门控：TTL 抑制 ← 生产 failed_total 数据；显示侧治本 ← 运维反馈；孤儿行批量 SQL 执行前 ← 只读副本核数；工作区脏文件 ← 原作者确认。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
-请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第七轮）。
+请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第八轮）。
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
 先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
 第六轮"（runbook 与孤儿行三层清理口径）、"本轮记录 第八轮"（告警+面板已随仓库交付）、
 "审计记录 第九轮"（告警契约已钉入 alerts_test.go）、"本轮记录 第十轮"（面板契约
 已钉入 deploy/grafana/dashboard_test.go——观测链路全部工件均有 CI 防回归保护）、
-"本轮记录 第十一轮"+"审计记录 第十二轮"（合并态复核；bg/ 基线被 R12 6490fd981
-移动后的失效面清单与处置口径））、遗留任务第 6 项。
-背景：观测工件齐全且已全部合入 main（第十二轮复验）；main 代码头以 git fetch 实查
-为准。第十一轮推送后 6490fd981（R12 P2/P3 收尾）变更了 bg/node_probe.go 的 legacy
+"本轮记录 第十三轮"（合并态复核 + bg/ 基线重测：fails_r7.txt 已是当前
+origin/main 口径基线，fails_r6.txt 作废））、遗留任务第 6 项。
+背景：观测工件齐全且已全部合入 main（第十二/十三轮复验）；main 代码头以 git fetch
+实查为准。6490fd981（R12 P2/P3 收尾）变更了 bg/node_probe.go 的 legacy
 missing-binding 分支（补写 node_probe_runs 取证行，DELETE 清理语义不变）——
-必要性闸门/skip/pump/daily-audit 路径未涉及。
-告警
-NodeProbeNecessityMirrorDeleteFailedHigh（failed_total 10m 增量 >5，warning）+
-面板 selfcheck-necessity-dashboard.json——运维按 deploy/prometheus/README 的
+必要性闸门/skip/pump/daily-audit 路径未涉及；第十三轮已在其上重测 bg 基线：
+全量失败集合与 fails_r6.txt 完全一致、定向守卫 25 例全绿。
+告警 NodeProbeNecessityMirrorDeleteFailedHigh（failed_total 10m 增量 >5，warning）
++ 面板 selfcheck-necessity-dashboard.json——运维按 deploy/prometheus/README 的
 provisioning 流程加载后即自动告警，无需人工 curl。孤儿行应急口径三层：绑定重建
 自然恢复 / POST /api/admin/probe/tasks 提交一次探测即删行（自 6490fd981 起同时
 留一条 success=false 取证行，属预期信号非异常）/ 批量 SQL；显示侧
@@ -198,10 +211,9 @@ provisioning 流程加载后即自动告警，无需人工 curl。孤儿行应�
 工作区遗留脏文件（docs 两处、scripts/deploy-lib、*.lnk）严禁 add/clean/恢复。
 继续用 git worktree 从 origin/main 拉独立分支实施；Windows 验证用 C: 副本
 lgw-p2test（仅 cp 变更文件；deploy 包验证需同步 deploy/grafana/ 的 README.md
-与面板 JSON；基线对照务必 CRLF 同口径）。**bg/ 基线警示**：lgw-p2test/fails_r6.txt
-的 17 例名单是 b37b68b51 口径，bg/node_probe.go 已被 6490fd981 变更——跑 bg
-套件前必须先对当前 origin/main 重测基线并 CRLF 同口径对照，不得直接拿
-fails_r6.txt 当回归判据。
+与面板 JSON；基线对照务必 CRLF 同口径——`git show <rev>:<file> | unix2dos`
+口径已第十三轮 cmp 校验）。若 origin/main 的 bg/ 再次被外部提交变更，跑 bg
+套件前须先重测基线；否则直接以 lgw-p2test/fails_r7.txt（17 例）为回归判据。
 
 本轮任务（按输入分派，无输入则如实记录阻塞）：
 A. 若已获得生产 /metrics 数据或告警触发记录（runbook 判读规则）：
