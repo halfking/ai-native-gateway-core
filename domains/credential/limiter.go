@@ -202,8 +202,13 @@ type Limiter struct {
 	global *Semaphore
 	pools  map[int]*Semaphore        // providerID → semaphore
 	creds  map[string]*Semaphore     // "providerID/credentialID" → semaphore
-	idents map[string]*identityEntry // "providerID/credentialID/identityHash" → entry
-	keys   map[int]*Semaphore        // keyID → per-key semaphore (limit from DB)
+	// credHotLimits records admin hot-updated capacities (SetCredentialCapacity)
+	// so recoveryStep recovers toward min(credentialLimit, hot value) instead of
+	// pulling an admin-lowered limit back to the process-wide default within
+	// fullRecoveryCycles intervals.
+	credHotLimits map[string]int
+	idents        map[string]*identityEntry // "providerID/credentialID/identityHash" → entry
+	keys          map[int]*Semaphore        // keyID → per-key semaphore (limit from DB)
 
 	identityMaxEntries int
 	identityIdleTTL    time.Duration
@@ -247,6 +252,7 @@ func NewWithLimits(global, pool, credential, identity int) *Limiter {
 		global:             NewSemaphore("global", global),
 		pools:              make(map[int]*Semaphore),
 		creds:              make(map[string]*Semaphore),
+		credHotLimits:      make(map[string]int),
 		idents:             make(map[string]*identityEntry),
 		keys:               make(map[int]*Semaphore),
 		identityMaxEntries: envPositiveInt("LLM_GATEWAY_IDENTITY_LIMITER_MAX_ENTRIES", defaultIdentityMaxEntries),
@@ -327,9 +333,15 @@ func (l *Limiter) Pool(providerID int) *Semaphore {
 	return s
 }
 
+// credentialKey is the map key format shared by Credential,
+// SetCredentialCapacity and recoveryStep.
+func credentialKey(providerID, credentialID int) string {
+	return fmt.Sprintf("%d/%d", providerID, credentialID)
+}
+
 // Credential returns the credential-level semaphore.
 func (l *Limiter) Credential(providerID, credentialID int) *Semaphore {
-	key := fmt.Sprintf("%d/%d", providerID, credentialID)
+	key := credentialKey(providerID, credentialID)
 	l.mu.RLock()
 	s, ok := l.creds[key]
 	l.mu.RUnlock()
@@ -355,6 +367,12 @@ func (l *Limiter) Credential(providerID, credentialID int) *Semaphore {
 // 2026-08-26 hot-reload hook: when admin patches concurrency_limit, this
 // ensures the in-process semaphore tracks the DB value within the same
 // request — without a service restart.
+//
+// The value is also recorded in credHotLimits so the shrink-recovery loop
+// (recoveryStep) treats it as the ceiling for this credential: without that
+// record, RecoverStep(credentialLimit) would silently restore the process-wide
+// default within fullRecoveryCycles × shrinkRecoveryInterval (~15 min),
+// undoing the admin's change.
 func (l *Limiter) SetCredentialCapacity(providerID, credentialID, capacity int) {
 	if capacity < 1 {
 		capacity = 1
@@ -362,6 +380,9 @@ func (l *Limiter) SetCredentialCapacity(providerID, credentialID, capacity int) 
 	s := l.Credential(providerID, credentialID)
 	old := s.Capacity()
 	s.capacity.Store(int64(capacity))
+	l.mu.Lock()
+	l.credHotLimits[credentialKey(providerID, credentialID)] = capacity
+	l.mu.Unlock()
 	slog.Info("limiter hot-reload: capacity updated",
 		"name", s.name,
 		"old_capacity", old,
@@ -746,8 +767,14 @@ func (l *Limiter) recoveryStep() {
 	for _, s := range l.pools {
 		s.RecoverStep(l.poolLimit)
 	}
-	for _, s := range l.creds {
-		s.RecoverStep(l.credentialLimit)
+	for key, s := range l.creds {
+		target := l.credentialLimit
+		// A hot-updated (admin-lowered) credential recovers only up to the
+		// hot value — never back past it toward the process-wide default.
+		if hot, ok := l.credHotLimits[key]; ok && hot < target {
+			target = hot
+		}
+		s.RecoverStep(target)
 	}
 }
 
@@ -822,7 +849,7 @@ func (l *Limiter) calculatePressure(
 	}
 
 	// Layer 2: Credential (key format: "providerID/credentialID")
-	credKey := fmt.Sprintf("%d/%d", poolID, credentialID)
+	credKey := credentialKey(poolID, credentialID)
 	l.mu.RLock()
 	cred, hasCred := l.creds[credKey]
 	l.mu.RUnlock()

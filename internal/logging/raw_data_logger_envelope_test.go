@@ -95,7 +95,7 @@ func TestAsyncRawDataLogger_DefaultOn(t *testing.T) {
 		t.Fatalf("NewAsyncRawDataLogger: %v", err)
 	}
 	t.Cleanup(func() { _ = logger.Close() })
-	if !logger.baseLogger.enabled {
+	if !logger.baseLogger.sinkEnabled() {
 		t.Errorf("expected base logger to be enabled by default")
 	}
 }

@@ -240,6 +240,7 @@ export default {
     planTypeFailed: "فشل تعيين plan_type"
   },
   errorDetail: {
+    healthLatency: 'زمن فحص الصحة', healthError: 'خطأ فحص الصحة',
     supplier: 'المورد', errorCode: 'رمز الخطأ', requestId: 'معرف الطلب',
     stage: 'المرحلة', retry: 'إعادة المحاولة', latency: 'المدة',
     openRequestTitle: 'فتح تفاصيل الطلب',

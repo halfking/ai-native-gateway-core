@@ -130,6 +130,10 @@ onBeforeUnmount(() => {
           <div class="status-item"><span>{{ pd('circuit') }}</span><strong>{{ data.credential.circuit_state }}</strong></div>
           <div class="status-item"><span>{{ pd('consecutiveFailures') }}</span><strong>{{ data.credential.consecutive_failures }}</strong></div>
           <div class="status-item"><span>{{ pd('balance') }}</span><strong>{{ data.credential.balance_usd == null ? '—' : `${data.credential.balance_usd} ${data.credential.balance_currency ?? ''}` }}</strong></div>
+          <!-- R12 候选18 尾巴：payload 一直携带 health_error / health_latency_ms，
+               但面板从未渲染——补上探活时延与探活错误两个状态项。 -->
+          <div class="status-item"><span>{{ pd('healthLatency') }}</span><strong>{{ data.credential.health_latency_ms != null ? `${data.credential.health_latency_ms}ms` : '—' }}</strong></div>
+          <div class="status-item status-item--wide"><span>{{ pd('healthError') }}</span><strong>{{ data.credential.health_error || '—' }}</strong></div>
         </div>
 
         <div v-if="data.credential.state_reason_detail" class="reason-line">
@@ -230,6 +234,9 @@ onBeforeUnmount(() => {
 .section-title, h3 { font-size: 14px; font-weight: 600; }
 .status-grid { align-items: stretch; flex-wrap: wrap; margin-bottom: 12px; }
 .status-item { min-width: 130px; padding: 10px 12px; border: 1px solid var(--border-color); background: var(--card-bg); }
+/* R12 候选18：探活错误文本较长，给两倍宽度并允许换行。 */
+.status-item--wide { min-width: 280px; flex: 1 1 280px; }
+.status-item--wide strong { word-break: break-all; white-space: normal; }
 .status-item span { display: block; color: var(--muted); margin-bottom: 4px; }
 .reason-line, .section-block { margin-top: 12px; }
 .reason-line { color: var(--muted); }

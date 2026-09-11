@@ -258,28 +258,3 @@ data: {"type":"message_stop"}
 		t.Fatalf("found unmapped Anthropic stop_reason in response:\n%s", body)
 	}
 }
-
-// TestMapAnthropicFinishReasonToChat tests the mapping function directly
-func TestMapAnthropicFinishReasonToChat(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"end_turn", "stop"},
-		{"tool_use", "tool_calls"},
-		{"max_tokens", "length"},
-		{"stop_sequence", "stop"},
-		{"refusal", "content_filter"},
-		{"unknown", "stop"}, // default case
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			result := mapAnthropicFinishReasonToChat(tt.input)
-			if result != tt.expected {
-				t.Errorf("mapAnthropicFinishReasonToChat(%q) = %q, want %q",
-					tt.input, result, tt.expected)
-			}
-		})
-	}
-}

@@ -27,7 +27,7 @@ import (
 // `tools` array.
 func extractSignalsForMessages(reqBody *messagesRequestBody, rawBody []byte) autoroute.ClassificationSignals {
 	sigs := autoroute.ClassificationSignals{
-		SystemPrompt:    reqBody.System,
+		SystemPrompt:    convertAnthropicSystem(reqBody.System), // R12 候选4: System is now json.RawMessage (string or block array) — the classifier gets plain text for both shapes.
 		ToolCount:       countToolsInBody(rawBody),
 		EstimatedTokens: estimateTokens(rawBody),
 	}

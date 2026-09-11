@@ -246,7 +246,9 @@ func main() {
 	// memorySvc holds the legacy memora concrete client/sink behind the
 	// live memory.Reader / memory.Writer interfaces used by gateway runtime.
 	var memorySvc *legacyMemoryServices
-	var rawDataLogger *logging.AsyncRawDataLogger
+	// R12（2026-09-11）：raw 审计落盘抽象为 logging.RawSink 接口，
+	// 灰度开关 LLM_GATEWAY_RAW_LOG_SINK=legacy|buffered 决定具体实现。
+	var rawDataLogger logging.RawSink
 	var anomalyReporter *logging.LockFreeAnomalyReporter
 
 	// 2026-07-20: ringBuffer holds failed request_log INSERTs in memory
@@ -1568,13 +1570,25 @@ func main() {
 			if os.Getenv("LLM_GATEWAY_RAW_LOG_ENABLED") == "false" {
 				slog.Warn("raw_data_logger: explicitly disabled by env; audit data will not be persisted")
 			} else {
-				asyncRawLogger, err := logging.NewAsyncRawDataLogger(logDir, maxSize, true, 10000)
+				// R12（2026-09-11）：灰度开关。空值/legacy = 现网
+				// AsyncRawDataLogger（行为零变化）；buffered 切换
+				// BufferedRawSink；非法值拒绝启动——拼错静默回退会无声
+				// 改变审计实现（预研 §5）。回滚 = env 改回 legacy + 重启。
+				rawSink, err := logging.NewRawSink(logDir, maxSize, true, os.Getenv("LLM_GATEWAY_RAW_LOG_SINK"))
 				if err != nil {
-					slog.Error("raw_data_logger: failed to initialize", "err", err)
-				} else {
-					rawDataLogger = asyncRawLogger
-					routingExec.RawDataLogger = executors.NewRawDataLoggerAdapter(asyncRawLogger)
-					slog.Info("raw_data_logger: initialized (default-on)", "dir", logDir, "max_size", maxSize)
+					slog.Error("raw_data_logger: refusing to start with unsupported sink", "err", err)
+					os.Exit(1)
+				}
+				rawDataLogger = rawSink
+				routingExec.RawDataLogger = executors.NewRawDataLoggerAdapter(rawSink)
+				slog.Info("raw_data_logger: initialized (default-on)",
+					"sink", logging.RawSinkModeName(os.Getenv("LLM_GATEWAY_RAW_LOG_SINK")),
+					"dir", logDir, "max_size", maxSize)
+				if buffered, ok := rawSink.(*logging.BufferedRawSink); ok {
+					cfg := buffered.Config()
+					slog.Info("raw_data_logger: buffered sink windows",
+						"flush_every", cfg.FlushEvery, "batch_size", cfg.BatchSize,
+						"max_bytes", cfg.MaxBytes, "max_write_attempts", cfg.MaxWriteAttempts)
 				}
 			}
 

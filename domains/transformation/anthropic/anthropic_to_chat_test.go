@@ -24,20 +24,23 @@ func TestAnthropicToChat_ThinkingBlocksDropped(t *testing.T) {
 	_ = json.Unmarshal(out, &v)
 	choice := v["choices"].([]any)[0].(map[string]any)
 	msg := choice["message"].(map[string]any)
-	if msg["content"] != "hi there" {
-		t.Errorf("content = %v, want 'hi there'", msg["content"])
+	// IR serialization: non-single-text content ships as a block array and
+	// the thinking block is NOT re-emitted inside content (it moves to
+	// reasoning_content below).
+	blocks, ok := msg["content"].([]any)
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("content = %v, want one text block", msg["content"])
 	}
-	// Enhanced (2026-06-20): thinking blocks should now be preserved in reasoning_content
+	if blocks[0].(map[string]any)["text"] != "hi there" {
+		t.Errorf("text block = %v, want 'hi there'", blocks[0])
+	}
+	// Thinking is preserved in reasoning_content
 	if reasoning, ok := msg["reasoning_content"].(string); !ok || reasoning != "deep thought" {
 		t.Errorf("reasoning_content = %v, want 'deep thought'", msg["reasoning_content"])
 	}
-	// Check metadata
-	meta := v["_kxg_meta"].(map[string]any)
-	if meta["has_thinking"] != true {
-		t.Errorf("_kxg_meta.has_thinking = %v, want true", meta["has_thinking"])
-	}
-	if int(meta["thinking_blocks_count"].(float64)) != 1 {
-		t.Errorf("_kxg_meta.thinking_blocks_count = %v, want 1", meta["thinking_blocks_count"])
+	// R12 候选4: the private _kxg_meta injection is gone from client bodies.
+	if _, ok := v["_kxg_meta"]; ok {
+		t.Errorf("_kxg_meta must not leak into client-visible responses")
 	}
 }
 
@@ -62,9 +65,10 @@ func TestAnthropicToChat_MultipleThinkingBlocks(t *testing.T) {
 	choice := v["choices"].([]any)[0].(map[string]any)
 	msg := choice["message"].(map[string]any)
 
-	// Content should only have text blocks
-	if msg["content"] != "final answer" {
-		t.Errorf("content = %v, want 'final answer'", msg["content"])
+	// Content should ship the surviving text block (IR block-array shape)
+	blocks, ok := msg["content"].([]any)
+	if !ok || len(blocks) != 1 || blocks[0].(map[string]any)["text"] != "final answer" {
+		t.Errorf("content = %v, want one text block 'final answer'", msg["content"])
 	}
 
 	// Reasoning content should have both thinking blocks joined
@@ -77,13 +81,9 @@ func TestAnthropicToChat_MultipleThinkingBlocks(t *testing.T) {
 		t.Errorf("reasoning_content = %q, want %q", reasoning, want)
 	}
 
-	// Check metadata
-	meta := v["_kxg_meta"].(map[string]any)
-	if int(meta["thinking_blocks_count"].(float64)) != 2 {
-		t.Errorf("_kxg_meta.thinking_blocks_count = %v, want 2", meta["thinking_blocks_count"])
-	}
-	if int(meta["reasoning_content_chars"].(float64)) != len(want) {
-		t.Errorf("_kxg_meta.reasoning_content_chars = %v, want %d", meta["reasoning_content_chars"], len(want))
+	// R12 候选4: no _kxg_meta in client-visible bodies.
+	if _, ok := v["_kxg_meta"]; ok {
+		t.Errorf("_kxg_meta must not leak into client-visible responses")
 	}
 }
 
@@ -219,5 +219,35 @@ func TestAnthropicToChat_UsageMapped(t *testing.T) {
 	}
 	if int(usage["total_tokens"].(float64)) != 59 {
 		t.Errorf("total_tokens = %v, want 59", usage["total_tokens"])
+	}
+}
+
+// TestAnthropicToChat_ScalarToolInputSurvives guards R12 候选4: the retired
+// hand-written fallback declared tool_use.input as map[string]any, so a
+// scalar input hard-failed the WHOLE response unmarshal. The IR-backed
+// conversion preserves the raw JSON payload instead.
+func TestAnthropicToChat_ScalarToolInputSurvives(t *testing.T) {
+	in := []byte(`{
+        "id":"msg_s","type":"message","role":"assistant","model":"x",
+        "content":[{"type":"tool_use","id":"call_1","name":"echo","input":"raw-scalar"}],
+        "usage":{"input_tokens":1,"output_tokens":1},
+        "stop_reason":"tool_use"
+    }`)
+	out, err := ConvertAnthropicResponseToChat(in, "x")
+	if err != nil {
+		t.Fatalf("scalar tool_use.input must not fail the conversion: %v", err)
+	}
+	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
+	_ = json.Unmarshal(out, &v)
+	choice := v["choices"].([]any)[0].(map[string]any)
+	msg := choice["message"].(map[string]any)
+	tcs := msg["tool_calls"].([]any)
+	if len(tcs) != 1 {
+		t.Fatalf("tool_calls = %v, want 1", msg["tool_calls"])
+	}
+	fn := tcs[0].(map[string]any)["function"].(map[string]any)
+	if fn["arguments"] != `"raw-scalar"` {
+		t.Errorf("arguments = %v, want the raw JSON string", fn["arguments"])
 	}
 }
