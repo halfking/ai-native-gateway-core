@@ -95,6 +95,23 @@ func TestRegistryThreeStateTransitions(t *testing.T) {
 // TestRegistryCompletedWatermarkEviction (UT-DQ-05): completed entries are
 // evicted FIFO by CompletedAt beyond the soft watermark; pending/in-flight
 // entries are NEVER evicted — not by the watermark, not by capacity.
+func TestRegistryRetryCannotReviveCompleted(t *testing.T) {
+	r := NewLifecycleRegistry(10, 50, 0)
+	base := time.Now()
+	if !r.RegisterPending("req-terminal", "gpt-4", base) {
+		t.Fatal("RegisterPending refused request")
+	}
+	r.MarkCompleted("req-terminal", base.Add(time.Second))
+	r.MarkRetryScheduled("req-terminal", base.Add(2*time.Second))
+	entry, ok := r.Get("req-terminal")
+	if !ok || entry.State != LifecycleCompleted || entry.RetryAt != nil {
+		t.Fatalf("completed entry revived by late retry: %#v", entry)
+	}
+	if got := r.Snapshot().Unfinished; got != 0 {
+		t.Fatalf("completed retry changed unfinished count: %d", got)
+	}
+}
+
 func TestRegistryCompletedWatermarkEviction(t *testing.T) {
 	const watermark = 3
 	var evictedMu sync.Mutex
