@@ -367,10 +367,14 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		slog.Warn("probe_service: dropping probe for (cred, model) with no binding row",
 			"credential_id", credID, "model", model)
 		s.worker.emitProbe(hbCtx, credID, 0, model, model, "direct", attempt, trigger, direct)
-		// Stays best-effort like before: escalating this drop into the skip
-		// path's retry/counter machinery is out of scope — a surviving row
-		// here re-enters via the pump and hits the missing-binding branch
-		// again, so the drop itself is retried by the pipeline, not lost.
+		// Stays best-effort: since pumpDueStatesSQL filters binding-less
+		// pairs (2026-09-11 P3, handoff 遗留项 5), no recurring scheduler
+		// revisits a pair whose binding chain is broken, so this branch is
+		// one-shot (manual tasks, or tasks enqueued before the binding
+		// vanished). A failed DELETE can at worst leave one orphan row that
+		// the pump picks up again only once the binding is (re)created —
+		// at which point it probes normally — so the skip path's
+		// retry/counter machinery would not change the outcome here.
 		_ = s.worker.deleteNodeProbeState(hbCtx, credID, model)
 		// Still write the audit row so dashboards don't lose the signal.
 		now := time.Now()
