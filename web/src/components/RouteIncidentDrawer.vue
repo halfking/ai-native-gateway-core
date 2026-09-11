@@ -21,6 +21,7 @@
 //   - all interactive elements have aria-label / title
 
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import {
   dispatchAction,
   exportEvidence,
@@ -454,9 +455,7 @@ function close() {
 function formatTs(ts?: string | null): string {
   if (!ts) return '—'
   try {
-    const d = new Date(ts)
-    if (Number.isNaN(d.getTime())) return ts
-    return d.toLocaleString()
+    return formatDateTime(ts)
   } catch {
     return ts
   }

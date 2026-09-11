@@ -1,3 +1,5 @@
+import { formatTimeOnly } from '../utils/datetime'
+
 // liveStreamDisplay — UI helpers for the swim lane.
 //
 // Pure data-shaping for the tiles. Lives in its own module so it
@@ -175,14 +177,11 @@ export function errorKindBg(errorKind: string | undefined | null): string {
  * Format a date as HH:MM using the active locale.
  */
 export function timeHHMM(ts: string | undefined | null, locale: string = 'en-US'): string {
-  if (!ts) return '--:--'
-  const d = new Date(ts)
-  if (Number.isNaN(d.getTime())) return '--:--'
-  try {
-    return d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: false })
-  } catch {
-    return '--:--'
-  }
+  return formatTimeOnly(ts, {
+    locale,
+    empty: '--:--',
+    options: { hour: '2-digit', minute: '2-digit', hour12: false },
+  })
 }
 
 /**

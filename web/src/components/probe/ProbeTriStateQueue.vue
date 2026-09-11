@@ -25,6 +25,7 @@ import {
 import { acquireProbeStream, useProbeStream, type ProbeOrigin } from '../../composables/probeStreamStore'
 import { credentialDisplayName, loadCredentialLabels } from '../../composables/useCredentialLabels'
 import { fmtDateTime24h } from '../../i18n/useFormat'
+import { formatTimeOnly } from '../../utils/datetime'
 
 // 前端 cap 与后端 probeCompletedWindow (=200) 同步。
 const MAX_COMPLETED = 200
@@ -106,7 +107,7 @@ const OUTCOME_LABEL: Record<ProbeOutcome, string> = {
 
 function fmtClock(ms?: number): string {
   if (!ms) return '—'
-  return new Date(ms).toLocaleTimeString('zh-CN', { hour12: false })
+  return formatTimeOnly(ms, { locale: 'zh-CN', options: { hour12: false } })
 }
 
 function fmtMs(v?: number): string {
