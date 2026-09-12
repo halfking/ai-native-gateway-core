@@ -139,21 +139,42 @@
 - **本轮自审计六件套**：(1) 审计范围=09-13 02:35 观察轮记录，未越界开新轮；(2) 起点重算——自观察轮终点起覆盖 03:14–03:25；(3) 验证如实区分——发现 1/2/3 为口径修正与证据波动留档（非交付缺陷），发现 4/5 复核通过；(4) 数据操作零写——全 READ ONLY 单事务 + ROLLBACK；(5) 顺序约束维护——A 轮未触发，252 未触碰；(6) gofmt 复查——本线净（694 留档），installer 16 文件归并行线。
 - **提交说明**：本轮仅 docs(handoff) 单文件；因工作区检出在并行分支，修订经临时 worktree（/tmp）在 main 上按文件提交，未触碰在途改动。
 
+## 观察轮（2026-09-13 04:06–04:16，无生产窗口，按任务书 B 分派）
+
+- **环境更新：本机现为双网关容器（蓝绿形态），并修正上轮"同版本 2093"口径。** 实测两容器：
+  - `llm-gateway-local-8782`：image ID `a71d89397a7b`，/healthz `2.5.4-aaf3dc24-20260912-2093`，boot 18:49:16Z（02:49 +0800），restarts=0；
+  - `llm-gateway-local-8781`（本轮首次取证）：image ID `2ece2e551598`，/healthz **`2.5.4-dae1b7c9-20260912-2094`**（dae1b7c9 = origin/main 前头），boot 18:47:44Z，端口 8781，restarts=0。
+  - 上轮审计发现 2 记 18:47/18:49Z 重建为"同版本 2093"——本轮以 /healthz（version.json）逐一核对修正：**18:47Z 的 8781 是真正的 2094 新二进制**，18:49Z 的 8782 是 2093。两容器同连本机 PG，均 boot 即扫。
+  - **镜像 tag 重指伪影（如实留档）**：tag `2.5.4.2094` 当前指向 `a71d89397a7b`（= 2093 的镜像，CreatedAt 16:50 +0800），而 8781 引用的 `2ece2e551598`（真正的 2094 构建）已成无 tag dangling——tag 在 8781 容器创建（18:47:44Z）之后被重指。容器身份判定以 image ID + /healthz version.json 为准，勿信 tag。
+- **scanner 静默维持（跨三代二进制实例全量清点）**：8782 stdout（自 18:49Z boot）SQLSTATE 42703 / "does not exist" 命中 **0**；8782 与 8781 两容器文件日志（各自当前 gateway.log + 10 个轮转归档，持久卷）全量清点命中均 **0**，覆盖 09-12 21:11 +0800（现窗最老归档 T13-11-07Z）至 04:08 +0800、跨 2092/2093/2094 三代二进制实例。8782 drift scanner boot 18:49:20Z 注册（仅启动 1 条 INFO），19:49Z tick 静默；WARN 全为既有启动期噪音（auth fail-open / ops token 前缀 / mock 凭据 decrypt failed / pending_sweeper clamp）。
+  - 上轮审计的"证据波动性"预警已兑现：修复前 2 条 42703 所在的 T00-18-40 归档与缺口五归档（T09-41-05 等）均已轮转出窗（现窗最老 = T13-11-07Z）。持久依据维持本文件文字记录；「修复后全量日志零命中」可随时复测，本轮复测通过。
+- **本地活库只读复核（单事务 REPEATABLE READ READ ONLY，事务内复核后 ROLLBACK）**：schema_migrations 690–700 全 11 行；sequences 标记 696–700 全 5 行（basename 逐一对上）；canonical 视图 `request_logs_with_current_month` 113 列 / raw_model_name=1 / system_fingerprint=1；scanner 形状 SELECT 出数 50 行；视图链 3 层（`..._without_customer_id` / `..._without_request_class_due_at` / canonical）+ bodies 视图共 4 视图齐全；8782 `/readyz` 200 全绿（database/redis connected）。双账本收敛维持。
+- **并行线核查（本轮 fetch 成功，有新动作但不撞线）**：origin/main 前进 be3dde651→a6b535dab（7 提交），主体为 **701 balance-floor guard**（1a89c32fe：`sql/migrations/startup/701_credential_balance_floor.sql` + bg/balance_floor_guard + db.go ensure +50 行；a6b535dab 为其 feature handoff 文档）；696–700 文件最后动作与既有记录一致（696=83bf582dd / 697=d03f0ada4 / 698=2ad8d64ad / 699=531ea1a86 / 700=7bd3bfe6d），无撞线、无重编号触发。
+  - **给 balance-floor 线的接线缺口留档（不代改）**：通道脚本 apply-db-revision-sequence.sh 文件清单止于 700（origin/main 实查 331 行），**无 701 条目**——升级型数据库（共享 252 生产 PG 即是）经通道升级将轮不到 701 文件（693/699 同款形态）；若 701 的表/列已全部覆盖于 Go ensure 链则升级库无害，需该线自证。归属 balance-floor 线处置；对本线顺序约束无影响。
+- **生产 252 本轮未触碰**（未复核 698–700 应用态，属 A 轮窗口范围）；「通道先 698/699/700 → 再上携带 83bf582dd 的二进制」顺序约束继续有效。701 进 origin/main 不改变该约束（252 通道应用按既有清单 698/699/700 先行；701 是否随窗口应用取决于 balance-floor 线接线补齐与其自身发布决策）。
+- **C 项遗留按兵未自动开新轮**：视图基础层 pre-485 冻结交集"陈旧也重建"专项迁移、deploy-lib readyz 60s 窗口偏短、696/697 schema_migrations 自插补齐——均维持留档，等触发条件。
+- **gofmt -l 复查**（C 项遗留跟踪）：本线扫描面（db/ + sql/migrations/）仍仅 `migration_694_behavior_integration_test.go`；installer/ 未格式化文件仍 16（并行线自有债，归属不在本线，不代改）。
+- **本轮自审计六件套**：(1) B/D/C 按任务书分派执行，无越界（未触碰 252、未开新轮、未代改 701 接线）；(2) 起点重算——自 03:25 审计轮终点起，本轮覆盖 04:06–04:16；(3) 验证如实区分——scanner 静默/双账本/视图/视图链/并行线 fetch 全部通过，无环境受限项；tag 重指与 8781 版本口径修正如实留档；(4) 数据操作零写——仅单事务 READ ONLY + ROLLBACK；(5) 顺序约束维护——A 轮未触发；(6) gofmt 复查——本线净，694 留档，installer 归并行线。
+- **提交说明**：本轮仅 docs(handoff) 单文件；因工作区检出在并行分支 `fix/probe-recovery-closeout`（干净、无在途改动），修订经临时 worktree（/tmp）基于 origin/main 按文件提交后推送 main。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
 请对 llm-gateway-go「request_logs 视图 raw_model_name 根修（迁移 700）+ LF 治理」
 做下一轮观察/收尾。工作目录：主工作区（main）。
 先阅读：docs/handoff/2026-09-12-request-logs-view-raw-model-name-rootfix.md
-（含审计轮 09-13 03:25 记录）与 docs/changelogs/2026-09-12-request-logs-view-raw-model-name.md。
+（含观察轮 09-13 04:16 记录）与 docs/changelogs/2026-09-12-request-logs-view-raw-model-name.md。
 
-背景：700 已在 origin/main；本机 2093（aaf3dc24）运行正常、/readyz 全绿；
-42703 修复后全量日志 0 命中，15:25–21:25 缺口已关（归档证据受
-max_backups=10 保留窗约束会轮转失效，持久依据以 handoff 文字为准）；
-文件日志（容器内 /opt/llm-gateway-go/logs/，持久卷）为跨容器实例的
-权威证据源（stdout 随实例更替重置）。双账本 696-700 齐、视图
-113 列/raw=1/fp=1。生产 252 的 698/699/700 尚未应用；「通道先
-698/699/700 → 再上携带 83bf582dd 的二进制」顺序约束有效。
+背景：700 已在 origin/main；本机为双容器蓝绿形态——8782 跑 2093
+（aaf3dc24，镜像 tag 2.5.4.2094 系重指伪影，身份以 /healthz 为准）、
+8781 跑 2094（dae1b7c9），均 /readyz 全绿；42703 修复后全量日志
+（含轮转归档，跨 2092/2093/2094 三代二进制）持续 0 命中（归档证据受
+max_backups=10 轮转失效，持久依据以 handoff 文字为准）；文件日志
+（容器内 /opt/llm-gateway-go/logs/，持久卷）为跨容器实例的权威证据源。
+双账本 696-700 齐、视图 113 列/raw=1/fp=1。并行线 701（balance-floor）
+已进 origin/main，通道脚本尚无 701 条目（已留档归属该线，勿代改）。
+生产 252 的 698/699/700 尚未应用；「通道先 698/699/700 → 再上携带
+83bf582dd 的二进制」顺序约束有效。
 
 本轮任务（按输入分派）：
 A. 生产发布窗口到达（或有运营报障）：252 通道应用 698/699/700（含函数链
