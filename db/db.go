@@ -1426,7 +1426,8 @@ func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
 //     充值/窗口重置后自动恢复；绝不写 manual_disabled。
 //   - plan_quota_*：zhipu/minimax 套餐探测结果的展示列。
 //
-// 幂等：纯 ADD COLUMN IF NOT EXISTS（与 631 同级的元数据变更，热表安全）。
+// 幂等：纯 ADD COLUMN IF NOT EXISTS（与 631 同级的元数据变更，热表安全），
+// 末尾按 693 先例补记 schema_migrations 账本 stamp（已 stamp 时为 no-op）。
 func (d *DB) ensureCredentialBalanceFloor(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
@@ -1455,6 +1456,10 @@ func (d *DB) ensureCredentialBalanceFloor(ctx context.Context) error {
 
 		ALTER TABLE credentials
 		    ADD COLUMN IF NOT EXISTS plan_quota_checked_at timestamptz;
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('701', 'credential balance-floor + plan quota sensing columns')
+		ON CONFLICT (version) DO NOTHING;
 	`)
 	if err != nil {
 		return err
