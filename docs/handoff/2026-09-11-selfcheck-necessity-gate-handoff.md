@@ -386,10 +386,25 @@
 - **复核点**：开工基准 = 9cef04e27（第二十六轮提交；fetch 确认本轮窗口 origin/main 无再前进，本地 main 落后一跳由本轮 ff 收敛）。本轮最终复核点 = 本轮提交。
 - **遗留风险**：与第二十六轮相同，无新增；其中④（fails_r12 待重测）与②（154 公网地址抓取）继续有效。
 
+## 本轮记录（2026-09-12 第二十八轮，上线观察轮第二十一轮——legacy 通道 245-a 第三度复查平稳；运维接入仍未执行，遗留项 6 保持开启）
+
+- **输入缺失声明（按 D 项要求如实区分）**：任务书未携带运维接入完成通知或告警触发记录。开工 ssh 只读复查（同二十六/二十七轮探测通道，全部 GET/grep/stat）确认 245 侧接入仍未执行：prometheus.yml mtime 仍为 **2026-08-18**（接入材料交付后未被动过）、grep job_name 仅 prometheus + legacy `llm-gateway`（另两条注释的 node-exporter/postgres）、rules 目录 10 文件无新 necessity 文件（mtime 全部 8 月）、`api/v1/rules` 中 Necessity 计数 = **0**、targets 仅 127.0.0.1:8781（up）+ 9090 自抓。按分派规则 **A 不触发**（完整数据门未开：TTL 抑制继续锁门、遗留项 6 保持开启——关闭条件不变 = 双机接入后 runbook 完整判读平稳）、**B/B' 不触发**（无运维反馈输入）、**C 维持关闭**（无乱序完成反例）。本轮零代码改动，产出 = legacy 通道平稳复查 + 合并态复核 + 154 侧补充探测（不完整，如实记录）+ 本记录。
+- **legacy 通道 245-a 平稳复查（第二十七轮口径延续；仍为局部信号，不关闭遗留项 6）**：
+  - Prometheus 侧：`api/v1/series` 仍恰两条 necessity 系列（mirror_delete_failed_total / mirror_delete_retry_total，均 instance="127.0.0.1:8781" job="llm-gateway"），skip_total 无任何系列（懒创建 = 零 skip）；`api/v1/query` 实测 failed 当前值 **0**、increase[24h] **0**。
+  - 网关直读（权威；本轮落实第二十七轮"空响应"注记——循环重试取非空输出）：HELP/TYPE + 0 值行齐全（failed=0、retry=0），skip family 连续 3 次取样均 0 行——本次为"懒创建真 0"而非空响应伪象（HELP/TYPE 与 0 值行完整可辨，与第二十六/二十七轮实测形态一致）。
+  - **判读结论：平稳。** 无 churn 循环迹象（failed 恒 0、24h 增量 0、retry=0），第三轮有界重试在生产从未触发；升级判据（failed 持续增长 / skip 异常高）均未满足。双机判读面（154 无通道、蓝绿 b 槽位在抓取面外、告警规则未加载）仍三点缺位，遗留项 6 不动。
+- **154 侧补充探测（如实记录，不构成判据）**：单元 llm-gateway-go-canary@8781 active；网关直读尝试未取到 admin key（systemctl cat 无 EnvironmentFile 行、systemctl show Environment 无 LLM_GATEWAY_ADMIN_API_KEY），Bearer 空 token 直读 3 次均空响应——**指标未取**。154 本就不在抓取面（接入前无 Prometheus 通道），其网关直读只是补充信号：第二十六轮已实测 154 /metrics 为 failed/retry 两条 0 值系列；本轮获取路径未复现，不深挖、不重复，下一轮提示词已加"勿按该路径重试"注记。
+- **main 合并态复核（只读，git fetch 实查）**：origin/main 仍为 **03cf7a312**（第二十七轮提交，与本地 main 同点）——本轮窗口零前进；`git diff 5bcd87dae..origin/main -- bg/` **为空**（bg 第八度移动未发生，fails_r12.txt 待重测警示继续挂起——本轮零 bg 触碰，无重测义务）；deploy/{grafana,prometheus}/ 在同区间的 diff 全部为第二十六轮自身提交内容（prometheus.yml / NATIVE-245-DEPLOY.md / alerts.yml / grafana README 4 文件），无并行线增量。观测五件套在 origin/main 逐项复验在位：alerts.yml 告警 1 处、alerts_test.go 契约 3 行断言（告警名 + expr 指标 + for，第九轮口径）、面板 uid 1 处、dashboard_test.go 4 个 Test 函数（3 例结构契约 + 第二十五轮新增 instance 分维度契约 TestSelfcheckNecessityDashboardSkipPanelBreaksDownByInstance）、README 引用 2 处。
+- **协作环境验活（本轮通过）**：`git worktree list` + worktree 内 `git status` → lgw-necessity-p2 存活且干净，检出 docs/necessity-gate-round27（=03cf7a312），本轮已在其上 `-B` 出 **docs/necessity-gate-round28**；go-cost worktree 仍标 prunable（deploy-lib 线对象，未处置）。C: 副本 lgw-p2test 与 fails_r6–r12.txt 基线留档均在位（本轮零 bg 活动，未触碰未核验）。主工作区脏文件 7 项与起始快照一致，维持严禁触碰。
+- **C 项**：`lastProbeRun` 保持 `started_at DESC`，无反例，维持关闭。
+- **验证记录（如实区分）**：**通过**——legacy 通道判读全链路只读取证（api/v1 query/series/rules/targets + 网关直读带重试，全部 GET；未在生产机执行任何写操作）、合并态复核（零前进、bg 零变化、五件套逐项复验）、worktree 验活。**未验证**——运维接入仍未执行（遗留项 6 前置链第一步，第三度复查确认阻塞）；154 网关直读本轮未取到数据（key 获取路径未复现，见上）。**环境受限**——promtool/Grafana 导入不可用、win/arm64 `-race` 不支持（口径同既往）。本轮零代码改动，未跑任何测试套件——被验证对象（bg/deploy 契约面）与第二十六轮验证对象逐字节一致，结论沿用。
+- **复核点**：开工基准 = 03cf7a312（第二十七轮提交；fetch 确认本轮窗口 origin/main 无前进）。本轮最终复核点 = 本轮提交。
+- **遗留风险**：与第二十七轮相同，无新增；其中④（fails_r12 待重测——bg 第七度移动后已三轮零触碰）与②（154 公网地址抓取）继续有效。观察节奏注记：legacy 通道已连续两轮（27/28）同形态平稳（failed/retry=0、increase=0、零 skip），在生产流量形态（每日约 27 次 attempt）下该通道的边际信息量已趋饱和——后续轮次在接入未执行期间可低频复查（如隔轮），把探测开销留给接入状态判断本身。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
-请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第二十一轮）。
+请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第二十二轮）。
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
 先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
@@ -399,31 +414,33 @@ ssh 只读预检三前置闭环：两机 admin key 不同值→必须拆双 job 
 CounterVec 无 sentinel → 接入验收判据用 mirror_delete_failed_total 0 值系列勿用
 skip_total；LLMGatewayDown 已通配 up{job=~"llm-gateway.*"}；接入材料
 （NATIVE-245-DEPLOY.md 接入节 + prometheus.yml 双 job 注释模板 + grafana README）
-已按实测修正为照做即用）、"本轮记录 第二十七轮"（2026-09-12 首批 necessity 生产数据
-到达并判读平稳：legacy 单目标通道 job llm-gateway→127.0.0.1:8781 已抓到 failed/retry
-两条系列且恒 0、increase[24h]=0、零 skip（懒创建=自 2083 上线以来 245-a 无一次 gate
-skip，且 client_golang 对无子系列 CounterVec 连 HELP/TYPE 都不输出）→ 无 churn 迹象，
-TTL 抑制继续锁门；运维接入仍未执行（prometheus.yml 仍单 legacy job、无 Necessity
-规则加载、无双 job）→ 遗留项 6 保持开启；探测注记：ssh 通道连续 curl /metrics 偶发
-空响应会伪造"指标缺失"结论——判读前循环重试或多次取样）、遗留任务第 6 项。
+已按实测修正为照做即用）、"本轮记录 第二十七/二十八轮"（legacy 通道 245-a 首批
+necessity 生产数据到达后连续两轮判读平稳：failed/retry 恒 0、increase[24h]=0、零
+skip（懒创建=client_golang 对无子系列 CounterVec 连 HELP/TYPE 都不输出）→ 无 churn
+迹象，TTL 抑制继续锁门；运维接入连续三度复查均未执行（prometheus.yml mtime
+2026-08-18 未动、单 legacy job、无 Necessity 规则、无双 job）→ 遗留项 6 保持开启；
+探测注记：ssh 通道 curl /metrics 偶发空响应会伪造"指标缺失"结论——判读前循环重试
+或多次取样；legacy 通道边际信息量已饱和，接入未执行期间指标复查可低频（隔轮）做、
+把探测开销留给接入状态判断）、遗留任务第 6 项。
 背景：本轮唯一实质等待仍是运维执行接入（/opt/monitoring 编辑 + 154 token 文件 +
-reload + alerts.yml 同步 + api/v1 验收，步骤全在 NATIVE 文档接入节）。下轮开工先
-ssh 只读复查接入状态（grep prometheus.yml job_name + api/v1/rules Necessity +
-api/v1/series match mirror_delete_failed_total）+ 顺带复查 legacy 通道是否仍平稳：
+reload + alerts.yml 同步 + api/v1 验收，步骤全在 NATIVE 文档接入节）。下轮开工
+先 ssh 只读复查接入状态（stat prometheus.yml mtime + grep job_name +
+api/v1/rules Necessity + api/v1/series match mirror_delete_failed_total），
+legacy 通道指标复查隔轮做：
 接入已执行 → 3 条 0 值系列（gateway-245-a/b、gateway-154-a）= 验收过，按第六轮
 runbook + instance 分节点判读：平稳 → 关闭遗留项 6；单 instance failed_total 持续
 增长/告警 firing → 短 TTL 抑制（先失败测试，硬条件不变：不漏真实故障探测、证据错误
 fail-open、manual/admin 绕过、lease 丢失不删新 owner 状态），实施前先重测 bg 判据。
-基线警示：**bg/ 已第七度移动（fa106fef2..5bcd87dae）且 fails_r12.txt（17 例）源文本
-口径两轮未重测（第二十六/二十七轮均零 bg 改动）。下轮如需跑 bg 套件（如 A 项触发
-TTL 抑制实施），先在 C: 副本重测当前 HEAD 基线并留档 fails_r13，不得直接拿 fails_r12
-当判据。** TestProbeService*LeaseHeartbeat* 两例时序敏感（重负载下偶发新增失败）——
-失败集合失配先定向复跑再定性。
+基线警示：**bg/ 第七度移动（fa106fef2..5bcd87dae）后 fails_r12.txt（17 例）源文本
+口径已三轮未重测（第二十六/二十七/二十八轮均零 bg 改动）。下轮如需跑 bg 套件（如
+A 项触发 TTL 抑制实施），先在 C: 副本重测当前 HEAD 基线并留档 fails_r13，不得直接
+拿 fails_r12 当判据。** TestProbeService*LeaseHeartbeat* 两例时序敏感（重负载下
+偶发新增失败）——失败集合失配先定向复跑再定性。
 注意：主工作区检出 main（并行线活跃，工作区遗留脏文件 7 项——docs 下多处、
 scripts/deploy-lib、*.lnk——严禁 add/clean/恢复）。继续用 git worktree 从
 origin/main 拉独立分支实施（开工先验活：`git worktree list` + worktree 内
 git status，元数据被清即 rm 重建；lgw-necessity-p2 现检出
-docs/necessity-gate-round27，路径在 //Mac/Home 同源盘、Windows 侧可正常访问，
+docs/necessity-gate-round28，路径在 //Mac/Home 同源盘、Windows 侧可正常访问，
 可直接 `checkout -B` 到本轮分支）；Windows 验证用 C: 副本 lgw-p2test
 （C:\Users\xutaohuang\AppData\Local\lgw-p2test；仅 cp 变更文件；基线对照务必
 CRLF 同口径——`git show <rev>:<file> | unix2dos`，或 diff 加 --strip-trailing-cr；
@@ -433,6 +450,8 @@ CRLF 同口径——`git show <rev>:<file> | unix2dos`，或 diff 加 --strip-tr
 ——接入写操作归运维。245 admin token 只读路径：
 /opt/monitoring/prometheus/secrets/admin_token（curl 网关 /metrics 用）；
 Prometheus API 127.0.0.1:9090（/api/v1/query|series|rules|targets 均只读）。
+（注：154 侧网关直读需 154 自身 admin key，第二十八轮经 systemctl cat/show 未取到
+EnvironmentFile 路径，勿再按该路径重试；154 指标判读以接入后的 Prometheus 通道为准。）
 
 本轮任务（按输入分派，无输入则如实记录阻塞）：
 A. 若已获得 245/154 双机的 necessity 数据或告警触发记录（第六轮 runbook + instance
@@ -441,7 +460,7 @@ A. 若已获得 245/154 双机的 necessity 数据或告警触发记录（第六
      抑制（硬条件不变），先补失败测试；实施前先按上方基线警示重测 bg 判据；
    - 观察窗口平稳 → 在 handoff 记录结论并关闭遗留项 6。
    （legacy 通道 245-a 单槽位数据继续到达且平稳 = 局部信号，记录但不关闭遗留项 6
-   ——第二十七轮口径。）
+   ——第二十七轮口径，第二十八轮延续。）
 B. 若运维确认"模型解绑/改名后自检 tab 长期显示陈旧节点"：先给应急口径（admin API
    提交一次探测即删行，或批量 SQL），再按预案实施显示侧治本修复（queryProbeNodeTasks
    WHERE 并入绑定链 EXISTS，SQL 抽取可守卫 + 先红后绿测试），实施前与反馈方确认
