@@ -23,6 +23,9 @@ import {
   type PromptInjectionPolicy,
 } from '../api/promptInjection'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElTag } from 'element-plus'
 // Props:
 //   - moduleEnabled: when false, the panel shows a banner warning that all
 //     settings will be inert. Defaults to true so the panel works standalone

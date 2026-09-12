@@ -395,7 +395,7 @@ onBeforeUnmount(() => controller?.abort())
 </template>
 
 <style scoped>
-.turns-list-view { background: var(--bg); min-height: 100vh; padding: 16px 24px; max-width: 1400px; margin: 0 auto; }
+.turns-list-view { background: var(--bg); min-height: 100vh; min-height: 100dvh; padding: 16px 24px; max-width: 1400px; margin: 0 auto; }
 .header { margin-bottom: 16px; }
 .header h1 { font-size: 24px; font-weight: 600; color: var(--text); margin: 0 0 8px; }
 .subtitle { font-size: 14px; color: var(--text-secondary); margin: 0; }

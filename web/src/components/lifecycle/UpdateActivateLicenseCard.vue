@@ -4,6 +4,9 @@ import type { LicenseStatus } from '../../api/updateActivate'
 import { formatDateTime } from '../../utils/datetime'
 import { isLicenseActive, licenseStateLabel } from '../../utils/labels'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElButton, ElCard, ElEmpty, ElSkeleton, ElTag } from 'element-plus'
 /** UpdateActivateLicenseCard — 复用 /maintain/activate 的 status-panel 样式，
  *  展示激活效果：状态点 + 状态文案 + 订阅 tier + license key + 有效期 + 设备名。
  *  数据来源 maintain-api /license/status（由父组件注入）。 */

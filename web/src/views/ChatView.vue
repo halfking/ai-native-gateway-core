@@ -27,6 +27,8 @@ import {
 } from '../composables/useChatSessions'
 import { useGatewayApiKey } from '../composables/useGatewayApiKey'
 import ApiKeySelectModal from '../components/ApiKeySelectModal.vue'
+// 2026-09-13 P3：弹层收敛到 ui/AppModal（方案 §4.5.7）
+import AppModal from '../components/ui/AppModal.vue'
 import ChatComposer from '../components/chat/ChatComposer.vue'
 import ChatMessageList from '../components/chat/ChatMessageList.vue'
 import ChatParamsDrawer from '../components/chat/ChatParamsDrawer.vue'
@@ -643,23 +645,17 @@ async function runSummarize() {
       @update:settings="onSettingsPatch"
     />
 
-    <div v-if="showSummaryModal" class="modal-overlay" @click.self="showSummaryModal = false">
-      <div class="modal-card">
-        <div class="modal-head">
-          <h3>{{ t('chat.modal.summaryTitle') }}</h3>
-          <button type="button" class="modal-close" @click="showSummaryModal = false">×</button>
-        </div>
-        <div class="modal-body">{{ summaryText }}</div>
-        <div class="modal-foot">
-          <button type="button" class="btn btn-ghost btn-sm" @click="onCopy(summaryText, 'summary')">
-            {{ copiedKey === 'summary' ? t('chat.copied') : t('chat.copySummary') }}
-          </button>
-          <button type="button" class="btn btn-primary btn-sm" @click="showSummaryModal = false">
-            {{ t('chat.modal.close') }}
-          </button>
-        </div>
-      </div>
-    </div>
+    <AppModal v-model="showSummaryModal" :title="t('chat.modal.summaryTitle')" size="sm">
+      <div class="chat-summary-body">{{ summaryText }}</div>
+      <template #footer>
+        <button type="button" class="btn btn-ghost btn-sm" @click="onCopy(summaryText, 'summary')">
+          {{ copiedKey === 'summary' ? t('chat.copied') : t('chat.copySummary') }}
+        </button>
+        <button type="button" class="btn btn-primary btn-sm" @click="showSummaryModal = false">
+          {{ t('chat.modal.close') }}
+        </button>
+      </template>
+    </AppModal>
   </div>
 </template>
 

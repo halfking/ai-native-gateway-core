@@ -78,6 +78,8 @@ export default {
   pagination: {
     total: 'إجمالي {n} عنصر',
     page: 'الصفحة {n}',
+    pageOf: "صفحة {page} من {pages}",
+    perPage: "لكل صفحة",
     pageSize: '{n} عناصر لكل صفحة',
     previous: 'السابق',
     next: 'التالي',

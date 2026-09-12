@@ -4,6 +4,9 @@ import { useI18n } from 'vue-i18n'
 import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, getCredentialFpSlotStats, getCredentialDecisions, clearManualDisabled, setManualDisabled, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction, type FpSlotStats, type CredentialRoutingDecision, type CredentialMonitorMeta } from '../api'
 import { Chart, registerables } from 'chart.js'
 import FpSlotVisualizer from '../components/FpSlotVisualizer.vue'
+// 2026-09-13 P2：统计行收敛到 ui/StatCard+StatsRow（方案 §4.5.3）
+import StatCard from '../components/ui/StatCard.vue'
+import StatsRow from '../components/ui/StatsRow.vue'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import SegTabs, { type SegTab } from '../components/SegTabs.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -913,27 +916,23 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Summary cards -->
-    <div class="summary-row">
-      <div class="summary-card">
-        <div class="summary-label">总凭据</div>
-        <div class="summary-value">{{ summary.total }}</div>
-      </div>
-      <div class="summary-card summary-good">
-        <div class="summary-label">可用 (ready)</div>
-        <div class="summary-value">{{ summary.ready }}</div>
-      </div>
-      <div class="summary-card" :class="summary.abnormal > 0 ? 'summary-warn' : ''">
-        <div class="summary-label">异常</div>
-        <div class="summary-value">{{ summary.abnormal }}</div>
-        <div class="summary-sub">unreachable/cooling/rate_limited</div>
-      </div>
-      <div class="summary-card" :class="summary.brokenModels > 0 ? 'summary-bad' : ''">
-        <div class="summary-label">broken 模型</div>
-        <div class="summary-value">{{ summary.brokenModels }}</div>
-        <div class="summary-sub">probe 确认坏掉</div>
-      </div>
-    </div>
+    <!-- Summary cards → ui/StatCard + StatsRow（方案 §4.5.3，2026-09-13） -->
+    <StatsRow>
+      <StatCard label="总凭据" :value="summary.total" />
+      <StatCard label="可用 (ready)" :value="summary.ready" tone="success" />
+      <StatCard
+        label="异常"
+        :value="summary.abnormal"
+        :tone="summary.abnormal > 0 ? 'warning' : 'neutral'"
+        sub="unreachable/cooling/rate_limited"
+      />
+      <StatCard
+        label="broken 模型"
+        :value="summary.brokenModels"
+        :tone="summary.brokenModels > 0 ? 'danger' : 'neutral'"
+        sub="probe 确认坏掉"
+      />
+    </StatsRow>
 
     <div v-if="loading" style="text-align:center;padding:32px">加载中...</div>
     <div v-else-if="!filteredCreds.length" style="text-align:center;padding:32px">暂无凭据</div>
@@ -1789,41 +1788,6 @@ onUnmounted(() => {
 /* Summary cards — compact, matches the density of /routing-v2's hero chips
    and AnalyticsKpiBar. The previous 16px padding + 28px value font + 20px
    section gap was too airy for an operations dashboard. */
-.summary-row {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-}
-.summary-card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 8px 12px;
-}
-.summary-label {
-  font-size: 11px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-.summary-value {
-  font-size: 20px;
-  font-weight: 700;
-  margin-top: 2px;
-  line-height: 1.1;
-}
-.summary-sub {
-  font-size: 10px;
-  color: var(--muted);
-  margin-top: 2px;
-}
-.summary-good { border-color: var(--success-bd); }
-.summary-good .summary-value { color: var(--success); }
-.summary-warn { border-color: var(--warning-bd); }
-.summary-warn .summary-value { color: var(--warning); }
-.summary-bad { border-color: var(--danger-bd); }
-.summary-bad .summary-value { color: var(--danger); }
-
 .drawer-body {
   position: relative;
 }
@@ -2110,12 +2074,6 @@ onUnmounted(() => {
   letter-spacing: 0.04em;
 }
 
-@media (max-width: 900px) {
-  .summary-row {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
 /* 2026-06-23: per-model toggle + state-change history */
 .history-table {
   width: 100%;
@@ -2379,8 +2337,8 @@ onUnmounted(() => {
   .skeleton { animation: none; }
 }
 
-/* ═══ 响应式: 屏幕窄于 700px 强制 list-full (老板视觉验收点) ═══ */
-@media (max-width: 700px) {
+/* ═══ 响应式: 极窄屏强制 list-full (老板视觉验收点；2026-09-13 P3 收敛 700→640) ═══ */
+@media (max-width: 640px) {
   .detail-skeleton-grid {
     grid-template-columns: 1fr;
   }

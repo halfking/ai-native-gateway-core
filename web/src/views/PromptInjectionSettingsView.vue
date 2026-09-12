@@ -262,7 +262,7 @@
             <el-tag
               v-for="cat in ruleCategories"
               :key="cat.value"
-              :type="ruleCategoryFilter === cat.value ? 'primary' : ''"
+              :type="ruleCategoryFilter === cat.value ? 'primary' : undefined"
               :effect="ruleCategoryFilter === cat.value ? 'dark' : 'plain'"
               @click="ruleCategoryFilter = cat.value; loadRules()"
               style="margin-right: 8px; margin-bottom: 8px; cursor: pointer"
@@ -849,6 +849,9 @@ const loadAvailableModels = async () => {
 }
 import { req } from '../api/_core'
 import EmptyState from '../components/EmptyState.vue'
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElAlert, ElButton, ElCard, ElCol, ElDescriptions, ElDescriptionsItem, ElDialog, ElDivider, ElForm, ElFormItem, ElIcon, ElInput, ElInputNumber, ElOption, ElPagination, ElRow, ElSelect, ElSlider, ElStatistic, ElSwitch, ElTabPane, ElTable, ElTableColumn, ElTabs, ElTag, ElText } from 'element-plus'
 const createEngine = async () => {
   try {
     await apiCreateEngine(newEngine as any)
