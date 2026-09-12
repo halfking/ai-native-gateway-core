@@ -335,6 +335,44 @@ func TestBalanceFloorGuardPullNeverTouchesManualDisabled(t *testing.T) {
 	}
 }
 
+// TestBalanceFloorGuardSweepFairnessAndGuards pins the 2026-09-13 sweep-SQL
+// hardening: currency passes A/C rotate fairly (oldest-checked first) instead
+// of starving under LIMIT, pass B mirrors pass C's provider-side guard (a
+// pulled row must always stay visible to pass C's restore), and the plan pull
+// UPDATE carries the same status/lifecycle column guards as its candidate
+// SELECT.
+func TestBalanceFloorGuardSweepFairnessAndGuards(t *testing.T) {
+	src, err := os.ReadFile("balance_floor_guard.go")
+	if err != nil {
+		t.Fatalf("read balance floor guard source failed: %v", err)
+	}
+	body := string(src)
+	// pass A refresh + pass C restore both rotate oldest-checked-first.
+	if got := strings.Count(body, "ORDER BY c.balance_last_checked_at ASC NULLS FIRST"); got != 2 {
+		t.Fatalf("expected fair-rotation ORDER BY in both currency SELECTs (A/C), found %d", got)
+	}
+	// pass B (unaliased UPDATE) mirrors pass C's provider guard via EXISTS.
+	for _, marker := range []string{
+		"SELECT 1 FROM providers p",
+		"WHERE p.id = credentials.provider_id",
+		"p.enabled = TRUE\n\t\t        AND COALESCE(p.manual_disabled, FALSE) = FALSE",
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("currency pull UPDATE must mirror pass C's provider guard, missing %q", marker)
+		}
+	}
+	// Both unaliased pull UPDATEs (currency pass B + plan pull) guard
+	// status/lifecycle exactly like their candidate SELECTs.
+	for _, marker := range []string{
+		"AND status = 'active'",
+		"AND lifecycle_status = 'active'",
+	} {
+		if got := strings.Count(body, marker); got != 2 {
+			t.Fatalf("marker %q must guard both pull UPDATEs (pass B + plan), found %d", marker, got)
+		}
+	}
+}
+
 func TestBalanceFloorGuardMainWiring(t *testing.T) {
 	src, err := os.ReadFile("../cmd/gateway/main.go")
 	if err != nil {
