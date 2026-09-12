@@ -106,21 +106,21 @@ func TestParseOpenAIStreamChunk_QwenStructuredContent(t *testing.T) {
 		},
 	}
 
-		for _, tc := range cases {
-			t.Run(tc.name, func(t *testing.T) {
-				chunk, err := ParseOpenAIStreamChunk(`data: {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chunk, err := ParseOpenAIStreamChunk(`data: {
 					"id":"qwen-stream",
 					"object":"chat.completion.chunk",
 					"model":"qwen-plus",
 					"choices":[{"index":0,"delta":{"content":` + tc.contentJSON + `},"finish_reason":null}]
 				}`)
-				require.NoError(t, err)
-				require.NotNil(t, chunk.Delta)
-				assert.Equal(t, tc.wantContent, chunk.Delta.Content)
-				assert.Equal(t, tc.wantType, chunk.Delta.DeltaType)
-			})
-		}
+			require.NoError(t, err)
+			require.NotNil(t, chunk.Delta)
+			assert.Equal(t, tc.wantContent, chunk.Delta.Content)
+			assert.Equal(t, tc.wantType, chunk.Delta.DeltaType)
+		})
 	}
+}
 
 func TestParseOpenAIResponse_QwenContentWithToolCalls(t *testing.T) {
 	body := []byte(`{
