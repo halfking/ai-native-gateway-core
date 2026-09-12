@@ -702,13 +702,16 @@ func (h *Handler) handleForceRecover(w http.ResponseWriter, r *http.Request) {
 
 	// Audit trail: model_offer_events row, same ledger the manual-disable
 	// endpoints write (source='admin'), so credential availability history is
-	// queryable from one table.
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.Exec(ctx, `
+	// queryable from one table. Best-effort: an INSERT failure must not fail
+	// the force-recover, but it is logged — it must not vanish silently.
+	if _, aerr := h.db.Exec(ctx, `
 		INSERT INTO model_offer_events
 		    (source, action, credential_id, provider_id, raw_model_name, reason_code, reason_detail)
 		VALUES ('admin', 'force_recover', $1, $2, '', 'credential_force_recover', $3)
-	`, credID, providerID, detail)
+	`, credID, providerID, detail); aerr != nil {
+		slog.Warn("force_recover_audit_insert_failed",
+			"credential_id", credID, "error", aerr)
+	}
 
 	// R16 (2026-09-12) audit P2: mirror applyForceEnable's recovery chain
 	// (admin/routing.go) — a bare credentials-row flip leaves keys marked
