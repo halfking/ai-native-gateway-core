@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import type { ModuleCatalogItem } from '../../api/updateActivate'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElAlert, ElCard, ElEmpty, ElSkeleton, ElTable, ElTableColumn, ElTag } from 'element-plus'
 defineProps<{
   items: ModuleCatalogItem[]
   loading: boolean

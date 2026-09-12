@@ -9,6 +9,9 @@ import { useI18n } from 'vue-i18n'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElCard, ElEmpty } from 'element-plus'
 const { t } = useI18n()
 
 export interface TrendDataPoint {

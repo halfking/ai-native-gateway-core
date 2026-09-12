@@ -12,6 +12,9 @@
 import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElCheckbox, ElDialog } from 'element-plus'
 export type OperationScope = 'download' | 'activate'
 
 const props = withDefaults(

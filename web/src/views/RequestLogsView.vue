@@ -30,6 +30,9 @@ import { usePagination } from '../composables/usePagination'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElDatePicker } from 'element-plus'
 const { isSpanning } = useViewportSegments()
 
 const rows = ref<RequestLogRow[]>([])
@@ -48,7 +51,7 @@ type TimePreset =
   | 'h1' | 'h6' | 'h24' | 'd3' | 'd7'
   | 'today' | 'thisWeek' | 'thisMonth' | 'thisYear'
   | 'custom'
-type DateRange = [Date | string, Date | string]
+type DateRange = [string, string]
 const timePreset = ref<TimePreset>('h24')
 const customDateRange = ref<DateRange | null>(null)
 const successFilter = ref<'' | 'success' | 'failure' | 'rate_limited' | 'in_progress'>('')
@@ -166,7 +169,7 @@ function clampCustomDateRange() {
   const end = new Date(endValue)
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return
   const maxEnd = new Date(start.getTime() + 3 * 24 * 3600 * 1000)
-  if (end > maxEnd) customDateRange.value = [start, maxEnd]
+  if (end > maxEnd) customDateRange.value = [start.toISOString(), maxEnd.toISOString()]
 }
 
 function normalizeTimePresetForTenant() {
@@ -1013,7 +1016,7 @@ onMounted(async () => {
     const s = new Date(q.from)
     const e = new Date(q.to)
     if (!isNaN(s.getTime()) && !isNaN(e.getTime())) {
-      customDateRange.value = [s, e]
+      customDateRange.value = [s.toISOString(), e.toISOString()]
     }
   }
   normalizeTimePresetForTenant()

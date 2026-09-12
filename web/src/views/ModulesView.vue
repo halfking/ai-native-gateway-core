@@ -18,6 +18,9 @@ import ModuleEntitlementsPanel from '../components/ModuleEntitlementsPanel.vue'
 // 2026-09-13 P3：页头收敛到 ui/PageHeader（方案 §4.5.2）
 import PageHeader from '../components/ui/PageHeader.vue'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElButton } from 'element-plus'
 const { t } = useI18n()
 const router = useRouter()
 const modules = ref<ModuleWithStatus[]>([])

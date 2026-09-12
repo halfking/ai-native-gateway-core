@@ -5,6 +5,9 @@ import { confirmDialog } from '../../composables/useConfirmDialog'
 import type { CatalogResponse, Release, CatalogItem, UpgradeStatus } from '../../api/updateActivate'
 import { useI18n } from 'vue-i18n'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElButton, ElCard, ElEmpty, ElSkeleton, ElTag } from 'element-plus'
 /** UpdateActivateVersionsCard — 系统版本列表（最新 5 个）+ 升级→下载→安装→启动切换流程。
  *  复用 maintain /maintain/download + /maintain/upgrade 的视觉规范。 */
 
