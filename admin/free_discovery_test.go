@@ -1,8 +1,9 @@
 package admin
 
-// 免费资源自动发现 Admin API 单元测试.
-// 构造最小 Handler (无 pgxpool), 注入 sqlmock 桥接的 freediscovery 服务,
-// 直接调用 handler 方法断言 HTTP 行为. 参考 handler_cred_encrypt_test.go 模式.
+// Unit tests for the free resource auto-discovery Admin API.
+// Builds a minimal Handler (no pgxpool), injects the freediscovery services
+// bridged over sqlmock, and calls handler methods directly to assert HTTP
+// behavior. Follows the handler_cred_encrypt_test.go pattern.
 
 import (
 	"bytes"
@@ -19,7 +20,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
-// newFreeDiscoveryTestHandler 构造带 freediscovery 依赖的最小 Handler.
+// newFreeDiscoveryTestHandler builds a minimal Handler with the freediscovery deps wired.
 func newFreeDiscoveryTestHandler(t *testing.T) (*Handler, sqlmock.Sqlmock) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
@@ -42,7 +43,7 @@ func newFreeDiscoveryTestHandler(t *testing.T) (*Handler, sqlmock.Sqlmock) {
 	return h, mock
 }
 
-// fdRequest 执行 handler 请求并返回 recorder.
+// fdRequest performs a handler request and returns the recorder.
 func fdRequest(t *testing.T, h *Handler, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader *bytes.Reader
@@ -78,7 +79,7 @@ func fdRequest(t *testing.T, h *Handler, method, path string, body any) *httptes
 	return rec
 }
 
-// fdPathID 从路径提取末段数字 ({id} 模式在 httptest 下需手动注入).
+// fdPathID extracts the trailing path segment ({id} patterns need manual injection under httptest).
 func fdPathID(path string) string {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	last := parts[len(parts)-1]
@@ -123,7 +124,8 @@ func TestFreeDiscovery_PresetsIncludeGroqAndOpenRouter(t *testing.T) {
 	if !codes["groq"] || !codes["openrouter"] {
 		t.Fatalf("groq/openrouter presets missing: %v", codes)
 	}
-	// 回归: google-ai-studio 必须返回正确的 api_type (前端依赖此字段显示协议适配提示)
+	// Regression: google-ai-studio must return the correct api_type (the frontend relies
+	// on this field to show the protocol-adaptation hint)
 	if apiTypes["google-ai-studio"] != string(freediscovery.APITypeGoogleGenerativeAI) {
 		t.Fatalf("google-ai-studio api_type = %q, want %q", apiTypes["google-ai-studio"], freediscovery.APITypeGoogleGenerativeAI)
 	}
@@ -132,13 +134,13 @@ func TestFreeDiscovery_PresetsIncludeGroqAndOpenRouter(t *testing.T) {
 func TestFreeDiscovery_CreateTemplate_ValidationPassesThrough(t *testing.T) {
 	h, mock := newFreeDiscoveryTestHandler(t)
 
-	// Create 走事务 (Begin + GUC + INSERT + Commit) + Get 回读
+	// Create runs in a transaction (Begin + GUC + INSERT + Commit) followed by a Get readback
 	mock.ExpectBegin()
 	mock.ExpectExec("SET LOCAL app\\.current_tenant").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("INSERT INTO provider_templates").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 	mock.ExpectCommit()
-	// Get 回读
+	// Get readback
 	mock.ExpectBegin()
 	mock.ExpectExec("SET LOCAL app\\.current_tenant").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("FROM provider_templates WHERE id = \\$1").WillReturnError(sql.ErrNoRows)
@@ -150,8 +152,8 @@ func TestFreeDiscovery_CreateTemplate_ValidationPassesThrough(t *testing.T) {
 		"base_url":      "https://api.groq.com/openai/v1",
 	})
 	if rec.Code != http.StatusBadRequest {
-		// Get 回读返回 NotFound 是预期 (mock 层), 但 validation 错误会 400 —
-		// 这里只要求不是 500/panic
+		// Get readback returning NotFound is expected at the mock layer, but validation
+		// errors return 400 — we only require that it is not 500/panic
 		if rec.Code == http.StatusInternalServerError {
 			t.Fatalf("unexpected 500: %s", rec.Body.String())
 		}
@@ -193,11 +195,13 @@ func TestFreeDiscovery_Import_MissingTaskID400(t *testing.T) {
 	}
 }
 
-// TestFreeDiscovery_Import_StatusForSentinels 验证 import handler 把领域 sentinel
-// 错误映射为正确的 HTTP 状态码 (404 / 409), 而不是写死 500.
+// TestFreeDiscovery_Import_StatusForSentinels verifies that the import handler maps
+// domain sentinel errors to the correct HTTP status codes (404 / 409) instead of
+// a hardcoded 500.
 //
-// Regression: 之前 import handler 直接返回 500, 导致 ErrImportTaskNotFound /
-// ErrImportTaskNotReady 的契约失效. audit-fix (2026-09-09) 已修, 此测试守住.
+// Regression: the import handler used to return 500 outright, breaking the
+// ErrImportTaskNotFound / ErrImportTaskNotReady contract. Fixed by audit-fix
+// (2026-09-09); this test guards it.
 func TestFreeDiscovery_Import_StatusForSentinels(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -229,7 +233,7 @@ func TestFreeDiscovery_MethodNotAllowed(t *testing.T) {
 func TestFreeDiscovery_TenantIsolationGUC(t *testing.T) {
 	h, mock := newFreeDiscoveryTestHandler(t)
 
-	// List 任务必须走 RLS GUC 事务
+	// Listing tasks must go through the RLS GUC transaction
 	mock.ExpectBegin()
 	mock.ExpectExec("SET LOCAL app\\.current_tenant = 'default'").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("FROM discovery_tasks ORDER BY created_at DESC LIMIT \\$1").
@@ -259,7 +263,7 @@ func TestFDStatusFor(t *testing.T) {
 	}
 }
 
-// taskListCols 与 engine.ListTasks 的 SELECT 列序一致.
+// taskListCols mirrors the SELECT column order of engine.ListTasks.
 func taskListCols() []string {
 	return []string{
 		"id", "tenant_id", "template_id", "provider_code", "status", "trigger_type",
