@@ -283,3 +283,47 @@ type stubScanner struct {
 func (s *stubScanner) ScanModels(_ context.Context, _ *ProviderTemplate, _ string) ([]DiscoveredModel, error) {
 	return s.models, s.err
 }
+
+// TestDiscoveryEngine_GetTask_NotFoundSentinel guards the audit contract: a missing
+// task (sql.ErrNoRows) must return the ErrTaskNotFound sentinel (handler maps to 404),
+// while a db fault must not be wrapped as this sentinel (stays 500).
+func TestDiscoveryEngine_GetTask_NotFoundSentinel(t *testing.T) {
+	db, mock := newMockDB(t)
+	engine := NewDiscoveryEngine(db, NewTemplateManager(db, nil))
+
+	runBegin(mock)
+	mock.ExpectQuery("FROM discovery_tasks WHERE id=\\$1").
+		WithArgs(int64(42)).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+
+	_, err := engine.GetTask(context.Background(), "tenant-a", 42)
+	if !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("missing task must return ErrTaskNotFound, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// A db fault is not the sentinel: the handler side must keep returning 500,
+	// never a false 404.
+	db2, mock2 := newMockDB(t)
+	engine2 := NewDiscoveryEngine(db2, NewTemplateManager(db2, nil))
+
+	runBegin(mock2)
+	mock2.ExpectQuery("FROM discovery_tasks WHERE id=\\$1").
+		WithArgs(int64(42)).
+		WillReturnError(errors.New("boom"))
+	mock2.ExpectRollback()
+
+	_, err = engine2.GetTask(context.Background(), "tenant-a", 42)
+	if err == nil {
+		t.Fatal("db fault must return an error")
+	}
+	if errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("db fault must not map to ErrTaskNotFound, got %v", err)
+	}
+	if err := mock2.ExpectationsWereMet(); err != nil {
+		t.Fatalf("%v", err)
+	}
+}
