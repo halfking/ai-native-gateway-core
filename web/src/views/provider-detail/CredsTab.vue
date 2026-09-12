@@ -453,6 +453,16 @@ async function submitAddCred() {
   }
 }
 
+// migration 701: '' (v-model.number output of a cleared numeric input) and
+// null both mean "operator didn't set a floor here" → omit from the PATCH so
+// the server keeps the stored value; only an explicit number (0 included)
+// is sent.
+function normalizeFloorInput(v: number | string | null | undefined): number | undefined {
+  if (v === '' || v == null) return undefined
+  const n = Number(v)
+  return Number.isFinite(n) ? n : undefined
+}
+
 async function saveSelected() {
   const c = selected.value
   if (!c) return
@@ -475,6 +485,11 @@ async function saveSelected() {
       expires_at: c.expires_at,
       tags: c.tags,
       notes: c.notes || '',
+      // migration 701: '' (cleared input) → undefined = omitted from PATCH =
+      // keep the current floor; a number is stored as-is and 0 clears it.
+      balance_floor_usd: normalizeFloorInput(c.balance_floor_usd),
+      quota_floor_tokens: normalizeFloorInput(c.quota_floor_tokens),
+      quota_floor_percent: normalizeFloorInput(c.quota_floor_percent),
     })
     emit('refresh')
     closeDrawer()
@@ -1214,6 +1229,66 @@ function onTagsInput(ev: Event) {
                 />
               </div>
             </div>
+          </div>
+
+          <!-- 2026-09-13 migration 701: balance-floor guard. Floors default to
+               NULL (disabled); the guard pulls a credential below any
+               configured floor (quota_state='balance_exhausted' +
+               reason='balance_floor', never manual_disabled) and restores it
+               once the quota clears the hysteresis band. PATCH contract:
+               omitted field = no change, 0 = clear. -->
+          <div class="drawer-section">
+            <div class="drawer-section-title">{{ pd('creds.drawerSectionBalanceFloor') }}</div>
+            <div class="field-grid">
+              <div>
+                <label class="field-label">{{ pd('creds.drawerFloorUsd') }}</label>
+                <input
+                  v-model.number="selected.balance_floor_usd"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  class="field-input"
+                  :disabled="!canManageCreds"
+                  :placeholder="pd('creds.floorPlaceholderZeroClears')"
+                />
+              </div>
+              <div>
+                <label class="field-label">{{ pd('creds.drawerFloorTokens') }}</label>
+                <input
+                  v-model.number="selected.quota_floor_tokens"
+                  type="number"
+                  step="1000"
+                  min="0"
+                  class="field-input"
+                  :disabled="!canManageCreds"
+                  :placeholder="pd('creds.floorPlaceholderZeroClears')"
+                />
+              </div>
+            </div>
+            <div class="field-grid" style="margin-top:8px">
+              <div>
+                <label class="field-label">{{ pd('creds.drawerFloorPercent') }}</label>
+                <input
+                  v-model.number="selected.quota_floor_percent"
+                  type="number"
+                  step="1"
+                  min="0"
+                  max="100"
+                  class="field-input"
+                  :disabled="!canManageCreds"
+                  :placeholder="pd('creds.floorPlaceholderZeroClears')"
+                />
+              </div>
+              <div>
+                <label class="field-label">{{ pd('creds.planQuotaProbeTitle') }}</label>
+                <div v-if="selected.plan_quota_kind" class="cell-muted">
+                  {{ selected.plan_quota_kind }}<template v-if="selected.plan_quota_used_percent != null"> · {{ selected.plan_quota_used_percent }}%</template><template v-if="selected.plan_quota_remaining_tokens != null"> · {{ pd('creds.planQuotaRemainingTokens') }} {{ selected.plan_quota_remaining_tokens }}</template>
+                  <div class="cell-sub">{{ timeText(selected.plan_quota_checked_at) }}</div>
+                </div>
+                <div v-else class="cell-muted">{{ pd('creds.planQuotaNone') }}</div>
+              </div>
+            </div>
+            <div class="cell-sub" style="margin-top:6px">{{ pd('creds.floorHint') }}</div>
           </div>
 
           <div class="drawer-section">

@@ -285,6 +285,18 @@ export interface ProviderCredential {
   // /providers/{id} → creds drawer. NULL/empty means "no plan, behaves
   // like 'token'" for routing purposes.
   plan_type?: string | null
+  // migration 701: per-credential balance floors (NULL = disabled; PATCH 0 =
+  // clear). bg/balance_floor_guard pulls a credential below any configured
+  // floor and auto-restores it past the hysteresis band.
+  balance_floor_usd?: number | null
+  quota_floor_tokens?: number | null
+  quota_floor_percent?: number | null
+  // Plan-probe readout written by balance_floor_guard (zhipu/minimax only).
+  plan_quota_kind?: string | null
+  plan_quota_windows?: unknown
+  plan_quota_remaining_tokens?: number | null
+  plan_quota_used_percent?: number | null
+  plan_quota_checked_at?: string | null
 }
 
 export interface CredentialUsage {
@@ -338,6 +350,10 @@ export function updateCredential(providerId: number, credId: number, data: Parti
   plan_type: string | null
   tags: string[]
   notes: string
+  // migration 701: balance-floor guard floors. Omit = no change, 0 = clear.
+  balance_floor_usd: number | null
+  quota_floor_tokens: number | null
+  quota_floor_percent: number | null
 }>) {
   return req<{ message: string }>('PATCH', `/api/providers/${providerId}/credentials/${credId}`, data)
 }
