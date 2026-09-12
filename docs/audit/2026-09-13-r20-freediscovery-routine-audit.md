@@ -36,7 +36,7 @@ version.json / web/public（menu-config、version.json），**零 Go 代码变�
 | 11 | gofmt | `gofmt -l`（scope 文件） | 空 |
 | 12 | build / vet | `go build/vet ./admin/... ./domains/freediscovery/...` | 均通过 |
 | 13 | 全量回归 | `go test -count=1 ./domains/freediscovery/ ./admin/` | ok（freediscovery 2.66s；admin 69.7s） |
-| 14 | ④ 运行版本身份 | `docker exec … go version -m /opt/llm-gateway-go/gateway` + `git diff --name-only a6b535dab ede6589fd` | vcs.revision `a6b535dab…`；tip 增量仅 docs/version 文件（非 docs/version 过滤为空）→ 行为等同 |
+| 14 | ④ 运行版本身份 | `docker cp` 出二进制后宿主 `go version -m`（更正轮升级方法，见 §六 #2）+ `git diff --name-only a6b535dab ede6589fd` | `mod … v0.0.0-20260912194516-a6b535dab45b+dirty` → vcs.revision `a6b535dab` 确证（**+dirty**：构建时工作区带 WIP，见 §六 #3）；tip 增量仅 docs/version 文件（非 docs/version 过滤为空）→ 行为等同 |
 | 15 | ④ readyz | `curl :8782/healthz` `/readyz` | healthz `2.5.4-a6b535da-20260912-2098` ready；readyz db 2.6ms + redis 4.1ms `status: ready` |
 
 ## 三、改动文件与关键行为
@@ -70,9 +70,12 @@ version.json / web/public（menu-config、version.json），**零 Go 代码变�
 `ede6589fd..a8c3a7aaa` 共 105 文件）。按配方收束后登记如下：
 
 - **处置**：工作区在收束时干净（版本文件已入 R20 提交 `9b68a6853`），
-  stash 步为空操作；本仓 `pull.rebase=false`，收束为 merge `cc026c93b`
-  （parents：`9b68a6853` + `a8c3a7aaa`），与仓库既有 merge 先例
-  （`67fce6914`、`a8c3a7aaa`）形态一致。
+  stash 步为空操作；merge `cc026c93b`（parents：`9b68a6853` +
+  `a8c3a7aaa`）系**并行会话在共享检出目录显式执行
+  `git pull --commit --rebase=false --log origin main` 产生**——本轮
+  `git rebase origin/main` 随后执行时树已最新（输出"当前分支 main 是
+  最新的"）。机制归因经更正轮实证修正（§六 #1）：`pull.rebase=false`
+  只影响 `git pull`，不改变 `git rebase` 的线性变基行为。
 - **入线体检**：`git diff --name-only ede6589fd a8c3a7aaa` 过滤 `.go$`/
   `go.mod`/`go.sum` 为零命中（纯 web/ + 4 个 docs 文件）；4 条 FreeDiscovery
   scope 路径 diff 为空；版本文件未被入线触碰（rebase/merge 零冲突）。
@@ -80,21 +83,51 @@ version.json / web/public（menu-config、version.json），**零 Go 代码变�
   完全覆盖；合并后补跑 `go build ./admin/... ./domains/freediscovery/...`
   通过。
 - **结论**：§一/§二 全部结论对合并后 tip `cc026c93b` 维持；本轮 seq 2099
-  与入线零版本交互。R21 的区间基线取 `cc026c93b`。
+  与入线零版本交互。R21 区间基线经更正轮改定，见 §七。
 
-## 六、下一轮提示词
+## 六、更正轮（同日元审计，对 R20 本身，2026-09-13）
+
+**触发**：用户要求对 R20 元审计。逐条复核 R20 全部声明 + 三项实证补充
+（reflog 溯源 + scratch 隔离实验、确定性二进制身份、实时行为探针）。
+
+| # | 复核项 | 命令 | 结果 |
+|---|---|---|---|
+| 1 | §五 merge 机制归因 | `git reflog -6` 溯源 + scratch 仓库 `git -c pull.rebase=false rebase` | **勘误（已就地修正）**：merge `cc026c93b` 由并行会话在共享检出目录显式执行 `git pull --commit --rebase=false --log origin main` 产生——reflog 记录两词 `origin main` 与非常规 flag 组合，与本轮命令 `git rebase origin/main`（单词、带斜杠）不符；且 rebase 输出"当前分支 main 是最新的"证明其执行时 merge 已存在。scratch 实验（复刻 `pull.rebase=false`）中 `git rebase` 仍线性变基成功 → `pull.rebase=false` 只影响 `git pull`，原文"本仓 pull.rebase=false，收束为 merge"归因错误。memory `local-dev-environment` 中同源错误句一并修正（repo 外） |
+| 2 | §二 #14 证据路径 | `docker cp llm-gateway-local-8782:/opt/llm-gateway-go/gateway /tmp && go version -m` | 原记录的容器内命令可能静默回落 `grep -a`（容器内无 go 工具链时），结论虽无误但证据路径有歧义 → 升级为宿主 go 确证：`mod github.com/kaixuan/llm-gateway-go v0.0.0-20260912194516-a6b535dab45b+dirty`；容器内 `/opt/.../version.json` seq 2098 与 healthz 一致 |
+| 3 | `+dirty` 对"行为等同"的影响 | 同上 + 实时探针 | 部署二进制构建时工作区带未提交改动（balance-floor WIP 期），单凭 vcs.revision 不足以证行为等同 → 补实时探针（无故障注入）：admin token 登录后 `GET /api/free-discovery/tasks/999999` → **HTTP 404** `{"error":{"detail":"freediscovery: task not found (id 999999)"}}`，与 R19 §六真实 PG 证据一致 |
+| 4 | 新 tip（`a92706960`）门禁重跑 | 同 §二 #10-#13 | CJK 仅 fixture；gofmt 空；build/vet OK；`go test -count=1` freediscovery 2.68s + admin 67.0s ok；4 命名测试 4/4 PASS |
+| 5 | §五 入线体检数字复核 | `git diff --name-only ede6589fd a8c3a7aaa \| wc -l`（=105；docs 4）+ scope diff `ede6589fd..a92706960` = 0 | 全部成立 |
+
+**根因归纳**：并行会话共享同一检出目录（与 `git add -A` 禁令同族风险）是
+merge 插入与机制误判的共同背景；方法论教训——reflog/配置的**命令形态相近
+不等于因果**，机制归因必须用隔离实验（scratch 仓库）证伪后方可落档。
+
+**更正轮改动文件**：本文档（§二 #14 证据升级、§五 处置句修正、本节、§七
+基线改定）；memory `local-dev-environment`（repo 外，同步修正机制句）。
+零代码改动。
+
+## 七、下一轮提示词
 
 > 请根据 docs/audit/2026-09-13-r20-freediscovery-routine-audit.md（含 §五
-> 收尾登记）与 memory 状态，对 FreeDiscovery 做例行审计（R21），区间基线为
-> cc026c93b（或当轮实际 origin/main tip）：
+> 收尾登记、§六 更正轮）与 memory 状态，对 FreeDiscovery 做例行审计（R21），
+> 区间基线为 R20 落档后的最新 tip（fetch 时 `git rev-parse origin/main`，
+> 若无并行新提交即为 R20 更正轮提交）：
 > ① 契约逐条核对——R20 §二 表中 6 项 + LOW 观察（templates list :76，豁免
 >   判据见 #7）逐条用 rg 对代码现状核销，勿信任任何"已关闭"声明；
-> ② 区间净 diff——`git diff <R20 tip> <新tip> -- admin/free_discovery.go
+> ② 区间净 diff——`git diff <基线> <新tip> -- admin/free_discovery.go
 >   admin/free_discovery_test.go domains/freediscovery/ web/src/api/free-discovery.ts`，
->   merge 提交勿用 `git show --stat` 下结论；
+>   merge 提交勿用 `git show --stat` 下结论；入线若含并行 merge，先体检
+>   是否触碰 scope 与任何 `.go`/`go.mod`/`go.sum`（未触碰则 Go 门禁证据可
+>   延续到合并后 tip）；
 > ③ 门禁——`rg -l '[\p{Han}]' domains/freediscovery/*.go` 仅允许
 >   url_safety_test.go fixture；gofmt/build/vet/test -count=1 全绿；
-> ④ 若本轮 tip 已部署至 8782：复核 `go version -m` vcs.revision == 当轮 tip
->   + readyz；若 tip 含 Go 代码变更且已重部署，按部署技能"晋升后身份检查"
->   条款执行；tip 未重部署时核对增量是否仍为 docs/version-only（行为等同
->   即可，无需重部署、无需重复故障注入）。
+> ④ 部署身份——若 tip 含 Go 代码变更且已重部署：`go version -m` 核验
+>   vcs.revision == 当轮 tip（建议 docker cp 出二进制用宿主 go，容器内
+>   无 go 工具链时该命令会静默失败）+ readyz；若增量纯 docs/version 且
+>   未重部署：核对行为等同即可（可复用 404 探针），无需故障注入。
+>   注意：运行二进制带 `+dirty` 时 vcs.revision 不足以单独定案，需行为
+>   探针补证。
+> 推送遇拒：先 fetch 检查入线；收束前 `git reflog -5` 确认没有并行会话
+> 已在共享检出目录先行 merge（R20 实况），再用显式 `git pull --rebase
+> origin main` 收束——`git rebase` 局部命令无法表达"拉取远端"，且本仓
+> 并行会话共用工作区，动手前看 reflog。
