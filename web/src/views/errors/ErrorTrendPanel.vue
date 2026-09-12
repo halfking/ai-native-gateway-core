@@ -160,5 +160,5 @@ onBeforeUnmount(() => {
 .breakdown-row > .section-block { flex: 1 1 280px; margin-top: 12px; }
 .data-table { width: 100%; font-size: 12px; }
 .empty-hint { color: var(--muted); text-align: center; padding: 24px; }
-@media (max-width: 720px) { .summary-item { flex: 1 1 42%; } }
+@media (max-width: 768px) { .summary-item { flex: 1 1 42%; } }
 </style>

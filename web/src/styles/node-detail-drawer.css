@@ -180,7 +180,7 @@
   flex-wrap: wrap;
 }
 
-@media (max-width: 700px) {
+@media (max-width: 768px) {
   .nd-drawer .nd-grid,
   .nd-drawer .nd-form-grid {
     grid-template-columns: 1fr;

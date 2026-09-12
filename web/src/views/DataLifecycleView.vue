@@ -638,7 +638,7 @@ onUnmounted(() => {
 
 .empty-hint { text-align: center; padding: 32px; color: var(--muted); font-size: 13px; }
 
-@media (max-width: 800px) {
+@media (max-width: 768px) {
   .stats-row { grid-template-columns: repeat(2, 1fr); }
   .charts-row { grid-template-columns: 1fr; }
   .form-row-dates { grid-template-columns: 1fr; }

@@ -243,5 +243,5 @@ onBeforeUnmount(() => {
 .data-table { width: 100%; font-size: 12px; }
 .message-cell, .preview-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty-hint { color: var(--muted); text-align: center; padding: 24px; }
-@media (max-width: 720px) { .status-item { flex: 1 1 42%; } .failures-table { min-width: 1180px; } }
+@media (max-width: 768px) { .status-item { flex: 1 1 42%; } .failures-table { min-width: 1180px; } }
 </style>

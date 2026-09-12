@@ -685,7 +685,7 @@ const thresholdInvalid = computed(() => {
 .threshold-error { color: var(--danger); font-size: 11px; margin: 6px 0 0; }
 .state { color: var(--muted); font-size: 12px; padding: 10px 0; }
 
-@media (max-width: 800px) {
+@media (max-width: 768px) {
   .field-row { grid-template-columns: 1fr; gap: 7px; }
   .switch { justify-self: start; }
   .radio-group { justify-self: start; }

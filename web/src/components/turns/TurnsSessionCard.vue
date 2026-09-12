@@ -231,7 +231,7 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
 .child-ops { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .ops-chip { background: var(--primary-soft); color: var(--accent); }
 .ops-hint, .empty { text-align: center; color: var(--text-secondary); padding: 12px 16px; font-size: 13px; }
-@media (max-width: 760px) {
+@media (max-width: 768px) {
   .turn-row { grid-template-columns: 1fr; gap: 10px; }
   .col + .col { padding-top: 10px; border-left: 0; border-top: 1px dashed var(--border); }
   .session-title { max-width: 100%; }

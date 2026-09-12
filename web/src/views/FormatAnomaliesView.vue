@@ -636,7 +636,7 @@ textarea {
   width: 100%;
   margin-top: 8px;
 }
-@media (max-width: 1200px) {
+@media (max-width: 1024px) {
   .filters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -646,7 +646,7 @@ textarea {
     align-self: end;
   }
 }
-@media (max-width: 900px) {
+@media (max-width: 1024px) {
   .page {
     padding: 14px;
   }

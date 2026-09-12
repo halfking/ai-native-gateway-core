@@ -995,7 +995,7 @@ onMounted(() => {
 }
 
 /* === Responsive === */
-@media (max-width: 1100px) {
+@media (max-width: 1024px) {
   .layout {
     grid-template-columns: 1fr;
   }

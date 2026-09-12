@@ -827,7 +827,7 @@ function fmtNum(n: number) {
   color: var(--accent-h);
 }
 
-@media (max-width: 800px) {
+@media (max-width: 768px) {
   .grid-2 { grid-template-columns: 1fr; }
   .local-logs-grid { grid-template-columns: 1fr; }
 }

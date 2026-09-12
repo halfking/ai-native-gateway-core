@@ -1278,7 +1278,7 @@ onMounted(fetchData)
 .batch-pricing-form { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .batch-pricing-form h4 { margin: 0 0 10px; font-size: 13px; color: var(--accent-h); }
 .batch-pricing-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
-@media (max-width: 600px) { .batch-pricing-grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 768px) { .batch-pricing-grid { grid-template-columns: 1fr 1fr; } }
 .alert-success { background: var(--success-soft, rgba(22, 132, 91, 0.08)); border: 1px solid var(--success); color: var(--success); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
 .alert-danger { background: var(--danger-soft, rgba(194, 65, 59, 0.08)); border: 1px solid var(--danger); color: var(--danger); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
 .inherit-details { max-height: 300px; overflow-y: auto; margin: 12px 0; }

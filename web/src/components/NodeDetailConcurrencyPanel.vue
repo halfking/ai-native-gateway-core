@@ -255,5 +255,5 @@ defineExpose({ reload: loadFpStats })
 .nd-dialog h4 { margin: 0; font-size: 15px; }
 .nd-dialog label { display: grid; gap: 5px; font-size: 12px; }
 .nd-dialog input { box-sizing: border-box; width: 100%; padding: 7px; border: 1px solid var(--kx-border); border-radius: 5px; background: var(--kx-bg); color: inherit; }
-@media (max-width: 700px) { .nd-grid { grid-template-columns: 1fr; } }
+@media (max-width: 768px) { .nd-grid { grid-template-columns: 1fr; } }
 </style>

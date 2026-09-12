@@ -223,6 +223,6 @@ const manualStateDetail = computed(() => {
 .nd-notice--warn { background:color-mix(in srgb, var(--kx-warning) 12%, transparent); color:var(--kx-warning); }
 .nd-notice--ok { background:color-mix(in srgb, var(--kx-success) 12%, transparent); color:var(--kx-success); }
 .nd-notice--error { background:color-mix(in srgb, var(--kx-danger) 12%, transparent); color:var(--kx-danger); }
-@media (max-width:700px) { .nd-drawer { width:100vw; }.nd-header { padding:14px; flex-direction:column; }.nd-body { padding:12px; }.nd-header-actions { justify-content:flex-end; } }
+@media (max-width:768px) { .nd-drawer { width:100vw; }.nd-header { padding:14px; flex-direction:column; }.nd-body { padding:12px; }.nd-header-actions { justify-content:flex-end; } }
 </style>
 <style src="../styles/node-detail-drawer.css"></style>

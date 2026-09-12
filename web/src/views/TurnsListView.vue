@@ -422,5 +422,5 @@ onBeforeUnmount(() => controller?.abort())
 .btn-primary { background: var(--accent); color: white; border: 0; }
 .btn-secondary { background: var(--surface-primary); color: var(--text-primary); border: 1px solid var(--border); }
 .btn-secondary:disabled, .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
-@media (max-width: 760px) { .turns-list-view { padding: 12px; } }
+@media (max-width: 768px) { .turns-list-view { padding: 12px; } }
 </style>

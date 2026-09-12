@@ -568,7 +568,7 @@ const pipeline = computed(() =>
   50% { transform: translate3d(-8px, 10px, 0); }
 }
 
-@media (max-width: 960px) {
+@media (max-width: 1024px) {
   .kx-landing__hero {
     grid-template-columns: 1fr;
     gap: 28px;

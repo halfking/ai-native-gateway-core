@@ -626,7 +626,7 @@ function onDividerKeydown(e: KeyboardEvent) {
 .child-list { list-style: none; padding: 0; }
 .muted { color: var(--muted); font-size: 12px; }
 .err { color: var(--danger); font-size: 12px; }
-@media (max-width: 800px) {
+@media (max-width: 768px) {
   .pane-body { flex-direction: column; }
   .left { border-right: none; border-bottom: 1px solid var(--border); max-height: 200px; width: 100% !important; max-width: none; }
   .divider { display: none; }
