@@ -3020,6 +3020,9 @@ DECLARE
     moved bigint := 0;
     month_rec record;
 BEGIN
+    -- 698: group months under Asia/Shanghai so boundary rows land in the
+    -- same month group the 694-pinned ensure_* target was created for.
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
     IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN
         RAISE EXCEPTION 'p_retention must be positive';
     END IF;
@@ -3142,6 +3145,9 @@ CREATE OR REPLACE FUNCTION public.promote_credential_model_index_hot_to_partitio
 RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE moved bigint := 0; month_rec record;
 BEGIN
+  -- 698: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 694-pinned ensure_* target was created for.
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
   IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
   IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
   -- Rows route by bucket, so pre-ensure the months the moved rows will land in.
@@ -3232,6 +3238,9 @@ CREATE OR REPLACE FUNCTION public.promote_credit_ledger_hot_to_partition(
 RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE moved bigint := 0; month_rec record;
 BEGIN
+  -- 698: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 694-pinned ensure_* target was created for.
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
   IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
   IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
   FOR month_rec IN
@@ -3332,6 +3341,9 @@ DECLARE
   v_ttl_days int := 7;
   month_rec record;
 BEGIN
+  -- 698: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 694-pinned ensure_* target was created for.
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
   IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
   IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
 
@@ -3453,6 +3465,9 @@ DECLARE
     v_demoted bigint := 0;
     v_part_demoted bigint := 0;
 BEGIN
+    -- 698: group months under Asia/Shanghai so boundary rows land in the
+    -- same month group the 694-pinned ensure_* target was created for.
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
     IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN
         RAISE EXCEPTION 'p_retention must be positive';
     END IF;
@@ -3675,6 +3690,9 @@ CREATE OR REPLACE FUNCTION public.promote_request_wal_hot_to_partition(
 RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE moved bigint := 0; month_rec record;
 BEGIN
+  -- 698: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 694-pinned ensure_* target was created for.
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
   IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
   IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
   FOR month_rec IN
@@ -3768,6 +3786,9 @@ CREATE OR REPLACE FUNCTION public.promote_routing_decision_log_hot_to_partition(
 RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE moved bigint := 0; month_rec record;
 BEGIN
+  -- 698: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 694-pinned ensure_* target was created for.
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
   IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
   IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
   FOR month_rec IN
@@ -3873,6 +3894,9 @@ CREATE OR REPLACE FUNCTION public.promote_tool_usage_stats_hot_to_partition(
 RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE moved bigint := 0; month_rec record;
 BEGIN
+  -- 698: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 694-pinned ensure_* target was created for.
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
   IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
   IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
   -- Rows route by created_at, so pre-ensure those months; the retention
@@ -3961,6 +3985,9 @@ CREATE OR REPLACE FUNCTION public.promote_usage_ledger_hot_to_partition(
 RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE moved bigint := 0; month_rec record;
 BEGIN
+  -- 698: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 694-pinned ensure_* target was created for.
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
   IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
   IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
   -- The month pre-ensure loop must use the same predicate as the batch CTE.
