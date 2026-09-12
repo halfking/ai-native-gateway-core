@@ -447,7 +447,7 @@ t('...') 字样；每步一个 commit，push 前先 git pull --no-rebase 合入�
 
 ### 遗留与后续
 
-1. push 仍被凭证拦截（本轮新增 3 个本地 commit 待推：9d5865ce0 / 76306b145 / 781fa7587）；并行线在途，push 前先 `git pull --no-rebase`（远端已前进至 087fba395 chore build_seq 同步）。
+1. push 待用户完成（本轮本地待推 4 个 commit：9d5865ce0 / 76306b145 / 781fa7587 / db329fc8e；远端已前进至 087fba395，push 前先 `git pull --no-rebase origin main`）。**推送前排查已穷尽**（2026-09-13 06:1x）：本机无 credential helper / .netrc / keyring 条目（libsecret 查询为空）、SSH key 未在 codeup 注册（Permission denied publickey）、各克隆 .git/config 无内嵌凭证 URL、无 aliyun CLI。已弹出交互 foot 终端执行 `git pull --no-rebase origin main && git push origin main`（日志 /tmp/llmgw-push.log，成功标记 /tmp/llmgw-push-ok），正等待用户输入 codeup 凭证；该窗口无超时，或随时可在任一有凭证终端手动执行上述两条命令。注：origin/main reflog 显示今日 04:39/04:54 有 "update by push" 成功记录，说明本机当时存在可用凭证通道（另一会话/用户终端），本轮未能复用。
 2. 存量 vitest 失败文件余 39（基线 40，TurnDigestDrawer.test 已修）；其余 39 个仍为 jsdom localStorage 环境问题，维持不修约定。
 3. 登录态页面（凭据监控/请求日志等）的 375 走查需后端+凭证，留待真机或联调环境；本轮覆盖访客态全路由 + 组件级交互测试。
 4. AppModal 新增 escClose 已同步《前端组件使用指南》§6 与治理节（el-dialog/el-drawer 清零 + 断点全严格）。
