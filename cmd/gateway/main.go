@@ -7110,14 +7110,18 @@ func main() {
 			memorySvc.Stop(memStopCtx)
 			memStopCancel()
 		}
-		if anomalyReporter != nil {
-			if err := anomalyReporter.Close(); err != nil {
-				slog.Warn("anomaly_reporter: shutdown failed", "error", err)
-			}
-		}
+		// R16 (2026-09-12): raw sinks close BEFORE the anomaly reporter —
+		// their Close-drain reporting lands only while the reporter is still
+		// enabled; the old order silently discarded every close_drained
+		// anomaly (enqueue is gated on r.enabled).
 		if rawDataLogger != nil {
 			if err := rawDataLogger.Close(); err != nil {
 				slog.Warn("raw_data_logger: shutdown failed", "error", err)
+			}
+		}
+		if anomalyReporter != nil {
+			if err := anomalyReporter.Close(); err != nil {
+				slog.Warn("anomaly_reporter: shutdown failed", "error", err)
 			}
 		}
 

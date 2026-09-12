@@ -35,7 +35,6 @@ import sessions from './sessions'
 import compression from './compression'
 import examples from './examples'
 import dataLifecycle from './dataLifecycle'
-import tuning from './tuning'
 import turnDigest from './turnDigest'
 import errorVocab from './errorVocab'
 import sessionTimeline from './sessionTimeline'
@@ -46,7 +45,6 @@ import memoraStatusButton from './memoraStatusButton'
 import slotInfoCard from './slotInfoCard'
 import gatewayApiKeyPicker from './gatewayApiKeyPicker'
 import statusBadge from './statusBadge'
-import tagEditor from './tagEditor'
 import modelCatalogFilterBar from './modelCatalogFilterBar'
 import sixDimScoreBar from './sixDimScoreBar'
 import catalogPanel from './catalogPanel'
@@ -112,7 +110,6 @@ export default {
   compression,
   examples,
   dataLifecycle,
-  tuning,
   turnDigest,
   errorVocab,
   sessionTimeline,
@@ -123,7 +120,6 @@ export default {
   slotInfoCard,
   gatewayApiKeyPicker,
   statusBadge,
-  tagEditor,
   modelCatalogFilterBar,
   sixDimScoreBar,
   catalogPanel,

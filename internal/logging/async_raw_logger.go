@@ -609,15 +609,22 @@ func (l *AsyncRawDataLogger) Close() error {
 			if l.baseLogger != nil {
 				l.baseLogger.writeEntry(closeEntry)
 			}
-			// R12 审计修正：overflowReporter 的读在本段无 stateMu 保护，
-			// 快照化与 SetOverflowReporter 的写互斥。
-			l.stateMu.RLock()
-			rep := l.overflowReporter
-			l.stateMu.RUnlock()
-			if rep != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				defer cancel()
-				rep.ReportRawLogCloseDrained(ctx, RawCorrelationEnvelope{}, remaining)
+			// R16 (2026-09-12): the anomaly report is gated on remaining > 0 —
+			// the stub above stays forensic-only. The old condition fired the
+			// anomaly on ANY shutdown that ever saw traffic, which both
+			// spams the endpoint and hides the real "items left behind" case
+			// the ReportRawLogCloseDrained contract documents.
+			if remaining > 0 {
+				// R12 审计修正：overflowReporter 的读在本段无 stateMu 保护，
+				// 快照化与 SetOverflowReporter 的写互斥。
+				l.stateMu.RLock()
+				rep := l.overflowReporter
+				l.stateMu.RUnlock()
+				if rep != nil {
+					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					defer cancel()
+					rep.ReportRawLogCloseDrained(ctx, RawCorrelationEnvelope{}, remaining)
+				}
 			}
 		}
 		if l.baseLogger != nil {

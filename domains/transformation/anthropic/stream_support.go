@@ -84,15 +84,13 @@ type StreamOutcome struct {
 //   - emittedContent: set true the first time the translator's writeChunk
 //     closure serializes a delta with non-empty Content / ReasoningContent
 //     / ToolCalls, or when a ChunkTypeDone with finish_reason="stop" arrives.
-//   - inputTokens/outputTokens: local IR-Usage accumulators (also mirrored
-//     into audit.StreamCapture.promptTokens/completionTokens via
-//     ObserveChunk, but reading the local copies avoids taking the capture
-//     mutex in the hot path).
+//   - inputTokens/outputTokens: UNUSED since the usage-based branch was
+//     removed (audit R16, 2026-09-12 — the parameters no longer influence
+//     the result; kept for signature stability across the three SSE
+//     translators).
 //
-// The check is strict: no content AND (no input AND no output tokens). An
-// upstream that returns usage tokens but no content is treated as empty —
-// matching the non-stream semantics in isEmptyAnthropicMessagesResponse
-// (which checks content array length, not usage token presence).
+// The check is content-only: no client-visible semantic emission means the
+// stream is empty, regardless of usage tokens.
 //
 // clientDisconnectPending is deliberately distinct from merely having a
 // pending capturer. A capturer is also installed for ordinary requests so a

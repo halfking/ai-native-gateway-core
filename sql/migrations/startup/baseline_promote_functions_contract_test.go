@@ -101,6 +101,24 @@ func objectsCanonicalBody(t *testing.T, table string) (string, string) {
 	return name, body
 }
 
+// baselinePromoteFunctionsNoObjectsFile are promote functions the Go resident
+// scheduler (bg/partition_manager.go promoteSpecs) calls on every tick that
+// existed ONLY as out-of-band migrations (534/579/580) or in-place edits —
+// never in any baseline and with no sql/objects/functions canonical.
+// R16 (2026-09-12): their authoritative-dump bodies (2026-09-12, local
+// llm-gateway-pg; promote_session_module_executions / promote_dashboard_access
+// already carry the 659-lineage advisory lock + SKIP LOCKED, promote_handoff
+// logs is the rewritten hot-drain form with p_batch_size=200) were inserted
+// into all three baselines. Three-way body equality is the contract here;
+// the objects/ comparison and the 698 pin assertions do NOT apply — these
+// bodies were never 698-pinned and pinning them is a deliberate migration
+// (next number ≥701), not a baseline edit.
+var baselinePromoteFunctionsNoObjectsFile = []string{
+	"promote_dashboard_access_events_hot_to_partition",
+	"promote_handoff_logs_hot_to_partition",
+	"promote_session_module_executions_hot_to_partition",
+}
+
 // TestBaselinePromoteHotFunctionsThreeWayConsistency extends the ensure
 // contract to the promote side (2026-09-12 audit P2-3 residual): the three
 // 01-schema.sql baselines must carry the 698-pinned hot_to_partition bodies —
@@ -147,6 +165,32 @@ func TestBaselinePromoteHotFunctionsThreeWayConsistency(t *testing.T) {
 			}
 			if strings.Index(body, "date_trunc(") < strings.Index(body, "SET LOCAL") {
 				t.Errorf("%s baseline %s: month grouping evaluated before the timezone pin", label, name)
+			}
+		}
+
+		// R16: no-objects-file promote functions — presence + three-way
+		// equality only (bodies compared across the baselines below).
+		for _, name := range baselinePromoteFunctionsNoObjectsFile {
+			if _, ok := got[name]; !ok {
+				t.Errorf("%s baseline missing promote function %s (no objects/ canonical, dump-lineage)", label, name)
+			}
+		}
+	}
+
+	ref := extracted["canonical"]
+	for _, name := range baselinePromoteFunctionsNoObjectsFile {
+		want, ok := ref[name]
+		if !ok {
+			continue // reported above
+		}
+		for _, label := range labels {
+			body, ok := extracted[label][name]
+			if !ok {
+				continue
+			}
+			if body != want {
+				t.Errorf("%s baseline body drift for %s (dump-lineage, no objects/ canonical)\n canonical: %s\n %s: %s",
+					label, name, want, label, body)
 			}
 		}
 	}
