@@ -337,8 +337,8 @@ f. commit：feat(web): P3-<页面名> 组件化迁移。
 | 4 | P1c 访客壳/门户/dvh 收尾（P1 收口） | ✅ 完成 2026-09-13 | commit d7726ceaa。访客壳 guest-header <768 汉堡（isTablet 断点）+ AppNavDrawer 新增 guestLinks 扁平列表模式（6 静态链接数组化），>=768 guest-nav 不动；PublicPageShell <768 --pub-max:100%+padding 12px；ServiceLandingPage 补 768px 档（间距微调，hero ≤960 已单列）；100vh→100dvh 清理 19 处（App.vue×3、style.css drawer-panel、弹层抽屉类×5、表格/滚动容器类×8、两个 landing shell），全部保留两行 fallback，0 孤立 100vh。四件套全过。**P1 整体验收结论**：全站移动端导航可用——已登录态 <1024 汉堡+AppNavDrawer 手风琴（50 菜单项可达，含运维中心降级与插件注入），访客态 <768 汉堡+静态链接抽屉；弹窗/抽屉（AppModal/AppDrawer）在 375px 自动全屏/bottom-sheet；RTL 经逻辑属性自动换边；桌面态 DOM 与样式零回归（所有响应式改动均为媒体内增量或 JS 分支） |
 | 5 | P2 剩余组件 FilterBar/StatsRow/DataTable | ✅ 完成 2026-09-13 | commit fa76cb7d7。ui/FilterBar（definitions: select/search/daterange + v-model，整合 FilterInput/ActiveFilterChips；<1023 纵向堆叠+全宽搜索，<768 折叠为「筛选（N）」展开面板，词条走 common.button.filter 已有 8 语言；类型抽至 ui/filter-types.ts）；ui/StatsRow（container query 栅格，768/1024 切换点，cols 可配 2/2/4）；ui/DataTable（包裹模式：overflow-x 滚动 + AppSpinner loading + EmptyState + :slotted min-width 列宽保护）。示范迁移：AuditLogView（FilterBar+PaginationBar×2+删 720px 碎片）、RequestLogsView（DataTable 包裹）、CredentialMonitorView（StatsRow+StatCard，tone 取代 summary-*）。新增测试 16 用例全绿；四件套全过（vitest 522 通过/40 存量失败=基线）。**采用基线（Step 6 目标）**：PageHeader 1/PaginationBar 2/FilterBar 1/StatCard 2/StatsRow 1/DataTable 1/AppModal 2；剩手写 modal-overlay 17 文件、手写分页 3 文件 |
 | 6 | P3 高频页面迁移（10 页清单） | ✅ 完成 2026-09-13（10/10 页处理，1 项拆分待办） | commits 77fbbf9fe/P3-1+2、3492eb481/P3-3、33295a24c/P3-4、65352a968/P3-5、d739d981f/P3-6、040e1b859/P3-7+8、ed7f05464/P3-9、8d70e0b57/P3-10。逐页结果：①DashboardViewV2 页头为紧凑变体+内容全在子组件，无标准骨架可迁移（登记）；②ChatView summary 弹窗→AppModal、800→768；③ProvidersView showEdit/showCred→AppModal(stacked 新增)、manageCred→AppDrawer、1000→1024；④ModelsView PageHeader+双抽屉→AppDrawer+映射弹窗→AppModal、900→768（create-modal 顶部对齐长表单保留并登记）；⑤CredentialMonitor 900 死块删除+700→640；⑥RoutingDashboard cell 弹层→AppModal、900→768；⑦TenantsView/⑧UsersView PageHeader+DataTable 包裹；⑨FreePoolView PageHeader+StatsRow+StatCard；⑩ModulesView PageHeader+960→1024。四件套每步全过（vitest 稳定 40 存量失败=基线）。**待办**：P3-5 第二批——selectedCred 详情抽屉→AppDrawer、7 个确认弹窗→AppModal、2367 行拆分 components/credential-monitor/（§4.7-4）；ProvidersView diagnose 抽屉（z-110 内联）与 ModelsView create-modal 保留手写（避免布局回归） |
-| 7 | P4 折叠屏增强层 | ☐ 未开始 | |
-| 8 | P5 治理收尾 | ☐ 未开始 | |
+| 7 | P4 折叠屏增强层 | ✅ 完成 2026-09-13 | commit d17e83f21。useViewportSegments.ts（特性检测 viewport.segments/devicePosture，resize+姿态更新，不支持时 supported=false/isSpanning 恒 false 零风险降级，2 用例全绿）；styles/foldable.css（horizontal-viewport-segments:2 三列 grid=左屏/铰链留白/右屏，device-posture:folded 铰链避让，main.ts 引入；不支持的浏览器整段原生忽略）；RequestLogsView isSpanning 双栏（列表 span-left/详情抽屉停靠 span-right，非跨屏包装层 display:contents DOM 流不变）。**验证方式：受限**——polyfill 需 npm install 触发 node_modules 重写（本环境禁令），跳过安装；以 jsdom 降级单测 + CSS 特性查询忽略语义为准，真机/polyfill 抽验待补 |
+| 8 | P5 治理收尾 | ✅ 完成 2026-09-13 | commits 233cebbe3 + b79a2d1d8。①白名单：P3 已清 9 文件碎片（720/800/900/960/1000/700 等），存余 43 文件 49 处属设计 §5.1 P5「剩余 ~30 个列表页」分摊范围，登记理由如上；responsive:check 保持 `--strict --allow-legacy`（分摊清零后去 --allow-legacy 即全严格）。②el-* 未注册：实扫 24 文件（多于 Batch1 估计的 14）全部补齐 EP 导入，连带修复注册后暴露的 13 处既有模板类型问题 + 1 个测试 mock 桩，复扫 0 未解析；「Failed to resolve component」验收以静态扫描替代 DevTools 抽查（本环境受限）。③el-dialog/drawer 评估：4 处（OperationAgreementDialog/PromptInjectionSettingsView/VibeCodingView 的 el-dialog、TurnDigestDrawer 的 el-drawer）注册修复后已可用，登记不强制迁移。④文档：《前端组件使用指南》成文 + 设计文档 §7 实施状态节 + README 索引更新。⑤四件套终验：vue-tsc 0 错误、vitest 524 通过/40 存量失败文件=基线、i18n STRICT PASS、responsive:check exit 0 |
 
 （状态取值：☐ 未开始 / ◐ 进行中 / ✅ 完成+日期；Step 6 按 10 页逐页在交付摘要里列完成度）
 
@@ -347,3 +347,28 @@ f. commit：feat(web): P3-<页面名> 组件化迁移。
 - 本线只动 `web/`（前端）与 `docs/`，不触碰 Go/迁移/部署面；与数据库迁移线、部署线无在途冲突面。
 - 桌面零回归是每步红线：所有响应式改动必须媒体查询内增量，禁止改动桌面态 DOM 与样式。
 - 组件接口如有调整（新增 props/改名），须同步更新《组件使用指南》与既有采用处，避免接口漂移。
+
+## 五、整体收口结论（2026-09-13）
+
+**全部 9 个 Step（0~8）执行完毕**，共 18 个 commit（f797779d4 → b79a2d1d8），全部在本地 main，未 push（待用户确认）。
+
+### 交付总量
+
+- **新增基础设施**：breakpoints.ts 单一事实源、useBreakpoint/useScrollLock/useFocusTrap/useAppNav/useViewportSegments 五个 composable、responsive-audit.mjs 审计脚本（responsive:check 门禁）、matchMedia vitest 全局 stub、responsive-base.css/foldable.css、间距与字号令牌（--kx-space-1..6、--kx-font-sm/md/lg）。
+- **新增通用组件**（components/ui/，全部带单测+响应式源码断言）：PageHeader、PaginationBar、StatCard、StatsRow、FilterBar、DataTable、AppModal、AppDrawer、AppNavDrawer + filter-types。
+- **壳层**：<1024 汉堡+抽屉导航（50 菜单项可达）、访客壳 <768 汉堡、AppTopbar 桌面 DOM 零回归、LoginModal/ProvidersView/ModelsView/ChatView/RoutingDashboard 等弹层收敛。
+- **页面迁移**：P3 十页处理完毕，另带动 AuditLog/RequestLogs/CredentialMonitor 的 Step 5 示范迁移；PageHeader 采用 4 页、PaginationBar 3 页、AppModal 9 处、AppDrawer 4 处、DataTable 3 处、StatsRow+StatCard 3 页。
+- **债务修复**：24 文件 el-* 运行时未注册修复（含 13 处连带类型问题）；19 处 100vh→dvh（两行 fallback）；App.vue 死代码与多页死样式删除。
+
+### 质量数据
+
+- 终验四件套：vue-tsc 0 错误；vitest 524 通过 / 40 存量失败文件（与基线完全一致，未修存量、未新增失败）；i18n STRICT PASS；responsive:check exit 0。
+- 每步独立 commit（feat/fix/docs 前缀 + step 编号），可按 commit 粒度回滚。
+
+### 遗留与分摊（均已在登记表/文档登记理由）
+
+1. 断点白名单存余 43 文件 49 处（§5.1 P5「剩余 ~30 个列表页」分摊范围）；清零后去 --allow-legacy 升级全严格。
+2. CredentialMonitorView（2367 行）子组件拆分 + 其 7 个确认弹窗/详情抽屉迁移（P3-5 第二批）。
+3. 保留手写三处：ProvidersView diagnose 抽屉（z-110 叠层）、ModelsView create-modal（顶部对齐长表单）、DashboardViewV2 紧凑变体页头——均有明确理由，详见各步交付摘要。
+4. 折叠屏 polyfill 未安装（环境禁 npm install）；真机/polyfill 双屏抽验待补。
+5. DevTools 走查以源码级走查记录替代（每步 commit message 内），关键页真机走查建议随 P5 分摊一并执行。
