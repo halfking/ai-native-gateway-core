@@ -8,6 +8,8 @@
 package bg
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -57,5 +59,30 @@ func TestAuthProbeBackoffRecoverAtMonotonic(t *testing.T) {
 			t.Fatalf("ladder not monotonic at n=%d: %s after %s", n, prev, got)
 		}
 		prev = got
+	}
+}
+
+// TestCycleAllRespectsAuthBackoffLadder pins the 2026-09-13 audit-round
+// fixes F1/F2: the ladder in availability_recover_at must actually gate
+// probe FREQUENCY, not only routing release.
+//
+//   - F1: cycleAll must skip rows whose availability_recover_at is still in
+//     the future — otherwise a permanently-revoked key was re-probed every
+//     hourly cycle (plus fast reprobe) regardless of the 15m→24h ladder.
+//   - F2: a failed cycle probe must not schedule the 5-minute fast reprobe
+//     for auth_failed — that single follow-up request defeated the decay.
+//     unreachable (plausibly transient) keeps the fast reprobe.
+func TestCycleAllRespectsAuthBackoffLadder(t *testing.T) {
+	src, err := os.ReadFile("credential_probe_v2.go")
+	if err != nil {
+		t.Fatalf("read credential_probe_v2.go failed: %v", err)
+	}
+	body := string(src)
+
+	if !strings.Contains(body, "AND (c.availability_recover_at IS NULL OR c.availability_recover_at <= now())") {
+		t.Fatal("cycleAll must skip rows whose availability_recover_at is still in the future (F1)")
+	}
+	if strings.Contains(body, `pr.AvailabilityState == "auth_failed" || pr.AvailabilityState == "unreachable"`) {
+		t.Fatal("auth_failed must not trigger the 5-minute fast reprobe (F2)")
 	}
 }
