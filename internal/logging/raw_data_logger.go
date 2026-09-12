@@ -467,14 +467,15 @@ func (l *RawDataLogger) rotate() error {
 
 	// 2026-08-18: 清理旧文件（保留最近 10 个，rule 11 §3）。
 	// 单文件 100MB × 10 ≈ 1000MB 上限。
-	go l.cleanupOldFiles(maxRawLogKeepCount)
+	// baseDir 值捕获：rotate 持锁期求值，goroutine 不再读共享可变字段（-race 竞争根修）。
+	go l.cleanupOldFiles(l.baseDir, maxRawLogKeepCount)
 
 	return nil
 }
 
 // cleanupOldFiles 清理旧的日志文件，保留最近N个
-func (l *RawDataLogger) cleanupOldFiles(keepCount int) {
-	files, err := filepath.Glob(filepath.Join(l.baseDir, "raw_data_*.jsonl"))
+func (l *RawDataLogger) cleanupOldFiles(baseDir string, keepCount int) {
+	files, err := filepath.Glob(filepath.Join(baseDir, "raw_data_*.jsonl"))
 	if err != nil {
 		slog.Warn("raw_data_logger: failed to list old files", "err", err)
 		return
