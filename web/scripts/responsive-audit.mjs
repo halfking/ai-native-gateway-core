@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// responsive-audit.mjs — @media 断点白名单审计 CLI（方案 §4.2，2026-09-13）
+// responsive-audit.mjs — @media / @container 断点白名单审计 CLI（方案 §4.2，2026-09-13）
 //
 // 用法：
 //   node scripts/responsive-audit.mjs                          # 人类可读报告（默认 WARN 不失败）
@@ -10,8 +10,9 @@
 //
 // 断点白名单唯一事实源是 src/config/breakpoints.ts 的 MEDIA_QUERY_WHITELIST；
 // 本脚本优先直接 import（Node strip-types），失败时按正则从源文件提取作为兜底。
-// 只审计宽度类 media 特性（min-width / max-width / width 的 px 值）；
-// prefers-color-scheme / hover / print 等非宽度特性不计入。
+// 只审计宽度类条件（min-width / max-width / width 的 px 值），@media 与
+// @container（容器查询）同一白名单与分级；prefers-color-scheme / hover /
+// print 等非宽度特性不计入。
 // 注意：Step 1 只接入脚本不收紧（存量碎片值多，--allow-legacy 放行），Step 8 收敛。
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
@@ -35,7 +36,7 @@ function parseArgs(argv) {
 
 function printHelp() {
   console.log(`
-responsive-audit — @media 断点白名单审计（白名单源：src/config/breakpoints.ts）
+responsive-audit — @media/@container 断点白名单审计（白名单源：src/config/breakpoints.ts）
 
 USAGE
   node scripts/responsive-audit.mjs [options]
@@ -73,10 +74,12 @@ function listFiles(dir, exts, out = []) {
   return out
 }
 
-/** 提取一个文件中所有 @media 宽度断点值（含行号）。 */
-function extractMediaWidths(content) {
+/** 提取一个文件中所有 @media / @container 条件的宽度断点值（含行号）。
+ *  @container 可带容器名前缀（如 `@container card (min-width: 400px)`），
+ *  prelude 整体捕获后按同一宽度特性正则取值。 */
+function extractWidthHits(content) {
   const hits = []
-  const preludeRe = /@media([^{]*){/g
+  const preludeRe = /@(?:media|container)([^{]*){/g
   let m
   while ((m = preludeRe.exec(content)) !== null) {
     const prelude = m[1]
@@ -102,7 +105,7 @@ async function main() {
 
   for (const file of files) {
     const content = readFileSync(file, 'utf8')
-    const hits = extractMediaWidths(content)
+    const hits = extractWidthHits(content)
     if (hits.length === 0) continue
     mediaQueryCount += hits.length
     const legacy = hits.filter((h) => !whitelistSet.has(h.value))
@@ -128,7 +131,7 @@ async function main() {
     }, null, 2))
   } else {
     console.log(`responsive-audit — 断点白名单 ${JSON.stringify(whitelist)}`)
-    console.log(`扫描 ${files.length} 个文件（.vue/.css），命中 ${mediaQueryCount} 处宽度断点\n`)
+    console.log(`扫描 ${files.length} 个文件（.vue/.css），命中 ${mediaQueryCount} 处宽度断点（@media/@container）\n`)
     console.log('断点值分布（次数降序）：')
     for (const { value, count, whitelisted } of widthValues) {
       console.log(`  ${String(value).padStart(5)}px  x${String(count).padEnd(4)} ${whitelisted ? '✓ 白名单' : '✗ 白名单外（存量）'}`)
@@ -146,7 +149,7 @@ async function main() {
     } else if (legacyTotal > 0) {
       console.log(`WARN — ${legacyTotal} 处白名单外存量断点放行（Step 8 收敛；后续可去 --allow-legacy 收紧）`)
     } else {
-      console.log('PASS — 所有 @media 断点均在白名单内')
+      console.log('PASS — 所有 @media/@container 宽度断点均在白名单内')
     }
   }
   process.exitCode = pass ? 0 : 1
