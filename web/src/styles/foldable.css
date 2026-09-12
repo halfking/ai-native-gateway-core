@@ -10,13 +10,18 @@
  * 驱动），左栏内容用 .span-left，右栏内容用 .span-right，其余跨全宽。
  */
 
-/* 双分段（横跨折叠） */
+/* 双分段（横跨折叠）。
+ * 铰链宽度按 MDN 记载的分段几何推导：segment(1) 左缘 − segment(0) 右缘；
+ * （规范无 viewport-segment-hinge env，2026-09-14 审计修正） */
 @media (horizontal-viewport-segments: 2) {
   .app-shell--spanning {
     display: grid;
     grid-template-columns:
       env(viewport-segment-width 0 0, 1fr)
-      env(viewport-segment-hinge, 0px)
+      calc(
+        env(viewport-segment-left 1 0, 0px) -
+        env(viewport-segment-right 0 0, 0px)
+      )
       1fr;
   }
 
@@ -35,12 +40,21 @@
 }
 
 /*
- * 折叠姿态（垂直铰链穿过单屏）：按窄视口处理，内容避开铰链线，
- * 仅给直接子内容加半铰链宽度的行内呼吸空间，不改变布局结构。
+ * 折叠姿态：按窄视口处理（设计 §4.6），不建独立布局；仅让左右两栏内容
+ * 在各自贴铰链一侧留出铰链宽度的呼吸空间，避免内容被压在铰链下。
  */
 @media (device-posture: folded) {
-  .app-shell--spanning > * {
-    padding-inline: calc(env(viewport-segment-hinge, 0px) / 2);
+  .app-shell--spanning > .span-left {
+    padding-inline-end: calc(
+      env(viewport-segment-left 1 0, 0px) -
+      env(viewport-segment-right 0 0, 0px)
+    );
+  }
+  .app-shell--spanning > .span-right {
+    padding-inline-start: calc(
+      env(viewport-segment-left 1 0, 0px) -
+      env(viewport-segment-right 0 0, 0px)
+    );
   }
 }
 
