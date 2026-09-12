@@ -28,6 +28,17 @@ html[data-theme='light'] {
   --kx-text-on-primary: #ffffff;
   --kx-shadow-sm: 0 8px 24px rgba(30, 55, 100, 0.06);
   --kx-shadow-md: 0 16px 40px rgba(30, 50, 90, 0.1);
+  /* 2026-09-13 响应式改造 P0：间距/字号令牌（方案 §4.2）。
+   * 新组件（components/ui/ 等）一律消费令牌，禁止再手写散落的间距/字号魔法数。 */
+  --kx-space-1: 4px;
+  --kx-space-2: 8px;
+  --kx-space-3: 12px;
+  --kx-space-4: 16px;
+  --kx-space-5: 24px;
+  --kx-space-6: 32px;
+  --kx-font-sm: 12px;
+  --kx-font-md: 14px;
+  --kx-font-lg: 16px;
   /* Gateway alias bridge — 旧组件仍引用 --bg/--card/--border 等 */
   --bg:        var(--kx-bg);
   --sidebar:   var(--kx-sidebar);

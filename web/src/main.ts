@@ -6,6 +6,7 @@ import './style.css'
 import 'element-plus/dist/index.css'
 import './styles/pill-chip.css'
 import './styles/confirm-dialog.css'
+import './styles/responsive-base.css'
 import { initErrorReporter, createVueErrorHandler } from './utils/errorReporter'
 
 // 初始化全局错误上报

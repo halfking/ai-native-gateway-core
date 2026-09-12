@@ -330,7 +330,7 @@ f. commit：feat(web): P3-<页面名> 组件化迁移。
 
 | Step | 内容 | 状态 | 交付摘要（完成时填） |
 |---|---|---|---|
-| 0 | 提交 Batch 1 | ☐ 未开始 | |
+| 0 | 提交 Batch 1 | ✅ 完成 2026-09-13 | commit f797779d4，23 文件（13 修改 + 设计文档/handoff + ui 组件 6 文件 + usePagination 2 文件）；提交前核验 vue-tsc 0 错误、vitest 469 通过 / 40 存量失败文件（= 基线）、diff 与交付清单一致；未 push |
 | 1 | P0 基础设施（breakpoints/useBreakpoint/审计脚本/令牌/responsive-base） | ☐ 未开始 | |
 | 2 | P1a AppModal + AppDrawer | ☐ 未开始 | |
 | 3 | P1b 壳层移动导航 | ☐ 未开始 | |
