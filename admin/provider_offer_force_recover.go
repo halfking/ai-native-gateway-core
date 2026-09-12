@@ -606,6 +606,26 @@ func (h *Handler) toggleModelOfferState(w http.ResponseWriter, r *http.Request, 
 // The model_offers INSERT trigger propagates admin_protected on fresh rows;
 // this call also covers the ON CONFLICT case where the row already existed
 // unprotected (the trigger's conflict branch leaves admin_protected as-is).
+// forceRecoverActor resolves the operator identifier for audit trails.
+// R21 (2026-09-13) audit P2: the drawer path never sends X-Admin-User, so a
+// header-only lookup collapsed every UI-triggered mutation to the constant
+// "admin" and the R16 who-dimension was lost. JWT auth context first (same
+// shape as fdActor), legacy header second, anonymous constant last.
+func forceRecoverActor(r *http.Request) string {
+	if auth := GetAuthContext(r); auth != nil {
+		if auth.Username != "" {
+			return auth.Username
+		}
+		if auth.UserID != 0 {
+			return "user-" + strconv.Itoa(auth.UserID)
+		}
+	}
+	if header := r.Header.Get("X-Admin-User"); header != "" {
+		return header
+	}
+	return "admin"
+}
+
 func (h *Handler) pinAdminProtectedOffers(ctx context.Context, credentialID int, rawModelNames []string) {
 	if h == nil || h.db == nil || len(rawModelNames) == 0 {
 		return
@@ -653,10 +673,7 @@ func (h *Handler) handleForceRecover(w http.ResponseWriter, r *http.Request) {
 	// review criticized). Actor comes from X-Admin-User; reason is accepted
 	// in the body (optional — the drawer button sends none) and folded into
 	// the model_offer_events reason_detail.
-	actor := r.Header.Get("X-Admin-User")
-	if actor == "" {
-		actor = "admin"
-	}
+	actor := forceRecoverActor(r)
 	var body struct {
 		Reason string `json:"reason"`
 	}
@@ -756,10 +773,7 @@ func (h *Handler) setProviderManualDisabled(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "reason is required")
 		return
 	}
-	actor := r.Header.Get("X-Admin-User")
-	if actor == "" {
-		actor = "admin"
-	}
+	actor := forceRecoverActor(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -829,10 +843,7 @@ func (h *Handler) setCredentialManualDisabled(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "reason is required")
 		return
 	}
-	actor := r.Header.Get("X-Admin-User")
-	if actor == "" {
-		actor = "admin"
-	}
+	actor := forceRecoverActor(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -965,10 +976,7 @@ func (h *Handler) setDefaultProbeModel(w http.ResponseWriter, r *http.Request, p
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	actor := r.Header.Get("X-Admin-User")
-	if actor == "" {
-		actor = "admin"
-	}
+	actor := forceRecoverActor(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -1021,10 +1029,7 @@ func (h *Handler) setDefaultProbeModel(w http.ResponseWriter, r *http.Request, p
 // Looks up via request_logs (7d most-used client_model) and falls back to
 // domestic provider random pick. Manual source is preserved.
 func (h *Handler) pickDefaultProbeModel(w http.ResponseWriter, r *http.Request, providerID, credID int) {
-	actor := r.Header.Get("X-Admin-User")
-	if actor == "" {
-		actor = "admin"
-	}
+	actor := forceRecoverActor(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 

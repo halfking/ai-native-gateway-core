@@ -277,6 +277,15 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 	provider.InvalidateCredentialKeyCache(credID)
 	provider.ResetKeyRotatorForCredential(credID)
 
+	// R21 (2026-09-13) audit P2: the comment above claimed to mirror
+	// applyForceEnable's recovery chain but skipped resetInMemoryNodeState —
+	// in-memory circuit cooling / fpslot cooldown kept filtering the node for
+	// up to ~5 min after a "successful" recovery click.
+	var providerID int
+	if err := h.db.QueryRow(ctx, `SELECT provider_id FROM credentials WHERE id = $1`, credID).Scan(&providerID); err == nil {
+		h.resetInMemoryNodeState(ctx, credID, providerID, "", true)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"triggered":              true,
 		"credential_id":          credID,

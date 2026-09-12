@@ -148,7 +148,9 @@ func (h *Handler) resetCredentialQuota(w http.ResponseWriter, r *http.Request, p
 	defer cancel()
 	tag, err := h.db.Exec(ctx, `
 		UPDATE credentials
-		SET quota_state = 'ok', quota_recover_at = NULL
+		SET quota_state = 'ok', quota_recover_at = NULL,
+		    state_reason_code = NULL, state_reason_detail = NULL,
+		    state_updated_at = now()
 		WHERE id = $1 AND provider_id = $2 AND status <> 'deleted'
 	`, credID, providerID)
 	if err != nil {
