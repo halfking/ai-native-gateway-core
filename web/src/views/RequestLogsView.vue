@@ -21,6 +21,8 @@ import ModelPicker from '../components/ModelPicker.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import SessionSummaryDrawer from '../components/SessionSummaryDrawer.vue'
 import PaginationBar from '../components/ui/PaginationBar.vue'
+// 2026-09-13 P2：表格容器收敛到 ui/DataTable 包裹模式（方案 §4.5.5 姿势 1）
+import DataTable from '../components/ui/DataTable.vue'
 import StatCard from '../components/ui/StatCard.vue'
 import { usePagination } from '../composables/usePagination'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
@@ -1263,7 +1265,7 @@ onMounted(async () => {
             <td style="padding:3px 6px;border:1px solid var(--border)">将历史事实作为"动态上下文"注入请求</td>
           </tr>
         </table>
-      </div>
+      </DataTable>
     </div>
 
     <!-- 2026-08-10: 筛选条件区可折叠卡片。
@@ -1434,7 +1436,8 @@ onMounted(async () => {
       @change-size="onPageSizeChange"
     />
 
-    <div class="card" style="overflow-x:auto">
+    <div class="card">
+      <DataTable min-width="960px">
       <table class="data-table request-log-table" style="width:100%;font-size:12px">
         <thead>
           <tr>
