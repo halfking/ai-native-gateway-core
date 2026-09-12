@@ -10,7 +10,8 @@
 
 | 类型 | 文件 | 状态 |
 |---|---|---|
-| 专题方案 | [frontend-responsive-and-componentization-design.md](./frontend-responsive-and-componentization-design.md)（前端响应式适配：桌面/移动/折叠屏 + 组件化架构） | draft |
+| 专题方案 | [frontend-responsive-and-componentization-design.md](./frontend-responsive-and-componentization-design.md)（前端响应式适配：桌面/移动/折叠屏 + 组件化架构；§7 实施状态） | 已实施 |
+| 使用指南 | [frontend-component-usage-guide.md](./frontend-component-usage-guide.md)（ui/ 组件 props 清单 + 迁移对照 + 断点规范） | official |
 | _（待补充）_ | | |
 
 ## 命名约定

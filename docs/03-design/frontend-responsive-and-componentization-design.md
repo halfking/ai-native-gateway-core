@@ -602,3 +602,20 @@ src/
 
 - 现状依据：`web/src/style.css`（令牌）、`web/src/App.vue`（壳层/死代码）、`web/src/components/shell/AppTopbar.vue`（导航与现有断点）、`web/src/config/appNav.ts`（菜单单一事实源）、`web/src/components/shell/AppTopbar.responsive.test.ts`（响应式测试模式）
 - 收敛先例：`web/src/composables/useConfirmDialog.ts`（26 视图采用）、`web/src/components/EmptyState.vue`
+
+---
+
+## 7. 实施状态（2026-09-13 收口）
+
+| 阶段 | 状态 | 说明 |
+|---|---|---|
+| P0 基础设施 | ✅ 完成 | breakpoints.ts / useBreakpoint / responsive-audit.mjs / matchMedia mock / --kx-space-*, --kx-font-* / responsive-base.css |
+| P1 壳层改造 | ✅ 完成 | AppModal/AppDrawer/useAppNav/AppNavDrawer/AppTopbar 汉堡分支/访客壳汉堡/PublicPageShell 移动全宽/dvh 清理（P1 验收结论见 handoff 登记表 Step 4） |
+| P2 通用组件库 | ✅ 完成 | FilterBar/StatsRow/DataTable(包裹模式)/filter-types，各带单测+响应式源码断言（58 用例全绿）；「story 式示例页」未做，以《组件使用指南》对照示例替代 |
+| P3 高频页面迁移 | ✅ 完成（10/10 页处理） | 每页独立 commit；**待办**：CredentialMonitor 子组件拆分（filter/table/子表）与其 7 个确认弹窗/详情抽屉迁移登记至后续分摊 |
+| P4 折叠屏增强 | ✅ 完成（验证受限） | useViewportSegments/foldable.css/RequestLogs 双栏停靠；polyfill 因环境禁 npm install 未装，真机/polyfill 抽验待补 |
+| P5 收尾治理 | ✅ 完成（白名单收缩按设计 §4.2 分摊策略顺延） | 24 文件 el-* 注册修复；el-dialog/el-drawer 4 处评估登记（保留，风险低）；《前端组件使用指南》成文；断点白名单存余 43 文件 49 处（属 §5.1 P5「剩余 ~30 个列表页」分摊范围），responsive:check 保持 `--strict --allow-legacy`（= 已武装的严格门禁，分摊清零后去掉 --allow-legacy 自动升级） |
+| 桌面零回归红线 | ✅ 全程遵守 | 所有响应式改动为媒体内增量或 JS 断点分支；AppTopbar >=1024 DOM 不变（v-else 分支） |
+
+配套文档：[frontend-component-usage-guide.md](./frontend-component-usage-guide.md)（组件 props 清单 + 迁移前后对照 + 断点规范）。
+执行记录：[../handoff/2026-09-13-frontend-responsive-componentization-steps.md](../handoff/2026-09-13-frontend-responsive-componentization-steps.md)（逐 commit 登记）。
