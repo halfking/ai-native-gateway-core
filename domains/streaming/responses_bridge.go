@@ -620,6 +620,17 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 							// an unterminated stream. MayWriteTerminal inside
 							// finishAttempt keeps pre-commit attempts silent for
 							// transparent failover.
+							//
+							// FlushHoldback first: the survival L1 holdback window
+							// (5s/20 chunks) holds semantic frames WITHOUT advancing
+							// the gate commit state, so short streams end entirely
+							// inside the window and MayWriteTerminal would stay
+							// false forever (commit_state=metadata at finish). The
+							// coordinator's Finish flushes held deltas but nobody
+							// re-renders the terminal afterwards — force-close the
+							// window here so the commit lands BEFORE the terminal
+							// rendering decision.
+							_ = gate.FlushHoldback()
 							scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 							return StreamOutcome{ChunkCount: chunkCount}
 						}
@@ -665,6 +676,11 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 						ChunkCount:  chunkCount,
 					}
 				}
+				// FlushHoldback: force-close the survival L1 holdback window so
+				// held deltas commit BEFORE the terminal rendering decision —
+				// otherwise a stream that ends inside the window (commit_state
+				// stuck at metadata) skips response.completed entirely.
+				_ = gate.FlushHoldback()
 				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				return StreamOutcome{ChunkCount: chunkCount}
 			}
@@ -1018,6 +1034,11 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 					}
 					return outcome
 				}
+				// FlushHoldback: force-close the survival L1 holdback window so
+				// held deltas commit BEFORE the terminal rendering decision —
+				// otherwise a stream that ends inside the window (commit_state
+				// stuck at metadata) skips response.completed entirely.
+				_ = gate.FlushHoldback()
 				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				return StreamOutcome{ChunkCount: chunkCount}
 			case streamReadTimeout:
@@ -1069,6 +1090,11 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		payload := strings.TrimPrefix(trimmed, "data: ")
 		if payload == "[DONE]" {
 			upstreamDoneReceived = true
+			// FlushHoldback: force-close the survival L1 holdback window so
+			// held deltas commit BEFORE the terminal rendering decision —
+			// otherwise a stream that ends inside the window (commit_state
+			// stuck at metadata) skips response.completed entirely.
+			_ = gate.FlushHoldback()
 			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 			return StreamOutcome{ChunkCount: chunkCount}
 		}
