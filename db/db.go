@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 )
@@ -395,6 +397,17 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	return nil
 }
 
+// sessionSummariesArchival backfill bounds: 2000-row chunks keep per-statement
+// row-lock windows in the milliseconds range (far below the shared PG's 30s
+// statement_timeout), and the per-boot wall-clock slice means a leftover
+// backfill simply resumes on the next boot — NULL last_accessed_at is
+// archival-safe (predicates treat it as "not accessed recently"), so boot
+// never waits on convergence.
+const (
+	sessionSummariesBackfillBatch = 2000
+	sessionSummariesBackfillSlice = 20 * time.Second
+)
+
 // ensureSessionSummariesArchivalSchema mirrors sql/migrations/startup/
 // 471_session_summaries_archival.sql + 690_session_summaries_archived_ttl_index.sql.
 //
@@ -404,37 +417,187 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 // is in the ledger, so the columns below never materialised. Without them the
 // session_summaries TTL trimmer fails with "column archived_at does not
 // exist" on every boot and domains/sessionarchive cannot archive rows.
+//
+// 2026-09-11 (deploy-lib RUNBOOK-zstd-deploy §7.7 gate finding): replaying
+// the migration verbatim — one whole-table `UPDATE … WHERE last_accessed_at
+// IS NULL` plus two plain CREATE INDEX in a single batch — is a structural
+// boot blocker on live databases: with active traffic the shared PG's 30s
+// statement_timeout (SQLSTATE 57014) kills the batch, retries fail
+// identically, and the "postgres disabled" latch turns readyz 503 on every
+// boot. End state is unchanged; only the execution strategy is lock-safe:
+//   - columns: nullable ADD COLUMN (metadata-only) under a short lock_timeout
+//     with bounded retries against transient lock-queue contention;
+//   - backfill: chunked by the session_key watermark (2k rows per statement,
+//     per-statement lock/statement timeouts) inside a wall-clock slice; the
+//     watermark only ever advances (chunk_max computed with DB collation in
+//     the same statement), so the loop terminates even while traffic inserts
+//     new NULL rows, and a contended or exhausted slice degrades to "resume
+//     next boot" instead of failing boot;
+//   - indexes: CREATE INDEX CONCURRENTLY (never blocks DML), after dropping
+//     an INVALID leftover of a previously cancelled build — plain
+//     IF NOT EXISTS would skip the rebuild forever.
+//
 // Idempotent, and a no-op on databases where 471/690 already applied.
 func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	_, err := d.pool.Exec(ctx, `
-		ALTER TABLE public.session_summaries ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ;
-		ALTER TABLE public.session_summaries ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
 
-		-- 471 backfill: rows predating the column read as "last touched at
-		-- last request". Converges: the summary writer leaves it NULL and the
-		-- archival predicates treat NULL as "not accessed recently".
-		UPDATE public.session_summaries SET last_accessed_at = last_request_at
-		WHERE last_accessed_at IS NULL;
+	// 1) Columns. Nullable ADD COLUMN is metadata-only, but it still needs a
+	// momentary ACCESS EXCLUSIVE lock; cap the lock-queue wait at 2s per
+	// attempt so a busy writer cannot stack every request behind the DDL wait.
+	var colErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-time.After(2 * time.Second):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		_, colErr = d.pool.Exec(ctx, `
+			SET LOCAL lock_timeout = '2s';
+			ALTER TABLE public.session_summaries ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ;
+			ALTER TABLE public.session_summaries ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+		`)
+		if colErr == nil {
+			break
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(colErr, &pgErr) && pgErr.Code == "55P03" {
+			continue
+		}
+		return fmt.Errorf("ensure session_summaries archival columns: %w", colErr)
+	}
+	if colErr != nil {
+		return fmt.Errorf("ensure session_summaries archival columns: %w", colErr)
+	}
 
-		CREATE INDEX IF NOT EXISTS idx_session_summaries_archival
-			ON public.session_summaries (archived_at, last_accessed_at, last_request_at)
-			WHERE archived_at IS NULL;
-		CREATE INDEX IF NOT EXISTS idx_session_summaries_archived
-			ON public.session_summaries (archived_at, last_request_at)
-			WHERE archived_at IS NOT NULL;
+	conn, err := d.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
 
+	// 2) Backfill, chunked by the session_key watermark. Rows predating the
+	// column read as "last touched at last request". Converges across boots:
+	// the summary writer leaves new rows NULL and the archival predicates
+	// treat NULL as "not accessed recently". chunk_max is computed by the
+	// database (window function) so the watermark advances in DB collation
+	// order — a Go-side byte-wise max could skip keys under a punctuation-
+	// aware collation.
+	backfillDeadline := time.Now().Add(sessionSummariesBackfillSlice)
+	watermark := ""
+	backfilled := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if time.Now().After(backfillDeadline) {
+			slog.Warn("session_summaries last_accessed_at backfill slice exhausted; resumes next boot",
+				"rows_backfilled", backfilled, "watermark", watermark)
+			break
+		}
+		rows, err := conn.Query(ctx, `
+			WITH chunk AS (
+				SELECT session_key, max(session_key) OVER () AS chunk_max
+				FROM public.session_summaries
+				WHERE session_key > $1
+				  AND last_accessed_at IS NULL
+				  AND last_request_at IS NOT NULL
+				ORDER BY session_key
+				LIMIT $2
+			)
+			UPDATE public.session_summaries ss
+			SET last_accessed_at = ss.last_request_at
+			FROM chunk c
+			WHERE ss.session_key = c.session_key
+			RETURNING c.chunk_max
+		`, watermark, sessionSummariesBackfillBatch)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && (pgErr.Code == "55P03" || pgErr.Code == "57014") {
+				slog.Warn("session_summaries backfill chunk contended; resumes next boot",
+					"pgcode", pgErr.Code, "rows_backfilled", backfilled, "watermark", watermark)
+				break
+			}
+			return fmt.Errorf("session_summaries archival backfill chunk: %w", err)
+		}
+		watermarks, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return fmt.Errorf("session_summaries archival backfill chunk: %w", err)
+		}
+		if len(watermarks) == 0 {
+			break
+		}
+		watermark = watermarks[0]
+		backfilled += len(watermarks)
+	}
+
+	// 3) Archival indexes, built CONCURRENTLY so hot-path DML never blocks.
+	// The pinned conn raises statement_timeout for the build (shared PG
+	// default is 30s) and restores it before release.
+	if _, err := conn.Exec(ctx, `SET statement_timeout = '10min'`); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SET statement_timeout = DEFAULT`)
+	}()
+
+	for _, idx := range []struct{ name, ddl string }{
+		{
+			name: "idx_session_summaries_archival",
+			ddl: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_session_summaries_archival
+				ON public.session_summaries (archived_at, last_accessed_at, last_request_at)
+				WHERE archived_at IS NULL`,
+		},
+		{
+			name: "idx_session_summaries_archived",
+			ddl: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_session_summaries_archived
+				ON public.session_summaries (archived_at, last_request_at)
+				WHERE archived_at IS NOT NULL`,
+		},
+	} {
+		var valid bool
+		err := conn.QueryRow(ctx, `
+			SELECT i.indisvalid
+			FROM pg_index i
+			JOIN pg_class c ON c.oid = i.indexrelid
+			JOIN pg_class t ON t.oid = i.indrelid
+			WHERE c.relname = $1 AND t.relname = 'session_summaries'
+			  AND t.relnamespace = 'public'::regnamespace
+		`, idx.name).Scan(&valid)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			// index absent: build it below
+		case err != nil:
+			return fmt.Errorf("inspect %s: %w", idx.name, err)
+		case valid:
+			continue
+		default:
+			// A cancelled CONCURRENTLY build leaves an INVALID index behind;
+			// IF NOT EXISTS would skip the rebuild forever. DROP INDEX
+			// CONCURRENTLY cannot run inside a transaction block — both
+			// statements run standalone on this pinned conn.
+			slog.Warn("dropping INVALID index left by an interrupted build", "index", idx.name)
+			if _, err := conn.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS public.`+idx.name); err != nil {
+				return fmt.Errorf("drop invalid %s: %w", idx.name, err)
+			}
+		}
+		if _, err := conn.Exec(ctx, idx.ddl); err != nil {
+			return fmt.Errorf("create %s: %w", idx.name, err)
+		}
+	}
+
+	if _, err := d.pool.Exec(ctx, `
 		INSERT INTO public.schema_migrations (version, description)
 		VALUES ('471', 'session_summaries_archival'),
 		       ('690', 'session_summaries archived ttl index')
 		ON CONFLICT (version) DO NOTHING;
-	`)
-	if err != nil {
+	`); err != nil {
 		return fmt.Errorf("ensure session_summaries archival schema: %w", err)
 	}
-	slog.Info("session_summaries archival schema ensured")
+	slog.Info("session_summaries archival schema ensured", "backfilled_rows", backfilled)
 	return nil
 }
 
