@@ -1,8 +1,13 @@
 package providercap
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 )
@@ -129,4 +134,76 @@ func BalanceURL(baseURL string, desc Descriptor) string {
 	}
 	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	return base + desc.BalanceEndpoint
+}
+
+// ExtractJSONPath walks a dot-separated path ("total_available",
+// "balance_infos.0.total_balance") through already-decoded JSON and returns
+// the terminal value as a float64. Numeric JSON strings ("10.73") are
+// accepted — DeepSeek returns string amounts, and rejecting them silently
+// zeroes the balance display. Returns ok=false for missing/malformed paths.
+func ExtractJSONPath(parsed any, path string) (float64, bool) {
+	cur := parsed
+	for _, p := range strings.Split(path, ".") {
+		switch v := cur.(type) {
+		case map[string]any:
+			cur = v[p]
+		case []any:
+			idx := 0
+			//nolint:errcheck // best-effort parse, non-critical
+			fmt.Sscanf(p, "%d", &idx)
+			if idx >= len(v) {
+				return 0, false
+			}
+			cur = v[idx]
+		default:
+			return 0, false
+		}
+		if cur == nil {
+			return 0, false
+		}
+	}
+	switch v := cur.(type) {
+	case float64:
+		return v, true
+	case string:
+		var f float64
+		if _, err := fmt.Sscanf(v, "%f", &f); err == nil {
+			return f, true
+		}
+	}
+	return 0, false
+}
+
+// FetchBalanceUSD GETs a vendor balance endpoint and extracts the USD value
+// via desc.BalanceJSONPath. Shared by credential_probe_v2 (routine display
+// refresh) and bg/balance_floor_guard (floor re-check for pulled credentials).
+// Network/parse failures return (0, false) — callers treat balance as unknown
+// and never act on stale numbers.
+func FetchBalanceUSD(ctx context.Context, client *http.Client, url, apiKey string, desc Descriptor) (float64, bool) {
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, false
+	}
+	ApplyAuthHeaders(req, desc, apiKey)
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, false
+	}
+	//nolint:errcheck // best-effort close
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return 0, false
+	}
+	var parsed any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return 0, false
+	}
+	return ExtractJSONPath(parsed, desc.BalanceJSONPath)
 }

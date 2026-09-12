@@ -143,8 +143,20 @@ func (p *BalanceQuotaProbe) SetOnQuotaRecharged(fn func(credID int, source strin
 // charging two upstream probes for one accepted webhook.
 //
 // credID <= 0 is ignored (same behavior as ForceProbe).
+//
+// 2026-09-13: rows pulled by bg/balance_floor_guard
+// (state_reason_code='balance_floor') are NOT dispatched — a chat probe would
+// succeed against their remaining buffer and un-pull them (writeHealth allows
+// $8='ok' through). Their recharge recovery belongs to the guard's own
+// balance/plan re-checks, which run every sweep.
 func (p *BalanceQuotaProbe) OnQuotaRecharged(credID int, source string) {
 	if credID <= 0 {
+		return
+	}
+	if p.credentialFloorPulled(credID) {
+		slog.Info("balance_quota_probe: recharge webhook ignored for balance_floor-pulled credential (guard owns recovery)",
+			"credential_id", credID,
+			"source", source)
 		return
 	}
 	if p.probeNowAsync != nil {
@@ -160,6 +172,26 @@ func (p *BalanceQuotaProbe) OnQuotaRecharged(credID int, source string) {
 		"credential_id", credID,
 		"source", source,
 		"mode", map[bool]string{true: "immediate", false: "delayed_fallback"}[p.probeNowAsync != nil])
+}
+
+// credentialFloorPulled reports whether the credential is currently pulled by
+// bg/balance_floor_guard. DB errors fail-open (dispatch proceeds) so a
+// transient outage can't silently swallow recharge signals.
+func (p *BalanceQuotaProbe) credentialFloorPulled(credID int) bool {
+	if p.db == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var reason string
+	err := p.db.QueryRow(ctx, `
+		SELECT COALESCE(state_reason_code, '')
+		FROM credentials
+		WHERE id = $1
+		  AND quota_state = 'balance_exhausted'
+		  AND COALESCE(state_reason_code, '') = 'balance_floor'
+	`, credID).Scan(&reason)
+	return err == nil && reason == "balance_floor"
 }
 
 func (p *BalanceQuotaProbe) Start(ctx context.Context) {
@@ -355,11 +387,20 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 	// of the exhausted state. The new guard requires EITHER a
 	// configured default_probe_model OR a routable binding on the
 	// credential — if neither is true the probe really cannot run.
+	//
+	// 2026-09-13 balance_floor guard exemption: rows pulled by
+	// bg/balance_floor_guard (state_reason_code='balance_floor') still
+	// have buffer quota left, so a real chat probe would SUCCEED and
+	// writeHealth's hard-quota guard ($8='ok' passes) would flip them
+	// straight back to ok/ready — a 2-minute ping-pong that burns a
+	// probe token each cycle. Recovery for floor-pulled rows belongs to
+	// the guard's own balance/plan re-checks, never to a chat probe.
 	rows, err := p.db.Query(timeoutCtx, `
 		SELECT c.id
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.quota_state IN ('balance_exhausted', 'permanently_exhausted')
+		  AND COALESCE(c.state_reason_code, '') <> 'balance_floor'
 		  AND c.status = 'active'
 		  AND c.lifecycle_status = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE

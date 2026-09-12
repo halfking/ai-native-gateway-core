@@ -222,7 +222,15 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			       c.rpm_limit,
 			       c.tpm_limit,
 			       c.max_queue_depth,
-		       c.max_queue_wait_ms
+		       c.max_queue_wait_ms,
+		       c.balance_floor_usd::float8,
+		       c.quota_floor_tokens,
+		       c.quota_floor_percent::float8,
+		       c.plan_quota_kind,
+		       c.plan_quota_windows,
+		       c.plan_quota_remaining_tokens,
+		       c.plan_quota_used_percent::float8,
+		       c.plan_quota_checked_at
 		FROM credentials c
 		WHERE c.provider_id = $1
 		  -- 2026-08-31: 软删除的凭据不在任何列表中返回
@@ -236,56 +244,64 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 	defer rows.Close()
 
 	type cred struct {
-		ID                     int        `json:"id"`
-		ProviderID             int        `json:"provider_id"`
-		Label                  string     `json:"label"`
-		Status                 string     `json:"status"`
-		TrustLevel             string     `json:"trust_level"`
-		ConcurrencyLimit       *int       `json:"concurrency_limit"`
-		BalanceUSD             *float64   `json:"balance_usd"`
-		PlanType               string     `json:"plan_type"`
-		CircuitState           string     `json:"circuit_state"`
-		CircuitOpenedAt        *time.Time `json:"circuit_opened_at"`
-		ConsecutiveFailures    int        `json:"consecutive_failures"`
-		CoolingUntil           *time.Time `json:"cooling_until"`
-		LifecycleStatus        string     `json:"lifecycle_status"`
-		AvailabilityState      string     `json:"availability_state"`
-		AvailabilityRecoverAt  *time.Time `json:"availability_recover_at"`
-		QuotaState             string     `json:"quota_state"`
-		QuotaRecoverAt         *time.Time `json:"quota_recover_at"`
-		StateReasonCode        *string    `json:"state_reason_code"`
-		StateReasonDetail      *string    `json:"state_reason_detail"`
-		StateUpdatedAt         *time.Time `json:"state_updated_at"`
-		HealthStatus           string     `json:"health_status"`
-		HealthCheckedAt        *time.Time `json:"health_checked_at"`
-		HealthSource           *string    `json:"health_source"`
-		HealthWarningCode      *string    `json:"health_warning_code"`
-		HealthError            *string    `json:"health_error"`
-		HealthLatencyMs        *int       `json:"health_latency_ms"`
-		HealthProbeModel       *string    `json:"health_probe_model"`
-		ApiModelsOk            *bool      `json:"api_models_ok"`
-		ApiModelsLastCheckedAt *time.Time `json:"api_models_last_checked_at"`
-		ApiModelsError         *string    `json:"api_models_error"`
-		EffectiveAt            *time.Time `json:"effective_at"`
-		ExpiresAt              *time.Time `json:"expires_at"`
-		Tags                   []string   `json:"tags"`
-		Notes                  string     `json:"notes"`
-		KeyMasked              *string    `json:"key_masked"`
-		KeyMaskError           *string    `json:"key_mask_error"`
-		FpSlotLimit            *int       `json:"fp_slot_limit"`
-		FpSlotsUsed            *int       `json:"fp_slots_used"`
-		FpSlotsFree            *int       `json:"fp_slots_free"`
-		EffectiveFpSlotLimit   *int       `json:"effective_fp_slot_limit"`
-		ManualDisabled         bool       `json:"manual_disabled"`
-		EffectiveState         string     `json:"effective_state"`
-		EffectiveReason        string     `json:"effective_reason,omitempty"`
-		CreatedAt              *time.Time `json:"created_at"`
-		UpdatedAt              *time.Time `json:"updated_at"`
-		ConcurrencyMode        string     `json:"concurrency_mode"`
-		RPMLimit               *int       `json:"rpm_limit"`
-		TPMLimit               *int       `json:"tpm_limit"`
-		MaxQueueDepth          *int       `json:"max_queue_depth"`
-		MaxQueueWaitMS         *int       `json:"max_queue_wait_ms"`
+		ID                       int             `json:"id"`
+		ProviderID               int             `json:"provider_id"`
+		Label                    string          `json:"label"`
+		Status                   string          `json:"status"`
+		TrustLevel               string          `json:"trust_level"`
+		ConcurrencyLimit         *int            `json:"concurrency_limit"`
+		BalanceUSD               *float64        `json:"balance_usd"`
+		PlanType                 string          `json:"plan_type"`
+		CircuitState             string          `json:"circuit_state"`
+		CircuitOpenedAt          *time.Time      `json:"circuit_opened_at"`
+		ConsecutiveFailures      int             `json:"consecutive_failures"`
+		CoolingUntil             *time.Time      `json:"cooling_until"`
+		LifecycleStatus          string          `json:"lifecycle_status"`
+		AvailabilityState        string          `json:"availability_state"`
+		AvailabilityRecoverAt    *time.Time      `json:"availability_recover_at"`
+		QuotaState               string          `json:"quota_state"`
+		QuotaRecoverAt           *time.Time      `json:"quota_recover_at"`
+		StateReasonCode          *string         `json:"state_reason_code"`
+		StateReasonDetail        *string         `json:"state_reason_detail"`
+		StateUpdatedAt           *time.Time      `json:"state_updated_at"`
+		HealthStatus             string          `json:"health_status"`
+		HealthCheckedAt          *time.Time      `json:"health_checked_at"`
+		HealthSource             *string         `json:"health_source"`
+		HealthWarningCode        *string         `json:"health_warning_code"`
+		HealthError              *string         `json:"health_error"`
+		HealthLatencyMs          *int            `json:"health_latency_ms"`
+		HealthProbeModel         *string         `json:"health_probe_model"`
+		ApiModelsOk              *bool           `json:"api_models_ok"`
+		ApiModelsLastCheckedAt   *time.Time      `json:"api_models_last_checked_at"`
+		ApiModelsError           *string         `json:"api_models_error"`
+		EffectiveAt              *time.Time      `json:"effective_at"`
+		ExpiresAt                *time.Time      `json:"expires_at"`
+		Tags                     []string        `json:"tags"`
+		Notes                    string          `json:"notes"`
+		KeyMasked                *string         `json:"key_masked"`
+		KeyMaskError             *string         `json:"key_mask_error"`
+		FpSlotLimit              *int            `json:"fp_slot_limit"`
+		FpSlotsUsed              *int            `json:"fp_slots_used"`
+		FpSlotsFree              *int            `json:"fp_slots_free"`
+		EffectiveFpSlotLimit     *int            `json:"effective_fp_slot_limit"`
+		ManualDisabled           bool            `json:"manual_disabled"`
+		EffectiveState           string          `json:"effective_state"`
+		EffectiveReason          string          `json:"effective_reason,omitempty"`
+		CreatedAt                *time.Time      `json:"created_at"`
+		UpdatedAt                *time.Time      `json:"updated_at"`
+		ConcurrencyMode          string          `json:"concurrency_mode"`
+		RPMLimit                 *int            `json:"rpm_limit"`
+		TPMLimit                 *int            `json:"tpm_limit"`
+		MaxQueueDepth            *int            `json:"max_queue_depth"`
+		MaxQueueWaitMS           *int            `json:"max_queue_wait_ms"`
+		BalanceFloorUSD          *float64        `json:"balance_floor_usd"`
+		QuotaFloorTokens         *int64          `json:"quota_floor_tokens"`
+		QuotaFloorPercent        *float64        `json:"quota_floor_percent"`
+		PlanQuotaKind            *string         `json:"plan_quota_kind"`
+		PlanQuotaWindows         json.RawMessage `json:"plan_quota_windows"`
+		PlanQuotaRemainingTokens *int64          `json:"plan_quota_remaining_tokens"`
+		PlanQuotaUsedPercent     *float64        `json:"plan_quota_used_percent"`
+		PlanQuotaCheckedAt       *time.Time      `json:"plan_quota_checked_at"`
 	}
 
 	var creds []cred
@@ -336,6 +352,14 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			&c.TPMLimit,
 			&c.MaxQueueDepth,
 			&c.MaxQueueWaitMS,
+			&c.BalanceFloorUSD,
+			&c.QuotaFloorTokens,
+			&c.QuotaFloorPercent,
+			&c.PlanQuotaKind,
+			&c.PlanQuotaWindows,
+			&c.PlanQuotaRemainingTokens,
+			&c.PlanQuotaUsedPercent,
+			&c.PlanQuotaCheckedAt,
 		); err != nil {
 			slog.Warn("listCredentials scan failed", "error", err)
 			continue
@@ -431,6 +455,13 @@ type updateCredentialRequest struct {
 	TPMLimit         *int     `json:"tpm_limit"`
 	MaxQueueDepth    *int     `json:"max_queue_depth"`
 	MaxQueueWaitMS   *int     `json:"max_queue_wait_ms"`
+	// 2026-09-13 migration 701: 余额/套餐下限（NULL = 不启用）。显式传 0
+	// 表示清除下限（percent=0 若按字面解释会是"已用>=0 即摘出"，语义危险，
+	// 统一约定 0=清除）。bg/balance_floor_guard 周期评估，低于下限摘出路由
+	// 池，充值/窗口重置后自动恢复。
+	BalanceFloorUSD   *float64 `json:"balance_floor_usd"`
+	QuotaFloorTokens  *int64   `json:"quota_floor_tokens"`
+	QuotaFloorPercent *float64 `json:"quota_floor_percent"`
 }
 
 func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, providerID, credID int) {
@@ -457,6 +488,18 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	}
 	if req.TPMLimit != nil && *req.TPMLimit < 0 {
 		writeError(w, http.StatusBadRequest, "tpm_limit must be >= 0")
+		return
+	}
+	if req.BalanceFloorUSD != nil && (*req.BalanceFloorUSD < 0 || *req.BalanceFloorUSD > 1e9) {
+		writeError(w, http.StatusBadRequest, "balance_floor_usd must be in [0, 1e9]; 0 clears the floor")
+		return
+	}
+	if req.QuotaFloorTokens != nil && *req.QuotaFloorTokens < 0 {
+		writeError(w, http.StatusBadRequest, "quota_floor_tokens must be >= 0; 0 clears the floor")
+		return
+	}
+	if req.QuotaFloorPercent != nil && (*req.QuotaFloorPercent < 0 || *req.QuotaFloorPercent > 100) {
+		writeError(w, http.StatusBadRequest, "quota_floor_percent must be in [0, 100]; 0 clears the floor")
 		return
 	}
 
@@ -581,6 +624,27 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	}
 	if req.MaxQueueWaitMS != nil {
 		sets = append(sets, "max_queue_wait_ms = "+arg(*req.MaxQueueWaitMS))
+	}
+	if req.BalanceFloorUSD != nil {
+		if *req.BalanceFloorUSD <= 0 {
+			sets = append(sets, "balance_floor_usd = NULL")
+		} else {
+			sets = append(sets, "balance_floor_usd = "+arg(*req.BalanceFloorUSD))
+		}
+	}
+	if req.QuotaFloorTokens != nil {
+		if *req.QuotaFloorTokens <= 0 {
+			sets = append(sets, "quota_floor_tokens = NULL")
+		} else {
+			sets = append(sets, "quota_floor_tokens = "+arg(*req.QuotaFloorTokens))
+		}
+	}
+	if req.QuotaFloorPercent != nil {
+		if *req.QuotaFloorPercent <= 0 {
+			sets = append(sets, "quota_floor_percent = NULL")
+		} else {
+			sets = append(sets, "quota_floor_percent = "+arg(*req.QuotaFloorPercent))
+		}
 	}
 	if len(sets) == 0 {
 		if err := tx.Commit(ctx); err != nil {
