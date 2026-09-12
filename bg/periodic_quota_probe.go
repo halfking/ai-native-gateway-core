@@ -297,17 +297,13 @@ func (p *PeriodicQuotaProbe) probePreExhausted(ctx context.Context) (int, error)
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.quota_state = 'periodic_exhausted'
 		  AND c.status = 'active'
-		  -- 2026-09-13 closeout (P3): admit auto-disabled rows — writeHealth
-		  -- explicitly re-enables disabled+auto_disabled_at rows on a
-		  -- successful periodic probe, but no probe target could reach them
-		  -- (cycler and this scan both required lifecycle='active').
-		  AND (
-		      c.lifecycle_status = 'active'
-		      OR (
-		          c.lifecycle_status = 'disabled'
-		          AND c.auto_disabled_at IS NOT NULL
-		      )
-		  )
+		  -- 2026-09-13 audit round F3: the pre-exhausted (boundary-approaching)
+		  -- phase keeps lifecycle='active' only. Auto-disabled rows are served
+		  -- by the post-expiry phase; probing them here is a doomed request —
+		  -- writeHealth's disabled-row admission requires quota_recover_at
+		  -- IS NULL OR <= now(), so a pre-boundary result would be discarded
+		  -- (0 rows) and the vendor request wasted.
+		  AND c.lifecycle_status = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
