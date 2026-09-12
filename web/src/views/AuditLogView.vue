@@ -5,6 +5,10 @@ import { localeRef } from '../i18n'
 import { fmtDateCompact } from '../i18n/useFormat'
 import { ref, onMounted, computed } from 'vue'
 import { getAuditLogs, type AuditLogEntry } from '../api'
+// 2026-09-13 P2：筛选/分页收敛到 ui 组件（方案 §4.5.4/§4.5.6）
+import FilterBar from '../components/ui/FilterBar.vue'
+import type { FilterDefinition } from '../components/ui/filter-types'
+import PaginationBar from '../components/ui/PaginationBar.vue'
 
 const { t, te } = useI18n()
 const entries = ref<AuditLogEntry[]>([])
@@ -14,10 +18,14 @@ const size = ref(50)
 const loading = ref(false)
 const error = ref('')
 
-const filterActor = ref('')
-const filterAction = ref('')
-const filterFrom = ref('')
-const filterTo = ref('')
+const filters = ref<Record<string, string>>({ actor: '', action: '', from: '', to: '' })
+
+// FilterBar 声明式定义（label 走 computed 以随语言切换更新）
+const filterDefs = computed<FilterDefinition[]>(() => [
+  { key: 'actor', type: 'search', label: t('auditLog.filter.actorLabel'), placeholder: t('auditLog.filter.actorPlaceholder') },
+  { key: 'action', type: 'search', label: t('auditLog.filter.actionLabel'), placeholder: t('auditLog.filter.actionPlaceholder') },
+  { key: 'time', type: 'daterange', fromKey: 'from', toKey: 'to', fromLabel: t('auditLog.filter.fromLabel'), toLabel: t('auditLog.filter.toLabel') },
+])
 
 const detailVisible = ref(false)
 const detailEntry = ref<AuditLogEntry | null>(null)
@@ -31,10 +39,10 @@ async function load() {
     const r = await getAuditLogs({
       page: page.value,
       size: size.value,
-      actor: filterActor.value.trim() || undefined,
-      action: filterAction.value.trim() || undefined,
-      from: filterFrom.value ? new Date(filterFrom.value).toISOString() : undefined,
-      to: filterTo.value ? new Date(filterTo.value).toISOString() : undefined,
+      actor: filters.value.actor.trim() || undefined,
+      action: filters.value.action.trim() || undefined,
+      from: filters.value.from ? new Date(filters.value.from).toISOString() : undefined,
+      to: filters.value.to ? new Date(filters.value.to).toISOString() : undefined,
     })
     entries.value = r.entries || []
     total.value = r.total || 0
@@ -60,10 +68,12 @@ function changePage(delta: number) {
 }
 
 function clearFilters() {
-  filterActor.value = ''
-  filterAction.value = ''
-  filterFrom.value = ''
-  filterTo.value = ''
+  filters.value = { actor: '', action: '', from: '', to: '' }
+  resetPageAndLoad()
+}
+
+function onPageSizeChange(next: number) {
+  size.value = next
   resetPageAndLoad()
 }
 
@@ -148,62 +158,24 @@ onMounted(load)
 
     <div v-if="error" class="alert alert-danger" role="alert">{{ error }}</div>
 
-    <div class="compact-filter-bar compact-filter-bar--stacked">
-      <div class="cf-row">
-        <div class="cf-field cf-field--actor">
-          <span class="cf-label">{{ t('auditLog.filter.actorLabel') }}</span>
-          <input
-            v-model="filterActor"
-            type="text"
-            class="cf-input"
-            :placeholder="t('auditLog.filter.actorPlaceholder')"
-            :aria-label="t('auditLog.filter.actorAria')"
-            @keyup.enter="resetPageAndLoad"
-          />
-        </div>
-        <div class="cf-field cf-field--action">
-          <span class="cf-label">{{ t('auditLog.filter.actionLabel') }}</span>
-          <input
-            v-model="filterAction"
-            type="text"
-            class="cf-input"
-            :placeholder="t('auditLog.filter.actionPlaceholder')"
-            :aria-label="t('auditLog.filter.actionAria')"
-            @keyup.enter="resetPageAndLoad"
-          />
-        </div>
-        <div class="cf-field cf-field--time">
-          <span class="cf-label">{{ t('auditLog.filter.fromLabel') }}</span>
-          <input v-model="filterFrom" type="datetime-local" class="cf-input" :aria-label="t('auditLog.filter.fromAria')" />
-        </div>
-        <div class="cf-field cf-field--time">
-          <span class="cf-label">{{ t('auditLog.filter.toLabel') }}</span>
-          <input v-model="filterTo" type="datetime-local" class="cf-input" :aria-label="t('auditLog.filter.toAria')" />
-        </div>
-        <button class="btn btn-primary btn-sm" :disabled="loading" @click="resetPageAndLoad">{{ t('auditLog.filter.query') }}</button>
-        <button class="btn btn-ghost btn-sm" :disabled="loading" @click="clearFilters">{{ t('auditLog.filter.reset') }}</button>
-      </div>
-    </div>
+    <FilterBar
+      v-model="filters"
+      :definitions="filterDefs"
+      :loading="loading"
+      @search="resetPageAndLoad"
+      @clear="resetPageAndLoad"
+    />
 
-    <div v-if="!loading && total > 0" class="pagination-bar">
-      <div class="pagination-meta">
-        <span>{{ t('auditLog.pagination.total', { n: total }) }}</span>
-        <span>{{ t('auditLog.pagination.pageOf', { page, total: totalPages }) }}</span>
-        <label class="page-size-label">
-          <span class="text-muted">{{ t('auditLog.pagination.perPage') }}</span>
-          <select v-model.number="size" class="page-size-select" @change="resetPageAndLoad">
-            <option :value="25">25</option>
-            <option :value="50">50</option>
-            <option :value="100">100</option>
-            <option :value="200">200</option>
-          </select>
-        </label>
-      </div>
-      <div class="pagination-actions">
-        <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="changePage(-1)">{{ t('auditLog.pagination.previous') }}</button>
-        <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="changePage(1)">{{ t('auditLog.pagination.next') }}</button>
-      </div>
-    </div>
+    <PaginationBar
+      v-if="!loading && total > 0"
+      :page="page"
+      :page-size="size"
+      :total="total"
+      :page-sizes="[25, 50, 100, 200]"
+      @prev="changePage(-1)"
+      @next="changePage(1)"
+      @change-size="onPageSizeChange"
+    />
 
     <div class="card table-card">
       <div class="table-wrap">
@@ -265,25 +237,16 @@ onMounted(load)
       </div>
     </div>
 
-    <div v-if="!loading && total > 0" class="pagination-bar">
-      <div class="pagination-meta">
-        <span>{{ t('auditLog.pagination.total', { n: total }) }}</span>
-        <span>{{ t('auditLog.pagination.pageOf', { page, total: totalPages }) }}</span>
-        <label class="page-size-label">
-          <span class="text-muted">{{ t('auditLog.pagination.perPage') }}</span>
-          <select v-model.number="size" class="page-size-select" @change="resetPageAndLoad">
-            <option :value="25">25</option>
-            <option :value="50">50</option>
-            <option :value="100">100</option>
-            <option :value="200">200</option>
-          </select>
-        </label>
-      </div>
-      <div class="pagination-actions">
-        <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="changePage(-1)">{{ t('auditLog.pagination.previous') }}</button>
-        <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="changePage(1)">{{ t('auditLog.pagination.next') }}</button>
-      </div>
-    </div>
+    <PaginationBar
+      v-if="!loading && total > 0"
+      :page="page"
+      :page-size="size"
+      :total="total"
+      :page-sizes="[25, 50, 100, 200]"
+      @prev="changePage(-1)"
+      @next="changePage(1)"
+      @change-size="onPageSizeChange"
+    />
 
     <div v-if="detailVisible && detailEntry" class="drawer-backdrop" @click="closeDetail">
       <div class="drawer-panel card drawer-panel-wide" role="dialog" aria-labelledby="audit-detail-title" @click.stop>
@@ -350,18 +313,6 @@ onMounted(load)
   font-weight: 500;
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--accent-h);
-}
-
-.compact-filter-bar .cf-field--actor,
-.compact-filter-bar .cf-field--action {
-  flex: 1 1 160px;
-  min-width: 140px;
-  max-width: 220px;
-}
-
-.compact-filter-bar .cf-field--time {
-  flex: 0 1 200px;
-  min-width: 168px;
 }
 
 .table-card {
@@ -477,41 +428,6 @@ onMounted(load)
   font-size: 11px;
 }
 
-.pagination-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 12px;
-  flex-wrap: wrap;
-}
-
-.pagination-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--muted);
-  flex-wrap: wrap;
-}
-
-.page-size-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.page-size-select {
-  width: auto;
-  padding: 2px 6px;
-  font-size: 12px;
-}
-
-.pagination-actions {
-  display: flex;
-  gap: 8px;
-}
-
 .detail-meta {
   display: flex;
   flex-wrap: wrap;
@@ -532,24 +448,6 @@ onMounted(load)
   word-break: break-all;
   max-height: 320px;
   overflow: auto;
-}
-
-@media (max-width: 720px) {
-  .compact-filter-bar .cf-field--actor,
-  .compact-filter-bar .cf-field--action,
-  .compact-filter-bar .cf-field--time {
-    flex: 1 1 100%;
-    max-width: none;
-  }
-
-  .pagination-bar {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .pagination-actions {
-    justify-content: flex-end;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
