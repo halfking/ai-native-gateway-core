@@ -43,20 +43,70 @@ func isEmptyUpstreamChatResponse(body []byte) bool {
 func isEmptyChatChoices(raw json.RawMessage) bool {
 	var choices []struct {
 		Message struct {
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
-			ToolCalls        []any  `json:"tool_calls"`
+			Content          json.RawMessage `json:"content"`
+			ReasoningContent string          `json:"reasoning_content"`
+			ToolCalls        []any           `json:"tool_calls"`
 		} `json:"message"`
 	}
-	if json.Unmarshal(raw, &choices) != nil || len(choices) == 0 {
+	// R16: malformed choices → not empty (aligned with the executors copy);
+	// the converter/quality layers own semantics, the empty gate must not
+	// fail over on a gateway-side parse gap.
+	if json.Unmarshal(raw, &choices) != nil {
+		return false
+	}
+	if len(choices) == 0 {
 		return true
 	}
 	for _, choice := range choices {
-		if choice.Message.Content != "" || choice.Message.ReasoningContent != "" || len(choice.Message.ToolCalls) > 0 {
+		if choice.Message.ReasoningContent != "" || len(choice.Message.ToolCalls) > 0 {
+			return false
+		}
+		if chatContentHasOutput(choice.Message.Content) {
 			return false
 		}
 	}
 	return true
+}
+
+// chatContentHasOutput judges message.content in both wire shapes: a plain
+// string and a content-part array (multimodal / server-tool parts / refusal).
+// Unknown part types count as output — semantic attribution belongs to the
+// converter / IR layer (b2639182b), the empty gate must not reclassify
+// payload-carrying bodies as empty because of its own parsing gaps.
+func chatContentHasOutput(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false
+	}
+	if raw[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) != nil {
+			return false
+		}
+		return s != ""
+	}
+	if raw[0] == '[' {
+		var parts []struct {
+			Type    string `json:"type"`
+			Text    string `json:"text"`
+			Refusal string `json:"refusal"`
+		}
+		if json.Unmarshal(raw, &parts) != nil {
+			return true // array shape we cannot interpret — assume payload
+		}
+		for _, p := range parts {
+			if p.Text != "" || p.Refusal != "" {
+				return true
+			}
+			switch p.Type {
+			case "", "text", "output_text", "refusal":
+				// text-shaped: only non-empty text/refusal counts
+			default:
+				return true // unknown part type: payload we cannot represent
+			}
+		}
+		return false
+	}
+	return false
 }
 
 func isEmptyAnthropicContent(raw json.RawMessage) bool {
@@ -85,6 +135,14 @@ func isEmptyAnthropicContent(raw json.RawMessage) bool {
 			return false
 		case "tool_use":
 			return false
+		default:
+			// R16 (2026-09-12): unrecognized block types count as output so
+			// unknown-only bodies reach the IR OnlyUnsupportedBlocks guard
+			// (KindConversion, stage=gateway) instead of an empty-response
+			// failover that demotes the provider for a gateway gap.
+			if block.Type != "" {
+				return false
+			}
 		}
 	}
 	return true
@@ -107,8 +165,20 @@ func isEmptyResponsesOutput(raw json.RawMessage) bool {
 		return true
 	}
 	for _, item := range output {
-		if item.Type == "function_call" && (item.CallID != "" || item.Name != "" || item.Arguments != "") {
-			return false
+		// R16: named output item types this classifier doesn't model
+		// (web_search_call, mcp_call, ...) count as output — same policy as
+		// the Anthropic block loop above.
+		switch item.Type {
+		case "function_call":
+			if item.CallID != "" || item.Name != "" || item.Arguments != "" {
+				return false
+			}
+		case "message", "reasoning":
+			// fall through to the content/summary checks below
+		default:
+			if item.Type != "" {
+				return false
+			}
 		}
 		for _, content := range item.Content {
 			if content.Text != "" {

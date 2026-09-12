@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
@@ -736,11 +737,95 @@ func TestAnthropicExecutor_EmptyNativeMessagesResponseIsRetryable(t *testing.T) 
 		`{"type":"message","content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{}}]}`,
 		`{"type":"error","error":{"type":"api_error","message":"boom"}}`,
 		`{"id":"unknown-shape"}`,
+		// R16 (2026-09-12): unrecognized block types count as output so the
+		// body reaches the WriteNonStreamResponse OnlyUnsupportedBlocks guard
+		// (KindConversion, stage=gateway) instead of an empty-response
+		// failover. container_upload is the case b2639182b was fixed for.
+		`{"type":"message","content":[{"type":"container_upload","id":"ctn_1"}]}`,
+		`{"type":"message","content":[{"type":"code_execution_tool_result","content":[]}]}`,
 	} {
 		if isEmptyAnthropicMessagesResponse([]byte(body)) {
 			t.Fatalf("isEmptyAnthropicMessagesResponse(%s) = true, want false", body)
 		}
 	}
+}
+
+// TestAnthropicExecutor_UnknownOnlyBodiesFailAsConversionNotEmpty locks the
+// R16 ordering contract of executeAnthropicOnce: the empty gate must let
+// unknown-block-only bodies through so WriteNonStreamResponse can attribute
+// them as KindConversion (stage=gateway: no provider demotion, no billing),
+// never as KindEmptyResponse (failover + provider demotion + billing refused).
+func TestAnthropicExecutor_UnknownOnlyBodiesFailAsConversionNotEmpty(t *testing.T) {
+	body := []byte(`{"type":"message","role":"assistant","model":"claude-opus-4-8","content":[{"type":"container_upload","id":"ctn_1"}],"stop_reason":"end_turn"}`)
+
+	if isEmptyAnthropicMessagesResponse(body) {
+		t.Fatal("precondition: unknown-only body must pass the empty gate")
+	}
+
+	ae := &AnthropicExecutor{
+		ClientProtocol: "openai-chat",
+		ProviderID:     1,
+		IR:             unknownOnlyIRStub{},
+	}
+	rec := httptest.NewRecorder()
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+	_, err := ae.WriteNonStreamResponse(rec, resp, "claude-opus-4-8", "fix", nil)
+	if err == nil {
+		t.Fatal("WriteNonStreamResponse must fail unknown-only bodies as conversion, got nil error")
+	}
+	var upErr *upstreampkg.Error
+	if !errors.As(err, &upErr) {
+		t.Fatalf("expected *upstream.Error, got %T: %v", err, err)
+	}
+	if upErr.Kind != errorsx.KindConversion {
+		t.Fatalf("kind = %s, want %s (KindEmptyResponse would demote the provider)", upErr.Kind, errorsx.KindConversion)
+	}
+	if !strings.Contains(upErr.Message, "container_upload") {
+		t.Fatalf("conversion error must name the offending block type, got: %s", upErr.Message)
+	}
+}
+
+// unknownOnlyIRStub implements irconv.Converter minimally: response parsing
+// delegates to the real ir.ParseAnthropicResponse, request-side methods are
+// unused by WriteNonStreamResponse.
+type unknownOnlyIRStub struct{}
+
+func (unknownOnlyIRStub) ParseOpenAI(body []byte) (*ir.InternalRequest, error) {
+	return nil, errors.New("not implemented")
+}
+func (unknownOnlyIRStub) ParseAnthropic(body []byte) (*ir.InternalRequest, error) {
+	return nil, errors.New("not implemented")
+}
+func (unknownOnlyIRStub) ParseResponses(body []byte) (*ir.InternalRequest, error) {
+	return nil, errors.New("not implemented")
+}
+func (unknownOnlyIRStub) SerializeOpenAI(req *ir.InternalRequest) ([]byte, error) {
+	return nil, errors.New("not implemented")
+}
+func (unknownOnlyIRStub) SerializeAnthropic(req *ir.InternalRequest) ([]byte, error) {
+	return nil, errors.New("not implemented")
+}
+func (unknownOnlyIRStub) ParseAnthropicResponse(body []byte) (*ir.InternalResponse, error) {
+	return ir.ParseAnthropicResponse(body)
+}
+func (unknownOnlyIRStub) ParseOpenAIResponse(body []byte) (*ir.InternalResponse, error) {
+	return ir.ParseOpenAIResponse(body)
+}
+func (unknownOnlyIRStub) SerializeOpenAIResponse(resp *ir.InternalResponse, clientModel string) ([]byte, error) {
+	return ir.SerializeOpenAIResponse(resp, clientModel)
+}
+func (unknownOnlyIRStub) SerializeAnthropicResponse(resp *ir.InternalResponse, clientModel string) ([]byte, error) {
+	return nil, errors.New("not implemented")
+}
+func (unknownOnlyIRStub) SerializeResponses(chunk *ir.StreamChunk, itemID string) string {
+	return ""
+}
+func (unknownOnlyIRStub) SerializeResponsesResponse(resp *ir.InternalResponse, clientModel string) ([]byte, error) {
+	return nil, errors.New("not implemented")
 }
 
 func TestExecutorAnthropic_EmptyNativeMessagesResponseDoesNotWriteClient(t *testing.T) {
