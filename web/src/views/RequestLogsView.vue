@@ -1273,7 +1273,7 @@ onMounted(async () => {
             <td style="padding:3px 6px;border:1px solid var(--border)">将历史事实作为"动态上下文"注入请求</td>
           </tr>
         </table>
-      </DataTable>
+      </div>
     </div>
 
     <!-- 2026-08-10: 筛选条件区可折叠卡片。
@@ -1571,6 +1571,7 @@ onMounted(async () => {
           </tr>
         </tbody>
       </table>
+      </DataTable>
     </div>
 
     <PaginationBar
