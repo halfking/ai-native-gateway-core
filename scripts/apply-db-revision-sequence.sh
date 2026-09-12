@@ -300,6 +300,17 @@ files=(
   # 漂移检测即失明(晋升行丢列,父表默认 NULL)。列在 hot(603)/parent(487)
   # 均已存在,纯 CREATE OR REPLACE,幂等收敛,down 无。697 已查生产双账本空闲。
   "$ROOT_DIR/sql/migrations/startup/697_request_logs_promote_system_fingerprint.sql"
+  # 2026-09-12 视图列缺口第二起:699 给 request_logs_with_current_month 追加
+  # raw_model_name lateral 阶段(485 加父表列、603 补 hot 列,但视图基础包装的
+  # 列交集在 485 之前冻结、链上从未重建)——integrity_fingerprint_drift 自
+  # 83bf582dd 起按近期窗口教义读视图并 SELECT raw_model_name,每周期 42703:
+  # 本机 2089 部署即时炸出,生产 252 视图同构(112 列、无 raw_model_name),
+  # 携带 83bf582dd 的下一个生产二进制上线即复现。696 的 system_fingerprint
+  # 在同一 select list 保留。纯 CREATE OR REPLACE VIEW(尾部追加列,无 DROP),
+  # 幂等收敛,down 无。编号前已查生产双账本(2026-09-12):schema_migrations
+  # 有 696/697、无 698/699;gateway_db_revision_sequences 跨项目最新 697,
+  # 698 预留给 promote 时区钉定(cf6eb457f),本迁移取 699。
+  "$ROOT_DIR/sql/migrations/startup/699_request_logs_view_raw_model_name.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

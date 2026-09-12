@@ -1,0 +1,70 @@
+package startup
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+// Migration 699 appends raw_model_name to the canonical
+// request_logs_with_current_month view. The 7-day fingerprint drift scanner
+// (bg/integrity_fingerprint_drift.go) selects raw_model_name from the view
+// since its read surface left the bare parent (83bf582dd / startup 696
+// doctrine) — but the wrapper chain's frozen base intersection predates 485,
+// so the column never surfaced and every scan failed with 42703 (observed
+// live on the local deploy DB; the shared 252 production PG carries the same
+// 112-column view shape and would reproduce it on the next scanner-bearing
+// binary). 699 mirrors 696: column-presence guard + CREATE OR REPLACE of the
+// canonical stage only, preserving the 696 fingerprint lateral.
+func TestMigration699ViewRawModelName(t *testing.T) {
+	migration, err := os.ReadFile("699_request_logs_view_raw_model_name.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	body := stripSQLComments(string(migration))
+
+	for _, required := range []string{
+		"BEGIN;",
+		// Column-presence guard: dynamically rebuilt chains (680 bootstrap /
+		// db.go self-heal on a post-485 database) already expose the column
+		// via the base wrapper — an unconditional CREATE OR REPLACE would
+		// fail with "column already exists".
+		"canonical_has_raw_model_name",
+		"IF canonical_has_raw_model_name THEN",
+		"CREATE OR REPLACE VIEW public.request_logs_with_current_month",
+		// raw_model_name rides the same hot-first lateral as 577/610/696 and
+		// the 696 fingerprint column stays in the same select list — a
+		// rebuild that dropped it would silently revert 696.
+		"source.request_class, source.due_at, source.system_fingerprint, source.raw_model_name",
+		"SELECT h.request_class, h.due_at, h.system_fingerprint, h.raw_model_name",
+		"SELECT p.request_class, p.due_at, p.system_fingerprint, p.raw_model_name",
+		"FROM public.request_logs_with_current_month_without_request_class_due_at v",
+		"COMMIT;",
+	} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("migration 699 missing %q", required)
+		}
+	}
+
+	// Readers must never observe a missing relation: the canonical view is
+	// replaced in place, wrappers stay untouched.
+	if strings.Contains(body, "DROP VIEW") {
+		t.Fatalf("migration 699 must not DROP the view (readers would see 42P01)")
+	}
+	if strings.Contains(body, "EXCEPTION WHEN OTHERS") {
+		t.Fatalf("migration 699 must not swallow errors")
+	}
+
+	// The upgrade channel must carry 699 (693-class gap: a migration that
+	// never reaches apply-db-revision-sequence.sh is inert on upgrade DBs —
+	// exactly how 694/695 sat unapplied on the shared production PG, and how
+	// 696/697 sat unapplied on the local deploy DB).
+	seq, err := os.ReadFile("../../../scripts/apply-db-revision-sequence.sh")
+	if err != nil {
+		t.Fatalf("read apply-db-revision-sequence.sh: %v", err)
+	}
+	if !strings.Contains(string(seq), "699_request_logs_view_raw_model_name.sql") {
+		t.Fatalf("apply-db-revision-sequence.sh does not carry migration 699 — " +
+			"upgrade-database deployments would never apply it")
+	}
+}
