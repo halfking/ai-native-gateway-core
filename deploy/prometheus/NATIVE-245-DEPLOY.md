@@ -85,50 +85,89 @@ cat /opt/monitoring/smoke/received.log    # 应看到 receiver=credential-team �
 > 第二十五轮——生产观测目标钉定为 **245 与 154 两台网关机**，necessity 三指标
 > （skip/retry/failed）与告警 `NodeProbeNecessityMirrorDeleteFailedHigh` 需要对两台机
 > 的**每个蓝绿槽位**都有数据。本节是仓库 `deploy/prometheus/prometheus.yml` 末尾
-> `llm-gateway-prod` 注释模板在 245 原生栈上的落地版。
+> `llm-gateway-prod-245/-154` 注释模板在 245 原生栈上的落地版。
+
+**预检结果（2026-09-12，仓库侧经 ssh 只读探测，未改动任何生产配置）**：
+
+- 245 Prometheus 在线（`/-/ready` OK）；active targets 仍只有旧 `llm-gateway`
+  （127.0.0.1:8781）+ 自抓——**`llm-gateway-prod-*` job 未加、接入未执行**；
+  `api/v1/rules` 无任何 Necessity 规则（alerts.yml 未同步）；
+  `api/v1/series` 查 necessity 指标为空。
+- **两机 admin key 不同值（实测，非假设）**：245 token 打 154:8781 返回 **401**；
+  key 指纹比对（len/MD5 前 8 位）：245 len=67/`8c828877`，154 len=51/`f7a0c4c2`。
+  → **154 必须拆专属 job + 独立 token 文件**（单 job 只能挂一个 bearer_token_file）。
+- **154 为单实例部署**：仅 `llm-gateway-go-canary@8781.service` 运行，8782 无监听
+  （245→154:8782 返回 000）。→ 154 只配 `gateway-154-a` 一个目标；154 起蓝绿 b 槽位
+  后再启用 154-b。245→154:8781 网络可达（401 是 HTTP 鉴权层的响应=网络通）。
+- **两机网关二进制均已含 necessity gate**：245/154 的 /metrics 都已暴露
+  `..._mirror_delete_failed_total 0` 与 `..._retry_total 0`（无标签 Counter，注册即以
+  0 暴露）。**`skip_total` 无系列属预期非故障**——它是带 `reason` 标签的 CounterVec
+  且无 sentinel 预热（`bg/probe_necessity.go`，唯一子系列创建点是首次 skip 事件的
+  `WithLabelValues(...).Inc()`），首次 necessity skip 发生前 /metrics 里不存在该系列。
+  第二十五轮文档"skip 计数器注册即预热"的说法有误（该表述套用了
+  credential 指标的 sentinel 预热先例），已随本轮修正：**接入验收用 failed_total 做
+  series 判据，不用 skip_total**。
+- 预检基线：两机 failed/retry 均为 0（进程启动以来无镜像删除翻动）——弱正面信号，
+  不构成遗留项 6 的收敛证据（仍需接入后按 runbook 观察窗口判读）。
 
 **为什么不能沿用现有 `127.0.0.1:8781` 单目标**：
 
 1. 只覆盖 245 本机，**154 完全在抓取面外**——154 上的 necessity 指标与告警数据不存在；
-2. 蓝绿切换后 active 端口在 8781/8782 **轮换**（2083 收尾文档实测），固定 8781 的抓取
-   恰在发版时刻集体落空（target DOWN），监控在最需要它的窗口致盲；
+2. 蓝绿切换后 active 端口在 8781/8782 **轮换**（245 侧，2083 收尾文档实测；154 当前
+   单实例无轮换），固定 8781 的抓取恰在发版时刻集体落空（target DOWN），监控在最
+   需要它的窗口致盲；
 3. 每节点抓**两个槽位**（`a`=8781，`b`=8782）：非 active 槽位 target DOWN 属预期噪声；
    `instance` 标签钉死为 `节点-槽位`（不随轮换漂移），面板与告警按 instance 分系列。
 
 **接入步骤（在 245 上执行）**：
 
 ```bash
+# 0. 建 154 专属 token 文件（两机 key 不同——预检实证，非可选项）
+#    154 上读取（勿把 key 明文写进任何仓库文件/文档）：
+#      grep '^LLM_GATEWAY_ADMIN_API_KEY=' /etc/llm-gateway-go/env | cut -d= -f2-
+#    经安全通道带入 245 落盘为 admin_token_154：
+#      install -m 600 /dev/null /opt/monitoring/prometheus/secrets/admin_token_154
+#      # 写入 154 的 key 内容
 # 1. 抓取目标：/opt/monitoring/prometheus/prometheus.yml 的 scrape_configs 追加
-#    （<HOST_154_ADDR> 换成 245 可达的 154 地址；先验证连通性，见第 4 步）
-#      - job_name: 'llm-gateway-prod'
+#    （两个 job——key 不同必须拆；与仓库 prometheus.yml 末尾注释模板一致）
+#      - job_name: 'llm-gateway-prod-245'
 #        scrape_interval: 15s
 #        static_configs:
 #          - targets: ['127.0.0.1:8781']
 #            labels: { instance: 'gateway-245-a', service: 'llm-gateway' }
 #          - targets: ['127.0.0.1:8782']
 #            labels: { instance: 'gateway-245-b', service: 'llm-gateway' }
-#          - targets: ['<HOST_154_ADDR>:8781']
-#            labels: { instance: 'gateway-154-a', service: 'llm-gateway' }
-#          - targets: ['<HOST_154_ADDR>:8782']
-#            labels: { instance: 'gateway-154-b', service: 'llm-gateway' }
 #        bearer_token_file: '/opt/monitoring/prometheus/secrets/admin_token'
-#    （admin_token 文件已存在=245 的 LLM_GATEWAY_ADMIN_API_KEY；154 网关的
-#      key 若与 245 不同，须另建 token 文件并拆出 154 专属 job——先 curl 验证）
-# 2. 校验 + 热加载
+#      - job_name: 'llm-gateway-prod-154'
+#        scrape_interval: 15s
+#        static_configs:
+#          - targets: ['47.97.111.154:8781']   # 预检实测可达（公网地址=ssh config 的 154）
+#            labels: { instance: 'gateway-154-a', service: 'llm-gateway' }
+#          # - targets: ['47.97.111.154:8782']  # 154-b：实测无监听，起蓝绿后再启用
+#          #   labels: { instance: 'gateway-154-b', service: 'llm-gateway' }
+#        bearer_token_file: '/opt/monitoring/prometheus/secrets/admin_token_154'
+# 2. 退役旧 llm-gateway job（127.0.0.1:8781）：同一端点被新 llm-gateway-prod-245
+#    覆盖，保留会产生双系列（旧 job 无 instance 钉定，蓝绿轮换后断系列）。
+#    LLMGatewayDown 告警已改为 up{job=~"llm-gateway.*"}，退役后继续生效。
+# 3. 校验 + 热加载（promtool 对部分函数错误返回 0——以 /-/reload 实际结果为准）
 /opt/monitoring/prometheus/promtool check config /opt/monitoring/prometheus/prometheus.yml
 curl -X POST 127.0.0.1:9090/-/reload
-# 3. 告警规则：仓库 deploy/prometheus/rules/alerts.yml 与 /opt/monitoring/prometheus/rules/
-#    同步（含 NodeProbeNecessityMirrorDeleteFailedHigh）后按上方惯例 reload
-# 4. 连通性/鉴权预检（在 245 上对 4 个目标各来一次）
-curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat /opt/monitoring/prometheus/secrets/admin_token)" http://127.0.0.1:8781/metrics
-curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat /opt/monitoring/prometheus/secrets/admin_token)" http://<HOST_154_ADDR>:8781/metrics   # 期望 200；401=两机 key 不同；000/超时=网络不通
+# 4. 告警规则：仓库 deploy/prometheus/rules/alerts.yml 与 /opt/monitoring/prometheus/rules/
+#    同步（含 NodeProbeNecessityMirrorDeleteFailedHigh + LLMGatewayDown 通配修正）
+#    后按上方惯例 reload
+# 5. 连通性/鉴权预检（2026-09-12 已实测：8781→401、8782→000，结论见上，无需重做；
+#    若 154 地址/端口拓扑变更后重测，期望 200；401=token 文件内容不对；000=网络不通）
 ```
 
 **接入后验收（Prometheus 侧）**：
 
 ```bash
-# 4 个 instance 各应有 llmgw_node_probe_necessity_skip_total 系列（计数器注册即预热）
-curl -s '127.0.0.1:9090/api/v1/series?match[]=llmgw_node_probe_necessity_skip_total' | python3 -m json.tool | grep instance
+# 3 个 instance（gateway-245-a/b、gateway-154-a）各应有一条值为 0 的
+# llmgw_node_probe_necessity_mirror_delete_failed_total 系列（无标签 Counter，
+# 注册即以 0 暴露——用它做接入 series 验收判据）
+curl -s '127.0.0.1:9090/api/v1/series?match[]=llmgw_node_probe_necessity_mirror_delete_failed_total' | python3 -m json.tool | grep instance
+# skip_total 系列为懒创建（带 reason 标签，首次 skip 事件才出现子系列）：
+# 接入成功后短时间内查不到 skip_total 属预期，非故障——勿以它判验收。
 # 告警规则已加载（应含 NodeProbeNecessityMirrorDeleteFailedHigh）
 curl -s '127.0.0.1:9090/api/v1/rules' | python3 -c 'import sys,json;d=json.load(sys.stdin);print([r["name"] for g in d["data"]["groups"] for r in g["rules"] if "Necessity" in r["name"]])'
 ```
@@ -137,14 +176,16 @@ curl -s '127.0.0.1:9090/api/v1/rules' | python3 -c 'import sys,json;d=json.load(
 `mirror_delete_retry_total` 偶发增长=瞬时失败被同轮吸收（设计内）；`failed_total` 在
 **同一 instance 上** 10m 增量 >5（即告警阈值）=该节点有 (cred,model) 镜像删除翻动循环
 → 按 handoff 遗留项 6 升级短 TTL 抑制；`skip_total` 单节点异常高 → 排查该节点 Redis
-键 schema（legacy/k2/dual）与 tenant 归属。蓝绿轮换后计数器从 0 重新累计属预期
-（新进程），`increase()` 自动处理清零；轮换后请在 **active 槽位的新 instance 系列**
-上继续判读。
+键 schema（legacy/k2/dual）与 tenant 归属——注意 skip_total 懒创建：**首次 skip 前无
+系列、面板 skip 泳道为空属预期**（与"未接入导致面板空"的区分：验收 series
+failed_total 存在=已接入）。蓝绿轮换后计数器从 0 重新累计属预期（新进程），
+`increase()` 自动处理清零；轮换后请在 **active 槽位的新 instance 系列**上继续判读。
 
 **边界（如实记录）**：Grafana 不在 245 原生栈内（本文件只覆盖 Prometheus +
 Alertmanager）——`selfcheck-necessity-dashboard.json` 面板需要 Grafana 实例方可导入
 （compose 栈内有；生产双机观测当前以 Prometheus UI / api/v1 查询为准，面板导入待
-Grafana 落点定夺）。
+Grafana 落点定夺）。预检为 ssh 只读探测（curl GET / grep / ss / systemctl list /
+key 指纹），未在生产机上执行任何写操作；接入写操作（本节步骤）仍待运维执行。
 
 ## 已知状态（2026-08-18）
 

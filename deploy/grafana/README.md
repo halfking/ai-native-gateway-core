@@ -95,7 +95,7 @@
 
 **使用场景:** 上线观察（handoff 遗留项 6 判读规则：retry 偶发增长为设计内吸收；failed 持续增长触发 `NodeProbeNecessityMirrorDeleteFailedHigh` 告警）；skip 异常偏高时优先排查 Redis 键 schema（legacy/k2/dual）与 tenant 归属
 
-**双机观测口径（2026-09-12 修正）:** 生产观测目标为 245 与 154 两台网关机（handoff 第二十五轮）——skip 面板按 `instance` 分系列（`sum by (instance, reason)`），retry/failures 面板图例带 `{{instance}}`；`instance` 需在抓取侧钉为 `gateway-<节点>-<槽位>`（蓝绿轮换 8781/8782 不漂移），抓取目标模板见 `deploy/prometheus/prometheus.yml` 的 `llm-gateway-prod` 注释块与 `deploy/prometheus/NATIVE-245-DEPLOY.md` 的"双机观测接入"节。没有双机抓取数据时面板为空，属未接入而非故障。
+**双机观测口径（2026-09-12 修正）:** 生产观测目标为 245 与 154 两台网关机（handoff 第二十五轮）——skip 面板按 `instance` 分系列（`sum by (instance, reason)`），retry/failures 面板图例带 `{{instance}}`；`instance` 需在抓取侧钉为 `gateway-<节点>-<槽位>`（蓝绿轮换 8781/8782 不漂移），抓取目标模板见 `deploy/prometheus/prometheus.yml` 的 `llm-gateway-prod-245/-154` 注释块与 `deploy/prometheus/NATIVE-245-DEPLOY.md` 的"双机观测接入"节。没有双机抓取数据时面板为空，属未接入而非故障；**已接入后 skip 泳道仍可能为空**——`skip_total` 是带 `reason` 标签的 CounterVec 且无 sentinel 预热，首次 necessity skip 事件前该系列不存在（接入验收用 `mirror_delete_failed_total` 的 0 值系列判据，勿用 skip_total）。
 
 ---
 
@@ -198,7 +198,7 @@ docker-compose restart grafana
 - `llm_gateway_proxy_transport_invalidations_total` - Transport 失效次数
 
 ### 自检必要性指标
-- `llmgw_node_probe_necessity_skip_total{reason}` - 必要性闸门跳过的自检探测计数（按原因：not_necessary_all_nodes_healthy / not_necessary_last_probe_healthy）
+- `llmgw_node_probe_necessity_skip_total{reason}` - 必要性闸门跳过的自检探测计数（按原因：not_necessary_all_nodes_healthy / not_necessary_last_probe_healthy；懒创建——首次 skip 前无系列）
 - `llmgw_node_probe_necessity_mirror_delete_retry_total` - skip 路径镜像删除的同轮即时重试计数（瞬时吸收量）
 - `llmgw_node_probe_necessity_mirror_delete_failed_total` - 镜像删除重试后仍失败计数（持续失败告警源，对应告警 `NodeProbeNecessityMirrorDeleteFailedHigh`）
 

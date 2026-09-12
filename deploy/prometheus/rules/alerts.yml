@@ -79,7 +79,10 @@ groups:
     interval: 30s
     rules:
       - alert: LLMGatewayDown
-        expr: up{job="llm-gateway"} == 0
+        # 2026-09-12: regex so the alert survives the two-node observation
+        # rename (llm-gateway-prod-245 / llm-gateway-prod-154, see
+        # NATIVE-245-DEPLOY.md) as well as the legacy compose job name.
+        expr: up{job=~"llm-gateway.*"} == 0
         for: 1m
         labels:
           severity: critical
