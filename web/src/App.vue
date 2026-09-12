@@ -329,7 +329,7 @@ function handleChangePasswordSuccess() {
 }
 
 /* 2026-09-12: 删除 2026-07-21 topbar 迁移后遗留的整套 sidebar 死样式
- * (.sidebar、.sidebar-*、.nav-*、.toggle-icon、.user-name、.version-tag 等约 350 行，
+ * (.sidebar / .sidebar-* / .nav-* / .toggle-icon / .user-name / .version-tag 等约 350 行，
  * 模板已无对应元素；连带清理 640px 媒体查询中的 .main-header 系列)。 */
 
 .main-content {
