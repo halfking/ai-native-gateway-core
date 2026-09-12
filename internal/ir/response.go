@@ -426,9 +426,24 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 			}
 		case []any:
 			for _, item := range c {
-				if m, ok := item.(map[string]any); ok {
-					ir.Content = append(ir.Content, parseOpenAIResponseContentBlock(m))
+				m, ok := item.(map[string]any)
+				if !ok {
+					continue
 				}
+				block := parseOpenAIResponseContentBlock(m)
+				// R21 (2026-09-13, closes R16 P2-1): record unrepresentable
+				// parts (server_tool_use, web_search_tool_result, ...) —
+				// parity with ParseAnthropicResponse's UnknownBlockTypes, so
+				// empty-response guards can attribute the response as
+				// unsupported instead of silently succeeding with empty
+				// content.
+				if block.Type != "" && block.Type != "text" && block.Type != "tool_use" &&
+					block.Type != "refusal" &&
+					len(ir.UnknownBlockTypes) < maxUnknownBlockTypes &&
+					!slices.Contains(ir.UnknownBlockTypes, block.Type) {
+					ir.UnknownBlockTypes = append(ir.UnknownBlockTypes, block.Type)
+				}
+				ir.Content = append(ir.Content, block)
 			}
 		}
 
@@ -475,6 +490,13 @@ func parseOpenAIResponseContentBlock(m map[string]any) ResponseContentBlock {
 		name, _ := m["name"].(string)
 		inputRaw, _ := json.Marshal(m["input"])
 		return ResponseContentBlock{Type: "tool_use", ID: id, Name: name, Input: inputRaw}
+	case "refusal":
+		// R21 (2026-09-13, closes R16 P2-1): the refusal TEXT used to be
+		// dropped here — a refusal-only response collapsed to an empty-shell
+		// block with no semantics, which downstream guards could mis-count as
+		// an empty-but-successful turn. Preserve the text like a text block.
+		text, _ := m["refusal"].(string)
+		return ResponseContentBlock{Type: "refusal", Text: text}
 	case "":
 		if text, ok := m["text"].(string); ok {
 			return ResponseContentBlock{Type: "text", Text: text}
