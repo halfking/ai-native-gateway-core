@@ -80,6 +80,8 @@ export default {
   pagination: {
     total: '共 {n} 条',
     page: '第 {n} 页',
+    pageOf: "第 {page} / {pages} 页",
+    perPage: "每页",
     pageSize: '每页 {n} 条',
     previous: '上一页',
     next: '下一页',

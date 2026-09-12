@@ -79,6 +79,8 @@ export default {
   pagination: {
     total: '{n} insgesamt',
     page: 'Seite {n}',
+    pageOf: "Seite {page} von {pages}",
+    perPage: "pro Seite",
     pageSize: '{n} / Seite',
     previous: 'Zurück',
     next: 'Weiter',

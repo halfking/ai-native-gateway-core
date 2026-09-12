@@ -79,6 +79,8 @@ export default {
   pagination: {
     total: '全 {n} 件',
     page: '{n} ページ',
+    pageOf: "{page} / {pages} ページ",
+    perPage: "表示件数",
     pageSize: 'ページあたり {n} 件',
     previous: '前へ',
     next: '次へ',

@@ -6,6 +6,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchKeyProfile, getDefaultLimits, setDefaultLimits, getKeyConflict, type ApiKey, type KeyCreatedResponse, type DefaultLimits, type KeyConflict } from '../api'
 import { store, clearApiKey, setApiKey, setPreferredChatKeyId, isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 import FilterInput from '../components/FilterInput.vue'
+import PageHeader from '../components/ui/PageHeader.vue'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useActionMessage } from '../composables/useActionMessage'
 
@@ -568,13 +569,13 @@ onBeforeUnmount(() => {
 
 <template>
   <div>
-    <div class="page-header">
-      <h2>{{ t('keys.list.title') }}</h2>
-      <div style="display:flex;gap:8px">
+    <!-- 2026-09-12: 页头收敛到 ui/PageHeader（方案 §4.5.2）；移动端标题与操作区自动堆叠 -->
+    <PageHeader :title="t('keys.list.title')">
+      <template #actions>
         <button class="btn btn-ghost" @click="openDefaultLimits">⚙ 默认限制</button>
         <button class="btn btn-primary" @click="openNew">+ 签发密钥</button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div v-if="redirectAfter" class="alert alert-info">
       选择或签发密钥后将自动返回
