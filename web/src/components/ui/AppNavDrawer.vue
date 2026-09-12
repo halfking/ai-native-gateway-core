@@ -16,22 +16,50 @@ import AppDrawer from './AppDrawer.vue'
 import { navDrawerOpen, useAppNav } from '../../composables/useAppNav'
 import { isNavItemActive } from '../../config/appNav'
 
+const props = withDefaults(
+  defineProps<{
+    /**
+     * 访客壳静态链接（2026-09-13 P1c）：提供时以扁平列表渲染并跳过登录态
+     * useAppNav 菜单，供 App.vue guest-header 的汉堡按钮复用同一抽屉。
+     */
+    guestLinks?: { labelKey: string; href: string }[]
+  }>(),
+  { guestLinks: undefined },
+)
+
 const { t } = useI18n()
 const { route, navGroups, navPrimaryResolved, navLabel } = useAppNav()
 
 type ResolvedItem = { item: { path: string; label: string; icon?: string; exact?: boolean; labelKey?: string }, resolved: { path: string; external?: boolean; activateAction?: boolean } }
 type Section = { id: string; flat: boolean; label?: string; labelKey?: string; items: ResolvedItem[] }
 
-const sections = computed<Section[]>(() => [
-  { id: '__primary', flat: true, items: navPrimaryResolved.value as unknown as ResolvedItem[] },
-  ...navGroups.value.map((g) => ({
-    id: g.id,
-    flat: false,
-    label: g.label,
-    labelKey: g.labelKey,
-    items: g.items as unknown as ResolvedItem[],
-  })),
-])
+const sections = computed<Section[]>(() => {
+  if (props.guestLinks) {
+    // 访客模式：6 个静态链接扁平列表（<a href> 外链语义）
+    return [{
+      id: '__guest',
+      flat: true,
+      items: props.guestLinks.map((l) => ({
+        item: { path: l.href, label: t(l.labelKey), icon: '•' },
+        resolved: { path: l.href, external: true, activateAction: false },
+      })) as unknown as ResolvedItem[],
+    }]
+  }
+  return [
+    { id: '__primary', flat: true, items: navPrimaryResolved.value as unknown as ResolvedItem[] },
+    ...navGroups.value.map((g) => ({
+      id: g.id,
+      flat: false,
+      label: g.label,
+      labelKey: g.labelKey,
+      items: g.items as unknown as ResolvedItem[],
+    })),
+  ]
+})
+
+const drawerTitle = computed(() =>
+  props.guestLinks ? t('landing.guestNavAria', '产品导航') : t('nav.mainAria', '主导航'),
+)
 
 const expanded = ref<Set<string>>(new Set())
 
@@ -83,7 +111,7 @@ function itemLabel(item: ResolvedItem): string {
     v-model="navDrawerOpen"
     direction="right"
     width="min(80vw, 320px)"
-    :title="t('nav.mainAria', '主导航')"
+    :title="drawerTitle"
   >
     <nav class="app-nav-drawer" :aria-label="t('nav.mainAria', '主导航')">
       <template v-for="section in sections" :key="section.id">

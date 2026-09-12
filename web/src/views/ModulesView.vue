@@ -1197,6 +1197,7 @@ onMounted(() => {
   border-radius: 10px;
   overflow-y: auto;
   max-height: calc(100vh - 200px);
+  max-height: calc(100dvh - 200px);
   padding: 8px;
 }
 .loading {
@@ -1339,6 +1340,7 @@ onMounted(() => {
   padding: 20px;
   overflow-y: auto;
   max-height: calc(100vh - 200px);
+  max-height: calc(100dvh - 200px);
 }
 .detail-empty {
   display: flex;

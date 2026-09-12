@@ -1146,7 +1146,7 @@ onMounted(fetchData)
 
 /* Tree View */
 .pm-body { min-height: 60vh; }
-.pm-tree { width: 100%; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; max-height: calc(100vh - 320px); }
+.pm-tree { width: 100%; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; max-height: calc(100vh - 320px); max-height: calc(100dvh - 320px); }
 .drawer-title { margin: 0; color: var(--text); font-size: 16px; }
 .drawer-body { flex: 1; overflow-y: auto; }
 .tree-family { margin-bottom: 4px; }
