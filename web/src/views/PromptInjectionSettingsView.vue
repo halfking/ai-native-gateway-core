@@ -595,7 +595,7 @@
 
     <!-- ============= Dialogs ============= -->
 
-    <el-dialog v-model="showAddEngine" :title="t('sessions.promptInjectionFull.addEngineTitle')" width="600px">
+    <AppModal v-model="showAddEngine" :title="t('sessions.promptInjectionFull.addEngineTitle')" size="md">
       <el-form :model="newEngine" label-width="140px">
         <el-form-item :label="t('sessions.promptInjectionFull.colName')" required>
           <el-input v-model="newEngine.engine_name" :placeholder="t('sessions.promptInjectionFull.engineNamePlaceholder')" />
@@ -629,9 +629,9 @@
         <el-button @click="showAddEngine = false">{{ t('sessions.promptInjectionFull.cancel') }}</el-button>
         <el-button type="primary" @click="createEngine">{{ t('sessions.promptInjectionFull.create') }}</el-button>
       </template>
-    </el-dialog>
+    </AppModal>
 
-    <el-dialog v-model="showAddRule" :title="t('sessions.promptInjectionFull.addRuleTitle')" width="600px">
+    <AppModal v-model="showAddRule" :title="t('sessions.promptInjectionFull.addRuleTitle')" size="md">
       <el-form :model="newRule" label-width="140px">
         <el-form-item :label="t('sessions.promptInjectionFull.colRuleName')" required>
           <el-input v-model="newRule.rule_name" :placeholder="t('sessions.promptInjectionFull.ruleNamePlaceholder')" />
@@ -664,9 +664,9 @@
         <el-button @click="showAddRule = false">{{ t('sessions.promptInjectionFull.cancel') }}</el-button>
         <el-button type="primary" @click="createRule">{{ t('sessions.promptInjectionFull.create') }}</el-button>
       </template>
-    </el-dialog>
+    </AppModal>
 
-    <el-dialog v-model="showAddCanary" :title="t('sessions.promptInjectionFull.createTokenTitle')" width="500px">
+    <AppModal v-model="showAddCanary" :title="t('sessions.promptInjectionFull.createTokenTitle')" size="sm">
       <el-form :model="newCanary" label-width="140px">
         <el-form-item :label="t('sessions.promptInjectionFull.colName')">
           <el-input v-model="newCanary.token_name" :placeholder="t('sessions.promptInjectionFull.tokenNamePlaceholder')" />
@@ -699,7 +699,7 @@
         <el-button @click="showAddCanary = false">{{ t('sessions.promptInjectionFull.cancel') }}</el-button>
         <el-button type="primary" @click="createCanaryToken">{{ t('sessions.promptInjectionFull.create') }}</el-button>
       </template>
-    </el-dialog>
+    </AppModal>
 
   </div>
 </template>
@@ -851,7 +851,9 @@ import { req } from '../api/_core'
 import EmptyState from '../components/EmptyState.vue'
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
-import { ElAlert, ElButton, ElCard, ElCol, ElDescriptions, ElDescriptionsItem, ElDialog, ElDivider, ElForm, ElFormItem, ElIcon, ElInput, ElInputNumber, ElOption, ElPagination, ElRow, ElSelect, ElSlider, ElStatistic, ElSwitch, ElTabPane, ElTable, ElTableColumn, ElTabs, ElTag, ElText } from 'element-plus'
+import { ElAlert, ElButton, ElCard, ElCol, ElDescriptions, ElDescriptionsItem, ElDivider, ElForm, ElFormItem, ElIcon, ElInput, ElInputNumber, ElOption, ElPagination, ElRow, ElSelect, ElSlider, ElStatistic, ElSwitch, ElTabPane, ElTable, ElTableColumn, ElTabs, ElTag, ElText } from 'element-plus'
+// 2026-09-13：弹层壳由 el-dialog 收敛到 ui/AppModal（EP 表单体保留）
+import AppModal from '../components/ui/AppModal.vue'
 const createEngine = async () => {
   try {
     await apiCreateEngine(newEngine as any)

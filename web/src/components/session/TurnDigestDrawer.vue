@@ -8,10 +8,13 @@ import {
   type TurnDetail,
 } from '../../api/sessions_v2'
 import TurnDigestCard from './TurnDigestCard.vue'
+// 2026-09-13：壳由 el-drawer 迁 ui/AppDrawer（direction=right + width 70%
+// 保持原 rtl/size 视觉；内容 EP tabs/empty 保留，状态重置语义不变）
+import AppDrawer from '../ui/AppDrawer.vue'
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
-import { ElButton, ElDrawer, ElEmpty, ElTabPane, ElTabs } from 'element-plus'
+import { ElButton, ElEmpty, ElTabPane, ElTabs } from 'element-plus'
 const props = defineProps<{
   modelValue: boolean
   sessionId: string
@@ -186,22 +189,17 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <el-drawer
+  <AppDrawer
     :model-value="modelValue"
-    direction="rtl"
-    size="70%"
-    :destroy-on-close="false"
-    @update:model-value="(value: boolean) => value ? emit('update:modelValue', value) : close()"
+    direction="right"
+    width="70%"
+    :title="headerTitle"
     @close="close"
   >
-    <template #header>
-      <div class="tdd-header">
-        <strong>{{ headerTitle }}</strong>
-        <span v-if="detail?.model" class="tdd-sub">
-          <span class="chip chip--tight">{{ detail.model }}</span><template v-if="detail.cost_usd != null"> · ${{ detail.cost_usd.toFixed(4) }}</template>
-        </span>
-      </div>
-    </template>
+    <!-- 原el-drawer header 副行（模型 chip + 费用）迁入 body 顶部 -->
+    <div v-if="detail?.model" class="tdd-sub tdd-headsub">
+      <span class="chip chip--tight">{{ detail.model }}</span><template v-if="detail.cost_usd != null"> · ${{ detail.cost_usd.toFixed(4) }}</template>
+    </div>
 
     <div v-if="loading" class="tdd-state">{{ t('turnDigest.loading') }}</div>
     <div v-else-if="error" class="tdd-error" role="alert" data-testid="tdd-error">
@@ -253,10 +251,11 @@ onBeforeUnmount(() => {
     </el-tabs>
 
     <template #footer><el-button size="small" @click="close">{{ t('turnDigest.close') }}</el-button></template>
-  </el-drawer>
+  </AppDrawer>
 </template>
 
 <style scoped>
+.tdd-headsub { margin-bottom: 8px; }
 .tdd-waterfall { display: grid; gap: 6px; }
 .tdd-waterfall-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--kx-border); border-radius: 6px; }
 .tdd-waterfall-row code { color: var(--kx-muted); font-size: 12px; }

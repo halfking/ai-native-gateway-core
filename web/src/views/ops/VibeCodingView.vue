@@ -19,7 +19,9 @@ import { useEnumLabel } from '../../composables/useEnumLabel'
 
 
 // 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
-import { ElBadge, ElButton, ElCard, ElDescriptions, ElDescriptionsItem, ElDialog, ElDivider, ElForm, ElFormItem, ElInput, ElTable, ElTableColumn, ElTag } from 'element-plus'
+import { ElBadge, ElButton, ElCard, ElDescriptions, ElDescriptionsItem, ElDivider, ElForm, ElFormItem, ElInput, ElTable, ElTableColumn, ElTag } from 'element-plus'
+// 2026-09-13：弹层壳由 el-dialog 收敛到 ui/AppModal（EP 表单/表格体保留）
+import AppModal from '../../components/ui/AppModal.vue'
 const { t } = useI18n()
 const enumLabel = useEnumLabel()
 const vibeStatusLabel = (value?: string | null) => enumLabel('ops.vibecoding.status', value)
@@ -291,10 +293,10 @@ onMounted(load)
     </el-card>
 
     <!-- Create Project Dialog -->
-    <el-dialog
+    <AppModal
       v-model="showProjectDialog"
       :title="t('ops.vibecoding.createProjectTitle')"
-      width="500px"
+      size="sm"
     >
       <el-form :model="projectForm" label-width="120px">
         <el-form-item :label="t('ops.vibecoding.projectName')" required>
@@ -313,13 +315,13 @@ onMounted(load)
           {{ t('common.create') }}
         </el-button>
       </template>
-    </el-dialog>
+    </AppModal>
 
     <!-- Create Session Dialog -->
-    <el-dialog
+    <AppModal
       v-model="showSessionDialog"
       :title="t('ops.vibecoding.createSessionTitle')"
-      width="500px"
+      size="sm"
     >
       <el-form :model="sessionForm" label-width="120px">
         <el-form-item :label="t('ops.vibecoding.taskType')" required>
@@ -332,13 +334,13 @@ onMounted(load)
           {{ t('common.create') }}
         </el-button>
       </template>
-    </el-dialog>
+    </AppModal>
 
     <!-- Review Detail Dialog -->
-    <el-dialog
+    <AppModal
       v-model="showReviewDialog"
       :title="t('ops.vibecoding.reviewDetail')"
-      width="800px"
+      size="lg"
     >
       <div v-if="selectedReview">
         <el-descriptions :column="2" border>
@@ -388,7 +390,7 @@ onMounted(load)
       <template #footer>
         <el-button @click="showReviewDialog = false">{{ t('common.close') }}</el-button>
       </template>
-    </el-dialog>
+    </AppModal>
   </div>
 </template>
 

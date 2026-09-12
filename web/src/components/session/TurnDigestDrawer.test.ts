@@ -4,7 +4,7 @@
 // surface in the error banner, closing emits update:modelValue + close.
 
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createI18n } from 'vue-i18n'
 import type { TurnDetail } from '../../api/sessions_v2'
 import TurnDigestDrawer from './TurnDigestDrawer.vue'
@@ -19,6 +19,19 @@ vi.mock('../../api/sessions_v2', async (importOriginal) => {
   }
 })
 
+// 存量环境问题隔离（本测试文件原属 40 文件失败基线）：store.ts 在模块顶层
+// 读取 localStorage，本环境 jsdom 未定义。被测组件不依赖鉴权状态，最小替身。
+vi.mock('../../store', () => ({
+  store: { userInfo: null, apiKey: '', jwtToken: '', locale: 'zh-CN' },
+  getCurrentTenantId: () => 'default',
+  clearApiKey: () => undefined,
+  clearAll: () => undefined,
+  authBearer: () => '',
+  getLocale: () => 'zh-CN',
+  isAuthenticated: () => false,
+  isSuperAdmin: () => false,
+}))
+
 const i18n = createI18n({
   legacy: false,
   globalInjection: true,
@@ -26,6 +39,7 @@ const i18n = createI18n({
   fallbackLocale: 'en',
   messages: {
     'zh-CN': {
+      common: { button: { close: '关闭' } },
       turnDigest: {
         title: '轮次摘要',
         turn: '轮次',
@@ -73,9 +87,8 @@ function mountDrawer(props: Record<string, unknown> = {}) {
     global: {
       plugins: [i18n],
       stubs: {
-        'el-drawer': {
-          template: '<div class="el-drawer"><slot name="header" /><slot /><slot name="footer" /></div>',
-        },
+        // 2026-09-13 壳迁 ui/AppDrawer：真实壳 + Teleport 打桩
+        Teleport: true,
         'el-tabs': { template: '<div class="el-tabs"><slot /></div>' },
         'el-tab-pane': { template: '<div class="el-tab-pane"><slot /></div>' },
         'el-tag': { template: '<span class="el-tag"><slot /></span>' },
@@ -87,6 +100,7 @@ function mountDrawer(props: Record<string, unknown> = {}) {
         'turn-digest-card-stub': { template: '<div class="turn-digest-card"><slot /></div>' },
       },
     },
+    attachTo: document.body,
   })
 }
 
@@ -106,6 +120,10 @@ const detail: TurnDetail = {
 
 beforeEach(() => {
   getSessionTurnMock.mockReset()
+})
+
+afterEach(() => {
+  document.body.innerHTML = ''
 })
 
 describe('TurnDigestDrawer', () => {
@@ -225,7 +243,8 @@ describe('TurnDigestDrawer', () => {
     expect(w.find('[data-testid="tdd-error"]').exists()).toBe(false)
     expect(w.find('[role="alert"]').exists()).toBe(false)
 
-    const button = w.findAll('button').find((b) => b.text() !== '')
+    // 壳迁 AppDrawer 后头部有 ✕ 按钮，需精确定位「下载附件」按钮
+    const button = w.findAll('button').find((b) => b.text().includes('下载附件'))
     await button!.trigger('click')
 
     const inline = w.find('[data-testid="tdd-attachment-error"]')
@@ -246,7 +265,7 @@ describe('TurnDigestDrawer', () => {
     const w = mountDrawer()
     await flushPromises()
 
-    const button = w.findAll('button').find((b) => b.text() !== '')
+    const button = w.findAll('button').find((b) => b.text().includes('下载附件'))
     await button!.trigger('click')
 
     expect(w.find('[data-testid="tdd-attachment-error"]').exists()).toBe(false)

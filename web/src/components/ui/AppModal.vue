@@ -23,6 +23,8 @@ const props = withDefaults(
     size?: 'sm' | 'md' | 'lg'
     /** 点击遮罩是否关闭，默认 true */
     closeOnMask?: boolean
+    /** ESC 是否关闭，默认 true；门控类弹窗（协议确认等）置 false 强制显式选择 */
+    escClose?: boolean
     /** 全屏模式（isSmall <480 时自动生效），顶部关闭栏 + 底部 footer 吸底 */
     fullscreen?: boolean
     /** 是否渲染右上角/顶栏关闭按钮 */
@@ -38,6 +40,7 @@ const props = withDefaults(
     title: '',
     size: 'md',
     closeOnMask: true,
+    escClose: true,
     fullscreen: false,
     closable: true,
     disabledConfirm: false,
@@ -75,8 +78,11 @@ function onMaskClick(): void {
 
 function onDocumentKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') {
-    e.stopPropagation()
-    requestClose()
+    // escClose=false 时 ESC 不关闭（焦点圈闭仍生效），供门控类弹窗使用
+    if (props.escClose) {
+      e.stopPropagation()
+      requestClose()
+    }
     return
   }
   trap.trapTab(e)

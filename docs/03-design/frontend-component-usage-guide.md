@@ -67,7 +67,7 @@ props：`loading/empty/emptyText/scrollable(true)/minWidth('720px')`。
 
 ## 6. AppModal
 
-props：`modelValue/title/size('sm'480|'md'640|'lg'860)/closeOnMask(true)/fullscreen/closable(true)/disabledConfirm/panelClass/stacked`。
+props：`modelValue/title/size('sm'480|'md'640|'lg'860)/closeOnMask(true)/escClose(true)/fullscreen/closable(true)/disabledConfirm/panelClass/stacked`。`escClose=false` 供门控类弹窗（如操作协议确认 OperationAgreementDialog）禁用 ESC，强制显式选择。
 emits：`update:modelValue/close`；插槽：默认、`#footer`（作用域 `{ disabledConfirm, close }`）。
 内置能力：ESC、引用计数滚动锁定（嵌套弹层安全）、焦点圈闭+返还、isSmall(<480) 自动全屏（顶栏关闭+footer 吸底）、<768 宽 `min(92vw, size)`、stacked→`.modal-overlay-stacked`(z-110)。
 迁移对照（ProvidersView showAdd）：外层两层 div + h3 → `<AppModal v-model="show" :title="…" size="sm">`，按钮行进 `#footer`。
@@ -96,5 +96,6 @@ z-index：遮罩 z-100；需要盖在另一弹层上的抽屉（如 diagnose z-1
 
 ## 10. 治理与登记（2026-09-13 收口时点）
 
-- el-* 注册：24 个文件补齐 EP 导入（此前运行时 resolve 失败）。el-dialog（OperationAgreementDialog/PromptInjectionSettingsView/VibeCodingView）与 el-drawer（TurnDigestDrawer）共 4 处：已可用、风险低，**登记不强制迁移**。
-- 断点白名单：`responsive:check` = `--strict --allow-legacy`（存量 43 文件 49 处放行）。这批文件属设计 §5.1 P5「剩余 ~30 个列表页滚动迁移（可按团队节奏分摊）」范围，不在本轮 10 页清单内；待其页面迁移时逐文件收敛（P3 已示范：900/960/1000/700 等→768/1024/640），清零后从 package.json 去掉 `--allow-legacy` 即自动升级为全严格门禁。
+- el-* 注册：24 个文件补齐 EP 导入（此前运行时 resolve 失败）。
+- el-dialog/el-drawer 清零（2026-09-13 分摊轮）：OperationAgreementDialog → AppModal（`esc-close` + `close-on-mask` 双禁用保持门控语义，@open 复位改 watch）；PromptInjectionSettingsView×3 与 VibeCodingView×3 → AppModal（600→md、500→sm、800→lg，EP 表单/表格体保留）；TurnDigestDrawer → AppDrawer（direction=right + width 70% 保持原 rtl/size，EP tabs 体保留，头部副行迁 body 顶部）。EP 组件仅剩非弹层类（表单/表格/卡片等）按需引入。
+- 断点白名单：**全严格已生效**（2026-09-13 分摊轮）。存量 43 文件 49 处碎片断点已按语义就近收敛（520→480；600/680/700/720/760/800→768；900/960/1000/1023/1100/1200→1024；1600→1440），`responsive:check` 已从 `--strict --allow-legacy` 升级为 `--strict`，白名单外即 FAIL。新代码断点只允许 480/640/768/1024/1440。
