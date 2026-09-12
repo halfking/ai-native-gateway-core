@@ -26,6 +26,9 @@ import {
 } from '../../utils/deviceFingerprint'
 import { SITE_TITLE } from '../../config/brand'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElAlert, ElCard, ElForm, ElFormItem, ElInput } from 'element-plus'
 const AGREEMENT_VERSION = '2026-07-17'
 const AGREEMENT_SCOPE = 'activate'
 const AGREEMENT_KEY = `llmgw_op_agreement_${AGREEMENT_SCOPE}_${AGREEMENT_VERSION}`

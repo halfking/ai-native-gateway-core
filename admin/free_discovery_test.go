@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -70,6 +71,11 @@ func fdRequest(t *testing.T, h *Handler, method, path string, body any) *httptes
 		handler = h.handleFreeDiscoveryTasks
 	case strings.Contains(path, "/import"):
 		handler = h.handleFreeDiscoveryImport
+	case strings.Contains(path, "/tasks/"):
+		// GET /tasks/{id} — must be checked after the /import and /results suffixes
+		// above; before this case was added, /tasks/N fell through to the
+		// templateByID default and hit the wrong handler.
+		handler = h.handleFreeDiscoveryTask
 	case strings.HasSuffix(path, "/templates"):
 		handler = h.handleFreeDiscoveryTemplates
 	default:
@@ -219,6 +225,67 @@ func TestFreeDiscovery_Import_StatusForSentinels(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFreeDiscovery_Task_StatusForSentinels verifies the GetTask sentinel contract:
+// a missing task (ErrTaskNotFound, plain or wrapped) maps to 404, while a plain db
+// fault stays 500.
+//
+// Regression: GetTask used to return a bare fmt.Errorf("... task %d not found") with
+// no sentinel, so fdStatusFor fell through to 500 even though the handler comment
+// promised 404 (audit 2026-09-09 finding 1; fixed 2026-09-13).
+func TestFreeDiscovery_Task_StatusForSentinels(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		expect int
+	}{
+		{"sentinel → 404", freediscovery.ErrTaskNotFound, http.StatusNotFound},
+		{"wrapped with id → 404", fmt.Errorf("%w (id 42)", freediscovery.ErrTaskNotFound), http.StatusNotFound},
+		{"db fault → 500", errors.New("freediscovery: scan task: boom"), http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fdStatusFor(tc.err); got != tc.expect {
+				t.Fatalf("fdStatusFor(%v)=%d, want %d", tc.err, got, tc.expect)
+			}
+		})
+	}
+}
+
+// TestFreeDiscovery_Task_GetNotFound404_DBFault500 exercises the real GetTask
+// handler over sqlmock: sql.ErrNoRows must surface as 404 via the ErrTaskNotFound
+// sentinel; a db fault must not be mistaken for a missing task and stays 500.
+func TestFreeDiscovery_Task_GetNotFound404_DBFault500(t *testing.T) {
+	h, mock := newFreeDiscoveryTestHandler(t)
+	t.Run("missing task → 404", func(t *testing.T) {
+		mock.ExpectBegin()
+		mock.ExpectExec("SET LOCAL app\\.current_tenant = 'default'").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectQuery("FROM discovery_tasks WHERE id=\\$1").
+			WithArgs(int64(999)).
+			WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
+
+		// Routed through fdRequest so the /tasks/{id} switch case stays exercised.
+		rec := fdRequest(t, h, http.MethodGet, "/api/free-discovery/tasks/999", nil)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("missing task must 404, got %d", rec.Code)
+		}
+	})
+
+	t.Run("db fault → 500", func(t *testing.T) {
+		mock.ExpectBegin()
+		mock.ExpectExec("SET LOCAL app\\.current_tenant = 'default'").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectQuery("FROM discovery_tasks WHERE id=\\$1").
+			WithArgs(int64(999)).
+			WillReturnError(errors.New("boom"))
+		mock.ExpectRollback()
+
+		rec := fdRequest(t, h, http.MethodGet, "/api/free-discovery/tasks/999", nil)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("db fault must stay 500, got %d", rec.Code)
+		}
+	})
 }
 
 func TestFreeDiscovery_MethodNotAllowed(t *testing.T) {

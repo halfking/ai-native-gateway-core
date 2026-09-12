@@ -25,6 +25,8 @@ import {
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { isSuperAdmin } from '../store'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import AppModal from '../components/ui/AppModal.vue'
+import AppDrawer from '../components/ui/AppDrawer.vue'
 
 const { t } = useI18n()
 const pm = (k: string, params?: Record<string,unknown>): string =>
@@ -1057,10 +1059,9 @@ onUnmounted(() => {
       <div v-if="!loading && visibleProviders.length === 0" class="empty">{{ pm('list.empty') }}</div>
     </div>
 
-    <!-- ── Add Provider Modal ─────────────────────────────────────────────── -->
-    <div class="modal-overlay" v-if="showAdd" @click.self="showAdd = false">
-      <div class="modal" style="max-width:500px" @click.stop>
-        <h3>{{ pm('create.title') }}</h3>
+    <!-- ── Add Provider Modal（2026-09-13 迁移至 ui/AppModal，方案 §4.5.7：
+         ESC/滚动锁定/焦点圈闭/移动端响应式由组件统一提供） ────────────────── -->
+    <AppModal v-model="showAdd" :title="pm('create.title')" size="sm">
         <div v-if="addErr" class="alert alert-danger">{{ addErr }}</div>
 
         <!-- Toggle custom mode -->
@@ -1152,19 +1153,17 @@ onUnmounted(() => {
           <input v-model="addNotes" :placeholder="pm('create.remarkPlaceholder')" />
         </div>
 
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-          <button class="btn btn-ghost" @click="showAdd = false">{{ pm('common.button.cancel') }}</button>
-          <button class="btn btn-primary" @click="submitAdd" :disabled="addSaving">
-            {{ addSaving ? pm('create.submitting') : pm('create.submit') }}
-          </button>
-        </div>
-      </div>
-    </div>
+      <template #footer>
+        <button class="btn btn-ghost" @click="showAdd = false">{{ pm('common.button.cancel') }}</button>
+        <button class="btn btn-primary" @click="submitAdd" :disabled="addSaving">
+          {{ addSaving ? pm('create.submitting') : pm('create.submit') }}
+        </button>
+      </template>
+    </AppModal>
 
     <!-- ── Edit Provider Modal ───────────────────────────────────────────── -->
-    <div class="modal-overlay" v-if="showEdit" @click.self="showEdit = false">
-      <div class="modal" style="max-width:500px" @click.stop>
-        <h3>{{ pm('edit.title', { name: editProvider?.display_name }) }}</h3>
+    <!-- Edit Provider（2026-09-13 P3 迁移 ui/AppModal） -->
+    <AppModal v-model="showEdit" :title="pm('edit.title', { name: editProvider?.display_name })" size="sm">
         <div v-if="editErr" class="alert alert-danger">{{ editErr }}</div>
         <div class="form-group">
           <label>{{ pm('edit.catalogCode') }}</label>
@@ -1226,18 +1225,23 @@ onUnmounted(() => {
           <label>{{ pm('edit.remark') }}</label>
           <input v-model="editNotes" :placeholder="pm('edit.remarkPlaceholder')" />
         </div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-          <button class="btn btn-ghost" @click="showEdit = false">{{ pm('common.button.cancel') }}</button>
-          <button class="btn btn-primary" @click="submitEdit" :disabled="editSaving">
-            {{ editSaving ? t('keys.common.loading') : pm('common.button.save') }}
-          </button>
-        </div>
-      </div>
-    </div>
+      <template #footer>
+        <button class="btn btn-ghost" @click="showEdit = false">{{ pm('common.button.cancel') }}</button>
+        <button class="btn btn-primary" @click="submitEdit" :disabled="editSaving">
+          {{ editSaving ? t('keys.common.loading') : pm('common.button.save') }}
+        </button>
+      </template>
+    </AppModal>
 
     <!-- ── Manage Credentials Modal ───────────────────────────────────────── -->
-    <div class="drawer-backdrop" v-if="showManageCred && manageProvider" @click="closeManageCred">
-      <div class="drawer-panel card drawer-panel-wide" @click.stop>
+    <!-- Manage Credentials（2026-09-13 P3 迁移 ui/AppDrawer，方向 auto：<768 bottom sheet） -->
+    <AppDrawer
+      v-if="manageProvider"
+      :model-value="showManageCred"
+      width="min(900px, 95vw)"
+      :closable="false"
+      @update:model-value="(v: boolean) => { if (!v) closeManageCred() }"
+    >
         <div class="credential-toolbar">
           <div>
             <h3 style="margin:0">{{ pm('credential.drawerTitle', { name: manageProvider.display_name }) }}</h3>
@@ -1345,8 +1349,7 @@ onUnmounted(() => {
           </table>
           <div v-if="!(credentialsByProvider[manageProvider.id] || []).length" class="empty">{{ pm('credential.empty') }}</div>
         </div>
-      </div>
-    </div>
+    </AppDrawer>
 
     <!-- ── Diagnose Modal ───────────────────────────────────────────────── -->
     <div class="drawer-backdrop" style="z-index:110" v-if="diagnoseProviderId !== null" @click="closeDiagnose">
@@ -1458,9 +1461,8 @@ onUnmounted(() => {
     </div>
 
     <!-- ── Add Credential Modal ──────────────────────────────────────────── -->
-    <div class="modal-overlay" style="z-index:110" v-if="showCred" @click.self="showCred = false">
-      <div class="modal" @click.stop>
-        <h3>{{ pm('credential.addDialog.title', { name: credProvider?.display_name }) }}</h3>
+    <!-- Add Credential（2026-09-13 P3 迁移 ui/AppModal，stacked=z110 叠于凭据抽屉上） -->
+    <AppModal v-model="showCred" :title="pm('credential.addDialog.title', { name: credProvider?.display_name })" size="sm" stacked>
         <div v-if="credErr" class="alert alert-danger">{{ credErr }}</div>
         <div class="form-group">
           <label>{{ pm('credential.addDialog.apiKeyLabel') }}</label>
@@ -1475,14 +1477,13 @@ onUnmounted(() => {
           <template v-else-if="credProbeStatus === 'done'">{{ pm('credential.addDialog.probeStatusDone') }}</template>
           <template v-else-if="credProbeStatus === 'failed'">{{ pm('credential.addDialog.probeStatusFailed') }}</template>
         </div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-          <button class="btn btn-ghost" @click="showCred = false">{{ pm('common.button.cancel') }}</button>
-          <button class="btn btn-primary" @click="submitCred" :disabled="credSaving">
-            {{ credSaving ? pm('credential.addDialog.submitting') : (credProbeStatus === 'probing' ? pm('credential.addDialog.probeBtn') : pm('credential.addDialog.submit')) }}
-          </button>
-        </div>
-      </div>
-    </div>
+      <template #footer>
+        <button class="btn btn-ghost" @click="showCred = false">{{ pm('common.button.cancel') }}</button>
+        <button class="btn btn-primary" @click="submitCred" :disabled="credSaving">
+          {{ credSaving ? pm('credential.addDialog.submitting') : (credProbeStatus === 'probing' ? pm('credential.addDialog.probeBtn') : pm('credential.addDialog.submit')) }}
+        </button>
+      </template>
+    </AppModal>
   </div>
 </template>
 
@@ -1731,7 +1732,7 @@ table code {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
-@media (max-width: 1000px) {
+@media (max-width: 1024px) {
   .credential-table {
     min-width: 960px;
   }

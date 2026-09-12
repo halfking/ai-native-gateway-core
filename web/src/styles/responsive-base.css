@@ -1,0 +1,38 @@
+/*
+ * responsive-base.css — 响应式基线（方案 §4.2 / §5.1 P0，2026-09-13）。
+ *
+ * 红线：只做增量工具类与媒体查询内兜底，禁止改写桌面既有样式，避免视觉回归。
+ * 本文件内的 @media 断点值必须在 src/config/breakpoints.ts 的白名单内
+ * （scripts/responsive-audit.mjs 审计）。
+ */
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/*
+ * <768px 触摸目标兜底：.btn 桌面态 min-height 36px，移动端提到 44px
+ * （WCAG 2.5.5 触摸目标建议值）。只加媒体内最小高度，不改桌面样式。
+ * 排除 checkbox/radio/range 等非文本控件，避免勾选框被拉伸。
+ */
+@media (max-width: 768px) {
+  .btn,
+  button,
+  input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  select,
+  textarea {
+    min-height: 44px;
+  }
+}
+
+/*
+ * 刘海屏/圆角屏安全区：需要贴边的壳层/工具条挂 .safe-area。
+ * env() 在不支持的浏览器解析失败时回退为 0，无副作用。
+ */
+.safe-area {
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+}

@@ -9,6 +9,9 @@ import {
 } from '../../api/sessions_v2'
 import TurnDigestCard from './TurnDigestCard.vue'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElButton, ElDrawer, ElEmpty, ElTabPane, ElTabs } from 'element-plus'
 const props = defineProps<{
   modelValue: boolean
   sessionId: string

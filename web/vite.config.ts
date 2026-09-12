@@ -72,6 +72,9 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'jsdom',
+    // 2026-09-13: jsdom lacks window.matchMedia; stub it globally for
+    // useBreakpoint / theme detection tests (see src/test/setup.ts).
+    setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.{test,spec}.ts'],
     exclude: ['node_modules/**', 'dist/**'],
   },

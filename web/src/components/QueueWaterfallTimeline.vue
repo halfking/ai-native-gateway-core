@@ -141,5 +141,5 @@ const hasData = computed(() => props.requests.length > 0)
   color: var(--kx-muted);
   margin-top: 2px;
 }
-.qwt-body { max-height: calc(100vh - 320px); overflow: auto; }
+.qwt-body { max-height: calc(100vh - 320px); max-height: calc(100dvh - 320px); overflow: auto; }
 </style>

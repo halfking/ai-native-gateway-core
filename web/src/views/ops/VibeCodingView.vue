@@ -17,6 +17,9 @@ import {
 
 import { useEnumLabel } from '../../composables/useEnumLabel'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElBadge, ElButton, ElCard, ElDescriptions, ElDescriptionsItem, ElDialog, ElDivider, ElForm, ElFormItem, ElInput, ElTable, ElTableColumn, ElTag } from 'element-plus'
 const { t } = useI18n()
 const enumLabel = useEnumLabel()
 const vibeStatusLabel = (value?: string | null) => enumLabel('ops.vibecoding.status', value)
@@ -197,7 +200,7 @@ onMounted(load)
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="200" fixed="right">
           <template #default="scope">
-            <el-button type="primary" size="small" @click="openSessionDialog(scope?.row)">
+            <el-button type="primary" size="small" @click="openSessionDialog(scope?.row as VibeCodingProject)">
               {{ t('ops.vibecoding.newSession') }}
             </el-button>
             <el-button size="small" @click="selectedProjectId = scope?.row?.id">
@@ -266,12 +269,12 @@ onMounted(load)
         </el-table-column>
         <el-table-column :label="t('ops.vibecoding.issues')" width="80">
           <template #default="scope">
-            <el-badge :value="reviewIssues(scope?.row).length" :type="reviewIssues(scope?.row).length > 0 ? 'danger' : 'success'" />
+            <el-badge :value="reviewIssues(scope?.row as CodeReview).length" :type="reviewIssues(scope?.row as CodeReview).length > 0 ? 'danger' : 'success'" />
           </template>
         </el-table-column>
         <el-table-column :label="t('ops.vibecoding.suggestions')" width="80">
           <template #default="scope">
-            <el-badge :value="reviewSuggestions(scope?.row).length" type="info" />
+            <el-badge :value="reviewSuggestions(scope?.row as CodeReview).length" type="info" />
           </template>
         </el-table-column>
         <el-table-column prop="created_at" :label="t('ops.vibecoding.reviewedAt')" width="160">
@@ -279,7 +282,7 @@ onMounted(load)
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="100" fixed="right">
           <template #default="scope">
-            <el-button size="small" @click="viewReviewDetail(scope?.row)">
+            <el-button size="small" @click="viewReviewDetail(scope?.row as CodeReview)">
               {{ t('common.detail') }}
             </el-button>
           </template>
@@ -375,7 +378,7 @@ onMounted(load)
         </el-table>
 
         <h4>{{ t('ops.vibecoding.suggestions') }} ({{ reviewSuggestions(selectedReview).length }})</h4>
-        <el-table :data="reviewSuggestions(selectedReview)" size="small">
+        <el-table :data="(reviewSuggestions(selectedReview) as unknown as Record<string, unknown>[])" size="small">
           <el-table-column type="index" :label="'#'" width="50" />
           <el-table-column prop="" :label="t('ops.vibecoding.message')" min-width="300" show-overflow-tooltip>
             <template #default="scope">{{ scope?.row }}</template>

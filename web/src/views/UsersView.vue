@@ -7,6 +7,9 @@ import type { Tenant } from '../api'
 import { store, isReadOnlyMode, isTenantAdmin } from '../store'
 import { checkPasswordPolicy, passwordsMatch } from '../utils/passwordPolicy'
 import { confirmDialog } from '../composables/useConfirmDialog'
+// 2026-09-13 P3：页头/表格容器收敛到 ui 组件（方案 §4.5.2/§4.5.5）
+import PageHeader from '../components/ui/PageHeader.vue'
+import DataTable from '../components/ui/DataTable.vue'
 
 const { t } = useI18n()
 
@@ -158,10 +161,11 @@ onMounted(() => { load(); loadTenants() })
 
 <template>
   <div class="users-page">
-    <div class="page-header">
-      <h1>{{ t('users.title') }}</h1>
-      <button v-if="canCreateUsers" class="btn btn-primary" @click="showCreate = true">+ {{ t('users.create') }}</button>
-    </div>
+    <PageHeader :title="t('users.title')">
+      <template #actions>
+        <button v-if="canCreateUsers" class="btn btn-primary" @click="showCreate = true">+ {{ t('users.create') }}</button>
+      </template>
+    </PageHeader>
 
     <div v-if="readOnly" class="alert alert-info" style="margin-bottom:12px">
       {{ t('users.readOnlyNotice') }}
@@ -181,7 +185,8 @@ onMounted(() => { load(); loadTenants() })
 
     <div v-if="loading" class="loading">{{ t('users.loading') }}</div>
 
-    <table v-else class="table" style="width:100%">
+    <DataTable v-else min-width="820px">
+    <table class="table" style="width:100%">
       <thead>
         <tr>
           <th>{{ t('users.table.id') }}</th>
@@ -226,6 +231,7 @@ onMounted(() => { load(); loadTenants() })
         </tr>
       </tbody>
     </table>
+    </DataTable>
 
     <!-- Create Modal -->
     <div v-if="showCreate" class="modal-backdrop" @click.self="closeCreateModal">
@@ -321,13 +327,6 @@ onMounted(() => { load(); loadTenants() })
 </template>
 
 <style scoped>
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
-.page-header h1 { font-size: 20px; margin: 0; }
 
 .badge-purple { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-h); }
 .badge-blue { background: var(--info-bg); color: var(--accent); }

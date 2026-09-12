@@ -33,6 +33,12 @@ func healthyBindingSQL() string {
 // hard quota states are cleared too (same contract as writeHealth's 2026-08-07
 // guard). The trailing predicate keeps the UPDATE a no-op when nothing needs
 // to change — MarkNodeProbeHealthy runs on every successful request.
+//
+// 2026-09-13: rows pulled by bg/balance_floor_guard
+// (state_reason_code='balance_floor') are exempt — they still have buffer
+// quota by design, so an in-flight/stale-cache success here would instantly
+// un-pull them and flap against the guard's next sweep. Recovery for those
+// rows belongs exclusively to the guard's balance/plan re-checks.
 func healthyCredentialSQL() string {
 	return `
 		UPDATE credentials
@@ -49,6 +55,7 @@ func healthyCredentialSQL() string {
 		WHERE id = $1
 		  AND lifecycle_status = 'active'
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
+		  AND COALESCE(state_reason_code, '') <> 'balance_floor'
 		  AND (
 		      health_status IS DISTINCT FROM 'healthy'
 		      OR availability_state IS DISTINCT FROM 'ready'

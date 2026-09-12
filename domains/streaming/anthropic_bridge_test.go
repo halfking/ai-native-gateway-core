@@ -605,3 +605,45 @@ func TestQ3InitialInputThenInputJSONDeltaContinuation(t *testing.T) {
 	assert.NotContains(t, output, "junk", output)
 	assert.Contains(t, output, `"finish_reason":"tool_calls"`)
 }
+
+// TestStreamOpenAIToAnthropicSSE_EmptyStreamIsResumableFailover pins the
+// 2026-09-13 Q2 empty-stream fix: a 200 SSE stream that carries ZERO semantic
+// deltas (role/empty choices + usage + [DONE]) must be classified as an
+// empty-response interruption with Resumable=true so the executor fails over
+// to the next candidate. Previously the bridge wrote message_delta/message_stop
+// and returned success, so relay upstreams with empty streams surfaced to
+// Anthropic clients as "message_start but no content blocks" (claude code 529
+// / keep-alive-only pathology).
+func TestStreamOpenAIToAnthropicSSE_EmptyStreamIsResumableFailover(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}` + "\n",
+		"\n",
+		`data: {"id":"chunk-2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n",
+		"\n",
+		`data: {"id":"chunk-3","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":0}}` + "\n",
+		"\n",
+		"data: [DONE]\n",
+		"\n",
+	}, "")
+
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(upstreamBody)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamOpenAIToAnthropicSSE(context.Background(), rec, resp, "claude-sonnet-5", "claude-sonnet-5", "req-q2-empty-stream", nil, nil)
+
+	require.True(t, out.Interrupted)
+	assert.Equal(t, "anthropic_empty_response", out.Reason)
+	assert.Equal(t, errorsx.KindEmptyResponse, out.Kind)
+	assert.True(t, out.Resumable)
+	assert.Equal(t, 0, out.ChunkCount)
+
+	// No closing tail may be fabricated for an empty stream: the attempt must
+	// stay discardable for transparent failover.
+	body := rec.Body.String()
+	assert.NotContains(t, body, "event: message_delta")
+	assert.NotContains(t, body, "event: message_stop")
+	assert.NotContains(t, body, "text_delta")
+}

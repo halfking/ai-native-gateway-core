@@ -1735,6 +1735,8 @@ func (c *CredentialProbeV2) probeOne(ctx context.Context, credID int) {
 
 // probeBalance fetches the account balance for supported vendors (P3).
 // Returns (balanceUSD, true) on success, (0, false) otherwise.
+// 2026-09-13: HTTP+JSONPath body moved to providercap.FetchBalanceUSD so
+// bg/balance_floor_guard reuses the exact same fetch/parse semantics.
 func (c *CredentialProbeV2) probeBalance(ctx context.Context, s v2Snapshot) (float64, bool) {
 	desc := providercap.Resolve(s.ProviderProtocol, s.CatalogCode)
 	balURL := providercap.BalanceURL(s.BaseURL, desc)
@@ -1747,62 +1749,12 @@ func (c *CredentialProbeV2) probeBalance(ctx context.Context, s v2Snapshot) (flo
 		providercap.WarnBlocked("probe_v2.balance", balURL, reason)
 		return 0, false
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, balURL, nil)
-	if err != nil {
-		return 0, false
-	}
-	providercap.ApplyAuthHeaders(req, desc, s.APIKey)
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
+	balUSD, ok := providercap.FetchBalanceUSD(ctx, nil, balURL, s.APIKey, desc)
+	if !ok {
 		slog.Debug("credential probe v2: balance probe failed",
-			"credential_id", s.ID, "url", balURL, "error", err)
-		return 0, false
+			"credential_id", s.ID, "url", balURL)
 	}
-	//nolint:errcheck // best-effort close
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, false
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if err != nil {
-		return 0, false
-	}
-	var parsed any
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return 0, false
-	}
-	parts := strings.Split(desc.BalanceJSONPath, ".")
-	cur := parsed
-	for _, p := range parts {
-		switch v := cur.(type) {
-		case map[string]any:
-			cur = v[p]
-		case []any:
-			idx := 0
-			//nolint:errcheck // best-effort parse, non-critical
-			fmt.Sscanf(p, "%d", &idx)
-			if idx >= len(v) {
-				return 0, false
-			}
-			cur = v[idx]
-		default:
-			return 0, false
-		}
-		if cur == nil {
-			return 0, false
-		}
-	}
-	switch v := cur.(type) {
-	case float64:
-		return v, true
-	case string:
-		var f float64
-		if _, err2 := fmt.Sscanf(v, "%f", &f); err2 == nil {
-			return f, true
-		}
-	}
-	return 0, false
+	return balUSD, ok
 }
 
 // decryptCiphertext attempts to decrypt with keyring first, then fallback to

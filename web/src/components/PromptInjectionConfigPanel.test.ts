@@ -33,8 +33,10 @@ vi.mock('vue-router', () => ({
 }))
 
 const ElMessageMock = { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }
+// 2026-09-13 P5：组件补齐了 ElTag 实际导入，mock 需提供组件桩
 vi.mock('element-plus', () => ({
   ElMessage: ElMessageMock,
+  ElTag: { template: '<span class="el-tag-stub"><slot /></span>' },
 }))
 
 // Stub element-plus el-tag to silence component-resolution warnings in tests.

@@ -11,6 +11,10 @@ import UserInfoDialog from './components/UserInfoDialog.vue'
 import LanguageSelector from './components/LanguageSelector.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
 import AppTopbar from './components/shell/AppTopbar.vue'
+// 2026-09-13 方案 §4.4：移动端抽屉导航，与 AppTopbar 汉堡按钮共享开关状态
+import AppNavDrawer from './components/ui/AppNavDrawer.vue'
+import { useBreakpoint } from './composables/useBreakpoint'
+import { navDrawerOpen } from './composables/useAppNav'
 import { detectTheme, logoSrc } from './theme'
 import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from './config/brand'
 import { useLoginModal } from './composables/useLoginModal'
@@ -133,6 +137,20 @@ watch(isLoggedIn, (loggedIn) => {
   }
 }, { immediate: true })
 
+// 2026-09-13 方案 §4.4 P1c：访客壳 <768px 收纳为汉堡 + AppNavDrawer。
+// guest-nav 桌面态（>=768）不动；断点用 isTablet(>=768) 而非 isMobile(<1024)。
+const { isTablet } = useBreakpoint()
+
+// 现有 guest-nav 的 6 个静态链接数组化（抽屉数据源）
+const guestNavLinks = [
+  { labelKey: 'landing.navDownload', href: '/customer/update-activate' },
+  { labelKey: 'landing.navSetup', href: '/bootstrap' },
+  { labelKey: 'landing.navActivate', href: '/customer/update-activate' },
+  { labelKey: 'landing.navLicense', href: '/customer/update-activate' },
+  { labelKey: 'landing.navAgreement', href: '/customer/update-activate' },
+  { labelKey: 'landing.navSupport', href: '/customer/update-activate' },
+]
+
 watch(
   () => route.query.login,
   (login) => {
@@ -202,6 +220,8 @@ function handleChangePasswordSuccess() {
         <RouterView />
       </section>
     </main>
+    <!-- 移动导航抽屉挂载点（Teleport 到 body；遮罩 z-index 对齐既有弹层约定） -->
+    <AppNavDrawer />
   </div>
   <div v-else class="guest-layout">
     <header class="guest-header">
@@ -218,7 +238,15 @@ function handleChangePasswordSuccess() {
           <span>{{ SITE_TITLE_LINE_TWO }}</span>
         </span>
       </a>
-      <nav class="guest-nav" :aria-label="t('landing.guestNavAria') || '产品导航'">
+      <button
+        v-if="!isTablet"
+        type="button"
+        class="btn btn-ghost btn-sm guest-hamburger"
+        :aria-label="t('landing.guestNavAria', '产品导航')"
+        aria-haspopup="dialog"
+        @click="navDrawerOpen = true"
+      >☰</button>
+      <nav v-else class="guest-nav" :aria-label="t('landing.guestNavAria') || '产品导航'">
         <a href="/customer/update-activate">{{ t('landing.navDownload') }}</a>
         <a href="/bootstrap">{{ t('landing.navSetup') || '安装激活' }}</a>
         <a href="/customer/update-activate">{{ t('landing.navActivate') }}</a>
@@ -235,6 +263,7 @@ function handleChangePasswordSuccess() {
     <main class="guest-main">
       <RouterView />
     </main>
+    <AppNavDrawer :guest-links="guestNavLinks" />
     <LoginModal v-model="showLoginModal" />
   </div>
   <ChangePasswordDialog v-model="showChangePassword" :forced="mustChangePassword" @success="handleChangePasswordSuccess" />
@@ -249,6 +278,7 @@ function handleChangePasswordSuccess() {
   align-items: center;
   justify-content: center;
   height: 100vh;
+  height: 100dvh;
   background: var(--bg-card);
   color: var(--text-secondary);
   font-size: 13px;
@@ -273,6 +303,7 @@ function handleChangePasswordSuccess() {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -291,386 +322,15 @@ function handleChangePasswordSuccess() {
   overflow: hidden;
 }
 
-.sidebar {
-  width: 220px;
-  flex-shrink: 0;
-  background: var(--sidebar);
-  /* border-right: in LTR this is the inline-end of the sidebar (the
-   * edge facing the main content); in RTL the sidebar moves to the
-   * right side of the viewport and the facing edge flips. postcss-rtlcss
-   * handles `border-right` automatically, but we use the logical form
-   * here so the intent is explicit to future readers. */
-  border-inline-end: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  transition: width 0.2s ease;
-}
-
 .header-alert {
   margin: 0;
   padding: 6px 10px;
   font-size: 12px;
 }
 
-.app-layout.sidebar-collapsed .sidebar {
-  width: 64px;
-}
-
-.sidebar-logo {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px 14px 14px;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text);
-  border-bottom: 1px solid var(--border);
-  min-height: 76px;
-  text-decoration: none;
-  cursor: pointer;
-}
-.sidebar-logo:hover {
-  color: var(--accent-h, var(--text));
-}
-
-.app-layout.sidebar-collapsed .sidebar-logo {
-  justify-content: center;
-  padding: 20px 8px 16px;
-}
-
-.sidebar-logo-text {
-  line-height: 1.35;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-}
-
-.sidebar-logo-img {
-  flex-shrink: 0;
-  display: block;
-  width: 60px;
-  height: 60px;
-  object-fit: contain;
-  border-radius: 12px;
-}
-
-.sidebar-nav {
-  flex: 1;
-  padding: 8px 8px 12px;
-  overflow-y: auto;
-  /* Slim themed scrollbar — the default browser scrollbar is glaringly
-   * wide inside the 64px collapsed sidebar. Firefox uses the longhand
-   * `scrollbar-*` properties; WebKit/Blink need the pseudo-elements. */
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--accent) 40%, transparent) transparent;
-}
-
-.sidebar-nav::-webkit-scrollbar {
-  width: 4px;
-}
-
-.sidebar-nav::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.sidebar-nav::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--accent) 40%, transparent);
-  border-radius: 4px;
-  transition: background 0.15s;
-}
-
-.sidebar-nav::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--accent) 75%, transparent);
-}
-
-.nav-primary {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-bottom: 8px;
-  margin-bottom: 4px;
-  border-bottom: 1px solid var(--border);
-}
-
-.nav-item-primary {
-  font-weight: 500;
-}
-
-.nav-group + .nav-group {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-}
-
-.app-layout.sidebar-collapsed .nav-group + .nav-group {
-  margin-top: 4px;
-  padding-top: 4px;
-}
-
-.nav-group-label {
-  padding: 4px 10px 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--muted);
-  text-transform: none;
-  user-select: none;
-}
-
-.nav-group-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 10px;
-  margin-bottom: 2px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  cursor: pointer;
-  text-align: left;
-  transition: background 0.15s, color 0.15s;
-}
-
-.nav-group-header:hover {
-  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
-  color: var(--text);
-}
-
-.nav-group-header.expanded,
-.nav-group-header.has-active {
-  color: var(--text);
-}
-
-.nav-group-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.nav-group-chevron {
-  flex-shrink: 0;
-  width: 0;
-  height: 0;
-  border-top: 4px solid transparent;
-  border-bottom: 4px solid transparent;
-  /* In LTR the caret points right (border-left → `>`). postcss-rtlcss
-   * mirrors this to `border-right`, making it point left (the
-   * directionally-correct chevron for RTL). */
-  border-inline-start: 5px solid currentColor;
-  opacity: 0.55;
-  transition: transform 0.15s ease;
-}
-
-/* When expanded, rotate so the caret points down. The base rotation
- * (90deg → clockwise) produces a downward chevron in LTR; in RTL the
- * starting caret already points the other way, so we need a different
- * rotation to keep the "expanded = points down" affordance. */
-.nav-group-header.expanded .nav-group-chevron {
-  transform: rotate(90deg);
-}
-[dir="rtl"] .nav-group-header.expanded .nav-group-chevron {
-  transform: rotate(-90deg);
-}
-
-.nav-group-items {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  font-size: 13px;
-  color: var(--muted);
-  transition: background 0.15s, color 0.15s;
-}
-
-.app-layout.sidebar-collapsed .nav-item {
-  justify-content: center;
-  padding: 8px;
-}
-
-.nav-item:hover {
-  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
-  color: var(--text);
-}
-
-.nav-item.active {
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
-  color: var(--accent-h);
-}
-
-.nav-icon {
-  font-size: 15px;
-  flex-shrink: 0;
-  width: 20px;
-  text-align: center;
-}
-
-.nav-label {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sidebar-footer {
-  padding: 8px;
-  border-top: 1px solid var(--border);
-}
-
-.sidebar-user-badge {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  margin-bottom: 4px;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  min-width: 0;
-}
-
-.app-layout.sidebar-collapsed .sidebar-user-badge {
-  justify-content: center;
-  padding: 8px;
-  gap: 0;
-}
-
-.sidebar-user-avatar {
-  flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent), var(--accent-h));
-  color: white;
-  font-size: 12px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
-}
-
-.sidebar-user-info {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  gap: 1px;
-  flex: 1;
-}
-
-.sidebar-user-info .user-name {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 1.2;
-}
-
-.sidebar-user-info .user-role {
-  font-size: 10px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 1.2;
-}
-
-.sidebar-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 8px 10px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-
-.app-layout.sidebar-collapsed .sidebar-toggle {
-  justify-content: center;
-  padding: 8px;
-}
-
-.sidebar-toggle:hover {
-  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
-  color: var(--text);
-}
-
-.toggle-icon {
-  font-size: 14px;
-  line-height: 1;
-  flex-shrink: 0;
-}
-
-/* The sidebar-collapse caret is a single glyph (« or »). postcss-rtlcss
- * cannot mirror glyphs, so we flip the whole character with scaleX(-1).
- * LTR rendering: « collapsed (drawer stays open) | » collapsed (close it).
- * RTL rendering: the meanings swap because the sidebar sits on the right,
- * so the SAME characters now point the wrong way; mirroring them restores
- * the correct affordance. */
-[dir="rtl"] .toggle-icon {
-  transform: scaleX(-1);
-}
-/* Same treatment for the header sidebar toggle button on mobile. */
-[dir="rtl"] .header-sidebar-toggle {
-  transform: scaleX(-1);
-}
-
-.user-name {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
-}
-
-.user-role {
-  font-size: 11px;
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-.meta-sep {
-  color: var(--muted);
-  opacity: 0.5;
-  user-select: none;
-}
-
-.version-tag {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--accent-h);
-  font-family: 'SF Mono', 'Fira Code', monospace;
-  white-space: nowrap;
-}
-
-.version-build {
-  font-size: 11px;
-  color: var(--muted);
-  font-family: 'SF Mono', 'Fira Code', monospace;
-  white-space: nowrap;
-}
+/* 2026-09-12: 删除 2026-07-21 topbar 迁移后遗留的整套 sidebar 死样式
+ * (.sidebar、.sidebar-*、.nav-*、.toggle-icon、.user-name、.version-tag 等约 350 行，
+ * 模板已无对应元素；连带清理 640px 媒体查询中的 .main-header 系列)。 */
 
 .main-content {
   flex: 1;
@@ -694,6 +354,7 @@ function handleChangePasswordSuccess() {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  min-height: 100dvh;
   width: 100%;
   background: var(--bg);
 }
@@ -721,6 +382,16 @@ function handleChangePasswordSuccess() {
   flex: 1;
   min-width: 0;
   margin-inline-start: 12px;
+}
+
+/* 2026-09-13 P1c：访客壳汉堡按钮（仅 <768 由 v-if 渲染），触摸目标 44px */
+.guest-hamburger {
+  flex-shrink: 0;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px 12px;
+  font-size: 16px;
+  line-height: 1;
 }
 
 .guest-nav a {
@@ -787,22 +458,8 @@ function handleChangePasswordSuccess() {
 }
 
 @media (max-width: 640px) {
-  .main-header {
-    padding: 6px 12px;
-  }
-
   .main-body {
     padding: 12px;
-  }
-
-  .main-header-right {
-    gap: 8px;
-  }
-
-  .header-meta {
-    padding: 4px 8px;
-    gap: 4px;
-    font-size: 10px;
   }
 
   .guest-header {
