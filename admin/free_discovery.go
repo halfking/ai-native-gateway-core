@@ -267,9 +267,9 @@ func (h *Handler) handleFreeDiscoveryImportOrbi(w http.ResponseWriter, r *http.R
 	})
 }
 
-// ── 发现任务 ────────────────────────────────────────────────────────────
+// ── Discovery Tasks ─────────────────────────────────────────────────────
 
-// handleFreeDiscoveryScan POST 触发一次发现任务.
+// handleFreeDiscoveryScan POST triggers a discovery task.
 func (h *Handler) handleFreeDiscoveryScan(w http.ResponseWriter, r *http.Request) {
 	deps := h.fdDeps(w)
 	if deps == nil {
@@ -294,8 +294,9 @@ func (h *Handler) handleFreeDiscoveryScan(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// 独立超时上下文: 客户端断开不取消扫描 (否则任务永久停留在 running,
-	// 且 fail 也无法用已取消的 ctx 写库); 60s 覆盖上游慢响应.
+	// Independent timeout context: a client disconnect must NOT cancel the scan
+	// (otherwise the task stays stuck in `running` and even `fail` cannot write
+	// to the DB with an already-cancelled ctx); 60s covers a slow upstream.
 	scanCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 60*time.Second)
 	defer cancel()
 
@@ -306,7 +307,9 @@ func (h *Handler) handleFreeDiscoveryScan(w http.ResponseWriter, r *http.Request
 		TriggerType: freediscovery.TriggerManual,
 	})
 	if err != nil {
-		// 任务已落库 failed 状态时返回 200 + 任务体, 让 UI 能展示失败详情
+		// When the task has already been persisted in `failed` state, return 200 +
+		// the task body so the UI can show failure details instead of treating the
+		// background failure as an HTTP error.
 		if task != nil && task.Status == freediscovery.TaskStatusFailed {
 			writeJSON(w, http.StatusOK, task)
 			return
@@ -317,7 +320,7 @@ func (h *Handler) handleFreeDiscoveryScan(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, task)
 }
 
-// handleFreeDiscoveryTasks GET 任务列表.
+// handleFreeDiscoveryTasks GET lists tasks.
 func (h *Handler) handleFreeDiscoveryTasks(w http.ResponseWriter, r *http.Request) {
 	deps := h.fdDeps(w)
 	if deps == nil {
@@ -366,7 +369,7 @@ func (h *Handler) handleFreeDiscoveryTask(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, task)
 }
 
-// handleFreeDiscoveryTaskResults GET 任务发现结果 (?status=pending|all).
+// handleFreeDiscoveryTaskResults GET lists results of a task (?status=pending|all).
 func (h *Handler) handleFreeDiscoveryTaskResults(w http.ResponseWriter, r *http.Request) {
 	deps := h.fdDeps(w)
 	if deps == nil {
@@ -397,7 +400,7 @@ func (h *Handler) handleFreeDiscoveryTaskResults(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
 
-// handleFreeDiscoveryImport POST 批量导入到 free_resource_catalog.
+// handleFreeDiscoveryImport POST batch-imports results into free_resource_catalog.
 func (h *Handler) handleFreeDiscoveryImport(w http.ResponseWriter, r *http.Request) {
 	deps := h.fdDeps(w)
 	if deps == nil {
@@ -430,9 +433,9 @@ func (h *Handler) handleFreeDiscoveryImport(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, summary)
 }
 
-// ── 辅助 ────────────────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────
 
-// fdActor 操作人标识 (审计; 不含敏感信息).
+// fdActor is the operator identifier (for audit; not sensitive).
 func fdActor(r *http.Request) string {
 	if auth := GetAuthContext(r); auth != nil {
 		if auth.Username != "" {
@@ -445,10 +448,12 @@ func fdActor(r *http.Request) string {
 	return "legacy-admin-key"
 }
 
-// fdStatusFor 领域错误 → HTTP 状态码.
+// fdStatusFor maps domain errors to HTTP status codes.
 //
-// 优先用 errors.Is 匹配 sentinel 错误, 避免误把任意含 "not found" 的内部错误
-// 映射为 404; 仅当不是 sentinel 时回退到字符串包含判断 (兼容旧错误消息).
+// Prefer errors.Is against sentinel errors to avoid mapping any internal error
+// that happens to contain "not found" to a 404; only fall back to a substring
+// check when no sentinel matches (kept for backwards compatibility with older
+// error messages).
 func fdStatusFor(err error) int {
 	switch {
 	case errors.Is(err, freediscovery.ErrTemplateNotFound),
