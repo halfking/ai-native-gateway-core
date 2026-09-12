@@ -457,7 +457,8 @@ func fdActor(r *http.Request) string {
 func fdStatusFor(err error) int {
 	switch {
 	case errors.Is(err, freediscovery.ErrTemplateNotFound),
-		errors.Is(err, freediscovery.ErrImportTaskNotFound):
+		errors.Is(err, freediscovery.ErrImportTaskNotFound),
+		errors.Is(err, freediscovery.ErrTaskNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, freediscovery.ErrTemplateDisabled),
 		errors.Is(err, freediscovery.ErrImportTaskNotReady),
