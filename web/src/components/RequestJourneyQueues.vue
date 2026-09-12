@@ -427,7 +427,7 @@ function closeDialog() {
   font-size: 12px;
 }
 .degraded-notice strong { color: var(--kx-warning); }
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .queue-row { grid-template-columns: 32px minmax(0, 1fr) auto; }
   .queue-attempt { grid-column: 2; }
   .queue-status { grid-column: 3; grid-row: 1 / span 2; }

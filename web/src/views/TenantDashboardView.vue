@@ -914,7 +914,7 @@ onUnmounted(() => {
   grid-template-columns: 1fr 1fr;
   gap: 20px;
 }
-@media (max-width: 800px) {
+@media (max-width: 768px) {
   .trend-grid { grid-template-columns: 1fr; }
 }
 .trend-label {

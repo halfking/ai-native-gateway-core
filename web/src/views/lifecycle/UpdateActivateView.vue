@@ -493,7 +493,7 @@ onMounted(async () => {
   padding: 0;
 }
 
-@media (min-width: 900px) {
+@media (min-width: 1024px) {
   .ua-grid { grid-template-columns: 1fr 1fr; }
   /* Site + License 两块是站点状态视图，横向并排 */
   .ua-grid > :nth-child(1),

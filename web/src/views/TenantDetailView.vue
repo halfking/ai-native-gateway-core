@@ -906,7 +906,7 @@ watch(() => route.params.tenantId, loadTenant)
 .maas-shortcut-icon { font-size: 20px; }
 .maas-shortcut-label { font-size: 12px; font-weight: 500; }
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .billing-toolbar { align-items: stretch; }
   .billing-user-input { min-width: 0; flex: 1 1 100%; }
   .billing-toolbar .btn { width: 100%; }

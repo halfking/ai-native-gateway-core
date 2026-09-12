@@ -149,7 +149,7 @@ function fmtCost(v: number | undefined) {
   color: var(--text-muted);
 }
 .period-stat strong { font-size: 15px; color: var(--text); }
-@media (max-width: 900px) {
+@media (max-width: 1024px) {
   .period-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .title-row { flex-direction: column; align-items: flex-start; }
 }

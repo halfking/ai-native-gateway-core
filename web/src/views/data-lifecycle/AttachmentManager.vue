@@ -427,7 +427,7 @@ onMounted(load)
   white-space: pre-wrap; word-break: break-all;
 }
 
-@media (max-width: 800px) {
+@media (max-width: 768px) {
   .grid-2 { grid-template-columns: 1fr; }
   .stats-grid { grid-template-columns: 1fr; }
 }

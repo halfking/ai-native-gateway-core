@@ -684,7 +684,7 @@ watch(() => props.timeQuery, () => {
   transform: translateX(-8px);
 }
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .pue-drawer {
     width: 100vw;
   }

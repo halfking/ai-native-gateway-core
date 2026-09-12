@@ -222,7 +222,7 @@ const changeClass = (change: number, isNegative: boolean) => {
 .stat-change-bad { color: var(--danger, var(--danger)); }
 .stat-change-neutral { color: var(--muted, var(--text-secondary)); }
 .stat-subtext { font-size: 12px; color: var(--muted, var(--text-secondary)); }
-@media (max-width: 1600px) { .stat-value { font-size: 20px; } }
+@media (max-width: 1440px) { .stat-value { font-size: 20px; } }
 @media (max-width: 768px) {
   .dashboard-stats-row { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
   .stat-content { gap: 8px; }

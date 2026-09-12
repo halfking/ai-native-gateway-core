@@ -1404,7 +1404,7 @@ watch(activeTab, (tab) => {
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .compact-alert { margin-top: 8px; padding: 8px; font-size: 11px; }
 
-@media (max-width: 960px) {
+@media (max-width: 1024px) {
   .overview-grid { grid-template-columns: 1fr; }
   .overview-grid .span-2 { grid-column: span 1; }
   .detail-grid { grid-template-columns: 1fr; }

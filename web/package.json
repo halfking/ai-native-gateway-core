@@ -16,7 +16,7 @@
     "i18n:check:json": "node scripts/i18n-audit.mjs --json --out=reports/i18n-audit.json",
     "i18n:fix:dry": "node scripts/i18n-fix.mjs --dry-run",
     "i18n:fix": "node scripts/i18n-fix.mjs --apply --yes",
-    "responsive:check": "node scripts/responsive-audit.mjs --strict --allow-legacy"
+    "responsive:check": "node scripts/responsive-audit.mjs --strict"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

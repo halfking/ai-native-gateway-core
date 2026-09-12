@@ -133,7 +133,7 @@ function openTask(id: string) {
   margin-bottom: 16px;
   width: 100%;
 }
-@media (max-width: 900px) { .rankings-row { grid-template-columns: 1fr; } }
+@media (max-width: 1024px) { .rankings-row { grid-template-columns: 1fr; } }
 .detail-card {
   border: 1px solid var(--border, var(--surface-secondary));
   border-radius: 10px;

@@ -273,12 +273,12 @@ function onDaysClick(next: number) {
   display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: 16px; margin-bottom: 16px; width: 100%;
 }
-@media (max-width: 960px) { .charts-row { grid-template-columns: 1fr; } }
+@media (max-width: 1024px) { .charts-row { grid-template-columns: 1fr; } }
 .detail-grid {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px; margin-bottom: 16px; width: 100%;
 }
-@media (max-width: 900px) { .detail-grid { grid-template-columns: 1fr; } }
+@media (max-width: 1024px) { .detail-grid { grid-template-columns: 1fr; } }
 .detail-card {
   border: 1px solid var(--border, var(--surface-secondary)); border-radius: 10px;
   background: var(--card, var(--on-primary)); padding: 14px 16px; min-width: 0;

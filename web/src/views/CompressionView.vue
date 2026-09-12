@@ -802,7 +802,7 @@ watch(activeTab, loadAll)
   font-size: 13px;
 }
 
-@media (max-width: 800px) {
+@media (max-width: 768px) {
   .stats-row {
     grid-template-columns: repeat(2, 1fr);
   }

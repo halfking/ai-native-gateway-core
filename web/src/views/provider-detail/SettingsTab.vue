@@ -494,7 +494,7 @@ async function runHealthCheck() {
   word-break: break-all;
 }
 
-@media (max-width: 960px) {
+@media (max-width: 1024px) {
   .info-item--wide {
     grid-column: auto;
   }

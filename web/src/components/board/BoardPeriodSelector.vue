@@ -168,7 +168,7 @@ function diffDays(start: string, end: string): number {
   color: var(--text-muted);
   font-size: 12px;
 }
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .bps {
     flex-direction: column;
     align-items: stretch;

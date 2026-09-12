@@ -734,7 +734,7 @@ onMounted(load)
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
 }
-@media (max-width: 1100px) { .settings-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 1024px) { .settings-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 640px) { .settings-grid { grid-template-columns: 1fr; } }
 .field { display: flex; flex-direction: column; gap: 4px; }
 .field-label { font-size: 12px; color: var(--muted); }
@@ -791,7 +791,7 @@ onMounted(load)
 .modal-code { display: block; margin-bottom: 8px; }
 .modal-hint { font-size: 12px; color: var(--muted); margin: 0 0 16px; }
 .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-@media (max-width: 520px) { .edit-grid { grid-template-columns: 1fr; } }
+@media (max-width: 480px) { .edit-grid { grid-template-columns: 1fr; } }
 .edit-field { display: flex; flex-direction: column; gap: 6px; }
 .edit-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .link-sm { font-size: 11px; margin-left: auto; background: none; border: none; color: var(--accent-h); cursor: pointer; }

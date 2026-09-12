@@ -454,7 +454,7 @@ function goCanonical() {
 
 <style scoped>
 .dual { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-@media (max-width: 900px) { .dual { grid-template-columns: 1fr; } }
+@media (max-width: 1024px) { .dual { grid-template-columns: 1fr; } }
 .pane h4 { margin: 0 0 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 15%, transparent); }
 .badge.protect { background: color-mix(in srgb, var(--warning-dark) 20%, transparent); }
@@ -478,5 +478,5 @@ function goCanonical() {
 .match-score { color: var(--muted); font-size: 11px; }
 .badge.match-best { background: color-mix(in srgb, var(--success) 25%, transparent); }
 .price-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-@media (max-width: 520px) { .price-grid { grid-template-columns: 1fr; } }
+@media (max-width: 480px) { .price-grid { grid-template-columns: 1fr; } }
 </style>
