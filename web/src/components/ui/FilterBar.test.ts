@@ -119,12 +119,14 @@ describe('FilterBar', () => {
     expect(w.find('.filter-bar__panel').exists()).toBe(true)
   })
 
-  it('响应式源码断言：1023 纵向堆叠+全宽搜索、769 隐藏折叠入口、isSmall 折叠逻辑', () => {
-    expect(source).toMatch(/@media \(max-width: 1023px\)/)
-    const stackBlock = source.split('@media (max-width: 1023px)')[1] ?? ''
+  it('响应式源码断言：1024 白名单档纵向堆叠+全宽搜索、isSmall 折叠逻辑', () => {
+    // 2026-09-14 审计修正：堆叠断点收敛到白名单值 1024；769 死规则已移除
+    expect(source).toMatch(/@media \(max-width: 1024px\)/)
+    const stackBlock = source.split('@media (max-width: 1024px)')[1] ?? ''
     expect(stackBlock).toContain('flex-direction: column')
     expect(stackBlock).toMatch(/\.filter-bar__search\s*{[^}]*width:\s*100%/s)
-    expect(source).toMatch(/@media \(min-width: 769px\)/)
+    expect(source).not.toMatch(/max-width:\s*1023px/)
+    expect(source).not.toMatch(/min-width:\s*769px/)
     expect(source).toContain('isSmall')
     expect(source).toContain('isMobile')
   })

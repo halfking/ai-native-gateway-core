@@ -206,8 +206,9 @@ function onSearch() {
   margin-inline-start: auto;
 }
 
-/* <1024：控件纵向堆叠 + 搜索按钮全宽（布局决策口径与 AppTopbar 一致） */
-@media (max-width: 1023px) {
+/* <1024（含 1024 边界，白名单档）：控件纵向堆叠 + 搜索按钮全宽，
+ * 布局决策口径与 AppTopbar 的 useBreakpoint().isMobile(<1024) 一致 */
+@media (max-width: 1024px) {
   .filter-bar__fields {
     flex-direction: column;
     align-items: stretch;
@@ -220,10 +221,6 @@ function onSearch() {
   }
 }
 
-/* >=768 隐藏折叠入口（<768 由 v-if 渲染） */
-@media (min-width: 769px) {
-  .filter-bar__toggle {
-    display: none;
-  }
-}
+/* 折叠入口仅由 v-if="isSmall"(<480) 渲染，无需 CSS 隐藏规则
+ * （2026-09-14 审计修正：移除非白名单 min-width:769 死规则） */
 </style>
