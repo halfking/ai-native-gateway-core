@@ -48,6 +48,12 @@ const emit = defineEmits<{
   close: []
 }>()
 
+defineSlots<{
+  default?: () => unknown
+  /** 作用域参数：disabledConfirm 透传、close 请求关闭 */
+  footer?: (props: { disabledConfirm: boolean; close: () => void }) => unknown
+}>()
+
 const { t } = useI18n()
 const { isSmall } = useBreakpoint()
 const resolvedFullscreen = computed(() => props.fullscreen || isSmall.value)

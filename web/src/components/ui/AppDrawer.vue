@@ -44,6 +44,11 @@ const emit = defineEmits<{
   close: []
 }>()
 
+defineSlots<{
+  default?: () => unknown
+  footer?: () => unknown
+}>()
+
 const { t } = useI18n()
 const { isTablet } = useBreakpoint()
 
