@@ -801,7 +801,15 @@ func (g *BalanceFloorGuard) handlePlanCredential(ctx context.Context, c floorCan
 	action := evaluatePlanFloor(c.FloorTokens, c.FloorPercent, st)
 	switch action {
 	case floorPull:
-		if c.QuotaState == "ok" && c.ReasonCode != "balance_floor" {
+		// R21 (2026-09-13): the old `ReasonCode != "balance_floor"` guard here
+		// permanently neutralized token/percent floors after an admin
+		// reset-quota left an "ok + balance_floor reason" residue (the pull
+		// was refused, while currency pass B — pure SQL — still pulled,
+		// splitting the two paths). The SQL WHERE below (quota_state='ok' +
+		// availability guards) already prevents overwriting our own pulled
+		// rows, so re-evaluating a residue row is safe: below floor → re-pull,
+		// recovered → the restore path clears the stale reason.
+		if c.QuotaState == "ok" {
 			detail := st.summary(c.FloorTokens, c.FloorPercent)
 			tag, uerr := g.db.Exec(ctx, `
 				UPDATE credentials
