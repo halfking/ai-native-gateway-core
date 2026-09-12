@@ -38,10 +38,10 @@ import (
 // TestStreamChunk_Responses_FutureEvent_IsNotEmitted for the pinned behavior.
 func TestStreamChunk_Responses_ExtensionLoss(t *testing.T) {
 	cases := []struct {
-		name        string
-		chunk       *StreamChunk
-		wantEvents  []string
-		notEmitted  []string
+		name       string
+		chunk      *StreamChunk
+		wantEvents []string
+		notEmitted []string
 	}{
 		{
 			name: "text delta",

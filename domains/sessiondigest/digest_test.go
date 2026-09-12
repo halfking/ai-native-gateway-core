@@ -91,3 +91,37 @@ func TestUnmarshalRejectsUnknownVersion(t *testing.T) {
 		t.Fatal("Unmarshal accepted an unknown schema version")
 	}
 }
+
+// Audit R20 (2026-09-13): Responses protocol turns carry the user payload
+// under top-level "input" (string or message-item array). messageValues'
+// walk previously only descended messages/choices/message/output/content,
+// so every Responses turn digested with an empty user_input.
+func TestBuildExtractsResponsesInputAsString(t *testing.T) {
+	request := map[string]any{
+		"model": "gpt-6",
+		"input": "summarize this log",
+	}
+	envelope := Build(request, map[string]any{"output": []any{map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "here you go"}}}}}, nil, nil, time.Now())
+	if envelope == nil {
+		t.Fatal("Build returned nil")
+	}
+	if envelope.Payload.UserInput != "summarize this log" {
+		t.Fatalf("UserInput = %q, want %q", envelope.Payload.UserInput, "summarize this log")
+	}
+}
+
+func TestBuildExtractsResponsesInputAsItems(t *testing.T) {
+	request := map[string]any{
+		"model": "gpt-6",
+		"input": []any{
+			map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "list the errors"}}},
+		},
+	}
+	envelope := Build(request, nil, nil, nil, time.Now())
+	if envelope == nil {
+		t.Fatal("Build returned nil")
+	}
+	if envelope.Payload.UserInput != "list the errors" {
+		t.Fatalf("UserInput = %q, want %q", envelope.Payload.UserInput, "list the errors")
+	}
+}

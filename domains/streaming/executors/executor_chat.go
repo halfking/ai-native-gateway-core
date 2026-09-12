@@ -888,7 +888,11 @@ func (e *Executor) executeOpenAI(
 				//nolint:errcheck // best-effort close
 				defer resp.Body.Close()
 				body := make([]byte, 4096)
-				n, _ := resp.Body.Read(body)
+				// Audit R20 (2026-09-13): a single Read may short-read and
+				// truncate the error body before classification — read until
+				// the buffer is full or the body ends (ErrUnexpectedEOF on a
+				// partial fill is the expected stop).
+				n, _ := io.ReadFull(resp.Body, body)
 				e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "openai-completions"), body[:n])
 				_, _ = io.Copy(io.Discard, resp.Body)
 				errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
