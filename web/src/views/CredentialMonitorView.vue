@@ -2074,12 +2074,6 @@ onUnmounted(() => {
   letter-spacing: 0.04em;
 }
 
-@media (max-width: 900px) {
-  .summary-row {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
 /* 2026-06-23: per-model toggle + state-change history */
 .history-table {
   width: 100%;
@@ -2343,8 +2337,8 @@ onUnmounted(() => {
   .skeleton { animation: none; }
 }
 
-/* ═══ 响应式: 屏幕窄于 700px 强制 list-full (老板视觉验收点) ═══ */
-@media (max-width: 700px) {
+/* ═══ 响应式: 极窄屏强制 list-full (老板视觉验收点；2026-09-13 P3 收敛 700→640) ═══ */
+@media (max-width: 640px) {
   .detail-skeleton-grid {
     grid-template-columns: 1fr;
   }
