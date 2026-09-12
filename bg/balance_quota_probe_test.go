@@ -124,3 +124,26 @@ func TestBalanceQuotaProbeForceProbeDataRaceFix(t *testing.T) {
 		t.Fatalf("len(p.forceLastSeen) must be captured under forceMu to avoid data race")
 	}
 }
+
+// TestBalanceQuotaProbeExemptsBalanceFloorPulled pins the 2026-09-13
+// balance_floor guard collaboration contract: rows pulled from the pool by
+// bg/balance_floor_guard (state_reason_code='balance_floor') must NOT be
+// chat-probed by this worker. They still have buffer quota, so a chat probe
+// would succeed and writeHealth would flip them straight back to ok/ready —
+// a 2-minute ping-pong. Recovery for those rows belongs to the guard's own
+// balance/plan re-checks.
+func TestBalanceQuotaProbeExemptsBalanceFloorPulled(t *testing.T) {
+	src, err := os.ReadFile("balance_quota_probe.go")
+	if err != nil {
+		t.Fatalf("read balance quota probe source failed: %v", err)
+	}
+	body := string(src)
+	for _, want := range []string{
+		`COALESCE(c.state_reason_code, '') <> 'balance_floor'`,
+		"balance_floor guard exemption",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("balance quota probe is missing %q", want)
+		}
+	}
+}
