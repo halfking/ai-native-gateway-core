@@ -71,6 +71,11 @@ func fdRequest(t *testing.T, h *Handler, method, path string, body any) *httptes
 		handler = h.handleFreeDiscoveryTasks
 	case strings.Contains(path, "/import"):
 		handler = h.handleFreeDiscoveryImport
+	case strings.Contains(path, "/tasks/"):
+		// GET /tasks/{id} — must be checked after the /import and /results suffixes
+		// above; before this case was added, /tasks/N fell through to the
+		// templateByID default and hit the wrong handler.
+		handler = h.handleFreeDiscoveryTask
 	case strings.HasSuffix(path, "/templates"):
 		handler = h.handleFreeDiscoveryTemplates
 	default:
@@ -252,8 +257,8 @@ func TestFreeDiscovery_Task_StatusForSentinels(t *testing.T) {
 // handler over sqlmock: sql.ErrNoRows must surface as 404 via the ErrTaskNotFound
 // sentinel; a db fault must not be mistaken for a missing task and stays 500.
 func TestFreeDiscovery_Task_GetNotFound404_DBFault500(t *testing.T) {
+	h, mock := newFreeDiscoveryTestHandler(t)
 	t.Run("missing task → 404", func(t *testing.T) {
-		h, mock := newFreeDiscoveryTestHandler(t)
 		mock.ExpectBegin()
 		mock.ExpectExec("SET LOCAL app\\.current_tenant = 'default'").WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectQuery("FROM discovery_tasks WHERE id=\\$1").
@@ -261,17 +266,14 @@ func TestFreeDiscovery_Task_GetNotFound404_DBFault500(t *testing.T) {
 			WillReturnError(sql.ErrNoRows)
 		mock.ExpectRollback()
 
-		req := httptest.NewRequest(http.MethodGet, "/api/free-discovery/tasks/999", nil)
-		req.SetPathValue("id", "999")
-		rec := httptest.NewRecorder()
-		h.handleFreeDiscoveryTask(rec, req)
+		// Routed through fdRequest so the /tasks/{id} switch case stays exercised.
+		rec := fdRequest(t, h, http.MethodGet, "/api/free-discovery/tasks/999", nil)
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("missing task must 404, got %d", rec.Code)
 		}
 	})
 
 	t.Run("db fault → 500", func(t *testing.T) {
-		h, mock := newFreeDiscoveryTestHandler(t)
 		mock.ExpectBegin()
 		mock.ExpectExec("SET LOCAL app\\.current_tenant = 'default'").WillReturnResult(sqlmock.NewResult(0, 0))
 		mock.ExpectQuery("FROM discovery_tasks WHERE id=\\$1").
@@ -279,10 +281,7 @@ func TestFreeDiscovery_Task_GetNotFound404_DBFault500(t *testing.T) {
 			WillReturnError(errors.New("boom"))
 		mock.ExpectRollback()
 
-		req := httptest.NewRequest(http.MethodGet, "/api/free-discovery/tasks/999", nil)
-		req.SetPathValue("id", "999")
-		rec := httptest.NewRecorder()
-		h.handleFreeDiscoveryTask(rec, req)
+		rec := fdRequest(t, h, http.MethodGet, "/api/free-discovery/tasks/999", nil)
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("db fault must stay 500, got %d", rec.Code)
 		}
