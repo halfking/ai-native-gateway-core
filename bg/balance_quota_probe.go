@@ -420,10 +420,7 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 		      -- /auto-disabled revalidation branches below require
 		      -- quota_state='ok' and never select floor-pulled rows.
 		      c.quota_state IN ('balance_exhausted', 'permanently_exhausted')
-		      AND NOT (
-		          c.quota_state = 'balance_exhausted'
-		          AND COALESCE(c.state_reason_code, '') = 'balance_floor'
-		      )
+		      AND COALESCE(c.state_reason_code, '') <> 'balance_floor'
 		      OR (
 		      -- suspended-revalidation set (P3): the contradictory
 		      -- suspended+quota-ok+NULL-recover rows. Slower floor
