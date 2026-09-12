@@ -12,7 +12,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/safehttpclient"
 )
 
-// testTemplate 构造测试模板.
+// testTemplate builds a test template.
 func testTemplate() *ProviderTemplate {
 	return &ProviderTemplate{
 		ID: 1, ProviderCode: "groq", DisplayName: "Groq",
@@ -21,8 +21,9 @@ func testTemplate() *ProviderTemplate {
 	}
 }
 
-// scannerForTest 返回一个 SafeHTTPClient 包装 (allowlist 含 httptest server 的 host),
-// 用于本地单元测试. 生产路径 (NewHTTPScanner(nil)) 仍走默认严格 SSRF 阻断.
+// scannerForTest returns a SafeHTTPClient wrapper (allowlist includes the httptest
+// server's host) for local unit tests. The production path (NewHTTPScanner(nil))
+// still goes through the default strict SSRF blocking.
 func scannerForTest(t *testing.T, baseURL string) *HTTPScanner {
 	t.Helper()
 	u, err := url.Parse(baseURL)
@@ -54,9 +55,9 @@ func TestHTTPScanner_ScanModels_OpenAIEnvelope(t *testing.T) {
 	tpl := testTemplate()
 	tpl.BaseURL = srv.URL + "/openai/v1"
 
-	// 通过引擎的 scannerFor 获取 Groq 装配 (FreeOf=全部模型) — 真实路径.
+	// Obtain the Groq preset via the engine's scannerFor (FreeOf=all models) — the real path.
 	engine := NewDiscoveryEngine(nil, nil)
-	// 将默认 safehttpclient 替换为测试客户端 (127.0.0.1 allowlist).
+	// Replace the default safehttpclient with the test client (127.0.0.1 allowlist).
 	preset := engine.scannerFor(tpl).(*HTTPScanner)
 	preset.doer = scannerForTest(t, tpl.BaseURL).doer
 	models, err := preset.ScanModels(context.Background(), tpl, "sk-test")
@@ -75,7 +76,7 @@ func TestHTTPScanner_ScanModels_OpenAIEnvelope(t *testing.T) {
 	if models[0].RawMetadata == nil {
 		t.Fatal("raw metadata must be preserved")
 	}
-	// Groq 预设钩子: 全部模型免费层可用 + 每日配额估算.
+	// Groq preset hook: all models are eligible for the free tier + daily quota estimation.
 	if models[0].DailyTokens != 14400 {
 		t.Fatalf("groq quota hook missing: %+v", models[0])
 	}
@@ -102,8 +103,9 @@ func TestHTTPScanner_ScanModels_OpenRouterFreeOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScanModels: %v", err)
 	}
-	// 默认规则: HasSuffix(":free") OR (pricing_prompt != "" AND 零定价).
-	// gpt-5 非零定价 → 排除; broken 无定价字段 → pricing 为空 → 零定价判定 true 但 :free 缺失 → 也被排除.
+	// Default rule: HasSuffix(":free") OR (pricing_prompt != "" AND zero pricing).
+	// gpt-5 has non-zero pricing -> excluded; broken has no pricing field -> pricing is empty
+	// -> zero-pricing check is true but :free suffix is missing -> also excluded.
 	if len(models) != 1 || models[0].ModelID != "google/gemma-4-31b-it:free" {
 		t.Fatalf("want only the :free model, got %+v", models)
 	}

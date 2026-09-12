@@ -12,21 +12,21 @@ import (
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
-// DiscoveryEngine 发现引擎: 加载模板 → 解析密钥 → 扫描上游 → ToS 初判 →
-// 结果落库 (discovery_results, 状态 pending 待人工审查).
+// DiscoveryEngine: loads template -> resolves API key -> scans upstream -> runs ToS
+// initial check -> writes results (discovery_results, status pending for human review).
 //
-// 失败快路径: 任何一步失败, 任务标记 failed 并携带错误信息; 不做静默回退.
+// Fail-fast: any step that fails marks the task failed with the error; no silent rollback.
 type DiscoveryEngine struct {
 	db        *sql.DB
 	templates *TemplateManager
-	// providerScanners 按提供商装配 (预设钩子: FreeOf/PoolKey/Quota)
+	// providerScanners are wired per provider (preset hooks: FreeOf/PoolKey/Quota).
 	providerScanners map[string]ProviderScanner
-	// fallbackScanners 按协议兜底 (未注册预设的提供商)
+	// fallbackScanners are wired per protocol (for providers without a preset).
 	fallbackScanners map[APIType]ProviderScanner
 	tos              *ToSChecker
 }
 
-// NewDiscoveryEngine 构造引擎.
+// NewDiscoveryEngine constructs the engine.
 func NewDiscoveryEngine(db *sql.DB, templates *TemplateManager) *DiscoveryEngine {
 	e := &DiscoveryEngine{
 		db:               db,
@@ -36,7 +36,7 @@ func NewDiscoveryEngine(db *sql.DB, templates *TemplateManager) *DiscoveryEngine
 		tos:              NewToSChecker(),
 	}
 
-	// 按预设装配提供商扫描器 (FreeOf/PoolKey/QuotaEstimator 钩子)
+	// Wire provider scanners from presets (FreeOf/PoolKey/QuotaEstimator hooks).
 	for code, p := range builtinPresets {
 		hs := NewHTTPScanner(nil)
 		if p.FreeOf != nil {
@@ -51,25 +51,27 @@ func NewDiscoveryEngine(db *sql.DB, templates *TemplateManager) *DiscoveryEngine
 		e.providerScanners[code] = hs
 	}
 
-	// 协议兜底: google-ai-studio 使用 Gemini 真协议 (models[] 形态),
-	// 其余协议继续复用 openai 形态扫描 (anthropic 走 x-api-key 适配器).
+	// Protocol fallbacks: google-ai-studio uses the real Gemini protocol (models[] shape);
+	// the remaining protocols keep reusing the OpenAI shape (anthropic goes via the x-api-key adapter).
 	e.fallbackScanners[APITypeOpenAICompletions] = NewHTTPScanner(nil)
 	e.fallbackScanners[APITypeGoogleGenerativeAI] = NewGoogleGenerativeAIScanner(nil)
 	e.fallbackScanners[APITypeAnthropic] = NewAnthropicScanner(nil)
 	return e
 }
 
-// SetScanner 注入/覆盖指定协议的兜底扫描器 (测试与后续真协议适配入口).
+// SetScanner injects/overrides the fallback scanner for a given protocol
+// (entry point for tests and future real-protocol adapters).
 func (e *DiscoveryEngine) SetScanner(t APIType, s ProviderScanner) {
 	e.fallbackScanners[t] = s
 }
 
-// SetProviderScanner 注入/覆盖指定提供商的扫描器 (测试入口).
+// SetProviderScanner injects/overrides the scanner for a given provider (test entry point).
 func (e *DiscoveryEngine) SetProviderScanner(code string, s ProviderScanner) {
 	e.providerScanners[code] = s
 }
 
-// scannerFor 解析模板应使用的扫描器: 提供商装配优先, 协议兜底次之.
+// scannerFor resolves which scanner the template should use: provider wiring takes precedence,
+// then the protocol fallback.
 func (e *DiscoveryEngine) scannerFor(tpl *ProviderTemplate) ProviderScanner {
 	if s, ok := e.providerScanners[tpl.ProviderCode]; ok && s != nil {
 		return s
@@ -77,21 +79,23 @@ func (e *DiscoveryEngine) scannerFor(tpl *ProviderTemplate) ProviderScanner {
 	return e.fallbackScanners[tpl.APIType]
 }
 
-// Run 执行一次发现任务. 返回任务终态.
+// Run executes one discovery task. Returns the terminal task state.
 //
-// 状态机 (2026-09-09 audit-fix):
-//   - Run 入口先校验模板存在且 enabled, 否则 ErrTemplateNotFound / ErrTemplateDisabled
-//   - createTask 写 pending (started_at NULL)
-//   - updateTask(running) 同时设置 started_at, 必须从 pending 转换, 检查 RowsAffected
-//   - 扫描成功/失败后 updateTask(success/failed), 必须从 running 转换, 检查 RowsAffected
-//   - 任意 UPDATE 失配返回 ErrTaskStateConflict, 防止乱序更新
+// State machine (2026-09-09 audit-fix):
+//   - Run entry first validates the template exists and is enabled; otherwise
+//     ErrTemplateNotFound / ErrTemplateDisabled.
+//   - createTask writes pending (started_at NULL).
+//   - updateTask(running) also sets started_at; must transition from pending and check RowsAffected.
+//   - After scan success/failure, updateTask(success/failed); must transition from running and check RowsAffected.
+//   - Any UPDATE mismatch returns ErrTaskStateConflict to prevent out-of-order updates.
 func (e *DiscoveryEngine) Run(ctx context.Context, req DiscoveryRequest) (*DiscoveryTask, error) {
 	if req.TriggerType == "" {
 		req.TriggerType = TriggerManual
 	}
 
-	// 0. 前置模板校验: 拒绝禁用模板 (禁用模板可能携带过期密钥, 触发扫描
-	//    将消耗上游 API 配额且写入失败任务; 与 List(enabledOnly) 保持一致).
+	// 0. Pre-flight template validation: reject disabled templates (a disabled template may
+	//    carry stale credentials, and triggering a scan would consume upstream API quota
+	//    while writing a failed task; consistent with List(enabledOnly)).
 	tpl, err := e.templates.Get(ctx, req.TenantID, req.TemplateID)
 	if err != nil {
 		if errors.Is(err, ErrTemplateNotFound) {
@@ -104,13 +108,13 @@ func (e *DiscoveryEngine) Run(ctx context.Context, req DiscoveryRequest) (*Disco
 		return nil, ErrTemplateDisabled
 	}
 
-	// 1. 创建任务 (pending)
+	// 1. Create the task (pending).
 	task, err := e.createTask(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. 标记 running (启动时间在此写入; 同时检查 RowsAffected 防并发覆盖)
+	// 2. Mark running (start time is written here; also check RowsAffected to prevent concurrent overwrites).
 	if err := e.updateTask(ctx, task, TaskStatusRunning, TaskStatusPending, nil, nil); err != nil {
 		return nil, err
 	}
@@ -120,25 +124,25 @@ func (e *DiscoveryEngine) Run(ctx context.Context, req DiscoveryRequest) (*Disco
 	scanStart := timeNow()
 	metrics.FreeDiscoveryActiveScans.Inc()
 
-	// 3. 解析密钥
+	// 3. Resolve the API key.
 	apiKey, _, err := e.templates.ResolveAPIKey(ctx, tpl)
 	if err != nil {
 		return e.fail(ctx, task, TaskStatusRunning, fmt.Errorf("resolve api key: %w", err), scanStart)
 	}
 
-	// 4. 选择扫描器 (提供商装配优先, 协议兜底)
+	// 4. Pick the scanner (provider wiring first, protocol fallback second).
 	scanner := e.scannerFor(tpl)
 	if scanner == nil {
 		return e.fail(ctx, task, TaskStatusRunning, fmt.Errorf("no scanner for provider %q (api_type %q)", tpl.ProviderCode, tpl.APIType), scanStart)
 	}
 
-	// 5. 扫描
+	// 5. Scan.
 	models, err := scanner.ScanModels(ctx, tpl, apiKey)
 	if err != nil {
 		return e.fail(ctx, task, TaskStatusRunning, err, scanStart)
 	}
 
-	// 6. ToS 初判 (共享池/配额钩子已在 scanner 装配层生效)
+	// 6. ToS initial check (shared-pool/quota hooks already applied at scanner wiring).
 	for i := range models {
 		models[i].TosVerdict, models[i].TosNotes = e.tos.Check(tpl, models[i].ModelID)
 		if models[i].TosVerdict == "avoid" || models[i].TosVerdict == "caution" {
@@ -146,12 +150,12 @@ func (e *DiscoveryEngine) Run(ctx context.Context, req DiscoveryRequest) (*Disco
 		}
 	}
 
-	// 7. 结果落库 (pending)
+	// 7. Persist results (pending).
 	if err := e.saveResults(ctx, task, models); err != nil {
 		return e.fail(ctx, task, TaskStatusRunning, err, scanStart)
 	}
 
-	// 8. 任务完成
+	// 8. Complete the task.
 	found := len(models)
 	if err := e.updateTask(ctx, task, TaskStatusSuccess, TaskStatusRunning, &found, nil); err != nil {
 		metrics.FreeDiscoveryActiveScans.Dec()
@@ -171,7 +175,7 @@ func (e *DiscoveryEngine) Run(ctx context.Context, req DiscoveryRequest) (*Disco
 	return e.GetTask(ctx, req.TenantID, task.ID)
 }
 
-// failScanMetrics 记录扫描失败路径的可观测性指标 (终态 + 耗时).
+// failScanMetrics records observability metrics for the scan-failure path (terminal status + duration).
 func failScanMetrics(provider string, cause error, scanStart time.Time) {
 	metrics.FreeDiscoveryActiveScans.Dec()
 	metrics.FreeDiscoveryScansTotal.WithLabelValues(provider, "failed").Inc()
@@ -180,7 +184,7 @@ func failScanMetrics(provider string, cause error, scanStart time.Time) {
 	}
 }
 
-// createTask 写入 pending 任务行. started_at 保留 NULL, 由 running 状态写入.
+// createTask writes the pending task row. started_at stays NULL and is written by the running transition.
 func (e *DiscoveryEngine) createTask(ctx context.Context, req DiscoveryRequest) (*DiscoveryTask, error) {
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -192,13 +196,14 @@ func (e *DiscoveryEngine) createTask(ctx context.Context, req DiscoveryRequest) 
 		return nil, err
 	}
 
-	// provider_code 从模板读取, 任务留痕 (RLS 同事务内可见).
+	// provider_code is read from the template and stored on the task for traceability
+	// (RLS visibility within the same transaction).
 	var providerCode string
 	if err := tx.QueryRowContext(ctx,
 		`SELECT provider_code FROM provider_templates WHERE id=$1`, req.TemplateID,
 	).Scan(&providerCode); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("freediscovery: template %d not found (tenant %q)", req.TemplateID, req.TenantID)
+			return nil, fmt.Errorf("freediscovery: template %d not found (tenant %q): %w", req.TemplateID, req.TenantID, ErrTemplateNotFound)
 		}
 		return nil, fmt.Errorf("freediscovery: lookup template: %w", err)
 	}
@@ -226,8 +231,8 @@ func (e *DiscoveryEngine) createTask(ctx context.Context, req DiscoveryRequest) 
 	}, nil
 }
 
-// updateTask 更新任务状态与统计; expectedFrom 为状态机前置条件, 0 行返回 ErrTaskStateConflict.
-// running 状态会同步写入 started_at.
+// updateTask updates the task status and counters; expectedFrom is the state-machine precondition,
+// and 0 rows returns ErrTaskStateConflict. The running state also writes started_at.
 func (e *DiscoveryEngine) updateTask(
 	ctx context.Context, task *DiscoveryTask, status TaskStatus,
 	expectedFrom TaskStatus, modelsFound, modelsImported *int,
@@ -248,7 +253,7 @@ func (e *DiscoveryEngine) updateTask(
 	}
 	if status == TaskStatusRunning {
 		startedAt = completedAt
-		// running 不强制写入 completed_at (避免覆盖)
+		// Do not force a completed_at write while running (avoids overwriting).
 		completedAt = nil
 	}
 
@@ -271,12 +276,14 @@ func (e *DiscoveryEngine) updateTask(
 	return tx.Commit()
 }
 
-// fail 标记任务失败并返回 (任务体, 原错误). 任务体供 handler 在
-// 扫描失败时仍返回 200 + failed 任务详情 (docs §3.4 契约); 不吞错.
+// fail marks the task as failed and returns (task body, original error). The task body lets the
+// handler still return 200 + failed task details on scan failure (docs section 3.4 contract); the
+// error is not swallowed.
 //
-// 仅在 expectedFrom 状态 (一般为 running) 下可转换; 0 行表示状态机被破坏,
-// 返回的 error 仍包裹 cause, 让 handler 透传; 任务体仍然失败状态供 UI 展示.
-// scanStart 非零时同步落扫描耗时/终态指标.
+// Only the expectedFrom state (typically running) may transition; 0 rows indicates a broken state
+// machine. The returned error still wraps cause so the handler can pass it through; the task body
+// remains in the failed state for the UI. When scanStart is non-zero, scan duration and
+// terminal-status metrics are recorded at the same time.
 func (e *DiscoveryEngine) fail(ctx context.Context, task *DiscoveryTask, expectedFrom TaskStatus, cause error, scanStart ...time.Time) (*DiscoveryTask, error) {
 	failScanMetrics(task.ProviderCode, cause, firstTime(scanStart))
 	task.Status = TaskStatusFailed
@@ -284,7 +291,7 @@ func (e *DiscoveryEngine) fail(ctx context.Context, task *DiscoveryTask, expecte
 
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
-		return task, cause // DB 不可用时优先暴露原始错误
+		return task, cause // Surface the original error when the DB is unavailable.
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -303,7 +310,8 @@ func (e *DiscoveryEngine) fail(ctx context.Context, task *DiscoveryTask, expecte
 	}
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
-		// 状态机冲突: 让上层知道是并发问题, 但任务体仍标记失败 (handler 决策).
+		// State-machine conflict: surface the concurrency issue to the caller, but keep the task body
+		// marked failed (handler's decision).
 		slog.Warn("freediscovery: fail transition rejected by state guard",
 			"task_id", task.ID, "expected_from", string(expectedFrom))
 		return task, fmt.Errorf("%w: %v", ErrTaskStateConflict, cause)
@@ -317,7 +325,7 @@ func (e *DiscoveryEngine) fail(ctx context.Context, task *DiscoveryTask, expecte
 	return task, cause
 }
 
-// saveResults 批量写入发现结果 (单事务; ON CONFLICT 跳过重复 model_id).
+// saveResults batch-writes discovery results (single transaction; ON CONFLICT skips duplicate model_id).
 func (e *DiscoveryEngine) saveResults(ctx context.Context, task *DiscoveryTask, models []DiscoveredModel) error {
 	if len(models) == 0 {
 		return nil
@@ -349,7 +357,7 @@ func (e *DiscoveryEngine) saveResults(ctx context.Context, task *DiscoveryTask, 
 			tos_verdict=EXCLUDED.tos_verdict,
 			tos_notes=EXCLUDED.tos_notes,
 			raw_metadata=EXCLUDED.raw_metadata
-		-- import_status / imported_at 保持原值: 重复扫描不重置已审查状态`)
+		-- import_status / imported_at preserve their existing values: repeated scans do not reset the reviewed status.`)
 	if err != nil {
 		return fmt.Errorf("freediscovery: prepare result insert: %w", err)
 	}
@@ -371,7 +379,7 @@ func (e *DiscoveryEngine) saveResults(ctx context.Context, task *DiscoveryTask, 
 	return tx.Commit()
 }
 
-// GetTask 读取任务 (RLS 过滤).
+// GetTask reads a task (RLS-filtered).
 func (e *DiscoveryEngine) GetTask(ctx context.Context, tenantID string, id int64) (*DiscoveryTask, error) {
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -399,7 +407,7 @@ func (e *DiscoveryEngine) GetTask(ctx context.Context, tenantID string, id int64
 		&t.ModelsFound, &t.ModelsImported, &createdAt, &updatedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("freediscovery: task %d not found", id)
+			return nil, fmt.Errorf("%w (id %d)", ErrTaskNotFound, id)
 		}
 		return nil, fmt.Errorf("freediscovery: scan task: %w", err)
 	}
@@ -420,7 +428,7 @@ func (e *DiscoveryEngine) GetTask(ctx context.Context, tenantID string, id int64
 	return &t, nil
 }
 
-// ListTasks 列出租户任务 (按创建时间倒序, limit 上限 200).
+// ListTasks lists the tenant's tasks (newest first; limit capped at 200).
 func (e *DiscoveryEngine) ListTasks(ctx context.Context, tenantID string, limit int) ([]*DiscoveryTask, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
@@ -474,7 +482,8 @@ func (e *DiscoveryEngine) ListTasks(ctx context.Context, tenantID string, limit 
 	return out, rows.Err()
 }
 
-// ListResults 列出任务的发现结果, 可按 import_status 过滤 ("all" = 不过滤).
+// ListResults lists the results of a task, optionally filtered by import_status
+// ("all" means no filter).
 func (e *DiscoveryEngine) ListResults(ctx context.Context, tenantID string, taskID int64, importStatus string) ([]*DiscoveryResult, error) {
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -531,10 +540,10 @@ func nullableTime(dst **time.Time, v sql.NullTime) {
 	}
 }
 
-// timeNow/timeSince 独立时钟入口, 测试可注入.
+// timeNow/timeSince are independent clock entry points that tests can override.
 var timeSince = time.Since
 
-// firstTime 返回变长参数中的第一个 time.Time; 空参返回零值.
+// firstTime returns the first time.Time in a variadic argument list; an empty call returns the zero value.
 func firstTime(ts []time.Time) time.Time {
 	if len(ts) == 0 {
 		return time.Time{}

@@ -5,26 +5,30 @@ import (
 	"strings"
 )
 
-// ProviderPreset 内置供应商预设 (源自 Orbi templates/pi-providers/*.json 的多租户化).
-// SeedTemplate 用预设一键建模板, 减少手工录入.
+// ProviderPreset built-in provider preset (sourced from Orbi
+// templates/pi-providers/*.json, multi-tenantified).
+// SeedTemplate uses the preset to create a template in one step, reducing
+// manual entry.
 type ProviderPreset struct {
 	ProviderCode string
 	DisplayName  string
 	BaseURL      string
 	APIType      APIType
-	APIKeyEnv    string // 空 = keyless
+	APIKeyEnv    string // empty = keyless
 	TosURL       string
 	TosVerdict   string
 	TosNotes     string
-	// FreeOf 判定上游模型条目是否免费 (nil = 默认 :free 后缀规则)
+	// FreeOf judges whether an upstream model entry is free
+	// (nil = default :free suffix rule).
 	FreeOf func(m modelEntry) bool
-	// PoolKeyOf 共享配额池推断 (nil = 无共享池)
+	// PoolKeyOf infers the shared quota pool (nil = no shared pool).
 	PoolKeyOf func(modelID string) string
-	// QuotaEstimator 估算免费配额 (nil = 不估算, 0)
+	// QuotaEstimator estimates the free quota (nil = no estimate, 0).
 	QuotaEstimator func(modelID string) (monthly, daily int64)
 }
 
-// builtinPresets 内置预设注册表. 新增提供商只需在此追加.
+// builtinPresets is the built-in preset registry. To add a new provider, just
+// append here.
 var builtinPresets = map[string]*ProviderPreset{
 	"groq": {
 		ProviderCode: "groq",
@@ -35,9 +39,10 @@ var builtinPresets = map[string]*ProviderPreset{
 		TosURL:       "https://groq.com/terms-of-use/",
 		TosVerdict:   "caution",
 		TosNotes:     "Free tier documented (RPM/RPD/TPD limits); production proxy of free tier is a gray area — review before scale",
-		// Groq 免费层按账户+模型计: /models 返回的全部模型在免费账户内均可用
+		// Groq free tier is metered per account+model: every model returned by
+		// /models is usable on a free account.
 		FreeOf: func(modelEntry) bool { return true },
-		// 配额按模型独立计 (无跨模型共享池)
+		// Quota is counted per model (no cross-model shared pool).
 		QuotaEstimator: func(string) (int64, int64) { return 0, 14400 },
 	},
 	"openrouter": {
@@ -49,7 +54,8 @@ var builtinPresets = map[string]*ProviderPreset{
 		TosURL:       "https://openrouter.ai/docs/api-reference/limits",
 		TosVerdict:   "ok",
 		TosNotes:     "':'-suffixed models are officially free; all :free models share one daily request pool per account",
-		// 默认规则已覆盖 (:free 后缀 / 零定价), 显式留 nil
+		// The default rule already covers this (:free suffix / zero pricing);
+		// explicitly left as nil.
 		PoolKeyOf: func(modelID string) string {
 			if strings.HasSuffix(modelID, ":free") {
 				return "openrouter-free-pool"
@@ -95,12 +101,12 @@ var builtinPresets = map[string]*ProviderPreset{
 	},
 }
 
-// GetPreset 返回内置预设 (找不到返回 nil).
+// GetPreset returns the built-in preset (nil if not found).
 func GetPreset(providerCode string) *ProviderPreset {
 	return builtinPresets[providerCode]
 }
 
-// ListPresetCodes 返回全部内置预设 code (字母序稳定输出).
+// ListPresetCodes returns all built-in preset codes (stable alphabetical output).
 func ListPresetCodes() []string {
 	codes := make([]string, 0, len(builtinPresets))
 	for code := range builtinPresets {
@@ -110,7 +116,8 @@ func ListPresetCodes() []string {
 	return codes
 }
 
-// PresetToCreateRequest 把预设转换为创建请求 (displayName 可覆盖).
+// PresetToCreateRequest converts the preset into a create request (displayName
+// can be overridden).
 func PresetToCreateRequest(p *ProviderPreset) *CreateTemplateRequest {
 	verdict := p.TosVerdict
 	if verdict == "" {

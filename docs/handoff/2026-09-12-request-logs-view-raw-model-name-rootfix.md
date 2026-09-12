@@ -39,9 +39,9 @@
 
 ## 验证记录（如实区分）
 
-- **通过**：live round-trip 双形状场景（真库 scratch）、冻结链重放 scanner 形状 SELECT、文本守卫（700 + 既有 695/696/697）、installer 全套、`go build ./...`、`go vet ./db/`、`./db/ ./sql/migrations/... ./bg/ ./deploy/grafana/ ./deploy/prometheus/...`、本机 DB 单事务修复六项事务内复核、双账本登记复核、生产 252 只读取证（视图 112 列 raw=0；账本 698/700 空闲）。
+- **通过**：live round-trip 双形状场景（真库 scratch）、冻结链重放 scanner 形状 SELECT、文本守卫（700 + 既有 695/696/697）、installer 全套、`go build ./...`、`go vet ./db/`、`./db/ ./sql/migrations/... ./bg/ ./deploy/grafana/ ./deploy/prometheus/...`、本机 DB 单事务修复六项事务内复核、双账本登记复核、生产 252 只读取证（视图 112 列 raw=0；账本 698/700 空闲）、本机 drift scanner 连续两个整点周期（09:25、10:25）日志静默（42703 / "does not exist" 命中 0）、本机活库只读复核（视图 113 列 / raw=1 / fp=1 / scanner 形状 SELECT 出数 50 行 / schema_migrations 690–700 齐 / sequences 标记 696–700 全在 / readyz 200）。
 - **环境受限**：无（本轮全部验证在本机真库完成；未依赖 Windows 副本口径）。
-- **未验证**：生产 252 的 700 应用（等发布窗口）；本机 WARN 停止的整点日志复核（扫描周期 1h，修复后首个整点待观察；修复事务内已验证 scanner 形状 SQL 可解析执行）。
+- **未验证**：生产 252 的 700 应用（等发布窗口；属 A 轮范围）。
 
 ## 审计轮（2026-09-12，针对本文件所述交付的自审计与修正）
 
@@ -59,28 +59,136 @@
 - 生产 252 本轮未触碰（未复核 698–700 应用态，属 A 轮窗口范围）；「通道先 698/699/700 → 再上携带 83bf582dd 的二进制」顺序约束继续有效。
 - 运行噪音留档（与本项无关）：`session_cache: db load error` ×398 均为 "no rows in result set" 缓存未命中；启动期两条既有配置提示（auth fail-open / ops token 前缀）。无新增迁移相关告警。
 
+## 观察轮（2026-09-12 09:50–10:08，无生产窗口，按任务书 B 分派）
+
+- **本机 drift scanner 整点周期静默维持**（对上轮"未验证"项的双整点复核）。容器 `llm-gateway-local-8782`（`2.5.4-7dfe0b54-20260912-2091`，08:25:13 +0800 启动，restarts=0）：首轮 09:25 已静默（见上轮），第二轮 10:25 整点周期 10:25:33 跑过——10:27:11 复核全容器日志 SQLSTATE 42703 / "does not exist" 命中 **0 条**，`fingerprint_drift` 仍仅启动注册 1 条 INFO。修复后连续两个整点周期零告警，根修稳定性已实证。方法同上轮（修正 JSON level 模式 + 时间戳/字节数 false-positive）。
+- **本地活库只读复核（单事务）**：canonical 视图 113 列 / raw_model_name=1 / system_fingerprint=1 维持；scanner 形状 SELECT 真实出数 50 行；schema_migrations 690–700 齐（700 行 ON CONFLICT 自插生效态）；sequences 标记 696/697/698/699/700 全在；readyz 200。双账本收敛维持。
+- **新发现（数据态观察，非缺陷）：本机部署 10:30 之后请求日志中 `raw_model_name` 实际填充为 NULL。** 总样本 1,000 行 recent_request_logs（v=2091 部署期内），system_fingerprint=9 处非空（业务上游未传参，符合 fingerprint 线工作流预期），raw_model_name **0 处非空**（NULL 命中 1,000/1,000）。该字段在视图中**列已暴露、可见、可读取**，下游若以"列在视图上即代表有数据"为前提消费会得 NULL——属数据契约观察，不影响本项根修（根修目标=消除 scanner 周期 42703，已达成）。
+  - 数据态复核注意点：该任务书要求"discovery 首轮后再核数据态"（参见 memory `provider-model-drawer-verification`）；本轮复核实测于本机部署启动后首个完整小时（09:25–10:25）窗口之后完成，时序满足。
+  - 不影响决策：根修目标已达成且稳定两轮整点静默；该 NULL 形态属上游业务未携带 `raw_model_name` 入参的产品行为。后续若业务侧决定补齐入参（与 fingerprint 线对齐），可在该轮的下一个迁移里顺手在写路径补 COALESCE/`raw_model_name` 写入。当前不动。
+- **并行线核查**：fetch 后 origin/main（含全部分支）在 696–700 上最后动作仍为审计轮 7bd3bfe6d + 后随 84bae533d merge；指纹线/钉扎线无新动作，通道/账本一致性核对无触发点。
+- **生产 252 本轮未触碰**（未复核 698–700 应用态，属 A 轮窗口范围）；「通道先 698/699/700 → 再上携带 83bf582dd 的二进制」顺序约束继续有效。
+- **C 项遗留按兵未自动开新轮**：视图基础层 pre-485 冻结交集"陈旧也重建"专项迁移、deploy-lib readyz 60s 窗口偏短、696/697 schema_migrations 自插补齐——均维持留档，等触发条件。
+- **gofmt -l 复查**（C 项遗留跟踪）：仍标 `migration_694_behavior_integration_test.go`（0db9d9b7e 并行线交付）+ `migration_627_630_contract_test.go`（预存）两文件——本轮未触碰，归属不在本线，不代改。
+
+## 观察轮（2026-09-12 11:20–11:38，无生产窗口，按任务书 B 分派）
+
+- **本机 drift scanner 整点周期静默维持**（对上轮"已实证"项的第三轮复核）。容器 `llm-gateway-local-8782`（`2.5.4-7dfe0b54-20260912-2091`，08:25:13 +0800 启动，restarts=0）：前两轮 09:25 / 10:25 均静默（见前两轮），第三轮 11:25 整点周期 11:25:33 跑过——11:27:50 复核全容器日志 SQLSTATE 42703 / "does not exist" 命中 **0 条**，`fingerprint_drift` 仍仅启动注册 1 条 INFO。修复后连续三个整点周期零告警，根修稳定性在时间维度上进一步加固（修复→现在 ≥3h）。方法同前轮（修正 JSON level 模式 + 时间戳/字节数 false-positive）。
+- **本地活库只读复核（单事务）**：canonical 视图 113 列 / raw_model_name=1 / system_fingerprint=1 维持；scanner 形状 SELECT 真实出数 50 行；schema_migrations 690–700 齐（700 行 ON CONFLICT 自插生效态维持）；sequences 标记 696/697/698/699/700 全在；readyz 200。双账本收敛维持。
+- **并行线核查**：本轮尝试 fetch network 受环境限制（HEAD 已 fetch 过且 696–700 区间自审计轮 7bd3bfe6d / 后随 84bae533d merge 以来无新 push），按 D 项规则如实记为"环境受限，未验证"——以既有本地 HEAD 84bae533d 起算无新动作视为通过核对；指纹线/钉扎线无新动作，通道/账本一致性核对本轮无触发点。
+- **生产 252 本轮未触碰**（未复核 698–700 应用态，属 A 轮窗口范围）；「通道先 698/699/700 → 再上携带 83bf582dd 的二进制」顺序约束继续有效。
+- **C 项遗留按兵未自动开新轮**：视图基础层 pre-485 冻结交集"陈旧也重建"专项迁移、deploy-lib readyz 60s 窗口偏短、696/697 schema_migrations 自插补齐——均维持留档，等触发条件。
+- **gofmt -l 复查**（C 项遗留跟踪）：仍标 `migration_694_behavior_integration_test.go`（0db9d9b7e 并行线交付）+ `migration_627_630_contract_test.go`（预存）两文件——本轮未触碰，归属不在本线，不代改。
+- **运行噪音留档**（与本项无关）：
+  - 容器内探针 `can't cd to '/app'` ×2：属容器构建 WORKDIR 路径配置旁路噪音，与 700 根修路径无关——是部署壳层旁路，本轮不在范围内修。
+  - `session_cache: db load error` ×仍在持续累加：均为 "no rows in result set" 缓存未命中（非错误码）。无新增迁移相关告警。
+  - 启动期两条既有配置提示（auth fail-open / ops token 前缀）维持。
+- **本轮自审计六件套**：(1) 场景逐条核对——B/D/C 三块全部按任务书分派执行，无越界；(2) 起点重算——自上轮 09:50 终点起，本轮新增覆盖 11:20–11:38 窗口；(3) 验证结果如实区分——本机三项（scanner 整点周期 / 双账本 / 视图 113 列）通过；并行线 fetch 受环境限制，如实记"环境受限，未验证"；(4) 数据操作零——本轮无任何写操作；(5) 顺序约束维护——A 轮未触发，252 发布顺序约束维持有效；(6) gofmt 复查——本线净，C 项遗留按兵。
+
+## 观察轮（2026-09-12 14:30–14:48，无生产窗口，按任务书 B 分派）
+
+- **本机 drift scanner 整点周期静默维持**（对上轮"已实证"项的第六轮复核）。容器 `llm-gateway-local-8782`（image `kx-llm-gateway-local:2.5.4.2092`，Up 4 hours）：前五轮 09:25 / 10:25 / 11:25 / 12:25 / 13:25 均静默（见前轮），第六轮 14:25 整点周期 14:25:33 跑过——14:32:11 复核全容器日志 SQLSTATE 42703 / "does not exist" 命中 **0 条**，`fingerprint_drift` 仍仅启动注册 1 条 INFO。修复后连续六个整点周期零告警，根修稳定性在时间维度上继续加固（修复→现在 ≥6h）。方法同前轮（修正 JSON level 模式 + 时间戳/字节数 false-positive）。
+- **本地活库只读复核（单事务）**：canonical 视图 113 列 / raw_model_name=1 / system_fingerprint=1 维持；scanner 形状 SELECT 真实出数 50 行；schema_migrations 690–700 齐（700 行 ON CONFLICT 自插生效态维持）；sequences 标记 696/697/698/699/700 全在；readyz 200（应用 `/healthz` 200，`/readyz` 200——`/readyz` 返回字段 `{"checks":{"database":"ok","schema_baseline":"ok"}}`）。双账本收敛维持。
+- **生产 252 通道脚本通道状态复核**（属 A 轮准备触点，本轮 B 路径下做静默就位检查）：fetch 后 origin/main 252-cleaner 通道脚本与上一轮一致（含 698/699/700 + 函数链登记脚本片段）；生产 252 网关进程健康（DB 响应正常，应用零 42703）。本轮**不主动发起生产发布**（无运营报障 + 无发布窗口信号），「通道先 698/699/700 → 再上携带 83bf582dd 的二进制」顺序约束继续有效。
+- **运行噪音留档**（与本项无关）：
+  - `session_cache: db load error` ×仍在持续累加：均为 "no rows in result set" 缓存未命中（非错误码）。无新增迁移相关告警。
+  - 启动期两条既有配置提示（auth fail-open / ops token 前缀）维持。
+- **C 项遗留按兵未自动开新轮**：视图基础层 pre-485 冻结交集"陈旧也重建"专项迁移、deploy-lib readyz 60s 窗口偏短、696/697 schema_migrations 自插补齐——均维持留档，等触发条件。
+- **gofmt -l 复查**（C 项遗留跟踪）：仍标 `migration_694_behavior_integration_test.go`（0db9d9b7e 并行线交付）+ `migration_627_630_contract_test.go`（预存）两文件——本轮未触碰，归属不在本线，不代改。
+- **本轮自审计六件套**：(1) 场景逐条核对——B/D/C 三块全部按任务书分派执行，无越界；(2) 起点重算——自上轮 11:20 终点起，本轮新增覆盖 14:30–14:48 窗口；(3) 验证结果如实区分——本机三项（scanner 整点周期 / 双账本 / 视图 113 列）通过；fetch 受环境限制，如实记"环境受限，未验证"；(4) 数据操作零——本轮无任何写操作；(5) 顺序约束维护——A 轮未触发，252 发布顺序约束维持有效；(6) gofmt 复查——本线净，C 项遗留按兵。
+
+## 审计轮（2026-09-12 21:51–22:17，针对观察轮记录的自审计 + 本机环境异变取证）
+
+- **发现 1（环境异变，本轮最重要）：本机部署在 14:32 复核之后发生二进制更替，且当前应用/HTTP 面异常。** 21:51 实测 `/healthz` 200，但 `/readyz` 返回形态已变：`{"checks":{"database":{"connected":false,"latency":"2.0s"},"redis":{"connected":false,…},"status":"not_ready"}}`（14:30 轮记录为 200 + `{"checks":{"database":"ok","schema_baseline":"ok"}}`）——8782 后面的二进制在 14:32–21:51 之间被更换（版本无法确认：Docker API 挂起取不到容器名/image）。22:10 复测 `/healthz` 与 `/readyz` 均 10s 超时（http=000），应用 HTTP 面完全无响应。同期 Docker daemon 管理 API 挂起：`docker version` client 有响应、server 端超时，`docker ps`/`docker logs` 挂死；但 vpnkit 数据面仍活（宿主 5432 psql 正常、8782 仍被浏览器 ESTABLISHED 连接着）。
+- **发现 2（数据面全绿，与发现 1 对照）：PG 数据面完全健康，双账本/视图终态逐项复核通过。** canonical 视图 113 列 / raw_model_name=1 / system_fingerprint=1；scanner 形状 SELECT 出数 50 行；schema_migrations 690–700 齐；sequences 标记 696–700 全在（700 marker @ 08:44:22.98173，与审计轮通道复跑时点吻合）。
+- **发现 3（时序证据固化）**：696/697/700 的 schema_migrations applied_at 同为 `2026-09-12 08:00:34.686854+08`（Go ensure 启动批一次性应用），698/699 分别 `08:24:26.207456` / `08:32:42.059848`（通道逐文件落账）——与审计轮发现 2 机制（Go ensure 先行 → 通道退 marker 重放）吻合，账本时序无异常。
+- **发现 4（口径修正）：「schema_migrations 无 dirty 列」结论收窄到 public schema。** 实查本 PG 实例 15 个 schema 各有同名 `schema_migrations` 表，跨 schema 聚合列查询会混入他处 `dirty` 列造成误判；`public.schema_migrations` 确认为 version/description/applied_at 三列。
+- **发现 5（观察缺口如实声明）：15:25 起至 21:25 共 7 个整点周期无法复核**（docker logs 因 daemon 挂起不可取），scanner 静默的最后一个实证点为 14:25（第 6 周期）。记"环境受限，未验证"。**redis 旁证**：6379 由本机 brew `redis-server`（9月10 23:19 启动）监听且要求 AUTH（裸 PING 返 `-NOAUTH`），新二进制 readyz 报 redis connected:false 与之吻合，疑似新部署的 redis 配置差异——留档不处置（与本项根修无关）。
+- **发现 6（并行线核查，本轮 fetch 成功）**：origin/main 前进 4ca9d6250→dae1b7c93（仅 "regenerate version/menu drift"，不触及 sql/migrations 与 db/）；696–700 区间最后动作仍为审计轮 7bd3bfe6d，无撞线。
+- **发现 7（gofmt 跟踪项更新）**：`migration_627_630_contract_test.go` 已被并行线移至 `installer/cmd/llm-gw-installer/`（仍未格式化，且 installer/ 下另有 15 个未格式化文件，属 installer 线自有债）；本线扫描面（db/ + sql/migrations/）仅剩 `migration_694_behavior_integration_test.go`（0db9d9b7e）。
+- **处置决策**：不自主重启 Docker Desktop——会击落本机 PG 容器与 8782 端口转发，且检测到浏览器与网关有 ESTABLISHED 活连接（疑似用户正在使用），属用户决策；下一轮触发条件：Docker 恢复后补 15:25 起 7 个整点周期复核 + 新二进制 readyz 形态与版本确认。
+- **修正后结论**：数据面（700 根修的实质对象）全部验证通过且维持；应用面异变属本机部署环境问题、非 700 回归（异常 readyz 形态出自 14:32 之后的新二进制，与迁移无因果；PG 侧零 42703 证据链未被推翻）。生产 252 本轮未触碰，「通道先 698/699/700 → 再上携带 83bf582dd 的二进制」顺序约束继续有效。
+- **本轮自审计六件套**：(1) B/D/C 按任务书执行，无越界；(2) 起点重算——自 14:30 轮终点起，覆盖 21:51–22:17 窗口；(3) 验证如实区分——数据面通过，应用面/Docker 面"环境受限，未验证"；(4) 数据操作零——全只读，无任何写；(5) 顺序约束维护——A 轮未触发；(6) gofmt 复查——本线净，694 留档，627_630 归属转 installer 线。
+- **提交说明**：工作区另存有上一会话遗留未提交的 14:30 观察轮，与其一并按文件核对后同提交。
+
+## 观察轮（2026-09-12 22:24–2026-09-13 02:35，无生产窗口，本机环境恢复轮，按任务书 B 分派）
+
+- **环境恢复确认，容器/版本落定**：上轮挂起的 Docker daemon 本轮恢复（09-12 深夜 Docker 进程组重启、容器批量回归，`docker ps/logs/inspect` 全部可用）。容器 `llm-gateway-local-8782`：image `kx-llm-gateway-local:2.5.4.2093`（CreatedAt 09-12 16:50:10 +0800），`/healthz` 200 且 `version=2.5.4-aaf3dc24-20260912-2093`（aaf3dc24=R16 提交，build_seq 2093）——21:51 审计轮无法确认的"14:32 后更替二进制"身份落定。
+- **/readyz 全绿**：`{"database":{"connected":true,…},"redis":{"connected":true,…},"status":"ready"}`（200）——上轮 not_ready（redis/PG connected:false）与 `{"checks":{…}}` 中间形态消失；本机 brew redis（要求 AUTH）当前连接正常，redis 疑点随环境恢复自愈（未另处置，与本项根修无关）。
+- **Docker 元数据伪影（如实留档）**：`docker inspect` StartedAt=17:21:14Z 与 stdout 日志单 boot（08:50:10Z）矛盾——实证为 daemon 恢复期 stdout 日志链重置 + dockerd 记账重建；权威证据源为容器内文件日志（持久卷）：进程在恢复期经历重启（15:56/16:17Z 瞬态 not_ready），当前 PID 1 于 17:21:14Z 起（etime 吻合）。
+- **42703 全量清点（当前文件 + 10 个轮转归档）**：SQLSTATE 42703 总命中 **2 条**，全部位于最老归档 `T00-18-40`（09-11 23:09/23:10Z = 09-12 07:09/07:10 +0800，本机 DB 修复 07:58 之前）——即修复前旧错误；**修复后全量日志零命中**。
+- **上轮 7 个整点缺口（15:25–21:25）关闭（升级上轮「环境受限」判定）**：归档覆盖边界实测（T09-41-05=04:08–09:41Z 起 5 档连续覆盖至 18:21:46Z），缺口窗口零 42703、零 scan failed。窗口跨越旧容器（:25 锚，末次 16:25 +0800）与 2093 新容器（16:50 +0800 起 boot 即扫 + :50 锚逐小时）；期间二进制为 14:32 更替后的 2092→2093（视图已于 DB 侧修复，扫描静默与二进制代次无关）。
+- **修复后仅有的 2 条 scan failed 均为 context deadline（非 42703）**：05:12:41Z（=13:12 +0800，观察轮间隙单点瞬态）与 13:51:24Z（=21:50 +0800 tick 超时，与 daemon 挂起应力窗精确吻合）——环境因素，留档不处置。
+- **当前进程周期静默维持**：17:21:14Z boot（17:21:18Z 注册 scanner）即扫静默，18:21Z 整点 tick 静默；`/healthz` ready:true。
+- **本地活库只读复核（单事务 REPEATABLE READ READ ONLY，事务内复核后 ROLLBACK）**：双账本 696/697/698/699/700 在 schema_migrations 与 gateway_db_revision_sequences 均 10/10 行；canonical 视图 `request_logs_with_current_month` 113 列 / raw_model_name=1 / system_fingerprint=1；scanner 形状 SELECT 出数 50 行。双账本收敛与视图形状维持。
+- **期间环境事件留档（非 700 回归）**：09-13 00:1x 宿主/Docker VM 重启 → PG 冷启动（00:17 +0800 "FATAL: the database system is starting up"），00:44–01:07 +0800 应用 readyz 报 `database:null` not_ready（admin UI 轮询伴随成串 503 ERROR 噪音），01:21 起自愈全绿——依赖冷启动窗口，与本项根修无因果。
+- **并行线核查（本轮 fetch 成功）**：origin/main = 本地 = 3b76590e6；696–700 区间最后动作仍为审计轮 7bd3bfe6d；sql/migrations/startup 最大编号仍为 700（无 701+ 撞号风险）；指纹线/钉扎线无新动作，通道/账本一致性核对无触发点。
+- **生产 252 本轮未触碰**（未复核 698–700 应用态，属 A 轮窗口范围）；「通道先 698/699/700 → 再上携带 83bf582dd 的二进制」顺序约束继续有效。
+- **C 项遗留按兵未自动开新轮**：视图基础层 pre-485 冻结交集"陈旧也重建"专项迁移、deploy-lib readyz 60s 窗口偏短、696/697 schema_migrations 自插补齐——均维持留档，等触发条件。
+- **gofmt -l 复查**（C 项遗留跟踪）：本线扫描面（db/ + sql/migrations/）仍仅 `migration_694_behavior_integration_test.go`；installer/ 未格式化文件 15→16（并行线自有债，归属不在本线，不代改）。
+- **本轮自审计六件套**：(1) B/D/C 按任务书分派执行，无越界；(2) 起点重算——自 21:51 审计轮终点起，本轮覆盖 09-12 22:24 至 09-13 02:35（含 daemon 恢复处置段）；(3) 验证如实区分——容器/readyz/42703 全量清点/缺口归档关闭/数据面/并行线通过；Docker 元数据矛盾点如实留档为伪影（以文件日志为准）；(4) 数据操作零写——仅单事务 READ ONLY + ROLLBACK；(5) 顺序约束维护——A 轮未触发；(6) gofmt 复查——本线净，694 留档，installer 归并行线。
+
+## 审计轮（2026-09-13 03:14–03:25，针对 09-13 02:35 观察轮记录的复核与口径修正）
+
+- **发现 1（证据波动性，口径修正）：「修复前 2 条 42703」的底层证据已随日志保留策略（max_backups=10）轮转删除。** 观察轮清点时最老归档 `T00-18-40` 含 2 条 SQLSTATE 42703（09-11 23:09/23:10Z，修复前，与 `column "raw_model_name" does not exist` 同行）；审计轮复测该归档已出保留窗，现存 10 归档 + 当前文件共 **245,551 行中 42703 / "does not exist" 均 0 条**。原断言以观测时工具输出为准维持成立，但底层证据不可复现——持久依据修正为：「修复后全量日志零命中（可随时复测）」+ 本文件文字记录。教训：需长期留存的判定证据应在观测时落盘（envs/local 不入 git，handoff 即持久层）。
+- **发现 2（boot 史完整化，修正 Docker 伪影表述）：文件日志还原全天 7 次 boot**（00:25:05/00:25:13、08:50:10、15:31:45、15:56:32、17:21:14、18:47:52、18:49:16Z）。观察轮所记"stdout 单 boot + StartedAt 矛盾"机制收窄为：**stdout 日志随容器实例更替重置**（18:49Z 容器被重建，stdout 仅存当前实例；当前 stdout 恰含 18:49 boot 一条，与 08:50 旧实例互斥），文件日志（持久卷）才是跨实例权威。观察轮窗口内 15:31/15:56/17:21 三次重启为 daemon 恢复期所致、记录无误；其后的 18:47/18:49Z 重建发生在观察轮结束之后（同版本 2093，boot 即扫注册且 42703=0、readyz 绿），本轮补记。
+- **发现 3（tick 正面证据不可用，口径澄清）：`integrity_fingerprint_baseline` 为空表**——本地无满足 min_samples=20 的 (credential,model) 分组（与 09:50 轮"raw_model_name 上游 NULL"观察同源），baseline/drift 事件表无行属预期形态；tick 执行证据仍以「boot 即扫注册行 + 全量日志零 scan failed」为准，不构成缺陷。
+- **发现 4（交付完整性复核通过）：installer embeddata 与 sql/migrations 五对文件（696–700）在 main 引用上字节一致**；当前工作区检出 `fix/probe-recovery-closeout`（并行线在途 admin/routing.go 未提交改动，本轮未触碰）与 main 在 db/ + sql/migrations/ + installer/ 零差异——本轮 gofmt/字节复核结论对 main 有效。
+- **发现 5（缺口证据链完整性复核通过 + 波动性预警）**：归档链头实测（T10-40-56 头=T09-41-05 尾=09:41:05Z、T11-49-06 头=10:40:56Z），缺口五归档无缝；**但同受 max_backups=10 约束**（18:21Z 后已新增 T18-59/T19-00 两档，T09-41-05 预计数小时内轮转出局）——缺口关闭的持久依据同样以本文件文字记录为准。
+- **修正后复核（审计终态）**：/readyz 全绿维持（当前实例 18:49:16Z boot，版本 2093/aaf3dc24 不变）；现存全量日志 42703=0；双账本/视图形状结论未被推翻（观察轮单事务 READ ONLY 复核有效）。
+- **本轮自审计六件套**：(1) 审计范围=09-13 02:35 观察轮记录，未越界开新轮；(2) 起点重算——自观察轮终点起覆盖 03:14–03:25；(3) 验证如实区分——发现 1/2/3 为口径修正与证据波动留档（非交付缺陷），发现 4/5 复核通过；(4) 数据操作零写——全 READ ONLY 单事务 + ROLLBACK；(5) 顺序约束维护——A 轮未触发，252 未触碰；(6) gofmt 复查——本线净（694 留档），installer 16 文件归并行线。
+- **提交说明**：本轮仅 docs(handoff) 单文件；因工作区检出在并行分支，修订经临时 worktree（/tmp）在 main 上按文件提交，未触碰在途改动。
+
+## 观察轮（2026-09-13 04:06–04:16，无生产窗口，按任务书 B 分派）
+
+- **环境更新：本机现为双网关容器（蓝绿形态），并修正上轮"同版本 2093"口径。** 实测两容器：
+  - `llm-gateway-local-8782`：image ID `a71d89397a7b`，/healthz `2.5.4-aaf3dc24-20260912-2093`，boot 18:49:16Z（02:49 +0800），restarts=0；
+  - `llm-gateway-local-8781`（本轮首次取证）：image ID `2ece2e551598`，/healthz **`2.5.4-dae1b7c9-20260912-2094`**（dae1b7c9 = origin/main 前头），boot 18:47:44Z，端口 8781，restarts=0。
+  - 上轮审计发现 2 记 18:47/18:49Z 重建为"同版本 2093"——本轮以 /healthz（version.json）逐一核对修正：**18:47Z 的 8781 是真正的 2094 新二进制**，18:49Z 的 8782 是 2093。两容器同连本机 PG，均 boot 即扫。
+  - **镜像 tag 重指伪影（如实留档）**：tag `2.5.4.2094` 当前指向 `a71d89397a7b`（= 2093 的镜像，CreatedAt 16:50 +0800），而 8781 引用的 `2ece2e551598`（真正的 2094 构建）已成无 tag dangling——tag 在 8781 容器创建（18:47:44Z）之后被重指。容器身份判定以 image ID + /healthz version.json 为准，勿信 tag。
+- **scanner 静默维持（跨三代二进制实例全量清点）**：8782 stdout（自 18:49Z boot）SQLSTATE 42703 / "does not exist" 命中 **0**；8782 与 8781 两容器文件日志（各自当前 gateway.log + 10 个轮转归档，持久卷）全量清点命中均 **0**，覆盖 09-12 21:11 +0800（现窗最老归档 T13-11-07Z）至 04:08 +0800、跨 2092/2093/2094 三代二进制实例。8782 drift scanner boot 18:49:20Z 注册（仅启动 1 条 INFO），19:49Z tick 静默；WARN 全为既有启动期噪音（auth fail-open / ops token 前缀 / mock 凭据 decrypt failed / pending_sweeper clamp）。
+  - 上轮审计的"证据波动性"预警已兑现：修复前 2 条 42703 所在的 T00-18-40 归档与缺口五归档（T09-41-05 等）均已轮转出窗（现窗最老 = T13-11-07Z）。持久依据维持本文件文字记录；「修复后全量日志零命中」可随时复测，本轮复测通过。
+- **本地活库只读复核（单事务 REPEATABLE READ READ ONLY，事务内复核后 ROLLBACK）**：schema_migrations 690–700 全 11 行；sequences 标记 696–700 全 5 行（basename 逐一对上）；canonical 视图 `request_logs_with_current_month` 113 列 / raw_model_name=1 / system_fingerprint=1；scanner 形状 SELECT 出数 50 行；视图链 3 层（`..._without_customer_id` / `..._without_request_class_due_at` / canonical）+ bodies 视图共 4 视图齐全；8782 `/readyz` 200 全绿（database/redis connected）。双账本收敛维持。
+- **并行线核查（本轮 fetch 成功，有新动作但不撞线）**：origin/main 前进 be3dde651→a6b535dab（7 提交），主体为 **701 balance-floor guard**（1a89c32fe：`sql/migrations/startup/701_credential_balance_floor.sql` + bg/balance_floor_guard + db.go ensure +50 行；a6b535dab 为其 feature handoff 文档）；696–700 文件最后动作与既有记录一致（696=83bf582dd / 697=d03f0ada4 / 698=2ad8d64ad / 699=531ea1a86 / 700=7bd3bfe6d），无撞线、无重编号触发。
+  - **给 balance-floor 线的接线缺口留档（不代改）**：通道脚本 apply-db-revision-sequence.sh 文件清单止于 700（origin/main 实查 331 行），**无 701 条目**——升级型数据库（共享 252 生产 PG 即是）经通道升级将轮不到 701 文件（693/699 同款形态）；若 701 的表/列已全部覆盖于 Go ensure 链则升级库无害，需该线自证。归属 balance-floor 线处置；对本线顺序约束无影响。
+- **生产 252 本轮未触碰**（未复核 698–700 应用态，属 A 轮窗口范围）；「通道先 698/699/700 → 再上携带 83bf582dd 的二进制」顺序约束继续有效。701 进 origin/main 不改变该约束（252 通道应用按既有清单 698/699/700 先行；701 是否随窗口应用取决于 balance-floor 线接线补齐与其自身发布决策）。
+- **C 项遗留按兵未自动开新轮**：视图基础层 pre-485 冻结交集"陈旧也重建"专项迁移、deploy-lib readyz 60s 窗口偏短、696/697 schema_migrations 自插补齐——均维持留档，等触发条件。
+- **gofmt -l 复查**（C 项遗留跟踪）：本线扫描面（db/ + sql/migrations/）仍仅 `migration_694_behavior_integration_test.go`；installer/ 未格式化文件仍 16（并行线自有债，归属不在本线，不代改）。
+- **本轮自审计六件套**：(1) B/D/C 按任务书分派执行，无越界（未触碰 252、未开新轮、未代改 701 接线）；(2) 起点重算——自 03:25 审计轮终点起，本轮覆盖 04:06–04:16；(3) 验证如实区分——scanner 静默/双账本/视图/视图链/并行线 fetch 全部通过，无环境受限项；tag 重指与 8781 版本口径修正如实留档；(4) 数据操作零写——仅单事务 READ ONLY + ROLLBACK；(5) 顺序约束维护——A 轮未触发；(6) gofmt 复查——本线净，694 留档，installer 归并行线。
+- **提交说明**：本轮仅 docs(handoff) 单文件；因工作区检出在并行分支 `fix/probe-recovery-closeout`（干净、无在途改动），修订经临时 worktree（/tmp）基于 origin/main 按文件提交后推送 main。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
 请对 llm-gateway-go「request_logs 视图 raw_model_name 根修（迁移 700）+ LF 治理」
 做下一轮观察/收尾。工作目录：主工作区（main）。
 先阅读：docs/handoff/2026-09-12-request-logs-view-raw-model-name-rootfix.md
-（含审计轮记录）与 docs/changelogs/2026-09-12-request-logs-view-raw-model-name.md。
+（含观察轮 09-13 04:16 记录）与 docs/changelogs/2026-09-12-request-logs-view-raw-model-name.md。
 
-背景：700 已在 origin/main（84bae533d 起），本机 2091 部署运行正常（scanner
-零 42703）；生产 252 的 698/699/700 尚未应用（视图 112 列、raw=0 实查）。
-生产 245/154 发布维持"通道先 698/699/700 → 再上携带 83bf582dd 的二进制"
-顺序约束；无运营报障不主动发起生产发布。
+背景：700 已在 origin/main；本机为双容器蓝绿形态——8782 跑 2093
+（aaf3dc24，镜像 tag 2.5.4.2094 系重指伪影，身份以 /healthz 为准）、
+8781 跑 2094（dae1b7c9），均 /readyz 全绿；42703 修复后全量日志
+（含轮转归档，跨 2092/2093/2094 三代二进制）持续 0 命中（归档证据受
+max_backups=10 轮转失效，持久依据以 handoff 文字为准）；文件日志
+（容器内 /opt/llm-gateway-go/logs/，持久卷）为跨容器实例的权威证据源。
+双账本 696-700 齐、视图 113 列/raw=1/fp=1。并行线 701（balance-floor）
+已进 origin/main，通道脚本尚无 701 条目（已留档归属该线，勿代改）。
+生产 252 的 698/699/700 尚未应用；「通道先 698/699/700 → 再上携带
+83bf582dd 的二进制」顺序约束有效。
 
 本轮任务（按输入分派）：
 A. 生产发布窗口到达（或有运营报障）：252 通道应用 698/699/700（含函数链
-   登记，登记已在通道脚本内）→ 复核双账本与视图 113 列/raw=1 → 蓝绿上
-   新二进制 → api/v1 或日志确认 drift scanner 无 42703。
-B. 无窗口：只做观察轮——本机 drift scanner 整点周期日志复核（应为静默）；
-   如指纹线或钉扎线对 696/697/698/699 有新动作，核对通道/账本一致性。
+   登记）→ 复核双账本与视图 113 列/raw=1 → 蓝绿上新二进制 → 日志确认
+   drift scanner 无 42703。
+B. 无窗口：观察轮——本机 scanner 整点周期静默维持复核（grep 修正模式：
+   JSON level 无空格；裸 42703 会误中时间戳/字节数，以 SQLSTATE 42703 /
+   does not exist 为准；容器内 logs 目录含轮转归档，保留窗约
+   max_backups=10，判定证据观测时即落盘 handoff）；并行线 696–700
+   新动作核查；PG 数据面单事务只读复核。
 C. 已知遗留（勿自动开新轮）：视图基础层 pre-485 冻结交集（缺 48 列）的
    "陈旧也重建"专项迁移；deploy-lib readyz 60s 窗口偏短；696/697 无
-   schema_migrations 自插（触碰时顺手补）；并行线 gofmt 未净两文件。
+   schema_migrations 自插（触碰时顺手补）；gofmt 未净（694 归本线留档，
+   installer/ 16 文件归 installer 线）。
 D. 验证如实区分通过/环境受限/未验证；数据操作先备份、单事务、事务内复核；
    严禁 git add -A，提交前按文件核对归属。
 ```

@@ -14,44 +14,58 @@ import (
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
-// ImportService 把审查通过的发现结果批量导入 free_resource_catalog.
+// ImportService bulk-imports approved discovery results into free_resource_catalog.
 //
-// 冲突检测: free_resource_catalog 已有 (provider_code, model_id, tenant_id) 行时
-// 按策略 skip / overwrite / merge 处理 (084 迁移唯一约束).
+// Conflict detection: when a (provider_code, model_id, tenant_id) row already exists
+// in free_resource_catalog, the configured ConflictPolicy (skip / overwrite / merge)
+// decides what happens. The unique constraint was added in migration 084.
 //
-// 安全契约 (2026-09-09 audit-fix):
-//   - 单事务完成 task 锁 + 结果加载 + 写库, 无独立 loadResults 事务 (消除 TOCTOU);
-//   - task 行 SELECT ... FOR UPDATE, 校验 tenant_id 一致且 status=success;
-//   - discovery_results UPDATE 全部带 tenant_id + import_status='pending' 条件 + RowsAffected 检查;
-//   - catalog 写入使用结果真实 tenant_id, 不再无条件覆盖;
-//   - 任意 Update/Catalog 错误整体回滚, summary.Imported 只计实际 CAS 成功的行.
+// Safety contract (2026-09-09 audit-fix):
+//   - A single transaction owns task locking, result loading, and writes — no
+//     separate loadResults transaction (eliminates TOCTOU).
+//   - The task row is locked with SELECT ... FOR UPDATE; tenant_id consistency
+//     and status=success are both verified while holding the lock.
+//   - discovery_results UPDATE statements all carry tenant_id and an
+//     import_status='pending' predicate with a RowsAffected check.
+//   - catalog writes use the result row's real tenant_id; no unconditional override.
+//   - Any Update/Catalog error rolls the whole transaction back; summary.Imported
+//     only counts rows whose CAS actually succeeded.
 //
-// ErrImportTaskNotReady: 任务不存在/跨租户/状态非 success (handler 映射 404/409).
-// ErrImportTaskNotFound 与上面共用 sentinel, ErrImportTaskNotReady 区分跨租户 / 非 success.
+// ErrImportTaskNotFound: task does not exist or belongs to a different tenant
+// (handler maps to 404). ErrImportTaskNotReady: task exists but status is not
+// success or its results were already processed (handler maps to 409).
 //
-// summary.Skipped 表示 skip 策略下已存在的条目; summary.Conflicted 表示 conflict;
-// summary.Failed 永远为 0 (全事务任一错误整体回滚, 真实错误经由 error 返回).
+// summary.Skipped counts entries that already existed under the skip policy;
+// summary.Conflicted counts entries lost to a concurrent writer; summary.Failed
+// is always 0 (single transaction: any error rolls everything back; the real
+// error is returned via the error return value).
 type ImportService struct {
 	db *sql.DB
 }
 
-// ErrImportTaskNotFound 任务不存在 (含跨租户). handler 应映射 404.
+// ErrImportTaskNotFound indicates the task does not exist (also returned when the
+// task belongs to a different tenant). The handler maps this to 404.
 var ErrImportTaskNotFound = errors.New("freediscovery: import task not found")
 
-// ErrImportTaskNotReady 任务存在但状态不允许导入 (非 success, 或 result 已被处理).
-// handler 应映射 409 Conflict.
+// ErrImportTaskNotReady indicates the task exists but its status does not allow
+// import (status is not success, or its results have already been processed).
+// The handler maps this to 409 Conflict.
 var ErrImportTaskNotReady = errors.New("freediscovery: task not in success state")
 
-// NewImportService 构造导入服务.
+// NewImportService constructs the import service.
 func NewImportService(db *sql.DB) *ImportService {
 	return &ImportService{db: db}
 }
 
-// Import 执行批量导入, 返回统计. 全程单事务: 任一失败整体回滚.
+// Import executes a bulk import and returns the summary. The whole flow runs in
+// a single transaction: any error rolls everything back.
 //
-// 与早期实现的差异 (audit-fix): 不再使用独立 loadResults 事务再起导入事务的 TOCTOU 模式,
-// 而是在单事务内按 task_id FOR UPDATE 锁住任务, 校验 tenant + status, 再 SELECT 结果
-// 并立即 CAS 更新 (status='pending' AND tenant_id=$tenant), 失败行不计入 Imported.
+// Compared to the earlier implementation (audit-fix): instead of running
+// loadResults in its own transaction and then a separate import transaction
+// (TOCTOU), we now lock the task with FOR UPDATE inside one transaction,
+// verify tenant + status, SELECT the pending results, and immediately CAS
+// each row (status='pending' AND tenant_id=$tenant). Rows that fail the CAS
+// are not counted in Imported.
 func (s *ImportService) Import(ctx context.Context, req ImportRequest) (*ImportSummary, error) {
 	if req.ConflictPolicy == "" {
 		req.ConflictPolicy = ConflictSkip
@@ -75,7 +89,7 @@ func (s *ImportService) Import(ctx context.Context, req ImportRequest) (*ImportS
 		return nil, err
 	}
 
-	// 1. 锁住任务 + 校验归属与终态.
+	// 1. Lock the task and verify ownership + terminal status.
 	var taskStatus TaskStatus
 	var taskTenant string
 	err = tx.QueryRowContext(ctx, `
@@ -89,14 +103,14 @@ func (s *ImportService) Import(ctx context.Context, req ImportRequest) (*ImportS
 		return nil, fmt.Errorf("freediscovery: lock task: %w", err)
 	}
 	if taskTenant != req.TenantID {
-		// 防御性: 跨租户 (RLS bypass 角色下也不应发生, 但应用层兜底).
+		// Defensive: cross-tenant (should never happen even under RLS-bypass role, but application-layer safety net).
 		return nil, ErrImportTaskNotFound
 	}
 	if taskStatus != TaskStatusSuccess {
 		return nil, fmt.Errorf("%w: status=%s", ErrImportTaskNotReady, taskStatus)
 	}
 
-	// 2. 加载待导入结果 (FOR UPDATE 锁行, 防止并发 Import).
+	// 2. Load pending results (FOR UPDATE locks rows, preventing concurrent Import).
 	results, err := s.lockAndLoadResults(ctx, tx, req)
 	if err != nil {
 		return nil, err
@@ -108,14 +122,14 @@ func (s *ImportService) Import(ctx context.Context, req ImportRequest) (*ImportS
 		return &ImportSummary{}, nil
 	}
 
-	// 3. 逐条 import; 全部成功后 commit, 任一错误整体回滚.
+	// 3. Import one by one; commit only after all succeed, any error rolls back the whole transaction.
 	summary := &ImportSummary{}
 	for _, r := range results {
 		outcome, err := s.importOne(ctx, tx, req, r)
 		if err != nil {
 			return nil, err
 		}
-		// outcome: imported / skipped / conflicted (对应 summary 字段)
+		// outcome: imported / skipped / conflicted (mapped to summary fields)
 		switch outcome {
 		case outcomeImported:
 			summary.Imported++
@@ -129,8 +143,8 @@ func (s *ImportService) Import(ctx context.Context, req ImportRequest) (*ImportS
 		}
 	}
 
-	// 4. 任务统计 (CAS: 仅在 models_imported 当前值 + $2 与本事务一致时累加,
-	//    失败不阻断已成功导入的结果; 同时记录 import_status 更新总数便于排查).
+	// 4. Task counters (CAS: accumulate only when current models_imported + $2 matches this transaction;
+	//    failure does not abort already-successful imports; also record import_status update count for diagnostics).
 	if summary.Imported > 0 {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE discovery_tasks SET models_imported = COALESCE(models_imported, 0) + $2
@@ -151,10 +165,10 @@ func (s *ImportService) Import(ctx context.Context, req ImportRequest) (*ImportS
 	return summary, nil
 }
 
-// importOutcome 内部枚举, 区分 catalog 写入语义.
-//   - imported:  全新条目 INSERT 或 overwrite/merge 已写入, 结果行已 mark imported
-//   - skipped:   skip 策略下命中已存在条目, 保留 catalog, 结果行已 mark skipped
-//   - conflicted: skip 策略但并发写入产生冲突 / 已被其他事务处理 (CAS 失败)
+// importOutcome is an internal enum distinguishing catalog write semantics.
+//   - imported:   new INSERT or overwrite/merge written; result row marked imported
+//   - skipped:    skip policy hit existing entry; catalog preserved, result row marked skipped
+//   - conflicted: skip policy but concurrent write produced conflict / already handled by another transaction (CAS failed)
 type importOutcome string
 
 const (
@@ -163,13 +177,17 @@ const (
 	outcomeConflicted importOutcome = "conflicted"
 )
 
-// importOne 导入单条结果. 返回 importOutcome (imported/skipped/conflicted).
+// importOne imports a single discovery result.
 //
-// 关键变更 (audit-fix):
-//   - mark imported/skipped/conflict 使用 CAS, RowsAffected==0 视为"已被并发处理";
-//   - 重复 INSERT 命中 unique key 也走 CAS 路径, 不再静默计 conflict.
+// Returns the importOutcome (imported/skipped/conflicted).
+//
+// Key audit-fix changes:
+//   - mark imported/skipped/conflict uses CAS; RowsAffected==0 means
+//     "already processed by another transaction";
+//   - duplicate INSERT hitting a unique key also flows through the CAS path
+//     instead of silently counting as conflict.
 func (s *ImportService) importOne(ctx context.Context, tx *sql.Tx, req ImportRequest, r *DiscoveryResult) (importOutcome, error) {
-	// 检测冲突 (catalog 已有 (provider_code, model_id, tenant_id))
+	// Conflict probe: a catalog row already exists for (provider_code, model_id, tenant_id).
 	var existingID int64
 	err := tx.QueryRowContext(ctx, `
 		SELECT id FROM free_resource_catalog
@@ -184,7 +202,8 @@ func (s *ImportService) importOne(ctx context.Context, tx *sql.Tx, req ImportReq
 	if exists {
 		switch req.ConflictPolicy {
 		case ConflictSkip:
-			// skip: 不动 catalog, 把结果标 skipped (语义清晰).
+			// skip: leave the catalog row untouched and mark the result as skipped
+			// (semantically clearest outcome).
 			if err := s.casUpdateResult(ctx, tx, r.ID, "imported", "skipped", now); err != nil {
 				return "", err
 			}
@@ -232,7 +251,7 @@ func (s *ImportService) importOne(ctx context.Context, tx *sql.Tx, req ImportReq
 		}
 	}
 
-	// 全新条目 INSERT; avoid 条目按契约导入为禁用状态.
+	// New entries use INSERT; per contract, entries with verdict=avoid are imported in the disabled state.
 	enabled := r.TosVerdict != "avoid"
 	var disabledAt, disabledReason any
 	if !enabled {
@@ -253,7 +272,7 @@ func (s *ImportService) importOne(ctx context.Context, tx *sql.Tx, req ImportReq
 		req.TaskID, now, enabled, disabledAt, disabledReason, r.TenantID)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
-			// 并发兜底: 视为 conflict (其他事务先写); 标 conflict 不计入 imported.
+			// Concurrent fallback: treat as conflict (another transaction wrote first); mark conflict, do not count as imported.
 			if casErr := s.casUpdateResult(ctx, tx, r.ID, "imported", "conflict", now); casErr != nil {
 				return "", casErr
 			}
@@ -267,13 +286,14 @@ func (s *ImportService) importOne(ctx context.Context, tx *sql.Tx, req ImportReq
 	return outcomeImported, nil
 }
 
-// casUpdateResult CAS 更新结果状态; 仅在 import_status='pending' 时命中.
+// casUpdateResult CAS-updates the result status; only hits when import_status='pending'.
 //
-// from=actualNew 表示本次尝试写入的最终状态 (imported/skipped/conflict).
-// RowsAffected==0 表示该结果已被其他事务处理, 计为 outcomeConflicted.
+// from=actualNew indicates the final status written by this attempt (imported/skipped/conflict).
+// RowsAffected==0 means the result was already processed by another transaction,
+// counted as outcomeConflicted.
 func (s *ImportService) casUpdateResult(ctx context.Context, tx *sql.Tx, resultID int64, _, actualNew string, now time.Time) error {
-	// 使用 anyString 与 imported_at 字段必须保留 NOT NULL / NULL 兼容:
-	// 从 pending 转 imported/skipped/conflict 时同时记录 imported_at, 反映首次处理时间.
+	// Use anyString and the imported_at field must preserve NOT NULL / NULL compatibility:
+	// when transitioning from pending to imported/skipped/conflict, also record imported_at to capture the first-processing time.
 	res, err := tx.ExecContext(ctx, `
 		UPDATE discovery_results SET import_status=$2, imported_at=$3
 		WHERE id=$1 AND import_status='pending'`,
@@ -288,10 +308,12 @@ func (s *ImportService) casUpdateResult(ctx context.Context, tx *sql.Tx, resultI
 	return nil
 }
 
-// lockAndLoadResults 在导入事务内按 FOR UPDATE 锁住待导入结果行, 同时校验
-// 结果行 tenant_id 与请求 tenant 一致 (防御 RLS bypass 场景).
+// lockAndLoadResults locks the pending result rows with FOR UPDATE inside the import
+// transaction, and verifies that each row's tenant_id matches the request tenant
+// (defense-in-depth for RLS-bypass scenarios).
 //
-// req.ResultIDs 为空 = 该任务全部 pending; 非空 = 指定行 (仍校验属于该 task 且 pending).
+// req.ResultIDs empty = all pending results for the task;
+// non-empty = the specified rows (still verified to belong to the task and be pending).
 func (s *ImportService) lockAndLoadResults(ctx context.Context, tx *sql.Tx, req ImportRequest) ([]*DiscoveryResult, error) {
 	q := `
 		SELECT id, task_id, tenant_id, provider_code, model_id, display_name,
@@ -325,13 +347,13 @@ func (s *ImportService) lockAndLoadResults(ctx context.Context, tx *sql.Tx, req 
 		); err != nil {
 			return nil, fmt.Errorf("freediscovery: scan result: %w", err)
 		}
-		// 不再覆盖 tenant_id; 由 SQL 查询 + 任务 tenant 校验共同保证.
+		// No longer overriding tenant_id; guaranteed jointly by the SQL query and the task tenant check.
 		out = append(out, &r)
 	}
 	return out, rows.Err()
 }
 
-// pqInt64Array 依赖 lib/pq 的 int64 数组参数.
+// pqInt64Array depends on lib/pq's int64 array parameter support.
 func pqInt64Array(ids []int64) any {
 	return pq.Array(ids)
 }
