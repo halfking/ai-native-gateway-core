@@ -372,6 +372,12 @@ func (m *CandidateFailureMonitor) applyAutoCool(ctx context.Context, credID int)
 		  AND lifecycle_status = 'active'
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
 		  AND availability_state NOT IN ('cooling')
+		  -- R21 (2026-09-13) audit P2: never steal reason ownership from the
+		  -- balance-floor guard — rewriting a floor-pulled row to
+		  -- auto_cool_high_failure_rate re-enables the probe/write-through
+		  -- un-pull path and re-creates the pull/un-pull ping-pong the
+		  -- ownership invariant exists to prevent.
+		  AND COALESCE(state_reason_code, '') <> 'balance_floor'
 	`, m.coolMinutes, credID)
 	if err != nil {
 		return err
