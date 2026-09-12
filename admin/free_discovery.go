@@ -1,12 +1,13 @@
 package admin
 
-// 免费资源自动发现 Admin API (/api/free-discovery/*).
+// Free resource auto-discovery Admin API (/api/free-discovery/*).
 //
-// 数据模型: sql/migrations/084-freediscovery-schema.sql
-// 领域包:   domains/freediscovery (模板 CRUD / 发现引擎 / 批量导入)
+// Data model:  sql/migrations/084-freediscovery-schema.sql
+// Domain pkg:  domains/freediscovery (template CRUD / discovery engine / batch import)
 //
-// 路由在 registerRoutes 中挂载; 服务依赖经 SetFreeDiscovery 在 main.go
-// 启动时注入 (dbConn.Stdlib() 桥接 + credential keyring).
+// Routes are mounted in registerRoutes; service dependencies are injected
+// at startup via SetFreeDiscovery in main.go (dbConn.Stdlib() bridge +
+// credential keyring).
 
 import (
 	"context"
@@ -22,15 +23,17 @@ import (
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
-// freeDiscoveryDeps 聚合三个领域服务, 共享同一个 stdlib DB 桥接.
+// freeDiscoveryDeps groups the three domain services and shares the same
+// stdlib DB bridge.
 type freeDiscoveryDeps struct {
 	templates *freediscovery.TemplateManager
 	engine    *freediscovery.DiscoveryEngine
 	importer  *freediscovery.ImportService
 }
 
-// SetFreeDiscovery 注入免费资源发现服务. 启动时调用一次;
-// stdlibDB 为 nil (no-DB 模式) 时跳过, 相关路由在请求时返回 503.
+// SetFreeDiscovery wires the free-resource-discovery services. Called once at
+// startup; when stdlibDB is nil (no-DB mode) this is a no-op and the related
+// routes return 503 on request.
 func (h *Handler) SetFreeDiscovery(stdlibDB *sql.DB, kr *secret.Keyring) {
 	if stdlibDB == nil {
 		return
@@ -43,7 +46,7 @@ func (h *Handler) SetFreeDiscovery(stdlibDB *sql.DB, kr *secret.Keyring) {
 	}
 }
 
-// fdDeps 取依赖; 未注入时写 503 并返回 nil.
+// fdDeps retrieves dependencies; writes 503 and returns nil when not wired.
 func (h *Handler) fdDeps(w http.ResponseWriter) *freeDiscoveryDeps {
 	if h.freeDiscovery == nil {
 		writeError(w, http.StatusServiceUnavailable, "free-discovery is not available (database disabled)")
@@ -53,13 +56,13 @@ func (h *Handler) fdDeps(w http.ResponseWriter) *freeDiscoveryDeps {
 }
 
 func (h *Handler) fdTenant(r *http.Request) string {
-	// EffectiveTenantID: tenant_admin → 自有租户; super_admin/legacy → "default".
+	// EffectiveTenantID: tenant_admin -> own tenant; super_admin/legacy -> "default".
 	return EffectiveTenantID(r)
 }
 
-// ── 模板管理 ────────────────────────────────────────────────────────────
+// ── Template management ─────────────────────────────────────────────────
 
-// handleFreeDiscoveryTemplates GET(列表) / POST(创建).
+// handleFreeDiscoveryTemplates handles GET (list) / POST (create).
 func (h *Handler) handleFreeDiscoveryTemplates(w http.ResponseWriter, r *http.Request) {
 	deps := h.fdDeps(w)
 	if deps == nil {
@@ -100,7 +103,7 @@ func (h *Handler) handleFreeDiscoveryTemplates(w http.ResponseWriter, r *http.Re
 	}
 }
 
-// handleFreeDiscoveryTemplateByID GET/PUT/DELETE 单个模板.
+// handleFreeDiscoveryTemplateByID GET/PUT/DELETE a single template.
 func (h *Handler) handleFreeDiscoveryTemplateByID(w http.ResponseWriter, r *http.Request) {
 	deps := h.fdDeps(w)
 	if deps == nil {
@@ -152,7 +155,7 @@ func (h *Handler) handleFreeDiscoveryTemplateByID(w http.ResponseWriter, r *http
 	}
 }
 
-// handleFreeDiscoveryPresets GET 内置供应商预设 (Groq/OpenRouter/...).
+// handleFreeDiscoveryPresets GET the built-in provider presets (Groq/OpenRouter/...).
 func (h *Handler) handleFreeDiscoveryPresets(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -189,8 +192,8 @@ func (h *Handler) handleFreeDiscoveryPresets(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{"presets": out})
 }
 
-// handleFreeDiscoveryImportOrbi POST 导入 Orbi pi-providers JSON 模板.
-// 请求体即 Orbi 模板文件内容: {"providers": {"groq": {...}}}.
+// handleFreeDiscoveryImportOrbi POST imports Orbi pi-providers JSON templates.
+// Request body is the Orbi template file content: {"providers": {"groq": {...}}}.
 func (h *Handler) handleFreeDiscoveryImportOrbi(w http.ResponseWriter, r *http.Request) {
 	deps := h.fdDeps(w)
 	if deps == nil {
@@ -203,7 +206,7 @@ func (h *Handler) handleFreeDiscoveryImportOrbi(w http.ResponseWriter, r *http.R
 	if RequireSuperAdminForWrite(w, r) {
 		return
 	}
-	// 限制请求体大小, 防止恶意巨文件 (实际 Orbi 模板通常 < 100 KB).
+	// Cap request body size to prevent malicious giant files (real Orbi templates are usually < 100 KB).
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
 	var file freediscovery.OrbiProviderFile
 	if err := json.NewDecoder(r.Body).Decode(&file); err != nil {
@@ -221,22 +224,22 @@ func (h *Handler) handleFreeDiscoveryImportOrbi(w http.ResponseWriter, r *http.R
 	var errs []string
 	for code, p := range file.Providers {
 		if strings.TrimSpace(code) == "" {
-			// 防 panic: 空 provider key 直接跳过 (slice bounds)
+			// Guard against panic: skip empty provider keys outright (slice bounds).
 			failed++
 			errs = append(errs, "<empty provider key>: skipped")
 			continue
 		}
-		// 复用 ValidateCreate 前置校验, 失败记入 errs 而不阻断其它 provider.
+		// Reuse ValidateCreate for the upfront check; failures are recorded in errs without aborting the remaining providers.
 		req := &freediscovery.CreateTemplateRequest{
 			ProviderCode:   code,
 			DisplayName:    freediscovery.TrimmedDisplayName(strings.ToUpper(string([]rune(code)[:1])) + code[1:]),
 			BaseURL:        p.BaseURL,
 			APIType:        freediscovery.APIType(p.API),
-			APIKeyEnv:      "", // Orbi 模板的 apiKey 是 "$VAR" 引用; CreateTemplateRequest 接受后端 env 引用, 由 Create 校验
+			APIKeyEnv:      "", // Orbi templates' apiKey is a "$VAR" reference; CreateTemplateRequest accepts a backend env reference, validated by Create.
 			ModelsEndpoint: "/models",
 			CreatedBy:      actor,
 		}
-		// Orbi apiKey 字段约定: "$VAR" 表示 env 引用 (保留); 其它值视为字面量, 不作为 env 名解析.
+		// Orbi apiKey field convention: "$VAR" is an env reference (preserved); any other value is treated as a literal and not parsed as an env name.
 		if strings.HasPrefix(p.APIKey, "$") {
 			req.APIKeyEnv = p.APIKey
 		}
@@ -246,7 +249,7 @@ func (h *Handler) handleFreeDiscoveryImportOrbi(w http.ResponseWriter, r *http.R
 			continue
 		}
 		if _, err := deps.templates.Create(r.Context(), tenant, req); err != nil {
-			// 单个 provider 失败不阻断其余导入
+			// A single provider failure must not abort the rest of the batch.
 			failed++
 			errs = append(errs, code+": "+err.Error())
 			continue
@@ -255,7 +258,7 @@ func (h *Handler) handleFreeDiscoveryImportOrbi(w http.ResponseWriter, r *http.R
 	}
 	status := "ok"
 	if failed > 0 && created > 0 {
-		status = "partial" // 部分成功: 调用方可继续查看 errors
+		status = "partial" // Partial success: the caller can still inspect errors.
 	} else if failed > 0 && created == 0 {
 		status = "failed"
 	}
@@ -338,7 +341,9 @@ func (h *Handler) handleFreeDiscoveryTasks(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
 }
 
-// handleFreeDiscoveryTask GET 单个任务.
+// handleFreeDiscoveryTask GET retrieves a single discovery task by id.
+// Uses fdStatusFor so repository sentinels (ErrTaskNotFound) surface as 404
+// instead of 500; other errors fall through to 500 by design.
 func (h *Handler) handleFreeDiscoveryTask(w http.ResponseWriter, r *http.Request) {
 	deps := h.fdDeps(w)
 	if deps == nil {
@@ -355,7 +360,7 @@ func (h *Handler) handleFreeDiscoveryTask(w http.ResponseWriter, r *http.Request
 	}
 	task, err := deps.engine.GetTask(r.Context(), h.fdTenant(r), id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeError(w, fdStatusFor(err), err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, task)
