@@ -89,3 +89,19 @@
 ### 并行会话协同（同窗口）
 - f08e0a95b（并行会话）收敛三处 01-schema baseline（§四.3 的 dump 陈旧主体）；**699_supplier_errors_ensure_timezone_pin** 在其暂存区推进中（对应 §四.11 supplier_errors ensure 缺定义 + cfl 同款钉扎补漏），与本轮 698 无文件重叠。
 - 竞态纪律生效：两轮提交均用精确 pathspec（`git commit -- <paths>`），699 的 staged 集合在本会话两次提交间完好无损。
+
+## 七、第四轮：P2 批次推进（2026-09-12 深夜，同会话续）
+
+### §四.3 dump 基线残余 → 全闭环（7396debc0）
+- f08e0a95b 后核实：bodies ensure 已 heap（11 处 "columnar" 命中均为 archive 合法层）、credit_ledger/tool_usage ensure 已补、694 pinning 三处齐备——审计原文四缺陷中前三已被并行会话消除。
+- 残余的 promote 侧独立漂移：sql/schema/01-schema.sql（package.sh 打包的 canonical 快照）promote 体停在 **659 时代**（'7 days' 默认、无自愈/指纹）；deploy/installer 镜像停在 **697 时代**（缺 698 钉扎）。纯基线重导路径会拿 698 之前的月份路由去打 694 钉扎的分区边界——正是 698 关闭的 23514 批次失败。
+- 7396debc0 将 9 个 promote_*_hot_to_partition 块以 objects/ 规范体整体替换进三处基线。范围纪律：*_default_batch 与 session_* promote 体的历史形态不动（Go 调用方恒显式传参、无迁移谱系重定义过它们，陈旧默认值惰性）。
+- 新锁 TestBaselinePromoteHotFunctionsThreeWayConsistency（ensure 契约的姊妹篇）：对 objects/ 规范体的三方逐体相等（美元引号感知提取——promote 体混用 `$$`/`$function$`）、pin-BEGIN 首语句（注释剥离归一化）、pin 先于 date_trunc、request_logs 体保 695 自愈 + 3×system_fingerprint 谱系。经变异验证（改一个 promote pin 为 UTC → 测试红）。
+
+### §四.5 launcher/upgrader 升级通道评估（本轮仅评估，不改码）
+- **通道存在**：`OfflineApplier.ApplyOfflinePackage`（llm-gw-installer upgrade --action apply --offline）对包内 `migrations/**` 递归按字典序执行、跳过 down 文件（offline_apply.go:278）。
+- **三个缺口**：(1) 触发面是操作员手动 CLI，launcher 守护进程不自动调（llm-launcher main.go:378 注释明确 auto-upgrade 需尚未存在的 launcher-native executor）；(2) 包内容（是否含 sql/migrations/startup/*）由 **本仓库外的 Maintain/master 打包**决定，仓库内无打包器可约束——需要 Maintain 侧在制品里带同 commit 的 startup 迁移；(3) `executeSQLFile` **不记账本**（不写 gateway_db_revision_sequences/schema_migrations）——694-698 均幂等故重跑无害，但离线通道绕过 clobber 守卫，若制品内迁移陈旧会以旧体覆盖新体且无守卫拦截。
+- **建议**（按序）：Maintain 打包侧把 startup 迁移纳入制品清单（治本）；executeSQLFile 增加 ledger 记录使离线通道与 sequence 教义收敛；过渡期 runbook——任何 offline_apply 升级后手动跑一次 sequence 脚本（幂等）对账兜底。需要制品样例才能动 apply 侧代码，本轮不盲改。
+
+### 其余 P2/P3 状态
+- §四.4（BufferedRawSink 大条目）、§四.6-12（分区生命周期、opslog_trimmer 批量、user_intent 护栏、Web P3、dispatch registry 小项、supplier_errors ensure 已由 699 关闭、Windows cleanup metric）保持开放，未被本轮触碰。
