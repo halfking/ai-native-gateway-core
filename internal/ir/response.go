@@ -23,8 +23,8 @@ import (
 type InternalResponse struct {
 	ID             string `json:"id"`
 	Model          string `json:"model"`
-	Created        int64  `json:"created"`        // Unix timestamp (OpenAI style); 0 if not available
-	Role           string `json:"role"`           // "assistant" (Anthropic uses top-level role field)
+	Created        int64  `json:"created"`         // Unix timestamp (OpenAI style); 0 if not available
+	Role           string `json:"role"`            // "assistant" (Anthropic uses top-level role field)
 	SourceProtocol string `json:"source_protocol"` // "openai-chat" | "anthropic-messages" — which upstream we parsed
 
 	// Content is the normalized message content. Both OpenAI messages[] and
@@ -156,6 +156,20 @@ func (ir *InternalResponse) OnlyUnsupportedBlocks() bool {
 		ir.ReasoningContent == "" && len(ir.UnknownBlockTypes) > 0
 }
 
+// recordUnknownBlockType deduplicates and appends one unsupported block/item
+// type name (bounded by maxUnknownBlockTypes). Audit R20 (2026-09-13): this
+// is now shared by ALL response parsers (Anthropic, OpenAI chat, Responses,
+// Gemini) — previously only ParseAnthropicResponse recorded unknowns, so an
+// unknown-only Responses/Gemini payload collapsed into an empty-looking
+// parse and could be misclassified as an empty upstream response.
+func (ir *InternalResponse) recordUnknownBlockType(typ string) {
+	if typ == "" || len(ir.UnknownBlockTypes) >= maxUnknownBlockTypes ||
+		slices.Contains(ir.UnknownBlockTypes, typ) {
+		return
+	}
+	ir.UnknownBlockTypes = append(ir.UnknownBlockTypes, typ)
+}
+
 // ParseAnthropicResponse parses an Anthropic Messages API response body into IR.
 func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 	if len(body) == 0 {
@@ -283,10 +297,7 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 			// semantically unsafe (these blocks carry tool payloads, not
 			// text), so record the type and let the empty-response guards
 			// attribute the response as unsupported rather than empty.
-			if c.Type != "" && len(ir.UnknownBlockTypes) < maxUnknownBlockTypes &&
-				!slices.Contains(ir.UnknownBlockTypes, c.Type) {
-				ir.UnknownBlockTypes = append(ir.UnknownBlockTypes, c.Type)
-			}
+			ir.recordUnknownBlockType(c.Type)
 		}
 	}
 
@@ -427,7 +438,7 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 		case []any:
 			for _, item := range c {
 				if m, ok := item.(map[string]any); ok {
-					ir.Content = append(ir.Content, parseOpenAIResponseContentBlock(m))
+					ir.Content = append(ir.Content, parseOpenAIResponseContentBlock(ir, m))
 				}
 			}
 		}
@@ -463,8 +474,11 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 
 // parseOpenAIResponseContentBlock parses a single OpenAI-compatible content
 // block into IR format. Qwen/DashScope use {"text":"..."} without the
-// OpenAI Responses API's type:"text" discriminator.
-func parseOpenAIResponseContentBlock(m map[string]any) ResponseContentBlock {
+// OpenAI Responses API's type:"text" discriminator. Unsupported payload
+// types (image_url, input_audio, ...) keep their type name on the block but
+// drop the payload — recordUnknownBlockType makes that loss visible to the
+// empty-response guards.
+func parseOpenAIResponseContentBlock(ir *InternalResponse, m map[string]any) ResponseContentBlock {
 	typ, _ := m["type"].(string)
 	switch typ {
 	case "text":
@@ -479,6 +493,8 @@ func parseOpenAIResponseContentBlock(m map[string]any) ResponseContentBlock {
 		if text, ok := m["text"].(string); ok {
 			return ResponseContentBlock{Type: "text", Text: text}
 		}
+	default:
+		ir.recordUnknownBlockType(typ)
 	}
 	return ResponseContentBlock{Type: typ}
 }

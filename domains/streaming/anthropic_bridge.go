@@ -989,6 +989,23 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 				// commits the attempt and the closing usage/done chunks
 				// follow. An EOF with nothing delivered (empty stream) stays
 				// droppable: no completed stream is fabricated.
+				//
+				// 2026-09-13 fix (holdback parity with the responses bridges):
+				// the survival L1 holdback window (5s/20 chunks) holds semantic
+				// frames WITHOUT advancing the gate commit state, so a stream
+				// that ends entirely inside the window leaves
+				// MayWriteTerminal()==false here and the success path below
+				// skipped the closing usage/finish_reason/[DONE] chunks. The
+				// coordinator's Finish() flushes held deltas but nobody
+				// re-renders the terminal afterwards — force-close the window
+				// so the commit lands BEFORE the terminal rendering decision.
+				// An empty stream flushes nothing and stays below
+				// MayWriteTerminal, so no completed stream is fabricated.
+				if err := gate.FlushHoldback(); err != nil {
+					slog.Warn("anthropic_to_openai: flush holdback before terminal failed",
+						"request_id", requestID,
+						"error", err.Error())
+				}
 				if gate.MayWriteTerminal() || bufferedText.Len() > 0 {
 					flushBufferedText()
 					// Incremental integrity breach on the flushed text: cut
@@ -1357,6 +1374,22 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			if finishReason != nil {
 				fr = *finishReason
 			}
+			// 2026-09-13 fix (holdback parity with the responses bridges):
+			// the survival L1 holdback window (5s/20 chunks) holds semantic
+			// frames WITHOUT advancing the gate commit state, so a stream
+			// that ends entirely inside the window used to leave the closing
+			// finish_reason/usage/[DONE] chunks stranded in the holdback
+			// buffer, delivered only if the survival coordinator happened to
+			// Finish() this gate. Force-close the window BEFORE rendering the
+			// terminal block so the bridge is self-contained: the commit lands
+			// first and the terminal writes go straight to the wire. The
+			// interrupt paths above (empty stream, incomplete tool call, error
+			// events) return before this point and stay discardable.
+			if err := gate.FlushHoldback(); err != nil {
+				slog.Warn("anthropic_to_openai: flush holdback before terminal failed",
+					"request_id", requestID,
+					"error", err.Error())
+			}
 			writeChunk(&ir.StreamChunk{
 				Type:           ir.ChunkTypeDelta,
 				Delta:          &ir.StreamDelta{},
@@ -1523,6 +1556,7 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, error) {
 	return anthropictransform.ConvertAnthropicResponseToChat(in, clientModel)
 }
+
 // convertBridgeChatMessageToAnthropic converts a single OpenAI message to Anthropic format.
 // Handles text content, multimodal content, tool_calls, and tool results.
 func convertBridgeChatMessageToAnthropic(msg map[string]any) map[string]any {

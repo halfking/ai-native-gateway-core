@@ -57,11 +57,11 @@ type InternalRequest struct {
 	ToolChoice *ToolChoice `json:"tool_choice,omitempty"`
 
 	// Sampling parameters (shared)
-	MaxTokens         int      `json:"max_tokens,omitempty"`    // OpenAI: max_tokens; Anthropic: max_tokens
-	Temperature       *float64 `json:"temperature,omitempty"`   // OpenAI: temperature; Anthropic: temperature
-	TopP              *float64 `json:"top_p,omitempty"`         // OpenAI: top_p; Anthropic: top_p
-	TopK              *int     `json:"top_k,omitempty"`         // Anthropic-only (OpenAI has no equivalent)
-	Stop              []string `json:"stop,omitempty"`          // OpenAI: stop[]; Anthropic: stop_sequences[]
+	MaxTokens         int      `json:"max_tokens,omitempty"`          // OpenAI: max_tokens; Anthropic: max_tokens
+	Temperature       *float64 `json:"temperature,omitempty"`         // OpenAI: temperature; Anthropic: temperature
+	TopP              *float64 `json:"top_p,omitempty"`               // OpenAI: top_p; Anthropic: top_p
+	TopK              *int     `json:"top_k,omitempty"`               // Anthropic-only (OpenAI has no equivalent)
+	Stop              []string `json:"stop,omitempty"`                // OpenAI: stop[]; Anthropic: stop_sequences[]
 	ParallelToolCalls *bool    `json:"parallel_tool_calls,omitempty"` // OpenAI-compatible providers
 
 	Stream bool `json:"stream"` // Streaming flag (passthrough both directions)
@@ -206,10 +206,10 @@ type InternalRequest struct {
 
 // SystemPrompt represents a normalized system prompt.
 type SystemPrompt struct {
-	Content   string         `json:"content,omitempty"`  // Plain text content
-	Parts     []ContentBlock `json:"parts,omitempty"`    // Anthropic-style content blocks (for mixed content)
-	PDFs      []PDFDocument  `json:"pdfs,omitempty"`     // Anthropic PDF documents
-	Priority  *int           `json:"priority,omitempty"` // Priority for system prompt (Anthropic)
+	Content   string         `json:"content,omitempty"`       // Plain text content
+	Parts     []ContentBlock `json:"parts,omitempty"`         // Anthropic-style content blocks (for mixed content)
+	PDFs      []PDFDocument  `json:"pdfs,omitempty"`          // Anthropic PDF documents
+	Priority  *int           `json:"priority,omitempty"`      // Priority for system prompt (Anthropic)
 	CacheCtrl *CacheControl  `json:"cache_control,omitempty"` // Cache control for system prompt
 }
 
@@ -232,11 +232,11 @@ type PDFSource struct {
 // Message is the unified message structure. Role values:
 // "system" | "user" | "assistant" | "tool"
 type Message struct {
-	Role       string         `json:"role"`                  // "system" | "user" | "assistant" | "tool"
-	Content    []ContentBlock `json:"content,omitempty"`     // Main content (mixed blocks)
-	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`  // OpenAI-style tool_calls from assistant
+	Role       string         `json:"role"`                   // "system" | "user" | "assistant" | "tool"
+	Content    []ContentBlock `json:"content,omitempty"`      // Main content (mixed blocks)
+	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`   // OpenAI-style tool_calls from assistant
 	ToolCallID string         `json:"tool_call_id,omitempty"` // OpenAI: tool role uses this; Anthropic uses content blocks
-	Name       string         `json:"name,omitempty"`        // tool role: function name
+	Name       string         `json:"name,omitempty"`         // tool role: function name
 
 	// RawContent preserves the original content format when we need exact round-trip.
 	// Used for content that doesn't normalize cleanly (e.g., complex multimodal).
@@ -435,7 +435,7 @@ func (t ToolDefinition) IsFunction() bool {
 
 // ToolChoice controls automatic vs forced tool calling.
 type ToolChoice struct {
-	Type string `json:"type"`   // "auto" | "none" | "any" | "required" | "tool"
+	Type string `json:"type"`           // "auto" | "none" | "any" | "required" | "tool"
 	Name string `json:"name,omitempty"` // When Type="tool", this is the forced function name
 }
 
@@ -509,8 +509,8 @@ type DocumentSource struct {
 
 // Metadata is generic key-value metadata.
 type Metadata struct {
-	UserID    string            `json:"user_id,omitempty"`
-	RequestID string            `json:"request_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
 	// Gateway session/project context carriers (audit 2026-09-08 #5).
 	// Protocol parsers never set these: the handler layer injects them from
 	// request context / session metadata (X-Gw-Project-Id, session user_tags

@@ -31,11 +31,11 @@ type StreamChunk struct {
 	Error *StreamError `json:"error,omitempty"`
 
 	// Metadata (present in all chunk types)
-	ID             string `json:"id"`               // Chunk ID (OpenAI: chatcmpl-xxx, Anthropic: msg_xxx)
-	Model          string `json:"model"`             // Model name
-	Created        int64  `json:"created"`           // Unix timestamp (OpenAI style; 0 if not available)
-	FinishReason   string `json:"finish_reason"`     // When stream ends: "stop" | "length" | "tool_calls" | etc.
-	CandidateIndex int    `json:"candidate_index"`   // Gemini candidate index (zero is the backward-compatible default)
+	ID             string `json:"id"`              // Chunk ID (OpenAI: chatcmpl-xxx, Anthropic: msg_xxx)
+	Model          string `json:"model"`           // Model name
+	Created        int64  `json:"created"`         // Unix timestamp (OpenAI style; 0 if not available)
+	FinishReason   string `json:"finish_reason"`   // When stream ends: "stop" | "length" | "tool_calls" | etc.
+	CandidateIndex int    `json:"candidate_index"` // Gemini candidate index (zero is the backward-compatible default)
 
 	// StopReason carries the source protocol's NATIVE termination reason
 	// (audit-r2 A#2, 2026-09-08). FinishReason is normalized to the OpenAI
@@ -99,7 +99,7 @@ type StreamDelta struct {
 	Role             string                `json:"role,omitempty"`              // "assistant" (first chunk only)
 	Content          string                `json:"content,omitempty"`           // Text content delta
 	ReasoningContent string                `json:"reasoning_content,omitempty"` // Thinking/reasoning delta (OpenAI: reasoning_content, Anthropic: thinking)
-	ToolCalls        []StreamToolCallDelta `json:"tool_calls,omitempty"`       // Incremental tool calls
+	ToolCalls        []StreamToolCallDelta `json:"tool_calls,omitempty"`        // Incremental tool calls
 
 	// ThinkingSignature carries the Anthropic chain-of-thought verification
 	// token emitted at the end of a thinking block (signature_delta event).
@@ -124,10 +124,10 @@ type StreamAudioDelta struct {
 
 // StreamToolCallDelta represents incremental tool call data.
 type StreamToolCallDelta struct {
-	Index     int    `json:"index"`              // Tool call array index (OpenAI convention)
-	ID        string `json:"id,omitempty"`       // Tool call ID (first chunk only)
-	Type      string `json:"type,omitempty"`     // "function" (OpenAI), "tool_use" (Anthropic maps to function)
-	Name      string `json:"name,omitempty"`     // Function name (first chunk only)
+	Index     int    `json:"index"`               // Tool call array index (OpenAI convention)
+	ID        string `json:"id,omitempty"`        // Tool call ID (first chunk only)
+	Type      string `json:"type,omitempty"`      // "function" (OpenAI), "tool_use" (Anthropic maps to function)
+	Name      string `json:"name,omitempty"`      // Function name (first chunk only)
 	Arguments string `json:"arguments,omitempty"` // Incremental JSON arguments
 }
 

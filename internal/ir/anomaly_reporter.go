@@ -165,7 +165,7 @@ func (e AnomalyEvent) MetadataAsJSON() string {
 var (
 	reporterMu  sync.RWMutex
 	reporter    AnomalyReporter = DefaultAnomalyReporter()
-	reporterDed = map[string]struct{}{}
+	reporterDed                 = map[string]struct{}{}
 
 	// activeScopeMu guards activeScope. The active scope, when non-nil,
 	// intercepts every package-level ReportProtocolLoss / ReportUnknownField
@@ -258,12 +258,12 @@ func dedupKey(ev AnomalyEvent) string {
 	// Compact key: type|req|src|tgt|field|reason. Cheap and unique enough
 	// for our purposes (we are not bucketing by metadata).
 	b, _ := json.Marshal(struct {
-		T AnomalyType `json:"t"`
-		R string      `json:"r"`
-		S string      `json:"s"`
-		Tgt string    `json:"tgt"`
-		F string      `json:"f"`
-		Rsn string    `json:"rsn"`
+		T   AnomalyType `json:"t"`
+		R   string      `json:"r"`
+		S   string      `json:"s"`
+		Tgt string      `json:"tgt"`
+		F   string      `json:"f"`
+		Rsn string      `json:"rsn"`
 	}{ev.AnomalyType, ev.RequestID, ev.SourceProtocol, ev.TargetProtocol, ev.FieldPath, ev.Reason})
 	return string(b)
 }

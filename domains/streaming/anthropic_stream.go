@@ -795,7 +795,19 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				outcome.Reason = "client_cancel"
 				outcome.Kind = errorsx.KindCanceled
 			case streamReadEOF:
-				if !upstreamDoneReceived {
+				// 2026-09-13 fix (benign-EOF parity with the responses
+				// bridge): some upstreams — notably minimax-style relays —
+				// close the stream right after the finish_reason chunk
+				// instead of emitting [DONE]. A finish_reason already
+				// accumulated means the stream COMPLETED semantically; treat
+				// the missing [DONE] as benign upstream non-compliance and
+				// fall through to the normal Phase-4 tail so the client still
+				// receives message_delta/message_stop. The failure-shaped
+				// finish_reasons (network_error/sensitive/context window)
+				// return via midStreamHalt before EOF, so finalFinishReason
+				// here is always a normal stop. Only EOF with NO finish_reason
+				// is a genuine interruption.
+				if !upstreamDoneReceived && finalFinishReason == "" {
 					if capture != nil {
 						capture.MarkInterruptedWithReason("eof_without_done")
 					}
@@ -872,7 +884,9 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	// tail renders. Interrupted outcomes keep the holdback intact: the
 	// coordinator discards held frames on transparent failover.
 	if !outcome.Interrupted {
-		_ = gate.FlushHoldback()
+		if err := gate.FlushHoldback(); err != nil {
+			slog.Warn("openai_to_anthropic: flush holdback before tail failed", "request_id", requestID, "error", err.Error())
+		}
 	}
 
 	// 2026-09-13 fix (Q2 empty-stream parity): a clean upstream end with ZERO

@@ -221,4 +221,14 @@ BEGIN
 END;
 $$;
 
+-- Ledger self-registration: the upgrade channel only stamps
+-- gateway_db_revision_sequences; schema_migrations rows exist only for files
+-- that insert their own (698/699/700 precedent). Audit R20 (2026-09-13):
+-- 695 was merged without a self-insert — not covered by the 696/697 backlog
+-- registered to the parallel line — so channel-upgraded databases would
+-- miss the dual-ledger row. Runs on every apply; conflict-safe.
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('695', 'promote_request_logs_hot_to_partition final-success self-heal (demote superseded hot claims before the atomic CTE; 23505 cold-migration stall root fix)')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+
 COMMIT;

@@ -48,47 +48,47 @@ func TestIRInternalRequestRoundtrip(t *testing.T) {
 			Description: "fetch weather",
 			Parameters:  json.RawMessage(`{"type":"object"}`),
 		}},
-		ToolChoice: &ToolChoice{Type: "auto"},
-		MaxTokens:  1024,
-		Temperature: &temp,
-		TopP:        &topP,
-		TopK:        &topK,
-		Stop:        []string{"\n\n"},
-		ParallelToolCalls: &parallel,
-		Stream:       true,
-		Thinking:     &ThinkingConfig{Type: "enabled", BudgetTokens: 2048},
-		CacheControl: []CacheControl{{Type: "ephemeral"}},
-		Documents:    []Document{{Type: "document", Source: DocumentSource{Type: "text", Data: "doc"}}},
-		FrequencyPenalty: &freq,
-		PresencePenalty:  &pres,
-		Logprobs:         &logprobs,
-		TopLogprobs:      &topLogprobs,
-		Seed:             &seed,
-		ResponseFormat:   &ResponseFormat{Type: "json_object", Schema: json.RawMessage(`{"x":"int"}`)},
-		N:                n,
-		User:             "u_1",
-		Metadata:         &Metadata{UserID: "u_1", RequestID: "r_1", Other: map[string]string{"k": "v"}},
-		Reasoning:        &ReasoningConfig{Effort: "high", BudgetTokens: &budget, MaxReasoningTokens: &maxReasoning},
-		Modalities:       []string{"text", "audio"},
-		AudioConfig:      &AudioConfig{Voice: "alloy", Format: "mp3", Speed: 1.0},
-		LogitBias:        map[string]float64{"50256": -100},
-		Store:            &store,
-		ServiceTier:      "auto",
-		Prediction:       &Prediction{Type: "content", Content: "draft"},
-		Verbosity:        "low",
-		WebSearchOptions: &WebSearchOptions{ContextSize: "medium"},
-		PromptCacheKey:   "key_1",
-		SafetyIdentifier: "safe_1",
+		ToolChoice:         &ToolChoice{Type: "auto"},
+		MaxTokens:          1024,
+		Temperature:        &temp,
+		TopP:               &topP,
+		TopK:               &topK,
+		Stop:               []string{"\n\n"},
+		ParallelToolCalls:  &parallel,
+		Stream:             true,
+		Thinking:           &ThinkingConfig{Type: "enabled", BudgetTokens: 2048},
+		CacheControl:       []CacheControl{{Type: "ephemeral"}},
+		Documents:          []Document{{Type: "document", Source: DocumentSource{Type: "text", Data: "doc"}}},
+		FrequencyPenalty:   &freq,
+		PresencePenalty:    &pres,
+		Logprobs:           &logprobs,
+		TopLogprobs:        &topLogprobs,
+		Seed:               &seed,
+		ResponseFormat:     &ResponseFormat{Type: "json_object", Schema: json.RawMessage(`{"x":"int"}`)},
+		N:                  n,
+		User:               "u_1",
+		Metadata:           &Metadata{UserID: "u_1", RequestID: "r_1", Other: map[string]string{"k": "v"}},
+		Reasoning:          &ReasoningConfig{Effort: "high", BudgetTokens: &budget, MaxReasoningTokens: &maxReasoning},
+		Modalities:         []string{"text", "audio"},
+		AudioConfig:        &AudioConfig{Voice: "alloy", Format: "mp3", Speed: 1.0},
+		LogitBias:          map[string]float64{"50256": -100},
+		Store:              &store,
+		ServiceTier:        "auto",
+		Prediction:         &Prediction{Type: "content", Content: "draft"},
+		Verbosity:          "low",
+		WebSearchOptions:   &WebSearchOptions{ContextSize: "medium"},
+		PromptCacheKey:     "key_1",
+		SafetyIdentifier:   "safe_1",
 		PreviousResponseID: "resp_1",
-		Truncation:       "auto",
-		MCPServers:       []MCPServer{{Type: "url", URL: "https://mcp", Name: "m"}},
-		ContextManagement: &ContextManagement{Edits: []ContextEdit{{Type: "clear_tool_uses_20250919", Threshold: intPtr(80), Keep: intPtr(2), ClearToolInputs: &parallel}}},
-		Container:         &Container{ID: "c_1", Skills: []ContainerSkill{{Name: "sk", Type: "anthropic"}}},
-		SafetySettings:    []SafetySetting{{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_NONE"}},
-		CachedContent:     "cached/abc",
-		SourceProtocol:    ProtocolAnthropicMessages,
-		Extensions:        map[string]json.RawMessage{"custom": json.RawMessage(`{"v":1}`)},
-		TargetProvider:    "anthropic",
+		Truncation:         "auto",
+		MCPServers:         []MCPServer{{Type: "url", URL: "https://mcp", Name: "m"}},
+		ContextManagement:  &ContextManagement{Edits: []ContextEdit{{Type: "clear_tool_uses_20250919", Threshold: intPtr(80), Keep: intPtr(2), ClearToolInputs: &parallel}}},
+		Container:          &Container{ID: "c_1", Skills: []ContainerSkill{{Name: "sk", Type: "anthropic"}}},
+		SafetySettings:     []SafetySetting{{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_NONE"}},
+		CachedContent:      "cached/abc",
+		SourceProtocol:     ProtocolAnthropicMessages,
+		Extensions:         map[string]json.RawMessage{"custom": json.RawMessage(`{"v":1}`)},
+		TargetProvider:     "anthropic",
 		// Class and DueAt must NOT round-trip; they're gateway-internal metadata
 		// (see class.go:10-12 — "Class and DueAt are Go-struct metadata only").
 		Class: ClassScheduled,
@@ -344,14 +344,14 @@ func TestIRJSONUsesSnakeCase(t *testing.T) {
 	intPtr := func(v int) *int { return &v }
 
 	req := &InternalRequest{
-		Model: "m",
-		Tools: []ToolDefinition{{Name: "f"}},
-		ToolChoice: &ToolChoice{Type: "auto"},
-		MaxTokens: 100,
-		FrequencyPenalty: nil,
-		LogitBias:        map[string]float64{"50256": -100},
-		CacheControl:     []CacheControl{{Type: "ephemeral"}},
-		MCPServers:       []MCPServer{{Type: "url", URL: "https://x", Name: "n", AuthorizationToken: "t"}},
+		Model:             "m",
+		Tools:             []ToolDefinition{{Name: "f"}},
+		ToolChoice:        &ToolChoice{Type: "auto"},
+		MaxTokens:         100,
+		FrequencyPenalty:  nil,
+		LogitBias:         map[string]float64{"50256": -100},
+		CacheControl:      []CacheControl{{Type: "ephemeral"}},
+		MCPServers:        []MCPServer{{Type: "url", URL: "https://x", Name: "n", AuthorizationToken: "t"}},
 		ContextManagement: &ContextManagement{Edits: []ContextEdit{{Type: "clear_tool_uses_20250919", Threshold: intPtr(80)}}},
 		Container:         &Container{Skills: []ContainerSkill{{Name: "s", Type: "anthropic"}}},
 		SafetySettings:    []SafetySetting{{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_NONE"}},
@@ -393,8 +393,8 @@ func TestIRJSONUsesSnakeCase(t *testing.T) {
 			{Type: "tool_use", ID: "t", Name: "n", Input: json.RawMessage(`{}`)},
 			{Type: "thinking", Thinking: "x", Signature: "s"},
 		},
-		ToolCalls:      []ResponseToolCall{{ID: "t", Name: "n", Arguments: "{}", InputRaw: json.RawMessage(`{}`)}},
-		FinishReason:   "tool_use",
+		ToolCalls:        []ResponseToolCall{{ID: "t", Name: "n", Arguments: "{}", InputRaw: json.RawMessage(`{}`)}},
+		FinishReason:     "tool_use",
 		ReasoningContent: "x",
 	}
 	data, err = json.Marshal(resp)
@@ -410,12 +410,12 @@ func TestIRJSONUsesSnakeCase(t *testing.T) {
 	}
 
 	chunk := &StreamChunk{
-		Type:            ChunkTypeDelta,
-		FinishReason:    "tool_calls",
-		CandidateIndex:  0,
-		SourceProtocol:  ProtocolOpenAIChat,
-		Usage:           &StreamUsage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3},
-		Delta:           &StreamDelta{ToolCalls: []StreamToolCallDelta{{Index: 0, ID: "t", Type: "f", Name: "n", Arguments: "{}"}}},
+		Type:           ChunkTypeDelta,
+		FinishReason:   "tool_calls",
+		CandidateIndex: 0,
+		SourceProtocol: ProtocolOpenAIChat,
+		Usage:          &StreamUsage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3},
+		Delta:          &StreamDelta{ToolCalls: []StreamToolCallDelta{{Index: 0, ID: "t", Type: "f", Name: "n", Arguments: "{}"}}},
 	}
 	data, err = json.Marshal(chunk)
 	if err != nil {
@@ -525,9 +525,9 @@ func TestIRJSONOmitemptyHonored(t *testing.T) {
 	}
 
 	// Minimal delta chunk — only "type" must be present. Pointer fields
-// (Delta/Usage/Error) carry `omitempty`, so a nil pointer is elided entirely
-// (encoding/json standard behavior). Value-type metadata fields are required
-// and emitted at their zero values.
+	// (Delta/Usage/Error) carry `omitempty`, so a nil pointer is elided entirely
+	// (encoding/json standard behavior). Value-type metadata fields are required
+	// and emitted at their zero values.
 	chunk := &StreamChunk{Type: ChunkTypeDelta}
 	data, err = json.Marshal(chunk)
 	if err != nil {

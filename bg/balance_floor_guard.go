@@ -64,6 +64,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -456,6 +457,15 @@ func (g *BalanceFloorGuard) Start(ctx context.Context) {
 		"vendors", []string{"zhipu", "minimax"},
 		"floor_fields", []string{"balance_floor_usd", "quota_floor_tokens", "quota_floor_percent"})
 	go func() {
+		// Audit R20 (2026-09-13): top-level panic guard. A panic on this
+		// loop (pgx driver, JSON decode, providercap) previously took down
+		// the whole gateway process — same shape the BaseWorker scaffold
+		// already protects against.
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("balance_floor_guard worker panicked", "panic", r, "stack", string(debug.Stack()))
+			}
+		}()
 		ticker := time.NewTicker(g.interval)
 		defer ticker.Stop()
 		for {
@@ -467,12 +477,24 @@ func (g *BalanceFloorGuard) Start(ctx context.Context) {
 				slog.Info("balance_floor_guard stopped")
 				return
 			case <-ticker.C:
-				if err := g.cycle(ctx); err != nil {
+				if err := g.safeCycle(ctx); err != nil {
 					slog.Warn("balance_floor_guard cycle failed", "error", err)
 				}
 			}
 		}
 	}()
+}
+
+// safeCycle runs one sweep with a per-cycle panic guard so a bad credential
+// payload skips this tick instead of killing the worker loop.
+func (g *BalanceFloorGuard) safeCycle(ctx context.Context) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("balance_floor_guard cycle panicked", "panic", r, "stack", string(debug.Stack()))
+			err = fmt.Errorf("balance_floor_guard cycle panic: %v", r)
+		}
+	}()
+	return g.cycle(ctx)
 }
 
 func (g *BalanceFloorGuard) Stop() {
@@ -534,6 +556,7 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
+		ORDER BY c.balance_last_checked_at ASC NULLS FIRST
 		LIMIT 100
 	`)
 	if err != nil {
@@ -607,6 +630,7 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
+		ORDER BY c.balance_last_checked_at ASC NULLS FIRST
 		LIMIT 100
 	`)
 	if err != nil {
