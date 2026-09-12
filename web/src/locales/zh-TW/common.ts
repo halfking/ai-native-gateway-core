@@ -79,6 +79,8 @@ export default {
   pagination: {
     total: '共 {n} 條',
     page: '第 {n} 頁',
+    pageOf: "第 {page} / {pages} 頁",
+    perPage: "每頁",
     pageSize: '每頁 {n} 條',
     previous: '上一頁',
     next: '下一頁',

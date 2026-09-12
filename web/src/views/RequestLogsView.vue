@@ -20,6 +20,9 @@ import { getProviders, getProviderCredentials } from '../api/providers'
 import ModelPicker from '../components/ModelPicker.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import SessionSummaryDrawer from '../components/SessionSummaryDrawer.vue'
+import PaginationBar from '../components/ui/PaginationBar.vue'
+import StatCard from '../components/ui/StatCard.vue'
+import { usePagination } from '../composables/usePagination'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 
@@ -818,17 +821,15 @@ async function load() {
   }
 }
 
-function changePage(delta: number) {
-  const max = Math.max(1, Math.ceil(total.value / pageSize.value))
-  const next = page.value + delta
-  if (next < 1 || next > max) return
-  page.value = next
-  load()
-}
+// 2026-09-12: 分页状态收敛到 usePagination + PaginationBar（方案 §4.5.6），
+// 替换原 changePage/resetPageAndLoad 手写实现；resetPageAndLoad 保留原名，
+// 作为全文件 12 处筛选/查询入口的统一别名（语义不变：回第 1 页 + 重拉）。
+const pager = usePagination({ page, pageSize, total, onChange: load })
+const resetPageAndLoad = pager.reset
 
-function resetPageAndLoad() {
-  page.value = 1
-  load()
+function onPageSizeChange(size: number) {
+  pageSize.value = size
+  resetPageAndLoad()
 }
 
 function fmtTs(ts: string) {
@@ -1164,26 +1165,11 @@ onMounted(async () => {
           </div>
         </div>
         <div class="stats-grid stats-grid--compact" style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">
-          <div class="stat-card stat-card--compact">
-            <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.inputTokenLabel') }}</div>
-            <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.prompt_tokens) }}</div>
-          </div>
-          <div class="stat-card stat-card--compact">
-            <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.outputTokenLabel') }}</div>
-            <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.completion_tokens) }}</div>
-          </div>
-          <div class="stat-card stat-card--compact">
-            <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.cacheReadLabel') }}</div>
-            <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.cache_read_tokens) }}</div>
-          </div>
-          <div class="stat-card stat-card--compact">
-            <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.cacheWriteLabel') }}</div>
-            <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.cache_write_tokens) }}</div>
-          </div>
-          <div class="stat-card stat-card--compact">
-            <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.costLabel') }}</div>
-            <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatCost(aggregate.cost_usd) }}</div>
-          </div>
+          <StatCard compact :label="t('requests.list.filter.inputTokenLabel')" :value="formatStatNumber(aggregate.prompt_tokens)" />
+          <StatCard compact :label="t('requests.list.filter.outputTokenLabel')" :value="formatStatNumber(aggregate.completion_tokens)" />
+          <StatCard compact :label="t('requests.list.filter.cacheReadLabel')" :value="formatStatNumber(aggregate.cache_read_tokens)" />
+          <StatCard compact :label="t('requests.list.filter.cacheWriteLabel')" :value="formatStatNumber(aggregate.cache_write_tokens)" />
+          <StatCard compact :label="t('requests.list.filter.costLabel')" :value="formatStatCost(aggregate.cost_usd)" />
         </div>
       </div>
 
@@ -1437,24 +1423,16 @@ onMounted(async () => {
       </div>
     </div>
 
-    <div v-if="!loading && total > 0" class="pagination-bar">
-      <div class="pagination-info">
-        <span>共 {{ total }} 条</span>
-        <span v-if="total > 0">· 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页</span>
-        <span class="pagination-divider">·</span>
-        <span class="page-size-label">每页</span>
-        <select v-model.number="pageSize" @change="resetPageAndLoad" class="page-size-select">
-          <option :value="50">50</option>
-          <option :value="100">100</option>
-          <option :value="200">200</option>
-          <option :value="500">500</option>
-        </select>
-      </div>
-      <div class="pagination-controls">
-        <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="changePage(-1)">上一页</button>
-        <button class="btn btn-ghost btn-sm" :disabled="page >= Math.ceil(total / pageSize)" @click="changePage(1)">下一页</button>
-      </div>
-    </div>
+    <PaginationBar
+      v-if="!loading && total > 0"
+      :page="page"
+      :page-size="pageSize"
+      :total="total"
+      :page-sizes="[50, 100, 200, 500]"
+      @prev="pager.prev"
+      @next="pager.next"
+      @change-size="onPageSizeChange"
+    />
 
     <div class="card" style="overflow-x:auto">
       <table class="data-table request-log-table" style="width:100%;font-size:12px">
@@ -1584,24 +1562,16 @@ onMounted(async () => {
       </table>
     </div>
 
-    <div v-if="!loading && total > 0" class="pagination-bar">
-      <div class="pagination-info">
-        <span>共 {{ total }} 条</span>
-        <span>· 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页</span>
-        <span class="pagination-divider">·</span>
-        <span class="page-size-label">每页</span>
-        <select v-model.number="pageSize" @change="resetPageAndLoad" class="page-size-select">
-          <option :value="50">50</option>
-          <option :value="100">100</option>
-          <option :value="200">200</option>
-          <option :value="500">500</option>
-        </select>
-      </div>
-      <div class="pagination-controls">
-        <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="changePage(-1)">上一页</button>
-        <button class="btn btn-ghost btn-sm" :disabled="page >= Math.ceil(total / pageSize)" @click="changePage(1)">下一页</button>
-      </div>
-    </div>
+    <PaginationBar
+      v-if="!loading && total > 0"
+      :page="page"
+      :page-size="pageSize"
+      :total="total"
+      :page-sizes="[50, 100, 200, 500]"
+      @prev="pager.prev"
+      @next="pager.next"
+      @change-size="onPageSizeChange"
+    />
 
     <RequestLogDrawer
       :request-id="activeRequestId"
@@ -1875,64 +1845,8 @@ onMounted(async () => {
 .cell-line1.muted {
   color: var(--text-secondary);
 }
-.pagination-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 12px;
-  padding: 8px 12px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  flex-wrap: nowrap;
-}
-.pagination-info {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--muted);
-  font-size: 12px;
-  flex-wrap: nowrap;
-  white-space: nowrap;
-  flex-shrink: 0;
-  min-width: 0;
-}
-.pagination-controls {
-  display: flex;
-  gap: 8px;
-  flex-wrap: nowrap;
-  flex-shrink: 0;
-}
-.page-size-select {
-  width: auto;
-  min-width: 0;
-  max-width: 96px;
-  padding: 2px 6px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
-  font-size: 12px;
-}
-.page-size-label {
-  color: var(--muted);
-  font-size: 12px;
-}
-.pagination-divider {
-  color: var(--muted);
-  opacity: 0.6;
-}
-@media (max-width: 720px) {
-  .pagination-bar {
-    flex-wrap: wrap;
-  }
-  .pagination-info,
-  .pagination-controls {
-    width: 100%;
-    justify-content: space-between;
-  }
-}
+/* 2026-09-12: .pagination-bar/.page-size-* 样式随分页栏收敛到
+ * components/ui/PaginationBar.vue（标准 768px 断点），此处副本删除。 */
 
 /* v3 compression savings text in the table compression column */
 .cell-line2.saving-text {
