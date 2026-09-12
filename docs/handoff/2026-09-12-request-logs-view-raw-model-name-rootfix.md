@@ -157,34 +157,56 @@
 - **本轮自审计六件套**：(1) B/D/C 按任务书分派执行，无越界（未触碰 252、未开新轮、未代改 701 接线）；(2) 起点重算——自 03:25 审计轮终点起，本轮覆盖 04:06–04:16；(3) 验证如实区分——scanner 静默/双账本/视图/视图链/并行线 fetch 全部通过，无环境受限项；tag 重指与 8781 版本口径修正如实留档；(4) 数据操作零写——仅单事务 READ ONLY + ROLLBACK；(5) 顺序约束维护——A 轮未触发；(6) gofmt 复查——本线净，694 留档，installer 归并行线。
 - **提交说明**：本轮仅 docs(handoff) 单文件；因工作区检出在并行分支 `fix/probe-recovery-closeout`（干净、无在途改动），修订经临时 worktree（/tmp）基于 origin/main 按文件提交后推送 main。
 
+## 观察轮（2026-09-13 04:28–05:16，无生产窗口，按任务书 B 分派；轮内本机网关容器被外部终止）
+
+- **环境再变更（外部/并行部署动作，本线未操作容器）：蓝绿对收成单容器 2098，该容器随后在轮内被外部 SIGKILL，至今无接管。** 时序：
+  - 04:10:04 +0800（20:10:04Z）`llm-gateway-local-8782` 以新镜像 `kx-llm-gateway-local:2.5.4.2098`（image ID `1624ded40286`，CreatedAt 04:09:45）重建，/healthz `2.5.4-a6b535da-20260912-2098`（a6b535da=701 线 handoff 文档提交，含 1a89c32fe 全部代码），/readyz 200 全绿，restarts=0；`llm-gateway-local-8781`（2094）在 04:16 轮仍记录在案、本轮 04:28 已不存在（容器整个删除，非停止）——蓝绿形态仅存续约 20 分钟，删除与 2098 重建同时窗。更替归属 R19/R20 审计线部署冒烟（ede6589fd 记 "seq 2098 deployment smoke"，时序与镜像 CreatedAt 吻合）。
+  - **04:54:22 +0800 容器 exited 137（外部 SIGKILL；oom=false、无 panic）**，最后一条日志在死亡前 0.7s；至 05:16（本轮观测终点）无新容器接管，本机不存在 2099 镜像。按「部署 churn 归属部署线/用户、勿自主拉起」惯例不重启；下轮先查拓扑（docker ps + /healthz 身份）再取证。
+- **42703 清点（覆盖边界如实）：2098 实例全生命周期（boot 04:10:04 → SIGKILL 04:54:22，44 分钟）0 命中。** 文件日志（当前 gateway.log + 4 个未压缩轮转 + 全部 .gz 归档 + 前代 shutdown.log）与 stdout 双侧 `SQLSTATE 42703` / `does not exist` 均 **0**；含 boot 即扫（20:10:26.937Z `integrity_fingerprint_drift started` 注册）。**本实例首个整点 tick（锚 :10，应落 05:10:26）未及发生即被杀——本轮不构成新整点周期证据**；整点静默的最强证据仍为 04:16 轮跨三代全量清点（至 04:08 +0800）+ 本轮 44 分钟零命中窗。方法教训如实留档：进程死亡后对 stdout 的 `--since` grep 返回空集，勿误读为「静默」，先核 `docker inspect` State。
+- **日志洪水 + 归档急速轮转（新运行形态，留档）**：`live stream delta push` INFO 行内嵌全量 probe-direct 失败摘要，**单行 ~145KB、日志量 ~100MB/2 分钟**（04:21–04:32 已轮转 10+ 归档），max_backups=10 保留窗实测只剩 ~25 分钟，resource_monitor.log 同步膨胀至 21MB+——「全量清点」证据时效大缩水，判定证据观测时即落盘 handoff 更必要。洪水源 = probe-direct 失败潮（`probe-direct-*-fail-*` 请求名潮 + 终窗 04:47–04:54 内 `node_probe_worker: decrypt failed` ERROR ×238 / `enrichWithAPIKeys: reveal failed` ×116 / `live stream record: lock not acquired` WARN ×291 / trace.FlushToPG ×90），**修复在 `fix/probe-recovery-closeout` 分支（e52e5a9ea F1-F5 反压梯子）尚未进 main**——属探针线交付范围，本线不代改；洪水持续期间 8782 日志卷消耗 ~6GB/h 量级，探针线合并部署后应自然消除。
+- **PG 数据面单事务只读复核（REPEATABLE READ READ ONLY，事务内复核后 ROLLBACK；PG 容器 ~04:14 曾重启、现 healthy，数据面不受网关容器死亡影响）**：schema_migrations 690–700 全 11 行（时序与既有解码一致）；sequences 标记 693–700 全 9 行（含 694 重编号双名历史行）；canonical 视图 113 列 / raw_model_name=1 / system_fingerprint=1；scanner 形状 SELECT 50 行；视图链 4 视图齐全。**701 账本新事实**：2098 boot 的 Go ensure 打 `credential balance-floor schema ensured (migration 701)` 且 `balance_floor_guard started`（300s 周期，zhipu/minimax；04:20 实际拉回 1 个低于 floor 凭据、04:40 恢复 cred 78）——但 **schema_migrations 与 sequences 均无 701 行**（Go ensure 不写账本，701 SQL 文件本机从未经通道执行）。即 701 的 schema 效果由 Go ensure 覆盖、账本缺行；升级库无害性与通道 701 条目缺口仍归 balance-floor 线自证（04:16 轮留档维持）。
+- **并行线核查（本轮 fetch 两次均成功）**：a8c3a7aaa→1822ebdfb（R20 routine/addendum + 前端线 FilterBar 修复 + handoff 文档）全部 docs/web，零 Go/迁移改动；696–700 文件最后动作仍为 7bd3bfe6d；startup 存号仍止于 701（无 702+ 撞号风险）；通道脚本维持 693–700、无 701 条目。探针线 `fix/probe-recovery-closeout`（e52e5a9ea，主工作区检出、与 origin 同分支同步）不触 sql/ 与 db/，无撞线，尚未并入 main。R20 文档提及 seq 2099 但本机无 2099 镜像（docs-only delta，与 2098 行为等价）。
+- **生产 252 本轮未触碰**（未复核 698–700 应用态，属 A 轮窗口范围）；「通道先 698/699/700 → 再上携带 83bf582dd 的二进制」顺序约束继续有效。
+- **C 项遗留按兵未自动开新轮**：视图基础层 pre-485 冻结交集"陈旧也重建"专项迁移、deploy-lib readyz 60s 窗口偏短、696/697 schema_migrations 自插补齐——均维持留档，等触发条件。
+- **gofmt -l 复查**（origin/main 1822ebdfb detached worktree 实查）：db/ 净；sql/migrations/ 仍仅 `migration_694_behavior_integration_test.go`（归本线留档）；installer/ 仍 16 文件（归 installer 线）。
+- **本轮自审计六件套**：(1) B/D/C 按任务书分派执行，无越界（未重启容器、未触碰 252、未代改探针/701/通道）；(2) 起点重算——自 04:16 轮终点起，本轮覆盖 04:28–05:16；(3) 验证如实区分——42703 清点（2098 全生命周期 0 命中）通过但明示「无整点周期证据」；容器死亡与空集 grep 误读风险如实修正留档；数据面/并行线通过；(4) 数据操作零写——仅单事务 READ ONLY + ROLLBACK；(5) 顺序约束维护——A 轮未触发；(6) gofmt 复查——本线净（694 留档），installer 归并行线。
+- **提交说明**：原 main worktree（/private/tmp/lgg4-audit-main-wt）在轮内被并行会话删除（pull 后数分钟目录消失）；本轮经新建 detached 临时 worktree（/tmp，基于 origin/main 1822ebdfb）按文件提交后以显式 SHA 推送 main。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
 请对 llm-gateway-go「request_logs 视图 raw_model_name 根修（迁移 700）+ LF 治理」
 做下一轮观察/收尾。工作目录：主工作区（main）。
 先阅读：docs/handoff/2026-09-12-request-logs-view-raw-model-name-rootfix.md
-（含观察轮 09-13 04:16 记录）与 docs/changelogs/2026-09-12-request-logs-view-raw-model-name.md。
+（含观察轮 09-13 05:16 记录）与 docs/changelogs/2026-09-12-request-logs-view-raw-model-name.md。
 
-背景：700 已在 origin/main；本机为双容器蓝绿形态——8782 跑 2093
-（aaf3dc24，镜像 tag 2.5.4.2094 系重指伪影，身份以 /healthz 为准）、
-8781 跑 2094（dae1b7c9），均 /readyz 全绿；42703 修复后全量日志
-（含轮转归档，跨 2092/2093/2094 三代二进制）持续 0 命中（归档证据受
-max_backups=10 轮转失效，持久依据以 handoff 文字为准）；文件日志
-（容器内 /opt/llm-gateway-go/logs/，持久卷）为跨容器实例的权威证据源。
-双账本 696-700 齐、视图 113 列/raw=1/fp=1。并行线 701（balance-floor）
-已进 origin/main，通道脚本尚无 701 条目（已留档归属该线，勿代改）。
-生产 252 的 698/699/700 尚未应用；「通道先 698/699/700 → 再上携带
-83bf582dd 的二进制」顺序约束有效。
+背景：700 已在 origin/main；本机形态再变——04:10 起蓝绿对被收成单容器
+8782=2098（a6b535da，首个携带 701 的二进制；Go ensure 已覆盖 701 schema
+但双账本无 701 行，视图 113 列/raw=1/fp=1 与双账本 690-700 维持），
+8781 已删；但 04:54:22 该容器被外部 SIGKILL（exit 137，非 OOM 非 panic），
+至 05:16 无接管、本机无 2099 镜像——下轮务必先查容器拓扑与身份
+（docker ps + /healthz，tag 会被重指勿信）。42703 证据：2098 全生命周期
+（04:10–04:54）0 命中但无整点 tick 证据；跨代最强证据仍为 04:16 轮
+全量清点（至 04:08 +0800）。日志洪水新形态：live stream delta push 单行
+~145KB（probe-direct 失败潮，修复在 fix/probe-recovery-closeout 分支
+尚未进 main），~100MB/2 分钟令 max_backups=10 保留窗仅 ~25 分钟，
+判定证据观测时即落盘。并行线：R19/R20 审计线在部署冒烟（seq 2098/2099）、
+701 通道条目缺口维持归属 balance-floor 线；生产 252 的 698/699/700
+尚未应用；「通道先 698/699/700 → 再上携带 83bf582dd 的二进制」顺序
+约束有效。
 
 本轮任务（按输入分派）：
 A. 生产发布窗口到达（或有运营报障）：252 通道应用 698/699/700（含函数链
    登记）→ 复核双账本与视图 113 列/raw=1 → 蓝绿上新二进制 → 日志确认
    drift scanner 无 42703。
-B. 无窗口：观察轮——本机 scanner 整点周期静默维持复核（grep 修正模式：
-   JSON level 无空格；裸 42703 会误中时间戳/字节数，以 SQLSTATE 42703 /
-   does not exist 为准；容器内 logs 目录含轮转归档，保留窗约
-   max_backups=10，判定证据观测时即落盘 handoff）；并行线 696–700
-   新动作核查；PG 数据面单事务只读复核。
+B. 无窗口：观察轮——先核本机容器拓扑/身份/存活（上轮终态 8782 已死无
+   接管；若仍未恢复，如实记环境受限，勿自主拉起，部署 churn 归属部署线
+   /用户）；有运行实例则做 scanner 周期静默复核（grep 修正模式：JSON
+   level 无空格；裸 42703 会误中时间戳/字节数，以 SQLSTATE 42703 /
+   does not exist 为准；进程死亡后 stdout --since 空集勿误读为静默，
+   先核 State；容器内 logs 归档保留窗仅 ~25 分钟，证据观测时即落盘）；
+   并行线 696–700 新动作核查；PG 数据面单事务只读复核（701 双账本缺行
+   形态维持观察）。
 C. 已知遗留（勿自动开新轮）：视图基础层 pre-485 冻结交集（缺 48 列）的
    "陈旧也重建"专项迁移；deploy-lib readyz 60s 窗口偏短；696/697 无
    schema_migrations 自插（触碰时顺手补）；gofmt 未净（694 归本线留档，
