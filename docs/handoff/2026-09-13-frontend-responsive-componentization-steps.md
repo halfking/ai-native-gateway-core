@@ -423,3 +423,31 @@ t('...') 字样；每步一个 commit，push 前先 git pull --no-rebase 合入�
 
 验收红线：桌面 >=1024 DOM 零回归；新代码断点只允许白名单值；新测试全绿。
 ```
+
+## 八、收尾分摊轮执行记录（2026-09-13，§七 提示词已执行）
+
+§七 五项任务全部完成，4 个 commit（7ac729d60 → 781fa7587，其中 7ac729d60 已随
+并行线合入远端）：
+
+| # | 任务 | 结果 | commit |
+|---|---|---|---|
+| 0 | 接手前核查 | 工作区发现 3 处遗留未提交修复（非本轮产生）：RequestLogsView `</DataTable>` 闭合错位（模板损坏级）、App.vue 注释内 `*/` 提前终止块注释、menu-config 时间戳；核实为正确性修复后独立落账 | 7ac729d60 |
+| 1 | P3-5 第二批 | CredentialMonitorView 2361 行拆分：视图留装配（490 行）+ components/credential-monitor/ 四件（helpers/CredentialMonitorTable/CredentialMonitorFilters/CredentialDetailDrawer）；详情抽屉迁 AppDrawer（width 保持 min(1000px,95vw)，auto 方向 <768 bottom-sheet）；7 确认弹窗迁 AppModal sm（6 在抽屉组件 + batch 在视图）；新增测试 16 用例全绿 | 9d5865ce0 |
+| 2 | P5 断点分摊 | 存量 47 处白名单外断点全部收敛（900×9→1024、800×8→768、720×7→768、960×5→1024、760×4、700×4、1200×3、1100×2、520×2→480、600/680/1600 各 1；42 文件，仅 @media 前导内数值）；responsive:check 去 --allow-legacy 升级全严格，exit 0 | 76306b145 |
+| 3 | el-dialog/el-drawer 评估 | 结论：4 文件均可无损迁移，全部执行（替代原「登记不强制迁移」）。AppModal 新增 `escClose`（默认 true）支撑协议弹窗门控语义（ESC/遮罩双禁用+watch 复位）；PromptInjection×3、VibeCoding×3 → AppModal（EP 表单/表格体保留）；TurnDigestDrawer → AppDrawer（direction=right + 70%）；顺手修复 TurnDigestDrawer.test 的存量环境失败（store 顶层 localStorage 以 mock 隔离），**存量失败文件 40→39** | 781fa7587 |
+| 4 | 设备矩阵走查 | 见下方走查记录 | — |
+| 5 | 收口 | 四件套：vue-tsc 0 错误；vitest 553 通过/**39** 存量失败文件（< 基线 40，缩小来源=TurnDigestDrawer.test 修复）；i18n STRICT PASS；responsive:check 严格模式 exit 0 | — |
+
+### 设备矩阵走查记录（vite dev + 内嵌浏览器实测，375/768/1024/1440 四档）
+
+- **375 全新加载**：访客壳汉堡渲染 ✓（.guest-hamburger，桌面导航隐藏）、页面无横向溢出 ✓；LoginModal（AppModal）打开为全屏模式：顶部 ✕ 关闭栏 + body 滚动锁定（data-scroll-locked=true）+ login-modal 皮肤保留，截图留档 ✓。
+- **768**：桌面导航（白名单 768 含边界，>=768 走桌面）✓ 无溢出；**1024/1440**：桌面态正常、无溢出 ✓。
+- **交互类点击验证受环境阻塞**：内嵌浏览器该标签页输入管道未通（页面挂载 input 计数器实测 pointerdown/keydown/click 到达数=0），ESC/遮罩/汉堡的点击行为无法真机走查；此类交互已由组件测试覆盖（AppModal 8 用例：ESC/遮罩/滚动锁/焦点圈闭/escClose 门控；AppNavDrawer/AppDrawer 开合用例）。
+- **动态改视口刷新限制（环境项，非应用缺陷）**：实测内嵌浏览器视口变化不派发 matchMedia change 事件（页面内独立探针验证：原生 matches 翻转、事件列表为空），仅影响"加载后改视口"的模拟场景；真机/桌面浏览器窗口缩放按规范派发，不受影响。每档以全新加载验证断点初始化均正确。
+
+### 遗留与后续
+
+1. push 仍被凭证拦截（本轮新增 3 个本地 commit 待推：9d5865ce0 / 76306b145 / 781fa7587）；并行线在途，push 前先 `git pull --no-rebase`（远端已前进至 087fba395 chore build_seq 同步）。
+2. 存量 vitest 失败文件余 39（基线 40，TurnDigestDrawer.test 已修）；其余 39 个仍为 jsdom localStorage 环境问题，维持不修约定。
+3. 登录态页面（凭据监控/请求日志等）的 375 走查需后端+凭证，留待真机或联调环境；本轮覆盖访客态全路由 + 组件级交互测试。
+4. AppModal 新增 escClose 已同步《前端组件使用指南》§6 与治理节（el-dialog/el-drawer 清零 + 断点全严格）。
