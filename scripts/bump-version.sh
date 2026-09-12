@@ -47,6 +47,16 @@ VERSION_JSON="$PROJECT_ROOT/version.json"
 WEB_PUBLIC_VERSION_JSON="$PROJECT_ROOT/web/public/version.json"
 WEB_DIST_VERSION_JSON="$PROJECT_ROOT/web/dist/version.json"
 
+# Windows 部署宿主（Git Bash + 原生 Windows python）：python3 -c 代码串内
+# 嵌入的 $VERSION_JSON 若是 MSYS POSIX 形态（/z/...），MSYS 参数转换不覆盖
+# 串内路径，native python 打不开 → CURRENT_SEQ 回退 0 → bump 产出 seq=1
+# 击穿单调性。cygpath -m 转为 Z:/... 混合形态；macOS 无 cygpath 时原样回退。
+if command -v cygpath >/dev/null 2>&1; then
+  VERSION_JSON_PY="$(cygpath -m "$VERSION_JSON" 2>/dev/null || printf %s "$VERSION_JSON")"
+else
+  VERSION_JSON_PY="$VERSION_JSON"
+fi
+
 # ── 参数 ────────────────────────────────────────────────────────
 TARGET_SEQ=""
 DRY_RUN=false
@@ -63,11 +73,11 @@ done
 [[ -f "$VERSION_JSON" ]] || { echo "bump-version: $VERSION_JSON 不存在" >&2; exit 1; }
 
 # 用 python 解析 JSON (避免 grep 复杂正则多语言问题)
-CURRENT_SEQ=$(python3 -c "import json; print(json.load(open('$VERSION_JSON'))['build_seq'])" 2>/dev/null \
+CURRENT_SEQ=$(python3 -c "import json; print(json.load(open('$VERSION_JSON_PY'))['build_seq'])" 2>/dev/null \
   || echo 0)
-CURRENT_GIT_SHA=$(python3 -c "import json; print(json.load(open('$VERSION_JSON')).get('git_sha',''))" 2>/dev/null \
+CURRENT_GIT_SHA=$(python3 -c "import json; print(json.load(open('$VERSION_JSON_PY')).get('git_sha',''))" 2>/dev/null \
   || echo "")
-CURRENT_VERSION=$(python3 -c "import json; print(json.load(open('$VERSION_JSON'))['version'])" 2>/dev/null \
+CURRENT_VERSION=$(python3 -c "import json; print(json.load(open('$VERSION_JSON_PY'))['version'])" 2>/dev/null \
   || echo "v0.0.0")
 
 # git tag (e.g. "v2.4.1") — 这是 NEW_VERSION 的 tag 部分
@@ -104,7 +114,7 @@ HEAD_DATE=$(date -u +%Y%m%d)
 # 才递增；否则保留原 seq，使同代码多次部署 build_seq 一致。--seq 显式
 # 指定仍然尊重（修漂移或强制 +N）。
 SAME_CODE=0
-if [[ "$HEAD_SHA" == "$CURRENT_GIT_SHA" && "$HEAD_DATE" == "$(python3 -c "import json;print(json.load(open('$VERSION_JSON'))['build_date'])" 2>/dev/null)" ]]; then
+if [[ "$HEAD_SHA" == "$CURRENT_GIT_SHA" && "$HEAD_DATE" == "$(python3 -c "import json;print(json.load(open('$VERSION_JSON_PY'))['build_date'])" 2>/dev/null)" ]]; then
   SAME_CODE=1
 fi
 if (( SAME_CODE == 1 )) && [[ -z "$TARGET_SEQ" ]]; then
