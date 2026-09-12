@@ -862,6 +862,31 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		}
 	}
 
+	// 2026-09-13 fix (Q2 empty-stream parity): a clean upstream end with ZERO
+	// semantic deltas (no text / thinking / tool_call — usage-only chunks do
+	// not count) is an empty response, not a success. Previously the bridge
+	// wrote the message_delta/message_stop tail and returned a non-interrupted
+	// outcome, so the executor never failed over: relay upstreams returning
+	// 200 + empty-choice streams surfaced to Anthropic clients as
+	// "message_start but no content blocks" (claude code 529 / keep-alive-only
+	// pathology). Return a resumable empty-response outcome instead so the
+	// executor tries the next candidate; in buffered-gate mode the
+	// pre-declared scaffolding never committed and is discarded with the
+	// attempt (transparent failover, mirrors Q3/Q4 IsAnthropicStreamEmpty and
+	// the OpenAI chat early-empty gate).
+	if !outcome.Interrupted && chunkCount == 0 {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("anthropic_empty_response")
+		}
+		return StreamOutcome{
+			Interrupted: true,
+			Reason:      "anthropic_empty_response",
+			Kind:        errorsx.KindEmptyResponse,
+			Resumable:   true,
+			ChunkCount:  0,
+		}
+	}
+
 	// Phase 4: flush whatever mode we ended up in. Probing means the
 	// stream ended before we accumulated enough bytes to decide — flush
 	// whatever we have as a single text_delta so short content isn't
