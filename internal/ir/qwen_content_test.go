@@ -152,3 +152,33 @@ func TestParseOpenAIResponse_QwenContentWithToolCalls(t *testing.T) {
 	assert.Equal(t, `{"query":"test"}`, response.ToolCalls[0].Arguments)
 	assert.Equal(t, "tool_calls", response.FinishReason)
 }
+
+// TestParseOpenAIResponse_RefusalAndUnknownBlocks closes R16 P2-1 (R21,
+// 2026-09-13): the refusal part used to drop its TEXT (refusal-only
+// responses collapsed to an empty shell that could be mis-counted as an
+// empty-but-successful turn), and unknown parts (server_tool_use, ...) were
+// not recorded in UnknownBlockTypes — unlike ParseAnthropicResponse.
+func TestParseOpenAIResponse_RefusalAndUnknownBlocks(t *testing.T) {
+	body := []byte(`{
+		"id":"refusal-response",
+		"object":"chat.completion",
+		"model":"gpt-4o",
+		"choices":[{
+			"message":{"role":"assistant","content":[
+				{"type":"refusal","refusal":"I cannot help with that."},
+				{"type":"server_tool_use","id":"srwu_1","name":"web_search","input":{"query":"x"}}
+			]},
+			"finish_reason":"stop"
+		}]
+	}`)
+
+	response, err := ParseOpenAIResponse(body)
+	require.NoError(t, err)
+	require.Len(t, response.Content, 2)
+	assert.Equal(t, "refusal", response.Content[0].Type)
+	assert.Equal(t, "I cannot help with that.", response.Content[0].Text,
+		"refusal text must survive the parse (text-shaped for empty gates)")
+	assert.Equal(t, "server_tool_use", response.Content[1].Type)
+	assert.Contains(t, response.UnknownBlockTypes, "server_tool_use",
+		"unknown parts must be recorded, parity with ParseAnthropicResponse")
+}
