@@ -6,6 +6,9 @@ import { getClientAnalyticsDetail, type ClientAnalyticsDetail } from '../api/adm
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElAlert, ElButton, ElCard, ElCol, ElLink, ElRadioButton, ElRadioGroup, ElRow, ElTable, ElTableColumn, ElTag } from 'element-plus'
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
@@ -246,7 +249,7 @@ function goBack() {
               </el-table-column>
               <el-table-column prop="health_grade" :label="t('sessions.clientAnalytics.health')" width="80" align="center">
                 <template #default="scope">
-                  <el-tag v-if="scope?.row?.health_grade" :type="healthGradeColor(scope.row.health_grade)" size="small">
+                  <el-tag v-if="scope?.row?.health_grade" :type="healthGradeColor(scope.row.health_grade) || undefined" size="small">
                     {{ scope.row.health_grade }}
                   </el-tag>
                   <span v-else>—</span>

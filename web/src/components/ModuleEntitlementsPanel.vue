@@ -16,6 +16,9 @@ import {
   type ModuleEntitlement,
 } from '../api/moduleEntitlements'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElAlert, ElButton, ElCard, ElTabPane, ElTable, ElTableColumn, ElTabs, ElTag } from 'element-plus'
 type Tab = 'catalog' | 'opened' | 'mine'
 const tab = ref<Tab>('catalog')
 
@@ -157,7 +160,7 @@ onBeforeUnmount(() => {
                 size="small"
                 link
                 :loading="applying === row.module_id"
-                @click="applyOpen(row)"
+                @click="applyOpen(row as ModuleCatalogItem)"
               >
                 直开
               </el-button>
@@ -166,7 +169,7 @@ onBeforeUnmount(() => {
                 size="small"
                 link
                 :loading="applying === row.module_id"
-                @click="applyPending(row)"
+                @click="applyPending(row as ModuleCatalogItem)"
               >
                 提交申请
               </el-button>

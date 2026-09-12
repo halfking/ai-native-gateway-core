@@ -6,6 +6,9 @@ import { getUserProfile, type UserProfileDetail } from '../api/admin'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElButton, ElCard, ElCol, ElRadioButton, ElRadioGroup, ElRow, ElTable, ElTableColumn, ElTag } from 'element-plus'
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
@@ -78,15 +81,15 @@ function renderCostChart() {
   costChart.setOption(option, true)
 }
 
-function healthGradeColor(grade?: string): string {
-  if (!grade) return ''
+function healthGradeColor(grade?: string): 'success' | 'primary' | 'warning' | 'info' | 'danger' | undefined {
+  if (!grade) return undefined
   switch (grade) {
     case 'A': return 'success'
     case 'B': return 'primary'
     case 'C': return 'warning'
     case 'D': return 'info'
     case 'F': return 'danger'
-    default: return ''
+    default: return undefined
   }
 }
 </script>
@@ -197,7 +200,7 @@ function healthGradeColor(grade?: string): string {
           </el-table-column>
           <el-table-column prop="health_grade" :label="t('sessions.userProfile.avgHealthGrade')" width="80" align="center">
             <template #default="scope">
-              <el-tag v-if="scope?.row?.health_grade" :type="healthGradeColor(scope?.row?.health_grade)" size="small">
+              <el-tag v-if="scope?.row?.health_grade" :type="healthGradeColor(scope?.row?.health_grade) || undefined" size="small">
                 {{ scope?.row?.health_grade }}
               </el-tag>
             </template>

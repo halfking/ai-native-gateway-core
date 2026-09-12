@@ -4,6 +4,9 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getUserProfileList, type UserProfileSummary } from '../api/admin'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElButton, ElCard, ElInput, ElPagination, ElTable, ElTableColumn } from 'element-plus'
 const { t } = useI18n()
 const router = useRouter()
 
