@@ -16,6 +16,10 @@ import {
   type ModelNameMapping,
 } from '../api'
 import ActiveFilterChips from '../components/ActiveFilterChips.vue'
+// 2026-09-13 P3：壳层收敛到 ui 组件（方案 §4.5.2/§4.5.7/§4.5.8）
+import PageHeader from '../components/ui/PageHeader.vue'
+import AppDrawer from '../components/ui/AppDrawer.vue'
+import AppModal from '../components/ui/AppModal.vue'
 import CatalogPanel from '../components/CatalogPanel.vue'
 import ModelPicker from '../components/ModelPicker.vue'
 import { useFilterChips } from '../composables/useFilterChips'
@@ -788,8 +792,8 @@ watch(activeTab, async (tab) => {
 
 <template>
   <div>
-    <div class="page-header">
-      <h2>{{ t('models.page.title') }}</h2>
+    <PageHeader :title="t('models.page.title')">
+      <template #actions>
       <div v-if="activeTab === 'canonical'" style="display:flex;gap:8px;align-items:center">
         <span class="badge badge-gray">{{ filtered.length }} 个模型</span>
         <button v-if="!readOnly" class="btn btn-ghost btn-sm" @click="openFeaturedDrawer">
@@ -817,7 +821,8 @@ watch(activeTab, async (tab) => {
           @input="() => { nameMappingsPage = 1; loadNameMappings() }"
         />
       </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="tab-bar" style="margin-bottom:16px">
       <button
@@ -1065,13 +1070,13 @@ watch(activeTab, async (tab) => {
     </div>
 
     <!-- 特色模型抽屉 -->
-    <div v-if="showFeaturedDrawer" class="drawer-backdrop" @click="closeFeaturedDrawer">
-      <div class="drawer-panel card drawer-panel-wide" @click.stop>
-        <div class="drawer-header">
-          <h3>★ 特色模型 (Featured)</h3>
-          <button class="btn btn-ghost btn-sm" @click="closeFeaturedDrawer">关闭</button>
-        </div>
-        <div class="drawer-body">
+    <AppDrawer
+      v-model="showFeaturedDrawer"
+      title="★ 特色模型 (Featured)"
+      width="min(900px, 95vw)"
+      @close="closeFeaturedDrawer"
+    >
+      <div class="drawer-body">
           <p class="muted small" style="margin-top:0">
             路由 v2 在「仅特色」筛选、ClientConfig 默认模型集等场景使用此列表。已存 <code>routing_policy.featured_models</code>，仅 <code>default</code> 租户生效。
           </p>
@@ -1110,18 +1115,19 @@ watch(activeTab, async (tab) => {
               <button class="btn btn-ghost" @click="closeFeaturedDrawer">关闭</button>
             </div>
           </template>
-        </div>
       </div>
-    </div>
+    </AppDrawer>
 
-    <!-- 模型详情弹层 -->
-    <div v-if="detail" class="drawer-backdrop" @click="detail = null">
-      <div class="drawer-panel card drawer-panel-wide" @click.stop>
-        <div class="drawer-header">
-          <h3>{{ detail.canonical_name }}</h3>
-          <button class="btn btn-ghost btn-sm" @click="detail = null">关闭</button>
-        </div>
-        <div class="drawer-body">
+    <!-- 模型详情弹层 → ui/AppDrawer（2026-09-13 P3） -->
+    <AppDrawer
+      v-if="detail"
+      :model-value="true"
+      :title="detail.canonical_name"
+      width="min(900px, 95vw)"
+      @update:model-value="(v: boolean) => { if (!v) detail = null }"
+      @close="detail = null"
+    >
+      <div class="drawer-body">
           <div v-if="detailLoading" class="muted">加载中…</div>
 
           <!-- 基础信息 -->
@@ -1291,9 +1297,8 @@ watch(activeTab, async (tab) => {
               暂无供应商模型信息。请先运行模型扫描或手动添加模型别名。
             </div>
           </div>
-        </div>
       </div>
-    </div>
+    </AppDrawer>
 
     <!-- 新增模型弹层 -->
     <div v-if="showCreateModal" class="modal-overlay" @click.self="showCreateModal = false">
@@ -1360,13 +1365,13 @@ watch(activeTab, async (tab) => {
     </div>
 
     <!-- Name Mapping Modal -->
-    <div v-if="showNameMappingModal" class="modal-overlay" @click.self="closeNameMappingModal">
-      <div class="modal">
-        <div class="modal-header">
-          <h3>{{ editingNameMapping ? '编辑映射' : '新增映射' }}</h3>
-          <button class="btn btn-ghost btn-sm" @click="closeNameMappingModal">×</button>
-        </div>
-        <div class="modal-body">
+    <AppModal
+      v-model="showNameMappingModal"
+      :title="editingNameMapping ? '编辑映射' : '新增映射'"
+      size="sm"
+      @close="closeNameMappingModal"
+    >
+      <div class="modal-body">
           <div v-if="nameMappingsError" class="alert alert-error" style="margin-bottom:12px">{{ nameMappingsError }}</div>
           <div class="form-group">
             <label>原始名称 <span style="color:#dc3545">*</span></label>
@@ -1392,14 +1397,13 @@ watch(activeTab, async (tab) => {
             <input v-model="nameMappingForm.description" class="input" placeholder="可选描述" />
           </div>
         </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost" @click="closeNameMappingModal">取消</button>
-          <button class="btn btn-primary" :disabled="nameMappingSaving || !nameMappingForm.raw_model_name || !nameMappingForm.standardized_name" @click="saveNameMapping">
-            {{ nameMappingSaving ? '保存中...' : '保存' }}
-          </button>
-        </div>
-      </div>
-    </div>
+      <template #footer>
+        <button class="btn btn-ghost" @click="closeNameMappingModal">取消</button>
+        <button class="btn btn-primary" :disabled="nameMappingSaving || !nameMappingForm.raw_model_name || !nameMappingForm.standardized_name" @click="saveNameMapping">
+          {{ nameMappingSaving ? '保存中...' : '保存' }}
+        </button>
+      </template>
+    </AppModal>
     </template>
   </div>
 </template>
@@ -1426,13 +1430,6 @@ watch(activeTab, async (tab) => {
   font-size: 11px;
   opacity: .75;
   margin-left: 2px;
-}
-
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
 }
 
 .filter-row {
@@ -1572,45 +1569,6 @@ watch(activeTab, async (tab) => {
   display: flex;
   gap: 8px;
   margin-top: 12px;
-}
-
-.drawer-backdrop {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: var(--overlay-strong);
-  z-index: 1000;
-}
-
-.drawer-panel {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 680px;
-  max-width: 90vw;
-  border-radius: 0;
-  overflow-y: auto;
-  z-index: 1001;
-}
-
-.drawer-panel-wide {
-  width: 860px;
-}
-
-.drawer-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 20px 24px;
-  border-bottom: 1px solid var(--border);
-}
-
-.drawer-header h3 {
-  margin: 0;
-  font-size: 18px;
 }
 
 .drawer-body {
@@ -1798,12 +1756,10 @@ watch(activeTab, async (tab) => {
 .badge-purple { background: color-mix(in srgb, var(--accent) 15%, var(--surface-primary)); color: var(--accent-h); }
 .badge-gray { background: var(--bg-tertiary); color: var(--muted); }
 
-@media (max-width: 900px) {
+@media (max-width: 768px) {
   .form-grid, .alias-add { grid-template-columns: 1fr; }
   .span-2 { grid-column: span 1; }
   .create-modal { margin: 20px; }
-  .drawer-panel { width: 95vw; }
-  .drawer-panel-wide { width: 95vw; }
   .filter-card .card-header { align-items: flex-start; }
   .filter-heading { width: 100%; }
   .filter-header-actions { width: 100%; justify-content: flex-start; }
