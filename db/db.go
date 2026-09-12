@@ -148,6 +148,11 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureProviderSoftDelete(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-13 migration 701: 余额/套餐下限列。balance_floor_guard worker
+	// 启动早于流量，缺列会让它的候选 SELECT 直接 42703 并永久空转。
+	if err := db.ensureCredentialBalanceFloor(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-11 migration 693: provider_models.canonical_cleared_at 是管理员
 	// 解绑持久化标记，clear_canonical PATCH / discovery upsert / 健康检查都在
 	// 读它。升级库缺列时这些路径整体 42703（实测），必须在服务流量前补齐。
@@ -1410,6 +1415,51 @@ func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
 		return err
 	}
 	slog.Info("provider/credential soft-delete schema ensured (migration 631)")
+	return nil
+}
+
+// ensureCredentialBalanceFloor mirrors sql/migrations/startup/701_credential_balance_floor.sql.
+// 2026-09-13 余额下限 + 订阅套餐额度感知列：
+//   - balance_floor_usd / quota_floor_tokens / quota_floor_percent：操作员
+//     配置的下限（NULL = 不启用）。bg/balance_floor_guard 周期评估，低于下限
+//     写 quota_state='balance_exhausted'（reason='balance_floor'）摘出路由池，
+//     充值/窗口重置后自动恢复；绝不写 manual_disabled。
+//   - plan_quota_*：zhipu/minimax 套餐探测结果的展示列。
+//
+// 幂等：纯 ADD COLUMN IF NOT EXISTS（与 631 同级的元数据变更，热表安全）。
+func (d *DB) ensureCredentialBalanceFloor(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE credentials
+		    ADD COLUMN IF NOT EXISTS balance_floor_usd numeric(14,6);
+
+		ALTER TABLE credentials
+		    ADD COLUMN IF NOT EXISTS quota_floor_tokens bigint;
+
+		ALTER TABLE credentials
+		    ADD COLUMN IF NOT EXISTS quota_floor_percent numeric(5,2);
+
+		ALTER TABLE credentials
+		    ADD COLUMN IF NOT EXISTS plan_quota_kind text;
+
+		ALTER TABLE credentials
+		    ADD COLUMN IF NOT EXISTS plan_quota_windows jsonb;
+
+		ALTER TABLE credentials
+		    ADD COLUMN IF NOT EXISTS plan_quota_remaining_tokens bigint;
+
+		ALTER TABLE credentials
+		    ADD COLUMN IF NOT EXISTS plan_quota_used_percent numeric(5,2);
+
+		ALTER TABLE credentials
+		    ADD COLUMN IF NOT EXISTS plan_quota_checked_at timestamptz;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("credential balance-floor schema ensured (migration 701)")
 	return nil
 }
 

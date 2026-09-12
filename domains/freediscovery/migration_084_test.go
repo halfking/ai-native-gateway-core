@@ -6,8 +6,10 @@ import (
 	"testing"
 )
 
-// 结构性测试: 校验 084 迁移文件的 schema 不变量 (参考 handoff/migration_362_test.go 模式).
-// 不执行 DDL — DDL 执行覆盖由数据库集成测试承担.
+// Structural tests: validate the schema invariants of the 084 migration file
+// (mirrors the handoff/migration_362_test.go pattern).
+// DDL execution is NOT run here — DDL execution coverage is provided by
+// database integration tests.
 
 func readMigration084(t *testing.T, suffix string) string {
 	t.Helper()
@@ -33,21 +35,21 @@ func TestMigration084_Up_RLSContract(t *testing.T) {
 	if !strings.Contains(up, "ENABLE ROW LEVEL SECURITY") {
 		t.Fatal("up migration must enable RLS")
 	}
-	// 策略通过 FOREACH 循环 + format('tenant_isolation_%s') 拼接, 校验命名模式
+	// Policies are concatenated via FOREACH loop + format('tenant_isolation_%s'); verify the naming pattern
 	if !strings.Contains(up, "'tenant_isolation_' || table_name") {
 		t.Fatal("missing tenant_isolation policy naming pattern")
 	}
-	// 循环必须覆盖三张表
+	// The loop must cover all three tables
 	for _, table := range []string{"provider_templates", "discovery_tasks", "discovery_results"} {
 		if !strings.Contains(up, "'"+table+"'") {
 			t.Errorf("RLS loop must cover table %s", table)
 		}
 	}
-	// get_current_tenant() 幂等保护必须存在 (075 被回滚后 084 仍可独立执行)
+	// get_current_tenant() idempotent protection must exist (084 must runnable on its own after 075 is rolled back)
 	if !strings.Contains(up, "get_current_tenant") {
 		t.Fatal("up migration must idempotently ensure get_current_tenant()")
 	}
-	// tenant GUC 名是全库契约
+	// tenant GUC name is a database-wide contract
 	if !strings.Contains(up, "app.current_tenant") {
 		t.Fatal("policies must reference app.current_tenant GUC")
 	}
@@ -55,7 +57,7 @@ func TestMigration084_Up_RLSContract(t *testing.T) {
 
 func TestMigration084_Up_TenantColumnContract(t *testing.T) {
 	up := readMigration084(t, ".sql")
-	// 三张表都必须带 tenant_id TEXT NOT NULL DEFAULT 'default' (075 契约)
+	// All three tables must include tenant_id TEXT NOT NULL DEFAULT 'default' (075 contract)
 	count := strings.Count(up, "tenant_id TEXT NOT NULL DEFAULT 'default'")
 	if count < 3 {
 		t.Fatalf("expected >=3 tenant_id columns with default, got %d", count)
@@ -72,12 +74,13 @@ func TestMigration084_Up_UniqueConstraints(t *testing.T) {
 	}
 }
 
-// TestMigration084_Up_AllTablesHaveUpdatedAt: omnifree_touch_updated_at()
-// 触发器对三表循环挂载并引用 NEW.updated_at — 任何缺该列的表都会让
-// 所有 UPDATE 报 42703 (E2E 实测教训, sqlmock 覆盖不到触发器行为).
+// TestMigration084_Up_AllTablesHaveUpdatedAt: the omnifree_touch_updated_at()
+// trigger is attached to all three tables in a loop and references NEW.updated_at —
+// any table missing this column will make every UPDATE fail with 42703
+// (lesson learned from real E2E runs; sqlmock cannot cover trigger behavior).
 func TestMigration084_Up_AllTablesHaveUpdatedAt(t *testing.T) {
 	up := readMigration084(t, ".sql")
-	// discovery_results 的建表语句必须显式含 updated_at
+	// The discovery_results CREATE TABLE statement must explicitly include updated_at
 	if !strings.Contains(up, "updated_at TIMESTAMPTZ DEFAULT now()") {
 		t.Fatal("discovery_results must define updated_at (trigger contract)")
 	}
@@ -104,11 +107,11 @@ func TestMigration084_Down_DropsTablesAndColumns(t *testing.T) {
 			t.Errorf("down migration must drop catalog column %s", col)
 		}
 	}
-	// 回滚顺序: 结果表必须先于任务表删除 (外键)
+	// Rollback order: the results table must be dropped before the tasks table (FK)
 	if strings.Index(down, "discovery_results") > strings.Index(down, "discovery_tasks") {
 		t.Fatal("down must drop discovery_results before discovery_tasks (FK order)")
 	}
-	// 不得删除 075 共享函数 (OmniFree 表仍依赖)
+	// Must NOT drop the 075 shared functions (OmniFree tables still depend on them)
 	if strings.Contains(down, "DROP FUNCTION") {
 		t.Fatal("down migration must NOT drop shared functions (075 OmniFree depends on them)")
 	}

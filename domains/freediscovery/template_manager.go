@@ -13,32 +13,41 @@ import (
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
-// ErrTemplateNotFound 模板不存在 (含 RLS 隔离后不可见的他租户模板)
+// ErrTemplateNotFound means the template does not exist (including templates hidden by RLS
+// from another tenant).
 var ErrTemplateNotFound = errors.New("freediscovery: provider template not found")
 
-// ErrTemplateDisabled 模板已停用 (admin 可观察但扫描入口必须拒绝, 防止
-// 携带上游 API key 的扫描请求对停用模板执行). 调用方应映射为 409 Conflict.
+// ErrTemplateDisabled means the template has been disabled (admins can observe it but the scan
+// entry point must reject it, to prevent scan requests carrying an upstream API key from being
+// executed against a disabled template). Callers should map this to 409 Conflict.
 var ErrTemplateDisabled = errors.New("freediscovery: provider template is disabled")
 
-// ErrTaskStateConflict 任务状态机转换被拒绝 (重复 POST 扫描、并发覆盖等).
-// 调用方应映射为 409 Conflict.
+// ErrTaskStateConflict means a task state-machine transition was rejected
+// (repeated POST scans, concurrent overwrites, etc.). Callers should map this to 409 Conflict.
 var ErrTaskStateConflict = errors.New("freediscovery: task state transition rejected")
 
-// TemplateManager 供应商模板 CRUD. 所有读写均走 RLS:
-// 事务内先 SET LOCAL app.current_tenant, 与 075/084 迁移的
-// tenant_isolation_* 策略契约一致 (参考 freeresource.QuotaTracker 同款实现).
+// ErrTaskNotFound means the task does not exist (including tasks hidden by RLS
+// from another tenant). Callers should map this to 404 Not Found; db faults are
+// not this sentinel and must keep returning 500.
+var ErrTaskNotFound = errors.New("freediscovery: task not found")
+
+// TemplateManager handles provider template CRUD. All reads and writes go through RLS:
+// SET LOCAL app.current_tenant is set inside the transaction, matching the
+// tenant_isolation_* policy contract in migrations 075/084 (see the analogous
+// implementation in freeresource.QuotaTracker).
 type TemplateManager struct {
 	db      *sql.DB
-	keyring *secret.Keyring // nil = 不支持明文密钥加密落库 (仅 env 引用模式)
+	keyring *secret.Keyring // nil = plaintext-key encryption to storage is unsupported (env-reference mode only).
 }
 
-// NewTemplateManager 创建模板管理器. keyring 可为 nil:
-// 此时 Create/Update 携带明文 APIKey 会返回错误, 调用方应改用 APIKeyEnv.
+// NewTemplateManager creates the template manager. keyring may be nil:
+// in that case Create/Update carrying plaintext APIKey will return an error and the caller
+// should switch to APIKeyEnv.
 func NewTemplateManager(db *sql.DB, keyring *secret.Keyring) *TemplateManager {
 	return &TemplateManager{db: db, keyring: keyring}
 }
 
-// Create 新增模板. 返回创建后的完整行.
+// Create inserts a template. Returns the full row after creation.
 func (m *TemplateManager) Create(ctx context.Context, tenantID string, req *CreateTemplateRequest) (*ProviderTemplate, error) {
 	if msg := req.ValidateCreate(); msg != "" {
 		return nil, fmt.Errorf("%s", msg)
@@ -115,7 +124,7 @@ func (m *TemplateManager) Create(ctx context.Context, tenantID string, req *Crea
 	return m.Get(ctx, tenantID, id)
 }
 
-// Get 按 ID 读取模板. 跨租户 ID 返回 ErrTemplateNotFound (RLS 过滤).
+// Get reads a template by ID. Cross-tenant IDs return ErrTemplateNotFound (RLS-filtered).
 func (m *TemplateManager) Get(ctx context.Context, tenantID string, id int64) (*ProviderTemplate, error) {
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -142,7 +151,7 @@ func (m *TemplateManager) Get(ctx context.Context, tenantID string, id int64) (*
 	return t, nil
 }
 
-// List 列出租户内模板. enabledOnly=true 时仅返回启用模板.
+// List lists the tenant's templates. When enabledOnly is true, only enabled templates are returned.
 func (m *TemplateManager) List(ctx context.Context, tenantID string, enabledOnly bool) ([]*ProviderTemplate, error) {
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -182,9 +191,9 @@ func (m *TemplateManager) List(ctx context.Context, tenantID string, enabledOnly
 	return out, rows.Err()
 }
 
-// Update 部分更新模板. 指针字段 nil = 不修改.
+// Update partially updates a template. Nil pointer fields mean "no change".
 func (m *TemplateManager) Update(ctx context.Context, tenantID string, id int64, req *UpdateTemplateRequest) (*ProviderTemplate, error) {
-	// 先读现值 (同时校验存在性 + 租户可见性)
+	// First read the current value (also validates existence + tenant visibility).
 	cur, err := m.Get(ctx, tenantID, id)
 	if err != nil {
 		return nil, err
@@ -203,7 +212,8 @@ func (m *TemplateManager) Update(ctx context.Context, tenantID string, id int64,
 		ciphertext = []byte(env)
 	}
 	if req.APIKey != nil && *req.APIKey == "" {
-		// 空串语义: 清除已存密文 (密文优先级高于 env 引用, 不清除则无法切换)
+		// Empty-string semantics: clear the stored ciphertext (ciphertext has priority over env references,
+		// so it must be cleared to allow switching back).
 		clearCiphertext = true
 	}
 
@@ -291,7 +301,8 @@ func (m *TemplateManager) Update(ctx context.Context, tenantID string, id int64,
 	return m.Get(ctx, tenantID, id)
 }
 
-// Delete 删除模板. 关联的历史任务通过 ON DELETE SET NULL 保留 (provider_code 冗余列可追溯).
+// Delete removes a template. Related historical tasks are preserved via ON DELETE SET NULL
+// (the provider_code redundant column remains for traceability).
 func (m *TemplateManager) Delete(ctx context.Context, tenantID string, id int64) error {
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -318,11 +329,11 @@ func (m *TemplateManager) Delete(ctx context.Context, tenantID string, id int64)
 	return nil
 }
 
-// ResolveAPIKey 解析模板的上游认证密钥:
-//  1. api_key_encrypted 密文解密 (keyring 必须可用)
-//  2. api_key_env 环境变量引用解析
+// ResolveAPIKey resolves the template's upstream credential:
+//  1. decrypt the api_key_encrypted ciphertext (keyring must be available)
+//  2. resolve the api_key_env environment variable reference
 //
-// keyless 模板返回空串. 返回 (key, source, error).
+// Keyless templates return an empty string. Returns (key, source, error).
 func (m *TemplateManager) ResolveAPIKey(ctx context.Context, t *ProviderTemplate) (string, string, error) {
 	_ = ctx
 	if t == nil || !t.HasCredential() {
@@ -338,7 +349,7 @@ func (m *TemplateManager) ResolveAPIKey(ctx context.Context, t *ProviderTemplate
 		}
 		return string(pt), "encrypted", nil
 	}
-	// env 引用: 支持 "$VAR" 与裸 "VAR" 两种写法 (Orbi 模板用 $VAR)
+	// Env reference: support both "$VAR" and bare "VAR" forms (Orbi templates use $VAR).
 	ref := t.APIKeyEnv
 	ref = strings.TrimPrefix(ref, "$")
 	if ref == "" {
@@ -381,11 +392,11 @@ func scanTemplate(row interface {
 	return &t, nil
 }
 
-// setTenantTx 在事务内设置 RLS 租户 GUC.
-// 与 freeresource.QuotaTracker 一致: SET LOCAL + escapeTenant 白名单转义.
+// setTenantTx sets the RLS tenant GUC inside a transaction.
+// Matches freeresource.QuotaTracker: SET LOCAL + escapeTenant allowlist escaping.
 func setTenantTx(ctx context.Context, tx *sql.Tx, tenantID string) error {
 	if tenantID == "" {
-		return nil // 让 RLS fallback 到 'default'
+		return nil // Let RLS fall back to 'default'.
 	}
 	_, err := tx.ExecContext(ctx,
 		fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", escapeTenantID(tenantID)))
@@ -395,8 +406,9 @@ func setTenantTx(ctx context.Context, tx *sql.Tx, tenantID string) error {
 	return nil
 }
 
-// escapeTenantID 仅放行 [A-Za-z0-9_-] 且 <=64 字符, 其余替换为 'default',
-// 与 075/084 迁移中 get_current_tenant() 的无引号拼接契约配套.
+// escapeTenantID only allows [A-Za-z0-9_-] up to 64 characters; anything else is replaced
+// with 'default', matching the unquoted-concatenation contract used by get_current_tenant()
+// in migrations 075/084.
 func escapeTenantID(id string) string {
 	if id == "" || len(id) > 64 {
 		return "default"
@@ -410,7 +422,8 @@ func escapeTenantID(id string) string {
 	return id
 }
 
-// envLookup 独立的 env 读取入口, 测试可注入 (t.Setenv 走真实 os.Getenv).
+// envLookup is an independent env-reading entry point that tests can override
+// (t.Setenv goes through the real os.Getenv).
 var envLookup = os.Getenv
 
 func nullableStr(s string) any {
@@ -420,5 +433,5 @@ func nullableStr(s string) any {
 	return s
 }
 
-// timeNow 独立的时钟入口, 测试可注入.
+// timeNow is an independent clock entry point that tests can override.
 var timeNow = time.Now

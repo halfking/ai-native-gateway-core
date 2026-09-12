@@ -11,7 +11,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/safehttpclient"
 )
 
-// anthropicScannerForTest 返回 allowlist 含 httptest server host 的扫描器.
+// anthropicScannerForTest returns a scanner whose allowlist contains the httptest server host.
 func anthropicScannerForTest(t *testing.T, baseURL string) *AnthropicScanner {
 	t.Helper()
 	safe := safehttpclient.NewWithAllowlist(30*time.Second, []string{"127.0.0.1"})

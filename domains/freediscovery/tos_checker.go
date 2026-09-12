@@ -2,25 +2,27 @@ package freediscovery
 
 import "strings"
 
-// ToSChecker 基于关键词规则的 ToS 合规初判.
-// MVP 采用保守策略: 无法判定 → ambiguous (需人工审查), 绝不猜 ok.
+// ToSChecker keyword-rule based ToS compliance first-pass check.
+// MVP uses a conservative strategy: when it cannot decide → ambiguous (requires
+// manual review); never guess "ok".
 type ToSChecker struct {
 	rules map[string]*ToSRule
 }
 
-// ToSRule 单个提供商的 ToS 判定规则.
+// ToSRule ToS judgement rule for a single provider.
 type ToSRule struct {
 	ProviderCode string
-	// ModelID 关键词分类 (小写匹配)
-	AvoidKeywords   []string // 命中 → avoid (如 vision model ToS 禁止自动化)
-	CautionKeywords []string // 命中 → caution (如 vision/experimental)
-	AllowKeywords   []string // 命中 → ok (如 :free / free 官方标记)
-	// ProviderVerdict 提供商级兜底判定 (模板 tos_verdict 优先于此)
+	// ModelID keyword classification (lowercase match).
+	AvoidKeywords   []string // match → avoid (e.g. vision-model ToS forbids automation)
+	CautionKeywords []string // match → caution (e.g. vision/experimental)
+	AllowKeywords   []string // match → ok (e.g. :free / official "free" marking)
+	// ProviderVerdict provider-level fallback verdict (template tos_verdict takes precedence).
 	ProviderVerdict string
 	Notes           string
 }
 
-// NewToSChecker 构造检查器, 自动从内置预设装载规则.
+// NewToSChecker constructs the checker and automatically loads rules from the
+// built-in presets.
 func NewToSChecker() *ToSChecker {
 	c := &ToSChecker{rules: make(map[string]*ToSRule)}
 	for code, p := range builtinPresets {
@@ -36,10 +38,12 @@ func NewToSChecker() *ToSChecker {
 	return c
 }
 
-// Check 对单个模型做 ToS 初判. 模板已有 verdict 时优先采用模板值.
+// Check performs a ToS first-pass judgement on a single model. When the template
+// already has a verdict, that value takes precedence.
 func (c *ToSChecker) Check(tpl *ProviderTemplate, modelID string) (verdict, notes string) {
 	if tpl != nil && tpl.TosVerdict != "" && tpl.TosVerdict != "unknown" {
-		// 模板级判定优先 (人工审查结论), 但 avoid 关键词仍可降级
+		// Template-level verdict takes precedence (manual review conclusion), but
+		// avoid keywords can still downgrade it.
 		verdict = tpl.TosVerdict
 		notes = tpl.TosNotes
 	}
@@ -57,7 +61,7 @@ func (c *ToSChecker) Check(tpl *ProviderTemplate, modelID string) (verdict, note
 		return "avoid", "model id contains " + strings.Join(rule.AvoidKeywords, "/") + " keyword"
 	}
 	if containsAny(id, rule.CautionKeywords) {
-		// caution 关键词命中: 有模板级 ok 时降级为 caution
+		// caution keyword hit: when template-level is ok, downgrade to caution.
 		if verdict == "ok" {
 			return "caution", "downgraded from template verdict: model id contains caution keyword"
 		}
@@ -68,12 +72,12 @@ func (c *ToSChecker) Check(tpl *ProviderTemplate, modelID string) (verdict, note
 	if verdict == "" {
 		if containsAny(id, rule.AllowKeywords) {
 			if rule.ProviderVerdict == "avoid" || rule.ProviderVerdict == "caution" {
-				// 提供商级判定更保守时, 采用提供商级
+				// When the provider-level verdict is more conservative, use the provider-level verdict.
 				return rule.ProviderVerdict, rule.Notes
 			}
 			return "ok", "official free marking in model id"
 		}
-		// 无任何关键词命中: 走提供商级兜底, 再兜底 ambiguous (保守)
+		// No keyword hit: fall back to provider-level, then to ambiguous (conservative).
 		if rule.ProviderVerdict == "ok" || rule.ProviderVerdict == "caution" {
 			return rule.ProviderVerdict, rule.Notes
 		}

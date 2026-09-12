@@ -12,7 +12,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-// runBegin 期望一个带 RLS GUC 的事务开始.
+// runBegin expects a transaction start with the RLS GUC.
 func runBegin(mock sqlmock.Sqlmock) {
 	mock.ExpectBegin()
 	mock.ExpectExec("SET LOCAL app\\.current_tenant").WillReturnResult(sqlmock.NewResult(0, 0))
@@ -22,7 +22,7 @@ func TestDiscoveryEngine_Run_TemplateNotFound(t *testing.T) {
 	db, mock := newMockDB(t)
 	engine := NewDiscoveryEngine(db, NewTemplateManager(db, nil))
 
-	// Run 入口先 Get 完整模板; 模板不存在直接返回 ErrTemplateNotFound.
+	// Run entry first Gets the full template; if missing, returns ErrTemplateNotFound directly.
 	runBegin(mock)
 	mock.ExpectQuery("FROM provider_templates WHERE id = \\$1").
 		WithArgs(int64(999)).
@@ -44,7 +44,7 @@ func TestDiscoveryEngine_Run_TemplateDisabled(t *testing.T) {
 	db, mock := newMockDB(t)
 	engine := NewDiscoveryEngine(db, NewTemplateManager(db, nil))
 
-	// Run 入口先 Get 模板; enabled=false 直接返回 ErrTemplateDisabled (不创建任务).
+	// Run entry first Gets the template; enabled=false returns ErrTemplateDisabled directly (no task created).
 	runBegin(mock)
 	mock.ExpectQuery("FROM provider_templates WHERE id = \\$1").
 		WillReturnRows(templateRowsWith(&ProviderTemplate{
@@ -69,13 +69,13 @@ func TestDiscoveryEngine_Run_ScannerFailureMarksTaskFailed(t *testing.T) {
 	engine := NewDiscoveryEngine(db, NewTemplateManager(db, nil))
 	engine.SetProviderScanner("groq", &stubScanner{err: errors.New("upstream exploded")})
 
-	// 1. Run 入口 Get 模板 (前置校验 enabled)
+	// 1. Run entry Gets the template (pre-checks enabled).
 	runBegin(mock)
 	mock.ExpectQuery("FROM provider_templates WHERE id = \\$1").
 		WillReturnRows(templateRows(7))
 	mock.ExpectRollback()
 
-	// 2. createTask (事务内查 provider_code + INSERT)
+	// 2. createTask (look up provider_code + INSERT inside the transaction).
 	runBegin(mock)
 	mock.ExpectQuery("SELECT provider_code FROM provider_templates WHERE id=\\$1").
 		WillReturnRows(sqlmock.NewRows([]string{"provider_code"}).AddRow("groq"))
@@ -83,19 +83,19 @@ func TestDiscoveryEngine_Run_ScannerFailureMarksTaskFailed(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(101))
 	mock.ExpectCommit()
 
-	// 3. mark running (CAS pending → running)
+	// 3. mark running (CAS pending → running).
 	runBegin(mock)
 	mock.ExpectExec("UPDATE discovery_tasks SET status=\\$2").
 		WithArgs(int64(101), string(TaskStatusRunning), nil, nil, nil, nil, "tenant-a", string(TaskStatusPending)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	// 4. ResolveAPIKey: 单独事务查 env
+	// 4. ResolveAPIKey: separate transaction to read the env.
 	runBegin(mock)
-	mock.ExpectExec("SELECT").WillReturnResult(sqlmock.NewResult(0, 0)) // 占位, ResolveAPIKey 实现而定
+	mock.ExpectExec("SELECT").WillReturnResult(sqlmock.NewResult(0, 0)) // placeholder, depends on the ResolveAPIKey implementation
 	mock.ExpectRollback()
 
-	// 5. fail: 标记 failed (CAS running → failed)
+	// 5. fail: mark failed (CAS running → failed).
 	runBegin(mock)
 	mock.ExpectExec("UPDATE discovery_tasks SET status=\\$2, error_message=\\$3").
 		WithArgs(int64(101), string(TaskStatusFailed), sqlmock.AnyArg(), sqlmock.AnyArg(), "tenant-a", string(TaskStatusRunning)).
@@ -125,21 +125,21 @@ func TestDiscoveryEngine_Run_HappyPath(t *testing.T) {
 	tpl := testTemplate()
 	tpl.ID = 7
 	tpl.BaseURL = srv.URL
-	tpl.Enabled = true // Run 入口要求 enabled=true
+	tpl.Enabled = true // Run entry requires enabled=true
 
-	// 用 stubScanner 替代 httptest 路径, 避免 safehttpclient 阻断 127.0.0.1.
+	// Use a stubScanner in place of the httptest path to avoid safehttpclient blocking 127.0.0.1.
 	engine.SetProviderScanner("groq", &stubScanner{
 		models: []DiscoveredModel{{ProviderCode: "groq", ModelID: "llama-3.1-8b-instant",
 			DisplayName: "Llama 3.1 8B", ContextWindow: 131072, MaxTokens: 8192}},
 	})
 
-	// 1. Run 入口 Get 模板
+	// 1. Run entry Gets the template.
 	runBegin(mock)
 	mock.ExpectQuery("FROM provider_templates WHERE id = \\$1").
 		WillReturnRows(templateRowsWith(tpl))
 	mock.ExpectRollback()
 
-	// 2. createTask (查 provider_code + INSERT)
+	// 2. createTask (look up provider_code + INSERT).
 	runBegin(mock)
 	mock.ExpectQuery("SELECT provider_code FROM provider_templates WHERE id=\\$1").
 		WillReturnRows(sqlmock.NewRows([]string{"provider_code"}).AddRow("groq"))
@@ -147,27 +147,27 @@ func TestDiscoveryEngine_Run_HappyPath(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(101))
 	mock.ExpectCommit()
 
-	// 3. mark running (CAS pending → running)
+	// 3. mark running (CAS pending → running).
 	runBegin(mock)
 	mock.ExpectExec("UPDATE discovery_tasks SET status=\\$2").
 		WithArgs(int64(101), string(TaskStatusRunning), nil, nil, sqlmock.AnyArg(), nil, "tenant-a", string(TaskStatusPending)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	// 4. saveResults (单事务批量)
+	// 4. saveResults (single-transaction batch).
 	runBegin(mock)
 	mock.ExpectPrepare("INSERT INTO discovery_results")
 	mock.ExpectExec("INSERT INTO discovery_results").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	// 5. updateTask success (CAS running → success)
+	// 5. updateTask success (CAS running → success).
 	runBegin(mock)
 	mock.ExpectExec("UPDATE discovery_tasks SET status=\\$2").
 		WithArgs(int64(101), string(TaskStatusSuccess), sqlmock.AnyArg(), nil, nil, sqlmock.AnyArg(), "tenant-a", string(TaskStatusRunning)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	// 6. GetTask (终态回读)
+	// 6. GetTask (read back final state).
 	runBegin(mock)
 	mock.ExpectQuery("FROM discovery_tasks WHERE id=\\$1").
 		WillReturnRows(taskRows(101, "success", 1))
@@ -192,7 +192,7 @@ func TestDiscoveryEngine_Run_NoScannerForProvider(t *testing.T) {
 	db, mock := newMockDB(t)
 	engine := NewDiscoveryEngine(db, NewTemplateManager(db, nil))
 
-	// 1. Get 模板 (enabled=true, 但 api_type 未知 → fallback 也无)
+	// 1. Get template (enabled=true, but api_type is unknown → no fallback either).
 	runBegin(mock)
 	mock.ExpectQuery("FROM provider_templates WHERE id = \\$1").
 		WillReturnRows(templateRowsWith(&ProviderTemplate{
@@ -201,7 +201,7 @@ func TestDiscoveryEngine_Run_NoScannerForProvider(t *testing.T) {
 		}))
 	mock.ExpectRollback()
 
-	// 2. createTask
+	// 2. createTask.
 	runBegin(mock)
 	mock.ExpectQuery("SELECT provider_code FROM provider_templates WHERE id=\\$1").
 		WillReturnRows(sqlmock.NewRows([]string{"provider_code"}).AddRow("exotic-provider"))
@@ -209,14 +209,14 @@ func TestDiscoveryEngine_Run_NoScannerForProvider(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(102))
 	mock.ExpectCommit()
 
-	// 3. mark running
+	// 3. mark running.
 	runBegin(mock)
 	mock.ExpectExec("UPDATE discovery_tasks SET status=\\$2").
 		WithArgs(int64(102), string(TaskStatusRunning), nil, nil, sqlmock.AnyArg(), nil, "tenant-a", string(TaskStatusPending)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	// 4. fail: 标记 failed (无 scanner)
+	// 4. fail: mark failed (no scanner).
 	runBegin(mock)
 	mock.ExpectExec("UPDATE discovery_tasks SET status=\\$2, error_message=\\$3").
 		WithArgs(int64(102), string(TaskStatusFailed), sqlmock.AnyArg(), sqlmock.AnyArg(), "tenant-a", string(TaskStatusRunning)).
@@ -274,7 +274,7 @@ func taskRows(id int64, status string, found int) *sqlmock.Rows {
 	)
 }
 
-// stubScanner 固定输出/错误的扫描器.
+// stubScanner a scanner with fixed output/error.
 type stubScanner struct {
 	models []DiscoveredModel
 	err    error
@@ -282,4 +282,48 @@ type stubScanner struct {
 
 func (s *stubScanner) ScanModels(_ context.Context, _ *ProviderTemplate, _ string) ([]DiscoveredModel, error) {
 	return s.models, s.err
+}
+
+// TestDiscoveryEngine_GetTask_NotFoundSentinel guards the audit contract: a missing
+// task (sql.ErrNoRows) must return the ErrTaskNotFound sentinel (handler maps to 404),
+// while a db fault must not be wrapped as this sentinel (stays 500).
+func TestDiscoveryEngine_GetTask_NotFoundSentinel(t *testing.T) {
+	db, mock := newMockDB(t)
+	engine := NewDiscoveryEngine(db, NewTemplateManager(db, nil))
+
+	runBegin(mock)
+	mock.ExpectQuery("FROM discovery_tasks WHERE id=\\$1").
+		WithArgs(int64(42)).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+
+	_, err := engine.GetTask(context.Background(), "tenant-a", 42)
+	if !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("missing task must return ErrTaskNotFound, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// A db fault is not the sentinel: the handler side must keep returning 500,
+	// never a false 404.
+	db2, mock2 := newMockDB(t)
+	engine2 := NewDiscoveryEngine(db2, NewTemplateManager(db2, nil))
+
+	runBegin(mock2)
+	mock2.ExpectQuery("FROM discovery_tasks WHERE id=\\$1").
+		WithArgs(int64(42)).
+		WillReturnError(errors.New("boom"))
+	mock2.ExpectRollback()
+
+	_, err = engine2.GetTask(context.Background(), "tenant-a", 42)
+	if err == nil {
+		t.Fatal("db fault must return an error")
+	}
+	if errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("db fault must not map to ErrTaskNotFound, got %v", err)
+	}
+	if err := mock2.ExpectationsWereMet(); err != nil {
+		t.Fatalf("%v", err)
+	}
 }

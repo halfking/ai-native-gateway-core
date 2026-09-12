@@ -10,13 +10,13 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-// runBeginTx 仅 BeginTx; caller 负责 GUC 与后续语句.
+// runBeginTx only does BeginTx; the caller is responsible for GUC and subsequent statements.
 func runBeginTx(mock sqlmock.Sqlmock) {
 	mock.ExpectBegin()
 	mock.ExpectExec("SET LOCAL app\\.current_tenant").WillReturnResult(sqlmock.NewResult(0, 0))
 }
 
-// resultRows 构造两条 pending 结果 (按 audit-fix 后的列顺序含 tenant_id).
+// resultRows builds two pending results (column order includes tenant_id, post audit-fix).
 func resultRows() *sqlmock.Rows {
 	cols := []string{
 		"id", "task_id", "tenant_id", "provider_code", "model_id", "display_name",
@@ -102,7 +102,7 @@ func TestImportService_NewRowsInserted(t *testing.T) {
 			AddRow("tenant-a", string(TaskStatusSuccess)))
 	mock.ExpectQuery("FROM discovery_results").
 		WillReturnRows(resultRows())
-	// 第一条 probe → 不存在 → INSERT → mark imported
+	// First row: probe -> not found -> INSERT -> mark imported
 	mock.ExpectQuery("SELECT id FROM free_resource_catalog").
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO free_resource_catalog").
@@ -141,12 +141,12 @@ func TestImportService_ConflictSkip(t *testing.T) {
 			AddRow("tenant-a", string(TaskStatusSuccess)))
 	mock.ExpectQuery("FROM discovery_results").
 		WillReturnRows(resultRows())
-	// 第一条: catalog 已存在 → skip → mark skipped
+	// First row: catalog already exists -> skip -> mark skipped
 	mock.ExpectQuery("SELECT id FROM free_resource_catalog").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(555)))
 	mock.ExpectExec("UPDATE discovery_results SET import_status=\\$").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	// 第二条: 不存在 → INSERT → mark imported
+	// Second row: not found -> INSERT -> mark imported
 	mock.ExpectQuery("SELECT id FROM free_resource_catalog").
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO free_resource_catalog").
@@ -260,7 +260,7 @@ func TestImportService_InsertFailureRollsBackAll(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT id FROM free_resource_catalog").
 		WillReturnError(sql.ErrNoRows)
-	// 第一条成功, 第二条炸 → 整体回滚
+	// First row succeeds, second row blows up -> entire transaction rolls back
 	mock.ExpectExec("INSERT INTO free_resource_catalog").
 		WillReturnError(errors.New("constraint violation"))
 	mock.ExpectRollback()
@@ -284,14 +284,14 @@ func TestImportService_DuplicateKeyRaceTreatedAsConflict(t *testing.T) {
 			AddRow("tenant-a", string(TaskStatusSuccess)))
 	mock.ExpectQuery("FROM discovery_results").
 		WillReturnRows(resultRows())
-	// 第一条: 探测无冲突, INSERT 撞 unique constraint → 标记 conflict
+	// First row: probe finds no conflict, INSERT hits unique constraint -> mark conflict
 	mock.ExpectQuery("SELECT id FROM free_resource_catalog").
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO free_resource_catalog").
 		WillReturnError(errors.New(`pq: duplicate key value violates unique constraint "free_resource_catalog_provider_model_tenant_key"`))
 	mock.ExpectExec("UPDATE discovery_results SET import_status=\\$").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	// 第二条: 正常导入
+	// Second row: normal import
 	mock.ExpectQuery("SELECT id FROM free_resource_catalog").
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO free_resource_catalog").
@@ -321,8 +321,8 @@ func TestImportService_ResultAlreadyProcessed(t *testing.T) {
 			AddRow("tenant-a", string(TaskStatusSuccess)))
 	mock.ExpectQuery("FROM discovery_results").
 		WillReturnRows(resultRows())
-	// 第一条: catalog 不存在 → INSERT 成功 → mark imported CAS 失败 (RowsAffected=0)
-	// 表示其他事务已处理; 整体事务回滚.
+	// First row: catalog not found -> INSERT succeeds -> mark imported CAS fails (RowsAffected=0)
+	// means another transaction already processed it; entire transaction rolls back.
 	mock.ExpectQuery("SELECT id FROM free_resource_catalog").
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO free_resource_catalog").

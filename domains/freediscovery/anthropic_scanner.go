@@ -12,26 +12,28 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/safehttpclient"
 )
 
-// Anthropic Messages API 的真协议扫描器.
+// Anthropic Messages API real-protocol scanner.
 //
-// 协议特点:
-//   - 端点:  {base}/v1/models?limit=1000 (base 默认 https://api.anthropic.com)
-//   - 鉴权:  x-api-key 请求头 + anthropic-version: 2023-06-01
-//   - 响应:  {"data":[{"id":"claude-...","type":"model","display_name":"..."}],
+// Protocol characteristics:
+//   - Endpoint:  {base}/v1/models?limit=1000 (base defaults to https://api.anthropic.com)
+//   - Auth:      x-api-key request header + anthropic-version: 2023-06-01
+//   - Response:  {"data":[{"id":"claude-...","type":"model","display_name":"..."}],
 //     "has_more":bool,"first_id":...,"last_id":...}
 //
-// 与 OpenAI 兼容形态的差异: data[] 内是 display_name (camelCase) 而非
-// display_name/context_window 数值字段; 鉴权是 x-api-key 而非 Bearer,
-// 因此不能复用 HTTPScanner, 需要独立实现.
+// Differences from the OpenAI-compatible form: data[] uses display_name
+// (camelCase) and lacks numeric context_window fields; auth is x-api-key
+// instead of Bearer, so HTTPScanner cannot be reused and a dedicated
+// implementation is required.
 //
-// doer 出站与 HTTPScanner 一致: 默认 safehttpclient 阻断私网/回环/元数据,
-// 测试可注入 httptest.Server client (allowlist 127.0.0.1).
+// doer outbound matches HTTPScanner: by default safehttpclient blocks
+// private/loopback/metadata; tests can inject an httptest.Server client
+// (allowlist 127.0.0.1).
 type AnthropicScanner struct {
 	doer func(req *http.Request) (*http.Response, error)
 }
 
-// NewAnthropicScanner 构造 Anthropic 扫描器. httpClient=nil 时使用
-// safehttpclient 作为安全默认.
+// NewAnthropicScanner constructs an Anthropic scanner. When httpClient=nil,
+// safehttpclient is used as a safe default.
 func NewAnthropicScanner(httpClient *http.Client) *AnthropicScanner {
 	if httpClient != nil {
 		return &AnthropicScanner{doer: httpClient.Do}
@@ -40,14 +42,14 @@ func NewAnthropicScanner(httpClient *http.Client) *AnthropicScanner {
 	return &AnthropicScanner{doer: safe.Do}
 }
 
-// anthropicModelsResponse Anthropic /v1/models 响应结构.
+// anthropicModelsResponse Anthropic /v1/models response structure.
 type anthropicModelsResponse struct {
 	Data    []anthropicModelEntry `json:"data"`
 	HasMore bool                  `json:"has_more"`
 	LastID  string                `json:"last_id"`
 }
 
-// anthropicModelEntry 单个 Anthropic 模型条目.
+// anthropicModelEntry a single Anthropic model entry.
 type anthropicModelEntry struct {
 	ID          string `json:"id"`
 	Type        string `json:"type"`
@@ -64,12 +66,14 @@ func (e anthropicModelEntry) displayName() string {
 	return e.ID
 }
 
-// anthropicModelsPerPage Anthropic 单页上限 (API 最大值, 减少分页往返).
+// anthropicModelsPerPage Anthropic per-page maximum (API upper bound; reduces
+// pagination round-trips).
 const anthropicModelsPerPage = 1000
 
-// ScanModels 拉取 Anthropic 模型列表 (自动翻页, has_more 跟进),
-// 解析后全部返回为待审查候选 — Anthropic API 无公开免费层,
-// 免费判定交给 ToSChecker (preset verdict=caution → 默认不自动导入).
+// ScanModels fetches the Anthropic model list (auto-paginates following has_more)
+// and returns all entries as review candidates — the Anthropic API exposes no
+// public free tier, so free-tier judgement is delegated to ToSChecker
+// (preset verdict=caution → not auto-imported by default).
 func (s *AnthropicScanner) ScanModels(ctx context.Context, tpl *ProviderTemplate, apiKey string) ([]DiscoveredModel, error) {
 	if tpl == nil {
 		return nil, fmt.Errorf("freediscovery: nil template")
@@ -85,7 +89,7 @@ func (s *AnthropicScanner) ScanModels(ctx context.Context, tpl *ProviderTemplate
 
 	models := make([]DiscoveredModel, 0, 64)
 	afterID := ""
-	for page := 0; page < 10; page++ { // 硬上限 10 页 = 10000 模型, 防御异常上游
+	for page := 0; page < 10; page++ { // Hard cap 10 pages = 10000 models; defends against a misbehaving upstream.
 		pageURL, err := joinBaseAndEndpoint(base, "/v1/models")
 		if err != nil {
 			return nil, fmt.Errorf("freediscovery: invalid anthropic base url: %w", err)
@@ -131,7 +135,7 @@ func (s *AnthropicScanner) ScanModels(ctx context.Context, tpl *ProviderTemplate
 
 		for i, e := range payload.Data {
 			if e.ID == "" {
-				continue // 单条畸形跳过, 不整体失败.
+				continue // Skip a single malformed entry without failing the whole batch.
 			}
 			var raw map[string]any
 			if i < len(rawList) {
@@ -141,7 +145,7 @@ func (s *AnthropicScanner) ScanModels(ctx context.Context, tpl *ProviderTemplate
 				ProviderCode: tpl.ProviderCode,
 				ModelID:      e.ID,
 				DisplayName:  e.displayName(),
-				FreeType:     string(FreeTypeRecurringUncapped), // 待 ToS 人工审查确认
+				FreeType:     string(FreeTypeRecurringUncapped), // Awaiting manual ToS review
 				PoolKey:      "anthropic-api-pool",
 				RawMetadata:  raw,
 			})

@@ -12,7 +12,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
-// newMockDB 构造 (db, mock) 对. 所有用例共用, 每个用例自行设置期望.
+// newMockDB constructs a (db, mock) pair. Shared by all test cases; each case sets its own expectations.
 func newMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
@@ -23,7 +23,7 @@ func newMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 	return db, mock
 }
 
-// expectTenantGUC 断言事务内的 RLS GUC 设置语句.
+// expectTenantGUC asserts the in-transaction RLS GUC setup statement.
 func expectTenantGUC(mock sqlmock.Sqlmock, tenantID string) {
 	mock.ExpectBegin()
 	mock.ExpectExec("SET LOCAL app\\.current_tenant").
@@ -55,7 +55,7 @@ func TestEscapeTenantID(t *testing.T) {
 
 func TestTemplateManager_Create_RequiresKeyringForPlaintextKey(t *testing.T) {
 	db, _ := newMockDB(t)
-	// nil keyring: 明文密钥必须被拒绝 (fail closed, 不落明文)
+	// nil keyring: plaintext keys must be rejected (fail closed, never persist plaintext)
 	m := NewTemplateManager(db, nil)
 	enabled := true
 	_, err := m.Create(context.Background(), "tenant-a", &CreateTemplateRequest{
@@ -130,8 +130,8 @@ func TestTemplateManager_Get_RLSTenantGUCAlwaysSet(t *testing.T) {
 	db, mock := newMockDB(t)
 	m := NewTemplateManager(db, nil)
 
-	// 核心契约: 任何读写在事务内都先 SET LOCAL app.current_tenant,
-	// 否则连接池复用连接时会用上一个租户的 GUC (freeresource audit round 3 C2 教训).
+	// Core contract: every read/write must SET LOCAL app.current_tenant inside the transaction,
+	// otherwise the connection pool may reuse a connection carrying the previous tenant's GUC (lesson from freeresource audit round 3 C2).
 	mock.ExpectBegin()
 	mock.ExpectExec("SET LOCAL app\\.current_tenant = 'tenant-a'").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("FROM provider_templates").WillReturnError(sql.ErrNoRows)
@@ -264,7 +264,7 @@ func TestTemplateManager_ResolveAPIKey_FromEnv(t *testing.T) {
 }
 
 func TestTemplateManager_ResolveAPIKey_EncryptedRoundTrip(t *testing.T) {
-	// 真实 keyring 加解密回路: Create 落密文 → ResolveAPIKey 解回明文
+	// Real keyring encrypt/decrypt round trip: Create persists ciphertext, ResolveAPIKey decrypts back to plaintext.
 	current := make([]byte, 32)
 	for i := range current {
 		current[i] = byte(i)
