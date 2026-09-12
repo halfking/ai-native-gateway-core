@@ -39,6 +39,8 @@ import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { isSuperAdmin } from '../store'
 import { ApiError } from '../api/_core'
 import { assignSpacedPriorities } from '../utils/queueNodeCards'
+// 2026-09-13 P3：弹层收敛到 ui/AppModal（方案 §4.5.7）
+import AppModal from '../components/ui/AppModal.vue'
 
 const { t } = useI18n()
 
@@ -1085,15 +1087,16 @@ onUnmounted(() => stopPoll())
         </div>
       </template>
 
-      <div v-if="cellModalOpen && cellPopup" class="modal-overlay" @click.self="closeCellModal">
-        <div class="modal-panel card compact-card">
-          <div class="card-toolbar">
-            <div class="toolbar-left">
-              <span class="toolbar-title">{{ cellPopup.row }} × {{ displayTaskKey(cellPopup.col) }}</span>
-              <span class="text-muted">最近决策</span>
-            </div>
-            <button class="btn btn-ghost btn-sm" @click="closeCellModal">关闭</button>
-          </div>
+      <!-- 2026-09-13 P3：cell 决策弹层迁移 ui/AppModal -->
+      <AppModal
+        v-if="cellPopup"
+        :model-value="cellModalOpen"
+        :title="`${cellPopup.row} × ${displayTaskKey(cellPopup.col)}`"
+        size="sm"
+        @update:model-value="(v: boolean) => { if (!v) closeCellModal() }"
+        @close="closeCellModal"
+      >
+          <div class="text-muted" style="margin:-4px 0 8px;font-size:12px">最近决策</div>
           <div v-if="cellLoading" class="loading-hint">加载…</div>
           <template v-else>
             <div v-if="cellDecisions.length" class="compact-decisions">
@@ -1122,8 +1125,7 @@ onUnmounted(() => stopPoll())
               compact
             />
           </template>
-        </div>
-      </div>
+      </AppModal>
     </div>
 
     <!-- ═══ Tab A: Overview ═══ -->
@@ -1759,7 +1761,7 @@ onUnmounted(() => stopPoll())
   flex-direction: column;
   height: 100%;
 }
-@media (max-width: 900px) {
+@media (max-width: 768px) {
   .analytics-charts { grid-template-columns: 1fr; }
 }
 .card-toolbar.clickable { cursor: pointer; user-select: none; }
