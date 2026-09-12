@@ -87,4 +87,12 @@ BEGIN
     '680 / db.ensureRequestLogsCurrentMonthView when dropped out-of-band.';
 END $$;
 
+-- Ledger self-registration: the upgrade channel only stamps
+-- gateway_db_revision_sequences; schema_migrations rows exist only for files
+-- that insert their own (698/699 precedent). Runs even on the no-op guard
+-- path so the dual-ledger reconciliation stays aligned.
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('700', 'request_logs_with_current_month view exposes raw_model_name (drift scanner 42703 root fix; base wrapper frozen pre-485)')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+
 COMMIT;

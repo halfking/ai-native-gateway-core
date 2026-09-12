@@ -42,3 +42,37 @@
 - **通过**：live round-trip 双形状场景（真库 scratch）、冻结链重放 scanner 形状 SELECT、文本守卫（700 + 既有 695/696/697）、installer 全套、`go build ./...`、`go vet ./db/`、`./db/ ./sql/migrations/... ./bg/ ./deploy/grafana/ ./deploy/prometheus/...`、本机 DB 单事务修复六项事务内复核、双账本登记复核、生产 252 只读取证（视图 112 列 raw=0；账本 698/700 空闲）。
 - **环境受限**：无（本轮全部验证在本机真库完成；未依赖 Windows 副本口径）。
 - **未验证**：生产 252 的 700 应用（等发布窗口）；本机 WARN 停止的整点日志复核（扫描周期 1h，修复后首个整点待观察；修复事务内已验证 scanner 形状 SQL 可解析执行）。
+
+## 审计轮（2026-09-12，针对本文件所述交付的自审计与修正）
+
+- **发现 1（实质，已修）：迁移 700 缺 schema_migrations 自插登记。** 通道（apply-db-revision-sequence.sh）的 pending 判定只读 `gateway_db_revision_sequences`（per-file marker），自身不写 schema_migrations；698/699 文件尾部自带 `INSERT ... ON CONFLICT (version)` 自登记，而 700 初版没有——升级库经通道应用 700 后双账本将错位（schema_migrations 缺 700 行），恰是本轮在本机花一整段修复的错位形态。已补自插语句（no-op 守卫路径也执行，698/699 同款），`migration_700_test.go` 增两条文本钉。**附带发现：696/697 文件同样无自插**（生产行的登记来自指纹线当年手工应用）——不代改，留档给该线；后续轮次如触碰 696/697 文件应顺手补齐。
+- **发现 2（机制澄清，无缺陷）**：通道复跑时 700 文件的真实执行曾在 2091 部署时被跳过（我先行手工登记 sequences marker 触发 pending 跳过，视图效果已在但 COMMENT/自插未执行）。本轮退掉手工 marker → 通道真实执行 700 文件（守卫 no-op + COMMENT 落 + 自插生效）→ 本机账本完全收敛于通道路径。过程中 `INSERT 0 1` 命令标签一度疑似矛盾，rollback 包裹探针实证：**该 kx-citus-pg17 构建对 `ON CONFLICT DO UPDATE` 也报 `INSERT 0 1`**，非账本异常。
+- **发现 3（观察，不处置）**：gofmt -l 标出 `migration_694_behavior_integration_test.go`（并行线 0db9d9b7e 交付）与 `migration_627_630_contract_test.go`（预存）未格式化——非本轮改动面，不代改以保持提交归属清晰。
+- **发现 4（部署脚本粗糙边，留档）**：2090 部署时 8782 `/readyz` 60s 探针超时（全量 Go ensure 链启动慢于窗口）报 "active cutover failed"，随后自愈为健康 2090；2091 复现同形态并 VERIFY_PASS=1。属 deploy-lib 线的健康窗口设置问题，未在本轮修（跨线范围），已知症状：满迁移链的冷启动可能超 60s。
+- **修正后全量验证（终态 HEAD）**：`go build ./...` 净、`go vet ./...` 零输出、gofmt 本轮文件净、`go test ./db/ ./sql/migrations/... ./bg/ ./deploy/grafana/ ./deploy/prometheus/...` 全绿、live round-trip（真库）绿、installer 全套绿、通道 `bash -n` 过、通道复跑 696-700 全部 already-applied/幂等、双账本终态 696/697/698/699/700 齐、生产 252 复核维持 698-700 未应用 + 视图 112/raw=0（发布约束继续有效）。
+
+## 下一轮提示词（可直接复制）
+
+```text
+请对 llm-gateway-go「request_logs 视图 raw_model_name 根修（迁移 700）+ LF 治理」
+做下一轮观察/收尾。工作目录：主工作区（main）。
+先阅读：docs/handoff/2026-09-12-request-logs-view-raw-model-name-rootfix.md
+（含审计轮记录）与 docs/changelogs/2026-09-12-request-logs-view-raw-model-name.md。
+
+背景：700 已在 origin/main（84bae533d 起），本机 2091 部署运行正常（scanner
+零 42703）；生产 252 的 698/699/700 尚未应用（视图 112 列、raw=0 实查）。
+生产 245/154 发布维持"通道先 698/699/700 → 再上携带 83bf582dd 的二进制"
+顺序约束；无运营报障不主动发起生产发布。
+
+本轮任务（按输入分派）：
+A. 生产发布窗口到达（或有运营报障）：252 通道应用 698/699/700（含函数链
+   登记，登记已在通道脚本内）→ 复核双账本与视图 113 列/raw=1 → 蓝绿上
+   新二进制 → api/v1 或日志确认 drift scanner 无 42703。
+B. 无窗口：只做观察轮——本机 drift scanner 整点周期日志复核（应为静默）；
+   如指纹线或钉扎线对 696/697/698/699 有新动作，核对通道/账本一致性。
+C. 已知遗留（勿自动开新轮）：视图基础层 pre-485 冻结交集（缺 48 列）的
+   "陈旧也重建"专项迁移；deploy-lib readyz 60s 窗口偏短；696/697 无
+   schema_migrations 自插（触碰时顺手补）；并行线 gofmt 未净两文件。
+D. 验证如实区分通过/环境受限/未验证；数据操作先备份、单事务、事务内复核；
+   严禁 git add -A，提交前按文件核对归属。
+```
