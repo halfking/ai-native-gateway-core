@@ -134,6 +134,9 @@ import {
   ChatDotRound, Connection, Money, CircleCheck, Odometer, Timer, DocumentCopy, Coin, ArrowUp, ArrowDown,
 } from '@element-plus/icons-vue'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElIcon } from 'element-plus'
 export interface DashboardStats {
   totalSessions: number
   totalSessionsChange: number | null

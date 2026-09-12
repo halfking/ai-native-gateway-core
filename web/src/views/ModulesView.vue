@@ -15,7 +15,12 @@ import { listSettings, type SettingItem } from '../api'
 import { useRouter } from 'vue-router'
 import PromptInjectionConfigPanel from '../components/PromptInjectionConfigPanel.vue'
 import ModuleEntitlementsPanel from '../components/ModuleEntitlementsPanel.vue'
+// 2026-09-13 P3：页头收敛到 ui/PageHeader（方案 §4.5.2）
+import PageHeader from '../components/ui/PageHeader.vue'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElButton } from 'element-plus'
 const { t } = useI18n()
 const router = useRouter()
 const modules = ref<ModuleWithStatus[]>([])
@@ -385,20 +390,19 @@ onMounted(() => {
       <span>{{ t('modulesView.modeBannerBody') }}</span>
     </div>
     <!-- Header -->
-    <div class="page-header">
-      <div class="page-header-left">
-        <h1 class="page-title">{{ t('modulesView.pageTitle') }}</h1>
-        <p class="page-subtitle">{{ t('modulesView.pageSubtitle') }}</p>
-      </div>
-      <div class="page-header-right">
+    <PageHeader
+      :title="t('modulesView.pageTitle')"
+      :subtitle="t('modulesView.pageSubtitle')"
+    >
+      <template #actions>
         <div class="summary-badge">
           <span class="summary-count">{{ enabledCount }}</span>
           <span class="summary-sep">/</span>
           <span class="summary-total">{{ totalCount }}</span>
           <span class="summary-label">{{ t('modulesView.modulesEnabled') }}</span>
         </div>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div v-if="error" class="error-banner">{{ error }}</div>
 
@@ -1115,27 +1119,12 @@ onMounted(() => {
 }
 
 /* ── Page Header ── */
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 20px;
+/* 2026-09-13 P3：页头骨架迁至 ui/PageHeader，这里只保留本页特有的
+   底部分隔线细节（scoped 可命中子组件根元素） */
+.app-page-header {
   padding-bottom: 16px;
   border-bottom: 1px solid var(--border);
 }
-.page-header-left { flex: 1; }
-.page-title {
-  font-size: 20px;
-  font-weight: 700;
-  margin: 0 0 4px;
-  color: var(--text-primary);
-}
-.page-subtitle {
-  font-size: 13px;
-  color: var(--text-secondary);
-  margin: 0;
-}
-.page-header-right { flex-shrink: 0; }
 .summary-badge {
   display: flex;
   align-items: baseline;
@@ -1197,6 +1186,7 @@ onMounted(() => {
   border-radius: 10px;
   overflow-y: auto;
   max-height: calc(100vh - 200px);
+  max-height: calc(100dvh - 200px);
   padding: 8px;
 }
 .loading {
@@ -1339,6 +1329,7 @@ onMounted(() => {
   padding: 20px;
   overflow-y: auto;
   max-height: calc(100vh - 200px);
+  max-height: calc(100dvh - 200px);
 }
 .detail-empty {
   display: flex;
@@ -2072,7 +2063,7 @@ onMounted(() => {
 }
 
 /* ── Responsive ── */
-@media (max-width: 960px) {
+@media (max-width: 1024px) {
   .layout { grid-template-columns: 1fr; }
   .list-pane,
   .detail-pane { max-height: none; }

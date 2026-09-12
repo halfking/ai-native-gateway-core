@@ -337,7 +337,7 @@ const openFullscreenTitle = computed(() =>
 .drawer-header h3 { margin: 0; flex: 1; font-size: 16px; }
 .mode-seg { display: flex; gap: 4px; }
 .tab-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
-.drawer-body-scroll { max-height: calc(100vh - 140px); overflow: auto; }
+.drawer-body-scroll { max-height: calc(100vh - 140px); max-height: calc(100dvh - 140px); overflow: auto; }
 .drawer-loading, .drawer-error { padding: 16px; }
 .drawer-error { color: var(--danger); }
 .drawer-error-inline { font-size: 12px; margin-bottom: 8px; }

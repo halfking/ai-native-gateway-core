@@ -11,6 +11,9 @@ import {
   getSessionSnapshot,
 } from '../api/sessions_v2'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElButton } from 'element-plus'
 const props = defineProps<{
   sessionId: string
   title?: string

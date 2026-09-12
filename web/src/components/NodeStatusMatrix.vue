@@ -283,6 +283,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
 .nm-modal {
   width: min(860px, 96vw);
   height: 100vh;
+  height: 100dvh;
   overflow: auto;
   background: var(--kx-surface);
   color: var(--kx-text);
