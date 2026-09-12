@@ -5,6 +5,9 @@ import { clearAll } from '../store'
 import { logout as apiLogout } from '../api/auth'
 import PublicPortalLayout from '../components/PublicPortalLayout.vue'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElButton, ElCard } from 'element-plus'
 const { t } = useI18n()
 const router = useRouter()
 

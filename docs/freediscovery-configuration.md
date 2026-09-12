@@ -212,6 +212,7 @@ UI 同步: `FreeDiscoveryView.vue` 行内"扫描"按钮 `:disabled="!tpl.enabled
 | `ErrTaskStateConflict` | 409 | 并发状态覆盖 |
 | `ErrTemplateNotFound` (scan 路径) | 404 | template_id 不存在 |
 | `ErrTemplateDisabled` (scan 路径) | 409 | template.enabled = false |
+| `ErrTaskNotFound` (GET 任务详情) | 404 | task id 不存在 / 跨租户 (2026-09-13 补齐 sentinel；此前裸 fmt.Errorf 落 500) |
 
 ## 5. 端点速查
 

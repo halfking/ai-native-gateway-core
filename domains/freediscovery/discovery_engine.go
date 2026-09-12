@@ -203,7 +203,7 @@ func (e *DiscoveryEngine) createTask(ctx context.Context, req DiscoveryRequest) 
 		`SELECT provider_code FROM provider_templates WHERE id=$1`, req.TemplateID,
 	).Scan(&providerCode); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("freediscovery: template %d not found (tenant %q)", req.TemplateID, req.TenantID)
+			return nil, fmt.Errorf("freediscovery: template %d not found (tenant %q): %w", req.TemplateID, req.TenantID, ErrTemplateNotFound)
 		}
 		return nil, fmt.Errorf("freediscovery: lookup template: %w", err)
 	}
@@ -407,7 +407,7 @@ func (e *DiscoveryEngine) GetTask(ctx context.Context, tenantID string, id int64
 		&t.ModelsFound, &t.ModelsImported, &createdAt, &updatedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("freediscovery: task %d not found", id)
+			return nil, fmt.Errorf("%w (id %d)", ErrTaskNotFound, id)
 		}
 		return nil, fmt.Errorf("freediscovery: scan task: %w", err)
 	}

@@ -197,7 +197,9 @@ const pipeline = computed(() =>
   align-items: center;
   justify-content: stretch;
   width: 100%;
+  /* 2026-09-13 P1c: dvh fallback */
   min-height: calc(100vh - 64px);
+  min-height: calc(100dvh - 64px);
   margin: 0;
   padding: clamp(36px, 5vw, 64px) var(--landing-pad-x) clamp(40px, 5vw, 72px);
   box-sizing: border-box;
@@ -576,6 +578,18 @@ const pipeline = computed(() =>
   .kx-landing__hero-art {
     min-height: 240px;
     border-radius: 16px;
+  }
+}
+
+/* 2026-09-13 P1c：补 768px 档。hero 在 <=960 已单列化（768-959 区间表现
+   无问题），此档仅做间距/装饰微调，不改布局结构。 */
+@media (max-width: 768px) {
+  .kx-landing__hero {
+    gap: 20px;
+    padding-top: 20px;
+  }
+  .kx-landing__hero-art {
+    min-height: 200px;
   }
 }
 

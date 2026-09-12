@@ -143,8 +143,20 @@ func (p *BalanceQuotaProbe) SetOnQuotaRecharged(fn func(credID int, source strin
 // charging two upstream probes for one accepted webhook.
 //
 // credID <= 0 is ignored (same behavior as ForceProbe).
+//
+// 2026-09-13: rows pulled by bg/balance_floor_guard
+// (state_reason_code='balance_floor') are NOT dispatched — a chat probe would
+// succeed against their remaining buffer and un-pull them (writeHealth allows
+// $8='ok' through). Their recharge recovery belongs to the guard's own
+// balance/plan re-checks, which run every sweep.
 func (p *BalanceQuotaProbe) OnQuotaRecharged(credID int, source string) {
 	if credID <= 0 {
+		return
+	}
+	if p.credentialFloorPulled(credID) {
+		slog.Info("balance_quota_probe: recharge webhook ignored for balance_floor-pulled credential (guard owns recovery)",
+			"credential_id", credID,
+			"source", source)
 		return
 	}
 	if p.probeNowAsync != nil {
@@ -160,6 +172,26 @@ func (p *BalanceQuotaProbe) OnQuotaRecharged(credID int, source string) {
 		"credential_id", credID,
 		"source", source,
 		"mode", map[bool]string{true: "immediate", false: "delayed_fallback"}[p.probeNowAsync != nil])
+}
+
+// credentialFloorPulled reports whether the credential is currently pulled by
+// bg/balance_floor_guard. DB errors fail-open (dispatch proceeds) so a
+// transient outage can't silently swallow recharge signals.
+func (p *BalanceQuotaProbe) credentialFloorPulled(credID int) bool {
+	if p.db == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var reason string
+	err := p.db.QueryRow(ctx, `
+		SELECT COALESCE(state_reason_code, '')
+		FROM credentials
+		WHERE id = $1
+		  AND quota_state = 'balance_exhausted'
+		  AND COALESCE(state_reason_code, '') = 'balance_floor'
+	`, credID).Scan(&reason)
+	return err == nil && reason == "balance_floor"
 }
 
 func (p *BalanceQuotaProbe) Start(ctx context.Context) {
@@ -364,59 +396,81 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 	// of the exhausted state. The new guard requires EITHER a
 	// configured default_probe_model OR a routable binding on the
 	// credential — if neither is true the probe really cannot run.
+	//
+	// 2026-09-13 balance_floor guard exemption: rows pulled by
+	// bg/balance_floor_guard (state_reason_code='balance_floor') still
+	// have buffer quota left, so a real chat probe would SUCCEED and
+	// writeHealth's hard-quota guard ($8='ok' passes) would flip them
+	// straight back to ok/ready — a 2-minute ping-pong that burns a
+	// probe token each cycle. Recovery for floor-pulled rows belongs to
+	// the guard's own balance/plan re-checks, never to a chat probe.
 	rows, err := p.db.Query(timeoutCtx, `
 		SELECT c.id
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE (
+		      -- quota set. 2026-09-13 balance_floor guard exemption (from
+		      -- main): rows pulled by bg/balance_floor_guard
+		      -- (quota_state='balance_exhausted' + state_reason_code=
+		      -- 'balance_floor') still have buffer quota, so a chat probe
+		      -- would SUCCEED and writeHealth's hard-quota guard would flip
+		      -- them straight back — a 2-minute ping-pong. Their recovery
+		      -- belongs to the guard's own balance/plan re-checks. The
+		      -- exemption is scoped to the quota branch only: the suspended
+		      -- /auto-disabled revalidation branches below require
+		      -- quota_state='ok' and never select floor-pulled rows.
 		      c.quota_state IN ('balance_exhausted', 'permanently_exhausted')
-		      OR (
-		          -- suspended-revalidation set (P3): the contradictory
-		          -- suspended+quota-ok+NULL-recover rows. Slower floor
-		          -- cadence than the quota set via the backoff expression
-		          -- below; see credential_recovery.go availSQL for the
-		          -- matching evidence-based restore. Rows that ALREADY carry
-		          -- fresh healthy evidence are excluded — availSQL restores
-		          -- those within one 30s tick without another probe.
-		          c.availability_state = 'suspended'
-		          AND c.availability_recover_at IS NULL
-		          AND COALESCE(c.quota_state, 'ok') = 'ok'
-		          AND NOT (
-		              c.health_status = 'healthy'
-		              AND c.health_checked_at > now() - INTERVAL '2 hours'
-		          )
+		      AND NOT (
+		          c.quota_state = 'balance_exhausted'
+		          AND COALESCE(c.state_reason_code, '') = 'balance_floor'
 		      )
 		      OR (
-		          -- 2026-09-13 audit round F4: auto-disabled revalidation. An
-		          -- auto-disabled credential whose revalidation probe returns
-		          -- 401/403 flips to auth_failed and would otherwise fall out
-		          -- of every recovery set (this scan required 'suspended'; the
-		          -- availSQL tick requires lifecycle='active') — stranded
-		          -- again. Revalidate ANY auto-disabled, quota-ok, non-ready
-		          -- row once its availability backoff has expired; writeHealth
-		          -- flips it fully (ready + lifecycle active) on success.
+		      -- suspended-revalidation set (P3): the contradictory
+		      -- suspended+quota-ok+NULL-recover rows. Slower floor
+		      -- cadence than the quota set via the backoff expression
+		      -- below; see credential_recovery.go availSQL for the
+		      -- matching evidence-based restore. Rows that ALREADY carry
+		      -- fresh healthy evidence are excluded — availSQL restores
+		      -- those within one 30s tick without another probe.
+		      c.availability_state = 'suspended'
+		      AND c.availability_recover_at IS NULL
+		      AND COALESCE(c.quota_state, 'ok') = 'ok'
+		      AND NOT (
+		          c.health_status = 'healthy'
+		          AND c.health_checked_at > now() - INTERVAL '2 hours'
+		      )
+		      )
+		      OR (
+		      -- 2026-09-13 audit round F4: auto-disabled revalidation. An
+		      -- auto-disabled credential whose revalidation probe returns
+		      -- 401/403 flips to auth_failed and would otherwise fall out
+		      -- of every recovery set (this scan required 'suspended'; the
+		      -- availSQL tick requires lifecycle='active') — stranded
+		      -- again. Revalidate ANY auto-disabled, quota-ok, non-ready
+		      -- row once its availability backoff has expired; writeHealth
+		      -- flips it fully (ready + lifecycle active) on success.
+		      c.lifecycle_status = 'disabled'
+		      AND c.auto_disabled_at IS NOT NULL
+		      AND COALESCE(c.quota_state, 'ok') = 'ok'
+		      AND COALESCE(c.availability_state, 'ready') <> 'ready'
+		      AND (c.availability_recover_at IS NULL OR c.availability_recover_at <= now())
+		      )
+		      )
+		  AND c.status = 'active'
+		  -- 2026-09-13 closeout (P3): admit auto-disabled rows (auto_disabled_at
+		  -- set) — writeHealth already sanctions re-enabling exactly this class
+		  -- on a successful probe (auto_enabled_reason='periodic_quota_probe_
+		  -- recovered'). Prod evidence: ALL six suspended+quota-ok contradictory
+		  -- rows (creds 9/13/23/24/25/30) were auto-disabled by the availability
+		  -- <50% rule, then stranded — no probe target could ever reach them.
+		  AND (
+		      c.lifecycle_status = 'active'
+		      OR (
 		          c.lifecycle_status = 'disabled'
 		          AND c.auto_disabled_at IS NOT NULL
-		          AND COALESCE(c.quota_state, 'ok') = 'ok'
-		          AND COALESCE(c.availability_state, 'ready') <> 'ready'
-		          AND (c.availability_recover_at IS NULL OR c.availability_recover_at <= now())
 		      )
-		      )
-  AND c.status = 'active'
-  -- 2026-09-13 closeout (P3): admit auto-disabled rows (auto_disabled_at
-  -- set) — writeHealth already sanctions re-enabling exactly this class
-  -- on a successful probe (auto_enabled_reason='periodic_quota_probe_
-  -- recovered'). Prod evidence: ALL six suspended+quota-ok contradictory
-  -- rows (creds 9/13/23/24/25/30) were auto-disabled by the availability
-  -- <50% rule, then stranded — no probe target could ever reach them.
-  AND (
-      c.lifecycle_status = 'active'
-      OR (
-          c.lifecycle_status = 'disabled'
-          AND c.auto_disabled_at IS NOT NULL
-      )
-  )
-  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  )
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
 		  -- due gate (P3): exponential re-probe interval by consecutive

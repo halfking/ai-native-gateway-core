@@ -295,6 +295,7 @@ async function writeMemora() {
 .ssd-panel {
   width: min(720px, 96vw);
   height: 100vh;
+  height: 100dvh;
   overflow-y: auto;
   border-radius: 0;
   padding: 16px 20px 24px;

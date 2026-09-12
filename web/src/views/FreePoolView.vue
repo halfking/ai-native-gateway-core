@@ -31,6 +31,10 @@ import {
 } from '../api'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { useActionMessage } from '../composables/useActionMessage'
+// 2026-09-13 P3：页头/统计行收敛到 ui 组件（方案 §4.5.2/§4.5.3）
+import PageHeader from '../components/ui/PageHeader.vue'
+import StatsRow from '../components/ui/StatsRow.vue'
+import StatCard from '../components/ui/StatCard.vue'
 
 const { t } = useI18n()
 // credentialDisplayName resolves credential id → human label; the composable
@@ -684,8 +688,8 @@ onUnmounted(() => {
 
 <template>
   <div>
-    <div class="page-header">
-      <h2>{{ t('freePool.page.title') }}</h2>
+    <PageHeader :title="t('freePool.page.title')">
+      <template #actions>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <span
           class="freshness-badge"
@@ -721,7 +725,8 @@ onUnmounted(() => {
           {{ showBulkForm ? '收起多 Key 批量' : '多 Key 批量池化' }}
         </button>
       </div>
-    </div>
+      </template>
+    </PageHeader>
     <p style="color:var(--muted);margin-bottom:20px">
       管理免费模型资源池。已注册模型路由优先级最高（routing_tier = 9，composite_score = 0）。
       下方「免费模型清单」展示当前池内全部可用模型；「模板目录」展示已知免费 Provider 及其预期模型。
@@ -730,28 +735,12 @@ onUnmounted(() => {
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
     <div v-if="message" class="alert alert-success">{{ message }}</div>
 
-    <div v-if="poolData" class="stat-row" style="margin-bottom:20px">
-      <div class="stat-inline">
-        <span class="stat-label">可路由模型</span>
-        <span class="stat-value stat-ok">{{ poolData.stats.routable_models }}</span>
-        <span class="stat-sub">/ {{ poolData.stats.free_models }} offer</span>
-      </div>
-      <div class="stat-inline">
-        <span class="stat-label">可用 Provider</span>
-        <span class="stat-value stat-ok">{{ poolData.stats.available_providers }}</span>
-        <span class="stat-sub">/ {{ poolData.stats.total_providers }}</span>
-      </div>
-      <div class="stat-inline">
-        <span class="stat-label">模板已接入</span>
-        <span class="stat-value">{{ poolData.stats.catalog_registered }}</span>
-        <span class="stat-sub">/ {{ poolData.stats.catalog_templates }} 模板</span>
-      </div>
-      <div class="stat-inline">
-        <span class="stat-label">模板模型</span>
-        <span class="stat-value">{{ catalogSummary.templateModels }}</span>
-        <span class="stat-sub">目录已知</span>
-      </div>
-    </div>
+    <StatsRow v-if="poolData" style="margin-bottom:20px">
+      <StatCard label="可路由模型" :value="poolData.stats.routable_models" tone="success" :sub="`/ ${poolData.stats.free_models} offer`" />
+      <StatCard label="可用 Provider" :value="poolData.stats.available_providers" tone="success" :sub="`/ ${poolData.stats.total_providers}`" />
+      <StatCard label="模板已接入" :value="poolData.stats.catalog_registered" :sub="`/ ${poolData.stats.catalog_templates} 模板`" />
+      <StatCard label="模板模型" :value="catalogSummary.templateModels" sub="目录已知" />
+    </StatsRow>
 
     <div v-if="showKeyForm" class="card" style="margin-bottom:20px">
       <h3 style="margin-top:0">写入免费池凭据（加密存 DB）</h3>
@@ -1479,29 +1468,6 @@ onUnmounted(() => {
 <style scoped>
 .cell-muted { color: var(--muted); font-size: 11px; margin-top: 3px; }
 
-.stat-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  /* 2026-07-07: nowrap → wrap, 移除 overflow-x: auto
-     4张统计卡在窄屏时自动折行，不再横向滚动 */
-}
-.stat-inline {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex: 1 1 0;
-  min-width: 160px;
-  padding: 10px 14px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  white-space: nowrap;
-}
-.stat-label { font-size: 12px; color: var(--muted); }
-.stat-value { font-size: 20px; font-weight: 700; color: var(--text); }
-.stat-value.stat-ok { color: var(--success); }
-.stat-sub { font-size: 12px; color: var(--muted); }
 
 .form-grid {
   display: grid;

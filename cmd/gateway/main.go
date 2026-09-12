@@ -3400,6 +3400,7 @@ func main() {
 	var credProbeV2 *bg.CredentialProbeV2
 	var periodicQuotaProbe *bg.PeriodicQuotaProbe
 	var balanceQuotaProbe *bg.BalanceQuotaProbe
+	var balanceFloorGuard *bg.BalanceFloorGuard
 	var pendingSweeper *bg.PendingSweeper
 	var candidateFailureMonitor *bg.CandidateFailureMonitor
 
@@ -3847,6 +3848,19 @@ func main() {
 			}
 			balanceQuotaProbe.Start(context.Background())
 			slog.Info("CHECKPOINT: balanceQuotaProbe started")
+
+			// 2026-09-13 migration 701: balance-floor guard — 主动感知
+			// zhipu/minimax 订阅套餐额度（+ 被摘出凭据的货币余额刷新），低于
+			// 操作员配置的下限时把凭据摘出路由池（quota_state=
+			// 'balance_exhausted' + reason='balance_floor'），充值/窗口重置后
+			// 自动恢复。floor 字段默认 NULL → 选点为空 → 空转，可安全常开。
+			// LLM_GATEWAY_BALANCE_FLOOR_GUARD=off 可整体关闭。
+			balanceFloorGuard = bg.NewBalanceFloorGuard(dbConn.Pool(), fernetKey)
+			if keyring != nil {
+				balanceFloorGuard.SetKeyring(keyring)
+			}
+			balanceFloorGuard.Start(context.Background())
+			slog.Info("CHECKPOINT: balanceFloorGuard started")
 
 			// 900-series: default probe model picker (spec §4.2.1) — daily 0:00
 			slog.Info("CHECKPOINT: before NewDefaultProbePicker")
@@ -6934,6 +6948,11 @@ func main() {
 		// enqueue work after the consumer has exited.
 		if periodicQuotaProbe != nil {
 			periodicQuotaProbe.Stop()
+		}
+		// balance_floor_guard 的恢复判定依赖它自己的周期 sweep，先于
+		// BalanceQuotaProbe 停止可避免停机窗口内的最后一批拉取无人复核。
+		if balanceFloorGuard != nil {
+			balanceFloorGuard.Stop()
 		}
 		if balanceQuotaProbe != nil {
 			balanceQuotaProbe.Stop()

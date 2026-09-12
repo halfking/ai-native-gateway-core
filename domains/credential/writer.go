@@ -253,6 +253,9 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 			    state_updated_at        = now()
 			WHERE id = $3
 			  AND lifecycle_status = 'active'
+			  -- 2026-09-13: 不夺走 balance_floor guard 摘出的行（reason 守卫
+			  -- 保持所有权，避免 BalanceQuotaProbe 豁免失效）。
+			  AND COALESCE(state_reason_code, '') <> 'balance_floor'
 		`, string(failure.Kind), detail, credentialID)
 		return err
 	case errorsx.KindQuota, errorsx.KindQuotaBalance:
@@ -268,6 +271,9 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 			WHERE id = $3
 			  AND lifecycle_status = 'active'
 			  AND quota_state NOT IN ('permanently_exhausted')
+			  -- 2026-09-13: floor 摘出的行本就是 balance_exhausted，重打
+			  -- reason 会丢所有权（guard 恢复与 probe 豁免都依赖它）。
+			  AND COALESCE(state_reason_code, '') <> 'balance_floor'
 		`, string(failure.Kind), detail, credentialID)
 		return err
 	case errorsx.KindAuthRevoked:
