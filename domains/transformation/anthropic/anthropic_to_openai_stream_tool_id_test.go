@@ -152,9 +152,18 @@ data: {"type":"message_stop"}
 	t.Logf("Successfully verified %d tool_call chunks, all with ID 'toolu_xyz789'", toolCallChunks)
 }
 
-// TestAnthropicToOpenAIStream_ToolCallIDFallback tests the fallback ID generation
-// when a tool call arrives without a cached ID (edge case).
-func TestAnthropicToOpenAIStream_ToolCallIDFallback(t *testing.T) {
+// TestAnthropicToOpenAIStream_OrphanInputJSONDeltaDropped pins the R16
+// (2026-09-12) contract for malformed upstream streams: input_json_delta
+// fragments that arrive on a block that never opened as tool_use (here: a
+// text block) are DROPPED, not synthesized into a tool call.
+//
+// History: this stream used to synthesize a tool call with a generated
+// call_<requestID>_<index> id — but always with an EMPTY function.name,
+// which is a hard OpenAI SDK error on the client ("unavailable tool ''").
+// The synthesis branch is gone; orphan fragments are dropped with a warn
+// and an orphan_input_json_delta_dropped quality flag, and a stream with
+// nothing else on the wire classifies as empty (failover preserved).
+func TestAnthropicToOpenAIStream_OrphanInputJSONDeltaDropped(t *testing.T) {
 	// Edge case: input_json arrives WITHOUT a preceding content_block_start(tool_use)
 	// This shouldn't happen in normal Anthropic streams, but we have fallback logic
 	anthropicSSE := `event: message_start
@@ -197,70 +206,17 @@ data: {"type":"message_stop"}
 		nil,
 	)
 
-	if outcome.Interrupted {
-		t.Fatalf("stream was interrupted: %s", outcome.Reason)
+	if outcome.Interrupted && outcome.Reason != "anthropic_empty_response" {
+		t.Fatalf("malformed orphan-delta stream must end as empty classification (failover), got reason=%s", outcome.Reason)
 	}
 
 	body := w.Body.String()
 
-	// If tool_calls appear, they should have a synthetic fallback ID
+	// No tool call may be synthesized from an orphan input_json_delta.
 	if strings.Contains(body, `"tool_calls"`) {
-		// Parse and verify the fallback ID
-		lines := strings.Split(body, "\n")
-		for _, line := range lines {
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" {
-				continue
-			}
-
-			var chunk map[string]interface{}
-			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				continue
-			}
-
-			choices, ok := chunk["choices"].([]interface{})
-			if !ok || len(choices) == 0 {
-				continue
-			}
-
-			choice := choices[0].(map[string]interface{})
-			delta, ok := choice["delta"].(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			toolCallsRaw, ok := delta["tool_calls"]
-			if !ok {
-				continue
-			}
-
-			toolCallsJSON, _ := json.Marshal(toolCallsRaw)
-			var toolCalls []map[string]interface{}
-			if err := json.Unmarshal(toolCallsJSON, &toolCalls); err != nil {
-				continue
-			}
-
-			for _, tc := range toolCalls {
-				id, hasID := tc["id"]
-				if !hasID {
-					t.Errorf("Tool call missing 'id' field even with fallback: %+v", tc)
-				} else {
-					idStr, isString := id.(string)
-					if !isString {
-						t.Errorf("Tool call 'id' is not a string: %v (type %T)", id, id)
-					} else if idStr == "" {
-						t.Errorf("Tool call 'id' is empty string")
-					} else {
-						// Fallback ID should match pattern: call_<requestID>_<index>
-						if !strings.HasPrefix(idStr, "call_fallback-id-test_") {
-							t.Logf("Fallback ID generated: %s", idStr)
-						}
-					}
-				}
-			}
-		}
+		t.Fatalf("orphan input_json_delta must not surface as tool calls; body:\n%s", body)
+	}
+	if strings.Contains(body, `"name":""`) {
+		t.Fatalf("empty-name tool call must never be emitted; body:\n%s", body)
 	}
 }
