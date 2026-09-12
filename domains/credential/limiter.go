@@ -769,9 +769,13 @@ func (l *Limiter) recoveryStep() {
 	}
 	for key, s := range l.creds {
 		target := l.credentialLimit
-		// A hot-updated (admin-lowered) credential recovers only up to the
-		// hot value — never back past it toward the process-wide default.
-		if hot, ok := l.credHotLimits[key]; ok && hot < target {
+		// R16 (2026-09-12): hot-updated (admin-set) limits are sticky in BOTH
+		// directions. The old `hot < target` guard protected only admin
+		// LOWERINGS — an admin raising capacity to e.g. 100 was silently
+		// dragged back to the process-wide default (50) by the first
+		// post-shrink recovery step. With a hot record present, it is the
+		// recovery ceiling regardless of direction.
+		if hot, ok := l.credHotLimits[key]; ok {
 			target = hot
 		}
 		s.RecoverStep(target)
