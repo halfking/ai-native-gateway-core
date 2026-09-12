@@ -6,6 +6,7 @@ import { setApiKey, setJwtToken, setUserInfo } from '../store'
 import { useLoginModal } from '../composables/useLoginModal'
 import { detectTheme, logoSrc } from '../theme'
 import { SITE_LOGO_SIZE, SITE_TITLE } from '../config/brand'
+import AppModal from './ui/AppModal.vue'
 
 const brandLogo = ref(logoSrc())
 let logoObserver: MutationObserver | null = null
@@ -88,88 +89,90 @@ async function handleLogin() {
     loading.value = false
   }
 }
+// 2026-09-13: 壳层迁移到 ui/AppModal（方案 §4.5.7）。
+// ESC/滚动锁定/焦点圈闭由 AppModal 提供；AppModal 内部关闭（ESC/遮罩）
+// 发出 update:modelValue=false，在此统一走 close() 补做 closeLogin()。
+function onModelUpdate(v: boolean) {
+  if (!v) close()
+}
 </script>
 
 <template>
-  <Teleport to="body">
-    <div
-      v-if="modelValue"
-      class="modal-overlay"
-      role="presentation"
-      @click.self="close"
-    >
-      <div
-        class="login-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="login-modal-title"
-        @click.stop
-      >
-        <div class="login-modal__header">
-          <div class="login-modal__brand">
-            <img
-              :src="brandLogo"
-              :width="SITE_LOGO_SIZE"
-              :height="SITE_LOGO_SIZE"
-              alt="开轩启圭"
-              class="login-modal__brand-img"
-            />
-            <div>
-              <h2 id="login-modal-title">登录控制面</h2>
-              <p class="login-modal__subtitle">{{ SITE_TITLE }}</p>
-              <p class="login-modal__hint">首次登录或管理员重置密码后，需要先修改密码才能继续使用。</p>
-            </div>
-          </div>
-          <button type="button" class="btn btn-ghost btn-sm login-modal__close" aria-label="关闭" @click="close">
-            ✕
-          </button>
+  <AppModal
+    :model-value="modelValue"
+    size="sm"
+    panel-class="login-modal"
+    :closable="false"
+    @update:model-value="onModelUpdate"
+  >
+    <div class="login-modal__header">
+      <div class="login-modal__brand">
+        <img
+          :src="brandLogo"
+          :width="SITE_LOGO_SIZE"
+          :height="SITE_LOGO_SIZE"
+          alt="开轩启圭"
+          class="login-modal__brand-img"
+        />
+        <div>
+          <h2 id="login-modal-title">登录控制面</h2>
+          <p class="login-modal__subtitle">{{ SITE_TITLE }}</p>
+          <p class="login-modal__hint">首次登录或管理员重置密码后，需要先修改密码才能继续使用。</p>
         </div>
-
-        <div v-if="error" class="alert alert-danger">{{ error }}</div>
-
-        <form @submit.prevent="handleLogin">
-          <div class="form-group">
-            <label for="login-username">用户名</label>
-            <input
-              id="login-username"
-              v-model="username"
-              type="text"
-              placeholder="admin"
-              autocomplete="username"
-            />
-          </div>
-          <div class="form-group">
-            <label for="login-password">密码</label>
-            <input
-              id="login-password"
-              v-model="password"
-              type="password"
-              placeholder="••••••••"
-              autocomplete="current-password"
-            />
-          </div>
-          <div class="login-modal__actions">
-            <button type="button" class="btn btn-ghost" @click="close">取消</button>
-            <button class="btn btn-primary" type="submit" :disabled="loading">
-              {{ loading ? '登录中…' : '登录' }}
-            </button>
-          </div>
-        </form>
       </div>
+      <button type="button" class="btn btn-ghost btn-sm login-modal__close" aria-label="关闭" @click="close">
+        ✕
+      </button>
     </div>
-  </Teleport>
+
+    <div v-if="error" class="alert alert-danger">{{ error }}</div>
+
+    <form @submit.prevent="handleLogin">
+      <div class="form-group">
+        <label for="login-username">用户名</label>
+        <input
+          id="login-username"
+          v-model="username"
+          type="text"
+          placeholder="admin"
+          autocomplete="username"
+        />
+      </div>
+      <div class="form-group">
+        <label for="login-password">密码</label>
+        <input
+          id="login-password"
+          v-model="password"
+          type="password"
+          placeholder="••••••••"
+          autocomplete="current-password"
+        />
+      </div>
+      <div class="login-modal__actions">
+        <button type="button" class="btn btn-ghost" @click="close">取消</button>
+        <button class="btn btn-primary" type="submit" :disabled="loading">
+          {{ loading ? '登录中…' : '登录' }}
+        </button>
+      </div>
+    </form>
+  </AppModal>
 </template>
 
-<style scoped>
-.login-modal {
+<!-- .login-modal 基础皮肤作用于 AppModal 渲染的面板元素（不在本组件模板内），
+     必须全局样式；min-width:0 抵消全局 .modal 的 360px 下限，保持旧版窄屏收缩行为。 -->
+<style>
+.modal.login-modal {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 24px;
   width: min(400px, calc(100vw - 32px));
+  min-width: 0;
   box-shadow: 0 16px 48px var(--overlay-strong);
 }
+</style>
 
+<style scoped>
 .login-modal__header {
   display: flex;
   align-items: flex-start;
