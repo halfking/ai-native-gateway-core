@@ -58,3 +58,24 @@ chat 层（`runEmptyStreamGate` + early_empty）、Q3/Q4（`IsAnthropicStreamEmp
 
 - 方案 36 §7（问题留档）、VM `~/backup-ai-gateway-20260912-051238/`（变更前配置备份）。
 - codex 0.45.0 + chat wire 锁定本版不变。
+
+## 245 部署与验证记录（2026-09-13）
+
+部署：`scripts/deploy-245.sh --no-frontend`，最终 **build_seq 2092 / commit 696bc69d**（含修复提交 b514ec374 + 4b7fb6bfd），healthz ready=true。
+
+**配置调优（代码之外）**：245 `.env` 追加 `LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_BASE_SECONDS=4` / `RETRY_MAX_SECONDS=16`（原默认 30s——上游流中打嗝时客户端只能跨 30s+ backoff 干等 keep-alive 直至超时，即"56 字节 keep-alive"体验的直接来源）。变更前 `.env` 已备份至 VM `.env.bak-survival-backoff-*`。
+
+**E2E 复现验证（公网 llmgo.kxpms.cn）**：
+
+| 用例 | 结果 |
+|---|---|
+| `/v1/responses` 流式（gpt-6-astra）×4 | 4/4 完整终止序列：`response.created → deltas → output_text.done → output_item.done → response.completed`（修复前 0/2，deltas 后裸断流） |
+| `/v1/messages` 全套 claude 特征（stream+tools+cache_control+metadata+beta 头）×5 | 5/5 完整信封：`message_start → ping → content_block(tool_use) → message_delta → message_stop`，2.5-2.8s，无 keep-alive 挂死（修复前间歇 75s 超时只剩 keep-alive） |
+| `/v1/chat/completions` 回归冒烟 ×3 | 3/3 200 + content |
+
+期间观测到 apiclaude.cc（provider 587）间歇性流中 `event: error`（resumable，透明重试）——上游侧抖动，网关按设计 failover；配合 4s backoff 客户端不再感知。
+
+## 遗留观察项
+
+- native Responses 透传（`StreamNativeResponsesSSE`）不合成终止事件——上游截断时客户端无 `response.completed`，保持透传语义另行观察。
+- codex 0.45.0 + chat wire 锁定不变；解除锁定由 owner 在 codex ≥0.80 上复验后决定。
