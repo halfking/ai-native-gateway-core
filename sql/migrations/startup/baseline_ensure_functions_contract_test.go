@@ -83,14 +83,14 @@ var baselineEnsureFunctionsPinned = append(append([]string{}, migration694Ensure
 //     bg/partition_manager.go passes as a Shanghai calendar-day literal
 //     (531ea1a86), so the live path is pinned at the call site; their
 //     DEFAULT CURRENT_DATE / DEFAULT NULL parameters remain a UTC-session trap
-//     queued for the advisory-lock migration (R15 §5, next number ≥701).
+//     queued for the advisory-lock migration (R15 §5, next number ≥702).
 //   - ensure_handoff_logs_partition is the authoritative NOOP body (R15 §6 #4);
 //     the plural ensure_handoff_logs_partitions (columnar, unpinned) is not
 //     wired to any active caller and is deliberately NOT in the baseline.
 //
 // The contract asserts presence + three-way body equality so a future baseline
 // regeneration cannot silently drop or diverge them; upgrading these to pinned
-// bodies is a deliberate migration (≥701), not a baseline edit.
+// bodies is a deliberate migration (≥702), not a baseline edit.
 var baselineEnsureFunctionsUnpinned = []string{
 	"ensure_cache_metrics_partition",
 	"ensure_dashboard_events_partition",
@@ -171,7 +171,7 @@ func TestBaselineEnsureFunctionsThreeWayConsistency(t *testing.T) {
 			}
 		}
 		// The R16 unpinned set must stay exactly that — unpinned. If a future
-		// migration (≥701) pins them, move them to baselineEnsureFunctionsPinned
+		// migration (≥702) pins them, move them to baselineEnsureFunctionsPinned
 		// together with the migration body, not by relaxing this assertion.
 		for _, fn := range baselineEnsureFunctionsUnpinned {
 			body, ok := extracted[label][fn]
