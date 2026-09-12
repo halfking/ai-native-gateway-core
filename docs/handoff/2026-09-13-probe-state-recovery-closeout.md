@@ -104,7 +104,25 @@ RestoreOnSuccess 与 forceEnableCredentialSQL 增加 `probe_consecutive_failures
 
 观察指标：`llmgw_routing_credential_recovery_total{sql_kind="availability_recover"}`、`credential probe v2: cycle complete` 日志的 `skipped_recent_success`、`recovering sweeper: drained due recovering probes` 日志、journald 中 `ProbeNow failed` 频度。
 
-## 8. 部署说明（未执行，留待窗口）
+## 8. 审计轮（2026-09-13 第二轮，F1–F5）
+
+实施完成后按用户要求做了一轮完整自审计，逐条复核 P1–P7 的行为闭环，发现并修复 5 个问题（均已提交至同一分支）：
+
+| # | 问题 | 修复 |
+|---|---|---|
+| F1 | **cycler 不看退避阶梯**：P2 的 ladder 只挡"恢复 tick 翻 ready"，cycleAll 每小时仍探测 auth_failed 凭据——死 key 实际 24 次/天而非宣称的衰减 | cycleAll WHERE 增加 `(availability_recover_at IS NULL OR <= now())`——未来 recover_at 的行（auth 阶梯/rate_limited/unreachable）跳过，到期后由 tick 释放、下一轮 cycler 复测 |
+| F2 | **快速复探击穿阶梯**：每次 auth_failed 还会 SubmitFastProbe（5 分钟后再探一次），阶梯形同虚设 | auth_failed 不再触发 fast reprobe；仅 unreachable（短暂瞬态）保留 |
+| F3 | **pre-exhausted 误纳 auto-disabled 行**：replace_all 把放宽打到两条 SELECT；pre-boundary 行的探测结果会被 writeHealth 的 disabled 准入（要求 recover_at 已到期）拒写，纯浪费供应商请求 | probePreExhausted 回退为仅 lifecycle='active'；post-expiry 保留放宽 |
+| F4 | **auto-disabled 复验再悬空**：复验集吃 403 后行变 auth_failed，掉出 suspended 复验集，且 availSQL 释放需 lifecycle='active'——再次无通道 | balance 复验集新增分支：auto-disabled + quota ok + 非 ready + recover_at 已到期，统一走慢速复验 |
+| F5 | **sweeper 共享预算会掐断在途探测**：2 分钟 tick 预算到期时 cancel 正在执行的 TriggerManual，把可能健康的模型误记为共识失败 | SELECT 用 30s 独立 ctx；每个探测独立 90s 超时（recoveringSweepProbeTimeout）；5 分钟 tick 预算只在探测间隙检查 |
+
+回归锁定：`TestCycleAllRespectsAuthBackoffLadder`（F1 源码形状 + F2 禁止 auth_failed 触发 fast reprobe）。
+
+### 审计轮验证
+- 252 只读模拟：F1 闸门使当前 cycler 目标集 23 行、0 行被跳过（ladder 行由新代码部署后自产自耗）；F4 查询命中集与修复前一致（15 行）且覆盖未来 auth_failed 悬空路径。
+- `go test ./bg/`（本地 stub 副本）全绿（除预存 Windows symlink 项）；linux/arm64 交叉编译通过。
+
+## 9. 部署说明（未执行，留待窗口）
 
 - 顺序：先 245（全部 bg worker 所在）后 154（traffic-only，热路径 P6/P7 生效）。走既有 deploy-245 / deploy-seamless 流程 bump seq。
 - 回滚：改动均为 SQL 字符串/Go 逻辑，无 schema 变更，直接回滚二进制即可。

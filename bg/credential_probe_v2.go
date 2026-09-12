@@ -423,6 +423,15 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		  AND COALESCE(p.enabled, FALSE) = TRUE
 		  AND COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
 		  AND c.availability_state <> 'suspended'
+		  -- 2026-09-13 audit round F1: a row with a FUTURE
+		  -- availability_recover_at is deliberately parked — auth ladder
+		  -- (P2, 15m→24h), rate_limited (60s), unreachable (5min). Probing
+		  -- it again now would defeat the ladder: the recovery tick
+		  -- releases the row exactly when the backoff expires, and the next
+		  -- hourly cycle then re-measures it. Without this gate a
+		  -- permanently-revoked key was still hit once per hour (plus the
+		  -- fast reprobe) regardless of the ladder.
+		  AND (c.availability_recover_at IS NULL OR c.availability_recover_at <= now())
 		  AND COALESCE(c.default_probe_model, '') <> ''
 		ORDER BY c.id
 	`)
@@ -562,10 +571,16 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 			}
 		}
 
-		// P2: fast reprobe after auth_failed or unreachable. Route through the
+		// P2: fast reprobe after unreachable. Route through the
 		// deduplicating submitter so cycle scans share the same pending mark and
 		// lifecycle handling as quota-triggered probes.
-		if pr.AvailabilityState == "auth_failed" || pr.AvailabilityState == "unreachable" {
+		//
+		// 2026-09-13 audit round F2: auth_failed is deliberately NOT fast-
+		// reprobed. A 401/403 now carries the exponential ladder in
+		// availability_recover_at (15m→24h); a follow-up probe 5 minutes
+		// later would burn a vendor request and defeat the decay. unreachable
+		// (5min ladder, plausibly transient) keeps the fast reprobe.
+		if pr.AvailabilityState == "unreachable" {
 			c.SubmitFastProbe(s.ID)
 		}
 

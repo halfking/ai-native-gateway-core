@@ -190,6 +190,15 @@ const recoveringSweeperInterval = 30 * time.Minute
 // 480 requests/day fleet-wide even if every recovering row is stuck.
 const recoveringSweepBatch = 10
 
+// recoveringSweepTickBudget bounds one tick BETWEEN probes (never mid-probe —
+// cancelling a probe mid-flight would record a false consensus failure).
+const recoveringSweeperTickBudget = 5 * time.Minute
+
+// recoveringSweepProbeTimeout is the per-probe ceiling for one TriggerManual
+// consensus verify. probeModel applies its own request timeouts; this is the
+// outer guard so a wedged upstream cannot pin the sweeper goroutine.
+const recoveringSweepProbeTimeout = 90 * time.Second
+
 // recoveringSweeperLoop periodically drains model_probe_state rows stuck in
 // state='recovering' whose next_retry_at has elapsed (probe-recovery
 // closeout P4, 2026-09-13). Only runs in new probe mode (started from
@@ -226,15 +235,22 @@ func (r *ModelProbeRunner) recoveringSweeperLoop(ctx context.Context) {
 // credentials keep their rows parked until the credential itself recovers
 // (the model probe never overrides a credential-level verdict).
 func (r *ModelProbeRunner) recoveringSweepTick(ctx context.Context) {
-	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
+	// 2026-09-13 audit round F5: the probe phase must NOT share one short
+	// budget context — a near-expiry ctx would cancel TriggerManual
+	// mid-request and record a FALSE failure into the consensus for a
+	// possibly-healthy model. The SELECT gets a bounded ctx; each probe
+	// gets its own full timeout, and the tick-level budget is enforced
+	// only BETWEEN probes.
+	selectCtx, cancelSelect := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelSelect()
+	deadline := time.Now().Add(recoveringSweeperTickBudget)
 
 	type recoveringRow struct {
 		CredID   int
 		RawModel string
 	}
 	var ids []recoveringRow
-	rows, err := r.db.Query(timeoutCtx, `
+	rows, err := r.db.Query(selectCtx, `
 		SELECT mps.credential_id, mps.raw_model_name
 		FROM model_probe_state mps
 		JOIN credentials c ON c.id = mps.credential_id
@@ -269,14 +285,24 @@ func (r *ModelProbeRunner) recoveringSweepTick(ctx context.Context) {
 
 	swept := 0
 	for _, id := range ids {
-		select {
-		case <-timeoutCtx.Done():
-			slog.Warn("recovering sweeper: tick budget exhausted",
+		if parentDone := ctx.Done(); parentDone != nil {
+			select {
+			case <-parentDone:
+				slog.Warn("recovering sweeper: parent cancelled",
+					"swept", swept, "remaining", len(ids)-swept)
+				return
+			default:
+			}
+		}
+		if !time.Now().Before(deadline) {
+			slog.Warn("recovering sweeper: tick budget exhausted between probes",
 				"swept", swept, "remaining", len(ids)-swept)
 			return
-		default:
 		}
-		if err := r.TriggerManual(timeoutCtx, id.CredID, id.RawModel); err != nil {
+		probeCtx, cancelProbe := context.WithTimeout(ctx, recoveringSweepProbeTimeout)
+		err := r.TriggerManual(probeCtx, id.CredID, id.RawModel)
+		cancelProbe()
+		if err != nil {
 			slog.Debug("recovering sweeper: manual trigger failed",
 				"credential_id", id.CredID, "raw_model", id.RawModel, "error", err)
 			continue
