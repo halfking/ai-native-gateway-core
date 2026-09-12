@@ -51,6 +51,14 @@
 - **发现 4（部署脚本粗糙边，留档）**：2090 部署时 8782 `/readyz` 60s 探针超时（全量 Go ensure 链启动慢于窗口）报 "active cutover failed"，随后自愈为健康 2090；2091 复现同形态并 VERIFY_PASS=1。属 deploy-lib 线的健康窗口设置问题，未在本轮修（跨线范围），已知症状：满迁移链的冷启动可能超 60s。
 - **修正后全量验证（终态 HEAD）**：`go build ./...` 净、`go vet ./...` 零输出、gofmt 本轮文件净、`go test ./db/ ./sql/migrations/... ./bg/ ./deploy/grafana/ ./deploy/prometheus/...` 全绿、live round-trip（真库）绿、installer 全套绿、通道 `bash -n` 过、通道复跑 696-700 全部 already-applied/幂等、双账本终态 696/697/698/699/700 齐、生产 252 复核维持 698-700 未应用 + 视图 112/raw=0（发布约束继续有效）。
 
+## 观察轮（2026-09-12 09:05–09:28，无生产窗口，按任务书 B 分派）
+
+- **上轮唯一「未验证」项关闭：本机 drift scanner 整点周期静默确认。** 容器 `llm-gateway-local-8782`（`2.5.4-7dfe0b54-20260912-2091`，08:25:13 +0800 启动，restarts=0）：启动即扫（08:25:34）干净，首个整点周期 09:25:34 已过（09:27:50 复核）——全容器日志 SQLSTATE 42703 / "does not exist" 命中 **0 条**，`fingerprint_drift` 仅启动注册 1 条 INFO。方法注记：首轮 grep 曾两处失真（` WARN ` 带空格永不匹配 JSON `"level":"WARN"`；裸 `42703` 会误中时间戳 `…242703928Z`/字节数 `1427031`），终判以修正后模式为准。
+- 本机活库只读复核（单事务）：canonical 视图 113 列 / raw=1 / fp=1；scanner 形状 SELECT 真实出数 50 行；schema_migrations 690–700 齐；sequences 标记 696/697/698/699/700 全在（07:09–08:44 时间戳与审计轮通道复跑吻合）；readyz 200。双账本收敛维持。
+- 并行线核查：fetch 后 origin/main（含全部分支）在 696–700 上最后动作仍为审计轮 7bd3bfe6d，指纹线/钉扎线无新动作，通道/账本一致性核对无触发点。
+- 生产 252 本轮未触碰（未复核 698–700 应用态，属 A 轮窗口范围）；「通道先 698/699/700 → 再上携带 83bf582dd 的二进制」顺序约束继续有效。
+- 运行噪音留档（与本项无关）：`session_cache: db load error` ×398 均为 "no rows in result set" 缓存未命中；启动期两条既有配置提示（auth fail-open / ops token 前缀）。无新增迁移相关告警。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
