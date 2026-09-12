@@ -470,3 +470,17 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 | 696 | `696_request_logs_view_system_fingerprint.sql` | `05fff36e2030d87d5707c464cd57464657cf7cbb21ee2def9fc655e92045e3b3` | applied+verified |
 | 697 | `697_request_logs_promote_system_fingerprint.sql` | `3e9ccbf539eb541740ed55c0525a78001c5c1594d44823cb4fd1635a5bbc260c` | applied+verified |
 
+
+## 2026-09-12T08:30:00Z — startup sequence apply (2ad8d64ad / a67433a4f)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 698 | `698_promote_hot_partition_timezone_pin.sql` | `2b4e549178d14dc19ee0df82e95d58809becc087eed30eebca93be1c2087885c` | applied+verified |
+| 699 | `699_supplier_errors_ensure_timezone_pin.sql` | `da371148fc0f01bc91a41143a636f78444a218c16062674904dbcab7589be816` | applied+verified |
+| 700 | `700_request_logs_view_raw_model_name.sql` | `30885bf019fe4ce509239f0bf97b7b1d5119e68c2a5fb604133ac35c90703b94` | applied+verified |
+
+补录说明（R16 审计，2026-09-12）：698=9 个 promote_hot_to_partition 函数体
+Asia/Shanghai 钉扎（objects/ 688 谱系机械变换）；699=ensure_supplier_errors_
+partition 钉扎（694 清单漏了 deploy 轨 V371 出身的它）；700=request_logs 视图
+补 raw_model_name 列（drift scanner 42703 根修）。三者均已随本地 deploy
+2089-2091 应用；699/700 的下机通道（down/对账）按迁移文件内注释执行。

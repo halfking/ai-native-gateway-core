@@ -65,6 +65,39 @@ func extractEnsureFunctions(t *testing.T, sql string) map[string]string {
 	return fns
 }
 
+// baselineEnsureFunctionsPinned is the full Shanghai-pinned ensure surface the
+// three baselines must agree on: the 694 family plus 699's
+// ensure_supplier_errors_partition (the deploy-track V371 function that 694's
+// sweep missed; pinned by migration 699). R16 (2026-09-12) added the 699 entry
+// — it existed in all three baselines but was outside this contract, i.e. the
+// exact regression surface R15's contract was built to close.
+var baselineEnsureFunctionsPinned = append(append([]string{}, migration694EnsureFunctions...),
+	"ensure_supplier_errors_partition")
+
+// baselineEnsureFunctionsUnpinned are ensure functions present in all three
+// baselines (R16, 2026-09-12: added from the authoritative-dump bodies — they
+// were defined only by out-of-band migration 475 / evolved in-place, so fresh
+// installs without them hit 42883 on every partition-manager tick) whose
+// bodies are NOT Shanghai-pinned:
+//   - the three date-signature functions take an explicit ::date argument that
+//     bg/partition_manager.go passes as a Shanghai calendar-day literal
+//     (531ea1a86), so the live path is pinned at the call site; their
+//     DEFAULT CURRENT_DATE / DEFAULT NULL parameters remain a UTC-session trap
+//     queued for the advisory-lock migration (R15 §5, next number ≥701).
+//   - ensure_handoff_logs_partition is the authoritative NOOP body (R15 §6 #4);
+//     the plural ensure_handoff_logs_partitions (columnar, unpinned) is not
+//     wired to any active caller and is deliberately NOT in the baseline.
+//
+// The contract asserts presence + three-way body equality so a future baseline
+// regeneration cannot silently drop or diverge them; upgrading these to pinned
+// bodies is a deliberate migration (≥701), not a baseline edit.
+var baselineEnsureFunctionsUnpinned = []string{
+	"ensure_cache_metrics_partition",
+	"ensure_dashboard_events_partition",
+	"ensure_session_module_executions_partition",
+	"ensure_handoff_logs_partition",
+}
+
 // TestBaselineEnsureFunctionsThreeWayConsistency asserts that the three
 // 01-schema.sql baselines define the same set of ensure_* partition functions
 // with identical (whitespace-normalized) bodies, that every 694 function is
@@ -86,7 +119,7 @@ func TestBaselineEnsureFunctionsThreeWayConsistency(t *testing.T) {
 	base := extracted["canonical"]
 	for _, label := range labels {
 		other := extracted[label]
-		for _, fn := range migration694EnsureFunctions {
+		for _, fn := range baselineEnsureFunctionsPinned {
 			if _, ok := base[fn]; !ok {
 				continue // reported below
 			}
@@ -95,14 +128,14 @@ func TestBaselineEnsureFunctionsThreeWayConsistency(t *testing.T) {
 			}
 		}
 	}
-	for _, fn := range migration694EnsureFunctions {
+	for _, fn := range baselineEnsureFunctionsPinned {
 		if _, ok := base[fn]; !ok {
 			t.Errorf("canonical baseline missing ensure function %s", fn)
 		}
 	}
 
 	// 2. Identical normalized bodies for every function all three define.
-	for _, fn := range migration694EnsureFunctions {
+	for _, fn := range append(append([]string{}, baselineEnsureFunctionsPinned...), baselineEnsureFunctionsUnpinned...) {
 		ref, ok := base[fn]
 		if !ok {
 			continue
@@ -118,13 +151,13 @@ func TestBaselineEnsureFunctionsThreeWayConsistency(t *testing.T) {
 		}
 	}
 
-	// 3. 694 contract holds inside each baseline: Shanghai pin as the first
+	// 3. 694/699 contract holds inside each baseline: Shanghai pin as the first
 	// body statement (the pre-694 DECLARE initializers evaluated before any
 	// in-body SET LOCAL could take effect — same trap the 694 migration fixed).
 	// Normalization keeps punctuation attached to tokens, so the pin reads
 	// "BEGIN SET LOCAL TIME ZONE 'Asia/Shanghai';".
 	for _, label := range labels {
-		for _, fn := range migration694EnsureFunctions {
+		for _, fn := range baselineEnsureFunctionsPinned {
 			body, ok := extracted[label][fn]
 			if !ok {
 				continue
@@ -135,6 +168,19 @@ func TestBaselineEnsureFunctionsThreeWayConsistency(t *testing.T) {
 			}
 			if strings.Index(body, "date_trunc(") < strings.Index(body, "SET LOCAL") {
 				t.Errorf("%s baseline %s: calendar derivation evaluated before the timezone pin", label, fn)
+			}
+		}
+		// The R16 unpinned set must stay exactly that — unpinned. If a future
+		// migration (≥701) pins them, move them to baselineEnsureFunctionsPinned
+		// together with the migration body, not by relaxing this assertion.
+		for _, fn := range baselineEnsureFunctionsUnpinned {
+			body, ok := extracted[label][fn]
+			if !ok {
+				t.Errorf("%s baseline missing (unpinned) ensure function %s", label, fn)
+				continue
+			}
+			if strings.Contains(body, "SET LOCAL TIME ZONE") {
+				t.Errorf("%s baseline %s: pinned body without contract-list migration — move it to baselineEnsureFunctionsPinned", label, fn)
 			}
 		}
 	}

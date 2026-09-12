@@ -24,7 +24,14 @@ done
 # window here: the sequence is intentionally append-only and has grown beyond
 # the original 40-line contract fixture.
 sequence=$(awk '/^files=\(/{inside=1} inside{print} inside && /^\)/{exit}' "$SCRIPT")
-for required in 655 560 572 606 563 564 644 645 650 651 652 653 654 656 659 660 661 662 663 664 V371; do
+# R16 (2026-09-12): the 693/699-class channel gaps happened because entries
+# newer than V371 were outside this self-test — required list now runs to the
+# current top of the startup track. 665 and 687-692 are intentional sequence
+# gaps (out-of-band ledger entries / installer-only channel; documented in the
+# sequence comments), so they stay excluded here by design.
+for required in 655 560 572 606 563 564 644 645 650 651 652 653 654 656 659 660 661 662 663 664 V371 \
+                666 667 668 669 670 671 672 673 674 675 676 677 678 679 680 681 682 683 684 685 \
+                686 693 694 695 696 697 698 699 700; do
   printf '%s\n' "$sequence" | grep -q "${required}_" || {
     printf 'missing sequence entry: %s\n' "$required" >&2
     exit 1
