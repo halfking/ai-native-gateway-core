@@ -40,6 +40,7 @@
 
 6. **运维观察项（上线后）**
    观察：`llmgw_node_probe_necessity_skip_total` 增速、自检 tab "skipped_not_necessary" 磁贴占比、以及 `llmgw_node_probe_necessity_mirror_delete_retry_total`（瞬时失败吸收量）与 `llmgw_node_probe_necessity_mirror_delete_failed_total`（**持续失败告警源**）。若 failed_total 持续增长（说明某 (cred,model) 的镜像 DELETE 长期不收敛、磁贴仍按 pump 周期翻动），按原方案升级：对刚被跳过的 (credential_id, raw_model) 引入短 TTL 抑制（pump 侧或闸门侧均可，抑制窗口必须短于真实故障的重探测需求）。若 skip 率异常高，优先排查 Redis 键 schema（legacy/k2/dual）与 tenant 归属是否一致。**抓取命令与判读规则见"本轮记录（第六轮）"的观测 runbook。第八轮已补 `NodeProbeNecessityMirrorDeleteFailedHigh` 告警与 `selfcheck-necessity-dashboard.json` 面板（随仓库交付，运维按 deploy/prometheus/README 的 provisioning 流程加载后，failed_total 持续增长会自动告警，不再依赖人工抓取）。**
+   **【第二十六轮预检状态（2026-09-12，ssh 只读探测）】数据门未开：245 侧运维接入未执行（targets 仍旧单目标、无 Necessity 规则、necessity series 空）；三个接入前置已实测闭环（两机 key 不同值→必须拆双 job、154 单实例→只配 a 槽位、两机网关二进制已含 gate 指标）——接入材料已按实测修正为"照做即用"（NATIVE-245-DEPLOY.md 接入节 + prometheus.yml 双 job 模板），验收判据用 `mirror_delete_failed_total` 0 值系列（skip_total 为懒创建系列，首次 skip 前不存在）。判读仍按第六轮 runbook + instance 分节点口径，等接入后的首批数据。**
 
 7. **工作区遗留脏文件（非本特性，未处置，需原作者确认）**
    - `D docs/02-resources/research/pricing/scripts/vendor_pricing_table.py`
@@ -350,63 +351,82 @@
 - **遗留风险**：①245 侧接入是运维手工步骤，未执行前告警/面板对双机均无数据——本轮交付的是"接入即可用"的全部仓库侧材料；②154 可达性与 key 同值性两个前置未验证；③Grafana 落点未定，面板生产可用性待定（Prometheus UI/`api/v1` 判读不受影响）；④若运维直接启用模板而跳过 instance 钉定，`sum by (instance)` 将回落 host:port 形态（轮换后断系列）——模板与 NATIVE 文档均已写明钉定要求；⑤既往风险（TTL 抑制/显示侧治本/批量 SQL/脏文件门控）不变。
 - **补注（同轮推送窗口内的 main 前进与 bg 第六度移动，已吸收）**：round-25 记录提交（7124fcf1f）推送时 origin/main 已前进七提交至 055cecc78（694 rollback replace-safe、695 installer 同步、logging frameIndex、**65782814 bg candidate_failure_logs 分区预构建**、modelname alias 顺序、24h 审计文档、merge）——rebase 干净后以 **17de96f12** ff 合入 main 并推送。增量定性：外部 bg 变更仅 `bg/partition_manager.go`(+13)/`_test.go`(+4)，**necessity gate 文件与 deploy 契约面零涉及**（deploy 五文件 diff 全为本轮自身提交）。bg 基线随之重测：两 partition 文件先校验（副本 == d0d5b7e45 逐字节一致）后应用 origin/main；全量套件**首轮出现 2 例新增失败**（TestProbeServiceLeaseHeartbeatExtendsDuringRun / TestProbeServiceHeartbeatExtendsLeasePeriodically，报"heartbeat 0 次/never fired"，窗口仅 0.07/0.13s）——定向复跑 **3/3 过**、全量复跑 **17 例集合与 fails_r11 完全一致**，确证为并发编译/测试负载下的**时序偶发**而非 65782814 引入（两例 ticker goroutine 与测试窗口竞争）。**fails_r12.txt 留档为当前基线，fails_r11 作废（集合相同）**。守卫族 26 例绿；交叉编译 ./bg/（含新 partition 内容）通过。**新环境观察：两例租约心跳测试时序敏感，本机重负载下会抖——后续轮次遇失败集合失配，先定向复跑再定性，勿直接判回归。**主工作区脏文件清单再扩大（并行线活跃）：新增 M `admin/models.go`、M `bg/taxonomy_sync.go`、M `bg/taxonomy_sync_alias_upsert_live_test.go`、M `discovery/alias_sync.go`、M `scripts/govern-junk-canonical/plan_test.go`（系 modelname/alias 线在途改动）——维持严禁触碰。本轮最终复核点 = **17de96f12**（bg 已在该内容上重测留档）。
 
+## 本轮记录（2026-09-12 第二十六轮，上线观察轮第十九轮——无输入记录阻塞 + 245/154 只读预检三前置闭环 + 接入材料实测修正）
+
+- **任务选择说明**：按第二十五轮提示词分派——A 项数据门（245 侧运维接入后首批数据）未开，B/B' 均无运维反馈输入，进入"无输入则如实记录阻塞"分支。本轮新增实质交付：发现 245 的 Prometheus 可经 ssh 只读通道探测（`~/.ssh/config` 在役主机 245=8.136.114.245/154=47.97.111.154，2026-09-11 免密已验证），遂把二十五轮标注"未验证"的接入前置与 B' 401/000 分叉**提前实测闭环**，并把实测结论回写进接入材料（deploy/prometheus/ 3 文件 + grafana README）——运维接入路径上的所有假设清零，照做即用。
+- **预检结论（全部只读：curl GET / grep / ss / systemctl list-units / key 指纹；未在生产机执行任何写操作）**：
+  1. **A 项数据门未开（接入未执行，实测）**：245 Prometheus 在线（`/-/ready` OK），但 active targets 仅旧 `llm-gateway`（127.0.0.1:8781）+ 自抓两个；`api/v1/rules` 无任何 Necessity 规则；`api/v1/series` 查 necessity 指标为空。二十五轮遗留风险①由推测升级为实测确认。**阻塞维持：等运维执行 NATIVE 文档接入步骤。**
+  2. **两机 admin key 不同值（B' 401 分叉坐实）**：245 token 打 154:8781 返回 **401**（网络通，HTTP 鉴权层应答）；key 指纹比对（len/MD5 前 8 位，仅为比对入库，明文未入库）245 len=67/`8c828877` vs 154 len=51/`f7a0c4c2`。→ 模板从"单 job 4 目标 + 401 时再拆"改为**双 job 已验证形态**（`llm-gateway-prod-245`/`-154` 各挂 bearer_token_file；步骤 0 新增 154 token 文件 `admin_token_154` 创建法，含"勿把 key 明文写进仓库"约束）。
+  3. **154 单实例（B' 000 分叉坐实）**：仅 `llm-gateway-go-canary@8781.service` 运行（ss 实测 8782 无监听；245→154:8782=000）。→ 154 只配 `gateway-154-a`；154-b 目标注释保留，154 起蓝绿 b 槽位后再启用。
+  4. **skip_total 懒创建（二十五轮文档缺陷，本轮修正）**：两机 /metrics 均只有 failed/retry 两条 0 值系列、**无 skip 系列**。代码核对：`probeNecessitySkipTotal` 为带 `reason` 标签的 CounterVec 且无 sentinel 预热（`bg/probe_necessity.go:79` 定义；`bg/probe_service.go:319` 的 `WithLabelValues(reasonCode).Inc()` 是唯一子系列创建点）；failed/retry 为无标签 Counter 注册即以 0 暴露。根因：二十五轮把 credential 指标的"注册即预热 sentinel"先例错误套用到 skip_total（该措辞原样进了 NATIVE 验收节）。后果若不修：运维照文档验收"应见 4 条 skip 系列"必误报 B'（验收不过）。修正：**接入验收判据改用 `mirror_delete_failed_total` 0 值系列（3 instance），skip_total 懒创建语义写入 NATIVE 文档与 grafana README**（已接入但 skip 泳道为空 ≠ 故障）。
+  5. **LLMGatewayDown 依赖旧 job 名（审计新发现）**：`alerts.yml` 的 `up{job="llm-gateway"} == 0`（critical）——若运维按指引"接入后移除旧 job"该告警永久静默，若保留旧 job 则无钉定双系列回归。修正：expr 改 `up{job=~"llm-gateway.*"}`，NATIVE 步骤明确"退役旧 llm-gateway job"。
+  6. **生产二进制含 necessity gate（间接确认）**：两机 /metrics 均暴露 gate 指标 → 二进制在 11af45216 线之后（指标与闸门同文件交付，接线同批）。无应用版本指标，无法钉死确切版本；skip 系列为空与"接线生效且尚无 skip 事件"一致（亦与"探测队列无任务"一致），不构成告警信号。两机 failed/retry=0（进程启动以来无镜像删除翻动）——弱正面信号，不构成遗留项 6 收敛证据。
+- **改动文件（4，deploy 契约面 + 文档；零 Go/SQL/闸门路径改动）**：
+  1. `deploy/prometheus/prometheus.yml`：`llm-gateway-prod` 注释模板重写为实测双 job 形态——instance 钉定直接进模板主体（原钉定只存在于双层注释示例里，运维直接取消单层注释启用会落到无钉定 host:port 漂移形态=二十五轮风险④）、154 地址填实测值 `47.97.111.154`（公网，与 09-10 审计文档已含 245 公网 IP 同敏感级；若运维后续给内网路由则替换复测）、154-b 注释保留、双 bearer_token_file、旧 job 退役注记。**非注释行零变化**（`diff --strip-trailing-cr` 复验改前改后逐行一致）——compose 栈行为零变化。
+  2. `deploy/prometheus/NATIVE-245-DEPLOY.md`：接入节重写——预检结果块（上述 6 条）、步骤 0（154 token 文件）、双 job 抓取块、旧 job 退役步骤、验收判据改 failed_total、skip 懒创建说明、判读补充、"预检为只读探测"边界声明。
+  3. `deploy/prometheus/rules/alerts.yml`：LLMGatewayDown expr 通配化（见预检结论 5）。
+  4. `deploy/grafana/README.md`：双机口径段更新（模板新名 + 已接入后 skip 泳道为空的懒创建语义）；指标说明节 skip_total 补懒创建注记。
+- **验证记录（如实区分）**：**通过**——`go test -mod=vendor -count=1 ./deploy/grafana/ ./deploy/prometheus/rules/`（C: 副本 lgw-p2test，4 个变更文件同步后）= **10 例全 PASS（grafana 4 + rules 6，与二十五轮同口径）**；prometheus.yml 非注释行改前改后逐行一致。**环境受限**——promtool 本机不可用（245 上有 2.47.0，接入步骤已含 `promtool check config`）；Grafana 导入未实测（无实例）。**未验证**——运维侧实际接入（/opt/monitoring 编辑 + reload + 验收）仍待执行，本轮全部为只读预检 + 仓库侧材料修正；alerts.yml 修改在 245 侧的生效随接入步骤第 4 步（alerts.yml 同步）一并发生，接入前 245 现网 `up{job=~"llm-gateway.*"}` 与旧 expr 行为等价（现网只有 job llm-gateway）。
+- **bg/ 基线第七度移动（本会话窗口内，fa106fef2..5bcd87dae）**：`bg/partition_manager.go`(+22，分区时区修正，694/699 后续) + `bg/taxonomy_sync.go`(+9)/`bg/taxonomy_sync_alias_upsert_live_test.go`(+31)（alias 线）。**fails_r12.txt（17 例）源文本口径随之待重测**——本轮零 bg 改动、未跑 bg 套件，按二十五轮先例重测留给下次触碰 bg 的轮次（下轮提示词已标注）。deploy/{grafana,prometheus}/ 契约子树 fa106fef2..5bcd87dae 零变化（`deploy/sql/schemas/baseline` 变化不属契约双子判据），二十五轮 deploy 契约结论继续有效；本轮 own 改动后的契约结论见上方验证记录。
+- **复核点**：开工基准 = 5bcd87dae（origin/main 顶；并行会话已把主工作区 3 个未推提交经 84bae533d merge 收敛并推送——48fb5ba81 的"pending push"注记就此了结，主工作区脏文件清单回到 7 项原集）。本轮最终复核点 = 本轮提交。
+- **遗留风险**：①A 项数据门依旧未开，runbook 判读仍等运维接入后首批数据；②154 走公网地址抓取（/metrics 有 bearer 鉴权门但暴露公网）——运维给内网路由后替换地址复测；③key 指纹（MD5 前 8 位）仅为比对入库；④fails_r12 待重测（bg 第七度移动）；⑤既往风险（TTL 抑制未实施/显示侧治本预案就绪未实施/批量 SQL/脏文件门控）不变。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
-请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第十九轮）。
+请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第二十轮）。
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
 先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
-第六轮"（runbook 判读规则与孤儿行三层清理口径）、"本轮记录 第二十五轮"（运维指令
-已把观测目标钉定为 245/154 两台生产机：审计发现生产 Prometheus 常驻 245 原生栈
-（NATIVE-245-DEPLOY.md），原抓取面只含 127.0.0.1:8781——154 不在抓取面内 + 固定
-端口蓝绿轮换后落空 + skip 面板跨实例聚合三缺口，已修正：prometheus.yml 新增
-llm-gateway-prod 注释模板（双节点×双槽位 4 目标、instance 钉 gateway-<node>-<slot>）、
-NATIVE 文档新增"双机观测接入"节（接入步骤/预检 curl/验收命令/分节点判读/Grafana
-边界）、面板 expr 改 sum by (instance, reason) + 图例带 instance、新契约测试
-TestSelfcheckNecessityDashboardSkipPanelBreaksDownByInstance 先红后绿（grafana 4 例
-+ rules 6 例全 PASS）；第二十四轮提示词的 bg-diff 基准 c6676f304 有 merge 拓扑缺陷
-（早于 83bf582dd，会误报 696 变更）——**bg 增量复核一律以上一轮复核点为 diff 基准**，
-本轮最终复核点 = 17de96f12（补注：推送窗口内 main 七提交已被吸收，65782814 移动
-bg/ 的 partition_manager 两文件已重测）；fails_r12.txt（17 例，集合=fails_r11）为
-bg 回归判据；若见 TestProbeService*LeaseHeartbeat* 两例新增失败先定向复跑再定性
-（时序敏感，负载下会抖））、遗留任务第 6 项。
-背景：观测仓库侧工件全部就绪（模板 + NATIVE 接入节 + per-instance 面板 + 契约
-4+6），**A 项数据门 = 245 侧运维接入完成**（/opt/monitoring 编辑 + reload +
-api/v1 验收，步骤在 NATIVE 文档节）；拿到双机 /metrics 数据或告警触发记录后按
-第六轮 runbook + 第二十五轮 instance 分节点口径判读：平稳 → 关闭遗留项 6；
-failed_total 单 instance 持续增长 → 短 TTL 抑制（先失败测试，硬条件不变）。
-告警 NodeProbeNecessityMirrorDeleteFailedHigh 已在 alerts.yml（与 245 原生栈
-/opt/monitoring/prometheus/rules/ 同源同步后生效）；面板 selfcheck-necessity-
-dashboard.json 需 Grafana 实例（不在 245 原生栈内，落点待运维定夺，不影响
-Prometheus UI 判读）。孤儿行应急口径三层：绑定重建自然恢复 / POST
-/api/admin/probe/tasks 提交一次探测即删行（自 6490fd981 起同时留 success=false
-取证行，属预期信号非异常）/ 批量 SQL；显示侧治本预案（queryProbeNodeTasks WHERE
-并入绑定链 EXISTS）就绪未实施。
-注意：主工作区检出 main；工作区遗留脏文件（docs 下多处、scripts/deploy-lib、*.lnk）
-严禁 add/clean/恢复。继续用 git worktree 从 origin/main 拉独立分支实施（开工先验活：
-`git worktree list` + worktree 内 git status，元数据被清即 rm 重建；lgw-necessity-p2
-现检出 feat/necessity-two-node-observation，路径在 //Mac/Home 同源盘、Windows 侧可
-正常访问，可直接 `checkout -B` 到本轮分支）；Windows 验证用 C: 副本 lgw-p2test
+第六轮"（runbook 判读规则与孤儿行三层清理口径）、"本轮记录 第二十五轮"（观测目标
+钉定 245/154 双机 × 双槽位的来龙去脉）、"本轮记录 第二十六轮"（2026-09-12 ssh 只读
+预检：A 项数据门仍未开——245 运维接入未执行；三前置实测闭环：两机 admin key 不同值
+（401+指纹）→ 必须拆双 job llm-gateway-prod-245/-154 各挂 token 文件、154 单实例
+（8782 无监听）→ 只配 gateway-154-a、skip_total 为懒创建 CounterVec 无 sentinel →
+接入验收判据改用 mirror_delete_failed_total 0 值系列勿用 skip_total；
+LLMGatewayDown 已通配 up{job=~"llm-gateway.*"} 配合旧 job 退役；接入材料
+（NATIVE-245-DEPLOY.md 接入节 + prometheus.yml 双 job 注释模板 + grafana README）
+已按实测修正为照做即用）、遗留任务第 6 项。
+背景：本轮唯一实质等待 = 运维执行接入（/opt/monitoring 编辑 + 154 token 文件 +
+reload + alerts.yml 同步 + api/v1 验收，步骤全在 NATIVE 文档接入节）；拿到双机
+数据或告警触发记录后按第六轮 runbook + instance 分节点口径判读：平稳 → 关闭遗留
+项 6；mirror_delete_failed_total 单 instance 持续增长/告警 firing → 短 TTL 抑制
+（先失败测试，硬条件不变：不漏真实故障探测、证据错误 fail-open、manual/admin 绕过、
+lease 丢失不删新 owner 状态）。
+基线警示：**bg/ 已第七度移动（fa106fef2..5bcd87dae：partition_manager.go 分区时区
+修正 + taxonomy_sync 两文件 alias 线）——fails_r12.txt（17 例）源文本口径待重测，
+本轮未重测（零 bg 改动）。下轮如需跑 bg 套件（如 A 项触发 TTL 抑制实施），先在
+C: 副本重测当前 HEAD 基线并留档 fails_r13，不得直接拿 fails_r12 当判据。**
+TestProbeService*LeaseHeartbeat* 两例时序敏感（重负载下偶发新增失败）——失败集合
+失配先定向复跑再定性。
+注意：主工作区检出 main（并行线活跃，工作区遗留脏文件 7 项——docs 下多处、
+scripts/deploy-lib、*.lnk——严禁 add/clean/恢复）。继续用 git worktree 从
+origin/main 拉独立分支实施（开工先验活：`git worktree list` + worktree 内
+git status，元数据被清即 rm 重建；lgw-necessity-p2 现检出
+feat/necessity-r19-preflight，路径在 //Mac/Home 同源盘、Windows 侧可正常访问，
+可直接 `checkout -B` 到本轮分支）；Windows 验证用 C: 副本 lgw-p2test
 （C:\Users\xutaohuang\AppData\Local\lgw-p2test；仅 cp 变更文件；deploy 包验证需
-同步 deploy/grafana/ 的 README.md 与面板 JSON 及 deploy/prometheus/ 的 yml/文档；
-基线对照务必 CRLF 同口径——`git show <rev>:<file> | unix2dos`；副本上 `go build`
-交叉编译需 -buildvcs=false）。
+同步 deploy/prometheus/ 的 yml/文档与 deploy/grafana/ 的 README.md；基线对照务必
+CRLF 同口径——`git show <rev>:<file> | unix2dos`，或 diff 加
+--strip-trailing-cr；副本上 go build 交叉编译需 -buildvcs=false）。
+运维通道备忘：ssh 245 / ssh 154（~/.ssh/config 在役免密，25022 端口）可做只读
+探测（curl GET / grep / ss / systemctl list / key 指纹），严禁在生产机执行写操作
+——接入写操作归运维。
 
 本轮任务（按输入分派，无输入则如实记录阻塞）：
-A. 若已获得 245/154 双机的 /metrics 数据或告警触发记录（第六轮 runbook + instance
-   分节点判读）：
+A. 若已获得 245/154 双机的 necessity 数据或告警触发记录（第六轮 runbook + instance
+   分节点判读；验收先确认 mirror_delete_failed_total 的 3 条 0 值系列存在=接入成功）：
    - mirror_delete_failed_total 单 instance 持续增长 / 告警 firing → 实施短 TTL
-     抑制（硬条件不变：不漏真实故障探测、证据错误 fail-open、manual/admin 绕过、
-     lease 丢失不删新 owner 状态），先补失败测试；
-   - 两者平稳 → 在 handoff 记录结论并关闭遗留项 6。
+     抑制（硬条件不变），先补失败测试；实施前先按上方基线警示重测 bg 判据；
+   - 观察窗口平稳 → 在 handoff 记录结论并关闭遗留项 6。
 B. 若运维确认"模型解绑/改名后自检 tab 长期显示陈旧节点"：先给应急口径（admin API
    提交一次探测即删行，或批量 SQL），再按预案实施显示侧治本修复（queryProbeNodeTasks
    WHERE 并入绑定链 EXISTS，SQL 抽取可守卫 + 先红后绿测试），实施前与反馈方确认
    面板口径（node-tasks 泳道 vs SSE 流）。
-B'. 若运维反馈"按 NATIVE 文档接入后 api/v1/series 验收不过"（401/000/target down），
-   按 401=两机 key 不同（154 拆专属 job + 独立 token 文件）、000=网络不通（上报
-   运维，勿在仓库侧猜测拓扑）分叉处置并记录。
+B'. 若运维反馈接入执行受阻：401=token 文件内容与该机 key 不符（对照 NATIVE 步骤 0
+   重建 admin_token_154）；000=网络/地址拓扑变更（上报运维实测，勿在仓库侧猜）；
+   promtool/reload 报错=按文档"以 /-/reload 实际结果为准"排查；其余问题如实记录
+   并回写 NATIVE 文档。
 C. lastProbeRun 维持关闭；除非出现乱序完成记录反例。
 D. 验证如实区分通过/环境受限/未验证。
 
