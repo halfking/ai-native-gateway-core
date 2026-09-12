@@ -622,6 +622,13 @@ upload_release() {
     err "tar 管道上传失败"; return 1; }
   # 修正属主为 root (tar 会保留本地 UID 501，导致 systemd 读不到)
   remote_ssh "chown -R root:root '$release_dir'" || true
+  # 2026-09-13 Windows 部署宿主：MSYS 对无扩展名文件不授予执行位（noacl
+  # 挂载下 chmod 也无效），tar 按本地视角把 gateway 存成 644 → 远端解包后
+  # 候选 unit exec 直接 Permission denied (status 126)。显式恢复执行位；
+  # 对 Mac/Linux 宿主是无操作。
+  local staged_bin_name
+  staged_bin_name=$(HOST_STAGE_TARGET="$TARGET" host_binary_name) || staged_bin_name="gateway"
+  remote_ssh "chmod 0755 '$release_dir/$staged_bin_name'" || { err "恢复二进制执行位失败"; return 1; }
   ok "bundle 上传完成"
 }
 
