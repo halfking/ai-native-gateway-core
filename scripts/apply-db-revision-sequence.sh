@@ -311,6 +311,12 @@ files=(
   # 体加钉扎,迁移文件由 objects/ 机械变换生成。纯 CREATE OR REPLACE,幂等
   # 收敛,down 无。698 已查生产双账本空闲（seq/schema_migrations 均 0 命中）。
   "$ROOT_DIR/sql/migrations/startup/698_promote_hot_partition_timezone_pin.sql"
+  # 2026-09-12 接线补齐:699 supplier_errors ensure 钉扎(531ea1a86)交付时只接了
+  # installer embeddata/dbinit 路径,漏了本通道——升级型数据库(共享 252 生产 PG
+  # 即是)经通道升级将永远轮不到该迁移,正是 693 类缺口。文件自带 schema_migrations
+  # INSERT(ON CONFLICT DO UPDATE)与 down 镜像,通道补条目即闭环。升级库 V371 已装
+  # 该函数(签名一致,纯函数体重定义),幂等收敛。
+  "$ROOT_DIR/sql/migrations/startup/699_supplier_errors_ensure_timezone_pin.sql"
   # 2026-09-12 视图列缺口第二起:700 给 request_logs_with_current_month 追加
   # raw_model_name lateral 阶段(485 加父表列、603 补 hot 列,但视图基础包装的
   # 列交集在 485 之前冻结、链上从未重建)——integrity_fingerprint_drift 自
@@ -350,6 +356,9 @@ intentional_function_chains=(
   # of 695's body (self-heal demote kept); 698 adds the Asia/Shanghai pin on
   # top of 697's body and must stay the later entry.
   'promote_request_logs_hot_to_partition|695_request_logs_promote_final_success_self_heal.sql|697_request_logs_promote_system_fingerprint.sql|698_promote_hot_partition_timezone_pin.sql|'
+  # 699 re-pins ensure_supplier_errors_partition (V371 deployed the original
+  # out-of-repo-family body) to Asia/Shanghai; the pin must stay the later entry.
+  'ensure_supplier_errors_partition|V371__supplier_errors_hot_and_stats.sql|699_supplier_errors_ensure_timezone_pin.sql|'
   # 659 rewrote these seven promote bodies as the single atomic CTE form;
   # 688 later aligned their defaults to the Go scheduler (not in this array,
   # so invisible to the scanner) and 698 re-derives each body from the
