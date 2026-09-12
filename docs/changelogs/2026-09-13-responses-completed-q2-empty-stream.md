@@ -9,6 +9,22 @@ llmgo.kxpms.cn（245，build 2086 实测）两个网关侧流式缺陷（证据�
 
 ## 根因
 
+### 缺口 0（245 实测定位的主根因）：survival holdback 窗口吞掉终止渲染
+
+245 部署 2090 后 curl 实测 `/v1/responses`（gpt-6-astra）仍缺 `response.completed`，journals 取证：
+
+```
+survival_attempt_start:  holdback_window_ms=5000, holdback_max_chunks=20
+request_survival_finished: "succeed":true, "committed":false, "commit_state":"metadata"
+```
+
+survival 协调器给每个流式 attempt 的 gate 挂 **L1 holdback 窗口（5s / 20 chunks）**：语义帧被 hold 而**不推进 gate 提交状态**（`attempt_commit_gate.go holdbackTryHoldLocked`）。短流（<5s 且 <20 chunk，正是绝大多数 Agent 请求）整个流结束在窗口内 → 桥的 `finishAttempt`/Phase-4 tail 决策看到 `MayWriteTerminal()==false` → **跳过终止渲染** → 协调器收尾 `GateWriter.Finish` 把 held 帧冲给客户端，但无人再补终止事件。影响面：
+
+- `/v1/responses`：deltas 后流无 `response.completed` 即关闭（codex ≥0.80 断流）；
+- `/v1/messages`：客户端收到 `message_start` 但无 `message_delta/message_stop`（"message_start but no content blocks" → 非流式回退 → 503/529）。
+
+修复：两个 responses 桥与 Q2 桥在**成功路径**调用现成的 `gate.FlushHoldback()`（强制关闭 holdback 窗口并提交 held 帧，`attempt_commit_gate.go FlushHoldback`），终止渲染随即正常执行；中断路径不动 holdback，保持透明 failover 语义。回归测试 `stream_holdback_regression_test.go`（三协议）。
+
 ### 缺口 1：responses_bridge.go benign-EOF 分支不发终止事件
 
 `StreamAnthropicSSEToResponsesWithDiagnostics` 的 EOF 分支中，当上游（anthropic-messages 协议，minimax 风格中继常见）发出 finish_reason 后不发 `message_stop` 直接关流时，代码判定 benign（成功）却**不调用 `scaffold.finishAttempt()`** 直接 return —— 网关认为成功，客户端永远收不到 `response.output_text.done / response.output_item.done / response.completed`。对照同函数 clean-EOF 路径（有 finishAttempt）确认为遗漏。

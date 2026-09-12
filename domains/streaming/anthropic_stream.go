@@ -862,6 +862,19 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		}
 	}
 
+	// 2026-09-13 fix: the survival L1 holdback window (5s/20 chunks) holds
+	// semantic frames WITHOUT advancing the gate commit state, so short
+	// streams end entirely inside the window. Without flushing, the Phase-4
+	// tail decision below sees MayWriteTerminal()==false and skips
+	// message_delta/message_stop — the client gets "message_start but no
+	// content blocks" (claude code 529 / keep-alive-only pathology).
+	// Force-close the window on the clean path so held frames commit and the
+	// tail renders. Interrupted outcomes keep the holdback intact: the
+	// coordinator discards held frames on transparent failover.
+	if !outcome.Interrupted {
+		_ = gate.FlushHoldback()
+	}
+
 	// 2026-09-13 fix (Q2 empty-stream parity): a clean upstream end with ZERO
 	// semantic deltas (no text / thinking / tool_call — usage-only chunks do
 	// not count) is an empty response, not a success. Previously the bridge
