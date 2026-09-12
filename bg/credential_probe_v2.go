@@ -391,6 +391,11 @@ type v2Snapshot struct {
 	DefaultProbeModel      string
 	ProviderProtocol       string
 	CatalogCode            string // P3: balance probe vendor routing
+	// ProbeConsecutiveFailures is the credential's probe-failure ladder
+	// counter (probe-recovery closeout P2, 2026-09-13). The auth backoff
+	// in classifyProbeFailure callers derives availability_recover_at from
+	// counter+1 so repeated 401/403 probes decay from 15min to a 24h cap.
+	ProbeConsecutiveFailures int
 }
 
 // cycleAll iterates active credentials, sends /v1/models + mini chat "hi",
@@ -407,7 +412,8 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		       c.secret_ciphertext,
 		       COALESCE(c.default_probe_model, ''),
 		       COALESCE(p.protocol, 'openai-completions'),
-		       COALESCE(p.catalog_code, '')
+		       COALESCE(p.catalog_code, ''),
+		       COALESCE(c.probe_consecutive_failures, 0)
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.status = 'active'
@@ -430,6 +436,7 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 	healthy := 0
 	warn := 0
 	failed := 0
+	skippedRecentSuccess := 0
 
 	probeStart := time.Now()
 
@@ -438,7 +445,21 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		var ciphertext []byte
 		if err := rows.Scan(&s.ID, &s.Status, &s.LifecycleStatus, &s.ManualDisabled,
 			&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
-			&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol, &s.CatalogCode); err != nil {
+			&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol, &s.CatalogCode,
+			&s.ProbeConsecutiveFailures); err != nil {
+			continue
+		}
+
+		// 2026-09-13 closeout (audit R5 / P5): a credential with fresh
+		// successful REAL traffic and a currently-green health verdict does
+		// not need the hourly synthetic probe — the traffic IS the probe.
+		// Skipping it removes the largest healthy-fleet probe cost without
+		// touching failure detection: any failure flips health_status away
+		// from healthy/unknown (or last_probe_success false), and the row
+		// becomes eligible again immediately. Fail-open by design: if
+		// last_used_at is NULL the row is probed as before.
+		if skipProbeOnRecentTrafficSuccess(timeoutCtx, c.db, s.ID) {
+			skippedRecentSuccess++
 			continue
 		}
 
@@ -479,6 +500,18 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 			healthy++
 		} else {
 			pr = classifyProbeFailure(errMsg)
+			// 2026-09-13 closeout (P2): probe-level auth failures carry an
+			// exponential recover_at (15m→24h cap) instead of NULL. The old
+			// NULL let the 30s recovery tick flip auth_failed straight back
+			// to ready, so a permanently-revoked key oscillated
+			// ready→auth_failed→ready every hour with one wasted vendor
+			// request per cycle. With the ladder the tick only releases the
+			// credential when the backoff expires; a success resets the
+			// counter (writeHealth).
+			if pr.AvailabilityState == "auth_failed" {
+				prRecoverAt := authProbeBackoffRecoverAt(s.ProbeConsecutiveFailures + 1)
+				pr.AvailabilityRecoverAt = &prRecoverAt
+			}
 			pr.HealthLatencyMs = int(time.Since(probeStart).Milliseconds())
 			failed++
 			if pr.HealthStatus == "warning" {
@@ -543,7 +576,47 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		"healthy", healthy,
 		"warning", warn,
 		"failed", failed,
+		"skipped_recent_success", skippedRecentSuccess,
 	)
+}
+
+// probeSkipRecentSuccessEnv toggles the P5 recent-success skip in cycleAll.
+// Default ON ("成功后不要重复探测"); set to false/0/off to restore the
+// probe-every-active-credential-hourly behaviour.
+const probeSkipRecentSuccessEnv = "LLM_GATEWAY_PROBE_SKIP_RECENT_SUCCESS"
+
+func probeSkipRecentSuccessEnabled() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(probeSkipRecentSuccessEnv)))
+	return v == "" || v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+// skipProbeOnRecentTrafficSuccess reports whether a credential's own recent
+// request success already proves it healthy, making the synthetic probe
+// redundant this cycle (probe-recovery closeout P5, 2026-09-13).
+//
+// Evidence bar (ALL must hold, else the probe runs):
+//   - a successful request within the last 30 minutes (last_used_at — the
+//     dispatch path stamps it on every routed request);
+//   - health_status currently healthy/unknown (a failure write anywhere
+//     makes the row probe-eligible again);
+//   - the previous probe did not fail (last_probe_success false → probe).
+//
+// DB errors fail OPEN (probe runs) — this is a cost optimization, not a gate.
+func skipProbeOnRecentTrafficSuccess(ctx context.Context, db *pgxpool.Pool, credID int) bool {
+	if !probeSkipRecentSuccessEnabled() {
+		return false
+	}
+	var ok bool
+	err := db.QueryRow(ctx, `
+		SELECT COALESCE(c.last_used_at, to_timestamp(0)) > now() - INTERVAL '30 minutes'
+		   AND c.health_status IN ('healthy', 'unknown')
+		   AND COALESCE(c.last_probe_success, TRUE)
+		FROM credentials c WHERE c.id = $1
+	`, credID).Scan(&ok)
+	if err != nil {
+		return false
+	}
+	return ok
 }
 
 type probeResult struct {
@@ -913,6 +986,37 @@ func (c *CredentialProbeV2) miniAnthropic(ctx context.Context, httpClient *http.
 	return false, fmt.Sprintf("messages status %d: %s", resp.StatusCode, truncateBody(respBody))
 }
 
+// authProbeBackoffBase is the first-rung recovery delay for a probe-level
+// auth failure (probe-recovery closeout P2, 2026-09-13). It matches the
+// writer.go KindAuth cooldown so a probe 401/403 and a traffic 401/403 cool
+// for the same initial window.
+const authProbeBackoffBase = 15 * time.Minute
+
+// authProbeBackoffCap bounds the auth probe ladder. A permanently revoked
+// key is re-validated at most once per day at steady state — enough to
+// notice a vendor-side unblock within a day, far below any abuse threshold.
+const authProbeBackoffCap = 24 * time.Hour
+
+// authProbeBackoffRecoverAt returns the availability_recover_at for the
+// n-th consecutive failed auth probe: 15m, 30m, 1h, 2h, 4h, 8h, 16h, then
+// capped at 24h. n must be >= 1 (callers pass counter+1). A successful
+// probe or successful real traffic resets the counter (writeHealth /
+// RestoreOnSuccess), returning the cadence to the first rung.
+func authProbeBackoffRecoverAt(n int) time.Time {
+	if n < 1 {
+		n = 1
+	}
+	step := n - 1
+	if step > 7 {
+		step = 7
+	}
+	d := authProbeBackoffBase << uint(step)
+	if d > authProbeBackoffCap || d <= 0 {
+		d = authProbeBackoffCap
+	}
+	return time.Now().Add(d)
+}
+
 func classifyProbeFailure(errMsg string) probeResult {
 	pr := probeResult{HealthSource: "probe"}
 	switch {
@@ -1085,15 +1189,39 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		        ELSE auto_disabled_reason
 		    END,
 		    state_reason_code = $9,
-		    state_updated_at = NOW()
+		    state_updated_at = NOW(),
+		    -- 2026-09-13 closeout (P2/P3): probe bookkeeping for the auth
+		    -- backoff ladder and the quota-probe due gate. Failures climb the
+		    -- ladder (recover_at = base << n, capped); any healthy probe
+		    -- resets it. last_probe_at feeds the balance/periodic probe
+		    -- "due" filter so a dead credential is re-probed on an
+		    -- exponential schedule instead of every tick.
+		    last_probe_at = NOW(),
+		    probe_consecutive_failures = CASE
+		        WHEN $1 = 'healthy' THEN 0
+		        ELSE COALESCE(credentials.probe_consecutive_failures, 0) + 1
+		    END,
+		    last_probe_success = ($1 = 'healthy')
 		WHERE id = $10
 		  AND (
 		      lifecycle_status = 'active'
 		      OR (
 		          lifecycle_status = 'disabled'
 		          AND auto_disabled_at IS NOT NULL
-		          AND COALESCE(quota_state, 'ok') = 'periodic_exhausted'
-		          AND (quota_recover_at IS NULL OR quota_recover_at <= now())
+		          AND (
+		              -- 2026-08-07 P0 死锁修复：periodic_exhausted 且恢复期已到
+		              -- 的自动禁用行允许写入（探活成功可自动启用）。
+		              (
+		                  COALESCE(quota_state, 'ok') = 'periodic_exhausted'
+		                  AND (quota_recover_at IS NULL OR quota_recover_at <= now())
+		              )
+		              -- 2026-09-13 closeout (P3): quota-ok 自动禁用行（可用性
+		              -- 低于阈值被自动禁用、availability suspended、recover_at
+		              -- NULL）也允许写入——suspended-revalidation 目标集探测它们，
+		              -- 成功经下方 CASE 翻回 active/ready，否则这批行没有任何
+		              -- 探测写入通道（prod creds 9/13/23/24/25/30）。
+		              OR COALESCE(quota_state, 'ok') = 'ok'
+		          )
 		      )
 		  )
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
@@ -1499,7 +1627,8 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 		       c.secret_ciphertext,
 		       COALESCE(c.default_probe_model, ''),
 		       COALESCE(p.protocol, 'openai-completions'),
-		       COALESCE(p.catalog_code, '')
+		       COALESCE(p.catalog_code, ''),
+		       COALESCE(c.probe_consecutive_failures, 0)
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.id = $1
@@ -1519,6 +1648,7 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 		&s.ID, &s.Status, &s.LifecycleStatus, &s.ManualDisabled,
 		&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
 		&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol, &s.CatalogCode,
+		&s.ProbeConsecutiveFailures,
 	)
 	if err != nil {
 		slog.Debug("credential probe v2: ProbeNow skipped (credential not active or missing)",
@@ -1556,11 +1686,20 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 			"latency_ms", pr.HealthLatencyMs)
 	} else {
 		pr = classifyProbeFailure(errMsg)
+		// 2026-09-13 closeout (P2): same exponential auth ladder as cycleAll —
+		// ProbeNow is the executor behind the quota probes and the recovery
+		// ticker's immediate submits, so without the ladder a permanently
+		// revoked key was re-probed at the caller's fixed cadence forever.
+		if pr.AvailabilityState == "auth_failed" {
+			prRecoverAt := authProbeBackoffRecoverAt(s.ProbeConsecutiveFailures + 1)
+			pr.AvailabilityRecoverAt = &prRecoverAt
+		}
 		pr.HealthLatencyMs = int(time.Since(probeStart).Milliseconds())
 		pr.HealthSource = "probe_now"
 		slog.Info("credential probe v2: ProbeNow failed",
 			"credential_id", credID,
 			"availability_state", pr.AvailabilityState,
+			"probe_consecutive_failures", s.ProbeConsecutiveFailures+1,
 			"final_error", errMsg)
 	}
 	pr.HealthProbeModel = s.DefaultProbeModel
