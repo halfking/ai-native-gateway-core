@@ -25,6 +25,7 @@ import {
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { isSuperAdmin } from '../store'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import AppModal from '../components/ui/AppModal.vue'
 
 const { t } = useI18n()
 const pm = (k: string, params?: Record<string,unknown>): string =>
@@ -1057,10 +1058,9 @@ onUnmounted(() => {
       <div v-if="!loading && visibleProviders.length === 0" class="empty">{{ pm('list.empty') }}</div>
     </div>
 
-    <!-- ── Add Provider Modal ─────────────────────────────────────────────── -->
-    <div class="modal-overlay" v-if="showAdd" @click.self="showAdd = false">
-      <div class="modal" style="max-width:500px" @click.stop>
-        <h3>{{ pm('create.title') }}</h3>
+    <!-- ── Add Provider Modal（2026-09-13 迁移至 ui/AppModal，方案 §4.5.7：
+         ESC/滚动锁定/焦点圈闭/移动端响应式由组件统一提供） ────────────────── -->
+    <AppModal v-model="showAdd" :title="pm('create.title')" size="sm">
         <div v-if="addErr" class="alert alert-danger">{{ addErr }}</div>
 
         <!-- Toggle custom mode -->
@@ -1152,14 +1152,13 @@ onUnmounted(() => {
           <input v-model="addNotes" :placeholder="pm('create.remarkPlaceholder')" />
         </div>
 
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-          <button class="btn btn-ghost" @click="showAdd = false">{{ pm('common.button.cancel') }}</button>
-          <button class="btn btn-primary" @click="submitAdd" :disabled="addSaving">
-            {{ addSaving ? pm('create.submitting') : pm('create.submit') }}
-          </button>
-        </div>
-      </div>
-    </div>
+      <template #footer>
+        <button class="btn btn-ghost" @click="showAdd = false">{{ pm('common.button.cancel') }}</button>
+        <button class="btn btn-primary" @click="submitAdd" :disabled="addSaving">
+          {{ addSaving ? pm('create.submitting') : pm('create.submit') }}
+        </button>
+      </template>
+    </AppModal>
 
     <!-- ── Edit Provider Modal ───────────────────────────────────────────── -->
     <div class="modal-overlay" v-if="showEdit" @click.self="showEdit = false">

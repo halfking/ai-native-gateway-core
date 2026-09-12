@@ -331,7 +331,7 @@ f. commit：feat(web): P3-<页面名> 组件化迁移。
 | Step | 内容 | 状态 | 交付摘要（完成时填） |
 |---|---|---|---|
 | 0 | 提交 Batch 1 | ✅ 完成 2026-09-13 | commit f797779d4，23 文件（13 修改 + 设计文档/handoff + ui 组件 6 文件 + usePagination 2 文件）；提交前核验 vue-tsc 0 错误、vitest 469 通过 / 40 存量失败文件（= 基线）、diff 与交付清单一致；未 push |
-| 1 | P0 基础设施（breakpoints/useBreakpoint/审计脚本/令牌/responsive-base） | ☐ 未开始 | |
+| 1 | P0 基础设施（breakpoints/useBreakpoint/审计脚本/令牌/responsive-base） | ✅ 完成 2026-09-13 | commit 64b6983d3。新增 breakpoints.ts（BREAKPOINTS+MEDIA_QUERY_WHITELIST=[480,640,768,1024,1440]）、useBreakpoint.ts（单例 matchMedia，isMobile<1024/isTablet>=768/isSmall<480/isDesktop computed，含 \_resetForTests）、scripts/responsive-audit.mjs（白名单直接 import breakpoints.ts，--strict/--allow-legacy/--json）、vite.config setupFiles=src/test/setup.ts（matchMedia stub）、useBreakpoint.test.ts 8 用例全绿、style.css 补 --kx-space-1..6 与 --kx-font-sm/md/lg（12/14/16px，对齐存量组件实际字号）、styles/responsive-base.css（text-size-adjust+<768 触摸高度 44px 兜底+.safe-area）+main.ts 引入、package.json 加 responsive:check。四件套全过（vitest 477 通过/40 存量失败文件=基线）。**存量断点分布（Step 8 收敛用）**：共 90 处宽度断点/244 文件——白名单内 768×18、640×8、1024×5、480×4；白名单外 55 处：900×12、800×9、720×8、960×6、700×5、760×4、1200×3、520×2、1100×2、1600/680/600/1000 各×1，明细可跑 `node scripts/responsive-audit.mjs` 查看 |
 | 2 | P1a AppModal + AppDrawer | ☐ 未开始 | |
 | 3 | P1b 壳层移动导航 | ☐ 未开始 | |
 | 4 | P1c 访客壳/门户/dvh 收尾（P1 收口） | ☐ 未开始 | |
