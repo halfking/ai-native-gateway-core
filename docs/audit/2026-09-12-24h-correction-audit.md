@@ -105,3 +105,9 @@
 
 ### 其余 P2/P3 状态
 - §四.4（BufferedRawSink 大条目）、§四.6-12（分区生命周期、opslog_trimmer 批量、user_intent 护栏、Web P3、dispatch registry 小项、supplier_errors ensure 已由 699 关闭、Windows cleanup metric）保持开放，未被本轮触碰。
+
+## 八、R16 口径更正（2026-09-12，见 docs/audit/2026-09-12-r16-24h-audit.md）
+
+- §三"recent-window 改道……剩余 3 处裸父表读均为有意保留且有测试锁定"口径已漂移：HEAD 实际保留 = opslog_trimmer 2 处（有锁）+ credential_recovery.go:1675 一处（无锁、未登记）；integrity_fingerprint_drift 已随 696 翻转为视图读。
+- §六.2 残留中"`parseOpenAIResponseContentBlock` 对未知块保留为不透明 IR 块"经 R16 复核升级为 P2：OpenAI 侧未知 part 载荷丢失且不进 UnknownBlockTypes，空成功计账可复现（R16 报告 §四.1）。
+- §四.11（supplier_errors ensure 无定义）已由 699 迁移 + R16 将该函数补入三份 baseline（5a3915c5e）双重关闭。

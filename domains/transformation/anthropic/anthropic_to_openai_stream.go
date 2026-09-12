@@ -113,6 +113,14 @@ func StreamAnthropicSSEToOpenAI(
 		bufferedToolArgs    strings.Builder
 		currentToolCallID   string
 		initialArgsSent     bool
+		// unknownBlockTypes records content_block_start types this Q3
+		// translator cannot represent (server_tool_use, container_upload,
+		// ...) — bounded, dedup via linear scan. Observability only: the
+		// unknown-only stream still classifies as empty at EOF (failover to
+		// the next candidate is preserved, and resumable empty streams do
+		// not demote the provider), but the operator can now see WHY.
+		// R16 (2026-09-12), parity with ir.UnknownBlockTypes (b2639182b).
+		unknownBlockTypes []string
 		// emittedContent (audit-24h-20260828-r3 P1-B parity) tracks
 		// whether any client-visible semantic bytes — text, thinking,
 		// tool-call deltas, or a terminal [DONE] — reached the wire.
@@ -420,6 +428,30 @@ func StreamAnthropicSSEToOpenAI(
 							// 2026-07-27 并发修复：走带锁 setter（audit.StreamCapture.SetHasThinking）。
 							capture.SetHasThinking()
 						}
+					} else if err == nil && evt.ContentBlock.Type != "" && evt.ContentBlock.Type != "text" && evt.ContentBlock.Type != "redacted_thinking" {
+						// R16 (2026-09-12): unrecognized block start (server_tool_use,
+						// container_upload, ...). Its input_json_delta must NOT be
+						// treated as a tool call below, and its presence is recorded
+						// for observability. Empty classification is deliberately
+						// unchanged: an unknown-only stream should still fail over.
+						known := false
+						for _, t := range unknownBlockTypes {
+							if t == evt.ContentBlock.Type {
+								known = true
+								break
+							}
+						}
+						if !known {
+							if len(unknownBlockTypes) < 8 {
+								unknownBlockTypes = append(unknownBlockTypes, evt.ContentBlock.Type)
+							}
+							slog.Warn("unknown_content_block_start_in_stream",
+								"block_type", evt.ContentBlock.Type,
+								"request_id", requestID)
+							if capture != nil {
+								capture.AddQualityFlag("unknown_content_block")
+							}
+						}
 					}
 
 				case "content_block_delta":
@@ -454,9 +486,24 @@ func StreamAnthropicSSEToOpenAI(
 							writeChunk(chunk)
 
 						case "input_json_delta":
-							// Only accumulate if we haven't sent initial args
+							// Only accumulate if we haven't sent initial args.
+							// R16 guard: also require an open tool_use block
+							// (currentToolCallID). Unknown blocks (server_tool_use
+							// etc.) stream input_json_delta too — without this
+							// check their fragments pooled into a synthesized
+							// empty-name tool call at content_block_stop, i.e. a
+							// malformed `function.name:""` tool call on the wire.
 							if !initialArgsSent && evt.Delta.PartialJSON != "" {
-								bufferedToolArgs.WriteString(evt.Delta.PartialJSON)
+								if currentToolCallID != "" {
+									bufferedToolArgs.WriteString(evt.Delta.PartialJSON)
+								} else {
+									slog.Warn("orphan_input_json_delta_dropped",
+										"request_id", requestID,
+										"delta_len", len(evt.Delta.PartialJSON))
+									if capture != nil {
+										capture.AddQualityFlag("orphan_input_json_delta_dropped")
+									}
+								}
 							}
 
 						case "signature_delta":
@@ -536,20 +583,14 @@ func StreamAnthropicSSEToOpenAI(
 								capture.AddQualityFlag("tool_args_repaired_on_flush")
 							}
 						}
-						// Defensive fallback for malformed upstream streams that send
-						// input_json_delta without a preceding tool_use block. The
-						// OpenAI wire contract requires a stable non-empty call id;
-						// never emit an empty id or a negative tool index.
+						// The OpenAI wire contract requires a stable non-empty call
+						// id AND a non-empty function name; the old synthesized
+						// call_<requestID>_<index> fallback always emitted
+						// name:"" (a hard client SDK error), so orphan fragments
+						// are dropped at the input_json_delta guard above instead.
+						// args can only be non-empty here when a tool_use block
+						// opened, i.e. currentToolCallID != "".
 						callIndex := toolCallIndex - 1
-						if callIndex < 0 {
-							callIndex = 0
-						}
-						if currentToolCallID == "" {
-							currentToolCallID = fmt.Sprintf("call_%s_%d", requestID, callIndex)
-							slog.Warn("anthropic-to-openai: synthesized missing tool call id",
-								"request_id", requestID,
-								"tool_call_index", callIndex)
-						}
 						chunk := buildToolCallChunk(callIndex, currentToolCallID, "", &validated, true)
 						writeChunk(chunk)
 						bufferedToolArgs.Reset()

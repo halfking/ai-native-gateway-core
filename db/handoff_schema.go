@@ -7,7 +7,7 @@ import (
 )
 
 // ensureHandoffLogsHotColumnarSchema validates the contract installed by
-// startup migration 532. Destructive legacy conversion belongs to the
+// startup migration 534. Destructive legacy conversion belongs to the
 // versioned migration; startup self-healing only restores safe, idempotent
 // definitions and fails closed when the database is in an ambiguous state.
 func (d *DB) ensureHandoffLogsHotColumnarSchema(ctx context.Context) error {
@@ -37,17 +37,17 @@ BEGIN
 	INTO view_exists;
 
 	IF parent_kind IS DISTINCT FROM 'p' OR NOT partitioned THEN
-		RAISE EXCEPTION 'handoff_logs schema contract requires a RANGE partitioned parent; run startup migration 532';
+		RAISE EXCEPTION 'handoff_logs schema contract requires a RANGE partitioned parent; run startup migration 534';
 	END IF;
 	IF hot_kind IS DISTINCT FROM 'r' THEN
-		RAISE EXCEPTION 'handoff_logs_hot schema contract is missing or not a heap table; run startup migration 532';
+		RAISE EXCEPTION 'handoff_logs_hot schema contract is missing or not a heap table; run startup migration 534';
 	END IF;
 	IF NOT view_exists THEN
-		RAISE EXCEPTION 'handoff_logs_with_current_month is missing; run startup migration 532';
+		RAISE EXCEPTION 'handoff_logs_with_current_month is missing; run startup migration 534';
 	END IF;
 	IF to_regprocedure('public.ensure_handoff_logs_partition(timestamptz)') IS NULL
 	   OR to_regprocedure('public.promote_handoff_logs_hot_to_partition(interval,integer)') IS NULL THEN
-		RAISE EXCEPTION 'handoff partition functions are missing; run startup migration 532';
+		RAISE EXCEPTION 'handoff partition functions are missing; run startup migration 534';
 	END IF;
 END
 $do$;`

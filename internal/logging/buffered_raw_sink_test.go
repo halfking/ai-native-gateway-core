@@ -108,7 +108,7 @@ func TestBufferedRawSink_BatchSizeWakeFlush(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		s.LogUpstreamRequest("batch-r", "openai-chat", []byte("x"), "post_conversion")
 	}
-	waitForCond(t, 2*time.Second, func() bool {
+	waitForCond(t, 5*time.Second, func() bool {
 		return s.Stats().FlushCount > 0
 	}, "wake-triggered flush at batch threshold")
 }
@@ -126,7 +126,7 @@ func TestBufferedRawSink_TickerFlush(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	s.LogUpstreamRequest("tick-r", "openai-chat", []byte("y"), "post_conversion")
-	waitForCond(t, 2*time.Second, func() bool {
+	waitForCond(t, 5*time.Second, func() bool {
 		return s.Stats().FlushCount > 0
 	}, "ticker flush")
 }

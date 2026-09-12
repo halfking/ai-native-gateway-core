@@ -341,7 +341,7 @@ func TestRawDataLogger_CleanupOldFilesKeepBoundary(t *testing.T) {
 		}
 	}
 
-	l.cleanupOldFiles(keep)
+	l.cleanupOldFiles(dir, keep)
 
 	files, err := filepath.Glob(filepath.Join(dir, "raw_data_*.jsonl"))
 	if err != nil {
