@@ -16,15 +16,11 @@ import SystemStatusIndicator from '../SystemStatusIndicator.vue'
 import UserMenuDropdown from './UserMenuDropdown.vue'
 import { detectTheme, logoSrc } from '../../theme'
 import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from '../../config/brand'
-import { isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, isProviderConsoleView as checkProviderConsole } from '../../store'
-import { NAV_GROUPS, NAV_PRIMARY_ITEMS, isNavItemActive, resolveNavItemActivation, visibleNavGroups, visibleNavItems, mergeRemotePluginNav, type NavGroup } from '../../config/appNav'
-import { usePluginNav } from '../../composables/usePluginNav'
-import {
-  LOCAL_OPS_MENU,
-  onMaintainAvailabilityChange,
-  resolveOpsMenu,
-  type OpsMenuGroup,
-} from '../../config/edition'
+import { isNavItemActive } from '../../config/appNav'
+// 2026-09-13: 菜单构建（静态分组 + 插件/运维中心合并 + 角色过滤）抽到
+// useAppNav，与 AppNavDrawer（移动抽屉）共用；行为不变。
+import { navDrawerOpen, useAppNav } from '../../composables/useAppNav'
+import { useBreakpoint } from '../../composables/useBreakpoint'
 
 export interface VersionInfo {
   version?: string
@@ -58,124 +54,19 @@ onMounted(() => {
   document.addEventListener('click', handleOutside)
   window.addEventListener('resize', onWindowChange)
   window.addEventListener('scroll', onWindowChange, true)
-  void refreshOpsMenu()
-  void checkActivationStatus()
-  stopMaintainWatch = onMaintainAvailabilityChange(() => {
-    void refreshOpsMenu()
-  })
 })
 onBeforeUnmount(() => {
   logoObserver?.disconnect()
   document.removeEventListener('click', handleOutside)
   window.removeEventListener('resize', onWindowChange)
   window.removeEventListener('scroll', onWindowChange, true)
-  stopMaintainWatch?.()
-  stopMaintainWatch = null
 })
 
-const isSuperAdmin = computed(() => checkSuperAdmin())
-const isPlatformOps = computed(() => checkPlatformOps())
-const isTenantPortal = computed(() => !isPlatformOps.value)
-// 2026-09-04: 供应商控制台（super_admin 或 default 租户 tenant_admin）
-const isProviderConsole = computed(() => checkProviderConsole())
-
-const isActivated = ref(false)
-
-// 检查激活状态
-async function checkActivationStatus() {
-  try {
-    const resp = await fetch('/api/system/bootstrap/status')
-    if (resp.ok) {
-      const data = await resp.json()
-      isActivated.value = data.activated === true
-    }
-  } catch {
-    // 忽略错误，默认未激活
-  }
-}
-
-const navPrimaryItems = computed(() => visibleNavItems(NAV_PRIMARY_ITEMS, {
-  isSuperAdmin: isSuperAdmin.value,
-  isPlatformOps: isPlatformOps.value,
-  isTenantPortal: isTenantPortal.value,
-  isProviderConsole: isProviderConsole.value,
-  isActivated: isActivated.value,
-}))
-
-// 2026-09-02: 在渲染前一次性把每个菜单项解析成最终 path / 是否为激活动作,
-// 避免模板内反复调用 resolveNavItemActivation。
-const navPrimaryResolved = computed(() =>
-  navPrimaryItems.value.map((item) => ({
-    item,
-    resolved: resolveNavItemActivation(item, { isActivated: isActivated.value }),
-  })),
-)
-
-const opsMenuOverrides = ref<OpsMenuGroup[] | null>(null)
-
-// V5.1: dynamic plugin nav (plugin-runtime /api/v1/plugin-nav). Loaded once
-// per mount; failures silently keep the static layout. The merge step runs
-// after the opsPlatform override so a plugin can't displace the maintain
-// nav, but plugin entries land inside the matching static group (e.g.
-// 'requests-sessions') or in a synthetic 'plugins' group if no match.
-const { pluginNav } = usePluginNav()
-
-function mergeRemoteOps(localGroups: NavGroup[], remote: OpsMenuGroup[] | null): NavGroup[] {
-  if (!remote || !remote.length) return localGroups
-  const merged: NavGroup[] = []
-  for (const g of localGroups) {
-    if (g.id === 'opsplatform') continue
-    merged.push(g)
-  }
-  for (const g of remote) {
-    merged.push({
-      id: g.id,
-      label: g.label,
-      items: g.items.map((it) => ({
-        path: it.path,
-        label: it.label,
-        labelKey: it.labelKey,
-        icon: it.icon || '•',
-        super: it.super,
-        hideForTenant: it.hide_for_tenant,
-        external: it.external,
-        exact: false,
-      })),
-    })
-  }
-  return merged
-}
-
-const navGroups = computed(() => {
-  let local = visibleNavGroups(NAV_GROUPS, {
-    isSuperAdmin: isSuperAdmin.value,
-    isPlatformOps: isPlatformOps.value,
-    isTenantPortal: isTenantPortal.value,
-    isProviderConsole: isProviderConsole.value,
-    isActivated: isActivated.value,
-  })
-  local = mergeRemotePluginNav(local, pluginNav.value)
-  const base = opsMenuOverrides.value ? mergeRemoteOps(local, opsMenuOverrides.value) : local
-  // 2026-09-02: 每个 item 都附带上「按激活状态解析后的 path / 是否为激活动作」,
-  // 模板直接读 resolved.path 渲染即可。
-  return base.map((g) => ({
-    ...g,
-    items: g.items.map((item) => ({
-      item,
-      resolved: resolveNavItemActivation(item, { isActivated: isActivated.value }),
-    })),
-  }))
-})
-
-async function refreshOpsMenu() {
-  try {
-    opsMenuOverrides.value = await resolveOpsMenu()
-  } catch {
-    opsMenuOverrides.value = LOCAL_OPS_MENU
-  }
-}
-
-let stopMaintainWatch: (() => void) | null = null
+// 菜单数据与激活状态解析来自 useAppNav（共享单例，运维中心/插件菜单
+// 的后台加载也由其统一触发，见 composable 内 startBackgroundLoading）。
+const { navGroups, navPrimaryResolved, navLabel } = useAppNav()
+// <1024 布局决策口径：菜单区替换为汉堡按钮，抽屉导航接管（方案 §4.4）
+const { isMobile } = useBreakpoint()
 
 const openGroupId = ref<string | null>(null)
 const dropdownStyle = ref<Record<string, string>>({})
@@ -260,9 +151,6 @@ function groupActive(id: string): boolean {
     .some(({ item }) => isNavItemActive(item.path, route.path, item.exact)) ?? false
 }
 
-function navLabel(labelKey: string | undefined, fallback: string): string {
-  return labelKey ? t(labelKey) : fallback
-}
 </script>
 
 <template>
@@ -282,7 +170,24 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
       </span>
     </a>
 
-    <nav class="app-topbar__nav" :aria-label="t('nav.mainAria', '主导航')">
+    <!-- 2026-09-13 方案 §4.4：<1024（isMobile 布局决策口径）菜单区替换为汉堡
+         按钮，抽屉导航（AppNavDrawer，App.vue 挂载）接管；>=1024 渲染保持
+         原 DOM 结构不变（桌面零回归红线）。 -->
+    <button
+      v-if="isMobile"
+      type="button"
+      class="app-topbar__hamburger"
+      :aria-label="t('nav.mainAria', '主导航')"
+      aria-haspopup="dialog"
+      :aria-expanded="navDrawerOpen"
+      @click="navDrawerOpen = true"
+    >
+      <span class="app-topbar__hamburger-bar" aria-hidden="true"></span>
+      <span class="app-topbar__hamburger-bar" aria-hidden="true"></span>
+      <span class="app-topbar__hamburger-bar" aria-hidden="true"></span>
+    </button>
+
+    <nav v-else class="app-topbar__nav" :aria-label="t('nav.mainAria', '主导航')">
       <template v-for="{ item, resolved } in navPrimaryResolved" :key="item.path + item.label">
         <a
           v-if="resolved.external"
@@ -598,6 +503,31 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
 @keyframes app-topbar-dropdown-enter {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* 2026-09-13 方案 §4.4：移动壳层汉堡按钮（仅 <1024 由 v-if 渲染，桌面不出现）。
+   触摸目标 ≥44px（对齐 responsive-base.css 的移动端兜底口径）。 */
+.app-topbar__hamburger {
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  width: 40px;
+  height: 40px;
+  padding: 0 9px;
+  border: 1px solid var(--kx-border, var(--border));
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  font-family: inherit;
+}
+.app-topbar__hamburger-bar {
+  display: block;
+  width: 100%;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--kx-text, var(--text));
 }
 
 @media (max-width: 768px) {
