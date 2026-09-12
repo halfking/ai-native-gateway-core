@@ -12,7 +12,7 @@
 
 /* 双分段（横跨折叠）。
  * 铰链宽度按 MDN 记载的分段几何推导：segment(1) 左缘 − segment(0) 右缘；
- * （规范无 viewport-segment-hinge env，2026-09-14 审计修正） */
+ * （规范无 viewport-segment-hinge env，2026-09-13 审计修正） */
 @media (horizontal-viewport-segments: 2) {
   .app-shell--spanning {
     display: grid;
