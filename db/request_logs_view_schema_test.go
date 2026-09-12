@@ -41,6 +41,15 @@ func TestApplyMigrationsIncludesRequestLogsViewEnsure(t *testing.T) {
 		// lateral stage when the base wrapper's frozen intersection lacks it;
 		// the shape probe keeps both wrapper generations idempotent.
 		"baseHasFingerprint",
+		// Migration 699 contract: raw_model_name rides the same conditional
+		// lateral stage (the frozen base intersection predates 485, so the
+		// drift scanner's SELECT hit 42703 on every cycle until 699), and the
+		// lateral itself is trimmed to columns the hot table actually has so
+		// self-heal never regresses on tables lagging 485/603.
+		"baseHasRawModelName",
+		"hotHasFingerprint",
+		"hotHasRawModelName",
+		"source.raw_model_name",
 		"NOT IN ('customer_id', 'request_class', 'due_at')",
 		"LEFT JOIN LATERAL",
 		// The fast path must short-circuit on a healthy view so a no-op boot
@@ -55,9 +64,11 @@ func TestApplyMigrationsIncludesRequestLogsViewEnsure(t *testing.T) {
 
 // Live round-trip: rebuild the whole wrapper chain from scratch hot/parent
 // tables inside a dedicated scratch database, then verify the canonical view
-// matches the production column contract (108 base + customer_id +
-// request_class + due_at + system_fingerprint = 112) and that a HOT_ONLY hot
-// column never breaks the UNION.
+// matches the production column contract (intersection base + customer_id +
+// request_class + due_at, with system_fingerprint/raw_model_name either
+// inherited via the dynamic base intersection or appended by the 696/699
+// conditional laterals on frozen chains) and that a HOT_ONLY hot column never
+// breaks the UNION.
 //
 // Gated on LLM_GATEWAY_TEST_PG_DSN so CI stays offline-green; run locally:
 //
@@ -115,10 +126,14 @@ func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// Minimal hot/parent pair: a shared base column set, the three later-
-	// appended columns (customer_id/request_class/due_at) on both sides, and
-	// a HOT_ONLY column that exists only on hot — the exact shape that made
-	// the 341-style SELECT * UNION replay fail and drop the view.
+	// Minimal hot/parent pair: a shared base column set, the later-appended
+	// columns (customer_id/request_class/due_at/system_fingerprint(487/603)/
+	// raw_model_name(485/603)) on both sides, and a HOT_ONLY column that
+	// exists only on hot — the exact shape that made the 341-style SELECT *
+	// UNION replay fail and drop the view. The fingerprint/model-name columns
+	// must exist on the tables or the 696/699 lateral shape probes have
+	// nothing real to probe (this schema predated 696 and made the live
+	// round-trip fail with 42703 on h.system_fingerprint).
 	schema := `
 		CREATE TABLE public.request_logs (
 			id bigserial PRIMARY KEY,
@@ -129,6 +144,8 @@ func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
 			customer_id bigint,
 			request_class text NOT NULL DEFAULT 'immediate',
 			due_at timestamptz,
+			system_fingerprint text,
+			raw_model_name text,
 			CONSTRAINT request_logs_request_class_due_at_check
 				CHECK ((request_class = 'immediate' AND due_at IS NULL)
 					OR (request_class = 'scheduled' AND due_at IS NOT NULL))
@@ -143,14 +160,16 @@ func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
 			customer_id bigint,
 			request_class text NOT NULL DEFAULT 'immediate',
 			due_at timestamptz,
+			system_fingerprint text,
+			raw_model_name text,
 			CONSTRAINT request_logs_hot_request_class_due_at_check
 				CHECK ((request_class = 'immediate' AND due_at IS NULL)
 					OR (request_class = 'scheduled' AND due_at IS NOT NULL))
 		);
-		INSERT INTO public.request_logs_hot (request_id, ts, caller_id, customer_id, request_class, due_at)
-		VALUES ('req-hot', now(), 'hot-only', 42, 'scheduled', now() + interval '1 hour');
-		INSERT INTO public.request_logs (request_id, ts, customer_id, request_class, due_at)
-		VALUES ('req-parent', now(), 7, 'immediate', NULL);
+		INSERT INTO public.request_logs_hot (request_id, ts, caller_id, customer_id, request_class, due_at, system_fingerprint, raw_model_name)
+		VALUES ('req-hot', now(), 'hot-only', 42, 'scheduled', now() + interval '1 hour', 'fp-hot-a', 'model-alpha');
+		INSERT INTO public.request_logs (request_id, ts, customer_id, request_class, due_at, system_fingerprint, raw_model_name)
+		VALUES ('req-parent', now(), 7, 'immediate', NULL, 'fp-parent-b', 'model-beta');
 	`
 	if _, err := pool.Exec(ctx, schema); err != nil {
 		t.Fatalf("seed scratch schema: %v", err)
@@ -183,53 +202,127 @@ func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
 	`).Scan(&baseCount); err != nil {
 		t.Fatalf("count base columns: %v", err)
 	}
-	if colCount != baseCount+4 { // base + customer_id + request_class + due_at + system_fingerprint (696)
-		t.Fatalf("canonical view column count = %d, want %d (base %d + customer_id + request_class + due_at + system_fingerprint)",
-			colCount, baseCount+4, baseCount)
+	// Dynamic-rebuild shape (b): the base intersection already carries
+	// system_fingerprint/raw_model_name (both tables have them), so the
+	// canonical only appends customer_id + request_class + due_at via the
+	// 577/610 stages — the fingerprint/model-name columns ride v.*.
+	if colCount != baseCount+3 { // base(incl. fp+raw) + customer_id + request_class + due_at
+		t.Fatalf("canonical view column count = %d, want %d (base %d + customer_id + request_class + due_at)",
+			colCount, baseCount+3, baseCount)
 	}
 
 	// HOT_ONLY column must be absent from the view; appended columns present.
-	var hotOnly, hasClass, hasDueAt, hasCustomer, hasFingerprint bool
+	var hotOnly, hasClass, hasDueAt, hasCustomer, hasFingerprint, hasRawModelName bool
 	if err := pool.QueryRow(ctx, `
 		SELECT
 			bool_or(column_name = 'caller_id'),
 			bool_or(column_name = 'request_class'),
 			bool_or(column_name = 'due_at'),
 			bool_or(column_name = 'customer_id'),
-			bool_or(column_name = 'system_fingerprint')
+			bool_or(column_name = 'system_fingerprint'),
+			bool_or(column_name = 'raw_model_name')
 		FROM information_schema.columns
 		WHERE table_schema = 'public'
 		  AND table_name = 'request_logs_with_current_month'
-	`).Scan(&hotOnly, &hasClass, &hasDueAt, &hasCustomer, &hasFingerprint); err != nil {
+	`).Scan(&hotOnly, &hasClass, &hasDueAt, &hasCustomer, &hasFingerprint, &hasRawModelName); err != nil {
 		t.Fatalf("probe view column contract: %v", err)
 	}
 	if hotOnly {
 		t.Error("HOT_ONLY column caller_id leaked into the canonical view")
 	}
-	if !hasClass || !hasDueAt || !hasCustomer || !hasFingerprint {
-		t.Errorf("appended columns missing (request_class=%v due_at=%v customer_id=%v system_fingerprint=%v)",
-			hasClass, hasDueAt, hasCustomer, hasFingerprint)
+	if !hasClass || !hasDueAt || !hasCustomer || !hasFingerprint || !hasRawModelName {
+		t.Errorf("appended columns missing (request_class=%v due_at=%v customer_id=%v system_fingerprint=%v raw_model_name=%v)",
+			hasClass, hasDueAt, hasCustomer, hasFingerprint, hasRawModelName)
 	}
 
 	// Data round-trip through the view from both sides of the UNION.
 	var hotCustomer, parentCustomer *int64
-	var hotClass string
+	var hotClass, hotRaw, hotFP, parentRaw string
 	if err := pool.QueryRow(ctx, `
-		SELECT customer_id, request_class FROM request_logs_with_current_month
+		SELECT customer_id, request_class, raw_model_name, system_fingerprint FROM request_logs_with_current_month
 		WHERE request_id = 'req-hot'
-	`).Scan(&hotCustomer, &hotClass); err != nil {
+	`).Scan(&hotCustomer, &hotClass, &hotRaw, &hotFP); err != nil {
 		t.Fatalf("read hot row via view: %v", err)
 	}
-	if hotCustomer == nil || *hotCustomer != 42 || hotClass != "scheduled" {
-		t.Errorf("hot row via view = (%v, %q), want (42, scheduled)", hotCustomer, hotClass)
+	if hotCustomer == nil || *hotCustomer != 42 || hotClass != "scheduled" || hotRaw != "model-alpha" || hotFP != "fp-hot-a" {
+		t.Errorf("hot row via view = (%v, %q, %q, %q), want (42, scheduled, model-alpha, fp-hot-a)", hotCustomer, hotClass, hotRaw, hotFP)
 	}
 	if err := pool.QueryRow(ctx, `
-		SELECT customer_id FROM request_logs_with_current_month
+		SELECT customer_id, raw_model_name FROM request_logs_with_current_month
 		WHERE request_id = 'req-parent'
-	`).Scan(&parentCustomer); err != nil {
+	`).Scan(&parentCustomer, &parentRaw); err != nil {
 		t.Fatalf("read parent row via view: %v", err)
 	}
-	if parentCustomer == nil || *parentCustomer != 7 {
-		t.Errorf("parent row via view customer_id = %v, want 7", parentCustomer)
+	if parentCustomer == nil || *parentCustomer != 7 || parentRaw != "model-beta" {
+		t.Errorf("parent row via view = (%v, %q), want (7, model-beta)", parentCustomer, parentRaw)
+	}
+
+	// Frozen-chain replay (migration 699's reason to exist): wrappers created
+	// before 485/603 — the base intersection carries neither
+	// system_fingerprint nor raw_model_name — plus the canonical dropped
+	// out-of-band (680-incident style). The ensure must reuse the stale
+	// wrappers and append fingerprint + model name on the conditional lateral
+	// instead of crashing or silently omitting them. This is the exact shape
+	// found on the local deploy DB and the shared 252 production PG, where
+	// the drift scanner's SELECT hit 42703 on every cycle.
+	if _, err := pool.Exec(ctx, `
+		DROP VIEW public.request_logs_with_current_month;
+		DROP VIEW public.request_logs_with_current_month_without_request_class_due_at;
+		DROP VIEW public.request_logs_with_current_month_without_customer_id;
+	`); err != nil {
+		t.Fatalf("drop dynamic chain: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		CREATE VIEW public.request_logs_with_current_month_without_customer_id AS
+		SELECT id, request_id, ts, tenant_id, prompt_tokens FROM public.request_logs_hot
+		UNION ALL
+		SELECT id, request_id, ts, tenant_id, prompt_tokens FROM public.request_logs
+	`); err != nil {
+		t.Fatalf("create stale pre-485 base wrapper: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		CREATE VIEW public.request_logs_with_current_month_without_request_class_due_at AS
+		SELECT v.*, m.customer_id
+		FROM public.request_logs_with_current_month_without_customer_id v
+		LEFT JOIN LATERAL (
+			SELECT customer_id FROM public.request_logs_hot
+			WHERE request_id = v.request_id AND ts = v.ts
+			UNION ALL
+			SELECT customer_id FROM public.request_logs
+			WHERE request_id = v.request_id AND ts = v.ts
+			LIMIT 1
+		) m ON true
+	`); err != nil {
+		t.Fatalf("create stale 577 wrapper: %v", err)
+	}
+	if err := db.ensureRequestLogsCurrentMonthView(ctx); err != nil {
+		t.Fatalf("ensure (frozen-chain rebuild): %v", err)
+	}
+	// Idempotency: a second pass on the rebuilt chain must be a no-op.
+	if err := db.ensureRequestLogsCurrentMonthView(ctx); err != nil {
+		t.Fatalf("ensure (frozen-chain idempotent second pass): %v", err)
+	}
+
+	// 5 stale base + customer_id + request_class + due_at + system_fingerprint (696) + raw_model_name (699).
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = 'public'
+		  AND table_name = 'request_logs_with_current_month'
+	`).Scan(&colCount); err != nil {
+		t.Fatalf("count frozen-rebuild view columns: %v", err)
+	}
+	if colCount != 10 {
+		t.Fatalf("frozen-rebuild canonical column count = %d, want 10 (5 stale base + customer_id + request_class + due_at + system_fingerprint + raw_model_name)", colCount)
+	}
+	// The scanner's exact projection must now parse and return data.
+	var scanFP, scanRaw string
+	if err := pool.QueryRow(ctx, `
+		SELECT raw_model_name, system_fingerprint FROM request_logs_with_current_month
+		WHERE request_id = 'req-hot'
+	`).Scan(&scanRaw, &scanFP); err != nil {
+		t.Fatalf("scanner-shape SELECT on frozen rebuild: %v", err)
+	}
+	if scanRaw != "model-alpha" || scanFP != "fp-hot-a" {
+		t.Errorf("scanner-shape SELECT = (%q, %q), want (model-alpha, fp-hot-a)", scanRaw, scanFP)
 	}
 }
