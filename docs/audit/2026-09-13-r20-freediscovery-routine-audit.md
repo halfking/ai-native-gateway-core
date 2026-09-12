@@ -63,11 +63,30 @@ version.json / web/public（menu-config、version.json），**零 Go 代码变�
 5. **并行会话纪律**：工作区当前零 WIP；提交仍严格按路径显式暂存，
    `git add -A` 在本仓库禁止；推送遇拒用 stash(named)→rebase→push→pop 配方。
 
-## 五、下一轮提示词
+## 五、收尾登记：推送遇拒后并入并行线（同日，2026-09-13）
 
-> 请根据 docs/audit/2026-09-13-r20-freediscovery-routine-audit.md 与 memory
-> 状态，对 FreeDiscovery 做例行审计（R21），区间基线为 ede6589fd（或当轮
-> 实际 origin/main tip）：
+**触发**：R20 首推被拒（non-fast-forward）——fetch 与 push 之间并行会话把
+前端响应式/组件化工作流推上 origin/main（`a8c3a7aaa` merge，区间
+`ede6589fd..a8c3a7aaa` 共 105 文件）。按配方收束后登记如下：
+
+- **处置**：工作区在收束时干净（版本文件已入 R20 提交 `9b68a6853`），
+  stash 步为空操作；本仓 `pull.rebase=false`，收束为 merge `cc026c93b`
+  （parents：`9b68a6853` + `a8c3a7aaa`），与仓库既有 merge 先例
+  （`67fce6914`、`a8c3a7aaa`）形态一致。
+- **入线体检**：`git diff --name-only ede6589fd a8c3a7aaa` 过滤 `.go$`/
+  `go.mod`/`go.sum` 为零命中（纯 web/ + 4 个 docs 文件）；4 条 FreeDiscovery
+  scope 路径 diff 为空；版本文件未被入线触碰（rebase/merge 零冲突）。
+- **证据覆盖复核**：入线零 Go 变更 → §二 #10-#13 门禁证据对合并后 Go 树
+  完全覆盖；合并后补跑 `go build ./admin/... ./domains/freediscovery/...`
+  通过。
+- **结论**：§一/§二 全部结论对合并后 tip `cc026c93b` 维持；本轮 seq 2099
+  与入线零版本交互。R21 的区间基线取 `cc026c93b`。
+
+## 六、下一轮提示词
+
+> 请根据 docs/audit/2026-09-13-r20-freediscovery-routine-audit.md（含 §五
+> 收尾登记）与 memory 状态，对 FreeDiscovery 做例行审计（R21），区间基线为
+> cc026c93b（或当轮实际 origin/main tip）：
 > ① 契约逐条核对——R20 §二 表中 6 项 + LOW 观察（templates list :76，豁免
 >   判据见 #7）逐条用 rg 对代码现状核销，勿信任任何"已关闭"声明；
 > ② 区间净 diff——`git diff <R20 tip> <新tip> -- admin/free_discovery.go
