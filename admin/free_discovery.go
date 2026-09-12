@@ -327,7 +327,9 @@ func (h *Handler) handleFreeDiscoveryTasks(w http.ResponseWriter, r *http.Reques
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	tasks, err := deps.engine.ListTasks(r.Context(), h.fdTenant(r), limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		// List endpoints have no expected sentinel errors today (failures are DB faults,
+		// so fdStatusFor falls through to 500); routed through fdStatusFor for consistency.
+		writeError(w, fdStatusFor(err), err.Error())
 		return
 	}
 	if tasks == nil {
@@ -380,7 +382,8 @@ func (h *Handler) handleFreeDiscoveryTaskResults(w http.ResponseWriter, r *http.
 	}
 	results, err := deps.engine.ListResults(r.Context(), h.fdTenant(r), id, status)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		// See handleFreeDiscoveryTasks: no expected sentinels, fdStatusFor falls through to 500.
+		writeError(w, fdStatusFor(err), err.Error())
 		return
 	}
 	if results == nil {
