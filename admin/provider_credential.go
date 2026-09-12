@@ -1237,9 +1237,13 @@ func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// 审计修复 (2026-08-30)：检查迭代过程中的错误
+	// R16 (2026-09-12)：升级为 500——与 provider_models.go:129 确立的
+	// "500 优于静默截断"约定一致，凭据错误统计不完整时不得伪装为完整。
 	if err := rows.Err(); err != nil {
-		slog.Warn("getProviderErrorStats rows iteration error",
+		slog.Error("getProviderErrorStats rows iteration error",
 			"provider_id", providerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "provider error stats iteration failed")
+		return
 	}
 
 	if stats == nil {

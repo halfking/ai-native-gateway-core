@@ -242,6 +242,9 @@ func (h *errorsTrendHandlers) loadFromDetail(ctx context.Context, q statsQuery) 
 }
 
 // loadBreakdowns 填充 summary 的 top 错误类型 / top 供应商 / 受影响凭据数。
+// R16 (2026-09-12) audit P2: the third branch (kind='creds') feeds
+// summary.affected_credentials, which the new error-trend panel renders as a
+// KPI — it used to be declared but never computed (always 0).
 func (h *errorsTrendHandlers) loadBreakdowns(ctx context.Context, q statsQuery, resp *errorsTrendResponse) error {
 	rows, err := h.db.Query(ctx, `
 		SELECT 'type' AS kind, COALESCE(NULLIF(error_type, ''), 'unknown') AS key,
@@ -260,6 +263,13 @@ func (h *errorsTrendHandlers) loadBreakdowns(ctx context.Context, q statsQuery, 
 		  AND ($4 = 0 OR credential_id = $4)
 		  AND ($5 = '' OR $5 = 'all' OR error_type = $5)
 		GROUP BY supplier
+		UNION ALL
+		SELECT 'creds', '', COUNT(DISTINCT credential_id)::int
+		FROM supplier_errors_unified
+		WHERE occurred_at >= $1 AND occurred_at < $2
+		  AND ($3 = '' OR $3 = 'all' OR supplier = $3)
+		  AND ($4 = 0 OR credential_id = $4)
+		  AND ($5 = '' OR $5 = 'all' OR error_type = $5)
 		ORDER BY kind, n DESC
 	`, q.Since, q.Until, q.Supplier, q.CredentialID, q.ErrorType)
 	if err != nil {
@@ -284,6 +294,8 @@ func (h *errorsTrendHandlers) loadBreakdowns(ctx context.Context, q statsQuery, 
 			if len(resp.Summary.TopSuppliers) < 10 {
 				resp.Summary.TopSuppliers = append(resp.Summary.TopSuppliers, row)
 			}
+		case "creds":
+			resp.Summary.AffectedCreds = n
 		}
 	}
 	return rows.Err()
