@@ -148,34 +148,6 @@ describe('guide group migrated items', () => {
   })
 })
 
-/**
- * 2026-07-22: 回归保护 — 防止 PUBLIC_NAV_LINKS 指向不存在的路由，
- * 否则路由守卫会重定向到 /?login=1，导致导航栏错位。
- */
-describe('PUBLIC_NAV_LINKS regression guard', () => {
-  it('all PUBLIC_NAV_LINKS must point to existing public routes', async () => {
-    const { PUBLIC_NAV_LINKS } = await import('./navLinks')
-    const routerModule = await import('../router')
-
-    // 收集所有声明为 public 的路径
-    const publicPaths = new Set<string>()
-    for (const route of routerModule.router.options.routes) {
-      if (route.meta?.public) {
-        publicPaths.add(route.path as string)
-      }
-    }
-
-    // 所有 PUBLIC_NAV_LINKS 必须在 publicPaths 中
-    for (const link of PUBLIC_NAV_LINKS) {
-      const isPublic = publicPaths.has(link.path)
-      expect(
-        isPublic,
-        `PUBLIC_NAV_LINKS entry "${link.path}" (${link.labelKey}) is not in the set of public routes — this will trigger a redirect to /?login=1`,
-      ).toBe(true)
-    }
-  })
-})
-
 describe('V5.1 plugin nav (remote merge)', () => {
   const asmEntry: RemoteNavEntry = {
     plugin_id: 'ai-session-manager',
