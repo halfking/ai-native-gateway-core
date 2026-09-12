@@ -1,6 +1,6 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/699_request_logs_view_raw_model_name.sql
--- Migration:     699
+-- File:          sql/migrations/startup/700_request_logs_view_raw_model_name.sql
+-- Migration:     700
 -- Database:      llm_gateway
 -- Purpose:       Ensure the canonical request_logs_with_current_month view
 --                exposes raw_model_name. The 7-day fingerprint drift scanner
@@ -32,7 +32,7 @@
 --      → the guard no-ops (an unconditional lateral re-add would fail with
 --      "column already exists" — same dual-shape trap 696 documented).
 --   Guard-passing chains never carry raw_model_name in the reused wrapper,
---   and 696 always precedes 699 in the channel, so the static select list
+--   and 696 always precedes 700 in the channel, so the static select list
 --   (request_class, due_at, system_fingerprint, raw_model_name) is safe in
 --   every reachable state.
 --
@@ -63,7 +63,7 @@ BEGIN
   ) INTO canonical_has_raw_model_name;
 
   IF canonical_has_raw_model_name THEN
-    RAISE NOTICE '699: request_logs_with_current_month already exposes raw_model_name; nothing to do';
+    RAISE NOTICE '700: request_logs_with_current_month already exposes raw_model_name; nothing to do';
     RETURN;
   END IF;
 
@@ -83,7 +83,7 @@ BEGIN
 
   COMMENT ON VIEW public.request_logs_with_current_month IS
     'Hot + monthly partitions UNION with customer_id (577), request_class/due_at (610), '
-    'system_fingerprint (696) and raw_model_name (699) appended. Bootstrap-recreated by '
+    'system_fingerprint (696) and raw_model_name (700) appended. Bootstrap-recreated by '
     '680 / db.ensureRequestLogsCurrentMonthView when dropped out-of-band.';
 END $$;
 

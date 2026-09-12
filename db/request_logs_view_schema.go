@@ -17,13 +17,13 @@ import (
 // 只有读路径挂——这类"表在、视图没了"的状态没有任何 migration 会重建
 // （610 之后再无 migration 触碰该视图），网关也没有启动自愈，于是持续报错。
 //
-// 重建按 577 + 610 + 696 + 699 的包装链分阶段补齐，列契约 = 基础 108 列 UNION
+// 重建按 577 + 610 + 696 + 700 的包装链分阶段补齐，列契约 = 基础 108 列 UNION
 // + customer_id (577) + request_class/due_at (610) + system_fingerprint (696)
-// + raw_model_name (699，仅冻结链需追加；动态推导的基础交集自带)。
+// + raw_model_name (700，仅冻结链需追加；动态推导的基础交集自带)。
 // 基础列取 hot∩parent 交集（排除后追加列），因此 hot 的 HOT_ONLY 列
 // （caller_id 等）永远不会撑爆 UNION——这正是 341 式 "SELECT * FROM hot
 // UNION ALL SELECT * FROM parent" 重放在 603 之后必失败、进而留下"视图已删
-// 未建"的根因。699 的缘起：drift scanner（83bf582dd 起）SELECT
+// 未建"的根因。700 的缘起：drift scanner（83bf582dd 起）SELECT
 // raw_model_name FROM 本视图，而冻结基础交集早于 485，该列从未出现在链上，
 // 每周期 42703（本机 2089 部署即时炸出，生产 252 视图同构）。
 //
@@ -116,9 +116,9 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 		}
 	}
 
-	// Migration 610+696+699 阶段：lateral 追加 request_class/due_at（canonical），
+	// Migration 610+696+700 阶段：lateral 追加 request_class/due_at（canonical），
 	// 并按基础包装形状与底层表实际列况决定是否追加 system_fingerprint（696）与
-	// raw_model_name（699，与 sql/migrations/startup/699 同形）。post-603 动态
+	// raw_model_name（700，与 sql/migrations/startup/700 同形）。post-603 动态
 	// 推导的基础交集已含两列（680 引导/自愈重建路径），此时 canonical 经 v.* 继承，
 	// 再 lateral 追加会重复列（CREATE 直接失败）；pre-485 冻结链（生产/本机现网）
 	// 基础包装缺列，需 lateral 追加。lateral 的列引用同样按 hot 侧实况裁剪——
@@ -193,7 +193,7 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 	if _, err := d.pool.Exec(ctx, canonicalDDL); err != nil {
 		return fmt.Errorf("rebuild request_logs_with_current_month view: %w", err)
 	}
-	slog.Info("request_logs_with_current_month view chain restored (self-heal 680+696+699)",
+	slog.Info("request_logs_with_current_month view chain restored (self-heal 680+696+700)",
 		"base_wrapper_carries_fingerprint", baseHasFingerprint,
 		"base_wrapper_carries_raw_model_name", baseHasRawModelName,
 		"appended_columns", strings.Join(appendSelects, ", "))

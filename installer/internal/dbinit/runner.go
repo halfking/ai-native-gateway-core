@@ -135,7 +135,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"695_request_logs_promote_final_success_self_heal.sql",
 			"696_request_logs_view_system_fingerprint.sql",
 			"697_request_logs_promote_system_fingerprint.sql",
-			"699_request_logs_view_raw_model_name.sql",
+			"698_promote_hot_partition_timezone_pin.sql",
+			"699_supplier_errors_ensure_timezone_pin.sql",
+			"700_request_logs_view_raw_model_name.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}

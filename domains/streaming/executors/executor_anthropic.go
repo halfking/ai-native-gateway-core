@@ -211,6 +211,28 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 					StatusCode: resp.StatusCode,
 				}
 			}
+			if irResp.OnlyUnsupportedBlocks() {
+				// 2026-09-12 audit P1: an upstream 200 whose content blocks
+				// are all types this gateway cannot represent used to be
+				// serialized as an empty-but-successful body (billed as
+				// success) — and the legacy converter path hard-failed it as
+				// "empty response", demoting the provider for a gateway-side
+				// conversion gap. Fail as conversion (stage=gateway: billing
+				// refused, provider health untouched) with the offending
+				// types named so operators can spot which upstream ships
+				// block shapes the IR doesn't model yet.
+				slog.Warn("unsupported_content_blocks_only",
+					"provider_id", a.ProviderID,
+					"model", irResp.Model,
+					"block_types", irResp.UnknownBlockTypes,
+				)
+				return nil, &upstreampkg.Error{
+					Kind: errorsx.KindConversion,
+					Message: fmt.Sprintf("anthropic response contains only unsupported content block types %v",
+						irResp.UnknownBlockTypes),
+					StatusCode: resp.StatusCode,
+				}
+			}
 			var (
 				converted []byte
 				serErr    error

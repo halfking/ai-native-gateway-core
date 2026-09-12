@@ -370,8 +370,14 @@ var requestLogsViewSystemFingerprintMigration696 []byte
 //go:embed embeddata/startup/697_request_logs_promote_system_fingerprint.sql
 var requestLogsPromoteSystemFingerprintMigration697 []byte
 
-//go:embed embeddata/startup/699_request_logs_view_raw_model_name.sql
-var requestLogsViewRawModelNameMigration699 []byte
+//go:embed embeddata/startup/698_promote_hot_partition_timezone_pin.sql
+var promoteHotPartitionTimezonePinMigration698 []byte
+
+//go:embed embeddata/startup/699_supplier_errors_ensure_timezone_pin.sql
+var supplierErrorsEnsureTimezonePinMigration699 []byte
+
+//go:embed embeddata/startup/700_request_logs_view_raw_model_name.sql
+var requestLogsViewRawModelNameMigration700 []byte
 
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
@@ -491,7 +497,9 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/695_request_logs_promote_final_success_self_heal.sql":                   requestLogsPromoteFinalSuccessSelfHealMigration695,
 	"startup/696_request_logs_view_system_fingerprint.sql":                           requestLogsViewSystemFingerprintMigration696,
 	"startup/697_request_logs_promote_system_fingerprint.sql":                        requestLogsPromoteSystemFingerprintMigration697,
-	"startup/699_request_logs_view_raw_model_name.sql":                               requestLogsViewRawModelNameMigration699,
+	"startup/698_promote_hot_partition_timezone_pin.sql":                             promoteHotPartitionTimezonePinMigration698,
+	"startup/699_supplier_errors_ensure_timezone_pin.sql":                            supplierErrorsEnsureTimezonePinMigration699,
+	"startup/700_request_logs_view_raw_model_name.sql":                               requestLogsViewRawModelNameMigration700,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 

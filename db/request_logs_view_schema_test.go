@@ -41,9 +41,9 @@ func TestApplyMigrationsIncludesRequestLogsViewEnsure(t *testing.T) {
 		// lateral stage when the base wrapper's frozen intersection lacks it;
 		// the shape probe keeps both wrapper generations idempotent.
 		"baseHasFingerprint",
-		// Migration 699 contract: raw_model_name rides the same conditional
+		// Migration 700 contract: raw_model_name rides the same conditional
 		// lateral stage (the frozen base intersection predates 485, so the
-		// drift scanner's SELECT hit 42703 on every cycle until 699), and the
+		// drift scanner's SELECT hit 42703 on every cycle until 700), and the
 		// lateral itself is trimmed to columns the hot table actually has so
 		// self-heal never regresses on tables lagging 485/603.
 		"baseHasRawModelName",
@@ -66,7 +66,7 @@ func TestApplyMigrationsIncludesRequestLogsViewEnsure(t *testing.T) {
 // tables inside a dedicated scratch database, then verify the canonical view
 // matches the production column contract (intersection base + customer_id +
 // request_class + due_at, with system_fingerprint/raw_model_name either
-// inherited via the dynamic base intersection or appended by the 696/699
+// inherited via the dynamic base intersection or appended by the 696/700
 // conditional laterals on frozen chains) and that a HOT_ONLY hot column never
 // breaks the UNION.
 //
@@ -131,7 +131,7 @@ func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
 	// raw_model_name(485/603)) on both sides, and a HOT_ONLY column that
 	// exists only on hot — the exact shape that made the 341-style SELECT *
 	// UNION replay fail and drop the view. The fingerprint/model-name columns
-	// must exist on the tables or the 696/699 lateral shape probes have
+	// must exist on the tables or the 696/700 lateral shape probes have
 	// nothing real to probe (this schema predated 696 and made the live
 	// round-trip fail with 42703 on h.system_fingerprint).
 	schema := `
@@ -257,7 +257,7 @@ func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
 		t.Errorf("parent row via view = (%v, %q), want (7, model-beta)", parentCustomer, parentRaw)
 	}
 
-	// Frozen-chain replay (migration 699's reason to exist): wrappers created
+	// Frozen-chain replay (migration 700's reason to exist): wrappers created
 	// before 485/603 — the base intersection carries neither
 	// system_fingerprint nor raw_model_name — plus the canonical dropped
 	// out-of-band (680-incident style). The ensure must reuse the stale
@@ -303,7 +303,7 @@ func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
 		t.Fatalf("ensure (frozen-chain idempotent second pass): %v", err)
 	}
 
-	// 5 stale base + customer_id + request_class + due_at + system_fingerprint (696) + raw_model_name (699).
+	// 5 stale base + customer_id + request_class + due_at + system_fingerprint (696) + raw_model_name (700).
 	if err := pool.QueryRow(ctx, `
 		SELECT count(*) FROM information_schema.columns
 		WHERE table_schema = 'public'
