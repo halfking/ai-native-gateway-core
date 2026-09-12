@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -249,5 +250,54 @@ func TestAnthropicToChat_ScalarToolInputSurvives(t *testing.T) {
 	fn := tcs[0].(map[string]any)["function"].(map[string]any)
 	if fn["arguments"] != `"raw-scalar"` {
 		t.Errorf("arguments = %v, want the raw JSON string", fn["arguments"])
+	}
+}
+
+// 2026-09-12 audit P1: an unknown-only response must fail with a message
+// that names the unsupported block types (conversion-class, provider NOT
+// demoted) instead of the generic "empty response" that previously pushed
+// these into the empty_response bucket.
+func TestAnthropicToChat_UnknownOnlyBlocksNamedInError(t *testing.T) {
+	in := []byte(`{
+        "id":"msg_uo","type":"message","role":"assistant","model":"claude-x",
+        "content":[{"type":"server_tool_use","id":"stu_1","name":"web_search","input":{"query":"x"}}],
+        "usage":{"input_tokens":10,"output_tokens":4},
+        "stop_reason":"tool_use"
+    }`)
+	_, err := ConvertAnthropicResponseToChat(in, "x")
+	if err == nil {
+		t.Fatal("unknown-only response must not serialize as an empty success")
+	}
+	for _, want := range []string{"unsupported upstream content block types", "server_tool_use"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q must contain %q", err.Error(), want)
+		}
+	}
+	if strings.Contains(err.Error(), "empty response") {
+		t.Errorf("error %q must not reuse the empty-response classification", err.Error())
+	}
+}
+
+func TestAnthropicToChat_MixedUnknownBlocksSucceed(t *testing.T) {
+	in := []byte(`{
+        "id":"msg_mixed","type":"message","role":"assistant","model":"claude-x",
+        "content":[
+            {"type":"server_tool_use","id":"stu_1","name":"web_search","input":{}},
+            {"type":"text","text":"the answer"}
+        ],
+        "usage":{"input_tokens":10,"output_tokens":4},
+        "stop_reason":"end_turn"
+    }`)
+	out, err := ConvertAnthropicResponseToChat(in, "x")
+	if err != nil {
+		t.Fatalf("mixed response must convert, got %v", err)
+	}
+	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
+	_ = json.Unmarshal(out, &v)
+	choice := v["choices"].([]any)[0].(map[string]any)
+	msg := choice["message"].(map[string]any)
+	if msg["content"] != "the answer" {
+		t.Errorf("content = %v, want the text block preserved", msg["content"])
 	}
 }

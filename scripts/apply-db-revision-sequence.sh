@@ -300,17 +300,29 @@ files=(
   # 漂移检测即失明(晋升行丢列,父表默认 NULL)。列在 hot(603)/parent(487)
   # 均已存在,纯 CREATE OR REPLACE,幂等收敛,down 无。697 已查生产双账本空闲。
   "$ROOT_DIR/sql/migrations/startup/697_request_logs_promote_system_fingerprint.sql"
-  # 2026-09-12 视图列缺口第二起:699 给 request_logs_with_current_month 追加
+  # 2026-09-12 promote 月份路由会话时区钉扎（694 的 promote 侧补全）：9 个
+  # promote_*_hot_to_partition 函数体在调用 ensure_* 之前先用 date_trunc 按
+  # 会话时区分组,694 只钉了 ensure 的边界计算——UTC 会话下 [月初 00:00,08:00)
+  # +08 窗口的行落入上一月分组,ensure 按 694 钉扎的上海边界建的分区不含该行,
+  # INSERT 23514 整批卡死（cfl 表的 TTL trim 随即开数据丢失窗口,657828114 的
+  # 预建只救了 cfl 一张表）。生产集群 default TZ=Asia/Shanghai 故潜伏;
+  # 新宿主机/维护 psql/裸 pgx 任一 UTC 会话即触发。request_logs 体 = 697 体
+  # （含 695 自愈与 system_fingerprint 三列）加钉扎,其余 8 个 = objects/ 规范
+  # 体加钉扎,迁移文件由 objects/ 机械变换生成。纯 CREATE OR REPLACE,幂等
+  # 收敛,down 无。698 已查生产双账本空闲（seq/schema_migrations 均 0 命中）。
+  "$ROOT_DIR/sql/migrations/startup/698_promote_hot_partition_timezone_pin.sql"
+  # 2026-09-12 视图列缺口第二起:700 给 request_logs_with_current_month 追加
   # raw_model_name lateral 阶段(485 加父表列、603 补 hot 列,但视图基础包装的
   # 列交集在 485 之前冻结、链上从未重建)——integrity_fingerprint_drift 自
   # 83bf582dd 起按近期窗口教义读视图并 SELECT raw_model_name,每周期 42703:
   # 本机 2089 部署即时炸出,生产 252 视图同构(112 列、无 raw_model_name),
   # 携带 83bf582dd 的下一个生产二进制上线即复现。696 的 system_fingerprint
   # 在同一 select list 保留。纯 CREATE OR REPLACE VIEW(尾部追加列,无 DROP),
-  # 幂等收敛,down 无。编号前已查生产双账本(2026-09-12):schema_migrations
-  # 有 696/697、无 698/699;gateway_db_revision_sequences 跨项目最新 697,
-  # 698 预留给 promote 时区钉定(cf6eb457f),本迁移取 699。
-  "$ROOT_DIR/sql/migrations/startup/699_request_logs_view_raw_model_name.sql"
+  # 幂等收敛,down 无。编号注记:本轮先按当时双账本核查取 699,与并行线
+  # (698 promote 钉扎 / 699 supplier_errors 钉扎)撞号——两线均先入 origin,
+  # 本迁移重编号 699→700;重编号前已复核生产双账本 698-702 均 0 命中
+  # (schema_migrations 无 698/699/700/701,sequences 无 :69[89]/:70[0-2])。
+  "$ROOT_DIR/sql/migrations/startup/700_request_logs_view_raw_model_name.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
@@ -335,8 +347,21 @@ intentional_function_chains=(
   # must stay the later entry.
   'promote_auto_route_selections_hot_to_partition|656_auto_route_selections_hot.sql|658_auto_route_structured_features.sql|'
   # 697 appends system_fingerprint to the three explicit column lists on top
-  # of 695's body (self-heal demote kept) and must stay the later entry.
-  'promote_request_logs_hot_to_partition|695_request_logs_promote_final_success_self_heal.sql|697_request_logs_promote_system_fingerprint.sql|'
+  # of 695's body (self-heal demote kept); 698 adds the Asia/Shanghai pin on
+  # top of 697's body and must stay the later entry.
+  'promote_request_logs_hot_to_partition|695_request_logs_promote_final_success_self_heal.sql|697_request_logs_promote_system_fingerprint.sql|698_promote_hot_partition_timezone_pin.sql|'
+  # 659 rewrote these seven promote bodies as the single atomic CTE form;
+  # 688 later aligned their defaults to the Go scheduler (not in this array,
+  # so invisible to the scanner) and 698 re-derives each body from the
+  # sql/objects/ canonical (byte-identical to 688's live body, verified
+  # per-function) plus the Asia/Shanghai pin. 698 must stay the later entry.
+  'promote_tool_usage_stats_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
+  'promote_credit_ledger_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
+  'promote_request_logs_bodies_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
+  'promote_usage_ledger_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
+  'promote_request_wal_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
+  'promote_credential_model_index_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
+  'promote_routing_decision_log_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
 )
 redefined_functions="$(
   for file in "${files[@]}"; do
