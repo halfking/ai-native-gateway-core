@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ElLoadingDirective } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { useChart, createTimeSeriesConfig } from '../../composables/useChart'
 import type { BoardTrendPoint } from '../../api/board'
+
+// v-loading is not globally registered in this project — bind the directive locally.
+const vLoading = ElLoadingDirective
 
 const props = defineProps<{
   data: BoardTrendPoint[]

@@ -45,8 +45,8 @@ import (
 // on the `want` list — update the matrix in the comment at the same time.
 func TestSerializeResponsesRequest_ExtensionLoss(t *testing.T) {
 	req := &InternalRequest{
-		Model:    "gpt-4o",
-		Stream:   true,
+		Model:     "gpt-4o",
+		Stream:    true,
 		MaxTokens: 1024,
 		Messages: []Message{
 			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}},
@@ -54,7 +54,7 @@ func TestSerializeResponsesRequest_ExtensionLoss(t *testing.T) {
 		// Source protocol must be Responses for restoreExtensions() to honor Extensions.
 		// We also seed the explicit typed fields so the test does not depend on
 		// round-tripping Extensions for preserved fields.
-		SourceProtocol: ProtocolOpenAIResponses,
+		SourceProtocol:     ProtocolOpenAIResponses,
 		PreviousResponseID: "resp_abc",
 		PromptCacheKey:     "cache_xyz",
 		SafetyIdentifier:   "user_safe_1",

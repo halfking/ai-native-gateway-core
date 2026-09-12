@@ -62,6 +62,9 @@ if [[ "$RUN_WEB" == true ]]; then
   (cd web && pnpm run typecheck)
   echo "[verify] frontend tests"
   (cd web && pnpm run test)
+  echo "[verify] frontend static gates (responsive breakpoints + el-* imports)"
+  (cd web && pnpm run responsive:check)
+  (cd web && pnpm run element:check)
   echo "[verify] frontend build"
   (cd web && pnpm run build)
 fi

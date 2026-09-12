@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ElLoadingDirective } from 'element-plus'
 import type { ActiveElement, ChartEvent } from 'chart.js'
 import { useChart, createDoughnutConfig, generateColors } from '../../composables/useChart'
 import type { BoardPieItem } from '../../api/board'
+
+// v-loading is not globally registered in this project — bind the directive locally.
+const vLoading = ElLoadingDirective
 
 const props = defineProps<{
   title: string

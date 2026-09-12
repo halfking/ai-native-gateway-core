@@ -121,3 +121,122 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// Audit R20 (2026-09-13): the unknown-block recording must cover ALL
+// response parsers, not only Anthropic. Previously ParseResponsesResponse
+// had no default branch (web_search_call / mcp_call / ... were silently
+// dropped), parseOpenAIResponseContentBlock dropped unknown payloads without
+// recording, and ParseGeminiResponse had no unknown-part handling — an
+// unknown-only payload collapsed into an empty-looking parse.
+func TestParseResponsesResponse_UnknownOutputItems(t *testing.T) {
+	body := []byte(`{
+		"id": "resp_unknown",
+		"object": "response",
+		"created_at": 1700000000,
+		"status": "completed",
+		"model": "gpt-fake",
+		"output": [
+			{"type": "web_search_call", "id": "ws_1", "status": "completed"},
+			{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "answer"}]},
+			{"type": "mcp_call", "id": "mcp_1", "status": "completed"}
+		],
+		"usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
+	}`)
+
+	parsed, err := ParseResponsesResponse(body)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got, want := parsed.UnknownBlockTypes, []string{"web_search_call", "mcp_call"}; !equalStrings(got, want) {
+		t.Fatalf("UnknownBlockTypes = %v, want %v", got, want)
+	}
+	if parsed.OnlyUnsupportedBlocks() {
+		t.Fatal("mixed response must not be classified unknown-only")
+	}
+}
+
+func TestParseResponsesResponse_UnknownOnlyOutput(t *testing.T) {
+	body := []byte(`{
+		"id": "resp_unknown_only",
+		"object": "response",
+		"created_at": 1700000000,
+		"status": "completed",
+		"model": "gpt-fake",
+		"output": [{"type": "file_search_call", "id": "fs_1", "status": "completed"}],
+		"usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
+	}`)
+
+	parsed, err := ParseResponsesResponse(body)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !parsed.OnlyUnsupportedBlocks() {
+		t.Fatal("unknown-only response must be classified unsupported, not empty")
+	}
+}
+
+func TestParseOpenAIResponse_UnknownContentBlockTypes(t *testing.T) {
+	body := []byte(`{
+		"id": "chatcmpl_unknown",
+		"object": "chat.completion",
+		"created": 1700000000,
+		"model": "gpt-fake",
+		"choices": [{
+			"index": 0,
+			"message": {
+				"role": "assistant",
+				"content": [
+					{"type": "image_url", "image_url": {"url": "https://example.com/x.png"}},
+					{"type": "text", "text": "answer"}
+				]
+			},
+			"finish_reason": "stop"
+		}],
+		"usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+	}`)
+
+	parsed, err := ParseOpenAIResponse(body)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got, want := parsed.UnknownBlockTypes, []string{"image_url"}; !equalStrings(got, want) {
+		t.Fatalf("UnknownBlockTypes = %v, want %v", got, want)
+	}
+	// Pre-existing shape: the unsupported block stays on Content as a lossy
+	// shell (type kept, payload dropped) — now at least the loss is visible
+	// via UnknownBlockTypes.
+	if len(parsed.Content) != 2 || parsed.Content[0].Type != "image_url" || parsed.Content[1].Type != "text" {
+		t.Fatalf("blocks must keep parsing: Content = %+v", parsed.Content)
+	}
+	if parsed.OnlyUnsupportedBlocks() {
+		t.Fatal("mixed response must not be classified unknown-only")
+	}
+}
+
+func TestParseGeminiResponse_UnknownParts(t *testing.T) {
+	body := []byte(`{
+		"candidates": [{
+			"content": {
+				"role": "model",
+				"parts": [
+					{"text": "answer"},
+					{"inlineData": {"mimeType": "image/png", "data": "aGk="}},
+					{"executableCode": {"language": "PYTHON", "code": "print(1)"}}
+				]
+			},
+			"finishReason": "STOP"
+		}],
+		"usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 2, "totalTokenCount": 5}
+	}`)
+
+	parsed, err := ParseGeminiResponse(body)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got, want := parsed.UnknownBlockTypes, []string{"inlineData", "gemini_part_unrecognized"}; !equalStrings(got, want) {
+		t.Fatalf("UnknownBlockTypes = %v, want %v", got, want)
+	}
+	if len(parsed.Content) != 1 || parsed.Content[0].Type != "text" {
+		t.Fatalf("known parts must keep parsing: Content = %+v", parsed.Content)
+	}
+}

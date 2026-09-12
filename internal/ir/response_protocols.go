@@ -19,6 +19,12 @@ func ParseGeminiResponse(body []byte) (*InternalResponse, error) {
 					Text         string          `json:"text"`
 					Thought      string          `json:"thought"`
 					FunctionCall json.RawMessage `json:"functionCall"`
+					// Audit R20 (2026-09-13): keep enough of the other known
+					// part shapes to recognize them as "known-unsupported"
+					// rather than fully unknown (inlineData carries media the
+					// gateway does not synthesize into text).
+					InlineData       json.RawMessage `json:"inlineData"`
+					ThoughtSignature string          `json:"thoughtSignature"`
 				} `json:"parts"`
 			} `json:"content"`
 			FinishReason string `json:"finishReason"`
@@ -74,6 +80,19 @@ func ParseGeminiResponse(body []byte) (*InternalResponse, error) {
 			id := fmt.Sprintf("gemini_call_%d_%s", index, call.Name)
 			resp.Content = append(resp.Content, ResponseContentBlock{Type: "tool_use", ID: id, Name: call.Name, Input: call.Args})
 			resp.ToolCalls = append(resp.ToolCalls, ResponseToolCall{ID: id, Name: call.Name, Arguments: string(call.Args), InputRaw: append(json.RawMessage(nil), call.Args...)})
+		case len(part.InlineData) > 0 && string(part.InlineData) != "null":
+			// Known-unsupported media part: keep the loss visible without
+			// fabricating text from binary payloads.
+			resp.recordUnknownBlockType("inlineData")
+		case part.ThoughtSignature != "":
+			// Signature-only part: a known Gemini shape that rides next to
+			// thought/functionCall parts — nothing to synthesize, not a loss.
+		default:
+			// Gemini parts have no explicit type discriminator — an all-empty
+			// decode means a part shape this parser does not know
+			// (executableCode, videoMetadata, ...). Record it so the
+			// response is attributed as unsupported, never as empty.
+			resp.recordUnknownBlockType("gemini_part_unrecognized")
 		}
 	}
 	return resp, nil
@@ -151,6 +170,13 @@ func ParseResponsesResponse(body []byte) (*InternalResponse, error) {
 				resp.Content = append(resp.Content, ResponseContentBlock{Type: "thinking", Thinking: text})
 				resp.ReasoningContent += text
 			}
+		default:
+			// Audit R20 (2026-09-13): web_search_call / mcp_call /
+			// file_search_call / ... were silently dropped before, so an
+			// unknown-only Responses payload collapsed into an empty-looking
+			// parse. Record the item type so OnlyUnsupportedBlocks can
+			// attribute the response as unsupported instead of empty.
+			resp.recordUnknownBlockType(item.Type)
 		}
 	}
 	return resp, nil
@@ -167,6 +193,11 @@ func appendResponsesMessageContent(resp *InternalResponse, raw json.RawMessage) 
 	for _, block := range blocks {
 		if block.Type == "output_text" || block.Type == "text" {
 			resp.Content = append(resp.Content, ResponseContentBlock{Type: "text", Text: block.Text})
+		} else {
+			// Audit R20 (2026-09-13): non-text message content parts were
+			// silently dropped; record them for unsupported-response
+			// attribution (parity with the output-item switch above).
+			resp.recordUnknownBlockType(block.Type)
 		}
 	}
 	return nil
