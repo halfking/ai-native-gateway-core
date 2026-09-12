@@ -1577,6 +1577,38 @@ $$;
 
 
 --
+-- Name: ensure_cache_metrics_partition(date); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.ensure_cache_metrics_partition(target_date date DEFAULT CURRENT_DATE) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    month_start    date := date_trunc('month', target_date)::date;
+    month_end      date := (date_trunc('month', target_date) + interval '1 month')::date;
+    partition_name text := 'cache_metrics_' || to_char(month_start, 'YYYY_MM');
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON c.relnamespace = n.oid
+        WHERE c.relname = partition_name
+          AND n.nspname = 'public'
+    ) THEN
+        RETURN partition_name || ' (already exists)';
+    END IF;
+
+    EXECUTE format(
+        'CREATE TABLE public.%I PARTITION OF public.cache_metrics FOR VALUES FROM (%L) TO (%L)',
+        partition_name, month_start, month_end
+    );
+
+    RAISE NOTICE 'ensure_cache_metrics_partition: created %', partition_name;
+    RETURN partition_name;
+END;
+$$;
+
+
+--
 -- Name: ensure_candidate_failure_logs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1700,6 +1732,53 @@ COMMENT ON FUNCTION public.ensure_credit_ledger_partition(target_month timestamp
 Called by bg.PartitionManager on every tick for current + next month.
 Parent-table indexes auto-propagate. Idempotent.
 Originally in migration 334; recreated in 475 to fix production silent-skip.';
+
+
+--
+-- Name: ensure_dashboard_events_partition(date); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.ensure_dashboard_events_partition(target_date date DEFAULT NULL::date) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_date DATE;
+    v_month_start DATE;
+    v_month_end DATE;
+    v_partition_name TEXT;
+BEGIN
+    v_date := COALESCE(target_date, NOW());
+    v_month_start := DATE_TRUNC('month', v_date);
+    v_month_end := v_month_start + INTERVAL '1 month';
+    v_partition_name := 'dashboard_access_events_' || TO_CHAR(v_month_start, 'YYYY_MM');
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = v_partition_name) THEN
+        EXECUTE format('
+            CREATE TABLE %I PARTITION OF dashboard_access_events
+            FOR VALUES FROM (%L) TO (%L)
+        ', v_partition_name, v_month_start, v_month_end);
+        
+        EXECUTE format('
+            CREATE INDEX idx_%s_tenant ON %I(tenant_id, timestamp DESC)
+        ', v_partition_name, v_partition_name);
+    END IF;
+    
+    RETURN v_partition_name;
+END;
+$$;
+
+
+--
+-- Name: ensure_handoff_logs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.ensure_handoff_logs_partition(p_month timestamp with time zone) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE NOTICE 'noop';
+END;
+$$;
 
 
 --
@@ -1987,6 +2066,68 @@ Idempotent. Added 2026-06-30 in migration 319.';
 
 
 --
+-- Name: ensure_session_module_executions_partition(date); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.ensure_session_module_executions_partition(target_date date DEFAULT NULL::date) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_date DATE;
+    v_month_start DATE;
+    v_month_end DATE;
+    v_partition_name TEXT;
+    v_next_partition_name TEXT;
+    v_next_month_start DATE;
+    v_next_month_end DATE;
+BEGIN
+    v_date := COALESCE(target_date, NOW());
+    v_month_start := DATE_TRUNC('month', v_date);
+    v_month_end := v_month_start + INTERVAL '1 month';
+    v_partition_name := 'session_module_executions_' || TO_CHAR(v_month_start, 'YYYY_MM');
+    
+    -- 创建目标月分区
+    IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = v_partition_name) THEN
+        EXECUTE format('
+            CREATE TABLE %I PARTITION OF session_module_executions
+            FOR VALUES FROM (%L) TO (%L)
+        ', v_partition_name, v_month_start, v_month_end);
+        
+        EXECUTE format('
+            CREATE INDEX idx_%s_session ON %I(gw_session_id, module_name)
+        ', v_partition_name, v_partition_name);
+        
+        EXECUTE format('
+            CREATE INDEX idx_%s_tenant ON %I(tenant_id, created_at DESC)
+        ', v_partition_name, v_partition_name);
+    END IF;
+    
+    -- 同时确保下个月分区也存在
+    v_next_month_start := v_month_start + INTERVAL '1 month';
+    v_next_month_end := v_next_month_start + INTERVAL '1 month';
+    v_next_partition_name := 'session_module_executions_' || TO_CHAR(v_next_month_start, 'YYYY_MM');
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = v_next_partition_name) THEN
+        EXECUTE format('
+            CREATE TABLE %I PARTITION OF session_module_executions
+            FOR VALUES FROM (%L) TO (%L)
+        ', v_next_partition_name, v_next_month_start, v_next_month_end);
+        
+        EXECUTE format('
+            CREATE INDEX idx_%s_session ON %I(gw_session_id, module_name)
+        ', v_next_partition_name, v_next_partition_name);
+        
+        EXECUTE format('
+            CREATE INDEX idx_%s_tenant ON %I(tenant_id, created_at DESC)
+        ', v_next_partition_name, v_next_partition_name);
+    END IF;
+    
+    RETURN v_partition_name;
+END;
+$$;
+
+
+--
 -- Name: ensure_sessions_v2_partitions(date); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -2032,6 +2173,44 @@ COMMENT ON FUNCTION public.ensure_sessions_v2_partitions(target_date date) IS 'E
      Called by bg.PartitionManager alongside ensure_request_logs_partition.
      session_bodies uses heap storage because response bodies can be updated.
      Created: 2026-07-17, Migration 430';
+
+
+--
+-- Name: ensure_supplier_errors_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.ensure_supplier_errors_partition(target_ts timestamp with time zone) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    month_start    date;
+    month_end      date;
+    partition_name text;
+BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_ts)::date;
+    month_end := (date_trunc('month', target_ts) + interval '1 month')::date;
+    partition_name := 'supplier_errors_' || to_char(month_start, 'YYYY_MM');
+
+    IF NOT EXISTS (SELECT 1 FROM pg_class
+                   WHERE relname = partition_name
+                     AND relnamespace = 'public'::regnamespace) THEN
+        -- 裸 USING columnar（对齐 V359 模板）：citus_columnar 11.2+ 的
+        -- 压缩/stripe/chunk 参数走 columnar.* GUC（全局默认 zstd/
+        -- 150000/10000），不再接受 WITH(...) reloption。
+        EXECUTE format(
+            'CREATE TABLE %I PARTITION OF supplier_errors
+             FOR VALUES FROM (%L) TO (%L) USING columnar',
+            partition_name, month_start, month_end
+        );
+        RAISE NOTICE 'ensure_supplier_errors_partition: created % as columnar', partition_name;
+    ELSE
+        -- 幂等：确保既有分区保持 columnar（历史分区不可变语义）
+        PERFORM enforce_columnar_partition(partition_name, 'supplier_errors');
+    END IF;
+    RETURN partition_name;
+END;
+$$;
 
 
 --
@@ -3303,6 +3482,118 @@ $$;
 
 
 --
+-- Name: promote_dashboard_access_events_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.promote_dashboard_access_events_hot_to_partition(p_retention interval DEFAULT '08:00:00'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_moved bigint := 0;
+    v_month_value timestamptz;
+BEGIN
+    IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN
+        RAISE EXCEPTION 'p_retention must be positive';
+    END IF;
+    IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 100000 THEN
+        RAISE EXCEPTION 'p_batch_size must be between 1 and 100000';
+    END IF;
+
+    PERFORM pg_advisory_xact_lock(
+        hashtextextended('public.promote_dashboard_access_events_hot_to_partition', 0)
+    );
+
+    CREATE TEMP TABLE _dae_promotion_batch ON COMMIT DROP AS
+    SELECT event_id, event_type, timestamp, tenant_id, user_id, user_role,
+           session_id, api_path, api_method, api_version, query_params,
+           status_code, response_time_ms, cache_hit, data_size, error_code,
+           error_message, client_ip, user_agent, referer, db_query_time_ms,
+           cache_query_time_ms, created_at
+    FROM public.dashboard_access_events_hot
+    WHERE created_at < statement_timestamp() - p_retention
+    ORDER BY created_at, event_id
+    LIMIT p_batch_size
+    FOR UPDATE SKIP LOCKED;
+
+    IF NOT EXISTS (SELECT 1 FROM _dae_promotion_batch) THEN
+        RETURN 0;
+    END IF;
+
+    FOR v_month_value IN
+        SELECT DISTINCT date_trunc('month', created_at)::timestamptz
+        FROM _dae_promotion_batch
+    LOOP
+        PERFORM public.ensure_dashboard_events_partition(v_month_value::date);
+    END LOOP;
+
+    WITH moved_rows AS (
+        DELETE FROM public.dashboard_access_events_hot h
+        USING _dae_promotion_batch b
+        WHERE h.event_id = b.event_id
+          AND h.created_at = b.created_at
+        RETURNING h.event_id, h.event_type, h.timestamp, h.tenant_id,
+                  h.user_id, h.user_role, h.session_id, h.api_path,
+                  h.api_method, h.api_version, h.query_params, h.status_code,
+                  h.response_time_ms, h.cache_hit, h.data_size, h.error_code,
+                  h.error_message, h.client_ip, h.user_agent, h.referer,
+                  h.db_query_time_ms, h.cache_query_time_ms, h.created_at
+    ), inserted_rows AS (
+        INSERT INTO public.dashboard_access_events (
+            event_id, event_type, timestamp, tenant_id, user_id, user_role,
+            session_id, api_path, api_method, api_version, query_params,
+            status_code, response_time_ms, cache_hit, data_size, error_code,
+            error_message, client_ip, user_agent, referer, db_query_time_ms,
+            cache_query_time_ms, created_at
+        )
+        SELECT event_id, event_type, timestamp, tenant_id, user_id, user_role,
+               session_id, api_path, api_method, api_version, query_params,
+               status_code, response_time_ms, cache_hit, data_size, error_code,
+               error_message, client_ip, user_agent, referer, db_query_time_ms,
+               cache_query_time_ms, created_at
+        FROM moved_rows
+        RETURNING 1
+    )
+    SELECT count(*) INTO v_moved FROM inserted_rows;
+
+    RETURN v_moved;
+END;
+$$;
+
+
+--
+-- Name: promote_handoff_logs_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.promote_handoff_logs_hot_to_partition(p_retention interval DEFAULT '08:00:00'::interval, p_batch_size integer DEFAULT 200) RETURNS bigint
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    n bigint := 0;
+BEGIN
+    CREATE TEMP TABLE _promote_hl_batch ON COMMIT DROP AS
+    SELECT * FROM public.handoff_logs_hot
+    WHERE created_at < now() - p_retention
+    ORDER BY created_at
+    LIMIT p_batch_size;
+
+    GET DIAGNOSTICS n = ROW_COUNT;
+
+    IF n = 0 THEN
+        RETURN 0;
+    END IF;
+
+    INSERT INTO public.handoff_logs
+    SELECT * FROM _promote_hl_batch;
+
+    DELETE FROM public.handoff_logs_hot
+    WHERE id IN (SELECT id FROM _promote_hl_batch);
+
+    RETURN n;
+END;
+$$;
+
+
+--
 -- Name: promote_model_probe_runs_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -3867,6 +4158,81 @@ BEGIN
     RETURNING request_id
   ) SELECT count(*) INTO moved FROM inserted;
   RETURN moved;
+END;
+$$;
+
+
+--
+-- Name: promote_session_module_executions_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.promote_session_module_executions_hot_to_partition(p_retention interval DEFAULT '08:00:00'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_moved bigint := 0;
+    v_month_value timestamptz;
+BEGIN
+    IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN
+        RAISE EXCEPTION 'p_retention must be positive';
+    END IF;
+    IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 100000 THEN
+        RAISE EXCEPTION 'p_batch_size must be between 1 and 100000';
+    END IF;
+
+    PERFORM pg_advisory_xact_lock(
+        hashtextextended('public.promote_session_module_executions_hot_to_partition', 0)
+    );
+
+    CREATE TEMP TABLE _sme_promotion_batch ON COMMIT DROP AS
+    SELECT execution_id, gw_session_id, tenant_id, module_name, module_version,
+           request_id, batch_key, status, started_at, completed_at, duration_ms,
+           result_summary, result_detail, error_message, cache_key, ttl_seconds,
+           expires_at, created_at, updated_at
+    FROM public.session_module_executions_hot
+    WHERE created_at < statement_timestamp() - p_retention
+    ORDER BY created_at, execution_id
+    LIMIT p_batch_size
+    FOR UPDATE SKIP LOCKED;
+
+    IF NOT EXISTS (SELECT 1 FROM _sme_promotion_batch) THEN
+        RETURN 0;
+    END IF;
+
+    FOR v_month_value IN
+        SELECT DISTINCT date_trunc('month', created_at)::timestamptz
+        FROM _sme_promotion_batch
+    LOOP
+        PERFORM public.ensure_session_module_executions_partition(v_month_value::date);
+    END LOOP;
+
+    WITH moved_rows AS (
+        DELETE FROM public.session_module_executions_hot h
+        USING _sme_promotion_batch b
+        WHERE h.execution_id = b.execution_id
+          AND h.created_at = b.created_at
+        RETURNING h.execution_id, h.gw_session_id, h.tenant_id, h.module_name,
+                  h.module_version, h.request_id, h.batch_key, h.status,
+                  h.started_at, h.completed_at, h.duration_ms, h.result_summary,
+                  h.result_detail, h.error_message, h.cache_key, h.ttl_seconds,
+                  h.expires_at, h.created_at, h.updated_at
+    ), inserted_rows AS (
+        INSERT INTO public.session_module_executions (
+            execution_id, gw_session_id, tenant_id, module_name, module_version,
+            request_id, batch_key, status, started_at, completed_at, duration_ms,
+            result_summary, result_detail, error_message, cache_key, ttl_seconds,
+            expires_at, created_at, updated_at
+        )
+        SELECT execution_id, gw_session_id, tenant_id, module_name, module_version,
+               request_id, batch_key, status, started_at, completed_at, duration_ms,
+               result_summary, result_detail, error_message, cache_key, ttl_seconds,
+               expires_at, created_at, updated_at
+        FROM moved_rows
+        RETURNING 1
+    )
+    SELECT count(*) INTO v_moved FROM inserted_rows;
+
+    RETURN v_moved;
 END;
 $$;
 
