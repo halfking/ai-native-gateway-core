@@ -372,3 +372,54 @@ f. commit：feat(web): P3-<页面名> 组件化迁移。
 3. 保留手写三处：ProvidersView diagnose 抽屉（z-110 叠层）、ModelsView create-modal（顶部对齐长表单）、DashboardViewV2 紧凑变体页头——均有明确理由，详见各步交付摘要。
 4. 折叠屏 polyfill 未安装（环境禁 npm install）；真机/polyfill 双屏抽验待补。
 5. DevTools 走查以源码级走查记录替代（每步 commit message 内），关键页真机走查建议随 P5 分摊一并执行。
+
+---
+
+## 六、审计修正轮（2026-09-13，commit 94c893cc4 + 本节）
+
+对 Step 0~8 全量交付做对照设计的复评，修正两个自查引入的问题：
+
+| # | 问题 | 根因 | 修正 |
+|---|---|---|---|
+| 1 | FilterBar.vue 使用非白名单断点 `max-width:1023px` / `min-width:769px`（审计 WARN 明细中 1023×1、769×1 均来自本组件） | 堆叠档照抄设计文档"<1024"的语义写法未对照白名单；769 规则本身是死逻辑（折叠入口由 `v-if="isSmall"(<480)` 渲染，≥480 不存在，CSS 隐藏冗余） | 堆叠断点收敛到白名单值 `max-width:1024px`（含边界，与项目 768 含边界约定一致）；删除 769 死规则；测试断言同步（8 用例全绿）。存量 WARN 49→47，**自查引入项清零** |
+| 2 | foldable.css 使用规范中不存在的 `env(viewport-segment-hinge)`；folded 姿态对全部子元素加 `padding-inline` 方向欠准 | 首版凭直觉简化了铰链几何 | 改用 MDN 记载的分段 env 集合，铰链宽=`segment-left(1,0) − segment-right(0,0)`；folded 姿态仅对左右栏贴铰链侧留白 |
+
+其余复核项（无问题）：LoginModal 全局皮肤 specificity（`.modal.login-modal` 双类胜出）；ProvidersView manageCred 抽屉 v-if 收窄；RequestLogsView spanning 包装层 `display:contents` 非跨屏零布局影响；ModulesView 对 PageHeader 根元素的 scoped 命中（无默认插槽时单根成立）；合并远端 13 个 Go 线提交仅触及生成文件，web 门禁全绿。
+
+### 推送状态
+
+main 当前领先 origin/main 20 个提交（含用户侧 merge cc026c93b 与本审计修正）。**push 在本执行环境被凭证拦截**（`could not read Username for 'https://codeup.aliyun.com'`，无 credential helper / SSH key）；请在有凭证的终端执行 `git push origin main`。
+
+## 七、下一轮执行提示词（复制即用）
+
+```text
+你是前端工程师，在 llm-gateway-go-5/web 继续响应式与组件化改造的收尾分摊轮。
+先读：docs/handoff/2026-09-13-frontend-responsive-componentization-steps.md 的
+"环境注意事项/全局门禁/登记表/§五收口/§六审计轮"，以及
+docs/03-design/frontend-component-usage-guide.md（组件用法与断点规范）。
+工作区约定：pnpm 未装用 npm run/npx；不要 npm install（node_modules 是 darwin 布局
+手工补过 arm64 二进制）；存量 vitest 失败基线 40 文件不得扩大；i18n 注释里别写
+t('...') 字样；每步一个 commit，push 前先 git pull --no-rebase 合入远端。
+
+任务（按序，独立 commit）：
+1. P3-5 第二批：CredentialMonitorView（2367 行）按 §4.7-4 拆分
+   components/credential-monitor/（filter/table/子表），同时把 7 个确认弹窗
+   （batch/demote/promote/concurrency/toggle/clearDisabled/setManualDisabled，
+   drawer-backdrop+card 模式）迁 ui/AppModal（sm）、selectedCred 详情抽屉迁
+   ui/AppDrawer（注意确认弹窗迁移前后逐个 git diff 自查视觉结构）。
+2. P5 断点分摊（按 responsive-audit 明细逐文件收敛到 480/640/768/1024/1440，
+   语义就近：600/680/700/720/760/800→768；900/960/1000/1023/1100/1200→1024；
+   520→480；1600→1440；每收敛一批跑 npm run responsive:check 看 WARN 下降）。
+   全部清零后：package.json 的 responsive:check 去掉 --allow-legacy 升级全严格，
+   并在本文件登记切换。
+3. el-dialog（OperationAgreementDialog/PromptInjectionSettingsView/VibeCodingView）
+   与 el-drawer（TurnDigestDrawer）4 处迁移评估：能无损换 AppModal/AppDrawer
+   就迁，不能则登记理由。
+4. 手动设备矩阵走查（DevTools 375/768/1024/1440 + 如有 Fold 设备或
+   viewportsegments-polyfill）：核对 §五收口结论中的移动导航/弹窗/双栏行为，
+   走查记录写进 commit message 与本文件 §六。
+5. 收口：四件套（vue-tsc 0 错误 / vitest 失败集不超 40 文件基线 / i18n STRICT /
+   responsive:check）+ 登记表更新 + push。
+
+验收红线：桌面 >=1024 DOM 零回归；新代码断点只允许白名单值；新测试全绿。
+```

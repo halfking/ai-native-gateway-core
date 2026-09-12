@@ -120,7 +120,7 @@ describe('FilterBar', () => {
   })
 
   it('响应式源码断言：1024 白名单档纵向堆叠+全宽搜索、isSmall 折叠逻辑', () => {
-    // 2026-09-14 审计修正：堆叠断点收敛到白名单值 1024；769 死规则已移除
+    // 2026-09-13 审计修正：堆叠断点收敛到白名单值 1024；769 死规则已移除
     expect(source).toMatch(/@media \(max-width: 1024px\)/)
     const stackBlock = source.split('@media (max-width: 1024px)')[1] ?? ''
     expect(stackBlock).toContain('flex-direction: column')
