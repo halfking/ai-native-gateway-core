@@ -26,6 +26,11 @@ var ErrTemplateDisabled = errors.New("freediscovery: provider template is disabl
 // (repeated POST scans, concurrent overwrites, etc.). Callers should map this to 409 Conflict.
 var ErrTaskStateConflict = errors.New("freediscovery: task state transition rejected")
 
+// ErrTaskNotFound means the task does not exist (including tasks hidden by RLS
+// from another tenant). Callers should map this to 404 Not Found; db faults are
+// not this sentinel and must keep returning 500.
+var ErrTaskNotFound = errors.New("freediscovery: task not found")
+
 // TemplateManager handles provider template CRUD. All reads and writes go through RLS:
 // SET LOCAL app.current_tenant is set inside the transaction, matching the
 // tenant_isolation_* policy contract in migrations 075/084 (see the analogous
