@@ -921,3 +921,57 @@ func TestStreamAnthropicSSEToResponses_NonEmptyContent(t *testing.T) {
 		t.Errorf("out.Kind should be empty for a successful non-empty stream, got %q", out.Kind)
 	}
 }
+
+// TestStreamAnthropicSSEToResponses_BenignEOFEmitCompleted pins the
+// 2026-09-13 fix: an upstream that closes the stream after finish_reason
+// WITHOUT message_stop (minimax-style relays) is a successful stream — the
+// client must still receive the terminal envelope (output_text.done /
+// output_item.done / response.completed). Previously the benign-EOF branch
+// returned a success outcome without finishAttempt, leaving Responses SDK
+// clients (codex ≥0.80) on an unterminated stream.
+func TestStreamAnthropicSSEToResponses_BenignEOFEmitCompleted(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		"event: message_start\n",
+		`data: {"type":"message_start","message":{"id":"msg_upstream","model":"claude-opus-4-8","role":"assistant","content":[],"stop_reason":null,"usage":{"input_tokens":7,"output_tokens":0}}}` + "\n",
+		"\n",
+		"event: content_block_start\n",
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n",
+		"\n",
+		"event: content_block_delta\n",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello benign eof"}}` + "\n",
+		"\n",
+		"event: content_block_stop\n",
+		`data: {"type":"content_block_stop","index":0}` + "\n",
+		"\n",
+		"event: message_delta\n",
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}` + "\n",
+		"\n",
+		// EOF here — NO message_stop.
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	rec := httptest.NewRecorder()
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-benign-eof-12345678901", nil, nil)
+
+	// The stream is a SUCCESS — not interrupted — and must be terminated.
+	require.False(t, out.Interrupted)
+
+	body := rec.Body.String()
+	assert.Contains(t, body, `"delta":"hello benign eof"`)
+	assert.Contains(t, body, "event: response.output_text.done")
+	assert.Contains(t, body, "event: response.output_item.done")
+	assert.Contains(t, body, "event: response.completed")
+	assert.Contains(t, body, `"text":"hello benign eof"`)
+	assert.Contains(t, body, `"status":"completed"`)
+	assert.Contains(t, body, `"input_tokens":7`)
+	assert.Contains(t, body, `"output_tokens":3`)
+}
