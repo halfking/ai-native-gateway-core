@@ -1,11 +1,12 @@
-// Package freediscovery 实现免费资源自动发现: 借鉴 Orbi pi-providers 模板能力,
-// 通过供应商模板配置自动扫描上游 /models 端点, 发现免费模型并经人工审查后
-// 批量导入 free_resource_catalog.
+// Package freediscovery implements automatic free-resource discovery: inspired by Orbi's
+// pi-providers template capability, it uses provider template configuration to scan upstream
+// /models endpoints automatically, discover free models, and batch-import them into
+// free_resource_catalog after manual review.
 //
-// 数据模型: sql/migrations/084-freediscovery-schema.sql
-//   - provider_templates  供应商模板 (多租户, RLS)
-//   - discovery_tasks     发现任务
-//   - discovery_results   发现结果 (待审查导入)
+// Data model: sql/migrations/084-freediscovery-schema.sql
+//   - provider_templates  provider templates (multi-tenant, RLS)
+//   - discovery_tasks     discovery tasks
+//   - discovery_results   discovery results (pending review/import)
 package freediscovery
 
 import (
@@ -13,17 +14,18 @@ import (
 	"time"
 )
 
-// APIType 供应商 API 协议类型
+// APIType is the provider API protocol type.
 type APIType string
 
 const (
-	APITypeOpenAICompletions  APIType = "openai-completions"   // OpenAI 兼容 /v1/models
+	APITypeOpenAICompletions  APIType = "openai-completions"   // OpenAI-compatible /v1/models
 	APITypeGoogleGenerativeAI APIType = "google-generative-ai" // Google Generative Language API
 	APITypeAnthropic          APIType = "anthropic"            // Anthropic Messages API
 )
 
-// FreeType 免费资源类型 (与 084 迁移 discovery_results.free_type CHECK 约束对齐;
-// 值域同 domains/freeresource 的既有定义).
+// FreeType is the free resource type (aligned with the discovery_results.free_type CHECK
+// constraint from migration 084; the value domain matches the existing definition
+// in domains/freeresource).
 type FreeType string
 
 const (
@@ -36,7 +38,7 @@ const (
 	FreeTypeDiscontinued      FreeType = "discontinued"
 )
 
-// TaskStatus 发现任务状态
+// TaskStatus is the discovery task status.
 type TaskStatus string
 
 const (
@@ -46,7 +48,7 @@ const (
 	TaskStatusFailed  TaskStatus = "failed"
 )
 
-// TriggerType 发现任务触发方式
+// TriggerType is how the discovery task was triggered.
 type TriggerType string
 
 const (
@@ -55,7 +57,7 @@ const (
 	TriggerWebhook   TriggerType = "webhook"
 )
 
-// ImportStatus 发现结果导入状态
+// ImportStatus is the import status of a discovery result.
 type ImportStatus string
 
 const (
@@ -65,20 +67,21 @@ const (
 	ImportConflict ImportStatus = "conflict"
 )
 
-// ConflictPolicy 批量导入时的冲突处理策略
+// ConflictPolicy is the conflict-handling policy for batch imports.
 type ConflictPolicy string
 
 const (
-	// ConflictSkip 已存在 (provider_code, model_id) 时跳过, 保留现有条目 (默认, 最安全)
+	// ConflictSkip keeps the existing row when (provider_code, model_id) already exists
+	// (default, safest).
 	ConflictSkip ConflictPolicy = "skip"
-	// ConflictOverwrite 已存在时用发现结果覆盖配额/ToS 字段
+	// ConflictOverwrite overwrites the quota/ToS fields with the discovery result on conflict.
 	ConflictOverwrite ConflictPolicy = "overwrite"
-	// ConflictMerge 已存在时仅补充空字段, 不覆盖已有值
+	// ConflictMerge fills only empty fields on conflict and never overwrites existing values.
 	ConflictMerge ConflictPolicy = "merge"
 )
 
-// ProviderTemplate 供应商模板 (Orbi pi-providers 模板的多租户化形态).
-// 密钥字段 (APIKeyEncrypted) 标记 json:"-", 永不回显给客户端.
+// ProviderTemplate is the provider template (multi-tenant shape of the Orbi pi-providers template).
+// The credential field (APIKeyEncrypted) is tagged json:"-" and never echoed back to the client.
 type ProviderTemplate struct {
 	ID              int64     `json:"id"`
 	TenantID        string    `json:"tenant_id"`
@@ -86,8 +89,8 @@ type ProviderTemplate struct {
 	DisplayName     string    `json:"display_name"`
 	BaseURL         string    `json:"base_url"`
 	APIType         APIType   `json:"api_type"`
-	APIKeyEnv       string    `json:"api_key_env"` // 环境变量引用, 如 "$GROQ_API_KEY"; 空表示 keyless
-	APIKeyEncrypted []byte    `json:"-"`           // 加密密文, 绝不序列化
+	APIKeyEnv       string    `json:"api_key_env"` // Env var reference, e.g. "$GROQ_API_KEY"; empty means keyless.
+	APIKeyEncrypted []byte    `json:"-"`           // Encrypted ciphertext; never serialized.
 	ModelsEndpoint  string    `json:"models_endpoint"`
 	QuotaEndpoint   string    `json:"quota_endpoint"`
 	TosURL          string    `json:"tos_url"`
@@ -99,20 +102,20 @@ type ProviderTemplate struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
-// HasCredential 模板是否携带可用的上游认证.
-// keyless 提供商 (无 APIKeyEnv 也无密文) 返回 false.
+// HasCredential reports whether the template carries usable upstream auth.
+// Keyless providers (no APIKeyEnv and no ciphertext) return false.
 func (t *ProviderTemplate) HasCredential() bool {
 	return t != nil && (t.APIKeyEnv != "" || len(t.APIKeyEncrypted) > 0)
 }
 
-// CreateTemplateRequest 创建模板请求
+// CreateTemplateRequest is the create-template request payload.
 type CreateTemplateRequest struct {
 	ProviderCode string  `json:"provider_code"`
 	DisplayName  string  `json:"display_name"`
 	BaseURL      string  `json:"base_url"`
 	APIType      APIType `json:"api_type"`
 	APIKeyEnv    string  `json:"api_key_env"`
-	// APIKey 明文仅用于写入 (服务端加密后落库), 永不回读/回显
+	// APIKey plaintext is only used for writes (server encrypts before storing) and is never read back or echoed.
 	APIKey         string `json:"api_key,omitempty"`
 	ModelsEndpoint string `json:"models_endpoint"`
 	QuotaEndpoint  string `json:"quota_endpoint,omitempty"`
@@ -120,10 +123,10 @@ type CreateTemplateRequest struct {
 	TosVerdict     string `json:"tos_verdict,omitempty"`
 	TosNotes       string `json:"tos_notes,omitempty"`
 	Enabled        *bool  `json:"enabled,omitempty"`
-	CreatedBy      string `json:"created_by,omitempty"` // 操作人 (审计); 服务端可从会话注入
+	CreatedBy      string `json:"created_by,omitempty"` // Operator (audit); server may inject this from the session.
 }
 
-// UpdateTemplateRequest 更新模板请求 (指针字段 nil = 不修改)
+// UpdateTemplateRequest is the update-template request payload (nil pointer fields = no change).
 type UpdateTemplateRequest struct {
 	DisplayName    *string  `json:"display_name,omitempty"`
 	BaseURL        *string  `json:"base_url,omitempty"`
@@ -138,11 +141,11 @@ type UpdateTemplateRequest struct {
 	Enabled        *bool    `json:"enabled,omitempty"`
 }
 
-// DiscoveryTask 发现任务记录
+// DiscoveryTask is a discovery task record.
 type DiscoveryTask struct {
 	ID             int64       `json:"id"`
 	TenantID       string      `json:"tenant_id"`
-	TemplateID     *int64      `json:"template_id"` // 模板被删除后为 NULL
+	TemplateID     *int64      `json:"template_id"` // NULL after the template is deleted.
 	ProviderCode   string      `json:"provider_code"`
 	Status         TaskStatus  `json:"status"`
 	TriggerType    TriggerType `json:"trigger_type"`
@@ -156,22 +159,22 @@ type DiscoveryTask struct {
 	UpdatedAt      time.Time   `json:"updated_at"`
 }
 
-// DiscoveryRequest 触发发现请求
+// DiscoveryRequest triggers a discovery run.
 type DiscoveryRequest struct {
 	TemplateID  int64
 	TenantID    string
 	TriggeredBy string
-	TriggerType TriggerType // 空 = manual
+	TriggerType TriggerType // Empty = manual.
 }
 
-// DiscoveredModel 扫描发现的单个模型
+// DiscoveredModel is a single model found by a scan.
 type DiscoveredModel struct {
 	ProviderCode  string
 	ModelID       string
 	DisplayName   string
 	ContextWindow int
 	MaxTokens     int
-	FreeType      string // 空 = 无法推断免费类型
+	FreeType      string // Empty = free type could not be inferred.
 	MonthlyTokens int64
 	DailyTokens   int64
 	PoolKey       string
@@ -180,7 +183,7 @@ type DiscoveredModel struct {
 	RawMetadata   map[string]any
 }
 
-// DiscoveryResult 发现结果持久化行
+// DiscoveryResult is a persisted discovery result row.
 type DiscoveryResult struct {
 	ID            int64        `json:"id"`
 	TaskID        int64        `json:"task_id"`
@@ -201,16 +204,16 @@ type DiscoveryResult struct {
 	CreatedAt     time.Time    `json:"created_at"`
 }
 
-// ImportRequest 批量导入请求
+// ImportRequest is the batch-import request payload.
 type ImportRequest struct {
 	TaskID         int64          `json:"task_id"`
-	TenantID       string         `json:"-"`                    // 服务端从会话派生
-	ResultIDs      []int64        `json:"result_ids,omitempty"` // 空 = 导入该任务全部 pending 结果
+	TenantID       string         `json:"-"`                    // Derived from the session on the server.
+	ResultIDs      []int64        `json:"result_ids,omitempty"` // Empty = import all pending results for the task.
 	ConflictPolicy ConflictPolicy `json:"conflict_policy,omitempty"`
-	ImportedBy     string         `json:"-"` // 服务端从会话派生
+	ImportedBy     string         `json:"-"` // Derived from the session on the server.
 }
 
-// ImportSummary 批量导入结果统计
+// ImportSummary is the batch-import result counters.
 type ImportSummary struct {
 	Imported   int `json:"imported"`
 	Skipped    int `json:"skipped"`
@@ -218,20 +221,21 @@ type ImportSummary struct {
 	Failed     int `json:"failed"`
 }
 
-// OrbiProviderFile Orbi pi-providers JSON 模板文件结构 (templates/pi-providers/*.json)
+// OrbiProviderFile is the structure of an Orbi pi-providers JSON template file
+// (templates/pi-providers/*.json).
 type OrbiProviderFile struct {
 	Providers map[string]OrbiProvider `json:"providers"`
 }
 
-// OrbiProvider Orbi 单个 provider 定义
+// OrbiProvider is a single provider definition in Orbi.
 type OrbiProvider struct {
 	BaseURL string      `json:"baseUrl"`
 	API     string      `json:"api"`
-	APIKey  string      `json:"apiKey"` // 环境变量引用, 如 "$GROQ_API_KEY"
+	APIKey  string      `json:"apiKey"` // Env var reference, e.g. "$GROQ_API_KEY".
 	Models  []OrbiModel `json:"models"`
 }
 
-// OrbiModel Orbi 模板中的模型条目
+// OrbiModel is a model entry in an Orbi template.
 type OrbiModel struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
@@ -239,8 +243,8 @@ type OrbiModel struct {
 	MaxTokens     int    `json:"maxTokens"`
 }
 
-// ValidateCreate 校验创建请求的必填字段.
-// 返回人类可读的错误信息; 空串 = 通过.
+// ValidateCreate validates the required fields of a create request.
+// Returns a human-readable error message; empty string means pass.
 func (r *CreateTemplateRequest) ValidateCreate() string {
 	if r.ProviderCode == "" {
 		return "provider_code is required"
@@ -296,8 +300,9 @@ func isValidTosVerdict(s string) bool {
 	return false
 }
 
-// TrimmedDisplayName 计算前端可安全显示的展示名; 截断 + 去除前后空白 + 限制长度.
-// 复用 rune 计算以避免按字节切 UTF-8 造成乱码.
+// TrimmedDisplayName computes a display name that is safe for the frontend: truncate,
+// trim leading/trailing whitespace, and cap the length.
+// Reuses rune counting so UTF-8 byte slicing does not produce mojibake.
 func TrimmedDisplayName(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {

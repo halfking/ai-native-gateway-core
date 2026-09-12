@@ -14,12 +14,12 @@ func TestIsValidBaseURL(t *testing.T) {
 	}
 	bad := []struct {
 		in   string
-		want string // 期望错误信息片段; 空表示通过
+		want string // expected error message fragment; empty means pass
 	}{
 		{"", "required"},
 		{"ftp://api.x.com", "must use http"},
-		{"//api.x.com/v1", "must use http"},      // 无 scheme
-		{"javascript:alert(1)", "must use http"}, // 不允许 scheme
+		{"//api.x.com/v1", "must use http"},      // missing scheme
+		{"javascript:alert(1)", "must use http"}, // disallowed scheme
 		{"https://user:pass@api.x.com/v1", "userinfo"},
 		{"https://api.x.com/v1#frag", "fragment"},
 		{"https:// api.x.com/v1", "invalid character"},
@@ -56,7 +56,7 @@ func TestIsValidModelsEndpoint(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"models", "relative"}, // 缺前导 /
+		{"models", "relative"}, // missing leading /
 		{"//api.x.com/models", "scheme-relative"},
 		{"https://api.x.com/models", "relative path"},
 		{"http://api.x.com/models", "relative path"},
@@ -100,7 +100,7 @@ func TestJoinBaseAndEndpoint_SSRFDefense(t *testing.T) {
 			t.Errorf("joinBaseAndEndpoint(%q,%q) = %q, want %q", c.base, c.ep, got, c.want)
 		}
 	}
-	// 拒绝绝对 endpoint
+	// Reject absolute endpoint
 	if _, err := joinBaseAndEndpoint("https://x.com/v1", "//evil.com/models"); err == nil {
 		t.Error("scheme-relative endpoint must be rejected")
 	}
@@ -112,6 +112,7 @@ func TestTrimmedDisplayName(t *testing.T) {
 	}{
 		{"  Groq  ", "Groq"},
 		{"", ""},
+		// Deliberate multi-byte fixture: 250 CJK runes (750 bytes) must truncate by rune to 200.
 		{strings.Repeat("中", 250), strings.Repeat("中", 200)},
 	}
 	for _, c := range cases {
