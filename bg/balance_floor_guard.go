@@ -34,7 +34,7 @@ package bg
 // 摘出机制：写 quota_state='balance_exhausted' + availability_state='suspended'
 // + state_reason_code='balance_floor'。候选 SQL（provider/client.go）与
 // v_routable_credential_models 本来就排除这些状态 = 立即出池；
-// trg_notify_auto_route_refresh 触发器自动广播缓存失效。恢复：额度回到
+// trg_notify_auto_route_creds 触发器自动广播缓存失效。恢复：额度回到
 // floor*1.1（token/货币）或 floor-2pp（百分比）滞回带以上，且所有权校验
 // （state_reason_code='balance_floor'）通过，才翻回 ok/ready —— 永远不会碰
 // 反应式（writer.go）或其它路径写入的配额状态。
@@ -534,6 +534,7 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
+		ORDER BY c.balance_last_checked_at ASC NULLS FIRST
 		LIMIT 100
 	`)
 	if err != nil {
@@ -582,6 +583,14 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 		  AND status = 'active'
 		  AND lifecycle_status = 'active'
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
+		  -- provider 守卫与 pass C 恢复选点对齐：disabled provider 下的
+		  -- 凭据不得只被摘出却永远轮不到恢复（pass C 选不到它们）。
+		  AND EXISTS (
+		      SELECT 1 FROM providers p
+		      WHERE p.id = credentials.provider_id
+		        AND p.enabled = TRUE
+		        AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		  )
 	`)
 	if err != nil {
 		return err
@@ -607,6 +616,7 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
+		ORDER BY c.balance_last_checked_at ASC NULLS FIRST
 		LIMIT 100
 	`)
 	if err != nil {
@@ -802,6 +812,8 @@ func (g *BalanceFloorGuard) handlePlanCredential(ctx context.Context, c floorCan
 				    state_reason_detail = $1,
 				    state_updated_at = now()
 				WHERE id = $2
+				  AND status = 'active'
+				  AND lifecycle_status = 'active'
 				  AND COALESCE(manual_disabled, FALSE) = FALSE
 				  AND COALESCE(quota_state, 'ok') = 'ok'
 				  AND COALESCE(availability_state, 'ready') NOT IN ('suspended', 'auth_failed')
