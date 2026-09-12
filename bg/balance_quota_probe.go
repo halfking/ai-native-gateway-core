@@ -329,12 +329,21 @@ func (p *BalanceQuotaProbe) credentialEligibleForForceProbe(credID int) (bool, e
 // probeBalanceExhausted 探测 balance_exhausted 和 permanently_exhausted 状态的凭据。
 //
 // 选择条件：
-//   - quota_state IN ('balance_exhausted', 'permanently_exhausted')
+//   - quota_state IN ('balance_exhausted', 'permanently_exhausted')，
+//     OR 挂起矛盾行（availability_state='suspended' 且 quota_state='ok'
+//     且 recover_at=NULL —— 2026-09-13 closeout P3：这类行此前没有任何
+//     探测来源，只能人工 force-enable；纳入慢速复验后，探测成功经
+//     writeHealth 翻回 ready，为 availSQL 的 suspended 证据恢复分支提供
+//     health 证据）
 //   - lifecycle_status = 'active'
 //   - 凭据和 provider 都未被手动禁用
 //   - provider 已启用
 //   - 有配置 default_probe_model，或可从 credential_model_bindings 中
 //     选出至少一个可用探测模型（fallback）
+//   - 2026-09-13 closeout P3 到期闸：last_probe_at 距今不足
+//     quotaProbeBackoff(probe_consecutive_failures) 的行跳过，本轮不探。
+//     原先每 2min 全量轰炸"没充值"的确定死亡凭据（720 次/天/凭据），
+//     指数退避后稳态 ≤1 次/小时/凭据，充值后最迟 1h 自动恢复。
 //
 // 探测结果：
 //   - 成功：credential_probe_v2 会清除 quota_state='ok'，恢复 availability_state='ready'
@@ -359,12 +368,53 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 		SELECT c.id
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
-		WHERE c.quota_state IN ('balance_exhausted', 'permanently_exhausted')
-		  AND c.status = 'active'
-		  AND c.lifecycle_status = 'active'
-		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		WHERE (
+		      c.quota_state IN ('balance_exhausted', 'permanently_exhausted')
+		      OR (
+		          -- suspended-revalidation set (P3): the contradictory
+		          -- suspended+quota-ok+NULL-recover rows. Slower floor
+		          -- cadence than the quota set via the backoff expression
+		          -- below; see credential_recovery.go availSQL for the
+		          -- matching evidence-based restore. Rows that ALREADY carry
+		          -- fresh healthy evidence are excluded — availSQL restores
+		          -- those within one 30s tick without another probe.
+		          c.availability_state = 'suspended'
+		          AND c.availability_recover_at IS NULL
+		          AND COALESCE(c.quota_state, 'ok') = 'ok'
+		          AND NOT (
+		              c.health_status = 'healthy'
+		              AND c.health_checked_at > now() - INTERVAL '2 hours'
+		          )
+		      )
+		      )
+  AND c.status = 'active'
+  -- 2026-09-13 closeout (P3): admit auto-disabled rows (auto_disabled_at
+  -- set) — writeHealth already sanctions re-enabling exactly this class
+  -- on a successful probe (auto_enabled_reason='periodic_quota_probe_
+  -- recovered'). Prod evidence: ALL six suspended+quota-ok contradictory
+  -- rows (creds 9/13/23/24/25/30) were auto-disabled by the availability
+  -- <50% rule, then stranded — no probe target could ever reach them.
+  AND (
+      c.lifecycle_status = 'active'
+      OR (
+          c.lifecycle_status = 'disabled'
+          AND c.auto_disabled_at IS NOT NULL
+      )
+  )
+  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
+		  -- due gate (P3): exponential re-probe interval by consecutive
+		  -- probe failures — 2min, 4min, 8min, 16min, 32min, then capped at
+		  -- 1h. First failure stays on the 2min rung so a genuine transient
+		  -- or a quick recharge is still noticed within one interval.
+		  AND (
+		      c.last_probe_at IS NULL
+		      OR now() - c.last_probe_at >= LEAST(
+		          INTERVAL '2 minutes' * POWER(2, LEAST(COALESCE(c.probe_consecutive_failures, 0), 5)),
+		          INTERVAL '1 hour'
+		      )
+		  )
 		  AND (
 		      COALESCE(c.default_probe_model, '') <> ''
 		      OR EXISTS (
