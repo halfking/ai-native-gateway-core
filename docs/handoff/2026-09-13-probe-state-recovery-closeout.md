@@ -127,3 +127,14 @@ RestoreOnSuccess 与 forceEnableCredentialSQL 增加 `probe_consecutive_failures
 - 顺序：先 245（全部 bg worker 所在）后 154（traffic-only，热路径 P6/P7 生效）。走既有 deploy-245 / deploy-seamless 流程 bump seq。
 - 回滚：改动均为 SQL 字符串/Go 逻辑，无 schema 变更，直接回滚二进制即可。
 - 注意：`probe_consecutive_failures`/`last_probe_at` 列为既有列（此前无 writer 维护），无迁移。部署后首批 P3 复验将立即探测 15 个卡死凭据（15 次真实请求），属预期一次性成本。
+
+## 10. 部署执行记录（2026-09-13，245 完成 / 154 待 24h 观测门）
+
+### 10.1 245（已完成，2026-09-13 07:23 CST）
+
+- **2102-8e9f0072（seq 2102）蓝绿切换 8781→8782，DEPLOY_RC=0**；9 步验证链全绿（healthz/readyz/版本身份/DB/admin 同步/凭据解密冒烟 failed=0/logrotate）；身份三方核验过（current=releases/2102-8e9f0072，bundle git_sha = 二进制 vcs.revision = 8e9f0072）。
+- 分支增量（已推送 origin）：`34031a63f` 合并 origin/main——**部署树必须 ⊇ 生产 2092**（其流式修复 b514ec374/4b7fb6bfd 原始 sha 只存在于 go-2 本地检出，已 rebase 为 `5b249f31d`/`158043f93` 进 main；同时带入 balance_floor guard（migration 701）+ 若干 web 修复）；`0d42b4a65` seamless 预编译二进制入口；`56a8eace1` bump-version cygpath 修正；`8e9f00722` 上传后恢复 gateway 执行位。合并解法：balance_floor 豁免（main 侧字面谓词，TestBalanceQuotaProbeExemptsBalanceFloorPulled 钉住）限定在 P3 目标集的 quota 分支内——suspended/F4 复验分支要求 quota_state='ok' 天然不选 floor 行。
+- 部署前基线（24h，双槽）：ProbeNow failed=15,358；probe-direct 行=160,215；429/403 行=1,599；mps recovering=113（最早 2026-07-08）；probe_backoff 列维护行=0。基线与 ③ 对比口径已钉定于观测日志 `~\AppData\Local\lgw-closeout-observe\observations.md`。
+- 迁移：部署流水线向共享库应用 4 个 pending（699/700/701_credential_balance_floor 等），db-changelog 已记账。
+- **Windows 宿主部署配方**（首次从 Windows 完成，见记忆 llm-gateway-windows-deploy-recipe）：zig cc 预编译 + `LLM_GATEWAY_PREBUILT_BINARY` 入口；ssh（mux 剥除 + LogLevel=ERROR 防 PQ 警告污染合并捕获）/python3（Store 空壳 + \r\n 剥除）/sha256sum（-t 文本模式）三 shim；`AIAN_DEPLOY_LIB`/`ENVS_ROOT` 指向 /z/ SSOT（deploy-245.sh 包装层硬编码坏软链，直接调 deploy-seamless.sh）。
+- T+10min 早期信号：全部 bg worker 启动（含新 balanceFloorGuard）；recovering sweeper 启动；availability_recover recovered 5→28；probe_backoff 维护行 0→13；recovering 113→112；15 卡死凭据复验开跑（403 死 key 落 auth_failed+退避）；孤发 1 条内部 503（跟踪）。
