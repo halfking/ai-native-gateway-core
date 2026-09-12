@@ -1001,6 +1001,33 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		}
 	}
 
+	// audit R21 (2026-09-13): Q2 empty-stream parity — the last of the six
+	// bridges without an empty gate. A clean OpenAI upstream end with zero
+	// semantic output (role/usage-only choices + [DONE]) previously rendered
+	// a legal-but-empty response.completed and returned success, so the
+	// executor never failed over. Classify on accumulated semantic state
+	// (text / reasoning / tool calls), not on chunkCount — scaffolding and
+	// empty deltas must not mask an empty response. Interrupted paths and
+	// the holdback window are untouched (transparent failover semantics).
+	responsesHasSemanticOutput := func() bool {
+		return fullText.Len() > 0 || scaffold.reasoningText.Len() > 0 || len(scaffold.toolStates) > 0
+	}
+	returnEmptyOutcome := func() StreamOutcome {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("openai_empty_response")
+		}
+		if pc != nil {
+			pc.markInterrupted("openai_empty_response")
+		}
+		return StreamOutcome{
+			Interrupted: true,
+			Reason:      "openai_empty_response",
+			Kind:        errorsx.KindEmptyResponse,
+			Resumable:   true,
+			ChunkCount:  chunkCount,
+		}
+	}
+
 	for {
 		lastSend := time.Time{}
 		readResult := readNextStreamLine(ctx, reader, bodyCloser, w, &lastSend, runtimeCfg)
@@ -1033,6 +1060,12 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 						capture.MarkInterruptedWithReason(outcome.Reason)
 					}
 					return outcome
+				}
+				// audit R21: empty gate BEFORE FlushHoldback — a held-free empty
+				// stream must fail over, not render a legal-but-empty
+				// response.completed (mirrors Q2 anthropic_stream.go ordering).
+				if !responsesHasSemanticOutput() {
+					return returnEmptyOutcome()
 				}
 				// FlushHoldback: force-close the survival L1 holdback window so
 				// held deltas commit BEFORE the terminal rendering decision —
@@ -1090,6 +1123,11 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		payload := strings.TrimPrefix(trimmed, "data: ")
 		if payload == "[DONE]" {
 			upstreamDoneReceived = true
+			// audit R21: empty gate BEFORE FlushHoldback — same parity as the
+			// clean-EOF return above.
+			if !responsesHasSemanticOutput() {
+				return returnEmptyOutcome()
+			}
 			// FlushHoldback: force-close the survival L1 holdback window so
 			// held deltas commit BEFORE the terminal rendering decision —
 			// otherwise a stream that ends inside the window (commit_state
