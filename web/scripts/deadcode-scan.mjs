@@ -36,7 +36,11 @@ function resolveImport(fromFile, spec) {
   return null;
 }
 
-const IMPORT_RE = /(?:import\s+[^'"]*?from\s+|import\s*\(\s*|import\s+|require\s*\(\s*)['"]([^'"]+)['"]/g;
+// Matches all import/re-export edge forms: `import x from`, `import(...)`,
+// side-effect `import 'x'`, `require('x')`, plus the two re-export shapes
+// `export * from 'x'` / `export { x } from 'x'` (and `export * as ns from`)
+// — missing those dropped api.ts re-export edges and caused mass false DEAD.
+const IMPORT_RE = /(?:import\s+[^'"]*?from\s+|export\s+[^'"]*?from\s+|import\s*\(\s*|import\s+|require\s*\(\s*)['"]([^'"]+)['"]/g;
 
 const edges = new Map(); // file -> Set(imported files)
 const inbound = new Map(); // file -> Set of referencing files
