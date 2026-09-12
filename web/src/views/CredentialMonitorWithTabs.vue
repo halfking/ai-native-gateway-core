@@ -83,6 +83,7 @@ watch(activeTab, (v) => {
   gap: 12px;
   padding: 16px;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .view-tabs-container {

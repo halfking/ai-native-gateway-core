@@ -132,6 +132,7 @@ onBeforeUnmount(() => {
 .session-detail {
   background: var(--kx-bg, var(--surface-secondary));
   min-height: 100vh;
+  min-height: 100dvh;
 }
 .list {
   padding: 16px 24px;

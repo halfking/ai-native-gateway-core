@@ -534,6 +534,7 @@ tbody tr:hover { background: var(--row-hover); }
   width: 540px;
   max-width: 90vw;
   height: 100vh;
+  height: 100dvh;
   overflow-y: auto;
   border-radius: 0;
   display: flex;

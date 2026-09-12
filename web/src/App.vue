@@ -13,6 +13,8 @@ import ThemeToggle from './components/ThemeToggle.vue'
 import AppTopbar from './components/shell/AppTopbar.vue'
 // 2026-09-13 方案 §4.4：移动端抽屉导航，与 AppTopbar 汉堡按钮共享开关状态
 import AppNavDrawer from './components/ui/AppNavDrawer.vue'
+import { useBreakpoint } from './composables/useBreakpoint'
+import { navDrawerOpen } from './composables/useAppNav'
 import { detectTheme, logoSrc } from './theme'
 import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from './config/brand'
 import { useLoginModal } from './composables/useLoginModal'
@@ -135,6 +137,20 @@ watch(isLoggedIn, (loggedIn) => {
   }
 }, { immediate: true })
 
+// 2026-09-13 方案 §4.4 P1c：访客壳 <768px 收纳为汉堡 + AppNavDrawer。
+// guest-nav 桌面态（>=768）不动；断点用 isTablet(>=768) 而非 isMobile(<1024)。
+const { isTablet } = useBreakpoint()
+
+// 现有 guest-nav 的 6 个静态链接数组化（抽屉数据源）
+const guestNavLinks = [
+  { labelKey: 'landing.navDownload', href: '/customer/update-activate' },
+  { labelKey: 'landing.navSetup', href: '/bootstrap' },
+  { labelKey: 'landing.navActivate', href: '/customer/update-activate' },
+  { labelKey: 'landing.navLicense', href: '/customer/update-activate' },
+  { labelKey: 'landing.navAgreement', href: '/customer/update-activate' },
+  { labelKey: 'landing.navSupport', href: '/customer/update-activate' },
+]
+
 watch(
   () => route.query.login,
   (login) => {
@@ -222,7 +238,15 @@ function handleChangePasswordSuccess() {
           <span>{{ SITE_TITLE_LINE_TWO }}</span>
         </span>
       </a>
-      <nav class="guest-nav" :aria-label="t('landing.guestNavAria') || '产品导航'">
+      <button
+        v-if="!isTablet"
+        type="button"
+        class="btn btn-ghost btn-sm guest-hamburger"
+        :aria-label="t('landing.guestNavAria', '产品导航')"
+        aria-haspopup="dialog"
+        @click="navDrawerOpen = true"
+      >☰</button>
+      <nav v-else class="guest-nav" :aria-label="t('landing.guestNavAria') || '产品导航'">
         <a href="/customer/update-activate">{{ t('landing.navDownload') }}</a>
         <a href="/bootstrap">{{ t('landing.navSetup') || '安装激活' }}</a>
         <a href="/customer/update-activate">{{ t('landing.navActivate') }}</a>
@@ -239,6 +263,7 @@ function handleChangePasswordSuccess() {
     <main class="guest-main">
       <RouterView />
     </main>
+    <AppNavDrawer :guest-links="guestNavLinks" />
     <LoginModal v-model="showLoginModal" />
   </div>
   <ChangePasswordDialog v-model="showChangePassword" :forced="mustChangePassword" @success="handleChangePasswordSuccess" />
@@ -253,6 +278,7 @@ function handleChangePasswordSuccess() {
   align-items: center;
   justify-content: center;
   height: 100vh;
+  height: 100dvh;
   background: var(--bg-card);
   color: var(--text-secondary);
   font-size: 13px;
@@ -277,6 +303,7 @@ function handleChangePasswordSuccess() {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -327,6 +354,7 @@ function handleChangePasswordSuccess() {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  min-height: 100dvh;
   width: 100%;
   background: var(--bg);
 }
@@ -354,6 +382,16 @@ function handleChangePasswordSuccess() {
   flex: 1;
   min-width: 0;
   margin-inline-start: 12px;
+}
+
+/* 2026-09-13 P1c：访客壳汉堡按钮（仅 <768 由 v-if 渲染），触摸目标 44px */
+.guest-hamburger {
+  flex-shrink: 0;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px 12px;
+  font-size: 16px;
+  line-height: 1;
 }
 
 .guest-nav a {
