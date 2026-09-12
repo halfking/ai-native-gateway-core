@@ -11,6 +11,8 @@ import UserInfoDialog from './components/UserInfoDialog.vue'
 import LanguageSelector from './components/LanguageSelector.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
 import AppTopbar from './components/shell/AppTopbar.vue'
+// 2026-09-13 方案 §4.4：移动端抽屉导航，与 AppTopbar 汉堡按钮共享开关状态
+import AppNavDrawer from './components/ui/AppNavDrawer.vue'
 import { detectTheme, logoSrc } from './theme'
 import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from './config/brand'
 import { useLoginModal } from './composables/useLoginModal'
@@ -202,6 +204,8 @@ function handleChangePasswordSuccess() {
         <RouterView />
       </section>
     </main>
+    <!-- 移动导航抽屉挂载点（Teleport 到 body；遮罩 z-index 对齐既有弹层约定） -->
+    <AppNavDrawer />
   </div>
   <div v-else class="guest-layout">
     <header class="guest-header">
