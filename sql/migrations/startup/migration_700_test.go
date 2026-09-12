@@ -43,6 +43,12 @@ func TestMigration700ViewRawModelName(t *testing.T) {
 		"SELECT p.request_class, p.due_at, p.system_fingerprint, p.raw_model_name",
 		"FROM public.request_logs_with_current_month_without_request_class_due_at v",
 		"COMMIT;",
+		// Ledger self-registration: the channel stamps only
+		// gateway_db_revision_sequences; without this INSERT every
+		// channel-upgraded database would drift in schema_migrations
+		// (698/699 self-register, 696/697 needed a manual catch-up).
+		"INSERT INTO public.schema_migrations (version, description)",
+		"ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description",
 	} {
 		if !strings.Contains(body, required) {
 			t.Fatalf("migration 700 missing %q", required)
