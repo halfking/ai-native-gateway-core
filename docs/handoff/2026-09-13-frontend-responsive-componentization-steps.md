@@ -20,7 +20,7 @@
 
 1. **pnpm 未安装**：本机只有 npm/npx（node v26）。运行脚本用 `npm run <script>` 或 `npx <bin>`。**不要** `npm install`（会重写 pnpm 布局的 node_modules）。
 2. **node_modules 是 darwin 平台装的**：本机是 arm64 Linux，rollup/esbuild 原生二进制缺失已手工补装（tarball 解压进 `node_modules/@rollup/rollup-linux-arm64-gnu`、`node_modules/@esbuild/linux-arm64`，未动 manifest/lockfile）。若 vitest 报 `Cannot find module '@rollup/rollup-linux-arm64-gnu'` 或 esbuild platform 报错，按同样方法补：`cd /tmp && npm pack @rollup/rollup-linux-arm64-gnu@4.60.4`（esbuild 用 `@esbuild/linux-arm64@0.21.5`）→ 解压 `package/` 到对应目录。
-3. **存量测试失败基线 = 40 个文件**（jsdom `localStorage` 未定义等环境问题，经 git stash 基线对照确认，与代码无关）。判断标准：**失败集合不得超出该基线**；新写测试必须全绿。不要去修这 40 个存量失败（非本项目范围）。
+3. **存量测试失败基线 = 40 个文件**（jsdom `localStorage` 未定义等环境问题，经 git stash 基线对照确认，与代码无关）。判断标准：**失败集合不得超出该基线**；新写测试必须全绿。不要去修这 40 个存量失败（非本项目范围）。**平台二义性**：基线 40 仅适用于 Linux 环境（jsdom `localStorage` 未定义等）；darwin（macOS）上 node_modules 为 darwin 布局，2026-09-13 实测 121 文件 / 887 用例全绿 0 失败——勿把 darwin 的「0 失败」误判为存量已修，对照基线前先确认运行平台。
 4. **i18n 扫描器会扫描注释**：组件/代码注释里**不要写 `t('xxx.yyy')` 字样**（会被当作真实引用报 missing key）。用法示例写 `someLabel` 之类的占位变量。
 5. **测试读源码用** `readFileSync(resolve(process.cwd(), 'src/...'), 'utf8')`（项目惯例，`new URL(..., import.meta.url)` 在 vitest 下报 `ERR_INVALID_URL_SCHEME`）。
 6. **死代码删除先验证边界**：用行内容断言或 grep 确认无调用方后再删，保留仍在用的相邻规则（Batch 1 删 App.vue 时 `.header-alert` 夹在死区中间被保留）。
