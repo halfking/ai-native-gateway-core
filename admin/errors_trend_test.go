@@ -28,7 +28,9 @@ func trendBreakdownRows() *pgxmock.Rows {
 		AddRow("type", "rate_limit", 2).
 		AddRow("type", "timeout", 2).
 		AddRow("supplier", "zhipu", 3).
-		AddRow("supplier", "openai", 1)
+		AddRow("supplier", "openai", 1).
+		// R16 (2026-09-12): third UNION branch feeds summary.affected_credentials.
+		AddRow("creds", "", 2)
 }
 
 func TestErrorsTrendFromStats(t *testing.T) {
@@ -71,6 +73,7 @@ func TestErrorsTrendFromStats(t *testing.T) {
 				Key   string `json:"key"`
 				Count int    `json:"count"`
 			} `json:"top_suppliers"`
+			AffectedCreds int `json:"affected_credentials"`
 		} `json:"summary"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -87,6 +90,11 @@ func TestErrorsTrendFromStats(t *testing.T) {
 	}
 	if len(body.Summary.TopErrorTypes) != 2 || len(body.Summary.TopSuppliers) != 2 {
 		t.Fatalf("breakdowns: %+v", body.Summary)
+	}
+	// R16: creds branch of loadBreakdowns must land in the summary KPI
+	// (was declared-but-never-computed, i.e. always 0 on the panel).
+	if body.Summary.AffectedCreds != 2 {
+		t.Fatalf("affected_credentials=%d, want 2", body.Summary.AffectedCreds)
 	}
 	if body.TimeSeries[0].BySupplier["zhipu"] != 3 {
 		t.Fatalf("by_supplier=%v", body.TimeSeries[0].BySupplier)
