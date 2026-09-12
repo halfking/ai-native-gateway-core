@@ -386,6 +386,21 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 		              AND c.health_checked_at > now() - INTERVAL '2 hours'
 		          )
 		      )
+		      OR (
+		          -- 2026-09-13 audit round F4: auto-disabled revalidation. An
+		          -- auto-disabled credential whose revalidation probe returns
+		          -- 401/403 flips to auth_failed and would otherwise fall out
+		          -- of every recovery set (this scan required 'suspended'; the
+		          -- availSQL tick requires lifecycle='active') — stranded
+		          -- again. Revalidate ANY auto-disabled, quota-ok, non-ready
+		          -- row once its availability backoff has expired; writeHealth
+		          -- flips it fully (ready + lifecycle active) on success.
+		          c.lifecycle_status = 'disabled'
+		          AND c.auto_disabled_at IS NOT NULL
+		          AND COALESCE(c.quota_state, 'ok') = 'ok'
+		          AND COALESCE(c.availability_state, 'ready') <> 'ready'
+		          AND (c.availability_recover_at IS NULL OR c.availability_recover_at <= now())
+		      )
 		      )
   AND c.status = 'active'
   -- 2026-09-13 closeout (P3): admit auto-disabled rows (auto_disabled_at
