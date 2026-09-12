@@ -23,10 +23,14 @@ import SessionSummaryDrawer from '../components/SessionSummaryDrawer.vue'
 import PaginationBar from '../components/ui/PaginationBar.vue'
 // 2026-09-13 P2：表格容器收敛到 ui/DataTable 包裹模式（方案 §4.5.5 姿势 1）
 import DataTable from '../components/ui/DataTable.vue'
+// 2026-09-13 P4：折叠屏横跨（isSpanning）时 列表|详情 双栏（方案 §4.6）
+import { useViewportSegments } from '../composables/useViewportSegments'
 import StatCard from '../components/ui/StatCard.vue'
 import { usePagination } from '../composables/usePagination'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
+
+const { isSpanning } = useViewportSegments()
 
 const rows = ref<RequestLogRow[]>([])
 const keys = ref<ApiKey[]>([])
@@ -1061,7 +1065,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div>
+  <div :class="{ 'app-shell--spanning': isSpanning }">
+    <div :class="isSpanning ? 'span-left' : 'rl-contents'">
     <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <h2 style="margin:0">请求日志</h2>
       <div style="display:flex;gap:8px;align-items:center">
@@ -1576,6 +1581,8 @@ onMounted(async () => {
       @change-size="onPageSizeChange"
     />
 
+    </div>
+    <div :class="isSpanning ? 'span-right request-logs-detail-pane' : 'rl-contents'">
     <RequestLogDrawer
       :request-id="activeRequestId"
       mode="request-logs"
@@ -1585,6 +1592,7 @@ onMounted(async () => {
       @filter-session="onDrawerFilterSession"
       @open-request="onDrawerOpenRequest"
     />
+    </div>
 
     <SessionSummaryDrawer
       :open="summaryDrawerOpen"
