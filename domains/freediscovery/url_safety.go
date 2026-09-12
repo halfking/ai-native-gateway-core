@@ -9,15 +9,16 @@ import (
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
-// recordURLSafetyBlocked 将一次 URL safety 拒绝落入指标.
-// reason 采用低基数分类: <field>_<class>, field ∈ base_url/models_endpoint,
-// class 由拒绝消息归类 (required/scheme/hostname/blocked_ip/userinfo/...).
+// recordURLSafetyBlocked records a URL-safety rejection in metrics.
+// reason uses a low-cardinality classification: <field>_<class>, where field is in
+// base_url/models_endpoint and class is derived from the rejection message
+// (required/scheme/hostname/blocked_ip/userinfo/...).
 func recordURLSafetyBlocked(field, msg string) {
 	metrics.FreeDiscoveryURLSafetyBlockedTotal.WithLabelValues(field + "_" + classifyURLSafetyRejection(msg)).Inc()
 }
 
-// classifyURLSafetyRejection 把人类可读的校验消息归入低基数枚举.
-// 未知消息兜底为 "other", 保证标签基数有界.
+// classifyURLSafetyRejection buckets human-readable validation messages into a low-cardinality
+// enumeration. Unknown messages fall back to "other" so the label cardinality stays bounded.
 func classifyURLSafetyRejection(msg string) string {
 	switch {
 	case strings.Contains(msg, "is required"):
@@ -53,28 +54,30 @@ func classifyURLSafetyRejection(msg string) string {
 	}
 }
 
-// URL 校验与端点安全工具 (2026-09-09 audit-fix)。
+// URL validation and endpoint safety utilities (2026-09-09 audit-fix).
 //
-// 设计目标:
-//   - 拒绝 SSRF 危险目标 (RFC1918 / loopback / link-local / IPv6 ULA / 私有 IP 字面量 /
-//     cloud metadata、userinfo / 控制字符 / 非法 scheme / fragment);
-//   - 限制 models_endpoint 必须是相对路径, 拒绝绝对 URL、`//host` 协议相对 URL;
-//   - 配合 safehttpclient 的运行时 transport, 在校验层前置阻断, 测试允许注入 allowlist;
-//   - 与生产 safehttpclient.NewWithAllowlist 的阻断范围对齐, 避免两套策略漂移.
+// Design goals:
+//   - Reject SSRF-dangerous targets (RFC1918 / loopback / link-local / IPv6 ULA / private IP literals /
+//     cloud metadata, userinfo / control characters / invalid scheme / fragment);
+//   - Restrict models_endpoint to a relative path; reject absolute URLs and `//host` scheme-relative URLs;
+//   - Pair with the safehttpclient runtime transport to block at the validation layer first; tests
+//     are allowed to inject an allowlist;
+//   - Match the blocking scope of safehttpclient.NewWithAllowlist in production to avoid policy drift.
 //
-// 注意: 本包不发起任何出站请求; 运行时 outbound 保护由 safehttpclient 提供.
+// Note: this package does not initiate any outbound requests; runtime outbound protection is
+// provided by safehttpclient.
 
-// maxBaseURLLen 与 maxEndpointLen 防止异常长输入触发解析器开销.
+// maxBaseURLLen and maxEndpointLen prevent abnormally long inputs from triggering parser overhead.
 const (
 	maxBaseURLLen  = 2048
 	maxEndpointLen = 512
 )
 
-// isValidBaseURL 校验 base_url: 仅 http/https scheme, 拒绝 userinfo/fragment/控制字符,
-// 拒绝 loopback/private/link-local/multicast/metadata 等危险 IP 字面量.
+// isValidBaseURL validates base_url: only http/https schemes; reject userinfo, fragments, and
+// control characters; reject dangerous IP literals such as loopback/private/link-local/multicast/metadata.
 //
-// 返回非空字符串表示错误 (与 isValidProviderCode 风格保持一致).
-// 每次拒绝同步递增 freediscovery_url_safety_blocked_total{reason}.
+// A non-empty return string means an error (kept consistent with the isValidProviderCode style).
+// Each rejection also increments freediscovery_url_safety_blocked_total{reason}.
 func isValidBaseURL(raw string) string {
 	msg := validateBaseURL(raw)
 	if msg != "" {
@@ -90,7 +93,7 @@ func validateBaseURL(raw string) string {
 	if len(raw) > maxBaseURLLen {
 		return "base_url exceeds maximum length"
 	}
-	// 控制字符可能在 URL 解析器中被规范化, 提前阻断.
+	// Control characters may be normalized by URL parsers, so block them up front.
 	for _, r := range raw {
 		if r < 0x20 || r == 0x7f {
 			return "base_url contains control characters"
@@ -113,13 +116,13 @@ func validateBaseURL(raw string) string {
 	if u.Fragment != "" {
 		return "base_url must not contain a fragment"
 	}
-	// IPv4/IPv6 字面量: 直接阻断私网地址段.
+	// IPv4/IPv6 literals: block private address ranges directly.
 	if ip := net.ParseIP(host); ip != nil {
 		if reason := blockReasonForIP(ip); reason != "" {
 			return "base_url " + reason
 		}
 	}
-	// 域名形式: 阻断常见绕过模式 (safehttpclient 在 dial 阶段会做进一步 DNS 校验).
+	// Domain form: block common bypass patterns (safehttpclient performs further DNS validation at the dial stage).
 	if strings.Contains(host, "@") {
 		return "base_url hostname contains @ character (potential parser bypass)"
 	}
@@ -129,9 +132,9 @@ func validateBaseURL(raw string) string {
 	return ""
 }
 
-// isValidModelsEndpoint 校验 models_endpoint: 必须以单斜杠开头 (相对路径),
-// 拒绝 scheme、`//host` 协议相对 URL、含 userinfo 的绝对 URL 与控制字符.
-// 每次拒绝同步递增 freediscovery_url_safety_blocked_total{reason}.
+// isValidModelsEndpoint validates models_endpoint: must start with a single slash (relative path);
+// reject schemes, `//host` scheme-relative URLs, absolute URLs with userinfo, and control characters.
+// Each rejection also increments freediscovery_url_safety_blocked_total{reason}.
 func isValidModelsEndpoint(raw string) string {
 	msg := validateModelsEndpoint(raw)
 	if msg != "" {
@@ -142,7 +145,7 @@ func isValidModelsEndpoint(raw string) string {
 
 func validateModelsEndpoint(raw string) string {
 	if raw == "" {
-		// 默认值在调用处补 /models; 空串允许通过 (调用方填默认值).
+		// The caller fills in the default /models; an empty string is allowed (caller supplies the default).
 		return ""
 	}
 	if len(raw) > maxEndpointLen {
@@ -153,14 +156,14 @@ func validateModelsEndpoint(raw string) string {
 			return "models_endpoint contains control characters"
 		}
 	}
-	// 必须以单个 '/' 开头 (相对路径), 拒绝 '//' (协议相对 URL) 与任何 scheme.
+	// Must start with a single '/' (relative path); reject '//' (scheme-relative URL) and any scheme.
 	if !strings.HasPrefix(raw, "/") {
 		return "models_endpoint must be a relative path starting with /"
 	}
 	if strings.HasPrefix(raw, "//") {
 		return "models_endpoint must not be a scheme-relative URL (//host/path)"
 	}
-	// 进一步用 url.Parse 确认不解析成新 host.
+	// Use url.Parse to further confirm it does not resolve to a new host.
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Sprintf("models_endpoint invalid: %v", err)
@@ -171,11 +174,11 @@ func validateModelsEndpoint(raw string) string {
 	return ""
 }
 
-// blockReasonForIP 返回 IP 命中拒绝策略的原因; 空串表示放行.
+// blockReasonForIP returns the rejection reason when an IP matches a block policy; empty string means allowed.
 //
-// 复用 safehttpclient 的常见阻断范围: loopback、private (RFC1918 / IPv6 ULA)、
-// link-local (169.254/169.239、fe80::/10)、cloud metadata (169.254.169.254)、
-// IPv4 multicast (224/4)、IPv6 multicast (ff00::/8)、未指定/广播地址.
+// Reuses the common blocking scope of safehttpclient: loopback, private (RFC1918 / IPv6 ULA),
+// link-local (169.254/169.239, fe80::/10), cloud metadata (169.254.169.254), IPv4 multicast
+// (224/4), IPv6 multicast (ff00::/8), unspecified addresses, and broadcast.
 func blockReasonForIP(ip net.IP) string {
 	if ip == nil {
 		return ""
@@ -187,7 +190,7 @@ func blockReasonForIP(ip net.IP) string {
 		return "host is loopback (127.0.0.0/8 or ::1)"
 	}
 	if ip.IsLinkLocalUnicast() {
-		// 169.254.0.0/16 (IPv4) 与 fe80::/10 (IPv6); 包含 cloud metadata 169.254.169.254
+		// 169.254.0.0/16 (IPv4) and fe80::/10 (IPv6); includes cloud metadata 169.254.169.254.
 		return "host is link-local (incl. cloud metadata 169.254.169.254)"
 	}
 	if ip.IsLinkLocalMulticast() {
@@ -205,11 +208,12 @@ func blockReasonForIP(ip net.IP) string {
 	return ""
 }
 
-// joinBaseAndEndpoint 安全拼接 base 与 endpoint; endpoint 必须已经通过 isValidModelsEndpoint.
+// joinBaseAndEndpoint safely joins base and endpoint; endpoint must already have passed isValidModelsEndpoint.
 //
-// base 的 path 段保留 (例 https://a.com/v1 + /models → https://a.com/v1/models).
-// url.ResolveReference 把绝对 path 的 reference 视作替换而非追加, 因此改用
-// 直接拼接 base.Path 与 endpoint, 再序列化整个 URL. endpoint 不以 "/" 开头则补 "/".
+// The base path segment is preserved (e.g. https://a.com/v1 + /models -> https://a.com/v1/models).
+// url.ResolveReference treats an absolute-path reference as a replacement rather than an append,
+// so we instead concatenate base.Path with endpoint and re-serialize the whole URL. If endpoint
+// does not start with "/", one is added.
 func joinBaseAndEndpoint(base, endpoint string) (string, error) {
 	baseURL, err := url.Parse(base)
 	if err != nil {
@@ -228,7 +232,7 @@ func joinBaseAndEndpoint(base, endpoint string) (string, error) {
 	if ep.Scheme != "" || ep.Host != "" || ep.User != nil {
 		return "", fmt.Errorf("models_endpoint must be relative")
 	}
-	// 拼接: base.Path (含前缀 /) + ep.Path (已确保以 / 开头), 合并 query
+	// Concatenation: base.Path (with leading /) + ep.Path (already ensured to start with /), then merge query.
 	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + ep.Path
 	if ep.RawQuery != "" {
 		baseURL.RawQuery = ep.RawQuery

@@ -12,35 +12,38 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/safehttpclient"
 )
 
-// maxScanBodyBytes 上游响应体积上限 (防御恶意/异常端点).
+// maxScanBodyBytes is the upstream response size limit (defense against malicious/malformed endpoints).
 const maxScanBodyBytes = 8 << 20 // 8 MiB
 
-// ProviderScanner 扫描上游提供商的模型列表.
+// ProviderScanner scans an upstream provider's model list.
 type ProviderScanner interface {
-	// ScanModels 拉取并解析模型列表, 过滤出免费条目.
+	// ScanModels fetches and parses the model list, filtering out free entries.
 	ScanModels(ctx context.Context, tpl *ProviderTemplate, apiKey string) ([]DiscoveredModel, error)
 }
 
-// HTTPScanner 基于 OpenAI 兼容 GET {base_url}{models_endpoint} 的通用扫描器.
-// Groq / OpenRouter / SiliconFlow / 智谱 等 openai-completions 提供商共用,
-// 差异通过 freeOf / poolKeyOf / quotaEstimator 钩子注入.
+// HTTPScanner is the generic scanner built on OpenAI-compatible GET {base_url}{models_endpoint}.
+// Shared by openai-completions providers such as Groq / OpenRouter / SiliconFlow / Zhipu;
+// differences are injected via the freeOf / poolKeyOf / quotaEstimator hooks.
 //
-// doer 出站: 安全生产默认使用 safehttpclient (阻断私网/回环/链路本地/云元数据,
-// 防 DNS rebinding), 测试可注入 httptest.Server client.
+// doer for outbound: production defaults to safehttpclient (blocks private networks / loopback /
+// link-local / cloud metadata, and prevents DNS rebinding). Tests may inject an httptest.Server client.
 type HTTPScanner struct {
 	doer func(req *http.Request) (*http.Response, error)
 
-	// freeOf 判断上游模型条目是否属于免费层 (nil = openAICompatibleFreeOf 默认规则)
+	// freeOf judges whether an upstream model entry belongs to the free tier
+	// (nil = use the openAICompatibleFreeOf default rule).
 	freeOf func(m modelEntry) bool
-	// poolKeyOf 推断跨模型共享配额池标识 (nil = 无共享池)
+	// poolKeyOf infers the shared-quota-pool identifier across models (nil = no shared pool).
 	poolKeyOf func(m modelEntry) string
-	// quotaEstimator 估算免费配额 (nil = 不估算, 0)
+	// quotaEstimator estimates the free quota (nil = no estimation, 0).
 	quotaEstimator func(m modelEntry) (monthly, daily int64)
 }
 
-// NewHTTPScanner 构造通用扫描器. httpClient 为 nil 时使用 safehttpclient 作为安全默认
-// (阻断私网/回环/链路本地/cloud metadata, 防 DNS rebinding).
-// 生产部署应使用 nil 让其自动获取安全 transport; 仅测试场景可注入 httptest.NewServer client.
+// NewHTTPScanner constructs the generic scanner. When httpClient is nil, safehttpclient is used
+// as the safe default (blocks private networks / loopback / link-local / cloud metadata,
+// and prevents DNS rebinding).
+// Production deployments should pass nil to let it pick up the safe transport automatically;
+// only test scenarios may inject an httptest.NewServer client.
 func NewHTTPScanner(httpClient *http.Client) *HTTPScanner {
 	if httpClient != nil {
 		return &HTTPScanner{doer: httpClient.Do}
@@ -49,19 +52,20 @@ func NewHTTPScanner(httpClient *http.Client) *HTTPScanner {
 	return &HTTPScanner{doer: safe.Do}
 }
 
-// modelEntry 上游 /models 响应的单个条目 (OpenAI 兼容形态 + 常见扩展字段).
+// modelEntry is a single entry in the upstream /models response (OpenAI-compatible shape
+// plus common extension fields).
 type modelEntry struct {
 	ID          string `json:"id"`
-	Name        string `json:"name"`                  // OpenRouter 展示名
-	DisplayName string `json:"display_name"`          // Groq 展示名
-	ContextLen  int    `json:"context_length"`        // OpenRouter
-	ContextWin  int    `json:"context_window"`        // Groq
-	MaxOut      int    `json:"max_output_tokens"`     // Groq
-	MaxComp     int    `json:"max_completion_tokens"` // OpenRouter
-	// OpenRouter 定价 (字符串化的美元/百万token); "0" = 免费
+	Name        string `json:"name"`                  // OpenRouter display name.
+	DisplayName string `json:"display_name"`          // Groq display name.
+	ContextLen  int    `json:"context_length"`        // OpenRouter.
+	ContextWin  int    `json:"context_window"`        // Groq.
+	MaxOut      int    `json:"max_output_tokens"`     // Groq.
+	MaxComp     int    `json:"max_completion_tokens"` // OpenRouter.
+	// OpenRouter pricing (stringified USD per million tokens); "0" = free.
 	PricingPrompt     string `json:"pricing_prompt"`
 	PricingCompletion string `json:"pricing_completion"`
-	// 原始字段兜底
+	// Raw-field fallback.
 	raw map[string]any
 }
 
@@ -90,7 +94,7 @@ func (e modelEntry) maxTokens() int {
 	return e.MaxComp
 }
 
-// IsFree 归一化后的免费判定输入: OpenRouter ":free" 后缀或零定价.
+// IsFree is the normalized free-decision input: the OpenRouter ":free" suffix or zero pricing.
 func (e modelEntry) isZeroPriced() bool {
 	return isZeroPrice(e.PricingPrompt) && isZeroPrice(e.PricingCompletion)
 }
@@ -100,7 +104,7 @@ func isZeroPrice(s string) bool {
 	return s == "" || s == "0" || s == "0.0" || s == "0.00"
 }
 
-// ScanModels 拉取 {base_url}{models_endpoint} 并解析.
+// ScanModels fetches {base_url}{models_endpoint} and parses it.
 func (s *HTTPScanner) ScanModels(ctx context.Context, tpl *ProviderTemplate, apiKey string) ([]DiscoveredModel, error) {
 	if tpl == nil {
 		return nil, fmt.Errorf("freediscovery: nil template")
@@ -119,7 +123,7 @@ func (s *HTTPScanner) ScanModels(ctx context.Context, tpl *ProviderTemplate, api
 		return nil, fmt.Errorf("freediscovery: build request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	// keyless 提供商允许空 Authorization 缺省
+	// Keyless providers allow an empty Authorization header.
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
@@ -174,10 +178,10 @@ func (s *HTTPScanner) ScanModels(ctx context.Context, tpl *ProviderTemplate, api
 	return models, nil
 }
 
-// parseModelsResponse 兼容两种响应形态:
+// parseModelsResponse supports two response shapes:
 //   - OpenAI/Groq:  {"data": [...]}
-//   - OpenRouter:   {"data": [...]} (同形)
-//   - 裸数组:       [...]
+//   - OpenRouter:   {"data": [...]} (same shape)
+//   - Bare array:   [...]
 func parseModelsResponse(body []byte) ([]modelEntry, error) {
 	var envelope struct {
 		Data []json.RawMessage `json:"data"`
@@ -197,7 +201,7 @@ func decodeEntries(raw []json.RawMessage) ([]modelEntry, error) {
 	for _, r := range raw {
 		var e modelEntry
 		if err := json.Unmarshal(r, &e); err != nil {
-			continue // 单条畸形数据跳过, 不整体失败
+			continue // Skip a single malformed entry rather than failing the whole batch.
 		}
 		if e.ID == "" {
 			continue
@@ -210,19 +214,19 @@ func decodeEntries(raw []json.RawMessage) ([]modelEntry, error) {
 	return out, nil
 }
 
-// openAICompatibleFreeOf 默认免费判定规则:
-//   - 模型 ID 带 ":free" 后缀 (OpenRouter)
-//   - 或上游定价全为零 (OpenRouter pricing 字段)
+// openAICompatibleFreeOf is the default free-decision rule:
+//   - Model ID has the ":free" suffix (OpenRouter).
+//   - Or upstream pricing is all zeros (OpenRouter pricing fields).
 func openAICompatibleFreeOf(m modelEntry) bool {
 	return strings.HasSuffix(m.ID, ":free") || (m.PricingPrompt != "" && m.isZeroPriced())
 }
 
-// inferFreeType 从模型特征推断免费类型 (写入 discovery_results.free_type).
+// inferFreeType infers the free type from model characteristics (writes discovery_results.free_type).
 func inferFreeType(m modelEntry) string {
 	id := strings.ToLower(m.ID)
 	switch {
 	case strings.Contains(id, "free"):
-		return string(FreeTypeRecurringUncapped) // OpenRouter :free 无总量上限, 仅 RPM/RPD
+		return string(FreeTypeRecurringUncapped) // OpenRouter :free has no volume cap, only RPM/RPD.
 	case strings.Contains(id, "trial"):
 		return string(FreeTypeOneTimeInitial)
 	default:
@@ -230,10 +234,11 @@ func inferFreeType(m modelEntry) string {
 	}
 }
 
-// joinURL 安全拼接 base 与 endpoint (使用 URL 解析器而非字符串拼接).
+// joinURL safely joins base and endpoint (uses a URL parser rather than string concatenation).
 //
-// endpoint 必须已通过 isValidModelsEndpoint 校验 (相对路径、不含 scheme/host).
-// 出站 HTTP 请求安全策略由 safehttpclient 在 transport 层提供, 此处仅负责 URL 构造.
+// endpoint must already have passed isValidModelsEndpoint (relative path, no scheme/host).
+// Outbound HTTP request safety is provided by safehttpclient at the transport layer; this
+// function only constructs the URL.
 func joinURL(base, endpoint string) (string, error) {
 	return joinBaseAndEndpoint(base, endpoint)
 }

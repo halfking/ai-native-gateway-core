@@ -29,7 +29,7 @@ func TestToSChecker_CautionKeyword(t *testing.T) {
 
 func TestToSChecker_AvoidKeywordWins(t *testing.T) {
 	c := NewToSChecker()
-	// avoid 关键词优先级最高, 即便模板是 ok
+	// The "avoid" keyword has the highest priority, even when the template verdict is ok.
 	verdict, _ := c.Check(&ProviderTemplate{ProviderCode: "groq", TosVerdict: "ok"}, "deprecated-model:free")
 	if verdict != "avoid" {
 		t.Fatalf("avoid keyword must win, got %q", verdict)
@@ -38,7 +38,7 @@ func TestToSChecker_AvoidKeywordWins(t *testing.T) {
 
 func TestToSChecker_TemplateVerdictPriority(t *testing.T) {
 	c := NewToSChecker()
-	// 模板级 caution 覆盖提供商预设
+	// Template-level caution overrides the provider-level preset.
 	verdict, notes := c.Check(&ProviderTemplate{
 		ProviderCode: "openrouter", TosVerdict: "caution", TosNotes: "reviewed by admin",
 	}, "unmarked-model-x")
@@ -49,7 +49,7 @@ func TestToSChecker_TemplateVerdictPriority(t *testing.T) {
 
 func TestToSChecker_ProviderVerdictFallback(t *testing.T) {
 	c := NewToSChecker()
-	// groq 预设是 caution: 无关键词命中时走提供商级兜底
+	// groq preset is caution: when no keyword matches, fall back to the provider-level verdict.
 	verdict, _ := c.Check(&ProviderTemplate{ProviderCode: "groq"}, "llama-3.1-8b-instant")
 	if verdict != "caution" {
 		t.Fatalf("provider-level fallback verdict expected, got %q", verdict)
@@ -58,7 +58,7 @@ func TestToSChecker_ProviderVerdictFallback(t *testing.T) {
 
 func TestToSChecker_FreeMarkingDowngradedByProviderCaution(t *testing.T) {
 	c := NewToSChecker()
-	// 提供商级 avoid 时, 即使模型带 :free 也不能给 ok
+	// When the provider-level verdict is avoid, the model cannot be marked ok even if it carries :free.
 	c.rules["evil-provider"] = &ToSRule{
 		ProviderCode:    "evil-provider",
 		AllowKeywords:   []string{":free"},

@@ -12,26 +12,27 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/safehttpclient"
 )
 
-// Google AI Studio (Generative Language API) 的真协议扫描器.
+// Google AI Studio (Generative Language API) real-protocol scanner.
 //
-// 协议特点:
-//   - 端点:  {base}/models?key=<API_KEY>&pageSize=1000
-//   - 鉴权:  API key 作为 URL query 参数, 不是 Authorization: Bearer
-//   - 响应:  {"models":[{"name":"models/gemini-pro","displayName":"...",
+// Protocol characteristics:
+//   - Endpoint:  {base}/models?key=<API_KEY>&pageSize=1000
+//   - Auth:      API key is passed as a URL query parameter, not Authorization: Bearer
+//   - Response:  {"models":[{"name":"models/gemini-pro","displayName":"...",
 //     "inputTokenLimit":N,"outputTokenLimit":N,
 //     "supportedGenerationMethods":["generateContent",...]}]}
 //
-// 与 OpenAI 兼容形态完全不同 (data[] vs models[], key in query vs Bearer header),
-// 因此需要单独的扫描器.
+// Differs entirely from the OpenAI-compatible form (data[] vs models[], key in
+// query vs Bearer header), so a dedicated scanner is required.
 //
-// doer 出站与 HTTPScanner 一致: 默认 safehttpclient 阻断私网/回环/元数据,
-// 测试可注入 httptest.Server client (allowlist 127.0.0.1).
+// doer outbound matches HTTPScanner: by default safehttpclient blocks
+// private/loopback/metadata; tests can inject an httptest.Server client
+// (allowlist 127.0.0.1).
 type GoogleGenerativeAIScanner struct {
 	doer func(req *http.Request) (*http.Response, error)
 }
 
-// NewGoogleGenerativeAIScanner 构造 Google Generative AI 扫描器.
-// httpClient=nil 时使用 safehttpclient 作为安全默认.
+// NewGoogleGenerativeAIScanner constructs a Google Generative AI scanner.
+// When httpClient=nil, safehttpclient is used as a safe default.
 func NewGoogleGenerativeAIScanner(httpClient *http.Client) *GoogleGenerativeAIScanner {
 	if httpClient != nil {
 		return &GoogleGenerativeAIScanner{doer: httpClient.Do}
@@ -40,16 +41,18 @@ func NewGoogleGenerativeAIScanner(httpClient *http.Client) *GoogleGenerativeAISc
 	return &GoogleGenerativeAIScanner{doer: safe.Do}
 }
 
-// googleModelsResponse Google /v1beta/models 响应结构 (2025-09 schema).
+// googleModelsResponse Google /v1beta/models response structure (2025-09 schema).
 type googleModelsResponse struct {
 	Models []googleModelEntry `json:"models"`
-	// NextPageToken 简化处理: MVP 阶段单页 pageSize=1000 通常足够;
-	// 真上线再加分页 token 跟进.
+	// NextPageToken is intentionally simplified: a single page with pageSize=1000
+	// is usually enough during the MVP phase; add pagination-token follow-up
+	// before true production rollout.
 	NextPageToken string `json:"nextPageToken"`
 }
 
-// googleModelEntry 单个 Google 模型条目.
-// "name" 含 "models/" 前缀 (例如 "models/gemini-2.0-flash"), ModelID 须剥离前缀.
+// googleModelEntry a single Google model entry.
+// "name" carries the "models/" prefix (e.g. "models/gemini-2.0-flash"); ModelID
+// must strip that prefix.
 type googleModelEntry struct {
 	Name                       string   `json:"name"`
 	DisplayName                string   `json:"displayName"`
@@ -63,12 +66,12 @@ type googleModelEntry struct {
 }
 
 func (e googleModelEntry) isFreeOfCharge() bool {
-	// 2025-09: Google AI Studio 的免费模型特征:
-	//   1. name 包含 "gemini" 系列 (gemini-*-flash / gemini-*-pro 早期)
-	//   2. supportedGenerationMethods 含 "generateContent"
-	//   3. 没有 "tuning" / "countTokens" 之外的方法 (避免付费 Vertex AI 模型)
+	// 2025-09: characteristics of Google AI Studio free models:
+	//   1. name belongs to the "gemini" series (gemini-*-flash / early gemini-*-pro)
+	//   2. supportedGenerationMethods contains "generateContent"
+	//   3. No methods beyond "tuning" / "countTokens" (avoids paid Vertex AI models)
 	//
-	// 不强制包含 ":free" — Google API 没有 :free 命名约定.
+	// ":free" is NOT required — the Google API has no :free naming convention.
 	id := strings.ToLower(e.Name)
 	if !strings.Contains(id, "gemini") {
 		return false
@@ -85,7 +88,7 @@ func (e googleModelEntry) displayName() string {
 	if e.DisplayName != "" {
 		return e.DisplayName
 	}
-	// 退化: 从 "models/gemini-2.0-flash" 取最后一段.
+	// Fallback: take the last segment from "models/gemini-2.0-flash".
 	return strings.TrimPrefix(e.Name, "models/")
 }
 
@@ -93,7 +96,8 @@ func (e googleModelEntry) modelID() string {
 	return strings.TrimPrefix(e.Name, "models/")
 }
 
-// ScanModels 拉取 Google AI Studio 模型列表, 解析 + 免费判定.
+// ScanModels fetches the Google AI Studio model list, parses it, and applies
+// the free-tier check.
 func (s *GoogleGenerativeAIScanner) ScanModels(ctx context.Context, tpl *ProviderTemplate, apiKey string) ([]DiscoveredModel, error) {
 	if tpl == nil {
 		return nil, fmt.Errorf("freediscovery: nil template")
@@ -108,8 +112,8 @@ func (s *GoogleGenerativeAIScanner) ScanModels(ctx context.Context, tpl *Provide
 		return nil, fmt.Errorf("freediscovery: build google request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	// Google AI Studio: API key 必须作为 ?key= 查询参数传递.
-	// 不能使用 Authorization: Bearer, 上游会忽略.
+	// Google AI Studio: the API key MUST be passed as the ?key= query parameter.
+	// Authorization: Bearer is not honored by the upstream.
 	if apiKey != "" {
 		q := req.URL.Query()
 		q.Set("key", apiKey)
@@ -141,7 +145,7 @@ func (s *GoogleGenerativeAIScanner) ScanModels(ctx context.Context, tpl *Provide
 		if !e.isFreeOfCharge() {
 			continue
 		}
-		// 单条畸形 (无 Name) 跳过, 不整体失败.
+		// A single malformed entry (missing Name) is skipped without failing the batch.
 		if e.Name == "" {
 			continue
 		}
@@ -151,8 +155,9 @@ func (s *GoogleGenerativeAIScanner) ScanModels(ctx context.Context, tpl *Provide
 			DisplayName:   e.displayName(),
 			ContextWindow: e.InputTokenLimit,
 			MaxTokens:     e.OutputTokenLimit,
-			FreeType:      string(FreeTypeRecurringUncapped), // Google AI Studio 免费层按 RPM/RPD 限额, 无月总量
-			// 默认按 Gemini 免费层估算: 每分钟 15 RPM, 每日 1500 RPD, 单模型估算 ~50K/天.
+			FreeType:      string(FreeTypeRecurringUncapped), // Google AI Studio free tier is rate-limited by RPM/RPD with no monthly cap
+			// Default estimate based on the Gemini free tier: 15 RPM, 1500 RPD,
+			// ~50K/day per model.
 			MonthlyTokens: 0,
 			DailyTokens:   50000,
 			PoolKey:       "google-aistudio-free-pool",
@@ -162,13 +167,13 @@ func (s *GoogleGenerativeAIScanner) ScanModels(ctx context.Context, tpl *Provide
 	return models, nil
 }
 
-// decodeGoogleEntries 解码单个条目到 raw map (供 RawMetadata 透传).
+// decodeGoogleEntries decodes each entry into a raw map (passthrough for RawMetadata).
 func decodeGoogleEntries(body []byte) ([]googleModelEntry, error) {
 	var payload googleModelsResponse
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, err
 	}
-	// 同步填充 raw map (供 ScanModels 透传).
+	// Synchronously populate the raw map (passthrough for ScanModels).
 	var rawList []map[string]any
 	if err := json.Unmarshal(body, &struct {
 		Models *[]map[string]any `json:"models"`
