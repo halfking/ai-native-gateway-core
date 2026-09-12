@@ -12,7 +12,7 @@ import { req } from './_core'
 // 错误约定 (admin/free_discovery.go fdStatusFor):
 //   - 400  校验/SSRF 阻断 (loopback / private / userinfo / fragment / 控制字符 /
 //         scheme 不对 / models_endpoint 含 scheme·host·userinfo)
-//   - 404  ErrTemplateNotFound / ErrImportTaskNotFound (含跨租户)
+//   - 404  ErrTemplateNotFound / ErrImportTaskNotFound / ErrTaskNotFound (含跨租户)
 //   - 409  ErrTemplateDisabled / ErrImportTaskNotReady / ErrTaskStateConflict
 //   - 500  兜底; scan 在 task 已 failed 时仍 200+任务体
 
