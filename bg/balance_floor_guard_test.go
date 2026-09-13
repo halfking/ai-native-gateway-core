@@ -305,8 +305,8 @@ func TestBalanceFloorGuardPullNeverTouchesManualDisabled(t *testing.T) {
 	}
 
 	restores := strings.Count(body, "SET quota_state = 'ok'")
-	if restores != 2 {
-		t.Fatalf("expected exactly 2 restore UPDATEs (currency + plan), found %d", restores)
+	if restores != 3 {
+		t.Fatalf("expected exactly 3 restore UPDATEs (currency + plan + cleared-floor release), found %d", restores)
 	}
 	// 两处恢复（货币/detail 固定文案，套餐/detail 前缀文案）各自带
 	// reason='balance_floor' 守卫。marker 文案位于 SET 子句内，因此从
@@ -367,9 +367,61 @@ func TestBalanceFloorGuardSweepFairnessAndGuards(t *testing.T) {
 		"AND status = 'active'",
 		"AND lifecycle_status = 'active'",
 	} {
-		if got := strings.Count(body, marker); got != 2 {
-			t.Fatalf("marker %q must guard both pull UPDATEs (pass B + plan), found %d", marker, got)
+		if got := strings.Count(body, marker); got != 3 {
+			t.Fatalf("marker %q must guard both pull UPDATEs (pass B + plan) and the release UPDATE, found %d", marker, got)
 		}
+	}
+}
+
+// TestBalanceFloorGuardClearedFloorRelease pins the cleared-floor release
+// contract: a floor-pulled row must become routable again within one cycle
+// once ALL three floor columns are NULL, and the release must never touch
+// rows that still have a floor configured (those stay owned by the
+// hysteresis restore paths) or rows pulled for other reasons.
+func TestBalanceFloorGuardClearedFloorRelease(t *testing.T) {
+	src, err := os.ReadFile("balance_floor_guard.go")
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	body := string(src)
+
+	idx := strings.Index(body, "func (g *BalanceFloorGuard) releaseClearedFloorCredentials")
+	if idx < 0 {
+		t.Fatalf("releaseClearedFloorCredentials not found")
+	}
+	end := strings.Index(body[idx+1:], "\nfunc ")
+	if end < 0 {
+		t.Fatalf("release function end not found")
+	}
+	fn := body[idx : idx+1+end]
+
+	for _, want := range []string{
+		"COALESCE(quota_state, 'ok') = 'balance_exhausted'",
+		`COALESCE(state_reason_code, '') = 'balance_floor'`,
+		"balance_floor_usd IS NULL",
+		"quota_floor_tokens IS NULL",
+		"quota_floor_percent IS NULL",
+		// 与 pass C 恢复选点对齐的可路由守卫：他方禁用期间不释放。
+		"AND status = 'active'",
+		"AND lifecycle_status = 'active'",
+		"COALESCE(manual_disabled, FALSE) = FALSE",
+		"SELECT 1 FROM providers p",
+		"p.enabled = TRUE",
+		"COALESCE(p.manual_disabled, FALSE) = FALSE",
+		// cycle 内必须挂接（套餐 sweep 之前），否则清下限不生效。
+	} {
+		if !strings.Contains(fn, want) {
+			t.Fatalf("release UPDATE missing %q", want)
+		}
+	}
+	cycleIdx := strings.Index(body, "func (g *BalanceFloorGuard) cycle(")
+	if cycleIdx < 0 {
+		t.Fatalf("cycle not found")
+	}
+	cycleEnd := strings.Index(body[cycleIdx+1:], "\nfunc ")
+	cycleFn := body[cycleIdx : cycleIdx+1+cycleEnd]
+	if !strings.Contains(cycleFn, "releaseClearedFloorCredentials") {
+		t.Fatalf("cycle must call releaseClearedFloorCredentials")
 	}
 }
 
