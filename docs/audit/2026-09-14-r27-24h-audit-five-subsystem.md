@@ -107,3 +107,93 @@
 - web：vue-tsc、vitest（color-audit 11 用例、i18n parity 6 用例）、color:check strict PASS。
 - installer 独立 module go build/test 通过；deploy_readiness_contract_test 11 项 PASS。
 - 推送：490e8e989..41b529de5 → origin/main。
+
+## 六、补派审计轮（同日晚：autocombo / 双存储 / 多层队列，验证器缺口收口）
+
+补派 3 个只读子代理（G/H/I）覆盖 §四.8 明示未审的两个维度与多层队列独立结论，
+并以 §三 #1 死桥退役收口代码结构维度。
+
+### 6.1 auto 模型全量实现（G 轮，domains/autocombo + handler_autocombo + autoroute）
+
+仓库内 "auto" 实为两条平行链路：精确 `model="auto"` → autoroute.Decider；
+`model="auto/*"` → autocombo/OmniFree 虚拟路由。
+
+- **P0-1（已修复，3d6620a0f）**：`CanonicalizeClientModel` 的通用 last-'/' 厂商前缀
+  剥离把 `auto/free` 折叠为 `free`，`shouldTryOmniFree`（要求 `auto/` 前缀）在线上
+  恒 false——OmniFree 全域（Resolver 14 内置模板/VirtualFactory/Engine/配额预取/
+  429 校准/Prometheus 指标族）代码完备但 wire 上不可达；唯一直测前缀的单测绕过了
+  入口规范化，HTTP 级 e2e 缺失是漏网根因。修复：`auto/` 保留命名空间豁免 + 3 组
+  钉桩用例；OmniFree 未接线时 nil 守卫保持原 400 行为，严格可加。
+- P1-1：autocombo 六维评分排序被 executor Router（Bandit/P2C）重排覆盖，评分实际
+  只影响 top-50 截断——排序所有权冲突。
+- P2：combo 语义未实现（实为单选+failover，无流式拼接/usage 聚合）；`HideTrainableModels`
+  无源死配置；`ExplorationRate` 死字段；D5 模型级 failover 只护 autoroute 非流式。
+- 闭环结论：autoroute 链路基本闭环；autocombo 链路「代码完备、链路断头」——P0-1
+  修复后需补 HTTP 级 `auto/*` e2e 与排序所有权定性（登记 §七）。
+
+### 6.2 双存储架构（H 轮，full: pg+redis+memory+files vs lite: sqlite+memory+files）
+
+事实链：`LLM_GATEWAY_STORAGE_MODE`（config/storage.go）→ storage_mode_init.go →
+storage/factory → lite_telemetry_sink.go 唯一生产写接缝。
+
+- **P0-1（已修复，d8af9ccb0）**：lite 模式（及 full 的 no-DB 降级态）数据面鉴权
+  完全旁路——middleware sk-* 透传直达无鉴权 handler，任意 Bearer sk-* 可消耗上游
+  凭据。修复：verifier 禁用且部署静态密钥时 handler 侧兜底闸（consttime 精确匹配）；
+  无静态密钥时 ERROR 告警明示暴露面与收口开关（不 fail-start，no-DB 降级为生产
+  依赖路径）。
+- P1：lite 不门控 Redis（半开形态）；full 模式 `full_storage.postgres_url` 校验
+  假字段（实际连接走 DATABASE_URL）；SQLite sessions/turns/logs 无保留期清理
+  （bodies trimmer 只删文件不删 meta，制造永久 Missing 告警）；providers/credentials/
+  models/bindings 四家 SQLite store 零生产接线（schema 占位）。
+- P2/P3：SQLite 无版本化迁移机制（PRAGMA user_version 建议）；多个部署脚本
+  CGO_ENABLED=0 与 lite 硬 CGO 冲突（fail-fast 有防呆）；MemoryStateStore 零生产
+  消费者（"memory 替代 Redis" 文案与实现不符）；bodies 目录无容量上限；文档多处
+  漂移（"生产就绪⭐5" 宣称与自留未完成项矛盾）。
+- 闭环结论：**部分闭环**。lite 单机审计主干（开关→工厂→SQLite 三 store→files→
+  trimmer→对账→telemetry 接缝）真实可运行且质量好；full 侧在工厂内为诚实标注的桩
+  （既有 pgx/redis 装配不走工厂）。memory 层未闭环；P0-1/P1 各项修复前 lite 只应
+  定位"可信网络内单机审计部署"。
+
+### 6.3 多层队列与权重负载均衡（I 轮，dispatch pipeline + executors router + limiter）
+
+生产主链路：入口 RPM 门 → dispatch.Pipeline（Tier-0 总队列 → Tier-1 模型队列 →
+Tier-2 凭据队列+Governor → ForwardFunc）→ Router.PlanCandidates（候选过滤→
+billing round→tier→P2C/加权首轮→优先级桶）。
+
+- P1-1：admin `scoring_weights_update` 是展示-only 假旋钮——`CalculateCompositeScore`
+  仅被诊断/预览端点调用，真实选路用 env 可调的 `DefaultLoadScoreWeights()`。
+- P2：routeFailover 阻塞投递 failoverCh（容量 FailoverWorkers×4）不受请求 ctx 约束，
+  上游大面积故障时凭据级头阻塞；retry/due 堆无显式容量上限（有界性依赖客户端 ctx）；
+  权重负载均衡三套并行实现（Bandit 接线被注释、domains/routing WeightedRouter 仅
+  测试引用，均为生产死代码）；手动 `model_offers.weight` 无上限钳制（可垄断首轮）。
+- P3：weightCounters sync.Map 无淘汰（慢性缓涨）；Tier-0 单 drainer 跨模型队头阻塞；
+  候选硬截断 12 大池尾部失真；concurrencyGovernor 2ms 轮询；RPM 旁路后溢出退避
+  仅 1s。
+- 闭环结论：入口并发/出口限流/调度瀑布**闭环**（分钟桶 RPM+预算队列、Governor+
+  Limiter 四层+熔断三段恢复、429 三层钳制、ladder maxAttempts=100 硬顶、shutdown
+  全链无孤儿、惊群三重抑制——工程完成度显著高于平均）；多层队列解耦与权重负载均衡
+  **部分闭环**（P1-1 假旋钮与 P2-2 头阻塞为优先修复项；评分逻辑散布 4 处为最大改进面）。
+
+### 6.4 死桥退役（§三 #1 收口）
+
+`domains/transformation/anthropic/anthropic_stream.go`（StreamOpenAIToAnthropicSSE
+7 参无 gate 版）+ writeAnthropicTail/writeSSEWithCapturer/writeSSE/flushBufferedText
+及桥专属 pendingCapturer/StreamWriter/runtime-config/keepalive 集群整体退役；
+stream_support.go 收缩至唯一活符号 IsAnthropicStreamEmpty，包文档钉住 4 符号活面
+（选择器扫描穷尽验证：外部导入方仅 streaming 两文件）。提交见 git log（refactor
+transformation）。
+
+## 七、登记遗留增补（R28 候选，均有证据未修）
+
+| # | 级别 | 内容 | 来源 |
+|---|------|------|------|
+| 13 | P1 | admin scoring_weights 假旋钮：注入路由热路径或文档明示 display-only | I-1-1 |
+| 14 | P1 | autocombo 评分与 Router 重排所有权冲突（评分仅影响 top-50 截断） | G-1-1 |
+| 15 | P2 | routeFailover 阻塞投递 failoverCh 头阻塞；retry 堆无上限 | I-2-2/2-4 |
+| 16 | P2 | lite 不门控 Redis 半开形态 + start-lite.sh 未 unset REDIS_ADDR | H-1-2 |
+| 17 | P2 | full_storage.postgres_url 校验假字段 | H-1-3 |
+| 18 | P2 | SQLite 无保留期清理 + trimmer/对账互相制造永久 Missing | H-1-4 |
+| 19 | P2 | SQLite catalog 四 store 零接线（接线或摘除死表） | H-1-5 |
+| 20 | P2 | Bandit/WeightedRouter 生产死代码（删除或标 UNUSED） | I-2-3 |
+| 21 | P2 | OmniFree 补 HTTP 级 auto/* e2e + HideTrainableModels/ExplorationRate 死配置收口 | G-P3-5 等 |
+| 22 | P3 | 手动 weight 上限钳制、weightCounters 淘汰、Tier-0 drainer 公平性、SQLite user_version 迁移、bodies 容量上限、文档漂移修订 | 各轮 |
