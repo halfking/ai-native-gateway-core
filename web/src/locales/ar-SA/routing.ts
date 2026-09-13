@@ -248,6 +248,7 @@ export default {
     loading: 'جاري التحميل…',
     globalTitle: 'السياسة العالمية',
     weightsTitle: 'معاملات النقاط الإجمالية',
+    weightsDisplayOnlyHint: 'للعرض فقط: يؤثر على واجهة معاينة التشخيص ولا يؤثر على التوجيه الفعلي',
     featuredTitle: 'النماذج المميزة (Featured)',
     featuredDescription: 'اختر أسماء النماذج القياسية، سيتم تمييزها بـ ★ في نظرة التوجيه، ويمكنك تفعيل تصفية «المميز فقط».',
     featuredPlaceholder: 'اختر النماذج المميزة…',

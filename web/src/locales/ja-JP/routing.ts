@@ -248,6 +248,7 @@ export default {
     loading: '読み込み中…',
     globalTitle: 'グローバルポリシー',
     weightsTitle: '総合スコア係数',
+    weightsDisplayOnlyHint: '診断プレビュー API にのみ影響し、本番ルーティングには適用されません',
     featuredTitle: '注目モデル (Featured)',
     featuredDescription: '標準モデル名を選択すると、ルーティング概要に ★ マークが表示され、「注目のみ」フィルターを有効化できます。',
     featuredPlaceholder: '注目モデルを選択…',

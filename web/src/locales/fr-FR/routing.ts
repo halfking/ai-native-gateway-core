@@ -249,6 +249,7 @@ export default {
     loading: 'Chargement…',
     globalTitle: 'Stratégie globale',
     weightsTitle: 'Coefficients de score global',
+    weightsDisplayOnlyHint: 'Affecte uniquement l\'aperçu de diagnostic, pas le routage en production',
     featuredTitle: 'Modèles Featured',
     featuredDescription: 'Sélectionnez des noms de modèles standard ; ils seront marqués d\'un ★ dans la vue de routage et permettront le filtre « Featured uniquement ».',
     featuredPlaceholder: 'Choisir un modèle featured…',

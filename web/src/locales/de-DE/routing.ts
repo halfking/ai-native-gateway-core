@@ -249,6 +249,7 @@ export default {
     loading: 'Wird geladen…',
     globalTitle: 'Globale Strategie',
     weightsTitle: 'Gesamtbewertungskoeffizienten',
+    weightsDisplayOnlyHint: 'Nur für die Diagnosevorschau – wirkt sich nicht auf das Live-Routing aus',
     featuredTitle: 'Featured-Modelle',
     featuredDescription: 'Standardmodellnamen auswählen; sie werden in der Routing-Übersicht mit ★ markiert und ermöglichen die Filterung „Nur Featured".',
     featuredPlaceholder: 'Featured-Modell auswählen…',
