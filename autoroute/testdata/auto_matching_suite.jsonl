@@ -1,0 +1,60 @@
+{"name": "code_ide_cursor_fixnil", "bucket": "coding_agent", "expected_task": "code", "client_type": "cursor", "prompt": "修复这个函数里的空指针问题,配置文件缺失时进程直接 panic 了"}
+{"name": "code_ide_cursor_backoff", "bucket": "coding_agent", "expected_task": "code", "client_type": "cursor", "prompt": "重构这里的重试逻辑,把轮询改成指数退避,然后实现单元测试"}
+{"name": "code_ide_zcode_pagination", "bucket": "coding_agent", "expected_task": "code", "client_type": "zcode", "prompt": "给这个接口加分页参数,用 cursor 返回下一页"}
+{"name": "code_ide_cc_unittest", "bucket": "coding_agent", "expected_task": "code", "client_type": "claude-code", "prompt": "帮我写一个 Go 单元测试,把 HTTP 依赖 mock 掉"}
+{"name": "code_fence_explain", "bucket": "coding_agent", "expected_task": "code", "prompt": "```\ndef f(x):\n    return x * 2\n```\n这段代码是做什么的,有没有 bug"}
+{"name": "code_ide_windsurf_react", "bucket": "coding_agent", "expected_task": "code", "client_type": "windsurf", "prompt": "用 React 做一个首页组件,要有表单校验和提交状态"}
+{"name": "code_zh_sql_seven_days", "bucket": "coding_agent", "expected_task": "code", "prompt": "用 SQL 写一个查询:统计每个租户最近7天的请求数和 P95 延迟"}
+{"name": "code_zh_script_rename", "bucket": "coding_agent", "expected_task": "code", "prompt": "写一个脚本,按日期批量重命名文件"}
+{"name": "code_en_regex_strip", "bucket": "coding_agent", "expected_task": "code", "prompt": "How do I strip HTML tags from a string using regular expression in Java?"}
+{"name": "audit_zh_security", "bucket": "code_audit", "expected_task": "code_audit", "prompt": "请对这段代码做安全审计,重点检查有没有 SQL 注入和 XSS 漏洞"}
+{"name": "audit_en_timing", "bucket": "code_audit", "expected_task": "code_audit", "prompt": "Security review this auth middleware: is it vulnerable to timing attacks?"}
+{"name": "audit_zh_quality", "bucket": "code_audit", "expected_task": "code_audit", "prompt": "做一次代码质量检查,列出所有命名、异常处理和并发安全方面的问题"}
+{"name": "audit_zh_scan", "bucket": "code_audit", "expected_task": "code_audit", "prompt": "对这段 Java 处理 CRLF 的逻辑做漏洞扫描,并给出修复清单"}
+{"name": "trap_audit_review_is_code", "bucket": "code_audit", "expected_task": "code", "prompt": "please review my code and suggest improvements"}
+{"name": "plan_zh_arch", "bucket": "planning", "expected_task": "planning", "prompt": "帮我写一份微服务架构方案,拆解各模块任务和技术选型"}
+{"name": "plan_zh_impl", "bucket": "planning", "expected_task": "planning", "prompt": "为这个项目制定实施计划,做工作分解,给出里程碑"}
+{"name": "plan_en_doc", "bucket": "planning", "expected_task": "planning", "prompt": "Write a technical design doc for the new billing system, break down the work into phases"}
+{"name": "plan_en_roadmap", "bucket": "planning", "expected_task": "planning", "prompt": "Create a product roadmap for Q4, define milestones and resource needs"}
+{"name": "plan_zh_migration", "bucket": "planning", "expected_task": "planning", "prompt": "帮我制定一个数据迁移方案,先给出整体思路"}
+{"name": "trap_plan_then_code_is_code", "bucket": "planning", "expected_task": "code", "prompt": "实现一个用户认证系统,先制定详细的计划,然后逐步实现每个模块"}
+{"name": "trap_story_is_creative", "bucket": "planning", "expected_task": "creative", "prompt": "写一个关于探索外太空的故事"}
+{"name": "intent_zh_ticket", "bucket": "intent_classification", "expected_task": "intent_classification", "prompt": "请对这条用户消息进行意图分类:我想退款。可选标签为咨询/投诉/建议"}
+{"name": "intent_zh_recognize", "bucket": "intent_classification", "expected_task": "intent_classification", "prompt": "识别以下文本的意图并归类:钱怎么还没到账"}
+{"name": "intent_en_query", "bucket": "intent_classification", "expected_task": "intent_classification", "prompt": "Classify the intent of this user query into one of: refund, shipping, account. Query: I was charged twice"}
+{"name": "intent_zh_textcls", "bucket": "intent_classification", "expected_task": "intent_classification", "prompt": "对这条工单做文本分类,输出标签(billing/technical/account):card was charged twice"}
+{"name": "fc_weather_1tool", "bucket": "function_call", "expected_task": "function_call", "tools": 1, "prompt": "北京今天天气怎么样"}
+{"name": "fc_reminder_2tool", "bucket": "function_call", "expected_task": "function_call", "tools": 2, "prompt": "帮我建一个每天早上九点的提醒,再往清单里加一条待办"}
+{"name": "fc_bookroom_1tool", "bucket": "function_call", "expected_task": "function_call", "tools": 1, "prompt": "Book a meeting room for tomorrow 2pm"}
+{"name": "fc_ticket_1tool", "bucket": "function_call", "expected_task": "function_call", "tools": 1, "prompt": "把这条工单通过 transfer_ticket 转派给售后组"}
+{"name": "fc_schedule_1tool", "bucket": "function_call", "expected_task": "function_call", "tools": 1, "prompt": "帮我查一下我今天的日程安排"}
+{"name": "agent_research_zh", "bucket": "agent", "expected_task": "agent", "tools": 5, "tool_results": true, "prompt": "先联网搜索各厂商最新的价格政策,再读取本地的报价表格,对比后汇总成表格"}
+{"name": "agent_todo_en", "bucket": "agent", "expected_task": "agent", "tools": 4, "tool_results": true, "prompt": "Find all TODO comments in the repo and create GitHub issues for each one"}
+{"name": "agent_fixloop_zh", "bucket": "agent", "expected_task": "agent", "tools": 3, "tool_results": true, "prompt": "跑一遍全量测试,根据失败信息修复代码,再重跑到全绿"}
+{"name": "rea_zh_pool", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "一个水池有进水管和排水管,进水每小时 6 吨、排水每小时 4 吨,水池 100 吨,几小时注满?列方程求解"}
+{"name": "rea_zh_sqrt2", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "证明根号2是无理数,给出完整的推导过程"}
+{"name": "rea_en_syllogism", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "If all A are B, and some B are C, can we conclude some A are C? Explain why step by step."}
+{"name": "rea_zh_stats", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "计算这组样本的期望值和标准差,并解释计算过程"}
+{"name": "rea_zh_liars", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "三人中只有一人说真话,甲说是乙、乙说是丙、丙说不是我,推理到底谁说谎"}
+{"name": "rea_zh_train", "bucket": "reasoning", "expected_task": "reasoning", "prompt": "小王骑车以 12 公里每小时骑行 1.5 小时,再步行 5 公里每小时走 40 分钟,总共行进多远?列出算式并求解"}
+{"name": "cre_zh_poem", "bucket": "creative", "expected_task": "creative", "prompt": "写一首关于秋天的短诗"}
+{"name": "cre_zh_names", "bucket": "creative", "expected_task": "creative", "prompt": "给智能台灯产品起几个有创意的名字"}
+{"name": "cre_zh_email_polish", "bucket": "creative", "expected_task": "creative", "prompt": "帮我把这封邮件润色得更正式一些:你好,我想把交货日期改到下周五"}
+{"name": "cre_en_story", "bucket": "creative", "expected_task": "creative", "prompt": "Compose a short bedtime story about a brave little turtle"}
+{"name": "cre_zh_translate", "bucket": "creative", "expected_task": "creative", "prompt": "把这段话翻译成英文:人工智能正在深刻地改变世界"}
+{"name": "cre_zh_slogan", "bucket": "creative", "expected_task": "creative", "prompt": "给新款奶茶写一段 100 字左右的宣传文案,语气要活泼"}
+{"name": "cre_zh_email_summary", "bucket": "creative", "expected_task": "creative", "prompt": "总结一下这封邮件里客户提出的主要需求"}
+{"name": "chat_zh_greet", "bucket": "chat", "expected_task": "chat", "prompt": "你好,今天天气怎么样"}
+{"name": "chat_zh_thanks", "bucket": "chat", "expected_task": "chat", "prompt": "谢谢你的帮助,辛苦了!"}
+{"name": "chat_zh_opinion", "bucket": "chat", "expected_task": "chat", "prompt": "你觉得这个想法怎么样,有没有什么建议"}
+{"name": "chat_en_help", "bucket": "chat", "expected_task": "chat", "prompt": "What can you help me with?"}
+{"name": "chat_zh_note", "bucket": "chat", "expected_task": "chat", "prompt": "帮我记一下:周三下午三点开产品评审会"}
+{"name": "vis_zh_describe", "bucket": "vision", "expected_task": "vision", "image": true, "prompt": "这张图里是什么"}
+{"name": "vis_en_extract", "bucket": "vision", "expected_task": "vision", "image": true, "prompt": "Describe what's in this picture and extract any visible text"}
+{"name": "vis_zh_ide_screenshot", "bucket": "vision", "expected_task": "vision", "image": true, "client_type": "cursor", "prompt": "看这张页面截图,帮我检查样式为什么错乱了"}
+{"name": "vis_zh_mermaid", "bucket": "vision", "expected_task": "vision", "image": true, "prompt": "把这张流程图还原成 mermaid 图"}
+{"name": "long_zh_minutes", "bucket": "long_context", "expected_task": "long_context", "pad_to_tokens": 60000, "prompt": "请总结上面会议纪要的要点并列出 action items"}
+{"name": "long_en_paper", "bucket": "long_context", "expected_task": "long_context", "pad_to_tokens": 60000, "prompt": "Summarise the attached research paper in bullet points"}
+{"name": "gap_zh_codeanalyze", "bucket": "trap", "expected_task": "code", "known_failure": false, "expect_note": "已修复(2026-09-14):通用词'分析'命中 reasoning 关键词且与'代码'打平时按优先级归 reasoning;期望归 code", "prompt": "帮我分析这段代码哪里性能比较差,给出优化建议"}
+{"name": "gap_zh_sentiment", "bucket": "trap", "expected_task": "intent_classification", "known_failure": false, "expect_note": "已修复(2026-09-14):情感二分类无'意图/类别'目标词,启发式判定为 chat;期望归 intent_classification(需关键词补充或 LLM fallback)", "prompt": "判断这条评论是正面还是负面:物流很快,包装完好"}
+{"name": "gap_sysprompt_haiku", "bucket": "trap", "expected_task": "code", "known_failure": false, "expect_note": "修复后语义:system 的'代码审查'短语不再触发 code_audit 硬覆盖劫持,但角色定义仍经关键词通道偏向 code 族任务(角色定义了 key 的任务域)", "system": "你是一个代码审查助手,负责把关代码质量。", "prompt": "帮我写一首关于春天的俳句"}
