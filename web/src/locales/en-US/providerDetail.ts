@@ -171,6 +171,7 @@ export default {
       token_plan: "token_plan (subscription)",
       code_plan: "code_plan (coding plan)",
       agent_plan: "agent_plan (agent plan)",
+      monthly: "monthly (fixed monthly)",
       request: "request (per request)",
       seat: "seat (per seat)",
       compute_time: "compute_time (per compute)",

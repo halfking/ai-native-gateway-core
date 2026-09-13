@@ -192,6 +192,7 @@ export default {
       token_plan: "token_plan (اشتراك)",
       code_plan: "code_plan (خطة برمجية)",
       agent_plan: "agent_plan (خطة وكيل)",
+      monthly: "monthly (رسم شهري ثابت)",
       request: "request (لكل طلب)",
       seat: "seat (لكل مقعد)",
       compute_time: "compute_time (لكل حوسبة)",
