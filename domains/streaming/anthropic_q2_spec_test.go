@@ -323,4 +323,10 @@ func TestQ2NamelessToolCallDroppedAtStreamEnd(t *testing.T) {
 	assert.NotContains(t, wire, `"id":"call_nn"`, "held state must not leak to the wire")
 	assert.Contains(t, wire, "no tool for you")
 	assert.Contains(t, wire, "event: message_stop")
+	// The dropped call must not promise tool_use semantics: stop_reason
+	// must reflect the text-only stream (end_turn), not tool_use with zero
+	// tool_use blocks on the wire (R-audit 2026-09-14 B-P2-4).
+	assert.Contains(t, wire, `"stop_reason":"end_turn"`,
+		"text-only stream (held nameless call dropped) must end with end_turn")
+	assert.NotContains(t, wire, `"stop_reason":"tool_use"`)
 }

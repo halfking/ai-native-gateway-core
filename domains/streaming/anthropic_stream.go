@@ -1081,7 +1081,19 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				st.stopped = true
 			}
 		}
-		if len(toolOrder) > 0 {
+		// Only promise tool_use semantics when at least one tool_use block
+		// actually reached the wire. A stream whose only tool call was held
+		// nameless and dropped must not report stop_reason=tool_use with
+		// zero tool_use blocks on the wire — the client would wait for tool
+		// results that can never come.
+		hasStartedTool := false
+		for _, openaiIdx := range toolOrder {
+			if st := toolBlocks[openaiIdx]; st != nil && st.started {
+				hasStartedTool = true
+				break
+			}
+		}
+		if hasStartedTool {
 			finalFinishReason = "tool_calls"
 		}
 

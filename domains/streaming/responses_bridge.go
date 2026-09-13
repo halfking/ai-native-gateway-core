@@ -56,6 +56,51 @@ type responsesToolTerminalState struct {
 	Arguments strings.Builder
 }
 
+// responsesToolHold implements arg-first lazy opening for the Responses
+// bridges, mirroring the pendingArgs hold in anthropic_stream.go: an
+// argument fragment whose function name has not arrived yet must never
+// reach the client as response.function_call_arguments.delta. The item
+// would dangle without a prior response.output_item.added (the serializer
+// only opens an item once Name is known) and the terminal nameless guard
+// would then omit the call entirely, leaving the client holding unusable
+// deltas for an item that never existed. Fragments are buffered per tool
+// index (bounded) and replayed as the first delta when the name arrives.
+type responsesToolHold struct {
+	opened  map[int]bool
+	pending map[int]string
+}
+
+func newResponsesToolHold() *responsesToolHold {
+	return &responsesToolHold{opened: make(map[int]bool), pending: make(map[int]string)}
+}
+
+// adjust rewrites one tool-call delta in place so serialization stays
+// consistent with what the client has already seen. Returns false when the
+// buffered prefix would exceed the tool-argument bound (caller aborts with
+// conversionOverflow, matching the bounded-accumulator discipline).
+func (h *responsesToolHold) adjust(tc *ir.StreamToolCallDelta) bool {
+	if tc.Name != "" {
+		if !h.opened[tc.Index] {
+			h.opened[tc.Index] = true
+			if pending := h.pending[tc.Index]; pending != "" {
+				tc.Arguments = pending + tc.Arguments
+			}
+			delete(h.pending, tc.Index)
+		}
+		return true
+	}
+	if tc.Arguments == "" || h.opened[tc.Index] {
+		return true
+	}
+	combined := h.pending[tc.Index] + tc.Arguments
+	if len(combined) > maxResponsesBridgeToolArgumentsBytes {
+		return false
+	}
+	h.pending[tc.Index] = combined
+	tc.Arguments = ""
+	return true
+}
+
 type responsesScaffold struct {
 	w           http.ResponseWriter
 	flusher     http.Flusher
@@ -250,6 +295,7 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inpu
 		indices = append(indices, index)
 	}
 	sort.Ints(indices)
+	emittedToolItems := 0
 	for _, index := range indices {
 		state := s.toolStates[index]
 		if state == nil {
@@ -262,6 +308,7 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inpu
 		if state.Name == "" {
 			continue
 		}
+		emittedToolItems++
 		item := map[string]any{
 			"type": "function_call", "id": state.ID, "call_id": state.ID,
 			"name": state.Name, "arguments": state.Arguments.String(), "status": status,
@@ -279,6 +326,15 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inpu
 	// Preserve the historical message terminal events for ordinary and mixed
 	// streams, but omit the synthetic message for a tool-only response.
 	hasMessage := len(indices) == 0 || fullText != "" || s.reasoningText.Len() > 0
+	// Degenerate-stream guard: if every tool item was dropped by the
+	// nameless guard and the stream carries no text or reasoning, a
+	// status=completed envelope with an empty output array would be a
+	// false success — the upstream did emit (suppressed) content. Downgrade
+	// to incomplete so clients can retry or fail over instead of treating
+	// the empty response as a trustworthy result.
+	if len(indices) > 0 && emittedToolItems == 0 && fullText == "" && s.reasoningText.Len() == 0 {
+		status = "incomplete"
+	}
 	if hasMessage {
 		s.writeSSEEvent("response.output_text.done", map[string]any{
 			"type": "response.output_text.done", "item_id": s.msgID,
@@ -470,6 +526,10 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		toolCallIDs         = make(map[int]string)
 		messageStopReceived bool
 		conversionOverflow  bool
+		// toolHold defers arg-first tool_call fragments until the function
+		// name arrives (see responsesToolHold) — keeps the Responses wire
+		// free of deltas referencing an item that was never opened.
+		toolHold = newResponsesToolHold()
 		// emittedContent (audit-24h-20260828-r3 P1-B parity, Phase E):
 		// tracks whether any client-visible semantic bytes — text,
 		// thinking, tool-call deltas — reached the wire. Set true inside
@@ -505,6 +565,10 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 					if id, ok := toolCallIDs[tc.Index]; ok {
 						tc.ID = id
 					}
+				}
+				if !toolHold.adjust(tc) {
+					conversionOverflow = true
+					return
 				}
 			}
 		}
@@ -941,6 +1005,11 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		toolCallIDs          = make(map[int]string)
 		upstreamDoneReceived bool
 		conversionOverflow   bool
+		// toolHold defers arg-first tool_call fragments until the function
+		// name arrives (see responsesToolHold). Some upstreams stream
+		// argument fragments before the name; emitting their deltas would
+		// reference an output_item that was never opened.
+		toolHold = newResponsesToolHold()
 	)
 
 	writeChunkIR := func(chunk *ir.StreamChunk) {
@@ -961,6 +1030,10 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 					if id, ok := toolCallIDs[tc.Index]; ok {
 						tc.ID = id
 					}
+				}
+				if !toolHold.adjust(tc) {
+					conversionOverflow = true
+					return
 				}
 			}
 		}

@@ -848,6 +848,133 @@ func TestStreamOpenAIToResponsesSSE_ToolCalls_MultipleArgChunks(t *testing.T) {
 		"concatenated deltas should form the full JSON arguments")
 }
 
+// TestStreamOpenAIToResponsesSSE_ArgFirstToolCallHeldUntilName pins the
+// arg-first lazy opening: an upstream that streams argument fragments
+// before the function name must not produce function_call_arguments.delta
+// events before the item's response.output_item.added — the client would
+// hold deltas for an item that was never opened, and the terminal nameless
+// guard omits the call entirely (R-audit 2026-09-14 B-P1).
+func TestStreamOpenAIToResponsesSSE_ArgFirstToolCallHeldUntilName(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		// Arg-first pathology: argument fragment arrives BEFORE the name.
+		`data: {"id":"chatcmpl-argfirst","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"type":"function","function":{"arguments":"{\"city\":"}}]},"finish_reason":null}]}` + "\n\n",
+		// Name (and id) arrive later.
+		`data: {"id":"chatcmpl-argfirst","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_af","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}` + "\n\n",
+		`data: {"id":"chatcmpl-argfirst","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"SF\"}"}}]},"finish_reason":null}]}` + "\n\n",
+		`data: {"id":"chatcmpl-argfirst","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n",
+		`data: [DONE]` + "\n\n",
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	rec := httptest.NewRecorder()
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-arg-first", nil, nil)
+	require.False(t, out.Interrupted)
+
+	body := rec.Body.String()
+
+	// The held fragment must never leak as a delta before the item is open.
+	// Two output_item.added events exist (the synthetic message item at
+	// stream start, the function_call item when the name arrives) — the
+	// tool item's added is the LAST one on the wire.
+	addedIdx := strings.LastIndex(body, "event: response.output_item.added")
+	deltaIdx := strings.Index(body, "response.function_call_arguments.delta")
+	require.NotEqual(t, -1, addedIdx, "terminal/wire must open the function_call item")
+	require.NotEqual(t, -1, deltaIdx, "buffered prefix must be replayed once the name arrives")
+	assert.Less(t, addedIdx, deltaIdx,
+		"output_item.added (function_call) must precede the first arguments delta")
+
+	// Concatenated deltas must reconstruct the full arguments, including
+	// the held arg-first prefix.
+	var fullDelta strings.Builder
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &parsed); err != nil {
+			continue
+		}
+		if parsed["type"] == "response.function_call_arguments.delta" {
+			if d, ok := parsed["delta"].(string); ok {
+				fullDelta.WriteString(d)
+			}
+		}
+	}
+	assert.Equal(t, `{"city":"SF"}`, fullDelta.String(),
+		"replayed prefix + post-name deltas must form the full JSON arguments")
+
+	// Terminal envelope carries the completed named item with full args.
+	assert.Contains(t, body, `"name":"get_weather"`)
+	assert.Contains(t, body, `"arguments":"{\"city\":\"SF\"}"`)
+	assert.Contains(t, body, `"status":"completed"`)
+}
+
+// TestStreamOpenAIToResponsesSSE_NamelessToolOnlyFailsOver pins the
+// degenerate tool-only stream: a stream whose only tool call was held
+// nameless emits nothing client-visible, so the bridge must surface the
+// empty-response outcome (executor fails over) instead of writing a
+// lying status=completed envelope with an empty output array
+// (R-audit 2026-09-14 B-P2-3).
+func TestStreamOpenAIToResponsesSSE_NamelessToolOnlyFailsOver(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chatcmpl-nn","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_nn_r","type":"function","function":{"arguments":"{\"x\":1}"}}]},"finish_reason":null}]}` + "\n\n",
+		`data: {"id":"chatcmpl-nn","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n",
+		`data: [DONE]` + "\n\n",
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	rec := httptest.NewRecorder()
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-nameless-only", nil, nil)
+	assert.True(t, out.Interrupted, "fully-held stream must fail over, not fake success")
+	assert.Equal(t, errorsx.KindEmptyResponse, out.Kind)
+
+	body := rec.Body.String()
+	assert.NotContains(t, body, `"status":"completed"`,
+		"no false-success terminal may reach the wire")
+	assert.NotContains(t, body, `"name":""`, "nameless item must not reach the wire")
+}
+
+// TestResponsesScaffoldWriteFinalEvents_AllNamelessDegradesToIncomplete pins
+// the writeFinalEvents degenerate guard directly: an all-nameless toolStates
+// map with no text/reasoning must produce an incomplete (not completed)
+// terminal envelope (R-audit 2026-09-14 B-P2-3 defense-in-depth).
+func TestResponsesScaffoldWriteFinalEvents_AllNamelessDegradesToIncomplete(t *testing.T) {
+	rec := httptest.NewRecorder()
+	gate := NewAttemptCommitGate(context.Background(), ProtocolOpenAIResponses,
+		NewSerializedStreamWriter(rec), GateOptions{Mode: GateModeImmediate})
+	scaffold := newResponsesScaffold(rec, rec, "req-all-nameless", "test-model")
+	args := strings.Builder{}
+	args.WriteString(`{"x":1}`)
+	scaffold.toolStates[0] = &responsesToolTerminalState{ID: "call_x", Arguments: args}
+
+	scaffold.finishAttempt(gate, "", "tool_calls", 1, 2, 3)
+
+	body := rec.Body.String()
+	assert.Contains(t, body, `"status":"incomplete"`,
+		"all-nameless tool stream must not be reported as a completed success")
+	assert.NotContains(t, body, `"status":"completed"`)
+	assert.NotContains(t, body, `"type":"function_call"`,
+		"nameless call must be omitted from the terminal output")
+}
+
 // TestStreamAnthropicSSEToResponses_EmptyResponseFailOver verifies the
 // audit-24h-20260828-r3 P1-B parity fix in the Phase E (Anthropic→
 // Responses) translator: when upstream sends message_start + message_stop
