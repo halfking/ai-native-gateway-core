@@ -16,6 +16,10 @@ const elementDarkCss = readFileSync(
 // 是「刷新/直链（无 ?theme= 参数）」场景下唯一设置主题的代码——漏掉 dark 类
 // 会让 EP 组件在每次刷新后回退亮色（2026-09-13 审计发现的真因）。
 const themeInitJs = readFileSync(resolve(process.cwd(), 'public/theme-init.js'), 'utf8')
+// FOUC 前提：theme-init.js 必须在 <head> 内同步执行（无 defer/async）——
+// 同步脚本是解析阻塞点，先于 Vite 注入的样式表与模块脚本，类在任何渲染前就位。
+// 若被移出 head 或加了 defer，暗色直链/刷新将出现亮色首帧闪烁。
+const indexHtml = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8')
 
 describe('dark skin bridging (EP components)', () => {
   it('applyTheme toggles html.dark class together with data-theme', () => {
@@ -44,6 +48,17 @@ describe('dark skin bridging (EP components)', () => {
     // 与 theme.ts 同一存储键与同一双轨约定，防两处漂移
     expect(themeInitJs).toContain("llmgw_theme")
     expect(themeInitJs).toContain("setAttribute('data-theme'")
+  })
+
+  it('theme-init.js stays synchronous inside <head> (FOUC guard)', () => {
+    const head = indexHtml.slice(0, indexHtml.indexOf('</head>'))
+    const scriptTag = head.match(/<script\s+src="\/theme-init\.js"[^>]*>/)
+    expect(scriptTag).not.toBeNull()
+    const tag = scriptTag![0]
+    // 同步执行是首帧前类就位的机制前提（双 rAF 行为探针 2026-09-13 三场景实测），
+    // 任何 defer/async/移出 head 都会让暗色直链/刷新首帧回退亮色
+    expect(tag).not.toContain('defer')
+    expect(tag).not.toContain('async')
   })
 
   it('element-dark.css bridges EP surfaces to app tokens at higher specificity', () => {
