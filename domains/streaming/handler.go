@@ -3,6 +3,7 @@ package streaming
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -730,7 +731,11 @@ type ChatHandler struct {
 	provider             providerResolver
 	sticky               *executors.StickyCache
 	keyVerifier          requestKeyVerifier
-	survivalAttemptExec  AttemptExecutor
+	// staticDataPlaneKey (2026-09-14 audit H-P0-1): DB verifier 不可用
+	// （lite/no-DB 降级）时的兜底数据面闸——非空时要求 Bearer 与部署静态
+	// 密钥精确匹配（覆盖 middleware sk-* 透传洞），否则整段鉴权被跳过。
+	staticDataPlaneKey string
+	survivalAttemptExec AttemptExecutor
 	rateLimiter          ratelimit.RPMLimiter
 	telemetryClient      *telemetry.Client
 	// profileEmitter (2026-07-15) 把请求/会话事件投到 clientprofile 画像聚合。
@@ -1258,6 +1263,14 @@ func (h *ChatHandler) expandToolIDs(ctx context.Context, tenantID string, toolID
 func (h *ChatHandler) SetAuth(kv *authentication.KeyVerifier, rl ratelimit.RPMLimiter) {
 	h.keyVerifier = kv
 	h.rateLimiter = rl
+}
+
+// SetStaticDataPlaneKey arms the DB-verifier-unavailable fallback: when the
+// key verifier is not enabled (lite mode / no-DB degraded boot), every
+// data-plane request must present this exact key instead of being processed
+// unauthenticated (2026-09-14 audit H-P0-1).
+func (h *ChatHandler) SetStaticDataPlaneKey(key string) {
+	h.staticDataPlaneKey = key
 }
 
 // SetAdminAPIKey configures the operator token used to gate the
@@ -2054,8 +2067,7 @@ func (h *ChatHandler) serveWithExecutor(
 
 	// ── API key authentication ──────────────────────────────────────────
 	var keyInfo *authentication.KeyInfo
-	if h.keyVerifier != nil && h.keyVerifier.Enabled() {
-		rawKey := extractBearerToken(r)
+	if h.keyVerifier != nil && h.keyVerifier.Enabled() {		rawKey := extractBearerToken(r)
 		if rawKey == "" {
 			captureAndEmitFailure("missing_key", "missing api key", nil, nil)
 			writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgMissingKey, nil)
@@ -2099,6 +2111,19 @@ func (h *ChatHandler) serveWithExecutor(
 		span := trace.SpanFromContext(r.Context())
 		observability.SetTenantAttrs(span, keyInfo.TenantID, "api_key",
 			fmt.Sprintf("key_%d", keyInfo.ID))
+	} else if h.staticDataPlaneKey != "" {
+		// 2026-09-14 audit H-P0-1: DB verifier unavailable (lite mode /
+		// no-DB degraded boot). The middleware sk-* passthrough previously
+		// ended here with NO auth — any Bearer sk-* was served. Require the
+		// deployed static key instead; downstream already handles the
+		// keyInfo==nil shape (it is today's path for this state).
+		rawKey := extractBearerToken(r)
+		if rawKey == "" || subtle.ConstantTimeCompare([]byte(h.staticDataPlaneKey), []byte(rawKey)) != 1 {
+			captureAndEmitFailure("invalid_key", "invalid api key (static-key fallback auth)", nil, nil)
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgInvalidKey, nil)
+			return
+		}
 	}
 
 	// ── Status checks (throttled key → hard rate-limit) ────────────────

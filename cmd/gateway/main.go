@@ -2197,8 +2197,18 @@ func main() {
 		embeddingsHandler = streaming.NewEmbeddingsHandler(providerClient, upClient)
 		embeddingsHandler.SetAuth(keyVerifier, slidingRL)
 		slog.Info("API key authentication + RPM rate limiting enabled")
+	} else if cfg.SecretKey != "" {
+		// 2026-09-14 audit H-P0-1: DB verifier unavailable (lite mode /
+		// no-DB degraded boot). The middleware sk-* passthrough previously
+		// left the data plane fully open. With a static key deployed, arm
+		// the handler-side fallback so every data-plane request must present
+		// exactly this key.
+		chatHandler.SetStaticDataPlaneKey(cfg.SecretKey)
+		slog.Warn("API key authentication: DB verifier unavailable — static secret-key-only auth enforced for all data-plane requests (sk-* keys rejected)")
 	} else {
-		slog.Warn("API key authentication disabled (no database connection)")
+		exposed := storageRt != nil // lite 模式即常态开放；full 降级态为临时暴露
+		slog.Error("DATA PLANE UNAUTHENTICATED: api key verification unavailable and no static key configured — any bearer token is accepted. Set LLM_GATEWAY_SECRET_KEY (static-key fallback) or LLM_GATEWAY_KEYSTORE_SNAPSHOT_DIR (snapshot auth) to close this.",
+			"lite_mode", exposed)
 	}
 
 	// ── Telemetry ─────────────────────────────────────────────────────────
