@@ -28,7 +28,11 @@ export LLM_GATEWAY_CACHE_DIR="${LLM_GATEWAY_CACHE_DIR:-./data/cache}"
 export LLM_GATEWAY_LOGS_DIR="${LLM_GATEWAY_LOGS_DIR:-./data/request_logs}"
 
 # ── 清空 full 段变量：lite 模式不使用 PostgreSQL/Redis ──────────
-unset LLM_GATEWAY_DATABASE_URL DATABASE_URL LLM_GATEWAY_POSTGRES_URL LLM_GATEWAY_REDIS_URL || true
+# Redis 六项与 storage_mode_init.go 的 liteRedisEnvKeys 一致（R28 #16），
+# 双保险覆盖进程内 unset 之外的继承 env。
+unset LLM_GATEWAY_DATABASE_URL DATABASE_URL LLM_GATEWAY_POSTGRES_URL LLM_GATEWAY_REDIS_URL \
+    LLM_GATEWAY_REDIS_ADDR LLM_GATEWAY_REDIS_PASSWORD LLM_GATEWAY_REDIS_DB \
+    REDIS_URL RATE_LIMIT_REDIS_URL RPM_REDIS_URL || true
 
 # ── 数据目录 ────────────────────────────────────────────────────
 mkdir -p ./data

@@ -249,6 +249,55 @@ func (c *StorageConfig) ApplyDefaults() {
 	}
 }
 
+// PostgresURLAlignment 描述 AlignFullPostgresURL 的对齐结果。
+type PostgresURLAlignment int
+
+const (
+	// PostgresURLUnchanged 无需对齐：双方一致、均为空，或不适用（非 full
+	// 模式 / Full 段缺失）。
+	PostgresURLUnchanged PostgresURLAlignment = iota
+	// PostgresURLPromoted 提升方向：full_storage.postgres_url 非空而
+	// DATABASE_URL 为空，已把 postgres_url 写入 *databaseURL。
+	PostgresURLPromoted
+	// PostgresURLBackfilled 回填方向：DATABASE_URL 非空而
+	// full_storage.postgres_url 为空，已把 *databaseURL 写回 YAML 段。
+	PostgresURLBackfilled
+	// PostgresURLConflict 双方均非空且不一致：未改动任何一方，DATABASE_URL
+	// env 优先（与历史行为一致），由调用方决定是否告警。
+	PostgresURLConflict
+)
+
+// AlignFullPostgresURL 双向对齐 full_storage.postgres_url 与主配置的
+// DATABASE_URL（audit 2026-09-14 R28 #17）：full 模式下两个入口指向同一个
+// PostgreSQL，此前 main 建池只读 DATABASE_URL，postgres_url 是"假字段"，
+// 只配其一会导致配置漂移。仅 full 模式生效：
+//
+//   - postgres_url 非空且 *databaseURL 为空 → 提升：*databaseURL = postgres_url；
+//   - *databaseURL 非空且 postgres_url 为空 → 回填：postgres_url = *databaseURL；
+//   - 两者均非空且不同 → 不改任何一方，返回 PostgresURLConflict（DATABASE_URL
+//     env 优先，历史行为不变）。
+//
+// 非 full 模式、Full 段为 nil，或双方 trim 后一致时返回 PostgresURLUnchanged。
+func (c *StorageConfig) AlignFullPostgresURL(databaseURL *string) PostgresURLAlignment {
+	if c == nil || databaseURL == nil || c.NormalizeMode() != StorageModeFull || c.Full == nil {
+		return PostgresURLUnchanged
+	}
+	pg := strings.TrimSpace(c.Full.PostgresURL)
+	db := strings.TrimSpace(*databaseURL)
+	switch {
+	case pg != "" && db == "":
+		*databaseURL = c.Full.PostgresURL
+		return PostgresURLPromoted
+	case pg == "" && db != "":
+		c.Full.PostgresURL = *databaseURL
+		return PostgresURLBackfilled
+	case pg != "" && db != "" && pg != db:
+		return PostgresURLConflict
+	default:
+		return PostgresURLUnchanged
+	}
+}
+
 // LoadStorageConfigFromYAML 从 YAML 文件加载 StorageConfig：解析后再用
 // LLM_GATEWAY_* 环境变量填充未配置（零值）字段。调用方随后应执行
 // ApplyDefaults（补默认值）与 Validate（校验必填项）。

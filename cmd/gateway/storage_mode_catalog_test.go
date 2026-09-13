@@ -11,7 +11,10 @@ import (
 	sqlitestore "github.com/kaixuan/llm-gateway-go/storage/sqlite"
 )
 
-// TestLiteCatalogStoresAccessible 验证 lite 模式下 catalog stores 可通过 runtime 访问。
+// TestLiteCatalogStoresAccessible 验证 lite 模式下 catalog stores 可经
+// storage factory 构造并读写（audit 2026-09-14 R28 #19：runtime Get*Store
+// getter 已删除——SQLite catalog 四表为 EXPERIMENTAL placeholder，未接入
+// data/admin plane，lite 生产路径走 YAML 配置；factory 的 New*Store 保留）。
 func TestLiteCatalogStoresAccessible(t *testing.T) {
 	tmpDir := t.TempDir()
 	storageCfg := &config.StorageConfig{
@@ -31,43 +34,43 @@ func TestLiteCatalogStoresAccessible(t *testing.T) {
 	defer rt.Shutdown()
 
 	// Provider store
-	providerStoreIface := rt.GetProviderStore()
+	providerStoreIface := rt.factory.NewProviderStore()
 	if providerStoreIface == nil {
-		t.Fatal("GetProviderStore returned nil")
+		t.Fatal("factory.NewProviderStore returned nil")
 	}
 	providerStore, ok := providerStoreIface.(*sqlitestore.SQLiteProviderStore)
 	if !ok {
-		t.Fatalf("GetProviderStore type = %T, want *SQLiteProviderStore", providerStoreIface)
+		t.Fatalf("factory.NewProviderStore type = %T, want *SQLiteProviderStore", providerStoreIface)
 	}
 
 	// Credential store
-	credStoreIface := rt.GetCredentialStore()
+	credStoreIface := rt.factory.NewCredentialStore()
 	if credStoreIface == nil {
-		t.Fatal("GetCredentialStore returned nil")
+		t.Fatal("factory.NewCredentialStore returned nil")
 	}
 	credStore, ok := credStoreIface.(*sqlitestore.SQLiteCredentialStore)
 	if !ok {
-		t.Fatalf("GetCredentialStore type = %T, want *SQLiteCredentialStore", credStoreIface)
+		t.Fatalf("factory.NewCredentialStore type = %T, want *SQLiteCredentialStore", credStoreIface)
 	}
 
 	// Model store
-	modelStoreIface := rt.GetModelStore()
+	modelStoreIface := rt.factory.NewModelStore()
 	if modelStoreIface == nil {
-		t.Fatal("GetModelStore returned nil")
+		t.Fatal("factory.NewModelStore returned nil")
 	}
 	_, ok = modelStoreIface.(*sqlitestore.SQLiteModelStore)
 	if !ok {
-		t.Fatalf("GetModelStore type = %T, want *SQLiteModelStore", modelStoreIface)
+		t.Fatalf("factory.NewModelStore type = %T, want *SQLiteModelStore", modelStoreIface)
 	}
 
 	// Binding store
-	bindingStoreIface := rt.GetBindingStore()
+	bindingStoreIface := rt.factory.NewBindingStore()
 	if bindingStoreIface == nil {
-		t.Fatal("GetBindingStore returned nil")
+		t.Fatal("factory.NewBindingStore returned nil")
 	}
 	_, ok = bindingStoreIface.(*sqlitestore.SQLiteBindingStore)
 	if !ok {
-		t.Fatalf("GetBindingStore type = %T, want *SQLiteBindingStore", bindingStoreIface)
+		t.Fatalf("factory.NewBindingStore type = %T, want *SQLiteBindingStore", bindingStoreIface)
 	}
 
 	// Basic CRUD smoke test
@@ -131,8 +134,8 @@ func TestLiteCatalogPersistenceRoundTrip(t *testing.T) {
 		t.Fatalf("initStorageMode phase 1: %v", err)
 	}
 
-	providerStore1 := rt1.GetProviderStore().(*sqlitestore.SQLiteProviderStore)
-	credStore1 := rt1.GetCredentialStore().(*sqlitestore.SQLiteCredentialStore)
+	providerStore1 := rt1.factory.NewProviderStore().(*sqlitestore.SQLiteProviderStore)
+	credStore1 := rt1.factory.NewCredentialStore().(*sqlitestore.SQLiteCredentialStore)
 
 	// Save provider
 	p := &provider.Provider{
@@ -177,8 +180,8 @@ func TestLiteCatalogPersistenceRoundTrip(t *testing.T) {
 	}
 	defer rt2.Shutdown()
 
-	providerStore2 := rt2.GetProviderStore().(*sqlitestore.SQLiteProviderStore)
-	credStore2 := rt2.GetCredentialStore().(*sqlitestore.SQLiteCredentialStore)
+	providerStore2 := rt2.factory.NewProviderStore().(*sqlitestore.SQLiteProviderStore)
+	credStore2 := rt2.factory.NewCredentialStore().(*sqlitestore.SQLiteCredentialStore)
 
 	// Verify provider restored
 	gotProvider, found, err := providerStore2.Get("openai")
@@ -233,8 +236,8 @@ func TestLiteCatalogForeignKeyConstraint(t *testing.T) {
 	}
 	defer rt.Shutdown()
 
-	providerStore := rt.GetProviderStore().(*sqlitestore.SQLiteProviderStore)
-	credStore := rt.GetCredentialStore().(*sqlitestore.SQLiteCredentialStore)
+	providerStore := rt.factory.NewProviderStore().(*sqlitestore.SQLiteProviderStore)
+	credStore := rt.factory.NewCredentialStore().(*sqlitestore.SQLiteCredentialStore)
 
 	// Create provider + credential
 	_ = providerStore.Save(&provider.Provider{
