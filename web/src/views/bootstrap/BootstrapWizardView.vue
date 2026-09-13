@@ -667,7 +667,7 @@ onMounted(async () => {
   justify-content: center;
   font-size: 12px;
   font-weight: 700;
-  background: #eef2f8;
+  background: var(--bg-secondary);
 }
 .wizard-steps__item.is-active .wizard-steps__index {
   background: var(--accent);

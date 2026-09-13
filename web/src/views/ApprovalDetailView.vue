@@ -932,7 +932,7 @@ onBeforeUnmount(() => {
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: #f65e5e;
+  background: var(--danger-dark);
 }
 
 .btn-secondary {
