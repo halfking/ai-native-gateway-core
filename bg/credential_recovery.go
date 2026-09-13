@@ -512,10 +512,46 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		      -- (credential_probe_v2.go sets it to NULL), so we allow auth_failed
 		      -- to recover even when availability_recover_at IS NULL. The next
 		      -- successful node_probe clears auth_failed via updateCredentialHealth.
-		      availability_state = 'auth_failed'
+		      --
+		      -- 2026-09-13 closeout (probe-recovery audit R2): the bare
+		      -- "availability_state = 'auth_failed'" branch recovered a FRESHLY
+		      -- written auth_failed (writer.go KindAuth recover_at = +15min)
+		      -- within one 30s tick, short-circuiting the intended cooldown and
+		      -- flipping a just-403'd credential straight back into routing.
+		      -- auth_failed must now respect its recover_at like every other
+		      -- state; the IS NULL escape hatch stays for legacy rows and for
+		      -- probe-written rows (which carry the P2 exponential ladder in
+		      -- availability_recover_at — see classifyProbeFailure).
+		      (
+		          availability_state = 'auth_failed'
+		          AND (
+		              availability_recover_at IS NULL
+		              OR availability_recover_at <= now()
+		          )
+		      )
 		      OR (
 		          availability_recover_at IS NOT NULL
 		          AND availability_recover_at <= now()
+		      )
+		      -- 2026-09-13 closeout (audit R1): suspension writes
+		      -- (auth_revoked / quota_permanent / quota_balance) persist
+		      -- availability_recover_at = NULL, so a row whose quota_state was
+		      -- later cleared back to 'ok' by another path (stale-cleanup,
+		      -- probe success, reclassification) ended up
+		      -- suspended + quota ok + recover_at NULL — a contradictory state
+		      -- with NO automatic recovery path (prod evidence: creds 9/23/24,
+		      -- stuck for weeks until manual force-enable). Recover it only on
+		      -- fresh probe evidence (a successful health check within the
+		      -- last 2 hours); balance_quota_probe's suspended-revalidation
+		      -- target set (P3) is what refreshes that evidence. Genuinely
+		      -- revoked keys never regain 'healthy' and stay suspended.
+		      OR (
+		          availability_state = 'suspended'
+		          AND availability_recover_at IS NULL
+		          AND COALESCE(quota_state, 'ok') = 'ok'
+		          AND health_status = 'healthy'
+		          AND health_checked_at IS NOT NULL
+		          AND health_checked_at > now() - INTERVAL '2 hours'
 		      )
 		  )
 		  -- 2026-08-07 P0 死锁修复：'suspended' 之前不在上面的 IN 列表里，
