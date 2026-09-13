@@ -781,14 +781,12 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 	return ClassifyResponseStatus(resp)
 }
 
-// ClassifyResponseStatus maps an upstream HTTP response status code to
-// an ErrorKind. Status-only (no body peek) so it's safe to call on a
-// response whose body is still owned by another reader. Use
-// ClassifyErrorWithBody when you also have the body bytes available
-// and want overload/model-not-found signals from the payload.
-// HTTPStatusForKind is the single source of truth for mapping an ErrorKind
-// back to the HTTP status the gateway surfaces to the end client when the
-// last upstream error escapes the failover chain. Exhaustion responses use
+// HTTPStatusForKind is the canonical ErrorKind → HTTP status mapping for
+// the embeddings exhaustion path (the only call site as of 2026-09-14).
+// Chat paths intentionally keep their legacy per-protocol exhaustion
+// mappings (see streaming/handler.go and streaming/messages.go — the
+// Anthropic surface always answers 503 overloaded_error) — do NOT rewire
+// them here without a dedicated contract test. Exhaustion responses use
 // the standard semantic families: 429 rate-limit/quota, 503 overloaded
 // (this project classifies 503/529 vendor statuses as concurrent-load
 // signals, so an overloaded fleet is an overload outcome, not bad gateway),
@@ -813,6 +811,11 @@ func HTTPStatusForKind(kind ErrorKind) int {
 	}
 }
 
+// ClassifyResponseStatus maps an upstream HTTP response status code to
+// an ErrorKind. Status-only (no body peek) so it's safe to call on a
+// response whose body is still owned by another reader. Use
+// ClassifyErrorWithBody when you also have the body bytes available
+// and want overload/model-not-found signals from the payload.
 func ClassifyResponseStatus(resp *http.Response) ErrorKind {
 	switch {
 	case resp.StatusCode == 429:

@@ -214,3 +214,24 @@ func TestBaselinePromoteHotFunctionsThreeWayConsistency(t *testing.T) {
 		}
 	}
 }
+
+// TestPromoteMonthsCTEHasDeterministicOrder pins the 698-family template
+// rule (2026-09-14 audit C-F-2): a promote body's months pre-ensure
+// subquery that ends in LIMIT 12 must carry ORDER BY 1. Without it, more
+// than twelve cold months produce an arbitrary subset — rows belonging to
+// un-prebuilt months fail the whole data-modifying CTE with "no partition
+// of partitioned row found", and the same oldest batch is retried every
+// scheduler tick (head-of-line blocking) until months rotate through.
+func TestPromoteMonthsCTEHasDeterministicOrder(t *testing.T) {
+	monthsLimitRe := regexp.MustCompile(`(?s)LIMIT 12`)
+	orderFirstRe := regexp.MustCompile(`ORDER BY 1\s+LIMIT 12|\n(\s*)ORDER BY 1\n\s*LIMIT 12`)
+	for _, table := range migration698Tables {
+		name, body := objectsCanonicalBody(t, table)
+		if !monthsLimitRe.MatchString(body) {
+			continue // function uses a different pre-ensure shape
+		}
+		if !orderFirstRe.MatchString(body) {
+			t.Errorf("%s: months subquery has LIMIT 12 without ORDER BY 1 — non-deterministic pre-ensure set (C-F-2)", name)
+		}
+	}
+}

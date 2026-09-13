@@ -4261,6 +4261,7 @@ BEGIN
     SELECT DISTINCT date_trunc('month', occurred_at) AS m
     FROM supplier_errors_hot
     WHERE occurred_at < statement_timestamp() - p_retention
+    ORDER BY 1
     LIMIT 12
   ) months;
   -- 2026-09-05 audit D-2#2 atomic single data-modifying CTE: FOR UPDATE
