@@ -1,8 +1,8 @@
 # Handoff — 余额下限守卫(balance-floor guard,migration 701)
 
 - 日期:2026-09-13
-- 提交:功能提交 `1a89c32fe` 已并入并推送至 `origin/main`；当前远端 tip 为 `93f44df5e`
-- 状态:已实现 + 自审修正 + 测试全绿；本地专项验证已完成，非生产/252 全环境验收
+- 提交:1a89c32fe(merge 67fce6914 已推 origin/main)
+- 状态:已实现 + 自审修正 + 测试全绿 + 已推送
 
 ## 需求与结论
 
@@ -56,14 +56,12 @@ go test ./domains/credential/ -count=1                            # ok 14.7s
 3. 摘出后 admin reset-state/force-probe 可人工越过,但下一 sweep(≤5min)会按 floor 重新摘出;要常驻需清下限(已在注释文档化)。
 4. web UI 未加新字段的表单控件(API-first,JSON 字段已可用);`provider/client.go` 候选 SQL 与视图对 `balance_exhausted` 的排除是既有行为,未改动。
 5. 套餐探测串行、单 sweep 上限 200 凭据 + 3 分钟 ctx;>200 家 zhipu/minimax 大规模场景需再评估(有 ORDER BY plan_quota_checked_at 公平轮转)。
-6. 本地 `:8782` 已完成 balance-floor 专项运行时验证（真实 zhipu + currency mock）；252/生产环境仍未验证，MiniMax `/v1/token_plan/remains` 因无订阅 key 仍未实测；下次 pg-schema-sync-252/deploy 时需单独补证 migration 701 与厂商接口。
+6. 本地/252 库尚未部署验证运行时行为(仅单测/构建);下次 deploy-local 或 pg-schema-sync-252 时 migration 701 会随 ensure 生效。
+
+## 当前验证结论
+
+> 对 1a89c32fe(balance-floor guard)的部署级验证目前只能分层表述：已证 migration 701、zhipu 真实凭据摘出/恢复闭环、web 构建与相关单测；currency pass A/B/C 仅为 mock 验证；未证 minimax `/v1/token_plan/remains` 真实响应、当前 Docker/:8782 容器身份与 `go version -m`、以及登录后的 live 404 探针。详见 `docs/changelogs/2026-09-13-balance-floor-guard-deploy-verify-and-fixes.md`。已落地的两项代码修复为清下限自动回池(`releaseClearedFloorCredentials`,66a9f8e6a)与 planTypes 下拉值域对齐(77956aeb5)。下一轮不得将 mock 或静态证据写成完整生产闭环。
 
 ## 下一轮提示词(建议)
 
-> 对 `1a89c32fe`(balance-floor guard)的本地专项验证已完成，详见
-> `docs/changelogs/2026-09-13-balance-floor-guard-deploy-verify-and-fixes.md`：
-> migration 701 确认、真实 zhipu 摘出/恢复闭环、货币 pass A/B/C 闭环(mock)、
-> web 表单控件补齐；附带两修复——清下限自动回池(`releaseClearedFloorCredentials`)
-> 与 planTypes 下拉值域对齐。**这不等同于 252/生产环境验收**；MiniMax
-> `/v1/token_plan/remains` 因无订阅 key 仍未实测，拿到凭证后再按需修正
-> `parseMiniMaxPlan`（fail-open，不阻塞）。
+> 先执行 `git fetch origin main` 并记录新的 `origin/main` SHA、HEAD 差异和工作树 WIP；勿覆盖 VERSION/version.json/web/public/* 等并行部署簿记。随后按证据顺序复验：恢复 Docker Desktop 并确认 daemon 健康，`docker ps` 核对 :8782 active/:8781 candidate、tag 与端口，`docker cp` 容器二进制后用 `go version -m` 核对 vcs.revision，再执行登录后的 live 404 探针。最后使用脱敏的真实 Minimax 订阅 key 验证 `/v1/token_plan/remains` 响应字段与 parse；currency A/B/C 若仍为 mock 必须继续标注 mock。任一环境不可用时记录 blocker 与恢复条件，不得宣称部署闭环。

@@ -1316,3 +1316,35 @@ func TestQuotaResetsReFiveHourWordBoundary(t *testing.T) {
 		}
 	}
 }
+
+// TestHTTPStatusForKind (2026-09-13 audit fix): single source of truth for
+// the client-facing status when a typed error escapes the failover chain.
+// Semantic families: 429 throttle, 503 overload, 504 timeout, 502 dead.
+// Everything else — including future kinds — falls through to 502.
+func TestHTTPStatusForKind(t *testing.T) {
+	cases := []struct {
+		kind ErrorKind
+		want int
+	}{
+		{KindRateLimit, 429},
+		{KindQuota, 429},
+		{KindQuotaPeriodic, 429},
+		{KindQuotaBalance, 429},
+		{KindQuotaPermanent, 429},
+		{KindConcurrent, 503},
+		{KindUpstreamOverloaded, 503},
+		{KindTimeout, 504},
+		{KindStreamTimeout, 504},
+		{KindNetwork, 502},
+		{KindUpstreamDown, 502},
+		{KindAuth, 502},
+		{KindTransient, 502},
+		{KindCanceled, 502},
+		{"future_unknown_kind", 502},
+	}
+	for _, tc := range cases {
+		if got := HTTPStatusForKind(tc.kind); got != tc.want {
+			t.Errorf("HTTPStatusForKind(%q) = %d, want %d", tc.kind, got, tc.want)
+		}
+	}
+}

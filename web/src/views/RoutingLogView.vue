@@ -505,9 +505,9 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
   font-weight: 600;
 }
 
-.badge-kind-routing { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
+.badge-kind-routing { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
 .badge-kind-probe { background: color-mix(in srgb, var(--purple) 15%, transparent); color: var(--purple); }
-.badge-kind-state { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+.badge-kind-state { background: color-mix(in srgb, var(--warning) 15%, transparent); color: var(--warning); }
 
 .status-pill {
   display: inline-block;
@@ -517,12 +517,12 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
   font-weight: 600;
 }
 
-.st-ok { background: rgba(16, 185, 129, 0.15); color: #10b981; }
-.st-fail { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+.st-ok { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
+.st-fail { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
 
-.change-recovered { background: rgba(16, 185, 129, 0.15); color: #10b981; }
-.change-broke { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
-.change-manual { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
+.change-recovered { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
+.change-broke { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
+.change-manual { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
 
 .detail-row-tr td {
   background: var(--bg-subtle, rgba(128, 128, 128, 0.05));

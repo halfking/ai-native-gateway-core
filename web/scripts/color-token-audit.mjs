@@ -22,8 +22,15 @@ const EXTS = ['.vue', '.ts', '.css', '.scss']
 //   - liveStreamDisplay.ts : hex→rgba 工具函数代码里有伪 rgba(...,${alpha}) 字符串
 const SKIP_FILES = new Set([
   'style.css',
+  // 暗色桥接层:fill 层级用 color-mix(#ffffff/#000000 ...) 做透明度混合,
+  // 白/黑是混合成分而非主题色
+  'styles/element-dark.css',
+  // 终端风代码块:双主题固定暗底(--bg-elevated 指向固定 #1e1e2e 表面)+
+  // 固定浅字,是刻意的「两个主题下都像终端」设计(文件头注释锚定)
+  'views/ExamplesView.vue',
   'composables/liveStreamColors.ts',
   'composables/useChart.ts',
+  'composables/useChart.colors.test.ts',
   'composables/liveStreamDisplay.ts',
   'utils/waterfallTimeline.ts',
   'types/swimlane.ts',
@@ -31,6 +38,28 @@ const SKIP_FILES = new Set([
 
 const HEX_RE = /#[0-9a-fA-F]{3,8}\b/g
 const RGB_RE = /rgba?\s*\([^)]+\)/g
+
+const MIX_BLACKWHITE_RE = /#000000\b|#000\b|#ffffff\b|#fff\b/gi
+
+// 平衡括号提取行内每个 color-mix(...) 并仅豁免其黑白成分
+function exemptColorMixBlacks(line) {
+  let out = ''
+  let i = 0
+  for (;;) {
+    const idx = line.indexOf('color-mix(', i)
+    if (idx === -1) return out + line.slice(i)
+    out += line.slice(i, idx)
+    let depth = 1
+    let j = idx + 'color-mix('.length
+    while (j < line.length && depth > 0) {
+      if (line[j] === '(') depth++
+      else if (line[j] === ')') depth--
+      j++
+    }
+    out += line.slice(idx, j).replace(MIX_BLACKWHITE_RE, '__MIX__')
+    i = j
+  }
+}
 
 function walk(dir) {
   const out = []
@@ -47,6 +76,8 @@ function walk(dir) {
 function scanFile(file) {
   const rel = relative(ROOT, file).replace(/\\/g, '/')
   if (SKIP_FILES.has(rel)) return []
+  // 测试文件里的颜色是断言字符串(如 toContain('#ffffff')),不是主题样式
+  if (rel.endsWith('.test.ts') || rel.endsWith('.test.js')) return []
   const source = readFileSync(file, 'utf8')
   const violations = []
   const lines = source.split(/\r?\n/)
@@ -62,9 +93,11 @@ function scanFile(file) {
   let inTokenBlock = false
   let tokenBraceDepth = 0
   let generalBraceDepth = 0
+  // 跨行块注释追踪:注释中间的行(历史修复说明等)不参与扫描
+  let inBlockComment = false
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
+    let line = lines[i]
     if (isVue) {
       if (!inStyle) {
         if (/<style[^>]*>/.test(line)) { inStyle = true; styleDepth = 1; continue }
@@ -72,7 +105,7 @@ function scanFile(file) {
         if (/<style[^>]*>/.test(line)) styleDepth++
         if (/<\/style>/.test(line)) {
           styleDepth--
-          if (styleDepth === 0) { inStyle = false; inTokenBlock = false }
+          if (styleDepth === 0) { inStyle = false; inTokenBlock = false; inBlockComment = false }
           continue
         }
       }
@@ -95,6 +128,17 @@ function scanFile(file) {
     }
 
     // 简单去除行注释 / 块注释(单行内)
+    if (inBlockComment) {
+      const end = line.indexOf('*/')
+      if (end === -1) continue
+      inBlockComment = false
+      line = line.slice(end + 2)
+    }
+    const open = line.indexOf('/*')
+    if (open !== -1 && line.indexOf('*/', open + 2) === -1) {
+      inBlockComment = true
+      line = line.slice(0, open)
+    }
     const cleaned = line
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\/\/.*$/, '')
@@ -110,6 +154,11 @@ function scanFile(file) {
     })
     // 删除 rgba(var(--xxx), 0.X) 这种 CSS 现代用法(rgb 三元组从 var() 注入)
     scanable = scanable.replace(/rgba\(\s*var\([^)]+\)\s*,\s*[^)]+\)/g, '__RGBA_VAR__')
+    // color-mix() 只豁免黑白成分(#000/#fff 是明度调节,两主题语义一致);
+    // 其余成分色(潜在品牌/数据色硬编码)照常报告,避免豁免面过宽造成漏报。
+    // 成分提取用平衡括号扫描:简单 [^)]* 会在内嵌 var(--x) 的闭括号处截断,
+    // 导致尾部成分(#000 等)漏出豁免范围(2026-09-13 审计轮实测修正)
+    scanable = exemptColorMixBlacks(scanable)
 
     for (const re of [HEX_RE, RGB_RE]) {
       re.lastIndex = 0

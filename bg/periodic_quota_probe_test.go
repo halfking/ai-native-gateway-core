@@ -14,7 +14,6 @@ func TestPeriodicQuotaProbeSkipsDisabledCredentials(t *testing.T) {
 	body := string(src)
 	for _, want := range []string{
 		"c.status = 'active'",
-		"c.lifecycle_status = 'active'",
 		"COALESCE(c.manual_disabled, FALSE) = FALSE",
 		"COALESCE(p.manual_disabled, FALSE) = FALSE",
 		"p.enabled = TRUE",
@@ -24,8 +23,33 @@ func TestPeriodicQuotaProbeSkipsDisabledCredentials(t *testing.T) {
 			t.Fatalf("periodic quota probe is missing recovery guard %q", want)
 		}
 	}
-	if strings.Contains(body, "c.auto_disabled_at IS NOT NULL") {
-		t.Fatal("disabled credentials must not receive automatic quota probes")
+	// 2026-09-13 closeout (P3): AUTO-disabled rows (auto_disabled_at set,
+	// e.g. the availability<50% rule) ARE admitted — writeHealth explicitly
+	// re-enables exactly this class on a successful probe
+	// (auto_enabled_reason='periodic_quota_probe_recovered'), and prod
+	// evidence showed auto-disabled+suspended rows stranded with no probe
+	// source. But the admission MUST be paired with the auto_disabled_at
+	// guard: a bare lifecycle='disabled' admission would also sweep
+	// operator-disabled credentials, violating operator intent.
+	if !strings.Contains(body, "c.auto_disabled_at IS NOT NULL") {
+		t.Fatal("auto-disabled credentials must be admitted only via the auto_disabled_at guard (writeHealth auto-enable path)")
+	}
+	// Shape check: every admission of a disabled lifecycle must carry the
+	// auto guard. Slice each `c.lifecycle_status = 'disabled'` occurrence
+	// and require the guard within the same SQL clause (next 120 chars).
+	for i := 0; ; {
+		idx := strings.Index(body[i:], "c.lifecycle_status = 'disabled'")
+		if idx < 0 {
+			break
+		}
+		window := body[i+idx:]
+		if len(window) > 120 {
+			window = window[:120]
+		}
+		if !strings.Contains(window, "c.auto_disabled_at IS NOT NULL") {
+			t.Fatalf("disabled-lifecycle admission without auto_disabled_at guard near offset %d", i+idx)
+		}
+		i += idx + 1
 	}
 }
 

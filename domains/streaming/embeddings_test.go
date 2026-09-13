@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -195,5 +196,145 @@ func assertRawNumber(t *testing.T, raw json.RawMessage, want int) {
 	}
 	if got != want {
 		t.Fatalf("value = %d, want %d", got, want)
+	}
+}
+
+// ── Exhaustion contract tests (2026-09-13 audit fix) ─────────────────────
+// Prior behavior: every exhausted failover returned 502/server_error with
+// the last vendor status erased. The contract now harvests the typed Kind
+// per candidate and maps exhaustion to 429 (rate_limit_error, Retry-After
+// relayed) when the fleet was throttled, 502 otherwise. Bodies are still
+// never relayed — only the Kind decides the client-facing status.
+
+// TestEmbeddingsHandlerExhaustionRateLimit429: all candidates answer 429 →
+// client sees 429 rate_limit_error and the vendor's Retry-After is relayed.
+func TestEmbeddingsHandlerExhaustionRateLimit429(t *testing.T) {
+	throttled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limit exceeded"}}`))
+	}))
+	defer throttled.Close()
+
+	resolver := &embeddingResolverStub{candidates: []provider.Candidate{
+		embeddingCandidate(throttled.URL, "primary"),
+		embeddingCandidate(throttled.URL, "backup"),
+	}}
+	handler := NewEmbeddingsHandler(resolver, upstream.NewWithRetries(0))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/embeddings", stringsReader(`{"model":"embedding-fast","input":"hello"}`)))
+
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Retry-After"); got != "7" {
+		t.Fatalf("Retry-After = %q, want 7", got)
+	}
+	var payload struct {
+		Error struct {
+			Type string `json:"type"`
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error.Type != "rate_limit_error" || payload.Error.Code != "rate_limit_exhausted" {
+		t.Fatalf("error type/code = %q/%q, want rate_limit_error/rate_limit_exhausted", payload.Error.Type, payload.Error.Code)
+	}
+}
+
+// TestEmbeddingsHandlerExhaustionOverloaded503: all candidates answer 503 —
+// this project classifies 503 as concurrent-load (KindConcurrent), so the
+// exhaustion response is 503 overloaded_error, distinct from a dead fleet.
+func TestEmbeddingsHandlerExhaustionOverloaded503(t *testing.T) {
+	overloaded := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "12")
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer overloaded.Close()
+
+	resolver := &embeddingResolverStub{candidates: []provider.Candidate{
+		embeddingCandidate(overloaded.URL, "primary"),
+	}}
+	handler := NewEmbeddingsHandler(resolver, upstream.NewWithRetries(0))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/embeddings", stringsReader(`{"model":"embedding-fast","input":"hello"}`)))
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Retry-After"); got != "12" {
+		t.Fatalf("Retry-After = %q, want 12", got)
+	}
+	var payload struct {
+		Error struct {
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error.Type != "overloaded_error" {
+		t.Fatalf("error type = %q, want overloaded_error", payload.Error.Type)
+	}
+}
+
+// TestEmbeddingsHandlerExhaustionDeadUpstream502: a truly dead fleet
+// (connection refused — no server at the address) must keep the legacy 502
+// mapping. KindNetwork/KindUpstreamDown are bad-gateway semantics.
+func TestEmbeddingsHandlerExhaustionDeadUpstream502(t *testing.T) {
+	// Reserve a port then close the listener: connections are refused.
+	deadAddr, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadURL := "http://" + deadAddr.Addr().String()
+	_ = deadAddr.Close()
+
+	resolver := &embeddingResolverStub{candidates: []provider.Candidate{
+		embeddingCandidate(deadURL, "primary"),
+	}}
+	handler := NewEmbeddingsHandler(resolver, upstream.NewWithRetries(0))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/embeddings", stringsReader(`{"model":"embedding-fast","input":"hello"}`)))
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Retry-After"); got != "" {
+		t.Fatalf("Retry-After = %q, want empty on 502", got)
+	}
+}
+
+// TestEmbeddingsHandlerExhaustionMixedTakesWorstRetryAfter: one candidate
+// throttled with Retry-After: 30, another with 3 → client gets 429 and the
+// longest window (30s), because the client must back off at least as long
+// as the worst vendor constraint.
+func TestEmbeddingsHandlerExhaustionMixedTakesWorstRetryAfter(t *testing.T) {
+	shortWindow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "3")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer shortWindow.Close()
+	longWindow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer longWindow.Close()
+
+	resolver := &embeddingResolverStub{candidates: []provider.Candidate{
+		embeddingCandidate(shortWindow.URL, "primary"),
+		embeddingCandidate(longWindow.URL, "backup"),
+	}}
+	handler := NewEmbeddingsHandler(resolver, upstream.NewWithRetries(0))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/embeddings", stringsReader(`{"model":"embedding-fast","input":"hello"}`)))
+
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Retry-After"); got != "30" {
+		t.Fatalf("Retry-After = %q, want 30 (max across candidates)", got)
 	}
 }

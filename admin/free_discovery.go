@@ -46,6 +46,48 @@ func (h *Handler) SetFreeDiscovery(stdlibDB *sql.DB, kr *secret.Keyring) {
 	}
 }
 
+// FreeDiscoveryEngine returns the shared DiscoveryEngine for background
+// workers (e.g. bg.ScanScheduler) to call Run directly. Returns nil when
+// free-discovery is not wired (no-DB mode).
+func (h *Handler) FreeDiscoveryEngine() *freediscovery.DiscoveryEngine {
+	if h == nil || h.freeDiscovery == nil {
+		return nil
+	}
+	return h.freeDiscovery.engine
+}
+
+// FreeDiscoveryTemplates returns the shared TemplateManager for background
+// workers. Returns nil when not wired.
+func (h *Handler) FreeDiscoveryTemplates() *freediscovery.TemplateManager {
+	if h == nil || h.freeDiscovery == nil {
+		return nil
+	}
+	return h.freeDiscovery.templates
+}
+
+// ScanSchedulerStatusProvider is implemented by *bg.ScanScheduler (or any test
+// double) so the admin handler can surface liveness without importing bg.
+type ScanSchedulerStatusProvider interface {
+	Status() any
+}
+
+// SetScanSchedulerStatus wires the scan-scheduler liveness probe at startup.
+func (h *Handler) SetScanSchedulerStatus(p ScanSchedulerStatusProvider) {
+	if h == nil {
+		return
+	}
+	h.scanSchedulerStatus = p
+}
+
+// handleFreeDiscoveryScanSchedulerStatus returns the worker liveness snapshot.
+func (h *Handler) handleFreeDiscoveryScanSchedulerStatus(w http.ResponseWriter, r *http.Request) {
+	if h.scanSchedulerStatus == nil {
+		writeError(w, http.StatusServiceUnavailable, "scan-scheduler is not available")
+		return
+	}
+	writeJSON(w, http.StatusOK, h.scanSchedulerStatus.Status())
+}
+
 // fdDeps retrieves dependencies; writes 503 and returns nil when not wired.
 func (h *Handler) fdDeps(w http.ResponseWriter) *freeDiscoveryDeps {
 	if h.freeDiscovery == nil {
@@ -464,6 +506,8 @@ func fdStatusFor(err error) int {
 		errors.Is(err, freediscovery.ErrImportTaskNotReady),
 		errors.Is(err, freediscovery.ErrTaskStateConflict):
 		return http.StatusConflict
+	case errors.Is(err, freediscovery.ErrInvalidTenantID):
+		return http.StatusBadRequest
 	case strings.Contains(err.Error(), "required"),
 		strings.Contains(err.Error(), "invalid"),
 		strings.Contains(err.Error(), "must be"),
