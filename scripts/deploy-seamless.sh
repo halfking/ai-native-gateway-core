@@ -627,7 +627,7 @@ upload_release() {
   # 候选 unit exec 直接 Permission denied (status 126)。显式恢复执行位；
   # 对 Mac/Linux 宿主是无操作。
   local staged_bin_name
-  staged_bin_name=$(HOST_STAGE_TARGET="$TARGET" host_binary_name) || staged_bin_name="gateway"
+  staged_bin_name=$(HOST_STAGE_TARGET="$TARGET" host_binary_name "$TARGET") || staged_bin_name="gateway"
   remote_ssh "chmod 0755 '$release_dir/$staged_bin_name'" || { err "恢复二进制执行位失败"; return 1; }
   ok "bundle 上传完成"
 }
