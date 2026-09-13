@@ -1871,7 +1871,7 @@ onUnmounted(() => {
 }
 .qbar-ok .qbar-fill { background: var(--success-bd); }
 .qbar-mid .qbar-fill { background: var(--warning-bd); }
-.qbar-high .qbar-fill { background: rgba(248,81,73,.55); }
+.qbar-high .qbar-fill { background: var(--danger-bd); }
 .qbar-exhausted .qbar-fill { background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .qbar-unknown .qbar-fill { background: var(--neutral-bd); }
 .qbar-text {

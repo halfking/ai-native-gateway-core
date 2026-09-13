@@ -710,3 +710,188 @@ codeup 等服务凭证）；**部署一律 SSH 到主机上执行，不在虚机
 ### 复核无问题项
 
 LandingView.vue 零硬编码色；`styles/*.css` 目录全令牌化；`public/` 仅 theme-init.js 一个脚本资产。本轮无新发现问题，无需代码改动；§十四 提示词维持有效（仅状态更新：行为级 E2E 已补）。
+
+## 十六、暗色收尾与例行维护轮执行记录（2026-09-13，§十四 提示词已执行）
+
+§十四 六项任务全部完成，2 个代码 commit（0242f5fd4 + 14b89cd56）+ 本节登记。
+
+### 任务 1：五门禁例行复验 — 全绿
+
+| 门禁 | 结果 |
+|---|---|
+| `npx vue-tsc --noEmit` | 0 错误（轮首、轮末各一次） |
+| `npx vitest run` | 561 通过 / 41 失败（**39 失败文件 = 基线不变**；通过 +1 = 任务 4 新用例） |
+| `i18n-audit --strict --missing-only` | STRICT PASS (0 missing) |
+| `responsive-audit --strict` | PASS 全白名单（768×50 / 1024×28 / 640×9 / 480×7 / 1440×1） |
+| `element-import-audit` | OK（246 .vue） |
+
+### 任务 2：暗色残余清扫 — 扩展至历史硬编码文字色（0242f5fd4）
+
+范围从 §十二补充 的 background 面扩展到**实色硬编码文字色**（§十三 扣分项收口）。方法：`color-token-audit.mjs` 全量扫描 93 处 → 逐处上下文判定 → 实色清扫 / 半透明保留。
+
+**清扫 15 文件 46 处**（映射均对齐令牌表或同文件既有令牌化示范）：
+
+| 类别 | 明细 |
+|---|---|
+| 状态徽章文字 | RoutingLogView badge/pill ×4 组（#3b82f6/#f59e0b/#10b981/#ef4444 → --accent/--warning/--success/--danger，底同步 color-mix 化对齐 .badge-kind-probe 示范）；RequestLogsView 压缩徽章 ×3（#6d28d9→--purple、#0f766e→--probe-cyan、#7e22ce→--magenta 与底同源） |
+| 状态条 | CredentialStatusBar 五状态（#b7791f **恰为亮色 --kx-warning 原值**、#c53030≈--kx-danger、#718096≈--kx-muted，映射近乎精确对位；degraded 橙 #c05621 → color-mix(--warning 60%, --danger) 保中间档语义） |
+| 正文/展开行 | BootstrapWizard agree-list #3d4d66→--text（暗底不可读）；RoutingAuditView expand-row #050505→--bg-subtle（亮色下深底+深字既有问题一并修复） |
+| 按钮组 | ApprovalDetail btn-success:hover #2cc189 → color-mix(--success 88%, #000) 对齐全局惯例；ProvidersView badge-blue → --info-bg/--accent 对齐 Annotation 先例 |
+| 进度/迁移条 | FreePoolView qbar-high rgba(248,81,73,.55)→--danger-bd 对齐同组 *-bd；StorageConfig done 边框 → color-mix(--success 45%) 对齐 running 行 |
+| 模板内联 style | 18 处（ModelsView 删除红/必填星/#888、RoutingOverride 摘要三元、DiagTab 三段统计、CredentialDetailDrawer 成败计数、RequestLogsView 租户提示与图例、RoutingAudit 摘要）→ 语义令牌；:style 三元内改为 'var(--warning)' 字符串形式 |
+
+**真 bug 修复（顺带发现）**：ProxyView（`/admin/proxy`，requiresSuper）6 个 CSS 变量 `--primary-color/--secondary-bg/--error-bg/--primary-hover/--secondary-hover/--error-hover` **全库零定义**（src 与 index.html 均无），scoped 声明在级联中胜出但 var() 计算时无效 → background unset 透明底 + `color:#fff` 白字，亮色页面按钮整体不可见。修复：映射语义令牌对齐全局按钮惯例（primary=accent 底 on-primary 字、secondary/small=card 底 text 字、danger=danger 底、disabled=bg-secondary+muted）。
+
+**保留项判定 47 处**：rgba 半透明叠加（badge 底/告警底 ≤0.3）、遮罩（0.45~0.5 黑）、热力图格上标注（深字+白影画在数据色上）、合成条纹纹理（白斜纹画在彩色条上）、element-dark.css 的 #fff/#000（fill 层级 color-mix 成分）——均为 §十二 先例同款「半透明在暗底下自然变暗」或数据可视化语境。
+
+**审计脚本增强**（color-token-audit.mjs）：跨行块注释行过滤（历史修复说明不再误报）、`color-mix()` 成分色豁免（#000 加深/#fff 提亮为明度调节）、element-dark.css / ExamplesView（终端风代码块固定暗底浅字，注释锚定）/ 测试文件豁免。违规 **93 → 47**，残量全为已判定保留类。
+
+**验证**：vue-tsc 0 错误；ProxyView/CredentialKeyField 9 用例全绿；生产构建通过，网关 :8781 引用新 asset hash 且新 CSS chunk 200。**真机走查**：本虚机 headless 对 SPA 渲染不可靠（§十二 残项延续），暗色下 ProxyView/凭据监控徽章等观感复核待用户真实浏览器（`?theme=dark`）。
+
+### 任务 3：FOUC 复核 — 无闪烁，无需关键 CSS 内联
+
+- **静态证据**：dist/index.html 中 theme-init.js 位于 head 第 10 行**同步执行**（无 defer/async），先于 Vite 注入的样式表 link（第 18 行）与 module script（第 11 行）；脚本本体为纯同步 IIFE（URL 参数 > localStorage > 系统偏好判定 + setAttribute + classList.toggle + colorScheme 一次完成，无任何异步依赖）。按 HTML 渲染阻塞模型，首帧绘制前类必已就位。
+- **行为证据**（裸页真实脚本 + 真实 CSS 栈 + 双 rAF 首帧前探针，三场景全过）：
+
+| 场景 | 首帧前状态 |
+|---|---|
+| F1 `?theme=dark` 直链 | theme=dark、dark 类 ✓、`--el-bg-color=#1a222d`、`--kx-bg=#0f141c` ✓ |
+| F2 去参刷新（存储持久） | 同上全 ✓ |
+| F3 `?theme=light` 对照 | light + `#fff`（探针可区分两态）✓ |
+
+- 结论：**暗色直链/刷新无亮色闪烁**，无需 index.html 关键 CSS 内联最小集（提示词中的备选方案不启用）。探针时点说明：DOMContentLoaded 不保证样式表已应用（F1 首轮实测 elBg 为空即此因），故 FOUC 断言以双 rAF（渲染阻塞保证样式已应用、首帧绘制前）为准。
+
+### 任务 4：EP 品牌色 primary 一致性 — 整组重推导落地（14b89cd56）
+
+§十二 当时以「直接映射 base 会与 light-3/5/7/9 派生阶脱节」为由放弃。本轮确认 **EP dark 官方混合规律**（从 theme-chalk/dark/css-vars.css 实测反推：dark 模式下 light-N = mix(primary, black, N·10%)、dark-2 = mix(primary, white, 20%)）后，用 color-mix 等价式整组重推导，脱节前提消除：
+
+- element-dark.css（`html.dark[data-theme='dark']` 门控）：`--el-color-primary: var(--kx-primary)` + dark-2/light-3/5/7/8/9 六阶同源推导；**亮色侧零触碰**（§十二 红线），success/warning/danger/info 仍保持 EP 默认。范围约定头注释二次修订。
+- **组件级实测**（裸页真实 EP 组件）：dark 下 `el-button--primary` 实际渲染 `rgb(91,140,255)` = #5b8cff（暗色 --kx-primary）✓；light 下 `rgb(64,158,255)` = #409eff EP 默认 ✓。
+- 测试锁定：theme.dark-skin.test.ts 新增第 5 用例（六阶映射式逐条断言），5 用例全绿。
+- 效果：暗色下 EP 主按钮/开关/链接/激活态与应用自研主蓝同调（此前 EP 默认 #409eff 天蓝与应用 #5b8cff 并存）。
+
+### 任务 5：组件接口同步 — 无
+
+本轮改动全部为 CSS 令牌替换与审计脚本增强，零组件接口调整；《前端组件使用指南》无品牌色相关表述需同步（桥接范围约定的权威记录在 element-dark.css 头注释与本节）。
+
+### 本轮遗留（下一轮可复用 §十四 模板）
+
+1. **真机暗色走查**（本轮任务 2 的用户侧验证）：`?theme=dark` 下 ProxyView 按钮组（本次修复主现场）、RoutingLog/RequestLogs 状态徽章、EP 主按钮新品牌蓝观感。
+2. EP 品牌色其余四色（success/warning/danger/info）是否同样整组重推导——本次按「亮色零触碰+最小面」原则只做 primary，其余色应用与 EP 默认偏差小，维持默认并登记。
+3. 存量 vitest 39 失败文件（jsdom localStorage 环境问题）维持不修约定。
+
+### 推送状态
+
+**✅ push 已完成（2026-09-13，cfc8175bb）**：凭证通道（§一-9 credential.helper store）本轮实测免交互可用——`git pull --no-rebase` 合入远端 4 个并行线提交（audit 线 + Go migration 线，不触及 web/，合并后 vue-tsc 复验 0 错误）后推送成功（`94d87e7a1..cfc8175bb`），`git rev-list --count` 双向 0。与 §八「唯一通道=用户交互终端」的旧结论不同，本轮非交互 push 直接过——以本轮实测为准。
+
+## 十七、下一轮执行提示词（复制即用）
+
+```text
+你是前端工程师，在 llm-gateway-go-5/web 做下一轮例行审计与真机复核。
+先读：docs/handoff/2026-09-13-frontend-responsive-componentization-steps.md
+（§二环境注意事项、§九/§十三/§十五三轮审计评分、§十六例行轮记录、§十八审计轮）、
+docs/03-design/frontend-component-usage-guide.md（§11 EP 暗色桥接与颜色令牌规范）、
+git log 近 10 个提交。
+工作区约定：pnpm 未装用 npm run/npx；不要 npm install（node_modules 为 darwin
+布局，rollup/esbuild/sass-embedded-linux-arm64 已手工补装）；存量 vitest 失败
+基线 39 文件不得扩大；i18n 注释里别写 t('...') 字样；新代码断点只允许
+480/640/768/1024/1440；硬编码色判定先跑 node scripts/color-token-audit.mjs
+（终态基线 45，color-mix 内黑白成分豁免、非黑白成分照常报告）。
+
+环境约束（必读）：虚机环境——部署 SSH 到主机；headless 浏览器对 SPA 渲染
+不可靠（OOM），视觉验证用「生产包 + 网关 :8781 托管」或裸页探针
+（/tmp/walk/lib.mjs + fouc.mjs/brand.mjs 可复用），用户侧观感请用户真实浏览器复核。
+
+任务（按序，独立 commit）：
+1. 五门禁例行复验：vue-tsc / vitest（失败集 ≤39 文件基线）/ i18n STRICT /
+   responsive:check --strict / element:check。
+2. 暗色真机复核（§十六遗留 1）：请用户在真实浏览器 ?theme=dark 走查
+   ProxyView（/admin/proxy，按钮组修复现场）、RoutingLog/RequestLogs 徽章、
+   RoutingAudit 展开行（#050505→--bg-subtle 双主题变化）、EP 主按钮品牌蓝；
+   发现残余亮块/不可读文字继续令牌化清扫。
+3. EP 品牌色其余四色评估（§十六遗留 2）：应用与 EP 默认偏差大的色才值得
+   整组重推导（方法照 §十六任务4），偏差小的维持默认并登记理由。
+4. 任何组件接口调整，同步《前端组件使用指南》（§四约定；颜色令牌红线见指南 §11）。
+5. 每项一个 commit；push 前先 git pull --no-rebase 合入远端；登记进本文件新 §。
+
+验收红线：桌面 >=1024 DOM 零回归；新代码断点只允许白名单值；新测试全绿；
+主题双轨（data-theme 与 html.dark）在任何写入点必须原子同步。
+```
+
+## 十八、审计评分与修正轮（2026-09-13，对 §十六 例行轮复评）
+
+### 评分表（10 分制）
+
+| 任务项 | 得分 | 评语 |
+|---|---|---|
+| §十六-1 五门禁例行复验 | 10 | 全绿，失败构成复核到用例级（jsdom localStorage 环境问题），通过数增量可追溯到新用例 |
+| §十六-2 暗色残余清扫 + ProxyView bug | 8 | 清扫 46 处映射对位精确（#b7791f 恰为亮色 --kx-warning 原值）、保留判定有据、ProxyView 未定义变量根因分析正确；**扣 2**：①color-mix 黑白豁免因外层 `[^)]*` 在内嵌 `var()` 闭括号截断而**从未生效**——3 处 #000 留在 47 清单中却误判为「已豁免」，数字凑巧对上未细究；②qbar-high 透明度 55%→30% 的视觉变化未量化登记 |
+| §十六-3 FOUC 复核 | 9 | 双 rAF 时点选择正确（DCL 不保证样式表应用的辨析有价值）；扣 1：机制前提（theme-init.js head 同步、无 defer/async）无回归测试锁定，探针在 /tmp 不入仓库 |
+| §十六-4 EP 品牌色重推导 | 10 | 官方混合规律实测反推 + 组件级求值验证 + 测试锁定，证据链完整；亮色零触碰红线守住 |
+| §十六-5/6 接口同步与收口 | 10 | 零接口判定正确；pull --no-rebase 合并后复验、push 双向同步 |
+| **平均** | **9.4** | |
+
+### 本轮修正（审计发现 → 修复）
+
+| # | 问题 | 根因 | 修正 |
+|---|---|---|---|
+| 1 | color-mix 黑白豁免对含 var() 的表达式从未生效；且旧规则豁免面过宽（color-mix 内任意 hex/rgb 全部豁免，潜在品牌/数据色成分会被漏报） | 外层 `color-mix\([^)]*\)` 在内嵌 `var(--success)` 的闭括号处截断，尾部成分（#000）不在匹配范围内 | 改为**平衡括号扫描**提取完整 color-mix(...)，且仅豁免 #000/#fff（含 3/6 位、大小写不敏感）；非黑白成分照常报告。豁免函数 4 用例自测 PASS（含 var() 嵌套、品牌色成分保留、rgba 嵌套三个边界） |
+| 2 | 块注释扫描状态跨 style 块泄漏（病态输入：style 块以未闭合 `/*` 结尾时状态泄入下一块） | inBlockComment 只在注释闭合与文档循环处维护，`</style>` 收尾未重置 | `</style>` 收尾时与 inTokenBlock 一并重置 |
+| 3 | 测试文件中的颜色断言字符串被误报（如 toContain 里的 #ffffff） | 审计脚本按扩展名扫描全部 .ts | 通用豁免 `.test.ts`/`.test.js`（颜色是断言数据非主题样式） |
+| 4 | FOUC 机制前提无回归锁定 | 探针脚本在 /tmp 不入仓库 | theme.dark-skin.test.ts 新增第 6 用例：theme-init.js 必须在 `<head>` 内且无 defer/async（违反即暗色直链/刷新首帧回退亮色） |
+| 5 | EP 暗色桥接知识不在使用指南 | §十二/§十六 桥接约定散落 handoff 与 CSS 头注释，指南读者不可见 | 指南新增 §11「EP 暗色桥接与颜色令牌规范」（主题双轨/桥接范围/颜色令牌红线/FOUC 前提） |
+| 6 | 视觉变化量化登记补正（§九-3 同类扣分预防） | qbar-high 与 expand-row 的透明度/底色变化未量化 | ①qbar-high `rgba(248,81,73,.55)`→`--danger-bd`(30%)：透明度 −25pp，与同组 qbar-ok/mid 的 30% 档对齐（视觉变淡但梯度语义更清晰：mid/high 同透明度异色相，high > exhausted 12%）；②RoutingAudit expand-row `#050505`→`--bg-subtle` 为双主题双向变化：暗色从「近黑行」变「subtle 层级行」，亮色从「深底+深字不可读」修复为可读。真机走查随 §十六遗留 1 一并 |
+
+修正后 color-token-audit 终态：**45 处 / 22 文件**（3 处 #000 正确豁免移出 + 测试断言 2 处移除 + 原保留类不变），残量全为已判定保留类。
+
+### 其余复核项（无问题）
+
+- 嵌套 rgba 场景实测：`color-mix(... rgba(0,0,0,0.2) ...)` 旧规则已正确豁免，新规则同过（自测 case 3）。
+- color-mix 内嵌非黑白独立 hex 现状 **0 处**（扫描到的均为 `var(--x, #fallback)` 形态，由既有 var-fallback 规则先行处理）——豁免收紧当前零新增违规，纯为未来漏报防护。
+- expand-row「亮色下不可读」判断复核成立（.diff-field/.diff-label 无专门 color 规则，继承 --text）。
+- ProxyView secondary/small 改 card 底+text 字与全局 .btn-secondary 惯例逐字一致。
+- 本轮修正零生产代码变化（脚本+测试+文档），生产包/网关 hash 不变属预期。
+
+### §十六 口径补正
+
+「违规 93→47」：93 为旧脚本口径，47 为当时新口径（含误判已豁免的 3 处 #000）；本轮修正后终态 **45**。审计门禁基线以 45 为准。
+
+### 推送状态
+
+**✅ push 已完成（2026-09-13）**：修正 commit + 本节登记 push 成功，双向同步（详见 git log）。
+
+## 十九、下一轮执行提示词（复制即用）
+
+```text
+你是前端工程师，在 llm-gateway-go-5/web 做下一轮例行审计与真机复核。
+先读：docs/handoff/2026-09-13-frontend-responsive-componentization-steps.md
+（§二环境注意事项、§九/§十三/§十五/§十八四轮审计评分、§十六例行轮记录）、
+docs/03-design/frontend-component-usage-guide.md（§11 EP 暗色桥接与颜色令牌规范）、
+git log 近 10 个提交。
+工作区约定：pnpm 未装用 npm run/npx；不要 npm install（node_modules 为 darwin
+布局，rollup/esbuild/sass-embedded-linux-arm64 已手工补装）；存量 vitest 失败
+基线 39 文件不得扩大；i18n 注释里别写 t('...') 字样；新代码断点只允许
+480/640/768/1024/1440；硬编码色判定先跑 node scripts/color-token-audit.mjs
+（终态基线 45，color-mix 内仅黑白成分豁免、非黑白成分照常报告——收紧豁免时
+先跑基线对比，防误报新冻结）。
+
+环境约束（必读）：虚机环境——TLS/证书类操作使用主机证书；部署一律 SSH 到
+主机执行（不在虚机内部署）；headless 浏览器对 SPA 渲染不可靠（OOM），视觉
+验证用「生产包 + 网关 :8781 托管」或裸页探针（/tmp/walk/lib.mjs +
+fouc.mjs/brand.mjs 可复用），用户侧观感请用户真实浏览器复核。
+
+任务（按序，独立 commit）：
+1. 五门禁例行复验：vue-tsc / vitest（失败集 ≤39 文件基线）/ i18n STRICT /
+   responsive:check --strict / element:check（+ color-token-audit 基线 45 不新增）。
+2. 暗色真机复核（§十六遗留 1）：请用户在真实浏览器 ?theme=dark 走查
+   ProxyView（/admin/proxy，按钮组修复现场）、RoutingLog/RequestLogs 徽章、
+   RoutingAudit 展开行（#050505→--bg-subtle 双主题变化）、EP 主按钮品牌蓝；
+   发现残余亮块/不可读文字继续令牌化清扫。
+3. EP 品牌色其余四色评估（§十六遗留 2）：应用与 EP 默认偏差大的色才值得
+   整组重推导（方法照 §十六任务4），偏差小的维持默认并登记理由。
+4. 任何组件接口调整，同步《前端组件使用指南》（§四约定；颜色令牌红线见指南 §11）。
+5. 每项一个 commit；push 前先 git pull --no-rebase 合入远端；登记进本文件新 §。
+
+验收红线：桌面 >=1024 DOM 零回归；新代码断点只允许白名单值；新测试全绿；
+主题双轨（data-theme 与 html.dark）在任何写入点必须原子同步。
+```

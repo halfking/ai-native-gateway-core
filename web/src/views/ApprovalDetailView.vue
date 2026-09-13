@@ -922,7 +922,7 @@ onBeforeUnmount(() => {
 }
 
 .btn-success:hover:not(:disabled) {
-  background: #2cc189;
+  background: color-mix(in srgb, var(--success) 88%, #000);
 }
 
 .btn-danger {

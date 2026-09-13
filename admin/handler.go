@@ -61,6 +61,10 @@ type Handler struct {
 	// freeDiscovery (2026-09-09): 免费资源自动发现服务 (084 迁移三表).
 	// SetFreeDiscovery 在启动时注入; nil = 路由返回 503 (no-DB 模式).
 	freeDiscovery *freeDiscoveryDeps
+	// scanSchedulerStatus (2026-09-14, R20 §二.6): liveness probe for the
+	// periodic scan worker. nil → /api/free-discovery/scan-scheduler/status
+	// returns 503. Set by SetScanSchedulerStatus at startup.
+	scanSchedulerStatus ScanSchedulerStatusProvider
 	discSvc       *discovery.Service
 	credCycler           *bg.CredentialCycler
 	credRecov            *bg.CredentialRecovery
@@ -1263,6 +1267,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/free-discovery/tasks", h.admin(h.handleFreeDiscoveryTasks))
 	mux.HandleFunc("GET /api/free-discovery/tasks/{id}", h.admin(h.handleFreeDiscoveryTask))
 	mux.HandleFunc("GET /api/free-discovery/tasks/{id}/results", h.admin(h.handleFreeDiscoveryTaskResults))
+	mux.HandleFunc("GET /api/free-discovery/scan-scheduler/status", h.admin(h.handleFreeDiscoveryScanSchedulerStatus))
 	mux.HandleFunc("POST /api/free-discovery/import", h.admin(h.handleFreeDiscoveryImport))
 	mux.HandleFunc("/api/free-pool/register", h.superAdmin(h.handleFreePoolRegister))
 	mux.HandleFunc("/api/free-pool/models", h.admin(h.handleFreePoolModels))

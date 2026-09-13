@@ -786,6 +786,33 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 // response whose body is still owned by another reader. Use
 // ClassifyErrorWithBody when you also have the body bytes available
 // and want overload/model-not-found signals from the payload.
+// HTTPStatusForKind is the single source of truth for mapping an ErrorKind
+// back to the HTTP status the gateway surfaces to the end client when the
+// last upstream error escapes the failover chain. Exhaustion responses use
+// the standard semantic families: 429 rate-limit/quota, 503 overloaded
+// (this project classifies 503/529 vendor statuses as concurrent-load
+// signals, so an overloaded fleet is an overload outcome, not bad gateway),
+// 504 timeout, 502 dead upstream/network. Bodies are NOT relayed: the
+// gateway never forwards one vendor's error text to a client that may be
+// routed elsewhere next attempt. New kinds fall through to 502 rather than
+// guessing a client-facing status.
+func HTTPStatusForKind(kind ErrorKind) int {
+	switch kind {
+	case KindRateLimit, KindQuota, KindQuotaPeriodic, KindQuotaBalance, KindQuotaPermanent:
+		return http.StatusTooManyRequests
+	case KindConcurrent, KindUpstreamOverloaded:
+		return http.StatusServiceUnavailable
+	case KindTimeout, KindStreamTimeout:
+		return http.StatusGatewayTimeout
+	case KindNetwork, KindUpstreamDown:
+		// KindNetwork covers connection-refused/DNS as much as slow links;
+		// 502 (bad gateway) is the honest generic, 504 stays timeout-only.
+		return http.StatusBadGateway
+	default:
+		return http.StatusBadGateway
+	}
+}
+
 func ClassifyResponseStatus(resp *http.Response) ErrorKind {
 	switch {
 	case resp.StatusCode == 429:

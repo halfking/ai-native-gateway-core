@@ -1097,7 +1097,7 @@ onMounted(async () => {
       <span>逐出 {{ bodyCache.evictions }}</span>
     </div>
 
-    <div v-if="!isDefaultTenant()" class="tenant-notice" style="margin-bottom:12px;padding:8px 12px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);border-radius:6px;font-size:12px;color:#3b82f6">
+    <div v-if="!isDefaultTenant()" class="tenant-notice" style="margin-bottom:12px;padding:8px 12px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);border-radius:6px;font-size:12px;color:var(--accent)">
       非 default 租户只能查看最近 3 天的请求日志
     </div>
 
@@ -1263,12 +1263,12 @@ onMounted(async () => {
             <td style="padding:3px 6px;border:1px solid var(--border)">触发 LLM 无损摘要（保留关键事实、路径、ID、错误等）→ 摘要失败时降级为机械裁剪</td>
           </tr>
           <tr>
-            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:#b45309">机械裁剪 (mechanical_trim)</td>
+            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:var(--warning-dark)">机械裁剪 (mechanical_trim)</td>
             <td style="padding:3px 6px;border:1px solid var(--border)">上游 4xx context_length / 滑动窗口摘要失败</td>
             <td style="padding:3px 6px;border:1px solid var(--border)">从最早消息开始逐对裁剪，保留 system + 首条 user + 最近 N 对</td>
           </tr>
           <tr>
-            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:#6d28d9">Memora 注入</td>
+            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:var(--purple)">Memora 注入</td>
             <td style="padding:3px 6px;border:1px solid var(--border)">上下文超限时检索 Memora L1 事实</td>
             <td style="padding:3px 6px;border:1px solid var(--border)">将历史事实作为"动态上下文"注入请求</td>
           </tr>
@@ -1801,7 +1801,7 @@ onMounted(async () => {
 }
 .compression-badge.strategy-memora_l1_inject {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
-  color: #6d28d9;
+  color: var(--purple);
 }
 .compression-badge.strategy-llm_summary {
   background: var(--info-bg);
@@ -1816,14 +1816,14 @@ onMounted(async () => {
    in the logs table. */
 .compression-badge.strategy-delta_append {
   background: rgba(20, 184, 166, 0.12);
-  color: #0f766e;
+  color: var(--probe-cyan);
   border: 1px solid rgba(20, 184, 166, 0.3);
 }
 .compression-badge.strategy-sliding_window_token,
 .compression-badge.strategy-sliding_window_count,
 .compression-badge.strategy-sliding_window_idle {
   background: color-mix(in srgb, var(--magenta) 12%, transparent);
-  color: #7e22ce;
+  color: var(--magenta);
   border: 1px solid color-mix(in srgb, var(--magenta) 30%, transparent);
 }
 .col-compress {

@@ -255,6 +255,13 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inpu
 		if state == nil {
 			continue
 		}
+		// Unified empty-name rejection: a terminal function_call item
+		// without a name is not a legal Responses API output item. The
+		// deltas were still streamed (fragments), but the terminal
+		// envelope omits the unfulfilled call.
+		if state.Name == "" {
+			continue
+		}
 		item := map[string]any{
 			"type": "function_call", "id": state.ID, "call_id": state.ID,
 			"name": state.Name, "arguments": state.Arguments.String(), "status": status,
@@ -292,6 +299,11 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inpu
 	for _, index := range indices {
 		state := s.toolStates[index]
 		if state == nil {
+			continue
+		}
+		// Unified empty-name rejection: keep response.completed.output in
+		// lockstep with the output_item.done events above.
+		if state.Name == "" {
 			continue
 		}
 		output = append(output, map[string]any{
@@ -787,7 +799,10 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		// Incremental integrity breach (repeated-content loop): cut the
 		// stream so the executor can failover. Mirrors stream.go.
 		if capture != nil && capture.IntegrityBreached() {
-			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+			// Integrity failures are resumable interruptions, never successful
+			// completions. Emit an incomplete terminal only for committed attempts;
+			// deferred gates leave terminal rendering to the coordinator.
+			scaffold.finishInterrupted(gate, fullText.String(), capture.IntegrityBreachReason(), inputTokens, outputTokens)
 			return integrityBreachOutcome(capture, chunkCount)
 		}
 	}
@@ -1206,7 +1221,10 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		// Incremental integrity breach (repeated-content loop): cut the
 		// stream so the executor can failover. Mirrors stream.go.
 		if capture != nil && capture.IntegrityBreached() {
-			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+			// Integrity failures are resumable interruptions, never successful
+			// completions. Emit an incomplete terminal only for committed attempts;
+			// deferred gates leave terminal rendering to the coordinator.
+			scaffold.finishInterrupted(gate, fullText.String(), capture.IntegrityBreachReason(), inputTokens, outputTokens)
 			return integrityBreachOutcome(capture, chunkCount)
 		}
 	}
