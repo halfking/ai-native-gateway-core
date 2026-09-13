@@ -107,6 +107,12 @@ func (h *Handler) handleResetCredentialState(w http.ResponseWriter, r *http.Requ
 		if errors.Is(err, errForceEnableCredNotFound) {
 			writeError(w, http.StatusNotFound, "credential not found")
 		} else {
+			// 提交后部分失败:DB 效果已落地但请求以 5xx 结束,审计照记
+			// (audit_outcome=partial_failed 供消费方过滤)。
+			if committed, _ := beforeAfter["db_committed"].(bool); committed {
+				beforeAfter["audit_outcome"] = "partial_failed"
+				h.logAudit(r, "routing_credential_reset_state", beforeAfter)
+			}
 			writeError(w, http.StatusInternalServerError, err.Error())
 		}
 		return

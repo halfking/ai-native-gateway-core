@@ -33,26 +33,6 @@ func expectTenantGUC(mock sqlmock.Sqlmock, tenantID string) {
 	_ = tenantID
 }
 
-func TestEscapeTenantID(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"tenant-a", "tenant-a"},
-		{"Tenant_1", "Tenant_1"},
-		{"", "default"},
-		{"default", "default"},
-		{"bad; DROP TABLE x", "default"},
-		{"bad'tenant", "default"},
-		{strings.Repeat("a", 65), "default"},
-		{strings.Repeat("a", 64), strings.Repeat("a", 64)},
-	}
-	for _, c := range cases {
-		if got := escapeTenantID(c.in); got != c.want {
-			t.Errorf("escapeTenantID(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
 // TestIsValidTenantID covers the [A-Za-z0-9_-]{1,64} allowlist that guards
 // the RLS GUC. Invalid IDs must be rejected (ErrInvalidTenantID → 400) rather
 // than silently remapped to the shared 'default' bucket (R20 §2.5).

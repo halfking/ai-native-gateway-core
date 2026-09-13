@@ -1663,6 +1663,12 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 			if errors.Is(err, errForceEnableCredNotFound) {
 				writeError(w, http.StatusNotFound, "credential not found")
 			} else {
+				// 提交后部分失败:DB 效果已落地但请求以 5xx 结束,审计照记
+				// (audit_outcome=partial_failed 供消费方过滤)。
+				if committed, _ := beforeAfter["db_committed"].(bool); committed {
+					beforeAfter["audit_outcome"] = "partial_failed"
+					h.logAudit(r, "emergency_repair."+req.Action, beforeAfter)
+				}
 				writeError(w, http.StatusInternalServerError, err.Error())
 			}
 			return
@@ -5522,6 +5528,10 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 		return fmt.Errorf("force_enable: commit failed: %w", err)
 	}
 	met.RoutingCredentialResetTotal.WithLabelValues("db", "ok").Inc()
+	// 提交分界标记:此后任何失败都意味着持久化效果已落地而请求将以 5xx
+	// 结束。调用方据此在错误分支补写审计(否则特权操作留下持久化效果
+	// 却无审计记录,2026-09-14 审计轮 D-P2-1)。
+	beforeAfter["db_committed"] = true
 
 	// A force-enable is also an operator recovery point for credentials that
 	// were ejected after an upstream auth failure. Drop the in-process primary
@@ -5562,6 +5572,7 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 		if len(resetModels) == 0 {
 			// 整凭据 reset 时模型枚举失败 — 明确拒绝，避免 URSM 被完全跳过
 			met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "no_models").Inc()
+			beforeAfter["post_commit_failure"] = "no binding models found, cannot reset URSM"
 			return fmt.Errorf("force_enable: no binding models found for credential %d, cannot reset URSM", credentialID)
 		}
 		disabled := false
@@ -5578,11 +5589,13 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 			}
 			if err := h.ursmV2.ApplyAdmin(ctx, adminAction); err != nil {
 				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "error").Inc()
+				beforeAfter["post_commit_failure"] = "ursm.v2 apply_admin failed for model " + m
 				return fmt.Errorf("force_enable: ursm.v2 apply_admin failed for model %s: %w", m, err)
 			}
 			met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "ok").Inc()
 			if err := h.ursmV2.ClearStateForTenant(ctx, ursmTenantID, credentialID, m); err != nil {
 				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "error").Inc()
+				beforeAfter["post_commit_failure"] = "ursm.v2 clear_state failed for model " + m
 				return fmt.Errorf("force_enable: ursm.v2 clear_state failed for model %s: %w", m, err)
 			}
 			met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "ok").Inc()
