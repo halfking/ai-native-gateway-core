@@ -192,6 +192,86 @@ func TestWriteHealth_HardQuotaFailureBooksKeeping(t *testing.T) {
 	}
 }
 
+// TestWriteHealth_EvidenceAtOptimisticGate pins the 2026-09-14 audit R28 #5
+// fix: a FAILURE verdict is only evidence from the probe's start time — the
+// network I/O can take tens of seconds and a state write landing mid-flight
+// (admin reset, balance_floor guard pull, writer.go quota branch) is fresher
+// and must not be clobbered. Contract:
+//
+//   - probeResult carries EvidenceAt (probe-start timestamp);
+//   - every failure-producing call site stamps it (cycleAll per-row T0,
+//     cycleAll decrypt-failure literal, ProbeNow via its existing probeStart);
+//   - the main UPDATE WHERE gains `($ok OR $evidence IS NULL OR
+//     state_updated_at < $evidence)` — success writes stay unconditional
+//     (same semantics as the hard-quota OR-bypass pinned above), unset
+//     evidence fails open;
+//   - the R27 bookkeeping UPDATE (A-P1-1) must stay UNgated — bookkeeping is
+//     probe self-accounting, not a health verdict, and must never be lost to
+//     a race;
+//   - the race case gets its own log line, separate from the pre-existing
+//     "skipped stale result" guard-miss message;
+//   - the race-discriminating SELECT must run BEFORE the bookkeeping UPDATE
+//     (which stamps state_updated_at and would mask every guard miss as a
+//     race).
+func TestWriteHealth_EvidenceAtOptimisticGate(t *testing.T) {
+	src, err := os.ReadFile("credential_probe_v2.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	for _, want := range []string{
+		// Evidence stamp flows from probe start to writeHealth.
+		"EvidenceAt time.Time",
+		"rowT0 := time.Now()",
+		"pr.EvidenceAt = rowT0",
+		"pr.EvidenceAt = probeStart",
+		"EvidenceAt:",
+		// Gate in the main UPDATE: success unconditional, unset evidence
+		// fails open, failure only when nobody wrote during the probe.
+		"OR $11::timestamptz IS NULL",
+		"COALESCE(state_updated_at, to_timestamp(0)) < $11::timestamptz",
+		// evidenceAt is bound as the 11th parameter of the main UPDATE.
+		"credID, evidenceAt)",
+		// Split race-lost log, distinct from the guard-miss message.
+		"writeHealth dropped stale failure result (state changed during probe)",
+		"writeHealth skipped stale result",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("EvidenceAt optimistic gate is missing %q (R28 #5 regression)", want)
+		}
+	}
+
+	// The R27 bookkeeping UPDATE must remain UNgated by the evidence
+	// condition — extract it exactly like
+	// TestWriteHealth_HardQuotaFailureBooksKeeping and assert no $11/evidence
+	// parameter leaked into its WHERE.
+	bookStart := strings.Index(body, "if pr.HealthStatus != \"healthy\" {")
+	if bookStart < 0 {
+		t.Fatalf("bookkeeping branch not found")
+	}
+	bookEnd := strings.Index(body[bookStart:], "slog.Info(\"credential probe v2: writeHealth skipped stale result\"")
+	if bookEnd < 0 {
+		t.Fatalf("bookkeeping branch end not found")
+	}
+	bookkeeping := body[bookStart : bookStart+bookEnd]
+	for _, banned := range []string{"$11", "evidenceAt", "state_updated_at <"} {
+		if strings.Contains(bookkeeping, banned) {
+			t.Fatalf("R27 bookkeeping UPDATE must stay unconditional, found %q inside it (A-P1-1 regression)", banned)
+		}
+	}
+
+	// The race-discriminating SELECT must run BEFORE the bookkeeping branch:
+	// bookkeeping stamps state_updated_at and would turn every guard miss
+	// into a false "race lost" diagnosis.
+	raceIdx := strings.Index(body, "touchedDuringProbe")
+	if raceIdx < 0 {
+		t.Fatalf("race-discriminating SELECT not found")
+	}
+	if raceIdx > bookStart {
+		t.Fatalf("race SELECT must run before the bookkeeping UPDATE (bookkeeping stamps state_updated_at)")
+	}
+}
+
 func TestWriteHealth_ClosesBindingFailuresWithoutCredentialWideWrite(t *testing.T) {
 	src, err := os.ReadFile("credential_probe_v2.go")
 	if err != nil {

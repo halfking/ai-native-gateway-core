@@ -50,6 +50,9 @@ package bg
 // Env knobs:
 //   LLM_GATEWAY_BALANCE_FLOOR_INTERVAL — sweep 周期，默认 5m（>=30s）
 //   LLM_GATEWAY_BALANCE_FLOOR_GUARD    — "off"/"false"/"0" 关闭 sweep
+//   LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS — #4 逃生门（R28, 2026-09-14）：
+//     plan 探测证据陈旧超过该小时数时释放 floor 摘出的行，默认 24；0=关闭
+//     逃生门（不推荐：套餐 API 长期故障时 floor 行会永久卡死）。
 //
 // 安全性：所有 floor 字段默认 NULL → 选点为空 → worker 空转；探测失败
 // fail-open（保留上次状态，绝不用过期数据做摘出决策）；单凭据失败不影响
@@ -408,9 +411,12 @@ type BalanceFloorGuard struct {
 	keyring  *secret.Keyring
 	interval time.Duration
 	disabled bool
-	http     *http.Client
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	// #4 逃生门（R28, 2026-09-14）：plan 探测证据陈旧阈值与总开关。
+	escapeStale time.Duration
+	escapeOff   bool
+	http        *http.Client
+	stopCh      chan struct{}
+	stopOnce    sync.Once
 }
 
 func NewBalanceFloorGuard(db *pgxpool.Pool, encKey []byte) *BalanceFloorGuard {
@@ -433,13 +439,32 @@ func NewBalanceFloorGuard(db *pgxpool.Pool, encKey []byte) *BalanceFloorGuard {
 	case "off", "false", "0":
 		disabled = true
 	}
+	// #4 逃生门阈值（小时，默认 24）。0=关闭；解析后 d>0 复检防大数溢出，
+	// 与上面 interval 钳制同一教训（time.Duration 乘法溢出为负会让陈旧判定
+	// 永真/永假，2026-09-14 审计 A-P3-5 定式）。
+	escapeStale := 24 * time.Hour
+	escapeOff := false
+	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			switch {
+			case n == 0:
+				escapeOff = true
+			case n > 0:
+				if d := time.Duration(n) * time.Hour; d > 0 {
+					escapeStale = d
+				}
+			}
+		}
+	}
 	return &BalanceFloorGuard{
-		db:       db,
-		encKey:   encKey,
-		interval: interval,
-		disabled: disabled,
-		http:     &http.Client{Timeout: 10 * time.Second},
-		stopCh:   make(chan struct{}),
+		db:          db,
+		encKey:      encKey,
+		interval:    interval,
+		disabled:    disabled,
+		escapeStale: escapeStale,
+		escapeOff:   escapeOff,
+		http:        &http.Client{Timeout: 10 * time.Second},
+		stopCh:      make(chan struct{}),
 	}
 }
 
@@ -531,6 +556,13 @@ func (g *BalanceFloorGuard) cycle(ctx context.Context) error {
 	if err := g.releaseClearedFloorCredentials(ctx); err != nil {
 		slog.Warn("balance_floor_guard: cleared-floor release failed", "error", err)
 	}
+	// #4 逃生门（R28, 2026-09-14）：陈旧 plan 证据释放，同样放在套餐 sweep
+	// 之前 —— 释放后同 tick 的 plan sweep 立即重探测：成功且仍击穿则经
+	// floorPull 重摘（checked_at 已刷新，24h 内不再触发逃生门），失败则保持
+	// 释放态由 #12a 的 15 分钟退避节奏重试。
+	if err := g.releaseStaleProbeFloorCredentials(ctx); err != nil {
+		slog.Warn("balance_floor_guard: stale-probe escape release failed", "error", err)
+	}
 	return g.sweepPlanQuotas(ctx)
 }
 
@@ -584,6 +616,64 @@ func (g *BalanceFloorGuard) releaseClearedFloorCredentials(ctx context.Context) 
 	if n := tag.RowsAffected(); n > 0 {
 		slog.Info("balance_floor_guard: released floor-pulled credentials (floors cleared)",
 			"count", n)
+	}
+	return nil
+}
+
+// releaseStaleProbeFloorCredentials is the plan-path escape hatch (#4, R28
+// 2026-09-14). The plan sweep only restores from FRESH probe evidence
+// (fail-open on error; since #12a a failing row isn't even re-probed for 15
+// minutes), so once plan_quota_checked_at goes cold the hysteresis restore
+// can never fire again and the row hangs in balance_exhausted/balance_floor
+// forever — three dead ends at once: currency pass C requires
+// balance_floor_usd, the plan restore requires a fresh probe, and
+// BalanceQuotaProbe exempts balance_floor rows by design (anti ping-pong).
+// The hatch releases such rows after
+// LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS (default 24h, 0=off) of stale/absent
+// plan evidence. Single idempotent UPDATE; ownership invariants match
+// releaseClearedFloorCredentials (only our own balance_floor rows, never
+// manual_disabled rows, provider must be routable).
+//
+// 自愈性：释放后同 tick 的 plan sweep 会立刻重探测 —— 探测成功且仍击穿则经
+// floorPull 立即重摘（persistPlanState 已刷新 checked_at，24h 内逃生门不再
+// 触发）；探测仍失败则行保持 released（fail-open），#12a 的 15 分钟退避限制
+// 重试节奏，探测恢复后按正常滞回工作。
+func (g *BalanceFloorGuard) releaseStaleProbeFloorCredentials(ctx context.Context) error {
+	if g.escapeOff {
+		return nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	tag, err := g.db.Exec(cctx, `
+		UPDATE credentials
+		SET quota_state = 'ok',
+		    quota_recover_at = NULL,
+		    availability_state = 'ready',
+		    availability_recover_at = NULL,
+		    state_reason_code = NULL,
+		    state_reason_detail = 'balance_floor guard: escape hatch, plan probe stale',
+		    state_updated_at = now()
+		WHERE COALESCE(quota_state, 'ok') = 'balance_exhausted'
+		  AND COALESCE(state_reason_code, '') = 'balance_floor'
+		  AND (quota_floor_tokens IS NOT NULL OR quota_floor_percent IS NOT NULL)
+		  AND (plan_quota_checked_at IS NULL
+		       OR plan_quota_checked_at < now() - $1::interval)
+		  AND status = 'active'
+		  AND lifecycle_status = 'active'
+		  AND COALESCE(manual_disabled, FALSE) = FALSE
+		  AND EXISTS (
+		      SELECT 1 FROM providers p
+		      WHERE p.id = credentials.provider_id
+		        AND p.enabled = TRUE
+		        AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		  )
+	`, g.escapeStale)
+	if err != nil {
+		return err
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("balance_floor_guard: escape hatch released floor-pulled credentials (plan probe stale)",
+			"count", n, "stale_after", g.escapeStale.String())
 	}
 	return nil
 }
@@ -801,7 +891,11 @@ func (g *BalanceFloorGuard) restorePulledCurrency(ctx context.Context, id int64,
 }
 
 // sweepPlanQuotas probes zhipu/minimax subscription-plan quotas, persists the
-// sensing columns, and enforces token/percent floors.
+// sensing columns, and enforces token/percent floors. Rows whose last probe
+// FAILED are parked for 15 minutes per attempt (#12a, R28 2026-09-14): they
+// sort by the failure stamp first (sinks to the front when eligible) but are
+// skipped until the backoff expires, so a dead vendor plan API is not hit on
+// every 5-min tick. Success clears the stamp (persistPlanState).
 func (g *BalanceFloorGuard) sweepPlanQuotas(ctx context.Context) error {
 	cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
@@ -823,7 +917,9 @@ func (g *BalanceFloorGuard) sweepPlanQuotas(ctx context.Context) error {
 		      OR c.quota_floor_tokens IS NOT NULL
 		      OR c.quota_floor_percent IS NOT NULL
 		  )
-		ORDER BY c.plan_quota_checked_at ASC NULLS FIRST
+		  -- #12a 失败退避：最近一次探测失败的行冷却 15 分钟后才再次入选。
+		  AND COALESCE(c.plan_quota_probe_failed_at, to_timestamp(0)) < now() - interval '15 minutes'
+		ORDER BY COALESCE(c.plan_quota_probe_failed_at, c.plan_quota_checked_at) ASC NULLS FIRST
 		LIMIT 200
 	`)
 	if err != nil {
@@ -881,6 +977,18 @@ func (g *BalanceFloorGuard) handlePlanCredential(ctx context.Context, c floorCan
 		// fail-open：探测失败保留旧状态，绝不用过期数据做摘出决策。
 		slog.Debug("balance_floor_guard: plan probe failed",
 			"credential_id", c.ID, "catalog", c.Catalog, "error", err)
+		// #12a 失败退避记账（R28, 2026-09-14）：只写 plan_quota_probe_failed_at。
+		// 绝不写 plan_quota_checked_at —— 它的新鲜度是 #4 逃生门的判据，失败时
+		// 刷新它会让逃生门永远哑火。扫描侧凭 failed_at 让该行沉底 15 分钟，
+		// 避免每个周期都打挂死的套餐端点。
+		if _, uerr := g.db.Exec(ctx, `
+			UPDATE credentials
+			SET plan_quota_probe_failed_at = now()
+			WHERE id = $1
+		`, c.ID); uerr != nil {
+			slog.Warn("balance_floor_guard: probe backoff stamp failed",
+				"credential_id", c.ID, "error", uerr)
+		}
 		return
 	}
 
@@ -958,7 +1066,9 @@ func (g *BalanceFloorGuard) handlePlanCredential(ctx context.Context, c floorCan
 // escalations. It also does NOT touch balance_last_checked_at — no currency
 // balance was read here, and keeping it stale preserves pass A's 15-min
 // refresh gate (and blocks pass B from treating a legacy balance_usd as fresh
-// evidence on plan-only vendors).
+// evidence on plan-only vendors). A successful probe clears
+// plan_quota_probe_failed_at (#12a) — the backoff stamp only applies to
+// consecutive failures.
 func (g *BalanceFloorGuard) persistPlanState(ctx context.Context, credID int64, st *planState) {
 	windowsJSON, err := json.Marshal(st.Windows)
 	if err != nil {
@@ -970,7 +1080,8 @@ func (g *BalanceFloorGuard) persistPlanState(ctx context.Context, credID int64, 
 		    plan_quota_windows = $3::jsonb,
 		    plan_quota_remaining_tokens = $4,
 		    plan_quota_used_percent = $5,
-		    plan_quota_checked_at = now()
+		    plan_quota_checked_at = now(),
+		    plan_quota_probe_failed_at = NULL
 		WHERE id = $1
 	`, credID, st.Kind, string(windowsJSON), st.MinTokensRemaining,
 		roundPercent(st.MaxUsedPercent)); err != nil {
