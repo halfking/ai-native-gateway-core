@@ -2824,7 +2824,9 @@ func main() {
 			)
 			scanScheduler.Start(context.Background())
 			adminHandler.SetScanSchedulerStatus(scanScheduler)
-			slog.Info("scan_scheduler started")
+			// Start 内部按 disabled/未接线实际情况打点（"started" /
+			// "disabled or not fully wired"），这里不再重复，避免 env=off
+			// 时两条矛盾日志（2026-09-14 审计 D-P3-7）。
 		}
 		// 会话优化 v4 (T4/R1.6): 流式连接注册表 — request_id → 客户端写出
 		// 流，供心跳/思考帧桥接回写与 /api/admin/connection-registry 只读

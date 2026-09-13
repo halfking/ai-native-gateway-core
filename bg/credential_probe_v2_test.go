@@ -143,6 +143,55 @@ func TestWriteHealth_HardQuotaBypassOnSuccess(t *testing.T) {
 	}
 }
 
+// TestWriteHealth_HardQuotaFailureBooksKeeping pins the 2026-09-14 audit
+// A-P1-1 fix: when a probe of a hard-quota row FAILS ($8=NULL), the main
+// UPDATE matches 0 rows (hard-quota guard) — but the failure must still
+// advance last_probe_at / probe_consecutive_failures via the dedicated
+// bookkeeping UPDATE. Without it the exponential due-gate never climbs and
+// the dead upstream is re-bombed on every 2-min tick (the exact shape
+// f8322dc04 R4 set out to eliminate). The bookkeeping UPDATE must NOT touch
+// quota_state (hard-quota state stays authoritative) and must keep the
+// lifecycle/manual-disabled guards.
+func TestWriteHealth_HardQuotaFailureBooksKeeping(t *testing.T) {
+	src, err := os.ReadFile("credential_probe_v2.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	for _, want := range []string{
+		// The 0-rows branch gates the bookkeeping UPDATE on failures only.
+		"if pr.HealthStatus != \"healthy\" {",
+		// The bookkeeping UPDATE advances the probe ladder…
+		"probe_consecutive_failures = COALESCE(credentials.probe_consecutive_failures, 0) + 1",
+		"last_probe_success = FALSE",
+		// …targets ONLY hard-quota rows (the guard-miss case)…
+		"AND quota_state IN ('permanently_exhausted', 'balance_exhausted')",
+		// …and keeps the manual-disable guard.
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("hard-quota failure bookkeeping is missing %q (A-P1-1 regression)", want)
+		}
+	}
+	// The bookkeeping UPDATE must not write quota_state (COALESCE($8, …) /
+	// quota assignments belong to the main write only). Extract the
+	// bookkeeping statement and check it has no quota_state assignment.
+	start := strings.Index(body, "if pr.HealthStatus != \"healthy\" {")
+	if start < 0 {
+		t.Fatalf("bookkeeping branch not found")
+	}
+	end := strings.Index(body[start:], "slog.Info(\"credential probe v2: writeHealth skipped stale result\"")
+	if end < 0 {
+		t.Fatalf("bookkeeping branch end not found")
+	}
+	bookkeeping := body[start : start+end]
+	if strings.Contains(bookkeeping, "quota_state =") {
+		t.Fatalf("bookkeeping UPDATE must not assign quota_state (hard-quota state must stay authoritative)")
+	}
+	if !strings.Contains(bookkeeping, "COALESCE(manual_disabled, FALSE) = FALSE") {
+		t.Fatalf("bookkeeping UPDATE must keep the manual-disable guard")
+	}
+}
+
 func TestWriteHealth_ClosesBindingFailuresWithoutCredentialWideWrite(t *testing.T) {
 	src, err := os.ReadFile("credential_probe_v2.go")
 	if err != nil {

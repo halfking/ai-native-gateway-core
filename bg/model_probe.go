@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -214,7 +215,7 @@ func (r *ModelProbeRunner) recoveringSweeperLoop(ctx context.Context) {
 		return
 	case <-time.After(2 * time.Minute): // initial stagger, after first featured tick
 	}
-	r.recoveringSweepTick(ctx)
+	r.recoveringSweepTickGuarded(ctx)
 	ticker := time.NewTicker(recoveringSweeperInterval)
 	defer ticker.Stop()
 	for {
@@ -222,9 +223,21 @@ func (r *ModelProbeRunner) recoveringSweeperLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.recoveringSweepTick(ctx)
+			r.recoveringSweepTickGuarded(ctx)
 		}
 	}
+}
+
+// recoveringSweepTickGuarded isolates a single sweep's panic: this loop is
+// the only driver of recovering rows (R3 fix) — an unguarded tick panic
+// would silently retire the sweeper and strand every recovering row.
+func (r *ModelProbeRunner) recoveringSweepTickGuarded(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("recovering sweeper tick panic", "recover", rec, "stack", string(debug.Stack()))
+		}
+	}()
+	r.recoveringSweepTick(ctx)
 }
 
 // recoveringSweepTick selects due recovering rows and runs them through the

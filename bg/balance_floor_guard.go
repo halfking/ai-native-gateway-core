@@ -419,7 +419,13 @@ func NewBalanceFloorGuard(db *pgxpool.Pool, encKey []byte) *BalanceFloorGuard {
 		if d, err := time.ParseDuration(v); err == nil && d >= 30*time.Second {
 			interval = d
 		} else if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			interval = time.Duration(n) * time.Minute
+			// 分钟数整数路径：大数乘 minute 会溢出为负 duration，
+			// NewTicker(负值) 直接 panic → 顶层 recover 后 guard 静默死亡。
+			// 溢出时回落默认 5min（对齐 scan_scheduler 的 parsed > 0 复检，
+			// 2026-09-14 审计 A-P3-5）。
+			if d := time.Duration(n) * time.Minute; d > 0 {
+				interval = d
+			}
 		}
 	}
 	disabled := false

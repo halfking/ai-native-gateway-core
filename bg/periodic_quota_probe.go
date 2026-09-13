@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -85,7 +86,11 @@ func NewPeriodicQuotaProbe(db *pgxpool.Pool) *PeriodicQuotaProbe {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			interval = d
 		} else if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			interval = time.Duration(n) * time.Minute
+			// 大数溢出为负 duration → NewTicker panic（对齐 balance_floor_guard
+			// 的复检，2026-09-14 审计 A-P3-5）。
+			if d := time.Duration(n) * time.Minute; d > 0 {
+				interval = d
+			}
 		}
 	}
 	preProbeWindow := 60 * time.Second
@@ -144,9 +149,19 @@ func (p *PeriodicQuotaProbe) Start(ctx context.Context) {
 				slog.Info("periodic_quota_probe stopped")
 				return
 			case <-ticker.C:
-				if err := p.tick(ctx); err != nil {
-					slog.Error("periodic_quota_probe failed", "error", err)
-				}
+				// per-tick recover：单轮 panic 不终止调度循环（对齐
+				// BalanceQuotaProbe.runGuardedTick，2026-09-14 审计 A-P2-2）。
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							slog.Error("periodic_quota_probe tick panic",
+								"panic", r, "stack", string(debug.Stack()))
+						}
+					}()
+					if err := p.tick(ctx); err != nil {
+						slog.Error("periodic_quota_probe failed", "error", err)
+					}
+				}()
 			}
 		}
 	}()
