@@ -375,9 +375,11 @@ func TestBalanceFloorGuardSweepFairnessAndGuards(t *testing.T) {
 
 // TestBalanceFloorGuardClearedFloorRelease pins the cleared-floor release
 // contract: a floor-pulled row must become routable again within one cycle
-// once ALL three floor columns are NULL, and the release must never touch
-// rows that still have a floor configured (those stay owned by the
-// hysteresis restore paths) or rows pulled for other reasons.
+// once the floor that pulled it is gone — currency floor NULL AND (both plan
+// floors NULL, or a non-plan vendor whose plan floors are inert config with
+// no probe data source). The release must never touch a zhipu/minimax row
+// that still has plan floors configured (owned by the plan hysteresis path)
+// or rows pulled for other reasons.
 func TestBalanceFloorGuardClearedFloorRelease(t *testing.T) {
 	src, err := os.ReadFile("balance_floor_guard.go")
 	if err != nil {
@@ -401,6 +403,10 @@ func TestBalanceFloorGuardClearedFloorRelease(t *testing.T) {
 		"balance_floor_usd IS NULL",
 		"quota_floor_tokens IS NULL",
 		"quota_floor_percent IS NULL",
+		// 惰性 plan 下限边界：非套餐厂商的 plan floor 无数据源、从不参与
+		// 摘出/恢复，不得让"清了货币下限"的行永久卡死。
+		"OR NOT EXISTS (",
+		"IN ('zhipu', 'minimax')",
 		// 与 pass C 恢复选点对齐的可路由守卫：他方禁用期间不释放。
 		"AND status = 'active'",
 		"AND lifecycle_status = 'active'",
@@ -408,7 +414,6 @@ func TestBalanceFloorGuardClearedFloorRelease(t *testing.T) {
 		"SELECT 1 FROM providers p",
 		"p.enabled = TRUE",
 		"COALESCE(p.manual_disabled, FALSE) = FALSE",
-		// cycle 内必须挂接（套餐 sweep 之前），否则清下限不生效。
 	} {
 		if !strings.Contains(fn, want) {
 			t.Fatalf("release UPDATE missing %q", want)
