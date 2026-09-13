@@ -799,7 +799,10 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		// Incremental integrity breach (repeated-content loop): cut the
 		// stream so the executor can failover. Mirrors stream.go.
 		if capture != nil && capture.IntegrityBreached() {
-			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+			// Integrity failures are resumable interruptions, never successful
+			// completions. Emit an incomplete terminal only for committed attempts;
+			// deferred gates leave terminal rendering to the coordinator.
+			scaffold.finishInterrupted(gate, fullText.String(), capture.IntegrityBreachReason(), inputTokens, outputTokens)
 			return integrityBreachOutcome(capture, chunkCount)
 		}
 	}
@@ -1218,7 +1221,10 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		// Incremental integrity breach (repeated-content loop): cut the
 		// stream so the executor can failover. Mirrors stream.go.
 		if capture != nil && capture.IntegrityBreached() {
-			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+			// Integrity failures are resumable interruptions, never successful
+			// completions. Emit an incomplete terminal only for committed attempts;
+			// deferred gates leave terminal rendering to the coordinator.
+			scaffold.finishInterrupted(gate, fullText.String(), capture.IntegrityBreachReason(), inputTokens, outputTokens)
 			return integrityBreachOutcome(capture, chunkCount)
 		}
 	}
