@@ -345,8 +345,9 @@ func safeWriteSSE(w io.Writer, line string) { //nolint:unused
 //     连接已关闭时可能 panic，这里 recover 后记录，绝不炸 worker。
 //
 // StreamWriter 同时实现 http.ResponseWriter 与 http.Flusher，可直接作为
-// w 传给 StreamAnthropicPassthrough / StreamAnthropicSSEToOpenAI，无需
-// 修改其签名（从而不影响 20+ 现有测试与 IR 路径的并行副本）。
+// w 传给 streaming 包内的 legacy 桥路与 IR 路径的并行副本（两条桥路分别
+// 位于 domains/streaming/anthropic_bridge.go 与 anthropic_stream.go），无需
+// 修改其签名（从而不影响 20+ 现有测试）。
 type StreamWriter struct {
 	ctx     context.Context
 	w       http.ResponseWriter
