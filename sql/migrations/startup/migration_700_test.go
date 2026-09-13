@@ -64,24 +64,32 @@ func TestMigration700ViewRawModelName(t *testing.T) {
 		t.Fatalf("migration 700 must not swallow errors")
 	}
 
-	// The upgrade channel must carry 700 (693-class gap: a migration that
-	// never reaches apply-db-revision-sequence.sh is inert on upgrade DBs —
-	// exactly how 694/695 sat unapplied on the shared production PG, and how
-	// 696/697 sat unapplied on the local deploy DB).
+	// The upgrade channel must carry every late-startup migration (693-class
+	// gap: a migration that never reaches apply-db-revision-sequence.sh is
+	// inert on upgrade DBs — exactly how 694/695 sat unapplied on the shared
+	// production PG, and how 696/697 sat unapplied on the local deploy DB;
+	// 701/703 repeated the shape before this guard). Order must stay
+	// non-decreasing; 702 is reserved (advisory-lock) and intentionally
+	// absent until that migration lands.
 	seq, err := os.ReadFile("../../../scripts/apply-db-revision-sequence.sh")
 	if err != nil {
 		t.Fatalf("read apply-db-revision-sequence.sh: %v", err)
 	}
 	seqBody := string(seq)
-	for _, required := range []string{
+	channelEntries := []string{
 		"700_request_logs_view_raw_model_name.sql",
 		"701_credential_balance_floor.sql",
-	} {
-		if !strings.Contains(seqBody, required) {
+		"703_supplier_errors_promote_timezone_pin.sql",
+	}
+	lastPos := -1
+	for _, required := range channelEntries {
+		pos := strings.Index(seqBody, required)
+		if pos < 0 {
 			t.Fatalf("apply-db-revision-sequence.sh does not carry migration %s — upgrade-database deployments would never apply it", required)
 		}
-	}
-	if strings.Index(seqBody, "700_request_logs_view_raw_model_name.sql") > strings.Index(seqBody, "701_credential_balance_floor.sql") {
-		t.Fatalf("migration channel order regressed: 701 appears before 700")
+		if pos < lastPos {
+			t.Fatalf("migration channel order regressed: %s appears out of sequence", required)
+		}
+		lastPos = pos
 	}
 }
