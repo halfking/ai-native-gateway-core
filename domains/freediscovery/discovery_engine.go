@@ -37,7 +37,14 @@ func NewDiscoveryEngine(db *sql.DB, templates *TemplateManager) *DiscoveryEngine
 	}
 
 	// Wire provider scanners from presets (FreeOf/PoolKey/QuotaEstimator hooks).
+	// Only OpenAI-compatible presets get an HTTPScanner: providerScanners wins in
+	// scannerFor, so wiring one for a non-OpenAI protocol (e.g. google-generative-ai)
+	// would shadow the real protocol scanner in fallbackScanners and every scan of
+	// that preset would fail response parsing (2026-09-14 gap fix).
 	for code, p := range builtinPresets {
+		if p.APIType != APITypeOpenAICompletions {
+			continue
+		}
 		hs := NewHTTPScanner(nil)
 		if p.FreeOf != nil {
 			hs.freeOf = p.FreeOf
@@ -252,7 +259,10 @@ func (e *DiscoveryEngine) updateTask(
 		completedAt = timeNow().UTC()
 	}
 	if status == TaskStatusRunning {
-		startedAt = completedAt
+		// started_at must be written here (docs contract 4.3: running sets
+		// started_at = now()); it previously read the still-nil completedAt and
+		// every task persisted with a NULL started_at (2026-09-14 gap fix).
+		startedAt = timeNow().UTC()
 		// Do not force a completed_at write while running (avoids overwriting).
 		completedAt = nil
 	}
