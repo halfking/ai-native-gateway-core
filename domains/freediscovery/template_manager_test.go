@@ -55,7 +55,7 @@ func TestEscapeTenantID(t *testing.T) {
 
 // TestIsValidTenantID covers the [A-Za-z0-9_-]{1,64} allowlist that guards
 // the RLS GUC. Invalid IDs must be rejected (ErrInvalidTenantID → 400) rather
-// than silently remapped to the shared 'default' bucket (R20 §二.5).
+// than silently remapped to the shared 'default' bucket (R20 §2.5).
 func TestIsValidTenantID(t *testing.T) {
 	cases := []struct {
 		in   string

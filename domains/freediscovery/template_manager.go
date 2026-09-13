@@ -402,7 +402,7 @@ var ErrInvalidTenantID = errors.New("freediscovery: tenant_id must only allow [A
 // setTenantTx sets the RLS tenant GUC inside a transaction.
 // Matches freeresource.QuotaTracker: SET LOCAL + escapeTenant allowlist escaping.
 // Non-empty tenant IDs that fail the allowlist are rejected (ErrInvalidTenantID)
-// rather than silently remapped to 'default' (R20 §二.5 P2).
+// rather than silently remapped to 'default' (R20 §2.5 P2).
 func setTenantTx(ctx context.Context, tx *sql.Tx, tenantID string) error {
 	if tenantID == "" {
 		return nil // Let RLS fall back to 'default'.
