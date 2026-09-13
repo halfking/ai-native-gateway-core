@@ -700,6 +700,25 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					state.name = fnName
 				}
 
+				// Lazy block opening: an OpenAI tool_calls fragment without
+				// function.name carries no binding promise of a callable yet
+				// (name-first ordering is the documented convention; some
+				// upstreams stream argument fragments before the name).
+				// Opening a tool_use block with an EMPTY name violates the
+				// Anthropic wire format and hard-errors SDK clients. Hold
+				// the block closed and buffer argument fragments in
+				// pendingArgs; the real content_block_start fires when the
+				// name arrives (arg-first fragment), replaying the buffered
+				// prefix as the first input_json_delta.
+				if state.name == "" {
+					if fn != nil {
+						if args, _ := fn["arguments"].(string); args != "" {
+							state.pendingArgs += args
+						}
+					}
+					continue
+				}
+
 				chunkCount++
 				if !state.started {
 					// tool_calls_missing accounting: the moment we promise this
@@ -749,9 +768,12 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 
 				if fn != nil {
 					args, _ := fn["arguments"].(string)
-					if args != "" {
-						partial := state.pendingArgs + args
-						state.pendingArgs = ""
+					// Include anything buffered during the lazy-open hold;
+					// the name-bearing fragment flushes it even when its own
+					// arguments field is empty.
+					partial := state.pendingArgs + args
+					state.pendingArgs = ""
+					if partial != "" {
 						argEvent := map[string]any{
 							"type":  "content_block_delta",
 							"index": state.anthropicIdx,
@@ -1033,7 +1055,25 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		// in first-open order.
 		for _, openaiIdx := range toolOrder {
 			st := toolBlocks[openaiIdx]
-			if st != nil && st.started && !st.stopped {
+			if st == nil {
+				continue
+			}
+			if !st.started {
+				// Lazy-open hold never released: the upstream ended the
+				// stream without ever naming this tool call, so nothing was
+				// emitted for it. Record the drop for audit; emitting a
+				// name-less tool_use block would violate the wire format.
+				if capture != nil {
+					capture.AddQualityFlag("tool_name_never_arrived")
+				}
+				slog.Warn("anthropic stream: tool call ended without a name; dropped",
+					"request_id", requestID,
+					"openai_index", openaiIdx,
+					"buffered_args_bytes", len(st.pendingArgs),
+				)
+				continue
+			}
+			if !st.stopped {
 				writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{
 					"type":  "content_block_stop",
 					"index": st.anthropicIdx,

@@ -257,3 +257,70 @@ func TestQ2NativeReasoningContentStreamsAsThinkingBlock(t *testing.T) {
 	stops := strings.Count(wire, `"content_block_stop"`)
 	assert.Equal(t, starts, stops, wire)
 }
+
+// TestQ2ArgFirstToolCallDefersBlockOpenUntilName pins the lazy-open hold:
+// an arg-first fragment (arguments before function.name) must NOT emit a
+// content_block_start with an empty name. The buffered prefix replays as
+// the first input_json_delta once the name arrives, in order.
+func TestQ2ArgFirstToolCallDefersBlockOpenUntilName(t *testing.T) {
+	body := strings.Join([]string{
+		// Fragment 1: id + arguments, NO name — held, nothing emitted.
+		`data: {"id":"s1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_af","type":"function","function":{"arguments":"{\"a\":"}}]},"finish_reason":null}]}`,
+		`data: {"id":"s1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]},"finish_reason":null}]}`,
+		// Fragment 3: name arrives — block opens NOW, buffered args replay.
+		`data: {"id":"s1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"deferred_tool"}}]},"finish_reason":null}]}`,
+		`data: {"id":"s1","choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(body)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamOpenAIToAnthropicSSE(context.Background(), rec, resp, "arg-first-model", "arg-first-model", "req-q2-argfirst", nil, nil)
+
+	assert.False(t, out.Interrupted)
+	wire := rec.Body.String()
+	// Exactly one tool_use block, and its start carries the real name.
+	// (Map serialization is alphabetical: name precedes type in the JSON.)
+	assert.Equal(t, 1, strings.Count(wire, `"type":"tool_use"`), wire)
+	assert.Contains(t, wire, `"name":"deferred_tool"`, wire)
+	assert.NotContains(t, wire, `"name":""`, "no empty-name tool_use may appear on the wire")
+	// Held fragments coalesce and replay as input_json_delta(s) on the
+	// opened block, in order. JSON key ordering proves the prefix survived.
+	assert.Contains(t, wire, `"{\"a\":1}"`, wire)
+	assert.Equal(t, 1, strings.Count(wire, `"type":"input_json_delta"`), wire)
+	// Stop pairing still holds: text block 0 + tool block.
+	assert.Equal(t, 2, strings.Count(wire, `"content_block_stop"`), wire)
+}
+
+// TestQ2NamelessToolCallDroppedAtStreamEnd pins the terminal rejection: if
+// the upstream finishes without ever naming a call, no tool_use block may
+// be emitted for it (empty name violates the Anthropic wire format), and
+// the stream still terminates cleanly.
+func TestQ2NamelessToolCallDroppedAtStreamEnd(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"s1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_nn","type":"function","function":{"arguments":"{\"x\":1}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"s1","choices":[{"delta":{"content":"no tool for you"},"finish_reason":null}]}`,
+		`data: {"id":"s1","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(body)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamOpenAIToAnthropicSSE(context.Background(), rec, resp, "nameless-model", "nameless-model", "req-q2-nameless", nil, nil)
+
+	assert.False(t, out.Interrupted)
+	wire := rec.Body.String()
+	assert.NotContains(t, wire, `"type":"tool_use"`, "nameless call must not open a block")
+	assert.NotContains(t, wire, `"name":""`)
+	assert.NotContains(t, wire, `"id":"call_nn"`, "held state must not leak to the wire")
+	assert.Contains(t, wire, "no tool for you")
+	assert.Contains(t, wire, "event: message_stop")
+}

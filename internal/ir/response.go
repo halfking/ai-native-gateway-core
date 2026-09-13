@@ -534,6 +534,13 @@ func SerializeOpenAIResponse(ir *InternalResponse, clientModel string) ([]byte, 
 	// Tool calls
 	var toolCalls []map[string]any
 	for _, tc := range ir.ToolCalls {
+		// Unified empty-name rejection (2026-09-13): a complete-call wire
+		// format (chat.completions tool_calls entry) requires id and
+		// function.name. Emitting an empty name produces an SDK-side
+		// validation error; the Gemini serializer already had this guard.
+		if tc.Name == "" {
+			continue
+		}
 		// 2026-07-27: Prefer the preserved raw JSON payload. Fall back to
 		// the legacy string form when the parser couldn't produce valid
 		// JSON (e.g. non-object tool inputs).
@@ -610,6 +617,12 @@ func buildOpenAIResponseContent(ir *InternalResponse) any {
 		}
 	}
 	for _, tc := range ir.ToolCalls {
+		// Unified empty-name rejection: same invariant as the OpenAI
+		// serializer — a terminal tool_use block without a name violates
+		// the Anthropic wire format.
+		if tc.Name == "" {
+			continue
+		}
 		if !existingIDs[tc.ID] {
 			blocks = append(blocks, map[string]any{
 				"type": "tool_use",
@@ -761,6 +774,11 @@ func buildAnthropicResponseContent(ir *InternalResponse) []map[string]any {
 		}
 	}
 	for _, tc := range ir.ToolCalls {
+		// Unified empty-name rejection: same invariant as the OpenAI
+		// serializer — this is the full-JSON Anthropic path.
+		if tc.Name == "" {
+			continue
+		}
 		if existingIDs[tc.ID] {
 			continue
 		}
@@ -897,6 +915,11 @@ func buildResponsesResponseOutput(ir *InternalResponse, msgID, status string) []
 			})
 		}
 		for index, tc := range ir.ToolCalls {
+			// Unified empty-name rejection: a function_call output item
+			// without a name is not a legal Responses API item.
+			if tc.Name == "" {
+				continue
+			}
 			item := map[string]any{
 				"type":      "function_call",
 				"id":        msgID + "_fc_" + itoa(index),
@@ -1099,7 +1122,7 @@ func SerializeGeminiResponse(irResp *InternalResponse, clientModel string) ([]by
 		}
 	}
 	for _, tc := range irResp.ToolCalls {
-		if tc.ID == "" || tc.Name == "" {
+		if tc.Name == "" {
 			continue
 		}
 		if emittedToolIDs[tc.ID] {
