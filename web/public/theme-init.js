@@ -16,6 +16,10 @@
       t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     }
     document.documentElement.setAttribute('data-theme', t);
+    // Element Plus 暗色变量（theme-chalk/dark/css-vars.css）以 html.dark 为门控，
+    // 必须与 data-theme 同步切换（与 src/theme.ts applyTheme 保持同一约定），
+    // 否则刷新后 EP 组件在暗色下回退亮色皮肤。
+    document.documentElement.classList.toggle('dark', t === 'dark');
     document.documentElement.style.colorScheme = t;
     try { localStorage.setItem('llmgw_theme', t); } catch (e) {}
   } catch (e) {}

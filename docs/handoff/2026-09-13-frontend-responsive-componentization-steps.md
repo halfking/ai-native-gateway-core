@@ -604,3 +604,109 @@ git push 需用户在交互终端输入 codeup 凭证（setsid foot bash <脚本
 - 四门禁 + element:check 全绿；vitest 559 通过 / 41 失败 = **39 失败文件基线不变**。
 
 **验证环境残项**：本虚机的旧版 headless_shell（playwright chromium_headless_shell，`--headless=old`）自 11:29 起对 SPA 整页渲染反复 OOM 崩溃（partition_alloc OnNoMemoryInternal，SIGTRAP，4 次 1.1G coredump，亮暗皆可触发、与本次改动无关）；SPA 级暗色截图以「变量级联探针 + 裸页 EP 组件真实渲染对比截图」替代，SPA 真机暗色走查待真机/联调环境补。
+
+### §十二补充：应用侧硬编码亮面清扫（同日第二轮，用户要求继续收敛）
+
+EP 变量接线之后，继续清扫**应用自研样式里绕过令牌的硬编码亮色面**（全库 `background: white/#fff` 与 Material 粉彩底扫描）：
+
+| 文件 | 修复 |
+|---|---|
+| OutputComplianceView.vue（6 处） | `.stat-card`/`.table-container`/`.btn-secondary`/`.config-panel` 的 `background: white` → `var(--card)`；`.btn-primary` `color: white` → `var(--on-primary)`；`.success-banner` 边框 `#6ee7b7` → `var(--success-bd)` |
+| AnnotationStatsView.vue（8 处） | `.stat-icon-primary/success/green/red/info` 的 Material 粉彩底（#e3f2fd/#e8f5e9/#ffebee/#f3e5f5）→ `--info-bg/--success-bg/--danger-bg` 与 `color-mix(var(--purple) 14%)`；`.badge-blue` → `--info-bg/--accent`；`.bar-fill` 渐变 `#1976d2→#42a5f5` → `var(--accent)→var(--probe-cyan)` |
+| AnnotationView.vue（4 处） | `.badge-blue/green/yellow/red` 粉彩底+硬编码深字 → `--info/success/warning/danger-bg` + 对应 `--*-strong/--accent` |
+| BootstrapWizardView.vue（1 处） | `.wizard-steps__index` `#eef2f8` → `var(--bg-secondary)` |
+| ApprovalDetailView.vue（1 处） | `.btn-danger:hover` `#f65e5e` → `var(--danger-dark)`（暗色下悬停变亮、亮色下变深，两主题语义均正确） |
+
+**刻意保留**：4 处开关（switch/knob）的 `background: white` 圆点（NotificationChannels/SettingsView/ApprovalConfigView/PromptInjectionConfigPanel）——彩色轨道上的白色圆钮是两主题通用设计；ProvidersView 的 `rgba(255,80,80,α)` 告警行底为半透明红，暗底下自然呈暗红，保留。
+
+**环境补丁登记**：`sass-embedded` 仅装了 darwin-arm64 宿主二进制（darwin 布局 node_modules 的又一例），生产构建 scss 转换挂起；按 rollup/esbuild 同款手法手工补装 `sass-embedded-linux-arm64@1.100.0`（npm pack 解压入 node_modules，未动 manifest/lockfile）后 `vite build` 通过（19.4s）。**生产包已验证**：dist 由网关 :8781 正常服务（index/asset 200，CSS 含 `--el-bg-color` 桥接）。
+
+**门禁终态**：五门禁全绿，vitest 559 通过 / 41 失败 = **39 失败文件基线不变**。SPA 级暗色截图在本虚机 headless 下仍不可得（ chromium 新旧两版同样挂起，见上残项），本轮修复均为确定性令牌替换，建议在用户真实浏览器（即发现问题处）刷新 `?theme=dark` 复核。
+
+## 十三、审计评分与修正轮（2026-09-13，对 §十~§十二 复评）
+
+### 评分表（10 分制）
+
+| 任务项 | 得分 | 评语 |
+|---|---|---|
+| §十一-1 五门禁例行复验 | 10 | 全绿且失败构成复核到用例级（jsdom localStorage 环境问题），通过数增量可追溯到新用例 |
+| §十一-2 登录态页面走查 | 9 | 本地真实后端（Go+PG16+Redis）+ 造数 + CDP 真实事件交互，runbook 可复用价值高；扣 1：headless 受限时当轮未尝试「生产包由网关托管」替代路径（次日补做成功） |
+| §十一-3a 折叠屏验证 | 9 | segments 注入三态翻转实证，验证状态从「受限」实质升级；扣 1：CSS 媒体查询部分固有不可软件模拟 |
+| §十一-3b/3c 弹窗评估与宽度量化 | 10 | 逐迁移 commit 从 git 历史提取原宽，量化到像素与百分比，实测佐证 |
+| §十二 EP 暗色接线 | 8 | 变量级联探针+裸页渲染实证、桥接特异性设计免疫导入顺序；**扣 2：只验证了会话内路径，漏查 theme-init.js 刷新持久路径——属应发现而未发现的集成点，本审计轮补修** |
+| §十二补充 硬编码亮面清扫 | 9 | 20 处令牌化+保留项有明确设计理由；扣 1：范围限于 background 面，历史硬编码文字色未扩展 |
+| **平均** | **9.2** | |
+
+### 本轮修正（审计发现 → 修复）
+
+| # | 问题 | 根因 | 修正 |
+|---|---|---|---|
+| 1 | **刷新后暗色回退亮块**：用户切换暗色后一切正常，但刷新/直链（无 `?theme=` 参数）打开时 EP 组件整片回退白底 | 主题双轨（data-theme + html.dark）只在 `src/theme.ts applyTheme()` 落实；`index.html <head>` 内同步执行的启动脚本 `public/theme-init.js`（无 URL 参数场景下唯一设置主题的代码）只设 data-theme 不设 dark 类，EP dark 变量门控在启动路径始终不生效 | theme-init.js 补 `classList.toggle('dark', t === 'dark')`（注释锚定与 applyTheme 同一约定）；`theme.dark-skin.test.ts` 新增启动脚本源码断言（4 用例全绿），锁定「存储键 + setAttribute + classList」三要素防两处漂移；重建生产包并验证 dist 与网关服务（:8781/theme-init.js）均含修复 |
+
+其余复核项（无问题）：EP 组件链式变量落位——el-table（`--el-table-bg-color → --el-fill-color-blank`）与 el-select 下拉（`--el-bg-color-overlay`）均链到已桥接根变量；全库仅 theme-init.js 与 theme.ts 两处 data-theme 写入点；4 处开关圆点保留判定成立；body 文字色 `var(--text)` 已令牌化。
+
+## 十四、下一轮执行提示词（复制即用）
+
+```text
+你是前端工程师，在 llm-gateway-go-5/web 做下一轮暗色皮肤收尾与例行维护。
+先读：docs/handoff/2026-09-13-frontend-responsive-componentization-steps.md
+（§二环境注意事项、§九/§十三两轮审计评分）、
+docs/03-design/frontend-component-usage-guide.md、git log 近 10 个提交。
+工作区约定：pnpm 未装用 npm run/npx；不要 npm install（node_modules 为 darwin 布局，
+rollup/esbuild/sass-embedded-linux-arm64 均已手工补装 arm64 二进制，生产构建可用的
+手法见 §十二补充）；存量 vitest 失败基线 39 文件不得扩大；i18n 注释里别写 t('...')
+字样；新代码断点只允许 480/640/768/1024/1440。
+
+环境约束（必读）：我们在虚机中——TLS/证书类操作使用主机的证书（虚机不持有
+codeup 等服务凭证）；**部署一律 SSH 到主机上执行，不在虚机内直接部署**；
+本虚机 headless 浏览器对 SPA 渲染不可靠（OOM/挂起），视觉验证优先用
+「生产包构建 + 网关 :8781 托管」或在用户真实浏览器复核（主题直链 ?theme=dark）。
+
+任务（按序，独立 commit）：
+1. 五门禁例行复验：vue-tsc / vitest（失败集 ≤39 文件基线）/ i18n STRICT /
+   responsive:check --strict / element:check。
+2. 暗色皮肤真机复核：用户真实浏览器 ?theme=dark 全站走查（刷新路径已由
+   §十五 行为级 E2E 覆盖——S1~S5 五场景全过；真机侧重点转向 el-table/
+   el-select 下拉/el-dialog 等 EP 面板的视觉观感与对比度），发现残余亮块
+   继续令牌化清扫（可扩展至历史硬编码文字色，同 §十二补充方法）。
+3. FOUC 复核：暗色直链刷新无亮色闪烁（theme-init.js 在 head 同步执行，
+   确认无回归）；如仍有闪烁，评估 index.html 关键 CSS 内联最小集。
+4. （可选，需评估）EP 品牌色 --el-color-primary 与应用 --kx-primary 的
+   色阶一致性：直接映射会与 light-3/5/7/9 派生阶脱节，须整组重推导或
+   放弃并登记理由。
+5. 任何组件接口调整，同步《前端组件使用指南》（§四约定）。
+6. 每项一个 commit；push 前先 git pull --no-rebase 合入远端；登记进本文件新 §。
+
+验收红线：桌面 >=1024 DOM 零回归；新代码断点只允许白名单值；新测试全绿；
+主题双轨（data-theme 与 html.dark）在任何写入点必须原子同步。
+```
+
+## 十五、审计评分轮 2（2026-09-13，对 §十三 修正轮复评）
+
+### 评分表（10 分制）
+
+| 任务项 | 得分 | 评语 |
+|---|---|---|
+| theme-init.js 启动路径修复（b5924e0b3） | 10 | 根因级修复（非补丁式条件分支），diff 最小、注释锚定双轨约定，dist 与网关服务双验证 |
+| 测试锁定（theme.dark-skin.test.ts 4 用例） | 9 | 源码断言三要素防漂移，符合项目源码断言惯例；扣 1：启动脚本本身无行为级断言（本轮 §十五补行为级 E2E，证据链闭合） |
+| §十三/§十四 文档 | 9 | 评分、修正、提示词齐备；扣 1：§十四成文时行为级验证尚未做，本轮以 §十五 更新 |
+| 盲区复扫（LandingView + styles/*.css） | 10 | LandingView 零硬编码色、styles 目录全令牌化——暗色面清扫确认无剩余盲区 |
+| **平均** | **9.5** | |
+
+### 行为级端到端验证（裸页真实脚本 + 真实 CSS 栈，五场景全过）
+
+`file://` 裸页挂 `public/theme-init.js`（真实启动脚本）+ 三层真实样式（EP base / EP dark / element-dark 桥接 / style.css），CDP 逐场景导航断言 `data-theme`、`dark` 类、`--el-bg-color` 解析值、localStorage 写回：
+
+| 场景 | 结果 |
+|---|---|
+| S1 无参首访（系统偏好） | theme-init 命中 `prefers-color-scheme: dark`（Omarchy 暗色桌面）→ dark ✓——**这解释了用户侧成因链**：系统暗色→启动即暗→EP 组件白底 |
+| S2 `?theme=dark` 直链 | dark ✓，`--el-bg-color=#1a222d`（桥接生效），localStorage 写回 dark ✓ |
+| S3 **去参刷新（核心承诺）** | dark 持久 ✓，dark 类在位 ✓ |
+| S4 `?theme=light` 直链 | light ✓（URL 永远赢），localStorage 写回 light ✓ |
+| S5 去参刷新 | light 持久 ✓ |
+
+至此暗色主题双轨（`data-theme` + `html.dark`）在**全部三条路径**（会话内切换 / URL 直链 / 刷新持久）均验证同步。
+
+### 复核无问题项
+
+LandingView.vue 零硬编码色；`styles/*.css` 目录全令牌化；`public/` 仅 theme-init.js 一个脚本资产。本轮无新发现问题，无需代码改动；§十四 提示词维持有效（仅状态更新：行为级 E2E 已补）。
