@@ -1051,8 +1051,8 @@ onUnmounted(() => {
                     </div>
                     <div class="window-stats">
                       <span>总计: <b>{{ windowEntries.length }}</b></span>
-                      <span style="color:#10b981">成功: <b>{{ windowEntries.filter(e => e.ok).length }}</b></span>
-                      <span style="color:#ef4444">失败: <b>{{ windowEntries.filter(e => !e.ok).length }}</b></span>
+                      <span style="color:var(--success)">成功: <b>{{ windowEntries.filter(e => e.ok).length }}</b></span>
+                      <span style="color:var(--danger)">失败: <b>{{ windowEntries.filter(e => !e.ok).length }}</b></span>
                       <span>失败率: <b>{{ ((windowEntries.filter(e => !e.ok).length / windowEntries.length) * 100).toFixed(1) }}%</b></span>
                     </div>
                   </div>

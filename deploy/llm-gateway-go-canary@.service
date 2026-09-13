@@ -46,7 +46,9 @@ Environment=LLM_GATEWAY_DB_BOOT_RETRY_SECONDS=75s
 ExecStart=/usr/bin/env LLM_GATEWAY_LISTEN=:%i LLM_GATEWAY_VERSION_FILE=/opt/llm-gateway-go/slots/%i/version.json LLM_GATEWAY_LOG_FILE=/opt/llm-gateway-go/logs/gateway-canary-%i.log /opt/llm-gateway-go/slots/%i/llm-gateway-go
 Restart=on-failure
 RestartSec=5s
-TimeoutStartSec=30s
+# Leave margin above the 75s DB boot retry budget so systemd does not kill
+# the candidate before the application can become ready.
+TimeoutStartSec=90s
 TimeoutStopSec=25s
 KillSignal=SIGTERM
 StandardOutput=journal

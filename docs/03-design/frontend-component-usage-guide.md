@@ -100,3 +100,12 @@ z-index：遮罩 z-100；需要盖在另一弹层上的抽屉（如 diagnose z-1
 - el-* 注册：24 个文件补齐 EP 导入（此前运行时 resolve 失败）。
 - el-dialog/el-drawer 清零（2026-09-13 分摊轮）：OperationAgreementDialog → AppModal（`esc-close` + `close-on-mask` 双禁用保持门控语义，@open 复位改 watch）；PromptInjectionSettingsView×3 与 VibeCodingView×3 → AppModal（600→md、500→sm、800→lg，EP 表单/表格体保留）；TurnDigestDrawer → AppDrawer（direction=right + width 70% 保持原 rtl/size，EP tabs 体保留，头部副行迁 body 顶部）。EP 组件仅剩非弹层类（表单/表格/卡片等）按需引入。
 - 断点白名单：**全严格已生效**（2026-09-13 分摊轮）。存量 43 文件 49 处碎片断点已按语义就近收敛（520→480；600/680/700/720/760/800→768；900/960/1000/1023/1100/1200→1024；1600→1440），`responsive:check` 已从 `--strict --allow-legacy` 升级为 `--strict`，白名单外即 FAIL。新代码断点只允许 480/640/768/1024/1440。
+
+## 11. EP 暗色桥接与颜色令牌规范（2026-09-13）
+
+Element Plus 组件消费 `--el-*` 变量，应用自研样式消费 `--kx-*`/语义令牌（style.css）。两套变量由 `src/styles/element-dark.css`（`html.dark[data-theme='dark']` 门控，特异性高于 EP 文件，免疫导入顺序）在暗色下统一：
+
+- **主题双轨**：`data-theme` 与 `html.dark` 必须在任何写入点原子同步（`src/theme.ts applyTheme` 与 `public/theme-init.js` 两处，测试锁定）。漏掉 dark 类 = EP 组件回退白底。
+- **桥接范围**：表面/文字/描边/遮罩映射到应用令牌；品牌色 primary 在暗色按 EP dark 官方混合规律整组重推导（base 直取 `--kx-primary`，light-N/dark-2 用 color-mix 等价式），其余品牌色保持 EP 默认；**亮色侧零触碰**。
+- **颜色令牌红线**：组件/视图样式禁止硬编码色，一律消费语义令牌（`--success/--warning/--danger/--accent/--muted`、`--*-bg/--*-bd`、`--purple/--magenta/--probe-cyan` 等）；半透明叠加（rgba ≤0.55 的 badge 底/遮罩/图形纹理）可保留。门禁：`npm run color:check`（严格基线模式：基线外新增即 FAIL；已判定保留项入 `scripts/color-audit-baseline.json`，扩容走 `npm run color:baseline:update` 并在 handoff 登记理由；color-mix 内黑白成分豁免、测试文件豁免）。
+- **FOUC 前提**：theme-init.js 在 index.html `<head>` 内同步执行（无 defer/async），先于样式表——此顺序由 `theme.dark-skin.test.ts` 锁定，移动即失守。

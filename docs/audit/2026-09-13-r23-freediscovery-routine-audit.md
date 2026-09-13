@@ -1,0 +1,235 @@
+# R23 — FreeDiscovery 例行审计（2026-09-13）
+
+## 一、结论
+
+**当前仓库状态（复核时）**：`HEAD=origin/main=93f44df5e`，工作树 clean；
+`VERSION`、`version.json`、`web/public/version.json` 的内容仍为 seq-2100，
+但不再是未提交 WIP。R23 下面的区间结论仍指向当时取证 tip；~~截至当前
+`origin/main`，FreeDiscovery scope 相对 `d4f433931` 仍为零差异~~
+**（此声明已失效，见 §六.6：d4f433931 之后 scope 路径出现 4 文件实质变更）**。
+
+**区间 4cfaacdf3..d4f433931（取证时 origin/main tip）：FreeDiscovery
+四条 scope 路径 diff 为空。R22 §二 表中 6 项契约 + LOW 观察
+（templates GET list :76，豁免判据 #7）逐条以代码现状 rg 核销（不信任任何
+"已关闭"声明），全部行号与 R22 记录逐一吻合，维持"真实关闭"/"行为等价
+豁免"。静态门禁与全量测试全绿。**
+
+**④ 部署身份（R22 遗留 #2，本轮闭环）：Docker Desktop 已恢复健康**
+（daemon API 正常，`docker ps`/`docker cp` 可达）。:8782 容器
+`llm-gateway-local-8782` 运行中（Up 2 hours），healthz 返回版本串
+`2.5.4-c4da30d5-20260913-2101`，对应运行时版本元数据中的 git sha
+`c4da30d5d`（区间内第 4 个 commit，balance-floor guard 部署验证闭环 handoff）。
+**但容器二进制 `go version -m` 显示 `(devel)` 且无 vcs.* 字段**；这只能
+确认当前观测到的构建结果，不能单独证明二进制 provenance，也不足以断言
+唯一构建根因。healthz 的 `git_sha` 是运行时 `version.json` 部署元数据，
+不是二进制 provenance；后续需以二进制 sha256↔构建产物或镜像 digest
+补齐同源校验。**404 探针复跑通过**（POST `/api/auth/token` 使用受控
+本地凭证成功 → GET
+`/api/free-discovery/tasks/999999` → HTTP 404 + detail `"freediscovery:
+task not found (id 999999)"`），GetTask sentinel 全链路行为验证绿灯。
+本地 VERSION 文件持 `2.5.4-1822ebdf-20260912-2100` 未同步（seq-2100），
+版本 bump 仍缺席（与 R21/R22 同因，部署簿记未 settle 入主线）；实际
+部署元数据版本 seq-2101 对应 `c4da30d5d`，距 seq-2100 基线 `1822ebdfb`
+相隔 40 个 commit（均在本区间 4cfaacdf3..d4f433931 之前）——说明并行线在
+R22 期间完成 seq-2101 部署元数据对应的容器重启，但未补推部署簿记 commit 入主线。
+
+区间构成：origin 自 4cfaacdf3（R22 **取证** tip；R22 落档 `b62a28c52`
+及其父 `7c59561e8` 均落在本区间内，4cfaacdf3 并非 b62a28c52 的父
+commit——R23 原稿此处记错，§六.2 更正）新增 15 个 commit（14 个
+`--no-merges` + 1 个 merge `d1c68becb`）至 `d4f433931`
+（2026-09-13 15:44:53 +0800，zcode）：代码类为 bg/balance-floor 2 修
+（`66a9f8e6a` 清下限自动回池、`de9c19f75` 删 recordBalanceCheck 修
+guard 15min 新鲜度伪造）、anthropic 死桥退役 1（`97aa179ab`）、web 6 修
+（`14b405807` EP 暗色三件套、`4d14b615b` credential drawer
+balance-floor form（migration 701 readout）、`41417b559` unblock vite
+build、`77956aeb5` planTypes 下拉对齐、`c0b6e6b2b` 暗色二轮令牌化清扫、
+`b5924e0b3` theme-init.js 启动路径 dark 补丁）、docs 5（`b62a28c52`
+R22 审计落档本身、`7c59561e8`、`5df12411f`、`c4da30d5d`、
+`d4f433931` handoff/changelog），**`.go$|go.mod|go.sum` 过滤 23 个 Go
+文件全部位于 FreeDiscovery scope 之外**（bg/balance_floor_guard*、
+bg/balance_quota_probe*、domains/transformation/anthropic/
+{capturer_test,passthrough_stream*,to_openai_stream*,stream_support}）
+— **4 条 FreeDiscovery scope 路径 diff 为空**，与 R22 状况一致。
+本检出 WIP 为空（干净工作树），无残留部署簿记。
+
+## 二、验证项与证据（命令与结果）
+
+| # | 验证项 | 命令 | 结果 |
+|---|---|---|---|
+| 1 | 发现 1：import handler 走 fdStatusFor | `rg -n 'fdStatusFor\(err\)' admin/free_discovery.go` | 9 处命中（:96/:122/:138/:148/:317/:338/:366/:394/:430），`handleFreeDiscoveryImport` :430 在列；行号与 R22 相同 |
+| 2 | 发现 2：list 端点走 fdStatusFor | `sed -n '70,80p' admin/free_discovery.go` | tasks list :338、taskResults :394 均 `fdStatusFor`；templates GET list **:76 仍直写** `http.StatusInternalServerError` → LOW 观察不变（见 #7） |
+| 3 | 发现 3：GetTask sentinel 全链路 | `rg -n 'ErrTaskNotFound' domains/ admin/` | 定义 `template_manager.go:32`；GetTask wrap `discovery_engine.go:410`；fdStatusFor 404 组 :461；三测试在位（engine :301、admin :243/:257）；行号与 R22 相同 |
+| 4 | import 契约（404/409） | `rg -n 'ErrImportTask' admin/ domains/` | sentinel `import_service.go:48` ErrImportTaskNotFound；fdStatusFor 404 组 :460、409 组 :464；handler :430 接线；行号与 R22 相同 |
+| 5 | R18 收尾：fdRequest `/tasks/{id}` 路由 | `sed -n '60,86p' admin/free_discovery_test.go` | switch 排序 `/scan` → `/results` 后缀 → `/tasks` 精确 → `/import` → `/tasks/` → `/templates` → default，注释完整；行号与 R22 相同 |
+| 6 | R18 收尾：前端契约行 | `sed -n '12,20p' web/src/api/free-discovery.ts` | :14-19 块状注释含 `ErrTaskNotFound` 404 行、ErrImportTaskNotFound、409 三组；行号与 R22 相同 |
+| 7 | LOW 观察豁免复核 | `sed -n '150,200p' domains/freediscovery/template_manager.go` | `TemplateManager.List` :155-191 仍只返回包装后的 db 错误，**无任何 sentinel** → templates GET :76 直写 500 与 fdStatusFor default-500 行为等价的豁免条件继续成立 |
+| 8 | 区间净 diff（tree-to-tree，merge 勿用 show --stat） | `git diff --name-only 4cfaacdf3 d4f433931 -- admin/free_discovery.go admin/free_discovery_test.go domains/freediscovery/ web/src/api/free-discovery.ts` | 空输出；**4 条 FreeDiscovery scope 路径 diff 为空**；总区间 49 文件（按 `git diff --name-only` 计），`.go$/go.mod/go.sum` 过滤 23 文件全部位于 scope 之外 |
+| 9 | WIP 隔离 | `git status --porcelain` | 空输出 — **干净工作树**，R22 残留的 seq-2100 部署簿记 WIP（4 文件）已清除 |
+| 10 | CJK 收口保持 | `rg -l '[\p{Han}]' domains/freediscovery/*.go admin/free_discovery.go admin/free_discovery_test.go` | 仅 `url_safety_test.go` fixture；admin 两文件零命中 |
+| 11 | gofmt | `gofmt -l`（scope 文件） | 空 |
+| 12 | build / vet | `go build/vet ./admin/... ./domains/freediscovery/...` | 均通过（exit 0） |
+| 13 | 全量回归 | `go test -count=1 ./domains/freediscovery/ ./admin/` | ok（freediscovery 2.622s；admin 66.606s） |
+| 14 | ④ Docker daemon 健康 | `docker info` | 正常（Server: Containers 50 Running 47 Stopped 3 Images 347）— **daemon 已恢复**，R22 的 500 故障已解决 |
+| 15 | ④ :8782 cutover 终态 — 端口可达性 | `docker ps --filter "publish=8782"` + `curl http://127.0.0.1:8782/healthz` | 容器 `llm-gateway-local-8782` (0680b4667452) Up 2 hours，端口 `127.0.0.1:8782->8782/tcp`；healthz 返回 `{"status":"ok","version":"2.5.4-c4da30d5-20260913-2101","git_sha":"c4da30d5","build_seq":2101,"build_date":"20260913","ready":true}` — **:8782 服务可达** |
+| 16 | ④ :8782 cutover 终态 — 二进制身份 | `docker cp llm-gateway-local-8782:/opt/llm-gateway-go/gateway /tmp/gateway-8782-binary` + `go version -m /tmp/gateway-8782-binary` | 容器 entrypoint `/opt/llm-gateway-go/gateway`；`go version -m` 显示 `go1.27.1`、`mod github.com/kaixuan/llm-gateway-go (devel)`，**无 vcs.* 字段**（build 时未注入 VCS 元数据，与 R20/R21/memory 记录一致）— **无法从二进制直接取证 vcs.revision** |
+| 17 | ④ :8782 cutover 终态 — 版本串校准 | healthz `git_sha` 字段 + `git log --oneline --all \| grep c4da30d5` | healthz 报告运行时元数据 `git_sha: c4da30d5`，对应 `c4da30d5d docs(handoff): balance-floor guard 部署验证闭环`（区间内第 4 个 commit，1822ebdfb seq-2100 基线后 +40 commit）— **部署元数据版本 seq-2101 对应 c4da30d5d；不等同于二进制 provenance** |
+| 18 | ④ 实时 404 探针 | `POST /api/auth/token`（受控凭证） + `GET /api/free-discovery/tasks/999999` | 登录成功（access_token + user role super_admin）；GET tasks/999999 → **HTTP 404** + `{"error":{"detail":"freediscovery: task not found (id 999999)"}}` — **404 探针通过**，GetTask sentinel 全链路行为验证绿灯；审计文档不记录凭证 |
+| 19 | ④ :8781 清理 | `docker ps --filter "publish=8781"` | 空输出 — :8781 预热实例已清理（R22 已记录 2101 收束） |
+| 20 | ④ 本地 VERSION 同步 | `cat VERSION` | `2.5.4-1822ebdf-20260912-2100` — 本地 VERSION 文件仍持 seq-2100，与部署元数据版本 seq-2101 不同步（版本 bump 缺席，与 R21/R22 同因） |
+
+## 三、改动文件
+
+- `docs/audit/2026-09-13-r23-freediscovery-routine-audit.md`（本文）。
+- **零代码改动**；**版本 bump 缺席**：区间内无 deploy/version 簿记 commit
+  入线（并行线已完成 seq-2101 部署但未补推簿记），本检出 WIP 为空——与
+  R21/R22 同因，跳过；下一轮从实际落档值续。
+- **收束方法**：本检出工作树干净（无 WIP），直接在主线追加本文：
+  `git add docs/audit/2026-09-13-r23-freediscovery-routine-audit.md` →
+  `git commit -m "docs(audit): R23 FreeDiscovery routine audit"` →
+  `git pull --rebase origin main`（若需要）→ `git push origin main`。
+
+## 四、遗留风险
+
+1. **templates GET list 直写 500（LOW 观察，维持）**：#7 复核 `List` 仍无
+   sentinel，豁免继续成立。判据不变：`List` 引入任何 sentinel 时必须先改
+   走 fdStatusFor。
+2. **二进制 provenance 未闭环（P1，维持）**：容器二进制 `go version -m`
+   显示 `(devel)` 且无 vcs.* 字段。healthz `git_sha` 来自运行时
+   `version.json`，只能证明部署元数据（seq-2101 对应 `c4da30d5d`），不能
+   替代二进制身份；404 探针仅证明运行行为。后续需补二进制 sha256 与构建
+   产物/镜像 digest 的同源校验，或让构建产物包含可核验的 VCS 元数据。
+3. **版本 bump 缺席（低优先级，维持）**：seq-2101 部署元数据已落地但未补推簿记
+   commit 入主线，本地 VERSION 文件仍持 seq-2100。下一轮部署时从实际
+   部署元数据 seq-2101 续号（seq-2102）。
+4. **`errors.Is` vs `==`**：domain 层多处仍用 `err == sql.ErrNoRows`（R18
+   §四.2 遗留，维持原样）。
+5. **归档可信度**：原则继续适用——"已关闭"只是线索，代码现状才是证据；
+   本轮 7/7 逐条 rg 核销即为执行样例。
+
+## 五、下一轮提示词
+
+> 请根据 docs/audit/2026-09-13-r23-freediscovery-routine-audit.md（含
+> §六 R23.1 修正轮）与 memory 状态，对 FreeDiscovery 做例行审计（R24），
+> 区间基线为本轮落档提交（fetch 时 `git rev-parse origin/main` 为准，
+> 勿硬编码 sha）：
+> ① 契约逐条核对——R23 §二 表中 6 项 + LOW 观察（templates GET list
+>   直写 500，豁免判据 #7）逐条 rg 核销；行号以 R23.1 §六.7 的 tip 基线
+>   为准（fdStatusFor 9 处 :138 起、templates 直写 :118、import
+>   writeError :472），勿沿用 d4f433931 旧行号；勿信任"已关闭"声明；
+> ② **R23.1 移交的 scope 变更必须纳入本轮区间审计**：`ErrInvalidTenantID`
+>   新链路（template_manager.go sentinel :400、setTenantTx reject :411、
+>   isValidTenantID allowlist、fdStatusFor 400 case :509、admin 测试
+>   :331）+ escapeTenantID 兼容残留调用方清点 + bg.ScanScheduler 状态
+>   接线（FreeDiscoveryEngine/FreeDiscoveryTemplates 访问器、
+>   SetScanSchedulerStatus、handleFreeDiscoveryScanSchedulerStatus 的
+>   路由注册与鉴权）；
+> ③ 区间净 diff——`git diff <基线> <新tip> -- admin/free_discovery.go
+>   admin/free_discovery_test.go domains/freediscovery/
+>   web/src/api/free-discovery.ts`，merge 勿用 `git show --stat` 下结论；
+>   入线先体检 `.go`/`go.mod`/`go.sum`（未触碰则 Go 门禁证据延续）；
+> ④ 门禁——CJK 仅 url_safety_test.go fixture（R23.1 已修复 §2.5 破口，
+>   勿再在 Go 注释中写 `§二` 类汉字章节引用）；gofmt/build/vet/
+>   test -count=1 全绿；
+> ⑤ 部署身份——核验 :8782 cutover 终态：当前服务版本串（healthz 的
+>   `version.json` 元数据）+ `docker ps` 确认 LISTEN + 复跑 404 探针
+>   （`POST /api/auth/token` 使用受控凭证，密码从容器 env
+>   `LLM_GATEWAY_ADMIN_PASSWORD` 读取 → `GET
+>   /api/free-discovery/tasks/999999` → 404 精确 detail）。容器二进制
+>   `go version -m` 若无 vcs.*，不得把 healthz git_sha 当作二进制
+>   provenance；需补 binary sha256↔构建产物或镜像 digest 同源校验。
+> **凭据红线**：受控凭证只从容器 env/`.env.local` 现场读取，审计文档、
+> 提示词、commit message 一律不复现（R23 原稿事故见 §六.5）。
+> 推送遇拒：fetch 体检 + `git reflog -5` 后显式 `git pull --rebase origin
+> main`；共享检出有活跃并行会话时优先 R21 §三的 worktree 零侵入收束
+> （R23.1 即按此执行）。版本 bump 从实际落档值续（若并行线补推
+> seq-2102 部署，以其为准；否则跳过）。
+
+## 六、R23.1 修正轮（2026-09-14）
+
+起因：按任务要求对 R23 审计本身复核修正。本检出（共享检出）在 R23 落档后
+持续有活跃并行会话推进（期间 origin/main 由 `93f44df5e` 经多次 merge/rebase
+推进至 `4ed97a213`），故本轮全程按 R21 §三 worktree 零侵入协议收束。
+
+### 6.1 R23 原稿事实错误（本轮以命令复核更正）
+
+| 原稿声明 | 复核结果 | 证据 |
+|---|---|---|
+| 区间"推进 16 个 commit" | **15 个**（14 个 `--no-merges` + 1 个 merge `d1c68becb`） | `git rev-list --count 4cfaacdf3..d4f433931` / `--no-merges` |
+| "总区间 82 文件" | **49 文件** | `git diff --name-only 4cfaacdf3 d4f433931 \| wc -l` |
+| `d4f433931`"14:28+0800" | **15:44:53 +0800，作者 zcode** | `git show -s --format='%ci %an' d4f433931` |
+| "4cfaacdf3 是 `b62a28c52` 的父 commit" | **错**——b62a28c52 之父为 `7c59561e8`，b62a28c52/7c59561e8 均在区间内；4cfaacdf3 是 R22 的**取证** tip 而非落档父 | `git rev-parse b62a28c52^` |
+| 区间构成"一组 7 修"列举 | mislabel：`14b405807` 是 EP 暗色三件套而非 migration 701 form（form 是 `4d14b615b`）；`77956aeb5` 是 planTypes 下拉（web）而非 changelog；且混入 docs commit 计入"修" | `git log --no-merges --oneline 4cfaacdf3..d4f433931` 逐一比对 |
+
+并行会话已先行修正其中部分（密码脱敏、82→49、provenance 表述收紧、
+遗留 #2 重开 P1；对应提交后经 rebase 现映射为 `e38559ec4`/`13ed52e52`），
+本轮补齐其余（commit 数、时间戳、父子关系、区间构成重写）。
+
+### 6.2 R23 门禁基线披露
+
+R23 的门禁（gofmt/build/vet/test）实际在 `c4da30d5d` 检出上执行（本地
+main 当时落后取证 tip 3 个 commit，均为 web/docs：theme-init.js、
+暗色视图、handoff）。复核 `git diff --name-only c4da30d5d d4f433931 --
+'*.go' go.mod go.sum` 为空 → 按"未触碰则 Go 门禁证据延续"原则，R23
+门禁结论对 d4f433931 有效。本轮已在 `4ed97a213` 重跑全量门禁（见 6.8）。
+
+### 6.3 凭据入档事故（红线违反，登记 rotation debt）
+
+R23 原稿（`93f44df5e`）将本地部署 admin 密码明文写入审计文档
+（§一/§二#18/§五）并推送远端——违反 memory 既定红线"勿将凭据写入审计
+文档/提示词"。并行会话已在后续提交脱敏（改为"受控凭证"表述），但
+**git 历史仍保留明文**，与既有 credential-rotation-debt 同性质，计入
+rotation debt。自本轮起：探针密码只从容器 env
+`LLM_GATEWAY_ADMIN_PASSWORD` 现场读取；文档/提示词/commit message
+一律不复现。memory 已同步更新。
+
+### 6.4 悬空 sha 遗留收敛（R22 遗留 #3 关闭）
+
+`fa1124b18`/`a0a6a48dc` 已不在任何分支可见历史（`git log --all` 零命中）
+——并行线经 rebase/merge 收编，悬空 sha 映射问题自然消解，遗留关闭。
+
+### 6.5 区间后 scope 变更预审（R24 必审项）
+
+`d4f433931..4ed97a213` 期间 4 条 scope 路径出现实质变更（R23 区间结论
+不受影响，但"scope 仍零差异"声明失效）：
+
+- **R20 §2.5 P2 修复（跨租户数据混合风险收口）**：`setTenantTx` 不再将
+  非法 tenant_id 静默 remap 到 'default'，改为新 sentinel
+  `ErrInvalidTenantID`（template_manager.go :400）在 allowlist
+  `isValidTenantID`（:415 附近）失败时拒绝（:411）；fdStatusFor 新增
+  400 case（admin :509）；新增 `TestIsValidTenantID`/
+  `TestSetTenantTx_RejectsInvalidTenantID`；`escapeTenantID` 保留兼容。
+- **bg.ScanScheduler 状态接线**：admin 新增 `FreeDiscoveryEngine`/
+  `FreeDiscoveryTemplates` 访问器、`ScanSchedulerStatusProvider` 接口、
+  `SetScanSchedulerStatus`、`handleFreeDiscoveryScanSchedulerStatus`
+  （:68-91）——路由注册与鉴权归属 R24 审计。
+
+### 6.6 契约 tip 复核（7/7 维持，行号重基线）
+
+在 `4ed97a213` 复核：7 项契约语义全部维持。行号漂移（admin
+free_discovery.go 头部 +42 行）：fdStatusFor 9 处
+:96/:122/:138/:148/:317/:338/:366/:394/:430 →
+:138/:164/:180/:190/:359/:380/:408/:436/:472；templates GET 直写
+:76 → :118；import handler :404 → :446（writeError :430 → :472）。
+不变项：`ErrTaskNotFound` :32、engine wrap :410、import sentinels
+:48/:53、`List` :155 起（仍无 sentinel，豁免 #7 成立）。
+
+### 6.7 CJK 门禁破口修复（本轮唯一代码改动）
+
+并行会话在 3 个 scope 文件写入 `R20 §二.5` 章节引用（`二`/`五` 为汉字），
+致机械门禁 `rg -l '[\p{Han}]'` 首次出现非豁免命中。本轮统一改为 ASCII
+`§2.5`（3 文件 3 行，注释级改动，零行为变更），恢复"仅
+url_safety_test.go fixture"基线。规则重申：Go 注释引用审计章节一律用
+阿拉伯数字（§2.5、§四→§4）。
+
+### 6.8 门禁重跑（@4ed97a213 + 6.7 修复）
+
+| 门禁 | 命令 | 结果 |
+|---|---|---|
+| CJK | `rg -l '[\p{Han}]' domains/freediscovery/*.go admin/free_discovery*.go` | 仅 `url_safety_test.go`（修复后） |
+| gofmt | `gofmt -l`（scope 文件） | 空 |
+| build / vet | `go build/vet ./admin/... ./domains/freediscovery/...` | 通过（exit 0） |
+| 全量回归 | `go test -count=1 ./domains/freediscovery/ ./admin/` | ok（freediscovery 2.592s；admin 66.304s，cgo warning 为 vendor m1cpu 已知噪音） |
+
+### 6.9 版本 bump
+
+缺席维持（区间内无 deploy/version 簿记 commit 入线）；R24 从实际落档值续。

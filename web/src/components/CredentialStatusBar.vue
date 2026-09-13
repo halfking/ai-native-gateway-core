@@ -23,9 +23,9 @@ const label = computed(() => props.labels?.[state.value] ?? credentialDisplaySta
 <style scoped>
 .credential-status-bar { display: inline-flex; align-items: center; gap: .35rem; font-size: .8rem; font-weight: 600; }
 .dot { width: .5rem; height: .5rem; border-radius: 50%; background: currentColor; }
-.state-active { color: #16803c; }
-.state-cooling, .state-rate_limited { color: #b7791f; }
-.state-degraded, .state-quota_exhausted { color: #c05621; }
-.state-unreachable, .state-auth_failed, .state-suspended, .state-disabled, .state-deleted { color: #c53030; }
-.state-unknown { color: #718096; }
+.state-active { color: var(--success); }
+.state-cooling, .state-rate_limited { color: var(--warning); }
+.state-degraded, .state-quota_exhausted { color: color-mix(in srgb, var(--warning) 60%, var(--danger)); }
+.state-unreachable, .state-auth_failed, .state-suspended, .state-disabled, .state-deleted { color: var(--danger); }
+.state-unknown { color: var(--muted); }
 </style>

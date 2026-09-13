@@ -399,6 +399,27 @@ func retryAfterFromResponse(resp *http.Response) time.Duration {
 	return RetryAfterFromHeaders(resp.Header)
 }
 
+// ErrorFromResponse types a non-retryable response that Client.Do returns
+// as (resp, nil) — every 4xx below 500 in the current contract. It mirrors
+// doWithClient's non-retryable branch: classify via ClassifyErrorWithBody
+// (status + captured body, the same lossy-signal fix as the 5xx path),
+// restore the body for downstream readers, and carry Retry-After. Do is
+// left untouched: rewriting its (resp, nil) early return would force every
+// existing nil-check caller to handle a typed error for responses it
+// already relays verbatim.
+func ErrorFromResponse(resp *http.Response) *Error {
+	if resp == nil {
+		return nil
+	}
+	body := captureErrorBody(resp, true)
+	kind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body)
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		msg = fmt.Sprintf("HTTP %d (empty body)", resp.StatusCode)
+	}
+	return &Error{Kind: kind, Message: msg, Body: body, StatusCode: resp.StatusCode, RetryAfter: retryAfterFromResponse(resp)}
+}
+
 // captureErrorBody consumes an error response once and restores a readable
 // body so callers can still inspect or relay the response after Do returns.
 func captureErrorBody(resp *http.Response, restore bool) []byte {
