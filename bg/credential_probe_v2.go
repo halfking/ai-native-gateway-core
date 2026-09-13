@@ -480,6 +480,9 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 				"error", decErr,
 			)
 			recoverAt := time.Now().Add(5 * time.Minute)
+			// #5 (R28): decrypt failure is also a stale-evidence-prone failure
+			// write — stamp EvidenceAt so the optimistic gate in writeHealth
+			// applies to it as well.
 			c.writeHealth(timeoutCtx, s.ID, probeResult{
 				HealthStatus:          "unreachable",
 				HealthError:           "decrypt failed",
@@ -487,12 +490,17 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 				AvailabilityState:     "unreachable",
 				AvailabilityRecoverAt: &recoverAt,
 				StateReasonCode:       "decrypt_failed",
+				EvidenceAt:            time.Now(),
 			})
 			failed++
 			continue
 		}
 		s.APIKey = apiKey
 
+		// #5 (R28, 2026-09-14): per-row evidence timestamp — the failure
+		// verdict produced below is only trusted by writeHealth while nobody
+		// touched the row's state after this instant.
+		rowT0 := time.Now()
 		// Verify the probe model is still routable
 		ok, errMsg := c.probeCredential(timeoutCtx, s)
 		checked++
@@ -537,6 +545,7 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 			}
 		}
 		pr.HealthProbeModel = s.DefaultProbeModel
+		pr.EvidenceAt = rowT0 // #5 (R28): optimistic-concurrency evidence stamp
 		c.writeHealth(timeoutCtx, s.ID, pr)
 
 		// 2026-08-26 quota-recovery-notify fix: after writeHealth has flipped
@@ -651,6 +660,17 @@ type probeResult struct {
 	// distinguishes per-binding model failures from credential-wide
 	// failures so writeHealth only acts on the targeted (cmb) row.
 	BindingOnly bool
+	// EvidenceAt is the probe-START timestamp backing this verdict (#5, R28
+	// 2026-09-14, optimistic concurrency gate). A failure verdict is only
+	// evidence from the past: the probe's network I/O can take tens of
+	// seconds, and a state write that lands during the flight (admin
+	// reset-state, balance_floor guard pull, writer.go quota branch, …) is
+	// FRESHER than the probe's conclusion. writeHealth therefore trusts a
+	// failure write only while state_updated_at < EvidenceAt. Success
+	// verdicts bypass the gate unconditionally — same semantics as the
+	// hard-quota OR-bypass: a live 2xx is the freshest evidence there is.
+	// Zero value disables the gate (fail-open) for callers that don't set it.
+	EvidenceAt time.Time
 }
 
 // loadBoundRawModels returns distinct available raw models bound to a
@@ -1148,6 +1168,12 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 	if pr.StateReasonCode != "" {
 		stateReason = &pr.StateReasonCode
 	}
+	// #5 (R28, 2026-09-14): nil evidence → optimistic gate skipped (fail-open
+	// for any caller that doesn't stamp EvidenceAt).
+	var evidenceAt *time.Time
+	if !pr.EvidenceAt.IsZero() {
+		evidenceAt = &pr.EvidenceAt
+	}
 
 	result, err := c.db.Exec(execCtx, `
 		UPDATE credentials
@@ -1261,15 +1287,40 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		      COALESCE($8, '') = 'ok'
 		      OR quota_state NOT IN ('permanently_exhausted', 'balance_exhausted')
 		  )
-		`, pr.HealthStatus, pr.HealthError, pr.HealthLatencyMs, pr.HealthProbeModel,
+		  -- #5 (R28, 2026-09-14): 乐观并发闸。失败结论只是"探测开始时刻"的证据，
+		  -- 探测网络 I/O 可长达数十秒，期间其它写者（admin reset-state、floor guard
+		  -- 摘出、writer.go 配额分支等）落库的状态更新鲜，不得被旧失败结论覆盖。
+		  -- 成功写无条件放行 —— 与上面硬配额 OR-bypass 同语义：探活成功是最新的
+		  -- 事实。$11 IS NULL（调用方未盖 EvidenceAt 戳）时闸门失效、照旧写入。
+		  AND (
+		      COALESCE($8, '') = 'ok'
+		      OR $11::timestamptz IS NULL
+		      OR COALESCE(state_updated_at, to_timestamp(0)) < $11::timestamptz
+		  )
+	`, pr.HealthStatus, pr.HealthError, pr.HealthLatencyMs, pr.HealthProbeModel,
 		pr.HealthSource, pr.AvailabilityState, recoverAt,
-		quotaState, stateReason, credID)
+		quotaState, stateReason, credID, evidenceAt)
 	if err != nil {
 		slog.Warn("credential probe v2: writeHealth failed",
 			"credential_id", credID, "health_status", pr.HealthStatus, "error", err)
 		return
 	}
 	if result.RowsAffected() == 0 {
+		// #5 (R28, 2026-09-14): 0 rows 有两种成因，日志必须区分 —— 硬配额/
+		// 生命周期守卫命中（既有行为），或乐观并发闸拦下竞态丢写（探测期间
+		// 状态已被其它写者更新）。判别 SELECT 必须在下面的簿记 UPDATE 之前
+		// 执行：簿记会推进 state_updated_at，把每个守卫 miss 都伪装成竞态。
+		okWrite := quotaState != nil && *quotaState == "ok"
+		raceLost := false
+		if evidenceAt != nil && !okWrite {
+			var touchedDuringProbe bool
+			if qerr := c.db.QueryRow(execCtx, `
+				SELECT COALESCE(state_updated_at, to_timestamp(0)) >= $1
+				FROM credentials WHERE id = $2
+			`, *evidenceAt, credID).Scan(&touchedDuringProbe); qerr == nil && touchedDuringProbe {
+				raceLost = true
+			}
+		}
 		// 硬配额守卫命中（0 rows）：quota_state 保持硬配额权威是对的，但
 		// 不能连探针簿记一起吞掉——last_probe_at 供 balance/periodic 探测
 		// 的指数到期闸使用，丢失它会把该行钉死在最快节奏（2min tick 每 tick
@@ -1277,6 +1328,8 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		// A-P1-1）。失败时用无硬配额守卫的簿记 UPDATE 单独推进梯子；
 		// quota_state / lifecycle / auto_* 列一律不动。成功（healthy）被
 		// 硬配额守卫挡住的情形不存在（守卫对 $8='ok' 放行）。
+		// R27 簿记分支保持无条件（不加 #5 乐观闸条件）：簿记只是探针自身的
+		// 节奏记账，不是健康结论，竞态也不能丢。
 		if pr.HealthStatus != "healthy" {
 			if _, err := c.db.Exec(execCtx, `
 				UPDATE credentials
@@ -1306,8 +1359,16 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 					"credential_id", credID, "health_status", pr.HealthStatus, "error", err)
 			}
 		}
-		slog.Info("credential probe v2: writeHealth skipped stale result",
-			"credential_id", credID, "health_status", pr.HealthStatus)
+		if raceLost {
+			// #5 竞态丢写：失败结论已过期（探测期间状态被更新），属预期
+			// 自保护，不是守卫命中 —— 单独文案供日志检索，不算异常。
+			slog.Info("credential probe v2: writeHealth dropped stale failure result (state changed during probe)",
+				"credential_id", credID, "health_status", pr.HealthStatus,
+				"evidence_at", pr.EvidenceAt)
+		} else {
+			slog.Info("credential probe v2: writeHealth skipped stale result",
+				"credential_id", credID, "health_status", pr.HealthStatus)
+		}
 		return
 	}
 	if pr.BindingOnly {
@@ -1754,6 +1815,9 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 			"final_error", errMsg)
 	}
 	pr.HealthProbeModel = s.DefaultProbeModel
+	// #5 (R28): probeStart was taken immediately before probeCredential — it
+	// IS the evidence timestamp for optimistic-concurrency gating.
+	pr.EvidenceAt = probeStart
 	c.writeHealth(timeoutCtx, credID, pr)
 	if ok && pr.AvailabilityState == "ready" && c.onQuotaRecovered != nil {
 		c.onQuotaRecovered(credID, "probe_now")

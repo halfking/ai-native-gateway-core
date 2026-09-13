@@ -305,8 +305,8 @@ func TestBalanceFloorGuardPullNeverTouchesManualDisabled(t *testing.T) {
 	}
 
 	restores := strings.Count(body, "SET quota_state = 'ok'")
-	if restores != 3 {
-		t.Fatalf("expected exactly 3 restore UPDATEs (currency + plan + cleared-floor release), found %d", restores)
+	if restores != 4 {
+		t.Fatalf("expected exactly 4 restore UPDATEs (currency + plan + cleared-floor release + stale-probe escape hatch), found %d", restores)
 	}
 	// 两处恢复（货币/detail 固定文案，套餐/detail 前缀文案）各自带
 	// reason='balance_floor' 守卫。marker 文案位于 SET 子句内，因此从
@@ -361,14 +361,15 @@ func TestBalanceFloorGuardSweepFairnessAndGuards(t *testing.T) {
 			t.Fatalf("currency pull UPDATE must mirror pass C's provider guard, missing %q", marker)
 		}
 	}
-	// Both unaliased pull UPDATEs (currency pass B + plan pull) guard
+	// All unaliased routability-guarded UPDATEs (currency pass B + plan pull
+	// + cleared-floor release + stale-probe escape hatch) guard
 	// status/lifecycle exactly like their candidate SELECTs.
 	for _, marker := range []string{
 		"AND status = 'active'",
 		"AND lifecycle_status = 'active'",
 	} {
-		if got := strings.Count(body, marker); got != 3 {
-			t.Fatalf("marker %q must guard both pull UPDATEs (pass B + plan) and the release UPDATE, found %d", marker, got)
+		if got := strings.Count(body, marker); got != 4 {
+			t.Fatalf("marker %q must guard both pull UPDATEs (pass B + plan), the release UPDATE and the escape-hatch UPDATE, found %d", marker, got)
 		}
 	}
 }
@@ -521,5 +522,191 @@ func TestBalanceFloorGuardDisabledNoCycle(t *testing.T) {
 	// CycleNow 在 disabled/db nil 时必须是无操作成功，供测试/运维安全调用。
 	if err := g.CycleNow(context.Background()); err != nil {
 		t.Fatalf("CycleNow on disabled guard must be a no-op, got %v", err)
+	}
+}
+
+// TestBalanceFloorGuardEscapeHatchThreshold pins the #4 escape-hatch env
+// contract (R28, 2026-09-14): LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS defaults
+// to 24, 0 disables the hatch entirely, positive values are honoured, and a
+// value whose hours→Duration conversion overflows falls back to the default
+// (same d>0 recheck as the interval knob — A-P3-5) instead of producing a
+// negative duration that would corrupt the staleness comparison.
+func TestBalanceFloorGuardEscapeHatchThreshold(t *testing.T) {
+	cases := []struct {
+		name      string
+		env       string
+		wantStale time.Duration
+		wantOff   bool
+	}{
+		{"default when unset", "", 24 * time.Hour, false},
+		{"zero disables hatch", "0", 24 * time.Hour, true},
+		{"hours honoured", "72", 72 * time.Hour, false},
+		{"off string does not disable hatch", "off", 24 * time.Hour, false},
+		{"negative falls back to default", "-5", 24 * time.Hour, false},
+		{"int64 hours overflow falls back to default", "9223372036854775807", 24 * time.Hour, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.env == "" {
+				t.Setenv("LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS", "")
+				os.Unsetenv("LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS")
+			} else {
+				t.Setenv("LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS", c.env)
+			}
+			g := NewBalanceFloorGuard(nil, nil)
+			if g.escapeOff != c.wantOff {
+				t.Fatalf("escapeOff = %v, want %v (env %q)", g.escapeOff, c.wantOff, c.env)
+			}
+			if g.escapeStale != c.wantStale {
+				t.Fatalf("escapeStale = %v, want %v (env %q)", g.escapeStale, c.wantStale, c.env)
+			}
+		})
+	}
+}
+
+// TestBalanceFloorGuardStaleProbeEscapeHatch pins the #4 plan-path escape
+// hatch SQL (R28, 2026-09-14): floor-pulled rows whose plan probe evidence
+// went cold (checked_at NULL or older than the threshold) are released with
+// the same ownership invariants as the cleared-floor release, and cycle() must
+// run it AFTER releaseClearedFloorCredentials and BEFORE sweepPlanQuotas so a
+// same-tick successful probe re-pulls via floorPull with fresh checked_at.
+func TestBalanceFloorGuardStaleProbeEscapeHatch(t *testing.T) {
+	src, err := os.ReadFile("balance_floor_guard.go")
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	body := string(src)
+
+	idx := strings.Index(body, "func (g *BalanceFloorGuard) releaseStaleProbeFloorCredentials")
+	if idx < 0 {
+		t.Fatalf("releaseStaleProbeFloorCredentials not found")
+	}
+	end := strings.Index(body[idx+1:], "\nfunc ")
+	if end < 0 {
+		t.Fatalf("escape hatch function end not found")
+	}
+	fn := body[idx : idx+1+end]
+
+	// 释放只碰自己的行 + 陈旧判定（NULL 或早于阈值）。
+	for _, want := range []string{
+		// 陈旧判据：plan 证据缺失或早于 $1 阈值。
+		"plan_quota_checked_at IS NULL",
+		"plan_quota_checked_at < now() - $1::interval",
+		// 只针对 plan-floor 摘出的行（货币行由 pass C / 清下限释放负责）。
+		"quota_floor_tokens IS NOT NULL OR quota_floor_percent IS NOT NULL",
+		// 所有权不变量：与 releaseClearedFloorCredentials 一致。
+		"COALESCE(quota_state, 'ok') = 'balance_exhausted'",
+		`COALESCE(state_reason_code, '') = 'balance_floor'`,
+		"AND status = 'active'",
+		"AND lifecycle_status = 'active'",
+		"COALESCE(manual_disabled, FALSE) = FALSE",
+		"SELECT 1 FROM providers p",
+		"p.enabled = TRUE",
+		"COALESCE(p.manual_disabled, FALSE) = FALSE",
+		// 释放文案供日志/审计检索。
+		"escape hatch, plan probe stale",
+		// env=0 关闭逃生门（不执行 UPDATE）。
+		"if g.escapeOff",
+	} {
+		if !strings.Contains(fn, want) {
+			t.Fatalf("escape hatch UPDATE missing %q", want)
+		}
+	}
+	// 绝不写 manual_disabled / quota_floor_*（逃生门只翻状态，不动配置）。
+	for _, banned := range []string{"manual_disabled = TRUE", "quota_floor_tokens ="} {
+		if strings.Contains(fn, banned) {
+			t.Fatalf("escape hatch UPDATE must not assign %q", banned)
+		}
+	}
+
+	// cycle 顺序：cleared-floor release → escape hatch → plan sweep。
+	cycleIdx := strings.Index(body, "func (g *BalanceFloorGuard) cycle(")
+	if cycleIdx < 0 {
+		t.Fatalf("cycle not found")
+	}
+	cycleEnd := strings.Index(body[cycleIdx+1:], "\nfunc ")
+	cycleFn := body[cycleIdx : cycleIdx+1+cycleEnd]
+	cleared := strings.Index(cycleFn, "g.releaseClearedFloorCredentials(")
+	escape := strings.Index(cycleFn, "g.releaseStaleProbeFloorCredentials(")
+	sweep := strings.Index(cycleFn, "g.sweepPlanQuotas(")
+	if cleared < 0 || escape < 0 || sweep < 0 {
+		t.Fatalf("cycle must call releaseClearedFloorCredentials, releaseStaleProbeFloorCredentials and sweepPlanQuotas")
+	}
+	if !(cleared < escape && escape < sweep) {
+		t.Fatalf("cycle order must be cleared-floor release -> escape hatch -> plan sweep, got %d/%d/%d", cleared, escape, sweep)
+	}
+}
+
+// TestBalanceFloorGuardPlanProbeFailureBackoff pins the #12a failure-backoff
+// wiring (R28, 2026-09-14): a failed plan probe stamps
+// plan_quota_probe_failed_at WITHOUT touching plan_quota_checked_at (the
+// escape hatch's staleness evidence —刷新它会永久哑火 #4), the sweep scan
+// parks failed rows for 15 minutes and sinks them to the front by the
+// COALESCEd stamp, and persistPlanState clears the stamp on success.
+func TestBalanceFloorGuardPlanProbeFailureBackoff(t *testing.T) {
+	src, err := os.ReadFile("balance_floor_guard.go")
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	body := string(src)
+
+	// 1) 失败分支记账：handlePlanCredential 的失败 UPDATE 只写 failed_at。
+	hidx := strings.Index(body, "func (g *BalanceFloorGuard) handlePlanCredential")
+	if hidx < 0 {
+		t.Fatalf("handlePlanCredential not found")
+	}
+	hend := strings.Index(body[hidx+1:], "\nfunc ")
+	hfn := body[hidx : hidx+1+hend]
+	failIdx := strings.Index(hfn, "balance_floor_guard: plan probe failed")
+	if failIdx < 0 {
+		t.Fatalf("failure log marker not found")
+	}
+	// 失败分支：从失败日志到函数内 persistPlanState 调用之间是记账 UPDATE。
+	persistIdx := strings.Index(hfn, "g.persistPlanState(")
+	if persistIdx < 0 || persistIdx < failIdx {
+		t.Fatalf("handlePlanCredential structure changed: persistPlanState call not after failure branch")
+	}
+	failBranch := hfn[failIdx:persistIdx]
+	stmtStart := strings.Index(failBranch, "UPDATE credentials")
+	if stmtStart < 0 {
+		t.Fatalf("failure branch stamp UPDATE not found")
+	}
+	stmtEnd := strings.Index(failBranch[stmtStart:], "`")
+	if stmtEnd < 0 {
+		t.Fatalf("failure branch stamp UPDATE terminator not found")
+	}
+	failSQL := failBranch[stmtStart : stmtStart+stmtEnd]
+	if !strings.Contains(failSQL, "SET plan_quota_probe_failed_at = now()") {
+		t.Fatalf("failure branch must stamp plan_quota_probe_failed_at")
+	}
+	// 关键耦合：失败记账绝不写 plan_quota_checked_at（#4 逃生门判据）。
+	if strings.Contains(failSQL, "plan_quota_checked_at") {
+		t.Fatalf("failure branch must NOT write plan_quota_checked_at (would neutralize the #4 escape hatch staleness check)")
+	}
+
+	// 2) 成功清戳：persistPlanState 置 failed_at = NULL。
+	pidx := strings.Index(body, "func (g *BalanceFloorGuard) persistPlanState")
+	if pidx < 0 {
+		t.Fatalf("persistPlanState not found")
+	}
+	pend := strings.Index(body[pidx+1:], "\nfunc ")
+	pfn := body[pidx : pidx+1+pend]
+	if !strings.Contains(pfn, "plan_quota_probe_failed_at = NULL") {
+		t.Fatalf("persistPlanState must clear plan_quota_probe_failed_at on success")
+	}
+
+	// 3) 扫描退避：失败行冷却 15 分钟，且按 COALESCE(failed_at, checked_at)
+	//    沉底排序；非失败行仍按 checked_at 公平轮转。
+	sidx := strings.Index(body, "func (g *BalanceFloorGuard) sweepPlanQuotas")
+	if sidx < 0 {
+		t.Fatalf("sweepPlanQuotas not found")
+	}
+	send := strings.Index(body[sidx+1:], "\nfunc ")
+	sfn := body[sidx : sidx+1+send]
+	if !strings.Contains(sfn, "COALESCE(c.plan_quota_probe_failed_at, to_timestamp(0)) < now() - interval '15 minutes'") {
+		t.Fatalf("plan sweep must park failed rows for 15 minutes")
+	}
+	if !strings.Contains(sfn, "ORDER BY COALESCE(c.plan_quota_probe_failed_at, c.plan_quota_checked_at) ASC NULLS FIRST") {
+		t.Fatalf("plan sweep must order by COALESCE(failed_at, checked_at) ASC NULLS FIRST")
 	}
 }

@@ -490,3 +490,16 @@ partition 钉扎（694 清单漏了 deploy 轨 V371 出身的它）；700=reques
 |-----------|------|---------|--------|
 | 703 | `703_supplier_errors_promote_timezone_pin.sql` | `dd21425c325c564c66d47489741566d4ce9e19d7fc2b3f57a4d88eb40913b44e` | applied+verified |
 
+## 2026-09-14 — R28 审计修复：704 plan 探测失败退避戳（pending deploy）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 704 | `704_plan_quota_probe_backoff.sql` | `e99d9aa3bdbe93f3a078250b164ed1ddefdc1acc5b79751cea1a92ef686d2511` | pending deploy |
+
+补录说明（R28 审计，2026-09-14）：704 = credentials.plan_quota_probe_failed_at
+单列新增（balance_floor_guard 套餐探测失败退避戳：失败行扫描冷却 15 分钟，
+成功探测清戳）。配套 bg 侧同批改动：#4 逃生门（陈旧 plan 证据超
+LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS（默认 24h）释放 floor 摘出行）与
+#5 writeHealth 乐观并发闸（EvidenceAt 失败结论不过期覆盖）。701 未落账本
+条目为历史遗漏，列定义见 701 迁移文件头注释。
+
