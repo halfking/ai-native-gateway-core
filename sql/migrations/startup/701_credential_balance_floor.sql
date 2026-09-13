@@ -54,4 +54,11 @@ ALTER TABLE public.credentials
 ALTER TABLE public.credentials
     ADD COLUMN IF NOT EXISTS plan_quota_checked_at timestamp with time zone;
 
+-- 双账本自登记(695/703 定式,2026-09-14 审计 F-P3-1):升级通道库此前只落
+-- gateway_db_revision_sequences :701 标记、无 schema_migrations 行,账本对账
+-- 审机会误报漂移。幂等:重跑安全。
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('701', 'credential balance floor guard columns (balance_floor_usd, quota_floor_*, plan_quota_*)')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+
 COMMIT;

@@ -70,6 +70,7 @@ BEGIN
         SELECT DISTINCT date_trunc('month', occurred_at) AS m
         FROM supplier_errors_hot
         WHERE occurred_at < statement_timestamp() - p_retention
+        ORDER BY 1
         LIMIT 12
     ) months;
 
