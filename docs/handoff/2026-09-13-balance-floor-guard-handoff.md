@@ -1,8 +1,8 @@
 # Handoff — 余额下限守卫(balance-floor guard,migration 701)
 
 - 日期:2026-09-13
-- 提交:1a89c32fe(merge 67fce6914 已推 origin/main)
-- 状态:已实现 + 自审修正 + 测试全绿 + 已推送
+- 提交:功能提交 `1a89c32fe` 已并入并推送至 `origin/main`；当前远端 tip 为 `93f44df5e`
+- 状态:已实现 + 自审修正 + 测试全绿；本地专项验证已完成，非生产/252 全环境验收
 
 ## 需求与结论
 
@@ -56,8 +56,14 @@ go test ./domains/credential/ -count=1                            # ok 14.7s
 3. 摘出后 admin reset-state/force-probe 可人工越过,但下一 sweep(≤5min)会按 floor 重新摘出;要常驻需清下限(已在注释文档化)。
 4. web UI 未加新字段的表单控件(API-first,JSON 字段已可用);`provider/client.go` 候选 SQL 与视图对 `balance_exhausted` 的排除是既有行为,未改动。
 5. 套餐探测串行、单 sweep 上限 200 凭据 + 3 分钟 ctx;>200 家 zhipu/minimax 大规模场景需再评估(有 ORDER BY plan_quota_checked_at 公平轮转)。
-6. 本地/252 库尚未部署验证运行时行为(仅单测/构建);下次 deploy-local 或 pg-schema-sync-252 时 migration 701 会随 ensure 生效。
+6. 本地 `:8782` 已完成 balance-floor 专项运行时验证（真实 zhipu + currency mock）；252/生产环境仍未验证，MiniMax `/v1/token_plan/remains` 因无订阅 key 仍未实测；下次 pg-schema-sync-252/deploy 时需单独补证 migration 701 与厂商接口。
 
 ## 下一轮提示词(建议)
 
-> ~~对 1a89c32fe(balance-floor guard)做部署级验证~~ —— 已于 2026-09-13 全部完成,详见 `docs/changelogs/2026-09-13-balance-floor-guard-deploy-verify-and-fixes.md`:migration 701 确认、zhipu 摘出/恢复闭环、货币 pass A/B/C 闭环(mock)、web 表单控件补齐(4d14b615b);附带两修复 —— 清下限自动回池(`releaseClearedFloorCredentials`,66a9f8e6a)、planTypes 下拉对齐实测值域(77956aeb5)。剩余:若拿到 minimax 订阅 key,实测 `/v1/token_plan/remains` 形状并按需修正 parseMiniMaxPlan(fail-open,不阻塞)。
+> 对 `1a89c32fe`(balance-floor guard)的本地专项验证已完成，详见
+> `docs/changelogs/2026-09-13-balance-floor-guard-deploy-verify-and-fixes.md`：
+> migration 701 确认、真实 zhipu 摘出/恢复闭环、货币 pass A/B/C 闭环(mock)、
+> web 表单控件补齐；附带两修复——清下限自动回池(`releaseClearedFloorCredentials`)
+> 与 planTypes 下拉值域对齐。**这不等同于 252/生产环境验收**；MiniMax
+> `/v1/token_plan/remains` 因无订阅 key 仍未实测，拿到凭证后再按需修正
+> `parseMiniMaxPlan`（fail-open，不阻塞）。
