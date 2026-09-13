@@ -780,6 +780,10 @@ LandingView.vue 零硬编码色；`styles/*.css` 目录全令牌化；`public/` 
 2. EP 品牌色其余四色（success/warning/danger/info）是否同样整组重推导——本次按「亮色零触碰+最小面」原则只做 primary，其余色应用与 EP 默认偏差小，维持默认并登记。
 3. 存量 vitest 39 失败文件（jsdom localStorage 环境问题）维持不修约定。
 
+### 推送状态
+
+**✅ push 已完成（2026-09-13，cfc8175bb）**：凭证通道（§一-9 credential.helper store）本轮实测免交互可用——`git pull --no-rebase` 合入远端 4 个并行线提交（audit 线 + Go migration 线，不触及 web/，合并后 vue-tsc 复验 0 错误）后推送成功（`94d87e7a1..cfc8175bb`），`git rev-list --count` 双向 0。与 §八「唯一通道=用户交互终端」的旧结论不同，本轮非交互 push 直接过——以本轮实测为准。
+
 ## 十七、下一轮执行提示词（复制即用）
 
 ```text
