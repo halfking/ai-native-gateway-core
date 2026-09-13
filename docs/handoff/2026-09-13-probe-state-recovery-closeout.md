@@ -141,3 +141,18 @@ RestoreOnSuccess 与 forceEnableCredentialSQL 增加 `probe_consecutive_failures
 ### 下一轮可复制提示词
 
 > 在不覆盖现有 handoff 修改的前提下，核验 154/245 live binary identity 与迁移双账本，完成 154 的 24h 观察（ProbeNow failed、probe-direct、429/403、recovering、probe_backoff），并用真实 MiniMax subscription key 实测 `/v1/token_plan/remains` 的响应契约；若任一指标回归，附原始日志/SQL 快照后再修复。
+
+## R25 审计轮（2026-09-13，针对 R24 交付 + 并行线合入后的元审计与修正）
+
+- **发现 1（实质，已修）：migration 703 重复了 693/699/701 同款升级通道缺口。** 并行线经 main-sync 合入 `703_supplier_errors_promote_timezone_pin.sql`（r20 §二.4 supplier_errors promote 钉扎），文件自带 ledger 自插（695-699 先例）+ 三份 01-schema baseline 收敛，但 `scripts/apply-db-revision-sequence.sh` 的 ordered list 止于 701——升级型数据库（共享 252 生产 PG 即是）经通道升级将轮不到 703。已补通道条目（700→701→703 顺序；702 为 advisory-lock 预留、有意缺位），并把 `migration_700_test.go` 的通道守卫从"存在性+相邻顺序"升级为**尾随序列守卫**（700/701/703 存在性 + 全序非递减，702 预留注释明示）。负向验证闭环：临时移除 703 条目 → 守卫 FAIL → 恢复 → PASS。教训重申：startup 存号核查（fetch 后 `git show origin/main:sql/migrations/startup/`）与通道清单核查必须成对做，任何并行线新迁移合入都是缺口的再次出现点。
+- **发现 2（注释漂移，已修，零行为变更）：`internal/probeutil/retry.go` 两处注释宣称 "2s+5s backoff"，实际 `probeRetryDelaysDefault = {0, 5s, 5s}`。** 同文件 line 12 的正确值与 line 14/67 的漂移值自相矛盾，曾误导审计子代理。已统一改为 5s+5s。纯注释修复，`go test ./internal/probeutil/` 绿。
+- **发现 3（判定非缺陷，留档）：recovering sweeper 的 context 预算**——子代理报告"2m ctx 包住 SELECT + 全部 TriggerManual 可 mid-probe 取消"，实读 e52e5a9ea 后的现行实现（`bg/model_probe.go:237-317`）确认 F5 已修：SELECT 独立 30s ctx，每探针独立 90s probeCtx，tick 级 5 分钟预算只在探针之间检查（297 行），不会中途取消真实请求。报告基于 ea3b7b141 原始版本，结论过时。
+- **发现 4（判定非缺陷，留档）：`restoreAllBindingsOnCredentialSuccess` 的候选缓存条件失效**（`cmbRows>0 || moRows>0` 才失效）。语义审计：缓存失效的目的是让路由读到"行状态变化"后的新态；UPDATE 影响 0 行 = 无状态变化 = 现存缓存内容仍正确，条件失效是正确优化而非缺陷。其注释"always invalidate"的表述（recharge recovery 测试注释）属措辞不精确，行为正确；不代改测试注释（低价值 diff），留档给该测试后续触碰者。
+- **并行线遗留清单核对（main-sync handoff 9c2646e5c）**：axios lockfile 漂移 / esbuild 未在 package.json 声明（web 线自有债）、W1/W6 worktree WIP（对应负责人）、`:8782` cutover live 验证（等部署窗口）——均不代改。新合入的 migration 703 即发现 1，已修。
+- **本轮验证**：`go test ./sql/migrations/startup -run TestMigration700ViewRawModelName -count=1`（含负向验证往返）、`go test ./internal/probeutil/ -count=1`、`go test ./bg/ -count=1`、`go build ./...`、`go vet ./internal/probeutil/ ./sql/migrations/startup/`、`bash -n scripts/apply-db-revision-sequence.sh` 全绿（vendor cgo Wgnu-folding-constant warning 为既有噪音）。
+- **本轮自审计六件套**：(1) 审计范围=R24 交付 + 并行线合入面，未越界开新轮；(2) 起点重算——自 4ea8ab0af 推送后起，覆盖 bee319a8f 合入面；(3) 验证如实区分——发现 1/2 修复通过（含负向验证），发现 3/4 为非缺陷判定并留档证据；数据面复核本轮未做（无窗口分派，B 轮数据面复核由下一轮提示词承接）；(4) 数据操作零——本轮无 DB 写；(5) 顺序约束维护——252 未触碰，通道先 698/699/700（现扩至含 701/703）→ 再上携带 83bf582dd 的二进制约束不变；(6) gofmt 复查——本轮文件净。
+- **提交说明**：仅 3 文件（通道脚本 + 守卫测试 + retry 注释）+ 本 handoff 追加；按文件显式 add，未触碰并行 WIP。
+
+### R26 下一轮可复制提示词
+
+> 请对 llm-gateway-go 做下一轮审计/收尾（R26）。基线：R25（本轮）已闭 703 通道缺口 + retry 注释漂移；F1-F5 探针恢复线在 main。本轮任务：(1) 数据面单事务只读复核（双账本 696-700+701 stamp 形态、视图 113 列/raw=1/fp=1、sequences 标记），如 PG 可达；(2) 核验 154/245 live binary 身份与 24h 观察指标（ProbeNow failed、probe-direct、429/403、recovering 计数、probe_backoff 行数）——仅在有部署窗口或运营报障时执行 154 部署，否则如实记未验证；(3) fetch 后用 `git show origin/main:sql/migrations/startup/` 复查 startup 存号 vs 通道清单成对核查（702 预留缺位、704+ 撞号）；(4) MiniMax `/v1/token_plan/remains` 实测仍等真实订阅 key，无 key 则维持留档；(5) 严禁 git add -A；提交前按文件核对归属；验证如实区分通过/环境受限/未验证。
