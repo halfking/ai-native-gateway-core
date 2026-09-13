@@ -52,13 +52,17 @@ import (
 //   - ForceProbe(credID): bypass the 2-min tick for admin-triggered
 //     re-checks after a user manually topped up. Rate-limited so a
 //     panic-clicking operator can't pile up probes.
-//   - last_balance_check_at bookkeeping on credentials.balance_last_checked_at
-//     for observability and to dedupe against double-submissions.
 //   - default_probe_model fallback: when the operator hasn't set one,
 //     pick the cheapest routable model from credential_model_bindings
 //     so the probe always has a target. The probe-v2 worker still
 //     honours default_probe_model — this fallback only matters for
 //     the BalanceQuotaProbe SELECT predicate.
+//
+// 2026-09-13 R21 P2-leftover #1: the legacy recordBalanceCheck helper
+// (which stamped credentials.balance_last_checked_at on every chat
+// probe dispatch) was deleted — see TestBalanceQuotaProbeDoesNotForgeFreshness.
+// That column is owned exclusively by bg/balance_floor_guard.refreshBalance,
+// which actually issues a vendor balance GET.
 type BalanceQuotaProbe struct {
 	db             *pgxpool.Pool
 	interval       time.Duration
@@ -164,7 +168,12 @@ func (p *BalanceQuotaProbe) OnQuotaRecharged(credID int, source string) {
 	} else if p.probeSubmitter != nil {
 		p.probeSubmitter(credID)
 	}
-	p.recordBalanceCheck(credID, "webhook_"+source)
+	// R22 (2026-09-13): recordBalanceCheck was removed (R21 P2 leftover
+	// #1) — chat probes do NOT touch balance_usd, so they must not bump
+	// balance_last_checked_at either (balance_floor_guard.passA uses it
+	// as the 15-min freshness gate) nor state_updated_at (auto_revoke
+	// uses it as the rolling re-evaluation trigger, per
+	// balance_floor_guard.persistPlanState precedent).
 	if p.onQuotaRecharged != nil {
 		p.onQuotaRecharged(credID, source)
 	}
@@ -317,7 +326,7 @@ func (p *BalanceQuotaProbe) ForceProbe(credID int) bool {
 		return false
 	}
 
-	p.recordBalanceCheck(credID, "admin_force")
+	// R22 (2026-09-13): recordBalanceCheck removed (see OnQuotaRecharged).
 	return true
 }
 
@@ -436,7 +445,7 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 		} else if p.probeSubmitter != nil {
 			p.probeSubmitter(credID)
 		}
-		p.recordBalanceCheck(credID, "scheduled")
+		// R22 (2026-09-13): recordBalanceCheck removed (see OnQuotaRecharged).
 		count++
 	}
 	if count > 0 {
@@ -447,33 +456,6 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 		)
 	}
 	return nil
-}
-
-// recordBalanceCheck stamps credentials.balance_last_checked_at so
-// dashboards can show "last balance check" latency. Errors are logged
-// but never block the probe — the timestamp is observability, not
-// correctness.
-func (p *BalanceQuotaProbe) recordBalanceCheck(credID int, source string) {
-	if p.db == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	tag, err := p.db.Exec(ctx, `
-		UPDATE credentials
-		SET balance_last_checked_at = now(),
-		    state_updated_at        = now()
-		WHERE id = $1
-	`, credID)
-	if err != nil {
-		slog.Debug("balance_quota_probe: balance_last_checked_at update failed",
-			"credential_id", credID, "source", source, "error", err)
-		return
-	}
-	if tag.RowsAffected() == 0 {
-		slog.Debug("balance_quota_probe: balance_last_checked_at update affected 0 rows",
-			"credential_id", credID, "source", source)
-	}
 }
 
 /* === BEGIN: origin/main (kept for audit, NOT COMPILED) === */
