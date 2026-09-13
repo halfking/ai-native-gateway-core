@@ -61,4 +61,24 @@ describe('dark skin bridging (EP components)', () => {
       expect(elementDarkCss).toContain('var(--kx-')
     }
   })
+
+  it('EP primary brand scale is re-derived from --kx-primary (EP dark mix ratios)', () => {
+    // base 直接取应用令牌,派生阶按 EP dark 官方混合规则 color-mix 等价:
+    // light-N = mix(primary, black, N*10%),dark-2 = mix(primary, white, 20%)
+    expect(elementDarkCss).toContain('--el-color-primary: var(--kx-primary);')
+    expect(elementDarkCss).toContain(
+      '--el-color-primary-dark-2: color-mix(in srgb, var(--kx-primary) 80%, #ffffff);',
+    )
+    for (const [n, pct] of [
+      ['3', 70],
+      ['5', 50],
+      ['7', 30],
+      ['8', 20],
+      ['9', 10],
+    ] as const) {
+      expect(elementDarkCss).toContain(
+        `--el-color-primary-light-${n}: color-mix(in srgb, var(--kx-primary) ${pct}%, #000000);`,
+      )
+    }
+  })
 })
