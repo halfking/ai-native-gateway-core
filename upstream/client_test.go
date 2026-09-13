@@ -654,3 +654,59 @@ func TestDo_HonorsRetryAfterForBackoff(t *testing.T) {
 		t.Errorf("elapsed = %s, want < 4s", elapsed)
 	}
 }
+
+// TestErrorFromResponse (2026-09-13 audit fix): Do returns 4xx/429 as
+// (resp, nil); ErrorFromResponse types that response using status+body —
+// the same lossy-signal fix the 5xx path got — restores the body, and
+// carries Retry-After.
+func TestErrorFromResponse(t *testing.T) {
+	t.Run("rate limit with body and Retry-After", func(t *testing.T) {
+		// Body deliberately avoids overload vocabulary ("slow down",
+		// "too many requests", …) and budget vocabulary ("quota
+		// exceeded", "insufficient credit", …) so the classifier's
+		// plain-429 fallback (KindRateLimit) applies rather than the
+		// overload upgrade or the quota split.
+		resp := &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"Retry-After": []string{"9"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"window requests reached ceiling"}}`)),
+		}
+		err := ErrorFromResponse(resp)
+		if err == nil {
+			t.Fatal("err = nil")
+		}
+		if err.Kind != errorsx.KindRateLimit {
+			t.Fatalf("kind = %q, want rate_limit", err.Kind)
+		}
+		if err.RetryAfter != 9*time.Second {
+			t.Fatalf("retryAfter = %s, want 9s", err.RetryAfter)
+		}
+		if err.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("statusCode = %d", err.StatusCode)
+		}
+		restored, readErr := io.ReadAll(resp.Body)
+		if readErr != nil || string(restored) == "" {
+			t.Fatalf("body not restored: %q err=%v", restored, readErr)
+		}
+	})
+
+	t.Run("empty body falls back to status message", func(t *testing.T) {
+		resp := &http.Response{
+			StatusCode: http.StatusNotFound,
+			Body:       io.NopCloser(strings.NewReader("")),
+		}
+		err := ErrorFromResponse(resp)
+		if err == nil {
+			t.Fatal("err = nil")
+		}
+		if err.Message != "HTTP 404 (empty body)" {
+			t.Fatalf("message = %q", err.Message)
+		}
+	})
+
+	t.Run("nil response", func(t *testing.T) {
+		if ErrorFromResponse(nil) != nil {
+			t.Fatal("want nil for nil response")
+		}
+	})
+}
