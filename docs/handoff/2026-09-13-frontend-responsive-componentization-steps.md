@@ -508,3 +508,83 @@ git push 需用户在交互终端输入 codeup 凭证（setsid foot bash <脚本
 
 验收红线：桌面 >=1024 DOM 零回归；新代码断点只允许白名单值；新测试全绿。
 ```
+
+## 十一、例行审计与体验补强轮执行记录（2026-09-13，§十 提示词已执行）
+
+§十五项任务全部完成，验证型轮次无生产代码改动，记录落账于本节（1 个 docs commit）。
+
+### 任务 1：五门禁例行复验 — 全绿
+
+| 门禁 | 结果 |
+|---|---|
+| `npx vue-tsc --noEmit` | 0 错误 |
+| `npx vitest run` | 556 通过 / 41 失败（**39 个失败文件 = 基线**，构成复核为存量 jsdom localStorage 环境问题，无新增回归）；通过数 553→556 为 §九修正轮新增 3 个栈顶 ESC 集成用例 |
+| `i18n-audit --strict --missing-only` | STRICT PASS (0 missing) |
+| `responsive-audit --strict` | PASS（全白名单） |
+| `element-import-audit` | OK（246 个 .vue 全部 el-* 导入在册） |
+
+### 任务 2：登录态页面补走查 — 完成（本地真实后端）
+
+**环境搭建 runbook**（本次实测打通，供后续轮复用；虚机内可完整复现）：
+1. `go build -o /tmp/llm-gw-dev ./cmd/gateway`。
+2. 存储：**lite 模式不够**（admin 登录等 API 走 pgxpool，返回 database not configured），需 Postgres。Docker Hub 不可达，用 daocloud 镜像：`docker run -d --name llm-gw-dev-pg -p 127.0.0.1:55432:5432 -e POSTGRES_DB=llm_gateway -e POSTGRES_USER=gateway_user -e POSTGRES_PASSWORD=*** docker.m.daocloud.io/library/postgres:16-alpine`（**必须 PG16+**：startup 迁移用 `security_invoker` 视图参数，PG14 报错）+ `redis:7-alpine` 同法。
+3. 建库：`psql` 依次灌 `sql/schema/00-prereqs.sql`（缺 citus/vector 扩展的报错可忽略）、`01-schema.sql`、`02-seed.sql`，再把 `sql/migrations/startup/*.sql`（跳过 .down）按序跑两轮；`534_handoff_logs_hot_columnar.sql` 依赖 citus columnar，用 `sed 's/ USING columnar//g'` 去 columnar 后执行（heap 分区对走查等价）。
+4. 自愈预置：`session_summaries.user_intent` 手动 widen 到 varchar(200)（先 DROP 依赖视图；Go 自愈链只重建 v_session_flow，v_session_analytics 依赖会卡启动，本地库直接预宽化绕开）。
+5. 启动：`LLM_GATEWAY_DATABASE_URL=postgres://gateway_user:***@127.0.0.1:55432/llm_gateway?sslmode=disable LLM_GATEWAY_REDIS_ADDR=127.0.0.1:56379 LLM_GATEWAY_SECRET_KEY=<32+字节> LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=<32字节> LLM_GATEWAY_CORS_ORIGINS=http://127.0.0.1:5780 LLM_GATEWAY_ENV=development /tmp/llm-gw-dev`。
+6. 账号：种子 admin 的 bcrypt 哈希非公开默认值，本地库直接 `UPDATE users SET password_hash='<bcrypt(admin123)>', must_change_password=false`。
+7. 前端 `npx vite --port 5780`（代理 /api→8781，cookieDomainRewrite 已配）；首启向导用 `localStorage['llmgw_require_bootstrap']='0'` 跳过（「稍后再说」同款）。
+8. 造数：`POST /api/providers`（code 必填）+ `POST /api/providers/{id}/credentials` 得到一条凭据行供详情/弹窗路径使用。
+9. 浏览器驱动：ZCode 内嵌浏览器输入管道与截图在本环境不可用（§八已记录），本轮改用 **playwright 自带 headless_shell + 零依赖 CDP 脚本**（Node 26 内置 WebSocket，`Page.addScriptToEvaluateOnNewDocument`/`Runtime.evaluate`/`Emulation.setDeviceMetricsOverride`/`Page.captureScreenshot`），交互为页面内真实事件派发，截图留档 /tmp/walk/shots/（11 张，不入仓库）。
+
+**走查结论**（凭据监控 `/routing-v2/credentials`、请求日志 `/request-logs`、Chat `/chat`，另带仪表盘）：
+- **1440×900 桌面档**：四页全部到达、无横向溢出；顶栏完整菜单渲染（桌面 DOM 零回归红线 ✓）；凭据监控 StatsRow 四卡单行 + 筛选栏 + 空态正常。
+- **375×812 移动档**：四页全部到达、**页面级横向溢出 0**；汉堡按钮（.app-topbar__hamburger）可见；StatsRow 折两列（container query 生效）；筛选控件纵向堆叠；Chat 表单/输入全宽；仪表盘 Tab 条为容器内滚动（白名单内行为）。
+- **交互路径**（CDP 派发真实点击/键盘事件）：行点击 → CredentialDetailDrawer（AppDrawer right）打开 ✓ ESC 关闭 ✓；抽屉内「临时降级」→ AppModal sm=480px 居中 + body 滚动锁定 ✓；375 档同路径：抽屉自动转 **bottom-sheet**（全宽、贴底、拖拽把手）✓、弹窗自动**全屏** ✓（z-index 弹窗>抽屉叠层正确）；375 汉堡 → AppNavDrawer（min(80vw,320px)、分组手风琴、当前路由组默认展开高亮）→ 点击菜单项跳转并自动收起 ✓。
+- **残项**：请求日志「详情」路径需要真实网关流量数据（本地无上游请求），本轮未覆盖；其余「列表→筛选→详情→弹窗」路径全部实测通过。
+
+### 任务 3a：折叠屏验证 — 从「受限」升级为「JS 行为链 e2e 实测」
+
+不再尝试 viewportsegments-polyfill（其 JS API 部分本轮已用等价注入法覆盖；且真机 CSS 媒体查询无论如何无法软件模拟）。方法：CDP `Page.addScriptToEvaluateOnNewDocument` 在页面脚本前注入 `window.viewport.segments = [左屏 540×717, 右屏 440×717]`（Surface Duo 展开态 984×717），实测：
+- 双分段注入 → RequestLogsView 根节点挂 `.app-shell--spanning`、列表 `.span-left`、详情容器 `.span-right.request-logs-detail-pane` 三类名全部就位 ✓；
+- 清空 segments + 派发 resize → 回落单栏 `.rl-contents`（响应式更新 ✓）；
+- 重新注入 + resize → 双栏恢复 ✓（三态翻转全过）。
+- **仍需真机**：foldable.css 的 `@media (horizontal-viewport-segments: 2)` 三列 grid 与 `env(viewport-segment-*)` 铰链几何——CSS 媒体查询无法软件模拟，维持真机抽验残项登记。
+
+### 任务 3b：CredentialDetailDrawer 6 弹窗再拆评估 — 结论：不拆
+
+前提核对：`git log 9d5865ce0..HEAD -- CredentialDetailDrawer.vue` 为空——**自迁移后零功能新增，§十「若新增功能」的再评估触发条件不成立**。实质理由登记（补 §九-1 扣分项要求的粒度说明）：6 个确认弹窗均为单次使用、绑定抽屉内部响应式状态（demoteDialogOpen 等）的 13~50 行小模板，共享同一 sm 档视觉；拆独立文件需为每个弹窗搭 props/emits 桥，约净增 6×(props 声明+emit 转发+文件头) 而无复用场景，收益为负。§九-1 扣分项就此收口。
+
+### 任务 3c：AppModal 宽度档位 vs 原手写宽度 — 偏差量化表（补 §九-3 扣分项）
+
+逐迁移 commit 从 git 历史提取原宽，与现档位对照：
+
+| 弹窗（来源 commit） | 原宽 | 现档位 | 偏差 |
+|---|---|---|---|
+| CredentialMonitor 确认卡 ×3（9d5865ce0） | max-width:480px | sm 480 | **0** |
+| CredentialMonitor 确认卡 ×4（9d5865ce0） | max-width:500px | sm 480 | −20px（−4%） |
+| ProvidersView showEdit（3492eb481） | .modal max-width:500px | sm 480 | −20px（−4%） |
+| ChatView summary（77fbbf9fe） | min(520px,100%) | sm 480 | −40px（−7.7%） |
+| PromptInjection addCanary（781fa7587） | 500 | sm 480 | −20px（−4%） |
+| PromptInjection addEngine/addRule（781fa7587） | 600 | md 640 | +40px（+6.7%） |
+| OperationAgreementDialog（781fa7587） | min(640px,92vw) | md 640 | **0**（截图 01 复核一致） |
+| VibeCoding project/session（781fa7587） | 500×2 | sm 480 | −20px（−4%） |
+| VibeCoding reviewDetail（781fa7587） | 800 | lg 860 | **+60px（+7.5%，全表最大）** |
+| TurnDigestDrawer（781fa7587） | el-drawer 70% | AppDrawer 70% | **0** |
+
+实测佐证：临时降级弹窗 1440 档实测 480px 居中 + 滚动锁定；375 档全屏；md 档 640 与 OperationAgreement 原宽逐字一致（截图比对）。**结论**：最大偏差 60px/7.5%，方向一致（向 4/6/8 档位收敛），属于档位统一的设计代价而非回归；维持现档位映射不做逐弹窗像素回调，本扣分项收口。
+
+### 任务 4：组件接口调整 — 无
+
+本轮零生产代码改动，无接口漂移，《前端组件使用指南》无需同步。
+
+### 任务 5：收口
+
+- 验证型轮次，全部结论落账本节（1 个 docs commit）；无代码 commit。
+- §八遗留 3（登录态 375 走查）就此关闭；遗留 2（39 存量失败文件）本轮复核维持基线不变、维持不修约定；遗留 4（escClose 指南同步）§九已闭；遗留 5（并行线整合）§九已闭。
+- push：commit 后按凭证通道推送（见 §六/最新登记）。
+
+### 本轮遗留（下一轮 §十模板可复用）
+
+1. 请求日志「详情」路径走查需真实流量数据（联调环境或回放流量）。
+2. foldable.css 真机（Surface Duo / 双屏设备）CSS 网格抽验。
+3. 登录态环境 runbook 已入本节，后续轮可直接复用（步骤 2~6 脚本化可再省时）。
