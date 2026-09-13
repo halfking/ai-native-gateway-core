@@ -198,9 +198,12 @@ func sessionValueString(value any) string {
 	return text
 }
 
+// sessionFieldNameReplacer is package-level (goroutine-safe); building it
+// per request showed up in alloc profiles on the streaming hot path.
+var sessionFieldNameReplacer = strings.NewReplacer("-", "", "_", "", ".", "", " ", "")
+
 func normalizeSessionFieldName(value string) string {
-	replacer := strings.NewReplacer("-", "", "_", "", ".", "", " ", "")
-	return strings.ToLower(replacer.Replace(strings.TrimSpace(value)))
+	return strings.ToLower(sessionFieldNameReplacer.Replace(strings.TrimSpace(value)))
 }
 
 func detectAndHandleModelSwitch(
@@ -236,6 +239,7 @@ func generateSystemSessionID() string {
 //  2. Redis 未知的受信 gw_ id(新会话首请求)幂等注册 EnsureV2WithID(异步、
 //     尽力而为、带 panic 防护)— 否则每次后续请求都重复 ErrSessionNotFound,
 //     Touch 与轮次状态永不生效。branch 命名空间(gt_/gs_)不注册,与 chat 一致。
+//
 // 返回规范化后的 sessionID 与解析到的 SessionInfo(可为 nil)。
 func normalizeAndRegisterClientSession(
 	r *http.Request,

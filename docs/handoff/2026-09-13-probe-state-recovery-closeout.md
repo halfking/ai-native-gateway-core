@@ -156,3 +156,17 @@ RestoreOnSuccess 与 forceEnableCredentialSQL 增加 `probe_consecutive_failures
 ### R26 下一轮可复制提示词
 
 > 请对 llm-gateway-go 做下一轮审计/收尾（R26）。基线：R25（本轮）已闭 703 通道缺口 + retry 注释漂移；F1-F5 探针恢复线在 main。本轮任务：(1) 数据面单事务只读复核（双账本 696-700+701 stamp 形态、视图 113 列/raw=1/fp=1、sequences 标记），如 PG 可达；(2) 核验 154/245 live binary 身份与 24h 观察指标（ProbeNow failed、probe-direct、429/403、recovering 计数、probe_backoff 行数）——仅在有部署窗口或运营报障时执行 154 部署，否则如实记未验证；(3) fetch 后用 `git show origin/main:sql/migrations/startup/` 复查 startup 存号 vs 通道清单成对核查（702 预留缺位、704+ 撞号）；(4) MiniMax `/v1/token_plan/remains` 实测仍等真实订阅 key，无 key 则维持留档；(5) 严禁 git add -A；提交前按文件核对归属；验证如实区分通过/环境受限/未验证。
+
+---
+
+> 合入备注（main-sync 2026-09-14）：以下 §10 为分支侧部署执行记录原样归档。其“合并解法”所述 balance_floor 豁免限定在 quota 分支内的形态，main-sync 复审后收敛为 main 侧全局字面谓词（TestBalanceQuotaProbeExemptsBalanceFloorPulled 钉住）；两形态对可达状态行为等价——floor 行 quota_state=\balance_exhausted\，P3/F4 复验分支要求 quota_state=\ok\ 天然不选 floor 行。
+## 10. 部署执行记录（2026-09-13，245 完成 / 154 待 24h 观测门）
+
+### 10.1 245（已完成，2026-09-13 07:23 CST）
+
+- **2102-8e9f0072（seq 2102）蓝绿切换 8781→8782，DEPLOY_RC=0**；9 步验证链全绿（healthz/readyz/版本身份/DB/admin 同步/凭据解密冒烟 failed=0/logrotate）；身份三方核验过（current=releases/2102-8e9f0072，bundle git_sha = 二进制 vcs.revision = 8e9f0072）。
+- 分支增量（已推送 origin）：`34031a63f` 合并 origin/main——**部署树必须 ⊇ 生产 2092**（其流式修复 b514ec374/4b7fb6bfd 原始 sha 只存在于 go-2 本地检出，已 rebase 为 `5b249f31d`/`158043f93` 进 main；同时带入 balance_floor guard（migration 701）+ 若干 web 修复）；`0d42b4a65` seamless 预编译二进制入口；`56a8eace1` bump-version cygpath 修正；`8e9f00722` 上传后恢复 gateway 执行位。合并解法：balance_floor 豁免（main 侧字面谓词，TestBalanceQuotaProbeExemptsBalanceFloorPulled 钉住）限定在 P3 目标集的 quota 分支内——suspended/F4 复验分支要求 quota_state='ok' 天然不选 floor 行。
+- 部署前基线（24h，双槽）：ProbeNow failed=15,358；probe-direct 行=160,215；429/403 行=1,599；mps recovering=113（最早 2026-07-08）；probe_backoff 列维护行=0。基线与 ③ 对比口径已钉定于观测日志 `~\AppData\Local\lgw-closeout-observe\observations.md`。
+- 迁移：部署流水线向共享库应用 4 个 pending（699/700/701_credential_balance_floor 等），db-changelog 已记账。
+- **Windows 宿主部署配方**（首次从 Windows 完成，见记忆 llm-gateway-windows-deploy-recipe）：zig cc 预编译 + `LLM_GATEWAY_PREBUILT_BINARY` 入口；ssh（mux 剥除 + LogLevel=ERROR 防 PQ 警告污染合并捕获）/python3（Store 空壳 + \r\n 剥除）/sha256sum（-t 文本模式）三 shim；`AIAN_DEPLOY_LIB`/`ENVS_ROOT` 指向 /z/ SSOT（deploy-245.sh 包装层硬编码坏软链，直接调 deploy-seamless.sh）。
+- T+10min 早期信号：全部 bg worker 启动（含新 balanceFloorGuard）；recovering sweeper 启动；availability_recover recovered 5→28；probe_backoff 维护行 0→13；recovering 113→112；15 卡死凭据复验开跑（403 死 key 落 auth_failed+退避）；孤发 1 条内部 503（跟踪）。

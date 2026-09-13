@@ -1850,7 +1850,7 @@ func idleMarkerQueueKeys(tenantID, dimension, dimensionKey string) []string {
 	// in dimension values are turned into "_" so the resulting Redis
 	// key never has an ambiguous ":" that a downstream parser would
 	// split incorrectly.
-	safeKey := strings.NewReplacer(":", "_", "/", "_").Replace(dimensionKey)
+	safeKey := dimensionKeyReplacer.Replace(dimensionKey)
 	dimSuffix := dimension + ":" + safeKey
 	var keys []string
 	if strings.TrimSpace(tenantID) == "" {
@@ -1878,12 +1878,17 @@ func idleMarkerQueueKeys(tenantID, dimension, dimensionKey string) []string {
 // idleMarkerRequestID returns the stable request_id for an idle marker tile.
 // The same lane always produces the same request_id so each idle tick
 // updates the same tile (ZADD member) instead of appending a new row.
+// dimensionKeyReplacer is package-level: strings.Replacer is goroutine-safe,
+// and the snapshot/idle-marker loops used to construct one per key per pass —
+// measured at ~230GB/h of allocation churn on 245 (2026-09-13 OOM forensics).
+var dimensionKeyReplacer = strings.NewReplacer(":", "_", "/", "_")
+
 func idleMarkerRequestID(tenantID, dimension, key string) string {
 	scope := "global"
 	if tenantID != "" {
 		scope = "t-" + tenantID
 	}
-	safeKey := strings.NewReplacer(":", "_", "/", "_").Replace(key)
+	safeKey := dimensionKeyReplacer.Replace(key)
 	return fmt.Sprintf("idle-%s-%s-%s", scope, dimension, safeKey)
 }
 
