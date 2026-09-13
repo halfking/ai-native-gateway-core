@@ -134,17 +134,33 @@ type Router struct {
 		GetNodeState(ctx context.Context, credentialID int, model string) (*credentialfpslot.NodeState, error)
 		GetNodeStatesBatch(ctx context.Context, keys []credentialfpslot.NodeStateKey) ([]*credentialfpslot.NodeState, error)
 	}
+	// UNUSED (audit 2026-09-14 R28 #20): never wired — cmd/gateway/main.go's
+	// Bandit block is commented out, so Router.Bandit is always nil and
+	// planByTier always takes the P2C branch. Kept for the dormant bandit
+	// tests (router_bandit_test.go) and a future re-enable.
+	//
 	// Bandit is the Thompson Sampling bandit scorer for intelligent credential
 	// selection. When set, planByTier uses bandit scoring instead of P2C within
 	// each tier. Falls back to P2C if Bandit is nil.
 	Bandit *credential.BanditScorer
+	// UNUSED (audit 2026-09-14 R28 #20): same dormant status as Bandit —
+	// nothing constructs a BanditFlusher in production wiring.
+	//
 	// BanditFlusher is the async batch writer for Bandit state. When set,
 	// the executor calls MarkDirty after recording success/failure events.
 	BanditFlusher interface {
 		MarkDirty(credentialID string)
 	}
 	// weightCounters isolates deterministic weighted selection by candidate set.
-	weightCounters sync.Map
+	// Soft-cap rotation (audit 2026-09-14 R28 #22b): each nextWeightCounter call
+	// bumps weightCountersTotal; past weightCounterSoftCap the whole map is
+	// swapped for a fresh one so unbounded candidate-set churn cannot grow it
+	// forever. The counter only drives the weighted round-robin phase, so a
+	// rotation merely restarts that phase from 0 — no correctness impact;
+	// weightCountersMu only serializes the rare wholesale swap.
+	weightCounters      sync.Map
+	weightCountersMu    sync.Mutex
+	weightCountersTotal atomic.Uint64
 	// PriorityRoutingEnabled controls the priority candidate bucket. It defaults
 	// to true and can be disabled at process start for an emergency rollback.
 	PriorityRoutingEnabled bool
@@ -1091,12 +1107,32 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 	return ordered
 }
 
+// weightCounterSoftCap (audit 2026-09-14 R28 #22b) bounds the weightCounters
+// map: past this many cumulative counter allocations the map is swapped for a
+// fresh one (weighted round-robin phase restarts at 0 — diagnostic/phase-only
+// state, no correctness impact). Var (not const) so tests can pin the
+// rotation with a tiny cap.
+var weightCounterSoftCap uint64 = 100_000
+
 func (r *Router) nextWeightCounter(cands []provider.Candidate) uint64 {
 	identities := make([]string, 0, len(cands))
 	for _, c := range cands {
 		identities = append(identities, fmt.Sprintf("%d:%d:%s", c.ProviderID, c.CredentialID, c.RawModel))
 	}
 	sort.Strings(identities)
+
+	// Soft cap: rotate the whole map once the cumulative allocation count
+	// crosses the threshold. Double-checked under the mutex so concurrent
+	// callers rotate once; a racing LoadOrStore on the old map is harmless
+	// (the counter only phases the weighted lottery).
+	if r.weightCountersTotal.Add(1) > weightCounterSoftCap {
+		r.weightCountersMu.Lock()
+		if r.weightCountersTotal.Load() > weightCounterSoftCap {
+			r.weightCounters = sync.Map{}
+			r.weightCountersTotal.Store(0)
+		}
+		r.weightCountersMu.Unlock()
+	}
 
 	counter, _ := r.weightCounters.LoadOrStore(strings.Join(identities, "|"), &atomic.Uint64{})
 	return counter.(*atomic.Uint64).Add(1) - 1
@@ -1655,6 +1691,10 @@ func SortByCompositeScore(candidates []provider.Candidate, weights ScoringWeight
 // banditOrder orders candidates using Thompson Sampling bandit algorithm.
 // This provides intelligent credential selection based on historical performance.
 // Falls back to P2C if any step fails.
+//
+// UNUSED (audit 2026-09-14 R28 #20): dead in production — Router.Bandit is
+// always nil (main.go wiring disabled), so planByTier never reaches this
+// path; only router_bandit_test.go exercises it directly.
 func (r *Router) banditOrder(ctx context.Context, cands []provider.Candidate) []provider.Candidate {
 	if len(cands) <= 1 || r.Bandit == nil {
 		return cands

@@ -65,12 +65,12 @@ type Handler struct {
 	// periodic scan worker. nil → /api/free-discovery/scan-scheduler/status
 	// returns 503. Set by SetScanSchedulerStatus at startup.
 	scanSchedulerStatus ScanSchedulerStatusProvider
-	discSvc       *discovery.Service
-	credCycler           *bg.CredentialCycler
-	credRecov            *bg.CredentialRecovery
-	envCleaner           *bg.EnvelopeCleaner
-	stickyClean          *bg.StickyCleaner
-	taxSync              *bg.TaxonomySync
+	discSvc             *discovery.Service
+	credCycler          *bg.CredentialCycler
+	credRecov           *bg.CredentialRecovery
+	envCleaner          *bg.EnvelopeCleaner
+	stickyClean         *bg.StickyCleaner
+	taxSync             *bg.TaxonomySync
 	// 2026-08-26 hot-reload: in-process sticky cache for clear-for-credential
 	// on PATCH binding/credential. Cleared by HandleRoutingCandidateBindingUpdate
 	// and updateCredential so new sessions can re-enter load balancing
@@ -119,7 +119,7 @@ type Handler struct {
 	// 2026-09-05 审计闭环1: backs GET /api/errors/trend（supplier_error_stats
 	// 预聚合读端 + supplier_errors_unified 明细兜底）。
 	errorsTrendHandlers *errorsTrendHandlers
-	fpSlots     *credentialfpslot.Manager
+	fpSlots             *credentialfpslot.Manager
 	// pendingStore (Track C C7, 2026-06-18) is the durable cache
 	// for client reconnect and vendor async retry. nil disables
 	// the /api/admin/pending-responses* endpoints; the GET
@@ -1168,6 +1168,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/routing/probe", h.superAdmin(h.handleRoutingProbe))
 	mux.HandleFunc("/api/routing/manual-priority", h.superAdmin(h.handleRoutingManualPriority))
 	mux.HandleFunc("/api/routing/score-details", admin(h.handleRoutingScoreDetails))
+	// Audit 2026-09-14 R28 #13: scoring-weights is a DISPLAY-ONLY knob — it
+	// feeds the /api/routing/resolve and /api/routing/score-details preview
+	// endpoints only, never the live routing hot path (which reads
+	// executors.DefaultLoadScoreWeights). GET/PATCH responses carry
+	// "display_only":true + "note" to disclose this to API consumers.
 	mux.HandleFunc("/api/routing/scoring-weights", h.superAdmin(h.handleRoutingScoringWeights))
 	mux.HandleFunc("/api/routing/featured-models", admin(h.handleRoutingFeaturedModelsDynamic))
 	mux.HandleFunc("/api/telemetry/decision-log", admin(h.handleTelemetryDecisionLog))

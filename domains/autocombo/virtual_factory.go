@@ -180,6 +180,16 @@ func (vf *VirtualFactory) BuildFromCandidates(
 		return nil, fmt.Errorf("build engine: %w", err)
 	}
 	sorted := engine.sortCandidates(withQuota, quotaSnap)
+	// Sorting-ownership contract (audit 2026-09-14 R28 #14):
+	//   评分 = 粗排 (coarse ranking): Engine.sortCandidates computes the
+	//   6-dimension composite score and DECIDES THE MaxCandidates SURVIVAL
+	//   SET — the truncation below keeps the top-scored head and drops the
+	//   tail. After this point the score is final for admission.
+	//   Router = 精排 (fine ranking): the surviving set is handed to the
+	//   executor Router (planByTier), which re-orders WITHIN each tier via
+	//   P2C (load/latency-aware) to decide the attempt ORDER. The autocombo
+	//   score never re-enters that decision, and the Router never re-admits
+	//   a truncated candidate.
 	if limit := spec.MaxCandidates; limit > 0 && len(sorted) > limit {
 		sorted = sorted[:limit]
 	}

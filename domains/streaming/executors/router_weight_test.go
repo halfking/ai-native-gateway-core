@@ -1,6 +1,7 @@
 package executors
 
 import (
+	"sync/atomic"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -148,5 +149,51 @@ func TestPlanCandidatesKeepsPreferredBillingRoundOverWeight(t *testing.T) {
 		if planned[0].CredentialID != 1 {
 			t.Fatalf("request %d selected PAYG credential %d before preferred plan", i, planned[0].CredentialID)
 		}
+	}
+}
+
+// TestNextWeightCounterRotatesAtSoftCap (audit 2026-09-14 R28 #22b): once the
+// cumulative allocation count crosses weightCounterSoftCap the whole
+// weightCounters map is swapped for a fresh one, so the weighted round-robin
+// phase restarts from 0. The counter only phases the weighted lottery, so
+// the reset has no correctness impact; this pins the restart behavior.
+func TestNextWeightCounterRotatesAtSoftCap(t *testing.T) {
+	origCap := weightCounterSoftCap
+	weightCounterSoftCap = 4
+	defer func() { weightCounterSoftCap = origCap }()
+
+	router := NewRouter(nil, nil)
+	cands := []provider.Candidate{
+		{CredentialID: 1, ProviderID: 1, RawModel: "model-x", Tier: 1, Weight: 1, Routable: true},
+		{CredentialID: 2, ProviderID: 2, RawModel: "model-x", Tier: 1, Weight: 1, Routable: true},
+	}
+	key := "1:1:model-x|2:2:model-x"
+
+	// Four allocations fill the map up to (not past) the soft cap.
+	for i := 0; i < 4; i++ {
+		router.nextWeightCounter(cands)
+	}
+	if v, ok := router.weightCounters.Load(key); !ok {
+		t.Fatal("counter entry missing before rotation")
+	} else if got := v.(*atomic.Uint64).Load(); got != 4 {
+		t.Fatalf("counter before rotation = %d, want 4", got)
+	}
+
+	// The next allocation crosses the cap → map rotated, counter restarts at 0.
+	if got := router.nextWeightCounter(cands); got != 0 {
+		t.Fatalf("first counter after rotation = %d, want 0 (weighted phase restarts)", got)
+	}
+	if router.weightCountersTotal.Load() != 0 {
+		t.Fatalf("total after rotation = %d, want 0", router.weightCountersTotal.Load())
+	}
+	if v, ok := router.weightCounters.Load(key); !ok {
+		t.Fatal("counter entry not re-created after rotation")
+	} else if got := v.(*atomic.Uint64).Load(); got != 1 {
+		t.Fatalf("counter entry after rotation = %d, want 1", got)
+	}
+
+	// Subsequent allocations keep counting up from the fresh phase.
+	if got := router.nextWeightCounter(cands); got != 1 {
+		t.Fatalf("second counter after rotation = %d, want 1", got)
 	}
 }

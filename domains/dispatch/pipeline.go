@@ -389,10 +389,13 @@ func (p *Pipeline) NewDefaultRetryScheduler() *HeapRetryScheduler {
 	if p == nil {
 		return nil
 	}
+	// maxItems (audit 2026-09-14 R28 #15b): same bound style as Start() —
+	// DispatcherWorkers*64, mirroring the failoverCh capacity idiom. 0 would
+	// keep the legacy unbounded heap.
 	return NewHeapRetrySchedulerWithCloseHandler(
 		p.onRetryDue,
 		func(qr *QueuedRequest) { p.complete(qr, ForwardOutcome{Err: ErrShutdown}) },
-		nil, nil)
+		nil, nil, p.config().DispatcherWorkers*64)
 }
 
 // SetQueueMirror wires the optional Redis queue-state mirror. Nil disables
@@ -935,10 +938,13 @@ func (p *Pipeline) Start() {
 	// parked at Tier-0 drain time and re-admitted via onScheduledDue; Close
 	// completes still-parked requests with ErrShutdown so Submit callers
 	// never block through a shutdown.
+	// maxItems (audit 2026-09-14 R28 #15b) bounds the parked heap at
+	// DispatcherWorkers*64 (same idiom as the failoverCh capacity above);
+	// Schedule refuses (callers fall back to their immediate path) beyond it.
 	p.dueScheduler = NewHeapRetrySchedulerWithCloseHandler(
 		p.onScheduledDue,
 		func(qr *QueuedRequest) { p.complete(qr, ForwardOutcome{Err: ErrShutdown}) },
-		nil, nil)
+		nil, nil, cfg.DispatcherWorkers*64)
 
 	// Stage C.2: start the optional snapshot observer. Its lifecycle is
 	// independent of the Pipeline's wg — Stop() drains it explicitly so
@@ -1894,7 +1900,19 @@ func (p *Pipeline) routeFailover(qr *QueuedRequest, out ForwardOutcome) {
 	if qr.completed.Load() || qr.abandoned.Load() {
 		return
 	}
+	// Audit 2026-09-14 R28 #15a: ctx-aware handoff. The ③ mover already
+	// re-checks ctx after dequeue (onRetryDue / runFailover), but parking the
+	// item on the bounded failoverCh while the caller is already gone makes
+	// the queue absorb work that can never be delivered. When the request ctx
+	// is done we complete the qr with the ctx error instead (zero-drop
+	// semantics: the request is terminal, never discarded) so the Submit
+	// caller is released immediately. Deliberately NO `default` branch — a
+	// live ctx must still wait on failoverCh/stopCh exactly as before.
 	select {
+	case <-ctxOf(qr).Done():
+		metricOverflow.WithLabelValues("failover_ctx_done").Inc()
+		p.observeOverflow("failover_ctx_done")
+		p.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
 	case p.failoverCh <- failoverItem{qr: qr, out: out}:
 	case <-p.stopCh:
 		// Pipeline is shutting down and the failover channel may never be
