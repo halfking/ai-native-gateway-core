@@ -484,3 +484,9 @@ Asia/Shanghai 钉扎（objects/ 688 谱系机械变换）；699=ensure_supplier_
 partition 钉扎（694 清单漏了 deploy 轨 V371 出身的它）；700=request_logs 视图
 补 raw_model_name 列（drift scanner 42703 根修）。三者均已随本地 deploy
 2089-2091 应用；699/700 的下机通道（down/对账）按迁移文件内注释执行。
+## 2026-09-13T18:03:13Z — deploy 245 build_seq 2102 (490e8e98)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 703 | `703_supplier_errors_promote_timezone_pin.sql` | `dd21425c325c564c66d47489741566d4ce9e19d7fc2b3f57a4d88eb40913b44e` | applied+verified |
+
