@@ -1,7 +1,7 @@
 # docs/ — LLM Gateway 文档
 
 > 重构时间：2026-08-17 · 重构分支：`chore/docs-archive-2026-08` · 重构策略：保守归档 + 主题重组  
-> 最后更新：2026-09-07
+> 最后更新：2026-09-14
 
 ---
 
@@ -33,6 +33,14 @@
 - **过期过程文档已删除**：FINAL_* / COMPLETION_* / SELFCHECK_* / HANDOFF_* / 修复与验收报告、`.acc-task-stop-summary*`、`.handoff/`、`.artifacts/` 等 AI 会话产物（git 历史可恢复）；docs/ 顶层的重复验证报告（ERROR-EVIDENCE-MATRIX-20260904/05、LOCAL-VERIFICATION-REPORT-20260904/05 等）一并清理。
 - **docs/ 顶层审计/修复/设计文档归位**：`audit-2026-09-*.md` → [audit/](./audit/)、`2026-09-06-*-fix.md` → [fixes/](./fixes/)、热力图需求/实施 → [design/](./design/)。
 - **敏感信息脱敏**：全部活跃文档中的真实服务器 IP / SSH 密码 / 测试令牌替换为 `<env:HOST_154_IP>` 等占位符（对照 `.env.example`，真实值放本地环境变量）。
+
+---
+
+## 🧹 2026-09-14 文档整理
+
+- `MOCK_PROVIDER_SYSTEM_TEST_REPORT_20260907.md`（仓库根目录，2026-09-07 一次性全量测试报告，7/7 场景终局运行）→ [archive/2026-09/](./archive/2026-09/MOCK_PROVIDER_SYSTEM_TEST_REPORT_20260907.md)。
+- `docs/merge-audit-2026-08-26-local-precedence.md`（一次性合并审计记录，仓内无引用，后续合并审计由 [audit/](./audit/) 承接）→ [archive/2026-08/](./archive/2026-08/merge-audit-2026-08-26-local-precedence.md)。
+- 引用同步：[deployment/rate-limit-and-node-probe-semantics.md](./deployment/rate-limit-and-node-probe-semantics.md) 中指向测试报告的路径已更新；归档索引 [archive/INDEX.md](./archive/INDEX.md) 已补录上述两条。
 
 ---
 

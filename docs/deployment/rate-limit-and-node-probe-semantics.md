@@ -1,6 +1,6 @@
 # 运维语义说明:限流阈值、节点探针排除窗口、全候选 429 透传、env 文件读取
 
-> 来源:Mock Provider 7 场景综合系统测试(`MOCK_PROVIDER_SYSTEM_TEST_REPORT_20260907.md` §5)中发现并根治/澄清的运维语义问题。面向直接改库/运维本地部署的工程师。
+> 来源:Mock Provider 7 场景综合系统测试([`../archive/2026-09/MOCK_PROVIDER_SYSTEM_TEST_REPORT_20260907.md`](./archive/2026-09/MOCK_PROVIDER_SYSTEM_TEST_REPORT_20260907.md) §5)中发现并根治/澄清的运维语义问题。面向直接改库/运维本地部署的工程师。
 
 ## 1. API key 的 `rate_limit_rpm`:NULL ≠ 无限,显式 0 才是无限
 
