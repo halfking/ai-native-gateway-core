@@ -860,33 +860,60 @@ git log 近 10 个提交。
 
 **✅ push 已完成（2026-09-13）**：修正 commit + 本节登记 push 成功，双向同步（详见 git log）。
 
-## 十九、下一轮执行提示词（复制即用）
+## 二十、审计评分轮 3（2026-09-13，对 §十八 修正轮复评）
+
+### 评分表（10 分制）
+
+| 任务项 | 得分 | 评语 |
+|---|---|---|
+| color-mix 豁免平衡括号修复（33066e289） | 9 | 根因级修复 + 4 边界自测通过；**扣 1**：自测是一次性 /tmp 脚本未入仓（自测过程中还出现期望值笔误，临时验证无评审保障），且新引入的豁免函数对**跨行 color-mix** 的续行黑白成分会误报——该边界未识别、未登记 |
+| inBlockComment 跨 style 块重置 | 10 | 病态输入防御到位 |
+| FOUC 前提回归用例 | 10 | 源码级锁定 head 同步 + 无 defer/async，与 /tmp 行为探针互补 |
+| 指南 §11 暗色桥接 | 10 | 桥接知识首次进入指南读者视野，双轨/桥接范围/令牌红线/FOUC 前提四要素齐备 |
+| 口径补正与量化登记 | 10 | color-audit 基线口径 45 明确；qbar-high/expand-row 视觉变化量化到 pp |
+| **平均** | **9.8** | |
+
+### 本轮修正（审计发现 → 修复）
+
+| # | 问题 | 根因 | 修正 |
+|---|---|---|---|
+| 1 | 豁免函数无入仓单测——§十八 的核心修复靠一次性 /tmp 自测验证 | 审计脚本为 CLI 整体无导出；vitest include 仅 `src/**`，scripts/ 下无法放测试 | 提取 `scripts/lib/color-audit-scan.mjs`（纯函数模块 + `.d.mts` 类型声明），新增 `src/color-audit-scan.test.ts` 5 用例入仓：var() 内嵌+尾部黑白、品牌色成分保留（漏报防护核心）、跨行续行、同行多 color-mix、嵌套 rgba |
+| 2 | 跨行 color-mix 的续行黑白成分被误报（`color-mix(in srgb,⏎ var(--x) 60%,⏎ #000)` 的第三行 `#000` 报违规） | 豁免函数纯行级，括号平衡状态不跨行 | `exemptColorMixBlacks(line, state)` 增加 `{inMix, depth}` 跨行状态衔接；scanFile 每文件初始化、style 块收尾重置（与 inBlockComment 同点） |
+| 3 | color 审计门禁未接入 package.json——§十八 声称「`--strict` 供 CI」但无 npm script，执行者需手敲 node 命令，门禁形同虚设 | 加 script 的动作漏做 | `color:check`（`--strict --baseline scripts/color-audit-baseline.json`）+ `color:baseline:update` 两 script；strict 语义升级为**基线对比**（对齐 i18n-cjk-baseline.json 先例）：拦截基线外新增硬编码色、放行 45 处已判定保留项；key 用 `file:value` 粒度抗行号漂移 |
+| 4 | （连带发现）color:check 初版直接抄 `--strict` 导致 45 处保留项全部 FAIL（exit 1） | strict 全量拦截语义与「保留判定」不兼容，缺基线放行通道 | 同 #3 基线机制解决 |
+
+**门禁拦截实证**：临时向 ModulesView.vue 注入 `.tmp-x{color:#123abc}` → `color:check` exit 1 并列出基线外新增；还原后 exit 0。（单行 `<style>...</style>` 注入形式不拦截属脚本既有行为——vue style 块识别要求开闭标签分行，真实代码无此形态。）
+
+### 门禁终态（六门禁）
+
+vue-tsc / vitest（39 失败文件基线）/ i18n STRICT / responsive:check --strict / element:check / **color:check（--strict --baseline，基线 44 条 / 45 处）**——修正后全绿。后续轮门禁清单按六项执行。
+
+## 二十一、下一轮执行提示词（复制即用）
 
 ```text
 你是前端工程师，在 llm-gateway-go-5/web 做下一轮例行审计与真机复核。
 先读：docs/handoff/2026-09-13-frontend-responsive-componentization-steps.md
-（§二环境注意事项、§九/§十三/§十五/§十八四轮审计评分、§十六例行轮记录）、
+（§二环境注意事项、§九/§十三/§十五/§十八/§二十五轮审计评分、§十六例行轮记录）、
 docs/03-design/frontend-component-usage-guide.md（§11 EP 暗色桥接与颜色令牌规范）、
 git log 近 10 个提交。
 工作区约定：pnpm 未装用 npm run/npx；不要 npm install（node_modules 为 darwin
 布局，rollup/esbuild/sass-embedded-linux-arm64 已手工补装）；存量 vitest 失败
 基线 39 文件不得扩大；i18n 注释里别写 t('...') 字样；新代码断点只允许
-480/640/768/1024/1440；硬编码色判定先跑 node scripts/color-token-audit.mjs
-（终态基线 45，color-mix 内仅黑白成分豁免、非黑白成分照常报告——收紧豁免时
-先跑基线对比，防误报新冻结）。
+480/640/768/1024/1440。
 
-环境约束（必读）：虚机环境——TLS/证书类操作使用主机证书；部署一律 SSH 到
+环境约束（必读）：虚机环境——TLS/证书类操作使用主机的证书；部署一律 SSH 到
 主机执行（不在虚机内部署）；headless 浏览器对 SPA 渲染不可靠（OOM），视觉
 验证用「生产包 + 网关 :8781 托管」或裸页探针（/tmp/walk/lib.mjs +
 fouc.mjs/brand.mjs 可复用），用户侧观感请用户真实浏览器复核。
 
 任务（按序，独立 commit）：
-1. 五门禁例行复验：vue-tsc / vitest（失败集 ≤39 文件基线）/ i18n STRICT /
-   responsive:check --strict / element:check（+ color-token-audit 基线 45 不新增）。
+1. 六门禁例行复验：vue-tsc / vitest（失败集 ≤39 文件基线）/ i18n STRICT /
+   responsive:check --strict / element:check / color:check（基线 44 条放行、
+   基线外新增即 FAIL；保留判定扩容走 color:baseline:update 并在登记表说明）。
 2. 暗色真机复核（§十六遗留 1）：请用户在真实浏览器 ?theme=dark 走查
    ProxyView（/admin/proxy，按钮组修复现场）、RoutingLog/RequestLogs 徽章、
    RoutingAudit 展开行（#050505→--bg-subtle 双主题变化）、EP 主按钮品牌蓝；
-   发现残余亮块/不可读文字继续令牌化清扫。
+   发现残余亮块/不可读文字继续令牌化清扫（清扫后基线同步缩减）。
 3. EP 品牌色其余四色评估（§十六遗留 2）：应用与 EP 默认偏差大的色才值得
    整组重推导（方法照 §十六任务4），偏差小的维持默认并登记理由。
 4. 任何组件接口调整，同步《前端组件使用指南》（§四约定；颜色令牌红线见指南 §11）。
