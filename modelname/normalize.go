@@ -238,6 +238,17 @@ func CanonicalizeClientModel(rawName string) string {
 	// "minimax-m3". Without this, loadCandidatesByModalityDB's
 	// "canonical_raw_name = $1" clause never matches NIM offers.
 	rawName = strings.TrimSpace(strings.ToLower(rawName))
+	// 2026-09-14 audit G-P0-1: "auto/" is the gateway's own OmniFree
+	// virtual-route namespace, NOT a vendor prefix. The generic last-"/"
+	// strip below collapsed "auto/free" to "free", making shouldTryOmniFree
+	// (which requires the "auto/" prefix) unreachable on the live wire — the
+	// whole autocombo domain was dead code despite full test coverage at the
+	// unit level. Exempt the reserved prefix here; when OmniFree is not
+	// wired, handler_autocombo's nil-guard keeps the literal-name fallback
+	// (400 invalid_model), identical to today's behavior.
+	if strings.HasPrefix(rawName, "auto/") {
+		return rawName
+	}
 	if idx := strings.LastIndex(rawName, "/"); idx >= 0 {
 		rawName = rawName[idx+1:]
 	}

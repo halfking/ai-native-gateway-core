@@ -103,6 +103,12 @@ func TestCanonicalizeClientModel(t *testing.T) {
 		{name: "nvidia z-ai uppercase", in: "Z-AI/GLM-5.2", want: "glm-5.2"},
 		{name: "anthropic claude prefix", in: "anthropic/claude-3-5-sonnet", want: "claude-3-5-sonnet"},
 		{name: "openai prefix", in: "openai/gpt-4o", want: "gpt-4o"},
+		// 2026-09-14 audit G-P0-1: "auto/" is the gateway's own OmniFree
+		// namespace, not a vendor prefix — the strip must not collapse it,
+		// otherwise shouldTryOmniFree is unreachable on the live wire.
+		{name: "omnifree auto/free preserved", in: "auto/free", want: "auto/free"},
+		{name: "omnifree auto/ prefix uppercase", in: "AUTO/FREE", want: "auto/free"},
+		{name: "omnifree auto/ with slash suffix", in: "auto/pro/free", want: "auto/pro/free"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
