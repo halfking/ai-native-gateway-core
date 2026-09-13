@@ -1,0 +1,45 @@
+/*
+ * element-dark.css — Element Plus 暗色皮肤与应用令牌的桥接（2026-09-13）。
+ *
+ * 背景：EP 组件（el-table/el-card/el-input/el-select…）消费 --el-* 变量，
+ * 默认亮色白底。暗色适配由 theme-chalk/dark/css-vars.css 的 html.dark 门控
+ * 提供（main.ts 引入，theme.ts applyTheme 同步切换 dark 类）；本文件再把
+ * EP 的表面/文字/描边变量映射到 style.css 的应用令牌，使 EP 组件与应用
+ * 自研面板保持同一暗色调，而非 EP 默认的中性灰。
+ *
+ * 特异性：html.dark[data-theme='dark'] 高于 EP 文件的 html.dark，
+ * 不依赖引入顺序。data-theme 与 dark 类由 applyTheme 原子同步设置。
+ *
+ * 范围约定：只桥接表面/文字/描边/遮罩；--el-color-* 品牌色保持 EP 默认，
+ * 避免 light-N 派生色阶与 base 脱节。
+ */
+html.dark[data-theme='dark'] {
+  /* 表面 */
+  --el-bg-color: var(--kx-surface);
+  --el-bg-color-overlay: var(--kx-surface);
+  --el-bg-color-page: var(--kx-bg);
+  --el-fill-color-blank: var(--kx-surface);
+  --el-fill-color: color-mix(in srgb, #ffffff 6%, var(--kx-surface));
+  --el-fill-color-light: color-mix(in srgb, #ffffff 5%, var(--kx-surface));
+  --el-fill-color-lighter: color-mix(in srgb, #ffffff 4%, var(--kx-surface));
+  --el-fill-color-extra-light: color-mix(in srgb, #ffffff 3%, var(--kx-surface));
+  --el-fill-color-dark: color-mix(in srgb, #000000 12%, var(--kx-surface));
+  --el-fill-color-darker: color-mix(in srgb, #000000 20%, var(--kx-surface));
+
+  /* 文字 */
+  --el-text-color-primary: var(--kx-text);
+  --el-text-color-regular: var(--kx-text);
+  --el-text-color-secondary: var(--kx-muted);
+  --el-text-color-placeholder: var(--kx-muted);
+  --el-text-color-disabled: var(--kx-muted);
+
+  /* 描边 */
+  --el-border-color: var(--kx-border);
+  --el-border-color-light: var(--kx-border);
+  --el-border-color-lighter: var(--kx-border);
+  --el-border-color-extra-light: var(--kx-border);
+
+  /* 遮罩（对齐 style.css 的 --overlay-strong） */
+  --el-mask-color: var(--overlay-strong);
+  --el-mask-color-extra-light: var(--overlay-faint);
+}
