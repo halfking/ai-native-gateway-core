@@ -528,15 +528,17 @@ func (g *BalanceFloorGuard) cycle(ctx context.Context) error {
 	return g.sweepPlanQuotas(ctx)
 }
 
-// releaseClearedFloorCredentials releases floor-pulled credentials whose three
-// floor columns are ALL NULL — the unambiguous operator signal that the floor
-// was cleared (admin PATCH NULLs them). Until this pass existed such rows
-// hung forever: currency pass C requires balance_floor_usd IS NOT NULL, the
-// plan path no-ops when both plan floors are NULL (floorNone), and
-// BalanceQuotaProbe exempts balance_floor rows by design (anti ping-pong).
-// If ANY floor remains configured the row stays owned by the hysteresis
-// restore paths instead. Routability guards mirror pass C's candidate SELECT:
-// a row disabled by other means is released once those disables lift.
+// releaseClearedFloorCredentials releases floor-pulled credentials once the
+// floor that pulled them is gone: currency floor NULL AND (both plan floors
+// NULL, or the vendor is not a plan vendor whose plan floors would be inert
+// config anyway — they have no probe data source, never participate in pull/
+// restore). Until this pass existed such rows hung forever: currency pass C
+// requires balance_floor_usd IS NOT NULL, the plan path no-ops on NULL floors
+// (floorNone) and skips non-plan vendors outright, and BalanceQuotaProbe
+// exempts balance_floor rows by design (anti ping-pong). A zhipu/minimax row
+// with plan floors still set stays owned by the plan hysteresis path.
+// Routability guards mirror pass C's candidate SELECT: a row disabled by
+// other means is released once those disables lift.
 func (g *BalanceFloorGuard) releaseClearedFloorCredentials(ctx context.Context) error {
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -547,13 +549,19 @@ func (g *BalanceFloorGuard) releaseClearedFloorCredentials(ctx context.Context) 
 		    availability_state = 'ready',
 		    availability_recover_at = NULL,
 		    state_reason_code = NULL,
-		    state_reason_detail = 'balance_floor guard: all floors cleared by operator, released to routing pool',
+		    state_reason_detail = 'balance_floor guard: floors cleared by operator, released to routing pool',
 		    state_updated_at = now()
 		WHERE COALESCE(quota_state, 'ok') = 'balance_exhausted'
 		  AND COALESCE(state_reason_code, '') = 'balance_floor'
 		  AND balance_floor_usd IS NULL
-		  AND quota_floor_tokens IS NULL
-		  AND quota_floor_percent IS NULL
+		  AND (
+		      (quota_floor_tokens IS NULL AND quota_floor_percent IS NULL)
+		      OR NOT EXISTS (
+		          SELECT 1 FROM providers q
+		          WHERE q.id = credentials.provider_id
+		            AND COALESCE(q.catalog_code, '') IN ('zhipu', 'minimax')
+		      )
+		  )
 		  AND status = 'active'
 		  AND lifecycle_status = 'active'
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
@@ -568,7 +576,7 @@ func (g *BalanceFloorGuard) releaseClearedFloorCredentials(ctx context.Context) 
 		return err
 	}
 	if n := tag.RowsAffected(); n > 0 {
-		slog.Info("balance_floor_guard: released floor-pulled credentials (all floors cleared)",
+		slog.Info("balance_floor_guard: released floor-pulled credentials (floors cleared)",
 			"count", n)
 	}
 	return nil

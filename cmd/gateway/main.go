@@ -2794,6 +2794,7 @@ func main() {
 	// 保证 /api/auth/* 路由全部注册上，DB 相关 handler 在请求时再 503/500。
 	var adminHandler *admin.Handler
 	var promptInjectionHandler *admin.PromptInjectionHandler
+	var scanScheduler *bg.ScanScheduler // R20 §二.6: FreeDiscovery periodic scan worker
 	{
 		var adminDB *pgxpool.Pool
 		if dbConn != nil && dbConn.Enabled() {
@@ -2809,6 +2810,21 @@ func main() {
 		if dbConn != nil && dbConn.Enabled() {
 			adminHandler.SetFreeDiscovery(dbConn.Stdlib(), keyring)
 			slog.Info("free-discovery admin routes wired", "keyring", keyring != nil)
+		}
+		// ── FreeDiscovery scheduled scan worker (2026-09-14, R20 §二.6) ──
+		// Periodic sweep of all enabled provider templates → TriggerScheduled
+		// runs. Shares the same DiscoveryEngine/TemplateManager the admin
+		// handler uses. Disabled when free-discovery is not wired or
+		// LLM_GATEWAY_FD_SCAN_SCHEDULER=off.
+		if adminHandler.FreeDiscoveryEngine() != nil {
+			scanScheduler = bg.NewScanScheduler(
+				dbConn.Pool(),
+				adminHandler.FreeDiscoveryEngine(),
+				adminHandler.FreeDiscoveryTemplates(),
+			)
+			scanScheduler.Start(context.Background())
+			adminHandler.SetScanSchedulerStatus(scanScheduler)
+			slog.Info("scan_scheduler started")
 		}
 		// 会话优化 v4 (T4/R1.6): 流式连接注册表 — request_id → 客户端写出
 		// 流，供心跳/思考帧桥接回写与 /api/admin/connection-registry 只读
@@ -6953,6 +6969,9 @@ func main() {
 		// BalanceQuotaProbe 停止可避免停机窗口内的最后一批拉取无人复核。
 		if balanceFloorGuard != nil {
 			balanceFloorGuard.Stop()
+		}
+		if scanScheduler != nil {
+			scanScheduler.Stop()
 		}
 		if balanceQuotaProbe != nil {
 			balanceQuotaProbe.Stop()

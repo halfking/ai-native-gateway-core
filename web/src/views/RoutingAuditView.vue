@@ -86,15 +86,15 @@ onMounted(load)
       </div>
       <div class="summary-card">
         <div class="summary-label">{{ t('routingAudit.summary.inserts') }}</div>
-        <div class="summary-value" style="color: #22c55e">{{ summary.insert }}</div>
+        <div class="summary-value" style="color: var(--success)">{{ summary.insert }}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">{{ t('routingAudit.summary.updates') }}</div>
-        <div class="summary-value" style="color: #3b82f6">{{ summary.update }}</div>
+        <div class="summary-value" style="color: var(--accent)">{{ summary.update }}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">{{ t('routingAudit.summary.deletes') }}</div>
-        <div class="summary-value" style="color: #ef4444">{{ summary.delete }}</div>
+        <div class="summary-value" style="color: var(--danger)">{{ summary.delete }}</div>
       </div>
     </div>
 
@@ -382,7 +382,7 @@ h2 {
 }
 .btn-expand:hover { background: var(--kx-text); }
 .expand-row {
-  background: #050505;
+  background: var(--bg-subtle);
 }
 .expand-row td {
   padding: 12px 16px;

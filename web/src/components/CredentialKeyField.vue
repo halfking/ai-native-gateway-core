@@ -93,5 +93,5 @@ function hide() {
 .credential-key-field { display: inline-flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
 .credential-key-field code { max-width: 22rem; overflow: hidden; text-overflow: ellipsis; }
 .credential-key-field button { font-size: .75rem; }
-.error { color: #c53030; font-size: .75rem; }
+.error { color: var(--danger); font-size: .75rem; }
 </style>

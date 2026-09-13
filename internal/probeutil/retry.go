@@ -11,7 +11,7 @@
 //
 // probeRetryDelays: 0s, 5s, 5s — three attempts total. The 0s first attempt
 // keeps the happy path identical (no extra latency for healthy credentials).
-// The 2s + 5s backoff is deliberately short: it is meant to absorb blips,
+// The 5s + 5s backoff is deliberately short: it is meant to absorb blips,
 // not to wait for upstream recovery. Long backoff (10/15/30s) lives in
 // bg/model_probe.probeWithRetry and serves a different purpose — waiting
 // for an already-broken provider to come back online.
@@ -64,7 +64,7 @@ var ProbeRetryDelays = probeRetryDelaysDefault
 //
 // The "any other 4xx" default errs on the side of retrying: a single probe
 // must not declare a credential dead (audit mandate). Statuses like 405/409/
-// 410/418/428/451 are uncommon enough from a probe endpoint that a 2s+5s
+// 410/418/428/451 are uncommon enough from a probe endpoint that a 5s+5s
 // retry is cheaper than a false-unhealthy cascade. The classifier only
 // short-circuits to fail-fast on the six statuses that are unambiguous
 // business failures.

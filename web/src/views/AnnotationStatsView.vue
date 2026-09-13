@@ -304,23 +304,23 @@ onMounted(load)
 }
 
 .stat-icon-primary {
-  background: #e3f2fd;
+  background: var(--info-bg);
 }
 
 .stat-icon-success {
-  background: #e8f5e9;
+  background: var(--success-bg);
 }
 
 .stat-icon-green {
-  background: #e8f5e9;
+  background: var(--success-bg);
 }
 
 .stat-icon-red {
-  background: #ffebee;
+  background: var(--danger-bg);
 }
 
 .stat-icon-info {
-  background: #f3e5f5;
+  background: color-mix(in srgb, var(--purple) 14%, transparent);
 }
 
 .stat-content {
@@ -401,11 +401,11 @@ onMounted(load)
 }
 
 .text-success {
-  color: var(--success, #388e3c);
+  color: var(--success);
 }
 
 .text-danger {
-  color: var(--danger, #d32f2f);
+  color: var(--danger);
 }
 
 .accuracy-badge {
@@ -421,8 +421,8 @@ onMounted(load)
 }
 
 .badge-blue {
-  background: #e3f2fd;
-  color: #1976d2;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 
 .badge-gray {
@@ -441,7 +441,7 @@ onMounted(load)
 
 .bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, #1976d2, #42a5f5);
+  background: linear-gradient(90deg, var(--accent), var(--probe-cyan));
   border-radius: 4px;
   transition: width 0.3s ease;
 }

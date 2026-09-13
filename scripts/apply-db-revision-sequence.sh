@@ -329,6 +329,14 @@ files=(
   # 本迁移重编号 699→700;重编号前已复核生产双账本 698-702 均 0 命中
   # (schema_migrations 无 698/699/700/701,sequences 无 :69[89]/:70[0-2])。
   "$ROOT_DIR/sql/migrations/startup/700_request_logs_view_raw_model_name.sql"
+  # 2026-09-13 balance-floor guard: carry the schema migration through the
+  # upgrade channel as well as Go startup ensure, keeping both ledgers aligned.
+  "$ROOT_DIR/sql/migrations/startup/701_credential_balance_floor.sql"
+  # 2026-09-13 接线补齐:703 supplier_errors promote 钉扎(703 文件注释引 r20 §二.4)
+  # 交付时只落了 startup 文件 + 01-schema baseline + Go ensure 面,漏了本通道——
+  # 升级型数据库(共享 252 生产 PG 即是)经通道升级将永远轮不到它,693/699/701
+  # 同款缺口。文件自带 schema_migrations INSERT(695-699 先例),通道补条目即闭环。
+  "$ROOT_DIR/sql/migrations/startup/703_supplier_errors_promote_timezone_pin.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

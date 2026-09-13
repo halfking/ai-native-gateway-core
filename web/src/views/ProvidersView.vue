@@ -1715,8 +1715,8 @@ table code {
   font-size: 11px;
 }
 .badge-blue {
-  background: rgba(33,150,243,.18);
-  color: #42a5f5;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 .badge-orange {
   background: var(--warning-bg);

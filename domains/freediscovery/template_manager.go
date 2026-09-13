@@ -392,23 +392,53 @@ func scanTemplate(row interface {
 	return &t, nil
 }
 
+// ErrInvalidTenantID is returned when a tenant_id fails the
+// [A-Za-z0-9_-]{1,64} allowlist. Callers (admin handlers) map this to 400
+// via fdStatusFor. Previously setTenantTx silently remapped such IDs to
+// the shared 'default' bucket — a cross-tenant data-blending risk if a
+// malformed or hostile tenant_id ever reached the DB layer.
+var ErrInvalidTenantID = errors.New("freediscovery: tenant_id must only allow [A-Za-z0-9_-] up to 64 characters")
+
 // setTenantTx sets the RLS tenant GUC inside a transaction.
 // Matches freeresource.QuotaTracker: SET LOCAL + escapeTenant allowlist escaping.
+// Non-empty tenant IDs that fail the allowlist are rejected (ErrInvalidTenantID)
+// rather than silently remapped to 'default' (R20 §2.5 P2).
 func setTenantTx(ctx context.Context, tx *sql.Tx, tenantID string) error {
 	if tenantID == "" {
 		return nil // Let RLS fall back to 'default'.
 	}
+	if !isValidTenantID(tenantID) {
+		return ErrInvalidTenantID
+	}
 	_, err := tx.ExecContext(ctx,
-		fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", escapeTenantID(tenantID)))
+		fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", tenantID))
 	if err != nil {
 		return fmt.Errorf("freediscovery: set rls tenant: %w", err)
 	}
 	return nil
 }
 
-// escapeTenantID only allows [A-Za-z0-9_-] up to 64 characters; anything else is replaced
-// with 'default', matching the unquoted-concatenation contract used by get_current_tenant()
-// in migrations 075/084.
+// isValidTenantID is the [A-Za-z0-9_-]{1,64} allowlist shared by setTenantTx
+// and the admin boundary guard. It mirrors freeresource.isValidTenantID so
+// the RLS GUC is only ever fed an identifier that is safe to inline
+// unquoted (get_current_tenant() in migrations 075/084 has no quoting).
+func isValidTenantID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// escapeTenantID is retained for backwards compatibility with any caller
+// still concatenating the tenant into SQL without the reject path; it
+// collapses invalid input to the safe 'default' fallback. New call sites
+// should use isValidTenantID + ErrInvalidTenantID instead.
 func escapeTenantID(id string) string {
 	if id == "" || len(id) > 64 {
 		return "default"

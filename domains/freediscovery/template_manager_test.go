@@ -53,6 +53,63 @@ func TestEscapeTenantID(t *testing.T) {
 	}
 }
 
+// TestIsValidTenantID covers the [A-Za-z0-9_-]{1,64} allowlist that guards
+// the RLS GUC. Invalid IDs must be rejected (ErrInvalidTenantID → 400) rather
+// than silently remapped to the shared 'default' bucket (R20 §2.5).
+func TestIsValidTenantID(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"tenant-a", true},
+		{"Tenant_1", true},
+		{"default", true},
+		{"A", true},
+		{strings.Repeat("a", 64), true},
+		{"", false},
+		{strings.Repeat("a", 65), false},
+		{"bad; DROP TABLE x", false},
+		{"bad'tenant", false},
+		{"with space", false},
+		{"café", false},
+		{"a/b", false},
+		{"a.b", false},
+	}
+	for _, c := range cases {
+		if got := isValidTenantID(c.in); got != c.want {
+			t.Errorf("isValidTenantID(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// TestSetTenantTx_RejectsInvalidTenantID verifies that a non-empty tenant ID
+// failing the allowlist is rejected with ErrInvalidTenantID — NOT silently
+// remapped to 'default'. An empty tenant ID is still allowed (falls back to
+// default via RLS).
+func TestSetTenantTx_RejectsInvalidTenantID(t *testing.T) {
+	db, mock := newMockDB(t)
+	ctx := context.Background()
+
+	// Invalid ID: setTenantTx must reject before touching tx.ExecContext,
+	// so we only need to expect the Begin — no SET LOCAL, no Rollback
+	// expectations should fire on the SQL path (guard returns early).
+	mock.ExpectBegin()
+	// No ExpectExec: the guard must fire before ExecContext.
+	// sqlmock.MatchExpectationsInOrder defaults to true, so the Begin must
+	// be consumed first.
+	mock.ExpectRollback() // defer tx.Rollback()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := setTenantTx(ctx, tx, "bad; DROP TABLE x"); !errors.Is(err, ErrInvalidTenantID) {
+		t.Fatalf("setTenantTx(invalid) = %v, want ErrInvalidTenantID", err)
+	}
+}
+
 func TestTemplateManager_Create_RequiresKeyringForPlaintextKey(t *testing.T) {
 	db, _ := newMockDB(t)
 	// nil keyring: plaintext keys must be rejected (fail closed, never persist plaintext)

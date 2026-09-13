@@ -998,47 +998,48 @@ h1 {
 }
 
 .btn-primary {
-  background: var(--primary-color);
-  color: #fff;
+  background: var(--accent);
+  color: var(--on-primary);
 }
 
 .btn-primary:hover {
-  background: var(--primary-hover);
+  background: var(--accent-h);
 }
 
 .btn-primary:disabled {
-  background: var(--secondary-bg);
+  background: var(--bg-secondary);
+  color: var(--muted);
   cursor: not-allowed;
 }
 
 .btn-secondary {
-  background: var(--secondary-bg);
-  color: #fff;
+  background: var(--card);
+  color: var(--text);
 }
 
 .btn-secondary:hover {
-  background: var(--secondary-hover);
+  background: var(--bg-hover);
 }
 
 .btn-small {
   padding: 0.25rem 0.75rem;
   font-size: 0.85rem;
   margin-right: 0.5rem;
-  background: var(--secondary-bg);
-  color: #fff;
+  background: var(--card);
+  color: var(--text);
 }
 
 .btn-small:hover {
-  background: var(--secondary-hover);
+  background: var(--bg-hover);
 }
 
 .btn-danger {
-  background: var(--error-bg);
-  color: #fff;
+  background: var(--danger);
+  color: var(--on-primary);
 }
 
 .btn-danger:hover {
-  background: var(--error-hover);
+  background: color-mix(in srgb, var(--danger) 88%, #000);
 }
 
 .modal-overlay {

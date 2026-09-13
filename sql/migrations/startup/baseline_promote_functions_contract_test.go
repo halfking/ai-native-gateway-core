@@ -12,6 +12,9 @@ import (
 // migration698Tables lists the nine hot-to-partition promote functions that
 // migration 698 pinned to Asia/Shanghai, in the objects/ canonical naming
 // scheme (promote_<table>_hot_to_partition_interval_integer.sql).
+// supplier_errors has no objects/ canonical — its promote body lives only
+// on the V371 deploy track; migration 703 pinned it and the baselines
+// carry the 703 body, asserted by name below (F13 closure).
 var migration698Tables = []string{
 	"candidate_failure_logs",
 	"credential_model_index",
@@ -20,6 +23,7 @@ var migration698Tables = []string{
 	"request_logs",
 	"request_wal",
 	"routing_decision_log",
+	"supplier_errors",
 	"tool_usage_stats",
 	"usage_ledger",
 }

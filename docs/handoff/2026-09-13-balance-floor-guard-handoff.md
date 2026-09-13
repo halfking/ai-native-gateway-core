@@ -60,7 +60,7 @@ go test ./domains/credential/ -count=1                            # ok 14.7s
 
 ## 当前验证结论
 
-> 对 1a89c32fe(balance-floor guard)的部署级验证目前只能分层表述：已证 migration 701、zhipu 真实凭据摘出/恢复闭环、web 构建与相关单测；currency pass A/B/C 仅为 mock 验证；未证 minimax `/v1/token_plan/remains` 真实响应、当前 Docker/:8782 容器身份与 `go version -m`、以及登录后的 live 404 探针。详见 `docs/changelogs/2026-09-13-balance-floor-guard-deploy-verify-and-fixes.md`。已落地的两项代码修复为清下限自动回池(`releaseClearedFloorCredentials`,66a9f8e6a)与 planTypes 下拉值域对齐(77956aeb5)。下一轮不得将 mock 或静态证据写成完整生产闭环。
+> 对 1a89c32fe(balance-floor guard)的部署级验证目前只能分层表述：已证 migration 701、zhipu 真实凭据摘出/恢复闭环、web 构建与相关单测；currency pass A/B/C 仅为 mock 验证；未证 minimax `/v1/token_plan/remains` 真实响应、当前 Docker/:8782 容器身份与 `go version -m`、以及登录后的 live 404 探针。详见 `docs/changelogs/2026-09-13-balance-floor-guard-deploy-verify-and-fixes.md`。已落地的代码修复为清下限自动回池(`releaseClearedFloorCredentials`,66a9f8e6a)、planTypes 下拉值域对齐(77956aeb5)、以及惰性 plan 下限边界修正(870fac658:非套餐厂商清货币下限后残留 plan floor 不再卡死,顺带复审 probe-recovery closeout 并行线与所有权不变量交互全部健在)。下一轮不得将 mock 或静态证据写成完整生产闭环。
 
 ## 下一轮提示词(建议)
 
