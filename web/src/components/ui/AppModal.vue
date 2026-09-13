@@ -34,8 +34,6 @@ const props = withDefaults(
     disabledConfirm?: boolean
     /** 追加到面板元素上的自定义类（保留旧面板皮肤时使用，如 login-modal） */
     panelClass?: string
-    /** 叠放模式：遮罩 z-index 提到 110（复用全局 .modal-overlay-stacked），用于弹层叠弹层 */
-    stacked?: boolean
   }>(),
   {
     title: '',
@@ -46,7 +44,6 @@ const props = withDefaults(
     closable: true,
     disabledConfirm: false,
     panelClass: '',
-    stacked: false,
   },
 )
 
@@ -130,10 +127,7 @@ onBeforeUnmount(() => {
     <div
       v-if="modelValue"
       class="modal-overlay app-modal"
-      :class="{
-        'app-modal--fullscreen': resolvedFullscreen,
-        'modal-overlay-stacked': stacked,
-      }"
+      :class="resolvedFullscreen ? 'app-modal--fullscreen' : ''"
       role="presentation"
       @click.self="onMaskClick"
     >

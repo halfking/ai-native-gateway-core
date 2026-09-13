@@ -506,7 +506,6 @@ tbody tr:hover { background: var(--row-hover); }
   width: 100%;
 }
 .modal h3 { margin-bottom: 16px; font-size: 16px; }
-.modal-overlay-stacked { z-index: 110; }
 
 .modal-safe-area {
   position: fixed;

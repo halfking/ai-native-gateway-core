@@ -96,6 +96,26 @@ describe('AppModal', () => {
     expect(document.body.getAttribute('data-scroll-locked')).toBeNull()
   })
 
+  it('嵌套栈：ESC 仅关闭栈顶弹层（useOverlayStack 集成）', async () => {
+    const a = mountModal({ title: '底层-A' })
+    const b = mountModal({ title: '顶层-B' })
+    await flushPromises()
+
+    pressEscape()
+    await flushPromises()
+    expect(b.emitted('update:modelValue')).toEqual([[false]])
+    expect(a.emitted('update:modelValue')).toBeUndefined()
+
+    // 栈顶 B 关闭后，A 成为栈顶，下一次 ESC 才轮到它
+    await b.setProps({ modelValue: false })
+    await flushPromises()
+    pressEscape()
+    await flushPromises()
+    expect(a.emitted('update:modelValue')!.at(-1)).toEqual([false])
+    a.unmount()
+    b.unmount()
+  })
+
   it('焦点圈闭：打开后焦点进入面板；关闭后焦点返还', async () => {
     const outside = document.createElement('button')
     document.body.appendChild(outside)
