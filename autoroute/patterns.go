@@ -49,6 +49,17 @@ func (p PatternMatch) MatchString(text string) bool {
 // compiledPatterns is the package-level singleton, built once at init.
 var compiledPatterns []PatternMatch
 
+// planModeCodingRe 与 compiledPatterns 中同名单独编译一份，供
+// IsPlanningRequest 做"计划后实现"防误判护栏（2026-09-14 复审）。
+var planModeCodingRe = regexp.MustCompile(`(?i)(?:先|请).{0,10}(?:制定|给出|列出).{0,10}(?:计划|方案|步骤).{0,20}(?:再|然后|之后).{0,10}(?:实现|编码|写代码)`)
+
+// looksLikePlanModeCoding reports whether the text is a "make a plan then
+// implement" coding ask, which must stay TaskCode even when a planning
+// verb+target combo also matches.
+func looksLikePlanModeCoding(text string) bool {
+	return planModeCodingRe.MatchString(text)
+}
+
 func init() {
 	compiledPatterns = buildDefaultPatterns()
 }
@@ -177,14 +188,39 @@ func buildDefaultPatterns() []PatternMatch {
 			weight: 0.60,
 			reason: "pattern: chinese coding task (colloquial 'write a script/tool')",
 		},
+		// "分析" 与代码对象连用时是代码分析（2026-09-14 复审 gap_zh_codeanalyze）：
+		// 关键词层"分析"归 reasoning、"代码"归 code，打平时按优先级错归 reasoning。
+		// 这里直接把"分析+代码对象"判给 code，优先级高于关键词打平。
+		{
+			expr:   `分析.{0,10}(?:代码|函数|接口|程序|脚本|模块|堆栈|日志|报错|性能|内存|泄漏)`,
+			task:   TaskCode,
+			weight: 0.55,
+			reason: "pattern: code/data analysis on a code artifact",
+		},
+		// "分析 + 数据对象" 归 reasoning（"分析"从 reasoning 关键词降级后的补偿，
+		// 覆盖数据分析/归因类请求，如"分析这组数据的分布""分析失败的原因"）。
+		{
+			expr:   `分析.{0,8}(?:数据|样本|分布|趋势|原因|根因)`,
+			task:   TaskReasoning,
+			weight: 0.55,
+			reason: "pattern: data/cause analysis request",
+		},
 		// ── Creative patterns ───────────────────────────────────────
 		// "写一个/写一段/写首" without an explicit code/algorithm target
 		// (the code keyword "写代码" already covers the code case)
 		{
-			expr:   `写(?:一个|一段|一首|一篇).{0,20}(?:故事|诗|歌词|散文|读后感|观后感)`,
+			expr:   `写(?:一个|一段|一首|一篇).{0,20}(?:故事|诗|歌词|散文|读后感|观后感|俳句|打油诗)`,
 			task:   TaskCreative,
 			weight: 0.60,
 			reason: "pattern: creative writing request (story/poem/lyrics)",
+		},
+		// 起名/命名请求（2026-09-14 复审 cre_zh_names：动词与"名字"被修饰语
+		// 隔开，紧邻关键词覆盖不了，如"起几个有创意的名字"）。
+		{
+			expr:   `(?:起|取|想|拟|帮.{0,4}起).{0,8}(?:名字|名称|slogan|标语|标题)`,
+			task:   TaskCreative,
+			weight: 0.60,
+			reason: "pattern: creative naming request",
 		},
 	}
 

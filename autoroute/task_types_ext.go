@@ -29,10 +29,36 @@ var codeAuditKeywords = []string{
 // IsCodeAuditRequest checks if a request is asking for an explicit code audit /
 // security review / vulnerability scan. Returns false for ordinary "review my
 // code" requests (those classify as TaskCode).
+//
+// 2026-09-14 匹配复审（gap_sysprompt_haiku）：审计短语优先只看 user 提示词；
+// system 提示词里的短语仅在 user 同时提到代码对象时才采信——否则"你是代码
+// 审查助手"这类角色设定会劫持 user 的任意请求（如写诗）。
 func IsCodeAuditRequest(signals ClassificationSignals) bool {
-	contentLower := strings.ToLower(signals.SystemPrompt + " " + signals.LastUserPrompt)
-	for _, kw := range codeAuditKeywords {
-		if strings.Contains(contentLower, kw) {
+	userLower := strings.ToLower(signals.LastUserPrompt)
+	if containsAnyPhrase(userLower, codeAuditKeywords) {
+		return true
+	}
+	sysLower := strings.ToLower(signals.SystemPrompt)
+	return containsAnyPhrase(sysLower, codeAuditKeywords) && userMentionsCodeObject(userLower)
+}
+
+func containsAnyPhrase(haystack string, phrases []string) bool {
+	for _, kw := range phrases {
+		if strings.Contains(haystack, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// userMentionsCodeObject reports whether the user prompt itself references a
+// code artifact — required before a system-prompt audit phrase may count.
+func userMentionsCodeObject(userLower string) bool {
+	for _, obj := range []string{
+		"代码", "code", "函数", "function", "接口", "api", "脚本", "script",
+		"模块", "module", "commit", "pull request", " pr", "bug", "中间件", "middleware",
+	} {
+		if strings.Contains(userLower, obj) {
 			return true
 		}
 	}
@@ -47,10 +73,13 @@ var intentClassificationKeywords = []string{
 	// 中文紧邻短语
 	"意图分类", "意图识别", "意图检测", "意图归类",
 	"文本分类", "识别意图", "判断意图",
+	// 中文情感/倾向二分类（2026-09-14 复审 gap_zh_sentiment 补充）
+	"情感分类", "情感分析", "情感倾向", "正面还是负面", "是正面", "是负面",
 	// 英文紧邻短语
 	"intent classification", "intent detection",
 	"classify intent", "classify the intent", "detect intent",
 	"classify this", "text classification",
+	"sentiment analysis", "sentiment classification", "positive or negative",
 }
 
 // intentClassifyVerbs / intentClassifyTargets 用于组合判断：当动词与目标
@@ -111,16 +140,48 @@ var planningKeywords = []string{
 	"roadmap", "technical proposal", "write a proposal",
 }
 
+// planningVerbs / planningTargets 用于组合判断（2026-09-14 复审
+// plan_zh_migration 补充）：紧邻短语覆盖不了"制定一个数据迁移方案"这类
+// 动词与目标被修饰语隔开的写法，动词+目标同时出现即判定（与意图分类的
+// 组合判断同型）。动词表刻意不含"做/写"这类泛动词，避免普通创作误判。
+var planningVerbs = []string{"制定", "拟定", "拟一个", "起草", "设计", "规划"}
+var planningTargets = []string{"方案", "计划", "规划", "路线图"}
+
+// hasPlanDesignSignal 报告文本是否同时含一个规划动词和一个方案/计划目标。
+func hasPlanDesignSignal(contentLower string) bool {
+	hasVerb := false
+	for _, v := range planningVerbs {
+		if strings.Contains(contentLower, v) {
+			hasVerb = true
+			break
+		}
+	}
+	if !hasVerb {
+		return false
+	}
+	for _, tgt := range planningTargets {
+		if strings.Contains(contentLower, tgt) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsPlanningRequest checks if a request is asking for a plan / proposal /
 // technical design / task breakdown — i.e. high-intelligence structured
 // thinking rather than code implementation. Caller must still guard against
 // the coding strong-signal channel so "先制定计划然后实现" stays TaskCode.
 func IsPlanningRequest(signals ClassificationSignals) bool {
 	contentLower := strings.ToLower(signals.SystemPrompt + " " + signals.LastUserPrompt)
+	// "先制定…计划,然后(逐步)实现"是编程请求（plan-mode coding pattern），
+	// 动宾组合不得把它抢成 planning——2026-09-14 复审回归教训。
+	if looksLikePlanModeCoding(contentLower) {
+		return false
+	}
 	for _, kw := range planningKeywords {
 		if strings.Contains(contentLower, kw) {
 			return true
 		}
 	}
-	return false
+	return hasPlanDesignSignal(contentLower)
 }
