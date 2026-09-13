@@ -204,7 +204,7 @@ func (s *ImportService) importOne(ctx context.Context, tx *sql.Tx, req ImportReq
 		case ConflictSkip:
 			// skip: leave the catalog row untouched and mark the result as skipped
 			// (semantically clearest outcome).
-			if err := s.casUpdateResult(ctx, tx, r.ID, "imported", "skipped", now); err != nil {
+			if err := s.casUpdateResult(ctx, tx, r.ID, r.TenantID, "skipped", now); err != nil {
 				return "", err
 			}
 			return outcomeSkipped, nil
@@ -221,7 +221,7 @@ func (s *ImportService) importOne(ctx context.Context, tx *sql.Tx, req ImportReq
 				req.TaskID, now, r.TenantID); err != nil {
 				return "", fmt.Errorf("freediscovery: overwrite %s: %w", r.ModelID, err)
 			}
-			if err := s.casUpdateResult(ctx, tx, r.ID, "imported", "imported", now); err != nil {
+			if err := s.casUpdateResult(ctx, tx, r.ID, r.TenantID, "imported", now); err != nil {
 				return "", err
 			}
 			return outcomeImported, nil
@@ -244,7 +244,7 @@ func (s *ImportService) importOne(ctx context.Context, tx *sql.Tx, req ImportReq
 				req.TaskID, now, r.TenantID); err != nil {
 				return "", fmt.Errorf("freediscovery: merge %s: %w", r.ModelID, err)
 			}
-			if err := s.casUpdateResult(ctx, tx, r.ID, "imported", "imported", now); err != nil {
+			if err := s.casUpdateResult(ctx, tx, r.ID, r.TenantID, "imported", now); err != nil {
 				return "", err
 			}
 			return outcomeImported, nil
@@ -273,31 +273,33 @@ func (s *ImportService) importOne(ctx context.Context, tx *sql.Tx, req ImportReq
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			// Concurrent fallback: treat as conflict (another transaction wrote first); mark conflict, do not count as imported.
-			if casErr := s.casUpdateResult(ctx, tx, r.ID, "imported", "conflict", now); casErr != nil {
+			if casErr := s.casUpdateResult(ctx, tx, r.ID, r.TenantID, "conflict", now); casErr != nil {
 				return "", casErr
 			}
 			return outcomeConflicted, nil
 		}
 		return "", fmt.Errorf("freediscovery: insert catalog %s: %w", r.ModelID, err)
 	}
-	if err := s.casUpdateResult(ctx, tx, r.ID, "imported", "imported", now); err != nil {
+	if err := s.casUpdateResult(ctx, tx, r.ID, r.TenantID, "imported", now); err != nil {
 		return "", err
 	}
 	return outcomeImported, nil
 }
 
-// casUpdateResult CAS-updates the result status; only hits when import_status='pending'.
+// casUpdateResult CAS-updates the result status; only hits when the row belongs to
+// tenantID and import_status='pending'.
 //
-// from=actualNew indicates the final status written by this attempt (imported/skipped/conflict).
-// RowsAffected==0 means the result was already processed by another transaction,
-// counted as outcomeConflicted.
-func (s *ImportService) casUpdateResult(ctx context.Context, tx *sql.Tx, resultID int64, _, actualNew string, now time.Time) error {
-	// Use anyString and the imported_at field must preserve NOT NULL / NULL compatibility:
-	// when transitioning from pending to imported/skipped/conflict, also record imported_at to capture the first-processing time.
+// actualNew is the final status written by this attempt (imported/skipped/conflict).
+// RowsAffected==0 means the result was already processed by another transaction or
+// is not visible to this tenant. The tenant_id predicate is the application-layer
+// defense-in-depth required by the Import safety contract (RLS is the first layer).
+func (s *ImportService) casUpdateResult(ctx context.Context, tx *sql.Tx, resultID int64, tenantID, actualNew string, now time.Time) error {
+	// imported_at is recorded on every pending -> imported/skipped/conflict
+	// transition to capture the first-processing time.
 	res, err := tx.ExecContext(ctx, `
 		UPDATE discovery_results SET import_status=$2, imported_at=$3
-		WHERE id=$1 AND import_status='pending'`,
-		resultID, actualNew, now)
+		WHERE id=$1 AND tenant_id=$4 AND import_status='pending'`,
+		resultID, actualNew, now, tenantID)
 	if err != nil {
 		return fmt.Errorf("freediscovery: mark %s %d: %w", actualNew, resultID, err)
 	}

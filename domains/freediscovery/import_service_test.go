@@ -107,7 +107,9 @@ func TestImportService_NewRowsInserted(t *testing.T) {
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO free_resource_catalog").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec("UPDATE discovery_results SET import_status=\\$").
+	// Full-clause regex: regression guard for the tenant_id predicate in
+	// casUpdateResult (Import safety contract: result UPDATEs carry tenant_id).
+	mock.ExpectExec("UPDATE discovery_results SET import_status=\\$2, imported_at=\\$3\\s+WHERE id=\\$1 AND tenant_id=\\$4 AND import_status='pending'").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT id FROM free_resource_catalog").
 		WillReturnError(sql.ErrNoRows)

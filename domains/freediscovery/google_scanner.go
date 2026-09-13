@@ -135,13 +135,16 @@ func (s *GoogleGenerativeAIScanner) ScanModels(ctx context.Context, tpl *Provide
 			tpl.ProviderCode, resp.StatusCode, string(body))
 	}
 
-	var payload googleModelsResponse
-	if err := json.Unmarshal(body, &payload); err != nil {
+	// decodeGoogleEntries unmarshals the model list and pairs each entry with
+	// its raw map so RawMetadata is persisted (it was previously always nil:
+	// the helper existed but was never called — 2026-09-14 gap fix).
+	entries, err := decodeGoogleEntries(body)
+	if err != nil {
 		return nil, fmt.Errorf("freediscovery: parse google response: %w", err)
 	}
 
-	models := make([]DiscoveredModel, 0, len(payload.Models))
-	for _, e := range payload.Models {
+	models := make([]DiscoveredModel, 0, len(entries))
+	for _, e := range entries {
 		if !e.isFreeOfCharge() {
 			continue
 		}
