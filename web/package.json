@@ -17,7 +17,9 @@
     "i18n:fix:dry": "node scripts/i18n-fix.mjs --dry-run",
     "i18n:fix": "node scripts/i18n-fix.mjs --apply --yes",
     "responsive:check": "node scripts/responsive-audit.mjs --strict",
-    "element:check": "node scripts/element-import-audit.mjs"
+    "element:check": "node scripts/element-import-audit.mjs",
+    "color:check": "node scripts/color-token-audit.mjs --strict --baseline scripts/color-audit-baseline.json",
+    "color:baseline:update": "node scripts/color-token-audit.mjs --update-baseline --baseline scripts/color-audit-baseline.json"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
