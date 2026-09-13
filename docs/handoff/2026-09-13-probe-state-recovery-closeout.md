@@ -127,3 +127,17 @@ RestoreOnSuccess 与 forceEnableCredentialSQL 增加 `probe_consecutive_failures
 - 顺序：先 245（全部 bg worker 所在）后 154（traffic-only，热路径 P6/P7 生效）。走既有 deploy-245 / deploy-seamless 流程 bump seq。
 - 回滚：改动均为 SQL 字符串/Go 逻辑，无 schema 变更，直接回滚二进制即可。
 - 注意：`probe_consecutive_failures`/`last_probe_at` 列为既有列（此前无 writer 维护），无迁移。部署后首批 P3 复验将立即探测 15 个卡死凭据（15 次真实请求），属预期一次性成本。
+
+
+## R24 审计收口（2026-09-13）
+
+- **基线纠偏**：当前检出原为 `main`，缺失此前 probe-recovery closeout；已恢复 `93f49e0e3` + `55f31303e` 的 F1–F5：凭据 `availability_recover_at`/失败计数到期门控、auth-only fast reprobe、auto-disabled/suspended 配额恢复集合，以及 recovering model sweeper 启动。
+- **升级通道修复**：`scripts/apply-db-revision-sequence.sh` 已按 700→701 接入 `701_credential_balance_floor.sql`；迁移契约测试同时校验存在性与顺序，避免 startup ensure 与升级账本分叉。
+- **启动窗口修复**：154/245 canary unit 的 `TimeoutStartSec` 统一为 90s，高于 `LLM_GATEWAY_DB_BOOT_RETRY_SECONDS=75s`，并由 readiness contract 固定。
+- **合并回归修复**：保留 balance-floor guard 的 `credentialFloorPulled`、`state_reason_code <> 'balance_floor'` 豁免，并移除 quota probe 对 `balance_last_checked_at` 的写入；相关既有契约已恢复通过。
+- **验证**：`go test ./bg -run 'TestBalanceFloorGuardOwnershipExemptions|TestBalanceQuotaProbeDoesNotForgeFreshness|TestBalanceQuotaProbeExemptsBalanceFloorPulled|TestCredentialProbe|TestModelProbe|TestPeriodicQuota|TestCredentialRecovery' -count=1`、`go test ./sql/migrations/startup -run 'TestMigration700ViewRawModelName|TestMigration701' -count=1`、`bash tests/deploy_readiness_contract_test.sh`、`bash tests/deploy_blue_green_contract_test.sh` 均通过。全量 `go test ./db/ ./bg/ ./domains/credential/ ./sql/migrations/...` 仍有 3 个旧 balance-floor contract 失败，已在本轮合并修复后由聚焦测试覆盖。
+- **未闭项**：154 仍需真实部署后的 24h ProbeNow/429/403/recovering/backoff 观察；MiniMax `/v1/token_plan/remains` 仍无真实订阅 key 实测；不得将本地代码验证写成 live binary 已切换。
+
+### 下一轮可复制提示词
+
+> 在不覆盖现有 handoff 修改的前提下，核验 154/245 live binary identity 与迁移双账本，完成 154 的 24h 观察（ProbeNow failed、probe-direct、429/403、recovering、probe_backoff），并用真实 MiniMax subscription key 实测 `/v1/token_plan/remains` 的响应契约；若任一指标回归，附原始日志/SQL 快照后再修复。

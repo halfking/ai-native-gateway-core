@@ -143,8 +143,14 @@ func (p *BalanceQuotaProbe) SetOnQuotaRecharged(fn func(credID int, source strin
 // charging two upstream probes for one accepted webhook.
 //
 // credID <= 0 is ignored (same behavior as ForceProbe).
+// Balance-floor-pulled credentials remain owned by the floor guard; a chat
+// probe would incorrectly restore them while their balance evidence is stale.
 func (p *BalanceQuotaProbe) OnQuotaRecharged(credID int, source string) {
 	if credID <= 0 {
+		return
+	}
+	if p.credentialFloorPulled(credID) {
+		slog.Info("balance_quota_probe: recharge webhook ignored for balance_floor-pulled credential (guard owns recovery)", "credential_id", credID, "source", source)
 		return
 	}
 	if p.probeNowAsync != nil {
@@ -152,7 +158,6 @@ func (p *BalanceQuotaProbe) OnQuotaRecharged(credID int, source string) {
 	} else if p.probeSubmitter != nil {
 		p.probeSubmitter(credID)
 	}
-	p.recordBalanceCheck(credID, "webhook_"+source)
 	if p.onQuotaRecharged != nil {
 		p.onQuotaRecharged(credID, source)
 	}
@@ -285,7 +290,6 @@ func (p *BalanceQuotaProbe) ForceProbe(credID int) bool {
 		return false
 	}
 
-	p.recordBalanceCheck(credID, "admin_force")
 	return true
 }
 
@@ -402,6 +406,7 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 		          AND (c.availability_recover_at IS NULL OR c.availability_recover_at <= now())
 		      )
 		      )
+  AND COALESCE(c.state_reason_code, '') <> 'balance_floor' -- balance_floor guard exemption
   AND c.status = 'active'
   -- 2026-09-13 closeout (P3): admit auto-disabled rows (auto_disabled_at
   -- set) — writeHealth already sanctions re-enabling exactly this class
@@ -460,7 +465,6 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 		} else if p.probeSubmitter != nil {
 			p.probeSubmitter(credID)
 		}
-		p.recordBalanceCheck(credID, "scheduled")
 		count++
 	}
 	if count > 0 {
@@ -473,31 +477,23 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 	return nil
 }
 
-// recordBalanceCheck stamps credentials.balance_last_checked_at so
-// dashboards can show "last balance check" latency. Errors are logged
-// but never block the probe — the timestamp is observability, not
-// correctness.
-func (p *BalanceQuotaProbe) recordBalanceCheck(credID int, source string) {
+// credentialFloorPulled reports whether the balance-floor guard owns recovery.
+// Fail open on database errors so a transient outage does not swallow webhooks.
+func (p *BalanceQuotaProbe) credentialFloorPulled(credID int) bool {
 	if p.db == nil {
-		return
+		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	tag, err := p.db.Exec(ctx, `
-		UPDATE credentials
-		SET balance_last_checked_at = now(),
-		    state_updated_at        = now()
+	var reason string
+	err := p.db.QueryRow(ctx, `
+		SELECT COALESCE(state_reason_code, '')
+		FROM credentials
 		WHERE id = $1
-	`, credID)
-	if err != nil {
-		slog.Debug("balance_quota_probe: balance_last_checked_at update failed",
-			"credential_id", credID, "source", source, "error", err)
-		return
-	}
-	if tag.RowsAffected() == 0 {
-		slog.Debug("balance_quota_probe: balance_last_checked_at update affected 0 rows",
-			"credential_id", credID, "source", source)
-	}
+		  AND quota_state = 'balance_exhausted'
+		  AND COALESCE(state_reason_code, '') = 'balance_floor'
+	`, credID).Scan(&reason)
+	return err == nil && reason == "balance_floor"
 }
 
 /* === BEGIN: origin/main (kept for audit, NOT COMPILED) === */

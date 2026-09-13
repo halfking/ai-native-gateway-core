@@ -329,6 +329,9 @@ files=(
   # 本迁移重编号 699→700;重编号前已复核生产双账本 698-702 均 0 命中
   # (schema_migrations 无 698/699/700/701,sequences 无 :69[89]/:70[0-2])。
   "$ROOT_DIR/sql/migrations/startup/700_request_logs_view_raw_model_name.sql"
+  # 2026-09-13 balance-floor guard: carry the schema migration through the
+  # upgrade channel as well as Go startup ensure, keeping both ledgers aligned.
+  "$ROOT_DIR/sql/migrations/startup/701_credential_balance_floor.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
