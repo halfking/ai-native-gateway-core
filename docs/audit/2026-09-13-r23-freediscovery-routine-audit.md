@@ -94,9 +94,9 @@ diff 为空**，与 R22 状况一致。本检出 WIP 为空（干净工作树）
    `version.json`，只能证明部署元数据（seq-2101 对应 `c4da30d5d`），不能
    替代二进制身份；404 探针仅证明运行行为。后续需补二进制 sha256 与构建
    产物/镜像 digest 的同源校验，或让构建产物包含可核验的 VCS 元数据。
-3. **版本 bump 缺席（低优先级，维持）**：seq-2101 部署已落地但未补推簿记
+3. **版本 bump 缺席（低优先级，维持）**：seq-2101 部署元数据已落地但未补推簿记
    commit 入主线，本地 VERSION 文件仍持 seq-2100。下一轮部署时从实际
-   服务版本 seq-2101 续号（seq-2102）。
+   部署元数据 seq-2101 续号（seq-2102）。
 4. **`errors.Is` vs `==`**：domain 层多处仍用 `err == sql.ErrNoRows`（R18
    §四.2 遗留，维持原样）。
 5. **归档可信度**：原则继续适用——"已关闭"只是线索，代码现状才是证据；
@@ -106,7 +106,8 @@ diff 为空**，与 R22 状况一致。本检出 WIP 为空（干净工作树）
 
 > 请根据 docs/audit/2026-09-13-r23-freediscovery-routine-audit.md 与
 > memory 状态，对 FreeDiscovery 做例行审计（R24），区间基线为本轮落档
-> 提交（fetch 时 `git rev-parse origin/main`）：
+> 提交（本次修正落档 tip 为 `03e79e2c9`；fetch 时仍须执行
+> `git rev-parse origin/main`）：
 > ① 契约逐条核对——R23 §二 表中 6 项 + LOW 观察（templates list :76，
 >   豁免判据 #7）逐条 rg 核销，勿信任"已关闭"声明；
 > ② 区间净 diff——`git diff <基线> <新tip> -- admin/free_discovery.go
