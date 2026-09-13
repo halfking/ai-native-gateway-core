@@ -622,3 +622,61 @@ EP 变量接线之后，继续清扫**应用自研样式里绕过令牌的硬编
 **环境补丁登记**：`sass-embedded` 仅装了 darwin-arm64 宿主二进制（darwin 布局 node_modules 的又一例），生产构建 scss 转换挂起；按 rollup/esbuild 同款手法手工补装 `sass-embedded-linux-arm64@1.100.0`（npm pack 解压入 node_modules，未动 manifest/lockfile）后 `vite build` 通过（19.4s）。**生产包已验证**：dist 由网关 :8781 正常服务（index/asset 200，CSS 含 `--el-bg-color` 桥接）。
 
 **门禁终态**：五门禁全绿，vitest 559 通过 / 41 失败 = **39 失败文件基线不变**。SPA 级暗色截图在本虚机 headless 下仍不可得（ chromium 新旧两版同样挂起，见上残项），本轮修复均为确定性令牌替换，建议在用户真实浏览器（即发现问题处）刷新 `?theme=dark` 复核。
+
+## 十三、审计评分与修正轮（2026-09-13，对 §十~§十二 复评）
+
+### 评分表（10 分制）
+
+| 任务项 | 得分 | 评语 |
+|---|---|---|
+| §十一-1 五门禁例行复验 | 10 | 全绿且失败构成复核到用例级（jsdom localStorage 环境问题），通过数增量可追溯到新用例 |
+| §十一-2 登录态页面走查 | 9 | 本地真实后端（Go+PG16+Redis）+ 造数 + CDP 真实事件交互，runbook 可复用价值高；扣 1：headless 受限时当轮未尝试「生产包由网关托管」替代路径（次日补做成功） |
+| §十一-3a 折叠屏验证 | 9 | segments 注入三态翻转实证，验证状态从「受限」实质升级；扣 1：CSS 媒体查询部分固有不可软件模拟 |
+| §十一-3b/3c 弹窗评估与宽度量化 | 10 | 逐迁移 commit 从 git 历史提取原宽，量化到像素与百分比，实测佐证 |
+| §十二 EP 暗色接线 | 8 | 变量级联探针+裸页渲染实证、桥接特异性设计免疫导入顺序；**扣 2：只验证了会话内路径，漏查 theme-init.js 刷新持久路径——属应发现而未发现的集成点，本审计轮补修** |
+| §十二补充 硬编码亮面清扫 | 9 | 20 处令牌化+保留项有明确设计理由；扣 1：范围限于 background 面，历史硬编码文字色未扩展 |
+| **平均** | **9.2** | |
+
+### 本轮修正（审计发现 → 修复）
+
+| # | 问题 | 根因 | 修正 |
+|---|---|---|---|
+| 1 | **刷新后暗色回退亮块**：用户切换暗色后一切正常，但刷新/直链（无 `?theme=` 参数）打开时 EP 组件整片回退白底 | 主题双轨（data-theme + html.dark）只在 `src/theme.ts applyTheme()` 落实；`index.html <head>` 内同步执行的启动脚本 `public/theme-init.js`（无 URL 参数场景下唯一设置主题的代码）只设 data-theme 不设 dark 类，EP dark 变量门控在启动路径始终不生效 | theme-init.js 补 `classList.toggle('dark', t === 'dark')`（注释锚定与 applyTheme 同一约定）；`theme.dark-skin.test.ts` 新增启动脚本源码断言（4 用例全绿），锁定「存储键 + setAttribute + classList」三要素防两处漂移；重建生产包并验证 dist 与网关服务（:8781/theme-init.js）均含修复 |
+
+其余复核项（无问题）：EP 组件链式变量落位——el-table（`--el-table-bg-color → --el-fill-color-blank`）与 el-select 下拉（`--el-bg-color-overlay`）均链到已桥接根变量；全库仅 theme-init.js 与 theme.ts 两处 data-theme 写入点；4 处开关圆点保留判定成立；body 文字色 `var(--text)` 已令牌化。
+
+## 十四、下一轮执行提示词（复制即用）
+
+```text
+你是前端工程师，在 llm-gateway-go-5/web 做下一轮暗色皮肤收尾与例行维护。
+先读：docs/handoff/2026-09-13-frontend-responsive-componentization-steps.md
+（§二环境注意事项、§九/§十三两轮审计评分）、
+docs/03-design/frontend-component-usage-guide.md、git log 近 10 个提交。
+工作区约定：pnpm 未装用 npm run/npx；不要 npm install（node_modules 为 darwin 布局，
+rollup/esbuild/sass-embedded-linux-arm64 均已手工补装 arm64 二进制，生产构建可用的
+手法见 §十二补充）；存量 vitest 失败基线 39 文件不得扩大；i18n 注释里别写 t('...')
+字样；新代码断点只允许 480/640/768/1024/1440。
+
+环境约束（必读）：我们在虚机中——TLS/证书类操作使用主机的证书（虚机不持有
+codeup 等服务凭证）；**部署一律 SSH 到主机上执行，不在虚机内直接部署**；
+本虚机 headless 浏览器对 SPA 渲染不可靠（OOM/挂起），视觉验证优先用
+「生产包构建 + 网关 :8781 托管」或在用户真实浏览器复核（主题直链 ?theme=dark）。
+
+任务（按序，独立 commit）：
+1. 五门禁例行复验：vue-tsc / vitest（失败集 ≤39 文件基线）/ i18n STRICT /
+   responsive:check --strict / element:check。
+2. 暗色皮肤真机复核：用户真实浏览器 ?theme=dark 全站走查（重点：刷新后
+   EP 组件保持暗色——§十三修正 1 的端到端确认；以及 el-table/el-select 下拉/
+   el-dialog 等 EP 面板），发现残余亮块继续令牌化清扫（可扩展至历史硬编码
+   文字色，同 §十二补充方法）。
+3. FOUC 复核：暗色直链刷新无亮色闪烁（theme-init.js 在 head 同步执行，
+   确认无回归）；如仍有闪烁，评估 index.html 关键 CSS 内联最小集。
+4. （可选，需评估）EP 品牌色 --el-color-primary 与应用 --kx-primary 的
+   色阶一致性：直接映射会与 light-3/5/7/9 派生阶脱节，须整组重推导或
+   放弃并登记理由。
+5. 任何组件接口调整，同步《前端组件使用指南》（§四约定）。
+6. 每项一个 commit；push 前先 git pull --no-rebase 合入远端；登记进本文件新 §。
+
+验收红线：桌面 >=1024 DOM 零回归；新代码断点只允许白名单值；新测试全绿；
+主题双轨（data-theme 与 html.dark）在任何写入点必须原子同步。
+```

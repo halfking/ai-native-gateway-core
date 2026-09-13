@@ -12,6 +12,10 @@ const elementDarkCss = readFileSync(
   resolve(process.cwd(), 'src/styles/element-dark.css'),
   'utf8',
 )
+// 启动路径：index.html <head> 内同步执行的 theme-init.js（public/，不参与打包），
+// 是「刷新/直链（无 ?theme= 参数）」场景下唯一设置主题的代码——漏掉 dark 类
+// 会让 EP 组件在每次刷新后回退亮色（2026-09-13 审计发现的真因）。
+const themeInitJs = readFileSync(resolve(process.cwd(), 'public/theme-init.js'), 'utf8')
 
 describe('dark skin bridging (EP components)', () => {
   it('applyTheme toggles html.dark class together with data-theme', () => {
@@ -33,6 +37,13 @@ describe('dark skin bridging (EP components)', () => {
     expect(mainTs.indexOf("'element-plus/theme-chalk/dark/css-vars.css'")).toBeLessThan(
       mainTs.indexOf("'./styles/element-dark.css'"),
     )
+  })
+
+  it('theme-init.js boot script toggles the dark class (refresh persistence)', () => {
+    expect(themeInitJs).toContain("classList.toggle('dark'")
+    // 与 theme.ts 同一存储键与同一双轨约定，防两处漂移
+    expect(themeInitJs).toContain("llmgw_theme")
+    expect(themeInitJs).toContain("setAttribute('data-theme'")
   })
 
   it('element-dark.css bridges EP surfaces to app tokens at higher specificity', () => {
