@@ -7,13 +7,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
@@ -155,6 +158,10 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Typed trailing state for the exhaustion response: Kind decides 429 vs
+	// 502, Retry-After (max across candidates) is relayed on 429.
+	var lastKind errorsx.ErrorKind
+	var lastRetryAfter time.Duration
 	var lastErr string
 	for _, candidate := range candidates {
 		if !candidate.IsAvailable() || candidate.APIKey == "" || candidate.Protocol == "anthropic-messages" {
@@ -177,17 +184,38 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		resp, upstreamErr := h.upstream.Do(upstreamReq)
 		if upstreamErr != nil {
+			// 5xx / network path: Do already classified (status+body) and
+			// captured the body; harvest Kind + Retry-After for exhaustion.
+			lastKind = upstreamErr.Kind
+			if upstreamErr.RetryAfter > lastRetryAfter {
+				lastRetryAfter = upstreamErr.RetryAfter
+			}
 			lastErr = upstreamErr.Error()
+			continue
+		}
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
+			// 2026-09-13 audit fix: <500 responses leave Do as (resp, nil);
+			// classify status+body here (the chat executor's lossy-signal
+			// fix, applied via ErrorFromResponse) BEFORE draining the body,
+			// so 429/404 bodies inform the Kind while the response is still
+			// unread. Retry-After is relayed to the client on exhaustion.
+			typedErr := upstream.ErrorFromResponse(resp)
+			_ = resp.Body.Close()
+			if typedErr != nil {
+				lastKind = typedErr.Kind
+				if typedErr.RetryAfter > lastRetryAfter {
+					lastRetryAfter = typedErr.RetryAfter
+				}
+				lastErr = typedErr.Message
+			} else {
+				lastErr = fmt.Sprintf("upstream HTTP %d", resp.StatusCode)
+			}
 			continue
 		}
 		responseBody, readErr := readLimitedResponse(resp.Body, maxEmbeddingsResponseBytes)
 		_ = resp.Body.Close()
 		if readErr != nil {
 			lastErr = readErr.Error()
-			continue
-		}
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
-			lastErr = fmt.Sprintf("upstream HTTP %d", resp.StatusCode)
 			continue
 		}
 		if autoDecision != "" {
@@ -201,7 +229,24 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Warn("embedding candidates exhausted", "request_id", requestID, "model", model, "error", lastErr)
-	writeErrorJSON(w, http.StatusBadGateway, requestID, "All embedding providers failed", "server_error", "upstream_error")
+	// Contract: exhaustion status follows the semantic family of the last
+	// error Kind (429 throttled / 503 overloaded / 504 timeout / 502 dead),
+	// with the worst vendor Retry-After relayed on any retryable family.
+	status, errType, code := http.StatusBadGateway, "server_error", "upstream_error"
+	if lastKind != "" && errorsx.HTTPStatusForKind(lastKind) != http.StatusBadGateway {
+		if lastRetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(lastRetryAfter.Seconds()))))
+		}
+		switch errorsx.HTTPStatusForKind(lastKind) {
+		case http.StatusTooManyRequests:
+			status, errType, code = http.StatusTooManyRequests, "rate_limit_error", "rate_limit_exhausted"
+		case http.StatusServiceUnavailable:
+			status, errType, code = http.StatusServiceUnavailable, "overloaded_error", "overloaded_exhausted"
+		case http.StatusGatewayTimeout:
+			status, errType, code = http.StatusGatewayTimeout, "timeout_error", "timeout_exhausted"
+		}
+	}
+	writeErrorJSON(w, status, requestID, "All embedding providers failed", errType, code)
 }
 
 func (h *EmbeddingsHandler) authenticate(w http.ResponseWriter, r *http.Request, requestID string) (*authentication.KeyInfo, bool) {
