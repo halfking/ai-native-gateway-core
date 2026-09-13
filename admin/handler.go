@@ -1267,7 +1267,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/free-discovery/tasks", h.admin(h.handleFreeDiscoveryTasks))
 	mux.HandleFunc("GET /api/free-discovery/tasks/{id}", h.admin(h.handleFreeDiscoveryTask))
 	mux.HandleFunc("GET /api/free-discovery/tasks/{id}/results", h.admin(h.handleFreeDiscoveryTaskResults))
-	mux.HandleFunc("GET /api/free-discovery/scan-scheduler/status", h.admin(h.handleFreeDiscoveryScanSchedulerStatus))
+	// superAdmin(而非 admin): scheduler 全局单例,last_error 携带其他租户
+	// 模板的上游地址/响应片段/env 变量名(2026-09-14 审计轮 D-P3-3)。
+	mux.HandleFunc("GET /api/free-discovery/scan-scheduler/status", h.superAdmin(h.handleFreeDiscoveryScanSchedulerStatus))
 	mux.HandleFunc("POST /api/free-discovery/import", h.admin(h.handleFreeDiscoveryImport))
 	mux.HandleFunc("/api/free-pool/register", h.superAdmin(h.handleFreePoolRegister))
 	mux.HandleFunc("/api/free-pool/models", h.admin(h.handleFreePoolModels))

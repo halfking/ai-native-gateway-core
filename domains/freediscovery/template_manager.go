@@ -435,23 +435,6 @@ func isValidTenantID(id string) bool {
 	return true
 }
 
-// escapeTenantID is retained for backwards compatibility with any caller
-// still concatenating the tenant into SQL without the reject path; it
-// collapses invalid input to the safe 'default' fallback. New call sites
-// should use isValidTenantID + ErrInvalidTenantID instead.
-func escapeTenantID(id string) string {
-	if id == "" || len(id) > 64 {
-		return "default"
-	}
-	for _, c := range id {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '_' || c == '-') {
-			return "default"
-		}
-	}
-	return id
-}
-
 // envLookup is an independent env-reading entry point that tests can override
 // (t.Setenv goes through the real os.Getenv).
 var envLookup = os.Getenv
