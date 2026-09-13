@@ -34,7 +34,7 @@ package bg
 // 摘出机制：写 quota_state='balance_exhausted' + availability_state='suspended'
 // + state_reason_code='balance_floor'。候选 SQL（provider/client.go）与
 // v_routable_credential_models 本来就排除这些状态 = 立即出池；
-// trg_notify_auto_route_refresh 触发器自动广播缓存失效。恢复：额度回到
+// trg_notify_auto_route_creds 触发器自动广播缓存失效。恢复：额度回到
 // floor*1.1（token/货币）或 floor-2pp（百分比）滞回带以上，且所有权校验
 // （state_reason_code='balance_floor'）通过，才翻回 ok/ready —— 永远不会碰
 // 反应式（writer.go）或其它路径写入的配额状态。
@@ -64,6 +64,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -456,6 +457,15 @@ func (g *BalanceFloorGuard) Start(ctx context.Context) {
 		"vendors", []string{"zhipu", "minimax"},
 		"floor_fields", []string{"balance_floor_usd", "quota_floor_tokens", "quota_floor_percent"})
 	go func() {
+		// Audit R20 (2026-09-13): top-level panic guard. A panic on this
+		// loop (pgx driver, JSON decode, providercap) previously took down
+		// the whole gateway process — same shape the BaseWorker scaffold
+		// already protects against.
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("balance_floor_guard worker panicked", "panic", r, "stack", string(debug.Stack()))
+			}
+		}()
 		ticker := time.NewTicker(g.interval)
 		defer ticker.Stop()
 		for {
@@ -467,12 +477,24 @@ func (g *BalanceFloorGuard) Start(ctx context.Context) {
 				slog.Info("balance_floor_guard stopped")
 				return
 			case <-ticker.C:
-				if err := g.cycle(ctx); err != nil {
+				if err := g.safeCycle(ctx); err != nil {
 					slog.Warn("balance_floor_guard cycle failed", "error", err)
 				}
 			}
 		}
 	}()
+}
+
+// safeCycle runs one sweep with a per-cycle panic guard so a bad credential
+// payload skips this tick instead of killing the worker loop.
+func (g *BalanceFloorGuard) safeCycle(ctx context.Context) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("balance_floor_guard cycle panicked", "panic", r, "stack", string(debug.Stack()))
+			err = fmt.Errorf("balance_floor_guard cycle panic: %v", r)
+		}
+	}()
+	return g.cycle(ctx)
 }
 
 func (g *BalanceFloorGuard) Stop() {
@@ -534,6 +556,7 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
+		ORDER BY c.balance_last_checked_at ASC NULLS FIRST
 		LIMIT 100
 	`)
 	if err != nil {
@@ -582,6 +605,14 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 		  AND status = 'active'
 		  AND lifecycle_status = 'active'
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
+		  -- provider 守卫与 pass C 恢复选点对齐：disabled provider 下的
+		  -- 凭据不得只被摘出却永远轮不到恢复（pass C 选不到它们）。
+		  AND EXISTS (
+		      SELECT 1 FROM providers p
+		      WHERE p.id = credentials.provider_id
+		        AND p.enabled = TRUE
+		        AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		  )
 	`)
 	if err != nil {
 		return err
@@ -607,6 +638,7 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
+		ORDER BY c.balance_last_checked_at ASC NULLS FIRST
 		LIMIT 100
 	`)
 	if err != nil {
@@ -791,7 +823,15 @@ func (g *BalanceFloorGuard) handlePlanCredential(ctx context.Context, c floorCan
 	action := evaluatePlanFloor(c.FloorTokens, c.FloorPercent, st)
 	switch action {
 	case floorPull:
-		if c.QuotaState == "ok" && c.ReasonCode != "balance_floor" {
+		// R21 (2026-09-13): the old `ReasonCode != "balance_floor"` guard here
+		// permanently neutralized token/percent floors after an admin
+		// reset-quota left an "ok + balance_floor reason" residue (the pull
+		// was refused, while currency pass B — pure SQL — still pulled,
+		// splitting the two paths). The SQL WHERE below (quota_state='ok' +
+		// availability guards) already prevents overwriting our own pulled
+		// rows, so re-evaluating a residue row is safe: below floor → re-pull,
+		// recovered → the restore path clears the stale reason.
+		if c.QuotaState == "ok" {
 			detail := st.summary(c.FloorTokens, c.FloorPercent)
 			tag, uerr := g.db.Exec(ctx, `
 				UPDATE credentials
@@ -802,6 +842,8 @@ func (g *BalanceFloorGuard) handlePlanCredential(ctx context.Context, c floorCan
 				    state_reason_detail = $1,
 				    state_updated_at = now()
 				WHERE id = $2
+				  AND status = 'active'
+				  AND lifecycle_status = 'active'
 				  AND COALESCE(manual_disabled, FALSE) = FALSE
 				  AND COALESCE(quota_state, 'ok') = 'ok'
 				  AND COALESCE(availability_state, 'ready') NOT IN ('suspended', 'auth_failed')

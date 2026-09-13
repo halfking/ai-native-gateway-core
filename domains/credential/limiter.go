@@ -160,30 +160,26 @@ func (s *Semaphore) Shrink(factor float64) {
 	}
 }
 
-// RecoverStep increases capacity by one step toward the target.
-func (s *Semaphore) RecoverStep(targetCapacity int) {
+// RecoverStep increases capacity by one step toward the target and reports
+// the transition. Logging lives with the caller: recoveryStep runs under the
+// limiter-wide mutex, so per-step slog writes must happen after Unlock.
+func (s *Semaphore) RecoverStep(targetCapacity int) (oldCap, newCap int, changed bool) {
 	for {
-		oldCap := s.capacity.Load()
+		old := s.capacity.Load()
 		target := int64(targetCapacity)
-		if oldCap >= target {
-			return
+		if old >= target {
+			return int(old), int(old), false
 		}
-		recovery := int64(math.Ceil(float64(target-oldCap) * shrinkRecoveryFactor))
+		recovery := int64(math.Ceil(float64(target-old) * shrinkRecoveryFactor))
 		if recovery < 1 {
 			recovery = 1
 		}
-		newCap := oldCap + recovery
-		if newCap > target {
-			newCap = target
+		new := old + recovery
+		if new > target {
+			new = target
 		}
-		if s.capacity.CompareAndSwap(oldCap, newCap) {
-			slog.Info("semaphore recovery",
-				"name", s.name,
-				"old_capacity", oldCap,
-				"new_capacity", newCap,
-				"target", targetCapacity,
-			)
-			return
+		if s.capacity.CompareAndSwap(old, new) {
+			return int(old), int(new), true
 		}
 	}
 }
@@ -191,6 +187,14 @@ func (s *Semaphore) RecoverStep(targetCapacity int) {
 // ---------------------------------------------------------------------------
 // Limiter — four-layer concurrency controller
 // ---------------------------------------------------------------------------
+
+// recoveryEvent is one semaphore capacity transition staged by recoveryStep
+// for post-Unlock logging.
+type recoveryEvent struct {
+	name           string
+	oldCap, newCap int
+	target         int
+}
 
 // Limiter manages concurrency across five layers.
 type Limiter struct {
@@ -200,15 +204,20 @@ type Limiter struct {
 	identityLimit   int
 
 	global *Semaphore
-	pools  map[int]*Semaphore        // providerID → semaphore
-	creds  map[string]*Semaphore     // "providerID/credentialID" → semaphore
+	pools  map[int]*Semaphore    // providerID → semaphore
+	creds  map[string]*Semaphore // "providerID/credentialID" → semaphore
 	// credHotLimits records admin hot-updated capacities (SetCredentialCapacity)
-	// so recoveryStep recovers toward min(credentialLimit, hot value) instead of
-	// pulling an admin-lowered limit back to the process-wide default within
-	// fullRecoveryCycles intervals.
+	// so recoveryStep treats the hot value as the recovery CEILING in both
+	// directions (R16 2026-09-12): without a record, RecoverStep would pull
+	// the capacity back to the process-wide default within fullRecoveryCycles
+	// intervals, undoing the admin's change.
 	credHotLimits map[string]int
-	idents        map[string]*identityEntry // "providerID/credentialID/identityHash" → entry
-	keys          map[int]*Semaphore        // keyID → per-key semaphore (limit from DB)
+	// recoveryLog stages one tick's semaphore transitions so they can be
+	// logged after Unlock — slog writes are syscalls and must not hold the
+	// hot limiter mutex (audit R20 2026-09-13).
+	recoveryLog []recoveryEvent
+	idents      map[string]*identityEntry // "providerID/credentialID/identityHash" → entry
+	keys        map[int]*Semaphore        // keyID → per-key semaphore (limit from DB)
 
 	identityMaxEntries int
 	identityIdleTTL    time.Duration
@@ -379,10 +388,17 @@ func (l *Limiter) SetCredentialCapacity(providerID, credentialID, capacity int) 
 	}
 	s := l.Credential(providerID, credentialID)
 	old := s.Capacity()
-	s.capacity.Store(int64(capacity))
+	// Audit R20 (2026-09-13): record the hot ceiling BEFORE storing the new
+	// capacity. The reverse order raced with recoveryStep: a concurrent tick
+	// could observe "no hot record" between the two writes, RecoverStep
+	// toward the process-wide default past the admin's new value, and — once
+	// the record landed — sticky semantics kept the wrong capacity forever
+	// (RecoverStep only raises, so an admin lowering 50→5 could strand the
+	// semaphore at ~28 indefinitely).
 	l.mu.Lock()
 	l.credHotLimits[credentialKey(providerID, credentialID)] = capacity
 	l.mu.Unlock()
+	s.capacity.Store(int64(capacity))
 	slog.Info("limiter hot-reload: capacity updated",
 		"name", s.name,
 		"old_capacity", old,
@@ -761,11 +777,12 @@ func (l *Limiter) recoveryLoop() {
 
 func (l *Limiter) recoveryStep() {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.cleanupIdentitiesLocked(time.Now())
 
 	for _, s := range l.pools {
-		s.RecoverStep(l.poolLimit)
+		if oldCap, newCap, changed := s.RecoverStep(l.poolLimit); changed {
+			l.recoveryLog = append(l.recoveryLog, recoveryEvent{name: s.name, oldCap: oldCap, newCap: newCap, target: l.poolLimit})
+		}
 	}
 	for key, s := range l.creds {
 		target := l.credentialLimit
@@ -778,8 +795,24 @@ func (l *Limiter) recoveryStep() {
 		if hot, ok := l.credHotLimits[key]; ok {
 			target = hot
 		}
-		s.RecoverStep(target)
+		if oldCap, newCap, changed := s.RecoverStep(target); changed {
+			l.recoveryLog = append(l.recoveryLog, recoveryEvent{name: s.name, oldCap: oldCap, newCap: newCap, target: target})
+		}
 	}
+	l.mu.Unlock()
+
+	// Audit R20 (2026-09-13): emit recovery logs AFTER Unlock — slog writes
+	// are syscalls and must not hold the hot limiter lock (Pool/Credential/
+	// Key/Stats all contend here).
+	for _, ev := range l.recoveryLog {
+		slog.Info("semaphore recovery",
+			"name", ev.name,
+			"old_capacity", ev.oldCap,
+			"new_capacity", ev.newCap,
+			"target", ev.target,
+		)
+	}
+	l.recoveryLog = l.recoveryLog[:0]
 }
 
 // ---------------------------------------------------------------------------

@@ -975,3 +975,36 @@ func TestStreamAnthropicSSEToResponses_BenignEOFEmitCompleted(t *testing.T) {
 	assert.Contains(t, body, `"input_tokens":7`)
 	assert.Contains(t, body, `"output_tokens":3`)
 }
+
+// TestStreamOpenAIToResponsesSSE_EmptyStreamIsResumableFailover pins the R21
+// (2026-09-13) Q2 empty-stream parity: the OpenAI→Responses bridge was the
+// last of the six bridges without an empty gate. A clean upstream stream with
+// ZERO semantic output (role/empty choices + usage + [DONE]) previously
+// rendered a legal-but-empty response.completed and returned success, so the
+// executor never failed over and Responses SDK clients saw an empty turn.
+func TestStreamOpenAIToResponsesSSE_EmptyStreamIsResumableFailover(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chatcmpl-e","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}` + "\n\n",
+		`data: {"id":"chatcmpl-e","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+		`data: {"id":"chatcmpl-e","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":0}}` + "\n\n",
+		"data: [DONE]\n\n",
+	}, "")
+
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(upstreamBody)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-resp-empty-stream", nil, nil)
+
+	require.True(t, out.Interrupted)
+	assert.Equal(t, "openai_empty_response", out.Reason)
+	assert.Equal(t, errorsx.KindEmptyResponse, out.Kind)
+	assert.True(t, out.Resumable, "empty upstream must stay transparently retryable")
+
+	body := rec.Body.String()
+	// No terminal envelope may be fabricated for an empty stream.
+	assert.NotContains(t, body, "event: response.completed")
+	assert.NotContains(t, body, "event: response.output_text.delta")
+}

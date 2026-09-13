@@ -16,6 +16,7 @@ import { useI18n } from 'vue-i18n'
 import { useBreakpoint } from '../../composables/useBreakpoint'
 import { useFocusTrap } from '../../composables/useFocusTrap'
 import { lockBodyScroll, unlockBodyScroll } from '../../composables/useScrollLock'
+import { isTopmostOverlayLayer, nextOverlayLayerId, popOverlayLayer, pushOverlayLayer } from '../../composables/useOverlayStack'
 
 const props = withDefaults(
   defineProps<{
@@ -59,6 +60,10 @@ const resolvedDirection = computed<'right' | 'bottom'>(() => {
 
 const panelRef = ref<HTMLElement | null>(null)
 const trap = useFocusTrap(panelRef)
+// 叠层栈：ESC 只关最顶层弹层（audit R20 2026-09-13），避免 stacked 场景
+// 一次按键把抽屉+弹层全部关闭。
+const overlayId = nextOverlayLayerId()
+onBeforeUnmount(() => popOverlayLayer(overlayId))
 
 function requestClose(): void {
   emit('update:modelValue', false)
@@ -71,6 +76,7 @@ function onMaskClick(): void {
 
 function onDocumentKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') {
+    if (!isTopmostOverlayLayer(overlayId)) return
     e.stopPropagation()
     requestClose()
     return
@@ -83,11 +89,13 @@ watch(
   (open) => {
     if (typeof document === 'undefined') return
     if (open) {
+      pushOverlayLayer(overlayId)
       lockBodyScroll()
       document.addEventListener('keydown', onDocumentKeydown)
       // immediate 首跑时 v-if 的面板尚未渲染，nextTick 后再圈焦
       void nextTick(() => trap.activate())
     } else {
+      popOverlayLayer(overlayId)
       document.removeEventListener('keydown', onDocumentKeydown)
       trap.deactivate()
       unlockBodyScroll()

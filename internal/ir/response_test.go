@@ -818,11 +818,11 @@ func TestParseAnthropicResponse_PreservesNonObjectToolInput(t *testing.T) {
 // all text blocks once ToolCalls were present.
 func TestSerializeResponsesResponse_TextWithToolCalls(t *testing.T) {
 	ir := &InternalResponse{
-		ID:           "resp_txt_tool",
-		Model:        "gpt-4o",
-		Created:      1234567890,
-		Role:         "assistant",
-		Content:      []ResponseContentBlock{{Type: "text", Text: "让我先查一下"}},
+		ID:      "resp_txt_tool",
+		Model:   "gpt-4o",
+		Created: 1234567890,
+		Role:    "assistant",
+		Content: []ResponseContentBlock{{Type: "text", Text: "让我先查一下"}},
 		ToolCalls: []ResponseToolCall{{
 			ID:        "call_1",
 			Name:      "get_weather",

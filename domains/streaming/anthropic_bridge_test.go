@@ -647,3 +647,90 @@ func TestStreamOpenAIToAnthropicSSE_EmptyStreamIsResumableFailover(t *testing.T)
 	assert.NotContains(t, body, "event: message_stop")
 	assert.NotContains(t, body, "text_delta")
 }
+
+// TestStreamAnthropicSSEToOpenAI_LiveBridgeOrphanInputJSONDeltaDropped pins
+// the R21 (2026-09-13) mirror of 90e3bf18a onto the LIVE Q3 bridge: a
+// server_tool_use block streams input_json_delta just like tool_use, but its
+// content_block_start never sets currentToolCallID — the fragments used to
+// pool into a synthesized tool call with an EMPTY function.name at
+// content_block_stop (hard OpenAI SDK error on the client) and set
+// emittedContent, so the stream ended as a "successful" response carrying
+// `{"function":{"name":""}}`. Orphan fragments are now dropped.
+func TestStreamAnthropicSSEToOpenAI_LiveBridgeOrphanInputJSONDeltaDropped(t *testing.T) {
+	anthropicSSE := "event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"test-model\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_start\n" +
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
+		"event: content_block_stop\n" +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		// Unknown block type streaming orphan argument fragments.
+		"event: content_block_start\n" +
+		"data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"server_tool_use\",\"id\":\"srvtoolu_1\",\"name\":\"web_search\"}}\n\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"query\\\":\\\"x\\\"}\"}}\n\n" +
+		"event: content_block_stop\n" +
+		"data: {\"type\":\"content_block_stop\",\"index\":1}\n\n" +
+		"event: message_delta\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n" +
+		"event: message_stop\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
+
+	rec := httptest.NewRecorder()
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(anthropicSSE)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp,
+		"gpt-5", "claude-sonnet-5", "req-q3-orphan-delta", nil, nil)
+
+	assert.False(t, out.Interrupted, "text + end_turn is a successful stream")
+
+	wire := rec.Body.String()
+	// No tool call may be synthesized — the orphan fragments belong to an
+	// unrepresentable block and must not surface as tool_calls at all.
+	assert.NotContains(t, wire, `"tool_calls"`, "orphan input_json_delta must not synthesize a tool call:\n%s", wire)
+	assert.NotContains(t, wire, `"name":""`)
+	// The real semantic content survives.
+	assert.Contains(t, wire, `"ok"`)
+	assert.Contains(t, wire, `chat.completion.chunk`)
+}
+
+// TestStreamAnthropicSSEToOpenAI_BenignEOFFinishReasonCompletes pins the R21
+// (2026-09-13) benign-EOF tolerance on the live Q3 bridge (parity with
+// 5b249f31d on the Responses←Anthropic bridge): minimax-style relays send
+// finish_reason via message_delta and then close WITHOUT message_stop. That
+// shape used to be classified eof_without_done on every EOF and transparently
+// failed over, burning candidates on healthy responses. A finish_reason plus
+// delivered content must now complete successfully.
+func TestStreamAnthropicSSEToOpenAI_BenignEOFFinishReasonCompletes(t *testing.T) {
+	anthropicSSE := "event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"test-model\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_start\n" +
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"minimax tail\"}}\n\n" +
+		"event: content_block_stop\n" +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		// finish_reason arrives, then the upstream closes WITHOUT message_stop.
+		"event: message_delta\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n"
+
+	rec := httptest.NewRecorder()
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(anthropicSSE)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp,
+		"gpt-5", "claude-sonnet-5", "req-q3-benign-eof", nil, nil)
+
+	assert.False(t, out.Interrupted,
+		"finish_reason + delivered content before EOF is a benign completion, not a failover")
+
+	wire := rec.Body.String()
+	assert.Contains(t, wire, `"minimax tail"`)
+	assert.Contains(t, wire, `"finish_reason":"stop"`)
+}

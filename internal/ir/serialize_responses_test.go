@@ -584,7 +584,7 @@ func TestSerializeResponsesRequest_ToolNameSanitized(t *testing.T) {
 		Model:    "gpt-4o",
 		Messages: []Message{{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}}},
 		Tools: []ToolDefinition{
-			{Name: "search web"}, // space → underscore
+			{Name: "search web"},             // space → underscore
 			{Name: strings.Repeat("a", 100)}, // too long → truncated
 			{Name: "2leading"},               // digit prefix → fn_2leading
 		},
