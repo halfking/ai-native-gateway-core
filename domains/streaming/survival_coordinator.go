@@ -999,8 +999,24 @@ func finishGateWriter(w interface{ Finish() error }, gate *AttemptCommitGate) er
 // clientCommitted ORs in an out-of-band committed signal: an L2 replay miss
 // voids the last gate (uncommitted by design) even though an earlier attempt
 // of the same request already put bytes on the wire.
+//
+// audit #2: when the bridge already rendered a protocol terminal for this
+// attempt (gate.TerminalRendered — e.g. a committed integrity breach emitted
+// response.completed(incomplete) via responsesScaffold.finishInterrupted),
+// rendering again would put a SECOND terminal on the wire
+// (completed(incomplete) + response.failed). Suppress it: one attempt, one
+// terminal. The voided L2 replay gate never latches, so the
+// l2_alignment_miss envelope path below keeps its behavior.
 func (c *SurvivalCoordinator) renderTerminal(decision TaskDecision, gate *AttemptCommitGate, clientCommitted bool) {
 	if c.Terminal == nil {
+		return
+	}
+	if gate != nil && gate.TerminalRendered() {
+		slog.Warn("survival_terminal_already_rendered",
+			"attempt_action", decision.Action.String(),
+			"attempt_reason", decision.Reason,
+			"client_committed", clientCommitted,
+		)
 		return
 	}
 	committed := clientCommitted || (gate != nil && gate.Committed())

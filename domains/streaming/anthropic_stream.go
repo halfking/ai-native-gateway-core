@@ -31,6 +31,15 @@ type q2ToolStreamBlock struct {
 	pendingArgs  string
 }
 
+// maxAnthropicStreamPendingArgsBytes bounds the arg-first lazy-open hold
+// (audit #10): a nameless tool_calls fragment's arguments are buffered in
+// state.pendingArgs until the function name arrives. An upstream that never
+// sends the name would grow that buffer without bound — 1 MiB matches
+// maxResponsesBridgeToolArgumentsBytes in responses_bridge.go. Exceeding it
+// aborts the attempt with a conversion outcome instead of silently
+// accumulating.
+const maxAnthropicStreamPendingArgsBytes = 1 << 20
+
 // StreamOpenAIToAnthropicSSE converts OpenAI-format SSE (from upstream)
 // into Anthropic-format SSE (for client). Processes chunk["choices"][0]["delta"]
 // and emits Anthropic events (message_start, content_block_delta, etc.).
@@ -714,6 +723,35 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					if fn != nil {
 						if args, _ := fn["arguments"].(string); args != "" {
 							state.pendingArgs += args
+							// audit #10: the hold is bounded. A stream of
+							// nameless fragments whose accumulated arguments
+							// exceed the cap aborts the attempt with a
+							// conversion outcome instead of retaining unbounded
+							// bytes while waiting for a name that never arrives.
+							// Committed attempts still get the Anthropic
+							// protocol terminal; uncommitted ones stay
+							// outcome-only (mirrors the responses bridge
+							// conversionOverflow handling).
+							if len(state.pendingArgs) > maxAnthropicStreamPendingArgsBytes {
+								midStreamHalt = &StreamOutcome{
+									Interrupted: true,
+									Reason:      "anthropic_stream_arg_accumulator_limit",
+									Kind:        errorsx.KindConversion,
+									Resumable:   false,
+									ChunkCount:  chunkCount,
+								}
+								if capture != nil {
+									capture.MarkInterruptedWithReason(midStreamHalt.Reason)
+								}
+								slog.Warn("anthropic stream: nameless tool-call argument hold exceeded accumulator limit",
+									"request_id", requestID,
+									"client_model", clientModel,
+									"pending_args_bytes", len(state.pendingArgs),
+									"limit_bytes", maxAnthropicStreamPendingArgsBytes,
+								)
+								writeAnthropicInterruptedTail(w, flusher, pc, gate, chunkCount, msgID, clientModel, outputTokens, inputTokens, capture)
+								return true
+							}
 						}
 					}
 					continue
@@ -800,6 +838,9 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				return *midStreamHalt
 			}
 			outcome = integrityBreachOutcome(capture, 0)
+			// audit #3: committed clients get message_delta/message_stop
+			// (stop_reason=max_tokens); uncommitted stay silent for failover.
+			writeAnthropicInterruptedTail(w, flusher, pc, gate, chunkCount, msgID, clientModel, outputTokens, inputTokens, capture)
 			return outcome
 		}
 	}
@@ -892,6 +933,9 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				return *midStreamHalt
 			}
 			outcome = integrityBreachOutcome(capture, 0)
+			// audit #3: committed clients get message_delta/message_stop
+			// (stop_reason=max_tokens); uncommitted stay silent for failover.
+			writeAnthropicInterruptedTail(w, flusher, pc, gate, chunkCount, msgID, clientModel, outputTokens, inputTokens, capture)
 			return outcome
 		}
 	}
@@ -1153,6 +1197,24 @@ func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, pc *pending
 
 	writeSSEWithCapturer(w, pc, "message_stop", map[string]any{"type": "message_stop"})
 	flusher.Flush()
+}
+
+// writeAnthropicInterruptedTail renders the Anthropic protocol terminal
+// (message_delta + message_stop) after an integrity-breach cut (audit #3).
+// finishReason "length" maps through mapAnthropicStopReason to
+// stop_reason="max_tokens", signalling a truncated — not completed — turn.
+// Without it a committed client (one that already saw content_block_delta
+// events) is left hanging on message_start with no terminal event.
+//
+// Gate layering mirrors the chat tail (writeChatInterruptedTail): the tail
+// renders only for attempts the client already owns (MayWriteTerminal or
+// client-visible semantic output); uncommitted attempts stay byte-silent so
+// the survival coordinator can discard and fail over transparently.
+func writeAnthropicInterruptedTail(w http.ResponseWriter, flusher http.Flusher, pc *pendingCapturer, gate *AttemptCommitGate, chunkCount int, msgID, clientModel string, outputTokens, inputTokens int, capture *audit.StreamCapture) {
+	if !(gate.MayWriteTerminal() || attemptHasClientSemanticOutput(gate, chunkCount)) {
+		return
+	}
+	writeAnthropicTail(w, flusher, pc, msgID, clientModel, "length", outputTokens, inputTokens, capture)
 }
 
 // writeSSEWithCapturer is the capturer-aware variant of writeSSE for the

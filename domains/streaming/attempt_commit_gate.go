@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/metrics"
@@ -283,6 +284,15 @@ type AttemptCommitGate struct {
 	state     CommitState
 	committed bool
 	discarded bool
+	// terminalRendered latches that a protocol terminal envelope has already
+	// been rendered client-side for this attempt (audit #2: e.g. the bridge
+	// wrote response.completed(incomplete) on a committed integrity breach).
+	// The survival coordinator consults it before handing the decision to its
+	// Terminal seam so a committed breach cannot produce BOTH
+	// completed(incomplete) AND response.failed on the wire. atomic.Bool
+	// because bridges render terminals on their own goroutine-independent
+	// write paths while the coordinator reads it from the loop.
+	terminalRendered atomic.Bool
 	// checkpointedState records the highest state whose durable checkpoint
 	// completed successfully. It prevents duplicate non-idempotent hooks.
 	checkpointedState CommitState
@@ -395,6 +405,31 @@ func (g *AttemptCommitGate) MayWriteTerminal() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.committed || g.mode == GateModeImmediate
+}
+
+// MarkTerminalRendered latches that this attempt's protocol terminal has
+// already been rendered to the client (audit #2). Bridges call it after a
+// successful terminal emission (e.g. responsesScaffold.writeFinalEvents) so
+// the survival coordinator's renderTerminal can suppress the second terminal
+// (completed(incomplete) + response.failed) on committed breach paths. The
+// latch is intentionally NOT set on the detached-client replay path or on
+// uncommitted (coordinator-owned) attempts — there the coordinator keeps
+// terminal ownership. Safe for concurrent use; nil-safe.
+func (g *AttemptCommitGate) MarkTerminalRendered() {
+	if g == nil {
+		return
+	}
+	g.terminalRendered.Store(true)
+}
+
+// TerminalRendered reports whether a protocol terminal was already rendered
+// for this attempt. A voided L2 replay gate never latches it, so the
+// l2_alignment_miss envelope path is unaffected. nil-safe.
+func (g *AttemptCommitGate) TerminalRendered() bool {
+	if g == nil {
+		return false
+	}
+	return g.terminalRendered.Load()
 }
 
 // SetFirstSemanticByteCallback binds an attempt-scoped callback. It is safe to

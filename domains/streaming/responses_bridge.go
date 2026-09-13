@@ -247,15 +247,29 @@ func (s *responsesScaffold) finishAttempt(gate *AttemptCommitGate, fullText, fin
 		if s.pc == nil || s.clientWriter == nil || !s.clientWriter.clientDisconnected {
 			return
 		}
+		// Detached-client replay path: the envelope goes only into the
+		// pending capturer, never onto the wire. The coordinator keeps
+		// terminal ownership — do NOT latch the gate here.
+		s.writeFinalEvents(fullText, finishReason, "", inputTokens, outputTokens, totalTokens)
+		return
 	}
-	s.writeFinalEvents(fullText, finishReason, inputTokens, outputTokens, totalTokens)
+	s.writeFinalEvents(fullText, finishReason, "", inputTokens, outputTokens, totalTokens)
+	// audit #2: the protocol terminal reached the wire through a committed
+	// gate — latch it so the survival coordinator's renderTerminal cannot
+	// append a second terminal (completed + response.failed).
+	gate.MarkTerminalRendered()
 }
 
 func (s *responsesScaffold) finishInterrupted(gate *AttemptCommitGate, fullText, reason string, inputTokens, outputTokens int) {
 	if !gate.MayWriteTerminal() {
 		return
 	}
-	s.writeFinalEvents(fullText, "length", inputTokens, outputTokens, inputTokens+outputTokens)
+	// audit #11: the interruption reason is already in hand here — pass it
+	// through so response.completed carries incomplete_details.reason instead
+	// of a bare "length" finish. "length" stays the default finish form.
+	s.writeFinalEvents(fullText, "length", reason, inputTokens, outputTokens, inputTokens+outputTokens)
+	// audit #2: latch the committed terminal (see finishAttempt).
+	gate.MarkTerminalRendered()
 }
 
 // writeFinalEvents emits response.output_text.done, response.output_item.done,
@@ -275,7 +289,7 @@ func openaiFinishReasonIsError(fr string) bool {
 	return false
 }
 
-func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inputTokens, outputTokens, totalTokens int) {
+func (s *responsesScaffold) writeFinalEvents(fullText, finishReason, incompleteReason string, inputTokens, outputTokens, totalTokens int) {
 	status := "completed"
 	if finishReason == "length" || openaiFinishReasonIsError(finishReason) {
 		status = "incomplete"
@@ -379,6 +393,19 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inpu
 			"model": s.clientModel, "status": status, "output": output,
 			"usage": map[string]any{"input_tokens": inputTokens, "output_tokens": outputTokens, "total_tokens": totalTokens},
 		},
+	}
+	// audit #11: a status=incomplete envelope without incomplete_details is a
+	// protocol gap — Responses SDK clients contract on the reason. Prefer the
+	// caller-supplied interruption reason; otherwise map the finish reason
+	// ("length" → "max_output_tokens" etc.). Omit the field when no explicit
+	// cause is known.
+	if status == "incomplete" {
+		if incompleteReason == "" {
+			incompleteReason = ir.MapFinishReasonToResponsesIncompleteReason(finishReason)
+		}
+		if incompleteReason != "" {
+			completed["incomplete_details"] = map[string]any{"reason": incompleteReason}
+		}
 	}
 	s.writeSSEEvent("response.completed", completed)
 }

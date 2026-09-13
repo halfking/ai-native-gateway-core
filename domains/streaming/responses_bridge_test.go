@@ -722,7 +722,7 @@ func TestResponsesScaffold_RoundTrip(t *testing.T) {
 		msgID:       s.msgID,
 		created:     s.created,
 	}
-	s2.writeFinalEvents("Hello world", "stop", 10, 5, 15)
+	s2.writeFinalEvents("Hello world", "stop", "", 10, 5, 15)
 
 	// Parse the closing response.completed event JSON.
 	body := rec2.Body.String()
