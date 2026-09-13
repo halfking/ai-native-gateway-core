@@ -617,3 +617,91 @@ func TestConsistencyEnvInvalidBoolFallsBackToDefault(t *testing.T) {
 		t.Fatalf("Enabled = %v, want 默认 true", cfg.Lite.Consistency.Enabled)
 	}
 }
+
+// ── AlignFullPostgresURL（audit 2026-09-14 R28 #17）：full_storage.postgres_url
+// ↔ DATABASE_URL 双向对齐的三个方向 + no-op 场景。──────────────────────────
+
+// TestAlignFullPostgresURLPromotion：段有 env 无 → postgres_url 提升为 DATABASE_URL。
+func TestAlignFullPostgresURLPromotion(t *testing.T) {
+	c := &StorageConfig{
+		Mode: "full",
+		Full: &FullStorageConfig{PostgresURL: "postgres://user:pass@127.0.0.1:5432/llm_gateway"},
+	}
+	dbURL := ""
+	if got := c.AlignFullPostgresURL(&dbURL); got != PostgresURLPromoted {
+		t.Fatalf("AlignFullPostgresURL = %v, want PostgresURLPromoted", got)
+	}
+	if dbURL != c.Full.PostgresURL {
+		t.Errorf("DATABASE_URL = %q, want promoted %q", dbURL, c.Full.PostgresURL)
+	}
+}
+
+// TestAlignFullPostgresURLBackfill：env 有段无 → DATABASE_URL 回填 YAML 段。
+func TestAlignFullPostgresURLBackfill(t *testing.T) {
+	c := &StorageConfig{
+		Mode: "full",
+		Full: &FullStorageConfig{},
+	}
+	dbURL := "postgres://user:pass@127.0.0.1:5432/llm_gateway"
+	if got := c.AlignFullPostgresURL(&dbURL); got != PostgresURLBackfilled {
+		t.Fatalf("AlignFullPostgresURL = %v, want PostgresURLBackfilled", got)
+	}
+	if c.Full.PostgresURL != dbURL {
+		t.Errorf("full_storage.postgres_url = %q, want backfilled %q", c.Full.PostgresURL, dbURL)
+	}
+	// 回填后 DATABASE_URL 原值不被改动。
+	if dbURL != "postgres://user:pass@127.0.0.1:5432/llm_gateway" {
+		t.Errorf("DATABASE_URL mutated to %q, want unchanged", dbURL)
+	}
+}
+
+// TestAlignFullPostgresURLConflict：双设且不同 → 不改任何一方，env 优先
+// （历史行为不变），由调用方告警。
+func TestAlignFullPostgresURLConflict(t *testing.T) {
+	c := &StorageConfig{
+		Mode: "full",
+		Full: &FullStorageConfig{PostgresURL: "postgres://yaml@127.0.0.1:5432/yaml_db"},
+	}
+	dbURL := "postgres://env@127.0.0.1:5432/env_db"
+	if got := c.AlignFullPostgresURL(&dbURL); got != PostgresURLConflict {
+		t.Fatalf("AlignFullPostgresURL = %v, want PostgresURLConflict", got)
+	}
+	if c.Full.PostgresURL != "postgres://yaml@127.0.0.1:5432/yaml_db" {
+		t.Errorf("full_storage.postgres_url = %q, want unchanged (conflict 不改写)", c.Full.PostgresURL)
+	}
+	if dbURL != "postgres://env@127.0.0.1:5432/env_db" {
+		t.Errorf("DATABASE_URL = %q, want unchanged (conflict 不改写)", dbURL)
+	}
+}
+
+// TestAlignFullPostgresURLNoop：一致 / 双空 / 非 full 模式 / nil 段均不动。
+func TestAlignFullPostgresURLNoop(t *testing.T) {
+	// 双方一致。
+	same := "postgres://same@127.0.0.1:5432/db"
+	c := &StorageConfig{Mode: "full", Full: &FullStorageConfig{PostgresURL: same}}
+	dbURL := same
+	if got := c.AlignFullPostgresURL(&dbURL); got != PostgresURLUnchanged {
+		t.Errorf("identical URLs: alignment = %v, want PostgresURLUnchanged", got)
+	}
+	// 双方均为空。
+	empty := &StorageConfig{Mode: "full", Full: &FullStorageConfig{}}
+	emptyURL := ""
+	if got := empty.AlignFullPostgresURL(&emptyURL); got != PostgresURLUnchanged {
+		t.Errorf("both empty: alignment = %v, want PostgresURLUnchanged", got)
+	}
+	// 非 full 模式不生效。
+	lite := &StorageConfig{Mode: "lite", Full: &FullStorageConfig{PostgresURL: same}}
+	liteURL := ""
+	if got := lite.AlignFullPostgresURL(&liteURL); got != PostgresURLUnchanged {
+		t.Errorf("lite mode: alignment = %v, want PostgresURLUnchanged", got)
+	}
+	if liteURL != "" {
+		t.Errorf("lite mode DATABASE_URL = %q, want untouched", liteURL)
+	}
+	// Full 段缺失。
+	noSection := &StorageConfig{Mode: "full"}
+	noSectionURL := ""
+	if got := noSection.AlignFullPostgresURL(&noSectionURL); got != PostgresURLUnchanged {
+		t.Errorf("nil Full: alignment = %v, want PostgresURLUnchanged", got)
+	}
+}

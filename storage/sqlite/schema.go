@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS configs (
 	updated_at INTEGER
 );
 
+-- EXPERIMENTAL placeholder: not wired into data plane or admin plane (audit 2026-09-14 R28 #19); lite credentials/catalog production path uses YAML config
 -- Lite catalog: providers 供应商表
 CREATE TABLE IF NOT EXISTS providers (
 	id          TEXT PRIMARY KEY,

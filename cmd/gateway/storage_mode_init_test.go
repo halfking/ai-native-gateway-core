@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -255,6 +256,39 @@ func TestSqlitePragmasFromLiteConfig(t *testing.T) {
 		"synchronous":  "FULL",
 		"busy_timeout": "3000",
 	}, got)
+}
+
+// TestInitStorageModeLiteDisablesRedisEnv 钉住 lite 模式的 Redis env 收口
+// 行为（audit 2026-09-14 R28 #16）：init 后对全部非空 Redis env 执行
+// Warn + Unset（断言 Lookup 为空）；nil runtime（full/未启用）为 no-op，
+// 环境保持原样。
+func TestInitStorageModeLiteDisablesRedisEnv(t *testing.T) {
+	keys := make([]string, len(liteRedisEnvKeys))
+	copy(keys, liteRedisEnvKeys)
+	for i, k := range keys {
+		t.Setenv(k, fmt.Sprintf("previous-value-%d", i))
+	}
+
+	rt, err := initStorageMode(nil, liteStorageConfigForTest(t))
+	if err != nil {
+		t.Fatalf("initStorageMode(lite) error = %v", err)
+	}
+	defer rt.Shutdown()
+	rt.disableRedisEnv()
+
+	for _, k := range keys {
+		if v, ok := os.LookupEnv(k); ok {
+			t.Errorf("lite 收口后 %s 仍存在（len=%d），want 已 unset", k, len(v))
+		}
+	}
+
+	// nil runtime（full/未启用双模式）：收口为 no-op，env 不被触碰。
+	t.Setenv("LLM_GATEWAY_REDIS_ADDR", "127.0.0.1:6379")
+	var nilRt *storageRuntime
+	nilRt.disableRedisEnv()
+	if v := os.Getenv("LLM_GATEWAY_REDIS_ADDR"); v != "127.0.0.1:6379" {
+		t.Errorf("nil runtime 收口后 LLM_GATEWAY_REDIS_ADDR = %q, want 原值保持", v)
+	}
 }
 
 // TestInitStorageModeConsistencyWorkerWiring 验证一致性对账 worker（审计

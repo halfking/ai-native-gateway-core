@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -207,6 +208,37 @@ func (r *storageRuntime) liteMode() bool {
 	return r != nil
 }
 
+// liteRedisEnvKeys 是 lite 模式按策略收口（unset）的 Redis 相关环境变量：
+// 前三项对齐主配置 config.go 的 LLM_GATEWAY_REDIS_* 装配源，后三项覆盖
+// domains 侧直读 os.Getenv 的 mode-blind 消费者（credential fp slot /
+// RPM 限流等，audit 2026-09-14 R28 #16）。
+var liteRedisEnvKeys = []string{
+	"LLM_GATEWAY_REDIS_ADDR",
+	"LLM_GATEWAY_REDIS_PASSWORD",
+	"LLM_GATEWAY_REDIS_DB",
+	"REDIS_URL",
+	"RATE_LIMIT_REDIS_URL",
+	"RPM_REDIS_URL",
+}
+
+// disableRedisEnv 是 lite 模式的 Redis env 收口（audit 2026-09-14 R28 #16）：
+// 遍历 liteRedisEnvKeys，对非空值先记 Warn（只记 key 与原值长度，不落明文，
+// 保留溯源线索）再 Unset，保证下游 —— main 的 Redis 装配段与 domains 直读
+// env 的消费者 —— 在 lite 模式下读到空值。nil-safe（full/未启用模式 no-op）。
+// 注意：主 Config 在本调用之前已完成解析，cfg.RedisAddr 等字段不受影响，
+// main 侧装配段以 storageRt == nil 做二次门控。
+func (r *storageRuntime) disableRedisEnv() {
+	if r == nil {
+		return
+	}
+	for _, k := range liteRedisEnvKeys {
+		if v, ok := os.LookupEnv(k); ok && v != "" {
+			slog.Warn("storage lite mode: Redis disabled by policy", "key", k, "previous_len", len(v))
+			_ = os.Unsetenv(k)
+		}
+	}
+}
+
 // newSessionCacheV2 构造 SessionCacheV2：
 //   - lite 模式：mode-aware 构造（摘除 L2 Redis、注入 L1.5 文件缓存）；
 //     db 可为 nil（lite 模式跳过 PG），此时 L3 回源永远 miss（返回 nil 状态），
@@ -219,41 +251,10 @@ func (r *storageRuntime) newSessionCacheV2(db *pgxpool.Pool, redisAddr string, r
 	return v2.NewSessionCacheV2WithMode(db, redisAddr, redisDB, storage.StorageModeLite, r.fileCache)
 }
 
-// GetProviderStore 返回 lite 模式的 provider catalog store（full 模式返回 nil）。
-// 调用方需要类型断言为 *sqlitestore.SQLiteProviderStore 或 domains/provider.Store。
-func (r *storageRuntime) GetProviderStore() interface{} {
-	if r == nil || r.factory == nil {
-		return nil
-	}
-	return r.factory.NewProviderStore()
-}
-
-// GetCredentialStore 返回 lite 模式的 credential store（full 模式返回 nil）。
-// 调用方需要类型断言为 *sqlitestore.SQLiteCredentialStore 或 domains/credential.Store。
-func (r *storageRuntime) GetCredentialStore() interface{} {
-	if r == nil || r.factory == nil {
-		return nil
-	}
-	return r.factory.NewCredentialStore()
-}
-
-// GetModelStore 返回 lite 模式的 model catalog store（full 模式返回 nil）。
-// 调用方需要类型断言为 *sqlitestore.SQLiteModelStore。
-func (r *storageRuntime) GetModelStore() interface{} {
-	if r == nil || r.factory == nil {
-		return nil
-	}
-	return r.factory.NewModelStore()
-}
-
-// GetBindingStore 返回 lite 模式的 credential-model binding store（full 模式返回 nil）。
-// 调用方需要类型断言为 *sqlitestore.SQLiteBindingStore。
-func (r *storageRuntime) GetBindingStore() interface{} {
-	if r == nil || r.factory == nil {
-		return nil
-	}
-	return r.factory.NewBindingStore()
-}
+// Get*Store getter 已移除（audit 2026-09-14 R28 #19）：SQLite catalog 四表
+// 为 EXPERIMENTAL placeholder，未接入 data plane / admin plane，lite 的
+// credentials/catalog 生产路径走 YAML 配置。仍需访问测试/实验实现时直接
+// 使用 r.factory.New*Store()（storage/factory 保留不动）。
 
 // Shutdown 优雅关闭存储运行时：先取消清理任务（有界等待退出），再关闭工厂
 // （幂等，内部会排空 FileBodiesStore 的异步写队列保证落盘）。

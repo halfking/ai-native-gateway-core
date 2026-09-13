@@ -419,10 +419,38 @@ func main() {
 	// LLM_GATEWAY_STORAGE_MODE 未设置或为 full 时 storageRt 为 nil，以下全部
 	// 走既有装配路径（行为零变化）；lite 模式在此初始化存储工厂、L1.5 文件
 	// 缓存与后台清理任务，Shutdown 挂在优雅关闭段末尾。
-	storageRt, storageInitErr := initStorageMode(cfg, loadStorageConfig(configFile))
+	storageCfg := loadStorageConfig(configFile)
+	storageRt, storageInitErr := initStorageMode(cfg, storageCfg)
 	if storageInitErr != nil {
 		slog.Error("storage mode init failed", "error", storageInitErr)
 		os.Exit(1)
+	}
+
+	// ── lite 模式 Redis env 收口（audit 2026-09-14 R28 #16）──────────────
+	// lite 按策略禁用 Redis：在下游装配与 mode-blind 消费者（domains 侧直读
+	// os.Getenv 的 credential fp slot / RPM 限流等）读取之前，把 Redis 相关
+	// env 从进程环境摘除；先记 Warn（只记 key 与原值长度，不落明文）再 Unset。
+	// nil-safe：full/未启用模式为 no-op。
+	storageRt.disableRedisEnv()
+
+	// ── full_storage.postgres_url ↔ DATABASE_URL 双向对齐（audit 2026-09-14 R28 #17）──
+	// full_storage.postgres_url 此前是"假字段"（main 建池只读 DATABASE_URL）：
+	// 只配 YAML 段会静默落入 no-DB 降级。full 模式下双向补齐——段有 env 无 →
+	// 提升为 DATABASE_URL；env 有段无 → 回填 YAML 段；双设且不同 → WARN 声明
+	// DATABASE_URL env 优先（历史行为不变）。对齐后补跑 Validate，full 段缺
+	// 关键字段只告警不 fail-start（避免存量部署被卡）。
+	if storageCfg != nil && storageCfg.NormalizeMode() == config.StorageModeFull {
+		switch storageCfg.AlignFullPostgresURL(&cfg.DatabaseURL) {
+		case config.PostgresURLPromoted:
+			slog.Info("full_storage.postgres_url promoted to DATABASE_URL")
+		case config.PostgresURLBackfilled:
+			slog.Info("DATABASE_URL backfilled into full_storage.postgres_url")
+		case config.PostgresURLConflict:
+			slog.Warn("full_storage.postgres_url and DATABASE_URL both set and differ; DATABASE_URL env takes precedence (historical behavior unchanged)")
+		}
+		if err := storageCfg.Validate(); err != nil {
+			slog.Warn("storage: full mode config validation failed (non-fatal, continuing legacy assembly)", "error", err)
+		}
 	}
 
 	cfgStore := config.NewStore(cfg)
@@ -834,7 +862,11 @@ func main() {
 	// 成功时（ROUTING_OPT_ENABLED=true 且有 DB pool）非 nil，否则保持 nil
 	// （关闭路径零开销）。
 	var routingOptimizerForShutdown *routingopt.RealOptimizer
-	if cfg.RedisAddr != "" {
+	// 2026-09-14 R28 #16: lite 模式（storageRt != nil）按策略禁用 Redis——
+	// 主 Config 在上方 env 收口之前已完成解析，cfg.RedisAddr 可能仍残留值，
+	// 此处以 storageRt == nil 为准做二次门控；跳过本段后 sessionMgr 等
+	// 保持 nil，走与"Redis 未配置/不可达"一致的既有降级路径。
+	if cfg.RedisAddr != "" && storageRt == nil {
 		redisClient := session.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		// 2026-09-04 availability: bounded boot-ping retry so a Redis that
 		// comes up slightly after the gateway (container ordering, short
@@ -1432,6 +1464,10 @@ func main() {
 			slog.Info("timeout config wired to router")
 		}
 
+		// UNUSED (audit 2026-09-14 R28 #20): Bandit wiring disabled; Router.Bandit
+		// is always nil in production — see executors/router.go banditOrder.
+		// The block below is retained as the re-enable recipe only.
+		//
 		// Phase 1 Bandit Scoring (2026-06-26): Initialize Thompson Sampling scorer
 		// for intelligent credential selection based on historical performance.
 		// Flushes state to database every 10s or when 100 credentials are dirty.
@@ -2196,6 +2232,10 @@ func main() {
 		// are both ready by this point.
 		embeddingsHandler = streaming.NewEmbeddingsHandler(providerClient, upClient)
 		embeddingsHandler.SetAuth(keyVerifier, slidingRL)
+		// 2026-09-14 audit #8: failed embedding candidates feed the shared
+		// candidate_failure_logs / supplier_errors ledger, same as chat —
+		// keeps credential quality views complete across all data planes.
+		embeddingsHandler.SetFailureLogger(executors.NewCandidateFailureWriter(dbConn.Pool()))
 		slog.Info("API key authentication + RPM rate limiting enabled")
 	} else if cfg.SecretKey != "" {
 		// 2026-09-14 audit H-P0-1: DB verifier unavailable (lite mode /
