@@ -58,6 +58,10 @@ go test ./domains/credential/ -count=1                            # ok 14.7s
 5. 套餐探测串行、单 sweep 上限 200 凭据 + 3 分钟 ctx;>200 家 zhipu/minimax 大规模场景需再评估(有 ORDER BY plan_quota_checked_at 公平轮转)。
 6. 本地/252 库尚未部署验证运行时行为(仅单测/构建);下次 deploy-local 或 pg-schema-sync-252 时 migration 701 会随 ensure 生效。
 
+## 当前验证结论
+
+> 对 1a89c32fe(balance-floor guard)的部署级验证目前只能分层表述：已证 migration 701、zhipu 真实凭据摘出/恢复闭环、web 构建与相关单测；currency pass A/B/C 仅为 mock 验证；未证 minimax `/v1/token_plan/remains` 真实响应、当前 Docker/:8782 容器身份与 `go version -m`、以及登录后的 live 404 探针。详见 `docs/changelogs/2026-09-13-balance-floor-guard-deploy-verify-and-fixes.md`。已落地的两项代码修复为清下限自动回池(`releaseClearedFloorCredentials`,66a9f8e6a)与 planTypes 下拉值域对齐(77956aeb5)。下一轮不得将 mock 或静态证据写成完整生产闭环。
+
 ## 下一轮提示词(建议)
 
-> ~~对 1a89c32fe(balance-floor guard)做部署级验证~~ —— 已于 2026-09-13 全部完成,详见 `docs/changelogs/2026-09-13-balance-floor-guard-deploy-verify-and-fixes.md`:migration 701 确认、zhipu 摘出/恢复闭环、货币 pass A/B/C 闭环(mock)、web 表单控件补齐(4d14b615b);附带两修复 —— 清下限自动回池(`releaseClearedFloorCredentials`,66a9f8e6a)、planTypes 下拉对齐实测值域(77956aeb5)。剩余:若拿到 minimax 订阅 key,实测 `/v1/token_plan/remains` 形状并按需修正 parseMiniMaxPlan(fail-open,不阻塞)。
+> 先执行 `git fetch origin main` 并记录新的 `origin/main` SHA、HEAD 差异和工作树 WIP；勿覆盖 VERSION/version.json/web/public/* 等并行部署簿记。随后按证据顺序复验：恢复 Docker Desktop 并确认 daemon 健康，`docker ps` 核对 :8782 active/:8781 candidate、tag 与端口，`docker cp` 容器二进制后用 `go version -m` 核对 vcs.revision，再执行登录后的 live 404 探针。最后使用脱敏的真实 Minimax 订阅 key 验证 `/v1/token_plan/remains` 响应字段与 parse；currency A/B/C 若仍为 mock 必须继续标注 mock。任一环境不可用时记录 blocker 与恢复条件，不得宣称部署闭环。
