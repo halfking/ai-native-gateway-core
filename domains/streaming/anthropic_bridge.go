@@ -1032,6 +1032,15 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 					// before emitting the closing usage/done chunks so the
 					// executor can failover. Mirrors stream.go.
 					if capture != nil && capture.IntegrityBreached() {
+						// audit #3: the flushed text may have committed the
+						// attempt — a committed client gets the chat protocol
+						// terminal instead of a truncated stream; uncommitted
+						// attempts stay outcome-only (guard inside).
+						writeChatInterruptedTail(w, pc, gate, &ir.StreamUsage{
+							PromptTokens:     inputTokens,
+							CompletionTokens: outputTokens,
+							TotalTokens:      inputTokens + outputTokens,
+						})
 						return integrityBreachOutcome(capture, chunkCount)
 					}
 					// 2026-08-29: Validate tool call completeness on clean EOF
@@ -1533,6 +1542,14 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		// Incremental integrity breach (repeated-content loop): cut the
 		// stream so the executor can failover. Mirrors stream.go.
 		if capture != nil && capture.IntegrityBreached() {
+			// audit #3: a committed client (deltas already on the wire) gets
+			// the chat protocol terminal (finish_reason=length + [DONE]);
+			// uncommitted attempts stay outcome-only for transparent failover.
+			writeChatInterruptedTail(w, pc, gate, &ir.StreamUsage{
+				PromptTokens:     inputTokens,
+				CompletionTokens: outputTokens,
+				TotalTokens:      inputTokens + outputTokens,
+			})
 			return integrityBreachOutcome(capture, chunkCount)
 		}
 	}

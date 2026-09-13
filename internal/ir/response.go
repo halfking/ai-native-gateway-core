@@ -533,12 +533,17 @@ func SerializeOpenAIResponse(ir *InternalResponse, clientModel string) ([]byte, 
 
 	// Tool calls
 	var toolCalls []map[string]any
+	// audit #11: count the calls the unified empty-name rejection drops so an
+	// all-nameless tool_calls turn can be downgraded below instead of
+	// serializing as a tool-call turn with zero calls.
+	droppedNameless := 0
 	for _, tc := range ir.ToolCalls {
 		// Unified empty-name rejection (2026-09-13): a complete-call wire
 		// format (chat.completions tool_calls entry) requires id and
 		// function.name. Emitting an empty name produces an SDK-side
 		// validation error; the Gemini serializer already had this guard.
 		if tc.Name == "" {
+			droppedNameless++
 			continue
 		}
 		// 2026-07-27: Prefer the preserved raw JSON payload. Fall back to
@@ -568,6 +573,13 @@ func SerializeOpenAIResponse(ir *InternalResponse, clientModel string) ([]byte, 
 
 	finishReason := ir.FinishReason
 	if finishReason == "" {
+		finishReason = "stop"
+	}
+	// audit #11: a tool_calls finish whose calls were ALL dropped by the
+	// nameless guard would hand the client a tool-call turn with an empty
+	// tool_calls array — a protocol breach. Degrade to a plain "stop" so the
+	// client sees a (degenerate but legal) message turn.
+	if droppedNameless > 0 && len(toolCalls) == 0 && finishReason == "tool_calls" {
 		finishReason = "stop"
 	}
 
@@ -692,6 +704,22 @@ func SerializeAnthropicResponse(ir *InternalResponse, clientModel string) ([]byt
 
 	// Build stop_reason (Anthropic form)
 	stopReason := mapFinishReasonToAnthropic(ir.FinishReason)
+	// audit #11: mirror of the OpenAI serializer guard. buildAnthropicResponseContent
+	// drops nameless tool calls (unified empty-name rejection); when that drop
+	// empties an otherwise tool_calls turn, stop_reason=tool_use would make
+	// Anthropic clients wait for tool results that can never arrive. Degrade
+	// to end_turn.
+	droppedNameless, emitted := 0, 0
+	for _, tc := range ir.ToolCalls {
+		if tc.Name == "" {
+			droppedNameless++
+		} else {
+			emitted++
+		}
+	}
+	if droppedNameless > 0 && emitted == 0 && ir.FinishReason == "tool_calls" {
+		stopReason = mapFinishReasonToAnthropic("stop")
+	}
 
 	out := map[string]any{
 		"id":            ir.ID,
@@ -850,6 +878,23 @@ func SerializeResponsesResponse(ir *InternalResponse, clientModel string) ([]byt
 
 	status := mapFinishReasonToResponsesStatus(ir.FinishReason)
 
+	// audit #11 (Responses-side nameless downgrade): an all-nameless tool_calls
+	// turn drops every function_call item below; a status=completed envelope
+	// with an empty output array would be a false success (the upstream did
+	// emit suppressed content). Degrade to incomplete, mirroring the streaming
+	// degenerate-stream guard in responsesScaffold.writeFinalEvents.
+	droppedNameless, emitted := 0, 0
+	for _, tc := range ir.ToolCalls {
+		if tc.Name == "" {
+			droppedNameless++
+		} else {
+			emitted++
+		}
+	}
+	if droppedNameless > 0 && emitted == 0 && ir.FinishReason == "tool_calls" {
+		status = "incomplete"
+	}
+
 	output := buildResponsesResponseOutput(ir, msgID, status)
 
 	resp := map[string]any{
@@ -865,8 +910,34 @@ func SerializeResponsesResponse(ir *InternalResponse, clientModel string) ([]byt
 			"total_tokens":  ir.Usage.TotalTokens,
 		},
 	}
+	// audit #11: a status=incomplete envelope without incomplete_details is a
+	// protocol gap — Responses SDK clients contract on the reason. Map the
+	// finish reason to the Responses API reason vocabulary; omit the field
+	// when the finish reason carries no explicit incomplete cause.
+	if status == "incomplete" {
+		if reason := MapFinishReasonToResponsesIncompleteReason(ir.FinishReason); reason != "" {
+			resp["incomplete_details"] = map[string]any{"reason": reason}
+		}
+	}
 
 	return json.Marshal(resp)
+}
+
+// MapFinishReasonToResponsesIncompleteReason maps a unified (OpenAI-form)
+// finish reason to the Responses API incomplete_details.reason value
+// (audit #11). It is the inverse of the parse-side mapping in
+// response_protocols.go:mapResponsesStatus, so reason → finish → reason
+// round-trips. Returns "" when the finish reason carries no explicit
+// incomplete cause; callers omit the incomplete_details field then.
+func MapFinishReasonToResponsesIncompleteReason(reason string) string {
+	switch reason {
+	case "length", "max_tokens":
+		return "max_output_tokens"
+	case "content_filter", "refusal":
+		return "content_filter"
+	default:
+		return ""
+	}
 }
 
 // buildResponsesResponseOutput assembles the Responses API `output[]` array

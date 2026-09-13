@@ -534,6 +534,50 @@ func integrityBreachOutcome(capture *audit.StreamCapture, chunkCount int) Stream
 	}
 }
 
+// writeChatInterruptedTail renders the OpenAI chat-completions protocol
+// terminal frames after an integrity-breach cut (audit #3): one empty-delta
+// chat.completion.chunk carrying finish_reason="length" followed by the
+// data: [DONE] sentinel. Without it a committed client (one that already
+// saw semantic deltas) is left hanging on a truncated SSE stream — OpenAI
+// SDKs block forever waiting for [DONE].
+//
+// Gate layering mirrors the Responses bridge (responsesScaffold.finishInterrupted):
+// the tail renders only for attempts the client already owns —
+// MayWriteTerminal (committed / immediate / gate-disabled) or, for the nil
+// legacy gate, client-visible chunk evidence. Uncommitted attempts stay
+// byte-silent so the survival coordinator can discard the buffer and fail
+// over transparently (outcome-only).
+func writeChatInterruptedTail(w http.ResponseWriter, pc *pendingCapturer, gate *AttemptCommitGate, usage *ir.StreamUsage) {
+	if !(gate.MayWriteTerminal() || attemptHasClientSemanticOutput(gate, 0)) {
+		return
+	}
+	// An all-zero usage block is noise, not information — omit it.
+	if usage != nil && usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+		usage = nil
+	}
+	tail := (&ir.StreamChunk{
+		Type:           ir.ChunkTypeDelta,
+		Delta:          &ir.StreamDelta{},
+		FinishReason:   "length",
+		Usage:          usage,
+		SourceProtocol: ir.ProtocolOpenAIChat,
+	}).SerializeOpenAI("", "", 0)
+	if tail != "" {
+		safeWriteSSE(w, tail)
+		if pc != nil {
+			pc.append(tail)
+		}
+	}
+	done := "data: [DONE]\n\n"
+	safeWriteSSE(w, done)
+	if pc != nil {
+		pc.append(done)
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		safeFlush(flusher)
+	}
+}
+
 func ptrStreamOutcome(o StreamOutcome) *StreamOutcome { return &o }
 
 // P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
@@ -977,6 +1021,9 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 				}
 				if capture.IntegrityBreached() {
 					outcome = integrityBreachOutcome(capture, chunkCount)
+					// audit #3: committed clients get the protocol terminal
+					// (finish_reason=length + [DONE]); uncommitted stay silent.
+					writeChatInterruptedTail(w, pc, gate, chunk.Usage)
 					return outcome
 				}
 			}
@@ -1360,6 +1407,9 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 					}
 					if capture.IntegrityBreached() {
 						outcome = integrityBreachOutcome(capture, chunkCount)
+						// audit #3: committed clients get the protocol terminal
+						// (finish_reason=length + [DONE]); uncommitted stay silent.
+						writeChatInterruptedTail(w, pc, gate, chunk.Usage)
 						return outcome
 					}
 				}
