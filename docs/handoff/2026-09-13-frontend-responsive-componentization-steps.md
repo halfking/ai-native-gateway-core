@@ -588,3 +588,19 @@ git push 需用户在交互终端输入 codeup 凭证（setsid foot bash <脚本
 1. 请求日志「详情」路径走查需真实流量数据（联调环境或回放流量）。
 2. foldable.css 真机（Surface Duo / 双屏设备）CSS 网格抽验。
 3. 登录态环境 runbook 已入本节，后续轮可直接复用（步骤 2~6 脚本化可再省时）。
+
+## 十二、暗色皮肤修正轮（2026-09-13，用户报告修复）
+
+**用户报告**：暗色系下出现大块亮色。**根因**：Element Plus 组件（el-table/el-card/el-input/el-select…共 121 处 el-table-column、56 处 el-card）消费 `--el-*` 变量，默认白底；而应用仅切 `data-theme` 自研令牌——EP dark css-vars 未引入、`html.dark` 门控类从未切换、`--el-*` 无任何覆盖，三类缺失导致所有 EP 组件在暗色下整片保持亮色。
+
+**修复**（3 文件 + 1 测试）：
+1. `theme.ts applyTheme()`：同步 `classList.toggle('dark', theme==='dark')`（EP dark 变量的门控），与 `data-theme` 原子切换；
+2. `main.ts`：引入 `element-plus/theme-chalk/dark/css-vars.css`（EP 官方暗色变量）+ `styles/element-dark.css`；
+3. 新增 `styles/element-dark.css`：`html.dark[data-theme='dark']`（特异性高于 EP 的 `html.dark`，免疫导入顺序）把 EP 表面/文字/描边/遮罩变量映射到应用令牌（`--el-bg-color→--kx-surface` 等），EP 组件与应用自研面板同调；**范围约定**：只桥接面/字/边/遮罩，`--el-color-*` 品牌色保持 EP 默认（light-N 派生色阶不与 base 脱节），亮色零触碰。
+
+**验证**：
+- 新增 `src/theme.dark-skin.test.ts` 3 用例全绿（applyTheme 双向切类 + main.ts 引入与顺序源码断言 + 桥接文件选择器/令牌断言）；
+- 变量级联探针（裸页挂真实三层样式文件）：亮 `--el-bg-color=#fff`（零回归）→ 仅 dark 类 = EP 默认暗灰 `#141414`（官方路径生效）→ 加 data-theme 后 = `#1a222d`（桥接映射到 `--kx-surface` 胜出）；el-card/el-input 实算背景 `rgb(26,34,45)`、描边 `rgb(42,53,68)`，亮暗对比截图留档；
+- 四门禁 + element:check 全绿；vitest 559 通过 / 41 失败 = **39 失败文件基线不变**。
+
+**验证环境残项**：本虚机的旧版 headless_shell（playwright chromium_headless_shell，`--headless=old`）自 11:29 起对 SPA 整页渲染反复 OOM 崩溃（partition_alloc OnNoMemoryInternal，SIGTRAP，4 次 1.1G coredump，亮暗皆可触发、与本次改动无关）；SPA 级暗色截图以「变量级联探针 + 裸页 EP 组件真实渲染对比截图」替代，SPA 真机暗色走查待真机/联调环境补。
