@@ -176,6 +176,7 @@ export default {
       token_plan: 'token_plan (订阅套餐)',
       code_plan: 'code_plan (代码套餐)',
       agent_plan: 'agent_plan (Agent 套餐)',
+      monthly: 'monthly (包月固定)',
       request: 'request (按请求)',
       seat: 'seat (按席位)',
       compute_time: 'compute_time (按算力)',

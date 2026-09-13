@@ -191,6 +191,7 @@ export default {
       token_plan: "token_plan (訂閱方案)",
       code_plan: "code_plan (程式碼方案)",
       agent_plan: "agent_plan (Agent 方案)",
+      monthly: "monthly (月費固定)",
       request: "request (按請求)",
       seat: "seat (按席位)",
       compute_time: "compute_time (按算力)",

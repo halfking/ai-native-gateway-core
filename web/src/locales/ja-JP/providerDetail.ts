@@ -192,6 +192,7 @@ export default {
       token_plan: "token_plan (サブスクリプション)",
       code_plan: "code_plan (コードプラン)",
       agent_plan: "agent_plan (Agent プラン)",
+      monthly: "monthly (月額固定)",
       request: "request (リクエスト単位)",
       seat: "seat (シート単位)",
       compute_time: "compute_time (コンピュート単位)",

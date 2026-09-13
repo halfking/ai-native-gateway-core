@@ -227,10 +227,7 @@ const planTypes = computed(() => [
   { value: 'token_plan', label: pd('creds.planTypes.tokenPlan') },
   { value: 'code_plan', label: pd('creds.planTypes.codePlan') },
   { value: 'agent_plan', label: pd('creds.planTypes.agentPlan') },
-  { value: 'request', label: pd('creds.planTypes.request') },
-  { value: 'seat', label: pd('creds.planTypes.seat') },
-  { value: 'compute_time', label: pd('creds.planTypes.computeTime') },
-  { value: 'flat_quota', label: pd('creds.planTypes.flatQuota') },
+  { value: 'monthly', label: pd('creds.planTypes.monthly') },
   { value: 'free', label: pd('creds.planTypes.free') },
 ])
 

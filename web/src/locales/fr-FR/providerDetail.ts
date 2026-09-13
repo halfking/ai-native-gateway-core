@@ -192,6 +192,7 @@ export default {
       token_plan: "token_plan (abonnement)",
       code_plan: "code_plan (forfait code)",
       agent_plan: "agent_plan (forfait agent)",
+      monthly: "monthly (forfait mensuel)",
       request: "request (par requête)",
       seat: "seat (par siège)",
       compute_time: "compute_time (par calcul)",
