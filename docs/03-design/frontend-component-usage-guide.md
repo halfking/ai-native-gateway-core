@@ -67,9 +67,9 @@ props：`loading/empty/emptyText/scrollable(true)/minWidth('720px')`。
 
 ## 6. AppModal
 
-props：`modelValue/title/size('sm'480|'md'640|'lg'860)/closeOnMask(true)/escClose(true)/fullscreen/closable(true)/disabledConfirm/panelClass/stacked`。`escClose=false` 供门控类弹窗（如操作协议确认 OperationAgreementDialog）禁用 ESC，强制显式选择。
+props：`modelValue/title/size('sm'480|'md'640|'lg'860)/closeOnMask(true)/escClose(true)/fullscreen/closable(true)/disabledConfirm/panelClass`。`escClose=false` 供门控类弹窗（如操作协议确认 OperationAgreementDialog）禁用 ESC，强制显式选择。
 emits：`update:modelValue/close`；插槽：默认、`#footer`（作用域 `{ disabledConfirm, close }`）。
-内置能力：ESC、引用计数滚动锁定（嵌套弹层安全）、焦点圈闭+返还、isSmall(<480) 自动全屏（顶栏关闭+footer 吸底）、<768 宽 `min(92vw, size)`、stacked→`.modal-overlay-stacked`(z-110)。
+内置能力：ESC（**仅栈顶弹层响应**，useOverlayStack，R20）、引用计数滚动锁定、焦点圈闭+返还、isSmall(<480) 自动全屏（顶栏关闭+footer 吸底）、<768 宽 `min(92vw, size)`。弹层叠弹层无需额外属性：z-index（modal 1000 > drawer 100）+ 栈顶判定天然正确。
 迁移对照（ProvidersView showAdd）：外层两层 div + h3 → `<AppModal v-model="show" :title="…" size="sm">`，按钮行进 `#footer`。
 保留皮肤：`panel-class="login-modal"` + 全局 `.modal.login-modal` 样式（LoginModal 范式）。
 不适配场景：顶部对齐的超长表单（ModelsView create-modal 顶部对齐+页面滚动）保留手写。
@@ -77,7 +77,7 @@ emits：`update:modelValue/close`；插槽：默认、`#footer`（作用域 `{ d
 ## 7. AppDrawer
 
 props：`modelValue/title/width('min(33vw,520px)')/direction('auto'|'right'|'bottom')/closeOnMask(true)/closable(true)`。
-auto：`isTablet(>=768)` 右侧、<768 bottom-sheet（90dvh+把手）。右侧用 `inset-inline-end`，dir=rtl 自动换边（项目未装 postcss-rtlcss，逻辑属性原生 RTL 生效）。
+auto：`isTablet(>=768)` 右侧、<768 bottom-sheet（90dvh+把手）。右侧用 `inset-inline-end`，dir=rtl 自动换边（项目未装 postcss-rtlcss，逻辑属性原生 RTL 生效）。ESC 同样仅栈顶响应（与 AppModal 共用 useOverlayStack）。
 迁移对照（ModelsView 特色抽屉）：`.drawer-backdrop > .drawer-panel(.drawer-header+.drawer-body)` → `<AppDrawer v-model="show" title="…" width="min(900px,95vw)">`，内层 header/body 删除。
 z-index：遮罩 z-100；需要盖在另一弹层上的抽屉（如 diagnose z-110）暂保留手写。
 
@@ -87,12 +87,13 @@ z-index：遮罩 z-100；需要盖在另一弹层上的抽屉（如 diagnose z-1
 - 访客态：`<AppNavDrawer :guest-links="[{ labelKey, href }…]" />`。
 - 数据源：登录态 useAppNav()（与桌面下拉完全同源）；手风琴默认展开当前路由组，跳转自动收起。
 
-## 9. useBreakpoint / useViewportSegments / useScrollLock / useFocusTrap
+## 9. useBreakpoint / useViewportSegments / useScrollLock / useFocusTrap / useOverlayStack
 
 - `useBreakpoint()`：全局单例 matchMedia，见 §0。
 - `useViewportSegments()`：折叠屏（§4.6）。isSpanning 时宿主挂 `.app-shell--spanning`（foldable.css 三列 grid），左栏 `.span-left`/右栏 `.span-right`；不支持的浏览器恒 false，CSS 特性查询原生忽略，零降级成本。polyfill 因环境禁 npm install 未装，真机验证待补。
 - `useScrollLock`（lockBodyScroll/unlockBodyScroll）：引用计数，`data-scroll-locked` 属性供测试/样式钩子。
 - `useFocusTrap(container)`：弹层焦点圈闭三件套。
+- `useOverlayStack`（R20，2026-09-13）：模块级弹层栈，AppModal/AppDrawer 自动接入——ESC 仅由栈顶弹层响应，修复合嵌套弹窗被一次按键全关的问题；测试钩子 `overlayStackDepth()`。
 
 ## 10. 治理与登记（2026-09-13 收口时点）
 
