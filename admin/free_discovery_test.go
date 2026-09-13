@@ -328,7 +328,7 @@ func TestFDStatusFor(t *testing.T) {
 	if got := fdStatusFor(errors.New("db exploded")); got != http.StatusInternalServerError {
 		t.Fatalf("unknown: %d", got)
 	}
-	// R20 §二.5: invalid tenant_id must map to 400, not 500.
+	// R20 §2.5: invalid tenant_id must map to 400, not 500.
 	if got := fdStatusFor(freediscovery.ErrInvalidTenantID); got != http.StatusBadRequest {
 		t.Fatalf("invalid tenant_id: got %d, want %d", got, http.StatusBadRequest)
 	}

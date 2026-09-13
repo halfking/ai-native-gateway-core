@@ -99,6 +99,10 @@ func TestForceEnableCredentialSQL_Structural(t *testing.T) {
 		"health_status = 'healthy'",
 		"state_reason_code = NULL",
 		"state_updated_at = NOW()",
+		// 2026-09-13 closeout (P2): force-enable must also reset the probe
+		// backoff ladder so the credential regains fast probe cadence.
+		"probe_consecutive_failures = 0",
+		"last_probe_at = NULL",
 	} {
 		if !strings.Contains(sql, mustReset) {
 			t.Fatalf("force-enable SQL must reset %s; got:\n%s", mustReset, sql)
