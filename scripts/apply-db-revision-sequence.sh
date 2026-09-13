@@ -367,6 +367,12 @@ intentional_function_chains=(
   # 699 re-pins ensure_supplier_errors_partition (V371 deployed the original
   # out-of-repo-family body) to Asia/Shanghai; the pin must stay the later entry.
   'ensure_supplier_errors_partition|V371__supplier_errors_hot_and_stats.sql|699_supplier_errors_ensure_timezone_pin.sql|'
+  # 703 re-pins promote_supplier_errors_hot_to_partition month grouping to
+  # Asia/Shanghai on top of V371's original body; the pin must stay the later
+  # entry (same V371-track pattern as 699; 703 landed without this
+  # registration and aborted every later deploy at the pre-flight guard,
+  # 2026-09-14 deploy-local incident).
+  'promote_supplier_errors_hot_to_partition|V371__supplier_errors_hot_and_stats.sql|703_supplier_errors_promote_timezone_pin.sql|'
   # 659 rewrote these seven promote bodies as the single atomic CTE form;
   # 688 later aligned their defaults to the Go scheduler (not in this array,
   # so invisible to the scanner) and 698 re-derives each body from the

@@ -818,7 +818,7 @@ EOF
 }
 
 verify_instance() {
-  local port="$1" bundle="$2" body expected expected_seq
+  local port="$1" bundle="$2" body expected expected_seq readyz_body
   expected=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version", ""))' "$bundle/version.json")
   expected_seq=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("build_seq", ""))' "$bundle/version.json")
   # 2026-09-09：active cutover 偶发 verify 失败（"previous release was
@@ -831,7 +831,11 @@ verify_instance() {
     return 1
   fi
   if ! dl_wait_http "http://127.0.0.1:${port}/readyz" "$HEALTH_TIMEOUT"; then
-    printf '    [verify] %s:%s: /readyz did not return 200 within %ss\n' "$port" "$bundle" "$HEALTH_TIMEOUT" >&2
+    # 2026-09-14：/readyz 是 DB+Redis 双 ping 严格门，超时时抓一次响应体
+    # （不含 -f，503 也收），立刻分辨是 database 还是 redis 不通，还是端
+    # 口根本无人监听——不再只留一句超时让操作员盲猜。
+    readyz_body=$(curl -sS --max-time 3 "http://127.0.0.1:${port}/readyz" 2>&1 || true)
+    printf '    [verify] %s:%s: /readyz did not return 200 within %ss (last body: %s)\n' "$port" "$bundle" "$HEALTH_TIMEOUT" "${readyz_body:-<endpoint unreachable>}" >&2
     return 1
   fi
   if ! body=$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/version" 2>&1); then
@@ -1011,9 +1015,21 @@ deploy() {
     cp "$LLM_GATEWAY_UPSTREAM_FILE" "$RUN_DIR/active-upstream.conf"
   else
     warn 'no local proxy configured; using controlled restart (not zero-downtime)'
-    stop_instance "$active_port"
-    start_instance "$bundle" "$active_port"
-    verify_instance "$active_port" "$bundle" || { stop_instance "$active_port"; [[ -e "$active_bundle" ]] && start_instance "$active_bundle" "$active_port"; die 'active cutover failed; previous release was restarted'; }
+    # 2026-09-14：2102 cutover 首启在候选端口 verify 全绿、同一 bundle 在
+    # active 端口 /readyz 60s 不 ready 一次（瞬态首启窗口，非 release 问
+    # 题），单次失败即回滚把可恢复抖动变成部署失败。给一次完整的重启重
+    # 试再判失败；配合 verify_instance 的 readyz 响应体输出，真依赖故障
+    # 也能从日志直接看出 database/redis 哪一侧不通。
+    local cutover_ok=0 cutover_attempt
+    for cutover_attempt in 1 2; do
+      (( cutover_attempt > 1 )) && printf '    [cutover] readiness gate failed; retry %d/2 (controlled restart)\n' "$cutover_attempt" >&2
+      stop_instance "$active_port"
+      start_instance "$bundle" "$active_port"
+      if verify_instance "$active_port" "$bundle"; then cutover_ok=1; break; fi
+    done
+    if (( ! cutover_ok )); then
+      stop_instance "$active_port"; [[ -e "$active_bundle" ]] && start_instance "$active_bundle" "$active_port"; die 'active cutover failed; previous release was restarted'
+    fi
     if ! smoke_credential_decrypt "$active_port" "$bundle/env"; then
       stop_instance "$active_port"
       [[ -e "$active_bundle" ]] && start_instance "$active_bundle" "$active_port"
