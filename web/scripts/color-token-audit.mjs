@@ -10,6 +10,7 @@
 
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { resolve, relative, join } from 'node:path'
+import { exemptColorMixBlacks } from './lib/color-audit-scan.mjs'
 
 const ROOT = resolve(process.cwd(), 'src')
 const EXTS = ['.vue', '.ts', '.css', '.scss']
@@ -38,28 +39,6 @@ const SKIP_FILES = new Set([
 
 const HEX_RE = /#[0-9a-fA-F]{3,8}\b/g
 const RGB_RE = /rgba?\s*\([^)]+\)/g
-
-const MIX_BLACKWHITE_RE = /#000000\b|#000\b|#ffffff\b|#fff\b/gi
-
-// 平衡括号提取行内每个 color-mix(...) 并仅豁免其黑白成分
-function exemptColorMixBlacks(line) {
-  let out = ''
-  let i = 0
-  for (;;) {
-    const idx = line.indexOf('color-mix(', i)
-    if (idx === -1) return out + line.slice(i)
-    out += line.slice(i, idx)
-    let depth = 1
-    let j = idx + 'color-mix('.length
-    while (j < line.length && depth > 0) {
-      if (line[j] === '(') depth++
-      else if (line[j] === ')') depth--
-      j++
-    }
-    out += line.slice(idx, j).replace(MIX_BLACKWHITE_RE, '__MIX__')
-    i = j
-  }
-}
 
 function walk(dir) {
   const out = []
@@ -95,6 +74,8 @@ function scanFile(file) {
   let generalBraceDepth = 0
   // 跨行块注释追踪:注释中间的行(历史修复说明等)不参与扫描
   let inBlockComment = false
+  // 跨行 color-mix 追踪:参数跨行书写时,续行里的黑白成分也要豁免(每文件/每 style 块重置)
+  const mixState = { inMix: false, depth: 0 }
 
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i]
@@ -105,7 +86,7 @@ function scanFile(file) {
         if (/<style[^>]*>/.test(line)) styleDepth++
         if (/<\/style>/.test(line)) {
           styleDepth--
-          if (styleDepth === 0) { inStyle = false; inTokenBlock = false; inBlockComment = false }
+          if (styleDepth === 0) { inStyle = false; inTokenBlock = false; inBlockComment = false; mixState.inMix = false; mixState.depth = 0 }
           continue
         }
       }
@@ -157,8 +138,9 @@ function scanFile(file) {
     // color-mix() 只豁免黑白成分(#000/#fff 是明度调节,两主题语义一致);
     // 其余成分色(潜在品牌/数据色硬编码)照常报告,避免豁免面过宽造成漏报。
     // 成分提取用平衡括号扫描:简单 [^)]* 会在内嵌 var(--x) 的闭括号处截断,
-    // 导致尾部成分(#000 等)漏出豁免范围(2026-09-13 审计轮实测修正)
-    scanable = exemptColorMixBlacks(scanable)
+    // 导致尾部成分(#000 等)漏出豁免范围(2026-09-13 审计轮实测修正);
+    // 跨行参数由 mixState 状态衔接,续行黑白成分不再误报(§二十 审计轮)
+    scanable = exemptColorMixBlacks(scanable, mixState)
 
     for (const re of [HEX_RE, RGB_RE]) {
       re.lastIndex = 0
@@ -180,6 +162,13 @@ const args = process.argv.slice(2)
 const jsonIdx = args.indexOf('--json')
 const outPath = jsonIdx >= 0 ? args[jsonIdx + 1] : null
 const strict = args.includes('--strict')
+// 基线机制(对齐 i18n-cjk-baseline.json 先例):--strict 与 --baseline 同用时,
+// 只拦截「基线外」的新增违规;存量已判定保留项(半透明叠加/遮罩/图形纹理等)
+// 放行。基线 key 用 file:value 粒度——抗行号漂移,代价是同一文件新增同值
+// 第二处不报,可接受。--update-baseline 重新生成。
+const baselineIdx = args.indexOf('--baseline')
+const baselinePath = baselineIdx >= 0 ? args[baselineIdx + 1] : null
+const updateBaseline = args.includes('--update-baseline')
 
 const files = walk(ROOT)
 const all = []
@@ -213,7 +202,40 @@ if (all.length > 0 && !outPath) {
   }
 }
 
-if (strict && all.length > 0) {
-  console.error(`\n[strict] 发现 ${all.length} 处硬编码颜色,请修复后再提交。`)
+if (baselinePath && (updateBaseline || strict)) {
+  const baselineFile = resolve(process.cwd(), baselinePath)
+  const vKey = (v) => `${v.file}:${v.value}`
+  if (updateBaseline) {
+    writeFileSync(baselineFile, JSON.stringify({
+      // file:value 粒度,抗行号漂移;新增颜色值硬编码即 strict 拦截
+      violations: [...new Set(all.map(vKey))].sort().map((k) => {
+        const [file, ...rest] = k.split(':')
+        return { file, value: rest.join(':') }
+      }),
+    }, null, 2) + '\n')
+    console.log(`\n[baseline] 已写入 ${all.length} 处(去重 ${new Set(all.map(vKey)).size} 条)到 ${baselinePath}`)
+  } else {
+    let baselineSet = new Set()
+    try {
+      baselineSet = new Set(
+        JSON.parse(readFileSync(baselineFile, 'utf8')).violations.map((v) => `${v.file}:${v.value}`),
+      )
+    } catch (e) {
+      console.error(`[baseline] 基线文件不可读(${baselinePath}),请先跑 color:baseline:update`)
+      process.exit(1)
+    }
+    const newViolations = all.filter((v) => !baselineSet.has(vKey(v)))
+    if (newViolations.length > 0) {
+      console.error(`\n[strict] 发现 ${newViolations.length} 处基线外新增硬编码颜色(门禁拦截):`)
+      for (const v of newViolations.slice(0, 20)) console.error(`  ${v.file}:${v.line}: ${v.value}`)
+      console.error('请令牌化后提交,或评审确认保留后跑 npm run color:baseline:update')
+      process.exit(1)
+    }
+    console.log(`\n[strict] PASS — 违规 ${all.length} 处均在保留基线内(基线 ${baselineSet.size} 条),无新增`)
+  }
+}
+
+if (strict && !baselinePath && all.length > 0) {
+  console.error(`\n[strict] 发现 ${all.length} 处硬编码颜色,请修复后再提交(或配置 --baseline 走保留基线)。`)
   process.exit(1)
 }
