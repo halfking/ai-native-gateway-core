@@ -107,5 +107,5 @@ Element Plus 组件消费 `--el-*` 变量，应用自研样式消费 `--kx-*`/�
 
 - **主题双轨**：`data-theme` 与 `html.dark` 必须在任何写入点原子同步（`src/theme.ts applyTheme` 与 `public/theme-init.js` 两处，测试锁定）。漏掉 dark 类 = EP 组件回退白底。
 - **桥接范围**：表面/文字/描边/遮罩映射到应用令牌；品牌色 primary 在暗色按 EP dark 官方混合规律整组重推导（base 直取 `--kx-primary`，light-N/dark-2 用 color-mix 等价式），其余品牌色保持 EP 默认；**亮色侧零触碰**。
-- **颜色令牌红线**：组件/视图样式禁止硬编码色，一律消费语义令牌（`--success/--warning/--danger/--accent/--muted`、`--*-bg/--*-bd`、`--purple/--magenta/--probe-cyan` 等）；半透明叠加（rgba ≤0.55 的 badge 底/遮罩/图形纹理）可保留。门禁：`node scripts/color-token-audit.mjs`（`--strict` 供 CI；color-mix 内黑白成分豁免、测试文件与白名单文件豁免）。
+- **颜色令牌红线**：组件/视图样式禁止硬编码色，一律消费语义令牌（`--success/--warning/--danger/--accent/--muted`、`--*-bg/--*-bd`、`--purple/--magenta/--probe-cyan` 等）；半透明叠加（rgba ≤0.55 的 badge 底/遮罩/图形纹理）可保留。门禁：`npm run color:check`（严格基线模式：基线外新增即 FAIL；已判定保留项入 `scripts/color-audit-baseline.json`，扩容走 `npm run color:baseline:update` 并在 handoff 登记理由；color-mix 内黑白成分豁免、测试文件豁免）。
 - **FOUC 前提**：theme-init.js 在 index.html `<head>` 内同步执行（无 defer/async），先于样式表——此顺序由 `theme.dark-skin.test.ts` 锁定，移动即失守。
