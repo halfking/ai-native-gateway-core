@@ -22,8 +22,15 @@ const EXTS = ['.vue', '.ts', '.css', '.scss']
 //   - liveStreamDisplay.ts : hex→rgba 工具函数代码里有伪 rgba(...,${alpha}) 字符串
 const SKIP_FILES = new Set([
   'style.css',
+  // 暗色桥接层:fill 层级用 color-mix(#ffffff/#000000 ...) 做透明度混合,
+  // 白/黑是混合成分而非主题色
+  'styles/element-dark.css',
+  // 终端风代码块:双主题固定暗底(--bg-elevated 指向固定 #1e1e2e 表面)+
+  // 固定浅字,是刻意的「两个主题下都像终端」设计(文件头注释锚定)
+  'views/ExamplesView.vue',
   'composables/liveStreamColors.ts',
   'composables/useChart.ts',
+  'composables/useChart.colors.test.ts',
   'composables/liveStreamDisplay.ts',
   'utils/waterfallTimeline.ts',
   'types/swimlane.ts',
@@ -62,9 +69,11 @@ function scanFile(file) {
   let inTokenBlock = false
   let tokenBraceDepth = 0
   let generalBraceDepth = 0
+  // 跨行块注释追踪:注释中间的行(历史修复说明等)不参与扫描
+  let inBlockComment = false
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
+    let line = lines[i]
     if (isVue) {
       if (!inStyle) {
         if (/<style[^>]*>/.test(line)) { inStyle = true; styleDepth = 1; continue }
@@ -95,6 +104,17 @@ function scanFile(file) {
     }
 
     // 简单去除行注释 / 块注释(单行内)
+    if (inBlockComment) {
+      const end = line.indexOf('*/')
+      if (end === -1) continue
+      inBlockComment = false
+      line = line.slice(end + 2)
+    }
+    const open = line.indexOf('/*')
+    if (open !== -1 && line.indexOf('*/', open + 2) === -1) {
+      inBlockComment = true
+      line = line.slice(0, open)
+    }
     const cleaned = line
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\/\/.*$/, '')
@@ -110,6 +130,9 @@ function scanFile(file) {
     })
     // 删除 rgba(var(--xxx), 0.X) 这种 CSS 现代用法(rgb 三元组从 var() 注入)
     scanable = scanable.replace(/rgba\(\s*var\([^)]+\)\s*,\s*[^)]+\)/g, '__RGBA_VAR__')
+    // color-mix() 的成分色(#000 加深 / #fff 提亮)是明度调节,两主题语义一致,不计违规
+    scanable = scanable.replace(/color-mix\s*\([^)]*\)/g, (m) =>
+      m.replace(HEX_RE, '__MIX__').replace(RGB_RE, '__MIX__'))
 
     for (const re of [HEX_RE, RGB_RE]) {
       re.lastIndex = 0

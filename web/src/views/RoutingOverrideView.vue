@@ -199,15 +199,15 @@ onMounted(loadOverrides)
       </div>
       <div class="summary-card">
         <div class="summary-label">{{ t('routingOverride.summary.bans') }}</div>
-        <div class="summary-value" style="color: #f97316">{{ summary.bans }}</div>
+        <div class="summary-value" style="color: var(--warning)">{{ summary.bans }}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">{{ t('routingOverride.summary.pins') }}</div>
-        <div class="summary-value" style="color: #22c55e">{{ summary.pins }}</div>
+        <div class="summary-value" style="color: var(--success)">{{ summary.pins }}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">{{ t('routingOverride.summary.expiring') }}</div>
-        <div class="summary-value" :style="{ color: summary.expiring > 0 ? '#eab308' : '#888' }">
+        <div class="summary-value" :style="{ color: summary.expiring > 0 ? 'var(--warning)' : 'var(--muted)' }">
           {{ summary.expiring }}
         </div>
       </div>

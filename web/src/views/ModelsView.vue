@@ -861,7 +861,7 @@ watch(activeTab, async (tab) => {
         <h3>模型名称映射管理</h3>
       </div>
       <div class="card-body">
-        <div v-if="nameMappingsLoading" style="text-align:center;padding:32px;color:#888">加载中...</div>
+        <div v-if="nameMappingsLoading" style="text-align:center;padding:32px;color:var(--muted)">加载中...</div>
         <div v-else-if="nameMappingsError" class="alert alert-error" style="margin-bottom:12px">{{ nameMappingsError }}</div>
         <div v-else-if="nameMappingsMessage" class="alert alert-success" style="margin-bottom:12px">{{ nameMappingsMessage }}</div>
 
@@ -891,12 +891,12 @@ watch(activeTab, async (tab) => {
               <td class="muted small">{{ m.updated_at ? formatDateTime(m.updated_at, { locale: 'zh-CN' }) : '-' }}</td>
               <td>
                 <button v-if="!readOnly && !m.auto_generated" class="btn btn-ghost btn-sm" @click="openNameMappingModal(m)">编辑</button>
-                <button v-if="!readOnly && !m.auto_generated" class="btn btn-ghost btn-sm" style="color:#dc3545" @click="removeNameMapping(m.id)">删除</button>
+                <button v-if="!readOnly && !m.auto_generated" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="removeNameMapping(m.id)">删除</button>
               </td>
             </tr>
           </tbody>
         </table>
-        <div v-else style="text-align:center;padding:32px;color:#888">
+        <div v-else style="text-align:center;padding:32px;color:var(--muted)">
           暂无映射记录，点击"新增映射"或"从 provider_models 同步"添加
         </div>
 
@@ -1374,7 +1374,7 @@ watch(activeTab, async (tab) => {
       <div class="modal-body">
           <div v-if="nameMappingsError" class="alert alert-error" style="margin-bottom:12px">{{ nameMappingsError }}</div>
           <div class="form-group">
-            <label>原始名称 <span style="color:#dc3545">*</span></label>
+            <label>原始名称 <span style="color:var(--danger)">*</span></label>
             <input
               v-model="nameMappingForm.raw_model_name"
               class="input"
@@ -1384,7 +1384,7 @@ watch(activeTab, async (tab) => {
             <span class="help-text">供应商 API 返回的原始模型名称（如 minimaxai/minimax-m2.7）</span>
           </div>
           <div class="form-group">
-            <label>标准名称 <span style="color:#dc3545">*</span></label>
+            <label>标准名称 <span style="color:var(--danger)">*</span></label>
             <input
               v-model="nameMappingForm.standardized_name"
               class="input"
