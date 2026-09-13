@@ -359,13 +359,24 @@ func TestSupplierErrorStatsRetryableStageBuckets(t *testing.T) {
 	insertSupplierErrorBucketed(t, ctx, conn, occurred, "req-bkt-5", false, "")
 
 	// 与聚合器相同的分钟 rollup（minute 级，pgx 传 interval 文本）。
+	// 2026-09-14 审计 #7：base 源镜像改为 hot∪父表 UNION ALL（promote 是
+	// DELETE+INSERT 原子单语句，行不会同时在两侧，无重复计数）。
 	minuteRollup := `
 WITH base AS (
     SELECT date_bin($1::interval, occurred_at, '2000-01-01'::timestamptz) AS stat_time,
            supplier, credential_id, error_type, model,
            request_id, affected_users, is_retryable, stage
-    FROM supplier_errors_hot
-    WHERE occurred_at >= $3 AND occurred_at < $4
+    FROM (
+        SELECT occurred_at, supplier, credential_id, error_type, model,
+               request_id, affected_users, is_retryable, stage
+        FROM supplier_errors_hot
+        WHERE occurred_at >= $3 AND occurred_at < $4
+        UNION ALL
+        SELECT occurred_at, supplier, credential_id, error_type, model,
+               request_id, affected_users, is_retryable, stage
+        FROM supplier_errors
+        WHERE occurred_at >= $3 AND occurred_at < $4
+    ) hot_and_historical
 ), bucket_totals AS (
     SELECT stat_time, supplier, credential_id, error_type, model,
            COUNT(*)::int AS error_count,
