@@ -3,6 +3,7 @@ package freediscovery
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,13 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
+
+// nonNilArg matches any non-nil driver value. Regression guard for the running
+// transition: started_at must be written (it was previously persisted as NULL
+// because the code assigned the still-nil completedAt).
+type nonNilArg struct{}
+
+func (nonNilArg) Match(v driver.Value) bool { return v != nil }
 
 // runBegin expects a transaction start with the RLS GUC.
 func runBegin(mock sqlmock.Sqlmock) {
@@ -86,7 +94,7 @@ func TestDiscoveryEngine_Run_ScannerFailureMarksTaskFailed(t *testing.T) {
 	// 3. mark running (CAS pending → running).
 	runBegin(mock)
 	mock.ExpectExec("UPDATE discovery_tasks SET status=\\$2").
-		WithArgs(int64(101), string(TaskStatusRunning), nil, nil, nil, nil, "tenant-a", string(TaskStatusPending)).
+		WithArgs(int64(101), string(TaskStatusRunning), nil, nil, nonNilArg{}, nil, "tenant-a", string(TaskStatusPending)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -150,7 +158,7 @@ func TestDiscoveryEngine_Run_HappyPath(t *testing.T) {
 	// 3. mark running (CAS pending → running).
 	runBegin(mock)
 	mock.ExpectExec("UPDATE discovery_tasks SET status=\\$2").
-		WithArgs(int64(101), string(TaskStatusRunning), nil, nil, sqlmock.AnyArg(), nil, "tenant-a", string(TaskStatusPending)).
+		WithArgs(int64(101), string(TaskStatusRunning), nil, nil, nonNilArg{}, nil, "tenant-a", string(TaskStatusPending)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -212,7 +220,7 @@ func TestDiscoveryEngine_Run_NoScannerForProvider(t *testing.T) {
 	// 3. mark running.
 	runBegin(mock)
 	mock.ExpectExec("UPDATE discovery_tasks SET status=\\$2").
-		WithArgs(int64(102), string(TaskStatusRunning), nil, nil, sqlmock.AnyArg(), nil, "tenant-a", string(TaskStatusPending)).
+		WithArgs(int64(102), string(TaskStatusRunning), nil, nil, nonNilArg{}, nil, "tenant-a", string(TaskStatusPending)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -325,5 +333,31 @@ func TestDiscoveryEngine_GetTask_NotFoundSentinel(t *testing.T) {
 	}
 	if err := mock2.ExpectationsWereMet(); err != nil {
 		t.Fatalf("%v", err)
+	}
+}
+
+// TestDiscoveryEngine_PresetScannerWiring guards the scannerFor precedence:
+// a preset whose protocol is not openai-completions (google-ai-studio) must fall
+// through to the real protocol scanner in fallbackScanners. The preset loop
+// previously wired an OpenAI-shape HTTPScanner under the provider key, shadowing
+// the Gemini scanner and failing every google-ai-studio scan at response parsing.
+func TestDiscoveryEngine_PresetScannerWiring(t *testing.T) {
+	db, _ := newMockDB(t)
+	engine := NewDiscoveryEngine(db, NewTemplateManager(db, nil))
+
+	if _, ok := engine.scannerFor(&ProviderTemplate{
+		ProviderCode: "google-ai-studio", APIType: APITypeGoogleGenerativeAI,
+	}).(*GoogleGenerativeAIScanner); !ok {
+		t.Fatalf("google-ai-studio preset must resolve to the Gemini protocol scanner")
+	}
+	if _, ok := engine.scannerFor(&ProviderTemplate{
+		ProviderCode: "groq", APIType: APITypeOpenAICompletions,
+	}).(*HTTPScanner); !ok {
+		t.Fatalf("groq preset must keep the OpenAI-compatible scanner")
+	}
+	if _, ok := engine.scannerFor(&ProviderTemplate{
+		ProviderCode: "custom", APIType: APITypeAnthropic,
+	}).(*AnthropicScanner); !ok {
+		t.Fatalf("custom providers must fall back by protocol")
 	}
 }
