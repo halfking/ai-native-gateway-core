@@ -153,7 +153,7 @@ onBeforeUnmount(() => {
 .section-block { margin-top: 12px; }
 .trend-bars { display: flex; gap: 4px; align-items: flex-end; min-height: 140px; padding: 8px 0; overflow-x: auto; }
 .trend-bar-col { display: flex; flex-direction: column; align-items: center; min-width: 34px; flex: 1 0 34px; }
-.trend-bar { width: 70%; min-height: 2px; background: var(--danger, #d64545); border-radius: 2px 2px 0 0; }
+.trend-bar { width: 70%; min-height: 2px; background: var(--danger); border-radius: 2px 2px 0 0; }
 .trend-bar-label { margin-top: 4px; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .trend-bar-count { color: inherit; font-size: 11px; font-weight: 600; }
 .breakdown-row { display: flex; gap: 16px; flex-wrap: wrap; }

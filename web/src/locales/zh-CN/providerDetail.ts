@@ -107,7 +107,7 @@ export default {
     drawerSectionBalanceFloor: '额度下限守卫',
     drawerFloorUsd: '货币余额下限（USD）',
     drawerFloorTokens: '套餐剩余 token 下限',
-    drawerFloorPercent: '套餐已用百分比下限（%）',
+    drawerFloorPercent: '套餐已用百分比阈值（超限即摘出，%）',
     floorPlaceholderZeroClears: '0 = 清除下限',
     floorHint: '低于下限的凭据会被自动摘出路由池（不写手工停用）；充值或窗口重置、额度回到滞回带后自动回池。留空 = 不修改，0 = 清除。',
     planQuotaProbeTitle: '套餐探测',
@@ -177,10 +177,6 @@ export default {
       code_plan: 'code_plan (代码套餐)',
       agent_plan: 'agent_plan (Agent 套餐)',
       monthly: 'monthly (包月固定)',
-      request: 'request (按请求)',
-      seat: 'seat (按席位)',
-      compute_time: 'compute_time (按算力)',
-      flat_quota: 'flat_quota (固定配额)',
       free: 'free (免费)',
       // camelCase aliases — CredsTab.vue references the dropdown labels
       // via `creds.planTypes.tokenPlan` etc. (v735 used camelCase in the
@@ -193,8 +189,6 @@ export default {
       tokenPlan: 'token_plan (订阅套餐)',
       codePlan: 'code_plan (代码套餐)',
       agentPlan: 'agent_plan (Agent 套餐)',
-      computeTime: 'compute_time (按算力)',
-      flatQuota: 'flat_quota (固定配额)',
     },
     health: {
       healthy: '正常',

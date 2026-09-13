@@ -16,6 +16,59 @@ export const MIX_BLACKWHITE_RE = /#000000\b|#000\b|#ffffff\b|#fff\b/gi
 const MIX_OPEN = 'color-mix('
 
 /**
+ * stripVarFallbacks(line)：用平衡括号扫描提取一行内所有 var(token, fallback)
+ * 的兜底内容,返回 { line, fallbacks }。
+ *
+ * 背景（2026-09-14 审计轮 E-P1）：兜底里的字面色（hex / rgba/rgb 字面量）是
+ * 「暗色漏白」回归通道——token 改名/删除时兜底即生效。此前用 [^)]+ 正则剥除,
+ * 碰到嵌套括号（var(--a, rgba(0,0,0,.06)) / var(--a, var(--b, #000))）会把
+ * rgba 字面量吞进占位符,兜底色对门禁不可见。
+ *
+ * line 结构保证：var(--x,__FALLBACK__) 保留 var( 前缀与结构,下游
+ * rgba(var(...)) 豁免与 color-mix 平衡括号扫描不受影响。
+ * 跨行未闭合的 var() 按原文返回（兜底提取仅单行语义）。
+ *
+ * @param {string} line 已去除注释的一行
+ * @returns {{ line: string, fallbacks: string[] }} 兜底被占位替换的行 + 兜底文本列表
+ */
+export function stripVarFallbacks(line) {
+  let out = ''
+  const fallbacks = []
+  let i = 0
+  for (;;) {
+    const idx = line.indexOf('var(', i)
+    if (idx === -1) return { line: out + line.slice(i), fallbacks }
+    out += line.slice(i, idx)
+    let depth = 1
+    let j = idx + 4
+    let topComma = -1
+    while (j < line.length && depth > 0) {
+      const ch = line[j]
+      if (ch === '(') {
+        depth++
+      } else if (ch === ')') {
+        depth--
+        if (depth === 0) break
+      } else if (ch === ',' && depth === 1 && topComma === -1) {
+        topComma = j
+      }
+      j++
+    }
+    if (depth !== 0) {
+      // var() 跨行未闭合：保留原文,交由调用方按无兜底文本扫描
+      return { line: out + line.slice(idx), fallbacks }
+    }
+    if (topComma === -1) {
+      out += line.slice(idx, j + 1)
+    } else {
+      fallbacks.push(line.slice(topComma + 1, j))
+      out += line.slice(idx, topComma) + ',__FALLBACK__)'
+    }
+    i = j + 1
+  }
+}
+
+/**
  * @param {string} line 已去除注释的一行
  * @param {{ inMix: boolean, depth: number }} state 跨行状态，就地更新
  * @returns {string} 黑白成分替换为 __MIX__ 占位的行文本

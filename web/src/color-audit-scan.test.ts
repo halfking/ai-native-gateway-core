@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 // include 的 src/** 内，故测试放 src/ 以相对路径引入；类型经 .d.mts 提供）。
 // 豁免语义：仅黑白成分（#000/#fff，明度调节、两主题一致）替换为 __MIX__；
 // 非黑白成分（品牌/数据色硬编码）必须保留，交由调用方 HEX 扫描照常报告。
-import { exemptColorMixBlacks } from '../scripts/lib/color-audit-scan.mjs'
+import { exemptColorMixBlacks, stripVarFallbacks } from '../scripts/lib/color-audit-scan.mjs'
 
 function scan(lines: string[]) {
   const state = { inMix: false, depth: 0 }
@@ -65,5 +65,53 @@ describe('exemptColorMixBlacks (color-token-audit core)', () => {
     expect(
       exemptColorMixBlacks('color-mix(in srgb, rgba(0, 0, 0, 0.2) 50%, var(--c))', state),
     ).toBe('color-mix(in srgb, rgba(0, 0, 0, 0.2) 50%, var(--c))')
+  })
+})
+
+describe('stripVarFallbacks (color-token-audit fallback extraction)', () => {
+  it('extracts a simple hex fallback and preserves var structure', () => {
+    const out = stripVarFallbacks('color: var(--danger, #c2413b);')
+    expect(out.fallbacks).toEqual([' #c2413b'])
+    expect(out.line).toBe('color: var(--danger,__FALLBACK__);')
+  })
+
+  it('extracts a nested rgba fallback the [^)]+ regex used to swallow (E-P1)', () => {
+    const out = stripVarFallbacks('background: var(--kx-surface-soft, rgba(0, 0, 0, 0.03));')
+    // 兜底文本必须完整保留 rgba 字面量,供调用方 HEX/RGB 扫描上报
+    expect(out.fallbacks).toEqual([' rgba(0, 0, 0, 0.03)'])
+    expect(out.line).toBe('background: var(--kx-surface-soft,__FALLBACK__);')
+  })
+
+  it('handles doubly nested var() fallbacks', () => {
+    const out = stripVarFallbacks(
+      'background: var(--kx-primary-soft, var(--accent-soft, rgba(0, 0, 0, 0.06)));',
+    )
+    expect(out.fallbacks).toEqual([' var(--accent-soft, rgba(0, 0, 0, 0.06))'])
+    expect(out.line).toBe(
+      'background: var(--kx-primary-soft,__FALLBACK__);',
+    )
+  })
+
+  it('leaves var() without fallback untouched', () => {
+    const out = stripVarFallbacks('color: var(--text-primary);')
+    expect(out.fallbacks).toEqual([])
+    expect(out.line).toBe('color: var(--text-primary);')
+  })
+
+  it('keeps rgba(var(--x, triplet), alpha) structural exemption intact', () => {
+    const out = stripVarFallbacks('box-shadow: 0 0 0 0 rgba(var(--accent-rgb, 63, 120, 255), .5);')
+    // 十进制三元组兜底不是 hex/rgba 字面量:提取但由调用方扫描判定不报;
+    // 占位替换后仍保持 var() 结构,rgba(var(...)) 豁免正则可命中
+    expect(out.fallbacks).toEqual([' 63, 120, 255'])
+    expect(out.line).toBe(
+      'box-shadow: 0 0 0 0 rgba(var(--accent-rgb,__FALLBACK__), .5);',
+    )
+    expect(out.line).toMatch(/rgba\(var\(--accent-rgb,__FALLBACK__\), \.5\)/)
+  })
+
+  it('returns original text for a cross-line (unclosed) var()', () => {
+    const out = stripVarFallbacks('background: var(--x, rgba(0, 0, 0,')
+    expect(out.fallbacks).toEqual([])
+    expect(out.line).toBe('background: var(--x, rgba(0, 0, 0,')
   })
 })

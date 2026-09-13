@@ -487,8 +487,8 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 .col-err { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
 
 .log-row { cursor: pointer; }
-.log-row:hover { background: var(--bg-subtle, rgba(128, 128, 128, 0.06)); }
-.log-row.expanded { background: var(--bg-subtle, rgba(128, 128, 128, 0.08)); }
+.log-row:hover { background: var(--bg-subtle); }
+.log-row.expanded { background: var(--bg-subtle); }
 
 .row-state-change td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 
@@ -525,7 +525,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 .change-manual { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
 
 .detail-row-tr td {
-  background: var(--bg-subtle, rgba(128, 128, 128, 0.05));
+  background: var(--bg-subtle);
   white-space: normal;
 }
 
@@ -549,7 +549,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 .error-pre {
   margin: 0;
   padding: 8px;
-  background: var(--bg, rgba(128, 128, 128, 0.08));
+  background: var(--bg);
   border-radius: 4px;
   font-size: 11px;
   font-family: var(--font-mono, monospace);

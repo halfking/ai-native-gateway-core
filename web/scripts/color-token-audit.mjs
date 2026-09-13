@@ -10,7 +10,7 @@
 
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { resolve, relative, join } from 'node:path'
-import { exemptColorMixBlacks } from './lib/color-audit-scan.mjs'
+import { exemptColorMixBlacks, stripVarFallbacks } from './lib/color-audit-scan.mjs'
 
 const ROOT = resolve(process.cwd(), 'src')
 const EXTS = ['.vue', '.ts', '.css', '.scss']
@@ -124,15 +124,30 @@ function scanFile(file) {
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\/\/.*$/, '')
 
-    // 跳过 var(--xxx, fallback) 形式里的 fallback 颜色(var() 的兜底,不实际生效)
-    // 跳过 svg/image 的 fill/color 属性里被引号包裹的 hex 值(ECharts / canvas 图,数据色不在主题范围)
-    // 也跳过形如 #123 hex 的 svg 内部 path 表达式
+    // var(--xxx, fallback) 兜底值:token 已在 style.css 定义时兜底永不求值,
+    // 但兜底里的字面色(hex / rgba/rgb 字面量)是「暗色漏白」回归通道
+    // (token 改名/删除即生效),因此兜底内容单独提取上报(rule 12 P0),
+    // 其余内容仍剥除后再扫(2026-09-14 审计轮修正:此前 [^)]+ 正则碰嵌套
+    // 括号会把 rgba 兜底吞掉,该模式对门禁不可见)。
     let scanable = cleaned
-    // 删除 var(--anything, color) 里的 color 部分(后出现的逗号到右括号)
-    scanable = scanable.replace(/var\(\s*[A-Za-z0-9_-]+(?:--[A-Za-z0-9_-]+)?\s*,[^)]+\)/g, (m) => {
-      // 替换 var() 内容为 placeholder
-      return m.replace(/,(.+)$/, ',__FALLBACK__)').replace(/,(.+)\)/, ',__FALLBACK__)')
-    })
+    {
+      const fb = stripVarFallbacks(scanable)
+      for (const fbText of fb.fallbacks) {
+        for (const re of [HEX_RE, RGB_RE]) {
+          re.lastIndex = 0
+          let fm
+          while ((fm = re.exec(fbText)) !== null) {
+            violations.push({
+              file: rel,
+              line: i + 1,
+              col: 1,
+              value: fm[0],
+            })
+          }
+        }
+      }
+      scanable = fb.line
+    }
     // 删除 rgba(var(--xxx), 0.X) 这种 CSS 现代用法(rgb 三元组从 var() 注入)
     scanable = scanable.replace(/rgba\(\s*var\([^)]+\)\s*,\s*[^)]+\)/g, '__RGBA_VAR__')
     // color-mix() 只豁免黑白成分(#000/#fff 是明度调节,两主题语义一致);

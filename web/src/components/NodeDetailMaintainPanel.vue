@@ -220,13 +220,13 @@ code.nd-lc-code { font-size: 10.5px; opacity: 0.75; }
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 8px;
-  background: var(--kx-primary-soft, var(--accent-soft, rgba(0, 0, 0, 0.06)));
+  background: var(--kx-primary-soft, var(--accent-soft));
   color: var(--kx-primary, var(--accent));
 }
 /* Current-state coloring (only the chip marked is-current gets the tint). */
-.nd-lc-chip--active.is-current { border-color: color-mix(in srgb, var(--kx-success, #22a06b) 55%, var(--kx-border, var(--border))); color: var(--kx-success, #22a06b); background: color-mix(in srgb, var(--kx-success, #22a06b) 10%, transparent); }
-.nd-lc-chip--disabled.is-current { border-color: color-mix(in srgb, var(--kx-danger, #d64545) 55%, var(--kx-border, var(--border))); color: var(--kx-danger, #d64545); background: color-mix(in srgb, var(--kx-danger, #d64545) 10%, transparent); }
-.nd-lc-chip--suspended.is-current { border-color: color-mix(in srgb, var(--kx-warning, #d9a441) 55%, var(--kx-border, var(--border))); color: var(--kx-warning, #d9a441); background: color-mix(in srgb, var(--kx-warning, #d9a441) 10%, transparent); }
+.nd-lc-chip--active.is-current { border-color: color-mix(in srgb, var(--kx-success) 55%, var(--kx-border, var(--border))); color: var(--kx-success); background: color-mix(in srgb, var(--kx-success) 10%, transparent); }
+.nd-lc-chip--disabled.is-current { border-color: color-mix(in srgb, var(--kx-danger) 55%, var(--kx-border, var(--border))); color: var(--kx-danger); background: color-mix(in srgb, var(--kx-danger) 10%, transparent); }
+.nd-lc-chip--suspended.is-current { border-color: color-mix(in srgb, var(--kx-warning) 55%, var(--kx-border, var(--border))); color: var(--kx-warning); background: color-mix(in srgb, var(--kx-warning) 10%, transparent); }
 .nd-lc-chip--retired.is-current { color: var(--kx-muted, var(--muted)); }
 
 /* ── manual-disabled status row ─────────────────────── */
