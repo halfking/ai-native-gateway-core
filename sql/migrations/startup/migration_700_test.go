@@ -72,8 +72,16 @@ func TestMigration700ViewRawModelName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read apply-db-revision-sequence.sh: %v", err)
 	}
-	if !strings.Contains(string(seq), "700_request_logs_view_raw_model_name.sql") {
-		t.Fatalf("apply-db-revision-sequence.sh does not carry migration 700 — " +
-			"upgrade-database deployments would never apply it")
+	seqBody := string(seq)
+	for _, required := range []string{
+		"700_request_logs_view_raw_model_name.sql",
+		"701_credential_balance_floor.sql",
+	} {
+		if !strings.Contains(seqBody, required) {
+			t.Fatalf("apply-db-revision-sequence.sh does not carry migration %s — upgrade-database deployments would never apply it", required)
+		}
+	}
+	if strings.Index(seqBody, "700_request_logs_view_raw_model_name.sql") > strings.Index(seqBody, "701_credential_balance_floor.sql") {
+		t.Fatalf("migration channel order regressed: 701 appears before 700")
 	}
 }

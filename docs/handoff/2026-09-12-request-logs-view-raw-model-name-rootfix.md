@@ -174,6 +174,18 @@
 
 ## 下一轮提示词（可直接复制）
 
+## 观察轮（2026-09-13 13:10–13:55，无生产窗口，探针恢复线交接轮；本线只读）
+
+- **工作区与代码基线**：当前分支 `fix/probe-recovery-closeout`，工作树保持干净；HEAD 为 `e52e5a9ea`（探针关闭审计轮 F1–F5），本轮未修改业务代码。静态核对确认迁移 700、`db.go` 自愈、installer embeddata 与通道引用均在 HEAD，未见 696–700 回退。
+- **静态验证通过**：`go test ./sql/migrations/startup -run TestMigration700ViewRawModelName -count=1` 通过；`go test ./db -run 'Test.*RequestLogs.*Schema|Test.*Migration' -count=1` 通过。此前静态 migration/installer/LF 门禁输出亦为通过；本轮未触碰并行线未格式化文件。
+- **本机运行态身份需收窄口径**：持久部署 `bin/version.json` 仍为 `2.5.4-1e0f71c7-20260912-2102`（`git_sha=1e0f71c7`，build_seq 2102），不是当前 HEAD 的探针恢复提交；因此不能把宿主运行态结果写成“HEAD 已部署”。8782 `/healthz` 当前 HTTP 200；8781 未监听（HTTP 000）。Docker server API 可返回版本 `29.7.2`。
+- **PG 数据面只读复核通过**：PostgreSQL 17.0，数据库 `llm_gateway`，单事务 `BEGIN READ ONLY` 后 `ROLLBACK`。`public.schema_migrations` 有 696、697、698、699、700；`request_logs_with_current_month` 113 列且 `raw_model_name/system_fingerprint` 均存在；`usage_ledger_with_current_month` 有 19 列且 `raw_model_name` 存在。两次探针 SQL 类型错误已如实留档，最终修正查询 exit 0；无写操作。
+- **运行日志证据边界**：当前 2102 网关日志可见多次 boot 与 PostgreSQL 不可达/随后 disabled 的启动降级记录；本轮针对 42703/`does not exist` 的现存 gateway/shutdown 文件清点未发现修复后新命中，但 2102 不是 HEAD，且 scanner tick/日志归档窗口不能替代 HEAD 部署后的周期证据。此前持久 handoff 中关于 2098/2093/2094 的静默证据继续有效，本轮不重复宣称。
+- **生产与发布约束**：无生产窗口、无运营报障；252 未触碰，`698/699/700 → 再上携带 83bf582dd 的二进制` 顺序约束继续有效。探针恢复线 `e52e5a9ea` 尚未被本轮推送或部署动作改变。
+- **本轮自审计六件套**：(1) B/D/C 按任务书执行，无越界；(2) 起点重算——承接 09-13 05:16 后的恢复窗口，覆盖至 13:55；(3) 验证如实区分——静态门禁、PG 双账本/视图和 8782 healthz 通过，HEAD 运行态及 8781 未验证/不适用；(4) 数据操作零写——仅只读事务并回滚；(5) A 轮未触发，发布顺序维护；(6) 工作树干净，未引入行尾或并行线污染。
+
+## 下一轮提示词（可直接复制）
+
 ```text
 请对 llm-gateway-go「request_logs 视图 raw_model_name 根修（迁移 700）+ LF 治理」
 做下一轮观察/收尾。工作目录：主工作区（main）。

@@ -8,6 +8,8 @@ SEAMLESS="$ROOT/scripts/deploy-seamless.sh"
 HOST_LIB="$ROOT/scripts/deploy-lib/host.sh"
 TARGETS="$ROOT/scripts/deploy-lib/targets.sh"
 LOCAL_HOST="$ROOT/scripts/local-host-deploy.sh"
+CANARY_154="$ROOT/deploy/llm-gateway-go-canary@.service"
+CANARY_245="$ROOT/deploy/llmgo-245-canary@.service"
 
 failures=0
 pass() { printf 'PASS %s\n' "$1"; }
@@ -50,6 +52,8 @@ fi
 require "Local deploy records prior active bundle" 'previous_version=\$\(lh_active_version\)' "$LOCAL_HOST"
 require "Local deploy restores prior bundle after start failure" 'candidate failed to start; restoring previous active bundle' "$LOCAL_HOST"
 require "Local deploy requires readyz before verification" 'ready_url="http://127\.0\.0\.1:\$PORT/readyz"' "$LOCAL_HOST"
+require "154 canary leaves margin above DB boot budget" '^TimeoutStartSec=90s$' "$CANARY_154"
+require "245 canary leaves margin above DB boot budget" '^TimeoutStartSec=90s$' "$CANARY_245"
 
 if (( failures > 0 )); then
   printf '%s deployment readiness contract(s) failed\n' "$failures" >&2
