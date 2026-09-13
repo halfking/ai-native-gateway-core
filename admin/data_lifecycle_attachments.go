@@ -229,7 +229,11 @@ func (h *Handler) handleDataLifecycleAttachmentStats(w http.ResponseWriter, r *h
 	defer cancel()
 
 	args := append([]any{}, tenantArgs...)
-	where := "WHERE attachments IS NOT NULL" + tenantPred
+	// 2026-09-14: request_logs.attachments can hold the JSON `null` scalar
+	// (18k+ rows in request_logs_hot); jsonb_array_elements raises
+	// `cannot extract elements from a scalar` on it, so gate the LATERAL on
+	// array-ness (jsonb_typeof is NULL for SQL NULL → also excluded here).
+	where := "WHERE attachments IS NOT NULL AND jsonb_typeof(attachments) = 'array'" + tenantPred
 	if !since.IsZero() {
 		args = append(args, since)
 		where += " AND ts >= $" + strconv.Itoa(len(args))
@@ -345,6 +349,7 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupPreview(w http.ResponseWri
 		FROM request_logs,
 		     LATERAL jsonb_array_elements(attachments) AS elem
 		WHERE attachments IS NOT NULL
+		  AND jsonb_typeof(attachments) = 'array'
 		  AND ts < NOW() - make_interval(days => $%d::int)
 		  %s`,
 		daysIdx, tenantPred,
@@ -472,6 +477,7 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 			    FROM request_logs_hot r,
 			         LATERAL jsonb_array_elements(r.attachments) AS att
 			    WHERE r.attachments IS NOT NULL
+			      AND jsonb_typeof(r.attachments) = 'array'
 			      AND r.ts < NOW() - make_interval(days => $%d::int)
 			      AND (att ? 'hash' OR att ? 'sha256' OR att ? 'id' OR att ? 'url')
 			      AND NULLIF(COALESCE(att->>'hash', att->>'sha256',
@@ -513,6 +519,7 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 			SELECT count(*) FROM request_logs_hot r,
 			    LATERAL jsonb_array_elements(r.attachments) AS att
 			WHERE r.attachments IS NOT NULL
+			  AND jsonb_typeof(r.attachments) = 'array'
 			  AND r.ts < NOW() - make_interval(days => $%d::int)
 			  AND NOT (att ? 'hash' OR att ? 'sha256' OR att ? 'id' OR att ? 'url')
 			  %s`, daysIdx, tenantPred)
