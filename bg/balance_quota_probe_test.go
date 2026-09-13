@@ -13,6 +13,12 @@ import (
 // exhausted credentials silently skipped. The new predicate accepts
 // EITHER a configured default_probe_model OR at least one routable
 // binding on the credential.
+//
+// R22 (2026-09-13): the legacy recordBalanceCheck / balance_last_checked_at
+// checks are gone — chat probes no longer touch that column (R21 P2
+// leftover #1: the probe path was forging the guard's 15-min freshness
+// gate). The freshness column is now exclusively written by
+// bg/balance_floor_guard.refreshBalance.
 func TestBalanceQuotaProbeIncludesRoutableFallback(t *testing.T) {
 	src, err := os.ReadFile("balance_quota_probe.go")
 	if err != nil {
@@ -30,13 +36,40 @@ func TestBalanceQuotaProbeIncludesRoutableFallback(t *testing.T) {
 		// Cooldown dedup so a panic-clicking operator can't pile up probes.
 		"forceLastSeen",
 		"forceCooldown",
-		// Observability bookkeeping on credentials.balance_last_checked_at.
-		"recordBalanceCheck",
-		"balance_last_checked_at",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("balance quota probe is missing %q", want)
 		}
+	}
+}
+
+// TestBalanceQuotaProbeDoesNotForgeFreshness pins the R21 P2-leftover #1
+// fix (2026-09-13): chat probes from this worker must NOT bump
+// credentials.balance_last_checked_at. That column is the guard's
+// 15-min freshness gate (bg/balance_floor_guard.sweepCurrencyFloors
+// pass A); a chat probe doesn't refresh balance_usd, so a stale
+// balance_usd paired with a fresh balance_last_checked_at would let
+// pass B treat stale evidence as fresh and let pass A skip the row.
+//
+// The assertion targets SQL `SET balance_last_checked_at` and any
+// helper that would reintroduce the legacy write — comments that
+// merely reference the column for documentation are allowed (and
+// necessary so future readers don't re-add the helper).
+func TestBalanceQuotaProbeDoesNotForgeFreshness(t *testing.T) {
+	src, err := os.ReadFile("balance_quota_probe.go")
+	if err != nil {
+		t.Fatalf("read balance quota probe source failed: %v", err)
+	}
+	body := string(src)
+	if strings.Contains(body, "SET balance_last_checked_at") {
+		t.Fatalf("balance quota probe must not write balance_last_checked_at " +
+			"— that column is owned by bg/balance_floor_guard.refreshBalance (R21 P2 leftover #1)")
+	}
+	// recordBalanceCheck was removed entirely; re-introducing it without
+	// removing the SET balance_last_checked_at write would re-introduce
+	// the bug (its original purpose was exactly that write).
+	if strings.Contains(body, "func (p *BalanceQuotaProbe) recordBalanceCheck(") {
+		t.Fatalf("recordBalanceCheck must not be reintroduced (R21 P2 leftover #1)")
 	}
 }
 
