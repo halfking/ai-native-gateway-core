@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	_ "net/http/pprof" // 2026-09-13: gated pprof registration (LLM_GATEWAY_PPROF=on) — default off
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -5548,23 +5547,6 @@ func main() {
 	// LLM_GATEWAY_ADMIN_API_KEY 静态 token（与 AdminTokenMiddleware 配合）。
 	mux.Handle("/metrics", middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(middleware.MetricsHandler()))
 	registerStorageMetricsHandler(mux, storageRt, cfg.AdminAPIKey) // Task 5.3: 存储分层指标端点，鉴权与 /metrics 一致
-
-	// 2026-09-13: /debug/pprof 取证口（默认关闭）。LLM_GATEWAY_PPROF=on 时
-	// 以 admin token 鉴权暴露 heap/goroutine/allocs 三类 profile，用于生产
-	// 内存累积事件的取证（245 OOM 事件）。默认不注册，常规环境零新增面。
-	if os.Getenv("LLM_GATEWAY_PPROF") == "on" {
-		pprofMux := http.NewServeMux()
-		pprofMux.HandleFunc("/debug/pprof/", func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/debug/pprof/heap", "/debug/pprof/heap/", "/debug/pprof/goroutine", "/debug/pprof/goroutine/", "/debug/pprof/allocs", "/debug/pprof/allocs/":
-				http.DefaultServeMux.ServeHTTP(w, r)
-			default:
-				http.NotFound(w, r)
-			}
-		})
-		mux.Handle("/debug/pprof/", middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(pprofMux))
-		slog.Info("CHECKPOINT: pprof endpoints registered (LLM_GATEWAY_PPROF=on)")
-	}
 
 	// 2026-07-20: telemetry fallback ring buffer 暴露面。
 	// 路径: /internal/telemetry/fallback-buffer/{stats,dump,clear,replay}
