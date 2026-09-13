@@ -1,3 +1,8 @@
+// UNUSED (audit 2026-09-14 R28 #20): Bandit wiring disabled in production —
+// Router.Bandit is always nil (cmd/gateway/main.go bandit block commented
+// out; see executors/router.go banditOrder). Referenced only by tests and
+// the dormant wiring recipe.
+
 // Package credential - Thompson Sampling Bandit for intelligent credential selection
 package credential
 

@@ -1,3 +1,8 @@
+// UNUSED (audit 2026-09-14 R28 #20): Bandit wiring disabled in production —
+// Router.Bandit is always nil (cmd/gateway/main.go bandit block commented
+// out; see executors/router.go banditOrder), so nothing constructs a
+// BanditFlusher outside tests and the dormant wiring recipe.
+
 // Package bg provides background workers for the gateway.
 package bg
 

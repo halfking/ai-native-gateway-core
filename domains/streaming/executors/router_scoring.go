@@ -30,6 +30,13 @@ type LoadScoreWeights struct {
 
 // DefaultLoadScoreWeights 返回默认权重配置
 //
+// Audit 2026-09-14 R28 #13: this constructor is the ONLY authority for the
+// live-routing hot path (P2C composite in calculateLoadScore ← Router.LoadScoreWeights).
+// The admin knob routing_policy.scoring_weights_json (admin /api/routing/
+// scoring-weights GET/PATCH) is a DIAGNOSTIC PREVIEW only — it feeds
+// /api/routing/resolve and /api/routing/score-details, never this hot path.
+// Admin responses carry "display_only":true + "note" to disclose that.
+//
 // CostWeight/IQWeight（M2 RT-2）默认 0（关闭）：关闭时评分与历史公式完全一致。
 // 通过 env 开启：LLM_GATEWAY_ROUTING_W_COST / LLM_GATEWAY_ROUTING_W_IQ
 // （沿用本文件 W_HEADROOM/W_CAPACITY 的 env 惯例），非法值回落 0。

@@ -102,7 +102,7 @@ func TestHeapRetrySchedulerFiresInDueTimeOrder(t *testing.T) {
 		mu.Lock()
 		fired = append(fired, fmt.Sprintf("%s@%d", qr.ID, retryAt.Unix()))
 		mu.Unlock()
-	}, clock, steppedSleeper(clock, step))
+	}, clock, steppedSleeper(clock, step), 0 /* maxItems: unbounded */)
 	defer s.Close()
 
 	base := clock.Now()
@@ -167,7 +167,7 @@ func TestHeapRetrySchedulerCloseDropsPending(t *testing.T) {
 		mu.Lock()
 		fired++
 		mu.Unlock()
-	}, clock, steppedSleeper(clock, step))
+	}, clock, steppedSleeper(clock, step), 0 /* maxItems: unbounded */)
 	if !s.Schedule(parkedRequest("r"), clock.Now().Add(time.Hour)) {
 		t.Fatal("Schedule refused before Close")
 	}
@@ -199,7 +199,7 @@ func TestHeapRetrySchedulerCloseCompletesParkedItems(t *testing.T) {
 			defer mu.Unlock()
 			closed = append(closed, qr)
 		},
-		clock, steppedSleeper(clock, make(chan struct{})))
+		clock, steppedSleeper(clock, make(chan struct{})), 0 /* maxItems: unbounded */)
 
 	if !s.Schedule(parkedRequest("a"), clock.Now().Add(time.Hour)) {
 		t.Fatal("Schedule refused")
@@ -226,6 +226,45 @@ func TestHeapRetrySchedulerCloseCompletesParkedItems(t *testing.T) {
 	}
 }
 
+// TestHeapRetrySchedulerMaxItemsBound (audit 2026-09-14 R28 #15b): Schedule
+// refuses (returns false) once the parked heap reaches maxItems, so callers
+// take their existing immediate-path fallback; already-parked items still
+// fire normally. maxItems=0 keeps the legacy unbounded behavior.
+func TestHeapRetrySchedulerMaxItemsBound(t *testing.T) {
+	clock := &fakeClock{now: time.Now()}
+	step := make(chan struct{})
+	var mu sync.Mutex
+	fired := 0
+	s := NewHeapRetryScheduler(func(*QueuedRequest, time.Time) {
+		mu.Lock()
+		fired++
+		mu.Unlock()
+	}, clock, steppedSleeper(clock, step), 2 /* maxItems */)
+	defer s.Close()
+
+	if !s.Schedule(parkedRequest("a"), clock.Now().Add(time.Hour)) {
+		t.Fatal("Schedule refused below capacity")
+	}
+	if !s.Schedule(parkedRequest("b"), clock.Now().Add(2*time.Hour)) {
+		t.Fatal("Schedule refused at last free slot")
+	}
+	if s.Schedule(parkedRequest("c"), clock.Now().Add(3*time.Hour)) {
+		t.Fatal("Schedule must refuse at maxItems capacity")
+	}
+	if got := s.Len(); got != 2 {
+		t.Fatalf("parked = %d, want 2", got)
+	}
+
+	// Unbounded constructor (maxItems=0) keeps accepting.
+	unbounded := NewHeapRetryScheduler(func(*QueuedRequest, time.Time) {}, clock, steppedSleeper(clock, make(chan struct{})), 0)
+	defer unbounded.Close()
+	for i := 0; i < 4; i++ {
+		if !unbounded.Schedule(parkedRequest(fmt.Sprintf("u%d", i)), clock.Now().Add(time.Hour)) {
+			t.Fatalf("unbounded scheduler refused item %d", i)
+		}
+	}
+}
+
 // TestPipelineTimedRetryFlow (UT-DQ-04, pipeline): a pre-firstbyte failure
 // with a RetryScheduler wired parks the request as pending+retry_at, the
 // retry_scheduled observation carries retry_at, and the due pickup re-enters
@@ -247,7 +286,7 @@ func TestPipelineTimedRetryFlow(t *testing.T) {
 	}
 	p := f.pipeline()
 	events := collectObservations(p)
-	s := NewHeapRetryScheduler(p.onRetryDue, clock, advancingSleeper(clock))
+	s := NewHeapRetryScheduler(p.onRetryDue, clock, advancingSleeper(clock), 0 /* maxItems: unbounded */)
 	defer s.Close()
 	p.SetRetryScheduler(s)
 	p.Start()

@@ -136,6 +136,14 @@ type HeapRetryScheduler struct {
 	clock   RetryClock
 	sleeper RetrySleeper
 
+	// maxItems (audit 2026-09-14 R28 #15b) bounds the parked heap. 0 (or
+	// negative) keeps the legacy unbounded behavior. When the heap is at
+	// capacity Schedule returns false and the caller falls back to its
+	// existing immediate path (tryEnqueueCred / model-change escalation) —
+	// the scheduler is best-effort and never the owner of record, so refusing
+	// admission is always safe.
+	maxItems int
+
 	mu      sync.Mutex
 	items   retryHeap
 	nextSeq int64
@@ -149,21 +157,24 @@ type HeapRetryScheduler struct {
 // NewHeapRetryScheduler builds and starts a scheduler. pick runs on the
 // picker goroutine at (or just after) each item's retry_at; it must not
 // block for long. Nil clock/sleeper default to the real ones. Parked items
-// are dropped on Close (legacy behaviour).
-func NewHeapRetryScheduler(pick func(qr *QueuedRequest, retryAt time.Time), clock RetryClock, sleeper RetrySleeper) *HeapRetryScheduler {
-	return NewHeapRetrySchedulerWithCloseHandler(pick, nil, clock, sleeper)
+// are dropped on Close (legacy behaviour). maxItems bounds the heap
+// (Schedule returns false at capacity); pass 0 for the legacy unbounded heap.
+func NewHeapRetryScheduler(pick func(qr *QueuedRequest, retryAt time.Time), clock RetryClock, sleeper RetrySleeper, maxItems int) *HeapRetryScheduler {
+	return NewHeapRetrySchedulerWithCloseHandler(pick, nil, clock, sleeper, maxItems)
 }
 
 // NewHeapRetrySchedulerWithCloseHandler additionally invokes onClose for
 // every still-parked request when Close runs, letting the pipeline complete
 // those requests (e.g. with ErrShutdown) so their Submit callers do not
 // block forever during graceful shutdown. Nil onClose keeps the drop
-// behaviour.
+// behaviour. maxItems bounds the parked heap (0 = unbounded, audit
+// 2026-09-14 R28 #15b).
 func NewHeapRetrySchedulerWithCloseHandler(
 	pick func(qr *QueuedRequest, retryAt time.Time),
 	onClose func(qr *QueuedRequest),
 	clock RetryClock,
 	sleeper RetrySleeper,
+	maxItems int,
 ) *HeapRetryScheduler {
 	if clock == nil {
 		clock = RealRetryClock{}
@@ -177,6 +188,7 @@ func NewHeapRetrySchedulerWithCloseHandler(
 		onClose:    onClose,
 		clock:      clock,
 		sleeper:    sleeper,
+		maxItems:   maxItems,
 		notify:     make(chan struct{}, 1),
 		loopCancel: cancel,
 	}
@@ -184,13 +196,19 @@ func NewHeapRetrySchedulerWithCloseHandler(
 	return s
 }
 
-// Schedule parks qr until retryAt (non-blocking).
+// Schedule parks qr until retryAt (non-blocking). Returns false when the
+// scheduler is closed OR the heap is at its maxItems bound (audit 2026-09-14
+// R28 #15b); both cases route the caller to its pre-existing fallback path.
 func (s *HeapRetryScheduler) Schedule(qr *QueuedRequest, retryAt time.Time) bool {
 	if s == nil || qr == nil {
 		return false
 	}
 	s.mu.Lock()
 	if s.closed {
+		s.mu.Unlock()
+		return false
+	}
+	if s.maxItems > 0 && s.items.Len() >= s.maxItems {
 		s.mu.Unlock()
 		return false
 	}

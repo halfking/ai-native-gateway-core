@@ -58,7 +58,13 @@ var (
 	metricOverflow = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dispatch_overflow_total",
 		Help: "Requests that could not be enqueued and were redirected/rejected.",
-	}, []string{"reason"}) // reason: cred_queue_full|model_queue_full|pace_timeout|no_route
+		// reason (de-facto closed enum, see dispatch sites): cred_queue_full|
+		// model_queue_full|pace_timeout|no_route|shutdown|total_queue_full|
+		// dispatch_observation_full|total_queue_full_on_due|failover_ctx_done
+		// (failover_ctx_done = audit 2026-09-14 R28 #15a: routeFailover saw an
+		// already-canceled request ctx and completed the qr instead of parking
+		// it on failoverCh).
+	}, []string{"reason"})
 
 	// ===== V6-W1.7: dual-backend queue admission (集群准入/容量, 10 号文档) =====
 	// Admit/Release are bumped at the pipeline integration plane; Rejected

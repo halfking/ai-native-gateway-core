@@ -1853,10 +1853,15 @@ func applyCapacityWeightedLB(cand *Candidate, concurrencyLimitAuto *int) {
 		return
 	}
 	// Respect an explicit operator weight (anything other than the SQL
-	// default of 100). This preserves the manual escape hatch.
+	// default of 100). This preserves the manual escape hatch. The value is
+	// clamped to capacityWeightMax so a stray model_offers.weight of 10^6
+	// cannot monopolize the weighted first pick (R28 audit #22a) — the same
+	// ceiling the capacity-derived branch already applies.
 	if cand.Weight != defaultManualWeight {
 		if cand.Weight <= 0 {
 			cand.Weight = defaultManualWeight
+		} else if cand.Weight > capacityWeightMax {
+			cand.Weight = capacityWeightMax
 		}
 		return
 	}

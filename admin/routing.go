@@ -3759,37 +3759,77 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// Audit 2026-09-14 R28 #13: the admin scoring-weights knob is DISPLAY-ONLY.
+// routing_policy.scoring_weights_json feeds the diagnostic preview paths
+// (/api/routing/resolve, /api/routing/score-details) — the live routing hot
+// path reads executors.DefaultLoadScoreWeights (see
+// domains/streaming/executors/router_scoring.go). Every response below
+// carries the disclosure so API consumers cannot mistake the knob for a
+// live-routing control.
+const scoringWeightsDisplayOnlyNote = "these weights only affect /api/routing/resolve and /api/routing/score-details previews, not live routing"
+
+// scoringWeightsDisplayOnlyPayload flattens the weights map with the
+// display-only disclosure keys. The five numeric weight keys stay at the top
+// level so the existing wire shape (and the admin UI that spreads the GET
+// body into its PATCH draft) keeps working; PATCH tolerates and ignores the
+// two disclosure keys on round-trip.
+func scoringWeightsDisplayOnlyPayload(weights map[string]float64) map[string]any {
+	out := make(map[string]any, len(weights)+2)
+	for k, v := range weights {
+		out[k] = v
+	}
+	out["display_only"] = true
+	out["note"] = scoringWeightsDisplayOnlyNote
+	return out
+}
+
 func (h *Handler) handleRoutingScoringWeights(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	if r.Method == http.MethodGet {
 		weights := h.getScoringWeights(ctx)
-		writeJSON(w, http.StatusOK, weights)
+		// R28 #13: display-only disclosure rides on the GET payload (flat
+		// keys; see scoringWeightsDisplayOnlyPayload).
+		writeJSON(w, http.StatusOK, scoringWeightsDisplayOnlyPayload(weights))
 		return
 	}
 
 	if r.Method == http.MethodPatch {
-		var patch map[string]float64
+		// R28 #13: parse tolerantly (map[string]any) so the disclosure keys
+		// that GET now returns (display_only/note) round-trip harmlessly when
+		// a client echoes the GET body back; only the five known numeric
+		// knobs below are read, everything else is ignored (same
+		// accept-and-ignore behavior the old map[string]float64 parse had for
+		// unknown numeric keys).
+		var patch map[string]any
 		if err := readJSON(r, &patch); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
+		patchFloat := func(key string) (float64, bool) {
+			v, ok := patch[key]
+			if !ok {
+				return 0, false
+			}
+			f, ok := v.(float64)
+			return f, ok
+		}
 
 		current := h.getScoringWeights(ctx)
-		if v, ok := patch["price"]; ok {
+		if v, ok := patchFloat("price"); ok {
 			current["price"] = v
 		}
-		if v, ok := patch["session_load"]; ok {
+		if v, ok := patchFloat("session_load"); ok {
 			current["session_load"] = v
 		}
-		if v, ok := patch["failure_penalty"]; ok {
+		if v, ok := patchFloat("failure_penalty"); ok {
 			current["failure_penalty"] = v
 		}
-		if v, ok := patch["default_price_cny"]; ok {
+		if v, ok := patchFloat("default_price_cny"); ok {
 			current["default_price_cny"] = v
 		}
-		if v, ok := patch["default_price_usd"]; ok {
+		if v, ok := patchFloat("default_price_usd"); ok {
 			current["default_price_usd"] = v
 		}
 
@@ -3807,7 +3847,13 @@ func (h *Handler) handleRoutingScoringWeights(w http.ResponseWriter, r *http.Req
 			auditMap[k] = v
 		}
 		h.logAudit(r, "scoring_weights_update", auditMap)
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		// R28 #13: the PATCH response also carries the display-only
+		// disclosure so the actuator answer is honest at the API level.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":       "ok",
+			"display_only": true,
+			"note":         scoringWeightsDisplayOnlyNote,
+		})
 		return
 	}
 

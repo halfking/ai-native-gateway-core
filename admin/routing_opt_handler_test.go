@@ -425,3 +425,55 @@ func TestRoutingOptParametersDBErrorReturns500(t *testing.T) {
 		t.Fatalf("parameters db error: want 500, got %d", w.Code)
 	}
 }
+
+// =============================================================================
+// Audit 2026-09-14 R28 #13: scoring-weights display-only disclosure contract.
+// The /api/routing/scoring-weights knob feeds only the /api/routing/resolve
+// and /api/routing/score-details preview paths — never live routing. Both
+// GET and PATCH responses must disclose that. The full handler flow needs a
+// live pool (h.db is *pgxpool.Pool), so this pins the shared response
+// payload builder plus the GET→PATCH echo round-trip (the admin UI spreads
+// the GET body into its PATCH draft, so the disclosure keys must survive).
+// =============================================================================
+
+func TestRoutingScoringWeightsDisplayOnlyContract(t *testing.T) {
+	weights := map[string]float64{
+		"price":             10,
+		"session_load":      5,
+		"failure_penalty":   20,
+		"default_price_cny": 5.0,
+		"default_price_usd": 5.0,
+	}
+	body := scoringWeightsDisplayOnlyPayload(weights)
+
+	if v, ok := body["display_only"].(bool); !ok || !v {
+		t.Fatalf("payload display_only = %v, want true", body["display_only"])
+	}
+	const wantNote = "these weights only affect /api/routing/resolve and /api/routing/score-details previews, not live routing"
+	if v, ok := body["note"].(string); !ok || v != wantNote {
+		t.Fatalf("payload note = %v, want %q", body["note"], wantNote)
+	}
+	for k, want := range weights {
+		if v, ok := body[k].(float64); !ok || v != want {
+			t.Fatalf("payload[%q] = %v, want %v (weight keys must stay top-level float64)", k, body[k], want)
+		}
+	}
+
+	// Round-trip: a client echoing the GET body back as a PATCH body must
+	// still yield the five numeric knobs (the PATCH parse ignores the
+	// disclosure keys instead of 400-ing on them).
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	var echo map[string]any
+	if err := json.Unmarshal(raw, &echo); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	for k, want := range weights {
+		v, ok := echo[k].(float64)
+		if !ok || v != want {
+			t.Fatalf("echo[%q] = %v (%T), want %v", k, echo[k], echo[k], want)
+		}
+	}
+}
