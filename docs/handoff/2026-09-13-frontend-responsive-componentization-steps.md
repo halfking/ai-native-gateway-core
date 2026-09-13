@@ -604,3 +604,21 @@ git push 需用户在交互终端输入 codeup 凭证（setsid foot bash <脚本
 - 四门禁 + element:check 全绿；vitest 559 通过 / 41 失败 = **39 失败文件基线不变**。
 
 **验证环境残项**：本虚机的旧版 headless_shell（playwright chromium_headless_shell，`--headless=old`）自 11:29 起对 SPA 整页渲染反复 OOM 崩溃（partition_alloc OnNoMemoryInternal，SIGTRAP，4 次 1.1G coredump，亮暗皆可触发、与本次改动无关）；SPA 级暗色截图以「变量级联探针 + 裸页 EP 组件真实渲染对比截图」替代，SPA 真机暗色走查待真机/联调环境补。
+
+### §十二补充：应用侧硬编码亮面清扫（同日第二轮，用户要求继续收敛）
+
+EP 变量接线之后，继续清扫**应用自研样式里绕过令牌的硬编码亮色面**（全库 `background: white/#fff` 与 Material 粉彩底扫描）：
+
+| 文件 | 修复 |
+|---|---|
+| OutputComplianceView.vue（6 处） | `.stat-card`/`.table-container`/`.btn-secondary`/`.config-panel` 的 `background: white` → `var(--card)`；`.btn-primary` `color: white` → `var(--on-primary)`；`.success-banner` 边框 `#6ee7b7` → `var(--success-bd)` |
+| AnnotationStatsView.vue（8 处） | `.stat-icon-primary/success/green/red/info` 的 Material 粉彩底（#e3f2fd/#e8f5e9/#ffebee/#f3e5f5）→ `--info-bg/--success-bg/--danger-bg` 与 `color-mix(var(--purple) 14%)`；`.badge-blue` → `--info-bg/--accent`；`.bar-fill` 渐变 `#1976d2→#42a5f5` → `var(--accent)→var(--probe-cyan)` |
+| AnnotationView.vue（4 处） | `.badge-blue/green/yellow/red` 粉彩底+硬编码深字 → `--info/success/warning/danger-bg` + 对应 `--*-strong/--accent` |
+| BootstrapWizardView.vue（1 处） | `.wizard-steps__index` `#eef2f8` → `var(--bg-secondary)` |
+| ApprovalDetailView.vue（1 处） | `.btn-danger:hover` `#f65e5e` → `var(--danger-dark)`（暗色下悬停变亮、亮色下变深，两主题语义均正确） |
+
+**刻意保留**：4 处开关（switch/knob）的 `background: white` 圆点（NotificationChannels/SettingsView/ApprovalConfigView/PromptInjectionConfigPanel）——彩色轨道上的白色圆钮是两主题通用设计；ProvidersView 的 `rgba(255,80,80,α)` 告警行底为半透明红，暗底下自然呈暗红，保留。
+
+**环境补丁登记**：`sass-embedded` 仅装了 darwin-arm64 宿主二进制（darwin 布局 node_modules 的又一例），生产构建 scss 转换挂起；按 rollup/esbuild 同款手法手工补装 `sass-embedded-linux-arm64@1.100.0`（npm pack 解压入 node_modules，未动 manifest/lockfile）后 `vite build` 通过（19.4s）。**生产包已验证**：dist 由网关 :8781 正常服务（index/asset 200，CSS 含 `--el-bg-color` 桥接）。
+
+**门禁终态**：五门禁全绿，vitest 559 通过 / 41 失败 = **39 失败文件基线不变**。SPA 级暗色截图在本虚机 headless 下仍不可得（ chromium 新旧两版同样挂起，见上残项），本轮修复均为确定性令牌替换，建议在用户真实浏览器（即发现问题处）刷新 `?theme=dark` 复核。

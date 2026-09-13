@@ -865,23 +865,23 @@ onMounted(load)
 }
 
 .badge-blue {
-  background: #e3f2fd;
-  color: #1976d2;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 
 .badge-green {
-  background: #e8f5e9;
-  color: #388e3c;
+  background: var(--success-bg);
+  color: var(--success-strong);
 }
 
 .badge-yellow {
-  background: #fff3e0;
-  color: #f57c00;
+  background: var(--warning-bg);
+  color: var(--warning-strong);
 }
 
 .badge-red {
-  background: #ffebee;
-  color: #d32f2f;
+  background: var(--danger-bg);
+  color: var(--danger-strong);
 }
 
 .badge-gray {

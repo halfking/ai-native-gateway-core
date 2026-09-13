@@ -618,7 +618,7 @@ onMounted(() => {
 }
 
 .stat-card {
-  background: white;
+  background: var(--card);
   border: 1px solid var(--surface-secondary);
   border-radius: 8px;
   padding: 1rem;
@@ -665,7 +665,7 @@ onMounted(() => {
 
 /* 表格 */
 .table-container {
-  background: white;
+  background: var(--card);
   border: 1px solid var(--surface-secondary);
   border-radius: 8px;
   overflow-x: auto;
@@ -754,14 +754,14 @@ onMounted(() => {
 
 .btn-primary {
   background: var(--accent);
-  color: white;
+  color: var(--on-primary);
 }
 
 .btn-primary:hover { background: var(--accent); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .btn-secondary {
-  background: white;
+  background: var(--card);
   color: var(--muted);
   border: 1px solid var(--border);
 }
@@ -834,7 +834,7 @@ onMounted(() => {
 
 .success-banner {
   background: var(--success-bg);
-  border: 1px solid #6ee7b7;
+  border: 1px solid var(--success-bd);
   color: var(--success-strong);
   padding: 0.75rem 1rem;
   border-radius: 6px;
@@ -843,7 +843,7 @@ onMounted(() => {
 
 /* 配置面板 */
 .config-panel {
-  background: white;
+  background: var(--card);
   border-radius: 8px;
   padding: 1.5rem;
 }
