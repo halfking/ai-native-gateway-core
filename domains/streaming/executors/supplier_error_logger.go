@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
@@ -40,6 +41,13 @@ const supplierErrorInsertSQL = `
 		$15, $16, $17, 1, $18::text::jsonb
 	)
 `
+
+// supplierErrorRLSBypassSQL 是事务级 RLS 旁路 GUC（is_local=true，事务提交
+// 即失效，pooled 连接不保留提权）。2026-09-14 审计 #6：supplier_errors_hot
+// 为 FORCE RLS + tenant 隔离（V371），非 superuser 应用角色直写会 42501 或
+// 被静默过滤到 0 行，dashboard 数据闭环断裂。定式与
+// domains/streaming/anomaly_harvester.go runCleanup 一致。
+const supplierErrorRLSBypassSQL = `SELECT set_config('app.bypass_rls', 'true', true)`
 
 // persistSupplierError 把已构建的候选失败行投影为 supplier_errors_hot 行并
 // 写入。与 candidate_failure_logs_hot 的 INSERT 共用 3s 独立超时上下文，
@@ -76,7 +84,7 @@ func (w *CandidateFailureWriter) persistSupplierError(ctx context.Context, row c
 		metadataJSON = marshalContext(metadata)
 	}
 
-	_, err := w.pool.Exec(ctx, supplierErrorInsertSQL,
+	if err := w.execWithRLSBypass(ctx, supplierErrorInsertSQL,
 		occurredAt,
 		row.RequestID,
 		contextStringValue(row.Context, "trace_id"),
@@ -95,8 +103,7 @@ func (w *CandidateFailureWriter) persistSupplierError(ctx context.Context, row c
 		stage,
 		latency,
 		metadataJSON,
-	)
-	if err != nil {
+	); err != nil {
 		slog.Warn("supplier_error_logger: insert failed",
 			"error", err,
 			"request_id", row.RequestID,
@@ -104,6 +111,30 @@ func (w *CandidateFailureWriter) persistSupplierError(ctx context.Context, row c
 			"supplier", supplier,
 		)
 	}
+}
+
+// execWithRLSBypass 在单事务内先设事务级 RLS 旁路 GUC、再执行一条写语句并
+// 提交（2026-09-14 审计 #6）。仅具体 *pgxpool.Pool（生产 wiring 走
+// db.DB.Pool()）走事务路径；最小测试替身（pgxmock 等）退回直连 Exec——
+// RLS 只在真实 PostgreSQL 上生效，替身无此语义。
+func (w *CandidateFailureWriter) execWithRLSBypass(ctx context.Context, sql string, args ...any) error {
+	beginner, ok := w.pool.(*pgxpool.Pool)
+	if !ok {
+		_, err := w.pool.Exec(ctx, sql, args...)
+		return err
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, supplierErrorRLSBypassSQL); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, sql, args...); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // supplierErrorMetadata 构建请求元数据 JSONB。仅保留结构化诊断字段；
@@ -146,7 +177,7 @@ func contextStringValue(ctx map[string]any, key string) string {
 
 // lowCardinalityContextValue 读取低基数维度值：超长或含空白的值一律丢弃
 // （词表值是短代码，二者都是自由文本混入的信号），不截断、不清洗——
-// 宁可维度缺失（''），不可把自由文本写入维度列。
+// 宁可维度缺失（”），不可把自由文本写入维度列。
 func lowCardinalityContextValue(ctx map[string]any, key string) string {
 	v := contextStringValue(ctx, key)
 	if v == "" || len(v) > 64 {

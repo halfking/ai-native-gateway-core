@@ -13,9 +13,14 @@
 // rollup 的窗口上界）。每次 tick 重算 [watermark, now)，起点 now-10min
 // （≈2×interval，与旧固定窗口等价）；成功后推进 watermark，失败不推进
 // 自然在下个 tick 重算同一窗口（UPSERT 幂等，重算不重不漏）。窗口上限
-// 钳 8h：停摆超过 8h 的那一段，hot 行可能已被 promote 搬进 columnar
-// （聚合器永久够不着），继续重算更老区间只是浪费——趋势 API 对该段
-// 走明细兜底。
+// 钳 48h（2026-09-14 审计 #7：base 源改为 hot∪父表 UNION ALL 后，聚合器
+// 对已 promote 的行仍可达——columnar 历史只读不改结果，钳窗口只为停摆
+// catch-up 的重算量兜底）；停摆超过 48h 的那一段钳掉并告警，趋势 API 对
+// 该段走明细兜底。
+//
+// RLS（2026-09-14 审计 #6）：hot 与父表均 FORCE RLS，聚合在单事务内先
+// set_config('app.bypass_rls','true',true) 再跑三条 rollup——顺带把
+// minute→hour→day 三级变成原子提交，任一级失败整体回滚、watermark 不动。
 package bg
 
 import (
@@ -33,10 +38,11 @@ const supplierErrorStatsDefaultInterval = 5 * time.Minute
 // 固定 [now-10min, now) 窗口等价。
 const supplierErrorStatsInitialLookback = 10 * time.Minute
 
-// supplierErrorStatsMaxWindow 钳制 catch-up 窗口（audit D-2#7）：聚合器
-// 停摆 >8h 后 hot 行可能已被 promote 迁走（8h hot 保留），更老的区间
-// 重算只会得到残缺结果，钳到 8h 并告警。
-const supplierErrorStatsMaxWindow = 8 * time.Hour
+// supplierErrorStatsMaxWindow 钳制 catch-up 窗口（audit D-2#7；2026-09-14
+// 审计 #7 放宽 8h→48h）：base 源改为 hot∪父表 UNION ALL 后，已 promote 进
+// columnar 的行对聚合器仍然可达，钳窗口只为停摆 catch-up 的重算量兜底，
+// 不再是"数据永久够不着"的硬边界。
+const supplierErrorStatsMaxWindow = 48 * time.Hour
 
 // supplierErrorStatsRollupSQL 把 hot 明细按分钟桶聚合 upsert（granularity
 // 由参数传入，固定传 "minute"）。错误率分母 total_requests =
@@ -51,13 +57,26 @@ const supplierErrorStatsMaxWindow = 8 * time.Hour
 // rollup 的分组语义；分桶计数随覆盖式 UPSERT 逐桶刷新，无重复累计。
 // stage_counts 用两层分组（先按 stage 计数再 jsonb_object_agg）是因为
 // jsonb_object_agg 不求和；空串 stage 保留为 "" 键（无损），读端映射 unknown。
+//
+// 2026-09-14 审计 #7：base 源从仅 supplier_errors_hot 改为 hot∪父表
+// UNION ALL——promote 是 DELETE+INSERT 原子单语句，任一行只会存在于某一侧，
+// UPSERT 覆盖写幂等，无重复计数；聚合器由此覆盖已迁入 columnar 历史的区间。
 const supplierErrorStatsRollupSQL = `
 WITH base AS (
     SELECT date_bin($1::interval, occurred_at, '2000-01-01'::timestamptz) AS stat_time,
            supplier, credential_id, error_type, model,
            request_id, affected_users, is_retryable, stage
-    FROM supplier_errors_hot
-    WHERE occurred_at >= $3 AND occurred_at < $4
+    FROM (
+        SELECT occurred_at, supplier, credential_id, error_type, model,
+               request_id, affected_users, is_retryable, stage
+        FROM supplier_errors_hot
+        WHERE occurred_at >= $3 AND occurred_at < $4
+        UNION ALL
+        SELECT occurred_at, supplier, credential_id, error_type, model,
+               request_id, affected_users, is_retryable, stage
+        FROM supplier_errors
+        WHERE occurred_at >= $3 AND occurred_at < $4
+    ) hot_and_historical
 ), bucket_totals AS (
     SELECT stat_time, supplier, credential_id, error_type, model,
            COUNT(*)::int AS error_count,
@@ -322,8 +341,9 @@ func (a *SupplierErrorStatsAggregator) run(ctx context.Context) {
 //     固定「最近两个 interval」窗口等价；
 //   - 有 watermark：[watermark, now)——失败过的 tick 不推进 watermark，
 //     自然在下个 tick 重算同一窗口（迟到行/停摆期数据被补聚）；
-//   - watermark 老于 8h：钳到 [now-8h, now) 并返回 clamped=true（更老的
-//     hot 行可能已被 promote 迁走，重算只能得到残缺结果）。
+//   - watermark 老于 48h：钳到 [now-48h, now) 并返回 clamped=true（catch-up
+//     重算量兜底；2026-09-14 审计 #7 后 base 已覆盖 hot∪历史父表，钳制不再
+//     代表数据不可达）。
 func (a *SupplierErrorStatsAggregator) rollupWindow(now time.Time) (from, to time.Time, clamped bool) {
 	to = now
 	if a.watermark.IsZero() {
@@ -336,9 +356,9 @@ func (a *SupplierErrorStatsAggregator) rollupWindow(now time.Time) (from, to tim
 }
 
 // rollup 重算 [watermark, now) 的 minute 桶，并做 minute→hour→day 二次
-// rollup（audit E-#4）。三级全部成功才推进 watermark；任一级失败提前
-// 返回、watermark 不动，下个 tick 从同一水位重算——UPSERT 幂等保证
-// 重算不重不漏。
+// rollup（audit E-#4）。三级在同一条事务内提交（2026-09-14 审计 #6：事务内
+// 先设 RLS 旁路，顺带获得三级原子性）；失败整体回滚、watermark 不动，下个
+// tick 从同一水位重算——UPSERT 幂等保证重算不重不漏。
 func (a *SupplierErrorStatsAggregator) rollup(ctx context.Context) {
 	if a == nil || a.db == nil {
 		return
@@ -347,13 +367,26 @@ func (a *SupplierErrorStatsAggregator) rollup(ctx context.Context) {
 	from, to, clamped := a.rollupWindow(now)
 	if clamped {
 		slog.Warn("supplier_error_stats: watermark older than max window, clamping recompute range "+
-			"(rows older than the 8h hot window may already be promoted and permanently out of reach)",
+			"(catch-up backlog is capped; rows older than the window remain queryable via the unified detail view)",
 			"watermark", a.watermark.Format(time.RFC3339),
 			"from", from.Format(time.RFC3339),
 			"max_window", supplierErrorStatsMaxWindow.String())
 	}
 
-	minuteTag, err := a.db.Exec(ctx, supplierErrorStatsRollupSQL,
+	// 单事务包住三级 rollup + RLS 旁路（is_local=true，提交即失效，
+	// pooled 连接不保留提权）——任一级失败全部回滚。
+	tx, err := a.db.Begin(ctx)
+	if err != nil {
+		slog.Warn("supplier_error_stats: rollup begin failed", "error", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
+		slog.Warn("supplier_error_stats: rollup RLS setup failed", "error", err)
+		return
+	}
+
+	minuteTag, err := tx.Exec(ctx, supplierErrorStatsRollupSQL,
 		a.interval, "minute", from, to)
 	if err != nil {
 		slog.Warn("supplier_error_stats: minute rollup failed",
@@ -363,14 +396,18 @@ func (a *SupplierErrorStatsAggregator) rollup(ctx context.Context) {
 	if n := minuteTag.RowsAffected(); n > 0 {
 		slog.Debug("supplier_error_stats: rolled up minute buckets", "buckets", n)
 	}
-	if _, err := a.db.Exec(ctx, supplierErrorStatsHourRollupSQL, from, to); err != nil {
+	if _, err := tx.Exec(ctx, supplierErrorStatsHourRollupSQL, from, to); err != nil {
 		slog.Warn("supplier_error_stats: hour rollup failed",
 			"error", err, "from", from, "to", to)
 		return
 	}
-	if _, err := a.db.Exec(ctx, supplierErrorStatsDayRollupSQL, from, to); err != nil {
+	if _, err := tx.Exec(ctx, supplierErrorStatsDayRollupSQL, from, to); err != nil {
 		slog.Warn("supplier_error_stats: day rollup failed",
 			"error", err, "from", from, "to", to)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("supplier_error_stats: rollup commit failed", "error", err)
 		return
 	}
 	a.watermark = to

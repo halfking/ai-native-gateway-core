@@ -22,11 +22,13 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -59,6 +61,31 @@ func (h *candidateFailureHandlers) SetRecentAlerts(getter func() []bg.CandidateF
 	h.alertsGetter = getter
 }
 
+// withRLSBypassTx 在单只读事务内执行 candidate_failure_logs 读查询（2026-09-14
+// R28 审计 #6 扫尾）：candidate_failure_logs 为 FORCE RLS（V367），网关应用
+// 角色非 superuser 时直连读被静默过滤到 0 行、监控页恒空。事务内
+// set_config('app.bypass_rls','true',true)（is_local=true，errors_trend.go
+// withTrendReadTx 同一定式）保证旁路随事务提交即失效，连接归还池不保留提权。
+func (h *candidateFailureHandlers) withRLSBypassTx(ctx context.Context, sql string, args []any, fn func(rows pgx.Rows) error) error {
+	tx, err := h.db.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return fmt.Errorf("begin candidate failure read tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
+		return fmt.Errorf("set candidate failure RLS bypass GUC: %w", err)
+	}
+	rows, err := tx.Query(ctx, sql, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if err := fn(rows); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // listCandidateFailures returns the most recent N failures. Pagination is
 // by (ts, id) keyset (not OFFSET) so large pages stay fast.
 //
@@ -86,26 +113,6 @@ func (h *candidateFailureHandlers) listCandidateFailures(w http.ResponseWriter, 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rows, err := h.db.Query(ctx, `
-		SELECT
-			id, ts, request_id, tenant_id, credential_id, provider_id,
-			raw_model_name, attempt_index, error_kind, error_message,
-			upstream_status_code, upstream_response_preview, latency_ms,
-			retryable, session_id
-		FROM candidate_failure_logs_with_current_month
-		WHERE ts >= $1
-		  AND ($2 = '' OR error_kind = $2)
-		  AND ($3 = '' OR retryable::text = $3)
-		  AND ($4 = '' OR session_id = $4)
-		ORDER BY ts DESC, id DESC
-		LIMIT $5
-	`, since, kind, retryable, session, limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
-		return
-	}
-	defer rows.Close()
-
 	type row struct {
 		ID                      *int64    `json:"id,omitempty"`
 		Ts                      time.Time `json:"ts"`
@@ -124,24 +131,43 @@ func (h *candidateFailureHandlers) listCandidateFailures(w http.ResponseWriter, 
 		SessionID               *string   `json:"session_id,omitempty"`
 	}
 	out := make([]row, 0, limit)
-	for rows.Next() {
-		var x row
-		if err := rows.Scan(
-			&x.ID, &x.Ts, &x.RequestID, &x.TenantID, &x.CredentialID, &x.ProviderID,
-			&x.RawModelName, &x.AttemptIndex, &x.ErrorKind, &x.ErrorMessage,
-			&x.UpstreamStatusCode, &x.UpstreamResponsePreview, &x.LatencyMs,
-			&x.Retryable, &x.SessionID,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
-			return
-		}
-		x.ErrorMessage = string(errorsx.SanitizeErrorText([]byte(x.ErrorMessage), 320))
-		if x.UpstreamResponsePreview != nil {
-			s := string(errorsx.SanitizeErrorText([]byte(*x.UpstreamResponsePreview), 320))
-			x.UpstreamResponsePreview = &s
-		}
-		out = append(out, x)
+	err := h.withRLSBypassTx(ctx, `
+		SELECT
+			id, ts, request_id, tenant_id, credential_id, provider_id,
+			raw_model_name, attempt_index, error_kind, error_message,
+			upstream_status_code, upstream_response_preview, latency_ms,
+			retryable, session_id
+		FROM candidate_failure_logs_with_current_month
+		WHERE ts >= $1
+		  AND ($2 = '' OR error_kind = $2)
+		  AND ($3 = '' OR retryable::text = $3)
+		  AND ($4 = '' OR session_id = $4)
+		ORDER BY ts DESC, id DESC
+		LIMIT $5
+	`, []any{since, kind, retryable, session, limit}, func(rows pgx.Rows) error {
+		for rows.Next() {
+			var x row
+			if err := rows.Scan(
+				&x.ID, &x.Ts, &x.RequestID, &x.TenantID, &x.CredentialID, &x.ProviderID,
+				&x.RawModelName, &x.AttemptIndex, &x.ErrorKind, &x.ErrorMessage,
+				&x.UpstreamStatusCode, &x.UpstreamResponsePreview, &x.LatencyMs,
+				&x.Retryable, &x.SessionID,
+			); err != nil {
+				return err
+			}
+			x.ErrorMessage = string(errorsx.SanitizeErrorText([]byte(x.ErrorMessage), 320))
+			if x.UpstreamResponsePreview != nil {
+				s := string(errorsx.SanitizeErrorText([]byte(*x.UpstreamResponsePreview), 320))
+				x.UpstreamResponsePreview = &s
+			}
+			out = append(out, x)
 
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data":  out,
@@ -169,23 +195,6 @@ func (h *candidateFailureHandlers) getCandidateFailuresByCredential(w http.Respo
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rows, err := h.db.Query(ctx, `
-		SELECT
-			id, ts, request_id, raw_model_name, attempt_index, error_kind,
-			upstream_status_code, upstream_response_preview, latency_ms,
-			session_id
-		FROM candidate_failure_logs_with_current_month
-		WHERE credential_id = $1
-		  AND ts >= $2
-		ORDER BY ts DESC, id DESC
-		LIMIT $3
-	`, credID, since, limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
-		return
-	}
-	defer rows.Close()
-
 	type row struct {
 		ID                      *int64    `json:"id,omitempty"`
 		Ts                      time.Time `json:"ts"`
@@ -199,21 +208,37 @@ func (h *candidateFailureHandlers) getCandidateFailuresByCredential(w http.Respo
 		SessionID               *string   `json:"session_id,omitempty"`
 	}
 	out := make([]row, 0, limit)
-	for rows.Next() {
-		var x row
-		if err := rows.Scan(
-			&x.ID, &x.Ts, &x.RequestID, &x.RawModelName, &x.AttemptIndex,
-			&x.ErrorKind, &x.UpstreamStatusCode, &x.UpstreamResponsePreview,
-			&x.LatencyMs, &x.SessionID,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
-			return
+	err = h.withRLSBypassTx(ctx, `
+		SELECT
+			id, ts, request_id, raw_model_name, attempt_index, error_kind,
+			upstream_status_code, upstream_response_preview, latency_ms,
+			session_id
+		FROM candidate_failure_logs_with_current_month
+		WHERE credential_id = $1
+		  AND ts >= $2
+		ORDER BY ts DESC, id DESC
+		LIMIT $3
+	`, []any{credID, since, limit}, func(rows pgx.Rows) error {
+		for rows.Next() {
+			var x row
+			if err := rows.Scan(
+				&x.ID, &x.Ts, &x.RequestID, &x.RawModelName, &x.AttemptIndex,
+				&x.ErrorKind, &x.UpstreamStatusCode, &x.UpstreamResponsePreview,
+				&x.LatencyMs, &x.SessionID,
+			); err != nil {
+				return err
+			}
+			if x.UpstreamResponsePreview != nil {
+				s := string(errorsx.SanitizeErrorText([]byte(*x.UpstreamResponsePreview), 320))
+				x.UpstreamResponsePreview = &s
+			}
+			out = append(out, x)
 		}
-		if x.UpstreamResponsePreview != nil {
-			s := string(errorsx.SanitizeErrorText([]byte(*x.UpstreamResponsePreview), 320))
-			x.UpstreamResponsePreview = &s
-		}
-		out = append(out, x)
+		return rows.Err()
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data":          out,
@@ -236,7 +261,19 @@ func (h *candidateFailureHandlers) getCandidateFailureStats(w http.ResponseWrite
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rows, err := h.db.Query(ctx, `
+	type row struct {
+		RawModelName     string    `json:"raw_model_name"`
+		ErrorKind        string    `json:"error_kind"`
+		CredentialID     int       `json:"credential_id"`
+		ProviderID       int       `json:"provider_id"`
+		Count            int       `json:"count"`
+		RetryableCount   int       `json:"retryable_count"`
+		DistinctStatuses int       `json:"distinct_status_codes"`
+		LastSeen         time.Time `json:"last_seen"`
+		FirstSeen        time.Time `json:"first_seen"`
+	}
+	out := make([]row, 0, 50)
+	err := h.withRLSBypassTx(ctx, `
 		SELECT
 			raw_model_name,
 			error_kind,
@@ -252,36 +289,23 @@ func (h *candidateFailureHandlers) getCandidateFailureStats(w http.ResponseWrite
 		GROUP BY raw_model_name, error_kind, credential_id, provider_id
 		ORDER BY count DESC
 		LIMIT 50
-	`, since)
+	`, []any{since}, func(rows pgx.Rows) error {
+		for rows.Next() {
+			var x row
+			if err := rows.Scan(
+				&x.RawModelName, &x.ErrorKind, &x.CredentialID, &x.ProviderID,
+				&x.Count, &x.RetryableCount, &x.DistinctStatuses,
+				&x.LastSeen, &x.FirstSeen,
+			); err != nil {
+				return err
+			}
+			out = append(out, x)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
-	}
-	defer rows.Close()
-
-	type row struct {
-		RawModelName     string    `json:"raw_model_name"`
-		ErrorKind        string    `json:"error_kind"`
-		CredentialID     int       `json:"credential_id"`
-		ProviderID       int       `json:"provider_id"`
-		Count            int       `json:"count"`
-		RetryableCount   int       `json:"retryable_count"`
-		DistinctStatuses int       `json:"distinct_status_codes"`
-		LastSeen         time.Time `json:"last_seen"`
-		FirstSeen        time.Time `json:"first_seen"`
-	}
-	out := make([]row, 0, 50)
-	for rows.Next() {
-		var x row
-		if err := rows.Scan(
-			&x.RawModelName, &x.ErrorKind, &x.CredentialID, &x.ProviderID,
-			&x.Count, &x.RetryableCount, &x.DistinctStatuses,
-			&x.LastSeen, &x.FirstSeen,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
-			return
-		}
-		out = append(out, x)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data":  out,

@@ -66,7 +66,7 @@ func TestSupplierErrorStatsRollupWindowRecomputesAfterFailure(t *testing.T) {
 	afterOutage := base.Add(40 * time.Minute)
 	from, _, clamped := a.rollupWindow(afterOutage)
 	if clamped {
-		t.Fatal("40-minute gap must not clamp (under 8h max window)")
+		t.Fatal("40-minute gap must not clamp (under 48h max window)")
 	}
 	if !from.Equal(base) {
 		t.Fatalf("post-outage window from = %v, want last watermark %v", from, base)
@@ -83,16 +83,27 @@ func TestSupplierErrorStatsRollupWindowClampsToMaxWindow(t *testing.T) {
 	_, to, _ := a.rollupWindow(base)
 	a.watermark = to
 
-	// Aggregator stalled for 10h: rows older than 8h may already be
-	// promoted out of hot, so the catch-up window is clamped to 8h and
-	// flagged so rollup() can warn.
+	// #7 (2026-09-14): the base source reads hot ∪ historical parent, so a
+	// 10h stall is fully recomputable — only a stall beyond the 48h cap is
+	// clamped (catch-up backlog bound, not a data-reachability cliff).
 	afterStall := base.Add(10 * time.Hour)
 	from, _, clamped := a.rollupWindow(afterStall)
-	if !clamped {
-		t.Fatal("10h stale watermark must clamp")
+	if clamped {
+		t.Fatal("10h stale watermark must not clamp (under 48h max window)")
 	}
-	if want := 8 * time.Hour; afterStall.Sub(from) != want {
-		t.Fatalf("clamped window width = %v, want %v", afterStall.Sub(from), want)
+	if !from.Equal(to) {
+		t.Fatalf("post-stall window from = %v, want last watermark %v", from, to)
+	}
+
+	// 50h stall: the catch-up window is clamped to 48h and flagged so
+	// rollup() can warn.
+	afterLongStall := base.Add(50 * time.Hour)
+	from2, _, clamped2 := a.rollupWindow(afterLongStall)
+	if !clamped2 {
+		t.Fatal("50h stale watermark must clamp")
+	}
+	if want := 48 * time.Hour; afterLongStall.Sub(from2) != want {
+		t.Fatalf("clamped window width = %v, want %v", afterLongStall.Sub(from2), want)
 	}
 }
 
@@ -119,6 +130,17 @@ func TestSupplierErrorStatsRollupSQLContract(t *testing.T) {
 		if !strings.Contains(minute, want) {
 			t.Errorf("minute rollup SQL missing %q", want)
 		}
+	}
+
+	// #7 (2026-09-14): the minute base source must span hot AND the
+	// historical parent via UNION ALL — promote is an atomic DELETE+INSERT,
+	// so a row lives on exactly one side (no double counting) and the
+	// aggregator stays reachable across promoted windows.
+	if got := strings.Count(minute, "FROM SUPPLIER_ERRORS"); got < 2 {
+		t.Errorf("minute rollup base must read hot AND parent tables, got %d FROM SUPPLIER_ERRORS* references", got)
+	}
+	if !strings.Contains(minute, "UNION ALL") {
+		t.Error("minute rollup base must UNION ALL hot with the historical parent")
 	}
 
 	hour := strings.ToUpper(supplierErrorStatsHourRollupSQL)

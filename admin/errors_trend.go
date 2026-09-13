@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type errorsTrendDB interface {
@@ -48,11 +49,11 @@ type errorsTrendBreakdownRow struct {
 }
 
 type errorsTrendSummary struct {
-	TotalErrors     int                      `json:"total_errors"`
-	UniqueRequests  int                      `json:"unique_requests"`
-	TopErrorTypes   []errorsTrendBreakdownRow `json:"top_error_types"`
-	TopSuppliers    []errorsTrendBreakdownRow `json:"top_suppliers"`
-	AffectedCreds   int                      `json:"affected_credentials"`
+	TotalErrors    int                       `json:"total_errors"`
+	UniqueRequests int                       `json:"unique_requests"`
+	TopErrorTypes  []errorsTrendBreakdownRow `json:"top_error_types"`
+	TopSuppliers   []errorsTrendBreakdownRow `json:"top_suppliers"`
+	AffectedCreds  int                       `json:"affected_credentials"`
 }
 
 type errorsTrendResponse struct {
@@ -139,12 +140,12 @@ func (h *errorsTrendHandlers) getErrorsTrend(w http.ResponseWriter, r *http.Requ
 
 // statsQuery 是趋势查询的过滤参数包。
 type statsQuery struct {
-	Granularity string
+	Granularity  string
 	Since, Until time.Time
-	TenantID    string
-	Supplier    string
+	TenantID     string
+	Supplier     string
 	CredentialID int64
-	ErrorType   string
+	ErrorType    string
 }
 
 // bucketInterval 把粒度词映射到 date_bin 间隔。
@@ -159,8 +160,45 @@ func bucketInterval(granularity string) string {
 	}
 }
 
+// withTrendReadTx 在单事务内执行一条 supplier_errors 读查询并回调消费行
+// （2026-09-14 审计 #6）：supplier_errors_hot / supplier_errors 为 FORCE RLS
+// + tenant 隔离（V371），网关应用角色非 superuser，直连读会被静默过滤到
+// 0 行、趋势数据闭环断裂。事务内 set_config('app.bypass_rls','true',true)
+// （is_local=true，与 domains/streaming/anomaly_harvester.go 既有定式一致）
+// 保证旁路随事务提交即失效，pooled 连接不保留提权。
+// 仅具体 *pgxpool.Pool 走事务路径；最小测试替身（pgxmock 等）保持既有
+// 直连 Query 路径——RLS 只在真实 PostgreSQL 上生效。
+func (h *errorsTrendHandlers) withTrendReadTx(ctx context.Context, sql string, args []any, fn func(rows pgx.Rows) error) error {
+	if pool, ok := h.db.(*pgxpool.Pool); ok {
+		tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+		if err != nil {
+			return fmt.Errorf("begin trend read tx: %w", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
+			return fmt.Errorf("set trend RLS bypass GUC: %w", err)
+		}
+		rows, err := tx.Query(ctx, sql, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		if err := fn(rows); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	rows, err := h.db.Query(ctx, sql, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	return fn(rows)
+}
+
 func (h *errorsTrendHandlers) loadFromStats(ctx context.Context, q statsQuery) (*errorsTrendResponse, error) {
-	rows, err := h.db.Query(ctx, `
+	resp := &errorsTrendResponse{Source: "stats", TimeSeries: []errorsTrendPoint{}}
+	err := h.withTrendReadTx(ctx, `
 		SELECT stat_time,
 		       SUM(error_count)::int,
 		       SUM(unique_requests)::int,
@@ -173,23 +211,20 @@ func (h *errorsTrendHandlers) loadFromStats(ctx context.Context, q statsQuery) (
 		  AND ($5 = 0 OR credential_id = $5)
 		  AND ($6 = '' OR $6 = 'all' OR error_type = $6)
 		GROUP BY stat_time ORDER BY stat_time
-	`, q.Granularity, q.Since, q.Until, q.Supplier, q.CredentialID, q.ErrorType)
+	`, []any{q.Granularity, q.Since, q.Until, q.Supplier, q.CredentialID, q.ErrorType}, func(rows pgx.Rows) error {
+		for rows.Next() {
+			p, err := scanTrendPoint(rows)
+			if err != nil {
+				return fmt.Errorf("scan supplier_error_stats row failed: %w", err)
+			}
+			resp.TimeSeries = append(resp.TimeSeries, p)
+			resp.Summary.TotalErrors += p.ErrorCount
+			resp.Summary.UniqueRequests += p.UniqueRequests
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("query supplier_error_stats failed: %w", err)
-	}
-	defer rows.Close()
-	resp := &errorsTrendResponse{Source: "stats", TimeSeries: []errorsTrendPoint{}}
-	for rows.Next() {
-		p, err := scanTrendPoint(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan supplier_error_stats row failed: %w", err)
-		}
-		resp.TimeSeries = append(resp.TimeSeries, p)
-		resp.Summary.TotalErrors += p.ErrorCount
-		resp.Summary.UniqueRequests += p.UniqueRequests
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate supplier_error_stats failed: %w", err)
 	}
 	if err := h.loadBreakdowns(ctx, q, resp); err != nil {
 		return nil, err
@@ -200,7 +235,8 @@ func (h *errorsTrendHandlers) loadFromStats(ctx context.Context, q statsQuery) (
 // loadFromDetail 是 stats 空窗口时的明细兜底：直接对 supplier_errors_unified
 // 按桶聚合（响应 source=fallback）。
 func (h *errorsTrendHandlers) loadFromDetail(ctx context.Context, q statsQuery) (*errorsTrendResponse, error) {
-	rows, err := h.db.Query(ctx, fmt.Sprintf(`
+	resp := &errorsTrendResponse{Source: "fallback", TimeSeries: []errorsTrendPoint{}}
+	err := h.withTrendReadTx(ctx, fmt.Sprintf(`
 		SELECT date_bin('%s'::interval, occurred_at, '2000-01-01'::timestamptz) AS bucket,
 		       COUNT(*)::int,
 		       COUNT(DISTINCT request_id)::int,
@@ -217,23 +253,20 @@ func (h *errorsTrendHandlers) loadFromDetail(ctx context.Context, q statsQuery) 
 		      AND ($5 = '' OR $5 = 'all' OR error_type = $5)
 		) d
 		GROUP BY bucket ORDER BY bucket
-	`, bucketInterval(q.Granularity)), q.Since, q.Until, q.Supplier, q.CredentialID, q.ErrorType)
+	`, bucketInterval(q.Granularity)), []any{q.Since, q.Until, q.Supplier, q.CredentialID, q.ErrorType}, func(rows pgx.Rows) error {
+		for rows.Next() {
+			p, err := scanTrendPoint(rows)
+			if err != nil {
+				return fmt.Errorf("scan supplier_errors_unified row failed: %w", err)
+			}
+			resp.TimeSeries = append(resp.TimeSeries, p)
+			resp.Summary.TotalErrors += p.ErrorCount
+			resp.Summary.UniqueRequests += p.UniqueRequests
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("query supplier_errors_unified failed: %w", err)
-	}
-	defer rows.Close()
-	resp := &errorsTrendResponse{Source: "fallback", TimeSeries: []errorsTrendPoint{}}
-	for rows.Next() {
-		p, err := scanTrendPoint(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan supplier_errors_unified row failed: %w", err)
-		}
-		resp.TimeSeries = append(resp.TimeSeries, p)
-		resp.Summary.TotalErrors += p.ErrorCount
-		resp.Summary.UniqueRequests += p.UniqueRequests
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate supplier_errors_unified failed: %w", err)
 	}
 	if err := h.loadBreakdowns(ctx, q, resp); err != nil {
 		return nil, err
@@ -246,7 +279,7 @@ func (h *errorsTrendHandlers) loadFromDetail(ctx context.Context, q statsQuery) 
 // summary.affected_credentials, which the new error-trend panel renders as a
 // KPI — it used to be declared but never computed (always 0).
 func (h *errorsTrendHandlers) loadBreakdowns(ctx context.Context, q statsQuery, resp *errorsTrendResponse) error {
-	rows, err := h.db.Query(ctx, `
+	err := h.withTrendReadTx(ctx, `
 		SELECT 'type' AS kind, COALESCE(NULLIF(error_type, ''), 'unknown') AS key,
 		       COUNT(*)::int AS n
 		FROM supplier_errors_unified
@@ -271,34 +304,35 @@ func (h *errorsTrendHandlers) loadBreakdowns(ctx context.Context, q statsQuery, 
 		  AND ($4 = 0 OR credential_id = $4)
 		  AND ($5 = '' OR $5 = 'all' OR error_type = $5)
 		ORDER BY kind, n DESC
-	`, q.Since, q.Until, q.Supplier, q.CredentialID, q.ErrorType)
+	`, []any{q.Since, q.Until, q.Supplier, q.CredentialID, q.ErrorType}, func(rows pgx.Rows) error {
+		resp.Summary.TopErrorTypes = []errorsTrendBreakdownRow{}
+		resp.Summary.TopSuppliers = []errorsTrendBreakdownRow{}
+		for rows.Next() {
+			var kind, key string
+			var n int
+			if err := rows.Scan(&kind, &key, &n); err != nil {
+				return fmt.Errorf("scan trend breakdown row failed: %w", err)
+			}
+			row := errorsTrendBreakdownRow{Key: key, Count: n}
+			switch kind {
+			case "type":
+				if len(resp.Summary.TopErrorTypes) < 10 {
+					resp.Summary.TopErrorTypes = append(resp.Summary.TopErrorTypes, row)
+				}
+			case "supplier":
+				if len(resp.Summary.TopSuppliers) < 10 {
+					resp.Summary.TopSuppliers = append(resp.Summary.TopSuppliers, row)
+				}
+			case "creds":
+				resp.Summary.AffectedCreds = n
+			}
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return fmt.Errorf("query trend breakdowns failed: %w", err)
 	}
-	defer rows.Close()
-	resp.Summary.TopErrorTypes = []errorsTrendBreakdownRow{}
-	resp.Summary.TopSuppliers = []errorsTrendBreakdownRow{}
-	for rows.Next() {
-		var kind, key string
-		var n int
-		if err := rows.Scan(&kind, &key, &n); err != nil {
-			return fmt.Errorf("scan trend breakdown row failed: %w", err)
-		}
-		row := errorsTrendBreakdownRow{Key: key, Count: n}
-		switch kind {
-		case "type":
-			if len(resp.Summary.TopErrorTypes) < 10 {
-				resp.Summary.TopErrorTypes = append(resp.Summary.TopErrorTypes, row)
-			}
-		case "supplier":
-			if len(resp.Summary.TopSuppliers) < 10 {
-				resp.Summary.TopSuppliers = append(resp.Summary.TopSuppliers, row)
-			}
-		case "creds":
-			resp.Summary.AffectedCreds = n
-		}
-	}
-	return rows.Err()
+	return nil
 }
 
 // scanTrendPoint 把一行趋势桶扫描为数据点。jsonb 聚合列经 []byte 中转

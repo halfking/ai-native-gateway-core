@@ -1064,6 +1064,21 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 			// keeps the gauge semantically a "consecutive-skip" counter,
 			// not a lifetime counter.
 			resetPromoteZombieLockStreak(s.label)
+			// 2026-09-14 审计 #6：promote 以应用角色（非 superuser）在 FORCE
+			// RLS 的 supplier_errors / candidate_failure_logs 分区父表上搬行
+			// （V367/V371 policy：tenant_id 匹配或 app.bypass_rls）。缺旁路时
+			// promote 函数静默迁 0 行，hot 表 8h 不变式与错误数据闭环一起断。
+			// is_local=true 把旁路限制在本事务，pooled 连接不保留提权。
+			if _, err := tx.Exec(timeoutCtx,
+				"SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
+				tx.Rollback(timeoutCtx)
+				cancel()
+				recordPromoteDuration(s.label, time.Since(batchStart).Seconds())
+				slog.Error("partition_manager: promote RLS setup failed",
+					"label", s.label, "error", err)
+				recordPromoteFailure(s.label)
+				break
+			}
 			var n int64
 			err = tx.QueryRow(timeoutCtx,
 				"SELECT "+s.fnName+"($1::interval, $2::int)",

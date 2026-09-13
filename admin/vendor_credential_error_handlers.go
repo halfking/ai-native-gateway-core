@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
@@ -21,6 +22,40 @@ type vendorCredentialErrorDB interface {
 }
 
 type vendorCredentialErrorHandlers struct{ db vendorCredentialErrorDB }
+
+// withVendorRLSBypassReadTx 在单只读事务内执行 supplier_errors / candidate_failure_logs
+// 读查询并回调消费行（2026-09-14 R28 审计 #6 扫尾）：两表为 FORCE RLS + tenant 隔离
+// （V371/V367），网关应用角色非 superuser，直连读被静默过滤到 0 行、凭据详情页
+// 错误集合恒空。事务内 set_config('app.bypass_rls','true',true)（is_local=true，
+// 与 errors_trend.go withTrendReadTx 同一定式）保证旁路随事务提交即失效。
+// 仅具体 *pgxpool.Pool 走事务路径；测试替身保持既有直连 Query 路径。
+func (h *vendorCredentialErrorHandlers) withVendorRLSBypassReadTx(ctx context.Context, sql string, args []any, fn func(rows pgx.Rows) error) error {
+	if pool, ok := h.db.(*pgxpool.Pool); ok {
+		tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+		if err != nil {
+			return fmt.Errorf("begin vendor error read tx: %w", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
+			return fmt.Errorf("set vendor error RLS bypass GUC: %w", err)
+		}
+		rows, err := tx.Query(ctx, sql, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		if err := fn(rows); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	rows, err := h.db.Query(ctx, sql, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	return fn(rows)
+}
 
 type vendorCredentialMeta struct {
 	ID                  int64      `json:"id"`
@@ -192,49 +227,47 @@ func (h *vendorCredentialErrorHandlers) loadVendorCredentialMeta(ctx context.Con
 // 旧读源 candidate_failure_logs_with_current_month 保留给双写过渡期的直接
 // SQL 消费者，admin 读端已统一切换。
 func (h *vendorCredentialErrorHandlers) loadVendorErrorSummary(ctx context.Context, id int64, tenantID string, since time.Time) ([]vendorErrorKindStat, error) {
-	rows, err := h.db.Query(ctx, `
+	folded := make(map[string]*vendorErrorKindStat)
+	err := h.withVendorRLSBypassReadTx(ctx, `
 		SELECT error_type, is_retryable, COALESCE(NULLIF(stage, ''), 'unknown') AS stage_bucket,
 		       COUNT(*)::int, MAX(occurred_at), COUNT(DISTINCT http_status)::int
 		FROM supplier_errors_unified
 			WHERE credential_id = $1 AND ($2 = '' OR tenant_id = $2) AND occurred_at >= $3
 			GROUP BY 1, 2, 3
-		`, id, tenantID, since)
+		`, []any{id, tenantID, since}, func(rows pgx.Rows) error {
+		for rows.Next() {
+			var kind, stageBucket string
+			var retryable bool
+			var groupCount, distinctStatus int
+			var lastSeen time.Time
+			if err := rows.Scan(&kind, &retryable, &stageBucket, &groupCount, &lastSeen, &distinctStatus); err != nil {
+				return fmt.Errorf("scan vendor error summary failed: %w (credential_id=%d)", err, id)
+			}
+			item, ok := folded[kind]
+			if !ok {
+				item = &vendorErrorKindStat{
+					ErrorKind:   kind,
+					LastSeen:    lastSeen,
+					StageCounts: make(map[string]int),
+				}
+				folded[kind] = item
+			}
+			item.Count += groupCount
+			if retryable {
+				item.RetryableCount += groupCount
+			}
+			if lastSeen.After(item.LastSeen) {
+				item.LastSeen = lastSeen
+			}
+			if distinctStatus > item.DistinctStatusCodes {
+				item.DistinctStatusCodes = distinctStatus
+			}
+			item.StageCounts[stageBucket] += groupCount
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("query vendor error summary failed: %w (credential_id=%d)", err, id)
-	}
-	defer rows.Close()
-	folded := make(map[string]*vendorErrorKindStat)
-	for rows.Next() {
-		var kind, stageBucket string
-		var retryable bool
-		var groupCount, distinctStatus int
-		var lastSeen time.Time
-		if err := rows.Scan(&kind, &retryable, &stageBucket, &groupCount, &lastSeen, &distinctStatus); err != nil {
-			return nil, fmt.Errorf("scan vendor error summary failed: %w (credential_id=%d)", err, id)
-		}
-		item, ok := folded[kind]
-		if !ok {
-			item = &vendorErrorKindStat{
-				ErrorKind:   kind,
-				LastSeen:    lastSeen,
-				StageCounts: make(map[string]int),
-			}
-			folded[kind] = item
-		}
-		item.Count += groupCount
-		if retryable {
-			item.RetryableCount += groupCount
-		}
-		if lastSeen.After(item.LastSeen) {
-			item.LastSeen = lastSeen
-		}
-		if distinctStatus > item.DistinctStatusCodes {
-			item.DistinctStatusCodes = distinctStatus
-		}
-		item.StageCounts[stageBucket] += groupCount
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate vendor error summary failed: %w (credential_id=%d)", err, id)
 	}
 	result := make([]vendorErrorKindStat, 0, len(folded))
 	for _, item := range folded {
@@ -271,7 +304,8 @@ type vendorRecentFailureRow struct {
 }
 
 func (h *vendorCredentialErrorHandlers) loadVendorRecentFailures(ctx context.Context, id int64, tenantID string, since time.Time) ([]vendorRecentFailure, error) {
-	rows, err := h.db.Query(ctx, `
+	var result []vendorRecentFailure
+	err := h.withVendorRLSBypassReadTx(ctx, `
 		SELECT u.occurred_at, u.request_id, u.model, u.attempt_seq, u.error_type, u.error_message,
 		       u.http_status, u.is_retryable, u.stage, u.supplier, u.error_code, u.latency_ms,
 		       c.upstream_response_preview
@@ -282,39 +316,37 @@ func (h *vendorCredentialErrorHandlers) loadVendorRecentFailures(ctx context.Con
 			      AND c.attempt_index = u.attempt_seq
 			WHERE u.credential_id = $1 AND ($2 = '' OR u.tenant_id = $2) AND u.occurred_at >= $3
 			ORDER BY u.occurred_at DESC LIMIT 10
-		`, id, tenantID, since)
+		`, []any{id, tenantID, since}, func(rows pgx.Rows) error {
+		result = make([]vendorRecentFailure, 0, 10)
+		for rows.Next() {
+			var row vendorRecentFailureRow
+			var item vendorRecentFailure
+			if err := rows.Scan(&row.Ts, &row.RequestID, &row.Model, &row.AttemptSeq, &row.ErrorKind,
+				&row.ErrorMessage, &row.HTTPStatus, &row.Retryable, &row.Stage, &row.Supplier, &row.ErrorCode,
+				&row.LatencyMs, &row.Preview); err != nil {
+				return fmt.Errorf("scan vendor recent failure failed: %w (credential_id=%d)", err, id)
+			}
+			item = vendorRecentFailure{
+				Ts:                      row.Ts,
+				RequestID:               row.RequestID,
+				RawModelName:            row.Model,
+				AttemptIndex:            row.AttemptSeq,
+				ErrorKind:               row.ErrorKind,
+				ErrorMessage:            row.ErrorMessage,
+				UpstreamStatusCode:      row.HTTPStatus,
+				UpstreamResponsePreview: row.Preview,
+				LatencyMs:               row.LatencyMs,
+				Supplier:                row.Supplier,
+				ErrorCode:               row.ErrorCode,
+				Retryable:               row.Retryable,
+				Stage:                   row.Stage,
+			}
+			result = append(result, item)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("query vendor recent failures failed: %w (credential_id=%d)", err, id)
-	}
-	defer rows.Close()
-	result := make([]vendorRecentFailure, 0, 10)
-	for rows.Next() {
-		var row vendorRecentFailureRow
-		var item vendorRecentFailure
-		if err := rows.Scan(&row.Ts, &row.RequestID, &row.Model, &row.AttemptSeq, &row.ErrorKind,
-			&row.ErrorMessage, &row.HTTPStatus, &row.Retryable, &row.Stage, &row.Supplier, &row.ErrorCode,
-			&row.LatencyMs, &row.Preview); err != nil {
-			return nil, fmt.Errorf("scan vendor recent failure failed: %w (credential_id=%d)", err, id)
-		}
-		item = vendorRecentFailure{
-			Ts:                      row.Ts,
-			RequestID:               row.RequestID,
-			RawModelName:            row.Model,
-			AttemptIndex:            row.AttemptSeq,
-			ErrorKind:               row.ErrorKind,
-			ErrorMessage:            row.ErrorMessage,
-			UpstreamStatusCode:      row.HTTPStatus,
-			UpstreamResponsePreview: row.Preview,
-			LatencyMs:               row.LatencyMs,
-			Supplier:                row.Supplier,
-			ErrorCode:               row.ErrorCode,
-			Retryable:               row.Retryable,
-			Stage:                   row.Stage,
-		}
-		result = append(result, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate vendor recent failures failed: %w (credential_id=%d)", err, id)
 	}
 	// Defense in depth: rows written before errorsx.SanitizeErrorText was
 	// wired into buildRow may still carry credential echoes from the upstream
