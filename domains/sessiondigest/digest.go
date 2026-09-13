@@ -127,8 +127,19 @@ func messageValues(value any) []map[string]any {
 				messages = append(messages, value)
 				return
 			}
-			for _, key := range []string{"messages", "choices", "message", "output", "content"} {
+			for _, key := range []string{"messages", "choices", "message", "output", "input", "content"} {
 				if child, ok := value[key]; ok {
+					// Audit R20 (2026-09-13): Responses protocol requests put
+					// the turn payload under top-level "input", which may be a
+					// plain string — synthesize the user-message shape so
+					// roleText can extract it. Without this, every Responses
+					// turn digested with an empty user_input.
+					if key == "input" {
+						if text, isStr := child.(string); isStr {
+							messages = append(messages, map[string]any{"role": "user", "content": text})
+							continue
+						}
+					}
 					walk(child)
 				}
 			}

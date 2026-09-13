@@ -796,6 +796,13 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		bufferedToolArgs    strings.Builder
 		currentToolCallID   string
 		initialArgsSent     bool
+		// R21 (2026-09-13): mirror of 90e3bf18a onto the LIVE Q3 bridge (that
+		// fix landed in the unreferenced transformation copy). Records
+		// content_block_start types this bridge cannot represent
+		// (server_tool_use, container_upload, ...) — bounded, deduped,
+		// observability only; empty classification is unchanged so an
+		// unknown-only stream still fails over.
+		unknownBlockTypes []string
 		// audit R8 P2: when content_block_start carried partial input, the
 		// start fragment is emitted immediately; stash it so stop can validate
 		// start+continuation as one JSON document and append the tail.
@@ -947,10 +954,23 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				// R21 (2026-09-13): a finish_reason accumulated before EOF
+				// marks a BENIGN early close — minimax-style relays send
+				// finish_reason via message_delta and then close the stream
+				// without message_stop (the same shape 5b249f31d taught the
+				// Responses←Anthropic bridge to accept). Every
+				// message_stop-less EOF used to be classified
+				// eof_without_done, so healthy responses were transparently
+				// failed over, burning candidates. Empty-stream semantics are
+				// preserved: EOF without finishReason or semantic content
+				// still interrupts and fails over.
+				benignEOF := finishReason != nil &&
+					!toolCallValidator.HasPendingToolUses() &&
+					(bufferedText.Len() > 0 || hasEmittedToolCalls || chunkCount > 0)
 				// EOF without an Anthropic message_stop is an upstream
 				// interruption, not a successful completion. Only a stream
 				// that supplied its protocol terminal event may finalize.
-				if !messageStopReceived {
+				if !messageStopReceived && !benignEOF {
 					// 2026-08-29: Check if EOF happened during tool execution
 					if toolCallValidator.HasPendingToolUses() {
 						slog.Warn("anthropic_to_openai: EOF during tool execution",
@@ -989,6 +1009,23 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 				// commits the attempt and the closing usage/done chunks
 				// follow. An EOF with nothing delivered (empty stream) stays
 				// droppable: no completed stream is fabricated.
+				//
+				// 2026-09-13 fix (holdback parity with the responses bridges):
+				// the survival L1 holdback window (5s/20 chunks) holds semantic
+				// frames WITHOUT advancing the gate commit state, so a stream
+				// that ends entirely inside the window leaves
+				// MayWriteTerminal()==false here and the success path below
+				// skipped the closing usage/finish_reason/[DONE] chunks. The
+				// coordinator's Finish() flushes held deltas but nobody
+				// re-renders the terminal afterwards — force-close the window
+				// so the commit lands BEFORE the terminal rendering decision.
+				// An empty stream flushes nothing and stays below
+				// MayWriteTerminal, so no completed stream is fabricated.
+				if err := gate.FlushHoldback(); err != nil {
+					slog.Warn("anthropic_to_openai: flush holdback before terminal failed",
+						"request_id", requestID,
+						"error", err.Error())
+				}
 				if gate.MayWriteTerminal() || bufferedText.Len() > 0 {
 					flushBufferedText()
 					// Incremental integrity breach on the flushed text: cut
@@ -1164,6 +1201,31 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 					} else if err == nil && evt.ContentBlock.Type == "thinking" && capture != nil {
 						// 2026-07-27 并发修复：走带锁 setter（audit.StreamCapture.SetHasThinking）。
 						capture.SetHasThinking()
+					} else if err == nil && evt.ContentBlock.Type != "" && evt.ContentBlock.Type != "text" && evt.ContentBlock.Type != "redacted_thinking" {
+						// R21 (2026-09-13): unrecognized block start
+						// (server_tool_use, container_upload, ...). Its
+						// input_json_delta is dropped above; record its presence
+						// for observability (bounded, deduped). Empty
+						// classification is deliberately unchanged: an
+						// unknown-only stream should still fail over.
+						known := false
+						for _, t := range unknownBlockTypes {
+							if t == evt.ContentBlock.Type {
+								known = true
+								break
+							}
+						}
+						if !known {
+							if len(unknownBlockTypes) < 8 {
+								unknownBlockTypes = append(unknownBlockTypes, evt.ContentBlock.Type)
+							}
+							slog.Warn("unknown_content_block_start_in_stream",
+								"block_type", evt.ContentBlock.Type,
+								"request_id", requestID)
+							if capture != nil {
+								capture.AddQualityFlag("unknown_content_block")
+							}
+						}
 					}
 
 				case "content_block_delta":
@@ -1188,12 +1250,30 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 								SourceProtocol: ir.ProtocolAnthropicMessages,
 							})
 						case "input_json_delta":
-							// audit R8 P2: buffer unconditionally — content_block_start
-							// may carry partial input AND deltas may continue it (legal
-							// Anthropic shape); dropping them truncated tool arguments.
-							if evt.Delta.PartialJSON != "" {
-								bufferedToolArgs.WriteString(evt.Delta.PartialJSON)
+							// audit R8 P2: buffer deltas that continue an open
+							// tool_use block — content_block_start may carry
+							// partial input AND deltas may continue it (legal
+							// Anthropic shape); dropping them truncated tool
+							// arguments. R21 (2026-09-13, mirror of 90e3bf18a
+							// onto this live bridge): fragments arriving with
+							// NO open tool_use block (server_tool_use /
+							// container_upload stream input_json_delta too, but
+							// their start never sets currentToolCallID) used to
+							// pool into a synthesized tool call with an EMPTY
+							// function.name at content_block_stop — a hard
+							// OpenAI SDK error on the client. Drop them here.
+							if evt.Delta.PartialJSON == "" {
+								break
 							}
+							if currentToolCallID == "" {
+								slog.Warn("orphan_input_json_delta_dropped",
+									"request_id", requestID)
+								if capture != nil {
+									capture.AddQualityFlag("orphan_input_json_delta_dropped")
+								}
+								break
+							}
+							bufferedToolArgs.WriteString(evt.Delta.PartialJSON)
 						case "signature_delta":
 							if evt.Delta.Signature != "" {
 								thinkingSignatures[evt.Index] = evt.Delta.Signature
@@ -1356,6 +1436,22 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			fr := "stop"
 			if finishReason != nil {
 				fr = *finishReason
+			}
+			// 2026-09-13 fix (holdback parity with the responses bridges):
+			// the survival L1 holdback window (5s/20 chunks) holds semantic
+			// frames WITHOUT advancing the gate commit state, so a stream
+			// that ends entirely inside the window used to leave the closing
+			// finish_reason/usage/[DONE] chunks stranded in the holdback
+			// buffer, delivered only if the survival coordinator happened to
+			// Finish() this gate. Force-close the window BEFORE rendering the
+			// terminal block so the bridge is self-contained: the commit lands
+			// first and the terminal writes go straight to the wire. The
+			// interrupt paths above (empty stream, incomplete tool call, error
+			// events) return before this point and stay discardable.
+			if err := gate.FlushHoldback(); err != nil {
+				slog.Warn("anthropic_to_openai: flush holdback before terminal failed",
+					"request_id", requestID,
+					"error", err.Error())
 			}
 			writeChunk(&ir.StreamChunk{
 				Type:           ir.ChunkTypeDelta,
@@ -1523,6 +1619,7 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, error) {
 	return anthropictransform.ConvertAnthropicResponseToChat(in, clientModel)
 }
+
 // convertBridgeChatMessageToAnthropic converts a single OpenAI message to Anthropic format.
 // Handles text content, multimodal content, tool_calls, and tool results.
 func convertBridgeChatMessageToAnthropic(msg map[string]any) map[string]any {

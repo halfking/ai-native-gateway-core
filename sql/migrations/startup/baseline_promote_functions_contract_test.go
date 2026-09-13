@@ -112,7 +112,7 @@ func objectsCanonicalBody(t *testing.T, table string) (string, string) {
 // into all three baselines. Three-way body equality is the contract here;
 // the objects/ comparison and the 698 pin assertions do NOT apply — these
 // bodies were never 698-pinned and pinning them is a deliberate migration
-// (next number ≥701), not a baseline edit.
+// (next number ≥702), not a baseline edit.
 var baselinePromoteFunctionsNoObjectsFile = []string{
 	"promote_dashboard_access_events_hot_to_partition",
 	"promote_handoff_logs_hot_to_partition",

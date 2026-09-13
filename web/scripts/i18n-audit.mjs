@@ -165,6 +165,8 @@ async function main() {
           console.error(`\n❌ --strict: ${data.missingCount} missing keys (exit 1)`)
           process.exit(1)
         }
+        // 0 missing 也要留痕，否则 CI 日志无法区分"通过"与"没跑 strict"
+        console.error('\nSTRICT PASS (0 missing)')
       } catch (e) {
         console.error('error: failed to parse JSON output for --strict check', e)
         process.exit(1)
