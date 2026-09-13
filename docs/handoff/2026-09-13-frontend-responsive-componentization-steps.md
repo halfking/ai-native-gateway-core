@@ -665,10 +665,10 @@ codeup 等服务凭证）；**部署一律 SSH 到主机上执行，不在虚机
 任务（按序，独立 commit）：
 1. 五门禁例行复验：vue-tsc / vitest（失败集 ≤39 文件基线）/ i18n STRICT /
    responsive:check --strict / element:check。
-2. 暗色皮肤真机复核：用户真实浏览器 ?theme=dark 全站走查（重点：刷新后
-   EP 组件保持暗色——§十三修正 1 的端到端确认；以及 el-table/el-select 下拉/
-   el-dialog 等 EP 面板），发现残余亮块继续令牌化清扫（可扩展至历史硬编码
-   文字色，同 §十二补充方法）。
+2. 暗色皮肤真机复核：用户真实浏览器 ?theme=dark 全站走查（刷新路径已由
+   §十五 行为级 E2E 覆盖——S1~S5 五场景全过；真机侧重点转向 el-table/
+   el-select 下拉/el-dialog 等 EP 面板的视觉观感与对比度），发现残余亮块
+   继续令牌化清扫（可扩展至历史硬编码文字色，同 §十二补充方法）。
 3. FOUC 复核：暗色直链刷新无亮色闪烁（theme-init.js 在 head 同步执行，
    确认无回归）；如仍有闪烁，评估 index.html 关键 CSS 内联最小集。
 4. （可选，需评估）EP 品牌色 --el-color-primary 与应用 --kx-primary 的
@@ -680,3 +680,33 @@ codeup 等服务凭证）；**部署一律 SSH 到主机上执行，不在虚机
 验收红线：桌面 >=1024 DOM 零回归；新代码断点只允许白名单值；新测试全绿；
 主题双轨（data-theme 与 html.dark）在任何写入点必须原子同步。
 ```
+
+## 十五、审计评分轮 2（2026-09-13，对 §十三 修正轮复评）
+
+### 评分表（10 分制）
+
+| 任务项 | 得分 | 评语 |
+|---|---|---|
+| theme-init.js 启动路径修复（b5924e0b3） | 10 | 根因级修复（非补丁式条件分支），diff 最小、注释锚定双轨约定，dist 与网关服务双验证 |
+| 测试锁定（theme.dark-skin.test.ts 4 用例） | 9 | 源码断言三要素防漂移，符合项目源码断言惯例；扣 1：启动脚本本身无行为级断言（本轮 §十五补行为级 E2E，证据链闭合） |
+| §十三/§十四 文档 | 9 | 评分、修正、提示词齐备；扣 1：§十四成文时行为级验证尚未做，本轮以 §十五 更新 |
+| 盲区复扫（LandingView + styles/*.css） | 10 | LandingView 零硬编码色、styles 目录全令牌化——暗色面清扫确认无剩余盲区 |
+| **平均** | **9.5** | |
+
+### 行为级端到端验证（裸页真实脚本 + 真实 CSS 栈，五场景全过）
+
+`file://` 裸页挂 `public/theme-init.js`（真实启动脚本）+ 三层真实样式（EP base / EP dark / element-dark 桥接 / style.css），CDP 逐场景导航断言 `data-theme`、`dark` 类、`--el-bg-color` 解析值、localStorage 写回：
+
+| 场景 | 结果 |
+|---|---|
+| S1 无参首访（系统偏好） | theme-init 命中 `prefers-color-scheme: dark`（Omarchy 暗色桌面）→ dark ✓——**这解释了用户侧成因链**：系统暗色→启动即暗→EP 组件白底 |
+| S2 `?theme=dark` 直链 | dark ✓，`--el-bg-color=#1a222d`（桥接生效），localStorage 写回 dark ✓ |
+| S3 **去参刷新（核心承诺）** | dark 持久 ✓，dark 类在位 ✓ |
+| S4 `?theme=light` 直链 | light ✓（URL 永远赢），localStorage 写回 light ✓ |
+| S5 去参刷新 | light 持久 ✓ |
+
+至此暗色主题双轨（`data-theme` + `html.dark`）在**全部三条路径**（会话内切换 / URL 直链 / 刷新持久）均验证同步。
+
+### 复核无问题项
+
+LandingView.vue 零硬编码色；`styles/*.css` 目录全令牌化；`public/` 仅 theme-init.js 一个脚本资产。本轮无新发现问题，无需代码改动；§十四 提示词维持有效（仅状态更新：行为级 E2E 已补）。
