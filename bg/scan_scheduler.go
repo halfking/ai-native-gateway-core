@@ -42,6 +42,9 @@ import (
 const (
 	fdScanDefaultInterval = 6 * time.Hour
 	fdScanMinInterval     = 1 * time.Minute
+	// fdScanCycleTimeout bounds one full sweep (N templates × HTTP 30s
+	// worst case). Matches the admin manual-scan budget.
+	fdScanCycleTimeout = 60 * time.Second
 )
 
 // ScanScheduler periodically triggers FreeDiscovery scans for all enabled
@@ -52,6 +55,10 @@ type ScanScheduler struct {
 	tmpl     *freediscovery.TemplateManager
 	interval time.Duration
 	disabled bool
+	// cycleTimeout bounds each sweep (aligns the admin manual path's 60s
+	// budget; the scheduler path previously ran engine.Run on a bare
+	// workerCtx with no deadline — 2026-09-14 audit D-P2-2).
+	cycleTimeout time.Duration
 
 	// inFlight tracks template IDs whose scan is still running; prevents
 	// overlapping scans of the same template if one tick overlaps the next.
@@ -65,6 +72,7 @@ type ScanScheduler struct {
 	workerMu     sync.Mutex
 
 	// Health counters for liveness probe (atomic, lock-free reads).
+	startedFlag  atomic.Bool // true once Start actually spawned the worker
 	lastSweepAt  time.Time
 	lastSweepMu  sync.RWMutex
 	sweepsTotal  uint64 // atomic — completed sweeps
@@ -102,13 +110,14 @@ func NewScanScheduler(db *pgxpool.Pool, engine *freediscovery.DiscoveryEngine, t
 		disabled = true
 	}
 	return &ScanScheduler{
-		db:       db,
-		engine:   engine,
-		tmpl:     tmpl,
-		interval: interval,
-		disabled: disabled,
-		inFlight: make(map[int64]struct{}),
-		stopCh:   make(chan struct{}),
+		db:           db,
+		engine:       engine,
+		tmpl:         tmpl,
+		interval:     interval,
+		cycleTimeout: fdScanCycleTimeout,
+		disabled:     disabled,
+		inFlight:     make(map[int64]struct{}),
+		stopCh:       make(chan struct{}),
 	}
 }
 
@@ -125,6 +134,7 @@ func (s *ScanScheduler) Start(ctx context.Context) {
 		s.workerMu.Lock()
 		s.workerCancel = cancel
 		s.workerMu.Unlock()
+		s.startedFlag.Store(true)
 		slog.Info("scan_scheduler started", "interval", s.interval)
 		s.workerWG.Add(1)
 		go func() {
@@ -135,10 +145,36 @@ func (s *ScanScheduler) Start(ctx context.Context) {
 					s.recordCycleError(fmt.Errorf("scan_scheduler worker panic: %v", r))
 				}
 			}()
-			// Run once at startup so a fresh process does not wait six hours.
-			if err := s.safeCycle(workerCtx); err != nil {
+			// Stop-before-Start guard: a Stop() that landed before the
+			// goroutine got scheduled must not trigger a full upstream
+			// sweep against the operator's intent (2026-09-14 audit A-P3-1).
+			if s.stopRequested(workerCtx) {
+				slog.Info("scan_scheduler stopped before initial cycle")
+				return
+			}
+			// Run once at startup so a fresh process does not wait six
+			// hours. Bounded retry ladder (30s/60s): a transient startup
+			// failure (migration race, keyring not ready) must not create
+			// a six-hour blind spot (2026-09-14 audit D-P2-2).
+			initialDelays := []time.Duration{30 * time.Second, 60 * time.Second}
+			for attempt := 0; ; attempt++ {
+				err := s.safeCycle(workerCtx)
+				if err == nil {
+					break
+				}
 				s.recordCycleError(err)
-				slog.Warn("scan_scheduler initial cycle failed", "error", err)
+				slog.Warn("scan_scheduler initial cycle failed",
+					"error", err, "attempt", attempt+1)
+				if attempt >= len(initialDelays) {
+					break
+				}
+				select {
+				case <-workerCtx.Done():
+					return
+				case <-s.stopCh:
+					return
+				case <-time.After(initialDelays[attempt]):
+				}
 			}
 			ticker := time.NewTicker(s.interval)
 			defer ticker.Stop()
@@ -161,6 +197,18 @@ func (s *ScanScheduler) Start(ctx context.Context) {
 	})
 }
 
+// stopRequested reports whether Stop()/ctx cancellation already happened.
+func (s *ScanScheduler) stopRequested(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	case <-s.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *ScanScheduler) Stop() {
 	if s == nil {
 		return
@@ -175,7 +223,9 @@ func (s *ScanScheduler) Stop() {
 	s.workerWG.Wait()
 }
 
-// safeCycle runs one sweep with a per-cycle panic guard.
+// safeCycle runs one sweep with a per-cycle panic guard and a bounded
+// wall-clock budget (fdScanCycleTimeout; zero-value tolerant for struct
+// literals in tests).
 func (s *ScanScheduler) safeCycle(ctx context.Context) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -183,7 +233,13 @@ func (s *ScanScheduler) safeCycle(ctx context.Context) (err error) {
 			err = fmt.Errorf("scan_scheduler cycle panic: %v", r)
 		}
 	}()
-	return s.cycle(ctx)
+	budget := s.cycleTimeout
+	if budget <= 0 {
+		budget = fdScanCycleTimeout
+	}
+	runCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	return s.cycle(runCtx)
 }
 
 // CycleNow runs one sweep synchronously — test/ops entry point.
@@ -327,6 +383,7 @@ func (s *ScanScheduler) cycle(ctx context.Context) error {
 // ScanSchedulerStatus is the liveness/health snapshot for the admin probe.
 type ScanSchedulerStatus struct {
 	Enabled      bool      `json:"enabled"`
+	Started      bool      `json:"started"` // worker actually running (vs env-enabled only)
 	Interval     string    `json:"interval"`
 	LastSweepAt  time.Time `json:"last_sweep_at"`
 	SweepsTotal  uint64    `json:"sweeps_total"`
@@ -351,6 +408,7 @@ func (s *ScanScheduler) Status() any {
 	s.lastErrorMu.RUnlock()
 	return ScanSchedulerStatus{
 		Enabled:      !s.disabled,
+		Started:      s.startedFlag.Load(),
 		Interval:     s.interval.String(),
 		LastSweepAt:  ls,
 		SweepsTotal:  atomic.LoadUint64(&s.sweepsTotal),

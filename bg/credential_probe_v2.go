@@ -1270,6 +1270,42 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		return
 	}
 	if result.RowsAffected() == 0 {
+		// 硬配额守卫命中（0 rows）：quota_state 保持硬配额权威是对的，但
+		// 不能连探针簿记一起吞掉——last_probe_at 供 balance/periodic 探测
+		// 的指数到期闸使用，丢失它会把该行钉死在最快节奏（2min tick 每 tick
+		// 重打死上游，恰是 f8322dc04 R4 要消灭的轰炸形态；2026-09-14 审计
+		// A-P1-1）。失败时用无硬配额守卫的簿记 UPDATE 单独推进梯子；
+		// quota_state / lifecycle / auto_* 列一律不动。成功（healthy）被
+		// 硬配额守卫挡住的情形不存在（守卫对 $8='ok' 放行）。
+		if pr.HealthStatus != "healthy" {
+			if _, err := c.db.Exec(execCtx, `
+				UPDATE credentials
+				SET health_status = $1,
+				    health_error = $2,
+				    health_checked_at = NOW(),
+				    health_latency_ms = $3,
+				    health_probe_model = $4,
+				    health_source = $5,
+				    availability_state = $6,
+				    availability_recover_at = $7,
+				    state_reason_code = $8,
+				    state_updated_at = NOW(),
+				    last_probe_at = NOW(),
+				    probe_consecutive_failures = COALESCE(credentials.probe_consecutive_failures, 0) + 1,
+				    last_probe_success = FALSE
+				WHERE id = $9
+				  AND (
+				      lifecycle_status = 'active'
+				      OR (lifecycle_status = 'disabled' AND auto_disabled_at IS NOT NULL)
+				  )
+				  AND COALESCE(manual_disabled, FALSE) = FALSE
+				  AND quota_state IN ('permanently_exhausted', 'balance_exhausted')
+			`, pr.HealthStatus, pr.HealthError, pr.HealthLatencyMs, pr.HealthProbeModel,
+				pr.HealthSource, pr.AvailabilityState, recoverAt, stateReason, credID); err != nil {
+				slog.Warn("credential probe v2: hard-quota bookkeeping update failed",
+					"credential_id", credID, "health_status", pr.HealthStatus, "error", err)
+			}
+		}
 		slog.Info("credential probe v2: writeHealth skipped stale result",
 			"credential_id", credID, "health_status", pr.HealthStatus)
 		return

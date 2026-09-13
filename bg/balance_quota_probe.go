@@ -26,6 +26,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -65,6 +66,14 @@ type BalanceQuotaProbe struct {
 	probeSubmitter func(credID int)
 	stopCh         chan struct{}
 	stopOnce       sync.Once
+
+	// lifecycleMu + started/workerDone: 与 PeriodicQuotaProbe 同款生命周期
+	// 守卫——Start 无重入保护会叠出双份 ticker 循环（每 tick 双份探测提交），
+	// goroutine 顶层 recover 防单次 panic 击穿网关进程
+	// （2026-09-14 审计 A-P2-2/A-P2-3）。
+	lifecycleMu sync.Mutex
+	started     bool
+	workerDone  chan struct{}
 
 	// probeNowAsync (optional, 2026-08-23 hzx-2): lets ForceProbe bypass
 	// the 2-min tick by invoking CredentialProbeV2.ProbeNowAsync. Wired
@@ -168,12 +177,30 @@ func (p *BalanceQuotaProbe) OnQuotaRecharged(credID int, source string) {
 }
 
 func (p *BalanceQuotaProbe) Start(ctx context.Context) {
+	p.lifecycleMu.Lock()
+	if p.started {
+		p.lifecycleMu.Unlock()
+		return
+	}
+	p.started = true
+	if p.workerDone == nil {
+		p.workerDone = make(chan struct{})
+	}
+	p.lifecycleMu.Unlock()
 	slog.Info("balance_quota_probe started",
 		"interval", p.interval,
 		"target_states", []string{"balance_exhausted", "permanently_exhausted"},
 		"force_cooldown", p.forceCooldown,
 	)
 	go func() {
+		defer close(p.workerDone)
+		// 顶层 recover：tick 路径含 DB 扫描与结果分类，未捕获 panic 会
+		// 直接终止整个网关进程（2026-09-14 审计 A-P2-2）。
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("balance_quota_probe panic", "panic", r, "stack", string(debug.Stack()))
+			}
+		}()
 		ticker := time.NewTicker(p.interval)
 		defer ticker.Stop()
 		for {
@@ -185,12 +212,22 @@ func (p *BalanceQuotaProbe) Start(ctx context.Context) {
 				slog.Info("balance_quota_probe stopped")
 				return
 			case <-ticker.C:
-				if err := p.probeBalanceExhausted(ctx); err != nil {
-					slog.Error("balance_quota_probe failed", "error", err)
-				}
+				p.runGuardedTick(ctx)
 			}
 		}
 	}()
+}
+
+// runGuardedTick 隔离单次 tick 的 panic：单轮失败/异常不应终止后续调度。
+func (p *BalanceQuotaProbe) runGuardedTick(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("balance_quota_probe tick panic", "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+	if err := p.probeBalanceExhausted(ctx); err != nil {
+		slog.Error("balance_quota_probe failed", "error", err)
+	}
 }
 
 func (p *BalanceQuotaProbe) Stop() {

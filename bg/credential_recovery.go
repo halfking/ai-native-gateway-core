@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -1768,10 +1769,12 @@ func (r *CredentialRecovery) claimLookbackCandidate(ctx context.Context, credID 
 		`, leaseSeconds, credID, model); err != nil {
 			return false, fmt.Errorf("lookback claim lease: %w", err)
 		}
-	case err.Error() == "no rows in result set":
+	case errors.Is(err, pgx.ErrNoRows):
 		// Absent, paused, or currently leased elsewhere. Only the ABSENT
 		// case proceeds: INSERT ON CONFLICT DO NOTHING loses to an existing
 		// row (paused or leased), which reports claim=false via RowsAffected.
+		// errors.Is 而非字符串匹配：pgx 包装/版本变化不应误判为 claim_error
+		// （2026-09-14 审计 A-P3-4）。
 		tag, insErr := tx.Exec(ctx, `
 			INSERT INTO node_probe_state
 			    (credential_id, raw_model_name, next_retry_at, next_retry_seconds,
