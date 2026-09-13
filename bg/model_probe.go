@@ -150,6 +150,16 @@ func (r *ModelProbeRunner) Start(ctx context.Context) {
 // cycle is the "强化自检" lever (需求: 常用模型加强自检). It only probes models
 // matched by globalIsFeaturedModel and writes model_probe_runs (read-only w.r.t.
 // state unless the consensus cycle also runs), so it is safe to run standalone.
+//
+// 2026-09-13 closeout (P4): also starts the recovering sweeper. With the
+// consensus loop off, model_probe_state rows in state='recovering' had NO
+// driver at all — every row's next_retry_at went stale (prod evidence:
+// 113 rows due since 2026-07-20, six cmb rows stuck 'model_probe_broken',
+// models unroutable until manual force-recover). The sweeper drains exactly
+// that dead-end set through the existing consensus machinery; it does not
+// touch healthy rows (the nonfeatured watchdog extends those) or featured
+// deep-ping targets, so the "no duplicate probes in new mode" invariant
+// still holds.
 func (r *ModelProbeRunner) StartFeaturedOnly(ctx context.Context) {
 	fctx, cancel := context.WithCancel(ctx)
 	r.featuredCancel.Store(&cancel)
@@ -163,8 +173,147 @@ func (r *ModelProbeRunner) StartFeaturedOnly(ctx context.Context) {
 	// non-featured bindings — no HTTP probe, just timestamp arithmetic. This
 	// keeps "其它模型降频" honest in the default new mode.
 	go r.nonfeaturedWatchdogLoop(fctx)
+	go r.recoveringSweeperLoop(fctx)
 	r.startManualProbeWorker(fctx)
-	slog.Info("model probe featured-only cycle (常用模型 deep ping) + nonfeatured watchdog started")
+	slog.Info("model probe featured-only cycle (常用模型 deep ping) + nonfeatured watchdog + recovering sweeper started")
+}
+
+// recoveringSweeperInterval is the sweep cadence for the recovering dead-end
+// set. 30 minutes matches broken_probe_reviver: a row the reviver flips
+// broken_confirmed → recovering is drained within one interval, and a
+// failing verify walks the consensus backoff ladder rather than the sweep
+// cadence.
+const recoveringSweeperInterval = 30 * time.Minute
+
+// recoveringSweepBatch bounds one sweep. Consensus verify probes are real
+// upstream requests; 10 per 30min keeps the worst-case overhead at
+// 480 requests/day fleet-wide even if every recovering row is stuck.
+const recoveringSweepBatch = 10
+
+// recoveringSweepTickBudget bounds one tick BETWEEN probes (never mid-probe —
+// cancelling a probe mid-flight would record a false consensus failure).
+const recoveringSweeperTickBudget = 5 * time.Minute
+
+// recoveringSweepProbeTimeout is the per-probe ceiling for one TriggerManual
+// consensus verify. probeModel applies its own request timeouts; this is the
+// outer guard so a wedged upstream cannot pin the sweeper goroutine.
+const recoveringSweepProbeTimeout = 90 * time.Second
+
+// recoveringSweeperLoop periodically drains model_probe_state rows stuck in
+// state='recovering' whose next_retry_at has elapsed (probe-recovery
+// closeout P4, 2026-09-13). Only runs in new probe mode (started from
+// StartFeaturedOnly); in legacy mode the consensus cycle already owns them.
+func (r *ModelProbeRunner) recoveringSweeperLoop(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("recovering sweeper panic", "recover", rec)
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(2 * time.Minute): // initial stagger, after first featured tick
+	}
+	r.recoveringSweepTick(ctx)
+	ticker := time.NewTicker(recoveringSweeperInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.recoveringSweepTick(ctx)
+		}
+	}
+}
+
+// recoveringSweepTick selects due recovering rows and runs them through the
+// same cycle machinery the consensus loop uses, so verify successes clear
+// cmb 'model_probe_broken' and failures advance the consensus backoff
+// exactly like the legacy path. The credential-level guards mirror the
+// consensus target query: suspended / hard-quota / manual-disabled
+// credentials keep their rows parked until the credential itself recovers
+// (the model probe never overrides a credential-level verdict).
+func (r *ModelProbeRunner) recoveringSweepTick(ctx context.Context) {
+	// 2026-09-13 audit round F5: the probe phase must NOT share one short
+	// budget context — a near-expiry ctx would cancel TriggerManual
+	// mid-request and record a FALSE failure into the consensus for a
+	// possibly-healthy model. The SELECT gets a bounded ctx; each probe
+	// gets its own full timeout, and the tick-level budget is enforced
+	// only BETWEEN probes.
+	selectCtx, cancelSelect := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelSelect()
+	deadline := time.Now().Add(recoveringSweeperTickBudget)
+
+	type recoveringRow struct {
+		CredID   int
+		RawModel string
+	}
+	var ids []recoveringRow
+	rows, err := r.db.Query(selectCtx, `
+		SELECT mps.credential_id, mps.raw_model_name
+		FROM model_probe_state mps
+		JOIN credentials c ON c.id = mps.credential_id
+		JOIN providers p ON p.id = c.provider_id
+		WHERE mps.state = 'recovering'
+		  AND (mps.next_retry_at IS NULL OR mps.next_retry_at <= NOW())
+		  AND COALESCE(c.status, 'active') = 'active'
+		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		  AND COALESCE(c.availability_state, 'ready') NOT IN ('suspended')
+		  AND COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(p.enabled, FALSE) = TRUE
+		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		ORDER BY mps.next_retry_at ASC NULLS FIRST
+		LIMIT $1
+	`, recoveringSweepBatch)
+	if err != nil {
+		slog.Warn("recovering sweeper: select failed", "error", err)
+		return
+	}
+	for rows.Next() {
+		var row recoveringRow
+		if err := rows.Scan(&row.CredID, &row.RawModel); err != nil {
+			continue
+		}
+		ids = append(ids, row)
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return
+	}
+
+	swept := 0
+	for _, id := range ids {
+		if parentDone := ctx.Done(); parentDone != nil {
+			select {
+			case <-parentDone:
+				slog.Warn("recovering sweeper: parent cancelled",
+					"swept", swept, "remaining", len(ids)-swept)
+				return
+			default:
+			}
+		}
+		if !time.Now().Before(deadline) {
+			slog.Warn("recovering sweeper: tick budget exhausted between probes",
+				"swept", swept, "remaining", len(ids)-swept)
+			return
+		}
+		probeCtx, cancelProbe := context.WithTimeout(ctx, recoveringSweepProbeTimeout)
+		err := r.TriggerManual(probeCtx, id.CredID, id.RawModel)
+		cancelProbe()
+		if err != nil {
+			slog.Debug("recovering sweeper: manual trigger failed",
+				"credential_id", id.CredID, "raw_model", id.RawModel, "error", err)
+			continue
+		}
+		swept++
+	}
+	if swept > 0 {
+		slog.Info("recovering sweeper: drained due recovering probes",
+			"swept", swept,
+			"selected", len(ids))
+	}
 }
 
 // nonfeaturedWatchdogLoop extends next_retry_at on healthy_confirmed bindings

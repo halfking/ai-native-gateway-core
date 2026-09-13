@@ -218,11 +218,31 @@ func (p *PeriodicQuotaProbe) probePeriodicExhausted(ctx context.Context) (int, e
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.quota_state = 'periodic_exhausted'
 		  AND c.status = 'active'
-		  AND c.lifecycle_status = 'active'
+		  -- 2026-09-13 closeout (P3): admit auto-disabled rows — writeHealth
+		  -- explicitly re-enables disabled+auto_disabled_at rows on a
+		  -- successful periodic probe, but no probe target could reach them
+		  -- (cycler and this scan both required lifecycle='active').
+		  AND (
+		      c.lifecycle_status = 'active'
+		      OR (
+		          c.lifecycle_status = 'disabled'
+		          AND c.auto_disabled_at IS NOT NULL
+		      )
+		  )
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
 		  AND (c.quota_recover_at IS NULL OR c.quota_recover_at <= now())
+		  -- 2026-09-13 closeout (P3): same exponential due gate as
+		  -- BalanceQuotaProbe so a periodic-exhausted credential is not
+		  -- re-probed every 5min tick while it keeps failing.
+		  AND (
+		      c.last_probe_at IS NULL
+		      OR now() - c.last_probe_at >= LEAST(
+		          INTERVAL '2 minutes' * POWER(2, LEAST(COALESCE(c.probe_consecutive_failures, 0), 5)),
+		          INTERVAL '1 hour'
+		      )
+		  )
 		  AND (
 		      COALESCE(c.default_probe_model, '') <> ''
 		      OR EXISTS (
@@ -277,6 +297,12 @@ func (p *PeriodicQuotaProbe) probePreExhausted(ctx context.Context) (int, error)
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.quota_state = 'periodic_exhausted'
 		  AND c.status = 'active'
+		  -- 2026-09-13 audit round F3: the pre-exhausted (boundary-approaching)
+		  -- phase keeps lifecycle='active' only. Auto-disabled rows are served
+		  -- by the post-expiry phase; probing them here is a doomed request —
+		  -- writeHealth's disabled-row admission requires quota_recover_at
+		  -- IS NULL OR <= now(), so a pre-boundary result would be discarded
+		  -- (0 rows) and the vendor request wasted.
 		  AND c.lifecycle_status = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
