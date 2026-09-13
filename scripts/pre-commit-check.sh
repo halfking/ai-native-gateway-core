@@ -261,10 +261,12 @@ check_web_token_compliance() {
   fi
   local files
   # Staged + working-tree + untracked web/src changes; covers all commit paths.
+  # *.test.ts excluded: assertion strings in tests are fixtures, not styles
+  # (same semantics as color-token-audit.mjs's own test-file skip).
   files=$( { git diff --cached --name-only -- 'web/src/**'; \
              git diff --name-only -- 'web/src/**'; \
              git ls-files --others --exclude-standard -- 'web/src/**'; } \
-          | grep -E '\.(vue|ts|css)$' | sort -u)
+          | grep -E '\.(vue|ts|css)$' | grep -v '\.test\.ts$' | sort -u)
   if [[ -z "$files" ]]; then
     return 0
   fi

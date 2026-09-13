@@ -65,6 +65,8 @@ if [[ "$RUN_WEB" == true ]]; then
   echo "[verify] frontend static gates (responsive breakpoints + el-* imports)"
   (cd web && pnpm run responsive:check)
   (cd web && pnpm run element:check)
+  echo "[verify] frontend color token gate (rule 12 P0 + baseline)"
+  (cd web && pnpm run color:check)
   echo "[verify] frontend build"
   (cd web && pnpm run build)
 fi

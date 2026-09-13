@@ -209,7 +209,7 @@ const changeClass = (change: number, isNegative: boolean) => {
 .stat-card:hover { transform: translateY(-2px); }
 .stat-content { display: flex; align-items: center; gap: 12px; }
 .stat-icon { width: 48px; height: 48px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.icon-accent  { background: color-mix(in srgb, var(--accent, #6366f1) 16%, transparent); }
+.icon-accent  { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .icon-success { background: color-mix(in srgb, var(--success) 16%, transparent); }
 .icon-danger  { background: color-mix(in srgb, var(--danger) 14%, transparent); }
 .icon-warning { background: color-mix(in srgb, var(--warning) 16%, transparent); }

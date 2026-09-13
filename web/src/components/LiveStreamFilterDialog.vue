@@ -139,7 +139,7 @@ function apply() {
   max-height: min(72vh, 640px);
   display: flex;
   flex-direction: column;
-  background: var(--card, #1a1a1e);
+  background: var(--card);
   color: var(--text, var(--surface-secondary));
   border: 1px solid var(--border, var(--kx-text));
   border-radius: 10px;

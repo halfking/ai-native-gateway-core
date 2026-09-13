@@ -154,7 +154,7 @@ function resetDefaults() {
 .drawer-overlay {
   position: fixed;
   inset: 0;
-  background: var(--overlay-medium, rgba(0, 0, 0, 0.4));
+  background: var(--overlay-medium);
   z-index: 80;
   display: flex;
   justify-content: flex-end;

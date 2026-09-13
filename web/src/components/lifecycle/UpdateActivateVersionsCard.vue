@@ -304,7 +304,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   align-items: center;
   gap: 16px;
   padding: 14px 16px;
-  background: var(--kx-surface-soft, rgba(0, 0, 0, 0.03));
+  background: var(--kx-surface-soft);
   border: 1px solid var(--kx-border, var(--overlay-faint));
   border-radius: 10px;
   margin-bottom: 16px;
@@ -399,8 +399,8 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
 
 .upgrade-flow {
   padding: 16px;
-  background: var(--kx-surface-soft, rgba(0, 0, 0, 0.02));
-  border: 1px solid var(--kx-border, rgba(0, 0, 0, 0.06));
+  background: var(--kx-surface-soft);
+  border: 1px solid var(--kx-border);
   border-radius: 10px;
 }
 .upgrade-flow__head {
@@ -442,7 +442,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   justify-content: center;
   font-weight: 600;
   font-size: 13px;
-  background: var(--kx-primary-soft, rgba(37, 99, 235, 0.12));
+  background: var(--kx-primary-soft);
   color: var(--kx-primary, var(--accent));
 }
 .flow-step--done .flow-step__index { background: rgba(22, 163, 74, 0.15); color: var(--kx-success, var(--success)); }

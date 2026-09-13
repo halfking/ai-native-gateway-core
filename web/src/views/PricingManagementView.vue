@@ -1279,8 +1279,8 @@ onMounted(fetchData)
 .batch-pricing-form h4 { margin: 0 0 10px; font-size: 13px; color: var(--accent-h); }
 .batch-pricing-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
 @media (max-width: 768px) { .batch-pricing-grid { grid-template-columns: 1fr 1fr; } }
-.alert-success { background: var(--success-soft, rgba(22, 132, 91, 0.08)); border: 1px solid var(--success); color: var(--success); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
-.alert-danger { background: var(--danger-soft, rgba(194, 65, 59, 0.08)); border: 1px solid var(--danger); color: var(--danger); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
+.alert-success { background: var(--success-soft); border: 1px solid var(--success); color: var(--success); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
+.alert-danger { background: var(--danger-soft); border: 1px solid var(--danger); color: var(--danger); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
 .inherit-details { max-height: 300px; overflow-y: auto; margin: 12px 0; }
 .inherit-row { padding: 4px 0; font-size: 13px; color: var(--muted); }
 </style>

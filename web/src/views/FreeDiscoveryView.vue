@@ -887,15 +887,15 @@ onMounted(loadAll)
   border: 1px solid;
 }
 .banner-error {
-  background: var(--danger-soft, #fff1f1);
-  border-color: var(--danger, #c2413b);
-  color: var(--danger, #c2413b);
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
   word-break: break-all;
 }
 .banner-ok {
-  background: var(--success-soft, #e6f7ef);
-  border-color: var(--success, #16845b);
-  color: var(--success, #16845b);
+  background: var(--success-soft);
+  border-color: var(--success);
+  color: var(--success);
 }
 .tab-bar {
   display: flex;
@@ -912,8 +912,8 @@ onMounted(loadAll)
   border-bottom: 2px solid transparent;
 }
 .tab-btn.active {
-  color: var(--primary, #1e4fd6);
-  border-bottom-color: var(--primary, #1e4fd6);
+  color: var(--primary);
+  border-bottom-color: var(--primary);
   font-weight: 600;
 }
 .tab-btn.small {
@@ -923,8 +923,8 @@ onMounted(loadAll)
   border-radius: 6px;
 }
 .tab-btn.small.active {
-  border-bottom: 1px solid var(--primary, #1e4fd6);
-  background: var(--bg-subtle, #eaf0ff);
+  border-bottom: 1px solid var(--primary);
+  background: var(--bg-subtle);
 }
 .tab-panel {
   display: flex;
@@ -994,7 +994,7 @@ onMounted(loadAll)
 }
 .preset-warn {
   font-size: 11px;
-  color: var(--warning, #b7791f);
+  color: var(--warning);
 }
 
 /* Badges */
@@ -1006,40 +1006,40 @@ onMounted(loadAll)
   white-space: nowrap;
 }
 .tos-ok {
-  background: var(--success-soft, #e6f7ef);
-  color: var(--success, #16845b);
+  background: var(--success-soft);
+  color: var(--success);
 }
 .tos-caution {
-  background: var(--warning-soft, #fff7e8);
-  color: var(--warning, #b7791f);
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 .tos-avoid {
-  background: var(--danger-soft, #fff1f1);
-  color: var(--danger, #c2413b);
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 .tos-ambiguous {
   background: var(--bg-hover);
   color: var(--text-secondary);
 }
 .st-success {
-  background: var(--success-soft, #e6f7ef);
-  color: var(--success, #16845b);
+  background: var(--success-soft);
+  color: var(--success);
 }
 .st-failed {
-  background: var(--danger-soft, #fff1f1);
-  color: var(--danger, #c2413b);
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 .st-running {
-  background: var(--bg-subtle, #eaf0ff);
-  color: var(--primary, #1e4fd6);
+  background: var(--bg-subtle);
+  color: var(--primary);
 }
 .st-pending {
-  background: var(--warning-soft, #fff7e8);
-  color: var(--warning, #b7791f);
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 .st-warning {
-  background: var(--warning-soft, #fff7e8);
-  color: var(--warning, #b7791f);
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 .st-muted {
   background: var(--bg-hover);
@@ -1103,7 +1103,7 @@ onMounted(loadAll)
 .orbi-err {
   display: block;
   font-size: 11px;
-  color: var(--danger, #c2413b);
+  color: var(--danger);
 }
 
 /* Table */
@@ -1129,7 +1129,7 @@ onMounted(loadAll)
   vertical-align: top;
 }
 .data-table tr.selected td {
-  background: var(--bg-subtle, #eaf0ff);
+  background: var(--bg-subtle);
 }
 .empty-cell {
   text-align: center;
@@ -1163,7 +1163,7 @@ onMounted(loadAll)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--danger, #c2413b);
+  color: var(--danger);
   font-size: 12px;
 }
 .actions-cell {
@@ -1181,12 +1181,12 @@ onMounted(loadAll)
   cursor: pointer;
 }
 .toggle.on {
-  background: var(--success-soft, #e6f7ef);
-  color: var(--success, #16845b);
-  border-color: var(--success, #16845b);
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: var(--success);
 }
 .btn.danger {
-  color: var(--danger, #c2413b);
+  color: var(--danger);
 }
 
 /* Scan bar */
@@ -1230,7 +1230,7 @@ onMounted(loadAll)
 }
 .import-summary {
   font-size: 12px;
-  color: var(--success, #16845b);
+  color: var(--success);
 }
 .hist-counts {
   display: flex;
