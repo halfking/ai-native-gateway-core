@@ -25,7 +25,8 @@
 5. **测试读源码用** `readFileSync(resolve(process.cwd(), 'src/...'), 'utf8')`（项目惯例，`new URL(..., import.meta.url)` 在 vitest 下报 `ERR_INVALID_URL_SCHEME`）。
 6. **死代码删除先验证边界**：用行内容断言或 grep 确认无调用方后再删，保留仍在用的相邻规则（Batch 1 删 App.vue 时 `.header-alert` 夹在死区中间被保留）。
 7. 需要查响应式/断点现状时：`grep -rn "@media" src --include="*.vue" --include="*.css" | grep -oP 'max-width:\s*\d+px' | sort | uniq -c | sort -rn`。
-8. **虚机环境约束（2026-09-13 补充）**：本执行环境为虚机——TLS/证书类操作需使用**主机的证书**（虚机内不持有 codeup 等服务的独立凭证）；**部署一律 SSH 到主机上执行**，不在虚机内直接部署。git push 需用户在有凭证的交互终端输入 codeup 凭证（落地经验：`setsid foot bash <脚本>` 弹出交互终端等输入最有效，见 §八遗留1）。
+8. **虚机环境约束（2026-09-13 补充）**：本执行环境为虚机——TLS/证书类操作需使用**主机的证书**（虚机内不持有 codeup 等服务的独立凭证）；**部署一律 SSH 到主机上执行**，不在虚机内直接部署。
+9. **codeup 凭证通道已就绪（2026-09-13 10:25）**：用户提供 codeup 账号，已配置 `git config --global credential.helper store` + `~/.git-credentials`（0600，仓库外本机文件，**密码不入仓库**）；`git ls-remote`/`git fetch`/`git push` 均已验证免交互可用。后续轮次 push 不再需要交互终端。账号用户名：`huangzhouzixuan_Rdn`（密码仅存于本机凭证文件，任何仓库文档不得记录）。
 
 ### 全局门禁（每步完成必须全过，四件套）
 
