@@ -622,6 +622,13 @@ upload_release() {
     err "tar 管道上传失败"; return 1; }
   # 修正属主为 root (tar 会保留本地 UID 501，导致 systemd 读不到)
   remote_ssh "chown -R root:root '$release_dir'" || true
+  # 2026-09-13 Windows 部署宿主：MSYS 对无扩展名文件不授予执行位（noacl
+  # 挂载下 chmod 也无效），tar 按本地视角把 gateway 存成 644 → 远端解包后
+  # 候选 unit exec 直接 Permission denied (status 126)。显式恢复执行位；
+  # 对 Mac/Linux 宿主是无操作。
+  local staged_bin_name
+  staged_bin_name=$(HOST_STAGE_TARGET="$TARGET" host_binary_name "$TARGET") || staged_bin_name="gateway"
+  remote_ssh "chmod 0755 '$release_dir/$staged_bin_name'" || { err "恢复二进制执行位失败"; return 1; }
   ok "bundle 上传完成"
 }
 
@@ -703,6 +710,21 @@ do_deploy() {
   # stale artifact before invoking the toolchain so the build never trips the
   # "already exists and is not an object file" guard.
   rm -f "$tmpbin"
+  # 2026-09-13 opt-in 预编译二进制入口（LLM_GATEWAY_PREBUILT_BINARY）：为
+  # 既跑不了 CGO=0 本机构建（CGO-only 依赖 sqlite/onnxruntime）、也跑不了
+  # --platform linux/amd64 容器回退的构建宿主准备（实证：Windows-on-ARM64
+  # 上本地 kx-base 镜像为 arm64 架构，--platform 校验直接拒用且无远端可拉）。
+  # 调用方在带外用等价工具链（zig cc x86_64-linux-musl 静态）产出 linux/amd64
+  # 二进制。后续所有身份防线不变：bundle version.json git_sha 来自当前 HEAD、
+  # SHA256SUMS、远端 dl_verify_release、部署后 vcs.revision 三方比对仍然生效。
+  if [[ -n "${LLM_GATEWAY_PREBUILT_BINARY:-}" ]]; then
+    if [[ ! -s "$LLM_GATEWAY_PREBUILT_BINARY" ]]; then
+      err "LLM_GATEWAY_PREBUILT_BINARY=$LLM_GATEWAY_PREBUILT_BINARY 不存在或为空; refusing to continue"
+      exit 1
+    fi
+    install -m 0755 "$LLM_GATEWAY_PREBUILT_BINARY" "$tmpbin"
+    warn "使用带外预编译二进制（LLM_GATEWAY_PREBUILT_BINARY），跳过本机构建；身份校验照常执行"
+  fi
   if [[ "$SKIP_FRONTEND" == "false" ]]; then
     if [[ ! -d web/node_modules ]]; then
       log "web/node_modules 缺失，按 package-lock.json 安装依赖"
@@ -729,7 +751,10 @@ do_deploy() {
   # ~/work/docker-base-images/lang-base/ 与 ~/work/docker-base-image/lang-base/
   # 都有离线 tar.gz，且已推 registry.itestu.cn/lang-base/kx-base-golang
   # 兜底。重新构建/保存：~/work/docker-base-images/scripts/build-kx-base-golang-1.27-alpine.sh
-  if ! CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
+  # （预编译入口已就位时整段构建跳过——tmpbin 非空即表示带外产物就绪。）
+  if [[ -s "$tmpbin" ]]; then
+    : # prebuilt binary supplied via LLM_GATEWAY_PREBUILT_BINARY
+  elif ! CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
     -o "$tmpbin" ./cmd/gateway; then
     command -v docker >/dev/null 2>&1 || {
       err "CGO=0 构建失败且 docker 不可用，无法回退容器 CGO 构建; refusing to continue with stale binary"
