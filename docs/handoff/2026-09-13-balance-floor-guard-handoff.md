@@ -60,4 +60,4 @@ go test ./domains/credential/ -count=1                            # ok 14.7s
 
 ## 下一轮提示词(建议)
 
-> 对 1a89c32fe(balance-floor guard)做部署级验证:1) 在本地 8782 环境跑 `gateway migrate`/启动确认 701 列生效;2) 给一条真实 zhipu 凭据配 `quota_floor_percent:95` 观察摘出/恢复日志与 admin 展示;3) 给一条 deepseek 凭据配 `balance_floor_usd` 验证货币 pass A/B/C;4) admin web 补三个下限字段的表单控件;5) 若有 minimax 订阅 key,实测 `/v1/token_plan/remains` 形状并按需修正 parseMiniMaxPlan。
+> ~~对 1a89c32fe(balance-floor guard)做部署级验证~~ —— 已于 2026-09-13 全部完成,详见 `docs/changelogs/2026-09-13-balance-floor-guard-deploy-verify-and-fixes.md`:migration 701 确认、zhipu 摘出/恢复闭环、货币 pass A/B/C 闭环(mock)、web 表单控件补齐(4d14b615b);附带两修复 —— 清下限自动回池(`releaseClearedFloorCredentials`,66a9f8e6a)、planTypes 下拉对齐实测值域(77956aeb5)。剩余:若拿到 minimax 订阅 key,实测 `/v1/token_plan/remains` 形状并按需修正 parseMiniMaxPlan(fail-open,不阻塞)。
