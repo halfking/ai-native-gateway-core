@@ -44,7 +44,8 @@ package bg
 // 它写回 ok（writeHealth 硬配额守卫允许 $8='ok' 通过）→ 乒乓。所以
 // balance_quota_probe.go 对 state_reason_code='balance_floor' 的行豁免，恢复
 // 完全由本 guard 负责。admin 的 force-probe/reset-state 仍可人工越过
-// （下一轮 sweep 会按 floor 重新摘出，除非操作员清掉下限）。
+// （下一轮 sweep 会按 floor 重新摘出，除非操作员清掉下限）；下限全部清空
+// 后，sweep 会自动释放仍被本 guard 摘出的凭据（releaseClearedFloorCredentials）。
 //
 // Env knobs:
 //   LLM_GATEWAY_BALANCE_FLOOR_INTERVAL — sweep 周期，默认 5m（>=30s）
@@ -519,7 +520,58 @@ func (g *BalanceFloorGuard) cycle(ctx context.Context) error {
 	if err := g.sweepCurrencyFloors(ctx); err != nil {
 		slog.Warn("balance_floor_guard: currency sweep failed", "error", err)
 	}
+	// 清下限释放放在套餐 sweep 之前：同周期内刚释放的 zhipu/minimax
+	// 凭据能立刻被套餐探测感知到（floors 已 NULL，不会被重新摘出）。
+	if err := g.releaseClearedFloorCredentials(ctx); err != nil {
+		slog.Warn("balance_floor_guard: cleared-floor release failed", "error", err)
+	}
 	return g.sweepPlanQuotas(ctx)
+}
+
+// releaseClearedFloorCredentials releases floor-pulled credentials whose three
+// floor columns are ALL NULL — the unambiguous operator signal that the floor
+// was cleared (admin PATCH NULLs them). Until this pass existed such rows
+// hung forever: currency pass C requires balance_floor_usd IS NOT NULL, the
+// plan path no-ops when both plan floors are NULL (floorNone), and
+// BalanceQuotaProbe exempts balance_floor rows by design (anti ping-pong).
+// If ANY floor remains configured the row stays owned by the hysteresis
+// restore paths instead. Routability guards mirror pass C's candidate SELECT:
+// a row disabled by other means is released once those disables lift.
+func (g *BalanceFloorGuard) releaseClearedFloorCredentials(ctx context.Context) error {
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	tag, err := g.db.Exec(cctx, `
+		UPDATE credentials
+		SET quota_state = 'ok',
+		    quota_recover_at = NULL,
+		    availability_state = 'ready',
+		    availability_recover_at = NULL,
+		    state_reason_code = NULL,
+		    state_reason_detail = 'balance_floor guard: all floors cleared by operator, released to routing pool',
+		    state_updated_at = now()
+		WHERE COALESCE(quota_state, 'ok') = 'balance_exhausted'
+		  AND COALESCE(state_reason_code, '') = 'balance_floor'
+		  AND balance_floor_usd IS NULL
+		  AND quota_floor_tokens IS NULL
+		  AND quota_floor_percent IS NULL
+		  AND status = 'active'
+		  AND lifecycle_status = 'active'
+		  AND COALESCE(manual_disabled, FALSE) = FALSE
+		  AND EXISTS (
+		      SELECT 1 FROM providers p
+		      WHERE p.id = credentials.provider_id
+		        AND p.enabled = TRUE
+		        AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		  )
+	`)
+	if err != nil {
+		return err
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("balance_floor_guard: released floor-pulled credentials (all floors cleared)",
+			"count", n)
+	}
+	return nil
 }
 
 // sweepCurrencyFloors enforces currency floors in three passes:
