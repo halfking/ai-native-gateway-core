@@ -99,9 +99,9 @@ function scoreColor(score: number): string {
           <div style="font-size:12px;color:var(--muted)">{{ pdg('summaryTotalCreds') }}</div>
           <div style="font-size:20px;font-weight:600">{{ cachedResult.summary?.total_credentials ?? 0 }}</div>
           <div style="font-size:11px;color:var(--muted)">
-            <span style="color:#4caf50">{{ pdg('summaryHealthySuffix', { n: cachedResult.summary?.healthy ?? 0 }) }}</span> ·
-            <span style="color:#f0b429">{{ pdg('summaryDegradedSuffix', { n: cachedResult.summary?.degraded ?? 0 }) }}</span> ·
-            <span style="color:#f44336">{{ pdg('summaryUnreachableSuffix', { n: cachedResult.summary?.unreachable ?? 0 }) }}</span>
+            <span style="color:var(--success)">{{ pdg('summaryHealthySuffix', { n: cachedResult.summary?.healthy ?? 0 }) }}</span> ·
+            <span style="color:var(--warning)">{{ pdg('summaryDegradedSuffix', { n: cachedResult.summary?.degraded ?? 0 }) }}</span> ·
+            <span style="color:var(--danger)">{{ pdg('summaryUnreachableSuffix', { n: cachedResult.summary?.unreachable ?? 0 }) }}</span>
           </div>
         </div>
         <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:14px">
