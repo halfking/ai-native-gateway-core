@@ -16,10 +16,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestStreamAnthropicSSEToResponses_FullFlow exercises the complete
-// Anthropic → Responses API pipeline: initial scaffolding, delta text
-// events, accumulated usage flowing into response.completed, and the
-// closing sequence.
+// TestResponsesScaffoldFinishInterruptedEmitsOnlyIncompleteTerminal pins the
+// terminal contract used by integrity-breach bridge exits.
+func TestResponsesScaffoldFinishInterruptedEmitsOnlyIncompleteTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		mode         GateMode
+		wantTerminal bool
+	}{
+		{name: "committed", mode: GateModeImmediate, wantTerminal: true},
+		{name: "deferred", mode: GateModeBuffered, wantTerminal: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			gate := NewAttemptCommitGate(context.Background(), ProtocolOpenAIResponses,
+				NewSerializedStreamWriter(rec), GateOptions{Mode: tc.mode})
+			scaffold := newResponsesScaffold(rec, rec, "req-integrity-terminal", "test-model")
+
+			scaffold.finishInterrupted(gate, "partial output", "integrity_repeated_content", 3, 2)
+
+			body := rec.Body.String()
+			if tc.wantTerminal {
+				assert.Equal(t, 1, strings.Count(body, "event: response.completed"))
+				assert.Contains(t, body, `"status":"incomplete"`)
+				assert.NotContains(t, body, `"status":"completed"`)
+			} else {
+				assert.NotContains(t, body, "event: response.completed")
+			}
+		})
+	}
+}
+
 func TestStreamAnthropicSSEToResponses_FullFlow(t *testing.T) {
 	upstreamBody := strings.Join([]string{
 		// 1) message_start (input tokens)
