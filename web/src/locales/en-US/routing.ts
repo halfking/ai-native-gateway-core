@@ -247,6 +247,7 @@ export default {
     loading: 'Loading…',
     globalTitle: 'Global policy',
     weightsTitle: 'Scoring coefficients',
+    weightsDisplayOnlyHint: 'Display only: affects the diagnostic preview API, not live routing',
     featuredTitle: 'Featured models',
     featuredDescription: 'Pick standard model names — they will be marked with ★ in the routing overview and filterable via "Featured only".',
     featuredPlaceholder: 'Pick featured models…',

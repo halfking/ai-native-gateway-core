@@ -247,6 +247,7 @@ export default {
     loading: 'Cargando…',
     globalTitle: 'Política global',
     weightsTitle: 'Coeficientes de puntuación',
+    weightsDisplayOnlyHint: 'Solo afecta a la vista previa de diagnóstico, no al enrutamiento en producción',
     featuredTitle: 'Modelos destacados',
     featuredDescription: 'Elija nombres de modelos estándar — se marcarán con ★ en el panorama de enrutamiento y se podrán filtrar mediante "Solo destacados".',
     featuredPlaceholder: 'Elija modelos destacados…',

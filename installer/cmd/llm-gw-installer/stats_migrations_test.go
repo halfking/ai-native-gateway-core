@@ -115,6 +115,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"698_promote_hot_partition_timezone_pin.sql":           promoteHotPartitionTimezonePinMigration698,
 		"699_supplier_errors_ensure_timezone_pin.sql":          supplierErrorsEnsureTimezonePinMigration699,
 		"700_request_logs_view_raw_model_name.sql":             requestLogsViewRawModelNameMigration700,
+		"701_credential_balance_floor.sql":                     credentialBalanceFloorMigration701,
 		"703_supplier_errors_promote_timezone_pin.sql":         supplierErrorsPromoteTimezonePinMigration703,
 	}
 

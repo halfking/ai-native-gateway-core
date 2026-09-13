@@ -7,6 +7,7 @@ import {
   type RoutingPolicy, type ScoringWeights,
 } from '../api'
 import { useActionMessage } from '../composables/useActionMessage'
+import { ElAlert } from 'element-plus'
 import ModelPicker from '../components/ModelPicker.vue'
 
 const { t } = useI18n()
@@ -186,6 +187,7 @@ onMounted(load)
       <p style="color:var(--muted);font-size:12px;margin-bottom:12px">
         综合得分公式：值越小，候选越优先。<strong>免费模型（价格=0）得分固定为 0，最高优先。</strong>
       </p>
+      <el-alert type="info" show-icon :closable="false" :title="t('routing.policy.weightsDisplayOnlyHint')" style="margin-bottom:12px" />
       <div style="background:var(--bg-subtle);border:1px solid var(--border);padding:12px;border-radius:6px;margin-bottom:16px;font-family:monospace;font-size:13px;color:var(--text)">
         {{ formulaPreview }}
       </div>

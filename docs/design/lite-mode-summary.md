@@ -1,5 +1,7 @@
 # LLM Gateway 双模式存储方案 - 执行摘要
 
+> ⚠️ 状态修正（2026-09-14 R28 审计）：lite 定位为"可信网络内单机审计部署"；数据面鉴权兜底已修（d8af9ccb0），但 Redis 未门控/SQLite 无保留期清理/catalog 四 store 未接线等 P1/P2 项收口前不用于生产。见 docs/audit/2026-09-14-r28-audit-round.md
+
 ## 核心问题与解决方案
 
 ### 问题

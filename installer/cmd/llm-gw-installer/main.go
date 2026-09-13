@@ -379,6 +379,9 @@ var supplierErrorsEnsureTimezonePinMigration699 []byte
 //go:embed embeddata/startup/700_request_logs_view_raw_model_name.sql
 var requestLogsViewRawModelNameMigration700 []byte
 
+//go:embed embeddata/startup/701_credential_balance_floor.sql
+var credentialBalanceFloorMigration701 []byte
+
 //go:embed embeddata/startup/703_supplier_errors_promote_timezone_pin.sql
 var supplierErrorsPromoteTimezonePinMigration703 []byte
 
@@ -503,6 +506,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/698_promote_hot_partition_timezone_pin.sql":                             promoteHotPartitionTimezonePinMigration698,
 	"startup/699_supplier_errors_ensure_timezone_pin.sql":                            supplierErrorsEnsureTimezonePinMigration699,
 	"startup/700_request_logs_view_raw_model_name.sql":                               requestLogsViewRawModelNameMigration700,
+	"startup/701_credential_balance_floor.sql":                                       credentialBalanceFloorMigration701,
 	"startup/703_supplier_errors_promote_timezone_pin.sql":                           supplierErrorsPromoteTimezonePinMigration703,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
