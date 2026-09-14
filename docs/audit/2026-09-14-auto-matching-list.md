@@ -288,3 +288,31 @@ route_tier=primary(路由×标签×归一化三件叠加生效)。
 - codeup Flow 需人工在 codeup 流水线页导入 .workflow/main-verify.yml 一次。
 - 生产 245/154 部署后:核对 709 落库、admin API 补 (b) 标签、O4 env+key、
   以 routing_decision_log.decision_trace 的 fallback_used 做效果验证。
+
+### ⚠️ 五轮生产部署期新发现 O5(2026-09-14 晚,未修复——需人工决策)
+
+**生产 `model=auto` 被同名 canonical 遮蔽,auto 决策漏斗在生产从未生效**:
+
+- 2026-08-25 生产库出现 canonical `auto`(models_canonical id=2664552,
+  唯一 offer=credential #44 openrouter-kx 的 `openrouter/auto`,即
+  OpenRouter 官方 meta-model)+ 同名 alias(auto→2664552)。
+- 模型解析先于 auto-route decider:生产 `model=auto` 被该 canonical 精确
+  匹配吸收,转发 openrouter/auto,**V2 漏斗/分类器/兜底池在 08-25 后的
+  生产 auto 流量上从未运行**(本地副本无此行,故本地 E2E 一直正常)。
+- OpenRouter 侧 auto 会路由到其自选上游;09-05 起解析为
+  claude-sonnet-4.5 的流量在我方 0 可用凭据 → 全部
+  `no_candidate` 503(routing_decision_log:09-05×12、09-06×21、
+  09-07×4、09-12×2、09-14×6;多 api_key,非本轮引入——本轮为首次
+  在生产实测 auto,暴露存量缺陷)。
+- O4 的 LLM fallback 因 decider 被遮蔽而从未获得触发机会(env 已在
+  245 进程内就位,O5 解除后即自动生效)。
+- 修复选项(需决策人选择,本轮不动行为):
+  (i) 下线/改名 canonical auto + alias,恢复真 auto 路由(数据操作,可逆);
+  (ii) 代码层把 "auto" 保留为路由关键字,别名解析不得抢占(需迁移清理+
+      守卫测试);
+  (iii) 若 openrouter/auto 即期望的"auto"实现,则维持现状,把 O1′/O2/O4
+      的生效面改为与调用方另行约定。
+- 附带核实:①auto_route_selections_hot 生产 0 行、父表停在 09-08——
+  selection 写链在生产已断 ≥6 天,独立于 O5,需另查;②admin
+  PATCH /api/models/{id}/tags 此前对所有写请求静默失败(json.RawMessage
+  塞 text[] 列),已在本轮修复(e201f9ed0)并用其落地 (b)。
