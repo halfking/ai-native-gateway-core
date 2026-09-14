@@ -16,12 +16,12 @@ func TestSyntheticSessionID_ProbeKind(t *testing.T) {
 	// origin_actor=node-probe-worker / task_type=probe_triggered。
 	at := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
 	entry := &telemetry.RequestLogEntry{
-		RequestID:   "req-probe-1",
-		OriginStage: strPtr("node_probe"),
-		OriginActor: strPtr("node-probe-worker"),
-		TaskType:    strPtr("probe_triggered"),
+		RequestID:    "req-probe-1",
+		OriginStage:  strPtr("node_probe"),
+		OriginActor:  strPtr("node-probe-worker"),
+		TaskType:     strPtr("probe_triggered"),
 		CredentialID: func() *int { v := 123; return &v }(),
-		EventAt:     &at,
+		EventAt:      &at,
 	}
 	got := SyntheticSessionID(entry)
 	// plan §3-D4 形态：sys:{kind}:{cred}:日
@@ -86,12 +86,12 @@ func TestPersistHook_SynthesizesSystemSessionForNoSessionTraffic(t *testing.T) {
 	at := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
 	withShadowFlags(t, func() {
 		hook(&telemetry.RequestLogEntry{
-			RequestID:   "req-probe-term",
-			Success:     true,
-			OriginStage: strPtr("node_probe"),
-			TaskType:    strPtr("probe_triggered"),
+			RequestID:    "req-probe-term",
+			Success:      true,
+			OriginStage:  strPtr("node_probe"),
+			TaskType:     strPtr("probe_triggered"),
 			CredentialID: func() *int { v := 7; return &v }(),
-			EventAt:     &at,
+			EventAt:      &at,
 		})
 	})
 	if got == nil {
