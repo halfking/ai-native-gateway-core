@@ -67,6 +67,15 @@ type SanitizeInputMiddleware struct {
 	// Redis keys remain tenant scoped for cross-process isolation; the mutex
 	// closes the in-process read-modify-write race for concurrent requests.
 	stateMu sync.Mutex
+	// censorSink（706，可选）：把占位符→原始值映射双写 DB
+	// （public.session_censors），Redis 降级为热缓存。nil 时仅 Redis。
+	censorSink CensorSink
+}
+
+// SetCensorSink wires the optional DB double-write sink (migration 706).
+// Call before serving; nil disables the double-write.
+func (m *SanitizeInputMiddleware) SetCensorSink(sink CensorSink) {
+	m.censorSink = sink
 }
 
 // NewSanitizeInputMiddleware 创建输入脱敏中间件。
@@ -375,6 +384,19 @@ func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, session
 		}
 		if err := m.redis.HSet(ctx, mapKey, fields).Err(); err != nil {
 			return err
+		}
+		// 706 双写 DB（best-effort：失败仅告警，不影响 Redis 主链路；
+		// 恢复语义不变——DB 行供审计回溯，不参与还原热路径）。
+		if m.censorSink != nil {
+			entries := make([]CensorEntry, 0, len(sm))
+			for ph, val := range sm {
+				e := CensorEntry{Placeholder: ph, Original: val}
+				if p, ok := ParsePlaceholder(ph); ok {
+					e.SensitiveType = string(p.Type)
+				}
+				entries = append(entries, e)
+			}
+			m.censorSink.SaveCensorMappings(ctx, tenantID, sessionID, entries)
 		}
 		if tenantID == "_unknown" {
 			if err := m.redis.HSet(ctx, SanitizeRedisKey(sessionID), fields).Err(); err != nil {

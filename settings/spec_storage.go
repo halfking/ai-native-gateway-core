@@ -88,6 +88,44 @@ func StorageSpecs() []*Spec {
 			HotReload:       true,
 		},
 		{
+			// 存储优化方案 v2 S1b 灰度开关（migration 707）。
+			Key:             "storage.session_turns_bodies_enabled",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategoryStorage,
+			Default:         false,
+			Description:     "会话轮次正文写入 session_turns",
+			DescriptionLong: "开启后 SessionWriterV2 把每轮 request_delta/response_delta 同步写入 session_turns 正文列（宽表，turn 级唯一事实源的第一步）。关闭时正文仍只落 session_bodies 逐轮行。默认关闭；回切即关闭开关（列保留不删，方案 §7）。",
+			DangerLevel:     Dangerous,
+			HotReload:       true,
+		},
+		{
+			// 存储优化方案 v2 S1b 灰度开关（migration 708）。
+			Key:             "storage.session_final_full_enabled",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategoryStorage,
+			Default:         false,
+			Description:     "会话最后完整快照（final_full）+ 停写 outbound_body",
+			DescriptionLong: "开启后 SessionWriterV2 每轮把完整 outbound upsert 进 session_bodies(kind='final_full', turn_no=0) 一行，并停止逐轮写 outbound_body（差集读端优先读 final_full、未命中回退旧行）。关闭时完全回到旧行为。默认关闭；方案 §6 估算停写 outbound_body 月省约 1.8GB。",
+			DangerLevel:     Dangerous,
+			HotReload:       true,
+		},
+		{
+			// 存储优化方案 v2 S2（migration 710 轮）：request_logs 停写 gate。
+			// S2 仅登记（默认 true = 继续双写）；S4 落 telemetry client 分支化
+			// 后由本开关一键停写/回切（plan §4 S2/S4 行、§7）。
+			Key:             "storage.request_logs_write_enabled",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategoryStorage,
+			Default:         true,
+			Description:     "request_logs 主账本写入（S4 停写 gate）",
+			DescriptionLong: "存储优化方案 v2：开启时 telemetry/admin ingest 维持 request_logs(_hot) 与 bodies 双写（现状）；S4 落地写分支后关闭即停写，session 六表族成为唯一事实源。关闭前提：dual_read_validator 对账 7 天零漂移（plan §4 S2 退出条件）。回切即重新开启，热表结构不动、无数据丢失窗口。",
+			DangerLevel:     Dangerous,
+			HotReload:       true,
+		},
+		{
 			Key:             "log.delete_days",
 			Type:            TypeInt,
 			Scope:           ScopePlatform,

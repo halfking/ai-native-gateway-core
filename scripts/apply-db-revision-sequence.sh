@@ -337,6 +337,46 @@ files=(
   # 升级型数据库(共享 252 生产 PG 即是)经通道升级将永远轮不到它,693/699/701
   # 同款缺口。文件自带 schema_migrations INSERT(695-699 先例),通道补条目即闭环。
   "$ROOT_DIR/sql/migrations/startup/703_supplier_errors_promote_timezone_pin.sql"
+  # 2026-09-14 P0 存储治理:request_logs promote 断链修复。337 曾 DETACH
+  # 2026_07..2026_12 月分区,而 ensure_request_logs_partition(694 体)只查
+  # pg_class relname——DETACH 后的空壳仍存在,ensure 永远跳过,promote
+  # (602/688)INSERT INTO 父表全路由进 request_logs_default(本机实测
+  # 609MB/255,084 行积压,月分区 0 行空壳)。705 重写 ensure(attached-aware
+  # + 空壳重挂 + default 缝隙自愈),并用 repair_request_logs_detached_partitions()
+  # 一次性补列重挂空壳、把 default 积压按月搬回分区。文件自带双账本
+  # schema_migrations INSERT(695-704 定式)。
+  "$ROOT_DIR/sql/migrations/startup/705_request_logs_reattach_detached_partitions.sql"
+  # 2026-09-14 存储优化方案 v2 S1a(docs/03-design/04-data-design/
+  # storage-optimization-plan.md §4):六表族补全。706 建 session_memora/
+  # session_censors/session_tools 三新表族(hot+ensure_session_family_partitions
+  # +promote,430/614/638 惯例)+ sessions 访问维度补列;707 session_turns 宽表化
+  # (D1 五类补采+正文列+is_final_success 部分唯一索引)并把
+  # promote_session_turns_hot_to_partition 重写为有序列契约校验+SELECT * 形态
+  # (显式列清单会在加列后 promote 静默丢新列);708 session_bodies kind 列
+  # (final_full/turn_delta pivot 前置)+旧行回填+final_full 部分唯一索引+
+  # DROP sessions.last_full_* 456 死列(零读写,本机审计 100% NULL)+
+  # promote_session_bodies_hot_to_partition 同款重写。三文件均自带双账本
+  # schema_migrations INSERT(695-705 定式)。707/708 内为对应 promote 函数在
+  # 本通道清单内的唯一定义者,无 chain 登记需求(526/615/626/636/638/640/688
+  # 不在本清单)。
+  "$ROOT_DIR/sql/migrations/startup/706_session_family_s1a.sql"
+  "$ROOT_DIR/sql/migrations/startup/707_session_turns_s1a.sql"
+  "$ROOT_DIR/sql/migrations/startup/708_session_bodies_s1a.sql"
+  # 2026-09-14 存储优化方案 v2 S2（docs/03-design/04-data-design/
+  # storage-optimization-plan.md §3 D6/§4）：request_logs_with_current_month
+  # 同名视图体重建为 session 家族拼装体——session_turns(_hot) 113 列会话投影
+  # （缺源列 NULL 补位，列映射契约登记在文件头）UNION ALL v1 体（700 形态
+  # 冻结）× 反连接（request_id 已入 turns 的 v1 行不再输出，双写期不重复
+  # 计数）。约 40 个读方零改动切到会话族读路径。纯 CREATE OR REPLACE VIEW
+  # （113 列名称/顺序/类型逐一保持，显式 CAST 钉类型），幂等收敛（viewdef
+  # 含 session_turns 即跳过；session_turns 缺表保留 v1 体由 db.ensure 兜底），
+  # down 恢复 700 双形态体。文件自带 schema_migrations INSERT(695-705 定式)。
+  # 编号注记:方案原文编号 709 已被共享账本占用(2026-09-14 14:19 并行线
+  # work_type route coverage,裸 '709'),按 699→700 先例重编号 710;编号前已
+  # 查本机双账本 710 空闲(schema_migrations/sequences 均 0 命中)。
+  # Go 镜像体:db/request_logs_view_schema.go canonicalV2DDL(启动自愈/升级
+  # 同体),等价性由 db/view_schema_v2_contract_test.go 校验。
+  "$ROOT_DIR/sql/migrations/startup/710_request_logs_view_session_family_v2.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
@@ -373,6 +413,12 @@ intentional_function_chains=(
   # registration and aborted every later deploy at the pre-flight guard,
   # 2026-09-14 deploy-local incident).
   'promote_supplier_errors_hot_to_partition|V371__supplier_errors_hot_and_stats.sql|703_supplier_errors_promote_timezone_pin.sql|'
+  # 705 rewrote ensure_request_logs_partition as the attached-aware body
+  # (detached-shell re-attach + default-gap self-heal) on top of 694's
+  # timezone-pinned body; the rewrite must stay the later entry. 705 landed
+  # without this registration — same pre-flight guard abort class as 703
+  # (caught 2026-09-14 when S1a files joined the sequence).
+  'ensure_request_logs_partition|694_partition_ensure_timezone.sql|705_request_logs_reattach_detached_partitions.sql|'
   # 659 rewrote these seven promote bodies as the single atomic CTE form;
   # 688 later aligned their defaults to the Go scheduler (not in this array,
   # so invisible to the scanner) and 698 re-derives each body from the
