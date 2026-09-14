@@ -337,6 +337,15 @@ files=(
   # 升级型数据库(共享 252 生产 PG 即是)经通道升级将永远轮不到它,693/699/701
   # 同款缺口。文件自带 schema_migrations INSERT(695-699 先例),通道补条目即闭环。
   "$ROOT_DIR/sql/migrations/startup/703_supplier_errors_promote_timezone_pin.sql"
+  # 2026-09-14 P0 存储治理:request_logs promote 断链修复。337 曾 DETACH
+  # 2026_07..2026_12 月分区,而 ensure_request_logs_partition(694 体)只查
+  # pg_class relname——DETACH 后的空壳仍存在,ensure 永远跳过,promote
+  # (602/688)INSERT INTO 父表全路由进 request_logs_default(本机实测
+  # 609MB/255,084 行积压,月分区 0 行空壳)。705 重写 ensure(attached-aware
+  # + 空壳重挂 + default 缝隙自愈),并用 repair_request_logs_detached_partitions()
+  # 一次性补列重挂空壳、把 default 积压按月搬回分区。文件自带双账本
+  # schema_migrations INSERT(695-704 定式)。
+  "$ROOT_DIR/sql/migrations/startup/705_request_logs_reattach_detached_partitions.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
