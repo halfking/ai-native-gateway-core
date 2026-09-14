@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -8,9 +9,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/goalrun"
 	"github.com/pashagolub/pgxmock/v4"
 )
+
+// goalrunStubVerifier 是 KeyVerifier 测试桩（§0-F2：tenant 来自验证后的
+// key，而非 X-Tenant-ID 头）。
+type goalrunStubVerifier struct {
+	tenant  string
+	err     error
+	enabled bool
+}
+
+func (s *goalrunStubVerifier) Enabled() bool { return s.enabled || s.tenant != "" || s.err != nil }
+func (s *goalrunStubVerifier) Verify(_ context.Context, _ string) (GoalRunKeyInfo, error) {
+	if s.err != nil {
+		return GoalRunKeyInfo{}, s.err
+	}
+	return GoalRunKeyInfo{ID: 1, TenantID: s.tenant}, nil
+}
+
+func newAuthedGoalRunHandler(mock pgxmock.PgxPoolIface, tenant string) *GoalRunHandler {
+	handler := NewGoalRunHandler(goalrun.NewStore(mock), slog.Default())
+	handler.SetAuth(&goalrunStubVerifier{tenant: tenant})
+	return handler
+}
 
 func TestGoalRunHandler_ServeHTTP_Success(t *testing.T) {
 	mock, err := pgxmock.NewPool()
@@ -19,8 +43,7 @@ func TestGoalRunHandler_ServeHTTP_Success(t *testing.T) {
 	}
 	defer mock.Close()
 
-	store := goalrun.NewStore(mock)
-	handler := NewGoalRunHandler(store, slog.Default())
+	handler := newAuthedGoalRunHandler(mock, "tenant_abc")
 
 	rows := pgxmock.NewRows([]string{
 		"id", "tenant_id", "api_key_id", "root_goal_id",
@@ -51,7 +74,7 @@ func TestGoalRunHandler_ServeHTTP_Success(t *testing.T) {
 		WillReturnRows(rows)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/goal-runs/gr_test123", nil)
-	req.Header.Set("X-Tenant-ID", "tenant_abc")
+	req.Header.Set("Authorization", "Bearer sk-test")
 	req.Header.Set("X-Session-ID", "session_root")
 
 	w := httptest.NewRecorder()
@@ -98,8 +121,7 @@ func TestGoalRunHandler_ServeHTTP_MethodNotAllowed(t *testing.T) {
 	}
 	defer mock.Close()
 
-	store := goalrun.NewStore(mock)
-	handler := NewGoalRunHandler(store, slog.Default())
+	handler := newAuthedGoalRunHandler(mock, "tenant_abc")
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/goal-runs/gr_test123", nil)
 	w := httptest.NewRecorder()
@@ -117,11 +139,10 @@ func TestGoalRunHandler_ServeHTTP_MissingGoalRunID(t *testing.T) {
 	}
 	defer mock.Close()
 
-	store := goalrun.NewStore(mock)
-	handler := NewGoalRunHandler(store, slog.Default())
+	handler := newAuthedGoalRunHandler(mock, "tenant_abc")
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/goal-runs/", nil)
-	req.Header.Set("X-Tenant-ID", "tenant_abc")
+	req.Header.Set("Authorization", "Bearer sk-test")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -137,9 +158,9 @@ func TestGoalRunHandler_ServeHTTP_MissingTenantID(t *testing.T) {
 	}
 	defer mock.Close()
 
-	store := goalrun.NewStore(mock)
-	handler := NewGoalRunHandler(store, slog.Default())
+	handler := newAuthedGoalRunHandler(mock, "tenant_abc")
 
+	// 无 key → InvalidKeyError → 401（§0-F2：tenant 来自验证后的 key）。
 	req := httptest.NewRequest(http.MethodGet, "/v1/goal-runs/gr_test123", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -158,6 +179,40 @@ func TestGoalRunHandler_ServeHTTP_MissingTenantID(t *testing.T) {
 	}
 }
 
+// §0-F2：verifier 未配置 → fail-closed 503（绝不回退到信任 X-Tenant-ID）。
+func TestGoalRunHandler_ServeHTTP_AuthUnavailable(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
+	}
+	defer mock.Close()
+
+	handler := NewGoalRunHandler(goalrun.NewStore(mock), slog.Default())
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/goal-runs/gr_test123", nil)
+	req.Header.Set("X-Tenant-ID", "tenant_abc") // 攻击者头：verifier 未配置时也无效
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status 503 (fail-closed), got %d", w.Code)
+	}
+}
+
+// §0-F2：store 为 nil → 503（原实现会 panic）。
+func TestGoalRunHandler_ServeHTTP_NilStore(t *testing.T) {
+	handler := NewGoalRunHandler(nil, slog.Default())
+	handler.SetAuth(&goalrunStubVerifier{tenant: "tenant_abc"})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/goal-runs/gr_test123", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status 503, got %d", w.Code)
+	}
+}
+
 func TestGoalRunHandler_ServeHTTP_NotFound(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -165,15 +220,14 @@ func TestGoalRunHandler_ServeHTTP_NotFound(t *testing.T) {
 	}
 	defer mock.Close()
 
-	store := goalrun.NewStore(mock)
-	handler := NewGoalRunHandler(store, slog.Default())
+	handler := newAuthedGoalRunHandler(mock, "tenant_abc")
 
 	mock.ExpectQuery(`SELECT .+ FROM goal_runs`).
 		WithArgs("gr_notfound").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/goal-runs/gr_notfound", nil)
-	req.Header.Set("X-Tenant-ID", "tenant_abc")
+	req.Header.Set("Authorization", "Bearer sk-test")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -198,8 +252,8 @@ func TestGoalRunHandler_ServeHTTP_TenantMismatch(t *testing.T) {
 	}
 	defer mock.Close()
 
-	store := goalrun.NewStore(mock)
-	handler := NewGoalRunHandler(store, slog.Default())
+	// 验证后的 key 属于 tenant_attacker，而 run 属于 tenant_owner → 403。
+	handler := newAuthedGoalRunHandler(mock, "tenant_attacker")
 
 	rows := pgxmock.NewRows([]string{
 		"id", "tenant_id", "api_key_id", "root_goal_id",
@@ -230,7 +284,7 @@ func TestGoalRunHandler_ServeHTTP_TenantMismatch(t *testing.T) {
 		WillReturnRows(rows)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/goal-runs/gr_test123", nil)
-	req.Header.Set("X-Tenant-ID", "tenant_attacker")
+	req.Header.Set("Authorization", "Bearer sk-test")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -245,6 +299,26 @@ func TestGoalRunHandler_ServeHTTP_TenantMismatch(t *testing.T) {
 
 	if errResp.Code != "forbidden" {
 		t.Errorf("expected error code 'forbidden', got '%s'", errResp.Code)
+	}
+}
+
+func TestGoalRunHandler_ServeHTTP_InvalidKey(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
+	}
+	defer mock.Close()
+
+	handler := NewGoalRunHandler(goalrun.NewStore(mock), slog.Default())
+	handler.SetAuth(&goalrunStubVerifier{err: &authentication.InvalidKeyError{Message: "invalid"}})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/goal-runs/gr_test123", nil)
+	req.Header.Set("Authorization", "Bearer sk-bad")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401 (cross-package InvalidKeyError assertion), got %d", w.Code)
 	}
 }
 

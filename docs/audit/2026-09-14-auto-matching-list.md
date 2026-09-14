@@ -333,3 +333,56 @@ route_tier=primary(路由×标签×归一化三件叠加生效)。
   selection 写链在生产已断 ≥6 天,独立于 O5,需另查;②admin
   PATCH /api/models/{id}/tags 此前对所有写请求静默失败(json.RawMessage
   塞 text[] 列),已在本轮修复(e201f9ed0)并用其落地 (b)。
+
+## 六、收口与观测(2026-09-15 例行续查)
+
+**selection 写链断档收口(§五"附带核实,独立于 O5,待查"一项——推翻独立性,定性为 O5 同族)**:
+- 表内全部 22344 行集中在 09-07(10933)/09-08(11411,止于 05:43:18)两天:
+  写链 09-07 随 structured features v1 上线开始收数,仅存活约 1 天。
+- 断档机制:09-08 早晨部署窗口(24h 审计第二轮,2057 时代)蓝绿交接把
+  245 退役实例降级为 traffic-only(`scripts/local-host-blue-green.sh:45`
+  `LLM_GATEWAY_RUNTIME_ROLE=traffic-only`)→ 与 O5 同一后果,data-plane
+  实例无 decider → `wire=nil` → `recordAutoSelectionFromWire` 直接返回,
+  零写入;154(full 模式)全程 model=auto 流量为 0(canary jsonl 实测),
+  无从补偿。journal 该窗口已轮转,时间相关性以 09-08 05:43 停写与降级
+  机制互证。
+- **自愈实证**:O5 修复 00:12 提交→00:16 部署 245=2113→00:17:00 首行
+  落库,7 天断档闭合。至 01:17 共 9 行:heuristic_v2×8 + llm_v2×1
+  (conf 0.85),fallback_used 正确记录,settled_at 由 settle worker 正常
+  回填——data-plane 端到端写链(决策→selection→结算)全通。
+
+**154 例行部署(2117-4e7f9810,含 O5+O4 全部改动)**:
+- 蓝绿交接 134s 完成,active=8781,解密冒烟 providers=18/creds=12
+  failed=0;admin 密码同步、journald drop-in 就绪。
+- O4 env 六项 `/proc/<pid>/environ` 进程态验证通过:Endpoint(公网自环)/
+  key/model=deepseek-v4-flash/Timeout=8/MaxTokens=64/ExtraBody thinking
+  disabled。
+
+**O4 采纳率首日观测(245,00:16-01:17)**:
+- 升级尝试 8 次:成功 1(llm_v2 conf 0.85)、超时 6、HTTP 503 no_candidate 1
+  (glm-5.1,系部署调试期残留 env,已被 deepseek-v4-flash 取代,非缺陷)。
+  超时多数落在旧构建 3s/5s 截断时代;终版(8s+thinking disabled)下仍偶发
+  超时,与上游 deepseek 中继 1.9~10s 波动吻合。熔断器全程 closed,
+  每次失败均优雅降级启发式,无请求失败。
+- 调参评估:分类在请求热路径内联,8s 已是 TTFB 预算上限,不建议抬高
+  timeout;升级本身低频(夜间 8 次/h),维持现状观察即可。
+- 观测面缺陷修复:`llm_gateway_llm_classifier_*` 与熔断 gauge 族自
+  引入以来恒 0——`autoroute.RecordLLMMetricCall/RecordLLMCircuitBreakerState`
+  默认 no-op,注释声明"Wired by main.go"但 main.go 从未接线,采纳率只能
+  journal 考古;另 request_logs 不落自环内部调用(key 115 全历史仅 7 行
+  人工测试),亦非可靠通道。本轮在 buildAutoLLMCaller 补两行接线
+  (telemetry.RecordLLMClassifierCall/RecordLLMCircuitBreakerState),
+  守卫测试 TestAutoLLMMetricsWiredInBuildAutoLLMCaller 锁定;随下次例行
+  部署生效。
+
+**§六 审计复核(同日 02:00,对上述修复轮的反审)**:
+- 复核线上:245=2116/154=2117 healthz 均 200;01:17 后零新增升级(低峰
+  无低置信请求),观测结论不变。9 行/llm_v2×1 维持。
+- 修正接线轮两处缺口:①DisabledCaller(未配 LLMGatewayAutoLLMEndpoint
+  的部署)绕过 InstrumentedCaller,指标 HELP 声明的 `disabled` outcome
+  永远不会发出——LLMFallbackClassifier.Classify 补
+  `errors.Is(err, ErrLLMDisabled)` 显式记录,单测
+  TestLLMFallbackClassifier_RecordsDisabledOutcome;②llm_caller.go 与
+  classifier_llm.go 两处过时注释("Wired by main.go"/"3s 硬编码")改准。
+- 复核确认无回归面:接线赋值仅在启动装配期执行一次、signature 两侧
+  匹配、InstrumentedCaller 既有 outcome 分类单测未动、guard 测试通过。

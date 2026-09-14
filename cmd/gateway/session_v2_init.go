@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
+	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 )
 
 // initSessionV2Writer creates SessionWriterV2 and all of its sub-writers.
@@ -85,6 +86,48 @@ func stopSessionAggregateOutboxReaper(reaper any) {
 	if s, ok := reaper.(stopper); ok {
 		s.Stop()
 		slog.Info("session aggregate outbox reaper stopped")
+	}
+}
+
+// startSessionMirrorOutboxReaper boots the durable replay queue for the
+// sessionv2mirror shadow write (spec §12 GAP 2 closure, migration 712).
+//
+// The mirror hook registers failed writes (timeout / DB error / all 8 slots
+// busy) in session_mirror_outbox with the full entry JSON as payload; this
+// reaper drains it with FOR UPDATE SKIP LOCKED and exponential backoff,
+// replaying through the same entryToProcessedRequest bridge into the same
+// SessionWriterV2 (request_id idempotent). Also wires the hook-side
+// registration pool (nil pool disables registration; the hook then falls
+// back to the in-process backlog). Controlled by
+// sessions_v2.mirror_outbox (registration, default on) and
+// sessions_v2.mirror_outbox_replay (drain, default on), both hot-reload.
+// Returning `any` keeps main.go decoupled (same pattern as the aggregate
+// outbox reaper).
+func startSessionMirrorOutboxReaper(ctx context.Context, pool *pgxpool.Pool, writer *v2.SessionWriterV2) any {
+	if pool == nil {
+		slog.Warn("session mirror outbox: nil pool, GAP-2 replay disabled")
+		sessionv2mirror.InitMirrorOutbox(nil)
+		return nil
+	}
+	sessionv2mirror.InitMirrorOutbox(pool)
+	if writer == nil {
+		slog.Warn("session mirror outbox: nil V2 writer, replay disabled (registration still active)")
+		return nil
+	}
+	return sessionv2mirror.StartMirrorOutboxReaper(ctx, pool, writer)
+}
+
+// stopSessionMirrorOutboxReaper drains the mirror outbox reaper's in-flight
+// tick. Nil-safe. MUST run before pools.CloseAll() and after
+// telemetryClient.Stop so no new registrations race the shutdown.
+func stopSessionMirrorOutboxReaper(reaper any) {
+	if reaper == nil {
+		return
+	}
+	type stopper interface{ Stop() }
+	if s, ok := reaper.(stopper); ok {
+		s.Stop()
+		slog.Info("session mirror outbox reaper stopped")
 	}
 }
 
