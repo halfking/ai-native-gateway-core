@@ -102,4 +102,23 @@ print("%s|%s|%s|%s|%s" % (d["v1_rows"],d["v2_rows"],d["only_in_v1_count"],d["onl
 done < /tmp/obs_round_sessions.$$
 rm -f /tmp/obs_round_sessions.$$
 
-echo "ROUND_RESULT|sessions=$TOTAL|fail=$FAIL|verdict=$([[ $FAIL -eq 0 ]] && echo PASS || echo FAIL)|at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# 4. 全局 G2 扫描（抽样会话之外的兜底）：近 24h v1 终态行缺失 turns 的总数。
+# shadow write 为 best-effort（hook 超时/信号量满进 in-process backlog，进程
+# 重启即丢，无重放器——spec §12 GAP 2），该值 >0 即存在持续镜像丢失，
+# S4 停写 gate 在丢失归零（或 GAP-2 重放器补齐）前不可触发。
+G2G="$(psql_q "
+SELECT count(*) FROM (
+  SELECT request_id, is_final_success, ts FROM public.request_logs_hot
+  UNION ALL SELECT request_id, is_final_success, ts FROM public.request_logs
+) v1
+WHERE v1.is_final_success IS TRUE
+  AND v1.request_id IS NOT NULL
+  AND v1.ts > now() - interval '24 hours'
+  AND NOT EXISTS (SELECT 1 FROM public.session_turns_hot t WHERE t.request_id = v1.request_id)
+  AND NOT EXISTS (SELECT 1 FROM public.session_turns t WHERE t.request_id = v1.request_id);")"
+
+G2G_VERDICT=PASS; [[ "$G2G" != "0" ]] && G2G_VERDICT=FAIL
+echo "GLOBAL_G2|v1_final_missing_turns_24h=$G2G|verdict=$G2G_VERDICT"
+OVERALL=PASS
+[[ "$FAIL" != "0" || "$G2G_VERDICT" == "FAIL" ]] && OVERALL=FAIL
+echo "ROUND_RESULT|sessions=$TOTAL|fail=$FAIL|global_g2=$G2G|verdict=$OVERALL|at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
