@@ -11,10 +11,15 @@
 --
 -- 投影仅用 request_logs_hot 与 request_logs 父表的共有列（两表不同构：
 -- hot 独有 status_code/caller_id/session_correlation_id，父表独有
--- is_terminal/outbound_body/request_depth——父表的 outbound_body 只在
--- S1b cutover 过渡窗有值，仍在 bodies CTE 中经 bodies_hot 取近 7 天值）。
+-- is_terminal/outbound_body/request_depth；hot.protocol_conversion 为 text
+-- 需显式 ::boolean，父表 agent_name/agent_type 为 varchar 显式 ::text）。
 -- project_id / namespace / submit_mode_header 为 mirror-only 字段，v1 无源，
 -- 回填行保持零值（entryToProcessedRequest 的 detector 走推断路径）。
+--
+-- 结构注记：RLS 表（request_logs 父表 force RLS、session_turns(_hot) RLS）
+-- 在多表组合查询中触发本机 PG 的 "invalid perminfoindex 0 in RTE with
+-- relid 0" planner 错误，故每张 RLS 表先单独物化到临时表（单表 SELECT 不
+-- 触发），join/反连接全部在临时表间进行。
 --
 -- 用法（父表∪hot 双侧语义与 scripts/audit/storage_observation_round.sh 一致）：
 --   psql "$LLM_GATEWAY_DSN" -f scripts/audit/mirror_outbox_backfill.sql
@@ -23,84 +28,112 @@
 
 \set days 7
 
-WITH bodies AS (
-    SELECT DISTINCT ON (request_id)
-           request_id, request_body, response_body, outbound_body
-    FROM (
-        SELECT request_id, request_body, response_body, outbound_body
-        FROM public.request_logs_bodies_hot
-        UNION ALL
-        SELECT request_id, request_body, response_body, outbound_body
-        FROM public.request_logs_bodies
-    ) u
-),
-v1 AS (
-    SELECT request_id, ts, tenant_id, gw_session_id, is_final_success,
-           latency_ms, prompt_tokens, completion_tokens,
-           cache_read_tokens, cache_write_tokens, reasoning_tokens,
-           image_tokens, audio_tokens, video_tokens, provider_tokens,
-           cost_usd, cost_display, cost_currency, credits_charged,
-           usage_source, error_kind, request_status,
-           upstream_status_code, upstream_finish_reason,
-           client_model, outbound_model, canonical_model, canonical_id,
-           credential_id, provider_id, application_id, api_key_id,
-           api_key_owner_user, end_user_id, customer_id, client_ip,
-           client_forwarded_for, agent_name, agent_type, client_protocol,
-           upstream_protocol, protocol_conversion, client_request_id,
-           client_timeout, client_endpoint, egress_protocol,
-           task_type, is_auto_request, auto_decision, auto_confidence,
-           auto_profile, work_type, task_type_chosen, confidence_num,
-           model_chosen, routing_attempts, routing_summary,
-           parent_request_id, compression_strategy, compression_reason,
-           compression_meta, token_band, request_mode, client_profile,
-           affinity_hit, request_class, due_at, system_fingerprint,
-           identity_hash, response_checksum, request_preview,
-           transform_summary, response_preview, failure_stage,
-           failure_detail_code, stream_first_chunk_ms, stream_chunk_count,
-           stream_done_received, stream_interrupted, origin_stage,
-           origin_actor, attachments, outbound_msg_count,
-           outbound_token_est, outbound_msg_hashes, quality_flags,
-           quality_fix_actions, quality_score
-    FROM public.request_logs_hot
+-- 全部物化包进单事务：ON COMMIT DROP 依赖事务边界（psql autocommit 会
+-- 在每条 CREATE 后立刻提交并删除临时表）。
+BEGIN;
+
+\echo '== 1/5 物化 v1 hot 侧 =='
+CREATE TEMP TABLE _g2_v1_hot ON COMMIT DROP AS
+SELECT request_id, ts, tenant_id, gw_session_id, is_final_success,
+       latency_ms, prompt_tokens, completion_tokens,
+       cache_read_tokens, cache_write_tokens, reasoning_tokens,
+       image_tokens, audio_tokens, video_tokens, provider_tokens,
+       cost_usd, cost_display, cost_currency, credits_charged,
+       usage_source, error_kind, request_status,
+       upstream_status_code, upstream_finish_reason,
+       client_model, outbound_model, canonical_model, canonical_id,
+       credential_id, provider_id, application_id, api_key_id,
+       api_key_owner_user, end_user_id, customer_id, client_ip,
+       client_forwarded_for, agent_name, agent_type, client_protocol,
+       upstream_protocol, protocol_conversion::boolean AS protocol_conversion,
+       client_request_id, client_timeout, client_endpoint, egress_protocol,
+       task_type, is_auto_request, auto_decision, auto_confidence,
+       auto_profile, work_type, task_type_chosen, confidence_num,
+       model_chosen, routing_attempts, routing_summary,
+       parent_request_id, compression_strategy, compression_reason,
+       compression_meta, token_band, request_mode, client_profile,
+       affinity_hit, request_class, due_at, system_fingerprint,
+       identity_hash, response_checksum, request_preview,
+       transform_summary, response_preview, failure_stage,
+       failure_detail_code, stream_first_chunk_ms, stream_chunk_count,
+       stream_done_received, stream_interrupted, origin_stage,
+       origin_actor, attachments, outbound_msg_count,
+       outbound_token_est, outbound_msg_hashes, quality_flags,
+       quality_fix_actions, quality_score
+FROM public.request_logs_hot
+WHERE is_final_success IS TRUE
+  AND request_id IS NOT NULL
+  AND ts > now() - (:days || ' days')::interval;
+
+\echo '== 2/5 物化 v1 父表侧 =='
+CREATE TEMP TABLE _g2_v1_par ON COMMIT DROP AS
+SELECT request_id, ts, tenant_id, gw_session_id, is_final_success,
+       latency_ms, prompt_tokens, completion_tokens,
+       cache_read_tokens, cache_write_tokens, reasoning_tokens,
+       image_tokens, audio_tokens, video_tokens, provider_tokens,
+       cost_usd, cost_display, cost_currency, credits_charged,
+       usage_source, error_kind, request_status,
+       upstream_status_code, upstream_finish_reason,
+       client_model, outbound_model, canonical_model, canonical_id,
+       credential_id, provider_id, application_id, api_key_id,
+       api_key_owner_user, end_user_id, customer_id, client_ip,
+       client_forwarded_for, agent_name::text AS agent_name, agent_type::text AS agent_type, client_protocol,
+       upstream_protocol, protocol_conversion, client_request_id,
+       client_timeout, client_endpoint, egress_protocol,
+       task_type, is_auto_request, auto_decision, auto_confidence,
+       auto_profile, work_type, task_type_chosen, confidence_num,
+       model_chosen, routing_attempts, routing_summary,
+       parent_request_id, compression_strategy, compression_reason,
+       compression_meta, token_band, request_mode, client_profile,
+       affinity_hit, request_class, due_at, system_fingerprint,
+       identity_hash, response_checksum, request_preview,
+       transform_summary, response_preview, failure_stage,
+       failure_detail_code, stream_first_chunk_ms, stream_chunk_count,
+       stream_done_received, stream_interrupted, origin_stage,
+       origin_actor, attachments, outbound_msg_count,
+       outbound_token_est, outbound_msg_hashes, quality_flags,
+       quality_fix_actions, quality_score
+FROM public.request_logs
+WHERE is_final_success IS TRUE
+  AND request_id IS NOT NULL
+  AND ts > now() - (:days || ' days')::interval;
+
+\echo '== 3/5 物化 v1 bodies（hot∪父表，取最新） =='
+CREATE TEMP TABLE _g2_bodies_hot ON COMMIT DROP AS
+SELECT request_id, request_body, response_body, outbound_body, ts
+FROM public.request_logs_bodies_hot
+WHERE ts > now() - (:days + 1 || ' days')::interval;
+
+-- 父表 request_logs_bodies 不物化：当月分区为 columnar 存储，全/窗扫描
+-- 分钟级且回填窗口（7 天）与 bodies_hot 热窗（0-7 天）基本重合；已 promote
+-- 的临界行缺正文可接受（G1/G2/G3 对账均不涉正文，session_bodies 缺口与
+-- 该行 turns 缺失同源）。
+
+CREATE TEMP TABLE _g2_bodies ON COMMIT DROP AS
+SELECT DISTINCT ON (request_id)
+       request_id, request_body, response_body, outbound_body
+FROM _g2_bodies_hot
+ORDER BY request_id, ts DESC;
+
+\echo '== 4/5 物化已有 turns 的 request_id（双侧） =='
+CREATE TEMP TABLE _g2_has_turn ON COMMIT DROP AS
+SELECT DISTINCT request_id FROM public.session_turns_hot WHERE request_id IS NOT NULL
+UNION
+SELECT DISTINCT request_id FROM public.session_turns WHERE request_id IS NOT NULL;
+
+\echo '== 5/5 合成缺失集并灌入 outbox =='
+CREATE TEMP TABLE _g2_missing ON COMMIT DROP AS
+SELECT v.request_id, v.tenant_id, v.gw_session_id, b.request_body, b.response_body, b.outbound_body,
+       -- v1 全列以 jsonb 形态携带，供 payload 投影直接引用
+       to_jsonb(v) AS v1json
+FROM (
+    SELECT * FROM _g2_v1_hot
     UNION ALL
-    SELECT request_id, ts, tenant_id, gw_session_id, is_final_success,
-           latency_ms, prompt_tokens, completion_tokens,
-           cache_read_tokens, cache_write_tokens, reasoning_tokens,
-           image_tokens, audio_tokens, video_tokens, provider_tokens,
-           cost_usd, cost_display, cost_currency, credits_charged,
-           usage_source, error_kind, request_status,
-           upstream_status_code, upstream_finish_reason,
-           client_model, outbound_model, canonical_model, canonical_id,
-           credential_id, provider_id, application_id, api_key_id,
-           api_key_owner_user, end_user_id, customer_id, client_ip,
-           client_forwarded_for, agent_name, agent_type, client_protocol,
-           upstream_protocol, protocol_conversion, client_request_id,
-           client_timeout, client_endpoint, egress_protocol,
-           task_type, is_auto_request, auto_decision, auto_confidence,
-           auto_profile, work_type, task_type_chosen, confidence_num,
-           model_chosen, routing_attempts, routing_summary,
-           parent_request_id, compression_strategy, compression_reason,
-           compression_meta, token_band, request_mode, client_profile,
-           affinity_hit, request_class, due_at, system_fingerprint,
-           identity_hash, response_checksum, request_preview,
-           transform_summary, response_preview, failure_stage,
-           failure_detail_code, stream_first_chunk_ms, stream_chunk_count,
-           stream_done_received, stream_interrupted, origin_stage,
-           origin_actor, attachments, outbound_msg_count,
-           outbound_token_est, outbound_msg_hashes, quality_flags,
-           quality_fix_actions, quality_score
-    FROM public.request_logs
-),
-missing AS (
-    SELECT v1.*, b.request_body, b.response_body, b.outbound_body
-    FROM v1
-    LEFT JOIN bodies b ON b.request_id = v1.request_id
-    WHERE v1.is_final_success IS TRUE
-      AND v1.request_id IS NOT NULL
-      AND v1.ts > now() - (:days || ' days')::interval
-      AND NOT EXISTS (SELECT 1 FROM public.session_turns_hot t WHERE t.request_id = v1.request_id)
-      AND NOT EXISTS (SELECT 1 FROM public.session_turns t      WHERE t.request_id = v1.request_id)
-)
+    SELECT * FROM _g2_v1_par
+) v
+LEFT JOIN _g2_bodies b ON b.request_id = v.request_id
+WHERE NOT EXISTS (SELECT 1 FROM _g2_has_turn t WHERE t.request_id = v.request_id);
+
 INSERT INTO public.session_mirror_outbox
     (tenant_id, request_id, session_id, source, fail_reason, payload)
 SELECT
@@ -109,105 +142,23 @@ SELECT
     COALESCE(NULLIF(m.gw_session_id, ''), 'backfill:' || m.request_id),
     'backfill',
     'g2_backfill',
-    jsonb_build_object(
-        'request_id',             m.request_id,
-        'event_at',               m.ts,
-        'tenant_id',              COALESCE(m.tenant_id, 'default'),
-        'gw_session_id',          NULLIF(m.gw_session_id, ''),
-        'success',                m.is_final_success,
-        'latency_ms',             m.latency_ms,
-        'prompt_tokens',          m.prompt_tokens,
-        'completion_tokens',      m.completion_tokens,
-        'cache_read_tokens',      m.cache_read_tokens,
-        'cache_write_tokens',     m.cache_write_tokens,
-        'reasoning_tokens',       m.reasoning_tokens,
-        'image_tokens',           m.image_tokens,
-        'audio_tokens',           m.audio_tokens,
-        'video_tokens',           m.video_tokens,
-        'provider_tokens',        m.provider_tokens,
-        'cost_usd',               m.cost_usd,
-        'cost_display',           m.cost_display,
-        'cost_currency',          m.cost_currency,
-        'credits_charged',        m.credits_charged,
-        'usage_source',           m.usage_source,
-        'error_kind',             m.error_kind,
-        'request_status',         m.request_status,
-        'upstream_status_code',   m.upstream_status_code,
-        'upstream_finish_reason', m.upstream_finish_reason,
-        'client_model',           m.client_model,
-        'outbound_model',         m.outbound_model,
-        'canonical_model',        m.canonical_model,
-        'canonical_id',           m.canonical_id,
-        'credential_id',          m.credential_id,
-        'provider_id',            m.provider_id,
-        'application_id',         m.application_id,
-        'api_key_id',             m.api_key_id,
-        'api_key_owner_user',     m.api_key_owner_user,
-        'end_user_id',            m.end_user_id,
-        'customer_id',            m.customer_id,
-        'client_ip',              m.client_ip,
-        'client_forwarded_for',   m.client_forwarded_for,
-        'agent_name',             m.agent_name,
-        'agent_type',             m.agent_type,
-        'client_protocol',        m.client_protocol,
-        'upstream_protocol',      m.upstream_protocol,
-        'protocol_conversion',    m.protocol_conversion,
-        'client_request_id',      m.client_request_id,
-        'client_timeout',         m.client_timeout,
-        'client_endpoint',        m.client_endpoint,
-        'egress_protocol',        m.egress_protocol,
-        'task_type',              m.task_type,
-        'is_auto_request',        m.is_auto_request,
-        'auto_decision',          m.auto_decision,
-        'auto_confidence',        m.auto_confidence,
-        'auto_profile',           m.auto_profile,
-        'work_type',              m.work_type,
-        'task_type_chosen',       m.task_type_chosen,
-        'confidence_num',         m.confidence_num,
-        'model_chosen',           m.model_chosen,
-        'routing_attempts',       m.routing_attempts,
-        'routing_summary',        m.routing_summary,
-        'parent_request_id',      m.parent_request_id,
-        'compression_strategy',   m.compression_strategy,
-        'compression_reason',     m.compression_reason,
-        'compression_meta',       m.compression_meta,
-        'token_band',             m.token_band,
-        'request_mode',           m.request_mode,
-        'client_profile',         m.client_profile,
-        'affinity_hit',           m.affinity_hit,
-        'request_class',          m.request_class,
-        'due_at',                 m.due_at,
-        'system_fingerprint',     m.system_fingerprint,
-        'identity_hash',          m.identity_hash,
-        'response_checksum',      m.response_checksum,
-        'request_preview',        m.request_preview,
-        'transform_summary',      m.transform_summary,
-        'response_preview',       m.response_preview,
-        'failure_stage',          m.failure_stage,
-        'failure_detail_code',    m.failure_detail_code,
-        'stream_first_chunk_ms',  m.stream_first_chunk_ms,
-        'stream_chunk_count',     m.stream_chunk_count,
-        'stream_done_received',   m.stream_done_received,
-        'stream_interrupted',     m.stream_interrupted,
-        'origin_stage',           m.origin_stage,
-        'origin_actor',           m.origin_actor,
-        'attachments',            m.attachments,
-        'outbound_msg_count',     m.outbound_msg_count,
-        'outbound_token_est',     m.outbound_token_est,
-        'outbound_msg_hashes',    m.outbound_msg_hashes,
-        'quality_flags',          m.quality_flags,
-        'quality_fix_actions',    m.quality_fix_actions,
-        'quality_score',          m.quality_score,
-        'request_body',           CASE WHEN m.request_body  IS NULL THEN NULL ELSE m.request_body::text  END,
-        'response_body',          CASE WHEN m.response_body IS NULL THEN NULL ELSE m.response_body::text END,
-        'outbound_body',          m.outbound_body
+    m.v1json
+    || jsonb_build_object(
+        'event_at',           m.v1json -> 'ts',
+        'success',            m.v1json -> 'is_final_success',
+        'request_body',       CASE WHEN m.request_body  IS NULL THEN NULL ELSE m.request_body::text  END,
+        'response_body',      CASE WHEN m.response_body IS NULL THEN NULL ELSE m.response_body::text END,
+        'outbound_body',      m.outbound_body
     )
-FROM missing m
+    - 'ts' - 'is_final_success' - 'id'
+FROM _g2_missing m
 ON CONFLICT (request_id) DO NOTHING;
 
--- 结果反馈：登记行数与重放前的 pending 深度
+-- 结果反馈：登记行数与当前 pending 深度
 SELECT 'backfill_rows' AS k, count(*)::text AS v
 FROM public.session_mirror_outbox WHERE source = 'backfill'
 UNION ALL
 SELECT 'pending_now', count(*)::text
 FROM public.session_mirror_outbox WHERE status = 'pending';
+
+COMMIT;

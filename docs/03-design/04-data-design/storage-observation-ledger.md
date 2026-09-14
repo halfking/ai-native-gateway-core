@@ -85,3 +85,34 @@ GLOBAL_G2|v1_final_missing_turns_24h=258|verdict=FAIL
 ### E5 实证（Round 1b 抓到首个 G1-cost 漂移样本）
 
 `gw_c8879719…/13747961fb123b68f911b080aa146b25`：v1 `0.00001870` vs v2 `0.000019`（turns 列 numeric(14,6) 写入舍入）。处置见例外类 E5 行。
+
+### Round 2 —— 2026-09-15 03:56 (+08)，GAP-2 闭环后首轮，**PASS —— GLOBAL_G2 归零，7 天观察期正式起算**
+
+前置闭环（2026-09-15 02:30-03:56，commit 6df4de85d，本机部署 git_sha=6df4de85 / build_seq=2118）：
+
+1. **GAP-2 落地（方案对比定案：失败路径 outbox 化）**：新迁移 712 建 `session_mirror_outbox`（pending→claimed→DELETE|退避|dead 状态机、request_id 唯一幂等、RLS 对齐 630）；hook 两条失败路径（8 槽满/写失败）改为持久登记（payload=完整 RequestLogEntry JSON，独立 500ms 预算、不占 8 槽，登记失败降级 in-proc backlog 保持 GAP-2 前行为）；重放器（internal/sessionv2mirror/replay.go，FOR UPDATE SKIP LOCKED + 指数退避 + claim lease，gate 与实时 hook 逐条一致）随网关启动。全量 outbox 化方案被否：session_aggregate_outbox 的 payload 是 SessionUpdate 聚合快照、重放不写 turns，无法承载；且 100% 写两遍与存储优化目标相悖。payload 自带全量事实，S4 停写后重放不依赖 v1。
+2. **历史回填**：`scripts/audit/mirror_outbox_backfill.sql` 把 7 天窗口 v1 终态缺 turns 行（父表∪hot 双侧）按 entry json tag 投影灌入同一张表，reaper 无差别消化。**546+3 行全部回补，outbox 清空**。工程注记：本机 PG 对「RLS 分区父表 UNION ALL 多表组合」触发 `invalid perminfoindex 0 in RTE with relid 0` planner 错误，脚本改为 RLS/分区表逐张单表物化临时表后在临时表间合成；psql autocommit 下 ON COMMIT DROP 需 BEGIN/COMMIT 包裹。
+3. **711 迁移应用**：`session_turns.cost_usd` numeric(12,6)→(14,8)（cost_display 为 double precision 无需动）；被 710 视图（request_logs_with_current_month，rule _RETURN）与 640 视图（session_turns_with_current_month）依赖，迁移内 DROP 后分别由 db.ensure（canonicalV2DDL 单一契约源）与 640 同款体内联重建。配套 `turns_cost_precision_backfill.sql` numeric 直拷回填 4651 行，**双写期 cost 漂移清零**（remaining_drift=0），G1-cost 的 ≤1e-6 临时容差自此不再被触发。
+4. **并行线干扰实录**：外部并行线在本轮部署窗口（03:11 起，commit 2aa80828=build_seq 2118 撞号）持有构建锁并覆盖 8782；其运行期（03:43-47）按 GAP-2 前行为再产生 3 行缺失，已被本轮幂等回填兜回。撞号与 bundle 互踩再次印证：对账/验收前必须核对 /healthz 的 git_sha（本轮 6df4de85），勿信 build_seq/tag。
+
+本轮结果：
+
+```
+sid|class|v1|v2|only_v1|only_v2|G1(tok,cost,succ,cred)|G2_final_missing|G3_recent_v2only|verdict
+gw_7a19bfa5-27a1-4137-bd58-0f1dceb35c23|biz_multi|597|715|33|151|0,0,0,0|0|0|PASS
+gs_gw_7a19bfa5-27a1-4137-bd58-0f1dceb35c23|biz_multi|175|180|31|36|0,0,0,0|0|0|PASS
+gw_98bfbafe-3a03-48e5-a747-2e4b1ccfbc34|biz_multi|73|68|5|0|0,0,0,0|0|0|PASS
+gw_8dd3d88c-1cca-4a40-b47d-801c7026a7bd|biz_multi|54|50|4|0|0,0,0,0|0|0|PASS
+gw_8c1e23e2-ca3c-495b-83e4-512b534bdda4|loop_single|1|1|0|0|0,0,0,0|0|0|PASS
+gw_f37a2732-6b41-4071-8ebe-b6a42f0e1fd2|loop_single|1|1|0|0|0,0,0,0|0|0|PASS
+gw_c8879719-4fd3-49fd-b890-78587758d01f|loop_single|1|1|0|0|0,0,0,0|0|0|PASS
+sys:probe:cred35:20260914|sys|0|1745|0|1745|0,0,0,0|0|1745|PASS
+sys:probe:cred11:20260914|sys|0|1532|0|1532|0,0,0,0|0|1532|PASS
+sys:probe:cred50:20260914|sys|0|450|0|450|0,0,0,0|0|450|PASS
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-14T19:56:52Z
+```
+
+- **GLOBAL_G2 首次归零**（24h 窗口 0/6900+），7 天零漂移观察期**自 2026-09-15 起算**，达标 earliest 2026-09-22。
+- biz_multi 会话的 only_v1=33/31/5/4 与 only_v2=151/36 为非终态行（is_final_success=FALSE 的 in_progress/失败占位行，端点不分终态故显示差集；SQL 侧 G2/G3 分类均 0）——与 Round 1 一致，非漂移。
+- E5 例外自此关闭：cost 双侧 14,8 精度对齐，G1-cost=0 漂移实证。
