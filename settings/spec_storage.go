@@ -126,6 +126,23 @@ func StorageSpecs() []*Spec {
 			HotReload:       true,
 		},
 		{
+			// 存储优化方案 v2 S3 波1 读端灰度（plan §4-S3，纯代码无 DDL）。
+			// 开启后 admin 日志列表/详情（/api/logs、/api/logs/{id}）的 FROM
+			// 直读 session_turns 家族原生投影（复用 710 视图 session 分支的
+			// 113 列契约），不再经过视图 v1 分支与反连接；API 响应形状不变。
+			// 默认关闭走视图。镜像链启用前的 request_logs 历史行在原生模式
+			// 下不可见，停写 + TTL 退役后边界消解（样板注释已登记）。
+			Key:             "storage.admin_logs_native_turns_read",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategoryStorage,
+			Default:         false,
+			Description:     "admin 日志读端原生 session_turns（S3 波1）",
+			DescriptionLong: "开启后 /api/logs 列表与详情直接读 session_turns(_hot) 的 710 会话分支投影（113 列与视图逐列同形），跳过视图的 v1 冻结分支 UNION ALL 与反连接开销。响应契约不变，可随时关闭回切视图。注意：镜像链启用前的 request_logs 历史窗口在原生模式下不可见。",
+			DangerLevel:     Warning,
+			HotReload:       true,
+		},
+		{
 			Key:             "log.delete_days",
 			Type:            TypeInt,
 			Scope:           ScopePlatform,
