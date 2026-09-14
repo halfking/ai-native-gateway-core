@@ -16,6 +16,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
@@ -191,6 +192,12 @@ func saveCapturedPending(store *pending.Store, pc *streaming.PendingCapturer, re
 //	LLMGatewayAutoLLMModel    model name (default "gpt-4o-mini")
 //	LLMGatewayAutoLLMTimeout  seconds (default 3)
 func buildAutoLLMCaller() autoroute.LLMCaller {
+	// The Prometheus mirror hooks default to no-ops and nothing else assigns
+	// them; without this wiring llm_gateway_llm_classifier_* stays at zero
+	// forever (audit 2026-09-15: the family had never been fed in production).
+	autoroute.RecordLLMMetricCall = telemetry.RecordLLMClassifierCall
+	autoroute.RecordLLMCircuitBreakerState = telemetry.RecordLLMCircuitBreakerState
+
 	caller, enabled := autoroute.BuildHTTPLlmCallerFromEnv(os.Getenv)
 	if !enabled {
 		return autoroute.DisabledCaller{}
