@@ -70,7 +70,7 @@ func TestGoalRunHandler_ServeHTTP_Success(t *testing.T) {
 	)
 
 	mock.ExpectQuery(`SELECT .+ FROM goal_runs`).
-		WithArgs("gr_test123").
+		WithArgs("gr_test123", "tenant_abc").
 		WillReturnRows(rows)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/goal-runs/gr_test123", nil)
@@ -223,7 +223,7 @@ func TestGoalRunHandler_ServeHTTP_NotFound(t *testing.T) {
 	handler := newAuthedGoalRunHandler(mock, "tenant_abc")
 
 	mock.ExpectQuery(`SELECT .+ FROM goal_runs`).
-		WithArgs("gr_notfound").
+		WithArgs("gr_notfound", "tenant_abc").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/goal-runs/gr_notfound", nil)
@@ -255,41 +255,20 @@ func TestGoalRunHandler_ServeHTTP_TenantMismatch(t *testing.T) {
 	// 验证后的 key 属于 tenant_attacker，而 run 属于 tenant_owner → 403。
 	handler := newAuthedGoalRunHandler(mock, "tenant_attacker")
 
-	rows := pgxmock.NewRows([]string{
-		"id", "tenant_id", "api_key_id", "root_goal_id",
-		"root_session_id", "current_session_id",
-		"root_request_id", "last_request_id", "last_durable_task_id",
-		"status", "policy_version", "policy_snapshot",
-		"instruction_hash", "redacted_instruction_summary",
-		"turn_count", "follow_up_count", "retry_count",
-		"model_switch_count", "handoff_count", "tokens_used",
-		"last_progress_hash",
-		"deadline_at", "lease_owner", "lease_until", "version",
-		"terminal_reason", "created_at", "updated_at", "completed_at",
-	}).AddRow(
-		"gr_test123", "tenant_owner", "", "",
-		"session_root", "session_root",
-		"req_root", "", "",
-		"running", 1, []byte(`{}`),
-		"hash", "",
-		0, 0, 0,
-		0, 0, int64(0),
-		"",
-		time.Now().Add(time.Hour), "", time.Time{}, int64(1),
-		"", time.Now(), time.Now(), time.Time{},
-	)
-
+	// R29：查询层带 tenant 谓词后，攻击者租户（tenant_attacker）在 SQL 层
+	// 即 0 行 → 404（不泄露 run 存在性，与 hostedtask 约定一致）；
+	// 归属不匹配的行根本不会返回给 handler 做 403 比对。
 	mock.ExpectQuery(`SELECT .+ FROM goal_runs`).
-		WithArgs("gr_test123").
-		WillReturnRows(rows)
+		WithArgs("gr_test123", "tenant_attacker").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/goal-runs/gr_test123", nil)
 	req.Header.Set("Authorization", "Bearer sk-test")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	if w.Code != http.StatusForbidden {
-		t.Errorf("expected status 403, got %d", w.Code)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", w.Code)
 	}
 
 	var errResp ErrorResponse
@@ -297,8 +276,8 @@ func TestGoalRunHandler_ServeHTTP_TenantMismatch(t *testing.T) {
 		t.Fatalf("failed to decode error response: %v", err)
 	}
 
-	if errResp.Code != "forbidden" {
-		t.Errorf("expected error code 'forbidden', got '%s'", errResp.Code)
+	if errResp.Code != "not_found" {
+		t.Errorf("expected error code 'not_found', got '%s'", errResp.Code)
 	}
 }
 
