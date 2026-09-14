@@ -503,3 +503,14 @@ LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS（默认 24h）释放 floor 摘出行）�
 #5 writeHealth 乐观并发闸（EvidenceAt 失败结论不过期覆盖）。701 未落账本
 条目为历史遗漏，列定义见 701 迁移文件头注释。
 
+## 2026-09-14T06:35:59Z — deploy 245 build_seq 2110 (b4ab9d1b)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 704 | `704_plan_quota_probe_backoff.sql` | `af2231f95613f027190a7cf2ff90c5ef5146d03666177eceaa0ac87e58540462` | applied+verified |
+| 705 | `705_request_logs_reattach_detached_partitions.sql` | `fa6c1b5419fd66ea80e654e0c57129a68b92ca821d4913303bb84518424be5fc` | applied+verified |
+| 706 | `706_session_family_s1a.sql` | `7cfd76f3b9ec6c3491de0763ca396b59a21cc2d438fe9349cd4ca0f87be2cbb8` | applied+verified |
+| 707 | `707_session_turns_s1a.sql` | `40f048aae8bf0cb255cd54cfaf107ba6f9c0f21196173597ccc0a4a0a17ab87e` | applied+verified |
+| 708 | `708_session_bodies_s1a.sql` | `6f1f8d3c931f207c2c1833206e3db2831d471fdf06b7273b359c5567b33a8dd6` | applied+verified |
+| 709 | `709_work_type_route_coverage.sql` | `14843d50eded9e8bd99ac04bd4525b192a5a710e7f66653e13f6fcc3ab652d53` | applied+verified |
+
