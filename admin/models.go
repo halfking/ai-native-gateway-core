@@ -16,7 +16,7 @@ import (
 )
 
 // Alias create/bulk-import statements. 2026-09-12: both used to arbitrate on
-// the expression (raw_name, COALESCE(quantization,''), COALESCE(surface,'')),
+// the expression (raw_name, COALESCE(quantization,”), COALESCE(surface,”)),
 // but model_aliases has no such unique index — only
 // uq_model_aliases_canonical_raw (canonical_id, raw_name) — so every create
 // failed with 42P10 since 2cef36255 introduced them. Rewritten onto the real
@@ -935,12 +935,12 @@ func (h *Handler) createAliasesBulk(w http.ResponseWriter, r *http.Request, mode
 		//nolint:errcheck // best-effort demote; the upsert already succeeded
 		h.db.Exec(ctx, aliasDemoteCompetitorsSQL, name, modelID)
 		created = append(created, map[string]any{
-			"id":           aliasID,
-			"canonical_id": modelID,
-			"raw_name":     name,
-			"status":       "active",
+			"id":              aliasID,
+			"canonical_id":    modelID,
+			"raw_name":        name,
+			"status":          "active",
 			"client_profiles": req.ClientProfiles,
-			"notes":        notes,
+			"notes":           notes,
 		})
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -999,7 +999,7 @@ func (h *Handler) patchAlias(w http.ResponseWriter, r *http.Request, canonicalID
 
 func (h *Handler) updateModelTags(w http.ResponseWriter, r *http.Request, id int) {
 	var req struct {
-		Tags json.RawMessage `json:"tags"`
+		Tags []string `json:"tags"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -1007,15 +1007,41 @@ func (h *Handler) updateModelTags(w http.ResponseWriter, r *http.Request, id int
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.Exec(ctx, `UPDATE models_canonical SET tags = $1 WHERE id = $2`, req.Tags, id)
+	// tags is TEXT[] (models_canonical): bind a []string, not the raw JSON
+	// bytes. The previous json.RawMessage binding sent a bytea into a text[]
+	// column, the UPDATE failed on the type mismatch, and the swallowed
+	// error (nolint:errcheck) still returned 200 "updated" — every write
+	// silently no-oped (2026-09-14 auto-matching audit O1′-b discovery).
+	res, err := h.db.Exec(ctx,
+		`UPDATE models_canonical SET tags = $1, tags_updated_at = NOW() WHERE id = $2`,
+		req.Tags, id)
+	if err != nil {
+		slog.Warn("updateModelTags: exec failed", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if res.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "model not found")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
 
 func (h *Handler) resetModelTags(w http.ResponseWriter, r *http.Request, id int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.Exec(ctx, `UPDATE models_canonical SET tags = '[]'::jsonb WHERE id = $1`, id)
+	// Same TEXT[] binding discipline as updateModelTags: the previous
+	// `'[]'::jsonb` literal could not assign into a text[] column either.
+	res, err := h.db.Exec(ctx,
+		`UPDATE models_canonical SET tags = '{}', tags_updated_at = NOW() WHERE id = $1`, id)
+	if err != nil {
+		slog.Warn("resetModelTags: exec failed", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "reset failed")
+		return
+	}
+	if res.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "model not found")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "reset"})
 }
