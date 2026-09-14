@@ -136,7 +136,14 @@ func (c *CircuitBreakerCaller) Call(ctx context.Context, prompt string) (string,
 		c.consecutive = 0
 		c.openUntil = time.Time{}
 	}
+	consecutive := c.consecutive
+	open := c.consecutive >= c.MaxFailures && now.Before(c.openUntil)
 	c.mu.Unlock()
+
+	// R29 审计：State() 无生产调用方，两个 breaker gauge（*_state /
+	// *_consecutive_failures）此前恒 0——bac8b6e9e 接线了函数指针却
+	// 没有数据源。在这里镜像上报，Call 是生产唯一入口。
+	RecordLLMCircuitBreakerState(consecutive, open)
 
 	return resp, err
 }
