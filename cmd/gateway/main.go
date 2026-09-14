@@ -858,6 +858,10 @@ func main() {
 	// 后台回填 session_turns.digest jsonb envelope（存量 NULL 行）。与 reaper
 	// 同一生命周期：dbConn 就绪后启动，pools.CloseAll 前排空 in-flight 批。
 	var sessionDigestBackfillForShutdown any
+	// sessionMirrorOutboxReaperForShutdown — spec §12 GAP 2 closure (migration
+	// 712, 2026-09-15): durable replay for failed sessionv2mirror shadow
+	// writes. Same lifecycle as the aggregate outbox reaper.
+	var sessionMirrorOutboxReaperForShutdown any
 	// routingOptimizerForShutdown — P2.2 Track B: 优雅关闭时在 DB pool
 	// 关闭前排空异步反馈批量队列（FlushFeedback）。buildRoutingOptimizer
 	// 成功时（ROUTING_OPT_ENABLED=true 且有 DB pool）非 nil，否则保持 nil
@@ -2515,6 +2519,18 @@ func main() {
 		sessionAggregateOutboxReaperForShutdown = startSessionAggregateOutboxReaper(context.Background(), dbConn.Pool())
 		if sessionAggregateOutboxReaperForShutdown != nil {
 			slog.Info("session aggregate outbox reaper started (FOR UPDATE SKIP LOCKED, 30s tick, batch=100, max_attempts=10)")
+		}
+
+		// Spec §12 GAP 2 closure (2026-09-15, migration 712): durable replay
+		// queue for the sessionv2mirror shadow write. Failed mirror writes
+		// (timeout / DB error / all 8 slots busy) register in
+		// session_mirror_outbox with the full entry JSON; this reaper drains
+		// them so a V2 outage or slot exhaustion no longer silently drops
+		// turns (observed 3.71%/24h on the local deployment). Bound to the
+		// gateway lifecycle context like the aggregate reaper above.
+		sessionMirrorOutboxReaperForShutdown = startSessionMirrorOutboxReaper(context.Background(), dbConn.Pool(), sessionV2Writer)
+		if sessionMirrorOutboxReaperForShutdown != nil {
+			slog.Info("session mirror outbox reaper started (GAP-2 replay: FOR UPDATE SKIP LOCKED, 30s tick, batch=100, max_attempts=10)")
 		}
 
 		// turn-digest 第二阶段 (2026-09-04): 回填存量 session_turns.digest
@@ -7186,6 +7202,9 @@ func main() {
 		// outbox rows are enqueued) and BEFORE pools.CloseAll (so the final
 		// tick's DB transaction can still reach the server).
 		stopSessionAggregateOutboxReaper(sessionAggregateOutboxReaperForShutdown)
+		// GAP-2 closure (migration 712): drain the mirror outbox reaper.
+		// Same ordering contract as the aggregate reaper above.
+		stopSessionMirrorOutboxReaper(sessionMirrorOutboxReaperForShutdown)
 		// turn-digest 第二阶段: 排空回填批。同样必须在 pools.CloseAll 之前，
 		// 让 in-flight 批的事务还能到达数据库。
 		stopSessionDigestBackfill(sessionDigestBackfillForShutdown)
