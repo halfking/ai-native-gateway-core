@@ -35,7 +35,14 @@ import (
 // The hook is a no-op when:
 //   - writer is nil,
 //   - the feature flag disables V2 shadow writes,
-//   - the entry has no GwSessionID (no session context).
+//   - the entry is a non-terminal (in_progress) state.
+//
+// 存储优化方案 v2 §3-D4：无 gw_session_id 的流量（探针/系统/匿名）不再被
+// 丢弃，而是合成 client_type='system' 的系统会话（session_id=
+// 'sys:{kind}:{cred|prov}:{yyyymmdd}'，按日聚合）继续走同一条 turns 写链——
+// S4 停写 request_logs 后这类流量才有落点。合成路径跳过 title/summary
+// 排除与 session_dim 维护，其余闸门（终态、shadow 开关、超时预算）与常规
+// 路径一致。
 //
 // On real DB errors it logs WARN with the request_id and continues.
 //
@@ -52,7 +59,7 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 	}
 
 	return func(entry *telemetry.RequestLogEntry) {
-		if entry == nil || entry.GwSessionID == nil || *entry.GwSessionID == "" {
+		if entry == nil {
 			return
 		}
 
@@ -65,10 +72,24 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 			return
 		}
 
+		// 存储优化方案 v2 §3-D4：无会话头流量合成系统会话（探针统计与计费
+		// 归因随 turns 走单事实管道，plan §9 风险行 2 的前置落点）。
+		synthetic := false
+		sessionID := ""
+		if entry.GwSessionID == nil || *entry.GwSessionID == "" {
+			sessionID = SyntheticSessionID(entry)
+			synthetic = true
+		} else {
+			sessionID = *entry.GwSessionID
+		}
+
 		// Gateway-internal title/summary loopbacks are not user turns. Business
 		// auto-route requests also set IsAutoRequest, but carry TaskType and must
 		// be mirrored so the task dimension is queryable from session_turns.
-		if isInternalAutoEntry(entry) {
+		// Synthetic sessions keep internal loopbacks（计费事实完整性，D7 前提）；
+		// kind 已在 SyntheticSessionID 中标为 internal，分析侧按 client_type
+		// 过滤。
+		if !synthetic && isInternalAutoEntry(entry) {
 			return
 		}
 
@@ -80,9 +101,14 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 		}
 
 		// Convert the telemetry entry to a V2 ProcessedRequest
-		req := entryToProcessedRequest(entry)
+		req := entryToProcessedRequest(entry, sessionID)
 		if req == nil {
 			return
+		}
+		if synthetic {
+			// D4：系统会话在 sessions.client_type 上显式标 'system'，分析侧
+			// 过滤面（plan §3-D4）。
+			req.ClientType = "system"
 		}
 
 		// Bound the shadow write so a slow DB cannot stall telemetry.
@@ -102,7 +128,7 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 		// settings_kv['sessions_v2.write_timeout_ms'].
 		timeout := time.Duration(settings.GetPlatformInt("sessions_v2.write_timeout_ms", defaultShadowWriteTimeoutMs)) * time.Millisecond
 
-		run := func() { runShadowWrite(writer, req, entry, dims, timeout) }
+		run := func() { runShadowWrite(writer, req, entry, dims, timeout, synthetic) }
 		if !shadowWriteDispatchAsync {
 			run()
 			return
@@ -150,33 +176,40 @@ var shadowWriteDispatchAsync = true
 
 // runShadowWrite executes one best-effort shadow write with its own timeout
 // budget. Called either inline (tests) or on a semaphore-bounded goroutine.
+// synthetic marks a D4 system session (no gw_session_id traffic): the V1
+// session_dim dimension table stays untouched for it.
 //
 // Race note: this may run after the telemetry worker called
 // entry.releaseBodies() — that nils RequestBody/ResponseBody/OutboundBody,
 // and neither the dims writer nor the V2 writer reads those fields (req is
 // the deep-parsed snapshot), so the hand-off is race-free.
-func runShadowWrite(w V2Writer, req *v2.ProcessedRequest, entry *telemetry.RequestLogEntry, dims []DimWriter, timeout time.Duration) {
+func runShadowWrite(w V2Writer, req *v2.ProcessedRequest, entry *telemetry.RequestLogEntry, dims []DimWriter, timeout time.Duration, synthetic bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	// session_dim 维度维护（任务/项目/属主/客户端）：与 V2 写入同一
 	// 超时预算，独立 best-effort —— V2 写失败也不影响维度更新。
-	for _, dim := range dims {
-		if dim == nil {
-			continue
-		}
-		if err := dim.UpsertSessionDim(ctx, entry); err != nil {
-			slog.Warn("sessionv2mirror: session_dim upsert failed",
-				"request_id", entry.RequestID,
-				"session_id", *entry.GwSessionID,
-				"error", err)
+	// 合成系统会话不维护 V1 维度表（session_dim 以 gw_session_id 为键，
+	// 无会话头流量本就缺席于此）。
+	if !synthetic {
+		for _, dim := range dims {
+			if dim == nil {
+				continue
+			}
+			if err := dim.UpsertSessionDim(ctx, entry); err != nil {
+				slog.Warn("sessionv2mirror: session_dim upsert failed",
+					"request_id", entry.RequestID,
+					"session_id", req.SessionID,
+					"error", err)
+			}
 		}
 	}
 
 	if err := w.Write(ctx, req); err != nil {
 		slog.Warn("sessionv2mirror: V2 shadow write failed",
 			"request_id", entry.RequestID,
-			"session_id", *entry.GwSessionID,
+			"session_id", req.SessionID,
+			"synthetic", synthetic,
 			"error", err)
 		// P0-2 (audit §3.6 R-3.3): count this lost-row event so the
 		// Grafana rule in deploy/monitoring/grafana-alerts/shadow-write-failures.yaml
@@ -200,8 +233,12 @@ func runShadowWrite(w V2Writer, req *v2.ProcessedRequest, entry *telemetry.Reque
 // entryToProcessedRequest converts a telemetry.RequestLogEntry to a
 // v2.ProcessedRequest. This is the bridge between the V1 telemetry
 // pipeline and the V2 writer.
-func entryToProcessedRequest(entry *telemetry.RequestLogEntry) *v2.ProcessedRequest {
-	if entry == nil || entry.GwSessionID == nil {
+//
+// sessionID is the resolved session key: the entry's GwSessionID for regular
+// traffic, or the D4 synthetic system-session id for no-header traffic (pass
+// SyntheticSessionID(entry); empty entries are rejected).
+func entryToProcessedRequest(entry *telemetry.RequestLogEntry, sessionID string) *v2.ProcessedRequest {
+	if entry == nil || sessionID == "" {
 		return nil
 	}
 
@@ -210,7 +247,7 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry) *v2.ProcessedRequ
 		eventTime = *entry.EventAt
 	}
 	req := &v2.ProcessedRequest{
-		SessionID:       *entry.GwSessionID,
+		SessionID:       sessionID,
 		TenantID:        entry.TenantID,
 		RequestID:       entry.RequestID,
 		Timestamp:       eventTime,
@@ -282,7 +319,7 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry) *v2.ProcessedRequ
 	}
 	// Copy only the audited, body-free compression metadata. Raw request or
 	// response payloads are intentionally excluded from the V2 mirror.
-	for key, value := range safeCompressionMeta(entry.CompressionMeta, entry.TenantID, *entry.GwSessionID) {
+	for key, value := range safeCompressionMeta(entry.CompressionMeta, entry.TenantID, sessionID) {
 		if req.CompressionMeta == nil {
 			req.CompressionMeta = make(map[string]interface{})
 		}

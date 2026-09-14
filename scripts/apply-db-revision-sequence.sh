@@ -362,6 +362,21 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/706_session_family_s1a.sql"
   "$ROOT_DIR/sql/migrations/startup/707_session_turns_s1a.sql"
   "$ROOT_DIR/sql/migrations/startup/708_session_bodies_s1a.sql"
+  # 2026-09-14 存储优化方案 v2 S2（docs/03-design/04-data-design/
+  # storage-optimization-plan.md §3 D6/§4）：request_logs_with_current_month
+  # 同名视图体重建为 session 家族拼装体——session_turns(_hot) 113 列会话投影
+  # （缺源列 NULL 补位，列映射契约登记在文件头）UNION ALL v1 体（700 形态
+  # 冻结）× 反连接（request_id 已入 turns 的 v1 行不再输出，双写期不重复
+  # 计数）。约 40 个读方零改动切到会话族读路径。纯 CREATE OR REPLACE VIEW
+  # （113 列名称/顺序/类型逐一保持，显式 CAST 钉类型），幂等收敛（viewdef
+  # 含 session_turns 即跳过；session_turns 缺表保留 v1 体由 db.ensure 兜底），
+  # down 恢复 700 双形态体。文件自带 schema_migrations INSERT(695-705 定式)。
+  # 编号注记:方案原文编号 709 已被共享账本占用(2026-09-14 14:19 并行线
+  # work_type route coverage,裸 '709'),按 699→700 先例重编号 710;编号前已
+  # 查本机双账本 710 空闲(schema_migrations/sequences 均 0 命中)。
+  # Go 镜像体:db/request_logs_view_schema.go canonicalV2DDL(启动自愈/升级
+  # 同体),等价性由 db/view_schema_v2_contract_test.go 校验。
+  "$ROOT_DIR/sql/migrations/startup/710_request_logs_view_session_family_v2.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
