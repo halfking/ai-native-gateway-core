@@ -394,6 +394,12 @@ intentional_function_chains=(
   'promote_request_wal_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
   'promote_credential_model_index_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
   'promote_routing_decision_log_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
+  # 705 redefines ensure_request_logs_partition (still the 694 body) so the
+  # ensure tick re-attaches detached monthly partition shells via
+  # sync_partition_columns before deciding "already exists"; 705 must stay
+  # the later entry (same landed-without-registration abort pattern as 703,
+  # 2026-09-14 deploy-local incident).
+  'ensure_request_logs_partition|694_partition_ensure_timezone.sql|705_request_logs_reattach_detached_partitions.sql|'
 )
 redefined_functions="$(
   for file in "${files[@]}"; do

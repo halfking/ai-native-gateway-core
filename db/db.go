@@ -230,6 +230,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureWorkTypeSchema(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-14 migration 709: work_type 路由补齐 4 个无路由任务类
+	// (code_audit/function_call/intent_classification/planning)。V2 漏斗只给
+	// 有路由的类全量候选池,无路由类必走 48h 兜底池(auto-matching 审计 O1′-c,
+	// 人工已确认)。幂等 seed,管理员已配置的路由集不被回改。
+	if err := db.ensureWorkTypeRouteCoverage(migCtx); err != nil {
+		return err
+	}
 	if err := db.EnsureTenantsTable(migCtx); err != nil {
 		return err
 	}
@@ -1881,6 +1888,86 @@ func (d *DB) ensureWorkTypeSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("work_type_config schema ensured (22 seed rows idempotent)")
+	return nil
+}
+
+// ensureWorkTypeRouteCoverage mirrors sql/migrations/startup/
+// 709_work_type_route_coverage.sql. 2026-09-14 auto-matching audit O1′-c
+// (human-confirmed): the V2 funnel (WorkTypeRouteStore) only grants the full
+// candidate pool to l1_task_type values with enabled routes; classes without
+// routes always draw from the 48h fallback pool. Production had no routes for
+// code_audit / function_call / intent_classification / planning.
+//
+// Idempotent: config rows use ON CONFLICT DO NOTHING; route blocks only seed
+// when the work_type_key has NO routes at all (491 "administrator-managed
+// route sets remain untouched" convention), so rebooting never reverts
+// operator edits. Stamps schema_migrations version 706 (dual-ledger
+// convention, 701/703/704 style).
+func (d *DB) ensureWorkTypeRouteCoverage(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		INSERT INTO work_type_config (key, label, category, l1_task_type, default_profile, tags, prompt_keywords, sort_order)
+		VALUES
+		  ('code_audit',            '代码审计', '研发', 'code_audit',            'smart',       ARRAY['code','audit'],        ARRAY['审计','审查','安全','漏洞'],     25),
+		  ('intent_classification', '意图分类', '通用', 'intent_classification', 'speed_first', ARRAY['classification','intent'], ARRAY['意图','分类','路由'],     26),
+		  ('planning',              '任务规划', '研发', 'planning',              'smart',       ARRAY['planning','plan'],     ARRAY['规划','计划','拆解','步骤'],     27)
+		ON CONFLICT (key) DO NOTHING;
+
+		INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier)
+		SELECT v.work_type_key, v.canonical_name, v.weight, 0, TRUE, v.tier
+		FROM (VALUES
+		  ('fn_call', 'deepseek-v4-flash', 1.00::numeric, 'primary'),
+		  ('fn_call', 'minimax-m2.7',      0.85::numeric, 'secondary'),
+		  ('fn_call', 'glm-5.2',           0.80::numeric, 'secondary')
+		) AS v(work_type_key, canonical_name, weight, tier)
+		WHERE NOT EXISTS (
+		  SELECT 1 FROM work_type_model_route r WHERE r.work_type_key = v.work_type_key
+		)
+		ON CONFLICT (work_type_key, canonical_name) DO NOTHING;
+
+		INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier)
+		SELECT v.work_type_key, v.canonical_name, v.weight, 0, TRUE, v.tier
+		FROM (VALUES
+		  ('code_audit', 'deepseek-v4-flash', 1.00::numeric, 'primary'),
+		  ('code_audit', 'glm-5.2',           0.80::numeric, 'secondary')
+		) AS v(work_type_key, canonical_name, weight, tier)
+		WHERE NOT EXISTS (
+		  SELECT 1 FROM work_type_model_route r WHERE r.work_type_key = v.work_type_key
+		)
+		ON CONFLICT (work_type_key, canonical_name) DO NOTHING;
+
+		INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier)
+		SELECT v.work_type_key, v.canonical_name, v.weight, 0, TRUE, v.tier
+		FROM (VALUES
+		  ('intent_classification', 'deepseek-v4-flash', 1.00::numeric, 'primary'),
+		  ('intent_classification', 'glm-5.2',           0.80::numeric, 'secondary')
+		) AS v(work_type_key, canonical_name, weight, tier)
+		WHERE NOT EXISTS (
+		  SELECT 1 FROM work_type_model_route r WHERE r.work_type_key = v.work_type_key
+		)
+		ON CONFLICT (work_type_key, canonical_name) DO NOTHING;
+
+		INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier)
+		SELECT v.work_type_key, v.canonical_name, v.weight, 0, TRUE, v.tier
+		FROM (VALUES
+		  ('planning', 'deepseek-v4-flash', 1.00::numeric, 'primary'),
+		  ('planning', 'glm-5.2',           0.80::numeric, 'secondary')
+		) AS v(work_type_key, canonical_name, weight, tier)
+		WHERE NOT EXISTS (
+		  SELECT 1 FROM work_type_model_route r WHERE r.work_type_key = v.work_type_key
+		)
+		ON CONFLICT (work_type_key, canonical_name) DO NOTHING;
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('709', 'work_type route coverage for code_audit/function_call/intent_classification/planning (auto-matching audit O1''-c)')
+		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("work_type route coverage ensured (migration 709)")
 	return nil
 }
 
