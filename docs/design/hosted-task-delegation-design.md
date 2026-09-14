@@ -1,183 +1,295 @@
-# 设计：网关任务托管（Hosted Task Delegation）
+# 设计：网关任务托管（Hosted Task Delegation）v2
 
-> 状态：设计提案（未实施） 日期：2026-09-14
-> 目标：前端智能体可将一个任务**移交给网关全权处理**（网关侧运行 pi 智能体），完成后网关**反馈结果**给前端智能体；任务可随时**拉回**前端智能体。全程由 **acc + agent-companion** 做任务管理调配、多智能体协同与 handoff，由 **memora** 做会话与上下文管理。
+> 状态：**v2 已核实，可执行**（P0 就绪）
+> v1：2026-09-14 设计提案（ace419dcc）
+> v2：2026-09-14 依据跨仓库源码核实修订，修正 v1 中 6 处与实现不符的断言，明确"网关转交 ACC、进展经网关通知前端、上下文环境经 Memora 交换"的执行契约与 P0 逐文件清单。
+> 本文档所有 file:line 引用均经源码核实（2026-09-14 工作树）；标注【跨仓库】的条目属其他仓库职责，本仓仅定义契约。
 
 ---
 
-## 1. 需求重述
+## 0. 修订记录（v1 → v2 核实修正）
 
-| # | 需求 | 对应能力缺口 |
-|---|------|------------|
-| R1 | 前端智能体 → 网关：任务移交（含上下文） | 需新增网关托管 API 与任务台账 |
-| R2 | 网关侧全权执行：安装 pi 智能体，长任务自主运行 | companion 已支持 pi driver；需部署 + 驱动链路 |
-| R3 | 任务管理调配、多智能体调度协同（长任务分阶段） | ACC coordinator/mission/decomposer 已有，需接线 |
-| R4 | 自动上下文管理及 handoff（阶段间移交） | pi compaction + memora compress + ACC StructuredHandoffPacket，需编排串联 |
-| R5 | 完成后网关 → 前端智能体反馈 | 网关 outbox 签名 webhook + 结果拉取已具备，需接事件 |
-| R6 | 任务拉回（网关 → 前端智能体） | 需新增 recall API + handoff 包组装 |
+| # | v1 断言 | 核实结论 | 证据 |
+|---|--------|---------|------|
+| F1 | 复用 `internal/outbox` 向前端 callback URL 发签名 webhook | **不成立**。outbox 是网关→ASM 单一固定端点（`ASM_INTERNAL_ENDPOINT`），表无 destination 列，deliverer 只持一个 endpoint | `cmd/gateway/main.go:546-576`、`internal/outbox/delivery.go:65-104`、`deploy/sql/migrations/V357__create_outbox_events_table.sql:18-51` |
+| F2 | 挂载 `/v1/goal-runs/:id` 即可 | handler 已实现但**从未挂载**（`_ = goalRunHandler`），且直接信任 `X-Tenant-ID`、store 为 nil 会 panic，**不能只加一行 mux** | `cmd/gateway/main.go:744-757`、`internal/handlers/goalrun_handler.go:75-99` |
+| F3 | pi 经 ACP/RPC 驱动 | **实为 CLI headless**：`pi --mode json "<prompt>"`，prompt 走位置参数，模型经 `PI_MODEL` env，resume 用 `--session <id>` | 【跨仓库】`agent-companion/internal/agentfacade/known.go:72-90,255-259`、`cli_driver.go:227-275` |
+| F4 | 取消经 ACC 可靠生效 | **仅 delivered**。companion `FacadeExecutor` 未实现 `CommandCanceler`，ACC 回执链停在 delivered；且 pi `exit 0 + stopReason=error` 会被 facade 标记成功 | 【跨仓库】`agent-companion/internal/acc/command_loop.go:19-30,530-660`、`internal/agentfacade/cli_driver.go:175-217`、`parsers.go:335-352` |
+| F5 | Memora compress 可直接用于阶段压缩 | compress 走 V1Auth 且 **body/header tenant 可覆盖认证 tenant**，不得暴露给不可信调用方；只能由网关受控调用（tenant 写死） | 【跨仓库】`memora/internal/sessionmemory/handler.go:250-273`、`internal/middleware/auth.go:111-178` |
+| F6 | 复用 durable 队列/pending 承载托管任务 | durable 是 LLM 请求生存队列（加密快照绑定 HTTP 请求语义）；pending 是 Redis 短期缓存（TTL 1h、body 1MiB）。**只复用模式（lease/fencing/CAS），不复用表与 runner** | `durable/task.go:1-10`、`pending/pending.go:35-47`、`sql/migrations/startup/516_durable_llm_tasks.sql:7-17` |
 
-## 2. 各模块能力盘点（2026-09-14 调研结论）
+另两条部署纪律性发现：
 
-### 2.1 llm-gateway-go-5（网关，本仓库）
-- **已有持久任务台账**：`goal_runs` / `goal_run_steps` / `goal_run_actions`（迁移 549/554/555，含 lease/fencing），状态机含 `waiting_tool` / `waiting_input` / `waiting_handoff` / `auditing`（`domains/goalrun/types.go:17-92`）。
-- **可恢复任务队列**：`durable_llm_tasks`（迁移 516/520），claim/lease/fencing token/write-ahead commit/reaper（`durable/task.go:14`），env 门控 `LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED`。
-- **完成回调**：`internal/outbox`（PG outbox → Dispatcher 重试/DLQ → 签名 HTTP POST，`X-Gateway-Event-Signature` 等头，`internal/outbox/dispatcher.go:98`）。
-- **结果拉取**：`pending/`（Redis CAS + PG 兜底，供轮询）。
-- **会话线层**：`session_summaries`（事实上的会话主表）+ `request_logs` 分区；`X-Gw-Session-Id` 归组。
-- **handoff 相关**：`/v1/handoffs/confirm` 已挂载（`domains/streaming/handoff_confirmation.go:23`）；`/v1/goal-runs/{id}` handler 已实现但**路由未挂载**（`cmd/gateway/main.go:753` `_ = goalRunHandler`）；自动 handoff 触发器已停用（`domains/hooks/handoff/doc.go`，因引用了不存在的 sessions 表，复活需映射 `session_summaries`）。
-- **网关自调 LLM 先例**：`internal/loopback` 回环调自身 `/v1/chat/completions`（自动标题 `admin/auto_title_generator.go`）。
-- **网关上跑外部进程先例**：`plugin-runtime/`（manifest/handshake/安装器/生命周期）。
-- **后台 worker 框架**：`bg/base_worker.go:33` BaseWorker（ticker 循环，main.go 约 79 个 worker）。
-- 缺口：**无通用 agent 推理循环/tool 执行器**（`domains/toolexecution` 只做统计）。
+- GoalRun 迁移存在 **549/554 双 schema 漂移**（549=UUID+`goal_run_id`、554=TEXT+`root_request_id`；现行代码/installer 对齐 554/555）。新建迁移不得引用 549 血统。
+  `sql/migrations/startup/549_goal_run_ledger.sql:5-50` vs `554_goal_runs.sql:28-98`、`installer/internal/dbinit/runner.go:48-49`
+- 迁移须**三处同步**：`sql/migrations/startup/` + `installer/cmd/llm-gw-installer/embeddata/startup/` + `installer/internal/dbinit/runner.go` StartupFiles 清单，并记入 `docs/db-changelog.md`。反例：R28 的 704 已入 migrations 与 changelog，但 embeddata/runner **尚未同步**。
+- 自动 handoff 触发器**已复活**（v1 说停用已过期）：`domains/hooks/handoff/trigger_hook.go:1-36` supersedes 停用版，默认 `LLM_GATEWAY_HANDOFF_ENABLED=false`。
+- 会话事实边界：`session_summaries` 是分析聚合表；V2 `public.sessions`（迁移 430）仍是 shadow；request_logs 才是正文/请求核心。托管会话导出应读 request_logs + session V2 视图，勿再宣称"session_summaries 是主表"。
+  `sql/migrations/startup/310_session_summaries.sql:7-75`、`430_sessions_v2_schema.sql:34-98`、`docs/03-design/01-architecture/architecture/ARCHITECTURE.md:171-193`
 
-### 2.2 acc（Agent Control Center）
-- 双进程：Node `:4100`（Express+WS）+ acc-go `:4101`（Echo+Asynq+Temporal），`/api/v2/*` 走 Go。
-- **任务管理**：12 态统一状态机（`lib/task-states.js`），canonical `acc_tasks`；coordinator API：`POST /api/v2/coordinator/tasks`、`/tasks/:id/decompose`、**`/tasks/:id/dispatch`**、**`/tasks/:id/handoff`**、`/tasks/:id/complete`、`/webhook/llm-gateway`（`acc-go/internal/httpapi/handlers/coordinator_native.go:62-74`）。
-- **运行时注册**：`/api/v2/runtime` register/heartbeat，实例可声明 `api_endpoint`（`internal/runtimecontrol/service.go:89-113`）——**外部运行时（网关上的 companion+pi）接入 ACC 的标准挂点**。
-- **移交状态机（最完整）**：编排 v3 `/api/v2/orchestration/tasks/:id/transfers`，16 态（requested→source_fenced→snapshot_captured→…→committed），含 fencing token/CAS revision/快照/幂等键/SSE（`internal/httpapi/handlers/transfer_native.go:53-72`）。
-- **语义交接包**：`StructuredHandoffPacket{goal, currentResult, doneWhen, blockers, nextOwner, requiresInputFrom, artifactRefs}`（`lib/collaboration-engine/handoff-manager.js:1-70`）。
-- **多智能体协同**：Mission 7-Phase（intake→deliberating→planning→executing→auditing→reporting→completed）、任务拆解 L1→L4（`lib/task-decomposer.js`）、协作引擎 12 工作流、A2A JSON-RPC 对等面（`internal/a2a/`）。
-- **与 memora**：`KXMEMORY_BASE_URL` + `internal/kxmem/` 客户端；MCP 工具 `acc_memora_search/store`。
+---
 
-### 2.3 agent-companion
-- Go headless 守护进程，桥接本机编码智能体与 ACC；**pi 是一等驱动**（`pi --mode json`，`internal/agentfacade/cli_driver.go:37-39`）。
-- **续跑**：`POST /api/v1/native/sessions/:id/operate` 对观测到的原生会话续跑（`internal/api/operate.go:61-233`）；`ResumePrefix` 生成 `--resume`/`--session`（pi）。
-- **网关会话归组**：每次 dispatch 注入 `AGENT_GATEWAY_SESSION=gw_<dispatch_id>` → 一个 dispatch = 一个网关会话（`internal/accbridge/executor.go:119-124`）。
-- **记忆注入**：run 组装接入 `MemoraSearch`（注入 prompt）与 `MemoraSink`（产物/会话沉淀）（`cmd/agent-companion/main.go:688-696`）。
-- **LLM 配置下发**：`internal/llmconf` 把网关 baseUrl+key 渲染进各 CLI 原生配置（`/llm/deploy`，diff/dry-run/备份）。
-- **边界契约（红线）**：本地 API 只读，**写路径全走 ACC**（`docs/swarm/SWARM_BOUNDARY_CONTRACT.md:2.1-2.3`）。
-- 无任务台账（权威在 ACC）；沙箱：cube sandbox（bash/http 步骤计划执行，`internal/cube/plan.go:15-45`）。
-- **三层权威 + 索引**（`docs/SESSION_STORAGE_DESIGN.md`）：线层=网关（会话/正文/成本）、续层=agent 原生会话文件、知层=memora（只存提炼物）、索引层=ACC 四元关联（task↔dispatch↔agent_session↔gw_session，`internal/accbridge/session_report.go:31-41`）。
+## 1. 架构总则
 
-### 2.4 memora（kxmemory-go）
-- Go 记忆/知识服务：L1–L6 分层记忆、混合检索（BM25+向量+RRF+MMR，`internal/memory/hybrid.go:33`）、会话压缩 `POST /api/v1/sessions/:session_id/compress`（summary/entity/hybrid，`internal/sessionmemory/handler.go:44-50`）、会话摘要摄取 `/api/session/ingest-summary`。
-- **隔离**：`scope_chain = {tenant_id, project_id, run_id, task_id, agent_session_id}`，PG RLS 强制（`internal/v2/retrieval.go:37-43`）；v2 检索强制要求 `project_id`。
-- **跨 agent 延续原语**：`memory.session_id` 挂会话、`openclaw_handoffs`（agent→target_agent 带 summary JSONB，迁移 000017）、`openclaw_shared_thread`（项目级共享线程）、上下文 manifest（迁移 000043，append-only+哈希快照）。
-- `source_system` 白名单**已含 `gateway` / `pi-swarm`**（`internal/v2/ingest.go:44-50`）——网关作为记忆来源是官方支持枚举。
-- **无出站 webhook**（`docs/integration/redclaw-acc.md` §2.5）：跨服务全入站，异步靠轮询 + receipts。
+### 1.1 单写者原则（源自 RedClaw《27-ACC-Memory-Gateway三系统整合方案》）
 
-### 2.5 pi（@earendil-works/pi-coding-agent v0.85.0）
-- 4 种运行形态：TUI / `-p` print / `--mode json`（JSONL 事件流）/ `--mode rpc`（stdin/stdout JSONL 协议）+ SDK。
-- **会话**：JSONL 树（v3 格式），`~/.pi/agent/sessions/...`；`-c`/`--session`/`--fork` 恢复分叉；可 `PI_CODING_AGENT_SESSION_DIR` 重定向。
-- **上下文管理**：自动 compaction（`contextWindow - reserveTokens` 触发，结构化摘要 + retainedTail checkpoint）、`/compact [instructions]`、分支摘要（`docs/compaction.md`）。
-- **LLM 后端**：`~/.pi/agent/models.json` 自定义 provider（baseUrl + `openai-completions`）——**本机已实证指向 `https://llm.kxpms.cn/v1`（即网关），带 `X-Gw-Session-Id` 头注入**。
-- 工具：read/write/edit/bash/grep 等；**不内置 MCP**（扩展机制补齐；pi-swarm 的 `extension/pi-swarm-tools.js`、`src/accmcp.js` 是现成的 ACC MCP 客户端先例）。
-- Linux 常驻：官方 containerization 文档（node:24-slim Dockerfile）+ systemd；pi-swarm `deploy/README.md:71-75` 已给 launchd→systemd 映射。
+每种状态只允许一个系统拥有写权限，其余系统只保存引用、投影或诊断：
 
-## 3. 总体架构
+| 领域 | 唯一权威 | 其他系统 |
+|------|---------|---------|
+| 托管任务接入/投影/通知/结果拉取 | **网关** | 前端只对接网关 |
+| 任务账本、dispatch、handoff/transfer、执行进度事件 | **ACC** | 网关投影、companion 上报 |
+| agent 进程、原生会话（resume/fork） | **agent-companion + pi 原生会话文件** | 只读观测 |
+| 会话正文、成本、计费（线层） | **网关**（request_logs + usage_ledger） | — |
+| 上下文/环境/知识（知层）、handoff 快照 | **Memora** | 网关/companion 经 API 存取 |
 
-### 3.1 角色分工（职责单一，权威分明）
+RedClaw 蜂群契约佐证：companion 本地 API 只读、写路径必须经 ACC（【跨仓库】`RedClaw/docs/swarm/SWARM_BOUNDARY_CONTRACT.md`、`agent-companion/docs/swarm/SWARM_SYSTEM_PLAN.md §1`）。
+
+### 1.2 角色与链路
 
 ```
-前端智能体(用户机器)          网关宿主机(245/154)                     平台服务
-┌─────────────────┐   delegate   ┌──────────────────────────┐        ┌──────────┐
-│ zcode/claude/…  │ ───────────▶ │  llm-gateway-go           │───────▶│ ACC      │
-│  · 发起托管      │ ◀─────────── │  · hosted-task 台账+API   │ dispatch│ :4100/01 │
-│  · 接收回调      │  webhook/轮询 │  · outbox 回调/结果拉取    │ ◀────── │ 拆解/派发 │
-│  · recall 拉回   │              │  · 会话线层权威/计费       │        │ transfer │
-└─────────────────┘              │  · loopback LLM 供给      │        └────┬─────┘
-                                 └──────────────────────────┘             │ dispatch
-                                        ▲ LLM (loopback)                  ▼
-                                        │                          ┌──────────────┐
-                                 ┌──────┴───────────┐              │ agent-companion│
-                                 │ pi (gateway 宿主机)│◀────────────│ (网关宿主机)    │
-                                 │  · tool loop      │  spawn/驱动  │ · pi driver    │
-                                 │  · compaction     │              │ · resume/operate│
-                                 └──────┬───────────┘              │ · 记忆注入      │
-                                        │ L1/L2 沉淀/compress       └──────┬───────┘
-                                        ▼                                 │ session_report
-                                 ┌──────────────┐◀────────────────────────┘
-                                 │ memora       │  scope_chain 隔离 · handoff 快照
-                                 └──────────────┘
+前端智能体(用户机器)            网关宿主机(245/154)                       平台服务
+┌────────────────┐  ①委托     ┌────────────────────────────┐  ②转交    ┌─────────────┐
+│ zcode/claude/… │ ─────────▶ │ llm-gateway-go              │ ────────▶ │ ACC acc-go   │
+│ 只对接网关      │ ◀───────── │  · /v1/hosted-tasks 门面     │  runtime  │  :4101       │
+│                │  ⑤通知/拉取 │  · hosted_tasks 投影+台账    │  dispatch │ 任务账本/租约 │
+└────────────────┘            │  · reconciler 订阅 ACC 事件  │ ◀─SSE/轮询─│ fencing/SSE  │
+                              │  · 签名回调(SSRF防护)        │           └──────┬──────┘
+                              │  · 线层:会话正文/成本/计费    │                  │③派发
+                              └────────────────────────────┘                  ▼
+                                     ▲ LLM(loopback,计费)            ┌──────────────────┐
+                                     │                               │ agent-companion   │
+                              ┌──────┴────────┐      ④spawn/驱动      │ (网关宿主机,systemd)│
+                              │ pi (--mode json)│◀────────────────────│ 租约/围栏/去重/恢复 │
+                              │  tool loop     │                      └────────┬─────────┘
+                              │  compaction    │                                │⑥上下文交换
+                              └───────┬────────┘                                ▼
+                                      │产物/摘要                        ┌──────────────┐
+                                      └───────────────────────────────▶│ Memora        │
+                                        (typed ingest/scope_chain)     │ 上下文/环境/快照│
+                                                                       └──────────────┘
 ```
 
-- **网关 = 托管面权威**：任务台账、API、回调、结果、会话线层、计费（pi 的 LLM 调用全过网关，计费自动进 `usage_ledger`）。
-- **ACC = 编排权威**：多阶段拆解、dispatch、transfer/handoff 状态机、四元索引。
-- **companion = 执行面**：pi 进程托管/续跑/记忆注入；遵守"本地只读、写走 ACC"契约。
-- **memora = 上下文权威**：L1 切片/L2 摘要/压缩/handoff 快照/跨 agent 检索。
-- **pi = 执行体**：tool 循环 + 会话内 compaction。
+### 1.3 三条不变量
 
-### 3.2 关键决策
+1. **前端永不直连 ACC/companion/Memora**：委托、查询、拉取、召回、通知全部经网关。
+2. **网关不建第二套执行 owner**：`hosted_tasks` 只做关联投影（hosted_id ↔ acc_command_id/gw_session/tenant），lease/fencing/重试由 ACC Runtime Control 与 companion 持有；网关不重试 dispatch 语义（重试=同 Idempotency-Key 重放）。
+3. **执行真相在 ACC，存储真相在 Memora，通知真相在网关 outbox**：跨服务一律以 Idempotency-Key/Correlation-ID 对账，不凭网络异常推断状态。
 
-| 决策 | 选择 | 理由 | 备选 |
-|------|------|------|------|
-| D1 网关如何驱动 pi | 网关→ACC coordinator dispatch→companion→pi | 尊重 companion"写走 ACC"红线；复用 dispatch 幂等键/租约/reaper | 网关直接调 companion 本地 API（需改契约，否决） |
-| D2 任务台账放哪 | 网关新建 `hosted_tasks`，并保留 goal_run 关联 | 面向前端智能体的数据面契约归网关；goal_runs 状态机可内嵌复用 | 直接复用 goal_runs（耦合 chat 请求语义，否决） |
-| D3 完成通知 | 网关 outbox 签名 webhook（主）+ `GET result` 轮询（兜底） | outbox 重试/DLQ/HMAC 已生产级；memora 式纯轮询不满足"反馈"需求 | memora 通知（无出站 webhook，否决） |
-| D4 拉回语义 | recall = ACC transfer(halt) + 网关组装 handoff 包 | 复用 16 态 transfer 的 fence/snapshot 语义；包组装是网关强项（线层在手） | 仅 cancel（丢上下文，否决） |
-| D5 上下文延续 | 线层（网关）+ 知层（memora）+ 续层指针（pi session JSONL） | 即平台既有三层权威设计，不新造 | 全量正文塞 memora（违反知层契约，否决） |
-| D6 ACC 状态回投 | 网关 BaseWorker 轮询 ACC 任务状态 | 简单可靠；ACC 有 SSE 但跨网部署轮询更稳 | ACC→网关 webhook（ACC 侧新增出站，可后补） |
+---
 
-## 4. 核心流程
+## 2. 各模块已核实能力与边界
 
-### 4.1 委托（前端 → 网关）
-1. 前端智能体调 `POST /v1/hosted-tasks`：任务目标/完成判据/上下文（内联摘要 + memora scope 引用 + artifact 引用）/回调 URL/预算与限额。
-2. 网关：鉴权（既有 KeyVerifier）→ 建 `hosted_tasks` 行（状态 `delegated`）→ 建 `gw_<id>` 会话组 → 写 outbox 事件 `hosted_task.accepted`。
-3. 网关以 service token 调 ACC `POST /api/v2/coordinator/tasks`（payload 带 correlation_id=hosted_task_id）+ `/tasks/:id/dispatch`；ACC 按 runtime registry 派给网关宿主机上的 companion。
-4. companion 驱动 pi：注入 `AGENT_GATEWAY_SESSION=gw_<id>`、网关 baseUrl/key（llmconf 或 env）、memora 记忆检索结果（MemoraSearch）；pi 以 `--mode json` 无头运行。
+### 2.1 ACC（编排权威）【跨仓库：agent-control-center】
 
-### 4.2 执行与上下文管理（长任务分阶段）
-- **会话内**：pi 自动 compaction 兜住上下文窗口；工具调用过网关计费与 `toolexecution` 统计。
-- **阶段间**：ACC decomposer/Mission 拆解为多阶段（多 dispatch，同 correlation_id）；阶段边界由 companion 触发 memora `ingest-summary`（L2）+ `POST /api/v1/sessions/:id/compress`（hybrid）+ typed artifact ingest（L5）；下一阶段 dispatch 时 MemoraSearch 注入上阶段提炼物。阶段移交用 `StructuredHandoffPacket`。
-- **线层**：全程 `X-Gw-Session-Id=gw_<id>`，网关 `session_summaries`/`request_logs` 留正文与成本权威。
+| 能力 | 契约 | 关键证据 |
+|------|------|---------|
+| Runtime 注册/心跳 | `POST /api/v2/runtime/register`（runtime_id+instance_id 必填，返回 run_id；幂等 replay=200）；`POST /api/v2/runtime/heartbeat`（仅 runtime_id/instance_id/api_endpoint 三字段生效） | `acc-go/internal/httpapi/handlers/runtime_control_native.go:140-185`、`internal/runtimecontrol/service.go:195-224` |
+| **执行派发（P0 主链）** | `POST /api/v2/runtime/dispatch` + `Idempotency-Key`（header/body 一致性校验）+ `{runtime_id, task_id, operation, payload{kind:pi, prompt, cwd, timeout_ms, session_id}, source_ref, correlation_id}` → 202 `{command_id}`；按 runtime_id+task_id 自动 provision command task | `runtime_control_native.go:113-123,330-367`、`internal/runtimecontrol/service.go:560-615` |
+| 进展事件 | `GET /api/v2/orchestration/runs/:run_id/events/stream`（`?after=` / `Last-Event-ID` 恢复；durable 回放+live）；轮询兜底 `GET /api/v2/runtime/commands/:command_id` | `internal/httpapi/handlers/orchestration_events_stream.go:45-74`、`runtime_control_native.go:369-379` |
+| 取消 | `POST /api/v2/runtime/commands/:command_id/cancel`（2xx=requested）；回执链 requested→delivered→effective 单调推进 | `runtime_control_native.go:453`、migration 214 |
+| 任务账本（可选） | canonical `/api/v2/canonical/tasks`（Idempotency-Key 强制、12 态、乐观并发 resource_version）；注意 **coordinator 的 dispatch/handoff/decompose 是 Node 转发，不是 Go native**，P0 不依赖 | `internal/httpapi/handlers/acc.go:510-714`、`coordinator_native.go:1-25` |
+| 召回/移交（P1） | v3 transfer 16 态：requested→source_fenced→snapshot_captured→…→committed；要求 snapshot_ref+`sha256:` hash+manifest_version+expected_task_revision+Idempotency-Key | `internal/orchestration/transfer_model.go:40,173-215`、`internal/httpapi/handlers/transfer_native.go:50-71` |
+| 鉴权 | Runtime Control 全部挂 RequireAuth：Bearer 须含 sub+**tenant_id** claim（`sk-svc.*` 不通用） | `internal/auth/auth.go:266-290`、`orchestration_native.go:369-381` |
 
-### 4.3 完成 → 反馈（网关 → 前端）
-1. companion 上报 ACC（完成回写 + `acc_report_session` 四元索引）；pi 产物按需 ingest memora。
-2. 网关 worker 轮询发现 ACC 任务终态 → 校验预算/产物 → 置 `hosted_tasks` 终态（`completed`/`failed`）→ 写 outbox。
-3. outbox Dispatcher 签名 POST 前端回调 URL（`hosted_task.completed`，带 result 摘要 + 签名头）；前端也可随时 `GET /v1/hosted-tasks/:id` 与 `.../result`（pending/ 支撑，含产物引用、成本、memora artifact id、pi session 指针）。
+### 2.2 agent-companion（执行面）【跨仓库】
 
-### 4.4 拉回（网关 → 前端智能体）
-1. 前端调 `POST /v1/hosted-tasks/:id/recall`。
-2. 网关经 ACC 发起 transfer（进入 source_fenced/snapshot_captured，或轻量路径：dispatch cancel + companion run cancel）。
-3. 网关组装 **handoff 包**：① 线层导出（该 gw 会话 turns 摘要/全文引用）；② 续层指针（pi session JSONL 路径/id，companion nativestore 可查）；③ 知层（memora scope_chain 检索引用 + 最新 compress 结果）；④ `StructuredHandoffPacket`（goal/currentResult/doneWhen/blockers/artifactRefs）。
-4. 置状态 `recalled`，outbox 事件 `hosted_task.recalled`；前端智能体以自身上下文 + handoff 包续跑。同时写 memora `openclaw_handoffs`（from=pi@gateway, to=前端 agent）留档。
+- pi 驱动：`pi --mode json`（known.go:72-90），resume `--session`（known.go:255-259），`PI_MODEL` env 注入（cli_driver.go:250-275），进程组 SIGTERM→5s→SIGKILL（cli_process_unix.go:11-39）。
+- 命令消费：ACC run SSE（`internal/acc/sse.go:48-167`）→ lease acquire/start/execute/complete（`command_loop.go:350-529`）；SettledCursor+durable inbox 重启恢复（`recovery.go:279-360`）。
+- 网关联动：每次 dispatch 注入 `AGENT_GATEWAY_SESSION=gw_<dispatch_id>`（accbridge/executor.go:116-125）+ 网关 URL/key/correlation env（gateway/gateway.go:108-136）。
+- 记忆：MemoraSearch 前置注入（executor.go:153-193，**tenant 硬编码 default**，跨租户任务需 P1 修复）；tool 产物/终局会话 best-effort ingest（executor.go:238-309,394-439）。
+- **边界（写入 P0 契约）**：①取消仅到 delivered（§0-F4）；②`CheckPath/CheckTool` 未接入执行链，`payload.cwd` 可覆盖默认值 → **cwd 必须由网关白名单映射，禁止透传任意路径**；③facade 运行表纯内存，重启后 run 查询消失 → 网关不得依赖 companion 查询做结果权威。
 
-## 5. API 与数据模型（网关新增）
+### 2.3 Memora（上下文/环境交换层）【跨仓库】
 
-### 5.1 数据面 API（`/v1/hosted-tasks`，鉴权走既有 KeyVerifier）
+| 接口 | 契约要点 | 证据 |
+|------|---------|------|
+| v2 typed ingest（**主写路径**） | `POST /api/v2/memories/ingest`：service JWT（tenant 从 JWT 派生）+ `Idempotency-Key` + `X-Correlation-ID` 必填；items ≤5000，每 item 须 `source_type/source_id/scope_chain.project_id/content_preview`；批内同 project；响应须解析 `failed[]/degraded`（200≠全部成功）；`source_system` 白名单已含 `gateway` | `memora/internal/v2/ingest.go:44-50,142-273,376-413` |
+| v2 search | `POST /api/v2/memories/search`：scope_chain.tenant 必须==JWT tenant，project_id 必填，tags 在 `filters.tags`（顶层 tags 不生效），`policy.on_degraded` 显式 | `internal/v2/retrieval.go:36-75,153-238` |
+| context manifest（**环境快照**） | `POST /api/v2/context-manifests`：append-only+版本+每 entry content_hash；verify 报 drifted/missing | `internal/v2/context_manifests.go:25-142`、迁移 000043 |
+| 会话压缩（受控） | `POST /api/v1/sessions/:id/compress`：**仅网关服务端调用**（V1Auth，tenant 写死，见 §0-F5） | `internal/sessionmemory/handler.go:40-63,250-273` |
+| PG-first 可靠性范式 | ingest receipt：PG 事务先落主记录→向量异步补偿→replay 补做→`vector_ready` | `internal/memory/ingest_receipt.go` |
+| 无出站 webhook | 完成通知不能依赖 Memora | `docs/integration/redclaw-acc.md §2.5` |
+
+### 2.4 网关（本仓，接入面/通知通道）
+
+| 原语 | 现状与复用方式 |
+|------|---------------|
+| API key/tenant | 复用 `domains/authentication.KeyVerifier` + `domains/session/handler.go:14-138` 的 authenticate 模式（context 注入 api_key_id/tenant_id；**必须断言跨包 `authentication.InvalidKeyError`**，勿照抄 session 本地副本陷阱 handler.go:122-133） |
+| HMAC 签名 | 复用 `internal/outbox/signature.go:10-37`（`timestamp.nonce.body`，hmac-sha256=）与 wire envelope 渲染（`wire.go:55-82`） |
+| SSRF 防护 | 复用 `internal/safehttpclient`（私网/回环/metadata/IPv6/DNS rebinding/redirect 复验，allowlist 显式开启内网）`safe_http_client.go:57-109` |
+| 后台 worker | 复用 `bg/base_worker.go:45-149`（幂等 Start/Stop、panic 隔离） |
+| 迁移纪律 | 下一个编号 **705**（704 已被 R28 占用：`sql/migrations/startup/704_plan_quota_probe_backoff.sql`）；唯一编号测试 `migration_version_unique_test.go` |
+| 会话线层 | dispatch 会话组 `gw_<hosted_task_id>`；正文/成本权威在 request_logs/usage_ledger，零改造入账 |
+| 现有 GoalRun | 仅作参考模式；P0 不写入 goal_runs（避免与 chat-goal 语义混淆） |
+
+---
+
+## 3. 端到端数据流
+
+### 3.1 委托与执行（P0 主链）
+
+```
+①前端 → POST /v1/hosted-tasks (Bearer sk-*, Idempotency-Key)
+   网关: KeyVerifier→tenant/api_key → 校验(goal/limits/callback SSRF) →
+   Tx{ INSERT hosted_tasks(delegated) + hosted_task_events(accepted)
+       + hosted_task_callbacks(URL+secret 持久化) }
+   → 202 {hosted_task_id, status_url}
+
+②网关 → ACC Runtime Control dispatch（同 Idempotency-Key 派生键 gw-hosted-<id>-a1）
+   payload: {kind:"pi", prompt(goal+done_when+context 摘要), cwd(白名单映射路径),
+             timeout_ms, mcp_servers?}; source_ref:"llm-gateway/hosted-task";
+   correlation_id: hosted_task_id
+   成功 → Tx{ status=dispatching→running 事件, 记 acc_command_id/acc_run_id }
+   失败(网络/5xx) → 同键重放（ACC 幂等保证不双发）; 持续失败 → 事件 dispatch_degraded
+
+③ACC SSE → companion（租约 acquire/start）→ spawn pi
+   pi 环境注入: AGENT_GATEWAY_SESSION=gw_<hosted_task_id>（companion 按 dispatch_id 生成）
+   pi 全部 LLM → 网关 loopback /v1/chat/completions → usage_ledger 入账（零改造）
+
+④网关 reconciler（BaseWorker）:
+   订阅 GET /api/v2/orchestration/runs/{run_id}/events/stream（after/Last-Event-ID 持久游标）
+   + 定时轮询 GET /api/v2/runtime/commands/{command_id} 兜底
+   → 投影 hosted_tasks.status/progress（CAS revision）+ hosted_task_events
+   → 终态判定: pi 结果须校验 raw.stop_reason≠error（§0-F4）；unknown_outcome 不猜测，
+     进入 needs_review（人工对账状态，P0 暴露为 failed(unknown) + 事件注明）
+
+⑤通知:
+   终态 → Tx{ 终态落 hosted_tasks(PG 权威) + result 持久化 + 事件 } →
+   callback deliverer（safehttpclient + HMAC）POST callback.url → 2xx 完成;
+   失败按退避重试→DLQ; 前端随时 GET /v1/hosted-tasks/{id}(/result) 拉取兜底
+```
+
+### 3.2 取消（P0）
+
+前端 `POST .../cancel` → 网关 CAS（终态抢占）→ ACC `commands/:id/cancel`（requested）→ 事件 `cancel_requested`。
+回执 delivered/effective 由 reconciler 跟踪；**effective 依赖 companion 侧 CommandCanceler 修复（P1）**，P0 文档明确"取消=请求受理"。
+
+### 3.3 召回/拉回（P1）
+
+`POST .../recall` → 网关组装 handoff 包（不改 ACC 状态时用轻量路径：cancel + 快照）：
+① 线层导出（request_logs 该 gw 会话 turns 摘要/引用）；② 续层指针（pi native session id，来自 ACC session report 四元索引）；③ 知层（Memora scope_chain + context-manifest 引用 + 最新 compress 结果）；④ StructuredHandoffPacket{goal, currentResult, doneWhen, blockers, nextOwner, requiresInputFrom, artifactRefs}。
+需执行权转移时走 ACC v3 transfer（source_fence→snapshot_capture→source_stop→source_release→commit）。事件 `hosted_task.recalled`，前端凭包续跑。
+
+---
+
+## 4. API / 状态机 / 事件契约（P0）
+
+### 4.1 端点（鉴权=KeyVerifier；tenant 一律取自验证后 context）
+
 | 端点 | 说明 |
 |------|------|
-| `POST /v1/hosted-tasks` | 委托：goal、done_when、context{summary, memora_scope{tenant,project,task}, artifacts[]}、callback{url}、limits{max_duration, budget_credits}、model_pref → `{task_id, status_url}` |
-| `GET /v1/hosted-tasks/:id` | 状态 + 事件时间线（归属校验：tenant/key） |
-| `GET /v1/hosted-tasks/:id/result` | 终态结果：产物引用、成本、session 指针、memora artifact ids |
-| `POST /v1/hosted-tasks/:id/recall` | 拉回：触发 transfer + 组装 handoff 包 |
-| `POST /v1/hosted-tasks/:id/cancel` | 取消（不组包） |
-| webhook 事件 | `hosted_task.accepted / running / waiting_input / completed / failed / recalled / budget_exceeded`（outbox HMAC 签名） |
+| `POST /v1/hosted-tasks` | 必带 `Idempotency-Key`（16-256，对齐 handoff 约定）。body：`{goal(必填), done_when, context{summary, memora{project_id, tags[]}, artifacts[]}, environment{workspace_id(白名单映射,不接受裸路径), model_pref, timeout_seconds}, callback{url}, limits{deadline_seconds, budget_credits(P0 校验记录,P1 熔断)}}` → 202 `{hosted_task_id, status_url}`；同键同体重放 200 返回原任务 |
+| `GET /v1/hosted-tasks/{id}` | 状态 + 事件时间线；跨租户/不存在统一 404 |
+| `GET /v1/hosted-tasks/{id}/result` | running→202+Retry-After；终态→200 `{summary, output, artifact_refs[], memora{scope_chain, manifest_key}, cost, gw_session_id, pi_session_ref, result_version, content_hash}`（PG 权威，Redis 仅投影） |
+| `POST /v1/hosted-tasks/{id}/cancel` | 202 `{cancel_status:"requested"}`；终态后 409 |
+| `POST /v1/hosted-tasks/{id}/recall` | **P0 返回 501**（显式不支持），P1 实现 |
 
-挂载遵循 `main.go:5889` sessions 的写法；`/v1/goal-runs/:id`（已实现未挂载）顺手并入本次挂载。
+### 4.2 hosted_tasks 状态机（独立于 GoalRun 字符串）
 
-### 5.2 数据模型（新迁移 `sql/migrations/startup/`）
-- `hosted_tasks`：`id, tenant_id, api_key_id, frontend_agent(kind, instance_id), goal, done_when, status, acc_task_id, acc_dispatch_id, gw_session_id, goal_run_id(可空), callback_url, budget_credits, spent_credits, model_pref, created_at, updated_at, finished_at`。状态机：`delegated→running→(waiting_input|completing)→completed|failed|recalled|cancelled`。
-- `hosted_task_events`：状态流转/阶段进度台账（或映射写入 goal_run_steps）。
-- 复用：`internal/outbox`（回调）、`pending/`（结果缓存）、`durable/`（网关自身崩溃恢复时 claim/lease 语义）、`usage_ledger`（pi 调用计费，零改造）。
+```
+delegated → dispatching → running → completing → completed | failed
+                                          ↘ needs_review (unknown_outcome)
+任意非终态 → cancelled | expired(deadline reaper)
+终态 sticky（CAS 抢占，cancel 与 complete 竞争只活一个）
+```
 
-## 6. 部署拓扑
+### 4.3 事件（hosted_task_events，append-only，唯一 (task_id, seq)）
 
-- 网关宿主机新增两个常驻进程：**agent-companion**（systemd，注册 ACC runtime control，`api_endpoint` 指向本地只读面）与 **pi**（由 companion 按需 spawn，不必常驻；Node 22+ 运行时进宿主机或复用 pi 官方 Docker 模板 + 沙箱）。
-- pi 的 LLM 后端：`models.json` provider 指向 `http://127.0.0.1:8781/v1`（loopback，走 `internal/loopback` 同款端口感知）+ 网关签发的内部 API key（独立 key、独立预算、可观测隔离）。
-- ACC 侧：网关宿主机 companion 完成一次 `runtime register`（capabilities 声明 pi/claude/codex 驱动），dispatch 幂等键沿用 `pi-swarm-engine-<task_id>` 风格：`gw-hosted-<hosted_task_id>`。
-- memora/ACC/网关已共享 PG 实例，无新增存储依赖。
+`accepted / dispatch_degraded / running / progress / cancel_requested / completed / failed / expired / cancelled / callback_delivered / callback_dlq`
+（P1 增：budget_exceeded / recalled / phase_changed）
 
-## 7. 实施路线
+---
 
-| 阶段 | 内容 | 验收 |
-|------|------|------|
-| **P0 MVP（≈1–2 周）** | 网关宿主机部署 companion+pi（llmconf 指向网关）；网关 `hosted_tasks` 表 + `/v1/hosted-tasks` 五端点 + 状态机；ACC dispatch 接线（单阶段，手动派发）；完成回调 outbox 事件 + result 拉取；挂载 `/v1/goal-runs/:id` | 前端 curl 委托一个单阶段任务 → 网关上 pi 自主完成 → 回调+拉取结果；计费入账 |
-| **P1（≈2–3 周）** | recall/handoff 包组装（线层导出+续层指针+memora 快照+Packet）；ACC decomposer 多阶段拆解 + 阶段边界 memora compress/ingest 自动化；预算/时长限额执行与 `budget_exceeded` 事件；网关 worker 轮询 ACC 状态 | 两阶段任务跨阶段上下文延续验证；中途 recall 后前端智能体凭 handoff 包续跑成功 |
-| **P2（后续）** | 多 pi 并发/多宿主机（runtime registry 多实例+负载策略）；沙箱加固（companion cube sandbox 或 pi 容器化）；前端智能体侧封装 skill（delegate/recall 一键化，参照 `~/.agents/skills/handoff`）；网关 web 管理面 hosted-task 看板；pi 接 ACC MCP 工具（复用 pi-swarm accmcp 扩展）实现 pi 会话内自查任务/自报进度 | 多任务并发、多宿主调度、看板可见 |
+## 5. Memora 上下文与环境交换设计
 
-## 8. 风险与对策
+| 时机 | 写入方 | 内容与接口 |
+|------|--------|-----------|
+| 委托时 | 网关（service JWT，tenant=KeyVerifier 派生值） | 任务上下文（goal/done_when/约束）typed ingest（source_type=context, scope_chain={project_id, task_id=hosted_id}）；**环境信息**（workspace 映射、模型偏好、工具约束）写 context-manifest（manifest_key=hosted_id, hash 快照） |
+| 执行中 | companion（已有链路，P0 局限见下） | tool 产物 artifact ingest（幂等键=dispatch_id-tool_call_id）；**P0 限制**：companion MemoraSearch tenant 硬编码 default → P0 网关在 prompt 内联上下文摘要+scope 引用，跨租户注入修复列 P1【跨仓库】 |
+| 阶段边界(P1) | 网关受控调用 | `/api/v1/sessions/:id/compress`（tenant 写死）+ L2 ingest-summary（X-API-Key 面，`X-Memora-Stub:true` 视为未持久化） |
+| 终局 | companion + 网关 | 会话摘要/decision_outcome ingest（幂等键=hosted_id）；网关校验 `degraded/failed[]` 后才在事件中声明"知识已沉淀" |
+| 召回(P1) | 网关 | handoff 包携带 scope_chain + manifest_key + compress 引用 |
+
+**红线**：Memora 只存提炼物与引用，不存会话正文（线层在网关）；Memora 无出站通知，一切事件经网关 outbox 语义。
+
+---
+
+## 6. P0 可执行清单
+
+### 6.0 跨仓库前置门禁（先于网关编码验收，均【跨仓库】）
+
+1. 网关宿主机部署 agent-companion（systemd 常驻）+ Node/pi 运行时；companion 向 ACC Runtime Control `register`（agent_inventory 声明 kind=pi），heartbeat 正常。
+2. companion 侧 LLM 配置指向网关 loopback（独立内部 API key，独立预算/观测）。
+3. 网关持有：ACC service JWT（含 tenant_id claim）、Memora service JWT（v2 契约）。
+4. 245 staging 演练：创建单阶段任务→pi 自主完成→网关入账→回调+拉取（§8 矩阵 A 组）。
+
+### 6.1 网关侧新文件（逐文件）
+
+| 文件 | 内容 |
+|------|------|
+| `sql/migrations/startup/705_hosted_tasks.sql` (+.down) | 三表：`hosted_tasks`（id, tenant_id, api_key_id, goal, done_when, status CHECK, acc_command_id, acc_run_id, gw_session_id, workspace_id, model_pref, deadline_at, callback_url_hash, result JSONB, result_version, revision, idempotency 唯一(tenant_id,idempotency_key), 终态 sticky CHECK）；`hosted_task_events`（唯一(task_id,seq)）；`hosted_task_callbacks`（url, secret 加密, attempt/next_at/status, DLQ 字段）。全表 RLS（app.current_tenant），bypass 仅 worker 角色 |
+| `sql/migrations/startup/migration_705_test.go` | 唯一编号+fresh up/down/up+RLS 负向矩阵 |
+| `domains/hostedtask/types.go` | 状态/事件枚举 + 纯函数迁移矩阵（表驱动测试） |
+| `domains/hostedtask/store.go` | Tx 内幂等创建/CAS 投影/终态抢占/事件追加（参照 routeincident store.go:77-164 的 FOR UPDATE+version CAS） |
+| `domains/hostedtask/handler.go` | 五端点；authenticate 复用 session 模式（跨包 InvalidKeyError 断言） |
+| `domains/hostedtask/acc_client.go` | Runtime Control 客户端：dispatch/getCommand/cancel/run SSE（token env `LLM_GATEWAY_ACC_SERVICE_TOKEN`、base env `LLM_GATEWAY_ACC_BASE_URL`；注入 http.Client 便于测试；SSE 游标持久化在 hosted_tasks 行） |
+| `domains/hostedtask/callbacks.go` + `internal/hostedcallback/` | callback deliverer：safehttpclient（redirect=0 或逐跳复验；allowlist 可配）+ 复用 `outbox.SignPayload` 头；退避重试→DLQ；event_id=`hosted_<id>_ev<seq>` 固定 |
+| `bg/hosted_task_reconciler.go` | BaseWorker：SSE 订阅（断线 after 恢复）+ 轮询兜底 + deadline reaper + 终态触发回调入队 |
+| `cmd/gateway/main.go` | 装配 + `mux.Handle("/v1/hosted-tasks", …)`、`/v1/hosted-tasks/`；**顺带修复**：`/v1/goal-runs/{id}` 挂载前先给 goalrun_handler 补 KeyVerifier 归属校验（独立小 PR） |
+| `installer/…/embeddata/startup/705_*` + `runner.go` 清单 + `docs/db-changelog.md` | 三处同步（§0 反例教训） |
+| `config/config.go` + `.env.example` | hostedtask 配置块（ACC URL/token、callback allowlist、deadline 默认值、worker 开关） |
+
+### 6.2 P0 明确不做
+
+recall（501）、多阶段拆解、budget 熔断执行、多 runtime 调度、pi 沙箱（P0 以 workspace 白名单+低权用户+内网过渡，P2 容器化）、修改现有 ASM outbox 语义。
+
+---
+
+## 7. P1 / P2 路线
+
+- **P1（2–3 周）**：recall/handoff 包（§3.3，含 ACC transfer 接线或轻量快照路径）；ACC canonical task 双写（账本对齐，资源版本乐观并发）；多阶段（ACC 拆解/阶段边界 Memora compress+ingest 自动化）；budget 熔断（usage_ledger 按 gw_session 归集 + 原子扣减 + `budget_exceeded` 单次事件）；companion 侧修复【跨仓库】：FacadeExecutor 实现 CommandCanceler、pi stopReason=error→失败、MemoraSearch tenant 参数化。
+- **P2**：多 pi 并发/多宿主（runtime registry 负载策略）、pi 容器化/cube 隔离、web 管理看板、前端 delegate/recall skill、pi 接 ACC MCP 工具（复用 pi-swarm accmcp 扩展）。
+
+---
+
+## 8. 验收测试矩阵
+
+| 组 | 用例（全部门禁） |
+|----|----------------|
+| A 端到端(245) | 委托→pi 完成→usage_ledger 入账→回调 2xx→result 可读；记录 commit/迁移/flag/外部版本 |
+| B API | 401/403(跨租户 404)/400/405/幂等重放(同键同体 200、同键异体 409)/并发 cancel-vs-complete 单终态 |
+| C 路由装配 | httptest 打最终 mux（含 h2c），/v1/hosted-tasks 不被 static fallback 吞 |
+| D 迁移/RLS | 705 fresh/upgrade/down-up；NOSUPERUSER+NOBYPASSRLS 租户 A/B 负向；无 TEST_DATABASE_URL 不得记 PASS |
+| E 回调 | HMAC 正确/过期/重放；2xx；4xx 不重试；5xx 退避→DLQ；loopback/RFC1918/metadata/redirect 复验全拒；POST 成功 commit 前崩溃→重投+event_id 幂等 |
+| F 结果 | Redis 清空后 PG 回源；result_version 单调；hash/tenant 不匹配拒绝 |
+| G 恢复 | 网关重启后 SSE 游标续传；同 Idempotency-Key 重放不双发；unknown_outcome→needs_review 不猜测 |
+| H 取消 | 2xx=requested；旧执行迟到回写被终态 CAS 拒（0 行） |
+
+---
+
+## 9. 风险与对策
 
 | 风险 | 对策 |
 |------|------|
-| companion"本地只读"契约被绕过 temptations | 严格执行 D1（写路径全走 ACC）；网关不直写 companion 状态 |
-| pi bash 工具在网关宿主机上的安全面 | P0 限内网+独立低权用户；P2 cube sandbox/容器隔离；对 hosted 任务的 bash 调用加 `toolexecution` 审计与告警 |
-| ACC dispatch 对 pi kind 的支持确认 | companion 侧 pi driver 已实证；ACC 侧 engine kind 需在 P0 首日验证（pi-swarm M2-A 已走通同链路，风险低） |
-| memora 无出站 webhook | 全部事件通知由网关 outbox 承担；memora 侧维持入站轮询模式 |
-| `session_summaries` 替代 sessions 表的历史坑 | 新代码一律以 `session_summaries` 为会话主表（`domains/hooks/handoff/doc.go` 教训） |
-| 长任务网关重启 | hosted_tasks 状态落 PG；恢复逻辑复用 durable claim/lease 语义；companion operations ledger 对 `unknown_outcome` 的保守语义兜底 |
-| 预算失控 | 委托时强制 budget_credits + max_duration；pi 全部 LLM 走网关 → 天然可计量可熔断 |
+| callback SSRF/数据外泄 | P0 即做：safehttpclient+allowlist+redirect 复验+secret 加密存储 |
+| 取消不可证（companion delivered 止步） | 语义降级"requested"；effective 事件化；P1 companion 修复 |
+| pi 假成功（stopReason=error） | 网关终态判定强制校验 raw.stop_reason |
+| ACC/companion 状态漂移 | 执行真相=ACC；网关只投影+needs_review 人工对账态 |
+| cwd 任意路径（CheckPath 未接线） | workspace_id 白名单映射，禁裸路径 |
+| 迁移漂移重演 | 705 三处同步纳入 PR checklist + CI 唯一编号测试 |
+| Memora stub/降级伪成功 | 解析 failed[]/degraded/X-Memora-Stub，未确认不声明沉淀完成 |
+| 跨仓库依赖不可复现 | §6.0 四项门禁前置于编码验收；缺依赖记 SKIPPED-CONFIG |
 
-## 9. 结论
+---
 
-**可行，且大部分原语已存在并有实证**：pi 可编程驱动/可恢复/自带 compaction 且已实证走网关 LLM；companion 原生支持 pi 并已打通 ACC dispatch、网关会话归组、memora 注入三条链路；ACC 有完整的 dispatch/handoff/transfer 状态机；memora 有 scope_chain 隔离、压缩与 handoff 表；网关有 outbox 回调、pending 结果、goal_runs/durable 台账。**真正的新建工作集中在网关的 hosted-task 子系统（API+台账+回调/召回闭环）与各链路的编排接线**，按 P0→P2 路线可在不破坏既有边界契约的前提下落地。
+## 10. 决策记录
+
+| 决策 | 选择 | 依据 |
+|------|------|------|
+| D1 谁执行 | 网关转交 ACC（Runtime Control dispatch），不自建 agent runtime | 用户原则+RedClaw 单写者+companion 写路径契约（ACC 是唯一能驱动 companion 的控制面） |
+| D2 进展如何回前端 | ACC SSE→网关 reconciler 投影→网关签名回调+拉取 | 用户原则；复用网关 HMAC/重试模式；前端零新增依赖 |
+| D3 上下文放哪 | Memora（v2 typed ingest + context-manifest + scope_chain），正文留网关线层 | 用户原则+三层权威设计（SESSION_STORAGE_DESIGN） |
+| D4 hosted_tasks 定位 | 关联投影表，非执行 owner | 防 durable/goalrun/ACC 三方状态竞争（R28 审计结论） |
+| D5 P0 回调实现 | 新建 hosted_task_callbacks+deliverer，不动 ASM outbox | F1 核实：现 outbox 单端点语义不匹配 |
+| D6 P0 驱动协议 | pi `--mode json` headless | F3 核实：RPC/ACP 驱动尚未实现，headless 已实证可跑 |
