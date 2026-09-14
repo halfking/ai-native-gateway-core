@@ -34,8 +34,12 @@ func (h *Handler) HandleApprovalResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 获取 tenant_id（从认证上下文）
-	tenantID := getTenantIDFromRequest(r)
+	// R29 安全修复：tenantFromQueryOrContext 只允许超管显式指定目标租户，
+	// 其余角色钉死认证上下文自身租户——此前的 getTenantIDFromRequest 方式 1
+	// 读的 string context key 全仓无写入方（AdminMiddleware 写的是
+	// authContextKey{}），恒 miss 后回落到可伪造的 X-Tenant-ID 头 /
+	// tenant_id query，已认证 tenant_admin 可跨租户 resume 任意审批。
+	tenantID := tenantFromQueryOrContext(r)
 	if tenantID == "" {
 		http.Error(w, `{"error":"missing tenant_id"}`, http.StatusUnauthorized)
 		return
@@ -134,28 +138,6 @@ func extractApprovalID(r *http.Request) string {
 	// 方式 2: 从 query 参数提取（备用）
 	if id := r.URL.Query().Get("id"); id != "" {
 		return id
-	}
-
-	return ""
-}
-
-// getTenantIDFromRequest 从请求上下文中提取 tenant_id。
-//
-// 假设认证中间件已将 tenant_id 写入上下文或 header。
-func getTenantIDFromRequest(r *http.Request) string {
-	// 方式 1: 从上下文提取（如果有认证中间件）
-	if tenantID, ok := r.Context().Value("tenant_id").(string); ok && tenantID != "" {
-		return tenantID
-	}
-
-	// 方式 2: 从 header 提取
-	if tenantID := r.Header.Get("X-Tenant-ID"); tenantID != "" {
-		return tenantID
-	}
-
-	// 方式 3: 从 query 参数提取（不推荐，仅用于测试）
-	if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
-		return tenantID
 	}
 
 	return ""
