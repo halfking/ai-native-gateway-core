@@ -1,9 +1,9 @@
 # auto 匹配清单 —— 任务类型 → 模型/供应商节点(2026-09-14)
 
-> **状态:待人工确认(2026-09-14 下午二次复核后 §三 已按修正后机制重述)。**
+> **状态:6 项已人工确认并实施(2026-09-14 晚,§三结论栏/§五四轮实施记录)。**
 > 本清单由 2026-09-14 匹配能力复审出具
 > (方法与数据见 [2026-09-14-auto-matching-prompt-e2e-audit.md](2026-09-14-auto-matching-prompt-e2e-audit.md)),
-> 未获人工确认前不作为 routing_policy / routing matrix 的自动变更依据。
+> 三轮机制定稿见 §一;§三为 6 项决策原提请(含审计建议与人工结论)。
 > 二次复核推翻了原 O1 的机制描述与杠杆选择,详见 §三引言与 §五复验记录(二轮)。
 >
 > 数据来源:
@@ -131,19 +131,19 @@ matrix 首选,O1 的紧迫性以此量化为准。
      现状。
    - **审计建议:确认 (a)+(b)+(c)**;(d) 不建议。三者叠加后全部任务类回到
      正常打分路径(Reliability/价格/通道质量信号重新生效)。
-   - **结论:__________(决策人/日期:__________)**
+   - **结论:确认 (a)+(b)+(c),否决 (d)(决策人:huangxt/2026-09-14 会话内逐项确认)**
 2. **[高质量备选 claude]** claude-fable-5($15/$50)在 reasoning/code_audit 的
    定位?事实:#31 整 credential auth_failed+permanently_exhausted(不可达),
    生产近 5000 条决策中 fable-5 仅 5 次;V2 无"matrix 备选"机制,人工显式
    指定模型即绕过 auto。
    **审计建议:维持"人工显式档"定位,不做 routing 变更**,配额恢复后自然可用。
-   **结论:__________(决策人/日期:__________)**
+   **结论:维持"人工显式档"定位,不做 routing 变更(决策人:huangxt/2026-09-14 会话内逐项确认)**
 3. **[vision/NIM]** 原"降权 NVIDIA NIM、MiniMax#42 为先"是否仍有必要?事实:
    11:23 复核 8/18 NIM minimax-m3 **无**退避行(05:00 快照过时);
    CHANNEL_QUALITY_ROUTING(默认开启)已按 providers.category 实现"官方优先、
    免费/中继降权"(stratifyAndPickTopN)。
    **审计建议:无需变更,维持现状观察。**
-   **结论:__________(决策人/日期:__________)**
+   **结论:维持现状观察(决策人:huangxt/2026-09-14 会话内逐项确认)**
 4. **[O2 抑制策略]** 是否增加"(credential,model) 分发全失败后 5 分钟短期抑制"
    (泛化 recordModelNotFound 的 404 硬抑制先例;154 authoritative 无 stateManager
    分支需同步铺设)?429/5xx 现状仅有 cmi.success_rate→Reliability 软反馈
@@ -151,18 +151,18 @@ matrix 首选,O1 的紧迫性以此量化为准。
    补充:生产 decision_trace 为空对象,建议实施时**顺带补齐 decision_trace
    的 fallback_used/task_type 写入**,否则效果无法在生产验证。
    **审计建议:确认实施(含 trace 可观测性)。**
-   **结论:__________(决策人/日期:__________)**
+   **结论:确认实施(含 trace 可观测性)(决策人:huangxt/2026-09-14 会话内逐项确认)**
 5. **[O4 LLM fallback]** 生产是否配置 AUTO LLM fallback endpoint(<0.7 置信度
    走 LLM 复分类)?事实:生产/本地均未配置,离线套件实测 96.7%。
    **审计建议:暂缓**,以词表扩充为主,<0.7 占比上升再启用。
-   **结论:__________(决策人/日期:__________)**
+   **结论:启用(超出审计"暂缓"建议,按人工决策执行;决策人:huangxt/2026-09-14 会话内逐项确认)**
 6. **[回归基线/CI]** 60 例套件挂 CI?事实:`verify.sh:41` 已含
    `go test ./...`(套件纯离线、无 skip 守卫,凡运行 verify.sh 的门禁已天然
    覆盖);但仓库远端仅 codeup,`.github/workflows/` 在 codeup 不执行,
    **当前无生效 CI 载体**。
    **审计建议:确认后配 codeup Flow**(最小 workflow=build+vet+该套件),
    或明确以本地 verify.sh 为门禁并记录于 README。
-   **结论:__________(决策人/日期:__________)**
+   **结论:两者都做——配 codeup Flow + README 记录本地 verify.sh 门禁(决策人:huangxt/2026-09-14 会话内逐项确认)**
 
 ## 四、复跑方式
 
@@ -219,3 +219,72 @@ AUTO_AUDIT_API_KEY=sk-xxx go run ./cmd/autoroute-e2e-audit \
 - §一已按三轮定稿重写;§三 O1′ 杠杆改为 (a)词表归一化+(b)主力补标签+
   (c)work_type 路由补齐 三件套。两轮均为 docs-only+只读生产查询,
   未做任何行为变更;实机取证仅向本地网关发送了少量 auto 测试请求。
+
+### 四轮实施记录(2026-09-14 晚,6 项结论落地)
+
+**人工结论(会话内逐项确认,决策人 huangxt)**:①a+b+c(否决 d);②claude 维持
+人工显式档;③vision/NIM 维持现状;④O2 实施含 trace;⑤O4 LLM fallback
+**启用**(超出审计"暂缓"建议,按人工决策执行);⑥codeup Flow+README 双轨。
+
+**已实施(代码,本地已部署验证)**:
+- O1′-a 词表归一化:`autoroute/scoring.go` TaskMatchScore 匹配层加
+  normalizeTagSeparators('_'→'-',词表与候选两侧归一,containsFold 本身不动
+  ——它被分类器文本匹配复用);单测 TestTaskMatchScoreSeparatorNormalization
+  /TestNormalizeTagSeparators,agent 类 0→66.7、function_call 类 0→100。
+- O2 5min 抑制:`executor.go` 新增 recordTransientDispatchFailure(复用
+  recordModelNotFound 的 node_probe_state UPSERT 语义,last_direct_ok=FALSE
+  + next_retry_at=now()+5min,不写 model_probe_runs 证据行),由
+  `executor_dispatch.go` recordDispatchError 对 transient 类失败触发;
+  transientSuppressErrorCode 白名单=http_429/http_5xx/timeout/network/
+  upstream_down/concurrent,模型未找到/客户端错误/配额/取消类明确排除。
+  dispatch_v2 是唯一执行路径且 recordDispatchError 为共享 reducer,
+  245(stateManager)/154(authoritative 无 stateManager)两分支天然同享,
+  探测恢复仍由 bg NodeProbeWorker 独占(429 行遵循 SC-11 不即时探测)。
+- O2 trace 可观测:`handler.go` emitTelemetry 在 executor Trace 与
+  audit evt 均空时,把 auto wire(X-Gw-Auto-Decision 同源 JSON)投影为
+  decision_trace(`auto_route.go` autoDecisionTrace:source/task_type/
+  fallback_used/confidence/classifier/chosen_*);本地实测 auto 流量
+  53/309 行带 trace,显式模型流量保持 {}(设计如此)。
+- O1′-c 路由补齐:迁移 **709**(sql/migrations/startup/
+  709_work_type_route_coverage.sql + down + db.go ensureWorkTypeRouteCoverage
+  镜像 + db_migration_709_test.go 守卫;键级 NOT EXISTS 守卫不回改管理员
+  路由集;双账本 stamp;迁移号三重查重:仓内无 709/测试无引用/252 共享
+  账本 702-730 仅 703;**初建号为 706,查重后被并行会话 efe9e1c83 的
+  session_family S1a(706-708)抢先占用,即时改号 709**)。种 3 个 work_type_config(code_audit/
+  intent_classification/planning)+ 4 类路由(primary deepseek-v4-flash,
+  secondary glm-5.2/minimax-m2.7;claude 系按②不进 auto)。本地库已应用,
+  11 个 l1 全覆盖。
+- 顺手修复:scripts/apply-db-revision-sequence.sh 补登
+  ensure_request_logs_partition 的 694→705 intentional_function_chains
+  (705 落库时漏登记,部署预检门报"同函数多文件重定义",与 703 当初同形)。
+- CI ⑥:`.workflow/main-verify.yml`(codeup Flow:build+vet+60 例离线套件;
+  首次需在 codeup 流水线页导入)+ README「CI 与门禁」一节(本地
+  verify.sh 为正式门禁)。
+
+**已实施(数据/配置)**:
+- O1′-b 标签(本地库已应用;生产待新二进制部署后经 admin API PATCH
+  ——旧生产二进制无 /api/admin/models 树):7 模型按真实能力补标签,
+  依据=仓内 internal/reasoncap/reasoning_defaults.go(deepseek-v4 系/
+  glm-5 系/kimi-k3/minimax-m3 均 Supported)+ 库内家族先例(deepseek-v3.1
+  =tool-use+function-call)+ 生产 context_window(≥128k 补 long-context);
+  minimax-m2.7 无 reasoncap 条目,保守只补 tool-use+function-call。
+- O4 启用(生产):LLMGatewayAutoLLM{Endpoint,ApiKey,Model,Timeout} 环境变量
+  + 自环调用(模型 deepseek-v4-flash);ApiKey 走 admin API 新建专用 key
+  (旧二进制无 /api/admin/keys,须待部署);阈值默认 0.7(tuning 可覆盖)。
+
+**本地 E2E 复跑(2026-09-14,2.5.4-06815c74-2109,60 例套件)**:
+兜底 **32/60(53%)→5/60(8%)**;agent(3)/code(13)/code_audit(4)/
+function_call(5)/long_context(2)/planning(5)/reasoning(6)/vision(4)/chat(5)
+九类 0 兜底;creative 1/8 零星;**intent_classification 4/5 仍兜底——预测内
+残余**(词表 [classification] 无任何真实标签可命中,胜者仍 deepseek-v4-flash,
+行为不变);agent 3/3 胜者 minimax-m3、code/reasoning → glm-5.2,与 §一实测
+主力一致。行为冒烟:planning fallback_used=false、match_score=33.3、
+route_tier=primary(路由×标签×归一化三件叠加生效)。
+
+**残余与后续**:
+- intent_classification(词表 classification)与 long_context 类(cap:long-context
+  仅 1/5=20<30,尺寸词 128k/200k/512k/1m 无独立标签面)仍会走兜底池;胜者
+  与配置 primary 一致,优先级低,待词表/标签后续迭代。
+- codeup Flow 需人工在 codeup 流水线页导入 .workflow/main-verify.yml 一次。
+- 生产 245/154 部署后:核对 709 落库、admin API 补 (b) 标签、O4 env+key、
+  以 routing_decision_log.decision_trace 的 fallback_used 做效果验证。
