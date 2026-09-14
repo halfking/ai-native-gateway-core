@@ -140,6 +140,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"700_request_logs_view_raw_model_name.sql",
 			"701_credential_balance_floor.sql",
 			"703_supplier_errors_promote_timezone_pin.sql",
+			"711_hosted_tasks.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}

@@ -362,6 +362,15 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/706_session_family_s1a.sql"
   "$ROOT_DIR/sql/migrations/startup/707_session_turns_s1a.sql"
   "$ROOT_DIR/sql/migrations/startup/708_session_bodies_s1a.sql"
+  # 2026-09-15 存储优化方案 v2 S4 前置（plan §4-S4 / §4.2-10，观察台账
+  # Round 1b）：711 turns cost_usd numeric(12,6)→(14,8)（E5 G1-cost 舍入
+  # 对齐 v1；cost_display 为 double precision 无需动）+712
+  # session_mirror_outbox（spec §12 GAP-2 闭环：mirror 失败行持久登记，
+  # payload=完整 entry JSON，internal/sessionv2mirror replay.go 重放器消化；
+  # 历史回填脚本 scripts/audit/mirror_outbox_backfill.sql 灌同表）。均自带
+  # schema_migrations INSERT(695-705 定式)；两者不定义函数，无 chain 登记。
+  "$ROOT_DIR/sql/migrations/startup/711_session_turns_cost_precision.sql"
+  "$ROOT_DIR/sql/migrations/startup/712_session_mirror_outbox.sql"
   # 2026-09-14 存储优化方案 v2 S2（docs/03-design/04-data-design/
   # storage-optimization-plan.md §3 D6/§4）：request_logs_with_current_month
   # 同名视图体重建为 session 家族拼装体——session_turns(_hot) 113 列会话投影
