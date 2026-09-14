@@ -119,7 +119,7 @@ RedClaw 蜂群契约佐证：companion 本地 API 只读、写路径必须经 AC
 | HMAC 签名 | 复用 `internal/outbox/signature.go:10-37`（`timestamp.nonce.body`，hmac-sha256=）与 wire envelope 渲染（`wire.go:55-82`） |
 | SSRF 防护 | 复用 `internal/safehttpclient`（私网/回环/metadata/IPv6/DNS rebinding/redirect 复验，allowlist 显式开启内网）`safe_http_client.go:57-109` |
 | 后台 worker | 复用 `bg/base_worker.go:45-149`（幂等 Start/Stop、panic 隔离） |
-| 迁移纪律 | 下一个编号 **705**（704 已被 R28 占用：`sql/migrations/startup/704_plan_quota_probe_backoff.sql`）；唯一编号测试 `migration_version_unique_test.go` |
+| 迁移纪律 | 下一编号 **711**（704=R28 探测退避；705–710 已被远程会话 V2 等批次占用：`705…710_*.sql`）；唯一编号测试 `migration_version_unique_test.go` |
 | 会话线层 | dispatch 会话组 `gw_<hosted_task_id>`；正文/成本权威在 request_logs/usage_ledger，零改造入账 |
 | 现有 GoalRun | 仅作参考模式；P0 不写入 goal_runs（避免与 chat-goal 语义混淆） |
 
@@ -228,8 +228,8 @@ delegated → dispatching → running → completing → completed | failed
 
 | 文件 | 内容 |
 |------|------|
-| `sql/migrations/startup/705_hosted_tasks.sql` (+.down) | 三表：`hosted_tasks`（id, tenant_id, api_key_id, goal, done_when, status CHECK, acc_command_id, acc_run_id, gw_session_id, workspace_id, model_pref, deadline_at, callback_url_hash, result JSONB, result_version, revision, idempotency 唯一(tenant_id,idempotency_key), 终态 sticky CHECK）；`hosted_task_events`（唯一(task_id,seq)）；`hosted_task_callbacks`（url, secret 加密, attempt/next_at/status, DLQ 字段）。全表 RLS（app.current_tenant），bypass 仅 worker 角色 |
-| `sql/migrations/startup/migration_705_test.go` | 唯一编号+fresh up/down/up+RLS 负向矩阵 |
+| `sql/migrations/startup/711_hosted_tasks.sql` (+.down) | 三表：`hosted_tasks`（id, tenant_id, api_key_id, goal, done_when, status CHECK, acc_command_id, acc_run_id, gw_session_id, workspace_id, model_pref, deadline_at, callback_url_hash, result JSONB, result_version, revision, idempotency 唯一(tenant_id,idempotency_key), 终态 sticky CHECK）；`hosted_task_events`（唯一(task_id,seq)）；`hosted_task_callbacks`（url, secret 加密, attempt/next_at/status, DLQ 字段）。全表 RLS（app.current_tenant），bypass 仅 worker 角色 |
+| `sql/migrations/startup/migration_711_test.go` | 唯一编号+fresh up/down/up+RLS 负向矩阵 |
 | `domains/hostedtask/types.go` | 状态/事件枚举 + 纯函数迁移矩阵（表驱动测试） |
 | `domains/hostedtask/store.go` | Tx 内幂等创建/CAS 投影/终态抢占/事件追加（参照 routeincident store.go:77-164 的 FOR UPDATE+version CAS） |
 | `domains/hostedtask/handler.go` | 五端点；authenticate 复用 session 模式（跨包 InvalidKeyError 断言） |
@@ -237,7 +237,7 @@ delegated → dispatching → running → completing → completed | failed
 | `domains/hostedtask/callbacks.go` + `internal/hostedcallback/` | callback deliverer：safehttpclient（redirect=0 或逐跳复验；allowlist 可配）+ 复用 `outbox.SignPayload` 头；退避重试→DLQ；event_id=`hosted_<id>_ev<seq>` 固定 |
 | `bg/hosted_task_reconciler.go` | BaseWorker：SSE 订阅（断线 after 恢复）+ 轮询兜底 + deadline reaper + 终态触发回调入队 |
 | `cmd/gateway/main.go` | 装配 + `mux.Handle("/v1/hosted-tasks", …)`、`/v1/hosted-tasks/`；**顺带修复**：`/v1/goal-runs/{id}` 挂载前先给 goalrun_handler 补 KeyVerifier 归属校验（独立小 PR） |
-| `installer/…/embeddata/startup/705_*` + `runner.go` 清单 + `docs/db-changelog.md` | 三处同步（§0 反例教训） |
+| `installer/…/embeddata/startup/711_*` + `runner.go` 清单 + `docs/db-changelog.md` | 三处同步（§0 反例教训） |
 | `config/config.go` + `.env.example` | hostedtask 配置块（ACC URL/token、callback allowlist、deadline 默认值、worker 开关） |
 
 ### 6.2 P0 明确不做
@@ -260,7 +260,7 @@ recall（501）、多阶段拆解、budget 熔断执行、多 runtime 调度、p
 | A 端到端(245) | 委托→pi 完成→usage_ledger 入账→回调 2xx→result 可读；记录 commit/迁移/flag/外部版本 |
 | B API | 401/403(跨租户 404)/400/405/幂等重放(同键同体 200、同键异体 409)/并发 cancel-vs-complete 单终态 |
 | C 路由装配 | httptest 打最终 mux（含 h2c），/v1/hosted-tasks 不被 static fallback 吞 |
-| D 迁移/RLS | 705 fresh/upgrade/down-up；NOSUPERUSER+NOBYPASSRLS 租户 A/B 负向；无 TEST_DATABASE_URL 不得记 PASS |
+| D 迁移/RLS | 711 fresh/upgrade/down-up；NOSUPERUSER+NOBYPASSRLS 租户 A/B 负向；无 TEST_DATABASE_URL 不得记 PASS |
 | E 回调 | HMAC 正确/过期/重放；2xx；4xx 不重试；5xx 退避→DLQ；loopback/RFC1918/metadata/redirect 复验全拒；POST 成功 commit 前崩溃→重投+event_id 幂等 |
 | F 结果 | Redis 清空后 PG 回源；result_version 单调；hash/tenant 不匹配拒绝 |
 | G 恢复 | 网关重启后 SSE 游标续传；同 Idempotency-Key 重放不双发；unknown_outcome→needs_review 不猜测 |
@@ -277,7 +277,7 @@ recall（501）、多阶段拆解、budget 熔断执行、多 runtime 调度、p
 | pi 假成功（stopReason=error） | 网关终态判定强制校验 raw.stop_reason |
 | ACC/companion 状态漂移 | 执行真相=ACC；网关只投影+needs_review 人工对账态 |
 | cwd 任意路径（CheckPath 未接线） | workspace_id 白名单映射，禁裸路径 |
-| 迁移漂移重演 | 705 三处同步纳入 PR checklist + CI 唯一编号测试 |
+| 迁移漂移重演 | 711 三处同步纳入 PR checklist + CI 唯一编号测试 |
 | Memora stub/降级伪成功 | 解析 failed[]/degraded/X-Memora-Stub，未确认不声明沉淀完成 |
 | 跨仓库依赖不可复现 | §6.0 四项门禁前置于编码验收；缺依赖记 SKIPPED-CONFIG |
 
