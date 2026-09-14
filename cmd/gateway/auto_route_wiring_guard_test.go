@@ -66,3 +66,33 @@ func TestAutoRouteWiringNotGatedOnDataPlaneMode(t *testing.T) {
 		t.Fatal("O5 regression: full-only maintenance writers (trimmers/feedback analyzer) are no longer gated on !bgDataPlaneOnly and would double-run on blue-green candidate instances")
 	}
 }
+
+// TestAutoLLMMetricsWiredInBuildAutoLLMCaller guards the 2026-09-15 O4
+// follow-up: autoroute.RecordLLMMetricCall / RecordLLMCircuitBreakerState
+// default to no-ops ("wired by main.go" per their doc comment) and nothing
+// else assigns them. Until buildAutoLLMCaller wires them to the telemetry
+// package, llm_gateway_llm_classifier_* and the breaker gauges stay at zero
+// forever — the O4 adoption-rate observation channel was silently dead in
+// production (escalations were only visible via journal archaeology).
+func TestAutoLLMMetricsWiredInBuildAutoLLMCaller(t *testing.T) {
+	source, err := os.ReadFile("main_types.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+
+	const fnMarker = "func buildAutoLLMCaller()"
+	fnIdx := strings.Index(text, fnMarker)
+	if fnIdx < 0 {
+		t.Fatal("main_types.go: buildAutoLLMCaller missing; the LLM caller assembly moved — re-evaluate this guard")
+	}
+
+	for _, wiring := range []string{
+		"autoroute.RecordLLMMetricCall = telemetry.RecordLLMClassifierCall",
+		"autoroute.RecordLLMCircuitBreakerState = telemetry.RecordLLMCircuitBreakerState",
+	} {
+		if !strings.Contains(text[fnIdx:], wiring) {
+			t.Fatalf("main_types.go: %q not wired inside buildAutoLLMCaller — llm_gateway_llm_classifier_* would stay at zero in production", wiring)
+		}
+	}
+}
