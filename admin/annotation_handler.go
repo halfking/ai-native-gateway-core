@@ -31,16 +31,16 @@ func nullStringPtr(n sql.NullString) *string {
 // region — those struct fields stay in the payload (zero-valued) to keep the
 // API shape stable for the web UI.
 type AnnotationSample struct {
-	RequestID     string  `json:"request_id"`
-	ModelName     string  `json:"model_name"`
-	TaskType      string  `json:"task_type"`
-	PromptTokens  int     `json:"prompt_tokens"`
-	IsStreaming   bool    `json:"is_streaming"`
-	HasVision     bool    `json:"has_vision"`
-	Region        string  `json:"region"`
-	Profile       string  `json:"profile"`
-	AutoProvider  string  `json:"auto_provider"`
-	Confidence    float64 `json:"confidence"`
+	RequestID    string  `json:"request_id"`
+	ModelName    string  `json:"model_name"`
+	TaskType     string  `json:"task_type"`
+	PromptTokens int     `json:"prompt_tokens"`
+	IsStreaming  bool    `json:"is_streaming"`
+	HasVision    bool    `json:"has_vision"`
+	Region       string  `json:"region"`
+	Profile      string  `json:"profile"`
+	AutoProvider string  `json:"auto_provider"`
+	Confidence   float64 `json:"confidence"`
 	// Annotation fields (populated if annotated)
 	HumanProvider *string    `json:"human_provider,omitempty"`
 	IsCorrect     *bool      `json:"is_correct,omitempty"`
@@ -122,10 +122,10 @@ type FirstTurnSamplesResponse struct {
 
 // AnnotationStatsResponse wraps all statistics
 type AnnotationStatsResponse struct {
-	Overall    *annotation.AnnotationStats     `json:"overall"`
-	ByProvider []annotation.ProviderAccuracy   `json:"by_provider"`
-	ByAnnotator []annotation.AnnotatorStats    `json:"by_annotator"`
-	ByReason   []annotation.ReasonDistribution `json:"by_reason"`
+	Overall     *annotation.AnnotationStats     `json:"overall"`
+	ByProvider  []annotation.ProviderAccuracy   `json:"by_provider"`
+	ByAnnotator []annotation.AnnotatorStats     `json:"by_annotator"`
+	ByReason    []annotation.ReasonDistribution `json:"by_reason"`
 }
 
 // handleAnnotationSamples handles GET /api/admin/annotations/samples
@@ -575,7 +575,7 @@ func queryFirstTurnSamples(ctx context.Context, q firstTurnQueryer, opts firstTu
 			tha.annotator,
 			tha.annotated_at
 	` + firstTurnFromClause + whereClause + fmt.Sprintf(`
-		ORDER BY ft.ts DESC
+		ORDER BY ft.ts DESC, ft.request_id
 		LIMIT $%d OFFSET $%d
 	`, len(args)+1, len(args)+2)
 
@@ -593,10 +593,10 @@ func queryFirstTurnSamples(ctx context.Context, q firstTurnQueryer, opts firstTu
 		// pgxmock test double, neither of which agree on **T semantics).
 		var (
 			title, clientType, humanProvider, humanTaskType, humanModel, reason, annotator sql.NullString
-			confidence                                                                      sql.NullFloat64
-			statusCode, latencyMs, totalTurns                                               sql.NullInt64
-			success, isCorrect                                                              sql.NullBool
-			annotatedAt                                                                     sql.NullTime
+			confidence                                                                     sql.NullFloat64
+			statusCode, latencyMs, totalTurns                                              sql.NullInt64
+			success, isCorrect                                                             sql.NullBool
+			annotatedAt                                                                    sql.NullTime
 		)
 		var s FirstTurnSample
 		if err := rows.Scan(

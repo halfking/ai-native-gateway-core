@@ -211,7 +211,7 @@ func TestFirstTurnQueryScansRows(t *testing.T) {
 			tha.annotator,
 			tha.annotated_at
 	` + firstTurnFromClause + where + `
-		ORDER BY ft.ts DESC
+		ORDER BY ft.ts DESC, ft.request_id
 		LIMIT $5 OFFSET $6
 	`
 	rows := mock.NewRows([]string{
