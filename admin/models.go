@@ -1005,6 +1005,13 @@ func (h *Handler) updateModelTags(w http.ResponseWriter, r *http.Request, id int
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	// Full-replacement endpoint: an absent/null tags field binds a nil
+	// []string and would NULL the column. Require the field explicitly —
+	// a genuine clear is [] (or POST tags/reset).
+	if req.Tags == nil {
+		writeError(w, http.StatusBadRequest, "tags field is required (use [] to clear)")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	// tags is TEXT[] (models_canonical): bind a []string, not the raw JSON

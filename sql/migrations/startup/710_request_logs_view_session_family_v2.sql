@@ -146,6 +146,18 @@ BEGIN
     RETURN;
   END IF;
 
+  -- 包装链在场守卫：v2 体直接引用 …_without_request_class_due_at。680 事故态
+  -- （canonical 与包装链同被带外删除）下强行 CREATE 会 42P01 炸停部署通道——
+  -- 保留现状交由 db.ensure（先重建包装再上 v2 体，启动期幂等收敛）。
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_views
+    WHERE schemaname = 'public'
+      AND viewname = 'request_logs_with_current_month_without_request_class_due_at'
+  ) THEN
+    RAISE NOTICE '710: wrapper chain missing (680-incident shape); keeping v1 rebuild to db.ensure';
+    RETURN;
+  END IF;
+
   -- v1 分支 lateral 形态条件化（696/700 同款守卫语义）：冻结链基础交集缺
   -- system_fingerprint/raw_model_name → lateral 追加 4 列；动态重建链自带 →
   -- 追加会重复列，只追加 request_class/due_at。
