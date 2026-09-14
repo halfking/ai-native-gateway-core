@@ -47,19 +47,27 @@ func (s *PostgresStore) Save(ctx context.Context, exec *ToolExecution) error {
 	}
 	exec.ComputeDuration()
 
+	// 存储优化方案 v2 S1a（migration 706）：写链切到月分区表 session_tools
+	// （134 的 tool_executions 形状 + turn_no + partition_date）。本机审计
+	// 发现 tool_executions 从未在本地建表（134 属 domain 通道），切换同时
+	// 修复该缺表写失败。partition_date 取调用日，与 session 家族语义一致
+	// （日粒度值、月分区边界）。
+	partitionDate := exec.StartedAt.UTC()
+	partitionDate = time.Date(partitionDate.Year(), partitionDate.Month(), partitionDate.Day(), 0, 0, 0, 0, time.UTC)
+
 	const q = `
-		INSERT INTO tool_executions (
+		INSERT INTO public.session_tools (
 			execution_id, session_id, request_id, tenant_id,
 			tool_name, tool_call_id, arguments, result,
 			status, error_message, error_type,
 			started_at, completed_at, duration_ms,
-			identity_hash, model, created_at
+			identity_hash, model, created_at, partition_date
 		) VALUES (
 			$1, $2, $3, $4,
 			$5, $6, $7, $8,
 			$9, $10, $11,
 			$12, $13, $14,
-			$15, $16, $17
+			$15, $16, $17, $18
 		)
 	`
 	_, err := s.db.ExecContext(ctx, q,
@@ -68,6 +76,7 @@ func (s *PostgresStore) Save(ctx context.Context, exec *ToolExecution) error {
 		string(exec.Status), nullString(exec.ErrorMessage), nullString(exec.ErrorType),
 		exec.StartedAt, nullTime(exec.CompletedAt), exec.DurationMs,
 		nullString(exec.IdentityHash), nullString(exec.Model), exec.CreatedAt,
+		partitionDate,
 	)
 	if err != nil {
 		return fmt.Errorf("toolexecution: insert: %w", err)
@@ -83,7 +92,7 @@ func (s *PostgresStore) Get(ctx context.Context, executionID string) (*ToolExecu
 		       status, COALESCE(error_message, ''), COALESCE(error_type, ''),
 		       started_at, completed_at, COALESCE(duration_ms, 0),
 		       COALESCE(identity_hash, ''), COALESCE(model, ''), created_at
-		FROM tool_executions
+		FROM public.session_tools
 		WHERE execution_id = $1
 	`
 	var exec ToolExecution
@@ -136,7 +145,7 @@ func (s *PostgresStore) Update(ctx context.Context, executionID string, updater 
 	exec.ComputeDuration()
 
 	const q = `
-		UPDATE tool_executions
+		UPDATE public.session_tools
 		SET status        = $1,
 		    result        = $2,
 		    error_message = $3,
@@ -172,7 +181,7 @@ func (s *PostgresStore) ListBySession(ctx context.Context, sessionID string) ([]
 		       status, COALESCE(error_message, ''), COALESCE(error_type, ''),
 		       started_at, completed_at, COALESCE(duration_ms, 0),
 		       COALESCE(identity_hash, ''), COALESCE(model, ''), created_at
-		FROM tool_executions
+		FROM public.session_tools
 		WHERE session_id = $1
 		ORDER BY started_at DESC
 	`
@@ -193,7 +202,7 @@ func (s *PostgresStore) ListByIdentity(ctx context.Context, identityHash string,
 		       status, COALESCE(error_message, ''), COALESCE(error_type, ''),
 		       started_at, completed_at, COALESCE(duration_ms, 0),
 		       COALESCE(identity_hash, ''), COALESCE(model, ''), created_at
-		FROM tool_executions
+		FROM public.session_tools
 		WHERE identity_hash = $1
 		ORDER BY started_at DESC
 		LIMIT $2
@@ -209,7 +218,7 @@ func (s *PostgresStore) ListByToolName(ctx context.Context, toolName string, sta
 		       status, COALESCE(error_message, ''), COALESCE(error_type, ''),
 		       started_at, completed_at, COALESCE(duration_ms, 0),
 		       COALESCE(identity_hash, ''), COALESCE(model, ''), created_at
-		FROM tool_executions
+		FROM public.session_tools
 		WHERE tool_name = $1 AND started_at >= $2 AND started_at < $3
 		ORDER BY started_at ASC
 	`
@@ -230,7 +239,7 @@ func (s *PostgresStore) ListByTenant(ctx context.Context, tenantID string, start
 		       status, COALESCE(error_message, ''), COALESCE(error_type, ''),
 		       started_at, completed_at, COALESCE(duration_ms, 0),
 		       COALESCE(identity_hash, ''), COALESCE(model, ''), created_at
-		FROM tool_executions
+		FROM public.session_tools
 		WHERE tenant_id = $1 AND started_at >= $2 AND started_at < $3
 		ORDER BY started_at DESC
 		LIMIT $4
@@ -407,7 +416,7 @@ func (s *PostgresStore) ListStats(ctx context.Context, toolName string, startTim
 func (s *PostgresStore) ListToolNamesWithActivity(ctx context.Context, startTime, endTime time.Time) ([]string, error) {
 	const q = `
 		SELECT DISTINCT tool_name
-		FROM tool_executions
+		FROM public.session_tools
 		WHERE started_at >= $1 AND started_at < $2
 		ORDER BY tool_name
 	`
