@@ -89,8 +89,15 @@ func NewHTTPLlmCaller(cfg HTTPLlmCallerConfig) *HTTPLlmCaller {
 		cfg.MaxTokens = 16
 	}
 	if cfg.HTTPClient == nil {
+		// 2026-09-15 O4 verification fix: the default client timeout must
+		// follow cfg.Timeout. It previously stayed at a hardcoded 5s, which
+		// silently overrode a larger LLMGatewayAutoLLMTimeout (context 8s,
+		// client kills the request at 5s — observed on the 245 self-loop
+		// classification path). Call(ctx) also bounds each call with a
+		// context deadline of cfg.Timeout; the client value is the outer
+		// safety net only.
 		cfg.HTTPClient = &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout: cfg.Timeout,
 		}
 	}
 	return &HTTPLlmCaller{cfg: cfg}
