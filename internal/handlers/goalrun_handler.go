@@ -125,7 +125,7 @@ func (h *GoalRunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Fetch GoalRun from repository
-	run, err := h.store.GetGoalRun(ctx, goalRunID)
+	run, err := h.store.GetGoalRun(ctx, tenantID, goalRunID)
 	if err != nil {
 		if err == goalrun.ErrGoalRunNotFound {
 			h.writeError(w, http.StatusNotFound, "not_found", "goal run not found")
