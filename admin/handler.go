@@ -1343,6 +1343,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		// admin middleware: allows any authenticated user to annotate samples.
 		// Annotation routes are registered here to keep them with other auto-route endpoints.
 		mux.HandleFunc("/api/admin/annotations/samples", admin(h.handleAnnotationSamples))
+		// First-turn workbench (2026-09-14): one row per session's turn_no=1
+		// request with its auto-route decision + annotation summary.
+		mux.HandleFunc("/api/admin/annotations/first-turn-samples", admin(h.handleAnnotationFirstTurnSamples))
 		mux.HandleFunc("/api/admin/annotations/stats", admin(h.handleAnnotationStats))
 		mux.HandleFunc("/api/admin/annotations/batch", admin(h.handleBatchAnnotate))
 		mux.HandleFunc("/api/admin/annotations/", admin(h.handleDeleteAnnotation)) // DELETE /annotations/{request_id}
