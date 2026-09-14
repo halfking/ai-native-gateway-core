@@ -317,16 +317,21 @@ func TestBuildAnnotationMetadata(t *testing.T) {
 		t.Fatalf("both set: unexpected error %v", err)
 	}
 	want := `{"model":"glm-5","task_type":"code"}`
-	if string(b.([]byte)) != want {
-		t.Errorf("both set: got %s, want %s", b, want)
+	if s, ok := b.(string); !ok || s != want {
+		t.Errorf("both set: got %v (%T), want string %s", b, b, want)
+	}
+	// JSONB 载荷必须是 string 而非 []byte:pgx 会把 []byte 按 bytea 编码,
+	// jsonb 列报 22P02(生产冒烟 2026-09-15 实测)。
+	if _, ok := b.([]byte); ok {
+		t.Errorf("metadata must be string not []byte (pgx bytea trap)")
 	}
 
 	b, err = buildAnnotationMetadata("reasoning", "")
 	if err != nil {
 		t.Fatalf("task only: unexpected error %v", err)
 	}
-	if string(b.([]byte)) != `{"task_type":"reasoning"}` {
-		t.Errorf("task only: got %s", b)
+	if s, ok := b.(string); !ok || s != `{"task_type":"reasoning"}` {
+		t.Errorf("task only: got %v (%T)", b, b)
 	}
 
 	if _, err := buildAnnotationMetadata(strings.Repeat("x", 65), ""); err == nil {
