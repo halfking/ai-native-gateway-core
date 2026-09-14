@@ -374,3 +374,15 @@ route_tier=primary(路由×标签×归一化三件叠加生效)。
   (telemetry.RecordLLMClassifierCall/RecordLLMCircuitBreakerState),
   守卫测试 TestAutoLLMMetricsWiredInBuildAutoLLMCaller 锁定;随下次例行
   部署生效。
+
+**§六 审计复核(同日 02:00,对上述修复轮的反审)**:
+- 复核线上:245=2116/154=2117 healthz 均 200;01:17 后零新增升级(低峰
+  无低置信请求),观测结论不变。9 行/llm_v2×1 维持。
+- 修正接线轮两处缺口:①DisabledCaller(未配 LLMGatewayAutoLLMEndpoint
+  的部署)绕过 InstrumentedCaller,指标 HELP 声明的 `disabled` outcome
+  永远不会发出——LLMFallbackClassifier.Classify 补
+  `errors.Is(err, ErrLLMDisabled)` 显式记录,单测
+  TestLLMFallbackClassifier_RecordsDisabledOutcome;②llm_caller.go 与
+  classifier_llm.go 两处过时注释("Wired by main.go"/"3s 硬编码")改准。
+- 复核确认无回归面:接线赋值仅在启动装配期执行一次、signature 两侧
+  匹配、InstrumentedCaller 既有 outcome 分类单测未动、guard 测试通过。
