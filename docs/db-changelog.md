@@ -514,3 +514,9 @@ LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS（默认 24h）释放 floor 摘出行）�
 | 708 | `708_session_bodies_s1a.sql` | `6f1f8d3c931f207c2c1833206e3db2831d471fdf06b7273b359c5567b33a8dd6` | applied+verified |
 | 709 | `709_work_type_route_coverage.sql` | `14843d50eded9e8bd99ac04bd4525b192a5a710e7f66653e13f6fcc3ab652d53` | applied+verified |
 
+## 2026-09-14T16:15:36Z — deploy 245 build_seq 2113 (c26f2dc9)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 710 | `710_request_logs_view_session_family_v2.sql` | `888d026400710735dd0213e0b64325bf70cb1dcc24392f716f377b28b5b0c62b` | applied+verified |
+
