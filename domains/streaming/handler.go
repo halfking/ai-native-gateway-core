@@ -734,10 +734,10 @@ type ChatHandler struct {
 	// staticDataPlaneKey (2026-09-14 audit H-P0-1): DB verifier 不可用
 	// （lite/no-DB 降级）时的兜底数据面闸——非空时要求 Bearer 与部署静态
 	// 密钥精确匹配（覆盖 middleware sk-* 透传洞），否则整段鉴权被跳过。
-	staticDataPlaneKey string
+	staticDataPlaneKey  string
 	survivalAttemptExec AttemptExecutor
-	rateLimiter          ratelimit.RPMLimiter
-	telemetryClient      *telemetry.Client
+	rateLimiter         ratelimit.RPMLimiter
+	telemetryClient     *telemetry.Client
 	// profileEmitter (2026-07-15) 把请求/会话事件投到 clientprofile 画像聚合。
 	// nil 禁用画像聚合；调用方负责 graceful 注入（main.go SetupClientProfileIntegration）。
 	profileEmitter interface {
@@ -2067,7 +2067,8 @@ func (h *ChatHandler) serveWithExecutor(
 
 	// ── API key authentication ──────────────────────────────────────────
 	var keyInfo *authentication.KeyInfo
-	if h.keyVerifier != nil && h.keyVerifier.Enabled() {		rawKey := extractBearerToken(r)
+	if h.keyVerifier != nil && h.keyVerifier.Enabled() {
+		rawKey := extractBearerToken(r)
 		if rawKey == "" {
 			captureAndEmitFailure("missing_key", "missing api key", nil, nil)
 			writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgMissingKey, nil)
@@ -5348,6 +5349,11 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	} else if evt.DecisionTrace != nil {
 		traceJSON, _ := json.Marshal(evt.DecisionTrace)
 		dl.DecisionTrace = traceJSON
+	} else if logCtx != nil && len(logCtx.AutoDecision) > 0 {
+		// Auto-route success: project the decision wire into the trace so
+		// fallback_used/task_type are observable in routing_decision_log
+		// (2026-09-14 audit O2 observability).
+		dl.DecisionTrace = autoDecisionTrace(logCtx.AutoDecision)
 	}
 	if result.Candidate.RawModel != "" {
 		dl.ResolvedRawModel = strPtr(result.Candidate.RawModel)
