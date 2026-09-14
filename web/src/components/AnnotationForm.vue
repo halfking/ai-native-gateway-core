@@ -1,18 +1,29 @@
 <script setup lang="ts">
+// AnnotationForm.vue — 首轮会话人工标注表单(2026-09-14 重构)。
+//
+// 标注语义升级:人工标注的 ground truth 是「任务类型 + 所选模型」
+// (供应商不重要),由后端写入 training_human_annotations.annotation_metadata,
+// 用于 auto 任务类型定位训练。是否正确/原因沿用原语义。
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { PROVIDERS, VALID_REASONS, type AnnotationSample } from '../api/annotations'
-import type { Provider, AnnotationReason } from '../api/annotations'
+import { VALID_REASONS, type FirstTurnSample } from '../api/annotations'
+import type { AnnotationReason } from '../api/annotations'
 
 const { t } = useI18n()
 
 const props = defineProps<{
-  sample: AnnotationSample | null
+  sample: FirstTurnSample | null
   defaultAnnotator?: string
+  /** L1 task type options (key + display label). */
+  taskTypes?: { key: string; label: string }[]
+  /** Candidate model names for the "which model should have been picked" pick. */
+  models?: string[]
 }>()
 
 const emit = defineEmits<{
   submit: [data: {
+    task_type: string
+    model: string
     human_provider: string
     is_correct: boolean
     reason: string
@@ -21,53 +32,61 @@ const emit = defineEmits<{
   cancel: []
 }>()
 
-const humanProvider = ref<string>('')
+const taskType = ref<string>('')
+const model = ref<string>('')
 const isCorrect = ref<boolean>(true)
 const reason = ref<string>('correct')
 const annotator = ref<string>('')
 
 const errors = ref<Record<string, string>>({})
 
-// Initialize form when sample changes
+const taskTypeChoices = computed<{ key: string; label: string }[]>(() =>
+  props.taskTypes?.length ? props.taskTypes : [{ key: 'chat', label: 'chat' }],
+)
+const modelChoices = computed<string[]>(() => props.models ?? [])
+
+// Initialize form when sample changes; prefill with the auto decision.
 watch(() => props.sample, (newSample) => {
   if (newSample) {
-    // Pre-fill with auto provider if available
-    humanProvider.value = newSample.human_provider || newSample.auto_provider || ''
+    taskType.value = newSample.human_task_type || newSample.task_type || ''
+    model.value = newSample.human_model || newSample.chosen_model || ''
     isCorrect.value = newSample.is_correct ?? true
     reason.value = newSample.reason || 'correct'
     annotator.value = newSample.annotator || props.defaultAnnotator || ''
   }
 }, { immediate: true })
 
+// 确认语义:人工选择的任务类型与模型都和 auto 决策一致 → 正确;否则视为纠正。
+watch([taskType, model], ([tt, m]) => {
+  if (!props.sample) return
+  const matches = tt === props.sample.task_type && (!props.sample.chosen_model || m === props.sample.chosen_model)
+  isCorrect.value = matches
+})
+
 const isValid = computed(() => {
-  return humanProvider.value && reason.value && annotator.value
+  return !!taskType.value && !!model.value && !!reason.value && !!annotator.value
 })
 
 function validate(): boolean {
   errors.value = {}
-  
-  if (!humanProvider.value) {
-    errors.value.human_provider = t('annotation.form.errors.providerRequired')
-  }
-  
+  if (!taskType.value) errors.value.task_type = t('annotation.form.errors.taskTypeRequired')
+  if (!model.value) errors.value.model = t('annotation.form.errors.modelRequired')
   if (!reason.value) {
     errors.value.reason = t('annotation.form.errors.reasonRequired')
   } else if (!VALID_REASONS.includes(reason.value as AnnotationReason)) {
     errors.value.reason = t('annotation.form.errors.reasonInvalid')
   }
-  
-  if (!annotator.value) {
-    errors.value.annotator = t('annotation.form.errors.annotatorRequired')
-  }
-  
+  if (!annotator.value) errors.value.annotator = t('annotation.form.errors.annotatorRequired')
   return Object.keys(errors.value).length === 0
 }
 
 function handleSubmit() {
   if (!validate()) return
-  
   emit('submit', {
-    human_provider: humanProvider.value,
+    task_type: taskType.value,
+    model: model.value,
+    // 供应商不重要:model 兜底 human_label(后端同样兜底)。
+    human_provider: model.value,
     is_correct: isCorrect.value,
     reason: reason.value,
     annotator: annotator.value,
@@ -85,46 +104,58 @@ function handleCancel() {
       <h3>{{ t('annotation.form.title') }}</h3>
       <div class="sample-info">
         <span class="info-item">
-          <span class="label">{{ t('annotation.form.requestId') }}:</span>
-          <code>{{ sample.request_id }}</code>
-        </span>
-        <span class="info-item">
-          <span class="label">{{ t('annotation.form.model') }}:</span>
-          <span>{{ sample.model_name }}</span>
-        </span>
-        <span class="info-item">
-          <span class="label">{{ t('annotation.form.autoProvider') }}:</span>
-          <span class="badge badge-blue">{{ sample.auto_provider }}</span>
-        </span>
-        <span class="info-item">
           <span class="label">{{ t('annotation.form.confidence') }}:</span>
-          <span :class="sample.confidence < 0.5 ? 'text-danger' : 'text-muted'">
-            {{ (sample.confidence * 100).toFixed(1) }}%
+          <span :class="(sample.confidence ?? 0) < 0.5 ? 'text-danger' : 'text-muted'">
+            {{ sample.confidence != null ? (sample.confidence * 100).toFixed(1) + '%' : '-' }}
           </span>
+        </span>
+        <span class="info-item">
+          <span class="label">{{ t('annotation.form.autoRoute') }}:</span>
+          <span class="badge badge-blue">{{ sample.task_type }}</span>
+          <code class="text-mono">{{ sample.chosen_model }}</code>
         </span>
       </div>
     </div>
 
     <div class="form-body">
       <div class="form-field">
-        <label for="human-provider" class="form-label">
-          {{ t('annotation.form.humanProvider') }}
+        <label for="anno-task-type" class="form-label">
+          {{ t('annotation.form.taskType') }}
           <span class="required">*</span>
         </label>
         <select
-          id="human-provider"
-          v-model="humanProvider"
+          id="anno-task-type"
+          v-model="taskType"
           class="form-select"
-          :class="{ 'is-invalid': errors.human_provider }"
+          :class="{ 'is-invalid': errors.task_type }"
         >
-          <option value="">{{ t('annotation.form.selectProvider') }}</option>
-          <option v-for="p in PROVIDERS" :key="p" :value="p">
-            {{ p }}
+          <option value="">{{ t('annotation.form.selectTaskType') }}</option>
+          <option v-for="tt in taskTypeChoices" :key="tt.key" :value="tt.key">
+            {{ tt.label }}
+          </option>
+          <option v-if="taskType && !taskTypeChoices.some(x => x.key === taskType)" :value="taskType">
+            {{ taskType }}
           </option>
         </select>
-        <span v-if="errors.human_provider" class="error-message">
-          {{ errors.human_provider }}
-        </span>
+        <span v-if="errors.task_type" class="error-message">{{ errors.task_type }}</span>
+      </div>
+
+      <div class="form-field">
+        <label for="anno-model" class="form-label">
+          {{ t('annotation.form.model') }}
+          <span class="required">*</span>
+        </label>
+        <select
+          id="anno-model"
+          v-model="model"
+          class="form-select"
+          :class="{ 'is-invalid': errors.model }"
+        >
+          <option value="">{{ t('annotation.form.selectModel') }}</option>
+          <option v-for="m in modelChoices" :key="m" :value="m">{{ m }}</option>
+          <option v-if="model && !modelChoices.includes(model)" :value="model">{{ model }}</option>
+        </select>
+        <span v-if="errors.model" class="error-message">{{ errors.model }}</span>
       </div>
 
       <div class="form-field">
@@ -134,21 +165,11 @@ function handleCancel() {
         </label>
         <div class="radio-group">
           <label class="radio-label">
-            <input
-              v-model="isCorrect"
-              type="radio"
-              name="is-correct"
-              :value="true"
-            />
+            <input v-model="isCorrect" type="radio" name="is-correct" :value="true" />
             <span>{{ t('annotation.form.correct') }}</span>
           </label>
           <label class="radio-label">
-            <input
-              v-model="isCorrect"
-              type="radio"
-              name="is-correct"
-              :value="false"
-            />
+            <input v-model="isCorrect" type="radio" name="is-correct" :value="false" />
             <span>{{ t('annotation.form.incorrect') }}</span>
           </label>
         </div>
@@ -169,9 +190,7 @@ function handleCancel() {
             {{ t(`annotation.reasons.${r}`) }}
           </option>
         </select>
-        <span v-if="errors.reason" class="error-message">
-          {{ errors.reason }}
-        </span>
+        <span v-if="errors.reason" class="error-message">{{ errors.reason }}</span>
       </div>
 
       <div class="form-field">
@@ -187,9 +206,7 @@ function handleCancel() {
           :class="{ 'is-invalid': errors.annotator }"
           :placeholder="t('annotation.form.annotatorPlaceholder')"
         />
-        <span v-if="errors.annotator" class="error-message">
-          {{ errors.annotator }}
-        </span>
+        <span v-if="errors.annotator" class="error-message">{{ errors.annotator }}</span>
       </div>
     </div>
 
@@ -244,12 +261,10 @@ function handleCancel() {
   color: var(--text-muted);
 }
 
-.info-item code {
+.text-mono {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  padding: 0.125rem 0.25rem;
-  background: var(--bg-code);
-  border-radius: 3px;
+  word-break: break-all;
 }
 
 .form-body {
@@ -342,7 +357,7 @@ function handleCancel() {
 }
 
 .badge-blue {
-  background: var(--primary-light);
-  color: var(--primary);
+  background: var(--info-bg);
+  color: var(--accent);
 }
 </style>

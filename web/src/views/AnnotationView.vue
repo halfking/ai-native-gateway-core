@@ -1,80 +1,88 @@
 <script setup lang="ts">
+// AnnotationView.vue — 首轮会话标注工作台(2026-09-14 重构)。
+//
+// 语义变更:旧版列出每条 auto 路由请求;新版以「会话第一轮」为行
+// (session_turns.turn_no = 1 且带有 auto_route_selections 决策),
+// 展示会话标题/客户端/原任务类型/自动模型/置信度/状态/标注信息,
+// 人工标注沉淀「任务类型 + 所选模型」用于 auto 任务类型定位训练。
+// 旧请求级样本列表仍在 GET /api/admin/annotations/samples 保留。
 import { ref, computed, onMounted } from 'vue'
 import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { store } from '../store'
-import { fmtDateCompact } from '../i18n/useFormat'
 import { localeRef } from '../i18n'
-import {
-  getSamples,
-  createAnnotation,
-  batchAnnotate,
-  deleteAnnotation,
-  type AnnotationSample,
-  type SamplesParams,
-} from '../api/annotations'
+import { getFirstTurnSamples, createAnnotation, type FirstTurnSample, type FirstTurnParams } from '../api/annotations'
+import { L1_TASK_TYPES, listL1TaskTypes, type L1TaskTypeMeta } from '../api-work-types'
+import { getAvailableModelsRaw } from '../api/models'
+import { getUnifiedRequestDetail, type UnifiedRequestDetail } from '../api/requestDetail'
+import DataTable from '../components/ui/DataTable.vue'
+import PaginationBar from '../components/ui/PaginationBar.vue'
+import AppModal from '../components/ui/AppModal.vue'
 import AnnotationForm from '../components/AnnotationForm.vue'
 
 const { t } = useI18n()
 
-const samples = ref<AnnotationSample[]>([])
+const samples = ref<FirstTurnSample[]>([])
 const total = ref(0)
 const page = ref(1)
 const size = ref(50)
 const loading = ref(false)
 const error = ref('')
 
+// 默认当天(UTC 日期串,与后端默认口径一致)
+function utcToday(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
 // Filters
-const filterStartDate = ref('')
-const filterEndDate = ref('')
-const filterMinConfidence = ref<number | undefined>(undefined)
-const filterMaxConfidence = ref<number | undefined>(1.0)
+const filterStartDate = ref(utcToday())
+const filterEndDate = ref(utcToday())
+const filterTaskType = ref('')
+const filterModel = ref('')
+const filterHumanTaskType = ref('')
 const filterAnnotated = ref<boolean | undefined>(undefined)
-const filterAnnotator = ref('')
+const filterMinConfidence = ref<number | undefined>(undefined)
+const filterMaxConfidence = ref<number | undefined>(undefined)
 
-// Selection
-const selectedIds = ref<Set<string>>(new Set())
+// Option sources
+const taskTypeOptions = ref<{ key: string; label: string }[]>(L1_TASK_TYPES.map(x => ({ key: x.key, label: x.label })))
+const modelOptions = ref<string[]>([])
 
-// Drawer state
-const drawerVisible = ref(false)
-const drawerMode = ref<'annotate' | 'view'>('annotate')
-const currentSample = ref<AnnotationSample | null>(null)
-
-// Batch annotation
-const showBatchDialog = ref(false)
-const batchHumanProvider = ref('')
-const batchIsCorrect = ref(true)
-const batchReason = ref('correct')
-const batchAnnotator = ref('')
+async function loadOptions() {
+  // Best-effort: keep the seed/static lists on failure.
+  try {
+    const r = await listL1TaskTypes()
+    if (r.items?.length) {
+      taskTypeOptions.value = r.items.map((x: L1TaskTypeMeta) => ({ key: x.key, label: `${x.icon ? x.icon + ' ' : ''}${x.label || x.key}` }))
+    }
+  } catch { /* seed list fallback */ }
+  try {
+    modelOptions.value = await getAvailableModelsRaw()
+  } catch { /* empty fallback */ }
+}
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size.value)))
 
 const defaultAnnotator = computed(() => store.userInfo?.username || '')
 
-const selectedCount = computed(() => selectedIds.value.size)
-
-const allSelected = computed(() => {
-  if (samples.value.length === 0) return false
-  return samples.value.every(s => selectedIds.value.has(s.request_id))
-})
-
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    const params: SamplesParams = {
+    const params: FirstTurnParams = {
       page: page.value,
       size: size.value,
     }
-
     if (filterStartDate.value) params.start_date = filterStartDate.value
     if (filterEndDate.value) params.end_date = filterEndDate.value
+    if (filterTaskType.value) params.task_type = filterTaskType.value
+    if (filterModel.value) params.model = filterModel.value
+    if (filterHumanTaskType.value) params.human_task_type = filterHumanTaskType.value
+    if (filterAnnotated.value != null) params.annotated = filterAnnotated.value
     if (filterMinConfidence.value != null) params.min_confidence = filterMinConfidence.value
     if (filterMaxConfidence.value != null) params.max_confidence = filterMaxConfidence.value
-    if (filterAnnotated.value != null) params.annotated = filterAnnotated.value
-    if (filterAnnotator.value) params.annotator = filterAnnotator.value
 
-    const r = await getSamples(params)
+    const r = await getFirstTurnSamples(params)
     samples.value = r.samples || []
     total.value = r.total || 0
   } catch (e: unknown) {
@@ -88,7 +96,6 @@ async function load() {
 
 function resetPageAndLoad() {
   page.value = 1
-  selectedIds.value.clear()
   load()
 }
 
@@ -96,137 +103,98 @@ function changePage(delta: number) {
   const next = page.value + delta
   if (next < 1 || next > totalPages.value) return
   page.value = next
-  selectedIds.value.clear()
   load()
 }
 
-function clearFilters() {
-  filterStartDate.value = ''
-  filterEndDate.value = ''
-  filterMinConfidence.value = undefined
-  filterMaxConfidence.value = 1.0
-  filterAnnotated.value = undefined
-  filterAnnotator.value = ''
+function onPageSizeChange(next: number) {
+  size.value = next
   resetPageAndLoad()
 }
 
-function toggleSelectAll() {
-  if (allSelected.value) {
-    selectedIds.value.clear()
-  } else {
-    samples.value.forEach(s => selectedIds.value.add(s.request_id))
+function clearFilters() {
+  filterStartDate.value = utcToday()
+  filterEndDate.value = utcToday()
+  filterTaskType.value = ''
+  filterModel.value = ''
+  filterHumanTaskType.value = ''
+  filterAnnotated.value = undefined
+  filterMinConfidence.value = undefined
+  filterMaxConfidence.value = undefined
+  resetPageAndLoad()
+}
+
+// ── 标注弹窗状态 ──
+const modalVisible = ref(false)
+const modalMode = ref<'annotate' | 'view'>('annotate')
+const currentSample = ref<FirstTurnSample | null>(null)
+const detail = ref<UnifiedRequestDetail | null>(null)
+const detailLoading = ref(false)
+const detailError = ref('')
+const requestPreview = ref('')
+
+async function openModal(sample: FirstTurnSample, mode: 'annotate' | 'view') {
+  currentSample.value = sample
+  modalMode.value = mode
+  modalVisible.value = true
+  detail.value = null
+  detailError.value = ''
+  requestPreview.value = ''
+  detailLoading.value = true
+  try {
+    detail.value = await getUnifiedRequestDetail(sample.request_id)
+    const body = detail.value?.bodies?.request_body
+    if (body != null) {
+      let text = ''
+      if (typeof body === 'string') text = body
+      else {
+        try { text = JSON.stringify(body, null, 2) } catch { text = String(body) }
+      }
+      requestPreview.value = text.length > 8000 ? text.slice(0, 8000) + '\n…' : text
+    }
+  } catch (e: unknown) {
+    detailError.value = e instanceof Error ? e.message : t('annotation.detail.loadFailed')
+  } finally {
+    detailLoading.value = false
   }
 }
 
-function toggleSelect(requestId: string) {
-  if (selectedIds.value.has(requestId)) {
-    selectedIds.value.delete(requestId)
-  } else {
-    selectedIds.value.add(requestId)
-  }
-}
+function openAnnotate(sample: FirstTurnSample) { void openModal(sample, 'annotate') }
+function openView(sample: FirstTurnSample) { void openModal(sample, 'view') }
 
-function openAnnotateDrawer(sample: AnnotationSample) {
-  currentSample.value = sample
-  drawerMode.value = 'annotate'
-  drawerVisible.value = true
-}
-
-function openViewDrawer(sample: AnnotationSample) {
-  currentSample.value = sample
-  drawerMode.value = 'view'
-  drawerVisible.value = true
-}
-
-function closeDrawer() {
-  drawerVisible.value = false
+function closeModal() {
+  modalVisible.value = false
   currentSample.value = null
+  detail.value = null
 }
 
 async function handleAnnotationSubmit(data: {
+  task_type: string
+  model: string
   human_provider: string
   is_correct: boolean
   reason: string
   annotator: string
 }) {
   if (!currentSample.value) return
-
   try {
     await createAnnotation({
       request_id: currentSample.value.request_id,
-      ...data,
+      task_type: data.task_type,
+      model: data.model,
+      human_provider: data.human_provider,
+      is_correct: data.is_correct,
+      reason: data.reason,
+      annotator: data.annotator,
     })
-    closeDrawer()
-    load() // Reload to update the list
-    showSuccess(t('annotation.annotationCreated'))
+    closeModal()
+    load()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : t('annotation.annotationFailed')
   }
 }
 
-function openBatchDialog() {
-  if (selectedCount.value === 0) {
-    showWarning(t('annotation.noSamplesSelected'))
-    return
-  }
-  batchHumanProvider.value = ''
-  batchIsCorrect.value = true
-  batchReason.value = 'correct'
-  batchAnnotator.value = defaultAnnotator.value
-  showBatchDialog.value = true
-}
-
-function closeBatchDialog() {
-  showBatchDialog.value = false
-}
-
-async function handleBatchSubmit() {
-  if (selectedCount.value === 0) return
-
-  try {
-    const requestIds = Array.from(selectedIds.value)
-    const r = await batchAnnotate({
-      request_ids: requestIds,
-      human_provider: batchHumanProvider.value,
-      is_correct: batchIsCorrect.value,
-      reason: batchReason.value,
-      annotator: batchAnnotator.value,
-    })
-
-    closeBatchDialog()
-    selectedIds.value.clear()
-    load()
-
-    if (r.failed > 0) {
-      showWarning(t('annotation.batchPartialSuccess', { success: r.success, failed: r.failed }))
-    } else {
-      showSuccess(t('annotation.batchSuccess', { count: r.success }))
-    }
-  } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('annotation.batchFailed')
-  }
-}
-
-async function handleDelete(requestId: string) {
-  if (!confirm(t('annotation.confirmDelete'))) return
-
-  try {
-    await deleteAnnotation(requestId)
-    load()
-    showSuccess(t('annotation.deleteSuccess'))
-  } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('annotation.deleteFailed')
-  }
-}
-
-function showSuccess(message: string) {
-  // Simple success notification - can be enhanced with Element Plus ElMessage
-  console.log('[SUCCESS]', message)
-}
-
-function showWarning(message: string) {
-  // Simple warning notification
-  console.warn('[WARNING]', message)
+function isAnnotated(s: FirstTurnSample): boolean {
+  return !!(s.human_provider || s.human_task_type)
 }
 
 function confidenceBadgeClass(confidence: number): string {
@@ -235,12 +203,22 @@ function confidenceBadgeClass(confidence: number): string {
   return 'badge-red'
 }
 
-function fmtTime(s: string | undefined) {
+function fmtTime(s: string | undefined | null) {
   if (!s) return '-'
   return formatDateTime(s, { locale: localeRef.value, options: { hour12: false } })
 }
 
-onMounted(load)
+function fmtMetaStatus(d: UnifiedRequestDetail | null): string {
+  if (!d) return '-'
+  if (d.meta.request_status) return d.meta.request_status
+  if (d.meta.success != null) return d.meta.success ? 'success' : 'failure'
+  return '-'
+}
+
+onMounted(() => {
+  load()
+  void loadOptions()
+})
 </script>
 
 <template>
@@ -255,7 +233,7 @@ onMounted(load)
       </div>
     </div>
 
-    <p class="page-desc">{{ t('annotation.page.desc') }}</p>
+    <p class="page-desc">{{ t('annotation.page.firstTurnDesc') }}</p>
 
     <div v-if="error" class="alert alert-danger" role="alert">{{ error }}</div>
 
@@ -264,45 +242,33 @@ onMounted(load)
       <div class="cf-row">
         <div class="cf-field">
           <span class="cf-label">{{ t('annotation.filter.startDate') }}</span>
-          <input
-            v-model="filterStartDate"
-            type="date"
-            class="cf-input"
-            :aria-label="t('annotation.filter.startDate')"
-          />
+          <input v-model="filterStartDate" type="date" class="cf-input" :aria-label="t('annotation.filter.startDate')" />
         </div>
         <div class="cf-field">
           <span class="cf-label">{{ t('annotation.filter.endDate') }}</span>
-          <input
-            v-model="filterEndDate"
-            type="date"
-            class="cf-input"
-            :aria-label="t('annotation.filter.endDate')"
-          />
+          <input v-model="filterEndDate" type="date" class="cf-input" :aria-label="t('annotation.filter.endDate')" />
         </div>
         <div class="cf-field">
-          <span class="cf-label">{{ t('annotation.filter.minConfidence') }}</span>
-          <input
-            v-model.number="filterMinConfidence"
-            type="number"
-            min="0"
-            max="1"
-            step="0.1"
-            class="cf-input"
-            placeholder="0.0"
-          />
+          <span class="cf-label">{{ t('annotation.filter.taskType') }}</span>
+          <select v-model="filterTaskType" class="cf-input">
+            <option value="">{{ t('annotation.filter.all') }}</option>
+            <option v-for="tt in taskTypeOptions" :key="tt.key" :value="tt.key">{{ tt.label }}</option>
+          </select>
         </div>
         <div class="cf-field">
-          <span class="cf-label">{{ t('annotation.filter.maxConfidence') }}</span>
-          <input
-            v-model.number="filterMaxConfidence"
-            type="number"
-            min="0"
-            max="1"
-            step="0.1"
-            class="cf-input"
-            placeholder="1.0"
-          />
+          <span class="cf-label">{{ t('annotation.filter.model') }}</span>
+          <select v-model="filterModel" class="cf-input">
+            <option value="">{{ t('annotation.filter.all') }}</option>
+            <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
+            <option v-if="filterModel && !modelOptions.includes(filterModel)" :value="filterModel">{{ filterModel }}</option>
+          </select>
+        </div>
+        <div class="cf-field">
+          <span class="cf-label">{{ t('annotation.filter.humanTaskType') }}</span>
+          <select v-model="filterHumanTaskType" class="cf-input">
+            <option value="">{{ t('annotation.filter.all') }}</option>
+            <option v-for="tt in taskTypeOptions" :key="tt.key" :value="tt.key">{{ tt.label }}</option>
+          </select>
         </div>
         <div class="cf-field">
           <span class="cf-label">{{ t('annotation.filter.annotated') }}</span>
@@ -313,13 +279,12 @@ onMounted(load)
           </select>
         </div>
         <div class="cf-field">
-          <span class="cf-label">{{ t('annotation.filter.annotator') }}</span>
-          <input
-            v-model="filterAnnotator"
-            type="text"
-            class="cf-input"
-            :placeholder="t('annotation.filter.annotatorPlaceholder')"
-          />
+          <span class="cf-label">{{ t('annotation.filter.minConfidence') }}</span>
+          <input v-model.number="filterMinConfidence" type="number" min="0" max="1" step="0.1" class="cf-input" placeholder="0.0" />
+        </div>
+        <div class="cf-field">
+          <span class="cf-label">{{ t('annotation.filter.maxConfidence') }}</span>
+          <input v-model.number="filterMaxConfidence" type="number" min="0" max="1" step="0.1" class="cf-input" placeholder="1.0" />
         </div>
       </div>
       <div class="cf-row">
@@ -332,231 +297,192 @@ onMounted(load)
       </div>
     </div>
 
-    <!-- Batch Actions -->
-    <div v-if="selectedCount > 0" class="batch-actions">
-      <span class="batch-info">{{ t('annotation.batchSelected', { count: selectedCount }) }}</span>
-      <button class="btn btn-primary btn-sm" @click="openBatchDialog">
-        {{ t('annotation.batchAnnotate') }}
-      </button>
-      <button class="btn btn-ghost btn-sm" @click="selectedIds.clear()">
-        {{ t('annotation.clearSelection') }}
-      </button>
-    </div>
-
     <!-- Pagination -->
-    <div v-if="!loading && total > 0" class="pagination-bar">
-      <div class="pagination-meta">
-        <span>{{ t('annotation.pagination.total', { n: total }) }}</span>
-        <span>{{ t('annotation.pagination.pageOf', { page, total: totalPages }) }}</span>
-        <label class="page-size-label">
-          <span class="text-muted">{{ t('annotation.pagination.perPage') }}</span>
-          <select v-model.number="size" class="page-size-select" @change="resetPageAndLoad">
-            <option :value="25">25</option>
-            <option :value="50">50</option>
-            <option :value="100">100</option>
-            <option :value="200">200</option>
-          </select>
-        </label>
-      </div>
-      <div class="pagination-controls">
-        <button
-          class="btn btn-ghost btn-sm"
-          :disabled="page <= 1"
-          @click="changePage(-1)"
-        >
-          {{ t('annotation.pagination.prev') }}
-        </button>
-        <button
-          class="btn btn-ghost btn-sm"
-          :disabled="page >= totalPages"
-          @click="changePage(1)"
-        >
-          {{ t('annotation.pagination.next') }}
-        </button>
-      </div>
-    </div>
+    <PaginationBar
+      :page="page"
+      :page-size="size"
+      :total="total"
+      :page-sizes="[25, 50, 100, 200]"
+      @prev="changePage(-1)"
+      @next="changePage(1)"
+      @change-size="onPageSizeChange"
+    />
 
-    <!-- Samples Table -->
-    <div class="table-container">
+    <!-- First-Turn Sessions Table -->
+    <DataTable :loading="loading" :empty="!loading && samples.length === 0" :empty-text="t('annotation.noSamples')" min-width="1080px">
       <table class="data-table">
         <thead>
           <tr>
-            <th class="col-checkbox">
-              <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" />
-            </th>
-            <th class="col-request-id">{{ t('annotation.table.requestId') }}</th>
-            <th>{{ t('annotation.table.model') }}</th>
+            <th class="col-time">{{ t('annotation.table.time') }}</th>
+            <th class="col-title">{{ t('annotation.table.title') }}</th>
+            <th>{{ t('annotation.table.client') }}</th>
             <th>{{ t('annotation.table.taskType') }}</th>
+            <th>{{ t('annotation.table.model') }}</th>
             <th class="col-confidence">{{ t('annotation.table.confidence') }}</th>
-            <th>{{ t('annotation.table.autoProvider') }}</th>
             <th class="col-status">{{ t('annotation.table.status') }}</th>
+            <th class="col-anno">{{ t('annotation.table.annotationInfo') }}</th>
             <th class="col-actions">{{ t('annotation.table.actions') }}</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading">
-            <td colspan="8" class="loading-row">{{ t('annotation.loading') }}</td>
-          </tr>
-          <tr v-else-if="samples.length === 0">
-            <td colspan="8" class="empty-row">{{ t('annotation.noSamples') }}</td>
-          </tr>
-          <tr v-for="sample in samples" :key="sample.request_id" :class="{ 'row-selected': selectedIds.has(sample.request_id) }">
-            <td class="col-checkbox">
-              <input
-                type="checkbox"
-                :checked="selectedIds.has(sample.request_id)"
-                @change="toggleSelect(sample.request_id)"
-              />
+          <tr v-for="sample in samples" :key="sample.request_id">
+            <td class="col-time text-mono">{{ fmtTime(sample.ts) }}</td>
+            <td class="col-title" :title="sample.title || sample.request_id">
+              <span v-if="sample.title" class="title-text">{{ sample.title }}</span>
+              <code v-else class="text-mono">{{ sample.request_id }}</code>
             </td>
-            <td class="col-request-id">
-              <code class="text-mono">{{ sample.request_id }}</code>
-            </td>
-            <td>{{ sample.model_name }}</td>
-            <td>{{ sample.task_type }}</td>
+            <td>{{ sample.client || '-' }}</td>
+            <td><span class="badge badge-blue">{{ sample.task_type }}</span></td>
+            <td><code class="text-mono">{{ sample.chosen_model }}</code></td>
             <td class="col-confidence">
-              <span :class="confidenceBadgeClass(sample.confidence)" class="badge">
+              <span v-if="sample.confidence != null" :class="confidenceBadgeClass(sample.confidence)" class="badge">
                 {{ (sample.confidence * 100).toFixed(1) }}%
               </span>
-            </td>
-            <td>
-              <span class="badge badge-blue">{{ sample.auto_provider }}</span>
+              <span v-else>-</span>
             </td>
             <td class="col-status">
-              <span v-if="sample.human_provider" class="badge badge-green">
-                {{ t('annotation.table.annotated') }}
-              </span>
-              <span v-else class="badge badge-gray">
-                {{ t('annotation.table.unannotated') }}
-              </span>
+              <span v-if="sample.success === true" class="badge badge-green">{{ t('annotation.table.statusOk', { code: sample.status_code ?? '' }) }}</span>
+              <span v-else-if="sample.success === false" class="badge badge-red">{{ t('annotation.table.statusFail', { code: sample.status_code ?? '' }) }}</span>
+              <span v-else class="badge badge-gray">-</span>
+            </td>
+            <td class="col-anno">
+              <template v-if="isAnnotated(sample)">
+                <span class="badge badge-green">{{ t('annotation.table.annotated') }}</span>
+                <div class="anno-meta">
+                  <span v-if="sample.human_task_type" class="badge badge-blue">{{ sample.human_task_type }}</span>
+                  <span v-if="sample.is_correct === false" class="badge badge-red">{{ t('annotation.form.incorrect') }}</span>
+                  <span class="text-muted anno-annotator" :title="`${sample.annotator || ''} · ${fmtTime(sample.annotated_at)}`">
+                    {{ sample.annotator }}
+                  </span>
+                </div>
+              </template>
+              <span v-else class="badge badge-gray">{{ t('annotation.table.unannotated') }}</span>
             </td>
             <td class="col-actions">
-              <button
-                v-if="!sample.human_provider"
-                class="btn-link"
-                @click="openAnnotateDrawer(sample)"
-              >
+              <button v-if="!isAnnotated(sample)" class="btn-link" @click="openAnnotate(sample)">
                 {{ t('annotation.table.annotate') }}
               </button>
-              <template v-else>
-                <button class="btn-link" @click="openViewDrawer(sample)">
-                  {{ t('annotation.table.view') }}
-                </button>
-                <button class="btn-link text-danger" @click="handleDelete(sample.request_id)">
-                  {{ t('annotation.table.delete') }}
-                </button>
-              </template>
+              <button v-else class="btn-link" @click="openView(sample)">
+                {{ t('annotation.table.view') }}
+              </button>
             </td>
           </tr>
         </tbody>
       </table>
-    </div>
+    </DataTable>
 
-    <!-- Annotation Drawer -->
-    <div v-if="drawerVisible" class="drawer-overlay" @click.self="closeDrawer">
-      <div class="drawer">
-        <div class="drawer-header">
-          <h3>
-            {{ drawerMode === 'annotate' ? t('annotation.drawer.annotateTitle') : t('annotation.drawer.viewTitle') }}
-          </h3>
-          <button class="btn-close" @click="closeDrawer">&times;</button>
+    <!-- Annotate / View Modal -->
+    <AppModal
+      :model-value="modalVisible"
+      :title="modalMode === 'annotate' ? t('annotation.drawer.annotateTitle') : t('annotation.drawer.viewTitle')"
+      size="lg"
+      @update:model-value="modalVisible = $event"
+      @close="closeModal"
+    >
+      <div class="modal-sample-summary">
+        <div class="detail-row">
+          <span class="detail-label">{{ t('annotation.form.requestId') }}:</span>
+          <code class="text-mono">{{ currentSample?.request_id }}</code>
         </div>
-        <div class="drawer-body">
-          <AnnotationForm
-            v-if="drawerMode === 'annotate'"
-            :sample="currentSample"
-            :default-annotator="defaultAnnotator"
-            @submit="handleAnnotationSubmit"
-            @cancel="closeDrawer"
-          />
-          <div v-else-if="currentSample" class="annotation-detail">
-            <div class="detail-row">
-              <span class="detail-label">{{ t('annotation.detail.humanProvider') }}:</span>
-              <span class="badge badge-blue">{{ currentSample.human_provider }}</span>
-            </div>
-            <div class="detail-row">
-              <span class="detail-label">{{ t('annotation.detail.isCorrect') }}:</span>
-              <span :class="currentSample.is_correct ? 'badge badge-green' : 'badge badge-red'">
-                {{ currentSample.is_correct ? t('annotation.form.correct') : t('annotation.form.incorrect') }}
-              </span>
-            </div>
-            <div class="detail-row">
-              <span class="detail-label">{{ t('annotation.detail.reason') }}:</span>
-              <span>{{ t(`annotation.reasons.${currentSample.reason}`) }}</span>
-            </div>
-            <div class="detail-row">
-              <span class="detail-label">{{ t('annotation.detail.annotator') }}:</span>
-              <span>{{ currentSample.annotator }}</span>
-            </div>
-            <div class="detail-row">
-              <span class="detail-label">{{ t('annotation.detail.annotatedAt') }}:</span>
-              <span>{{ fmtTime(currentSample.annotated_at) }}</span>
-            </div>
-          </div>
+        <div class="detail-row">
+          <span class="detail-label">{{ t('annotation.table.session') }}:</span>
+          <code class="text-mono">{{ currentSample?.session_id }}</code>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">{{ t('annotation.form.autoRoute') }}:</span>
+          <span>
+            <span class="badge badge-blue">{{ currentSample?.task_type }}</span>
+            <code class="text-mono">{{ currentSample?.chosen_model }}</code>
+            <span v-if="currentSample?.confidence != null" class="badge" :class="confidenceBadgeClass(currentSample.confidence)">
+              {{ (currentSample.confidence * 100).toFixed(1) }}%
+            </span>
+          </span>
         </div>
       </div>
-    </div>
 
-    <!-- Batch Annotation Dialog -->
-    <div v-if="showBatchDialog" class="modal-overlay" @click.self="closeBatchDialog">
-      <div class="modal">
-        <h3>{{ t('annotation.batch.title') }}</h3>
-        <p class="modal-desc">{{ t('annotation.batch.desc', { count: selectedCount }) }}</p>
-        
-        <div class="form-body">
-          <div class="form-field">
-            <label class="form-label">{{ t('annotation.form.humanProvider') }}</label>
-            <select v-model="batchHumanProvider" class="form-select">
-              <option value="">{{ t('annotation.form.selectProvider') }}</option>
-              <option v-for="p in ['openai', 'anthropic', 'aws_bedrock', 'google', 'azure']" :key="p" :value="p">
-                {{ p }}
-              </option>
-            </select>
-          </div>
-          
-          <div class="form-field">
-            <label class="form-label">{{ t('annotation.form.isCorrect') }}</label>
-            <div class="radio-group">
-              <label class="radio-label">
-                <input v-model="batchIsCorrect" type="radio" :value="true" />
-                <span>{{ t('annotation.form.correct') }}</span>
-              </label>
-              <label class="radio-label">
-                <input v-model="batchIsCorrect" type="radio" :value="false" />
-                <span>{{ t('annotation.form.incorrect') }}</span>
-              </label>
+      <!-- First-turn detail: metadata + request body -->
+      <section class="detail-section">
+        <h4>{{ t('annotation.detail.metaSection') }}</h4>
+        <div v-if="detailLoading" class="text-muted">{{ t('annotation.loading') }}</div>
+        <div v-else-if="detailError" class="alert alert-danger">{{ detailError }}</div>
+        <template v-else-if="detail">
+          <div class="meta-grid">
+            <div class="detail-row">
+              <span class="detail-label">{{ t('annotation.detail.clientModel') }}:</span>
+              <span>{{ detail.meta.client_model || '-' }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">{{ t('annotation.detail.status') }}:</span>
+              <span>{{ fmtMetaStatus(detail) }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">{{ t('annotation.detail.latency') }}:</span>
+              <span>{{ detail.meta.latency_ms != null ? detail.meta.latency_ms + ' ms' : '-' }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">{{ t('annotation.detail.turnNumber') }}:</span>
+              <span>{{ detail.meta.turn_number ?? '-' }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">{{ t('annotation.detail.totalTurns') }}:</span>
+              <span>{{ currentSample?.total_turns ?? '-' }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">{{ t('annotation.detail.source') }}:</span>
+              <span><span class="badge badge-gray">{{ detail.source }}</span></span>
             </div>
           </div>
-          
-          <div class="form-field">
-            <label class="form-label">{{ t('annotation.form.reason') }}</label>
-            <select v-model="batchReason" class="form-select">
-              <option value="correct">{{ t('annotation.reasons.correct') }}</option>
-              <option value="performance">{{ t('annotation.reasons.performance') }}</option>
-              <option value="cost">{{ t('annotation.reasons.cost') }}</option>
-              <option value="availability">{{ t('annotation.reasons.availability') }}</option>
-              <option value="quality">{{ t('annotation.reasons.quality') }}</option>
-              <option value="other">{{ t('annotation.reasons.other') }}</option>
-            </select>
+          <template v-if="requestPreview">
+            <h4>{{ t('annotation.detail.requestSection') }}</h4>
+            <pre class="request-preview">{{ requestPreview }}</pre>
+          </template>
+        </template>
+      </section>
+
+      <!-- Existing annotation (view mode) -->
+      <section v-if="modalMode === 'view' && currentSample && isAnnotated(currentSample)" class="detail-section">
+        <h4>{{ t('annotation.detail.annotationSection') }}</h4>
+        <div class="meta-grid">
+          <div class="detail-row">
+            <span class="detail-label">{{ t('annotation.form.taskType') }}:</span>
+            <span><span class="badge badge-blue">{{ currentSample.human_task_type || '-' }}</span></span>
           </div>
-          
-          <div class="form-field">
-            <label class="form-label">{{ t('annotation.form.annotator') }}</label>
-            <input v-model="batchAnnotator" type="text" class="form-input" />
+          <div class="detail-row">
+            <span class="detail-label">{{ t('annotation.form.model') }}:</span>
+            <span><code class="text-mono">{{ currentSample.human_model || currentSample.human_provider || '-' }}</code></span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">{{ t('annotation.detail.isCorrect') }}:</span>
+            <span :class="currentSample.is_correct ? 'badge badge-green' : 'badge badge-red'">
+              {{ currentSample.is_correct ? t('annotation.form.correct') : t('annotation.form.incorrect') }}
+            </span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">{{ t('annotation.detail.reason') }}:</span>
+            <span>{{ currentSample.reason ? t(`annotation.reasons.${currentSample.reason}`) : '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">{{ t('annotation.detail.annotator') }}:</span>
+            <span>{{ currentSample.annotator || '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">{{ t('annotation.detail.annotatedAt') }}:</span>
+            <span>{{ fmtTime(currentSample.annotated_at) }}</span>
           </div>
         </div>
-        
-        <div class="modal-actions">
-          <button class="btn btn-ghost" @click="closeBatchDialog">{{ t('annotation.form.cancel') }}</button>
-          <button
-            class="btn btn-primary"
-            :disabled="!batchHumanProvider || !batchAnnotator"
-            @click="handleBatchSubmit"
-          >
-            {{ t('annotation.batch.submit') }}
-          </button>
-        </div>
-      </div>
-    </div>
+      </section>
+
+      <!-- Annotate form -->
+      <AnnotationForm
+        v-if="modalMode === 'annotate'"
+        :sample="currentSample"
+        :default-annotator="defaultAnnotator"
+        :task-types="taskTypeOptions"
+        :models="modelOptions"
+        @submit="handleAnnotationSubmit"
+        @cancel="closeModal"
+      />
+    </AppModal>
   </div>
 </template>
 
@@ -597,21 +523,6 @@ onMounted(load)
   margin-bottom: 1.5rem;
 }
 
-.batch-actions {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 0.75rem 1rem;
-  background: var(--primary-light);
-  border-radius: 6px;
-  margin-bottom: 1rem;
-}
-
-.batch-info {
-  font-weight: 500;
-  color: var(--primary);
-}
-
 .table-container {
   overflow-x: auto;
   border: 1px solid var(--border);
@@ -643,17 +554,22 @@ onMounted(load)
   background: var(--bg-hover);
 }
 
-.row-selected {
-  background: var(--primary-light) !important;
+.col-time {
+  width: 150px;
+  white-space: nowrap;
 }
 
-.col-checkbox {
-  width: 40px;
-  text-align: center;
+.col-title {
+  min-width: 220px;
+  max-width: 320px;
 }
 
-.col-request-id {
-  min-width: 150px;
+.title-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
 }
 
 .col-confidence,
@@ -662,21 +578,31 @@ onMounted(load)
   text-align: center;
 }
 
-.col-actions {
-  width: 150px;
-  text-align: right;
+.col-anno {
+  min-width: 180px;
 }
 
-.loading-row,
-.empty-row {
-  text-align: center;
-  padding: 2rem !important;
-  color: var(--text-muted);
+.anno-meta {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  margin-top: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.anno-annotator {
+  font-size: 0.75rem;
+}
+
+.col-actions {
+  width: 110px;
+  text-align: right;
 }
 
 .text-mono {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
+  word-break: break-all;
 }
 
 .btn-link {
@@ -694,166 +620,56 @@ onMounted(load)
   color: var(--primary-hover);
 }
 
-.btn-link.text-danger {
-  color: var(--danger);
-}
-
-/* Drawer styles */
-.drawer-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  justify-content: flex-end;
-  z-index: 1000;
-}
-
-.drawer {
-  width: 500px;
-  max-width: 90vw;
-  background: var(--bg);
-  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.15);
+/* Modal internals */
+.modal-sample-summary {
   display: flex;
   flex-direction: column;
-}
-
-.drawer-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 1.5rem;
+  gap: 0.5rem;
+  padding-bottom: 0.75rem;
+  margin-bottom: 0.75rem;
   border-bottom: 1px solid var(--border);
 }
 
-.drawer-header h3 {
-  margin: 0;
-  font-size: 1.25rem;
+.detail-section {
+  margin-top: 1rem;
+}
+
+.detail-section h4 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.9375rem;
   font-weight: 600;
 }
 
-.btn-close {
-  background: none;
-  border: none;
-  font-size: 1.5rem;
-  cursor: pointer;
-  color: var(--text-muted);
-  padding: 0;
-  width: 2rem;
-  height: 2rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.btn-close:hover {
-  color: var(--text);
-}
-
-.drawer-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 1.5rem;
-}
-
-.annotation-detail {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.5rem 1.5rem;
 }
 
 .detail-row {
   display: flex;
-  align-items: center;
-  gap: 1rem;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.875rem;
 }
 
 .detail-label {
   font-weight: 500;
   color: var(--text-muted);
-  min-width: 120px;
+  white-space: nowrap;
 }
 
-/* Modal styles */
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.modal {
-  background: var(--bg);
-  border-radius: 8px;
-  padding: 1.5rem;
-  width: 500px;
-  max-width: 90vw;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-}
-
-.modal h3 {
-  margin: 0 0 0.5rem 0;
-  font-size: 1.25rem;
-  font-weight: 600;
-}
-
-.modal-desc {
-  color: var(--text-muted);
-  margin-bottom: 1.5rem;
-}
-
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.75rem;
-  margin-top: 1.5rem;
-}
-
-.form-body {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.form-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.form-label {
-  font-size: 0.875rem;
-  font-weight: 500;
-}
-
-.form-select,
-.form-input {
-  padding: 0.5rem 0.75rem;
+.request-preview {
+  max-height: 260px;
+  overflow: auto;
+  padding: 0.75rem;
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 0.875rem;
-  background: var(--bg);
-  color: var(--text);
-}
-
-.radio-group {
-  display: flex;
-  gap: 1.5rem;
-}
-
-.radio-label {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  cursor: pointer;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .badge {
