@@ -51,35 +51,55 @@ func estimateSuiteTokens(s string) int {
 	return ascii/4 + cjk*2
 }
 
+// autoMatchingSuiteFiles 列出全部套件文件:v1(2026-09-14 首轮)+ v2(2026-09-15
+// 二轮,docs/audit/2026-09-15-auto-matching-round2-plan.md)。新增套件文件追加
+// 到这里即可并入离线回归;cmd/autoroute-e2e-audit 用 -suite 指定同一文件。
+var autoMatchingSuiteFiles = []struct {
+	path    string
+	minSize int
+}{
+	{"testdata/auto_matching_suite.jsonl", 50},
+	{"testdata/auto_matching_suite_v2.jsonl", 20},
+}
+
 func loadAutoMatchingSuite(t *testing.T) []suiteCase {
 	t.Helper()
-	f, err := os.Open("testdata/auto_matching_suite.jsonl")
-	if err != nil {
-		t.Fatalf("open suite: %v", err)
-	}
-	defer f.Close()
 	var cases []suiteCase
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1024*1024), 8*1024*1024)
-	for lineNo := 1; sc.Scan(); lineNo++ {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	seen := map[string]string{}
+	for _, sf := range autoMatchingSuiteFiles {
+		f, err := os.Open(sf.path)
+		if err != nil {
+			t.Fatalf("open suite: %v", err)
 		}
-		var c suiteCase
-		if err := json.Unmarshal([]byte(line), &c); err != nil {
-			t.Fatalf("suite line %d: %v", lineNo, err)
+		fileCases := 0
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 1024*1024), 8*1024*1024)
+		for lineNo := 1; sc.Scan(); lineNo++ {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			var c suiteCase
+			if err := json.Unmarshal([]byte(line), &c); err != nil {
+				t.Fatalf("suite %s line %d: %v", sf.path, lineNo, err)
+			}
+			if c.Name == "" || c.ExpectedTask == "" || c.Prompt == "" {
+				t.Fatalf("suite %s line %d: missing name/expected_task/prompt", sf.path, lineNo)
+			}
+			if prev := seen[c.Name]; prev != "" {
+				t.Fatalf("duplicate case name %q in %s and %s", c.Name, prev, sf.path)
+			}
+			seen[c.Name] = sf.path
+			cases = append(cases, c)
+			fileCases++
 		}
-		if c.Name == "" || c.ExpectedTask == "" || c.Prompt == "" {
-			t.Fatalf("suite line %d: missing name/expected_task/prompt", lineNo)
+		if err := sc.Err(); err != nil {
+			t.Fatalf("scan suite %s: %v", sf.path, err)
 		}
-		cases = append(cases, c)
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatalf("scan suite: %v", err)
-	}
-	if len(cases) < 50 {
-		t.Fatalf("suite unexpectedly small: %d cases", len(cases))
+		f.Close()
+		if fileCases < sf.minSize {
+			t.Fatalf("suite %s unexpectedly small: %d cases", sf.path, fileCases)
+		}
 	}
 	return cases
 }

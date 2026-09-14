@@ -108,18 +108,56 @@ func hasIntentClassifySignal(contentLower string) bool {
 	return false
 }
 
+// intentActDeixis / intentActEnglish 用于"施行语境"守卫（2026-09-15 二轮
+// trap_intent_word_passing）："我们产品里有个'意图识别'功能模块，帮我想几个
+// slogan"——意图短语作为产品能力名词被引用时不构成分类任务。命中关键词或
+// 动宾组合之外，还须同时出现指向待分类文本的指示词（中）或祈使动词/指示
+// 限定词（英）。与 2026-09-14 F6（system 短语需 user 提及代码对象）同型。
+var intentActDeixis = []string{
+	"以下", "下面", "下列", "这条", "这段", "这些", "每条", "本条", "该段",
+	"这句话", "这段话", "此条", "该文本", "这个文本", "每条记录", "每一条",
+}
+
+var intentActEnglish = []string{
+	"classify", "detect intent", "label ", "categorize", "triage", "tag ",
+	"following", "this text", "this message", "this ticket", "this review",
+}
+
+func hasIntentActContext(contentLower string) bool {
+	for _, d := range intentActDeixis {
+		if strings.Contains(contentLower, d) {
+			return true
+		}
+	}
+	for _, e := range intentActEnglish {
+		if strings.Contains(contentLower, e) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsIntentClassificationRequest checks if a request is performing intent
 // detection / text classification as the task itself (not just containing the
 // word "intent" in passing).
 func IsIntentClassificationRequest(signals ClassificationSignals) bool {
 	contentLower := strings.ToLower(signals.SystemPrompt + " " + signals.LastUserPrompt)
+	hit := false
 	for _, kw := range intentClassificationKeywords {
 		if strings.Contains(contentLower, kw) {
-			return true
+			hit = true
+			break
 		}
 	}
 	// 组合判断：动词 + 目标同时出现（允许间隔），覆盖"识别以下文本的意图"。
-	return hasIntentClassifySignal(contentLower)
+	if !hit {
+		hit = hasIntentClassifySignal(contentLower)
+	}
+	if !hit {
+		return false
+	}
+	// 施行语境守卫：意图短语必须作用在待分类文本上，而非产品名词引用。
+	return hasIntentActContext(contentLower)
 }
 
 // planningKeywords target plan/proposal/design/breakdown asks. "计划" alone is
