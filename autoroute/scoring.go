@@ -368,11 +368,15 @@ func scoreContextFit(c Candidate, estTokens int) float64 {
 //
 // Match formula:
 //
-//	hits = |required ∩ candidate.tags|  (case-insensitive substring match)
+//	hits = |required ∩ candidate.tags|  (case-insensitive substring match,
+//	                                      with '_'/'-' separator normalization)
 //	score = hits / |required|           (1.0 when all required tags hit)
 //
 // Tag matching is substring-based so "code" matches "code_completion"
 // and "code-review". This is loose but resilient to taxonomy drift.
+// Separator normalization (2026-09-14 audit) makes the underscore-style
+// vocabulary (tool_use/function_call/long_context) match the hyphen-style
+// capability tags actually present in the library (cap:tool-use etc.).
 func TaskMatchScore(task TaskType, candidateTags []string) float64 {
 	required := requiredTagsForTask(task)
 	if len(required) == 0 {
@@ -380,14 +384,36 @@ func TaskMatchScore(task TaskType, candidateTags []string) float64 {
 	}
 	hits := 0
 	for _, r := range required {
+		rn := normalizeTagSeparators(r)
 		for _, c := range candidateTags {
-			if containsFold(c, r) {
+			if containsFold(normalizeTagSeparators(c), rn) {
 				hits++
 				break
 			}
 		}
 	}
 	return float64(hits) / float64(len(required))
+}
+
+// normalizeTagSeparators canonicalizes capability-tag word separators so the
+// required-tag vocabulary (underscore style: tool_use / function_call /
+// long_context) can substring-match library tags written in hyphen style
+// (cap:tool-use / cap:function-call / cap:long-context). Without this, the
+// two taxonomies never intersect: hyphen-tagged candidates scored 0 for
+// underscore vocabulary terms and the task type was pushed into the 48h
+// fallback pool regardless of real capability coverage (2026-09-14 audit).
+// Only ASCII '_' is rewritten to '-'; everything else passes through.
+func normalizeTagSeparators(s string) string {
+	if indexOf(s, "_") < 0 {
+		return s
+	}
+	b := []byte(s)
+	for i := 0; i < len(b); i++ {
+		if b[i] == '_' {
+			b[i] = '-'
+		}
+	}
+	return string(b)
 }
 
 // requiredTagsForTask returns the tag set that qualifies a model as

@@ -591,6 +591,33 @@ func writeAutoDecisionHeader(w http.ResponseWriter, wire *autoRouteDecision) {
 	w.Header().Set(autoHeaderName, string(b))
 }
 
+// autoDecisionTrace renders a compact decision_trace projection of the
+// auto-route decision wire, for routing_decision_log.decision_trace on
+// auto-route successes (the executor Trace is only built on routing
+// failures, which left the column an empty object in production and made
+// fallback_used/task_type unobservable via SQL — 2026-09-14 audit O2).
+// Returns nil when the wire JSON does not parse; the column then stays NULL.
+func autoDecisionTrace(wireJSON []byte) json.RawMessage {
+	var wire autoRouteDecision
+	if err := json.Unmarshal(wireJSON, &wire); err != nil {
+		return nil
+	}
+	b, err := json.Marshal(map[string]any{
+		"source":               "auto_route",
+		"task_type":            wire.TaskType,
+		"fallback_used":        wire.FallbackUsed,
+		"confidence":           wire.Confidence,
+		"classifier":           wire.Classifier,
+		"chosen_model":         wire.ChosenModel,
+		"chosen_raw_model":     wire.ChosenRawModel,
+		"chosen_credential_id": wire.ChosenCredID,
+	})
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
 // SetAutoRoute wires the autoroute decider. Call from main.go at startup.
 // Passing nil disables auto-route (the handler falls back to default model
 // for any model="auto" request).
