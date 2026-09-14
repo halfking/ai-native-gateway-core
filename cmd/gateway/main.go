@@ -67,14 +67,15 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
-	"github.com/kaixuan/llm-gateway-go/domains/integration"                         //nolint:depguard // clientprofile worker wiring
-	"github.com/kaixuan/llm-gateway-go/domains/modelquality"                        //nolint:depguard // 模型质量监控
-	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
-	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                     //nolint:depguard // 供应商画像告警 handler (AlertType)
-	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"                        //nolint:depguard // P1 proactive upstream quota prefetch
-	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"                       //nolint:depguard // in-flight request content store
-	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"                      //nolint:depguard // request lifecycle observation
-	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
+	"github.com/kaixuan/llm-gateway-go/domains/hostedtask"
+	"github.com/kaixuan/llm-gateway-go/domains/integration"     //nolint:depguard // clientprofile worker wiring
+	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    //nolint:depguard // 模型质量监控
+	"github.com/kaixuan/llm-gateway-go/domains/notification"    //nolint:depguard // 审批通知器
+	"github.com/kaixuan/llm-gateway-go/domains/providerprofile" //nolint:depguard // 供应商画像告警 handler (AlertType)
+	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"    //nolint:depguard // P1 proactive upstream quota prefetch
+	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"   //nolint:depguard // in-flight request content store
+	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"  //nolint:depguard // request lifecycle observation
+	"github.com/kaixuan/llm-gateway-go/domains/routeincident"   //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
@@ -101,6 +102,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/dbx"
 	"github.com/kaixuan/llm-gateway-go/internal/handlers"
+	"github.com/kaixuan/llm-gateway-go/internal/hostedcallback"
 	"github.com/kaixuan/llm-gateway-go/internal/ir" //nolint:depguard // 诊断组件：语义分析器
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
@@ -782,7 +784,6 @@ func main() {
 	slog.Info("goal integration initialised",
 		"store_configured", goalIntegrator.IsConfigured(),
 	)
-	_ = goalRunHandler // constructed eagerly so package init order is deterministic
 
 	// Health handler with database and Redis status checking (2026-07-08)
 	// Pass db and redis connections for health checks (will be updated with redis later)
@@ -5965,6 +5966,76 @@ func main() {
 		mux.Handle("/v1/gw/sessions", sessionHandler)
 		mux.Handle("/v1/gw/sessions/", sessionHandler)
 		slog.Info("session endpoints enabled", "paths", []string{"/v1/sessions", "/v1/gw/sessions"})
+	}
+
+	// ── GoalRun 状态端点（§0-F2 修复后挂载，hosted-task-delegation-design
+	// §6.1）：KeyVerifier 归属校验已接入（SetAuth），tenant 取自验证结果而非
+	// X-Tenant-ID 头，store nil 时 503 fail-closed。
+	if keyVerifier.Enabled() {
+		goalRunHandler.SetAuth(goalrunAuthAdapter{kv: keyVerifier})
+	}
+	mux.Handle("/v1/goal-runs", goalRunHandler)
+	mux.Handle("/v1/goal-runs/", goalRunHandler)
+	slog.Info("goal run status endpoint enabled", "path", "/v1/goal-runs/{id}", "auth", keyVerifier.Enabled())
+
+	// ── Hosted task delegation (P0, hosted-task-delegation-design §6.1) ──
+	// 前端只对接网关：委托/查询/结果/取消走 /v1/hosted-tasks 门面；执行真相
+	// 在 ACC（dispatch 同键重放，租约/围栏由 ACC+companion 持有）；通知经
+	// 签名回调 + 拉取兜底。Opt-in：LLM_GATEWAY_HOSTED_TASKS_ENABLED=true
+	// 且 PG 可用（§6.0 跨仓库门禁：companion 常驻 + ACC/Memora JWT）。
+	if cfg.HostedTasks.Enabled {
+		if dbConn == nil || !dbConn.Enabled() || dbConn.Pool() == nil {
+			slog.Warn("hosted task delegation enabled but PostgreSQL unavailable; endpoints not mounted")
+		} else {
+			htStore := hostedtask.NewStore(dbConn.Pool())
+			htACC := hostedtask.NewACCClient(cfg.HostedTasks.ACCBaseURL, cfg.HostedTasks.ACCToken,
+				cfg.HostedTasks.ACCRuntimeID, nil)
+			// 回调 url/secret 的 AES-GCM keyring：专用 key 优先，回退凭据
+			// keyring 派生（§9：secret 加密存储）。nil → 带回调的委托 503
+			// fail-closed（不落明文），deliverer 跳过认领。
+			htCallbackKey := cfg.HostedTasks.CallbackEncKey
+			if htCallbackKey == "" {
+				htCallbackKey = cfg.CredentialEncryptionKey
+			}
+			var htKeyring *secret.Keyring
+			if kr, krErr := secret.KeyringFromEnv(cfg.SecretKey, htCallbackKey); krErr == nil {
+				htKeyring = kr
+			} else {
+				slog.Warn("hosted task delegation: no callback encryption keyring; callback-carrying delegations will be rejected",
+					"error", krErr)
+			}
+			htHandler := hostedtask.NewHandler(htStore, hostedtaskAuthAdapter{kv: keyVerifier},
+				hostedtask.Config{
+					Workspaces:        cfg.HostedTasks.Workspaces,
+					Model:             cfg.HostedTasks.Model,
+					TimeoutSeconds:    cfg.HostedTasks.TimeoutSeconds,
+					DefaultDeadline:   time.Duration(cfg.HostedTasks.DefaultDeadlineSeconds) * time.Second,
+					MaxDeadline:       time.Duration(cfg.HostedTasks.MaxDeadlineSeconds) * time.Second,
+					CallbackAllowlist: cfg.HostedTasks.CallbackAllowlist,
+				}, htKeyring, slog.Default())
+			htReconciler := bg.NewHostedTaskReconciler(bg.HostedTaskReconcilerConfig{
+				Store: htStore,
+				ACC:   htACC,
+				Callbacks: hostedtask.CallbackDeps{
+					Store:     htStore,
+					Deliverer: hostedcallback.NewDeliverer(10*time.Second, cfg.HostedTasks.CallbackAllowlist),
+					Keyring:   htKeyring,
+					Logger:    slog.Default(),
+				},
+				Interval:           time.Duration(cfg.HostedTasks.ReconcileIntervalSeconds) * time.Second,
+				DispatchRetryAfter: time.Duration(cfg.HostedTasks.DispatchRetryAfterSeconds) * time.Second,
+			})
+			htHandler.SetACCCancel(htReconciler.CancelOnACC)
+			htReconciler.Start(context.Background())
+			defer htReconciler.Stop()
+			mux.Handle("/v1/hosted-tasks", htHandler)
+			mux.Handle("/v1/hosted-tasks/", htHandler)
+			slog.Info("hosted task delegation enabled",
+				"paths", []string{"/v1/hosted-tasks"},
+				"acc_configured", htACC.Configured(),
+				"callback_keyring", htKeyring != nil,
+				"workspaces", len(cfg.HostedTasks.Workspaces))
+		}
 	}
 
 	// ── Config reload endpoint ──────────────────────────────────────────
