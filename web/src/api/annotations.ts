@@ -77,6 +77,10 @@ export interface CreateAnnotationRequest {
   is_correct: boolean
   reason: string
   annotator: string
+  /** First-turn workbench (2026-09-14): ground-truth task type label. */
+  task_type?: string
+  /** First-turn workbench: the model the annotator would have chosen. */
+  model?: string
 }
 
 export interface BatchAnnotateRequest {
@@ -102,6 +106,70 @@ export interface SamplesParams {
   max_confidence?: number
   annotated?: boolean
   annotator?: string
+}
+
+// ── First-turn annotation workbench (2026-09-14) ──────────────────────────
+// One row per session's turn_no=1 request: session display fields + auto
+// route decision + human annotation summary (from annotation_metadata).
+
+export interface FirstTurnSample {
+  session_id: string
+  request_id: string
+  ts: string
+  title: string | null
+  client: string | null
+  task_type: string
+  chosen_model: string
+  confidence: number | null
+  status_code: number | null
+  success: boolean | null
+  latency_ms: number | null
+  total_turns: number | null
+  // Annotation fields (populated if annotated)
+  human_task_type?: string
+  human_model?: string
+  human_provider?: string
+  is_correct?: boolean
+  reason?: string
+  annotator?: string
+  annotated_at?: string
+}
+
+export interface FirstTurnSamplesResponse {
+  samples: FirstTurnSample[]
+  total: number
+}
+
+export interface FirstTurnParams {
+  page: number
+  size: number
+  start_date?: string
+  end_date?: string
+  task_type?: string
+  model?: string
+  human_task_type?: string
+  annotated?: boolean
+  min_confidence?: number
+  max_confidence?: number
+}
+
+/**
+ * Get paginated first-turn session samples (auto-routed turn_no=1 requests).
+ * Date inputs are YYYY-MM-DD; empty values default to today (UTC) server-side.
+ */
+export function getFirstTurnSamples(params: FirstTurnParams) {
+  const query = new URLSearchParams()
+  query.set('page', String(params.page))
+  query.set('size', String(params.size))
+  if (params.start_date) query.set('start_date', params.start_date)
+  if (params.end_date) query.set('end_date', params.end_date)
+  if (params.task_type) query.set('task_type', params.task_type)
+  if (params.model) query.set('model', params.model)
+  if (params.human_task_type) query.set('human_task_type', params.human_task_type)
+  if (params.annotated != null) query.set('annotated', String(params.annotated))
+  if (params.min_confidence != null) query.set('min_confidence', String(params.min_confidence))
+  if (params.max_confidence != null) query.set('max_confidence', String(params.max_confidence))
+  return req<FirstTurnSamplesResponse>('GET', `/api/admin/annotations/first-turn-samples?${query}`)
 }
 
 /**
