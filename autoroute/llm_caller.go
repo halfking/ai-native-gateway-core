@@ -32,9 +32,9 @@ var ErrLLMDisabled = errors.New("autoroute: LLM caller disabled")
 // heuristic result.
 var ErrLLMCircuitOpen = errors.New("autoroute: LLM circuit breaker open")
 
-// RecordLLMMetricCall indirection. Wired by main.go (or init in tests)
-// to forward LLM call metrics to the telemetry package. Defaults to
-// a no-op so the autoroute package doesn't import telemetry (which
+// RecordLLMMetricCall indirection. Wired to the telemetry package by
+// buildAutoLLMCaller (cmd/gateway; tests assign a capture sink). Defaults
+// to a no-op so the autoroute package doesn't import telemetry (which
 // would invert the existing dependency graph).
 var RecordLLMMetricCall = func(outcome string, latency time.Duration) {}
 

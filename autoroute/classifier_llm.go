@@ -2,6 +2,7 @@ package autoroute
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -19,8 +20,9 @@ import (
 // the chosen model via the normal flow.
 //
 // Failure handling:
-//   - LLM call times out (3s) → return error, decider falls back to
-//     heuristic result even at low confidence
+//   - LLM call fails/times out (classifier-level cap follows
+//     LLMGatewayAutoLLMTimeout, default 3s, clamped ≤30s) → return error,
+//     decider falls back to heuristic result even at low confidence
 //   - LLM call returns invalid output → return error, same fallback
 //   - LLM call succeeds → return Classification with Classifier="llm"
 type LLMFallbackClassifier struct {
@@ -93,6 +95,13 @@ func (c *LLMFallbackClassifier) Classify(ctx context.Context, sigs Classificatio
 	prompt := buildClassificationPrompt(sigs)
 	raw, err := c.Caller(timeoutCtx, prompt)
 	if err != nil {
+		if errors.Is(err, ErrLLMDisabled) {
+			// Disabled deployments (no LLMGatewayAutoLLMEndpoint) return
+			// DisabledCaller directly, bypassing InstrumentedCaller — without
+			// this record the "disabled" outcome promised by the
+			// llm_gateway_llm_classifier_total HELP is never emitted.
+			RecordLLMMetricCall("disabled", 0)
+		}
 		return nil, fmt.Errorf("llm classify: %w", err)
 	}
 	task, ok := normaliseLLMTaskType(raw)
