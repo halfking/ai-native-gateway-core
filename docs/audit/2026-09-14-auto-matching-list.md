@@ -40,27 +40,42 @@ function_call / intent_classification / long_context / planning 这 **7/11 任�
 vision 4 类走正常打分。故"deepseek 承担主力"对这 7 类是兜底池胜者而非
 matrix 首选,O1 的紧迫性以此量化为准。
 
-**兜底机制修正(2026-09-14 下午二次复核)**:上段的"matrix preferred 池选不出
-候选"表述不准确。真实机制链路(代码核实):
-1. 生产/本地默认走 **V2 决策漏斗**(`UseChannelQualityRouting` 默认开启,
-   autoroute/feature_flags.go:134);
-2. V2 内**不消费** task_default_routing 矩阵(autoroute/decision_v2.go:230,
-   矩阵仅在 legacy Decide 且 `UseExplicitDefault=true` 时参与,默认 false);
-3. 兜底的真实触发点:打分排序后**若榜首候选 MatchScore<30(候选模型 tags 与
-   任务必配标签词表零命中),整个推荐被替换为 48h 兜底池胜者**
-   (autoroute/recommend_v2.go:272;池空另有两处同源兜底 :117/:161);
-4. 触发原因是**标签荒**:生产/本地 models_canonical 的 capability 标签同等
-   贫瘠(deepseek-v4-flash 仅 `{family:deepseek}`、glm-5.2 仅
-   `{family:zhipu-glm}`、minimax-m3 仅 `{family:minimax}`,2026-09-14 11:23
-   245 只读复核两边逐行一致),7 类的必配词表(agent/tool_use/function_call、
-   creative/writing、classification、planning/analysis、code/review/security、
-   long_context/128k/200k/512k/1m,autoroute/scoring.go:395 requiredTagsForTask)
-   几乎零命中;且已有标签用连字符(`cap:long-context`)与词表下划线
-   (`long_context`)不匹配。chat 无必配标签恒 0.5,code/reasoning/vision 各有
-   带标签候选,故 4 类正常打分——7/4 分裂由此完全解释。
-5. 因此 **O1 的正确杠杆是标签数据与词表,不是 routing matrix**;写矩阵对生产
-   V2 路径无效(另:生产 task_default_routing 已有 102 行 'v6.1 default'——
-   原 O1 想写的内容生产已在,只是 V2 不读;本地副本该表反而 0 行)。
+**兜底机制修正(2026-09-14 三轮审计定稿;推翻二轮"标签荒"单因表述)**:上段的
+"matrix preferred 池选不出候选"表述不准确,完整机制链路(代码+实机双核实):
+1. 生产/本地默认走 **V2 决策漏斗**(UseChannelQualityRouting 默认开启,
+   autoroute/feature_flags.go:134;实机 X-Gw-Auto-Decision 的
+   enabled_features 仅 ["channel_quality_routing"])。
+2. V2 实际消费的任务→模型配置是 **work_type_model_route + work_type_config**
+   (WorkTypeRouteStore,decision_v2.go:203-255):有路由的类走**全量候选池**
+   (FullCandidateSet)并在打分后按 tier 策略过滤出配置 primary;无路由的类
+   只能用 48h 热榜 Top3 canonical 组池。**task_default_routing 在 V2 不参与**
+   (decision_v2.go:230;生产该表 102 行 'v6.1 default' 全部惰性,本地副本 0 行)。
+3. 兜底触发点:打分排序后**若榜首候选 MatchScore<30,整个推荐被替换为 48h
+   兜底池胜者**(recommend_v2.go:272,composite 恒 50);池空另有 :117/:161
+   同源兜底。
+4. MatchScore=TaskMatchScore×100(scoring_simplified.go:205),即候选 tags 对
+   requiredTagsForTask 词表(scoring.go:395)的子串命中率。**词表与库内标签
+   系统性分隔符错配**:词表用下划线(tool_use/function_call/long_context),
+   库内能力标签用连字符(cap:tool-use/cap:function-call/cap:long-context),
+   子串匹配永不命中;当前主力新模型(deepseek-v4-flash/glm-5.2/minimax-m3/
+   kimi-k3 等)仅 family 标签,带能力标签的多为旧世代模型(o1/o3 系、
+   claude-opus-4.x、gpt-4o 系、gemini-2.5、deepseek-r1 等;生产 83/1022 个
+   active canonical 带 cap: 能力标签)。
+5. **7/4 分裂精确定因**(本地 12/12 确定性复现):code_audit/
+   intent_classification/planning 本地无 work_type 路由 → 热榜3池全 match=0
+   → 必兜底;agent/creative/function_call/long_context 有路由但词表错配/
+   无对应标签 → 0 命中 → 兜底;chat 无必配词表恒 50;code/reasoning/vision
+   有标签命中的旧世代候选(deepseek-r1 的 cap:reasoning、codegemma/
+   starcoder2 的 family:*code*、gpt-4o 系的 cap:vision+multimodal)以
+   33~100 分压住排序首位 → **门控不触发**,再被 tier 策略过滤成配置的
+   primary —— 门控被掩盖,fallback_used=false(planning 本地虽有 deepseek-r1
+   可用,但无路由进不了全量池,仍必兜底)。
+6. 生产 work_type 路由覆盖(2026-09-14 只读复核):enabled 路由仅覆盖
+   agent/chat/code/creative/long_context/reasoning/vision 7 类,
+   **code_audit/function_call/intent_classification/planning 无路由**——
+   这 4 类在生产同样必走兜底(比本地 E2E 还多 function_call 一类)。
+7. 结论:O1 的正确杠杆 = **词表归一化(代码) + 主力模型补能力标签(数据)
+   + work_type_model_route 补齐无路由类(配置)**,而非 task_default_routing。
 
 ## 二、当前不可用面(2026-09-14 05:00 生产快照,节选)
 
@@ -97,23 +112,25 @@ matrix 首选,O1 的紧迫性以此量化为准。
 > **机械上无效**(见 §一机制修正与 §五二轮记录),故 6 项全部按下述事实重述。
 > 每项给出审计建议;**结论栏未经人工填写前,任何对应变更不得实施**。
 
-1. **[O1′ 七类回正常打分路径]** 是否实施"让 7 类(agent/code_audit/creative/
-   function_call/intent_classification/long_context/planning)回到正常打分路径"?
-   可选杠杆:
-   - (a) **补标签(数据)**:按厂商公开能力给主力模型补 models_canonical.tags
-     capability 词(如 deepseek-v4-flash/glm-5.2/glm-5.1 补 reasoning/analysis/
-     tool_use/function_call/writing 等)。约束:必须按真实能力补,不得为过门控
-     虚标;走 tags 管理流程,注意 tags_locked=false 现状。
-   - (b) **词表对齐(代码)**:requiredTagsForTask(autoroute/scoring.go:395)与
-     库内标签词表对齐,含 `long-context`/`long_context` 分隔符归一化;小改动、
-     需测试。
-   - (c) **软化门控(代码,语义变化大)**:MatchScore<30 硬替换改降权保留
-     正常打分胜者(recommend_v2.go:272)。
-   - (d) 维持现状(兜底池胜者=48h 最热模型,实测可用但绕过 Reliability/价格
-     信号)。
-   - **审计建议:(b)+(a)**。b 先行(低风险、立收 long_context 类),a 跟进按
-     真实能力逐模型铺;c/d 不建议(7 类绕过 Reliability 软反馈的现状已是
-     O2 的成因之一)。
+1. **[O1′ 兜底类回正常打分路径]** 是否实施"让兜底类回到正常打分路径"?
+   经三轮审计,杠杆为三件套(可独立确认,机制见 §一定稿):
+   - (a) **词表归一化(代码,小改动)**:requiredTagsForTask 词表与库内标签
+     的分隔符归一(tool-use↔tool_use、function-call↔function_call、
+     long-context↔long_context;autoroute/scoring.go:395 + containsFold)。
+     仅此一项即可让 agent/function_call 类靠既有 cap: 标签拿到 ≥30 分摆脱
+     必兜底;需配套单测。
+   - (b) **主力模型补能力标签(数据)**:按厂商公开能力给 deepseek-v4-flash/
+     glm-5.2/glm-5.1/minimax-m3/kimi-k3 等补 cap: 系列标签(工具调用/推理/
+     长上下文)。约束:按真实能力补,不虚标过门控;tags_locked=false 可直接
+     更新。
+   - (c) **work_type_model_route 补齐(配置)**:为生产无路由的 4 类
+     (code_audit/function_call/intent_classification/planning)配置路由
+     (本地 planning/code_audit/intent_classification 同样缺失)——这是原
+     O1"写入 preferred 池"意图的**正确落点**(V2 真正消费的表)。
+   - (d) 软化 MatchScore<30 门控(recommend_v2.go:272,语义变化大)或维持
+     现状。
+   - **审计建议:确认 (a)+(b)+(c)**;(d) 不建议。三者叠加后全部任务类回到
+     正常打分路径(Reliability/价格/通道质量信号重新生效)。
    - **结论:__________(决策人/日期:__________)**
 2. **[高质量备选 claude]** claude-fable-5($15/$50)在 reasoning/code_audit 的
    定位?事实:#31 整 credential auth_failed+permanently_exhausted(不可达),
@@ -188,3 +205,17 @@ AUTO_AUDIT_API_KEY=sk-xxx go run ./cmd/autoroute-e2e-audit \
   已含 `go test ./...`。原第 6 项"挂 CI"改述为"配 codeup Flow 或明确门禁载体"。
 - §三 6 项已按上述事实重述并附审计建议;结论栏留空待人工填写。
 - 本轮为 docs-only 修改,未触任何 routing_policy/matrix/标签数据。
+
+### 三轮审计记录(2026-09-14 傍晚,提交前自查)
+
+- 触发:对二轮结论做提交前审计,发现矛盾——reasoning 类 fallback_used=false
+  但胜者 glm-5.2 无 reasoning 标签,按二轮机制理应必兜底。
+- 取证:X-Gw-Auto-Decision 实机头(暴露 match_score 字段;reasoning/planning
+  各 6 连发,12/12 确定性分裂,排除抖动)、本地索引可用候选全量标签核查
+  (83/1022 类型的标签富集面)、本地+生产 work_type_model_route 配置比对。
+- 结论:推翻二轮"标签荒"单因表述,定稿为 §一的 7 点机制——**V2 实际消费
+  work_type_model_route(非 task_default_routing);分隔符错配杀死词表命中;
+  有路由类的门控可被旧世代标签候选压住并被 tier 策略掩盖;无路由类必兜底**。
+- §一已按三轮定稿重写;§三 O1′ 杠杆改为 (a)词表归一化+(b)主力补标签+
+  (c)work_type 路由补齐 三件套。两轮均为 docs-only+只读生产查询,
+  未做任何行为变更;实机取证仅向本地网关发送了少量 auto 测试请求。
