@@ -1,8 +1,9 @@
 # 存储结构优化方案 v2 —— 会话中心化：弃用 request_logs，六表会话族为最终态
 
-> 状态：v2 方案整理（2026-09-14）。P0（迁移 705，request_logs promote 断链修复）已落地并验收，是过渡期 request_logs 保持健康的前提。
+> 状态：v2 方案整理（2026-09-14）。**P0（迁移 705）与 S1a（迁移 706/707/708 + Go 写链）已落地并验收**（2026-09-14，本机）；S1b 代码面已随 S1a 完成（默认关的灰度开关，见 §4），S2 起待执行。
 > v1 → v2 方向变更：v1 是"优化 request_logs 体系 + session_turns 瘦身"；v2 按用户需求（2026-09-14）反转为**弃用 request_logs 表族，以 sessions / session_turns / session_bodies / session_memora / session_censors / session_tools 六表族为唯一事实源**，session_turns 拼装还原 request_logs。v1 的 P2（session_turns 瘦身）**撤销**，P1a 落点修正（尾部快照从 sessions 列改到 session_bodies），P1b（promote 幂等 + 轮转入链）保留并升级为会话表族自身的收尾步骤。
 > 实测基线：本机 llm-gateway-pg（PG17/citus 13.3-1），2026-09 分区，2026-09-14。
+> S1a 实施偏差登记（全部已验证，详见 §4 表后"实施事实核对"）：① final_full 写点为逐轮 upsert（本库无 close 钩子）；② tool_executions 表本地从未建（134 属 domain 通道），session_tools 直接承接写链并顺带修复缺表；③ RequestLogEntry 缺 trace_events/search_text/request_checksum/raw_model_name 四源（列已建暂 NULL），stream_done_sent 映射 StreamDoneReceived；④ kind 列 DEFAULT 'turn_delta'（滚动部署安全，推翻草案 'final_full'——旧二进制滚动期误标实测 13 行后修正）；⑤ 707/708 将 turns/bodies 的 promote 重写为「列集合契约 + 目录派生列清单」（历史库父表/hot 列序漂移实测：有序契约在本机会失败）。
 
 ## 0. 结论摘要
 
@@ -98,14 +99,23 @@ session_summaries / session_titles / session_title_states / session_tags / sessi
 | 阶段 | 内容 | 迁移编号 | 代码工作项 | 退出条件 |
 |---|---|---|---|---|
 | **P0（✅已完成）** | request_logs promote 断链修复，过渡期 request_logs 保持健康 | 705（已落地） | — | 本机已验收；生产 252 应用前复核 default 分布（v1 §2.5） |
-| **S1a 六表族补全（schema+新表）** | 三新表 + sessions 补列 + turns 五类列 + bodies kind 列 | **706**：session_memora/session_censors/session_tools 建表 + sessions 补列 + client_type 修复；**707**：session_turns 补采五类列+正文列+is_final_success+部分唯一索引；**708**：session_bodies kind 列 + DROP sessions.last_full_* | mirror bridge 扩字段；aggregator 写 project/访问维度/duration；工具链切 session_tools；sanitize 双写；memora 首轮快照写点 | 双账本登记；行为测试覆盖新写点 |
-| **S1b 写链切换（会话侧）** | turn writer 写正文+新列；聚合器关闭时写 final_full、停写 outbound_body、差集读端切 final_full | （随 707/708 的 Go 侧） | bodies_writer/turn_writer/session_writer_v2/outbound_builder/cache_v2 | settings 开关灰度：`storage.session_turns_bodies_enabled`、`storage.session_final_full_enabled`；回切开关保留 |
+| **S1a（✅已完成 2026-09-14）** | 三新表 + sessions 补列 + turns 五类列 + bodies kind 列 | **706**：session_memora/session_censors/session_tools 建表（含 hot+ensure_session_family_partitions+promote）+ sessions 补列；**707**：session_turns 补采五类列+正文列+is_final_success+部分唯一索引 + promote 重写；**708**：session_bodies kind 列（DEFAULT 'turn_delta'）+ final_full 部分唯一索引 + DROP sessions.last_full_* + promote 重写 | mirror bridge 扩字段（s1a_fields.go）+ client_type 修复；aggregator 写 project/访问维度/duration（outbox 编解码同步）；工具链切 session_tools；sanitize 双写（security/sanitize/db_sink.go，AES-GCM 密钥 LLM_GATEWAY_SESSION_CENSOR_KEY，未配置降级只存占位符）；memora 首轮快照写点（family_writers.go） | 双账本登记 ✅；行为测试覆盖新写点 ✅（migration_706_707_708_behavior_integration_test.go + pgxmock 单测）；本机验收 SQL A-F 全绿 ✅ |
+| **S1b（代码面✅，默认关灰度）** | turn writer 写正文+新列；聚合器关闭时写 final_full、停写 outbound_body、差集读端切 final_full | （随 707/708 的 Go 侧，已落地） | bodies_writer/turn_writer/session_writer_v2/outbound_builder/cache_v2 ✅；settings 开关：`storage.session_turns_bodies_enabled`、`storage.session_final_full_enabled`（均默认 false，热加载；回切=关开关） | 开关打开后按 §8 A/B/E 观察 7 天 |
 | **S2 拼装还原 + 双读校验** | 同名视图体替换（session UNION ALL 冻结 request_logs） | **709**：视图 v2 体 + 视图自愈链改写 + request_logs 停写 gate（settings `storage.request_logs_write_enabled` 默认 true） | dual_read_validator 对账扩展（turns vs request_logs 等值） | 对账 7 天零漂移 |
 | **S3 读端分波切换** | 波1 admin 日志/详情；波2 仪表盘/监控 jobs；波3 网关旁路（压缩冷启动/摘要/导出） | 无（纯代码） | 约 40 文件按 §2.2 分组迁移；session_turns_tree 等注释更新 | 各波功能回归通过 |
 | **S4 停写 request_logs** | gate 关闭；telemetry/admin ingest 停写 request_logs_hot 与 bodies_hot（usage_ledger、turns 写入不变） | 710：无 DDL 的 gate 收口 + 双账本 | telemetry client 分支化 | request_logs 行数归零增长；compat 视图历史窗口正常 |
 | **S5 存储收尾** | 历史分区 TTL/DROP 决策（合规窗口）；**711**：promote 幂等去 ON CONFLICT（session_bodies 反连接版）+ `enforce_columnar_partition_aged`（月关闭后 heap→columnar，当月恒 heap）；DROP 456 死列残留与 sensitive_keywords 死列；request_logs_bodies 停写与分区回收 | 710/711 | partition_manager 挂点（archiveSpecs 的 day 调度模式） | 月增存储达 §6 目标 |
 
 依赖关系：S1 → S2 → S3 → S4 → S5 严格顺序；711（轮转）依赖 707/708（turns 变宽表后列存收益才最大）。
+
+### 4.1 实施事实核对（S1a 落地时审计发现，2026-09-14）
+
+1. **tool_executions 表本地不存在**：migration 134 属 `sql/migrations/domain/` 通道，本机两账本（schema_migrations / gateway_db_revision_sequences）均无记录——§1/§3-D5 "tool_executions 已 90% 达标"在生产写链上并不成立（写链一直在对缺表 INSERT）。706 的 session_tools 自带完整 134 形状（+turn_no+月分区化），`domains/toolexecution/postgres_store.go` 切表名后顺带修复该缺表。
+2. **RequestLogEntry 缺五源**：TraceEvents / SearchText / RequestChecksum / RawModelName 在 entry 上不存在（707 照建列、暂 NULL，S2 视图 NULL 补位登记）；StreamDoneSent 不存在，最接近的 `StreamDoneReceived` 映射 `stream_done_sent`；OwnerUser 实为 `APIKeyOwnerUser`。
+3. **本库无会话关闭链路**：`SessionAggregator.CloseSession` 零调用方——D2 "会话关闭时拼装 final_full" 无挂钩点。实现取逐轮 upsert（turn_no=0 + request_id='final_full:<sid>' + kind='final_full'，部分唯一索引守护），终态同为"每会话一行最后完整快照"；duration_ms 在 CloseSession 内计算（含 closed_at 复核分支），供未来 close 链路复用。
+4. **历史库父表/hot 列序漂移**：本机 session_turns 父表与 hot 集合相等但 attnum 序不同（456/513/525/636/640 各自追加所致）——"有序列契约 + SELECT *" 方案在本机会误报且位置映射有错列风险；707/708 的 promote 重写改为**列集合契约（按名比较）+ 目录派生显式列清单（按名映射）**，行为测试 + 本机 253K 行真实 promote 冒烟通过。
+5. **kind DEFAULT 必须对滚动部署友好**：'final_full' 默认会让旧二进制滚动期写入的逐轮行误标（本机实测 13 行后修正为 'turn_delta'）；新写链对两种 kind 均显式赋值，DEFAULT 仅为旧写链兜底。
+6. **705 曾漏登记 function chain**：705 重写 `ensure_request_logs_partition` 但未在通道脚本 `intentional_function_chains` 登记——pre-flight guard 会中止其后一切部署（703 同款事故复发面），S1a 落地时补登记并实测通过。
 
 ---
 

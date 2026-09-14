@@ -197,6 +197,10 @@ func TestHotPromoteTableMap(t *testing.T) {
 		"session_module_executions_hot",
 		"dashboard_access_events_hot",
 		"auto_route_selections_hot",
+		// 706（存储优化方案 v2 S1a）
+		"session_memora_hot",
+		"session_censors_hot",
+		"session_tools_hot",
 	}
 	for _, name := range expected {
 		if _, ok := hotPromoteTableMap[name]; !ok {
