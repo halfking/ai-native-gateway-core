@@ -189,14 +189,14 @@ func (w captureWriterV2) Write(_ context.Context, req *v2.ProcessedRequest) erro
 }
 
 func TestEntryToProcessedRequest_NilEntry(t *testing.T) {
-	req := entryToProcessedRequest(nil)
+	req := entryToProcessedRequest(nil, "")
 	if req != nil {
 		t.Fatal("expected nil for nil entry")
 	}
 }
 
 func TestEntryToProcessedRequest_NilGwSessionID(t *testing.T) {
-	req := entryToProcessedRequest(&telemetry.RequestLogEntry{RequestID: "r1"})
+	req := entryToProcessedRequest(&telemetry.RequestLogEntry{RequestID: "r1"}, "")
 	if req != nil {
 		t.Fatal("expected nil when GwSessionID is nil")
 	}
@@ -223,7 +223,7 @@ func TestEntryToProcessedRequest_CoreFields(t *testing.T) {
 		UpstreamStatusCode: intPtr(200),
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if req == nil {
 		t.Fatal("entryToProcessedRequest returned nil")
 	}
@@ -264,7 +264,7 @@ func TestEntryToProcessedRequest_UsageFields(t *testing.T) {
 		Success:          true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	check(t, "PromptTokens", req.PromptTokens, 100)
 	check(t, "CompletionTokens", req.CompletionTokens, 50)
 	check(t, "CacheReadTokens", req.CacheReadTokens, 10)
@@ -284,7 +284,7 @@ func TestEntryToProcessedRequest_CompressionFields(t *testing.T) {
 		Success:             true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if !req.CompressionApplied {
 		t.Error("expected CompressionApplied=true")
 	}
@@ -303,7 +303,7 @@ func TestEntryToProcessedRequest_CompressionSkipped(t *testing.T) {
 		GwSessionID: gwSessionPtr("sess_no_comp"),
 		Success:     true,
 	}
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if req.CompressionApplied {
 		t.Error("expected CompressionApplied=false when no compression strategy")
 	}
@@ -337,7 +337,7 @@ func TestEntryToProcessedRequest_CompressionMetaWhitelist(t *testing.T) {
 		CompressionMeta:     meta,
 		Success:             true,
 	}
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if req.CompressionMeta["summary_marker"] != "[smm_v1:0123456789abcdef]" {
 		t.Fatalf("summary marker not preserved: %#v", req.CompressionMeta)
 	}
@@ -370,7 +370,7 @@ func TestEntryToProcessedRequest_RequestBodyParsing(t *testing.T) {
 		Success:     true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if len(req.RequestBody) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(req.RequestBody))
 	}
@@ -390,7 +390,7 @@ func TestEntryToProcessedRequest_ResponseBodyParsing(t *testing.T) {
 		Success:      true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if len(req.ResponseBody) != 1 {
 		t.Fatalf("expected 1 response message, got %d", len(req.ResponseBody))
 	}
@@ -412,7 +412,7 @@ func TestEntryToProcessedRequest_OutboundBodyParsing(t *testing.T) {
 		Success:          true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if len(req.OutboundBody) != 1 {
 		t.Fatalf("expected 1 outbound message, got %d", len(req.OutboundBody))
 	}
@@ -449,7 +449,7 @@ func TestEntryToProcessedRequest_OutboundBodyFullObject(t *testing.T) {
 		Success:             true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if len(req.OutboundBody) != 2 {
 		t.Fatalf("expected 2 outbound messages from full request object, got %d", len(req.OutboundBody))
 	}
@@ -470,7 +470,7 @@ func TestEntryToProcessedRequest_OutboundBodyBareArray(t *testing.T) {
 		Success:      true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if len(req.OutboundBody) != 1 {
 		t.Fatalf("expected 1 outbound message from bare array, got %d", len(req.OutboundBody))
 	}
@@ -489,7 +489,7 @@ func TestEntryToProcessedRequest_SubmitModeHeader(t *testing.T) {
 		Success:          true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	check(t, "SubmitModeHeader", req.SubmitModeHeader, "delta")
 }
 
@@ -502,7 +502,7 @@ func TestEntryToProcessedRequest_SubmitModeHeaderEmpty(t *testing.T) {
 		Success:     true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	check(t, "SubmitModeHeader", req.SubmitModeHeader, "")
 }
 
@@ -515,7 +515,7 @@ func TestEntryToProcessedRequest_UsesEventTime(t *testing.T) {
 		Success:     true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if !req.Timestamp.Equal(eventAt) {
 		t.Fatalf("Timestamp = %v, want event time %v", req.Timestamp, eventAt)
 	}
@@ -546,7 +546,7 @@ func TestEntryToProcessedRequest_AttachmentsParsing(t *testing.T) {
 		Success:     true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if len(req.Attachments) != 1 {
 		t.Fatalf("expected 1 attachment, got %d", len(req.Attachments))
 	}
@@ -576,7 +576,7 @@ func TestEntryToProcessedRequest_ResponseBodyWithToolCalls(t *testing.T) {
 		Success:      true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if len(req.ResponseBody) != 1 {
 		t.Fatalf("expected 1 response message, got %d", len(req.ResponseBody))
 	}

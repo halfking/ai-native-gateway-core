@@ -98,7 +98,7 @@ func TestPersistHook_Integration_DBWrite(t *testing.T) {
 	}
 
 	// Convert to ProcessedRequest and write directly (bypasses settings flag check)
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	require.NotNil(t, req)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
