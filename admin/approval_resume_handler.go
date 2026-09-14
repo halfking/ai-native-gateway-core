@@ -39,6 +39,11 @@ func (h *Handler) HandleApprovalResume(w http.ResponseWriter, r *http.Request) {
 	// 读的 string context key 全仓无写入方（AdminMiddleware 写的是
 	// authContextKey{}），恒 miss 后回落到可伪造的 X-Tenant-ID 头 /
 	// tenant_id query，已认证 tenant_admin 可跨租户 resume 任意审批。
+	if GetAuthContext(r) == nil {
+		// 纵深防御：生产挂载点在 wrapAdmin 之后必有认证上下文；缺失即未认证。
+		http.Error(w, `{"error":"missing tenant_id"}`, http.StatusUnauthorized)
+		return
+	}
 	tenantID := tenantFromQueryOrContext(r)
 	if tenantID == "" {
 		http.Error(w, `{"error":"missing tenant_id"}`, http.StatusUnauthorized)
