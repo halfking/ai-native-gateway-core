@@ -33,7 +33,14 @@ func autoFallbackModel() string {
 	if m := strings.TrimSpace(os.Getenv("LLM_GATEWAY_AUTO_FALLBACK_MODEL")); m != "" {
 		return m
 	}
-	return "claude-sonnet-4.5"
+	// 2026-09-14 O5 fix: the hardcoded default was "claude-sonnet-4.5" —
+	// a premium model whose credentials are dead in production, so any
+	// decider==nil instance answered every model="auto" request with a
+	// guaranteed 503 no_candidate. The fallback default must be a model
+	// that is actually routable: deepseek-v4-flash is the measured
+	// cost-efficient workhorse (auto-matching audit §一) with live
+	// credentials. Still env-overridable per deployment.
+	return "deepseek-v4-flash"
 }
 
 // autoHeaderName is the response header carrying the decision JSON.
