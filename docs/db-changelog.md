@@ -520,3 +520,17 @@ LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS（默认 24h）释放 floor 摘出行）�
 |-----------|------|---------|--------|
 | 710 | `710_request_logs_view_session_family_v2.sql` | `888d026400710735dd0213e0b64325bf70cb1dcc24392f716f377b28b5b0c62b` | applied+verified |
 
+
+## 2026-09-15 — 任务托管 P0：711 hosted_tasks 三表（pending deploy）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 711 | `711_hosted_tasks.sql` | `c02cabe55b342be273eb563e437bb4da8ca465b72e69b4f66c03c2adce636877` | pending deploy |
+
+补录说明（hosted-task-delegation-design §6.1，2026-09-15）：711 = hosted_tasks
+（委托任务投影，CAS revision + 终态 sticky + (tenant_id, idempotency_key) 幂等）+
+hosted_task_events（append-only，唯一 (task_id, seq)）+ hosted_task_callbacks
+（签名回调台账，URL/secret AES-GCM 加密，attempt/next_at/DLQ）。三表全 RLS
+（app.current_tenant + super_admin/bypass_rls，跟随 554 惯例）。三处同步已完成：
+embeddata/startup/711_* 与 runner.go StartupFiles 均已加入。执行真相在 ACC，
+本组表只是关联投影（单写者原则 D4），不引入第二执行 owner。

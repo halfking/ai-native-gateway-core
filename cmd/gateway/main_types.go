@@ -17,8 +17,10 @@ import (
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hostedtask"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
+	"github.com/kaixuan/llm-gateway-go/internal/handlers"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/irconv"
 	"github.com/kaixuan/llm-gateway-go/pending"
@@ -86,6 +88,38 @@ func (a sessionAuthAdapter) Verify(ctx context.Context, rawKey string) (session.
 		return session.KeyInfo{}, err
 	}
 	return session.KeyInfo{ID: ki.ID, TenantID: ki.TenantID}, nil
+}
+
+// hostedtaskAuthAdapter bridges authentication.KeyVerifier to the
+// hosted-task facade's KeyVerifier (hosted-task-delegation-design §2.4:
+// tenant/api_key 一律取自验证后 context)。error 原样透传不包装 —— handler
+// 端基于跨包 *authentication.InvalidKeyError 做类型断言，包装会破坏断言。
+type hostedtaskAuthAdapter struct {
+	kv *authentication.KeyVerifier
+}
+
+func (a hostedtaskAuthAdapter) Enabled() bool { return a.kv != nil && a.kv.Enabled() }
+func (a hostedtaskAuthAdapter) Verify(ctx context.Context, rawKey string) (hostedtask.KeyInfo, error) {
+	ki, err := a.kv.Verify(ctx, rawKey)
+	if err != nil {
+		return hostedtask.KeyInfo{}, err
+	}
+	return hostedtask.KeyInfo{ID: int64(ki.ID), TenantID: ki.TenantID}, nil
+}
+
+// goalrunAuthAdapter bridges authentication.KeyVerifier to the GoalRun status
+// handler's verifier (§0-F2：挂载 /v1/goal-runs 前补 KeyVerifier 归属校验)。
+type goalrunAuthAdapter struct {
+	kv *authentication.KeyVerifier
+}
+
+func (a goalrunAuthAdapter) Enabled() bool { return a.kv != nil && a.kv.Enabled() }
+func (a goalrunAuthAdapter) Verify(ctx context.Context, rawKey string) (handlers.GoalRunKeyInfo, error) {
+	ki, err := a.kv.Verify(ctx, rawKey)
+	if err != nil {
+		return handlers.GoalRunKeyInfo{}, err
+	}
+	return handlers.GoalRunKeyInfo{ID: ki.ID, TenantID: ki.TenantID}, nil
 }
 
 // extractTenantIDFromUpstreamResp extracts tenantID from the upstream request
