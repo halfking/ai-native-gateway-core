@@ -289,29 +289,46 @@ route_tier=primary(路由×标签×归一化三件叠加生效)。
 - 生产 245/154 部署后:核对 709 落库、admin API 补 (b) 标签、O4 env+key、
   以 routing_decision_log.decision_trace 的 fallback_used 做效果验证。
 
-### ⚠️ 五轮生产部署期新发现 O5(2026-09-14 晚,未修复——需人工决策)
+### ⚠️ 五轮生产部署期新发现 O5(2026-09-14 晚提请;六轮修正根因并修复)
 
-**生产 `model=auto` 被同名 canonical 遮蔽,auto 决策漏斗在生产从未生效**:
+**生产 `model=auto` 全部 503 no_candidate——真根因(六轮代码级核实,推翻五轮"canonical 遮蔽"初判)**:
 
-- 2026-08-25 生产库出现 canonical `auto`(models_canonical id=2664552,
-  唯一 offer=credential #44 openrouter-kx 的 `openrouter/auto`,即
-  OpenRouter 官方 meta-model)+ 同名 alias(auto→2664552)。
-- 模型解析先于 auto-route decider:生产 `model=auto` 被该 canonical 精确
-  匹配吸收,转发 openrouter/auto,**V2 漏斗/分类器/兜底池在 08-25 后的
-  生产 auto 流量上从未运行**(本地副本无此行,故本地 E2E 一直正常)。
-- OpenRouter 侧 auto 会路由到其自选上游;09-05 起解析为
-  claude-sonnet-4.5 的流量在我方 0 可用凭据 → 全部
-  `no_candidate` 503(routing_decision_log:09-05×12、09-06×21、
-  09-07×4、09-12×2、09-14×6;多 api_key,非本轮引入——本轮为首次
-  在生产实测 auto,暴露存量缺陷)。
-- O4 的 LLM fallback 因 decider 被遮蔽而从未获得触发机会(env 已在
-  245 进程内就位,O5 解除后即自动生效)。
-- 修复选项(需决策人选择,本轮不动行为):
-  (i) 下线/改名 canonical auto + alias,恢复真 auto 路由(数据操作,可逆);
-  (ii) 代码层把 "auto" 保留为路由关键字,别名解析不得抢占(需迁移清理+
-      守卫测试);
-  (iii) 若 openrouter/auto 即期望的"auto"实现,则维持现状,把 O1′/O2/O4
-      的生效面改为与调用方另行约定。
+- auto 决策引擎(decider/分类器/索引/tuning/work_type store 全家)的装配整体
+  位于 `if !bgDataPlaneOnly { ... }`(cmd/gateway/main.go 原 4816-5157)内。
+  **245 以 `LLM_GATEWAY_BG_MODE=data-plane` 永久运行 → decider 从未装配**
+  (154 无该 env,full 模式,不受影响)。
+- `maybeResolveAuto` 在 `h.decider == nil` 时走兜底分支:
+  `autoFallbackModel()` **硬编码返回 "claude-sonnet-4.5"**(其凭据生产全灭)
+  → 改写后的模型 0 可用候选 → 每个 auto 请求 503 no_candidate。
+  该分支 wire=nil,故无 X-Gw-Auto-Decision 头、无 decision 写入、无
+  selection 落库、无 O4 升级日志——与本轮全部实测吻合。
+- 失败时间线与"claude 凭据死亡"(09-04/05)吻合:冷表 09-05×12、09-06×21、
+  09-07×4、09-12×2(多 api_key 存量),非本轮引入;五轮所称
+  "canonical auto(openrouter/auto@#44) 遮蔽"不成立——handler 在任何解析
+  之前先做 `clientModel == "auto"` 魔法串判定(modelname.CanonicalizeClientModel
+  不改写 auto),同名 canonical 仅是并存的卫生问题,非本缺陷机制。
+- 附带核实(独立于 O5,待查):auto_route_selections_hot 生产 0 行、父表
+  停在 09-08——selection 写链断 ≥6 天;admin PATCH /api/models/{id}/tags
+  此前全部静默失败,已修复(e201f9ed0)。
+
+**O5 修复(六轮,人工确认"按建议执行")**:
+- main.go 三段拆分:写重型 rollup/suggest 工人与 trimmer/feedbackAnalyzer
+  维持 `!bgDataPlaneOnly` 专属;**auto 决策引擎+其全部 store/refresher/
+  selection+tuning writer 改为双模式装配**(蓝绿候选实例也必须有决策能力;
+  refresher 类均为 SELECT/LISTEN,双实例安全)。full 模式(154)语句序列
+  完全不变。守卫测试 TestAutoRouteWiringNotGatedOnDataPlaneMode 锁定拆分。
+- `autoFallbackModel()` 死模型默认值改为 deepseek-v4-flash(env
+  LLM_GATEWAY_AUTO_FALLBACK_MODEL 仍可覆盖),decider==nil 兜底不再指向
+  凭据已灭的模型;单测 TestAutoFallbackModelDefault。
+- admin updateModelTags 补 `tags` 字段必填守卫(absent/null 不再 NULL 列)。
+- **O4 随修三处静默截断(实施验证中发现)**:①classifier 层 3s 硬编码与
+  HTTP client 层 env 脱节(8780d57ba);②默认 HTTP client 5s 硬编码覆盖更大
+  env 值(7cdebfa67);③推理型分类模型思考链耗尽 max_tokens 致 content 恒空
+  ——新增 LLMGatewayAutoLLMMaxTokens/ExtraBody env(741bad4d8,部署侧配
+  thinking disabled+64)。生产 245 实测:低置信请求触发升级,LLM 复分类
+  成功采纳(classifier=llm_v2, conf 0.85),超时则优雅降级启发式——弹性
+  语义符合设计;成功率受上游延迟波动影响,属运营调参(模型/timeout)。
+
 - 附带核实:①auto_route_selections_hot 生产 0 行、父表停在 09-08——
   selection 写链在生产已断 ≥6 天,独立于 O5,需另查;②admin
   PATCH /api/models/{id}/tags 此前对所有写请求静默失败(json.RawMessage

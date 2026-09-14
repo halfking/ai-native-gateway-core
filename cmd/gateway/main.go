@@ -4836,6 +4836,19 @@ func main() {
 			concurrencyAutoScaleUp.Start(context.Background())
 
 			slog.Info("CHECKPOINT: after concurrencyAutoScaleUp.Start, before NewIndex")
+			// 2026-09-14 O5 fix: everything from InitFeatureFlags down to the
+			// auto-route feedback loop is REQUEST-PATH infrastructure (it is
+			// what makes model="auto" resolve at all), not background write
+			// load. It previously lived inside this !bgDataPlaneOnly block, so
+			// a permanent data-plane instance (LLM_GATEWAY_BG_MODE=data-plane,
+			// e.g. the 245 canary) never wired a decider; maybeResolveAuto then
+			// took the decider==nil branch and rewrote model="auto" to the
+			// autoFallbackModel() default ("claude-sonnet-4.5", credentials
+			// dead) — every auto request 503 no_candidate. Split the block:
+			// the write-heavy rollup/suggest workers stay full-mode-only
+			// (reopened below), the decision engine runs in BOTH modes.
+		}
+		{
 			autoroute.InitFeatureFlags()
 			autoIdx := autoroute.NewIndex()
 
@@ -4951,8 +4964,9 @@ func main() {
 			// ── SmartSaniGuard (2026-08-07) ─────────────────────────
 			// 输入脱敏 + 占位符还原（仅依赖 Redis）。必须放在 initGoalControl
 			// 之后调用：append 模式需要现有 chain 已注册到 chatHandler。
-			// bgDataPlaneOnly=true 模式下 initGoalControl 不会执行，
-			// 但 SmartSaniGuard 不需要 DB，因此也能独立启用。
+			// 2026-09-14 O5 拆分后 initGoalControl 在 data-plane 模式同样
+			// 执行（自身受 LLM_GATEWAY_GOAL_ENABLED 门控，默认 no-op），
+			// SmartSaniGuard 只依赖 Redis，两模式可用。
 			// 706：db 句柄额外接 session_censors 审计双写（best-effort）。
 			var redisForGuard *redis.Client
 			if redisClientForCache != nil {
@@ -5101,7 +5115,11 @@ func main() {
 			affinityWorker := bg.NewAutoRouteAffinityWorker(dbConn.Pool())
 			affinityWorker.Start(context.Background())
 			defer affinityWorker.Stop()
-
+		}
+		// Full-mode-only maintenance writers (DELETE batches / proposal
+		// generation). O5 split: skipped on data-plane instances exactly as
+		// before — the shared tables are trimmed by the full-mode instance.
+		if !bgDataPlaneOnly {
 			// v2.2 (P8.8): AuditTrimmer caps growth of the two
 			// audit tables (routing_overrides_audit from P7.9
 			// trigger, routing_audit_log from P7.9.1 app-level
@@ -5146,7 +5164,10 @@ func main() {
 			if adminHandler != nil {
 				adminHandler.SetFeedbackAnalyzer(feedbackAnalyzer)
 			}
-
+		}
+		{
+			// B (continued): request-path telemetry writers — per-instance
+			// by design, every instance persists its own selections/signals.
 			// v2.1: tuning_signals async writer. Wired with the same PG
 			// pool the rest of the system uses; runs an independent
 			// batching goroutine so request_logs is unaffected.
