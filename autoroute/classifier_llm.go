@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,7 +36,23 @@ type LLMFallbackClassifier struct {
 // typically a thin shim around the chat completions endpoint that uses
 // the cheapest available credential (system-internal API key).
 func NewLLMFallbackClassifier(caller func(ctx context.Context, prompt string) (string, error)) *LLMFallbackClassifier {
-	return &LLMFallbackClassifier{Caller: caller, timeout: 3 * time.Second}
+	c := &LLMFallbackClassifier{Caller: caller, timeout: 3 * time.Second}
+	// 2026-09-15 O4 verification fix: the self-loop classification path
+	// (gateway → its own /v1/chat/completions → upstream) needs more than
+	// the 3s default, but LLMGatewayAutoLLMTimeout only raised the HTTP
+	// client's timeout while this classifier-level cap still cut every
+	// call at 3s. Honor the same env knob here (seconds, clamped to ≤30
+	// so a misconfig cannot stall the request path for long — this runs
+	// before dispatch on low-confidence requests).
+	if v := strings.TrimSpace(os.Getenv("LLMGatewayAutoLLMTimeout")); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			if secs > 30 {
+				secs = 30
+			}
+			c.timeout = time.Duration(secs) * time.Second
+		}
+	}
+	return c
 }
 
 // Name implements Classifier.
