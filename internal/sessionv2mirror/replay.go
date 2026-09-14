@@ -18,6 +18,7 @@ package sessionv2mirror
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -68,18 +69,53 @@ type replayDB interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
+// setBypassGUCs lifts tenant isolation for the current transaction (R29
+// audit 2026-09-15): session_mirror_outbox is ENABLE+FORCE RLS (712), so
+// even the table owner is subject to the tenant policy — without these GUCs
+// every non-'default'-tenant row is invisible to the reaper and re-registration
+// INSERTs are rejected by WITH CHECK. Same contract as the 630 reaper
+// (domains/session/v2/session_aggregate_outbox_reaper.go). is_local=true keeps
+// the pooled connection clean after commit.
+func setBypassGUCs(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `SELECT set_config('app.current_role', 'super_admin', true), set_config('app.bypass_rls', 'true', true)`)
+	if err != nil {
+		return fmt.Errorf("set RLS bypass GUCs: %w", err)
+	}
+	return nil
+}
+
+// execBypass runs one statement against the FORCE-RLS outbox inside a
+// transaction-scoped bypass (single-statement pool Exec cannot carry the
+// GUCs; a session-scoped set_config would leak across pool borrowers).
+func execBypass(ctx context.Context, db replayDB, sql string, args ...any) (pgconn.CommandTag, error) {
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return pgconn.CommandTag{}, err
+	}
+	//nolint:errcheck // rollback is the safe default after commit too
+	defer tx.Rollback(ctx)
+	if err := setBypassGUCs(ctx, tx); err != nil {
+		return pgconn.CommandTag{}, err
+	}
+	tag, err := tx.Exec(ctx, sql, args...)
+	if err != nil {
+		return pgconn.CommandTag{}, err
+	}
+	return tag, tx.Commit(ctx)
+}
+
 // MirrorOutboxReaper drains session_mirror_outbox rows.
 type MirrorOutboxReaper struct {
-	db         replayDB
-	writer     V2Writer
-	interval   time.Duration
-	batchSize  int
-	maxAtts    int
-	stopCh     chan struct{}
-	doneCh     chan struct{}
-	mu         sync.Mutex
-	started    bool
-	stopped    bool
+	db        replayDB
+	writer    V2Writer
+	interval  time.Duration
+	batchSize int
+	maxAtts   int
+	stopCh    chan struct{}
+	doneCh    chan struct{}
+	mu        sync.Mutex
+	started   bool
+	stopped   bool
 }
 
 // StartMirrorOutboxReaper starts the reaper in the background. Returns nil
@@ -170,7 +206,7 @@ type claimRow struct {
 func (r *MirrorOutboxReaper) tick(ctx context.Context) error {
 	// 1. Recover crash orphans: rows stuck in 'claimed' beyond the lease go
 	// back to 'pending' (single statement, no claim contention).
-	if _, err := r.db.Exec(ctx, `
+	if _, err := execBypass(ctx, r.db, `
 		UPDATE public.session_mirror_outbox
 		SET status = 'pending', claimed_at = NULL, updated_at = NOW()
 		WHERE status = 'claimed' AND claimed_at < NOW() - $1::interval
@@ -200,6 +236,9 @@ func (r *MirrorOutboxReaper) claimBatch(ctx context.Context) ([]claimRow, error)
 	}
 	//nolint:errcheck // readonly after claim update; rollback is the safe default
 	defer tx.Rollback(ctx)
+	if err := setBypassGUCs(ctx, tx); err != nil {
+		return nil, err
+	}
 
 	rows, err := tx.Query(ctx, `
 		UPDATE public.session_mirror_outbox
@@ -280,7 +319,7 @@ func (r *MirrorOutboxReaper) replayOne(ctx context.Context, row claimRow) {
 		r.requeue(ctx, row, err)
 		return
 	}
-	if _, err := r.db.Exec(ctx, `DELETE FROM public.session_mirror_outbox WHERE id = $1`, row.id); err != nil {
+	if _, err := execBypass(ctx, r.db, `DELETE FROM public.session_mirror_outbox WHERE id = $1`, row.id); err != nil {
 		// The turn is written (idempotent on request_id); a leftover row
 		// self-heals: the next replay attempt re-writes nothing (ON
 		// CONFLICT DO NOTHING) and deletes the row.
@@ -302,7 +341,7 @@ func (r *MirrorOutboxReaper) requeue(ctx context.Context, row claimRow, writeErr
 	if backoff > mirrorReplayMaxBackoff {
 		backoff = mirrorReplayMaxBackoff
 	}
-	if _, err := r.db.Exec(ctx, `
+	if _, err := execBypass(ctx, r.db, `
 		UPDATE public.session_mirror_outbox
 		SET status = 'pending', attempts = $2, last_error = $3,
 		    next_retry_at = NOW() + $4::interval, claimed_at = NULL, updated_at = NOW()
@@ -317,7 +356,7 @@ func (r *MirrorOutboxReaper) requeue(ctx context.Context, row claimRow, writeErr
 }
 
 func (r *MirrorOutboxReaper) markDead(ctx context.Context, row claimRow, reason string) {
-	if _, err := r.db.Exec(ctx, `
+	if _, err := execBypass(ctx, r.db, `
 		UPDATE public.session_mirror_outbox
 		SET status = 'dead', last_error = $2, claimed_at = NULL, updated_at = NOW()
 		WHERE id = $1
@@ -334,7 +373,7 @@ func (r *MirrorOutboxReaper) markDead(ctx context.Context, row claimRow, reason 
 }
 
 func (r *MirrorOutboxReaper) deleteRow(ctx context.Context, id int64, why string) {
-	if _, err := r.db.Exec(ctx, `DELETE FROM public.session_mirror_outbox WHERE id = $1`, id); err != nil {
+	if _, err := execBypass(ctx, r.db, `DELETE FROM public.session_mirror_outbox WHERE id = $1`, id); err != nil {
 		slog.Warn("sessionv2mirror: outbox skip-delete failed", "id", id, "why", why, "error", err)
 	}
 }
@@ -346,6 +385,9 @@ func (r *MirrorOutboxReaper) refreshGauge(ctx context.Context) error {
 	}
 	//nolint:errcheck // gauge scrape only
 	defer tx.Rollback(ctx)
+	if err := setBypassGUCs(ctx, tx); err != nil {
+		return err
+	}
 	var pending float64
 	if err := tx.QueryRow(ctx, `
 		SELECT count(*) FROM public.session_mirror_outbox WHERE status = 'pending'

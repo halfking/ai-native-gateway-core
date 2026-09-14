@@ -92,7 +92,22 @@ func EnqueueMirrorFailure(entry *telemetry.RequestLogEntry, sessionID, reason st
 
 	ctx, cancel := context.WithTimeout(context.Background(), mirrorOutboxEnqueueBudgetMs*time.Millisecond)
 	defer cancel()
-	_, err = pool.Exec(ctx, `
+	// FORCE RLS (712) means a bare INSERT is rejected by WITH CHECK for any
+	// non-'default' tenant — the GUC lift must wrap the INSERT (replay.go
+	// execBypass contract; 630 reaper precedent).
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		slog.Warn("sessionv2mirror: outbox registration begin failed, degrading to in-process backlog",
+			"request_id", entry.RequestID, "error", err)
+		return false
+	}
+	defer tx.Rollback(ctx)
+	if err := setBypassGUCs(ctx, tx); err != nil {
+		slog.Warn("sessionv2mirror: outbox registration GUC lift failed, degrading to in-process backlog",
+			"request_id", entry.RequestID, "error", err)
+		return false
+	}
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO public.session_mirror_outbox
 		    (tenant_id, request_id, session_id, source, fail_reason, payload)
 		VALUES ($1, $2, $3, 'hook', $4, $5::jsonb)
@@ -100,9 +115,13 @@ func EnqueueMirrorFailure(entry *telemetry.RequestLogEntry, sessionID, reason st
 		SET fail_reason = EXCLUDED.fail_reason,
 		    payload     = EXCLUDED.payload,
 		    updated_at  = NOW()
-	`, tenantID, entry.RequestID, sessionID, reason, string(payload))
-	if err != nil {
+	`, tenantID, entry.RequestID, sessionID, reason, string(payload)); err != nil {
 		slog.Warn("sessionv2mirror: outbox registration failed, degrading to in-process backlog",
+			"request_id", entry.RequestID, "error", err)
+		return false
+	}
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("sessionv2mirror: outbox registration commit failed, degrading to in-process backlog",
 			"request_id", entry.RequestID, "error", err)
 		return false
 	}
