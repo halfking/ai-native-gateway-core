@@ -321,6 +321,13 @@ route_tier=primary(路由×标签×归一化三件叠加生效)。
   LLM_GATEWAY_AUTO_FALLBACK_MODEL 仍可覆盖),decider==nil 兜底不再指向
   凭据已灭的模型;单测 TestAutoFallbackModelDefault。
 - admin updateModelTags 补 `tags` 字段必填守卫(absent/null 不再 NULL 列)。
+- **O4 随修三处静默截断(实施验证中发现)**:①classifier 层 3s 硬编码与
+  HTTP client 层 env 脱节(8780d57ba);②默认 HTTP client 5s 硬编码覆盖更大
+  env 值(7cdebfa67);③推理型分类模型思考链耗尽 max_tokens 致 content 恒空
+  ——新增 LLMGatewayAutoLLMMaxTokens/ExtraBody env(741bad4d8,部署侧配
+  thinking disabled+64)。生产 245 实测:低置信请求触发升级,LLM 复分类
+  成功采纳(classifier=llm_v2, conf 0.85),超时则优雅降级启发式——弹性
+  语义符合设计;成功率受上游延迟波动影响,属运营调参(模型/timeout)。
 
 - 附带核实:①auto_route_selections_hot 生产 0 行、父表停在 09-08——
   selection 写链在生产已断 ≥6 天,独立于 O5,需另查;②admin
