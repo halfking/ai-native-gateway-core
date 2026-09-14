@@ -4953,11 +4953,12 @@ func main() {
 			// 之后调用：append 模式需要现有 chain 已注册到 chatHandler。
 			// bgDataPlaneOnly=true 模式下 initGoalControl 不会执行，
 			// 但 SmartSaniGuard 不需要 DB，因此也能独立启用。
+			// 706：db 句柄额外接 session_censors 审计双写（best-effort）。
 			var redisForGuard *redis.Client
 			if redisClientForCache != nil {
 				redisForGuard = redisClientForCache.Client()
 			}
-			sanitizePatternDetector = installSmartSaniGuard(chatHandler, redisForGuard)
+			sanitizePatternDetector = installSmartSaniGuard(chatHandler, redisForGuard, dbConn.Stdlib())
 
 			autoIndexRefresher = bg.NewAutoIndexRefresher(dbConn.Pool(), autoIdx)
 			autoIndexRefresher.Start(context.Background())

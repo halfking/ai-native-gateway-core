@@ -461,6 +461,15 @@ func decodeUpdatePayload(raw []byte, dst *SessionUpdate) error {
 	dst.LastResponseSummary, _ = m["last_response_summary"].(string)
 	dst.LastModel, _ = m["last_model"].(string)
 	dst.LastProvider, _ = m["last_provider"].(string)
+	dst.ClientType, _ = m["client_type"].(string)
+	// 706 访问维度/项目（首值优先字段，随 outbox 持久化以便 reaper 重放）
+	dst.ProjectID, _ = m["project_id"].(string)
+	dst.APIKeyID, _ = m["api_key_id"].(string)
+	dst.ApplicationID, _ = m["application_id"].(string)
+	dst.EndUserID, _ = m["end_user_id"].(string)
+	dst.OwnerUser, _ = m["owner_user"].(string)
+	dst.ClientIP, _ = m["client_ip"].(string)
+	dst.AgentName, _ = m["agent_name"].(string)
 	dst.TurnIncrement = toInt(m["turn_increment"])
 	dst.TokensIncrement = toInt(m["tokens_increment"])
 	dst.CostIncrement = toFloat(m["cost_increment"])
@@ -495,10 +504,19 @@ func EncodeSessionUpdateForOutbox(u SessionUpdate) ([]byte, error) {
 		"last_response_summary": u.LastResponseSummary,
 		"last_model":            u.LastModel,
 		"last_provider":         u.LastProvider,
-		"turn_increment":        u.TurnIncrement,
-		"tokens_increment":      u.TokensIncrement,
-		"cost_increment":        u.CostIncrement,
-		"updated_at":            u.UpdatedAt.Format(time.RFC3339Nano),
+		"client_type":           u.ClientType,
+		// 706 访问维度/项目（首值优先字段）
+		"project_id":     u.ProjectID,
+		"api_key_id":     u.APIKeyID,
+		"application_id": u.ApplicationID,
+		"end_user_id":    u.EndUserID,
+		"owner_user":     u.OwnerUser,
+		"client_ip":      u.ClientIP,
+		"agent_name":     u.AgentName,
+		"turn_increment":   u.TurnIncrement,
+		"tokens_increment": u.TokensIncrement,
+		"cost_increment":   u.CostIncrement,
+		"updated_at":       u.UpdatedAt.Format(time.RFC3339Nano),
 	})
 }
 

@@ -346,6 +346,22 @@ files=(
   # 一次性补列重挂空壳、把 default 积压按月搬回分区。文件自带双账本
   # schema_migrations INSERT(695-704 定式)。
   "$ROOT_DIR/sql/migrations/startup/705_request_logs_reattach_detached_partitions.sql"
+  # 2026-09-14 存储优化方案 v2 S1a(docs/03-design/04-data-design/
+  # storage-optimization-plan.md §4):六表族补全。706 建 session_memora/
+  # session_censors/session_tools 三新表族(hot+ensure_session_family_partitions
+  # +promote,430/614/638 惯例)+ sessions 访问维度补列;707 session_turns 宽表化
+  # (D1 五类补采+正文列+is_final_success 部分唯一索引)并把
+  # promote_session_turns_hot_to_partition 重写为有序列契约校验+SELECT * 形态
+  # (显式列清单会在加列后 promote 静默丢新列);708 session_bodies kind 列
+  # (final_full/turn_delta pivot 前置)+旧行回填+final_full 部分唯一索引+
+  # DROP sessions.last_full_* 456 死列(零读写,本机审计 100% NULL)+
+  # promote_session_bodies_hot_to_partition 同款重写。三文件均自带双账本
+  # schema_migrations INSERT(695-705 定式)。707/708 内为对应 promote 函数在
+  # 本通道清单内的唯一定义者,无 chain 登记需求(526/615/626/636/638/640/688
+  # 不在本清单)。
+  "$ROOT_DIR/sql/migrations/startup/706_session_family_s1a.sql"
+  "$ROOT_DIR/sql/migrations/startup/707_session_turns_s1a.sql"
+  "$ROOT_DIR/sql/migrations/startup/708_session_bodies_s1a.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
@@ -382,6 +398,12 @@ intentional_function_chains=(
   # registration and aborted every later deploy at the pre-flight guard,
   # 2026-09-14 deploy-local incident).
   'promote_supplier_errors_hot_to_partition|V371__supplier_errors_hot_and_stats.sql|703_supplier_errors_promote_timezone_pin.sql|'
+  # 705 rewrote ensure_request_logs_partition as the attached-aware body
+  # (detached-shell re-attach + default-gap self-heal) on top of 694's
+  # timezone-pinned body; the rewrite must stay the later entry. 705 landed
+  # without this registration — same pre-flight guard abort class as 703
+  # (caught 2026-09-14 when S1a files joined the sequence).
+  'ensure_request_logs_partition|694_partition_ensure_timezone.sql|705_request_logs_reattach_detached_partitions.sql|'
   # 659 rewrote these seven promote bodies as the single atomic CTE form;
   # 688 later aligned their defaults to the Go scheduler (not in this array,
   # so invisible to the scanner) and 698 re-derives each body from the

@@ -484,7 +484,8 @@ func buildSanitizeRestoreInterceptor(redisClient *redis.Client, detector *saniti
 
 // buildSanitizeInputMiddleware 构造 SmartSaniGuard 输入脱敏中间件。
 // 返回的函数可直接传给 chatHandler.SetSanitizeInputMiddleware。
-func buildSanitizeInputMiddleware(redisClient *redis.Client, detector *sanitize.PatternDetector) (func(http.Handler) http.Handler, error) {
+// db 非 nil 时挂 706 的 session_censors DB 双写 sink（best-effort）。
+func buildSanitizeInputMiddleware(redisClient *redis.Client, detector *sanitize.PatternDetector, db *sql.DB) (func(http.Handler) http.Handler, error) {
 	if redisClient == nil {
 		return nil, nil
 	}
@@ -495,6 +496,9 @@ func buildSanitizeInputMiddleware(redisClient *redis.Client, detector *sanitize.
 	mw, err := sanitize.NewSanitizeInputMiddleware(s, redisClient, 30*time.Minute)
 	if err != nil {
 		return nil, err
+	}
+	if db != nil {
+		mw.SetCensorSink(sanitize.NewPostgresCensorSink(db))
 	}
 	return mw.Wrap, nil
 }
@@ -524,14 +528,14 @@ func newSanitizePatternDetector() *sanitize.PatternDetector {
 // 入口：main.go 在调用 initGoalControl 之外单独调用本函数，
 //
 //	bgDataPlaneOnly 与 !bgDataPlaneOnly 两个分支都会执行。
-func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redis.Client) *sanitize.PatternDetector {
+func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redis.Client, db *sql.DB) *sanitize.PatternDetector {
 	if chatHandler == nil || redisClient == nil {
 		return nil
 	}
 	detector := newSanitizePatternDetector()
 
 	// 1. 输入侧中间件（chatHandler.ServeHTTP 入口处生效）
-	mwFn, mwErr := buildSanitizeInputMiddleware(redisClient, detector)
+	mwFn, mwErr := buildSanitizeInputMiddleware(redisClient, detector, db)
 	if mwErr != nil || mwFn == nil {
 		slog.Warn("smart_sani_guard: input middleware init failed, skip request-side",
 			"error", mwErr)
