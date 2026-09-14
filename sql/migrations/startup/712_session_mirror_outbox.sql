@@ -76,3 +76,8 @@ CREATE POLICY tenant_isolation_session_mirror_outbox ON public.session_mirror_ou
     );
 
 COMMIT;
+
+-- 双账本自登记（695-705 定式）。
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('712', 'storage plan v2 S4 prerequisite GAP-2: session_mirror_outbox durable replay queue for sessionv2mirror shadow write')
+ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
