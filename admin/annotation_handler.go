@@ -663,9 +663,11 @@ func queryFirstTurnSamples(ctx context.Context, q firstTurnQueryer, opts firstTu
 }
 
 // buildAnnotationMetadata renders the first-turn workbench labels
-// (task_type / model) as an annotation_metadata JSONB payload. Returns nil
-// when both are empty (legacy callers), and a user-facing error when a value
-// exceeds its length cap.
+// (task_type / model) as an annotation_metadata JSONB payload. Returns an
+// empty string when both are empty (legacy callers), and a user-facing error
+// when a value exceeds its length cap. The JSON is passed as a string (not
+// []byte) so pgx encodes it as text for PG to cast into jsonb — a []byte
+// would be sent as bytea and rejected with 22P02.
 func buildAnnotationMetadata(taskType, model string) (any, error) {
 	if taskType == "" && model == "" {
 		return nil, nil
@@ -687,7 +689,7 @@ func buildAnnotationMetadata(taskType, model string) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal annotation metadata: %v", err)
 	}
-	return b, nil
+	return string(b), nil
 }
 
 // lookupAutoSelection fetches the auto label (chosen model) and its
