@@ -4,6 +4,7 @@ export default {
   page: {
     title: 'Human Annotation',
     desc: 'Annotate AUTO routing predictions for machine learning training and evaluation',
+    firstTurnDesc: 'List the first turn of recent sessions (auto-routed) and annotate the real task type and ideal model to localize auto task-type classification',
     totalChip: 'Total: {n}',
     refresh: 'Refresh',
     refreshing: 'Refreshing...',
@@ -11,6 +12,9 @@ export default {
   filter: {
     startDate: 'Start Date',
     endDate: 'End Date',
+    taskType: 'Original Task Type',
+    model: 'Model',
+    humanTaskType: 'Human Task Type',
     minConfidence: 'Min Confidence',
     maxConfidence: 'Max Confidence',
     annotated: 'Annotation Status',
@@ -26,7 +30,10 @@ export default {
     title: 'Annotate Sample',
     requestId: 'Request ID',
     model: 'Model',
-    autoProvider: 'Auto Route',
+    taskType: 'Task Type',
+    selectTaskType: 'Select task type',
+    selectModel: 'Select model',
+    autoRoute: 'Auto Route',
     confidence: 'Confidence',
     humanProvider: 'Human Annotated Provider',
     selectProvider: 'Select provider',
@@ -40,6 +47,8 @@ export default {
     cancel: 'Cancel',
     errors: {
       providerRequired: 'Provider is required',
+      taskTypeRequired: 'Task type is required',
+      modelRequired: 'Model is required',
       reasonRequired: 'Reason is required',
       reasonInvalid: 'Invalid reason',
       annotatorRequired: 'Annotator is required',
@@ -47,11 +56,18 @@ export default {
   },
   table: {
     requestId: 'Request ID',
+    time: 'Time',
+    title: 'Title',
+    client: 'Client',
+    session: 'Session ID',
     model: 'Model',
     taskType: 'Task Type',
     confidence: 'Confidence',
     autoProvider: 'Auto Route',
     status: 'Status',
+    statusOk: 'OK {code}',
+    statusFail: 'Fail {code}',
+    annotationInfo: 'Annotation',
     actions: 'Actions',
     annotated: 'Annotated',
     unannotated: 'Unannotated',
@@ -69,6 +85,16 @@ export default {
     reason: 'Annotation Reason',
     annotator: 'Annotator',
     annotatedAt: 'Annotated At',
+    loadFailed: 'Failed to load first-turn detail',
+    metaSection: 'First-Turn Metadata',
+    requestSection: 'Request',
+    annotationSection: 'Human Annotation',
+    clientModel: 'Client Model',
+    status: 'Status',
+    latency: 'Latency',
+    turnNumber: 'Turn',
+    totalTurns: 'Session Turns',
+    source: 'Source',
   },
   batch: {
     title: 'Batch Annotation',
@@ -123,13 +149,13 @@ export default {
   batchSelected: '{count} selected',
   batchAnnotate: 'Batch Annotate',
   clearSelection: 'Clear Selection',
-  
+
   // Success messages
   annotationCreated: 'Annotation created successfully',
   batchSuccess: 'Batch annotation successful: {count} items',
   batchPartialSuccess: 'Batch annotation partially successful: {success} succeeded, {failed} failed',
   deleteSuccess: 'Annotation deleted successfully',
-  
+
   // Error messages
   loadFailed: 'Failed to load annotation samples',
   annotationFailed: 'Annotation failed',
@@ -137,7 +163,7 @@ export default {
   deleteFailed: 'Failed to delete annotation',
   noSamplesSelected: 'Please select samples to annotate',
   confirmDelete: 'Confirm delete this annotation?',
-  
+
   // Loading states
   loading: 'Loading...',
   noSamples: 'No annotation samples',
