@@ -85,6 +85,7 @@ GLOBAL_G2|v1_final_missing_turns_24h=258|verdict=FAIL
 ### E5 实证（Round 1b 抓到首个 G1-cost 漂移样本）
 
 `gw_c8879719…/13747961fb123b68f911b080aa146b25`：v1 `0.00001870` vs v2 `0.000019`（turns 列 numeric(14,6) 写入舍入）。处置见例外类 E5 行。
+<<<<<<< HEAD
 
 ### Round 2 —— 2026-09-15 03:56 (+08)，GAP-2 闭环后首轮，**PASS —— GLOBAL_G2 归零，7 天观察期正式起算**
 
@@ -135,3 +136,5 @@ ROUND_RESULT|sessions=9|fail=0|global_g2=2|verdict=FAIL|at=2026-09-15T01:16:22Z
 **新发现（待办，暂以每日回填兜底）——claim 置位 is_final_success 的结构性漏镜像**：缺失行 `f403405b…`（09:17:35，网关恢复后产生）显示存在一条不经 telemetry entry 管道的 `is_final_success` 置位路径（后台 final-success claim/usage 修正直接 SQL UPDATE）：`persistRequestLog` 的 hooks 只覆盖 INSERT/UPDATE entry 写入（client.go:1002-1046），SQL 侧置位列不触发 onPersisted → hook 永远看不到终态信号 → gate `!entry.Success && !isTerminalFailure` 静默跳过（无日志、无登记）。量级 ~3 行/天（低频恒定），G2 gate 对这类行无法靠重放器归零。修复候选（择一，S4 停写前须评估）：① claim UPDATE 路径补发 mirror 触发；② G2 度量为该类登记例外类 E6（须先量化其占比与 credits 完整性）；③ 每日轮回填兜底常态化（现状）。本轮 3 行中 04:13/04:14 两行属 recovery 窗口真失败，f403405b 属本类。
 
 附注：PG 容器 08:36 崩溃重启原因未深挖（docker logs 采样时 daemon 响应迟滞，符合既往管理面挂起记录）；reaper/网关自恢复行为符合预期。
+=======
+>>>>>>> 77ee456ab (feat(storage): 存储优化方案 v2 S3 波1 读端改造样板 —— admin 日志列表/详情原生 turns 读（灰度开关 storage.admin_logs_native_turns_read）)
