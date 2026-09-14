@@ -47,6 +47,8 @@ func initSessionV2Writer(pool *pgxpool.Pool) *v2.SessionWriterV2 {
 	turnLogsWriter := v2.NewTurnLogsWriter(pool)
 
 	writer := v2.NewSessionWriterV2(turnWriter, bodiesWriter, aggregator, turnLogsWriter)
+	// 706（存储优化方案 v2 S1a）：session_memora 首 turn 快照写点。
+	writer.SetMemoraWriter(v2.NewSessionMemoraWriter(pool))
 	slog.Info("session V2 writer initialized (shadow hook remains feature-gated)")
 	return writer
 }

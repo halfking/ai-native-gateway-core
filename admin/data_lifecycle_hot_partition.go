@@ -45,6 +45,10 @@ var hotPromoteTableMap = map[string]string{
 	"session_module_executions_hot": "promote_session_module_executions_hot_to_partition",
 	"dashboard_access_events_hot":   "promote_dashboard_access_events_hot_to_partition",
 	"auto_route_selections_hot":     "promote_auto_route_selections_hot_to_partition",
+	// 706（存储优化方案 v2 S1a）：三新表族
+	"session_memora_hot":  "promote_session_memora_hot_to_partition",
+	"session_censors_hot": "promote_session_censors_hot_to_partition",
+	"session_tools_hot":   "promote_session_tools_hot_to_partition",
 }
 
 // HotJobStatus 状态枚举

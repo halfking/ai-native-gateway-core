@@ -77,6 +77,16 @@ type SessionUpdate struct {
 	// Session metadata (set on first turn, preserved thereafter)
 	ClientType string
 
+	// 访问维度/项目（706，首值优先：COALESCE(NULLIF(EXCLUDED.x,''), x)。
+	// 会话归属维度，取首个非空请求的值固化；后续轮不覆盖。
+	ProjectID     string
+	APIKeyID      string
+	ApplicationID string
+	EndUserID     string
+	OwnerUser     string
+	ClientIP      string
+	AgentName     string
+
 	// Incremental counters (add to existing)
 	TurnIncrement   int
 	TokensIncrement int
@@ -205,6 +215,8 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			last_turn_no, last_request_summary, last_response_summary,
 			last_model, last_provider,
 			client_type,
+			project_id, api_key_id, application_id, end_user_id,
+			owner_user, client_ip, agent_name,
 			partition_date
 		) VALUES (
 			$1, $2,
@@ -213,7 +225,9 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			$7, $8, $9,
 			$10, $11,
 			$12,
-			$13
+			$13, $14, $15, $16,
+			$17, $18, $19,
+			$20
 		)
 		-- 租户守卫（2026-09-07 审计）：客户端提供的 gw_ 会话 id 在 Redis
 		-- 缓存过期后无法做归属校验，WHERE 挡住他租户 key 用同 id 混写
@@ -229,7 +243,14 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			last_response_summary = EXCLUDED.last_response_summary,
 			last_model = EXCLUDED.last_model,
 			last_provider = EXCLUDED.last_provider,
-			client_type = EXCLUDED.client_type
+			client_type = EXCLUDED.client_type,
+			project_id = COALESCE(NULLIF(EXCLUDED.project_id, ''), public.sessions.project_id),
+			api_key_id = COALESCE(NULLIF(EXCLUDED.api_key_id, ''), public.sessions.api_key_id),
+			application_id = COALESCE(NULLIF(EXCLUDED.application_id, ''), public.sessions.application_id),
+			end_user_id = COALESCE(NULLIF(EXCLUDED.end_user_id, ''), public.sessions.end_user_id),
+			owner_user = COALESCE(NULLIF(EXCLUDED.owner_user, ''), public.sessions.owner_user),
+			client_ip = COALESCE(NULLIF(EXCLUDED.client_ip, ''), public.sessions.client_ip),
+			agent_name = COALESCE(NULLIF(EXCLUDED.agent_name, ''), public.sessions.agent_name)
 		WHERE public.sessions.tenant_id = EXCLUDED.tenant_id
 	`,
 		update.SessionID, update.TenantID,
@@ -238,6 +259,8 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 		update.LastTurnNo, update.LastRequestSummary, update.LastResponseSummary,
 		update.LastModel, update.LastProvider,
 		update.ClientType,
+		update.ProjectID, update.APIKeyID, update.ApplicationID, update.EndUserID,
+		update.OwnerUser, update.ClientIP, update.AgentName,
 		partitionDate,
 	)
 	if err != nil {
@@ -332,9 +355,18 @@ type SessionSnapshot struct {
 
 // CloseSession marks a session as closed
 func (a *SessionAggregator) CloseSession(ctx context.Context, tenantID, sessionID string) error {
+	// 706：关闭时计算 duration_ms = closed_at - created_at（方案 §3 D3）。
 	_, err := a.db.Exec(ctx, `
 		UPDATE public.sessions
-		SET status = 'closed', closed_at = NOW()
+		SET status = 'closed',
+		    closed_at = NOW(),
+		    duration_ms = CASE
+		        WHEN closed_at IS NOT NULL AND created_at IS NOT NULL
+		            THEN GREATEST(0, (EXTRACT(EPOCH FROM (closed_at - created_at)) * 1000)::BIGINT)
+		        WHEN created_at IS NOT NULL
+		            THEN GREATEST(0, (EXTRACT(EPOCH FROM (NOW() - created_at)) * 1000)::BIGINT)
+		        ELSE duration_ms
+		    END
 		WHERE tenant_id = $1 AND session_id = $2
 	`, tenantID, sessionID)
 

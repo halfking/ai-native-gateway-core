@@ -88,6 +88,30 @@ func StorageSpecs() []*Spec {
 			HotReload:       true,
 		},
 		{
+			// 存储优化方案 v2 S1b 灰度开关（migration 707）。
+			Key:             "storage.session_turns_bodies_enabled",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategoryStorage,
+			Default:         false,
+			Description:     "会话轮次正文写入 session_turns",
+			DescriptionLong: "开启后 SessionWriterV2 把每轮 request_delta/response_delta 同步写入 session_turns 正文列（宽表，turn 级唯一事实源的第一步）。关闭时正文仍只落 session_bodies 逐轮行。默认关闭；回切即关闭开关（列保留不删，方案 §7）。",
+			DangerLevel:     Dangerous,
+			HotReload:       true,
+		},
+		{
+			// 存储优化方案 v2 S1b 灰度开关（migration 708）。
+			Key:             "storage.session_final_full_enabled",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategoryStorage,
+			Default:         false,
+			Description:     "会话最后完整快照（final_full）+ 停写 outbound_body",
+			DescriptionLong: "开启后 SessionWriterV2 每轮把完整 outbound upsert 进 session_bodies(kind='final_full', turn_no=0) 一行，并停止逐轮写 outbound_body（差集读端优先读 final_full、未命中回退旧行）。关闭时完全回到旧行为。默认关闭；方案 §6 估算停写 outbound_body 月省约 1.8GB。",
+			DangerLevel:     Dangerous,
+			HotReload:       true,
+		},
+		{
 			Key:             "log.delete_days",
 			Type:            TypeInt,
 			Scope:           ScopePlatform,

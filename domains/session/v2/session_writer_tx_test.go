@@ -193,13 +193,13 @@ func TestWrite_PersistsVersionedDigestInTurnTransaction(t *testing.T) {
 		WithArgs(req.TenantID, req.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 
-	args := anyArgs(47)
+	args := anyArgs(97)
 	args[35] = digestArgument{} // versioned JSONB digest follows title/summary.
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
 		WithArgs(args...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO public.session_bodies").
-		WithArgs(anyArgs(11)...).
+		WithArgs(anyArgs(12)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	expectOutboxEnqueue(mock)
 	mock.ExpectCommit()
@@ -249,10 +249,10 @@ func TestWrite_LoadsPreviousOutboundForRequestDelta(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(2))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
-		WithArgs(anyArgs(47)...).
+		WithArgs(anyArgs(97)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
-	bodyArgs := anyArgs(11)
+	bodyArgs := anyArgs(12)
 	bodyArgs[5] = `[{"role":"user","content":"new"}]`
 	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(bodyArgs...).
@@ -289,13 +289,13 @@ func TestWrite_TurnAndBodiesAreAtomic_RollbackOnBodiesFailure(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
-		WithArgs(anyArgs(47)...).
+		WithArgs(anyArgs(97)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	// 4. WriteBodiesInTx FAILS — simulate a DB error on the bodies INSERT.
 	bodiesErr := errors.New("boom: bodies insert failed")
 	mock.ExpectExec("INSERT INTO public.session_bodies").
-		WithArgs(anyArgs(11)...).
+		WithArgs(anyArgs(12)...).
 		WillReturnError(bodiesErr)
 
 	// 5. Because bodies failed, the tx MUST roll back (no Commit expected).
@@ -328,12 +328,12 @@ func TestWrite_TurnAndBodiesAreAtomic_CommitOnSuccess(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
-		WithArgs(anyArgs(47)...).
+		WithArgs(anyArgs(97)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	// 4. WriteBodiesInTx succeeds.
 	mock.ExpectExec("INSERT INTO public.session_bodies").
-		WithArgs(anyArgs(11)...).
+		WithArgs(anyArgs(12)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	// 4b. audit-data-closure-C: outbox enqueue in the same tx.
@@ -438,9 +438,9 @@ func TestWrite_AggregateSnapshotIsIndependentOfCaller(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
-		WithArgs(anyArgs(47)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+		WithArgs(anyArgs(97)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO public.session_bodies").
-		WithArgs(anyArgs(11)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+		WithArgs(anyArgs(12)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	expectOutboxEnqueue(mock)
 	mock.ExpectCommit()
 
@@ -492,10 +492,10 @@ func TestWrite_AggregateGoroutineManagedByLifecycle(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
-		WithArgs(anyArgs(47)...).
+		WithArgs(anyArgs(97)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO public.session_bodies").
-		WithArgs(anyArgs(11)...).
+		WithArgs(anyArgs(12)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	// audit-data-closure-C: outbox enqueue in the same tx.
 	expectOutboxEnqueue(mock)

@@ -326,6 +326,10 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry) *v2.ProcessedRequ
 		req.MultimodalTypes = multimodalTypes(req.Attachments)
 	}
 
+	// 存储优化方案 v2 S1a：request_logs 独有的五类数据补采（计费/路由/
+	// 诊断/检索·完整性/访问维度）+ client_type 断供修复。
+	applyStorageS1AFields(req, entry)
+
 	return req
 }
 

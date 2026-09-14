@@ -44,6 +44,8 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 		// 接入预建以消除 UTC 会话下月初缝隙行 promote 失败 + 7d trim 静默
 		// 删数据的复发面（473 同族）。
 		"ensure_candidate_failure_logs_partition": false, // Migration 689/694
+		// 706（存储优化方案 v2 S1a）：三新表族一次调用覆盖
+		"ensure_session_family_partitions":        false, // Migration 706
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
@@ -83,6 +85,10 @@ func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
 		"promote_session_bodies_hot_to_partition":            false, // Migration 615
 		"promote_auto_route_selections_hot_to_partition":     false, // Migration 656
 		"promote_supplier_errors_hot_to_partition":           false, // Migration V371 (2026-09-05, D-2#1)
+		// 706（存储优化方案 v2 S1a）：三新表族
+		"promote_session_memora_hot_to_partition":            false, // Migration 706
+		"promote_session_censors_hot_to_partition":           false, // Migration 706
+		"promote_session_tools_hot_to_partition":             false, // Migration 706
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {

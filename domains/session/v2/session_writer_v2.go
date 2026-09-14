@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/sessiondigest"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 const (
@@ -46,6 +47,9 @@ type SessionWriterV2 struct {
 	bodiesWriter      *SessionBodiesWriter
 	sessionAggregator sessionUpdater
 	turnLogsWriter    *TurnLogsWriter
+	// memoraWriter（706，可选）：会话首 turn 时写初始环境/上下文快照。
+	// nil 时跳过（旧部署/测试无需该表存在）。
+	memoraWriter *SessionMemoraWriter
 
 	// aggWg tracks the in-flight aggregate snapshot goroutines so Stop can
 	// wait for them (spec §6.3). Each Write that reaches the aggregate step
@@ -97,6 +101,12 @@ func NewSessionWriterV2(tw *TurnWriter, bw *SessionBodiesWriter, sa *SessionAggr
 		lifecycleCtx:      ctx,
 		lifecycleCancel:   cancel,
 	}
+}
+
+// SetMemoraWriter wires the optional session_memora snapshot writer (706).
+// Call before the first Write; nil disables the snapshot write.
+func (w *SessionWriterV2) SetMemoraWriter(mw *SessionMemoraWriter) {
+	w.memoraWriter = mw
 }
 
 // Stop signals shutdown and waits for all in-flight aggregate goroutines to
@@ -209,6 +219,70 @@ type ProcessedRequest struct {
 	T7ForwardStartAt  *time.Time
 	T8ResponseStartAt *time.Time
 	T9ResponseEndAt   *time.Time
+
+	// ── 存储优化方案 v2 S1a（migration 706/707）：request_logs 独有数据补采。
+	// 数据源是 telemetry.RequestLogEntry（mirror bridge
+	// entryToProcessedRequest 逐一拷贝）；四组列全部可空、零值即 NULL。
+	// 缺源字段（TraceEvents/SearchText/RequestChecksum/RawModelName 在
+	// RequestLogEntry 上不存在）保留列位、暂为 NULL（方案 §9 视图 NULL
+	// 补位登记）。
+
+	// 访问维度（sessions 存首值做会话归属，turns 存每轮值做计费精确到轮）。
+	APIKeyID          string
+	ApplicationID     string
+	EndUserID         string
+	CustomerID        int64
+	OwnerUser         string
+	ClientIP          string
+	ClientForwardedFor string
+	AgentName         string
+	AgentType         string
+	VirtualClientID   string
+
+	// 计费组（credits_charged 是计费事实源，D7 双读校验前提）。
+	CreditsCharged int64
+	CostDisplay    float64
+	CostCurrency   string
+	WorkType       string
+	TokenBand      string
+	UsageSource    string
+
+	// 路由组。
+	IsAutoRequest   bool
+	AutoDecision    string
+	AutoConfidence  float64
+	TaskTypeChosen  string
+	RoutingAttempts json.RawMessage
+	RoutingSummary  string
+	CanonicalID     int64
+	CanonicalModel  string
+	RawModelName    string
+
+	// 诊断组。
+	TraceEvents         json.RawMessage
+	FailureStage        string
+	FailureDetailCode   string
+	UpstreamStatusCode  int
+	UpstreamFinishReason string
+	StreamFirstChunkMs  int
+	StreamChunkCount    int
+	StreamInterrupted   bool
+	StreamDoneSent      bool
+	ClientRequestID     string
+	ClientEndpoint      string
+	ClientTimeout       bool
+	EgressProtocol      string
+
+	// 检索/完整性组。
+	RequestPreview    string
+	ResponsePreview   string
+	TransformSummary  string
+	IdentityHash      string
+	RequestChecksum   string
+	ResponseChecksum  string
+	SystemFingerprint string
+	OriginStage       string
+	OriginActor       string
 
 	// Protocol-specific extensions (from ir.TransportContext)
 	ProviderExtensions map[string]interface{} // Preserves vendor-specific fields
@@ -407,6 +481,76 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		Title:      summarizeMessages(requestDelta),
 		Summary:    summarizeMessages(req.ResponseBody),
 		DigestJSON: digestJSON,
+
+		// ── 707 补采列搬运（存储优化方案 v2 S1a/S1b）。正文列按
+		// storage.session_turns_bodies_enabled 灰度写入；其余列无条件
+		// 写入（全部可空，mirror bridge 已从 RequestLogEntry 填充）。
+		RequestDeltaJSON:  nil,
+		ResponseDeltaJSON: nil,
+
+		APIKeyID:           req.APIKeyID,
+		ApplicationID:      req.ApplicationID,
+		EndUserID:          req.EndUserID,
+		CustomerID:         req.CustomerID,
+		CreditsCharged:     req.CreditsCharged,
+		CostDisplay:        req.CostDisplay,
+		CostCurrency:       req.CostCurrency,
+		WorkType:           req.WorkType,
+		TokenBand:          req.TokenBand,
+		UsageSource:        req.UsageSource,
+		IsAutoRequest:      req.IsAutoRequest,
+		AutoDecision:       req.AutoDecision,
+		AutoConfidence:     req.AutoConfidence,
+		TaskTypeChosen:     req.TaskTypeChosen,
+		RoutingAttempts:    []byte(req.RoutingAttempts),
+		RoutingSummary:     req.RoutingSummary,
+		CanonicalID:        req.CanonicalID,
+		CanonicalModel:     req.CanonicalModel,
+		RawModelName:       req.RawModelName,
+		TraceEvents:        []byte(req.TraceEvents),
+		FailureStage:       req.FailureStage,
+		FailureDetailCode:  req.FailureDetailCode,
+		UpstreamStatusCode: req.UpstreamStatusCode,
+		UpstreamFinishReason: req.UpstreamFinishReason,
+		StreamFirstChunkMs: req.StreamFirstChunkMs,
+		StreamChunkCount:   req.StreamChunkCount,
+		StreamInterrupted:  req.StreamInterrupted,
+		StreamDoneSent:     req.StreamDoneSent,
+		ClientRequestID:    req.ClientRequestID,
+		ClientEndpoint:     req.ClientEndpoint,
+		ClientTimeout:      req.ClientTimeout,
+		EgressProtocol:     req.EgressProtocol,
+		SearchText:         "",
+		RequestPreview:     req.RequestPreview,
+		ResponsePreview:    req.ResponsePreview,
+		TransformSummary:   req.TransformSummary,
+		IdentityHash:       req.IdentityHash,
+		RequestChecksum:    req.RequestChecksum,
+		ResponseChecksum:   req.ResponseChecksum,
+		SystemFingerprint:  req.SystemFingerprint,
+		OriginStage:        req.OriginStage,
+		OriginActor:        req.OriginActor,
+		ClientIP:           req.ClientIP,
+		ClientForwardedFor: req.ClientForwardedFor,
+		AgentName:          req.AgentName,
+		AgentType:          req.AgentType,
+		VirtualClientID:    req.VirtualClientID,
+	}
+
+	// S1b 灰度开关①：每轮正文同步进 session_turns（宽表路线第一步）。
+	if settings.GetPlatformBool("storage.session_turns_bodies_enabled", false) {
+		if requestDeltaJSON, err := safeJSONMarshal(requestDelta); err == nil {
+			turnRec.RequestDeltaJSON = requestDeltaJSON
+		} else {
+			slog.WarnContext(ctx, "marshal turn request_delta failed; persisting NULL",
+				"session_id", req.SessionID, "request_id", req.RequestID, "error", err)
+		}
+		if responseDeltaJSON, err := safeJSONMarshal(req.ResponseBody); err == nil {
+			turnRec.ResponseDeltaJSON = responseDeltaJSON
+		} else {
+			slog.WarnContext(ctx, "marshal turn response_delta failed; persisting NULL",
+				"session_id", req.SessionID, "request_id", req.RequestID, "error", err)
+		}
 	}
 
 	// 4. Atomic turn + bodies write (spec §6.2). The transaction and lock were
@@ -430,8 +574,41 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		RequestAttachments:  requestAttachments,
 		ResponseAttachments: responseAttachments,
 	}
+	// S1b 灰度开关②：final_full 启用时逐轮停写 outbound_body（每轮的完整
+	// outbound 改由下方 final_full 行承载），避免同一份内容双份落盘
+	//（方案 §6：outbound_body 停写月省 ≈1.8GB）。旧行为完全保留可回切。
+	if settings.GetPlatformBool("storage.session_final_full_enabled", false) {
+		bodiesRec.OutboundBody = nil
+	}
 	if err := w.bodiesWriter.WriteBodiesInTx(lockCtx, tx, bodiesRec); err != nil {
 		return fmt.Errorf("write bodies: %w", err)
+	}
+
+	// S1b 灰度开关②（写点）：每会话"最后完整快照"行。方案 D2 原设计为
+	// 会话关闭时拼装写入；本库无自动关闭链路（CloseSession 零调用方，
+	// 2026-09-14 审计），故实现为每轮 upsert 覆盖——同为"最后完整快照"
+	// 终态，migration 708 注释已登记该偏差。turn_no=0 +
+	// request_id='final_full:<session>' + kind='final_full'，经 708 部分唯
+	// 一索引守护每会话每分区至多一行；幂等 upsert 走既有
+	// (tenant_id, request_id, partition_date) 唯一约束。
+	if settings.GetPlatformBool("storage.session_final_full_enabled", false) && len(req.OutboundBody) > 0 {
+		if err := w.bodiesWriter.WriteFinalFullInTx(lockCtx, tx, FinalFullRecord{
+			SessionID:    req.SessionID,
+			TenantID:     req.TenantID,
+			Ts:           req.Timestamp,
+			OutboundBody: req.OutboundBody,
+		}); err != nil {
+			return fmt.Errorf("write final_full: %w", err)
+		}
+	}
+
+	// 706：会话首 turn 持久化时一次写入初始环境/上下文快照（insert-only，
+	// 幂等由 (tenant_id, session_id, partition_date) 唯一约束兜底）。与
+	// turn+bodies 同事务（spec §6.2）；失败即整体回滚重试，无孤儿快照。
+	if w.memoraWriter != nil && turnNo == 1 {
+		if err := w.memoraWriter.WriteMemoraSnapshotInTx(lockCtx, tx, buildMemoraSnapshot(req)); err != nil {
+			return fmt.Errorf("write memora snapshot: %w", err)
+		}
 	}
 
 	// audit-data-closure-C (2026-08-31): enqueue the aggregate snapshot update
@@ -451,6 +628,13 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		LastModel:           req.ClientModel,
 		LastProvider:        req.ProviderID,
 		ClientType:          req.ClientType,
+		ProjectID:           req.ProjectID,
+		APIKeyID:            req.APIKeyID,
+		ApplicationID:       req.ApplicationID,
+		EndUserID:           req.EndUserID,
+		OwnerUser:           req.OwnerUser,
+		ClientIP:            req.ClientIP,
+		AgentName:           req.AgentName,
 		TurnIncrement:       1,
 		TokensIncrement:     req.PromptTokens + req.CompletionTokens,
 		CostIncrement:       req.CostUSD,
@@ -529,6 +713,13 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 			LastModel:           req.ClientModel,
 			LastProvider:        req.ProviderID,
 			ClientType:          req.ClientType,
+			ProjectID:           req.ProjectID,
+			APIKeyID:            req.APIKeyID,
+			ApplicationID:       req.ApplicationID,
+			EndUserID:           req.EndUserID,
+			OwnerUser:           req.OwnerUser,
+			ClientIP:            req.ClientIP,
+			AgentName:           req.AgentName,
 			TurnIncrement:       1,
 			TokensIncrement:     req.PromptTokens + req.CompletionTokens,
 			CostIncrement:       req.CostUSD,
