@@ -20,23 +20,70 @@ import (
 // --- fakes -------------------------------------------------------------
 
 // recordingDB captures Exec calls so tests can assert the state-machine
-// statements the reaper issues (delete / requeue / dead). Begin is unused
-// by replayOne (claimBatch is exercised only against a live DB).
+// statements the reaper issues (delete / requeue / dead). Begin returns a
+// recording tx so the R29 RLS-bypass wrappers (execBypass / setBypassGUCs)
+// run unchanged against the fake; GUC lift statements land in the same
+// recording and the Contains-style assertions ignore them.
 type recordingDB struct {
 	mu    sync.Mutex
 	calls []string // rendered SQL + args, in call order
 }
 
 func (d *recordingDB) Begin(context.Context) (pgx.Tx, error) {
-	return nil, errors.New("Begin not supported by recordingDB")
+	return &recordingTx{db: d}, nil
 }
 
 func (d *recordingDB) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	return d.record(sql, args)
+}
+
+func (d *recordingDB) record(sql string, args []any) (pgconn.CommandTag, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.calls = append(d.calls, strings.TrimSpace(sql)+" | "+fmt.Sprint(args...))
 	return pgconn.NewCommandTag("UPDATE 1"), nil
 }
+
+type recordingTx struct {
+	db *recordingDB
+}
+
+func (t *recordingTx) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	return t.db.record(sql, args)
+}
+
+func (t *recordingTx) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	return nil, errors.New("Query not supported by recordingTx")
+}
+
+func (t *recordingTx) QueryRow(context.Context, string, ...any) pgx.Row {
+	return nil
+}
+
+func (t *recordingTx) Begin(context.Context) (pgx.Tx, error) {
+	return nil, errors.New("nested Begin not supported by recordingTx")
+}
+
+func (t *recordingTx) Conn() *pgx.Conn { return nil }
+
+func (t *recordingTx) CopyFrom(context.Context, pgx.Identifier, []string, pgx.CopyFromSource) (int64, error) {
+	return 0, errors.New("CopyFrom not supported by recordingTx")
+}
+
+func (t *recordingTx) LargeObjects() pgx.LargeObjects {
+	return pgx.LargeObjects{}
+}
+
+func (t *recordingTx) Prepare(context.Context, string, string) (*pgconn.StatementDescription, error) {
+	return nil, errors.New("Prepare not supported by recordingTx")
+}
+
+func (t *recordingTx) SendBatch(context.Context, *pgx.Batch) pgx.BatchResults {
+	return nil
+}
+
+func (t *recordingTx) Commit(context.Context) error   { return nil }
+func (t *recordingTx) Rollback(context.Context) error { return nil }
 
 func (d *recordingDB) statements() []string {
 	d.mu.Lock()
@@ -144,6 +191,12 @@ func TestReplayOne_SuccessDeletesRow(t *testing.T) {
 	joined := strings.Join(db.statements(), "\n")
 	if !strings.Contains(joined, "DELETE FROM public.session_mirror_outbox") {
 		t.Fatalf("expected DELETE after successful replay, got %v", db.statements())
+	}
+	// R29: the table is ENABLE+FORCE RLS (712) — every reaper statement must
+	// run inside the transaction-scoped bypass, otherwise non-'default'
+	// tenants are invisible (orphan/claim/dead paths silently no-op).
+	if !strings.Contains(joined, "set_config('app.bypass_rls', 'true', true)") {
+		t.Fatalf("expected RLS bypass GUC lift before outbox statements, got %v", db.statements())
 	}
 }
 
