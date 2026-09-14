@@ -153,6 +153,12 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureCredentialBalanceFloor(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-14 migration 704: 套餐探测失败退避戳。R28 #12a 的扫描 SQL 与
+	// 失败分支都读写 credentials.plan_quota_probe_failed_at，缺列时 5 分钟
+	// sweep 每 轮 42703（096141ecc 漏补 ensure 链，09-14 审计实测）。
+	if err := db.ensureCredentialPlanQuotaProbeBackoff(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-11 migration 693: provider_models.canonical_cleared_at 是管理员
 	// 解绑持久化标记，clear_canonical PATCH / discovery upsert / 健康检查都在
 	// 读它。升级库缺列时这些路径整体 42703（实测），必须在服务流量前补齐。
@@ -1465,6 +1471,33 @@ func (d *DB) ensureCredentialBalanceFloor(ctx context.Context) error {
 		return err
 	}
 	slog.Info("credential balance-floor schema ensured (migration 701)")
+	return nil
+}
+
+// ensureCredentialPlanQuotaProbeBackoff mirrors sql/migrations/startup/704_plan_quota_probe_backoff.sql.
+// 2026-09-14 (R28 #12a, 096141ecc)：bg/balance_floor_guard 的套餐探测失败退避。
+//   - plan_quota_probe_failed_at：最近一次探测失败时刻。失败分支写 now()，
+//     扫描 SQL 凭它冷却 15 分钟并沉底排序；成功探测（persistPlanState）置 NULL。
+//     该列绝不参与 plan_quota_checked_at 的 #4 逃生门新鲜度语义，两者必须独立。
+//
+// 幂等：单列 ADD COLUMN IF NOT EXISTS（credentials 热表，与 701 同级元数据变
+// 更），末尾按 701/703 定式补记 schema_migrations 账本 stamp（已 stamp 时为 no-op）。
+func (d *DB) ensureCredentialPlanQuotaProbeBackoff(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE credentials
+		    ADD COLUMN IF NOT EXISTS plan_quota_probe_failed_at timestamp with time zone;
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('704', 'plan quota probe failure backoff stamp (credentials.plan_quota_probe_failed_at)')
+		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("credential plan-quota probe backoff schema ensured (migration 704)")
 	return nil
 }
 
