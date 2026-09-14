@@ -53,8 +53,12 @@ type HostedTaskReconciler struct {
 	streamLimit        int
 	logger             *slog.Logger
 
-	mu      sync.Mutex
-	streams map[string]context.CancelFunc // runID → 订阅 goroutine 取消器
+	mu sync.Mutex
+	// streams 值用 *streamHandle 指针而非裸 CancelFunc：goroutine 退出时的
+	// defer 清理必须做指针身份比较（R29 审计）。裸值时代的无条件 delete 有
+	// 竞争——旧订阅 goroutine 退出晚于新订阅注册时，会把新订阅的 cancel 项
+	// 删掉，同一 runID 随后被再次注册成双订阅（重复 repoll/cursor 写）。
+	streams map[string]*streamHandle
 }
 
 // NewHostedTaskReconciler 构造 reconciler。
@@ -84,7 +88,7 @@ func NewHostedTaskReconciler(cfg HostedTaskReconcilerConfig) *HostedTaskReconcil
 		dispatchRetryAfter: cfg.DispatchRetryAfter,
 		streamLimit:        cfg.StreamLimit,
 		logger:             log,
-		streams:            map[string]context.CancelFunc{},
+		streams:            map[string]*streamHandle{},
 	}
 }
 
@@ -227,16 +231,16 @@ func (r *HostedTaskReconciler) projectPass(ctx context.Context, now time.Time) {
 	}
 	// 清理已不在 active 集的流（cancel 使订阅 goroutine 退出）。
 	r.mu.Lock()
-	var stale []context.CancelFunc
-	for runID, cancel := range r.streams {
+	var stale []*streamHandle
+	for runID, h := range r.streams {
 		if !seen[runID] {
-			stale = append(stale, cancel)
+			stale = append(stale, h)
 			delete(r.streams, runID)
 		}
 	}
 	r.mu.Unlock()
-	for _, cancel := range stale {
-		cancel()
+	for _, h := range stale {
+		h.cancel()
 	}
 }
 
@@ -394,6 +398,12 @@ func (r *HostedTaskReconciler) settle(ctx context.Context, taskID string, in hos
 
 var errStopStream = errors.New("hostedtask: task settled; stop stream")
 
+// streamHandle 是一条 SSE 订阅的登记句柄，指针身份用于 defer 清理时
+// 区分"自己"与"后继订阅"（见 streams 字段注释）。
+type streamHandle struct {
+	cancel context.CancelFunc
+}
+
 // ensureStream 为 runID 维护至多一条订阅 goroutine（断线退避重连；run 退出
 // active 集时由 projectPass 调 cancel 回收）。
 func (r *HostedTaskReconciler) ensureStream(ctx context.Context, task hostedtask.Task) {
@@ -406,13 +416,19 @@ func (r *HostedTaskReconciler) ensureStream(ctx context.Context, task hostedtask
 		return
 	}
 	streamCtx, cancel := context.WithCancel(ctx)
-	r.streams[task.AccRunID] = cancel
+	handle := &streamHandle{cancel: cancel}
+	r.streams[task.AccRunID] = handle
 	r.mu.Unlock()
 
 	go func(runID, taskID, cursor string) {
 		defer func() {
 			r.mu.Lock()
-			delete(r.streams, runID)
+			// 只清理仍属于自己的登记项：若已有新订阅（同 runID 重入 active
+			// 集）注册，绝不能替它删项——否则第三次 ensureStream 会再开一条
+			// 订阅 goroutine，同 runID 双订阅并发（R29 审计 #G）。
+			if cur, ok := r.streams[runID]; ok && cur == handle {
+				delete(r.streams, runID)
+			}
 			r.mu.Unlock()
 		}()
 		backoff := time.Second
