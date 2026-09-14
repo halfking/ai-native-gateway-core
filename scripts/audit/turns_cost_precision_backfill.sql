@@ -1,6 +1,6 @@
--- turns_cost_precision_backfill.sql — 迁移 711 配套数据修补（E5 闭环）
+-- turns_cost_precision_backfill.sql — 迁移 713 配套数据修补（E5 闭环）
 --
--- 前置：711_session_turns_cost_precision.sql 已应用
+-- 前置：713_session_turns_cost_precision.sql 已应用
 -- （session_turns.cost_usd numeric(12,6) → numeric(14,8)）。
 --
 -- 把双写期已有 turns 行的 cost_usd 从 v1 终态行（父表∪hot 双侧）拷回 8 位

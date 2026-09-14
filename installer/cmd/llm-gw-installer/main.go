@@ -385,6 +385,24 @@ var credentialBalanceFloorMigration701 []byte
 //go:embed embeddata/startup/703_supplier_errors_promote_timezone_pin.sql
 var supplierErrorsPromoteTimezonePinMigration703 []byte
 
+//go:embed embeddata/startup/706_session_family_s1a.sql
+var sessionFamilyS1aMigration706 []byte
+
+//go:embed embeddata/startup/707_session_turns_s1a.sql
+var sessionTurnsS1aMigration707 []byte
+
+//go:embed embeddata/startup/708_session_bodies_s1a.sql
+var sessionBodiesS1aMigration708 []byte
+
+//go:embed embeddata/startup/711_hosted_tasks.sql
+var hostedTasksMigration711 []byte
+
+//go:embed embeddata/startup/712_session_mirror_outbox.sql
+var sessionMirrorOutboxMigration712 []byte
+
+//go:embed embeddata/startup/713_session_turns_cost_precision.sql
+var sessionTurnsCostPrecisionMigration713 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -508,6 +526,12 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/700_request_logs_view_raw_model_name.sql":                               requestLogsViewRawModelNameMigration700,
 	"startup/701_credential_balance_floor.sql":                                       credentialBalanceFloorMigration701,
 	"startup/703_supplier_errors_promote_timezone_pin.sql":                           supplierErrorsPromoteTimezonePinMigration703,
+	"startup/706_session_family_s1a.sql":                                             sessionFamilyS1aMigration706,
+	"startup/707_session_turns_s1a.sql":                                              sessionTurnsS1aMigration707,
+	"startup/708_session_bodies_s1a.sql":                                             sessionBodiesS1aMigration708,
+	"startup/711_hosted_tasks.sql":                                                   hostedTasksMigration711,
+	"startup/712_session_mirror_outbox.sql":                                          sessionMirrorOutboxMigration712,
+	"startup/713_session_turns_cost_precision.sql":                                   sessionTurnsCostPrecisionMigration713,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 
