@@ -4953,11 +4953,12 @@ func main() {
 			// 之后调用：append 模式需要现有 chain 已注册到 chatHandler。
 			// bgDataPlaneOnly=true 模式下 initGoalControl 不会执行，
 			// 但 SmartSaniGuard 不需要 DB，因此也能独立启用。
+			// 706：db 句柄额外接 session_censors 审计双写（best-effort）。
 			var redisForGuard *redis.Client
 			if redisClientForCache != nil {
 				redisForGuard = redisClientForCache.Client()
 			}
-			sanitizePatternDetector = installSmartSaniGuard(chatHandler, redisForGuard)
+			sanitizePatternDetector = installSmartSaniGuard(chatHandler, redisForGuard, dbConn.Stdlib())
 
 			autoIndexRefresher = bg.NewAutoIndexRefresher(dbConn.Pool(), autoIdx)
 			autoIndexRefresher.Start(context.Background())
@@ -6091,6 +6092,10 @@ func main() {
 			// 2026-07-23: 系统监测 REST 端点（systemMonitor 已通过 SetSystemMonitor 注入）。
 			adminHandler.RegisterSystemMonitorRoutes(mux, adminMw, superAdminMw)
 			slog.Info("self-check API registered")
+			// 存储优化方案 v2 S2：dual_read_validator 对账端点（plan §4 S2）。
+			// GET /api/admin/sessions/{id}/dual-read —— turns vs request_logs
+			// 行级等值（§8-C 集合差 + §8-D 计费合计 + 字段漂移样本）。
+			NewDualReadValidator(dbConn.Pool()).RegisterRoutes(mux, adminMw)
 		}
 		// 2026-06-23 Phase 3: wire candidate_failure_monitor alert ring.
 		if candidateFailureMonitor != nil {

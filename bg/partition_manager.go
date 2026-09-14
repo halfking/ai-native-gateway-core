@@ -898,6 +898,12 @@ func ensureSpecs() []archiveSpec {
 		// 与次月分区始终先于 promote 存在。
 		{fnName: "ensure_candidate_failure_logs_partition", label: "candidate_failure_logs"}, // Migration 689/694
 
+		// 706（存储优化方案 v2 S1a）：session_memora/session_censors/
+		// session_tools 三新表族。一次调用覆盖三表（706 函数体）。不预建时，
+		// 三表月更后在下一 tick 全部写入失败（473 同族），故紧随 sessions_v2
+		// 接入 24h ensure 循环。
+		{fnName: "ensure_session_family_partitions", label: "session_family (memora/censors/tools)", argExpr: "$1::date"}, // Migration 706
+
 		// model_probe_runs 已切换为纯 hot 表策略（2026-07-14），
 		// 不再 promote 到 columnar 分区，所以也不需要 ensure。
 		// {fnName: "ensure_model_probe_runs_partition", label: "model_probe_runs"}, // Migration 385 (retired)
@@ -970,6 +976,10 @@ func promoteSpecs() []archiveSpec {
 		// 但后台调度漏注册 → hot 表只有管理员手动迁移，8h 不变式断裂
 		// 且错误明细无界增长。resolvePromoteConfig 走 default 8h 分支。
 		{fnName: "promote_supplier_errors_hot_to_partition", label: "supplier_errors_hot"}, // Migration V371 (2026-09-05)
+		// 706（存储优化方案 v2 S1a）：三新表族 hot → 月分区排水。
+		{fnName: "promote_session_memora_hot_to_partition", label: "session_memora_hot"},  // Migration 706
+		{fnName: "promote_session_censors_hot_to_partition", label: "session_censors_hot"}, // Migration 706
+		{fnName: "promote_session_tools_hot_to_partition", label: "session_tools_hot"},     // Migration 706
 	}
 }
 

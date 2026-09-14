@@ -112,6 +112,61 @@ func TestTaskMatchScore(t *testing.T) {
 	}
 }
 
+// 2026-09-14 audit O1′-a: the required-tag vocabulary uses underscores while
+// library capability tags use hyphens (cap:tool-use etc.). Before separator
+// normalization these never matched, pinning agent/function_call MatchScore
+// at 0 and forcing the 48h fallback pool.
+func TestTaskMatchScoreSeparatorNormalization(t *testing.T) {
+	// agent 词表 = [agent, tool_use, function_call]; both hyphen capability
+	// tags hit → 2/3.
+	agentTags := []string{"cap:tool-use", "cap:function-call"}
+	if got := TaskMatchScore(TaskAgent, agentTags); got < 0.6666 || got > 0.6668 {
+		t.Fatalf("agent hyphen tags: want 0.6667, got %.4f", got)
+	}
+	// function_call 词表 = [function_call, tool_use]; both hit → 1.0.
+	if got := TaskMatchScore(TaskFunctionCall, agentTags); got != 1.0 {
+		t.Fatalf("function_call hyphen tags: want 1.0, got %.4f", got)
+	}
+	// long_context 词表 = [long_context, 128k, 200k, 512k, 1m]; one hit → 0.2.
+	if got := TaskMatchScore(TaskLongContext, []string{"cap:long-context"}); got != 0.2 {
+		t.Fatalf("long_context hyphen tag: want 0.2, got %.4f", got)
+	}
+	// long_context + window-size tag (both separators, mixed) → 2/5.
+	mixed := []string{"cap:long-context", "context_128k"}
+	if got := TaskMatchScore(TaskLongContext, mixed); got != 0.4 {
+		t.Fatalf("long_context mixed separators: want 0.4, got %.4f", got)
+	}
+	// Underscore-style library tags keep matching after normalization.
+	if got := TaskMatchScore(TaskFunctionCall, []string{"cap:tool_use"}); got != 0.5 {
+		t.Fatalf("underscore library tag: want 0.5, got %.4f", got)
+	}
+	// Non-separator matching is unchanged (code 词表 = [code, programming],
+	// "code-review" hits "code" only).
+	if got := TaskMatchScore(TaskCode, []string{"cap:code-review"}); got != 0.5 {
+		t.Fatalf("plain substring: want 0.5, got %.4f", got)
+	}
+	if got := TaskMatchScore(TaskVision, []string{"cap:reasoning"}); got != 0 {
+		t.Fatalf("no false hit: want 0, got %.4f", got)
+	}
+}
+
+func TestNormalizeTagSeparators(t *testing.T) {
+	cases := map[string]string{
+		"tool_use":       "tool-use",
+		"cap:tool_use":   "cap:tool-use",
+		"long_context":   "long-context",
+		"already-hyphen": "already-hyphen",
+		"plain":          "plain",
+		"cap:128k":       "cap:128k",
+		"a_b_c":          "a-b-c",
+	}
+	for in, want := range cases {
+		if got := normalizeTagSeparators(in); got != want {
+			t.Fatalf("normalizeTagSeparators(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestRequiredTagsForTask(t *testing.T) {
 	cases := map[TaskType]bool{
 		TaskReasoning:    true,

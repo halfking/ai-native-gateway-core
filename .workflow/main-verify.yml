@@ -1,0 +1,63 @@
+# Codeup Flow 流水线（阿里云云效）——最小验证门。
+#
+# 背景（2026-09-14 auto-matching 审计第 6 项，人工确认"两者都做"）：仓库远端
+# 仅 codeup，`.github/workflows/` 在 codeup 不执行，此前无生效 CI 载体。
+# 本文件是 codeup Flow 的流水线即代码配置：build + vet + 60 例 auto 匹配
+# 离线套件（纯离线、无网络、无 skip 守卫）。
+#
+# 完整门禁仍是本地 `./verify.sh`（含 go test ./... / 迁移 checksum / 隐私
+# 合规 / 前端构建等），口径记录于 README「CI 与门禁」一节。
+#
+# 注意：codeup Flow 首次启用需在仓库「流水线」页导入 .workflow/ 下的流水线
+# 配置（或新建流水线时选择"流水线即代码"指向本文件）；导入后每次 push/PR
+# 自动触发。
+
+version: '1.0'
+
+sources:
+  repo:
+    type: codeup
+    name: llm-gateway-go
+    events:
+      push:
+        branches:
+          refs:
+            - main
+      pull_request:
+        branches:
+          refs:
+            - main
+
+stages:
+  verify:
+    name: build-vet-suite
+    jobs:
+      go-verify:
+        name: go1.27-build-vet-suite
+        runsOn: public/cn-eastwood2_4c8g_linux_x86_64
+        steps:
+          steps:
+            - step: shell
+              name: setup-go
+              script: |
+                GO_VERSION=1.27.1
+                if ! command -v go >/dev/null 2>&1 || [ "$(go version)" != "go version go${GO_VERSION} linux/amd64" ]; then
+                  curl -sSfL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz
+                  rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz
+                fi
+                go version
+            - step: shell
+              name: build
+              script: |
+                export PATH=$PATH:/usr/local/go/bin
+                go build ./...
+            - step: shell
+              name: vet
+              script: |
+                export PATH=$PATH:/usr/local/go/bin
+                go vet ./autoroute/...
+            - step: shell
+              name: auto-matching-suite
+              script: |
+                export PATH=$PATH:/usr/local/go/bin
+                go test ./autoroute/ -run 'TestAutoMatchingSuiteHeuristic|TestPromptClassificationMatrix' -count=1 -v

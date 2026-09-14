@@ -128,6 +128,72 @@ type TurnRecord struct {
 	T7ForwardStartAt  *time.Time
 	T8ResponseStartAt *time.Time
 	T9ResponseEndAt   *time.Time
+
+	// ── 存储优化方案 v2 S1a（migration 707）：request_logs 独有数据补采列。
+	// 零值即 NULL；镜像 ProcessedRequest 同名字段（SessionWriterV2.Write
+	// 负责搬运）。分组语义见 ProcessedRequest 注释与 storage-optimization-
+	// plan.md §3 D1。
+	//
+	// 正文组：RequestDeltaJSON/ResponseDeltaJSON 由 writer 在
+	// storage.session_turns_bodies_enabled 开启时填入（nil 即 NULL，旧行为）。
+	RequestDeltaJSON   []byte
+	ResponseDeltaJSON  []byte
+	IsFinalSuccess     bool
+
+	// 计费组
+	APIKeyID      string
+	ApplicationID string
+	EndUserID     string
+	CustomerID    int64
+	CreditsCharged int64
+	CostDisplay   float64
+	CostCurrency  string
+	WorkType      string
+	TokenBand     string
+	UsageSource   string
+
+	// 路由组
+	IsAutoRequest   bool
+	AutoDecision    string
+	AutoConfidence  float64
+	TaskTypeChosen  string
+	RoutingAttempts []byte
+	RoutingSummary  string
+	CanonicalID     int64
+	CanonicalModel  string
+	RawModelName    string
+
+	// 诊断组
+	TraceEvents         []byte
+	FailureStage        string
+	FailureDetailCode   string
+	UpstreamStatusCode  int
+	UpstreamFinishReason string
+	StreamFirstChunkMs  int
+	StreamChunkCount    int
+	StreamInterrupted   bool
+	StreamDoneSent      bool
+	ClientRequestID     string
+	ClientEndpoint      string
+	ClientTimeout       bool
+	EgressProtocol      string
+
+	// 检索/完整性组
+	SearchText        string
+	RequestPreview    string
+	ResponsePreview   string
+	TransformSummary  string
+	IdentityHash      string
+	RequestChecksum   string
+	ResponseChecksum  string
+	SystemFingerprint string
+	OriginStage       string
+	OriginActor       string
+	ClientIP          string
+	ClientForwardedFor string
+	AgentName         string
+	AgentType         string
+	VirtualClientID   string
 }
 
 // AppendTurn appends a new turn to the session, returning the assigned turn_no
@@ -239,6 +305,11 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 
 	// 4. Insert new live turns into the independent hot table. The anti-join
 	// keeps retries idempotent when an earlier copy has already been promoted.
+	// 707: columns $48..$97 are the storage-plan-v2 S1a backfill groups
+	// (bodies / final-success / billing / routing / diagnostics /
+	// search+integrity). All nullable; empty Go values persist as SQL NULL via
+	// the nilIf* helpers so fill-rate acceptance SQL (plan §8-B) measures real
+	// collection, not zero-value noise.
 	result, err := tx.Exec(ctx, `
 			INSERT INTO public.session_turns_hot (
 				session_id, turn_no, tenant_id, request_id, ts,
@@ -256,7 +327,20 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				t3_model_enqueued_at, t4_model_dequeued_at, t5_cred_enqueued_at,
 				t6_cred_dequeued_at, t7_forward_start_at, t8_response_start_at,
 				t9_response_end_at,
-				partition_date
+				partition_date,
+				request_delta, response_delta, is_final_success,
+				api_key_id, application_id, end_user_id, customer_id,
+				credits_charged, cost_display, cost_currency, work_type, token_band, usage_source,
+				is_auto_request, auto_decision, auto_confidence, task_type_chosen,
+				routing_attempts, routing_summary, canonical_id, canonical_model, raw_model_name,
+				trace_events, failure_stage, failure_detail_code,
+				upstream_status_code, upstream_finish_reason,
+				stream_first_chunk_ms, stream_chunk_count, stream_interrupted, stream_done_sent,
+				client_request_id, client_endpoint, client_timeout, egress_protocol,
+				search_text, request_preview, response_preview, transform_summary,
+				identity_hash, request_checksum, response_checksum, system_fingerprint,
+				origin_stage, origin_actor, client_ip, client_forwarded_for,
+				agent_name, agent_type, virtual_client_id
 			) SELECT
 				$1, $2, $3, $4, $5,
 				$6, $7, $8, $9,
@@ -270,7 +354,20 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				$31, $32, $33,
 				$34, $35, $36::text::jsonb,
 				$37, $38, $39, $40, $41, $42, $43, $44, $45, $46,
-				$47
+				$47,
+				$48::text::jsonb, $49::text::jsonb, $50,
+				$51, $52, $53, $54,
+				$55, $56, $57, $58, $59, $60,
+				$61, $62, $63, $64,
+				$65::text::jsonb, $66, $67, $68, $69,
+				$70::text::jsonb, $71, $72,
+				$73, $74,
+				$75, $76, $77, $78,
+				$79, $80, $81, $82,
+				$83, $84, $85, $86,
+				$87, $88, $89, $90,
+				$91, $92, $93, $94,
+				$95, $96, $97
 			WHERE NOT EXISTS (
 				SELECT 1
 				FROM public.session_turns_with_current_month
@@ -294,6 +391,20 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 		rec.T6CredDequeuedAt, rec.T7ForwardStartAt, rec.T8ResponseStartAt,
 		rec.T9ResponseEndAt,
 		partitionDate,
+		// 707 backfill groups
+		nilIfEmptyJSON(rec.RequestDeltaJSON), nilIfEmptyJSON(rec.ResponseDeltaJSON), boolOrNil(rec.IsFinalSuccess),
+		nilIfEmpty(rec.APIKeyID), nilIfEmpty(rec.ApplicationID), nilIfEmpty(rec.EndUserID), nilIfZeroI64(rec.CustomerID),
+		nilIfZeroI64(rec.CreditsCharged), nilIfZeroF64(rec.CostDisplay), nilIfEmpty(rec.CostCurrency), nilIfEmpty(rec.WorkType), nilIfEmpty(rec.TokenBand), nilIfEmpty(rec.UsageSource),
+		rec.IsAutoRequest, nilIfEmpty(rec.AutoDecision), nilIfZeroF64(rec.AutoConfidence), nilIfEmpty(rec.TaskTypeChosen),
+		nilIfEmptyJSON(rec.RoutingAttempts), nilIfEmpty(rec.RoutingSummary), nilIfZeroI64(rec.CanonicalID), nilIfEmpty(rec.CanonicalModel), nilIfEmpty(rec.RawModelName),
+		nilIfEmptyJSON(rec.TraceEvents), nilIfEmpty(rec.FailureStage), nilIfEmpty(rec.FailureDetailCode),
+		nilIfZeroInt(rec.UpstreamStatusCode), nilIfEmpty(rec.UpstreamFinishReason),
+		nilIfZeroInt(rec.StreamFirstChunkMs), nilIfZeroInt(rec.StreamChunkCount), rec.StreamInterrupted, rec.StreamDoneSent,
+		nilIfEmpty(rec.ClientRequestID), nilIfEmpty(rec.ClientEndpoint), rec.ClientTimeout, nilIfEmpty(rec.EgressProtocol),
+		nilIfEmpty(rec.SearchText), nilIfEmpty(rec.RequestPreview), nilIfEmpty(rec.ResponsePreview), nilIfEmpty(rec.TransformSummary),
+		nilIfEmpty(rec.IdentityHash), nilIfEmpty(rec.RequestChecksum), nilIfEmpty(rec.ResponseChecksum), nilIfEmpty(rec.SystemFingerprint),
+		nilIfEmpty(rec.OriginStage), nilIfEmpty(rec.OriginActor), nilIfEmpty(rec.ClientIP), nilIfEmpty(rec.ClientForwardedFor),
+		nilIfEmpty(rec.AgentName), nilIfEmpty(rec.AgentType), nilIfEmpty(rec.VirtualClientID),
 	)
 
 	if err != nil {
@@ -400,6 +511,60 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 // AppendTurnInTx and WriteBodiesInTx (spec §6.2 atomicity).
 func (w *TurnWriter) BeginTx(ctx context.Context) (pgx.Tx, error) {
 	return w.db.Begin(ctx)
+}
+
+// ── 707 backfill helpers ───────────────────────────────────────────────────
+//
+// The 707 backfill columns must distinguish "not collected" (SQL NULL) from
+// collected-but-zero/empty, otherwise the plan §8-B fill-rate acceptance SQL
+// (count(*) FILTER (WHERE col IS NOT NULL)) counts zero-value noise as
+// collected data. Go zero values therefore persist as NULL. Bool columns keep
+// their value (false is a legitimate state, and the partial final-success
+// index ignores both false and NULL).
+
+func nilIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func nilIfZeroI64(v int64) any {
+	if v == 0 {
+		return nil
+	}
+	return v
+}
+
+func nilIfZeroInt(v int) any {
+	if v == 0 {
+		return nil
+	}
+	return v
+}
+
+func nilIfZeroF64(v float64) any {
+	if v == 0 {
+		return nil
+	}
+	return v
+}
+
+func boolOrNil(v bool) any {
+	if !v {
+		return nil
+	}
+	return true
+}
+
+// nilIfEmptyJSON passes JSON payloads as strings for ::text::jsonb casts
+// (the same 22P02 avoidance as compression_meta), mapping empty payloads to
+// SQL NULL rather than jsonb 'null'.
+func nilIfEmptyJSON(b []byte) any {
+	if len(b) == 0 || string(b) == "null" {
+		return nil
+	}
+	return string(b)
 }
 
 // GetTurn retrieves a tenant-scoped turn by request_id.

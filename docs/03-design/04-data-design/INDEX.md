@@ -19,3 +19,4 @@
 | `partition/partition-standards.md` | md | active | 2026-07-22 |
 | `partition/partition-test-cases.md` | md | active | 2026-07-22 |
 | `partition/QUERY_PERFORMANCE_ANALYSIS.md` | md | active | 2026-07-22 |
+| `storage-optimization-plan.md` | md | active | 2026-09-14 |

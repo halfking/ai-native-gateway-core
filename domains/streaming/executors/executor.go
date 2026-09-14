@@ -2683,6 +2683,93 @@ func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, ra
 	}
 }
 
+// transientSuppressErrorCode maps a dispatch failure kind to the short-
+// suppression error_code written to node_probe_state. The second return is
+// false for kinds that must NOT arm the suppression: model_not_found /
+// model_deprecated (recordModelNotFound owns those), client bugs and
+// context-length (the upstream is healthy, the request is wrong), auth /
+// quota (credential-level policies own those), and canceled (the caller went
+// away; nothing is wrong with the pair).
+func transientSuppressErrorCode(kind errorsx.ErrorKind) (string, bool) {
+	switch kind {
+	case errorsx.KindRateLimit:
+		return "http_429", true
+	case errorsx.KindTransient:
+		return "http_5xx", true
+	case errorsx.KindTimeout, errorsx.KindStreamTimeout:
+		return "timeout", true
+	case errorsx.KindNetwork:
+		return "network", true
+	case errorsx.KindUpstreamDown, errorsx.KindUpstreamOverloaded:
+		return "upstream_down", true
+	case errorsx.KindConcurrent:
+		return "concurrent", true
+	default:
+		return "", false
+	}
+}
+
+// recordTransientDispatchFailure arms the short (5-minute) routing
+// suppression for a (credential, raw_model) pair whose dispatch forward just
+// failed with a transient upstream error (429 / 5xx / timeout / network).
+//
+// 2026-09-14 audit O2: 429/5xx previously only fed the
+// cmi.success_rate → Reliability soft feedback (5-10min lag), which the 48h
+// fallback pool (composite constant 50) bypasses entirely, so a dead pair
+// kept receiving fallback traffic. This generalizes the model_not_found
+// hard-suppression precedent in recordModelNotFound: same node_probe_state
+// UPSERT (last_direct_ok=FALSE, next_retry_at=now()+5min), so
+// refreshIndexSQL (autoroute/index.go) and filterCurrentlyAvailable
+// (autoroute/recommend_v2.go) drop the pair from every candidate pool —
+// including the fallback hot pool — while the window is armed. Recovery is
+// owned by the bg NodeProbeWorker (both the URSM stateManager branch and the
+// authoritative branch read this table; 429 pairs are not probed
+// immediately per SC-11). Unlike recordModelNotFound, no model_probe_runs
+// evidence row is written: 404s are rare probe-actionable signals, while
+// transient errors are common and would flood the probe history.
+func (e *Executor) recordTransientDispatchFailure(ctx context.Context, credentialID int, rawModel string, errorCode string) {
+	if e.DB == nil || !e.DB.Enabled() || credentialID <= 0 || rawModel == "" {
+		return
+	}
+	const suppressWindow = 5 * time.Minute
+	_, err := e.DB.Pool().Exec(ctx, `
+		INSERT INTO node_probe_state (
+			credential_id, raw_model_name,
+			consecutive_failures, consecutive_successes,
+			last_attempt_at, next_retry_at, next_retry_seconds,
+			paused, in_flight_until,
+			last_direct_ok, last_gateway_ok,
+			last_err_code, last_err_detail,
+			updated_at
+		) VALUES (
+			$1, $2,
+			1, 0,
+			now(), now() + $3::interval, EXTRACT(EPOCH FROM $3::interval)::int,
+			FALSE, NULL,
+			FALSE, FALSE,
+			$4, NULL,
+			now()
+		)
+		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
+		SET last_direct_ok = FALSE,
+		    last_gateway_ok = FALSE,
+		    last_attempt_at = now(),
+		    next_retry_at = now() + $3::interval,
+		    next_retry_seconds = EXTRACT(EPOCH FROM $3::interval)::int,
+		    consecutive_failures = node_probe_state.consecutive_failures + 1,
+		    last_err_code = $4,
+		    in_flight_until = NULL,
+		    updated_at = now()
+	`, credentialID, rawModel, suppressWindow.String(), errorCode)
+	if err != nil {
+		slog.Warn("record_transient_dispatch_failure: node_probe_state UPSERT failed",
+			"credential_id", credentialID,
+			"raw_model", rawModel,
+			"error_code", errorCode,
+			"error", err)
+	}
+}
+
 // recordMnfStreak (Step 6, 2026-06-18) increments the per-credential
 // model_not_found counter for the current sticky session. The counter
 // is used for observability and alerting only; it does NOT break the

@@ -153,6 +153,12 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureCredentialBalanceFloor(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-14 migration 704: 套餐探测失败退避戳。R28 #12a 的扫描 SQL 与
+	// 失败分支都读写 credentials.plan_quota_probe_failed_at，缺列时 5 分钟
+	// sweep 每 轮 42703（096141ecc 漏补 ensure 链，09-14 审计实测）。
+	if err := db.ensureCredentialPlanQuotaProbeBackoff(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-11 migration 693: provider_models.canonical_cleared_at 是管理员
 	// 解绑持久化标记，clear_canonical PATCH / discovery upsert / 健康检查都在
 	// 读它。升级库缺列时这些路径整体 42703（实测），必须在服务流量前补齐。
@@ -222,6 +228,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	}
 
 	if err := db.ensureWorkTypeSchema(migCtx); err != nil {
+		return err
+	}
+	// 2026-09-14 migration 709: work_type 路由补齐 4 个无路由任务类
+	// (code_audit/function_call/intent_classification/planning)。V2 漏斗只给
+	// 有路由的类全量候选池,无路由类必走 48h 兜底池(auto-matching 审计 O1′-c,
+	// 人工已确认)。幂等 seed,管理员已配置的路由集不被回改。
+	if err := db.ensureWorkTypeRouteCoverage(migCtx); err != nil {
 		return err
 	}
 	if err := db.EnsureTenantsTable(migCtx); err != nil {
@@ -1468,6 +1481,33 @@ func (d *DB) ensureCredentialBalanceFloor(ctx context.Context) error {
 	return nil
 }
 
+// ensureCredentialPlanQuotaProbeBackoff mirrors sql/migrations/startup/704_plan_quota_probe_backoff.sql.
+// 2026-09-14 (R28 #12a, 096141ecc)：bg/balance_floor_guard 的套餐探测失败退避。
+//   - plan_quota_probe_failed_at：最近一次探测失败时刻。失败分支写 now()，
+//     扫描 SQL 凭它冷却 15 分钟并沉底排序；成功探测（persistPlanState）置 NULL。
+//     该列绝不参与 plan_quota_checked_at 的 #4 逃生门新鲜度语义，两者必须独立。
+//
+// 幂等：单列 ADD COLUMN IF NOT EXISTS（credentials 热表，与 701 同级元数据变
+// 更），末尾按 701/703 定式补记 schema_migrations 账本 stamp（已 stamp 时为 no-op）。
+func (d *DB) ensureCredentialPlanQuotaProbeBackoff(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE credentials
+		    ADD COLUMN IF NOT EXISTS plan_quota_probe_failed_at timestamp with time zone;
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('704', 'plan quota probe failure backoff stamp (credentials.plan_quota_probe_failed_at)')
+		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("credential plan-quota probe backoff schema ensured (migration 704)")
+	return nil
+}
+
 // ensureProviderModelsCanonicalClearedAt mirrors sql/migrations/startup/
 // 693_provider_models_canonical_cleared_at.sql.
 //
@@ -1848,6 +1888,86 @@ func (d *DB) ensureWorkTypeSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("work_type_config schema ensured (22 seed rows idempotent)")
+	return nil
+}
+
+// ensureWorkTypeRouteCoverage mirrors sql/migrations/startup/
+// 709_work_type_route_coverage.sql. 2026-09-14 auto-matching audit O1′-c
+// (human-confirmed): the V2 funnel (WorkTypeRouteStore) only grants the full
+// candidate pool to l1_task_type values with enabled routes; classes without
+// routes always draw from the 48h fallback pool. Production had no routes for
+// code_audit / function_call / intent_classification / planning.
+//
+// Idempotent: config rows use ON CONFLICT DO NOTHING; route blocks only seed
+// when the work_type_key has NO routes at all (491 "administrator-managed
+// route sets remain untouched" convention), so rebooting never reverts
+// operator edits. Stamps schema_migrations version 706 (dual-ledger
+// convention, 701/703/704 style).
+func (d *DB) ensureWorkTypeRouteCoverage(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		INSERT INTO work_type_config (key, label, category, l1_task_type, default_profile, tags, prompt_keywords, sort_order)
+		VALUES
+		  ('code_audit',            '代码审计', '研发', 'code_audit',            'smart',       ARRAY['code','audit'],        ARRAY['审计','审查','安全','漏洞'],     25),
+		  ('intent_classification', '意图分类', '通用', 'intent_classification', 'speed_first', ARRAY['classification','intent'], ARRAY['意图','分类','路由'],     26),
+		  ('planning',              '任务规划', '研发', 'planning',              'smart',       ARRAY['planning','plan'],     ARRAY['规划','计划','拆解','步骤'],     27)
+		ON CONFLICT (key) DO NOTHING;
+
+		INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier)
+		SELECT v.work_type_key, v.canonical_name, v.weight, 0, TRUE, v.tier
+		FROM (VALUES
+		  ('fn_call', 'deepseek-v4-flash', 1.00::numeric, 'primary'),
+		  ('fn_call', 'minimax-m2.7',      0.85::numeric, 'secondary'),
+		  ('fn_call', 'glm-5.2',           0.80::numeric, 'secondary')
+		) AS v(work_type_key, canonical_name, weight, tier)
+		WHERE NOT EXISTS (
+		  SELECT 1 FROM work_type_model_route r WHERE r.work_type_key = v.work_type_key
+		)
+		ON CONFLICT (work_type_key, canonical_name) DO NOTHING;
+
+		INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier)
+		SELECT v.work_type_key, v.canonical_name, v.weight, 0, TRUE, v.tier
+		FROM (VALUES
+		  ('code_audit', 'deepseek-v4-flash', 1.00::numeric, 'primary'),
+		  ('code_audit', 'glm-5.2',           0.80::numeric, 'secondary')
+		) AS v(work_type_key, canonical_name, weight, tier)
+		WHERE NOT EXISTS (
+		  SELECT 1 FROM work_type_model_route r WHERE r.work_type_key = v.work_type_key
+		)
+		ON CONFLICT (work_type_key, canonical_name) DO NOTHING;
+
+		INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier)
+		SELECT v.work_type_key, v.canonical_name, v.weight, 0, TRUE, v.tier
+		FROM (VALUES
+		  ('intent_classification', 'deepseek-v4-flash', 1.00::numeric, 'primary'),
+		  ('intent_classification', 'glm-5.2',           0.80::numeric, 'secondary')
+		) AS v(work_type_key, canonical_name, weight, tier)
+		WHERE NOT EXISTS (
+		  SELECT 1 FROM work_type_model_route r WHERE r.work_type_key = v.work_type_key
+		)
+		ON CONFLICT (work_type_key, canonical_name) DO NOTHING;
+
+		INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier)
+		SELECT v.work_type_key, v.canonical_name, v.weight, 0, TRUE, v.tier
+		FROM (VALUES
+		  ('planning', 'deepseek-v4-flash', 1.00::numeric, 'primary'),
+		  ('planning', 'glm-5.2',           0.80::numeric, 'secondary')
+		) AS v(work_type_key, canonical_name, weight, tier)
+		WHERE NOT EXISTS (
+		  SELECT 1 FROM work_type_model_route r WHERE r.work_type_key = v.work_type_key
+		)
+		ON CONFLICT (work_type_key, canonical_name) DO NOTHING;
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('709', 'work_type route coverage for code_audit/function_call/intent_classification/planning (auto-matching audit O1''-c)')
+		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("work_type route coverage ensured (migration 709)")
 	return nil
 }
 
