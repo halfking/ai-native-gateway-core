@@ -526,6 +526,8 @@ LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS（默认 24h）释放 floor 摘出行）�
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 711 | `711_hosted_tasks.sql` | `c02cabe55b342be273eb563e437bb4da8ca465b72e69b4f66c03c2adce636877` | pending deploy |
+| 712 | `712_session_mirror_outbox.sql` | `cf968473ad5d19829e2533a0d137e6a56156f7e20a48a92f8210daf6c81cca3e` | pending deploy |
+| 713 | `713_session_turns_cost_precision.sql` | `fb46678f89b8243a9e94203c45085bca19bb469622680ea60b341d7f61752454` | pending deploy（原编 711_session_turns_cost_precision，与并行线 hosted_tasks 撞号，R29 2026-09-15 重编号 713；已按旧 711 应用过的库重放幂等） |
 
 补录说明（hosted-task-delegation-design §6.1，2026-09-15）：711 = hosted_tasks
 （委托任务投影，CAS revision + 终态 sticky + (tenant_id, idempotency_key) 幂等）+

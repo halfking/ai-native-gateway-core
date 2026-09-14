@@ -22,7 +22,7 @@
 | E2 | `only_in_v2` 历史行 | 观察起点之前的历史窗口差异（本机登记：09-10/09-11 时代行，v1 侧今日已无从对照；request_logs 无全局 TTL，成因为回填时代产物/历史清理，不属当前镜像漂移） |
 | E3 | sys 合成会话 `v1_rows=0` | D4 设计：基表 request_logs 中探针行 `gw_session_id=NULL`，按 `sys:%` 基表对账天然失配；兼容视图已做 `sys:%`→NULL 保真。sys 会话对账走 §8-D 计费合计口径 |
 | E4 | **shadow-write 丢失行**（v1 终态行缺 turns） | 镜像为 best-effort：hook 2000ms 预算超时/并发槽满 → in-process backlog（不落盘、进程重启即丢、无后台重放器，spec §12 GAP 2）。**这不是"例外"，是 G2 全局扫描要量化的阻塞项**——见下文 Round 1b |
-| E5 | cost 精度漂移 | `session_turns.cost_usd` 为 numeric(14,6)，镜像写入时对 v1 的 numeric(14,8) 舍入（实测 0.00001870→0.000019）。修复候选 **711**（编号届时查双账本）：turns cost 列 14,6→14,8 + 双写期窗口回填；修复前 G1-cost 按 ≤1e-6 绝对容差判等 |
+| E5 | cost 精度漂移 | `session_turns.cost_usd` 为 numeric(12,6)（R29 勘误：行内原误记 14,6），镜像写入时对 v1 的 numeric(14,8) 舍入（实测 0.00001870→0.000019）。修复 **713**（原编 711 与并行线 hosted_tasks 撞号，R29 重编号）：turns cost 列 14,6→14,8 + 双写期窗口回填；修复前 G1-cost 按 ≤1e-6 绝对容差判等 |
 
 S2→S4 停写 gate：**连续 7 个自然日每日一轮 PASS**（用户类 G1=G2=G3=0；sys 类按 E3 豁免 G2/G3、只查 G1）+ **GLOBAL_G2 全局扫描=0** + §8-D credits 合计等值。
 
