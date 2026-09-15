@@ -96,6 +96,10 @@ ML 的干预面被进一步限制为：**只把预测命中的候选稳定提升
    export ROUTING_ML_MANIFEST_PATH=/opt/llm-gateway/ml/<release>/manifest.json
    export ROUTING_ML_ORT_LIB_PATH=/opt/llm-gateway/ml/libonnxruntime.so
    export ROUTING_ML_MIN_CONFIDENCE=0.6
+   # 可选：manifest 热加载周期（秒）。默认 0=禁用（模型/manifest 变更仍须重启）；
+   # 设 >0 后 reranker 按该周期重读 manifest，manifest 内的模型文件变更即可
+   # 不重启生效（R30 审计 M-4 补记，settings/routing_ml_flags.go）。
+   export ROUTING_ML_RELOAD_SECONDS=0
    ```
 3. **启动验证**（成功/失败都以启动日志为准）：
    - 期望：`routingopt: ML re-ranker enabled`（携带 manifest 路径、labels 类目、min_confidence）
