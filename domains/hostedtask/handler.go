@@ -271,20 +271,23 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// workspace 白名单映射（§4.1：不接受裸路径）。
-	env := map[string]any{}
-	if body.Environment.WorkspaceID != "" {
-		if !workspaceIDPattern.MatchString(body.Environment.WorkspaceID) {
-			h.writeError(w, http.StatusBadRequest, "", "environment.workspace_id must match [a-zA-Z0-9_-]{1,64}", "hosted_task_error", "INVALID_WORKSPACE_ID")
-			return
-		}
-		cwd, ok := h.cfg.Workspaces[body.Environment.WorkspaceID]
-		if !ok {
-			h.writeError(w, http.StatusBadRequest, "", "unknown environment.workspace_id (not in gateway allowlist)", "hosted_task_error", "UNKNOWN_WORKSPACE")
-			return
-		}
-		env["workspace_id"] = body.Environment.WorkspaceID
-		env["cwd"] = cwd // 白名单映射结果；裸路径永不受理
+	// workspace 白名单映射（§4.1：不接受裸路径，P0 强制必填）。
+	if body.Environment.WorkspaceID == "" {
+		h.writeError(w, http.StatusBadRequest, "", "environment.workspace_id is required (no bare paths; must match gateway allowlist)", "hosted_task_error", "MISSING_WORKSPACE_ID")
+		return
+	}
+	if !workspaceIDPattern.MatchString(body.Environment.WorkspaceID) {
+		h.writeError(w, http.StatusBadRequest, "", "environment.workspace_id must match [a-zA-Z0-9_-]{1,64}", "hosted_task_error", "INVALID_WORKSPACE_ID")
+		return
+	}
+	cwd, ok := h.cfg.Workspaces[body.Environment.WorkspaceID]
+	if !ok {
+		h.writeError(w, http.StatusBadRequest, "", "unknown environment.workspace_id (not in gateway allowlist)", "hosted_task_error", "UNKNOWN_WORKSPACE")
+		return
+	}
+	env := map[string]any{
+		"workspace_id": body.Environment.WorkspaceID,
+		"cwd":          cwd, // 白名单映射结果；裸路径永不受理
 	}
 	if body.Environment.ModelPref != "" {
 		env["model"] = body.Environment.ModelPref

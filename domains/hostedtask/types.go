@@ -32,7 +32,6 @@ const (
 	StatusDelegated   Status = "delegated"
 	StatusDispatching Status = "dispatching"
 	StatusRunning     Status = "running"
-	StatusCompleting  Status = "completing"
 	StatusCompleted   Status = "completed"
 	StatusFailed      Status = "failed"
 	StatusNeedsReview Status = "needs_review"
@@ -51,16 +50,13 @@ func (s Status) Terminal() bool {
 }
 
 // transitionMatrix 是 §4.2 状态机的纯函数权威。表中未列出的迁移一律非法。
-// delegated → dispatching → running → completing → completed | failed
-//
-//	↘ needs_review (unknown_outcome)
+// delegated → dispatching → running → completed | failed | needs_review
 //
 // 任意非终态 → cancelled | expired(deadline reaper)
 var transitionMatrix = map[Status][]Status{
 	StatusDelegated:   {StatusDispatching, StatusCancelled, StatusExpired},
 	StatusDispatching: {StatusRunning, StatusFailed, StatusCancelled, StatusExpired},
-	StatusRunning:     {StatusCompleting, StatusCompleted, StatusFailed, StatusNeedsReview, StatusCancelled, StatusExpired},
-	StatusCompleting:  {StatusCompleted, StatusFailed, StatusNeedsReview, StatusCancelled, StatusExpired},
+	StatusRunning:     {StatusCompleted, StatusFailed, StatusNeedsReview, StatusCancelled, StatusExpired},
 	// 终态：无出边（sticky）。
 	StatusCompleted:   {},
 	StatusFailed:      {},
