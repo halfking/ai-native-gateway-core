@@ -14,7 +14,7 @@
 | O1′-b | 7 主力模型补 cap: 能力标签(本地库已应用) | 标签命中 → 正常打分路径 |
 | O1′-c | 迁移 709:work_type_config + 4 类路由补齐 | 11 任务类全有路由(本地 68 行 enabled) |
 | O2 | 分发 transient 失败 → (cred,model) 5min 抑制 + decision_trace 投影 | 实机抑制生效;auto 流量 trace 落库 |
-| O4 | LLM fallback 分类(生产已配,本地默认未配) | 本轮只验证启发式;O4 采纳率走生产观测 |
+| O4 | LLM fallback 分类(生产已配,本轮历史 E2E 只验证启发式) | 后续契约修正：fallback prompt 对齐 11 类、加入受限 system/user 与结构信号；采纳率仍需生产观测 |
 | O5 | auto 决策引擎双模式装配 + autoFallbackModel 默认值修复 | data-plane 容器 auto 不再 503 |
 
 首轮已知残余(本轮重点复核):intent_classification(词表 classification 无真实标签)
@@ -139,12 +139,15 @@ N2)= 100 例全绿**;golden 矩阵与 v6 路由矩阵无回归;`go test ./autoro
 
 ### 7.3 S2 端到端实测(v1 60 例 + v2 40 例,2.5.4-2aa80828/2118)
 
-**分类正确率(G1/G2)**:v1 55/60 全过、0 错判(5 例分发层 error);
-v2 37/40(1 例=登记的 known_failure 判 planning,2 例分发层 error)。
-**分类层实质正确率 92/93 = 98.9%,唯一失败即登记缺口(N2)**;11 类零错判,
-v1 trap + v2 trap_v2 全对。
+**分类与可用性口径(G1/G2)**：100 条历史 E2E 请求中，**93 条完成**并可比较分类；其中
+**92/93 = 98.9%** 分类正确，唯一偏差为 `long_context → planning`（N2）。另有
+**7/100 = 7.0%** 在传输/分发层失败，因此可用性纳入后的端到端正确交付为
+**92/100 = 92.0%**。N2 守卫随后已修复，并在当前离线 100 例套件转 PASS；历史
+JSONL 保留 pre-fix 偏差，不能描述为已归档的修复后 E2E 成功。
 
-**兜底份额(对比上轮 32/60=53%)**:
+**兜底份额**：完成请求中总兜底为 **27/93 = 29.0%**（历史 v1 单独口径为
+18/60=30%）。下表保留任务类的历史切片，不应将 v1 的 30% 当作两套件合并后的
+总体比例：
 
 | 任务类 | 上轮 | 本轮 v1 | 本轮 v2 |
 |--------|------|---------|---------|
@@ -172,7 +175,10 @@ latency p50≈3-5s / p95 30-93s / max 130s(60k 输入用例)。
   面调整备选(N3)。当日退避面:智码#35 整批、apicloude-china#56/57/58、
   联界#29/#45(minimax-m3 http_410)、商汤#3/#4/#49/#50/#58 kimi-k3 429;
   #31 apiclaude 已 deleted(自动面无 claude-fable/opus-4.8)。
-- G4:两套件非兜底选择与 top3[0] composite 差距全部 ≤10,零偏差。
+- G4（响应头窗口）: 66 条非兜底完成请求中，chosen 模型均出现于
+  `X-Gw-Auto-Decision.candidates_top3`，且该**暴露 top-3 窗口**内无 >10 分差距。
+  这不是生产 252 全候选池重算，也不覆盖 N6 的无单价 Claude-5 通道，故成本结论为
+  有条件成立。
 - 生产观测面:selection 写链正常(24h 9 行:heuristic_v2×8+llm_v2×1);
   decision_trace 投影在生产生效(7d 内 9 条 auto 决策带 task_type);生产
   auto 流量本身极低(~9 条/7d)。
