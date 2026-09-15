@@ -57,6 +57,21 @@ package bg
 // 安全性：所有 floor 字段默认 NULL → 选点为空 → worker 空转；探测失败
 // fail-open（保留上次状态，绝不用过期数据做摘出决策）；单凭据失败不影响
 // 其它凭据。
+//
+// 配置示例（DB credentials 列）：
+//   -- 货币下限（有公开余额 API 的厂商：openai/deepseek/siliconflow）
+//   ALTER TABLE credentials ADD COLUMN IF NOT EXISTS balance_floor_usd numeric(12,2);
+//   UPDATE credentials SET balance_floor_usd = 1.00 WHERE id = 123;
+//
+//   -- 套餐 token 下限（zhipu GLM：保最后 50 万 token）
+//   ALTER TABLE credentials ADD COLUMN IF NOT EXISTS quota_floor_tokens bigint;
+//   UPDATE credentials SET quota_floor_tokens = 500000 WHERE id = 456;
+//
+//   -- 套餐百分比下限（minimax 无绝对量，用百分比：已用 >= 95% 摘出）
+//   ALTER TABLE credentials ADD COLUMN IF NOT EXISTS quota_floor_percent numeric(5,2);
+//   UPDATE credentials SET quota_floor_percent = 95.0 WHERE id = 789;
+//
+// 恢复阈值：token/货币下限 * 1.1，百分比下限 - 2pp（滞回带防抖动）。
 
 import (
 	"context"
