@@ -1394,3 +1394,33 @@ func TestWrappedGenericWeb404IsUpstreamDown(t *testing.T) {
 		t.Errorf("ClassifyError(wrapped model-does-not-exist) = %q, want %q", got, KindModelNotFound)
 	}
 }
+
+// TestWrappedFunctionNotFoundNotModelNotFound (R30 audit F3, 2026-09-16):
+// the status-less wrapped path must NOT claim the `function` noun — a bare
+// "no such function" string is usually the client's own tool-calling mistake
+// echoed upstream, and KindModelNotFound hard-terminals the survival task and
+// cools the (credential,model) binding. Body paths (with a status gate) keep
+// the full noun list.
+func TestWrappedFunctionNotFoundNotModelNotFound(t *testing.T) {
+	if got := ClassifyError(fmt.Errorf("tool dispatch failed: no such function: foo"), nil); got == KindModelNotFound {
+		t.Errorf("ClassifyError(wrapped no-such-function) = %q, must not be model_not_found", got)
+	}
+	// ...while the status-gated body path still classifies it.
+	if got := ClassifyErrorWithBody(404, []byte(`no such function: foo`)); got != KindModelNotFound {
+		t.Errorf("ClassifyErrorWithBody(404, no-such-function) = %q, want %q", got, KindModelNotFound)
+	}
+}
+
+// TestClassifyResponseBodyGeneric404Guard (R30 audit F4, 2026-09-16): an SSE
+// error chunk carrying a generic web-server 404 body must not become
+// KindModelNotFound — parity with ClassifyErrorWithBody's V20 guard.
+func TestClassifyResponseBodyGeneric404Guard(t *testing.T) {
+	body := []byte(`<html><head><title>404 Not Found</title></head><body><center><h1>404 Not Found</h1><hr>nginx</center></body></html>`)
+	if got := ClassifyResponseBody(404, body); got == KindModelNotFound {
+		t.Errorf("ClassifyResponseBody(404, nginx 404) = %q, must not be model_not_found", got)
+	}
+	// A real model-not-found body keeps classifying.
+	if got := ClassifyResponseBody(404, []byte(`{"error":{"message":"Model gpt-9 does not exist","type":"invalid_request_error"}}`)); got != KindModelNotFound {
+		t.Errorf("ClassifyResponseBody(404, model-does-not-exist) = %q, want %q", got, KindModelNotFound)
+	}
+}
