@@ -15,7 +15,7 @@
 --     attempt/next_at/status/DLQ 字段；独立于 ASM outbox —— D5/F1）。
 --
 -- 关键约束（§4.2 状态机）：
---   delegated → dispatching → running → completing → completed | failed
+--   delegated → dispatching → running → completed | failed
 --                                      ↘ needs_review (unknown_outcome)
 --   任意非终态 → cancelled | expired(deadline reaper)；终态 sticky。
 --
