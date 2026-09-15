@@ -69,10 +69,26 @@ OpenRouter 免费模型带 `:free` 后缀且共享 `openrouter-free-pool` (默�
 
 ## 密钥安全契约
 
-- 模板优先用 `api_key_env` (如 `$GROQ_API_KEY`), 值永不入库;
-- 明文密钥经 `secret.EncryptAESGCM` (AES-256-GCM keyring) 加密落库,
-  无 keyring 时创建携带明文的模板会 fail closed;
-- 日志/UI 永不回显完整密钥 (Get/List 不返回密文字段).
+模板支持三种密钥配置方式:
+
+```go
+// 1. 环境变量引用（推荐，生产环境）
+APIKeyEnv: "$GROQ_API_KEY"       // 或 "GROQ_API_KEY"（两种形式等价）
+
+// 2. 数据库加密存储（多租户场景，需配置 Keyring）
+APIKeyEncrypted: "encrypted:base64..." // 创建时传明文 api_key，自动加密
+
+// 3. Keyless Provider（无需密钥的提供商）
+APIKeyEnv: ""
+APIKeyEncrypted: nil
+```
+
+安全机制:
+- 环境变量引用优先 (`api_key_env`): 值永不入库，仅运行时解析
+- 明文密钥经 `secret.EncryptAESGCM` (AES-256-GCM keyring) 加密落库；
+  无 keyring 时创建携带明文的模板会 fail closed
+- 日志/UI 永不回显完整密钥 (Get/List 不返回密文字段)
+- 环境变量缺失时错误消息包含：变量名、模板 ID、provider code、修复建议
 
 ## 与 Admin API 的关系
 
