@@ -215,8 +215,8 @@ func (m *v2SessionBodiesSource) GetSystemPromptPrefix(ctx context.Context, tenan
 		return "", fmt.Errorf("sessionsummary: v2 request_delta decode failed: %w", err)
 	}
 	for _, m2 := range msgs {
-		if strings.ToLower(strings.TrimSpace(m2.Role)) == "system" && strings.TrimSpace(m2.Content) != "" {
-			return prefixBytesSecretMasked(m2.Content), nil
+		if strings.ToLower(strings.TrimSpace(m2.Role)) == "system" && v2ContentText(m2.Content) != "" {
+			return prefixBytesSecretMasked(v2ContentText(m2.Content)), nil
 		}
 	}
 	return "", nil
