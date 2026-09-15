@@ -9,19 +9,15 @@ import (
 // 状态机纯函数矩阵（§4.2）。表驱动：from → 合法出边全集。
 func TestCanTransitionMatrix(t *testing.T) {
 	all := []Status{
-		StatusDelegated, StatusDispatching, StatusRunning, StatusCompleting,
+		StatusDelegated, StatusDispatching, StatusRunning,
 		StatusCompleted, StatusFailed, StatusNeedsReview, StatusCancelled, StatusExpired,
 	}
 	allowed := map[Status]map[Status]bool{
 		StatusDelegated:   {StatusDispatching: true, StatusCancelled: true, StatusExpired: true},
 		StatusDispatching: {StatusRunning: true, StatusFailed: true, StatusCancelled: true, StatusExpired: true},
 		StatusRunning: {
-			StatusCompleting: true, StatusCompleted: true, StatusFailed: true,
+			StatusCompleted: true, StatusFailed: true,
 			StatusNeedsReview: true, StatusCancelled: true, StatusExpired: true,
-		},
-		StatusCompleting: {
-			StatusCompleted: true, StatusFailed: true, StatusNeedsReview: true,
-			StatusCancelled: true, StatusExpired: true,
 		},
 		StatusCompleted:   {},
 		StatusFailed:      {},
@@ -41,7 +37,7 @@ func TestCanTransitionMatrix(t *testing.T) {
 
 func TestStatusTerminal(t *testing.T) {
 	terminal := []Status{StatusCompleted, StatusFailed, StatusNeedsReview, StatusCancelled, StatusExpired}
-	active := []Status{StatusDelegated, StatusDispatching, StatusRunning, StatusCompleting}
+	active := []Status{StatusDelegated, StatusDispatching, StatusRunning}
 	for _, s := range terminal {
 		if !s.Terminal() {
 			t.Errorf("%s should be terminal", s)
@@ -120,7 +116,7 @@ func TestBuildPromptSections(t *testing.T) {
 
 func allStatuses() []Status {
 	return []Status{
-		StatusDelegated, StatusDispatching, StatusRunning, StatusCompleting,
+		StatusDelegated, StatusDispatching, StatusRunning,
 		StatusCompleted, StatusFailed, StatusNeedsReview, StatusCancelled, StatusExpired,
 	}
 }
