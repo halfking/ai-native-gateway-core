@@ -211,9 +211,11 @@ PASS
 | `domains/hostedtask/types_test.go` | 修改 | -5 / +3 | 移除测试中的 completing 引用 |
 | `domains/hostedtask/handler.go` | 新增 | +4 | workspace_id 必填校验 |
 | `domains/hostedtask/handler_test.go` | 修改 | +1 | 冲突测试补充 workspace_id |
-| `sql/migrations/startup/711_hosted_tasks.sql` | 修改 | -1 / +1 | 状态枚举移除 'completing' |
+| `sql/migrations/startup/711_hosted_tasks.sql` | 修改 | -2 / +2 | 状态枚举 + 注释移除 'completing' |
+| `installer/cmd/llm-gw-installer/embeddata/startup/711_hosted_tasks.sql` | 修改 | -2 / +2 | 同步状态枚举 + 注释 |
+| `docs/design/hosted-task-delegation-design.md` | 修改 | -2 / +2 | 状态机图移除 completing |
 
-**总计**: 5 个文件，净增 0 行（删除 10 行，新增 10 行）
+**总计**: 7 个文件，净增 0 行（删除 15 行，新增 15 行）
 
 ### 4.2 风险评估
 

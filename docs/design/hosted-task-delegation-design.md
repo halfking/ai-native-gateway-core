@@ -191,8 +191,8 @@ RedClaw 蜂群契约佐证：companion 本地 API 只读、写路径必须经 AC
 ### 4.2 hosted_tasks 状态机（独立于 GoalRun 字符串）
 
 ```
-delegated → dispatching → running → completing → completed | failed
-                                          ↘ needs_review (unknown_outcome)
+delegated → dispatching → running → completed | failed
+                                   ↘ needs_review (unknown_outcome)
 任意非终态 → cancelled | expired(deadline reaper)
 终态 sticky（CAS 抢占，cancel 与 complete 竞争只活一个）
 ```

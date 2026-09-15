@@ -40,9 +40,9 @@ func TestMigration711HostedTasksContract(t *testing.T) {
 		}
 	}
 
-	// State machine (§4.2): all nine statuses in the CHECK.
+	// State machine (§4.2): all eight statuses in the CHECK.
 	for _, status := range []string{
-		"delegated", "dispatching", "running", "completing",
+		"delegated", "dispatching", "running",
 		"completed", "failed", "needs_review", "cancelled", "expired",
 	} {
 		if !strings.Contains(upText, "'"+status+"'") {
