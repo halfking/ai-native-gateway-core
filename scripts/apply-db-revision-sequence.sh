@@ -396,6 +396,15 @@ files=(
   # Go 镜像体:db/request_logs_view_schema.go canonicalV2DDL(启动自愈/升级
   # 同体),等价性由 db/view_schema_v2_contract_test.go 校验。
   "$ROOT_DIR/sql/migrations/startup/710_request_logs_view_session_family_v2.sql"
+  # 2026-09-16 R30 审计（时区钉扎波收尾）：694/698 漏网的 6 个分区函数统一
+  # 钉扎 Asia/Shanghai——4 个 ensure（session_module_executions/
+  # dashboard_access_events/cache_metrics 为 475 date 签名体，handoff_logs
+  # 为 534 columnar 体，其 DECLARE 初始化器先于 BEGIN 求值，已移入函数体）
+  # + 579/580 两个 promote 的 date_trunc 月份分组。686 已在
+  # session_module_executions 实际复发一次 473 类边界漂移（42P17），本迁移
+  # 除根。纯 CREATE OR REPLACE FUNCTION + 账本 upsert，幂等收敛；714 编号
+  # 已核对本机与 origin/main 双侧空闲。
+  "$ROOT_DIR/sql/migrations/startup/714_partition_timezone_pin_remaining.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

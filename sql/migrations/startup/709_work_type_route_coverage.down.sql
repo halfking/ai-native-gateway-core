@@ -1,6 +1,7 @@
--- Down migration for 706_work_type_route_coverage.sql.
--- Removes only the rows 706 seeds; operator-added routes/config rows for the
--- same keys are deliberately preserved (706 never touched them either).
+-- Down migration for 709_work_type_route_coverage.sql.
+-- (2026-09-16 R30 审计: 头注释误写 706, 系 711→709 撞号重编时的复制残留; 仅注释更正, 不改行为.)
+-- Removes only the rows 709 seeds; operator-added routes/config rows for the
+-- same keys are deliberately preserved (709 never touched them either).
 -- The schema_migrations ledger row is kept (append-only, 703 down convention).
 
 BEGIN;
