@@ -793,6 +793,17 @@ func (g *BalanceFloorGuard) releaseStaleProbeFloorCredentials(ctx context.Contex
 		  AND status = 'active'
 		  AND lifecycle_status = 'active'
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
+		  -- R30 P2-1（2026-09-16）：组合配置（货币下限+套餐下限同时存在）下，
+		  -- pass B 先按新鲜货币证据摘出，本逃生门再以"plan 证据陈旧"释放，
+		  -- 每 5 分钟永久乒乓且货币下限被绕过。货币证据仍新鲜且仍击穿时
+		  -- 不释放——摘出交回 pass B 的货币语义。
+		  AND NOT (
+		      balance_floor_usd IS NOT NULL
+		      AND balance_usd IS NOT NULL
+		      AND balance_last_checked_at IS NOT NULL
+		      AND balance_last_checked_at > now() - interval '30 minutes'
+		      AND balance_usd <= balance_floor_usd
+		  )
 		  AND EXISTS (
 		      SELECT 1 FROM providers p
 		      WHERE p.id = credentials.provider_id
@@ -985,18 +996,12 @@ func (g *BalanceFloorGuard) refreshBalance(ctx context.Context, id int64, cipher
 	return true
 }
 
-// restorePulledCurrency re-reads the balance of a floor-pulled credential and
-// restores it when the fresh balance clears the hysteresis band.
+// restorePulledCurrency restores a floor-pulled credential once pass A's
+// refreshed balance_usd clears the hysteresis band. This function never
+// fetches the vendor balance itself — pass A (cycle head) owns balance
+// refresh; the balURL/egress dance that used to live here was dead code from
+// an earlier self-fetch design (R30 P3-2).
 func (g *BalanceFloorGuard) restorePulledCurrency(ctx context.Context, id int64, baseURL, protocol, catalog string) {
-	desc := providercap.Resolve(protocol, catalog)
-	balURL := providercap.BalanceURL(baseURL, desc)
-	if balURL == "" {
-		return // vendor has no balance API; operator must clear the floor
-	}
-	if blocked, reason := providercap.EgressBlocked(balURL); blocked {
-		providercap.WarnBlocked("balance_floor_guard.balance", balURL, reason)
-		return
-	}
 	tag, err := g.db.Exec(ctx, `
 		UPDATE credentials
 		SET quota_state = 'ok',
@@ -1090,16 +1095,19 @@ func (g *BalanceFloorGuard) sweepPlanQuotas(ctx context.Context) error {
 	}
 
 	var stats planSweepStats
-	runPlanProbes(cctx, planCands, g.planConcurrency, func(ctx context.Context, c floorCandidate) {
+	runPlanProbes(cctx, planCands, g.planConcurrency, &stats, func(ctx context.Context, c floorCandidate) {
 		g.handlePlanCredential(ctx, c, &stats)
 	})
 
 	// F-L1: 周期级汇总 —— 探测成功率、摘出/恢复量与耗时，运营可观测。
 	// probed=0（无套餐厂商的部署）不输出：每 5 分钟一条空行是纯噪音
-	//（审计 2026-09-16 二轮 F-2）。
+	//（审计 2026-09-16 二轮 F-2）。probed 只计实际发起的探测；ctx 到点
+	// 被放弃的候选计入 skipped（R30 P2-4：len(planCands) 会把未探测的
+	// 也算进 probed，success+failed < probed 误导运营）。
 	if len(planCands) > 0 {
 		slog.Info("balance_floor_guard: plan sweep completed",
-			"probed", len(planCands),
+			"probed", stats.probed.Load(),
+			"skipped", stats.skipped.Load(),
 			"success", stats.success.Load(),
 			"failed", stats.failed.Load(),
 			"pulled", stats.pulled.Load(),
@@ -1110,8 +1118,11 @@ func (g *BalanceFloorGuard) sweepPlanQuotas(ctx context.Context) error {
 }
 
 // planSweepStats aggregates per-cycle plan probe outcomes (F-L1) — atomics
-// because probes run concurrently on the worker pool.
+// because probes run concurrently on the worker pool. probed/skipped split
+// attempted vs abandoned candidates (R30 P2-4).
 type planSweepStats struct {
+	probed   atomic.Int64
+	skipped  atomic.Int64
 	success  atomic.Int64
 	failed   atomic.Int64
 	pulled   atomic.Int64
@@ -1123,7 +1134,7 @@ type planSweepStats struct {
 // are in flight; per-candidate panics are contained exactly like the old
 // serial loop. errgroup 未进 vendor（modules.txt 只收了 semaphore/
 // singleflight），semaphore + WaitGroup 在此语义完全等价。
-func runPlanProbes(ctx context.Context, cands []floorCandidate, limit int, probe func(context.Context, floorCandidate)) {
+func runPlanProbes(ctx context.Context, cands []floorCandidate, limit int, stats *planSweepStats, probe func(context.Context, floorCandidate)) {
 	if limit < 1 {
 		limit = 1
 	}
@@ -1134,8 +1145,10 @@ func runPlanProbes(ctx context.Context, cands []floorCandidate, limit int, probe
 		// cctx 到点后 Acquire 报错：剩余候选放弃本轮（fail-open，下周期
 		// 重来），已提交的探测随取消的 ctx 自然收尾。
 		if err := sem.Acquire(ctx, 1); err != nil {
-			break
+			stats.skipped.Add(1)
+			continue
 		}
+		stats.probed.Add(1)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

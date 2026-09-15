@@ -454,6 +454,12 @@ func stateTableTTLSpecs() []stateTableTTLSpec {
 		{parent: "handoff_logs", setting: "lifecycle.handoff_logs_ttl_days", fallback: 30},
 		{parent: "model_probe_runs", setting: "lifecycle.model_probe_runs_ttl_days", fallback: 14},
 		{parent: "credential_model_index", setting: "lifecycle.credential_model_index_ttl_days", fallback: 7},
+		// R30 审计（2026-09-16）：supplier_errors 历史月分区此前不在任何
+		// drop 清单（hot 侧 8h promote 有界，历史表无限增长）。列存分区
+		// DROP 安全（689 helper 逐分区 DROP TABLE），fallback 90 天对齐
+		// 诊断/质量评估类数据的保留预期；settings_kv 行在管理员首次
+		// 显式设置时落库，此前按 fallback 生效。
+		{parent: "supplier_errors", setting: "lifecycle.supplier_errors_ttl_days", fallback: 90},
 	}
 }
 
