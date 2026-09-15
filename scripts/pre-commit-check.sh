@@ -212,6 +212,11 @@ check_migration_has_down() {
   return 0
 }
 
+# ── 3c. High-numbered migration delivery path ───────────────────────────
+check_canonical_migration_delivery_path() {
+  bash scripts/apply-db-revision-sequence_test.sh >/dev/null
+}
+
 # ── 4. Vue type-check ──────────────────────────────────────────────────
 check_vue_tsc() {
   if [[ ! -d web ]]; then
@@ -320,6 +325,7 @@ run_check "go vet"                  check_go_vet
 run_check "SQL: no SET+placeholder" check_sql_set_local
 run_check "Migration: unique NNN"   check_migration_unique
 run_check "Migration: has down.sql" check_migration_has_down
+run_check "Migration: canonical delivery" check_canonical_migration_delivery_path
 if has_staged_web_changes; then
   if [[ -d web/node_modules ]]; then
     run_vue_tsc
