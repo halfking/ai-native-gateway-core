@@ -956,8 +956,9 @@ func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candida
 		// 2026-09-14 audit O2: arm the 5-minute (credential, model) routing
 		// suppression on transient dispatch failures so the 48h fallback
 		// pool stops re-selecting a pair that just failed (its composite is
-		// a constant 50 and sees no Reliability feedback).
-		e.recordTransientDispatchFailure(sideEffectCtx, cand.CredentialID, cand.RawModel, code)
+		// a constant 50 and sees no Reliability feedback). Free-tier pairs
+		// arm a 60s window instead (2026-09-15 free-capacity plan).
+		e.recordTransientDispatchFailure(sideEffectCtx, cand.CredentialID, cand.RawModel, code, cand.BillingMode)
 	}
 	return kind
 }

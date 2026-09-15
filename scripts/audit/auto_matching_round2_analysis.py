@@ -1,109 +1,146 @@
 #!/usr/bin/env python3
-"""auto 匹配二轮 E2E 结果分析 —— G1 分类正确率/G4 均衡性/兜底份额/时延汇总。
+"""auto 匹配二轮 E2E 结果分析。
 
-用法: python3 scripts/audit/auto_matching_round2_analysis.py \
+该脚本只分析 cmd/autoroute-e2e-audit 写出的响应记录，不能替代生产 252
+候选池全量重算、价格审计或 node_probe_state/decision_trace 持久化核验。
+
+用法:
+    python3 scripts/audit/auto_matching_round2_analysis.py \
         docs/audit/2026-09-15-auto-matching-e2e-results-v2.jsonl \
         [docs/audit/2026-09-15-auto-matching-e2e-results-v2-suite2.jsonl ...]
-
-只读分析,不改任何状态。每行输入是 cmd/autoroute-e2e-audit 的 JSONL 记录。
 """
+
 import json
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
+
 
 def load(paths):
     rows = []
-    for p in paths:
-        for line in open(p):
-            line = line.strip()
-            if line and not line.startswith("#"):
-                rows.append(json.loads(line))
+    for path in paths:
+        with open(path, encoding="utf-8") as source:
+            for line in source:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    rows.append(json.loads(line))
     return rows
+
+
+def percentile(values, percentile_value):
+    if not values:
+        return None
+    values = sorted(values)
+    return values[min(len(values) - 1, int(len(values) * percentile_value))]
+
 
 def main():
     rows = load(sys.argv[1:])
     total = len(rows)
-    errs = [r for r in rows if r.get("error")]
-    fails = [r for r in rows if not r.get("error") and not r.get("pass")]
-    passes = [r for r in rows if not r.get("error") and r.get("pass")]
+    errors = [row for row in rows if row.get("error")]
+    comparable = [row for row in rows if not row.get("error")]
+    correct = [row for row in comparable if row.get("pass")]
+    incorrect = [row for row in comparable if not row.get("pass")]
 
-    print(f"total={total} pass={len(passes)} fail={len(fails)} error={len(errs)}")
-    if total:
-        ok = len(passes)
-        print(f"classification accuracy (ok/total) = {ok}/{total} = {ok/total:.1%}")
+    print("== request delivery and classification evidence ==")
+    print(f"total_requests={total}")
+    print(f"transport_or_dispatch_errors={len(errors)}")
+    print(f"completed_requests={len(comparable)}")
+    print(f"completed_request_rate={len(comparable)}/{total} = {len(comparable)/total:.1%}" if total else "completed_request_rate=n/a")
+    print(f"classification_correct_on_completed={len(correct)}/{len(comparable)} = {len(correct)/len(comparable):.1%}" if comparable else "classification_correct_on_completed=n/a")
+    print(f"end_to_end_correct_delivery={len(correct)}/{total} = {len(correct)/total:.1%}" if total else "end_to_end_correct_delivery=n/a")
+    print("note: classification accuracy excludes rows that never produced a decision; "
+          "end_to_end_correct_delivery includes them and is the availability-inclusive measure.")
 
-    # 期望分布 vs 实际(混淆视图)
-    conf = defaultdict(lambda: defaultdict(int))
-    for r in rows:
-        if not r.get("error"):
-            conf[r.get("expected_task", "?")][r.get("got_task", "?")] += 1
-    mis = [(e, g, n) for e, d in conf.items() for g, n in d.items() if e != g and n > 0]
-    if mis:
-        print("\n== misclassifications (expected -> got: n) ==")
-        for e, g, n in sorted(mis, key=lambda x: -x[2]):
-            print(f"  {e} -> {g}: {n}")
+    confusion = defaultdict(Counter)
+    for row in comparable:
+        confusion[row.get("expected_task", "?")][row.get("got_task", "?")] += 1
+    mismatches = [
+        (expected, actual, count)
+        for expected, actuals in confusion.items()
+        for actual, count in actuals.items()
+        if expected != actual and count
+    ]
+    if mismatches:
+        print("\n== classification mismatches among completed requests ==")
+        for expected, actual, count in sorted(mismatches, key=lambda item: -item[2]):
+            print(f"  {expected} -> {actual}: {count}")
 
-    # 兜底份额 per task
-    fb = defaultdict(lambda: [0, 0])
-    lat = defaultdict(list)
-    served = defaultdict(lambda: defaultdict(int))
-    creds = defaultdict(lambda: defaultdict(int))
-    for r in rows:
-        if r.get("error"):
+    fallback = defaultdict(lambda: [0, 0])
+    latency = defaultdict(list)
+    served = defaultdict(Counter)
+    for row in comparable:
+        decision = row.get("decision") or {}
+        task = decision.get("task_type") or row.get("expected_task") or "?"
+        fallback[task][1] += 1
+        if decision.get("fallback_used"):
+            fallback[task][0] += 1
+        if row.get("latency_ms") is not None:
+            latency[task].append(row["latency_ms"])
+        model = row.get("served_model") or decision.get("chosen_model") or "?"
+        served[task][model] += 1
+
+    fallback_count = sum(values[0] for values in fallback.values())
+    fallback_total = sum(values[1] for values in fallback.values())
+    print("\n== fallback share among completed requests ==")
+    print(f"overall_fallback={fallback_count}/{fallback_total} = {fallback_count/fallback_total:.1%}" if fallback_total else "overall_fallback=n/a")
+    for task in sorted(fallback):
+        used, task_total = fallback[task]
+        top_models = ", ".join(f"{model}×{count}" for model, count in served[task].most_common(3))
+        p50 = percentile(latency[task], 0.50)
+        p95 = percentile(latency[task], 0.95)
+        print(f"  {task:22} {used}/{task_total}  p50={p50}ms p95={p95}ms  served: {top_models}")
+
+    # The response header only exposes candidates_top3. It cannot prove the
+    # database-wide candidate-pool top1 or validate prices missing from CMI.
+    # Compare only non-fallback selections explicitly represented in that
+    # response-header window.
+    window_checked = 0
+    missing_chosen_score = 0
+    fallback_skipped = 0
+    gaps = []
+    for row in comparable:
+        decision = row.get("decision") or {}
+        candidates = decision.get("candidates_top3") or []
+        if not candidates:
             continue
-        d = r.get("decision") or {}
-        t = d.get("task_type") or r.get("expected_task") or "?"
-        fb[t][1] += 1
-        if d.get("fallback_used"):
-            fb[t][0] += 1
-        lat[t].append(r.get("latency_ms") or 0)
-        m = r.get("served_model") or d.get("chosen_model") or "?"
-        served[t][m] += 1
-        if d.get("chosen_credential_id"):
-            creds[t][f"{d.get('chosen_model')}@{d.get('chosen_credential_id')}"] += 1
-
-    print("\n== fallback share per task (fb/total) ==")
-    for t in sorted(fb):
-        n, tot = fb[t]
-        lats = sorted(lat[t])
-        p50 = lats[len(lats)//2] if lats else 0
-        p95 = lats[int(len(lats)*0.95)] if lats else 0
-        top = ", ".join(f"{m}×{c}" for m, c in sorted(served[t].items(), key=lambda x: -x[1])[:3])
-        print(f"  {t:22} {n}/{tot}  p50={p50}ms p95={p95}ms  served: {top}")
-
-    # G4: chosen composite vs pool top1 (decision 头 candidates_top3[0])
-    print("\n== G4 balance: chosen composite vs top3[0] composite ==")
-    dev = []
-    for r in rows:
-        if r.get("error"):
+        if decision.get("fallback_used"):
+            fallback_skipped += 1
             continue
-        d = r.get("decision") or {}
-        t3 = d.get("candidates_top3") or []
-        if not t3:
+        selected = next(
+            (candidate for candidate in candidates if candidate.get("model") == decision.get("chosen_model")),
+            None,
+        )
+        if selected is None:
+            missing_chosen_score += 1
             continue
-        top1 = t3[0].get("composite_score") or 0
-        chosen = next((c.get("composite_score") for c in t3
-                       if c.get("model") == d.get("chosen_model")
-                       and not d.get("fallback_used")), None)
-        if chosen is None:
-            chosen = d.get("candidates_top3", [{}])[0].get("composite_score")
-        gap = round(top1 - (chosen or 0), 1)
+        window_checked += 1
+        top_score = candidates[0].get("composite_score") or 0
+        selected_score = selected.get("composite_score") or 0
+        gap = round(top_score - selected_score, 1)
         if gap > 10:
-            dev.append((r.get("name"), d.get("task_type"), gap, d.get("fallback_used")))
-    if dev:
-        for name, t, gap, fbu in dev:
-            print(f"  {name:34} {t:20} gap={gap} fb={fbu}")
+            gaps.append((row.get("name"), decision.get("task_type"), gap))
+
+    print("\n== G4 response-header top-3 window evidence ==")
+    print("scope: non-fallback decisions whose chosen model appears in X-Gw-Auto-Decision candidates_top3; "
+          "this is not a production-252 full candidate-pool or pricing recomputation.")
+    print(f"window_checked={window_checked} fallback_skipped={fallback_skipped} chosen_not_in_top3={missing_chosen_score}")
+    if gaps:
+        print("result: deviations >10 in the exposed top-3 window")
+        for name, task, gap in gaps:
+            print(f"  {name:34} {task:20} gap={gap}")
     else:
-        print("  no deviation > 10 (non-fallback) — G4 PASS")
+        print("result: no deviation >10 in the exposed top-3 window")
 
-    all_lat = sorted(r.get("latency_ms") or 0 for r in rows if not r.get("error"))
-    if all_lat:
-        print(f"\nlatency: p50={all_lat[len(all_lat)//2]}ms p95={all_lat[int(len(all_lat)*0.95)]}ms max={all_lat[-1]}ms")
+    all_latency = [row.get("latency_ms") for row in comparable if row.get("latency_ms") is not None]
+    if all_latency:
+        print("\n== latency among completed requests ==")
+        print(f"p50={percentile(all_latency, 0.50)}ms p95={percentile(all_latency, 0.95)}ms max={max(all_latency)}ms")
 
-    if errs:
-        print("\n== errors ==")
-        for r in errs:
-            print(f"  {r.get('name')}: {(r.get('error') or '')[:100]}")
+    if errors:
+        print("\n== transport or dispatch errors (excluded from classification denominator) ==")
+        for row in errors:
+            print(f"  {row.get('name')}: {(row.get('error') or '')[:160]}")
+
 
 if __name__ == "__main__":
     main()

@@ -155,7 +155,10 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 		switch effect.Kind {
 		case nodehealth.EffectRecordCircuitFailure:
 			if e.Circuit != nil {
-				e.Circuit.RecordFailure(int(decision.Node.ProviderID), int(decision.Node.CredentialID), kind)
+				// 2026-09-15 (245 free-capacity plan): billing-mode-aware
+				// recording lets free credentials adopt the shortened
+				// freeTierPolicies cooling profile inside the breaker.
+				e.Circuit.RecordFailureWithBillingMode(int(decision.Node.ProviderID), int(decision.Node.CredentialID), kind, decision.BillingMode)
 			}
 		case nodehealth.EffectRecoverCircuit:
 			if e.Circuit != nil {

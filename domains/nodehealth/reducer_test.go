@@ -627,3 +627,62 @@ func TestOutcomeReducerEmptyResponseRetriesAfterAdapterFailure(t *testing.T) {
 		t.Fatalf("adapter calls=%d, want 2", got)
 	}
 }
+
+// TestFreeBillingRaisesCircuitThreshold (2026-09-15, 245 free-capacity plan):
+// free-tier credentials need 6 consecutive non-permanent failures before the
+// credential-wide circuit fires (paid threshold stays 3). Bursts of transient
+// errors on an occasionally-usable free provider must keep it serving under
+// the soft-demote path instead of hard-excluding it via the circuit.
+func TestFreeBillingRaisesCircuitThreshold(t *testing.T) {
+	buildObservation := func(attempt int, billing string) nodehealth.Observation {
+		return nodehealth.Observation{
+			Node:      nodehealth.NodeKey{CredentialID: 77, Model: "model-free"},
+			AttemptID: fmt.Sprintf("free-attempt-%d", attempt),
+			Phase:     nodehealth.PhaseRequest,
+			Outcome:   requestjourney.OutcomeFailure,
+			ErrorKind: nodehealth.ErrorKindNetwork,
+			// BillingMode rides on the observation the same way the
+			// dispatch attempt carries it.
+			BillingMode: billing,
+		}
+	}
+	hasCircuitFailure := func(decision nodehealth.Decision) bool {
+		for _, eff := range decision.Effects {
+			if eff.Kind == nodehealth.EffectRecordCircuitFailure {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Paid: 3rd consecutive failure fires the circuit effect.
+	rPaid := nodehealth.NewOutcomeReducer()
+	for i := 1; i <= 3; i++ {
+		decision, err := rPaid.Reduce(buildObservation(i, "per_token"))
+		if err != nil {
+			t.Fatalf("paid failure %d: %v", i, err)
+		}
+		if got := hasCircuitFailure(decision); got != (i == 3) {
+			t.Fatalf("paid failure %d: circuit effect = %v, want %v", i, got, i == 3)
+		}
+	}
+
+	// Free: no circuit effect at 3 (paid threshold), fires at 6.
+	rFree := nodehealth.NewOutcomeReducer()
+	for i := 1; i <= 5; i++ {
+		decision, err := rFree.Reduce(buildObservation(i, "free"))
+		if err != nil {
+			t.Fatalf("free failure %d: %v", i, err)
+		}
+		if hasCircuitFailure(decision) {
+			t.Fatalf("free failure %d: circuit effect must not fire before 6", i)
+		}
+	}
+	decision6, err := rFree.Reduce(buildObservation(6, "free"))
+	if err != nil {
+		t.Fatalf("free failure 6: %v", err)
+	}
+	if !hasCircuitFailure(decision6) {
+		t.Fatal("free failure 6: circuit effect must fire at the free threshold")
+	}
+}
