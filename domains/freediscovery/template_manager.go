@@ -289,17 +289,39 @@ func (m *TemplateManager) Update(ctx context.Context, tenantID string, id int64,
 		return nil, err
 	}
 
-	_, err = tx.ExecContext(ctx, `
-		UPDATE provider_templates SET
-			display_name=$2, base_url=$3, api_type=$4, api_key_env=$5,
-			api_key_encrypted=$6, models_endpoint=$7, quota_endpoint=$8,
-			tos_url=$9, tos_verdict=$10, tos_notes=$11, enabled=$12,
-			consecutive_scan_failures=$13, last_scan_failure_at=$14, auto_disabled_at=$15
-		WHERE id=$1`,
-		id, cur.DisplayName, cur.BaseURL, string(cur.APIType), nullableStr(cur.APIKeyEnv),
-		cur.APIKeyEncrypted, cur.ModelsEndpoint, nullableStr(cur.QuotaEndpoint),
-		nullableStr(cur.TosURL), cur.TosVerdict, nullableStr(cur.TosNotes), cur.Enabled,
-		cur.ConsecutiveScanFailures, cur.LastScanFailureAt, cur.AutoDisabledAt)
+	// R30 审计 F-2（2026-09-16）：改为只 SET 请求涉及的字段。此前的全字段
+	// 回写会把 Get 时取的旧快照写回——若调度器在 Get 与 UPDATE 之间恰好
+	// 累加了失败计数或置 enabled=false（自动禁用），一次只改 display_name
+	// 的 PATCH 会把自动禁用静默复活。健康三列仅在显式重新启用时清零。
+	setParts := make([]string, 0, 14)
+	args := []any{id}
+	addSet := func(col string, v any) {
+		args = append(args, v)
+		setParts = append(setParts, fmt.Sprintf("%s=$%d", col, len(args)))
+	}
+	addSet("display_name", cur.DisplayName)
+	addSet("base_url", cur.BaseURL)
+	addSet("api_type", string(cur.APIType))
+	addSet("api_key_env", nullableStr(cur.APIKeyEnv))
+	addSet("api_key_encrypted", cur.APIKeyEncrypted)
+	addSet("models_endpoint", cur.ModelsEndpoint)
+	addSet("quota_endpoint", nullableStr(cur.QuotaEndpoint))
+	addSet("tos_url", nullableStr(cur.TosURL))
+	addSet("tos_verdict", cur.TosVerdict)
+	addSet("tos_notes", nullableStr(cur.TosNotes))
+	if req.Enabled != nil {
+		addSet("enabled", *req.Enabled)
+		if *req.Enabled {
+			// Health feedback: operator manually enables → clear auto-disable state to allow retry.
+			addSet("consecutive_scan_failures", 0)
+			addSet("last_scan_failure_at", nil)
+			addSet("auto_disabled_at", nil)
+		}
+	}
+
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(
+		`UPDATE provider_templates SET %s WHERE id=$1`, strings.Join(setParts, ", ")),
+		args...)
 	if err != nil {
 		return nil, fmt.Errorf("freediscovery: update template %d: %w", id, err)
 	}

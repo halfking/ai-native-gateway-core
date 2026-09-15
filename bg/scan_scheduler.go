@@ -34,6 +34,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/domains/freediscovery"
@@ -387,16 +388,42 @@ func (s *ScanScheduler) cycle(ctx context.Context) error {
 	return nil
 }
 
+// runPrivileged runs fn inside a transaction with the same RLS bypass used by
+// cycle(). provider_templates is RLS-protected; without these LOCAL settings a
+// pool connection only sees the default tenant, so health feedback for any
+// other tenant would silently no-op (0 rows) and the auto-disable threshold
+// would never trigger.
+func (s *ScanScheduler) runPrivileged(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("scan_scheduler: begin health transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.current_role', 'super_admin', true)`); err != nil {
+		return fmt.Errorf("scan_scheduler: set super-admin role: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.bypass_rls', 'true', true)`); err != nil {
+		return fmt.Errorf("scan_scheduler: enable rls bypass: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // recordScanSuccess resets health feedback after a successful scan.
 func (s *ScanScheduler) recordScanSuccess(ctx context.Context, tenantID string, templateID int64) {
 	if s == nil || s.db == nil {
 		return
 	}
-	_, err := s.db.Exec(ctx, `
-		UPDATE public.provider_templates
-		SET consecutive_scan_failures = 0,
-		    last_scan_failure_at = NULL
-		WHERE id = $1 AND tenant_id = $2`, templateID, tenantID)
+	err := s.runPrivileged(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE public.provider_templates
+			SET consecutive_scan_failures = 0,
+			    last_scan_failure_at = NULL
+			WHERE id = $1 AND tenant_id = $2`, templateID, tenantID)
+		return err
+	})
 	if err != nil {
 		slog.Warn("scan_scheduler: reset template health failed", "template_id", templateID, "error", err)
 	}
@@ -410,17 +437,19 @@ func (s *ScanScheduler) recordScanFailure(ctx context.Context, tenantID string, 
 	}
 	var failures int
 	var disabled bool
-	err := s.db.QueryRow(ctx, `
-		UPDATE public.provider_templates
-		SET consecutive_scan_failures = COALESCE(consecutive_scan_failures, 0) + 1,
-		    last_scan_failure_at = now(),
-		    enabled = CASE WHEN COALESCE(consecutive_scan_failures, 0) + 1 >= 3 THEN FALSE ELSE enabled END,
-		    auto_disabled_at = CASE
-		        WHEN COALESCE(consecutive_scan_failures, 0) + 1 >= 3 THEN COALESCE(auto_disabled_at, now())
-		        ELSE auto_disabled_at
-		    END
-		WHERE id = $1 AND tenant_id = $2
-		RETURNING consecutive_scan_failures, enabled = FALSE`, templateID, tenantID).Scan(&failures, &disabled)
+	err := s.runPrivileged(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			UPDATE public.provider_templates
+			SET consecutive_scan_failures = COALESCE(consecutive_scan_failures, 0) + 1,
+			    last_scan_failure_at = now(),
+			    enabled = CASE WHEN COALESCE(consecutive_scan_failures, 0) + 1 >= 3 THEN FALSE ELSE enabled END,
+			    auto_disabled_at = CASE
+			        WHEN COALESCE(consecutive_scan_failures, 0) + 1 >= 3 THEN COALESCE(auto_disabled_at, now())
+			        ELSE auto_disabled_at
+			    END
+			WHERE id = $1 AND tenant_id = $2
+			RETURNING consecutive_scan_failures, enabled = FALSE`, templateID, tenantID).Scan(&failures, &disabled)
+	})
 	if err != nil {
 		slog.Warn("scan_scheduler: record template health failed", "template_id", templateID, "error", err)
 		return
