@@ -205,9 +205,8 @@ curl -X PATCH http://localhost:8782/api/free-discovery/templates/{id} \
 ```
 
 手动启用时：
-- `consecutive_scan_failures` 保持原值（不重置）
-- `auto_disabled_at` 清空为 NULL
-- 下次扫描成功后计数器才重置为 0
+- `consecutive_scan_failures` 重置为 0（同时清空 `last_scan_failure_at` 与 `auto_disabled_at`，与 template_manager.Update 行为一致）
+- 模板立即可参与扫描；若再次连续失败 3 次会重新自动禁用
 
 3. **验证恢复**
 ```bash
