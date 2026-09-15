@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Balance Floor Guard 二轮自审修正 (2026-09-16)**：`getJSON` 请求构造移出重试循环（构造错误此前会绕过重试分类被当传输错误白烧 2 次重试 +1.5s/凭据/周期）；`probed=0` 的空 sweep 不再输出汇总日志（无套餐厂商部署上每 5 分钟一条空行）。集成验证 harness 见 `bg/balance_floor_guard_integration_test.go`（integration tag，DSN 走 env），实测 200 凭据×100ms 并发(10)=2.09s vs 串行(1)=33.1s。
+
 ### Changed
 - **Balance Floor Guard 审计修复 (2026-09-16)**：A-C2 `Start()` 重入守卫 + D-L1 `Stop()` 等待 worker 退出（10s 上限，防在途 sweep 拖住进程下线）；A-C1 `SetKeyring`/`decryptKey` 以 RWMutex 保护；B-E1 逃生门默认从 24h 收紧为 2h（`LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS` 语义不变，0=关闭）；E-B1 套餐探测改有界 worker pool（新 env `LLM_GATEWAY_FLOOR_PLAN_CONCURRENCY`，默认 10，钳制 1..100）；F-L1 每周期输出 `plan sweep completed` 汇总日志（probed/success/failed/pulled/restored/duration）；F-L2 探测失败日志 Debug→Warn（每凭据 15 分钟限 1 条）；G-O1 控制面 GET 增加重试（至多 2 次，仅网络错误与 5xx，退避 0.5s/1s）。
 

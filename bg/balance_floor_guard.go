@@ -1095,13 +1095,17 @@ func (g *BalanceFloorGuard) sweepPlanQuotas(ctx context.Context) error {
 	})
 
 	// F-L1: 周期级汇总 —— 探测成功率、摘出/恢复量与耗时，运营可观测。
-	slog.Info("balance_floor_guard: plan sweep completed",
-		"probed", len(planCands),
-		"success", stats.success.Load(),
-		"failed", stats.failed.Load(),
-		"pulled", stats.pulled.Load(),
-		"restored", stats.restored.Load(),
-		"duration", time.Since(start).Round(time.Millisecond).String())
+	// probed=0（无套餐厂商的部署）不输出：每 5 分钟一条空行是纯噪音
+	//（审计 2026-09-16 二轮 F-2）。
+	if len(planCands) > 0 {
+		slog.Info("balance_floor_guard: plan sweep completed",
+			"probed", len(planCands),
+			"success", stats.success.Load(),
+			"failed", stats.failed.Load(),
+			"pulled", stats.pulled.Load(),
+			"restored", stats.restored.Load(),
+			"duration", time.Since(start).Round(time.Millisecond).String())
+	}
 	return nil
 }
 
@@ -1402,6 +1406,18 @@ func retryableHTTPErr(err error) bool {
 }
 
 func (g *BalanceFloorGuard) getJSON(ctx context.Context, u, authHeader, authValue string) ([]byte, error) {
+	// 请求只构造一次：URL/头是确定性的，构造失败重试也不会变好 —— 且构造
+	// 错误会绕过 retryableHTTPErr 的分类被当传输错误白烧 2 次重试（审计
+	// 2026-09-16 二轮 F-1）。GET 无 body，跨 attempt 复用同一 req 是安全的。
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(authHeader, authValue)
+	req.Header.Set("Accept", "application/json")
+	// 智谱对 Accept-Language 敏感（英文响应字段稳定，实测 cc-switch 同款头）。
+	req.Header.Set("Accept-Language", "en-US,en")
+
 	var lastErr error
 	for attempt := 1; attempt <= planHTTPMaxAttempts; attempt++ {
 		if attempt > 1 {
@@ -1411,7 +1427,7 @@ func (g *BalanceFloorGuard) getJSON(ctx context.Context, u, authHeader, authValu
 			case <-time.After(planHTTPRetryDelay * time.Duration(attempt-1)):
 			}
 		}
-		body, err := g.getJSONOnce(ctx, u, authHeader, authValue)
+		body, err := g.getJSONOnce(req, u)
 		if err == nil {
 			return body, nil
 		}
@@ -1423,15 +1439,7 @@ func (g *BalanceFloorGuard) getJSON(ctx context.Context, u, authHeader, authValu
 	return nil, lastErr
 }
 
-func (g *BalanceFloorGuard) getJSONOnce(ctx context.Context, u, authHeader, authValue string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set(authHeader, authValue)
-	req.Header.Set("Accept", "application/json")
-	// 智谱对 Accept-Language 敏感（英文响应字段稳定，实测 cc-switch 同款头）。
-	req.Header.Set("Accept-Language", "en-US,en")
+func (g *BalanceFloorGuard) getJSONOnce(req *http.Request, u string) ([]byte, error) {
 	resp, err := g.http.Do(req)
 	if err != nil {
 		return nil, err
