@@ -51,8 +51,12 @@ package bg
 //   LLM_GATEWAY_BALANCE_FLOOR_INTERVAL — sweep 周期，默认 5m（>=30s）
 //   LLM_GATEWAY_BALANCE_FLOOR_GUARD    — "off"/"false"/"0" 关闭 sweep
 //   LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS — #4 逃生门（R28, 2026-09-14）：
-//     plan 探测证据陈旧超过该小时数时释放 floor 摘出的行，默认 24；0=关闭
-//     逃生门（不推荐：套餐 API 长期故障时 floor 行会永久卡死）。
+//     plan 探测证据陈旧超过该小时数时释放 floor 摘出的行，默认 2（审计
+//     B-E1, 2026-09-16：从 24h 收紧 —— 套餐 API 长期故障时凭据不应被
+//     floor 卡死超过一个探测退避量级）；0=关闭逃生门（不推荐：floor 行
+//     会永久卡死）。
+//   LLM_GATEWAY_FLOOR_PLAN_CONCURRENCY — 套餐探测 worker pool 并发度
+//     （E-B1, 2026-09-16），默认 10，钳制 1..100。
 //
 // 安全性：所有 floor 字段默认 NULL → 选点为空 → worker 空转；探测失败
 // fail-open（保留上次状态，绝不用过期数据做摘出决策）；单凭据失败不影响
@@ -76,6 +80,7 @@ package bg
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -87,9 +92,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/secret"
@@ -102,7 +109,53 @@ const (
 	planFloorPercentHysteresis = 2.0
 	// maxPlanWindowsPerCredential / 响应体上限：防御性，账单接口不该返回大响应。
 	planRespBodyLimit = 64 * 1024
+	// F-L2: 探测失败 Warn 限流窗口 —— 与 #12a 探测退避同窗（15 分钟），
+	// 挂死的厂商套餐端点最多每刻钟刷一条 Warn。
+	planWarnWindow = 15 * time.Minute
+	// G-O1: 控制面 GET 重试 —— 1 次首发 + 至多 2 次重试，退避 500ms×attempt
+	//（0.5s / 1s）。只重试网络错误与 5xx，4xx（坏 key / 坏 URL）不重试。
+	planHTTPMaxAttempts = 3
+	planHTTPRetryDelay  = 500 * time.Millisecond
+	// D-L1: Stop 等待在途 sweep 的上限 —— sweep 的 cctx 派生自 Start 的
+	// 调用方 ctx（main.go 传 Background），无界 join 可能拖住进程下线数分钟。
+	stopWaitTimeout = 10 * time.Second
 )
+
+// warnGate rate-limits per-credential probe-failure Warn logs (F-L2): one Warn
+// per credential per window, further failures inside the window stay at Debug
+// so a dead vendor endpoint cannot flood the log. In-memory only — a restart
+// re-warns once, which is acceptable.
+type warnGate struct {
+	ttl  time.Duration
+	mu   sync.Mutex
+	last map[int64]time.Time
+}
+
+func newWarnGate(ttl time.Duration) *warnGate {
+	return &warnGate{ttl: ttl, last: make(map[int64]time.Time)}
+}
+
+// allow reports whether a Warn for id is due now, recording the attempt.
+func (w *warnGate) allow(id int64, now time.Time) bool {
+	if w == nil {
+		return true
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if t, ok := w.last[id]; ok && now.Sub(t) < w.ttl {
+		return false
+	}
+	// 防御性清理：凭据 ID 大规模翻新时避免 map 无界增长（正常规模到不了）。
+	if len(w.last) >= 4096 {
+		for k, t := range w.last {
+			if now.Sub(t) >= w.ttl {
+				delete(w.last, k)
+			}
+		}
+	}
+	w.last[id] = now
+	return true
+}
 
 // Zhipu/MiniMax 套餐端点路径（相对 origin —— 两家 base_url 都带 API 前缀，
 // 余额/套餐端点不在其下，必须从 scheme://host 重建，禁止字符串拼接 base）。
@@ -429,9 +482,20 @@ type BalanceFloorGuard struct {
 	// #4 逃生门（R28, 2026-09-14）：plan 探测证据陈旧阈值与总开关。
 	escapeStale time.Duration
 	escapeOff   bool
-	http        *http.Client
-	stopCh      chan struct{}
-	stopOnce    sync.Once
+	// E-B1: 套餐探测 worker pool 并发度（LLM_GATEWAY_FLOOR_PLAN_CONCURRENCY）。
+	planConcurrency int
+	// F-L2: 探测失败 Warn 限流（每凭据 15 分钟至多 1 条）。
+	warnGate *warnGate
+	http     *http.Client
+	stopCh   chan struct{}
+	stopOnce sync.Once
+
+	// A-C1: keyring 并发保护
+	keyringMu sync.RWMutex
+	// A-C2 & D-L1: 生命周期守卫
+	lifecycleMu sync.Mutex
+	started     bool
+	workerDone  chan struct{}
 }
 
 func NewBalanceFloorGuard(db *pgxpool.Pool, encKey []byte) *BalanceFloorGuard {
@@ -454,10 +518,10 @@ func NewBalanceFloorGuard(db *pgxpool.Pool, encKey []byte) *BalanceFloorGuard {
 	case "off", "false", "0":
 		disabled = true
 	}
-	// #4 逃生门阈值（小时，默认 24）。0=关闭；解析后 d>0 复检防大数溢出，
+	// #4 逃生门阈值（小时，默认 2）。0=关闭；解析后 d>0 复检防大数溢出，
 	// 与上面 interval 钳制同一教训（time.Duration 乘法溢出为负会让陈旧判定
 	// 永真/永假，2026-09-14 审计 A-P3-5 定式）。
-	escapeStale := 24 * time.Hour
+	escapeStale := 2 * time.Hour
 	escapeOff := false
 	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -471,15 +535,31 @@ func NewBalanceFloorGuard(db *pgxpool.Pool, encKey []byte) *BalanceFloorGuard {
 			}
 		}
 	}
+	// E-B1: 套餐探测并发度，默认 10；钳制 1..100 —— 0/负值会让 worker pool
+	// 空转，过大会把厂商控制面 API 打出限流。
+	planConcurrency := 10
+	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_FLOOR_PLAN_CONCURRENCY")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n < 1 {
+				n = 1
+			}
+			if n > 100 {
+				n = 100
+			}
+			planConcurrency = n
+		}
+	}
 	return &BalanceFloorGuard{
-		db:          db,
-		encKey:      encKey,
-		interval:    interval,
-		disabled:    disabled,
-		escapeStale: escapeStale,
-		escapeOff:   escapeOff,
-		http:        &http.Client{Timeout: 10 * time.Second},
-		stopCh:      make(chan struct{}),
+		db:              db,
+		encKey:          encKey,
+		interval:        interval,
+		disabled:        disabled,
+		escapeStale:     escapeStale,
+		escapeOff:       escapeOff,
+		planConcurrency: planConcurrency,
+		warnGate:        newWarnGate(planWarnWindow),
+		http:            &http.Client{Timeout: 10 * time.Second},
+		stopCh:          make(chan struct{}),
 	}
 }
 
@@ -487,7 +567,9 @@ func NewBalanceFloorGuard(db *pgxpool.Pool, encKey []byte) *BalanceFloorGuard {
 // nil-safe — decrypt falls back to the Fernet key.
 func (g *BalanceFloorGuard) SetKeyring(kr *secret.Keyring) {
 	if g != nil {
+		g.keyringMu.Lock()
 		g.keyring = kr
+		g.keyringMu.Unlock()
 	}
 }
 
@@ -499,11 +581,25 @@ func (g *BalanceFloorGuard) Start(ctx context.Context) {
 		slog.Info("balance_floor_guard disabled (LLM_GATEWAY_BALANCE_FLOOR_GUARD)")
 		return
 	}
+	// A-C2: Start 不可重入 —— 第二次调用不得再起一个 ticker goroutine
+	//（双倍探测、双倍摘出/恢复写竞争）。一次性生命周期：Stop 之后也不复活。
+	g.lifecycleMu.Lock()
+	if g.started {
+		g.lifecycleMu.Unlock()
+		slog.Warn("balance_floor_guard: Start ignored, already running")
+		return
+	}
+	g.started = true
+	g.workerDone = make(chan struct{})
+	g.lifecycleMu.Unlock()
 	slog.Info("balance_floor_guard started",
 		"interval", g.interval,
 		"vendors", []string{"zhipu", "minimax"},
 		"floor_fields", []string{"balance_floor_usd", "quota_floor_tokens", "quota_floor_percent"})
 	go func() {
+		// D-L1: 关闭 workerDone 供 Stop() join；先注册（defer 后进先出，
+		// 在 panic recover 之后执行）—— 即使 sweep panic 也能解除 Stop 阻塞。
+		defer close(g.workerDone)
 		// Audit R20 (2026-09-13): top-level panic guard. A panic on this
 		// loop (pgx driver, JSON decode, providercap) previously took down
 		// the whole gateway process — same shape the BaseWorker scaffold
@@ -544,11 +640,31 @@ func (g *BalanceFloorGuard) safeCycle(ctx context.Context) (err error) {
 	return g.cycle(ctx)
 }
 
+// Stop closes the stop channel and joins the worker (D-L1) so a caller
+// releasing shared resources (DB pool) cannot race a final sweep. The join is
+// capped at stopWaitTimeout: the sweep ctx derives from Start's caller ctx
+// (Background in main.go), so an unbounded wait could stall process shutdown
+// for minutes on a mid-cycle vendor timeout — the worker still exits on its
+// own via stopCh afterwards.
 func (g *BalanceFloorGuard) Stop() {
 	if g == nil {
 		return
 	}
-	g.stopOnce.Do(func() { close(g.stopCh) })
+	g.stopOnce.Do(func() {
+		close(g.stopCh)
+		g.lifecycleMu.Lock()
+		done := g.workerDone
+		g.lifecycleMu.Unlock()
+		if done == nil {
+			return // 从未 Start（或 disabled）：无 worker 可等
+		}
+		select {
+		case <-done:
+		case <-time.After(stopWaitTimeout):
+			slog.Warn("balance_floor_guard: stop timeout waiting for worker",
+				"timeout", stopWaitTimeout.String())
+		}
+	})
 }
 
 // CycleNow runs one sweep synchronously — test/ops entry point.
@@ -573,7 +689,7 @@ func (g *BalanceFloorGuard) cycle(ctx context.Context) error {
 	}
 	// #4 逃生门（R28, 2026-09-14）：陈旧 plan 证据释放，同样放在套餐 sweep
 	// 之前 —— 释放后同 tick 的 plan sweep 立即重探测：成功且仍击穿则经
-	// floorPull 重摘（checked_at 已刷新，24h 内不再触发逃生门），失败则保持
+	// floorPull 重摘（checked_at 已刷新，2h 内不再触发逃生门），失败则保持
 	// 释放态由 #12a 的 15 分钟退避节奏重试。
 	if err := g.releaseStaleProbeFloorCredentials(ctx); err != nil {
 		slog.Warn("balance_floor_guard: stale-probe escape release failed", "error", err)
@@ -644,13 +760,14 @@ func (g *BalanceFloorGuard) releaseClearedFloorCredentials(ctx context.Context) 
 // balance_floor_usd, the plan restore requires a fresh probe, and
 // BalanceQuotaProbe exempts balance_floor rows by design (anti ping-pong).
 // The hatch releases such rows after
-// LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS (default 24h, 0=off) of stale/absent
-// plan evidence. Single idempotent UPDATE; ownership invariants match
+// LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS (default 2h since audit B-E1
+// 2026-09-16, 0=off) of stale/absent plan evidence. Single idempotent UPDATE;
+// ownership invariants match
 // releaseClearedFloorCredentials (only our own balance_floor rows, never
 // manual_disabled rows, provider must be routable).
 //
 // 自愈性：释放后同 tick 的 plan sweep 会立刻重探测 —— 探测成功且仍击穿则经
-// floorPull 立即重摘（persistPlanState 已刷新 checked_at，24h 内逃生门不再
+// floorPull 立即重摘（persistPlanState 已刷新 checked_at，2h 内逃生门不再
 // 触发）；探测仍失败则行保持 released（fail-open），#12a 的 15 分钟退避限制
 // 重试节奏，探测恢复后按正常滞回工作。
 func (g *BalanceFloorGuard) releaseStaleProbeFloorCredentials(ctx context.Context) error {
@@ -911,7 +1028,12 @@ func (g *BalanceFloorGuard) restorePulledCurrency(ctx context.Context, id int64,
 // sort by the failure stamp first (sinks to the front when eligible) but are
 // skipped until the backoff expires, so a dead vendor plan API is not hit on
 // every 5-min tick. Success clears the stamp (persistPlanState).
+//
+// E-B1 (2026-09-16)：候选探测改走 runPlanProbes 的有界 worker pool（默认
+// 并发 10）—— 200 凭据串行、单请求最坏 10s 超时会远超 3 分钟 cctx；并发后
+// 同一 cctx 仍兜底整体时限，fail-open 语义不变。周期结束输出 F-L1 汇总。
 func (g *BalanceFloorGuard) sweepPlanQuotas(ctx context.Context) error {
+	start := time.Now()
 	cctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	rows, err := g.db.Query(cctx, `
@@ -958,26 +1080,75 @@ func (g *BalanceFloorGuard) sweepPlanQuotas(ctx context.Context) error {
 		return err
 	}
 
+	// 只处理订阅套餐厂商；非套餐厂商的 token/percent 下限无数据源，
+	// 由选点进来的仅是为了不被漏掉 —— 明确跳过。
+	planCands := make([]floorCandidate, 0, len(cands))
 	for _, c := range cands {
-		// 只处理订阅套餐厂商；非套餐厂商的 token/percent 下限无数据源，
-		// 由选点进来的仅是为了不被漏掉 —— 明确跳过。
-		if c.Catalog != "zhipu" && c.Catalog != "minimax" {
-			continue
+		if c.Catalog == "zhipu" || c.Catalog == "minimax" {
+			planCands = append(planCands, c)
 		}
-		func() {
+	}
+
+	var stats planSweepStats
+	runPlanProbes(cctx, planCands, g.planConcurrency, func(ctx context.Context, c floorCandidate) {
+		g.handlePlanCredential(ctx, c, &stats)
+	})
+
+	// F-L1: 周期级汇总 —— 探测成功率、摘出/恢复量与耗时，运营可观测。
+	slog.Info("balance_floor_guard: plan sweep completed",
+		"probed", len(planCands),
+		"success", stats.success.Load(),
+		"failed", stats.failed.Load(),
+		"pulled", stats.pulled.Load(),
+		"restored", stats.restored.Load(),
+		"duration", time.Since(start).Round(time.Millisecond).String())
+	return nil
+}
+
+// planSweepStats aggregates per-cycle plan probe outcomes (F-L1) — atomics
+// because probes run concurrently on the worker pool.
+type planSweepStats struct {
+	success  atomic.Int64
+	failed   atomic.Int64
+	pulled   atomic.Int64
+	restored atomic.Int64
+}
+
+// runPlanProbes probes candidates on a bounded worker pool (E-B1). The
+// semaphore blocks submission until a slot frees, so at most `limit` probes
+// are in flight; per-candidate panics are contained exactly like the old
+// serial loop. errgroup 未进 vendor（modules.txt 只收了 semaphore/
+// singleflight），semaphore + WaitGroup 在此语义完全等价。
+func runPlanProbes(ctx context.Context, cands []floorCandidate, limit int, probe func(context.Context, floorCandidate)) {
+	if limit < 1 {
+		limit = 1
+	}
+	sem := semaphore.NewWeighted(int64(limit))
+	var wg sync.WaitGroup
+	for _, c := range cands {
+		c := c
+		// cctx 到点后 Acquire 报错：剩余候选放弃本轮（fail-open，下周期
+		// 重来），已提交的探测随取消的 ctx 自然收尾。
+		if err := sem.Acquire(ctx, 1); err != nil {
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer sem.Release(1)
 			defer func() {
 				if r := recover(); r != nil {
 					slog.Warn("balance_floor_guard: panic handling credential",
 						"credential_id", c.ID, "panic", r)
 				}
 			}()
-			g.handlePlanCredential(cctx, c)
+			probe(ctx, c)
 		}()
 	}
-	return nil
+	wg.Wait()
 }
 
-func (g *BalanceFloorGuard) handlePlanCredential(ctx context.Context, c floorCandidate) {
+func (g *BalanceFloorGuard) handlePlanCredential(ctx context.Context, c floorCandidate, stats *planSweepStats) {
 	var st *planState
 	var err error
 	switch c.Catalog {
@@ -990,8 +1161,18 @@ func (g *BalanceFloorGuard) handlePlanCredential(ctx context.Context, c floorCan
 	}
 	if err != nil {
 		// fail-open：探测失败保留旧状态，绝不用过期数据做摘出决策。
-		slog.Debug("balance_floor_guard: plan probe failed",
-			"credential_id", c.ID, "catalog", c.Catalog, "error", err)
+		// F-L2: 失败日志升为 Warn，但每凭据 15 分钟窗口（与 #12a 退避同窗）
+		// 至多 1 条，其余降级 Debug —— 挂死的厂商端点不能刷屏。
+		if g.warnGate.allow(c.ID, time.Now()) {
+			slog.Warn("balance_floor_guard: plan probe failed",
+				"credential_id", c.ID, "catalog", c.Catalog, "error", err)
+		} else {
+			slog.Debug("balance_floor_guard: plan probe failed (rate-limited)",
+				"credential_id", c.ID, "catalog", c.Catalog, "error", err)
+		}
+		if stats != nil {
+			stats.failed.Add(1)
+		}
 		// #12a 失败退避记账（R28, 2026-09-14）：只写 plan_quota_probe_failed_at。
 		// 绝不写 plan_quota_checked_at —— 它的新鲜度是 #4 逃生门的判据，失败时
 		// 刷新它会让逃生门永远哑火。扫描侧凭 failed_at 让该行沉底 15 分钟，
@@ -1005,6 +1186,9 @@ func (g *BalanceFloorGuard) handlePlanCredential(ctx context.Context, c floorCan
 				"credential_id", c.ID, "error", uerr)
 		}
 		return
+	}
+	if stats != nil {
+		stats.success.Add(1)
 	}
 
 	g.persistPlanState(ctx, c.ID, st)
@@ -1043,6 +1227,9 @@ func (g *BalanceFloorGuard) handlePlanCredential(ctx context.Context, c floorCan
 				return
 			}
 			if tag.RowsAffected() > 0 {
+				if stats != nil {
+					stats.pulled.Add(1)
+				}
 				slog.Info("balance_floor_guard: credential pulled below plan floor",
 					"credential_id", c.ID, "detail", detail)
 			}
@@ -1069,6 +1256,9 @@ func (g *BalanceFloorGuard) handlePlanCredential(ctx context.Context, c floorCan
 			return
 		}
 		if tag.RowsAffected() > 0 {
+			if stats != nil {
+				stats.restored.Add(1)
+			}
 			slog.Info("balance_floor_guard: credential restored above plan floor",
 				"credential_id", c.ID, "detail", detail)
 		}
@@ -1168,7 +1358,11 @@ func (g *BalanceFloorGuard) decryptKey(ciphertext []byte) (string, error) {
 	if len(ciphertext) == 0 {
 		return "", fmt.Errorf("empty secret_ciphertext")
 	}
-	key, err := decryptCiphertext(ciphertext, g.keyring, g.encKey)
+	// A-C1: keyring 可能被 SetKeyring 并发替换，读取必须持读锁。
+	g.keyringMu.RLock()
+	kr := g.keyring
+	g.keyringMu.RUnlock()
+	key, err := decryptCiphertext(ciphertext, kr, g.encKey)
 	if err != nil {
 		return "", fmt.Errorf("decrypt: %w", err)
 	}
@@ -1178,7 +1372,58 @@ func (g *BalanceFloorGuard) decryptKey(ciphertext []byte) (string, error) {
 	return key, nil
 }
 
+// httpStatusError marks a completed HTTP exchange whose status wasn't 200 —
+// typed so the retry policy (G-O1) can distinguish transient 5xx from a
+// definitive 4xx (bad key / bad URL).
+type httpStatusError struct {
+	code int
+	url  string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("HTTP %d from %s", e.code, e.url)
+}
+
+// retryableHTTPErr reports whether a getJSON attempt is worth retrying
+// (G-O1): transport errors and 5xx are treated as transient; 4xx answers and
+// caller-context cancellation are not.
+func retryableHTTPErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var se *httpStatusError
+	if errors.As(err, &se) {
+		return se.code >= http.StatusInternalServerError
+	}
+	return true
+}
+
 func (g *BalanceFloorGuard) getJSON(ctx context.Context, u, authHeader, authValue string) ([]byte, error) {
+	var lastErr error
+	for attempt := 1; attempt <= planHTTPMaxAttempts; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(planHTTPRetryDelay * time.Duration(attempt-1)):
+			}
+		}
+		body, err := g.getJSONOnce(ctx, u, authHeader, authValue)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+		if !retryableHTTPErr(err) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func (g *BalanceFloorGuard) getJSONOnce(ctx context.Context, u, authHeader, authValue string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -1194,7 +1439,7 @@ func (g *BalanceFloorGuard) getJSON(ctx context.Context, u, authHeader, authValu
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, u)
+		return nil, &httpStatusError{code: resp.StatusCode, url: u}
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, planRespBodyLimit))
 }
