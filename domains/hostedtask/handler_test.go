@@ -117,7 +117,7 @@ func TestHandlerIdempotentReplay(t *testing.T) {
 		t.Errorf("replay must flag replayed=true: %s", r2.Body.String())
 	}
 	// 同键异体 → 409。
-	r3 := doReq(h, http.MethodPost, "/v1/hosted-tasks", "0123456789abcdef", `{"goal":"另一个目标"}`)
+	r3 := doReq(h, http.MethodPost, "/v1/hosted-tasks", "0123456789abcdef", `{"goal":"另一个目标","environment":{"workspace_id":"ws1"}}`)
 	if r3.Code != http.StatusConflict {
 		t.Fatalf("conflicting body = %d, want 409", r3.Code)
 	}
