@@ -6,6 +6,8 @@
 
 ## 〇、部署身份核查(观测前置,关键发现)
 
+> **2026-09-16 00:45 更新**:例行部署已执行完毕,两节点现已运行含二轮修复与 O4 指标接线的 main(3a68ff1f)血统构建——本节的"不含二轮修复"结论已被§七的部署记录取代,留档作观测前基线。
+
 | 节点 | build_seq | git_sha | active 单元 | 含一轮修复(O1-O5) | 含二轮修复(f6ea772c6/cd09aee46) | 含 O4 指标接线(bac8b6e9e) |
 |------|-----------|---------|-------------|-------------------|--------------------------------|---------------------------|
 | 245 | 2116 | 741bad4d | llmgo-245-canary@8781(09-15 20:01 起) | ✓ | **✗** | **✗** |
@@ -121,3 +123,34 @@ ssh root@8.136.114.245 'curl -s http://127.0.0.1:8781/healthz'   # 端口随蓝�
 **观测人**:ZCode
 **日期**:2026-09-16
 **状态**:五项任务首轮观测完成;T1/T2/T4 待例行部署开启窗口,T3 待运营补录,T5 部分恢复持续观察
+
+## 七、例行部署执行记录(2026-09-16 00:36–00:50,补录)
+
+**T1/T2/T4 观测窗口自此开启。**
+
+### 7.1 部署过程
+
+| 项 | 结果 |
+|----|------|
+| 前置门禁 | env-injector 双设备注入通过(245=aliyun-frontend-245,154=aliyun-gateway-154);go build ✓;go test bg/admin/autoroute 9 包全绿;无并行 deploy 进程 |
+| 245 第一跳 | 本会话 `deploy-245.sh` 部署 **2122-040207f7** 成功(139s,切换 38s;040207f7=598ef9cb6+本报告文档提交) |
+| 245 竞争覆盖 | 约 5 分钟后并行审计线覆盖部署 **2125-3a68ff1f**——3a68ff1f 是 origin/main HEAD,血统含 598ef9cb6(二轮修复)✓、bac8b6e9e(O4 指标接线)✓、040207f7c(本报告)✓,另含并行线免费凭据容量优化(8f00bde9c)/本地免费激活(c0f71b440)/gitignore;**部署目标(二轮修复+接线上生产)由 2125 达成**,内容级复核通过(patterns.go 词表/N2 守卫/11 类 allowlist/main_types.go 接线全在位) |
+| 154 | `deploy-154.sh` 部署 **2123-3a68ff1f** 成功(129s,切换 14s),active 8782,healthz ready=true |
+| 公网 L4 | `https://llmgo.kxpms.cn/healthz` → 200,2125-3a68ff1f ✓ |
+
+⚠️ **共享节点并行部署竞争**:245 在 5 分钟窗口内被两条部署线先后覆盖(2122→2125)。两条线部署的都是同一 origin/main 血统,最终态正确;但该竞争模式与本地共享网关 N4 同型,若两线部署不同血统将产生真冲突,建议人工协调部署窗口或按 N4 评估实例隔离。
+
+### 7.2 部署后冒烟
+
+- auto route listener 存活:2125 构建启动后对 credential_model_bindings/credentials NOTIFY 正常刷新索引(O5 修复的装配面在新构建延续生效)。
+- deployment-gate key(api_keys id=105)于部署门禁期间(00:44)产生真实请求流量,网关链路健康。
+- 部署后基线快照(00:50):selections 7 天窗口仍为 9 条/4 兜底(无新 auto 流量,符合部署前判断)。
+
+### 7.3 侧发现(非本轮缺陷,建议另开修复轮)
+
+1. **`request_logs_with_current_month` 视图生产缺失**(SQLSTATE 42P01):`auto_summary_generator` 的"summary persisted but title task lookup failed"持续 ERROR——摘要本身已持久化,仅标题任务查询失败,非致命。仓内 `sql/objects/views/request_logs_with_current_month.sql` 有定义,生产库未建,属 schema 漂移;按 pg 日志审计修复闭环惯例应走"新编号迁移+部署清单+installer 三处同步"修复。
+2. **auto-route settle 基线 NULL 扫描 WARN**(`cannot scan NULL into *string (col: task_type)`):cohort 基线查询遇到 task_type NULL 行时降级用中性基线,影响调优信号质量,不影响决策。
+
+### 7.4 周观测机制
+
+每日 09:33 定时任务(automation-39d46377,共 7 次)执行只读观测并追加到 [2026-09-16-round3-weekly-observation-log.md](2026-09-16-round3-weekly-observation-log.md)(D0 基线行已落)。观测内容:双节点构建身份、selections 7d 兜底分布、decision_trace task_type 分布、journal escalation/failed 24h 计数。统计达标判据:某日 7d 总数 ≥30 且兜底占比 ≤35% 记"达标信号"。
