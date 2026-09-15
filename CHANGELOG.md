@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Balance Floor Guard 审计修复 (2026-09-16)**：A-C2 `Start()` 重入守卫 + D-L1 `Stop()` 等待 worker 退出（10s 上限，防在途 sweep 拖住进程下线）；A-C1 `SetKeyring`/`decryptKey` 以 RWMutex 保护；B-E1 逃生门默认从 24h 收紧为 2h（`LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS` 语义不变，0=关闭）；E-B1 套餐探测改有界 worker pool（新 env `LLM_GATEWAY_FLOOR_PLAN_CONCURRENCY`，默认 10，钳制 1..100）；F-L1 每周期输出 `plan sweep completed` 汇总日志（probed/success/failed/pulled/restored/duration）；F-L2 探测失败日志 Debug→Warn（每凭据 15 分钟限 1 条）；G-O1 控制面 GET 增加重试（至多 2 次，仅网络错误与 5xx，退避 0.5s/1s）。
+
 ### Added
 - **PostgreSQL Instance Sync Tool (2026-09-08)**: 新增实例 inventory、确定性 plan、结构影响矩阵、校验备份、缺库 bootstrap 和 insert-only 数据合并。
   - **Safety**: manifest 绑定生成时间、两端 inventory 和 policy SHA-256；输出 hash；修复 allowlist hash 运行时解析；`llm_gateway` 永久禁止数据同步；数据写入采用有界 statement/lock timeout
