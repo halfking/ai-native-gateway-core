@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS hosted_tasks (
     completed_at      TIMESTAMPTZ,
 
     CONSTRAINT hosted_tasks_status_check
-        CHECK (status IN ('delegated', 'dispatching', 'running', 'completing',
+        CHECK (status IN ('delegated', 'dispatching', 'running',
                           'completed', 'failed', 'needs_review',
                           'cancelled', 'expired')),
     CONSTRAINT hosted_tasks_revision_positive CHECK (revision > 0),
