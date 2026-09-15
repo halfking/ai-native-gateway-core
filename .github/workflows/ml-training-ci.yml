@@ -98,7 +98,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.6'
+          go-version: '1.27.1'
           cache: true
 
       - name: Install ONNX Runtime (Ubuntu)
@@ -156,7 +156,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.6'
+          go-version: '1.27.1'
           cache: true
 
       - name: Install ONNX Runtime
@@ -173,7 +173,7 @@ jobs:
       - name: Regenerate Go test fixture
         run: |
           cd ml-training
-          python scripts/make_go_fixture.py --output ../routingopt/testdata/ml_fixture_new
+          python scripts/make_go_fixture.py --out ../routingopt/testdata/ml_fixture_new
 
       - name: Compare fixture manifest
         run: |
@@ -184,11 +184,11 @@ jobs:
 
       - name: Test fixture model loads in Go
         run: |
-          go test ./routingopt -run TestManifestLoad -v
+          go test ./routingopt -run 'TestLoadMLManifestFromFixture|TestMLSelectorEndToEnd' -v
 
-      - name: Verify ML flags configuration
+      - name: Verify routing ML packages
         run: |
-          go test ./settings -run TestRoutingMLFlags -v || echo "SKIP: No dedicated ML flags test found"
+          go vet ./settings ./routingopt
 
       - name: Build gateway with ML support
         run: |
