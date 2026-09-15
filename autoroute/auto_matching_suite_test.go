@@ -17,9 +17,9 @@ import (
 // 喂 HeuristicClassifier(静态默认关键词,与空 tuning_params 的网关行为一致),
 // 是套件在无网络环境下的可回归形态;cmd/autoroute-e2e-audit 用同一文件打真实网关。
 //
-// known_failure=true 的用例记录的是"期望行为"而非当前行为,单独计数:
-//   - 失败 = 已登记的待修缺口(见审计报告);
-//   - 通过 = 缺口已被修复,此时应把标志位翻回 false。
+// known_failure=true is reserved for an actively triaged, reproducible gap.
+// A case that now passes is an xpass and must have its fixture updated in the
+// same change; otherwise an old waiver can silently inflate the suite result.
 type suiteCase struct {
 	Name         string `json:"name"`
 	Bucket       string `json:"bucket"`
@@ -135,6 +135,10 @@ func TestAutoMatchingSuiteHeuristic(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Classify: %v", err)
 			}
+			if tc.KnownFailure && got.Primary == TaskType(tc.ExpectedTask) {
+				t.Errorf("known_failure unexpectedly passed as %s; remove known_failure from fixture", got.Primary)
+				return
+			}
 			if got.Primary == TaskType(tc.ExpectedTask) {
 				t.Logf("PASS %s (conf=%.2f, reason=%s)", tc.Name, got.Confidence, got.Reason)
 				return
@@ -170,6 +174,7 @@ func TestAutoMatchingSuiteHeuristic(t *testing.T) {
 		switch {
 		case ok && tc.KnownFailure:
 			knownFailPass++
+			fail++
 		case ok:
 			pass++
 		case tc.KnownFailure:
@@ -181,6 +186,6 @@ func TestAutoMatchingSuiteHeuristic(t *testing.T) {
 	t.Logf("suite summary: pass=%d fail=%d known_failure=%d known_failure_xpass=%d (total=%d)",
 		pass, fail, knownFail, knownFailPass, len(cases))
 	if fail > 0 {
-		t.Errorf("%d non-known cases failed — 分类回归,见上方子测试明细", fail)
+		t.Errorf("%d suite case(s) failed classification or retained a stale known_failure marker", fail)
 	}
 }
