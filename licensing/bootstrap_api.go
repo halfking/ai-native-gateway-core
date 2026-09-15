@@ -2,10 +2,12 @@ package licensing
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 )
@@ -239,11 +241,54 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "hardware_hash required"})
 	}
 	if h.centerURL == "" || !h.probeCenter() {
-		return c.JSON(http.StatusServiceUnavailable, map[string]any{
-			"activated": false, "error": "center_unreachable",
-			"message": "中心不可达，请改用离线激活或检查 LLM_GATEWAY_CENTER_URL/OPS_COLLECT_URL",
-		})
+		// 本地免费激活分支：中心不可达时生成本地免费 License
+		slog.Info("center unreachable, activating with local free license",
+			"instance_id", instanceID)
 
+		freeLic := h.generateFreeLicense(instanceID, input.HardwareHash)
+
+		// 写入 licenses 表（幂等处理）
+		if createErr := h.Store.CreateLicense(c.Request().Context(), freeLic); createErr != nil {
+			// 如果 CreateLicense 失败，尝试获取已存在的 License（幂等性）
+			existing, getErr := h.Store.GetLicense(c.Request().Context(), freeLic.LicenseKey)
+			if getErr != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]any{
+					"activated": false,
+					"error":     createErr.Error(),
+					"message":   "本地免费 License 创建失败",
+				})
+			}
+			freeLic = existing
+		}
+
+		// 激活设备
+		resp, err := h.Activator.Activate(c.Request().Context(), &ActivationRequest{
+			LicenseKey:   freeLic.LicenseKey,
+			HardwareHash: input.HardwareHash,
+			InstanceID:   instanceID,
+			DeviceName:   input.DeviceName,
+		})
+		if err != nil || !resp.Success {
+			errMsg := "unknown error"
+			if err != nil {
+				errMsg = err.Error()
+			}
+			return c.JSON(http.StatusInternalServerError, map[string]any{
+				"activated": false,
+				"error":     errMsg,
+				"message":   "设备激活失败",
+			})
+		}
+
+		return c.JSON(http.StatusOK, map[string]any{
+			"activated":     true,
+			"mode":          "free_local",
+			"center_online": false,
+			"registered":    false,
+			"instance_id":   instanceID,
+			"license_key":   maskBootstrapLicenseKey(freeLic.LicenseKey),
+			"message":       "已使用本地免费 License 激活；联网后可升级",
+		})
 	}
 	ok, body, err := bootstrapPostJSON(h.centerURL+"/maintain-api/public/license/issue", map[string]string{
 		"instance_id": instanceID, "hardware_hash": input.HardwareHash, "device_name": input.DeviceName,
@@ -326,10 +371,40 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 			})
 		}
 	}
-	h.startCenterAgent(instanceID, licenseKey, input.HardwareHash)
-	return c.JSON(http.StatusOK, map[string]any{
-		"activated": true, "mode": "quick", "center_online": true, "registered": true,
-		"instance_id": instanceID,
-		"license_key": maskBootstrapLicenseKey(licenseKey), "message": "已同意并完成激活",
-	})
-}
+		h.startCenterAgent(instanceID, licenseKey, input.HardwareHash)
+		return c.JSON(http.StatusOK, map[string]any{
+			"activated": true, "mode": "quick", "center_online": true, "registered": true,
+			"instance_id": instanceID,
+			"license_key": maskBootstrapLicenseKey(licenseKey), "message": "已同意并完成激活",
+		})
+	}
+	
+	// generateFreeLicense 生成本地免费 License（中心不可达时使用）
+	func (h *BootstrapHandler) generateFreeLicense(instanceID, hardwareHash string) *License {
+		now := time.Now()
+		
+		// License Key 格式：FREE-{instance_id前12位}
+		licenseKey := fmt.Sprintf("FREE-%s", instanceID)
+		if len(instanceID) > 12 {
+			licenseKey = fmt.Sprintf("FREE-%s", instanceID[:12])
+		}
+		
+		return &License{
+			LicenseKey:       licenseKey,
+			CustomerName:     "Free User",
+			CustomerEmail:    fmt.Sprintf("free-%s@local", instanceID[:min(8, len(instanceID))]),
+			MaxDevices:       1,  // 免费版限制 1 设备
+			SubscriptionTier: "free",
+			Features:         []string{"basic_ai_coding"}, // 基础功能
+			ExpiresAt:        now.AddDate(10, 0, 0),      // 10 年有效期
+			CreatedAt:        now,
+			HardwareHash:     hardwareHash,
+		}
+	}
+	
+	func min(a, b int) int {
+		if a < b {
+			return a
+		}
+		return b
+	}
