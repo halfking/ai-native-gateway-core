@@ -116,3 +116,22 @@ ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-14T19:56:52Z
 - **GLOBAL_G2 首次归零**（24h 窗口 0/6900+），7 天零漂移观察期**自 2026-09-15 起算**，达标 earliest 2026-09-22。
 - biz_multi 会话的 only_v1=33/31/5/4 与 only_v2=151/36 为非终态行（is_final_success=FALSE 的 in_progress/失败占位行，端点不分终态故显示差集；SQL 侧 G2/G3 分类均 0）——与 Round 1 一致，非漂移。
 - E5 例外自此关闭：cost 双侧 14,8 精度对齐，G1-cost=0 漂移实证。
+
+### 每日观察 2026-09-15 09:16 (+08)，build=ba6264ab/2119 —— **首扫 FAIL（PG crash recovery 窗口产物），处置后归零；本日不计入连续归零，计数自 09-16 重新起算**
+
+构建身份：ba6264ab/2119 在本仓库历史（R29 审计轮，含 GAP-2 闭环改动），核验通过。
+
+事件链：08:36(+08) 前后 llm-gateway-pg 容器崩溃重启进入 crash recovery；网关（ba6264ab）降级 DB-less（readyz database:null，17 分钟未自助恢复）→ 09:12 操作侧 docker restart 网关，10s 即 ready。窗口内 v1 终态行 2 条写入成功但 mirror 失败且 outbox 登记同败（DB 不可达）降级 in-proc backlog → 网关重启丢失 → 本轮 GLOBAL_G2=2（FAIL）。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=2|verdict=FAIL
+ROUND_RESULT|sessions=9|fail=0|global_g2=2|verdict=FAIL|at=2026-09-15T01:16:22Z
+```
+
+处置：重跑幂等回填灌 2 行 → reaper 消化 → GLOBAL_G2 复验=0（09:21），outbox 清空。
+
+**判定：本日（09-15）不计入连续归零**——09:16 时点 24h 窗口内存在缺失（尽管随即兜回）。连续归零计数自 2026-09-16 每日轮重新起算（Day1），7 天达标 earliest 顺延至 2026-09-22 每日轮。计数规则不变：任一日 FAIL 即清零。
+
+**新发现（待办，暂以每日回填兜底）——claim 置位 is_final_success 的结构性漏镜像**：缺失行 `f403405b…`（09:17:35，网关恢复后产生）显示存在一条不经 telemetry entry 管道的 `is_final_success` 置位路径（后台 final-success claim/usage 修正直接 SQL UPDATE）：`persistRequestLog` 的 hooks 只覆盖 INSERT/UPDATE entry 写入（client.go:1002-1046），SQL 侧置位列不触发 onPersisted → hook 永远看不到终态信号 → gate `!entry.Success && !isTerminalFailure` 静默跳过（无日志、无登记）。量级 ~3 行/天（低频恒定），G2 gate 对这类行无法靠重放器归零。修复候选（择一，S4 停写前须评估）：① claim UPDATE 路径补发 mirror 触发；② G2 度量为该类登记例外类 E6（须先量化其占比与 credits 完整性）；③ 每日轮回填兜底常态化（现状）。本轮 3 行中 04:13/04:14 两行属 recovery 窗口真失败，f403405b 属本类。
+
+附注：PG 容器 08:36 崩溃重启原因未深挖（docker logs 采样时 daemon 响应迟滞，符合既往管理面挂起记录）；reaper/网关自恢复行为符合预期。
