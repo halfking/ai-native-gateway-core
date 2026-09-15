@@ -357,7 +357,11 @@ func (m *TemplateManager) ResolveAPIKey(ctx context.Context, t *ProviderTemplate
 	}
 	val := envLookup(ref)
 	if val == "" {
-		return "", "", fmt.Errorf("freediscovery: env %s referenced by template %d is not set", ref, t.ID)
+		return "", "", fmt.Errorf(
+			"freediscovery: environment variable %s (referenced by provider template %d '%s') is not set or empty. "+
+				"Fix: export %s=your-api-key in your shell, or use encrypted storage via Keyring",
+			ref, t.ID, t.ProviderCode, ref,
+		)
 	}
 	return val, "env:" + ref, nil
 }

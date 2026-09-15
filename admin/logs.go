@@ -617,8 +617,14 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// Tenant-admin path retains the LEFT JOIN against api_keys so the WHERE
 	// clause on rl.tenant_id is matched by the same row set used for COUNT
 	// and the SUM aggregate below.
-	superCountSQL := "SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE " + where
-	tenantCountSQL := "SELECT COUNT(*) FROM request_logs_with_current_month rl LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
+	// S3 波1（plan §4-S3）：FROM 源可在视图与 session_turns 原生投影间切换
+	//（storage.admin_logs_native_turns_read，默认视图）。两种形态在 rl 别名下
+	// 逐列同形，WHERE/JOIN/扫描零改动。全查询共用一次取值，保证 COUNT/聚合/
+	// 分页列表读到同一行集。
+	logsFrom := logsSourceFromSQL()
+
+	superCountSQL := "SELECT COUNT(*) FROM " + logsFrom + " WHERE " + where
+	tenantCountSQL := "SELECT COUNT(*) FROM " + logsFrom + " LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
 	if IsTenantAdmin(r) {
 		if err := h.db.QueryRow(ctx, tenantCountSQL, args...).Scan(&count); err != nil {
 			slog.Error("admin listLogs count query failed", "scope", "tenant", "error", err)
@@ -660,9 +666,9 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		`
 	var aggFromSQL string
 	if IsTenantAdmin(r) {
-		aggFromSQL = " FROM request_logs_with_current_month rl LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
+		aggFromSQL = " FROM " + logsFrom + " LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
 	} else {
-		aggFromSQL = " FROM request_logs_with_current_month rl WHERE " + where
+		aggFromSQL = " FROM " + logsFrom + " WHERE " + where
 	}
 	if err := h.db.QueryRow(ctx, aggSelect+aggFromSQL, args...).Scan(
 		&promptSum, &completionSum, &cacheReadSum, &cacheWriteSum,
@@ -711,11 +717,11 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		// tenant_admin 路径保留 api_keys JOIN 以匹配同一行集。
 		var byModelFromSQL string
 		if IsTenantAdmin(r) {
-			byModelFromSQL = " FROM request_logs_with_current_month rl" +
+			byModelFromSQL = " FROM " + logsFrom +
 				" LEFT JOIN api_keys ak ON ak.id = rl.api_key_id" +
 				" LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id WHERE " + where
 		} else {
-			byModelFromSQL = " FROM request_logs_with_current_month rl" +
+			byModelFromSQL = " FROM " + logsFrom +
 				" LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id WHERE " + where
 		}
 		modelExpr := `COALESCE(mc.canonical_name, rl.canonical_model, rl.client_model, '未知')`
@@ -772,11 +778,11 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// 外层再对少量行做辅助表 LEFT JOIN + LATERAL。
 	innerSQL := fmt.Sprintf(`
 		SELECT rl.*%s
-		FROM request_logs_with_current_month rl
+		FROM %s
 		WHERE %s
 		ORDER BY %s
 		LIMIT $%d OFFSET $%d
-	`, traceSeqInner, where, orderBy, limitIdx, offsetIdx)
+	`, traceSeqInner, logsFrom, where, orderBy, limitIdx, offsetIdx)
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
 		SELECT %s%s
 		FROM (%s) rl
@@ -876,13 +882,13 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	// 这样 dashboard 实时流（24h 内请求）走 hot fast path，不会再 5s timeout。
 	err = h.db.QueryRow(ctx, fmt.Sprintf(`
 		SELECT %s
-		  FROM request_logs_with_current_month rl
+		  FROM %s
 		%s
 		 WHERE (rl.request_id = $1 OR rl.client_request_id = $1)
 		   AND ($2 OR rl.tenant_id = $3)
 		 ORDER BY CASE WHEN rl.request_id = $1 THEN 0 ELSE 1 END, rl.ts DESC
 		 LIMIT 1
-		`, requestLogsDetailCols, requestLogsJoins), requestID, IsSuperAdminOrLegacy(r), GetTenantID(r)).Scan(
+		`, requestLogsDetailCols, logsSourceFromSQL(), requestLogsJoins), requestID, IsSuperAdminOrLegacy(r), GetTenantID(r)).Scan(
 		&detail.Ts,
 		&detail.RequestID,
 		&detail.APIKeyID,
