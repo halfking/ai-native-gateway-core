@@ -154,3 +154,25 @@ ssh root@8.136.114.245 'curl -s http://127.0.0.1:8781/healthz'   # 端口随蓝�
 ### 7.4 周观测机制
 
 每日 09:33 定时任务(automation-39d46377,共 7 次)执行只读观测并追加到 [2026-09-16-round3-weekly-observation-log.md](2026-09-16-round3-weekly-observation-log.md)(D0 基线行已落)。观测内容:双节点构建身份、selections 7d 兜底分布、decision_trace task_type 分布、journal escalation/failed 24h 计数。统计达标判据:某日 7d 总数 ≥30 且兜底占比 ≤35% 记"达标信号"。
+
+## 八、D0 夜间补记(2026-09-16 02:23,部署后 ~1.5h)
+
+### 8.1 O4 指标读数通道验证(T2 前置,已打通)
+
+§二"指标通道…401 保护(无法匿名读)"的阻塞已随例行部署解除,当晚实测:
+
+- 两节点 `/metrics` 以 admin key 鉴权读取均 **HTTP 200**(245 共 1620 条 llm_gateway_* 序列,154 共 837 条)。`llm_gateway_llm_circuit_breaker_state/_consecutive_failures`(0=closed)与 `llm_gateway_llm_classifier_latency_seconds` histogram 族**在位且为 0**;`llm_gateway_llm_classifier_total` 是 CounterVec,首次 escalation 落第一个 outcome 标签后才会出现在输出——**当前全 0 与"部署后无 auto 流量"一致,不构成接线失效证据**(接线在位已由 2125/2123 内容级复核+auto_route_wiring_guard_test 保证)。
+- 两节点进程 env 均**已配置** `LLMGatewayAutoLLMEndpoint`(Model=deepseek-v4-flash):escalation 一旦发生,计数器即按 success/failure/timeout 落数,disabled 分支不适用。
+- ⚠️ **admin key 取值配方(踩坑留档)**:`/etc/llm-gateway-go/env` **不可 source**(第 26 行非 shell 安全行,报"9527: 未找到命令",与 §附-4 /opt/.env 的 `&` 问题同族;文件 mtime 2026-08-25 未变,定时任务的 psql 步骤不受影响——DSN 在第 13 行,source 中止前已导出);且该文件内 `LLM_GATEWAY_ADMIN_API_KEY=` 行携带杂质(截取 67 字符),与进程真实值(245=25/154=51 字符)不符,拿去鉴权 401。**权威来源是运行进程的 environ**:
+  ```bash
+  PID=$(systemctl show -p MainPID <active-canary-unit> | cut -d= -f2)   # 154 的 systemctl 不支持 --value
+  KEY=$(tr '\0' '\n' < /proc/$PID/environ | grep '^LLM_GATEWAY_ADMIN_API_KEY=' | cut -d= -f2-)
+  curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:$(cat /opt/llm-gateway-go/run/active-port)/metrics
+  ```
+
+### 8.2 其余三项复核
+
+- **部署后 journal(00:40 起)**:两节点 escalation/LLM fallback failed 均 **0**(无 auto 流量,符合预期)。
+- **T3 复核**:suyun#39/apinext#61/智码#35 的 16 行 Claude 系绑定单价/pricing_source/pricing_updated_at **仍全空**——补录未发生,§三"不可验证"标注继续有效。
+- **T5 复核(48h 探测窗,02:20 读数)**:#49 **9/32(28%,较 00:15 读数 6/28=21% 回升,last probe 01:49)**、#50 9/23(39%)维持但 **09-15 18:11 后无新探测**(探测端重退避)、#3 2/12 偶通、#4 0/17、#29 0/21、#45 0/12、#58 三模型 0/29 全败——维持"#50/#49 为 1M 长上下文观察候选、其余门控观察"结论不变。
+- **selection 双面复读(02:23)**:7d 窗口 9 条/4 兜底(44.4%)与 D0 基线完全一致,rdl 分区面(creative×7 兜4+chat+planning)依旧对账,部署后仍零新 auto 流量。
