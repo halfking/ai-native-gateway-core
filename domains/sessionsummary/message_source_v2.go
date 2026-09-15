@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -56,9 +57,13 @@ type v2TurnRow struct {
 // sessionMessageV2 is the JSON shape of a single message inside request_delta.
 // It mirrors the v2.Message struct but is kept local to avoid an import cycle
 // (domains/session/v2 does not expose Message for reuse here without coupling).
+// Content is a RawMessage: text-only messages carry a JSON string, but
+// multimodal messages (MessageFromIR's $ir envelope path) carry a block ARRAY —
+// decoding into a plain string fails the whole unmarshal and silently drops
+// the turn from summary input (IR-audit P1-2, 2026-09-16).
 type sessionMessageV2 struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
 }
 
 // v2SessionBodiesBaseQuery reads the unified hot∪partition view, NOT the
@@ -145,10 +150,65 @@ func collapseToLastRequestMessage(r v2TurnRow) (SessionMessage, bool) {
 	return SessionMessage{
 		RequestID: r.RequestID,
 		Role:      role,
-		Content:   last.Content,
+		Content:   v2ContentText(last.Content),
 		Model:     r.Model,
 		Timestamp: r.Ts,
 	}, true
+}
+
+// v2ContentText flattens a request_delta message content — a JSON string, a
+// block array, or a single block object — into human-readable summary-input
+// text. Mirrors domains/sessiondigest contentText: text parts join with
+// newlines, media/attachment parts become visible placeholders, so a
+// multimodal turn still contributes its prompt (and a marker) instead of
+// vanishing from the summary.
+func v2ContentText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	return v2ContentTextValue(value)
+}
+
+func v2ContentTextValue(value any) string {
+	switch value := value.(type) {
+	case string:
+		return value
+	case []any:
+		parts := make([]string, 0, len(value))
+		for _, item := range value {
+			if text := v2ContentTextValue(item); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	case map[string]any:
+		typ := strings.ToLower(v2StringValue(value["type"]))
+		switch typ {
+		case "text", "input_text", "output_text":
+			if text := v2StringValue(value["text"]); text != "" {
+				return text
+			}
+			return v2StringValue(value["content"])
+		case "image", "image_url", "input_image", "output_image":
+			return "[附图×1]"
+		case "audio", "input_audio":
+			return "[音频×1]"
+		case "file", "document", "attachment", "input_file", "output_file":
+			return "[附件×1]"
+		}
+	}
+	return ""
+}
+
+func v2StringValue(value any) string {
+	if s, ok := value.(string); ok {
+		return s
+	}
+	return ""
 }
 
 func (m *v2SessionBodiesSource) GetSessionMessages(ctx context.Context, tenantID, sessionKey string) ([]SessionMessage, error) {
