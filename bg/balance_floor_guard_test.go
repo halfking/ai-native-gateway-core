@@ -830,7 +830,7 @@ func TestRunPlanProbesBoundedConcurrency(t *testing.T) {
 	for i := range cands {
 		cands[i] = floorCandidate{ID: int64(i + 1)}
 	}
-	runPlanProbes(context.Background(), cands, limit, func(ctx context.Context, c floorCandidate) {
+	runPlanProbes(context.Background(), cands, limit, &planSweepStats{}, func(ctx context.Context, c floorCandidate) {
 		cur := inFlight.Add(1)
 		defer inFlight.Add(-1)
 		defer processed.Add(1)
@@ -855,7 +855,7 @@ func TestRunPlanProbesBoundedConcurrency(t *testing.T) {
 func TestRunPlanProbesRecoversPanic(t *testing.T) {
 	cands := []floorCandidate{{ID: 1}, {ID: 2}}
 	var ran atomic.Int64
-	runPlanProbes(context.Background(), cands, 2, func(ctx context.Context, c floorCandidate) {
+	runPlanProbes(context.Background(), cands, 2, &planSweepStats{}, func(ctx context.Context, c floorCandidate) {
 		ran.Add(1)
 		if c.ID == 1 {
 			panic("boom")

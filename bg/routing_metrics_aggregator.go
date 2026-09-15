@@ -222,6 +222,14 @@ func (w *RoutingMetricsAggregator) recomputeMetrics(ctx context.Context) (int, e
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// R30 P2-3（2026-09-16）：双实例（蓝绿双活）同时聚合时，非 NULL 维度撞
+	// UNIQUE 报错（下轮自愈），但 NULL 维度的 global 行没有任何唯一约束——
+	// 交错提交会留下同桶重复行，GetAggregatedMetrics 的 SUM 双倍计数。
+	// 事务级 advisory lock 把重算串行化。
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('public.routing_optimization_metrics_recompute', 0))`); err != nil {
+		return 0, err
+	}
+
 	// Delete first, then insert: MVCC keeps readers on the pre-sweep snapshot
 	// until commit, so metric consumers never observe a gap.
 	if _, err := tx.Exec(ctx, `
