@@ -8,6 +8,9 @@ DROP VIEW IF EXISTS public.session_turns_with_current_month;
 ALTER TABLE public.session_turns
     ALTER COLUMN cost_usd TYPE numeric(12, 6);
 
+ALTER TABLE public.session_turns_hot
+    ALTER COLUMN cost_usd TYPE numeric(12, 6);
+
 -- 重建 session_turns_with_current_month（640 同款体，见正向迁移说明）。
 CREATE OR REPLACE VIEW public.session_turns_with_current_month
 WITH (security_invoker = true) AS
