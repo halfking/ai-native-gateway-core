@@ -29,6 +29,13 @@ data:
   # false — 允许新标签进入训练集（可能导致标签不一致，仅特殊场景使用）
   annotation_require_known_label: true
 
+  # 标签词表保护（默认强制开启）：human_label 不在自动标签（label.column
+  # 列的取值空间）内的覆盖会被丢弃并计数告警（UserWarning +
+  # annotation_stats.overrides_dropped_unknown_label），防止 provider/模型
+  # 两级标签空间混用污染训练词表。
+  # 仅在已做label映射、明确要混入跨词表标签时才显式设为 false。
+  annotation_require_known_label: true
+
   # 数据清洗
   drop_duplicate_request_ids: true
   min_confidence: 0.0            # confidence 合法区间过滤 [min, max]
