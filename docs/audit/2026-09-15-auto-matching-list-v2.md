@@ -71,6 +71,11 @@ cap:text-classification 类标签(数据);(b) 软化 MatchScore<30 门控(语义
    known_failure 登记);② intent/audit/planning 硬覆盖(1.5)整体先于 agent 工具
    通道(2),工具上下文无法救回被误抢的编排请求(本轮 intent 守卫已缓解意图类,
    audit/planning 未动)。**是否修(调通道序或加施行语境守卫)?审计建议仅加守卫不改序。**
+   
+   **✓ 已修复(2026-09-16,cd09aee46)**:planning 补两道守卫 —— ① 引用语境守卫(>50k
+   长文中出现规划词但无主动制定意图判 long_context);② 工具上下文守卫(agent 编排
+   场景 planning/intent/audit 让位给 agent 通道);100 例套件全绿,mix_60k_planning_words
+   从 known_failure 转 PASS。随 2026-09-16 合并推送 main(6c80e8c2b)。
 3. **[N3 glm-5.2@57 生产退避]** 本地实测 9 连胜的 glm-5.2@apicloude-china#57 在
    生产为 http_403 探测退避(15 连败)。**生产 auto 实际不会选它(决策漏斗消费
    node_probe_state),清单 code/reasoning 备选已按生产面调整;无需变更,观察 403
