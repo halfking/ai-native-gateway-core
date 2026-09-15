@@ -546,3 +546,20 @@ LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS 默认由 24h 收紧为 2h（审计 B-E1 
 LLM_GATEWAY_FLOOR_PLAN_CONCURRENCY，默认 10，钳制 1..100）、Start 重入守卫、
 Stop 等待 worker（10s 上限）、keyring RWMutex、周期汇总日志与失败 Warn 限流、
 控制面 GET 重试（仅网络错误/5xx）。
+
+## 2026-09-16 — R30 审计轮：714 分区函数时区钉扎收尾（pending deploy）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 714 | `714_partition_timezone_pin_remaining.sql` | `13185466113b7f4749741f15090076aa59c7d06770a63441264dcc4a74b8292d` | pending deploy |
+
+694/698/699 钉扎波漏网的 6 个分区函数统一 `SET LOCAL TIME ZONE 'Asia/Shanghai'`：
+`ensure_session_module_executions_partition` / `ensure_dashboard_events_partition` /
+`ensure_cache_metrics_partition`（475 date 签名体，边界字面量按会话时区解释）、
+`ensure_handoff_logs_partition`（534，DECLARE 初始化器先于 BEGIN 求值，已移入函数体）、
+`promote_dashboard_access_events_hot_to_partition`（579）与
+`promote_session_module_executions_hot_to_partition`（580）的 date_trunc 月份分组。
+686 已在 session_module_executions 实际复发 473 类边界漂移（42P17）。纯
+CREATE OR REPLACE FUNCTION + 账本 upsert，幂等；已登记 revision-sequence 通道。
+同批非迁移修正：supplier_errors 历史月分区 TTL（Go stateTableTTLSpecs +
+settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时落库）。
