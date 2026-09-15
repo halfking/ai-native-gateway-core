@@ -34,6 +34,9 @@ bash tests/db252_tunnel_test.sh
 echo "[verify] pre-commit checks"
 ./scripts/pre-commit-check.sh
 
+echo "[verify] migration channel contracts"
+bash scripts/apply-db-revision-sequence_test.sh
+
 echo "[verify] migration checksums (sql/migrations/startup vs docs/db-changelog.md)"
 ./scripts/verify-migration-checksums.sh --quiet
 
