@@ -6,6 +6,51 @@ SCRIPT="$ROOT_DIR/scripts/apply-db-revision-sequence.sh"
 
 bash -n "$SCRIPT"
 
+# canonical_delivery_path_check enforces the R30 migration-channel invariant:
+# high-numbered canonical migrations must reach either a fresh install, an
+# upgrade, or a reviewed Go startup ensure. The inputs stay text lists so the
+# contract can exercise every route without mutating the real catalog.
+canonical_delivery_path_check() {
+  local canonical_files="$1"
+  local startup_files="$2"
+  local sequence_files="$3"
+  local ensure_files="$4"
+  local name version
+
+  while IFS= read -r name; do
+    [[ "$name" == *.down.sql ]] && continue
+    [[ "$name" =~ ^[0-9]{3}_.*\.sql$ ]] || continue
+    version=${name%%_*}
+    [[ "$version" < "690" ]] && continue
+
+    if printf '%s\n' "$startup_files" | grep -Fxq "$name" \
+      || printf '%s\n' "$sequence_files" | grep -Fxq "$name" \
+      || printf '%s\n' "$ensure_files" | grep -Fxq "$name"; then
+      continue
+    fi
+
+    printf 'canonical startup migration %s has no approved delivery path; register it in StartupFiles, the revision sequence, or the reviewed Go-ensure allowlist\n' "$name" >&2
+    return 1
+  done <<<"$canonical_files"
+}
+
+# Keep the helper independently regression-tested: a future edit must preserve
+# all three delivery paths and continue to reject an uncovered >=690 file.
+canonical_delivery_path_check \
+  $'690_fresh.sql\n691_upgrade.sql\n692_ensure.sql' \
+  '690_fresh.sql' \
+  '691_upgrade.sql' \
+  '692_ensure.sql'
+orphan_output=""
+if orphan_output=$(canonical_delivery_path_check '690_orphan.sql' '' '' '' 2>&1); then
+  printf 'canonical delivery-path guard accepted orphaned migration\n' >&2
+  exit 1
+fi
+printf '%s\n' "$orphan_output" | grep -Fq '690_orphan.sql' || {
+  printf 'canonical delivery-path guard did not identify the orphaned migration\n' >&2
+  exit 1
+}
+
 for required in \
   "655_session_summaries_schema_reconcile.sql" \
   "560_session_summaries_tenant_uniqueness.sql" \
@@ -54,6 +99,49 @@ if [[ -n "$top_startup" ]]; then
     exit 1
   }
 fi
+
+# R30 canonical delivery-path gate: prevent the post-690 startup catalog from
+# drifting outside every real installation/upgrade/self-heal channel. The
+# allowlist is deliberately exact: each entry has a reviewed db.go ensure and
+# focused parity coverage, so adding a migration demands an explicit decision.
+startup_files=$(grep -E '^[[:space:]]*"[0-9]{3}_.*\.sql",?$' "$ROOT_DIR/installer/internal/dbinit/runner.go" \
+  | sed -E 's/^[[:space:]]*"([0-9]{3}_[^"]+)".*/\1/' \
+  | sort -u)
+sequence_files=$(printf '%s\n' "$sequence" \
+  | sed -nE 's#^[[:space:]]*"\$ROOT_DIR/sql/migrations/startup/([0-9]{3}_[^"]+)".*#\1#p' \
+  | sort -u)
+ensure_allowlist=$(cat <<'EOF'
+690_session_summaries_archived_ttl_index.sql
+704_plan_quota_probe_backoff.sql
+709_work_type_route_coverage.sql
+EOF
+)
+canonical_files=$(find "$ROOT_DIR/sql/migrations/startup" -maxdepth 1 -type f -name '[0-9][0-9][0-9]_*.sql' \
+  ! -name '*.down.sql' -exec basename {} \; | sort)
+canonical_delivery_path_check "$canonical_files" "$startup_files" "$sequence_files" "$ensure_allowlist"
+
+# Sequence-only migrations are valid fresh-install exceptions, but they must
+# remain in the upgrade contract. If either disappears, the exhaustive gate's
+# coverage can otherwise be obscured by an unrelated future StartupFiles edit.
+for required in \
+  '705_request_logs_reattach_detached_partitions.sql' \
+  '710_request_logs_view_session_family_v2.sql'; do
+  printf '%s\n' "$sequence_files" | grep -Fxq "$required" || {
+    printf 'required sequence-only migration missing from revision sequence: %s\n' "$required" >&2
+    exit 1
+  }
+done
+
+# Ensure-only exceptions must not silently expand or disappear from the
+# reviewed list. Their source/migration equivalence has dedicated db tests.
+for required in \
+  '704_plan_quota_probe_backoff.sql' \
+  '709_work_type_route_coverage.sql'; do
+  printf '%s\n' "$ensure_allowlist" | grep -Fxq "$required" || {
+    printf 'required Go-ensure migration missing from allowlist: %s\n' "$required" >&2
+    exit 1
+  }
+done
 
 # Execute the REAL clobber guard (2026-09-14 audit F-P0-1 root cause):
 # grep-spot-checks stayed green while the pre-flight guard exited 5 on the
