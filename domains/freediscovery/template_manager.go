@@ -140,7 +140,8 @@ func (m *TemplateManager) Get(ctx context.Context, tenantID string, id int64) (*
 		SELECT id, tenant_id, provider_code, display_name, base_url, api_type,
 		       COALESCE(api_key_env,''), api_key_encrypted, COALESCE(models_endpoint,'/models'),
 		       COALESCE(quota_endpoint,''), COALESCE(tos_url,''), tos_verdict, COALESCE(tos_notes,''),
-		       enabled, COALESCE(created_by,''), created_at, updated_at
+		       enabled, COALESCE(created_by,''), created_at, updated_at,
+		       COALESCE(consecutive_scan_failures, 0), last_scan_failure_at, auto_disabled_at
 		FROM provider_templates WHERE id = $1`, id))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -167,7 +168,8 @@ func (m *TemplateManager) List(ctx context.Context, tenantID string, enabledOnly
 		SELECT id, tenant_id, provider_code, display_name, base_url, api_type,
 		       COALESCE(api_key_env,''), api_key_encrypted, COALESCE(models_endpoint,'/models'),
 		       COALESCE(quota_endpoint,''), COALESCE(tos_url,''), tos_verdict, COALESCE(tos_notes,''),
-		       enabled, COALESCE(created_by,''), created_at, updated_at
+		       enabled, COALESCE(created_by,''), created_at, updated_at,
+		       COALESCE(consecutive_scan_failures, 0), last_scan_failure_at, auto_disabled_at
 		FROM provider_templates`
 	if enabledOnly {
 		q += ` WHERE enabled = TRUE`
@@ -266,6 +268,12 @@ func (m *TemplateManager) Update(ctx context.Context, tenantID string, id int64,
 	}
 	if req.Enabled != nil {
 		cur.Enabled = *req.Enabled
+		// Health feedback: operator manually enables → clear auto-disable state to allow retry.
+		if *req.Enabled {
+			cur.ConsecutiveScanFailures = 0
+			cur.LastScanFailureAt = nil
+			cur.AutoDisabledAt = nil
+		}
 	}
 	if cur.DisplayName == "" {
 		return nil, errors.New("freediscovery: display_name cannot be empty")
@@ -285,11 +293,13 @@ func (m *TemplateManager) Update(ctx context.Context, tenantID string, id int64,
 		UPDATE provider_templates SET
 			display_name=$2, base_url=$3, api_type=$4, api_key_env=$5,
 			api_key_encrypted=$6, models_endpoint=$7, quota_endpoint=$8,
-			tos_url=$9, tos_verdict=$10, tos_notes=$11, enabled=$12
+			tos_url=$9, tos_verdict=$10, tos_notes=$11, enabled=$12,
+			consecutive_scan_failures=$13, last_scan_failure_at=$14, auto_disabled_at=$15
 		WHERE id=$1`,
 		id, cur.DisplayName, cur.BaseURL, string(cur.APIType), nullableStr(cur.APIKeyEnv),
 		cur.APIKeyEncrypted, cur.ModelsEndpoint, nullableStr(cur.QuotaEndpoint),
-		nullableStr(cur.TosURL), cur.TosVerdict, nullableStr(cur.TosNotes), cur.Enabled)
+		nullableStr(cur.TosURL), cur.TosVerdict, nullableStr(cur.TosNotes), cur.Enabled,
+		cur.ConsecutiveScanFailures, cur.LastScanFailureAt, cur.AutoDisabledAt)
 	if err != nil {
 		return nil, fmt.Errorf("freediscovery: update template %d: %w", id, err)
 	}
@@ -370,16 +380,19 @@ func scanTemplate(row interface {
 	Scan(dest ...any) error
 }) (*ProviderTemplate, error) {
 	var (
-		t         ProviderTemplate
-		apiType   string
-		createdAt sql.NullTime
-		updatedAt sql.NullTime
+		t                       ProviderTemplate
+		apiType                 string
+		createdAt               sql.NullTime
+		updatedAt               sql.NullTime
+		lastScanFailureAt       sql.NullTime
+		autoDisabledAt          sql.NullTime
 	)
 	if err := row.Scan(
 		&t.ID, &t.TenantID, &t.ProviderCode, &t.DisplayName, &t.BaseURL, &apiType,
 		&t.APIKeyEnv, &t.APIKeyEncrypted, &t.ModelsEndpoint,
 		&t.QuotaEndpoint, &t.TosURL, &t.TosVerdict, &t.TosNotes,
 		&t.Enabled, &t.CreatedBy, &createdAt, &updatedAt,
+		&t.ConsecutiveScanFailures, &lastScanFailureAt, &autoDisabledAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrTemplateNotFound
@@ -392,6 +405,12 @@ func scanTemplate(row interface {
 	}
 	if updatedAt.Valid {
 		t.UpdatedAt = updatedAt.Time
+	}
+	if lastScanFailureAt.Valid {
+		t.LastScanFailureAt = &lastScanFailureAt.Time
+	}
+	if autoDisabledAt.Valid {
+		t.AutoDisabledAt = &autoDisabledAt.Time
 	}
 	return &t, nil
 }

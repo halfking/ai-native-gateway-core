@@ -100,6 +100,10 @@ type ProviderTemplate struct {
 	CreatedBy       string    `json:"created_by"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+	// Health feedback (migration 087): auto-disable after consecutive failures.
+	ConsecutiveScanFailures int        `json:"consecutive_scan_failures"`
+	LastScanFailureAt       *time.Time `json:"last_scan_failure_at,omitempty"`
+	AutoDisabledAt          *time.Time `json:"auto_disabled_at,omitempty"`
 }
 
 // HasCredential reports whether the template carries usable upstream auth.

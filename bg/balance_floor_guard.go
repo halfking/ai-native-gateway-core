@@ -556,7 +556,7 @@ func (g *BalanceFloorGuard) CycleNow(ctx context.Context) error {
 	if g == nil || g.disabled {
 		return nil
 	}
-	return g.cycle(ctx)
+	return g.safeCycle(ctx)
 }
 
 func (g *BalanceFloorGuard) cycle(ctx context.Context) error {
