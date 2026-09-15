@@ -229,6 +229,33 @@ func TestSurvivalCoordinatorResumeBlockedRendersCommittedEnding(t *testing.T) {
 	}
 }
 
+func TestSurvivalCoordinatorDeadlineBeforeFirstAttemptRendersUncommittedTerminal(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{})
+	c := h.coordinator()
+	startedAt := h.clock
+	checks := 0
+	c.Options.Deadline = time.Second
+	c.Now = func() time.Time {
+		checks++
+		if checks == 1 {
+			return startedAt
+		}
+		return startedAt.Add(time.Second)
+	}
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+	if res.Succeed || res.Decision.Action != TaskActionFailClosed || res.Decision.Reason != "deadline_exceeded" {
+		t.Fatalf("deadline-before-attempt result = %+v", res)
+	}
+	if h.exec.calls != 0 || res.Attempts != 0 || res.FinalAttempt != nil {
+		t.Fatalf("deadline before first attempt must not execute: calls=%d attempts=%d final=%+v", h.exec.calls, res.Attempts, res.FinalAttempt)
+	}
+	if len(h.terminals) != 1 || h.committeds[0] {
+		t.Fatalf("deadline before first attempt must render one uncommitted terminal: terminals=%v committed=%v", h.terminals, h.committeds)
+	}
+}
+
 func TestSurvivalCoordinatorDeadlineStopsLoop(t *testing.T) {
 	h := newCoordHarness(&scriptedExecutor{errs: []error{rateLimitFailure(), rateLimitFailure()}})
 	c := h.coordinator()
