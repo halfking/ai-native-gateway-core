@@ -33,6 +33,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ml-training/requirements.txt: Python >= 3.11（最低要求，在 3.13/3.14 上验证过）
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -48,11 +49,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Verify pyarrow installation
+      # 硬依赖预检：缺失时报错指明具体包名。审计 F-8 发现本机缺 pyarrow 时
+      # pytest 收集阶段报错晦涩（ImportError 混在堆栈里），这里 fail-fast。
+      - name: Hard dependency preflight
         run: |
-          python -c "import pyarrow; print(f'pyarrow {pyarrow.__version__} installed')"
-          python -c "import pandas; print(f'pandas {pandas.__version__} installed')"
-          python -c "import sklearn; print(f'scikit-learn {sklearn.__version__} installed')"
+          missing=0
+          # import 名 ↔ PyPI 包名: sklearn=scikit-learn, yaml=PyYAML
+          for pkg in pyarrow pandas numpy sklearn yaml joblib pytest; do
+            if ! python -c "import ${pkg}" 2>/dev/null; then
+              echo "::error::缺少硬依赖包: ${pkg} — 请检查 ml-training/requirements.txt / requirements-dev.txt（pip install -r ml-training/requirements.txt -r ml-training/requirements-dev.txt）"
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "::error::依赖预检失败：见上方逐包错误；pytest 在缺依赖时的报错晦涩，故在此直接失败。"
+            exit 1
+          fi
+          python -c "import sys; print('python', sys.version.split()[0])"
+          python -m pip show pyarrow pandas numpy scikit-learn | grep -E '^(Name|Version):'
 
       - name: Run pytest
         run: |

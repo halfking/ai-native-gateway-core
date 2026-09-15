@@ -741,3 +741,83 @@ func TestManagerResetSingleCredential(t *testing.T) {
 	// Resetting a never-created breaker is a no-op, not a panic.
 	m.Reset(42, 999)
 }
+
+// TestFreeTierCoolingProfile (2026-09-15, 245 free-capacity plan): a
+// billing_mode='free' credential cools on the shortened freeTierPolicies
+// profile — "engine busy" on a 1-concurrency free provider is a normal,
+// milliseconds-scale condition, and a 2-minute hard stop discarded usable
+// free capacity (326 circuit-open cycles / 24h on NVIDIA NIM 18/8+18/19).
+func TestFreeTierCoolingProfile(t *testing.T) {
+	m := NewManager()
+
+	// Paid breaker: KindConcurrent cools 2 minutes (default policy).
+	m.RecordFailure(1, 100, errorsx.KindConcurrent)
+	m.RecordFailure(1, 100, errorsx.KindConcurrent)
+	paid := m.Get(1, 100)
+	if paid.State() != StateOpen {
+		t.Fatalf("paid breaker should be open after 2 concurrent failures, got %s", paid.State())
+	}
+	paidCooling := parseCoolingExpires(t, paid.Stats())
+	if paidCooling < time.Minute {
+		t.Fatalf("paid concurrent cooling should be ~2min, got %v", paidCooling)
+	}
+
+	// Free breaker: same two failures, but cooling is ~5 seconds.
+	m.RecordFailureWithBillingMode(1, 200, errorsx.KindConcurrent, "free")
+	m.RecordFailureWithBillingMode(1, 200, errorsx.KindConcurrent, "free")
+	free := m.Get(1, 200)
+	if !free.IsFreeTier() {
+		t.Fatal("free breaker should be marked as free tier")
+	}
+	if free.State() != StateOpen {
+		t.Fatalf("free breaker should be open after 2 concurrent failures, got %s", free.State())
+	}
+	freeCooling := parseCoolingExpires(t, free.Stats())
+	if freeCooling > 10*time.Second {
+		t.Fatalf("free concurrent cooling should be ~5s, got %v", freeCooling)
+	}
+
+	// The free profile only applies to breakers seen with billing_mode=free;
+	// a paid credential must not inherit it.
+	if m.Get(1, 100).IsFreeTier() {
+		t.Fatal("paid breaker must not be marked free tier")
+	}
+}
+
+// TestFreeTierTransientEscalationCeiling: sustained transient failures on a
+// free credential still escalate, but onto the free UpstreamDown profile
+// (15s) instead of the paid 30s — a dead free provider backs off without
+// pinning its capacity for half-hour ceilings.
+func TestFreeTierTransientEscalationCeiling(t *testing.T) {
+	m := NewManager()
+	for i := 0; i < 4; i++ {
+		m.RecordFailureWithBillingMode(2, 300, errorsx.KindTransient, "free")
+	}
+	free := m.Get(2, 300)
+	if free.State() != StateOpen {
+		t.Fatalf("free breaker should be open after repeated transient failures, got %s", free.State())
+	}
+	cooling := parseCoolingExpires(t, free.Stats())
+	if cooling > 20*time.Second {
+		t.Fatalf("free escalated transient cooling should be ~15s, got %v", cooling)
+	}
+}
+
+// parseCoolingExpires decodes the RFC3339 cooling_expires diagnostic field
+// from Breaker.Stats into a remaining duration.
+func parseCoolingExpires(t *testing.T, stats map[string]any) time.Duration {
+	t.Helper()
+	raw, ok := stats["cooling_expires"]
+	if !ok {
+		t.Fatal("stats missing cooling_expires")
+	}
+	str, ok := raw.(string)
+	if !ok {
+		t.Fatalf("cooling_expires = %T, want string", raw)
+	}
+	ts, err := time.Parse(time.RFC3339, str)
+	if err != nil {
+		t.Fatalf("parse cooling_expires %q: %v", str, err)
+	}
+	return time.Until(ts)
+}

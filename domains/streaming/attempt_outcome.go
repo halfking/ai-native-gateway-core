@@ -261,6 +261,16 @@ func appendSurvivalHistory(history *errorsx.DecisionHistory, result *AttemptResu
 		if candidate.Kind == "" {
 			continue
 		}
+		// 2026-09-15 (245 audit): synthesized no-attempt outcomes (built by
+		// foldCandidateOutcomes when the candidate walk never started, and by
+		// the non-ExecuteError fallback) carry no CandidateID/CredentialID —
+		// there is no real attempt to attribute. They used to flow into
+		// candidateCredential("") and emit 2k+ "survival: invalid candidate
+		// credential id" warnings per day on 245 while appending a
+		// CredentialID=0 history row that ActionNode skips anyway.
+		if candidate.CandidateID == "" {
+			continue
+		}
 		history.LastSeq++
 		history.PriorAttempts = append(history.PriorAttempts, errorsx.PriorAttempt{
 			Seq: history.LastSeq, AttemptNo: attemptNo, Model: candidateModel(candidate.CandidateID),

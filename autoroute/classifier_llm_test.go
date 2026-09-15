@@ -3,6 +3,7 @@ package autoroute
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,5 +28,51 @@ func TestLLMFallbackClassifier_RecordsDisabledOutcome(t *testing.T) {
 	}
 	if len(outcomes) != 1 || outcomes[0] != "disabled" {
 		t.Fatalf("outcomes = %v, want exactly [disabled]", outcomes)
+	}
+}
+
+func TestBuildClassificationPromptIncludesCurrentTaskContractAndSignals(t *testing.T) {
+	prompt := buildClassificationPrompt(ClassificationSignals{
+		SystemPrompt:    "You are a release-planning assistant.",
+		LastUserPrompt:  "Create a rollout roadmap from the tool findings.",
+		ToolCount:       4,
+		HasToolResults:  true,
+		HasImages:       true,
+		HasCodeBlock:    true,
+		EstimatedTokens: 65_000,
+	})
+
+	for _, want := range []string{
+		"planning", "code_audit", "intent_classification", "function_call",
+		"System prompt:", "release-planning assistant", "tool_count=4",
+		"has_tool_results=true", "has_images=true", "has_code_block=true",
+		"estimated_tokens=65000", "Create a rollout roadmap",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildClassificationPromptBoundsText(t *testing.T) {
+	prompt := buildClassificationPrompt(ClassificationSignals{
+		SystemPrompt:   strings.Repeat("s", llmFallbackSystemPromptLimit+1),
+		LastUserPrompt: strings.Repeat("u", llmFallbackUserPromptLimit+1),
+	})
+
+	if !strings.Contains(prompt, "...[truncated]") {
+		t.Fatalf("prompt did not mark truncated content")
+	}
+	if strings.Count(prompt, "...[truncated]") != 2 {
+		t.Fatalf("truncated marker count = %d, want 2", strings.Count(prompt, "...[truncated]"))
+	}
+}
+
+func TestNormaliseLLMTaskTypePlanning(t *testing.T) {
+	for _, raw := range []string{"planning", " Planning. ", "task: planning"} {
+		got, ok := normaliseLLMTaskType(raw)
+		if !ok || got != TaskPlanning {
+			t.Errorf("normaliseLLMTaskType(%q) = (%q, %t), want (%q, true)", raw, got, ok, TaskPlanning)
+		}
 	}
 }
