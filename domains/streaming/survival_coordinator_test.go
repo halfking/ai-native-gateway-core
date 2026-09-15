@@ -644,8 +644,14 @@ func TestSurvivalCoordinatorRetryAfterOverridesFixedInterval(t *testing.T) {
 }
 
 func TestSurvivalCoordinatorHistoryBackingArrayDoesNotAliasAcrossCalls(t *testing.T) {
+	// 2026-09-15: appendSurvivalHistory no longer records synthesized
+	// no-attempt outcomes (CandidateID="") into the history, so the aliasing
+	// exercise needs two REAL failed attempts before the success — the old
+	// script (one failure + scripted-exhaustion errors) silently relied on
+	// those synthesized outcomes to reach the 2-entry minimum.
 	hA := newCoordHarness(&scriptedExecutor{
-		errs: []error{transientFailure(), nil},
+		errs:    []error{transientFailure(), transientFailure(), nil},
+		results: []*executors.ExecuteResult{nil, nil, {}},
 	})
 	cA := hA.coordinator()
 	resA := cA.Run(context.Background(), hA.sw, &executors.ExecParams{})
@@ -726,5 +732,34 @@ func TestSurvivalCoordinatorNightBudgetStopsAtExactlySixHundredRetries(t *testin
 	}
 	if len(h.sleeps) != 600 || h.sleeps[0] != 30*time.Second || h.sleeps[599] != 30*time.Second {
 		t.Fatalf("recovery cadence broken: %d sleeps, first=%v last=%v", len(h.sleeps), h.sleeps[0], h.sleeps[599])
+	}
+}
+
+// TestAppendSurvivalHistorySkipsSynthesizedOutcomes (2026-09-15, 245 audit):
+// foldCandidateOutcomes synthesizes a CandidateID-less outcome when the
+// candidate walk never started (router returned zero candidates) and on
+// non-ExecuteError failures. Those carry no attribution target — appending
+// them produced 2k+/day "survival: invalid candidate credential id" warnings
+// on 245 plus CredentialID=0 history rows that ActionNode skips anyway.
+func TestAppendSurvivalHistorySkipsSynthesizedOutcomes(t *testing.T) {
+	history := &errorsx.DecisionHistory{PriorAttempts: make([]errorsx.PriorAttempt, 0, 8)}
+	result := &AttemptResult{
+		Success: false,
+		CandidateOutcomes: []CandidateOutcome{
+			{Kind: errorsx.KindNoAvailableChannel}, // synthesized: no CandidateID
+			{CandidateID: "provider:18/model:llama-3", CredentialID: "8", Kind: errorsx.KindTransient, ProviderID: 18},
+		},
+	}
+	decision := TaskDecision{Action: TaskActionRetryNow}
+	appendSurvivalHistory(history, result, 1, decision)
+
+	if len(history.PriorAttempts) != 1 {
+		t.Fatalf("history entries = %d, want 1 (synthesized outcome skipped)", len(history.PriorAttempts))
+	}
+	if history.PriorAttempts[0].CredentialID != 8 {
+		t.Fatalf("CredentialID = %d, want 8 (real attempt attributed)", history.PriorAttempts[0].CredentialID)
+	}
+	if history.LastSeq != 1 {
+		t.Fatalf("LastSeq = %d, want 1", history.LastSeq)
 	}
 }

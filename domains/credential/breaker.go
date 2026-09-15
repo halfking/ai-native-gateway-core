@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -138,6 +139,37 @@ var defaultPolicies = map[ErrorKind]CoolingPolicy{
 	errorsx.KindConcurrent: {InitialCooling: 2 * time.Minute, MaxCooling: 2 * time.Minute, RecoveryType: RecoveryAuto, ShrinkFactor: 0.5},
 }
 
+// freeTierPolicies (2026-09-15, 245 free-capacity plan) is the cooling profile
+// for billing_mode='free' credentials (on 245 that is the NVIDIA NIM free
+// pool). Rationale, from the 24h log evidence on 245:
+//
+//   - A free provider is "long-term flaky but occasionally usable". Its
+//     capacity is exactly what we must NOT discard for minutes: the default
+//     KindConcurrent policy (2 min flat) turned a single "engine busy" 503 on
+//     a 1-concurrency credential into a 2-minute outage even though the
+//     vendor was alive and free again milliseconds later. "Busy" on a
+//     1-concurrency free tier is the NORMAL state, not a health incident.
+//   - The transient family (60s flat + escalation) similarly punished bursts:
+//     326 "circuit opened" cycles / 24h flapped 18/8 and 18/19, and every
+//     open window discarded usable free capacity while requests bounced with
+//     KindCircuitOpen (36 + 23 rows in candidate_failure_logs_hot).
+//
+// Shorter cooling lets the soft-demote path (cmi.success_rate / URSM quality
+// score, which already ranks free bindings behind healthy paid ones) do the
+// ranking, while the breaker only hard-stops genuinely sustained outages.
+// Escalation for the transient family still applies after the threshold, so a
+// truly dead free credential still stops receiving first attempts.
+var freeTierPolicies = map[ErrorKind]CoolingPolicy{
+	errorsx.KindTransient:          {InitialCooling: 15 * time.Second, MaxCooling: 15 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	errorsx.KindTimeout:            {InitialCooling: 15 * time.Second, MaxCooling: 15 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	errorsx.KindNetwork:            {InitialCooling: 15 * time.Second, MaxCooling: 15 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	errorsx.KindStreamTimeout:      {InitialCooling: 15 * time.Second, MaxCooling: 15 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	errorsx.KindConcurrent:         {InitialCooling: 5 * time.Second, MaxCooling: 5 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	errorsx.KindUpstreamDown:       {InitialCooling: 15 * time.Second, MaxCooling: 5 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
+	errorsx.KindUpstreamOverloaded: {InitialCooling: 15 * time.Second, MaxCooling: 2 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
+	errorsx.KindRateLimit:          {InitialCooling: 30 * time.Second, MaxCooling: 2 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.7},
+}
+
 // ---------------------------------------------------------------------------
 // Breaker
 // ---------------------------------------------------------------------------
@@ -149,6 +181,7 @@ type Breaker struct {
 	failCount      atomic.Int32
 	consecutive    atomic.Int32
 	halfOpenProbes atomic.Int32
+	freeTier       atomic.Bool // billing_mode='free': use freeTierPolicies cooling
 	coolingPolicy  CoolingPolicy
 
 	mu             sync.Mutex
@@ -321,6 +354,14 @@ var transientFamily = map[ErrorKind]bool{
 	KindStreamTimeout: true,
 }
 
+// MarkFreeTier switches this breaker onto the freeTierPolicies cooling
+// profile (billing_mode='free' credentials). Idempotent; safe to call on
+// every failure recording. See freeTierPolicies for the rationale.
+func (b *Breaker) MarkFreeTier() { b.freeTier.Store(true) }
+
+// IsFreeTier reports whether the free-tier cooling profile is active.
+func (b *Breaker) IsFreeTier() bool { return b.freeTier.Load() }
+
 // RecordFailure records a failure and transitions the circuit state.
 func (b *Breaker) RecordFailure(kind ErrorKind) {
 	// 2026-07-03 P0 fix: client bugs (tool_call_id_mismatch, invalid_request_format,
@@ -338,6 +379,16 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 	policy, ok := defaultPolicies[kind]
 	if !ok {
 		policy = b.coolingPolicy
+	}
+	// 2026-09-15 (245 free-capacity plan): free-tier credentials cool on the
+	// shortened freeTierPolicies profile so a busy/blip on an occasionally-
+	// usable free provider does not discard its capacity for minutes. The
+	// state machine (thresholds, half-open probe) is unchanged — only the
+	// cooling durations differ.
+	if b.freeTier.Load() {
+		if fp, ok := freeTierPolicies[kind]; ok {
+			policy = fp
+		}
 	}
 	// 2026-07-09: 同族错误不重置连续失败计数
 	lastIsTransient := transientFamily[b.lastErrorKind]
@@ -418,6 +469,12 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 			case KindTransient, KindTimeout, KindNetwork, KindStreamTimeout:
 				if consecutive >= autoRecoveryFailureThreshold {
 					escalated := defaultPolicies[KindUpstreamDown]
+					// Free tier escalates onto its own (shorter) UpstreamDown
+					// profile: a sustained free outage still backs off, but the
+					// ceiling stays the free profile's 5 min, not 30 min.
+					if fp, ok := freeTierPolicies[KindUpstreamDown]; ok && b.freeTier.Load() {
+						escalated = fp
+					}
 					coolingDuration = escalated.InitialCooling
 					b.coolingExpires = now.Add(escalated.InitialCooling)
 
@@ -509,6 +566,7 @@ func (b *Breaker) Stats() map[string]any {
 		"consecutive_failures": b.consecutive.Load(),
 		"total_failures":       b.failCount.Load(),
 		"cooling_cycle":        b.coolingCycle,
+		"free_tier":            b.freeTier.Load(),
 	}
 	if !b.lastFailureAt.IsZero() {
 		stats["last_failure_at"] = b.lastFailureAt.Format(time.RFC3339)
@@ -619,6 +677,19 @@ func (m *Manager) Reset(providerID, credentialID int) {
 // RecordFailure records a failure on the appropriate breaker.
 func (m *Manager) RecordFailure(providerID, credentialID int, kind ErrorKind) {
 	b := m.GetOrCreate(providerID, credentialID)
+	b.RecordFailure(kind)
+}
+
+// RecordFailureWithBillingMode records a failure and, when the billing mode
+// is "free", marks the breaker for the shortened freeTierPolicies cooling
+// profile first (2026-09-15, 245 free-capacity plan). The mark is sticky:
+// a credential observed as free once keeps the profile until process
+// restart, matching the stable billing_mode column it derives from.
+func (m *Manager) RecordFailureWithBillingMode(providerID, credentialID int, kind ErrorKind, billingMode string) {
+	b := m.GetOrCreate(providerID, credentialID)
+	if strings.EqualFold(strings.TrimSpace(billingMode), "free") {
+		b.MarkFreeTier()
+	}
 	b.RecordFailure(kind)
 }
 
