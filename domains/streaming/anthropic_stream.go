@@ -1164,7 +1164,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	return outcome
 }
 
-func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, pc *pendingCapturer, msgID, clientModel, finishReason string, outputTokens int, inputTokens int, capture *audit.StreamCapture) {
+func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, pc *pendingCapturer, msgID, clientModel, finishReason string, outputTokens int, inputTokens int, capture *audit.StreamCapture) bool {
 	stopReason := mapAnthropicStopReason(finishReason)
 
 	// Record usage in capture for audit trail (IR-based)
@@ -1193,10 +1193,9 @@ func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, pc *pending
 		},
 		"usage": map[string]any{"output_tokens": outputTokens},
 	}
-	writeSSEWithCapturer(w, pc, "message_delta", deltaPayload)
-
-	writeSSEWithCapturer(w, pc, "message_stop", map[string]any{"type": "message_stop"})
-	flusher.Flush()
+	deltaWritten := writeSSEWithCapturer(w, pc, "message_delta", deltaPayload)
+	stopWritten := writeSSEWithCapturer(w, pc, "message_stop", map[string]any{"type": "message_stop"})
+	return deltaWritten && stopWritten && safeFlush(flusher)
 }
 
 // writeAnthropicInterruptedTail renders the Anthropic protocol terminal
@@ -1214,7 +1213,9 @@ func writeAnthropicInterruptedTail(w http.ResponseWriter, flusher http.Flusher, 
 	if !(gate.MayWriteTerminal() || attemptHasClientSemanticOutput(gate, chunkCount)) {
 		return
 	}
-	writeAnthropicTail(w, flusher, pc, msgID, clientModel, "length", outputTokens, inputTokens, capture)
+	if writeAnthropicTail(w, flusher, pc, msgID, clientModel, "length", outputTokens, inputTokens, capture) {
+		gate.MarkTerminalRendered()
+	}
 }
 
 // writeSSEWithCapturer is the capturer-aware variant of writeSSE for the
@@ -1222,17 +1223,17 @@ func writeAnthropicInterruptedTail(w http.ResponseWriter, flusher http.Flusher, 
 // capturer buffer so the gateway can replay them via the pending-response
 // endpoint on client reconnect (Track C C5, 2026-06-21). nil pc is fine —
 // it just writes to w.
-func writeSSEWithCapturer(w http.ResponseWriter, pc *pendingCapturer, event string, payload any) {
+func writeSSEWithCapturer(w http.ResponseWriter, pc *pendingCapturer, event string, payload any) bool {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return
+		return false
 	}
 	line := fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)
-	//nolint:errcheck // HTTP write error non-recoverable
-	w.Write([]byte(line))
+	written := safeWriteSSE(w, line)
 	if pc != nil {
 		pc.append(line)
 	}
+	return written
 }
 
 func writeSSE(w http.ResponseWriter, event string, payload any) {
