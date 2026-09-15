@@ -318,3 +318,42 @@ scripts/capacity-baseline/reports/
 # NAS 同步残片文件
 .!*
 data/
+
+# ── 2026-09-16: 跨平台 OS / 编辑器产物兜底（Windows + macOS + Linux + 通用编辑器）
+# 补齐已有的 .DS_Store / Thumbs.db / desktop.ini / .idea/ / .vscode/ 之外的
+# 跨平台噪声：macOS 资源叉与索引、Windows Office 锁与缩略图缓存、
+# Linux/KDE 文件夹元数据、Sublime/Eclipse/NetBeans 工程残留、patch 残片。
+# 这些文件在其它操作系统上要么无法创建，要么只属于本地工具链，
+# 没有理由进入仓库。────────────────────────────────────────────
+# macOS — AppleDouble / Spotlight / Trash / FSEvents
+._*
+.AppleDouble/
+.LSOverride
+.Spotlight-V100/
+.Trashes/
+.Trash-*
+.fseventsd/
+.TemporaryItems/
+
+# Windows — 缩略图缓存（Vista+）/ 快捷方式 / Office 文件锁
+ehthumbs.db
+ehthumbs_vista.db
+*.lnk
+~$*
+
+# Linux / KDE Dolphin — 文件夹元数据 / NFS 锁
+.directory
+.nfs*
+
+# 通用编辑器 — Sublime / Eclipse / NetBeans
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.settings/
+nbproject/
+.metadata/
+
+# patch / git apply 残片
+*.orig
+*.rej
