@@ -21,11 +21,20 @@
 --
 -- 分区表：父表 ALTER 自动级联全部分区（2026_07..2026_10 + default，
 -- 本机实测 26.8 万行，重写秒级）。放大 precision/scale 为纯放宽，无值截断。
+--
+-- session_turns_hot 是独立热表（非分区成员），必须与父表同批 ALTER：
+-- 707 promote 的列契约要求（列名:类型:非空）集合全等，任一侧单改类型
+-- 会让 promote_session_turns_hot_to_partition 永久报
+-- 「column contract has drifted」并停摆 hot→父表晋升（本机 2026-09-15
+-- 03:18 实证：首版只改父表，hot 滞留 12,6，promote 停摆积压 1.7 万行）。
 
 DROP VIEW IF EXISTS public.request_logs_with_current_month;
 DROP VIEW IF EXISTS public.session_turns_with_current_month;
 
 ALTER TABLE public.session_turns
+    ALTER COLUMN cost_usd TYPE numeric(14, 8);
+
+ALTER TABLE public.session_turns_hot
     ALTER COLUMN cost_usd TYPE numeric(14, 8);
 
 -- 重建 session_turns_with_current_month（640_session_turns_protocol_fields
