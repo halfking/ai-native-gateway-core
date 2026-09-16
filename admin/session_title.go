@@ -299,6 +299,10 @@ func (h *Handler) upsertSessionTitle(ctx context.Context, taskID, scopedSessionI
 // resolveSessionTitleTaskID chooses the real task scope from user-facing
 // requests so summary refreshes update the same title row as request logs.
 // Legacy sessions without a task retain the historical "auto" scope.
+// R34 (2026-09-17): goal shadow turns (origin_actor LIKE 'goal-%') are
+// gateway-synthesized — they carry no X-Gw-Task-Id, so picking one would
+// silently degrade the title scope back to legacy 'auto' for any goal-enabled
+// session whose latest success is a shadow turn.
 func (h *Handler) resolveSessionTitleTaskID(ctx context.Context, sessionID, tenantID string) (string, error) {
 	if h == nil || h.db == nil {
 		return "", fmt.Errorf("database not configured")
@@ -311,6 +315,7 @@ func (h *Handler) resolveSessionTitleTaskID(ctx context.Context, sessionID, tena
 		  AND tenant_id = $2
 		  AND success = TRUE
 		  AND COALESCE(is_auto_request, FALSE) = FALSE
+		  AND COALESCE(origin_actor, '') NOT LIKE 'goal-%'
 		ORDER BY ts DESC, id DESC
 		LIMIT 1
 	`, sessionID, tenantID).Scan(&taskID)

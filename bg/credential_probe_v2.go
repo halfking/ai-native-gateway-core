@@ -122,6 +122,10 @@ func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 	return probe
 }
 
+// CONTRACT: call once at boot, BEFORE Start — the field is written without
+// a lock while probe goroutines read it in decryptCiphertext. Runtime key
+// rotation would be a data race; switch to atomic.Pointer first if that is
+// ever needed (R34 2026-09-17 audit note).
 func (c *CredentialProbeV2) SetKeyring(kr *secret.Keyring) {
 	c.keyring = kr
 }

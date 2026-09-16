@@ -629,6 +629,57 @@ func TestInterceptNonStream_ToolCalls_NoAdvisorySignal_AfterGiveUp(t *testing.T)
 	}
 }
 
+// R34 (2026-09-17): client_signal_mode=handoff suppresses the advisory frame,
+// mirroring the regular gw-continue gate (advisory is a continue-flavoured
+// signal; a handoff-only tenant must not receive it mid tool loop).
+func TestInterceptNonStream_ToolCalls_NoAdvisorySignal_HandoffMode(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "adv-6", TenantID: "t1", State: StateActive})
+	hook := newTestHook(t, store, nil)
+	hook.config.ClientSignalOnToolCalls = true
+	hook.config.ClientSignalMode = "handoff"
+
+	res, _ := hook.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "adv-6", TenantID: "t1", FinishReason: "tool_calls",
+		ResponseBody:        []byte(`{"choices":[{"message":{"role":"assistant","content":"calling a tool now"},"finish_reason":"tool_calls"}]}`),
+		ClientSignalAllowed: true,
+	})
+	if res != nil {
+		t.Fatalf("handoff-only mode must suppress the advisory frame, got %+v", res)
+	}
+}
+
+// R34 (2026-09-17): when the loop detector wants a model rotation on a
+// tool_calls turn (budget exhausted, switch available), the rotation must take
+// precedence over the advisory frame. Without this ordering, a session whose
+// every turn ends in tool_calls would emit advisories forever while
+// AtomicModelSwitch never runs — starving the switch_budget_exhausted give-up.
+func TestInterceptNonStream_ToolCalls_ModelSwitch_PrecedesAdvisory(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "adv-7", TenantID: "t1", State: StateActive, AutoContinueCount: 3})
+	hook := newTestHook(t, store, nil) // ModelSwitchOnLoop=true, FallbackModels set, MaxAutoContinueCount=3
+	hook.config.ClientSignalOnToolCalls = true
+
+	res, _ := hook.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "adv-7", TenantID: "t1", FinishReason: "tool_calls",
+		ResponseBody:        []byte(`{"choices":[{"message":{"role":"assistant","content":"calling a tool now"},"finish_reason":"tool_calls"}]}`),
+		ClientSignalAllowed: true,
+	})
+	if res == nil {
+		t.Fatal("budget exhausted + switch available must rotate, got nil")
+	}
+	if res.ClientSignalKind != "" {
+		t.Fatalf("advisory frame must yield to model rotation, got ClientSignalKind=%q", res.ClientSignalKind)
+	}
+	if res.Action != "goal_model_switch" || len(res.InjectFollowUp) == 0 {
+		t.Fatalf("want goal_model_switch follow-up, got action=%q inject=%d bytes", res.Action, len(res.InjectFollowUp))
+	}
+	sess, _ := store.GetSession(context.Background(), "t1", "adv-7")
+	if sess.ModelSwitchCount == 0 {
+		t.Fatal("AtomicModelSwitch must actually run when rotation preempts the advisory")
+	}
+}
+
 // ── Concurrent continues: only one wins the CAS, exactly one follow-up ─────
 //
 // This exercises the AtomicAutoContinue guard that prevents two concurrent
