@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/db"
 )
 
 // HeatmapBucket represents a single time bucket in the heatmap.
@@ -28,6 +30,26 @@ type HeatmapBucket struct {
 type HeatmapModel struct {
 	RawModelName string          `json:"raw_model_name"`
 	Buckets      []HeatmapBucket `json:"buckets"`
+	// NodeStatus 是该 (credential, model) 节点的当前探测状态(单一事实源
+	// node_probe_state),2026-09-17 起随热力图一并返回:探测更新节点状态,
+	// 路由消费节点状态,请求结果回写节点状态,热力图如实展示节点状态。
+	NodeStatus *HeatmapNodeStatus `json:"node_status,omitempty"`
+}
+
+// HeatmapNodeStatus mirrors the current node_probe_state row for a
+// (credential, model) node. State uses the same derived vocabulary as
+// v_node_probe_state_compat: healthy_confirmed | broken_confirmed |
+// suspicious | probing | unknown(手动下线) | unprobed(尚无状态行)。
+type HeatmapNodeStatus struct {
+	State              string  `json:"state"`
+	Routable           bool    `json:"routable"`
+	LastDirectOK       *bool   `json:"last_direct_ok"`
+	LastErrCode        *string `json:"last_err_code,omitempty"`
+	LastAttemptAt      *string `json:"last_attempt_at,omitempty"`
+	NextRetryAt        *string `json:"next_retry_at,omitempty"`
+	ConsecutiveFails   int     `json:"consecutive_failures"`
+	ConsecutiveSuccess int     `json:"consecutive_successes"`
+	Paused             bool    `json:"paused"`
 }
 
 // HeatmapCredential represents a credential's heatmap data.
@@ -182,6 +204,10 @@ func (m *CredentialMonitorHandlers) handleCredentialHeatmap(w http.ResponseWrite
 		recordHeatmapQueryMetrics(false, queryDurationMs, len(credentialIDs), granularity)
 		return
 	}
+
+	// 附带当前节点状态(node_probe_state 单一事实源)。失败仅降级:
+	// node_status 缺省,热力图历史桶照常返回。
+	applyNodeStatus(ctx, m.h.db, credentials)
 
 	// 监控打点：成功查询
 	totalBuckets := 0
@@ -509,6 +535,96 @@ func deriveStatusFromRate(successRate float64, totalRequests int) string {
 		return "degraded"
 	}
 	return "unreachable"
+}
+
+// nodeStatusStateSQL 与 v_node_probe_state_compat 的 state 派生一致 —— 两者都
+// 调用 db.NodeProbeStateCaseSQL("nps") 这个单一事实源,保证同源。
+var nodeStatusStateSQL = db.NodeProbeStateCaseSQL("nps")
+
+// applyNodeStatus enriches each heatmap model row with the current
+// node_probe_state row for its (credential, model) pair. Best-effort: on
+// query error the enrichment is skipped (node_status stays nil) and the
+// historical buckets are still returned.
+func applyNodeStatus(ctx context.Context, db pgxQueryer, credentials []HeatmapCredential) {
+	type pairKey [2]string // {credential_id, raw_model_name}
+
+	seen := map[pairKey]bool{}
+	var creds []string
+	var models []string
+	for _, cred := range credentials {
+		for _, model := range cred.Models {
+			k := pairKey{fmt.Sprint(cred.CredentialID), model.RawModelName}
+			if !seen[k] {
+				seen[k] = true
+				creds = append(creds, k[0])
+				models = append(models, k[1])
+			}
+		}
+	}
+	if len(creds) == 0 {
+		return
+	}
+
+	rows, err := db.Query(ctx, `
+		SELECT nps.credential_id::text, nps.raw_model_name,
+		       `+nodeStatusStateSQL+`,
+		       -- routable 与路由判定一致: last_direct_ok=false 且未到重试时间 → 剔除
+		       NOT (COALESCE(nps.last_direct_ok, TRUE) = FALSE AND nps.next_retry_at > NOW()),
+		       nps.last_direct_ok, nps.last_err_code,
+		       nps.last_attempt_at, nps.next_retry_at,
+		       nps.consecutive_failures, nps.consecutive_successes, nps.paused
+		FROM node_probe_state nps
+		WHERE (nps.credential_id::text, nps.raw_model_name) IN (
+		    SELECT unnest($1::text[]), unnest($2::text[])
+		)
+	`, creds, models)
+	if err != nil {
+		slog.Warn("heatmap node_status enrichment failed", "error", err.Error())
+		return
+	}
+	defer rows.Close()
+
+	statusByKey := map[pairKey]*HeatmapNodeStatus{}
+	for rows.Next() {
+		var (
+			credID, model, state string
+			st                   HeatmapNodeStatus
+			lastAttempt, retry   *time.Time
+		)
+		if err := rows.Scan(
+			&credID, &model, &state, &st.Routable,
+			&st.LastDirectOK, &st.LastErrCode,
+			&lastAttempt, &retry,
+			&st.ConsecutiveFails, &st.ConsecutiveSuccess, &st.Paused,
+		); err != nil {
+			continue
+		}
+		st.State = state
+		if lastAttempt != nil {
+			s := lastAttempt.UTC().Format(time.RFC3339)
+			st.LastAttemptAt = &s
+		}
+		if retry != nil {
+			s := retry.UTC().Format(time.RFC3339)
+			st.NextRetryAt = &s
+		}
+		statusByKey[pairKey{credID, model}] = &st
+	}
+	if rows.Err() != nil {
+		slog.Warn("heatmap node_status enrichment rows error", "error", rows.Err().Error())
+		return
+	}
+
+	for ci := range credentials {
+		for mi := range credentials[ci].Models {
+			key := pairKey{fmt.Sprint(credentials[ci].CredentialID), credentials[ci].Models[mi].RawModelName}
+			if st, ok := statusByKey[key]; ok {
+				credentials[ci].Models[mi].NodeStatus = st
+			} else {
+				credentials[ci].Models[mi].NodeStatus = &HeatmapNodeStatus{State: "unprobed", Routable: true}
+			}
+		}
+	}
 }
 
 // granularitySeconds converts a granularity label to its bucket width in

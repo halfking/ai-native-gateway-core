@@ -326,7 +326,7 @@ func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
 				LEFT JOIN credential_model_bindings cmb
 					ON cmb.credential_id = mo.credential_id
 				   AND cmb.provider_model_id = (SELECT id FROM provider_models pm WHERE pm.raw_model_name = mo.raw_model_name AND pm.provider_id = c.provider_id LIMIT 1)
-				LEFT JOIN model_probe_state mps
+				LEFT JOIN v_node_probe_state_compat mps
 					ON mps.credential_id = mo.credential_id
 				   AND mps.raw_model_name = mo.raw_model_name
 				WHERE mo.credential_id = c.id
@@ -374,7 +374,7 @@ func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
 			LEFT JOIN credential_model_bindings cmb
 				ON cmb.credential_id = mo.credential_id
 			   AND cmb.provider_model_id = (SELECT id FROM provider_models pm WHERE (pm.raw_model_name = mo.raw_model_name OR pm.standardized_name = mo.standardized_name) AND pm.provider_id = c.provider_id LIMIT 1)
-			LEFT JOIN model_probe_state mps
+			LEFT JOIN v_node_probe_state_compat mps
 				ON mps.credential_id = mo.credential_id
 			   AND (mps.raw_model_name = mo.raw_model_name OR mps.raw_model_name = mo.standardized_name)
 			%s
@@ -424,7 +424,7 @@ func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
 					LEFT JOIN credential_model_bindings cmb
 						ON cmb.credential_id = mo.credential_id
 					   AND cmb.provider_model_id = (SELECT id FROM provider_models pm WHERE pm.raw_model_name = mo.raw_model_name AND pm.provider_id = c.provider_id LIMIT 1)
-					LEFT JOIN model_probe_state mps
+					LEFT JOIN v_node_probe_state_compat mps
 						ON mps.credential_id = mo.credential_id
 					   AND mps.raw_model_name = mo.raw_model_name
 					-- P95: bg rollup (5min bucket, latest 1) - main hot path
@@ -1125,6 +1125,24 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())
 			return
 		}
+		// 2026-09-17 数据源统一:展示面已切到 node_probe_state,手动下线必须
+		// 同步写入新系统(pause 探测队列 + 标记 last_err_code),否则凭据列表
+		// 与 probe-health 显示的仍是切换前的自动探测状态。
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO node_probe_state
+			    (credential_id, raw_model_name, next_retry_at, next_retry_seconds,
+			     paused, consecutive_failures, last_err_code, last_attempt_at, updated_at)
+			VALUES ($1, $2, NOW() + INTERVAL '100 years', 0, TRUE, 0, 'manual_offline', NOW(), NOW())
+			ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+			    paused = TRUE,
+			    next_retry_at = NOW() + INTERVAL '100 years',
+			    last_err_code = 'manual_offline',
+			    last_attempt_at = NOW(),
+			    updated_at = NOW()
+		`, req.CredentialID, req.RawModel); err != nil {
+			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())
+			return
+		}
 		newAvailable = false
 		newReason = &offlineReason
 	} else {
@@ -1164,6 +1182,21 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			    last_attempt_at = NOW(),
 			    next_retry_at = NOW(),
 			    last_status = 'manual_online'
+		`, req.CredentialID, req.RawModel); err != nil {
+			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())
+			return
+		}
+		// 2026-09-17 数据源统一:手动上线同步恢复新系统(un-pause + 立即排队重探)。
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO node_probe_state
+			    (credential_id, raw_model_name, next_retry_at, next_retry_seconds,
+			     paused, consecutive_failures, last_attempt_at, updated_at)
+			VALUES ($1, $2, NOW(), 5, FALSE, 0, NOW(), NOW())
+			ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+			    paused = FALSE,
+			    next_retry_at = NOW(),
+			    consecutive_failures = 0,
+			    updated_at = NOW()
 		`, req.CredentialID, req.RawModel); err != nil {
 			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())
 			return
