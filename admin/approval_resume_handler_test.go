@@ -68,13 +68,29 @@ func TestHandleApprovalResume_MissingTenantID(t *testing.T) {
 	h := &Handler{approvalResumeHandler: mock}
 
 	req := httptest.NewRequest("POST", "/api/admin/approvals/test-id/resume", nil)
-	// no tenant_id in context or header
+	// no auth context (unauthenticated) — R29: must 401, no header fallback.
 	rec := httptest.NewRecorder()
 
 	h.HandleApprovalResume(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("expected status 401, got %d", rec.Code)
+	}
+
+	// 已认证但伪造 X-Tenant-ID：不得改变目标租户（越权语义由
+	// TestApprovalResumeTenantScoping 钉死，这里钉 handler 级为自身租户）。
+	mock2 := &mockResumeHandler{}
+	h2 := &Handler{approvalResumeHandler: mock2}
+	req = httptest.NewRequest("POST", "/api/admin/approvals/test-id/resume", nil)
+	req = SetAuthContext(req, &AuthContext{TenantID: "own-tenant", Role: "tenant_admin"})
+	req.Header.Set("X-Tenant-ID", "victim-tenant")
+	rec = httptest.NewRecorder()
+	h2.HandleApprovalResume(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authenticated resume expected 200, got %d", rec.Code)
+	}
+	if mock2.calls[0].tenantID != "own-tenant" {
+		t.Errorf("forged X-Tenant-ID must be ignored, target tenant = %q", mock2.calls[0].tenantID)
 	}
 }
 
@@ -83,7 +99,7 @@ func TestHandleApprovalResume_Success(t *testing.T) {
 	h := &Handler{approvalResumeHandler: mock}
 
 	req := httptest.NewRequest("POST", "/api/admin/approvals/test-approval-id/resume", nil)
-	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req = SetAuthContext(req, &AuthContext{TenantID: "test-tenant", Role: "tenant_admin"})
 	rec := httptest.NewRecorder()
 
 	h.HandleApprovalResume(rec, req)
@@ -113,7 +129,7 @@ func TestHandleApprovalResume_NotPending(t *testing.T) {
 	h := &Handler{approvalResumeHandler: mock}
 
 	req := httptest.NewRequest("POST", "/api/admin/approvals/test-id/resume", nil)
-	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req = SetAuthContext(req, &AuthContext{TenantID: "test-tenant", Role: "tenant_admin"})
 	rec := httptest.NewRecorder()
 
 	h.HandleApprovalResume(rec, req)
@@ -132,7 +148,7 @@ func TestHandleApprovalResume_SnapshotMissing(t *testing.T) {
 	h := &Handler{approvalResumeHandler: mock}
 
 	req := httptest.NewRequest("POST", "/api/admin/approvals/test-id/resume", nil)
-	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req = SetAuthContext(req, &AuthContext{TenantID: "test-tenant", Role: "tenant_admin"})
 	rec := httptest.NewRecorder()
 
 	h.HandleApprovalResume(rec, req)
@@ -151,7 +167,7 @@ func TestHandleApprovalResume_Rejected(t *testing.T) {
 	h := &Handler{approvalResumeHandler: mock}
 
 	req := httptest.NewRequest("POST", "/api/admin/approvals/test-id/resume", nil)
-	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req = SetAuthContext(req, &AuthContext{TenantID: "test-tenant", Role: "tenant_admin"})
 	rec := httptest.NewRecorder()
 
 	h.HandleApprovalResume(rec, req)
@@ -170,7 +186,7 @@ func TestHandleApprovalResume_Timeout(t *testing.T) {
 	h := &Handler{approvalResumeHandler: mock}
 
 	req := httptest.NewRequest("POST", "/api/admin/approvals/test-id/resume", nil)
-	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req = SetAuthContext(req, &AuthContext{TenantID: "test-tenant", Role: "tenant_admin"})
 	rec := httptest.NewRecorder()
 
 	h.HandleApprovalResume(rec, req)
@@ -189,7 +205,7 @@ func TestHandleApprovalResume_GenericError(t *testing.T) {
 	h := &Handler{approvalResumeHandler: mock}
 
 	req := httptest.NewRequest("POST", "/api/admin/approvals/test-id/resume", nil)
-	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req = SetAuthContext(req, &AuthContext{TenantID: "test-tenant", Role: "tenant_admin"})
 	rec := httptest.NewRecorder()
 
 	h.HandleApprovalResume(rec, req)
@@ -223,43 +239,29 @@ func TestExtractApprovalID(t *testing.T) {
 	}
 }
 
-func TestGetTenantIDFromRequest(t *testing.T) {
-	tests := []struct {
-		name  string
-		setup func(*http.Request)
-		want  string
-	}{
-		{
-			name: "from header",
-			setup: func(r *http.Request) {
-				r.Header.Set("X-Tenant-ID", "tenant-from-header")
-			},
-			want: "tenant-from-header",
-		},
-		{
-			name: "from query param",
-			setup: func(r *http.Request) {
-				q := r.URL.Query()
-				q.Set("tenant_id", "tenant-from-query")
-				r.URL.RawQuery = q.Encode()
-			},
-			want: "tenant-from-query",
-		},
-		{
-			name:  "missing",
-			setup: func(r *http.Request) {},
-			want:  "",
-		},
+func TestApprovalResumeTenantScoping(t *testing.T) {
+	// R29: tenant_admin（及其它非超管角色）钉死认证上下文租户——伪造
+	// X-Tenant-ID / tenant_id query 不得改变目标租户（跨租户 resume 越权）。
+	newTenantAdminReq := func(tenant string) *http.Request {
+		req := httptest.NewRequest("POST", "/api/admin/approvals/test/resume", nil)
+		req = SetAuthContext(req, &AuthContext{TenantID: tenant, Role: "tenant_admin"})
+		return req
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("POST", "/api/admin/approvals/test/resume", nil)
-			tt.setup(req)
-			got := getTenantIDFromRequest(req)
-			if got != tt.want {
-				t.Errorf("getTenantIDFromRequest() = %q, want %q", got, tt.want)
-			}
-		})
+	req := newTenantAdminReq("own-tenant")
+	req.Header.Set("X-Tenant-ID", "victim-tenant")
+	q := req.URL.Query()
+	q.Set("tenant_id", "victim-tenant")
+	req.URL.RawQuery = q.Encode()
+	if got := tenantFromQueryOrContext(req); got != "own-tenant" {
+		t.Errorf("non-super role must be pinned to own tenant, got %q", got)
+	}
+
+	// super_admin 显式指定目标租户仍合法。
+	super := httptest.NewRequest("POST", "/api/admin/approvals/test/resume", nil)
+	super = SetAuthContext(super, &AuthContext{TenantID: "own-tenant", Role: "super_admin"})
+	super.Header.Set("X-Tenant-ID", "target-tenant")
+	if got := tenantFromQueryOrContext(super); got != "target-tenant" {
+		t.Errorf("super_admin explicit override expected, got %q", got)
 	}
 }

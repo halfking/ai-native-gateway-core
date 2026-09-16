@@ -21,6 +21,13 @@ func rawDelta(t *testing.T, msgs []sessionMessageV2) []byte {
 	return b
 }
 
+// rawText wraps a plain-string content into the RawMessage shape used by
+// sessionMessageV2.
+func rawText(s string) json.RawMessage {
+	b, _ := json.Marshal(s)
+	return b
+}
+
 // TestCollapseToLastRequestMessage_SelectsLast is the V1-parity contract: V1's
 // request_logs query returns messages[-1] of the turn body. The V2 source must
 // do the same with request_delta so both sources feed the summarizer the same
@@ -31,8 +38,8 @@ func TestCollapseToLastRequestMessage_SelectsLast(t *testing.T) {
 		Model:     "glm-4.6",
 		Ts:        time.Unix(1000, 0),
 		RequestDelta: rawDelta(t, []sessionMessageV2{
-			{Role: "system", Content: "ignored"},
-			{Role: "user", Content: "the actual prompt"},
+			{Role: "system", Content: rawText("ignored")},
+			{Role: "user", Content: rawText("the actual prompt")},
 		}),
 	}
 	sm, ok := collapseToLastRequestMessage(row)
@@ -59,7 +66,7 @@ func TestCollapseToLastRequestMessage_RoleDefaultsToUser(t *testing.T) {
 	row := v2TurnRow{
 		RequestID: "req-2",
 		RequestDelta: rawDelta(t, []sessionMessageV2{
-			{Content: "no role set"},
+			{Content: rawText("no role set")},
 		}),
 	}
 	sm, ok := collapseToLastRequestMessage(row)
@@ -91,6 +98,33 @@ func TestCollapseToLastRequestMessage_SkipsUnusable(t *testing.T) {
 	}
 }
 
+// TestCollapseToLastRequestMessage_MultimodalBlockArray is the regression test
+// for IR-audit P1-2 (2026-09-16): a multimodal turn's request_delta content is
+// a block ARRAY, which used to fail the plain-string unmarshal and silently
+// drop the whole turn from summary input. It must now flatten to its text plus
+// visible media placeholders.
+func TestCollapseToLastRequestMessage_MultimodalBlockArray(t *testing.T) {
+	blocks := json.RawMessage(`[
+		{"type": "text", "text": "看看这张图"},
+		{"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}},
+		{"type": "document", "source": {"type": "base64"}}
+	]`)
+	row := v2TurnRow{
+		RequestID:    "req-mm",
+		Model:        "glm-4.6",
+		Ts:           time.Unix(2000, 0),
+		RequestDelta: rawDelta(t, []sessionMessageV2{{Role: "user", Content: blocks}}),
+	}
+	sm, ok := collapseToLastRequestMessage(row)
+	if !ok {
+		t.Fatal("multimodal turn must not be dropped")
+	}
+	want := "看看这张图\n[附图×1]\n[附件×1]"
+	if sm.Content != want {
+		t.Errorf("content = %q, want %q", sm.Content, want)
+	}
+}
+
 // TestCollapseTurns_PreservesOrderAndSkips verifies the turn→message mapping
 // keeps ascending ts order (matching V1's ORDER BY ts ASC) and drops turns that
 // have no usable request_delta.
@@ -99,9 +133,9 @@ func TestCollapseTurns_PreservesOrderAndSkips(t *testing.T) {
 	t1 := time.Unix(2000, 0)
 	t2 := time.Unix(3000, 0)
 	turns := []v2TurnRow{
-		{RequestID: "r0", Ts: t0, RequestDelta: rawDelta(t, []sessionMessageV2{{Role: "user", Content: "first"}})},
+		{RequestID: "r0", Ts: t0, RequestDelta: rawDelta(t, []sessionMessageV2{{Role: "user", Content: rawText("first")}})},
 		{RequestID: "r1", Ts: t1, RequestDelta: nil}, // skipped
-		{RequestID: "r2", Ts: t2, RequestDelta: rawDelta(t, []sessionMessageV2{{Role: "user", Content: "third"}})},
+		{RequestID: "r2", Ts: t2, RequestDelta: rawDelta(t, []sessionMessageV2{{Role: "user", Content: rawText("third")}})},
 	}
 	got := collapseTurns(turns)
 	if len(got) != 2 {

@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -166,6 +167,92 @@ func TestStreamOpenAIToAnthropicUncommittedIntegrityBreachStaysSilent(t *testing
 }
 
 // ─── #2 survival terminal latch: one attempt, one terminal ──────────────────
+
+func TestChatInterruptedTailLatchesCoordinatorGate(t *testing.T) {
+	rec := httptest.NewRecorder()
+	gate := NewAttemptCommitGate(context.Background(), ProtocolOpenAIChat,
+		NewSerializedStreamWriter(rec), GateOptions{Mode: GateModeBuffered})
+	gw := NewGateWriterWithResponse(gate, rec)
+
+	require.NoError(t, gate.WriteFrame("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"))
+	require.True(t, gate.Committed())
+
+	writeChatInterruptedTail(gw, nil, gate, nil)
+	require.True(t, gate.TerminalRendered())
+	body := rec.Body.String()
+	assert.Equal(t, 1, strings.Count(body, `"finish_reason":"length"`))
+	assert.Equal(t, 1, strings.Count(body, "data: [DONE]\n\n"))
+
+	terminalCalls := 0
+	(&SurvivalCoordinator{Terminal: func(TaskDecision, bool) { terminalCalls++ }}).renderTerminal(
+		TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}, gate, false)
+	assert.Equal(t, 0, terminalCalls, "coordinator must not add a second Chat terminal")
+}
+
+func TestAnthropicInterruptedTailLatchesCoordinatorGate(t *testing.T) {
+	rec := httptest.NewRecorder()
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic,
+		NewSerializedStreamWriter(rec), GateOptions{Mode: GateModeBuffered})
+	gw := NewGateWriterWithResponse(gate, rec)
+
+	require.NoError(t, gate.WriteFrame("event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"))
+	require.True(t, gate.Committed())
+
+	writeAnthropicInterruptedTail(gw, gw, nil, gate, 1, "msg_test", "model", 0, 0, nil)
+	require.True(t, gate.TerminalRendered())
+	body := rec.Body.String()
+	assert.Equal(t, 1, strings.Count(body, `"stop_reason":"max_tokens"`))
+	assert.Equal(t, 1, strings.Count(body, "event: message_stop"))
+
+	terminalCalls := 0
+	(&SurvivalCoordinator{Terminal: func(TaskDecision, bool) { terminalCalls++ }}).renderTerminal(
+		TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}, gate, false)
+	assert.Equal(t, 0, terminalCalls, "coordinator must not add an error after message_stop")
+}
+
+func TestInterruptedTailWriteFailureLeavesCoordinatorEligible(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		protocol ClientProtocol
+		commit   string
+		tail     func(http.ResponseWriter, *AttemptCommitGate)
+	}{
+		{
+			name:     "chat",
+			protocol: ProtocolOpenAIChat,
+			commit:   "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+			tail: func(w http.ResponseWriter, gate *AttemptCommitGate) {
+				writeChatInterruptedTail(w, nil, gate, nil)
+			},
+		},
+		{
+			name:     "anthropic",
+			protocol: ProtocolAnthropic,
+			commit:   "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+			tail: func(w http.ResponseWriter, gate *AttemptCommitGate) {
+				writeAnthropicInterruptedTail(w, w.(http.Flusher), nil, gate, 1, "msg_test", "model", 0, 0, nil)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wire := &trackingFlusher{}
+			gate := NewAttemptCommitGate(context.Background(), tc.protocol,
+				NewSerializedStreamWriter(wire), GateOptions{Mode: GateModeBuffered})
+			gw := NewGateWriter(gate)
+			require.NoError(t, gate.WriteFrame(tc.commit))
+			require.True(t, gate.Committed())
+
+			wire.fail = true
+			tc.tail(gw, gate)
+			assert.False(t, gate.TerminalRendered(), "partial terminal must not suppress fallback")
+
+			terminalCalls := 0
+			(&SurvivalCoordinator{Terminal: func(TaskDecision, bool) { terminalCalls++ }}).renderTerminal(
+				TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}, gate, false)
+			assert.Equal(t, 1, terminalCalls, "coordinator must retain fallback authority")
+		})
+	}
+}
 
 func TestCommittedBreachRendersSingleResponsesTerminal(t *testing.T) {
 	rec := httptest.NewRecorder()

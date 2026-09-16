@@ -2,10 +2,17 @@ package bg
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
 // ---------------------------------------------------------------- parsers --
@@ -526,8 +533,9 @@ func TestBalanceFloorGuardDisabledNoCycle(t *testing.T) {
 }
 
 // TestBalanceFloorGuardEscapeHatchThreshold pins the #4 escape-hatch env
-// contract (R28, 2026-09-14): LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS defaults
-// to 24, 0 disables the hatch entirely, positive values are honoured, and a
+// contract (R28, 2026-09-14; default tightened 24h→2h by audit B-E1
+// 2026-09-16): LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS defaults
+// to 2, 0 disables the hatch entirely, positive values are honoured, and a
 // value whose hours→Duration conversion overflows falls back to the default
 // (same d>0 recheck as the interval knob — A-P3-5) instead of producing a
 // negative duration that would corrupt the staleness comparison.
@@ -538,12 +546,12 @@ func TestBalanceFloorGuardEscapeHatchThreshold(t *testing.T) {
 		wantStale time.Duration
 		wantOff   bool
 	}{
-		{"default when unset", "", 24 * time.Hour, false},
-		{"zero disables hatch", "0", 24 * time.Hour, true},
+		{"default when unset", "", 2 * time.Hour, false},
+		{"zero disables hatch", "0", 2 * time.Hour, true},
 		{"hours honoured", "72", 72 * time.Hour, false},
-		{"off string does not disable hatch", "off", 24 * time.Hour, false},
-		{"negative falls back to default", "-5", 24 * time.Hour, false},
-		{"int64 hours overflow falls back to default", "9223372036854775807", 24 * time.Hour, false},
+		{"off string does not disable hatch", "off", 2 * time.Hour, false},
+		{"negative falls back to default", "-5", 2 * time.Hour, false},
+		{"int64 hours overflow falls back to default", "9223372036854775807", 2 * time.Hour, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -708,5 +716,302 @@ func TestBalanceFloorGuardPlanProbeFailureBackoff(t *testing.T) {
 	}
 	if !strings.Contains(sfn, "ORDER BY COALESCE(c.plan_quota_probe_failed_at, c.plan_quota_checked_at) ASC NULLS FIRST") {
 		t.Fatalf("plan sweep must order by COALESCE(failed_at, checked_at) ASC NULLS FIRST")
+	}
+}
+
+// ------------------------------------------- lifecycle & concurrency (2026-09-16) --
+// 审计修复：A-C1 keyring 锁 / A-C2 Start 重入 / B-E1 逃生门 2h / D-L1 Stop join /
+// E-B1 并发探测 / F-L1 周期汇总 / F-L2 Warn 限流 / G-O1 HTTP 重试。
+
+// TestBalanceFloorGuardStartReentryAndStopJoin pins A-C2 + D-L1: a second
+// Start must not spawn another worker (proven by workerDone staying the same
+// channel), Stop must return only after the worker actually exited (proven by
+// workerDone being closed), and Start-after-Stop must not revive the worker.
+func TestBalanceFloorGuardStartReentryAndStopJoin(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_BALANCE_FLOOR_INTERVAL", "1h") // ticker 在测试内不点火
+	g := NewBalanceFloorGuard(nil, nil)
+	g.Start(context.Background())
+	g.lifecycleMu.Lock()
+	started, firstDone := g.started, g.workerDone
+	g.lifecycleMu.Unlock()
+	if !started || firstDone == nil {
+		t.Fatalf("Start must arm the worker (started=%v done=%v)", started, firstDone)
+	}
+	// A-C2: 重入 Start 不得再起 worker。
+	g.Start(context.Background())
+	g.lifecycleMu.Lock()
+	secondDone := g.workerDone
+	g.lifecycleMu.Unlock()
+	if secondDone != firstDone {
+		t.Fatalf("reentrant Start must be a no-op (A-C2)")
+	}
+	// D-L1: Stop 必须等 worker 退出 —— 返回后 workerDone 一定已关闭。
+	g.Stop()
+	select {
+	case <-firstDone:
+	default:
+		t.Fatalf("Stop must wait for worker exit (D-L1)")
+	}
+	// 一次性生命周期：Stop 后 Start 不得复活 worker；重复 Stop 幂等。
+	g.Start(context.Background())
+	g.Stop()
+	g.lifecycleMu.Lock()
+	after := g.workerDone
+	g.lifecycleMu.Unlock()
+	if after != firstDone {
+		t.Fatalf("Start after Stop must not re-arm the worker")
+	}
+}
+
+// TestBalanceFloorGuardSetKeyringConcurrent exercises the A-C1 lock: concurrent
+// SetKeyring writers racing BOTH keyring readers — decryptKey (plan probe
+// path) and refreshBalance (currency refresh path; audit round-3 F-3: the
+// round-2 fix only covered decryptKey and missed this unlocked read). Only
+// meaningful under -race. The v1-envelope ciphertext / openai catalog make the
+// code actually touch the keyring (and fail decrypt before any network call).
+func TestBalanceFloorGuardSetKeyringConcurrent(t *testing.T) {
+	g := NewBalanceFloorGuard(nil, nil)
+	var key [32]byte
+	key[0] = 7
+	kr, err := secret.NewKeyring(map[string][32]byte{"k1": key}, "k1")
+	if err != nil {
+		t.Fatalf("NewKeyring: %v", err)
+	}
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			g.SetKeyring(kr)
+		}()
+		go func() {
+			defer wg.Done()
+			// 解密必然失败，但读取路径必须触碰 keyring —— -race 捕获无锁读。
+			_, _ = g.decryptKey([]byte("v1:k1:not-a-real-envelope"))
+		}()
+		go func() {
+			defer wg.Done()
+			// 货币 refresh 路径：openai catalog 有 BalanceURL → 到达解密步
+			//（解密失败即返回，不发起网络请求）。
+			g.refreshBalance(ctx, 1, []byte("v1:k1:not-a-real-envelope"),
+				"https://api.openai.com/v1", "openai-completions", "openai")
+		}()
+	}
+	wg.Wait()
+}
+
+// TestBalanceFloorGuardPlanConcurrencyEnv pins the E-B1 env knob contract:
+// default 10, values clamped into 1..100, unparsable falls back to default.
+func TestBalanceFloorGuardPlanConcurrencyEnv(t *testing.T) {
+	cases := []struct {
+		env  string
+		want int
+	}{
+		{"", 10},
+		{"4", 4},
+		{"0", 1},
+		{"-3", 1},
+		{"1000", 100},
+		{"abc", 10},
+	}
+	for _, c := range cases {
+		t.Run("env="+c.env, func(t *testing.T) {
+			if c.env == "" {
+				t.Setenv("LLM_GATEWAY_FLOOR_PLAN_CONCURRENCY", "")
+				os.Unsetenv("LLM_GATEWAY_FLOOR_PLAN_CONCURRENCY")
+			} else {
+				t.Setenv("LLM_GATEWAY_FLOOR_PLAN_CONCURRENCY", c.env)
+			}
+			g := NewBalanceFloorGuard(nil, nil)
+			if g.planConcurrency != c.want {
+				t.Fatalf("planConcurrency = %d, want %d (env %q)", g.planConcurrency, c.want, c.env)
+			}
+		})
+	}
+}
+
+// TestRunPlanProbesBoundedConcurrency pins E-B1 worker-pool semantics: at
+// most `limit` probes in flight, every candidate processed exactly once.
+func TestRunPlanProbesBoundedConcurrency(t *testing.T) {
+	const limit = 4
+	var inFlight, maxInFlight, processed atomic.Int64
+	cands := make([]floorCandidate, 24)
+	for i := range cands {
+		cands[i] = floorCandidate{ID: int64(i + 1)}
+	}
+	runPlanProbes(context.Background(), cands, limit, &planSweepStats{}, func(ctx context.Context, c floorCandidate) {
+		cur := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		defer processed.Add(1)
+		for {
+			old := maxInFlight.Load()
+			if cur <= old || maxInFlight.CompareAndSwap(old, cur) {
+				break
+			}
+		}
+		time.Sleep(time.Millisecond)
+	})
+	if got := maxInFlight.Load(); got > limit {
+		t.Fatalf("max in-flight probes = %d, want <= %d", got, limit)
+	}
+	if got := processed.Load(); got != int64(len(cands)) {
+		t.Fatalf("processed = %d, want %d", got, len(cands))
+	}
+}
+
+// TestRunPlanProbesRecoversPanic pins per-candidate panic isolation on the
+// worker pool — one panicking probe must not skip the remaining candidates.
+func TestRunPlanProbesRecoversPanic(t *testing.T) {
+	cands := []floorCandidate{{ID: 1}, {ID: 2}}
+	var ran atomic.Int64
+	runPlanProbes(context.Background(), cands, 2, &planSweepStats{}, func(ctx context.Context, c floorCandidate) {
+		ran.Add(1)
+		if c.ID == 1 {
+			panic("boom")
+		}
+	})
+	if ran.Load() != 2 {
+		t.Fatalf("panic in one candidate must not skip others, ran=%d", ran.Load())
+	}
+}
+
+// TestPlanProbeWarnGateRateLimit pins F-L2 rate limiting: first failure per
+// credential warns, repeats inside the window are suppressed, other
+// credentials warn independently, and the window expiry re-arms the Warn.
+func TestPlanProbeWarnGateRateLimit(t *testing.T) {
+	w := newWarnGate(15 * time.Minute)
+	now := time.Now()
+	if !w.allow(1, now) {
+		t.Fatalf("first failure must warn")
+	}
+	if w.allow(1, now.Add(time.Minute)) {
+		t.Fatalf("second failure within the window must be rate-limited")
+	}
+	if !w.allow(2, now.Add(time.Minute)) {
+		t.Fatalf("another credential must warn independently")
+	}
+	if !w.allow(1, now.Add(15*time.Minute)) {
+		t.Fatalf("after the window a new Warn must be due")
+	}
+}
+
+// TestRetryableHTTPErr pins the G-O1 retry classification: transport errors
+// and 5xx retry, 4xx and caller-context cancellation do not.
+func TestRetryableHTTPErr(t *testing.T) {
+	if retryableHTTPErr(nil) {
+		t.Fatalf("nil must not be retryable")
+	}
+	if retryableHTTPErr(context.Canceled) || retryableHTTPErr(context.DeadlineExceeded) {
+		t.Fatalf("ctx errors must not be retryable")
+	}
+	if retryableHTTPErr(&httpStatusError{code: 401, url: "u"}) {
+		t.Fatalf("4xx must not be retryable")
+	}
+	if !retryableHTTPErr(&httpStatusError{code: 502, url: "u"}) {
+		t.Fatalf("5xx must be retryable")
+	}
+	if !retryableHTTPErr(errors.New("dial tcp: i/o timeout")) {
+		t.Fatalf("transport error must be retryable")
+	}
+}
+
+// TestGetJSONRetryOn5xxThenSuccess pins G-O1 behaviour end to end: two 502s
+// followed by a 200 must succeed on the third attempt.
+func TestGetJSONRetryOn5xxThenSuccess(t *testing.T) {
+	var calls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) < 3 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+	g := NewBalanceFloorGuard(nil, nil)
+	body, err := g.getJSON(context.Background(), srv.URL, "Authorization", "test")
+	if err != nil {
+		t.Fatalf("retry must recover from 5xx: %v", err)
+	}
+	if calls.Load() != 3 || !strings.Contains(string(body), "ok") {
+		t.Fatalf("calls=%d body=%q, want 3 attempts then success", calls.Load(), body)
+	}
+}
+
+// TestGetJSONNoRetryOn4xx pins that a definitive 4xx (bad key / bad URL) is
+// answered to the caller after exactly one attempt.
+func TestGetJSONNoRetryOn4xx(t *testing.T) {
+	var calls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	g := NewBalanceFloorGuard(nil, nil)
+	_, err := g.getJSON(context.Background(), srv.URL, "Authorization", "test")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 401") {
+		t.Fatalf("want HTTP 401 error, got %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("4xx must not be retried, calls=%d", calls.Load())
+	}
+}
+
+// TestGetJSONRetryExhausted pins the attempt ceiling: persistent 5xx fails
+// after exactly 1 initial + 2 retries.
+func TestGetJSONRetryExhausted(t *testing.T) {
+	var calls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	g := NewBalanceFloorGuard(nil, nil)
+	_, err := g.getJSON(context.Background(), srv.URL, "Authorization", "test")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 500") {
+		t.Fatalf("want HTTP 500 error after exhaustion, got %v", err)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("calls=%d, want exactly 3 attempts (1+2 retries)", calls.Load())
+	}
+}
+
+// TestBalanceFloorGuardConcurrencyContracts pins the 2026-09-16 audit-fix
+// markers in the guard source: keyring RWMutex (A-C1), Start reentry guard
+// (A-C2), escape default 2h (B-E1), Stop join (D-L1), bounded probe pool +
+// env knob (E-B1), sweep summary log (F-L1), Warn rate limit (F-L2), and the
+// typed retry policy (G-O1).
+func TestBalanceFloorGuardConcurrencyContracts(t *testing.T) {
+	src, err := os.ReadFile("balance_floor_guard.go")
+	if err != nil {
+		t.Fatalf("read balance floor guard source failed: %v", err)
+	}
+	body := string(src)
+	for _, want := range []string{
+		// A-C1: keyring 写（SetKeyring）与读（decryptKey）都在锁内。
+		"g.keyringMu.Lock()",
+		"g.keyringMu.RLock()",
+		// A-C2: Start 重入守卫。
+		"if g.started {",
+		// B-E1: 逃生门默认收紧为 2h。
+		"escapeStale := 2 * time.Hour",
+		// D-L1: Stop join workerDone。
+		"close(g.workerDone)",
+		"case <-done:",
+		// E-B1: 有界 worker pool + 并发 env 旋钮。
+		"semaphore.NewWeighted(",
+		"LLM_GATEWAY_FLOOR_PLAN_CONCURRENCY",
+		// F-L1: 周期级汇总日志。
+		"balance_floor_guard: plan sweep completed",
+		// F-L2: 失败日志升 Warn + 限流闸。
+		`slog.Warn("balance_floor_guard: plan probe failed"`,
+		"g.warnGate.allow(",
+		// G-O1: 类型化状态错误 + 重试判定。
+		"httpStatusError",
+		"retryableHTTPErr",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("balance floor guard is missing %q", want)
+		}
 	}
 }

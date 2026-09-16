@@ -112,6 +112,26 @@ const (
 		ORDER BY activated_at DESC
 		LIMIT 1
 	`
+
+	// routingOptMetricsSQL：5 分钟聚合表只读投影（R30 审计 P3 遗留债：
+	// 该表此前写-only，GetAggregatedMetrics 零调用方——本端点是其首个
+	// 生产读者，同时提供 30 天长窗口趋势而无需扫 raw feedback log）。
+	// 过滤参数语义：$2/$3 为空串 = 不过滤（含 NULL 维度的 global/provider
+	// 行一并返回）；非空 = 精确匹配。用户值只作为绑定参数，绝不进 SQL 文本。
+	// LIMIT 是常量 2000 防护（30 天 × 288 桶/天 × 维度组合，正常远小于此）。
+	routingOptMetricsSQL = `
+		SELECT time_bucket, task_type, predicted_provider,
+		       total_requests, successful_requests, failed_requests, accuracy_rate,
+		       avg_confidence, avg_latency_ms, avg_cost,
+		       p50_latency_ms, p95_latency_ms, p99_latency_ms,
+		       human_corrections, human_accuracy_rate
+		FROM routing_optimization_metrics
+		WHERE time_bucket >= $1
+		  AND ($2::text = '' OR task_type = $2)
+		  AND ($3::text = '' OR predicted_provider = $3)
+		ORDER BY time_bucket DESC, task_type NULLS LAST, predicted_provider NULLS LAST
+		LIMIT 2000
+	`
 )
 
 // hours 窗口 clamp 边界。
@@ -372,4 +392,105 @@ func rawJSONOrDefault(b []byte) json.RawMessage {
 		return json.RawMessage("{}")
 	}
 	return json.RawMessage(b)
+}
+
+// =============================================================================
+// GET /api/admin/routing-opt/metrics?hours=24&task_type=&provider=
+// =============================================================================
+
+// RoutingOptMetricsRow 是聚合表一行（5 分钟桶）的直接投影。
+// TaskType/PredictedProvider 为 NULL 时表示 GROUPING SETS 的聚合维度：
+// 双 NULL = 全局行，单 NULL = 按另一维度聚合的行（与 migration 670 契约一致）。
+type RoutingOptMetricsRow struct {
+	TimeBucket time.Time `json:"time_bucket"`
+	TaskType   *string   `json:"task_type"`
+	Provider   *string   `json:"predicted_provider"`
+
+	TotalRequests      int64 `json:"total_requests"`
+	SuccessfulRequests int64 `json:"successful_requests"`
+	FailedRequests     int64 `json:"failed_requests"`
+	AccuracyRate       *float64 `json:"accuracy_rate"`
+
+	AvgConfidence *float64 `json:"avg_confidence"`
+	AvgLatencyMs  *int     `json:"avg_latency_ms"`
+	AvgCost       *float64 `json:"avg_cost"`
+
+	P50LatencyMs *int `json:"p50_latency_ms"`
+	P95LatencyMs *int `json:"p95_latency_ms"`
+	P99LatencyMs *int `json:"p99_latency_ms"`
+
+	HumanCorrections  int64    `json:"human_corrections"`
+	HumanAccuracyRate *float64 `json:"human_accuracy_rate"`
+}
+
+// RoutingOptMetricsResponse 是 metrics 端点的响应。
+type RoutingOptMetricsResponse struct {
+	Hours int                    `json:"hours"`
+	Since time.Time              `json:"since"`
+	Rows  []RoutingOptMetricsRow `json:"rows"`
+	// Truncated 为 true 时结果被 LIMIT 2000 截断（收窄 hours 或加过滤重查）。
+	Truncated bool `json:"truncated"`
+}
+
+// handleRoutingOptMetrics handles GET /api/admin/routing-opt/metrics
+//
+// R30 审计 P3 遗留债处置（docs/audit/2026-09-16-r30-24h-audit-round.md §四）：
+// 聚合表首个生产读者。数据来源是 bg/routing_metrics_aggregator 每 5 分钟
+// 重算的聚合桶（含人工标注×2 加权），保留期 30 天与 hours 上限 720 一致，
+// 支持长窗口趋势查询而无需聚合 raw feedback log。
+func (h *Handler) handleRoutingOptMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	db := h.routingOptPool()
+	if db == nil {
+		http.Error(w, "Database not available", http.StatusServiceUnavailable)
+		return
+	}
+	ctx := r.Context()
+
+	hours := parseRoutingOptHours(r.URL.Query().Get("hours"))
+	since := time.Now().Add(-time.Duration(hours) * time.Hour)
+	taskType := strings.TrimSpace(r.URL.Query().Get("task_type"))
+	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
+
+	rows, err := db.Query(ctx, routingOptMetricsSQL, since, taskType, provider)
+	if err != nil {
+		slog.ErrorContext(ctx, "admin/routing-opt: metrics query failed", "hours", hours, "err", err)
+		http.Error(w, "Failed to query routing optimization metrics", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	resp := RoutingOptMetricsResponse{
+		Hours: hours,
+		Since: since,
+		Rows:  make([]RoutingOptMetricsRow, 0),
+	}
+	for rows.Next() {
+		var row RoutingOptMetricsRow
+		if err := rows.Scan(
+			&row.TimeBucket, &row.TaskType, &row.Provider,
+			&row.TotalRequests, &row.SuccessfulRequests, &row.FailedRequests, &row.AccuracyRate,
+			&row.AvgConfidence, &row.AvgLatencyMs, &row.AvgCost,
+			&row.P50LatencyMs, &row.P95LatencyMs, &row.P99LatencyMs,
+			&row.HumanCorrections, &row.HumanAccuracyRate,
+		); err != nil {
+			slog.ErrorContext(ctx, "admin/routing-opt: metrics row scan failed", "err", err)
+			http.Error(w, "Failed to read routing optimization metrics", http.StatusInternalServerError)
+			return
+		}
+		resp.Rows = append(resp.Rows, row)
+	}
+	if err := rows.Err(); err != nil {
+		slog.ErrorContext(ctx, "admin/routing-opt: metrics rows iteration failed", "err", err)
+		http.Error(w, "Failed to read routing optimization metrics", http.StatusInternalServerError)
+		return
+	}
+	// 命中 LIMIT 2000 时 pgx 不报错，只能靠行数推断（>= LIMIT 即视为截断）。
+	resp.Truncated = len(resp.Rows) >= 2000
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }

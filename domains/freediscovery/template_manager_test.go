@@ -189,12 +189,14 @@ func TestTemplateManager_Get_RoundTripFields(t *testing.T) {
 		"api_key_env", "api_key_encrypted", "models_endpoint",
 		"quota_endpoint", "tos_url", "tos_verdict", "tos_notes",
 		"enabled", "created_by", "created_at", "updated_at",
+		"consecutive_scan_failures", "last_scan_failure_at", "auto_disabled_at",
 	}
 	rows := sqlmock.NewRows(cols).AddRow(
 		7, "tenant-a", "groq", "Groq Free", "https://api.groq.com/openai/v1", "openai-completions",
 		"$GROQ_API_KEY", nil, "/models",
 		"", "https://groq.com/terms", "ok", "free tier documented",
 		true, "admin", nil, nil,
+		0, nil, nil,
 	)
 
 	mock.ExpectBegin()

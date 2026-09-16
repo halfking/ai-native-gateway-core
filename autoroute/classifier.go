@@ -332,6 +332,19 @@ func DefaultKeywords() KeywordSet {
 	}
 }
 
+// codeOutputNegated 报告文本是否显式声明不需要产出代码（概念/流程解释类
+// 提问常见 "no code needed""不用写代码"）。仅用于抑制关键词层的 code 评分，
+// 不影响 pattern 层与硬覆盖通道（2026-09-15 二轮 en_chat_api_explain）。
+var codeNegationPhrases = []string{
+	"no code", "without code", "not write code", "don't write code",
+	"no need to write code",
+	"不用写代码", "无需写代码", "不需要写代码", "不要写代码", "无需代码", "不用代码", "不要代码",
+}
+
+func codeOutputNegated(text string) bool {
+	return containsAnyPhrase(text, codeNegationPhrases)
+}
+
 // HeuristicClassifier implements Classifier using only signal extraction
 // (no LLM call). Deterministic, zero-latency, zero-cost. Confidence is
 // 0.7-0.95 for clear cases; 0.5-0.7 for ambiguous cases (triggers LLM
@@ -589,6 +602,17 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 		kwScore := min(1.0, float64(creativeHits)*perHitWeight)
 		if kwScore > scores[TaskCreative] { // max-merge with pattern layer
 			scores[TaskCreative] = kwScore
+		}
+	}
+
+	// 显式否定代码产出守卫（2026-09-15 二轮 en_chat_api_explain）："No code
+	// needed, just the concept" 的字面 "code" 命中 code 关键词（0.40）压过
+	// chat 基线，概念解释类请求被错拉成 code。文本显式声明不产出代码时，
+	// 抑制**仅来自关键词层**的 code 评分；pattern 层的结构信号
+	// （动词+编程对象等）不受影响——真正带编程结构的请求仍归 code。
+	if codeOutputNegated(text) {
+		if _, hasPattern := patternHits[TaskCode]; !hasPattern {
+			delete(scores, TaskCode)
 		}
 	}
 

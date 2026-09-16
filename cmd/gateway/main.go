@@ -67,14 +67,15 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
-	"github.com/kaixuan/llm-gateway-go/domains/integration"                         //nolint:depguard // clientprofile worker wiring
-	"github.com/kaixuan/llm-gateway-go/domains/modelquality"                        //nolint:depguard // 模型质量监控
-	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
-	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                     //nolint:depguard // 供应商画像告警 handler (AlertType)
-	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"                        //nolint:depguard // P1 proactive upstream quota prefetch
-	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"                       //nolint:depguard // in-flight request content store
-	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"                      //nolint:depguard // request lifecycle observation
-	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
+	"github.com/kaixuan/llm-gateway-go/domains/hostedtask"
+	"github.com/kaixuan/llm-gateway-go/domains/integration"     //nolint:depguard // clientprofile worker wiring
+	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    //nolint:depguard // 模型质量监控
+	"github.com/kaixuan/llm-gateway-go/domains/notification"    //nolint:depguard // 审批通知器
+	"github.com/kaixuan/llm-gateway-go/domains/providerprofile" //nolint:depguard // 供应商画像告警 handler (AlertType)
+	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"    //nolint:depguard // P1 proactive upstream quota prefetch
+	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"   //nolint:depguard // in-flight request content store
+	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"  //nolint:depguard // request lifecycle observation
+	"github.com/kaixuan/llm-gateway-go/domains/routeincident"   //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
@@ -101,6 +102,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/dbx"
 	"github.com/kaixuan/llm-gateway-go/internal/handlers"
+	"github.com/kaixuan/llm-gateway-go/internal/hostedcallback"
 	"github.com/kaixuan/llm-gateway-go/internal/ir" //nolint:depguard // 诊断组件：语义分析器
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
@@ -782,7 +784,6 @@ func main() {
 	slog.Info("goal integration initialised",
 		"store_configured", goalIntegrator.IsConfigured(),
 	)
-	_ = goalRunHandler // constructed eagerly so package init order is deterministic
 
 	// Health handler with database and Redis status checking (2026-07-08)
 	// Pass db and redis connections for health checks (will be updated with redis later)
@@ -857,6 +858,10 @@ func main() {
 	// 后台回填 session_turns.digest jsonb envelope（存量 NULL 行）。与 reaper
 	// 同一生命周期：dbConn 就绪后启动，pools.CloseAll 前排空 in-flight 批。
 	var sessionDigestBackfillForShutdown any
+	// sessionMirrorOutboxReaperForShutdown — spec §12 GAP 2 closure (migration
+	// 712, 2026-09-15): durable replay for failed sessionv2mirror shadow
+	// writes. Same lifecycle as the aggregate outbox reaper.
+	var sessionMirrorOutboxReaperForShutdown any
 	// routingOptimizerForShutdown — P2.2 Track B: 优雅关闭时在 DB pool
 	// 关闭前排空异步反馈批量队列（FlushFeedback）。buildRoutingOptimizer
 	// 成功时（ROUTING_OPT_ENABLED=true 且有 DB pool）非 nil，否则保持 nil
@@ -2514,6 +2519,18 @@ func main() {
 		sessionAggregateOutboxReaperForShutdown = startSessionAggregateOutboxReaper(context.Background(), dbConn.Pool())
 		if sessionAggregateOutboxReaperForShutdown != nil {
 			slog.Info("session aggregate outbox reaper started (FOR UPDATE SKIP LOCKED, 30s tick, batch=100, max_attempts=10)")
+		}
+
+		// Spec §12 GAP 2 closure (2026-09-15, migration 712): durable replay
+		// queue for the sessionv2mirror shadow write. Failed mirror writes
+		// (timeout / DB error / all 8 slots busy) register in
+		// session_mirror_outbox with the full entry JSON; this reaper drains
+		// them so a V2 outage or slot exhaustion no longer silently drops
+		// turns (observed 3.71%/24h on the local deployment). Bound to the
+		// gateway lifecycle context like the aggregate reaper above.
+		sessionMirrorOutboxReaperForShutdown = startSessionMirrorOutboxReaper(context.Background(), dbConn.Pool(), sessionV2Writer)
+		if sessionMirrorOutboxReaperForShutdown != nil {
+			slog.Info("session mirror outbox reaper started (GAP-2 replay: FOR UPDATE SKIP LOCKED, 30s tick, batch=100, max_attempts=10)")
 		}
 
 		// turn-digest 第二阶段 (2026-09-04): 回填存量 session_turns.digest
@@ -4836,6 +4853,19 @@ func main() {
 			concurrencyAutoScaleUp.Start(context.Background())
 
 			slog.Info("CHECKPOINT: after concurrencyAutoScaleUp.Start, before NewIndex")
+			// 2026-09-14 O5 fix: everything from InitFeatureFlags down to the
+			// auto-route feedback loop is REQUEST-PATH infrastructure (it is
+			// what makes model="auto" resolve at all), not background write
+			// load. It previously lived inside this !bgDataPlaneOnly block, so
+			// a permanent data-plane instance (LLM_GATEWAY_BG_MODE=data-plane,
+			// e.g. the 245 canary) never wired a decider; maybeResolveAuto then
+			// took the decider==nil branch and rewrote model="auto" to the
+			// autoFallbackModel() default ("claude-sonnet-4.5", credentials
+			// dead) — every auto request 503 no_candidate. Split the block:
+			// the write-heavy rollup/suggest workers stay full-mode-only
+			// (reopened below), the decision engine runs in BOTH modes.
+		}
+		{
 			autoroute.InitFeatureFlags()
 			autoIdx := autoroute.NewIndex()
 
@@ -4927,6 +4957,18 @@ func main() {
 			if opt := buildRoutingOptimizer(dbConn.Pool(), fpSlotRedis); opt != nil {
 				decider.SetOptimizer(opt)
 				routingOptimizerForShutdown = opt
+				// P2.2 §2.4: roll routing_feedback_log into the 5-minute
+				// metrics table. Only meaningful when feedback is written,
+				// hence gated on the optimizer being enabled rather than a
+				// separate flag.
+				// R31 pattern alignment: token-bucket leader election so a
+				// blue-green pair does not double-run every sweep (correctness
+				// stays on the advisory lock; this only saves the follower's
+				// wasted scan). Without Redis both instances sweep as before.
+				metricsAggregator := bg.NewRoutingMetricsAggregator(dbConn.Pool())
+				metricsAggregator.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
+				metricsAggregator.Start(context.Background())
+				defer metricsAggregator.Stop()
 			}
 			chatHandler.SetAutoRoute(decider)
 			if routingExec != nil {
@@ -4951,8 +4993,9 @@ func main() {
 			// ── SmartSaniGuard (2026-08-07) ─────────────────────────
 			// 输入脱敏 + 占位符还原（仅依赖 Redis）。必须放在 initGoalControl
 			// 之后调用：append 模式需要现有 chain 已注册到 chatHandler。
-			// bgDataPlaneOnly=true 模式下 initGoalControl 不会执行，
-			// 但 SmartSaniGuard 不需要 DB，因此也能独立启用。
+			// 2026-09-14 O5 拆分后 initGoalControl 在 data-plane 模式同样
+			// 执行（自身受 LLM_GATEWAY_GOAL_ENABLED 门控，默认 no-op），
+			// SmartSaniGuard 只依赖 Redis，两模式可用。
 			// 706：db 句柄额外接 session_censors 审计双写（best-effort）。
 			var redisForGuard *redis.Client
 			if redisClientForCache != nil {
@@ -5095,13 +5138,24 @@ func main() {
 			defer telemetry.StopSelectionWriter()
 
 			settleWorker := bg.NewAutoRouteSettleWorker(dbConn.Pool())
+			// R31 (audit 2026-09-16 §四#1): token-bucket leader election so a
+			// blue-green pair does not double-run every sweep. Same
+			// fpSlotRedis connection as the materialized-view refresher;
+			// without Redis both instances sweep as before (sweeps are
+			// idempotent).
+			settleWorker.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
 			settleWorker.Start(context.Background())
 			defer settleWorker.Stop()
 
 			affinityWorker := bg.NewAutoRouteAffinityWorker(dbConn.Pool())
+			affinityWorker.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
 			affinityWorker.Start(context.Background())
 			defer affinityWorker.Stop()
-
+		}
+		// Full-mode-only maintenance writers (DELETE batches / proposal
+		// generation). O5 split: skipped on data-plane instances exactly as
+		// before — the shared tables are trimmed by the full-mode instance.
+		if !bgDataPlaneOnly {
 			// v2.2 (P8.8): AuditTrimmer caps growth of the two
 			// audit tables (routing_overrides_audit from P7.9
 			// trigger, routing_audit_log from P7.9.1 app-level
@@ -5146,7 +5200,10 @@ func main() {
 			if adminHandler != nil {
 				adminHandler.SetFeedbackAnalyzer(feedbackAnalyzer)
 			}
-
+		}
+		{
+			// B (continued): request-path telemetry writers — per-instance
+			// by design, every instance persists its own selections/signals.
 			// v2.1: tuning_signals async writer. Wired with the same PG
 			// pool the rest of the system uses; runs an independent
 			// batching goroutine so request_logs is unaffected.
@@ -5944,6 +6001,76 @@ func main() {
 		mux.Handle("/v1/gw/sessions", sessionHandler)
 		mux.Handle("/v1/gw/sessions/", sessionHandler)
 		slog.Info("session endpoints enabled", "paths", []string{"/v1/sessions", "/v1/gw/sessions"})
+	}
+
+	// ── GoalRun 状态端点（§0-F2 修复后挂载，hosted-task-delegation-design
+	// §6.1）：KeyVerifier 归属校验已接入（SetAuth），tenant 取自验证结果而非
+	// X-Tenant-ID 头，store nil 时 503 fail-closed。
+	if keyVerifier.Enabled() {
+		goalRunHandler.SetAuth(goalrunAuthAdapter{kv: keyVerifier})
+	}
+	mux.Handle("/v1/goal-runs", goalRunHandler)
+	mux.Handle("/v1/goal-runs/", goalRunHandler)
+	slog.Info("goal run status endpoint enabled", "path", "/v1/goal-runs/{id}", "auth", keyVerifier.Enabled())
+
+	// ── Hosted task delegation (P0, hosted-task-delegation-design §6.1) ──
+	// 前端只对接网关：委托/查询/结果/取消走 /v1/hosted-tasks 门面；执行真相
+	// 在 ACC（dispatch 同键重放，租约/围栏由 ACC+companion 持有）；通知经
+	// 签名回调 + 拉取兜底。Opt-in：LLM_GATEWAY_HOSTED_TASKS_ENABLED=true
+	// 且 PG 可用（§6.0 跨仓库门禁：companion 常驻 + ACC/Memora JWT）。
+	if cfg.HostedTasks.Enabled {
+		if dbConn == nil || !dbConn.Enabled() || dbConn.Pool() == nil {
+			slog.Warn("hosted task delegation enabled but PostgreSQL unavailable; endpoints not mounted")
+		} else {
+			htStore := hostedtask.NewStore(dbConn.Pool())
+			htACC := hostedtask.NewACCClient(cfg.HostedTasks.ACCBaseURL, cfg.HostedTasks.ACCToken,
+				cfg.HostedTasks.ACCRuntimeID, nil)
+			// 回调 url/secret 的 AES-GCM keyring：专用 key 优先，回退凭据
+			// keyring 派生（§9：secret 加密存储）。nil → 带回调的委托 503
+			// fail-closed（不落明文），deliverer 跳过认领。
+			htCallbackKey := cfg.HostedTasks.CallbackEncKey
+			if htCallbackKey == "" {
+				htCallbackKey = cfg.CredentialEncryptionKey
+			}
+			var htKeyring *secret.Keyring
+			if kr, krErr := secret.KeyringFromEnv(cfg.SecretKey, htCallbackKey); krErr == nil {
+				htKeyring = kr
+			} else {
+				slog.Warn("hosted task delegation: no callback encryption keyring; callback-carrying delegations will be rejected",
+					"error", krErr)
+			}
+			htHandler := hostedtask.NewHandler(htStore, hostedtaskAuthAdapter{kv: keyVerifier},
+				hostedtask.Config{
+					Workspaces:        cfg.HostedTasks.Workspaces,
+					Model:             cfg.HostedTasks.Model,
+					TimeoutSeconds:    cfg.HostedTasks.TimeoutSeconds,
+					DefaultDeadline:   time.Duration(cfg.HostedTasks.DefaultDeadlineSeconds) * time.Second,
+					MaxDeadline:       time.Duration(cfg.HostedTasks.MaxDeadlineSeconds) * time.Second,
+					CallbackAllowlist: cfg.HostedTasks.CallbackAllowlist,
+				}, htKeyring, slog.Default())
+			htReconciler := bg.NewHostedTaskReconciler(bg.HostedTaskReconcilerConfig{
+				Store: htStore,
+				ACC:   htACC,
+				Callbacks: hostedtask.CallbackDeps{
+					Store:     htStore,
+					Deliverer: hostedcallback.NewDeliverer(10*time.Second, cfg.HostedTasks.CallbackAllowlist),
+					Keyring:   htKeyring,
+					Logger:    slog.Default(),
+				},
+				Interval:           time.Duration(cfg.HostedTasks.ReconcileIntervalSeconds) * time.Second,
+				DispatchRetryAfter: time.Duration(cfg.HostedTasks.DispatchRetryAfterSeconds) * time.Second,
+			})
+			htHandler.SetACCCancel(htReconciler.CancelOnACC)
+			htReconciler.Start(context.Background())
+			defer htReconciler.Stop()
+			mux.Handle("/v1/hosted-tasks", htHandler)
+			mux.Handle("/v1/hosted-tasks/", htHandler)
+			slog.Info("hosted task delegation enabled",
+				"paths", []string{"/v1/hosted-tasks"},
+				"acc_configured", htACC.Configured(),
+				"callback_keyring", htKeyring != nil,
+				"workspaces", len(cfg.HostedTasks.Workspaces))
+		}
 	}
 
 	// ── Config reload endpoint ──────────────────────────────────────────
@@ -7094,6 +7221,9 @@ func main() {
 		// outbox rows are enqueued) and BEFORE pools.CloseAll (so the final
 		// tick's DB transaction can still reach the server).
 		stopSessionAggregateOutboxReaper(sessionAggregateOutboxReaperForShutdown)
+		// GAP-2 closure (migration 712): drain the mirror outbox reaper.
+		// Same ordering contract as the aggregate reaper above.
+		stopSessionMirrorOutboxReaper(sessionMirrorOutboxReaperForShutdown)
 		// turn-digest 第二阶段: 排空回填批。同样必须在 pools.CloseAll 之前，
 		// 让 in-flight 批的事务还能到达数据库。
 		stopSessionDigestBackfill(sessionDigestBackfillForShutdown)
