@@ -135,3 +135,16 @@ ROUND_RESULT|sessions=9|fail=0|global_g2=2|verdict=FAIL|at=2026-09-15T01:16:22Z
 **新发现（待办，暂以每日回填兜底）——claim 置位 is_final_success 的结构性漏镜像**：缺失行 `f403405b…`（09:17:35，网关恢复后产生）显示存在一条不经 telemetry entry 管道的 `is_final_success` 置位路径（后台 final-success claim/usage 修正直接 SQL UPDATE）：`persistRequestLog` 的 hooks 只覆盖 INSERT/UPDATE entry 写入（client.go:1002-1046），SQL 侧置位列不触发 onPersisted → hook 永远看不到终态信号 → gate `!entry.Success && !isTerminalFailure` 静默跳过（无日志、无登记）。量级 ~3 行/天（低频恒定），G2 gate 对这类行无法靠重放器归零。修复候选（择一，S4 停写前须评估）：① claim UPDATE 路径补发 mirror 触发；② G2 度量为该类登记例外类 E6（须先量化其占比与 credits 完整性）；③ 每日轮回填兜底常态化（现状）。本轮 3 行中 04:13/04:14 两行属 recovery 窗口真失败，f403405b 属本类。
 
 附注：PG 容器 08:36 崩溃重启原因未深挖（docker logs 采样时 daemon 响应迟滞，符合既往管理面挂起记录）；reaper/网关自恢复行为符合预期。
+
+### 每日观察 2026-09-16 09:03 (+08)，build=5e3032d6/2122 —— **PASS，连续归零 Day 1/7**
+
+构建身份：5e3032d6/2122 在本仓库历史（S3 波1 合入后的 merge 构建），含 GAP-2 闭环改动（29f73ed81 为祖先），ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-16T01:03:00Z
+```
+
+- 抽样 10/10 PASS（biz_multi×4 含 2 个 gs_ 前缀双读会话、loop_single×3、sys×3），G1 四项（tok/cost/succ/cred）全部零漂移。
+- 昨日登记的 claim 置位结构性漏镜像在近 24h 窗口未再产生缺失（GLOBAL_G2=0，无人工回填介入）；该类行量级待持续观察。
+- **连续归零累计 1/7**（09-16 计 Day 1），按 09-15 每日轮 FAIL 清零后重起。7 天达标 earliest 2026-09-22 每日轮。
