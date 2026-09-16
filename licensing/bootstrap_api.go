@@ -211,6 +211,40 @@ func (h *BootstrapHandler) handleActivate(c echo.Context) error {
 			"error": err.Error(), "activated": false, "center_online": wantOnline, "mode": "local",
 		})
 	}
+	// R34 (2026-09-17 audit): Activate reports a full device roster as
+	// (resp{Success:false, NeedDeactivate:true}, nil) — previously the
+	// Success flag was ignored here and a seat conflict came back as
+	// 200 "activated", after which startCenterAgent ran on dead credentials.
+	// 409 + need_deactivate matches the activate-quick contract so the UI
+	// can offer the deactivate flow.
+	if resp != nil && !resp.Success {
+		status := http.StatusInternalServerError
+		out := map[string]any{
+			"activated": false, "center_online": wantOnline, "mode": "local",
+			"error": bootstrapErrString(errors.New(resp.ErrorCode)),
+		}
+		if resp.NeedDeactivate || resp.ErrorCode == CodeDeviceLimitExceeded {
+			status = http.StatusConflict
+			out["need_deactivate"] = true
+			out["message"] = "设备席位已被占用，需先解绑既有设备"
+		}
+		return c.JSON(status, out)
+	}
+	// R34: the local free license is machine-bound (R30 L-1 rationale on
+	// activate-quick). Same guard here — a network peer that learned the
+	// instance id must not activate it against a foreign hardware_hash and
+	// take the machine's only seat.
+	if strings.HasPrefix(input.LicenseKey, "FREE-") {
+		if fp, fpErr := GenerateFingerprint(); fpErr == nil && fp != nil && input.HardwareHash != fp.Hash() {
+			slog.Warn("bootstrap activate rejected foreign hardware_hash for local free license",
+				"instance_id", instanceID)
+			return c.JSON(http.StatusForbidden, map[string]any{
+				"activated": false, "center_online": wantOnline, "mode": "local",
+				"error":   "hardware_hash_mismatch",
+				"message": "本地免费激活仅限本机：hardware_hash 与本机指纹不符",
+			})
+		}
+	}
 	result["activated"] = true
 	result["mode"] = "local"
 	result["activation"] = resp
@@ -302,7 +336,12 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 			}
 			// R30 审计 L-1：席位被占（设备上限）是 409 冲突而非 500，
 			// 并提示需要解绑既有设备，前端可给出自助指引。
-			if errors.Is(err, ErrDeviceLimitExceeded) {
+			// R34 (2026-09-17 audit)：DeviceManager 对席位满返回
+			// (resp{Success:false, NeedDeactivate:true}, nil) —— err 恒为
+			// nil，errors.Is 永不命中，409 分支是死代码、实回 500。改判
+			// resp 标志。
+			if errors.Is(err, ErrDeviceLimitExceeded) ||
+				(err == nil && resp != nil && (resp.NeedDeactivate || resp.ErrorCode == CodeDeviceLimitExceeded)) {
 				return c.JSON(http.StatusConflict, map[string]any{
 					"activated":       false,
 					"error":           errMsg,

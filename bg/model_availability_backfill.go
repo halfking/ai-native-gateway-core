@@ -220,6 +220,11 @@ func (w *AvailabilityCacheBackfill) runOnceWithTrigger(ctx context.Context, trig
 		// WARN-failing every remaining entry (245 2026-09-16 audit). Entries
 		// skipped here are retried by the next pass — the pass is idempotent.
 		if err := ctx.Err(); err != nil {
+			// R34: the truncation itself must stay observable — 2cead66dd
+			// removed the per-entry WARN noise but left the partial pass
+			// fully silent. One WARN per truncated pass restores that.
+			slog.Warn("model_availability_backfill: sweep budget expired mid-pass, remaining entries deferred to next cycle",
+				"written", written, "deferred", len(entries)-written)
 			return written, err
 		}
 		existing, _ := w.reader.Read(ctx, e.credID, e.model)

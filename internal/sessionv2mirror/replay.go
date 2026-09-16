@@ -345,7 +345,7 @@ func (r *MirrorOutboxReaper) requeue(ctx context.Context, row claimRow, writeErr
 		UPDATE public.session_mirror_outbox
 		SET status = 'pending', attempts = $2, last_error = $3,
 		    next_retry_at = NOW() + $4::interval, claimed_at = NULL, updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND status = 'claimed'
 	`, row.id, attempts, writeErr.Error(), backoff); err != nil {
 		// The row stays 'claimed' past the lease and the orphan recovery
 		// re-queues it — no loss, just a slower retry.
@@ -356,10 +356,14 @@ func (r *MirrorOutboxReaper) requeue(ctx context.Context, row claimRow, writeErr
 }
 
 func (r *MirrorOutboxReaper) markDead(ctx context.Context, row claimRow, reason string) {
+	// R34 (2026-09-17 audit): guard on 'claimed'. Without it a slow worker
+	// whose lease the orphan recovery already returned to 'pending' (and that
+	// a second worker re-claimed and re-dead-lettered) could resurrect the row
+	// back to 'pending' here, breaking the dead-letter contract.
 	if _, err := execBypass(ctx, r.db, `
 		UPDATE public.session_mirror_outbox
 		SET status = 'dead', last_error = $2, claimed_at = NULL, updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND status = 'claimed'
 	`, row.id, reason); err != nil {
 		slog.Error("sessionv2mirror: outbox dead-mark update failed",
 			"request_id", row.requestID, "reason", reason, "error", err)

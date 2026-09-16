@@ -603,6 +603,20 @@ func (m *Manager) UpdateFromProbe(ctx context.Context, state *State) {
 		m.setToRedis(redisCtx, key, &merged)
 	}()
 
+	// R34 (2026-09-17 audit): persist probe outcomes so the three update
+	// paths (success / failure / probe) stay symmetric. Probe recovery used
+	// to live only in memcache + Redis — once the Redis entry expired, the
+	// last persisted failure (available=false) resurrected the credential as
+	// unavailable until its next real success.
+	if m.batchWriter != nil {
+		m.batchWriter.Add(StateUpdate{
+			CredentialID: merged.CredentialID,
+			Model:        merged.Model,
+			Available:    &merged.Available,
+			UpdatedAt:    time.Now(),
+		})
+	}
+
 	slog.Debug("credstate: probe result updated",
 		"credential_id", merged.CredentialID,
 		"model", merged.Model,

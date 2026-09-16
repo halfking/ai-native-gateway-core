@@ -35,11 +35,13 @@ package bg
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -121,8 +123,10 @@ func NewAutoRouteAffinityWorker(db *pgxpool.Pool) *AutoRouteAffinityWorker {
 // SetDistLock wires the Redis-backed distributed lock manager used for
 // cross-instance sweep dedup (token-bucket leader election, R31 audit §四#1).
 // Optional: when never called, or called with a manager whose Enabled() is
-// false, every instance sweeps exactly as before. Safe to call before or
-// after Start().
+// false, every instance sweeps exactly as before. MUST be called before
+// Start(): the field is read unsynchronized by the sweep goroutine (R34
+// 2026-09-17 audit — the previous "safe after Start" wording promised a
+// happens-before edge that does not exist).
 //
 // The affinity sweep has an extra reason to elect a single leader: the EMA
 // fold in upsertAggregates is a read-modify-write per bucket, and two
@@ -295,11 +299,25 @@ func (w *AutoRouteAffinityWorker) upsertAggregates(ctx context.Context, aggs []a
 	for _, a := range aggs {
 		// Look up the existing EMA so it can be blended.
 		var prevEMA float64
-		_ = w.db.QueryRow(ctx, `
+		// R34 (2026-09-17 audit): a failed read must not fold as prevEMA=0 —
+		// UpdateEMA weights the previous value at 0.85, so a transient DB
+		// error silently zeroed this bucket's whole learning history and the
+		// upsert then overwrote it. ErrNoRows is the legitimate new-bucket
+		// case and keeps the zero baseline; anything else skips the window.
+		switch scanErr := w.db.QueryRow(ctx, `
 			SELECT COALESCE(ema_reward, 0)
 			FROM task_model_affinity
 			WHERE task_type = $1 AND profile = $2 AND canonical_id = $3 AND tenant_id = $4
-		`, a.taskType, a.profile, a.canonicalID, a.tenantID).Scan(&prevEMA)
+		`, a.taskType, a.profile, a.canonicalID, a.tenantID).Scan(&prevEMA); {
+		case errors.Is(scanErr, pgx.ErrNoRows):
+			// New bucket — prevEMA stays 0.
+		case scanErr != nil:
+			slog.Warn("auto_route_affinity: prev EMA read failed, skipping bucket",
+				"task_type", a.taskType, "profile", a.profile,
+				"canonical_id", a.canonicalID, "tenant_id", a.tenantID,
+				"error", scanErr)
+			continue
+		}
 
 		// Fold this window's average reward into the running EMA. The EMA is the
 		// signal shrinkage pulls toward (via avg_reward); a single bad window

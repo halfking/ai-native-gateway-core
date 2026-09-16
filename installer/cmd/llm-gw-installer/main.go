@@ -403,6 +403,30 @@ var sessionMirrorOutboxMigration712 []byte
 //go:embed embeddata/startup/713_session_turns_cost_precision.sql
 var sessionTurnsCostPrecisionMigration713 []byte
 
+// R34 (2026-09-17 audit): five-point sync backfill — 704/705/709/710 had
+// drifted out of the installer (R30 leftover #8), and 714/715 landed after
+// it. 714 has no Go-side ensure mirror, so the installer was the ONLY
+// delivery channel that could apply it on a fresh install and it was
+// silently missing there.
+//
+//go:embed embeddata/startup/704_plan_quota_probe_backoff.sql
+var planQuotaProbeBackoffMigration704 []byte
+
+//go:embed embeddata/startup/705_request_logs_reattach_detached_partitions.sql
+var requestLogsReattachDetachedPartitionsMigration705 []byte
+
+//go:embed embeddata/startup/709_work_type_route_coverage.sql
+var workTypeRouteCoverageMigration709 []byte
+
+//go:embed embeddata/startup/710_request_logs_view_session_family_v2.sql
+var requestLogsViewSessionFamilyV2Migration710 []byte
+
+//go:embed embeddata/startup/714_partition_timezone_pin_remaining.sql
+var partitionTimezonePinRemainingMigration714 []byte
+
+//go:embed embeddata/startup/715_route_incidents_pending_state.sql
+var routeIncidentsPendingStateMigration715 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -532,6 +556,12 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/711_hosted_tasks.sql":                                                   hostedTasksMigration711,
 	"startup/712_session_mirror_outbox.sql":                                          sessionMirrorOutboxMigration712,
 	"startup/713_session_turns_cost_precision.sql":                                   sessionTurnsCostPrecisionMigration713,
+	"startup/704_plan_quota_probe_backoff.sql":                                       planQuotaProbeBackoffMigration704,
+	"startup/705_request_logs_reattach_detached_partitions.sql":                      requestLogsReattachDetachedPartitionsMigration705,
+	"startup/709_work_type_route_coverage.sql":                                       workTypeRouteCoverageMigration709,
+	"startup/710_request_logs_view_session_family_v2.sql":                            requestLogsViewSessionFamilyV2Migration710,
+	"startup/714_partition_timezone_pin_remaining.sql":                               partitionTimezonePinRemainingMigration714,
+	"startup/715_route_incidents_pending_state.sql":                                  routeIncidentsPendingStateMigration715,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 
