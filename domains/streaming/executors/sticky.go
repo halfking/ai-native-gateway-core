@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -236,7 +237,17 @@ func (s *StickyCache) SetDB(pool *pgxpool.Pool) {
 //
 // 2026-07-27 并发修复：与 SetDB 同因——RecordSuccessMultiLevel /
 // RestoreFromDB 在请求路径上读 s.redisStore，无锁写是数据竞争。
+//
+// Typed-nil 归一化（2026-09-17，252 无 Redis 部署实抓的每请求 500 crash）：
+// 调用方持 `var stickyStore *ursmcache.StickyStore` 且 Redis 不可用时传入
+// typed-nil 指针，`store != nil` 接口判空失效，GetLevel 在 nil receiver 上
+// panic。这里归一化为非 typed nil，快照守卫恢复判空语义。
 func (s *StickyCache) SetRedisStore(store StickyRedisStore) {
+	if store != nil {
+		if v := reflect.ValueOf(store); v.Kind() == reflect.Pointer && v.IsNil() {
+			store = nil
+		}
+	}
 	s.mu.Lock()
 	s.redisStore = store
 	s.mu.Unlock()

@@ -2231,7 +2231,7 @@ func (h *ChatHandler) serveWithExecutor(
 		logCtx.EmitFailure("body_too_large", "request body exceeds 32 MiB limit", nil, nil)
 		logCtx.MarkLogged()
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
-			"error": map[string]string{"message": "request body exceeds 32 MiB limit", "type": "invalid_request", "code": "body_too-large"},
+			"error": map[string]string{"message": "request body exceeds 32 MiB limit", "type": "invalid_request", "code": "body_too_large"},
 		})
 		return
 	}
