@@ -267,6 +267,27 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("probe state update failed: %v", err))
 		return
 	}
+	// 3.5 R36 (2026-09-17 audit): the reset must clear BOTH probe systems —
+	// v_routable gates on node_probe_state (node_probe_failed), so resetting
+	// only the legacy table left the binding blocked despite "修复成功".
+	// Same dual-clear contract as force_enable (admin/routing.go).
+	if _, err := h.db.Exec(ctx, `
+		UPDATE node_probe_state SET
+		    last_direct_ok    = TRUE,
+		    last_gateway_ok   = TRUE,
+		    last_err_code     = NULL,
+		    last_err_detail   = NULL,
+		    next_retry_at     = now(),
+		    next_retry_seconds = 0,
+		    consecutive_failures = 0,
+		    paused            = FALSE,
+		    in_flight_until   = NULL,
+		    updated_at        = now()
+		WHERE credential_id = $1 AND last_direct_ok = FALSE
+	`, credID); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("node probe state update failed: %v", err))
+		return
+	}
 	// 4. invalidate routing caches (触发路由器重载)
 	invalidateRoutingCaches(r.Context(), h.db, "credentials", credID)
 
@@ -287,11 +308,11 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"triggered":              true,
-		"credential_id":          credID,
-		"timestamp":              time.Now().UTC().Format(time.RFC3339),
-		"message":                "凭据已强制恢复，credential / binding / probe_state 已重置",
-		"key_cache_invalidated":  true,
-		"key_rotator_reset":      true,
+		"triggered":             true,
+		"credential_id":         credID,
+		"timestamp":             time.Now().UTC().Format(time.RFC3339),
+		"message":               "凭据已强制恢复，credential / binding / probe_state 已重置",
+		"key_cache_invalidated": true,
+		"key_rotator_reset":     true,
 	})
 }

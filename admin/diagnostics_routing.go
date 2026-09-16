@@ -312,6 +312,31 @@ func (h *Handler) handleRoutingBlockedFix(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// 3.5 R36 (2026-09-17 audit): dual-clear contract — v_routable gates on
+	// node_probe_state, so a provider-wide repair must reset the new system
+	// too or the binding stays blocked despite the legacy table showing
+	// healthy. Same shape as force_enable (admin/routing.go).
+	if _, err := h.db.Exec(ctx, `
+		UPDATE node_probe_state nps SET
+		    last_direct_ok    = TRUE,
+		    last_gateway_ok   = TRUE,
+		    last_err_code     = NULL,
+		    last_err_detail   = NULL,
+		    next_retry_at     = now(),
+		    next_retry_seconds = 0,
+		    consecutive_failures = 0,
+		    paused            = FALSE,
+		    in_flight_until   = NULL,
+		    updated_at        = now()
+		FROM credentials c
+		WHERE nps.credential_id = c.id
+		  AND c.provider_id = $1
+		  AND nps.last_direct_ok = FALSE
+	`, req.ProviderID); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("node probe state reset failed: %v", err))
+		return
+	}
+
 	// 4. Invalidate routing caches.
 	provider.InvalidateAllCandidateCache()
 	bgCtx, bgCancel := context.WithTimeout(context.Background(), 2*time.Second)

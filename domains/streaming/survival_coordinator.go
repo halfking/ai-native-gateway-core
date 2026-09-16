@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
@@ -359,6 +360,9 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	var l2RecoveryNo int
 	var l2LastScoreBP uint16
 	var l2Used bool
+	// R36: one-shot guard for the uncommitted context-length
+	// compress-and-retry (see the retry branch below).
+	var ctxLenCompressRetried bool
 
 	res := SurvivalResult{}
 	// 2026-08-31 (P2-6 audit-data-closure): allocate res.History with zero
@@ -474,6 +478,23 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		}
 		recordSurvivalAttempt(res.FinalAttempt)
 		res.Decision = AggregateTaskOutcomeWithHistory(res.FinalAttempt, res.History)
+		// R36 (2026-09-17 audit, closes R35-gap 遗留#2): one-shot
+		// compress-and-retry for an uncommitted context-length failure. The
+		// central policy hard-pins that kind FailTerminal regardless of
+		// commit state, so the survival budget never worked for mid-stream
+		// overflows (the executor tiered ladder only sees HTTP 4xx before
+		// first byte). The override lives HERE, not in the shared decision
+		// layer: the durable recovery worker aggregates the same kinds but
+		// re-runs attempts from the original snapshot without a body-rewrite
+		// hook, and must not open a no-compress retry loop. Committed
+		// failures keep the terminal (commit-block rule untouched).
+		if survivalCtxLenCompressRetryDue(ctxLenCompressRetried, res.Decision, res.FinalAttempt) {
+			ctxLenCompressRetried = true
+			res.Decision = TaskDecision{
+				Action: TaskActionRetryNow,
+				Reason: "context_length_uncommitted_compress_retry",
+			}
+		}
 		appendSurvivalHistory(&res.History, res.FinalAttempt, res.Attempts, res.Decision)
 		if l2ReplayThisAttempt {
 			// L2 replay verdict (design §3.3 point 3): an alignment miss —
@@ -713,6 +734,42 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 					DecisionReason: res.Decision.Reason,
 				})
 			}
+			// R36 (2026-09-17 audit): one-shot compress-and-retry for an
+			// uncommitted context-length failure. The decision layer now
+			// returns RetryNow for that shape (attempt_outcome.go
+			// centralActionForTaskWithHistory); this is the body half —
+			// without it the retry would re-send the same oversized body and
+			// burn the remaining attempts on the identical window error.
+			// Mechanical trim only (no LLM summarizer this deep): a modest
+			// shrink resolves marginal overflows; a failed shrink renders
+			// terminal immediately instead of re-colliding.
+			if !ctxLenCompressRetried && len(params.BodyBytes) > 0 && survivalAttemptHasKind(res.FinalAttempt, errorsx.KindContextLength) {
+				ctxLenCompressRetried = true
+				if trimmed, ok := survivalCompressBodyForRetry(params.BodyBytes); ok {
+					log.Info("survival_context_length_compress_retry", append(survivalRouteLogAttrs(params.RequestID, res.Attempts, res.Decision),
+						"body_bytes_before", len(params.BodyBytes),
+						"body_bytes_after", len(trimmed),
+						"provider_id", lastProviderID,
+						"raw_model", lastRawModel,
+					)...)
+					params.BodyBytes = trimmed
+				} else {
+					res.Decision = TaskDecision{Action: TaskActionFailTerminal, Reason: "context_length_compress_retry_failed"}
+					c.renderTerminal(res.Decision, gate, false)
+					recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
+					recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+					log.Warn("survival_task_ended",
+						"attempt", res.Attempts,
+						"action", res.Decision.Action.String(),
+						"reason", res.Decision.Reason,
+						"committed", res.FinalAttempt.CommitState >= CommitStateContent,
+						"succeed", false,
+						"provider_id", lastProviderID,
+						"raw_model", lastRawModel,
+					)
+					return res
+				}
+			}
 			if !c.now().Before(deadline) {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
 				c.renderTerminal(res.Decision, gate, false)
@@ -947,6 +1004,51 @@ func (c *SurvivalCoordinator) l2AlignedReplayPlan(
 // survival outcome/discard/resume-blocked event. attempt_id is deterministic for
 // a request and coordinator pass, while the route fields remain queryable even
 // when the router did not return a candidate.
+// survivalAttemptHasKind reports whether any candidate outcome folded into
+// the attempt carries the given error kind.
+func survivalAttemptHasKind(r *AttemptResult, kind errorsx.ErrorKind) bool {
+	if r == nil {
+		return false
+	}
+	for _, co := range r.CandidateOutcomes {
+		if co.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// survivalCtxLenCompressRetryDue reports whether the survival coordinator
+// should convert this terminal decision into the one-shot context-length
+// compress-and-retry: decision is terminal, nothing client-semantic was
+// committed, some candidate folded KindContextLength, and the one-shot
+// budget for this request is not yet spent. The body rewrite itself happens
+// in the retry branch via survivalCompressBodyForRetry.
+func survivalCtxLenCompressRetryDue(retried bool, d TaskDecision, r *AttemptResult) bool {
+	if retried || d.Action != TaskActionFailTerminal {
+		return false
+	}
+	if r != nil && r.CommitState >= CommitStateContent {
+		return false
+	}
+	return survivalAttemptHasKind(r, errorsx.KindContextLength)
+}
+
+// survivalCompressBodyForRetry performs the one-shot mechanical trim for an
+// uncommitted context-length retry. The window is derived from the body
+// itself (≈tokens at 4 bytes/token) so no provider catalog lookup is needed
+// this deep in the coordinator. CompressMessagesIfNeeded only acts on
+// chat/anthropic "messages"-shaped bodies and returns the input unchanged
+// otherwise (responses protocol → unchanged → caller renders terminal,
+// matching the pre-R36 behavior for that protocol).
+func survivalCompressBodyForRetry(body []byte) ([]byte, bool) {
+	trimmed := compression.CompressMessagesIfNeededBody(body, len(body)/4)
+	if len(trimmed) == 0 || len(trimmed) >= len(body) {
+		return nil, false
+	}
+	return trimmed, true
+}
+
 func survivalRouteLogAttrs(requestID string, attempt int, decision TaskDecision) []any {
 	attemptID := fmt.Sprintf("%s/%d", requestID, attempt)
 	return []any{

@@ -770,6 +770,13 @@ func applyCompressionMeta(dst *CompressionMeta, raw []byte) {
 		AlignmentMap           []map[string]interface{} `json:"alignment_map"`
 		SanitizeMapRef         string                   `json:"sanitize_map_ref"`
 		SanitizeMessageRefs    []map[string]interface{} `json:"sanitize_message_refs"`
+		// R36: producer-side provenance block (buildOutboundProvenance) —
+		// whitelisted through the sessions_v2 metadata mirror, surfaced here
+		// so in-process readers see the window composition and truncation
+		// flags alongside the arrays they describe.
+		WindowSource          map[string]float64 `json:"window_source"`
+		AlignmentMapTruncated bool               `json:"alignment_map_truncated"`
+		SanitizeRefsTruncated bool               `json:"sanitize_refs_truncated"`
 	}
 	if err := json.Unmarshal(raw, &meta); err != nil {
 		return

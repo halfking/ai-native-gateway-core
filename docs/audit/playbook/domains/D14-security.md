@@ -40,6 +40,8 @@
 - [R31] 免费档熔断画像 billing-blind（并发+分叉）— ceddf5438
 - [教训] pgxmock 可空列必须类型化 nil（(*string)(nil)），否则 Scan 报错易误判为 handler 缺陷——写测试时的坑
 
+- [R36] /activate FREE- 指纹校验时序倒置（先 Activate 占座后 403 不回滚）→ 校验必须先于占座副作用+fail-open 路径补 Warn；附件下载端点归属校验：内容寻址布局 URL 无租户信息，tenant_admin 需 request_attachments→request_logs 租户联查（fail-closed，拒绝 404）
+
 ## 5. 子代理派发提示词
 
 ```text

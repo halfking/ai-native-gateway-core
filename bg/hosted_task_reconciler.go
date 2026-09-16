@@ -116,13 +116,24 @@ func (r *HostedTaskReconciler) run(ctx context.Context) {
 	}
 }
 
+// hostedTaskPassBudget bounds each reconciler pass (R36 2026-09-17 audit,
+// closes R34 遗留#3): dispatch/project passes iterate up to 50 tasks against
+// the ACC control plane serially — with ACC hanging on a 30s client timeout
+// the old unbounded ctx let one black-holed tick run ~25 minutes and starve
+// ClaimExpiredTasks / DeliverDueCallbacks entirely.
+const hostedTaskPassBudget = 45 * time.Second
+
 func (r *HostedTaskReconciler) tick(ctx context.Context) {
 	now := time.Now().UTC()
 
+	// R36: each pass gets an independent budget so no single pass can starve
+	// the reaper/callback passes behind it.
+	passCtx, cancelPass := context.WithTimeout(ctx, hostedTaskPassBudget)
 	// 1. dispatch 轮次。
-	r.dispatchPass(ctx, now)
+	r.dispatchPass(passCtx, now)
 	// 2. active runs：SSE 订阅 + 轮询兜底。
-	r.projectPass(ctx, now)
+	r.projectPass(passCtx, now)
+	cancelPass()
 	// 3. deadline reaper。
 	if n, err := r.store.ClaimExpiredTasks(ctx, now, 50); err != nil {
 		r.logger.Error("hostedtask reaper failed", "error", err)

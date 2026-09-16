@@ -295,7 +295,11 @@ func (s *responsesScaffold) finishInterrupted(gate *AttemptCommitGate, fullText,
 // "completed" terminal envelope.
 func openaiFinishReasonIsError(fr string) bool {
 	switch fr {
-	case "content_filter", "network_error", "sensitive", "error":
+	// R36 (2026-09-17 audit): "refusal" added — the non-streaming Responses
+	// mapping (internal/ir mapFinishReasonToResponsesStatus) already reports
+	// refusal as incomplete/content_filter; the streaming bridge must not
+	// render a refusal-only upstream response as a successful "completed".
+	case "content_filter", "refusal", "network_error", "sensitive", "error":
 		return true
 	}
 	return false

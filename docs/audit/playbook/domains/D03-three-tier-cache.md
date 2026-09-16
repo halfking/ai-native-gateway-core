@@ -33,6 +33,8 @@
 
 - [初版] e2e_alignment_test / session_cache_concurrency_test 为健康面基准；三层链路的任何重构必须保持两测试绿
 
+- [R36] provenance 写端三键（window_source/alignment_map_truncated/sanitize_refs_truncated）未进镜像白名单被静默丢弃（commit 声称"白名单已知"不成立）→ 白名单补键+safeWindowSource 有界过滤+读侧字段；sanitizer 锁降级必须 Warn 级（Debug 在生产不可见，竞态窗口重开无观测）
+
 ## 5. 子代理派发提示词
 
 ```text

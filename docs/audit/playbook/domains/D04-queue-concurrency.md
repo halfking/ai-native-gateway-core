@@ -36,6 +36,8 @@
 - [R30] 权重 0/负数边界钳位、三级兜底 —— 健康面基准
 - [R30 遗留#6] Governor 并发等待默认无服务端时限 —— 开放债，防恶化
 
+- [R36] 预算豁免分支用 errors.Is(err, context.DeadlineExceeded) 会把 http.Client.Timeout（Go ≥1.23 包装为 DeadlineExceeded，go1.27 实证）当预算截断 → 挂起供应商永不自动禁用；豁免只准判父 ctx.Err()；durable_contract/action_bridge 的 UNUSED 标注曾与事实不符（已接线 dormant），照头注释清理前必须 grep 调用方
+
 ## 5. 子代理派发提示词
 
 ```text

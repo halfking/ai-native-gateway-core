@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/authentication"                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -1367,8 +1367,10 @@ func mergeCompressionMetaV3(
 		var prov map[string]any
 		if err := json.Unmarshal(provenance, &prov); err == nil {
 			for k, v := range prov {
-				// Producer-side facts win, but never clobber an earlier
-				// transform's own provenance keys.
+				// First writer wins: an earlier transform's own provenance
+				// key is never clobbered by the producer-side block (the
+				// transform ran later in the chain and its view is more
+				// specific). "Producer wins" would be backwards here.
 				if _, exists := m[k]; !exists {
 					m[k] = v
 				}

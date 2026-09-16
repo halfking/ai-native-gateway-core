@@ -1,5 +1,7 @@
-// UNUSED (R35 audit 2026-09-17): zero production callers, zero test references — registered as
-// cleanup candidate R35-DEBT in docs/audit/2026-09-17-r35-gap-audit-round.md §五. Delete after roadmap confirmation.
+// UNUSED CONSTRUCTION CHAIN (R36 audit 2026-09-17 wording correction: the ActionBridge type is
+// referenced by main_dispatch.go, but NewActionBridge/NewChannelActionSource have zero production
+// callers — the bridge is declared yet never assigned). Registered as cleanup candidate R36-DEBT
+// in docs/audit/2026-09-17-r36-24h-audit-round.md §四.
 
 package streaming
 

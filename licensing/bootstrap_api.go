@@ -202,6 +202,29 @@ func (h *BootstrapHandler) handleActivate(c echo.Context) error {
 	if h.Activator == nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "activator_unavailable"})
 	}
+	// R36 (2026-09-17 audit): the FREE- machine-binding guard must run BEFORE
+	// Activate. It previously ran after, so a foreign hardware_hash first
+	// occupied the single seat inside DeviceManager.ActivateDevice and only
+	// then got 403 — with no rollback, leaving the real machine to face 409
+	// need_deactivate. (Same seat-occupation DoS shape R30 L-1 fixed on
+	// activate-quick, which checks the fingerprint before activating.)
+	if strings.HasPrefix(input.LicenseKey, "FREE-") {
+		fp, fpErr := GenerateFingerprint()
+		if fpErr != nil || fp == nil {
+			// Fingerprint unavailable is a fail-open today; make it at least
+			// observable (activate-quick already Warns on this path).
+			slog.Warn("bootstrap activate: fingerprint unavailable, skipping FREE- machine-binding guard",
+				"instance_id", instanceID, "error", bootstrapErrString(fpErr))
+		} else if input.HardwareHash != fp.Hash() {
+			slog.Warn("bootstrap activate rejected foreign hardware_hash for local free license",
+				"instance_id", instanceID)
+			return c.JSON(http.StatusForbidden, map[string]any{
+				"activated": false, "center_online": wantOnline, "mode": "local",
+				"error":   "hardware_hash_mismatch",
+				"message": "本地免费激活仅限本机：hardware_hash 与本机指纹不符",
+			})
+		}
+	}
 	resp, err := h.Activator.Activate(c.Request().Context(), &ActivationRequest{
 		LicenseKey: input.LicenseKey, HardwareHash: input.HardwareHash,
 		InstanceID: instanceID, DeviceName: input.DeviceName,
@@ -229,21 +252,6 @@ func (h *BootstrapHandler) handleActivate(c echo.Context) error {
 			out["message"] = "设备席位已被占用，需先解绑既有设备"
 		}
 		return c.JSON(status, out)
-	}
-	// R34: the local free license is machine-bound (R30 L-1 rationale on
-	// activate-quick). Same guard here — a network peer that learned the
-	// instance id must not activate it against a foreign hardware_hash and
-	// take the machine's only seat.
-	if strings.HasPrefix(input.LicenseKey, "FREE-") {
-		if fp, fpErr := GenerateFingerprint(); fpErr == nil && fp != nil && input.HardwareHash != fp.Hash() {
-			slog.Warn("bootstrap activate rejected foreign hardware_hash for local free license",
-				"instance_id", instanceID)
-			return c.JSON(http.StatusForbidden, map[string]any{
-				"activated": false, "center_online": wantOnline, "mode": "local",
-				"error":   "hardware_hash_mismatch",
-				"message": "本地免费激活仅限本机：hardware_hash 与本机指纹不符",
-			})
-		}
 	}
 	result["activated"] = true
 	result["mode"] = "local"
