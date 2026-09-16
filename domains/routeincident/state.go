@@ -12,12 +12,14 @@ package routeincident
 // State is the lifecycle state of a route incident.
 //
 //	healthy    — internal, not stored; the observer computes this by absence.
-//	active     — 3+ consecutive terminal failures, no recovery streak yet.
+//	pending    — failures observed but below the FailureToActive threshold; not visible.
+//	active     — failures >= threshold, no recovery streak yet; visible.
 //	recovering — at least one terminal success after active; the entry stays visible.
 //	recovered  — 5 consecutive terminal successes; the lane entry disappears.
 type State string
 
 const (
+	StatePending    State = "pending"
 	StateActive     State = "active"
 	StateRecovering State = "recovering"
 	StateRecovered  State = "recovered"
@@ -26,6 +28,7 @@ const (
 // IsVisible reports whether the state should appear on the dashboard
 // swim lane. Recovered incidents are kept in the database for
 // timeline/audit queries but must not be visible on the live lane.
+// Pending incidents (below threshold) are also invisible.
 func (s State) IsVisible() bool {
 	switch s {
 	case StateActive, StateRecovering:
@@ -101,6 +104,11 @@ func DecideState(cur *Incident, terminalStatus string, th Thresholds) (newState 
 			return "", 0, 0, false
 		}
 		switch cur.State {
+		case StatePending:
+			// Success during pending resets the incident (it never
+			// became visible). Return applied=true so the store
+			// deletes or marks it recovered.
+			return StateRecovered, 0, 0, true
 		case StateActive:
 			return StateRecovering, 0, 1, true
 		case StateRecovering:
@@ -115,14 +123,22 @@ func DecideState(cur *Incident, terminalStatus string, th Thresholds) (newState 
 		}
 	case TerminalFailure:
 		if cur == nil {
-			// Open a new incident. failure_streak starts at 1 because
-			// the caller has just observed the first qualifying
-			// failure; the store will write the "opened" event for
-			// streak=1 and the (threshold-1) subsequent failures as
-			// failure_observed.
-			return StateActive, 1, 0, true
+			// Open a new incident in pending state. It becomes
+			// active only when failure_streak >= threshold.
+			if th.FailureToActive <= 1 {
+				return StateActive, 1, 0, true
+			}
+			return StatePending, 1, 0, true
 		}
 		switch cur.State {
+		case StatePending:
+			next := cur.FailureStreak + 1
+			if next >= th.FailureToActive {
+				// Threshold reached: transition to active (visible).
+				return StateActive, next, 0, true
+			}
+			// Still accumulating failures below threshold.
+			return StatePending, next, 0, true
 		case StateActive:
 			return StateActive, cur.FailureStreak + 1, 0, true
 		case StateRecovering:
@@ -130,9 +146,15 @@ func DecideState(cur *Incident, terminalStatus string, th Thresholds) (newState 
 			return StateActive, 1, 0, true
 		case StateRecovered:
 			// A new failure on a previously-recovered route reopens.
-			return StateActive, 1, 0, true
+			if th.FailureToActive <= 1 {
+				return StateActive, 1, 0, true
+			}
+			return StatePending, 1, 0, true
 		default:
-			return StateActive, 1, 0, true
+			if th.FailureToActive <= 1 {
+				return StateActive, 1, 0, true
+			}
+			return StatePending, 1, 0, true
 		}
 	default:
 		// in_progress / non-terminal / unknown — no transition.
