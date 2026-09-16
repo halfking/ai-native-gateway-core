@@ -155,7 +155,10 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 		switch effect.Kind {
 		case nodehealth.EffectRecordCircuitFailure:
 			if e.Circuit != nil {
-				e.Circuit.RecordFailure(int(decision.Node.ProviderID), int(decision.Node.CredentialID), kind)
+				// 2026-09-15 (245 free-capacity plan): billing-mode-aware
+				// recording lets free credentials adopt the shortened
+				// freeTierPolicies cooling profile inside the breaker.
+				e.Circuit.RecordFailureWithBillingMode(int(decision.Node.ProviderID), int(decision.Node.CredentialID), kind, decision.BillingMode)
 			}
 		case nodehealth.EffectRecoverCircuit:
 			if e.Circuit != nil {
@@ -231,7 +234,7 @@ func (e *Executor) recordProtocolCircuitSuccess(params *ExecParams, providerID, 
 	}
 }
 
-func (e *Executor) recordProtocolCircuitFailure(params *ExecParams, providerID, credentialID int, kind errorsx.ErrorKind) {
+func (e *Executor) recordProtocolCircuitFailure(params *ExecParams, providerID, credentialID int, kind errorsx.ErrorKind, billingMode string) {
 	if kind == errorsx.KindEmptyResponse {
 		// Empty responses are recorded on the tenant/credential/raw-model URSM
 		// node for soft routing penalties. The legacy circuit is only keyed by
@@ -242,7 +245,13 @@ func (e *Executor) recordProtocolCircuitFailure(params *ExecParams, providerID, 
 		return
 	}
 	if e.Circuit != nil {
-		e.Circuit.RecordFailure(providerID, credentialID, kind)
+		// R31 (audit 2026-09-16 §四#5): the legacy protocol paths (chat /
+		// anthropic stream interruption) previously recorded through plain
+		// RecordFailure, so a free credential failing here never adopted the
+		// freeTierPolicies cooling profile and opened at the paid cadence —
+		// the exact flap the 245 free-capacity plan eliminated on the V2
+		// dispatch path only.
+		e.Circuit.RecordFailureWithBillingMode(providerID, credentialID, kind, billingMode)
 	}
 }
 

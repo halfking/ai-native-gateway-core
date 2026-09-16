@@ -102,11 +102,11 @@ session_summaries / session_titles / session_title_states / session_tags / sessi
 | **S1a（✅已完成 2026-09-14）** | 三新表 + sessions 补列 + turns 五类列 + bodies kind 列 | **706**：session_memora/session_censors/session_tools 建表（含 hot+ensure_session_family_partitions+promote）+ sessions 补列；**707**：session_turns 补采五类列+正文列+is_final_success+部分唯一索引 + promote 重写；**708**：session_bodies kind 列（DEFAULT 'turn_delta'）+ final_full 部分唯一索引 + DROP sessions.last_full_* + promote 重写 | mirror bridge 扩字段（s1a_fields.go）+ client_type 修复；aggregator 写 project/访问维度/duration（outbox 编解码同步）；工具链切 session_tools；sanitize 双写（security/sanitize/db_sink.go，AES-GCM 密钥 LLM_GATEWAY_SESSION_CENSOR_KEY，未配置降级只存占位符）；memora 首轮快照写点（family_writers.go） | 双账本登记 ✅；行为测试覆盖新写点 ✅（migration_706_707_708_behavior_integration_test.go + pgxmock 单测）；本机验收 SQL A-F 全绿 ✅ |
 | **S1b（代码面✅，默认关灰度）** | turn writer 写正文+新列；聚合器关闭时写 final_full、停写 outbound_body、差集读端切 final_full | （随 707/708 的 Go 侧，已落地） | bodies_writer/turn_writer/session_writer_v2/outbound_builder/cache_v2 ✅；settings 开关：`storage.session_turns_bodies_enabled`、`storage.session_final_full_enabled`（均默认 false，热加载；回切=关开关） | 开关打开后按 §8 A/B/E 观察 7 天 |
 | **S2 拼装还原 + 双读校验（✅已落地 2026-09-14，本机）** | 同名视图体替换（session UNION ALL 冻结 request_logs） | **710**（原编号 709 被共享账本占用，重编号）：视图 v2 体 + 视图自愈链改写 + request_logs 停写 gate（settings `storage.request_logs_write_enabled` 默认 true）+ D4 合成系统会话（§3-D4，先于视图切换落地） | dual_read_validator 行级对账扩展（turns vs request_logs 等值：集合差 + 字段漂移样本 + credits 合计，端点 `GET /api/admin/sessions/{id}/dual-read`） | 对账 7 天零漂移 |
-| **S3 读端分波切换** | 波1 admin 日志/详情；波2 仪表盘/监控 jobs；波3 网关旁路（压缩冷启动/摘要/导出） | 无（纯代码） | 约 40 文件按 §2.2 分组迁移；session_turns_tree 等注释更新 | 各波功能回归通过 |
-| **S4 停写 request_logs** | gate 关闭；telemetry/admin ingest 停写 request_logs_hot 与 bodies_hot（usage_ledger、turns 写入不变） | 710：无 DDL 的 gate 收口 + 双账本 | telemetry client 分支化 | request_logs 行数归零增长；compat 视图历史窗口正常。**前置（2026-09-15 观察期实测新增）：sessionv2mirror shadow write 为 best-effort（超时/槽满入 in-process backlog、重启即丢、无重放器——spec §12 GAP 2），本机实测 24h 终态行丢失率 3.71%（258/6956），credits 随行丢失致 D7 不可能达标；须先落 GAP-2 重放器（backlog 持久化/turn 写入 outbox 化）+ 回补缺口，详见 storage-observation-ledger.md Round 1b** |
-| **S5 存储收尾** | 历史分区 TTL/DROP 决策（合规窗口）；**711**：promote 幂等去 ON CONFLICT（session_bodies 反连接版）+ `enforce_columnar_partition_aged`（月关闭后 heap→columnar，当月恒 heap）；DROP 456 死列残留与 sensitive_keywords 死列；request_logs_bodies 停写与分区回收 | 710/711 | partition_manager 挂点（archiveSpecs 的 day 调度模式） | 月增存储达 §6 目标 |
+| **S3 读端分波切换** | 波1 admin 日志/详情；波2 仪表盘/监控 jobs；波3 网关旁路（压缩冷启动/摘要/导出） | 无（纯代码） | 约 40 文件按 §2.2 分组迁移；session_turns_tree 等注释更新。**波1 ✅已合入 main（2026-09-15，2b8eb0023）：`db.SessionFamilyTurnsSourceSQL()` 导出 710 session 分支 113 列投影为单一契约源 + `admin/logs_turns_source.go` logsSourceFromSQL 切换（listLogs/getLog 的 COUNT/聚合/分组/分页共用同一行集）+ settings `storage.admin_logs_native_turns_read`（默认关、热加载，回切=关开关）；本机已部署 2119=83f19f6c 验证构建健康，开关灰度实测（API A/B + Web UI）待执行** | 各波功能回归通过 |
+| **S4 停写 request_logs** | gate 关闭；telemetry/admin ingest 停写 request_logs_hot 与 bodies_hot（usage_ledger、turns 写入不变） | 710：无 DDL 的 gate 收口 + 双账本 | telemetry client 分支化 | request_logs 行数归零增长；compat 视图历史窗口正常。**前置已闭环（2026-09-15）：GAP-2 修复=失败路径 outbox 化（迁移 712 session_mirror_outbox：失败登记持久化+重放器 replay.go，payload=完整 entry JSON，8 槽/2000ms 前台预算不变；全量 outbox 化被否——session_aggregate_outbox 的 SessionUpdate payload 重放不写 turns）+ 历史回填 549 行归零；附带 713（turns cost 12,6→14,8+回填；R29 由 711 重编号，见 db-changelog 2026-09-15 节）关闭 E5。GLOBAL_G2 于 Round 2（2026-09-15 03:56）首次归零，7 天观察期起算（earliest 2026-09-22 达标），详见 storage-observation-ledger.md Round 1b/Round 2** |
+| **S5 存储收尾** | 历史分区 TTL/DROP 决策（合规窗口）；**714**（编号届时双账本重查，原 711 已被并行线 hosted_tasks 占用）：promote 幂等去 ON CONFLICT（session_bodies 反连接版）+ `enforce_columnar_partition_aged`（月关闭后 heap→columnar，当月恒 heap）；DROP 456 死列残留与 sensitive_keywords 死列；request_logs_bodies 停写与分区回收 | 710/711 | partition_manager 挂点（archiveSpecs 的 day 调度模式） | 月增存储达 §6 目标 |
 
-依赖关系：S1 → S2 → S3 → S4 → S5 严格顺序；711（轮转）依赖 707/708（turns 变宽表后列存收益才最大）。
+依赖关系：S1 → S2 → S3 → S4 → S5 严格顺序；714（轮转）依赖 707/708（turns 变宽表后列存收益才最大）。
 
 ### 4.1 实施事实核对（S1a 落地时审计发现，2026-09-14）
 
@@ -119,7 +119,7 @@ session_summaries / session_titles / session_title_states / session_tags / sessi
 
 ### 4.2 S2 落地事实（2026-09-14）
 
-1. **编号**：方案原编号 709 已被共享账本占用（schema_migrations 裸 `'709'`，并行线 work_type route coverage，2026-09-14 14:19）——S2 视图迁移重编号 **710**（699→700 先例）；编号前查本机双账本 710 空闲。S4/S5 编号（710/711）顺延由届时双账本重查决定。
+1. **编号**：方案原编号 709 已被共享账本占用（schema_migrations 裸 `'709'`，并行线 work_type route coverage，2026-09-14 14:19）——S2 视图迁移重编号 **710**（699→700 先例）；编号前查本机双账本 710 空闲。S4/S5 编号顺延由届时双账本重查决定（R29 后实况：cost 精度=713、hosted=711、轮转候选=714+）。
 2. **视图体三分支**：`session_turns_hot` ∪ `session_turns`（同一 113 列投影，别名 t）∪ v1 体（700 形态冻结）× 反连接（request_id 已入 turns 的 v1 行不再输出）。113 列 = hot∩parent 冻结交集 + customer_id/request_class/due_at/system_fingerprint/raw_model_name。
 3. **v1 分支形态条件化**：冻结链（基础交集缺 fp/raw，生产/本机现网）lateral 追加 4 列；动态重建链（680 引导/自愈，交集自带 fp/raw）只追加 class/due_at——两形态 v1 分支恒 113 列。静态 4 列 lateral 在动态链上会 UNION 列数不匹配（111+4=115≠113），故迁移与 Go ensure 均按基础包装实况条件组装。
 4. **113 列数守卫**：canonical 列数 ≠ 113（契约漂移库）时保留 v1 体并 notice，不逼停通道/启动；session_turns 缺表（极简库）同规。
@@ -267,7 +267,7 @@ SELECT max(ts) FROM public.request_logs;  -- 随时间不再前进
 | 计费事实源切换期漂移（credits_charged） | D7：补采→dual_read_validator 7 天零漂移→才停写；usage_ledger 独立不受影响 |
 | 60% 无会话流量落点缺失 | D4 合成系统会话，先于 S2 落地；分析侧按 client_type='system' 过滤 |
 | 113 列冻结交集视图在 session 家族上缺源列 | 缺源列显式 NULL 补位并在视图注释登记；分波原生改造后消除 |
-| session_turns 宽表化后 TOAST 膨胀 | 正文 delta 与 final_full 走 TOAST（jsonb 天然）；711 月关闭后轮转 columnar；当月恒 heap（promote/UPDATE 需求不变） |
+| session_turns 宽表化后 TOAST 膨胀 | 正文 delta 与 final_full 走 TOAST（jsonb 天然）；714 月关闭后轮转 columnar；当月恒 heap（promote/UPDATE 需求不变） |
 | session_censors 落原文的合规风险 | 应用层 AES-GCM + 租户级开关（可降级只存占位符）+ 独立 TTL + 读取审计 |
 | memora 命名与同实例 kxmemory 产品表混淆 | session_memora 仅存初始环境快照；kxmemory 的 memora_* 表零接触（跨 schema/产品边界写入禁令） |
 | 视图切换的 40 文件回归面 | 两步走：同名视图体替换（零代码改动）→ 分波原生改造（每波独立回归） |
@@ -280,7 +280,7 @@ SELECT max(ts) FROM public.request_logs;  -- 随时间不再前进
 |---|---|
 | P0 迁移 705（promote 断链） | **保留已完成**——过渡期 request_logs 健康是双写期前提 |
 | P1a 激活 sessions.last_full_* 停写 outbound_body（706） | **修正落点**：尾部快照改落 session_bodies final_full（用户语义：sessions 不含请求内容）；456 死列改 DROP |
-| P1b promote 幂等去 ON CONFLICT + 轮转入链（707） | **保留升级为 711**：session_turns 宽表化后收益更大；enforce_columnar_partition_aged 设计不变 |
+| P1b promote 幂等去 ON CONFLICT + 轮转入链（707） | **保留升级为 714**：session_turns 宽表化后收益更大；enforce_columnar_partition_aged 设计不变 |
 | P2 session_turns 瘦身 + view JOIN request_logs（708） | **撤销并反转**：session_turns 成为 turn 级唯一事实源（宽表），view 拼装方向变为 session 家族 → request_logs 兼容视图 |
 | 不物理合并 request_logs+session_turns / 不建物化视图 | **继续成立**（弃用 ≠ 合并；普通视图/兼容视图，无 matview） |
 | session_bodies 不按纯 insert-only 裸转列存 | **继续成立**（final_full 关闭时 upsert 仍有重试覆盖；轮转仍走月关闭后） |

@@ -2297,11 +2297,26 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 			}
 			reasonCounts[reason]++
 		}
-		slog.Warn("executor: no candidates after router",
+		// 2026-09-15 (245 audit): input_candidates==0 means the router never
+		// produced a candidate list at all — the client model has no index
+		// rows (no binding / no canonical mapping / catalog gap), which is a
+		// different failure from "rows existed but every one was filtered".
+		// The empty reasons:{} map used to be the only signal, which made
+		// these no_candidate rows (408 keyed requests/24h on 245) look like a
+		// routing mystery instead of a catalog gap.
+		reasonHint := ""
+		if len(params.Candidates) == 0 {
+			reasonHint = "no_catalog_rows_for_model"
+		}
+		logAttrs := []any{
 			"input_candidates", len(params.Candidates),
 			"client_model", params.ClientModel,
 			"reasons", reasonCounts,
-		)
+		}
+		if reasonHint != "" {
+			logAttrs = append(logAttrs, "reason_hint", reasonHint)
+		}
+		slog.Warn("executor: no candidates after router", logAttrs...)
 		// ── 2026-08-15 (V3.3-OBS OBS-B1): no_route 动作事件 ──────────────────
 		// Router 过滤后无可用候选。blocked_reasons 摘要（reason:count）。
 		{
@@ -2727,11 +2742,21 @@ func transientSuppressErrorCode(kind errorsx.ErrorKind) (string, bool) {
 // immediately per SC-11). Unlike recordModelNotFound, no model_probe_runs
 // evidence row is written: 404s are rare probe-actionable signals, while
 // transient errors are common and would flood the probe history.
-func (e *Executor) recordTransientDispatchFailure(ctx context.Context, credentialID int, rawModel string, errorCode string) {
+//
+// 2026-09-15 (245 free-capacity plan): billing_mode='free' pairs arm a 60s
+// window instead of 5 min. A single transient blip on an occasionally-usable
+// free provider must not idle its (often single-concurrency) capacity for
+// five minutes — the breaker's free-tier profile already bounds the hard
+// stop, and the URSM soft-demote ranks a noisy free binding behind healthy
+// paid ones without removing it from the pool.
+func (e *Executor) recordTransientDispatchFailure(ctx context.Context, credentialID int, rawModel string, errorCode string, billingMode string) {
 	if e.DB == nil || !e.DB.Enabled() || credentialID <= 0 || rawModel == "" {
 		return
 	}
-	const suppressWindow = 5 * time.Minute
+	suppressWindow := 5 * time.Minute
+	if strings.EqualFold(strings.TrimSpace(billingMode), "free") {
+		suppressWindow = time.Minute
+	}
 	_, err := e.DB.Pool().Exec(ctx, `
 		INSERT INTO node_probe_state (
 			credential_id, raw_model_name,

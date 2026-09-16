@@ -32,9 +32,9 @@ var ErrLLMDisabled = errors.New("autoroute: LLM caller disabled")
 // heuristic result.
 var ErrLLMCircuitOpen = errors.New("autoroute: LLM circuit breaker open")
 
-// RecordLLMMetricCall indirection. Wired by main.go (or init in tests)
-// to forward LLM call metrics to the telemetry package. Defaults to
-// a no-op so the autoroute package doesn't import telemetry (which
+// RecordLLMMetricCall indirection. Wired to the telemetry package by
+// buildAutoLLMCaller (cmd/gateway; tests assign a capture sink). Defaults
+// to a no-op so the autoroute package doesn't import telemetry (which
 // would invert the existing dependency graph).
 var RecordLLMMetricCall = func(outcome string, latency time.Duration) {}
 
@@ -136,7 +136,14 @@ func (c *CircuitBreakerCaller) Call(ctx context.Context, prompt string) (string,
 		c.consecutive = 0
 		c.openUntil = time.Time{}
 	}
+	consecutive := c.consecutive
+	open := c.consecutive >= c.MaxFailures && now.Before(c.openUntil)
 	c.mu.Unlock()
+
+	// R29 审计：State() 无生产调用方，两个 breaker gauge（*_state /
+	// *_consecutive_failures）此前恒 0——bac8b6e9e 接线了函数指针却
+	// 没有数据源。在这里镜像上报，Call 是生产唯一入口。
+	RecordLLMCircuitBreakerState(consecutive, open)
 
 	return resp, err
 }

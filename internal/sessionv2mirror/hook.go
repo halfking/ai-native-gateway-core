@@ -141,14 +141,18 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 			}()
 		default:
 			// All shadow-write slots are busy (DB slow / request burst). The
-			// worker contract forbids blocking here, so retain the entry in
-			// the bounded backlog instead of queueing unbounded goroutines.
+			// worker contract forbids blocking here, so persist the entry to
+			// the durable outbox (migration 712) for the background reaper;
+			// if even that fails (DB unreachable), fall back to the bounded
+			// in-process backlog — pre-GAP-2 behaviour, observability only.
 			metrics.Global().RecordShadowWriteFailure("session_v2")
-			appendBacklog(BacklogItem{
-				RequestID: entry.RequestID,
-				Req:       req,
-				Entry:     entry,
-			})
+			if !EnqueueMirrorFailure(entry, sessionID, "semaphore_full") {
+				appendBacklog(BacklogItem{
+					RequestID: entry.RequestID,
+					Req:       req,
+					Entry:     entry,
+				})
+			}
 		}
 	}
 }
@@ -217,16 +221,20 @@ func runShadowWrite(w V2Writer, req *v2.ProcessedRequest, entry *telemetry.Reque
 		// during cutover); losing rows during the cutover window is the
 		// exact "data drift" failure mode the audit calls out.
 		metrics.Global().RecordShadowWriteFailure("session_v2")
-		// Spec §12 GAP 2: also retain the failed entry in the
-		// in-process backlog so it is observable (gauge) and drainable
-		// rather than dropped on the floor with only a counter. The
-		// backlog is bounded (FIFO eviction at cap); it is not
-		// persisted — dbdegradation.RingBuffer covers WAL fallback.
-		appendBacklog(BacklogItem{
-			RequestID: entry.RequestID,
-			Req:       req,
-			Entry:     entry,
-		})
+		// Spec §12 GAP 2 (closed 2026-09-15, migration 712): persist the
+		// failed entry to the durable session_mirror_outbox so the replay
+		// reaper recovers it across restarts. The payload carries the full
+		// entry JSON, so replay does not depend on request_logs surviving.
+		// The in-process backlog remains the last-resort surface when the
+		// outbox INSERT itself fails (DB unreachable), keeping the gauge and
+		// DrainBacklog observability contract intact.
+		if !EnqueueMirrorFailure(entry, req.SessionID, "write_failed") {
+			appendBacklog(BacklogItem{
+				RequestID: entry.RequestID,
+				Req:       req,
+				Entry:     entry,
+			})
+		}
 	}
 }
 

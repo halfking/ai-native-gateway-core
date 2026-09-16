@@ -1326,7 +1326,7 @@ func (e *Executor) executeAnthropicOnce(
 			)
 
 			if !isResumable {
-				e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind)
+				e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind, cand.BillingMode)
 			}
 			return &ExecuteResult{
 				Response:    resp,

@@ -32,6 +32,8 @@
 | F11 | SSRF 防御 (校验层 + safehttpclient 传输层双阻断) | ✅ `url_safety.go` |
 | F12 | 密钥安全 (env 引用不入库 / AES-256-GCM 密文落库, fail closed) | ✅ `TemplateManager.ResolveAPIKey` |
 | F13 | 可观测性 (Prometheus 指标 + 调度器 liveness 端点) | ✅ `metrics/freediscovery_metrics.go` |
+| F14 | 环境变量缺失明确错误 (变量名/提供商/修复建议) | ✅ `ResolveAPIKey` 增强提示 (2026-09-14) |
+| F15 | 预设模板状态透明度 (测试状态/检查日期/风险声明) | ✅ 配置文档 §8 (2026-09-14) |
 
 ### 1.3 非目标 (明确不做)
 

@@ -68,10 +68,13 @@ case "${1:-deploy}" in
         && [[ "$(docker inspect llm-gateway-local-8782 --format '{{.State.Status}}')" == "running" ]] \
         && runtime="container llm-gateway-local-8782"
       printf '[deploy-local] gateway already healthy at %s (runtime: %s); nothing to do.\n' "$HEALTH_URL" "$runtime"
-      printf '[deploy-local] to redeploy, free port 8782 first, then re-run this script.\n'
+      printf '[deploy-local] to redeploy, free port 8782 first, then re-run this script.\n' >&2
       exit 0
     fi
-    shift
+    # `${1:-deploy}` 默认分支下 $1 可能不存在；无参 shift 在 set -e 下静默 exit 1。
+    if [[ $# -gt 0 ]]; then
+      shift
+    fi
     exec bash "$UNIFIED" deploy "$@"
     ;;
   -h|--help|help)

@@ -99,7 +99,7 @@ func ParseResponses(body []byte) (*InternalRequest, error) {
 	for key, val := range rawMap {
 		if !knownFields[key] && len(val) > 0 && string(val) != "null" {
 			extensions[key] = val
-			ReportUnknownField("unknown", ProtocolOpenAIResponses, key, nil)
+			ReportParseUnknownField("unknown", ProtocolOpenAIResponses, key, nil)
 		}
 	}
 

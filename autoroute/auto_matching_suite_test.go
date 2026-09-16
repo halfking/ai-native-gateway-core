@@ -17,9 +17,9 @@ import (
 // 喂 HeuristicClassifier(静态默认关键词,与空 tuning_params 的网关行为一致),
 // 是套件在无网络环境下的可回归形态;cmd/autoroute-e2e-audit 用同一文件打真实网关。
 //
-// known_failure=true 的用例记录的是"期望行为"而非当前行为,单独计数:
-//   - 失败 = 已登记的待修缺口(见审计报告);
-//   - 通过 = 缺口已被修复,此时应把标志位翻回 false。
+// known_failure=true is reserved for an actively triaged, reproducible gap.
+// A case that now passes is an xpass and must have its fixture updated in the
+// same change; otherwise an old waiver can silently inflate the suite result.
 type suiteCase struct {
 	Name         string `json:"name"`
 	Bucket       string `json:"bucket"`
@@ -51,35 +51,55 @@ func estimateSuiteTokens(s string) int {
 	return ascii/4 + cjk*2
 }
 
+// autoMatchingSuiteFiles 列出全部套件文件:v1(2026-09-14 首轮)+ v2(2026-09-15
+// 二轮,docs/audit/2026-09-15-auto-matching-round2-plan.md)。新增套件文件追加
+// 到这里即可并入离线回归;cmd/autoroute-e2e-audit 用 -suite 指定同一文件。
+var autoMatchingSuiteFiles = []struct {
+	path    string
+	minSize int
+}{
+	{"testdata/auto_matching_suite.jsonl", 50},
+	{"testdata/auto_matching_suite_v2.jsonl", 20},
+}
+
 func loadAutoMatchingSuite(t *testing.T) []suiteCase {
 	t.Helper()
-	f, err := os.Open("testdata/auto_matching_suite.jsonl")
-	if err != nil {
-		t.Fatalf("open suite: %v", err)
-	}
-	defer f.Close()
 	var cases []suiteCase
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1024*1024), 8*1024*1024)
-	for lineNo := 1; sc.Scan(); lineNo++ {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	seen := map[string]string{}
+	for _, sf := range autoMatchingSuiteFiles {
+		f, err := os.Open(sf.path)
+		if err != nil {
+			t.Fatalf("open suite: %v", err)
 		}
-		var c suiteCase
-		if err := json.Unmarshal([]byte(line), &c); err != nil {
-			t.Fatalf("suite line %d: %v", lineNo, err)
+		fileCases := 0
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 1024*1024), 8*1024*1024)
+		for lineNo := 1; sc.Scan(); lineNo++ {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			var c suiteCase
+			if err := json.Unmarshal([]byte(line), &c); err != nil {
+				t.Fatalf("suite %s line %d: %v", sf.path, lineNo, err)
+			}
+			if c.Name == "" || c.ExpectedTask == "" || c.Prompt == "" {
+				t.Fatalf("suite %s line %d: missing name/expected_task/prompt", sf.path, lineNo)
+			}
+			if prev := seen[c.Name]; prev != "" {
+				t.Fatalf("duplicate case name %q in %s and %s", c.Name, prev, sf.path)
+			}
+			seen[c.Name] = sf.path
+			cases = append(cases, c)
+			fileCases++
 		}
-		if c.Name == "" || c.ExpectedTask == "" || c.Prompt == "" {
-			t.Fatalf("suite line %d: missing name/expected_task/prompt", lineNo)
+		if err := sc.Err(); err != nil {
+			t.Fatalf("scan suite %s: %v", sf.path, err)
 		}
-		cases = append(cases, c)
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatalf("scan suite: %v", err)
-	}
-	if len(cases) < 50 {
-		t.Fatalf("suite unexpectedly small: %d cases", len(cases))
+		f.Close()
+		if fileCases < sf.minSize {
+			t.Fatalf("suite %s unexpectedly small: %d cases", sf.path, fileCases)
+		}
 	}
 	return cases
 }
@@ -114,6 +134,10 @@ func TestAutoMatchingSuiteHeuristic(t *testing.T) {
 			got, err := c.Classify(ctx, sigs)
 			if err != nil {
 				t.Fatalf("Classify: %v", err)
+			}
+			if tc.KnownFailure && got.Primary == TaskType(tc.ExpectedTask) {
+				t.Errorf("known_failure unexpectedly passed as %s; remove known_failure from fixture", got.Primary)
+				return
 			}
 			if got.Primary == TaskType(tc.ExpectedTask) {
 				t.Logf("PASS %s (conf=%.2f, reason=%s)", tc.Name, got.Confidence, got.Reason)
@@ -150,6 +174,7 @@ func TestAutoMatchingSuiteHeuristic(t *testing.T) {
 		switch {
 		case ok && tc.KnownFailure:
 			knownFailPass++
+			fail++
 		case ok:
 			pass++
 		case tc.KnownFailure:
@@ -161,6 +186,6 @@ func TestAutoMatchingSuiteHeuristic(t *testing.T) {
 	t.Logf("suite summary: pass=%d fail=%d known_failure=%d known_failure_xpass=%d (total=%d)",
 		pass, fail, knownFail, knownFailPass, len(cases))
 	if fail > 0 {
-		t.Errorf("%d non-known cases failed — 分类回归,见上方子测试明细", fail)
+		t.Errorf("%d suite case(s) failed classification or retained a stale known_failure marker", fail)
 	}
 }

@@ -26,8 +26,11 @@ package ir
 import (
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
 )
 
 // AnomalyType is the IR-layer classification of an unrepresentable or
@@ -504,4 +507,26 @@ func ReportUnknownField(requestID, sourceProtocol, fieldPath string, extra map[s
 		RawValueTruncated: true,
 		Metadata:          extra,
 	})
+}
+
+// ReportParseUnknownField is the parser-facing unknown-field report. It
+// suppresses events for fields the paramreg registry already knows: those are
+// routed through Extensions and restored via paramreg.Apply by design, so a
+// parse-time flag is noise (245 2026-09-16 audit: stream_options/thinking
+// arriving on openai-chat requests produced ~6.4k ir_unknown_field WARNs/day).
+// Real loss on a specific src→dst pair is still reported at restore time by
+// the ActionDrop path, so nothing is silently swallowed.
+func ReportParseUnknownField(requestID, sourceProtocol, fieldPath string, extra map[string]any) {
+	if paramreg.Lookup(topLevelField(fieldPath)) != nil {
+		return
+	}
+	ReportUnknownField(requestID, sourceProtocol, fieldPath, extra)
+}
+
+// topLevelField returns the first segment of a dotted field path.
+func topLevelField(fieldPath string) string {
+	if i := strings.IndexByte(fieldPath, '.'); i >= 0 {
+		return fieldPath[:i]
+	}
+	return fieldPath
 }

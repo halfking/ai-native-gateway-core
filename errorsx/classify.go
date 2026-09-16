@@ -265,15 +265,59 @@ var contextLengthCJKRe = regexp.MustCompile(
 //     semantics (a working model being scheduled for removal) and should
 //     NOT short-circuit routing to a 404. Future work: a dedicated
 //     KindDeprecated kind for telemetry.
+//
+// 2026-09-15 (245 audit): the noun list gains `function` — NVIDIA NIM names
+// its served models "functions" and answers a dead/renamed model id with
+//
+//	404 {"status":404,"title":"Not Found","detail":"Function '<id>': Not
+//	     found for account '<acct>'"}
+//
+// That body matched none of the previous nouns, so ClassifyErrorWithBody fell
+// through to the status-only default (KindTransient, retryable). On 245 this
+// misclassification kept a removed NIM function in the retry loop and flapped
+// its circuit breaker (326 "circuit opened" cycles in 24h for 18/8 and 18/19)
+// instead of arming the binding-scoped model_not_found cooling.
 var modelNotFoundRe = regexp.MustCompile(
 	`(?i)(` +
-		`\b(model|endpoint)[\s:]+['"]?[a-z0-9._\-/:]{1,80}['"]?\s+(does not exist|is not found|not found|is unknown|unknown)\b|` +
+		`\b(model|endpoint|function)[\s:]+['"]?[a-z0-9._\-/:]{1,80}['"]?:?\s+(does not exist|is not found|not found|is unknown|unknown)\b|` +
+		`\b(no such|unknown)\s+(model|function)\b` +
+		`)`,
+)
+
+// modelNotFoundWrappedRe is the wrapped-error variant used by ClassifyError,
+// where no HTTP status is available to gate on. It deliberately EXCLUDES the
+// `function` noun: with a status gate (body paths) "Function '<id>': Not found
+// for account" at HTTP 404 reliably identifies a dead NIM function, but a bare
+// wrapped string like "no such function" / "Function 'x' not found" is far
+// more often the CLIENT's own tool/function-calling mistake echoed by an
+// upstream — misclassifying that as model_not_found would hard-terminal the
+// survival task AND cool the (credential,model) binding for 5 minutes
+// (R30 audit F3, 2026-09-16).
+var modelNotFoundWrappedRe = regexp.MustCompile(
+	`(?i)(` +
+		`\b(model|endpoint)[\s:]+['"]?[a-z0-9._\-/:]{1,80}['"]?:?\s+(does not exist|is not found|not found|is unknown|unknown)\b|` +
 		`\b(no such|unknown)\s+model\b` +
 		`)`,
 )
 var modelNotFoundCJKRe = regexp.MustCompile(
 	`模型不存在|模型.{0,10}不存在|模型.{0,10}未找到`,
 )
+
+// isGenericWebBody reports whether the body looks like a generic web-server
+// 404 (Nginx/Apache/Caddy/Traefik/cloud LB) within the first 512 bytes.
+// Shared by ClassifyErrorWithBody and ClassifyResponseBody so the two
+// classifiers cannot diverge on the same body (V20 guard, R30 parity).
+func isGenericWebBody(body []byte) bool {
+	bodyLower := strings.ToLower(string(body))
+	if len(bodyLower) > 512 {
+		bodyLower = bodyLower[:512]
+	}
+	return strings.Contains(bodyLower, "404 not found") ||
+		strings.Contains(bodyLower, "404 page not found") ||
+		strings.Contains(bodyLower, "page you requested") ||
+		strings.Contains(bodyLower, "page not found") ||
+		strings.Contains(bodyLower, "resource not found")
+}
 
 // noAvailableChannelRe matches the OneAPI/new-api relay body that reports "no
 // channel in this distributor group can serve the requested model":
@@ -733,7 +777,23 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		if modelDeprecatedRe.MatchString(msg) {
 			return KindModelDeprecated
 		}
-		if modelNotFoundRe.MatchString(msg) {
+		// 2026-09-15 (245 audit): generic web-server 404 bodies that reach this
+		// path through the legacy `fmt.Errorf("upstream %d: %s", ...)` wrapping.
+		// ClassifyErrorWithBody has the isGenericWebError guard for raw bodies;
+		// the wrapped-error path had none, so "404 page not found" from a
+		// misconfigured relay/LB landed in KindTransient and re-dialed the same
+		// dead endpoint. A wrong BASE_URL path is a routing/configuration
+		// fault: KindUpstreamDown gets the configuration-fault attribution
+		// (breaker auto 60s+ escalation, nodehealth updown) — the kind itself
+		// remains retryable per IsRetryable; the win is attribution, not
+		// "don't retry" (R30 audit F4 comment fix).
+		if strings.Contains(msg, "404 not found") || strings.Contains(msg, "404 page not found") ||
+			strings.Contains(msg, "page not found") || strings.Contains(msg, "page you requested") {
+			return KindUpstreamDown
+		}
+		// R30 (2026-09-16, audit F3): status-less wrapped path uses the
+		// narrowed regex — see modelNotFoundWrappedRe.
+		if modelNotFoundWrappedRe.MatchString(msg) {
 			return KindModelNotFound
 		}
 		if unsupportedFeatureRe.MatchString(msg) {
@@ -861,15 +921,7 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		// ("404 Not Found", "404 page not found") OR generic web phrases
 		// ("page you requested", "resource not found", "page not found")
 		// within the first 512 bytes, do NOT apply model-specific patterns.
-		bodyLower := strings.ToLower(string(body))
-		if len(bodyLower) > 512 {
-			bodyLower = bodyLower[:512]
-		}
-		isGenericWebError := strings.Contains(bodyLower, "404 not found") ||
-			strings.Contains(bodyLower, "404 page not found") ||
-			strings.Contains(bodyLower, "page you requested") ||
-			strings.Contains(bodyLower, "page not found") ||
-			strings.Contains(bodyLower, "resource not found")
+		isGenericWebError := isGenericWebBody(body)
 
 		// 2026-08-09: OneAPI/new-api distributor "no available channel for model
 		// X under group Y" on a 5xx. Checked BEFORE the overload branch because
@@ -1273,7 +1325,12 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 			modelDeprecatedRe.Match(body) {
 			return KindModelDeprecated
 		}
+		// R30 (2026-09-16, audit F4): parity with ClassifyErrorWithBody's V20
+		// guard — a generic web-server 404 body reaching this classifier via an
+		// SSE error chunk must not become KindModelNotFound. Same 512-byte
+		// heuristic, same rationale.
 		if (status == 400 || status == 404 || status == 422) &&
+			!isGenericWebBody(body) &&
 			(modelNotFoundRe.Match(body) || modelNotFoundCJKRe.Match(body)) {
 			return KindModelNotFound
 		}
