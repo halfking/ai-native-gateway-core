@@ -188,6 +188,13 @@ ok      github.com/kaixuan/llm-gateway-go/domains/routeincident        8.400s
 
 ### Prerequisites
 1. Code must deploy **before** migration 715 runs (code introduces `StatePending`)
+   > **Correction (2026-09-16, 6f3d03073):** this ordering was backwards — the
+   > CHECK constraint must admit `'pending'` *before* the new code writes it,
+   > or the first sub-threshold write fails with 23514. Migration 715 is now
+   > mirrored by `db.ensureRouteIncidentPendingState` and applied by the
+   > startup chain inside the same binary deploy, which resolves the ordering
+   > entirely. Do NOT run the 715 SQL by hand. See
+   > `2026-09-16-deployment-verification-715.md`.
 2. Existing `active` incidents remain valid (no data migration needed)
 
 ### Deployment Steps
