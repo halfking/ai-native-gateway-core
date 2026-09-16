@@ -237,6 +237,7 @@ func TestSurvivalMetricsStateTransitions(t *testing.T) {
 	keys := [][3]string{
 		{"running", "retry_now", "recoverable_candidate"},
 		{"running", "waiting_recovery", "wait_recovery_window"},
+		{"running", "waiting_recovery", "wait_recovery_window:rate_limit"},
 		{"waiting_recovery", "running", "retry"},
 		{"running", "succeed", "success"},
 		{"running", "fail_terminal", "terminal_candidate"},
@@ -283,8 +284,12 @@ func TestSurvivalMetricsStateTransitions(t *testing.T) {
 		c.Run(context.Background(), h.sw, &executors.ExecParams{})
 
 		got := survivalTransitionDeltas(t, before, keys)
-		if got["running>waiting_recovery|wait_recovery_window"] != 1 {
-			t.Fatalf("entering the wait must emit running->waiting_recovery, got %v", got)
+		// 2026-09-17 no-nodes enrichment: AggregateTaskOutcomeWithHistory now
+		// surfaces the underlying candidate kind in the wait decision reason
+		// when every wait candidate shares one kind. rateLimitFailure has
+		// KindRateLimit so the transition reason is "wait_recovery_window:rate_limit".
+		if got["running>waiting_recovery|wait_recovery_window:rate_limit"] != 1 {
+			t.Fatalf("entering the wait must emit running->waiting_recovery with underlying kind, got %v", got)
 		}
 		if got["waiting_recovery>running|retry"] != 1 {
 			t.Fatalf("leaving the wait for the next attempt must emit waiting_recovery->running, got %v", got)

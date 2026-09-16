@@ -332,6 +332,15 @@ func AggregateTaskOutcomeWithHistory(r *AttemptResult, history errorsx.DecisionH
 	var hasRetry, hasWait, hasTerminal, hasUnknown, hasBlocked bool
 	var maxRetryAfter time.Duration
 	var unknownKind errorsx.ErrorKind
+	// 2026-09-17 (no-nodes think enrichment): when every wait candidate shares
+	// the same underlying kind (the common case for "no available nodes" /
+	// upstream-down), surface that kind in the decision Reason so the per-
+	// retry `: thinking:` notice the client sees names the actual cause
+	// (e.g. 原因=no_available_channel) instead of the generic
+	// "wait_recovery_window". This is the spec requirement "每次重试的失败
+	// 结果都作为 think 返回给客户端" — the failure reason must travel with
+	// every retry, not only the terminal frame.
+	var waitKinds []errorsx.ErrorKind
 
 	// Enhanced logging for debugging retry decisions
 	candidateSummary := make([]map[string]any, 0, len(r.CandidateOutcomes))
@@ -354,6 +363,9 @@ func AggregateTaskOutcomeWithHistory(r *AttemptResult, history errorsx.DecisionH
 			hasRetry = true
 		case TaskActionWaitRecovery:
 			hasWait = true
+			if co.Kind != "" {
+				waitKinds = append(waitKinds, co.Kind)
+			}
 		case TaskActionFailTerminal:
 			hasTerminal = true
 		case TaskActionFailClosed:
@@ -383,7 +395,7 @@ func AggregateTaskOutcomeWithHistory(r *AttemptResult, history errorsx.DecisionH
 	} else if hasRetry {
 		decision = TaskDecision{Action: TaskActionRetryNow, Reason: "recoverable_candidate", NextRetryAfter: maxRetryAfter}
 	} else if hasWait {
-		decision = TaskDecision{Action: TaskActionWaitRecovery, Reason: "wait_recovery_window", NextRetryAfter: maxRetryAfter}
+		decision = TaskDecision{Action: TaskActionWaitRecovery, Reason: waitReasonCode(waitKinds), NextRetryAfter: maxRetryAfter}
 	} else {
 		decision = TaskDecision{Action: TaskActionFailClosed, Reason: "no_candidate_outcomes"}
 	}
@@ -406,6 +418,25 @@ func AggregateTaskOutcomeWithHistory(r *AttemptResult, history errorsx.DecisionH
 	)
 
 	return decision
+}
+
+// waitReasonCode derives the per-retry think/terminal reason from the
+// underlying candidate kinds. When every wait candidate shares one kind
+// (the dominant case — e.g. all KindNoAvailableChannel or all
+// KindRateLimit), we surface it so the client sees the actual cause in
+// every `: thinking:` retry notice. Mixed-kind waits fall back to the
+// generic bucket label so existing dashboards/tests do not break.
+func waitReasonCode(kinds []errorsx.ErrorKind) string {
+	if len(kinds) == 0 {
+		return "wait_recovery_window"
+	}
+	first := kinds[0]
+	for _, k := range kinds[1:] {
+		if k != first {
+			return "wait_recovery_window"
+		}
+	}
+	return "wait_recovery_window:" + string(first)
 }
 
 // centralActionForTaskWithHistory folds the legacy per-kind task action
