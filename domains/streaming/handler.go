@@ -1014,8 +1014,10 @@ type ResponseInterceptResult = response.InterceptResult
 // ResponseStreamMeta is an alias to response.StreamMeta.
 type ResponseStreamMeta = response.StreamMeta
 
-// dispatchFollowUpFunc (2026-07-11) is the seam used by injectFollowUpRequest
-type dispatchFollowUpFunc func(h *ChatHandler, ctx context.Context, sessionID string, body []byte, action string, authHeader string, attempt int) (status int, bodySnippet string)
+// dispatchFollowUpFunc (2026-07-11) is the seam used by injectFollowUpRequest.
+// parentRequestID (2026-09-17) is the originating client request_id, persisted
+// on the shadow turn via X-Gw-Parent-Request-Id (see 会话优化v4/18 §3).
+type dispatchFollowUpFunc func(h *ChatHandler, ctx context.Context, sessionID string, body []byte, action string, parentRequestID string, authHeader string, attempt int) (status int, bodySnippet string)
 
 // ResponseChunkResult is an alias to response.ChunkResult.
 type ResponseChunkResult = response.ChunkResult
@@ -5180,7 +5182,7 @@ goalRetryLoopDone:
 					// the historical server-side follow-up behavior.
 					followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
 					parentAuthHeader := h.buildHandoffAuthHeader(r)
-					go h.injectFollowUpRequest(followUpCtx, gwSessionID, endResult.InjectFollowUp, endResult.Action, parentAuthHeader)
+					go h.injectFollowUpRequest(followUpCtx, gwSessionID, endResult.InjectFollowUp, endResult.Action, requestID, parentAuthHeader)
 				}
 			}
 		} else {
@@ -5206,7 +5208,7 @@ goalRetryLoopDone:
 					// the historical server-side follow-up behavior.
 					followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
 					parentAuthHeader := h.buildHandoffAuthHeader(r)
-					go h.injectFollowUpRequest(followUpCtx, gwSessionID, interceptResult.InjectFollowUp, interceptResult.Action, parentAuthHeader)
+					go h.injectFollowUpRequest(followUpCtx, gwSessionID, interceptResult.InjectFollowUp, interceptResult.Action, requestID, parentAuthHeader)
 				}
 				// Apply ModifiedBody (e.g. output-compliance redaction).
 				//

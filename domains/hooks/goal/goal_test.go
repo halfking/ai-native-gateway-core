@@ -505,6 +505,130 @@ func TestInterceptNonStream_ToolCallsFinish_NoContinue(t *testing.T) {
 	}
 }
 
+// ── Advisory tool_calls signal (会话优化v4/18 §4) ──────────────────────────
+//
+// Path 1.5: when goal.client_signal_on_tool_calls is on and the client
+// declared the continue capability, a goal turn that ends with
+// finish_reason=tool_calls emits a budget-free advisory gw-continue (no
+// hint) telling the client the goal is still open.
+
+func TestInterceptNonStream_ToolCalls_AdvisorySignal_WhenEnabled(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "adv-1", TenantID: "t1", State: StateActive, ContinueAttempt: 1})
+	hook := newTestHook(t, store, nil)
+	hook.config.ClientSignalOnToolCalls = true
+	hook.config.ClientSignalEnabled = true
+	hook.config.ClientSignalMode = "auto"
+
+	res, err := hook.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "adv-1", TenantID: "t1", FinishReason: "tool_calls", TokensUsed: 9000, ContextWindow: 128000,
+		ResponseBody:        []byte(`{"choices":[{"message":{"role":"assistant","content":"calling a tool now"},"finish_reason":"tool_calls"}]}`),
+		ClientSignalAllowed: true,
+	})
+	if err != nil {
+		t.Fatalf("InterceptNonStream error: %v", err)
+	}
+	if res == nil || res.ClientSignalKind != "gw-continue" {
+		t.Fatalf("result=%+v, want advisory gw-continue", res)
+	}
+	if len(res.InjectFollowUp) != 0 {
+		t.Fatalf("advisory signal must not trigger the legacy self-call: %s", res.InjectFollowUp)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(res.ClientSignalPayload, &payload); err != nil {
+		t.Fatalf("payload not JSON: %v", err)
+	}
+	if payload["advisory"] != true {
+		t.Fatalf("advisory flag = %v, want true", payload["advisory"])
+	}
+	if payload["finish_reason"] != "tool_calls" {
+		t.Fatalf("finish_reason = %v, want tool_calls", payload["finish_reason"])
+	}
+	if _, hasHint := payload["hint"]; hasHint {
+		t.Fatal("advisory payload must NOT carry a hint (client decides its own continuation)")
+	}
+	if payload["attempt"] != float64(1) {
+		t.Fatalf("attempt = %v, want echoed current value 1", payload["attempt"])
+	}
+	// Budget-free: neither the continue budget nor the client-signal claim may move.
+	if got := store.autoContinueCount["adv-1"]; got != 0 {
+		t.Fatalf("advisory signal consumed AtomicAutoContinue budget (%d), want 0", got)
+	}
+	if store.atomicWonCalls != 0 {
+		t.Fatalf("atomicWonCalls = %d, want 0 (no ClaimContinueAttempt)", store.atomicWonCalls)
+	}
+	if sess, _ := store.GetSession(context.Background(), "t1", "adv-1"); sess.ContinueAttempt != 1 {
+		t.Fatalf("ContinueAttempt moved to %d, want unchanged 1", sess.ContinueAttempt)
+	}
+}
+
+func TestInterceptNonStream_ToolCalls_NoAdvisorySignal_WhenDisabled(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "adv-2", TenantID: "t1", State: StateActive})
+	hook := newTestHook(t, store, nil)
+	// ClientSignalOnToolCalls defaults to false; capability is declared but
+	// the tenant never opted in.
+	res, _ := hook.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "adv-2", TenantID: "t1", FinishReason: "tool_calls",
+		ResponseBody:        []byte(`{"choices":[{"message":{"role":"assistant","content":"calling a tool now"},"finish_reason":"tool_calls"}]}`),
+		ClientSignalAllowed: true,
+	})
+	if res != nil {
+		t.Fatalf("opt-out tenant must keep the historical nil behaviour, got %+v", res)
+	}
+}
+
+func TestInterceptNonStream_ToolCalls_NoAdvisorySignal_WithoutCapability(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "adv-3", TenantID: "t1", State: StateActive})
+	hook := newTestHook(t, store, nil)
+	hook.config.ClientSignalOnToolCalls = true
+
+	// Legacy client: no X-Gw-Capabilities → no signal, and critically no
+	// self-call either (the gateway cannot execute the model's tools).
+	res, _ := hook.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "adv-3", TenantID: "t1", FinishReason: "tool_calls",
+		ResponseBody: []byte(`{"choices":[{"message":{"role":"assistant","content":"calling a tool now"},"finish_reason":"tool_calls"}]}`),
+	})
+	if res != nil {
+		t.Fatalf("legacy client must get no advisory signal, got %+v", res)
+	}
+}
+
+func TestInterceptNonStream_ToolCalls_NoAdvisorySignal_SubAgentsPending(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "adv-4", TenantID: "t1", State: StateActive, SubAgentsPending: 1})
+	hook := newTestHook(t, store, nil)
+	hook.config.ClientSignalOnToolCalls = true
+
+	res, _ := hook.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "adv-4", TenantID: "t1", FinishReason: "tool_calls",
+		ResponseBody:        []byte(`{"choices":[{"message":{"role":"assistant","content":"calling a tool now"},"finish_reason":"tool_calls"}]}`),
+		ClientSignalAllowed: true,
+	})
+	if res != nil {
+		t.Fatalf("pending sub-agents mean work is still in flight; want nil, got %+v", res)
+	}
+}
+
+func TestInterceptNonStream_ToolCalls_NoAdvisorySignal_AfterGiveUp(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "adv-5", TenantID: "t1", State: StateActive, AutoContinueCount: 3})
+	hook := newTestHook(t, store, nil)
+	hook.config.ClientSignalOnToolCalls = true
+	hook.config.ModelSwitchOnLoop = false // budget exhausted + no switch ⇒ giveUp
+
+	res, _ := hook.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "adv-5", TenantID: "t1", FinishReason: "tool_calls",
+		ResponseBody:        []byte(`{"choices":[{"message":{"role":"assistant","content":"calling a tool now"},"finish_reason":"tool_calls"}]}`),
+		ClientSignalAllowed: true,
+	})
+	if res != nil {
+		t.Fatalf("give-up sessions must not receive advisory frames, got %+v", res)
+	}
+}
+
 // ── Concurrent continues: only one wins the CAS, exactly one follow-up ─────
 //
 // This exercises the AtomicAutoContinue guard that prevents two concurrent
