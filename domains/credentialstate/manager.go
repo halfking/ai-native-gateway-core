@@ -506,6 +506,8 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	m.batchWriter.Add(StateUpdate{
 		CredentialID:  credID,
 		Model:         model,
+		Available:     &state.Available,
+		RecoverAt:     state.RecoverAt,
 		LastFailureAt: &now,
 		LastError:     &errStr,
 		UpdatedAt:     now,
