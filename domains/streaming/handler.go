@@ -6301,11 +6301,34 @@ func shouldSkipAutoTitleGeneration(logCtx *RequestLogContext) bool {
 // outcome registry until pendingFeedbackTTL evicted it unreported: the P2.2
 // optimizer feedback stream degraded to failures-only. Never overwrites a
 // marker already present on the entry.
+//
+// R34 (2026-09-17 audit, closes the F1 residual): the single-marker
+// propagation unblocked ReportRoutingOutcome (which only needs
+// IsAutoRequest), but the v2.1 tuning-signal gate also requires
+// entry.TaskType — which stayed nil on the success terminal, so implicit
+// tuning signals still never fired for successful auto requests. Mirror the
+// rest of the auto field family the same never-overwrite way.
 func propagateIsAutoRequestToEntry(entry *telemetry.RequestLogEntry, logCtx *RequestLogContext) {
-	if entry == nil || entry.IsAutoRequest != nil || logCtx == nil || !logCtx.IsAutoRequest {
+	if entry == nil || logCtx == nil || !logCtx.IsAutoRequest {
 		return
 	}
-	entry.IsAutoRequest = boolPtr(true)
+	if entry.IsAutoRequest == nil {
+		entry.IsAutoRequest = boolPtr(true)
+	}
+	if entry.TaskType == nil && logCtx.TaskType != "" {
+		entry.TaskType = strPtr(logCtx.TaskType)
+	}
+	if entry.OutboundModel == nil && logCtx.OutboundModel != "" {
+		entry.OutboundModel = strPtr(logCtx.OutboundModel)
+	}
+	if entry.AutoDecision == nil && len(logCtx.AutoDecision) > 0 {
+		v := string(logCtx.AutoDecision)
+		entry.AutoDecision = &v
+	}
+	if entry.AutoConfidence == nil && logCtx.AutoConfidence > 0 {
+		conf := logCtx.AutoConfidence
+		entry.AutoConfidence = &conf
+	}
 }
 
 // shouldSkipAutoSummaryGeneration (2026-08-06) — symmetric companion to

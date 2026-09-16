@@ -367,6 +367,18 @@ func (s *ScanScheduler) cycle(ctx context.Context) error {
 						"template_id", t.templateID, "provider", t.providerCode)
 					return
 				}
+				// R34 (2026-09-17 audit): sweep-budget cutoffs are not
+				// template health — a scan cut short because the 60s sweep
+				// window (or the caller) expired says nothing about the
+				// upstream, and counting it toward the consecutive-failure
+				// threshold auto-disables slow-but-healthy tail templates.
+				if ctx.Err() != nil ||
+					errors.Is(err, context.DeadlineExceeded) ||
+					errors.Is(err, context.Canceled) {
+					slog.Info("scan_scheduler template scan cut by sweep budget, not counting as failure",
+						"template_id", t.templateID, "provider", t.providerCode)
+					return
+				}
 				atomic.AddUint64(&s.scansFailed, 1)
 				s.setLastError(err.Error())
 				s.recordScanFailure(ctx, t.tenantID, t.templateID)

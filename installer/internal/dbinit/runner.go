@@ -146,6 +146,17 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"711_hosted_tasks.sql",
 			"712_session_mirror_outbox.sql",
 			"713_session_turns_cost_precision.sql",
+			// R34 (2026-09-17 audit): five-point sync backfill — 704/705/709/
+			// 710 drifted out of the installer (R30 leftover #8) and 714/715
+			// landed after it; 714 has no Go-side ensure mirror, so the
+			// installer was the only fresh-install delivery channel for it.
+			"704_plan_quota_probe_backoff.sql",
+			"705_request_logs_reattach_detached_partitions.sql",
+			"709_work_type_route_coverage.sql",
+			"710_request_logs_view_session_family_v2.sql",
+			"714_partition_timezone_pin_remaining.sql",
+			"715_route_incidents_pending_state.sql",
+			"716_unify_probe_health_views.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}

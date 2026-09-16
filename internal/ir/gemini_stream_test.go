@@ -256,6 +256,9 @@ func TestSerializeGemini_TextDelta(t *testing.T) {
 }
 
 // TestSerializeGemini_ThoughtDelta verifies reasoning delta output.
+// R34 (2026-09-17 audit): the wire shape is the boolean marker beside the
+// text — the old gateway-invented `"thought":"<text>"` string shape is not
+// read by real Gemini clients.
 func TestSerializeGemini_ThoughtDelta(t *testing.T) {
 	chunk := &StreamChunk{
 		Type:  ChunkTypeDelta,
@@ -263,8 +266,11 @@ func TestSerializeGemini_ThoughtDelta(t *testing.T) {
 	}
 
 	out := chunk.SerializeGemini()
-	if !strings.Contains(out, `"thought":"thinking..."`) {
-		t.Errorf("Thought not in output: %s", out)
+	if !strings.Contains(out, `"thought":true`) {
+		t.Errorf("Boolean thought marker not in output: %s", out)
+	}
+	if !strings.Contains(out, `"text":"thinking..."`) {
+		t.Errorf("Thought text not carried by text field: %s", out)
 	}
 }
 

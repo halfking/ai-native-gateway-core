@@ -54,7 +54,13 @@ func acquireSweepDistLock(
 	if mgr == nil || !mgr.Enabled() {
 		return nil
 	}
-	h, err := mgr.Acquire(ctx, distlock.AcquireOpts{
+	// R34 (2026-09-17 audit): bound the leader handshake independently of the
+	// sweep budget — the follower path has its own 3s cap, but a Redis
+	// round-trip on the SetNX path used to eat into the caller's sweep
+	// deadline unchecked.
+	acquireCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	h, err := mgr.Acquire(acquireCtx, distlock.AcquireOpts{
 		Key:   distlock.BuildKey(autoRouteDistLockNamespace, logicalKey),
 		TTL:   ttl,
 		Mode:  distlock.ModeWaitFollower,

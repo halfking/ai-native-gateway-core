@@ -6,7 +6,9 @@
 // docs/superpowers/specs/2026-07-13-route-incident-diagnosis-design.md
 // so a cross-walk against the spec is a 1:1 find-replace.
 
-export type RouteIncidentState = 'active' | 'recovering' | 'recovered'
+// R34 (2026-09-17 audit): 715/bba08b922 added the below-threshold 'pending'
+// state on the server — mirror it here so list/filter typings stay honest.
+export type RouteIncidentState = 'pending' | 'active' | 'recovering' | 'recovered'
 
 export interface RouteIncidentRouteKey {
   endpoint_protocol: string

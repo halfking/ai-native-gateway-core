@@ -62,7 +62,7 @@ func ParseGeminiStreamChunk(line string) (*StreamChunk, error) {
 				Role  string `json:"role"`
 				Parts []struct {
 					Text         string          `json:"text"`
-					Thought      string          `json:"thought"` // Gemini 2.5+ thinking
+					Thought      json.RawMessage `json:"thought"` // Gemini 2.5+ thinking marker (bool on the real wire)
 					FunctionCall json.RawMessage `json:"functionCall"`
 					InlineData   json.RawMessage `json:"inlineData"`
 				} `json:"parts"`
@@ -163,10 +163,15 @@ func ParseGeminiStreamChunk(line string) (*StreamChunk, error) {
 	chunk.Delta = &StreamDelta{}
 	var audioData []byte
 	for partIdx, p := range cand.Content.Parts {
+		isThought, legacyThoughtText := geminiThoughtMarker(p.Thought)
 		switch {
-		case p.Thought != "":
-			// Multiple parts from one candidate belong to the same delta.
-			chunk.Delta.ReasoningContent += p.Thought
+		case isThought:
+			// R34: boolean "thought": true parts carry the thinking text in
+			// "text"; the legacy string form carried it in "thought" itself.
+			chunk.Delta.ReasoningContent += p.Text
+			if p.Text == "" {
+				chunk.Delta.ReasoningContent += legacyThoughtText
+			}
 		case p.Text != "":
 			chunk.Delta.Content += p.Text
 		case len(p.FunctionCall) > 0 && string(p.FunctionCall) != "null":
