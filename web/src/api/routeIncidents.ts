@@ -66,7 +66,7 @@ async function postJSON<T>(
 }
 
 export function listRouteIncidents(params: {
-  state?: 'active' | 'recovering' | 'recovered'
+  state?: 'pending' | 'active' | 'recovering' | 'recovered'
   visibleOnly?: boolean
   limit?: number
   tenantId?: string

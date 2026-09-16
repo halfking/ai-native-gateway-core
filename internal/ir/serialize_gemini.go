@@ -358,10 +358,14 @@ func buildGeminiContents(messages []Message) []map[string]any {
 					})
 				}
 			case "thinking":
-				// Gemini 2.5+ thinking part (with includeThoughts=true)
+				// Gemini 2.5+ thinking part (with includeThoughts=true).
+				// R34: the wire shape is a boolean marker beside the text —
+				// "thought" carrying the text itself was a gateway-invented
+				// shape real Gemini clients never read.
 				if block.Thinking != nil {
 					parts = append(parts, map[string]any{
-						"thought": block.Thinking.Thinking,
+						"text":    block.Thinking.Thinking,
+						"thought": true,
 					})
 				}
 			}
@@ -585,26 +589,42 @@ func extractTextFromContent(blocks []ContentBlock) string {
 // The trailing "_<partIdx>" disambiguator (added in 2026-09-01 to fix P0-1
 // parallel functionCall ID collisions) is stripped so a round-trip
 // parse→serialize→parse yields the same function name.
+// R34 (2026-09-17 audit): also accepts the legacy "gemini_call_<idx>_<name>"
+// shape the response-side parser synthesized before the format was unified —
+// those IDs can still arrive inside in-flight client conversations.
 func toolUseNameFromID(id string) string {
 	const prefix = "gemini_call_"
 	if len(id) <= len(prefix) || id[:len(prefix)] != prefix {
 		return id
 	}
 	rest := id[len(prefix):]
+	allDigits := func(s string) bool {
+		if s == "" {
+			return false
+		}
+		for _, r := range s {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	endsWithDigitSeg := func(s string) bool {
+		if i := strings.LastIndex(s, "_"); i >= 0 {
+			return allDigits(s[i+1:])
+		}
+		return false
+	}
+	// Legacy leading "<idx>_" (only when the remainder does not itself end
+	// in a "_<digits>" disambiguator — that combination is the current shape
+	// with a numeric function name).
+	if i := strings.Index(rest, "_"); i > 0 && allDigits(rest[:i]) && !endsWithDigitSeg(rest[i+1:]) {
+		rest = rest[i+1:]
+	}
 	// Strip a single trailing "_<digits>" disambiguator if present.
 	if i := strings.LastIndex(rest, "_"); i > 0 {
-		tail := rest[i+1:]
-		if tail != "" {
-			allDigits := true
-			for _, r := range tail {
-				if r < '0' || r > '9' {
-					allDigits = false
-					break
-				}
-			}
-			if allDigits {
-				return rest[:i]
-			}
+		if allDigits(rest[i+1:]) {
+			return rest[:i]
 		}
 	}
 	return rest

@@ -132,8 +132,10 @@ func NewAutoRouteSettleWorker(db *pgxpool.Pool) *AutoRouteSettleWorker {
 // SetDistLock wires the Redis-backed distributed lock manager used for
 // cross-instance sweep dedup (token-bucket leader election, R31 audit §四#1).
 // Optional: when never called, or called with a manager whose Enabled() is
-// false, every instance sweeps exactly as before. Safe to call before or
-// after Start().
+// false, every instance sweeps exactly as before. MUST be called before
+// Start(): the field is read unsynchronized by the sweep goroutine (R34
+// 2026-09-17 audit — the previous "safe after Start" wording promised a
+// happens-before edge that does not exist).
 func (w *AutoRouteSettleWorker) SetDistLock(mgr distlock.Manager) {
 	w.distLock = mgr
 }

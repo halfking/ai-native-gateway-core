@@ -395,9 +395,11 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 	nowIsTransient := transientFamily[kind]
 	if b.lastErrorKind != "" && b.lastErrorKind != kind && !(lastIsTransient && nowIsTransient) {
 		b.consecutive.Store(0)
-		if policy.RecoveryType == RecoveryExponential {
-			b.coolingCycle = 0
-		}
+		// R34 (2026-09-17 audit): reset the cooling cycle on any error-family
+		// change. Previously only a successor whose own policy was exponential
+		// reset it, so upstream_down(cycle 3) → timeout kept the stale cycle
+		// and the next escalation started at 2³× the initial cooling.
+		b.coolingCycle = 0
 	}
 
 	b.lastFailureAt = now
@@ -439,10 +441,7 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 		var coolingDuration time.Duration
 		if policy.RecoveryType == RecoveryExponential {
 			b.coolingCycle++
-			cooling := policy.InitialCooling * time.Duration(math.Pow(2, float64(b.coolingCycle-1)))
-			if cooling > policy.MaxCooling {
-				cooling = policy.MaxCooling
-			}
+			cooling := exponentialCooling(policy.InitialCooling, policy.MaxCooling, b.coolingCycle)
 			coolingDuration = cooling
 			b.coolingExpires = now.Add(cooling)
 			if b.coolingCycle >= 5 {
@@ -488,10 +487,7 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 					// coolingCycle, so single blips never climb past the first
 					// step; only genuine sustained failures back off.
 					b.coolingCycle++
-					cooling := time.Duration(float64(escalated.InitialCooling) * math.Pow(2, float64(b.coolingCycle-1)))
-					if cooling > escalated.MaxCooling {
-						cooling = escalated.MaxCooling
-					}
+					cooling := exponentialCooling(escalated.InitialCooling, escalated.MaxCooling, b.coolingCycle)
 					coolingDuration = cooling
 					b.coolingExpires = now.Add(cooling)
 
@@ -535,6 +531,25 @@ func failureConfirmationThreshold(policy CoolingPolicy) int32 {
 	default:
 		return autoRecoveryFailureThreshold
 	}
+}
+
+// exponentialCooling computes InitialCooling·2^(cycle-1) clamped to max.
+// R34 (2026-09-17 audit): the naive int64 multiply overflows/wraps once the
+// cycle count is large enough — a sustained multi-hour outage advances
+// coolingCycle without bound (free profile ~30 cycles ≈ 2h), and the wrapped
+// duration can come out negative, which defeats the `> max` clamp and makes
+// coolingExpires land in the past (breaker stops protecting the credential).
+// Do the math in float64 and clamp before the int64 conversion.
+func exponentialCooling(initial, max time.Duration, cycle int) time.Duration {
+	step := cycle - 1
+	if step < 0 {
+		step = 0
+	}
+	v := float64(initial) * math.Pow(2, float64(step))
+	if v <= 0 || v >= float64(max) {
+		return max
+	}
+	return time.Duration(v)
 }
 
 // RecordSuccess records a success and transitions the circuit to CLOSED.

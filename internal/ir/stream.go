@@ -1267,7 +1267,7 @@ func mapOpenAIFinishReasonToAnthropic(reason string) string {
 // audit-gemini-stream (2026-07-13): Completes the Gemini native adapter by
 // adding stream serialization. Map IR StreamDelta → Gemini parts:
 //   - text       → {"text": "..."}
-//   - reasoning  → {"thought": "..."} (Gemini 2.5+)
+//   - reasoning  → {"text": "...", "thought": true} (Gemini 2.5+)
 //   - tool_call  → {"functionCall": {"name": "...", "args": {...}}}
 //
 // Usage chunks emit usageMetadata with modality-aware token breakdowns.
@@ -1312,9 +1312,10 @@ func (c *StreamChunk) SerializeGemini() string {
 					parts = append(parts, map[string]any{"text": c.Delta.Content})
 				}
 
-				// Reasoning (Gemini 2.5+ thought)
+				// Reasoning (Gemini 2.5+ thought). R34: wire shape is the
+				// boolean marker beside the text, not text-in-"thought".
 				if c.Delta.ReasoningContent != "" {
-					parts = append(parts, map[string]any{"thought": c.Delta.ReasoningContent})
+					parts = append(parts, map[string]any{"text": c.Delta.ReasoningContent, "thought": true})
 				}
 
 				// Tool calls (functionCall). A partial streamed call can contain

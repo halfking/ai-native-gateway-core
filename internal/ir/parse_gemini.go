@@ -147,7 +147,7 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 			FileData         json.RawMessage `json:"fileData"`
 			FunctionCall     json.RawMessage `json:"functionCall"`
 			FunctionResponse json.RawMessage `json:"functionResponse"`
-			Thought          string          `json:"thought"`
+			Thought          json.RawMessage `json:"thought"`
 		} `json:"parts"`
 	}
 	if err := json.Unmarshal(raw, &contents); err != nil {
@@ -166,12 +166,22 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 
 		msg := Message{Role: role}
 		for partIdx, p := range c.Parts {
-			// Gemini thinking part
-			if p.Thought != "" {
-				msg.Content = append(msg.Content, ContentBlock{
-					Type:     "thinking",
-					Thinking: &ThinkingBlock{Thinking: p.Thought},
-				})
+			// Gemini thinking part. R34 (2026-09-17 audit): the real wire
+			// marker is a boolean ("thought": true, text rides in "text" —
+			// see docs/archive gemini generate-content reference); a string
+			// unmarshal of `true` failed the whole request with 400. The
+			// legacy gateway-only string shape stays tolerated.
+			if isThought, legacyText := geminiThoughtMarker(p.Thought); isThought {
+				thoughtText := p.Text
+				if thoughtText == "" {
+					thoughtText = legacyText
+				}
+				if thoughtText != "" {
+					msg.Content = append(msg.Content, ContentBlock{
+						Type:     "thinking",
+						Thinking: &ThinkingBlock{Thinking: thoughtText},
+					})
+				}
 				continue
 			}
 
@@ -270,6 +280,27 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 
 // geminiMediaBlock dispatches an inline_data part into the correct IR block
 // (image/audio/video) based on MIME type.
+// geminiThoughtMarker decodes the "thought" field of a Gemini part.
+// The real wire marker is a boolean ("thought": true marks the part as
+// thinking; the text itself rides in "text" — see the archived Gemini
+// generate-content reference). Older gateway builds emitted the thinking
+// text directly in "thought"; tolerate that legacy string shape too.
+// Returns (isThought, legacyText).
+func geminiThoughtMarker(raw json.RawMessage) (bool, string) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false, ""
+	}
+	var b bool
+	if err := json.Unmarshal(raw, &b); err == nil {
+		return b, ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s != "", s
+	}
+	return false, ""
+}
+
 func geminiMediaBlock(mimeType, base64Data string) ContentBlock {
 	switch {
 	case len(mimeType) >= 5 && mimeType[:5] == "image":

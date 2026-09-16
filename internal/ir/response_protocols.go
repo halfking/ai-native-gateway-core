@@ -17,7 +17,7 @@ func ParseGeminiResponse(body []byte) (*InternalResponse, error) {
 				Role  string `json:"role"`
 				Parts []struct {
 					Text         string          `json:"text"`
-					Thought      string          `json:"thought"`
+					Thought      json.RawMessage `json:"thought"` // thinking marker (bool on the real wire, legacy string tolerated)
 					FunctionCall json.RawMessage `json:"functionCall"`
 					// Audit R20 (2026-09-13): keep enough of the other known
 					// part shapes to recognize them as "known-unsupported"
@@ -60,12 +60,22 @@ func ParseGeminiResponse(body []byte) (*InternalResponse, error) {
 	}
 	resp.FinishReason = mapGeminiFinishReason(candidate.FinishReason)
 	for index, part := range candidate.Content.Parts {
+		isThought, legacyThoughtText := geminiThoughtMarker(part.Thought)
 		switch {
+		case isThought:
+			// R34: real wire thought parts are `{"text": ..., "thought":
+			// true}` — a string decode of `true` used to fail the whole
+			// response parse. Legacy string-only form still tolerated.
+			thoughtText := part.Text
+			if thoughtText == "" {
+				thoughtText = legacyThoughtText
+			}
+			if thoughtText != "" {
+				resp.Content = append(resp.Content, ResponseContentBlock{Type: "thinking", Thinking: thoughtText})
+				resp.ReasoningContent += thoughtText
+			}
 		case part.Text != "":
 			resp.Content = append(resp.Content, ResponseContentBlock{Type: "text", Text: part.Text})
-		case part.Thought != "":
-			resp.Content = append(resp.Content, ResponseContentBlock{Type: "thinking", Thinking: part.Thought})
-			resp.ReasoningContent += part.Thought
 		case len(part.FunctionCall) > 0 && string(part.FunctionCall) != "null":
 			var call struct {
 				Name string          `json:"name"`
@@ -77,7 +87,12 @@ func ParseGeminiResponse(body []byte) (*InternalResponse, error) {
 			if call.Name == "" {
 				return nil, fmt.Errorf("parse gemini candidate functionCall[%d]: missing name", index)
 			}
-			id := fmt.Sprintf("gemini_call_%d_%s", index, call.Name)
+			// R34: unify the synthesized id shape with the request-side
+			// parsers ("gemini_call_<name>_<idx>"). The old "<idx>_<name>"
+			// shape round-tripped through openai/anthropic clients into a
+			// second-turn functionResponse.name of "<idx>_<name>" — not the
+			// real function name — breaking the tool loop on the next turn.
+			id := fmt.Sprintf("gemini_call_%s_%d", call.Name, index)
 			resp.Content = append(resp.Content, ResponseContentBlock{Type: "tool_use", ID: id, Name: call.Name, Input: call.Args})
 			resp.ToolCalls = append(resp.ToolCalls, ResponseToolCall{ID: id, Name: call.Name, Arguments: string(call.Args), InputRaw: append(json.RawMessage(nil), call.Args...)})
 		case len(part.InlineData) > 0 && string(part.InlineData) != "null":
