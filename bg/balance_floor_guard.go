@@ -975,7 +975,12 @@ func (g *BalanceFloorGuard) refreshBalance(ctx context.Context, id int64, cipher
 		providercap.WarnBlocked("balance_floor_guard.balance", balURL, reason)
 		return false
 	}
-	apiKey, err := decryptCiphertext(ciphertext, g.keyring, g.encKey)
+	// A-C1: keyring 可能被 SetKeyring 并发替换，读取必须持读锁（审计三轮
+	// F-3：二轮只修了 decryptKey，漏了这条货币 refresh 路径的无锁读）。
+	g.keyringMu.RLock()
+	kr := g.keyring
+	g.keyringMu.RUnlock()
+	apiKey, err := decryptCiphertext(ciphertext, kr, g.encKey)
 	if err != nil || apiKey == "" {
 		slog.Warn("balance_floor_guard: decrypt failed for currency refresh",
 			"credential_id", id, "error", err)
