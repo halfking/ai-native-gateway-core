@@ -427,6 +427,9 @@ var partitionTimezonePinRemainingMigration714 []byte
 //go:embed embeddata/startup/715_route_incidents_pending_state.sql
 var routeIncidentsPendingStateMigration715 []byte
 
+//go:embed embeddata/startup/716_unify_probe_health_views.sql
+var unifyProbeHealthViewsMigration716 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -562,6 +565,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/710_request_logs_view_session_family_v2.sql":                            requestLogsViewSessionFamilyV2Migration710,
 	"startup/714_partition_timezone_pin_remaining.sql":                               partitionTimezonePinRemainingMigration714,
 	"startup/715_route_incidents_pending_state.sql":                                  routeIncidentsPendingStateMigration715,
+	"startup/716_unify_probe_health_views.sql":                                       unifyProbeHealthViewsMigration716,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 
