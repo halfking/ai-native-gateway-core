@@ -60,13 +60,13 @@ func TestHealthHandlerReadyzRequiresBothDependencies(t *testing.T) {
 //   - frontend uses .connected and .latency; never reads .error
 func TestHealthHandlerReadyzJSONContract(t *testing.T) {
 	cases := []struct {
-		name           string
-		db             dbConnector
-		redis          redisConnector
-		wantStatus     string
-		wantHTTPCode   int
-		wantDBConn     bool
-		wantRedisConn  bool
+		name          string
+		db            dbConnector
+		redis         redisConnector
+		wantStatus    string
+		wantHTTPCode  int
+		wantDBConn    bool
+		wantRedisConn bool
 	}{
 		{
 			name:          "all healthy",
@@ -844,6 +844,79 @@ func TestEstimatePromptTokensFromBytes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := estimatePromptTokensFromBytes(tc.in); got != tc.want {
 				t.Fatalf("estimatePromptTokensFromBytes(%d) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPropagateIsAutoRequestToEntry (2026-09-16 F1 fix,
+// p2.2-staging-verification-report §A4) — the success terminal must carry the
+// auto marker onto reqLog so the tuning-signal emit and
+// autoroute.ReportRoutingOutcome gates fire for successful auto requests.
+// Before the fix the marker never reached the success entry: 09-16 154 canary
+// observed stashed=120 / matched=22 (= all failures) / expired→98 (= all
+// successes).
+func TestPropagateIsAutoRequestToEntry(t *testing.T) {
+	existing := false
+	tests := []struct {
+		name      string
+		entry     *telemetry.RequestLogEntry
+		logCtx    *RequestLogContext
+		wantNil   bool
+		wantValue bool
+	}{
+		{
+			name:      "auto logCtx propagates true",
+			entry:     &telemetry.RequestLogEntry{},
+			logCtx:    &RequestLogContext{IsAutoRequest: true},
+			wantNil:   false,
+			wantValue: true,
+		},
+		{
+			name:      "non-auto logCtx leaves entry nil",
+			entry:     &telemetry.RequestLogEntry{},
+			logCtx:    &RequestLogContext{IsAutoRequest: false},
+			wantNil:   true,
+			wantValue: false,
+		},
+		{
+			name:      "nil logCtx leaves entry nil",
+			entry:     &telemetry.RequestLogEntry{},
+			logCtx:    nil,
+			wantNil:   true,
+			wantValue: false,
+		},
+		{
+			name:      "existing marker is never overwritten",
+			entry:     &telemetry.RequestLogEntry{IsAutoRequest: &existing},
+			logCtx:    &RequestLogContext{IsAutoRequest: true},
+			wantNil:   false,
+			wantValue: false,
+		},
+		{
+			name:      "nil entry is a safe no-op",
+			entry:     nil,
+			logCtx:    &RequestLogContext{IsAutoRequest: true},
+			wantNil:   true,
+			wantValue: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			propagateIsAutoRequestToEntry(tc.entry, tc.logCtx)
+			if tc.entry == nil {
+				return
+			}
+			if tc.wantNil && tc.entry.IsAutoRequest != nil {
+				t.Fatalf("IsAutoRequest = %v, want nil", *tc.entry.IsAutoRequest)
+			}
+			if !tc.wantNil {
+				if tc.entry.IsAutoRequest == nil {
+					t.Fatalf("IsAutoRequest = nil, want %v", tc.wantValue)
+				}
+				if got := *tc.entry.IsAutoRequest; got != tc.wantValue {
+					t.Fatalf("IsAutoRequest = %v, want %v", got, tc.wantValue)
+				}
 			}
 		})
 	}

@@ -5639,6 +5639,21 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// child_request 帧因此从不发射。与初始写入保持同一套关联字段应用。
 	applyParentCorrelationFields(reqLog, logCtx)
 
+	// 2026-09-16 F1 fix (p2.2-staging-verification-report §A4): the success
+	// terminal entry never carried IsAutoRequest — the struct literal above
+	// has no such field and the marker only lived on logCtx — so BOTH
+	// downstream gates keyed on reqLog.IsAutoRequest evaluated false for
+	// every successful auto request: the tuning-signal emit (line ~6158) and
+	// ReportRoutingOutcome (line ~6173). Their stashed decisions then expired
+	// unreported after pendingFeedbackTTL and the P2.2 optimizer feedback
+	// stream degraded to failures-only (09-16 154 canary: stashed=120,
+	// matched=22 = ALL non-200s, expired→98 = ALL successes; aggregate table
+	// successful_requests=0 everywhere). The failure terminal already
+	// propagates the marker via BuildFailureEntry, which is why exactly the
+	// failures matched. Propagate from logCtx here, mirroring the
+	// GwSessionID P0 fix above.
+	propagateIsAutoRequestToEntry(reqLog, logCtx)
+
 	// v3: if v7 compression_strategy is empty but a session compressor strategy
 	// exists, prefer the session compressor value so the row is queryable.
 	// (v7 and v3 strategies are mutually exclusive in a single request.)
@@ -6272,6 +6287,23 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 // as a normal request (no skip).
 func shouldSkipAutoTitleGeneration(logCtx *RequestLogContext) bool {
 	return logCtx != nil && logCtx.IsAutoRequest
+}
+
+// propagateIsAutoRequestToEntry (2026-09-16 F1 fix,
+// p2.2-staging-verification-report §A4) mirrors logCtx.IsAutoRequest onto the
+// terminal request-log entry so the success-path gates keyed on
+// entry.IsAutoRequest — the tuning-signal emit and
+// autoroute.ReportRoutingOutcome — fire for successful auto requests. Before
+// this fix the success terminal never carried the marker (failure terminal
+// got it via BuildFailureEntry), so every successful auto decision sat in the
+// outcome registry until pendingFeedbackTTL evicted it unreported: the P2.2
+// optimizer feedback stream degraded to failures-only. Never overwrites a
+// marker already present on the entry.
+func propagateIsAutoRequestToEntry(entry *telemetry.RequestLogEntry, logCtx *RequestLogContext) {
+	if entry == nil || entry.IsAutoRequest != nil || logCtx == nil || !logCtx.IsAutoRequest {
+		return
+	}
+	entry.IsAutoRequest = boolPtr(true)
 }
 
 // shouldSkipAutoSummaryGeneration (2026-08-06) — symmetric companion to
