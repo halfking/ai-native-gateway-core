@@ -475,13 +475,40 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 					if fp, ok := freeTierPolicies[KindUpstreamDown]; ok && b.freeTier.Load() {
 						escalated = fp
 					}
-					coolingDuration = escalated.InitialCooling
-					b.coolingExpires = now.Add(escalated.InitialCooling)
+					// R31 (audit 2026-09-16 §四#10): this branch previously wrote
+					// a flat escalated.InitialCooling and never advanced
+					// coolingCycle, so the "exponential" in the log was false —
+					// every sustained outage cooled the same 15s forever (free
+					// profile: permanently, paid: until a different kind
+					// happened to route here) and the cycle>=5 sustained-outage
+					// alert below could never fire for this family. Advance the
+					// cycle and compute the duration from the escalated policy,
+					// capped at its MaxCooling — the same formula the
+					// RecoveryExponential branch above uses. RecordSuccess resets
+					// coolingCycle, so single blips never climb past the first
+					// step; only genuine sustained failures back off.
+					b.coolingCycle++
+					cooling := time.Duration(float64(escalated.InitialCooling) * math.Pow(2, float64(b.coolingCycle-1)))
+					if cooling > escalated.MaxCooling {
+						cooling = escalated.MaxCooling
+					}
+					coolingDuration = cooling
+					b.coolingExpires = now.Add(cooling)
 
+					if b.coolingCycle >= 5 {
+						slog.Warn("circuit repeated cooling cycles",
+							"key", b.key,
+							"cycle", b.coolingCycle,
+							"cooling", cooling,
+							"error_kind", kind,
+						)
+					}
 					slog.Warn("circuit escalated to exponential cooling",
 						"key", b.key,
 						"consecutive", consecutive,
 						"error_kind", kind,
+						"cycle", b.coolingCycle,
+						"cooling", cooling,
 					)
 				}
 			}

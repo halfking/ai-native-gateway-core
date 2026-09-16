@@ -244,16 +244,26 @@ func TestRateLimitExponentialBackoff(t *testing.T) {
 func TestTransientEscalation(t *testing.T) {
 	b := New(1, 1)
 
-	// 3 consecutive transient failures → escalate to exponential cooling
-	b.RecordFailure(KindTransient)
+	// R31 (audit §四#10): the escalation now follows a real exponential curve.
+	// 2 consecutive transient failures → escalate onto the UpstreamDown
+	// profile at its initial 30s step; each further sustained failure doubles
+	// the cooling (30s → 60s), capped at the profile's 30min ceiling.
 	b.RecordFailure(KindTransient)
 	b.RecordFailure(KindTransient)
 
 	b.mu.Lock()
-	cooling := time.Until(b.coolingExpires)
+	cycle1, d1 := b.coolingCycle, b.coolingExpires.Sub(b.openSince)
 	b.mu.Unlock()
-	if cooling < 28*time.Second || cooling > 32*time.Second {
-		t.Fatalf("expected ~30s cooling after escalation, got %v", cooling)
+	if cycle1 != 1 || d1 != 30*time.Second {
+		t.Fatalf("expected escalation cycle 1 with ~30s cooling, got cycle %d / %v", cycle1, d1)
+	}
+
+	b.RecordFailure(KindTransient)
+	b.mu.Lock()
+	cycle2, d2 := b.coolingCycle, b.coolingExpires.Sub(b.openSince)
+	b.mu.Unlock()
+	if cycle2 != 2 || d2 != 60*time.Second {
+		t.Fatalf("expected escalation cycle 2 with ~60s cooling, got cycle %d / %v", cycle2, d2)
 	}
 }
 
@@ -788,22 +798,25 @@ func TestFreeTierCoolingProfile(t *testing.T) {
 	}
 }
 
-// TestFreeTierTransientEscalationCeiling: sustained transient failures on a
-// free credential still escalate, but onto the free UpstreamDown profile
-// (15s) instead of the paid 30s — a dead free provider backs off without
-// pinning its capacity for half-hour ceilings.
-func TestFreeTierTransientEscalationCeiling(t *testing.T) {
+// TestFreeTierTransientEscalationOwnsFreeProfile: sustained transient
+// failures on a free credential still escalate, but onto the free UpstreamDown
+// profile (15s first step) instead of the paid 30s — a dead free provider
+// backs off without pinning its capacity for half-hour ceilings. R31 (audit
+// §四#10) note: the curve is real now (15s → 30s → …); the free profile's
+// 5-minute ceiling clamp is pinned in TestEscalatedCoolingBacksOffExponentially.
+func TestFreeTierTransientEscalationOwnsFreeProfile(t *testing.T) {
 	m := NewManager()
-	for i := 0; i < 4; i++ {
-		m.RecordFailureWithBillingMode(2, 300, errorsx.KindTransient, "free")
-	}
+	m.RecordFailureWithBillingMode(2, 300, errorsx.KindTransient, "free")
+	m.RecordFailureWithBillingMode(2, 300, errorsx.KindTransient, "free")
 	free := m.Get(2, 300)
 	if free.State() != StateOpen {
 		t.Fatalf("free breaker should be open after repeated transient failures, got %s", free.State())
 	}
-	cooling := parseCoolingExpires(t, free.Stats())
-	if cooling > 20*time.Second {
-		t.Fatalf("free escalated transient cooling should be ~15s, got %v", cooling)
+	free.mu.Lock()
+	cycle, d := free.coolingCycle, free.coolingExpires.Sub(free.openSince)
+	free.mu.Unlock()
+	if cycle != 1 || d != 15*time.Second {
+		t.Fatalf("free escalation should start on the free profile's 15s step, got cycle %d / %v", cycle, d)
 	}
 }
 
@@ -824,4 +837,63 @@ func parseCoolingExpires(t *testing.T, stats map[string]any) time.Duration {
 		t.Fatalf("parse cooling_expires %q: %v", str, err)
 	}
 	return time.Until(ts)
+}
+
+// R31 (audit 2026-09-16 §四#10): the transient-family escalation previously
+// wrote a flat InitialCooling and never advanced coolingCycle, so the
+// "exponential" in its log was false, a sustained outage cooled the same step
+// forever, and the cycle>=5 sustained-outage alert could never fire. This pins
+// the repaired behaviour: the cycle advances and the duration follows the
+// escalated policy's exponential curve, capped at that policy's MaxCooling.
+func TestEscalatedCoolingBacksOffExponentially(t *testing.T) {
+	m := NewManager()
+
+	// Paid: escalates onto defaultPolicies[KindUpstreamDown] (30s initial,
+	// 30min ceiling): 30s → 60s → 120s …
+	b := m.GetOrCreate(9, 9)
+	b.RecordFailure(KindNetwork) // pending confirmation (threshold 2)
+	b.RecordFailure(KindNetwork) // opens, escalation cycle 1
+	b.mu.Lock()
+	cycle1, d1 := b.coolingCycle, b.coolingExpires.Sub(b.openSince)
+	b.mu.Unlock()
+	if cycle1 != 1 || d1 != 30*time.Second {
+		t.Fatalf("first escalation: cycle=%d cooling=%v, want cycle 1 / 30s", cycle1, d1)
+	}
+
+	b.RecordFailure(KindNetwork) // sustained failure → cycle 2
+	b.mu.Lock()
+	cycle2, d2 := b.coolingCycle, b.coolingExpires.Sub(b.openSince)
+	b.mu.Unlock()
+	if cycle2 != 2 || d2 != 60*time.Second {
+		t.Fatalf("second escalation: cycle=%d cooling=%v, want cycle 2 / 60s", cycle2, d2)
+	}
+
+	// Free: escalates onto freeTierPolicies[KindUpstreamDown] (15s initial,
+	// 5min ceiling) — 15s → 30s → …, and the ceiling must actually clamp
+	// instead of cooling 15s flat forever.
+	bf := m.GetOrCreate(8, 8)
+	bf.MarkFreeTier()
+	bf.RecordFailure(KindTimeout)
+	bf.RecordFailure(KindTimeout)
+	bf.mu.Lock()
+	cycleF1, dF1 := bf.coolingCycle, bf.coolingExpires.Sub(bf.openSince)
+	bf.mu.Unlock()
+	if cycleF1 != 1 || dF1 != 15*time.Second {
+		t.Fatalf("free first escalation: cycle=%d cooling=%v, want cycle 1 / 15s", cycleF1, dF1)
+	}
+
+	// Cycles 2..6: 30s, 60s, 120s, 240s, then 480s clamps to the 300s ceiling.
+	for i := 2; i <= 6; i++ {
+		bf.RecordFailure(KindTimeout)
+		bf.mu.Lock()
+		cycle, d := bf.coolingCycle, bf.coolingExpires.Sub(bf.openSince)
+		bf.mu.Unlock()
+		want := time.Duration(15 * (1 << uint(i-1)) * int(time.Second))
+		if want > 5*time.Minute {
+			want = 5 * time.Minute
+		}
+		if cycle != i || d != want {
+			t.Fatalf("free escalation cycle %d: cycle=%d cooling=%v, want %v", i, cycle, d, want)
+		}
+	}
 }
