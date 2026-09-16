@@ -136,6 +136,45 @@ func TestShouldClaimFinalSuccess(t *testing.T) {
 	}
 }
 
+// R34 (2026-09-17)：网关内部回环（auto-title gt_/auto-summary gs_ 分支会话）
+// 不得 claim is_final_success —— sessionv2mirror 经 IsInternalAutoEntry 把
+// 它们排除在 session_turns 之外，claim 了就会留下「is_final_success=TRUE
+// 但无 turns」的行，GLOBAL_G2 对账恒 >0（F1 修复让成功终态带上了
+// IsAutoRequest 之后暴露）。业务 auto 轮带 TaskType，仍正常 claim。
+func TestShouldClaimFinalSuccess_ExcludesInternalLoopbacks(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry *RequestLogEntry
+		want  bool
+	}{
+		{"auto-title loopback (origin_actor list) never claims", &RequestLogEntry{
+			RequestID: "gt-1", Success: true, GwSessionID: strptr("gt_gw_s1"),
+			IsAutoRequest: boolptr(true), OriginActor: strptr("auto-title-generator"),
+		}, false},
+		{"auto-summary loopback (request_type) never claims", &RequestLogEntry{
+			RequestID: "gs-1", Success: true, GwSessionID: strptr("gs_gw_s1"),
+			IsAutoRequest: boolptr(true), RequestType: strptr("summary"),
+		}, false},
+		{"taskless auto entry (decider-nil fallback) never claims", &RequestLogEntry{
+			RequestID: "ga-1", Success: true, GwSessionID: strptr("gw_s1"),
+			IsAutoRequest: boolptr(true),
+		}, false},
+		{"business auto turn with TaskType still claims", &RequestLogEntry{
+			RequestID: "ba-1", Success: true, GwSessionID: strptr("gw_s1"),
+			IsAutoRequest: boolptr(true), TaskType: strptr("coding"),
+		}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, shouldClaimFinalSuccess(tc.entry))
+			// 同一判定必须与镜像排除一致（构造保证）：claim 的行不该被镜像排除。
+			if tc.want {
+				require.False(t, IsInternalAutoEntry(tc.entry), "claiming entry must not be mirror-excluded")
+			}
+		})
+	}
+}
+
 // UT-FS-02（写路径回归）：updateRequestLog 在成功终态事务内恰好追加一次
 // claim（SAVEPOINT → claim UPDATE → RELEASE），且不改变既有语句集合
 // （usage_ledger → request_logs_hot 终态 UPDATE → bodies upsert）。

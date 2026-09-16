@@ -31,6 +31,7 @@
 6. **版本管理**：附件/文件的版本链可追溯（版本号/内容寻址），覆盖写有显式语义。
 
 ## 4. 历史回归点（轮末回注区）
+- [R35 09-17] goal 影子轮三纪律：① followUpSourceActor 只对 goal 族 action 打 goal-% 标（audit 前缀族→goal-audit，未知→不打头），未知 action 打泛化标记会污染 §8 预算对账；② advisory 帧不得抢占 Path 2 模型轮换（switchModel 生成与 finish_reason 无关，抢占=轮换通道永久饿死）；③ 查询侧消费 goal-% 行的入口（session_title 已修、work_types/top_models/settle 待 R35-R2 决策）
 
 - [09-15] 715 迁移启动链缺失：无镜像时 pending 写入必撞 23514 — 修复 6f3d03073
 - [09-15] 凭证状态持久化缺失与路由事件过早可见双重 bug — 修复 bba08b922

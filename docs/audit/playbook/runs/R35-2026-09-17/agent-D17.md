@@ -1,0 +1,32 @@
+# D17 代码卫生与冗余治理 子代理报告（窗口：b9d9a8ba5..2f3151a27，核心改动 72d921819）
+
+## 一、发现（候选，待主代理复核）
+
+| # | 级别候选 | 发现 | 证据 file:line | 建议处置 |
+|---|---|---|---|---|
+| 1 | P3 | **双重 256 字节截断并存（窗口内引入的重复实现）**：`defaultDispatchFollowUp` 现在返回 `bodySnippetPrefix`（rune 边界安全，≤256B+"..."），但调用方 `injectFollowUpRequest` 仍保留旧的 byte 级截断 `bodySnippet[:256]+"..."`。当 cut 恰为 256B 时总长 259>256，调用方再截会把 "..." 标记切掉；且两处截断语义不同（byte vs rune），stub 路径仍走不安全截断。streaming 包内已有 `truncateForLog`（byte 版）与 `truncateText`（rune 安全版） | domains/streaming/response_interceptor_helpers.go:154-158 与 :217-218、:267-277；同包既有 helper：openai_format_detector.go:62、telemetry_summary.go:218、format_anomaly_recorder.go:289 | 收敛到单一截断点（建议只在 seam 返回侧保留 bodySnippetPrefix，删调用侧；或反之），短期先两处加注释互指 |
+| 2 | P3 | **followUpSourceActor 注释两处失实（窗口内新增）**：(a) "Values stay in the auto-title actor namespace" —— goal-\* 与 auto-title 是两个命名空间：auto-title/summary 的 actor 值为 `auto-title-generator`/`auto-summary-generator`，由 admin 包直接 Set header（不经 followUpSourceActor），`LIKE 'goal-%'` 根本匹配不到它们；(b) "one LIKE 'goal-%' filter separates every gateway-initiated shadow turn" —— handoff 动作（trigger_hook.go:472 `Action:"handoff"`）落入 default 分支得 `goal-followup`，在 examples 接线（handoffHook 挂响应链）下 handoff 自调用会被算进 goal 影子轮，与设计文档 §3.1 只枚举三类 goal 动作的口径不符 | domains/streaming/response_interceptor_helpers.go:247-252；admin/auto_title_generator.go:31、admin/auto_summary_generator.go:58；domains/hooks/handoff/trigger_hook.go:471-472；examples/auto_control_integration.go:152-155 | 更正注释：goal-\* 是独立于 auto-title 的平行命名空间；handoff→goal-followup 的归类是否有意需主代理与设计意图核对后如实改写（或给 handoff 单独 actor 值） |
+| 3 | P3 | **恒真条件**：`if actor := followUpSourceActor(action); actor != ""` —— 函数所有分支（含 default）都返回非空串，`!= ""` 永真，属防御性死条件 | domains/streaming/response_interceptor_helpers.go:235-237 | 删除条件直接 Set，或注释标明"预留空值语义" |
+| 4 | P3 | **测试命名/注释误导（窗口触碰未纠正）**：TestDefaultDispatchFollowUpAppliesAuthHeader 名字与注释声称 "checks the production dispatcher's contract"，实际 stub 掉了 seam，从未调用 `defaultDispatchFollowUp`；`gotAction` 变量从不捕获 action，只是 stub 内自置 `"ok"` 的调用标记，命名误导 | domains/streaming/response_interceptor_helpers_test.go:179-199（窗口内仅改了 :186 签名） | 重命名为 TestInjectFollowUpAppliesAuthHeader 类；gotAction 改名 gotCalled |
+| 5 | P3 | **近乎恒真测试（遗留）**：TestDefaultDispatchFollowUpHitsLiveServer 声称 "integrates the production defaultDispatchFollowUp with a real httptest.Server"，实际自建 `http.NewRequest`、自行 Set 两个 header、再断言 server 收到同样 header——测的是 http.Client 语义，`defaultDispatchFollowUp`/`buildFollowUpRequest` 完全未参与 | domains/streaming/response_interceptor_helpers_test.go:201-236（窗口未触碰该用例） | 改为通过 `buildFollowUpRequest` 构造请求后打真 server，或删除；登记轮文档 §遗留 |
+| 6 | P3 | **映射测试缺生产真实动作**：TestFollowUpSourceActorMapping 的 cases 覆盖 goal_continue/goal_model_switch/audit/未知/空串，唯独缺唯一会走 default 的生产动作 `"handoff"`→`"goal-followup"`（同文件其余 7 个测试都用 "handoff" 动作穿过该 seam） | domains/streaming/response_interceptor_helpers_test.go:330-343；对照 trigger_hook.go:472 | cases 补 `"handoff": "goal-followup"` 钉桩（前提是 #2 的归类经确认有意） |
+| 7 | P3 | **advisory 分支测试缺口 + 条件重复**：`tryBuildAdvisoryToolSignal` 的 mode 门（mode∉{"",auto,continue,both}→nil）无对应测试（commit message 自称"六分支"，goal_test.go 新增仅 5 个）；且 mode 允许条件在 `tryBuildClientSignal`(:496) 与 `tryBuildAdvisoryToolSignal`(:566) 两处内联重复 | domains/hooks/goal/mode_hook.go:566-568、:496；goal_test.go 新增测试为 :514-631 共 5 个 | 补 mode="handoff" 抑制分支测试；mode 白名单判断提取小 helper |
+| 8 | P3 | **遗留误导注释（取样文件内、窗口外）**：`// buildGoalLLMCaller builds the LLMCaller for goal judgement calls...` 挂在 `buildSanitizeRestoreInterceptor` 头上，真正的 buildGoalLLMCaller（:588）有自己的注释——复制粘贴残留（b788f1a8c2，2026-07-06 引入） | cmd/gateway/goal_control.go:483-486（函数在 :489） | 删除 :483-486 四行残留注释 |
+| 9 | P3 | **遗留步骤编号漂移（窗口外）**：initGoalControl 内 "5." 出现两次（:156 retryResolver、:159 Goal mode hook），"7b." 出现两次（:357 Output compliance、:376 Goal retry wiring），且 7a(:373) 排在 7b(:357) 之后 | cmd/gateway/goal_control.go:156,159,357,373,376 | 顺手重排序号；低优先 |
+| 10 | P3 | **gofmt 遗留登记**：`gofmt -l ./cmd ./domains/hooks/goal ./domains/streaming ./settings` 报 41 个文件不干净（如 cmd/gateway/main_v3_wiring.go、domains/streaming/log_context.go、settings/auto_summary_specs.go），但**窗口内 7 个 Go 改动文件全部干净**（goal_control.go / mode_hook.go / goal_test.go / handler.go / response_interceptor_helpers.go(+test) / goal_specs.go 均不在列表）——窗口无 gofmt 回归，全部为存量债 | gofmt -l 输出；`git diff --name-only b9d9a8ba5..HEAD` 交叉验证零交集 | 登记轮文档 §遗留，按包批量 gofmt 单独提交 |
+
+## 二、核实为健康的面
+
+- **dispatchFollowUpFunc 加参全仓签名一致**：类型定义（domains/streaming/handler.go:1017-1020）、生产实现 defaultDispatchFollowUp（response_interceptor_helpers.go:190-199）、入口 injectFollowUpRequest（:114,:154）、两个 handler 调用点（handler.go:5185,:5211 均传 `requestID`）、8 处测试 stub（test:95,:113,:129,:147,:168,:186,:297,:318）全部含 parentRequestID；grep 旧签名模式无残留；设计文档（18 号方案 :59、:134）记载的也是新签名。
+- **三方 env 名逐字一致**：`LLM_GATEWAY_GOAL_CLIENT_SIGNAL_ON_TOOL_CALLS` 在 settings/goal_specs.go:480、cmd/gateway/goal_control.go:213、docs/GOAL_CLIENT_SIGNALS.md:38、设计文档 :92 完全一致；settings key `goal.client_signal_on_tool_calls` 与 mode_hook.go:542 loadBool key 一致，Scope Tenant 与租户级读取匹配。
+- **影子轮打标契约有钉桩且注释如实**：TestBuildFollowUpRequestCorrelationHeaders（test:349-381）断言 actor/parent 头存在、`X-Gw-Is-Auto` 缺席（GLOBAL_G2 理由）、空 parent 不产生空头——与 defaultDispatchFollowUp 注释（helpers:180-186）互相印证；handler 入口确有消费（handler.go:1726-1729）。
+- **advisory 主测试断言质量良好（非恒真）**：goal_test.go:514-561 断言 advisory=true、finish_reason、hint 缺席、attempt 回显、三项预算不动（autoContinueCount/atomicWonCalls/ContinueAttempt）；5 个 negative 分支均断言 res==nil。文档"GoalJudge 判定未完成"门与代码相符（InterceptNonStream/InterceptStreamEnd 均先跑 IsCompletedWithSubAgents 再进 decideAndContinue，mode_hook.go:314,:653）。
+- **Path 1.5 注释准确**：shouldAutoContinue 的 switch default（mode_hook.go:421-456）确实拒绝 tool_calls，"shouldAutoContinue deliberately declines tool_calls turns"（:352）如实。
+- **窗口新符号无零调用接缝**：buildFollowUpRequest/followUpSourceActor/bodySnippetPrefix/toolCallsSignalEnabled/tryBuildAdvisoryToolSignal/ClientSignalOnToolCalls 均有生产调用方。
+- **default 分支非死代码**（针对派发问题 2 的结论）：当前 goal_control.go:355 生产链确实只产生 goal_continue/goal_model_switch/audit 三种动作，但 handoff TriggerHook 实现了完整 ResponseInterceptor（trigger_hook.go:242,:267）且 examples/auto_control_integration.go:152-155 将其挂入响应链——"handoff" 是 default 分支的活路径。
+
+## 三、未覆盖项与原因
+
+- go build / go vet / go test 三门未运行 —— 只读纪律；三门属主代理修复阶段（conventions §5）。gofmt -l 已跑（只读）。
+- origin_actor/parent_request_id 落库链末端（applyParentCorrelationFields → sessionv2mirror → session_turns）未实库验证 —— 超出 D17 卫生面，属 D15/D16 横向追溯。
+- `_to-be-deprecated/` 目录全部排除；2f3151a27 纯文档提交未查。

@@ -153,9 +153,10 @@ func (h *ChatHandler) injectFollowUpRequest(ctx context.Context, sessionID strin
 
 	status, bodySnippet := dispatch(h, ctx, sessionID, followUpBody, action, parentRequestID, parentAuthHeader, 1)
 	if status >= 400 {
-		if len(bodySnippet) > 256 {
-			bodySnippet = bodySnippet[:256] + "..."
-		}
+		// Test stubs may return unbounded snippets; the production seam already
+		// truncates via bodySnippetPrefix — re-apply the same rune-safe cut so
+		// the log line stays bounded without slicing mid-rune.
+		bodySnippet = bodySnippetPrefix(bodySnippet)
 		slog.Warn("follow_up_request_failed",
 			"session_id", sessionID,
 			"action", action,
@@ -183,7 +184,10 @@ func (h *ChatHandler) injectFollowUpRequest(ctx context.Context, sessionID strin
 // 会话优化v4/18-Goal影子指令与续跑优化方案.md §3). It is deliberately NOT
 // marked X-Gw-Is-Auto: that header routes the entry into isInternalAutoEntry
 // and would silently drop the shadow turn from the session mirror, breaking
-// the GLOBAL_G2 reconciliation invariant.
+// the GLOBAL_G2 reconciliation invariant. (Header entry is not the only
+// IsAutoRequest source — a body model="auto" audit shadow turn still trips
+// the TaskType fallback; see applyAutoRouteFields on the success path, which
+// keeps business auto turns mirrored by carrying TaskType.)
 //
 // Returns (statusCode, bodySnippet). Body is truncated to 256 bytes so log
 // lines stay bounded on bad upstream payloads.
@@ -246,20 +250,26 @@ func buildFollowUpRequest(ctx context.Context, sessionID string, body []byte, ac
 
 // followUpSourceActor maps a follow-up action to the origin_actor value
 // persisted on the shadow turn (request_logs.origin_actor and
-// session_turns.origin_actor, via the X-Gw-Source-Actor header). Values stay
-// in the auto-title actor namespace ("auto-title-generator", ...) so one
-// LIKE 'goal-%' filter separates every gateway-initiated shadow turn from
-// client-initiated turns. Unknown actions fall back to the generic marker.
+// session_turns.origin_actor, via the X-Gw-Source-Actor header). Only
+// goal-family actions get a goal-% actor: the audit family uses the same
+// HasPrefix(action, "audit") semantics as the goal hook's own skip check
+// (mode_hook decideAndContinue), covering both "audit" and "audit_auto_fix".
+// Unknown actions return "" — the request then carries no X-Gw-Source-Actor
+// header and the row keeps origin_actor NULL, the pre-2026-09-17 behavior.
+// This matters for reconciliation: a future non-goal dispatch through this
+// seam (e.g. a response-side handoff follow-up) must not be silently
+// attributed to the goal shadow-turn budget (方案 18 §8 对账口径).
 func followUpSourceActor(action string) string {
-	switch strings.TrimSpace(action) {
-	case "goal_continue":
+	a := strings.TrimSpace(action)
+	switch {
+	case a == "goal_continue":
 		return "goal-continue"
-	case "goal_model_switch":
+	case a == "goal_model_switch":
 		return "goal-model-switch"
-	case "audit":
+	case strings.HasPrefix(a, "audit"):
 		return "goal-audit"
 	default:
-		return "goal-followup"
+		return ""
 	}
 }
 
