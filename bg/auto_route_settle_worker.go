@@ -270,8 +270,13 @@ func (w *AutoRouteSettleWorker) sweep(ctx context.Context) {
 // distinguish a fast model from a slow one — a per-model baseline would score
 // every model ~neutral against its own history.
 func (w *AutoRouteSettleWorker) loadTaskBaselines(ctx context.Context) (map[string]taskBaseline, error) {
+	// GROUP BY task_type yields a NULL group for rows with NULL task_type
+	// (request_logs_hot.task_type is nullable). pgx v5 cannot scan NULL into
+	// string and a scan failure is iteration-fatal, so the whole baseline
+	// map would be lost; COALESCE keeps the group scannable and the
+	// taskType != "" skip below drops it (245 2026-09-16 audit).
 	rows, err := w.db.Query(ctx, `
-		SELECT task_type,
+		SELECT COALESCE(task_type, '') AS task_type,
 		       COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::int AS p95_latency_ms,
 		       COALESCE(percentile_cont(0.75) WITHIN GROUP (ORDER BY cost_usd), 0)        AS p75_cost_usd
 		FROM request_logs_hot rl
