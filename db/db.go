@@ -355,6 +355,14 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureRouteIncidentSchema(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-16 migration 715: route_incidents.state 增加 'pending'。修复
+	// DecideState 引入 StatePending（阈值前不可见）后，旧 CHECK 约束只认
+	// active/recovering/recovered，首条 'pending' 写入即 23514，observer
+	// 重试耗尽后整个事件追踪静默失效（见 bba08b922 事件修复）。必须先于
+	// 任何流量落库，且在 ensureRouteIncidentSchema 之后保证表已存在。
+	if err := db.ensureRouteIncidentPendingState(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureRouteIncidentPhase2Schema(migCtx); err != nil {
 		return err
 	}
@@ -5100,6 +5108,48 @@ func (d *DB) ensureRouteIncidentSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("route_incident schema ensured (route_incidents + route_incident_events)")
+	return nil
+}
+
+// ensureRouteIncidentPendingState mirrors
+// sql/migrations/startup/715_route_incidents_pending_state.sql. 2026-09-16
+// (bba08b922 事件修复的另一半)：DecideState 新增 StatePending 后，
+// route_incidents 的 CHECK 约束与部分唯一索引必须先放行 'pending'，
+// 否则 streak<threshold 的首条写入即 23514（observer 重试耗尽后打点放弃，
+// 事件追踪整体静默失效）；全新安装路径由 ensureRouteIncidentSchema 建出
+// 旧约束，也依赖本函数就地升级。
+//
+// 幂等：DROP CONSTRAINT/INDEX IF EXISTS + 无条件重建（表为聚合小表，
+// AccessExclusive 锁窗口毫秒级，与 389 每次启动重建 trigger 同级），
+// 末尾按 701/704 定式补记 schema_migrations 账本 stamp。
+func (d *DB) ensureRouteIncidentPendingState(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE route_incidents
+		    DROP CONSTRAINT IF EXISTS route_incidents_state_check;
+
+		ALTER TABLE route_incidents
+		    ADD CONSTRAINT route_incidents_state_check
+		    CHECK (state IN ('pending', 'active', 'recovering', 'recovered'));
+
+		DROP INDEX IF EXISTS uq_route_incidents_active_route;
+
+		CREATE UNIQUE INDEX uq_route_incidents_active_route
+		    ON route_incidents (
+		        tenant_id, endpoint_protocol, model, COALESCE(provider_id, 0), COALESCE(credential_id, 0)
+		    )
+		    WHERE state IN ('pending', 'active', 'recovering');
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('715', 'route_incidents pending state (threshold-gated incident visibility)')
+		ON CONFLICT (version) DO NOTHING;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("route_incident pending state ensured (migration 715)")
 	return nil
 }
 

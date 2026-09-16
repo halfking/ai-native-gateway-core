@@ -13,8 +13,13 @@
 -- Migration safety:
 --   - Backward compatible: existing 'active'/'recovering'/'recovered' rows
 --     remain valid.
---   - Forward compatible: code must deploy before migration runs, so
---     DecideState can emit 'pending' state.
+--   - Ordering: the CONSTRAINT must allow 'pending' BEFORE the new code can
+--     write it — otherwise DecideState's first sub-threshold write fails with
+--     23514 and the observer silently drops all incident tracking. This file
+--     is mirrored by db.ensureRouteIncidentPendingState, applied by
+--     ApplyMigrations at binary startup before any traffic is served, so the
+--     constraint always lands before the first 'pending' write. Manual psql
+--     application is only needed if the operator skips the startup chain.
 --   - No data migration needed: existing incidents are already active
 --     (they crossed the threshold in the old logic).
 
