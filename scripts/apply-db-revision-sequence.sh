@@ -412,6 +412,12 @@ files=(
   # sequence 管存量库升级（共享 PG 预升级不启动新二进制的路径），
   # ensure 管全新安装与启动自愈（db.go ensureRouteIncidentPendingState）。
   "$ROOT_DIR/sql/migrations/startup/715_route_incidents_pending_state.sql"
+  # 2026-09-17 R34 审计（通道登记补齐）：716 统一探测健康视图族到
+  # node_probe_state 单一事实源。SQL 体与 db.ensureProbeHealthDashboardViews
+  # 幂等同构（网关启动亦重建），但未登记任何投递通道——R34 新装的
+  # TestCanonicalStartupMigrationsAtOrAbove704AreRegistered 守卫与通道门禁
+  # 双双红灯。按 701 定式登记 sequence 管存量库升级。
+  "$ROOT_DIR/sql/migrations/startup/716_unify_probe_health_views.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
