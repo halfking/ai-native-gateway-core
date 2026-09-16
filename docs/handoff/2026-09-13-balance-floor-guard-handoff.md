@@ -65,3 +65,51 @@ go test ./domains/credential/ -count=1                            # ok 14.7s
 ## 下一轮提示词(建议)
 
 > 先执行 `git fetch origin main` 并记录新的 `origin/main` SHA、HEAD 差异和工作树 WIP；勿覆盖 VERSION/version.json/web/public/* 等并行部署簿记。随后按证据顺序复验：恢复 Docker Desktop 并确认 daemon 健康，`docker ps` 核对 :8782 active/:8781 candidate、tag 与端口，`docker cp` 容器二进制后用 `go version -m` 核对 vcs.revision，再执行登录后的 live 404 探针。最后使用脱敏的真实 Minimax 订阅 key 验证 `/v1/token_plan/remains` 响应字段与 parse；currency A/B/C 若仍为 mock 必须继续标注 mock。任一环境不可用时记录 blocker 与恢复条件，不得宣称部署闭环。
+
+---
+
+# 2026-09-16 轮次 — 九项审计修复落地 + 集成验证(提交 ae41328c4 / 74240e999 / 二轮修正 f915808dc / 三轮修正)
+
+- 状态:已推送 origin/main;单测 -race 多轮全绿;集成验证(真实 PG + mock 厂商控制面)4/4 通过
+- 二轮自审修正(f915808dc):F-1 getJSON 请求构造移出重试循环(构造错误此前会绕过 retryableHTTPErr 分类被当传输错误白烧 2 次重试 +1.5s);F-2 probed=0 的空 sweep 不再输出汇总日志(无套餐厂商部署上每 5 分钟一条空行是纯噪音)
+- **三轮自审修正:F-3 A-C1 修复不完整** —— 货币 refresh 路径 refreshBalance 直接读 g.keyring 未持读锁(首轮只修了 decryptKey 一条路径);已补 RLock 快照,并把 SetKeyring 竞争测试扩展到同时竞争两条读路径(计划路径用 v1 信封密文、货币路径用 openai catalog 触达解密步,解密失败即返回无网络调用)。教训:**宣称"修复了 X"前必须穷举 X 的全部触发点** —— A-C1 的正确表述是"keyring 的全部读取点持锁",而非"decryptKey 持锁"。
+
+## 修复内容(对应审计编号)
+
+| 编号 | 修复 |
+|---|---|
+| A-C2 | Start() 重入守卫(lifecycleMu+started),Stop 后不复活 |
+| A-C1 | keyring 全部读取点持锁:SetKeyring 写锁 / decryptKey 读锁 / refreshBalance 读锁(三轮 F-3 补齐,keyring RWMutex) |
+| B-E1 | 逃生门默认 24h→**2h**(LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS 语义不变,0=关闭) |
+| D-L1 | Stop() join workerDone,上限 10s——sweep ctx 派生自 main 的 Background,无界 join 会拖住进程下线 |
+| E-B1 | 套餐探测串行→有界 worker pool(semaphore;**errgroup 未进 vendor**,modules.txt 只收 semaphore/singleflight,语义等价) |
+| F-L1 | 周期汇总日志 `plan sweep completed`(probed/success/failed/pulled/restored/duration;probed=0 不输出) |
+| F-L2 | 探测失败 Debug→Warn,warnGate 每凭据 15 分钟限 1 条(与 #12a 退避同窗),其余降级 Debug |
+| G-O1 | getJSON 重试 1+2 次,仅网络错误与 5xx(类型化 httpStatusError),退避 0.5s/1s;请求只构造一次 |
+| E-B2 | 货币批次大小可配置——**未做**(计划内 P3 后续迭代) |
+
+新 env:`LLM_GATEWAY_FLOOR_PLAN_CONCURRENCY`(默认 10,钳 1..100)。文档同步:guard 文件头 env knobs、CHANGELOG Unreleased、db-changelog 2026-09-16 条目(更正 R28 记录的 24h)。
+
+## 测试命令与结果(2026-09-16)
+
+```
+go build ./... && go vet ./bg/                                    # clean
+go test ./bg/ -count=1 -race                                      # 8 轮连续 ok(首轮一次未复现偶发失败)
+GUARD_IT_DSN='...llm_guard_it' go test -tags integration ./bg/ -run TestITBalanceFloor -v -count=1
+                                                                  # 4/4 PASS
+```
+
+集成验证要点(bg/balance_floor_guard_integration_test.go,integration tag,GUARD_IT_DSN 未设置自动 skip):
+- 性能:200 凭据×100ms mock 延迟 —— 并发(10)=**2.09s** vs 同构建串行(1)=33.1s,**15.8x**;串行基线覆盖 HTTP+解密+落库全程
+- 故障:500 恰 3 次 HTTP 尝试(1+2);Warn 恰 1 条,第二周期限流到 Debug;退避戳落库且绝不写 plan_quota_checked_at;fail-open 保持 ok
+- 逃生门:3h 陈旧证据(>2h)释放;健康复核回 ok 且 checked_at 刷新;故障端点保持释放态
+- Stop:34µs join worker、幂等、无 goroutine 泄漏
+- 汇总日志逐字段断言(probed=200 success=200 failed=0 pulled=0 restored=0)
+
+## 遗留风险(2026-09-16 增量)
+
+1. minimax 双端点 fallback(coding→token)各自独立重试:最坏 2×(3×10s 超时+1.5s)≈63s/凭据,厂商黑洞式故障时单 sweep 会顶到 3 分钟 cctx 上限(fail-open 兜底,#12a 15 分钟退避限制后续节奏);如需收敛可给 fallback 路径单独设尝试预算。
+2. 并发 10 对厂商控制面 API 的限流敏感性未在生产实测(计划风险评估项);如观察 429 升温,调低 LLM_GATEWAY_FLOOR_PLAN_CONCURRENCY 即可。
+3. Stop() 在在途 sweep 时最多阻塞下线序列 10s(权衡:换取不与 DB 池释放竞争);超时后 sweep 继续跑完但后续 DB 操作会收到 pool 关闭错误(仅日志噪音)。
+4. 共享蓝绿网关 :8782 仍跑旧构建;九项修复随下一轮例行部署生效,部署后应观察一次真实 `plan sweep completed` 日志。
+5. E-B2(货币批次大小可配置)与"串行 LIMIT 200 对非套餐厂商行的挤占"均未处理(后者为既有行为)。

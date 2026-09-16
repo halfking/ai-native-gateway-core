@@ -52,6 +52,8 @@ func routingOptGet(h *Handler, kind, path string) *httptest.ResponseRecorder {
 		h.handleRoutingOptAccuracy(w, req)
 	case "parameters":
 		h.handleRoutingOptParameters(w, req)
+	case "metrics":
+		h.handleRoutingOptMetrics(w, req)
 	default:
 		panic("unknown routing-opt kind: " + kind)
 	}
@@ -69,6 +71,7 @@ func TestRoutingOptNilPoolReturns503(t *testing.T) {
 		{"stats", "/api/admin/routing-opt/stats"},
 		{"accuracy", "/api/admin/routing-opt/accuracy"},
 		{"parameters", "/api/admin/routing-opt/parameters"},
+		{"metrics", "/api/admin/routing-opt/metrics"},
 	} {
 		w := routingOptGet(h, tc.kind, tc.path)
 		if w.Code != http.StatusServiceUnavailable {
@@ -93,6 +96,7 @@ func TestRoutingOptMethodGuard(t *testing.T) {
 		{"stats", func(w *httptest.ResponseRecorder, req *http.Request) { h.handleRoutingOptStats(w, req) }},
 		{"accuracy", func(w *httptest.ResponseRecorder, req *http.Request) { h.handleRoutingOptAccuracy(w, req) }},
 		{"parameters", func(w *httptest.ResponseRecorder, req *http.Request) { h.handleRoutingOptParameters(w, req) }},
+		{"metrics", func(w *httptest.ResponseRecorder, req *http.Request) { h.handleRoutingOptMetrics(w, req) }},
 	}
 	for _, tc := range calls {
 		for _, method := range []string{http.MethodPost, http.MethodDelete, http.MethodPut} {
@@ -143,6 +147,7 @@ func TestRoutingOptSQLFullyParameterized(t *testing.T) {
 		"stats_auto":  routingOptStatsAutoSQL,
 		"stats_human": routingOptStatsHumanSQL,
 		"accuracy":    routingOptAccuracySQL,
+		"metrics":     routingOptMetricsSQL,
 	}
 	for name, sql := range parameterized {
 		if !strings.Contains(sql, "$1") {
@@ -423,6 +428,127 @@ func TestRoutingOptParametersDBErrorReturns500(t *testing.T) {
 	w := routingOptGet(h, "parameters", "/api/admin/routing-opt/parameters")
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("parameters db error: want 500, got %d", w.Code)
+	}
+}
+
+// =============================================================================
+// pgxmock：metrics 聚合表只读端点（R30 P3 遗留债——首个生产读者）
+// =============================================================================
+
+func TestRoutingOptMetricsRows(t *testing.T) {
+	mock := newRoutingOptMockEnv(t)
+	h := &Handler{}
+
+	bucket := time.Date(2026, 9, 16, 8, 5, 0, 0, time.UTC)
+	acc := 0.75
+	humanAcc := 0.8333333
+	latency := 210
+	code := "code"
+	// pgxmock 对同列混用 nil/具体值时会按首行推断列类型，nil 具体值需用
+	// 类型化 nil 指针表达（与 body_resolver_test 的 &local 先例同源）。
+	var nilStr *string
+	var nilF64 *float64
+	var nilInt *int
+	rows := pgxmock.NewRows([]string{
+		"time_bucket", "task_type", "predicted_provider",
+		"total_requests", "successful_requests", "failed_requests", "accuracy_rate",
+		"avg_confidence", "avg_latency_ms", "avg_cost",
+		"p50_latency_ms", "p95_latency_ms", "p99_latency_ms",
+		"human_corrections", "human_accuracy_rate",
+	}).
+		AddRow(bucket, &code, nilStr, int32(4), int32(3), int32(1), &acc,
+			nilF64, &latency, nilF64, nilInt, nilInt, nilInt, int32(2), &humanAcc).
+		AddRow(bucket, nilStr, nilStr, int32(10), int32(8), int32(2), &acc,
+			nilF64, &latency, nilF64, nilInt, nilInt, nilInt, int32(2), nilF64)
+	mock.ExpectQuery(regexp.QuoteMeta("FROM routing_optimization_metrics")).
+		WithArgs(pgxmock.AnyArg(), "", "").
+		WillReturnRows(rows)
+
+	w := routingOptGet(h, "metrics", "/api/admin/routing-opt/metrics?hours=48")
+	if w.Code != http.StatusOK {
+		t.Fatalf("metrics: want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp RoutingOptMetricsResponse
+	if err := decodeRoutingOptJSON(t, w, &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Hours != 48 {
+		t.Errorf("hours = %d, want 48", resp.Hours)
+	}
+	if resp.Truncated {
+		t.Errorf("truncated = true, want false (2 rows < LIMIT 2000)")
+	}
+	if len(resp.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(resp.Rows))
+	}
+	// 第一行：按 task 聚合行（provider NULL）+ 人工加权口径
+	first := resp.Rows[0]
+	if first.TaskType == nil || *first.TaskType != "code" {
+		t.Errorf("row0 task_type = %v, want code", first.TaskType)
+	}
+	if first.Provider != nil {
+		t.Errorf("row0 provider = %v, want nil (GROUPING SETS provider-dim row)", first.Provider)
+	}
+	if first.HumanCorrections != 2 {
+		t.Errorf("row0 human_corrections = %d, want 2", first.HumanCorrections)
+	}
+	if first.HumanAccuracyRate == nil || *first.HumanAccuracyRate != humanAcc {
+		t.Errorf("row0 human_accuracy_rate = %v, want %v", first.HumanAccuracyRate, humanAcc)
+	}
+	// 第二行：全局行（双 NULL 维度）
+	second := resp.Rows[1]
+	if second.TaskType != nil || second.Provider != nil {
+		t.Errorf("row1 dims = (%v, %v), want (nil, nil) global row", second.TaskType, second.Provider)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// task_type/provider 过滤参数作为绑定参数传递（空串 = 不过滤）。
+func TestRoutingOptMetricsFiltersBindParams(t *testing.T) {
+	mock := newRoutingOptMockEnv(t)
+	h := &Handler{}
+
+	mock.ExpectQuery(regexp.QuoteMeta("FROM routing_optimization_metrics")).
+		WithArgs(pgxmock.AnyArg(), "code", "openai").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"time_bucket", "task_type", "predicted_provider",
+			"total_requests", "successful_requests", "failed_requests", "accuracy_rate",
+			"avg_confidence", "avg_latency_ms", "avg_cost",
+			"p50_latency_ms", "p95_latency_ms", "p99_latency_ms",
+			"human_corrections", "human_accuracy_rate",
+		}))
+
+	w := routingOptGet(h, "metrics", "/api/admin/routing-opt/metrics?task_type=code&provider=openai")
+	if w.Code != http.StatusOK {
+		t.Fatalf("metrics filtered: want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp RoutingOptMetricsResponse
+	if err := decodeRoutingOptJSON(t, w, &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Rows) != 0 {
+		t.Errorf("rows = %d, want 0 (empty result set)", len(resp.Rows))
+	}
+	if resp.Truncated {
+		t.Errorf("truncated = true, want false")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestRoutingOptMetricsDBErrorReturns500(t *testing.T) {
+	mock := newRoutingOptMockEnv(t)
+	h := &Handler{}
+
+	mock.ExpectQuery(regexp.QuoteMeta("FROM routing_optimization_metrics")).
+		WillReturnError(errors.New("relation does not exist"))
+
+	w := routingOptGet(h, "metrics", "/api/admin/routing-opt/metrics")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("metrics db error: want 500, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 

@@ -30,6 +30,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -65,6 +66,14 @@ type HTTPLlmCallerConfig struct {
 	// MaxTokens is the max_tokens for the response. Defaults to 16
 	// (we only need a one-word task type back).
 	MaxTokens int
+
+	// ExtraBody (2026-09-15 O4) is a raw JSON object merged into the
+	// request body after the core fields (extra keys win). Lets a
+	// deployment disable a classifier model's thinking channel without
+	// code changes — e.g. {"thinking":{"type":"disabled"}} for the
+	// deepseek dialect — reasoning tokens otherwise consume the whole
+	// max_tokens budget and the classification returns empty content.
+	ExtraBody json.RawMessage
 }
 
 // HTTPLlmCaller is the production-grade LLMCaller implementation
@@ -89,8 +98,15 @@ func NewHTTPLlmCaller(cfg HTTPLlmCallerConfig) *HTTPLlmCaller {
 		cfg.MaxTokens = 16
 	}
 	if cfg.HTTPClient == nil {
+		// 2026-09-15 O4 verification fix: the default client timeout must
+		// follow cfg.Timeout. It previously stayed at a hardcoded 5s, which
+		// silently overrode a larger LLMGatewayAutoLLMTimeout (context 8s,
+		// client kills the request at 5s — observed on the 245 self-loop
+		// classification path). Call(ctx) also bounds each call with a
+		// context deadline of cfg.Timeout; the client value is the outer
+		// safety net only.
 		cfg.HTTPClient = &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout: cfg.Timeout,
 		}
 	}
 	return &HTTPLlmCaller{cfg: cfg}
@@ -115,6 +131,14 @@ func (h *HTTPLlmCaller) Call(ctx context.Context, prompt string) (string, error)
 		},
 		"max_tokens":  h.cfg.MaxTokens,
 		"temperature": 0.0, // deterministic for classification
+	}
+	if len(h.cfg.ExtraBody) > 0 {
+		var extra map[string]any
+		if err := json.Unmarshal(h.cfg.ExtraBody, &extra); err == nil {
+			for k, v := range extra {
+				reqBody[k] = v
+			}
+		}
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -207,11 +231,28 @@ func BuildHTTPLlmCallerFromEnv(envLookup func(string) string) (LLMCaller, bool) 
 			cfg.Timeout = time.Duration(secs * float64(time.Second))
 		}
 	}
+	// 2026-09-15 O4: reasoning-classifier models (deepseek-v4 etc.) burn the
+	// tiny max_tokens budget on their thinking channel and return empty
+	// content, so both knobs must be tunable per deployment.
+	if mt := strings.TrimSpace(envLookup("LLMGatewayAutoLLMMaxTokens")); mt != "" {
+		if n, err := strconv.Atoi(mt); err == nil && n > 0 {
+			cfg.MaxTokens = n
+		}
+	}
+	if eb := strings.TrimSpace(envLookup("LLMGatewayAutoLLMExtraBody")); eb != "" {
+		extra := json.RawMessage(eb)
+		if json.Valid(extra) {
+			cfg.ExtraBody = extra
+		} else {
+			slog.Warn("autoroute: LLMGatewayAutoLLMExtraBody is not valid JSON; ignoring")
+		}
+	}
 
 	slog.Info("autoroute: LLM fallback enabled",
 		"endpoint", cfg.Endpoint,
 		"model", cfg.Model,
-		"timeout", cfg.Timeout.String())
+		"timeout", cfg.Timeout.String(),
+		"max_tokens", cfg.MaxTokens)
 	return NewHTTPLlmCaller(cfg), true
 }
 

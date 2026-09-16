@@ -117,6 +117,15 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"700_request_logs_view_raw_model_name.sql":             requestLogsViewRawModelNameMigration700,
 		"701_credential_balance_floor.sql":                     credentialBalanceFloorMigration701,
 		"703_supplier_errors_promote_timezone_pin.sql":         supplierErrorsPromoteTimezonePinMigration703,
+		// 706-713: extend byte-equality coverage to the storage-v2 session
+		// family and hosted-task/outbox channel (R29 audit 2026-09-15: the
+		// map previously stopped at 703 while StartupFiles grew past it).
+		"706_session_family_s1a.sql":           sessionFamilyS1aMigration706,
+		"707_session_turns_s1a.sql":            sessionTurnsS1aMigration707,
+		"708_session_bodies_s1a.sql":           sessionBodiesS1aMigration708,
+		"711_hosted_tasks.sql":                 hostedTasksMigration711,
+		"712_session_mirror_outbox.sql":        sessionMirrorOutboxMigration712,
+		"713_session_turns_cost_precision.sql": sessionTurnsCostPrecisionMigration713,
 	}
 
 	for name, embedded := range expected {

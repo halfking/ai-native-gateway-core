@@ -34,6 +34,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/domains/freediscovery"
@@ -345,13 +346,14 @@ func (s *ScanScheduler) cycle(ctx context.Context) error {
 					err := fmt.Errorf("template %d panic: %v", t.templateID, r)
 					atomic.AddUint64(&s.scansFailed, 1)
 					s.setLastError(err.Error())
+					s.recordScanFailure(ctx, t.tenantID, t.templateID)
 					slog.Error("scan_scheduler template panic",
 						"template_id", t.templateID, "provider", t.providerCode,
 						"panic", r, "stack", string(debug.Stack()))
 				}
 				s.release(t.templateID)
 			}()
-			_, err := s.engine.Run(ctx, freediscovery.DiscoveryRequest{
+			task, err := s.engine.Run(ctx, freediscovery.DiscoveryRequest{
 				TemplateID:  t.templateID,
 				TenantID:    t.tenantID,
 				TriggeredBy: "scan_scheduler",
@@ -367,8 +369,14 @@ func (s *ScanScheduler) cycle(ctx context.Context) error {
 				}
 				atomic.AddUint64(&s.scansFailed, 1)
 				s.setLastError(err.Error())
+				s.recordScanFailure(ctx, t.tenantID, t.templateID)
 				slog.Warn("scan_scheduler template scan failed",
 					"template_id", t.templateID, "provider", t.providerCode, "error", err)
+				return
+			}
+			// Success: reset failure counter
+			if task != nil && task.Status == freediscovery.TaskStatusSuccess {
+				s.recordScanSuccess(ctx, t.tenantID, t.templateID)
 			}
 		}()
 	}
@@ -378,6 +386,77 @@ func (s *ScanScheduler) cycle(ctx context.Context) error {
 	s.lastSweepMu.Unlock()
 	atomic.AddUint64(&s.sweepsTotal, 1)
 	return nil
+}
+
+// runPrivileged runs fn inside a transaction with the same RLS bypass used by
+// cycle(). provider_templates is RLS-protected; without these LOCAL settings a
+// pool connection only sees the default tenant, so health feedback for any
+// other tenant would silently no-op (0 rows) and the auto-disable threshold
+// would never trigger.
+func (s *ScanScheduler) runPrivileged(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("scan_scheduler: begin health transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.current_role', 'super_admin', true)`); err != nil {
+		return fmt.Errorf("scan_scheduler: set super-admin role: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.bypass_rls', 'true', true)`); err != nil {
+		return fmt.Errorf("scan_scheduler: enable rls bypass: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// recordScanSuccess resets health feedback after a successful scan.
+func (s *ScanScheduler) recordScanSuccess(ctx context.Context, tenantID string, templateID int64) {
+	if s == nil || s.db == nil {
+		return
+	}
+	err := s.runPrivileged(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE public.provider_templates
+			SET consecutive_scan_failures = 0,
+			    last_scan_failure_at = NULL
+			WHERE id = $1 AND tenant_id = $2`, templateID, tenantID)
+		return err
+	})
+	if err != nil {
+		slog.Warn("scan_scheduler: reset template health failed", "template_id", templateID, "error", err)
+	}
+}
+
+// recordScanFailure increments the consecutive failure counter and disables a
+// template at the threshold. The WHERE clause keeps tenant ownership explicit.
+func (s *ScanScheduler) recordScanFailure(ctx context.Context, tenantID string, templateID int64) {
+	if s == nil || s.db == nil {
+		return
+	}
+	var failures int
+	var disabled bool
+	err := s.runPrivileged(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			UPDATE public.provider_templates
+			SET consecutive_scan_failures = COALESCE(consecutive_scan_failures, 0) + 1,
+			    last_scan_failure_at = now(),
+			    enabled = CASE WHEN COALESCE(consecutive_scan_failures, 0) + 1 >= 3 THEN FALSE ELSE enabled END,
+			    auto_disabled_at = CASE
+			        WHEN COALESCE(consecutive_scan_failures, 0) + 1 >= 3 THEN COALESCE(auto_disabled_at, now())
+			        ELSE auto_disabled_at
+			    END
+			WHERE id = $1 AND tenant_id = $2
+			RETURNING consecutive_scan_failures, enabled = FALSE`, templateID, tenantID).Scan(&failures, &disabled)
+	})
+	if err != nil {
+		slog.Warn("scan_scheduler: record template health failed", "template_id", templateID, "error", err)
+		return
+	}
+	if disabled {
+		slog.Warn("freediscovery: template auto-disabled", "template_id", templateID, "tenant_id", tenantID, "consecutive_failures", failures)
+	}
 }
 
 // ScanSchedulerStatus is the liveness/health snapshot for the admin probe.

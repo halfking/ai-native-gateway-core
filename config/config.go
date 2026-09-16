@@ -277,6 +277,67 @@ type Config struct {
 	// booleans). It lets LoadFile apply an explicit YAML false while retaining
 	// environment-variable precedence.
 	yamlConfigured map[string]bool `yaml:"-"`
+
+	// HostedTasks（任务托管与移交，docs/design/hosted-task-delegation-design.md
+	// §6.1）：env-only 配置块（Load 时装配，见 loadHostedTasksConfig）。
+	HostedTasks HostedTasksConfig `yaml:"-"`
+}
+
+// HostedTasksConfig 是任务托管门面的装配参数（全部来自环境变量，默认关闭）。
+type HostedTasksConfig struct {
+	// Enabled 总开关（LLM_GATEWAY_HOSTED_TASKS_ENABLED=true 才装配端点与 worker）。
+	Enabled bool
+	// ACC Runtime Control（§6.0 门禁 3：service JWT 须含 tenant_id claim）。
+	ACCBaseURL   string // LLM_GATEWAY_ACC_BASE_URL
+	ACCToken     string // LLM_GATEWAY_ACC_SERVICE_TOKEN
+	ACCRuntimeID string // LLM_GATEWAY_ACC_RUNTIME_ID（companion 注册的 runtime）
+	// Workspaces：workspace_id=绝对路径 白名单映射（逗号分隔多对；§4.1 禁裸路径）。
+	Workspaces map[string]string
+	// CallbackAllowlist：回调 SSRF 校验的显式内网放行（精确主机/CIDR/*.后缀）。
+	CallbackAllowlist []string
+	// CallbackEncKey：回调 url/secret AES-GCM 加密 key 的 base64url（32B）；
+	// 空则回退 CREDENTIAL_ENCRYPTION_KEY / SECRET_KEY 派生 keyring。
+	CallbackEncKey string
+	// Model：dispatch 缺省模型偏好（可被请求 environment.model_pref 覆盖）。
+	Model string
+	// TimeoutSeconds：单次 dispatch 执行超时（默认 3600）。
+	TimeoutSeconds int
+	// DefaultDeadlineSeconds / MaxDeadlineSeconds：任务期限默认/上限（3600/86400）。
+	DefaultDeadlineSeconds int
+	MaxDeadlineSeconds     int
+	// ReconcileIntervalSeconds / DispatchRetryAfterSeconds：reconciler 节拍（5/30）。
+	ReconcileIntervalSeconds  int
+	DispatchRetryAfterSeconds int
+}
+
+// loadHostedTasksConfig 从环境变量装配 HostedTasksConfig（§6.1 config 块）。
+func loadHostedTasksConfig() HostedTasksConfig {
+	c := HostedTasksConfig{
+		Enabled:                   os.Getenv("LLM_GATEWAY_HOSTED_TASKS_ENABLED") == "true",
+		ACCBaseURL:                os.Getenv("LLM_GATEWAY_ACC_BASE_URL"),
+		ACCToken:                  os.Getenv("LLM_GATEWAY_ACC_SERVICE_TOKEN"),
+		ACCRuntimeID:              os.Getenv("LLM_GATEWAY_ACC_RUNTIME_ID"),
+		CallbackEncKey:            os.Getenv("LLM_GATEWAY_HOSTED_TASK_CALLBACK_ENC_KEY"),
+		Model:                     os.Getenv("LLM_GATEWAY_HOSTED_TASK_MODEL"),
+		CallbackAllowlist:         parseCommaList(os.Getenv("LLM_GATEWAY_HOSTED_TASK_CALLBACK_ALLOWLIST")),
+		TimeoutSeconds:            3600,
+		DefaultDeadlineSeconds:    3600,
+		MaxDeadlineSeconds:        86400,
+		ReconcileIntervalSeconds:  5,
+		DispatchRetryAfterSeconds: 30,
+	}
+	c.Workspaces = map[string]string{}
+	for _, pair := range parseCommaList(os.Getenv("LLM_GATEWAY_HOSTED_TASK_WORKSPACE_MAP")) {
+		if k, v, ok := strings.Cut(pair, "="); ok && k != "" && v != "" {
+			c.Workspaces[k] = v
+		}
+	}
+	applyPositiveIntEnv("LLM_GATEWAY_HOSTED_TASK_TIMEOUT_SECONDS", &c.TimeoutSeconds)
+	applyPositiveIntEnv("LLM_GATEWAY_HOSTED_TASK_DEFAULT_DEADLINE_SECONDS", &c.DefaultDeadlineSeconds)
+	applyPositiveIntEnv("LLM_GATEWAY_HOSTED_TASK_MAX_DEADLINE_SECONDS", &c.MaxDeadlineSeconds)
+	applyPositiveIntEnv("LLM_GATEWAY_HOSTED_TASK_RECONCILE_INTERVAL_SECONDS", &c.ReconcileIntervalSeconds)
+	applyPositiveIntEnv("LLM_GATEWAY_HOSTED_TASK_DISPATCH_RETRY_AFTER_SECONDS", &c.DispatchRetryAfterSeconds)
+	return c
 }
 
 // IsProduction reports whether the process is running in a production-like
@@ -555,6 +616,7 @@ func Load() *Config {
 		LogMaxAgeDays: 7,
 		LogCompress:   true,
 	}
+	cfg.HostedTasks = loadHostedTasksConfig()
 
 	if dbStr := os.Getenv("LLM_GATEWAY_REDIS_DB"); dbStr != "" {
 		if v, err := strconv.Atoi(dbStr); err == nil {

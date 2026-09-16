@@ -175,10 +175,10 @@ func TestStore_GetGoalRun(t *testing.T) {
 	)
 
 	mock.ExpectQuery(`SELECT .+ FROM goal_runs`).
-		WithArgs("gr_123").
+		WithArgs("gr_123", "tenant-1").
 		WillReturnRows(rows)
 
-	run, err := store.GetGoalRun(context.Background(), "gr_123")
+	run, err := store.GetGoalRun(context.Background(), "tenant-1", "gr_123")
 	if err != nil {
 		t.Fatalf("GetGoalRun: %v", err)
 	}
@@ -195,10 +195,10 @@ func TestStore_GetGoalRun_NotFound(t *testing.T) {
 	store, mock := newMockStore(t)
 
 	mock.ExpectQuery(`SELECT .+ FROM goal_runs`).
-		WithArgs("gr_missing").
+		WithArgs("gr_missing", "tenant-1").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}))
 
-	_, err := store.GetGoalRun(context.Background(), "gr_missing")
+	_, err := store.GetGoalRun(context.Background(), "tenant-1", "gr_missing")
 	if !errors.Is(err, ErrGoalRunNotFound) {
 		t.Fatalf("err = %v, want ErrGoalRunNotFound", err)
 	}

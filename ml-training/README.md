@@ -142,8 +142,10 @@ ONNX与joblib预测一致性。
 把它们整类丢弃，或补充数据。
 
 **Q: 人工标注的标签空间与chosen_model不一致（provider vs 模型名）**
-设置 `data.annotation_require_known_label: true` 可丢弃不在自动标签
-词表内的覆盖，防止污染标签空间；阶段4再做正式的标签空间归一。
+`data.annotation_require_known_label` 默认为 true：不在自动标签词表内的
+覆盖会被丢弃并计数告警（`annotation_stats.overrides_dropped_unknown_label`
++ UserWarning），防止污染标签空间；阶段4再做正式的标签空间归一。
+除非已配置label映射，不要设回 false。
 
 **Q: 规则引擎基线显示 N/A**
 测试集没有人工标注行且未配置 `evaluation.rule_engine_accuracy`。

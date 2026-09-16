@@ -530,3 +530,23 @@ func canonicalV2DDL(baseHasFP, baseHasRaw bool) string {
 		strings.Join(lateralCols, ", "),
 		strings.Join(parentCols, ", "))
 }
+
+// SessionFamilyTurnsSourceSQL returns a parenthesized FROM-source emitting the
+// frozen 113-column request-logs shape straight from the session-turn family
+// (hot ∪ parent), for S3 wave-1 native readers (plan §4-S3: admin 日志读端
+// 分波去视图化). It reuses buildSessionProjection() so the view ensure chain
+// and native readers share one copy of the column-mapping contract; a shape
+// change in 710 terms updates both.
+//
+// The returned source carries no alias — callers append one (e.g. `rl`).
+// Unlike the 710 view it omits the frozen-v1 branch and anti-join entirely:
+// rows promoted out of request_logs history are NOT covered, so native mode
+// is only correct while request_logs still holds every not-yet-retired row
+// (i.e. before S4 stop-write + TTL retirement of windows that predate the
+// session mirror).
+func SessionFamilyTurnsSourceSQL() string {
+	return "(SELECT " + sessionFamilyProjectionV2 +
+		" FROM public.session_turns_hot t" +
+		" UNION ALL SELECT " + sessionFamilyProjectionV2 +
+		" FROM public.session_turns t)"
+}

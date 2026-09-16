@@ -265,8 +265,16 @@ func enforceRoleAlternation(messages []Message) []Message {
 // warnRoleAlternationViolations detects role alternation violations and logs
 // warnings without modifying the message array. This is the default behavior
 // (E3: soft enforcement).
+//
+// 2026-09-15 (245 audit noise reduction): agent-framework payloads trigger
+// this on nearly every request — 90k+ WARN lines per day on 245, one line per
+// violating message pair. The per-request result is now aggregated into a
+// single WARN (violations count + first offending index); the per-index
+// detail stays available at Debug level. Message content is never modified.
 func warnRoleAlternationViolations(messages []Message) []Message {
 	violations := 0
+	firstIndex := -1
+	firstRole := ""
 	lastRole := ""
 
 	for i, msg := range messages {
@@ -275,20 +283,26 @@ func warnRoleAlternationViolations(messages []Message) []Message {
 		}
 
 		if lastRole != "" && lastRole == msg.Role {
-			slog.Warn("validate_and_fix: role alternation violation detected",
+			if firstIndex < 0 {
+				firstIndex = i
+				firstRole = msg.Role
+			}
+			violations++
+			slog.Debug("validate_and_fix: role alternation violation detail",
 				"index", i,
 				"role", msg.Role,
 				"previous_role", lastRole,
 			)
-			violations++
 		}
 
 		lastRole = msg.Role
 	}
 
 	if violations > 0 {
-		slog.Info("validate_and_fix: role alternation violations detected (not auto-fixed)",
+		slog.Warn("validate_and_fix: role alternation violations detected (not auto-fixed)",
 			"violations", violations,
+			"first_index", firstIndex,
+			"first_role", firstRole,
 		)
 	}
 
