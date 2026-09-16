@@ -1536,13 +1536,17 @@ func (r *ModelProbeRunner) verifyTargetModality(ctx context.Context, t probeTarg
 
 // GetState returns the current consensus state for a binding (used by
 // the admin API to show "2/3 successful — next attempt in 4m").
+//
+// 2026-09-17 数据源统一:改读 v_node_probe_state_compat(node_probe_state 的
+// 旧词汇投影)。model_probe_state 在 useNewProbeMode 下停更,直接读会把
+// 冻结的旧状态(如早已 410 的节点显示 healthy)回给管理端。
 func (r *ModelProbeRunner) GetState(ctx context.Context, credentialID int, rawModel string) (*ProbeStateRow, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT credential_id, raw_model_name, state,
 		       consecutive_successes, consecutive_failures, total_attempts,
 		       last_attempt_at, next_retry_at, last_status,
 		       last_state_change_at, last_state_change_run
-		FROM model_probe_state
+		FROM v_node_probe_state_compat
 		WHERE credential_id = $1 AND raw_model_name = $2
 	`, credentialID, rawModel)
 	var s ProbeStateRow
@@ -1561,6 +1565,7 @@ func (r *ModelProbeRunner) GetState(ctx context.Context, credentialID int, rawMo
 
 // ListStates returns all probe states for a given provider, optionally
 // filtered by state.  Used by the providers-page "自动测试" tab.
+// 2026-09-17 数据源统一:读 v_node_probe_state_compat(见 GetState 注释)。
 func (r *ModelProbeRunner) ListStates(ctx context.Context, providerID int, stateFilter string) ([]ProbeStateRow, error) {
 	args := []any{providerID}
 	q := `
@@ -1568,7 +1573,7 @@ func (r *ModelProbeRunner) ListStates(ctx context.Context, providerID int, state
 		       mps.consecutive_successes, mps.consecutive_failures, mps.total_attempts,
 		       mps.last_attempt_at, mps.next_retry_at, mps.last_status,
 		       mps.last_state_change_at, mps.last_state_change_run
-		FROM model_probe_state mps
+		FROM v_node_probe_state_compat mps
 		JOIN credentials c ON c.id = mps.credential_id
 		WHERE c.provider_id = $1
 	`

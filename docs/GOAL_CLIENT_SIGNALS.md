@@ -35,6 +35,7 @@ X-Gw-Capabilities: continue,handoff
 - `LLM_GATEWAY_GOAL_CLIENT_DRIVEN=true` 主开关
 - `LLM_GATEWAY_GOAL_CLIENT_SIGNAL_MODE=auto|continue|handoff|both`
 - `LLM_GATEWAY_GOAL_HANDOFF_SIGNAL_THRESHOLD=200000`（handoff 阈值 tokens）
+- `LLM_GATEWAY_GOAL_CLIENT_SIGNAL_ON_TOOL_CALLS=false`（2026-09-17 新增，advisory tool_calls 信号）
 
 ### 2.2 服务端发出的两种信号
 
@@ -57,6 +58,26 @@ data: {"type":"gw_continue","version":1,"reason":"goal_incomplete","request_id":
 - 在**同一个 session_id** 上发起新一轮 chat completion
 - 在 `messages` 末尾追加 `{"role":"user","content": <hint>}`
 - 在 header 携带 `X-Gw-Parent-Request-Id: <event.request_id>`
+
+#### `event: gw-continue`（advisory 变体，2026-09-17 新增）
+
+```text
+event: gw-continue
+data: {"type":"gw_continue","version":1,"reason":"goal_incomplete","advisory":true,"finish_reason":"tool_calls","request_id":"...","session_id":"...","attempt":1,"max_attempts":3,"tokens_used":9000,"context_window":128000,"sub_agents_pending":0}
+```
+
+**触发条件**（全部满足）：
+- `goal.client_signal_on_tool_calls=true`（租户级，默认 false）
+- 客户端声明 `continue` 能力
+- `finish_reason=tool_calls` 且 GoalJudge 判定任务未完成
+- `sub_agents_pending=0` 且未进入 give-up
+
+**与常规信号的差异**：
+1. **`advisory: true`** —— 这是状态提示（"目标仍未完成"），不是追加指令
+2. **不含 `hint` 字段** —— 客户端不应在 tool 轮之间插入"请继续下一步"；推荐在自身 tool 循环退出且 goal 未完成时把它当作"继续推进"的依据
+3. **不消耗续跑预算** —— `attempt` 仅回显当前值；tool 轮可能很多，预算要留给真正搁浅的场景
+
+**影子轮打标（2026-09-17）**：网关自调用的 goal 续跑轮（legacy 路径）在合成请求上携带 `X-Gw-Source-Actor: goal-continue|goal-model-switch|goal-audit` 与 `X-Gw-Parent-Request-Id: <触发请求>`，落库到 `request_logs.origin_actor/parent_request_id` 与 `session_turns.origin_actor/parent_request_id`。`origin_actor LIKE 'goal-%'` 即可从审计中筛出全部影子轮并与客户端请求 JOIN；客户端对话历史不受影响（影子轮从不回传原连接）。详见 [会话优化v4/18-Goal影子指令与续跑优化方案.md](03-design/02-feature-design/会话优化v4/18-Goal影子指令与续跑优化方案.md)。
 
 #### `event: gw-handoff`（客户端发起跨会话迁移）
 
@@ -168,11 +189,12 @@ X-Gw-Sub-Agents: [{"id":"agent-1","status":"completed"},{"id":"agent-2","status"
 | `domains/streaming/handler.go` | ChatHandler 字段 + setter + 追发逻辑 + RequestIdentity.SubAgents |
 | `domains/hooks/response/types.go` | `EndResult`/`InterceptResult` 新增 `ClientSignal*` 字段 |
 | `domains/hooks/response/chain.go` | Chain 合并 `ClientSignal*`（last-writer-wins） |
-| `domains/hooks/goal/mode_hook.go` | `ModeConfig.ClientSignal*` + `Session.ContinueAttempt`/`SubAgents*` + `tryBuildClientSignal` |
+| `domains/hooks/goal/mode_hook.go` | `ModeConfig.ClientSignal*` + `Session.ContinueAttempt`/`SubAgents*` + `tryBuildClientSignal`；2026-09-17 增 `ClientSignalOnToolCalls` + `tryBuildAdvisoryToolSignal`（Path 1.5） |
 | `domains/hooks/goal/completion_detector.go` | Strategy 0: sub-agent gate |
 | `domains/hooks/goal/store.go` | `GetSession`/`CreateSession` 加列；新增 `RecordSubAgents`/`ClaimContinueAttempt`/`RecordLastCompletionJudgement`（client-signal 方法通过可选接口接入，兼容旧 store） |
-| `settings/goal_specs.go` | 新增 `goal.client_signal_enabled`/`mode`/`handoff_signal_threshold_tokens` 三条 spec |
-| `cmd/gateway/goal_control.go` | 读取 client-signal 环境变量并注入 `ModeConfig`；子代理快照通过 `SetGoalSubAgentRecorder` 持久化 |
+| `settings/goal_specs.go` | 新增 `goal.client_signal_enabled`/`mode`/`handoff_signal_threshold_tokens` 三条 spec；2026-09-17 增 `goal.client_signal_on_tool_calls` |
+| `cmd/gateway/goal_control.go` | 读取 client-signal 环境变量并注入 `ModeConfig`；子代理快照通过 `SetGoalSubAgentRecorder` 持久化；2026-09-17 增 goal 启用但 AutoLLM 端点缺失的启动告警 |
+| `domains/streaming/response_interceptor_helpers.go` | 2026-09-17：follow-up 合成请求携带 `X-Gw-Source-Actor`（goal-continue/goal-model-switch/goal-audit）与 `X-Gw-Parent-Request-Id`，影子轮落库可辨 |
 
 ---
 

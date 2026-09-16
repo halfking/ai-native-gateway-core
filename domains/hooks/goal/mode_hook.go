@@ -70,6 +70,13 @@ type ModeConfig struct {
 	ClientSignalEnabled          bool
 	ClientSignalMode             string
 	HandoffSignalThresholdTokens int
+	// ClientSignalOnToolCalls (2026-09-17) additionally emits a budget-free
+	// advisory gw-continue when a goal session ends a turn with
+	// finish_reason=tool_calls. The legacy self-call cannot execute tools,
+	// but a capability-declaring client runs its own tool loop and may stop
+	// it without finishing the goal — the advisory frame tells it the goal is
+	// still open. Opt-in: see 会话优化v4/18-Goal影子指令与续跑优化方案.md §4.
+	ClientSignalOnToolCalls bool
 	// MaxFollowUpDepth / MaxFollowUpsPerSession override the hard-coded
 	// follow-up engine limits in domains/streaming. Zero = use the engine
 	// defaults (MaxFollowUpDepth=15, MaxFollowUpsPerSession=50).
@@ -341,6 +348,19 @@ func (h *ModeHook) decideAndContinue(ctx context.Context, req *response.Intercep
 		return nil, nil
 	}
 
+	// Path 1.5 (2026-09-17): tool_calls ending with a client-driven
+	// capability. shouldAutoContinue deliberately declines tool_calls turns —
+	// the legacy self-call cannot execute tools — but a capability-declaring
+	// client runs its own tool loop and may stop it without finishing the
+	// goal. An advisory gw-continue (no hint, no budget consumption) tells it
+	// the goal is still open. Opt-in via goal.client_signal_on_tool_calls;
+	// see 会话优化v4/18-Goal影子指令与续跑优化方案.md §4.
+	if req.FinishReason == "tool_calls" && !decision.giveUp && h.toolCallsSignalEnabled(req.TenantID) {
+		if signal := h.tryBuildAdvisoryToolSignal(ctx, req, sess); signal != nil {
+			return signal, nil
+		}
+	}
+
 	// Path 2: loop detected and we have a model to rotate to.
 	if decision.switchModel != "" {
 		if h.applyModelSwitch(ctx, req, sess, decision.switchModel) {
@@ -511,6 +531,56 @@ func (h *ModeHook) tryBuildClientSignal(ctx context.Context, req *response.Inter
 
 func (h *ModeHook) clientSignalEnabled(tenantID string) bool {
 	return h.loadBool(tenantID, "goal.client_signal_enabled", h.config.ClientSignalEnabled)
+}
+
+// toolCallsSignalEnabled reports whether the advisory tool_calls signal
+// (Path 1.5) is enabled for the tenant. Independent of clientSignalEnabled:
+// the advisory frame is only meaningful to capability-declaring clients, but
+// an operator may want it without switching the whole continue budget flow
+// over to client-driven mode.
+func (h *ModeHook) toolCallsSignalEnabled(tenantID string) bool {
+	return h.loadBool(tenantID, "goal.client_signal_on_tool_calls", h.config.ClientSignalOnToolCalls)
+}
+
+// tryBuildAdvisoryToolSignal emits a budget-free advisory gw-continue when a
+// goal turn ended with finish_reason=tool_calls (Path 1.5).
+//
+// Differences from the regular continue signal (tryBuildClientSignal):
+//   - "advisory": true and NO "hint" field — the payload is status
+//     information ("goal still open"), not an instruction to append the hint
+//     as a user message. Appending a hint mid-tool-loop would pollute the
+//     client conversation between tool rounds.
+//   - No ClaimContinueAttempt: tool-heavy sessions would exhaust the small
+//     continue budget before a genuinely stuck situation arrives. `attempt`
+//     merely echoes the current value.
+//
+// Gates: the client must have declared the continue capability (legacy
+// clients never see client signals, and the legacy self-call must NOT fire
+// for tool_calls), client_signal_mode must allow continue, and pending
+// sub-agents suppress the frame — work is still in flight.
+func (h *ModeHook) tryBuildAdvisoryToolSignal(ctx context.Context, req *response.InterceptRequest, sess *Session) *response.InterceptResult {
+	if !req.ClientSignalAllowed || sess.SubAgentsPending > 0 {
+		return nil
+	}
+	mode := h.loadString(req.TenantID, "goal.client_signal_mode", h.config.ClientSignalMode)
+	if !(mode == "" || mode == "auto" || mode == "continue" || mode == "both") {
+		return nil
+	}
+	payload := map[string]interface{}{
+		"type": "gw_continue", "version": 1, "reason": "goal_incomplete",
+		"advisory": true, "finish_reason": "tool_calls",
+		"request_id": req.RequestID, "session_id": req.SessionID,
+		"attempt":            sess.ContinueAttempt,
+		"max_attempts":       h.loadInt(req.TenantID, "goal.max_auto_continue_count", h.config.MaxAutoContinueCount),
+		"tokens_used":        req.TokensUsed,
+		"context_window":     req.ContextWindow,
+		"sub_agents_pending": sess.SubAgentsPending,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	return &response.InterceptResult{ClientSignalKind: "gw-continue", ClientSignalPayload: body, ClientSignalAttempts: sess.ContinueAttempt, Action: "gw-continue"}
 }
 
 func (h *ModeHook) InterceptStreamChunk(ctx context.Context, chunk []byte, meta *response.StreamMeta) (*response.ChunkResult, error) {

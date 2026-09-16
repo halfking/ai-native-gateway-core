@@ -50,9 +50,28 @@ type probeRunResponse struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// nodeProbeRunStatusSQL derives the legacy probe-run status vocabulary from a
+// node_probe_runs row. Shared by the SELECT list and the optional status
+// filter in handleProviderProbeHistory.
+const nodeProbeRunStatusSQL = `CASE
+		WHEN npr.direct_ok THEN 'ok'
+		WHEN npr.direct_http_status IN (401, 403) THEN 'auth'
+		WHEN npr.direct_http_status BETWEEN 400 AND 499 THEN 'http_4xx'
+		WHEN npr.direct_http_status >= 500 THEN 'http_5xx'
+		WHEN npr.direct_err_code LIKE 'network%' OR npr.direct_err_code LIKE 'timeout%'
+		     OR npr.direct_err_code LIKE 'dial%' OR npr.direct_err_code LIKE 'tls%' THEN 'network'
+		ELSE 'unknown'
+	END`
+
 // handleProviderProbeHistory returns the most recent probe runs for any
 // credential × model belonging to this provider.  Filters: limit (1-200,
 // default 50), status (optional: ok | http_4xx | http_5xx | network | auth | skipped).
+//
+// 2026-09-17 数据源统一:改读 node_probe_runs(新探测系统权威审计表)。
+// 旧 model_probe_runs 在 useNewProbeMode 下停更,probe-health 页据此显示的
+// "成功"可能是冻结数月前的旧状态(与热力图/路由不一致的根因)。
+// 行字段映射:status 由 direct_ok + direct_http_status 派生,保持旧契约
+// (ok | http_4xx | http_5xx | network | auth | skipped)。
 func (h *Handler) handleProviderProbeHistory(w http.ResponseWriter, r *http.Request, providerID int) {
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
@@ -69,7 +88,7 @@ func (h *Handler) handleProviderProbeHistory(w http.ResponseWriter, r *http.Requ
 	args := []any{providerID, limit}
 	statusClause := ""
 	if statusFilter != "" {
-		statusClause = " AND mpr.status = $3"
+		statusClause = " AND " + nodeProbeRunStatusSQL + " = $3"
 		args = append(args, statusFilter)
 	}
 
@@ -77,15 +96,21 @@ func (h *Handler) handleProviderProbeHistory(w http.ResponseWriter, r *http.Requ
 	defer cancel()
 
 	rows, err := h.db.Query(ctx, `
-		SELECT mpr.id, mpr.credential_id, mpr.raw_model_name, mpr.status,
-		       mpr.http_status, COALESCE(mpr.error_code, ''), COALESCE(mpr.error_message, ''),
-		       mpr.latency_ms, COALESCE(mpr.state_change, 'unchanged'), mpr.state_applied,
-		       mpr.triggered_by, mpr.created_at
-		FROM model_probe_runs_with_current_month mpr
-		JOIN credentials c ON c.id = mpr.credential_id
+		SELECT npr.id, npr.credential_id, npr.raw_model_name,
+		       `+nodeProbeRunStatusSQL+`,
+		       npr.direct_http_status,
+		       COALESCE(npr.direct_err_code, ''),
+		       COALESCE(npr.direct_err_detail, ''),
+		       COALESCE(npr.direct_latency_ms, 0),
+		       'unchanged',
+		       true,
+		       npr.trigger_kind,
+		       npr.started_at
+		FROM node_probe_runs npr
+		JOIN credentials c ON c.id = npr.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		WHERE p.id = $1`+statusClause+`
-		ORDER BY mpr.created_at DESC
+		ORDER BY npr.started_at DESC
 		LIMIT $2
 	`, args...)
 	if err != nil {
@@ -129,18 +154,17 @@ func (h *Handler) handleProviderProbeHistoryRecentFailures(w http.ResponseWriter
 	defer cancel()
 
 	rows, err := h.db.Query(ctx, `
-		SELECT raw_model_name,
+		SELECT npr.raw_model_name,
 		       COUNT(*) AS failed_count,
-		       MAX(created_at) AS last_failed_at,
-		       MIN(error_code) AS sample_error_code
-		FROM model_probe_runs_with_current_month
-		WHERE credential_id IN (
+		       MAX(npr.started_at) AS last_failed_at,
+		       MIN(COALESCE(npr.direct_err_code, 'unknown')) AS sample_error_code
+		FROM node_probe_runs npr
+		WHERE npr.credential_id IN (
 		    SELECT id FROM credentials WHERE provider_id = $1
 		)
-		  AND status <> 'ok'
-		  AND status <> 'skipped'
-		  AND created_at > NOW() - INTERVAL '6 hours'
-		GROUP BY raw_model_name
+		  AND npr.direct_ok = FALSE
+		  AND npr.started_at > NOW() - INTERVAL '6 hours'
+		GROUP BY npr.raw_model_name
 		ORDER BY failed_count DESC, last_failed_at DESC
 	`, providerID)
 	if err != nil {
@@ -389,11 +413,11 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 			SELECT raw_model_name,
 			       COUNT(DISTINCT credential_id) AS creds_affected,
 			       COUNT(*) AS total_failures,
-			       MAX(created_at) AS last_failed_at,
-			       MIN(error_code) AS sample_error_code
-			FROM model_probe_runs_with_current_month
-			WHERE status NOT IN ('ok', 'skipped')
-			  AND created_at > NOW() - INTERVAL '6 hours'
+			       MAX(started_at) AS last_failed_at,
+			       MIN(COALESCE(direct_err_code, 'unknown')) AS sample_error_code
+			FROM node_probe_runs
+			WHERE direct_ok = FALSE
+			  AND started_at > NOW() - INTERVAL '6 hours'
 			GROUP BY raw_model_name
 		),
 		passive_failures AS (
