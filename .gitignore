@@ -357,3 +357,6 @@ nbproject/
 # patch / git apply 残片
 *.orig
 *.rej
+
+# 2026-09-17: ssh-mgmt root password (never commit; local only)
+deploy/ssh-mgmt/pw.txt
