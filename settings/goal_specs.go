@@ -475,5 +475,17 @@ func GoalSpecs() []Spec {
 			HotReload:       true,
 			DangerLevel:     Warning,
 		},
+		{
+			Key:             "goal.client_signal_on_tool_calls",
+			EnvName:         "LLM_GATEWAY_GOAL_CLIENT_SIGNAL_ON_TOOL_CALLS",
+			Type:            TypeBool,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         false,
+			Description:     "tool_calls 收尾时发 advisory gw-continue",
+			DescriptionLong: "任务未完成且 finish_reason=tool_calls 时，向声明了 continue 能力的客户端发 advisory=true、不含 hint 的信号（不消耗续跑预算），提示其工具循环结束后目标仍未完成。legacy 自调用不受影响。",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
 	}
 }
