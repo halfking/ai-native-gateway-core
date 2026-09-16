@@ -438,6 +438,16 @@ func (s *PgStore) RefreshSubscriptionAndMetadata(ctx context.Context, subscripti
 		_ = tx.Rollback(ctx)
 	}()
 
+	// R35 (2026-09-17 audit P1): node-level banned_regions are operator
+	// state written via PUT /api/proxy/nodes/{id}/region-ban, but the refresh
+	// path DELETEs and re-INSERTs every node — wiping those bans on each 1h
+	// cycle. Capture them by node name first and re-apply below (name is the
+	// only stable key across a subscription refresh).
+	prevBans, err := s.loadNodeBansBySubscription(ctx, tx, subscriptionID)
+	if err != nil {
+		return fmt.Errorf("proxy: load node bans in refresh-and-metadata transaction: %w", err)
+	}
+
 	const deleteQ = `DELETE FROM proxy_nodes WHERE subscription_id = $1`
 	if _, err := tx.Exec(ctx, deleteQ, subscriptionID); err != nil {
 		return fmt.Errorf("proxy: delete old nodes in refresh-and-metadata transaction: %w", err)
@@ -458,6 +468,10 @@ func (s *PgStore) RefreshSubscriptionAndMetadata(ctx context.Context, subscripti
 			}
 			pw = enc
 		}
+		banned := node.BannedRegions
+		if len(banned) == 0 {
+			banned = prevBans[node.Name]
+		}
 		row := tx.QueryRow(ctx, insertQ,
 			subscriptionID,
 			node.Name,
@@ -470,7 +484,7 @@ func (s *PgStore) RefreshSubscriptionAndMetadata(ctx context.Context, subscripti
 			node.Location,
 			node.Status,
 			node.HealthCheckURL,
-			normalizeRegions(node.BannedRegions),
+			normalizeRegions(banned),
 		)
 		if err := row.Scan(&node.ID, &node.CreatedAt, &node.UpdatedAt); err != nil {
 			return fmt.Errorf("proxy: insert node %q in refresh-and-metadata transaction: %w", node.Name, err)
@@ -511,6 +525,32 @@ func (s *PgStore) RefreshSubscriptionAndMetadata(ctx context.Context, subscripti
 		return fmt.Errorf("proxy: commit refresh-and-metadata transaction: %w", err)
 	}
 	return nil
+}
+
+// loadNodeBansBySubscription captures operator-set node-level region bans by
+// node name inside the refresh transaction, so the DELETE+re-INSERT refresh
+// path can re-apply them instead of silently wiping that configuration
+// (R35 2026-09-17 audit P1).
+func (s *PgStore) loadNodeBansBySubscription(ctx context.Context, tx pgx.Tx, subscriptionID int) (map[string][]string, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT name, banned_regions FROM proxy_nodes WHERE subscription_id = $1 AND banned_regions IS NOT NULL`,
+		subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string][]string)
+	for rows.Next() {
+		var name string
+		var banned []string
+		if err := rows.Scan(&name, &banned); err != nil {
+			return nil, err
+		}
+		if len(banned) > 0 {
+			out[name] = normalizeRegions(banned)
+		}
+	}
+	return out, rows.Err()
 }
 
 // ---------------------------------------------------------------------------

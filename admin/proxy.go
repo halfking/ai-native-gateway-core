@@ -376,13 +376,21 @@ func (h *Handler) createProxySubscription(w http.ResponseWriter, r *http.Request
 	}
 
 	_, store := h.proxyRuntime()
+	banned := normalizeRegionList(req.BannedRegions)
+	if len(banned) == 0 {
+		// R35 (2026-09-17 audit P0): default HK exclusion on fresh
+		// subscriptions — overseas model providers uniformly reject Hong
+		// Kong egress. Operators override per subscription/node via the
+		// region-ban APIs (热更新)。
+		banned = []string{"HK"}
+	}
 	sub := &proxy.Subscription{
 		Name:          req.Name,
 		SubscribeURL:  req.SubscribeURL,
 		Status:        status,
 		Priority:      req.Priority,
 		Notes:         req.Notes,
-		BannedRegions: normalizeRegionList(req.BannedRegions),
+		BannedRegions: banned,
 	}
 	if err := store.CreateSubscription(r.Context(), sub); err != nil {
 		writeError(w, http.StatusInternalServerError, "create subscription: "+err.Error())

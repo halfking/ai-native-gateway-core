@@ -8,8 +8,14 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/attachments" //nolint:depguard // request pipeline owns attachment logging
 )
 
+// attachmentStrictMode: R35 (2026-09-17 audit P2) flipped the default to
+// lenient. The storage layer's declared contract is "存储失败不应阻塞请求转发，
+// 仅记录 warning"（domains/attachments/storage.go), but the previous default
+// (any value except "0") turned an attachments-dir outage into 503 for every
+// image-bearing request — an availability single point with a client-retry
+// path that cannot succeed. Strict stays available as an explicit opt-in.
 func attachmentStrictMode() bool {
-	return strings.TrimSpace(os.Getenv("LLM_GATEWAY_ATTACHMENT_STRICT")) != "0"
+	return strings.TrimSpace(os.Getenv("LLM_GATEWAY_ATTACHMENT_STRICT")) == "1"
 }
 
 func applyAttachmentResult(logCtx *RequestLogContext, result *attachments.ExtractResult) bool {

@@ -10,6 +10,9 @@
 // - 最大容量 1000 条目（约 10MB 内存，单条 10KB）
 // - 线程安全
 // - 定期清理过期条目（后台 goroutine）
+
+// UNUSED (R35 audit 2026-09-17): zero production callers, zero test references — registered as
+// cleanup candidate R35-DEBT in docs/audit/2026-09-17-r35-gap-audit-round.md §五. Delete after roadmap confirmation.
 package admin
 
 import (

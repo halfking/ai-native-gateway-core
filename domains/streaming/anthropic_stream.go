@@ -522,11 +522,17 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				emitQ2GateError("content_filter", "upstream refused to produce this content")
 				return true
 			case "model_context_window_exceeded":
+				// R35 (2026-09-17 audit P1): Resumable followed the chunk
+				// count, not a hardcoded false — with zero client-visible
+				// output the attempt is transparently retryable (survival
+				// failover / compressed re-request); once semantic output was
+				// committed the terminal frame is correct. Matches the
+				// empty-response and error-event branches in anthropic_bridge.
 				midStreamHalt = &StreamOutcome{
 					Interrupted: true,
 					Reason:      "context_length_exceeded",
 					Kind:        errorsx.KindContextLength,
-					Resumable:   false,
+					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
 					ChunkCount:  chunkCount,
 				}
 				if capture != nil {

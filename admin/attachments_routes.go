@@ -27,6 +27,8 @@ func (h *Handler) handleAttachmentsDownload(w http.ResponseWriter, r *http.Reque
 
 // listRequestAttachments 处理 GET /api/logs/{request_id}/attachments。
 // 委托给 attachments.Handler.ListByRequest；未配置存储或无附件时返回空数组。
+// R35 (2026-09-17 audit P1): tenant_admin 收敛到本租户（此前仅按
+// request_id 查询，可跨租户枚举附件元数据并取得下载路径）。
 func (h *Handler) listRequestAttachments(w http.ResponseWriter, r *http.Request, requestID string) {
 	if h.attachmentHandler == nil {
 		// 用与 ListByRequest 相同的空结构响应，保证前端无需区分"未配置"与"无附件"。
@@ -37,5 +39,9 @@ func (h *Handler) listRequestAttachments(w http.ResponseWriter, r *http.Request,
 		})
 		return
 	}
-	h.attachmentHandler.ListByRequest(w, r, requestID)
+	tenantScope := ""
+	if IsTenantAdmin(r) {
+		tenantScope = GetTenantID(r)
+	}
+	h.attachmentHandler.ListByRequest(w, r, requestID, tenantScope)
 }
