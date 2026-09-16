@@ -332,12 +332,12 @@ func AggregateTaskOutcomeWithHistory(r *AttemptResult, history errorsx.DecisionH
 	var hasRetry, hasWait, hasTerminal, hasUnknown, hasBlocked bool
 	var maxRetryAfter time.Duration
 	var unknownKind errorsx.ErrorKind
-	
+
 	// Enhanced logging for debugging retry decisions
 	candidateSummary := make([]map[string]any, 0, len(r.CandidateOutcomes))
 	for _, co := range r.CandidateOutcomes {
 		central := centralActionForTaskWithHistory(co.Kind, committed, co.RetryAfter, history)
-		
+
 		// Log each candidate outcome for observability
 		candidateSummary = append(candidateSummary, map[string]any{
 			"provider_id":   co.ProviderID,
@@ -346,7 +346,7 @@ func AggregateTaskOutcomeWithHistory(r *AttemptResult, history errorsx.DecisionH
 			"action":        central.Action.String(),
 			"retry_after":   co.RetryAfter.String(),
 		})
-		
+
 		switch central.Action {
 		case TaskActionResumeBlocked:
 			hasBlocked = true
@@ -369,7 +369,7 @@ func AggregateTaskOutcomeWithHistory(r *AttemptResult, history errorsx.DecisionH
 			maxRetryAfter = co.RetryAfter
 		}
 	}
-	
+
 	// Determine final decision
 	var decision TaskDecision
 	if hasUnknown {
@@ -387,7 +387,7 @@ func AggregateTaskOutcomeWithHistory(r *AttemptResult, history errorsx.DecisionH
 	} else {
 		decision = TaskDecision{Action: TaskActionFailClosed, Reason: "no_candidate_outcomes"}
 	}
-	
+
 	// Enhanced structured logging for observability
 	slog.Info("survival_decision_aggregate",
 		"commit_state", r.CommitState.String(),
@@ -404,7 +404,7 @@ func AggregateTaskOutcomeWithHistory(r *AttemptResult, history errorsx.DecisionH
 		"has_unknown", hasUnknown,
 		"history_prior_attempts", len(history.PriorAttempts),
 	)
-	
+
 	return decision
 }
 
@@ -432,6 +432,14 @@ func centralActionForTaskWithHistory(kind errorsx.ErrorKind, committed bool, ret
 	if central.Action == errorsx.ActionClientCanceled {
 		return TaskDecision{Action: TaskActionFailTerminal, Reason: central.ReasonCode}
 	}
+	// NOTE (R36 2026-09-17 audit): KindContextLength stays FailTerminal HERE
+	// on purpose. The durable recovery worker aggregates the same kinds but
+	// re-runs attempts via bare ExecuteAttempt from the original snapshot —
+	// no body-rewrite hook — so retrying at this layer would burn its retry
+	// ceiling on the identical oversized body. The one-shot
+	// compress-and-retry for uncommitted context-length failures lives in
+	// SurvivalCoordinator.Run (survivalCtxLenCompressRetryDue), which owns
+	// the body half of the ladder.
 	if central.Action == errorsx.ActionFailClosed {
 		// Synthetic candidate records carry no route identity, so the central
 		// policy may legitimately return fail-closed on a recoverable kind. In
@@ -480,14 +488,14 @@ func AggregateTaskOutcome(r *AttemptResult) TaskDecision {
 		maxRetryAfter                              time.Duration
 		unknownKind                                errorsx.ErrorKind
 	)
-	
+
 	// Log deprecation warning in debug builds
 	slog.Debug("using_deprecated_aggregate_task_outcome",
 		"note", "caller should migrate to AggregateTaskOutcomeWithHistory",
 		"committed", committed,
 		"candidate_count", len(r.CandidateOutcomes),
 	)
-	
+
 	for _, co := range r.CandidateOutcomes {
 		central := centralActionForTask(co.Kind, false, co.RetryAfter)
 		switch central.Action {
@@ -547,7 +555,7 @@ func AggregateTaskOutcome(r *AttemptResult) TaskDecision {
 			Reason: "no_candidate_outcomes",
 		}
 	}
-	
+
 	// Log decision for consistency with WithHistory version
 	slog.Debug("survival_decision_aggregate_nohistory",
 		"committed", committed,
@@ -556,6 +564,6 @@ func AggregateTaskOutcome(r *AttemptResult) TaskDecision {
 		"has_retry", hasRetry,
 		"has_wait", hasWait,
 	)
-	
+
 	return decision
 }

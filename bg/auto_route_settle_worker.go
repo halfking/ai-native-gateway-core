@@ -184,7 +184,7 @@ func (w *AutoRouteSettleWorker) run(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	case <-time.After(90 * time.Second):
-		w.sweep(ctx)
+		w.safeSweep(ctx)
 	}
 
 	for {
@@ -192,9 +192,23 @@ func (w *AutoRouteSettleWorker) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.sweep(ctx)
+			w.safeSweep(ctx)
 		}
 	}
+}
+
+// safeSweep wraps one sweep cycle in a per-cycle panic guard (R36 2026-09-17
+// audit, closes R34 遗留#6): the outer run() recover only prevents a process
+// kill — a single panicking sweep still unwound the goroutine and left the
+// worker permanently dead in-process. Recovering HERE keeps the ticker loop
+// alive; the run() recover stays as the last-resort net for the loop body.
+func (w *AutoRouteSettleWorker) safeSweep(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("auto-route settle sweep panic (cycle skipped, worker alive)", "recover", rec)
+		}
+	}()
+	w.sweep(ctx)
 }
 
 func (w *AutoRouteSettleWorker) sweep(ctx context.Context) {

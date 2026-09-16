@@ -344,6 +344,10 @@ func (m *SanitizeInputMiddleware) acquireOffsetsLock(ctx context.Context, sessio
 	key := sanitizeOffsetKey(tenantID, sessionID) + ":lock"
 	var token [8]byte
 	if _, err := rand.Read(token[:]); err != nil {
+		// Degraded to unlocked mode without a token; make the lost-mutex
+		// window visible (R36 audit: this path previously logged nothing).
+		m.logger.Warn("sanitize_middleware: offsets lock token generation failed, proceeding unlocked",
+			"session_id", sessionID, "error", err)
 		return func() {}
 	}
 	tok := hex.EncodeToString(token[:])
@@ -357,7 +361,9 @@ func (m *SanitizeInputMiddleware) acquireOffsetsLock(ctx context.Context, sessio
 		}
 		ok, err := m.redis.SetNX(ctx, key, tok, 5*time.Second).Result()
 		if err != nil {
-			m.logger.Debug("sanitize_middleware: offsets lock unavailable, proceeding unlocked",
+			// Warn, not Debug: degradation reopens the cross-process
+			// offset race and must be observable in production logs.
+			m.logger.Warn("sanitize_middleware: offsets lock unavailable, proceeding unlocked",
 				"session_id", sessionID, "error", err)
 			return func() {}
 		}
@@ -367,7 +373,7 @@ func (m *SanitizeInputMiddleware) acquireOffsetsLock(ctx context.Context, sessio
 			}
 		}
 	}
-	m.logger.Debug("sanitize_middleware: offsets lock contention timeout, proceeding unlocked",
+	m.logger.Warn("sanitize_middleware: offsets lock contention timeout, proceeding unlocked",
 		"session_id", sessionID)
 	return func() {}
 }

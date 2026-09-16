@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 	"github.com/kaixuan/llm-gateway-go/credentialhealth"
 	"github.com/redis/go-redis/v9"
 )
@@ -22,6 +23,17 @@ type CallHistoryAggregator struct {
 	recorder *credentialhealth.Recorder
 	interval time.Duration // default 1 minute
 	stopCh   chan struct{}
+
+	// distLock is the optional Redis-backed leader election (R36 2026-09-17
+	// audit, closes R34 遗留#4): the aggregator keeps its high-watermark in
+	// INSTANCE-LOCAL memory and its ON CONFLICT DO UPDATE overwrites the
+	// bucket aggregate (not adds), so two instances interleaving ticks
+	// corrupt each other's buckets — the leader's next tick re-reads only
+	// entries past its own watermark and overwrites the follower's bigger
+	// aggregate with a partial one. settle/affinity/metrics already elect;
+	// this worker is the last one without it. Optional: unset/disabled
+	// manager → every instance aggregates exactly as before.
+	distLock distlock.Manager
 
 	// 2026-07-27 concurrency fix: Stop() did an unguarded close(stopCh),
 	// so a second Stop() panicked with "close of closed channel".
@@ -93,8 +105,30 @@ func (a *CallHistoryAggregator) Stop() {
 	a.stopOnce.Do(func() { close(a.stopCh) })
 }
 
+// callHistoryDistLockTTL bounds how long the elected leader holds the lock;
+// ticks run every ~1m so a 3m TTL tolerates a missed heartbeat without
+// spanning two concurrent leaders.
+const callHistoryDistLockTTL = 3 * time.Minute
+
+// SetDistLock wires the Redis-backed distributed lock manager used for
+// cross-instance aggregation dedup. MUST be called before Start(): the
+// field is read unsynchronized by the aggregation goroutine (same contract
+// as AutoRouteSettleWorker.SetDistLock).
+func (a *CallHistoryAggregator) SetDistLock(mgr distlock.Manager) {
+	a.distLock = mgr
+}
+
 // aggregate reads all Redis sliding windows and writes aggregated stats to PG.
 func (a *CallHistoryAggregator) aggregate(ctx context.Context) error {
+	// R36: single-writer election — see the distLock field comment for why
+	// duplicate aggregators are correctness-harmful here, not just wasteful.
+	if h := acquireSweepDistLock(ctx, a.distLock, "call_history_aggregate", callHistoryDistLockTTL, "call_history_aggregate"); h != nil {
+		defer h.Release(context.WithoutCancel(ctx))
+		if !h.IsLeader() {
+			slog.Debug("call_history_aggregator: follower instance skips cycle")
+			return nil
+		}
+	}
 	// P1-3 fix (2026-06-22 audit): use SCAN instead of KEYS.
 	// KEYS is O(N) and blocks the Redis main thread; on a busy gateway with
 	// hundreds of (credential,model) pairs this stalls every other client
@@ -332,9 +366,15 @@ type aggregateRow struct {
 // correct semantics is to REPLACE (the row is the authoritative tally for
 // this window bucket), not accumulate.
 func (a *CallHistoryAggregator) insertBatch(ctx context.Context, rows []aggregateRow) error {
-	// Keep the batch atomic from the watermark's perspective. If any row
-	// fails, the caller must not advance any Redis high-watermark; the next
-	// tick can safely retry the complete batch.
+	// Watermark contract: watermarks advance ONLY after this returns nil,
+	// and the DO UPDATE REPLACES with the full re-aggregate of the
+	// (watermark, newest] span — so a partial batch failure converges on the
+	// next tick's retry (rows are recomputed from the same Redis entries,
+	// not summed incrementally). The per-row inserts are therefore
+	// deliberately NOT wrapped in a transaction; correctness rests on the
+	// replace semantics PLUS the R36 single-writer distlock (two instances
+	// with independent watermarks would clobber each other's buckets
+	// despite the replace).
 	// For simplicity, insert one-by-one with ON CONFLICT.
 	// Production would use pgx.CopyFrom or multi-row INSERT.
 	for _, r := range rows {

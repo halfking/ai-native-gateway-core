@@ -38,6 +38,8 @@
 - [R30] mirror_outbox 失败登记+重放（SKIP LOCKED/lease/指数退避/dead）+ kill switch —— 健康面基准
 - [运维] hostedtask 默认关，开启需 ENABLED + §6.0 跨仓库门禁
 
+- [R36] survival 层 KindContextLength 一律 FailTerminal → 5h 预算对超长完全不工作；压缩重试改判必须与 body 重写同侧（SurvivalCoordinator.Run），不可放共享决策层——durable worker 复用聚合但无 body 钩子，会空转烧 retry ceiling（钉桩 TestDurableRecoveryWorkerTerminalDecisionFails 实证）
+
 ## 5. 子代理派发提示词
 
 ```text

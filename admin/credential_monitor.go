@@ -1187,6 +1187,8 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			return
 		}
 		// 2026-09-17 数据源统一:手动上线同步恢复新系统(un-pause + 立即排队重探)。
+		// R36: DO UPDATE 同时清 last_err_code/last_err_detail,否则手动上线后
+		// 展示面继续残留 manual_offline/上次探测错误码直到下一轮探测。
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO node_probe_state
 			    (credential_id, raw_model_name, next_retry_at, next_retry_seconds,
@@ -1196,6 +1198,8 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			    paused = FALSE,
 			    next_retry_at = NOW(),
 			    consecutive_failures = 0,
+			    last_err_code = NULL,
+			    last_err_detail = NULL,
 			    updated_at = NOW()
 		`, req.CredentialID, req.RawModel); err != nil {
 			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())

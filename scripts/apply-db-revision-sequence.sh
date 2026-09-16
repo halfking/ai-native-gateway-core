@@ -418,6 +418,12 @@ files=(
   # TestCanonicalStartupMigrationsAtOrAbove704AreRegistered 守卫与通道门禁
   # 双双红灯。按 701 定式登记 sequence 管存量库升级。
   "$ROOT_DIR/sql/migrations/startup/716_unify_probe_health_views.sql"
+  # 2026-09-17 R36 审计（新迁移登记）：717 request_logs_hot 列型对齐母表
+  # （10 列，6 列硬不兼容）——闭合 R34 遗留#2 全新安装 42804 启动链阻断
+  # 与 602 promote 批次失败。三份 01-schema baseline 已同步对齐并由
+  # TestBaselineRequestLogsHotColumnTypesMatchMother 守卫。sequence 管存量
+  # 库升级（hot 仅 8h 数据，ALTER 重写秒级）。
+  "$ROOT_DIR/sql/migrations/startup/717_request_logs_hot_column_alignment.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

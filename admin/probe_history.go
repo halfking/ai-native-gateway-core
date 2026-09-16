@@ -20,9 +20,9 @@
 package admin
 
 import (
-	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"context"
 	"errors"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -219,11 +219,31 @@ func (h *Handler) handleProviderProbeHistoryTrigger(w http.ResponseWriter, r *ht
 		return
 	}
 	// Ensure the credential belongs to this provider.
-	var ok bool
+	var tenantID string
 	if err := h.db.QueryRow(r.Context(),
-		`SELECT EXISTS (SELECT 1 FROM credentials WHERE id = $1 AND provider_id = $2)`,
-		req.CredentialID, providerID).Scan(&ok); err != nil || !ok {
+		`SELECT tenant_id FROM credentials WHERE id = $1 AND provider_id = $2`,
+		req.CredentialID, providerID).Scan(&tenantID); err != nil {
 		writeError(w, http.StatusNotFound, "credential not found under provider")
+		return
+	}
+	// R36 (2026-09-17 audit): when the unified NodeProbeWorker is wired, route
+	// manual single-model triggers through it. The legacy TriggerManual writes
+	// model_probe_state/model_probe_runs_hot only; on SUCCESS it happened to
+	// propagate via MarkNodeProbeHealthy, but a FAILED probe left no trace in
+	// anything the UI reads (probe history reads node_probe_runs) — an
+	// operator paid for a real upstream call and saw nothing. Submitting to
+	// the unified two-round executor records the run in node_probe_runs and
+	// applies full failure semantics + backoff in node_probe_state. Same
+	// wiring pattern as the reset-state endpoint's trigger_probe.
+	if h.probeSubmitter != nil {
+		actor := "admin"
+		if authCtx := GetAuthContext(r); authCtx != nil && authCtx.Username != "" {
+			actor = authCtx.Username
+		}
+		h.probeSubmitter(req.CredentialID, req.RawModelName, tenantID, actor)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"triggered": true, "queued": true, "via": "node_probe_worker",
+		})
 		return
 	}
 	if err := h.modelProbe.TriggerManual(r.Context(), req.CredentialID, req.RawModelName); err != nil {

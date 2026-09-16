@@ -170,7 +170,7 @@ func (w *AvailabilityCacheBackfill) runOnceWithTrigger(ctx context.Context, trig
 		       COALESCE(consecutive_failures, 0),
 		       COALESCE(total_attempts, 0),
 		       last_attempt_at, next_retry_at, last_status
-		FROM model_probe_state
+		FROM v_node_probe_state_compat
 		WHERE next_retry_at IS NOT NULL
 		  AND next_retry_at <= NOW() + make_interval(secs => $1)
 		ORDER BY next_retry_at DESC

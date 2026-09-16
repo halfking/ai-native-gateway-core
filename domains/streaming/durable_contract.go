@@ -1,5 +1,9 @@
-// UNUSED (R35 audit 2026-09-17): zero production callers, zero test references — registered as
-// cleanup candidate R35-DEBT in docs/audit/2026-09-17-r35-gap-audit-round.md §五. Delete after roadmap confirmation.
+// DORMANT (R36 audit 2026-09-17 correction of the R35-gap annotation, which wrongly claimed
+// "zero production callers"): the contracts here ARE wired — DurableRequested/ClientSignalRequested
+// are consumed by handler.go & responses.go, snapshots marshal through durable_wiring.go /
+// durable_runner.go, and cmd/gateway/main.go builds durableStore behind per-tenant gates.
+// NOT deletable wholesale. R36-DEBT (docs/audit/2026-09-17-r36-24h-audit-round.md §四) asks only
+// for a roadmap decision on whether the dormant-by-default feature ships or is retired.
 
 package streaming
 

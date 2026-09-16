@@ -33,6 +33,8 @@
 
 - [初版] 本域健康面基线待首个 playbook 轮（R34）建立；R30 中"breaker 单进程锁内迁移无竞态，跨实例靠 DB 幂等收敛"是相邻基准
 
+- [R36] 探测系统统一（313d1ebc8）漏切面清单：手动 trigger 失败路径写旧表（成功路径 MarkNodeProbeHealthy 同步，失败零痕迹）→ probeSubmitter 接管；availability backfill/diagnostics 两端点直读/直写冻结 model_probe_state → 切 compat 视图/双清；遗留：credential_recovery 守卫+BrokenProbeReviver 无门控、compat 投影 total_attempts 语义漂移、node_probe_runs 无 skipped 映射
+
 ## 5. 子代理派发提示词
 
 ```text

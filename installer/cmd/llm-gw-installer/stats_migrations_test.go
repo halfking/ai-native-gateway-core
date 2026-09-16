@@ -137,6 +137,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"714_partition_timezone_pin_remaining.sql":          partitionTimezonePinRemainingMigration714,
 		"715_route_incidents_pending_state.sql":             routeIncidentsPendingStateMigration715,
 		"716_unify_probe_health_views.sql":                  unifyProbeHealthViewsMigration716,
+		"717_request_logs_hot_column_alignment.sql":         requestLogsHotColumnAlignmentMigration717,
 	}
 
 	for name, embedded := range expected {

@@ -41,8 +41,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -197,7 +197,7 @@ func (w *RoutingMetricsAggregator) run(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	case <-time.After(routingMetricsFirstDelay):
-		w.sweep(ctx)
+		w.safeSweep(ctx)
 	}
 
 	for {
@@ -205,9 +205,20 @@ func (w *RoutingMetricsAggregator) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.sweep(ctx)
+			w.safeSweep(ctx)
 		}
 	}
+}
+
+// safeSweep wraps one sweep cycle in a per-cycle panic guard (R36 2026-09-17
+// audit, closes R34 遗留#6) — see AutoRouteSettleWorker.safeSweep.
+func (w *RoutingMetricsAggregator) safeSweep(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("routing metrics sweep panic (cycle skipped, worker alive)", "recover", rec)
+		}
+	}()
+	w.sweep(ctx)
 }
 
 func (w *RoutingMetricsAggregator) sweep(ctx context.Context) {

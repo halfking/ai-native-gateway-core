@@ -372,9 +372,9 @@ func (s *ScanScheduler) cycle(ctx context.Context) error {
 				// window (or the caller) expired says nothing about the
 				// upstream, and counting it toward the consecutive-failure
 				// threshold auto-disables slow-but-healthy tail templates.
-				if ctx.Err() != nil ||
-					errors.Is(err, context.DeadlineExceeded) ||
-					errors.Is(err, context.Canceled) {
+				// R36 (2026-09-17 audit): the exemption must key on the
+				// PARENT context only; see scanCutBySweepBudget.
+				if scanCutBySweepBudget(ctx) {
 					slog.Info("scan_scheduler template scan cut by sweep budget, not counting as failure",
 						"template_id", t.templateID, "provider", t.providerCode)
 					return
@@ -405,6 +405,18 @@ func (s *ScanScheduler) cycle(ctx context.Context) error {
 // pool connection only sees the default tenant, so health feedback for any
 // other tenant would silently no-op (0 rows) and the auto-disable threshold
 // would never trigger.
+// scanCutBySweepBudget reports whether a scan error is a sweep-budget
+// cutoff (the parent sweep/caller context expired) rather than template
+// health. R36 (2026-09-17 audit): keyed on the parent context ONLY —
+// errors.Is(err, context.DeadlineExceeded) also matches http.Client.Timeout
+// errors since Go ≥1.23 wraps the client timeout in DeadlineExceeded
+// (empirically pinned by TestScanBudgetExempt_ClientTimeoutCountsAsFailure),
+// so testing the error alone exempted hung upstreams forever and made the
+// 3-strike auto-disable unreachable for slow providers.
+func scanCutBySweepBudget(ctx context.Context) bool {
+	return ctx.Err() != nil
+}
+
 func (s *ScanScheduler) runPrivileged(ctx context.Context, fn func(pgx.Tx) error) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {

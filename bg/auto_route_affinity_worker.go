@@ -178,7 +178,7 @@ func (w *AutoRouteAffinityWorker) run(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	case <-time.After(3 * time.Minute):
-		w.sweep(ctx)
+		w.safeSweep(ctx)
 	}
 
 	for {
@@ -186,9 +186,20 @@ func (w *AutoRouteAffinityWorker) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.sweep(ctx)
+			w.safeSweep(ctx)
 		}
 	}
+}
+
+// safeSweep wraps one sweep cycle in a per-cycle panic guard (R36 2026-09-17
+// audit, closes R34 遗留#6) — see AutoRouteSettleWorker.safeSweep.
+func (w *AutoRouteAffinityWorker) safeSweep(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("auto-route affinity sweep panic (cycle skipped, worker alive)", "recover", rec)
+		}
+	}()
+	w.sweep(ctx)
 }
 
 func (w *AutoRouteAffinityWorker) sweep(ctx context.Context) {

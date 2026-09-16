@@ -436,7 +436,45 @@ func safeCompressionMeta(raw json.RawMessage, tenantID, sessionID string) map[st
 			if pair, ok := boundedPair(value); ok {
 				out[key] = pair
 			}
+		case "window_source":
+			// R36: the P0-1 provenance write side (buildOutboundProvenance)
+			// emits this provider-window composition counter; whitelist it so
+			// the telemetry survives into sessions_v2 metadata instead of
+			// being silently dropped (alignment/sanitize arrays are already
+			// whitelisted above; the two *_truncated flags below complete the
+			// provenance block).
+			if filtered := safeWindowSource(value); len(filtered) > 0 {
+				out[key] = filtered
+			}
+		case "alignment_map_truncated", "sanitize_refs_truncated":
+			if b, ok := value.(bool); ok && b {
+				out[key] = b
+			}
 		}
+	}
+	return out
+}
+
+// safeWindowSource filters the producer-side window_source composition
+// counter (label → count). Labels are bounded words; counts bounded
+// integers; the whole map capped to keep metadata size predictable.
+func safeWindowSource(value interface{}) map[string]interface{} {
+	input, ok := value.(map[string]interface{})
+	if !ok || len(input) == 0 || len(input) > 16 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(input))
+	for k, v := range input {
+		label, ok := boundedCompressionWord(k)
+		if !ok {
+			continue
+		}
+		if n, ok := boundedNumber(v); ok {
+			out[label] = n
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

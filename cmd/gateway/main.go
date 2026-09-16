@@ -4715,6 +4715,10 @@ func main() {
 		if fpSlotRedis != nil {
 			modelAvailabilityCache = bg.NewModelAvailabilityCache(fpSlotRedis, 4*time.Hour)
 			callHistoryAggregator = bg.NewCallHistoryAggregator(fpSlotRedis, dbConn.Pool(), 1*time.Minute)
+			// R36 (2026-09-17 audit, R34 遗留#4): single-writer election —
+			// instance-local watermarks + replace ON CONFLICT make dual
+			// instances clobber each other's buckets (see aggregator doc).
+			callHistoryAggregator.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
 			callHistoryAggregator.Start(context.Background())
 
 			slog.Info("CHECKPOINT: before healthAutoRecover")
