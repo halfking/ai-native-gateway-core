@@ -269,6 +269,12 @@ llmgw_routingopt_feedback_writes_total{result="dropped"}          # ≈ 0
 llmgw_routingopt_exploration_requests_total                        # ε-greedy 探索计数
 llmgw_routingopt_metrics_sweeps_total{outcome="ok"}                # 聚合 worker（本次新增）
 llmgw_routingopt_metrics_rows_written                              # 每 sweep 写入行数
+
+# 聚合表只读端点（2026-09-16 R32：该表首个生产读者；R30 P3 遗留债处置）
+# GET /api/admin/routing-opt/metrics?hours=N[&task_type=][&provider=]
+#   - 数据源 routing_optimization_metrics（5 分钟桶，人工标注×2 加权，保留 30 天）
+#   - hours clamp 1..720；task_type/provider 可选过滤；双 NULL 行 = 全局聚合
+#   - 灰度验收用：确认该端点返回非空 rows 即证明聚合闭环落表生效
 ```
 
 **验收标准**:

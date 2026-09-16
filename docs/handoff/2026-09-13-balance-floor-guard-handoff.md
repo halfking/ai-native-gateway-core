@@ -68,17 +68,18 @@ go test ./domains/credential/ -count=1                            # ok 14.7s
 
 ---
 
-# 2026-09-16 轮次 — 九项审计修复落地 + 集成验证(提交 ae41328c4 / 74240e999 / 二轮修正)
+# 2026-09-16 轮次 — 九项审计修复落地 + 集成验证(提交 ae41328c4 / 74240e999 / 二轮修正 f915808dc / 三轮修正)
 
 - 状态:已推送 origin/main;单测 -race 多轮全绿;集成验证(真实 PG + mock 厂商控制面)4/4 通过
-- 二轮自审修正(本提交):F-1 getJSON 请求构造移出重试循环(构造错误此前会绕过 retryableHTTPErr 分类被当传输错误白烧 2 次重试 +1.5s);F-2 probed=0 的空 sweep 不再输出汇总日志(无套餐厂商部署上每 5 分钟一条空行是纯噪音)
+- 二轮自审修正(f915808dc):F-1 getJSON 请求构造移出重试循环(构造错误此前会绕过 retryableHTTPErr 分类被当传输错误白烧 2 次重试 +1.5s);F-2 probed=0 的空 sweep 不再输出汇总日志(无套餐厂商部署上每 5 分钟一条空行是纯噪音)
+- **三轮自审修正:F-3 A-C1 修复不完整** —— 货币 refresh 路径 refreshBalance 直接读 g.keyring 未持读锁(首轮只修了 decryptKey 一条路径);已补 RLock 快照,并把 SetKeyring 竞争测试扩展到同时竞争两条读路径(计划路径用 v1 信封密文、货币路径用 openai catalog 触达解密步,解密失败即返回无网络调用)。教训:**宣称"修复了 X"前必须穷举 X 的全部触发点** —— A-C1 的正确表述是"keyring 的全部读取点持锁",而非"decryptKey 持锁"。
 
 ## 修复内容(对应审计编号)
 
 | 编号 | 修复 |
 |---|---|
 | A-C2 | Start() 重入守卫(lifecycleMu+started),Stop 后不复活 |
-| A-C1 | SetKeyring 写锁 / decryptKey 读锁(keyring RWMutex) |
+| A-C1 | keyring 全部读取点持锁:SetKeyring 写锁 / decryptKey 读锁 / refreshBalance 读锁(三轮 F-3 补齐,keyring RWMutex) |
 | B-E1 | 逃生门默认 24h→**2h**(LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS 语义不变,0=关闭) |
 | D-L1 | Stop() join workerDone,上限 10s——sweep ctx 派生自 main 的 Background,无界 join 会拖住进程下线 |
 | E-B1 | 套餐探测串行→有界 worker pool(semaphore;**errgroup 未进 vendor**,modules.txt 只收 semaphore/singleflight,语义等价) |

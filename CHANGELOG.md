@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Balance Floor Guard 三轮自审修正 (2026-09-16)**：A-C1 修复不完整——货币 refresh 路径 `refreshBalance` 直接读 `keyring` 未持读锁（前轮只覆盖了 `decryptKey`），已补 RLock 快照；`SetKeyring` 竞争测试扩展到同时竞争两条读路径。
 - **Balance Floor Guard 二轮自审修正 (2026-09-16)**：`getJSON` 请求构造移出重试循环（构造错误此前会绕过重试分类被当传输错误白烧 2 次重试 +1.5s/凭据/周期）；`probed=0` 的空 sweep 不再输出汇总日志（无套餐厂商部署上每 5 分钟一条空行）。集成验证 harness 见 `bg/balance_floor_guard_integration_test.go`（integration tag，DSN 走 env），实测 200 凭据×100ms 并发(10)=2.09s vs 串行(1)=33.1s。
 
 ### Changed
