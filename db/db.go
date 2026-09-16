@@ -4114,10 +4114,31 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		DROP VIEW IF EXISTS v_model_priority_details CASCADE;
 		DROP VIEW IF EXISTS v_probe_system_health CASCADE;
 		DROP VIEW IF EXISTS v_model_availability_timeline CASCADE;
+		DROP VIEW IF EXISTS v_node_probe_state_compat CASCADE;
 		DROP FUNCTION IF EXISTS get_model_state_summary(TEXT) CASCADE;
 
+		-- v_node_probe_state_compat: 单一节点状态事实源(node_probe_state)到
+		-- 旧 model_probe_state 词汇的兼容投影。定义由 NodeProbeCompatViewSQL()
+		-- 提供(db/probe_views_unified.go),migration 716 与基线文件保持同步。
+		` + NodeProbeCompatViewSQL() + `;
+
 		CREATE OR REPLACE VIEW v_model_health_dashboard AS
-		WITH model_stats AS (
+		WITH real24 AS (
+		    -- 真实请求 24h 反馈(排除探测流量):请求结果影响节点状态的展示闭环。
+		    -- 单次聚合后按 (credential, model) JOIN,避免逐行 LATERAL 扫分区。
+		    SELECT
+		        rl.credential_id,
+		        lower(COALESCE(rl.outbound_model, rl.client_model)) AS model_name,
+		        COUNT(*) FILTER (WHERE rl.success) AS ok_24h,
+		        COUNT(*) FILTER (WHERE NOT rl.success) AS fail_24h,
+		        MAX(rl.ts) AS last_real_request_at
+		    FROM request_logs_with_current_month rl
+		    WHERE rl.ts > NOW() - INTERVAL '24 hours'
+		      AND COALESCE(rl.task_type, '') <> 'probe_triggered'
+		      AND NOT ('probe' = ANY(rl.quality_flags))
+		    GROUP BY rl.credential_id, lower(COALESCE(rl.outbound_model, rl.client_model))
+		),
+		model_stats AS (
 		    SELECT
 		        mps.raw_model_name,
 		        mps.raw_model_name as outbound_model_name,
@@ -4127,12 +4148,12 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		        COUNT(*) as total_credentials,
 		        COUNT(*) FILTER (WHERE mps.state IN ('healthy_confirmed', 'healthy')) as healthy_count,
 		        COUNT(*) FILTER (WHERE mps.state = 'suspicious') as suspicious_count,
-		        COUNT(*) FILTER (WHERE mps.state IN ('failing', 'recovering')) as failing_count,
+		        COUNT(*) FILTER (WHERE mps.state IN ('failing', 'recovering', 'broken_confirmed')) as failing_count,
 		        COUNT(*) FILTER (WHERE mps.state = 'probing') as probing_count,
 
 		        SUM(CASE WHEN mps.consecutive_failures >= 3 THEN 1 ELSE 0 END) as urgent_count,
 		        COUNT(*) FILTER (WHERE mps.state = 'suspicious') as suspicious_priority_count,
-		        COUNT(*) FILTER (WHERE mps.state IN ('failing', 'recovering')) as failing_priority_count,
+		        COUNT(*) FILTER (WHERE mps.state IN ('failing', 'recovering', 'broken_confirmed')) as failing_priority_count,
 		        COUNT(*) FILTER (WHERE mps.state = 'healthy_confirmed') as watchdog_count,
 
 		        AVG(CASE WHEN mps.total_attempts > 0
@@ -4141,25 +4162,29 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		        AVG(EXTRACT(EPOCH FROM (mps.next_retry_at - NOW())) / 3600) as avg_verification_hours,
 		        AVG(mps.consecutive_successes) as avg_consecutive_successes,
 
-		        0 as total_real_success_24h,
-		        0 as total_real_failure_24h,
+		        COALESCE(SUM(real24.ok_24h), 0) as total_real_success_24h,
+		        COALESCE(SUM(real24.fail_24h), 0) as total_real_failure_24h,
 
 		        MAX(mps.last_attempt_at) as last_verified_at,
-		        MAX(mps.last_attempt_at) as last_real_request_at,
+		        MAX(real24.last_real_request_at) as last_real_request_at,
 		        MIN(mps.next_retry_at) as next_probe_at,
 
-		        SUM(CASE WHEN mps.state IN ('failing', 'broken_confirmed')
+		        SUM(CASE WHEN mps.state IN ('failing', 'recovering', 'broken_confirmed')
 		                  AND mps.consecutive_failures >= 3
 		             THEN 1 ELSE 0 END) as critical_nodes,
 
 		        COUNT(*) FILTER (
 		            WHERE mps.next_retry_at <= NOW() + INTERVAL '5 minutes'
 		              AND mps.state != 'probing'
+		              AND mps.paused = FALSE
 		        ) as pending_probes_5min
 
-		    FROM model_probe_state mps
+		    FROM v_node_probe_state_compat mps
 		    JOIN credentials c ON c.id = mps.credential_id
 		    JOIN providers p ON p.id = c.provider_id
+		    LEFT JOIN real24
+		      ON real24.credential_id = mps.credential_id
+		     AND real24.model_name = lower(mps.raw_model_name)
 		    WHERE COALESCE(c.status, 'active') = 'active'
 		      AND COALESCE(c.lifecycle_status, 'active') = 'active'
 		      AND COALESCE(c.manual_disabled, FALSE) = FALSE
@@ -4232,16 +4257,16 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		    CASE
 		        WHEN mps.consecutive_failures >= 3 THEN 'urgent'
 		        WHEN mps.state = 'suspicious' THEN 'suspicious'
-		        WHEN mps.state IN ('failing', 'recovering') THEN 'failing'
-		        WHEN mps.state = 'healthy_confirmed' THEN 'watchdog'
+		        WHEN mps.state = 'broken_confirmed' THEN 'failing'
 		        ELSE NULL
 		    END as probe_priority,
 		        mps.state,
 		        mps.next_retry_at,
 		        mps.last_attempt_at
-		    FROM model_probe_state mps
+		    FROM v_node_probe_state_compat mps
 		    JOIN credentials c ON c.id = mps.credential_id
-		    WHERE mps.state IN ('suspicious', 'failing', 'recovering')
+		    WHERE mps.state IN ('suspicious', 'broken_confirmed')
+		      AND mps.paused = FALSE
 		      AND COALESCE(c.status, 'active') = 'active'
 		      AND COALESCE(c.lifecycle_status, 'active') = 'active'
 		      AND COALESCE(c.manual_disabled, FALSE) = FALSE
@@ -4264,7 +4289,7 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		    CASE
 		        WHEN mps.consecutive_failures >= 3 THEN 'urgent'
 		        WHEN mps.state = 'suspicious' THEN 'suspicious'
-		        WHEN mps.state IN ('failing', 'recovering') THEN 'failing'
+		        WHEN mps.state = 'broken_confirmed' THEN 'failing'
 		        ELSE 'watchdog'
 		    END as probe_priority,
 		    mps.state,
@@ -4273,8 +4298,8 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		    p.display_name as provider_name,
 		    mps.last_attempt_at as last_verified_at,
 		    mps.next_retry_at,
-		    mps.last_attempt_at as marked_suspicious_at,
-		    NULL::timestamp as probing_started_at,
+		    mps.updated_at as marked_suspicious_at,
+		    CASE WHEN mps.in_flight_until > NOW() THEN mps.in_flight_until END as probing_started_at,
 		    mps.consecutive_successes,
 		    mps.consecutive_failures,
 		    0 as consecutive_watchdog_successes,
@@ -4285,7 +4310,7 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		    0 as real_success_24h,
 		    0 as real_failure_24h,
 		    mps.last_attempt_at as last_real_request_at,
-		    NULL::text as last_unavailable_reason,
+		    mps.last_err_detail as last_unavailable_reason,
 		    mps.last_status as last_err_code,
 		    CASE
 		        WHEN mps.next_retry_at <= NOW() THEN 'ready'
@@ -4294,8 +4319,8 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		        WHEN mps.next_retry_at <= NOW() + INTERVAL '1 hour' THEN '<1h'
 		        ELSE '>1h'
 		    END as retry_in,
-		    EXTRACT(EPOCH FROM (NOW() - mps.last_attempt_at)) / 60 as state_duration_minutes
-		FROM model_probe_state mps
+		    EXTRACT(EPOCH FROM (NOW() - mps.updated_at)) / 60 as state_duration_minutes
+		FROM v_node_probe_state_compat mps
 		JOIN credentials c ON c.id = mps.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		WHERE COALESCE(c.status, 'active') = 'active'
@@ -4306,60 +4331,72 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		    CASE
 		        WHEN mps.consecutive_failures >= 3 THEN 1
 		        WHEN mps.state = 'suspicious' THEN 2
-		        WHEN mps.state IN ('failing', 'recovering') THEN 3
+		        WHEN mps.state = 'broken_confirmed' THEN 3
 		        ELSE 4
 		    END,
 		    c.id;
 
 		CREATE OR REPLACE VIEW v_probe_system_health AS
 		SELECT
-		    (SELECT COUNT(*) FROM model_probe_state) as total_nodes,
-		    (SELECT COUNT(*) FROM model_probe_state WHERE state IN ('healthy_confirmed', 'healthy')) as healthy_nodes,
-		    (SELECT COUNT(*) FROM model_probe_state WHERE state IN ('failing', 'broken_confirmed')) as failing_nodes,
-		    (SELECT COUNT(*) FROM model_probe_state WHERE state = 'suspicious') as suspicious_nodes,
-		    (SELECT COUNT(*) FROM model_probe_state WHERE state = 'probing') as probing_nodes,
-		    (SELECT COUNT(*) FROM model_probe_state WHERE consecutive_failures >= 3) as urgent_queue_size,
-		    (SELECT COUNT(*) FROM model_probe_state WHERE state = 'suspicious') as suspicious_queue_size,
-		    (SELECT COUNT(*) FROM model_probe_state WHERE state IN ('failing', 'recovering')) as failing_queue_size,
-		    (SELECT COUNT(*) FROM model_probe_state WHERE state = 'healthy_confirmed') as watchdog_queue_size,
-		    (SELECT COUNT(*) FROM model_probe_state
-		     WHERE next_retry_at <= NOW() AND state != 'probing') as ready_probes,
-		    (SELECT COUNT(*) FROM model_probe_state WHERE state = 'probing') as current_probing,
-		    (SELECT COUNT(DISTINCT credential_id) FROM model_probe_state
+		    (SELECT COUNT(*) FROM v_node_probe_state_compat) as total_nodes,
+		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state IN ('healthy_confirmed', 'healthy')) as healthy_nodes,
+		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state IN ('failing', 'broken_confirmed')) as failing_nodes,
+		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state = 'suspicious') as suspicious_nodes,
+		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state = 'probing') as probing_nodes,
+		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE consecutive_failures >= 3) as urgent_queue_size,
+		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state = 'suspicious') as suspicious_queue_size,
+		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state IN ('failing', 'broken_confirmed')) as failing_queue_size,
+		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state = 'healthy_confirmed') as watchdog_queue_size,
+		    (SELECT COUNT(*) FROM v_node_probe_state_compat
+		     WHERE next_retry_at <= NOW() AND state != 'probing' AND paused = FALSE) as ready_probes,
+		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state = 'probing') as current_probing,
+		    (SELECT COUNT(DISTINCT credential_id) FROM v_node_probe_state_compat
 		     WHERE state = 'probing') as credentials_being_probed,
 		    (SELECT ROUND(AVG(CASE WHEN total_attempts > 0
 		                           THEN consecutive_successes::float / total_attempts * 100
 		                           ELSE NULL END)::numeric, 2)
-		     FROM model_probe_state) as avg_success_rate_7d,
-		    (SELECT MAX(last_attempt_at) FROM model_probe_state) as last_probe_at,
-		    (SELECT MAX(last_attempt_at) FROM model_probe_state) as last_real_request_at,
-		    0 as total_real_success_24h,
-		    0 as total_real_failure_24h,
-		    (SELECT COUNT(*) FROM model_probe_state
+		     FROM v_node_probe_state_compat) as avg_success_rate_7d,
+		    (SELECT MAX(last_attempt_at) FROM v_node_probe_state_compat) as last_probe_at,
+		    (SELECT MAX(last_state_change_at) FROM v_node_probe_state_compat) as last_real_request_at,
+		    (SELECT COALESCE(SUM(ok_24h), 0) FROM (
+		         SELECT COUNT(*) FILTER (WHERE rl.success) AS ok_24h
+		         FROM request_logs_with_current_month rl
+		         WHERE rl.ts > NOW() - INTERVAL '24 hours'
+		           AND COALESCE(rl.task_type, '') <> 'probe_triggered'
+		           AND NOT ('probe' = ANY(rl.quality_flags))
+		     ) s) as total_real_success_24h,
+		    (SELECT COALESCE(SUM(fail_24h), 0) FROM (
+		         SELECT COUNT(*) FILTER (WHERE NOT rl.success) AS fail_24h
+		         FROM request_logs_with_current_month rl
+		         WHERE rl.ts > NOW() - INTERVAL '24 hours'
+		           AND COALESCE(rl.task_type, '') <> 'probe_triggered'
+		           AND NOT ('probe' = ANY(rl.quality_flags))
+		     ) s) as total_real_failure_24h,
+		    (SELECT COUNT(*) FROM v_node_probe_state_compat
 		     WHERE state IN ('failing', 'broken_confirmed')
 		       AND consecutive_failures >= 5) as critical_nodes,
-		    (SELECT COUNT(*) FROM model_probe_state
+		    (SELECT COUNT(*) FROM v_node_probe_state_compat
 		     WHERE next_retry_at <= NOW() + INTERVAL '5 minutes'
-		       AND state != 'probing') as pending_probes_5min,
+		       AND state != 'probing' AND paused = FALSE) as pending_probes_5min,
 		    NOW() as snapshot_at;
 
 		CREATE OR REPLACE VIEW v_model_availability_timeline AS
 		SELECT
-		    mpr.raw_model_name,
-		    mpr.raw_model_name as outbound_model_name,
-		    DATE_TRUNC('hour', mpr.created_at) as hour_bucket,
+		    npr.raw_model_name,
+		    npr.raw_model_name as outbound_model_name,
+		    DATE_TRUNC('hour', npr.started_at) as hour_bucket,
 		    COUNT(*) as total_probes,
-		    COUNT(*) FILTER (WHERE mpr.status = 'ok') as successful_probes,
-		    COUNT(*) FILTER (WHERE mpr.status != 'ok') as failed_probes,
-		    ROUND((COUNT(*) FILTER (WHERE mpr.status = 'ok') * 100.0 / COUNT(*))::numeric, 2) as success_rate,
-		    AVG(mpr.latency_ms) FILTER (WHERE mpr.status = 'ok') as avg_latency_ms,
-		    COUNT(DISTINCT mpr.credential_id) as probed_credentials,
-		    COUNT(DISTINCT mpr.credential_id) FILTER (WHERE mpr.status = 'ok') as successful_credentials,
-		    COUNT(DISTINCT mpr.credential_id) FILTER (WHERE mpr.status != 'ok') as failed_credentials
-		FROM model_probe_runs_with_current_month mpr
-		WHERE mpr.created_at >= NOW() - INTERVAL '24 hours'
-		GROUP BY mpr.raw_model_name, DATE_TRUNC('hour', mpr.created_at)
-		ORDER BY mpr.raw_model_name, hour_bucket DESC;
+		    COUNT(*) FILTER (WHERE npr.direct_ok) as successful_probes,
+		    COUNT(*) FILTER (WHERE NOT npr.direct_ok) as failed_probes,
+		    ROUND((COUNT(*) FILTER (WHERE npr.direct_ok) * 100.0 / COUNT(*))::numeric, 2) as success_rate,
+		    AVG(npr.direct_latency_ms) FILTER (WHERE npr.direct_ok) as avg_latency_ms,
+		    COUNT(DISTINCT npr.credential_id) as probed_credentials,
+		    COUNT(DISTINCT npr.credential_id) FILTER (WHERE npr.direct_ok) as successful_credentials,
+		    COUNT(DISTINCT npr.credential_id) FILTER (WHERE NOT npr.direct_ok) as failed_credentials
+		FROM node_probe_runs npr
+		WHERE npr.started_at >= NOW() - INTERVAL '24 hours'
+		GROUP BY npr.raw_model_name, DATE_TRUNC('hour', npr.started_at)
+		ORDER BY npr.raw_model_name, hour_bucket DESC;
 
 		CREATE OR REPLACE FUNCTION get_model_state_summary(p_raw_model_name TEXT)
 		RETURNS TABLE (
@@ -4389,10 +4426,10 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		            CASE
 		                WHEN mps.consecutive_failures >= 3 THEN 'urgent'
 		                WHEN mps.state = 'suspicious' THEN 'suspicious'
-		                WHEN mps.state IN ('failing', 'recovering') THEN 'failing'
+		                WHEN mps.state = 'broken_confirmed' THEN 'failing'
 		                ELSE 'watchdog'
 		            END as priority
-		        FROM model_probe_state mps
+		        FROM v_node_probe_state_compat mps
 		        JOIN credentials c ON c.id = mps.credential_id
 		        WHERE mps.raw_model_name = p_raw_model_name
 		          AND COALESCE(c.status, 'active') = 'active'
@@ -4424,7 +4461,7 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 			"error", err)
 		return
 	}
-	slog.Info("probe health dashboard views ensured (v_model_health_dashboard, v_probe_queue_snapshot, v_model_priority_details, v_probe_system_health, v_model_availability_timeline, get_model_state_summary)")
+	slog.Info("probe health dashboard views ensured (v_node_probe_state_compat, v_model_health_dashboard, v_probe_queue_snapshot, v_model_priority_details, v_probe_system_health, v_model_availability_timeline, get_model_state_summary)")
 }
 
 // ensureProductModulesSchema mirrors sql/migrations/startup/371_product_modules.sql

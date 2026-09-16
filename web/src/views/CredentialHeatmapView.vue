@@ -9,6 +9,7 @@ import {
   type HeatmapCredential,
   type HeatmapBucket,
   type HeatmapModel,
+  type HeatmapNodeStatus,
 } from '../api'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { useFilterChips, type FilterChip } from '../composables/useFilterChips'
@@ -259,12 +260,28 @@ function bucketKey(ts: string | number): number {
 interface IndexedModel {
   rawModelName: string
   byBucket: Map<number, HeatmapBucket>
+  nodeStatus?: HeatmapNodeStatus | null
+}
+
+// 当前节点状态徽章文案(与 probe-health 同一事实源 node_probe_state)
+const nodeStatusLabels: Record<string, string> = {
+  healthy_confirmed: '节点正常',
+  broken_confirmed: '节点故障',
+  suspicious: '可疑',
+  probing: '探测中',
+  unknown: '手动下线',
+  unprobed: '未探测',
+}
+
+function nodeStatusLabel(s?: string | null): string {
+  if (!s) return '未探测'
+  return nodeStatusLabels[s] || s
 }
 
 function indexModel(model: HeatmapModel): IndexedModel {
   const byBucket = new Map<number, HeatmapBucket>()
   for (const b of model.buckets) byBucket.set(bucketKey(b.time_bucket), b)
-  return { rawModelName: model.raw_model_name, byBucket }
+  return { rawModelName: model.raw_model_name, byBucket, nodeStatus: model.node_status }
 }
 
 // Aggregate 汇总 cell: "有绿即绿" — any ready model paints the cell green;
@@ -676,7 +693,20 @@ onUnmounted(() => {
           <!-- Expanded model rows: each model shows its own true status color -->
           <template v-if="expandedCredentials.has(row.cred.credential_id)">
             <tr v-for="model in row.models" :key="model.rawModelName" class="model-row">
-              <td class="row-label model-label" :title="model.rawModelName"><code>{{ model.rawModelName }}</code></td>
+              <td class="row-label model-label" :title="model.rawModelName">
+                <code>{{ model.rawModelName }}</code>
+                <span v-if="model.nodeStatus"
+                      class="node-status-badge"
+                      :class="{
+                        'ns-healthy': model.nodeStatus.state === 'healthy_confirmed',
+                        'ns-broken': model.nodeStatus.state === 'broken_confirmed' || !model.nodeStatus.routable,
+                        'ns-warn': model.nodeStatus.state === 'suspicious',
+                        'ns-muted': model.nodeStatus.state === 'probing' || model.nodeStatus.state === 'unknown' || model.nodeStatus.state === 'unprobed',
+                      }"
+                      :title="`节点状态(探测事实源): ${nodeStatusLabel(model.nodeStatus.state)}` + (model.nodeStatus.last_err_code ? ` · ${model.nodeStatus.last_err_code}` : '') + (model.nodeStatus.last_attempt_at ? ` · 最近探测 ${formatDateTimeIso(model.nodeStatus.last_attempt_at)}` : '')">
+                  {{ nodeStatusLabel(model.nodeStatus.state) }}
+                </span>
+              </td>
               <td v-for="t in timeAxis" :key="t"
                   class="cell model-cell"
                   :class="{ blank: !model.byBucket.get(t) }"
@@ -1082,6 +1112,22 @@ onUnmounted(() => {
   font-size: 10px;
   font-weight: 400;
 }
+
+/* 当前节点状态徽章(探测事实源 node_probe_state,与 probe-health 同源) */
+.node-status-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 9px;
+  line-height: 14px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.node-status-badge.ns-healthy { background: rgba(34, 197, 94, 0.18); color: #16a34a; }
+.node-status-badge.ns-broken { background: rgba(239, 68, 68, 0.18); color: #dc2626; }
+.node-status-badge.ns-warn { background: rgba(234, 179, 8, 0.18); color: #a16207; }
+.node-status-badge.ns-muted { background: rgba(107, 114, 128, 0.16); color: #6b7280; }
 
 /* Cells */
 .heatmap-table td.cell {
