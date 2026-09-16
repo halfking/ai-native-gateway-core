@@ -639,6 +639,10 @@ dl_wait_pg_isready() {
   fi
   local probe_host="$host"
   (( DL_DOCKER )) && [[ "$host" == "127.0.0.1" || "$host" == "localhost" ]] && probe_host=host.docker.internal
+  # 2026-09-17 audit: always log the probe target so operators can see when
+  # the pre-flight actually fired (success on attempt 1 was previously silent,
+  # making it indistinguishable from "function never called").
+  log "PG pre-flight: probing $probe_host:$port db=$db (docker=$DL_DOCKER pg_container=${DL_PG_CONTAINER:-${dl_pg_container_name:-none}})"
   local deadline=$(( $(date +%s) + 90 )) attempt=0
   while (( $(date +%s) < deadline )); do
     attempt=$(( attempt + 1 ))
@@ -646,18 +650,18 @@ dl_wait_pg_isready() {
       docker exec -i -e PGPASSWORD="$pass" "$(dl_pg_container_name)" \
         psql -X -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' \
         -h 127.0.0.1 -p 5432 -U "$user" -d "$db" >/dev/null 2>&1 && {
-        [[ $attempt -gt 1 ]] && printf '    [pg-preflight] PG ready after %d probe(s)\n' "$attempt" >&2
+        log "PG pre-flight: ready after $attempt probe(s) via docker exec"
         return 0
       }
     elif _dl_have psql; then
       PGPASSWORD="$pass" psql -X -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' \
         -h "$probe_host" -p "$port" -U "$user" -d "$db" >/dev/null 2>&1 && {
-        [[ $attempt -gt 1 ]] && printf '    [pg-preflight] PG ready after %d probe(s)\n' "$attempt" >&2
+        log "PG pre-flight: ready after $attempt probe(s) via psql"
         return 0
       }
     else
       # No psql and no docker — fall back to a TCP connect against the PG port.
-      (exec 3<>"/dev/tcp/$probe_host/$port") 2>/dev/null && { exec 3<&-; exec 3>&-; return 0; }
+      (exec 3<>"/dev/tcp/$probe_host/$port") 2>/dev/null && { exec 3<&-; exec 3>&-; log "PG pre-flight: ready after $attempt probe(s) via /dev/tcp"; return 0; }
     fi
     sleep 2
   done
