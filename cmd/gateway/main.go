@@ -4961,7 +4961,12 @@ func main() {
 				// metrics table. Only meaningful when feedback is written,
 				// hence gated on the optimizer being enabled rather than a
 				// separate flag.
+				// R31 pattern alignment: token-bucket leader election so a
+				// blue-green pair does not double-run every sweep (correctness
+				// stays on the advisory lock; this only saves the follower's
+				// wasted scan). Without Redis both instances sweep as before.
 				metricsAggregator := bg.NewRoutingMetricsAggregator(dbConn.Pool())
+				metricsAggregator.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
 				metricsAggregator.Start(context.Background())
 				defer metricsAggregator.Stop()
 			}
