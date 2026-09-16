@@ -921,3 +921,66 @@ func TestPropagateIsAutoRequestToEntry(t *testing.T) {
 		})
 	}
 }
+
+// TestPropagateIsAutoRequestToEntry_FullAutoFields (R35 2026-09-17, 撤并对账
+// 钉桩) locks the extended single-marker→full-field contract adopted from the
+// parallel R34 fix (01bd55ed7): the success terminal must carry
+// TaskType/OutboundModel/AutoDecision/AutoConfidence alongside IsAutoRequest,
+// never overwriting fields already present. Two downstream consumers depend on
+// the full set: emitTuningSignal (gate = IsAutoRequest && TaskType, reads
+// AutoDecision/AutoConfidence) and the sessionv2mirror internal-loopback
+// exclusion (business auto turns carry TaskType → telemetry.IsInternalAutoEntry
+// must be false → the turn stays mirrored in session_turns, GLOBAL_G2 intact).
+func TestPropagateIsAutoRequestToEntry_FullAutoFields(t *testing.T) {
+	decision := json.RawMessage(`{"task_type":"coding","classifier":"embedding"}`)
+	logCtx := &RequestLogContext{
+		IsAutoRequest:  true,
+		TaskType:       "coding",
+		OutboundModel:  "gpt-test",
+		AutoDecision:   decision,
+		AutoConfidence: 0.8,
+	}
+	entry := &telemetry.RequestLogEntry{}
+	propagateIsAutoRequestToEntry(entry, logCtx)
+	if entry.IsAutoRequest == nil || !*entry.IsAutoRequest {
+		t.Fatalf("IsAutoRequest not propagated: %v", entry.IsAutoRequest)
+	}
+	if entry.TaskType == nil || *entry.TaskType != "coding" {
+		t.Fatalf("TaskType not propagated: %v", entry.TaskType)
+	}
+	if entry.OutboundModel == nil || *entry.OutboundModel != "gpt-test" {
+		t.Fatalf("OutboundModel not propagated: %v", entry.OutboundModel)
+	}
+	if entry.AutoDecision == nil || *entry.AutoDecision != string(decision) {
+		t.Fatalf("AutoDecision not propagated: %v", entry.AutoDecision)
+	}
+	if entry.AutoConfidence == nil || *entry.AutoConfidence != 0.8 {
+		t.Fatalf("AutoConfidence not propagated: %v", entry.AutoConfidence)
+	}
+	// Mirror contract: a business auto turn (TaskType present) must NOT be
+	// classified as an internal loopback — otherwise the turn is dropped from
+	// session_turns while request_logs still claims it (GLOBAL_G2 break).
+	if telemetry.IsInternalAutoEntry(entry) {
+		t.Fatal("business auto turn with TaskType must not be mirror-excluded")
+	}
+
+	// Never-overwrite: pre-set fields survive a second propagation.
+	preset := "keep"
+	entry2 := &telemetry.RequestLogEntry{TaskType: &preset, IsAutoRequest: new(bool)}
+	propagateIsAutoRequestToEntry(entry2, logCtx)
+	if *entry2.TaskType != "keep" {
+		t.Fatalf("existing TaskType overwritten: %q", *entry2.TaskType)
+	}
+	if *entry2.IsAutoRequest {
+		t.Fatal("existing IsAutoRequest=false overwritten")
+	}
+
+	// Non-auto / nil contexts stay no-ops.
+	plain := &telemetry.RequestLogEntry{}
+	propagateIsAutoRequestToEntry(plain, &RequestLogContext{IsAutoRequest: false, TaskType: "coding"})
+	if plain.IsAutoRequest != nil || plain.TaskType != nil {
+		t.Fatalf("non-auto logCtx must not set auto fields: %+v", plain)
+	}
+	propagateIsAutoRequestToEntry(nil, logCtx)
+	propagateIsAutoRequestToEntry(entry, nil)
+}
