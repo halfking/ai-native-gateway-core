@@ -4957,6 +4957,13 @@ func main() {
 			if opt := buildRoutingOptimizer(dbConn.Pool(), fpSlotRedis); opt != nil {
 				decider.SetOptimizer(opt)
 				routingOptimizerForShutdown = opt
+				// P2.2 §2.4: roll routing_feedback_log into the 5-minute
+				// metrics table. Only meaningful when feedback is written,
+				// hence gated on the optimizer being enabled rather than a
+				// separate flag.
+				metricsAggregator := bg.NewRoutingMetricsAggregator(dbConn.Pool())
+				metricsAggregator.Start(context.Background())
+				defer metricsAggregator.Stop()
 			}
 			chatHandler.SetAutoRoute(decider)
 			if routingExec != nil {

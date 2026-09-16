@@ -261,13 +261,14 @@ go build ./...
 | groq | https://api.groq.com/openai/v1 | openai | ✅ Tested | 2026-09-14 | 免费额度需验证API Key |
 | openrouter | https://openrouter.ai/api/v1 | openai | ✅ Tested | 2026-09-14 | 部分模型`:free`后缀 |
 | google-ai-studio | https://generativelanguage.googleapis.com | google | ✅ Tested | 2026-09-14 | 需Google API Key |
-| siliconflow | https://api.siliconflow.cn/v1 | openai | ⚠️ Not tested | - | 中国大陆服务 |
-| zhipu | https://open.bigmodel.cn/api/paas/v4 | openai | ⚠️ Not tested | - | 智谱AI GLM系列 |
+| siliconflow | https://api.siliconflow.cn/v1 | openai | ⚠️ Cannot test | 2026-09-15 | 需要 $SILICONFLOW_API_KEY |
+| zhipu | https://open.bigmodel.cn/api/paas/v4 | openai | ⚠️ Cannot test | 2026-09-15 | 需要 $ZHIPU_API_KEY |
 
 **重要声明**：
 - 预置模板的存在**不构成**对配额、可用性、速度或模型支持的承诺
 - 上游 Provider 可能随时调整免费策略（如 GitHub Models 于 2026-08 停用）
-- `Not tested` 表示未经生产环境实测，用户需自行验证
+- `Cannot test` 表示当前验证环境缺少对应的真实 Provider 凭据，**不代表端点已验证兼容**
+- 获取凭据后，按 [`docs/freediscovery-testing-runbook.md`](freediscovery-testing-runbook.md) 创建模板、执行扫描并记录真实结果
 - 所有扫描结果需经过 ToS 检查和人工审查才可导入生产环境
 
 **配额验证建议**：

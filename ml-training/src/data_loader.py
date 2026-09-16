@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import glob
 import os
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence
 
@@ -200,9 +201,10 @@ def merge_annotations(
       is_annotated       是否被人工标注覆盖
       sample_weight      1.0（自动） / weight（人工标注）
 
-    require_known_label=True（默认）时，human_label不在自动标签词表内的覆盖会被丢弃
-    （防止provider/模型两级标签空间混用污染词表），并在返回列
-    annotation_stats 中报告。设为 False 会允许新标签进入训练，可能导致标签空间不一致。
+    require_known_label（默认True，强制开启）：human_label不在自动标签词表内
+    的覆盖会被丢弃（防止provider/模型两级标签空间混用污染词表），丢弃数计入
+    返回列 annotation_stats 的 overrides_dropped_unknown_label，并发出
+    UserWarning告警。仅在已做label映射、明确要混入跨词表标签时才显式传False。
     """
     out = df.copy()
     out[RULE_CHOICE_COL] = out[label_column]
@@ -220,7 +222,17 @@ def merge_annotations(
     if require_known_label:
         known = set(out[label_column].astype(str).unique())
         unknown = ~ann["human_label"].isin(known)
-        stats["overrides_dropped_unknown_label"] = int(unknown.sum())
+        dropped_unknown = int(unknown.sum())
+        stats["overrides_dropped_unknown_label"] = dropped_unknown
+        if dropped_unknown > 0:
+            examples = sorted(ann.loc[unknown, "human_label"].astype(str).unique())[:5]
+            warnings.warn(
+                f"merge_annotations: dropped {dropped_unknown} annotation row(s) "
+                f"whose human_label is outside the auto label space of "
+                f"'{label_column}' (examples: {examples}); label-space pollution "
+                f"protection is on (require_known_label=True).",
+                stacklevel=2,
+            )
         ann = ann[~unknown]
     if len(ann) == 0:
         out[WEIGHT_COL] = 1.0
