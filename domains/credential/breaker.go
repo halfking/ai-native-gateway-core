@@ -475,13 +475,40 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 					if fp, ok := freeTierPolicies[KindUpstreamDown]; ok && b.freeTier.Load() {
 						escalated = fp
 					}
-					coolingDuration = escalated.InitialCooling
-					b.coolingExpires = now.Add(escalated.InitialCooling)
+					// R31 (audit 2026-09-16 §四#10): this branch previously wrote
+					// a flat escalated.InitialCooling and never advanced
+					// coolingCycle, so the "exponential" in the log was false —
+					// every sustained outage cooled the same 15s forever (free
+					// profile: permanently, paid: until a different kind
+					// happened to route here) and the cycle>=5 sustained-outage
+					// alert below could never fire for this family. Advance the
+					// cycle and compute the duration from the escalated policy,
+					// capped at its MaxCooling — the same formula the
+					// RecoveryExponential branch above uses. RecordSuccess resets
+					// coolingCycle, so single blips never climb past the first
+					// step; only genuine sustained failures back off.
+					b.coolingCycle++
+					cooling := time.Duration(float64(escalated.InitialCooling) * math.Pow(2, float64(b.coolingCycle-1)))
+					if cooling > escalated.MaxCooling {
+						cooling = escalated.MaxCooling
+					}
+					coolingDuration = cooling
+					b.coolingExpires = now.Add(cooling)
 
+					if b.coolingCycle >= 5 {
+						slog.Warn("circuit repeated cooling cycles",
+							"key", b.key,
+							"cycle", b.coolingCycle,
+							"cooling", cooling,
+							"error_kind", kind,
+						)
+					}
 					slog.Warn("circuit escalated to exponential cooling",
 						"key", b.key,
 						"consecutive", consecutive,
 						"error_kind", kind,
+						"cycle", b.coolingCycle,
+						"cooling", cooling,
 					)
 				}
 			}
@@ -685,6 +712,12 @@ func (m *Manager) RecordFailure(providerID, credentialID int, kind ErrorKind) {
 // profile first (2026-09-15, 245 free-capacity plan). The mark is sticky:
 // a credential observed as free once keeps the profile until process
 // restart, matching the stable billing_mode column it derives from.
+//
+// R31 (audit 2026-09-16 §四#5): an empty billingMode deliberately falls back
+// to the paid profile — an unknown billing mode must never silently adopt
+// the free profile's laxer cooling. On the live paths the empty case is
+// unreachable anyway: every candidate SQL COALESCEs mo.billing_mode to
+// 'per_token' (provider/client.go), so callers always pass a concrete mode.
 func (m *Manager) RecordFailureWithBillingMode(providerID, credentialID int, kind ErrorKind, billingMode string) {
 	b := m.GetOrCreate(providerID, credentialID)
 	if strings.EqualFold(strings.TrimSpace(billingMode), "free") {
@@ -705,28 +738,13 @@ func (m *Manager) Allow(providerID, credentialID int) bool {
 	return b.Allow()
 }
 
-// ProbeCheck performs a half-open probe: if the circuit is HALF_OPEN,
-// it returns true. The caller should make a lightweight probe request
-// and then call RecordSuccess/RecordFailure.
-func (m *Manager) ProbeCheck(providerID, credentialID int) bool {
-	b := m.GetOrCreate(providerID, credentialID)
-	state := b.State()
-	if state == StateHalfOpen {
-		return true
-	}
-	// Also allow if it transitioned from OPEN to HALF_OPEN concurrently
-	if state == StateOpen && b.Allow() {
-		return b.State() == StateHalfOpen
-	}
-	return false
-}
-
-// CloseProbe completes a half-open probe by recording the result.
-func (m *Manager) CloseProbe(providerID, credentialID int, success bool, kind ErrorKind) {
-	b := m.GetOrCreate(providerID, credentialID)
-	if success {
-		b.RecordSuccess()
-	} else {
-		b.RecordFailure(kind)
-	}
-}
+// R31 (audit 2026-09-16 §四#5): Manager.ProbeCheck / Manager.CloseProbe were
+// removed as dead seams. They were the explicit half-open probe API of the
+// pre-unified probe design and had zero production callers — probe
+// scheduling is owned by ProbeQueue/StateObserver since 2026-09-01, probe
+// recovery closes the breaker through the live half-open lifecycle
+// (Allow + RecordSuccess / ReleaseProbe), and reducer probe-phase effects
+// (EffectRecordCircuitFailure on PhaseDirectProbe/GatewayProbe) reach the
+// breaker billing-aware via the adapter. CloseProbe also recorded failures
+// billing-blind, which would have re-introduced the free-profile gap had it
+// ever been wired.

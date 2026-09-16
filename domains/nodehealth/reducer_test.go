@@ -686,3 +686,59 @@ func TestFreeBillingRaisesCircuitThreshold(t *testing.T) {
 		t.Fatal("free failure 6: circuit effect must fire at the free threshold")
 	}
 }
+
+// TestDegradedStatusBoundaryFollowsBillingMode (R31, audit 2026-09-16 §四#5):
+// the Suspect→Degraded status boundary must use the same billing-mode
+// threshold as the circuit effect, so the ladder stays a leading indicator of
+// breaker behaviour. Previously the boundary was a flat 3, labelling a free
+// credential Degraded at failures 3-5 while its circuit stayed closed and it
+// kept serving traffic.
+func TestDegradedStatusBoundaryFollowsBillingMode(t *testing.T) {
+	buildObservation := func(attempt int, billing string) nodehealth.Observation {
+		return nodehealth.Observation{
+			Node:        nodehealth.NodeKey{CredentialID: 78, Model: "model-boundary"},
+			AttemptID:   fmt.Sprintf("boundary-attempt-%d", attempt),
+			Phase:       nodehealth.PhaseRequest,
+			Outcome:     requestjourney.OutcomeFailure,
+			ErrorKind:   nodehealth.ErrorKindNetwork,
+			BillingMode: billing,
+		}
+	}
+
+	// Paid: unchanged — Degraded arrives exactly at the 3rd failure, the same
+	// count that fires the circuit effect.
+	rPaid := nodehealth.NewOutcomeReducer()
+	for i := 1; i <= 3; i++ {
+		decision, err := rPaid.Reduce(buildObservation(i, "per_token"))
+		if err != nil {
+			t.Fatalf("paid failure %d: %v", i, err)
+		}
+		want := requestjourney.NodeHealthSuspect
+		if i == 3 {
+			want = requestjourney.NodeHealthDegraded
+		}
+		if decision.Status != want {
+			t.Fatalf("paid failure %d: status = %v, want %v", i, decision.Status, want)
+		}
+	}
+
+	// Free: Suspect through failures 3-5 (circuit still closed), Degraded at
+	// the 6th — the same count the circuit effect fires at.
+	rFree := nodehealth.NewOutcomeReducer()
+	for i := 1; i <= 5; i++ {
+		decision, err := rFree.Reduce(buildObservation(i, "free"))
+		if err != nil {
+			t.Fatalf("free failure %d: %v", i, err)
+		}
+		if decision.Status != requestjourney.NodeHealthSuspect {
+			t.Fatalf("free failure %d: status = %v, want suspect (circuit not yet open)", i, decision.Status)
+		}
+	}
+	decision6, err := rFree.Reduce(buildObservation(6, "free"))
+	if err != nil {
+		t.Fatalf("free failure 6: %v", err)
+	}
+	if decision6.Status != requestjourney.NodeHealthDegraded {
+		t.Fatalf("free failure 6: status = %v, want degraded (aligned with circuit effect)", decision6.Status)
+	}
+}

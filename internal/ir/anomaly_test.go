@@ -244,6 +244,49 @@ func TestAnomaly_ParseUnknownField_ReportedOncePerProtocol(t *testing.T) {
 	}
 }
 
+// TestAnomaly_ParseRegisteredField_NoUnknownFieldEvent — fields the paramreg
+// registry knows (stream_options / thinking arriving on an openai-chat body)
+// are routed to Extensions and restored via paramreg by design, so parsing
+// them must NOT emit ir_unknown_field (245 2026-09-16 audit: ~6.4k false
+// WARNs/day). A truly unregistered field must still be reported.
+func TestAnomaly_ParseRegisteredField_NoUnknownFieldEvent(t *testing.T) {
+	cap := resetDedupAndInstall(t)
+
+	body := []byte(`{
+		"model": "gpt-4o",
+		"messages": [{"role":"user","content":"hi"}],
+		"stream_options": {"include_usage": true},
+		"thinking": {"type": "enabled", "budget_tokens": 1024},
+		"truly_unregistered_field": {"x": 1}
+	}`)
+	ir, err := ParseOpenAI(body)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	// The passthrough contract is untouched: registered fields still land
+	// in Extensions for the restore path.
+	for _, registered := range []string{"stream_options", "thinking"} {
+		if _, ok := ir.Extensions[registered]; !ok {
+			t.Fatalf("expected %q preserved in Extensions (passthrough contract), extensions=%v", registered, ir.Extensions)
+		}
+	}
+	for _, ev := range cap.snapshot() {
+		if ev.AnomalyType == AnomalyUnknownField && ev.SourceProtocol == ProtocolOpenAIChat {
+			if ev.FieldPath == "stream_options" || ev.FieldPath == "thinking" {
+				t.Fatalf("registered field %q must not be reported as unknown_field; events=%+v", ev.FieldPath, cap.snapshot())
+			}
+		}
+	}
+	if !cap.hasEvent(AnomalyEvent{
+		AnomalyType:    AnomalyUnknownField,
+		SourceProtocol: ProtocolOpenAIChat,
+		FieldPath:      "truly_unregistered_field",
+	}) {
+		t.Fatalf("expected unknown_field event for truly_unregistered_field; events=%+v", cap.snapshot())
+	}
+}
+
 // TestAnomaly_Serialization_HasRawValueTruncatedFlag — every emitted event
 // must carry raw_value_truncated=true. This is a hard spec requirement.
 func TestAnomaly_Serialization_HasRawValueTruncatedFlag(t *testing.T) {
