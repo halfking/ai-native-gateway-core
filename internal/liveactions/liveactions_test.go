@@ -236,6 +236,31 @@ func TestNilEmitterIsNoOp(t *testing.T) {
 	e.Close()
 }
 
+// TestTypedNilClientNormalised: 调用方把 nil *redis.Client 以 Client 接口
+// 传入时（cmd/gateway 2026-09-17 252 无 Redis 部署实抓的 crash-loop：
+// typed-nil 骗过 write() 的 == nil 守卫，首个事件在 Pipeline() 空指针上
+// panic），NewEmitter 必须归一化为非 typed nil，worker 静默丢弃不 panic。
+func TestTypedNilClientNormalised(t *testing.T) {
+	ResetSeqForTest()
+	var typedNil *redis.Client
+	e := NewEmitter(typedNil, 0)
+	defer e.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.Emit(context.Background(), ActionEvent{RequestID: "tn-1", Action: ActionUpstreamRequest})
+		// run() 无事件即阻塞在 channel；给 write 足够时间跑完（若回归则
+		// 在此 goroutine panic 拖垮整个测试进程）。
+		time.Sleep(200 * time.Millisecond)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("emit path hung")
+	}
+}
+
 // TestRedisUnavailableSilentDegrade: Redis 挂掉时计数递增、Emit 不阻塞。
 func TestRedisUnavailableSilentDegrade(t *testing.T) {
 	ResetSeqForTest()
