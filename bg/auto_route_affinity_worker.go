@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -50,6 +51,13 @@ const (
 	affinityInterval = 15 * time.Minute
 	affinityWindow   = 14 * 24 * time.Hour // learning lookback
 	affinitySweepTO  = 3 * time.Minute
+
+	// affinityDistLockTTL bounds how long the Redis-elected leader holds the
+	// affinity token (R31 audit §四#1). Must exceed the sweep timeout
+	// (affinitySweepTO = 3m) so a slow-but-alive sweep never loses its lease
+	// mid-cycle; distlock auto-renews at ttl/3 while the process is alive.
+	affinityDistLockTTL = 5 * time.Minute
+
 	// affinityMinRewardN was removed: GROUP BY guarantees COUNT(*)>=1, so the
 	// previous guard was a tautology. Real small-sample defence lives at read
 	// time (AffinityMinSamples / AffinityTenantMinSamples).
@@ -98,11 +106,30 @@ type AutoRouteAffinityWorker struct {
 
 	stopOnce sync.Once
 	started  atomic.Bool
+
+	// distLock is the optional Redis-backed leader election manager (R31
+	// audit §四#1). Nil (or Enabled()==false) makes every instance sweep
+	// exactly as before this change.
+	distLock distlock.Manager
 }
 
 // NewAutoRouteAffinityWorker constructs the worker.
 func NewAutoRouteAffinityWorker(db *pgxpool.Pool) *AutoRouteAffinityWorker {
 	return &AutoRouteAffinityWorker{db: db, done: make(chan struct{})}
+}
+
+// SetDistLock wires the Redis-backed distributed lock manager used for
+// cross-instance sweep dedup (token-bucket leader election, R31 audit §四#1).
+// Optional: when never called, or called with a manager whose Enabled() is
+// false, every instance sweeps exactly as before. Safe to call before or
+// after Start().
+//
+// The affinity sweep has an extra reason to elect a single leader: the EMA
+// fold in upsertAggregates is a read-modify-write per bucket, and two
+// interleaved instances double-fold one window's reward (alpha 0.15 applied
+// twice). It converges eventually, but the election removes the drift.
+func (w *AutoRouteAffinityWorker) SetDistLock(mgr distlock.Manager) {
+	w.distLock = mgr
 }
 
 // Start launches the sweep loop. Idempotent.
@@ -166,6 +193,18 @@ func (w *AutoRouteAffinityWorker) sweep(ctx context.Context) {
 	}
 	sweepCtx, cancel := context.WithTimeout(ctx, affinitySweepTO)
 	defer cancel()
+
+	// R31 (audit §四#1): token-bucket cross-instance dedup — one leader per
+	// tick, followers skip without queueing. Distinct key from the settle
+	// worker so the two intervals (5m / 15m) elect independently. Without
+	// Redis both instances sweep as before.
+	if h := acquireSweepDistLock(sweepCtx, w.distLock, "auto_route_affinity", affinityDistLockTTL, "auto_route_affinity"); h != nil {
+		defer h.Release(context.WithoutCancel(sweepCtx))
+		if !h.IsLeader() {
+			slog.Info("auto-route affinity skipped, redis token held by another instance")
+			return
+		}
+	}
 
 	aggs, err := w.aggregate(sweepCtx)
 	if err != nil {

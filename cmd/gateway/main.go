@@ -5133,10 +5133,17 @@ func main() {
 			defer telemetry.StopSelectionWriter()
 
 			settleWorker := bg.NewAutoRouteSettleWorker(dbConn.Pool())
+			// R31 (audit 2026-09-16 §四#1): token-bucket leader election so a
+			// blue-green pair does not double-run every sweep. Same
+			// fpSlotRedis connection as the materialized-view refresher;
+			// without Redis both instances sweep as before (sweeps are
+			// idempotent).
+			settleWorker.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
 			settleWorker.Start(context.Background())
 			defer settleWorker.Stop()
 
 			affinityWorker := bg.NewAutoRouteAffinityWorker(dbConn.Pool())
+			affinityWorker.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
 			affinityWorker.Start(context.Background())
 			defer affinityWorker.Stop()
 		}
