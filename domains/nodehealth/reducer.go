@@ -264,7 +264,14 @@ func (r *OutcomeReducer) Reduce(observation Observation) (Decision, error) {
 		if observation.Phase == PhaseGatewayProbe && state.consecutiveFailures < 2 {
 			state.consecutiveFailures = 2
 		}
-		if state.consecutiveFailures < 3 {
+		// R31 (audit 2026-09-16 §四#5): the Suspect→Degraded boundary follows
+		// the same billing-mode threshold effectsFor uses to fire the circuit,
+		// so the status ladder stays a leading indicator of breaker behaviour.
+		// Previously the boundary was a flat 3: a free credential (circuit
+		// threshold 6) sat labelled Degraded at failures 3-5 while its circuit
+		// was still closed and traffic kept flowing — a dashboard fork with no
+		// behavioural counterpart. Paid credentials are unchanged (3 = 3).
+		if state.consecutiveFailures < circuitFailureThreshold(observation.BillingMode) {
 			state.status = requestjourney.NodeHealthSuspect
 		} else {
 			state.status = requestjourney.NodeHealthDegraded
@@ -424,7 +431,7 @@ func effectsFor(observation Observation, decision Decision) []Effect {
 			Effect{Kind: EffectInvalidateCandidateCache},
 			Effect{Kind: EffectScheduleProbe},
 		)
-	} else if isPermanent(observation.ErrorKind) || decision.ConsecutiveFailures >= 3 {
+	} else if isPermanent(observation.ErrorKind) || decision.ConsecutiveFailures >= circuitFailureThreshold(observation.BillingMode) {
 		effects = append(effects,
 			Effect{Kind: EffectRecordCircuitFailure},
 			Effect{Kind: EffectSetBindingUnavailable},
@@ -437,6 +444,27 @@ func effectsFor(observation Observation, decision Decision) []Effect {
 		effects = append(effects, Effect{Kind: EffectQuarantine})
 	}
 	return effects
+}
+
+// circuitFailureThreshold is the consecutive-failure count that escalates a
+// non-permanent failure to the credential-wide circuit (paid) or its free-tier
+// variant (2026-09-15, 245 free-capacity plan).
+//
+// Free credentials (billing_mode='free', on 245 the NVIDIA NIM pool) are
+// long-term flaky but occasionally usable single-concurrency channels. At the
+// paid threshold of 3, ordinary bursts of transient errors opened the circuit
+// constantly (326 "circuit opened" cycles / 24h on 18/8 + 18/19) and each
+// open window discarded usable free capacity while requests bounced with
+// KindCircuitOpen. Free bindings therefore need 6 consecutive failures before
+// the circuit effect fires — ranking is already handled by the soft-demote
+// path (cmi.success_rate / URSM quality), so a merely noisy free credential
+// keeps serving instead of being hard-excluded. Permanent failure kinds
+// bypass this threshold entirely (isPermanent above).
+func circuitFailureThreshold(billingMode string) int {
+	if strings.EqualFold(strings.TrimSpace(billingMode), "free") {
+		return 6
+	}
+	return 3
 }
 
 func isPermanent(kind ErrorKind) bool {

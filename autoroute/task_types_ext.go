@@ -34,6 +34,10 @@ var codeAuditKeywords = []string{
 // system 提示词里的短语仅在 user 同时提到代码对象时才采信——否则"你是代码
 // 审查助手"这类角色设定会劫持 user 的任意请求（如写诗）。
 func IsCodeAuditRequest(signals ClassificationSignals) bool {
+	// N2-2 工具上下文守卫：agent 编排场景中的审计任务让位给 agent 通道。
+	if signals.ToolCount > 0 && signals.HasToolResults {
+		return false
+	}
 	userLower := strings.ToLower(signals.LastUserPrompt)
 	if containsAnyPhrase(userLower, codeAuditKeywords) {
 		return true
@@ -108,18 +112,63 @@ func hasIntentClassifySignal(contentLower string) bool {
 	return false
 }
 
+// intentActDeixis / intentActEnglish 用于"施行语境"守卫（2026-09-15 二轮
+// trap_intent_word_passing）："我们产品里有个'意图识别'功能模块，帮我想几个
+// slogan"——意图短语作为产品能力名词被引用时不构成分类任务。命中关键词或
+// 动宾组合之外，还须同时出现指向待分类文本的指示词（中）或祈使动词/指示
+// 限定词（英）。与 2026-09-14 F6（system 短语需 user 提及代码对象）同型。
+var intentActDeixis = []string{
+	"以下", "下面", "下列", "这条", "这段", "这些", "每条", "本条", "该段",
+	"这句话", "这段话", "此条", "该文本", "这个文本", "每条记录", "每一条",
+}
+
+var intentActEnglish = []string{
+	"classify", "detect intent", "label ", "categorize", "triage", "tag ",
+	"following", "this text", "this message", "this ticket", "this review",
+}
+
+func hasIntentActContext(contentLower string) bool {
+	for _, d := range intentActDeixis {
+		if strings.Contains(contentLower, d) {
+			return true
+		}
+	}
+	for _, e := range intentActEnglish {
+		if strings.Contains(contentLower, e) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsIntentClassificationRequest checks if a request is performing intent
 // detection / text classification as the task itself (not just containing the
 // word "intent" in passing).
 func IsIntentClassificationRequest(signals ClassificationSignals) bool {
 	contentLower := strings.ToLower(signals.SystemPrompt + " " + signals.LastUserPrompt)
+	hit := false
 	for _, kw := range intentClassificationKeywords {
 		if strings.Contains(contentLower, kw) {
-			return true
+			hit = true
+			break
 		}
 	}
 	// 组合判断：动词 + 目标同时出现（允许间隔），覆盖"识别以下文本的意图"。
-	return hasIntentClassifySignal(contentLower)
+	if !hit {
+		hit = hasIntentClassifySignal(contentLower)
+	}
+	if !hit {
+		return false
+	}
+	// 施行语境守卫：意图短语必须作用在待分类文本上，而非产品名词引用。
+	if !hasIntentActContext(contentLower) {
+		return false
+	}
+	// N2-2 工具上下文守卫：agent 编排场景中的分类任务让位给 agent 通道。
+	if signals.ToolCount > 0 && signals.HasToolResults {
+		return false
+	}
+	return true
 }
 
 // planningKeywords target plan/proposal/design/breakdown asks. "计划" alone is
@@ -167,6 +216,35 @@ func hasPlanDesignSignal(contentLower string) bool {
 	return false
 }
 
+// looksLikePlanningReference 检测规划词是否仅作为引用/讨论对象而非执行指令。
+// N2-1 引用语境守卫：长文中的"材料里提到要制定方案"是引用，不是指令。
+// 特征：引用动词 + 规划词，或者间接引述标记 + 规划词。
+func looksLikePlanningReference(contentLower string) bool {
+	// 引用标记：提到/讨论/说明/指出/要求/建议/提议 + 制定/拟定...
+	referenceMarkers := []string{
+		"提到", "提出", "说明", "指出", "讨论", "谈到",
+		"要求", "建议", "提议", "强调", "明确",
+		"材料", "文件", "报告", "会议", "董事会",
+	}
+	for _, marker := range referenceMarkers {
+		if strings.Contains(contentLower, marker) {
+			// 有引用标记时，规划词可能是引用对象
+			return true
+		}
+	}
+	// 间接问句："请概括/总结/分析..." + 规划词在上文
+	indirectPatterns := []string{
+		"请概括", "请总结", "请分析", "请说明", "请解释",
+		"概括一下", "总结一下", "分析一下",
+	}
+	for _, pattern := range indirectPatterns {
+		if strings.Contains(contentLower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsPlanningRequest checks if a request is asking for a plan / proposal /
 // technical design / task breakdown — i.e. high-intelligence structured
 // thinking rather than code implementation. Caller must still guard against
@@ -176,6 +254,16 @@ func IsPlanningRequest(signals ClassificationSignals) bool {
 	// "先制定…计划,然后(逐步)实现"是编程请求（plan-mode coding pattern），
 	// 动宾组合不得把它抢成 planning——2026-09-14 复审回归教训。
 	if looksLikePlanModeCoding(contentLower) {
+		return false
+	}
+	// N2-2 工具上下文守卫：当有工具上下文（agent 编排场景）时，planning 让位。
+	// "制定 agent 执行方案" 中规划词是编排任务的一部分，应由 agent 通道处理。
+	if signals.ToolCount > 0 && signals.HasToolResults {
+		return false
+	}
+	// N2-1 引用语境守卫：长文中规划词仅作引用时（"材料提到制定方案"），
+	// 应判 long_context 而非 planning。检测引用标记后让位。
+	if signals.EstimatedTokens > 50000 && looksLikePlanningReference(contentLower) {
 		return false
 	}
 	for _, kw := range planningKeywords {

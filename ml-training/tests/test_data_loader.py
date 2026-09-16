@@ -75,7 +75,10 @@ def test_load_annotations_annotator_csv_format(annotations_csv):
 def test_merge_annotations_overrides_label_and_weight(synthetic_parquet, annotations_csv):
     df = load_parquet(str(synthetic_parquet))
     ann = load_annotations(str(annotations_csv))
-    merged = merge_annotations(df, ann, label_column="chosen_model", weight=2.0)
+    # 显式传require_known_label=True：本测试只验证覆盖+权重语义，
+    # 与词表保护正交（合成标注的human_label都在chosen_model词表内）。
+    merged = merge_annotations(df, ann, label_column="chosen_model", weight=2.0,
+                               require_known_label=True)
 
     ann_map = dict(zip(ann["request_id"], ann["human_label"]))
     annotated = merged[merged[IS_ANNOTATED_COL]]
@@ -97,28 +100,46 @@ def test_merge_annotations_require_known_label_drops_unknown(synthetic_parquet):
         "request_id": [df["request_id"].iloc[0], df["request_id"].iloc[1]],
         "human_label": ["gpt-4", "nonexistent_provider"],
     })
-    merged = merge_annotations(df, ann, label_column="chosen_model",
-                               require_known_label=True)
+    with pytest.warns(UserWarning, match="nonexistent_provider"):
+        merged = merge_annotations(df, ann, label_column="chosen_model",
+                                   require_known_label=True)
     stats = merged.attrs["annotation_stats"]
     assert stats["overrides_dropped_unknown_label"] == 1
     assert stats["overrides_applied"] == 1
 
 
-def test_merge_annotations_default_requires_known_label(synthetic_parquet):
-    """F-8 修复：验证 require_known_label 默认为 True 防止标签空间污染"""
+def test_merge_annotations_default_rejects_unknown_label(synthetic_parquet):
+    """默认（不传require_known_label）即强制词表保护：拒绝+计数+告警。
+
+    防回归：默认值曾为False，未知标签会静默混入训练标签空间（审计F-8）。
+    """
     df = load_parquet(str(synthetic_parquet))
     ann = pd.DataFrame({
         "request_id": [df["request_id"].iloc[0], df["request_id"].iloc[1]],
-        "human_label": ["gpt-4", "unknown_label_pollutes_space"],
+        "human_label": ["gpt-4", "nonexistent_provider"],
     })
-    # 不传 require_known_label 参数，应使用默认值 True
-    merged = merge_annotations(df, ann, label_column="chosen_model")
+    with pytest.warns(UserWarning, match="dropped 1 annotation row"):
+        merged = merge_annotations(df, ann, label_column="chosen_model")
     stats = merged.attrs["annotation_stats"]
-    # 未知标签应被丢弃
     assert stats["overrides_dropped_unknown_label"] == 1
     assert stats["overrides_applied"] == 1
-    # 验证未知标签确实没有进入训练集
-    assert "unknown_label_pollutes_space" not in merged[LABEL_COL].values
+    # 未知标签没有混入最终标签空间
+    assert "nonexistent_provider" not in merged[LABEL_COL].unique()
+
+
+def test_merge_annotations_opt_out_keeps_unknown_label(synthetic_parquet):
+    """显式require_known_label=False是退出词表保护的唯一途径（保留旧行为）。"""
+    df = load_parquet(str(synthetic_parquet))
+    ann = pd.DataFrame({
+        "request_id": [df["request_id"].iloc[0]],
+        "human_label": ["nonexistent_provider"],
+    })
+    merged = merge_annotations(df, ann, label_column="chosen_model",
+                               require_known_label=False)
+    stats = merged.attrs["annotation_stats"]
+    assert stats["overrides_dropped_unknown_label"] == 0
+    assert stats["overrides_applied"] == 1
+    assert "nonexistent_provider" in merged[LABEL_COL].unique()
 
 
 def test_merge_annotations_empty_keeps_autolabels(config_without_annotations,

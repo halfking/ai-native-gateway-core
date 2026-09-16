@@ -514,3 +514,52 @@ LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS（默认 24h）释放 floor 摘出行）�
 | 708 | `708_session_bodies_s1a.sql` | `6f1f8d3c931f207c2c1833206e3db2831d471fdf06b7273b359c5567b33a8dd6` | applied+verified |
 | 709 | `709_work_type_route_coverage.sql` | `14843d50eded9e8bd99ac04bd4525b192a5a710e7f66653e13f6fcc3ab652d53` | applied+verified |
 
+## 2026-09-14T16:15:36Z — deploy 245 build_seq 2113 (c26f2dc9)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 710 | `710_request_logs_view_session_family_v2.sql` | `888d026400710735dd0213e0b64325bf70cb1dcc24392f716f377b28b5b0c62b` | applied+verified |
+
+
+## 2026-09-15 — 任务托管 P0：711 hosted_tasks 三表（pending deploy）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 711 | `711_hosted_tasks.sql` | `c02cabe55b342be273eb563e437bb4da8ca465b72e69b4f66c03c2adce636877` | pending deploy |
+| 712 | `712_session_mirror_outbox.sql` | `cf968473ad5d19829e2533a0d137e6a56156f7e20a48a92f8210daf6c81cca3e` | pending deploy |
+| 713 | `713_session_turns_cost_precision.sql` | `fb46678f89b8243a9e94203c45085bca19bb469622680ea60b341d7f61752454` | pending deploy（原编 711_session_turns_cost_precision，与并行线 hosted_tasks 撞号，R29 2026-09-15 重编号 713；已按旧 711 应用过的库重放幂等） |
+
+补录说明（hosted-task-delegation-design §6.1，2026-09-15）：711 = hosted_tasks
+（委托任务投影，CAS revision + 终态 sticky + (tenant_id, idempotency_key) 幂等）+
+hosted_task_events（append-only，唯一 (task_id, seq)）+ hosted_task_callbacks
+（签名回调台账，URL/secret AES-GCM 加密，attempt/next_at/DLQ）。三表全 RLS
+（app.current_tenant + super_admin/bypass_rls，跟随 554 惯例）。三处同步已完成：
+embeddata/startup/711_* 与 runner.go StartupFiles 均已加入。执行真相在 ACC，
+本组表只是关联投影（单写者原则 D4），不引入第二执行 owner。
+
+## 2026-09-16 — balance_floor_guard 审计修复（无迁移，纯 bg 侧）
+
+本批无新迁移；更正上文 R28（2026-09-14）条目记录的逃生门默认值：#4 逃生门
+LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS 默认由 24h 收紧为 2h（审计 B-E1 ——
+套餐 API 长期故障时 floor 摘出行不应卡死超过一个探测退避量级；0=关闭语义
+不变，显式配置值优先）。同批：套餐探测并发化（新 env
+LLM_GATEWAY_FLOOR_PLAN_CONCURRENCY，默认 10，钳制 1..100）、Start 重入守卫、
+Stop 等待 worker（10s 上限）、keyring RWMutex、周期汇总日志与失败 Warn 限流、
+控制面 GET 重试（仅网络错误/5xx）。
+
+## 2026-09-16 — R30 审计轮：714 分区函数时区钉扎收尾（pending deploy）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 714 | `714_partition_timezone_pin_remaining.sql` | `13185466113b7f4749741f15090076aa59c7d06770a63441264dcc4a74b8292d` | pending deploy |
+
+694/698/699 钉扎波漏网的 6 个分区函数统一 `SET LOCAL TIME ZONE 'Asia/Shanghai'`：
+`ensure_session_module_executions_partition` / `ensure_dashboard_events_partition` /
+`ensure_cache_metrics_partition`（475 date 签名体，边界字面量按会话时区解释）、
+`ensure_handoff_logs_partition`（534，DECLARE 初始化器先于 BEGIN 求值，已移入函数体）、
+`promote_dashboard_access_events_hot_to_partition`（579）与
+`promote_session_module_executions_hot_to_partition`（580）的 date_trunc 月份分组。
+686 已在 session_module_executions 实际复发 473 类边界漂移（42P17）。纯
+CREATE OR REPLACE FUNCTION + 账本 upsert，幂等；已登记 revision-sequence 通道。
+同批非迁移修正：supplier_errors 历史月分区 TTL（Go stateTableTTLSpecs +
+settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时落库）。

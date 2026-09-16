@@ -117,6 +117,13 @@ func (a *CallHistoryAggregator) aggregate(ctx context.Context) error {
 	batch := make([]aggregateRow, 0, len(keys))
 
 	for _, key := range keys {
+		// The recorder's index set (llmgw:callhist:index) matches the SCAN
+		// glob but is not a per-(credential,model) data key — skip it
+		// silently (245 2026-09-16 audit: it WARNed once per tick,
+		// ~1.4k/day).
+		if key == credentialhealth.CallHistoryIndexKey() {
+			continue
+		}
 		// Parse key: llmgw:callhist:{credentialID}:{model}
 		credID, model, ok := parseCallHistKey(key)
 		if !ok {

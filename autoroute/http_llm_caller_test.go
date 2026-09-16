@@ -2,6 +2,7 @@ package autoroute
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -293,5 +294,75 @@ func TestParseFloatSeconds(t *testing.T) {
 		if !tt.err && got != tt.want {
 			t.Errorf("parseFloatSeconds(%q) = %v, want %v", tt.in, got, tt.want)
 		}
+	}
+}
+
+// 2026-09-15 O4: reasoning-capable classifier models burn the tiny
+// max_tokens budget on their thinking channel and return empty content.
+// LLMGatewayAutoLLMMaxTokens / LLMGatewayAutoLLMExtraBody let a deployment
+// raise the budget and disable thinking (deepseek dialect) via env alone;
+// ExtraBody keys are merged after the core fields and win.
+func TestBuildHTTPLlmCallerFromEnvExtraBodyAndMaxTokens(t *testing.T) {
+	env := map[string]string{
+		"LLMGatewayAutoLLMEndpoint":  "http://unit.test/v1",
+		"LLMGatewayAutoLLMMaxTokens": "64",
+		"LLMGatewayAutoLLMExtraBody": `{"thinking":{"type":"disabled"}}`,
+	}
+	caller, enabled := BuildHTTPLlmCallerFromEnv(func(k string) string { return env[k] })
+	if !enabled {
+		t.Fatal("caller should be enabled when endpoint is set")
+	}
+	h, ok := caller.(*HTTPLlmCaller)
+	if !ok {
+		t.Fatalf("unexpected caller type %T", caller)
+	}
+	if h.cfg.MaxTokens != 64 {
+		t.Fatalf("MaxTokens = %d, want 64", h.cfg.MaxTokens)
+	}
+	if string(h.cfg.ExtraBody) != `{"thinking":{"type":"disabled"}}` {
+		t.Fatalf("ExtraBody = %s", h.cfg.ExtraBody)
+	}
+
+	// Invalid JSON must be rejected (caller still enabled, extra ignored).
+	env["LLMGatewayAutoLLMExtraBody"] = "{not-json"
+	caller, _ = BuildHTTPLlmCallerFromEnv(func(k string) string { return env[k] })
+	h = caller.(*HTTPLlmCaller)
+	if h.cfg.ExtraBody != nil {
+		t.Fatalf("invalid ExtraBody must be dropped, got %s", h.cfg.ExtraBody)
+	}
+}
+
+// The merged ExtraBody must appear in the outgoing request body and win
+// over core fields on key collision.
+func TestHTTPLlmCallerExtraBodyMerged(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"chat"}}]}`))
+	}))
+	defer server.Close()
+
+	caller := NewHTTPLlmCaller(HTTPLlmCallerConfig{
+		Endpoint:  server.URL,
+		MaxTokens: 16,
+		ExtraBody: json.RawMessage(`{"temperature":0.9,"thinking":{"type":"disabled"}}`),
+	})
+	out, err := caller.Call(context.Background(), "classify me")
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if out != "chat" {
+		t.Fatalf("out = %q", out)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(gotBody, &sent); err != nil {
+		t.Fatalf("sent body not json: %v", err)
+	}
+	if sent["thinking"] == nil {
+		t.Fatal("thinking key missing from sent body")
+	}
+	if sent["temperature"] != 0.9 {
+		t.Fatalf("ExtraBody must win key collisions, temperature = %v", sent["temperature"])
 	}
 }

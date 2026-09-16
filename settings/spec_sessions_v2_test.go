@@ -21,6 +21,10 @@ func TestSessionsV2FeatureFlags(t *testing.T) {
 		"sessions_v2.turn_logs_retention_hours",
 		"sessions_v2.request_bodies_full",
 		"sessions_v2.turns_list_routing",
+		// R29（2026-09-15）：712 outbox 登记/重放 kill switch——未注册时
+		// getPlatformBool 对 Spec==nil 直接返回 fallback，运维 PUT 无效。
+		"sessions_v2.mirror_outbox",
+		"sessions_v2.mirror_outbox_replay",
 	}
 
 	if len(specs) != len(expectedKeys) {

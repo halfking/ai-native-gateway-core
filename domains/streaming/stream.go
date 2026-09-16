@@ -562,19 +562,24 @@ func writeChatInterruptedTail(w http.ResponseWriter, pc *pendingCapturer, gate *
 		Usage:          usage,
 		SourceProtocol: ir.ProtocolOpenAIChat,
 	}).SerializeOpenAI("", "", 0)
+	tailWritten := true
 	if tail != "" {
-		safeWriteSSE(w, tail)
+		tailWritten = safeWriteSSE(w, tail)
 		if pc != nil {
 			pc.append(tail)
 		}
 	}
 	done := "data: [DONE]\n\n"
-	safeWriteSSE(w, done)
+	doneWritten := safeWriteSSE(w, done)
 	if pc != nil {
 		pc.append(done)
 	}
+	flushed := true
 	if flusher, ok := w.(http.Flusher); ok {
-		safeFlush(flusher)
+		flushed = safeFlush(flusher)
+	}
+	if tailWritten && doneWritten && flushed {
+		gate.MarkTerminalRendered()
 	}
 }
 

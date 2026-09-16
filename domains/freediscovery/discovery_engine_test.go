@@ -245,12 +245,14 @@ func templateRows(id int64) *sqlmock.Rows {
 		"api_key_env", "api_key_encrypted", "models_endpoint",
 		"quota_endpoint", "tos_url", "tos_verdict", "tos_notes",
 		"enabled", "created_by", "created_at", "updated_at",
+		"consecutive_scan_failures", "last_scan_failure_at", "auto_disabled_at",
 	}
 	return sqlmock.NewRows(cols).AddRow(
 		id, "tenant-a", "groq", "Groq Free", "https://api.groq.test/openai/v1", "openai-completions",
 		"$GROQ_API_KEY", nil, "/models",
 		"", "", "caution", "free tier",
 		true, "admin", nil, nil,
+		0, nil, nil,
 	)
 }
 
@@ -260,12 +262,14 @@ func templateRowsWith(tpl *ProviderTemplate) *sqlmock.Rows {
 		"api_key_env", "api_key_encrypted", "models_endpoint",
 		"quota_endpoint", "tos_url", "tos_verdict", "tos_notes",
 		"enabled", "created_by", "created_at", "updated_at",
+		"consecutive_scan_failures", "last_scan_failure_at", "auto_disabled_at",
 	}
 	return sqlmock.NewRows(cols).AddRow(
 		tpl.ID, "tenant-a", tpl.ProviderCode, tpl.DisplayName, tpl.BaseURL, string(tpl.APIType),
 		tpl.APIKeyEnv, tpl.APIKeyEncrypted, tpl.ModelsEndpoint,
 		"", tpl.TosURL, tpl.TosVerdict, tpl.TosNotes,
 		tpl.Enabled, "admin", nil, nil,
+		tpl.ConsecutiveScanFailures, tpl.LastScanFailureAt, tpl.AutoDisabledAt,
 	)
 }
 

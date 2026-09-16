@@ -362,6 +362,25 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/706_session_family_s1a.sql"
   "$ROOT_DIR/sql/migrations/startup/707_session_turns_s1a.sql"
   "$ROOT_DIR/sql/migrations/startup/708_session_bodies_s1a.sql"
+  # 2026-09-15 存储优化方案 v2 S4 前置（plan §4-S4 / §4.2-10，观察台账
+  # Round 1b）：713 turns cost_usd numeric(12,6)→(14,8)（E5 G1-cost 舍入
+  # 对齐 v1；cost_display 为 double precision 无需动）+712
+  # session_mirror_outbox（spec §12 GAP-2 闭环：mirror 失败行持久登记，
+  # payload=完整 entry JSON，internal/sessionv2mirror replay.go 重放器消化；
+  # 历史回填脚本 scripts/audit/mirror_outbox_backfill.sql 灌同表）。均自带
+  # schema_migrations INSERT(695-705 定式)；两者不定义函数，无 chain 登记。
+  # 编号注记(R29 审计)：turns cost 精度迁移原编号 711 与并行线
+  # 711_hosted_tasks 撞号(双账本 '711' 同号异文件歧义)，按 699→700/709→710
+  # 先例重编号 713；重编号前已核远端 main(7ffcddaee) 双账本 713 零命中。
+  # 存量库若已按旧 '711' 应用过同体，重放 713 幂等(ALTER TYPE 同精度无害)。
+  "$ROOT_DIR/sql/migrations/startup/712_session_mirror_outbox.sql"
+  "$ROOT_DIR/sql/migrations/startup/713_session_turns_cost_precision.sql"
+  # 2026-09-15 R29 审计：hostedtask P0(711_hosted_tasks)此前只进 installer
+  # 全新安装通道，存量库(seq 通道)永远没有三表——功能开关一旦打开即每 5s
+  # reconciler Error×3 + 首请求 500。文件幂等(全 IF NOT EXISTS)、纯建表、
+  # 无函数定义，无 chain 登记需求；不自登记 schema_migrations(installer
+  # 通道惯例，账本由 installer 侧维护)。
+  "$ROOT_DIR/sql/migrations/startup/711_hosted_tasks.sql"
   # 2026-09-14 存储优化方案 v2 S2（docs/03-design/04-data-design/
   # storage-optimization-plan.md §3 D6/§4）：request_logs_with_current_month
   # 同名视图体重建为 session 家族拼装体——session_turns(_hot) 113 列会话投影
@@ -377,6 +396,15 @@ files=(
   # Go 镜像体:db/request_logs_view_schema.go canonicalV2DDL(启动自愈/升级
   # 同体),等价性由 db/view_schema_v2_contract_test.go 校验。
   "$ROOT_DIR/sql/migrations/startup/710_request_logs_view_session_family_v2.sql"
+  # 2026-09-16 R30 审计（时区钉扎波收尾）：694/698 漏网的 6 个分区函数统一
+  # 钉扎 Asia/Shanghai——4 个 ensure（session_module_executions/
+  # dashboard_access_events/cache_metrics 为 475 date 签名体，handoff_logs
+  # 为 534 columnar 体，其 DECLARE 初始化器先于 BEGIN 求值，已移入函数体）
+  # + 579/580 两个 promote 的 date_trunc 月份分组。686 已在
+  # session_module_executions 实际复发一次 473 类边界漂移（42P17），本迁移
+  # 除根。纯 CREATE OR REPLACE FUNCTION + 账本 upsert，幂等收敛；714 编号
+  # 已核对本机与 origin/main 双侧空闲。
+  "$ROOT_DIR/sql/migrations/startup/714_partition_timezone_pin_remaining.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

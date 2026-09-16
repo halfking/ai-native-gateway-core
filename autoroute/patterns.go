@@ -166,8 +166,10 @@ func buildDefaultPatterns() []PatternMatch {
 		//
 		// P1: "写/做/实现 + 编程对象名"（算法/数据结构/组件/接口/服务/中间件）
 		// 命中如"写一个快速排序""做一个表单组件""实现一个 LRU 缓存""写个线程池"。
+		// 2026-09-15 二轮补充对象:SQL/正则/YAML 等配置与查询语言产物
+		// (biz_sql_active_users:"写一个 SQL 语句"落 chat)。
 		{
-			expr:   `(?:写|做|实现|实现一个|写一个|写个|做个|编写)(?:一个|个|一段|一个简单的|一个完整)?\s*(?:快速排序|冒泡排序|归并排序|拓扑排序|二分查找|红黑树|二叉树|二叉搜索树|b\s*树|b\+|avl|图|哈希表|散列表|链表|栈|队列|堆|trie|布隆过滤器|线程池|连接池|内存池|缓存|lru|限流器|熔断器|负载均衡|中间件|路由|解释器|编译器|虚拟机|区块链|加密|解密|签名|鉴权|认证|授权|登录|注册|表单组件|对话框|编辑器|解析器|序列化|爬虫|脚本|小工具|控件|组件|插件|微服务|网关|代理|函数|类|方法|模块|接口|服务)`,
+			expr:   `(?:写|做|实现|实现一个|写一个|写个|做个|编写)(?:一个|个|一段|一个简单的|一个完整)?\s*(?:快速排序|冒泡排序|归并排序|拓扑排序|二分查找|红黑树|二叉树|二叉搜索树|b\s*树|b\+|avl|图|哈希表|散列表|链表|栈|队列|堆|trie|布隆过滤器|线程池|连接池|内存池|缓存|lru|限流器|熔断器|负载均衡|中间件|路由|解释器|编译器|虚拟机|区块链|加密|解密|签名|鉴权|认证|授权|登录|注册|表单组件|对话框|编辑器|解析器|序列化|爬虫|脚本|小工具|控件|组件|插件|微服务|网关|代理|函数|类|方法|模块|接口|服务|sql(?:\s*语句)?|正则表达式|yaml|dockerfile|crontab|查询语句)`,
 			task:   TaskCode,
 			weight: 0.65,
 			reason: "pattern: chinese coding task (verb + programming object)",
@@ -175,8 +177,10 @@ func buildDefaultPatterns() []PatternMatch {
 		// P2: "用 + 编程语言/技术栈 + 动作动词"
 		// 命中如"用 React 做一个表单组件""用 SQL 查询订单""用 go 写一个 LRU 缓存"。
 		// 语言/框架名本身就是强编程信号，且不会出现在 creative/planning 请求里。
+		// 2026-09-15 二轮补充疑问/处理动词(trap_python_csv_howto:
+		// "用 Python 怎么读取…"落 chat)。
 		{
-			expr:   `用\s*(?:python|java|javascript|js|typescript|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|django|flask|spring|gin|echo|flutter|nextjs|nuxt|tailwind|html|css|shell|bash|powershell)\s*(?:写|做|实现|编写|开发|生成|查询|连接|调用|构建|搭建|写一个|做一个|实现一个)`,
+			expr:   `用\s*(?:python|java|javascript|js|typescript|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|django|flask|spring|gin|echo|flutter|nextjs|nuxt|tailwind|html|css|shell|bash|powershell)\s*(?:写|做|实现|编写|开发|生成|查询|连接|调用|构建|搭建|写一个|做一个|实现一个|读取|解析|处理|部署|调试|迁移|怎么|如何)`,
 			task:   TaskCode,
 			weight: 0.65,
 			reason: "pattern: chinese coding task (language/framework + action verb)",
@@ -209,18 +213,60 @@ func buildDefaultPatterns() []PatternMatch {
 		// "写一个/写一段/写首" without an explicit code/algorithm target
 		// (the code keyword "写代码" already covers the code case)
 		{
-			expr:   `写(?:一个|一段|一首|一篇).{0,20}(?:故事|诗|歌词|散文|读后感|观后感|俳句|打油诗)`,
+			expr:   `写(?:一个|一段|一首|一篇).{0,20}(?:故事|诗|歌词|散文|读后感|观后感|俳句|打油诗|绝句|律诗|藏头诗|顺口溜)`,
 			task:   TaskCreative,
 			weight: 0.60,
 			reason: "pattern: creative writing request (story/poem/lyrics)",
 		},
 		// 起名/命名请求（2026-09-14 复审 cre_zh_names：动词与"名字"被修饰语
-		// 隔开，紧邻关键词覆盖不了，如"起几个有创意的名字"）。
+		// 隔开，紧邻关键词覆盖不了，如"起几个有创意的名字"）。2026-09-15 二轮
+		// 窗口 8→12(trap_intent_word_passing:"想几个这个模块的宣传 slogan")。
 		{
-			expr:   `(?:起|取|想|拟|帮.{0,4}起).{0,8}(?:名字|名称|slogan|标语|标题)`,
+			expr:   `(?:起|取|想|拟|帮.{0,4}起).{0,12}(?:名字|名称|slogan|标语|标题)`,
 			task:   TaskCreative,
 			weight: 0.60,
 			reason: "pattern: creative naming request",
+		},
+		// 英文创意名词族（2026-09-15 二轮 en_creative_tagline："Write 5 catchy
+		// taglines" 不命中 "write a/an" 关键词，落 chat）。
+		{
+			expr:   `(?:write|compose|draft|give\s+me|come\s+up\s+with|suggest)\s+(?:me\s+)?(?:\w+\s+){0,4}(?:taglines?|slogans?|jingles?|catchphrase|mottos?|poems?|haiku|stories|lyrics)`,
+			task:   TaskCreative,
+			weight: 0.60,
+			reason: "pattern: creative writing request (en noun family)",
+		},
+		// 邮件/回信写作（2026-09-15 二轮 biz_email_polite_reject："写一封婉拒的
+		// 英文邮件"落 chat；与"润色/改写"同族的书面写作面）。
+		{
+			expr:   `(?:写|拟|起草|撰写|回复|回).{0,14}(?:邮件|电子邮件|email|回信)`,
+			task:   TaskCreative,
+			weight: 0.60,
+			reason: "pattern: email/letter writing request",
+		},
+		// ── Reasoning patterns(二轮补充)─────────────────────────────
+		// 数据在前、分析在后的方向 2（2026-09-15 二轮 biz_data_monthly_report：
+		// "根据这份数据写一份月度经营分析"——F4 的"分析+数据"只覆盖分析在前）。
+		// 锚词(根据/基于/以上)防止"开发一个数据分析平台"类建设请求误入。
+		{
+			expr:   `(?:根据|基于|以上|下述|提供的?).{0,8}(?:数据|样本|报表|指标|数字).{0,14}分析`,
+			task:   TaskReasoning,
+			weight: 0.55,
+			reason: "pattern: analysis over given data (direction 2)",
+		},
+		{
+			expr:   `(?:写|出|做|起草)(?:一份|个).{0,16}(?:经营分析|分析报告|数据报告|调研报告|行业分析|竞品分析|财务分析|审计报告)`,
+			task:   TaskReasoning,
+			weight: 0.55,
+			reason: "pattern: analytical report writing request",
+		},
+		// 合同/条款类风险与合规审查（2026-09-15 二轮 biz_legal_contract_risk：
+		// "审查…合同/条款"是文档评审型推理——对象非代码，不得触发 code_audit，
+		// 也不落 chat）。方案也在对象列：评审方案≠制定方案(planning 需规划动词)。
+		{
+			expr:   `风险点|风险评估|风险审查|合规审查|合规风险|审查.{0,10}(?:合同|条款|协议|政策|方案)`,
+			task:   TaskReasoning,
+			weight: 0.55,
+			reason: "pattern: document/compliance risk review",
 		},
 	}
 

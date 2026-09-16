@@ -8,13 +8,30 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/goalrun"
 )
+
+// goalrunKeyVerifier 与 domains/session 的鉴权抽象同形；真实现由 main.go
+// 经适配器注入（hosted-task-delegation-design §0-F2：本 handler 曾直接信任
+// X-Tenant-ID 头且 store 为 nil 会 panic，挂载 /v1/goal-runs 前必须补
+// KeyVerifier 归属校验）。
+type goalrunKeyVerifier interface {
+	Enabled() bool
+	Verify(ctx context.Context, rawKey string) (GoalRunKeyInfo, error)
+}
+
+// GoalRunKeyInfo 是验证后的 key 信息（导出以便 main.go 适配器实现接口）。
+type GoalRunKeyInfo struct {
+	ID       int
+	TenantID string
+}
 
 // GoalRunHandler handles GoalRun status API requests.
 type GoalRunHandler struct {
 	store  *goalrun.Store
 	logger *slog.Logger
+	auth   goalrunKeyVerifier
 }
 
 // NewGoalRunHandler creates a new GoalRun handler with tenant/session ownership enforcement.
@@ -26,6 +43,12 @@ func NewGoalRunHandler(store *goalrun.Store, logger *slog.Logger) *GoalRunHandle
 		store:  store,
 		logger: logger,
 	}
+}
+
+// SetAuth 安装 KeyVerifier 抽象。未安装时请求 fail-closed（503）——
+// tenant 必须来自验证后的 key，绝不信任请求头（§0-F2）。
+func (h *GoalRunHandler) SetAuth(kv goalrunKeyVerifier) {
+	h.auth = kv
 }
 
 // GoalRunStatusResponse represents the API response for goal run status.
@@ -72,21 +95,37 @@ func (h *GoalRunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract tenant_id and session_id from headers or auth context
-	tenantID := r.Header.Get("X-Tenant-ID")
-	sessionID := r.Header.Get("X-Session-ID")
-
-	if tenantID == "" {
-		h.writeError(w, http.StatusUnauthorized, "unauthorized", "tenant_id required")
+	// §0-F2 修复：tenant 一律取自 KeyVerifier 验证结果；verifier 未配置
+	// 或 store 未配置均 fail-closed 503（此前直接信任 X-Tenant-ID 头，
+	// store 为 nil 时 panic）。
+	if h.store == nil {
+		h.writeError(w, http.StatusServiceUnavailable, "store_unavailable", "goal run store not configured")
 		return
 	}
+	if h.auth == nil || !h.auth.Enabled() {
+		h.writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "authentication not configured")
+		return
+	}
+	ki, err := h.verifyKey(r)
+	if err != nil {
+		if _, ok := err.(*authentication.InvalidKeyError); ok {
+			// 必须断言跨包类型（session handler.go:122 本地副本陷阱同源）。
+			h.writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or expired API key")
+			return
+		}
+		h.writeError(w, http.StatusServiceUnavailable, "auth_unavailable", "authentication temporarily unavailable")
+		return
+	}
+	tenantID := ki.TenantID
+
+	sessionID := r.Header.Get("X-Session-ID")
 
 	ctx := r.Context()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	// Fetch GoalRun from repository
-	run, err := h.store.GetGoalRun(ctx, goalRunID)
+	run, err := h.store.GetGoalRun(ctx, tenantID, goalRunID)
 	if err != nil {
 		if err == goalrun.ErrGoalRunNotFound {
 			h.writeError(w, http.StatusNotFound, "not_found", "goal run not found")
@@ -103,7 +142,6 @@ func (h *GoalRunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if run.TenantID != tenantID {
 		h.logger.WarnContext(ctx, "tenant mismatch",
 			slog.String("goal_run_id", goalRunID),
-			slog.String("request_tenant_id", tenantID),
 			slog.String("run_tenant_id", run.TenantID))
 		h.writeError(w, http.StatusForbidden, "forbidden", "access denied")
 		return
@@ -130,6 +168,26 @@ func (h *GoalRunHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.String("goal_run_id", goalRunID),
 			slog.String("error", err.Error()))
 	}
+}
+
+// verifyKey 复用 Bearer/x-api-key 提取并校验 sk-* key。
+func (h *GoalRunHandler) verifyKey(r *http.Request) (GoalRunKeyInfo, error) {
+	rawKey := r.Header.Get("Authorization")
+	switch {
+	case strings.HasPrefix(rawKey, "Bearer "):
+		rawKey = strings.TrimPrefix(rawKey, "Bearer ")
+	case strings.HasPrefix(rawKey, "bearer "):
+		rawKey = strings.TrimPrefix(rawKey, "bearer ")
+	default:
+		rawKey = ""
+	}
+	if rawKey == "" {
+		rawKey = r.Header.Get("x-api-key")
+	}
+	if rawKey == "" {
+		return GoalRunKeyInfo{}, &authentication.InvalidKeyError{Message: "missing key"}
+	}
+	return h.auth.Verify(r.Context(), rawKey)
 }
 
 // extractGoalRunID extracts goal_run_id from path like /v1/goal-runs/{id}

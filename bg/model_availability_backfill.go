@@ -216,6 +216,12 @@ func (w *AvailabilityCacheBackfill) runOnceWithTrigger(ctx context.Context, trig
 	// This avoids fighting the regular probe workers.
 	written := 0
 	for _, e := range entries {
+		// The shared 10s budget may expire mid-loop; stop cleanly instead of
+		// WARN-failing every remaining entry (245 2026-09-16 audit). Entries
+		// skipped here are retried by the next pass — the pass is idempotent.
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
 		existing, _ := w.reader.Read(ctx, e.credID, e.model)
 		if existing != nil && !shouldRefresh(existing.UpdatedAt, w.lookback) {
 			continue

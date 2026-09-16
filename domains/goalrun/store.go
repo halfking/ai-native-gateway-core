@@ -147,8 +147,11 @@ func (s *Store) CreateGoalRun(ctx context.Context, input NewGoalRunInput) (*Goal
 	return run, nil
 }
 
-// GetGoalRun 按 ID 查询 GoalRun（带 tenant RLS）。
-func (s *Store) GetGoalRun(ctx context.Context, goalRunID string) (*GoalRun, error) {
+// GetGoalRun 按 ID + tenant 查询 GoalRun。R29 审计：显式 tenant 谓词
+// （与 hostedtask store 双保险同款）——goal_runs 仅 ENABLE RLS 非 FORCE，
+// owner 角色旁路时 RLS 形同虚设；且 525981613 之后 handler 的鉴权链路
+// 已持有 verified tenant，查询层不再需要"先取回再比对"。
+func (s *Store) GetGoalRun(ctx context.Context, tenantID, goalRunID string) (*GoalRun, error) {
 	row := s.db.QueryRow(ctx, `
 		SELECT
 			id, tenant_id, api_key_id, root_goal_id,
@@ -162,8 +165,8 @@ func (s *Store) GetGoalRun(ctx context.Context, goalRunID string) (*GoalRun, err
 			deadline_at, lease_owner, lease_until, version,
 			terminal_reason, created_at, updated_at, completed_at
 		FROM goal_runs
-		WHERE id = $1
-	`, goalRunID)
+		WHERE id = $1 AND tenant_id = $2
+	`, goalRunID, tenantID)
 
 	run := &GoalRun{}
 	var policySnapshot []byte
