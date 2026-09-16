@@ -234,11 +234,11 @@ type RequestLogEntry struct {
 	// persistSystemFingerprint 落 request_logs_hot 专用列，697 起随 promote
 	// 进月度分区。nil = 上游未返回该头。
 	SystemFingerprint *string `json:"system_fingerprint,omitempty"`
-	ClientModel   *string    `json:"client_model,omitempty"`
-	OutboundModel *string    `json:"outbound_model,omitempty"`
-	CredentialID  *int       `json:"credential_id,omitempty"`
-	ProviderID    *int       `json:"provider_id,omitempty"`
-	CanonicalID   *int       `json:"canonical_id,omitempty"`
+	ClientModel       *string `json:"client_model,omitempty"`
+	OutboundModel     *string `json:"outbound_model,omitempty"`
+	CredentialID      *int    `json:"credential_id,omitempty"`
+	ProviderID        *int    `json:"provider_id,omitempty"`
+	CanonicalID       *int    `json:"canonical_id,omitempty"`
 	// 2026-07-27: 标准/canonical 模型名(全小写),从 models_canonical.canonical_name 提取。
 	// 之前需要每次 JOIN models_canonical 才能拿到标准名,实时请求流的模型筛
 	// 选因此无法直接做低成本的 GROUP BY。现在直接写,过滤 SQL 简单到极致。
@@ -2315,11 +2315,21 @@ func persistSystemFingerprint(ctx context.Context, tx pgx.Tx, entry *RequestLogE
 // session-level final-success claim. Failures, cancellations, client
 // disconnects and rows without a gw_session_id never claim (R6.2: 空
 // gw_session_id 不受唯一约束；失败/取消路径不改).
+//
+// 2026-09-17 R34: gateway-internal auto loopbacks (auto-title gt_/auto-summary
+// gs_ branch sessions) must not claim either. sessionv2mirror excludes them
+// from session_turns via IsInternalAutoEntry, so a claimed internal row would
+// leave is_final_success=TRUE with no mirrored turn — permanently inflating
+// the GLOBAL_G2 reconciliation counter. Business auto turns carry TaskType,
+// fail the IsInternalAutoEntry test, and still claim normally. The 2026-09-16
+// F1 fix started propagating IsAutoRequest onto success entries, which is what
+// made internal loopbacks reachable for this predicate at all.
 func shouldClaimFinalSuccess(entry *RequestLogEntry) bool {
 	return entry != nil &&
 		entry.Success &&
 		entry.GwSessionID != nil &&
-		*entry.GwSessionID != ""
+		*entry.GwSessionID != "" &&
+		!IsInternalAutoEntry(entry)
 }
 
 // claimSessionFinalSuccess marks the request_logs_hot row for requestID as

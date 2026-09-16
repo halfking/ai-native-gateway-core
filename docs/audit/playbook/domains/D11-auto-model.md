@@ -31,6 +31,7 @@
 7. **灰度门槛**：放量构建 ≥ e8ddff41d；灰度验证报告口径（matched/expired/accuracy）可复算。
 
 ## 4. 历史回归点（轮末回注区）
+- [R35 09-17] e8ddff41d 单标记半修双 P1 回归：成功终态只透传 IsAutoRequest（TaskType 恒 nil）→ isInternalAutoEntry 兜底把业务 auto 成功轮剔出 session_turns 镜像 + emitTuningSignal 全路径死（门需 TaskType，还读 AutoDecision/AutoConfidence）——并行 R34（01bd55ed7）扩展 propagateIsAutoRequestToEntry 全字段修复、R35 撤并采用并补钉桩；**教训：终态 entry 补 auto 字段必须全字段（单标记传播会翻转 isInternalAutoEntry 兜底语义），且 claim/镜像双门必须共享同一判定（telemetry.IsInternalAutoEntry）**；放量门槛构建随之更新
 
 - [09-16/17] F1 成功终态 outcome 回填缺失 → matched 22→120 / expired 98→0 / accuracy 0→95.8%（闭环断裂，P0 级）— 修复 e8ddff41d（propagateIsAutoRequestToEntry）；放量门槛构建 ≥ e8ddff41d
 - [历史] AUTO 路由数据管道三缺陷：promote 漂移丢特征列 / chat 记录丢 signals / exporter 扫描 bug —— 复核基线

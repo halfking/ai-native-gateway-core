@@ -47,7 +47,7 @@ func syntheticKindOf(entry *telemetry.RequestLogEntry) string {
 			return "probe"
 		}
 	}
-	if isInternalAutoEntry(entry) {
+	if telemetry.IsInternalAutoEntry(entry) {
 		return "internal"
 	}
 	return "anon"

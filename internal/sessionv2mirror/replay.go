@@ -290,7 +290,7 @@ func (r *MirrorOutboxReaper) replayOne(ctx context.Context, row claimRow) {
 		return
 	}
 	synthetic := entry.GwSessionID == nil || *entry.GwSessionID == ""
-	if !synthetic && isInternalAutoEntry(&entry) {
+	if !synthetic && telemetry.IsInternalAutoEntry(&entry) {
 		r.deleteRow(ctx, row.id, "skipped: internal loopback (hook exclusion class)")
 		mirrorReplayTotal.WithLabelValues("skipped").Inc()
 		return

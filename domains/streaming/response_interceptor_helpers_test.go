@@ -327,18 +327,35 @@ func TestInjectFollowUpPassesParentRequestID(t *testing.T) {
 
 // TestFollowUpSourceActorMapping locks the action→origin_actor mapping so
 // session_turns/request_logs keep one stable filter namespace (LIKE 'goal-%').
+// R34 (2026-09-17): audit family matches by prefix (covers audit_auto_fix,
+// aligning with the goal hook's own HasPrefix("audit") skip check); unknown
+// actions return "" (no X-Gw-Source-Actor header, origin_actor stays NULL) so
+// a future non-goal dispatch through this seam can't be misattributed to the
+// goal shadow-turn budget.
 func TestFollowUpSourceActorMapping(t *testing.T) {
 	cases := map[string]string{
 		"goal_continue":     "goal-continue",
 		"goal_model_switch": "goal-model-switch",
 		"audit":             "goal-audit",
-		" something-else ":  "goal-followup",
-		"":                  "goal-followup",
+		"audit_auto_fix":    "goal-audit",
+		" audit":            "goal-audit",
+		"handoff":           "",
+		" something-else ":  "",
+		"":                  "",
 	}
 	for action, want := range cases {
 		if got := followUpSourceActor(action); got != want {
 			t.Fatalf("followUpSourceActor(%q) = %q, want %q", action, got, want)
 		}
+	}
+
+	// The header contract: an unmapped action must not produce a header at all.
+	req, err := buildFollowUpRequest(context.Background(), "s", []byte(`{}`), "handoff", "p1", "", 1)
+	if err != nil {
+		t.Fatalf("buildFollowUpRequest: %v", err)
+	}
+	if got := req.Header.Get(autoSourceActorHeader); got != "" {
+		t.Fatalf("unmapped action must omit %s, got %q", autoSourceActorHeader, got)
 	}
 }
 

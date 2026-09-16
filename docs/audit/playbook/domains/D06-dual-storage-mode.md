@@ -28,6 +28,7 @@
 6. **部署文档同步**：两模式的部署/排障文档与代码开关现状一致（文档说禁的 env 代码真的禁）。
 
 ## 4. 历史回归点（轮末回注区）
+- [R35 09-17] GLOBAL_G2 不变式与 claim/镜像双门一致性：镜像排除门（isInternalAutoEntry）与 is_final_success claim 谓词必须共享同一判定（现 telemetry.IsInternalAutoEntry 单一事实源）；任何让成功终态携带 IsAutoRequest 的改动都会同时翻转两门输入——只改一侧必破 G2（gt_/gs_ 内部回环行 claim 但不镜像=G2 恒>0，R35-P1b）。post-F1 二进制部署后首个每日观察是验证点
 
 - [R30] full/lite 开关明确、lite 六 env 收口禁 redis、lite 缓存 L1+L1.5 文件级、分区管理器 lite 不启动 —— 健康面基准
 
