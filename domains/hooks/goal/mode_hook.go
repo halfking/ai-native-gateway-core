@@ -355,7 +355,15 @@ func (h *ModeHook) decideAndContinue(ctx context.Context, req *response.Intercep
 	// goal. An advisory gw-continue (no hint, no budget consumption) tells it
 	// the goal is still open. Opt-in via goal.client_signal_on_tool_calls;
 	// see 会话优化v4/18-Goal影子指令与续跑优化方案.md §4.
-	if req.FinishReason == "tool_calls" && !decision.giveUp && h.toolCallsSignalEnabled(req.TenantID) {
+	//
+	// R34 (2026-09-17): the advisory yields whenever the loop detector wants a
+	// model rotation (decision.switchModel). switchModel generation is
+	// finish_reason-agnostic (budget exhaustion and repeat detection both fire
+	// on tool_calls turns), so without this guard a session whose every turn
+	// ends in tool_calls would emit advisories forever while the rotation
+	// escape channel — and the switch_budget_exhausted give-up that depends on
+	// AtomicModelSwitch actually running — is permanently starved.
+	if req.FinishReason == "tool_calls" && !decision.giveUp && decision.switchModel == "" && h.toolCallsSignalEnabled(req.TenantID) {
 		if signal := h.tryBuildAdvisoryToolSignal(ctx, req, sess); signal != nil {
 			return signal, nil
 		}
@@ -555,9 +563,11 @@ func (h *ModeHook) toolCallsSignalEnabled(tenantID string) bool {
 //     merely echoes the current value.
 //
 // Gates: the client must have declared the continue capability (legacy
-// clients never see client signals, and the legacy self-call must NOT fire
-// for tool_calls), client_signal_mode must allow continue, and pending
-// sub-agents suppress the frame — work is still in flight.
+// clients never see client signals), client_signal_mode must allow continue,
+// and pending sub-agents suppress the frame — work is still in flight.
+// Path 1's shouldAutoContinue never self-calls for tool_calls turns; Path 2
+// (model switch) is a separate decision that takes precedence over this
+// advisory — see decideAndContinue.
 func (h *ModeHook) tryBuildAdvisoryToolSignal(ctx context.Context, req *response.InterceptRequest, sess *Session) *response.InterceptResult {
 	if !req.ClientSignalAllowed || sess.SubAgentsPending > 0 {
 		return nil

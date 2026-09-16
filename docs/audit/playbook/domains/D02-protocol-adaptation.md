@@ -31,6 +31,7 @@
 7. ** Responses/Gemini 特性**：reasoning.summary 数组形式、遗留 function_call 消息级形态等已知薄弱面（R30 遗留 #7）不进一步恶化。
 
 ## 4. 历史回归点（轮末回注区）
+- [R35 09-17] 接入新上游协议时必须核对 IR 不变量：工具轮 finish_reason 统一映射为 "tool_calls"——gemini 原生（MALFORMED_FUNCTION_CALL 才映射）与 responses 原生（status=completed 即 stop）当前不产 tool_calls，一旦这两族 parser 接入 chat 端点，goal tool_calls advisory（Path 1.5）将静默漏判
 
 - [R30] sessionsummary V2 消息源 `Content string` 解不了多模态块数组 → 整轮从摘要消失（契约）— 修复 692205664；v2ContentText 抽取 + 回归钉桩
 - [R30] anthropic 7 参死桥已退役、六桥空流门矩阵齐备 —— 健康面基准

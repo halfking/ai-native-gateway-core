@@ -32,6 +32,8 @@
 8. **注入面**：窗口内新增 SQL 全参数化；模板/路径拼接不引入注入。
 
 ## 4. 历史回归点（轮末回注区）
+- [R35 09-17] keyring SetKeyring（discovery/credential_probe_v2）无锁写：当前全部 boot 期 Start 前一次性调用（happens-before 成立、无活竞态），契约已注释钉死；引入热轮换前必须先改 atomic.Pointer
+- [R35 09-17] X-Gw-Source-Actor / X-Gw-Parent-Request-Id / X-Gw-Is-Auto 为客户端可注入受信头（2026-08-06 旧缝承重：goal-% 对账压在其上）——R35-R1 登记待修（token 方案，先证实 auto-title/summary 回环拓扑）；伪造 X-Gw-Is-Auto:true 可自我剔除出 session_turns 镜像
 
 - [R30] licensing 免费激活无认证可被任意 hardware_hash 占席位（首启 DoS）— 修复 47e54f90b；指纹一致 + 409 need_deactivate
 - [R30] balance-floor A-C1 refreshBalance 无锁读 / Start 重入守卫 / Stop join 10s / 有界并发池（semaphore 默认 10）— ae41328c4/8373a6775 系

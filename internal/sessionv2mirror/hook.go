@@ -89,7 +89,7 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 		// Synthetic sessions keep internal loopbacks（计费事实完整性，D7 前提）；
 		// kind 已在 SyntheticSessionID 中标为 internal，分析侧按 client_type
 		// 过滤。
-		if !synthetic && isInternalAutoEntry(entry) {
+		if !synthetic && telemetry.IsInternalAutoEntry(entry) {
 			return
 		}
 
@@ -906,25 +906,6 @@ func intStr(v int) string {
 		buf[i], buf[j] = buf[j], buf[i]
 	}
 	return string(buf)
-}
-
-func isInternalAutoEntry(entry *telemetry.RequestLogEntry) bool {
-	if entry == nil || entry.IsAutoRequest == nil || !*entry.IsAutoRequest {
-		return false
-	}
-	if entry.RequestType != nil {
-		switch strings.TrimSpace(*entry.RequestType) {
-		case "title_gen", "summary":
-			return true
-		}
-	}
-	if entry.OriginActor != nil {
-		switch strings.TrimSpace(*entry.OriginActor) {
-		case "auto-title-generator", "auto-summary-generator", "session-summary":
-			return true
-		}
-	}
-	return entry.TaskType == nil || strings.TrimSpace(*entry.TaskType) == ""
 }
 
 func isTerminalFailure(entry *telemetry.RequestLogEntry) bool {

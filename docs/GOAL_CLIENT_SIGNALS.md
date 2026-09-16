@@ -164,6 +164,7 @@ X-Gw-Sub-Agents: [{"id":"agent-1","status":"completed"},{"id":"agent-2","status"
 | 声明 `continue` 但网关 `LLM_GATEWAY_GOAL_CLIENT_DRIVEN=false` | 同上（自调用） |
 | 声明 `continue` 且开关打开 | 发 `gw-continue` SSE 帧；不再自调用 |
 | 声明 `handoff` 且上下文超阈值 | 发 `gw-handoff`；客户端换新会话 |
+| 声明 `continue`，`LLM_GATEWAY_GOAL_CLIENT_DRIVEN=false`，但 `LLM_GATEWAY_GOAL_CLIENT_SIGNAL_ON_TOOL_CALLS=true`（混合模式，R34 补记） | `tool_calls` 收尾轮发 advisory `gw-continue` 帧；stop/length 收尾轮仍走自调用——帧与自调用双轨并存。advisory 门刻意独立于 `client_signal_enabled`（`goal.client_signal_on_tool_calls` 单独开关，mode_hook `toolCallsSignalEnabled`） |
 
 ### 5.2 安全边界
 

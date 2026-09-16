@@ -65,6 +65,11 @@ func NewService(db *pgxpool.Pool, interval time.Duration) *Service {
 }
 
 // SetKeyring sets the AES-GCM keyring for credential decryption.
+// CONTRACT: call once at boot, BEFORE Start — the field is written without a
+// lock while the discovery goroutine reads it in decryptCredential. Today's
+// wiring (cmd/gateway) only ever calls this before Start, which establishes
+// the happens-before edge; runtime key rotation would be a data race and must
+// switch to atomic.Pointer first (R34 2026-09-17 audit note).
 func (s *Service) SetKeyring(kr *secret.Keyring) {
 	s.keyring = kr
 }

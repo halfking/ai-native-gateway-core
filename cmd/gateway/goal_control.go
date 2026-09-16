@@ -257,9 +257,12 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	// is missing, they quietly degrade to keyword heuristics — completion
 	// verdicts get noticeably worse with zero operator feedback. Warn loudly
 	// at boot so the misconfiguration surfaces before the first misjudged
-	// session.
-	if goalCfg.Enabled && !llmCallerConfigured() {
-		slog.Warn("goal_control: goal enabled but LLMGatewayAutoLLMEndpoint is not configured; "+
+	// session. R34: audit-only deployments (goal.audit_enabled without
+	// goal.enabled) share the same LLM dependency, so they warn too.
+	// Known gap, accepted: a tenant flipping goal.enabled at runtime via
+	// settings hot-reload gets no boot-time warning.
+	if (goalCfg.Enabled || goalCfg.UseAudit) && !llmCallerConfigured() {
+		slog.Warn("goal_control: goal/audit enabled but LLMGatewayAutoLLMEndpoint is not configured; "+
 			"LLM-judge completion detection and audit degrade to keyword heuristics",
 			"fix", "set LLMGatewayAutoLLMEndpoint (and LLMGatewayAutoLLMApiKey/Model) to restore full judgement",
 			"impact", "keyword-only completion detection may misjudge 'done' claims and audit will skip its LLM step")
@@ -480,10 +483,6 @@ func parseModelList(s string) []string {
 	return out
 }
 
-// buildGoalLLMCaller builds the LLMCaller for goal judgement calls from the
-// shared LLMGatewayAutoLLM* env vars. When no endpoint is set, returns a no-op
-// caller so the feature can be enabled (keyword detection / continue logic
-// don't need an LLM) without a hard runtime dependency.
 // buildSanitizeRestoreInterceptor 构造 SmartSaniGuard 占位符还原拦截器。
 // 返回 nil 时表示该能力未启用（Redis 不可用或 sanitizer 失败）。
 func buildSanitizeRestoreInterceptor(redisClient *redis.Client, detector *sanitize.PatternDetector) (response.ResponseInterceptor, error) {
