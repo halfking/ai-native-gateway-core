@@ -764,9 +764,11 @@ func TestBalanceFloorGuardStartReentryAndStopJoin(t *testing.T) {
 }
 
 // TestBalanceFloorGuardSetKeyringConcurrent exercises the A-C1 lock: concurrent
-// SetKeyring writers racing decryptKey readers. Only meaningful under -race —
-// the ciphertext is shaped as a v1 envelope so DecryptAny actually reads the
-// keyring before failing on the GCM tag.
+// SetKeyring writers racing BOTH keyring readers — decryptKey (plan probe
+// path) and refreshBalance (currency refresh path; audit round-3 F-3: the
+// round-2 fix only covered decryptKey and missed this unlocked read). Only
+// meaningful under -race. The v1-envelope ciphertext / openai catalog make the
+// code actually touch the keyring (and fail decrypt before any network call).
 func TestBalanceFloorGuardSetKeyringConcurrent(t *testing.T) {
 	g := NewBalanceFloorGuard(nil, nil)
 	var key [32]byte
@@ -775,9 +777,10 @@ func TestBalanceFloorGuardSetKeyringConcurrent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKeyring: %v", err)
 	}
+	ctx := context.Background()
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
-		wg.Add(2)
+		wg.Add(3)
 		go func() {
 			defer wg.Done()
 			g.SetKeyring(kr)
@@ -786,6 +789,13 @@ func TestBalanceFloorGuardSetKeyringConcurrent(t *testing.T) {
 			defer wg.Done()
 			// 解密必然失败，但读取路径必须触碰 keyring —— -race 捕获无锁读。
 			_, _ = g.decryptKey([]byte("v1:k1:not-a-real-envelope"))
+		}()
+		go func() {
+			defer wg.Done()
+			// 货币 refresh 路径：openai catalog 有 BalanceURL → 到达解密步
+			//（解密失败即返回，不发起网络请求）。
+			g.refreshBalance(ctx, 1, []byte("v1:k1:not-a-real-envelope"),
+				"https://api.openai.com/v1", "openai-completions", "openai")
 		}()
 	}
 	wg.Wait()

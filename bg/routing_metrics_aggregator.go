@@ -41,6 +41,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -75,6 +76,12 @@ const (
 
 	// routingFeedbackTrimMaxRounds bounds one daily trim sweep.
 	routingFeedbackTrimMaxRounds = 40
+
+	// routingMetricsDistLockTTL bounds how long the Redis-elected leader holds
+	// the aggregation token. Same convention as settleDistLockTTL: comfortably
+	// above the sweep timeout (4min) so a slow-but-alive sweep never loses its
+	// lease mid-cycle.
+	routingMetricsDistLockTTL = 6 * time.Minute
 )
 
 var (
@@ -124,6 +131,21 @@ type RoutingMetricsAggregator struct {
 	started  atomic.Bool
 
 	lastTrim time.Time
+
+	// R31 pattern alignment (docs/audit/2026-09-16-r30-24h-audit-round.md
+	// §四#1): token-bucket leader election so a blue-green pair does not
+	// double-run every sweep. Correctness is already guaranteed by the
+	// advisory lock inside recomputeMetrics — this saves the follower's
+	// wasted 30min-window scan. Without Redis (nil manager / disabled /
+	// Acquire error) both instances sweep exactly as before.
+	distLock distlock.Manager
+}
+
+// SetDistLock wires the shared Redis token-bucket election manager.
+// Optional: nil (default) keeps the worker sweeping on every instance,
+// serialized only by the in-transaction advisory lock.
+func (w *RoutingMetricsAggregator) SetDistLock(mgr distlock.Manager) {
+	w.distLock = mgr
 }
 
 // NewRoutingMetricsAggregator constructs the worker. A nil pool is allowed at
@@ -195,6 +217,17 @@ func (w *RoutingMetricsAggregator) sweep(ctx context.Context) {
 	sweepCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
 	started := time.Now()
+
+	// R31 pattern alignment: Redis-elected leader runs the sweep, followers
+	// skip without queueing. Without Redis both instances sweep as before
+	// (the advisory lock inside recomputeMetrics already kept that correct).
+	if h := acquireSweepDistLock(sweepCtx, w.distLock, "routing_metrics_aggregate", routingMetricsDistLockTTL, "routing_metrics_aggregate"); h != nil {
+		defer h.Release(context.WithoutCancel(sweepCtx))
+		if !h.IsLeader() {
+			slog.Info("routing metrics aggregation skipped, redis token held by another instance")
+			return
+		}
+	}
 
 	rows, err := w.recomputeMetrics(sweepCtx)
 	if err != nil {

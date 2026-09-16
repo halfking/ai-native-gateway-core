@@ -1352,12 +1352,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/api/admin/annotations", admin(h.handleCreateAnnotation))  // POST /annotations
 
 		// P2.2 Track C (2026-09-07): routing-opt admin API — stats / accuracy /
-		// parameters. DB-only: aggregates routing_feedback_log +
+		// parameters / metrics. DB-only: aggregates routing_feedback_log +
 		// routing_optimization_state through h.db (no in-memory optimizer
 		// dependency); nil pool → 503. Same admin middleware as annotations.
+		// metrics (2026-09-16): 5 分钟聚合表只读投影（R30 P3 遗留债——
+		// 该表首个生产读者），支持 hours/task_type/provider 过滤。
 		mux.HandleFunc("/api/admin/routing-opt/stats", admin(h.handleRoutingOptStats))
 		mux.HandleFunc("/api/admin/routing-opt/accuracy", admin(h.handleRoutingOptAccuracy))
 		mux.HandleFunc("/api/admin/routing-opt/parameters", admin(h.handleRoutingOptParameters))
+		mux.HandleFunc("/api/admin/routing-opt/metrics", admin(h.handleRoutingOptMetrics))
 
 		// Phase 2a analytics (matrix / flow / model-task-index / decision-replay).
 		// superAdmin only: these expose cross-tenant credential/model routing
