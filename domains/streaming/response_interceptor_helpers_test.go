@@ -92,11 +92,11 @@ func TestInterceptingStreamWriterBuffersAndInterceptsSSEFrame(t *testing.T) {
 func TestInjectFollowUpCarriesAuthorizationHeader(t *testing.T) {
 	var gotAuth string
 	h := &ChatHandler{handoffFallbackAuth: "fallback-key"}
-	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, authHeader string, _ int) (int, string) {
+	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, authHeader string, _ int) (int, string) {
 		gotAuth = authHeader
 		return http.StatusOK, `{}`
 	}
-	h.injectFollowUpRequest(context.Background(), "sess-auth", []byte(`{}`), "handoff", "Bearer parent-key")
+	h.injectFollowUpRequest(context.Background(), "sess-auth", []byte(`{}`), "handoff", "req-parent", "Bearer parent-key")
 	if gotAuth != "Bearer parent-key" {
 		t.Fatalf("dispatcher received auth %q, want %q", gotAuth, "Bearer parent-key")
 	}
@@ -110,11 +110,11 @@ func TestInjectFollowUpCarriesAuthorizationHeader(t *testing.T) {
 func TestInjectFollowUpOmitsHeaderWhenEmpty(t *testing.T) {
 	var sawEmptyAuth bool
 	h := &ChatHandler{handoffFallbackAuth: ""}
-	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, authHeader string, _ int) (int, string) {
+	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, authHeader string, _ int) (int, string) {
 		sawEmptyAuth = authHeader == ""
 		return http.StatusOK, `{}`
 	}
-	h.injectFollowUpRequest(context.Background(), "sess-empty", []byte(`{}`), "handoff", "")
+	h.injectFollowUpRequest(context.Background(), "sess-empty", []byte(`{}`), "handoff", "", "")
 	if !sawEmptyAuth {
 		t.Fatal("dispatcher should receive empty auth when call site provides none")
 	}
@@ -126,13 +126,13 @@ func TestInjectFollowUpRespectsDepthLimit(t *testing.T) {
 	var calls int
 	h := &ChatHandler{
 		handoffFallbackAuth: "fallback",
-		dispatchFollowUpRequest: func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ int) (int, string) {
+		dispatchFollowUpRequest: func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ string, _ int) (int, string) {
 			calls++
 			return http.StatusOK, `{}`
 		},
 	}
 	ctx := withFollowUpDepth(context.Background(), MaxFollowUpDepth)
-	h.injectFollowUpRequest(ctx, "sess-deep", []byte(`{}`), "handoff", "k")
+	h.injectFollowUpRequest(ctx, "sess-deep", []byte(`{}`), "handoff", "req-deep", "k")
 	if calls != 0 {
 		t.Fatalf("depth-limit guard should block dispatch; got %d", calls)
 	}
@@ -144,7 +144,7 @@ func TestInjectFollowUpRespectsPerSessionCeiling(t *testing.T) {
 	var calls int
 	h := &ChatHandler{
 		handoffFallbackAuth: "fallback",
-		dispatchFollowUpRequest: func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ int) (int, string) {
+		dispatchFollowUpRequest: func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ string, _ int) (int, string) {
 			calls++
 			return http.StatusOK, `{}`
 		},
@@ -153,7 +153,7 @@ func TestInjectFollowUpRespectsPerSessionCeiling(t *testing.T) {
 	for i := 0; i < MaxFollowUpsPerSession; i++ {
 		recordSessionFollowUp("sess-ceil")
 	}
-	h.injectFollowUpRequest(context.Background(), "sess-ceil", []byte(`{}`), "handoff", "k")
+	h.injectFollowUpRequest(context.Background(), "sess-ceil", []byte(`{}`), "handoff", "req-ceil", "k")
 	if calls != 0 {
 		t.Fatalf("per-session ceiling should block dispatch; got %d", calls)
 	}
@@ -165,12 +165,12 @@ func TestInjectFollowUpEmptyBodyIsNoop(t *testing.T) {
 	var calls int
 	h := &ChatHandler{
 		handoffFallbackAuth: "fallback",
-		dispatchFollowUpRequest: func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ int) (int, string) {
+		dispatchFollowUpRequest: func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ string, _ int) (int, string) {
 			calls++
 			return http.StatusOK, `{}`
 		},
 	}
-	h.injectFollowUpRequest(context.Background(), "sess-empty-body", nil, "handoff", "k")
+	h.injectFollowUpRequest(context.Background(), "sess-empty-body", nil, "handoff", "req-noop", "k")
 	if calls != 0 {
 		t.Fatalf("empty follow-up body should be a no-op; got %d dispatches", calls)
 	}
@@ -183,12 +183,12 @@ func TestDefaultDispatchFollowUpAppliesAuthHeader(t *testing.T) {
 	var gotAuth string
 	var gotAction string
 	h := &ChatHandler{}
-	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, header string, _ int) (int, string) {
+	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, header string, _ int) (int, string) {
 		gotAuth = header
 		gotAction = "ok"
 		return http.StatusOK, `{}`
 	}
-	h.injectFollowUpRequest(context.Background(), "sess-prod", []byte(`{}`), "handoff", "Bearer system-key")
+	h.injectFollowUpRequest(context.Background(), "sess-prod", []byte(`{}`), "handoff", "req-prod", "Bearer system-key")
 
 	if gotAuth != "Bearer system-key" {
 		t.Fatalf("production dispatcher must propagate Authorization verbatim; got %q", gotAuth)
@@ -294,16 +294,88 @@ func TestInjectFollowUpLogsAuthFailureOnMissingKey(t *testing.T) {
 		gotBody   string
 	)
 	h := &ChatHandler{handoffFallbackAuth: ""}
-	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ int) (int, string) {
+	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ string, _ int) (int, string) {
 		gotStatus = http.StatusUnauthorized
 		gotBody = `{"error":{"code":"missing_key"}}`
 		return gotStatus, gotBody
 	}
-	h.injectFollowUpRequest(context.Background(), "sess-auth-fail", []byte(`{}`), "handoff", "")
+	h.injectFollowUpRequest(context.Background(), "sess-auth-fail", []byte(`{}`), "handoff", "req-fail", "")
 	if gotStatus != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", gotStatus)
 	}
 	if !strings.Contains(gotBody, "missing_key") {
 		t.Fatalf("expected missing_key in body, got %q", gotBody)
+	}
+}
+
+// TestInjectFollowUpPassesParentRequestID verifies the shadow-turn tagging
+// contract (会话优化v4/18 §3): the orchestrator must forward the originating
+// client request_id to the dispatch seam so defaultDispatchFollowUp can stamp
+// X-Gw-Parent-Request-Id on the synthetic request.
+func TestInjectFollowUpPassesParentRequestID(t *testing.T) {
+	var gotParent string
+	h := &ChatHandler{}
+	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, parentRequestID string, _ string, _ int) (int, string) {
+		gotParent = parentRequestID
+		return http.StatusOK, `{}`
+	}
+	h.injectFollowUpRequest(context.Background(), "sess-parent", []byte(`{}`), "goal_continue", "req-abc-123", "k")
+	if gotParent != "req-abc-123" {
+		t.Fatalf("dispatcher received parentRequestID %q, want %q", gotParent, "req-abc-123")
+	}
+}
+
+// TestFollowUpSourceActorMapping locks the action→origin_actor mapping so
+// session_turns/request_logs keep one stable filter namespace (LIKE 'goal-%').
+func TestFollowUpSourceActorMapping(t *testing.T) {
+	cases := map[string]string{
+		"goal_continue":     "goal-continue",
+		"goal_model_switch": "goal-model-switch",
+		"audit":             "goal-audit",
+		" something-else ":  "goal-followup",
+		"":                  "goal-followup",
+	}
+	for action, want := range cases {
+		if got := followUpSourceActor(action); got != want {
+			t.Fatalf("followUpSourceActor(%q) = %q, want %q", action, got, want)
+		}
+	}
+}
+
+// TestBuildFollowUpRequestCorrelationHeaders asserts the header contract of
+// the synthetic shadow request: correlation headers present, X-Gw-Is-Auto
+// deliberately absent (setting it would route the turn into
+// isInternalAutoEntry and drop it from the session mirror).
+func TestBuildFollowUpRequestCorrelationHeaders(t *testing.T) {
+	req, err := buildFollowUpRequest(context.Background(), "sess-shadow", []byte(`{}`), "goal_continue", "req-parent-1", "Bearer k", 1)
+	if err != nil {
+		t.Fatalf("buildFollowUpRequest: %v", err)
+	}
+	if got := req.Header.Get("X-Gw-Session-Id"); got != "sess-shadow" {
+		t.Fatalf("X-Gw-Session-Id = %q", got)
+	}
+	if got := req.Header.Get("X-Gw-Follow-Up-Action"); got != "goal_continue" {
+		t.Fatalf("X-Gw-Follow-Up-Action = %q", got)
+	}
+	if got := req.Header.Get(autoSourceActorHeader); got != "goal-continue" {
+		t.Fatalf("%s = %q, want goal-continue", autoSourceActorHeader, got)
+	}
+	if got := req.Header.Get(autoParentRequestIDHeader); got != "req-parent-1" {
+		t.Fatalf("%s = %q, want req-parent-1", autoParentRequestIDHeader, got)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer k" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	if got := req.Header.Get(autoIsAutoHeader); got != "" {
+		t.Fatalf("%s must NOT be set on shadow turns (would trigger mirror exclusion), got %q", autoIsAutoHeader, got)
+	}
+
+	// Empty parent/actor-irrelevant fields must not produce empty headers.
+	req2, err := buildFollowUpRequest(context.Background(), "s", []byte(`{}`), "goal_continue", "", "", 1)
+	if err != nil {
+		t.Fatalf("buildFollowUpRequest: %v", err)
+	}
+	if got := req2.Header.Get(autoParentRequestIDHeader); got != "" {
+		t.Fatalf("empty parentRequestID must omit the header, got %q", got)
 	}
 }

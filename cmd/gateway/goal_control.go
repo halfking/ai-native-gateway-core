@@ -210,6 +210,7 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		ClientSignalEnabled:          getEnvBool("LLM_GATEWAY_GOAL_CLIENT_DRIVEN", false),
 		ClientSignalMode:             getEnv("LLM_GATEWAY_GOAL_CLIENT_SIGNAL_MODE", "auto"),
 		HandoffSignalThresholdTokens: getEnvInt("LLM_GATEWAY_GOAL_HANDOFF_SIGNAL_THRESHOLD", 200000),
+		ClientSignalOnToolCalls:      getEnvBool("LLM_GATEWAY_GOAL_CLIENT_SIGNAL_ON_TOOL_CALLS", false),
 
 		// Audit/Fix settings from preset
 		UseAudit:             getEnvBool("LLM_GATEWAY_GOAL_AUDIT_ENABLED", preset.UseAudit),
@@ -249,6 +250,20 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		"auto_fix", goalCfg.AutoFixEnabled,
 		"monthly_limit", goalCfg.MonthlyTokenLimit,
 	)
+
+	// 2026-09-17 silent-degradation guard (会话优化v4/18 §5): the completion
+	// detector's LLM-judge strategy and the audit hook both need the shared
+	// LLMGatewayAutoLLM* endpoint. When goal mode is enabled but the endpoint
+	// is missing, they quietly degrade to keyword heuristics — completion
+	// verdicts get noticeably worse with zero operator feedback. Warn loudly
+	// at boot so the misconfiguration surfaces before the first misjudged
+	// session.
+	if goalCfg.Enabled && !llmCallerConfigured() {
+		slog.Warn("goal_control: goal enabled but LLMGatewayAutoLLMEndpoint is not configured; "+
+			"LLM-judge completion detection and audit degrade to keyword heuristics",
+			"fix", "set LLMGatewayAutoLLMEndpoint (and LLMGatewayAutoLLMApiKey/Model) to restore full judgement",
+			"impact", "keyword-only completion detection may misjudge 'done' claims and audit will skip its LLM step")
+	}
 
 	// Enforce the budget-exhaustion invariant: the loop detector's
 	// budgetExhausted branch only fires when MaxFollowUpDepth can accommodate

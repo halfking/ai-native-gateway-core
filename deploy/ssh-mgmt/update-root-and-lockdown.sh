@@ -7,22 +7,32 @@
 #        - 顶层 PasswordAuthentication no, KbdInteractiveAuthentication no
 #        - 末尾追加 Match Address 172.16.2.0/24 -> PasswordAuthentication yes
 #   4) sshd -t 校验, reload
+#   5) 生效配置闸: sshd -T -C addr=<外网IP> 渲染最终生效配置, 必须
+#      PasswordAuthentication no 才算成功 —— 该检查天然覆盖
+#      /etc/ssh/sshd_config.d/*.conf Include drop-in 的 first-match-wins
+#      (只改主文件时 drop-in 里的 PasswordAuthentication yes 会压过本脚本
+#      的 no, 且 sshd -t 语法校验发现不了)。
 # 验证:
-#   - 公钥登录(从外网发起,必须成功)
-#   - 密码登录(从外网发起,必须被拒)
+#   - 远端生效配置断言(权威): OK_EFFECTIVE_PASSWORDAUTH_NO
+#   - 公钥登录(从操作机发起, 真实退出码, 失败计入总失败)
+#   - 密码登录(从操作机发起, 仅信息性; 权威判定以上一条生效配置闸为准)
 # 任何阶段失败:在远程用备份还原 shadow 和 sshd_config + reload。
+# 防锁死前置闸:/root/.ssh/authorized_keys 必须已有非注释密钥行,
+# 否则改密照常、禁密码直接回滚 —— 对"只密码登录"的机器禁外网密码=锁死。
 
 set -u
 set -o pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # root 密码不入库:从 pw.txt 读取(可用 ROOT_PW_FILE 覆盖路径)。
-# pw.txt 已加入 .gitignore;生成方式: umask 077 && printf '%s' '密码' > deploy/ssh-mgmt/pw.txt
+# pw.txt 已加入 .gitignore;生成方式(密码学随机、不进 shell history):
+#   umask 077 && openssl rand -base64 24 > deploy/ssh-mgmt/pw.txt
 PW_SOURCE="${ROOT_PW_FILE:-$SCRIPT_DIR/pw.txt}"
 if [ ! -s "$PW_SOURCE" ]; then
   echo "ERROR: 密码文件不存在或为空: $PW_SOURCE"
-  echo "       生成: umask 077 && printf '%s' 'root密码' > $PW_SOURCE"
+  echo "       生成: umask 077 && openssl rand -base64 24 > $PW_SOURCE"
   exit 1
 fi
 NEW_PASSWORD="$(cat "$PW_SOURCE")"
@@ -32,9 +42,11 @@ ALLOW_PASSWORD_FROM="$INTERNAL_CIDR"
 
 HOSTS=(245 154 252 115)
 
-# 本机准备:把远程脚本和密码文件分别写到 /tmp
-REMOTE_SH="/tmp/ssh-mgmt-payload.sh"
-PW_FILE="/tmp/ssh-mgmt-pw.txt"
+# 本机准备:把远程脚本和密码文件分别写到 /tmp —— mktemp 随机名 + umask 077,
+# 杜绝固定名 symlink/TOCTOU 与 644 明文窗口。
+REMOTE_SH="$(mktemp /tmp/ssh-mgmt-payload.XXXXXX)"
+PW_FILE="$(mktemp /tmp/ssh-mgmt-pw.XXXXXX)"
+trap 'rm -f "$REMOTE_SH" "$PW_FILE"' EXIT
 
 # 远程脚本本体(不含密码)。注意所有这里的 $ 都是远程执行时的 bash 变量引用,
 # 远程 shell 看到的源码是 base64 解码后的字面字符串,不会再被本机 shell 解释。
@@ -79,6 +91,15 @@ cp -a /etc/shadow "$SHADOW_BAK" || { echo "FAIL_BACKUP_SHADOW"; exit 2; }
 cp -a /etc/ssh/sshd_config "$SSHD_BAK" || { echo "FAIL_BACKUP_SSHD"; exit 2; }
 chmod 600 "$SHADOW_BAK" "$SSHD_BAK"
 echo "OK_BACKUP shadow=$SHADOW_BAK sshd=$SSHD_BAK"
+
+# 1.5) 防锁死前置闸:authorized_keys 必须已有非注释密钥行。
+# 对"一直密码登录、未配密钥"的机器禁外网密码 = 外网入口锁死,只剩 VNC 救援。
+if [ ! -s /root/.ssh/authorized_keys ] \
+   || ! grep -qvE '^[[:space:]]*(#|$)' /root/.ssh/authorized_keys; then
+  echo "FAIL_NO_AUTHORIZED_KEY (refusing to disable password auth; seed a key first)"
+  rollback
+fi
+echo "OK_AUTHORIZED_KEY_PRESENT"
 
 # 解除 /etc/shadow 的 immutable(常见云镜像保护位),改密需要写
 chattr -i /etc/shadow 2>/dev/null || true
@@ -160,11 +181,30 @@ echo "OK_SSHD_EDIT"
 # 4) 校验
 sshd -t && echo "OK_SSHD_TEST" || { echo "FAIL_SSHD_TEST"; rollback; }
 
-# 5) reload
-systemctl reload sshd 2>/dev/null || service sshd reload 2>/dev/null || true
+# 5) reload —— 失败必须回滚,严禁吞掉:Debian/Ubuntu 单元名是 ssh(CentOS 系
+# 是 sshd),四路都试;全失败说明新配置未生效,报告成功就是假成功。
+if ! { systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null \
+       || service sshd reload 2>/dev/null || service ssh reload 2>/dev/null; }; then
+  echo "FAIL_SSHD_RELOAD"
+  rollback
+fi
 echo "OK_SSHD_RELOAD"
 
-# 6) 自检:本会话走公钥,应该仍然 OK
+# 5.5) 生效配置闸(权威):以外网地址上下文渲染 sshd 最终生效配置,必须
+# PasswordAuthentication no。203.0.113.9 是 TEST-NET-3 文档地址,必不落在
+# 内网白名单内。该检查覆盖 Include drop-in 的 first-match-wins —— 只改主
+# 文件时 sshd_config.d/*.conf 里的 PasswordAuthentication yes 会压过本脚本
+# 的 no,sshd -t 与文件检查都发现不了。
+EFF_PW="$(sshd -T -C user=root,host=203.0.113.9,addr=203.0.113.9 2>/dev/null \
+          | awk 'tolower($1)=="passwordauthentication"{print tolower($2); exit}')"
+if [ "$EFF_PW" != "no" ]; then
+  echo "FAIL_EFFECTIVE_PW_NOT_NO val=${EFF_PW:-<empty>} (drop-in Include overrides? see /etc/ssh/sshd_config.d/)"
+  rollback
+fi
+echo "OK_EFFECTIVE_PASSWORDAUTH_NO"
+
+# 6) 自检:本会话走公钥,应该仍然 OK(信息性 —— 真实验证是操作机侧
+# verify_key_login 的退出码,见主脚本)。
 echo "OK_SELF_CHECK user=$(whoami)"
 
 echo "DONE_HOST=$HOSTNAME"
@@ -212,11 +252,15 @@ verify_key_login() {
                 "$host" \
                 'whoami && hostname -I' \
     2>&1 | grep -Ev "post-quantum|store now|openssh\.com/pq|Warning: Permanently"
+  # 真实退出码:ssh 的,不是管道末端 grep 的。禁密码后密钥登不上 = 锁死前兆。
+  return "${PIPESTATUS[0]}"
 }
 
 verify_password_denied_from_internet() {
   local host="$1"
-  # 强制走密码,服务端应该因为 Match Address 不匹配而拒绝
+  # 信息性:NumberOfPasswordPrompts=0 时客户端根本不出示密码,无论服务端
+  # 是否放行都必然 Permission denied —— 本函数的输出不能作为判定依据。
+  # 权威判定是远端 OK_EFFECTIVE_PASSWORDAUTH_NO 生效配置闸。
   ssh -o BatchMode=no \
       -o PreferredAuthentications=password \
       -o PubkeyAuthentication=no \
@@ -227,6 +271,7 @@ verify_password_denied_from_internet() {
       "root@${host}" "true" 2>&1 | head -2
 }
 
+FAILED_HOSTS=""
 for host in "${HOSTS[@]}"; do
   echo
   echo "============================================================"
@@ -236,18 +281,28 @@ for host in "${HOSTS[@]}"; do
   echo "$out"
   if ! grep -q "^DONE_HOST=" <<<"$out"; then
     echo "REMOTE FAILED on $host, see above"
+    FAILED_HOSTS="$FAILED_HOSTS $host"
+    continue
+  fi
+  if ! grep -q "^OK_EFFECTIVE_PASSWORDAUTH_NO$" <<<"$out"; then
+    echo "EFFECTIVE-CONFIG GATE NOT PASSED on $host"
+    FAILED_HOSTS="$FAILED_HOSTS $host"
     continue
   fi
 
   echo "-- verify key-only login (from internet source) --"
-  verify_key_login "$host"
+  if ! verify_key_login "$host"; then
+    echo "VERIFY_FAIL: key login broken on $host — restore access before disconnecting!"
+    FAILED_HOSTS="$FAILED_HOSTS $host"
+  fi
 
-  echo "-- verify password login from internet (must be denied) --"
+  echo "-- verify password login from internet (informational only) --"
   verify_password_denied_from_internet "$host"
 done
 
-# 清理本机临时文件
-rm -f "$REMOTE_SH" "$PW_FILE"
-
 echo
+if [ -n "$FAILED_HOSTS" ]; then
+  echo "COMPLETED WITH FAILURES on:$FAILED_HOSTS"
+  exit 1
+fi
 echo "ALL DONE"
