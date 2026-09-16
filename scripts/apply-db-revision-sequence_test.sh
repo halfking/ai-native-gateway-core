@@ -114,6 +114,7 @@ ensure_allowlist=$(cat <<'EOF'
 690_session_summaries_archived_ttl_index.sql
 704_plan_quota_probe_backoff.sql
 709_work_type_route_coverage.sql
+715_route_incidents_pending_state.sql
 EOF
 )
 canonical_files=$(find "$ROOT_DIR/sql/migrations/startup" -maxdepth 1 -type f -name '[0-9][0-9][0-9]_*.sql' \
@@ -136,7 +137,8 @@ done
 # reviewed list. Their source/migration equivalence has dedicated db tests.
 for required in \
   '704_plan_quota_probe_backoff.sql' \
-  '709_work_type_route_coverage.sql'; do
+  '709_work_type_route_coverage.sql' \
+  '715_route_incidents_pending_state.sql'; do
   printf '%s\n' "$ensure_allowlist" | grep -Fxq "$required" || {
     printf 'required Go-ensure migration missing from allowlist: %s\n' "$required" >&2
     exit 1

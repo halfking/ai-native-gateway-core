@@ -1,0 +1,51 @@
+# D08 — 供应商错误链与凭据服务质量
+
+> 领域编号: D08 ｜ 最近更新: 2026-09-17 (初版) ｜ 状态: v1
+
+## 1. 领域边界
+
+**管**：连接供应商端请求的错误处理逻辑全链：错误记录（supplier_errors 错误表族）、有备援时以 think 或类似不影响会话的模式回传客户端且不中断请求流程、错误按凭据聚合呈现（凭据详情页）、凭据服务质量评估；熔断（breaker）行为。
+**不管**：overflow 族的压缩重试语义（D05）；错误分类对 survival 的路由影响（D04/D02 交界，本域管分类学本身）；节点探测（D09）。
+
+## 2. 参考基线
+
+设计文档：
+- `docs/03-design/02-feature-design/design/vendor-credential-error-detail/`（00-code-context / 01-logic-points / 02-LP1~LP5 / 03-drift-check）
+- `docs/design/provider-quality-failover/`（00/01）
+- `docs/design/credential-monitor-heatmap-requirements.md` + `credential-monitor-heatmap-implementation.md`
+- `docs/03-design/FEATURE-REQ-credential-heatmap-routing-log.md`
+- `docs/03-design/02-feature-design/design/adaptive-timeout-strategy.md`、`timeout-retry-optimization/00-design-spec.md`
+- `docs/error-handling-improvements.md`、`docs/error-analysis-and-fixes.md`
+
+代码入口：
+- `errorsx/`（ClassifyError/ClassifyResponseBody 分类学）
+- `credentialhealth/`、`credentialfpslot/`、`domains/credential/`、`domains/credentialstate/`
+- supplier_errors 表族：`sql/migrations/startup/703_supplier_errors_promote_timezone_pin.sql` 等
+- web 凭据详情：ErrorDetailTab（error_summary/recent_failures/quality_scores_7d）
+- 熔断：breaker（free/paid 双 profile）
+
+## 3. 检查清单
+
+1. **错误必落账**：所有供应商端错误（含窗口内新增供应商/协议路径）进入 supplier_errors_hot → 8h promote（V371 基准）→ 历史 TTL 90d；无"分类失败即丢弃"路径。
+2. **think 模式回传**：有备援可切换时，供应商错误以 thinking/备注通道带给客户端、**不中断流**、错误文本不泄漏内部细节（脱敏双道基准）；无备援时以 kind 化信封终态。窗口内新增错误路径两种去向都有测试。
+3. **凭据聚合呈现**：错误按凭据聚合（错误集合挂在凭据详情下，或会话内关联），质量分（7d）计算口径与展示一致；用于评估供应商服务质量的数据面完整。
+4. **熔断曲线**：指数退避真指数（paid 30s→…→30min 封顶 / free 15s→…→5min 封顶）、RecordSuccess 重置、cycle≥5 告警；legacy 协议路径计入 free 画像；窗口内新增失败路径接入 RecordFailureWithBillingMode。
+5. **分类守卫**：名词窄化（function 类只在有 status 门路径判 model_not_found）不回退；isGenericWebBody 守卫在位。
+6. **免费/付费分叉**：billing mode 缺省语义有文档契约（COALESCE 活路径不可达即钉扎），新增 SQL 不引入空串静默回退。
+
+## 4. 历史回归点（轮末回注区）
+
+- [R30] errorsx `function` 名词无 status 门误判 model_not_found → survival 硬终+绑定 5min 冷却 — 修复 e784481af；modelNotFoundWrappedRe + 回归×2
+- [R31] 熔断升级分支不递增 coolingCycle（free 恒 15s 平铺、日志"exponential"不实）— 修复 01350f089；曲线钉桩测试重写
+- [R31] 免费档熔断画像漏 legacy 协议路径；CloseProbe/ProbeCheck 死接缝删除 — 修复 ceddf5438
+- [R30] supplier_errors TTL 90d — 修复 f19ba5d5a；hot 8h promote（V371）+ ErrorDetailTab 双道脱敏为健康面基准
+
+## 5. 子代理派发提示词
+
+```text
+你是 D08（供应商错误链与凭据服务质量）只读审计子代理。工作目录：本仓库根。
+第一步：Read docs/audit/playbook/conventions.md 和 docs/audit/playbook/domains/D08-provider-errors.md 全文。
+第二步：按域文档 §3 检查清单逐条核对，审计窗口：<窗口>；改动文件清单：<该域相关子集>。
+重点：窗口内新增的供应商错误路径是否"落账+think 回传/信封终态"两去向齐全；熔断画像是否覆盖。
+只读不改。输出按 conventions.md §4 结构，每条发现带 file:line 与触发路径。
+```
