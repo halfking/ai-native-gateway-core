@@ -756,6 +756,17 @@ start_instance() {
   local bundle="$1" port="$2" name; name=$(instance_name "$port")
   stop_instance "$port"
   write_instance_env "$bundle" "$port"
+  # 2026-09-17：2114 cutover 复盘 — active 端口 /readyz 60s 内反复出现
+  # database:null（openDBWithBootRetry 20s 预算耗尽，gateway 静默降级
+  # 兼容模式、readyz 永久 not_ready、自愈无门）。根因：上一轮 active
+  # 容器刚停时 PG 仍在恢复窗口，docker run 立刻把 gateway 拉起，gateway
+  # 自身 20s 内连不上 PG → h.db == nil → readyz 锁 not_ready。脚本侧
+  # 的 cutover 重试只在容器重启层面绕，无法绕过 gateway 进程内的
+  # 一次性 openDBWithBootRetry 决策。修法：start_instance 顶层先做 PG
+  # pre-flight，从 gateway 视角确认 DSN 可用 + SELECT 1 通过，再起容器。
+  # pre-flight 超时（90s）仅 warn 不 fail：仍有 LLM_GATEWAY_DB_BOOT_RETRY_SECONDS
+  # 兜底（dl_write_env 已上调到 90s）。
+  dl_wait_pg_isready || true
   if (( DL_DOCKER )); then
     local image="${LLM_GATEWAY_RUNTIME_IMAGE:-alpine:3.22}" image_file="$RUN_DIR/runtime.Dockerfile"
     docker image inspect "$image" >/dev/null 2>&1 || die "Docker runtime image $image is not available (set LLM_GATEWAY_RUNTIME_IMAGE)"
@@ -1020,9 +1031,15 @@ deploy() {
     # 题），单次失败即回滚把可恢复抖动变成部署失败。给一次完整的重启重
     # 试再判失败；配合 verify_instance 的 readyz 响应体输出，真依赖故障
     # 也能从日志直接看出 database/redis 哪一侧不通。
+    # 2026-09-17：2114 cutover 在 2 次重试内均落 database:null（gateway
+    # 进程内 openDBWithBootRetry 耗尽 20s 默认预算），即使起容器侧 PG
+    # 已可达，gateway 自身仍可能因启动时序问题落入兼容模式。脚本侧把
+    # 重试提到 3 次并在循环间隙 sleep 5s，让 container 完全清理、旧
+    # gateway 进程的 openDBWithBootRetry 决策期被覆盖；同时
+    # dl_wait_pg_isready 已在 start_instance 入口先 SELECT 1。
     local cutover_ok=0 cutover_attempt
-    for cutover_attempt in 1 2; do
-      (( cutover_attempt > 1 )) && printf '    [cutover] readiness gate failed; retry %d/2 (controlled restart)\n' "$cutover_attempt" >&2
+    for cutover_attempt in 1 2 3; do
+      (( cutover_attempt > 1 )) && printf '    [cutover] readiness gate failed; retry %d/3 (controlled restart)\n' "$cutover_attempt" >&2 && sleep 5
       stop_instance "$active_port"
       start_instance "$bundle" "$active_port"
       if verify_instance "$active_port" "$bundle"; then cutover_ok=1; break; fi

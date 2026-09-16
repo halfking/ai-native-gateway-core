@@ -378,6 +378,13 @@ dl_write_env() {
     dl_emit_env_line LLM_GATEWAY_PERSISTENT_LOG_DIR "$persistent_log_dir"
     dl_emit_env_line LLM_GATEWAY_DATABASE_URL "${LLM_GATEWAY_DATABASE_URL:-}"
     dl_emit_env_line DATABASE_URL "${DATABASE_URL:-${LLM_GATEWAY_DATABASE_URL:-}}"
+    # 2026-09-17：local 部署 2114 cutover 复盘 — gateway 内部
+    # openDBWithBootRetry 默认 20s 预算不够覆盖 PG 在上一容器停服后的
+    # 恢复窗口（cat /readyz 期间反复落 database:null）。脚本侧
+    # dl_wait_pg_isready 已先行 SELECT 1 探测，理论上到这里 DSN 已可
+    # 用；上调到 90s 作为 gateway 进程内的最后兜底，避免本地切流时偶发
+    # 单次 ping 失败就触发 nil 降级。生产 245 走更保守默认 20s。
+    dl_emit_env_line LLM_GATEWAY_DB_BOOT_RETRY_SECONDS "${LLM_GATEWAY_DB_BOOT_RETRY_SECONDS:-90}"
     dl_emit_env_line LLM_GATEWAY_PG_DATA_DIR "$(dl_shared_pg_dir)"
     # In minimal mode, clear Redis configuration to force SQLite usage
     if [[ "${DL_REDIS_MODE:-}" == "minimal" ]]; then
@@ -607,6 +614,66 @@ dl_wait_http() {
   local url="$1" deadline=$(( $(date +%s)+${2:-60} ))
   while (( $(date +%s) < deadline )); do curl -fsS --max-time 2 "$url" >/dev/null 2>&1 && return 0; sleep 1; done
   return 1
+}
+# Pre-flight PostgreSQL reachability probe (2026-09-17, incident 2114).
+# Symptom: the freshly started gateway's openDBWithBootRetry exhausted its
+# 20s default budget while PG was still warming after a previous cutover,
+# returned nil, and /readyz locked to database:null + not_ready forever.
+# Fix: before docker run / nohup, prove the exact DSN the gateway will see
+# (host.docker.internal:5432 in Docker mode, 127.0.0.1:PGPORT otherwise)
+# answers SELECT 1. Timeout 90s covers PG recovery windows seen locally.
+dl_wait_pg_isready() {
+  local dsn="${LLM_GATEWAY_DATABASE_URL:-${DATABASE_URL:-}}"
+  if [[ -z "$dsn" ]]; then
+    log 'no DATABASE_URL configured; skipping PG pre-flight'
+    return 0
+  fi
+  local user pass host port db
+  if ! user=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://([^:]+):.*|\2|p') \
+     || ! pass=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://[^:]+:([^@]+)@.*|\2|p') \
+     || ! host=$(printf '%s' "$dsn" | sed -nE 's|^.*@([^:]+):.*|\1|p') \
+     || ! port=$(printf '%s' "$dsn" | sed -nE 's|^.*@[^:]+:([0-9]+).*|\1|p') \
+     || ! db=$(printf '%s' "$dsn" | sed -nE 's|^.*/([^?]+).*|\1|p'); then
+    warn 'could not parse DATABASE_URL; skipping PG pre-flight'
+    return 0
+  fi
+  local probe_host="$host"
+  (( DL_DOCKER )) && [[ "$host" == "127.0.0.1" || "$host" == "localhost" ]] && probe_host=host.docker.internal
+  local deadline=$(( $(date +%s) + 90 )) attempt=0
+  while (( $(date +%s) < deadline )); do
+    attempt=$(( attempt + 1 ))
+    if (( DL_DOCKER )); then
+      docker exec -i -e PGPASSWORD="$pass" "$(dl_pg_container_name)" \
+        psql -X -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' \
+        -h 127.0.0.1 -p 5432 -U "$user" -d "$db" >/dev/null 2>&1 && {
+        [[ $attempt -gt 1 ]] && printf '    [pg-preflight] PG ready after %d probe(s)\n' "$attempt" >&2
+        return 0
+      }
+    elif _dl_have psql; then
+      PGPASSWORD="$pass" psql -X -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' \
+        -h "$probe_host" -p "$port" -U "$user" -d "$db" >/dev/null 2>&1 && {
+        [[ $attempt -gt 1 ]] && printf '    [pg-preflight] PG ready after %d probe(s)\n' "$attempt" >&2
+        return 0
+      }
+    else
+      # No psql and no docker — fall back to a TCP connect against the PG port.
+      (exec 3<>"/dev/tcp/$probe_host/$port") 2>/dev/null && { exec 3<&-; exec 3>&-; return 0; }
+    fi
+    sleep 2
+  done
+  warn "PG pre-flight timed out after 90s ($probe_host:$port, db=$db); gateway boot retry will have to absorb the remaining warmup"
+  return 1
+}
+dl_pg_container_name() {
+  # Best-effort detection of the local PG container name; empty string when
+  # running in system/host mode (dl_wait_pg_isready only execs when set).
+  if [[ -n "${DL_PG_CONTAINER:-}" ]]; then printf '%s\n' "$DL_PG_CONTAINER"; return; fi
+  for c in llm-gateway-pg postgres kx-citus; do
+    if (( DL_DOCKER )) && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -Fxq "$c"; then
+      printf '%s\n' "$c"; return
+    fi
+  done
+  printf '\n'
 }
 dl_record_verify() {
   local root="$1" db="$2" redis="$3" version="$4" port="$5"
