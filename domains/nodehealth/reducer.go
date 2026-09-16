@@ -264,7 +264,14 @@ func (r *OutcomeReducer) Reduce(observation Observation) (Decision, error) {
 		if observation.Phase == PhaseGatewayProbe && state.consecutiveFailures < 2 {
 			state.consecutiveFailures = 2
 		}
-		if state.consecutiveFailures < 3 {
+		// R31 (audit 2026-09-16 §四#5): the Suspect→Degraded boundary follows
+		// the same billing-mode threshold effectsFor uses to fire the circuit,
+		// so the status ladder stays a leading indicator of breaker behaviour.
+		// Previously the boundary was a flat 3: a free credential (circuit
+		// threshold 6) sat labelled Degraded at failures 3-5 while its circuit
+		// was still closed and traffic kept flowing — a dashboard fork with no
+		// behavioural counterpart. Paid credentials are unchanged (3 = 3).
+		if state.consecutiveFailures < circuitFailureThreshold(observation.BillingMode) {
 			state.status = requestjourney.NodeHealthSuspect
 		} else {
 			state.status = requestjourney.NodeHealthDegraded
