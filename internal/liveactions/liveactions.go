@@ -29,6 +29,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -249,7 +250,19 @@ type Emitter struct {
 // rdb may be nil (events are still emitted to the buffer but the worker
 // no-ops the write — keeps emit sites identical across environments).
 // bufSize <= 0 falls back to DefaultBufferSize.
+//
+// Typed-nil hazard (2026-09-17, 252 Redis-less deployment crash-loop): a
+// nil *redis.Client stored in the Client interface makes `rdb == nil`
+// false, so the nil guard in write() would not trip and the first event
+// panics on Pipeline()'s nil receiver. NewEmitter normalises typed-nil
+// values to the untyped nil interface so the write() guard holds for every
+// caller shape.
 func NewEmitter(rdb Client, bufSize int) *Emitter {
+	if rdb != nil {
+		if v := reflect.ValueOf(rdb); v.Kind() == reflect.Pointer && v.IsNil() {
+			rdb = nil
+		}
+	}
 	if bufSize <= 0 {
 		bufSize = DefaultBufferSize
 	}

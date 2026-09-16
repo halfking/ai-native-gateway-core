@@ -137,3 +137,21 @@ func TestPromptBudgetWiredInEntryPoints(t *testing.T) {
 		}
 	}
 }
+
+// TestBodyTooLargeWireCodeConvention pins the client-facing error code of the
+// 32 MiB body-cap rejection to the underscore form body_too_large — the same
+// spelling used by logCtx.SetError/EmitFailure and the failure classifiers
+// (handler.go "body_too_large" cases). The 2026-09-17 prompt_too_large 413
+// audit found a hyphenated body_too-large variant had leaked into the JSON
+// wire code, so clients keying on error.code saw an inconsistent value.
+func TestBodyTooLargeWireCodeConvention(t *testing.T) {
+	for _, file := range []string{"handler.go", "messages.go", "responses.go"} {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if strings.Contains(string(src), "body_too-large") {
+			t.Errorf("%s: hyphenated wire code body_too-large must be body_too_large", file)
+		}
+	}
+}

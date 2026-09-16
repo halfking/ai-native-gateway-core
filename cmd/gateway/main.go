@@ -1393,7 +1393,13 @@ func main() {
 		}
 		// URSM v2 双写过渡: 注入 StickyStore (Task 2)。
 		// nil(redis 不可用) 时 SetRedisStore 退化为纯内存/DB 旧行为。
-		stickyCache.SetRedisStore(stickyStore)
+		// 2026-09-17: 显式判空再传——typed-nil *StickyStore 会骗过
+		// StickyCache 内部的 store != nil 守卫（252 无 Redis 部署实抓）。
+		if stickyStore != nil {
+			stickyCache.SetRedisStore(stickyStore)
+		} else {
+			stickyCache.SetRedisStore(nil)
+		}
 		router := executors.NewRouter(stickyCache, lim)
 		// 2026-09-09 P0 修复：dispatch 路径绕过 Limiter 的 credential 信号量，
 		// 导致 routing 永远按 weight 而不是实时并发分摊。把 PeakCollector
