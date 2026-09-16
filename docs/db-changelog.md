@@ -563,3 +563,9 @@ Stop 等待 worker（10s 上限）、keyring RWMutex、周期汇总日志与失�
 CREATE OR REPLACE FUNCTION + 账本 upsert，幂等；已登记 revision-sequence 通道。
 同批非迁移修正：supplier_errors 历史月分区 TTL（Go stateTableTTLSpecs +
 settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时落库）。
+## 2026-09-16T18:57:32Z — deploy 245 build_seq 2115 (afe343de)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 716 | `716_unify_probe_health_views.sql` | `97281941bcd5207408091d845bd1112d0c0c85c233a395ec8522fad02aa1ec03` | applied+verified |
+

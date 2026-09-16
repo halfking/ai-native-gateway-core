@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation
 )
@@ -110,7 +111,7 @@ func cleanupSessionFollowUps(sessionID string) {
 //  3. Panic recovery so a single misbehaving follow-up doesn't kill the worker
 //
 // The 100ms sleep at the start is a cheap per-call rate limit.
-func (h *ChatHandler) injectFollowUpRequest(ctx context.Context, sessionID string, followUpBody []byte, action string, parentAuthHeader string) {
+func (h *ChatHandler) injectFollowUpRequest(ctx context.Context, sessionID string, followUpBody []byte, action string, parentRequestID string, parentAuthHeader string) {
 	if len(followUpBody) == 0 {
 		return
 	}
@@ -150,7 +151,7 @@ func (h *ChatHandler) injectFollowUpRequest(ctx context.Context, sessionID strin
 		dispatch = defaultDispatchFollowUp
 	}
 
-	status, bodySnippet := dispatch(h, ctx, sessionID, followUpBody, action, parentAuthHeader, 1)
+	status, bodySnippet := dispatch(h, ctx, sessionID, followUpBody, action, parentRequestID, parentAuthHeader, 1)
 	if status >= 400 {
 		if len(bodySnippet) > 256 {
 			bodySnippet = bodySnippet[:256] + "..."
@@ -175,6 +176,15 @@ func (h *ChatHandler) injectFollowUpRequest(ctx context.Context, sessionID strin
 // header and loops it back through ChatHandler.ServeHTTP (the same path a
 // normal client request hits, including auth + routing + upstream).
 //
+// The synthesized request carries the same correlation headers the auto-title
+// loopback uses (X-Gw-Source-Actor / X-Gw-Parent-Request-Id), so the shadow
+// turn is persisted with origin_actor='goal-*' and a joinable parent_request_id
+// in request_logs and session_turns (方案：docs/03-design/02-feature-design/
+// 会话优化v4/18-Goal影子指令与续跑优化方案.md §3). It is deliberately NOT
+// marked X-Gw-Is-Auto: that header routes the entry into isInternalAutoEntry
+// and would silently drop the shadow turn from the session mirror, breaking
+// the GLOBAL_G2 reconciliation invariant.
+//
 // Returns (statusCode, bodySnippet). Body is truncated to 256 bytes so log
 // lines stay bounded on bad upstream payloads.
 func defaultDispatchFollowUp(
@@ -183,24 +193,17 @@ func defaultDispatchFollowUp(
 	sessionID string,
 	body []byte,
 	action string,
+	parentRequestID string,
 	authHeader string,
 	attempt int,
 ) (int, string) {
 	time.Sleep(100 * time.Millisecond)
 
 	childCtx := withFollowUpDepth(ctx, FollowUpDepthFromContext(ctx)+1)
-	req, err := http.NewRequestWithContext(childCtx, http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req, err := buildFollowUpRequest(childCtx, sessionID, body, action, parentRequestID, authHeader, attempt)
 	if err != nil {
 		slog.Error("follow_up_request_create_failed", "error", err, "session_id", sessionID)
 		return 0, ""
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Gw-Session-Id", sessionID)
-	req.Header.Set("X-Gw-Follow-Up-Action", action)
-	req.Header.Set("X-Gw-Follow-Up-Depth", "1")
-	req.Header.Set("X-Gw-Follow-Up-Attempt", strconv.Itoa(attempt))
-	if authHeader != "" {
-		req.Header.Set("Authorization", authHeader)
 	}
 
 	rr := httptest.NewRecorder()
@@ -212,10 +215,65 @@ func defaultDispatchFollowUp(
 	h.ServeHTTP(rr, req)
 
 	snippet := rr.Body.String()
-	if len(snippet) > 256 {
-		snippet = snippet[:256] + "..."
+	return rr.Code, bodySnippetPrefix(snippet)
+}
+
+// buildFollowUpRequest constructs the synthetic follow-up request with its
+// session/action/correlation/auth headers. Split out of
+// defaultDispatchFollowUp so tests can assert the header contract without
+// spinning up the full ServeHTTP pipeline.
+func buildFollowUpRequest(ctx context.Context, sessionID string, body []byte, action string, parentRequestID string, authHeader string, attempt int) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
 	}
-	return rr.Code, snippet
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gw-Session-Id", sessionID)
+	req.Header.Set("X-Gw-Follow-Up-Action", action)
+	req.Header.Set("X-Gw-Follow-Up-Depth", "1")
+	req.Header.Set("X-Gw-Follow-Up-Attempt", strconv.Itoa(attempt))
+	if actor := followUpSourceActor(action); actor != "" {
+		req.Header.Set(autoSourceActorHeader, actor)
+	}
+	if parentRequestID != "" {
+		req.Header.Set(autoParentRequestIDHeader, parentRequestID)
+	}
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	return req, nil
+}
+
+// followUpSourceActor maps a follow-up action to the origin_actor value
+// persisted on the shadow turn (request_logs.origin_actor and
+// session_turns.origin_actor, via the X-Gw-Source-Actor header). Values stay
+// in the auto-title actor namespace ("auto-title-generator", ...) so one
+// LIKE 'goal-%' filter separates every gateway-initiated shadow turn from
+// client-initiated turns. Unknown actions fall back to the generic marker.
+func followUpSourceActor(action string) string {
+	switch strings.TrimSpace(action) {
+	case "goal_continue":
+		return "goal-continue"
+	case "goal_model_switch":
+		return "goal-model-switch"
+	case "audit":
+		return "goal-audit"
+	default:
+		return "goal-followup"
+	}
+}
+
+// bodySnippetPrefix truncates to 256 bytes on a rune boundary for log lines.
+func bodySnippetPrefix(s string) string {
+	const max = 256
+	if len(s) <= max {
+		return s
+	}
+	cut := s[:max]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut + "..."
 }
 
 // isFollowUpAuthFailure reports whether a synthetic follow-up response

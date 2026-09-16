@@ -482,9 +482,25 @@ export interface HeatmapBucket {
   sample_request_ids: string[]
 }
 
+/** 当前节点状态(单一事实源 node_probe_state,与 probe-health/路由同源)。 */
+export interface HeatmapNodeStatus {
+  /** healthy_confirmed | broken_confirmed | suspicious | probing | unknown(手动下线) | unprobed(尚无状态行) */
+  state: string
+  /** 路由当前是否可用(与路由判定一致) */
+  routable: boolean
+  last_direct_ok: boolean | null
+  last_err_code?: string | null
+  last_attempt_at?: string | null
+  next_retry_at?: string | null
+  consecutive_failures: number
+  consecutive_successes: number
+  paused: boolean
+}
+
 export interface HeatmapModel {
   raw_model_name: string
   buckets: HeatmapBucket[]
+  node_status?: HeatmapNodeStatus | null
 }
 
 export interface HeatmapCredential {
