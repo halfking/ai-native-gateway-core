@@ -80,8 +80,10 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 			extensions[key] = val
 			// Step 4.10 (2026-07-28): record unknown-field anomaly once
 			// per (request_id, source_protocol, field_path). Dedup is
-			// enforced inside ReportUnknownField.
-			ReportUnknownField("unknown", ProtocolOpenAIChat, key, nil)
+			// enforced inside ReportUnknownField. Registered paramreg
+			// fields (stream_options, thinking, …) go to Extensions only —
+			// see ReportParseUnknownField.
+			ReportParseUnknownField("unknown", ProtocolOpenAIChat, key, nil)
 		}
 	}
 

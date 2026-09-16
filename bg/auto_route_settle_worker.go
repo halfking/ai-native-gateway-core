@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -60,6 +61,13 @@ const (
 
 	// baselineWindow is the lookback for cohort baselines.
 	baselineWindow = 24 * time.Hour
+
+	// settleDistLockTTL bounds how long the Redis-elected leader holds the
+	// settle token (R31 audit §四#1). Must exceed the sweep timeout (4m) so a
+	// slow-but-alive sweep never loses its lease mid-cycle; distlock
+	// auto-renews at ttl/3 while the process is alive, so this is really just
+	// the crash-recovery bound (dead leader → token free within TTL).
+	settleDistLockTTL = 6 * time.Minute
 )
 
 var (
@@ -109,11 +117,25 @@ type AutoRouteSettleWorker struct {
 	// 2026-07-27.
 	stopOnce sync.Once
 	started  atomic.Bool
+
+	// distLock is the optional Redis-backed leader election manager (R31
+	// audit §四#1). Nil (or Enabled()==false) makes every instance sweep
+	// exactly as before this change.
+	distLock distlock.Manager
 }
 
 // NewAutoRouteSettleWorker constructs the worker.
 func NewAutoRouteSettleWorker(db *pgxpool.Pool) *AutoRouteSettleWorker {
 	return &AutoRouteSettleWorker{db: db, done: make(chan struct{})}
+}
+
+// SetDistLock wires the Redis-backed distributed lock manager used for
+// cross-instance sweep dedup (token-bucket leader election, R31 audit §四#1).
+// Optional: when never called, or called with a manager whose Enabled() is
+// false, every instance sweeps exactly as before. Safe to call before or
+// after Start().
+func (w *AutoRouteSettleWorker) SetDistLock(mgr distlock.Manager) {
+	w.distLock = mgr
 }
 
 // Start launches the sweep loop. Returns immediately. Idempotent: a second
@@ -180,6 +202,18 @@ func (w *AutoRouteSettleWorker) sweep(ctx context.Context) {
 	sweepCtx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
 
+	// R31 (audit §四#1): token-bucket cross-instance dedup — one leader per
+	// tick redeems the token, followers skip without queueing. Without Redis
+	// both instances sweep as before (the harm was doubled batch JOINs and
+	// counters counted once per instance, not correctness).
+	if h := acquireSweepDistLock(sweepCtx, w.distLock, "auto_route_settle", settleDistLockTTL, "auto_route_settle"); h != nil {
+		defer h.Release(context.WithoutCancel(sweepCtx))
+		if !h.IsLeader() {
+			slog.Info("auto-route settle skipped, redis token held by another instance")
+			return
+		}
+	}
+
 	baselines, err := w.loadTaskBaselines(sweepCtx)
 	if err != nil {
 		// Without baselines latency/cost fall back to neutral rather than being
@@ -236,8 +270,13 @@ func (w *AutoRouteSettleWorker) sweep(ctx context.Context) {
 // distinguish a fast model from a slow one — a per-model baseline would score
 // every model ~neutral against its own history.
 func (w *AutoRouteSettleWorker) loadTaskBaselines(ctx context.Context) (map[string]taskBaseline, error) {
+	// GROUP BY task_type yields a NULL group for rows with NULL task_type
+	// (request_logs_hot.task_type is nullable). pgx v5 cannot scan NULL into
+	// string and a scan failure is iteration-fatal, so the whole baseline
+	// map would be lost; COALESCE keeps the group scannable and the
+	// taskType != "" skip below drops it (245 2026-09-16 audit).
 	rows, err := w.db.Query(ctx, `
-		SELECT task_type,
+		SELECT COALESCE(task_type, '') AS task_type,
 		       COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::int AS p95_latency_ms,
 		       COALESCE(percentile_cont(0.75) WITHIN GROUP (ORDER BY cost_usd), 0)        AS p75_cost_usd
 		FROM request_logs_hot rl
