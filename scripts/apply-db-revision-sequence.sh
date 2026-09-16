@@ -405,6 +405,13 @@ files=(
   # 除根。纯 CREATE OR REPLACE FUNCTION + 账本 upsert，幂等收敛；714 编号
   # 已核对本机与 origin/main 双侧空闲。
   "$ROOT_DIR/sql/migrations/startup/714_partition_timezone_pin_remaining.sql"
+  # 2026-09-17 R33 审计（通道登记补齐）：715 route_incidents pending state。
+  # bba08b922 引入 StatePending、6f3d03073 接线 Go-ensure（ensure 的 CHECK/
+  # 索引重建幂等），但 sql/migrations/startup/715_*.sql 未登记任何投递通道，
+  # 通道门禁红灯（693/699/701/703 复发形态）。按 701 定式双通道登记：
+  # sequence 管存量库升级（共享 PG 预升级不启动新二进制的路径），
+  # ensure 管全新安装与启动自愈（db.go ensureRouteIncidentPendingState）。
+  "$ROOT_DIR/sql/migrations/startup/715_route_incidents_pending_state.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
