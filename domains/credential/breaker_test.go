@@ -365,31 +365,35 @@ func TestManagerStats(t *testing.T) {
 	}
 }
 
-func TestManagerProbeCheck(t *testing.T) {
+// R31 (audit 2026-09-16 §四#5): the explicit probe API (ProbeCheck/CloseProbe)
+// was removed as a dead seam; this keeps the underlying half-open recovery
+// contract pinned through the live API — Allow consumes a half-open probe,
+// and RecordSuccess closes the circuit so the next Allow passes.
+func TestManagerHalfOpenRecoveryViaLiveAPI(t *testing.T) {
 	m := NewManager()
-	m.RecordFailure(1, 1, KindTransient)
-	m.RecordFailure(1, 1, KindTransient)
-	m.RecordFailure(1, 1, KindTransient)
-
-	// Should not probe while still cooling
-	if m.ProbeCheck(1, 1) {
-		t.Fatal("should not probe while open")
+	for i := 0; i < 3; i++ {
+		m.RecordFailure(1, 1, KindTransient)
 	}
 
-	// Manually expire cooling
+	// Should not allow while still cooling
+	if m.Allow(1, 1) {
+		t.Fatal("should not allow while open")
+	}
+
+	// Manually expire cooling so Allow transitions OPEN → HALF_OPEN
 	b := m.Get(1, 1)
 	b.mu.Lock()
 	b.coolingExpires = time.Now().Add(-1 * time.Second)
 	b.mu.Unlock()
 
-	if !m.ProbeCheck(1, 1) {
-		t.Fatal("should probe after cooling expiry")
+	if !m.Allow(1, 1) {
+		t.Fatal("should allow the half-open probe after cooling expiry")
 	}
 
-	// Close the probe with success
-	m.CloseProbe(1, 1, true, "")
+	// A success on the half-open probe closes the breaker
+	m.RecordSuccess(1, 1)
 	if m.Allow(1, 1) != true {
-		t.Fatal("should allow after probe success")
+		t.Fatal("should allow after probe success closes the circuit")
 	}
 }
 

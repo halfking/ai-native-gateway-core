@@ -685,6 +685,12 @@ func (m *Manager) RecordFailure(providerID, credentialID int, kind ErrorKind) {
 // profile first (2026-09-15, 245 free-capacity plan). The mark is sticky:
 // a credential observed as free once keeps the profile until process
 // restart, matching the stable billing_mode column it derives from.
+//
+// R31 (audit 2026-09-16 §四#5): an empty billingMode deliberately falls back
+// to the paid profile — an unknown billing mode must never silently adopt
+// the free profile's laxer cooling. On the live paths the empty case is
+// unreachable anyway: every candidate SQL COALESCEs mo.billing_mode to
+// 'per_token' (provider/client.go), so callers always pass a concrete mode.
 func (m *Manager) RecordFailureWithBillingMode(providerID, credentialID int, kind ErrorKind, billingMode string) {
 	b := m.GetOrCreate(providerID, credentialID)
 	if strings.EqualFold(strings.TrimSpace(billingMode), "free") {
@@ -705,28 +711,13 @@ func (m *Manager) Allow(providerID, credentialID int) bool {
 	return b.Allow()
 }
 
-// ProbeCheck performs a half-open probe: if the circuit is HALF_OPEN,
-// it returns true. The caller should make a lightweight probe request
-// and then call RecordSuccess/RecordFailure.
-func (m *Manager) ProbeCheck(providerID, credentialID int) bool {
-	b := m.GetOrCreate(providerID, credentialID)
-	state := b.State()
-	if state == StateHalfOpen {
-		return true
-	}
-	// Also allow if it transitioned from OPEN to HALF_OPEN concurrently
-	if state == StateOpen && b.Allow() {
-		return b.State() == StateHalfOpen
-	}
-	return false
-}
-
-// CloseProbe completes a half-open probe by recording the result.
-func (m *Manager) CloseProbe(providerID, credentialID int, success bool, kind ErrorKind) {
-	b := m.GetOrCreate(providerID, credentialID)
-	if success {
-		b.RecordSuccess()
-	} else {
-		b.RecordFailure(kind)
-	}
-}
+// R31 (audit 2026-09-16 §四#5): Manager.ProbeCheck / Manager.CloseProbe were
+// removed as dead seams. They were the explicit half-open probe API of the
+// pre-unified probe design and had zero production callers — probe
+// scheduling is owned by ProbeQueue/StateObserver since 2026-09-01, probe
+// recovery closes the breaker through the live half-open lifecycle
+// (Allow + RecordSuccess / ReleaseProbe), and reducer probe-phase effects
+// (EffectRecordCircuitFailure on PhaseDirectProbe/GatewayProbe) reach the
+// breaker billing-aware via the adapter. CloseProbe also recorded failures
+// billing-blind, which would have re-introduced the free-profile gap had it
+// ever been wired.
