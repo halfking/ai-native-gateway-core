@@ -488,6 +488,17 @@ func parseOpenAIResponseContentBlock(ir *InternalResponse, m map[string]any) Res
 		id, _ := m["id"].(string)
 		name, _ := m["name"].(string)
 		inputRaw, _ := json.Marshal(m["input"])
+		// R34 (2026-09-17 audit): content-array tool calls on openai-
+		// compatible upstreams (Qwen/DashScope style) never populate the
+		// message-level tool_calls field, so serializers that emit tools
+		// only from ir.ToolCalls (openai chat, responses) dropped them
+		// entirely. Register on both surfaces; serializers dedup by ID.
+		ir.ToolCalls = append(ir.ToolCalls, ResponseToolCall{
+			ID:        id,
+			Name:      name,
+			Arguments: string(inputRaw),
+			InputRaw:  inputRaw,
+		})
 		return ResponseContentBlock{Type: "tool_use", ID: id, Name: name, Input: inputRaw}
 	case "refusal":
 		// R21 (2026-09-13, closes R16 P2-1): the refusal TEXT used to be
@@ -1197,7 +1208,17 @@ func SerializeGeminiResponse(irResp *InternalResponse, clientModel string) ([]by
 			}
 		case "thinking":
 			if c.Thinking != "" {
-				parts = append(parts, map[string]any{"thought": c.Thinking})
+				// R34: real Gemini thought parts are {"text": ..., "thought":
+				// true}; "thought" carrying the text was never a client shape.
+				parts = append(parts, map[string]any{"text": c.Thinking, "thought": true})
+			}
+		case "refusal":
+			// R34 (closes R30 IR P1 residue): the refusal fix (692205664)
+			// covered the openai/anthropic/responses serializers but missed
+			// this one — a refusal-only response still collapsed to an empty
+			// parts array for Gemini clients.
+			if c.Text != "" {
+				parts = append(parts, map[string]any{"text": c.Text})
 			}
 		}
 	}

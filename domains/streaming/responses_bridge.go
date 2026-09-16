@@ -50,6 +50,11 @@ const (
 	maxResponsesBridgeToolArgumentsBytes = 1 * 1024 * 1024
 )
 
+// errResponsesTerminalWrite signals that at least one terminal SSE event
+// failed to reach the wire (or capturer) — callers must not latch the
+// attempt gate on a half-written terminal.
+var errResponsesTerminalWrite = errors.New("responses terminal write failed")
+
 type responsesToolTerminalState struct {
 	ID        string
 	Name      string
@@ -253,11 +258,16 @@ func (s *responsesScaffold) finishAttempt(gate *AttemptCommitGate, fullText, fin
 		s.writeFinalEvents(fullText, finishReason, "", inputTokens, outputTokens, totalTokens)
 		return
 	}
-	s.writeFinalEvents(fullText, finishReason, "", inputTokens, outputTokens, totalTokens)
 	// audit #2: the protocol terminal reached the wire through a committed
 	// gate — latch it so the survival coordinator's renderTerminal cannot
 	// append a second terminal (completed + response.failed).
-	gate.MarkTerminalRendered()
+	// R34 (2026-09-17 audit): latch only on a successful write, matching the
+	// interrupted-tail contract (18933bc6c) — a failed wire write must keep
+	// the coordinator's fallback authority instead of swallowing both
+	// terminals.
+	if s.writeFinalEvents(fullText, finishReason, "", inputTokens, outputTokens, totalTokens) == nil {
+		gate.MarkTerminalRendered()
+	}
 }
 
 func (s *responsesScaffold) finishInterrupted(gate *AttemptCommitGate, fullText, reason string, inputTokens, outputTokens int) {
@@ -267,9 +277,11 @@ func (s *responsesScaffold) finishInterrupted(gate *AttemptCommitGate, fullText,
 	// audit #11: the interruption reason is already in hand here — pass it
 	// through so response.completed carries incomplete_details.reason instead
 	// of a bare "length" finish. "length" stays the default finish form.
-	s.writeFinalEvents(fullText, "length", reason, inputTokens, outputTokens, inputTokens+outputTokens)
-	// audit #2: latch the committed terminal (see finishAttempt).
-	gate.MarkTerminalRendered()
+	// R34: same success-gated latch as finishAttempt above.
+	if s.writeFinalEvents(fullText, "length", reason, inputTokens, outputTokens, inputTokens+outputTokens) == nil {
+		// audit #2: latch the committed terminal (see finishAttempt).
+		gate.MarkTerminalRendered()
+	}
 }
 
 // writeFinalEvents emits response.output_text.done, response.output_item.done,
@@ -289,7 +301,20 @@ func openaiFinishReasonIsError(fr string) bool {
 	return false
 }
 
-func (s *responsesScaffold) writeFinalEvents(fullText, finishReason, incompleteReason string, inputTokens, outputTokens, totalTokens int) {
+// writeFinalEvents emits response.output_text.done, response.output_item.done,
+// and response.completed with aggregated usage. fullText is the
+// accumulated visible text from all delta chunks. finishReason is the
+// raw OpenAI-form value ("stop" | "length" | "tool_calls" | ""); status
+// is the Responses API form ("completed" | "incomplete").
+// R34: returns nil only when every terminal event was written successfully —
+// callers latch the attempt gate on that (see finishAttempt/finishInterrupted).
+func (s *responsesScaffold) writeFinalEvents(fullText, finishReason, incompleteReason string, inputTokens, outputTokens, totalTokens int) error {
+	writeErr := error(nil)
+	emit := func(event string, payload any) {
+		if !s.writeSSEEvent(event, payload) {
+			writeErr = errResponsesTerminalWrite
+		}
+	}
 	status := "completed"
 	if finishReason == "length" || openaiFinishReasonIsError(finishReason) {
 		status = "incomplete"
@@ -299,7 +324,7 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason, incompleteR
 	// must not be represented as a message-only response in the terminal
 	// envelope. Keep the legacy message item for text/reasoning streams.
 	if s.reasoningText.Len() > 0 {
-		s.writeSSEEvent("response.reasoning_text.done", map[string]any{
+		emit("response.reasoning_text.done", map[string]any{
 			"type": "response.reasoning_text.done", "item_id": s.msgID,
 			"output_index": 0, "content_index": 0, "text": s.reasoningText.String(),
 		})
@@ -327,12 +352,12 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason, incompleteR
 			"type": "function_call", "id": state.ID, "call_id": state.ID,
 			"name": state.Name, "arguments": state.Arguments.String(), "status": status,
 		}
-		s.writeSSEEvent("response.function_call_arguments.done", map[string]any{
+		emit("response.function_call_arguments.done", map[string]any{
 			"type": "response.function_call_arguments.done", "item_id": state.ID,
 			"output_index": index, "call_id": state.ID, "name": state.Name,
 			"arguments": state.Arguments.String(),
 		})
-		s.writeSSEEvent("response.output_item.done", map[string]any{
+		emit("response.output_item.done", map[string]any{
 			"type": "response.output_item.done", "output_index": index, "item": item,
 		})
 	}
@@ -350,11 +375,11 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason, incompleteR
 		status = "incomplete"
 	}
 	if hasMessage {
-		s.writeSSEEvent("response.output_text.done", map[string]any{
+		emit("response.output_text.done", map[string]any{
 			"type": "response.output_text.done", "item_id": s.msgID,
 			"output_index": 0, "content_index": 0, "text": fullText,
 		})
-		s.writeSSEEvent("response.output_item.done", map[string]any{
+		emit("response.output_item.done", map[string]any{
 			"type": "response.output_item.done", "output_index": 0,
 			"item": map[string]any{
 				"type": "message", "id": s.msgID, "status": status,
@@ -407,7 +432,8 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason, incompleteR
 			completed["incomplete_details"] = map[string]any{"reason": incompleteReason}
 		}
 	}
-	s.writeSSEEvent("response.completed", completed)
+	emit("response.completed", completed)
+	return writeErr
 }
 
 // StreamAnthropicSSEToResponses reads Anthropic SSE upstream and writes

@@ -31,6 +31,12 @@ export interface FreeDiscoveryTemplate {
   tos_verdict: string // ok | caution | ambiguous | avoid | unknown
   tos_notes: string
   enabled: boolean
+  // R34 (2026-09-17 audit): health-feedback fields from the scan scheduler
+  // (99e77a587) — surfaced so the UI honors the "hover shows why disabled"
+  // behavior the commit promised.
+  auto_disabled_at?: string | null
+  consecutive_scan_failures?: number
+  last_scan_failure_at?: string | null
   created_by: string
   created_at: string
   updated_at: string

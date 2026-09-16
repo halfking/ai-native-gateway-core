@@ -394,6 +394,15 @@ function fmtNum(n: number): string {
   return String(n)
 }
 
+// R34: hover hint for the enabled toggle — explains auto-disables from the
+// scan scheduler health feedback (3 consecutive failures, 99e77a587).
+function autoDisabledHint(tpl: FreeDiscoveryTemplate): string {
+  if (tpl.enabled || !tpl.auto_disabled_at) return ''
+  const fails = tpl.consecutive_scan_failures
+  const when = fmtTime(tpl.auto_disabled_at)
+  return `auto-disabled at ${when}` + (typeof fails === 'number' ? ` · ${fails} consecutive scan failures` : '')
+}
+
 async function loadAll(): Promise<void> {
   await Promise.all([loadTemplates(), loadTasks()])
 }
@@ -563,7 +572,15 @@ onMounted(loadAll)
                 <td><code>{{ tpl.api_key_env || '—' }}</code></td>
                 <td><span class="badge" :class="tosClass(tpl.tos_verdict)">{{ tpl.tos_verdict }}</span></td>
                 <td>
-                  <button class="toggle" :class="{ on: tpl.enabled }" @click="toggleTemplate(tpl)">
+                  <!-- R34: surface the scan-scheduler health feedback — a
+                       template auto-disabled after 3 consecutive scan
+                       failures shows when/why on hover (99e77a587 contract). -->
+                  <button
+                    class="toggle"
+                    :class="{ on: tpl.enabled }"
+                    :title="autoDisabledHint(tpl)"
+                    @click="toggleTemplate(tpl)"
+                  >
                     {{ tpl.enabled ? t('freeDiscovery.common.enabled') : t('freeDiscovery.common.disabled') }}
                   </button>
                 </td>

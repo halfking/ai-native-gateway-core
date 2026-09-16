@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -126,6 +127,16 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"711_hosted_tasks.sql":                 hostedTasksMigration711,
 		"712_session_mirror_outbox.sql":        sessionMirrorOutboxMigration712,
 		"713_session_turns_cost_precision.sql": sessionTurnsCostPrecisionMigration713,
+		// R34 (2026-09-17 audit): byte-equality coverage for the five-point
+		// sync backfill (704/705/709/710/714/715) — see the go:embed block in
+		// main.go.
+		"704_plan_quota_probe_backoff.sql":                  planQuotaProbeBackoffMigration704,
+		"705_request_logs_reattach_detached_partitions.sql": requestLogsReattachDetachedPartitionsMigration705,
+		"709_work_type_route_coverage.sql":                  workTypeRouteCoverageMigration709,
+		"710_request_logs_view_session_family_v2.sql":       requestLogsViewSessionFamilyV2Migration710,
+		"714_partition_timezone_pin_remaining.sql":          partitionTimezonePinRemainingMigration714,
+		"715_route_incidents_pending_state.sql":             routeIncidentsPendingStateMigration715,
+		"716_unify_probe_health_views.sql":                  unifyProbeHealthViewsMigration716,
 	}
 
 	for name, embedded := range expected {
@@ -296,6 +307,50 @@ func TestStartupFilesAreAllEmbedded(t *testing.T) {
 		}
 		if _, ok := registered[name]; !ok {
 			t.Errorf("embeddata/startup file %q is not registered in dbinit.Runner.StartupFiles — wire it into runner.go StartupFiles plus the go:embed var and embeddedSQLFiles entry in main.go, or delete the stray copy", name)
+		}
+	}
+}
+
+// TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17
+// audit) closes the drift direction no test covered: a canonical migration
+// that never reached the installer (704/705/709/710 drifted out — R30
+// leftover #8; 714 landed with no installer copy and no Go ensure mirror).
+// From 704 onward every canonical up-migration must be registered in
+// StartupFiles; anything below 704 is legacy history (pre-703 shapes are
+// superseded or Go-ensure-backed) and stays exempt.
+func TestCanonicalStartupMigrationsAtOrAbove704AreRegistered(t *testing.T) {
+	t.Helper()
+
+	canonicalDir := filepath.Join("..", "..", "..", "sql", "migrations", "startup")
+	entries, err := os.ReadDir(canonicalDir)
+	if err != nil {
+		t.Fatalf("read canonical startup dir: %v", err)
+	}
+
+	runner := dbinit.NewRunner("", "", "", "")
+	registered := make(map[string]struct{}, len(runner.StartupFiles))
+	for _, name := range runner.StartupFiles {
+		registered[name] = struct{}{}
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || strings.HasSuffix(name, ".down.sql") || !strings.HasSuffix(name, ".sql") {
+			continue
+		}
+		prefix := name
+		if i := strings.Index(name, "_"); i > 0 {
+			prefix = name[:i]
+		}
+		num, err := strconv.Atoi(prefix)
+		if err != nil {
+			continue // non-numeric asset (e.g. dated repair scripts)
+		}
+		if num < 704 {
+			continue
+		}
+		if _, ok := registered[name]; !ok {
+			t.Errorf("canonical startup migration %q (>=704) is not registered in dbinit.Runner.StartupFiles — run the five-point sync (embeddata copy, go:embed var + embeddedSQLFiles map in main.go, StartupFiles entry, parity map here), see llm-gateway-installer-migration-3way-sync", name)
 		}
 	}
 }
