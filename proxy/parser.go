@@ -60,7 +60,14 @@ func NewMultiFormatParser() *MultiFormatParser {
 // client 为 nil 时退回默认客户端。
 func NewMultiFormatParserWithClient(client *http.Client) *MultiFormatParser {
 	if client == nil {
-		client = &http.Client{Timeout: defaultParserTimeout}
+		// R35 (2026-09-17 audit P2): honor HTTP(S)_PROXY on subscription
+		// fetches too — the airport endpoints are frequently blocked from
+		// CN egress, and an unpooled default client silently bypassed the
+		// very proxy this subsystem manages.
+		client = &http.Client{
+			Timeout:   defaultParserTimeout,
+			Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
+		}
 	}
 	return &MultiFormatParser{
 		client:    client,

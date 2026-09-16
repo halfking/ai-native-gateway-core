@@ -134,7 +134,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 //
 // 从 request_logs.attachments 列读取该请求的附件元数据数组并返回 JSON。
 // 路径中的 request_id 由上层 mux 提取后传入。
-func (h *Handler) ListByRequest(w http.ResponseWriter, r *http.Request, requestID string) {
+// R35 (2026-09-17 audit P1): tenantID 非空时（tenant_admin 调用方由 admin
+// 包装层传入）附加租户谓词——此前仅按 request_id 查询，租户管理员可枚举
+// 任意请求的附件元数据（含下载路径）进而跨租户取文件。
+func (h *Handler) ListByRequest(w http.ResponseWriter, r *http.Request, requestID string, tenantScope ...string) {
 	if requestID == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_request_id",
 			"request_id is required")
@@ -149,12 +152,21 @@ func (h *Handler) ListByRequest(w http.ResponseWriter, r *http.Request, requestI
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	tenantID := ""
+	if len(tenantScope) > 0 {
+		tenantID = strings.TrimSpace(tenantScope[0])
+	}
+
 	var raw []byte
 	// Query from view (hot + partitions) to include recent 7-day data
-	err := h.dbPool.QueryRow(ctx,
-		`SELECT attachments::text FROM request_logs_with_current_month WHERE request_id = $1 ORDER BY ts DESC LIMIT 1`,
-		requestID,
-	).Scan(&raw)
+	query := `SELECT attachments::text FROM request_logs_with_current_month WHERE request_id = $1`
+	args := []any{requestID}
+	if tenantID != "" {
+		query += ` AND tenant_id = $2`
+		args = append(args, tenantID)
+	}
+	query += ` ORDER BY ts DESC LIMIT 1`
+	err := h.dbPool.QueryRow(ctx, query, args...).Scan(&raw)
 
 	if err != nil {
 		// 无附件或请求不存在：返回空数组而非错误

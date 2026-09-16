@@ -460,12 +460,43 @@ func safeAlignmentRecords(value interface{}) []map[string]interface{} {
 		if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 {
 			return nil
 		}
-		out = append(out, map[string]interface{}{
+		entry := map[string]interface{}{
 			"original_index": original, "compressed_index": compressed,
 			"is_compressed": isCompressed, "compressed_into": into, "hash": hash,
-		})
+		}
+		// R35 (2026-09-17 audit P2): keep the identity-disambiguation and
+		// target-kind fields too — occurrence disambiguates duplicate hashes
+		// and target_kind/target_space carry the retained/summary/dropped
+		// semantics the provenance validators reason over. Optional fields:
+		// absent on legacy producers.
+		if occ, ok := nonNegativeIndex(record["occurrence"]); ok {
+			entry["occurrence"] = occ
+		}
+		if kind, ok := boundedCompressionWord(record["target_kind"]); ok {
+			entry["target_kind"] = kind
+		}
+		if space, ok := boundedCompressionWord(record["target_space"]); ok {
+			entry["target_space"] = space
+		}
+		out = append(out, entry)
 	}
 	return out
+}
+
+// boundedCompressionWord accepts short lowercase identifier words
+// ("retained", "summary", "dropped", "none", ...) used by the alignment
+// provenance records — letters/digits/underscore/-, max 24 chars.
+func boundedCompressionWord(value interface{}) (string, bool) {
+	s, ok := value.(string)
+	if !ok || s == "" || len(s) > 24 {
+		return "", false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
+			return "", false
+		}
+	}
+	return s, true
 }
 
 func safeSanitizeRefs(value interface{}) []map[string]interface{} {

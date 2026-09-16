@@ -15,6 +15,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -119,6 +120,14 @@ type RequestLogContext struct {
 	OutboundTokenBand         string
 	OutboundPriorLayerTokens  int
 	OutboundCompressionReason string
+	// OutboundProvenance (R35, 2026-09-17 audit P0-1) carries the original→
+	// compressed/sanitized provenance write-through: a pre-merged JSON object
+	// with alignment_map / sanitize_message_refs / window_source keys, folded
+	// into request_logs.compression_meta (and thence sessions_v2 metadata via
+	// the mirror whitelist, which already knows these keys). Without this the
+	// V2 read path (applyCompressionMeta) read keys no writer ever produced.
+	// Size-capped at the producer (see buildOutboundProvenance).
+	OutboundProvenance []byte
 
 	ErrCode string
 	ErrMsg  string
@@ -1268,8 +1277,8 @@ func applySessionCompressorFields(entry *telemetry.RequestLogEntry, c *RequestLo
 	if len(c.OutboundBody) > 0 {
 		entry.OutboundBody = json.RawMessage(c.OutboundBody)
 	}
-	if c.OutboundStrategy == "" && c.OutboundTokenBand == "" {
-		return // no compression rewrite or threshold observation to persist
+	if c.OutboundStrategy == "" && c.OutboundTokenBand == "" && len(c.OutboundProvenance) == 0 {
+		return // no compression rewrite, threshold observation, or provenance to persist
 	}
 	if len(c.OutboundMsgHashes) > 0 {
 		entry.OutboundMsgHashes = json.RawMessage(c.OutboundMsgHashes)
@@ -1285,10 +1294,11 @@ func applySessionCompressorFields(entry *telemetry.RequestLogEntry, c *RequestLo
 
 	// Merge window-triggered, summary, and multi-layer threshold facts into
 	// compression_meta without clobbering fields written by other transforms.
-	if c.OutboundWindowTriggered != "" || c.OutboundSummaryMarker != "" || c.OutboundTokenBand != "" {
+	if c.OutboundWindowTriggered != "" || c.OutboundSummaryMarker != "" || c.OutboundTokenBand != "" || len(c.OutboundProvenance) > 0 {
 		merged, err := mergeCompressionMetaV3(entry.CompressionMeta,
 			c.OutboundWindowTriggered, c.OutboundSummaryMarker,
-			c.OutboundTokenBand, c.OutboundTokenEst, c.OutboundPriorLayerTokens)
+			c.OutboundTokenBand, c.OutboundTokenEst, c.OutboundPriorLayerTokens,
+			c.OutboundProvenance)
 		if err != nil {
 			c.recordMetadataLoss("compression_meta", err)
 		}
@@ -1332,6 +1342,7 @@ func mergeCompressionMetaV3(
 	windowTriggered, summaryMarker, tokenBand string,
 	outboundTokens *int,
 	priorLayerTokens int,
+	provenance json.RawMessage,
 ) (json.RawMessage, error) {
 	m := make(map[string]any)
 	if len(existing) > 0 {
@@ -1352,6 +1363,18 @@ func mergeCompressionMetaV3(
 			m["outbound_tokens"] = *outboundTokens
 		}
 	}
+	if len(provenance) > 0 {
+		var prov map[string]any
+		if err := json.Unmarshal(provenance, &prov); err == nil {
+			for k, v := range prov {
+				// Producer-side facts win, but never clobber an earlier
+				// transform's own provenance keys.
+				if _, exists := m[k]; !exists {
+					m[k] = v
+				}
+			}
+		}
+	}
 	if len(m) == 0 {
 		return existing, nil
 	}
@@ -1360,6 +1383,71 @@ func mergeCompressionMetaV3(
 		return existing, err
 	}
 	return b, nil
+}
+
+// buildOutboundProvenance assembles the R35 provenance write-through payload:
+// the compressor's AlignmentMap (identity/occurrence per source message), the
+// sanitizer's SanitizedMessageRefs, and provider-window source telemetry — the
+// per-request counts of retained / summary-folded / dropped messages that no
+// exporter previously answered. Both record slices are hash-only (no
+// plaintext) and hard-capped so compression_meta stays far below its JSONB
+// comfort zone; on overflow the arrays are truncated and a *_truncated flag
+// kept, on runaway size only the counters survive.
+func buildOutboundProvenance(r *http.Request, alignment []compression.AlignmentInfo) []byte {
+	prov := make(map[string]any, 3)
+
+	windowSource := map[string]int{}
+	for _, a := range alignment {
+		kind := a.TargetKind
+		if kind == "" {
+			if a.IsCompressed {
+				kind = "summary"
+			} else {
+				kind = "retained"
+			}
+		}
+		windowSource[kind]++
+	}
+	if len(windowSource) > 0 {
+		prov["window_source"] = windowSource
+	}
+
+	const maxRecords = 256
+	if len(alignment) > 0 {
+		if len(alignment) > maxRecords {
+			alignment = alignment[:maxRecords]
+			prov["alignment_map_truncated"] = true
+		}
+		prov["alignment_map"] = alignment
+	}
+
+	if r != nil {
+		if info, ok := compression.SanitizeInfoFromContext(r.Context()); ok && len(info.MessageRefs) > 0 {
+			refs := info.MessageRefs
+			if len(refs) > maxRecords {
+				refs = refs[:maxRecords]
+				prov["sanitize_refs_truncated"] = true
+			}
+			prov["sanitize_message_refs"] = refs
+		}
+	}
+
+	if len(prov) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(prov)
+	if err != nil {
+		return nil
+	}
+	if len(b) > 128*1024 {
+		// Counters-only fallback: never let provenance bloat the JSONB meta.
+		fallback := map[string]any{"window_source": windowSource}
+		if b, err := json.Marshal(fallback); err == nil {
+			return b
+		}
+		return nil
+	}
+	return b
 }
 
 // applyRoutingMetadata (spec §12 GAP 3) merges the per-request

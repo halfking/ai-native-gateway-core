@@ -224,17 +224,21 @@ const (
 // We keep the CJK alternative because a few domestic providers localise
 // the error string rather than returning the canonical English form.
 var contextLengthRe = regexp.MustCompile(
-	`(?i)(context[ _-]?length[ _-]?exceeded|` +
+	`(?i)(context[ _-]?length[ _-]?(exceeded|limit)|` +
 		`maximum context length|` +
 		`context[ _-]?window[ _-]?(exceeded|is)|` +
 		`context[ _-]?window.{0,30}(exceed|limit|maximum)|` +
-		`prompt is too long|` +
+		`prompt is too long|prompt too long|` +
 		`input is too long|` +
 		`input.{0,30}(exceed|context window|limit)|` +
 		`too many (input )?tokens|` +
 		`tokens? exceed|` +
 		`reduce the length|` +
-		`maximum number of tokens)`,
+		`maximum number of tokens|` +
+		// R35 (2026-09-17 audit P2): some proxies return 400 with the raw
+		// error code instead of prose — without this the oversized body was
+		// classified Transient and re-sent verbatim across credentials.
+		`"code"\s*:\s*"request_too_large")`,
 )
 var contextLengthCJKRe = regexp.MustCompile(
 	`上下文(长度)?(超出|超过|超限)|` +

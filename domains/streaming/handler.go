@@ -3663,7 +3663,13 @@ func (h *ChatHandler) serveWithExecutor(
 			logCtx.OutboundTokenBand = string(scResult.TokenBand)
 			logCtx.OutboundPriorLayerTokens = scResult.PriorLayerTokens
 			logCtx.OutboundCompressionReason = scResult.CompressionReason
-
+			// R35 (2026-09-17 audit P0-1): provenance write-through. The
+			// AlignmentMap and sanitizer MessageRefs used to live only in the
+			// V1 Redis session state / result memo — sessions_v2 metadata's
+			// provenance read path consumed keys no writer ever produced.
+			if prov := buildOutboundProvenance(r, scResult.AlignmentMap); len(prov) > 0 {
+				logCtx.OutboundProvenance = prov
+			}
 		}
 		if scResult != nil && scResult.CompressionStrategy != "" {
 			logCtx.OutboundStrategy = scResult.CompressionStrategy

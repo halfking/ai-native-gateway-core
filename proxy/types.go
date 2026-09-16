@@ -185,6 +185,9 @@ type SelectionPolicy struct {
 }
 
 // DefaultSelectionPolicy 返回合理默认。
+// R35 注记：地域规避不在 policy 行上（banned_regions 挂在
+// subscription/node 两级）；默认 HK 排除落在订阅创建入口
+// （admin CreateSubscription），此处保持策略字段原义。
 func DefaultSelectionPolicy() SelectionPolicy {
 	return SelectionPolicy{
 		LoadBalanceStrategy:  StrategyBestOnly,

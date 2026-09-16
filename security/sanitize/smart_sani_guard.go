@@ -20,6 +20,7 @@ package sanitize
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -217,6 +218,16 @@ func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body 
 
 	// 会话级偏移量（记录每类已用最大编号，保证跨轮次不撞号）
 	tenantID := firstSanitizeTenant(tenantIDs)
+	// R35 (2026-09-17 audit P0-2): the load→assign→save sequence is a
+	// cross-process critical section. stateMu guards one process only; two
+	// replicas reading the same offsets baseline handed out identical
+	// placeholder indices for different values, and the absolute HSET then
+	// made it last-writer-wins — the restore interceptor could return
+	// instance A's sensitive value for instance B's placeholder. Serialize
+	// the section with a short Redis lock (best-effort: degraded to unlocked
+	// when Redis errors out or contention exceeds the retry budget).
+	releaseOffsets := m.acquireOffsetsLock(ctx, sessionID, tenantID)
+	defer releaseOffsets()
 	offset := m.loadOffsets(ctx, sessionID, tenantID)
 	// loadOffsets legitimately returns nil on a cache miss or when Redis is
 	// disabled. Keep a local map so allocating placeholder indexes below is
@@ -311,6 +322,54 @@ func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body 
 	}
 
 	return newBody, sm, messageRefs, nil
+}
+
+// releaseOffsetsLockScript deletes the lock only when the value still matches
+// our token — never someone else's lease after a TTL expiry.
+var releaseOffsetsLockScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+	return redis.call("DEL", KEYS[1])
+end
+return 0
+`)
+
+// acquireOffsetsLock takes the per-session offsets lock (SET NX PX 5s, three
+// 50ms retries). Returns a no-op release when Redis is unavailable or the
+// lock cannot be taken within the budget — the request then runs unlocked,
+// which is exactly the pre-R35 behaviour, instead of blocking the hot path.
+func (m *SanitizeInputMiddleware) acquireOffsetsLock(ctx context.Context, sessionID, tenantID string) func() {
+	if m.redis == nil || sessionID == "" {
+		return func() {}
+	}
+	key := sanitizeOffsetKey(tenantID, sessionID) + ":lock"
+	var token [8]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return func() {}
+	}
+	tok := hex.EncodeToString(token[:])
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return func() {}
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		ok, err := m.redis.SetNX(ctx, key, tok, 5*time.Second).Result()
+		if err != nil {
+			m.logger.Debug("sanitize_middleware: offsets lock unavailable, proceeding unlocked",
+				"session_id", sessionID, "error", err)
+			return func() {}
+		}
+		if ok {
+			return func() {
+				_ = releaseOffsetsLockScript.Run(context.WithoutCancel(ctx), m.redis, []string{key}, tok).Err()
+			}
+		}
+	}
+	m.logger.Debug("sanitize_middleware: offsets lock contention timeout, proceeding unlocked",
+		"session_id", sessionID)
+	return func() {}
 }
 
 // loadOffsets 从 Redis 加载每类已用最大编号作为偏移量。
