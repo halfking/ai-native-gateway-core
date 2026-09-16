@@ -81,10 +81,8 @@ var ErrNoDatabase = errors.New("routeincident: no database pool configured")
 //
 // Algorithm:
 //  1. Begin a transaction.
-//  2. SELECT ... FOR UPDATE the active/recovering row for this route
-//     key (or the first row of any state if you want to recover from
-//     a previous bug — but for phase 1 we only consider
-//     active/recovering).
+//  2. SELECT ... FOR UPDATE the live (pending/active/recovering) row
+//     for this route key.
 //  3. Run the pure DecideState from state.go.
 //  4. UPSERT the aggregate.
 //  5. Insert the idempotent event row.
@@ -92,7 +90,7 @@ var ErrNoDatabase = errors.New("routeincident: no database pool configured")
 //
 // The transaction isolation is READ COMMITTED (Postgres default);
 // the FOR UPDATE on the unique partial index is sufficient because
-// only one active/recovering row can exist per route.
+// only one pending/active/recovering row can exist per route.
 func (s *Store) Transition(ctx context.Context, in TransitionInput) (*TransitionResult, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrNoDatabase
@@ -163,10 +161,19 @@ func (s *Store) Transition(ctx context.Context, in TransitionInput) (*Transition
 	}, nil
 }
 
-// lockActive fetches the active/recovering row for the given route
-// key with a row lock. Returns nil if no such row exists. The
-// provider/credential columns are nullable, so we use COALESCE in
+// lockActive fetches the live (pending/active/recovering) row for the
+// given route key with a row lock. Returns nil if no such row exists.
+// The provider/credential columns are nullable, so we use COALESCE in
 // the WHERE clause to match the partial unique index.
+//
+// R33 (2026-09-17): 'pending' MUST be matched here. 715 widened the
+// partial unique index to `state IN ('pending','active','recovering')`,
+// so a route with a pending row has exactly one live aggregate row —
+// if this filter skipped pending, the next failure would run
+// DecideState(nil, ...) → insertNew again and die on 23505 (retry
+// exhausted by the observer), the threshold could never accumulate,
+// and the route key would be poisoned forever. Same for pending+success:
+// DecideState needs the row to mark it recovered.
 func lockActive(
 	ctx context.Context, tx pgx.Tx,
 	tenantID, protocol, model string,
@@ -185,7 +192,7 @@ func lockActive(
 		  AND model = $3
 		  AND COALESCE(provider_id, 0) = COALESCE($4, 0)
 		  AND COALESCE(credential_id, 0) = COALESCE($5, 0)
-		  AND state IN ('active', 'recovering')
+		  AND state IN ('pending', 'active', 'recovering')
 		FOR UPDATE
 	`
 	row := tx.QueryRow(ctx, sql, tenantID, protocol, model, providerID, credentialID)
