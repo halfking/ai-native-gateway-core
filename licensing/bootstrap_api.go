@@ -2,6 +2,7 @@ package licensing
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -245,6 +246,32 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 		slog.Info("center unreachable, activating with local free license",
 			"instance_id", instanceID)
 
+		// R30 审计 L-1（2026-09-16）：该端点无认证，任何网络可达者都能用
+		// 任意自造 hardware_hash 占掉免费 License 唯一的设备席位（MaxDevices=1），
+		// 真实用户首启即被 DoS。免费 License 只服务本机：客户端上报的 hash
+		// 必须与服务端自算指纹一致。指纹不可用时退回原行为（记 Warn，不把
+		// 正常装机路径锁死）。
+		if fp, fpErr := GenerateFingerprint(); fpErr == nil && fp != nil {
+			if input.HardwareHash != fp.Hash() {
+				slog.Warn("bootstrap activate-quick free branch rejected foreign hardware_hash",
+					"instance_id", instanceID)
+				return c.JSON(http.StatusForbidden, map[string]any{
+					"activated": false,
+					"error":     "hardware_hash_mismatch",
+					"message":   "本地免费激活仅限本机：hardware_hash 与本机指纹不符",
+				})
+			}
+		} else {
+			slog.Warn("bootstrap activate-quick free branch: fingerprint unavailable, skipping hash check",
+				"instance_id", instanceID, "error", bootstrapErrString(fpErr))
+		}
+
+		// R30 审计 L-4：与 handleActivate 同款 nil 防护（裸构造
+		// &BootstrapHandler{} 的测试/嵌入场景不再 panic）。
+		if h.Store == nil || h.Activator == nil {
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "activator_unavailable"})
+		}
+
 		freeLic := h.generateFreeLicense(instanceID, input.HardwareHash)
 
 		// 写入 licenses 表（幂等处理）
@@ -272,6 +299,16 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 			errMsg := "unknown error"
 			if err != nil {
 				errMsg = err.Error()
+			}
+			// R30 审计 L-1：席位被占（设备上限）是 409 冲突而非 500，
+			// 并提示需要解绑既有设备，前端可给出自助指引。
+			if errors.Is(err, ErrDeviceLimitExceeded) {
+				return c.JSON(http.StatusConflict, map[string]any{
+					"activated":       false,
+					"error":           errMsg,
+					"need_deactivate": true,
+					"message":         "免费 License 设备席位已被占用，需先解绑既有设备",
+				})
 			}
 			return c.JSON(http.StatusInternalServerError, map[string]any{
 				"activated": false,
@@ -371,40 +408,40 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 			})
 		}
 	}
-		h.startCenterAgent(instanceID, licenseKey, input.HardwareHash)
-		return c.JSON(http.StatusOK, map[string]any{
-			"activated": true, "mode": "quick", "center_online": true, "registered": true,
-			"instance_id": instanceID,
-			"license_key": maskBootstrapLicenseKey(licenseKey), "message": "已同意并完成激活",
-		})
+	h.startCenterAgent(instanceID, licenseKey, input.HardwareHash)
+	return c.JSON(http.StatusOK, map[string]any{
+		"activated": true, "mode": "quick", "center_online": true, "registered": true,
+		"instance_id": instanceID,
+		"license_key": maskBootstrapLicenseKey(licenseKey), "message": "已同意并完成激活",
+	})
+}
+
+// generateFreeLicense 生成本地免费 License（中心不可达时使用）
+func (h *BootstrapHandler) generateFreeLicense(instanceID, hardwareHash string) *License {
+	now := time.Now()
+
+	// License Key 格式：FREE-{instance_id前12位}
+	licenseKey := fmt.Sprintf("FREE-%s", instanceID)
+	if len(instanceID) > 12 {
+		licenseKey = fmt.Sprintf("FREE-%s", instanceID[:12])
 	}
-	
-	// generateFreeLicense 生成本地免费 License（中心不可达时使用）
-	func (h *BootstrapHandler) generateFreeLicense(instanceID, hardwareHash string) *License {
-		now := time.Now()
-		
-		// License Key 格式：FREE-{instance_id前12位}
-		licenseKey := fmt.Sprintf("FREE-%s", instanceID)
-		if len(instanceID) > 12 {
-			licenseKey = fmt.Sprintf("FREE-%s", instanceID[:12])
-		}
-		
-		return &License{
-			LicenseKey:       licenseKey,
-			CustomerName:     "Free User",
-			CustomerEmail:    fmt.Sprintf("free-%s@local", instanceID[:min(8, len(instanceID))]),
-			MaxDevices:       1,  // 免费版限制 1 设备
-			SubscriptionTier: "free",
-			Features:         []string{"basic_ai_coding"}, // 基础功能
-			ExpiresAt:        now.AddDate(10, 0, 0),      // 10 年有效期
-			CreatedAt:        now,
-			HardwareHash:     hardwareHash,
-		}
+
+	return &License{
+		LicenseKey:       licenseKey,
+		CustomerName:     "Free User",
+		CustomerEmail:    fmt.Sprintf("free-%s@local", instanceID[:min(8, len(instanceID))]),
+		MaxDevices:       1, // 免费版限制 1 设备
+		SubscriptionTier: "free",
+		Features:         []string{"basic_ai_coding"}, // 基础功能
+		ExpiresAt:        now.AddDate(10, 0, 0),       // 10 年有效期
+		CreatedAt:        now,
+		HardwareHash:     hardwareHash,
 	}
-	
-	func min(a, b int) int {
-		if a < b {
-			return a
-		}
-		return b
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
+	return b
+}

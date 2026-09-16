@@ -613,6 +613,14 @@ func buildOpenAIResponseContent(ir *InternalResponse) any {
 		switch c.Type {
 		case "text":
 			blocks = append(blocks, map[string]any{"type": "text", "text": c.Text})
+		case "refusal":
+			// R30 (2026-09-16, closes IR-audit P1-1): refusal blocks are
+			// preserved at parse time (R21) but every serializer dropped
+			// them — a refusal-only response collapsed to `content: []`,
+			// an empty-shell success. OpenAI chat has no refusal content
+			// part; emit the refusal text as a plain text part so the
+			// client sees the model's refusal instead of silence.
+			blocks = append(blocks, map[string]any{"type": "text", "text": c.Text})
 		case "tool_use":
 			// 审计 R8 P2：OpenAI chat 客户端的工具调用唯一规范形态是
 			// tool_calls 数组（下方已发射，带完整 input）。content 数组里
@@ -762,6 +770,11 @@ func buildAnthropicResponseContent(ir *InternalResponse) []map[string]any {
 	for _, c := range ir.Content {
 		switch c.Type {
 		case "text":
+			content = append(content, map[string]any{"type": "text", "text": c.Text})
+		case "refusal":
+			// R30 (2026-09-16, closes IR-audit P1-1): same serializer-side
+			// refusal drop as the OpenAI builder — Anthropic Messages has no
+			// refusal block type, so surface the text verbatim.
 			content = append(content, map[string]any{"type": "text", "text": c.Text})
 		case "tool_use":
 			var input any
@@ -958,10 +971,13 @@ func buildResponsesResponseOutput(ir *InternalResponse, msgID, status string) []
 		})
 	}
 
-	// Aggregate text content from IR.Content blocks (type=text).
+	// Aggregate text content from IR.Content blocks (type=text). Refusal
+	// blocks (R30, closes IR-audit P1-1) join the same text stream so a
+	// refusal-only response still reaches Responses clients as output_text
+	// instead of an empty message.
 	textContent := ""
 	for _, c := range ir.Content {
-		if c.Type == "text" {
+		if c.Type == "text" || c.Type == "refusal" {
 			textContent += c.Text
 		}
 	}
