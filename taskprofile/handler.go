@@ -1,0 +1,221 @@
+package taskprofile
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"os"
+	"strconv"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// handler.go — admin API for the task-profile module.
+//
+// Endpoints (all under /api/admin/task-profile, registered by
+// RegisterTaskProfileRoutes with the same middleware tier as the P2.1
+// annotation endpoints):
+//
+//	GET  /api/admin/task-profile                     — consolidated registry
+//	                                                  view (profiles + live
+//	                                                  correction stats)
+//	POST /api/admin/task-profile/corrections         — record one human
+//	                                                  task-type correction
+//	GET  /api/admin/task-profile/corrections/stats   — per-task stats
+//	                                                  (+ recent corrections)
+//	POST /api/admin/task-profile/reload              — re-apply the overlay
+//	                                                  file (independent
+//	                                                  upgrade operation)
+
+// OverlayEnvVar names the environment variable holding the overlay file
+// path. Kept here so cmd/gateway and the reload endpoint agree on the
+// source of truth.
+const OverlayEnvVar = "TASKPROFILE_OVERLAY"
+
+// Handlers wires the admin endpoints to a store.
+type Handlers struct {
+	store *CorrectionStore
+}
+
+// NewHandlers constructs the admin handlers over pool (may be nil → the
+// endpoints answer 503, same convention as the annotation handlers).
+func NewHandlers(pool *pgxpool.Pool) *Handlers {
+	return &Handlers{store: NewCorrectionStore(pool)}
+}
+
+// RegisterTaskProfileRoutes registers the endpoints on mux behind the given
+// admin middleware wrapper.
+func (h *Handlers) RegisterTaskProfileRoutes(mux *http.ServeMux, wrap func(http.HandlerFunc) http.HandlerFunc) {
+	mux.HandleFunc("GET /api/admin/task-profile", wrap(h.handleProfile))
+	mux.HandleFunc("POST /api/admin/task-profile/corrections", wrap(h.handleCreateCorrection))
+	mux.HandleFunc("GET /api/admin/task-profile/corrections/stats", wrap(h.handleCorrectionStats))
+	mux.HandleFunc("POST /api/admin/task-profile/reload", wrap(h.handleReload))
+}
+
+// handleProfile returns the consolidated view: registry version + profiles +
+// current correction stats merged per task type (the "one module" answer to
+// "task type identification + suggested tier" data).
+func (h *Handlers) handleProfile(w http.ResponseWriter, r *http.Request) {
+	if !h.ensurePool(w) {
+		return
+	}
+	ctx := r.Context()
+	version, profiles := Snapshot()
+
+	stats, err := h.store.Stats(ctx, time.Now().Add(-30*24*time.Hour))
+	if err != nil {
+		http.Error(w, "query correction stats: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	type profileView struct {
+		TaskProfile
+		CorrectionStats *CorrectionStat `json:"correction_stats,omitempty"`
+		Suggestion      Suggestion      `json:"suggestion"`
+	}
+	views := make([]profileView, 0, len(profiles))
+	for _, p := range profiles {
+		v := profileView{TaskProfile: p}
+		if s, ok := stats[p.TaskType]; ok {
+			sCopy := s
+			v.CorrectionStats = &sCopy
+		}
+		// Representative suggestion at confidence 1.0 isolates the
+		// correction-driven tier escalation (any lower value would conflate
+		// the confidence-escalation rule into the view).
+		v.Suggestion = Suggest(p.TaskType, 1.0, stats)
+		views = append(views, v)
+	}
+
+	writeJSON(w, map[string]any{
+		"registry_version": version,
+		"schema_version":   SchemaVersion,
+		"task_types":       TaskTypes(),
+		"profiles":         views,
+	})
+}
+
+// createCorrectionRequest is the POST /corrections body.
+type createCorrectionRequest struct {
+	RequestID     string `json:"request_id"`
+	HumanTaskType string `json:"human_task_type"`
+	Annotator     string `json:"annotator"`
+	Reason        string `json:"reason"`
+}
+
+// handleCreateCorrection records one human task-type correction.
+func (h *Handlers) handleCreateCorrection(w http.ResponseWriter, r *http.Request) {
+	if !h.ensurePool(w) {
+		return
+	}
+	var req createCorrectionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.RequestID == "" || req.HumanTaskType == "" || req.Annotator == "" || req.Reason == "" {
+		http.Error(w, "missing required fields: request_id, human_task_type, annotator, reason", http.StatusBadRequest)
+		return
+	}
+	if !IsValidTaskType(req.HumanTaskType) {
+		http.Error(w, "unknown human_task_type; valid: "+strconv.Quote(TaskTypesCSV()), http.StatusBadRequest)
+		return
+	}
+	if !IsValidReason(req.Reason) {
+		http.Error(w, "invalid reason; valid: "+strconv.Quote(reasonsCSV()), http.StatusBadRequest)
+		return
+	}
+
+	correction, err := h.store.Record(r.Context(), CreateCorrectionInput{
+		RequestID:     req.RequestID,
+		HumanTaskType: req.HumanTaskType,
+		Annotator:     req.Annotator,
+		Reason:        req.Reason,
+	})
+	switch {
+	case err == nil:
+		writeJSON(w, map[string]any{"success": true, "correction": correction})
+	case errors.Is(err, ErrUnknownRequest):
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	case errors.Is(err, ErrAlreadyCorrected):
+		http.Error(w, err.Error(), http.StatusConflict)
+	default:
+		http.Error(w, "record correction: "+err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// handleCorrectionStats answers with per-task stats and the recent feed.
+func (h *Handlers) handleCorrectionStats(w http.ResponseWriter, r *http.Request) {
+	if !h.ensurePool(w) {
+		return
+	}
+	since := time.Now().Add(-30 * 24 * time.Hour)
+	if v := r.URL.Query().Get("since_days"); v != "" {
+		days, err := strconv.Atoi(v)
+		if err != nil || days <= 0 || days > 365 {
+			http.Error(w, "since_days must be an integer in [1,365]", http.StatusBadRequest)
+			return
+		}
+		since = time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	}
+	limit := 100
+	if v := r.URL.Query().Get("recent_limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 || n > 500 {
+			http.Error(w, "recent_limit must be an integer in [1,500]", http.StatusBadRequest)
+			return
+		}
+		limit = n
+	}
+
+	stats, err := h.store.Stats(r.Context(), since)
+	if err != nil {
+		http.Error(w, "query stats: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	recent, err := h.store.Recent(r.Context(), limit)
+	if err != nil {
+		http.Error(w, "query recent: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Suggestions per corrected task type at a neutral confidence (0.75):
+	// shows the escalation the stats currently drive.
+	suggestions := make(map[string]Suggestion, len(stats))
+	for taskType := range stats {
+		suggestions[taskType] = Suggest(taskType, 0.75, stats)
+	}
+
+	writeJSON(w, map[string]any{
+		"since":       since.UTC().Format(time.RFC3339),
+		"stats":       stats,
+		"suggestions": suggestions,
+		"recent":      recent,
+	})
+}
+
+// handleReload re-applies the overlay file (or resets to defaults when
+// TASKPROFILE_OVERLAY is unset). This is the module's independent-upgrade
+// operation: profile data changes without a redeploy.
+func (h *Handlers) handleReload(w http.ResponseWriter, r *http.Request) {
+	version, err := ReloadOverlay(os.Getenv(OverlayEnvVar))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"success": true, "registry_version": version})
+}
+
+func (h *Handlers) ensurePool(w http.ResponseWriter) bool {
+	if h.store.Pool() == nil {
+		http.Error(w, "Database not available", http.StatusServiceUnavailable)
+		return false
+	}
+	return true
+}
+
+func writeJSON(w http.ResponseWriter, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(payload)
+}
