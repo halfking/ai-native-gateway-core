@@ -195,11 +195,30 @@ func (c *Checker) InvalidateAll() {
 
 // ReloadAll reloads every tenant's denylist.  Used at startup
 // (pre-warm) and by the background ticker as a safety net.
+//
+// RLS Phase 2 适配 (R41 P1-2): 跨租户拉取必须显式事务 + super_admin 旁路
+// GUC（迁移 725 新增的 tenant_model_policies_super_admin_bypass policy），
+// 因为 NOSUPERUSER owner 在 FORCE+ENABLE 形态下不能用 SET LOCAL row_security
+// 旁路（PG 在 SELECT 阶段抛 ERROR，R41 staging 矩阵 B/F 实证）。事务在
+// superuser 角色（llm_gateway SUPERUSER+BYPASSRLS）期间仍命中 BYPASSRLS
+// 旁路、与旧直连语义等价；NOSUPERUSER owner 角色下 725 bypass policy 触
+// 发、跨租户可见。
 func (c *Checker) ReloadAll(ctx context.Context) error {
 	if c == nil || !c.Enabled() {
 		return nil
 	}
-	rows, err := c.dbPool.Query(ctx, `
+	tx, err := c.dbPool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx) // no-op after Commit
+	}()
+	// 725 super_admin_bypass policy 旁路分支
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.current_role', 'super_admin', true)`); err != nil {
+		return fmt.Errorf("set super_admin role: %w", err)
+	}
+	rows, err := tx.Query(ctx, `
 		SELECT tenant_id, canonical_name
 		FROM tenant_model_policies_active
 	`)
@@ -239,6 +258,10 @@ func (c *Checker) ReloadAll(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
 	slog.Info("model_policy cache reloaded",
 		"tenants_with_policies", len(fresh),
 		"total_denials", countTotal(fresh))
@@ -246,13 +269,15 @@ func (c *Checker) ReloadAll(ctx context.Context) error {
 }
 
 // reloadTenant fetches the denylist for a single tenant and updates
-// the cache.  Bypasses RLS via SET LOCAL row_security = off because
-// the Checker runs without an app.current_tenant GUC.
+// the cache.  Sets `app.current_tenant=$tenant` in the local tx so
+// tenant_model_policies's `tenant_isolation_tmp` policy lets the row
+// through (canonical vocabulary form).
 //
-// Why not use a separate role: production uses one DB user per
-// service; creating model_policy_reader role requires touching
-// secrets, k8s config, and deploy scripts.  SET LOCAL is simpler
-// and stays in the same transaction so it auto-rollbacks.
+// RLS Phase 2 适配 (R41 P1-2): 原 `SET LOCAL row_security=off` 在
+// NOSUPERUSER owner + FORCE+ENABLE 形态下被 PG 在 SELECT 阶段抛 ERROR
+// （staging 矩阵 B/F 实证）。改用 tenant GUC 走标准 tenant_id 隔离分支——
+// 比 bypass 路径更窄、更安全（不能跨租户），且与同包其它读路径（denylist
+// cache refresh）一致。
 func (c *Checker) reloadTenant(ctx context.Context, tenantID string) error {
 	tx, err := c.dbPool.Begin(ctx)
 	if err != nil {
@@ -262,8 +287,8 @@ func (c *Checker) reloadTenant(ctx context.Context, tenantID string) error {
 		_ = tx.Rollback(ctx) // no-op after Commit
 	}()
 
-	if _, err := tx.Exec(ctx, "SET LOCAL row_security = off"); err != nil {
-		return fmt.Errorf("disable RLS: %w", err)
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.current_tenant', $1, true)`, tenantID); err != nil {
+		return fmt.Errorf("set tenant guc: %w", err)
 	}
 
 	rows, err := tx.Query(ctx, `
