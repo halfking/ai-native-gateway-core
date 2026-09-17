@@ -39,10 +39,14 @@ docker run -d --name dl717disc-a -e POSTGRES_USER=llm_gateway -e POSTGRES_PASSWO
 # probe IMMEDIATELY — PG is still initializing; old code slept 2s and misreported
 rc=0; out=$(pg_container_usable dl717disc-a 2>&1) || rc=$?
 check "cold-start usable (was: misreported not-usable)" 0 "$rc" "has llm_gateway database ✓" "$out"
-check "HAS_DB=1 exported" 0 "$(grep -q 'DL_DISCOVERED_PG_HAS_DB=1' <<<"$(set | grep DL_DISCOVERED_PG_HAS_DB)" && echo 0 || echo 1)" "" ""
+# R39: the captured subshell above cannot propagate `export` to this shell —
+# the original in-subshell assertion was deterministically red. Re-probe in
+# the parent shell and assert the exported flag there.
+pg_container_usable dl717disc-a >/dev/null 2>&1
+check "HAS_DB=1 exported" 0 "$([[ "${DL_DISCOVERED_PG_HAS_DB:-0}" == 1 ]] && echo 0 || echo 1)" "" ""
 
 echo "=== C: connected but llm_gateway absent (fresh generic container) ==="
-docker run -d --name dl717disc-b -e POSTGRES_USER=pguser -e POSTGRES_PASSWORD=pass-b -e POSTGRES_PASSWORD=pass-b -p 25433:5432 postgres:17-alpine >/dev/null
+docker run -d --name dl717disc-b -e POSTGRES_USER=pguser -e POSTGRES_PASSWORD=pass-b -p 25433:5432 postgres:17-alpine >/dev/null
 until docker exec dl717disc-b pg_isready -U pguser -d postgres >/dev/null 2>&1; do sleep 1; done
 rc=0; out=$(pg_container_usable dl717disc-b 2>&1) || rc=$?
 check "db-absent path usable (was: not usable)" 0 "$rc" "will create llm_gateway database" "$out"

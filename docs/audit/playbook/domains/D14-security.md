@@ -52,3 +52,11 @@
 第二步：以窗口改动面为取样范围（git diff 中的并发原语/网络调用/资源分配点），按域文档 §3 检查清单逐条核对。审计窗口：<窗口>。
 只读不改。输出按 conventions.md §4 结构，每条发现带 file:line 与触发路径。
 ```
+
+### R39 回注（2026-09-17，mDNS 特性首审）
+- **新特性安全基线五连**（新增网络面必查）：默认关闭全链路（env+yaml+部署面 grep）、绑定失败降级不 crash、Stop 幂等/double-close 安全、TXT 无凭据、vendored 依赖精确收敛+许可证。
+- goroutine 捕获 channel 字段必须存局部值再传（`a.stopCh` 字段在 monitor goroutine 被无锁读、Start 重启在 mu 内写——R39 已修，钉桩=discovery -race Restart 测试）。
+- mergeFrom 白名单与 yaml tag 必须成对（tag 暴露而白名单缺分支=死配置静默 no-op）。
+- 同主机多实例共用任何"实例名"必须拼端口/角色后缀（mDNS SPN/锁名/日志标识）。
+- 发现类 API 的返回值一律视为未认证数据，函数头必须钉 TRUST BOUNDARY 注释；`mdns.QueryContext` 才吃 ctx（`mdns.Query` 忽略）。
+- mDNS ServiceEntry.Name 是完整 SPN，比较实例名前必须剥 `._llm-gateway._tcp.local.` 后缀（parseServiceEntry 已处理，测试扩钉）。

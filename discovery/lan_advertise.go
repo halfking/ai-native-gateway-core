@@ -39,7 +39,7 @@ func NewLANAdvertiser(name string, port int, version string, apis []string) *LAN
 	if hostname == "" {
 		hostname = "llm-gateway"
 	}
-	
+
 	return &LANAdvertiser{
 		port:     port,
 		name:     name,
@@ -94,7 +94,12 @@ func (a *LANAdvertiser) Start(ctx context.Context) error {
 	}
 
 	a.server = server
-	a.stopCh = make(chan struct{}) // Reset stop channel for restart support
+	// Reset stop channel for restart support. Capture it locally so the
+	// monitor goroutine below reads the value, not the field — Start may be
+	// called again (restart) and replace a.stopCh while this goroutine is
+	// still selecting (the field write is mutex-held, the read would not be).
+	stopCh := make(chan struct{})
+	a.stopCh = stopCh
 	a.running = true
 
 	slog.Info("LAN advertiser started",
@@ -112,7 +117,7 @@ func (a *LANAdvertiser) Start(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			a.Stop()
-		case <-a.stopCh:
+		case <-stopCh:
 			return
 		}
 	}()
@@ -143,13 +148,16 @@ func (a *LANAdvertiser) Stop() {
 	default:
 		close(a.stopCh)
 	}
-	
+
 	a.running = false
 
 	slog.Info("LAN advertiser stopped", "service", a.name)
 }
 
 // IsRunning returns whether the advertiser is currently running.
+//
+// RESERVED(R39): LAN discovery client — no production caller yet; kept for
+// the Phase 2+ status/health wiring. Do not flag as dead code.
 func (a *LANAdvertiser) IsRunning() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -157,6 +165,9 @@ func (a *LANAdvertiser) IsRunning() bool {
 }
 
 // Status returns the current advertiser status.
+//
+// RESERVED(R39): LAN discovery client — no production caller yet; kept for
+// the Phase 2+ status/health wiring. Do not flag as dead code.
 func (a *LANAdvertiser) Status() map[string]any {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -213,6 +224,13 @@ func getLocalIPs() ([]net.IP, error) {
 
 // DiscoverGateways scans the local network for advertised LLM gateway instances.
 // timeout controls how long to wait for responses.
+//
+// TRUST BOUNDARY (R39): every returned GatewayInfo is UNAUTHENTICATED data
+// spoken by any L2 neighbor — name/host/port/TXT are trivially forgeable on
+// a LAN. Do NOT feed these values into configuration, callbacks, or outbound
+// targets without an application-level authentication step (e.g. a shared
+// token probe against the discovered address). Zero production callers
+// today: the LAN discovery client is not wired yet (Phase 2+).
 func DiscoverGateways(ctx context.Context, timeout time.Duration) ([]*GatewayInfo, error) {
 	entriesCh := make(chan *mdns.ServiceEntry, 16)
 	var gateways []*GatewayInfo
@@ -241,7 +259,7 @@ func DiscoverGateways(ctx context.Context, timeout time.Duration) ([]*GatewayInf
 		WantUnicastResponse: true,
 	}
 
-	if err := mdns.Query(params); err != nil {
+	if err := mdns.QueryContext(ctx, params); err != nil {
 		close(entriesCh)
 		wg.Wait()
 		return nil, fmt.Errorf("mDNS query failed: %w", err)
@@ -295,8 +313,16 @@ func parseServiceEntry(entry *mdns.ServiceEntry) *GatewayInfo {
 		host = entry.Host
 	}
 
+	// R39: live mDNS entries carry the full service instance name
+	// ("instance._llm-gateway._tcp.local."), but callers match on the bare
+	// instance name (the advertiser was constructed with it) — strip the
+	// service suffix.
+	name := entry.Name
+	const spnSuffix = "._llm-gateway._tcp.local."
+	name = strings.TrimSuffix(name, spnSuffix)
+
 	return &GatewayInfo{
-		Name:      entry.Name,
+		Name:      name,
 		Host:      host,
 		Port:      entry.Port,
 		Address:   fmt.Sprintf("http://%s:%d", host, entry.Port),

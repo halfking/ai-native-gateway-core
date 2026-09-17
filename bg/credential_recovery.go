@@ -1090,7 +1090,10 @@ func mnfCoolingRecoveryMirrorSQL() string {
 //     in cooling/rate_limited/auth_failed.
 //   - provider enabled / not manual_disabled.
 //   - Skip when node_probe_state.paused = TRUE (operator paused).
-//   - Skip when node_probe_state.next_retry_at > now() (ladder mid-cycle).
+//     (R39 comment correction: the SQL has never had a next_retry_at
+//     mid-cycle skip — recover_at and next_retry_at mature together for
+//     404-parked pairs, so none was needed. The old bullet claimed a
+//     predicate that does not exist.)
 //
 // The query is SELECT-only — the caller hands each row to
 // NodeProbeWorker.Submit, which writes cmb.available=TRUE via runOne's

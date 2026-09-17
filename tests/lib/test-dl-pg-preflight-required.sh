@@ -41,6 +41,11 @@ tcase() { # tcase <name> <want-rc> <want-pattern> <DSN> <required 0|1> <date-mod
     die(){ printf "error: %s\n" "$*" >&2; exit 1; }
     _dl_have(){ [[ "$1" == "psql" ]]; }
     DL_DOCKER=0
+    # R39: dl_wait_pg_isready resolves the pg container name unconditionally
+    # (ef408a026); without this stub every tcase died rc=127 before testing
+    # anything. With DL_DOCKER=0 the docker-exec branch never runs, so a
+    # fixed name is enough.
+    dl_pg_container_name(){ printf 'llm-gateway-pg'; }
     T0=1000000000
     date(){ local n; n=$(cat "$CLOCKFILE" 2>/dev/null || echo 0); n=$((n+1)); printf "%s" "$n" > "$CLOCKFILE"; if (( n == 1 )); then printf "%s" "$T0"; elif [[ "$DATE_MODE" == slow ]]; then printf "%s" "$((T0 + n * 2))"; else printf "%s" "$((T0 + 91))"; fi; }
     sleep(){ :; }
