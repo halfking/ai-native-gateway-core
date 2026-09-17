@@ -238,7 +238,11 @@ type probeOutcome struct {
 	direct       nodeProbeRoundResult
 	gateway      nodeProbeRoundResult
 	success      bool
-	recoverAt    time.Time
+	// attempt feeds the 404 model-not-served escalation (2nd confirmed 404
+	// → long re-check horizon) in applyOutcome; 0 means "unknown, keep the
+	// generic 5-minute cooldown".
+	attempt   int
+	recoverAt time.Time
 }
 
 // Run executes one queued probe task end-to-end and returns the queue result.
@@ -424,7 +428,7 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		direct:       direct,
 		gateway:      gw,
 		success:      success,
-		recoverAt:    now.Add(5 * time.Minute),
+		attempt:      attempt,
 	})
 	durationMs := int(now.Sub(startedAt).Milliseconds())
 
@@ -439,7 +443,10 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	// Audit fix #6: clamp to ≥5s — at pct=1 the first rung (5s) would truncate
 	// to 0s and produce a busy retry loop; the spec Min is 20 (enforced there),
 	// but a defensive floor here guards against future chain rungs <5s.
-	if globalIsFeaturedModel(model, "") {
+	// 2026-09-17: a confirmed model-not-served 404 must NOT be shortened — the
+	// multiplier exists to re-verify transient failures faster, and halving a
+	// catalog-mismatch horizon just re-churns the 404.
+	if globalIsFeaturedModel(model, "") && !isModelNotServedProbeError(errCode) {
 		if pct := settings.GetPlatformInt("probe.featured_backoff_multiplier", 50); pct > 0 && pct < 100 {
 			scaled := time.Duration(float64(backoff) * float64(pct) / 100.0)
 			if scaled < 5*time.Second {
@@ -678,7 +685,7 @@ func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
 		return
 	}
 	if outcome.direct.ok {
-		s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, true, "")
+		s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, true, "", 0)
 		if s.worker.db != nil {
 			s.worker.updateCredentialHealth(ctx, outcome.credentialID)
 		}
@@ -701,8 +708,19 @@ func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
 				"model", outcome.model,
 				"err_code", errCode)
 		} else {
-			s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, false, errCode)
-			s.worker.updateObservedState(ctx, outcome.credentialID, outcome.model, false, errCode, outcome.recoverAt)
+			// 2026-09-17: the binding write and the observed-state cool window
+			// must agree. A direct-round 404 confirmed twice escalates to the
+			// model-not-served horizon (6h) instead of the generic 5 minutes,
+			// so the pair stops flapping unavailable→cooldown→re-probe→404.
+			// The errCode handed down is the DIRECT round's when present —
+			// only direct evidence can convict the pair.
+			directErrCode := errCode
+			if outcome.direct.errCode != "" && outcome.direct.errCode != "none" {
+				directErrCode = outcome.direct.errCode
+			}
+			s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, false, directErrCode, outcome.attempt)
+			_, horizon := unavailableBindingHorizon(directErrCode, outcome.attempt)
+			s.worker.updateObservedState(ctx, outcome.credentialID, outcome.model, false, directErrCode, time.Now().Add(horizon))
 		}
 	}
 	if s.worker.invalidateCandidateCache != nil {

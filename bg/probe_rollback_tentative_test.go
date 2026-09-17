@@ -62,7 +62,7 @@ func TestProbeSyncMarksTentativeRestore(t *testing.T) {
 	if markIdx < 0 {
 		t.Fatal("ProbeSync success branch must call MarkTentativeRestore (smart-fallback marking entry)")
 	}
-	availIdx := strings.Index(body, "updateBindingAvailability(ctx, j.credID, j.model, true, \"\")")
+	availIdx := strings.Index(body, "updateBindingAvailability(ctx, j.credID, j.model, true, \"\", 0)")
 	if availIdx < 0 {
 		t.Fatal("ProbeSync success branch must restore availability")
 	}
