@@ -20,7 +20,10 @@ func TestNodeProbeStateUpdatesLogWriteFailures(t *testing.T) {
 	text := string(source)
 	for _, marker := range []string{
 		"consecutive_failures = 0",
-		"consecutive_failures = $3",
+		// 2026-09-17: the failure branch advances consecutive_failures via
+		// `CASE WHEN $10::boolean ... ELSE $3 END` — gateway-side errors must
+		// not climb the ladder — so anchor on the CASE's ELSE arm instead.
+		"ELSE $3 END",
 	} {
 		idx := strings.Index(text, "UPDATE node_probe_state SET\n")
 		for idx >= 0 && !strings.Contains(text[idx:idx+220], marker) {
@@ -285,8 +288,12 @@ func TestRunOneMissingBindingDropsOrphanStateRow(t *testing.T) {
 	// branches. Easiest check: the missing-binding log line must come
 	// before any "UPDATE node_probe_state SET consecutive_failures".
 	idxLog := strings.Index(body, `node_probe_worker: dropping probe for (cred, model) with no credential_model_bindings row`)
+	// 2026-09-17: the failure UPDATE's consecutive_failures column is now
+	// `CASE WHEN $10::boolean THEN node_probe_state.consecutive_failures
+	// ELSE $3 END` (gateway-side errors must not advance the ladder), so
+	// anchor the ordering check on the stable next_retry_at line instead.
 	idxFail := strings.Index(body, `UPDATE node_probe_state SET
-					consecutive_failures = $3,`)
+					consecutive_failures = CASE WHEN $10::boolean`)
 	if idxLog < 0 {
 		t.Fatalf("missing-binding log line not found in source")
 	}

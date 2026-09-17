@@ -66,6 +66,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -224,6 +225,108 @@ type NodeProbeWorker struct {
 	// the recovered availability.
 	syncWaitersMu sync.Mutex
 	syncWaiters   map[string][]chan struct{}
+
+	// decryptFailures / decryptTrippedAt implement the instance-level
+	// decrypt circuit (2026-09-17 incident: a dev instance on 252 with a
+	// mismatched LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY fired ~1400
+	// decrypt failures per hour at the shared production DB). Consecutive
+	// upstream-secret decrypt failures ≥ decryptTripThreshold trip the
+	// circuit: drainDue stops picking new work for decryptTripCooldown,
+	// then half-opens to let ONE probe through — if the operator fixed
+	// the key the probe succeeds and resets the counter, otherwise the
+	// circuit re-closes. Any successful resolve resets the counter.
+	decryptFailures atomic.Int64
+	decryptTrippedAt atomic.Int64 // unix seconds of the last trip; 0 = never
+}
+
+// decryptTripThreshold is the consecutive decrypt-failure count that trips
+// the instance-level decrypt circuit.
+const decryptTripThreshold = 5
+
+// decryptTripCooldown is how long the circuit stays fully closed before a
+// half-open probe is allowed through.
+const decryptTripCooldown = 15 * time.Minute
+
+// nodeProbeGatewaySideRetryDelay paces node_probe_state retries when the
+// direct round failed for a gateway-side reason (see isGatewaySideProbeError):
+// the pair is not unhealthy, so the chained backoff ladder must not escalate,
+// but we also do not want a misconfigured instance hammering the row every 5s.
+const nodeProbeGatewaySideRetryDelay = 15 * time.Minute
+
+// isGatewaySideProbeError reports whether a direct-round errCode describes a
+// failure that happened INSIDE this gateway instance — building/resolving the
+// endpoint or decrypting the credential secret — rather than an upstream
+// health signal. Such failures say "this instance cannot talk to the
+// upstream" (missing/mismatched key, keyring misconfig, join corruption),
+// NOT "the (credential, model) pair is unhealthy", so they must never be
+// written to the shared availability surfaces. The probe_-prefixed forms are
+// accepted defensively because updateBindingAvailability persists
+// "probe_"+errCode into unavailable_reason.
+//
+// 2026-09-17 incident: a dev gateway sharing the production DB with a
+// different CREDENTIAL_ENCRYPTION_KEY decrypted every legacy envelope to
+// "cannot decrypt: unknown format" → endpoint_build →
+// credential_model_bindings.available=FALSE (probe_endpoint_build, 5min
+// cooldown) on healthy credentials, fighting the production instance's
+// successful probes every cycle. This classifier is the shared-state guard.
+func isGatewaySideProbeError(errCode string) bool {
+	switch errCode {
+	case "endpoint_build", "request_build",
+		"probe_endpoint_build", "probe_request_build":
+		return true
+	}
+	return false
+}
+
+// decryptCircuitTripped reports whether the instance-level decrypt circuit
+// is currently blocking background probe picks. Logs (rate-limited to once
+// per decryptTripCooldown) while tripped. When the cooldown elapses it
+// half-opens: the caller is allowed one pick so a fixed key can prove
+// itself and reset the counter.
+func (w *NodeProbeWorker) decryptCircuitTripped() bool {
+	if w == nil {
+		return false
+	}
+	n := w.decryptFailures.Load()
+	if n < decryptTripThreshold {
+		return false
+	}
+	now := time.Now().Unix()
+	trippedAt := w.decryptTrippedAt.Load()
+	if trippedAt == 0 {
+		if w.decryptTrippedAt.CompareAndSwap(0, now) {
+			slog.Error("node_probe_worker: decrypt circuit OPEN — this instance cannot decrypt credential secrets; background node probes paused",
+				"consecutive_decrypt_failures", n,
+				"cooldown", decryptTripCooldown.String(),
+				"hint", "check LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY / keyring on this instance; wrong keys poison shared availability state")
+			return true
+		}
+		// Lost the CAS race: another goroutine just tripped it; re-read.
+		trippedAt = w.decryptTrippedAt.Load()
+	}
+	if time.Duration(now-trippedAt)*time.Second >= decryptTripCooldown {
+		// Half-open: allow exactly one pick. decryptTrippedAt is bumped so
+		// subsequent picks stay blocked until this probe's outcome either
+		// resets decryptFailures (success) or re-trips via failure #n+1.
+		w.decryptTrippedAt.Store(now)
+		return false
+	}
+	return true
+}
+
+// recordDecryptFailure / resetDecryptFailures maintain the consecutive-decrypt
+// failure counter behind the instance-level decrypt circuit.
+func (w *NodeProbeWorker) recordDecryptFailure() {
+	if w != nil {
+		w.decryptFailures.Add(1)
+	}
+}
+
+func (w *NodeProbeWorker) resetDecryptFailures() {
+	if w != nil {
+		w.decryptFailures.Store(0)
+		w.decryptTrippedAt.Store(0)
+	}
 }
 
 type nodeProbeTrigger struct {
@@ -1333,9 +1436,22 @@ func (w *NodeProbeWorker) ProbeSync(
 				}
 				res.gateway = w.probeGateway(ctx, j.credID, j.model)
 			} else {
-				w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode)
-				recoverAt := time.Now().Add(5 * time.Minute)
-				w.updateObservedState(ctx, j.credID, j.model, false, res.direct.errCode, recoverAt)
+				// 2026-09-17: gateway-side errors (decrypt/endpoint build) must
+				// not touch the shared availability surfaces — same doctrine as
+				// the tick path. updateBindingAvailability also refuses these
+				// errCodes internally; this branch additionally protects the
+				// observed-state surface.
+				if isGatewaySideProbeError(res.direct.errCode) {
+					slog.Error("node_probe_worker: gateway-side direct probe error (sync) — not updating availability",
+						"credential_id", j.credID,
+						"model", j.model,
+						"err_code", res.direct.errCode,
+						"err_detail", res.direct.errDetail)
+				} else {
+					w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode)
+					recoverAt := time.Now().Add(5 * time.Minute)
+					w.updateObservedState(ctx, j.credID, j.model, false, res.direct.errCode, recoverAt)
+				}
 			}
 			// 2026-08-18: the sync path also drives the URSM v2 authoritative
 			// router. Without this write the probe "recovered" only the PG
@@ -1570,6 +1686,14 @@ func (w *NodeProbeWorker) emitSyncAudit(
 }
 
 func (w *NodeProbeWorker) drainDue(ctx context.Context) {
+	// Instance-level decrypt circuit (2026-09-17): when this instance cannot
+	// decrypt credential secrets there is no point picking work — every direct
+	// round would fail endpoint_build and (before the shared-state guard) pollute
+	// the shared availability tables. Paused here; the circuit half-opens after
+	// decryptTripCooldown so a fixed key recovers automatically.
+	if w.decryptCircuitTripped() {
+		return
+	}
 	for i := 0; i < nodeProbeBatchSize; i++ {
 		if !w.cycle(ctx) {
 			return
@@ -1846,9 +1970,22 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "direct", attempt, trigger, direct)
 	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "gateway", attempt, trigger, gw)
 	if !direct.ok {
-		w.updateBindingAvailability(ctx, credID, model, false, direct.errCode)
-		recoverAt := time.Now().Add(5 * time.Minute)
-		w.updateObservedState(ctx, credID, model, false, direct.errCode, recoverAt)
+		if isGatewaySideProbeError(direct.errCode) {
+			// 2026-09-17: gateway-side error (endpoint/request build, decrypt).
+			// updateBindingAvailability refuses the shared-state write by itself,
+			// but the observed-state surface (URSM / state cache, possibly shared
+			// Redis) and the failure ladder must also stay untouched — the pair
+			// is not unhealthy, this instance is misconfigured.
+			slog.Error("node_probe_worker: gateway-side direct probe error — not updating availability",
+				"credential_id", credID,
+				"model", model,
+				"err_code", direct.errCode,
+				"err_detail", direct.errDetail)
+		} else {
+			w.updateBindingAvailability(ctx, credID, model, false, direct.errCode)
+			recoverAt := time.Now().Add(5 * time.Minute)
+			w.updateObservedState(ctx, credID, model, false, direct.errCode, recoverAt)
+		}
 	}
 	if w.invalidateCandidateCache != nil {
 		w.invalidateCandidateCache(credID)
@@ -1927,12 +2064,22 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		// that bypasses both. The DB column now stays NULL after
 		// runOne, and the chained backoff in next_retry_at naturally
 		// paces retries (30s → 60s → 120s → ...).
+		// 2026-09-17: a gateway-side error (decrypt/endpoint build — see
+		// isGatewaySideProbeError) is this instance's config problem. The pair
+		// is not unhealthy, so the chained ladder must not escalate and
+		// consecutive_failures must not advance; pace retries at the fixed
+		// gateway-side delay instead of the 5s..24h chain so a misconfigured
+		// instance also stops hammering the shared row.
+		gatewaySide := isGatewaySideProbeError(direct.errCode)
 		backoff := ChainBackoffIndex(attempt, NodeProbeBackoffChain)
+		if gatewaySide {
+			backoff = nodeProbeGatewaySideRetryDelay
+		}
 		nextRetryAt := now.Add(backoff)
 		nextSec := int(backoff.Seconds())
 		if _, err := w.db.Exec(ctx, `
 				UPDATE node_probe_state SET
-					consecutive_failures = $3,
+					consecutive_failures = CASE WHEN $10::boolean THEN node_probe_state.consecutive_failures ELSE $3 END,
 					consecutive_successes = 0,
 					last_attempt_at = now(),
 					next_retry_at = $4,
@@ -1945,7 +2092,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 					updated_at = now()
 				WHERE credential_id = $1 AND raw_model_name = $2
 			`, credID, model, attempt, nextRetryAt, nextSec,
-			direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw)); err != nil {
+			direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw), gatewaySide); err != nil {
 
 			w.logNodeProbeStateUpdateWarning("failure", direct.providerID, credID, model, trigger.parentID, err)
 		}
@@ -2456,6 +2603,11 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 	// already does via secret.DecryptAny.
 	pt, _, err := secret.DecryptAny(s, w.keyring, w.encKey)
 	if err != nil {
+		// Feed the instance-level decrypt circuit (2026-09-17): consecutive
+		// decrypt failures are a strong signal THIS instance's key config is
+		// wrong (e.g. dev instance sharing the production DB with a different
+		// CREDENTIAL_ENCRYPTION_KEY). See decryptCircuitTripped.
+		w.recordDecryptFailure()
 		// 2026-07-15 P0 fix: surface the raw error to operator logs.
 		// endpoint_build was the only signal in node_probe_state,
 		// but the upstream cause (keyring nil? unknown kid? Fernet
@@ -2474,6 +2626,9 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 			"error", err.Error())
 		return "", "", "", "", 0, fmt.Errorf("decrypt: %w", err)
 	}
+	// Decrypt succeeded — this instance's key config is coherent with the
+	// DB's envelopes, so clear the instance-level decrypt circuit.
+	w.resetDecryptFailures()
 	return string(pt), outboundModel, baseURL, protocol, providerID, nil
 }
 
@@ -2519,6 +2674,24 @@ func (w *NodeProbeWorker) logNodeProbeStateUpdateWarning(phase string, providerI
 
 func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID int, model string, available bool, reason string) {
 	if w == nil || w.db == nil {
+		return
+	}
+	// 2026-09-17 shared-state guard: a gateway-side probe error (endpoint
+	// build / request build — most commonly "cannot decrypt: unknown format"
+	// from a mismatched CREDENTIAL_ENCRYPTION_KEY) describes THIS instance's
+	// configuration, not the (credential, model) pair's upstream health.
+	// Multiple gateway instances share credential_model_bindings, so writing
+	// available=FALSE from a gateway-side error lets one misconfigured
+	// instance (observed: 252 dev vs production, ~1400 decrypt failures/hour)
+	// repeatedly flip healthy production bindings into 5-minute cooldowns and
+	// fight the well-configured instances' successful probes. Refuse the
+	// write; the audit trail (node_probe_runs) still records the failure.
+	if !available && isGatewaySideProbeError(reason) {
+		slog.Error("node_probe_worker: refusing to mark binding unavailable from a gateway-side probe error",
+			"credential_id", credID,
+			"model", model,
+			"reason", reason,
+			"hint", "gateway-side build/decrypt errors are this instance's config problem, not an upstream health signal")
 		return
 	}
 	if available {

@@ -691,8 +691,19 @@ func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
 		if code := firstErrCode(outcome.direct, outcome.gateway); code != nil && *code != "" {
 			errCode = *code
 		}
-		s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, false, errCode)
-		s.worker.updateObservedState(ctx, outcome.credentialID, outcome.model, false, errCode, outcome.recoverAt)
+		// 2026-09-17: gateway-side errors (decrypt/endpoint build) describe
+		// this instance's config, not the pair's upstream health — never write
+		// them to the shared availability surfaces. updateBindingAvailability
+		// refuses these errCodes internally; guard observed state here too.
+		if isGatewaySideProbeError(errCode) {
+			slog.Error("probe_service: gateway-side probe error — not updating availability",
+				"credential_id", outcome.credentialID,
+				"model", outcome.model,
+				"err_code", errCode)
+		} else {
+			s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, false, errCode)
+			s.worker.updateObservedState(ctx, outcome.credentialID, outcome.model, false, errCode, outcome.recoverAt)
+		}
 	}
 	if s.worker.invalidateCandidateCache != nil {
 		s.worker.invalidateCandidateCache(outcome.credentialID)
