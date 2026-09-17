@@ -595,3 +595,9 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 |-----------|------|---------|--------|
 | 721 | `721_credential_balance_source_and_error.sql` | `466e51f0a7357dc47c53095cc722273d0d857a5b9a4edede6b85ba72a5415945` | applied+verified |
 
+## 2026-09-17T22:31:22Z — deploy 245 build_seq 2135 (4bf39f96)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 725 | `725_r41_request_logs_and_tmp_super_admin_bypass.sql` | `ddaca40c4c4289f9df7b1965e8c9250a730e385c2fb180681b29ff4ebe2c88e7` | applied+verified |
+
