@@ -569,13 +569,13 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		}
 
 		// P3: balance probe for supported vendors (only when healthy).
-		// Migration 721 (2026-09-18): the manual-protection guard skips rows
-		// hand-calibrated by an operator within the last 24h
-		// (balance_source='manual') so the hourly automatic probe cannot
-		// silently overwrite a manual balance correction. R42: the predicate
-		// is the shared manualBalanceGuardSQL constant — see
-		// bg/balance_manual_guard.go (floor-guard Pass A SELECT + write-time
-		// UPDATE consume the same text).
+		// Migration 721 (2026-09-18): the WHERE skips rows hand-calibrated
+		// by an operator within the last 24h (balance_source='manual') so
+		// the hourly automatic probe cannot silently overwrite a manual
+		// balance correction. The predicate is the shared
+		// ManualBalanceProtectionPredicate (balance_manual_protection.go),
+		// also used by the floor guard's candidate SELECT — one constant, no
+		// manual syncing.
 		if pr.AvailabilityState == "ready" {
 			if balUSD, ok := c.probeBalance(timeoutCtx, s); ok {
 				if _, err := c.db.Exec(timeoutCtx,
@@ -585,7 +585,7 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 					     balance_last_checked_at = NOW(),
 					     balance_error = NULL
 					 WHERE id = $2
-					   AND `+manualBalanceGuardSQL,
+					   AND `+ManualBalanceProtectionPredicate,
 					balUSD, s.ID,
 				); err != nil {
 					slog.Warn("credential probe v2: balance_usd write failed",
@@ -606,7 +606,7 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 					`UPDATE credentials
 					 SET balance_error = $1
 					 WHERE id = $2
-					   AND `+manualBalanceGuardSQL,
+					   AND `+ManualBalanceProtectionPredicate,
 					balanceProbeFailStamp(), s.ID,
 				); uerr != nil {
 					slog.Warn("credential probe v2: balance_error stamp write failed",

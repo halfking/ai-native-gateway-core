@@ -179,6 +179,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 724 (2026-09-18): taskprofile per-request human task-type
 			// corrections (renumbered from a colliding 721 after R40 landed).
 			"724_task_type_corrections.sql",
+			// 725 (2026-09-18, parallel R41): super_admin_bypass policies for
+			// request_logs + tenant_model_policies (Phase 2 prerequisite).
+			"725_r41_request_logs_and_tmp_super_admin_bypass.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}

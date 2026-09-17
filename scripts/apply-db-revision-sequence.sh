@@ -464,6 +464,10 @@ files=(
   # 独立新表（auto 任务类型逐请求人工修正），无既有对象改动、IF NOT EXISTS 幂等。
   # 原编 721 与 R40 余额元数据迁移撞号，重编 724。
   "$ROOT_DIR/sql/migrations/startup/724_task_type_corrections.sql"
+  # 2026-09-18 R41 修复轮前置（并行会话交付，R42 补五点登记）：725
+  # request_logs + tenant_model_policies 补 super_admin_bypass policy,
+  # 全语句 DROP POLICY IF EXISTS + CREATE POLICY 幂等。
+  "$ROOT_DIR/sql/migrations/startup/725_r41_request_logs_and_tmp_super_admin_bypass.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

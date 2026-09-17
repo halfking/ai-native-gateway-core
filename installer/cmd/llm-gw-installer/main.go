@@ -463,6 +463,12 @@ var rlsEnableAttachmentsAndCflOldMigration723 []byte
 //go:embed embeddata/startup/724_task_type_corrections.sql
 var taskTypeCorrectionsMigration724 []byte
 
+// R42 (2026-09-18): parallel-session 725 landed with canonical copies only
+// (same five-point gap as 720/721); registered here and below.
+//
+//go:embed embeddata/startup/725_r41_request_logs_and_tmp_super_admin_bypass.sql
+var r41RequestLogsSuperAdminBypassMigration725 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -609,6 +615,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/722_durable_family_schema_convergence.sql":                              durableFamilySchemaConvergenceMigration722,
 	"startup/723_rls_enable_attachments_and_cfl_old.sql":                             rlsEnableAttachmentsAndCflOldMigration723,
 	"startup/724_task_type_corrections.sql":                                          taskTypeCorrectionsMigration724,
+	"startup/725_r41_request_logs_and_tmp_super_admin_bypass.sql":                    r41RequestLogsSuperAdminBypassMigration725,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 

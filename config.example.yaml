@@ -71,8 +71,10 @@ storage_mode: "full"
 full_storage:
   postgres_url: "postgres://user:password@127.0.0.1:5432/llm_gateway?sslmode=disable"
   redis_url: "redis://127.0.0.1:6379/2"
-  # 连接池上限；<=0 时默认 100。
-  max_connections: 100
+  # 连接池上限；<=0 时默认 200（2026-09-18 由 100 上调，配合 PG max_connections=1000）。
+  # 注意：storage factory 当前仅在 lite 模式被构造；full 模式 gateway 的
+  # 实际 PG 池由 db.Open 管理且不受本值影响（用 LLM_GATEWAY_DB_MAX_CONNS 调）。
+  max_connections: 200
 
 # lite 模式明细（storage_mode=lite 时必填 sqlite_path，其余为默认值示例）。
 lite_storage:

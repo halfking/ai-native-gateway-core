@@ -15,6 +15,7 @@ import {
   getCredentialModels, type ModelOffer,
   revealUnifiedCredentialKey,
   setUnifiedCredentialKey,
+  refreshCredentialBalance, type RefreshBalanceResponse,
 } from '../../api'
 import { isSuperAdmin, isProviderConsoleView } from '../../store'
 import FpSlotVisualizer from '../../components/FpSlotVisualizer.vue'
@@ -26,6 +27,9 @@ import { confirmDialog } from '../../composables/useConfirmDialog'
 const { t: td } = useI18n()
 const pd = (k: string, params?: Record<string, unknown>): string =>
   td(`providerDetail.${k}` as never, params as never)
+// pr reads the shared providers.* namespace (migration 721 balance keys,
+// defined once in locales/*/providers.ts and reused by both drawers).
+const pr = (k: string): string => td(`providers.${k}` as never) as string
 const { fmtDateTime } = useFormat()
 
 const props = defineProps<{
@@ -858,6 +862,48 @@ async function loadFpSlotStats() {
   }
 }
 
+// ── Migration 721 (2026-09-18): on-demand balance refresh + provenance ──────
+// Same contract as the /providers drawer (ProvidersView.vue): the ⟳ button
+// hits POST .../refresh-balance (GET-only against the vendor, zero tokens)
+// and patches the row in place — here both the drawer clone (`selected`) and
+// the matching table row in props.creds so neither view goes stale without a
+// round-trip. A failed probe keeps the previous balance (fail-open, mirrors
+// the floor guard) and surfaces the error inline; a 400 means the vendor has
+// no balance endpoint at all.
+const refreshingBalance = ref<Record<number, boolean>>({})
+const balanceRefreshError = ref<Record<number, string>>({})
+
+async function refreshBalance() {
+  const c = selected.value
+  if (!c || refreshingBalance.value[c.id]) return
+  refreshingBalance.value = { ...refreshingBalance.value, [c.id]: true }
+  balanceRefreshError.value = { ...balanceRefreshError.value, [c.id]: '' }
+  try {
+    const r: RefreshBalanceResponse = await refreshCredentialBalance(props.provider.id, c.id)
+    if (r.success && r.balance_usd != null) {
+      c.balance_usd = r.balance_usd
+      c.balance_source = 'api'
+      c.balance_last_checked_at = r.balance_checked_at ?? new Date().toISOString()
+      c.balance_error = null
+      const row = props.creds.find(x => x.id === c.id)
+      if (row) {
+        row.balance_usd = r.balance_usd
+        row.balance_source = 'api'
+        row.balance_last_checked_at = c.balance_last_checked_at
+        row.balance_error = null
+      }
+    } else {
+      c.balance_error = r.error ?? pr('credential.row.balanceRefreshFailed')
+      balanceRefreshError.value = { ...balanceRefreshError.value, [c.id]: c.balance_error ?? '' }
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : pr('credential.row.balanceRefreshFailed')
+    balanceRefreshError.value = { ...balanceRefreshError.value, [c.id]: msg }
+  } finally {
+    refreshingBalance.value = { ...refreshingBalance.value, [c.id]: false }
+  }
+}
+
 function fmtTtl(seconds: number): string {
   if (seconds <= 0) return pd('creds.expired')
   const hours = Math.floor(seconds / 3600)
@@ -1236,7 +1282,29 @@ function onTagsInput(ev: Event) {
                omitted field = no change, 0 = clear. -->
           <div class="drawer-section">
             <div class="drawer-section-title">{{ pd('creds.drawerSectionBalanceFloor') }}</div>
-            <div class="field-grid">
+            <!-- migration 721: current balance + on-demand vendor probe (⟳),
+                 same contract as the /providers drawer. ✏️ = manual entry
+                 (auto probes skip it for 24h), 🛰 = API probe. -->
+            <div class="info-row">
+              <span>{{ pd('creds.usageBalancePrefix') }}: {{ money(selected.balance_usd) }}</span>
+              <button
+                v-if="canManageCreds"
+                class="btn btn-ghost btn-sm"
+                type="button"
+                style="padding:2px 6px"
+                :disabled="refreshingBalance[selected.id]"
+                :title="pr('credential.row.balanceRefreshTooltip')"
+                @click="refreshBalance"
+              >{{ refreshingBalance[selected.id] ? '⏳' : '⟳' }}</button>
+            </div>
+            <div v-if="selected.balance_source" class="cell-sub" :title="pr(selected.balance_source === 'manual' ? 'credential.row.balanceSourceManual' : 'credential.row.balanceSourceApi')">
+              <template v-if="selected.balance_source === 'manual'">✏️ {{ pr('credential.row.balanceSourceManual') }}</template>
+              <template v-else>🛰 {{ pr('credential.row.balanceSourceApi') }}</template>
+              <template v-if="selected.balance_last_checked_at"> · {{ timeText(selected.balance_last_checked_at) }}</template>
+            </div>
+            <div v-if="selected.balance_error" class="cell-sub cell-sub--danger">⚠️ {{ selected.balance_error }}</div>
+            <div v-if="balanceRefreshError[selected.id]" class="cell-sub cell-sub--danger">⚠️ {{ balanceRefreshError[selected.id] }}</div>
+            <div class="field-grid" style="margin-top:8px">
               <div>
                 <label class="field-label">{{ pd('creds.drawerFloorUsd') }}</label>
                 <input

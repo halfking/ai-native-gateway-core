@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -43,7 +45,13 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	}
 	// 2026-06-26: raised from 16 → 32 to match 184 PG max_connections=1000 budget.
 	// 31 PG-consumer pods × 32 = 992 connections (8 reserved for replication/stats).
-	cfg.MaxConns = 32
+	// 2026-09-18: default stays 32 for shared-PG clusters; LLM_GATEWAY_DB_MAX_CONNS
+	// overrides per deployment when the PG headroom allows (e.g. single-pod local
+	// dev against a dedicated PG with max_connections=1000). This is the pool the
+	// full-mode gateway actually uses — StorageConfig.Full.MaxConnections only
+	// governs the storage factory, which initStorageMode constructs in lite mode
+	// only (see cmd/gateway/storage_mode_init.go), so it never caps this pool.
+	cfg.MaxConns = poolMaxConnsFromEnv(32)
 	cfg.MinConns = 2
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
@@ -74,13 +82,30 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	if err := pool.Ping(pingCtx); err != nil {
 		return nil, err
 	}
-	slog.Info("postgres connected")
+	slog.Info("postgres connected", "max_conns", cfg.MaxConns, "min_conns", cfg.MinConns)
 	db := &DB{pool: pool}
 	if err := db.ApplyMigrations(ctx); err != nil {
 		return nil, err
 	}
 	success = true // Mark success to prevent defer from closing pool
 	return db, nil
+}
+
+// poolMaxConnsFromEnv 解析 LLM_GATEWAY_DB_MAX_CONNS 为 pgxpool 池上限：
+// 未设置返回 def；非法值（非正整数/溢出）记 Warn 并保持 def——与
+// config.applyPositiveIntEnv 同样的容错语义，坏值不阻断启动。
+func poolMaxConnsFromEnv(def int32) int32 {
+	v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_DB_MAX_CONNS"))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(v, 10, 32)
+	if err != nil || n <= 0 {
+		slog.Warn("postgres: invalid LLM_GATEWAY_DB_MAX_CONNS, keeping default",
+			"value", v, "default", def)
+		return def
+	}
+	return int32(n)
 }
 
 // ApplyMigrations runs all idempotent schema migrations.

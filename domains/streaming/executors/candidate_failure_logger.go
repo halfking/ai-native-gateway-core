@@ -157,13 +157,16 @@ func (w *CandidateFailureWriter) logFailure(
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err := w.pool.Exec(ctx, candidateFailureInsertSQL,
+	// RLS Phase 2 适配 (R41 P1-4): candidate_failure_logs_hot policy 含
+	// `current_role=super_admin OR bypass_rls=true` 分支，但此处裸 pool.Exec
+	// 在 NOSUPERUSER owner 下会触发 42501 且被 warn 吞掉=失败账本静默丢失。
+	// 复用同族 supplier_error_logger.go:120 的 execWithRLSBypass 样板。
+	if err := w.execWithRLSBypass(ctx, candidateFailureInsertSQL,
 		row.RequestID, row.TenantID, row.SessionID, row.CredentialID, row.ProviderID, row.RawModelName,
 		row.AttemptIndex, row.ErrorKind, row.ErrorMessage,
 		row.UpstreamStatusCode, row.UpstreamResponseBody, row.UpstreamResponsePreview,
 		row.LatencyMs, row.PerAttemptLatencyMs, row.Retryable, marshalContext(row.Context),
-	)
-	if err != nil {
+	); err != nil {
 		slog.Warn("candidate_failure_logger: insert failed",
 			"error", err,
 			"request_id", requestID,

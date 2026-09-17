@@ -114,6 +114,14 @@ LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=$ENC_KEY
 # "postgres disabled: context deadline exceeded retry_budget=20s"），放宽到 10min。
 # 注意必须带单位（time.ParseDuration），裸数字 "600" 会静默回退 20s 默认值
 LLM_GATEWAY_DB_BOOT_RETRY_SECONDS=600s
+# 2026-09-18 配合 PG max_connections=1000 落地（ALTER SYSTEM on pg-252-pg17）。
+# LLM_GATEWAY_DB_MAX_CONNS 是 full 模式 gateway 实际使用的 db.Open pgxpool
+# 池上限（默认 32）。252 PG 为共享库（245/154/kaixuan-1 也连），dev 实例
+# 保守取 64；总预算 990，当前消费者合计 << 上限。
+LLM_GATEWAY_DB_MAX_CONNS=64
+# LLM_GATEWAY_STORAGE_MAX_CONNECTIONS 只作用于 storage factory（当前仅
+# lite 模式构造）；full 模式 gateway 不消费，保留供未来接线，非本实例瓶颈。
+LLM_GATEWAY_STORAGE_MAX_CONNECTIONS=200
 EOF
 )
 chmod 600 "$BUILD_TMP/gateway.env"
