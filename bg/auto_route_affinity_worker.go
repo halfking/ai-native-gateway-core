@@ -249,6 +249,16 @@ func (w *AutoRouteAffinityWorker) sweep(ctx context.Context) {
 // full (task, profile, canonical, tenant) key. Only rows with a reward are
 // counted — abandoned rows (reward IS NULL) are excluded so they cannot drag a
 // model's score down for reasons unrelated to model quality.
+//
+// R38 (R37 §四 #1 closing): synthetic rounds are excluded by an explicit
+// origin_actor predicate (LEFT JOIN request_logs_hot). The reward IS NOT NULL
+// guard alone was insufficient — a future write path that stamps a real
+// reward on a goal-* row (e.g. ad-hoc backfill, manual reconcile) would slip
+// through and pollute task_model_affinity. The view auto_route_selections_all
+// does not project origin_actor (selections carry only features + reward),
+// so the join is the only reliable way to enforce the synthetic-round gate
+// at the aggregate face. NULL origin_actor is treated as ordinary traffic
+// (legacy inserts predate the column).
 func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggregate, error) {
 	rows, err := w.db.Query(ctx, `
 		SELECT s.task_type,
@@ -263,11 +273,15 @@ func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggr
 		       COALESCE(AVG(ss.health_score), 0),
 		       AVG(s.reward)
 		FROM auto_route_selections_all s
+		LEFT JOIN request_logs_hot rl
+		       ON rl.request_id = s.request_id
 		LEFT JOIN session_summaries ss
 		       ON ss.session_key = s.session_id
 		WHERE s.reward IS NOT NULL
 		  AND s.canonical_id IS NOT NULL
 		  AND s.settled_at >= NOW() - $1::interval
+		  AND COALESCE(rl.origin_actor, '') NOT LIKE 'goal-%'
+		  AND COALESCE(rl.origin_actor, '') NOT IN ('auto-title-generator','auto-summary-generator','session-summary')
 		GROUP BY s.task_type, s.profile, s.canonical_id, s.chosen_model, COALESCE(s.tenant_id, '')
 	`, affinityWindow.String())
 	if err != nil {
