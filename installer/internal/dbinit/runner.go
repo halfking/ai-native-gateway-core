@@ -160,6 +160,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"717_request_logs_hot_column_alignment.sql",
 			"718_drop_redundant_indexes_and_add_ttl_indexes.sql",
 			"719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql",
+			"720_rls_policy_vocabulary_unification.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}
