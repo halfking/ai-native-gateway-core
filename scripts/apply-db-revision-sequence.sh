@@ -460,6 +460,10 @@ files=(
   # 时期零行为变化，为 Phase 2 降权作准备（设计 §五 Phase1#3）。原编 721 与
   # 507d78cff 余额元数据迁移撞号，重编 723。
   "$ROOT_DIR/sql/migrations/startup/723_rls_enable_attachments_and_cfl_old.sql"
+  # 2026-09-18 taskprofile 插件模块（新迁移登记）：724 task_type_corrections
+  # 独立新表（auto 任务类型逐请求人工修正），无既有对象改动、IF NOT EXISTS 幂等。
+  # 原编 721 与 R40 余额元数据迁移撞号，重编 724。
+  "$ROOT_DIR/sql/migrations/startup/724_task_type_corrections.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
