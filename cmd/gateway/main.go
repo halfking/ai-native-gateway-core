@@ -6986,13 +6986,17 @@ func main() {
 
 	slog.Info("CHECKPOINT: HTTP server configured, about to start", "listen", cfg.Listen)
 
+	// ── Graceful shutdown context (used by mDNS and server) ───────────────
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	// ── Start mDNS advertiser if enabled ──────────────────────────────────
 	var lanAdvertiser *discovery.LANAdvertiser
 	if cfg.LANAdvertise {
 		// Parse port from cfg.Listen (e.g., ":8781" or "0.0.0.0:8781")
 		listenPort := 8781 // default
-		if strings.Contains(cfg.Listen, ":") {
-			portStr := cfg.Listen[strings.LastIndex(cfg.Listen, ":")+1:]
+		_, portStr, err := net.SplitHostPort(cfg.Listen)
+		if err == nil {
 			if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
 				listenPort = p
 			}
@@ -7011,15 +7015,12 @@ func main() {
 			apis,
 		)
 		
-		if err := lanAdvertiser.Start(context.Background()); err != nil {
+		// Use signal-cancellable context for proper shutdown coordination
+		if err := lanAdvertiser.Start(ctx); err != nil {
 			slog.Error("failed to start mDNS advertiser", "error", err)
 			lanAdvertiser = nil
 		}
 	}
-
-	// ── Graceful shutdown ─────────────────────────────────────────────────
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	go func() {
 		slog.Info("gateway listening", "listen", cfg.Listen)
