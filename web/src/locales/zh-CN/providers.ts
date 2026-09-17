@@ -214,6 +214,12 @@ export default {
       slotUnlimited: '无限（0=不限）',
       usageSeparator: '次 · ',
       balanceLabel: '余额',
+      // migration 721 (2026-09-18): balance provenance + on-demand refresh.
+      balanceSourceApi: 'API 探测',
+      balanceSourceManual: '手工输入 · 24h 内自动探测不覆盖',
+      balanceRefreshTooltip: '立即调用厂商余额 API（GET，不消耗 token）',
+      balanceRefreshFailed: '余额探测失败',
+      balanceUnsupported: '该厂商无公开余额 API（套餐类凭据请看套餐配额字段）',
       quotaExhausted: '配额耗尽',
       tagsPlaceholder: 'tag1, tag2',
       notesPlaceholder: '备注',

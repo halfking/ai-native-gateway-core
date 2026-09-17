@@ -159,3 +159,42 @@ node 探测靠 legacy cycle 路径苟活，掩盖了损失。修复：从 154 �
     6h 复验/恢复闭环双向可用。
 - 现场状态复核（15:38）：四凭据 circuit closed / availability_state=ready /
   hzx-2 全模型探测 ok；仅剩历史 404 模型按 6h 节奏复检。
+
+---
+
+## 6. 收口审计（2026-09-18 03:00–03:30，批判性复检）
+
+对前述修复逐项重取证，**不采信此前未实证的结论**。结果分三类：已实证生效 / 新发现缺陷（已修）/ 仍未闭环。
+
+### 6.1 已实证生效
+
+- **404 终判 fleet 级生效**：`credential_model_bindings` 中 `unavailable_reason='probe_model_not_served_404'` 的行从首验时的 2 行增至 **13 行**——随 request_failure 探测持续落新语义，非一次性现象。
+- **双路径守卫齐备**：legacy runOne（`gatewaySide` 分支，bg/node_probe.go）+ 队列路径 mirrorNodeProbeState（R39 补的 `CASE WHEN $10` 守卫，bg/probe_service.go）同时在线；`go test ./bg/ -count=1` 全绿。
+- **代码现状**：`go build ./...`、`go vet ./cmd/gateway ./bg`、`go test ./errorsx ./bg -count=1` 全绿。
+
+### 6.2 前次验证的盲区（如实记录）
+
+- **"五凭据全 ready"只是时点快照**。03:14 复查：cred 2/31/59 跌为 auth_failed、cred 21 在 cooling↔ready 秒级抖动。
+  - cred 2/31/59 的 auth_failed 是**上游真实 403 INSUFFICIENT_BALANCE**（中转账户欠费）——探测如实上报，属正确行为而非误判；直连此刻同样会失败。欠费充值后由探测/流量自动恢复。
+  - **教训**：验证凭据状态类修复必须做时间窗对照（≥2 个时点+归因），单时点快照会误报"已修复"。
+
+### 6.3 新发现缺陷并已修（本提交）
+
+**MiniMax 400 invalid thinking.type（2013）被误分类 KindTransient → 凭据秒级抖动**。
+链路：客户端请求带 `thinking.type:"enabled"` → MiniMax 400 → 分类器不认识该形状 → KindTransient → UpdateOnFailure 冷却凭据 → 节点探测（规范 ping）直连 200 → 恢复 → 下一个同形请求再冷却。prod 实证：cred 21 minimax-prod-v2 于 03:08–03:19 间多次翻转，credential_state_log 的 MiniMax-M3 行 `last_err=transient, recover_at=+30min`。
+- `invalidRequestFormatRe`（errorsx/classify.go）新增两个 MiniMax 专属模式（`invalid params,…invalid thinking.type` 与 `invalid thinking.type…(2013)`）→ **KindClientBug**。
+- 下游语义核验：`IsClientBug(KindClientBug)=true` → UpdateOnFailure 直接 return（不冷却）；`action_policy` terminal（不重试）。
+- `failover_policy` 新增 `case KindClientBug`：EnqueueProbe=false（请求形状错误对任何凭据都必败，探测是纯浪费）——此前落入 default 分支仍会 fanout 探测。
+- 新测试：`TestClassifyErrorWithBody_MiniMaxInvalidThinkingTypeIsClientBug`（含反向断言：裸 invalid params 不误伤）；`TestDecideFailover` 表新增 client-shape 行（probe=false）。
+
+### 6.4 提交记录失实更正（不重写历史）
+
+b484efbac 提交信息称"add missing net import"，但 rebase 时该 hunk 与 R39（78b3acdef，并行会话同修此问题）重复被 git 自动丢弃，**该提交实际只含版本漂移文件**；net import 修复的真实归属是 R39 的 78b3acdef。此处存档更正，不改写已推送历史。
+
+### 6.5 仍未闭环（开放项）
+
+1. **cred 2 的 5 个 `model_probe_broken` 死端行**（gpt-4o-audio-preview/gpt-5.2/gpt-5.2-chat-latest/gpt-5.3-codex-spark/gpt-image-1，recover_at=NULL）——归 recoveringSweeper 清空机制所有， sweeper 运行时行会逐步消化；未逐行验证消化进度。
+2. **探测队列积压**：03:14 ready=497（15:38 时为 466）——随失败驱动的入队波动，无法据此断言"持续消化"或"持续增长"，需带窗口的趋势观测。
+3. **featured 深探的运营侧清理**（routing_policy.featured_models 移除 gpt-image-2 等非 chat 模型）——报告 §3 遗留项 1，仍未执行（人工动作）。
+4. **404 终判 6h 复验闭环的活体观测**：单测已锁行为，但首批 6h 窗口（约 09-18 05:36 后到期）的自动复验-恢复尚未到时，无活体证据。
+5. **本修复（MiniMax 分类）未部署**：需随下一班 deploy-245 → 154 晋级；部署后观察 cred 21 是否停止抖动（state_reason 不再出现 `[transient] upstream 400 … thinking.type`）。

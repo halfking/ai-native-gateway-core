@@ -26,6 +26,7 @@ func TestDecideFailover(t *testing.T) {
 		{"concurrent failure probes backups", 503, `service overloaded`, "", false, ScopeModel, false, true, DefaultProbeFanout, DefaultFrontendWait},
 		{"upstream overload delays and probes", 502, `Our servers are currently overloaded. Please try again later.`, "", false, ScopeModel, false, true, 1, DefaultFrontendWait},
 		{"model error does not probe", 404, `model foo is not found`, "", false, ScopeModel, false, false, 0, 0},
+		{"client request shape does not probe (2026-09-18 flap fix)", 400, `{"type":"error","error":{"type":"bad_request_error","message":"invalid params, invalid thinking.type: \"enabled\" (allowed: adaptive, disabled) (2013)","http_code":"400"}}`, "", false, ScopeModel, false, false, 0, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
