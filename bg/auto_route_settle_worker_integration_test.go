@@ -167,3 +167,84 @@ func TestAutoRouteSettleBatchMrLateralExcludesSyntheticActors(t *testing.T) {
 		t.Errorf("selection rows for the synthetic request appeared unexpectedly: %d", n)
 	}
 }
+
+func TestAutoRouteSettleBatchSkipsSyntheticActorSelections(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	pool, cleanup := DispatchPostgresContainer(t, ctx, settleWorkerSchema)
+	defer cleanup()
+
+	mustExec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("exec %q: %v", sql, err)
+		}
+	}
+
+	// R38: synthetic actor selections (goal-*/auto-*-generator/session-summary)
+	// must not settle into rewards. The filter occurs AFTER the LEFT JOIN so
+	// that rows without request_logs yet can still reach the abandon path.
+	//
+	// Insert three selections: one real user request, one goal shadow round,
+	// one internal loopback. Each has a logged request_log with success=TRUE.
+	mustExec(`INSERT INTO public.request_logs_hot
+		(request_id, success, latency_ms, cost_usd, canonical_id, tenant_id, task_type, is_auto_request, origin_actor, ts)
+		VALUES
+		('req-real', TRUE, 1000, 1.0, 42, 't1', 'chat', TRUE, '', NOW()),
+		('req-goal', TRUE, 1100, 1.1, 43, 't1', 'chat', TRUE, 'goal-model-switch', NOW()),
+		('req-loop', TRUE, 1200, 1.2, 44, 't1', 'chat', TRUE, 'auto-title-generator', NOW())`)
+
+	mustExec(`INSERT INTO public.auto_route_selections_hot
+		(request_id, task_type, canonical_id, ts, session_id)
+		VALUES
+		('req-real', 'chat', 42, NOW() - INTERVAL '10 minutes', NULL),
+		('req-goal', 'chat', 43, NOW() - INTERVAL '10 minutes', NULL),
+		('req-loop', 'chat', 44, NOW() - INTERVAL '10 minutes', NULL)`)
+
+	w := NewAutoRouteSettleWorker(pool)
+	baselines, err := w.loadTaskBaselines(ctx)
+	if err != nil {
+		t.Fatalf("loadTaskBaselines: %v", err)
+	}
+
+	settled, abandoned, err := w.settleBatch(ctx, baselines)
+	if err != nil {
+		t.Fatalf("settleBatch: %v", err)
+	}
+
+	// Only the real user request should settle with a reward; the two
+	// synthetic actors should be abandoned (settled_at stamped, reward=NULL).
+	if settled != 1 {
+		t.Errorf("settled = %d, want 1 (only the real request)", settled)
+	}
+	if abandoned != 2 {
+		t.Errorf("abandoned = %d, want 2 (goal + loopback)", abandoned)
+	}
+
+	// Verify the real request got a reward
+	var realReward *float64
+	if err := pool.QueryRow(ctx, `SELECT reward FROM public.auto_route_selections_hot WHERE request_id='req-real'`).Scan(&realReward); err != nil {
+		t.Fatalf("read real reward: %v", err)
+	}
+	if realReward == nil {
+		t.Error("real request reward is NULL, want numeric reward")
+	} else if *realReward <= 0 || *realReward > 1 {
+		t.Errorf("real reward = %f, want within (0,1]", *realReward)
+	}
+
+	// Verify the synthetic actors were abandoned (settled_at set, reward=NULL)
+	for _, reqID := range []string{"req-goal", "req-loop"} {
+		var settledAt *time.Time
+		var reward *float64
+		if err := pool.QueryRow(ctx, `SELECT settled_at, reward FROM public.auto_route_selections_hot WHERE request_id=$1`, reqID).Scan(&settledAt, &reward); err != nil {
+			t.Fatalf("read %s: %v", reqID, err)
+		}
+		if settledAt == nil {
+			t.Errorf("%s settled_at is NULL, want timestamp (should be abandoned)", reqID)
+		}
+		if reward != nil {
+			t.Errorf("%s reward = %v, want NULL (synthetic actors must not produce rewards)", reqID, *reward)
+		}
+	}
+}

@@ -281,6 +281,12 @@ type Config struct {
 	// HostedTasks（任务托管与移交，docs/design/hosted-task-delegation-design.md
 	// §6.1）：env-only 配置块（Load 时装配，见 loadHostedTasksConfig）。
 	HostedTasks HostedTasksConfig `yaml:"-"`
+
+	// LANAdvertise enables mDNS service advertisement on the local network.
+	// When enabled, the gateway broadcasts its presence as _llm-gateway._tcp.local
+	// allowing LAN clients (like network-switch) to discover and configure it automatically.
+	// Default: false. Enable via LLM_GATEWAY_LAN_ADVERTISE=true.
+	LANAdvertise bool `yaml:"lan_advertise" env:"LLM_GATEWAY_LAN_ADVERTISE"`
 }
 
 // HostedTasksConfig 是任务托管门面的装配参数（全部来自环境变量，默认关闭）。
@@ -735,6 +741,11 @@ func Load() *Config {
 	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_MAX_ACTIVE_TASKS_PER_TENANT", &cfg.RequestSurvivalMaxActiveTasksPerTenant)
 	if v := os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_TENANT_ALLOWLIST"); v != "" {
 		cfg.RequestSurvivalTenantAllowlist = parseCommaList(v)
+	}
+
+	// LAN advertise flag
+	if v := os.Getenv("LLM_GATEWAY_LAN_ADVERTISE"); v != "" {
+		cfg.LANAdvertise = v == "true" || v == "1"
 	}
 
 	// Log rotation overrides (only honoured when LLM_GATEWAY_LOG_FILE
