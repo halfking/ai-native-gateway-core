@@ -18,11 +18,12 @@
 //	attempt 4 → +5m
 //	attempt 5 → +1h
 //	attempt 6 → +2h
-//	attempt 7+→ +24h   (still ticking but the row is marked paused
-//	                    so a re-deploy / manual review is required)
+//	attempt 7+→ +6h    (ladder cap since 2026-07-24, bg/probe_backoff.go;
+//	                    rows keep ticking forever — "paused" was removed
+//	                    from this mode, only Submit's ON CONFLICT re-arms)
 //
-// After attempt 7 with 24h spacing the row stays paused and the worker
-// stops probing; the row re-arms when the NEXT REAL FAILURE for the same
+// After attempt 7 the row keeps probing on the 6h cadence; the ladder
+// resets when the NEXT REAL FAILURE for the same
 // (credential, model) arrives — Submit's ON CONFLICT un-pauses it and
 // resets the ladder (broken_probe_reviver only touches the legacy
 // model_probe_state table, and is a no-op under this new probe mode since
@@ -440,7 +441,8 @@ func (w *NodeProbeWorker) SetCircuitRecovery(fn func(providerID, credentialID in
 }
 
 // SetModelQualityTrigger wires an optional callback invoked when a node probe
-// fails repeatedly (consecutive_failures reaches nodeProbeMaxAttempts). The
+// fails twice in a row (attempt >= 2, same source as the active-probe
+// submitter's consecutive threshold — NOT nodeProbeMaxAttempts). The
 // gateway uses this to request an on-demand model-IQ re-test for the failing
 // node (a "suspicious action" trigger, see docs/model-iq/01-design.md §3.4).
 // The callback receives (credentialID, rawModel, consecutiveFailures) and must
@@ -576,8 +578,12 @@ func (w *NodeProbeWorker) Start(ctx context.Context) {
 //     with the now-working key (observed: cf=7 ladders parking hzx-2 /
 //     minimax-prod-v2 lanes for ~5h AFTER the fix deployed);
 //   - credential_model_bindings flipped unavailable by those errors →
-//     restore available (the pre-guard binary's writes; the guard refuses
-//     new ones).
+//     restore available. R42 caveat: the R40 credential-specific decrypt
+//     exemption legitimately writes the same 'probe_endpoint_build' reason
+//     (per-credential ciphertext corruption), and this sweep cannot tell
+//     the two apart — every restart re-opens those rows until the next
+//     probe rewrites them (accepted tradeoff, R40 §一; a dedicated reason
+//     tag is the Phase-2 cleanup if the window ever hurts).
 func (w *NodeProbeWorker) deescalateGatewaySideProbeState(ctx context.Context) {
 	if w == nil || w.db == nil {
 		return
@@ -1304,8 +1310,8 @@ func nonBlockingWake(ch chan<- struct{}) {
 //
 // Without this, the routing view v_routable_credential_models keeps
 // excluding the binding until NodeProbeWorker's natural backoff
-// ladder rolls over — up to 24h after the most recent failure, or
-// indefinitely if paused=TRUE.
+// ladder rolls over — up to the 6h ladder cap after the most recent
+// failure (the ladder no longer parks rows indefinitely).
 //
 // The "next_retry_at = now() + 1h" choice mirrors runOne's success
 // branch (BUG #6 fix, 2026-07-22). Previously was 24h; that left
@@ -1573,7 +1579,11 @@ func (w *NodeProbeWorker) ProbeSync(
 			// Success reflects the direct round only: the gateway round is
 			// routed through this same URSM filter and can 503 circularly
 			// while the key is missing.
-			w.updateURSMv2ProbeState(ctx, tenantID, j.credID, j.model, res.direct.ok, res.direct.latencyMs)
+			// R42: failures honor the gateway-side predicate (see runOne) —
+			// a misconfigured instance must not poison the shared node key.
+			if res.direct.ok || w.ursmFailureWritable(res.direct.errCode, res.direct.errDetail) {
+				w.updateURSMv2ProbeState(ctx, tenantID, j.credID, j.model, res.direct.ok, res.direct.latencyMs)
+			}
 			if w.invalidateCandidateCache != nil {
 				w.invalidateCandidateCache(j.credID)
 			}
@@ -2078,19 +2088,31 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	// composite result back as available=0 turned a transient key expiry into
 	// a persistent "confirmed unavailable" lockout (glm-5.2 outage on 154).
 	// The composite still drives the backoff ladder and audit below.
-	w.updateURSMv2ProbeState(ctx, trigger.tenantID, credID, model, direct.ok, direct.latencyMs)
+	// R42 (2026-09-18 audit): the URSM v2 node key lives in Redis shared
+	// cluster-wide; writing a failure there for a gateway-side error (this
+	// instance's config, not the pair's health) locks the node out of routing
+	// on every well-configured instance — the R39 P1-1 poisoning channel via
+	// a second surface. Success always writes (it is the recovery signal);
+	// failures follow the same predicate as the binding guards, R40
+	// credential-specific decrypt exemption included.
+	if direct.ok || w.ursmFailureWritable(direct.errCode, direct.errDetail) {
+		w.updateURSMv2ProbeState(ctx, trigger.tenantID, credID, model, direct.ok, direct.latencyMs)
+	}
 	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "direct", attempt, trigger, direct)
 	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "gateway", attempt, trigger, gw)
 	if !direct.ok {
 		if isGatewaySideProbeError(direct.errCode) && !w.credentialSpecificDecryptFailure(direct.errDetail) {
 			// 2026-09-17: gateway-side error (endpoint/request build, decrypt).
 			// updateBindingAvailability refuses the shared-state write by itself,
-			// but the observed-state surface (URSM / state cache, possibly shared
-			// Redis) and the failure ladder must also stay untouched — the pair
-			// is not unhealthy, this instance is misconfigured.
-			// R40 豁免：decrypt 形且熔断未跳闸 = 单凭据密文损坏（跟随凭据），
-			// 走 else 分支按真实不可用处理（含 ladder），否则该凭据在绑定面
-			// 永无不可用信号、只剩真实流量 breaker 兜底（R39 §三#3）。
+			// and the observed-state surface (updateObservedState below plus the
+			// URSM v2 write above — shared Redis) stays untouched via the same
+			// predicate — the pair is not unhealthy, this instance is
+			// misconfigured.
+			// R40 豁免：decrypt 形且熔断未跳闸 = 单凭据密文损坏（跟随凭据）：
+			// 走 else 分支真实写绑定/观测面；失败 ladder 仍按 gateway-side
+			// 冻结 consecutive_failures（固定 15m backoff，见下方 mirror
+			// CASE WHEN）——否则该凭据在绑定面永无不可用信号、只剩真实流量
+			// breaker 兜底（R39 §三#3）。
 			slog.Error("node_probe_worker: gateway-side direct probe error — not updating availability",
 				"credential_id", credID,
 				"model", model,
@@ -2880,6 +2902,18 @@ func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID 
 
 func (w *NodeProbeWorker) updateCredentialHealth(ctx context.Context, credID int) {
 	_, _ = w.db.Exec(ctx, healthyCredentialSQL(), credID)
+}
+
+// ursmFailureWritable reports whether a FAILED direct probe round may write
+// its unavailable state to the shared URSM v2 surface (R42, 2026-09-18
+// audit). Gateway-side errors (decrypt/endpoint/request build) describe this
+// instance, not the pair — except the R40 exemption (credential-specific
+// decrypt failure while the instance circuit is not tripped), which follows
+// the credential and must surface. Same predicate as the
+// updateBindingAvailability/applyOutcome guards; the success path is always
+// writable and is checked by the callers before consulting this.
+func (w *NodeProbeWorker) ursmFailureWritable(errCode, errDetail string) bool {
+	return !isGatewaySideProbeError(errCode) || w.credentialSpecificDecryptFailure(errDetail)
 }
 
 func (w *NodeProbeWorker) updateURSMv2ProbeState(ctx context.Context, tenantID string, credID int, model string, success bool, latencyMs int) {

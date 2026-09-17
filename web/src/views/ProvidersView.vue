@@ -13,6 +13,7 @@ import {
   type BackgroundTasksStatus, type CredentialCheckResult, type ProbeURLResult,
   type RefreshBalanceResponse,
 } from '../api'
+import { ApiError } from '../api/_core'
 import {
   useProviderQualitySummary,
   type QualitySortKey,
@@ -521,12 +522,10 @@ function statusBadgeClass(status: string): string {
 // response carries the fresh API reading which is patched into the local row
 // so the drawer re-renders without a full loadCredentials round-trip.
 const refreshingBalance = ref<Record<number, boolean>>({})
-const balanceRefreshError = ref<Record<number, string>>({})
 
 async function refreshBalance(p: Provider, c: ProviderCredential) {
   if (refreshingBalance.value[c.id]) return
   refreshingBalance.value = { ...refreshingBalance.value, [c.id]: true }
-  balanceRefreshError.value = { ...balanceRefreshError.value, [c.id]: '' }
   try {
     const r: RefreshBalanceResponse = await refreshCredentialBalance(p.id, c.id)
     if (r.success && r.balance_usd != null) {
@@ -538,11 +537,17 @@ async function refreshBalance(p: Provider, c: ProviderCredential) {
       // Probe failed: keep the previous balance (fail-open, mirrors the
       // floor guard) and surface the error inline under the input.
       c.balance_error = r.error ?? pm('credential.row.balanceRefreshFailed')
-      balanceRefreshError.value = { ...balanceRefreshError.value, [c.id]: c.balance_error ?? '' }
     }
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : pm('credential.row.balanceRefreshFailed')
-    balanceRefreshError.value = { ...balanceRefreshError.value, [c.id]: msg }
+    // R42: this branch previously only wrote the dead balanceRefreshError
+    // state (never rendered), so a 400 (vendor exposes no balance API)
+    // looked like a successful refresh. Write the row field that the
+    // template renders in red under the input.
+    if (e instanceof ApiError && e.status === 400) {
+      c.balance_error = pm('credential.row.balanceUnsupported')
+    } else {
+      c.balance_error = e instanceof Error ? e.message : pm('credential.row.balanceRefreshFailed')
+    }
   } finally {
     refreshingBalance.value = { ...refreshingBalance.value, [c.id]: false }
   }

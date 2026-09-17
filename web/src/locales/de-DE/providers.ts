@@ -209,6 +209,12 @@ export default {
       slotUnlimited: 'unbegrenzt (0 = kein Limit)',
       usageSeparator: ' Aufrufe · ',
       balanceLabel: 'Guthaben',
+      // migration 721 (2026-09-18): balance provenance + on-demand refresh.
+      balanceSourceApi: 'API-Abfrage',
+      balanceSourceManual: 'Manuell erfasst · 24h keine automatische Abfrage',
+      balanceRefreshTooltip: 'Guthaben-API des Anbieters jetzt abfragen (GET, ohne Tokens)',
+      balanceRefreshFailed: 'Guthaben-Abfrage fehlgeschlagen',
+      balanceUnsupported: 'Anbieter bietet keine Guthaben-API (Plan-Zugänge siehe Plan-Quota-Felder)',
       quotaExhausted: 'Kontingent erschöpft',
       tagsPlaceholder: 'tag1, tag2',
       notesPlaceholder: 'Notizen',

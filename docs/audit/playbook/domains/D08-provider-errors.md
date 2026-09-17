@@ -49,3 +49,9 @@
 重点：窗口内新增的供应商错误路径是否"落账+think 回传/信封终态"两去向齐全；熔断画像是否覆盖。
 只读不改。输出按 conventions.md §4 结构，每条发现带 file:line 与触发路径。
 ```
+
+### R42 回注（2026-09-18，721 manual 保护锁死 + 失败落账补齐）
+- **共享谓词常量取代"keep in sync"注释**：manual-24h 保护谓词现为 `bg/balance_manual_guard.go manualBalanceGuardSQL`，floor guard（Pass A SELECT/成功 UPDATE/失败戳 UPDATE ×3）与 probe_v2（成功 UPDATE/失败戳 ×2）五处消费，`TestManualBalanceGuardPredicateLockstep` 锁消费计数并禁手抄字面量回潮。新增余额写点必须消费同一常量。
+- **TOCTOU 定式**：候选 SELECT 带保护谓词 ≠ 写回受保护——写时 UPDATE 必须带同一谓词（探测飞行中操作员 PATCH 是真实场景）。
+- **后台探测失败路径写 balance_error**（共享 balanceProbeFailStamp()，不含厂商响应体），不动 checked_at（保 #12a 退避）；manual 行由谓词豁免。
+- **manual 戳只随值变化**：updateCredential 对 balance_usd 用 IS DISTINCT FROM 条件盖戳——表单恒携带该字段的环境里，无条件戳 = 任意编辑静默停摆自动探测 24h。

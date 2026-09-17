@@ -74,7 +74,7 @@ var (
 	autoRouteSettledTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmgw_autoroute_settled_total",
-			Help: "Auto-route selections settled, by outcome",
+			Help: "Auto-route selections settled, by outcome. R42 caliber note: synthetic-actor selections (goal-*/loopback) are stamped settled with reward=NULL in the DB but deliberately NOT counted under outcome=abandoned here — sweep-log abandoned counts exceed this metric by design",
 		},
 		[]string{"outcome"}, // rewarded / abandoned
 	)

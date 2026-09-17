@@ -590,9 +590,16 @@ func classifyAnthropicStreamError(errType string, payload []byte) errorsx.ErrorK
 		// classifier accidentally map it to e.g. content_filter or model
 		// not_found based on relay-injected hint text.
 		return errorsx.KindUpstreamDown
-	case "invalid_request_error":
+	case "invalid_request_error", "bad_request_error":
 		// Client-shaped problem (bad params, schema mismatch); do not
 		// failover — surface it as a non-retryable invalid-input.
+		// R42 (2026-09-18 audit): bad_request_error is the relay variant of
+		// the same shape (MiniMax sends thinking.type 400s as SSE
+		// bad_request_error events). Without this branch it fell to the body
+		// classifier with status=0, where every status-gated 4xx pattern is
+		// skipped → KindTransient → upgraded KindUpstreamDown → the
+		// credential cooling↔probe flapping that c66dbd6c9 fixed for the
+		// admission path.
 		return errorsx.KindClientBug
 	case "not_found_error":
 		return errorsx.KindModelNotFound

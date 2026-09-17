@@ -109,19 +109,15 @@ func DecideFailover(status int, body []byte, retryAfterHeader string, clientOrig
 		decision.EnqueueProbe = true
 		decision.ProbeFanout = DefaultProbeFanout
 		decision.ReasonCode = "upstream_transient_failure"
-	case KindModelNotFound, KindModelDeprecated, KindUnsupportedFeature, KindContextLength, KindContentFilter, KindToolCallIdMismatch:
-		decision.Scope = ScopeModel
-		decision.EnqueueProbe = false
-		decision.FrontendWait = 0
-		decision.ReasonCode = "model_or_request_not_eligible"
-	case KindClientBug:
-		// 2026-09-18 audit: a request-shape 400 (invalid params / MiniMax
-		// invalid thinking.type 2013 / invalid_request_format / Zhipu 1214)
-		// fails on EVERY credential — a follow-up probe with a well-formed
-		// ping would succeed and prove nothing about the failing traffic,
-		// only burn an upstream request. Same no-probe treatment as the
-		// other request-not-eligible kinds; UpdateOnFailure already skips
-		// client bugs, so no recovery probe is needed to un-cool anything.
+	case KindModelNotFound, KindModelDeprecated, KindUnsupportedFeature, KindContextLength, KindContentFilter, KindToolCallIdMismatch, KindClientBug:
+		// 2026-09-18 audit (R42 merged the formerly separate KindClientBug
+		// case — identical field-for-field): a request-shape 400 (invalid
+		// params / MiniMax invalid thinking.type 2013 / invalid_request_format
+		// / Zhipu 1214) fails on EVERY credential — a follow-up probe with a
+		// well-formed ping would succeed and prove nothing about the failing
+		// traffic, only burn an upstream request. UpdateOnFailure already
+		// skips client bugs, so no recovery probe is needed to un-cool
+		// anything.
 		decision.Scope = ScopeModel
 		decision.EnqueueProbe = false
 		decision.FrontendWait = 0

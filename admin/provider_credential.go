@@ -623,11 +623,19 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		// instead of silently overwriting the calibrated value with an API
 		// read. Clearing balance_error mirrors "the operator just asserted a
 		// known-good number".
+		// R42 (2026-09-18 audit): stamp ONLY when the value actually changes.
+		// The drawer form always carries balance_usd, so an unrelated edit
+		// (tags/notes/label) used to flip source→manual and silently suspend
+		// the automatic balance probes for 24h; re-asserting the unchanged
+		// value keeps the row's existing provenance. The CASE compares the
+		// OLD balance_usd (UPDATE SET right-hand sides see the pre-image).
+		balArg := arg(*req.BalanceUSD)
+		valueChanged := "balance_usd IS DISTINCT FROM " + balArg
 		sets = append(sets,
-			"balance_usd = "+arg(*req.BalanceUSD),
-			"balance_source = 'manual'",
-			"balance_last_checked_at = NOW()",
-			"balance_error = NULL",
+			"balance_usd = "+balArg,
+			"balance_source = CASE WHEN "+valueChanged+" THEN 'manual' ELSE balance_source END",
+			"balance_last_checked_at = CASE WHEN "+valueChanged+" THEN NOW() ELSE balance_last_checked_at END",
+			"balance_error = CASE WHEN "+valueChanged+" THEN NULL ELSE balance_error END",
 		)
 	}
 	if req.PlanType != nil {

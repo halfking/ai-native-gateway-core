@@ -22,6 +22,7 @@ package bg
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -191,5 +192,48 @@ func TestResolveDirectTargetDecryptFeedsCircuit(t *testing.T) {
 	}
 	if !strings.Contains(body, "w.resetDecryptFailures()") {
 		t.Errorf("successful decrypt must call resetDecryptFailures")
+	}
+}
+
+// TestURSMv2FailureWriteCarriesGatewaySideGuard (R42, 2026-09-18 audit) pins
+// that all three probe paths gate their shared-URSM failure write with the
+// same predicate as the binding guards. The URSM v2 node key lives in Redis
+// shared cluster-wide; an unconditional failure write from a misconfigured
+// instance (bad encryption key → endpoint_build) locks the node out of
+// routing everywhere — the R39 P1-1 poisoning channel via a second surface.
+// Success writes stay unconditional (recovery signal, 2026-08-18 fix).
+func TestURSMv2FailureWriteCarriesGatewaySideGuard(t *testing.T) {
+	probeSrc := nodeProbeSource(t)
+
+	// The predicate helper itself must carry both halves: gateway-side
+	// classification AND the R40 credential-specific decrypt exemption.
+	helper := sourceBetween(t, probeSrc,
+		"func (w *NodeProbeWorker) ursmFailureWritable",
+		"func (w *NodeProbeWorker) updateURSMv2ProbeState")
+	if !strings.Contains(helper, "!isGatewaySideProbeError(errCode)") ||
+		!strings.Contains(helper, "w.credentialSpecificDecryptFailure(errDetail)") {
+		t.Errorf("ursmFailureWritable must combine gateway-side classification with the R40 decrypt exemption")
+	}
+
+	// Tick path (runOne): the URSM write sits inside the ok-or-writable gate.
+	runOne := sourceBetween(t, probeSrc,
+		"func (w *NodeProbeWorker) runOne",
+		"func isMissingBindingErr")
+	if !strings.Contains(runOne, "if direct.ok || w.ursmFailureWritable(direct.errCode, direct.errDetail) {\n\t\tw.updateURSMv2ProbeState(") {
+		t.Errorf("runOne must gate the URSM v2 write with ok || ursmFailureWritable")
+	}
+
+	// Sync path (ProbeSync): same gate on the res.direct fields.
+	if !strings.Contains(probeSrc, "if res.direct.ok || w.ursmFailureWritable(res.direct.errCode, res.direct.errDetail) {\n\t\t\t\tw.updateURSMv2ProbeState(") {
+		t.Errorf("ProbeSync must gate the URSM v2 write with ok || ursmFailureWritable")
+	}
+
+	// Queue path (probe_service.go): same gate via the worker handle.
+	qSrc, err := os.ReadFile("probe_service.go")
+	if err != nil {
+		t.Fatalf("read probe_service.go: %v", err)
+	}
+	if !strings.Contains(string(qSrc), "if direct.ok || s.worker.ursmFailureWritable(direct.errCode, direct.errDetail) {\n\t\ts.worker.updateURSMv2ProbeState(") {
+		t.Errorf("probe_service queue path must gate the URSM v2 write with ok || ursmFailureWritable")
 	}
 }

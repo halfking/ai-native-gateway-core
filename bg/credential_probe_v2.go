@@ -569,12 +569,13 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		}
 
 		// P3: balance probe for supported vendors (only when healthy).
-		// Migration 721 (2026-09-18): the WHERE skips rows hand-calibrated
-		// by an operator within the last 24h (balance_source='manual') so
-		// the hourly automatic probe cannot silently overwrite a manual
-		// balance correction. Mirrors the guard in
-		// bg/balance_floor_guard.go refreshBalance candidate SELECT — keep
-		// the two predicates in sync.
+		// Migration 721 (2026-09-18): the manual-protection guard skips rows
+		// hand-calibrated by an operator within the last 24h
+		// (balance_source='manual') so the hourly automatic probe cannot
+		// silently overwrite a manual balance correction. R42: the predicate
+		// is the shared manualBalanceGuardSQL constant — see
+		// bg/balance_manual_guard.go (floor-guard Pass A SELECT + write-time
+		// UPDATE consume the same text).
 		if pr.AvailabilityState == "ready" {
 			if balUSD, ok := c.probeBalance(timeoutCtx, s); ok {
 				if _, err := c.db.Exec(timeoutCtx,
@@ -584,10 +585,7 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 					     balance_last_checked_at = NOW(),
 					     balance_error = NULL
 					 WHERE id = $2
-					   AND NOT (
-					       COALESCE(balance_source, '') = 'manual'
-					       AND balance_last_checked_at > NOW() - INTERVAL '24 hours'
-					   )`,
+					   AND `+manualBalanceGuardSQL,
 					balUSD, s.ID,
 				); err != nil {
 					slog.Warn("credential probe v2: balance_usd write failed",
@@ -595,6 +593,24 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 				} else {
 					slog.Debug("credential probe v2: balance_usd updated",
 						"credential_id", s.ID, "balance_usd", balUSD)
+				}
+			} else {
+				// R42: same failure stamp as the floor guard — a broken
+				// vendor balance endpoint must be visible without waiting
+				// for an operator to click ⟳. checked_at is deliberately
+				// NOT bumped (hourly cycle cadence unchanged, #12a fail-open)
+				// and manual rows are protected by the guard predicate.
+				slog.Warn("credential probe v2: balance probe failed",
+					"credential_id", s.ID)
+				if _, uerr := c.db.Exec(timeoutCtx,
+					`UPDATE credentials
+					 SET balance_error = $1
+					 WHERE id = $2
+					   AND `+manualBalanceGuardSQL,
+					balanceProbeFailStamp(), s.ID,
+				); uerr != nil {
+					slog.Warn("credential probe v2: balance_error stamp write failed",
+						"credential_id", s.ID, "error", uerr)
 				}
 			}
 		}

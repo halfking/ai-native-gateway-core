@@ -52,3 +52,8 @@
 - **RLS Phase1#2 durable 族 GUC 补齐**：durable/rls.go 统一通道——前台写（CreateAndClaim）`SET LOCAL app.current_tenant`，worker 17 条路径（claim/terminal/reaper/settlement/pending/决策历史/指标读）`super_admin + bypass_rls` 双 GUC；**autocommit 单语句读写必须包显式事务**——is_local GUC 在 autocommit 下语句结束即回收，等于没设，降权后表现为假性 ErrLeaseLost/ErrNoRows（pgxmock 用例 ×32 同步补 Begin/GUC/Commit 期望）。
 - **516 中间形态漂移（新发现，722 收敛）**：本机真库取证——2026-08-15 19:14 以从未入 git 的脏工作区 516 建表（缺 durable_llm_task_events/durable_pending_outbox/checkpoint_payload），516 后以最终形态提交；存量库三无（marker 锁死不可重放、ensure 无 durable 条目、代码直引缺失表/列）→ 首次 durable 事件写入即运行时失败。722 以 516 最终形态幂等体重放收敛（IF NOT EXISTS/DROP POLICY IF EXISTS/ADD COLUMN IF NOT EXISTS），全量注册双通道，本机真库实跑落地。
 - 教训：**"迁移文件后补编辑"对已应用库是静默腐蚀**——凡是 ensure 链不覆盖的 schema 面，交付矩阵必须回答"已应用旧版 X 的库怎么拿到新版 X 的对象"；只有文件不可变 + 序号通道新迁移一条路。
+
+### R42 回注（2026-09-18，durable 基表交付矩阵补全）
+- **"ensure 链不覆盖的 schema 面"第三条通道**：R40 教训覆盖了 revision-sequence 通道，R42 补上 installer 通道——516/520 已补进五点同步（TestDurableFamilyPrerequisitesRegistered 钉桩），durable 族全新装交付矩阵闭合。
+- **URSM v2 共享 Redis 属"observed-state surface"**：与 credential_model_bindings 同级，gateway-side 探测失败写它 = 集群级毒化（见 D09 R42 回注）。
+- pending/pg_source.go Get/GetLatest 是 durable 包外唯一无 GUC 读点（Phase 2 前置待办，登记 R42 §五#1）。

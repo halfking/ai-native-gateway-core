@@ -208,6 +208,12 @@ export default {
       slotUnlimited: 'ilimitado (0 = sin tope)',
       usageSeparator: ' llamadas · ',
       balanceLabel: 'Saldo',
+      // migration 721 (2026-09-18): balance provenance + on-demand refresh.
+      balanceSourceApi: 'Sondeo por API',
+      balanceSourceManual: 'Entrada manual · sin sondeos automáticos durante 24h',
+      balanceRefreshTooltip: 'Consultar ahora la API de saldo del proveedor (GET, sin tokens)',
+      balanceRefreshFailed: 'Falló el sondeo de saldo',
+      balanceUnsupported: 'El proveedor no expone API de saldo (los planes se ven en los campos de cuota del plan)',
       quotaExhausted: 'Cuota agotada',
       tagsPlaceholder: 'tag1, tag2',
       notesPlaceholder: 'notas',

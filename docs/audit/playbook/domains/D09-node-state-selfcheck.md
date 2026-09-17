@@ -55,3 +55,7 @@
 - **endpoint_build 粒度细分（闭合上文遗留）**：新识别器 `isDecryptShapedProbeDetail`（resolveDirectTarget 的 `decrypt: %w` 包装前缀）+ `credentialSpecificDecryptFailure`（解密形且实例解密熔断计数未达 decryptTripThreshold=5）——熔断未跳闸说明本实例解其它凭据正常，失败跟随凭据 = 单凭据密文永久损坏，豁免 guard 写真实不可用（绑定/observed/ladder 全走 else 分支）；实例真错 key 时计数到 5 熔断跳闸，压制恢复 + deescalate sweep 修复 pre-trip 窗口的少量写入（自愈）。updateBindingAvailability 签名新增第 7 参 errDetail（源钉桩同步更新 ×2），sync/queue/probe_service 三路抑制条件全部携带豁免（bg/node_probe_gateway_side_test.go + bg/node_probe_credential_decrypt_test.go）。
 - self-check/diagnostics 直读 model_probe_state 的残留面按 probeGuardStateTable/compat 视图逐个切换（R39 收口 probe_missing → v_node_probe_state_compat；legacy 模式下 nps 由 mirror 保持同构）。
 - SQL 注释与谓词漂移：expiredCmbRecoverySQL 曾宣称不存在的 next_retry_at 跳过（R39 改注释）。
+
+### R42 回注（2026-09-18，URSM v2 共享写门控收口）
+- **共享态守卫的完整清单**：绑定面（updateBindingAvailability 内部门）+ 观测面（updateObservedState 调用点门）+ **URSM v2 节点键（共享 Redis，updateURSMv2ProbeState 三路调用点门）**——R39/R40 只钉了前两个，URSM 三路（runOne/ProbeSync/probe_service 队列）全部漏网。R42 统一为 `direct.ok || w.ursmFailureWritable(errCode, errDetail)`（成功恒写保恢复信号；失败过 gateway-side+R40 豁免谓词），源钉桩 TestURSMv2FailureWriteCarriesGatewaySideGuard。**新增任何写共享 Redis 的探测反馈路径，必须过同一谓词。**
+- deescalate 启动清扫与 R40 豁免写的回收权衡已注释钉死（同 reason 不可区分，重启重开一轮探测周期）；若豁免窗口实测有害，Phase 2 出独立 reason 标签。

@@ -31,11 +31,13 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 )
 
@@ -61,7 +63,16 @@ func (h *Handler) refreshCredentialBalance(w http.ResponseWriter, r *http.Reques
 		  AND c.status <> 'deleted'
 	`, credID, providerID).Scan(&ciphertext, &baseURL, &protocol, &catalog)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "credential not found")
+		// R42: only a missing row is 404 — pool exhaustion / timeout / other
+		// infrastructure failures are 500 so they are not misread as "the
+		// credential does not exist" by the drawer.
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "credential not found")
+			return
+		}
+		slog.Warn("refresh-balance: credential lookup failed",
+			"provider_id", providerID, "credential_id", credID, "error", err)
+		writeError(w, http.StatusInternalServerError, "credential lookup failed")
 		return
 	}
 
@@ -88,6 +99,10 @@ func (h *Handler) refreshCredentialBalance(w http.ResponseWriter, r *http.Reques
 
 	balUSD, ok := providercap.FetchBalanceUSD(ctx, nil, balURL, apiKey, desc)
 	if !ok {
+		// R42: leave a slog trace — the DB stamp alone meant a persistently
+		// failing vendor endpoint produced zero server-side evidence.
+		slog.Warn("refresh-balance: vendor balance probe failed",
+			"provider_id", providerID, "credential_id", credID, "catalog", catalog)
 		errMsg := "balance probe failed (network/HTTP/parse) at " + time.Now().UTC().Format(time.RFC3339)
 		if _, uerr := h.db.Exec(ctx, `
 			UPDATE credentials
@@ -121,11 +136,11 @@ func (h *Handler) refreshCredentialBalance(w http.ResponseWriter, r *http.Reques
 
 	now := time.Now().UTC()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success":               true,
-		"balance_usd":           balUSD,
-		"balance_currency":      "USD",
-		"balance_source":        "api",
-		"balance_checked_at":    now.Format(time.RFC3339),
+		"success":            true,
+		"balance_usd":        balUSD,
+		"balance_currency":   "USD",
+		"balance_source":     "api",
+		"balance_checked_at": now.Format(time.RFC3339),
 	})
 }
 

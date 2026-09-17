@@ -255,7 +255,9 @@ BEGIN
     END IF;
 END $$;
 
--- knowledge* tables (8 tables)
+-- knowledge* tables (9 tables) (R42: comment said 8; the block below
+-- covers knowledge/annotations/base_acl/bases/entities/lineages/metadata/
+-- relations/versions)
 DO $$
 BEGIN
     IF to_regclass('knowledge') IS NOT NULL THEN

@@ -1,8 +1,12 @@
 // rls.go — durable 族 RLS GUC 通道（RLS 设计 §五 Phase 1 item 2）。
 //
-// durable_llm_tasks / durable_task_settlement_intents 的 tenant_isolation
-// policy 读 app.current_tenant（`tenant_id = current_setting('app.current_tenant', true)`），
-// super_admin_bypass policy 读 app.current_role / app.bypass_rls。在
+// durable_llm_tasks / durable_llm_task_events / durable_pending_outbox 为
+// 两分 policy 形状：tenant_isolation 读 app.current_tenant
+// （`tenant_id = current_setting('app.current_tenant', true)`），
+// super_admin_bypass 读 app.current_role / app.bypass_rls；
+// durable_task_settlement_intents 例外——迁移 520 把两条合并为单条
+// durable_task_settlement_access（USING+WITH CHECK 三分支 OR），双 GUC 命中
+// 同一谓词的旁路分支，语义等价（R42 注释修正）。在
 // llm_gateway 降权（Phase 2）之前这些 GUC 是 dormant 的；补齐后 worker/前台
 // 两条路径的 GUC 状态即 Phase 3 durable 批 FORCE 的前置证明。
 //

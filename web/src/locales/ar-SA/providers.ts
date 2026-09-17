@@ -210,6 +210,12 @@ export default {
       slotUnlimited: 'غير محدود (0=غير محدود)',
       usageSeparator: 'مرة · ',
       balanceLabel: 'الرصيد',
+      // migration 721 (2026-09-18): balance provenance + on-demand refresh.
+      balanceSourceApi: 'استقصاء عبر API',
+      balanceSourceManual: 'إدخال يدوي · لا استقصاء تلقائي لمدة 24 ساعة',
+      balanceRefreshTooltip: 'استدعاء API رصيد المزوّد الآن (GET بدون استهلاك توكن)',
+      balanceRefreshFailed: 'فشل استقصاء الرصيد',
+      balanceUnsupported: 'لا يوفر هذا المزوّد API رصيد عام (اعتمادات الخطة تظهر في حقول حصة الخطة)',
       quotaExhausted: 'الحصة مستنفدة',
       tagsPlaceholder: 'tag1, tag2',
       notesPlaceholder: 'ملاحظات',

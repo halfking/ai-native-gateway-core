@@ -42,3 +42,8 @@
 重点：窗口内 web/ 与观测面的 diff；孤儿路由与手写控件存量债是否恶化。
 只读不改。输出按 conventions.md §4 结构，每条发现带 file:line 与触发路径。
 ```
+
+### R42 回注（2026-09-18，i18n 全语言纪律 + 错误态渲染）
+- **新增 i18n key 必须 8 语言全落**：parity 门禁（每 locale ⊇ zh-CN leaf keys）在 main 上红过一次（721 五 key 只落 zh/en）——verify.sh --web 全红。交接/验证清单必须含 vitest run，vue-tsc+vite build 不覆盖 parity。
+- **catch 只写"从未渲染的状态"= 用户静默失败**：⟳ 刷新失败曾只写死状态 balanceRefreshError；修复后统一写已渲染的 c.balance_error，400（无余额 API）映射 balanceUnsupported。新增交互的验收标准：每条失败路径都能在 UI 上被用户看见。
+- manual 戳条件化（值不变不盖章）+ 后台失败落 balance_error 属 D08 R42 回注的 UX 侧。

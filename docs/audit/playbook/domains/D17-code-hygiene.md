@@ -39,3 +39,8 @@
 - **P0 抓获：main 分支网关不可编译**（cd76a7f0e 漏 import "net"，merge 入主后无人跑 build 门）。教训：直推 main 的提交，push 前至少 `go build ./cmd/gateway/`（仓库最大包，import 面最易漂移）。
 - gofmt 债随修复顺带清（R39 一并清 5 文件）；新导出符号若属分阶段特性，函数头补 `RESERVED(<特性>): ... 未接线` 标注（DiscoverGateways/IsRunning/Status 已标），防后续轮重复怀疑死代码。
 - go.mod 直接 import 的依赖勿留 // indirect（go mod tidy 归位 + go mod vendor 零 churn 验证）。
+
+### R42 回注（2026-09-18，注释诚实化批量清账 + 双胞胎教训）
+- 六处注释漂移一次清（node_probe 头注 6h 封顶/无 pause、SetModelQualityTrigger attempt>=2、deescalate 过时括注、rls.go policy 形状、720 "8 tables"、shadow_actors 第二写入口）——R40 一轮之内产生四处新漂移，**注释描述"另一分支/另一机制"时必须当场对照实现**。
+- failover_policy KindClientBug 重复 case 已合并；counter Help 补合成轮 abandon 口径。
+- **双胞胎提交教训**：并行会话同题同补丁双落（e9d46b37e/6276a3ff9）靠 merge 去重，掩盖"第二个提交没人真正看"——push 前 `git log --since='5 minutes'` 自查（conventions §7 候选）。
