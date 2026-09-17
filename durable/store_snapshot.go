@@ -32,13 +32,17 @@ func (s *Store) LoadSnapshot(ctx context.Context, taskID string) (*Snapshot, err
 	}
 	var snap Snapshot
 	var ciphertext string
-	err := s.db.QueryRow(ctx, `
-		SELECT id, tenant_id, request_id, request_hash,
-		       snapshot_version, encryption_key_id, request_snapshot_ciphertext
-		FROM durable_llm_tasks
-		WHERE id = $1`, taskID).Scan(
-		&snap.TaskID, &snap.TenantID, &snap.RequestID, &snap.RequestHash,
-		&snap.Version, &snap.EncryptionKeyID, &ciphertext)
+	// worker 恢复读：RLS USING 同样过滤 SELECT，包显式事务设旁路 GUC
+	// （rls.go）——降权后无 GUC 的读会静默 0 行（假性 not found）。
+	err := s.queryWithBypassTx(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT id, tenant_id, request_id, request_hash,
+			       snapshot_version, encryption_key_id, request_snapshot_ciphertext
+			FROM durable_llm_tasks
+			WHERE id = $1`, taskID).Scan(
+			&snap.TaskID, &snap.TenantID, &snap.RequestID, &snap.RequestHash,
+			&snap.Version, &snap.EncryptionKeyID, &ciphertext)
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("durable: snapshot task %s not found", taskID)

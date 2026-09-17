@@ -50,7 +50,7 @@ func (s *Store) CheckpointCommitState(ctx context.Context, p CheckpointParams) e
 	if CommitStateRank(p.State) <= 0 && p.State != CommitStateNone {
 		return fmt.Errorf("durable: unknown commit state %q", p.State)
 	}
-	tag, err := s.db.Exec(ctx, `
+	tag, err := s.execWithBypassTx(ctx, `
 		UPDATE durable_llm_tasks
 		SET commit_state = $5,
 		    checkpoint_payload = COALESCE($6::jsonb, checkpoint_payload),
@@ -169,6 +169,11 @@ func (s *Store) CommitTerminal(ctx context.Context, c TerminalCommit) (*Terminal
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
 
+	// worker 完成路径：旁路双 GUC（RLS §五 Phase1#2）。
+	if err := setAllTenantBypassGUC(ctx, tx); err != nil {
+		return nil, err
+	}
+
 	err = tx.QueryRow(ctx, `
 		UPDATE durable_llm_tasks
 		SET status = $4,
@@ -263,6 +268,11 @@ func (s *Store) ReapDeadlines(ctx context.Context, limit int, now time.Time) ([]
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
 
+	// worker 收割路径：旁路双 GUC（RLS §五 Phase1#2）。
+	if err := setAllTenantBypassGUC(ctx, tx); err != nil {
+		return nil, err
+	}
+
 	rows, err := reapSelect(ctx, tx, `
 		SELECT id, status FROM durable_llm_tasks
 		WHERE deadline_at <= $2
@@ -355,6 +365,11 @@ func (s *Store) ReapUnsafeCheckpointed(ctx context.Context, limit int, now time.
 		return nil, fmt.Errorf("durable: begin safety reap: %w", err)
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+
+	// worker 收割路径：旁路双 GUC（RLS §五 Phase1#2）。
+	if err := setAllTenantBypassGUC(ctx, tx); err != nil {
+		return nil, err
+	}
 
 	rows, err := reapSelect(ctx, tx, `
 		SELECT id, status FROM durable_llm_tasks

@@ -435,6 +435,31 @@ files=(
   # 归 parent_ts）+ tool_usage_stats_hot ASC/DESC 三对收敛（保 348 显式 DESC）。
   # 与 db.go/db_omnifree.go 同 commit 删除 ensure 创建者联动，drop 后不再复活。
   "$ROOT_DIR/sql/migrations/startup/719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql"
+  # 2026-09-18 R40 审计（新迁移登记）：720 RLS policy 词汇统一（设计
+  # docs/design/rls-tenant-isolation-architecture.md §五 Phase1#1）——
+  # app.tenant_id 57 条 → get_current_tenant()、app.is_super_admin 残留 2 条
+  # → 标准旁路形；superuser 时期零行为变化（llm_gateway 仍 SUPERUSER+BYPASSRLS）。
+  # f5328e13c 仅落 embeddata 单点（TestStartupFilesAreAllEmbedded 在 main 上红），
+  # 本轮补齐五点同步后登记存量库升级通道。
+  "$ROOT_DIR/sql/migrations/startup/720_rls_policy_vocabulary_unification.sql"
+  # 2026-09-18 R40 审计（通道登记补齐）：721 credentials 余额来源/错误列
+  # （507d78cff）仅落 canonical+embeddata 文件副本，四处代码登记全缺——
+  # 与 720 同款不完整五点同步，R40 补登记。纯 ADD COLUMN IF NOT EXISTS +
+  # 幂等约束补挂，存量库重放零风险。
+  "$ROOT_DIR/sql/migrations/startup/721_credential_balance_source_and_error.sql"
+  # 2026-09-18 R40 审计（新迁移登记）：722 durable 家族 schema 收敛——把 516
+  # 最终形态的幂等体（durable_llm_task_events / durable_pending_outbox 两表
+  # + RLS 政策 + durable_llm_tasks.checkpoint_payload）重放到应用过 516 中间
+  # 形态的存量库（本机真库取证：中间形态从未入 git，marker 已锁死 516、
+  # ensure 链无 durable 条目，代码引用缺失表/列 = 首次事件写入即运行时失败）。
+  # 全语句幂等，全新安装零变化。
+  "$ROOT_DIR/sql/migrations/startup/722_durable_family_schema_convergence.sql"
+  # 2026-09-18 R40 审计（新迁移登记）：723 RLS Phase1#3 空 RLS 补 ENABLE——
+  # attachments / candidate_failure_logs_columnar_old 两表 policy 已在且词汇
+  # 标准形，但 relrowsecurity=false 沦为摆设；ENABLE（不 FORCE）superuser
+  # 时期零行为变化，为 Phase 2 降权作准备（设计 §五 Phase1#3）。原编 721 与
+  # 507d78cff 余额元数据迁移撞号，重编 723。
+  "$ROOT_DIR/sql/migrations/startup/723_rls_enable_attachments_and_cfl_old.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

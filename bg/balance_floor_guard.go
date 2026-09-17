@@ -841,6 +841,10 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 	defer cancel()
 
 	// Pass A: refresh stale balances for floor-configured credentials.
+	// Migration 721 manual-protection: a row whose balance was hand-calibrated
+	// by an operator (balance_source='manual') is skipped for 24h so the
+	// automatic probe cannot silently overwrite the calibrated value. The
+	// stamp is written by admin updateCredential on every balance_usd PATCH.
 	rows, err := g.db.Query(cctx, `
 		SELECT c.id, c.secret_ciphertext,
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
@@ -850,6 +854,10 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 		WHERE c.balance_floor_usd IS NOT NULL
 		  AND (c.balance_last_checked_at IS NULL
 		       OR c.balance_last_checked_at < now() - interval '15 minutes')
+		  AND NOT (
+		      COALESCE(c.balance_source, '') = 'manual'
+		      AND c.balance_last_checked_at > now() - interval '24 hours'
+		  )
 		  AND c.status = 'active'
 		  AND c.lifecycle_status = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
@@ -991,7 +999,11 @@ func (g *BalanceFloorGuard) refreshBalance(ctx context.Context, id int64, cipher
 		return false // fail-open: keep previous balance, retry next cycle
 	}
 	if _, err := g.db.Exec(ctx, `
-		UPDATE credentials SET balance_usd = $1, balance_last_checked_at = now()
+		UPDATE credentials
+		SET balance_usd = $1,
+		    balance_source = 'api',
+		    balance_last_checked_at = now(),
+		    balance_error = NULL
 		WHERE id = $2
 	`, balUSD, id); err != nil {
 		slog.Warn("balance_floor_guard: balance refresh write failed",

@@ -591,18 +591,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 	} else {
 		// Fallback to base view
 		taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
-		rows, err := h.db.Query(ctx, fmt.Sprintf(`
-			SELECT %s AS task_type, COUNT(*)
-			FROM routing_analytics_source
-			WHERE ts >= NOW() - INTERVAL '7 days'
-			  AND (
-			    is_auto_request = TRUE
-			    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-			  )`+auditBusinessFrag+auditTenantFrag+`
-			GROUP BY (%s)
-			ORDER BY COUNT(*) DESC
-			LIMIT 20
-		`, taskExpr, taskExpr), auditTenantArgs...)
+		rows, err := h.db.Query(ctx, buildAutoRouteTaskDistQuery(taskExpr, auditBusinessFrag, auditTenantFrag), auditTenantArgs...)
 		if err == nil {
 			for rows.Next() {
 				var t string
@@ -716,6 +705,34 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSONOk(w, out)
+}
+
+// buildAutoRouteTaskDistQuery assembles the non-MV fallback task
+// distribution SELECT. It is a pure helper kept separate from the handler so
+// the SQL can be unit-tested without standing up a database.
+//
+// R41 (2026-09-18 PG log audit): businessFrag carries a bare '%' (the
+// `NOT LIKE 'probe-%'` filter), so it must be passed as a Sprintf ARGUMENT —
+// never concatenated into the format string. Embedding it corrupted the verb
+// stream: the bad verb in `probe-%'` swallowed the taskExpr argument and
+// PG received `GROUP BY (%!s(MISSING))`, failing every call with
+// `syntax error at or near "(" at character 607` (867×/8h live) whenever the
+// MV path was unavailable, and the handler's swallowed rows-err silently
+// emptied task_distribution. Same class as the R37 work_types.go fix
+// (wtSyntheticExclude / LIKE 'goal-%').
+func buildAutoRouteTaskDistQuery(taskExpr, businessFrag, tenantFrag string) string {
+	return fmt.Sprintf(`
+		SELECT %s AS task_type, COUNT(*)
+		FROM routing_analytics_source
+		WHERE ts >= NOW() - INTERVAL '7 days'
+		  AND (
+		    is_auto_request = TRUE
+		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+		  )%s%s
+		GROUP BY (%s)
+		ORDER BY COUNT(*) DESC
+		LIMIT 20
+	`, taskExpr, businessFrag, tenantFrag, taskExpr)
 }
 
 // handleRefresh triggers an immediate credential_model_index refresh.

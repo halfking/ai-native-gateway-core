@@ -442,6 +442,18 @@ var unifyEnsureShadowedIndexesMigration719 []byte
 //go:embed embeddata/startup/720_rls_policy_vocabulary_unification.sql
 var rlsPolicyVocabularyUnificationMigration720 []byte
 
+//go:embed embeddata/startup/721_credential_balance_source_and_error.sql
+var credentialBalanceSourceAndErrorMigration721 []byte
+
+//go:embed embeddata/startup/722_durable_family_schema_convergence.sql
+var durableFamilySchemaConvergenceMigration722 []byte
+
+//go:embed embeddata/startup/723_rls_enable_attachments_and_cfl_old.sql
+var rlsEnableAttachmentsAndCflOldMigration723 []byte
+
+//go:embed embeddata/startup/724_task_type_corrections.sql
+var taskTypeCorrectionsMigration724 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -582,6 +594,10 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/718_drop_redundant_indexes_and_add_ttl_indexes.sql":                     dropRedundantIndexesMigration718,
 	"startup/719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql":           unifyEnsureShadowedIndexesMigration719,
 	"startup/720_rls_policy_vocabulary_unification.sql":                              rlsPolicyVocabularyUnificationMigration720,
+	"startup/721_credential_balance_source_and_error.sql":                            credentialBalanceSourceAndErrorMigration721,
+	"startup/722_durable_family_schema_convergence.sql":                              durableFamilySchemaConvergenceMigration722,
+	"startup/723_rls_enable_attachments_and_cfl_old.sql":                             rlsEnableAttachmentsAndCflOldMigration723,
+	"startup/724_task_type_corrections.sql":                                          taskTypeCorrectionsMigration724,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 
