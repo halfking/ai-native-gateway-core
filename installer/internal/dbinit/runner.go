@@ -164,8 +164,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// embeddata only (f5328e13c), leaving TestStartupFilesAreAllEmbedded
 			// red on main; registered here with the canonical copy restored.
 			"720_rls_policy_vocabulary_unification.sql",
-			"723_rls_enable_attachments_and_cfl_old.sql",
+			// 721 (507d78cff) landed with file copies only — same incomplete
+			// five-point sync shape as 720; registered here (R40, 2026-09-18).
+			"721_credential_balance_source_and_error.sql",
 			"722_durable_family_schema_convergence.sql",
+			"723_rls_enable_attachments_and_cfl_old.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}
