@@ -2,11 +2,14 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -1311,11 +1314,18 @@ func (pm *PartitionManager) cleanupOldProviderErrorDetails(ctx context.Context) 
 
 	// Only delete resolved errors older than TTL.
 	// Unresolved errors are kept indefinitely for operational visibility.
-	tag, err := pm.db.Exec(timeoutCtx,
-		`DELETE FROM provider_error_details 
-		 WHERE resolved = true 
-		 AND updated_at < now() - ($1 || ' days')::interval`,
-		retentionDays)
+	//
+	// RLS Phase 2 适配 (R41 P1-3): 跨租户 TTL 清理必须显式事务 +
+	// super_admin 旁路 GUC（provider_error_details policy 含
+	// `current_role=super_admin OR bypass_rls=true` 分支），否则降权后
+	// 静默 0 行（真库实测 22,489+1('chenb') 行滞留）。
+	tag, err := pm.runWithBypass(timeoutCtx, func(tx pgx.Tx) (pgconn.CommandTag, error) {
+		return tx.Exec(timeoutCtx,
+			`DELETE FROM provider_error_details
+			 WHERE resolved = true
+			 AND updated_at < now() - ($1 || ' days')::interval`,
+			retentionDays)
+	})
 	if err != nil {
 		slog.Error("partition_manager: provider_error_details cleanup failed",
 			"retention_days", retentionDays, "error", err)
@@ -1441,4 +1451,34 @@ func (pm *PartitionManager) cleanupOldRoutingOptimizationMetrics(ctx context.Con
 		slog.Info("partition_manager: cleaned routing_optimization_metrics",
 			"deleted_rows", n, "retention_days", retentionDays)
 	}
+}
+
+// runWithBypass wraps a write in a tx with super_admin/bypass RLS GUCs set.
+// RLS Phase 2 适配 (R41 P1-3/P1-5): 跨租户清理 / 状态转移路径在
+// NOSUPERUSER owner 下必须显式事务 + 旁路 GUC，否则 policy 触发 0 行
+// 静默失败。事务语义与 admin/tenant_ctx.go setAllTenantGUC 同源。
+func (pm *PartitionManager) runWithBypass(ctx context.Context, fn func(pgx.Tx) (pgconn.CommandTag, error)) (pgconn.CommandTag, error) {
+	var zero pgconn.CommandTag
+	if pm == nil || pm.db == nil {
+		return zero, fmt.Errorf("partition manager not initialized")
+	}
+	tx, err := pm.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return zero, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.current_role', 'super_admin', true)`); err != nil {
+		return zero, fmt.Errorf("set super_admin role: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.bypass_rls', 'true', true)`); err != nil {
+		return zero, fmt.Errorf("set bypass_rls: %w", err)
+	}
+	tag, err := fn(tx)
+	if err != nil {
+		return zero, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return zero, fmt.Errorf("commit: %w", err)
+	}
+	return tag, nil
 }

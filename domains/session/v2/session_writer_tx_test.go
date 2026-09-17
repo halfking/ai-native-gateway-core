@@ -186,6 +186,11 @@ func TestWrite_PersistsVersionedDigestInTurnTransaction(t *testing.T) {
 	req := sampleRequest()
 
 	mock.ExpectBegin()
+	// RLS Phase 2 (R41 P1-5): turn tx must set app.current_tenant=req.TenantID
+	// for session_aggregate_outbox Enqueue to satisfy policy tenant branch.
+	mock.ExpectExec("SELECT set_config\\('app\\.current_tenant', \\$1, true\\)").
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
 	expectRequestLock(mock)
@@ -230,6 +235,11 @@ func TestWrite_LoadsPreviousOutboundForRequestDelta(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
+	// RLS Phase 2 (R41 P1-5): turn tx must set app.current_tenant=req.TenantID
+	// for session_aggregate_outbox Enqueue to satisfy policy tenant branch.
+	mock.ExpectExec("SELECT set_config\\('app\\.current_tenant', \\$1, true\\)").
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	expectSessionLock(mock)
 	mock.ExpectQuery("FROM public.session_bodies").
 		WithArgs(req.TenantID, req.SessionID).
@@ -280,6 +290,11 @@ func TestWrite_TurnAndBodiesAreAtomic_RollbackOnBodiesFailure(t *testing.T) {
 
 	// 1. Begin and lock before reading the previous body.
 	mock.ExpectBegin()
+	// RLS Phase 2 (R41 P1-5): turn tx must set app.current_tenant=req.TenantID
+	// for session_aggregate_outbox Enqueue to satisfy policy tenant branch.
+	mock.ExpectExec("SELECT set_config\\('app\\.current_tenant', \\$1, true\\)").
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
 
@@ -318,6 +333,11 @@ func TestWrite_TurnAndBodiesAreAtomic_CommitOnSuccess(t *testing.T) {
 
 	// 1. Begin and lock before reading the previous body.
 	mock.ExpectBegin()
+	// RLS Phase 2 (R41 P1-5): turn tx must set app.current_tenant=req.TenantID
+	// for session_aggregate_outbox Enqueue to satisfy policy tenant branch.
+	mock.ExpectExec("SELECT set_config\\('app\\.current_tenant', \\$1, true\\)").
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
 
@@ -431,6 +451,11 @@ func TestWrite_AggregateSnapshotIsIndependentOfCaller(t *testing.T) {
 		sessionAggregator: agg,
 	}
 	mock.ExpectBegin()
+	// RLS Phase 2 (R41 P1-5): turn tx must set app.current_tenant=req.TenantID
+	// for session_aggregate_outbox Enqueue to satisfy policy tenant branch.
+	mock.ExpectExec("SELECT set_config\\('app\\.current_tenant', \\$1, true\\)").
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
 	expectRequestLock(mock)
@@ -485,6 +510,11 @@ func TestWrite_AggregateGoroutineManagedByLifecycle(t *testing.T) {
 
 	// Drive a successful atomic write so the aggregate goroutine is spawned.
 	mock.ExpectBegin()
+	// RLS Phase 2 (R41 P1-5): turn tx must set app.current_tenant=req.TenantID
+	// for session_aggregate_outbox Enqueue to satisfy policy tenant branch.
+	mock.ExpectExec("SELECT set_config\\('app\\.current_tenant', \\$1, true\\)").
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
 	expectRequestLock(mock)
