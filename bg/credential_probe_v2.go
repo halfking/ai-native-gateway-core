@@ -572,9 +572,10 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		// Migration 721 (2026-09-18): the WHERE skips rows hand-calibrated
 		// by an operator within the last 24h (balance_source='manual') so
 		// the hourly automatic probe cannot silently overwrite a manual
-		// balance correction. Mirrors the guard in
-		// bg/balance_floor_guard.go refreshBalance candidate SELECT — keep
-		// the two predicates in sync.
+		// balance correction. The predicate is the shared
+		// ManualBalanceProtectionPredicate (balance_manual_protection.go),
+		// also used by the floor guard's candidate SELECT — one constant, no
+		// manual syncing.
 		if pr.AvailabilityState == "ready" {
 			if balUSD, ok := c.probeBalance(timeoutCtx, s); ok {
 				if _, err := c.db.Exec(timeoutCtx,
@@ -584,10 +585,7 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 					     balance_last_checked_at = NOW(),
 					     balance_error = NULL
 					 WHERE id = $2
-					   AND NOT (
-					       COALESCE(balance_source, '') = 'manual'
-					       AND balance_last_checked_at > NOW() - INTERVAL '24 hours'
-					   )`,
+					   AND `+ManualBalanceProtectionPredicate,
 					balUSD, s.ID,
 				); err != nil {
 					slog.Warn("credential probe v2: balance_usd write failed",
