@@ -4971,6 +4971,10 @@ func main() {
 			}
 			// v2.1: Score() also reads profile weights from tuningStore.
 			autoroute.SetTuningStore(tuningStore)
+			// taskprofile (2026-09-18): load the profile overlay file once —
+			// admin task-profile API + optimizer correction blend share the
+			// registry. Independent of ROUTING_OPT_ENABLED.
+			initTaskProfile()
 			// P2.2: routing optimization plugin (nil unless ROUTING_OPT_ENABLED=true;
 			// nil keeps routing byte-identical to the pre-P2.2 baseline).
 			// fpSlotRedis（line ~800 函数级声明，此处的赋值早已顺序完成）供

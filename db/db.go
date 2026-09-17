@@ -385,6 +385,12 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureRouteIncidentPhase2Schema(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-18 migration 724: taskprofile 模块的 task_type_corrections
+	// 表（auto 任务类型逐请求人工修正）。启动即自愈，保证 admin
+	// task-profile 端点与优化器修正混入在任何部署形态下都有表可用。
+	if err := db.ensureTaskTypeCorrections(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureVibeCodingSchema(migCtx); err != nil {
 		return err
 	}
@@ -1532,6 +1538,47 @@ func (d *DB) ensureCredentialPlanQuotaProbeBackoff(ctx context.Context) error {
 		return err
 	}
 	slog.Info("credential plan-quota probe backoff schema ensured (migration 704)")
+	return nil
+}
+
+// ensureTaskTypeCorrections mirrors sql/migrations/startup/
+// 724_task_type_corrections.sql — taskprofile 模块（2026-09-18）的逐请求
+// auto 任务类型人工修正表。独立新表、无既有对象改动；与 ensureRouteIncident
+// 同一"二进制启动即生效"的自愈模式，保证 admin /api/admin/task-profile 端点
+// 与 routingopt 修正混入在全新安装与存量升级库上都可用。
+// 幂等：CREATE TABLE / INDEX IF NOT EXISTS，已应用库上为 no-op。
+func (d *DB) ensureTaskTypeCorrections(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS public.task_type_corrections (
+		    id                    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+		    request_id            text NOT NULL UNIQUE,
+		    auto_task_type        text NOT NULL,
+		    human_task_type       text NOT NULL,
+		    agrees                boolean NOT NULL,
+		    classifier_confidence double precision,
+		    profile               text,
+		    annotator             text NOT NULL,
+		    reason                text NOT NULL,
+		    created_at            timestamptz NOT NULL DEFAULT NOW()
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_task_type_corrections_auto_type
+		    ON public.task_type_corrections (auto_task_type, created_at DESC);
+
+		COMMENT ON TABLE public.task_type_corrections IS
+		    'taskprofile: 人工对 auto 任务类型分配的逐请求修正（agrees=auto与human一致）';
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('724', 'taskprofile per-request human task-type corrections')
+		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("taskprofile task_type_corrections schema ensured (migration 724)")
 	return nil
 }
 

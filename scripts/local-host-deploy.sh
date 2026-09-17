@@ -100,9 +100,9 @@ export LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY="\${LLM_GATEWAY_CREDENTIAL_ENCRYPTI
 export LLM_GATEWAY_JWT_SECRET="\${LLM_GATEWAY_JWT_SECRET:?LLM_GATEWAY_JWT_SECRET must be set}"
 export LLM_GATEWAY_ADMIN_API_KEY="\${LLM_GATEWAY_ADMIN_API_KEY:?LLM_GATEWAY_ADMIN_API_KEY must be set}"
 export LLM_GATEWAY_CORS_ORIGINS="\${LLM_GATEWAY_CORS_ORIGINS:-*}"
-export LLM_GATEWAY_ATTACHMENT_DIR="\${LLM_GATEWAY_ATTACHMENT_DIR:-$ATTACH_DIR}"
-export LLM_GATEWAY_BACKUP_DIR="\${LLM_GATEWAY_BACKUP_DIR:-$BACKUP_DIR}"
-export LLM_GATEWAY_RAW_LOG_DIR="\${LLM_GATEWAY_RAW_LOG_DIR:-$RAW_LOG_DIR}"
+export LLM_GATEWAY_ATTACHMENT_DIR="\${LLM_GATEWAY_ATTACHMENT_DIR:-$attach_dir}"
+export LLM_GATEWAY_BACKUP_DIR="\${LLM_GATEWAY_BACKUP_DIR:-$backup_dir}"
+export LLM_GATEWAY_RAW_LOG_DIR="\${LLM_GATEWAY_RAW_LOG_DIR:-$raw_log_dir}"
 export LLM_GATEWAY_UPSTREAM="\${LLM_GATEWAY_UPSTREAM:-http://localhost:18080}"
 export LLM_GATEWAY_SEED_ADMIN_PASSWORD="\${LLM_GATEWAY_SEED_ADMIN_PASSWORD:?LLM_GATEWAY_SEED_ADMIN_PASSWORD must be set}"
 
@@ -230,8 +230,13 @@ SCRIPTEOF
 # ── Build pipeline ────────────────────────────────────────────────────────
 build_backend() {
   local bin_out=$1
-  log "go build -o $bin_out ./cmd/gateway"
-  (cd "$PROJECT_ROOT" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$bin_out" ./cmd/gateway)
+  # CGO default 1 since P2.5 (2026-09): routingopt imports yalue/onnxruntime_go
+  # whose files are cgo-only — a CGO_ENABLED=0 build of main fails outright
+  # ("build constraints exclude all Go files"), same as the Dockerfile /
+  # deploy-local.sh contract. Callers may still force CGO_ENABLED=0 for a
+  # pre-ONNX tree via the environment.
+  log "go build -o $bin_out ./cmd/gateway (CGO_ENABLED=${CGO_ENABLED:-1})"
+  (cd "$PROJECT_ROOT" && CGO_ENABLED="${CGO_ENABLED:-1}" go build -trimpath -ldflags="-s -w" -o "$bin_out" ./cmd/gateway)
 }
 
 build_frontend() {
