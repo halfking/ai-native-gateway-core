@@ -1810,6 +1810,13 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			irReq = ir.ValidateAndFixRequest(irReq, params.RequestID)
 			// Override model to outbound model
 			irReq.Model = resolveOutboundModel(params, cand)
+			// 2026-09-18（MiniMax thinking 事故）: 此路径（OpenAI 协议入向的
+			// 主路径）此前从未设置 TargetProvider，restoreExtensions 的方言
+			// 决策回退到 openai_chat，paramreg 的 KindTranslatable/KindDialectOnly
+			// 规则（如 thinking enabled→adaptive for MiniMax）全部不生效。
+			// ParseAnthropic 分支靠 SetContext(UpstreamCatalogCode) 在 transport
+			// 层二次还原兜底；本分支没有那次兜底，必须在序列化前直接标上。
+			irReq.TargetProvider = cand.CatalogCode
 			serializedBody, serializeErr := irScoped.SerializeOpenAI(irReq)
 			if serializeErr != nil {
 				slog.Warn("finalizeOpenAIUpstreamBody: legacy IR serialization failed; preserving pre-validation body",
@@ -1851,6 +1858,8 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 				preMsgs = len(irReq2.Messages)
 				irReq2 = ir.ValidateAndFixRequest(irReq2, params.RequestID)
 				irReq2.Model = resolveOutboundModel(params, cand)
+				// 同上（2026-09-18）: 断路器兜底路径同样需要方言感知。
+				irReq2.TargetProvider = cand.CatalogCode
 				if fixedBytes, err3 := ir.SerializeOpenAI(irReq2); err3 == nil {
 					bodyBytes = fixedBytes
 					slog.Warn("finalizeOpenAIUpstreamBody: IR circuit open, validated via breaker-independent fallback",
@@ -1907,7 +1916,7 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		// tool messages reach upstream unmangled; MiniMax 4xx-cascades;
 		// gateway loops 90s; client gets 503.
 		preBodyBytes := len(bodyBytes)
-		bodyBytes = applyInlineValidation(bodyBytes, params.RequestID)
+		bodyBytes = applyInlineValidation(bodyBytes, params.RequestID, cand.CatalogCode)
 		postBodyBytes := len(bodyBytes)
 		slog.Info("finalizeOpenAIUpstreamBody: legacy path (no IR) + inline validation",
 			"request_id", params.RequestID,
