@@ -1,7 +1,6 @@
 package paramreg
 
 import (
-	"bytes"
 	"encoding/json"
 	"testing"
 )
@@ -185,7 +184,8 @@ func TestDecide_TranslateRandomSeed(t *testing.T) {
 func TestDecide_TranslateThinking_EnabledToAdaptive(t *testing.T) {
 	enabledVal := json.RawMessage(`{"type":"enabled","budget_tokens":8192}`)
 
-	// 1. MiniMax 目标：enabled → adaptive，键名保持 thinking，budget_tokens 保留
+	// 1. MiniMax 目标：enabled → adaptive，输出最小对象（budget_tokens 丢弃：
+	//    M3 无 budget 概念，残留未知字段可能在严格校验下再次 400）
 	key, out, action, _ := Apply("thinking", enabledVal, DialectOpenAIChat, DialectMiniMax)
 	if action != ActionTranslate {
 		t.Errorf("→minimax action=%s, want translate", action)
@@ -193,14 +193,8 @@ func TestDecide_TranslateThinking_EnabledToAdaptive(t *testing.T) {
 	if key != "thinking" {
 		t.Errorf("→minimax key=%q, want thinking", key)
 	}
-	if !bytes.Contains(out, []byte(`"type":"adaptive"`)) {
-		t.Errorf("→minimax out=%s, must contain type:adaptive", out)
-	}
-	if bytes.Contains(out, []byte(`"type":"enabled"`)) {
-		t.Errorf("→minimax out=%s, must NOT contain type:enabled", out)
-	}
-	if !bytes.Contains(out, []byte(`"budget_tokens":8192`)) {
-		t.Errorf("→minimax out=%s, must preserve budget_tokens:8192", out)
+	if string(out) != `{"type":"adaptive"}` {
+		t.Errorf("→minimax out=%s, want exactly {\"type\":\"adaptive\"}", out)
 	}
 
 	// 2. 客户端已发 adaptive：保持不变
