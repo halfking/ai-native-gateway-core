@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -253,24 +252,4 @@ func (t *TaxonomySync) Status() map[string]any {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
-}
-
-func DiscoverYamlPath() string {
-	candidates := []string{
-		"data/model_taxonomy.yaml",
-		"../../services/llm-gateway/data/model_taxonomy.yaml",
-		filepath.Join(os.Getenv("PWD"), "data/model_taxonomy.yaml"),
-	}
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return "data/model_taxonomy.yaml"
-}
-
-func InitTaxonomySync(db *pgxpool.Pool) *TaxonomySync {
-	yamlPath := DiscoverYamlPath()
-	svc := NewTaxonomySync(db, yamlPath)
-	return svc
 }

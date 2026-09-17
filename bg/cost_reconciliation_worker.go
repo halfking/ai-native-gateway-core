@@ -17,8 +17,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"
 )
 
@@ -28,15 +26,6 @@ type CostReconciliationWorker struct {
 	interval   time.Duration
 	cancel     context.CancelFunc
 	done       chan struct{}
-}
-
-// NewCostReconciliationWorker 创建 worker。thresholds 为差异告警阈值。
-func NewCostReconciliationWorker(db *pgxpool.Pool, interval time.Duration, thresholds providerprofile.DiffThresholds) *CostReconciliationWorker {
-	source := providerprofile.NewPGGatewayMonthlyUsageSource(db)
-	store := providerprofile.NewPGReconciliationStore(db)
-	sink := providerprofile.NewPGReconciliationEventSink(db)
-	return NewCostReconciliationWorkerFromReconciler(
-		providerprofile.NewCostReconciler(source, store, sink, thresholds), interval)
 }
 
 // NewCostReconciliationWorkerFromReconciler 用已构造的 reconciler 创建

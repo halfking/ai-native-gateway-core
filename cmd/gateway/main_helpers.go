@@ -273,11 +273,9 @@ func useNewProbeMode() bool {
 // Each member relies on the system API key directly or shares the group's
 // lifecycle, so partial startup is deliberately avoided.
 // canStartGatewayDependentNewProbes gates the new probe/self-check worker
-// group on a usable system API key. The check intentionally re-reads
-// EnsureSystemAPIKeyFromEnv so deployments that do not have a system
-// key cached in DB (or whose key generation fails) skip all four
-// gateway-dependent workers in one go instead of each running with an
-// empty Authorization header.
+// group on a usable system API key: deployments without a usable key skip
+// all four gateway-dependent workers in one go instead of each running
+// with an empty Authorization header.
 func canStartGatewayDependentNewProbes(apiKey string) bool {
 	if strings.TrimSpace(apiKey) == "" {
 		return false
