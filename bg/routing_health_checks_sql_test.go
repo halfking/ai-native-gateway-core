@@ -59,3 +59,25 @@ func TestAutoFixCanonicalIDExcludesAdminUnbound(t *testing.T) {
 		t.Fatalf("autoFixCanonicalID lost the migration-693 admin-unbind guard:\n%s", body)
 	}
 }
+
+// R37 SQL 审计钉桩：billing_mismatch 的 fix_sql 由 provider_models.raw_model_name
+// （上游模型目录可影响）渲染而成，历史上裸拼 '%s' —— 落库后被 ExecuteFix 执行
+// 即存储型 SQL 注入。现契约：①字面量必须经 pgQuoteLiteral 转义（单引号翻倍）；
+// ②文本带 display-only 标注（执行通道已切 admin.cannedFix 参数化语句）。
+func TestBillingMismatchFixSQLEscapesRawModelName(t *testing.T) {
+	src, err := os.ReadFile("routing_health_checks.go")
+	if err != nil {
+		t.Fatalf("read routing_health_checks.go: %v", err)
+	}
+	source := string(src)
+	if !strings.Contains(source, "pgQuoteLiteral(credPlan)") || !strings.Contains(source, "pgQuoteLiteral(parts[1])") {
+		t.Fatal("billing_mismatch fix_sql must render raw_model_name/plan_type via pgQuoteLiteral (injection-hardened display text)")
+	}
+	if !strings.Contains(source, "display only, applied via parameterized fix channel") {
+		t.Fatal("fix_sql must be marked display-only; execution goes through admin.cannedFix")
+	}
+	// 助手本身：单引号必须翻倍。
+	if got := pgQuoteLiteral("x', billing_mode='hacked"); got != `'x'', billing_mode=''hacked'` {
+		t.Fatalf("pgQuoteLiteral escaping wrong: %q", got)
+	}
+}

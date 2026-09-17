@@ -638,8 +638,12 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 			AND NOT (
 			    -- Match bg/credential_recovery.go: only block credential-level
 			    -- recovery when every bound model is broken and unavailable.
+			    -- R37 (2026-09-17): source switched to v_node_probe_state_compat
+			    -- (same precedent as bg/model_probe.go GetState) —
+			    -- model_probe_state is frozen under the default new probe mode,
+			    -- so legacy rows cannot see new-system-confirmed dead models.
 			    (SELECT COUNT(*)
-			     FROM model_probe_state mps
+			     FROM v_node_probe_state_compat mps
 			     JOIN provider_models pm ON pm.raw_model_name = mps.raw_model_name
 			     JOIN credential_model_bindings cmb
 			          ON cmb.credential_id = mps.credential_id

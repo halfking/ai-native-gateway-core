@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -87,6 +88,19 @@ func recordSuspiciousExitDBDuration(seconds float64) {
 		return
 	}
 	suspiciousExitDBDuration.Observe(seconds)
+}
+
+// legacyProbeMode reports the documented rollback flag
+// (LLM_GATEWAY_USE_NEW_PROBE_MODE=false). Mirrors cmd/gateway useNewProbeMode
+// semantics (default = new mode); provider cannot import cmd/gateway. Under
+// the new mode, model_probe_state is frozen, so provider-side writes to it
+// are skipped.
+func legacyProbeMode() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("LLM_GATEWAY_USE_NEW_PROBE_MODE")))
+	if v == "" {
+		return false
+	}
+	return !(v == "1" || v == "true" || v == "yes" || v == "on")
 }
 
 // BindingRawModel returns the model_offers identity used for routing state.
@@ -1577,13 +1591,16 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		  -- (provider.manual_disabled, credentials.manual_disabled, or cmb.unavailable_reason='manual')
 		  AND v.is_routable = TRUE
 		  -- 2026-06-22 defect (2): drop (credential, model) pairs whose
-		  -- model_probe_state is 'broken_confirmed'. The probe worker marks a
+		  -- probe state is 'broken_confirmed'. The probe worker marks a
 		  -- binding broken_confirmed after 3 consecutive targeted-probe
 		  -- failures; without this filter the pair stays routable as long as
 		  -- the credential-level availability_state is 'ready', so the router
 		  -- keeps re-selecting it (the cred-11/minimax-m3 loop).
+		  -- R37 (2026-09-17) 数据源统一:改读 v_node_probe_state_compat —
+		  -- model_probe_state 在默认新模式下停更,冻结行会让本排除失效(且旧
+		  -- reviver 周期清空 broken 行,进一步架空它)。
 		  AND NOT EXISTS (
-		      SELECT 1 FROM model_probe_state mps
+		      SELECT 1 FROM v_node_probe_state_compat mps
 		      WHERE mps.credential_id = c.id
 		        AND mps.raw_model_name = mo.raw_model_name
 		        AND mps.state = 'broken_confirmed'
@@ -2363,26 +2380,33 @@ func (c *Client) defaultAsyncExitSuspicious(credentialID int, rawModel string) {
 	go func() {
 		bgCtx, bgCancel := context.WithTimeout(context.Background(), time.Second)
 		defer bgCancel()
-		dbStart := time.Now()
-		_, err := c.dbPool.Exec(bgCtx, `
-			UPDATE model_probe_state
-			SET state = 'recovering',
-			    next_retry_at = NOW() + INTERVAL '30 seconds',
-			    consecutive_successes = 0,
-			    consecutive_failures = 0,
-			    last_state_change_at = NOW()
-			WHERE credential_id = $1
-			  AND raw_model_name = $2
-			  AND state = 'suspicious'
-		`, credentialID, rawModel)
-		recordSuspiciousExitDBDuration(time.Since(dbStart).Seconds())
-		if err != nil {
-			slog.Warn("provider: maybeExitSuspicious db update failed",
-				"credential_id", credentialID,
-				"raw_model", rawModel,
-				"error", err)
-			recordSuspiciousExit("db_error")
-			return
+		// R37 (2026-09-17): under the default new probe mode,
+		// model_probe_state is frozen — this UPDATE would only mutate a dead
+		// table (NodeProbeWorker owns state/backoff). The live
+		// llmgw:avail cache write and candidate-cache invalidation below
+		// still apply in both modes. Rollback mode keeps the legacy write.
+		if legacyProbeMode() {
+			dbStart := time.Now()
+			_, err := c.dbPool.Exec(bgCtx, `
+				UPDATE model_probe_state
+				SET state = 'recovering',
+				    next_retry_at = NOW() + INTERVAL '30 seconds',
+				    consecutive_successes = 0,
+				    consecutive_failures = 0,
+				    last_state_change_at = NOW()
+				WHERE credential_id = $1
+				  AND raw_model_name = $2
+				  AND state = 'suspicious'
+			`, credentialID, rawModel)
+			recordSuspiciousExitDBDuration(time.Since(dbStart).Seconds())
+			if err != nil {
+				slog.Warn("provider: maybeExitSuspicious db update failed",
+					"credential_id", credentialID,
+					"raw_model", rawModel,
+					"error", err)
+				recordSuspiciousExit("db_error")
+				return
+			}
 		}
 		nextRetryAt := time.Now().Add(30 * time.Second).UTC().Format(time.RFC3339Nano)
 		if cacheErr := c.redis.HSet(bgCtx, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel), map[string]any{

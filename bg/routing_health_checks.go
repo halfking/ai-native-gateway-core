@@ -71,7 +71,11 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 				detail = fmt.Sprintf("cred_plan='%s' cmb_billing='%s' → v.is_routable=false", credPlan, cmbBilling)
 				parts := strings.SplitN(credModel, ":", 2)
 				if len(parts) == 2 {
-					fixSQL = fmt.Sprintf("UPDATE credential_model_bindings cmb SET billing_mode = '%s', plan_type_origin = 'manual_fix', plan_type_updated_at = now() FROM provider_models pm WHERE pm.id = cmb.provider_model_id AND cmb.credential_id = %s AND pm.raw_model_name = '%s';", credPlan, parts[0], parts[1])
+					// fix_sql is display/copy text only — raw_model_name comes
+					// from upstream model catalogs, so the literal must be
+					// escaped and one-click fixes run the parameterized
+					// canned statement in admin.cannedFix instead of this text.
+					fixSQL = fmt.Sprintf("UPDATE credential_model_bindings cmb SET billing_mode = %s, plan_type_origin = 'manual_fix', plan_type_updated_at = now() FROM provider_models pm WHERE pm.id = cmb.provider_model_id AND cmb.credential_id = %s AND pm.raw_model_name = %s; -- display only, applied via parameterized fix channel", pgQuoteLiteral(credPlan), parts[0], pgQuoteLiteral(parts[1]))
 				}
 
 			case "probe_missing":
@@ -154,6 +158,14 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 	}
 
 	return
+}
+
+// pgQuoteLiteral doubles single quotes so DB string values (which upstream
+// model catalogs can influence) stay inside SQL string literals when fix_sql
+// is rendered. The result is display/copy text only — one-click fixes run the
+// parameterized canned statements in admin.cannedFix, never this text.
+func pgQuoteLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 func autoFixCanonicalID(ctx context.Context, db *pgxpool.Pool, now time.Time) (int, error) {

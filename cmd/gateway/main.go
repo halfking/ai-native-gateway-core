@@ -3728,9 +3728,19 @@ func main() {
 		modelTier = bg.NewModelTier(dbConn.Pool(), bg.ModelTierConfig{RefreshInterval: 10 * time.Minute})
 		modelTier.Start(context.Background())
 		bg.SetGlobalModelTier(modelTier)
-		brokenProbeReviver = bg.NewBrokenProbeReviver(dbConn.Pool(), 0, 0)
-		brokenProbeReviver.Start(context.Background())
-		slog.Info("CHECKPOINT: brokenProbeReviver started")
+		// R37 (2026-09-17): legacy-scheduler housekeeping. Under the default
+		// new probe mode, model_probe_state is frozen — flipping its
+		// broken_confirmed rows back to 'recovering' here would both defeat
+		// the "all models broken" recovery guard (bg/credential_recovery.go /
+		// credentialhealth) and clear the routing broken-model exclusion, all
+		// against a stale table. The new NodeProbeWorker owns requeue/backoff.
+		if useNewProbeMode() {
+			slog.Info("CHECKPOINT: brokenProbeReviver skipped: LLM_GATEWAY_USE_NEW_PROBE_MODE=true (legacy probe table frozen)")
+		} else {
+			brokenProbeReviver = bg.NewBrokenProbeReviver(dbConn.Pool(), 0, 0)
+			brokenProbeReviver.Start(context.Background())
+			slog.Info("CHECKPOINT: brokenProbeReviver started")
+		}
 
 		// Routing health checker — runs diagnostic checks every 15 min,
 		// persists findings to routing_health_checks for admin review.

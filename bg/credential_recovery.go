@@ -593,8 +593,14 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		  -- 守卫逻辑：COUNT(broken且不可用的模型) = COUNT(所有模型) 时才拒绝。
 		  AND NOT (
 		      -- 子查询1: 计算broken且不可用的模型数
+		      -- R37 (2026-09-17) 数据源统一（同 model_probe.go GetState 先例）:
+		      -- model_probe_state 在 useNewProbeMode（默认开）下停更，直接读会把
+		      -- 冻结的旧状态回给守卫 —— 新系统已证实坏死的模型（冻结行仍 healthy）
+		      -- 不再阻止凭据翻回 ready 入池。改读 v_node_probe_state_compat
+		      -- （node_probe_state 的旧词汇投影，consecutive_failures>=3 →
+		      -- broken_confirmed），列名兼容平替。
 		      (SELECT COUNT(*)
-		       FROM model_probe_state mps
+		       FROM v_node_probe_state_compat mps
 		       JOIN provider_models pm ON pm.raw_model_name = mps.raw_model_name
 		       JOIN credential_model_bindings cmb
 		            ON cmb.credential_id = mps.credential_id

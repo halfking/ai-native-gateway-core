@@ -130,14 +130,15 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// R34 (2026-09-17 audit): byte-equality coverage for the five-point
 		// sync backfill (704/705/709/710/714/715) — see the go:embed block in
 		// main.go.
-		"704_plan_quota_probe_backoff.sql":                  planQuotaProbeBackoffMigration704,
-		"705_request_logs_reattach_detached_partitions.sql": requestLogsReattachDetachedPartitionsMigration705,
-		"709_work_type_route_coverage.sql":                  workTypeRouteCoverageMigration709,
-		"710_request_logs_view_session_family_v2.sql":       requestLogsViewSessionFamilyV2Migration710,
-		"714_partition_timezone_pin_remaining.sql":          partitionTimezonePinRemainingMigration714,
-		"715_route_incidents_pending_state.sql":             routeIncidentsPendingStateMigration715,
-		"716_unify_probe_health_views.sql":                  unifyProbeHealthViewsMigration716,
-		"717_request_logs_hot_column_alignment.sql":         requestLogsHotColumnAlignmentMigration717,
+		"704_plan_quota_probe_backoff.sql":                   planQuotaProbeBackoffMigration704,
+		"705_request_logs_reattach_detached_partitions.sql":  requestLogsReattachDetachedPartitionsMigration705,
+		"709_work_type_route_coverage.sql":                   workTypeRouteCoverageMigration709,
+		"710_request_logs_view_session_family_v2.sql":        requestLogsViewSessionFamilyV2Migration710,
+		"714_partition_timezone_pin_remaining.sql":           partitionTimezonePinRemainingMigration714,
+		"715_route_incidents_pending_state.sql":              routeIncidentsPendingStateMigration715,
+		"716_unify_probe_health_views.sql":                   unifyProbeHealthViewsMigration716,
+		"717_request_logs_hot_column_alignment.sql":          requestLogsHotColumnAlignmentMigration717,
+		"718_drop_redundant_indexes_and_add_ttl_indexes.sql": dropRedundantIndexesMigration718,
 	}
 
 	for name, embedded := range expected {
