@@ -107,15 +107,17 @@ sql = (
 # had already passed every health gate. Retry connection-class failures.
 psql_cmd = ['psql', db, '-v', 'ON_ERROR_STOP=1', '-c', sql]
 transient = ('too many clients', 'starting server', 'terminating connection')
-for attempt in range(1, 4):
+# 2026-09-18 D+1 retest: saturation is persistent (90+ idle sibling
+# connections), a single success needs a ~80s window — 3×5s still failed.
+for attempt in range(1, 9):
     r = subprocess.run(psql_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
     if r.returncode == 0:
         break
     err = r.stderr or r.stdout or ''
-    if attempt < 3 and any(t in err for t in transient):
-        print(f'[sync-admin] psql transient failure (attempt {attempt}/3), retry in 5s: '
+    if attempt < 8 and any(t in err for t in transient):
+        print(f'[sync-admin] psql transient failure (attempt {attempt}/8), retry in 10s: '
               + err.strip()[:200], file=sys.stderr)
-        time.sleep(5)
+        time.sleep(10)
         continue
     print(err, file=sys.stderr)
     sys.exit(r.returncode)
