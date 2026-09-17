@@ -3,6 +3,10 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
+	"github.com/kaixuan/llm-gateway-go/internal/reasoncap"
+	"github.com/kaixuan/llm-gateway-go/internal/reasonnorm"
 )
 
 // SerializeOpenAI serializes an InternalRequest into an OpenAI Chat Completions request body.
@@ -151,9 +155,15 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 
 	// Messages (system prompt becomes first message)
 	messages := serializeOpenAIMessages(req)
+	// 2026-09-18 P5（MiniMax thinking 事故收尾）: Anthropic/Gemini 入向的
+	// 推理意图（ir.Thinking / Reasoning.BudgetTokens）在此前只走 loss 上报、
+	// 从不出向 —— Claude Code 经网关到 MiniMax/DeepSeek 等 OpenAI 形态上游
+	// 时推理意图被静默丢弃。现按 TargetProvider 方言经 reasonnorm.Render
+	// 输出；方言无法表达时维持原 loss 上报。
+	thinkingRendered := applyThinkingToOpenAIChat(out, req)
 	// Step 4.10 (2026-07-28): emit explicit anomaly when source fields
 	// cannot be expressed on the OpenAI Chat Completions wire format.
-	reportSerializeOpenAILosses(req)
+	reportSerializeOpenAILosses(req, thinkingRendered)
 	if len(messages) > 0 {
 		out["messages"] = messages
 	}
@@ -195,6 +205,152 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 	}
 
 	return json.Marshal(out)
+}
+
+// applyThinkingToOpenAIChat renders request-level reasoning intent that the
+// OpenAI Chat wire has no native field for into the target provider's
+// reasoning dialect, and reports whether anything was written to out.
+//
+// 2026-09-18 P5（MiniMax thinking 事故收尾）: parse_anthropic consumes
+// `thinking` into ir.Thinking and parse_gemini maps thinkingConfig into
+// Reasoning{Type:"enabled",BudgetTokens}; before this hook both were only
+// reported as protocol loss by reportSerializeOpenAILosses, so Anthropic-
+// protocol clients (Claude Code) and Gemini-protocol clients routed to
+// OpenAI-form thinking upstreams (MiniMax M3, DeepSeek, GLM, Ark, Qwen)
+// silently lost their reasoning intent.
+//
+// Dialect keying follows the 2026-09-18 incident lesson: the dialect comes
+// from req.TargetProvider (resolveTargetDialect), never from the model name.
+// reasoncap.Resolve is deliberately NOT used here — it keys caps by model
+// name, which is the exact failure class that made the original fix inert
+// (a claude-* model name routed to a MiniMax upstream would resolve
+// Anthropic caps and emit an Anthropic thinking object at an OpenAI-wire
+// upstream). We instead synthesize minimal Caps from the target dialect;
+// clamping against model-specific budget ranges is therefore not performed,
+// which is safe because every dialect in the family collapses the intent to
+// a bare type toggle (no budget fields reach the wire).
+//
+// Dialects covered: minimax / deepseek / glm / ark / qwen — the generic
+// thinking-object family plus Qwen's enable_thinking. kimi / grok / mistral
+// / vllm / ollama and unknown dialects stay on the loss-report path: their
+// OpenAI-wire reasoning surfaces are either unverified against this gateway
+// (kimi) or effort-only field shapes we do not want to guess at. Plain
+// openai_chat targets are unchanged too — an Anthropic thinking object is
+// not valid there and dropping it (with the loss report) remains correct.
+//
+// Keys already present in out are never overwritten (IR/serializer output
+// wins, mirroring restoreExtensions).
+func applyThinkingToOpenAIChat(out map[string]any, req *InternalRequest) bool {
+	if req == nil {
+		return false
+	}
+	intent, haveIntent := openAIReasoningIntent(req)
+	if !haveIntent {
+		return false
+	}
+	dst := resolveTargetDialect(req, ProtocolOpenAIChat)
+	caps, ok := syntheticReasonCaps(dst)
+	if !ok {
+		return false
+	}
+	res := reasonnorm.Render(intent, caps, req.MaxTokens)
+	if res.IsEmpty() {
+		return false
+	}
+	rendered := false
+	if res.ThinkingObject != nil {
+		if _, exists := out["thinking"]; !exists {
+			out["thinking"] = res.ThinkingObject
+			rendered = true
+		}
+	}
+	if res.EnableThinking != nil {
+		if _, exists := out["enable_thinking"]; !exists {
+			out["enable_thinking"] = *res.EnableThinking
+			rendered = true
+		}
+	}
+	if res.ThinkingBudget != nil {
+		if _, exists := out["thinking_budget"]; !exists {
+			out["thinking_budget"] = *res.ThinkingBudget
+			rendered = true
+		}
+	}
+	if res.ReasoningEffort != "" {
+		if _, exists := out["reasoning_effort"]; !exists {
+			out["reasoning_effort"] = res.ReasoningEffort
+			rendered = true
+		}
+	}
+	return rendered
+}
+
+// openAIReasoningIntent extracts the cross-protocol reasoning intent for
+// OpenAI-wire serialization. Priority: ir.Thinking (Anthropic inbound), then
+// the budget-shaped Reasoning fallback (Gemini inbound). OpenAI-protocol
+// sources are excluded from the fallback: their reasoning_effort is already
+// serialized natively, and re-deriving a thinking object from it would
+// double-express the intent.
+func openAIReasoningIntent(req *InternalRequest) (reasonnorm.Intent, bool) {
+	if req.Thinking != nil {
+		switch req.Thinking.Type {
+		case "disabled":
+			return reasonnorm.Intent{Mode: reasonnorm.ModeDisabled}, true
+		case "adaptive":
+			return reasonnorm.Intent{Mode: reasonnorm.ModeAdaptive, BudgetTokens: req.Thinking.BudgetTokens}, true
+		default:
+			// "enabled" and unrecognized types: treat as enabled. An unknown
+			// type with a budget still expresses "think, roughly this much".
+			return reasonnorm.Intent{Mode: reasonnorm.ModeEnabled, BudgetTokens: req.Thinking.BudgetTokens}, true
+		}
+	}
+	if src := req.SourceProtocol; src == ProtocolOpenAIChat || src == ProtocolOpenAIResponses {
+		return reasonnorm.Intent{}, false
+	}
+	r := req.Reasoning
+	if r == nil || r.Effort != "" {
+		// Effort-shaped reasoning is OpenAI-native and already serialized as
+		// reasoning_effort; budget-shaped (Gemini thinkingConfig) is not.
+		return reasonnorm.Intent{}, false
+	}
+	if r.Type == "disabled" {
+		return reasonnorm.Intent{Mode: reasonnorm.ModeDisabled}, true
+	}
+	budget := 0
+	if r.BudgetTokens != nil {
+		budget = *r.BudgetTokens
+	}
+	if budget > 0 || r.Type == "enabled" {
+		return reasonnorm.Intent{Mode: reasonnorm.ModeEnabled, BudgetTokens: budget}, true
+	}
+	return reasonnorm.Intent{}, false
+}
+
+// syntheticReasonCaps maps a paramreg target dialect to the minimal reasoncap
+// Caps needed by reasonnorm.Render for OpenAI-wire output. ok=false means the
+// dialect has no verified OpenAI-wire reasoning surface here — callers keep
+// the loss-report behavior.
+func syntheticReasonCaps(dst paramreg.Dialect) (reasoncap.Caps, bool) {
+	capsOf := func(d reasoncap.Dialect) (reasoncap.Caps, bool) {
+		return reasoncap.Caps{
+			Supported:  true,
+			Dialect:    d,
+			CanDisable: true, // family members all accept an explicit off toggle
+		}, true
+	}
+	switch dst {
+	case paramreg.DialectMiniMax:
+		return capsOf(reasoncap.DialectMiniMax)
+	case paramreg.DialectDeepSeek:
+		return capsOf(reasoncap.DialectDeepSeek)
+	case paramreg.DialectGLM:
+		return capsOf(reasoncap.DialectGLM)
+	case paramreg.DialectArk:
+		return capsOf(reasoncap.DialectArk)
+	case paramreg.DialectQwen:
+		return capsOf(reasoncap.DialectQwen)
+	}
+	return reasoncap.Caps{}, false
 }
 
 // systemPlainText flattens IR System to plain text for text-only system
@@ -738,7 +894,7 @@ func serializeOpenAIDocumentBlock(doc *DocumentBlock) map[string]any {
 // An empty SourceProtocol is treated as "unknown / cross-protocol default"
 // to preserve historical fixture behavior for tests that build IR directly
 // without setting SourceProtocol.
-func reportSerializeOpenAILosses(req *InternalRequest) {
+func reportSerializeOpenAILosses(req *InternalRequest, thinkingRendered bool) {
 	if req == nil {
 		return
 	}
@@ -877,7 +1033,10 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 				nil,
 			)
 		}
-		if req.Thinking != nil {
+		// 2026-09-18 P5: 当 thinking 已按目标方言渲染出向时不再是丢失。
+		// 注意thinking 对象本身可跨方言表达（GenericThinkingObject），但
+		// thinking.signature / redacted_thinking（上方逐消息上报）仍是真丢失。
+		if req.Thinking != nil && !thinkingRendered {
 			ReportProtocolLoss(
 				"unknown",
 				"thinking",
