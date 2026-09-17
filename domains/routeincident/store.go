@@ -82,15 +82,23 @@ var ErrNoDatabase = errors.New("routeincident: no database pool configured")
 // Algorithm:
 //  1. Begin a transaction.
 //  2. SELECT ... FOR UPDATE the live (pending/active/recovering) row
-//     for this route key.
+//     for this route key. The state set MUST match the partial unique
+//     index uq_route_incidents_active_route exactly, otherwise a
+//     pending row is invisible to the lock probe and every subsequent
+//     failure re-INSERTs into the index (23505) — incident 2026-09-17
+//     (R33).
 //  3. Run the pure DecideState from state.go.
 //  4. UPSERT the aggregate.
 //  5. Insert the idempotent event row.
 //  6. Commit.
 //
-// The transaction isolation is READ COMMITTED (Postgres default);
-// the FOR UPDATE on the unique partial index is sufficient because
-// only one pending/active/recovering row can exist per route.
+// A concurrent first failure can still slip past step 2 (both
+// transactions see no row; READ COMMITTED does not serialize
+// non-existent-row locks). insertNew therefore uses ON CONFLICT DO
+// NOTHING against the same partial index; when the conflict fires the
+// transaction is rolled back and the whole transition is retried, so
+// the losing transaction counts its failure against the row the
+// winner created instead of surfacing a 23505 to the observer.
 func (s *Store) Transition(ctx context.Context, in TransitionInput) (*TransitionResult, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrNoDatabase
@@ -105,15 +113,40 @@ func (s *Store) Transition(ctx context.Context, in TransitionInput) (*Transition
 		in.OccurredAt = time.Now().UTC()
 	}
 
+	// Bounded retry for the concurrent-open race. Attempt 1 almost
+	// always succeeds; the retry only runs when our INSERT lost a race
+	// against a transaction that opened the incident between our lock
+	// probe and our insert. Each pass re-locks, so the losing failure
+	// is applied as an UPDATE with freshly-decided state.
+	const maxOpenAttempts = 3
+	for attempt := 1; ; attempt++ {
+		res, raced, err := s.transitionOnce(ctx, in)
+		if err != nil {
+			return nil, err
+		}
+		if !raced {
+			return res, nil
+		}
+		if attempt >= maxOpenAttempts {
+			return nil, fmt.Errorf("routeincident: concurrent open race did not settle after %d attempts", attempt)
+		}
+	}
+}
+
+// transitionOnce runs a single lock → decide → persist pass inside one
+// transaction. raced=true means our INSERT hit the partial unique
+// index (another transaction opened the incident concurrently and
+// committed); the caller must retry the whole transition.
+func (s *Store) transitionOnce(ctx context.Context, in TransitionInput) (*TransitionResult, bool, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
+		return nil, false, fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	cur, err := lockActive(ctx, tx, in.TenantID, in.Protocol, in.Model, in.ProviderID, in.CredentialID)
+	cur, err := lockOpen(ctx, tx, in.TenantID, in.Protocol, in.Model, in.ProviderID, in.CredentialID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	newState, fs, rs, applied := DecideState(cur, in.TerminalStatus, DefaultThresholds())
@@ -122,9 +155,9 @@ func (s *Store) Transition(ctx context.Context, in TransitionInput) (*Transition
 		// does not move the state machine — e.g. a success with no
 		// incident. Commit (release the lock) and return a NoOp.
 		if err := tx.Commit(ctx); err != nil {
-			return nil, fmt.Errorf("commit noop: %w", err)
+			return nil, false, fmt.Errorf("commit noop: %w", err)
 		}
-		return &TransitionResult{NoOp: true, Reason: "state machine decided no transition"}, nil
+		return &TransitionResult{NoOp: true, Reason: "state machine decided no transition"}, false, nil
 	}
 
 	var incident *Incident
@@ -134,22 +167,29 @@ func (s *Store) Transition(ctx context.Context, in TransitionInput) (*Transition
 		isOpen = true
 		incident, err = insertNew(ctx, tx, in, newState, fs, rs)
 		if err != nil {
-			return nil, err
+			return nil, false, err
+		}
+		if incident == nil {
+			// ON CONFLICT fired: the winning transaction committed its
+			// open between our lock probe and our INSERT. Roll back and
+			// let Transition retry — the next pass locks the row the
+			// winner created and applies this failure as an UPDATE.
+			return nil, true, nil
 		}
 	} else {
 		incident, err = updateExisting(ctx, tx, cur, in, newState, fs, rs)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 
 	// Idempotent event insertion.
 	if err := insertEvent(ctx, tx, incident.ID, in, newState, fs, rs, isOpen); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit: %w", err)
+		return nil, false, fmt.Errorf("commit: %w", err)
 	}
 
 	update := BuildUpdate(incident)
@@ -158,10 +198,10 @@ func (s *Store) Transition(ctx context.Context, in TransitionInput) (*Transition
 		Visible:  update.Visible,
 		Update:   update,
 		Reason:   fmt.Sprintf("state -> %s (failure=%d, recovery=%d)", newState, fs, rs),
-	}, nil
+	}, false, nil
 }
 
-// lockActive fetches the live (pending/active/recovering) row for the
+// lockOpen fetches the live (pending/active/recovering) row for the
 // given route key with a row lock. Returns nil if no such row exists.
 // The provider/credential columns are nullable, so we use COALESCE in
 // the WHERE clause to match the partial unique index.
@@ -170,16 +210,19 @@ func (s *Store) Transition(ctx context.Context, in TransitionInput) (*Transition
 // partial unique index to `state IN ('pending','active','recovering')`,
 // so a route with a pending row has exactly one live aggregate row —
 // if this filter skipped pending, the next failure would run
-// DecideState(nil, ...) → insertNew again and die on 23505 (retry
-// exhausted by the observer), the threshold could never accumulate,
-// and the route key would be poisoned forever. Same for pending+success:
-// DecideState needs the row to mark it recovered.
-func lockActive(
-	ctx context.Context, tx pgx.Tx,
-	tenantID, protocol, model string,
-	providerID, credentialID *int64,
-) (*Incident, error) {
-	const sql = `
+// DecideState(nil, ...) → insertNew again and die on 23505, the
+// threshold could never accumulate, and the route key would be
+// poisoned forever. Same for pending+success: DecideState needs the
+// row to mark it recovered.
+//
+// The state set must also stay in lockstep with the WHERE clause of
+// the partial unique index: rows in any of these states occupy the
+// index, so a probe that skips one of them under-detects and the
+// following INSERT collides.
+//
+// lockOpenSQL is package-level so the SQL-shape unit test can pin the
+// state set against the partial unique index.
+const lockOpenSQL = `
 		SELECT id, tenant_id, endpoint_protocol, model, provider_id, credential_id,
 		       state, failure_streak, recovery_streak,
 		       first_failure_at, last_failure_at, last_success_at, recovered_at,
@@ -195,7 +238,13 @@ func lockActive(
 		  AND state IN ('pending', 'active', 'recovering')
 		FOR UPDATE
 	`
-	row := tx.QueryRow(ctx, sql, tenantID, protocol, model, providerID, credentialID)
+
+func lockOpen(
+	ctx context.Context, tx pgx.Tx,
+	tenantID, protocol, model string,
+	providerID, credentialID *int64,
+) (*Incident, error) {
+	row := tx.QueryRow(ctx, lockOpenSQL, tenantID, protocol, model, providerID, credentialID)
 	inc, err := scanIncident(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -235,11 +284,16 @@ func scanIncident(row rowScanner) (*Incident, error) {
 }
 
 // insertNew opens a new active incident for the first qualifying
-// failure. The store relies on the partial unique index
-// (uq_route_incidents_active_route) to fail loudly on a race so the
-// observer can retry the same request against the now-existing row.
-func insertNew(ctx context.Context, tx pgx.Tx, in TransitionInput, state State, fs, rs int) (*Incident, error) {
-	const sql = `
+// failure. The INSERT carries an ON CONFLICT DO NOTHING clause pinned
+// to the partial unique index uq_route_incidents_active_route so a
+// concurrent open cannot surface a 23505: the losing transaction gets
+// no RETURNING row (nil, nil) and Transition retries against the row
+// the winner committed. The conflict target must mirror the index
+// expressions (COALESCE …, 0) and its WHERE predicate exactly.
+// insertNewSQL opens a new incident row, no-op on a concurrent open.
+// Package-level so the SQL-shape unit test can pin the conflict target
+// against the partial unique index definition.
+const insertNewSQL = `
 		INSERT INTO route_incidents (
 			tenant_id, endpoint_protocol, model, provider_id, credential_id,
 			state, failure_streak, recovery_streak,
@@ -247,6 +301,11 @@ func insertNew(ctx context.Context, tx pgx.Tx, in TransitionInput, state State, 
 			total_failures, total_successes,
 			last_error_kind, last_failure_stage
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, 1, 0, $10, $11)
+		ON CONFLICT (
+			tenant_id, endpoint_protocol, model,
+			COALESCE(provider_id, 0), COALESCE(credential_id, 0)
+		) WHERE state IN ('pending', 'active', 'recovering')
+		DO NOTHING
 		RETURNING id, tenant_id, endpoint_protocol, model, provider_id, credential_id,
 		          state, failure_streak, recovery_streak,
 		          first_failure_at, last_failure_at, last_success_at, recovered_at,
@@ -254,9 +313,11 @@ func insertNew(ctx context.Context, tx pgx.Tx, in TransitionInput, state State, 
 		          last_error_kind, last_failure_stage,
 		          version, created_at, updated_at
 	`
+
+func insertNew(ctx context.Context, tx pgx.Tx, in TransitionInput, state State, fs, rs int) (*Incident, error) {
 	failureKind := nullableString(RedactErrorKind(in.FailureKind))
 	failureStage := nullableString(SanitizeStage(in.FailureStage))
-	row := tx.QueryRow(ctx, sql,
+	row := tx.QueryRow(ctx, insertNewSQL,
 		in.TenantID, in.Protocol, in.Model, in.ProviderID, in.CredentialID,
 		string(state), fs, rs,
 		in.OccurredAt,
@@ -264,6 +325,12 @@ func insertNew(ctx context.Context, tx pgx.Tx, in TransitionInput, state State, 
 	)
 	inc, err := scanIncident(row)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Conflict: the concurrent transaction's row occupies the
+			// partial index. Signal the race to the caller — not a
+			// store error.
+			return nil, nil
+		}
 		return nil, fmt.Errorf("insert incident: %w", err)
 	}
 	return inc, nil

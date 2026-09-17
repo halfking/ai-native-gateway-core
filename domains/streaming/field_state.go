@@ -69,54 +69,6 @@ func (fs FieldState) String() string {
 	}
 }
 
-// ToStringPtr converts a json.RawMessage to *string based on its state.
-// This is useful when storing fields in the database:
-//   - FieldNotProvided → nil (database NULL, meaning "not provided")
-//   - FieldNull → "null" (JSON null stored as string)
-//   - FieldProvided → actual content
-//
-// Example:
-//
-//	var messagesPtr *string = ToStringPtr(reqBody.Messages)
-//	// Store messagesPtr in database, preserving the semantic difference
-func ToStringPtr(raw json.RawMessage) *string {
-	state := GetFieldState(raw)
-	switch state {
-	case FieldNotProvided:
-		return nil
-	case FieldNull:
-		v := "null"
-		return &v
-	case FieldProvided:
-		v := string(raw)
-		return &v
-	default:
-		return nil
-	}
-}
-
-// ValidateRequiredField validates that a required field is provided and not null.
-// Returns an error message if validation fails, or empty string if valid.
-//
-// Example:
-//
-//	if errMsg := ValidateRequiredField(reqBody.Messages, "messages"); errMsg != "" {
-//	    return errorResponse("invalid_request", errMsg)
-//	}
-func ValidateRequiredField(raw json.RawMessage, fieldName string) string {
-	state := GetFieldState(raw)
-	switch state {
-	case FieldNotProvided:
-		return fieldName + " field is required"
-	case FieldNull:
-		return fieldName + " cannot be null"
-	case FieldProvided:
-		return "" // Valid
-	default:
-		return fieldName + " has unknown state"
-	}
-}
-
 // ValidateNonEmptyArray validates that a field is a non-empty JSON array.
 // Returns an error message if validation fails, or empty string if valid.
 //

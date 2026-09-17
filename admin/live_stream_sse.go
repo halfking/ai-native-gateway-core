@@ -2826,63 +2826,6 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 	return out
 }
 
-// QueryChildRequests (2026-08-13, V3.2 BE-A3) returns the child/extended
-// requests (title_gen / summary / sensitive_check / compression / other)
-// linked to a parent request via request_logs.parent_request_id.
-// Used by the homepage live-stream to render the parent/child tree.
-// Depth is capped at 3 with a visited-set cycle guard. PG is the source of
-// truth (migration 510 added the parent_request_id partial index); Redis is
-// not used here because child links are queried on demand, not streamed.
-func (h *LiveStreamSSEHub) QueryChildRequests(ctx context.Context, parentRequestID string) []*LiveRequest {
-	if h.db == nil || parentRequestID == "" {
-		return nil
-	}
-	const maxDepth = 3
-	visited := map[string]bool{parentRequestID: true}
-	var out []*LiveRequest
-	var walk func(parentID string, depth int)
-	walk = func(parentID string, depth int) {
-		if depth > maxDepth {
-			return
-		}
-		rows, err := h.db.Query(ctx, `
-			SELECT request_id, COALESCE(request_type,'main'), COALESCE(request_status,''),
-			       latency_ms, success
-			FROM request_logs_hot
-			WHERE parent_request_id = $1
-			ORDER BY ts ASC
-			LIMIT 20`, parentID)
-		if err != nil {
-			slog.Debug("query child requests failed", "parent", parentID, "error", err)
-			return
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var rid, rtype, status string
-			var latency *int
-			var success bool
-			if rows.Scan(&rid, &rtype, &status, &latency, &success) != nil {
-				continue
-			}
-			if visited[rid] {
-				continue // 循环保护
-			}
-			visited[rid] = true
-			child := &LiveRequest{
-				RequestID:       rid,
-				RequestType:     normalizeLiveRequestType(rtype),
-				Status:          status,
-				LatencyMs:       latency,
-				ParentRequestID: parentRequestID,
-			}
-			out = append(out, child)
-			walk(rid, depth+1) // 递归子请求的子请求（深度≤3）
-		}
-	}
-	walk(parentRequestID, 1)
-	return out
-}
-
 // Stats 返回 SSE Hub 的监控指标
 func (h *LiveStreamSSEHub) Stats() map[string]interface{} {
 	h.mu.RLock()
