@@ -8,6 +8,8 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/modelbinding"
+
+	"github.com/kaixuan/llm-gateway-go/internal/probemode"
 )
 
 // ColdNodeActiveProber issues a real upstream probe when the
@@ -639,7 +641,7 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 			    -- Match bg/credential_recovery.go: only block credential-level
 			    -- recovery when every bound model is broken and unavailable.
 			    (SELECT COUNT(*)
-			     FROM model_probe_state mps
+			     FROM `+probemode.GuardStateTable()+` mps
 			     JOIN provider_models pm ON pm.raw_model_name = mps.raw_model_name
 			     JOIN credential_model_bindings cmb
 			          ON cmb.credential_id = mps.credential_id

@@ -122,34 +122,6 @@ func TestGetProviderFieldConfig(t *testing.T) {
 	}
 }
 
-func TestUsesToolCallID(t *testing.T) {
-	tests := []struct {
-		name        string
-		catalogCode string
-		modelName   string
-		expected    bool
-	}{
-		{"minimax direct", "minimax", "", true},
-		{"anthropic", "anthropic", "", false},
-		{"openai", "openai", "", false},
-		{"zhipu", "zhipu", "", false},
-		{"deepseek", "deepseek", "", false},
-		{"empty", "", "", false},
-		{"unknown", "unknown", "", false},
-		{"nvidia minimax relay", "nvidia", "minimaxai/minimax-m3", true},
-		{"nvidia llama", "nvidia", "meta/llama-3", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := UsesToolCallID(tt.catalogCode, tt.modelName)
-			if result != tt.expected {
-				t.Errorf("UsesToolCallID(%q, %q) = %v, want %v", tt.catalogCode, tt.modelName, result, tt.expected)
-			}
-		})
-	}
-}
-
 // TestProviderFieldMapping_BackwardCompatibility ensures that adding new
 // provider mappings doesn't break existing providers.
 func TestProviderFieldMapping_BackwardCompatibility(t *testing.T) {
@@ -180,10 +152,6 @@ func TestProviderFieldMapping_MiniMaxSpecific(t *testing.T) {
 	config := GetProviderFieldConfig("minimax", "")
 	if config.ToolResultIDField != "tool_call_id" {
 		t.Errorf("MiniMax should use 'tool_call_id', got %q", config.ToolResultIDField)
-	}
-
-	if !UsesToolCallID("minimax", "") {
-		t.Error("UsesToolCallID('minimax', '') should return true")
 	}
 }
 

@@ -22,8 +22,11 @@
 //	                    so a re-deploy / manual review is required)
 //
 // After attempt 7 with 24h spacing the row stays paused and the worker
-// stops probing; an operator must clear the flag or the
-// broken_probe_reviver (kept for that purpose) will retry.
+// stops probing; the row re-arms when the NEXT REAL FAILURE for the same
+// (credential, model) arrives — Submit's ON CONFLICT un-pauses it and
+// resets the ladder (broken_probe_reviver only touches the legacy
+// model_probe_state table, and is a no-op under this new probe mode since
+// R36).
 //
 // Two rounds per attempt
 // ──────────────────────

@@ -143,58 +143,6 @@ func ExtractDoubaoUsageFromChunk(payload string, catalogCode string) UsageData {
 	return ExtractUsageFromChunk(payload)
 }
 
-func ExtractFinishReason(payload string) string {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(payload), &obj); err != nil {
-		return ""
-	}
-
-	choicesRaw, ok := obj["choices"]
-	if !ok {
-		return ""
-	}
-
-	var choices []map[string]json.RawMessage
-	if err := json.Unmarshal(choicesRaw, &choices); err != nil {
-		return ""
-	}
-
-	for _, choice := range choices {
-		if frRaw, ok := choice["finish_reason"]; ok {
-			var fr string
-			if err := json.Unmarshal(frRaw, &fr); err == nil && fr != "" && fr != "null" {
-				return fr
-			}
-		}
-	}
-	return ""
-}
-
-func InjectStreamOptions(body []byte) []byte {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(body, &obj); err != nil {
-		return body
-	}
-
-	var streamOpts map[string]json.RawMessage
-	if raw, ok := obj["stream_options"]; ok {
-		if err := json.Unmarshal(raw, &streamOpts); err != nil {
-			streamOpts = make(map[string]json.RawMessage)
-		}
-	} else {
-		streamOpts = make(map[string]json.RawMessage)
-	}
-
-	streamOpts["include_usage"], _ = json.Marshal(true)
-	obj["stream_options"] = relayMustMarshal(streamOpts)
-
-	result, err := json.Marshal(obj)
-	if err != nil {
-		return body
-	}
-	return result
-}
-
 type CostInput struct {
 	PromptTokens     *float64
 	CompletionTokens *float64
@@ -324,11 +272,6 @@ func objVal(m map[string]json.RawMessage, key string) (map[string]json.RawMessag
 		return nil, err
 	}
 	return v, nil
-}
-
-func relayMustMarshal(v any) json.RawMessage {
-	b, _ := json.Marshal(v)
-	return b
 }
 
 func floatPtr(p *float64, def float64) float64 {

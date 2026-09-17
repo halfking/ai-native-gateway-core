@@ -149,3 +149,16 @@ ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-16T01:03:00Z
 - 昨日登记的 claim 置位结构性漏镜像在近 24h 窗口未再产生缺失（GLOBAL_G2=0，无人工回填介入）；该类行量级待持续观察。
 - **连续归零累计 1/7**（09-16 计 Day 1），按 09-15 每日轮 FAIL 清零后重起。7 天达标 earliest 2026-09-22 每日轮。
 >>>>>>> origin/main
+
+### 每日观察 2026-09-17 09:00 (+08)，build=876302d5/2119 —— **PASS，连续归零 Day 2/7**
+
+构建身份：876302d5/2119 在本仓库历史（origin/main merge 构建），含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=9|fail=0|global_g2=0|verdict=PASS|at=2026-09-17T01:00:41Z
+```
+
+- 抽样 9/9 PASS（biz_multi×3、loop_single×3、sys×3），G1 四项零漂移；sys 抽到 cred11/8/18 三桶当日探针会话，turns 写入量正常（6320/4488/3746）。
+- claim 置位结构性漏镜像连续第 2 天未在 24h 窗口产生缺失。
+- **连续归零累计 2/7**（09-17 计 Day 2）。7 天达标 earliest 2026-09-22 每日轮。
