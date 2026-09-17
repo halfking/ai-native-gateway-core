@@ -31,8 +31,16 @@ func translateRandomSeed(value json.RawMessage, src, dst Dialect) (string, json.
 // 同一个坏 body 打回。
 //
 // 修复：dst==MiniMax 时把 enabled → adaptive（最接近的合法值，
-// 保留客户端的"想要推理"语义）；其它方言原样透传（包括 DeepSeek/GLM/Kimi
-// 仍允许 enabled；Anthropic 仍接受 enabled|adaptive|disabled）。
+// 保留客户端的"想要推理"语义），并输出最小对象 {"type":"adaptive"}
+// （budget_tokens 等伴生字段一并丢弃 —— MiniMax M3 无 budget 概念）；
+// 其它方言原样透传（DeepSeek/GLM/Kimi 仍允许 enabled；Anthropic 仍接受
+// enabled|adaptive|disabled）。
+//
+// 覆盖范围（2026-09-18 审计）：仅 OpenAI 协议入向（parse_openai 把
+// thinking 放进 Extensions 的路径）。Anthropic 协议入向的 thinking 由
+// parse_anthropic 消费进 ir.Thinking，serialize_openai 对其只上报 loss
+// 不输出 —— 该路径在所有 OpenAI 形态上游都会静默丢 thinking，属 P5
+// reasonnorm 统一处理范畴，不在本修复内。
 //
 // 后续如果某个方言改 contract 再加白名单，在此函数追加分支即可。
 func translateThinking(value json.RawMessage, src, dst Dialect) (string, json.RawMessage, bool) {
@@ -46,8 +54,11 @@ func translateThinking(value json.RawMessage, src, dst Dialect) (string, json.Ra
 		return "thinking", value, true
 	}
 	if t, _ := obj["type"].(string); t == "enabled" {
-		obj["type"] = "adaptive"
-		out, err := json.Marshal(obj)
+		// 输出最小合法对象 {"type":"adaptive"}，丢弃 budget_tokens 等伴生字段：
+		// MiniMax M3 的 thinking 无 budget/深度控制（官方 Responses API 的
+		// effort 档位也只是 adaptive 的别名），改写后的对象里留下 MiniMax
+		// 不认识的字段可能在严格校验下再次 400。
+		out, err := json.Marshal(map[string]any{"type": "adaptive"})
 		if err != nil {
 			return "thinking", value, true
 		}
