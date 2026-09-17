@@ -210,6 +210,12 @@ export default {
       slotUnlimited: '無制限 (0=無制限)',
       usageSeparator: '回 · ',
       balanceLabel: '残高',
+      // migration 721 (2026-09-18): balance provenance + on-demand refresh.
+      balanceSourceApi: 'APIプローブ',
+      balanceSourceManual: '手動入力 · 24時間は自動プローブで上書きされません',
+      balanceRefreshTooltip: 'ベンダーの残高APIを即時呼び出し（GET、トークン消費なし）',
+      balanceRefreshFailed: '残高プローブに失敗しました',
+      balanceUnsupported: 'このベンダーには公開残高APIがありません（プラン系はプランクォータ項目を参照）',
       quotaExhausted: 'クォータ枯渇',
       tagsPlaceholder: 'tag1, tag2',
       notesPlaceholder: '備考',

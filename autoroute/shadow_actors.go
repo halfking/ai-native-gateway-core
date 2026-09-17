@@ -52,11 +52,14 @@ func SQLExcludeSyntheticActors(alias string) string {
 	}
 	// R39 note: the SQL predicates deliberately do NOT BTRIM. The Go side
 	// (IsSyntheticActor) trims first, so a value with surrounding whitespace
-	// would diverge between the two — this is safe only because the sole
-	// write entry (middleware/origin_mw.go) TrimSpaces X-LLM-Origin-Actor
-	// before it lands in request_logs_hot, and loopback actors are code
-	// constants. If another writer ever touches origin_actor, trim there
-	// too; do not "fix" just one side of this pair.
+	// would diverge between the two — this is safe only because BOTH write
+	// entries TrimSpace before the value lands in request_logs_hot:
+	// middleware/origin_mw.go (X-LLM-Origin-Actor, user traffic) and
+	// domains/streaming/request_log_pipeline.go (X-Gw-Source-Actor,
+	// loopback/goal chain, R42 correction — the R39 text claimed a sole
+	// writer). Loopback actors are additionally code constants. If another
+	// writer ever touches origin_actor, trim there too; do not "fix" just
+	// one side of this pair.
 	return " AND COALESCE(" + col + ", '') NOT LIKE 'goal-%'" +
 		" AND COALESCE(" + col + ", '') NOT IN ('auto-title-generator','auto-summary-generator','session-summary')"
 }

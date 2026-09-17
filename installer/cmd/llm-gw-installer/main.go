@@ -58,6 +58,15 @@ var requestJourneyMigration511 []byte
 //go:embed embeddata/startup/515_state_transitions_seq_unique.sql
 var requestJourneyMigration515 []byte
 
+// R42 (2026-09-18): durable family base tables — 657/722 prerequisites,
+// without which installer fresh installs aborted with 42P01 at 657.
+//
+//go:embed embeddata/startup/516_durable_llm_tasks.sql
+var durableLlmTasksMigration516 []byte
+
+//go:embed embeddata/startup/520_durable_task_settlement_intents.sql
+var durableTaskSettlementIntentsMigration520 []byte
+
 //go:embed embeddata/startup/521_repair_state_transitions_tenant.sql
 var requestJourneyMigration521 []byte
 
@@ -468,6 +477,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/478_auto_route_affinity.sql":                                            autoRouteAffinityMigration478,
 	"startup/511_state_transitions_table.sql":                                        requestJourneyMigration511,
 	"startup/515_state_transitions_seq_unique.sql":                                   requestJourneyMigration515,
+	"startup/516_durable_llm_tasks.sql":                                              durableLlmTasksMigration516,
+	"startup/520_durable_task_settlement_intents.sql":                                durableTaskSettlementIntentsMigration520,
 	"startup/521_repair_state_transitions_tenant.sql":                                requestJourneyMigration521,
 	"startup/530_request_journey_contract.sql":                                       requestJourneyMigration530,
 	"startup/531_request_journey_tenant_uniqueness.sql":                              requestJourneyMigration531,

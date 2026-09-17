@@ -211,6 +211,12 @@ export default {
       slotUnlimited: '無限（0=不限）',
       usageSeparator: '次 · ',
       balanceLabel: '餘額',
+      // migration 721 (2026-09-18): balance provenance + on-demand refresh.
+      balanceSourceApi: 'API 探測',
+      balanceSourceManual: '手動輸入 · 24h 內自動探測不覆蓋',
+      balanceRefreshTooltip: '立即呼叫廠商餘額 API（GET，不消耗 token）',
+      balanceRefreshFailed: '餘額探測失敗',
+      balanceUnsupported: '該廠商無公開餘額 API（套餐類憑證請看套餐配額欄位）',
       quotaExhausted: '配額耗盡',
       tagsPlaceholder: 'tag1, tag2',
       notesPlaceholder: '備註',

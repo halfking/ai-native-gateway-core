@@ -57,3 +57,8 @@
 - **shell 测试禁跨子 shell 断言 export**：`out=$(fn)` 内的 export 随子 shell 消亡；要断言 export 语义须父 shell 直调（test-smart-discovery-pg.sh "HAS_DB=1" 用例曾确定性必红，R39 修复 4/4 绿）。
 - preflight docker-exec 分支守卫：DL_DB_MODE=external 排除 + docker ps status=running（docker ps -a 含 stopped，90s 空烧/误 die）；无密码 DSN user 段正则 `([^@:/]+)(:[^@]*)?@`。
 - 启用计划注释必须指向真实可验证宿主（DL_PG_PREFLIGHT_REQUIRED 曾写"245 验证后启用"，但 245 走 deploy-seamless 根本不 source 此库）。
+
+### R42 回注（2026-09-18，installer 全新装断链收口 + 事务嵌套陷阱）
+- **五点同步纪律扩展到"前置创建者"**：StartupFiles 含 657/722（ALTER/FK 引用 durable_llm_tasks）而 516/520（唯一创建者）缺登记 → 全新装必崩 657。`≥704 注册测试`只保护新迁移；本轮加 `TestDurableFamilyPrerequisitesRegistered` 钉"基表必须先于依赖者注册且顺序正确"。任何新迁移触碰某张表的 ALTER/FK 前，先确认该表在 installer 链有创建者。
+- **迁移文件自带 BEGIN/COMMIT 的，绝不能包进外层事务验证**：516/520 的显式 BEGIN/COMMIT 会把外层 psql 事务切成 autocommit 段，外层 ROLLBACK 失效（R42 §三 事故：改名被永久提交，靠改名回滚修复）。验证手法二选一：裸跑幂等文件（确认无 BEGIN 头）或 scratch database。
+- **723 教训（to_regclass 守卫）**：迁移引用"不在 canonical 链创建面上的表"（deploy 链 rename 产物、fixes 瞬态表）必须逐表 DO+to_regclass 守卫，720/723 同款事故两犯。

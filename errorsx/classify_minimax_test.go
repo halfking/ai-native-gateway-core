@@ -39,3 +39,20 @@ func TestClassifyErrorWithBody_MiniMaxInvalidThinkingTypeIsClientBug(t *testing.
 		t.Fatalf("bare 'invalid params' without the MiniMax thinking.type shape must not be KindClientBug, got %q", other)
 	}
 }
+
+// R42 pin (2026-09-18 audit): the MiniMax-native base_resp envelope carries
+// the 2013 code as a bare number, which the toolCallIdMismatchRe
+// `(?:code|error_code|status)...2013` branch matches BEFORE the
+// invalidRequestFormatRe thinking.type pattern — so the classification lands
+// on KindToolCallIdMismatch, not KindClientBug. Both kinds are IsClientBug
+// (UpdateOnFailure skip, no probe, terminal action), so downstream behavior
+// is identical; this test only documents the envelope shape so a classifier
+// reorder cannot silently flip it into the transient family.
+func TestClassifyErrorWithBody_MiniMaxBaseRespEnvelope400StaysClientBugFamily(t *testing.T) {
+	body := []byte(`{"base_resp":{"status_code":2013,"msg":"invalid thinking.type: \"enabled\" (allowed: adaptive, disabled)"}}`)
+
+	got := ClassifyErrorWithBody(400, body)
+	if !IsClientBug(got) {
+		t.Fatalf("MiniMax base_resp 2013 envelope = %q, want a KindClientBug-family kind (tool_call_id_mismatch or client_bug)", got)
+	}
+}

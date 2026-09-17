@@ -16,8 +16,12 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 
 	canonicalDir := filepath.Join("..", "..", "..", "sql", "migrations", "startup")
 	expected := map[string][]byte{
-		"511_state_transitions_table.sql":                                        requestJourneyMigration511,
-		"515_state_transitions_seq_unique.sql":                                   requestJourneyMigration515,
+		"511_state_transitions_table.sql":      requestJourneyMigration511,
+		"515_state_transitions_seq_unique.sql": requestJourneyMigration515,
+		// R42 (2026-09-18): durable family base tables — 657/722 ride on
+		// them; a fresh install without 516/520 aborted with 42P01 at 657.
+		"516_durable_llm_tasks.sql":                                              durableLlmTasksMigration516,
+		"520_durable_task_settlement_intents.sql":                                durableTaskSettlementIntentsMigration520,
 		"521_repair_state_transitions_tenant.sql":                                requestJourneyMigration521,
 		"530_request_journey_contract.sql":                                       requestJourneyMigration530,
 		"531_request_journey_tenant_uniqueness.sql":                              requestJourneyMigration531,
@@ -374,6 +378,45 @@ func TestCanonicalStartupMigrationsAtOrAbove704AreRegistered(t *testing.T) {
 		}
 		if _, ok := registered[name]; !ok {
 			t.Errorf("canonical startup migration %q (>=704) is not registered in dbinit.Runner.StartupFiles — run the five-point sync (embeddata copy, go:embed var + embeddedSQLFiles map in main.go, StartupFiles entry, parity map here), see llm-gateway-installer-migration-3way-sync", name)
+		}
+	}
+}
+
+// TestDurableFamilyPrerequisitesRegistered (R42, 2026-09-18 audit) pins the
+// fresh-install ordering invariant the ≥704 floor above cannot see: 657 and
+// 722 unconditionally ALTER/reference durable_llm_tasks, whose only creators
+// are 516 (tasks/events) and 520 (settlement intents, FK → tasks). Before
+// R42 the installer chain shipped 657/722 without 516/520, so every fresh
+// install aborted with 42P01 at 657. Any future migration that touches the
+// durable family must keep its base-table creators ahead of it in
+// StartupFiles.
+func TestDurableFamilyPrerequisitesRegistered(t *testing.T) {
+	t.Helper()
+
+	runner := dbinit.NewRunner("", "", "", "")
+	position := make(map[string]int, len(runner.StartupFiles))
+	for i, name := range runner.StartupFiles {
+		position[name] = i
+	}
+
+	for _, base := range []string{
+		"516_durable_llm_tasks.sql",
+		"520_durable_task_settlement_intents.sql",
+	} {
+		if _, ok := position[base]; !ok {
+			t.Errorf("%s is not registered in dbinit.Runner.StartupFiles — 657/722 ALTER/reference durable_llm_tasks and a fresh install cannot succeed without it", base)
+		}
+	}
+	for _, dependent := range []string{
+		"657_durable_llm_tasks_decision_history.sql",
+		"722_durable_family_schema_convergence.sql",
+	} {
+		pos, ok := position[dependent]
+		if !ok {
+			continue // covered by the ≥704 registration test
+		}
+		if base516 := position["516_durable_llm_tasks.sql"]; ok && pos < base516 {
+			t.Errorf("%s (pos %d) must come after 516_durable_llm_tasks.sql (pos %d) in StartupFiles", dependent, pos, base516)
 		}
 	}
 }

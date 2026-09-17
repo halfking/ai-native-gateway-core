@@ -209,6 +209,12 @@ export default {
       slotUnlimited: 'illimité (0 = aucune limite)',
       usageSeparator: ' appels · ',
       balanceLabel: 'Solde',
+      // migration 721 (2026-09-18): balance provenance + on-demand refresh.
+      balanceSourceApi: 'Sondage API',
+      balanceSourceManual: 'Saisie manuelle · pas de sondage auto pendant 24h',
+      balanceRefreshTooltip: 'Interroger maintenant l’API de solde du fournisseur (GET, sans tokens)',
+      balanceRefreshFailed: 'Échec du sondage de solde',
+      balanceUnsupported: 'Ce fournisseur n’expose pas d’API de solde (les offres plan via les champs de quota)',
       quotaExhausted: 'Quota épuisé',
       tagsPlaceholder: 'tag1, tag2',
       notesPlaceholder: 'notes',

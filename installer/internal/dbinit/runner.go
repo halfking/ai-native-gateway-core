@@ -31,6 +31,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"478_auto_route_affinity.sql",
 			"511_state_transitions_table.sql",
 			"515_state_transitions_seq_unique.sql",
+			// R42 (2026-09-18): 516/520 are the only creators of the durable
+			// family base tables. 657 and 722 both ALTER/reference
+			// durable_llm_tasks unconditionally, so a fresh install without
+			// them aborted with 42P01 at 657 (the gap predates this round;
+			// 722/723 registration in R40 rode the same broken chain).
+			"516_durable_llm_tasks.sql",
+			"520_durable_task_settlement_intents.sql",
 			"521_repair_state_transitions_tenant.sql",
 			"530_request_journey_contract.sql",
 			"531_request_journey_tenant_uniqueness.sql",

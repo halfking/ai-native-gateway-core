@@ -1,6 +1,10 @@
 package admin
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 // TestTruncateBalanceError locks the rune-boundary behavior of the
 // balance_error column cap (migration 721 comment: ≤500 chars). CJK vendor
@@ -43,5 +47,32 @@ func TestTruncateBalanceError(t *testing.T) {
 	}
 	if got := truncateBalanceError(longASCII); len(got) != 500 {
 		t.Fatalf("ASCII truncation: got %d bytes, want 500", len(got))
+	}
+}
+
+// TestUpdateCredentialStampsManualOnlyOnValueChange (R42, 2026-09-18 audit)
+// pins the conditional manual stamping in source: the drawer form always
+// carries balance_usd, so an unconditional balance_source='manual' SET made
+// any unrelated edit (tags/notes/label) silently suspend the automatic
+// balance probes for 24h. The stamp (source/checked_at/error) must be
+// guarded by a balance_usd IS DISTINCT FROM comparison against the old row
+// (the local `valueChanged` fragment in updateCredential).
+func TestUpdateCredentialStampsManualOnlyOnValueChange(t *testing.T) {
+	src, err := os.ReadFile("provider_credential.go")
+	if err != nil {
+		t.Fatalf("read provider_credential.go: %v", err)
+	}
+	body := string(src)
+	if !strings.Contains(body, `valueChanged := "balance_usd IS DISTINCT FROM " + balArg`) {
+		t.Fatalf("updateCredential must compare the OLD balance_usd against the incoming value before stamping manual provenance")
+	}
+	for _, marker := range []string{
+		`"balance_source = CASE WHEN "+valueChanged+" THEN 'manual' ELSE balance_source END"`,
+		`"balance_last_checked_at = CASE WHEN "+valueChanged+" THEN NOW() ELSE balance_last_checked_at END"`,
+		`"balance_error = CASE WHEN "+valueChanged+" THEN NULL ELSE balance_error END"`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Errorf("updateCredential missing conditional stamp fragment %s — manual provenance must only be written when balance_usd actually changes", marker)
+		}
 	}
 }
