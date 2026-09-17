@@ -70,7 +70,8 @@ dl_prepare_layout() {
   # root now, so the project directory no longer creates postgres/redis.
   local need_pg=${1:-0} need_redis=${2:-0} r; r=$(dl_root)
   mkdir -p "$r/attachments" "$r/bin" "$r/backups" "$r/logs" "$r/raw-logs" "$r/run"
-  if _dl_bool "$need_pg" || _dl_bool "$need_redis"; then :; fi
+  # R37: removed a no-op `if _dl_bool "$need_pg" || _dl_bool "$need_redis"; then :; fi`
+  # left over from the shared-root migration (params kept for caller compat).
 }
 
 dl_prepare_shared_service_dirs() {
@@ -368,7 +369,10 @@ dl_write_env() {
   fi
   {
     printf 'LLM_GATEWAY_LISTEN=:%s\n' "$port"
-    dl_emit_env_line LLM_GATEWAY_CORS_ORIGINS "${LLM_GATEWAY_CORS_ORIGINS:-http://127.0.0.1:${port}}"
+    # R37: the CORS default was previously emitted twice with DIFFERENT
+    # defaults (this one without localhost, the later one with) — docker
+    # --env-file takes the last assignment, silently masking the divergence.
+    # The later, more permissive default is the single source now.
     dl_emit_env_line LLM_GATEWAY_VERSION_FILE "$version_file"
     dl_emit_env_line LLM_GATEWAY_LOG_FILE "$log_file"
     dl_emit_env_line LLM_GATEWAY_LOG_DIR "$log_dir"
@@ -384,7 +388,11 @@ dl_write_env() {
     # dl_wait_pg_isready 已先行 SELECT 1 探测，理论上到这里 DSN 已可
     # 用；上调到 90s 作为 gateway 进程内的最后兜底，避免本地切流时偶发
     # 单次 ping 失败就触发 nil 降级。生产 245 走更保守默认 20s。
-    dl_emit_env_line LLM_GATEWAY_DB_BOOT_RETRY_SECONDS "${LLM_GATEWAY_DB_BOOT_RETRY_SECONDS:-90}"
+    # R37 fix (2026-09-17): the value MUST carry a duration unit ("90s") —
+    # the gateway parses it with time.ParseDuration and a bare "90" fails
+    # ("missing unit"), silently falling back to the 20s default and
+    # neutralizing this defense layer (caught by R37 audit).
+    dl_emit_env_line LLM_GATEWAY_DB_BOOT_RETRY_SECONDS "${LLM_GATEWAY_DB_BOOT_RETRY_SECONDS:-90s}"
     dl_emit_env_line LLM_GATEWAY_PG_DATA_DIR "$(dl_shared_pg_dir)"
     # In minimal mode, clear Redis configuration to force SQLite usage
     if [[ "${DL_REDIS_MODE:-}" == "minimal" ]]; then
@@ -619,9 +627,13 @@ dl_wait_http() {
 # Symptom: the freshly started gateway's openDBWithBootRetry exhausted its
 # 20s default budget while PG was still warming after a previous cutover,
 # returned nil, and /readyz locked to database:null + not_ready forever.
-# Fix: before docker run / nohup, prove the exact DSN the gateway will see
-# (host.docker.internal:5432 in Docker mode, 127.0.0.1:PGPORT otherwise)
-# answers SELECT 1. Timeout 90s covers PG recovery windows seen locally.
+# Fix: before docker run / nohup, prove PG answers SELECT 1 — via docker exec
+# into the pg container (Docker mode; container-local view) or directly at
+# the DSN host:port (native mode). Timeout 90s covers PG recovery windows
+# seen locally. R37 (2026-09-17): DSN component validation made reachable
+# (the old sed-exit-code guard never fired) and the container name is
+# resolved once per call (the log previously expanded the function name
+# literally).
 dl_wait_pg_isready() {
   local dsn="${LLM_GATEWAY_DATABASE_URL:-${DATABASE_URL:-}}"
   if [[ -z "$dsn" ]]; then
@@ -629,25 +641,35 @@ dl_wait_pg_isready() {
     return 0
   fi
   local user pass host port db
-  if ! user=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://([^:]+):.*|\2|p') \
-     || ! pass=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://[^:]+:([^@]+)@.*|\2|p') \
-     || ! host=$(printf '%s' "$dsn" | sed -nE 's|^.*@([^:]+):.*|\1|p') \
-     || ! port=$(printf '%s' "$dsn" | sed -nE 's|^.*@[^:]+:([0-9]+).*|\1|p') \
-     || ! db=$(printf '%s' "$dsn" | sed -nE 's|^.*/([^?]+).*|\1|p'); then
-    warn 'could not parse DATABASE_URL; skipping PG pre-flight'
+  # R37 fix: sed -n returns exit 0 even with no match, so the old `! user=$(...)`
+  # guard was unreachable dead code — unparseable DSNs sailed through with
+  # empty/garbage components and burned the full 90s budget per start attempt.
+  user=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://([^:]+):.*|\2|p') || true
+  pass=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://[^:]+:([^@]+)@.*|\2|p') || true
+  host=$(printf '%s' "$dsn" | sed -nE 's|^.*@([^:]+):.*|\1|p') || true
+  port=$(printf '%s' "$dsn" | sed -nE 's|^.*@[^:]+:([0-9]+).*|\1|p') || true
+  db=$(printf '%s' "$dsn" | sed -nE 's|^.*/([^?]+).*|\1|p') || true
+  if [[ -z "$user" || -z "$host" || -z "$port" || -z "$db" ]]; then
+    warn 'could not parse DATABASE_URL into user/host/port/db; skipping PG pre-flight'
     return 0
   fi
-  local probe_host="$host"
-  (( DL_DOCKER )) && [[ "$host" == "127.0.0.1" || "$host" == "localhost" ]] && probe_host=host.docker.internal
+  # R37 fix: the old probe_host remap only fired under DL_DOCKER but was only
+  # READ by the non-docker psql/TCP branches — dead logic. The psql/TCP path
+  # probes the DSN host as written; the docker-exec path probes from inside
+  # the pg container (container-local view — proves PG answers, which is the
+  # uncertainty that mattered in incident 2114, but NOT the full
+  # host.docker.internal path the gateway container traverses).
   # 2026-09-17 audit: always log the probe target so operators can see when
   # the pre-flight actually fired (success on attempt 1 was previously silent,
   # making it indistinguishable from "function never called").
-  log "PG pre-flight: probing $probe_host:$port db=$db (docker=$DL_DOCKER pg_container=${DL_PG_CONTAINER:-${dl_pg_container_name:-none}})"
+  local pg_container
+  pg_container=$(dl_pg_container_name)
+  log "PG pre-flight: probing host=$host port=$port db=$db (docker=$DL_DOCKER pg_container=${pg_container:-<none>})"
   local deadline=$(( $(date +%s) + 90 )) attempt=0
   while (( $(date +%s) < deadline )); do
     attempt=$(( attempt + 1 ))
-    if (( DL_DOCKER )); then
-      docker exec -i -e PGPASSWORD="$pass" "$(dl_pg_container_name)" \
+    if (( DL_DOCKER )) && [[ -n "$pg_container" ]]; then
+      docker exec -i -e PGPASSWORD="$pass" "$pg_container" \
         psql -X -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' \
         -h 127.0.0.1 -p 5432 -U "$user" -d "$db" >/dev/null 2>&1 && {
         log "PG pre-flight: ready after $attempt probe(s) via docker exec"
@@ -655,17 +677,20 @@ dl_wait_pg_isready() {
       }
     elif _dl_have psql; then
       PGPASSWORD="$pass" psql -X -v ON_ERROR_STOP=1 -Atqc 'SELECT 1' \
-        -h "$probe_host" -p "$port" -U "$user" -d "$db" >/dev/null 2>&1 && {
+        -h "$host" -p "$port" -U "$user" -d "$db" >/dev/null 2>&1 && {
         log "PG pre-flight: ready after $attempt probe(s) via psql"
         return 0
       }
     else
-      # No psql and no docker — fall back to a TCP connect against the PG port.
-      (exec 3<>"/dev/tcp/$probe_host/$port") 2>/dev/null && { exec 3<&-; exec 3>&-; log "PG pre-flight: ready after $attempt probe(s) via /dev/tcp"; return 0; }
+      # No psql and no usable pg container — TCP-connect fallback. LIMITATION:
+      # a successful TCP handshake only proves something LISTENS on the port
+      # (proxy, lingering socket), not that PG answers SQL; this branch is
+      # advisory and may pass while PG is still warming.
+      (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null && { exec 3<&-; exec 3>&-; log "PG pre-flight: ready after $attempt probe(s) via /dev/tcp"; return 0; }
     fi
     sleep 2
   done
-  warn "PG pre-flight timed out after 90s ($probe_host:$port, db=$db); gateway boot retry will have to absorb the remaining warmup"
+  warn "PG pre-flight timed out after 90s ($host:$port, db=$db); gateway boot retry will have to absorb the remaining warmup"
   return 1
 }
 dl_pg_container_name() {

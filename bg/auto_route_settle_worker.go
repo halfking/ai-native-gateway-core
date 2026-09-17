@@ -298,7 +298,7 @@ func (w *AutoRouteSettleWorker) loadTaskBaselines(ctx context.Context) (map[stri
 		FROM request_logs_hot rl
 		WHERE rl.ts >= NOW() - $1::interval
 		  AND rl.is_auto_request = TRUE
-		  AND rl.latency_ms IS NOT NULL
+		  AND rl.latency_ms IS NOT NULL`+autoroute.SQLExcludeSyntheticActors("rl")+`
 		GROUP BY task_type
 	`, baselineWindow.String())
 	if err != nil {
@@ -398,7 +398,7 @@ func (w *AutoRouteSettleWorker) settleBatch(
 			       WHERE s.session_id IS NOT NULL
 			         AND r2.gw_session_id = s.session_id
 			         AND s.canonical_id IS NOT NULL
-			         AND r2.canonical_id = s.canonical_id
+			         AND r2.canonical_id = s.canonical_id`+autoroute.SQLExcludeSyntheticActors("r2")+`
 			) mr ON TRUE
 	`, settleDelay.String(), settleBatchSize)
 	if qErr != nil {

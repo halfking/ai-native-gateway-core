@@ -28,6 +28,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 )
 
 // WorkTypeHandlers serves admin CRUD for work_type_config.
@@ -269,6 +271,9 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		wtTenantWhere = wtTenantFrag
 		wtArgs = append(wtArgs, wtTenantArgs...)
 	}
+	// R37 (R35-R2 灰度口径): gateway-synthetic rounds (goal-% shadow rounds,
+	// internal title/summary loopbacks) never count as business usage.
+	wtSyntheticExclude := autoroute.SQLExcludeSyntheticActors("")
 	wtDirect := map[string]int{}
 	// 24 小时窗口查询走 request_logs_hot（heap 落地热数据，性能最优）
 	// 符合 docs/partition/partition-standards.md 查询规范
@@ -280,7 +285,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		  AND (
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )`+wtTenantWhere+`
+		  )`+wtSyntheticExclude+wtTenantWhere+`
 		GROUP BY work_type
 	`, wtArgs...)
 	if err == nil {
@@ -315,7 +320,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		  AND (
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )`+wtTenantWhere+`
+		  )`+wtSyntheticExclude+wtTenantWhere+`
 		GROUP BY (%s)
 	`, taskExpr, taskExpr), wtArgs...)
 	if err == nil {
@@ -344,7 +349,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		  COALESCE(SUM(CASE WHEN is_auto_request THEN 1 ELSE 0 END), 0),
 		  COALESCE(SUM(CASE WHEN NOT COALESCE(is_auto_request, FALSE) AND client_model IS NOT NULL AND client_model <> '' THEN 1 ELSE 0 END), 0)
 		FROM request_logs_hot
-		WHERE ts >= NOW() - INTERVAL '24 hours'`+wtTenantWhere+`
+		WHERE ts >= NOW() - INTERVAL '24 hours'`+wtSyntheticExclude+wtTenantWhere+`
 	`, wtArgs...).Scan(&totalAuto, &totalSpec)
 	out["total_auto"] = totalAuto
 	out["total_specified"] = totalSpec
@@ -408,7 +413,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		  AND (
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )`+wtTenantWhere+`
+		  )`+wtSyntheticExclude+wtTenantWhere+`
 		GROUP BY m
 		ORDER BY c DESC
 		LIMIT 10

@@ -39,6 +39,7 @@
 - [运维] hostedtask 默认关，开启需 ENABLED + §6.0 跨仓库门禁
 
 - [R36] survival 层 KindContextLength 一律 FailTerminal → 5h 预算对超长完全不工作；压缩重试改判必须与 body 重写同侧（SurvivalCoordinator.Run），不可放共享决策层——durable worker 复用聚合但无 body 钩子，会空转烧 retry ceiling（钉桩 TestDurableRecoveryWorkerTerminalDecisionFails 实证）
+- [R37] duration 类 env 必须带单位（time.ParseDuration 裸数字静默回退——Layer-2 兜底 90 实际无效，钉桩 deploy-local-lib-bootretry_test.sh）；sed -nE 无匹配退出码 0，`! var=$(sed…)` 解析护栏是死代码，必须校验变量非空；docker exec 探测=容器内网络视角≠网关实际路径，日志须如实描述； DL_DB_MODE=external 时 docker exec 选容器会误选 stopped 容器
 
 ## 5. 子代理派发提示词
 

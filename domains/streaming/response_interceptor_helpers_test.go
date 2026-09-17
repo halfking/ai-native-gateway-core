@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -176,10 +177,13 @@ func TestInjectFollowUpEmptyBodyIsNoop(t *testing.T) {
 	}
 }
 
-// TestDefaultDispatchFollowUpAppliesAuthHeader checks the production
-// dispatcher's contract: the Authorization header supplied at the
-// orchestrator level is propagated verbatim to the synthetic request.
-func TestDefaultDispatchFollowUpAppliesAuthHeader(t *testing.T) {
+// TestInjectFollowUpSeamPropagatesAuthHeader (renamed from the misleading
+// TestDefaultDispatchFollowUpAppliesAuthHeader, R35-R7): this exercises the
+// SEAM — the stub is invoked instead of defaultDispatchFollowUp, so what is
+// pinned is that injectFollowUpRequest forwards the caller's Authorization
+// header to the dispatch seam verbatim. The production request-build path is
+// covered by TestBuildFollowUpRequestHitsLiveServer below.
+func TestInjectFollowUpSeamPropagatesAuthHeader(t *testing.T) {
 	var gotAuth string
 	var gotAction string
 	h := &ChatHandler{}
@@ -198,30 +202,41 @@ func TestDefaultDispatchFollowUpAppliesAuthHeader(t *testing.T) {
 	}
 }
 
-// TestDefaultDispatchFollowUpHitsLiveServer integrates the production
-// defaultDispatchFollowUp with a real httptest.Server so we observe
-// actual request header propagation end-to-end.
-func TestDefaultDispatchFollowUpHitsLiveServer(t *testing.T) {
-	var gotAuth string
-	var gotDepth string
+func parseOrDie(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	return u
+}
+
+// TestBuildFollowUpRequestHitsLiveServer (rewritten from the tautological
+// TestDefaultDispatchFollowUpHitsLiveServer, R35-R7): the old test built its
+// own request by hand and asserted the server saw exactly what it set —
+// production code was never exercised. This version drives the real
+// buildFollowUpRequest (defaultDispatchFollowUp's request-build path,
+// including the R37 real-depth header) and puts it on the wire.
+func TestBuildFollowUpRequestHitsLiveServer(t *testing.T) {
+	var gotAuth, gotDepth, gotActor, gotAttempt string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotDepth = r.Header.Get("X-Gw-Follow-Up-Depth")
+		gotActor = r.Header.Get(autoSourceActorHeader)
+		gotAttempt = r.Header.Get("X-Gw-Follow-Up-Attempt")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"choices":[]}`))
 	}))
 	defer srv.Close()
 
-	// defaultDispatchFollowUp uses literal "/v1/chat/completions" path.
-	// We verify contract via direct invocation against a *http.Request
-	// captured in the orchestrator's seam — since the orchestrator calls
-	// h.ServeHTTP via httptest.NewRecorder (not a live socket), we instead
-	// exercise the dispatcher's request-build path through direct test.
-	// Build a synthetic request via the same path defaultDispatchFollowUp
-	// would build, then verify it against the test server using http.Client.
-	req, _ := http.NewRequest("POST", srv.URL+"/v1/chat/completions", strings.NewReader(`{}`))
-	req.Header.Set("Authorization", "Bearer live-key")
-	req.Header.Set("X-Gw-Follow-Up-Depth", "1")
+	// Same construction defaultDispatchFollowUp performs: depth already
+	// incremented in the child context, then buildFollowUpRequest.
+	ctx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(context.Background())+1)
+	req, err := buildFollowUpRequest(ctx, "sess-live", []byte(`{}`), "goal_continue", "req-live", "Bearer live-key", 1)
+	if err != nil {
+		t.Fatalf("buildFollowUpRequest: %v", err)
+	}
+	req.URL = parseOrDie(t, srv.URL+"/v1/chat/completions")
 	resp, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatalf("live server unreachable: %v", err)
@@ -231,7 +246,30 @@ func TestDefaultDispatchFollowUpHitsLiveServer(t *testing.T) {
 		t.Fatalf("server saw Authorization=%q, want %q", gotAuth, "Bearer live-key")
 	}
 	if gotDepth != "1" {
-		t.Fatalf("server saw X-Gw-Follow-Up-Depth=%q, want %q", gotDepth, "1")
+		t.Fatalf("server saw X-Gw-Follow-Up-Depth=%q, want real depth %q", gotDepth, "1")
+	}
+	if gotActor != "goal-continue" {
+		t.Fatalf("server saw %s=%q, want goal-continue", autoSourceActorHeader, gotActor)
+	}
+	// R37 (R35-R8): the dead header must stay deleted.
+	if gotAttempt != "" {
+		t.Fatalf("X-Gw-Follow-Up-Attempt was resurrected: %q (zero readers, constant-lie header)", gotAttempt)
+	}
+}
+
+// TestFollowUpDepthHeaderTracksRealDepth pins the R37 fix: the header used
+// to hardcode "1" while nested follow-ups ran at depth 1..15.
+func TestFollowUpDepthHeaderTracksRealDepth(t *testing.T) {
+	ctx := withFollowUpDepth(context.Background(), 7)
+	req, err := buildFollowUpRequest(ctx, "s", []byte(`{}`), "handoff", "p", "k", 1)
+	if err != nil {
+		t.Fatalf("buildFollowUpRequest: %v", err)
+	}
+	if got := req.Header.Get("X-Gw-Follow-Up-Depth"); got != "7" {
+		t.Fatalf("X-Gw-Follow-Up-Depth = %q, want %q", got, "7")
+	}
+	if got := req.Header.Get("X-Gw-Follow-Up-Attempt"); got != "" {
+		t.Fatalf("X-Gw-Follow-Up-Attempt must stay deleted, got %q", got)
 	}
 }
 

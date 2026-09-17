@@ -38,6 +38,7 @@
 - [R30 遗留#7] requestfact wire 缺 class/due_at；Responses reasoning.summary 数组静默丢弃；消息级 function_call 无解析——待收口，防止扩大
 
 - [R36] responses 流式桥 openaiFinishReasonIsError 曾缺 refusal（非流式已映射 incomplete/content_filter）→ refusal-only 流式响应渲染成 completed 成功终态 — 修复本轮回注钉桩 TestOpenaiFinishReasonIsError_IncludesRefusal；新协议接入时同步核对 isError 词表
+- [R37] 同型 typed-nil 修复必须排查孪生副本（executors/sticky.go 修后 routing/sticky.go 死副本仍在，intent cache 第三处）——修一处 grep 全仓同构 SetRedisStore；survival E2E 用例 c 钉 retry_limit_exceeded 依赖 stub 不消耗 UpstreamAttemptBudget，换真耗预算 stub 需同步预期（attempt_limit_exceeded 先判）；测试内 goroutine 与主 goroutine 共享 bytes.Buffer 必须 -race 验证（streamRead 实抓）
 
 ## 5. 子代理派发提示词
 

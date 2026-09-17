@@ -37,6 +37,7 @@
 - [历史] AUTO 路由数据管道三缺陷：promote 漂移丢特征列 / chat 记录丢 signals / exporter 扫描 bug —— 复核基线
 - [R30] auto 决策链闭环证实健康（分类→…→回灌双回路有消费方）—— 防回退基准
 - [运维] 回放必须小写 auto；154 旁路造数实例为验证环境
+- [R37] R35-R2 口径定案：灰度观测面与训练信号面剔除全部网关合成轮（autoroute.IsSyntheticActor＝内部回环三 actor + goal- 前缀）；决策时 recordFeedbackAsync 单 choke 点设门（stash+legacy 双路径），终端 ReportRoutingOutcome 在计数器之前丢弃；settle baselines/mr LATERAL 与 work_types 四查询走 SQLExcludeSyntheticActors。遗留：selection 行 settle/affinity 反连接（selections 表无 origin_actor，需 request_id 反连接+settled 标记防批堵塞）、routing_analytics_source 扩投影需迁移 718。154 复测 llmgw_autoroute_outcome_total 已可按此口径
 
 ## 5. 子代理派发提示词
 

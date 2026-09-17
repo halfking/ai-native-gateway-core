@@ -237,7 +237,7 @@ func GoalSpecs() []Spec {
 			Category:        CategorySession,
 			Default:         true,
 			Description:     "审计时使用自动路由",
-			DescriptionLong: "使用autoroute的code_audit任务类型自动选择最佳审计模型（推荐启用）",
+			DescriptionLong: "审计影子轮走autoroute（model=auto，由L1分类器定任务类型）自动选择最佳审计模型（推荐启用）。R37口径：影子轮(actor=goal-%)不计入auto路由灰度指标与训练信号",
 			HotReload:       true,
 			DangerLevel:     Safe,
 		},

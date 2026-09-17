@@ -268,6 +268,10 @@ func TestOutcomeBackfill_RespectsWriteBound(t *testing.T) {
 	}
 
 	// Hold every slot so the dispatch cannot proceed.
+	// R37 fix: the filler must RELEASE its slot before returning — the
+	// original only did `<-release` and leaked all maxConcurrentFeedbackWrites
+	// slots permanently, shedding every subsequent in-package feedback write
+	// (first exposed by the R37 shadow-actor tests that run after this file).
 	release := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := 0; i < maxConcurrentFeedbackWrites; i++ {
@@ -277,6 +281,7 @@ func TestOutcomeBackfill_RespectsWriteBound(t *testing.T) {
 			select {
 			case feedbackWriteSlots <- struct{}{}:
 				<-release
+				<-feedbackWriteSlots
 			case <-time.After(2 * time.Second):
 			}
 		}()

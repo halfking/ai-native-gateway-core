@@ -24,6 +24,7 @@
 
 - [R30] restorePulledCurrency 死代码移除 + 注释如实化；709 down 注释错字；freediscovery README 与代码矛盾回改 —— 模式基准
 - [R31] Manager.ProbeCheck/CloseProbe 零调用死接缝删除（防 billing-blind 复活）—— 模式基准
+- [R37] 测试自身可成为跨测试毒源：TestOutcomeBackfill_RespectsWriteBound 占坑 goroutine 不释放槽位→32 槽永久泄漏→全包后续反馈写静默 shed（dropped 恒定+4、新测试超时假失败）——占资源类测试必须对称释放；恒真测试（TestDefaultDispatchFollowUpHitsLiveServer 手工造请求自证）与命名误导（stub 冒充 production dispatcher）已改写；gofmt 存量 272 文件待按包机械批单独 commit
 
 ## 5. 子代理派发提示词
 

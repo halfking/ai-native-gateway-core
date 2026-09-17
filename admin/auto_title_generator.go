@@ -1055,6 +1055,9 @@ func (g *AutoTitleGenerator) doCallAutoTitleOnce(
 	// Mark as internal auto-request so it's excluded from user-visible
 	// metrics and from re-triggering auto title generation (chain prevention).
 	req.Header.Set("X-Gw-Is-Auto", "true")
+	// R37 (R35-R1): prove this self-call is loopback — without the per-boot
+	// token, RequestIDMiddleware strips the correlation headers above.
+	req.Header.Set(loopback.TokenHeader, loopback.Token())
 	if task.DeviceSeed != "" {
 		req.Header.Set("X-Device-Seed", task.DeviceSeed)
 	}

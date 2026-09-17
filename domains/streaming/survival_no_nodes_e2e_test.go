@@ -3,13 +3,12 @@ package streaming
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -68,16 +67,14 @@ func (noNodesKeyVerifier) LookupKeyMeta(context.Context, string) (*authenticatio
 
 // noNodesExecutor always fails the candidate walk with KindNoAvailableChannel;
 // foldCandidateOutcomes synthesizes the corresponding wait-recovery outcome
-// and the coordinator enters its retry loop. attempts counts every call so
-// the test can assert the retry count precisely.
+// and the coordinator enters its retry loop. calls counts every invocation
+// — all retry-count assertions read this field.
 type noNodesExecutor struct {
-	attempts int64
-	calls    int64
+	calls int64
 }
 
 func (e *noNodesExecutor) Execute(_ *executors.ExecParams) (*executors.ExecuteResult, error) {
 	n := atomic.AddInt64(&e.calls, 1)
-	atomic.StoreInt64(&e.attempts, n)
 	return nil, &executors.ExecuteError{
 		LastKind: errorsx.KindNoAvailableChannel,
 		LastErr:  fmt.Errorf("synthetic no available nodes for glm-5.2 (attempt %d)", n),
@@ -114,25 +111,33 @@ func newNoNodesHandler(t *testing.T, retryInterval time.Duration, attemptsCap in
 // the read loop observes an error, or the deadline elapses. It returns the
 // bytes collected and the deadline-relative remaining time (for chained
 // assertions).
+//
+// R37 race fix: the reader goroutine and the String() read below shared the
+// buffer unsynchronized — after a deadline lapse (scenario b's disconnect
+// path) the goroutine may still be mid-Write while the test reads. Snapshot
+// the bytes under the same mutex the writer holds.
 func streamRead(t *testing.T, body io.Reader, maxBytes int, deadline time.Duration) string {
 	t.Helper()
+	var mu sync.Mutex
 	out := &bytes.Buffer{}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		buf := make([]byte, 4096)
-		for out.Len() < maxBytes {
+		for {
+			mu.Lock()
+			over := out.Len() >= maxBytes
+			mu.Unlock()
+			if over {
+				return
+			}
 			n, err := body.Read(buf)
 			if n > 0 {
+				mu.Lock()
 				out.Write(buf[:n])
+				mu.Unlock()
 			}
 			if err != nil {
-				if errors.Is(err, io.EOF) {
-					return
-				}
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					return
-				}
 				return
 			}
 		}
@@ -141,6 +146,8 @@ func streamRead(t *testing.T, body io.Reader, maxBytes int, deadline time.Durati
 	case <-done:
 	case <-time.After(deadline):
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	return out.String()
 }
 
@@ -185,8 +192,15 @@ func TestSurvivalNoNodesKeepsConnectionOpenAndEmitsThink(t *testing.T) {
 
 	// Read SSE stream until we see the terminal frame or the deadline elapses.
 	// We expect at least two retries worth of think chunks + a terminal frame
-	// once the budget is hit.
-	got := streamRead(t, resp.Body, 1<<20, retryInterval*15)
+	// once the budget is hit. R37: the deadline previously used a bare
+	// retryInterval*15 multiplier — under -race on a slow CI the terminal
+	// frame could miss the window and flake; anchor the floor at 5s so the
+	// window always covers several retry cycles plus scheduling jitter.
+	readBudget := retryInterval * 15
+	if readBudget < 5*time.Second {
+		readBudget = 5 * time.Second
+	}
+	got := streamRead(t, resp.Body, 1<<20, readBudget)
 
 	// Requirement 1: connection stayed open — response was 200 with SSE.
 	if resp.StatusCode != http.StatusOK {

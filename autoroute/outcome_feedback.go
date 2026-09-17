@@ -60,6 +60,10 @@ type RoutingOutcome struct {
 	// RequestID is the correlation id (X-Request-Id) the decision was stashed
 	// under. Empty ids are ignored — they cannot match anything.
 	RequestID string
+	// OriginActor is the request's origin_actor (X-Gw-Source-Actor). Synthetic
+	// rounds (goal-% shadow rounds, internal title/summary loopbacks) are
+	// dropped by ReportRoutingOutcome (R35-R2 灰度口径).
+	OriginActor string
 	// Success is the terminal request_logs outcome (2xx upstream response).
 	Success bool
 	// LatencyMs is the settled end-to-end latency (0 when unknown).
@@ -225,6 +229,15 @@ func startPendingJanitor() {
 // (success telemetry + EmitFailure), NOT at decision time.
 func ReportRoutingOutcome(outcome RoutingOutcome) {
 	if outcome.RequestID == "" {
+		return
+	}
+	// R37 (R35-R2 灰度口径): gateway-synthetic rounds never enter the outcome
+	// counters — a title/summary loopback terminal has no stash (its decision
+	// was gated at recordFeedbackAsync), so letting it through would inflate
+	// orphan with self-call noise; a goal-% shadow round would inflate
+	// matched. Skipped BEFORE any counter so the synthetic flow is invisible
+	// to the registry (it still flows through request_logs for auditability).
+	if IsSyntheticActor(outcome.OriginActor) {
 		return
 	}
 	entry := takePendingFeedback(outcome.RequestID)
