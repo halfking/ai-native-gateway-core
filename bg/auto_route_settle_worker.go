@@ -336,9 +336,10 @@ type pendingSelection struct {
 	ts            time.Time
 
 	// From request_logs_hot; nil when the request was never logged.
-	success   *bool
-	latencyMs *int
-	costUSD   *float64
+	success     *bool
+	latencyMs   *int
+	costUSD     *float64
+	originActor *string // R38: filter synthetic actors (goal-*/auto-*-generator/session-summary)
 
 	// rlCanonicalID / rlTenantID are the values the settle worker backfills
 	// onto auto_route_selections.canonical_id / tenant_id when the decision-time
@@ -376,6 +377,7 @@ func (w *AutoRouteSettleWorker) settleBatch(
 	rows, qErr := w.db.Query(ctx, `
 			SELECT s.id, s.partition_date, s.request_id, s.task_type, s.canonical_id, s.ts,
 			       rl.success, rl.latency_ms, rl.cost_usd,
+			       rl.origin_actor,
 			       rl.canonical_id        AS rl_canonical_id,
 			       LEFT(rl.tenant_id, 64) AS rl_tenant_id,
 			       ss.health_score, ss.error_count, ss.request_count,
@@ -413,6 +415,7 @@ func (w *AutoRouteSettleWorker) settleBatch(
 		if scanErr := rows.Scan(
 			&p.id, &p.partitionDate, &p.requestID, &p.taskType, &p.canonicalID, &p.ts,
 			&p.success, &p.latencyMs, &p.costUSD,
+			&p.originActor,
 			&p.rlCanonicalID, &p.rlTenantID,
 			&p.sessionHealth, &p.sessionErrors, &p.sessionReqs,
 			&p.modelReqsInSes, &p.retryCount,
@@ -435,6 +438,20 @@ func (w *AutoRouteSettleWorker) settleBatch(
 					abandoned++
 					autoRouteSettledTotal.WithLabelValues("abandoned").Inc()
 				}
+			}
+			continue
+		}
+
+		// R38: skip synthetic actors (goal shadow rounds + internal loopbacks).
+		// These are real auto DECISIONS but not user-driven traffic. Filtering
+		// here (after the LEFT JOIN) preserves the abandon path for rows whose
+		// request_logs have not yet been written.
+		if p.originActor != nil && autoroute.IsSyntheticActor(*p.originActor) {
+			// Stamp settled with NULL reward so the row leaves the unsettled
+			// index and does not block future batches. No metrics increment —
+			// synthetic rounds are excluded from the training/observation surface.
+			if aErr := w.abandon(ctx, p); aErr == nil {
+				abandoned++
 			}
 			continue
 		}
