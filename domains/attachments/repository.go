@@ -282,14 +282,30 @@ func (r *Repository) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int
 	if r == nil || r.pool == nil {
 		return 0, errNoDB
 	}
-	tag, err := r.pool.Exec(ctx,
-		`DELETE FROM public.request_attachments WHERE created_at < $1`,
-		cutoff,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("attachments: delete older than: %w", err)
+	// 2026-09-17 audit: a single unbounded DELETE over request_attachments
+	// holds the row locks and WAL stream for the whole batch — after a
+	// backlog this stalls vacuum and replication. Chunk the delete the same
+	// way session_summaries_trimmer does (ctid self-select with LIMIT) and
+	// loop until the cutoff is drained.
+	const chunk = 10000
+	var total int64
+	for {
+		tag, err := r.pool.Exec(ctx, `
+			DELETE FROM public.request_attachments
+			WHERE ctid IN (
+				SELECT ctid FROM public.request_attachments
+				WHERE created_at < $1
+				LIMIT $2
+			)
+		`, cutoff, chunk)
+		if err != nil {
+			return total, fmt.Errorf("attachments: delete older than: %w", err)
+		}
+		total += tag.RowsAffected()
+		if tag.RowsAffected() < chunk {
+			return total, nil
+		}
 	}
-	return tag.RowsAffected(), nil
 }
 
 // errNoDB is returned by repository methods when no database handle is

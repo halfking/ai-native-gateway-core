@@ -4775,14 +4775,21 @@ func (h *Handler) handleFreePoolBootstrap(w http.ResponseWriter, r *http.Request
 	`)
 	if err == nil {
 		defer rows.Close()
+		var staleIDs []int
 		for rows.Next() {
 			var id int
 			var label string
 			//nolint:errcheck // best-effort
 			rows.Scan(&id, &label)
-			//nolint:errcheck // best-effort exec, non-critical
-			h.db.Exec(ctx, `UPDATE credentials SET status = 'disabled', availability_state = 'unreachable', updated_at = NOW() WHERE id = $1`, id)
+			staleIDs = append(staleIDs, id)
 			cleanupResults = append(cleanupResults, map[string]any{"id": id, "label": label})
+		}
+		// 2026-09-17 audit: one UPDATE per row serialized a full table
+		// access per credential; a single ANY($1) sweep does it in one
+		// statement. Best-effort as before.
+		if len(staleIDs) > 0 {
+			//nolint:errcheck // best-effort exec, non-critical
+			h.db.Exec(ctx, `UPDATE credentials SET status = 'disabled', availability_state = 'unreachable', updated_at = NOW() WHERE id = ANY($1)`, staleIDs)
 		}
 	}
 

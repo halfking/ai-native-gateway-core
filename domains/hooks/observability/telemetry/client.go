@@ -3420,11 +3420,20 @@ func lookupTurnNumber(ctx context.Context, tx pgx.Tx, sessionID string) int {
 	// Count existing requests in this session (including the current insert from the same tx)
 	// Since we're in the middle of the INSERT transaction, we need to count INCLUDING
 	// the row we just inserted. The turn_no should be: COUNT(*) for this session.
+	//
+	// 2026-09-17 audit: request_logs is RANGE-partitioned on ts. A bare
+	// gw_session_id predicate disables partition pruning, so every terminal
+	// request probed the gw_session_id index of EVERY monthly partition
+	// inside the write transaction. The 30d window restores pruning (1-2
+	// partitions); sessions outliving it restart turn numbering, which is
+	// acceptable — real sessions are far shorter, and the session/v2
+	// aggregator owns the authoritative turn_no anyway.
 	var count int
 	err := tx.QueryRow(ctx, `
-		SELECT COUNT(*) 
-		FROM request_logs 
+		SELECT COUNT(*)
+		FROM request_logs
 		WHERE gw_session_id = $1
+		  AND ts >= NOW() - INTERVAL '30 days'
 	`, sessionID).Scan(&count)
 
 	if err != nil {

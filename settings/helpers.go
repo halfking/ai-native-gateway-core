@@ -12,6 +12,13 @@ import (
 // DB connection and the DB is updated atomically, every call sees the
 // latest committed value — no caching layer to invalidate.
 //
+// IMPORTANT (2026-09-17 audit): these helpers are pinned by hot-reload
+// tests (e.g. domains/hooks/compression session_cache_ttl_test.go) that
+// mutate the backend store and expect the very next call to observe the
+// new value, and tests freely swap settings.Global. Do NOT add caching
+// here; use the opt-in CachedPlatformBool/String/Float family in
+// ttl_cache.go at call sites whose tests permit a ≤5s reload window.
+//
 // Pattern (matches session_audit/config.go, outputcompliance/interceptor.go):
 //
 //	if settings.Global != nil {

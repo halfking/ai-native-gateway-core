@@ -196,8 +196,8 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 			SELECT mc.id, mc.canonical_name
 			FROM model_aliases ma
 			JOIN models_canonical mc ON mc.id = ma.canonical_id
-			WHERE ma.raw_name = $1
-			  AND COALESCE(ma.status, 'active') = 'active'
+			WHERE lower(ma.raw_name) = lower($1)
+			  AND ma.status = 'active'
 			  AND COALESCE(mc.status, 'active') = 'active'
 			  AND (
 			      ma.client_profiles IS NULL
@@ -237,8 +237,8 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 			SELECT mc.id, mc.canonical_name
 			FROM model_aliases ma
 			JOIN models_canonical mc ON mc.id = ma.canonical_id
-			WHERE ma.raw_name = $1
-			  AND COALESCE(ma.status, 'active') = 'active'
+			WHERE lower(ma.raw_name) = lower($1)
+			  AND ma.status = 'active'
 			  AND COALESCE(mc.status, 'active') = 'active'
 			  AND (
 			      ma.client_profiles IS NULL

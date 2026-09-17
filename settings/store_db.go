@@ -79,11 +79,13 @@ func (s *StoreDB) Set(scope Scope, key string, value any) (jsonRawMessage, error
 		if err != nil {
 			return nil, fmt.Errorf("insert: %w", err)
 		}
+		InvalidatePlatformValue(key)
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("update: %w", err)
 	}
+	InvalidatePlatformValue(key)
 	return oldVal, nil
 }
 
@@ -212,6 +214,9 @@ func (s *StoreDB) Rollback(scope Scope, key, tenantID string) (jsonRawMessage, e
 		}
 		return nil, err
 	}
+	if scope != ScopeTenant {
+		InvalidatePlatformValue(key)
+	}
 	return newVal, nil
 }
 
@@ -225,6 +230,9 @@ func (s *StoreDB) Delete(scope Scope, key, tenantID string) error {
 	} else {
 		_, err = s.pool.Exec(context.Background(),
 			`DELETE FROM settings_kv WHERE key = $1`, key)
+		if err == nil {
+			InvalidatePlatformValue(key)
+		}
 	}
 	return err
 }
