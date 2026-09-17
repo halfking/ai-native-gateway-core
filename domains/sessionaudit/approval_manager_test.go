@@ -461,13 +461,21 @@ func TestApprove_NotFound(t *testing.T) {
 }
 
 // TestMarkTimeout 后台 worker 路径：批量把过期的 pending 改为 timeout。
+//
+// RLS Phase 2 (R41 P1-6): wrapped in own tx with super_admin role GUC
+// (approval_queue policy's role 分支即满足), 规避 autocommit GUC 不生效
+// 导致非 default 租户 pending 永不被超时终结。
 func TestMarkTimeout(t *testing.T) {
 	mock, _ := pgxmock.NewPool()
 	defer mock.Close()
 
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL app.current_role`).
+		WillReturnResult(pgxmock.NewResult("SET", 0))
 	mock.ExpectExec(`UPDATE approval_queue`).
 		WithArgs(ApprovalTimeout, ApprovalPending).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
+	mock.ExpectCommit()
 
 	m := NewApprovalManager(mock, 15*time.Minute)
 	n, err := m.MarkTimeout(context.Background())

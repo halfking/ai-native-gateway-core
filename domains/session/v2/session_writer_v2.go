@@ -346,6 +346,13 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 			_ = tx.Rollback(lockCtx)
 		}
 	}()
+	// RLS Phase 2 适配 (R41 P1-5): 共享 turn 事务须设 app.current_tenant=req.TenantID
+	// 才能让 EnqueueSessionAggregateOutbox 的 INSERT 命中
+	// session_aggregate_outbox policy 的 tenant 分支；不设则走 GUC fallback
+	// 'default'（或 42501），非 default 租户请求静默丢失聚合快照。
+	if _, err := tx.Exec(lockCtx, "SELECT set_config('app.current_tenant', $1, true)", req.TenantID); err != nil {
+		return fmt.Errorf("set tenant GUC for aggregate outbox: %w", err)
+	}
 	if err := w.turnWriter.LockSessionInTx(lockCtx, tx, req.TenantID, req.SessionID); err != nil {
 		return err
 	}

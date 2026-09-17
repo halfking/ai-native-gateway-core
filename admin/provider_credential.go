@@ -1251,6 +1251,11 @@ func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, 
 	// credential_id 过滤（2026-09-01 P0-1）：$5 为空时聚合全部凭据；非空时
 	// 按 provider_error_details.credential_id::text 精确匹配（迁移 639 新列，
 	// TEXT 类型，来源 candidate_failure_logs_hot.credential_id::text）。
+	//
+	// RLS Phase 2 适配 (R41 P1-3): provider_error_details 的 policy 是
+	// `(current_role=super_admin OR bypass_rls=true OR tenant_id=current_tenant)`，
+	// 但 admin handler 是跨租户面板（provider 维度非租户维度），必须显式事务 +
+	// super_admin/bypass 旁路（setAllTenantGUC）。
 	query := `
 		SELECT
 			model_name,
@@ -1275,14 +1280,6 @@ func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, 
 		LIMIT $2
 	`
 
-	rows, err := h.db.Query(ctx, query, providerID, limit, hours, resolvedFilter, credentialFilter)
-	if err != nil {
-		slog.Error("getProviderErrorStats query failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	defer rows.Close()
-
 	type errorStat struct {
 		ModelName         string    `json:"model_name"`
 		Endpoint          string    `json:"endpoint"`
@@ -1300,36 +1297,50 @@ func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, 
 	}
 
 	var stats []errorStat
-	for rows.Next() {
-		var s errorStat
-		if err := rows.Scan(
-			&s.ModelName,
-			&s.Endpoint,
-			&s.CredentialID,
-			&s.ErrorType,
-			&s.ErrorCode,
-			&s.ErrorMessage,
-			&s.AggregationBucket,
-			&s.Occurrences,
-			&s.FirstSeenAt,
-			&s.LastSeenAt,
-			&s.Resolved,
-			&s.CreatedAt,
-			&s.UpdatedAt,
-		); err != nil {
-			slog.Warn("getProviderErrorStats scan failed", "error", err)
-			continue
+	err := withAllTenantReadOnlyTx(ctx, h.db, func(tx pgx.Tx) error {
+		rows, qerr := tx.Query(ctx, query, providerID, limit, hours, resolvedFilter, credentialFilter)
+		if qerr != nil {
+			return qerr
 		}
-		stats = append(stats, s)
-	}
+		defer rows.Close()
 
-	// 审计修复 (2026-08-30)：检查迭代过程中的错误
-	// R16 (2026-09-12)：升级为 500——与 provider_models.go:129 确立的
-	// "500 优于静默截断"约定一致，凭据错误统计不完整时不得伪装为完整。
-	if err := rows.Err(); err != nil {
-		slog.Error("getProviderErrorStats rows iteration error",
-			"provider_id", providerID, "error", err)
-		writeError(w, http.StatusInternalServerError, "provider error stats iteration failed")
+		for rows.Next() {
+			var s errorStat
+			if serr := rows.Scan(
+				&s.ModelName,
+				&s.Endpoint,
+				&s.CredentialID,
+				&s.ErrorType,
+				&s.ErrorCode,
+				&s.ErrorMessage,
+				&s.AggregationBucket,
+				&s.Occurrences,
+				&s.FirstSeenAt,
+				&s.LastSeenAt,
+				&s.Resolved,
+				&s.CreatedAt,
+				&s.UpdatedAt,
+			); serr != nil {
+				slog.Warn("getProviderErrorStats scan failed", "error", serr)
+				continue
+			}
+			stats = append(stats, s)
+		}
+
+		// 审计修复 (2026-08-30)：检查迭代过程中的错误
+		// R16 (2026-09-12)：升级为 500——与 provider_models.go:129 确立的
+		// "500 优于静默截断"约定一致，凭据错误统计不完整时不得伪装为完整。
+		if rerr := rows.Err(); rerr != nil {
+			slog.Error("getProviderErrorStats rows iteration error",
+				"provider_id", providerID, "error", rerr)
+			return rerr
+		}
+		return nil
+	})
+	if err != nil {
+		// SQL 错误或迭代错误都映射为 500——与原行为一致（保持原错误日志口径）。
+		slog.Error("getProviderErrorStats failed", "provider_id", providerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "provider error stats query failed")
 		return
 	}
 
