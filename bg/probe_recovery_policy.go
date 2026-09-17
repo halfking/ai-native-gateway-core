@@ -43,6 +43,16 @@ func ProbeBackoffForKind(kind errorsx.ErrorKind, attempt int) time.Duration {
 
 // ProbeBackoffForErrCode maps a probe/audit error code onto ProbeBackoffForKind.
 func ProbeBackoffForErrCode(errCode string, attempt int) time.Duration {
+	// 2026-09-17: a 404 the DIRECT round returned twice is the upstream's
+	// "this credential does not serve this model" verdict. Re-probing it on
+	// the ordinary ladder (5s..6h) made every request_failure trigger walk the
+	// whole chain again — the eternal-churn shape seen on apigpt (14 models ×
+	// 7 attempts/24h). Park the pair at the model-not-served re-check horizon
+	// instead; the first (unconfirmed) 404 keeps the generic ladder so a
+	// one-off aggregator blip still re-verifies quickly.
+	if isModelNotServedProbeError(errCode) && attempt >= 2 {
+		return modelNotServedRecheckInterval
+	}
 	return ProbeBackoffForKind(classifyProbeErrCode(errCode), attempt)
 }
 
