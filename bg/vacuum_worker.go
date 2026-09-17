@@ -2,18 +2,10 @@
 //
 // 审计修复 (2026-08-29)：P1-7 - request_logs_bodies VACUUM自动化
 //
-// 定期对 request_logs_bodies 表执行 VACUUM FULL，回收 TOAST 表空间。
-//
-// 背景：
-//   - request_logs_bodies 存储大量 JSONB 数据（请求/响应体）
-//   - TOAST 表膨胀可能导致空间浪费
-//   - 已有 TTL 清理（24小时保留），但未自动 VACUUM
-//
-// 设计：
-//   - 每周执行一次 VACUUM FULL（周日凌晨 2:00）
-//   - 仅在低峰期执行，避免影响业务
-//   - VACUUM FULL 会锁表，需要在业务低峰期执行
-//   - 支持优雅停止
+// 2026-09-17 审计修订：request_logs_bodies 已改为按月分区（叶子表由
+// drop_old_request_logs_bodies_partitions 负责回收，分区 DROP 即归还空间），
+// 对分区父表执行 VACUUM FULL 无存储可重写、只会空耗全集群
+// VacuumFullMutex 窗口，故移除；本 worker 保留对 hot 表的普通 VACUUM。
 //
 // 接入点：cmd/gateway/main.go 在 init bg services 时构造 + Start。
 
@@ -26,10 +18,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/kaixuan/llm-gateway-go/internal/dbx"
 )
 
-// VacuumWorker 定期对 request_logs_bodies 执行 VACUUM FULL。
+// VacuumWorker 定期对 request_logs_bodies 的 hot 表执行普通 VACUUM。
 type VacuumWorker struct {
 	db *pgxpool.Pool
 
@@ -37,10 +28,10 @@ type VacuumWorker struct {
 	*BaseWorker
 
 	// 配置（业务字段，仍由本结构 mu 保护）
-	mu          sync.Mutex
-	interval    time.Duration // 执行间隔（默认 7 天）
-	executeHour int           // 执行时间（小时，0-23，默认 2）
-	lastExecuted time.Time    // 上次执行时间
+	mu           sync.Mutex
+	interval     time.Duration // 执行间隔（默认 7 天）
+	executeHour  int           // 执行时间（小时，0-23，默认 2）
+	lastExecuted time.Time     // 上次执行时间
 }
 
 // NewVacuumWorker 构造 worker。
@@ -151,53 +142,25 @@ func (w *VacuumWorker) vacuum(ctx context.Context) {
 	}
 
 	start := time.Now()
-	slog.Info("vacuum worker: starting VACUUM FULL on request_logs_bodies")
 
-	// VACUUM FULL 可能需要较长时间，设置 30 分钟超时
-	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-	defer cancel()
-
-	// 2026-09-01: cluster-wide VACUUM FULL mutex. With multiple
-	// gateway replicas, both would fire at Sunday 02:00 and race
-	// for ACCESS EXCLUSIVE — the loser fails with 55P03 and a
-	// generic error. Acquire a separate connection for the
-	// advisory lock so it can sit in pg_advisory_xact_lock for
-	// the full VACUUM FULL duration without blocking the actual
-	// vacuum connection.
-	vacuumConn, err := w.db.Acquire(timeoutCtx)
-	if err != nil {
-		slog.Error("vacuum worker: acquire vacuumConn failed", "error", err)
-		return
-	}
-	defer vacuumConn.Release()
-
-	err = dbx.VacuumFullMutex(timeoutCtx, w.db, vacuumConn, 30*time.Second,
-		func(ctx context.Context, c *pgxpool.Conn) error {
-			_, ierr := c.Exec(ctx, "VACUUM FULL request_logs_bodies")
-			return ierr
-		})
-	elapsed := time.Since(start)
-
-	if err != nil {
-		slog.Error("vacuum worker: VACUUM FULL failed",
-			"error", err,
-			"elapsed_seconds", elapsed.Seconds())
-		return
-	}
-
-	slog.Info("vacuum worker: VACUUM FULL completed",
-		"elapsed_seconds", elapsed.Seconds())
-
-	// 同时对 hot 表也执行 VACUUM（不加 FULL，避免长时间锁表）
-	// Hot 表数据量小，普通 VACUUM 即可
+	// 2026-09-17 audit: request_logs_bodies is a RANGE-partitioned parent
+	// (monthly leaves, reclaimed by drop_old_request_logs_bodies_partitions).
+	// VACUUM FULL against a partitioned parent either errors or no-ops —
+	// there is no storage on the parent to rewrite — so the weekly job only
+	// burned the cluster-wide VacuumFullMutex window. Space reclaim is the
+	// partition-drop path's job; here we keep plain VACUUM on the hot table
+	// (and the leaf-partition hygiene runs in bg/partition_manager.go).
 	hotCtx, hotCancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer hotCancel()
 
-	_, hotErr := w.db.Exec(hotCtx, "VACUUM request_logs_bodies_hot")
+	_, hotErr := w.db.Exec(hotCtx, "VACUUM (ANALYZE) request_logs_bodies_hot")
+	elapsed := time.Since(start)
 	if hotErr != nil {
 		slog.Warn("vacuum worker: VACUUM on hot table failed",
-			"error", hotErr)
-	} else {
-		slog.Info("vacuum worker: VACUUM on hot table completed")
+			"error", hotErr,
+			"elapsed_seconds", elapsed.Seconds())
+		return
 	}
+	slog.Info("vacuum worker: VACUUM on hot table completed",
+		"elapsed_seconds", elapsed.Seconds())
 }

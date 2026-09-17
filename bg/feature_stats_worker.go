@@ -171,7 +171,7 @@ func (w *FeatureStatsWorker) computeDedupRate(ctx context.Context, statDate time
 				COUNT(*) AS total_rows,
 				COUNT(DISTINCT content_hash) AS unique_hashes
 			FROM auto_route_selections
-			WHERE DATE(ts) = $1
+			WHERE ts >= $1 AND ts < $1 + INTERVAL '1 day'
 			  AND content_hash IS NOT NULL
 		),
 		top_dupes AS (
@@ -179,7 +179,7 @@ func (w *FeatureStatsWorker) computeDedupRate(ctx context.Context, statDate time
 				content_hash,
 				COUNT(*) AS count
 			FROM auto_route_selections
-			WHERE DATE(ts) = $1
+			WHERE ts >= $1 AND ts < $1 + INTERVAL '1 day'
 			  AND content_hash IS NOT NULL
 			GROUP BY content_hash
 			HAVING COUNT(*) > 1
@@ -374,11 +374,11 @@ type FeatureDistribution struct {
 
 // DedupStats 去重率统计数据结构（用于测试）。
 type DedupStats struct {
-	StatDate           time.Time              `json:"stat_date"`
-	TotalRows          int                    `json:"total_rows"`
-	UniqueHashes       int                    `json:"unique_hashes"`
-	DedupRate          float64                `json:"dedup_rate"`
-	DuplicateCount     int                    `json:"duplicate_count"`
+	StatDate           time.Time                `json:"stat_date"`
+	TotalRows          int                      `json:"total_rows"`
+	UniqueHashes       int                      `json:"unique_hashes"`
+	DedupRate          float64                  `json:"dedup_rate"`
+	DuplicateCount     int                      `json:"duplicate_count"`
 	TopDuplicateHashes []map[string]interface{} `json:"top_duplicate_hashes"`
 }
 

@@ -740,10 +740,22 @@ func (h *Handler) runTableMaintenanceJob(ctx context.Context, run *JobRun, schem
 	}
 	defer conn.Release()
 
-	if _, lerr := conn.Exec(opCtx, fmt.Sprintf("SET LOCAL lock_timeout = '%s'", lockTimeout)); lerr != nil {
+	// SET LOCAL outside a transaction block is silently ignored by
+	// PostgreSQL (only a WARNING), so the 5s cap below never applied and a
+	// wedged ACCESS EXCLUSIVE queue would block until the 30-60min opCtx
+	// fired. VACUUM/REINDEX cannot run inside a tx block, so use a
+	// session-level SET on this dedicated connection and RESET before the
+	// conn goes back to the pool (the deferred RESET runs before Release).
+	if _, lerr := conn.Exec(opCtx, fmt.Sprintf("SET lock_timeout = '%s'", lockTimeout)); lerr != nil {
 		h.failJob(run, "failed to set lock_timeout: "+lerr.Error())
 		return
 	}
+	defer func() {
+		resetCtx, resetCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer resetCancel()
+		//nolint:errcheck // best-effort cleanup; conn is discarded on failure
+		conn.Exec(resetCtx, "RESET lock_timeout")
+	}()
 
 	var sql string
 	switch op {

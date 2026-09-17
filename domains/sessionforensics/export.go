@@ -428,12 +428,15 @@ func (e *Exporter) ListRecentSessions(ctx context.Context, tenantID string, limi
 // 不修改聚合字段（first_request_at / last_request_at / total_cost_usd 等），
 // 这些字段由 request_logs 触发器自动维护；只覆盖用户语义相关的 title/summary
 // / key_topics/user_intent。
-func (e *Exporter) UpsertSummary(ctx context.Context, sessionID string, result SummaryResult) error {
+func (e *Exporter) UpsertSummary(ctx context.Context, sessionID, tenantID string, result SummaryResult) error {
 	if e == nil || e.store == nil {
 		return ErrorDBUnavailable
 	}
 	if sessionID == "" {
 		return fmt.Errorf("sessionforensics: missing session_id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
 	}
 	if result.Title == "" && result.Summary == "" {
 		return fmt.Errorf("sessionforensics: empty title and summary, refusing to drop existing data")
@@ -453,14 +456,14 @@ func (e *Exporter) UpsertSummary(ctx context.Context, sessionID string, result S
 		INSERT INTO session_summaries
 			(session_key, tenant_id, first_request_at, last_request_at,
 			 title, summary, key_topics, user_intent)
-		VALUES ($1, 'default', NOW(), NOW(),
-				NULLIF($2, ''), NULLIF($3, ''), $4::text[], NULLIF($5, ''))
+		VALUES ($1, $2, NOW(), NOW(),
+				NULLIF($3, ''), NULLIF($4, ''), $5::text[], NULLIF($6, ''))
 		ON CONFLICT (session_key) DO UPDATE SET
 			title      = COALESCE(EXCLUDED.title,      session_summaries.title),
 			summary    = COALESCE(EXCLUDED.summary,    session_summaries.summary),
 			key_topics = COALESCE(EXCLUDED.key_topics, session_summaries.key_topics),
 			user_intent= COALESCE(EXCLUDED.user_intent,session_summaries.user_intent)
-	`, sessionID, result.Title, result.Summary, topicsArray, userIntent)
+	`, sessionID, tenantID, result.Title, result.Summary, topicsArray, userIntent)
 	return err
 }
 

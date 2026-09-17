@@ -15,8 +15,11 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
+
+const gaugeRefreshInterval = 30 * time.Second
 
 // Dispatcher polls outbox_events and delivers them to ASM via HTTP.
 //
@@ -34,6 +37,12 @@ type Dispatcher struct {
 	maxAttempts  int           // Max retry attempts before DLQ (default: 5)
 	deliverer    *HTTPDeliverer
 	logger       *slog.Logger
+
+	// lastGaugeAt throttles updateGaugeMetrics: the two COUNT(*) probes run
+	// on the dispatch goroutine, so polling them every 5s cycle doubles the
+	// outbox_events read load for a monitoring gauge. 30s staleness is fine.
+	gaugeMu     sync.Mutex
+	lastGaugeAt time.Time
 }
 
 // DispatcherConfig holds configuration for Dispatcher.
@@ -384,8 +393,16 @@ func classifyError(err error) string {
 }
 
 // updateGaugeMetrics queries current pending and DLQ counts and updates Prometheus gauges.
-// Should be called periodically (e.g., after each poll cycle) for accurate monitoring.
+// Called after each poll cycle but throttled to gaugeRefreshInterval for
+// accurate-enough monitoring without scanning outbox_events every 5s.
 func (d *Dispatcher) updateGaugeMetrics(ctx context.Context) {
+	d.gaugeMu.Lock()
+	if time.Since(d.lastGaugeAt) < gaugeRefreshInterval {
+		d.gaugeMu.Unlock()
+		return
+	}
+	d.lastGaugeAt = time.Now()
+	d.gaugeMu.Unlock()
 	var pendingCount, dlqCount int
 
 	// Count pending events

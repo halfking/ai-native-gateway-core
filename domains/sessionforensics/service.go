@@ -178,7 +178,7 @@ func (s *Service) Summarize(ctx context.Context, pack *SessionPack, args Summari
 	}
 	persist := args.Persist == nil || *args.Persist
 	if persist && s.exporter != nil && s.exporter.store != nil {
-		if uerr := s.exporter.UpsertSummary(ctx, pack.SessionMeta.ID, *res); uerr != nil {
+		if uerr := s.exporter.UpsertSummary(ctx, pack.SessionMeta.ID, args.TenantID, *res); uerr != nil {
 			res.Error = fmt.Sprintf("upsert failed: %v", uerr)
 		}
 	}

@@ -185,6 +185,12 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureCredentialPlanQuotaProbeBackoff(migCtx); err != nil {
 		return err
 	}
+	// api_key_auto_profile was created without the unique identity required by
+	// DBProfileStore.Put's ON CONFLICT (api_key_id). Run this independently of
+	// unrelated schema self-heals so normal startup repairs existing databases.
+	if err := db.ensureApiKeyAutoProfileIdentity(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-17 (087 自愈): provider_templates 健康反馈三列。freediscovery
 	// 扫描调度器的失败计数/自动禁用分支每周期读写，缺列即 42703 空转。
 	if err := db.ensureFreediscoveryTemplateHealth(migCtx); err != nil {
@@ -1577,34 +1583,113 @@ func (d *DB) ensureTaskTypeCorrections(ctx context.Context) error {
 		return nil
 	}
 	_, err := d.pool.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS public.task_type_corrections (
-		    id                    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-		    request_id            text NOT NULL UNIQUE,
-		    auto_task_type        text NOT NULL,
-		    human_task_type       text NOT NULL,
-		    agrees                boolean NOT NULL,
-		    classifier_confidence double precision,
-		    profile               text,
-		    annotator             text NOT NULL,
-		    reason                text NOT NULL,
-		    created_at            timestamptz NOT NULL DEFAULT NOW()
-		);
+			CREATE TABLE IF NOT EXISTS public.task_type_corrections (
+			    id                    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+			    request_id            text NOT NULL UNIQUE,
+			    auto_task_type        text NOT NULL,
+			    human_task_type       text NOT NULL,
+			    agrees                boolean NOT NULL,
+			    classifier_confidence double precision,
+			    profile               text,
+			    annotator             text NOT NULL,
+			    reason                text NOT NULL,
+			    created_at            timestamptz NOT NULL DEFAULT NOW()
+			);
 
-		CREATE INDEX IF NOT EXISTS idx_task_type_corrections_auto_type
-		    ON public.task_type_corrections (auto_task_type, created_at DESC);
+			CREATE INDEX IF NOT EXISTS idx_task_type_corrections_auto_type
+			    ON public.task_type_corrections (auto_task_type, created_at DESC);
 
-		COMMENT ON TABLE public.task_type_corrections IS
-		    'taskprofile: 人工对 auto 任务类型分配的逐请求修正（agrees=auto与human一致）';
+			COMMENT ON TABLE public.task_type_corrections IS
+			    'taskprofile: 人工对 auto 任务类型分配的逐请求修正（agrees=auto与human一致）';
 
-		INSERT INTO public.schema_migrations (version, description)
-		VALUES ('724', 'taskprofile per-request human task-type corrections')
-		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
-	`)
+			INSERT INTO public.schema_migrations (version, description)
+			VALUES ('724', 'taskprofile per-request human task-type corrections')
+			ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+		`)
 	if err != nil {
 		return err
 	}
 	slog.Info("taskprofile task_type_corrections schema ensured (migration 724)")
 	return nil
+}
+
+// ensureApiKeyAutoProfileIdentity repairs a long-standing DDL gap on
+// api_key_auto_profile: the table was created without a PK/UNIQUE constraint
+// on api_key_id, so autoroute.DBProfileStore.Put's
+// `INSERT ... ON CONFLICT (api_key_id)` failed with 42P10 on every sticky
+// write (logged-and-dropped at the caller → the sticky-profile feature was
+// silently inert) and the decision-path point read seq-scanned.
+//
+// Unlike the migration-mirroring ensures above there is no numbered
+// migration file behind this index (per repo discipline new migrations must
+// run on a live DB before registration), so this ensure is the registration
+// channel: idempotent via pg_index probe + CREATE UNIQUE INDEX IF NOT
+// EXISTS, lock-capped at 2s, tiny table so the build is instant.
+func (d *DB) ensureApiKeyAutoProfileIdentity(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	var existing bool
+	if err := d.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_index i
+				JOIN pg_class c ON c.oid = i.indrelid
+				WHERE c.relname = 'api_key_auto_profile'
+				  AND i.indisunique
+				  AND i.indisvalid
+				  AND (SELECT array_agg(attname ORDER BY attname)
+				       FROM pg_attribute
+				       WHERE attrelid = c.oid AND attnum = ANY(i.indkey::smallint[]))
+				      = ARRAY['api_key_id'::name]
+			)
+		`).Scan(&existing); err != nil {
+		return fmt.Errorf("probe api_key_auto_profile unique index: %w", err)
+	}
+	if existing {
+		return nil
+	}
+	// Acquire a dedicated connection to set session-level lock_timeout for
+	// this DDL, then guarantee cleanup regardless of success. Do not use
+	// SET LOCAL on the pooled connection the caller acquired — without an
+	// explicit BEGIN, pgx auto-commits each Exec, so the SET LOCAL would
+	// revert before the CREATE INDEX executes (seen in startup tests).
+	conn, err := d.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire conn: %w", err)
+	}
+	defer conn.Release()
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-time.After(2 * time.Second):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		_, lastErr = conn.Exec(ctx, `SET lock_timeout = '2s'`)
+		if lastErr != nil {
+			return fmt.Errorf("set lock_timeout: %w", lastErr)
+		}
+		_, lastErr = conn.Exec(ctx, `
+				CREATE UNIQUE INDEX IF NOT EXISTS api_key_auto_profile_api_key_id_key
+				    ON public.api_key_auto_profile (api_key_id)
+			`)
+		_, resetErr := conn.Exec(ctx, `RESET lock_timeout`)
+		if resetErr != nil {
+			slog.Warn("api_key_auto_profile ensure: lock_timeout reset failed", "error", resetErr)
+		}
+		if lastErr == nil {
+			slog.Info("api_key_auto_profile identity index ensured (sticky-profile ON CONFLICT repair)")
+			return nil
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(lastErr, &pgErr) && pgErr.Code == "55P03" {
+			continue
+		}
+		return fmt.Errorf("ensure api_key_auto_profile unique index: %w", lastErr)
+	}
+	return fmt.Errorf("ensure api_key_auto_profile unique index: %w", lastErr)
 }
 
 // ensureProviderModelsCanonicalClearedAt mirrors sql/migrations/startup/
