@@ -164,6 +164,10 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// 724 (7106e1c5b, parallel session) landed with four of five sync
 		// points; parity coverage added by R40-followup (2026-09-18).
 		"724_task_type_corrections.sql": taskTypeCorrectionsMigration724,
+		// 725 (parallel R41 session) landed with canonical copies only —
+		// five-point gap caught by the pre-commit canonical-delivery gate
+		// on the R42 merge commit; registered here (R42, 2026-09-18).
+		"725_r41_request_logs_and_tmp_super_admin_bypass.sql": r41RequestLogsSuperAdminBypassMigration725,
 	}
 
 	for name, embedded := range expected {

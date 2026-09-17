@@ -188,23 +188,32 @@ func (h *Handler) listTenantModelPolicies(w http.ResponseWriter, r *http.Request
 	}
 	sqlText += ` ORDER BY id DESC`
 
-	rows, err := h.db.Query(ctx, sqlText, tenantCode)
+	// RLS Phase 2 (R41 P2 收口): tenant_model_policies policy 在 FORCE+ENABLE
+	// 形态下要求显式事务 + app.current_tenant=$tenantCode；裸 pool.Query 走
+	// NULLIF→'default' fallback，hansi/e2e-policy-a 共 3 行降权后不可见。
+	out := make([]TenantModelPolicyWire, 0)
+	err := withTenantTx(ctx, h.db, tenantCode, func(tx pgx.Tx) error {
+		rows, qerr := tx.Query(ctx, sqlText, tenantCode)
+		if qerr != nil {
+			return qerr
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var p TenantModelPolicyWire
+			if serr := rows.Scan(
+				&p.ID, &p.TenantID, &p.CanonicalName, &p.Reason, &p.CreatedBy,
+				&p.DeletedAt, &p.DeletedBy, &p.CreatedAt, &p.UpdatedAt,
+			); serr != nil {
+				continue
+			}
+			out = append(out, p)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
-	}
-	defer rows.Close()
-
-	out := make([]TenantModelPolicyWire, 0)
-	for rows.Next() {
-		var p TenantModelPolicyWire
-		if err := rows.Scan(
-			&p.ID, &p.TenantID, &p.CanonicalName, &p.Reason, &p.CreatedBy,
-			&p.DeletedAt, &p.DeletedBy, &p.CreatedAt, &p.UpdatedAt,
-		); err != nil {
-			continue
-		}
-		out = append(out, p)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"policies": out,
@@ -591,19 +600,10 @@ func (h *Handler) listTenantModelPoliciesAudit(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	rows, err := h.db.Query(ctx, `
-		SELECT id, ts, action, policy_id, tenant_id, canonical_name, reason, actor
-		FROM tenant_model_policies_audit
-		WHERE tenant_id = $1
-		ORDER BY ts DESC
-		LIMIT $2
-	`, tenantCode, limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "audit query failed: "+err.Error())
-		return
-	}
-	defer rows.Close()
-
+	// RLS Phase 2 (R41 P2 收口): tenant_model_policies_audit policy 在
+	// FORCE+ENABLE 形态下要求显式事务 + app.current_tenant=$tenantCode；裸
+	// pool.Query 走 NULLIF→'default' fallback，hansi/e2e-policy-a 共 20 行
+	// 审计降权后不可见。
 	type auditRow struct {
 		ID            int64     `json:"id"`
 		TS            time.Time `json:"ts"`
@@ -615,15 +615,34 @@ func (h *Handler) listTenantModelPoliciesAudit(w http.ResponseWriter, r *http.Re
 		Actor         string    `json:"actor"`
 	}
 	out := make([]auditRow, 0)
-	for rows.Next() {
-		var a auditRow
-		if err := rows.Scan(
-			&a.ID, &a.TS, &a.Action, &a.PolicyID, &a.TenantID,
-			&a.CanonicalName, &a.Reason, &a.Actor,
-		); err != nil {
-			continue
+	err := withTenantTx(ctx, h.db, tenantCode, func(tx pgx.Tx) error {
+		rows, qerr := tx.Query(ctx, `
+			SELECT id, ts, action, policy_id, tenant_id, canonical_name, reason, actor
+			FROM tenant_model_policies_audit
+			WHERE tenant_id = $1
+			ORDER BY ts DESC
+			LIMIT $2
+		`, tenantCode, limit)
+		if qerr != nil {
+			return qerr
 		}
-		out = append(out, a)
+		defer rows.Close()
+
+		for rows.Next() {
+			var a auditRow
+			if serr := rows.Scan(
+				&a.ID, &a.TS, &a.Action, &a.PolicyID, &a.TenantID,
+				&a.CanonicalName, &a.Reason, &a.Actor,
+			); serr != nil {
+				continue
+			}
+			out = append(out, a)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "audit query failed: "+err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"audit": out,

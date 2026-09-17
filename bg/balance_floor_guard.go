@@ -844,9 +844,13 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 	// Migration 721 manual-protection: a row whose balance was hand-calibrated
 	// by an operator (balance_source='manual') is skipped for 24h so the
 	// automatic probe cannot silently overwrite the calibrated value. The
-	// stamp is written by admin updateCredential on a balance_usd PATCH that
-	// actually changes the value. R42: the predicate is the shared
-	// manualBalanceGuardSQL constant — see balance_manual_guard.go.
+	// stamp (R42) is written by admin updateCredential only when the value
+	// actually changes; automatic probe failures stamp balance_error via
+	// balanceProbeFailStamp. The predicate lives in
+	// ManualBalanceProtectionPredicate (balance_manual_protection.go),
+	// shared with probe_v2's cycleAll and consumed at write time too
+	// (R42 TOCTOU fix); the columns are only on credentials so the
+	// unqualified fragment is unambiguous in this join.
 	rows, err := g.db.Query(cctx, `
 		SELECT c.id, c.secret_ciphertext,
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
@@ -856,7 +860,7 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 		WHERE c.balance_floor_usd IS NOT NULL
 		  AND (c.balance_last_checked_at IS NULL
 		       OR c.balance_last_checked_at < now() - interval '15 minutes')
-		  AND `+manualBalanceGuardSQL+`
+		  AND `+ManualBalanceProtectionPredicate+`
 		  AND c.status = 'active'
 		  AND c.lifecycle_status = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
@@ -1006,7 +1010,7 @@ func (g *BalanceFloorGuard) refreshBalance(ctx context.Context, id int64, cipher
 			UPDATE credentials
 			SET balance_error = $1
 			WHERE id = $2
-			  AND `+manualBalanceGuardSQL+`
+			  AND `+ManualBalanceProtectionPredicate+`
 		`, balanceProbeFailStamp(), id); uerr != nil {
 			slog.Warn("balance_floor_guard: balance_error stamp write failed",
 				"credential_id", id, "error", uerr)
@@ -1020,7 +1024,7 @@ func (g *BalanceFloorGuard) refreshBalance(ctx context.Context, id int64, cipher
 		    balance_last_checked_at = now(),
 		    balance_error = NULL
 		WHERE id = $2
-		  AND `+manualBalanceGuardSQL+`
+		  AND `+ManualBalanceProtectionPredicate+`
 	`, balUSD, id); err != nil {
 		slog.Warn("balance_floor_guard: balance refresh write failed",
 			"credential_id", id, "error", err)

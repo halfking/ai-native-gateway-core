@@ -389,7 +389,9 @@ func (r *sessionAggregateOutboxReaper) claimAndReplay(ctx context.Context) (bool
 // goroutine past Stop's doneCh wait.
 
 func (r *sessionAggregateOutboxReaper) markDone(ctx context.Context, id int64) {
-	tag, err := r.db.Exec(ctx,
+	// RLS Phase 2 适配 (R41 P1-5): 显式事务 + super_admin/bypass 旁路，规避
+	// 降权后 autocommit GUC 不生效导致的 0 行静默（state-machine 失活）。
+	tag, err := r.execWithBypassTx(ctx,
 		`UPDATE session_aggregate_outbox
 		 SET status='done', completed_at=NOW(), updated_at=NOW()
 		 WHERE id=$1 AND status='claimed'`, id)
@@ -404,7 +406,7 @@ func (r *sessionAggregateOutboxReaper) markDone(ctx context.Context, id int64) {
 }
 
 func (r *sessionAggregateOutboxReaper) markDead(ctx context.Context, id int64, reason string) {
-	tag, err := r.db.Exec(ctx,
+	tag, err := r.execWithBypassTx(ctx,
 		`UPDATE session_aggregate_outbox
 		 SET status='dead', last_error=$2, updated_at=NOW()
 		 WHERE id=$1 AND status='claimed'`, id, reason)
@@ -443,7 +445,7 @@ func (r *sessionAggregateOutboxReaper) scheduleRetry(ctx context.Context, id int
 	// `($N || ' seconds')::interval` concatenation works. pgx rejects
 	// int args when the SQL casts the placeholder to text mid-statement
 	// (same fix as the claim SELECT in claimAndReplay).
-	tag, err := r.db.Exec(ctx,
+	tag, err := r.execWithBypassTx(ctx,
 		`UPDATE session_aggregate_outbox
 		 SET status='pending', attempts=$2, last_error=$3,
 		     next_retry_at=NOW() + ($4 || ' seconds')::interval,
@@ -625,4 +627,37 @@ func isUsablePool(db any) bool {
 		return !v.IsNil()
 	}
 	return true
+}
+
+// execWithBypassTx wraps a single UPDATE in a tx with super_admin + bypass_rls
+// GUCs set, then commits. RLS Phase 2 适配 (R41 P1-5): session_aggregate_outbox
+// policy 含 `current_role=super_admin OR bypass_rls=true` 分支，但 reaper 的
+// markDone/markDead/scheduleRetry 此前裸 autocommit UPDATE，在 NOSUPERUSER
+// owner 下会被 RLS 过滤成 0 行（state-machine 静默失活）。语义对齐
+// durable/rls.go execWithBypassTx；区别仅在 db 类型为 *pgxpool.Pool 而非
+// durable.Store。
+func (r *sessionAggregateOutboxReaper) execWithBypassTx(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	var zero pgconn.CommandTag
+	if !isUsablePool(r.db) {
+		return zero, fmt.Errorf("session_aggregate_outbox: nil pool")
+	}
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return zero, fmt.Errorf("begin bypass tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.current_role', 'super_admin', true)`); err != nil {
+		return zero, fmt.Errorf("set super_admin role: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.bypass_rls', 'true', true)`); err != nil {
+		return zero, fmt.Errorf("set bypass_rls: %w", err)
+	}
+	tag, err := tx.Exec(ctx, sql, args...)
+	if err != nil {
+		return zero, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return zero, fmt.Errorf("commit bypass tx: %w", err)
+	}
+	return tag, nil
 }

@@ -320,9 +320,11 @@ source（需扩 credential_probe_queue.source CHECK 枚举，随迁移做）；�
   个为 claude/deepseek/doubao/gemini/glm/gpt-5.x/kimi/minimax 等 chat/text 系列）。
 - 卫生发现：routing_policy 存在 **4 行物理重复**（ctid 互异，id=1/tenant=default
   内容全同）——id 无唯一约束。
-- 运营确认结论：**待运营答复**——本轮已备齐证据与建议 SQL（见下），因"移除会改变
-  featured 深探/路由行为"属运营决策，未擅自执行；答复后按建议动作落库即可闭环。
-- 建议动作（确认后执行，注意先去重）：
+- 运营确认结论（2026-09-18 D+1 复核收尾）：**否决 / 维持现状**。运营明确答复
+  不移除 gpt-image-2——featured_models 保持 26 模型不变，DB 未做任何改动；
+  §6.5-3 遗留项以此答复闭环。依据：图像模型仍有业务方需要 featured 路由，
+  滚动续期源问题由 §7.2 的结构性修复（停泊绑定探测免疫）承接，不靠本清理。
+- 备查 SQL（仅当未来运营改主意时使用，当前不执行）：
   `DELETE` 重复行后 `UPDATE routing_policy SET featured_models =
   array_remove(featured_models,'gpt-image-2')`。
 

@@ -207,8 +207,9 @@ var specs = []FieldSpec{
 		Note: "枚举各厂商不一致：DeepSeek low|high|max / GLM 7 档 / Grok none|low|medium|high / Ark minimal|low|medium|high。须按目标能力收窄"},
 	{Name: "reasoning", Kind: KindIRHandled, IRPath: "Reasoning",
 		Note: "OpenAI Responses {effort,summary,context,mode}；OpenRouter {effort,max_tokens,exclude,enabled}，其中 effort 与 max_tokens 互斥"},
-	{Name: "thinking", Kind: KindIRHandled, IRPath: "Thinking/Reasoning",
-		Note: "取值分歧：Anthropic enabled|adaptive|disabled / DeepSeek·GLM·Kimi enabled|disabled / Ark 多 auto / MiniMax 用 disabled|adaptive（无 enabled）"},
+	{Name: "thinking", Kind: KindTranslatable, IRPath: "Thinking/Reasoning",
+		Translate: translateThinking,
+		Note: "取值分歧：Anthropic enabled|adaptive|disabled / DeepSeek·GLM·Kimi enabled|disabled / Ark 多 auto / MiniMax 仅 adaptive|disabled（无 enabled；2026-09 起上游拒收 enabled，硬 400）"},
 
 	// P5 之前：enable_thinking / thinking_budget / thinking_token_budget
 	// 是 KindPortable（IR 尚未统一处理，须靠 Extensions 透传）。
