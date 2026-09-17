@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -95,6 +96,37 @@ func HandleCredentialSuccessRates(db *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
+// resetCredentialSuccessRateRows deletes stale failed request_logs_hot rows
+// for a (credential, model) pair inside a super-admin GUC transaction. The GUC
+// predicate in the DELETE only passes when app.current_role/app.current_tenant
+// were set in this transaction — on a bare pooled connection the predicate is
+// NULL and the delete silently matches nothing (R38 fixed shape).
+func resetCredentialSuccessRateRows(ctx context.Context, db txBeginner, credentialID int64, rawModel string) (int64, error) {
+	var deleted int64
+	err := withTx(ctx, db, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := setAllTenantGUC(ctx, tx); err != nil {
+			return err
+		}
+		ct, err := tx.Exec(ctx, `
+			DELETE FROM request_logs_hot
+			WHERE credential_id = $1
+			  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
+			  AND lower(COALESCE(request_status, '')) = 'failure'
+			  AND ts < NOW() - INTERVAL '10 minutes'
+			  AND (
+			    current_setting('app.current_role', true) = 'super_admin'
+			    OR tenant_id = current_setting('app.current_tenant', true)
+			  )
+		`, credentialID, rawModel)
+		if err != nil {
+			return err
+		}
+		deleted = ct.RowsAffected()
+		return nil
+	})
+	return deleted, err
+}
+
 // HandleResetCredentialSuccessRate manually resets success rate by deleting
 // old failed requests for a (credential, model) pair.
 // POST /api/admin/credential-success-rates/reset
@@ -126,29 +158,18 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 		// 可被删除以重置失败凭据的评估状态。
 		//
 		// Defense in depth (2026-09-01 audit): the SQL itself enforces a
-		// tenant scope using the per-session GUC set by apihub.withTenantTx
-		// (see apihub/pg_store.go). When app.current_tenant is unset the
-		// predicate requires app.current_role = 'super_admin'; otherwise the
-		// delete is a no-op. The handler still calls its existing auth check;
-		// this is a regression guard against a future caller wrapper that
-		// skips the auth boundary.
-		result, err := db.Exec(r.Context(), `
-		DELETE FROM request_logs_hot
-		WHERE credential_id = $1
-		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
-		  AND lower(COALESCE(request_status, '')) = 'failure'
-		  AND ts < NOW() - INTERVAL '10 minutes'
-		  AND (
-		    current_setting('app.current_role', true) = 'super_admin'
-		    OR tenant_id = current_setting('app.current_tenant', true)
-		  )
-	`, req.CredentialID, req.RawModel)
+		// tenant scope using per-session GUCs. R38 (2026-09-17): the GUC
+		// predicate is only reachable inside a transaction that sets them —
+		// running on a bare pooled connection left both current_setting calls
+		// NULL and silently turned this DELETE into a permanent no-op. The
+		// handler is admin-authenticated (wrapAdmin) so the delete runs in a
+		// super-admin GUC transaction; the tenant predicate stays as a guard
+		// against future wrapper regressions.
+		deleted, err := resetCredentialSuccessRateRows(r.Context(), db, req.CredentialID, req.RawModel)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		deleted := result.RowsAffected()
 
 		// Return new success rate
 		var newRate *float64
