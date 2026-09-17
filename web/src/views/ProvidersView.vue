@@ -8,9 +8,10 @@ import {
   getProviders, createProvider, updateProvider, toggleProvider,
   addCredential, deleteCredential, deleteProvider, getCatalog, getProviderCredentials,
   updateCredential, checkProvider, checkCredential, diagnoseProvider,
-  getBackgroundTasksStatus, probeURL, probeProviderURL,
+  getBackgroundTasksStatus, probeURL, probeProviderURL, refreshCredentialBalance,
   type Provider, type CatalogEntry, type ProviderCredential, type CredentialStatus,
   type BackgroundTasksStatus, type CredentialCheckResult, type ProbeURLResult,
+  type RefreshBalanceResponse,
 } from '../api'
 import {
   useProviderQualitySummary,
@@ -46,7 +47,7 @@ const {
   enrichProviders,
   sortProvidersByQuality,
 } = useProviderQualitySummary()
-const qualitySortKey = ref<QualitySortKey>('default')
+const qualitySortKey = ref<QualitySortKey>('usage')
 const qualitySortOptions = computed(() => [
   { value: 'default' as const, label: pm('filter.sortDefault') },
   { value: 'usage' as const, label: pm('filter.sortUsage') },
@@ -513,6 +514,50 @@ function statusBadgeClass(status: string): string {
   if (status === 'disabled' || status === 'quota_expired' || status === 'quarantine') return 'badge-red'
   if (status === 'cooling' || status === 'degraded') return 'badge-amber'
   return 'badge-gray'
+}
+
+// ── Migration 721 (2026-09-18): on-demand balance refresh + provenance ─────
+// The drawer's usage column shows a ⟳ button next to the balance input. The
+// response carries the fresh API reading which is patched into the local row
+// so the drawer re-renders without a full loadCredentials round-trip.
+const refreshingBalance = ref<Record<number, boolean>>({})
+const balanceRefreshError = ref<Record<number, string>>({})
+
+async function refreshBalance(p: Provider, c: ProviderCredential) {
+  if (refreshingBalance.value[c.id]) return
+  refreshingBalance.value = { ...refreshingBalance.value, [c.id]: true }
+  balanceRefreshError.value = { ...balanceRefreshError.value, [c.id]: '' }
+  try {
+    const r: RefreshBalanceResponse = await refreshCredentialBalance(p.id, c.id)
+    if (r.success && r.balance_usd != null) {
+      c.balance_usd = r.balance_usd
+      c.balance_source = 'api'
+      c.balance_last_checked_at = r.balance_checked_at ?? new Date().toISOString()
+      c.balance_error = null
+    } else {
+      // Probe failed: keep the previous balance (fail-open, mirrors the
+      // floor guard) and surface the error inline under the input.
+      c.balance_error = r.error ?? pm('credential.row.balanceRefreshFailed')
+      balanceRefreshError.value = { ...balanceRefreshError.value, [c.id]: c.balance_error ?? '' }
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : pm('credential.row.balanceRefreshFailed')
+    balanceRefreshError.value = { ...balanceRefreshError.value, [c.id]: msg }
+  } finally {
+    refreshingBalance.value = { ...refreshingBalance.value, [c.id]: false }
+  }
+}
+
+function balanceSourceText(c: ProviderCredential): string {
+  if (c.balance_source === 'manual') return pm('credential.row.balanceSourceManual')
+  if (c.balance_source === 'api') return pm('credential.row.balanceSourceApi')
+  return ''
+}
+
+function balanceCurrencySymbol(c: ProviderCredential): string {
+  const cur = (c.balance_currency ?? 'USD').toUpperCase()
+  if (cur === 'USD') return '$'
+  return cur + ' '
 }
 
 function healthBadgeClass(status?: string | null): string {
@@ -1321,7 +1366,32 @@ onUnmounted(() => {
                 </td>
                 <td>
                   <div>{{ c.total_requests }}{{ pm('credential.row.usageSeparator') }}{{ money(c.total_cost_usd) }}</div>
-                  <div class="muted">{{ pm('credential.row.balanceLabel') }} <input v-model.number="c.balance_usd" type="number" min="0" step="100" class="compact-input number" style="width:80px;display:inline-block" placeholder="—" /></div>
+                  <!-- migration 721: balance input + on-demand vendor probe.
+                       The ⟳ button hits POST .../refresh-balance (GET-only
+                       against the vendor, zero tokens) and patches the row
+                       in place. -->
+                  <div class="muted" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+                    <span>{{ pm('credential.row.balanceLabel') }}</span>
+                    <span style="position:relative;display:inline-flex;align-items:center">
+                      <span v-if="balanceCurrencySymbol(c) !== '$'" style="position:absolute;left:4px;font-size:10px;color:var(--muted);pointer-events:none">{{ balanceCurrencySymbol(c) }}</span>
+                      <input v-model.number="c.balance_usd" type="number" min="0" step="100" class="compact-input number" style="width:80px;display:inline-block" placeholder="—" />
+                    </span>
+                    <button
+                      class="btn btn-ghost btn-sm"
+                      style="padding:2px 6px"
+                      :disabled="refreshingBalance[c.id]"
+                      :title="pm('credential.row.balanceRefreshTooltip')"
+                      @click.stop="refreshBalance(manageProvider, c)"
+                    >{{ refreshingBalance[c.id] ? '⏳' : '⟳' }}</button>
+                  </div>
+                  <div v-if="c.balance_source" class="muted" :title="c.balance_source === 'manual' ? pm('credential.row.balanceSourceManual') : pm('credential.row.balanceSourceApi')">
+                    <template v-if="c.balance_source === 'manual'">✏️ {{ pm('credential.row.balanceSourceManual') }}</template>
+                    <template v-else>🛰 {{ pm('credential.row.balanceSourceApi') }}</template>
+                    <template v-if="c.balance_last_checked_at"> · {{ fmtTimeAgo(c.balance_last_checked_at) }}</template>
+                  </div>
+                  <div v-if="c.balance_error" class="muted health-error" style="color:var(--danger)">
+                    ⚠️ {{ c.balance_error }}
+                  </div>
                   <div v-if="c.quota_summary?.any_exhausted" class="badge badge-red">{{ pm('credential.row.quotaExhausted') }}</div>
                 </td>
                 <td>
