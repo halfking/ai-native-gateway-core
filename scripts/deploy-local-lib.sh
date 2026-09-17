@@ -432,6 +432,10 @@ dl_write_env() {
     # the actual listen port, which is safe for the 127.0.0.1-bound local
     # deployment and keeps the co-served web UI same-origin.
     dl_emit_env_line LLM_GATEWAY_CORS_ORIGINS "${LLM_GATEWAY_CORS_ORIGINS:-http://127.0.0.1:${port},http://localhost:${port}}"
+    # 2026-09-18：配合 PG max_connections=1000 落地（ALTER SYSTEM），storage
+    # full 模式 PG/Redis pool size 由 .env.local 提供；未设时走 config 默认
+    # 200。Honor 显式配置；只有非正值才清空（避免历史空值导致 pool=0）。
+    dl_emit_env_line LLM_GATEWAY_STORAGE_MAX_CONNECTIONS "${LLM_GATEWAY_STORAGE_MAX_CONNECTIONS:-}"
   } > "$file"
   chmod 0600 "$file"
 }

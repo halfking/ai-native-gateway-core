@@ -172,9 +172,16 @@ func TestReaper_ClaimAndReplay_Success_PinsLeaseAndGuards(t *testing.T) {
 
 	// 5. markDone UPDATE outside the claim tx — must carry
 	//    `AND status='claimed'` guard; RowsAffected=1 means guard passed.
+	//    RLS Phase 2 (R41 P1-5): wrapped in own tx with super_admin/bypass GUCs.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_role', 'super_admin', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec("SELECT set_config\\('app.bypass_rls', 'true', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectExec("UPDATE session_aggregate_outbox").
 		WithArgs(int64(42)).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
 
 	// Wire the aggregator onto the reaper.
 	r := newSessionAggregateOutboxReaperForTest(mock, noopUpdateAggregator{}, 0, 0, 0)
@@ -204,9 +211,16 @@ func TestReaper_MarkDoneGuardSkipsWhenRowAlreadyTerminal(t *testing.T) {
 		t.Fatalf("pgxmock.NewPool: %v", err)
 	}
 	t.Cleanup(func() { mock.Close() })
+	// RLS Phase 2 (R41 P1-5): wrapped in tx + super_admin/bypass GUCs.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_role', 'super_admin', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec("SELECT set_config\\('app.bypass_rls', 'true', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectExec("UPDATE session_aggregate_outbox").
 		WithArgs(int64(99)).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0)) // guard rejected
+	mock.ExpectCommit()
 	r := newSessionAggregateOutboxReaperForTest(mock, nil, 0, 0, 0)
 	// Must not panic, must not return an error (the Exec succeeded).
 	r.markDone(context.Background(), 99)
@@ -225,9 +239,16 @@ func TestReaper_MarkDeadGuardSkipsWhenRowAlreadyTerminal(t *testing.T) {
 		t.Fatalf("pgxmock.NewPool: %v", err)
 	}
 	t.Cleanup(func() { mock.Close() })
+	// RLS Phase 2 (R41 P1-5): wrapped in tx + super_admin/bypass GUCs.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_role', 'super_admin', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec("SELECT set_config\\('app.bypass_rls', 'true', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectExec("UPDATE session_aggregate_outbox").
 		WithArgs(int64(99), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectCommit()
 	r := newSessionAggregateOutboxReaperForTest(mock, nil, 0, 0, 0)
 	r.markDead(context.Background(), 99, "test reason")
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -245,9 +266,16 @@ func TestReaper_ScheduleRetryGuardSkipsWhenRowAlreadyTerminal(t *testing.T) {
 		t.Fatalf("pgxmock.NewPool: %v", err)
 	}
 	t.Cleanup(func() { mock.Close() })
+	// RLS Phase 2 (R41 P1-5): wrapped in tx + super_admin/bypass GUCs.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_role', 'super_admin', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec("SELECT set_config\\('app.bypass_rls', 'true', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectExec("UPDATE session_aggregate_outbox[\\s\\S]*\\(\\$4 \\|\\| ' seconds'\\)::interval").
 		WithArgs(int64(99), 2, "transient", "4").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectCommit()
 	r := newSessionAggregateOutboxReaperForTest(mock, nil, 0, 0, 0)
 	r.scheduleRetry(context.Background(), 99, 2, errors.New("transient"))
 	if err := mock.ExpectationsWereMet(); err != nil {

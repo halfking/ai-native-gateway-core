@@ -373,6 +373,13 @@ func (m *ApprovalManager) decide(ctx context.Context, approvalID, callerTenantID
 //   - TimeoutActionApprove: 自动批准，approved_by 设为 "system:timeout"
 //
 // 仅由后台 worker 调用，因此不上 RLS（worker 在 superadmin 上下文）。
+//
+// RLS Phase 2 适配 (R41 P1-6): approval_queue policy 含
+// `current_role=super_admin OR tenant_id=current_tenant` 分支。注释与原
+// 实现不符——此前裸 pool.Exec 实际未设任何 GUC，autocommit 下无 tenant 上下文
+// 走 NULLIF→'default' fallback，降权后非 default 租户的 pending 永不被超时
+// 终结。修法：包显式事务 + setSuperAdminGUC，与同包 beginSuperAdminTx
+// 风格一致（policy role 分支即满足）。
 func (m *ApprovalManager) MarkTimeout(ctx context.Context) (int, error) {
 	var sql string
 	switch m.timeoutAction {
@@ -397,9 +404,20 @@ func (m *ApprovalManager) MarkTimeout(ctx context.Context) (int, error) {
 	if m.timeoutAction != TimeoutActionApprove {
 		target = ApprovalTimeout
 	}
-	tag, err := m.pool.Exec(ctx, sql, target, ApprovalPending)
+	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("begin mark timeout tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := setSuperAdminGUC(ctx, tx); err != nil {
+		return 0, err
+	}
+	tag, err := tx.Exec(ctx, sql, target, ApprovalPending)
 	if err != nil {
 		return 0, fmt.Errorf("mark timeout: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit mark timeout: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
 }
