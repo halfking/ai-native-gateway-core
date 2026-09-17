@@ -61,7 +61,7 @@ func TestNoGoStyleCommentsInsideSQLRawStrings(t *testing.T) {
 
 // multiLineRawStrings scans a Go source for raw-string literals that span
 // more than one physical line. Returns (openLine, body) for each block.
-// Single-line raw strings (`` `…` `` on one line) are skipped because
+// Single-line raw strings (“ `…` “ on one line) are skipped because
 // they cannot contain Go-style //-comment lines anyway.
 func multiLineRawStrings(src string) []rawStringBlock {
 	var blocks []rawStringBlock
@@ -138,4 +138,30 @@ func readProviderFile(t *testing.T, fname string) string {
 		t.Fatalf("read %s: %v", fname, err)
 	}
 	return string(data)
+}
+
+// TestBrokenPairExcludeSQL_FollowsProbeMode pins the R36 A-3 fix: the
+// defect-(2) broken-pair filter must consult the ACTIVE probe system's
+// verdict table (v_node_probe_state_compat under the new stack, where
+// model_probe_state is frozen; model_probe_state under the legacy stack).
+func TestBrokenPairExcludeSQL_FollowsProbeMode(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_USE_NEW_PROBE_MODE", "true")
+	got := brokenPairExcludeSQL("mps", "c.id", "mo.raw_model_name")
+	for _, want := range []string{
+		"NOT EXISTS (",
+		"FROM v_node_probe_state_compat mps",
+		"mps.credential_id = c.id",
+		"mps.raw_model_name = mo.raw_model_name",
+		"mps.state = 'broken_confirmed'",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("brokenPairExcludeSQL missing %q under new mode:\n%s", want, got)
+		}
+	}
+
+	t.Setenv("LLM_GATEWAY_USE_NEW_PROBE_MODE", "false")
+	got = brokenPairExcludeSQL("mps", "c.id", "mo.raw_model_name")
+	if !strings.Contains(got, "FROM model_probe_state mps") {
+		t.Errorf("brokenPairExcludeSQL must keep model_probe_state under legacy mode:\n%s", got)
+	}
 }
