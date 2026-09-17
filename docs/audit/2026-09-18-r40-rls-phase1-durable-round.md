@@ -16,6 +16,7 @@
 | **P2** | **迁移编号撞号**：收尾 fetch 发现并行会话 507d78cff 已推 **721**（凭据余额元数据）——本轮开局 fetch 时 721 空闲，工作期间被占用 | 本轮 ENABLE 迁移 721 → **723** 全量重编（文件名×4 + runner.go/main.go/stats test/sequence script + 文档引用）；教训：编号核对必须在**提交前**重复而非仅开局一次 | git fetch 输出 + grep 残留清零 |
 | P3 | R39 §三#2 404 连续性口径偏差 | 择"修文档"：`modelNotServedRecheckInterval` 注释钉死 episode 语义 + `TestUnavailableBindingHorizon` 补 interleave 用例（404@attempt=3 仍升级） | bg/node_probe.go |
 | P3 | R39 §三#3 endpoint_build 粒度混流 | 新识别器 `isDecryptShapedProbeDetail`（`decrypt: %w` 包装前缀）+ `credentialSpecificDecryptFailure`（解密形 ∧ 熔断计数 <5）；updateBindingAvailability 签名 +第 7 参 errDetail，sync/queue/probe_service 三路抑制条件携带豁免；源钉桩 ×2 同步更新 + 新行为测试 | bg/node_probe_credential_decrypt_test.go |
+| P2 | 收尾 merge（ee58e3a8d，无冲突）后发现并行会话 **721 余额元数据迁移同样只落文件副本**：四处代码登记全缺，TestStartupFilesAreAllEmbedded 二度红 | R40 补齐其 721 五点登记（runner/main/stats parity/sequence script）+ 722/723 登记顺序归位；通道续跑应用 721 + 幂等重放 723，marker 齐 | §四 run6 |
 
 ## §二、RLS Phase 1 四项落地明细（设计 §五，"真库实跑后定稿"纪律全程践行）
 
@@ -28,7 +29,7 @@
 
 - 并行会话 b484efbac（net import "重复修复"）实为对其旧基线的修复，与 R39 P0 修复合并后 main.go 无实质差异——diff 亲核仅 720+docs+version。
 - 720 迁移体行为中性论证成立：重放前后 public 总 policy 数 199 不变；analysis_events 出现新旧两条 bypass policy 共存（`analysis_events_super_admin_bypass` 预存 + `super_admin_analysis_events` 720 新建），PERMISSIVE OR 语义下冗余无害。
-- 本机 PG 崩溃为环境事件非本轮 SQL 所致：通道首次运行重放历史积压未登记迁移（重 WAL），容器内 postmaster 崩溃自恢复（216MB WAL checkpoint 重放）；**通道可续跑设计经受住考验**——恢复后重跑 69 skip + 1 apply 干净收口。容器无内存限制、宿主 15.6GiB 余量充足。
+- 本机 PG 崩溃为环境事件非本轮 SQL 所致：通道首次运行重放历史积压未登记迁移（重 WAL），容器内 postmaster 崩溃自恢复（216MB WAL checkpoint 重放）；**通道可续跑设计经受住考验**——恢复后重跑 69 skip + 1 apply 干净收口。容器无内存限制、宿主 15.6GiB 余量充足（数据盘 95% 用量、余 111G）。轮内第二次 backend 崩溃（"crash of another server process"）同样自恢复；日志中 2026-09-13 亦有两次历史崩溃——本机 PG 实例预存不稳定债（Citus 守护进程在位），与迁移内容无关，已入 §五 遗留。
 - get_current_tenant() 函数体读 `app.current_tenant`（001 定义与活库一致）——census 守卫无误报面。
 
 ## §四、测试与验证（实跑输出）
@@ -53,6 +54,11 @@ TestRLSPolicyVocabularyLiveCensus（TEST_DB_URL=本机）  # PASS 0.1s
   durable 收敛验证               # durable_llm_task_events/durable_pending_outbox to_regclass 非空、
                                  # checkpoint_payload 列=1、三表 rls=true + policy 2/2/2
   durable 写路径冒烟             # BEGIN INSERT events → SELECT 1 行 → ROLLBACK
+merge 后续跑（ee58e3a8d）       # applying 721_credential_balance（并行会话迁移）+ 723 幂等重放
+                                 # → completed successfully；balance_source/balance_error 列=2
+                                 # marker 齐（721 撞号孤儿 marker 已清理）；72x 期间 PG 二次
+                                 # backend 崩溃自恢复一次（环境债，§三/§五）
+最终门禁                        # build/vet OK；bg 7.9s / durable / db 全绿
 ```
 
 ## §五、遗留登记

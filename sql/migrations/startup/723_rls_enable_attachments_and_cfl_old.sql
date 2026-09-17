@@ -1,4 +1,4 @@
--- 721 (R40 RLS Phase 1, 2026-09-18): Enable RLS on attachments and
+-- 723 (R40 RLS Phase 1, 2026-09-18): Enable RLS on attachments and
 -- candidate_failure_logs_columnar_old. Closes RLS design §五 Phase 1 item 3.
 --
 -- Context: both tables carry tenant_isolation policies in canonical

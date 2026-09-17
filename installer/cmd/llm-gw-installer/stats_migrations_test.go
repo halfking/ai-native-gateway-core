@@ -146,13 +146,17 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// Phase 1 item 1) — landed in embeddata only (f5328e13c), five-point
 		// sync completed in this round.
 		"720_rls_policy_vocabulary_unification.sql": rlsPolicyVocabularyUnificationMigration720,
-		// R40 (2026-09-18): RLS enable for attachments/cfl_columnar_old
-		// (design §五 Phase 1 item 3).
-		"723_rls_enable_attachments_and_cfl_old.sql": rlsEnableAttachmentsAndCflOldMigration723,
+		// 721 (507d78cff, parallel session) landed with file copies only;
+		// parity coverage added by R40 five-point completion.
+		"721_credential_balance_source_and_error.sql": credentialBalanceSourceAndErrorMigration721,
 		// R40 (2026-09-18): durable family schema convergence — repairs
 		// pre-final-516 databases missing events/pending tables and
 		// checkpoint_payload (evidence: local llm_gateway DB).
 		"722_durable_family_schema_convergence.sql": durableFamilySchemaConvergenceMigration722,
+		// R40 (2026-09-18): RLS enable for attachments/cfl_columnar_old
+		// (design §五 Phase 1 item 3; renumbered 721→723 after the balance
+		// metadata migration took 721 mid-round).
+		"723_rls_enable_attachments_and_cfl_old.sql": rlsEnableAttachmentsAndCflOldMigration723,
 	}
 
 	for name, embedded := range expected {
