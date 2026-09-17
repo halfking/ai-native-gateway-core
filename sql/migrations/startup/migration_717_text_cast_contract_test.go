@@ -6,23 +6,22 @@ import (
 	"testing"
 )
 
-// TestMigration717ShapePins pins the structure of the live-DB-rewritten 717
-// (origin/main, "corrected same day after live-DB audit" — adopted at the
-// R37 merge):
+// TestMigration717ShapePins pins the structure of migration 717 as of the
+// R37 SQL-focused round's live-DB-hardened v3 ("视图依赖捕获重建"):
 //
-//  1. NO customer_id clause — 574 already owns hot.customer_id text→bigint on
-//     every existing install and the baseline is born aligned; a `customer_id
-//     ~ regex` here is 42883 on bigint (the R36 Rev-1 bug, flagged by
-//     e0f94a799's commit message and re-derived by both parallel sessions).
-//  2. NO single whole-batch ALTER TABLE — PostgreSQL rejects ALTER COLUMN
-//     TYPE on ANY column a view depends on (transitively via pg_rewrite) with
-//     0A000, BEFORE comparing old/new types, so even a type-identical no-op
-//     dies when one statement touches a view-projected column (680's wrapper
-//     chain precedes 717 on every install). The rewrite uses per-column
-//     subtransactions with feature_not_supported handlers.
-//  3. Every ALTER is guarded by an information_schema data_type check, which
-//     makes the file a silent no-op on aligned (fresh-install) baselines.
-//  4. A post-batch report keeps residual drift visible.
+//  1. View dependency capture/rebuild: request_logs_hot columns are depended
+//     on by wrapper views (680 chain) and routing_analytics_source; a bare
+//     ALTER COLUMN TYPE on any view-projected column dies with 0A000 — even
+//     a type-identical no-op. The file must capture the live view bodies
+//     (pg_get_viewdef) BEFORE dropping them, and recreate from the captured
+//     bodies AFTER the alters.
+//  2. Per-column information_schema type guards: only drifted columns are
+//     altered, so on aligned (fresh-install) baselines the file is a no-op —
+//     a bare unguarded whole-batch ALTER is the R36 Rev-1/Rev-2 failure mode
+//     (42883 on bigint customer_id, flagged by e0f94a799's commit message).
+//  3. The customer_id regex clause may only run under a text-family guard
+//     and must read the column through ::text (bare `customer_id ~` is 42883
+//     on the bigint column 574 + the baseline already guarantee).
 func TestMigration717ShapePins(t *testing.T) {
 	body, err := os.ReadFile("717_request_logs_hot_column_alignment.sql")
 	if err != nil {
@@ -31,13 +30,12 @@ func TestMigration717ShapePins(t *testing.T) {
 	sql := string(body)
 
 	mustContain := []string{
-		"BEGIN;",                         // atomic batch
-		"feature_not_supported",          // per-column 0A000 resilience
-		"information_schema.columns",     // per-column type guards
-		"data_type = 'text'",             // drifted-state guard (varchar/jsonb/boolean sources)
-		"data_type = 'double precision'", // content_safety_score source (live fact)
-		"data_type = 'ARRAY'",            // dlp_violations text[] source (live fact)
-		"columns still off-target",       // post-batch report keeps drift visible
+		"pg_get_viewdef", // capture live view bodies before dropping
+		"DROP VIEW IF EXISTS public.request_logs_with_current_month CASCADE",
+		"DROP VIEW IF EXISTS public.routing_analytics_source CASCADE",
+		"CREATE VIEW public.request_logs_with_current_month AS ' || v_final", // rebuild from captured body
+		"information_schema.columns",                                         // per-column drifted-only guards
+		"customer_id::text ~ '^[0-9]+$'",                                     // bigint-safe regex operand
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(sql, want) {
@@ -45,24 +43,29 @@ func TestMigration717ShapePins(t *testing.T) {
 		}
 	}
 
-	// The withdrawn clause must stay withdrawn: a bare text-operator on
-	// customer_id is 42883 on the bigint column that 574 + the baseline
-	// already guarantee; re-adding it resurrects the fresh-install blocker.
-	// (SQL shapes only — the file header documents the withdrawn Rev-1 form
-	// and legitimately contains the literal.)
+	// Bare text-operator on customer_id is 42883 on bigint (the original
+	// fresh-install blocker); the guarded clause must keep the ::text operand.
 	for _, banned := range []string{
 		"WHEN customer_id ~",
 		"THEN customer_id::bigint",
-		"ALTER COLUMN customer_id TYPE",
 	} {
 		if strings.Contains(sql, banned) {
-			t.Errorf("717 resurrected the withdrawn customer_id clause: %q — 574 owns the text→bigint transition; the clause is 42883 on bigint", banned)
+			t.Errorf("717 regressed to the bare customer_id operator: %q — 42883 on the bigint column 574 + the baseline guarantee", banned)
 		}
 	}
-	// Per-column subtransactions are load-bearing: one view-dependent 0A000
-	// must not abort its siblings (the original single-statement batch died
-	// on the first view-projected column).
-	if got := strings.Count(sql, "EXCEPTION WHEN feature_not_supported"); got < 7 {
-		t.Errorf("717 has %d per-column 0A000 handlers, want ≥7 (one per guarded column)", got)
+
+	// Every guarded column must be wrapped in a type check so aligned
+	// installs skip (count the guard queries: ≥10 guarded columns).
+	if got := strings.Count(sql, "SELECT data_type INTO v_type"); got < 10 {
+		t.Errorf("717 has %d per-column type guards, want ≥10 (agent_name/agent_type/api_key_fingerprint/task_id/customer_id/content_safety_score/dlp_violations/protocol_conversion/ir_extensions/sanitizer_mutations)", got)
+	}
+
+	// Known residue, kept visible: the jsonb pre-guard char class [0-9tfn-]
+	// admits words like "not-json" and then fails the ::jsonb parse it guards
+	// (22P02) — tolerated by the live-validated v3 because the writer only
+	// emits valid JSON; registered in the R37 round doc §四 with the patch
+	// shape (explicit true|false|null alternation) if it ever bites.
+	if !strings.Contains(sql, "0-9tfn-") {
+		t.Errorf("717 jsonb pre-guard changed: update the R37 round doc §四 residue note before removing this check")
 	}
 }

@@ -424,6 +424,12 @@ files=(
   # TestBaselineRequestLogsHotColumnTypesMatchMother 守卫。sequence 管存量
   # 库升级（hot 仅 8h 数据，ALTER 重写秒级）。
   "$ROOT_DIR/sql/migrations/startup/717_request_logs_hot_column_alignment.sql"
+  # 2026-09-17 R37 SQL 专项审计（新迁移登记）：718 冗余索引清理 + TTL/claim
+  # 缺失索引补齐（42 个函数等价冗余索引 drop，全部亲核无约束支撑、无 ensure
+  # 创建者；request_envelope/sticky_sessions 补 expires_at 索引、
+  # session_aggregate_outbox 补 claimable partial 索引）。非分区表 CONCURRENTLY；
+  # 父表 idx_request_logs_ts_desc 级联清 attached 叶子副本。生产低峰执行。
+  "$ROOT_DIR/sql/migrations/startup/718_drop_redundant_indexes_and_add_ttl_indexes.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

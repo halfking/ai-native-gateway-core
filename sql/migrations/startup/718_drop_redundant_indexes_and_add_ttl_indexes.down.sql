@@ -1,0 +1,11 @@
+-- 718 down: 文档化 no-op。
+--
+-- 718 drop 的是函数等价的冗余索引（同列约束/唯一索引、同构对、方向影蔽、
+-- partial 影蔽均保留更优一侧），重建它们只会恢复写放大，没有任何语义收益；
+-- 新增的三个 TTL/claim 索引（request_envelope_expires_at_idx、
+-- sticky_sessions_expires_at_idx、idx_session_aggregate_outbox_claimable）
+-- 如确需回退，请显式：
+--   DROP INDEX IF EXISTS request_envelope_expires_at_idx;
+--   DROP INDEX IF EXISTS sticky_sessions_expires_at_idx;
+--   DROP INDEX IF EXISTS idx_session_aggregate_outbox_claimable;
+SELECT 1;  -- no-op

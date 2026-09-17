@@ -3728,6 +3728,9 @@ func main() {
 		modelTier = bg.NewModelTier(dbConn.Pool(), bg.ModelTierConfig{RefreshInterval: 10 * time.Minute})
 		modelTier.Start(context.Background())
 		bg.SetGlobalModelTier(modelTier)
+		// R37 对账：BrokenProbeReviver 的新模式 no-op 门控在 worker 内部
+		// （bg/broken_probe_reviver.go newProbeModeEnabled，R36 补位轮实现），
+		// main 侧不再二次门控。
 		brokenProbeReviver = bg.NewBrokenProbeReviver(dbConn.Pool(), 0, 0)
 		brokenProbeReviver.Start(context.Background())
 		slog.Info("CHECKPOINT: brokenProbeReviver started")
