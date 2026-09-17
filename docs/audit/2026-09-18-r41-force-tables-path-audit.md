@@ -71,7 +71,7 @@
 | knowledge_lineages | A | 0 | **tool_usage_stats_old** | **B** | 0 |
 | knowledge_metadata | A | 0（9 行 tenant_id **全 NULL**，数据质量异常） | knowledge_relations | A | 0 |
 | knowledge_versions | A | 0 | memora_session_summaries_orphan | A | 0 |
-| memory | A | **18** (acc 6/console 12；default 10032) | memory（其余） | — | — |
+| memory | A | **18** (acc 6/console 12；default 10032) | 〈A 类 54 张+本仓 legacy 1 张至此列毕〉 | | |
 
 A 类=外部产品表（本仓+ensure 链均零引用，裸子串 grep/DML 正则/前缀拼接三重防漏核验）；B 类=本仓 legacy（tool_usage_stats_old：本仓声明面建表、迁移 335 SELECT 迁数后 DROP，fresh install 先建后删，0 行 0 引用，Phase 4 声明面清理时一并处理）。
 
