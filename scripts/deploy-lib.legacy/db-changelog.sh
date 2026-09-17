@@ -15,6 +15,15 @@ _deploy_verify_ssh() {
 }
 
 _db_changelog_repo_root() {
+  # Override #1（与共享 SSOT db-changelog 对齐）：调用方显式导出的
+  # DB_CHANGELOG_REPO_ROOT 优先。deploy-local.sh / deploy-seamless.sh
+  # 都会把它钉到仓库根；缺省回退 legacy 相对布局（lib 目录/../..），
+  # 该路径只在"lib 与仓库同树"时才正确，SSOT 分离部署下会解析到
+  # 共享库目录，迁移 ledger 的 canonical 文件 glob 必然为空而拒绝部署。
+  if [[ -n "${DB_CHANGELOG_REPO_ROOT:-}" && -d "${DB_CHANGELOG_REPO_ROOT}/sql/migrations" ]]; then
+    printf '%s\n' "$DB_CHANGELOG_REPO_ROOT"
+    return 0
+  fi
   cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd
 }
 
