@@ -15,7 +15,12 @@ import (
 // 2026-07-18: take requestID so each removal logs are correlated to
 // the gateway request. Caller must pass the actual value; no caller
 // is currently wired (see executor_chat.go:legacy_no_ir note).
-func applyInlineValidation(bodyBytes []byte, requestID string) []byte {
+//
+// 2026-09-18 (MiniMax thinking 事故): take targetCatalogCode so the
+// serializer's paramreg dialect decision (KindTranslatable / KindDialectOnly,
+// e.g. thinking enabled→adaptive for MiniMax) resolves to the real provider
+// dialect instead of falling back to generic openai_chat.
+func applyInlineValidation(bodyBytes []byte, requestID string, targetCatalogCode string) []byte {
 	// Debug level: this runs on every request, so Info-level would flood
 	// production logs. Operators can opt-in via LLM_GATEWAY_DEBUG_INLINE_VALIDATION=1
 	// by switching back to slog.Info in a per-deploy override if needed.
@@ -33,6 +38,7 @@ func applyInlineValidation(bodyBytes []byte, requestID string) []byte {
 
 	// Validate and fix
 	irReq = ir.ValidateAndFixRequest(irReq, requestID)
+	irReq.TargetProvider = targetCatalogCode
 
 	// Step 4 audit fix (2026-07-28): per-request scope so anomaly dedup is
 	// bounded to this request rather than the process-global map.
