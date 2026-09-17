@@ -214,6 +214,12 @@ export default {
       slotUnlimited: 'unlimited (0 = no cap)',
       usageSeparator: ' calls · ',
       balanceLabel: 'Balance',
+      // migration 721 (2026-09-18): balance provenance + on-demand refresh.
+      balanceSourceApi: 'API probe',
+      balanceSourceManual: 'Manual entry · auto probes skipped for 24h',
+      balanceRefreshTooltip: 'Query the vendor balance API now (GET, zero tokens)',
+      balanceRefreshFailed: 'Balance probe failed',
+      balanceUnsupported: 'Vendor exposes no balance API (plan vendors report via plan quota fields)',
       quotaExhausted: 'Quota exhausted',
       tagsPlaceholder: 'tag1, tag2',
       notesPlaceholder: 'notes',
