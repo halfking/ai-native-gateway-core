@@ -15,3 +15,43 @@ func translateRandomSeed(value json.RawMessage, src, dst Dialect) (string, json.
 	// 很可能已经有 seed 了。还原器只写目标不存在的键，不会覆盖 IR 的输出。
 	return "seed", value, true
 }
+
+// translateThinking 在目标方言不允许的 thinking.type 值时改写为最近合法值。
+//
+// 2026-09-18 事故根因（MiniMax hzx-2 / minimax-prod-v2 强启即降级）：
+//
+//	MiniMax 上游自 2026-09 起将 thinking.type 收窄为 adaptive | disabled，
+//	并对 enabled 硬报 400："invalid params, invalid thinking.type: \"enabled\"
+//	(allowed: adaptive, disabled) (2013)"。
+//
+// 网关 IR（parse_openai）不识别 thinking，因此客户端的 Anthropic 风格
+// thinking{type:enabled} 落到 req.Extensions。restoreExtensions 按
+// KindIRHandled 决策返回 ActionRestore，把客户端值原样塞进 MiniMax-bound
+// body → upstream 400 → credstate 开 breaker → 每次强制启用后立刻又被
+// 同一个坏 body 打回。
+//
+// 修复：dst==MiniMax 时把 enabled → adaptive（最接近的合法值，
+// 保留客户端的"想要推理"语义）；其它方言原样透传（包括 DeepSeek/GLM/Kimi
+// 仍允许 enabled；Anthropic 仍接受 enabled|adaptive|disabled）。
+//
+// 后续如果某个方言改 contract 再加白名单，在此函数追加分支即可。
+func translateThinking(value json.RawMessage, src, dst Dialect) (string, json.RawMessage, bool) {
+	if dst != DialectMiniMax {
+		return "thinking", value, true
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(value, &obj); err != nil {
+		// 非对象（罕见；某些客户端会传字符串或其它标量）。
+		// 原样写回 — 上游再校验，比网关主动猜更安全。
+		return "thinking", value, true
+	}
+	if t, _ := obj["type"].(string); t == "enabled" {
+		obj["type"] = "adaptive"
+		out, err := json.Marshal(obj)
+		if err != nil {
+			return "thinking", value, true
+		}
+		return "thinking", out, true
+	}
+	return "thinking", value, true
+}

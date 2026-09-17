@@ -1,6 +1,7 @@
 package paramreg
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
@@ -172,6 +173,63 @@ func TestDecide_TranslateRandomSeed(t *testing.T) {
 	}
 }
 
+// TestDecide_TranslateThinking_EnabledToAdaptive 验证 2026-09-18 MiniMax
+// hzx-2 / minimax-prod-v2 强启即降级事故的修复：
+//
+//	MiniMax 上游自 2026-09 起将 thinking.type 收窄为 adaptive | disabled，
+//	对 enabled 硬 400。客户端 Anthropic 风格 thinking{type:enabled} 落进
+//	req.Extensions → restoreExtensions 原样回写 → MiniMax 拒收。
+// 	→dst==MiniMax 必须把 enabled 翻译为 adaptive（最接近的合法值），
+//	  其它方言（Anthropic / DeepSeek / GLM / Kimi / Ark / OpenAI Chat）
+//	  原样透传。
+func TestDecide_TranslateThinking_EnabledToAdaptive(t *testing.T) {
+	enabledVal := json.RawMessage(`{"type":"enabled","budget_tokens":8192}`)
+
+	// 1. MiniMax 目标：enabled → adaptive，键名保持 thinking，budget_tokens 保留
+	key, out, action, _ := Apply("thinking", enabledVal, DialectOpenAIChat, DialectMiniMax)
+	if action != ActionTranslate {
+		t.Errorf("→minimax action=%s, want translate", action)
+	}
+	if key != "thinking" {
+		t.Errorf("→minimax key=%q, want thinking", key)
+	}
+	if !bytes.Contains(out, []byte(`"type":"adaptive"`)) {
+		t.Errorf("→minimax out=%s, must contain type:adaptive", out)
+	}
+	if bytes.Contains(out, []byte(`"type":"enabled"`)) {
+		t.Errorf("→minimax out=%s, must NOT contain type:enabled", out)
+	}
+	if !bytes.Contains(out, []byte(`"budget_tokens":8192`)) {
+		t.Errorf("→minimax out=%s, must preserve budget_tokens:8192", out)
+	}
+
+	// 2. 客户端已发 adaptive：保持不变
+	adaptiveVal := json.RawMessage(`{"type":"adaptive"}`)
+	key, out, action, _ = Apply("thinking", adaptiveVal, DialectOpenAIChat, DialectMiniMax)
+	if action != ActionTranslate || key != "thinking" || string(out) != `{"type":"adaptive"}` {
+		t.Errorf("→minimax (already adaptive) key=%q action=%s val=%s, want thinking/translate/{\"type\":\"adaptive\"}", key, action, out)
+	}
+
+	// 3. disabled：保持不变
+	disabledVal := json.RawMessage(`{"type":"disabled"}`)
+	key, out, action, _ = Apply("thinking", disabledVal, DialectOpenAIChat, DialectMiniMax)
+	if action != ActionTranslate || key != "thinking" || string(out) != `{"type":"disabled"}` {
+		t.Errorf("→minimax (disabled) key=%q action=%s val=%s, want passthrough", key, action, out)
+	}
+
+	// 4. 非 MiniMax 目标（DeepSeek）：enabled 原样透传
+	key, out, action, _ = Apply("thinking", enabledVal, DialectOpenAIChat, DialectDeepSeek)
+	if action != ActionTranslate || key != "thinking" || string(out) != string(enabledVal) {
+		t.Errorf("→deepseek key=%q action=%s val=%s, want passthrough（DeepSeek 仍接受 enabled）", key, action, out)
+	}
+
+	// 5. Anthropic：enabled 原样透传
+	key, out, action, _ = Apply("thinking", enabledVal, DialectOpenAIChat, DialectAnthropic)
+	if action != ActionTranslate || key != "thinking" || string(out) != string(enabledVal) {
+		t.Errorf("→anthropic key=%q action=%s val=%s, want passthrough", key, action, out)
+	}
+}
+
 // TestDialectInheritance 验证 OpenAI 兼容厂商能认识 OpenAI Chat 标准字段。
 func TestDialectInheritance(t *testing.T) {
 	if !IsOpenAIShaped(DialectDeepSeek) {
@@ -258,10 +316,16 @@ func TestKnownFieldsForDialect(t *testing.T) {
 // TestIRHandledFields 验证 IR 已处理字段集合的正确性。
 func TestIRHandledFields(t *testing.T) {
 	f := IRHandledFields()
-	for _, key := range []string{"model", "messages", "temperature", "max_tokens", "reasoning_effort", "thinking"} {
+	// 2026-09-18 修复：thinking 改 KindTranslatable（dst==MiniMax 时
+	// enabled → adaptive），故不再列入 IRHandledFields。其余 IR 真正
+	// parse+serialize 的字段仍在此集合里。
+	for _, key := range []string{"model", "messages", "temperature", "max_tokens", "reasoning_effort"} {
 		if !f[key] {
 			t.Errorf("IRHandledFields 缺少 %q", key)
 		}
+	}
+	if f["thinking"] {
+		t.Error("thinking 应已升为 KindTranslatable，不该留在 IRHandledFields")
 	}
 	// 这两个是 IR 零处理的，绝不能标成 IR 已处理，否则重演静默丢失事故。
 	for _, key := range []string{"stream_options", "metadata"} {
