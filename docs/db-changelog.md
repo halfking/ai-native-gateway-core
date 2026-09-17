@@ -581,3 +581,17 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 |-----------|------|---------|--------|
 | 719 | `719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql` | `9c7ae3eb253fb95f2ea04e9b898c91c8f26b0e9065ba833602891165739e18bc` | applied+verified |
 
+## 2026-09-17T21:16:36Z — deploy 245 build_seq 2131 (62853d7b)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 720 | `720_rls_policy_vocabulary_unification.sql` | `661f8ee9c37d4490b7f640c9dd769a9f397fc556dc3c09bdbeacfc0a347e6c13` | applied+verified |
+| 722 | `722_durable_family_schema_convergence.sql` | `6f5e31daac9899640d1d3157965aa7430c1f7f8beaaccc5e42dc5b7c1c89f3ff` | applied+verified |
+| 723 | `723_rls_enable_attachments_and_cfl_old.sql` | `c73ad189f5e8ce9b4e7d516bec72ae3149e5bb2fd386953960e9e462f95de646` | applied+verified |
+
+## 2026-09-17T21:31:12Z — deploy 245 build_seq 2133 (ffbc6dbc)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 721 | `721_credential_balance_source_and_error.sql` | `466e51f0a7357dc47c53095cc722273d0d857a5b9a4edede6b85ba72a5415945` | applied+verified |
+
