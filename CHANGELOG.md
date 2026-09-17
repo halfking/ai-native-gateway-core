@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **无节点保活重试审计修正 (2026-09-17)**：上轮 `67f78247c` 交付复核。核心 SurvivalCoordinator（白天 100 / 20:00 后 600 次、固定 30s、5h 上限、断开即停、`: thinking:` 回流）逐行复核成立、零改动；修正三处交付瑕疵——① Python mock 客户端 think 解析 bug（legacy 消息形态解析不出 reason 导致事件整条丢弃，改为按 `: thinking:` 前缀判定 + 通用 `第 N 次` 提取，兼容 survival/legacy 双线上形态）；② Go E2E 断开断言余量 2→1（循环顶+sleep 双重 ctx 检查下的结构最小值）并清理死字段/失实注释；③ 脚本删除未实现参数与失实 docstring，新增零候选终态帧识别（精确诊断 survival-OFF 下的立即错误帧行为）。验证：streaming 全套件 5 包绿、E2E ×3 稳定性绿、config 默认值钉桩 7 用例绿、live :8782 双窗口实测（瞬断窗口 A/B PASS；零候选窗口输出精确诊断）。审计文档：`docs/changelogs/2026-09-17-no-nodes-survival-audit.md`。
 - **Balance Floor Guard 三轮自审修正 (2026-09-16)**：A-C1 修复不完整——货币 refresh 路径 `refreshBalance` 直接读 `keyring` 未持读锁（前轮只覆盖了 `decryptKey`），已补 RLock 快照；`SetKeyring` 竞争测试扩展到同时竞争两条读路径。
 - **Balance Floor Guard 二轮自审修正 (2026-09-16)**：`getJSON` 请求构造移出重试循环（构造错误此前会绕过重试分类被当传输错误白烧 2 次重试 +1.5s/凭据/周期）；`probed=0` 的空 sweep 不再输出汇总日志（无套餐厂商部署上每 5 分钟一条空行）。集成验证 harness 见 `bg/balance_floor_guard_integration_test.go`（integration tag，DSN 走 env），实测 200 凭据×100ms 并发(10)=2.09s vs 串行(1)=33.1s。
 
@@ -10,6 +11,7 @@
 - **Balance Floor Guard 审计修复 (2026-09-16)**：A-C2 `Start()` 重入守卫 + D-L1 `Stop()` 等待 worker 退出（10s 上限，防在途 sweep 拖住进程下线）；A-C1 `SetKeyring`/`decryptKey` 以 RWMutex 保护；B-E1 逃生门默认从 24h 收紧为 2h（`LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS` 语义不变，0=关闭）；E-B1 套餐探测改有界 worker pool（新 env `LLM_GATEWAY_FLOOR_PLAN_CONCURRENCY`，默认 10，钳制 1..100）；F-L1 每周期输出 `plan sweep completed` 汇总日志（probed/success/failed/pulled/restored/duration）；F-L2 探测失败日志 Debug→Warn（每凭据 15 分钟限 1 条）；G-O1 控制面 GET 增加重试（至多 2 次，仅网络错误与 5xx，退避 0.5s/1s）。
 
 ### Added
+- **无节点保活 E2E + mock 客户端 (2026-09-17, 67f78247c)**：`domains/streaming/survival_no_nodes_e2e_test.go` —— httptest 真实 HTTP 链路驱动 ChatHandler+SurvivalCoordinator，四需求钉桩（连接保持/think 回流含底层 kind/预算恰好 MaxRetries+1 次后 `retry_limit_exceeded` 终态/断开后执行调用增量 ≤1）；`tests/mock-system-test/scenario_no_nodes_survival.py` —— live 网关冒烟驱动（think 节奏测量、断开、survival-OFF 零候选诊断）。
 - **PostgreSQL Instance Sync Tool (2026-09-08)**: 新增实例 inventory、确定性 plan、结构影响矩阵、校验备份、缺库 bootstrap 和 insert-only 数据合并。
   - **Safety**: manifest 绑定生成时间、两端 inventory 和 policy SHA-256；输出 hash；修复 allowlist hash 运行时解析；`llm_gateway` 永久禁止数据同步；数据写入采用有界 statement/lock timeout
   - **Data merge**: 显式列 `INSERT ... ON CONFLICT DO NOTHING`、写入契约与无键表摘要门禁、序列仅向上推进
