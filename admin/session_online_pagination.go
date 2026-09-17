@@ -40,12 +40,6 @@ type onlineSessionCursor struct {
 	SessionID string
 }
 
-// ParseCursor 解析 base64 游标为时间戳并验证 HMAC 签名。
-func ParseCursor(cursor string) (time.Time, error) {
-	parsed, err := parseOnlineSessionCursor(cursor)
-	return parsed.UpdatedAt, err
-}
-
 func parseOnlineSessionCursor(cursor string) (onlineSessionCursor, error) {
 	if cursor == "" {
 		return onlineSessionCursor{}, nil
@@ -93,12 +87,9 @@ func parseOnlineSessionCursor(cursor string) (onlineSessionCursor, error) {
 	return onlineSessionCursor{UpdatedAt: ts, SessionID: sessionID}, nil
 }
 
-// EncodeCursor 将时间戳编码为 base64 游标（带 HMAC 签名）。
-// 格式：base64(timestamp|hmac)。
-func EncodeCursor(ts time.Time) (string, error) {
-	return encodeOnlineSessionCursor(ts, "")
-}
-
+// encodeOnlineSessionCursor 将时间戳（可选会话 ID）编码为带 HMAC 签名的
+// base64 游标。格式：base64(payload|hmac)，payload 为 timestamp 或
+// timestamp|sessionID。
 func encodeOnlineSessionCursor(ts time.Time, sessionID string) (string, error) {
 	if ts.IsZero() {
 		return "", nil
@@ -136,29 +127,6 @@ func NormalizePaginationParams(params PaginationParams) PaginationParams {
 		params.Limit = 100
 	}
 	return params
-}
-
-// BuildPaginationResponse 构建分页响应元数据。
-// items: 本次返回的条目数
-// lastTS: 本次最后一条的时间戳（用于生成 next_cursor）
-// limit: 请求的 limit
-func BuildPaginationResponse(items int, lastTS time.Time, limit int) (PaginationResponse, error) {
-	if items < limit {
-		// 返回条目少于 limit，说明无更多数据
-		return PaginationResponse{HasMore: false}, nil
-	}
-	if lastTS.IsZero() {
-		return PaginationResponse{}, fmt.Errorf("cannot build cursor without a last timestamp")
-	}
-	nextCursor, err := EncodeCursor(lastTS)
-	if err != nil {
-		return PaginationResponse{}, err
-	}
-	// 有更多数据，生成 next_cursor
-	return PaginationResponse{
-		NextCursor: nextCursor,
-		HasMore:    true,
-	}, nil
 }
 
 func buildOnlineSessionPaginationResponse(hasMore bool, lastTS time.Time, lastSessionID string) (PaginationResponse, error) {

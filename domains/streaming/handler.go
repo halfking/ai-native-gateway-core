@@ -67,8 +67,6 @@ import (
 
 const maxBodySize = 128 << 20 // 128MB - increased for large context models like claude-opus-4-8 (1M context)
 
-func MaxBodySize() int { return maxBodySize }
-
 type preStreamKeepalive struct {
 	session *StreamSession
 }
@@ -7151,80 +7149,6 @@ func (h *ChatHandler) serveFallback(w http.ResponseWriter, r *http.Request) {
 			"code":    "executor_unavailable",
 		},
 	})
-}
-
-// ReplaceModelInRequestBody replaces the "model" field in a JSON body.
-func ReplaceModelInRequestBody(body []byte, newModel string) []byte {
-	quotedOld := bytes.Contains(body, []byte(`"model"`))
-	if !quotedOld {
-		return body
-	}
-	pattern := []byte(`"model"`)
-	idx := bytes.Index(body, pattern)
-	if idx < 0 {
-		return body
-	}
-	after := body[idx+len(pattern):]
-	colonIdx := bytes.IndexByte(after, ':')
-	if colonIdx < 0 {
-		return body
-	}
-	rest := after[colonIdx+1:]
-	rest = bytes.TrimLeft(rest, " \t\n\r")
-	if len(rest) == 0 || rest[0] != '"' {
-		return body
-	}
-	endIdx := bytes.IndexByte(rest[1:], '"')
-	if endIdx < 0 {
-		return body
-	}
-	oldValue := rest[1 : endIdx+1]
-	if string(oldValue) == newModel {
-		return body
-	}
-	var buf bytes.Buffer
-	prefix := body[:idx+len(pattern)+colonIdx+1]
-	suffix := rest[endIdx+2:]
-	buf.Write(prefix)
-	buf.WriteString(" \"")
-	buf.WriteString(newModel)
-	buf.WriteByte('"')
-	buf.Write(suffix)
-	return buf.Bytes()
-}
-
-// ReplaceModelInResponseBody replaces whatever model is in the response with clientModel.
-func ReplaceModelInResponseBody(body []byte, clientModel string) []byte {
-	pattern := []byte(`"model"`)
-	idx := bytes.Index(body, pattern)
-	if idx < 0 {
-		return body
-	}
-	after := body[idx+len(pattern):]
-	colonIdx := bytes.IndexByte(after, ':')
-	if colonIdx < 0 {
-		return body
-	}
-	rest := after[colonIdx+1:]
-	rest = bytes.TrimLeft(rest, " \t\n\r")
-	if len(rest) < 2 || rest[0] != '"' {
-		return body
-	}
-	endIdx := bytes.IndexByte(rest[1:], '"')
-	if endIdx < 0 {
-		return body
-	}
-	oldValue := rest[1 : endIdx+1]
-	if string(oldValue) == clientModel {
-		return body
-	}
-	var buf bytes.Buffer
-	prefix := body[:idx+len(pattern)+colonIdx+1]
-	suffix := rest[endIdx+2:]
-	buf.Write(prefix)
-	buf.WriteString(`"` + clientModel + `"`)
-	buf.Write(suffix)
-	return buf.Bytes()
 }
 
 func requestHasTools(body []byte) bool {

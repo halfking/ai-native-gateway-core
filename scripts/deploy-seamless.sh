@@ -754,7 +754,7 @@ do_deploy() {
   # （预编译入口已就位时整段构建跳过——tmpbin 非空即表示带外产物就绪。）
   if [[ -s "$tmpbin" ]]; then
     : # prebuilt binary supplied via LLM_GATEWAY_PREBUILT_BINARY
-  elif ! CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
+  elif ! CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags="-s -w" \
     -o "$tmpbin" ./cmd/gateway; then
     command -v docker >/dev/null 2>&1 || {
       err "CGO=0 构建失败且 docker 不可用，无法回退容器 CGO 构建; refusing to continue with stale binary"
@@ -793,7 +793,7 @@ do_deploy() {
         -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH=amd64 \
         -e GOCACHE=/tmp/go-build-cache -e GOPATH=/tmp/go-path \
         "$build_image" \
-        sh -c 'apk add --no-cache gcc musl-dev >/dev/null && go build -trimpath -ldflags="-s -w -extldflags -static" -o /src/.build-local/seamless-binary.'"$$"' ./cmd/gateway && chown "$HOST_UID:$HOST_GID" /src/.build-local/seamless-binary.'"$$") \
+        sh -c 'apk add --no-cache gcc musl-dev >/dev/null && go build -trimpath -buildvcs=false -ldflags="-s -w -extldflags -static" -o /src/.build-local/seamless-binary.'"$$"' ./cmd/gateway && chown "$HOST_UID:$HOST_GID" /src/.build-local/seamless-binary.'"$$") \
       || { err "backend CGO container build failed (GOOS=linux GOARCH=amd64); refusing to continue with stale binary"; exit 1; }
     if [[ ! -s "$cgo_out" ]]; then
       err "CGO container build produced no output at $cgo_out (docker run returned 0 but file is missing or empty)"

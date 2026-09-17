@@ -892,8 +892,3 @@ func randomHexSC(n int) string {
 	}
 	return string(b)
 }
-
-// EnsureSystemAPIKeyFromEnv reads the system API key from env var (no DB interaction).
-func EnsureSystemAPIKeyFromEnv() string {
-	return os.Getenv("LLM_GATEWAY_SELF_CHECK_API_KEY")
-}

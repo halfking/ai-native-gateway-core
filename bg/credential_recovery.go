@@ -16,6 +16,8 @@ import (
 	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability (2026-08-23 hzx-2 audit)
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"github.com/kaixuan/llm-gateway-go/internal/probemode"
 )
 
 // credentialRecoveryDB is the minimal database contract CredentialRecovery
@@ -296,6 +298,23 @@ const maxRecoveryProbeDispatch = 8
 // dispatchProbe runs a recovery callback asynchronously while bounding the
 // number of callbacks in flight. Recovery callbacks may perform database I/O;
 // tracking them also lets Stop drain work before the worker exits.
+
+// probeGuardStateTable returns the (credential, model) probe-verdict source
+// for the availability-recovery all-models-broken guard.
+//
+// R36 (2026-09-17, R36 遗留#3): under the new probe mode (default)
+// model_probe_state is frozen — reading it here kept credentials suspended
+// forever once its rows said broken_confirmed (nothing would ever flip them
+// back), while the only thing un-freezing them was BrokenProbeReviver
+// dissolving the guard wholesale. Read the live system's verdict instead:
+// v_node_probe_state_compat projects node_probe_state into the same
+// (credential_id, raw_model_name, state) vocabulary, so broken_confirmed
+// tracks the NEW system's consecutive_failures >= 3 in real time. Legacy
+// mode keeps reading model_probe_state, which legacy workers still update.
+func probeGuardStateTable() string {
+	return probemode.GuardStateTable() + " mps"
+}
+
 func (r *CredentialRecovery) dispatchProbe(fn func()) {
 	if r == nil || fn == nil {
 		return
@@ -593,14 +612,8 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		  -- 守卫逻辑：COUNT(broken且不可用的模型) = COUNT(所有模型) 时才拒绝。
 		  AND NOT (
 		      -- 子查询1: 计算broken且不可用的模型数
-		      -- R37 (2026-09-17) 数据源统一（同 model_probe.go GetState 先例）:
-		      -- model_probe_state 在 useNewProbeMode（默认开）下停更，直接读会把
-		      -- 冻结的旧状态回给守卫 —— 新系统已证实坏死的模型（冻结行仍 healthy）
-		      -- 不再阻止凭据翻回 ready 入池。改读 v_node_probe_state_compat
-		      -- （node_probe_state 的旧词汇投影，consecutive_failures>=3 →
-		      -- broken_confirmed），列名兼容平替。
 		      (SELECT COUNT(*)
-		       FROM v_node_probe_state_compat mps
+		       FROM ` + probeGuardStateTable() + `
 		       JOIN provider_models pm ON pm.raw_model_name = mps.raw_model_name
 		       JOIN credential_model_bindings cmb
 		            ON cmb.credential_id = mps.credential_id
