@@ -575,3 +575,9 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 |-----------|------|---------|--------|
 | 718 | `718_drop_redundant_indexes_and_add_ttl_indexes.sql` | `7a3807d0560643c6ec29210e3284d988c05e1849059d83ca5258387f792647f9` | applied+verified |
 
+## 2026-09-17T20:59:49Z — deploy 245 build_seq 2129 (c66dbd6c)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 719 | `719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql` | `9c7ae3eb253fb95f2ea04e9b898c91c8f26b0e9065ba833602891165739e18bc` | applied+verified |
+
