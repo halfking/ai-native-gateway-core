@@ -313,6 +313,10 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	l1Dist := map[string]int{}
 	// 24 小时窗口查询走 request_logs_hot（heap 落地热数据，性能最优）
 	// 符合 docs/partition/partition-standards.md 查询规范
+	// R37 fix: wtSyntheticExclude contains '%' (LIKE 'goal-%') — embedding it
+	// in the Sprintf template corrupted the verb stream and the handler's
+	// swallowed rows-err turned by_l1_task into an empty map (caught live by
+	// work_types_stats_integration_test). Pass it as a %s argument instead.
 	rows, err = h.db.Query(ctx, fmt.Sprintf(`
 		SELECT %s, COUNT(*)
 		FROM request_logs_hot
@@ -320,9 +324,9 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		  AND (
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )`+wtSyntheticExclude+wtTenantWhere+`
+		  )%s%s
 		GROUP BY (%s)
-	`, taskExpr, taskExpr), wtArgs...)
+	`, taskExpr, wtSyntheticExclude, wtTenantWhere, taskExpr), wtArgs...)
 	if err == nil {
 		for rows.Next() {
 			var k string
