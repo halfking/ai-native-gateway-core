@@ -58,64 +58,76 @@ detect_postgres_container() {
 pg_container_usable() {
   local container="$1"
   docker start "$container" >/dev/null 2>&1 || return 1
-  
+
   # Try to get database info
   local db_user db_pass db_name db_port
   db_user=$(dl_container_env "$container" POSTGRES_USER); db_user=${db_user:-postgres}
   db_pass=$(dl_container_env "$container" POSTGRES_PASSWORD)
   db_name="llm_gateway"
-  
+
   # Get port mapping
   db_port=$(docker port "$container" 5432/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
   if [[ -z "$db_port" ]]; then
     warn "PostgreSQL container $container has no host port mapping"
     return 1
   fi
-  
-  # Wait a moment for container to be ready
-  sleep 2
-  
-  # Check if we can connect and if llm_gateway database exists
-  local check_result
-  if [[ -n "$db_pass" ]]; then
-    check_result=$(docker exec -e PGPASSWORD="$db_pass" "$container" psql -U "$db_user" -lqt 2>/dev/null | grep -c "llm_gateway" || echo "0")
-  else
-    check_result=$(docker exec "$container" psql -U "$db_user" -lqt 2>/dev/null | grep -c "llm_gateway" || echo "0")
-  fi
-  
-  if [[ "$check_result" -gt 0 ]]; then
-    log "PostgreSQL: container $container has llm_gateway database ✓"
-    # Store credentials for later use
-    export DL_DISCOVERED_PG_USER="$db_user"
-    export DL_DISCOVERED_PG_PASS="$db_pass"
-    export DL_DISCOVERED_PG_PORT="$db_port"
-    export DL_DISCOVERED_PG_HAS_DB=1
-    return 0
-  else
-    log "PostgreSQL: container $container exists but no llm_gateway database, checking if we can create it..."
-    # Check if we can connect at all
-    if [[ -n "$db_pass" ]]; then
-      if docker exec -e PGPASSWORD="$db_pass" "$container" psql -U "$db_user" -c "SELECT 1" >/dev/null 2>&1; then
-        log "PostgreSQL: container $container is connectable, will create llm_gateway database"
-        export DL_DISCOVERED_PG_USER="$db_user"
-        export DL_DISCOVERED_PG_PASS="$db_pass"
-        export DL_DISCOVERED_PG_PORT="$db_port"
-        export DL_DISCOVERED_PG_HAS_DB=0
-        return 0
-      fi
-    else
-      if docker exec "$container" psql -U "$db_user" -c "SELECT 1" >/dev/null 2>&1; then
-        log "PostgreSQL: container $container is connectable, will create llm_gateway database"
-        export DL_DISCOVERED_PG_USER="$db_user"
-        export DL_DISCOVERED_PG_PASS="$db_pass"
-        export DL_DISCOVERED_PG_PORT="$db_port"
-        export DL_DISCOVERED_PG_HAS_DB=0
-        return 0
-      fi
+
+  # 2026-09-17 audit fix: this used to be `sleep 2` + `psql -lqt | grep -c
+  # llm_gateway`. Three defects fell out of that shape:
+  #   1. During a PG restart/recovery window the connection failure was
+  #      misread as "database missing" ("exists but no llm_gateway
+  #      database"), then the follow-up probe failed too and a perfectly
+  #      healthy container was declared "not usable" — leaving
+  #      DL_PG_CONTAINER empty for dl_write_env. pg_isready (no auth) now
+  #      gates the SQL probes.
+  #   2. `psql -lqt` without -d connects to the database named after the
+  #      user, so a generic container that had NOT been initialized with
+  #      POSTGRES_DB=llm_gateway always failed the list probe → "not
+  #      usable" instead of the "will create" path. All probes now pin
+  #      -d postgres (always present after initdb).
+  #   3. `grep -c llm_gateway` substring-matched sibling databases like
+  #      llm_gateway_backup. Replaced by an exact pg_database query.
+  local deadline=$(( $(date +%s) + 15 )) ready=0
+  while (( $(date +%s) < deadline )); do
+    if docker exec "$container" pg_isready -U "$db_user" -d postgres >/dev/null 2>&1; then
+      ready=1
+      break
     fi
-    warn "PostgreSQL: container $container not usable (cannot connect)"
+    sleep 1
+  done
+  if (( ! ready )); then
+    warn "PostgreSQL: container $container not usable (pg_isready not accepting after 15s; still starting or crashlooping)"
     return 1
   fi
+
+  # Exact existence probe: "1" = database present, "0" = connected but
+  # genuinely absent (fresh container → caller may create it). A failed
+  # connection after readiness is an auth/config problem, not a missing
+  # database — say so.
+  local exists
+  if [[ -n "$db_pass" ]]; then
+    exists=$(docker exec -e PGPASSWORD="$db_pass" "$container" psql -U "$db_user" -d postgres -Atqc \
+      "SELECT 1 FROM pg_database WHERE datname='$db_name'" 2>/dev/null) \
+      || { warn "PostgreSQL: container $container not usable (cannot authenticate as $db_user; check POSTGRES_PASSWORD drift)"; return 1; }
+  else
+    exists=$(docker exec "$container" psql -U "$db_user" -d postgres -Atqc \
+      "SELECT 1 FROM pg_database WHERE datname='$db_name'" 2>/dev/null) \
+      || { warn "PostgreSQL: container $container not usable (cannot connect as $db_user)"; return 1; }
+  fi
+
+  # Store credentials for later use (both outcomes are usable)
+  export DL_DISCOVERED_PG_USER="$db_user"
+  export DL_DISCOVERED_PG_PASS="$db_pass"
+  export DL_DISCOVERED_PG_PORT="$db_port"
+
+  if [[ "$exists" == "1" ]]; then
+    log "PostgreSQL: container $container has llm_gateway database ✓"
+    export DL_DISCOVERED_PG_HAS_DB=1
+    return 0
+  fi
+  log "PostgreSQL: container $container is connectable, will create llm_gateway database"
+  export DL_DISCOVERED_PG_HAS_DB=0
+  return 0
 }
 
 detect_redis_container() {

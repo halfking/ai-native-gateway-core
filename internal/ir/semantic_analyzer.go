@@ -1,7 +1,6 @@
 package ir
 
 import (
-	"encoding/json"
 	"strings"
 )
 
@@ -283,60 +282,4 @@ func maxFloat(a, b float64) float64 {
 		return a
 	}
 	return b
-}
-
-// CompareWithRawLog 对比原始日志，检测转换过程中的数据丢失
-//
-// 该函数用于在检测到疑似工具调用丢失时，对比原始上游响应数据
-// 判断是否在IR转换过程中丢失了tool_calls
-func CompareWithRawLog(rawUpstreamBody []byte, irResponse *InternalResponse) (bool, string) {
-	if len(rawUpstreamBody) == 0 {
-		return false, "no raw data available"
-	}
-
-	// 尝试解析原始响应为通用结构
-	var rawData map[string]interface{}
-	if err := json.Unmarshal(rawUpstreamBody, &rawData); err != nil {
-		return false, "failed to parse raw data"
-	}
-
-	// 检查原始数据中是否包含tool_calls或tools（不同协议字段不同）
-	hasToolCallsInRaw := false
-	var toolCallsField interface{}
-
-	// OpenAI: choices[0].message.tool_calls
-	if choices, ok := rawData["choices"].([]interface{}); ok && len(choices) > 0 {
-		if choice, ok := choices[0].(map[string]interface{}); ok {
-			if message, ok := choice["message"].(map[string]interface{}); ok {
-				if toolCalls, ok := message["tool_calls"]; ok && toolCalls != nil {
-					hasToolCallsInRaw = true
-					toolCallsField = toolCalls
-				}
-			}
-		}
-	}
-
-	// Anthropic: content[].type == "tool_use"
-	if content, ok := rawData["content"].([]interface{}); ok {
-		for _, block := range content {
-			if blockMap, ok := block.(map[string]interface{}); ok {
-				if blockType, ok := blockMap["type"].(string); ok && blockType == "tool_use" {
-					hasToolCallsInRaw = true
-					toolCallsField = block
-					break
-				}
-			}
-		}
-	}
-
-	// 对比IR响应
-	hasToolCallsInIR := irResponse != nil && len(irResponse.ToolCalls) > 0
-
-	if hasToolCallsInRaw && !hasToolCallsInIR {
-		// 发现数据丢失！
-		toolCallsJSON, _ := json.Marshal(toolCallsField)
-		return true, string(toolCallsJSON)
-	}
-
-	return false, ""
 }

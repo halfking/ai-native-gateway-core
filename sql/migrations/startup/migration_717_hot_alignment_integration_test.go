@@ -1,12 +1,21 @@
 //go:build integration
 
 // migration_717_hot_alignment_integration_test.go — behavioral fixture for
-// migration 717's R37 ::text-cast hardening. The R36 baseline hand-alignment
-// means a FRESH INSTALL loads request_logs_hot already in the mother types
-// BEFORE 717 runs, while pre-717 production installs carry the drifted text
-// shape. 717 must survive both column states (the drift shape was never
-// executed against an aligned baseline before — flagged by e0f94a799's
-// commit message as "customer_id cast bug (~ on bigint)").
+// the live-DB-rewritten migration 717 (adopted at the R37 merge). 717 must
+// behave correctly on BOTH hot-table vintages:
+//
+//   - drifted (pre-717 production shape per the live-DB audit): text varchars,
+//     double precision content_safety_score, text[] dlp_violations, text
+//     protocol_conversion / *_extensions, customer_id ALREADY bigint
+//     (migration 574 owns that transition) — the guarded ALTERs convert the
+//     seven guarded columns;
+//   - aligned (fresh-install baseline shape, all mother types) — every guard
+//     skips and the file is a no-op that preserves typed values.
+//
+// The 0A000 view-dependency path (frozen wrapper chains) is exercised on the
+// real 245/preprod chains; a fixture view chain would only duplicate the
+// per-column subtransaction logic that TestMigration717ShapePins pins
+// structurally.
 //
 // Run:
 //
@@ -43,28 +52,22 @@ func TestMigration717HotColumnAlignmentBothColumnStates(t *testing.T) {
 	}
 	migrationSQL := stripTxControl(t, "717_request_logs_hot_column_alignment.sql")
 
-	// ── scenario 1: drifted (pre-717 production shape, all text) ────────
+	// ── scenario 1: drifted (pre-717 production shape per the live audit) ─
 	exec(`CREATE TABLE public.request_logs_hot (
 		agent_name text,
 		agent_type text,
 		api_key_fingerprint text,
 		task_id text,
-		customer_id text,
-		content_safety_score text,
-		dlp_violations text,
+		customer_id bigint,
+		content_safety_score double precision,
+		dlp_violations text[],
 		protocol_conversion text,
 		ir_extensions text,
 		sanitizer_mutations text
 	)`)
 	exec(`INSERT INTO public.request_logs_hot VALUES (
-		'agent', 'coder', 'fp', 't1',
-		NULL, '{"score":1}', '[{"v":1}]', 'true', '{"k":1}', '[]'
-	), (
-		'agent', 'coder', 'fp', 't2',
-		'42', 'plain', 'plain', '0', 'not-json', '   '
-	), (
-		'agent', 'coder', 'fp', 't3',
-		'12345678901234567890', NULL, NULL, NULL, NULL, NULL
+		'agent', 'coder', '0123456789abcdefZZ', 't1',
+		42, 1.5, ARRAY['x'], 'true', '{"k":1}', '[]'
 	)`)
 	exec(migrationSQL)
 
@@ -73,7 +76,9 @@ func TestMigration717HotColumnAlignmentBothColumnStates(t *testing.T) {
 	rows, err := tx.Query(ctx, `
 		SELECT column_name, data_type FROM information_schema.columns
 		WHERE table_schema = 'public' AND table_name = 'request_logs_hot'
-		  AND column_name IN ('customer_id','protocol_conversion','ir_extensions','sanitizer_mutations','agent_name','api_key_fingerprint')
+		  AND column_name IN ('agent_name','agent_type','api_key_fingerprint','task_id',
+		                      'customer_id','content_safety_score','dlp_violations',
+		                      'protocol_conversion','ir_extensions','sanitizer_mutations')
 		ORDER BY column_name`)
 	if err != nil {
 		t.Fatalf("inspect drifted: %v", err)
@@ -87,8 +92,10 @@ func TestMigration717HotColumnAlignmentBothColumnStates(t *testing.T) {
 	}
 	rows.Close()
 	want := map[string]string{
-		"agent_name": "character varying", "api_key_fingerprint": "character varying",
-		"customer_id": "bigint", "protocol_conversion": "boolean",
+		"agent_name": "character varying", "agent_type": "character varying",
+		"api_key_fingerprint": "character varying", "task_id": "character varying",
+		"customer_id": "bigint", "content_safety_score": "jsonb",
+		"dlp_violations": "jsonb", "protocol_conversion": "boolean",
 		"ir_extensions": "jsonb", "sanitizer_mutations": "jsonb",
 	}
 	for _, c := range got {
@@ -97,31 +104,22 @@ func TestMigration717HotColumnAlignmentBothColumnStates(t *testing.T) {
 		}
 	}
 
-	queryText := func(sql string) string {
-		t.Helper()
-		var s string
-		if err := tx.QueryRow(ctx, sql).Scan(&s); err != nil {
-			t.Fatalf("query %q: %v", sql, err)
-		}
-		return s
+	var n int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM public.request_logs_hot
+		WHERE api_key_fingerprint = '0123456789abcdef'
+		  AND task_id = 't1' AND customer_id = 42
+		  AND content_safety_score = '1.5'::jsonb
+		  AND dlp_violations = '["x"]'::jsonb
+		  AND protocol_conversion IS TRUE
+		  AND ir_extensions = '{"k":1}'::jsonb
+		  AND sanitizer_mutations = '[]'::jsonb`).Scan(&n); err != nil {
+		t.Fatalf("drifted value check: %v", err)
 	}
-	// '42' → 42; NULL → NULL; 20-digit overflow debris → NULL (not an abort).
-	// ORDER BY task_id makes the aggregate deterministic: t1 NULL, t2 '42',
-	// t3 overflow.
-	if v := queryText(`SELECT string_agg(COALESCE(customer_id::text,'<null>'), ',' ORDER BY task_id) FROM public.request_logs_hot`); v != "<null>,42,<null>" {
-		t.Errorf("drifted customer_id mapping unexpected: %q", v)
-	}
-	if v := queryText(`SELECT protocol_conversion::text FROM public.request_logs_hot WHERE task_id='t1'`); v != "true" {
-		t.Errorf("drifted protocol_conversion 'true' = %q", v)
-	}
-	if v := queryText(`SELECT protocol_conversion::text FROM public.request_logs_hot WHERE task_id='t2'`); v != "false" {
-		t.Errorf("drifted protocol_conversion '0' = %q", v)
-	}
-	if v := queryText(`SELECT COALESCE(ir_extensions::text,'<null>') FROM public.request_logs_hot WHERE task_id='t2'`); v != "<null>" {
-		t.Errorf("drifted non-JSON debris should map to NULL, got %q", v)
+	if n != 1 {
+		t.Errorf("drifted: expected the row aligned with values preserved, got %d matching rows", n)
 	}
 
-	// ── scenario 2: aligned (fresh-install baseline shape, mother types) ─
+	// ── scenario 2: aligned (fresh-install baseline shape) — file is a no-op ─
 	exec(`DROP TABLE public.request_logs_hot`)
 	exec(`CREATE TABLE public.request_logs_hot (
 		agent_name character varying(255),
@@ -138,24 +136,17 @@ func TestMigration717HotColumnAlignmentBothColumnStates(t *testing.T) {
 	exec(`INSERT INTO public.request_logs_hot VALUES (
 		'agent', 'coder', 'fp', 'a1',
 		42, '{"score":1}', '[{"v":1}]', TRUE, '{"k":1}', '[]'
-	), (
-		'agent', 'coder', 'fp', 'a2',
-		NULL, NULL, NULL, FALSE, NULL, NULL
 	)`)
-	// The whole point: this must NOT raise 42883 (bigint ~ unknown etc.).
+	// Every guard must skip: this must not raise, rewrite, or lose values.
 	exec(migrationSQL)
 
-	var n int
-	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM public.request_logs_hot WHERE customer_id = 42 AND protocol_conversion IS TRUE AND ir_extensions = '{"k":1}'::jsonb AND sanitizer_mutations = '[]'::jsonb`).Scan(&n); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM public.request_logs_hot
+		WHERE api_key_fingerprint = 'fp' AND task_id = 'a1' AND customer_id = 42
+		  AND content_safety_score = '{"score":1}'::jsonb
+		  AND protocol_conversion IS TRUE AND ir_extensions = '{"k":1}'::jsonb`).Scan(&n); err != nil {
 		t.Fatalf("aligned value check: %v", err)
 	}
 	if n != 1 {
-		t.Errorf("aligned: expected typed values preserved for 1 row, got %d", n)
-	}
-	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM public.request_logs_hot WHERE customer_id IS NULL AND protocol_conversion IS FALSE AND ir_extensions IS NULL`).Scan(&n); err != nil {
-		t.Fatalf("aligned null check: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("aligned: expected NULL row preserved, got %d", n)
+		t.Errorf("aligned: expected typed values untouched by the no-op pass, got %d matching rows", n)
 	}
 }
