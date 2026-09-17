@@ -75,10 +75,3 @@ func GetProviderFieldConfig(catalogCode string, modelName string) ProviderFieldC
 		ToolResultIDField: "tool_use_id",
 	}
 }
-
-// UsesToolCallID returns true if the provider uses "tool_call_id" instead of
-// "tool_use_id" for tool result blocks. This is a convenience helper for the
-// most common case.
-func UsesToolCallID(catalogCode string, modelName string) bool {
-	return GetProviderFieldConfig(catalogCode, modelName).ToolResultIDField == "tool_call_id"
-}
