@@ -569,10 +569,25 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		}
 
 		// P3: balance probe for supported vendors (only when healthy).
+		// Migration 721 (2026-09-18): the WHERE skips rows hand-calibrated
+		// by an operator within the last 24h (balance_source='manual') so
+		// the hourly automatic probe cannot silently overwrite a manual
+		// balance correction. Mirrors the guard in
+		// bg/balance_floor_guard.go refreshBalance candidate SELECT — keep
+		// the two predicates in sync.
 		if pr.AvailabilityState == "ready" {
 			if balUSD, ok := c.probeBalance(timeoutCtx, s); ok {
 				if _, err := c.db.Exec(timeoutCtx,
-					`UPDATE credentials SET balance_usd = $1 WHERE id = $2`,
+					`UPDATE credentials
+					 SET balance_usd = $1,
+					     balance_source = 'api',
+					     balance_last_checked_at = NOW(),
+					     balance_error = NULL
+					 WHERE id = $2
+					   AND NOT (
+					       COALESCE(balance_source, '') = 'manual'
+					       AND balance_last_checked_at > NOW() - INTERVAL '24 hours'
+					   )`,
 					balUSD, s.ID,
 				); err != nil {
 					slog.Warn("credential probe v2: balance_usd write failed",

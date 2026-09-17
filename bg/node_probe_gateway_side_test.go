@@ -66,10 +66,13 @@ func TestUpdateBindingAvailabilityRefusesGatewaySideError(t *testing.T) {
 		"func (w *NodeProbeWorker) updateCredentialHealth")
 
 	guard := sourceBetween(t, body,
-		"if !available && isGatewaySideProbeError(reason) {",
+		"if !available && isGatewaySideProbeError(reason) && !w.credentialSpecificDecryptFailure(errDetail) {",
 		"if available {")
 	if !strings.Contains(guard, "return") {
 		t.Errorf("guard must return before any SQL for gateway-side errCodes")
+	}
+	if !strings.Contains(body, "!w.credentialSpecificDecryptFailure(errDetail)") {
+		t.Errorf("guard must carry the R40 credential-specific decrypt exemption (R39 §三#3)")
 	}
 	if !strings.Contains(body, "available = FALSE") {
 		t.Errorf("the unavailability UPDATE must still exist for genuine upstream errors")
@@ -144,7 +147,7 @@ func TestRunOneGatewaySideSkipsSharedStateWrites(t *testing.T) {
 	src := nodeProbeSource(t)
 
 	tick := sourceBetween(t, src,
-		"if !direct.ok {\n\t\tif isGatewaySideProbeError(direct.errCode) {",
+		"if !direct.ok {\n\t\tif isGatewaySideProbeError(direct.errCode) && !w.credentialSpecificDecryptFailure(direct.errDetail) {",
 		"if w.invalidateCandidateCache != nil {\n\t\tw.invalidateCandidateCache(credID)")
 	if !strings.Contains(tick, "not updating availability") {
 		t.Errorf("tick path must log the skipped availability update for gateway-side errors")
@@ -156,9 +159,12 @@ func TestRunOneGatewaySideSkipsSharedStateWrites(t *testing.T) {
 	if !strings.Contains(sync, "gateway-side direct probe error (sync)") {
 		t.Errorf("sync path must log the skipped availability update for gateway-side errors")
 	}
-	if !strings.Contains(sync, "w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode, 1)") ||
+	if !strings.Contains(sync, "w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail)") ||
 		!strings.Contains(sync, "w.updateObservedState(ctx, j.credID, j.model, false, res.direct.errCode") {
 		t.Errorf("sync path must keep the genuine-upstream-error write branch")
+	}
+	if !strings.Contains(sync, "!w.credentialSpecificDecryptFailure(res.direct.errDetail)") {
+		t.Errorf("sync path suppression must carry the R40 credential-specific decrypt exemption (R39 §三#3)")
 	}
 
 	ladder := sourceBetween(t, src,

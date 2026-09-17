@@ -692,7 +692,7 @@ func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
 		return
 	}
 	if outcome.direct.ok {
-		s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, true, "", 0)
+		s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, true, "", 0, "")
 		if s.worker.db != nil {
 			s.worker.updateCredentialHealth(ctx, outcome.credentialID)
 		}
@@ -709,7 +709,9 @@ func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
 		// this instance's config, not the pair's upstream health — never write
 		// them to the shared availability surfaces. updateBindingAvailability
 		// refuses these errCodes internally; guard observed state here too.
-		if isGatewaySideProbeError(errCode) {
+		// R40 豁免：decrypt 形且实例解密熔断未跳闸 = 单凭据密文损坏（跟随
+		// 凭据而非实例），放行到真实不可用写入（R39 §三#3）。
+		if isGatewaySideProbeError(errCode) && !s.worker.credentialSpecificDecryptFailure(outcome.direct.errDetail) {
 			slog.Error("probe_service: gateway-side probe error — not updating availability",
 				"credential_id", outcome.credentialID,
 				"model", outcome.model,
@@ -725,7 +727,7 @@ func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
 			if outcome.direct.errCode != "" && outcome.direct.errCode != "none" {
 				directErrCode = outcome.direct.errCode
 			}
-			s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, false, directErrCode, outcome.attempt)
+			s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, false, directErrCode, outcome.attempt, outcome.direct.errDetail)
 			_, horizon := unavailableBindingHorizon(directErrCode, outcome.attempt)
 			s.worker.updateObservedState(ctx, outcome.credentialID, outcome.model, false, directErrCode, time.Now().Add(horizon))
 		}

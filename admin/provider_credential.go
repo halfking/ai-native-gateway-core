@@ -187,6 +187,10 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		       COALESCE(c.trust_level,'trusted'), c.concurrency_limit,
 		       COALESCE(c.fp_slot_limit, 20) AS fp_slot_limit,  -- 2026-06-24: 5→20
 		       c.balance_usd::float8,
+		       COALESCE(c.balance_currency, 'USD') AS balance_currency,
+		       c.balance_last_checked_at,
+		       c.balance_source,
+		       c.balance_error,
 		       COALESCE(c.plan_type,'per_token') AS plan_type,
 		       COALESCE(c.circuit_state,'closed'),
 		       c.circuit_opened_at,
@@ -251,6 +255,10 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		TrustLevel               string          `json:"trust_level"`
 		ConcurrencyLimit         *int            `json:"concurrency_limit"`
 		BalanceUSD               *float64        `json:"balance_usd"`
+		BalanceCurrency          string          `json:"balance_currency"`
+		BalanceLastCheckedAt     *time.Time      `json:"balance_last_checked_at"`
+		BalanceSource            *string         `json:"balance_source"`
+		BalanceError             *string         `json:"balance_error"`
 		PlanType                 string          `json:"plan_type"`
 		CircuitState             string          `json:"circuit_state"`
 		CircuitOpenedAt          *time.Time      `json:"circuit_opened_at"`
@@ -316,6 +324,10 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			&c.TrustLevel, &c.ConcurrencyLimit,
 			&c.FpSlotLimit,
 			&balanceUSD,
+			&c.BalanceCurrency,
+			&c.BalanceLastCheckedAt,
+			&c.BalanceSource,
+			&c.BalanceError,
 			&c.PlanType,
 			&c.CircuitState,
 			&c.CircuitOpenedAt,
@@ -605,7 +617,18 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		sets = append(sets, "notes = "+arg(*req.Notes))
 	}
 	if req.BalanceUSD != nil {
-		sets = append(sets, "balance_usd = "+arg(*req.BalanceUSD))
+		// Migration 721: a manual PATCH write is operator-calibrated evidence —
+		// stamp it so balance_floor_guard.refreshBalance and probe_v2's
+		// balance probe skip this row for the 24h manual-protection window
+		// instead of silently overwriting the calibrated value with an API
+		// read. Clearing balance_error mirrors "the operator just asserted a
+		// known-good number".
+		sets = append(sets,
+			"balance_usd = "+arg(*req.BalanceUSD),
+			"balance_source = 'manual'",
+			"balance_last_checked_at = NOW()",
+			"balance_error = NULL",
+		)
 	}
 	if req.PlanType != nil {
 		sets = append(sets, "plan_type = "+arg(*req.PlanType), "plan_type_updated_at = NOW()")

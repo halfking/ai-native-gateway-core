@@ -42,6 +42,7 @@ func TestStore_ProjectPendingOutbox_Completed(t *testing.T) {
 	envelope, resultHash := encryptedOutboxResult(t, "task-1", "request-hash", `{"ok":true}`)
 
 	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectQuery(`FROM durable_pending_outbox`).
 		WithArgs(8, now).
 		WillReturnRows(outboxRows("task-1", envelope, resultHash, now))
@@ -74,6 +75,7 @@ func TestStore_ProjectPendingOutbox_HashMismatchRetried(t *testing.T) {
 	envelope, _ := encryptedOutboxResult(t, "task-1", "request-hash", "body")
 
 	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectQuery(`FROM durable_pending_outbox`).
 		WithArgs(8, now).
 		WillReturnRows(outboxRows("task-1", envelope, "wrong-hash", now))
@@ -126,6 +128,7 @@ func TestStore_ProjectPendingOutbox_Metrics(t *testing.T) {
 	projectedBefore := gatherProjectionMetric(t, "durable_pending_projections_total", "completed")
 
 	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectQuery(`FROM durable_pending_outbox`).
 		WithArgs(8, now).
 		WillReturnRows(outboxRows("task-metrics", envelope, resultHash, now))
@@ -151,6 +154,7 @@ func TestStore_ProjectPendingOutbox_ErrorMetricOnHashMismatch(t *testing.T) {
 	errBefore := gatherProjectionMetric(t, "durable_pending_projection_errors_total", "result_hash")
 
 	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectQuery(`FROM durable_pending_outbox`).
 		WithArgs(8, now).
 		WillReturnRows(outboxRows("task-errmetrics", envelope, "wrong-hash", now))

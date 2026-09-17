@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **凭据余额元数据 + 立即刷新 + 手工输入保护 (2026-09-18, 迁移 721)**：`/providers` 凭据抽屉新增"⟳ 刷新余额"按钮（`POST /api/providers/{pid}/credentials/{cid}/refresh-balance`，GET-only 厂商余额 API 零 token 消耗；失败 fail-open 写 `balance_error` 并在 UI 内联展示）；`listCredentials` 暴露 `balance_currency`/`balance_last_checked_at`/`balance_source`/`balance_error` 四列（前两列 schema 早已存在，此前从未 SELECT）；PATCH `balance_usd` 时标记 `balance_source='manual'`，`balance_floor_guard` Pass A 与 `credential_probe_v2` cycleAll 的余额写入对 manual 行实施 24h 保护（自动探测不再静默覆盖人工校准值）。迁移在本地 PG 事务内验证后回滚； installer embeddata 三处同步。文档：`docs/balance-query-optimization.md`（含 2026-09-18 审计修正记录——修正了早期"8+ 厂商支持"的失实声明，实际 6 家：openai/deepseek/siliconflow/openrouter 货币 + zhipu/minimax 套餐）。默认排序 `qualitySortKey` 由 `default` 改为 `usage`（按 24h 用量降序）。已知限制：refresh-balance 的 DB 依赖端到端单测未建（仅 truncate 纯函数单测）；CredsTab.vue（详情页抽屉）未接同款 UI；floor guard 探测失败路径不写 balance_error（保留既有 #12a 退避语义）。
+
 ### Fixed
 - **无节点保活重试审计修正 (2026-09-17)**：上轮 `67f78247c` 交付复核。核心 SurvivalCoordinator（白天 100 / 20:00 后 600 次、固定 30s、5h 上限、断开即停、`: thinking:` 回流）逐行复核成立、零改动；修正三处交付瑕疵——① Python mock 客户端 think 解析 bug（legacy 消息形态解析不出 reason 导致事件整条丢弃，改为按 `: thinking:` 前缀判定 + 通用 `第 N 次` 提取，兼容 survival/legacy 双线上形态）；② Go E2E 断开断言余量 2→1（循环顶+sleep 双重 ctx 检查下的结构最小值）并清理死字段/失实注释；③ 脚本删除未实现参数与失实 docstring，新增零候选终态帧识别（精确诊断 survival-OFF 下的立即错误帧行为）。验证：streaming 全套件 5 包绿、E2E ×3 稳定性绿、config 默认值钉桩 7 用例绿、live :8782 双窗口实测（瞬断窗口 A/B PASS；零候选窗口输出精确诊断）。审计文档：`docs/changelogs/2026-09-17-no-nodes-survival-audit.md`。
 - **Balance Floor Guard 三轮自审修正 (2026-09-16)**：A-C1 修复不完整——货币 refresh 路径 `refreshBalance` 直接读 `keyring` 未持读锁（前轮只覆盖了 `decryptKey`），已补 RLock 快照；`SetKeyring` 竞争测试扩展到同时竞争两条读路径。

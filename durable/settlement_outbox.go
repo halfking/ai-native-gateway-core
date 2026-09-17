@@ -61,7 +61,10 @@ func (s *Store) PersistSettlementIntent(ctx context.Context, c TerminalCommit) e
 		}
 		ciphertext, keyID = env, kid
 	}
-	tag, err := s.db.Exec(ctx, `
+	// worker 结算路径：单语句写包显式事务设旁路 GUC（autocommit 下 is_local
+	// GUC 即设即回收，rls.go）。语句含对 durable_llm_tasks 的 EXISTS 存在性
+	// 门禁，两表都受 RLS 约束，须在同一 GUC 事务内完成。
+	tag, err := s.execWithBypassTx(ctx, `
 		INSERT INTO durable_task_settlement_intents (
 			task_id, tenant_id, request_id, session_id, request_hash,
 			source_lease_owner, source_fencing_token, outcome, result_ciphertext,
@@ -128,6 +131,11 @@ func (s *Store) claimSettlementIntents(ctx context.Context, taskID, owner string
 		return nil, fmt.Errorf("durable: begin settlement claim: %w", err)
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+
+	// worker 结算领取：旁路双 GUC（RLS §五 Phase1#2）。
+	if err := setAllTenantBypassGUC(ctx, tx); err != nil {
+		return nil, err
+	}
 	query := `
 		SELECT task_id, tenant_id, request_id, session_id, request_hash,
 			source_lease_owner, source_fencing_token, outcome, result_ciphertext,
@@ -191,7 +199,8 @@ func (s *Store) claimSettlementIntents(ctx context.Context, taskID, owner string
 // RetrySettlementIntent releases a failed repair claim with durable backoff.
 // It intentionally retains the intent: terminal settlement is not execution retry.
 func (s *Store) RetrySettlementIntent(ctx context.Context, c ClaimedSettlement, next time.Time, cause error) error {
-	tag, err := s.db.Exec(ctx, `
+	// worker 单语句写包显式事务设旁路 GUC（rls.go）。
+	tag, err := s.execWithBypassTx(ctx, `
 		UPDATE durable_task_settlement_intents
 		SET claim_owner=NULL, claim_until=NULL,
 			last_error=$4, next_attempt_at=$5, updated_at=$5
@@ -218,6 +227,11 @@ func (s *Store) FinalizeSettlement(ctx context.Context, claim ClaimedSettlement)
 		return nil, err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+
+	// worker 结算落账：旁路双 GUC（RLS §五 Phase1#2）。
+	if err := setAllTenantBypassGUC(ctx, tx); err != nil {
+		return nil, err
+	}
 
 	var c ClaimedSettlement
 	var ciphertext, keyID pgtype.Text
