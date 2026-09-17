@@ -162,3 +162,83 @@ v1 部署后（05:35–05:42）曾以「cred 21 上游 200×11、窗口内 4xx=0
    `/opt/llm-gateway-go/version.json`，进程内缓存到重启）与 `/healthz`
    （读 slots/%i/version.json）在手工换版本时可能短暂不一致。
    正规部署路径两者同步，不受影响。
+
+## 7. 收尾轮（2026-09-18 当日，§4/§6 缺口闭环）
+
+### 7.1 P5 补课：Anthropic/Gemini 入向 thinking 按 TargetProvider 方言出向（`7bb1708d5`）
+
+- `serialize_openai` 新增 `applyThinkingToOpenAIChat`：`ir.Thinking`
+  （anthropic 入向）/ `Reasoning.BudgetTokens`（gemini 入向 budget 形状）
+  经 `reasonnorm.Render` 渲染进 OpenAI 线格式。**方言键 = TargetProvider，
+  刻意不用 reasoncap.Resolve（按模型名推 caps 会复燃"方言与目标 provider
+  脱钩"的本次事故失败类）**，caps 按 `resolveTargetDialect` 合成。
+- 方言族：minimax（最小 `{"type":"adaptive"}`，与 openai 入向
+  translateThinking v2 语义一致）/ deepseek / glm / ark（enabled|disabled
+  toggle）/ qwen（enable_thinking+thinking_budget）。kimi / grok / mistral /
+  vllm / ollama / 未知方言维持 loss 上报不出向；openai 协议入向的
+  reasoning_effort 已原生出向，加守卫防二次表达。
+- executor anthropic→openai 分支补 `irReq.TargetProvider = cand.CatalogCode`
+  （此前只有 transport 层 Extensions 兜底，ir.Thinking 的方言渲染够不到）。
+- loss 上报条件化：已渲染的 thinking 不再报 `ir_protocol_loss`；
+  signature / redacted_thinking 仍按真丢失上报。
+
+### 7.2 executor 层接线自动化测试（§6.2 缺口闭环）
+
+`executor_target_provider_wiring_test.go` 把 `finalizeOpenAIUpstreamBody`
+三条出向分支逐条钉死 CatalogCode 必须到达序列化层：legacy_with_ir（openai
+入向主路径）/ 断路器兜底（包级 ir 函数路径）/ anthropic→openai IR 分支。
+ir 层另有 P5 契约测试 `serialize_openai_thinking_p5_test.go`（含 gemini
+budget 形状、openai 入向防双表达、intent 提取单测）。
+
+### 7.3 154 生产同步部署 + 受控验证（2134-289c880e → 2138-73c8a6c5）
+
+deploy-seamless 全门禁绿（healthz/readyz/版本指纹、DB 就绪、admin 密码
+同步、凭据解密冒烟 providers=18,1,14 creds=12 failed=0、Nginx 切 8782）。
+
+四重证据受控验证（专用 key id=130，e2e-app；同一确定性 payload
+"17×23"，仅 thinking 开关与入向协议变化，2×2 共四次）：
+
+| 入向协议 | thinking | 上游（provider 14 / cred 21, api.minimaxi.com） | 响应 |
+|---|---|---|---|
+| openai (/v1/chat/completions) | enabled | `upstream_status=200` | `<think>…391</think>` 真实推理 |
+| anthropic (/v1/messages) | enabled | `upstream_status=200` | anthropic `thinking` block + text |
+| openai | disabled | `upstream_status=200` | 无 `<think>`，直接答案 |
+| anthropic | disabled | `upstream_status=200` | 仅 text block |
+
+disabled 对照翻转了推理内容出现与否 —— 证明方言翻译**确实送达上游**
+（若 thinking 被静默丢弃，M3 默认思考，对照不会翻转）。这也覆盖了
+§4 表中 ❌ 行（anthropic 入向 → OpenAI 形态上游含 MiniMax）。
+验毕 key 已禁用（复测 401）。
+
+注：验证窗口内 journald 的 12 条 `candidate_failure` 全部归属
+credential_id=35（与 thinking 无关、非 MiniMax 21/42，属既有独立问题，
+另行排查）。
+
+### 7.4 并发部署竞争收口（§6.3 缺口闭环；deploy-lib `2433e10` + 网关 `73c8a6c51`）
+
+排查结论：官方入口（deploy-154.sh / deploy-245.sh）均委托
+deploy-seamless，本地 per-target 锁 + 远端 mkdir 锁本应互斥；真实缺口三个：
+
+1. **本地锁路径随 $TMPDIR 漂移**：`${TMPDIR:-/tmp}/...` 在交互终端
+   (/var/folders/<user>)、cron/agent 沙箱（unset→/tmp 或私有 TMPDIR）下
+   解析出不同路径，本地锁层对不同上下文的同目标部署静默失效。
+   → 钉死机器级 `${LOCK_TMP_ROOT:-/tmp}/kx-llm-gateway-deploy-<target>.lock`
+   （LOCK_TMP_ROOT 仅供测试隔离）。
+2. **kill -0 把 EPERM 当 ESRCH**：跨用户存活部署进程被判死，
+   force-recover 会拆活锁。→ 统一 `lock_pid_alive`（ps -p 判存在，与属主
+   无关）；PID 复用场景 fail-closed。
+3. **带外手工 slots/run 改写在锁外**（06:14/06:19 两次覆盖的直接原因）：
+   → deploy-seamless 切流前新增漂移复核（预热前记 active-port +
+   slots/<active> symlink 基线，破坏性动作前复核，不一致 fail-closed）。
+
+`tests/deploy_lock_test.sh` 新增 AC-L15（默认路径无视 TMPDIR）/ AC-L16
+（PID 1 存活时三路 force-recover 全拒绝），全套 51 项通过。本轮 2138
+部署即运行在新锁代码上。
+
+### 7.5 遗留（更新后）
+
+- §6.1 / §6.2 / §6.3 已闭环（见 7.1–7.4）。
+- §6.4（252 PG max_connections 扩容）运维侧仍需确认；代码侧
+  `f6c8585ad` 已就绪，252 OOM 双层收口见 `be22017de`。
+- §6.5（version.json SSOT 多读路径）维持观察，正规部署不受影响。
+- 新增：credential_id=35 的 candidate_failure（非本事故范畴）待单独归因。
