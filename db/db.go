@@ -1959,8 +1959,16 @@ func (d *DB) ensureRoutingAnalyticsColumns(ctx context.Context) error {
 //
 // auto_profile is exposed because the admin auto-route profile distribution
 // (admin/auto_route.go) reads COALESCE(auto_profile, 'unknown') directly from
-// this source view. It must stay the LAST column in both UNION branches:
-// CREATE OR REPLACE VIEW can only append columns, never reorder existing ones.
+// this source view.
+//
+// origin_actor (migration 722, renumbered from the never-deployed 720 first
+// cut) is appended as the LAST column in both UNION branches so the MV layer
+// can filter synthetic actors (goal-% loopbacks) without another rebuild.
+// This constant must stay in lockstep with
+// sql/migrations/startup/722_routing_analytics_add_origin_actor.sql: the
+// migration's CREATE OR REPLACE VIEW pins the 16-column projection, and a
+// repair-path re-run of a stale 15-column batch here would fail with
+// "cannot drop columns from view".
 const routingAnalyticsMVSQL = `
 		-- Keep analytics isolated from the frozen request-log wrapper view. The
 		-- narrow source has stable types across hot and parent partitions and
@@ -1984,7 +1992,8 @@ const routingAnalyticsMVSQL = `
 		  latency_ms::numeric AS latency_ms,
 		  cost_usd::numeric AS cost_usd,
 		  origin_stage::text AS origin_stage,
-		  auto_profile::text AS auto_profile
+		  auto_profile::text AS auto_profile,
+		  origin_actor::text AS origin_actor
 		FROM request_logs_hot
 		UNION ALL
 		SELECT
@@ -2002,7 +2011,8 @@ const routingAnalyticsMVSQL = `
 		  latency_ms::numeric AS latency_ms,
 		  cost_usd::numeric AS cost_usd,
 		  origin_stage::text AS origin_stage,
-		  auto_profile::text AS auto_profile
+		  auto_profile::text AS auto_profile,
+		  origin_actor::text AS origin_actor
 		FROM request_logs;
 
 		CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d AS
