@@ -49,5 +49,9 @@
 - **守卫对称性**：任何"错误不推进共享状态"的守卫必须同时覆盖 legacy tick 路径与持久队列路径（runOne CASE WHEN ↔ mirrorNodeProbeState CASE WHEN、drainDue 熔断 ↔ processBatch 熔断）——20fb4c7a4 只修一半，队列通道 3 次重排即可集群级排除路由（R39 P1-1 已修，钉桩 bg/probe_service_gateway_side_test.go ×3）。
 - 探测"终态判定"语义审计：attempt 来源（cf+1 vs 队列重排序号）计任意错误类型，"连续 N 次同错误"需显式记录上轮 errCode（遗留：404 口径与事故文档表述偏差）。
 - endpoint_build 类错误码混流"实例错 key"与"凭据密文永久损坏"两种语义，绑定面无信号即此因（遗留）。
+
+### R40 回注（2026-09-18，R39 §三#2/#3 收口）
+- **404 口径决议（闭合上文遗留）**：择"修文档"——`unavailableBindingHorizon` 的语义是"本轮失败 episode 内 attempt≥2 的任意 404 即升级 6h"（episode=成功/Submit 重置之间），非"连续两次 404"；episode 内被瞬时错误间隔的 404 仍升级属更保守方向（6h 自愈重查封顶），不值得为叙事精确性给 node_probe_state 加 prev_err_code 列。语义钉进 `modelNotServedRecheckInterval` 注释 + `TestUnavailableBindingHorizon` interleave 用例（bg/node_probe.go / bg/probe_model_not_served_test.go）。
+- **endpoint_build 粒度细分（闭合上文遗留）**：新识别器 `isDecryptShapedProbeDetail`（resolveDirectTarget 的 `decrypt: %w` 包装前缀）+ `credentialSpecificDecryptFailure`（解密形且实例解密熔断计数未达 decryptTripThreshold=5）——熔断未跳闸说明本实例解其它凭据正常，失败跟随凭据 = 单凭据密文永久损坏，豁免 guard 写真实不可用（绑定/observed/ladder 全走 else 分支）；实例真错 key 时计数到 5 熔断跳闸，压制恢复 + deescalate sweep 修复 pre-trip 窗口的少量写入（自愈）。updateBindingAvailability 签名新增第 7 参 errDetail（源钉桩同步更新 ×2），sync/queue/probe_service 三路抑制条件全部携带豁免（bg/node_probe_gateway_side_test.go + bg/node_probe_credential_decrypt_test.go）。
 - self-check/diagnostics 直读 model_probe_state 的残留面按 probeGuardStateTable/compat 视图逐个切换（R39 收口 probe_missing → v_node_probe_state_compat；legacy 模式下 nps 由 mirror 保持同构）。
 - SQL 注释与谓词漂移：expiredCmbRecoverySQL 曾宣称不存在的 next_retry_at 跳过（R39 改注释）。

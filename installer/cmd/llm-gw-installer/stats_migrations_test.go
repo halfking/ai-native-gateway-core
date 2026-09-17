@@ -142,10 +142,24 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// R38 (2026-09-17 audit): ensure-shadowed index root fix + request_logs
 		// parent-index ownership unification.
 		"719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql": unifyEnsureShadowedIndexesMigration719,
-		// 720_rls_policy_vocabulary_unification is installer-only (no canonical
-		// sql/migrations/startup copy), so it has no parity entry here.
+		// R40 (2026-09-18): RLS policy vocabulary unification (design §五
+		// Phase 1 item 1) — landed in embeddata only (f5328e13c), five-point
+		// sync completed in this round.
+		"720_rls_policy_vocabulary_unification.sql": rlsPolicyVocabularyUnificationMigration720,
+		// 721 (507d78cff, parallel session) landed with file copies only;
+		// parity coverage added by R40 five-point completion.
 		"721_credential_balance_source_and_error.sql": credentialBalanceSourceAndErrorMigration721,
-		"722_routing_analytics_add_origin_actor.sql":  routingAnalyticsAddOriginActorMigration722,
+		// R40 (2026-09-18): durable family schema convergence — repairs
+		// pre-final-516 databases missing events/pending tables and
+		// checkpoint_payload (evidence: local llm_gateway DB).
+		"722_durable_family_schema_convergence.sql": durableFamilySchemaConvergenceMigration722,
+		// R40 (2026-09-18): RLS enable for attachments/cfl_columnar_old
+		// (design §五 Phase 1 item 3; renumbered 721→723 after the balance
+		// metadata migration took 721 mid-round).
+		"723_rls_enable_attachments_and_cfl_old.sql": rlsEnableAttachmentsAndCflOldMigration723,
+		// 724 (7106e1c5b, parallel session) landed with four of five sync
+		// points; parity coverage added by R40-followup (2026-09-18).
+		"724_task_type_corrections.sql": taskTypeCorrectionsMigration724,
 	}
 
 	for name, embedded := range expected {

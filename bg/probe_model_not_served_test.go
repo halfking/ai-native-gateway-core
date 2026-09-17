@@ -31,6 +31,13 @@ func TestUnavailableBindingHorizon(t *testing.T) {
 	if reason != "timeout" || horizon != 5*time.Minute {
 		t.Fatalf("timeout keeps the generic cooldown, got reason=%q horizon=%s", reason, horizon)
 	}
+	// R40 口径钉桩（闭合 R39 §三#2）：attempt 是 episode 序号而非"连续 404
+	// 计数"——404 被其他瞬时错误间隔后（如 404→timeout→404 的第三次探测）
+	// 仍按确认升级；语义修文档不修代码（见 modelNotServedRecheckInterval 注释）。
+	reason, horizon = unavailableBindingHorizon("http_404", 3)
+	if reason != "model_not_served_404" || horizon != modelNotServedRecheckInterval {
+		t.Fatalf("404 after interleaved transient errors (attempt=3) must still escalate, got reason=%q horizon=%s", reason, horizon)
+	}
 	// The persisted reason keeps the probe_ prefix shape the recovery SQL
 	// matches (LIKE 'probe_%'), so expired-binding recovery still owns the
 	// 6h-later re-verify.

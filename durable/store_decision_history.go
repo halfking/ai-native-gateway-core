@@ -26,9 +26,12 @@ import (
 // 历史不是正确性门）。
 func (s *Store) LoadDecisionHistory(ctx context.Context, taskID string) (json.RawMessage, error) {
 	var raw []byte
-	err := s.db.QueryRow(ctx,
-		`SELECT decision_history FROM durable_llm_tasks WHERE id = $1`,
-		taskID).Scan(&raw)
+	// worker 读：包显式事务设旁路 GUC（rls.go），降权后无 GUC 读静默 0 行。
+	err := s.queryWithBypassTx(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT decision_history FROM durable_llm_tasks WHERE id = $1`,
+			taskID).Scan(&raw)
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -44,7 +47,8 @@ func (s *Store) LoadDecisionHistory(ctx context.Context, taskID string) (json.Ra
 // SaveDecisionHistory 以 fencing 条件保存追加后的决策历史。0 行影响返回
 // ErrLeaseLost（调用方必须放弃，不得覆盖新持有者的历史）。
 func (s *Store) SaveDecisionHistory(ctx context.Context, taskID, leaseOwner string, fencingToken int64, history json.RawMessage) error {
-	tag, err := s.db.Exec(ctx,
+	// worker 单语句写包显式事务设旁路 GUC（rls.go）。
+	tag, err := s.execWithBypassTx(ctx,
 		`UPDATE durable_llm_tasks
 		    SET decision_history = $4
 		  WHERE id = $1 AND lease_owner = $2 AND fencing_token = $3`,
