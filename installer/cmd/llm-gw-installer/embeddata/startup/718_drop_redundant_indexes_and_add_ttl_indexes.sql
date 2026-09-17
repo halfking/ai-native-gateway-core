@@ -50,13 +50,15 @@ DROP INDEX CONCURRENTLY IF EXISTS credit_ledger_hot_ref_idx;                  --
 DROP INDEX CONCURRENTLY IF EXISTS credit_ledger_hot_tenant_created_idx;       -- 方向影蔽 _tenant_id_created_at_idx
 DROP INDEX CONCURRENTLY IF EXISTS idx_dae_hot_errors;                         -- partial ⊂ idx_dae_hot_timestamp
 
--- ── B2. 复核补漏（718 首跑后对账发现，R37 真库验证批）────────────────────────
--- request_logs 分区父表 ON ONLY 上的 partial 同构对——会作为 attached 索引
--- 传播到每一个月度叶子，是最热表上的双份维护成本。
-DROP INDEX IF EXISTS idx_request_logs_parent_ts;           -- 与 idx_request_logs_parent_request_id 逐字同构
-DROP INDEX CONCURRENTLY IF EXISTS idx_quality_profiles_provider;       -- 与 idx_pqp_provider_id 同构
-DROP INDEX CONCURRENTLY IF EXISTS idx_quality_profiles_quality_score;  -- 与 idx_pqp_quality_score 同构
-DROP INDEX CONCURRENTLY IF EXISTS idx_request_logs_bodies_hot_ts;      -- 与 request_logs_bodies_hot_ts_idx 同构
+-- ── B2. 复核补漏（718 首跑后对账发现，R37 真库验证批；R37 自审计修正）────────
+-- 注：原 B2 含 idx_request_logs_parent_ts 的 drop，自审计发现该名由
+-- db/db.go ensure（013 镜像）持有、与 V369/202609_01 通道的
+-- idx_request_logs_parent_request_id 构成所有权冲突对（本机两父索引各挂
+-- 5 个 attached 叶子）——drop 会被 ensure 复活且扰动叶子 ATTACH 拓扑，
+-- 已撤回并归入遗留"ensure 根治"范畴（须先统一通道归属）。
+DROP INDEX CONCURRENTLY IF EXISTS idx_quality_profiles_provider;       -- 与 idx_pqp_provider_id 同构（无 Go 创建者，已核）
+DROP INDEX CONCURRENTLY IF EXISTS idx_quality_profiles_quality_score;  -- 与 idx_pqp_quality_score 同构（同上）
+DROP INDEX CONCURRENTLY IF EXISTS idx_request_logs_bodies_hot_ts;      -- 与 request_logs_bodies_hot_ts_idx 同构（同上）
 
 -- ── C. 中频/配置表（CONCURRENTLY）────────────────────────────────────────────
 DROP INDEX CONCURRENTLY IF EXISTS idx_credential_probe_model_log_created;     -- 与 ..._created_at 同构
