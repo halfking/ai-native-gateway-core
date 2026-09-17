@@ -569,3 +569,9 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 |-----------|------|---------|--------|
 | 716 | `716_unify_probe_health_views.sql` | `97281941bcd5207408091d845bd1112d0c0c85c233a395ec8522fad02aa1ec03` | applied+verified |
 
+## 2026-09-17T06:54:27Z — deploy 245 build_seq 2124 (67d8629d)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 718 | `718_drop_redundant_indexes_and_add_ttl_indexes.sql` | `7a3807d0560643c6ec29210e3284d988c05e1849059d83ca5258387f792647f9` | applied+verified |
+
