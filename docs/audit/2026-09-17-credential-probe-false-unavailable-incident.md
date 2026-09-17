@@ -118,10 +118,44 @@ HEAD 含 R36/R37 审计新增的 `ensureFreediscoveryTemplateHealth`（087），
 
 ---
 
-## 4. 验证记录
+## 4. 部署过程中追加发现的两个独立缺陷（已一并修复）
+
+### 4.1 087 ensure 假定 provider_templates 存在（部署阻断，70672a052）
+
+R36/R37 审计新增的 `ensureFreediscoveryTemplateHealth` 在共享库上 42P01 死循环
+（freediscovery bootstrap 从未在该库跑过），`openDBWithBootRetry` 误判为
+"postgres unreachable" 烧完 75s 预算，部署 healthz 60s 窗口超时候选被拒
+（14:55 首次部署实证，旧实例无中断）。修复：`to_regclass` 预检，表缺失静默跳过。
+
+### 4.2 154 canary 模板被统一成 traffic-only —— 后台 worker 全集群无主（0a015af51）
+
+154 的 blue-green 模板在 09-17 "与 245 统一"时继承了
+`LLM_GATEWAY_RUNTIME_ROLE=traffic-only`。245 是 `bg_mode=data-plane`（设计使然），
+**154 是共享库上唯一的 full-mode 实例** —— 154 今晨 09:09 部署换装新模板后，
+所有 `!bgDataPlaneOnly` worker 全集群无主：
+- 持久探测队列（credential_probe_queue 516 条 ready 行自 09:09 无人认领；
+  必要性门、pinned gateway round、integrity_verify 一并失效）
+- model discovery、credential cycler、taxonomy sync、weekly rollup、audit trimmer
+
+node 探测靠 legacy cycle 路径苟活，掩盖了损失。修复：从 154 模板移除该行
+（空角色归一化为 active，恢复 09:09 前的所有权模型；蓝绿 ~15-30s 双活重叠是
+历史稳态，队列 SKIP LOCKED+租约、其余 worker advisory-lock/幂等，均为多实例设计）。
+重部署后实证：`runtime_role=active`、`durable probe queue worker started`、
+积压 516→483 消化中。
+
+## 5. 验证记录
 
 - 本地：`go build ./...`；`go test ./bg ./admin ./internal/probeutil ./domains/credentialstate -count=1` 全绿。
-- 245：部署 seq 见部署日志；部署后观测项——
-  - `journalctl -u llmgo-245-canary` 出现 `de-escalated gateway-side probe ladders` / `restored bindings poisoned...`（若当时有残留）；
-  - apigpt 404 模型绑定 reason 变为 `probe_model_not_served_404` 且 recover_at +6h；
-  - node_probe_runs 中 404 模型的 attempt 序列停在 2、next_retry_seconds≈21600。
+- 245：2125-70672a05（14:58 上线）——
+  - `provider_templates absent ... skipping 087`（部署阻断修复生效）；
+  - 404 梯子停泊：gpt-5.4 attempt7 http_404 → next_retry_seconds=21600；
+  - 解密恢复扫除无残留行可清（当时已被上午的恢复路径消化）。
+- 154：2126-b874368a（15:33，含守卫 20fb4c7a4 + 全部修复）→ 2127-0a015af5（15:33，角色修复）——
+  - 解密冒烟 0 失败；`durable probe queue worker started`；队列积压消化中；
+  - **404 终判端到端生效**：`writer/palmyra-creative-122b`、`nvidia/cosmos-reason2-8b`
+    （cred 19，attempt 7，http_404）→ 绑定 `probe_model_not_served_404` +
+    recover_at +6h；同批 timeout→30s 短链、http_429→3600/7200 策略间隔；
+  - gpt-5.4 / gpt-image-1（cred 2）在队列重排后被成功探测恢复 available ——
+    6h 复验/恢复闭环双向可用。
+- 现场状态复核（15:38）：四凭据 circuit closed / availability_state=ready /
+  hzx-2 全模型探测 ok；仅剩历史 404 模型按 6h 节奏复检。
