@@ -20,6 +20,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/kaixuan/llm-gateway-go/internal/probemode"
 )
 
 // Suspicious-exit metrics. Registered once at package init so the
@@ -1582,12 +1584,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		  -- failures; without this filter the pair stays routable as long as
 		  -- the credential-level availability_state is 'ready', so the router
 		  -- keeps re-selecting it (the cred-11/minimax-m3 loop).
-		  AND NOT EXISTS (
-		      SELECT 1 FROM model_probe_state mps
-		      WHERE mps.credential_id = c.id
-		        AND mps.raw_model_name = mo.raw_model_name
-		        AND mps.state = 'broken_confirmed'
-		  )
+		  AND `+brokenPairExcludeSQL("mps", "c.id", "mo.raw_model_name")+`
 		  -- 2026-06-22 defect (3) hard gate: exclude pairs whose real recent
 		  -- success rate is below 0.5 once we have at least 20 samples. The
 		  -- min-sample threshold avoids cold-start false positives (a brand-new
@@ -1653,12 +1650,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			            AND COALESCE(mo_sibling.unavailable_reason, '') NOT LIKE 'manual%'
 			            AND COALESCE(c_sibling.manual_disabled, FALSE) = FALSE
 			            AND COALESCE(p_sibling.manual_disabled, FALSE) = FALSE
-			            AND NOT EXISTS (
-			                SELECT 1 FROM model_probe_state mps_sibling
-			                WHERE mps_sibling.credential_id = mo_sibling.credential_id
-			                  AND mps_sibling.raw_model_name = mo_sibling.raw_model_name
-			                  AND mps_sibling.state = 'broken_confirmed'
-			            )
+			            AND `+brokenPairExcludeSQL("mps_sibling", "mo_sibling.credential_id", "mo_sibling.raw_model_name")+`
 			      )
 			  )
 
@@ -2356,11 +2348,41 @@ func (c *Client) maybeExitSuspicious(credentialID int, rawModel string) {
 	c.asyncExitSuspicious(credentialID, rawModel)
 }
 
+// brokenPairExcludeSQL returns the NOT EXISTS clause implementing the
+// 2026-06-22 defect-(2) guard: drop (credential, model) pairs the ACTIVE
+// probe system has proven broken (three consecutive targeted-probe
+// failures). R36 (A-3 sweep): the source table follows the probe mode via
+// internal/probemode.GuardStateTable — under the new probe stack the legacy
+// model_probe_state is frozen, so reading it here kept frozen
+// broken_confirmed rows excluded forever while new-system verdicts never
+// reached this filter.
+func brokenPairExcludeSQL(alias, credCol, modelCol string) string {
+	// Composed with strings.Builder (no raw-string backticks) so the
+	// sql_comment_syntax_test backtick-parity scanner cannot mistake the
+	// surrounding Go comments for SQL text.
+	var b strings.Builder
+	b.WriteString("NOT EXISTS (\n")
+	b.WriteString("\t\tSELECT 1 FROM " + probemode.GuardStateTable() + " " + alias + "\n")
+	b.WriteString("\t\tWHERE " + alias + ".credential_id = " + credCol + "\n")
+	b.WriteString("\t\t  AND " + alias + ".raw_model_name = " + modelCol + "\n")
+	b.WriteString("\t\t  AND " + alias + ".state = 'broken_confirmed'\n")
+	b.WriteString("\t)")
+	return b.String()
+}
+
 func (c *Client) defaultAsyncExitSuspicious(credentialID int, rawModel string) {
 	if c.dbPool == nil || c.redis == nil {
 		return
 	}
 	go func() {
+		if probemode.Enabled() {
+			// R36 (A-3 sweep): under the new probe mode model_probe_state is a
+			// frozen table — this legacy fast-path write has no consumer (the
+			// new system's node_probe_state has no 'suspicious' state and
+			// re-probes on its own scheduler). Keep the dispatch metric, skip
+			// the dead write.
+			return
+		}
 		bgCtx, bgCancel := context.WithTimeout(context.Background(), time.Second)
 		defer bgCancel()
 		dbStart := time.Now()
