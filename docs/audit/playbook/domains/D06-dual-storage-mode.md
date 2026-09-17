@@ -41,3 +41,9 @@
 重点：窗口内新增的存储调用点是否在 lite 模式下有对等实现或显式禁用。
 只读不改。输出按 conventions.md §4 结构，每条发现带 file:line 与触发路径。
 ```
+
+### R39 回注（2026-09-17，087 ensure 跳过批）
+- **"能力不存在而跳过"的裁决必须进程级传导**：ensure 局部 skip ≠ 装配层知道——provider_templates 缺席曾导致路由 500 裸 42P01 + scheduler 每 sweep 告警；R39 落地 db.ProviderTemplatesProvisioned() 信号 + main 装配门（不接线→503 复用既有语义）。
+- boot 连接重试必须区分 SQLSTATE：42P01/42703/42883/42809/0A000 = schema mismatch，fast-fail + 可行动日志（db.IsSchemaMismatchError），否则烧光预算后同样落到 disabled。
+- 存在性检查用 pg_class.relkind IN ('r','p') 而非 to_regclass（后者对视图/序列也真）。
+- ensure 内嵌 DDL 引用特性表前，先想"这张表在哪些部署形态不存在"（installer 全新安装 embed 只有 00/01/02+478 起）。

@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -47,6 +48,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/cmd/gateway/webhooks" //nolint:depguard // 充值回调 webhook 模块 (落点 B, 2026-08-26)
 	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/domains/analysis"                            //nolint:depguard // M3 embedding shadow adapter
@@ -2880,9 +2882,15 @@ func main() {
 		// ── 免费资源自动发现 (2026-09-09, 084 迁移) ──
 		// stdlib 桥接 + credential keyring 注入; no-DB 模式下 SetFreeDiscovery
 		// 内部跳过, 路由在请求时返回 503.
-		if dbConn != nil && dbConn.Enabled() {
+		// R39 (2026-09-17): provider_templates 未 provisioned 的部署（共享库
+		// traffic-only 角色、未跑 084 bootstrap）同样不接线 —— 否则路由 500
+		// 携带裸 42P01、scan scheduler 每 sweep 必告警。信号来自启动 ensure
+		// 链（db.ProviderTemplatesProvisioned）。
+		if dbConn != nil && dbConn.Enabled() && db.ProviderTemplatesProvisioned() {
 			adminHandler.SetFreeDiscovery(dbConn.Stdlib(), keyring)
 			slog.Info("free-discovery admin routes wired", "keyring", keyring != nil)
+		} else if dbConn != nil && dbConn.Enabled() {
+			slog.Info("provider_templates not provisioned; free-discovery routes stay unwired (503 on request)")
 		}
 		// ── FreeDiscovery scheduled scan worker (2026-09-14, R20 §二.6) ──
 		// Periodic sweep of all enabled provider templates → TriggerScheduled
@@ -7001,20 +7009,25 @@ func main() {
 				listenPort = p
 			}
 		}
-		
+
 		hostname, _ := os.Hostname()
 		if hostname == "" {
 			hostname = "llm-gateway"
 		}
-		
+		// Suffix the port into the instance name: blue-green keeps TWO
+		// gateway processes (:8781/:8782) on one host, and hashicorp/mdns
+		// does no conflict probing — identical instance names would give
+		// one name two SRV records pointing at different ports.
+		instanceName := fmt.Sprintf("%s-%d", hostname, listenPort)
+
 		apis := []string{"openai", "anthropic", "gemini"}
 		lanAdvertiser = discovery.NewLANAdvertiser(
-			hostname,
+			instanceName,
 			listenPort,
 			Version(),
 			apis,
 		)
-		
+
 		// Use signal-cancellable context for proper shutdown coordination
 		if err := lanAdvertiser.Start(ctx); err != nil {
 			slog.Error("failed to start mDNS advertiser", "error", err)

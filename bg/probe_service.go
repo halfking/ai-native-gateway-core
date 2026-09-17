@@ -455,6 +455,13 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 			backoff = scaled
 		}
 	}
+	// 2026-09-17 (R39): a gateway-side error (decrypt/endpoint build) is this
+	// instance's config problem, not pair unhealthiness — pace the queue path
+	// at the fixed gateway-side delay exactly like the legacy runOne ladder,
+	// overriding both the chained ladder and the featured multiplier.
+	if isGatewaySideProbeError(errCode) {
+		backoff = nodeProbeGatewaySideRetryDelay
+	}
 	nextSec := int(backoff.Seconds())
 	if nextSec <= 0 {
 		nextSec = 5 // defensive floor for sub-second backoff (audit #6)
@@ -824,11 +831,22 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 			WHERE credential_id = $1 AND raw_model_name = $2`, credID, model)
 		return
 	}
+	// 2026-09-17 (R39): mirror the legacy runOne ladder's gateway-side guard —
+	// an endpoint/request build failure is THIS instance's config problem
+	// (e.g. it cannot decrypt credentials), not pair unhealthiness. Without
+	// the CASE WHEN below, a wrong-key instance rescheduling its own durable
+	// queue tasks advanced consecutive_failures on the SHARED row until
+	// v_node_probe_state_compat projected broken_confirmed (cf>=3) and
+	// brokenPairExcludeSQL excluded the pair from routing cluster-wide.
+	gatewaySide := false
+	if c := firstErrCode(direct, gw); c != nil {
+		gatewaySide = isGatewaySideProbeError(*c)
+	}
 	nextRetryAt := now.Add(backoff)
 	nextSec := int(backoff.Seconds())
 	_, _ = w.db.Exec(ctx, `
 		UPDATE node_probe_state SET
-			consecutive_failures = $3,
+			consecutive_failures = CASE WHEN $10::boolean THEN node_probe_state.consecutive_failures ELSE $3 END,
 			consecutive_successes = 0,
 			last_attempt_at = now(),
 			next_retry_at = $4,
@@ -841,7 +859,7 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 			updated_at = now()
 		WHERE credential_id = $1 AND raw_model_name = $2`,
 		credID, model, attempt, nextRetryAt, nextSec,
-		direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw))
+		direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw), gatewaySide)
 }
 
 // insertNodeProbeRun writes the forensic audit row (mirrors runOne's INSERT).

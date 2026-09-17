@@ -44,3 +44,10 @@
 重点：窗口内新增的成败反馈路径是否绕过统一状态模块直写状态。
 只读不改。输出按 conventions.md §4 结构，每条发现带 file:line 与触发路径。
 ```
+
+### R39 回注（2026-09-17，凭据误判事故修复批首审）
+- **守卫对称性**：任何"错误不推进共享状态"的守卫必须同时覆盖 legacy tick 路径与持久队列路径（runOne CASE WHEN ↔ mirrorNodeProbeState CASE WHEN、drainDue 熔断 ↔ processBatch 熔断）——20fb4c7a4 只修一半，队列通道 3 次重排即可集群级排除路由（R39 P1-1 已修，钉桩 bg/probe_service_gateway_side_test.go ×3）。
+- 探测"终态判定"语义审计：attempt 来源（cf+1 vs 队列重排序号）计任意错误类型，"连续 N 次同错误"需显式记录上轮 errCode（遗留：404 口径与事故文档表述偏差）。
+- endpoint_build 类错误码混流"实例错 key"与"凭据密文永久损坏"两种语义，绑定面无信号即此因（遗留）。
+- self-check/diagnostics 直读 model_probe_state 的残留面按 probeGuardStateTable/compat 视图逐个切换（R39 收口 probe_missing → v_node_probe_state_compat；legacy 模式下 nps 由 mirror 保持同构）。
+- SQL 注释与谓词漂移：expiredCmbRecoverySQL 曾宣称不存在的 next_retry_at 跳过（R39 改注释）。

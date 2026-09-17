@@ -34,3 +34,8 @@
 第二步：以窗口改动面为主扫描死代码/重复实现/误导注释/零调用接缝，按域文档 §3 清单核对。审计窗口：<窗口>。
 只读不改。输出按 conventions.md §4 结构，每条发现带 file:line；建议只到"标注/迁移"粒度。
 ```
+
+### R39 回注（2026-09-17）
+- **P0 抓获：main 分支网关不可编译**（cd76a7f0e 漏 import "net"，merge 入主后无人跑 build 门）。教训：直推 main 的提交，push 前至少 `go build ./cmd/gateway/`（仓库最大包，import 面最易漂移）。
+- gofmt 债随修复顺带清（R39 一并清 5 文件）；新导出符号若属分阶段特性，函数头补 `RESERVED(<特性>): ... 未接线` 标注（DiscoverGateways/IsRunning/Status 已标），防后续轮重复怀疑死代码。
+- go.mod 直接 import 的依赖勿留 // indirect（go mod tidy 归位 + go mod vendor 零 churn 验证）。

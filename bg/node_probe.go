@@ -238,7 +238,7 @@ type NodeProbeWorker struct {
 	// then half-opens to let ONE probe through — if the operator fixed
 	// the key the probe succeeds and resets the counter, otherwise the
 	// circuit re-closes. Any successful resolve resets the counter.
-	decryptFailures atomic.Int64
+	decryptFailures  atomic.Int64
 	decryptTrippedAt atomic.Int64 // unix seconds of the last trip; 0 = never
 }
 
