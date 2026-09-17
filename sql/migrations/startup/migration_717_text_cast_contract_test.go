@@ -6,16 +6,24 @@ import (
 	"testing"
 )
 
-// TestMigration717UsingExpressionsAreTextCastGuarded pins the R37 hardening
-// of 717 (flagged by e0f94a799's commit message): every USING expression that
-// applies a text operator (~ regex, IN ('true',...), = ”) to an aligned
-// column must read the column through an explicit ::text cast. After the R36
-// baseline hand-alignment a fresh install loads request_logs_hot already in
-// the mother types (customer_id bigint, protocol_conversion boolean, *_muta
-// tions/ir_extensions jsonb) BEFORE 717 runs — a bare `col ~ regex` raises
-// 42883 (operator does not exist: bigint ~ unknown) and aborts the fresh
-// install's startup chain.
-func TestMigration717UsingExpressionsAreTextCastGuarded(t *testing.T) {
+// TestMigration717ShapePins pins the structure of the live-DB-rewritten 717
+// (origin/main, "corrected same day after live-DB audit" — adopted at the
+// R37 merge):
+//
+//  1. NO customer_id clause — 574 already owns hot.customer_id text→bigint on
+//     every existing install and the baseline is born aligned; a `customer_id
+//     ~ regex` here is 42883 on bigint (the R36 Rev-1 bug, flagged by
+//     e0f94a799's commit message and re-derived by both parallel sessions).
+//  2. NO single whole-batch ALTER TABLE — PostgreSQL rejects ALTER COLUMN
+//     TYPE on ANY column a view depends on (transitively via pg_rewrite) with
+//     0A000, BEFORE comparing old/new types, so even a type-identical no-op
+//     dies when one statement touches a view-projected column (680's wrapper
+//     chain precedes 717 on every install). The rewrite uses per-column
+//     subtransactions with feature_not_supported handlers.
+//  3. Every ALTER is guarded by an information_schema data_type check, which
+//     makes the file a silent no-op on aligned (fresh-install) baselines.
+//  4. A post-batch report keeps residual drift visible.
+func TestMigration717ShapePins(t *testing.T) {
 	body, err := os.ReadFile("717_request_logs_hot_column_alignment.sql")
 	if err != nil {
 		t.Fatalf("read 717: %v", err)
@@ -23,47 +31,38 @@ func TestMigration717UsingExpressionsAreTextCastGuarded(t *testing.T) {
 	sql := string(body)
 
 	mustContain := []string{
-		// customer_id: text-cast regex + bounded digit count (bigint overflow
-		// debris maps to NULL instead of aborting the migration).
-		"customer_id::text ~ '^[0-9]{1,18}$'",
-		// protocol_conversion: bare `col IN ('true',...)` is boolean = text
-		// on an aligned boolean column.
-		"protocol_conversion::text IN ('true', 't', '1', 'yes')",
-		// ir_extensions / sanitizer_mutations: bare `= ''` and `~` are
-		// jsonb/text operator errors on aligned jsonb columns; the final
-		// cast round-trips losslessly. The pre-guard must alternate the
-		// JSON literals explicitly — a bare t/f/n char class admits words
-		// like "not-json" and then fails the ::jsonb parse it guards.
-		"ir_extensions::text = ''",
-		"ir_extensions::text ~ '^[[:space:]]*([\\[\\{\"-]|-?[0-9]|true|false|null)'",
-		"ir_extensions::text::jsonb",
-		"sanitizer_mutations::text = ''",
-		"sanitizer_mutations::text ~ '^[[:space:]]*([\\[\\{\"-]|-?[0-9]|true|false|null)'",
-		"sanitizer_mutations::text::jsonb",
+		"BEGIN;",                         // atomic batch
+		"feature_not_supported",          // per-column 0A000 resilience
+		"information_schema.columns",     // per-column type guards
+		"data_type = 'text'",             // drifted-state guard (varchar/jsonb/boolean sources)
+		"data_type = 'double precision'", // content_safety_score source (live fact)
+		"data_type = 'ARRAY'",            // dlp_violations text[] source (live fact)
+		"columns still off-target",       // post-batch report keeps drift visible
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(sql, want) {
-			t.Errorf("717 lost its ::text guard: %q not found; a fresh install (aligned baseline) would abort at 717 with 42883", want)
+			t.Errorf("717 lost a live-validated invariant: %q not found", want)
 		}
 	}
 
-	mustNotContain := []string{
+	// The withdrawn clause must stay withdrawn: a bare text-operator on
+	// customer_id is 42883 on the bigint column that 574 + the baseline
+	// already guarantee; re-adding it resurrects the fresh-install blocker.
+	// (SQL shapes only — the file header documents the withdrawn Rev-1 form
+	// and legitimately contains the literal.)
+	for _, banned := range []string{
 		"WHEN customer_id ~",
-		"WHEN protocol_conversion IN",
-		"WHEN ir_extensions ~",
-		"WHEN sanitizer_mutations ~",
-		"ir_extensions = ''",
-		"sanitizer_mutations = ''",
-	}
-	for _, banned := range mustNotContain {
+		"THEN customer_id::bigint",
+		"ALTER COLUMN customer_id TYPE",
+	} {
 		if strings.Contains(sql, banned) {
-			t.Errorf("717 regressed to a bare column operator: %q — on an aligned (fresh-install) hot table this is 42883", banned)
+			t.Errorf("717 resurrected the withdrawn customer_id clause: %q — 574 owns the text→bigint transition; the clause is 42883 on bigint", banned)
 		}
 	}
-	// R36's char-class pre-guard admitted words like "not-json" (n/t/f are in
-	// the class) and then failed the ::jsonb parse it was guarding (22P02 on
-	// drifted installs — caught live by the integration fixture).
-	if strings.Contains(sql, "0-9tfn-") {
-		t.Error(`717 regressed to the R36 char-class pre-guard "[\[\{"0-9tfn-]" — it admits "not-json"-shaped debris and aborts the migration with 22P02`)
+	// Per-column subtransactions are load-bearing: one view-dependent 0A000
+	// must not abort its siblings (the original single-statement batch died
+	// on the first view-projected column).
+	if got := strings.Count(sql, "EXCEPTION WHEN feature_not_supported"); got < 7 {
+		t.Errorf("717 has %d per-column 0A000 handlers, want ≥7 (one per guarded column)", got)
 	}
 }

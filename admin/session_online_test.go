@@ -41,15 +41,15 @@ func TestParseCursor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ts, err := ParseCursor(tt.cursor)
+			parsed, err := parseOnlineSessionCursor(tt.cursor)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseCursor() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("parseOnlineSessionCursor() error = %v, wantErr %v", err, tt.wantErr)
 			}
-			if tt.wantZero && !ts.IsZero() {
-				t.Errorf("ParseCursor() expected zero time, got %v", ts)
+			if tt.wantZero && !parsed.UpdatedAt.IsZero() {
+				t.Errorf("parseOnlineSessionCursor() expected zero time, got %v", parsed.UpdatedAt)
 			}
-			if !tt.wantZero && !tt.wantErr && ts.IsZero() {
-				t.Errorf("ParseCursor() got zero time, expected valid timestamp")
+			if !tt.wantZero && !tt.wantErr && parsed.UpdatedAt.IsZero() {
+				t.Errorf("parseOnlineSessionCursor() got zero time, expected valid timestamp")
 			}
 		})
 	}
@@ -57,9 +57,9 @@ func TestParseCursor(t *testing.T) {
 
 func mustEncodeCursor(t *testing.T, ts time.Time) string {
 	t.Helper()
-	cursor, err := EncodeCursor(ts)
+	cursor, err := encodeOnlineSessionCursor(ts, "")
 	if err != nil {
-		t.Fatalf("EncodeCursor() error = %v", err)
+		t.Fatalf("encodeOnlineSessionCursor() error = %v", err)
 	}
 	return cursor
 }
@@ -68,18 +68,18 @@ func mustEncodeCursor(t *testing.T, ts time.Time) string {
 func TestEncodeCursor(t *testing.T) {
 	t.Setenv("CURSOR_HMAC_SECRET", "test-secret-key-0123456789012345")
 	ts := time.Date(2026, 8, 13, 10, 30, 0, 123456789, time.UTC)
-	cursor, err := EncodeCursor(ts)
+	cursor, err := encodeOnlineSessionCursor(ts, "")
 	if cursor == "" {
-		t.Errorf("EncodeCursor() returned empty string")
+		t.Errorf("encodeOnlineSessionCursor() returned empty string")
 	}
 
 	// 验证往返一致性
-	decoded, err := ParseCursor(cursor)
+	decoded, err := parseOnlineSessionCursor(cursor)
 	if err != nil {
-		t.Errorf("ParseCursor(EncodeCursor()) error = %v", err)
+		t.Errorf("parseOnlineSessionCursor(encodeOnlineSessionCursor()) error = %v", err)
 	}
-	if !decoded.Equal(ts) {
-		t.Errorf("round-trip failed: got %v, want %v", decoded, ts)
+	if !decoded.UpdatedAt.Equal(ts) {
+		t.Errorf("round-trip failed: got %v, want %v", decoded.UpdatedAt, ts)
 	}
 }
 
@@ -122,45 +122,60 @@ func TestNormalizePaginationParams(t *testing.T) {
 	}
 }
 
-// TestBuildPaginationResponse 测试分页响应构建。
-func TestBuildPaginationResponse(t *testing.T) {
+// TestBuildOnlineSessionPaginationResponse 测试分页响应构建。
+func TestBuildOnlineSessionPaginationResponse(t *testing.T) {
 	t.Setenv("CURSOR_HMAC_SECRET", "test-secret-key-0123456789012345")
 	ts := time.Date(2026, 8, 13, 10, 30, 0, 0, time.UTC)
 
 	tests := []struct {
-		name        string
-		items       int
-		lastTS      time.Time
-		limit       int
-		wantHasMore bool
+		name          string
+		hasMore       bool
+		lastTS        time.Time
+		lastSessionID string
+		wantHasMore   bool
+		wantErr       bool
 	}{
 		{
-			name:        "items < limit → no more",
-			items:       10,
+			name:        "no more → no cursor",
+			hasMore:     false,
 			lastTS:      ts,
-			limit:       20,
 			wantHasMore: false,
 		},
 		{
-			name:        "items == limit → has more",
-			items:       20,
-			lastTS:      ts,
-			limit:       20,
-			wantHasMore: true,
+			name:          "has more → cursor emitted",
+			hasMore:       true,
+			lastTS:        ts,
+			lastSessionID: "session-abc",
+			wantHasMore:   true,
+		},
+		{
+			name:          "zero lastTS → error",
+			hasMore:       true,
+			lastSessionID: "session-abc",
+			wantErr:       true,
+		},
+		{
+			name:    "empty sessionID → error",
+			hasMore: true,
+			lastTS:  ts,
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp, err := BuildPaginationResponse(tt.items, tt.lastTS, tt.limit)
+			resp, err := buildOnlineSessionPaginationResponse(tt.hasMore, tt.lastTS, tt.lastSessionID)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("buildOnlineSessionPaginationResponse() error = %v, wantErr %v", err, tt.wantErr)
+			}
 			if err != nil {
-				t.Fatalf("BuildPaginationResponse() error = %v", err)
+				return
 			}
 			if resp.HasMore != tt.wantHasMore {
-				t.Errorf("BuildPaginationResponse() has_more = %v, want %v", resp.HasMore, tt.wantHasMore)
+				t.Errorf("buildOnlineSessionPaginationResponse() has_more = %v, want %v", resp.HasMore, tt.wantHasMore)
 			}
 			if resp.HasMore && resp.NextCursor == "" {
-				t.Errorf("BuildPaginationResponse() has_more=true but next_cursor is empty")
+				t.Errorf("buildOnlineSessionPaginationResponse() has_more=true but next_cursor is empty")
 			}
 		})
 	}

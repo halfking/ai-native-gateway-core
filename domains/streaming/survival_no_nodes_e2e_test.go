@@ -67,8 +67,8 @@ func (noNodesKeyVerifier) LookupKeyMeta(context.Context, string) (*authenticatio
 
 // noNodesExecutor always fails the candidate walk with KindNoAvailableChannel;
 // foldCandidateOutcomes synthesizes the corresponding wait-recovery outcome
-// and the coordinator enters its retry loop. calls counts every invocation
-// — all retry-count assertions read this field.
+// and the coordinator enters its retry loop. calls counts every entry so the
+// tests can assert the retry count precisely.
 type noNodesExecutor struct {
 	calls int64
 }
@@ -107,15 +107,14 @@ func newNoNodesHandler(t *testing.T, retryInterval time.Duration, attemptsCap in
 // helper: read SSE stream chunk-by-chunk with a hard timeout
 // ---------------------------------------------------------------------------
 
-// streamRead reads from body into out until either maxBytes have been read,
-// the read loop observes an error, or the deadline elapses. It returns the
-// bytes collected and the deadline-relative remaining time (for chained
-// assertions).
+// streamRead drains body into a string until maxBytes have been read, the
+// reader hits EOF or a terminal read error, or the deadline elapses. It is
+// best-effort: on deadline the partial bytes read so far are returned.
 //
 // R37 race fix: the reader goroutine and the String() read below shared the
 // buffer unsynchronized — after a deadline lapse (scenario b's disconnect
-// path) the goroutine may still be mid-Write while the test reads. Snapshot
-// the bytes under the same mutex the writer holds.
+// path) the goroutine may still be mid-Write while the test reads (caught by
+// -race). Snapshot the bytes under the same mutex the writer holds.
 func streamRead(t *testing.T, body io.Reader, maxBytes int, deadline time.Duration) string {
 	t.Helper()
 	var mu sync.Mutex
@@ -253,7 +252,10 @@ func TestSurvivalNoNodesStopsImmediatelyOnClientDisconnect(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	body := strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/v1/chat/completions", body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/v1/chat/completions", body)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
 	req.Header.Set("Authorization", "Bearer sk-test")
 	req.Header.Set("Content-Type", "application/json")
 
@@ -280,13 +282,15 @@ func TestSurvivalNoNodesStopsImmediatelyOnClientDisconnect(t *testing.T) {
 	_ = resp.Body.Close()
 
 	// Give the server a moment to observe ctx.Done() and exit the loop. The
-	// coordinator's loop checks ctx.Err() at the top of each iteration; once
-	// the client cancels, no further executor calls should happen.
+	// coordinator checks ctx.Err() at the top of every iteration and inside
+	// the interruptible sleep, so after cancel at most ONE in-flight attempt
+	// (already past the loop-top check when cancel landed) can still enter
+	// the executor; no further attempt may start.
 	time.Sleep(retryInterval * 3)
 	callsAfterCancel := atomic.LoadInt64(&exec.calls)
-	if callsAfterCancel-callsAtCancel > 2 {
-		t.Fatalf("executor kept running after client disconnect: before=%d after=%d (delta=%d, want ≤2)",
-			callsAtCancel, callsAfterCancel, callsAfterCancel-callsAtCancel)
+	if delta := callsAfterCancel - callsAtCancel; delta > 1 {
+		t.Fatalf("executor kept running after client disconnect: before=%d after=%d (delta=%d, want ≤1)",
+			callsAtCancel, callsAfterCancel, delta)
 	}
 }
 

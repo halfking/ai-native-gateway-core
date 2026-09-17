@@ -53,13 +53,6 @@ func WithConnectionMonitorIdleTimeout(d time.Duration) ConnectionMonitorOption {
 		}
 	}
 }
-func WithConnectionMonitorClock(now func() time.Time) ConnectionMonitorOption {
-	return func(m *ConnectionMonitor) {
-		if now != nil {
-			m.now = now
-		}
-	}
-}
 func WithConnectionMonitorProbe(probe func() bool) ConnectionMonitorOption {
 	return func(m *ConnectionMonitor) {
 		if probe != nil {

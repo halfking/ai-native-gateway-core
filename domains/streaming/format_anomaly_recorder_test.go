@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -85,6 +86,60 @@ func TestFormatAnomalyRecorder_RecordAnomaly(t *testing.T) {
 				t.Errorf("first arg should be request_id, got %v", db.execArgs[0])
 			}
 		})
+	}
+}
+
+// TestFormatAnomalyRecorder_StructureArgMustBeString is the regression guard
+// for the 2026-09-17 PG log audit finding: response_format_anomalies stayed
+// at 0 rows forever because the recorder passed json.Marshal's []byte as the
+// response_structure arg. pgx's simple protocol (db.Open forces
+// QueryExecModeSimpleProtocol) text-encodes []byte as bytea hex ("\x7b..."),
+// which the jsonb column rejects with 22P02 on every insert. The arg must be
+// a Go string so it lands as a JSON text literal.
+func TestFormatAnomalyRecorder_StructureArgMustBeString(t *testing.T) {
+	db := &mockDB{}
+	recorder := NewFormatAnomalyRecorder(db)
+	err := recorder.RecordAnomaly(context.Background(), AnomalyRecord{
+		RequestID:   "req-structure-string",
+		AnomalyType: AnomalyZeroCompletion,
+		Severity:    SeverityMedium,
+		Structure:   map[string]any{"has_usage": false},
+	})
+	if err != nil {
+		t.Fatalf("RecordAnomaly() error = %v", err)
+	}
+	// response_structure is $12 in the 14-arg insert.
+	structureArg, ok := db.execArgs[11].(string)
+	if !ok {
+		t.Fatalf("response_structure arg must be string (pgx simple protocol encodes []byte as bytea hex), got %T", db.execArgs[11])
+	}
+	if structureArg != `{"has_usage":false}` {
+		t.Errorf("unexpected structure payload: %q", structureArg)
+	}
+	if !strings.Contains(db.execQuery, "$12::text::jsonb") {
+		t.Errorf("insert must cast response_structure via $12::text::jsonb, got: %s", db.execQuery)
+	}
+}
+
+func TestFormatAnomalyRecorder_DataAnomalyStructureArgMustBeString(t *testing.T) {
+	db := &mockDB{}
+	recorder := NewFormatAnomalyRecorder(db)
+	err := recorder.RecordDataAnomaly(context.Background(),
+		"persistence_failed", "high", "req-data-structure-string",
+		"request_wal_hot persist failed", map[string]any{"batch_index": 3})
+	if err != nil {
+		t.Fatalf("RecordDataAnomaly() error = %v", err)
+	}
+	// response_structure is $4 in the 6-arg insert.
+	structureArg, ok := db.execArgs[3].(string)
+	if !ok {
+		t.Fatalf("response_structure arg must be string (pgx simple protocol encodes []byte as bytea hex), got %T", db.execArgs[3])
+	}
+	if !strings.Contains(structureArg, `"batch_index"`) {
+		t.Errorf("unexpected structure payload: %q", structureArg)
+	}
+	if !strings.Contains(db.execQuery, "$4::text::jsonb") {
+		t.Errorf("insert must cast response_structure via $4::text::jsonb, got: %s", db.execQuery)
 	}
 }
 

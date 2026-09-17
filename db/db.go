@@ -159,6 +159,11 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureCredentialPlanQuotaProbeBackoff(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-17 (087 自愈): provider_templates 健康反馈三列。freediscovery
+	// 扫描调度器的失败计数/自动禁用分支每周期读写，缺列即 42703 空转。
+	if err := db.ensureFreediscoveryTemplateHealth(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-11 migration 693: provider_models.canonical_cleared_at 是管理员
 	// 解绑持久化标记，clear_canonical PATCH / discovery upsert / 健康检查都在
 	// 读它。升级库缺列时这些路径整体 42703（实测），必须在服务流量前补齐。
@@ -286,6 +291,19 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 		return err
 	}
 	if err := db.ensureProbeStateFunctionFixes(migCtx); err != nil {
+		return err
+	}
+	// 2026-09-17 (promote 函数在位修复，ensureProbeStateFunctionFixes 同族):
+	//   - dashboard_access_events promote 装回了 579 的坏列投影（714 钉扎
+	//     从 579 原体复制所致），每 promote 周期 42703、hot 只进不出；
+	//   - session_bodies promote 的 (id, partition_date) 仲裁覆盖不到父表
+	//     (tenant_id, request_id, partition_date) 唯一键，final_full 毒丸行
+	//     每周期 23505、整批晋升永远失败。
+	// PartitionManager 在 db.Open 之后才启动，两个修复必须在启动路径生效。
+	if err := db.ensureDashboardAccessEventsPromotePinned(migCtx); err != nil {
+		return err
+	}
+	if err := db.ensureSessionBodiesPromoteDrain(migCtx); err != nil {
 		return err
 	}
 	if err := db.ensureNodeProbeTriggerKindSchema(migCtx); err != nil {
@@ -1545,6 +1563,286 @@ func (d *DB) ensureProviderModelsCanonicalClearedAt(ctx context.Context) error {
 		return fmt.Errorf("ensure provider_models canonical_cleared_at: %w", err)
 	}
 	slog.Info("provider_models canonical_cleared_at ensured (migration 693)")
+	return nil
+}
+
+// ensureFreediscoveryTemplateHealth mirrors sql/migrations/087-freediscovery-health-feedback.sql.
+//
+// 2026-09-17 PG 日志审计（本机 llm_gateway 库 184 次 42703 实测）：087 的
+// provider_templates 健康反馈三列只进了仓库根迁移文件，而根迁移没有自动
+// 投递通道——bg/scan_scheduler 的失败计数/自动禁用分支与
+// domains/freediscovery 的模板详情查询每个周期 42703，扫描健康反馈闭环
+// 空转。本 ensure 与 693 同一"二进制启动即自愈"兜底模式。
+// 幂等：纯 ADD COLUMN IF NOT EXISTS + CREATE INDEX IF NOT EXISTS，
+// 已应用库上为 no-op。
+func (d *DB) ensureFreediscoveryTemplateHealth(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE public.provider_templates
+		    ADD COLUMN IF NOT EXISTS consecutive_scan_failures INT DEFAULT 0,
+		    ADD COLUMN IF NOT EXISTS last_scan_failure_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS auto_disabled_at TIMESTAMPTZ;
+
+		CREATE INDEX IF NOT EXISTS idx_provider_templates_health
+		    ON public.provider_templates(consecutive_scan_failures)
+		    WHERE enabled = FALSE AND auto_disabled_at IS NOT NULL;
+
+		COMMENT ON COLUMN public.provider_templates.consecutive_scan_failures IS
+		    'Health feedback: consecutive scan failure count; resets to 0 on success, increments on failure, auto-disables at >=3';
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('087', 'freediscovery template health feedback columns (consecutive_scan_failures/last_scan_failure_at/auto_disabled_at)')
+		ON CONFLICT (version) DO NOTHING;
+	`)
+	if err != nil {
+		return fmt.Errorf("ensure provider_templates health feedback columns: %w", err)
+	}
+	slog.Info("provider_templates health feedback schema ensured (migration 087)")
+	return nil
+}
+
+// ensureDashboardAccessEventsPromotePinned repairs
+// public.promote_dashboard_access_events_hot_to_partition in place.
+//
+// 2026-09-17 PG 日志审计（本机 llm_gateway 库 108 次 42703 实测）：迁移 579
+// 安装本函数时列投影写的是一张并不存在的 v2 形态（dashboard_id/widget_id/
+// occurred_at 等，Go 写端 telemetry/dashboard_events.go 从未写过这些列），
+// 607 已修正为 383/451 的真实 23 列形态；而 714 的时区钉扎从 579 原体
+// 复制、把坏投影装了回去，于是每个 promote 周期 SELECT 第一句即
+// 42703，dashboard_access_events_hot 只进不出。本 ensure 取 607 正体 +
+// 714 的 Asia/Shanghai 钉扎（date_trunc 月份分组必须与
+// ensure_dashboard_events_partition 的 +08 边界一致，703 同理）。
+// 幂等：CREATE OR REPLACE FUNCTION，函数体与目标一致时为 no-op。
+// 投递通道：纯 ensure（ensureProbeStateFunctionFixes 的 301/302 先例），
+// 不新增 startup 迁移文件，避免双通道登记漂移。
+func (d *DB) ensureDashboardAccessEventsPromotePinned(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION public.promote_dashboard_access_events_hot_to_partition(
+		    p_retention interval DEFAULT '8 hours',
+		    p_batch_size integer DEFAULT 5000
+		)
+		RETURNS bigint
+		LANGUAGE plpgsql
+		AS $function$
+		DECLARE
+		    v_moved bigint := 0;
+		    v_month_value timestamptz;
+		BEGIN
+		    SET LOCAL TIME ZONE 'Asia/Shanghai';
+		    IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN
+		        RAISE EXCEPTION 'p_retention must be positive';
+		    END IF;
+		    IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 100000 THEN
+		        RAISE EXCEPTION 'p_batch_size must be between 1 and 100000';
+		    END IF;
+
+		    PERFORM pg_advisory_xact_lock(
+		        hashtextextended('public.promote_dashboard_access_events_hot_to_partition', 0)
+		    );
+
+		    CREATE TEMP TABLE _dae_promotion_batch ON COMMIT DROP AS
+		    SELECT event_id, event_type, timestamp, tenant_id, user_id, user_role,
+		           session_id, api_path, api_method, api_version, query_params,
+		           status_code, response_time_ms, cache_hit, data_size, error_code,
+		           error_message, client_ip, user_agent, referer, db_query_time_ms,
+		           cache_query_time_ms, created_at
+		    FROM public.dashboard_access_events_hot
+		    WHERE created_at < statement_timestamp() - p_retention
+		    ORDER BY created_at, event_id
+		    LIMIT p_batch_size
+		    FOR UPDATE SKIP LOCKED;
+
+		    IF NOT EXISTS (SELECT 1 FROM _dae_promotion_batch) THEN
+		        RETURN 0;
+		    END IF;
+
+		    FOR v_month_value IN
+		        SELECT DISTINCT date_trunc('month', created_at)::timestamptz
+		        FROM _dae_promotion_batch
+		    LOOP
+		        PERFORM public.ensure_dashboard_events_partition(v_month_value::date);
+		    END LOOP;
+
+		    WITH moved_rows AS (
+		        DELETE FROM public.dashboard_access_events_hot h
+		        USING _dae_promotion_batch b
+		        WHERE h.event_id = b.event_id
+		          AND h.created_at = b.created_at
+		        RETURNING h.event_id, h.event_type, h.timestamp, h.tenant_id,
+		                  h.user_id, h.user_role, h.session_id, h.api_path,
+		                  h.api_method, h.api_version, h.query_params, h.status_code,
+		                  h.response_time_ms, h.cache_hit, h.data_size, h.error_code,
+		                  h.error_message, h.client_ip, h.user_agent, h.referer,
+		                  h.db_query_time_ms, h.cache_query_time_ms, h.created_at
+		    ), inserted_rows AS (
+		        INSERT INTO public.dashboard_access_events (
+		            event_id, event_type, timestamp, tenant_id, user_id, user_role,
+		            session_id, api_path, api_method, api_version, query_params,
+		            status_code, response_time_ms, cache_hit, data_size, error_code,
+		            error_message, client_ip, user_agent, referer, db_query_time_ms,
+		            cache_query_time_ms, created_at
+		        )
+		        SELECT event_id, event_type, timestamp, tenant_id, user_id, user_role,
+		               session_id, api_path, api_method, api_version, query_params,
+		               status_code, response_time_ms, cache_hit, data_size, error_code,
+		               error_message, client_ip, user_agent, referer, db_query_time_ms,
+		               cache_query_time_ms, created_at
+		        FROM moved_rows
+		        RETURNING 1
+		    )
+		    SELECT count(*) INTO v_moved FROM inserted_rows;
+
+		    RETURN v_moved;
+		END;
+		$function$;
+
+		COMMENT ON FUNCTION public.promote_dashboard_access_events_hot_to_partition(INTERVAL, INTEGER) IS
+		    'hot -> partitioned parent drain for dashboard_access_events (607-corrected legacy projection + Asia/Shanghai pin, gateway in-place repair 2026-09-17). Invoked by bg.PartitionManager.promoteSpecs() every promote tick; batched via p_batch_size.';
+	`)
+	if err != nil {
+		return fmt.Errorf("ensure dashboard_access_events promote function: %w", err)
+	}
+	slog.Info("dashboard_access_events promote function repaired (607 body + Asia/Shanghai pin)")
+	return nil
+}
+
+// ensureSessionBodiesPromoteDrain repairs
+// public.promote_session_bodies_hot_to_partition in place (708 body + drain).
+//
+// 2026-09-17 PG 日志审计（本机 llm_gateway 库同一 (tenant_id, request_id,
+// partition_date) 键 65 轮 23505 实测）：708 的晋升走
+// ON CONFLICT (id, partition_date) DO NOTHING，但父表还有
+// session_bodies_tenant_request_partition_key UNIQUE
+// (tenant_id, request_id, partition_date)。final_full 行被晋升进父表后，
+// 写端 bodies_writer.WriteFinalFullInTx 的 upsert 在 hot 找不到行会以新 id
+// 重插；下轮晋升撞父表的 tenant/request 唯一键——整批回滚，该行永远晋升
+// 不出去，每个 promote 周期报错一次，hot 窗口被毒丸行卡死。
+//
+// 修复语义（承 626/708 的守卫、advisory lock、列契约校验，动态列清单不变）：
+//   - 插入改为不带仲裁目标的 ON CONFLICT DO NOTHING，任何唯一键冲突都跳过；
+//   - 增加 reconciled CTE：父表已有同 (tenant_id, request_id,
+//     partition_date) 异 id 行时，按写端 upsert 语义把父行内容刷新为 hot
+//     载荷（只刷内容列与 ts，不触碰任何唯一键列）；
+//   - deleted 覆盖"本轮插入成功"与"本轮已 reconcile"两类，hot 窗口必排干。
+//
+// 无需 Asia/Shanghai 钉扎：本函数不做 date_trunc 月份分组，分区路由由行
+// 自带 partition_date 决定。投递通道：纯 ensure（同
+// ensureDashboardAccessEventsPromotePinned）。
+func (d *DB) ensureSessionBodiesPromoteDrain(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION public.promote_session_bodies_hot_to_partition(
+		    retention_window interval DEFAULT '8 hours',
+		    batch_size integer DEFAULT 5000
+		)
+		RETURNS TABLE(moved_count bigint)
+		LANGUAGE plpgsql
+		AS $function$
+		DECLARE
+		    cutoff_ts timestamptz;
+		    v_parent_shape TEXT;
+		    v_hot_shape TEXT;
+		    v_cols TEXT;
+		BEGIN
+		    IF retention_window IS NULL OR retention_window <= interval '0 seconds' THEN
+		        RAISE EXCEPTION 'retention_window must be positive';
+		    END IF;
+		    IF batch_size IS NULL OR batch_size < 1 THEN
+		        RAISE EXCEPTION 'batch_size must be >= 1';
+		    END IF;
+
+		    IF to_regclass('public.session_bodies_hot') IS NULL
+		       OR to_regclass('public.session_bodies') IS NULL THEN
+		        RAISE EXCEPTION 'session_bodies hot and parent tables must both exist';
+		    END IF;
+
+		    SELECT COALESCE(string_agg(attname || ':' || format_type(atttypid, atttypmod)
+		                      || ':' || attnotnull, E'\n' ORDER BY attname), '')
+		      INTO v_parent_shape
+		      FROM pg_attribute
+		     WHERE attrelid = 'public.session_bodies'::regclass
+		       AND attnum > 0 AND NOT attisdropped;
+		    SELECT COALESCE(string_agg(attname || ':' || format_type(atttypid, atttypmod)
+		                      || ':' || attnotnull, E'\n' ORDER BY attname), '')
+		      INTO v_hot_shape
+		      FROM pg_attribute
+		     WHERE attrelid = 'public.session_bodies_hot'::regclass
+		       AND attnum > 0 AND NOT attisdropped;
+		    IF v_parent_shape IS DISTINCT FROM v_hot_shape THEN
+		        RAISE EXCEPTION 'session_bodies hot/parent column contract has drifted (column set mismatch)';
+		    END IF;
+
+		    SELECT string_agg(quote_ident(attname), ',' ORDER BY attnum)
+		      INTO v_cols
+		      FROM pg_attribute
+		     WHERE attrelid = 'public.session_bodies_hot'::regclass
+		       AND attnum > 0 AND NOT attisdropped;
+
+		    cutoff_ts := now() - retention_window;
+
+		    IF NOT pg_try_advisory_xact_lock(hashtext('public.promote_session_bodies_hot_to_partition')) THEN
+		        RETURN QUERY SELECT 0::bigint;
+		        RETURN;
+		    END IF;
+
+		    EXECUTE format(
+		        'WITH to_move AS (
+		            SELECT %1$s
+		            FROM public.session_bodies_hot
+		            WHERE ts < %3$L::timestamptz
+		            ORDER BY ts
+		            LIMIT %2$s
+		            FOR UPDATE SKIP LOCKED
+		        ),
+		        inserted AS (
+		            INSERT INTO public.session_bodies (%1$s)
+		            SELECT %1$s FROM to_move
+		            ON CONFLICT DO NOTHING
+		            RETURNING id, partition_date
+		        ),
+		        reconciled AS (
+		            UPDATE public.session_bodies s
+		            SET request_delta = m.request_delta,
+		                response_delta = m.response_delta,
+		                outbound_body = m.outbound_body,
+		                request_attachments = m.request_attachments,
+		                response_attachments = m.response_attachments,
+		                ts = m.ts
+		            FROM to_move m
+		            WHERE s.tenant_id = m.tenant_id
+		              AND s.request_id = m.request_id
+		              AND s.partition_date = m.partition_date
+		              AND s.id <> m.id
+		            RETURNING m.id AS hot_id
+		        ),
+		        deleted AS (
+		            DELETE FROM public.session_bodies_hot h
+		            WHERE EXISTS (SELECT 1 FROM inserted i
+		                          WHERE i.id = h.id AND i.partition_date = h.partition_date)
+		               OR EXISTS (SELECT 1 FROM reconciled r WHERE r.hot_id = h.id)
+		            RETURNING 1
+		        )
+		        SELECT count(*) FROM deleted', v_cols, batch_size::text, cutoff_ts::text)
+		    INTO moved_count;
+
+		    RETURN QUERY SELECT moved_count;
+		END;
+		$function$;
+
+		COMMENT ON FUNCTION public.promote_session_bodies_hot_to_partition(interval, integer) IS
+		    'Atomically move old rows from session_bodies_hot to monthly partitions (708 contract checks + tenant/request-key conflict reconcile so hot window always drains). Rejects NULL or non-positive retention_window/batch_size (638 semantics kept).';
+	`)
+	if err != nil {
+		return fmt.Errorf("ensure session_bodies promote function: %w", err)
+	}
+	slog.Info("session_bodies promote function repaired (conflict-drain semantics)")
 	return nil
 }
 
@@ -4108,346 +4406,7 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		return
 	}
 
-	_, err = tx.Exec(ctx, `
-		DROP VIEW IF EXISTS v_model_health_dashboard CASCADE;
-		DROP VIEW IF EXISTS v_probe_queue_snapshot CASCADE;
-		DROP VIEW IF EXISTS v_model_priority_details CASCADE;
-		DROP VIEW IF EXISTS v_probe_system_health CASCADE;
-		DROP VIEW IF EXISTS v_model_availability_timeline CASCADE;
-		DROP VIEW IF EXISTS v_node_probe_state_compat CASCADE;
-		DROP FUNCTION IF EXISTS get_model_state_summary(TEXT) CASCADE;
-
-		-- v_node_probe_state_compat: 单一节点状态事实源(node_probe_state)到
-		-- 旧 model_probe_state 词汇的兼容投影。定义由 NodeProbeCompatViewSQL()
-		-- 提供(db/probe_views_unified.go),migration 716 与基线文件保持同步。
-		` + NodeProbeCompatViewSQL() + `;
-
-		CREATE OR REPLACE VIEW v_model_health_dashboard AS
-		WITH real24 AS (
-		    -- 真实请求 24h 反馈(排除探测流量):请求结果影响节点状态的展示闭环。
-		    -- 单次聚合后按 (credential, model) JOIN,避免逐行 LATERAL 扫分区。
-		    SELECT
-		        rl.credential_id,
-		        lower(COALESCE(rl.outbound_model, rl.client_model)) AS model_name,
-		        COUNT(*) FILTER (WHERE rl.success) AS ok_24h,
-		        COUNT(*) FILTER (WHERE NOT rl.success) AS fail_24h,
-		        MAX(rl.ts) AS last_real_request_at
-		    FROM request_logs_with_current_month rl
-		    WHERE rl.ts > NOW() - INTERVAL '24 hours'
-		      AND COALESCE(rl.task_type, '') <> 'probe_triggered'
-		      AND NOT ('probe' = ANY(rl.quality_flags))
-		    GROUP BY rl.credential_id, lower(COALESCE(rl.outbound_model, rl.client_model))
-		),
-		model_stats AS (
-		    SELECT
-		        mps.raw_model_name,
-		        mps.raw_model_name as outbound_model_name,
-		        'openai-completions' as protocol,
-		        p.display_name as provider_name,
-
-		        COUNT(*) as total_credentials,
-		        COUNT(*) FILTER (WHERE mps.state IN ('healthy_confirmed', 'healthy')) as healthy_count,
-		        COUNT(*) FILTER (WHERE mps.state = 'suspicious') as suspicious_count,
-		        COUNT(*) FILTER (WHERE mps.state IN ('failing', 'recovering', 'broken_confirmed')) as failing_count,
-		        COUNT(*) FILTER (WHERE mps.state = 'probing') as probing_count,
-
-		        SUM(CASE WHEN mps.consecutive_failures >= 3 THEN 1 ELSE 0 END) as urgent_count,
-		        COUNT(*) FILTER (WHERE mps.state = 'suspicious') as suspicious_priority_count,
-		        COUNT(*) FILTER (WHERE mps.state IN ('failing', 'recovering', 'broken_confirmed')) as failing_priority_count,
-		        COUNT(*) FILTER (WHERE mps.state = 'healthy_confirmed') as watchdog_count,
-
-		        AVG(CASE WHEN mps.total_attempts > 0
-		            THEN mps.consecutive_successes::float / mps.total_attempts * 100
-		            ELSE NULL END) as avg_success_rate_7d,
-		        AVG(EXTRACT(EPOCH FROM (mps.next_retry_at - NOW())) / 3600) as avg_verification_hours,
-		        AVG(mps.consecutive_successes) as avg_consecutive_successes,
-
-		        COALESCE(SUM(real24.ok_24h), 0) as total_real_success_24h,
-		        COALESCE(SUM(real24.fail_24h), 0) as total_real_failure_24h,
-
-		        MAX(mps.last_attempt_at) as last_verified_at,
-		        MAX(real24.last_real_request_at) as last_real_request_at,
-		        MIN(mps.next_retry_at) as next_probe_at,
-
-		        SUM(CASE WHEN mps.state IN ('failing', 'recovering', 'broken_confirmed')
-		                  AND mps.consecutive_failures >= 3
-		             THEN 1 ELSE 0 END) as critical_nodes,
-
-		        COUNT(*) FILTER (
-		            WHERE mps.next_retry_at <= NOW() + INTERVAL '5 minutes'
-		              AND mps.state != 'probing'
-		              AND mps.paused = FALSE
-		        ) as pending_probes_5min
-
-		    FROM v_node_probe_state_compat mps
-		    JOIN credentials c ON c.id = mps.credential_id
-		    JOIN providers p ON p.id = c.provider_id
-		    LEFT JOIN real24
-		      ON real24.credential_id = mps.credential_id
-		     AND real24.model_name = lower(mps.raw_model_name)
-		    WHERE COALESCE(c.status, 'active') = 'active'
-		      AND COALESCE(c.lifecycle_status, 'active') = 'active'
-		      AND COALESCE(c.manual_disabled, FALSE) = FALSE
-		    GROUP BY mps.raw_model_name, p.display_name
-		)
-		SELECT
-		    0 as provider_model_id,
-		    raw_model_name,
-		    outbound_model_name,
-		    protocol,
-		    provider_name,
-		    total_credentials,
-		    healthy_count,
-		    suspicious_count,
-		    failing_count,
-		    probing_count,
-		    ROUND(healthy_count * 100.0 / NULLIF(total_credentials, 0), 1) as healthy_percentage,
-		    ROUND(failing_count * 100.0 / NULLIF(total_credentials, 0), 1) as failing_percentage,
-		    urgent_count,
-		    suspicious_priority_count,
-		    failing_priority_count,
-		    watchdog_count,
-		    ROUND(avg_success_rate_7d::numeric, 2) as avg_success_rate_7d,
-		    ROUND(avg_verification_hours::numeric, 1) as avg_verification_hours,
-		    ROUND(avg_consecutive_successes::numeric, 1) as avg_consecutive_successes,
-		    total_real_success_24h,
-		    total_real_failure_24h,
-		    CASE
-		        WHEN (total_real_success_24h + total_real_failure_24h) > 0
-		        THEN ROUND((total_real_success_24h * 100.0 / (total_real_success_24h + total_real_failure_24h))::numeric, 2)
-		        ELSE NULL
-		    END as real_success_rate_24h,
-		    last_verified_at,
-		    last_real_request_at,
-		    next_probe_at,
-		    critical_nodes,
-		    pending_probes_5min,
-		    CASE
-		        WHEN critical_nodes > 0 THEN 'critical'
-		        WHEN ROUND(failing_count * 100.0 / NULLIF(total_credentials, 0), 1) > 20 THEN 'warning'
-		        WHEN ROUND(failing_count * 100.0 / NULLIF(total_credentials, 0), 1) > 10 THEN 'degraded'
-		        WHEN ROUND(healthy_count * 100.0 / NULLIF(total_credentials, 0), 1) >= 90 THEN 'healthy'
-		        ELSE 'normal'
-		    END as overall_health
-		FROM model_stats
-		ORDER BY
-		    CASE
-		        WHEN critical_nodes > 0 THEN 1
-		        WHEN urgent_count > 0 THEN 2
-		        WHEN ROUND(failing_count * 100.0 / NULLIF(total_credentials, 0), 1) > 20 THEN 3
-		        ELSE 4
-		    END,
-		    total_credentials DESC,
-		    raw_model_name;
-
-		CREATE OR REPLACE VIEW v_probe_queue_snapshot AS
-		SELECT
-		    sub.probe_priority,
-		    sub.state,
-		    COUNT(*) as queue_size,
-		    COUNT(*) FILTER (WHERE sub.next_retry_at <= NOW()) as ready_now,
-		    COUNT(*) FILTER (WHERE sub.next_retry_at <= NOW() + INTERVAL '1 minute') as ready_1min,
-		    COUNT(*) FILTER (WHERE sub.next_retry_at <= NOW() + INTERVAL '5 minutes') as ready_5min,
-		    MIN(sub.next_retry_at) as earliest_retry_at,
-		    MAX(sub.next_retry_at) as latest_retry_at,
-		    AVG(EXTRACT(EPOCH FROM (NOW() - sub.last_attempt_at))) as avg_wait_seconds,
-		    MAX(EXTRACT(EPOCH FROM (NOW() - sub.last_attempt_at))) as max_wait_seconds
-		FROM (
-		    SELECT
-		    CASE
-		        WHEN mps.consecutive_failures >= 3 THEN 'urgent'
-		        WHEN mps.state = 'suspicious' THEN 'suspicious'
-		        WHEN mps.state = 'broken_confirmed' THEN 'failing'
-		        ELSE NULL
-		    END as probe_priority,
-		        mps.state,
-		        mps.next_retry_at,
-		        mps.last_attempt_at
-		    FROM v_node_probe_state_compat mps
-		    JOIN credentials c ON c.id = mps.credential_id
-		    WHERE mps.state IN ('suspicious', 'broken_confirmed')
-		      AND mps.paused = FALSE
-		      AND COALESCE(c.status, 'active') = 'active'
-		      AND COALESCE(c.lifecycle_status, 'active') = 'active'
-		      AND COALESCE(c.manual_disabled, FALSE) = FALSE
-		) sub
-		GROUP BY sub.probe_priority, sub.state
-		ORDER BY
-		    CASE
-		        WHEN sub.probe_priority = 'urgent' THEN 1
-		        WHEN sub.probe_priority = 'suspicious' THEN 2
-		        WHEN sub.probe_priority = 'failing' THEN 3
-		        WHEN sub.probe_priority = 'watchdog' THEN 4
-		        ELSE 5
-		    END,
-		    sub.state;
-
-		CREATE OR REPLACE VIEW v_model_priority_details AS
-		SELECT
-		    mps.raw_model_name,
-		    mps.raw_model_name as outbound_model_name,
-		    CASE
-		        WHEN mps.consecutive_failures >= 3 THEN 'urgent'
-		        WHEN mps.state = 'suspicious' THEN 'suspicious'
-		        WHEN mps.state = 'broken_confirmed' THEN 'failing'
-		        ELSE 'watchdog'
-		    END as probe_priority,
-		    mps.state,
-		    c.id as credential_id,
-		    c.label as credential_label,
-		    p.display_name as provider_name,
-		    mps.last_attempt_at as last_verified_at,
-		    mps.next_retry_at,
-		    mps.updated_at as marked_suspicious_at,
-		    CASE WHEN mps.in_flight_until > NOW() THEN mps.in_flight_until END as probing_started_at,
-		    mps.consecutive_successes,
-		    mps.consecutive_failures,
-		    0 as consecutive_watchdog_successes,
-		    CASE WHEN mps.total_attempts > 0
-		         THEN mps.consecutive_successes::float / mps.total_attempts * 100
-		         ELSE NULL END as success_rate_7d,
-		    (mps.next_retry_at - NOW()) as verification_interval,
-		    0 as real_success_24h,
-		    0 as real_failure_24h,
-		    mps.last_attempt_at as last_real_request_at,
-		    mps.last_err_detail as last_unavailable_reason,
-		    mps.last_status as last_err_code,
-		    CASE
-		        WHEN mps.next_retry_at <= NOW() THEN 'ready'
-		        WHEN mps.next_retry_at <= NOW() + INTERVAL '1 minute' THEN '<1min'
-		        WHEN mps.next_retry_at <= NOW() + INTERVAL '5 minutes' THEN '<5min'
-		        WHEN mps.next_retry_at <= NOW() + INTERVAL '1 hour' THEN '<1h'
-		        ELSE '>1h'
-		    END as retry_in,
-		    EXTRACT(EPOCH FROM (NOW() - mps.updated_at)) / 60 as state_duration_minutes
-		FROM v_node_probe_state_compat mps
-		JOIN credentials c ON c.id = mps.credential_id
-		JOIN providers p ON p.id = c.provider_id
-		WHERE COALESCE(c.status, 'active') = 'active'
-		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
-		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
-		ORDER BY
-		    mps.raw_model_name,
-		    CASE
-		        WHEN mps.consecutive_failures >= 3 THEN 1
-		        WHEN mps.state = 'suspicious' THEN 2
-		        WHEN mps.state = 'broken_confirmed' THEN 3
-		        ELSE 4
-		    END,
-		    c.id;
-
-		CREATE OR REPLACE VIEW v_probe_system_health AS
-		SELECT
-		    (SELECT COUNT(*) FROM v_node_probe_state_compat) as total_nodes,
-		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state IN ('healthy_confirmed', 'healthy')) as healthy_nodes,
-		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state IN ('failing', 'broken_confirmed')) as failing_nodes,
-		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state = 'suspicious') as suspicious_nodes,
-		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state = 'probing') as probing_nodes,
-		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE consecutive_failures >= 3) as urgent_queue_size,
-		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state = 'suspicious') as suspicious_queue_size,
-		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state IN ('failing', 'broken_confirmed')) as failing_queue_size,
-		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state = 'healthy_confirmed') as watchdog_queue_size,
-		    (SELECT COUNT(*) FROM v_node_probe_state_compat
-		     WHERE next_retry_at <= NOW() AND state != 'probing' AND paused = FALSE) as ready_probes,
-		    (SELECT COUNT(*) FROM v_node_probe_state_compat WHERE state = 'probing') as current_probing,
-		    (SELECT COUNT(DISTINCT credential_id) FROM v_node_probe_state_compat
-		     WHERE state = 'probing') as credentials_being_probed,
-		    (SELECT ROUND(AVG(CASE WHEN total_attempts > 0
-		                           THEN consecutive_successes::float / total_attempts * 100
-		                           ELSE NULL END)::numeric, 2)
-		     FROM v_node_probe_state_compat) as avg_success_rate_7d,
-		    (SELECT MAX(last_attempt_at) FROM v_node_probe_state_compat) as last_probe_at,
-		    (SELECT MAX(last_state_change_at) FROM v_node_probe_state_compat) as last_real_request_at,
-		    (SELECT COALESCE(SUM(ok_24h), 0) FROM (
-		         SELECT COUNT(*) FILTER (WHERE rl.success) AS ok_24h
-		         FROM request_logs_with_current_month rl
-		         WHERE rl.ts > NOW() - INTERVAL '24 hours'
-		           AND COALESCE(rl.task_type, '') <> 'probe_triggered'
-		           AND NOT ('probe' = ANY(rl.quality_flags))
-		     ) s) as total_real_success_24h,
-		    (SELECT COALESCE(SUM(fail_24h), 0) FROM (
-		         SELECT COUNT(*) FILTER (WHERE NOT rl.success) AS fail_24h
-		         FROM request_logs_with_current_month rl
-		         WHERE rl.ts > NOW() - INTERVAL '24 hours'
-		           AND COALESCE(rl.task_type, '') <> 'probe_triggered'
-		           AND NOT ('probe' = ANY(rl.quality_flags))
-		     ) s) as total_real_failure_24h,
-		    (SELECT COUNT(*) FROM v_node_probe_state_compat
-		     WHERE state IN ('failing', 'broken_confirmed')
-		       AND consecutive_failures >= 5) as critical_nodes,
-		    (SELECT COUNT(*) FROM v_node_probe_state_compat
-		     WHERE next_retry_at <= NOW() + INTERVAL '5 minutes'
-		       AND state != 'probing' AND paused = FALSE) as pending_probes_5min,
-		    NOW() as snapshot_at;
-
-		CREATE OR REPLACE VIEW v_model_availability_timeline AS
-		SELECT
-		    npr.raw_model_name,
-		    npr.raw_model_name as outbound_model_name,
-		    DATE_TRUNC('hour', npr.started_at) as hour_bucket,
-		    COUNT(*) as total_probes,
-		    COUNT(*) FILTER (WHERE npr.direct_ok) as successful_probes,
-		    COUNT(*) FILTER (WHERE NOT npr.direct_ok) as failed_probes,
-		    ROUND((COUNT(*) FILTER (WHERE npr.direct_ok) * 100.0 / COUNT(*))::numeric, 2) as success_rate,
-		    AVG(npr.direct_latency_ms) FILTER (WHERE npr.direct_ok) as avg_latency_ms,
-		    COUNT(DISTINCT npr.credential_id) as probed_credentials,
-		    COUNT(DISTINCT npr.credential_id) FILTER (WHERE npr.direct_ok) as successful_credentials,
-		    COUNT(DISTINCT npr.credential_id) FILTER (WHERE NOT npr.direct_ok) as failed_credentials
-		FROM node_probe_runs npr
-		WHERE npr.started_at >= NOW() - INTERVAL '24 hours'
-		GROUP BY npr.raw_model_name, DATE_TRUNC('hour', npr.started_at)
-		ORDER BY npr.raw_model_name, hour_bucket DESC;
-
-		CREATE OR REPLACE FUNCTION get_model_state_summary(p_raw_model_name TEXT)
-		RETURNS TABLE (
-		    state TEXT,
-		    priority TEXT,
-		    count BIGINT,
-		    avg_success_rate NUMERIC,
-		    next_probe_in_seconds INTEGER
-		)
-		LANGUAGE SQL
-		STABLE
-		AS $$
-		    SELECT
-		        sub.state::TEXT,
-		        sub.priority::TEXT,
-		        COUNT(*) as count,
-		        ROUND(AVG(CASE WHEN sub.total_attempts > 0
-		                       THEN sub.consecutive_successes::float / sub.total_attempts * 100
-		                       ELSE NULL END)::numeric, 2) as avg_success_rate,
-		        EXTRACT(EPOCH FROM MIN(sub.next_retry_at - NOW()))::INTEGER as next_probe_in_seconds
-		    FROM (
-		        SELECT
-		            mps.state,
-		            mps.consecutive_successes,
-		            mps.total_attempts,
-		            mps.next_retry_at,
-		            CASE
-		                WHEN mps.consecutive_failures >= 3 THEN 'urgent'
-		                WHEN mps.state = 'suspicious' THEN 'suspicious'
-		                WHEN mps.state = 'broken_confirmed' THEN 'failing'
-		                ELSE 'watchdog'
-		            END as priority
-		        FROM v_node_probe_state_compat mps
-		        JOIN credentials c ON c.id = mps.credential_id
-		        WHERE mps.raw_model_name = p_raw_model_name
-		          AND COALESCE(c.status, 'active') = 'active'
-		          AND COALESCE(c.lifecycle_status, 'active') = 'active'
-		          AND COALESCE(c.manual_disabled, FALSE) = FALSE
-		    ) sub
-		    GROUP BY sub.state, sub.priority
-		    ORDER BY
-		        CASE sub.priority
-		            WHEN 'urgent' THEN 1
-		            WHEN 'suspicious' THEN 2
-		            WHEN 'failing' THEN 3
-		            WHEN 'watchdog' THEN 4
-		            ELSE 5
-		        END,
-		        sub.state;
-		$$;
-	`)
+	_, err = tx.Exec(ctx, probeHealthDashboardViewsSQL())
 	if err != nil {
 		// Non-fatal: the gateway must still serve traffic even if the
 		// admin dashboard views are unavailable. The probe-health page

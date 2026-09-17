@@ -6,6 +6,17 @@ _dl_die() { printf 'error: %s\n' "$*" >&2; return 1; }
 _dl_have() { command -v "$1" >/dev/null 2>&1; }
 _dl_bool() { [[ "${1:-}" == 1 || "${1:-}" == true || "${1:-}" == yes ]]; }
 
+# Fail-closed guard for dl_wait_pg_isready (DL_PG_PREFLIGHT_REQUIRED=1) and
+# any other lib primitive that must TERMINATE the deploy, not merely return
+# nonzero — a bare return would fall through `|| true` callers and fail open.
+# deploy-local.sh defines its own branded die() after sourcing this file and
+# overrides this fallback; the fallback exists so sourcing the lib alone
+# (tests, upgrade/seamless tooling) never degrades `die` into
+# "command not found" (exit 127) where fail-closed only holds by accident.
+if ! declare -F die >/dev/null 2>&1; then
+  die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+fi
+
 # Use native paths for the current shell. Git Bash/MSYS accepts /d/kaixuan,
 # while the displayed contract remains D:/kaixuan.
 dl_default_root() {
@@ -630,27 +641,41 @@ dl_wait_http() {
 # Fix: before docker run / nohup, prove PG answers SELECT 1 — via docker exec
 # into the pg container (Docker mode; container-local view) or directly at
 # the DSN host:port (native mode). Timeout 90s covers PG recovery windows
-# seen locally. R37 (2026-09-17): DSN component validation made reachable
-# (the old sed-exit-code guard never fired) and the container name is
-# resolved once per call (the log previously expanded the function name
-# literally).
+# seen locally.
+# R37 (2026-09-17): DSN component validation made reachable (the old
+# sed-exit-code guard never fired — both sessions found it independently) and
+# the container name is resolved once per call (the log previously expanded
+# the function name literally).
+# 2026-09-17 audit wrap (origin): env DL_PG_PREFLIGHT_REQUIRED gates the
+# timeout outcome. Default 0 (warn-only) keeps the historical `|| true`
+# behavior so callers degrade gracefully and the in-gateway
+# LLM_GATEWAY_DB_BOOT_RETRY_SECONDS budget (90s, see dl_write_env) still has
+# a chance to recover. Set DL_PG_PREFLIGHT_REQUIRED=1 to make a probe timeout
+# fatal (die); 245 preprod validates this path before enabling it broadly.
 dl_wait_pg_isready() {
+  local required="${DL_PG_PREFLIGHT_REQUIRED:-0}"
   local dsn="${LLM_GATEWAY_DATABASE_URL:-${DATABASE_URL:-}}"
   if [[ -z "$dsn" ]]; then
     log 'no DATABASE_URL configured; skipping PG pre-flight'
     return 0
   fi
   local user pass host port db
-  # R37 fix: sed -n returns exit 0 even with no match, so the old `! user=$(...)`
-  # guard was unreachable dead code — unparseable DSNs sailed through with
-  # empty/garbage components and burned the full 90s budget per start attempt.
-  user=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://([^:]+):.*|\2|p') || true
-  pass=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://[^:]+:([^@]+)@.*|\2|p') || true
-  host=$(printf '%s' "$dsn" | sed -nE 's|^.*@([^:]+):.*|\1|p') || true
-  port=$(printf '%s' "$dsn" | sed -nE 's|^.*@[^:]+:([0-9]+).*|\1|p') || true
-  db=$(printf '%s' "$dsn" | sed -nE 's|^.*/([^?]+).*|\1|p') || true
+  # R37 (2026-09-17, both sessions independently): sed -n returns exit 0 even
+  # with no match, so the original `if ! user=$(... ) || ! ...` chain could
+  # never fire — an unparseable DSN slid through with empty parts and burned
+  # the full 90s probing nothing. Extract first, then require the parts every
+  # probe needs (pass may be empty for passwordless DSNs).
+  user=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://([^:]+):.*|\2|p')
+  pass=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://[^:]+:([^@]+)@.*|\2|p')
+  host=$(printf '%s' "$dsn" | sed -nE 's|^.*@([^:]+):.*|\1|p')
+  port=$(printf '%s' "$dsn" | sed -nE 's|^.*@[^:]+:([0-9]+).*|\1|p')
+  db=$(printf '%s' "$dsn" | sed -nE 's|^.*/([^?]+).*|\1|p')
   if [[ -z "$user" || -z "$host" || -z "$port" || -z "$db" ]]; then
-    warn 'could not parse DATABASE_URL into user/host/port/db; skipping PG pre-flight'
+    if [[ "$required" == "1" ]]; then
+      die 'PG pre-flight: could not parse DATABASE_URL — fail-closed (DL_PG_PREFLIGHT_REQUIRED=1)'
+    fi
+    warn 'could not parse DATABASE_URL; skipping PG pre-flight'
+
     return 0
   fi
   # R37 fix: the old probe_host remap only fired under DL_DOCKER but was only
@@ -664,7 +689,7 @@ dl_wait_pg_isready() {
   # making it indistinguishable from "function never called").
   local pg_container
   pg_container=$(dl_pg_container_name)
-  log "PG pre-flight: probing host=$host port=$port db=$db (docker=$DL_DOCKER pg_container=${pg_container:-<none>})"
+  log "PG pre-flight: probing host=$host port=$port db=$db (docker=$DL_DOCKER pg_container=${pg_container:-<none>} required=$required)"
   local deadline=$(( $(date +%s) + 90 )) attempt=0
   while (( $(date +%s) < deadline )); do
     attempt=$(( attempt + 1 ))
@@ -690,6 +715,9 @@ dl_wait_pg_isready() {
     fi
     sleep 2
   done
+  if [[ "$required" == "1" ]]; then
+    die "PG pre-flight timed out after 90s ($host:$port, db=$db) — fail-closed (DL_PG_PREFLIGHT_REQUIRED=1); gateway would have hit database:null in 20s; refusing to start the container"
+  fi
   warn "PG pre-flight timed out after 90s ($host:$port, db=$db); gateway boot retry will have to absorb the remaining warmup"
   return 1
 }

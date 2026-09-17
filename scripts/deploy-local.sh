@@ -213,11 +213,14 @@ detect_existing_containers() {
         detect_redis_container || true
       fi
       
-      # Configure PostgreSQL if found
-      [[ -n "$DL_PG_CONTAINER" ]] && configure_postgres_container
-      
-      # Configure Redis if found
-      [[ -n "$DL_REDIS_CONTAINER" && "${MINIMAL_DEPLOY:-0}" == 0 ]] && configure_redis_container
+      # Configure PostgreSQL if found. if-form: under `set -e` a false
+      # `[[ … ]] && cmd` statement would silently kill the whole deploy
+      # when no PG container exists and the caller supplied an external
+      # DATABASE_URL (external-DB mode, 2026-09-17 verify deploy).
+      if [[ -n "$DL_PG_CONTAINER" ]]; then configure_postgres_container; fi
+
+      # Configure Redis if found (same set -e hazard as above).
+      if [[ -n "$DL_REDIS_CONTAINER" && "${MINIMAL_DEPLOY:-0}" == 0 ]]; then configure_redis_container; fi
     else
       # Fallback to original discovery logic if smart discovery not available
       for c in llm-gateway-pg postgres kx-citus; do
@@ -236,7 +239,7 @@ detect_existing_containers() {
           done
         fi
       fi
-      [[ -n "$DL_PG_CONTAINER" ]] && {
+      if [[ -n "$DL_PG_CONTAINER" ]]; then
         docker start "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
         DL_DB_MODE=docker
         DL_PG_SOURCE=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Source}}{{end}}{{end}}' "$DL_PG_CONTAINER" 2>/dev/null || true)
@@ -269,8 +272,8 @@ detect_existing_containers() {
             fi
           fi
         fi
-      }
-      [[ -n "$DL_REDIS_CONTAINER" && "${MINIMAL_DEPLOY:-0}" == 0 ]] && {
+      fi
+      if [[ -n "$DL_REDIS_CONTAINER" && "${MINIMAL_DEPLOY:-0}" == 0 ]]; then
         docker start "$DL_REDIS_CONTAINER" >/dev/null 2>&1 || true
         DL_REDIS_MODE=docker
         local redis_addr
@@ -285,7 +288,7 @@ detect_existing_containers() {
           redis_addr="127.0.0.1:${redis_port}"
         fi
         export LLM_GATEWAY_REDIS_ADDR="$redis_addr"
-      }
+      fi
     fi
   fi
 }
@@ -565,7 +568,7 @@ build_backend() {
   # step_release 打包（2026-09-05 事故：编译失败被赋值语境的 set -e 怪癖
   # 静默吞掉，两个新版本号打包了同一个 4 小时前的旧二进制）。
   rm -f "$out"
-  if ! (cd "$PROJECT_ROOT" && CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" go build -trimpath -ldflags='-s -w' -o "$out" ./cmd/gateway) 2>"$RUN_DIR/build-host.log"; then
+  if ! (cd "$PROJECT_ROOT" && CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$out" ./cmd/gateway) 2>"$RUN_DIR/build-host.log"; then
     # 2026-09-07: 上游 0e3fa12f6 线引入了 CGO-only 依赖（mattn/go-sqlite3、
     # yalue/onnxruntime_go，见 Dockerfile 2026-09-05 的 CGO_ENABLED=1 注），
     # 纯静态 CGO=0 构建自此后必然失败（"build constraints exclude all Go
@@ -624,7 +627,7 @@ build_backend() {
         -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH="$target_arch" \
         -e GOCACHE=/tmp/go-build-cache -e GOPATH=/tmp/go-path \
         "$build_image" \
-        sh -c 'apk add --no-cache gcc musl-dev >/dev/null && go build -trimpath -ldflags="-s -w" -o /src/.build-local/gateway.build.'"$$"' ./cmd/gateway && chown "$HOST_UID:$HOST_GID" /src/.build-local/gateway.build.'"$$") 2>"$cgo_log"; then
+        sh -c 'apk add --no-cache gcc musl-dev >/dev/null && go build -trimpath -buildvcs=false -ldflags="-s -w" -o /src/.build-local/gateway.build.'"$$"' ./cmd/gateway && chown "$HOST_UID:$HOST_GID" /src/.build-local/gateway.build.'"$$") 2>"$cgo_log"; then
       printf '    [cgo-build stderr follows]\n' >&2
       sed 's/^/    /' "$cgo_log" >&2 || true
       die "backend CGO container build failed (GOOS=linux GOARCH=$target_arch); full log: $cgo_log"
@@ -764,8 +767,10 @@ start_instance() {
   # 的 cutover 重试只在容器重启层面绕，无法绕过 gateway 进程内的
   # 一次性 openDBWithBootRetry 决策。修法：start_instance 顶层先做 PG
   # pre-flight，从 gateway 视角确认 DSN 可用 + SELECT 1 通过，再起容器。
-  # pre-flight 超时（90s）仅 warn 不 fail：仍有 LLM_GATEWAY_DB_BOOT_RETRY_SECONDS
-  # 兜底（dl_write_env 已上调到 90s）。
+  # pre-flight 超时（90s）默认仅 warn 不 fail：仍有 LLM_GATEWAY_DB_BOOT_RETRY_SECONDS
+  # 兜底（dl_write_env 已上调到 90s）。设置 DL_PG_PREFLIGHT_REQUIRED=1
+  # 切到 fail-closed 模式：超时直接 die，阻止容器启动进入 database:null
+  # 死区；默认 0 保持向后兼容，245 preprod 验证后才会开 1。
   dl_wait_pg_isready || true
   if (( DL_DOCKER )); then
     local image="${LLM_GATEWAY_RUNTIME_IMAGE:-alpine:3.22}" image_file="$RUN_DIR/runtime.Dockerfile"

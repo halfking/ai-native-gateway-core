@@ -8,17 +8,37 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/internal/probemode"
 )
 
 // BrokenProbeReviver re-queues model_probe_state rows stuck in
 // 'broken_confirmed' so the ModelProbeRunner gives them another chance.
+//
+// R36 (2026-09-17, legacy-probe-mode only): under the new probe mode
+// (LLM_GATEWAY_USE_NEW_PROBE_MODE, default true) model_probe_state is a
+// frozen table — the new system owns verdicts in node_probe_state, and a
+// paused node_probe_state row re-arms itself on the next real failure via
+// NodeProbeWorker.Submit. Reviving frozen legacy rows here would dissolve
+// the credential-recovery all-models-broken guard (state flips
+// broken_confirmed → recovering) and re-admit credentials the new system
+// has proven dead, so revive() is a no-op in that mode.
 type BrokenProbeReviver struct {
-	db          *pgxpool.Pool
+	db          reviveDB
 	interval    time.Duration
 	reviveAfter time.Duration
 	stopCh      chan struct{}
 	stopOnce    sync.Once
+	skipOnce    sync.Once
+}
+
+// reviveDB is the narrow handle BrokenProbeReviver needs. Production wires
+// *pgxpool.Pool; tests inject a pgxmock pool (same pattern as
+// CredentialRecovery.credentialRecoveryDB).
+type reviveDB interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
 func NewBrokenProbeReviver(db *pgxpool.Pool, interval, reviveAfter time.Duration) *BrokenProbeReviver {
@@ -64,6 +84,12 @@ func (w *BrokenProbeReviver) revive(ctx context.Context) error {
 	if w.db == nil {
 		return nil
 	}
+	if newProbeModeEnabled() {
+		w.skipOnce.Do(func() {
+			slog.Info("broken_probe_reviver disabled: new probe mode owns probe verdicts (model_probe_state frozen); node_probe_state paused rows re-arm via Submit")
+		})
+		return nil
+	}
 	tag, err := w.db.Exec(ctx, `
 		UPDATE model_probe_state
 		SET state = 'recovering', consecutive_failures = 1, next_retry_at = NOW(), last_state_change_at = NOW()
@@ -93,4 +119,11 @@ func envDuration(key string, def time.Duration) time.Duration {
 		return def
 	}
 	return time.Duration(n) * time.Second
+}
+
+// newProbeModeEnabled mirrors cmd/gateway's useNewProbeMode; the canonical
+// parse lives in internal/probemode so bg-side guards cannot disagree with
+// the worker-gating decision made at startup.
+func newProbeModeEnabled() bool {
+	return probemode.Enabled()
 }

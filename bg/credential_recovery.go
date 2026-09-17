@@ -16,6 +16,8 @@ import (
 	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability (2026-08-23 hzx-2 audit)
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"github.com/kaixuan/llm-gateway-go/internal/probemode"
 )
 
 // credentialRecoveryDB is the minimal database contract CredentialRecovery
@@ -296,6 +298,23 @@ const maxRecoveryProbeDispatch = 8
 // dispatchProbe runs a recovery callback asynchronously while bounding the
 // number of callbacks in flight. Recovery callbacks may perform database I/O;
 // tracking them also lets Stop drain work before the worker exits.
+
+// probeGuardStateTable returns the (credential, model) probe-verdict source
+// for the availability-recovery all-models-broken guard.
+//
+// R36 (2026-09-17, R36 遗留#3): under the new probe mode (default)
+// model_probe_state is frozen — reading it here kept credentials suspended
+// forever once its rows said broken_confirmed (nothing would ever flip them
+// back), while the only thing un-freezing them was BrokenProbeReviver
+// dissolving the guard wholesale. Read the live system's verdict instead:
+// v_node_probe_state_compat projects node_probe_state into the same
+// (credential_id, raw_model_name, state) vocabulary, so broken_confirmed
+// tracks the NEW system's consecutive_failures >= 3 in real time. Legacy
+// mode keeps reading model_probe_state, which legacy workers still update.
+func probeGuardStateTable() string {
+	return probemode.GuardStateTable() + " mps"
+}
+
 func (r *CredentialRecovery) dispatchProbe(fn func()) {
 	if r == nil || fn == nil {
 		return
@@ -594,7 +613,7 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		  AND NOT (
 		      -- 子查询1: 计算broken且不可用的模型数
 		      (SELECT COUNT(*)
-		       FROM model_probe_state mps
+		       FROM ` + probeGuardStateTable() + `
 		       JOIN provider_models pm ON pm.raw_model_name = mps.raw_model_name
 		       JOIN credential_model_bindings cmb
 		            ON cmb.credential_id = mps.credential_id
