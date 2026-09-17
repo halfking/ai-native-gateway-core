@@ -157,6 +157,9 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// (design §五 Phase 1 item 3; renumbered 721→723 after the balance
 		// metadata migration took 721 mid-round).
 		"723_rls_enable_attachments_and_cfl_old.sql": rlsEnableAttachmentsAndCflOldMigration723,
+		// 724 (7106e1c5b, parallel session) landed with four of five sync
+		// points; parity coverage added by R40-followup (2026-09-18).
+		"724_task_type_corrections.sql": taskTypeCorrectionsMigration724,
 	}
 
 	for name, embedded := range expected {

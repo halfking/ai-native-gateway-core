@@ -26,6 +26,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/taskprofile"
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
 	"github.com/kaixuan/llm-gateway-go/domains/session"      //nolint:depguard // session state manager
@@ -1350,6 +1351,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/api/admin/annotations/batch", admin(h.handleBatchAnnotate))
 		mux.HandleFunc("/api/admin/annotations/", admin(h.handleDeleteAnnotation)) // DELETE /annotations/{request_id}
 		mux.HandleFunc("/api/admin/annotations", admin(h.handleCreateAnnotation))  // POST /annotations
+
+		// taskprofile (2026-09-18): 任务类型档案 + 逐请求人工修正反馈闭环。
+		// Consolidates task taxonomy + model-tier data in one plugin-style
+		// module; corrections feed routingopt.PostClassify (human ×2 weight).
+		// Same admin middleware tier as the P2.1 annotation endpoints.
+		taskprofile.NewHandlers(h.db).RegisterTaskProfileRoutes(mux, admin)
 
 		// P2.2 Track C (2026-09-07): routing-opt admin API — stats / accuracy /
 		// parameters / metrics. DB-only: aggregates routing_feedback_log +

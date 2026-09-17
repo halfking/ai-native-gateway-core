@@ -169,6 +169,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"721_credential_balance_source_and_error.sql",
 			"722_durable_family_schema_convergence.sql",
 			"723_rls_enable_attachments_and_cfl_old.sql",
+			// 724 (2026-09-18): taskprofile per-request human task-type
+			// corrections (renumbered from a colliding 721 after R40 landed).
+			"724_task_type_corrections.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}

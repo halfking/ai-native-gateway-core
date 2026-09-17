@@ -451,6 +451,9 @@ var durableFamilySchemaConvergenceMigration722 []byte
 //go:embed embeddata/startup/723_rls_enable_attachments_and_cfl_old.sql
 var rlsEnableAttachmentsAndCflOldMigration723 []byte
 
+//go:embed embeddata/startup/724_task_type_corrections.sql
+var taskTypeCorrectionsMigration724 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -594,6 +597,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/721_credential_balance_source_and_error.sql":                            credentialBalanceSourceAndErrorMigration721,
 	"startup/722_durable_family_schema_convergence.sql":                              durableFamilySchemaConvergenceMigration722,
 	"startup/723_rls_enable_attachments_and_cfl_old.sql":                             rlsEnableAttachmentsAndCflOldMigration723,
+	"startup/724_task_type_corrections.sql":                                          taskTypeCorrectionsMigration724,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 

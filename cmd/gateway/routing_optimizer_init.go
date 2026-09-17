@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/routingopt"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	"github.com/kaixuan/llm-gateway-go/taskprofile"
 )
 
 // routing_optimizer_init.go — P2.2: wires the routing optimization plugin
@@ -63,6 +66,16 @@ func buildRoutingOptimizer(pool *pgxpool.Pool, rdb *redis.Client) *routingopt.Re
 		EnableAffinityCache: flags.AffinityCacheEnabled,
 	}
 	optimizer := routingopt.NewRealOptimizerWithOptions(pool, opts)
+	// taskprofile (2026-09-18): human task-type corrections (admin
+	// /api/admin/task-profile/corrections) blend into PostClassify
+	// confidence damping with the human ×2 weight. Adapter type below keeps
+	// routingopt and taskprofile mutually import-free.
+	correctionStore := taskprofile.NewCorrectionStore(pool)
+	// Correction verdicts also feed the in-process classification feedback
+	// aggregator, giving the previously unwired Prometheus counters their
+	// first producer.
+	correctionStore.SetRecorder(autoroute.NewClassificationFeedbackAggregator())
+	optimizer.WithCorrectionSource(taskprofileCorrectionSource{store: correctionStore})
 	slog.Info("autoroute: routing optimizer enabled",
 		"classification_enhancement", flags.EnableClassificationEnhancement,
 		"model_recommendation", flags.EnableModelRecommendation,
@@ -110,6 +123,39 @@ func buildRoutingOptimizer(pool *pgxpool.Pool, rdb *redis.Client) *routingopt.Re
 	// detection loop, gated by ROUTING_OPT_ADAPTIVE_LEARNING (default false).
 	startAdaptiveMaintenance(optimizer, flags.EnableAdaptiveLearning)
 	return optimizer
+}
+
+// taskprofileCorrectionSource adapts taskprofile.CorrectionStore to the
+// routingopt.CorrectionSource interface. The adapter lives here (not in
+// either package) so routingopt and taskprofile stay mutually import-free.
+type taskprofileCorrectionSource struct{ store *taskprofile.CorrectionStore }
+
+func (a taskprofileCorrectionSource) CorrectionStats(ctx context.Context, since time.Time) (map[string]routingopt.TaskCorrectionStat, error) {
+	stats, err := a.store.Stats(ctx, since)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]routingopt.TaskCorrectionStat, len(stats))
+	for taskType, s := range stats {
+		out[taskType] = routingopt.TaskCorrectionStat{Total: s.Total, Agrees: s.Agrees}
+	}
+	return out, nil
+}
+
+// initTaskProfile loads the profile overlay file once at startup,
+// independent of ROUTING_OPT_ENABLED — the admin task-profile API works even
+// with the optimizer off. Called from main with the shared DB pool.
+func initTaskProfile() {
+	if overlay := os.Getenv(taskprofile.OverlayEnvVar); overlay != "" {
+		if v, err := taskprofile.LoadOverlay(overlay); err != nil {
+			// Failed overlays never half-apply (LoadOverlay is atomic); the
+			// embedded defaults stay active and startup continues.
+			slog.Warn("taskprofile: overlay load failed, embedded defaults stay active",
+				"file", overlay, "err", err)
+		} else {
+			slog.Info("taskprofile: profile overlay loaded", "version", v, "file", overlay)
+		}
+	}
 }
 
 // adaptiveMaintenanceInterval is the cadence of the online-learning loop
