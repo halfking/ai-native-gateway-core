@@ -233,12 +233,16 @@ func (c *StorageConfig) ApplyLiteDefaults() {
 // lite 模式委托给 ApplyLiteDefaults。mode 为空/非法时不做任何事（由
 // Validate 报错），方便调用方按 "Load → ApplyDefaults → Validate" 排序。
 //
-// 2026-09-18 升级：默认 100→200，配合 PG max_connections=1000（2026-09-18
-// 在 252 + 本地同步落地，ALTER SYSTEM）。单 pod 总占 PG =
-// db.Open 主 pool 32 + storage 池 200 = 232 conn；按 db.go 注释"31 pod ×
-// 32 = 992"的设计空间，全集群留 ≥25% 头给 admin/exporter/replication 峰值。
-// 仍可通过 LLM_GATEWAY_STORAGE_MAX_CONNECTIONS env 显式上调（单 pod 演示
-// 环境 200-500 都安全）。
+// ⚠️ 消费范围（2026-09-18 审计澄清，作废早期错误注释）：生产网关不消费
+// 本默认值——main 从不调用 ApplyDefaults，业务 PG 池由 db.Open 构造，
+// 上限旋钮是 LLM_GATEWAY_DB_MAX_CONNS（默认 32）。Full.MaxConnections 仅当
+// 调用方显式走 NewStorageFactory(mode=full) 时才生效（当前生产无此路径：
+// factory full 分支为桩，见 storage/factory/stubs.go；initStorageMode 仅
+// lite 构造工厂）。早期注释"单 pod 总占 PG = 32 + 200 = 232 conn"因此作废：
+// 生产 pool 只有 32，不要拿本字段或连接计数推断生产池容量，以启动日志
+// "postgres connected max_conns=N" 为准。2026-09-18 默认 100→200 保留：
+// 配合 PG max_connections=1000（252 + 本地 ALTER SYSTEM）为未来 full 接线
+// 预留安全值，单 pod 演示环境（独占 PG）200-500 均安全。
 func (c *StorageConfig) ApplyDefaults() {
 	if c == nil {
 		return

@@ -437,6 +437,22 @@ func main() {
 	// nil-safe：full/未启用模式为 no-op。
 	storageRt.disableRedisEnv()
 
+	// ── LLM_GATEWAY_STORAGE_MAX_CONNECTIONS 误导护栏（2026-09-18 PG 池配置澄清）──
+	// 非 lite 模式（生产 full / 未启用双模式）下，业务 PG 池由 db.Open 构造，
+	// 上限旋钮是 LLM_GATEWAY_DB_MAX_CONNS；本 env 只喂 storage factory
+	// （lite 的 SQLite MaxOpenConns / 未来 full 接线），对生产 pool 无效。
+	// 曾因混淆把该 env 当生效旋钮并以连接计数"证实"（2026-09-18 假阳性
+	// 复盘），此处启动期显式告警，验证一律以
+	// "postgres connected max_conns=N" 日志为准。
+	if storageRt == nil {
+		if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_STORAGE_MAX_CONNECTIONS")); v != "" {
+			slog.Warn("LLM_GATEWAY_STORAGE_MAX_CONNECTIONS set but does NOT cap the full-mode gateway PG pool",
+				"effective_knob", "LLM_GATEWAY_DB_MAX_CONNS",
+				"scope", "storage factory only (lite SQLite / future full wiring)",
+				"value", v)
+		}
+	}
+
 	// ── full_storage.postgres_url ↔ DATABASE_URL 双向对齐（audit 2026-09-14 R28 #17）──
 	// full_storage.postgres_url 此前是"假字段"（main 建池只读 DATABASE_URL）：
 	// 只配 YAML 段会静默落入 no-DB 降级。full 模式下双向补齐——段有 env 无 →

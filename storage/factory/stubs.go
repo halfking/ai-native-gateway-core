@@ -4,7 +4,9 @@
 // 架构决策：生产环境的 full 模式路径由 cmd/gateway 基于现有 pgx/redis 直接
 // 装配完成，不经过本工厂，因此这里的桩保持不动；full 分支仅为结构占位与
 // 工厂分派逻辑测试而保留，后续如需将 full 装配收敛到本工厂，再以真实实现
-// 替换这些桩。
+// 替换这些桩。因此生产 PG 池调优走 LLM_GATEWAY_DB_MAX_CONNS（db.Open），
+// 本工厂的 MaxConnections / LLM_GATEWAY_STORAGE_MAX_CONNECTIONS 不影响
+// 生产网关（2026-09-18 澄清，见 config.StorageConfig.ApplyDefaults 注释）。
 //
 // lite 模式不使用桩：工厂已直接接线到真实实现包
 // （storage/sqlite、storage/lite、storage/file），见 factory.go。
