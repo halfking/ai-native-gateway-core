@@ -3909,9 +3909,8 @@ func (d *DB) ensureApplicationsTable(ctx context.Context) error {
 		    CONSTRAINT applications_data_sensitivity_check
 		        CHECK (data_sensitivity = ANY (ARRAY['public'::text, 'internal'::text, 'confidential'::text]))
 		);
-		CREATE INDEX IF NOT EXISTS idx_applications_tenant_code
-		    ON applications (tenant_id, code)
-		    WHERE enabled = TRUE;
+		-- idx_applications_tenant_code (partial on tenant_id,code) was removed in
+		-- R38/719: shadowed by applications_tenant_id_code_key UNIQUE above.
 
 		-- Seed default 'admin' application for super-admin authentication.
 		-- Explicit id=1 to match existing api_keys.application_id references
@@ -4526,7 +4525,7 @@ func (d *DB) ensureLicenseModulesSchema(ctx context.Context) error {
 			created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 		);
-		CREATE INDEX IF NOT EXISTS idx_licenses_key ON licenses (license_key);
+		-- idx_licenses_key removed in R38/719: shadowed by license_key UNIQUE.
 		CREATE INDEX IF NOT EXISTS idx_licenses_expires ON licenses (expires_at) WHERE expires_at IS NOT NULL;
 
 		CREATE TABLE IF NOT EXISTS license_modules (
@@ -4708,7 +4707,7 @@ func (d *DB) ensureLicenseDevicesSchema(ctx context.Context) error {
 			approved_at         TIMESTAMPTZ,
 			signed_license      JSONB
 		);
-		CREATE INDEX IF NOT EXISTS idx_oar_request ON offline_activation_requests (request_id);
+		-- idx_oar_request removed in R38/719: shadowed by request_id UNIQUE.
 		CREATE INDEX IF NOT EXISTS idx_oar_license ON offline_activation_requests (license_key);
 		CREATE INDEX IF NOT EXISTS idx_oar_created ON offline_activation_requests (created_at DESC);
 	`)
@@ -4813,7 +4812,7 @@ func (d *DB) ensureAutoUpdateSchema(ctx context.Context) error {
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
 			published_at    TIMESTAMPTZ
 		);
-		CREATE INDEX IF NOT EXISTS idx_releases_version ON releases (version);
+		-- idx_releases_version removed in R38/719: shadowed by version UNIQUE.
 		CREATE INDEX IF NOT EXISTS idx_releases_channel ON releases (channel, build_seq DESC);
 		CREATE INDEX IF NOT EXISTS idx_releases_published ON releases (published_at DESC)
 			WHERE published_at IS NOT NULL;
@@ -4926,7 +4925,7 @@ func (d *DB) ensureCenterOpsSchema(ctx context.Context) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_cc_instance ON center_commands (instance_id, issued_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_cc_status ON center_commands (status, issued_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_cc_command_id ON center_commands (command_id);
+		-- idx_cc_command_id removed in R38/719: shadowed by command_id UNIQUE.
 
 		CREATE TABLE IF NOT EXISTS instance_status_reports (
 			instance_id     TEXT NOT NULL,
@@ -4941,7 +4940,8 @@ func (d *DB) ensureCenterOpsSchema(ctx context.Context) error {
 			p99_latency_ms  DOUBLE PRECISION NOT NULL DEFAULT 0,
 			PRIMARY KEY (instance_id, timestamp)
 		);
-		CREATE INDEX IF NOT EXISTS idx_isr_instance ON instance_status_reports (instance_id, timestamp DESC);
+		-- idx_isr_instance removed in R38/719: shadowed by PRIMARY KEY
+		-- (instance_id, timestamp) — same columns, DESC served by backward scan.
 		CREATE INDEX IF NOT EXISTS idx_isr_timestamp ON instance_status_reports (timestamp DESC);
 
 		ALTER TABLE gateway_instances

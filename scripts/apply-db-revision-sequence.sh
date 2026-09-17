@@ -430,6 +430,11 @@ files=(
   # session_aggregate_outbox 补 claimable partial 索引）。非分区表 CONCURRENTLY；
   # 父表 idx_request_logs_ts_desc 级联清 attached 叶子副本。生产低峰执行。
   "$ROOT_DIR/sql/migrations/startup/718_drop_redundant_indexes_and_add_ttl_indexes.sql"
+  # 2026-09-17 R38 审计（新迁移登记）：719 ensure 约束影蔽索引根治 + request_logs
+  # 父索引跨通道所有权归一（drop idx_request_logs_parent_request_id，canonical
+  # 归 parent_ts）+ tool_usage_stats_hot ASC/DESC 三对收敛（保 348 显式 DESC）。
+  # 与 db.go/db_omnifree.go 同 commit 删除 ensure 创建者联动，drop 后不再复活。
+  "$ROOT_DIR/sql/migrations/startup/719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
