@@ -139,6 +139,9 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"716_unify_probe_health_views.sql":                   unifyProbeHealthViewsMigration716,
 		"717_request_logs_hot_column_alignment.sql":          requestLogsHotColumnAlignmentMigration717,
 		"718_drop_redundant_indexes_and_add_ttl_indexes.sql": dropRedundantIndexesMigration718,
+		// R38 (2026-09-17 audit): ensure-shadowed index root fix + request_logs
+		// parent-index ownership unification.
+		"719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql": unifyEnsureShadowedIndexesMigration719,
 	}
 
 	for name, embedded := range expected {
