@@ -45,14 +45,26 @@
 - `go build ./...`、`go vet ./domains/streaming/`：干净。
 - Python 解析单测：survival/legacy 两种真实线上报文 + keepalive/data 帧反例，全部通过。
 - live 实测（:8782）：候选存在且瞬时故障窗口内 A PASS（HTTP 200 保持 17.8s）+ B PASS（节奏 4s/9s，均值 5.5s vs 期望 6±8s）；零候选窗口内脚本精确输出 survival-OFF 诊断。
+- **live 端到端实测（同日补，隔离实例）**：以 `LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED=true` 的隔离 full 模式实例（一次性 citus PG + Redis db8 + :8792，勿动共享 :8782）验证 survival 真实路径，四项需求全部实测通过：
+
+  | 场景 | 实测 | 证据 |
+  |---|---|---|
+  | 制造真实零候选 | admin API `POST /api/credentials/set-manual-disabled` 逐个禁用 glm-5.2 全部 19 条凭据（生产谓词候选 8→0，`routing_audit_log` 19 条审计） | SQL 复刻候选谓词计数 |
+  | (a)(b) 保持连接+think 回流+30s 固定节奏 | HTTP 200 保持 60.1s；think#1 +0.1s、think#2 +30.02s、think#3 +30.02s，**均值 30.0s**（±10s 容差内、无抖动）；`reason=wait_recovery_window:no_available_channel`，`等待 30s` | `scenario_no_nodes_survival.py` 报告 `no-nodes-live-survival-20260917T022527Z.*`（A/B PASS） |
+  | (d) 断开即停（服务端） | 客户端 2 次 think 后断开（10:25:25.015），网关**同秒**记录 `survival_task_ended … attempt=2 action=fail_closed reason=client_disconnected`，随后 `request_survival_finished … decision=fail_closed reason=client_disconnected`；场景 A 主动关闭同样产生一条（attempt=3） | 网关日志 WARN ×2 |
+  | (c) 预算耗尽终态（等价观测） | 重启实例为 `RETRY_INTERVAL_SECONDS=2` + `MAX_ATTEMPTS=NIGHT_MAX_ATTEMPTS=3`：think #1/#2/#3 各 +2.0s，之后线上终态帧 `{"code":"gateway_survival_fail_closed","reason":"retry_limit_exceeded","retryable":false}` + `[DONE]`；日志 `survival_task_ended … reason=retry_limit_exceeded`（attempt=4=1 初始+3 重试） | 原始 SSE 抓取 + 网关日志 |
+
+  完整 think 消息形态（线上）：`: thinking: "正在等待可用节点并重试（第 N 次，原因=wait_recovery_window:no_available_channel，等待 30s）"`。验证后已通过同一 admin API 全量恢复（`set_manual_disabled_false` 19 条，`manual_disabled=true` 计数归零）。
 
 ## 遗留与风险
 
-- **live 网关未开启 survival**：默认部署 flag-off，live 只能观测 legacy 路径。要在真实部署上端到端观测 100/600/30s/5h 行为，需以 `LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED=true` 重新部署（涉及共享环境，本轮未执行）。
-- **glm-5.2 当前可路由**：本地目录中 glm-5.2 有健康凭据，"无节点"场景需借助瞬时故障窗口或禁用凭据才能触发；Go E2E 以 stub 固定该场景，不受环境影响。
-- **live 上游状态振荡**（健康↔瞬断↔零候选）使 Python 冒烟天然非确定性：脚本对三种状态均给出诚实判定（PASS / 精确诊断 / SKIP），不假报通过。
-- **`wait_recovery_window:<kind>` 格式变更**：已全仓 grep 确认无仪表盘/UI/SQL 硬编码旧值；仅测试内适配。若有外部系统按 `reason` 精确匹配 `wait_recovery_window` 需同步（混合 kind 时仍输出旧值，向后兼容）。
-- **断言 ≤1 的边界**：取消落在执行器入口之后、循环顶检查之前时，允许 1 次在途调用完成；这是结构上的最小余量，非缺陷。
+- **~~live 网关未开启 survival~~（已解决）**：本轮以隔离实例（一次性 citus PG :15432 + Redis db8 + :8792，共享 :8782 零接触）实测 survival 全路径，见上节"live 端到端实测"。共享部署仍保持默认 flag-off，未做任何变更。
+- **~~glm-5.2 当前可路由，无节点场景难触发~~（已解决）**：本轮用 admin API 批量禁用/恢复凭据确定性制造与解除零候选，不再依赖瞬时故障窗口。
+- **5h deadline 与 100/600 全量预算不可 live 短观测**：本轮以短间隔+小预算配置等价观测了预算终态（retry_limit_exceeded）；deadline_exceeded 分支与 5h 时长仍由 `config/request_survival_config_test.go` 钉桩 + E2E 覆盖，live 不复测。
+- **隔离环境搭建中发现的工具债**：`scripts/init-local-db.sh` 的失败过滤会把 NOTICE 行（"exists, skipping"）误判为幂等噪音，吞掉同文件内的真实 ERROR（本轮 526 契约校验失败被漏报）；且 SQL 快照与迁移链对 session-turns 家族的形状不一致（526 在快照上必失败），本轮以源库 `pg_dump --schema-only` 的 DDL 补齐后由 ensure 链自愈。建议挂账：init 脚本失败检测收紧 + 快照 session-family 重建。
+- **live 上游状态振荡**（健康↔瞬断↔零候选）使 Python 冒烟天然非确定性：本轮通过确定性禁用凭据消除该变量；脚本对三种状态均给出诚实判定（PASS / 精确诊断 / SKIP），不假报通过。
+- **`wait_recovery_window:<kind>` 格式变更**：已全仓 grep 确认无仪表盘/UI/SQL 硬编码旧值；仅测试内适配。若有外部系统按 `reason` 精确匹配 `wait_recovery_window` 需同步（混合 kind 时仍输出旧值，向后兼容）。本轮 live 观测到该新格式在线上按预期输出。
+- **断言 ≤1 的边界**：取消落在执行器入口之后、循环顶检查之前时，允许 1 次在途调用完成；这是结构上的最小余量，非缺陷。本轮 live 断开当秒即止（`reason=client_disconnected` 与断开同秒落日志），实证余量设置合理。
 
 ## 回滚
 

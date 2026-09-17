@@ -478,3 +478,46 @@ func TestReaper_PendingRowClaimedBySuperAdminGUC(t *testing.T) {
 // Avoid "imported and not used" if pgx is otherwise unused after the type
 // assertions above. The tests use pgxpool directly.
 var _ = pgx.ErrNoRows
+
+// R37 (2026-09-17) 自审计补验：trimDoneRows 的保留期清理此前只有源码形状
+// 钉桩，从未在真库执行过。本用例真插旧行（8d）/新 done 行/pending 行，
+// 断言只清超过保留期的终态行。（env 门控同套件其余用例。）
+func TestReaper_TrimsOldDoneRowsOnly(t *testing.T) {
+	pool := openAuditPool(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, "TRUNCATE public.session_aggregate_outbox"); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	seed := func(suffix, status string, age string) {
+		t.Helper()
+		stmt := `INSERT INTO public.session_aggregate_outbox
+		  (tenant_id, session_id, partition_date, request_id, update_payload, status, completed_at)
+		VALUES ('tenant_trim', $1, CURRENT_DATE, $1,
+		        '{"session_id":"x","tenant_id":"tenant_trim","request_id":"x"}'::jsonb, $2,
+		        NOW() - $3::interval)`
+		if _, err := pool.Exec(ctx, stmt, "sess_trim_"+suffix, status, age); err != nil {
+			t.Fatalf("seed %s: %v", suffix, err)
+		}
+	}
+	seed("old", "done", "8 days")   // 超保留期 → 应删
+	seed("fresh", "done", "1 hour") // 保留期内 → 应留
+	seed("pend", "pending", "8 days") // 非终态超龄 → 应留
+
+	r := newSessionAggregateOutboxReaperForTest(pool, nil, time.Hour, 1, 1)
+	r.trimDoneRows(ctx)
+
+	var oldN, freshN, pendN int
+	if err := pool.QueryRow(ctx, `SELECT
+		count(*) FILTER (WHERE request_id = 'sess_trim_old'),
+		count(*) FILTER (WHERE request_id = 'sess_trim_fresh'),
+		count(*) FILTER (WHERE request_id = 'sess_trim_pend')
+		FROM public.session_aggregate_outbox`).Scan(&oldN, &freshN, &pendN); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if oldN != 0 {
+		t.Fatalf("old done row not trimmed (count=%d)", oldN)
+	}
+	if freshN != 1 || pendN != 1 {
+		t.Fatalf("trim over-deleted: fresh=%d pending=%d (want 1/1)", freshN, pendN)
+	}
+}
