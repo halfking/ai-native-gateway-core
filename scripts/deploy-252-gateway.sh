@@ -47,6 +47,11 @@ for k in LLM_GATEWAY_DATABASE_URL LLM_GATEWAY_JWT_SECRET LLM_GATEWAY_TEST_KEY SS
   [[ -n "$v" ]] || { log "ERROR: SSOT KEY 未注入：$k（先 source env-injector inject 252）"; exit 2; }
 done
 [[ -f "$SSH_KEY_252" ]] || { log "ERROR: SSH_KEY_252 不是可读文件"; exit 2; }
+# R37 fix (D14): the `set +e`/`set +u` above were never restored — every
+# later failure (key generation, scp, remote install, healthz probes) was
+# swallowed and the script still printed VERIFY_RESULT=pass. Fail-closed
+# from here on.
+set -euo pipefail
 
 # ── 构建 linux/amd64 ─────────────────────────────────────────────────────
 # 与 deploy-seamless.sh do_deploy 同款两级策略（2026-09-05/09 CGO 回退）：
@@ -85,21 +90,32 @@ fi
 #    宿主机上 PG 在 172.16.2.210:5432（pg-252-pg17 容器 IP），需改写。
 # 2) CORS fail-closed panic（middleware.NewCORSMiddleware）：必须显式
 #    LLM_GATEWAY_CORS_ORIGINS，否则启动即 panic（deploy-local 已知 pitfall）。
+# R37 fix (D14): SECRET_KEY and CREDENTIAL_ENCRYPTION_KEY were the SAME
+# random value — one key reused across two cryptographic domains. Generate
+# two independent keys.
 GEN_KEY=$(python3 -c "import secrets;print(secrets.token_urlsafe(33))")
+ENC_KEY=$(python3 -c "import secrets;print(secrets.token_urlsafe(33))")
 DB_URL_252=$(printf '%s' "$LLM_GATEWAY_DATABASE_URL" | sed -E 's#@127\.0\.0\.1:5432#@172.16.2.210:5432#; s#@localhost:5432#@172.16.2.210:5432#')
-cat > "$BUILD_TMP/gateway.env" <<EOF
+# R37 fix (D14): umask 077 while writing — the file carries DATABASE_URL
+# (PG password) and JWT_SECRET; the old write-then-chmod left a world-readable
+# window.
+(umask 077; cat > "$BUILD_TMP/gateway.env" <<EOF
 LLM_GATEWAY_ENV=dev
 LLM_GATEWAY_LISTEN=$LISTEN
+# dev-only 风险接受（R37 备案）：* 允许任意网页源携有效 key 调用 API（含
+# /api 管理面前缀）。252 是 dev 实例、nginx 仅 llmgo.itestu.cn 暴露；转生产
+# 前必须收敛到运维域。
 LLM_GATEWAY_CORS_ORIGINS=*
 LLM_GATEWAY_DATABASE_URL=$DB_URL_252
 LLM_GATEWAY_JWT_SECRET=$LLM_GATEWAY_JWT_SECRET
 LLM_GATEWAY_SECRET_KEY=$GEN_KEY
-LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=$GEN_KEY
+LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=$ENC_KEY
 # 共享 PG 首启 EnsureSchema 超 20s 会被 boot 预算禁掉 DB（2026-09-17 实抓
 # "postgres disabled: context deadline exceeded retry_budget=20s"），放宽到 10min。
 # 注意必须带单位（time.ParseDuration），裸数字 "600" 会静默回退 20s 默认值
 LLM_GATEWAY_DB_BOOT_RETRY_SECONDS=600s
 EOF
+)
 chmod 600 "$BUILD_TMP/gateway.env"
 
 if [[ $DRY_RUN == 1 ]]; then
@@ -117,7 +133,7 @@ scp -qi "$SSH_KEY_252" -o StrictHostKeyChecking=accept-new \
 # 不传则 /api/system/version 退化为 v0.0.0/dev
 scp -qi "$SSH_KEY_252" -o StrictHostKeyChecking=accept-new \
   "$ROOT_DIR/version.json" "root@$TARGET_HOST:$REMOTE_DIR/version.json"
-scp -qi "$SSH_KEY_252" -o StrictHostKeyChecking=accept-new \
+scp -qpi "$SSH_KEY_252" -o StrictHostKeyChecking=accept-new \
   "$BUILD_TMP/gateway.env" "root@$TARGET_HOST:$REMOTE_DIR/.env.dev.new"
 
 log "安装 systemd 服务 $SERVICE..."
@@ -174,8 +190,12 @@ import json, sys
 open(sys.argv[1], "w").write(json.dumps({"model": "glm-4.7",
     "messages": [{"role": "user", "content": "a" * (33 * 1024 * 1024)}], "max_tokens": 1}))
 PY
+# R37 fix (D14): the test key was interpolated into the REMOTE command line
+# (visible in the remote curl process's /proc and the local ssh argv for the
+# call's duration). Pipe the header via stdin (`--header @-`) instead.
+printf 'Authorization: Bearer %s\n' "$LLM_GATEWAY_TEST_KEY" | \
 ssh -qi "$SSH_KEY_252" -o StrictHostKeyChecking=accept-new "root@$TARGET_HOST" \
-  "curl -fsS -m 30 -X POST http://127.0.0.1:8780/v1/chat/completions -H 'Content-Type: application/json' -H 'Authorization: Bearer $LLM_GATEWAY_TEST_KEY' --data-binary @$BODY_TMP" \
+  "curl -fsS -m 30 -X POST http://127.0.0.1:8780/v1/chat/completions -H 'Content-Type: application/json' --header @- --data-binary @$BODY_TMP" \
   | grep -q 'prompt_too_large' && log "PASS: 413 prompt_too_large wire code 验证通过" \
   || log "WARN: 413 探针未命中 prompt_too_large（检查 TEST_KEY 是否有效）"
 

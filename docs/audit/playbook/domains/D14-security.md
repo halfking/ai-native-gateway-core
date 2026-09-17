@@ -41,6 +41,7 @@
 - [教训] pgxmock 可空列必须类型化 nil（(*string)(nil)），否则 Scan 报错易误判为 handler 缺陷——写测试时的坑
 
 - [R36] /activate FREE- 指纹校验时序倒置（先 Activate 占座后 403 不回滚）→ 校验必须先于占座副作用+fail-open 路径补 Warn；附件下载端点归属校验：内容寻址布局 URL 无租户信息，tenant_admin 需 request_attachments→request_logs 租户联查（fail-closed，拒绝 404）
+- [R37] R35-R1 闭环：X-Gw-Loopback-Token per-boot 随机 token（internal/loopback）+ RequestIDMiddleware 剥离开关（StripUntrustedCorrelationHeaders，constant-time），auto-title/summary 回环带 token；拓扑结论=默认恒 127.0.0.1 直连（逃生门 env LLM_GATEWAY_ENDPOINT 未被部署面设置，跨实例退化仅可观测回归+Warn）。新备案：admin postAdminLLMChat 自调 URL 从 r.Host 构造（经 LB 绕公网，非 127.0.0.1 第二条自调路径）；deploy 脚本 set +e 不恢复=验证门虚设（deploy-252 实抓，密钥上远端命令行/落盘权限窗口同批修）
 
 ## 5. 子代理派发提示词
 

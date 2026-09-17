@@ -226,6 +226,13 @@ func defaultDispatchFollowUp(
 // session/action/correlation/auth headers. Split out of
 // defaultDispatchFollowUp so tests can assert the header contract without
 // spinning up the full ServeHTTP pipeline.
+//
+// R37 (R35-R8): X-Gw-Follow-Up-Depth now carries the REAL follow-up depth
+// (it was hardcoded "1" while the true depth lives in the context, 1..15);
+// X-Gw-Follow-Up-Attempt was deleted — it was always "1" with zero readers
+// anywhere in the repo (the `attempt` param stays only for dispatch-seam
+// signature stability; the auth-retry machinery it belonged to was never
+// wired and its residual helpers were removed in this round).
 func buildFollowUpRequest(ctx context.Context, sessionID string, body []byte, action string, parentRequestID string, authHeader string, attempt int) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -234,8 +241,7 @@ func buildFollowUpRequest(ctx context.Context, sessionID string, body []byte, ac
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Gw-Session-Id", sessionID)
 	req.Header.Set("X-Gw-Follow-Up-Action", action)
-	req.Header.Set("X-Gw-Follow-Up-Depth", "1")
-	req.Header.Set("X-Gw-Follow-Up-Attempt", strconv.Itoa(attempt))
+	req.Header.Set("X-Gw-Follow-Up-Depth", strconv.Itoa(FollowUpDepthFromContext(ctx)))
 	if actor := followUpSourceActor(action); actor != "" {
 		req.Header.Set(autoSourceActorHeader, actor)
 	}
@@ -286,62 +292,11 @@ func bodySnippetPrefix(s string) string {
 	return cut + "..."
 }
 
-// isFollowUpAuthFailure reports whether a synthetic follow-up response
-// indicates the dispatched Authorization header was rejected by the gateway's
-// auth layer. We deliberately do NOT retry on 5xx or auth_unavailable.
-func isFollowUpAuthFailure(status int, body string) bool {
-	if status < 400 || status >= 500 {
-		return false
-	}
-	lower := strings.ToLower(body)
-	for _, code := range []string{
-		"missing_key",
-		"invalid_key",
-		"key_throttled",
-		"budget_exhausted",
-	} {
-		if strings.Contains(lower, code) {
-			return true
-		}
-	}
-	return false
-}
-
-// followUpAuthCandidates returns the ordered list of Authorization header
-// values the follow-up engine should try. Order matters: parent first, then
-// system fallback. The fallback is omitted when unset, blank, or identical
-// to the parent.
-func followUpAuthCandidates(parent, fallback string) []string {
-	parent = strings.TrimSpace(parent)
-	fallback = strings.TrimSpace(fallback)
-	out := make([]string, 0, 2)
-	if parent != "" {
-		out = append(out, parent)
-	}
-	if fallback != "" && fallback != parent {
-		out = append(out, fallback)
-	}
-	return out
-}
-
-// authKindLabel returns a stable label for the auth header in use so logs
-// can distinguish "parent" vs "fallback" vs "none".
-func authKindLabel(parent, fallback, header string) string {
-	parent = strings.TrimSpace(parent)
-	fallback = strings.TrimSpace(fallback)
-	header = strings.TrimSpace(header)
-	switch header {
-	case parent:
-		if header == "" {
-			return "none"
-		}
-		return "parent"
-	case fallback:
-		return "fallback"
-	default:
-		return "other"
-	}
-}
+// R37 (R35-R8): isFollowUpAuthFailure / followUpAuthCandidates / authKindLabel
+// deleted — a multi-credential sequential auth-retry mechanism whose retry
+// loop was never wired since the file's initial release (zero callers, none
+// in tests). If auth-retry for follow-ups is ever designed, start from the
+// dispatch seam (dispatchFollowUpRequest), not from resurrected fragments.
 
 // extractMessageCount counts messages in a chat request body.
 func extractMessageCount(body []byte) int {

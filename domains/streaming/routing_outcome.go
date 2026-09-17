@@ -15,6 +15,14 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
+// originActorOf dereferences the entry's origin actor ("" when absent).
+func originActorOf(e *telemetry.RequestLogEntry) string {
+	if e == nil || e.OriginActor == nil {
+		return ""
+	}
+	return *e.OriginActor
+}
+
 // routingOutcomeFromEntry projects a terminal request_logs entry onto the
 // outcome report the autoroute registry matches stashed decisions by.
 // Latency/cost default to 0 when the entry carries no value — the feedback
@@ -24,8 +32,9 @@ func routingOutcomeFromEntry(e *telemetry.RequestLogEntry) autoroute.RoutingOutc
 		return autoroute.RoutingOutcome{}
 	}
 	out := autoroute.RoutingOutcome{
-		RequestID: e.RequestID,
-		Success:   e.Success,
+		RequestID:   e.RequestID,
+		OriginActor: originActorOf(e),
+		Success:     e.Success,
 	}
 	if e.LatencyMs != nil {
 		out.LatencyMs = int64(*e.LatencyMs)

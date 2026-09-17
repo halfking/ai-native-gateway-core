@@ -368,6 +368,11 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 	if rid := r.Header.Get("X-Request-Id"); rid != "" {
 		reqCtx = autoroute.WithRequestID(reqCtx, rid)
 	}
+	// R37 (R35-R2): carry the caller actor so recordFeedbackAsync can skip
+	// gateway-synthetic rounds (goal-% shadow rounds, internal loopbacks).
+	if actor := r.Header.Get(autoSourceActorHeader); actor != "" {
+		reqCtx = autoroute.WithOriginActor(reqCtx, actor)
+	}
 
 	if workType := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); workType != "" {
 		if l1, ok := h.decider.ResolveWorkType(workType); ok {

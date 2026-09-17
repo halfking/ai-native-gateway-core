@@ -10,17 +10,17 @@ gateway must:
   (d) stop immediately when the client disconnects, regardless of remaining
       retries.
 
-This driver connects to the local gateway (default :8782) and exercises the
-four behaviors with a Python mock client. It deliberately uses glm-5.2 as
-the requested test model; if glm-5.2 is currently routable on the local
-catalog (so the "no candidates" path is not reached), the script falls back
-to a model whose credentials the test runner has just disabled. Operators
-can override the model via --model.
+This driver connects to the local gateway (default :8782) and observes
+(a) connection-held-open, (b) think cadence and (d) client-disconnect with a
+Python mock client; (c) the budget-exhausted terminal frame is pinned by the
+Go e2e suite (domains/streaming/survival_no_nodes_e2e_test.go) and is NOT
+re-asserted here. Any model the operator passes via --model works as long as
+it is NOT routable on the target gateway (unroutable model => survival wait
+loop); pick one deliberately (e.g. a nonexistent model id).
 
 Usage:
     python3 tests/mock-system-test/scenario_no_nodes_survival.py
     python3 tests/mock-system-test/scenario_no_nodes_survival.py --model glm-5.2 --interval 1
-    python3 tests/mock-system-test/scenario_no_nodes_survival.py --skip-budget  # exit after first think
     python3 tests/mock-system-test/scenario_no_nodes_survival.py --report-only  # disable all assertions
 
 Output:
@@ -150,6 +150,9 @@ def parse_think_chunk(chunk: bytes, received_at: float) -> ThinkEvent:
             m2 = re.search(r"等待可用节点并重试（第\s*(\d+)\s*次", payload)
             if m2:
                 attempt = int(m2.group(1))
+            rm = re.search(r"原因=([^\s，,]*)", payload)
+            if rm:
+                reason = rm.group(1).strip()
             wm = WAIT_RE.search(payload.encode("utf-8"))
             if wm:
                 wait_seconds = int(wm.group(1))
@@ -157,6 +160,9 @@ def parse_think_chunk(chunk: bytes, received_at: float) -> ThinkEvent:
         m2 = re.search("第\\s*(\\d+)\\s*次".encode("utf-8"), msg)
         if m2:
             attempt = int(m2.group(1))
+        rmb = re.search("原因=([^\\s，,]*)".encode("utf-8"), msg)
+        if rmb:
+            reason = rmb.group(1).decode("utf-8", "replace").strip()
         wm = WAIT_RE.search(msg)
         if wm:
             wait_seconds = int(wm.group(1))
@@ -434,8 +440,6 @@ def main() -> int:
                    help="how many think chunks to read before stopping scenario A (0 = until budget)")
     p.add_argument("--wait-for-thinks", type=int, default=2,
                    help="how many thinks to read before disconnecting in scenario D")
-    p.add_argument("--skip-budget", action="store_true",
-                   help="skip scenario C (budget exhaustion) — just observe thinks")
     p.add_argument("--report-only", action="store_true",
                    help="collect results but skip assertion failures (always exit 0)")
     p.add_argument("--output-prefix", default="no-nodes",
@@ -449,7 +453,8 @@ def main() -> int:
     log("probing gateway readiness…")
     try:
         ready = PoolManager().urlopen("GET", f"{args.gateway}/readyz", timeout=5.0).data
-        if b"ready" not in ready:
+        # exact status match: b"ready" is also a substring of "not_ready"
+        if b'"status":"ready"' not in ready:
             log(f"WARNING: gateway not ready: {ready[:120]!r}")
     except Exception as e:
         log(f"WARNING: readiness probe failed: {e}")

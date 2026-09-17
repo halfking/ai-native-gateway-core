@@ -189,6 +189,14 @@ func (d *Decider) recordFeedbackAsync(ctx context.Context, decision *Decision, a
 	if d.optimizer == nil || decision == nil {
 		return
 	}
+	// R37 (R35-R2 灰度口径): synthetic rounds (goal-% shadow rounds, internal
+	// title/summary loopbacks) are real auto decisions but never become
+	// training/observation signal. Gating here covers BOTH paths below — the
+	// stash (which would otherwise surface as expired/matched) and the legacy
+	// no-correlation-id placeholder write.
+	if IsSyntheticActor(originActorFromContext(ctx)) {
+		return
+	}
 	if requestID := requestIDFromContext(ctx); requestID != "" {
 		stashPendingFeedback(requestID, d.optimizer, newRoutingFeedback(requestID, decision, apiKeyID, sessionID))
 		return

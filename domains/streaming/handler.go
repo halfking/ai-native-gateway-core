@@ -6178,7 +6178,11 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// v2.1: emit implicit feedback signal for the auto-route tuning loop.
 	// Best-effort async write via the dedicated tuning writer; never blocks
 	// the request path on DB latency.
-	if reqLog.IsAutoRequest != nil && *reqLog.IsAutoRequest && reqLog.TaskType != nil {
+	// R37 (R35-R2 灰度口径): gateway-synthetic rounds must not write tuning
+	// signals — the shadow rounds' outcomes would skew the 7-day accuracy
+	// dashboards.
+	if reqLog.IsAutoRequest != nil && *reqLog.IsAutoRequest && reqLog.TaskType != nil &&
+		!autoroute.IsSyntheticActor(originActorOf(reqLog)) {
 		latencyMs := 0
 		if reqLog.LatencyMs != nil {
 			latencyMs = *reqLog.LatencyMs

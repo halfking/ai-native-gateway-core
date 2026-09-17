@@ -790,7 +790,10 @@ func (h *ModeHook) triggerAudit(ctx context.Context, req *response.InterceptRequ
 		"model":    model,
 		"messages": []map[string]string{{"role": "user", "content": auditPrompt}},
 		"stream":   false,
-		"metadata": map[string]string{"task_type_hint": "code_audit"},
+		// R37 (R35-R2 附带清账): the previous "metadata": {"task_type_hint":
+		// "code_audit"} had zero consumers since its introduction — the L1
+		// classifier owns task typing for auto bodies. Reintroduce only with
+		// a wired reader in the autoroute entry path.
 	}
 
 	body, _ := json.Marshal(reqBody)
