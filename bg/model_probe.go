@@ -766,6 +766,14 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		  AND COALESCE(c.status, 'active') = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.enabled, FALSE) = TRUE
+		  -- 2026-09-17: skip pairs the authoritative surfaces already judge
+		  -- unavailable. This cycle is read-only w.r.t. state (recordRun with
+		  -- state_change='unchanged'), so deep-pinging an unavailable binding
+		  -- cannot restore it — it only burns an upstream request and logs a
+		  -- failed run every cycle. That was the gpt-image-2-on-apigpt shape:
+		  -- the model sits in routing_policy.featured_models, the relay 404s
+		  -- it, and every 30-min cycle re-recorded the guaranteed failure.
+		  AND COALESCE(cmb.available, TRUE) = TRUE
 		LIMIT $1
 	`, MaxBatchPerCycle*4 /* bound scan; Go-side globalIsFeaturedModel further filters */)
 	if err != nil {

@@ -87,69 +87,11 @@ func seedQuotaRowAsSuperAdmin(t *testing.T, db *sql.DB, credID int64, tenant str
 	}
 }
 
-// TestSetRLSTenantContext_GUCSession 验证 SetRLSTenantContext 真的把
-// app.current_tenant 推到了 PG session; 后续 SELECT get_current_tenant()
-// 应当返回所设值, 而不是 'default' fallback.
-//
-// 实现要点: 必须在同一 *sql.Conn (物理连接) 上 set + select, 因为
-// SET 是 session-scoped, 跨连接就丢失. SetRLSTenantContextConn 直接
-// 操作指定 Conn, 而 SetRLSTenantContext 用 db pool (适合无锁的 happy path,
-// 但 SET 仍需在同一连接上 SELECT 才能验证, 所以这里测 Conn 形式).
-func TestSetRLSTenantContext_GUCSession(t *testing.T) {
-	db := getTestDB(t)
-	defer db.Close()
-
-	conn, err := db.Conn(context.Background())
-	if err != nil {
-		t.Fatalf("get conn: %v", err)
-	}
-	defer conn.Close()
-
-	SetRLSTenantContextConn(context.Background(), conn, "tenant-r3-audit")
-
-	var gotVal string
-	if err := conn.QueryRowContext(context.Background(),
-		"SELECT public.get_current_tenant()").Scan(&gotVal); err != nil {
-		t.Fatalf("query get_current_tenant: %v", err)
-	}
-	if gotVal != "tenant-r3-audit" {
-		t.Errorf("expected tenant-r3-audit, got %q", gotVal)
-	}
-}
-
-// TestSetRLSTenantContext_EmptyFallback 验证空 tenantID 时不设置 GUC,
-// 让 get_current_tenant() 走 'default' fallback.
-func TestSetRLSTenantContext_EmptyFallback(t *testing.T) {
-	db := getTestDB(t)
-	defer db.Close()
-
-	conn, err := db.Conn(context.Background())
-	if err != nil {
-		t.Fatalf("get conn: %v", err)
-	}
-	defer conn.Close()
-
-	if _, err := conn.ExecContext(context.Background(),
-		"SET app.current_tenant = 'preexisting'"); err != nil {
-		t.Fatalf("seed GUC: %v", err)
-	}
-
-	// 空 ID → helper 直接 return, 不影响 GUC.
-	SetRLSTenantContext(context.Background(), db, "")
-
-	var gotVal string
-	if err := conn.QueryRowContext(context.Background(),
-		"SELECT public.get_current_tenant()").Scan(&gotVal); err != nil {
-		t.Fatalf("query get_current_tenant: %v", err)
-	}
-	if gotVal != "preexisting" {
-		t.Errorf("empty tenantID should not clear existing GUC, got %q", gotVal)
-	}
-}
-
-// TestSetRLSTenantContext_InvalidFallback 验证非法 tenantID 被替换
-// 为 'default' (防 SQL 注入).
-func TestSetRLSTenantContext_InvalidFallback(t *testing.T) {
+// TestEscapeTenant_InvalidFallback 验证非法 tenantID 被替换为 'default'
+// (防 SET LOCAL 字面量 SQL 注入)。R38: 原配套的 rls_helper.go（裸 SET 会话级
+// GUC、无 RESET 配对的死代码）已删除，生产路径统一走 quota_tracker 内联的
+// SET LOCAL + escapeTenant。
+func TestEscapeTenant_InvalidFallback(t *testing.T) {
 	cases := []string{
 		"'; DROP TABLE users; --",
 		"abc def",
@@ -157,9 +99,6 @@ func TestSetRLSTenantContext_InvalidFallback(t *testing.T) {
 		"with'quote",
 	}
 	for _, bad := range cases {
-		if got := isValidTenantID(bad); got {
-			t.Errorf("isValidTenantID(%q) = true, want false", bad)
-		}
 		if got := escapeTenant(bad); got != "default" {
 			t.Errorf("escapeTenant(%q) = %q, want default", bad, got)
 		}

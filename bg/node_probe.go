@@ -326,9 +326,18 @@ func (w *NodeProbeWorker) recordDecryptFailure() {
 }
 
 func (w *NodeProbeWorker) resetDecryptFailures() {
-	if w != nil {
-		w.decryptFailures.Store(0)
-		w.decryptTrippedAt.Store(0)
+	if w == nil {
+		return
+	}
+	// 2026-09-17: if the circuit was OPEN and this success just proved the key
+	// config fixed, the rows this instance (or a peer) poisoned while
+	// misconfigured are still parked on hours-long ladders / unavailable
+	// bindings. Unwind them now instead of waiting out every backoff.
+	wasTripped := w.decryptFailures.Load() >= decryptTripThreshold
+	w.decryptFailures.Store(0)
+	w.decryptTrippedAt.Store(0)
+	if wasTripped {
+		go w.deescalateGatewaySideProbeState(context.Background())
 	}
 }
 
@@ -509,11 +518,75 @@ func (w *NodeProbeWorker) Start(ctx context.Context) {
 	}
 	w.resolveProbeAPIKey(ctx)
 	go w.loop(ctx)
+	// 2026-09-17 incident follow-up: when the decrypt circuit's shared-state
+	// guard ships (or a corrected CREDENTIAL_ENCRYPTION_KEY deploys), rows the
+	// misconfigured instance already wrote can still hold hours-future
+	// next_retry_at ladders and probe_endpoint_build-poisoned bindings. Sweep
+	// them once at startup so recovery does not wait out every backoff.
+	go w.deescalateGatewaySideProbeState(ctx)
 	slog.Info("node_probe_worker started",
 		"tick_interval", nodeProbeTickInterval,
 		"max_attempts", nodeProbeMaxAttempts,
 		"api_key_resolved", w.apiKey != "",
 	)
+}
+
+// deescalateGatewaySideProbeState resets the shared-state residue of
+// gateway-side probe failures (decrypt / endpoint build). Those failures were
+// never upstream health signals, so their ladder rows and unavailable
+// bindings are safe to unwind from ANY instance — the err/reason codes
+// themselves identify the writes (see isGatewaySideProbeError). Best-effort,
+// bounded, logged; a failed sweep just leaves the rows to age out naturally.
+//
+// Targets (2026-09-17 05:00–09:08 decrypt storm on the shared 252 DB):
+//   - node_probe_state rows parked on endpoint_build/request_build with
+//     future next_retry_at → pull to now() so the pump re-verifies the pair
+//     with the now-working key (observed: cf=7 ladders parking hzx-2 /
+//     minimax-prod-v2 lanes for ~5h AFTER the fix deployed);
+//   - credential_model_bindings flipped unavailable by those errors →
+//     restore available (the pre-guard binary's writes; the guard refuses
+//     new ones).
+func (w *NodeProbeWorker) deescalateGatewaySideProbeState(ctx context.Context) {
+	if w == nil || w.db == nil {
+		return
+	}
+	sweepCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	tag, err := w.db.Exec(sweepCtx, `
+		UPDATE node_probe_state
+		SET next_retry_at = now(),
+		    next_retry_seconds = 5,
+		    updated_at = now()
+		WHERE last_err_code IN ('endpoint_build', 'request_build')
+		  AND next_retry_at > now()
+	`)
+	if err != nil {
+		slog.Warn("node_probe_worker: gateway-side ladder de-escalation failed", "error", err)
+		return
+	}
+	if tag.RowsAffected() > 0 {
+		slog.Info("node_probe_worker: de-escalated gateway-side probe ladders",
+			"rows", tag.RowsAffected(),
+			"hint", "these failures were instance config problems (decrypt/endpoint build), not upstream health")
+	}
+	tag, err = w.db.Exec(sweepCtx, `
+		UPDATE credential_model_bindings cmb
+		SET available = TRUE,
+		    unavailable_reason = NULL,
+		    unavailable_at = NULL,
+		    unavailable_recover_at = NULL,
+		    updated_at = now()
+		WHERE cmb.available = FALSE
+		  AND COALESCE(cmb.unavailable_reason, '') IN ('probe_endpoint_build', 'probe_request_build')
+	`)
+	if err != nil {
+		slog.Warn("node_probe_worker: gateway-side binding de-escalation failed", "error", err)
+		return
+	}
+	if tag.RowsAffected() > 0 {
+		slog.Info("node_probe_worker: restored bindings poisoned by gateway-side probe errors",
+			"rows", tag.RowsAffected())
+	}
 }
 
 // resolveProbeAPIKey preserves the caller-provided data-plane key. Local
@@ -1416,7 +1489,7 @@ func (w *NodeProbeWorker) ProbeSync(
 				// CRITICAL: update state BEFORE probeGateway so the
 				// routing layer sees the restored credential, not the
 				// stale cooling state left by the original 5xx.
-				w.updateBindingAvailability(ctx, j.credID, j.model, true, "")
+				w.updateBindingAvailability(ctx, j.credID, j.model, true, "", 0)
 				w.updateCredentialHealth(ctx, j.credID)
 				w.updateObservedState(ctx, j.credID, j.model, true, "", time.Now())
 				// 2026-08-24: smart-fallback tentative restore (需求 6
@@ -1451,7 +1524,11 @@ func (w *NodeProbeWorker) ProbeSync(
 						"err_code", res.direct.errCode,
 						"err_detail", res.direct.errDetail)
 				} else {
-					w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode)
+					// Sync probes carry no ladder attempt context; attempt=1
+					// keeps the generic 5-minute cooldown for a first 404 —
+					// the tick/queue paths escalate to the model-not-served
+					// horizon once their attempt counts confirm it.
+					w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode, 1)
 					recoverAt := time.Now().Add(5 * time.Minute)
 					w.updateObservedState(ctx, j.credID, j.model, false, res.direct.errCode, recoverAt)
 				}
@@ -1896,7 +1973,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	// sees the restored credential, not the stale cooling state from
 	// the original 5xx or transient failure.
 	if direct.ok {
-		w.updateBindingAvailability(ctx, credID, model, true, "")
+		w.updateBindingAvailability(ctx, credID, model, true, "", 0)
 		w.updateCredentialHealth(ctx, credID)
 		w.updateObservedState(ctx, credID, model, true, "", time.Now())
 		if w.recordCircuitSuccess != nil {
@@ -1985,8 +2062,9 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 				"err_code", direct.errCode,
 				"err_detail", direct.errDetail)
 		} else {
-			w.updateBindingAvailability(ctx, credID, model, false, direct.errCode)
-			recoverAt := time.Now().Add(5 * time.Minute)
+			w.updateBindingAvailability(ctx, credID, model, false, direct.errCode, attempt)
+			_, horizon := unavailableBindingHorizon(direct.errCode, attempt)
+			recoverAt := time.Now().Add(horizon)
 			w.updateObservedState(ctx, credID, model, false, direct.errCode, recoverAt)
 		}
 	}
@@ -2074,7 +2152,11 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		// gateway-side delay instead of the 5s..24h chain so a misconfigured
 		// instance also stops hammering the shared row.
 		gatewaySide := isGatewaySideProbeError(direct.errCode)
-		backoff := ChainBackoffIndex(attempt, NodeProbeBackoffChain)
+		// 2026-09-17: share the queue path's err-code-aware policy (404 →
+		// model-not-served long horizon on confirmed attempts; network/timeout
+		// → short chain; everything else → the 7-step ladder) so the legacy
+		// cycle and the queue don't ladder the same pair at different speeds.
+		backoff := ProbeBackoffForErrCode(direct.errCode, attempt)
 		if gatewaySide {
 			backoff = nodeProbeGatewaySideRetryDelay
 		}
@@ -2675,7 +2757,40 @@ func (w *NodeProbeWorker) logNodeProbeStateUpdateWarning(phase string, providerI
 	)
 }
 
-func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID int, model string, available bool, reason string) {
+// modelNotServedRecheckInterval is the binding cooldown applied when the
+// DIRECT probe round returns HTTP 404 twice in a row (attempt >= 2): the
+// upstream told us it does not serve this model on this credential. That is
+// a catalog mismatch, not a health transient — re-checking it every 5
+// minutes (the generic cooldown) produced the eternal 404 churn observed on
+// 2026-09-17 (apigpt "gpt key": 14 models × 7 attempts/24h of doomed
+// request_failure probes, every cycle flipping the binding unavailable again
+// right after recovery cleared it). 6h matches the ladder's long-tail cap so
+// a relay that later adds the model is picked up the same day.
+const modelNotServedRecheckInterval = 6 * time.Hour
+
+// isModelNotServedProbeError reports whether a direct-round error code is the
+// upstream's "model not found" verdict. Only the DIRECT round may set it — a
+// gateway-round 404 usually means "no routable candidates in this gateway",
+// which is downstream of the very binding state being written.
+func isModelNotServedProbeError(errCode string) bool {
+	switch errCode {
+	case "http_404", "probe_http_404":
+		return true
+	}
+	return false
+}
+
+// unavailableBindingHorizon returns the cooldown horizon for one unavailable
+// write. A 404 confirmed by a second attempt escalates to the model-not-served
+// horizon; everything else keeps the historical 5 minutes.
+func unavailableBindingHorizon(errCode string, attempt int) (reason string, horizon time.Duration) {
+	if isModelNotServedProbeError(errCode) && attempt >= 2 {
+		return "model_not_served_404", modelNotServedRecheckInterval
+	}
+	return errCode, 5 * time.Minute
+}
+
+func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID int, model string, available bool, reason string, attempt int) {
 	if w == nil || w.db == nil {
 		return
 	}
@@ -2701,12 +2816,13 @@ func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID 
 		_, _ = w.db.Exec(ctx, healthyBindingSQL(), credID, model)
 		return
 	}
+	reasonTag, horizon := unavailableBindingHorizon(reason, attempt)
 	_, _ = w.db.Exec(ctx, `
 		UPDATE credential_model_bindings cmb
 		SET available = FALSE,
 		    unavailable_reason = $3,
 		    unavailable_at = now(),
-		    unavailable_recover_at = now() + interval '5 minutes',
+		    unavailable_recover_at = now() + $4::interval,
 		    updated_at = now()
 		FROM provider_models pm
 		WHERE pm.id = cmb.provider_model_id
@@ -2714,7 +2830,7 @@ func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID 
 		  AND pm.raw_model_name = $2
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
-		`, credID, model, "probe_"+reason)
+		`, credID, model, "probe_"+reasonTag, fmt.Sprintf("%d seconds", int(horizon.Seconds())))
 }
 
 func (w *NodeProbeWorker) updateCredentialHealth(ctx context.Context, credID int) {

@@ -366,8 +366,10 @@ func (d *DB) ensureOmniFreeSchema(ctx context.Context) error {
 	}
 
 	// ── 3. Create indexes (与 075-omnifree-schema.sql §1-4 索引一致) ────────
+	// R38/719: idx_free_resource_catalog_provider / idx_keyless_providers_enabled /
+	// idx_keyless_providers_auto_combo removed — leftmost-prefix shadowed by
+	// keyless_providers_provider_tenant_key / free_resource_catalog UNIQUE.
 	_, err = d.pool.Exec(ctx, `
-		CREATE INDEX IF NOT EXISTS idx_free_resource_catalog_provider ON free_resource_catalog(provider_code);
 		CREATE INDEX IF NOT EXISTS idx_free_resource_catalog_free_type ON free_resource_catalog(free_type) WHERE enabled = TRUE;
 		CREATE INDEX IF NOT EXISTS idx_free_resource_catalog_tos ON free_resource_catalog(tos_verdict) WHERE enabled = TRUE;
 		CREATE INDEX IF NOT EXISTS idx_free_resource_catalog_pool_key ON free_resource_catalog(pool_key) WHERE pool_key IS NOT NULL;
@@ -381,9 +383,6 @@ func (d *DB) ensureOmniFreeSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_free_quota_tracker_tenant ON free_quota_tracker(tenant_id);
 		CREATE INDEX IF NOT EXISTS idx_free_quota_tracker_cleanup ON free_quota_tracker(auto_reset_at);
 
-		CREATE INDEX IF NOT EXISTS idx_keyless_providers_enabled ON keyless_providers(provider_code) WHERE enabled = TRUE;
-		CREATE INDEX IF NOT EXISTS idx_keyless_providers_auto_combo ON keyless_providers(provider_code)
-			WHERE enabled = TRUE AND allowlist_in_auto_combo = TRUE;
 		CREATE INDEX IF NOT EXISTS idx_keyless_providers_tenant ON keyless_providers(tenant_id);
 	`)
 	if err != nil {
