@@ -24,7 +24,19 @@ WorkingDirectory=/opt/llm-gateway-go
 # file does NOT set it, so systemd merge order between Environment= and
 # EnvironmentFile= is irrelevant here.
 EnvironmentFile=/etc/llm-gateway-go/env
-Environment=LLM_GATEWAY_RUNTIME_ROLE=traffic-only
+# 2026-09-17 worker-ownership regression: this template briefly carried
+# LLM_GATEWAY_RUNTIME_ROLE=traffic-only (inherited from the 245 pre-prod
+# template during the 09-17 "unify" pass). 154 is the ONLY full-mode instance
+# on the shared 252 DB (245 runs bg_mode=data-plane BY DESIGN), so the role
+# flip at the 09:09 deploy silently orphaned every !bgDataPlaneOnly worker
+# fleet-wide: durable probe queue (516 ready rows unclaimed), model
+# discovery, credential cycler, taxonomy sync, weekly rollups, audit
+# trimmers. The line is REMOVED — empty role normalizes to "active"
+# (config.RuntimeRole default), restoring the pre-09:09 ownership model
+# where the serving instance owns the workers. Blue-green overlap (two
+# active units for ~15-30s per deploy) is the long-standing steady state;
+# the queue consumes via SKIP LOCKED + leases and the other workers use
+# advisory locks / idempotent writes, all built for multi-instance.
 # 2026-09-10 窗口演练实抓（与 245 canary 同款）：候选冷启动 EnsureSchema 在
 # 生产 DB 负载下超过默认 20s boot 预算 → postgres disabled → readyz 503。
 # 候选预算提至 75s（高于实测 ~40s schema-ensure，低于 systemd 90s 上限）。
