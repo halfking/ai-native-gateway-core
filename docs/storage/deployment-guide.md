@@ -11,7 +11,7 @@
 1. 先解析 YAML，再用 `LLM_GATEWAY_*` 环境变量填充 YAML 未配置（空字符串/零值）的字段；
    **显式配置的 YAML 值优先于环境变量**。
 2. 环境变量缺失时，lite 模式由 `ApplyLiteDefaults` 补齐全部默认值；full 模式补
-   `max_connections=100`。
+   `max_connections=200`（2026-09-18 由 100 上调）。
 3. 嵌套段（`full_storage` / `lite_storage`）缺失但 env 有值时会自动创建对应段，支持纯 env 部署。
 4. 主程序装配入口（`cmd/gateway/storage_mode_init.go` 的 `loadStorageConfig`）：有 YAML 路径时
    走 `LoadStorageConfigFromYAML`（解析失败只告警并回退 env-only，不阻塞启动）；无 YAML 路径时
@@ -175,8 +175,8 @@ LLM_GATEWAY_REDIS_URL="127.0.0.1:6379" \
 export LLM_GATEWAY_STORAGE_MODE=full
 export LLM_GATEWAY_POSTGRES_URL="postgres://user:password@127.0.0.1:5432/llm_gateway?sslmode=disable"
 export LLM_GATEWAY_REDIS_URL="127.0.0.1:6379"
-# 可选：连接池上限，缺省 100
-export LLM_GATEWAY_STORAGE_MAX_CONNECTIONS=100
+# 可选：连接池上限，缺省 200（2026-09-18 由 100 上调）
+export LLM_GATEWAY_STORAGE_MAX_CONNECTIONS=200
 go run ./cmd/gateway
 ```
 
@@ -197,12 +197,19 @@ go run ./cmd/gateway
 |------|-----|--------|------|
 | `postgres_url` | `LLM_GATEWAY_POSTGRES_URL` | 无（full 必填） | pgx 连接串；Validate 要求非空，工厂用 `pgxpool.ParseConfig` 解析，解析失败启动失败 |
 | `redis_url` | `LLM_GATEWAY_REDIS_URL` | 无（full 必填） | Validate 要求非空；支持三种形态——`redis://[user:pass@]host[:port][/db]` 与 `rediss://`（TLS）经 `redis.ParseURL` 拆出 Addr/Username/Password/DB，裸 `host:port` 作为 Addr 原样使用（历史行为） |
-| `max_connections` | `LLM_GATEWAY_STORAGE_MAX_CONNECTIONS` | `100` | 同时作用于 pgx 连接池 `MaxConns` 与 go-redis `PoolSize`；`<=0` 或非法值不生效（保持默认） |
+| `max_connections` | `LLM_GATEWAY_STORAGE_MAX_CONNECTIONS` | `200`（2026-09-18 由 100 上调） | 同时作用于 pgx 连接池 `MaxConns` 与 go-redis `PoolSize`；`<=0` 或非法值不生效（保持默认） |
 
 > 说明：生产 full 模式的双模式工厂分支保留桩（`storage/factory/stubs.go`），实际的
 > PostgreSQL/Redis 装配由 cmd/gateway 既有 pgx/redis 路径承担；上述连接串由主配置
 > `LLM_GATEWAY_DATABASE_URL` 等既有变量与 `full_storage` 段共同衔接（见 start-full.sh 的
 > 回退逻辑）。
+>
+> **full 模式 gateway 的实际 PG 池不归本表管理**：`initStorageMode` 仅在 lite 模式构造
+> storage factory（`cmd/gateway/storage_mode_init.go`），full 模式的业务查询走
+> `db.Open` 的 pgxpool——池上限默认 32（31 pod × 32 = 992，对齐共享 PG
+> max_connections=1000 的集群预算），可用环境变量 `LLM_GATEWAY_DB_MAX_CONNS`
+> 按部署覆盖（单 pod 独占 PG 的本地开发可设 200+；共享 PG 的多 pod 环境保持默认，
+> 见 2026-09-18 changelog）。
 
 #### lite_storage 段
 
