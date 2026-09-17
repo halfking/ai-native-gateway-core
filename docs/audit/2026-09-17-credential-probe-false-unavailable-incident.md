@@ -198,3 +198,141 @@ b484efbac 提交信息称"add missing net import"，但 rebase 时该 hunk 与 R
 3. **featured 深探的运营侧清理**（routing_policy.featured_models 移除 gpt-image-2 等非 chat 模型）——报告 §3 遗留项 1，仍未执行（人工动作）。
 4. **404 终判 6h 复验闭环的活体观测**：单测已锁行为，但首批 6h 窗口（约 09-18 05:36 后到期）的自动复验-恢复尚未到时，无活体证据。
 5. **本修复（MiniMax 分类）未部署**：需随下一班 deploy-245 → 154 晋级；部署后观察 cred 21 是否停止抖动（state_reason 不再出现 `[transient] upstream 400 … thinking.type`）。
+
+---
+
+## 7. D+1 复核（2026-09-18 04:42–06:30，§6.5 五项逐条）
+
+验证纪律：双时点+归因（T0=04:42 部署前基线；T5=06:30 部署后终测），全部时区 +08；
+DB 为 154/245 共享 252 PG，任何单侧观测都注明写入方归因。本轮**先取证后改码**，
+三个修复各自精确路径提交（62853d7b0 / c1263e9af+ffbc6dbc8），无预提交污染。
+
+### 7.0 部署阻塞与修复（§6.5-5 的前置，共 6 次尝试）
+
+| # | 时刻 | 结果 | 根因 / 处置 |
+|---|------|------|-------------|
+| 1 | 04:52 | 切流后回滚 | sync-admin 单次 psql 撞 252 饱和（too many clients，~90/100 水位） |
+| 2 | 05:0x | 迁移中止 | **720 首应用 42P01**：`relation "context_manifest_entries" does not exist`（line 60）——59 段策略改写横跨可选表（兄弟产品表），`IF EXISTS` 只护 policy 不护表 → **62853d7b0**：每段 to_regclass 守卫 DO 块，缺表 NOTICE 跳过；up/down 双副本字节一致；scratch 库三场景实测（零表全跳过/有表仅建存在表/重跑幂等） |
+| 3 | 05:16 | 切流后回滚 | 720 修复生效（迁移推进到 722）；sync-admin 再撞饱和 → **c1263e9af**：连接类错误 psql 重试 |
+| 4 | 05:26 | 切流后回滚 | 3×5s 重试全落空——饱和是**持续性**的（实测 107 连接、90+ idle，兄弟产品泄漏）→ **ffbc6dbc8**：预算 8×10s |
+| 5 | 05:31 | 中止 | [8/9] 期间被并行会话干扰（见下） |
+| 6 | 05:40 | **成功** | 采纳已验证 2133 release，切流 24s |
+
+**并行部署竞争事件**：05:31–05:36 另一会话以 in-place 方式（绕过无缝蓝绿与构建锁）
+直接替换 `/opt/llm-gateway-go/gateway`（其工作区构建，版本戳 2127-48278818）并重启
+8782；且 05:37:52 对 cred 21 执行 force-enable（detail=`force_enable:
+minimax-thinking-fix verify 2127`，人工救援动作、不钉住状态）——对方在验同一事故。
+run 6 收尾时已 prune 未验证 releases（含该 2127）；06:17–06:19 对方再度部署（见
+下方"最终态"）——其 06:20:00 日志显示其工作区含等价 client_bug 分类（未提交态）。
+
+**验证（全绿，05:45 实测 2133 在役时）**：245 active=8781 `releases/2133-ffbc6dbc`
+（⊇ c66dbd6c9）；healthz/readyz 200；nginx https 200；background-tasks 401（DB 就绪
+非 503）；admin-login 200（sync-admin 生效）；公网 L4 `llmgo.kxpms.cn/healthz` 200；
+解密冒烟 6 provider / 4 cred / **0 decrypt_failed**；现役二进制含 MiniMax 分类
+regex literal（`invalid[ _-]?params` / `thinking[._ -]?type`）。
+
+**复核收尾时的最终态（06:27，如实记录）**：本会话的 2133-ffbc6dbc 在 05:40–06:17
+服役并完成 §7.1 活体验证后，被并行会话再度取代——06:17:13 其无缝部署
+`2134-289c880e`（基于 origin/main 的 merge，**不含本会话三个修复提交**——720 守卫/
+sync-admin 重试尚未推送；其未再撞 720 是因为共享 PG 已由本会话 run3/run5 登记
+720–723）切至 8782，06:19:57 又以 in-place 重启 8781（2127-48278818，工作区含
+等价 client_bug 修复，06:20:00 日志实证）。截至复核结束，nginx 现役=8782
+（2134-289c880e，二进制含 MiniMax 修复 pattern）；本会话三修复以提交形式待推送
+合流。**教训**：多会话同时操作 245 时"部署谁说了算"没有仲裁，必须串行化约定。
+
+### 7.1 §6.5-5：cred 21（minimax-prod-v2）抖动是否停止（①）
+
+部署前基线（旧代码 2125/2127，两台均无修复）：
+- T0 04:42:44 credentials 行写入 `[transient] upstream 400 … invalid thinking.type
+  (2013)`（ready 但 detail 残留该形状）；24h 内 cred 21 的 request_failure 探测 295 次。
+- T2 05:12:16 再次 cooling 写入（05:17:03 恢复）——抖动持续活跃，节奏 ~15-60 分钟。
+- 归因：03:05–03:25 抖动窗内 245 journald 0 条 "invalid thinking"（6097 条 minimax
+  相关日志中），154 journald 04:10:51 有 `candidate_failure_alert credential_id=21
+  MiniMax-M3`（invalid thinking）——**两台旧代码都在产生/放大抖动**（共享 PG，
+  任意一侧的请求路径都能写入冷却），单一时点或单侧日志都不足以归因。
+
+部署后（05:40 起，双构建叠加窗口——05:40–06:17 为 2133-ffbc6dbc，06:17 起为并行
+会话的 2127/2134 构建，二者经二进制 grep 与活体日志验证均含等价 client_bug 分类）：
+- **T5（06:23）**：credentials 行 state_updated_at 仍停在 05:37:52（force_enable）；
+  05:40 以来 cred 21 冷却写入 **0** 条，模型级 5 条写入全部为 available 恢复向。
+- **活量流量下的修复实证**：06:04:21 与 06:20:00 两波同形请求（`count_in_window=10`
+  /5min，MiniMax-M3 thinking.type 400）在 245 日志中呈现
+  `candidate_failure_alert … error_kind":"client_bug"`——分类正确、仅告警、
+  **无任何 cooling 动作**（"cooled"行检索为空；对比旧代码下同型请求写入
+  `[transient]` 冷却）。
+- 判定标准达成：部署后 state_reason_detail 不再出现 `[transient] … thinking.type`
+  形状（06:27:09 的一次 cooling 为 `[concurrent] overloaded_error`——MiniMax 集群
+  过载的合法限流冷却，属另一机制、按 rate_limit 策略自愈，非本事故形状）。
+
+判定：**①在 245 达成**（含活量流量验证）；残余风险 = 154 仍运行 2127（无修复），
+154 侧遇到同形请求仍会写入冷却（共享 PG），完全止抖以 154 晋级为完成条件。
+
+### 7.2 §6.5-4：404 终判 6h 到期复验（②）——两个结构性发现
+
+**发现一：§6.5-4 预期的"05:36 到期批"根本没到期。** 03:51–04:43 之间，全部 25 行
+`probe_model_not_served_404` 被 request_failure 探测**重写为新的 +6h 窗口**（滚动
+续期）；至 05:12 总数 25→32（11 行在 04:43 后再次续期）；**至 06:23 爆发到 77 行**
+（06:13–06:23 request_failure 探测波，峰值 16-21 次/分钟，cred 8×27 / cred 18×22 /
+cred 19×15 —— 某客户端批量命中中转目录模型）。机制：停泊中的绑定仍被
+流量驱动的 request_failure 探测命中（cred 19 停泊模型 6h 内各被探 4-7 次，最晚
+04:46），每次 direct 404×2 即 `recover_at=now()+6h`（bg/node_probe.go
+unavailableBindingHorizon → updateBindingAvailability 无条件刷新），**死线永远追不上**。
+
+**发现二：`trigger_kind='credential_recovery'` 全时段 0 行（自表建成以来）。**
+机制层两个原因：
+1. **触发错标**：恢复扫描的提交走 main.go:4302/4461
+   `nodeProbeWorker.Submit(credID, model, "default", "expired-binding-recovery")`
+   ——第 4 参是 parentReqID 不是 trigger；unified-queue 下 `submitViaQueue` 硬编码
+   source="request_failure"（bg/node_probe.go:835）。恢复探测即使发生也被记成
+   request_failure，不可观测。
+2. 滚动续期（发现一）使 recover_at 极少成熟；且 expiredCmbRecoverySQL 要求
+   credential 本身 `availability_state='ready'`，cred 18/19/29 长期 cooling 亦不合格。
+
+结论：§5 所称"6h 复验/恢复闭环双向可用"的活体证据实为 request_failure/periodic
+通道完成（gpt-5.4/gpt-image-1），**到期自动复验通道至今无一次可观测运行**。下一个
+自然到期窗 09:51–10:43（若不再被续期），留待下轮。结构性修复建议：恢复提交走显式
+source（需扩 credential_probe_queue.source CHECK 枚举，随迁移做）；并评估停泊绑定
+对 request_failure 探测的免疫，否则 6h 死线形同虚设。
+
+### 7.3 §6.5-1：cred 2 五个 model_probe_broken 行（③）——已消化，机制活体有效
+
+- 五行（gpt-4o-audio-preview / gpt-5.2 / gpt-5.2-chat-latest / gpt-5.3-codex-spark /
+  gpt-image-1）至 T0（04:47）**全部 available=t、无 unavailable_reason**。
+- broken 行的生灭是动态的：04:53:34（同一微秒=模型探测共识批量写）新产生 8 行
+  （creds 2/4/18/21）；至 05:30 cred 2 的 3 行已消化（~20-35 分钟），其余 6 行仍在
+  周期中（含 cred 21 的 abab5.5-chat / MiniMax-Text-01）。
+- 判定：sweeper/healthy_confirmed 消化活体有效；行存续以小时计，非死端。
+
+### 7.4 §6.5-2：探测队列 ready 24h 趋势（④）
+
+- 时点序列：466（09-17 15:38）→ 497（03:14）→ 474（T0 04:42）→ 531（04:56）→
+  526（05:01）→ 520（05:12）→ **524（T5 06:05/06:23 两测一致）**。
+- 24h 结构：入队 ~450-660 行/h；消化 ~60-108 行/h，**输出几乎全部失败**——05:00
+  前后 2h 窗 210 行失败中 207 行 result_http_status=401（上游无效 key/欠费中转）；
+  success 全天仅 4 行。
+- 年龄分布（05:56，total 527）：<6h 446（活跃滚动）＋昨日尾 77＋09-11 化石 4。
+- 判定：**高位持平/缓涨**，既非持续消化也非爆涨；去化瓶颈是死 key 凭据的运营清理
+  （欠费充值/换 key），非代码缺陷。
+
+### 7.5 §6.5-3：featured_models 非 chat 模型（⑤）
+
+- routing_policy.featured_models 共 26 模型，唯一非 chat：**gpt-image-2**（其余 25
+  个为 claude/deepseek/doubao/gemini/glm/gpt-5.x/kimi/minimax 等 chat/text 系列）。
+- 卫生发现：routing_policy 存在 **4 行物理重复**（ctid 互异，id=1/tenant=default
+  内容全同）——id 无唯一约束。
+- 运营确认结论：**待运营答复**——本轮已备齐证据与建议 SQL（见下），因"移除会改变
+  featured 深探/路由行为"属运营决策，未擅自执行；答复后按建议动作落库即可闭环。
+- 建议动作（确认后执行，注意先去重）：
+  `DELETE` 重复行后 `UPDATE routing_policy SET featured_models =
+  array_remove(featured_models,'gpt-image-2')`。
+
+### 7.6 新开放项（本轮新登记）
+
+1. **404 复验通道结构性修复**（§7.2 两发现）：显式 source 枚举 + 停泊绑定探测免疫。
+2. **154 晋级**：MiniMax 修复随下一班 deploy-154，完成后 cred 21 抖动方可完全止息。
+3. cred 35 失败率 ~100%（每 5 分钟 38-46 次全败）持续 auto-cool 循环——死 key 候选
+   仍被流量反复命中，建议运营下线或修 key。
+4. 245 request_failure 探测的 gateway 腿大量 401 invalid_key（同分钟 direct 腿
+   200）——探测网关腿的鉴权/路由错位，建议单开排查。
+5. **多会话 245 部署串行化约定**：05:31 in-place 绕过无缝蓝绿与构建锁事件。
+6. routing_policy 4 行物理重复（id 无唯一约束）。
