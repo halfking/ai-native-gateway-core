@@ -142,6 +142,10 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// R38 (2026-09-17 audit): ensure-shadowed index root fix + request_logs
 		// parent-index ownership unification.
 		"719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql": unifyEnsureShadowedIndexesMigration719,
+		// 720_rls_policy_vocabulary_unification is installer-only (no canonical
+		// sql/migrations/startup copy), so it has no parity entry here.
+		"721_credential_balance_source_and_error.sql": credentialBalanceSourceAndErrorMigration721,
+		"722_routing_analytics_add_origin_actor.sql":  routingAnalyticsAddOriginActorMigration722,
 	}
 
 	for name, embedded := range expected {
