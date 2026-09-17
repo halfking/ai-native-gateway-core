@@ -47,3 +47,8 @@
 重点：窗口内新增的出口调用点是否过 Governor；新增 worker 是否有 leader 选举或幂等收敛。
 只读不改。输出按 conventions.md §4 结构，每条发现带 file:line 与触发路径。
 ```
+
+### R39 回注（2026-09-17，settle 合成轮过滤批）
+- 合成轮口径边界留档：settle 的 session_summaries join（request_count/error_count/health_score）不滤合成轮，方向保守（少归因）；收敛须连写侧一起改并同步两个集成测试期望（F2，接受）。
+- writeReward/abandon 不查 RowsAffected：Redis-off 双实例 sweep 指标可虚高（DB 状态不重复，声明接受）。
+- Go 侧 IsSyntheticActor trim / SQL 谓词不 trim 的前置条件=写入口 origin_mw TrimSpace；新写者必须同样 trim，禁止单侧"修复"（shadow_actors.go 已注释钉死）。

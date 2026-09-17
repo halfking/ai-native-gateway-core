@@ -103,10 +103,10 @@ func TestLANAdvertiser_ContextCancellation(t *testing.T) {
 func TestParseServiceEntry(t *testing.T) {
 	// Test TXT record parsing without network multicast
 	entry := &mdns.ServiceEntry{
-		Name: "test-gateway",
-		Host: "gateway.local.",
+		Name:   "test-gateway",
+		Host:   "gateway.local.",
 		AddrV4: net.ParseIP("192.168.1.100"),
-		Port: 8781,
+		Port:   8781,
 		InfoFields: []string{
 			"version=2.5.0",
 			"api=openai,anthropic,gemini",
@@ -117,6 +117,16 @@ func TestParseServiceEntry(t *testing.T) {
 	gw := parseServiceEntry(entry)
 	if gw == nil {
 		t.Fatal("parseServiceEntry returned nil")
+	}
+
+	// R39 pin: live entries carry the full service instance name; the bare
+	// instance name is what callers match on.
+	if full := parseServiceEntry(&mdns.ServiceEntry{
+		Name:   "test-gateway._llm-gateway._tcp.local.",
+		AddrV4: net.ParseIP("192.168.1.100"),
+		Port:   8781,
+	}); full.Name != "test-gateway" {
+		t.Errorf("Expected full SPN trimmed to 'test-gateway', got %q", full.Name)
 	}
 
 	if gw.Name != "test-gateway" {

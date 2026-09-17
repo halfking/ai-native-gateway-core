@@ -143,6 +143,14 @@ func (w *ProbeQueueWorker) run(ctx context.Context) {
 }
 
 func (w *ProbeQueueWorker) processBatch(ctx context.Context) error {
+	// 2026-09-17 (R39): the instance-level decrypt circuit must gate the
+	// queue path too, not just the legacy drainDue loop — a wrong-key
+	// instance claiming durable queue rows fails every direct round with
+	// endpoint_build and (before the mirrorNodeProbeState CASE WHEN guard)
+	// advanced the shared consecutive_failures ladder. Mirrors drainDue.
+	if w.cfg.ProbeService != nil && w.cfg.ProbeService.worker.decryptCircuitTripped() {
+		return nil
+	}
 	if _, err := w.cfg.Queue.RequeueExpiredLeases(ctx); err != nil {
 		return err
 	}

@@ -33,8 +33,9 @@ cd ai-native-gateway-core
 # Start local dependencies
 docker-compose -f docker-compose.quickstart.yml up -d postgres redis
 
-# Run database migrations
-make db-migrate  # or ./scripts/db-migrate.sh
+# Database migrations
+# No manual step — the gateway applies pending migrations automatically on startup
+# (see docs/getting-started.md).
 
 # Build and run
 go build -o gateway ./cmd/gateway

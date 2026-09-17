@@ -651,7 +651,9 @@ dl_wait_http() {
 # behavior so callers degrade gracefully and the in-gateway
 # LLM_GATEWAY_DB_BOOT_RETRY_SECONDS budget (90s, see dl_write_env) still has
 # a chance to recover. Set DL_PG_PREFLIGHT_REQUIRED=1 to make a probe timeout
-# fatal (die); 245 preprod validates this path before enabling it broadly.
+# fatal (die); R39 correction: 245 deploys via deploy-seamless.sh do NOT
+# source this library, so that gate can never be exercised there — validate
+# it on the deploy-local path (local/252) before enabling it broadly.
 dl_wait_pg_isready() {
   local required="${DL_PG_PREFLIGHT_REQUIRED:-0}"
   local dsn="${LLM_GATEWAY_DATABASE_URL:-${DATABASE_URL:-}}"
@@ -665,7 +667,10 @@ dl_wait_pg_isready() {
   # never fire — an unparseable DSN slid through with empty parts and burned
   # the full 90s probing nothing. Extract first, then require the parts every
   # probe needs (pass may be empty for passwordless DSNs).
-  user=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://([^:]+):.*|\2|p')
+  # R39: the user segment also accepts the passwordless `user@host` shape —
+  # `([^:]+):` required a colon, so `postgresql://u@host:5432/db` slid to the
+  # unparseable branch (or worse, matched `u@host` as user with -U).
+  user=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://([^@:/]+)(:[^@]*)?@.*|\2|p')
   pass=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://[^:]+:([^@]+)@.*|\2|p')
   host=$(printf '%s' "$dsn" | sed -nE 's|^.*@([^:]+):.*|\1|p')
   port=$(printf '%s' "$dsn" | sed -nE 's|^.*@[^:]+:([0-9]+).*|\1|p')
@@ -689,6 +694,14 @@ dl_wait_pg_isready() {
   # making it indistinguishable from "function never called").
   local pg_container
   pg_container=$(dl_pg_container_name)
+  # R39: never exec into a local container when the caller brings its own PG
+  # (DL_DB_MODE=external), and never exec into a STOPPED container —
+  # dl_pg_container_name scans `docker ps -a`, so a stopped llm-gateway-pg
+  # would fail every exec and burn the whole 90s window (false die under
+  # DL_PG_PREFLIGHT_REQUIRED=1 for a healthy external PG).
+  if [[ -n "$pg_container" ]] && { [[ "${DL_DB_MODE:-}" == "external" ]] || ! docker ps --filter "name=^${pg_container}$" --filter status=running --format '{{.Names}}' 2>/dev/null | grep -q .; }; then
+    pg_container=""
+  fi
   log "PG pre-flight: probing host=$host port=$port db=$db (docker=$DL_DOCKER pg_container=${pg_container:-<none>} required=$required)"
   local deadline=$(( $(date +%s) + 90 )) attempt=0
   while (( $(date +%s) < deadline )); do

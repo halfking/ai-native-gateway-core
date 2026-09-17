@@ -499,8 +499,8 @@ func TestReaper_TrimsOldDoneRowsOnly(t *testing.T) {
 			t.Fatalf("seed %s: %v", suffix, err)
 		}
 	}
-	seed("old", "done", "8 days")   // 超保留期 → 应删
-	seed("fresh", "done", "1 hour") // 保留期内 → 应留
+	seed("old", "done", "8 days")     // 超保留期 → 应删
+	seed("fresh", "done", "1 hour")   // 保留期内 → 应留
 	seed("pend", "pending", "8 days") // 非终态超龄 → 应留
 
 	r := newSessionAggregateOutboxReaperForTest(pool, nil, time.Hour, 1, 1)

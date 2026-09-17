@@ -24,7 +24,7 @@
 ### 基本信息
 ```
 项目名称:     LLM Gateway Go
-当前版本:     v2.5.3-c1fd9f4c-20260905-1957
+当前版本:     见仓库根 VERSION 文件（构建时生成，如 2.5.4-8125a06a-20260917-2121）
 Go版本:       1.27.1
 主入口:       cmd/gateway/main.go
 默认端口:     8781 (Gateway 与 Admin 同端口，/api/admin/*)
@@ -129,23 +129,15 @@ go test -bench=. -benchmem ./domains/streaming/
 
 ### Linter与格式化
 ```bash
-# 运行所有linter
-./scripts/lint.sh
-
 # Go格式化
 gofmt -w .
 
 # Go imports
 goimports -w .
 
-# 多租户作用域检查
-go run ./cmd/tools/lint-tenant-scope
-
-# PostgreSQL RLS检查
-go run ./cmd/tools/lint-pg-rls
-
-# OpenTelemetry租户标签检查
-go run ./cmd/tools/lint-otel-tenant
+# 多租户三件套 linter（CI 门禁名，无本地可执行脚本）：
+# lint-tenant-scope-llmgw / lint-pg-rls / lint-otel-tenant
+# 口径见 README.md「Contributing」与 CONTRIBUTING.md
 ```
 
 ### 数据库操作
@@ -165,41 +157,41 @@ migrate create -ext sql -dir migrations -seq add_new_feature
 
 ### 部署相关
 ```bash
-# 检查License状态
-./installer/llm-gw-installer license status
+# 子命令全集：doctor / install / uninstall / version / activate / heartbeat / upgrade
 
-# 激活License（在线）
-./installer/llm-gw-installer activate --mode online --license-key LIC-xxx
+# 激活License（key 模式）
+./installer/llm-gw-installer activate --mode key --license-key LIC-xxx
 
-# 激活License（离线）
-./installer/llm-gw-installer activate --mode offline --request-file activation.req
+# 激活License（离线：先 offline-request 生成请求，再 offline-import 导入许可文件）
+./installer/llm-gw-installer activate --mode offline-request --license-key LIC-xxx
+./installer/llm-gw-installer activate --mode offline-import --license-path license.dat
 
 # 检查更新
-./installer/llm-gw-installer upgrade check
+./installer/llm-gw-installer upgrade --action check
 
 # 在线升级
-./installer/llm-gw-installer upgrade apply --to v2.5.3
+./installer/llm-gw-installer upgrade --action apply
 
 # 回滚
-./installer/llm-gw-installer upgrade rollback --to v2.5.2
+./installer/llm-gw-installer upgrade --action rollback
 ```
 
 ### 工具命令
 ```bash
-# 检查凭据健康
-./cmd/check-credentials/check-credentials --tenant-id xxx
+# 检查凭据健康（go run 或 go build 后执行；flag 为单横线 Go 风格）
+go run ./cmd/check-credentials -tenant xxx
 
-# 探测凭据
-./cmd/probe-cred/probe-cred --credential-id xxx --model gpt-4
+# 探测凭据（-chat 触发最小 chat completion 探测）
+go run ./cmd/probe-cred -cred 123 -chat gpt-4
 
-# 配置导出
-./cmd/cfg_dump/cfg_dump --output config.yaml
+# 配置导出（打印到 stdout；-print-secrets 需同时设 CFG_DUMP_ALLOW_SECRETS=1）
+go run ./cmd/cfg_dump
 
-# 会话取证
-./cmd/sessionforensics/sessionforensics --session-id xxx
+# 会话取证（子命令式：download / replay / summarize / list / migrate）
+go run ./cmd/sessionforensics list --tenant=default --limit=20
 
-# 质量计算
-./cmd/calc_quality/calc_quality --model-id xxx --days 7
+# 质量计算（无 flag，DSN 在 main.go 内配置）
+go run ./cmd/calc_quality
 ```
 
 ---
@@ -338,77 +330,39 @@ GET http://localhost:8781/api/admin/session-audit/export?tenant_id=xxx
 
 ### 环境变量
 ```bash
-# 数据库
-export DB_HOST=localhost
-export DB_PORT=5432
-export DB_NAME=llm_gateway
-export DB_USER=postgres
-export DB_PASSWORD=xxx
-export DB_SSLMODE=disable
-export DB_MAX_CONNS=100
+# 数据库（唯一入口，DSN 整串）
+export LLM_GATEWAY_DATABASE_URL=postgres://user:pass@localhost:5432/llm_gateway?sslmode=disable
 
 # Redis
 export LLM_GATEWAY_REDIS_ADDR=127.0.0.1:6379
-export REDIS_PORT=6379
-export REDIS_PASSWORD=xxx
-export REDIS_DB=0
+export LLM_GATEWAY_REDIS_PASSWORD=xxx
+export LLM_GATEWAY_REDIS_DB=0
 
 # 网关
 export LLM_GATEWAY_LISTEN=:8781
 export LLM_GATEWAY_LOG_LEVEL=info
-
-# 对象存储（OSS/S3）
-export OSS_ACCESS_KEY_ID=xxx
-export OSS_ACCESS_KEY_SECRET=xxx
-export OSS_BUCKET=llm-gateway
+export LLM_GATEWAY_API_KEY=xxx
+export LLM_GATEWAY_ADMIN_API_KEY=xxx
+export LLM_GATEWAY_SECRET_KEY=xxx
+export LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=xxx
 
 # 完整变量清单以 config/config.go 为准
 ```
 
 ### 配置文件示例
 ```yaml
-# config.yaml
-server:
-  listen: ":8781"
-  mode: production
-  shutdown_timeout: 30s
-
-database:
-  host: localhost
-  port: 5432
-  name: llm_gateway
-  user: postgres
-  password: xxx
-  sslmode: disable
-  max_conns: 100
-  min_conns: 10
-
-redis:
-  host: localhost
-  port: 6379
-  password: xxx
-  db: 0
-  pool_size: 50
-
-admin:
-  enabled: true
-  listen: ":8781"
-  cors_origins: ["http://localhost:3000"]
-
-logging:
-  level: info
-  format: json
-  output: stdout
-
-telemetry:
-  enabled: true
-  otel_endpoint: http://localhost:4318
-  prometheus_port: 9090
-
-license:
-  file: /etc/llm-gateway/license.dat
-  online_mode: true
-  heartbeat_interval: 60s
+# config.yaml —— 扁平顶层键结构（完整样例见仓库根 config.example.yaml）
+listen: ":8781"
+log_level: "info"
+static_dir: "web/dist"
+bg_mode: "full"
+runtime_role: "active"          # active 拥有后台 worker；traffic-only 用于蓝绿候选
+deploy_env: "development"
+default_language: "en"
+database_url: "postgres://user:pass@localhost:5432/llm_gateway?sslmode=disable"
+redis_addr: "127.0.0.1:6379"
+# secret_key / credential_encryption_key / api_key / admin_api_key 等敏感项
+# 建议不经文件，统一走 LLM_GATEWAY_* 环境变量注入（环境变量优先于本文件）
 ```
 
 ---
@@ -678,15 +632,12 @@ ping <upstream-api-host>
 # 1. 查看进程内存
 ps aux | grep gateway
 
-# 2. Go内存profile
-curl http://localhost:8781/debug/pprof/heap > heap.prof
+# 2. Go内存profile（pprof 挂在独立端口，需设 LLM_GATEWAY_PPROF_LISTEN=127.0.0.1:<port>，主端口 :8781 无 /debug/*）
+curl http://127.0.0.1:<pprof端口>/debug/pprof/heap > heap.prof
 go tool pprof -http=:8080 heap.prof
 
 # 3. 查看goroutine数量
-curl http://localhost:8781/debug/pprof/goroutine?debug=1
-
-# 4. 强制GC
-curl -X POST http://localhost:8781/debug/gc
+curl http://127.0.0.1:<pprof端口>/debug/pprof/goroutine?debug=1
 
 # 5. 重启服务（临时）
 sudo systemctl restart llm-gateway

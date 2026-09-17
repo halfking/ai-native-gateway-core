@@ -172,7 +172,7 @@ open http://localhost:8781/admin
 
 ```bash
 go build -o gateway ./cmd/gateway
-./gateway --config=configs/local.yaml
+LLM_GATEWAY_CONFIG_FILE=config.example.yaml ./gateway
 curl http://localhost:8781/healthz
 ```
 
