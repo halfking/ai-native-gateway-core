@@ -9,10 +9,13 @@ import (
 
 func TestStore_ActiveTaskCounts(t *testing.T) {
 	store, mock := newMockStore(t)
+	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectQuery(`WHERE status NOT IN`).
 		WillReturnRows(pgxmock.NewRows([]string{"tenant_id", "count"}).
 			AddRow("tenant-a", 3).
 			AddRow("tenant-b", 1))
+	mock.ExpectCommit()
 
 	counts, err := store.ActiveTaskCounts(context.Background())
 	if err != nil {

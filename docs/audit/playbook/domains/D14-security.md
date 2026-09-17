@@ -60,3 +60,8 @@
 - 同主机多实例共用任何"实例名"必须拼端口/角色后缀（mDNS SPN/锁名/日志标识）。
 - 发现类 API 的返回值一律视为未认证数据，函数头必须钉 TRUST BOUNDARY 注释；`mdns.QueryContext` 才吃 ctx（`mdns.Query` 忽略）。
 - mDNS ServiceEntry.Name 是完整 SPN，比较实例名前必须剥 `._llm-gateway._tcp.local.` 后缀（parseServiceEntry 已处理，测试扩钉）。
+
+### R40 回注（2026-09-18，RLS Phase 1 收口）
+- **RLS Phase 1 四项全部落地**（设计 docs/design/rls-tenant-isolation-architecture.md §五）：720 policy 词汇统一（59 条重写，public 弃用 GUC policy=0）、723 ENABLE attachments/cfl_columnar_old、durable 族 17 路径 GUC 补齐、census 守卫三驾（db/rls_policy_census_test.go：startup 迁移静态扫 + Go ensure 静态扫 + TEST_DB_URL 活库 census，.down 文件豁免——回滚本就要恢复旧词汇）。
+- 并行会话交付迁移只落 embeddata 单点（TestStartupFilesAreAllEmbedded 在 main 上红）：**五点同步是发布纪律不是建议**——canonical 副本 / embeddata / runner.go / main.go embed+map / revision-sequence 登记，缺一即红。
+- 共享状态守卫的粒度缺口（R39 §三#3 收口）：endpoint_build 混流"实例错 key"与"单凭据密文永久损坏"，后者被 guard 一并压制后在绑定面永无不可用信号——细分识别器（decrypt 形 detail + 熔断计数未达阈值）豁免写出真实信号，pre-trip 污染窗口由既有 deescalate sweep 自愈。

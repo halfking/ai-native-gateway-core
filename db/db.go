@@ -385,6 +385,12 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureRouteIncidentPhase2Schema(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-18 migration 724: taskprofile 模块的 task_type_corrections
+	// 表（auto 任务类型逐请求人工修正）。启动即自愈，保证 admin
+	// task-profile 端点与优化器修正混入在任何部署形态下都有表可用。
+	if err := db.ensureTaskTypeCorrections(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureVibeCodingSchema(migCtx); err != nil {
 		return err
 	}
@@ -1535,6 +1541,47 @@ func (d *DB) ensureCredentialPlanQuotaProbeBackoff(ctx context.Context) error {
 	return nil
 }
 
+// ensureTaskTypeCorrections mirrors sql/migrations/startup/
+// 724_task_type_corrections.sql — taskprofile 模块（2026-09-18）的逐请求
+// auto 任务类型人工修正表。独立新表、无既有对象改动；与 ensureRouteIncident
+// 同一"二进制启动即生效"的自愈模式，保证 admin /api/admin/task-profile 端点
+// 与 routingopt 修正混入在全新安装与存量升级库上都可用。
+// 幂等：CREATE TABLE / INDEX IF NOT EXISTS，已应用库上为 no-op。
+func (d *DB) ensureTaskTypeCorrections(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS public.task_type_corrections (
+		    id                    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+		    request_id            text NOT NULL UNIQUE,
+		    auto_task_type        text NOT NULL,
+		    human_task_type       text NOT NULL,
+		    agrees                boolean NOT NULL,
+		    classifier_confidence double precision,
+		    profile               text,
+		    annotator             text NOT NULL,
+		    reason                text NOT NULL,
+		    created_at            timestamptz NOT NULL DEFAULT NOW()
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_task_type_corrections_auto_type
+		    ON public.task_type_corrections (auto_task_type, created_at DESC);
+
+		COMMENT ON TABLE public.task_type_corrections IS
+		    'taskprofile: 人工对 auto 任务类型分配的逐请求修正（agrees=auto与human一致）';
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('724', 'taskprofile per-request human task-type corrections')
+		ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("taskprofile task_type_corrections schema ensured (migration 724)")
+	return nil
+}
+
 // ensureProviderModelsCanonicalClearedAt mirrors sql/migrations/startup/
 // 693_provider_models_canonical_cleared_at.sql.
 //
@@ -1959,16 +2006,8 @@ func (d *DB) ensureRoutingAnalyticsColumns(ctx context.Context) error {
 //
 // auto_profile is exposed because the admin auto-route profile distribution
 // (admin/auto_route.go) reads COALESCE(auto_profile, 'unknown') directly from
-// this source view.
-//
-// origin_actor (migration 722, renumbered from the never-deployed 720 first
-// cut) is appended as the LAST column in both UNION branches so the MV layer
-// can filter synthetic actors (goal-% loopbacks) without another rebuild.
-// This constant must stay in lockstep with
-// sql/migrations/startup/722_routing_analytics_add_origin_actor.sql: the
-// migration's CREATE OR REPLACE VIEW pins the 16-column projection, and a
-// repair-path re-run of a stale 15-column batch here would fail with
-// "cannot drop columns from view".
+// this source view. It must stay the LAST column in both UNION branches:
+// CREATE OR REPLACE VIEW can only append columns, never reorder existing ones.
 const routingAnalyticsMVSQL = `
 		-- Keep analytics isolated from the frozen request-log wrapper view. The
 		-- narrow source has stable types across hot and parent partitions and
@@ -1992,8 +2031,7 @@ const routingAnalyticsMVSQL = `
 		  latency_ms::numeric AS latency_ms,
 		  cost_usd::numeric AS cost_usd,
 		  origin_stage::text AS origin_stage,
-		  auto_profile::text AS auto_profile,
-		  origin_actor::text AS origin_actor
+		  auto_profile::text AS auto_profile
 		FROM request_logs_hot
 		UNION ALL
 		SELECT
@@ -2011,8 +2049,7 @@ const routingAnalyticsMVSQL = `
 		  latency_ms::numeric AS latency_ms,
 		  cost_usd::numeric AS cost_usd,
 		  origin_stage::text AS origin_stage,
-		  auto_profile::text AS auto_profile,
-		  origin_actor::text AS origin_actor
+		  auto_profile::text AS auto_profile
 		FROM request_logs;
 
 		CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d AS
