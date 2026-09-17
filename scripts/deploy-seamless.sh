@@ -119,7 +119,14 @@ DEPLOY_REMOTE_LOCK_PATH="/var/lib/llm-gateway-go/deploy.lock"
 if [[ "$ACTION" == deploy || "$ACTION" == rollback ]]; then
   # Each target has its own lock: deployments to 154 and 245 use separate
   # remote hosts and must not block one another locally.
-  LOCK_LOCAL_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-deploy-${TARGET}.lock"
+  #
+  # 2026-09-18（并发部署竞争排查，MiniMax thinking 事故 §6.3）：本地锁路径
+  # 钉死在机器级 /tmp，不随 $TMPDIR 漂移 —— 此前 "${TMPDIR:-/tmp}/..." 在
+  # 不同 shell 环境（交互终端 /var/folders vs cron/agent 沙箱 unset→/tmp 或
+  # 私有 TMPDIR）下解析出不同路径，本地锁层对不同 worktree / 不同上下文的
+  # 并发部署静默失效，只剩远端 mkdir 锁兜底（--force 恢复时连它也不保）。
+  # 显式 LOCK_LOCAL_DIR 仍可覆盖（测试用）。
+  LOCK_LOCAL_DIR="/tmp/kx-llm-gateway-deploy-${TARGET}.lock"
   LOCK_LOCAL_TARGET="$TARGET"
   if [[ "$FORCE" == true ]]; then
     lock_recover_local "$TARGET" 1 || exit $?
@@ -859,6 +866,7 @@ do_deploy() {
   # 8. candidate warm-up + atomic Nginx handoff
   local switch_start_ns switch_end_ns switch_elapsed_ms active_port candidate_port upstream_fragment candidate_unit candidate_binary
   local candidate_service active_service old_version
+  local baseline_active_port baseline_active_slot current_active_port current_active_slot
   active_port=$(target_field "$TARGET" active_port)
   candidate_port="$active_port"
   candidate_service="$SERVICE_NAME"
@@ -873,6 +881,13 @@ do_deploy() {
   log "[8/9] 候选预热 + Nginx 原子切流"
   active_port=$(remote_ssh "cat '$REMOTE_ROOT/run/active-port' 2>/dev/null" 2>/dev/null || true)
   active_port=${active_port:-$(target_field "$TARGET" active_port)}
+  # 2026-09-18（并发部署竞争排查）：带外变更漂移基线。锁只对"走本脚本的
+  # 部署"互斥，锁不住手工 slots/run 改写（2026-09-18 事故 06:14/06:19 两次
+  # 实测：手工 slot 与正规部署互相覆盖）。这里在预热前记下 active 侧状态，
+  # 切流的破坏性动作（candidate stop + symlink 改写）前复核一次——窗口内
+  # 出现带外变更就 fail-closed，让操作者重跑而不是叠出未知状态。
+  baseline_active_port="$active_port"
+  baseline_active_slot=$(remote_ssh "readlink '$REMOTE_ROOT/slots/$active_port' 2>/dev/null" 2>/dev/null || true)
   candidate_port=$(target_field "$TARGET" candidate_port)
   if [[ "$active_port" == "$candidate_port" ]]; then
     candidate_port=$(target_field "$TARGET" active_port)
@@ -937,6 +952,14 @@ do_deploy() {
   fi
   if remote_ssh "test -f '$REMOTE_ROOT/run/active-service'"; then
     active_service=$(remote_ssh "cat '$REMOTE_ROOT/run/active-service'")
+  fi
+  # 2026-09-18（并发部署竞争排查）：切流前带外漂移复核（与上方基线配对）。
+  current_active_port=$(remote_ssh "cat '$REMOTE_ROOT/run/active-port' 2>/dev/null" 2>/dev/null || true)
+  current_active_port=${current_active_port:-$(target_field "$TARGET" active_port)}
+  current_active_slot=$(remote_ssh "readlink '$REMOTE_ROOT/slots/$current_active_port' 2>/dev/null" 2>/dev/null || true)
+  if [[ "$current_active_port" != "$baseline_active_port" || "$current_active_slot" != "$baseline_active_slot" ]]; then
+    err "切流前检测到带外变更：active-port ${baseline_active_port}→${current_active_port}, slots/${baseline_active_port} → ${baseline_active_slot:-<none>} 变为 ${current_active_slot:-<none>}。并发部署或手工操作正在进行，拒绝切换以免互相覆盖；确认环境稳定后重跑部署。"
+    exit 1
   fi
   old_version=$(remote_ssh "readlink '$REMOTE_ROOT/current' 2>/dev/null | xargs basename" 2>/dev/null || true)
   switch_start_ns=$(zd_now_ns)
