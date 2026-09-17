@@ -685,12 +685,24 @@ var toolCallIdMismatchRe = regexp.MustCompile(
 // code 1214 for malformed `messages` histories; similar OpenAI-compatible
 // relays use the explicit invalid_request_format label.  These errors must
 // not be retried across the same provider or cool the credential.
+//
+// 2026-09-18 audit (245 credential-flap follow-up): MiniMax returns
+// "invalid params, invalid thinking.type: \"enabled\" (allowed: adaptive,
+// disabled) (2013)" for client-sent reasoning params it does not accept.
+// That body previously fell through to the status-only KindTransient
+// default, so UpdateOnFailure cooled the credential while the node probe
+// (well-formed ping) kept succeeding — the credential flapped
+// cooling↔ready every few minutes (prod: cred 21 minimax-prod-v2,
+// 2026-09-18 03:0x). Invalid-params 400s are client request shape, never a
+// credential health signal, so they join this client-bug class.
 var invalidRequestFormatRe = regexp.MustCompile(
 	`(?i)(invalid[_ -]?request[_ -]?format|` +
 		`["']code["']\s*:\s*["']?1214["']?|` +
 		`messages.{0,40}(invalid|illegal|malformed)|` +
 		`(invalid|illegal|malformed).{0,40}messages|` +
-		`messages[[:space:]]*(参数非法|格式错误|无效))`,
+		`messages[[:space:]]*(参数非法|格式错误|无效)|` +
+		`invalid[ _-]?params,[^\n]{0,100}invalid[ _-]?thinking[._ -]?type|` +
+		`invalid[ _-]?thinking[._ -]?type[^\n]{0,80}\(2013\))`,
 )
 
 // contentFilterRe matches upstream error bodies that signal a
