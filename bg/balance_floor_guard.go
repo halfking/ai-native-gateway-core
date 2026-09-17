@@ -845,6 +845,10 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 	// by an operator (balance_source='manual') is skipped for 24h so the
 	// automatic probe cannot silently overwrite the calibrated value. The
 	// stamp is written by admin updateCredential on every balance_usd PATCH.
+	// The predicate lives in ManualBalanceProtectionPredicate
+	// (balance_manual_protection.go), shared with probe_v2's cycleAll; the
+	// columns are only on credentials so the unqualified fragment is
+	// unambiguous in this join.
 	rows, err := g.db.Query(cctx, `
 		SELECT c.id, c.secret_ciphertext,
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
@@ -854,10 +858,7 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 		WHERE c.balance_floor_usd IS NOT NULL
 		  AND (c.balance_last_checked_at IS NULL
 		       OR c.balance_last_checked_at < now() - interval '15 minutes')
-		  AND NOT (
-		      COALESCE(c.balance_source, '') = 'manual'
-		      AND c.balance_last_checked_at > now() - interval '24 hours'
-		  )
+		  AND `+ManualBalanceProtectionPredicate+`
 		  AND c.status = 'active'
 		  AND c.lifecycle_status = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
