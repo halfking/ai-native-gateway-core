@@ -543,7 +543,7 @@ test_unlock_target_precedence() {
   printf 'target=245\npid=999999\nstarted_at=2020-01-01T00:00:00Z\n' >"$target_lock/metadata"
 
   local out rc=0
-  out=$(LOCK_LOCAL_DIR="$legacy" TMPDIR="$tmp" bash "$REPO_ROOT/scripts/deploy-lib/unlock-local.sh" --target 245 2>&1) || rc=$?
+  out=$(LOCK_LOCAL_DIR="$legacy" LOCK_TMP_ROOT="$tmp" bash "$REPO_ROOT/scripts/deploy-lib/unlock-local.sh" --target 245 2>&1) || rc=$?
   [[ $rc -eq 1 ]] && log_pass "explicit target inspects target lock despite stale override" \
     || log_fail "unexpected unlock rc=$rc"
   [[ "$out" == *"target=245"* ]] && log_pass "target lock metadata was selected" \
@@ -580,8 +580,8 @@ test_force_flag_parser() {
 test_force_recovery_stale_locks() {
   echo "── AC-L12: stale lock recovery ──"
   local tmp; tmp=$(mktemp -d -t kx-force-recovery.XXXXXX)
-  export TMPDIR="$tmp"
-  unset LOCK_LOCAL_DIR LOCK_LOCAL_BUILD_DIR
+  export LOCK_TMP_ROOT="$tmp"
+  unset TMPDIR LOCK_LOCAL_DIR LOCK_LOCAL_BUILD_DIR
   local target_lock="$tmp/kx-llm-gateway-deploy-245.lock"
   local build_lock="$tmp/kx-llm-gateway-build.lock"
   mkdir -p "$target_lock" "$build_lock"
@@ -617,8 +617,8 @@ test_force_recovery_stale_locks() {
 test_force_recovery_safety() {
   echo "── AC-L13: force recovery safety guards ──"
   local tmp; tmp=$(mktemp -d -t kx-force-safety.XXXXXX)
-  export TMPDIR="$tmp"
-  unset LOCK_LOCAL_DIR LOCK_LOCAL_BUILD_DIR LOCK_FLOCK_BIN
+  export LOCK_TMP_ROOT="$tmp"
+  unset TMPDIR LOCK_LOCAL_DIR LOCK_LOCAL_BUILD_DIR LOCK_FLOCK_BIN
   local target_lock="$tmp/kx-llm-gateway-deploy-245.lock"
   mkdir -p "$target_lock"
   printf 'target=154\npid=999999\n' >"$target_lock/metadata"
@@ -667,8 +667,8 @@ test_force_recovery_safety() {
 test_force_recovery_flock_path() {
   echo "── AC-L14: force recovery flock path ──"
   local tmp; tmp=$(mktemp -d -t kx-flock-path.XXXXXX)
-  export TMPDIR="$tmp"
-  unset LOCK_LOCAL_DIR LOCK_LOCAL_BUILD_DIR
+  export LOCK_TMP_ROOT="$tmp"
+  unset TMPDIR LOCK_LOCAL_DIR LOCK_LOCAL_BUILD_DIR
   local state_file="$tmp/__flock_state"
   local stubbin="$tmp/bin"
   mkdir -p "$stubbin"
@@ -732,6 +732,91 @@ EOF
   return 0
 }
 
+
+# --- AC-L15: machine-level default lock path -----------------------
+# 2026-09-18 concurrent-deploy race audit: the default local lock path
+# must NOT depend on $TMPDIR (macOS /var/folders/<user> vs unset→/tmp vs
+# sandbox-private TMPDIR made the local lock layer invisible across shell
+# contexts). With LOCK_LOCAL_DIR unset and LOCK_TMP_ROOT at its /tmp
+# default, every context must resolve the same path for the same target.
+test_machine_level_default_path() {
+  echo "── AC-L15: machine-level default lock path ──"
+  local tmp; tmp=$(mktemp -d -t kx-machine-default.XXXXXX)
+  local resolved=""
+  resolved=$(unset LOCK_LOCAL_DIR LOCK_LOCAL_TARGET LOCK_TMP_ROOT; \
+    export TMPDIR="$tmp"; \
+    bash -c 'source '"$LIB_LOCK"'; LOCK_LOCAL_TARGET=245; lock_ensure_local_dir; printf %s "$LOCK_LOCAL_DIR"')
+  [[ "$resolved" == "/tmp/kx-llm-gateway-deploy-245.lock" ]] \
+    && log_pass "default path ignores TMPDIR (machine-level /tmp)" \
+    || log_fail "default path followed TMPDIR: got [$resolved]"
+  resolved=$(unset LOCK_LOCAL_DIR LOCK_LOCAL_TARGET LOCK_TMP_ROOT; \
+    export TMPDIR="$tmp"; \
+    bash -c 'source '"$LIB_LOCK"'; lock_ensure_local_dir; printf %s "$LOCK_LOCAL_DIR"')
+  [[ "$resolved" == "/tmp/kx-llm-gateway-deploy.lock" ]] \
+    && log_pass "targetless default path also machine-level" \
+    || log_fail "targetless default path: got [$resolved]"
+  resolved=$(unset LOCK_LOCAL_DIR LOCK_LOCAL_TARGET; \
+    export LOCK_TMP_ROOT="$tmp" TMPDIR="$tmp"; \
+    bash -c 'source '"$LIB_LOCK"'; LOCK_LOCAL_TARGET=154; lock_ensure_local_dir; printf %s "$LOCK_LOCAL_DIR"')
+  [[ "$resolved" == "$tmp/kx-llm-gateway-deploy-154.lock" ]] \
+    && log_pass "LOCK_TMP_ROOT test seam overrides the root" \
+    || log_fail "LOCK_TMP_ROOT seam ignored: got [$resolved]"
+  rm -rf "$tmp"
+  return 0
+}
+
+# --- AC-L16: EPERM must not masquerade as death --------------------
+# 2026-09-18 concurrent-deploy race audit: `kill -0` fails for BOTH ESRCH
+# (process gone) and EPERM (process alive, owned by another user). Force
+# recovery then deleted a LIVE holder's lock. PID 1 (launchd/root, always
+# alive, never ours, never a deploy process) is the canonical probe: the
+# old code recovered the lock; the ps-based oracle must refuse.
+test_eperm_liveness_protection() {
+  echo "── AC-L16: EPERM-safe liveness ──"
+  local tmp; tmp=$(mktemp -d -t kx-eperm.XXXXXX)
+  export LOCK_TMP_ROOT="$tmp"
+  unset TMPDIR LOCK_LOCAL_DIR LOCK_LOCAL_BUILD_DIR LOCK_FLOCK_BIN
+  local target_lock="$tmp/kx-llm-gateway-deploy-245.lock"
+  local build_lock="$tmp/kx-llm-gateway-build.lock"
+  mkdir -p "$target_lock" "$build_lock"
+  printf 'target=245\npid=1\n' >"$target_lock/metadata"
+  printf 'target=245\npid=1\n' >"$build_lock/metadata"
+
+  local rc=0
+  lock_recover_local 245 1 || rc=$?
+  if [[ $rc -ne 0 && -d "$target_lock" ]]; then
+    log_pass "local force recovery refuses lock held by live foreign PID 1"
+  else
+    log_fail "local force recovery removed/rebuilt lock held by live PID 1 (rc=$rc)"
+  fi
+
+  rc=0
+  lock_recover_build 1 || rc=$?
+  if [[ $rc -ne 0 && -d "$build_lock" ]]; then
+    log_pass "build force recovery refuses lock held by live foreign PID 1"
+  else
+    log_fail "build force recovery removed lock held by live PID 1 (rc=$rc)"
+  fi
+
+  # Remote variant: metadata claims PID 1 (alive). Recovery must fail
+  # closed without removing the remote lock.
+  local remote_dir="$tmp/remote"
+  mkdir -p "$remote_dir/deploy.lock"
+  printf 'target=245\npid=1\n' >"$remote_dir/deploy.lock/metadata"
+  local ssh_cmd
+  ssh_cmd() { cat "$remote_dir/deploy.lock/metadata"; }
+  rc=0
+  lock_recover_remote ssh_cmd 245 "$remote_dir/deploy.lock" 1 || rc=$?
+  if [[ $rc -ne 0 && -d "$remote_dir/deploy.lock" ]]; then
+    log_pass "remote force recovery refuses lock held by live source PID 1"
+  else
+    log_fail "remote force recovery removed lock held by live PID 1 (rc=$rc)"
+  fi
+
+  rm -rf "$tmp"
+  return 0
+}
+
 # --- runner --------------------------------------------------------
 run_all() {
   echo "═══════════════════════════════════════════════════════════════"
@@ -753,6 +838,8 @@ run_all() {
   test_force_recovery_stale_locks
   test_force_recovery_safety
   test_force_recovery_flock_path
+  test_machine_level_default_path
+  test_eperm_liveness_protection
 
   echo
   echo "───────────────────────────────────────────────────────────────"
@@ -779,6 +866,8 @@ if [[ $# -gt 0 ]]; then
     force-recovery)    test_force_recovery_stale_locks ;;
     force-safety)      test_force_recovery_safety ;;
     flock-path)        test_force_recovery_flock_path ;;
+    machine-path)      test_machine_level_default_path ;;
+    eperm-liveness)    test_eperm_liveness_protection ;;
     all|*)             run_all ;;
   esac
 else
