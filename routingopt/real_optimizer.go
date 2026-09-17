@@ -64,6 +64,17 @@ func (o *RealOptimizer) WithAffinityCache(c *AffinityCache) *RealOptimizer {
 	return o
 }
 
+// WithCorrectionSource attaches the taskprofile human task-type correction
+// source (2026-09-18): PostClassify blends correction accuracy into the
+// per-task confidence damping (human ×2 weight). nil src = 未接线，
+// PostClassify 行为与接线前完全一致。Returns the receiver for chaining.
+func (o *RealOptimizer) WithCorrectionSource(src CorrectionSource) *RealOptimizer {
+	if o != nil && o.confidence != nil {
+		o.confidence.SetCorrectionSource(src)
+	}
+	return o
+}
+
 // FlushFeedback drains the async feedback batch queue (P2.2 Track B).
 // cmd/gateway 优雅关闭在 DB pool 关闭前调用（约 5s 超时 ctx）；同步路径
 // / 未接线时是安全 no-op。
