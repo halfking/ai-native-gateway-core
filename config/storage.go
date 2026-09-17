@@ -229,9 +229,16 @@ func (c *StorageConfig) ApplyLiteDefaults() {
 	}
 }
 
-// ApplyDefaults 按 mode 分派默认值：full 模式补 max_connections=100；
+// ApplyDefaults 按 mode 分派默认值：full 模式补 max_connections=200；
 // lite 模式委托给 ApplyLiteDefaults。mode 为空/非法时不做任何事（由
 // Validate 报错），方便调用方按 "Load → ApplyDefaults → Validate" 排序。
+//
+// 2026-09-18 升级：默认 100→200，配合 PG max_connections=1000（2026-09-18
+// 在 252 + 本地同步落地，ALTER SYSTEM）。单 pod 总占 PG =
+// db.Open 主 pool 32 + storage 池 200 = 232 conn；按 db.go 注释"31 pod ×
+// 32 = 992"的设计空间，全集群留 ≥25% 头给 admin/exporter/replication 峰值。
+// 仍可通过 LLM_GATEWAY_STORAGE_MAX_CONNECTIONS env 显式上调（单 pod 演示
+// 环境 200-500 都安全）。
 func (c *StorageConfig) ApplyDefaults() {
 	if c == nil {
 		return
@@ -242,7 +249,7 @@ func (c *StorageConfig) ApplyDefaults() {
 			c.Full = &FullStorageConfig{}
 		}
 		if c.Full.MaxConnections <= 0 {
-			c.Full.MaxConnections = 100
+			c.Full.MaxConnections = 200
 		}
 	case StorageModeLite:
 		c.ApplyLiteDefaults()

@@ -166,7 +166,9 @@ func TestApplyLiteDefaultsFillsAllDefaults(t *testing.T) {
 	}
 }
 
-// TestApplyDefaultsFullMaxConnections 验证 full 模式 max_connections 默认 100。
+// TestApplyDefaultsFullMaxConnections 验证 full 模式 max_connections 默认 200
+// （2026-09-18 升级：配合 PG max_connections=1000；env LLM_GATEWAY_STORAGE_MAX_CONNECTIONS
+// 仍可显式覆盖）。
 func TestApplyDefaultsFullMaxConnections(t *testing.T) {
 	cfg := &StorageConfig{
 		Mode: "full",
@@ -176,8 +178,8 @@ func TestApplyDefaultsFullMaxConnections(t *testing.T) {
 		},
 	}
 	cfg.ApplyDefaults()
-	if cfg.Full.MaxConnections != 100 {
-		t.Fatalf("MaxConnections = %d, want default 100", cfg.Full.MaxConnections)
+	if cfg.Full.MaxConnections != 200 {
+		t.Fatalf("MaxConnections = %d, want default 200", cfg.Full.MaxConnections)
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() after ApplyDefaults error = %v, want nil", err)
