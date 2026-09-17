@@ -1740,6 +1740,15 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		// against itself and could never fire — capture the pre-fix count.
 		msgCountBefore := len(irReq.Messages)
 		irReq = ir.ValidateAndFixRequest(irReq, params.RequestID)
+		// 2026-09-18（MiniMax thinking 事故 P5 收尾）: 与 legacy 分支同理由，
+		// irReq.TargetProvider 必须在序列化前标上。此前该分支依赖 converter
+		// SetContext(UpstreamCatalogCode) 在 transport 层的二次还原兜底
+		// Extensions 字段，但 ir.Thinking（parse_anthropic 消费 anthropic 的
+		// thinking 产生）只在 internal/ir.SerializeOpenAI 内按
+		// req.TargetProvider 渲染方言 —— transport 层兜底够不到它，导致
+		// Anthropic 协议入向到 MiniMax/DeepSeek 等 OpenAI 形态上游时推理
+		// 意图被静默丢弃（P5）。
+		irReq.TargetProvider = cand.CatalogCode
 		if lf := len(irReq.Messages); lf != msgCountBefore {
 			slog.Debug("finalizeOpenAIUpstreamBody: IR validate+fix applied",
 				"request_id", params.RequestID,
