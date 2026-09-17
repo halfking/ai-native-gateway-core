@@ -1,21 +1,23 @@
 //go:build integration
 
 // migration_717_hot_alignment_integration_test.go — behavioral fixture for
-// the live-DB-rewritten migration 717 (adopted at the R37 merge). 717 must
-// behave correctly on BOTH hot-table vintages:
+// migration 717 v3 (R37 SQL-focused round: view-dependency capture/rebuild +
+// per-column drifted-only guards). 717 must behave correctly on BOTH
+// hot-table vintages:
 //
-//   - drifted (pre-717 production shape per the live-DB audit): text varchars,
-//     double precision content_safety_score, text[] dlp_violations, text
-//     protocol_conversion / *_extensions, customer_id ALREADY bigint
-//     (migration 574 owns that transition) — the guarded ALTERs convert the
-//     seven guarded columns;
+//   - drifted: text varchars, double precision content_safety_score, text[]
+//     dlp_violations, text protocol_conversion / *_extensions, customer_id
+//     ALREADY bigint (574 owns that transition; the v3 clause is guarded to
+//     text-family and must skip) — the guards convert the drifted columns;
 //   - aligned (fresh-install baseline shape, all mother types) — every guard
 //     skips and the file is a no-op that preserves typed values.
 //
-// The 0A000 view-dependency path (frozen wrapper chains) is exercised on the
-// real 245/preprod chains; a fixture view chain would only duplicate the
-// per-column subtransaction logic that TestMigration717ShapePins pins
-// structurally.
+// Fixture notes: api_key_fingerprint stays ≤16 chars — the v3 varchar retypes
+// carry no LEFT() truncation, matching the live-validated behavior (values
+// beyond the parent domain were never observed and would 22001, which is the
+// same contract the promote path already enforces). The view capture/rebuild
+// path with real wrapper views is exercised by the live preprod chains; on a
+// view-less fixture the DROP/CREATE steps are guarded skips.
 //
 // Run:
 //
@@ -66,7 +68,7 @@ func TestMigration717HotColumnAlignmentBothColumnStates(t *testing.T) {
 		sanitizer_mutations text
 	)`)
 	exec(`INSERT INTO public.request_logs_hot VALUES (
-		'agent', 'coder', '0123456789abcdefZZ', 't1',
+		'agent', 'coder', '0123456789abcdef', 't1',
 		42, 1.5, ARRAY['x'], 'true', '{"k":1}', '[]'
 	)`)
 	exec(migrationSQL)
