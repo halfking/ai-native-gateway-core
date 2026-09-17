@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +20,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/kaixuan/llm-gateway-go/internal/probemode"
 )
 
 // Suspicious-exit metrics. Registered once at package init so the
@@ -88,19 +89,6 @@ func recordSuspiciousExitDBDuration(seconds float64) {
 		return
 	}
 	suspiciousExitDBDuration.Observe(seconds)
-}
-
-// legacyProbeMode reports the documented rollback flag
-// (LLM_GATEWAY_USE_NEW_PROBE_MODE=false). Mirrors cmd/gateway useNewProbeMode
-// semantics (default = new mode); provider cannot import cmd/gateway. Under
-// the new mode, model_probe_state is frozen, so provider-side writes to it
-// are skipped.
-func legacyProbeMode() bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv("LLM_GATEWAY_USE_NEW_PROBE_MODE")))
-	if v == "" {
-		return false
-	}
-	return !(v == "1" || v == "true" || v == "yes" || v == "on")
 }
 
 // BindingRawModel returns the model_offers identity used for routing state.
@@ -1591,20 +1579,12 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		  -- (provider.manual_disabled, credentials.manual_disabled, or cmb.unavailable_reason='manual')
 		  AND v.is_routable = TRUE
 		  -- 2026-06-22 defect (2): drop (credential, model) pairs whose
-		  -- probe state is 'broken_confirmed'. The probe worker marks a
+		  -- model_probe_state is 'broken_confirmed'. The probe worker marks a
 		  -- binding broken_confirmed after 3 consecutive targeted-probe
 		  -- failures; without this filter the pair stays routable as long as
 		  -- the credential-level availability_state is 'ready', so the router
 		  -- keeps re-selecting it (the cred-11/minimax-m3 loop).
-		  -- R37 (2026-09-17) 数据源统一:改读 v_node_probe_state_compat —
-		  -- model_probe_state 在默认新模式下停更,冻结行会让本排除失效(且旧
-		  -- reviver 周期清空 broken 行,进一步架空它)。
-		  AND NOT EXISTS (
-		      SELECT 1 FROM v_node_probe_state_compat mps
-		      WHERE mps.credential_id = c.id
-		        AND mps.raw_model_name = mo.raw_model_name
-		        AND mps.state = 'broken_confirmed'
-		  )
+		  AND `+brokenPairExcludeSQL("mps", "c.id", "mo.raw_model_name")+`
 		  -- 2026-06-22 defect (3) hard gate: exclude pairs whose real recent
 		  -- success rate is below 0.5 once we have at least 20 samples. The
 		  -- min-sample threshold avoids cold-start false positives (a brand-new
@@ -1670,12 +1650,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			            AND COALESCE(mo_sibling.unavailable_reason, '') NOT LIKE 'manual%'
 			            AND COALESCE(c_sibling.manual_disabled, FALSE) = FALSE
 			            AND COALESCE(p_sibling.manual_disabled, FALSE) = FALSE
-			            AND NOT EXISTS (
-			                SELECT 1 FROM model_probe_state mps_sibling
-			                WHERE mps_sibling.credential_id = mo_sibling.credential_id
-			                  AND mps_sibling.raw_model_name = mo_sibling.raw_model_name
-			                  AND mps_sibling.state = 'broken_confirmed'
-			            )
+			            AND `+brokenPairExcludeSQL("mps_sibling", "mo_sibling.credential_id", "mo_sibling.raw_model_name")+`
 			      )
 			  )
 
@@ -2373,40 +2348,63 @@ func (c *Client) maybeExitSuspicious(credentialID int, rawModel string) {
 	c.asyncExitSuspicious(credentialID, rawModel)
 }
 
+// brokenPairExcludeSQL returns the NOT EXISTS clause implementing the
+// 2026-06-22 defect-(2) guard: drop (credential, model) pairs the ACTIVE
+// probe system has proven broken (three consecutive targeted-probe
+// failures). R36 (A-3 sweep): the source table follows the probe mode via
+// internal/probemode.GuardStateTable — under the new probe stack the legacy
+// model_probe_state is frozen, so reading it here kept frozen
+// broken_confirmed rows excluded forever while new-system verdicts never
+// reached this filter.
+func brokenPairExcludeSQL(alias, credCol, modelCol string) string {
+	// Composed with strings.Builder (no raw-string backticks) so the
+	// sql_comment_syntax_test backtick-parity scanner cannot mistake the
+	// surrounding Go comments for SQL text.
+	var b strings.Builder
+	b.WriteString("NOT EXISTS (\n")
+	b.WriteString("\t\tSELECT 1 FROM " + probemode.GuardStateTable() + " " + alias + "\n")
+	b.WriteString("\t\tWHERE " + alias + ".credential_id = " + credCol + "\n")
+	b.WriteString("\t\t  AND " + alias + ".raw_model_name = " + modelCol + "\n")
+	b.WriteString("\t\t  AND " + alias + ".state = 'broken_confirmed'\n")
+	b.WriteString("\t)")
+	return b.String()
+}
+
 func (c *Client) defaultAsyncExitSuspicious(credentialID int, rawModel string) {
 	if c.dbPool == nil || c.redis == nil {
 		return
 	}
 	go func() {
+		if probemode.Enabled() {
+			// R36 (A-3 sweep): under the new probe mode model_probe_state is a
+			// frozen table — this legacy fast-path write has no consumer (the
+			// new system's node_probe_state has no 'suspicious' state and
+			// re-probes on its own scheduler). Keep the dispatch metric, skip
+			// the dead write.
+			return
+		}
 		bgCtx, bgCancel := context.WithTimeout(context.Background(), time.Second)
 		defer bgCancel()
-		// R37 (2026-09-17): under the default new probe mode,
-		// model_probe_state is frozen — this UPDATE would only mutate a dead
-		// table (NodeProbeWorker owns state/backoff). The live
-		// llmgw:avail cache write and candidate-cache invalidation below
-		// still apply in both modes. Rollback mode keeps the legacy write.
-		if legacyProbeMode() {
-			dbStart := time.Now()
-			_, err := c.dbPool.Exec(bgCtx, `
-				UPDATE model_probe_state
-				SET state = 'recovering',
-				    next_retry_at = NOW() + INTERVAL '30 seconds',
-				    consecutive_successes = 0,
-				    consecutive_failures = 0,
-				    last_state_change_at = NOW()
-				WHERE credential_id = $1
-				  AND raw_model_name = $2
-				  AND state = 'suspicious'
-			`, credentialID, rawModel)
-			recordSuspiciousExitDBDuration(time.Since(dbStart).Seconds())
-			if err != nil {
-				slog.Warn("provider: maybeExitSuspicious db update failed",
-					"credential_id", credentialID,
-					"raw_model", rawModel,
-					"error", err)
-				recordSuspiciousExit("db_error")
-				return
-			}
+		dbStart := time.Now()
+		_, err := c.dbPool.Exec(bgCtx, `
+			UPDATE model_probe_state
+			SET state = 'recovering',
+			    next_retry_at = NOW() + INTERVAL '30 seconds',
+			    consecutive_successes = 0,
+			    consecutive_failures = 0,
+			    last_state_change_at = NOW()
+			WHERE credential_id = $1
+			  AND raw_model_name = $2
+			  AND state = 'suspicious'
+		`, credentialID, rawModel)
+		recordSuspiciousExitDBDuration(time.Since(dbStart).Seconds())
+		if err != nil {
+			slog.Warn("provider: maybeExitSuspicious db update failed",
+				"credential_id", credentialID,
+				"raw_model", rawModel,
+				"error", err)
+			recordSuspiciousExit("db_error")
+			return
 		}
 		nextRetryAt := time.Now().Add(30 * time.Second).UTC().Format(time.RFC3339Nano)
 		if cacheErr := c.redis.HSet(bgCtx, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel), map[string]any{

@@ -156,13 +156,10 @@ SELECT
        AND state != 'probing') as pending_probes_5min,
     NOW() as snapshot_at;
 
--- R37 (2026-09-17) 半回滚补齐：down 原先只重建 3 个视图就结束，
--- v_model_priority_details / v_model_availability_timeline /
--- get_model_state_summary 被 CASCADE 后无人重建，依赖它们的
--- probe-health 端点（/api/admin/probe/model/{model}/nodes、
--- /api/admin/probe/timeline、/api/admin/probe/model/{model}/summary）
--- 回滚后全部 42P01。以下三体逐字取自 716 落地前的 db.go 内嵌 SQL
--- （313d1ebc8^，与 up 头注释同源）。
+-- R36 (2026-09-17) 补齐半回滚：以下三个对象在原 down 中缺失，回滚后
+-- /api/admin/probe/model/{model}/nodes、/timeline、/model/{model}/summary
+-- 会 42P01 直到网关重启 ensure 重建。旧体取自 716 父提交(313d1ebc8^)的
+-- db/db.go ensureProbeHealthDashboardViews 内嵌 SQL（去缩进原文）。
 
 CREATE OR REPLACE VIEW v_model_priority_details AS
 SELECT

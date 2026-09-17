@@ -6,6 +6,17 @@ _dl_die() { printf 'error: %s\n' "$*" >&2; return 1; }
 _dl_have() { command -v "$1" >/dev/null 2>&1; }
 _dl_bool() { [[ "${1:-}" == 1 || "${1:-}" == true || "${1:-}" == yes ]]; }
 
+# Fail-closed guard for dl_wait_pg_isready (DL_PG_PREFLIGHT_REQUIRED=1) and
+# any other lib primitive that must TERMINATE the deploy, not merely return
+# nonzero — a bare return would fall through `|| true` callers and fail open.
+# deploy-local.sh defines its own branded die() after sourcing this file and
+# overrides this fallback; the fallback exists so sourcing the lib alone
+# (tests, upgrade/seamless tooling) never degrades `die` into
+# "command not found" (exit 127) where fail-closed only holds by accident.
+if ! declare -F die >/dev/null 2>&1; then
+  die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+fi
+
 # Use native paths for the current shell. Git Bash/MSYS accepts /d/kaixuan,
 # while the displayed contract remains D:/kaixuan.
 dl_default_root() {
@@ -622,18 +633,35 @@ dl_wait_http() {
 # Fix: before docker run / nohup, prove the exact DSN the gateway will see
 # (host.docker.internal:5432 in Docker mode, 127.0.0.1:PGPORT otherwise)
 # answers SELECT 1. Timeout 90s covers PG recovery windows seen locally.
+#
+# 2026-09-17 audit wrap: env DL_PG_PREFLIGHT_REQUIRED gates the timeout
+# outcome. Default 0 (warn-only) keeps the historical `|| true` behavior so
+# callers degrade gracefully and the in-gateway LLM_GATEWAY_DB_BOOT_RETRY_SECONDS
+# budget (already 90s, see dl_write_env) still has a chance to recover. Set
+# DL_PG_PREFLIGHT_REQUIRED=1 to make a probe timeout fatal (die); 245 preprod
+# validates this path before enabling it broadly.
 dl_wait_pg_isready() {
+  local required="${DL_PG_PREFLIGHT_REQUIRED:-0}"
   local dsn="${LLM_GATEWAY_DATABASE_URL:-${DATABASE_URL:-}}"
   if [[ -z "$dsn" ]]; then
     log 'no DATABASE_URL configured; skipping PG pre-flight'
     return 0
   fi
   local user pass host port db
-  if ! user=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://([^:]+):.*|\2|p') \
-     || ! pass=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://[^:]+:([^@]+)@.*|\2|p') \
-     || ! host=$(printf '%s' "$dsn" | sed -nE 's|^.*@([^:]+):.*|\1|p') \
-     || ! port=$(printf '%s' "$dsn" | sed -nE 's|^.*@[^:]+:([0-9]+).*|\1|p') \
-     || ! db=$(printf '%s' "$dsn" | sed -nE 's|^.*/([^?]+).*|\1|p'); then
+  # 2026-09-17 audit fix: the original `if ! user=$(... ) || ! ...` chain
+  # could never fire — sed exits 0 on no-match, so an unparseable DSN slid
+  # through with empty parts and burned the full 90s probing nothing. Extract
+  # first, then require the parts that every probe needs (pass may be empty
+  # for passwordless DSNs).
+  user=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://([^:]+):.*|\2|p')
+  pass=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://[^:]+:([^@]+)@.*|\2|p')
+  host=$(printf '%s' "$dsn" | sed -nE 's|^.*@([^:]+):.*|\1|p')
+  port=$(printf '%s' "$dsn" | sed -nE 's|^.*@[^:]+:([0-9]+).*|\1|p')
+  db=$(printf '%s' "$dsn" | sed -nE 's|^.*/([^?]+).*|\1|p')
+  if [[ -z "$user" || -z "$host" || -z "$port" || -z "$db" ]]; then
+    if [[ "$required" == "1" ]]; then
+      die 'PG pre-flight: could not parse DATABASE_URL — fail-closed (DL_PG_PREFLIGHT_REQUIRED=1)'
+    fi
     warn 'could not parse DATABASE_URL; skipping PG pre-flight'
     return 0
   fi
@@ -642,7 +670,7 @@ dl_wait_pg_isready() {
   # 2026-09-17 audit: always log the probe target so operators can see when
   # the pre-flight actually fired (success on attempt 1 was previously silent,
   # making it indistinguishable from "function never called").
-  log "PG pre-flight: probing $probe_host:$port db=$db (docker=$DL_DOCKER pg_container=${DL_PG_CONTAINER:-${dl_pg_container_name:-none}})"
+  log "PG pre-flight: probing $probe_host:$port db=$db (docker=$DL_DOCKER pg_container=${DL_PG_CONTAINER:-${dl_pg_container_name:-none}} required=$required)"
   local deadline=$(( $(date +%s) + 90 )) attempt=0
   while (( $(date +%s) < deadline )); do
     attempt=$(( attempt + 1 ))
@@ -665,6 +693,9 @@ dl_wait_pg_isready() {
     fi
     sleep 2
   done
+  if [[ "$required" == "1" ]]; then
+    die "PG pre-flight timed out after 90s ($probe_host:$port, db=$db) — fail-closed (DL_PG_PREFLIGHT_REQUIRED=1); gateway would have hit database:null in 20s; refusing to start the container"
+  fi
   warn "PG pre-flight timed out after 90s ($probe_host:$port, db=$db); gateway boot retry will have to absorb the remaining warmup"
   return 1
 }
