@@ -195,6 +195,12 @@ func (s *Store) CreateAndClaim(ctx context.Context, n NewTask) (*Task, error) {
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // 提交后 Rollback 是 no-op
 
+	// 前台按租户写入路径：RLS 设计 §五 Phase1#2，tenant_isolation policy 的
+	// GUC 在降权后生效，superuser 时期 dormant。
+	if err := setLocalTenantGUC(ctx, tx, n.TenantID); err != nil {
+		return nil, err
+	}
+
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO durable_llm_tasks (
 			id, tenant_id, request_id, session_id, protocol, endpoint,

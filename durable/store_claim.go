@@ -113,6 +113,11 @@ func (s *Store) ClaimRunnable(ctx context.Context, opts ClaimOptions) ([]*Task, 
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
 
+	// worker 全租户扫描：旁路双 GUC（RLS §五 Phase1#2）。
+	if err := setAllTenantBypassGUC(ctx, tx); err != nil {
+		return nil, err
+	}
+
 	rows, err := tx.Query(ctx, claimSelectSQL, opts.Batch, now)
 	if err != nil {
 		return nil, fmt.Errorf("durable: claim select: %w", err)
@@ -167,7 +172,9 @@ func (s *Store) ClaimRunnable(ctx context.Context, opts ClaimOptions) ([]*Task, 
 // RenewLease 为 running 任务续租。必须携带 (lease_owner, fencing_token)；
 // 0 行（租约被夺/token 失效/任务不在 running）返回 ErrLeaseLost。
 func (s *Store) RenewLease(ctx context.Context, taskID, owner string, token int64, until time.Time) error {
-	tag, err := s.db.Exec(ctx, `
+	// worker 单语句写包显式事务设旁路 GUC：autocommit 下 is_local GUC 语句
+	// 结束即回收，降权后会被 RLS 过滤成假性 ErrLeaseLost（rls.go）。
+	tag, err := s.execWithBypassTx(ctx, `
 			UPDATE durable_llm_tasks
 			SET lease_until = $4, updated_at = $5
 			WHERE id = $1 AND lease_owner = $2 AND fencing_token = $3 AND status = 'running'`,
@@ -201,6 +208,11 @@ func (s *Store) Reschedule(ctx context.Context, p RescheduleParams) error {
 		return fmt.Errorf("durable: begin reschedule: %w", err)
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+
+	// worker 路径：旁路双 GUC（RLS §五 Phase1#2）。
+	if err := setAllTenantBypassGUC(ctx, tx); err != nil {
+		return err
+	}
 
 	var (
 		tenantID, requestID, sessionID string

@@ -160,6 +160,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"717_request_logs_hot_column_alignment.sql",
 			"718_drop_redundant_indexes_and_add_ttl_indexes.sql",
 			"719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql",
+			// R40 (2026-09-18): five-point sync completion — 720 landed in
+			// embeddata only (f5328e13c), leaving TestStartupFilesAreAllEmbedded
+			// red on main; registered here with the canonical copy restored.
+			"720_rls_policy_vocabulary_unification.sql",
+			"723_rls_enable_attachments_and_cfl_old.sql",
+			"722_durable_family_schema_convergence.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}

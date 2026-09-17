@@ -51,6 +51,12 @@ func (s *Store) ProjectPendingOutbox(ctx context.Context, target *pending.Store,
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
 
+	// worker 投影修复：旁路双 GUC（RLS §五 Phase1#2）——JOIN 两表都在
+	// RLS 约束下，须在同一 GUC 事务内完成。
+	if err := setAllTenantBypassGUC(ctx, tx); err != nil {
+		return 0, err
+	}
+
 	rows, err := tx.Query(ctx, `
 		SELECT o.task_id, o.result_version,
 		       t.tenant_id, t.request_id, t.session_id, t.status,

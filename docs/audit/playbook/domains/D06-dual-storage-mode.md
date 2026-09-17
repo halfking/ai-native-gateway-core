@@ -47,3 +47,8 @@
 - boot 连接重试必须区分 SQLSTATE：42P01/42703/42883/42809/0A000 = schema mismatch，fast-fail + 可行动日志（db.IsSchemaMismatchError），否则烧光预算后同样落到 disabled。
 - 存在性检查用 pg_class.relkind IN ('r','p') 而非 to_regclass（后者对视图/序列也真）。
 - ensure 内嵌 DDL 引用特性表前，先想"这张表在哪些部署形态不存在"（installer 全新安装 embed 只有 00/01/02+478 起）。
+
+### R40 回注（2026-09-18，durable 族 RLS GUC + schema 收敛）
+- **RLS Phase1#2 durable 族 GUC 补齐**：durable/rls.go 统一通道——前台写（CreateAndClaim）`SET LOCAL app.current_tenant`，worker 17 条路径（claim/terminal/reaper/settlement/pending/决策历史/指标读）`super_admin + bypass_rls` 双 GUC；**autocommit 单语句读写必须包显式事务**——is_local GUC 在 autocommit 下语句结束即回收，等于没设，降权后表现为假性 ErrLeaseLost/ErrNoRows（pgxmock 用例 ×32 同步补 Begin/GUC/Commit 期望）。
+- **516 中间形态漂移（新发现，722 收敛）**：本机真库取证——2026-08-15 19:14 以从未入 git 的脏工作区 516 建表（缺 durable_llm_task_events/durable_pending_outbox/checkpoint_payload），516 后以最终形态提交；存量库三无（marker 锁死不可重放、ensure 无 durable 条目、代码直引缺失表/列）→ 首次 durable 事件写入即运行时失败。722 以 516 最终形态幂等体重放收敛（IF NOT EXISTS/DROP POLICY IF EXISTS/ADD COLUMN IF NOT EXISTS），全量注册双通道，本机真库实跑落地。
+- 教训：**"迁移文件后补编辑"对已应用库是静默腐蚀**——凡是 ensure 链不覆盖的 schema 面，交付矩阵必须回答"已应用旧版 X 的库怎么拿到新版 X 的对象"；只有文件不可变 + 序号通道新迁移一条路。

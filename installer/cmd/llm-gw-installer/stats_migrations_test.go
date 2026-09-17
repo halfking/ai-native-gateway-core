@@ -142,6 +142,17 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// R38 (2026-09-17 audit): ensure-shadowed index root fix + request_logs
 		// parent-index ownership unification.
 		"719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql": unifyEnsureShadowedIndexesMigration719,
+		// R40 (2026-09-18): RLS policy vocabulary unification (design §五
+		// Phase 1 item 1) — landed in embeddata only (f5328e13c), five-point
+		// sync completed in this round.
+		"720_rls_policy_vocabulary_unification.sql": rlsPolicyVocabularyUnificationMigration720,
+		// R40 (2026-09-18): RLS enable for attachments/cfl_columnar_old
+		// (design §五 Phase 1 item 3).
+		"723_rls_enable_attachments_and_cfl_old.sql": rlsEnableAttachmentsAndCflOldMigration723,
+		// R40 (2026-09-18): durable family schema convergence — repairs
+		// pre-final-516 databases missing events/pending tables and
+		// checkpoint_payload (evidence: local llm_gateway DB).
+		"722_durable_family_schema_convergence.sql": durableFamilySchemaConvergenceMigration722,
 	}
 
 	for name, embedded := range expected {

@@ -272,6 +272,12 @@ const nodeProbeGatewaySideRetryDelay = 15 * time.Minute
 // credential_model_bindings.available=FALSE (probe_endpoint_build, 5min
 // cooldown) on healthy credentials, fighting the production instance's
 // successful probes every cycle. This classifier is the shared-state guard.
+//
+// R40 粒度细分（闭合 R39 §三#3）：guard 有一个被它一并压制的真信号子类——
+// 单凭据密文永久损坏（加密用过的 key 已轮转掉 / 行级损伤）。这类失败跟随
+// 凭据而不是实例（每个实例都解不开），绑定面却因 guard 永无不可用信号，
+// 只剩真实流量 breaker 兜底。识别器见 isDecryptShapedProbeDetail +
+// credentialSpecificDecryptFailure。
 func isGatewaySideProbeError(errCode string) bool {
 	switch errCode {
 	case "endpoint_build", "request_build",
@@ -279,6 +285,32 @@ func isGatewaySideProbeError(errCode string) bool {
 		return true
 	}
 	return false
+}
+
+// isDecryptShapedProbeDetail reports whether an endpoint_build errDetail came
+// from the credential-secret decrypt step. resolveDirectTarget wraps every
+// decrypt error as `decrypt: %w` (ErrUnknownFormat → "decrypt: cannot
+// decrypt: unknown format", ErrAADMismatch → "decrypt: secret: AAD
+// mismatch…"), and no other endpoint_build path emits that prefix.
+func isDecryptShapedProbeDetail(errDetail string) bool {
+	return strings.Contains(errDetail, "decrypt: ")
+}
+
+// credentialSpecificDecryptFailure reports whether a decrypt-shaped
+// gateway-side failure is evidence against THIS credential's envelope rather
+// than the instance's key config: the instance-level decrypt circuit counts
+// consecutive decrypt failures and trips at decryptTripThreshold, so a
+// failure observed while the counter is still below threshold means this
+// instance decrypts other credentials fine (any success resets the counter)
+// — the failure follows the credential, not the instance. On a genuinely
+// misconfigured instance the counter reaches the threshold and trips, which
+// both re-enables this suppression and lets deescalateGatewaySideProbeState
+// repair the few pre-trip writes.
+func (w *NodeProbeWorker) credentialSpecificDecryptFailure(errDetail string) bool {
+	if w == nil || !isDecryptShapedProbeDetail(errDetail) {
+		return false
+	}
+	return w.decryptFailures.Load() < decryptTripThreshold
 }
 
 // decryptCircuitTripped reports whether the instance-level decrypt circuit
@@ -1489,7 +1521,7 @@ func (w *NodeProbeWorker) ProbeSync(
 				// CRITICAL: update state BEFORE probeGateway so the
 				// routing layer sees the restored credential, not the
 				// stale cooling state left by the original 5xx.
-				w.updateBindingAvailability(ctx, j.credID, j.model, true, "", 0)
+				w.updateBindingAvailability(ctx, j.credID, j.model, true, "", 0, "")
 				w.updateCredentialHealth(ctx, j.credID)
 				w.updateObservedState(ctx, j.credID, j.model, true, "", time.Now())
 				// 2026-08-24: smart-fallback tentative restore (需求 6
@@ -1517,7 +1549,7 @@ func (w *NodeProbeWorker) ProbeSync(
 				// the tick path. updateBindingAvailability also refuses these
 				// errCodes internally; this branch additionally protects the
 				// observed-state surface.
-				if isGatewaySideProbeError(res.direct.errCode) {
+				if isGatewaySideProbeError(res.direct.errCode) && !w.credentialSpecificDecryptFailure(res.direct.errDetail) {
 					slog.Error("node_probe_worker: gateway-side direct probe error (sync) — not updating availability",
 						"credential_id", j.credID,
 						"model", j.model,
@@ -1528,7 +1560,7 @@ func (w *NodeProbeWorker) ProbeSync(
 					// keeps the generic 5-minute cooldown for a first 404 —
 					// the tick/queue paths escalate to the model-not-served
 					// horizon once their attempt counts confirm it.
-					w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode, 1)
+					w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode, 1, res.direct.errDetail)
 					recoverAt := time.Now().Add(5 * time.Minute)
 					w.updateObservedState(ctx, j.credID, j.model, false, res.direct.errCode, recoverAt)
 				}
@@ -1973,7 +2005,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	// sees the restored credential, not the stale cooling state from
 	// the original 5xx or transient failure.
 	if direct.ok {
-		w.updateBindingAvailability(ctx, credID, model, true, "", 0)
+		w.updateBindingAvailability(ctx, credID, model, true, "", 0, "")
 		w.updateCredentialHealth(ctx, credID)
 		w.updateObservedState(ctx, credID, model, true, "", time.Now())
 		if w.recordCircuitSuccess != nil {
@@ -2050,19 +2082,22 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "direct", attempt, trigger, direct)
 	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "gateway", attempt, trigger, gw)
 	if !direct.ok {
-		if isGatewaySideProbeError(direct.errCode) {
+		if isGatewaySideProbeError(direct.errCode) && !w.credentialSpecificDecryptFailure(direct.errDetail) {
 			// 2026-09-17: gateway-side error (endpoint/request build, decrypt).
 			// updateBindingAvailability refuses the shared-state write by itself,
 			// but the observed-state surface (URSM / state cache, possibly shared
 			// Redis) and the failure ladder must also stay untouched — the pair
 			// is not unhealthy, this instance is misconfigured.
+			// R40 豁免：decrypt 形且熔断未跳闸 = 单凭据密文损坏（跟随凭据），
+			// 走 else 分支按真实不可用处理（含 ladder），否则该凭据在绑定面
+			// 永无不可用信号、只剩真实流量 breaker 兜底（R39 §三#3）。
 			slog.Error("node_probe_worker: gateway-side direct probe error — not updating availability",
 				"credential_id", credID,
 				"model", model,
 				"err_code", direct.errCode,
 				"err_detail", direct.errDetail)
 		} else {
-			w.updateBindingAvailability(ctx, credID, model, false, direct.errCode, attempt)
+			w.updateBindingAvailability(ctx, credID, model, false, direct.errCode, attempt, direct.errDetail)
 			_, horizon := unavailableBindingHorizon(direct.errCode, attempt)
 			recoverAt := time.Now().Add(horizon)
 			w.updateObservedState(ctx, credID, model, false, direct.errCode, recoverAt)
@@ -2758,14 +2793,20 @@ func (w *NodeProbeWorker) logNodeProbeStateUpdateWarning(phase string, providerI
 }
 
 // modelNotServedRecheckInterval is the binding cooldown applied when the
-// DIRECT probe round returns HTTP 404 twice in a row (attempt >= 2): the
-// upstream told us it does not serve this model on this credential. That is
-// a catalog mismatch, not a health transient — re-checking it every 5
-// minutes (the generic cooldown) produced the eternal 404 churn observed on
-// 2026-09-17 (apigpt "gpt key": 14 models × 7 attempts/24h of doomed
-// request_failure probes, every cycle flipping the binding unavailable again
-// right after recovery cleared it). 6h matches the ladder's long-tail cap so
-// a relay that later adds the model is picked up the same day.
+// DIRECT probe round returns HTTP 404 on attempt >= 2 of the current failure
+// episode: the upstream told us it does not serve this model on this
+// credential. That is a catalog mismatch, not a health transient — re-checking
+// it every 5 minutes (the generic cooldown) produced the eternal 404 churn
+// observed on 2026-09-17 (apigpt "gpt key": 14 models × 7 attempts/24h of
+// doomed request_failure probes, every cycle flipping the binding unavailable
+// again right after recovery cleared it). 6h matches the ladder's long-tail
+// cap so a relay that later adds the model is picked up the same day.
+//
+// 口径（R40 决议，闭合 R39 §三#2）：attempt 是本轮失败 episode 的探测序号
+// （成功/Submit 重置），不是"连续 404 计数"——2026-09-17 事故文档写的
+// "连续两次 404"与实现有偏差，按实现口径修文档而非给 node_probe_state 加
+// prev_err_code 列：episode 内 404 被瞬时错误间隔后仍升级是更保守的方向
+// （6h 自愈重查封顶），不值得为叙事精确性动 schema。
 const modelNotServedRecheckInterval = 6 * time.Hour
 
 // isModelNotServedProbeError reports whether a direct-round error code is the
@@ -2781,7 +2822,7 @@ func isModelNotServedProbeError(errCode string) bool {
 }
 
 // unavailableBindingHorizon returns the cooldown horizon for one unavailable
-// write. A 404 confirmed by a second attempt escalates to the model-not-served
+// write. A 404 at attempt >= 2 of the episode escalates to the model-not-served
 // horizon; everything else keeps the historical 5 minutes.
 func unavailableBindingHorizon(errCode string, attempt int) (reason string, horizon time.Duration) {
 	if isModelNotServedProbeError(errCode) && attempt >= 2 {
@@ -2790,7 +2831,7 @@ func unavailableBindingHorizon(errCode string, attempt int) (reason string, hori
 	return errCode, 5 * time.Minute
 }
 
-func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID int, model string, available bool, reason string, attempt int) {
+func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID int, model string, available bool, reason string, attempt int, errDetail string) {
 	if w == nil || w.db == nil {
 		return
 	}
@@ -2804,7 +2845,11 @@ func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID 
 	// repeatedly flip healthy production bindings into 5-minute cooldowns and
 	// fight the well-configured instances' successful probes. Refuse the
 	// write; the audit trail (node_probe_runs) still records the failure.
-	if !available && isGatewaySideProbeError(reason) {
+	//
+	// R40 豁免：decrypt 形且实例解密熔断未跳闸的失败是单凭据密文损坏的证据
+	// （跟随凭据而非实例），按真实不可用写下去——见
+	// credentialSpecificDecryptFailure。
+	if !available && isGatewaySideProbeError(reason) && !w.credentialSpecificDecryptFailure(errDetail) {
 		slog.Error("node_probe_worker: refusing to mark binding unavailable from a gateway-side probe error",
 			"credential_id", credID,
 			"model", model,
