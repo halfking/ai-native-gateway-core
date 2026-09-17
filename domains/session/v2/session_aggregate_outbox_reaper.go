@@ -251,8 +251,44 @@ func (r *sessionAggregateOutboxReaper) tick(ctx context.Context) {
 		if !ok {
 			// No more pending rows; exit early to avoid burning a long-
 			// running connection on idle polls.
-			return
+			break
 		}
+	}
+	r.trimDoneRows(timeoutCtx)
+}
+
+// sessionOutboxDoneRetention bounds the growth of terminal rows: done rows
+// accumulate forever (365k+ observed, ~50k/day) and every claim scan otherwise
+// dead-renders them even with the partial claimable index. One LIMIT-bounded
+// DELETE per tick keeps deletes incremental (unbounded single-statement TTL
+// DELETEs have historically livelocked against the 30s tick budget).
+func (r *sessionAggregateOutboxReaper) trimDoneRows(ctx context.Context) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_role', 'super_admin', true)"); err != nil {
+		return
+	}
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM session_aggregate_outbox
+		WHERE id IN (
+			SELECT id FROM session_aggregate_outbox
+			WHERE status = 'done'
+			  AND completed_at < NOW() - INTERVAL '7 days'
+			ORDER BY completed_at
+			LIMIT 5000
+		)`)
+	if err != nil {
+		slog.Warn("session_aggregate_outbox: done-row trim failed", "error", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("session_aggregate_outbox: trimmed done rows", "count", n)
 	}
 }
 
@@ -506,13 +542,13 @@ func EncodeSessionUpdateForOutbox(u SessionUpdate) ([]byte, error) {
 		"last_provider":         u.LastProvider,
 		"client_type":           u.ClientType,
 		// 706 访问维度/项目（首值优先字段）
-		"project_id":     u.ProjectID,
-		"api_key_id":     u.APIKeyID,
-		"application_id": u.ApplicationID,
-		"end_user_id":    u.EndUserID,
-		"owner_user":     u.OwnerUser,
-		"client_ip":      u.ClientIP,
-		"agent_name":     u.AgentName,
+		"project_id":       u.ProjectID,
+		"api_key_id":       u.APIKeyID,
+		"application_id":   u.ApplicationID,
+		"end_user_id":      u.EndUserID,
+		"owner_user":       u.OwnerUser,
+		"client_ip":        u.ClientIP,
+		"agent_name":       u.AgentName,
 		"turn_increment":   u.TurnIncrement,
 		"tokens_increment": u.TokensIncrement,
 		"cost_increment":   u.CostIncrement,
