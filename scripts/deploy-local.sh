@@ -764,8 +764,10 @@ start_instance() {
   # 的 cutover 重试只在容器重启层面绕，无法绕过 gateway 进程内的
   # 一次性 openDBWithBootRetry 决策。修法：start_instance 顶层先做 PG
   # pre-flight，从 gateway 视角确认 DSN 可用 + SELECT 1 通过，再起容器。
-  # pre-flight 超时（90s）仅 warn 不 fail：仍有 LLM_GATEWAY_DB_BOOT_RETRY_SECONDS
-  # 兜底（dl_write_env 已上调到 90s）。
+  # pre-flight 超时（90s）默认仅 warn 不 fail：仍有 LLM_GATEWAY_DB_BOOT_RETRY_SECONDS
+  # 兜底（dl_write_env 已上调到 90s）。设置 DL_PG_PREFLIGHT_REQUIRED=1
+  # 切到 fail-closed 模式：超时直接 die，阻止容器启动进入 database:null
+  # 死区；默认 0 保持向后兼容，245 preprod 验证后才会开 1。
   dl_wait_pg_isready || true
   if (( DL_DOCKER )); then
     local image="${LLM_GATEWAY_RUNTIME_IMAGE:-alpine:3.22}" image_file="$RUN_DIR/runtime.Dockerfile"
