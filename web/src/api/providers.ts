@@ -278,6 +278,13 @@ export interface ProviderCredential {
   // Per-credential USD balance (from /api/providers/{id}/credentials
   // detail endpoint). Optional because some legacy list paths omit it.
   balance_usd?: number | string | null
+  // Migration 721 (2026-09-18): balance provenance metadata surfaced by
+  // listCredentials. balance_source='manual' rows are protected from
+  // automatic probe overwrites for 24h.
+  balance_currency?: string | null
+  balance_last_checked_at?: string | null
+  balance_source?: 'manual' | 'api' | null
+  balance_error?: string | null
   quotas: CredentialQuota[]
   quota_summary: CredentialQuotaSummary | null
   // v735: route-side plan type. Drives v_routable_credential_models
@@ -364,6 +371,26 @@ export function getCredentialUsage(providerId: number, credId: number, days = 7)
 
 export function revealCredentialKey(providerId: number, credId: number) {
   return req<{ credential_id: number; api_key: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/reveal`)
+}
+
+// Migration 721 (2026-09-18): on-demand vendor balance probe behind the
+// credential drawer's "刷新余额" button. GET-only vendor balance API, never
+// consumes tokens. success=false keeps the previous balance_usd and carries
+// the probe error for inline rendering; a 400 means the vendor has no
+// balance endpoint at all (plan vendors report via plan_quota_* instead).
+export interface RefreshBalanceResponse {
+  success: boolean
+  balance_usd?: number
+  balance_currency?: string
+  balance_source?: 'api'
+  balance_checked_at?: string
+  error?: string
+}
+
+export function refreshCredentialBalance(providerId: number, credId: number) {
+  return req<RefreshBalanceResponse>(
+    'POST', `/api/providers/${providerId}/credentials/${credId}/refresh-balance`
+  )
 }
 
 export function revealUnifiedCredentialKey(credId: number) {

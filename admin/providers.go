@@ -1498,6 +1498,16 @@ func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Reque
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case "refresh-balance":
+		// Migration 721 (2026-09-18): on-demand vendor balance probe so the
+		// operator doesn't wait for the floor-guard 5-min sweep after a
+		// recharge or a manual balance correction. GET-only vendor balance
+		// API — never consumes tokens.
+		if r.Method == http.MethodPost {
+			h.refreshCredentialBalance(w, r, providerID, credID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 	case "models":
 		// 2026-09-11 audit: handleCredentialModels (credential_models.go:
 		// GET list / POST manual add / DELETE clear) and the per-credential
