@@ -1579,6 +1579,24 @@ func (d *DB) ensureFreediscoveryTemplateHealth(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// 2026-09-17 deploy blocker (245 shared DB): provider_templates is
+	// provisioned by the freediscovery feature's own bootstrap, which some
+	// deployments never ran — observed on the shared 252 llm_gateway DB
+	// where every other ensure target exists but this table does not. The
+	// ALTER below then fails 42P01 on every boot attempt, the
+	// openDBWithBootRetry loop misreads it as "postgres unreachable" and
+	// burns the whole boot budget, and the deploy's healthz window (60s)
+	// expires before the gateway ever listens. A missing base table means
+	// the feature is not provisioned here — nothing to ALTER, skip quietly.
+	var present bool
+	if err := d.pool.QueryRow(ctx,
+		`SELECT to_regclass('public.provider_templates') IS NOT NULL`).Scan(&present); err != nil {
+		return fmt.Errorf("ensure provider_templates health feedback columns (presence check): %w", err)
+	}
+	if !present {
+		slog.Info("provider_templates absent (freediscovery not provisioned); skipping 087 health-feedback ensure")
+		return nil
+	}
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE public.provider_templates
 		    ADD COLUMN IF NOT EXISTS consecutive_scan_failures INT DEFAULT 0,
