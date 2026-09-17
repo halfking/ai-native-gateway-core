@@ -30,10 +30,13 @@ func baseTask() *Task {
 // 参数摘要 hash）。
 func TestStore_CheckpointCommitState(t *testing.T) {
 	store, mock := newMockStore(t)
+	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectExec(`UPDATE durable_llm_tasks`).
 		WithArgs("task-1", "worker-1", int64(3), pgxmock.AnyArg(),
 			"tool_call", pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
 
 	err := store.CheckpointCommitState(context.Background(), CheckpointParams{
 		TaskID: "task-1", LeaseOwner: "worker-1", FencingToken: 3,
@@ -52,9 +55,12 @@ func TestStore_CheckpointCommitState(t *testing.T) {
 // 均为 0 行 → ErrLeaseLost（不得写网络语义帧）。
 func TestStore_CheckpointCommitState_LeaseLost(t *testing.T) {
 	store, mock := newMockStore(t)
+	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectExec(`UPDATE durable_llm_tasks`).
 		WithArgs(anyArgs(7)...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectCommit()
 
 	err := store.CheckpointCommitState(context.Background(), CheckpointParams{
 		TaskID: "task-1", LeaseOwner: "worker-1", FencingToken: 2,
@@ -68,6 +74,7 @@ func TestStore_CheckpointCommitState_LeaseLost(t *testing.T) {
 // terminalCommitExpectations：CommitTerminal 的 pgxmock 事务脚手架。
 func terminalCommitExpectations(mock pgxmock.PgxPoolIface, updatedRows int64) {
 	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	verRows := pgxmock.NewRows([]string{"result_version"})
 	if updatedRows > 0 {
 		verRows.AddRow(int64(1))
@@ -172,6 +179,7 @@ func reapExpectations(mock pgxmock.PgxPoolIface, ids ...string) {
 		rows.AddRow(id, "running")
 	}
 	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectQuery(`FOR UPDATE SKIP LOCKED`).
 		WithArgs(anyArgs(2)...).
 		WillReturnRows(rows)
@@ -242,6 +250,7 @@ func TestStore_ReapDeadlines_None(t *testing.T) {
 func TestStore_ReapUnsafeCheckpointed(t *testing.T) {
 	store, mock := newMockStore(t)
 	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectQuery(`FOR UPDATE SKIP LOCKED`).
 		WithArgs(anyArgs(2)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "status"}).AddRow("task-2", "running"))
@@ -289,6 +298,7 @@ func TestStore_ReapUnsafeCheckpointed(t *testing.T) {
 func TestStore_ReapUnsafeCheckpointed_LiveLeaseGuard(t *testing.T) {
 	store, mock := newMockStore(t)
 	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	// 谓词必须包含 lease 护栏参数（$2 = now）——通过两个参数匹配钉住。
 	mock.ExpectQuery(`lease_until IS NULL OR lease_until < \$2`).
 		WithArgs(anyArgs(2)...).
@@ -315,6 +325,7 @@ func TestStore_ReapUnsafeCheckpointed_LiveLeaseGuard(t *testing.T) {
 func TestStore_ReapDeadlines_ExcludesCheckpointed(t *testing.T) {
 	store, mock := newMockStore(t)
 	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectQuery(`commit_state IN \('none', 'metadata'\)`).
 		WithArgs(anyArgs(2)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "status"}))
@@ -337,6 +348,7 @@ func TestStore_ReapDeadlines_ExcludesCheckpointed(t *testing.T) {
 func TestStore_ReapUnsafeCheckpointed_SkipsAlreadyBlocked(t *testing.T) {
 	store, mock := newMockStore(t)
 	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	// 谓词必须同时携带 lease 护栏（$2=now）与 status 排除 sink 态
 	// （'resume_safety_blocked'）——已 sank 的任务不应进入扫描结果。
 	mock.ExpectQuery(`status NOT IN \('completed', 'failed', 'expired', 'canceled', 'resume_safety_blocked'\)`).

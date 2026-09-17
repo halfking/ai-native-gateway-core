@@ -16,11 +16,14 @@ func TestStore_LoadSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
+	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectQuery(`SELECT id, tenant_id, request_id, request_hash`).
 		WithArgs("task-1").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "tenant_id", "request_id", "request_hash", "snapshot_version", "encryption_key_id", "request_snapshot_ciphertext",
 		}).AddRow("task-1", "tenant-1", "req-1", "request-hash", 1, keyID, envelope))
+	mock.ExpectCommit()
 
 	snapshot, err := store.LoadSnapshot(context.Background(), "task-1")
 	if err != nil {
@@ -59,11 +62,14 @@ func TestStore_LoadSnapshot_FailClosed(t *testing.T) {
 			t.Cleanup(mock.Close)
 			store := NewStore(mock, tc.storeKeyring)
 			if tc.storeKeyring != nil {
+				mock.ExpectBegin()
+				expectBypassGUC(mock)
 				mock.ExpectQuery(`SELECT id, tenant_id, request_id, request_hash`).
 					WithArgs("task-1").
 					WillReturnRows(pgxmock.NewRows([]string{
 						"id", "tenant_id", "request_id", "request_hash", "snapshot_version", "encryption_key_id", "request_snapshot_ciphertext",
 					}).AddRow("task-1", "tenant-1", "req-1", tc.requestHash, 1, tc.columnKeyID, envelope))
+				mock.ExpectCommit()
 			}
 			_, err = store.LoadSnapshot(context.Background(), "task-1")
 			if tc.wantErr != nil {

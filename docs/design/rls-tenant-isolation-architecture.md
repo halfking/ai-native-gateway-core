@@ -161,3 +161,5 @@ CREATE POLICY <name>_super_admin_bypass ON <tbl> USING (
 ## 七、与 R38 实施的衔接
 
 本轮（R38）落地：本设计文档 + Phase 1 第 2 项中的 credential_success_rate 修复与 rls_helper 死代码删除。Phase 1 其余项（policy 统一迁移、durable GUC、ENABLE 补齐）按上述方案在后续轮次逐项落地，每项走"迁移真库实跑后定稿"纪律。
+
+**Phase 1 完成标注（R40，2026-09-18）**：四项全部落地——①迁移 720 policy 词汇统一（f5328e13c 并行会话落 embeddata 单点，R40 补齐五点同步 + 通道真库实跑 + marker 登记，public 弃用 GUC policy = 0）；②durable 族 store GUC（durable/rls.go：前台写 setLocalTenantGUC、worker 17 路径旁路双 GUC，autocommit 单语句读写包显式事务）；③迁移 723 ENABLE attachments/candidate_failure_logs_columnar_old（原编 721 撞号重编，五点同步 + 真库 rls=true）；④census 守卫（db/rls_policy_census_test.go：静态双源——startup 迁移 .up 文件 + Go ensure CREATE POLICY 窗口扫弃用 GUC，.down 豁免；活库 census 走 TEST_DB_URL opt-in，§六 验收口径）。附带发现并修复：516 中间形态漂移库的 durable 家族缺表缺列（722 收敛迁移，真库落地）。§六 验收：活库 census 弃用 GUC policy 数 = 0 ✅（本机 llm_gateway 实测）。Phase 2 前置中的"73 张 FORCE 表逐表路径审计"仍待专项轮；D5（sessions 族 owner_filter 产品语义）仍未决。
