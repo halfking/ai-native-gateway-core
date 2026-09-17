@@ -6986,6 +6986,37 @@ func main() {
 
 	slog.Info("CHECKPOINT: HTTP server configured, about to start", "listen", cfg.Listen)
 
+	// ── Start mDNS advertiser if enabled ──────────────────────────────────
+	var lanAdvertiser *discovery.LANAdvertiser
+	if cfg.LANAdvertise {
+		// Parse port from cfg.Listen (e.g., ":8781" or "0.0.0.0:8781")
+		listenPort := 8781 // default
+		if strings.Contains(cfg.Listen, ":") {
+			portStr := cfg.Listen[strings.LastIndex(cfg.Listen, ":")+1:]
+			if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
+				listenPort = p
+			}
+		}
+		
+		hostname, _ := os.Hostname()
+		if hostname == "" {
+			hostname = "llm-gateway"
+		}
+		
+		apis := []string{"openai", "anthropic", "gemini"}
+		lanAdvertiser = discovery.NewLANAdvertiser(
+			hostname,
+			listenPort,
+			Version(),
+			apis,
+		)
+		
+		if err := lanAdvertiser.Start(context.Background()); err != nil {
+			slog.Error("failed to start mDNS advertiser", "error", err)
+			lanAdvertiser = nil
+		}
+	}
+
 	// ── Graceful shutdown ─────────────────────────────────────────────────
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -7009,6 +7040,12 @@ func main() {
 	slog.Info("gateway shutting down")
 	if persistentLogger != nil {
 		persistentLogger.LogShutdown("termination_signal", true, "signal", "SIGINT/SIGTERM")
+	}
+
+	// Stop mDNS advertiser first (fast operation)
+	if lanAdvertiser != nil {
+		lanAdvertiser.Stop()
+		slog.Info("mDNS advertiser stopped")
 	}
 
 	// 1. Stop accepting new connections — in-flight requests drain naturally
