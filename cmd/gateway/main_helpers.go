@@ -138,6 +138,18 @@ func openDBWithBootRetry(ctx context.Context, databaseURL string) *db.DB {
 			return conn
 		}
 		lastErr = err
+		// R39 (2026-09-17): a catalog error (missing table/column/function,
+		// blocked-by-view rewrite) is a schema mismatch, not "postgres
+		// unreachable" — retrying the connection cannot fix it and only
+		// burns the whole boot budget before the same "postgres disabled"
+		// path (the 245 deploy-blocker shape). Fast-fail with an
+		// actionable log instead of retrying.
+		if db.IsSchemaMismatchError(err) {
+			slog.Error("postgres schema mismatch at boot — NOT a connectivity problem; skipping connection retries",
+				"error", err,
+				"hint", "this deployment role lacks expected schema objects; run the DB bootstrap/migrations for this role or point LLM_GATEWAY_DATABASE_URL at the right database")
+			return nil
+		}
 		if time.Now().After(deadline) || budget == 0 {
 			break
 		}

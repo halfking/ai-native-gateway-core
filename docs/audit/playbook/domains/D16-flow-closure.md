@@ -50,3 +50,10 @@
 重点：窗口内新增数据流的三问核对与悬挂态排查。
 只读不改。输出按 conventions.md §4 结构，每条发现带 file:line 与触发路径。
 ```
+
+### R39 回注（2026-09-17，部署/脚本闭环批）
+- **修复落点必须核对 source 链**：deploy-local 运行时 source 仓外 SSOT（$AIAN_DEPLOY_LIB），本仓 deploy-lib.legacy 是留档拷贝——修了拷贝≠修了运行时（eb5a922c7 即此，R39 回灌 SSOT b569613）。仓外 SSOT 修复也要在本仓轮文档留痕。
+- **改被测函数必重跑其契约测试**：ef408a026 把 dl_pg_container_name 提为无条件调用，test-dl-pg-preflight-required.sh 未同步 stub → FAIL×3 入库三天无人察觉（R39 修复，5/5 绿）。
+- **shell 测试禁跨子 shell 断言 export**：`out=$(fn)` 内的 export 随子 shell 消亡；要断言 export 语义须父 shell 直调（test-smart-discovery-pg.sh "HAS_DB=1" 用例曾确定性必红，R39 修复 4/4 绿）。
+- preflight docker-exec 分支守卫：DL_DB_MODE=external 排除 + docker ps status=running（docker ps -a 含 stopped，90s 空烧/误 die）；无密码 DSN user 段正则 `([^@:/]+)(:[^@]*)?@`。
+- 启用计划注释必须指向真实可验证宿主（DL_PG_PREFLIGHT_REQUIRED 曾写"245 验证后启用"，但 245 走 deploy-seamless 根本不 source 此库）。

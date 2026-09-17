@@ -858,6 +858,11 @@ func (cfg *Config) mergeFrom(other *Config) {
 	if other.RuntimeRole != "" && os.Getenv("LLM_GATEWAY_RUNTIME_ROLE") == "" {
 		cfg.RuntimeRole = other.RuntimeRole
 	}
+	// R39: lan_advertise 曾在 yaml tag 暴露但 mergeFrom 无分支 → 文件配置静默
+	// no-op。补齐（env 优先，文件仅在 env 未设时生效，同其余字段惯例）。
+	if other.LANAdvertise && os.Getenv("LLM_GATEWAY_LAN_ADVERTISE") == "" {
+		cfg.LANAdvertise = true
+	}
 	if other.APIKey != "" && os.Getenv("LLM_GATEWAY_API_KEY") == "" {
 		cfg.APIKey = other.APIKey
 	}

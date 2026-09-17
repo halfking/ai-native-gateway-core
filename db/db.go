@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -1588,15 +1589,25 @@ func (d *DB) ensureFreediscoveryTemplateHealth(ctx context.Context) error {
 	// burns the whole boot budget, and the deploy's healthz window (60s)
 	// expires before the gateway ever listens. A missing base table means
 	// the feature is not provisioned here — nothing to ALTER, skip quietly.
+	// R39: record the verdict process-wide (ProviderTemplatesProvisioned)
+	// so main unwires free-discovery routes (503 instead of 42P01 500s)
+	// and never starts the scan scheduler against a missing table.
 	var present bool
 	if err := d.pool.QueryRow(ctx,
-		`SELECT to_regclass('public.provider_templates') IS NOT NULL`).Scan(&present); err != nil {
+		`SELECT EXISTS (
+			SELECT 1 FROM pg_class c
+			JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE n.nspname = 'public' AND c.relname = 'provider_templates'
+			  AND c.relkind IN ('r', 'p') -- ordinary or partitioned table only
+		)`).Scan(&present); err != nil {
 		return fmt.Errorf("ensure provider_templates health feedback columns (presence check): %w", err)
 	}
 	if !present {
+		providerTemplatesProvisioned.Store(false)
 		slog.Info("provider_templates absent (freediscovery not provisioned); skipping 087 health-feedback ensure")
 		return nil
 	}
+	providerTemplatesProvisioned.Store(true)
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE public.provider_templates
 		    ADD COLUMN IF NOT EXISTS consecutive_scan_failures INT DEFAULT 0,
@@ -1619,6 +1630,40 @@ func (d *DB) ensureFreediscoveryTemplateHealth(ctx context.Context) error {
 	}
 	slog.Info("provider_templates health feedback schema ensured (migration 087)")
 	return nil
+}
+
+// providerTemplatesProvisioned records (process-wide) the boot ensure
+// chain's verdict on whether public.provider_templates exists as a table.
+// Default false; stored true/false by ensureFreediscoveryTemplateHealth.
+// Consumers: cmd/gateway wiring — when false, free-discovery admin routes
+// stay unwired (requests get the existing 503 not-wired response instead
+// of a 500 carrying a raw 42P01) and the FD scan scheduler never starts
+// (it would otherwise log a 42P01 on every sweep, forever).
+var providerTemplatesProvisioned atomic.Bool
+
+// ProviderTemplatesProvisioned reports the boot ensure chain's verdict on
+// provider_templates. True means the table exists (feature may be wired);
+// false means the 087 ensure skipped and free-discovery must stay unwired.
+// A startup-time decision: creating the table later requires a gateway
+// restart to re-evaluate.
+func ProviderTemplatesProvisioned() bool { return providerTemplatesProvisioned.Load() }
+
+// IsSchemaMismatchError reports whether err is a PostgreSQL catalog error
+// meaning "this database lacks expected schema objects": undefined
+// table/column/function (42P01/42703/42883), wrong object type (42809), or
+// a feature not supported here (0A000 — e.g. column rewrites blocked by
+// view dependencies). These are NOT connectivity problems: boot connection
+// retries cannot fix them, they only burn the retry budget (the 245
+// incident shape). Callers should fast-fail with an actionable log instead.
+func IsSchemaMismatchError(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "42P01", "42703", "42883", "42809", "0A000":
+			return true
+		}
+	}
+	return false
 }
 
 // ensureDashboardAccessEventsPromotePinned repairs
