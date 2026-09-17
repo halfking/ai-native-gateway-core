@@ -82,3 +82,73 @@ healthz 均 `ready:true`。
    per-pod 池，自行在部署 env 设 `LLM_GATEWAY_DB_MAX_CONNS` 并按 990 总预算记账。
 3. **`docs/audit/2026-09-18-minimax-thinking-incident.md:118`** 仍记载"max_connections=100"
    ——事件时点的历史事实，按惯例不改历史审计文档。
+
+---
+
+## 第二轮（2026-09-18 同日晚）：三项候选事项落地
+
+### ① 252 OOM 理论风险收口（work_mem + memory limit 双层）
+
+先复核再动的实测（2026-09-18 晚）：
+
+- 主机 15.5G total / available 7.2G / swap 4G 已用 ~2.6G；**40+ 容器共享**
+  （redclaw 全家桶、memora、acc、nbjl、veritrans、smm、netbird、agent-companion 等）。
+- PG 后端每进程 RSS 1.6-1.9GB 是 shared_buffers（3.5G）共享页重复计数；真实私有内存
+  （host 侧 smaps Pss/Private）仅 **0.2-3.3MB/连接**，PG 全体进程 PSS 合计 **4.3G**。
+  → 1000 idle 全回填的边际成本 ≈ +3G，不构成 OOM；风险集中在极端活跃风暴
+  （每连接每个排序/哈希节点消耗 work_mem）。
+
+落地（零重启）：
+
+| 层 | 动作 | 持久性 |
+|---|---|---|
+| work_mem | `ALTER SYSTEM SET work_mem='8MB'` + `pg_reload_conf()`；新连接即 8MB（`SHOW work_mem` 实证），存量连接随 pgxpool MaxConnLifetime(30min) 自然轮换 | postgresql.auto.conf，重启不丢 |
+| memory limit | `podman update --memory 10g --memory-swap 12g pg-252-pg17`；cgroup v1 `memory.limit_in_bytes=10737418240` 实证，当时用量 4.6G，PG 存活 | **不持久化**（见下） |
+
+⚠️ **podman update 坑（4.9.4-rhel）**：只改运行时 cgroup，`podman inspect` 的
+`HostConfig.Memory` 仍为 0——容器/主机重启即丢。兜底：root crontab 已加
+`@reboot sleep 120 && podman update --memory 10g --memory-swap 12g pg-252-pg17`
+（注释标记 pg-252-pg17-memlimit）；人为 `podman restart` 后需手动重跑同一命令。
+限值语义：10G RAM + 2G swap；超限由 cgroup OOM kill 杀 PG（确定性爆炸半径，
+保护同主机其他 40+ 容器），优于主机全局 OOM 随机杀。应急回缩路径不变
+（上文遗留风险 1 的 `max_connections=400` 命令，配合 memory limit 双保险）。
+
+选 8MB 而非更低的理由：252 PG 为 154 生产/245 预发共享库，保留适度排序余量；
+极端风暴残余风险由 memory limit 保险丝兜底。
+
+### ② 245/154 上调 LLM_GATEWAY_DB_MAX_CONNS 的决策材料（供 owner）
+
+两台全量扫描（进程 env + systemd unit 文件双路）：**无一设置，全部默认 32**。
+
+- 245（172.16.2.241）：`llmgo-245-canary@8782` 等单元，进程 env 无该变量；
+- 154（172.16.2.209）：`llm-gateway-go-canary@8781` 等单元，unit 文件无该变量；
+- PG 侧今晨归属：154≈20、245≈18 连接（idle 回填 <32，与默认池上限一致）。
+
+**结论：无需上调。** 当前用量 ~20/实例，对 32 池上限余量充足，对 990 总预算余量更大。
+未来如需上调：网关部署 env 加 `LLM_GATEWAY_DB_MAX_CONNS=N` + 重启生效，验证看启动
+日志 `postgres connected max_conns=N`；记账约束 Σ(全部网关实例 N，含 252-dev=64) ≤ 990
+（1000 − 10 superuser reserved）。
+
+### ③ full 模式 storage factory 桩：评估结论 + 防再犯护栏
+
+评估（源码逐点核对）：
+
+- **接线不可取**：full 分支是 `ErrNotImplemented` 桩——"接线"意味着重新实现
+  session/bodies/turns/request_log/state 五类 store 并搬迁 main 装配，工程量大且零
+  现实收益（现有 db.Open 池 + `LLM_GATEWAY_DB_MAX_CONNS` 已是受控旋钮）。
+- **删桩不可取**：桩支撑工厂分派逻辑测试（`factory_test.go`）并保留未来收敛点；
+  full 概念还被活代码依赖（`AlignFullPostgresURL`，main.go:447；`Validate` full 分支）。
+- **真混淆源是死配置 + 错误注释**：`config.StorageConfig.ApplyDefaults`（full→200
+  默认）**无任何生产调用方**（仅测试调用），其注释"单 pod 总占 PG = 32 + 200 =
+  232 conn"与生产事实矛盾——第一轮假阳性在注释层的根源。
+
+落地（注释/告警级，零行为变更）：
+
+| 文件 | 改动 |
+|---|---|
+| `cmd/gateway/main.go` | 启动期护栏：非 lite 模式且设了 `LLM_GATEWAY_STORAGE_MAX_CONNECTIONS` → Warn 声明其不封顶生产 pool、生效旋钮是 `LLM_GATEWAY_DB_MAX_CONNS`，把误配挡在启动期 |
+| `config/storage.go` | `ApplyDefaults` 注释纠错：声明生产不消费本默认值、"232 conn"说法作废、池容量验证以启动日志 max_conns 为准 |
+| `storage/factory/stubs.go` | 文件头补池调优指向：生产池走 `LLM_GATEWAY_DB_MAX_CONNS`，本工厂配置不影响生产网关 |
+
+验证：`go build ./...` PASS；`go test ./config/ ./storage/factory/` PASS；
+`go vet ./cmd/gateway/ ./config/ ./storage/factory/` 干净。
