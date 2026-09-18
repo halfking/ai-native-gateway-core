@@ -120,9 +120,12 @@ dl_detect_resources() {
   DL_DOCKER=0; DL_COMPOSE=0; DL_PG_CONTAINER=; DL_REDIS_CONTAINER=
   DL_PG_SOURCE=; DL_REDIS_SOURCE=; DL_PG_MOUNT_TYPE=; DL_REDIS_MOUNT_TYPE=
   DL_DB_MODE=none; DL_REDIS_MODE=none
-  if _dl_have docker && docker info >/dev/null 2>&1; then
+  # 2026-09-18: docker info 偶发卡住（macOS Docker Desktop 繁忙时可能超时），
+  # 导致 deploy-local.sh status 15s+ 挂死。加 timeout 5s 防护，超时时跳过
+  # Docker 路径但不失败（外部 DSN/Redis 模式仍可用）。
+  if _dl_have docker && timeout 5 docker info >/dev/null 2>&1; then
     DL_DOCKER=1
-    docker compose version >/dev/null 2>&1 && DL_COMPOSE=1 || true
+    timeout 3 docker compose version >/dev/null 2>&1 && DL_COMPOSE=1 || true
     for c in llm-gateway-pg postgres kx-citus; do
       if docker ps --format '{{.Names}}' 2>/dev/null | grep -Fxq "$c"; then DL_PG_CONTAINER=$c; break; fi
     done
