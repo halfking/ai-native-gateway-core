@@ -630,10 +630,22 @@ func (c *Client) ReplayFallback(ctx context.Context, record dbdegradation.Backup
 		return err
 	}
 	normalizeRequestStatus(&entry)
+	var err error
 	if entry.Op == RequestLogUpdate {
-		return c.updateRequestLog(&entry)
+		err = c.updateRequestLog(&entry)
+	} else {
+		err = c.insertRequestLog(&entry)
 	}
-	return c.insertRequestLog(&entry)
+	if err == nil {
+		// R44 (storage ledger E6, 09-15/09-18 各 1 行 G2 缺失实锤): 回放路径
+		// 此前绕过 onPersisted hooks —— 同事务的 final-success claim 置位
+		// is_final_success 后 sessionv2mirror hook 永远收不到终态信号，
+		// 镜像行结构性缺失且重放器无法归零（无登记可重放）。进 fallback
+		// 文件的 entry 此前必然从未成功落库（degraded/写失败路径进入），
+		// hooks 从未对它触发过，此处补发即 exactly-once。
+		c.firePersistedHooks(&entry)
+	}
+	return err
 }
 
 // SetOnRequestLogPersisted registers the sole persisted hook (replaces any prior hooks).
@@ -999,6 +1011,25 @@ func (c *Client) insertDecisionLog(entry *DecisionLogEntry) error {
 	return err
 }
 
+// firePersistedHooks invokes the onPersisted hooks (panic-isolated) after a
+// successful INSERT/UPDATE of a request_logs row. Shared by persistRequestLog
+// (worker/sync paths) and ReplayFallback (degraded-recovery replay path).
+func (c *Client) firePersistedHooks(entry *RequestLogEntry) {
+	c.lifecycleMu.RLock()
+	hooks := append([]func(*RequestLogEntry){}, c.onPersisted...)
+	c.lifecycleMu.RUnlock()
+	for _, hook := range hooks {
+		func(h func(*RequestLogEntry)) {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Warn("telemetry onPersisted panic", "request_id", entry.RequestID)
+				}
+			}()
+			h(entry)
+		}(hook)
+	}
+}
+
 func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 	normalizeRequestStatus(entry)
 	if c.degraded.Load() {
@@ -1021,19 +1052,7 @@ func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 		err = c.insertRequestLog(entry)
 	}
 	if err == nil {
-		c.lifecycleMu.RLock()
-		hooks := append([]func(*RequestLogEntry){}, c.onPersisted...)
-		c.lifecycleMu.RUnlock()
-		for _, hook := range hooks {
-			func(h func(*RequestLogEntry)) {
-				defer func() {
-					if r := recover(); r != nil {
-						slog.Warn("telemetry onPersisted panic", "request_id", entry.RequestID)
-					}
-				}()
-				h(entry)
-			}(hook)
-		}
+		c.firePersistedHooks(entry)
 		if entry.Success && len(strings.TrimSpace(stringValue(entry.ResponseBody))) == 0 {
 			metrics.RecordSuccessfulResponseBodyMissing()
 			slog.Warn("successful request log missing response body",
