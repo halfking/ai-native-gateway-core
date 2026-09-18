@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -261,6 +262,12 @@ func buildAutoFallbackClassifier() autoroute.Classifier {
 	autoroute.RecordLLMMetricCall = telemetry.RecordLLMClassifierCall
 	autoroute.RecordLLMCircuitBreakerState = telemetry.RecordLLMCircuitBreakerState
 	if jc, ok := autoroute.BuildJevClassifierFromEnv(os.Getenv); ok {
+		// R44: 双兜底配置并存时旧 LLM endpoint 会被静默闲置——只有一条 Jev
+		// 启用 Info 不够，运维需要一条点名的 Warn 才能发现配置冲突。
+		if strings.TrimSpace(os.Getenv("LLMGatewayAutoLLMEndpoint")) != "" {
+			slog.Warn("cmd/gateway: Jev classifier occupies the auto fallback slot; " +
+				"LLMGatewayAutoLLMEndpoint/ApiKey/Model config is present but inert")
+		}
 		return jc
 	}
 	return autoroute.NewLLMFallbackClassifierWithCaller(buildAutoLLMCaller())

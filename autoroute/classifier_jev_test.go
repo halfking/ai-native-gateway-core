@@ -3,8 +3,10 @@ package autoroute
 // classifier_jev_test.go — TypeSafe Jev fallback classifier tests.
 // All network traffic stays on httptest servers; the production endpoint
 // is never contacted. The fail-open contract itself (decider keeps the
-// heuristic result when Classify errors) is pinned by decision_test.go;
-// here we pin that Classify errors on every failure mode.
+// heuristic result when Classify errors) is pinned by
+// TestDecide_FallbackError_KeepsHeuristic in decision_test.go (R44 补钉，
+// 此前该分支零覆盖且本头注指向不实); here we pin that Classify errors on
+// every failure mode.
 
 import (
 	"context"
