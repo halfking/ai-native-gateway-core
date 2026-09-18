@@ -40,6 +40,8 @@
 - [R31] 免费档熔断画像漏 legacy 协议路径；CloseProbe/ProbeCheck 死接缝删除 — 修复 ceddf5438
 - [R30] supplier_errors TTL 90d — 修复 f19ba5d5a；hot 8h promote（V371）+ ErrorDetailTab 双道脱敏为健康面基准
 
+- **R44 | 分析面错误词表 SSOT = errorsx.ErrorKind**：SQL/看板手写 error_kind 字面量前先对 errorsx/classify.go——quota_exceeded/invalid_auth/service_unavailable 均为虚构值（R44 两个分析模板因此 auth/quota 告警全失效，大面积 401 也不判 critical）。凭据维度错误聚合读 supplier_errors_unified（V371，hot∪分区），模板见 credential_health_check.sql §2。
+
 ## 5. 子代理派发提示词
 
 ```text

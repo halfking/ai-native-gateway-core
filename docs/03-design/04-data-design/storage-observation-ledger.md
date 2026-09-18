@@ -148,7 +148,6 @@ ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-16T01:03:00Z
 - 抽样 10/10 PASS（biz_multi×4 含 2 个 gs_ 前缀双读会话、loop_single×3、sys×3），G1 四项（tok/cost/succ/cred）全部零漂移。
 - 昨日登记的 claim 置位结构性漏镜像在近 24h 窗口未再产生缺失（GLOBAL_G2=0，无人工回填介入）；该类行量级待持续观察。
 - **连续归零累计 1/7**（09-16 计 Day 1），按 09-15 每日轮 FAIL 清零后重起。7 天达标 earliest 2026-09-22 每日轮。
->>>>>>> origin/main
 
 ### 每日观察 2026-09-17 09:00 (+08)，build=876302d5/2119 —— **PASS，连续归零 Day 2/7**
 
