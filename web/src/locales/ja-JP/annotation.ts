@@ -159,6 +159,7 @@ export default {
   // Error messages
   loadFailed: 'サンプルの読み込みに失敗しました',
   annotationFailed: 'アノテーションに失敗しました',
+  correctionWriteFailed: '修正の書き込みに失敗しました（アノテーションは保存済み）：{msg}',
   batchFailed: '一括アノテーションに失敗しました',
   deleteFailed: 'アノテーションの削除に失敗しました',
   noSamplesSelected: 'アノテーションするサンプルを選択してください',

@@ -44,3 +44,8 @@
 - 六处注释漂移一次清（node_probe 头注 6h 封顶/无 pause、SetModelQualityTrigger attempt>=2、deescalate 过时括注、rls.go policy 形状、720 "8 tables"、shadow_actors 第二写入口）——R40 一轮之内产生四处新漂移，**注释描述"另一分支/另一机制"时必须当场对照实现**。
 - failover_policy KindClientBug 重复 case 已合并；counter Help 补合成轮 abandon 口径。
 - **双胞胎提交教训**：并行会话同题同补丁双落（e9d46b37e/6276a3ff9）靠 merge 去重，掩盖"第二个提交没人真正看"——push 前 `git log --since='5 minutes'` 自查（conventions §7 候选）。
+
+### R43 回注（2026-09-18，双胞胎 merge 符号存活 + RESERVED 惯例）
+- 回注/注释引用符号名前先 `git ls-tree`/grep 验证存活（R42 双胞胎 merge 淘汰了 manualBalanceGuardSQL，D08 域文档指引落空一轮）。
+- 零消费方的新 API 家族（CachedPlatformBool/String/Float）用 `RESERVED(待首批消费方):` 头注标注（settings/ttl_cache.go 已标）——写端失效接线先于读者存在时尤其要标，防下轮重复怀疑。
+- 测试专用导出的注释如实化为 test-only（feature_stats GetLatestStats 原注释"用于测试和监控"的"监控"半句无接缝）。

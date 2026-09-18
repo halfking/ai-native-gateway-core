@@ -159,6 +159,7 @@ export default {
   // Error messages
   loadFailed: 'Error al cargar las muestras de anotación',
   annotationFailed: 'Error en la anotación',
+  correctionWriteFailed: 'Error al guardar la corrección (anotación guardada): {msg}',
   batchFailed: 'Error en la anotación por lotes',
   deleteFailed: 'Error al eliminar la anotación',
   noSamplesSelected: 'Selecciona muestras para anotar',

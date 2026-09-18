@@ -65,10 +65,13 @@ func TestApiKeyAutoProfileIdentityEnsureWired(t *testing.T) {
 
 // TestApiKeyAutoProfileSchemaHasIdentity prevents fresh installs from relying
 // on the startup repair before ON CONFLICT (api_key_id) can work.
+// R43 (2026-09-18): the installer's embedded 01-schema copy is in scope too —
+// it drifted from canonical for weeks (missing the PK) and no gate noticed.
 func TestApiKeyAutoProfileSchemaHasIdentity(t *testing.T) {
 	for _, path := range []string{
 		"../sql/objects/tables/api_key_auto_profile.sql",
 		"../sql/schema/01-schema.sql",
+		"../installer/cmd/llm-gw-installer/embeddata/01-schema.sql",
 	} {
 		contents, err := os.ReadFile(path)
 		if err != nil {

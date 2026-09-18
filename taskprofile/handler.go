@@ -24,6 +24,13 @@ import (
 //	                                                  task-type correction
 //	GET  /api/admin/task-profile/corrections/stats   — per-task stats
 //	                                                  (+ recent corrections)
+//	GET  /api/admin/task-profile/corrections/export  — CSV export
+//	                                                  (formula-injection-safe)
+//	POST /api/admin/task-profile/corrections/import  — CSV import (idempotent,
+//	                                                  ≤10000 rows, 32MB cap)
+//	POST /api/admin/task-profile/apply-tier-config   — write suggestions into
+//	                                                  task_type_tier_config
+//	                                                  (explicit operator action)
 //	POST /api/admin/task-profile/reload              — re-apply the overlay
 //	                                                  file (independent
 //	                                                  upgrade operation)
@@ -43,6 +50,14 @@ type Handlers struct {
 func NewHandlers(pool *pgxpool.Pool) *Handlers {
 	return &Handlers{store: NewCorrectionStore(pool)}
 }
+
+// SetRecorder attaches the optional FeedbackRecorder to the handlers' store.
+// R43 (2026-09-18): this is the ONLY production write path into the
+// corrections store (POST /corrections + CSV import), so the recorder must
+// be attached HERE — the routingopt side only ever reads CorrectionStats,
+// which never fires RecordFeedback. Guard test:
+// TestAdminWiring_AttachesFeedbackRecorder.
+func (h *Handlers) SetRecorder(r FeedbackRecorder) { h.store.SetRecorder(r) }
 
 // RegisterTaskProfileRoutes registers the endpoints on mux behind the given
 // admin middleware wrapper.
@@ -242,6 +257,11 @@ func (h *Handlers) handleImportCorrections(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "empty body: POST the CSV text with Content-Type: text/csv", http.StatusBadRequest)
 		return
 	}
+	// R43 (2026-09-18): cap the body — csv.Reader buffers whole records, so
+	// an authenticated user could otherwise POST a multi-GB single line
+	// (10k-row cap alone doesn't bound record size). 32MB ≫ any real
+	// 10k-row export of 9 short columns.
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<20)
 	summary, err := h.store.ImportCorrectionsCSV(r.Context(), r.Body, 10000)
 	if err != nil {
 		http.Error(w, "import: "+err.Error(), http.StatusBadRequest)
@@ -258,8 +278,11 @@ type applyTierConfigRequest struct {
 }
 
 // handleApplyTierConfig writes correction-driven tier suggestions into
-// task_type_tier_config (the table autoroute.TierSelector reads). Explicit
-// operator action by design — see taskprofile/csv.go ApplySuggestions.
+// task_type_tier_config. Explicit operator action by design — see
+// taskprofile/csv.go ApplySuggestions. R43 note: the table currently has no
+// runtime reader (autoroute.NewTierSelector is not constructed anywhere in
+// production; design doc §5.2 keeps consumption as a future opt-in), so this
+// endpoint persists operator-approved suggestions without changing routing.
 func (h *Handlers) handleApplyTierConfig(w http.ResponseWriter, r *http.Request) {
 	if !h.ensurePool(w) {
 		return
@@ -274,7 +297,11 @@ func (h *Handlers) handleApplyTierConfig(w http.ResponseWriter, r *http.Request)
 	applied, err := h.store.ApplySuggestions(r.Context(), req.TaskTypes)
 	if err != nil {
 		if ErrTierConfigMissing(err) {
-			http.Error(w, "task_type_tier_config table not available (migration 202609_02 not applied)", http.StatusServiceUnavailable)
+			// R43: ensureTaskTypeTierConfig (db.go) creates the table at
+			// startup, so a missing table means the ensure chain itself is
+			// disabled/broken — not "run the migration" (the original
+			// 202609_02 file was unexecutable PG DDL; fixed in R43).
+			http.Error(w, "task_type_tier_config table not available (startup ensure chain did not create it; see db.ensureTaskTypeTierConfig)", http.StatusServiceUnavailable)
 			return
 		}
 		http.Error(w, "apply tier config: "+err.Error(), http.StatusInternalServerError)

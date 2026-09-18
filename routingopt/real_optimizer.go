@@ -205,6 +205,12 @@ func (o *RealOptimizer) PreClassify(ctx context.Context, signals interface{}) (i
 //   - 样本不足或读取失败: 原样返回（baseline 行为）
 func (o *RealOptimizer) PostClassify(ctx context.Context, taskType string, confidence float64) (float64, error) {
 	defer recordHookLatency("postclassify", time.Now()) // P2.2 Track C: hook latency
+	// R43 (2026-09-18): HookTimeout 文档承诺约束全部三个 hook，此前唯独
+	// PostClassify 没套——TTL 到期后的第一个请求会在 confidence 快照刷新里
+	// 持 c.mu 跑两条 DB 聚合查询，DB 变慢时所有并发 Decide 在锁上排队。
+	// 10ms 上限把最坏情况钉死（与 PreClassify/RecommendModel 同一保护）。
+	ctx, cancel := o.opts.hookContext(ctx)
+	defer cancel()
 	return o.confidence.PostClassify(ctx, taskType, confidence)
 }
 

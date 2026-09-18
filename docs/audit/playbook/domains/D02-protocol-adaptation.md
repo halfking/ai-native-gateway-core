@@ -49,3 +49,8 @@
 优先读窗口内改动的 parser/桥/摘要源代码及其测试；只读不改。
 输出按 conventions.md §4 结构，每条发现带 file:line 与触发路径。
 ```
+
+### R43 回注（2026-09-18，Gemini budget intent 丢失上报批）
+- **生产序列化点 = 丢失观测点**：handler_gemini step-6 的 SerializeOpenAI 发生在路由前（TargetProvider 必空），budget 形 Reasoning（thinkingConfig）在此丢失且不可恢复——"executor 会带 candidate 重跑出向序列化"的论证只对 Extensions 可还原字段成立，对无 OpenAI 原生表达的 intent 不成立。新增 `reasoning.budget_tokens` loss 上报分支钉住该形态（完整 TargetProvider 前送修复登记 R43 §五#1 专项）。
+- **新旧注释必须当场对照实现**：translate.go 覆盖范围注曾把"applyThinkingToOpenAIChat"写成未来工作，45 分钟后同日落地即漂移（R43 已纠偏）——写"不在本修复内"前先 grep 是否已有同名实现。
+- 钉桩：`TestSerializeOpenAI_P5_GeminiBudgetLossReportedByTargetProvider`（空目标报丢失/minimax 目标渲染不报，双向）。

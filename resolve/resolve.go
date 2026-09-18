@@ -138,10 +138,12 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 		return passthrough(clientModel), nil
 	}
 	normalized := variants[0]
-	// 2026-07-14: all SQL columns compared below are persisted lowercase
-	// (model_aliases.raw_name, models_canonical.canonical_name). Compare
-	// against the lowercased client model instead of wrapping each
-	// column in lower(...).
+	// canonical_name is persisted lowercase (exact compare); but
+	// model_aliases.raw_name preserves client case — since 2026-09-18 the
+	// alias queries match with lower(ma.raw_name) = lower($1), which hits
+	// the functional partial index idx_model_aliases_lower_raw_name_status
+	// (and drops the old COALESCE(status,'active') — the column is NOT NULL
+	// DEFAULT 'active'). Do NOT "optimize" back to raw equality.
 	rawLookup := modelname.CanonicalizeClientModel(clientModel)
 	profile := strings.TrimSpace(strings.ToLower(clientProfile))
 

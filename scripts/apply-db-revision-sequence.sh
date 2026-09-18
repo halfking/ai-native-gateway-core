@@ -468,6 +468,11 @@ files=(
   # request_logs + tenant_model_policies 补 super_admin_bypass policy,
   # 全语句 DROP POLICY IF EXISTS + CREATE POLICY 幂等。
   "$ROOT_DIR/sql/migrations/startup/725_r41_request_logs_and_tmp_super_admin_bypass.sql"
+  # 2026-09-18 auto route rollup 42P10 修复（58384b0d8，R43 补五点登记）：726
+  # 恢复 718 误删的 credential_model_index_hot 唯一索引——154 生产事故
+  # （rollup ON CONFLICT 42P10 全失败）在存量库的标准修复通道。
+  # ctid 去重 + CREATE UNIQUE INDEX IF NOT EXISTS 幂等。
+  "$ROOT_DIR/sql/migrations/startup/726_restore_credential_model_index_hot_unique.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

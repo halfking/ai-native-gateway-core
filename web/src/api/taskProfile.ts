@@ -75,8 +75,8 @@ export interface AppliedTierConfig {
 
 /** 记录一条人工任务类型修正（request_id 冲突返回 409）。 */
 export function createTaskTypeCorrection(data: CreateTaskTypeCorrectionRequest): Promise<TaskTypeCorrection> {
-  // 后端响应是 {"success":true,"correction":{...}} 包装（taskprofile/handler.go
-  // handleCreateCorrection），泛型必须按 wrapper 形状声明再解包。
+  // 后端信封为 {success, correction}（taskprofile/handler.go handleCreateCorrection）；
+  // R43: 原写法把响应泛型写成 TaskTypeCorrection 再 as 强转，vue-tsc TS2352。
   return req<{ correction: TaskTypeCorrection }>('POST', '/api/admin/task-profile/corrections', data).then(
     (r) => r.correction
   )
