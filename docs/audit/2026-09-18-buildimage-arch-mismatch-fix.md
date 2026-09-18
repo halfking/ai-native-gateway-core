@@ -103,6 +103,9 @@ postcondition 4/4(offline)、lock 51/0、ssh_retry 21/0。
 1. 本地 `deploy-local.sh status` 实测偶发卡死（timeout 15s exit 124），
    疑点在资源探测（docker info / redis 系统级探测）某一环——与用户报告的
    "部署后期卡住"可能同源，本轮未修，需下一轮定位。
+   → **已修（同日 23:06 `468a1ce82`）**：`deploy-local-lib.sh dl_detect_resources`
+   的 `docker info` 加 `timeout 5`、`docker compose version` 加 `timeout 3`，
+   Docker Desktop 高负载时 status 不再无限挂起；遗留关闭。
 2. 蓝绿 cutover 受控重启链最坏 ~195s（3 次 × (60s 验证 + 5s 间隔)），
    性能优化未做。
 3. SSOT 的 tag 回填仍可能在"带错误平台后缀的请求名"下再次产生名不副实
