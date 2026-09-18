@@ -254,10 +254,11 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) (dispatchOutcome, error) {
 	}
 
 	if err := json.Unmarshal(payloadBytes, &env.Payload); err != nil {
-		// Poison-pill event (corrupt payload). markFailed will move it
-		// straight to DLQ after max_attempts, so count both "failed" and
-		// the retry attempt — but skip the duration histogram since the
-		// failure never reached ASM.
+		// Poison-pill event (corrupt payload): markDLQ directly, no retry —
+		// a malformed payload can never succeed, so retrying would only
+		// block the queue head. Count "failed" but skip the duration
+		// histogram since the failure never reached ASM.
+		// (R43: 注释曾误称"max_attempts 后进 DLQ"——实际一步直呼 markDLQ。)
 		d.logger.Error("unmarshal payload failed", "event_id", eventID, "error", err)
 		RecordEventFailed("validation")
 		d.markDLQ(ctx, tx, id, attempts+1, fmt.Sprintf("unmarshal error: %v", err))

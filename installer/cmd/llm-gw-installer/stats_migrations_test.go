@@ -168,6 +168,10 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// five-point gap caught by the pre-commit canonical-delivery gate
 		// on the R42 merge commit; registered here (R42, 2026-09-18).
 		"725_r41_request_logs_and_tmp_super_admin_bypass.sql": r41RequestLogsSuperAdminBypassMigration725,
+		// 726 (58384b0d8) landed with the embeddata copy only; runner/main/
+		// sequence registration completed by R43 (2026-09-18) — same
+		// five-point gap as 720/721/725.
+		"726_restore_credential_model_index_hot_unique.sql": restoreCredentialModelIndexHotUniqueMigration726,
 	}
 
 	for name, embedded := range expected {
@@ -419,8 +423,14 @@ func TestDurableFamilyPrerequisitesRegistered(t *testing.T) {
 		if !ok {
 			continue // covered by the ≥704 registration test
 		}
+		// R43 (2026-09-18): pin ordering against 520 too — its FK references
+		// durable_llm_tasks, so a reorder that slides dependents between 516
+		// and 520 (or past 520) must fail here, not at install time.
 		if base516 := position["516_durable_llm_tasks.sql"]; ok && pos < base516 {
 			t.Errorf("%s (pos %d) must come after 516_durable_llm_tasks.sql (pos %d) in StartupFiles", dependent, pos, base516)
+		}
+		if base520 := position["520_durable_task_settlement_intents.sql"]; ok && pos < base520 {
+			t.Errorf("%s (pos %d) must come after 520_durable_task_settlement_intents.sql (pos %d) in StartupFiles", dependent, pos, base520)
 		}
 	}
 }

@@ -40,3 +40,8 @@
 重点：窗口内新增的供应商出站路径是否遗漏代理强制；HK 排除与地域优先级配置是否仍生效。
 只读不改。输出按 conventions.md §4 结构，每条发现带 file:line 与触发路径。
 ```
+
+### R43 回注（2026-09-18，销账注记两条，免下轮重疑）
+- **订阅 Priority 字段当前由调用方承担**：manager 节点选择只按 ConsecutiveFailures→SuccessRate→ResponseTimeMs 排序，不读 Priority；订阅粒度的"优先级"由调用方显式传 subscriptionID 承担（admin/free_pool_extra.go）。若要"priority 参与节点排序"须产品决策，不是缺口修复。
+- **余额面走 env 代理非订阅节点**：⟳/bg probe/floor guard 的 FetchBalanceUSD 走 DefaultTransport（HTTP_PROXY/HTTPS_PROXY env）+ EgressBlocked 预检，不经订阅节点代理管理器——仅靠订阅出海的部署上，海外厂商余额探测会失败并显式落 balance_error（符合降级语义，不悬挂）。
+- TargetProvider 接线（c6de4699d/7bb1708d5）只改 IR 序列化方言，出站 transport 不变（pool p.Client() → proxy_resolver 链）。

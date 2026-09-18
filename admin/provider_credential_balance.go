@@ -104,10 +104,16 @@ func (h *Handler) refreshCredentialBalance(w http.ResponseWriter, r *http.Reques
 		slog.Warn("refresh-balance: vendor balance probe failed",
 			"provider_id", providerID, "credential_id", credID, "catalog", catalog)
 		errMsg := "balance probe failed (network/HTTP/parse) at " + time.Now().UTC().Format(time.RFC3339)
+		// R43 (2026-09-18): failure deliberately does NOT bump
+		// balance_last_checked_at — the bg probe paths (balance_floor_guard /
+		// credential_probe_v2) made the same call in R42, because the manual
+		// protection window is `source='manual' AND checked_at > NOW()-24h`:
+		// bumping on every failed ⟳ click extended it forever and suspended
+		// automatic probing on manual rows for as long as the vendor endpoint
+		// stayed broken. Same failure stamp semantics as bg: error only.
 		if _, uerr := h.db.Exec(ctx, `
 			UPDATE credentials
-			SET balance_error = $1,
-			    balance_last_checked_at = NOW()
+			SET balance_error = $1
 			WHERE id = $2
 		`, truncateBalanceError(errMsg), credID); uerr != nil {
 			slog.Warn("refresh-balance: error stamp write failed",

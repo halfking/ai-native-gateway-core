@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/routingopt"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/kaixuan/llm-gateway-go/taskprofile"
@@ -71,10 +70,11 @@ func buildRoutingOptimizer(pool *pgxpool.Pool, rdb *redis.Client) *routingopt.Re
 	// confidence damping with the human ×2 weight. Adapter type below keeps
 	// routingopt and taskprofile mutually import-free.
 	correctionStore := taskprofile.NewCorrectionStore(pool)
-	// Correction verdicts also feed the in-process classification feedback
-	// aggregator, giving the previously unwired Prometheus counters their
-	// first producer.
-	correctionStore.SetRecorder(autoroute.NewClassificationFeedbackAggregator())
+	// R43 (2026-09-18): deliberately NO SetRecorder here — this store is
+	// read-only (CorrectionSource only consumes CorrectionStats), so a
+	// recorder attached to it could never fire. The production recorder
+	// lives on the admin-side handlers store (admin/handler.go), the only
+	// write path (POST /corrections + CSV import).
 	optimizer.WithCorrectionSource(taskprofileCorrectionSource{store: correctionStore})
 	slog.Info("autoroute: routing optimizer enabled",
 		"classification_enhancement", flags.EnableClassificationEnhancement,

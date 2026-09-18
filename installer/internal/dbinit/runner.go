@@ -182,6 +182,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 725 (2026-09-18, parallel R41): super_admin_bypass policies for
 			// request_logs + tenant_model_policies (Phase 2 prerequisite).
 			"725_r41_request_logs_and_tmp_super_admin_bypass.sql",
+			// 726 (58384b0d8, 2026-09-18): restore credential_model_index_hot
+			// unique index dropped by 718 — without it fresh installs fail
+			// auto route rollup with SQLSTATE 42P10 (154 production incident).
+			"726_restore_credential_model_index_hot_unique.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}

@@ -55,3 +55,8 @@
 - **TOCTOU 定式**：候选 SELECT 带保护谓词 ≠ 写回受保护——写时 UPDATE 必须带同一谓词（探测飞行中操作员 PATCH 是真实场景）。
 - **后台探测失败路径写 balance_error**（共享 balanceProbeFailStamp()，不含厂商响应体），不动 checked_at（保 #12a 退避）；manual 行由谓词豁免。
 - **manual 戳只随值变化**：updateCredential 对 balance_usd 用 IS DISTINCT FROM 条件盖戳——表单恒携带该字段的环境里，无条件戳 = 任意编辑静默停摆自动探测 24h。
+
+### R43 回注（2026-09-18，符号名更正 + refresh-balance 失败语义统一）
+- 更正本域 R42 回注的符号名（merge 去重后 R42 子代理侧实现被淘汰）：manual 保护谓词 = `bg/balance_manual_protection.go ManualBalanceProtectionPredicate`（非 balance_manual_guard.go/manualBalanceGuardSQL）；守卫测试 = `TestBalanceManualProtectionContent/IsWired` + `TestManualBalancePredicateWriteTimeCoverage`（非 TestManualBalanceGuardPredicateLockstep）。消费计数 3+2 不变。
+- **失败路径不动 checked_at 现为三处统一契约**（floor guard/probe_v2/⟳ refresh-balance）：`balance_source='manual' AND checked_at > NOW()-24h` 保护窗下，失败 bump = 每次点击续期 = 自动探测永久挂起。新失败路径一律只写 balance_error。
+- 回注教训：**merge 后域文档回注要先 git ls-tree 验证符号存活**——回注指向已删除符号，下轮代理按文档找错文件（R43 实际发生）。

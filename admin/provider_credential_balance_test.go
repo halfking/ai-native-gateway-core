@@ -76,3 +76,36 @@ func TestUpdateCredentialStampsManualOnlyOnValueChange(t *testing.T) {
 		}
 	}
 }
+
+// TestRefreshBalanceFailureDoesNotBumpCheckedAt (R43, 2026-09-18 audit) pins
+// the ⟳ failure-path semantics in source: the manual protection window is
+// `balance_source='manual' AND balance_last_checked_at > NOW()-24h`, so a
+// failure UPDATE that bumps checked_at (the pre-R43 behavior) extended the
+// window on every click and suspended automatic probing on manual rows for
+// as long as the vendor endpoint stayed broken. Same call the bg probe paths
+// made in R42 (balanceProbeFailStamp: error only, checked_at untouched).
+func TestRefreshBalanceFailureDoesNotBumpCheckedAt(t *testing.T) {
+	source, err := os.ReadFile("provider_credential_balance.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	fnStart := strings.Index(text, "func (h *Handler) handleRefreshCredentialBalance(")
+	if fnStart < 0 {
+		// fall back to a looser anchor if the handler signature drifts
+		fnStart = strings.Index(text, "balance probe failed (network/HTTP/parse)")
+		if fnStart < 0 {
+			t.Fatal("refresh-balance failure path not found in source")
+		}
+	}
+	body := text[fnStart:]
+	failIdx := strings.Index(body, "SET balance_error = $1")
+	if failIdx < 0 {
+		t.Fatal("refresh-balance failure UPDATE no longer writes balance_error — failure evidence lost")
+	}
+	tail := body[failIdx:min(len(body), failIdx+200)]
+	if strings.Contains(tail, "balance_last_checked_at") {
+		t.Fatal("refresh-balance failure UPDATE bumps balance_last_checked_at — " +
+			"this extends the manual protection window on every failed ⟳ click (R43 regression)")
+	}
+}

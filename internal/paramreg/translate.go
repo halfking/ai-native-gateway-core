@@ -36,11 +36,12 @@ func translateRandomSeed(value json.RawMessage, src, dst Dialect) (string, json.
 // 其它方言原样透传（DeepSeek/GLM/Kimi 仍允许 enabled；Anthropic 仍接受
 // enabled|adaptive|disabled）。
 //
-// 覆盖范围（2026-09-18 审计）：仅 OpenAI 协议入向（parse_openai 把
-// thinking 放进 Extensions 的路径）。Anthropic 协议入向的 thinking 由
-// parse_anthropic 消费进 ir.Thinking，serialize_openai 对其只上报 loss
-// 不输出 —— 该路径在所有 OpenAI 形态上游都会静默丢 thinking，属 P5
-// reasonnorm 统一处理范畴，不在本修复内。
+// 覆盖范围（R43 2026-09-18 更新）：请求级 thinking 的跨协议表达已由同日 P5
+// 的 ir.applyThinkingToOpenAIChat 接管——Anthropic 入向（ir.Thinking）与
+// Gemini 入向（ir.Reasoning budget 形）在 OpenAI 形态上游按 TargetProvider
+// 方言出向；本函数保留为 OpenAI 协议入向（parse_openai 把 thinking 放进
+// Extensions 的路径）出向前的语义改写层，两者通过 extensions_restore 的
+// "已有键不覆盖"守卫衔接，不重复表达。
 //
 // 后续如果某个方言改 contract 再加白名单，在此函数追加分支即可。
 func translateThinking(value json.RawMessage, src, dst Dialect) (string, json.RawMessage, bool) {

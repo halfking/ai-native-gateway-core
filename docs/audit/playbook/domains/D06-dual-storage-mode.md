@@ -57,3 +57,8 @@
 - **"ensure 链不覆盖的 schema 面"第三条通道**：R40 教训覆盖了 revision-sequence 通道，R42 补上 installer 通道——516/520 已补进五点同步（TestDurableFamilyPrerequisitesRegistered 钉桩），durable 族全新装交付矩阵闭合。
 - **URSM v2 共享 Redis 属"observed-state surface"**：与 credential_model_bindings 同级，gateway-side 探测失败写它 = 集群级毒化（见 D09 R42 回注）。
 - pending/pg_source.go Get/GetLatest 是 durable 包外唯一无 GUC 读点（Phase 2 前置待办，登记 R42 §五#1）。
+
+### R43 回注（2026-09-18，表 DDL 双所有者裁决 + 五点同步三犯）
+- **同表两份 DDL 先查真库定所有者**：task_type_tier_config 在 repo 有 202609_02（TEXT 型，表级表达式 UNIQUE 语法错误、从未可执行）与 deploy/sql/migrations/V370（BIGINT+COALESCE(tenant_id,0)，实表来源）两份分叉——"哪份是真的"以 information_schema 实表为准，不以文件为准。R43 裁决 V370 唯一所有者、202609_02 桩化，缺口由 `db.ensureTaskTypeTierConfig`（V370 形态+补 min_confidence 列）启动自愈。
+- **迁移五点同步三犯**（720/721/726）：726 只落文件副本，installer runner/main/embed 与 sequence 通道四点全缺、双契约测试红——作者只跑了 `./sql/migrations/startup/` 包，该包不含 installer/sequence 门禁。**门禁覆盖面声明比门禁本身重要**：交付清单必须逐通道打勾（canonical/embeddata/runner/main embed+map/parity/sequence/deploy V 系列 grep）。
+- deploy/ 目录纳入改动面 grep 范围：V 系列迁移不进 revision-sequence，是最易漏的第三通道。

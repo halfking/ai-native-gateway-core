@@ -59,3 +59,7 @@
 ### R42 回注（2026-09-18，URSM v2 共享写门控收口）
 - **共享态守卫的完整清单**：绑定面（updateBindingAvailability 内部门）+ 观测面（updateObservedState 调用点门）+ **URSM v2 节点键（共享 Redis，updateURSMv2ProbeState 三路调用点门）**——R39/R40 只钉了前两个，URSM 三路（runOne/ProbeSync/probe_service 队列）全部漏网。R42 统一为 `direct.ok || w.ursmFailureWritable(errCode, errDetail)`（成功恒写保恢复信号；失败过 gateway-side+R40 豁免谓词），源钉桩 TestURSMv2FailureWriteCarriesGatewaySideGuard。**新增任何写共享 Redis 的探测反馈路径，必须过同一谓词。**
 - deescalate 启动清扫与 R40 豁免写的回收权衡已注释钉死（同 reason 不可区分，重启重开一轮探测周期）；若豁免窗口实测有害，Phase 2 出独立 reason 标签。
+
+### R43 回注（2026-09-18，R40 回注措辞更正 + 统计窗口口径）
+- 更正本域 R40 回注一处表述：R42 decrypt 豁免放行的是**绑定面与 observed 面**写真实状态；ladder（consecutive_failures）对 gateway-side 错误**含豁免在内一律冻结**（15m 固定退避，node_probe.go CASE WHEN $10）——对永久损坏凭据是保守方向，R42 已在代码注释钉死为可接受权衡。原文"绑定/observed/ladder 全走 else 分支"的"ladder"为笔误。
+- feature_stats 类 worker 的新增统计 SQL 必须与同文件既有窗口口径对齐（UTC 半开窗 vs DATE(ts) 会话时区可错位 8h）——R43 已把 computeSingleFeatureDistribution 对齐 computeDedupRate。

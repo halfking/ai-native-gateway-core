@@ -91,6 +91,11 @@ func CachedPlatformInt(key string, fallback int) int {
 // CachedPlatformBool is the opt-in cached variant of GetPlatformBool for
 // call sites that accept a ≤5s hot-reload window (see helpers.go for why
 // GetPlatformBool itself must stay uncached).
+//
+// RESERVED(待首批消费方): R43 审计确认 CachedPlatformBool/String/Float 全仓
+// 零生产调用方——失效接线（store_db.go InvalidatePlatformValue）先于读者
+// 存在。首批消费方接线前，勿在此家族新增变体；若最终决定删除，须连
+// store_db.go 四处失效接线一并移除。
 func CachedPlatformBool(key string, fallback bool) bool {
 	if Global == nil {
 		return fallback
