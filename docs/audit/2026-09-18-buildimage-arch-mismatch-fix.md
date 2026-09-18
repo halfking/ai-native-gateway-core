@@ -69,6 +69,35 @@ registry 两层永远拼不出 `1.27-alpine-arm64` 候选名，裸 tag 请求必
   onnxruntime 接入层加 `//go:build cgo` 拆分（动 vendor + routingopt 降级
   路径，独立工程），要么正式废弃该契约。保留红色不篡改，避免掩盖。
 
+## 追加审计：deploy-154.sh / deploy-245.sh（同日第二轮）
+
+**结论：两入口的架构处理正确**——154/245 目标机是 x86，seamless 构建段
+`GOARCH=amd64` + `--platform linux/amd64` + 默认镜像 `…-amd64` 是正确契约，
+与本地部署的错位 bug 本质不同，**不改**。实测解析链：缓存 `-amd64` tag
+再次名不副实（arm64 实，见发现 A）时平台校验正确判 miss → 离线 tar 重载
+真 amd64 → 容器内 `uname -m` = `x86_64`。dry-run 端口字面量与
+targets.sh 一致（两目标均 active 8781 / candidate 8782）。
+
+**发现 A（实锤升级）：错位 tag 会再生。** 上轮结尾本地缓存已清洗为名实
+相符，本轮审计再次观测到 `-amd64` tag 挂回 arm64 镜像（ID 2daeca9aa39a）
+——上轮"遗留风险 3"从推测升级为二次观测实锤。确切写手未定位（候选：
+SSOT `_finalize_loaded_tar` 跨名回填在裸 tag / 平台后缀名混用下的某条
+边；不排除 Docker Desktop 行为）。防线有效（平台校验使行为始终正确，
+代价是错位后每次 amd64 请求都重载 165MB tar）。根治 = 收紧回填语义
+（跨名回填禁止或加目标名平台校验），影响三个部署入口，留独立工程。
+
+**发现 B（已修）：bash 3.2 空参数炸。** `parse-wrapper-flags.sh` 头部注释
+明确承诺兼容 macOS 自带 bash 3.2.57 并为此避开 `local -n`，但
+`extract_force_unlock` 无参调用时 `"${_rest[@]}"` 空数组展开在 3.2 +
+`set -u` 下直接 `unbound variable`（/bin/bash 实测复现）；两 wrapper 的
+`"${ARGS[@]}"` / `"${ARGS[*]}"` 同病。当前环境被 brew bash 5 掩盖。
+修复：lib 加 `${#_rest[@]}` 计数守卫；两 wrapper 的 help/dry-run 段包
+计数守卫（守卫模式沿用 SSOT deploy-image-resolution.sh:330 先例）。
+验证：bash3.2 四探针（无参/带参剥 --force-unlock 透传 --seq/两 wrapper
+dry-run/--force-unlock+--dry-run 组合）全过；8 个相关套件回归
+wrapper 12/0、154 14/0、host 35/0、readiness、state_machine 14/0、
+postcondition 4/4(offline)、lock 51/0、ssh_retry 21/0。
+
 ## 遗留风险
 
 1. 本地 `deploy-local.sh status` 实测偶发卡死（timeout 15s exit 124），
@@ -78,6 +107,7 @@ registry 两层永远拼不出 `1.27-alpine-arm64` 候选名，裸 tag 请求必
    性能优化未做。
 3. SSOT 的 tag 回填仍可能在"带错误平台后缀的请求名"下再次产生名不副实
    tag（平台校验保证行为正确，但名字会骗人）；平台无关默认名从源头降低
-   了触发概率。
+   了触发概率。**第二轮已实锤：清洗后错位会再生（见追加审计发现 A），
+   根治需收紧 `_finalize_loaded_tar` 回填语义。**
 4. `deploy_local_contract_test` 的 fixture 修复后，`[[ ! -e "$version_install/run" ]]`
    等碰撞前置断言依赖 exit 1 路径，若 bump-version 行为变化需同步。

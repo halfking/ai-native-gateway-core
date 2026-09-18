@@ -42,14 +42,18 @@ FORCE_UNLOCK=0
 ARGS=()
 extract_force_unlock FORCE_UNLOCK ARGS "$@"
 
-for arg in "${ARGS[@]}"; do
-  [[ "$arg" == --help || "$arg" == -h ]] && { sed -n '2,27p' "$0"; exit 0; }
-done
-if [[ " ${ARGS[*]} " == *' --dry-run '* ]]; then
-  # Port literals MUST mirror targets.sh:154 (active_port "8781", candidate_port "8782");
-  # deploy-seamless.sh reads the same contract via target_field at deploy time.
-  printf '{"target":"154","active_port":"8781","candidate_port":"8782"}\n'
-  exit 0
+# bash 3.2 + set -u: empty-array "${ARGS[@]}" / "${ARGS[*]}" expansions die as
+# unbound — guard by count (no-arg `bash scripts/deploy-154.sh` path).
+if (( ${#ARGS[@]} > 0 )); then
+  for arg in "${ARGS[@]}"; do
+    [[ "$arg" == --help || "$arg" == -h ]] && { sed -n '2,27p' "$0"; exit 0; }
+  done
+  if [[ " ${ARGS[*]} " == *' --dry-run '* ]]; then
+    # Port literals MUST mirror targets.sh:154 (active_port "8781", candidate_port "8782");
+    # deploy-seamless.sh reads the same contract via target_field at deploy time.
+    printf '{"target":"154","active_port":"8781","candidate_port":"8782"}\n'
+    exit 0
+  fi
 fi
 
 if [[ $FORCE_UNLOCK -eq 1 ]]; then
