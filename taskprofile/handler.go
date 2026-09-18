@@ -50,6 +50,9 @@ func (h *Handlers) RegisterTaskProfileRoutes(mux *http.ServeMux, wrap func(http.
 	mux.HandleFunc("GET /api/admin/task-profile", wrap(h.handleProfile))
 	mux.HandleFunc("POST /api/admin/task-profile/corrections", wrap(h.handleCreateCorrection))
 	mux.HandleFunc("GET /api/admin/task-profile/corrections/stats", wrap(h.handleCorrectionStats))
+	mux.HandleFunc("GET /api/admin/task-profile/corrections/export", wrap(h.handleExportCorrections))
+	mux.HandleFunc("POST /api/admin/task-profile/corrections/import", wrap(h.handleImportCorrections))
+	mux.HandleFunc("POST /api/admin/task-profile/apply-tier-config", wrap(h.handleApplyTierConfig))
 	mux.HandleFunc("POST /api/admin/task-profile/reload", wrap(h.handleReload))
 }
 
@@ -193,6 +196,91 @@ func (h *Handlers) handleCorrectionStats(w http.ResponseWriter, r *http.Request)
 		"suggestions": suggestions,
 		"recent":      recent,
 	})
+}
+
+// handleExportCorrections streams corrections as CSV (P2.1-style offline
+// annotation loop: export → human review → import).
+func (h *Handlers) handleExportCorrections(w http.ResponseWriter, r *http.Request) {
+	if !h.ensurePool(w) {
+		return
+	}
+	since := time.Now().Add(-30 * 24 * time.Hour)
+	if v := r.URL.Query().Get("since_days"); v != "" {
+		days, err := strconv.Atoi(v)
+		if err != nil || days <= 0 || days > 365 {
+			http.Error(w, "since_days must be an integer in [1,365]", http.StatusBadRequest)
+			return
+		}
+		since = time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	}
+	limit := 10000
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 || n > 50000 {
+			http.Error(w, "limit must be an integer in [1,50000]", http.StatusBadRequest)
+			return
+		}
+		limit = n
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition",
+		`attachment; filename="task-type-corrections-`+time.Now().UTC().Format("20060102")+".csv\"")
+	if _, err := h.store.ExportCorrectionsCSV(r.Context(), w, since, limit); err != nil {
+		// Headers may already be written; the truncated body signals failure.
+		http.Error(w, "export: "+err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// handleImportCorrections ingests a corrections CSV (raw text/csv body).
+// Response reports imported/skipped/per-row errors; existing request_ids are
+// skipped so re-import is idempotent.
+func (h *Handlers) handleImportCorrections(w http.ResponseWriter, r *http.Request) {
+	if !h.ensurePool(w) {
+		return
+	}
+	if r.ContentLength == 0 {
+		http.Error(w, "empty body: POST the CSV text with Content-Type: text/csv", http.StatusBadRequest)
+		return
+	}
+	summary, err := h.store.ImportCorrectionsCSV(r.Context(), r.Body, 10000)
+	if err != nil {
+		http.Error(w, "import: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]any{"success": true, "summary": summary})
+}
+
+// applyTierConfigRequest is the POST /apply-tier-config body.
+type applyTierConfigRequest struct {
+	// TaskTypes optionally restricts the apply set; empty applies every type
+	// whose current suggestion is correction-driven escalation.
+	TaskTypes []string `json:"task_types"`
+}
+
+// handleApplyTierConfig writes correction-driven tier suggestions into
+// task_type_tier_config (the table autoroute.TierSelector reads). Explicit
+// operator action by design — see taskprofile/csv.go ApplySuggestions.
+func (h *Handlers) handleApplyTierConfig(w http.ResponseWriter, r *http.Request) {
+	if !h.ensurePool(w) {
+		return
+	}
+	var req applyTierConfigRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	applied, err := h.store.ApplySuggestions(r.Context(), req.TaskTypes)
+	if err != nil {
+		if ErrTierConfigMissing(err) {
+			http.Error(w, "task_type_tier_config table not available (migration 202609_02 not applied)", http.StatusServiceUnavailable)
+			return
+		}
+		http.Error(w, "apply tier config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"success": true, "applied": applied})
 }
 
 // handleReload re-applies the overlay file (or resets to defaults when

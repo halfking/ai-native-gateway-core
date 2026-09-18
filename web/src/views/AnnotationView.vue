@@ -12,6 +12,7 @@ import { useI18n } from 'vue-i18n'
 import { store } from '../store'
 import { localeRef } from '../i18n'
 import { getFirstTurnSamples, createAnnotation, type FirstTurnSample, type FirstTurnParams } from '../api/annotations'
+import { createTaskTypeCorrection } from '../api/taskProfile'
 import { L1_TASK_TYPES, listL1TaskTypes, type L1TaskTypeMeta } from '../api-work-types'
 import { getAvailableModelsRaw } from '../api/models'
 import { getUnifiedRequestDetail, type UnifiedRequestDetail } from '../api/requestDetail'
@@ -186,6 +187,17 @@ async function handleAnnotationSubmit(data: {
       reason: data.reason,
       annotator: data.annotator,
     })
+    // taskprofile 闭环（2026-09-18）：工作台收集的人工任务类型同时作为
+    // 逐请求修正写入 task_type_corrections（best-effort——失败/重复不阻塞
+    // 主标注流，409 表示该请求已有修正）。
+    if (data.task_type) {
+      createTaskTypeCorrection({
+        request_id: currentSample.value.request_id,
+        human_task_type: data.task_type,
+        annotator: data.annotator,
+        reason: data.is_correct ? 'correct' : data.reason,
+      }).catch(() => undefined)
+    }
     closeModal()
     load()
   } catch (e: unknown) {

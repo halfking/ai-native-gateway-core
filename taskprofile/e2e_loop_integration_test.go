@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -153,6 +154,20 @@ CREATE TABLE public.task_type_corrections (
 );
 CREATE INDEX idx_task_type_corrections_auto_type
 	ON public.task_type_corrections (auto_task_type, created_at DESC);
+CREATE TABLE public.task_type_tier_config (
+	id SERIAL PRIMARY KEY,
+	task_type TEXT NOT NULL,
+	preferred_tier TEXT NOT NULL CHECK (preferred_tier IN ('tier-a', 'tier-b', 'tier-c')),
+	fallback_tiers TEXT[] DEFAULT ARRAY[]::TEXT[],
+	min_confidence DECIMAL(3,2) DEFAULT 0.70 CHECK (min_confidence >= 0 AND min_confidence <= 1),
+	tenant_id TEXT,
+	enabled BOOLEAN DEFAULT TRUE,
+	description TEXT,
+	created_at TIMESTAMPTZ DEFAULT NOW(),
+	updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE UNIQUE INDEX uq_task_type_tier_config
+	ON public.task_type_tier_config (task_type, COALESCE(tenant_id, ''));
 `
 
 // countingRecorder captures FeedbackRecorder verdicts.
@@ -396,6 +411,105 @@ func TestTaskProfileE2E_CorrectionLoop_RealDB(t *testing.T) {
 	if p, _ := Profile("coding"); p.PreferredTier != TierB {
 		t.Fatalf("reload did not restore defaults: %+v", p)
 	}
+
+	// ── Phase 8: CSV export → import round trip ──────────────────────────
+	// Export contains the 7 corrections from Phase 2; re-importing them must
+	// be idempotent (all skipped). Two NEW rows (import inserts directly,
+	// no auto_route_selections lookup) must import and reach the recorder.
+	expRec := httptest.NewRecorder()
+	h.handleExportCorrections(expRec, httptest.NewRequest(http.MethodGet,
+		"/api/admin/task-profile/corrections/export?since_days=1", nil))
+	if expRec.Code != http.StatusOK {
+		t.Fatalf("export: %d %s", expRec.Code, expRec.Body.String())
+	}
+	if ct := expRec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
+		t.Fatalf("export content-type = %q, want text/csv", ct)
+	}
+	exportedBody := expRec.Body.String()
+	if !strings.HasPrefix(exportedBody, CorrectionCSVHeader) {
+		t.Fatalf("export missing header: %.80s", exportedBody)
+	}
+	verdictsBeforeImport := len(recorder.verdicts)
+	importPayload := exportedBody +
+		"req-import-a,coding,testing,false,0.60,web,importer,quality,2026-09-18T12:00:00Z\n" +
+		"req-import-b,chat,chat,true,,cli,importer,correct,2026-09-18T12:05:00Z\n"
+	impRec := httptest.NewRecorder()
+	h.handleImportCorrections(impRec, httptest.NewRequest(http.MethodPost,
+		"/api/admin/task-profile/corrections/import", strings.NewReader(importPayload)))
+	if impRec.Code != http.StatusOK {
+		t.Fatalf("import: %d %s", impRec.Code, impRec.Body.String())
+	}
+	var importView struct {
+		Summary struct {
+			TotalRows int `json:"total_rows"`
+			Imported  int `json:"imported"`
+			Skipped   int `json:"skipped"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(impRec.Body.Bytes(), &importView); err != nil {
+		t.Fatalf("decode import summary: %v (body %.200s)", err, impRec.Body.String())
+	}
+	if importView.Summary.Imported != 2 || importView.Summary.Skipped != 7 {
+		t.Fatalf("import summary = %+v, want imported 2 / skipped 7", importView.Summary)
+	}
+	if len(recorder.verdicts) != verdictsBeforeImport+2 {
+		t.Fatalf("import verdicts not recorded: %d → %d",
+			verdictsBeforeImport, len(recorder.verdicts))
+	}
+	// Re-import the same payload: everything skipped (idempotent).
+	impRec2 := httptest.NewRecorder()
+	h.handleImportCorrections(impRec2, httptest.NewRequest(http.MethodPost,
+		"/api/admin/task-profile/corrections/import", strings.NewReader(importPayload)))
+	var importView2 struct {
+		Summary struct {
+			Imported int `json:"imported"`
+			Skipped  int `json:"skipped"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(impRec2.Body.Bytes(), &importView2); err != nil {
+		t.Fatalf("decode re-import summary: %v", err)
+	}
+	if importView2.Summary.Imported != 0 || importView2.Summary.Skipped != 9 {
+		t.Fatalf("re-import must be idempotent: %+v", importView2.Summary)
+	}
+	t.Cleanup(func() { _ = cleanupImportedRows(ctx, pool, []string{"req-import-a", "req-import-b"}) })
+
+	// ── Phase 9: apply-tier-config writes the escalated suggestion ───────
+	// documentation is the only correction-driven escalation (rate 0.667).
+	applyRec := httptest.NewRecorder()
+	h.handleApplyTierConfig(applyRec, httptest.NewRequest(http.MethodPost,
+		"/api/admin/task-profile/apply-tier-config", strings.NewReader(`{}`)))
+	if applyRec.Code != http.StatusOK {
+		t.Fatalf("apply-tier-config: %d %s", applyRec.Code, applyRec.Body.String())
+	}
+	var applyView struct {
+		Applied []AppliedTierConfig `json:"applied"`
+	}
+	if err := json.Unmarshal(applyRec.Body.Bytes(), &applyView); err != nil {
+		t.Fatalf("decode apply view: %v", err)
+	}
+	if len(applyView.Applied) != 1 || applyView.Applied[0].TaskType != "documentation" ||
+		applyView.Applied[0].PreferredTier != TierB || applyView.Applied[0].TierSource != "correction_escalation" {
+		t.Fatalf("applied = %+v, want documentation → tier-b (correction_escalation)", applyView.Applied)
+	}
+	var dbTier string
+	if err := pool.QueryRow(ctx, `SELECT preferred_tier
+		FROM task_type_tier_config WHERE task_type='documentation'`).
+		Scan(&dbTier); err != nil {
+		t.Fatalf("tier config row missing after apply: %v", err)
+	}
+	if dbTier != TierB {
+		t.Fatalf("tier config tier = %s, want tier-b", dbTier)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM task_type_tier_config WHERE description LIKE 'taskprofile%'`)
+	})
+}
+
+// cleanupImportedRows removes rows created by the import phase.
+func cleanupImportedRows(ctx context.Context, pool *pgxpool.Pool, ids []string) error {
+	_, err := pool.Exec(ctx, `DELETE FROM task_type_corrections WHERE request_id = ANY($1)`, ids)
+	return err
 }
 
 func docRequestID(i int) string    { return "req-e2e-doc-" + string(rune('0'+i)) }
