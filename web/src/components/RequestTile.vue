@@ -237,12 +237,14 @@ const tooltipText = computed(() => {
   }
   // 2026-09-18: 缓存命中行 — 读/写 token 与命中率。命中率 = cache_read /
   // (cache_read + prompt)（缓存读占总输入的比例）；分母为 0 或字段缺省时
-  // 不渲染百分比（禁止 0% 冒充"无缓存"）。
+  // 不渲染百分比（禁止 0% 冒充"无缓存"）。R44: prompt 缺省同样不算命中率
+  // ——把缺省当 0 会让"只报 cache_read 的上游"冒充 100%。
   if (props.tile.cache_read_tokens != null || props.tile.cache_write_tokens != null) {
     const r = props.tile.cache_read_tokens ?? 0
     const w = props.tile.cache_write_tokens ?? 0
-    const denom = r + (props.tile.prompt_tokens ?? 0)
-    const pct = denom > 0 ? `${Math.round((r / denom) * 100)}%` : '—'
+    const pct = props.tile.prompt_tokens != null && r + props.tile.prompt_tokens > 0
+      ? `${Math.round((r / (r + props.tile.prompt_tokens)) * 100)}%`
+      : '—'
     lines.push(tooltipLine(`${tip}.cache`, t(`${tip}.cacheFormat`, { r, w, pct })))
   }
   // 2026-09-18: 会话 ID 行 — 有会话（request_logs.gw_session_id）时显示，

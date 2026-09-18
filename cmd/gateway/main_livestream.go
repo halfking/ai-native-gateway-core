@@ -179,6 +179,12 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 	if entry.CredentialID != nil && *entry.CredentialID > 0 {
 		fallbackCredentialID = *entry.CredentialID
 	}
+	// R44: 与 hub 路径（LiveRequestFromTelemetry）同语义补齐会话 ID——
+	// 此前该兜底分支只补了 cache token 两列、漏了 GwSessionID。
+	gwSessionID := ""
+	if entry.GwSessionID != nil {
+		gwSessionID = strings.TrimSpace(*entry.GwSessionID)
+	}
 	return admin.LiveRequest{
 		RequestID:        entry.RequestID,
 		Ts:               liveStreamEventTime(entry).Format(time.RFC3339),
@@ -197,6 +203,7 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		CostUSD:          entry.CostUSD,
 		ErrorKind:        entry.ErrorKind,
 		CredentialID:     fallbackCredentialID, // 2026-08-26: 凭据维度（label 不可得时泳道用 "凭据 #ID"）
+		GwSessionID:      gwSessionID,
 	}
 }
 

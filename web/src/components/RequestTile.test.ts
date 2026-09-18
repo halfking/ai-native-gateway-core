@@ -196,4 +196,18 @@ describe('RequestTile cache & session tooltip', () => {
     expect(title).toContain('gw_zero_read')
     w.unmount()
   })
+
+  // R44: prompt_tokens 缺省时不得把缺省当 0 —— 只报 cache_read 的上游会
+  // 冒充 100% 命中率，与"缺省不冒充"承诺同源。
+  it('renders cache line without ratio when prompt_tokens is missing (never fakes 100%)', () => {
+    const w = mountLarge(baseTile({
+      is_probe: false, status: 'success',
+      cache_read_tokens: 500, cache_write_tokens: 0, gw_session_id: 'gw_no_prompt',
+    }))
+    const title = w.attributes('title') ?? ''
+    expect(title).toContain('缓存')
+    expect(title).toContain('—')
+    expect(title).not.toContain('100%')
+    w.unmount()
+  })
 })
