@@ -160,6 +160,10 @@ cp "$ROOT/scripts/deploy-local-lib.sh" "$version_project/scripts/deploy-local-li
 cp "$ROOT/scripts/_shared-lib.sh" "$version_project/scripts/_shared-lib.sh"
 AIAN_DEPLOY_LIB_FIXTURE="$(cd "$ROOT/../.." && pwd)/deploy-lib"
 cp "$ROOT/scripts/bump-version.sh" "$version_project/scripts/bump-version.sh"
+# dadf1e66f 起 deploy-local.sh 顶层校验 PROJECT_ROOT/sql/migrations 存在
+# （否则 exit 64）；fixture 必须带上最小骨架，否则碰撞分支根本跑不到。
+mkdir -p "$version_project/sql/migrations"
+printf '# contract fixture placeholder\n' > "$version_project/sql/migrations/.gitkeep"
 printf '{\n  "version": "2.4.7-test",\n  "git_tag": "2.4.7",\n  "git_sha": "deadbeef",\n  "build_seq": 10,\n  "build_date": "20260903",\n  "module": "llm-gateway-go"\n}\n' > "$version_project/version.json"
 printf '2.4.7-test\n' > "$version_project/VERSION"
 cp "$version_project/version.json" "$version_project/web/public/version.json"

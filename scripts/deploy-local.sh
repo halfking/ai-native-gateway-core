@@ -576,11 +576,12 @@ build_backend() {
     # kx-base/golang:1.27-alpine-amd64 容器内 CGO 构建：musl 产物可直接
     # 跑在默认 alpine:3.22 运行时镜像上（LLM_GATEWAY_RUNTIME_IMAGE 可覆盖）。
     #
-    # 默认值 2026-09-09 改：原 golang:1.27-alpine 在离线 + Apple Silicon 上
-    # 会去 Docker Hub 拉 amd64 失败；kx-base/golang:1.27-alpine-amd64 在
-    # ~/work/docker-base-images/lang-base/ 与 ~/work/docker-base-image/lang-base/
-    # 都有离线 tar.gz，且已推 registry.itestu.cn/lang-base/kx-base-golang
-    # 兜底。重新构建/保存：~/work/docker-base-images/scripts/build-kx-base-golang-1.27-alpine.sh
+    # 默认值演进：
+    # - 2026-09-09：golang:1.27-alpine → kx-base/golang:1.27-alpine-amd64
+    #   （离线 tar 支持 + registry 兜底，但错误硬编码 amd64）
+    # - 2026-09-18：修正架构检测——根据宿主机 target_arch 动态选择
+    #   kx-base/golang:1.27-alpine-{arm64,amd64}，避免 Apple Silicon 本地
+    #   部署强制使用 amd64 构建镜像导致平台不匹配错误
     #
     # 2026-09-09 进一步加固：之前 docker run 的 stderr 被 '>/dev/null'
     # 吞掉，go build 失败时操作员看到的就是空的 bash 错误；现在每个
@@ -588,9 +589,8 @@ build_backend() {
     # 验证 cgo_out 真的写出来了，避免 mv 一个空文件（mv -f 找不到源
     # 时只 print 不返回 1，致命失败被静默吞掉）。
     need_cmd docker
-    local build_image="${LLM_GATEWAY_BUILD_IMAGE:-kx-base/golang:1.27-alpine-amd64}"
-    local cgo_log="$RUN_DIR/build-cgo.log"
-    # Ensure we pull the correct platform image matching target architecture
+    # 架构检测：根据 target_arch 自动选择匹配的构建镜像（2026-09-18 修正：
+    # 之前硬编码 amd64 导致 Apple Silicon 本地部署强制使用错误架构）
     local docker_platform
     if [[ "$target_arch" == "arm64" || "$target_arch" == "aarch64" ]]; then
       docker_platform="linux/arm64"
@@ -599,6 +599,17 @@ build_backend() {
     else
       die "unsupported target architecture: $target_arch (expected arm64 or amd64)"
     fi
+    # 默认构建镜像：保持平台无关 tag，让共享 SSOT resolve_build_image
+    # 根据传入的 docker_platform 自动推导 -arm64/-amd64 平台重组 tag。
+    # 关键修复（2026-09-18）：之前的 kx-base/golang:1.27-alpine-amd64 默认值
+    # 在 Apple Silicon 上拉到的实际是 arm64 镜像（因为 Docker 镜像缓存中存在
+    # 错误的同 ID 多 tag 引用），导致 macOS 本地部署强行使用 amd64 镜像平台。
+    # 修复后：默认 tag 不含平台段；resolve_build_image 会根据 $docker_platform
+    # 先尝试 kx-base/golang:1.27-alpine-arm64（Apple Silicon 命中），失败
+    # 再回退到 kx-base/golang:1.27-alpine-amd64（x86 Linux 命中）。
+    local default_build_image="kx-base/golang:1.27-alpine"
+    local build_image="${LLM_GATEWAY_BUILD_IMAGE:-$default_build_image}"
+    local cgo_log="$RUN_DIR/build-cgo.log"
     # 镜像解析走共享 SSOT resolve_build_image（UNIFICATION-PLAN-2026-09-09 §3.3，
     # P1.1 抽离原内联块）：本地 cache 含平台校验（平台不符视为未命中自动
     # 重解析，保留原 need_pull 防线）→ 离线 tar(~/work/{docker-base-images,
