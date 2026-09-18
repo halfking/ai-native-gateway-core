@@ -33,6 +33,8 @@
 - [R30 遗留#3] FreeDiscoveryView 手写 table/window.confirm 未复用套件；freediscovery 页未展示 auto_disabled_at 等健康字段——开放债
 - [09-16] 用户协议页暗色白底 — 修复 7c9e3b042
 
+- **R44 | "缺省不冒充"语义覆盖分子分母两侧**：命中率类派生指标在任一输入字段缺省时显示 —（R44 L-2：`prompt_tokens ?? 0` 使只报 cache_read 的上游冒充 100%）；LiveRequest 的 hub 路径与 hub==nil 兜底分支字段面必须对齐（R44 L-3：兜底分支补 cache 字段时漏 GwSessionID 实例）。
+
 ## 5. 子代理派发提示词
 
 ```text
