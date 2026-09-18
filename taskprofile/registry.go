@@ -87,6 +87,12 @@ func Snapshot() (string, []TaskProfile) {
 	return s.version, out
 }
 
+// SnapshotVersion returns just the current registry version string.
+func SnapshotVersion() string {
+	v, _ := Snapshot()
+	return v
+}
+
 // Profile returns the profile for taskType; ok=false for unknown types.
 func Profile(taskType string) (TaskProfile, bool) {
 	s := registry.Load()
