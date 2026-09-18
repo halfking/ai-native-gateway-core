@@ -4935,7 +4935,11 @@ func main() {
 				// LLMGatewayAutoLLMEndpoint; the wrapper is here
 				// so the dependency-graph and metrics are wired
 				// before the first low-confidence heuristic result.
-				autoroute.NewLLMFallbackClassifierWithCaller(buildAutoLLMCaller()),
+				// 2026-09-18: LLM_GATEWAY_JEV_CLASSIFIER=1 +
+				// TYPESAFE_API_KEY swaps the slot to the TypeSafe Jev
+				// choice classifier (default OFF, same fail-open
+				// contract) — see buildAutoFallbackClassifier.
+				buildAutoFallbackClassifier(),
 				autoIdx,
 				// v2.0.3 audit fix #14: switch from in-memory
 				// (process-local) sticky to DB-backed (cluster-wide).

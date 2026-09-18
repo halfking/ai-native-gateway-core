@@ -245,6 +245,27 @@ func buildAutoLLMCaller() autoroute.LLMCaller {
 	}
 }
 
+// buildAutoFallbackClassifier selects which implementation occupies the
+// decider's fallback-classifier slot (heuristic → low confidence → X).
+//
+// Selection logic:
+//  1. LLM_GATEWAY_JEV_CLASSIFIER enabled + TYPESAFE_API_KEY set:
+//     JevClassifier (TypeSafe System One /v1/systemone choice call,
+//     70–500ms, fail-open identical to the LLM path). Default OFF.
+//  2. Otherwise: the historical LLM fallback via buildAutoLLMCaller.
+//
+// The telemetry assignments are mirrored here (idempotent) so the Jev
+// path also feeds llm_gateway_llm_classifier_* — buildAutoLLMCaller is
+// skipped entirely when Jev wins, and the vars default to no-ops.
+func buildAutoFallbackClassifier() autoroute.Classifier {
+	autoroute.RecordLLMMetricCall = telemetry.RecordLLMClassifierCall
+	autoroute.RecordLLMCircuitBreakerState = telemetry.RecordLLMCircuitBreakerState
+	if jc, ok := autoroute.BuildJevClassifierFromEnv(os.Getenv); ok {
+		return jc
+	}
+	return autoroute.NewLLMFallbackClassifierWithCaller(buildAutoLLMCaller())
+}
+
 // irAdapter implements routing.IRConverter by wrapping the ir package functions.
 // Used when LLM_GATEWAY_IR_CONVERTER=true to enable the Phase B Parse→IR→Serialize
 // pipeline, reducing protocol conversion complexity from O(N²) to O(N).
