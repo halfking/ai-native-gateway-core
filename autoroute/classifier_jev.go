@@ -123,6 +123,11 @@ func BuildJevClassifierFromEnv(envLookup func(string) string) (*JevClassifier, b
 		slog.Warn("autoroute: invalid TYPESAFE_BASE_URL; keeping LLM fallback", "base_url", base, "error", err)
 		return nil, false
 	}
+	if u.Scheme == "http" {
+		// 显式配置才可能走到这里（默认 https），保留可用但必须喊出明文风险。
+		slog.Warn("autoroute: TYPESAFE_BASE_URL uses plaintext http; TYPESAFE_API_KEY travels unencrypted",
+			"base_url", base)
+	}
 
 	model := strings.TrimSpace(envLookup("LLM_GATEWAY_JEV_MODEL"))
 	if model == "" {
@@ -205,7 +210,9 @@ type jevState struct {
 func (c *JevClassifier) Classify(ctx context.Context, sigs ClassificationSignals) (*Classification, error) {
 	if !c.breakerAllow() {
 		RecordLLMMetricCall("breaker_open", 0)
-		RecordLLMCircuitBreakerState(jevBreakerFailures, true)
+		// R44: 上报真实失败连击而非硬编码阈值——重开周期后 consecutive 可
+		// 越过 5 继续累加，恒报 5 会让 gauge 在拒绝路径上抖动回跳。
+		RecordLLMCircuitBreakerState(c.breakerOpenConsecutive(), true)
 		return nil, ErrLLMCircuitOpen
 	}
 
@@ -334,6 +341,14 @@ func (c *JevClassifier) breakerAllow() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return time.Now().After(c.openUntil)
+}
+
+// breakerOpenConsecutive reads the failure streak under mu for gauge
+// reporting on the breaker-rejection path.
+func (c *JevClassifier) breakerOpenConsecutive() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.consecutive
 }
 
 func (c *JevClassifier) breakerFailure() {

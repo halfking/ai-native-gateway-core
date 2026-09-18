@@ -779,6 +779,18 @@ func (d *Decider) classify(ctx context.Context, sigs ClassificationSignals, hint
 		slog.Warn("autoroute: LLM fallback failed", "error", llmErr)
 		return cls, nil
 	}
+	// R44: fallback 结果低于升级阈值时保留 heuristic winner。LLM 槽恒返
+	// 硬编码 0.85 天然过门，Jev 是第一个能返回任意低置信的占位者——不设门
+	// 的话低置信外部结论会替换本地启发式并经 intentCache 粘住整个会话。
+	if llmCls.Confidence < d.effectiveLLMThreshold() {
+		slog.Info("autoroute: fallback confidence below threshold, keeping heuristic result",
+			"fallback_classifier", llmCls.Classifier,
+			"fallback_confidence", llmCls.Confidence,
+			"threshold", d.effectiveLLMThreshold(),
+			"heuristic_task", cls.Primary,
+		)
+		return cls, nil
+	}
 	return llmCls, nil
 }
 
