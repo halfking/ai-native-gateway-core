@@ -159,6 +159,7 @@ export default {
   // Error messages
   loadFailed: '加载标注样本失败',
   annotationFailed: '标注失败',
+  correctionWriteFailed: '修正写入失败（主标注已保存）：{msg}',
   batchFailed: '批量标注失败',
   deleteFailed: '删除标注失败',
   noSamplesSelected: '请先选择要标注的样本',

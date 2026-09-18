@@ -69,14 +69,14 @@ func (s *CorrectionStore) ExportCorrectionsCSV(ctx context.Context, w io.Writer,
 			return count, err
 		}
 		record := []string{
-			c.RequestID,
-			c.AutoTaskType,
-			c.HumanTaskType,
+			csvSafeFormula(c.RequestID),
+			csvSafeFormula(c.AutoTaskType),
+			csvSafeFormula(c.HumanTaskType),
 			strconv.FormatBool(c.Agrees),
 			fmtCSVFloat(c.ClassifierConfidence),
-			csvOrEmpty(c.Profile),
-			c.Annotator,
-			c.Reason,
+			csvSafeFormula(csvOrEmpty(c.Profile)),
+			csvSafeFormula(c.Annotator),
+			csvSafeFormula(c.Reason),
 			c.CreatedAt.UTC().Format(correctionCSVTime),
 		}
 		if err := cw.Write(record); err != nil {
@@ -282,11 +282,13 @@ type AppliedTierConfig struct {
 }
 
 // ApplySuggestions writes the current Suggestion for each requested task type
-// into task_type_tier_config (the table autoroute.TierSelector reads). Empty
-// taskTypes defaults to the types whose current suggestion is
-// correction_escalation — the operator-visible "apply the correction-driven
-// escalations" action. The write is explicit by design (design doc §5.2): the
-// suggestion engine never mutates tier config on its own.
+// into task_type_tier_config. Empty taskTypes defaults to the types whose
+// current suggestion is correction_escalation — the operator-visible "apply
+// the correction-driven escalations" action. The write is explicit by design
+// (design doc §5.2): the suggestion engine never mutates tier config on its
+// own. R43 note: no runtime component reads this table yet
+// (autoroute.NewTierSelector has zero production constructors), so applying
+// persists operator intent without changing routing behavior.
 func (s *CorrectionStore) ApplySuggestions(ctx context.Context, taskTypes []string) ([]AppliedTierConfig, error) {
 	if s.pool == nil {
 		return nil, errors.New("taskprofile: no DB pool")
@@ -308,11 +310,14 @@ func (s *CorrectionStore) ApplySuggestions(ctx context.Context, taskTypes []stri
 			return applied, fmt.Errorf("unknown task_type %q", tt)
 		}
 		sug := Suggest(tt, 1.0, stats)
+		// R43 (2026-09-18): ON CONFLICT 推断必须匹配表的**真实**唯一索引
+		// （deploy V370：tenant_id BIGINT + COALESCE(tenant_id, 0) 哨兵）。
+		// 原来按 202609_02 的 COALESCE(tenant_id,'') 推断，真表上 42P10。
 		tag, err := s.pool.Exec(ctx, `
 			INSERT INTO task_type_tier_config
 				(task_type, preferred_tier, fallback_tiers, min_confidence, tenant_id, enabled, description)
 			VALUES ($1, $2, $3, $4, NULL, TRUE, $5)
-			ON CONFLICT (task_type, COALESCE(tenant_id, '')) DO UPDATE SET
+			ON CONFLICT (task_type, COALESCE(tenant_id, 0)) DO UPDATE SET
 				preferred_tier = EXCLUDED.preferred_tier,
 				fallback_tiers = EXCLUDED.fallback_tiers,
 				min_confidence = EXCLUDED.min_confidence,
@@ -347,6 +352,24 @@ func csvOrEmpty(p *string) string {
 		return ""
 	}
 	return *p
+}
+
+// csvSafeFormula neutralizes CSV formula injection (R43, 2026-09-18):
+// request_id/annotator/reason are human-entered, and a value like
+// `=cmd|...` or `@SUM(...)` executes when the export is opened in
+// Excel/WPS. Fields starting with = + - @ tab or CR get a `'` prefix,
+// which spreadsheets treat as literal text. Exports are for human
+// spreadsheet consumption; re-import goes through DB-side validation
+// instead of parsing this prefix back.
+func csvSafeFormula(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
 }
 
 func fmtCSVFloat(f *float64) string {

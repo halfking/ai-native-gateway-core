@@ -181,6 +181,13 @@ func TestClassifyAnthropicStreamError(t *testing.T) {
 		{"timeout", errorsx.KindTimeout},
 		{"timeout_error", errorsx.KindTimeout},
 		{"api_error", errorsx.KindUpstreamDown},
+		// R43 (2026-09-18): pin the R42 bad_request_error branch — without
+		// it a status=0 in-stream error fell through to KindTransient →
+		// KindUpstreamDown (retryable + probe-immediately), reviving the
+		// credential cooling↔ready flapping that c66dbd6c9 fixed on the
+		// admission path. invalid_request_error pinned as its sibling.
+		{"bad_request_error", errorsx.KindClientBug},
+		{"invalid_request_error", errorsx.KindClientBug},
 		{"", errorsx.KindUpstreamDown},
 	}
 	for _, tc := range cases {

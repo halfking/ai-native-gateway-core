@@ -452,7 +452,11 @@ func (e *Exporter) UpsertSummary(ctx context.Context, sessionID, tenantID string
 	}
 
 	// INSERT/UPSERT 不需要 RETURNING；用 Exec 接口
-	_, err := e.store.Query(ctx, `
+	// INSERT/UPSERT 不需要 RETURNING；Store 没有 Exec 接口，走 Query。
+	// R43 (2026-09-18): 迭代器必须排干并 Close——pgx 的 Query 在 rows.Close
+	// 之前一直占住池连接，此前直接丢弃 RowIterator 导致每次调用泄漏一个
+	// 连接（auto 摘要常态写入，池终将耗尽）。
+	it, err := e.store.Query(ctx, `
 		INSERT INTO session_summaries
 			(session_key, tenant_id, first_request_at, last_request_at,
 			 title, summary, key_topics, user_intent)
@@ -464,7 +468,16 @@ func (e *Exporter) UpsertSummary(ctx context.Context, sessionID, tenantID string
 			key_topics = COALESCE(EXCLUDED.key_topics, session_summaries.key_topics),
 			user_intent= COALESCE(EXCLUDED.user_intent,session_summaries.user_intent)
 	`, sessionID, tenantID, result.Title, result.Summary, topicsArray, userIntent)
-	return err
+	if err != nil {
+		return err
+	}
+	for it.Next() {
+	}
+	if err := it.Err(); err != nil {
+		_ = it.Close()
+		return err
+	}
+	return it.Close()
 }
 
 // joinForPGArray 把 []string 格式化为 PG text[] 字面量（`a,b,c`）。

@@ -29,6 +29,8 @@ const page = ref(1)
 const size = ref(50)
 const loading = ref(false)
 const error = ref('')
+// R43: taskprofile 修正写入失败的非阻塞提示（主标注成功但修正未落库时可见）
+const correctionWarning = ref('')
 
 // 默认当天(UTC 日期串,与后端默认口径一致)
 function utcToday(): string {
@@ -69,6 +71,7 @@ const defaultAnnotator = computed(() => store.userInfo?.username || '')
 async function load() {
   loading.value = true
   error.value = ''
+  correctionWarning.value = ''
   try {
     const params: FirstTurnParams = {
       page: page.value,
@@ -190,13 +193,19 @@ async function handleAnnotationSubmit(data: {
     // taskprofile 闭环（2026-09-18）：工作台收集的人工任务类型同时作为
     // 逐请求修正写入 task_type_corrections（best-effort——失败/重复不阻塞
     // 主标注流，409 表示该请求已有修正）。
+    // R43 (2026-09-18): 失败不再静默吞掉——写 warning 条（409 幂等除外）。
+    // 此前 catch(() => undefined) 让词汇表不匹配等 400 完全不可见。
     if (data.task_type) {
       createTaskTypeCorrection({
         request_id: currentSample.value.request_id,
         human_task_type: data.task_type,
         annotator: data.annotator,
         reason: data.is_correct ? 'correct' : data.reason,
-      }).catch(() => undefined)
+      }).catch((corrErr: unknown) => {
+        const msg = corrErr instanceof Error ? corrErr.message : String(corrErr ?? '')
+        if (/409|already/i.test(msg)) return
+        correctionWarning.value = t('annotation.correctionWriteFailed', { msg })
+      })
     }
     closeModal()
     load()
@@ -248,6 +257,7 @@ onMounted(() => {
     <p class="page-desc">{{ t('annotation.page.firstTurnDesc') }}</p>
 
     <div v-if="error" class="alert alert-danger" role="alert">{{ error }}</div>
+    <div v-if="correctionWarning" class="alert alert-warning" role="alert">{{ correctionWarning }}</div>
 
     <!-- Filter Bar -->
     <div class="compact-filter-bar compact-filter-bar--stacked">

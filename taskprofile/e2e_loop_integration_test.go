@@ -160,14 +160,17 @@ CREATE TABLE public.task_type_tier_config (
 	preferred_tier TEXT NOT NULL CHECK (preferred_tier IN ('tier-a', 'tier-b', 'tier-c')),
 	fallback_tiers TEXT[] DEFAULT ARRAY[]::TEXT[],
 	min_confidence DECIMAL(3,2) DEFAULT 0.70 CHECK (min_confidence >= 0 AND min_confidence <= 1),
-	tenant_id TEXT,
+	-- R43 (2026-09-18): 对齐真实部署形态（deploy V370）——tenant_id BIGINT、
+	-- 唯一索引 0 哨兵 COALESCE；此前测试自建 TEXT/'' 形态，让 ApplySuggestions
+	-- 的 ON CONFLICT 在真表上 42P10 的缺陷测不出来。
+	tenant_id BIGINT,
 	enabled BOOLEAN DEFAULT TRUE,
 	description TEXT,
 	created_at TIMESTAMPTZ DEFAULT NOW(),
 	updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE UNIQUE INDEX uq_task_type_tier_config
-	ON public.task_type_tier_config (task_type, COALESCE(tenant_id, ''));
+	ON public.task_type_tier_config (task_type, COALESCE(tenant_id, 0));
 `
 
 // countingRecorder captures FeedbackRecorder verdicts.
@@ -364,7 +367,7 @@ func TestTaskProfileE2E_CorrectionLoop_RealDB(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
 		t.Fatalf("decode task-profile view: %v", err)
 	}
-	if view.RegistryVersion == "" || len(view.Profiles) != 15 {
+	if view.RegistryVersion == "" || len(view.Profiles) != 21 {
 		t.Fatalf("task-profile view incomplete: version=%q profiles=%d",
 			view.RegistryVersion, len(view.Profiles))
 	}

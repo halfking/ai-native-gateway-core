@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin/distlock" // 2026-08-19 title-gen per-session distributed lock
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
@@ -26,7 +27,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/taskprofile"
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
 	"github.com/kaixuan/llm-gateway-go/domains/session"      //nolint:depguard // session state manager
@@ -45,6 +45,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	"github.com/kaixuan/llm-gateway-go/security/sensitive"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	"github.com/kaixuan/llm-gateway-go/taskprofile"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -1356,7 +1357,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		// Consolidates task taxonomy + model-tier data in one plugin-style
 		// module; corrections feed routingopt.PostClassify (human ×2 weight).
 		// Same admin middleware tier as the P2.1 annotation endpoints.
-		taskprofile.NewHandlers(h.db).RegisterTaskProfileRoutes(mux, admin)
+		// R43 (2026-09-18): attach the classification-feedback recorder HERE —
+		// admin POST/import is the only production write path into the
+		// corrections store; without it the Prometheus classification feedback
+		// counters stay at zero (routingopt side is read-only).
+		taskProfileHandlers := taskprofile.NewHandlers(h.db)
+		taskProfileHandlers.SetRecorder(autoroute.NewClassificationFeedbackAggregator())
+		taskProfileHandlers.RegisterTaskProfileRoutes(mux, admin)
 
 		// P2.2 Track C (2026-09-07): routing-opt admin API — stats / accuracy /
 		// parameters / metrics. DB-only: aggregates routing_feedback_log +

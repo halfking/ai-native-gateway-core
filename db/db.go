@@ -422,6 +422,11 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureTaskTypeCorrections(migCtx); err != nil {
 		return err
 	}
+	// R43 (2026-09-18): task_type_tier_config（ApplySuggestions 落盘目标）——
+	// 原迁移 202609_02 表级表达式 UNIQUE 在 PG 上不可执行，表从未被建出。
+	if err := db.ensureTaskTypeTierConfig(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureVibeCodingSchema(migCtx); err != nil {
 		return err
 	}
@@ -1602,6 +1607,9 @@ func (d *DB) ensureTaskTypeCorrections(ctx context.Context) error {
 			COMMENT ON TABLE public.task_type_corrections IS
 			    'taskprofile: 人工对 auto 任务类型分配的逐请求修正（agrees=auto与human一致）';
 
+			COMMENT ON COLUMN public.task_type_corrections.agrees IS
+			    'auto_task_type = human_task_type（写入时冻结预计算，聚合免函数）';
+
 			INSERT INTO public.schema_migrations (version, description)
 			VALUES ('724', 'taskprofile per-request human task-type corrections')
 			ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
@@ -1610,6 +1618,99 @@ func (d *DB) ensureTaskTypeCorrections(ctx context.Context) error {
 		return err
 	}
 	slog.Info("taskprofile task_type_corrections schema ensured (migration 724)")
+	return nil
+}
+
+// ensureTaskTypeTierConfig mirrors deploy/sql/migrations/V370__create_tier_config_table.sql
+// — taskprofile ApplySuggestions 的落盘目标表的**真实所有者**（deploy 通道，
+// tenant_id BIGINT + COALESCE(tenant_id,0) 哨兵唯一索引）。R43 (2026-09-18)：
+// sql/migrations/202609_02 是同表的另一份 TEXT 型 DDL 且表级表达式 UNIQUE
+// 在 PG 上不可执行（从未在任何库生效）；ApplySuggestions 原 ON CONFLICT
+// 按 202609_02 的 COALESCE(tenant_id,”) 推断，在 V370 真表上 42P10——
+// apply 端点在有表库上报 500、无表库上报 503，两头都死。本 ensure 与
+// ensureTaskTypeCorrections 同"二进制启动即生效"模式补齐 V370 形态。
+// 幂等：CREATE ... IF NOT EXISTS / DO NOTHING，已有行与运维改动不被覆盖。
+func (d *DB) ensureTaskTypeTierConfig(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+			CREATE TABLE IF NOT EXISTS public.task_type_tier_config (
+			    id BIGSERIAL PRIMARY KEY,
+			    task_type TEXT NOT NULL,
+			    preferred_tier TEXT NOT NULL CHECK (preferred_tier IN ('tier-a', 'tier-b', 'tier-c')),
+			    fallback_tiers TEXT[],
+			    tenant_id BIGINT,
+			    enabled BOOLEAN DEFAULT TRUE,
+			    description TEXT,
+			    created_at TIMESTAMPTZ DEFAULT NOW(),
+			    updated_at TIMESTAMPTZ DEFAULT NOW()
+			);
+
+			CREATE UNIQUE INDEX IF NOT EXISTS task_type_tier_config_unique
+			    ON public.task_type_tier_config (task_type, COALESCE(tenant_id, 0));
+
+			-- R43: V370 的真表缺 min_confidence 列，而 taskprofile 写面与
+			-- autoroute.TierSelector 读面（SELECT min_confidence）都以它为
+			-- 契约——补列使两侧在 V370 库上可用。
+			ALTER TABLE public.task_type_tier_config
+			    ADD COLUMN IF NOT EXISTS min_confidence DECIMAL(3,2) DEFAULT 0.70;
+			DO $chk$
+			BEGIN
+			    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+			                   WHERE conname = 'task_type_tier_config_min_confidence_check'
+			                   AND conrelid = 'public.task_type_tier_config'::regclass) THEN
+			        ALTER TABLE public.task_type_tier_config
+			            ADD CONSTRAINT task_type_tier_config_min_confidence_check
+			            CHECK (min_confidence >= 0 AND min_confidence <= 1) NOT VALID;
+			    END IF;
+			END $chk$;
+
+			CREATE INDEX IF NOT EXISTS idx_task_type_tier_config_lookup
+			    ON public.task_type_tier_config(task_type, tenant_id, enabled)
+			    WHERE enabled = TRUE;
+
+			CREATE INDEX IF NOT EXISTS idx_task_type_tier_config_tenant
+			    ON public.task_type_tier_config(tenant_id, enabled)
+			    WHERE enabled = TRUE;
+
+			COMMENT ON TABLE public.task_type_tier_config IS
+			    '任务类型到模型档位的映射配置表，支持全局和租户级别配置';
+
+			DO $trig$
+			BEGIN
+			    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trigger_task_type_tier_config_updated_at') THEN
+			        CREATE FUNCTION update_task_type_tier_config_updated_at() RETURNS TRIGGER AS $f$
+			        BEGIN
+			            NEW.updated_at = NOW();
+			            RETURN NEW;
+			        END;
+			        $f$ LANGUAGE plpgsql;
+			        CREATE TRIGGER trigger_task_type_tier_config_updated_at
+			            BEFORE UPDATE ON public.task_type_tier_config
+			            FOR EACH ROW EXECUTE FUNCTION update_task_type_tier_config_updated_at();
+			    END IF;
+			END $trig$;
+
+			INSERT INTO public.task_type_tier_config
+			    (task_type, preferred_tier, fallback_tiers, min_confidence, description)
+			VALUES
+			    ('architecture', 'tier-a', '{tier-b}', 0.70, 'System design, API design, technical proposals, architecture reviews'),
+			    ('audit', 'tier-a', '{tier-b}', 0.70, 'Code review, security audit, PR review, vulnerability analysis'),
+			    ('debugging', 'tier-a', '{tier-b}', 0.65, 'Bug investigation, root cause analysis, stack trace debugging'),
+			    ('coding', 'tier-b', '{tier-a,tier-c}', 0.75, 'Greenfield development, feature implementation, API integration'),
+			    ('refactoring', 'tier-b', '{tier-a,tier-c}', 0.70, 'Code restructuring, optimization, clean-up'),
+			    ('testing', 'tier-b', '{tier-c}', 0.75, 'Unit/integration test generation, test coverage'),
+			    ('devops', 'tier-c', '{tier-b}', 0.80, 'CI/CD, deployment, infrastructure scripting, container config'),
+			    ('documentation', 'tier-c', '{}', 0.85, 'Comments, README, API docs, inline documentation'),
+			    ('summary', 'tier-c', '{}', 0.85, 'Code summarization, session recap, overview generation'),
+			    ('dependency', 'tier-c', '{tier-b}', 0.75, 'Dependency analysis, upgrade planning, package management')
+			ON CONFLICT (task_type, COALESCE(tenant_id, 0)) DO NOTHING;
+		`)
+	if err != nil {
+		return err
+	}
+	slog.Info("taskprofile task_type_tier_config schema ensured (V370 shape)")
 	return nil
 }
 
@@ -1675,7 +1776,11 @@ func (d *DB) ensureApiKeyAutoProfileIdentity(ctx context.Context) error {
 				CREATE UNIQUE INDEX IF NOT EXISTS api_key_auto_profile_api_key_id_key
 				    ON public.api_key_auto_profile (api_key_id)
 			`)
-		_, resetErr := conn.Exec(ctx, `RESET lock_timeout`)
+		// R43 (2026-09-18): RESET must run even when ctx was cancelled mid-
+		// CREATE — with the caller's ctx a cancelled ensure returns before
+		// RESET, leaking session-level lock_timeout='2s' onto a pooled
+		// connection (later startup DDL could then 55P03 spuriously).
+		_, resetErr := conn.Exec(context.WithoutCancel(ctx), `RESET lock_timeout`)
 		if resetErr != nil {
 			slog.Warn("api_key_auto_profile ensure: lock_timeout reset failed", "error", resetErr)
 		}

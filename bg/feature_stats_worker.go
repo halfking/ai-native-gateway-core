@@ -132,13 +132,16 @@ func (w *FeatureStatsWorker) computeFeatureDistributions(ctx context.Context, st
 // computeSingleFeatureDistribution 计算单个特征的分布。
 func (w *FeatureStatsWorker) computeSingleFeatureDistribution(ctx context.Context, statDate time.Time, featureName string) error {
 	// PRIVACY: 只查询结构化特征列，不查询 prompt/messages/response
+	// R43 (2026-09-18): 与 computeDedupRate 对齐为 UTC 半开窗——原
+	// `DATE(ts) = $1` 按会话时区求值（db DSN 未钉扎 TimeZone），同名
+	// stat_date 两表底层窗口可错位最多 8h，且 DATE() 不可 sargable。
 	query := `
 		WITH feature_counts AS (
 			SELECT 
 				COALESCE(` + featureName + `, 'NULL') AS feature_value,
 				COUNT(*) AS row_count
 			FROM auto_route_selections
-			WHERE DATE(ts) = $1
+			WHERE ts >= $1 AND ts < $1 + INTERVAL '1 day'
 			GROUP BY COALESCE(` + featureName + `, 'NULL')
 		),
 		total AS (
@@ -318,7 +321,10 @@ func (w *FeatureStatsWorker) detectMissingFeatures(ctx context.Context, statDate
 	}
 }
 
-// GetLatestStats 获取最新的统计数据（用于测试和监控）。
+// GetLatestStats 获取最新的统计数据。R43 (2026-09-18) 注释如实化：当前
+// 仅测试消费（feature_stats_worker_test.go），无生产/监控读者；其读取的
+// feature_quality_metrics 视图亦无写入方（write-only 债，见 R43 轮文档
+// 遗留）。接入监控读面前勿扩此函数。
 func (w *FeatureStatsWorker) GetLatestStats(ctx context.Context) (map[string]interface{}, error) {
 	result := make(map[string]interface{})
 
