@@ -214,6 +214,9 @@ v2: {
       },
 
       tokenFormat: '{p} + {c}',
+      cache: 'Cache',
+      cacheFormat: 'Lesen {r} / Schreiben {w} (Treffer {pct})',
+      sessionId: 'Sitzung',
     },
     connecting: "Verbindung wird hergestellt…",
     reconnecting: "Verbindung wird wiederhergestellt…",

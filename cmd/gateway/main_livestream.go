@@ -192,6 +192,8 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		PromptTokens:     entry.PromptTokens,
 		CompletionTokens: entry.CompletionTokens,
 		TotalTokens:      totalTokens,
+		CacheReadTokens:  entry.CacheReadTokens,
+		CacheWriteTokens: entry.CacheWriteTokens,
 		CostUSD:          entry.CostUSD,
 		ErrorKind:        entry.ErrorKind,
 		CredentialID:     fallbackCredentialID, // 2026-08-26: 凭据维度（label 不可得时泳道用 "凭据 #ID"）

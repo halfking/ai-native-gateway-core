@@ -64,6 +64,11 @@ export interface RequestTile {
   cost_usd?: number
   prompt_tokens?: number
   completion_tokens?: number
+  // 2026-09-18: 缓存 token + 会话身份（泳道 tile 直通后端 LiveStreamTile，
+  // tooltip 渲染"缓存 X (命中率 Y%)"与"会话 ID"）。缺省 = 未上报，不渲染。
+  cache_read_tokens?: number
+  cache_write_tokens?: number
+  gw_session_id?: string
   // 2026-07-13: error-triggered probe fields
   is_probe?: boolean
   probe_origin?: 'direct' | 'gateway' | 'scheduled'

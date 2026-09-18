@@ -235,6 +235,21 @@ const tooltipText = computed(() => {
     const c = props.tile.completion_tokens ?? 0
     lines.push(tooltipLine(`${tip}.tokens`, t(`${tip}.tokenFormat`, { p, c })))
   }
+  // 2026-09-18: 缓存命中行 — 读/写 token 与命中率。命中率 = cache_read /
+  // (cache_read + prompt)（缓存读占总输入的比例）；分母为 0 或字段缺省时
+  // 不渲染百分比（禁止 0% 冒充"无缓存"）。
+  if (props.tile.cache_read_tokens != null || props.tile.cache_write_tokens != null) {
+    const r = props.tile.cache_read_tokens ?? 0
+    const w = props.tile.cache_write_tokens ?? 0
+    const denom = r + (props.tile.prompt_tokens ?? 0)
+    const pct = denom > 0 ? `${Math.round((r / denom) * 100)}%` : '—'
+    lines.push(tooltipLine(`${tip}.cache`, t(`${tip}.cacheFormat`, { r, w, pct })))
+  }
+  // 2026-09-18: 会话 ID 行 — 有会话（request_logs.gw_session_id）时显示，
+  // 一次性调用缺省 = 不渲染（与"缓存行"同一可空语义）。
+  if (props.tile.gw_session_id) {
+    lines.push(tooltipLine(`${tip}.sessionId`, truncateText(props.tile.gw_session_id, 18)))
+  }
   if (props.tile.cost_usd != null) lines.push(tooltipLine(`${tip}.cost`, `$${props.tile.cost_usd.toFixed(4)}`))
   if (props.tile.request_id) lines.push(tooltipLine(`${tip}.requestId`, props.tile.request_id.slice(0, 12)))
   if (props.tile.timestamp) {

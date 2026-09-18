@@ -308,6 +308,60 @@ func TestLiveRequestTile_ProbeFields(t *testing.T) {
 	}
 }
 
+// 2026-09-18: 缓存 token + 会话身份必须同时走通 payload 持久化与 tile 投影，
+// 前端 "缓存 X (命中率 Y%) / 会话 ID" tooltip 才能在 replay/snapshot 重建后不丢。
+func TestLiveRequestCacheAndSessionFields_RoundTrip(t *testing.T) {
+	cacheRead, cacheWrite := 1200, 340
+	req := LiveRequest{
+		RequestID:        "req-cache-1",
+		Ts:               time.Now().UTC().Format(time.RFC3339),
+		TenantID:         "default",
+		GwSessionID:      "  gw_round_trip  ",
+		Model:            "minimax-m3",
+		Status:           "success",
+		CacheReadTokens:  &cacheRead,
+		CacheWriteTokens: &cacheWrite,
+	}
+
+	data, err := marshalLiveRequestRedisPayload(req)
+	if err != nil {
+		t.Fatalf("marshalLiveRequestRedisPayload: %v", err)
+	}
+	back, err := unmarshalLiveRequestRedisPayload(data)
+	if err != nil {
+		t.Fatalf("unmarshalLiveRequestRedisPayload: %v", err)
+	}
+	if back.CacheReadTokens == nil || *back.CacheReadTokens != cacheRead {
+		t.Fatalf("payload roundtrip lost cache_read_tokens: %#v", back.CacheReadTokens)
+	}
+	if back.CacheWriteTokens == nil || *back.CacheWriteTokens != cacheWrite {
+		t.Fatalf("payload roundtrip lost cache_write_tokens: %#v", back.CacheWriteTokens)
+	}
+	if back.GwSessionID != "  gw_round_trip  " {
+		t.Fatalf("payload roundtrip lost gw_session_id: %q", back.GwSessionID)
+	}
+
+	tile := liveRequestTile(back)
+	if tile.CacheReadTokens == nil || *tile.CacheReadTokens != cacheRead {
+		t.Fatalf("tile lost cache_read_tokens: %#v", tile.CacheReadTokens)
+	}
+	if tile.CacheWriteTokens == nil || *tile.CacheWriteTokens != cacheWrite {
+		t.Fatalf("tile lost cache_write_tokens: %#v", tile.CacheWriteTokens)
+	}
+	if tile.GwSessionID != "gw_round_trip" {
+		t.Fatalf("tile expected trimmed gw_session_id=gw_round_trip, got %q", tile.GwSessionID)
+	}
+
+	// 零值（无缓存上报）不得以 0 冒充 —— omitempty 必须真的缺省。
+	noCache, err := marshalLiveRequestRedisPayload(LiveRequest{RequestID: "req-nocache", Ts: req.Ts})
+	if err != nil {
+		t.Fatalf("marshalLiveRequestRedisPayload(no cache): %v", err)
+	}
+	if strings.Contains(noCache, "cache_read_tokens") || strings.Contains(noCache, "cache_write_tokens") {
+		t.Fatalf("payload without cache must omit cache fields, got %s", noCache)
+	}
+}
+
 func TestLiveStreamRedisStore_NilClient(t *testing.T) {
 	store := NewLiveStreamRedisStore(nil)
 	ctx := context.Background()
@@ -389,6 +443,7 @@ func TestLiveRequestRedisPayload_OnlyObservationFields(t *testing.T) {
 		"type": {}, "request_id": {}, "ts": {}, "tenant_id": {}, "gw_session_id": {},
 		"model": {}, "model_category": {}, "provider_code": {}, "status": {},
 		"latency_ms": {}, "prompt_tokens": {}, "completion_tokens": {}, "total_tokens": {},
+		"cache_read_tokens": {}, "cache_write_tokens": {},
 		"cost_usd": {}, "error_kind": {}, "client_profile": {}, "identity_hash": {}, "credits_charged": {},
 	}
 	for key := range raw {

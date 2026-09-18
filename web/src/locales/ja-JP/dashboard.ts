@@ -205,6 +205,9 @@ tabs: {
       },
 
       tokenFormat: '{p} + {c}',
+      cache: 'キャッシュ',
+      cacheFormat: '読み{r}/書き{w}（ヒット率{pct}）',
+      sessionId: 'セッション',
     },
     connecting: "接続中…",
     reconnecting: "再接続中…",
