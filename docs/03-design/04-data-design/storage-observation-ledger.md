@@ -162,3 +162,17 @@ ROUND_RESULT|sessions=9|fail=0|global_g2=0|verdict=PASS|at=2026-09-17T01:00:41Z
 - 抽样 9/9 PASS（biz_multi×3、loop_single×3、sys×3），G1 四项零漂移；sys 抽到 cred11/8/18 三桶当日探针会话，turns 写入量正常（6320/4488/3746）。
 - claim 置位结构性漏镜像连续第 2 天未在 24h 窗口产生缺失。
 - **连续归零累计 2/7**（09-17 计 Day 2）。7 天达标 earliest 2026-09-22 每日轮。
+
+### 每日观察 2026-09-18 09:01 (+08)，build=301fa21b/2139 —— **首扫 FAIL（claim 结构性漏镜像 1 行，回填兜回归零）；本日不计入，计数自 09-19 重起**
+
+构建身份：301fa21b/2139 在本仓库历史（MiniMax 事故收尾轮），含 GAP-2 闭环改动，ready=true，核验通过。注意 build_seq 从 2119 跳到 2139（外部并行线密集部署，撞号风险持续）。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=1|verdict=FAIL
+ROUND_RESULT|sessions=10|fail=0|global_g2=1|verdict=FAIL|at=2026-09-18T01:01:22Z
+```
+
+- 抽样 10/10 PASS、G1 四项零漂移；FAIL 仅由全局扫描抓出——缺失行 `44728e27…`（06:45:32，business/main，outbox 空=hook 静默跳过），与 09-15 `f403405b…` 同类，确认 **claim 置位 is_final_success 的结构性漏镜像为低频恒定发生**（两天窗口各 1 行）。
+- 处置：幂等回填灌 1 行 → reaper 消化 → GLOBAL_G2 复验=0（09:04），outbox 清空。
+- **判定：本日（09-18）不计入连续归零**，计数自 2026-09-19 每日轮重新起算，7 天达标 earliest 顺延至 **2026-09-25 每日轮**。
+- **待办升级**：结构性漏镜像两天两现（累计 2 行/4 天），"每日回填兜底"依赖本 cron 持续运行；**S4 停写评估前必须落地修复（claim 路径补发 mirror 触发）或登记例外类 E6**——重放器架构对该类行天然无效（hook 从未收到终态信号，无登记可重放）。
