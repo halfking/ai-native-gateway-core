@@ -214,6 +214,9 @@ v2: {
       },
 
       tokenFormat: '{p} + {c}',
+      cache: 'التخزين المؤقت',
+      cacheFormat: 'قراءة {r} / كتابة {w} ({pct})',
+      sessionId: 'الجلسة',
     },
     connecting: "...جارٍ الاتصال",
     reconnecting: "...جارٍ إعادة الاتصال",

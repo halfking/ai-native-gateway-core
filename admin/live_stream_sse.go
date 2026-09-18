@@ -310,16 +310,21 @@ type LiveRequest struct {
 	// GwSessionID is the LLM-Gateway session id (request_logs.gw_session_id)
 	// if the request was sent through a session. Empty when the request
 	// is one-off (e.g. a /v1/chat/completions call without a session).
-	GwSessionID      string   `json:"gw_session_id,omitempty"`
-	Model            string   `json:"model"`          // Standard model name (canonical preferred; 2026-07-16: outbound-only as last-resort fallback so tile matches the dimension key)
-	CanonicalName    string   `json:"canonical_name"` // Standard model name for aggregation (canonical_name in DB)
-	ModelCategory    string   `json:"model_category"`
-	ProviderCode     string   `json:"provider_code"`
-	Status           string   `json:"status"`
-	LatencyMs        *int     `json:"latency_ms,omitempty"`
-	PromptTokens     *int     `json:"prompt_tokens,omitempty"`
-	CompletionTokens *int     `json:"completion_tokens,omitempty"`
-	TotalTokens      *int     `json:"total_tokens,omitempty"`
+	GwSessionID      string `json:"gw_session_id,omitempty"`
+	Model            string `json:"model"`          // Standard model name (canonical preferred; 2026-07-16: outbound-only as last-resort fallback so tile matches the dimension key)
+	CanonicalName    string `json:"canonical_name"` // Standard model name for aggregation (canonical_name in DB)
+	ModelCategory    string `json:"model_category"`
+	ProviderCode     string `json:"provider_code"`
+	Status           string `json:"status"`
+	LatencyMs        *int   `json:"latency_ms,omitempty"`
+	PromptTokens     *int   `json:"prompt_tokens,omitempty"`
+	CompletionTokens *int   `json:"completion_tokens,omitempty"`
+	TotalTokens      *int   `json:"total_tokens,omitempty"`
+	// 2026-09-18: 缓存 token 投影（request_logs.cache_read_tokens /
+	// cache_write_tokens）。可空语义与其余 token 字段一致 —— 缺省渲染 "—"，
+	// 禁止零值冒充（前端 tooltip 计算缓存命中率时以 null 跳过）。
+	CacheReadTokens  *int     `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens *int     `json:"cache_write_tokens,omitempty"`
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
 	ErrorKind        *string  `json:"error_kind,omitempty"`
 	FailureStage     *string  `json:"failure_stage,omitempty"` // "gateway" | "upstream" — failure origin
@@ -1095,7 +1100,7 @@ func (h *LiveStreamSSEHub) evictStaleCachedSnapshots() {
 	now := time.Now()
 	activeScopes := h.activeScopes()
 	var evicted int64
-	
+
 	// Clean cachedSnapshot map
 	h.cachedSnapshotMu.Lock()
 	for key, entry := range h.cachedSnapshot {
@@ -2397,6 +2402,8 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		       rl.prompt_tokens,
 		       rl.completion_tokens,
 		       rl.total_tokens,
+		       rl.cache_read_tokens,
+		       rl.cache_write_tokens,
 		       rl.cost_usd::float8,
 		       rl.error_kind,
 		       COALESCE(rl.credential_id, 0) AS credential_id,
@@ -2424,7 +2431,7 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		if err := rows.Scan(
 			&r.RequestID, &ts, &r.TenantID, &r.GwSessionID, &r.Model,
 			&r.CanonicalName, &r.ProviderCode, &r.Status, &r.LatencyMs, &r.PromptTokens,
-			&r.CompletionTokens, &r.TotalTokens, &r.CostUSD, &r.ErrorKind,
+			&r.CompletionTokens, &r.TotalTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.CostUSD, &r.ErrorKind,
 			&r.CredentialID, &r.CredentialLabel,
 		); err != nil {
 			continue
@@ -2809,6 +2816,14 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 		if entry.CreditsCharged != nil {
 			v := int(*entry.CreditsCharged)
 			out.CreditsCharged = &v
+		}
+		// 2026-09-18: 缓存 token 投影（telemetry 已持久化 cache_read/write_tokens，
+		// 这里只透传，可空语义保持）。
+		if entry.CacheReadTokens != nil {
+			out.CacheReadTokens = entry.CacheReadTokens
+		}
+		if entry.CacheWriteTokens != nil {
+			out.CacheWriteTokens = entry.CacheWriteTokens
 		}
 		if entry.GwSessionID != nil && out.GwSessionID == "" {
 			out.GwSessionID = strings.TrimSpace(*entry.GwSessionID)

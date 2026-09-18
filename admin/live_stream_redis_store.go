@@ -67,9 +67,15 @@ type LiveStreamTile struct {
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
 	PromptTokens     *int     `json:"prompt_tokens,omitempty"`
 	CompletionTokens *int     `json:"completion_tokens,omitempty"`
-	IsProbe          bool     `json:"is_probe,omitempty"`
-	ProbeOrigin      string   `json:"probe_origin,omitempty"`
-	ProbeAttempt     int      `json:"probe_attempt,omitempty"`
+	// 2026-09-18: 缓存 token + 会话身份随 tile 下发 —— 前端 tooltip 的
+	// "缓存 X (命中率 Y%)" 与 "会话 ID" 渲染只需要 tile 自身字段（泳道
+	// 直通结构，无请求详情 JOIN）。可空语义同上，缺省不渲染。
+	CacheReadTokens  *int   `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens *int   `json:"cache_write_tokens,omitempty"`
+	GwSessionID      string `json:"gw_session_id,omitempty"`
+	IsProbe          bool   `json:"is_probe,omitempty"`
+	ProbeOrigin      string `json:"probe_origin,omitempty"`
+	ProbeAttempt     int    `json:"probe_attempt,omitempty"`
 	// StageCategory is the coarse UI phase for in-flight tiles:
 	// routing = received / routing; llm = already sent upstream, waiting.
 	// Empty for terminal / idle tiles.
@@ -158,20 +164,24 @@ type LiveStreamDelta struct {
 }
 
 type liveRequestRedisPayload struct {
-	Type             string   `json:"type,omitempty"`
-	RequestID        string   `json:"request_id"`
-	Ts               string   `json:"ts"`
-	TenantID         string   `json:"tenant_id,omitempty"`
-	GwSessionID      string   `json:"gw_session_id,omitempty"`
-	Model            string   `json:"model,omitempty"`
-	CanonicalName    string   `json:"canonical_name,omitempty"`
-	ModelCategory    string   `json:"model_category,omitempty"`
-	ProviderCode     string   `json:"provider_code,omitempty"`
-	Status           string   `json:"status,omitempty"`
-	LatencyMs        *int     `json:"latency_ms,omitempty"`
-	PromptTokens     *int     `json:"prompt_tokens,omitempty"`
-	CompletionTokens *int     `json:"completion_tokens,omitempty"`
-	TotalTokens      *int     `json:"total_tokens,omitempty"`
+	Type             string `json:"type,omitempty"`
+	RequestID        string `json:"request_id"`
+	Ts               string `json:"ts"`
+	TenantID         string `json:"tenant_id,omitempty"`
+	GwSessionID      string `json:"gw_session_id,omitempty"`
+	Model            string `json:"model,omitempty"`
+	CanonicalName    string `json:"canonical_name,omitempty"`
+	ModelCategory    string `json:"model_category,omitempty"`
+	ProviderCode     string `json:"provider_code,omitempty"`
+	Status           string `json:"status,omitempty"`
+	LatencyMs        *int   `json:"latency_ms,omitempty"`
+	PromptTokens     *int   `json:"prompt_tokens,omitempty"`
+	CompletionTokens *int   `json:"completion_tokens,omitempty"`
+	TotalTokens      *int   `json:"total_tokens,omitempty"`
+	// 2026-09-18: 缓存 token 随 Redis payload 持久化，replay/snapshot 重建后
+	// 前端 tooltip 的缓存命中率不丢（观测字段，与 messages 等请求体绝缘）。
+	CacheReadTokens  *int     `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens *int     `json:"cache_write_tokens,omitempty"`
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
 	ErrorKind        *string  `json:"error_kind,omitempty"`
 	FailureStage     *string  `json:"failure_stage,omitempty"`
@@ -873,6 +883,8 @@ func marshalLiveRequestRedisPayload(req LiveRequest) (string, error) {
 		PromptTokens:     req.PromptTokens,
 		CompletionTokens: req.CompletionTokens,
 		TotalTokens:      req.TotalTokens,
+		CacheReadTokens:  req.CacheReadTokens,
+		CacheWriteTokens: req.CacheWriteTokens,
 		CostUSD:          req.CostUSD,
 		ErrorKind:        req.ErrorKind,
 		FailureStage:     req.FailureStage,
@@ -914,6 +926,8 @@ func unmarshalLiveRequestRedisPayload(data string) (LiveRequest, error) {
 		PromptTokens:     p.PromptTokens,
 		CompletionTokens: p.CompletionTokens,
 		TotalTokens:      p.TotalTokens,
+		CacheReadTokens:  p.CacheReadTokens,
+		CacheWriteTokens: p.CacheWriteTokens,
 		CostUSD:          p.CostUSD,
 		ErrorKind:        p.ErrorKind,
 		FailureStage:     p.FailureStage,
@@ -1394,6 +1408,9 @@ func liveRequestTile(req LiveRequest) LiveStreamTile {
 		CostUSD:          req.CostUSD,
 		PromptTokens:     req.PromptTokens,
 		CompletionTokens: req.CompletionTokens,
+		CacheReadTokens:  req.CacheReadTokens,
+		CacheWriteTokens: req.CacheWriteTokens,
+		GwSessionID:      strings.TrimSpace(req.GwSessionID),
 		IsProbe:          req.IsProbe,
 		ProbeOrigin:      req.ProbeOrigin,
 		ProbeAttempt:     req.ProbeAttempt,

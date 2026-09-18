@@ -31,6 +31,10 @@ export interface LiveRequest {
   prompt_tokens?: number | null
   completion_tokens?: number | null
   total_tokens?: number | null
+  // 2026-09-18: 缓存 token（request_logs.cache_read/write_tokens 同口径）。
+  // null/缺省 = 未上报，渲染层禁止用 0 冒充。
+  cache_read_tokens?: number | null
+  cache_write_tokens?: number | null
   cost_usd?: number | null
   error_kind?: string | null
   failure_stage?: string | null  // "gateway" | "upstream" — failure origin
@@ -124,6 +128,9 @@ export interface LiveStreamTile {
   cost_usd?: number | null
   prompt_tokens?: number | null
   completion_tokens?: number | null
+  cache_read_tokens?: number | null
+  cache_write_tokens?: number | null
+  gw_session_id?: string
   is_probe?: boolean
   probe_origin?: string
   probe_attempt?: number

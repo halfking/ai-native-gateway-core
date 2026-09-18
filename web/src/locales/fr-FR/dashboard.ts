@@ -214,6 +214,9 @@ v2: {
       },
 
       tokenFormat: '{p} + {c}',
+      cache: 'Cache',
+      cacheFormat: 'lecture {r} / écriture {w} (taux {pct})',
+      sessionId: 'Session',
     },
     connecting: "Connexion…",
     reconnecting: "Reconnexion…",
