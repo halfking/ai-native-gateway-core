@@ -75,8 +75,10 @@ export interface AppliedTierConfig {
 
 /** 记录一条人工任务类型修正（request_id 冲突返回 409）。 */
 export function createTaskTypeCorrection(data: CreateTaskTypeCorrectionRequest): Promise<TaskTypeCorrection> {
-  return req<TaskTypeCorrection>('POST', '/api/admin/task-profile/corrections', data).then(
-    (r) => (r as { correction: TaskTypeCorrection }).correction
+  // 后端响应是 {"success":true,"correction":{...}} 包装（taskprofile/handler.go
+  // handleCreateCorrection），泛型必须按 wrapper 形状声明再解包。
+  return req<{ correction: TaskTypeCorrection }>('POST', '/api/admin/task-profile/corrections', data).then(
+    (r) => r.correction
   )
 }
 
