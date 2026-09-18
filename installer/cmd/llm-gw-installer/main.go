@@ -469,6 +469,12 @@ var taskTypeCorrectionsMigration724 []byte
 //go:embed embeddata/startup/725_r41_request_logs_and_tmp_super_admin_bypass.sql
 var r41RequestLogsSuperAdminBypassMigration725 []byte
 
+// R43 (2026-09-18): 726 (58384b0d8) landed with the embeddata copy only —
+// same five-point gap as 720/721/725; registered here and below.
+//
+//go:embed embeddata/startup/726_restore_credential_model_index_hot_unique.sql
+var restoreCredentialModelIndexHotUniqueMigration726 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -616,6 +622,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/723_rls_enable_attachments_and_cfl_old.sql":                             rlsEnableAttachmentsAndCflOldMigration723,
 	"startup/724_task_type_corrections.sql":                                          taskTypeCorrectionsMigration724,
 	"startup/725_r41_request_logs_and_tmp_super_admin_bypass.sql":                    r41RequestLogsSuperAdminBypassMigration725,
+	"startup/726_restore_credential_model_index_hot_unique.sql":                      restoreCredentialModelIndexHotUniqueMigration726,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 

@@ -47,3 +47,8 @@
 - **新增 i18n key 必须 8 语言全落**：parity 门禁（每 locale ⊇ zh-CN leaf keys）在 main 上红过一次（721 五 key 只落 zh/en）——verify.sh --web 全红。交接/验证清单必须含 vitest run，vue-tsc+vite build 不覆盖 parity。
 - **catch 只写"从未渲染的状态"= 用户静默失败**：⟳ 刷新失败曾只写死状态 balanceRefreshError；修复后统一写已渲染的 c.balance_error，400（无余额 API）映射 balanceUnsupported。新增交互的验收标准：每条失败路径都能在 UI 上被用户看见。
 - manual 戳条件化（值不变不盖章）+ 后台失败落 balance_error 属 D08 R42 回注的 UX 侧。
+
+### R43 回注（2026-09-18，前端闭环三断点批）
+- **前端闭环端到端验证要看后端词表**：工作台 L1 种子（api-work-types.ts）与 taskprofile registry 是两套词表——注册表缺类时提交 400 且 `.catch(() => undefined)` 静默吞掉（R43 已修：registry +6 类 + correctionWarning 警告条 + 8 语言 i18n）。新增标注/反馈前端时，词表 SSOT 对齐是验收项。
+- **生产接线 ≠ 测试接线**：FeedbackRecorder 挂在测试共享实例上 e2e 全绿、生产 admin store recorder=nil 计数恒零——e2e 注释自认"production wiring: admin handlers carry none"时，交付清单必须含生产装配点 grep。
+- vue-tsc 必跑：taskProfile.ts 泛型强转 TS2352 在 main 存在数日（a8d3a5bbe 交付漏 vue-tsc），vitest 925 绿不覆盖类型门（R42 i18n 教训的同款姊妹案例）。

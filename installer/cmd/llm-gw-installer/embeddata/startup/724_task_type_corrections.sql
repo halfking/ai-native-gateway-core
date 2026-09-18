@@ -1,6 +1,8 @@
--- 721_task_type_corrections.sql
+-- 724_task_type_corrections.sql
 -- taskprofile module (2026-09-18): per-request human corrections of the
 -- AUTO task-type assignment.
+-- (R43: 头注首行曾残留重编号前的 "721_" 文件名——721 已被余额元数据迁移
+-- 占用，本迁移自 7106e1c5b 撞号清理后定编 724。)
 --
 -- Background: the P2.1 annotation workflow (training_human_annotations)
 -- labels the chosen PROVIDER; the auto TASK TYPE itself had no structured

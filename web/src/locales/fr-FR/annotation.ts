@@ -159,6 +159,7 @@ export default {
   // Error messages
   loadFailed: "Échec du chargement des échantillons d'annotation",
   annotationFailed: "Échec de l'annotation",
+  correctionWriteFailed: 'Échec de l\'écriture de la correction (annotation enregistrée) : {msg}',
   batchFailed: "Échec de l'annotation par lot",
   deleteFailed: "Échec de la suppression de l'annotation",
   noSamplesSelected: 'Veuillez sélectionner des échantillons à annoter',

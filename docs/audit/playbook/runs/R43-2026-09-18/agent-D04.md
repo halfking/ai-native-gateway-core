@@ -1,0 +1,39 @@
+# D04 多层队列/限流并发/权重负载均衡 子代理报告（窗口：48h = `643735a28^..HEAD`；重点未经审计增量 = `b75c91900..HEAD`）
+
+按 conventions.md §3 证据纪律：以下发现均为**线索**，主代理须亲读复核后登记。所有路径为绝对路径，行号以 HEAD（468a1ce82）为准。
+
+## 一、发现（候选，待主代理复核）
+
+| # | 级别候选 | 发现 | 证据 file:line | 触发路径 / 建议处置 |
+|---|---|---|---|---|
+| 1 | **P2** | PostClassify hook 未套 `hookContext` 超时，且本增量在快照刷新里**新增第二个 DB 聚合查询（CorrectionStats）且全程持有 `c.mu`**。`Options.HookTimeout` 文档声称"bounds each hook (PreClassify / **PostClassify** / RecommendModel)"，但 PreClassify（real_optimizer.go:189）和 RecommendModel（:238）都套了超时，唯独 PostClassify（:206-209）没有。`ConfidenceAdjuster.taskStatsSnapshot` 在锁内先跑 `GetTaskTypeAccuracy`（confidence.go:100）再跑 `CorrectionStats`（:110），锁内 DB I/O 翻倍 | `/Users/xutaohuang/workspace/ai-native-tools/syncfield/llm-gateway-go-2/routingopt/real_optimizer.go:206-209`、`routingopt/options.go:31-34`、`routingopt/confidence.go:93-122`、`autoroute/decision.go:477` | 触发路径：任一 auto-route 请求进 `Decide()` → 同步调 `PostClassify`（decision.go:477）；60s TTL 到期后第一个到达者持锁做两条聚合查询，**期间所有并发 Decide 在 `c.mu` 上排队**；DB 慢时无 10ms hook 超时兜底，热路径延迟直接穿透。处置：给 PostClassify 补 `hookContext`（对齐文档与另两个 hook），或把快照刷新移出锁外（double-check / 单飞 goroutine）；回归测试用慢 DAO 桩锁刷新期并发调用 |
+| 2 | **P2** | affinity aggregate 的合成 actor 过滤 JOIN 的是 `request_logs_hot`，但学习窗口 14 天、hot 表默认 8h 即 promote 走人（`DefaultRetentionWindow = 8h`）→ **过滤器对 14 天窗口里约 13.7 天的行形同虚设**（JOIN 不中 → `COALESCE(rl.origin_actor,'')=''` → 按普通流量放行）。该过滤的防御目标恰是"未来回填给 goal-* 行盖真 reward"（注释自述），回填的多是旧数据——正好落在过滤器盲区。提交 b44bdacdd（窗口内、早于重点增量）声明"R38 遗留收尾"，实际守护半径 ≈ hot 保留期；集成测试全部插新行，测不出该盲区 | `bg/auto_route_affinity_worker.go:54`（14d 窗口）、`:276-277`（LEFT JOIN request_logs_hot）、`:283-284`（谓词）；`bg/partition_manager.go:44`（8h）、`:965`（promote_request_logs_hot_to_partition）、`:1185`（默认 8h 注释） | 触发路径：任一写路径给 8h 以前的 goal-* selection 补 reward → 下一次 affinity sweep 把它算进 `task_model_affinity`（EMA fold + ShrinkAffinity），污染路由学习。当前主防线 `reward IS NOT NULL` 仍成立，故为纵深防御缺口而非现行污染。处置：JOIN 改分区父表 `request_logs`（promote 后数据仍在）与 hot 表 UNION，或在 settle 写入时把 origin_actor 冗余进 selections（视图加投影）；真库回归须覆盖"promote 后旧行"用例 |
+| 3 | P3 | 管理端 ⟳ 立即刷新余额是本窗口**新增的出口供应商调用触发器**（`FetchBalanceUSD` 直连厂商，不经 Governor、无限流/在途去重）。属 metadata GET（不耗 token）+ 10s 超时 + egress 拦截，风险低，但按域检查清单 #1"任何新增出口路径都过 Governor"的字面口径属未满足，应显式留档豁免或加简单节流 | `admin/provider_credential_balance.go:46-100`、`internal/providercap/capability.go:182-186` | 触发路径：操作者（或前端循环 bug）连点 ⟳ → 无上限厂商 GET。处置：文档登记"balance API 非 LLM 出口，不受 Governor 管"；如要加固，按 credential 加 1 req/s 内存节流即可 |
+| 4 | P3 | outbox 毒丸路径注释漂移：dispatcher.go:257-260 注释说"markFailed 会在 max_attempts 后送 DLQ，所以连重试一起计数"，实际代码直接 `markDLQ`（:263）——毒丸**永不重试、立即 DLQ**（行为正确，防队头阻塞）；dispatcher_test.go:236 测试注释块同样声称"corrupt payload → (+ retry if not at max)"而代码无此路径 | `internal/outbox/dispatcher.go:256-267`、`internal/outbox/dispatcher_test.go:235-236` | 触发路径：读者按注释误判毒丸重试语义。处置：改两处注释为"corrupt payload 直接 DLQ，不重试" |
+| 5 | P3 | resolve.go:141-144 注释漂移：2026-07-14 注释声称"Compare against the lowercased client model **instead of wrapping each column in lower(...)**"，但本窗口增量已把 alias 两查询改为 `lower(ma.raw_name) = lower($1)`（resolve.go:199、:240）——该改法本身正确且恰好对齐既有的函数式部分索引，注释未同步。另 `aliasRawNames`（:279）仍用 `COALESCE(status,'active')` 而 alias 阶段用 `ma.status='active'`，风格分叉（列 NOT NULL DEFAULT 'active' + CHECK 下语义等价） | `resolve/resolve.go:141-144,199-200,240-241,279`；索引 `sql/objects/indexes/idx_model_aliases_lower_raw_name_status.sql:5`；列定义 `sql/objects/tables/model_aliases.sql`（status NOT NULL DEFAULT） | 触发路径：后续维护者按旧注释"优化"回去会丢大小写容错。处置：更新注释并统一 status 谓词写法 |
+| 6 | P3（观察，pre-existing） | `dispatchBatch` 无批大小上限：`for` 循环逐条派发直到无行（dispatcher.go:150-179），积压大时单个 poll cycle 可运行任意久；`updateGaugeMetrics` 只在批次结束时调用，gauge 陈旧窗口 = 30s 节流 + 批次时长。ctx 每圈检查，停机无损；本窗口仅新增 gauge 节流（正确） | `internal/outbox/dispatcher.go:147-180` | 触发路径：ASM 长时间宕机后恢复 → 积压一次性追平，期间 pending/DLQ gauge 不刷新。处置：可加每批 N 条上限后返回（下个 tick 继续），非必须 |
+
+## 二、核实为健康的面
+
+- **outbox 并发派发竞争** —— claim+deliver+mark 在同一事务内，`FOR UPDATE SKIP LOCKED` 的行锁覆盖整个 HTTP 投递窗（dispatcher.go:201-301），双实例不会双投同一行；崩溃回滚后 at-least-once + ASM 按 event_id 幂等吸收（:142-146）。claim 查询有配套部分索引 `idx_outbox_events_dispatch`（deploy/sql/migrations/V357__create_outbox_events_table.sql:58-60）。
+- **失败重排退避** —— 指数退避 2^(n-1)s 且 shift 钳位 6（≤64s），防 maxAttempts≥33 时 Duration 溢出成负退避引发紧循环（dispatcher.go:326-351，c4bcf2073 修的钳位仍在）；失败行 `next_retry_at` 置未来后即让出队头，不会阻塞后续事件；毒丸直接 DLQ（见发现#4，行为正确）。
+- **CorrectionSource 注入无数据竞争（-race 静态走查）** —— `c.corrections` 的写（SetCorrectionSource，confidence.go:76-83）与读（taskStatsSnapshot:109）都在同一 `c.mu` 下；发布出去的 stats map 每次刷新都是新建 map（BlendCorrectionsIntoAccuracy :137 或 DAO 新 map），发布后不变。`taskprofile` registry 为 `atomic.Pointer[snapshot]` 不可变快照换装（taskprofile/registry.go:55-76）；`CorrectionStore` 无状态 DAO（corrections.go:15-16），`SetRecorder` 仅装配期调用（routing_optimizer_init.go:77 唯一调用点）。`BlendCorrectionsIntoAccuracy` 纯函数：Total≤0 跳过、分母 ≥2 无除零、NaN 无来源；5 个单测钉权重×2/播种/门控（confidence_correction_test.go）。
+- **worker leader 选举 / 幂等收敛** —— affinity 与 settle worker 均 `acquireSweepDistLock`（auto_route_affinity_worker.go:216-222，TTL 5m > sweep 3m；R31 钉桩在位）；feature_stats 双实例经 `ON CONFLICT (stat_date…)` 收敛（feature_stats_worker.go:155,204）；balance 双写者的 `balance_error` stamp 幂等 last-write-wins 且不 bump `checked_at`；partition_manager 清理 DELETE 幂等，`runWithBypass` 用 `set_config(...,true)` LOCAL + defer Rollback，GUC 不外泄（partition_manager.go:1455-1484）。
+- **R42 探测门控一致性** —— URSM v2 失败写门控 `direct.ok || ursmFailureWritable(...)` 在 runOne（node_probe.go:2098）、ProbeSync（:1584）、ProbeService.Run（probe_service.go:421-423）三处一致；`ursmFailureWritable = !isGatewaySideProbeError || credentialSpecificDecryptFailure`（node_probe.go:2915-2917）与绑定面守卫同一谓词；字符串守卫测试锁三处接线（node_probe_gateway_side_test.go:211-228）。`invalidateCandidateCache` 在门控之外无条件触发（:1587,2128,2172），缓存失效不受门控影响——队列元数据（Redis URSM/绑定面）与内存候选缓存无失效分叉。
+- **721 余额写者契约** —— `ManualBalanceProtectionPredicate` 单一常量被 floor guard 候选 SELECT、floor guard 失败 stamp、probe_v2 失败 stamp 三处消费（balance_floor_guard.go:863,1010,1027；credential_probe_v2.go:588,602），守卫测试锁内容；admin ⟳ 有意覆盖 manual stamp 是文档化契约（provider_credential_balance.go:27-30、balance_manual_protection.go:33-35）。
+- **vacuum/partition 变更** —— 移除对分区父表的 VACUUM FULL 正确（父表无存储可重写，只空耗全集群互斥窗）；保留的 `VACUUM (ANALYZE)` 普通模式双实例并发安全；`dbx.VacuumFullMutex` 仍被 admin/data_lifecycle_storage.go:787 使用，非死代码。
+- **approval_timeout_worker** —— 窗口内仅注释变更；`MarkTimeout` 实际已有显式事务 + `setSuperAdminGUC`（sessionaudit/approval_manager.go:407-413），注释与实现相符。
+- **合成 actor 口径** —— affinity SQL 排除列表（goal-*、auto-title-generator、auto-summary-generator、session-summary）与 Go `IsSyntheticActor` 一致；R39 "SQL 不 trim 依赖写入口 TrimSpace" 前提已按 R42 修正为双写入口（origin_mw + request_log_pipeline，shadow_actors.go:52-62），无单侧修复。
+- **横向不变量（清单 #1/#2/#6/#7）零恶化** —— 48h 窗口 `domains/dispatch/`、`ratelimit/`、`pool/`、`cache/` 零改动：五层信号量+Governor 链、队列满拒绝+Retry-After、MaxQueueWaitMS=0 开放债、retry budget 均未被窗口触碰。新增重试点均带退避/上限（outbox 钳位、probe 6h 阶梯、balance 固定 15m/1h 节奏）。
+- **resolve 横向抽检** —— 内存缓存 key 已 lowercase（resolve.go:69-75），与 DB `lower(raw_name)` 语义一致，无缓存/DB 匹配口径分叉；权重 0/负/NaN 钳位与三级兜底代码不在窗口改动面（未回归）。
+
+## 三、未覆盖项与原因
+
+- **`go test -race` 实跑** —— 只读审计不执行构建/测试；#1 的 -race 结论为静态推演（结论：无数据竞争，仅有锁内 I/O 的延迟问题）。建议主代理对 `routingopt`、`internal/outbox`、`bg` 跑 `go test -race -count=1` 复核。
+- **durable/*（store_claim、pending_outbox、settlement_outbox 等）** —— 48h 窗口有改动但属 R42 已审计范围且主责 durable/存储域（D03 面），本轮未重复深审。
+- **Governor 五层链全量重走** —— 窗口零改动，按"横向不变量仅在追溯需要时读"的纪律未重走全链；仅核对了新增出口调用点（发现#3）。
+- **双实例/真库行为实证** —— leader 选举、SKIP LOCKED、promote 后 JOIN 盲区（发现#2）需真库双实例复现；本仓无本地 PG 凭据，未实跑。
+- **权重负载均衡钳位（清单 #3）实现亲读** —— 权重钳位代码不在窗口改动面，按"无改动即无回归"豁免，未重新亲读；如需健康面留档须另安排。
+- **probe direct/gateway round 是否应过 Governor 的历史决策** —— 属 pre-existing 直连供应商出口（非本增量引入），其豁免依据文档未追溯。
+
+**主代理复核结论（R43）**：#1 成立（P2）→ 已补 hookContext + 源码钉桩；#2 成立但按纵深防御定级登记遗留（当前唯一 reward 写者已对合成轮落 NULL，主防线有效；修复需 schema 冗余或性能权衡，另立专项）；#3 留档豁免；#4/#5 已修注释；#6 登记。#2 的保留期澄清：request_logs 族 hot promote 由 341 迁移 p_retention=7d 管辖（D09 独立复核一致），partition_manager 的 8h 常量是其它 *_default 表的兜底清理——盲窗至少 7~14d 段，结论不变。

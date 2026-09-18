@@ -159,6 +159,7 @@ export default {
   // Error messages
   loadFailed: 'فشل تحميل عينات التعليق',
   annotationFailed: 'فشل التعليق',
+  correctionWriteFailed: 'فشل حفظ التصحيح (تم حفظ التعليق التوضيحي): {msg}',
   batchFailed: 'فشل التعليق بالجملة',
   deleteFailed: 'فشل حذف التعليق',
   noSamplesSelected: 'الرجاء تحديد عينات للتعليق',

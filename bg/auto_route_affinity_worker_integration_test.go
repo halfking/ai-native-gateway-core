@@ -15,7 +15,7 @@
 //   - session_summaries (existing aggregate() dependency)
 //
 // Contract under test:
-//   - real traffic row (origin_actor='') → aggregated into the (task, profile,
+//   - real traffic row (origin_actor=”) → aggregated into the (task, profile,
 //     canonical, tenant) bucket
 //   - goal-* row stamped with a real reward (the dangerous regression: a future
 //     write path that backfills reward onto a synthetic selection must NOT

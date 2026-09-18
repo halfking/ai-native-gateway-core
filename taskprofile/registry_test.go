@@ -33,6 +33,15 @@ func TestDefaults_MirrorV3TierMapping(t *testing.T) {
 		"creative":  {"tier-b", 0.75},
 		"reasoning": {"tier-a", 0.70},
 		"planning":  {"tier-a", 0.70},
+		// R43 (2026-09-18): remaining autoroute.V2 enums. Values mirror
+		// autoroute's unknown-type fallback (getDefaultTier: tier-b + 0.70,
+		// getFallbacksForTier("tier-b") = [tier-a, tier-c]).
+		"agent":                 {"tier-b", 0.70},
+		"long_context":          {"tier-b", 0.70},
+		"vision":                {"tier-b", 0.70},
+		"function_call":         {"tier-b", 0.70},
+		"code_audit":            {"tier-b", 0.70},
+		"intent_classification": {"tier-b", 0.70},
 	}
 	version, profiles := Snapshot()
 	if version != RegistryVersion {

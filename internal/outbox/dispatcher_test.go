@@ -233,7 +233,8 @@ func (errorConnector) Driver() driver.Driver { return nil }
 //   - success  → RecordEventSent + ObserveDeliveryDuration(success=true)
 //   - http fail (not at max) → RecordEventFailed(reason) + RecordEventRetried
 //   - http fail (at max, moved to DLQ) → RecordEventFailed(reason) only
-//   - corrupt payload → RecordEventFailed("validation") (+ retry if not at max)
+//   - corrupt payload → RecordEventFailed("validation") only — markDLQ
+//     directly, no retry (a malformed payload can never succeed)
 //   - no claimable event → no metric changes
 //
 // Without these, the dispatcher could ship without ever incrementing the

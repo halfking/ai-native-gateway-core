@@ -1047,6 +1047,24 @@ func reportSerializeOpenAILosses(req *InternalRequest, thinkingRendered bool) {
 				nil,
 			)
 		}
+		// R43 (2026-09-18, P5 补课补漏): budget-shaped 请求级 Reasoning（Gemini
+		// thinkingConfig → Reasoning{Type:"enabled",BudgetTokens}）此前无丢失
+		// 上报——openAIReasoningIntent 只对 thinking 族目标方言渲染它，所以
+		// 在 plain openai_chat 目标（Gemini handler 路由前的 step-6 序列化，
+		// TargetProvider 必为空）intent 被静默丢弃，正是 P5 要消灭的形态。
+		if req.Reasoning != nil && req.Reasoning.Effort == "" &&
+			src != ProtocolOpenAIChat && src != ProtocolOpenAIResponses &&
+			req.Thinking == nil && !thinkingRendered {
+			ReportProtocolLoss(
+				"unknown",
+				"reasoning.budget_tokens",
+				ifaceNonEmpty(src, ProtocolGeminiGenerate),
+				ProtocolOpenAIChat,
+				"loss",
+				"budget-shaped reasoning intent has no OpenAI Chat representation and no thinking-family target dialect is known at this serialization point; dropped",
+				map[string]any{"budget_tokens": req.Reasoning.BudgetTokens},
+			)
+		}
 		if len(req.MCPServers) > 0 {
 			ReportProtocolLoss(
 				"unknown",

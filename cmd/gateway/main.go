@@ -439,11 +439,15 @@ func main() {
 
 	// ── LLM_GATEWAY_STORAGE_MAX_CONNECTIONS 误导护栏（2026-09-18 PG 池配置澄清）──
 	// 非 lite 模式（生产 full / 未启用双模式）下，业务 PG 池由 db.Open 构造，
-	// 上限旋钮是 LLM_GATEWAY_DB_MAX_CONNS；本 env 只喂 storage factory
-	// （lite 的 SQLite MaxOpenConns / 未来 full 接线），对生产 pool 无效。
+	// 上限旋钮是 LLM_GATEWAY_DB_MAX_CONNS。R43 注释纠偏（2026-09-18）：
+	// 该 env 当前在**两种模式下都是死配置**——initStorageMode 从不把
+	// MaxConnections 传给 factory（applyEnvOverrides 只填 Full 段，full
+	// factory 是桩），lite 路径同样不消费；保留它仅作未来接线旋钮。
 	// 曾因混淆把该 env 当生效旋钮并以连接计数"证实"（2026-09-18 假阳性
 	// 复盘），此处启动期显式告警，验证一律以
 	// "postgres connected max_conns=N" 日志为准。
+	// （已知噪音：deploy-252-gateway.sh / start-full.sh 会无条件 export 该
+	// env，full 模式下每次启动一条 Warn——脚本侧待清理，见 R43 轮文档遗留。）
 	if storageRt == nil {
 		if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_STORAGE_MAX_CONNECTIONS")); v != "" {
 			slog.Warn("LLM_GATEWAY_STORAGE_MAX_CONNECTIONS set but does NOT cap the full-mode gateway PG pool",
@@ -4989,7 +4993,11 @@ func main() {
 			autoroute.SetTuningStore(tuningStore)
 			// taskprofile (2026-09-18): load the profile overlay file once —
 			// admin task-profile API + optimizer correction blend share the
-			// registry. Independent of ROUTING_OPT_ENABLED.
+			// registry. Independent of ROUTING_OPT_ENABLED, but still nested
+			// in the dbConn-enabled + !IsCredRecoveryDisabled() block above
+			// (R43 注释纠偏：设 LLM_GATEWAY_CRED_RECOVERY_DISABLED=true 会
+			// 连带关闭 overlay 加载与 task-profile 装配——既有结构，注释
+			// 如实记录，不另开门控)。
 			initTaskProfile()
 			// P2.2: routing optimization plugin (nil unless ROUTING_OPT_ENABLED=true;
 			// nil keeps routing byte-identical to the pre-P2.2 baseline).

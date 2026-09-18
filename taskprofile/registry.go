@@ -25,11 +25,16 @@ import (
 const SchemaVersion = 1
 
 // RegistryVersion identifies the shipped default profile dataset.
-const RegistryVersion = "2026.09.v3-defaults"
+// R43 (2026-09-18): bumped from 2026.09.v3-defaults — the six remaining V2
+// classifier enums (agent/long_context/vision/function_call/code_audit/
+// intent_classification) gained profiles, closing the annotation-workbench
+// vocabulary gap.
+const RegistryVersion = "2026.09.v3.1-defaults"
 
 // defaultProfiles is the embedded baseline. Values MUST stay in sync with
 // autoroute.TaskTypeTierMapping / MinConfidenceThresholds (V3 defaults);
-// registry_defaults_test.go pins the tier tiers and thresholds.
+// registry_test.go (TestDefaults_MirrorV3TierMapping) pins the tiers and
+// thresholds.
 var defaultProfiles = []TaskProfile{
 	{TaskType: "architecture", Description: "System/API design, technical proposals", PreferredTier: TierA, FallbackTiers: []string{TierB}, MinConfidence: 0.70},
 	{TaskType: "audit", Description: "Code review, security audit, PR review", PreferredTier: TierA, FallbackTiers: []string{TierB}, MinConfidence: 0.70},
@@ -50,6 +55,19 @@ var defaultProfiles = []TaskProfile{
 	{TaskType: "creative", Description: "Creative writing, brainstorming (V2 legacy type)", PreferredTier: TierB, FallbackTiers: []string{TierC}, MinConfidence: 0.75},
 	{TaskType: "reasoning", Description: "Multi-step reasoning, math (V2 legacy type)", PreferredTier: TierA, FallbackTiers: []string{TierB}, MinConfidence: 0.70},
 	{TaskType: "planning", Description: "Task decomposition, planning (V2 legacy type)", PreferredTier: TierA, FallbackTiers: []string{TierB}, MinConfidence: 0.70},
+	// R43 (2026-09-18): the remaining six autoroute.V2 classifier enums
+	// (AllTaskTypes) had no profile, so corrections carrying them were
+	// rejected with 400 — exactly the types the annotation workbench's L1
+	// seed list offers (agent/long_context/vision/function_call) plus the
+	// goal-mode extensions. Values mirror autoroute's unknown-type fallback
+	// (tier_selector.go getDefaultTier: tier-b, MinConfidence 0.70,
+	// getFallbacksForTier("tier-b") = [tier-a, tier-c]).
+	{TaskType: "agent", Description: "Multi-step agent/tool loops (V2 legacy type)", PreferredTier: TierB, FallbackTiers: []string{TierA, TierC}, MinConfidence: 0.70},
+	{TaskType: "long_context", Description: "Long-document ingestion/QA (V2 legacy type)", PreferredTier: TierB, FallbackTiers: []string{TierA, TierC}, MinConfidence: 0.70},
+	{TaskType: "vision", Description: "Image understanding (V2 legacy type)", PreferredTier: TierB, FallbackTiers: []string{TierA, TierC}, MinConfidence: 0.70},
+	{TaskType: "function_call", Description: "Simple function/tool invocation (V2 legacy type)", PreferredTier: TierB, FallbackTiers: []string{TierA, TierC}, MinConfidence: 0.70},
+	{TaskType: "code_audit", Description: "Code review, security analysis (V2 goal-mode type)", PreferredTier: TierB, FallbackTiers: []string{TierA, TierC}, MinConfidence: 0.70},
+	{TaskType: "intent_classification", Description: "Intent detection/classification (V2 goal-mode type)", PreferredTier: TierB, FallbackTiers: []string{TierA, TierC}, MinConfidence: 0.70},
 }
 
 // snapshot is the immutable registry view swapped via atomic.Pointer.

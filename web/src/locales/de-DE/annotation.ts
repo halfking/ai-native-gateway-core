@@ -159,6 +159,7 @@ export default {
   // Error messages
   loadFailed: 'Annotation-Samples konnten nicht geladen werden',
   annotationFailed: 'Annotation fehlgeschlagen',
+  correctionWriteFailed: 'Korrektur konnte nicht geschrieben werden (Annotation gespeichert): {msg}',
   batchFailed: 'Sammelannotation fehlgeschlagen',
   deleteFailed: 'Annotation konnte nicht gelöscht werden',
   noSamplesSelected: 'Bitte wählen Sie Samples zum Annotieren aus',

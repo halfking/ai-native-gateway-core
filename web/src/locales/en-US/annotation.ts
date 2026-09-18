@@ -159,6 +159,7 @@ export default {
   // Error messages
   loadFailed: 'Failed to load annotation samples',
   annotationFailed: 'Annotation failed',
+  correctionWriteFailed: 'Correction write failed (annotation saved): {msg}',
   batchFailed: 'Batch annotation failed',
   deleteFailed: 'Failed to delete annotation',
   noSamplesSelected: 'Please select samples to annotate',

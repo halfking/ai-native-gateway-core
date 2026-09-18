@@ -303,3 +303,70 @@ func captureProtocolLoss(t *testing.T, run func()) []AnomalyEvent {
 }
 
 var capturedLosses []AnomalyEvent
+
+// R43 (2026-09-18, P5 补课补漏): Gemini inbound budget-shaped reasoning had
+// no loss report on a plain openai_chat target — the Gemini handler's
+// pre-route serialization runs with an empty TargetProvider, so the intent
+// was dropped silently (the exact shape P5 set out to make visible). These
+// pins cover both directions: loss reported pre-route, and rendered (no
+// loss) once the executor knows the target dialect.
+func TestSerializeOpenAI_P5_GeminiBudgetLossReportedByTargetProvider(t *testing.T) {
+	geminiBody := []byte(`{
+		"contents": [{"role":"user","parts":[{"text":"hi"}]}],
+		"generationConfig": {"thinkingConfig":{"thinkingBudget":8192}}
+	}`)
+
+	t.Run("empty target (handler step-6 shape) reports loss", func(t *testing.T) {
+		cap := resetDedupAndInstall(t)
+		irReq, err := ParseGemini(geminiBody)
+		if err != nil {
+			t.Fatalf("ParseGemini: %v", err)
+		}
+		if irReq.Reasoning == nil || irReq.Reasoning.BudgetTokens == nil {
+			t.Fatal("parse_gemini 应把 thinkingConfig.thinkingBudget 消费进 ir.Reasoning")
+		}
+		body, err := SerializeOpenAI(irReq)
+		if err != nil {
+			t.Fatalf("SerializeOpenAI: %v", err)
+		}
+		var m map[string]any
+		_ = json.Unmarshal(body, &m)
+		if _, ok := m["thinking"]; ok {
+			t.Fatalf("openai_chat 目标不应渲染 thinking 对象: %s", body)
+		}
+		if !cap.hasEvent(AnomalyEvent{
+			AnomalyType:       AnomalyProtocolLoss,
+			FieldPath:         "reasoning.budget_tokens",
+			SourceProtocol:    ProtocolGeminiGenerate,
+			TargetProtocol:    ProtocolOpenAIChat,
+			RawValueTruncated: true,
+		}) {
+			t.Fatalf("budget-shape Reasoning 丢失未上报, events=%v", cap.snapshot())
+		}
+	})
+
+	t.Run("minimax target renders intent, no loss", func(t *testing.T) {
+		cap := resetDedupAndInstall(t)
+		irReq, err := ParseGemini(geminiBody)
+		if err != nil {
+			t.Fatalf("ParseGemini: %v", err)
+		}
+		irReq.TargetProvider = "minimax"
+		body, err := SerializeOpenAI(irReq)
+		if err != nil {
+			t.Fatalf("SerializeOpenAI: %v", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(body, &m); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if _, ok := m["thinking"].(map[string]any); !ok {
+			t.Fatalf("minimax 目标应渲染 thinking 对象: %s", body)
+		}
+		for _, ev := range cap.snapshot() {
+			if ev.FieldPath == "reasoning.budget_tokens" {
+				t.Fatalf("已渲染的 intent 不应上报丢失: %v", ev)
+			}
+		}
+	})
+}
