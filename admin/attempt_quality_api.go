@@ -128,11 +128,15 @@ func loadFinalRequestMetrics(ctx context.Context, queryRow func(context.Context,
 	if queryRow == nil {
 		return finalRequestMetrics{}, nil
 	}
+	// R46 F3: 读面 hot∪母表——本端点 hours 默认 24/上限 168，hot 保留期
+	// 只有 8h，只扫 hot 会静默少报（与同响应的 request_state_transitions
+	// 聚合双口径矛盾）。不用 turns 优先的 request_logs_with_current_month：
+	// 它的 turns 段 provider_id 投影 NULL，按 provider 过滤会静默丢行。
 	query := `SELECT COUNT(*)::bigint,
 		COUNT(*) FILTER (WHERE success)::bigint,
 		COUNT(*) FILTER (WHERE NOT success)::bigint,
 		COALESCE(SUM(total_tokens), 0)::bigint
-		FROM request_logs_hot
+		FROM request_logs_with_current_month_without_request_class_due_at
 		WHERE tenant_id = $1 AND ts >= $2 AND ts < $3`
 	args := []any{tenantID, start.UTC(), end.UTC()}
 	if providerID > 0 {

@@ -108,11 +108,18 @@ func (p *GatewayNetworkProber) ProbeLatency(ctx context.Context, credentialID in
 }
 
 // GatewayRequestAnalyzer 请求分析器适配器
-// 从 request_logs_hot 表聚合请求统计（0-7天热数据，与 recent_success_rate()
-// SQL 函数读取同一张表，参见 sql/objects/functions/recent_success_rate_*.sql）。
+// 从 request_logs_hot 表聚合请求统计（hot 保留期默认 8h——R46 F8⑦ 注释
+// 如实化，原"0-7天热数据"失实；与 recent_success_rate() SQL 函数读取
+// 同一张表，参见 sql/objects/functions/recent_success_rate_*.sql）。
+// 入参 hours 在各方法入口 clamp 到 8h：本表只覆盖 hot 侧，hours>保留期
+// 会静默少报而非报错（生产唯一调用方 collector 传 hours=2）。
 type GatewayRequestAnalyzer struct {
 	db *pgxpool.Pool
 }
+
+// providerProfileHotHours 是 request_logs_hot 的默认保留期（partition
+// manager 8h 常量）。本适配器全部查询 clamp 到该窗口内。
+const providerProfileHotHours = 8
 
 // NewGatewayRequestAnalyzer 创建请求分析器
 func NewGatewayRequestAnalyzer(db *pgxpool.Pool) *GatewayRequestAnalyzer {
@@ -126,6 +133,10 @@ func NewGatewayRequestAnalyzer(db *pgxpool.Pool) *GatewayRequestAnalyzer {
 //   - RateLimitMetrics：429 命中次数 + 总请求，用于"限流命中率"维度
 //   - AvailabilityWindow：按 5 分钟桶聚合成功率，识别连续低成功率段
 func (a *GatewayRequestAnalyzer) AnalyzeRequests(ctx context.Context, credentialID int64, hours int) (*RequestStats, error) {
+	// R46 F8⑦: clamp 到 hot 保留期内，防止未来调用方传大 hours 静默少报。
+	if hours <= 0 || hours > providerProfileHotHours {
+		hours = providerProfileHotHours
+	}
 	query := `
 		SELECT
 			COUNT(*) AS total_requests,

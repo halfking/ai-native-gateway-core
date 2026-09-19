@@ -4788,8 +4788,11 @@ func (h *Handler) handleFreePoolBootstrap(w http.ResponseWriter, r *http.Request
 		// access per credential; a single ANY($1) sweep does it in one
 		// statement. Best-effort as before.
 		if len(staleIDs) > 0 {
+			// R46 F8⑥: 非 ready 态必须留 state_reason_code 归属 trail
+			//（对齐 R21/balance_floor 系列口径）；status='disabled' 对本
+			// 清扫对象（已 disabled 行）是冗余赋值，保留为幂等无害。
 			//nolint:errcheck // best-effort exec, non-critical
-			h.db.Exec(ctx, `UPDATE credentials SET status = 'disabled', availability_state = 'unreachable', updated_at = NOW() WHERE id = ANY($1)`, staleIDs)
+			h.db.Exec(ctx, `UPDATE credentials SET status = 'disabled', availability_state = 'unreachable', state_reason_code = 'oauth_bridge_cleanup', updated_at = NOW() WHERE id = ANY($1)`, staleIDs)
 		}
 	}
 

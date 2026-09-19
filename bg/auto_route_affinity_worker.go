@@ -256,9 +256,22 @@ func (w *AutoRouteAffinityWorker) sweep(ctx context.Context) {
 // reward on a goal-* row (e.g. ad-hoc backfill, manual reconcile) would slip
 // through and pollute task_model_affinity. The view auto_route_selections_all
 // does not project origin_actor (selections carry only features + reward),
-// so the join is the only reliable way to enforce the synthetic-round gate
-// at the aggregate face. NULL origin_actor is treated as ordinary traffic
-// (legacy inserts predate the column).
+// so the request_logs join is the only reliable way to enforce the
+// synthetic-round gate at the aggregate face. NULL origin_actor is treated as
+// ordinary traffic (legacy inserts predate the column).
+//
+// R46 F4 (affinity 盲窗三选一裁决, R43 §五#2 顺延收口): the old LEFT JOIN hit
+// request_logs_hot only — settled rows older than the ~8h hot retention saw
+// NULL origin_actor and slipped past the gate. Ruling (measured on the live
+// DB, see docs/audit/2026-09-19-r46-48h-audit-round.md §四): NOT EXISTS probes
+// over hot ∪ parent = 110ms / 14d window; literal view JOIN =
+// 6.98s + the turns-preferred view injects duplicate request faces (rejected);
+// settle-time redundant write + migration 727 = full five-point sync cost to
+// defend a write path that does not exist today (rejected). The NOT EXISTS
+// form is semantically identical (NULL actor passes, synthetic excluded) and
+// retention-independent: hot and parent are mutually exclusive (promote is
+// DELETE+INSERT), and each probe is an index descent on
+// idx_request_logs_hot_request_id / the partitioned request_id index.
 func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggregate, error) {
 	rows, err := w.db.Query(ctx, `
 		SELECT s.task_type,
@@ -273,15 +286,21 @@ func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggr
 		       COALESCE(AVG(ss.health_score), 0),
 		       AVG(s.reward)
 		FROM auto_route_selections_all s
-		LEFT JOIN request_logs_hot rl
-		       ON rl.request_id = s.request_id
 		LEFT JOIN session_summaries ss
 		       ON ss.session_key = s.session_id
 		WHERE s.reward IS NOT NULL
 		  AND s.canonical_id IS NOT NULL
 		  AND s.settled_at >= NOW() - $1::interval
-		  AND COALESCE(rl.origin_actor, '') NOT LIKE 'goal-%'
-		  AND COALESCE(rl.origin_actor, '') NOT IN ('auto-title-generator','auto-summary-generator','session-summary')
+		  AND NOT EXISTS (
+		      SELECT 1 FROM request_logs_hot rl
+		      WHERE rl.request_id = s.request_id
+		        AND (COALESCE(rl.origin_actor, '') LIKE 'goal-%'
+		          OR COALESCE(rl.origin_actor, '') IN ('auto-title-generator','auto-summary-generator','session-summary')))
+		  AND NOT EXISTS (
+		      SELECT 1 FROM request_logs rl
+		      WHERE rl.request_id = s.request_id
+		        AND (COALESCE(rl.origin_actor, '') LIKE 'goal-%'
+		          OR COALESCE(rl.origin_actor, '') IN ('auto-title-generator','auto-summary-generator','session-summary')))
 		GROUP BY s.task_type, s.profile, s.canonical_id, s.chosen_model, COALESCE(s.tenant_id, '')
 	`, affinityWindow.String())
 	if err != nil {

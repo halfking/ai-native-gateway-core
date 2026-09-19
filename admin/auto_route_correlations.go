@@ -115,6 +115,10 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 	}
 
 	// ── By model ─────────────────────────────────────────────
+	// R46 F3: 读面 request_logs_with_current_month_without_request_class_due_at
+	// （request_logs 侧 hot∪母表）。裸母表对最近 8h 仍在 hot 侧的 auto 流量
+	// 全盲；不能换 turns 优先的 request_logs_with_current_month——turns 段把
+	// model_chosen/strategy_used 投影为 NULL，本文件全部查询依赖这些列。
 	byModelQuery := `
 		SELECT
 		    model_chosen,
@@ -122,7 +126,7 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		    AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) AS success,
 		    COALESCE(AVG(latency_ms), 0)::int AS avg_latency,
 		    COALESCE(AVG(cost_usd), 0) AS avg_cost
-		FROM request_logs
+		FROM request_logs_with_current_month_without_request_class_due_at
 		WHERE is_auto_request = TRUE
 		  AND model_chosen IS NOT NULL
 		  AND ts >= NOW() - INTERVAL '1 day' * $1
@@ -143,7 +147,7 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		    AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) AS success,
 		    COALESCE(AVG(latency_ms), 0)::int AS avg_latency,
 		    COALESCE(AVG(cost_usd), 0) AS avg_cost
-		FROM request_logs
+		FROM request_logs_with_current_month_without_request_class_due_at
 		WHERE is_auto_request = TRUE
 		  AND strategy_used IS NOT NULL
 		  AND ts >= NOW() - INTERVAL '1 day' * $1
@@ -164,7 +168,7 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		    AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) AS success,
 		    COALESCE(AVG(latency_ms), 0)::int AS avg_latency,
 		    COALESCE(AVG(cost_usd), 0) AS avg_cost
-		FROM request_logs
+		FROM request_logs_with_current_month_without_request_class_due_at
 		WHERE is_auto_request = TRUE
 		  AND task_type_chosen IS NOT NULL
 		  AND ts >= NOW() - INTERVAL '1 day' * $1
@@ -186,7 +190,7 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		    AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) AS success,
 		    COALESCE(AVG(latency_ms), 0)::int AS avg_latency,
 		    COALESCE(AVG(cost_usd), 0) AS avg_cost
-		FROM request_logs
+		FROM request_logs_with_current_month_without_request_class_due_at
 		WHERE is_auto_request = TRUE
 		  AND model_chosen IS NOT NULL
 		  AND task_type_chosen IS NOT NULL
@@ -217,21 +221,32 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 	}
 
 	// ── Verdict: top-3 models per task type ────────────────────
+	// R46 F9: 本查询在 main 上从未成功执行过（部署冒烟首次实跑暴露）——
+	// ①内层 SELECT 裸取 success/latency_ms 而 GROUP BY 只有两维（42803，
+	// 端点每次调用 500）；②外层聚合无 GROUP BY；③Scan 期望 5 列（含
+	// rank）而查询只产出 4 列。重写为：聚合收敛到内层 GROUP BY，rank 由
+	// 聚合值计算并作为第 5 列投影，外层直接透传。
 	verdictQuery := `
 		SELECT
 		    task_type_chosen,
 		    model_chosen,
-		    AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) AS success,
-		    COALESCE(AVG(latency_ms), 0)::int AS avg_latency
+		    success,
+		    avg_latency,
+		    rn
 		FROM (
 			SELECT
-			    task_type_chosen, model_chosen, success, latency_ms,
+			    task_type_chosen,
+			    model_chosen,
+			    AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) AS success,
+			    COALESCE(AVG(latency_ms), 0)::int AS avg_latency,
 			    ROW_NUMBER() OVER (
 			        PARTITION BY task_type_chosen
-			        ORDER BY AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) DESC, latency_ms ASC
+			        ORDER BY AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) DESC, AVG(latency_ms) ASC
 			    ) AS rn
-			FROM request_logs
+			FROM request_logs_with_current_month_without_request_class_due_at
 			WHERE is_auto_request = TRUE
+			  AND task_type_chosen IS NOT NULL
+			  AND model_chosen IS NOT NULL
 			  AND ts >= NOW() - INTERVAL '1 day' * $1
 			GROUP BY task_type_chosen, model_chosen
 			HAVING COUNT(*) >= $2

@@ -107,7 +107,9 @@ function openFilterDialog(kind: 'status' | 'provider' | 'vendor' | 'agent') {
 }
 
 function onModelFilterPicked(value: string | string[]) {
-  applyModelFilter(Array.isArray(value) ? value : [])
+  // R46 F8⑩: 非数组（single 模式）按单值包裹，不得吞成空数组（清空筛选）；
+  // 空值清空视为未选。
+  applyModelFilter(Array.isArray(value) ? value : [value].filter((v) => !!v))
 }
 
 // 2026-08-06: 供应商 HTTP 延时轮询抽到 useProviderLatency composable
@@ -322,7 +324,7 @@ function vendorOptionLabel(v: string) {
               compact
               :model-value="modelFilterSelected"
               :placeholder="t('dashboard.liveStream.filterModel')"
-              title="筛选模型"
+              :title="t('dashboard.liveStream.filterModel')"
               @update:model-value="onModelFilterPicked"
             />
           </div>

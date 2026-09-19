@@ -81,6 +81,7 @@ type StickyLoadTracker struct {
 
 	stopSweep chan struct{}
 	sweepDone sync.WaitGroup
+	closeOnce sync.Once
 }
 
 // NewStickyLoadTracker 构造滑窗跟踪器并启动后台清扫。
@@ -122,18 +123,15 @@ func (t *StickyLoadTracker) SetStore(store StickyLoadStore) {
 	t.mu.Unlock()
 }
 
-// Close 停止后台清扫（幂等）。
+// Close 停止后台清扫（幂等；Once 防并发双 close panic）。
 func (t *StickyLoadTracker) Close() {
 	if t == nil {
 		return
 	}
-	select {
-	case <-t.stopSweep:
-		return
-	default:
+	t.closeOnce.Do(func() {
 		close(t.stopSweep)
 		t.sweepDone.Wait()
-	}
+	})
 }
 
 func (t *StickyLoadTracker) sweepLoop() {
@@ -155,7 +153,7 @@ func (t *StickyLoadTracker) sweepLoop() {
 func (t *StickyLoadTracker) pruneMemory() {
 	now := time.Now()
 	sessCutoff := now.Add(-t.window).Unix()
-	actCutoff := now.Add(-stickyLoadActivityRetention).UnixMilli()
+	actCutoff := now.Add(-t.activityRetention()).UnixMilli()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for cred, m := range t.sessions {
@@ -173,6 +171,16 @@ func (t *StickyLoadTracker) pruneMemory() {
 			delete(t.activity, cred)
 		}
 	}
+}
+
+// activityRetention 是 activity 时间戳的内存保留线。固定 10 分钟覆盖
+// 默认 recency 地平线；window 被运维调大时跟随 window，避免 recency
+// 信号比语义窗先归零（R46 F8⑪）。
+func (t *StickyLoadTracker) activityRetention() time.Duration {
+	if t.window > stickyLoadActivityRetention {
+		return t.window
+	}
+	return stickyLoadActivityRetention
 }
 
 // ObserveSession 记录"该会话此刻绑定在该凭据上"。在 sticky 绑定写入
@@ -198,6 +206,13 @@ func (t *StickyLoadTracker) ObserveSession(credentialID int, sessionKey string) 
 
 	if store != nil {
 		go func() {
+			// R46 F8⑫：与 dispatch worker 的 recover-per-item 纪律对齐，
+			// best-effort 观察路径不允许 panic 击穿进程。
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Warn("sticky-load observe panic", "credential_id", credentialID, "panic", r)
+				}
+			}()
 			ctx, cancel := context.WithTimeout(context.Background(), stickyLoadObserveTimeout)
 			defer cancel()
 			if err := store.Observe(ctx, credentialID, sessionKey, now, window); err != nil {
@@ -249,26 +264,42 @@ func (t *StickyLoadTracker) Refresh(credIDs []int) {
 	}
 
 	go func() {
+		// 单飞标志在 defer 中复位：LoadBatch panic（自定义 store 实现等）
+		// 不得永久卡死 refreshing 使快照冻结（R46 F1）。
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Warn("sticky-load refresh panic", "panic", r)
+			}
+			t.snapMu.Lock()
+			t.refreshing = false
+			t.snapMu.Unlock()
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), stickyLoadRefreshTimeout)
 		defer cancel()
 		sessions, lastSeen := store.LoadBatch(ctx, dedupeInts(credIDs), window)
-		t.snapMu.Lock()
-		t.refreshing = false
-		if sessions != nil {
-			snap := make(map[int]StickyLoadInfo, len(sessions))
-			for id, n := range sessions {
-				snap[id] = StickyLoadInfo{Sessions: n, LastActivityMs: lastSeen[id] * 1000}
-			}
-			t.snapshot = snap
-			t.snapAt = time.Now()
+		if sessions == nil {
+			return
 		}
+		snap := make(map[int]StickyLoadInfo, len(sessions))
+		for id, n := range sessions {
+			snap[id] = StickyLoadInfo{Sessions: n, LastActivityMs: lastSeen[id] * 1000}
+		}
+		t.snapMu.Lock()
+		t.snapshot = snap
+		t.snapAt = time.Now()
 		t.snapMu.Unlock()
 	}()
 }
 
 // Info 返回某凭据的 sticky 负载视图（热路径，O(1)）。
-// 会话数优先取跨实例快照（覆盖到该凭据时）；否则用本实例镜像。
-// 最近活跃取本实例 activity 与快照的较大者。
+// 会话数优先取跨实例快照（覆盖到该凭据且快照未过期时）；否则用本实例
+// 镜像。最近活跃取本实例 activity 与快照的较大者。
+//
+// R46 F1：快照新鲜度上限。快照的语义是"window 内活跃会话数"——快照
+// 年龄超过 window 本身即失去语义。Redis 持续故障时 Refresh 失败保留旧
+// 快照（短闪断兜底），但陈旧快照不得无限期参与评分（否则早已空闲的
+// 凭据被记满 sticky 会话数，流量系统性偏向"冻结时看起来空闲"的节点），
+// 超限回落本实例内存镜像。
 func (t *StickyLoadTracker) Info(credentialID int) StickyLoadInfo {
 	if t == nil || credentialID <= 0 {
 		return StickyLoadInfo{}
@@ -277,6 +308,9 @@ func (t *StickyLoadTracker) Info(credentialID int) StickyLoadInfo {
 
 	t.snapMu.Lock()
 	snap, covered := t.snapshot[credentialID]
+	if covered && time.Since(t.snapAt) >= t.window {
+		covered = false
+	}
 	t.snapMu.Unlock()
 
 	t.mu.Lock()

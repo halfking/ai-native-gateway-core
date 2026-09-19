@@ -67,6 +67,8 @@ type AuditEvent struct {
 	Detail map[string]any
 	// Request 是触发端点的原始请求；sink 从中提取 actor/tenant。变更端点
 	// 的 handler 路径上恒非 nil。
+	// R46 F8⑨ 契约约束：sink 禁止记录原始请求的 headers/body（Authorization
+	// 头会带出会话凭据）——只允许提取鉴权上下文字段。
 	Request *http.Request
 }
 
@@ -406,10 +408,13 @@ func (h *Handlers) handleApplyTierConfig(w http.ResponseWriter, r *http.Request)
 // TASKPROFILE_OVERLAY is unset). This is the module's independent-upgrade
 // operation: profile data changes without a redeploy.
 func (h *Handlers) handleReload(w http.ResponseWriter, r *http.Request) {
-	version, err := ReloadOverlay(os.Getenv(OverlayEnvVar))
+	overlayPath := os.Getenv(OverlayEnvVar)
+	version, err := ReloadOverlay(overlayPath)
 	if err != nil {
+		// R46 F8⑧: detail 记实际 overlay 路径（仅路径，无敏感风险），
+		// 恒为 env 名时取证不知道坏的是哪个文件。
 		h.emitAudit(AuditActionReload, "failure",
-			map[string]any{"error": err.Error(), "overlay_env": OverlayEnvVar}, r)
+			map[string]any{"error": err.Error(), "overlay_env": OverlayEnvVar, "overlay_path": overlayPath}, r)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
