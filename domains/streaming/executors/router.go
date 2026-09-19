@@ -193,6 +193,13 @@ type Router struct {
 	// 默认 false，通过环境变量 PRESSURE_AWARE_ROUTING 控制
 	PressureAwareEnabled bool
 
+	// StickyLoad (2026-09-19 sticky-session load balancing): 每凭据
+	// 5 分钟 sticky 会话滑窗 + 最近请求时间信号，供 calculateLoadScore
+	// 的 sticky/recency 惩罚项消费。nil = 未接线（惩罚恒 0，评分与
+	// 历史公式逐字节一致）。planCandidates 每请求触发一次 Refresh
+	//（内部按 refresh TTL 节流 + 单飞）。
+	StickyLoad StickyLoadView
+
 	// ShadowStrategy (GW-03, omni-ref2): 可选的路由策略，仅用于 shadow 评分
 	// 对比，不改变实际选中候选。nil = 现状（P2C/bandit 行为零变化）。
 	// 非 nil 时，planByTier 在每个 tier bucket 用 ShadowStrategy 独立评分，
@@ -575,6 +582,15 @@ func (r *Router) planCandidates(
 	// Round 1: token_plan / code_plan / agent_plan / free — always before PAYG.
 	// Round 2: token (按量). Executor skips saturated round-1 creds and falls through.
 	round1, round2 := splitByBillingRound(available)
+	// 2026-09-19: 触发 sticky 会话滑窗的跨实例快照刷新（TTL 节流 + 单飞，
+	// 纯内存模式 no-op）。放在可用性过滤之后，只刷新真正会参与评分的凭据。
+	if r.StickyLoad != nil && len(available) > 0 {
+		ids := make([]int, 0, len(available))
+		for _, c := range available {
+			ids = append(ids, c.CredentialID)
+		}
+		r.StickyLoad.Refresh(ids)
+	}
 	stratIn := StrategyInput{
 		Policy:           policy,
 		EgressPreference: egressPreference,

@@ -3066,7 +3066,14 @@ func stickyHitForChosen(stickyCredentialID *int, chosenCredentialID int) *bool {
 	return boolPtrCompat(*stickyCredentialID == chosenCredentialID)
 }
 
-func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
+// recordStickySuccess 在请求成功后写回 sticky 绑定并喂 sticky 负载滑窗。
+//
+// 2026-09-19 会话保持：当本请求带着 sticky 钉扎、钉扎节点被尝试且以
+// 非致命错误失败、最终由其他节点服务时（stickyPreserveBinding），
+// 不重写绑定——会话留在原节点，下一次请求仍优先回到原节点（prompt-cache
+// 亲和）。持续失败由节点健康冷却兜底：sticky 节点连败进入冷却后被
+// 过滤出候选，此路径自然走"未被尝试 → 迁移"分支。
+func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int, dctx *dispatchCtx) {
 	if e.Router == nil || e.Router.Sticky == nil || params == nil {
 		return
 	}
@@ -3074,6 +3081,20 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 	// Do not create bindings during that interval that could affect routing
 	// after the module is enabled again.
 	if !ratelimit.IsRateLimitEnabled() {
+		return
+	}
+
+	if stickyPreserveBinding(dctx, credentialID) {
+		slog.Info("sticky: transient failover, keeping session binding on original node",
+			"sticky_credential_id", *dctx.stickyCredID,
+			"served_credential_id", credentialID,
+			"error_kind", string(dctx.stickyFailKind),
+			"session_id", params.SessionID,
+			"request_id", params.RequestID,
+		)
+		if e.Router.StickyLoad != nil {
+			e.Router.StickyLoad.ObserveActivity(credentialID)
+		}
 		return
 	}
 
@@ -3088,11 +3109,24 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 			params.Model,
 			credentialID,
 		)
+		// 2026-09-19: 绑定写入即观察——会话计入该节点的 5 分钟滑窗。
+		if e.Router.StickyLoad != nil {
+			if l1, _, _ := buildStickyKeys(
+				params.TenantID, params.AppID, params.ApiKeyID,
+				params.ClientID.Fingerprint.ClientProfile,
+				params.SessionID, params.Model,
+			); l1 != "" {
+				e.Router.StickyLoad.ObserveSession(credentialID, l1)
+			}
+		}
 		return
 	}
 
 	// Fallback to L3-only recording
 	if params.StickyKey == "" || params.Policy == nil {
+		if e.Router.StickyLoad != nil {
+			e.Router.StickyLoad.ObserveActivity(credentialID)
+		}
 		return
 	}
 	// Policy.StickyTTLSeconds is in seconds (DB column `sticky_ttl_seconds`).
@@ -3104,6 +3138,29 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 		stickyTTL = time.Minute
 	}
 	e.Router.Sticky.RecordSuccess(params.StickyKey, credentialID, stickyTTL)
+	if e.Router.StickyLoad != nil {
+		e.Router.StickyLoad.ObserveActivity(credentialID)
+	}
+}
+
+// stickyPreserveBinding 判定"瞬时失败 failover 成功后是否保持会话在原
+// sticky 节点"。保持（返回 true）需同时满足：
+//   - 本请求有 sticky 钉扎，且实际服务节点 ≠ 钉扎节点（发生了 failover）；
+//   - 钉扎节点确实被尝试过且失败（stickyFailed）——若它根本没进候选
+//     （冷却/熔断/被过滤）或请求未触达它，视为严重情形，走迁移；
+//   - 失败类型非 credential-fatal（瞬时：超时/网络/429/过载等；
+//     严重：auth/quota 系列，见 errorsx.IsCredentialFatal）。
+func stickyPreserveBinding(dctx *dispatchCtx, servedCredentialID int) bool {
+	if dctx == nil || dctx.stickyCredID == nil {
+		return false
+	}
+	if *dctx.stickyCredID == servedCredentialID {
+		return false // 同节点成功：正常刷新绑定，不涉及保持/迁移
+	}
+	if !dctx.stickyFailed {
+		return false // sticky 节点未被尝试（被过滤/未触达）→ 迁移
+	}
+	return !errorsx.IsCredentialFatal(dctx.stickyFailKind)
 }
 
 func fpSlotTenantID(params *ExecParams) string {
