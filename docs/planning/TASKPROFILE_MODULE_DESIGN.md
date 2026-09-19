@@ -137,3 +137,4 @@ Prometheus 分类反馈计数器由此真正开始计数（该聚合器此前零
 - [x] 真库集成 E2E 闭环测试
 - [x] 本地部署验证（071x 记录见会话总结）
 - [x] 252 部署验证
+- [x] **变更端点审计 hook**（R43 §五#3 登记 → R45 2026-09-19 落地）：`Handlers.SetAuditHook(func(AuditEvent))`，四个变更端点（corrections create / import / reload / apply-tier-config）的**真实变更尝试**（success 与 failure）都投递事件；校验拒绝与 nil-pool 503 不投递（无变更意图）；hook panic 隔离、nil 零开销。taskprofile 不 import admin（避免反向依赖成环）——`AuditEvent` 携带原始 *http.Request，生产 sink 由 admin/handler.go 注入（首个 sink = 结构化 slog `taskprofile.audit`，actor 从 admin 鉴权上下文提取；未来可换 DB 审计表 sink 无需再动本包）。钉桩：默认门 `handler_audit_test.go` ×5（reload 成功/失败、无尝试不发、panic 隔离、nil no-op）+ 真库集成 `e2e_audit_hook_integration_test.go`（create 成功/重复失败、import 成功 detail.imported、apply 成功 detail.applied=1 行 documentation 升级）。

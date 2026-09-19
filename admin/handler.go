@@ -1363,6 +1363,31 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		// counters stay at zero (routingopt side is read-only).
 		taskProfileHandlers := taskprofile.NewHandlers(h.db)
 		taskProfileHandlers.SetRecorder(autoroute.NewClassificationFeedbackAggregator())
+		// R45（R43 §五#3 落地）: 四个变更端点（corrections create/import、
+		// reload、apply-tier-config）的审计留痕。taskprofile 定义 AuditEvent
+		// + SetAuditHook 避免反向依赖 admin；本侧注入 sink：结构化 slog
+		// （journald/日志管道可检索），actor 从 admin 鉴权上下文提取。
+		// hook 在 taskprofile 内已 panic 隔离，这里保持非阻塞。
+		taskProfileHandlers.SetAuditHook(func(ev taskprofile.AuditEvent) {
+			actor, tenant := "unknown", "default"
+			if ev.Request != nil {
+				if ac := GetAuthContext(ev.Request); ac != nil {
+					if ac.Username != "" {
+						actor = ac.Username
+					}
+					if ac.TenantID != "" {
+						tenant = ac.TenantID
+					}
+				}
+			}
+			slog.Info("taskprofile.audit",
+				"action", ev.Action,
+				"outcome", ev.Outcome,
+				"actor", actor,
+				"tenant_id", tenant,
+				"detail", ev.Detail,
+			)
+		})
 		taskProfileHandlers.RegisterTaskProfileRoutes(mux, admin)
 
 		// P2.2 Track C (2026-09-07): routing-opt admin API — stats / accuracy /

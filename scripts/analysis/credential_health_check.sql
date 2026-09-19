@@ -9,7 +9,8 @@
 --     迁移 448/510/710 维护重建）。直接查 request_logs 母表会漏掉 hot 表最近
 --     8h 的写入（promote 周期内），健康检查恰恰最该看到"刚出事"的时段。
 --   * error_kind 取值 = errorsx.ErrorKind 真实分类法（errorsx/classify.go）；
---     凭据状态词汇 = credentials 表 CHECK 约束（availability_state/quota_state）。
+--     凭据状态词汇：availability_state = credentials CHECK 约束；quota_state
+--     该列无 CHECK，词汇以代码写入面为准（R45 复核修正，见 §1 判据注释）。
 --   * §2 为供应商错误表视角（supplier_errors_unified，V371，D08 闭环）。
 -- =============================================================================
 
@@ -59,7 +60,11 @@ recent_stats AS (
   LEFT JOIN providers p ON c.provider_id = p.id
   WHERE rl.ts BETWEEN tr.start_time AND tr.end_time
     AND rl.credential_id IS NOT NULL
-    AND rl.request_type = 'main'
+    -- R45（P1 修复）：视图的 session_turns_hot/session_turns 段把 request_type
+    -- 投影为 NULL::text（session_turns 表无该列），裸 = 'main' 会漏掉全部
+    -- 业务行（真库 24h 实测漏 99.3%），残存读面只剩探测流量。缺省即 main
+    -- 是生产读端既定惯例（admin/session_online.go 等 COALESCE(request_type,'main')）。
+    AND COALESCE(rl.request_type, 'main') = 'main'
   GROUP BY
     rl.credential_id,
     c.label,
@@ -90,10 +95,14 @@ health_issues AS (
     total_cost_usd,
     last_request_time,
 
-    -- 状态词汇对齐 credentials CHECK 约束：
+    -- 状态词汇对齐（R45 复核修正来源标注）：
     --   availability_state ∈ {ready,cooling,rate_limited,auth_failed,unreachable,suspended}
-    --   quota_state 运行时值 ∈ {ok,balance_exhausted,permanently_exhausted,
-    --                            periodic_exhausted,suspended,unknown}
+    --     —— credentials CHECK 约束（pg_constraint 实查）。
+    --   quota_state 写入面 ∈ {ok,balance_exhausted,permanently_exhausted,
+    --     periodic_exhausted}——该列无 CHECK，以代码写入面为准；'unknown'
+    --     仅是读端 COALESCE 兜底值（main_v32_wiring.go），'suspended' 在
+    --     quota_state 上是死词汇（suspended 只写 availability_state），下方
+    --     IN 列表保留 'suspended' 属宽表保险、无漏报风险。
     --   lifecycle_status ∈ {active,disabled,suspended,retired}（'stable' 是死词汇）
     -- （旧版的 ('available','online') / ('exhausted','depleted','suspended')
     --  与真实词汇错配：健康值 'ready' 被打成 unavailable，三种真实耗尽态全漏
@@ -186,7 +195,16 @@ SELECT
   COUNT(*) FILTER (WHERE se.error_type IN ('auth', 'auth_revoked')) AS auth_error_count,
   COUNT(*) FILTER (WHERE se.error_type IN ('quota', 'quota_periodic', 'quota_balance', 'quota_permanent')) AS quota_error_count,
   COUNT(*) FILTER (WHERE se.error_type = 'upstream_down') AS upstream_down_count,
-  MODE() WITHIN GROUP (ORDER BY se.stage) AS dominant_stage,
+  -- R45：四类分组合计与 error_count 的缺口可见化（其余错误_kind 不在分项列，
+  -- 无 other 计数时用户无从察觉 150/158 这类大头缺失）。
+  COUNT(*) - COUNT(*) FILTER (WHERE se.error_type = 'rate_limit')
+          - COUNT(*) FILTER (WHERE se.error_type IN ('auth', 'auth_revoked'))
+          - COUNT(*) FILTER (WHERE se.error_type IN ('quota', 'quota_periodic', 'quota_balance', 'quota_permanent'))
+          - COUNT(*) FILTER (WHERE se.error_type = 'upstream_down') AS other_error_count,
+  -- R45：stage 空串→'unknown'，与凭据详情页读端约定一致
+  -- （vendor_credential_error_handlers.go COALESCE(NULLIF(stage,''),'unknown')）；
+  -- 真库 24h stage 空串占 90%+，裸 MODE 会恒输出空串。
+  MODE() WITHIN GROUP (ORDER BY COALESCE(NULLIF(se.stage, ''), 'unknown')) AS dominant_stage,
   MAX(se.occurred_at) AS last_error_at
 FROM supplier_errors_unified se
 LEFT JOIN credentials c ON se.credential_id = c.id

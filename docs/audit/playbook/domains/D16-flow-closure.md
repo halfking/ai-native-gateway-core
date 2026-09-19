@@ -64,3 +64,7 @@
 - **五点同步纪律扩展到"前置创建者"**：StartupFiles 含 657/722（ALTER/FK 引用 durable_llm_tasks）而 516/520（唯一创建者）缺登记 → 全新装必崩 657。`≥704 注册测试`只保护新迁移；本轮加 `TestDurableFamilyPrerequisitesRegistered` 钉"基表必须先于依赖者注册且顺序正确"。任何新迁移触碰某张表的 ALTER/FK 前，先确认该表在 installer 链有创建者。
 - **迁移文件自带 BEGIN/COMMIT 的，绝不能包进外层事务验证**：516/520 的显式 BEGIN/COMMIT 会把外层 psql 事务切成 autocommit 段，外层 ROLLBACK 失效（R42 §三 事故：改名被永久提交，靠改名回滚修复）。验证手法二选一：裸跑幂等文件（确认无 BEGIN 头）或 scratch database。
 - **723 教训（to_regclass 守卫）**：迁移引用"不在 canonical 链创建面上的表"（deploy 链 rename 产物、fixes 瞬态表）必须逐表 DO+to_regclass 守卫，720/723 同款事故两犯。
+
+### R45 回注（2026-09-19，E6 独立复核 + at-least-once 登记）
+- **ReplayFallback 补发 onPersisted 后，hooks 契约从 exactly-once 变 at-least-once**：同一 BackupRecord 经文件（GenericRecovery，无 per-record 去重）+ ring（HTTP replay）双通道回放可双发。G2 主消费者幂等（turns 按 request_id 反连接+ON CONFLICT、跨月视图覆盖完整）；routeincident/boardcache 不幂等（登记 R45 §五#1）。运维纪律：**单通道回放；文件恢复 completed_with_errors 后勿盲目整文件重跑**。commit 歧义变体（已提交但 pgx 报错）代码级不可判（UPDATE 同值仍计 affected），消费者级去重是唯一完整解。
+- admin telemetryIngester（/api/telemetry/request-log）是第三条绕 hooks 的写路径：无 gw_session_id、不做终态 claim，不构成 G2 claim-without-mirror；但 S4 停写 gate 清单必须含该端点禁用项。

@@ -54,3 +54,7 @@
 - **前端闭环端到端验证要看后端词表**：工作台 L1 种子（api-work-types.ts）与 taskprofile registry 是两套词表——注册表缺类时提交 400 且 `.catch(() => undefined)` 静默吞掉（R43 已修：registry +6 类 + correctionWarning 警告条 + 8 语言 i18n）。新增标注/反馈前端时，词表 SSOT 对齐是验收项。
 - **生产接线 ≠ 测试接线**：FeedbackRecorder 挂在测试共享实例上 e2e 全绿、生产 admin store recorder=nil 计数恒零——e2e 注释自认"production wiring: admin handlers carry none"时，交付清单必须含生产装配点 grep。
 - vue-tsc 必跑：taskProfile.ts 泛型强转 TS2352 在 main 存在数日（a8d3a5bbe 交付漏 vue-tsc），vitest 925 绿不覆盖类型门（R42 i18n 教训的同款姊妹案例）。
+
+### R45 回注（2026-09-19）
+- RequestTile 命中率边界定式：`prompt_tokens` 显式 0 且 cache_read>0 时 100% 是合法值（非"未上报"）；缺省（null）才显示 —。判据 = `prompt_tokens != null && r + prompt_tokens > 0`。
+- 实时流 hub==nil 兜底分支的字段面**有意**保持最小集（不可达防御代码不追求与 hub 路径逐字段对齐，避免双份漂移面）——字段对齐判据只适用于可达路径。

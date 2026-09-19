@@ -62,3 +62,6 @@
 - 更正本域 R42 回注的符号名（merge 去重后 R42 子代理侧实现被淘汰）：manual 保护谓词 = `bg/balance_manual_protection.go ManualBalanceProtectionPredicate`（非 balance_manual_guard.go/manualBalanceGuardSQL）；守卫测试 = `TestBalanceManualProtectionContent/IsWired` + `TestManualBalancePredicateWriteTimeCoverage`（非 TestManualBalanceGuardPredicateLockstep）。消费计数 3+2 不变。
 - **失败路径不动 checked_at 现为三处统一契约**（floor guard/probe_v2/⟳ refresh-balance）：`balance_source='manual' AND checked_at > NOW()-24h` 保护窗下，失败 bump = 每次点击续期 = 自动探测永久挂起。新失败路径一律只写 balance_error。
 - 回注教训：**merge 后域文档回注要先 git ls-tree 验证符号存活**——回注指向已删除符号，下轮代理按文档找错文件（R43 实际发生）。
+
+### R45 回注（2026-09-19）
+- supplier_errors 聚合读端的 stage 列空串占比 90%+（真库 24h 1206/1333）：`dominant_stage` 类聚合必须 `COALESCE(NULLIF(stage,''),'unknown')`（vendor_credential_error_handlers.go 读端约定），裸 MODE 恒输出空串。分组聚合须带 other_count 使分项与总数的缺口可见（真库 158 错误只有 8 个落在四类分项）。

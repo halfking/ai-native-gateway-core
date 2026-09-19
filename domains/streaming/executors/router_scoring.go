@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/modeliqdata"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -102,6 +103,37 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 		composite += iqPenalty * weights.IQWeight
 	}
 
+	// 2026-09-19 sticky-session load balancing: 新会话节点选择的三个新维度。
+	//   - sticky 惩罚：该节点 5 分钟滑窗内的 sticky 会话数 / 并发容量，
+	//     会话多且容量小的节点被压低，按容量拉平各节点承载的会话量，
+	//     降低上游按并发会话封禁的风险；
+	//   - recency 惩罚：节点最近一次请求距今越近惩罚越高（默认 30s
+	//     线性衰减到 0），把突发的新会话在毫级粒度上摊开；
+	//   - balance 惩罚：按量计费（billing round 2）凭据余额低于水位
+	//     线（默认 $5）线性加重，0 余额=1；订阅/免费凭据不适用。
+	// sticky/recency 仅在 Router.StickyLoad 接线后生效（未接线=纯 0，
+	// 与历史 composite 逐字节一致，测试/旧部署零影响）；balance 只依赖
+	// candidate 字段。三者权重均可用 env 置 0 整体关闭。
+	stickyWeight := envFloat("LLM_GATEWAY_ROUTING_W_STICKY", 0.15)
+	recencyWeight := envFloat("LLM_GATEWAY_ROUTING_W_RECENCY", 0.05)
+	balanceWeight := envFloat("LLM_GATEWAY_ROUTING_W_BALANCE", 0.05)
+	var stickyPenalty, recencyPenalty float64
+	if r != nil && r.StickyLoad != nil {
+		if stickyWeight > 0 {
+			stickyPenalty = stickySessionPenalty(c, r)
+		}
+		if recencyWeight > 0 {
+			recencyPenalty = recentRequestPenalty(c, r)
+		}
+	}
+	var balancePenalty float64
+	if balanceWeight > 0 {
+		balancePenalty = balancePenaltyForCandidate(c)
+	}
+	composite += stickyPenalty*stickyWeight +
+		recencyPenalty*recencyWeight +
+		balancePenalty*balanceWeight
+
 	if rand.Float64() < 0.1 {
 		slog.Info("LOAD_SCORE_V2",
 			"credential_id", c.CredentialID,
@@ -116,6 +148,9 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 			"capacity_penalty", capacityPenalty,
 			"cost_penalty", costPenalty,
 			"iq_penalty", iqPenalty,
+			"sticky_penalty", stickyPenalty,
+			"recency_penalty", recencyPenalty,
+			"balance_penalty", balancePenalty,
 			"composite", composite,
 		)
 	}
@@ -423,4 +458,128 @@ func calculateQualityScore(c provider.Candidate) float64 {
 	// 质量低 → 分数高（惩罚）
 	// 95% → 0.05, 80% → 0.20, 50% → 0.50
 	return 1.0 - quality
+}
+
+// stickySessionPenalty 把"该节点 5 分钟滑窗内的 sticky 会话数"按其并发
+// 容量归一成 0..1 惩罚（2026-09-19 sticky-session load balancing）。
+// 会话数达到容量 → 1.0；无会话/无信号 → 0。容量未知时用保守默认值
+// （env LLM_GATEWAY_STICKYLOAD_DEFAULT_CAPACITY，默认 8），避免无
+// concurrency_limit 的凭据被误判为无限容量。
+func stickySessionPenalty(c provider.Candidate, r *Router) float64 {
+	info := r.StickyLoad.Info(c.CredentialID)
+	if info.Sessions <= 0 {
+		return 0
+	}
+	capacity := stickySessionCapacity(c, r)
+	ratio := float64(info.Sessions) / float64(capacity)
+	if ratio > 1.0 {
+		ratio = 1.0
+	}
+	return ratio
+}
+
+func stickySessionCapacity(c provider.Candidate, r *Router) int {
+	if cap := concurrencyCapacity(c, r); cap > 0 {
+		return cap
+	}
+	return stickyLoadEnvInt("LLM_GATEWAY_STICKYLOAD_DEFAULT_CAPACITY", 8)
+}
+
+// recentRequestPenalty 以"节点最近一次请求时间"做突发平滑（2026-09-19）：
+// 距今 < 地平线（默认 30s，env LLM_GATEWAY_ROUTING_RECENCY_HORIZON_SECONDS）
+// 线性衰减 1→0；无信号（从未活跃）= 0（空闲节点最优先）。
+func recentRequestPenalty(c provider.Candidate, r *Router) float64 {
+	info := r.StickyLoad.Info(c.CredentialID)
+	if info.LastActivityMs <= 0 {
+		return 0
+	}
+	ageMs := time.Now().UnixMilli() - info.LastActivityMs
+	if ageMs <= 0 {
+		return 1.0
+	}
+	horizonMs := envFloat("LLM_GATEWAY_ROUTING_RECENCY_HORIZON_SECONDS", 30) * 1000
+	if horizonMs <= 0 {
+		return 0
+	}
+	if ageMs >= int64(horizonMs) {
+		return 0
+	}
+	return 1.0 - float64(ageMs)/horizonMs
+}
+
+// balancePenaltyForCandidate 把按量计费凭据的美元余额归一成 0..1 惩罚
+// （2026-09-19）：低于水位线（env LLM_GATEWAY_ROUTING_BALANCE_WATERMARK，
+// 默认 $5）线性加重，≤0 → 1.0；≥水位线 → 0。
+// 订阅/免费/计划类凭据（billing round 1）余额不是约束 → 0；
+// 余额未知（nil）fail-open → 0，不惩罚。
+func balancePenaltyForCandidate(c provider.Candidate) float64 {
+	if c.BalanceUSD == nil {
+		return 0
+	}
+	if provider.BillingRound(c.BillingMode) != 2 {
+		return 0
+	}
+	bal := *c.BalanceUSD
+	if bal <= 0 {
+		return 1.0
+	}
+	watermark := envFloat("LLM_GATEWAY_ROUTING_BALANCE_WATERMARK", 5)
+	if watermark <= 0 || bal >= watermark {
+		return 0
+	}
+	return 1.0 - bal/watermark
+}
+
+// firstHopLotteryWeights 把三新惩罚折算成首跳加权轮询（promoteWeighted
+// CandidateWithWeights）的有效权重（2026-09-19）。
+//
+// 背景：planByTier 的首跳由纯 Weight 加权轮询决定，calculateLoadScore 的
+// 惩罚只影响 failover 顺序——新会话的节点选择恰恰发生在首跳，因此惩罚必须
+// 折进抽签份额。折算公式：
+//
+//	p   = Σ(wi·penalty_i) / Σwi            （三惩罚按评分权重归一）
+//	w'  = max(1, round(Weight · (1 − 0.9·p)))
+//
+// 满载惩罚 p=1 时份额缩到 0.1（floor 防全饿死——重载节点的硬隔离始终由
+// 冷却/熔断过滤负责，抽签只做倾斜）。三个权重 env 全为 0、tracker 未接线
+// 或所有候选折算后不变时返回 nil，调用方走纯 Weight 原路径。
+func firstHopLotteryWeights(cands []provider.Candidate, r *Router) []int {
+	if r == nil || r.StickyLoad == nil || len(cands) == 0 {
+		return nil
+	}
+	wSticky := envFloat("LLM_GATEWAY_ROUTING_W_STICKY", 0.15)
+	wRecency := envFloat("LLM_GATEWAY_ROUTING_W_RECENCY", 0.05)
+	wBalance := envFloat("LLM_GATEWAY_ROUTING_W_BALANCE", 0.05)
+	sum := wSticky + wRecency + wBalance
+	if sum <= 0 {
+		return nil
+	}
+
+	adjusted := make([]int, len(cands))
+	changed := false
+	for i, c := range cands {
+		if c.Weight <= 0 {
+			// 零/未知权重候选在原实现中本就不参与抽签，保持为零。
+			adjusted[i] = c.Weight
+			continue
+		}
+		p := (stickySessionPenalty(c, r)*wSticky +
+			recentRequestPenalty(c, r)*wRecency +
+			balancePenaltyForCandidate(c)*wBalance) / sum
+		if p > 1.0 {
+			p = 1.0
+		}
+		w := int(float64(c.Weight) * (1.0 - 0.9*p))
+		if w < 1 {
+			w = 1
+		}
+		adjusted[i] = w
+		if w != c.Weight {
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return adjusted
 }

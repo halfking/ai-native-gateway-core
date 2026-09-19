@@ -50,3 +50,7 @@
 重点：窗口内 auto 链路改动的闭环完整性与终态 outcome 回填覆盖。
 只读不改。输出按 conventions.md §4 结构，每条发现带 file:line 与触发路径。
 ```
+
+### R45 回注（2026-09-19，Jev 面独立复核全过 + clamp）
+- R44 三修复（decider 层置信度门/gauge 真实连击/明文+双配置 Warn）独立复核全部成立；门的位置定式再确认：**classifier 层返 error 会被误计熔断失败，置信度门必须落 decider 层**。
+- `thresholds.llm_confidence` tuning 现已 clamp (0,1]（超范围拒绝）：此前无校验时 >0.85 的 tuning 会每次白付 fallback 外呼（LLM 槽恒 0.85 必被门拒）。tuning 键新增时沿用"设值即校验"定式。
