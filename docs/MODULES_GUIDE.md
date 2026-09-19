@@ -160,7 +160,7 @@ Client Request
     │
     ├─→ [7] Sticky检查（会话粘性）
     │
-    ├─→ [8] P2C/Bandit评分排序 ⭐
+    ├─→ [8] P2C评分排序 ⭐
     │
     └─→ [9] 返回Top-N候选
 ```

@@ -10,7 +10,7 @@
 |---|---|---|---|
 | RDS production | Authoritative production database | DBA-approved access only | Never copy data out |
 | 252 test | Integration and pre-release database | Controlled SSH tunnel | May sync to local |
-| local | Docker container `llm-gateway-pg` on `127.0.0.1:5432` | Developer-owned | May be overwritten by 252 sync |
+| local | Docker container `llm-gateway-pg` on `127.0.0.1:5432`（自 2026-09-18 起宿主端口绑定放开为 `0.0.0.0:5432` 供局域网访问，scram 密码认证，`LLM_GATEWAY_PG_PORT_BIND` 可覆盖） | Developer-owned | May be overwritten by 252 sync |
 
 Current environment references are limited to RDS, 252, and local. Historical server topology belongs only in archived documentation.
 

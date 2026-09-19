@@ -98,15 +98,16 @@ Requests flow through **two routing layers**, both observable in the Routing Pan
 3. **Tier-based fallback** (primary → secondary → tertiary credentials)
 4. Billing mode preference (metered → free → quota)
 5. **Sticky sessions** (session → credential binding, survives model switches)
-6. **P2C scoring** (Power-of-Two-Choices over latency, success rate, concurrency)
+6. **P2C scoring** (Power-of-Two-Choices over latency, success rate, concurrency, plus cost, sticky-session load, recency, balance, plan quota)
 
 **Dynamic switching**: credential health is continuously scored from rolling request outcomes and background probes. Failing credentials are automatically degraded (rate-limited / cooling down / unreachable → suspended) and traffic shifts to healthy candidates; recovery is automatic after cooldown. Routing policies and settings hot-reload at runtime (~5s) without restarts.
 
 **Current Status**:
 - ✅ Work-type classification, availability, tenant, protocol, tier, billing, sticky, P2C baseline
 - ✅ Health-aware degradation/recovery, hot config reload
-- 🚧 Cost/quality/context-aware scoring (shadow mode, not default active)
-- 🔬 Advanced bandit algorithms (exploration phase)
+- ✅ Cost-aware scoring (marginal-cost penalty folded into P2C score by default since 2026-09-19; `LLM_GATEWAY_ROUTING_W_COST` to disable)
+- 🚧 Context-aware scoring (shadow mode, not default active)
+- 🔬 Advanced bandit algorithms — routing bandit branch removed 2026-09-19 (dead-code cleanup; credential-reputation BanditScorer remains)
 
 ### Intelligent Context Compression
 

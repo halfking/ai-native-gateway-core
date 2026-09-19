@@ -102,7 +102,7 @@ Client Request
     ├─→ [4] 智能路由决策 (domains/streaming/executors)
     │       • model=auto 自动选模型
     │       • 候选凭据发现 (availability/tier/billing/sticky)
-    │       • P2C/Bandit 评分排序
+    │       • P2C 评分排序（sticky/成本惩罚折入，选路 Bandit 分支已于 2026-09-19 删除）
     │
     ├─→ [5] 资源治理 (domains/credential, ratelimit)
     │       • FP槽位并发控制
@@ -184,7 +184,7 @@ Client Request
 
 | 策略 | 文件 | 说明 |
 |------|------|------|
-| **Cost-Optimized** | `router_scoring.go` | 成本优先，生产默认 |
+| **Cost-Optimized** | `router_scoring.go` | 成本惩罚 0.15 参与 P2C 综合分（2026-09-19 起默认开，env 可关；非成本主导） |
 | **Quality-Aware** | `autoroute/scorer/quality.go` | 质量优先 |
 | **Context-Aware** | `autoroute/scorer/context.go` | 上下文窗口优先 |
 | **Cache-Optimized** | `cache/scorer.go` | 缓存命中优先 |

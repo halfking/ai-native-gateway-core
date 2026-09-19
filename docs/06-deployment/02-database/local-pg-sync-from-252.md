@@ -1,7 +1,7 @@
 # Local PostgreSQL (llm-gateway-pg) — 从 252 同步流程
 
-**版本**: 1.11
-**日期**: 2026-09-01
+**版本**: 1.14
+**日期**: 2026-09-19
 **状态**: 强制执行
 **作用范围**: 本地开发用的 docker PG 容器 (`llm-gateway-pg`)
 
@@ -11,7 +11,7 @@
 
 | 环境       | 标识       | 地址                  | 用途                          |
 |------------|------------|-----------------------|-------------------------------|
-| **本地开发**  | `local`    | `127.0.0.1:5432`（Docker 容器 `llm-gateway-pg`，容器内 5432 直映宿主机 5432） | 本地开发、smoke、debug  |
+| **本地开发**  | `local`    | `127.0.0.1:5432`（Docker 容器 `llm-gateway-pg`，容器内 5432 直映宿主机 5432；自 2026-09-18 起宿主端口绑定放开为 `0.0.0.0:5432` 供局域网访问，回环用法不变） | 本地开发、smoke、debug  |
 | **252 测试**  | `test`     | `<env:HOST_252>`（经受控 SSH 隧道访问）         | 集成测试、staging 验证 |
 | **RDS 生产**  | `prod`     | RDS 实例（内部）                              | 真实生产流量             |
 
@@ -280,6 +280,7 @@ PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -
 | 2026-09-01 | 1.11 | **文档-代码一致性审计修订**（4 任务并行审计 + 本地复现验证）：① Q1 更正——默认 schema 模式不 DROP、无自动回滚（原文与代码相反）；② 移除不存在的 "SSH control socket" 机制描述（实现是所有权 PID 语义：只复用健康 listener、只 kill 自建 PID）；③ hot 表模式与脚本默认对齐（catalog 判定含 2025 分区；`*_archived`/`*_archive` 为后缀匹配，非中缀）；④ §3.3 数据目录表述更新（recreate 脚本与容器现均指向 `~/.agents-cache/llm-gateway-pg-data`）；⑤ 补录 `local-host-sync-db.sh` 包装入口（§3.1/§六），明确 `pg-table-copy.sh` 不管理隧道；⑥ 头部版本对齐变更记录 |
 | 2026-09-07 | 1.12 | **§5 Q2 数据目录表述二次更正**：实测 `docker inspect llm-gateway-pg --format '{{json .Mounts}}'` → 容器当前 bind 源为 `~/kaixuan/postgres`（21G base 已活跃），历史条目里写的 `~/.agents-cache/llm-gateway-pg-data` 已被新 SSOT 取代。`scripts/local-dev/recreate-llm-gateway-pg.sh:40,46` 同步把 `DATA_DIR` 改为 `${LLM_GATEWAY_PG_DATA_DIR:-$HOME/kaixuan/postgres}`（可覆盖），头部注释把旧 Downloads 路径标注为 rollback-only 副本，避免脚本绑定到错误目录导致 22G 真实数据"看似丢失"。§5 Q2 正文同步替换为 `~/kaixuan/postgres`。历史 v1.6 / v1.11 条目保留原貌，不修改历史。 |
 | 2026-09-07 | 1.13 | **本地 llm-gateway-pg 角色防御 + psql 调用修正**：新增 `scripts/local-dev/ensure-llm-gateway-pg-role.sh`，幂等 CREATE ROLE/CREATE DATABASE（缺则补、在则 no-op），由 `scripts/deploy-local.sh ensure_resources()` 末尾在 `DL_PG_CONTAINER=llm-gateway-pg` 路径下调用。修复 5 个本地脚本里 `-U postgres` → `-U "${LLM_GATEWAY_PG_USER:-llm_gateway}"`（`sync-db-to-252.sh`、`sync-db-from-252.sh`、`diagnose-nvidia-minimax.sh`、`fix_503_one_click.sh`、`install/backup.sh`）以及 `deploy/prometheus/.env.example`。**作用域仅限本地 llm-gateway-pg**，252/245 远端的 psql 调用保持原状（其各自数据库按各环境约定管理）。 |
+| 2026-09-19 | 1.14 | **端口绑定放开局域网（跟齐 0080da15e）**：`scripts/local-dev/recreate-llm-gateway-pg.sh` 的 `PORT_BIND` 自 2026-09-18 起默认 `0.0.0.0:5432:5432`（原 `127.0.0.1:5432:5432`），供局域网设备直连本地开发库（开放标准见治理仓 `docs/deployment/LAN-EXPOSURE-STANDARD-2026-09-19.md`）；scram 密码认证不变，可用 `LLM_GATEWAY_PG_PORT_BIND` 覆盖（如收回 loopback 绑定）。回环访问方式（`-h 127.0.0.1`）不受影响。 |
 
 ---
 
