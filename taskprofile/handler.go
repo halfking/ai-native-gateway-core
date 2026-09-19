@@ -54,7 +54,10 @@ const OverlayEnvVar = "TASKPROFILE_OVERLAY"
 //
 // 语义约定：
 //   - 只有"真实变更尝试"才发事件——校验拒绝（400）与 nil-pool 503 不发
-//     （没有变更意图落库，不属于审计面）；
+//     （没有变更意图落库，不属于审计面）。例外（R47 契约精确化）：
+//     corrections-import 的 body 级失败（CSV 格式/表头错、32MB 超限）也投
+//     failure——导入的载荷本身即变更内容，body 解析失败属"真实尝试被拒"，
+//     与 create/apply 的 JSON 字段校验拒绝不同层；
 //   - success 与 failure 都发（失败的操作同样需要留痕：谁在何时试了什么）；
 //   - hook panic 隔离（审计绝不能打断端点），nil hook 零开销。
 type AuditEvent struct {

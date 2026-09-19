@@ -108,3 +108,57 @@ func TestTaskProfileAuditSink_NilRequestDoesNotPanic(t *testing.T) {
 		t.Fatalf("expected actor=unknown for nil request, got %v", records[0]["actor"])
 	}
 }
+
+// R47：F8⑨ 契约钉桩——sink 禁止把原始请求的 headers/body 带进审计输出
+// （Authorization 头会带出会话凭据）。请求携带敏感头与 body 后，断言
+// 捕获的 slog 记录中两者均不出现；未来有人往 sink 加
+// slog.Any("request", ev.Request) 之类会被此测试拦截。
+func TestTaskProfileAuditSink_NeverLogsHeadersOrBody(t *testing.T) {
+	req := httptest.NewRequest("POST", "/api/admin/taskprofile/corrections",
+		strings.NewReader(`{"task_type":"secret-payload"}`))
+	req.Header.Set("Authorization", "Bearer super-secret-token")
+	req = SetAuthContext(req, &AuthContext{Username: "ops01", TenantID: "tenant-x"})
+
+	records := captureLogRecords(t, func() {
+		taskProfileAuditSink(taskprofile.AuditEvent{
+			Action:  taskprofile.AuditActionCorrectionCreate,
+			Outcome: "failure",
+			Detail:  map[string]any{"error": "boom"},
+			Request: req,
+		})
+	})
+	if len(records) != 1 {
+		t.Fatalf("expected exactly 1 log record, got %d", len(records))
+	}
+	blob, err := json.Marshal(records[0])
+	if err != nil {
+		t.Fatalf("marshal record: %v", err)
+	}
+	for _, forbidden := range []string{"super-secret-token", "secret-payload", "Authorization", "Bearer"} {
+		if strings.Contains(string(blob), forbidden) {
+			t.Fatalf("audit record leaked sensitive material %q: %s", forbidden, blob)
+		}
+	}
+}
+
+// R47：AuthContext 存在但字段为空串 → 保持 unknown/default 回退
+// （ac != nil 但 Username/TenantID 均空的中间态分支补执行）。
+func TestTaskProfileAuditSink_EmptyAuthContextFieldsFallBack(t *testing.T) {
+	req := httptest.NewRequest("POST", "/api/admin/taskprofile/corrections", nil)
+	req = SetAuthContext(req, &AuthContext{Username: "", TenantID: ""})
+
+	records := captureLogRecords(t, func() {
+		taskProfileAuditSink(taskprofile.AuditEvent{
+			Action:  taskprofile.AuditActionCorrectionCreate,
+			Outcome: "success",
+			Request: req,
+		})
+	})
+	if len(records) != 1 {
+		t.Fatalf("expected exactly 1 log record, got %d", len(records))
+	}
+	if records[0]["actor"] != "unknown" || records[0]["tenant_id"] != "default" {
+		t.Fatalf("expected unknown/default fallback for empty auth fields, got %v/%v",
+			records[0]["actor"], records[0]["tenant_id"])
+	}
+}
