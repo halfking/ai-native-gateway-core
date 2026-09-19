@@ -63,7 +63,7 @@ Provider Candidate 的价格、cache、context、延迟、质量、配额和协�
 
 ## 4. 当前评分
 
-线上主路径仍以 P2C/Bandit/tier/sticky/URSM 为主。复合惩罚通常包括：
+线上主路径仍以 P2C/tier/sticky/URSM 为主（选路 Bandit 分支已于 2026-09-19 删除，仅 `domains/credential` 的 BanditScorer 保留供 reputation worker 使用）。复合惩罚通常包括：
 
 ```text
 concurrency pressure
@@ -72,17 +72,18 @@ concurrency pressure
 + quality penalty
 + headroom penalty
 + capacity penalty
-+ optional cost penalty
++ cost penalty（边际成本，默认 0.15，env LLM_GATEWAY_ROUTING_W_COST 可关）
++ sticky 会话数（默认 0.15）/ 最近请求时间（0.05）/ PAYG 余额（0.05）/ 计划额度（0.10）
 + optional IQ penalty
 ```
 
-OmniRoute 风格的 `cost-optimized`、`cache-optimized`、`context-aware`、`headroom` scorer 已存在，但主要通过 `ShadowStrategy` 观测，不应称为默认 active strategy。
+OmniRoute 风格的 `cost-optimized`、`cache-optimized`、`context-aware`、`headroom` scorer 已存在，仍主要通过 `ShadowStrategy` 观测，不应称为默认 active strategy；但边际成本惩罚自 2026-09-19 起默认折入 P2C 综合分（`CostWeight` 默认 0.15，env 可关）。
 
 ### 策略语义门禁
 
 | 策略 | 当前缺口 | active 前要求 |
 |---|---|---|
-| cost | 请求 token budget、可靠性和延迟参与不足 | unknown price 显式惩罚；费用和路由解释一致 |
+| cost | unknown price 显式惩罚已落地（2026-09-19：Round2 未知价格取最大惩罚，订阅/计划/免费边际成本记 0）；请求 token budget、可靠性和延迟参与仍不足 | 费用和路由解释一致 |
 | cache | cache affinity/telemetry 不完整 | cache policy、命中率和 cache price 有请求级输入 |
 | context | 主要偏好最大窗口 | 输入 token、output budget、安全余量硬过滤 |
 | headroom | 主要复用 limiter pressure | 明确 FP slot、concurrency、queue 的语义和权重 |

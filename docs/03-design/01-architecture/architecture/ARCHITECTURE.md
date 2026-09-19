@@ -120,11 +120,11 @@ HTTP/SSE
 availability / tenant / protocol / model filters
   -> URSM or compatible state backend
   -> tier + billing round + sticky constraints
-  -> P2C or Bandit ordering
+  -> P2C ordering（Bandit 分支已于 2026-09-19 删除）
   -> dispatch candidate execution and failover
 ```
 
-`cost-optimized`、`cache-optimized`、`context-aware`、`headroom` 评分器已经存在，但当前主要用于 shadow comparison；不能描述为默认 active routing mode。详见 [`routing-and-state.md`](routing-and-state.md)。
+`cost-optimized`、`cache-optimized`、`context-aware`、`headroom` 评分器已经存在，当前仍主要用于 shadow comparison；不能将具名 scorer 描述为默认 active routing mode（但边际成本惩罚自 2026-09-19 起默认折入 P2C 综合分，env `LLM_GATEWAY_ROUTING_W_COST` 可关）。详见 [`routing-and-state.md`](routing-and-state.md)。
 
 ### 3.3 重试、流式和安全边界
 
