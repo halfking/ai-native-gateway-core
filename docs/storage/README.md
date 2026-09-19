@@ -153,7 +153,9 @@ go run ./cmd/gateway
 `storage_mode: "lite"` 段，或纯环境变量（`config.LoadStorageConfigFromEnv`，无 YAML 即可）。
 
 lite 模式由 `cmd/gateway/storage_mode_init.go` 装配：旁路 PG 初始化、创建 L1.5 FileCache、
-启动 cache/bodies 两个后台清理任务；SIGTERM 优雅关闭（先停 trimmers 再排空异步写队列）。
+启动 cache/bodies/行级 retention 三个后台清理任务（R46 F6 起 SQLite request_logs/sessions/
+session_turns 按 `retention.request_logs_days` 自动清理）；SIGTERM 优雅关闭（先停 trimmers
+再排空异步写队列）。
 已通过无 PG/Redis 的真机 smoke 验证：完整启动、`/healthz` 200、SQLite+WAL 落盘、
 优雅关闭 exit 0。
 

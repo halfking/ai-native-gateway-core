@@ -160,7 +160,7 @@ func initStorageMode(cfg *config.Config, storageCfg *config.StorageConfig) (*sto
 	// 行级保留期 worker（R46 F6）：此前 RequestLogsDays 是死配置——文件侧
 	// 有两个 Trimmer，SQLite 行侧（request_logs/sessions/session_turns）无
 	// 任何 TTL，长跑单文件无界增长。sessions/turns 以会话为单位整体清理。
-	if sqlDB := f.SQLiteDB(); sqlDB != nil && lite.Retention.RequestLogsDays > 0 {
+	if sqlDB := f.SQLiteDB(); sqlDB != nil {
 		retention := bg.NewLiteRetentionWorker(sqlDB,
 			time.Duration(lite.Retention.RequestLogsDays)*24*time.Hour)
 		rt.trimmerWG.Add(1)
@@ -169,7 +169,10 @@ func initStorageMode(cfg *config.Config, storageCfg *config.StorageConfig) (*sto
 			retention.Start(trimmerCtx)
 		}()
 	} else {
-		slog.Warn("storage lite: 行级保留期 worker 未装配（request_logs_days<=0 或无 SQLite 句柄），SQLite 行数据不会自动清理",
+		// 防御分支：lite 分支 factory 打开失败已提前返回，正常不可达。
+		// 注意 ApplyLiteDefaults 把 RequestLogsDays<=0 钳为默认 7——行级
+		// 保留期没有 opt-out 语义（0 即 7d），运维文档按此口径。
+		slog.Warn("storage lite: 行级保留期 worker 未装配（无 SQLite 句柄），SQLite 行数据不会自动清理",
 			"request_logs_days", lite.Retention.RequestLogsDays)
 	}
 
