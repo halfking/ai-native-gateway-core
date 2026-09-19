@@ -107,7 +107,7 @@ func TestFinalizeOpenAIUpstreamBody_SourceReasoning_LegacyWithIR(t *testing.T) {
 		assertUpstreamThinking(t, body, "enabled", true)
 	})
 
-	t.Run("unknown catalog still drops with loss report", func(t *testing.T) {
+	t.Run("unknown catalog does not guess thinking", func(t *testing.T) {
 		cand := cand
 		cand.CatalogCode = ""
 		cand.RawModel = "some-openai-form-model"
@@ -189,22 +189,23 @@ func TestFinalizeOpenAIUpstreamBody_SourceReasoning_BodyReasoningWins(t *testing
 	}
 }
 
-// context 值经 WithCancel/WithValue 派生链（streamretry wrapper 形态）仍可达。
-func TestFinalizeOpenAIUpstreamBody_SourceReasoning_SurvivesDerivedContext(t *testing.T) {
+// context 派生链（WithCancel/WithValue 族，retry/survival wrapper 形态）可达性
+// 语义钉桩：派生不丢失外层真值；但内层显式 WithSourceReasoning(空载体) 会以
+// context.Value 最近值语义遮蔽外层真值——空载体等同无载体（HasReasoningIntent
+// =false），恢复不发生。这是文档化语义而非缺陷：遮蔽只可能来自显式调用，
+// 而显式挂空载体的发送方意图就是"清除"。
+func TestFinalizeOpenAIUpstreamBody_SourceReasoning_InnerEmptyCarrierShadowsOuter(t *testing.T) {
 	executor := &Executor{IR: &irAdapterForTest{}}
 	params := sourceReasoningParams("")
 	derived, cancel := context.WithCancel(params.R.Context())
 	defer cancel()
-	derived = ir.WithSourceReasoning(derived, ir.SourceReasoning{}) // 派生链上再叠一层
+	derived = ir.WithSourceReasoning(derived, ir.SourceReasoning{}) // 派生链最内层挂空载体
 	r := httptest.NewRequest("POST", "/v1/chat/completions", nil).WithContext(derived)
 	params.R = r
 	body, err := executor.finalizeOpenAIUpstreamBody(params, minimaxCandidate(), geminiSyntheticBody(t, 4096))
 	if err != nil {
 		t.Fatalf("finalizeOpenAIUpstreamBody: %v", err)
 	}
-	// 派生链最内层的空 SourceReasoning 不遮蔽外层真值（context.Value 取最内层
-	// 非空…实际上 WithValue 会遮蔽——空值HasReasoningIntent=false 视为无携带，
-	// 恢复不发生）。该用例钉住这个语义：空载体等同无载体。
 	m := decodeUpstreamBody(t, body)
 	if _, exists := m["thinking"]; exists {
 		t.Errorf("inner empty carrier must shadow as no-carrier (documented semantics): %s", body)

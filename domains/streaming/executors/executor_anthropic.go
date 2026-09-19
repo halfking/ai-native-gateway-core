@@ -554,6 +554,18 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 		// instead of the Anthropic-standard tool_use_id for tool_result blocks).
 		// Fixes MiniMax-M3 tool_call_id not found (2013) bug.
 		irReq.TargetProvider = cand.CatalogCode
+		// R45（Gemini thinking 专项补面，D01+D02 复核发现）：Gemini 入向的
+		// budget 形 intent 在 handler step-6 已丢出合成 body；本 Q3 分支
+		// （openai 形 → anthropic 上游）此前无恢复点，serialize_anthropic
+		// 的 Reasoning→thinking 渲染能力（serialize_anthropic.go Thinking
+		// config 段）拿不到输入。与 executor_chat.go 三分支同款恢复。
+		irReq = ir.RestoreSourceReasoning(irReq, params.R.Context())
+		// Anthropic 目标的 budget 约束与 Gemini 源不同：budget ≥ 1024 且
+		// < max_tokens（Anthropic 硬性限制；reasonnorm renderAnthropic 同款
+		// 钳制）。跨协议恢复的 budget 未经客户端按 Anthropic 规范选值，
+		// 钳不到位会 400；钳后仍 < 1024（max_tokens 太小放不下）则整体
+		// 丢弃 thinking（保持请求可发）。
+		irReq = ir.ClampRestoredReasoningForAnthropic(irReq)
 		bodyBytes, err := irScoped.SerializeAnthropic(irReq)
 		if err != nil {
 			// 2026-08-08 P0 Fix: same IR-circuit-open fallback as ParseOpenAI.
