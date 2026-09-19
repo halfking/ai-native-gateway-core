@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -463,6 +464,11 @@ func stateTableTTLSpecs() []stateTableTTLSpec {
 		// 诊断/质量评估类数据的保留预期；settings_kv 行在管理员首次
 		// 显式设置时落库，此前按 fallback 生效。
 		{parent: "supplier_errors", setting: "lifecycle.supplier_errors_ttl_days", fallback: 90},
+		// R47（存储演进批，R46 §五#8）：cache_metrics 月分区此前只建不删。
+		// 分区名 cache_metrics_YYYY_MM（475）与 689 helper 的
+		// ^<parent>_\d{4}_\d{2}$ 枚举正则匹配，直接复用调度。诊断写侧
+		// 数据（cachemetrics recorder），fallback 90 天对齐诊断类保留。
+		{parent: "cache_metrics", setting: "lifecycle.cache_metrics_ttl_days", fallback: 90},
 	}
 }
 
@@ -1136,11 +1142,37 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 			slog.Info("partition_manager: promote batch",
 				"label", s.label, "rows", n)
 		}
+		// R47（存储演进批，R46 §五#8）：排水结束后记录 hot 剩余行数水位。
+		// 持续高于「批量×周期」= promote 吞吐跟不上写入；查错只 Warn 不阻断。
+		recordHotTableBacklog(s.label, pm.hotTableBacklogRows(ctx, s.label))
 		if budgetExhausted {
 			break
 		}
 	}
 	pm.analyzePartitionStats(ctx)
+}
+
+// hotTableBacklogRows counts remaining rows in a spec's hot table. The
+// physical hot table is <label> (already suffixed) or <label>_hot for the
+// three labels that name the partition family instead (credit_ledger,
+// request_logs_bodies, tool_usage_stats). Query errors return -1 (gauge
+// keeps last value; caller Warns) — never blocks the promote cycle.
+func (pm *PartitionManager) hotTableBacklogRows(ctx context.Context, label string) int64 {
+	table := label
+	if !strings.HasSuffix(table, "_hot") {
+		table += "_hot"
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var n int64
+	if err := pm.db.QueryRow(timeoutCtx,
+		"SELECT COUNT(*) FROM "+table,
+	).Scan(&n); err != nil {
+		slog.Warn("partition_manager: hot backlog count failed",
+			"label", label, "table", table, "error", err)
+		return -1
+	}
+	return n
 }
 
 // analyzePartitionStats refreshes planner stats on hot heap tables and recent

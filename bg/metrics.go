@@ -185,6 +185,16 @@ var (
 		},
 		[]string{"table"},
 	)
+	// R47（存储演进批，R46 §五#8）：per-table hot 剩余行数 gauge——promote
+	// 排水结束后的水位。持续高于「批量×周期」即排水速度跟不上写入，
+	// 是 hot 表 8h 不变式承压的前瞻信号。
+	hotTableBacklogRows = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llm_gateway_hot_table_backlog_rows",
+			Help: "Rows remaining in the hot table after each promote drain cycle. Persistently high values mean promote throughput lags write throughput.",
+		},
+		[]string{"table"},
+	)
 )
 
 // recordPromoteFailure increments the failure counter for a table.
@@ -206,6 +216,11 @@ func recordPromoteDuration(table string, seconds float64) {
 // recordPromoteSkipped increments the skipped counter for a table.
 func recordPromoteSkipped(table string) {
 	hotTablePromoteSkippedTotal.WithLabelValues(table).Inc()
+}
+
+// recordHotTableBacklog sets the post-drain hot table row count (R47).
+func recordHotTableBacklog(table string, rows int64) {
+	hotTableBacklogRows.WithLabelValues(table).Set(float64(rows))
 }
 
 // incPromoteZombieLockStreak (2026-08-31, P2-8) bumps the per-table
