@@ -58,3 +58,24 @@ func TestSelectBestNode_HealthBeatsSubscriptionPriority(t *testing.T) {
 		t.Fatalf("expected healthy node of low-priority subscription to win, got %+v", got)
 	}
 }
+
+// R47：订阅缺失于 map（store 里没有该订阅记录）时 Priority 回落 0，
+// 与"未设置"同桶——不得 panic 或被当作最高/最低优先。
+func TestSelectBestNode_MissingSubscriptionPriorityFallsBackToZero(t *testing.T) {
+	store := &fakeStoreForBans{
+		subs: []*Subscription{}, // 节点 77 的订阅 9 无记录
+		nodes: []*Node{
+			{ID: 77, SubscriptionID: 9, Name: "orphan-sub", Protocol: ProtocolHTTP, Server: "3.3.3.3", Port: 80, Status: "active", Location: "SG", ResponseTimeMs: 20},
+		},
+	}
+	mgr := NewManager(store, nil, nil)
+	mgr.refreshAllSubscriptionBans(context.Background())
+
+	got, err := mgr.SelectBestNode(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("SelectBestNode: %v", err)
+	}
+	if got == nil || got.ID != 77 {
+		t.Fatalf("expected orphan node to be selectable, got %+v", got)
+	}
+}

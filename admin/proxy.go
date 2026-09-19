@@ -374,6 +374,12 @@ func (h *Handler) createProxySubscription(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "status must be one of active/disabled/error")
 		return
 	}
+	// R47：Priority 与 manual_priority 同口径（[0,99]，小值优先）——此前
+	// 直通入库，负值会成为"最高优先级"越过所有未设置（0）订阅。
+	if req.Priority < 0 || req.Priority > 99 {
+		writeError(w, http.StatusBadRequest, "priority must be in [0,99]")
+		return
+	}
 
 	_, store := h.proxyRuntime()
 	banned := normalizeRegionList(req.BannedRegions)
@@ -459,6 +465,11 @@ func (h *Handler) updateProxySubscription(w http.ResponseWriter, r *http.Request
 		sub.Status = st
 	}
 	if req.Priority != nil {
+		// R47：与 create/manual_priority 同口径（[0,99]）。
+		if *req.Priority < 0 || *req.Priority > 99 {
+			writeError(w, http.StatusBadRequest, "priority must be in [0,99]")
+			return
+		}
 		sub.Priority = *req.Priority
 	}
 	if req.Notes != nil {

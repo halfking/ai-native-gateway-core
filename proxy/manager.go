@@ -659,7 +659,7 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 }
 
 // refreshSubscriptionBans 把订阅级 banned_regions 同步到内存缓存。
-// LoadCache / RefreshSubscription / Subscription PUT 后调用，保证 selectNode
+// ReloadCache / RefreshSubscription / Subscription PUT 后调用，保证 selectNode
 // 看到最新的禁用集合，避免仍命中已被禁用的节点。
 func (m *Manager) refreshSubscriptionBans(ctx context.Context, subscriptionID int) {
 	sub, err := m.store.GetSubscription(ctx, subscriptionID)
