@@ -734,11 +734,14 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 	// 对最近 8h 仍在 hot 侧的请求 404）。不用 turns 优先的
 	// request_logs_with_current_month——它的 turns 段把 auto_profile 投影
 	// 为 NULL，决策回放要读的字段都在 request_logs 侧。
-	// request_id 匹配必须按腿进行：视图把 hot(TEXT)/母表(UUID) 归并为
+	// request_id 匹配必须按腿进行：视图把 hot(TEXT)/母表(TEXT) 归并为
 	// text，但 ANY 的参数类型会被两支推成 uuid[]（数组字面量对探测 id 直接
 	// 22P02）——改为内联双腿：hot 腿 text 精确匹配（走 request_id 索引，
-	// 覆盖 hex32/dashed/探测 id 三形态）；母表腿 ::text 比较（匹配 uuid 列
-	// 把 hex32 归一成的 dashed 形态），加 30d 界防跨全部分区扫描。
+	// 覆盖 hex32/dashed/探测 id 三形态）；母表腿 ::text 比较（request_id
+	// 同为 text 列，双形态匹配纯防御性），加 30d 界防跨全部分区扫描。
+	// （R47 实测注释更正：真库 request_logs(_hot).request_id 均为 text 且
+	// 母表存原始 hex32；真正 uuid 型的是 routing_decision_log.request_id，
+	// L2 腿的 dashed 形态候选对位的是那张表。）
 	err := h.db.QueryRow(ctx, `
 		SELECT ts, task_type, auto_profile, auto_confidence,
 		       client_model, outbound_model, api_key_id, credential_id,
@@ -1102,8 +1105,10 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	writeJSONOk(w, out)
 }
 
-// uuidVariants 返回同一请求 id 在 hot（TEXT 原样存储）与母表（UUID 列把
-// hex32 归一为 dashed 形态）两条腿上的可能形态，供 = ANY 匹配（R46 F9）。
+// uuidVariants 返回同一请求 id 在两条腿上的可能形态，供 = ANY 匹配
+// （R46 F9）。真库两腿 request_id 均为 text（母表存原始 hex32，R47 实测
+// 更正了此前"母表 UUID 列归一 dashed"的注释）；dashed 形态候选对位的
+// 是 routing_decision_log.request_id（uuid 列，L2 腿）。
 // 非 uuid 形态的 id（探测字符串等）原样返回单元素。
 func uuidVariants(id string) []string {
 	stripped := strings.ToLower(strings.ReplaceAll(id, "-", ""))

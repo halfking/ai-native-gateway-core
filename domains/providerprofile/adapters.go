@@ -247,6 +247,11 @@ func (a *GatewayRequestAnalyzer) BucketSuccessRates(
 	if bucketSizeMin <= 0 {
 		bucketSizeMin = 5
 	}
+	// R47：入口 clamp（类型注释宣称"各方法入口 clamp 到 8h"，此前只有
+	// AnalyzeRequests 有）——外部直调传大 hours 会静默少报。
+	if hours <= 0 || hours > providerProfileHotHours {
+		hours = providerProfileHotHours
+	}
 	query := `
 		SELECT
 		  FLOOR(EXTRACT(EPOCH FROM ts) / ($3 * 60)) * ($3 * 60) AS bucket_epoch,

@@ -1571,6 +1571,10 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 				  -- 落入 ELSE 2 档与全局行（provider_id IS NULL）仅按
 				  -- effective_from 决胜负，他供应商较新价格可冒充全局默认价。
 				  -- tenant 级行（scope='tenant'）是有意保留的 ELSE 2 档语义。
+				  -- 注意（R47 注释精确化）：tier-1 判据 provider_id = p.id 不
+				  -- 校验 scope，scope='tenant' 且带 provider_id=p.id 的混合行
+				  -- 会落供应商档而非 ELSE 2——CHECK 不禁止该畸形形态，现网
+				  -- tenant 行 provider_id 均为 NULL 不触发；数据卫生问题。
 				  AND NOT (pp.scope = 'provider' AND pp.provider_id IS NOT NULL AND pp.provider_id <> p.id)
 				-- 2026-09-19 成本自动填充优先级：凭据级 > 供应商级 > 全局。
 				-- 供应商维护的价格表（scope='provider', provider_id=p.id）

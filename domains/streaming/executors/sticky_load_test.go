@@ -239,3 +239,36 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// R47：快照新鲜度上限的绝对顶——window 被运维调得极大时（如 86400s），
+// Redis 故障下的冻结快照最多参与 stickyLoadSnapshotStaleCap 时长，之后
+// 回落本实例内存镜像（R46 F1 的 window 耦合收尾）。
+func TestStickyLoadTrackerSnapshotStaleCap(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_STICKYLOAD_WINDOW_SECONDS", "86400")
+	tr := NewStickyLoadTracker()
+	defer tr.Close()
+	if tr.snapshotMaxAge != stickyLoadSnapshotStaleCap {
+		t.Fatalf("expected snapshotMaxAge capped at %v, got %v",
+			stickyLoadSnapshotStaleCap, tr.snapshotMaxAge)
+	}
+
+	// 注入超龄"冻结"快照：年龄超过绝对顶 → 不得覆盖 Info。
+	tr.snapMu.Lock()
+	tr.snapshot = map[int]StickyLoadInfo{7: {Sessions: 99, LastActivityMs: 1}}
+	tr.snapAt = time.Now().Add(-stickyLoadSnapshotStaleCap - time.Minute)
+	tr.snapMu.Unlock()
+	if got := tr.Info(7); got.Sessions != 0 {
+		t.Fatalf("stale snapshot beyond cap must fall back to memory, got %+v", got)
+	}
+}
+
+// R47：activity 保留窗跟随 recency 地平线 env——地平线调大后 recency
+// 信号不得比语义窗先归零。
+func TestStickyLoadActivityRetentionFollowsHorizon(t *testing.T) {
+	tr := NewStickyLoadTracker()
+	defer tr.Close()
+	t.Setenv("LLM_GATEWAY_ROUTING_RECENCY_HORIZON_SECONDS", "900")
+	if got := tr.activityRetention(); got < 900*time.Second {
+		t.Fatalf("activity retention must cover configured horizon 900s, got %v", got)
+	}
+}

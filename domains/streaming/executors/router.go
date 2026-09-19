@@ -184,7 +184,7 @@ type Router struct {
 	StickyLoad StickyLoadView
 
 	// ShadowStrategy (GW-03, omni-ref2): 可选的路由策略，仅用于 shadow 评分
-	// 对比，不改变实际选中候选。nil = 现状（P2C/bandit 行为零变化）。
+	// 对比，不改变实际选中候选。nil = 现状（P2C 行为零变化）。
 	// 非 nil 时，planByTier 在每个 tier bucket 用 ShadowStrategy 独立评分，
 	// 记录 agreed/disagreed metric（llmgw_routing_shadow_strategy_outcomes_total）。
 	// 通过环境变量 LLM_GATEWAY_ROUTING_SHADOW_STRATEGY 选择策略构造。
@@ -1043,8 +1043,8 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 
 		// Load-aware P2C ordering. (The Thompson-Sampling Bandit branch was
 		// removed 2026-09-19: Router.Bandit was never wired in production —
-		// always nil since main.go disabled the block — so the branch was
-		// unreachable outside router_bandit_test.go.)
+		// always nil since main.go disabled the block — so the dead branch
+		// and its dedicated test file were deleted together.)
 		sorted := p2cOrder(bucket, r)
 
 		// Two-layer priority routing (2026-09-19): partition the P2C order

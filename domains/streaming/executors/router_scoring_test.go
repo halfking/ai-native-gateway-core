@@ -403,3 +403,30 @@ func TestLerp(t *testing.T) {
 		t.Errorf("lerp at start should be 1.00")
 	}
 }
+
+// R47：F8④ 收尾钉桩——负权重被 clamp 到 0，方向不反转（负 headroom/
+// capacity 权重曾使对应惩罚项变奖励：低 headroom、低容量节点反被偏好）。
+func TestCalculateLoadScore_NegativeWeightsClamped(t *testing.T) {
+	router := &Router{LoadScoreWeights: DefaultLoadScoreWeights()}
+	candidate := provider.Candidate{
+		CredentialID:     1,
+		ProviderID:       1,
+		P95LatencyMs:     500,
+		SuccessRate:      0.95,
+		ConcurrencyLimit: intPtr(50),
+	}
+	ctx := context.Background()
+
+	t.Setenv("LLM_GATEWAY_ROUTING_W_HEADROOM", "0")
+	zero := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights)
+
+	t.Setenv("LLM_GATEWAY_ROUTING_W_HEADROOM", "-5")
+	negativeHeadroom := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights)
+	assert.InDelta(t, zero, negativeHeadroom, 1e-12,
+		"negative W_HEADROOM must clamp to 0 (same score as W_HEADROOM=0)")
+
+	t.Setenv("LLM_GATEWAY_ROUTING_W_CAPACITY", "-3")
+	negativeCapacity := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights)
+	assert.InDelta(t, zero, negativeCapacity, 1e-12,
+		"negative W_CAPACITY must clamp to 0 (same score as W_HEADROOM=0 baseline)")
+}

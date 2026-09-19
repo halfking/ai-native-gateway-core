@@ -47,6 +47,11 @@ const (
 	// stickyLoadActivityRetention：activity 时间戳只需覆盖评分的 recency
 	// 地平线（默认 30s），保留 10 分钟足够且限界内存。
 	stickyLoadActivityRetention = 10 * time.Minute
+	// stickyLoadSnapshotStaleCap 是快照新鲜度上限的绝对顶（R47）：R46 F1
+	// 把 Info 的快照覆盖判据钉在 window 上，但 window 是运维 env——调得
+	// 极大时（如 86400s）Redis 故障下的冻结快照仍可整天参与评分，偏置
+	// 重新打开。快照年龄超过 min(window, 该顶) 即回落本实例内存镜像。
+	stickyLoadSnapshotStaleCap = 10 * time.Minute
 )
 
 // StickyLoadTracker 维护每凭据的 sticky 会话滑窗（2026-09-19
@@ -67,6 +72,9 @@ const (
 type StickyLoadTracker struct {
 	window  time.Duration
 	refresh time.Duration
+	// snapshotMaxAge = min(window, stickyLoadSnapshotStaleCap)，构造期
+	// 定死（window 构造后不变），Info 快照新鲜度判据用（R47）。
+	snapshotMaxAge time.Duration
 
 	store StickyLoadStore // nil → 纯内存（无 Redis 部署）
 
@@ -98,11 +106,15 @@ func NewStickyLoadTracker() *StickyLoadTracker {
 		refresh = stickyLoadDefaultRefresh
 	}
 	t := &StickyLoadTracker{
-		window:    window,
-		refresh:   refresh,
-		sessions:  make(map[int]map[string]int64),
-		activity:  make(map[int]int64),
-		stopSweep: make(chan struct{}),
+		window:         window,
+		refresh:        refresh,
+		snapshotMaxAge: window,
+		sessions:       make(map[int]map[string]int64),
+		activity:       make(map[int]int64),
+		stopSweep:      make(chan struct{}),
+	}
+	if t.snapshotMaxAge > stickyLoadSnapshotStaleCap {
+		t.snapshotMaxAge = stickyLoadSnapshotStaleCap
 	}
 	t.sweepDone.Add(1)
 	go t.sweepLoop()
@@ -136,6 +148,13 @@ func (t *StickyLoadTracker) Close() {
 
 func (t *StickyLoadTracker) sweepLoop() {
 	defer t.sweepDone.Done()
+	// 顶层 recover：pruneMemory 纯 map 操作，panic 概率低，但后台循环
+	// 裸奔会击穿进程——对齐 bg worker run-loop 纪律（R47）。
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("sticky-load sweep panic", "panic", r)
+		}
+	}()
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
@@ -174,13 +193,22 @@ func (t *StickyLoadTracker) pruneMemory() {
 }
 
 // activityRetention 是 activity 时间戳的内存保留线。固定 10 分钟覆盖
-// 默认 recency 地平线；window 被运维调大时跟随 window，避免 recency
-// 信号比语义窗先归零（R46 F8⑪）。
+// 默认 recency 地平线；window 被运维调大时跟随 window；recency 地平线
+// env（LLM_GATEWAY_ROUTING_RECENCY_HORIZON_SECONDS，recentRequestPenalty
+// 消费）调得比二者都大时同样跟随——否则 recency 信号比语义窗先归零，
+// 惩罚提前消失（R46 F8⑪ / R47 补地平线维度）。
 func (t *StickyLoadTracker) activityRetention() time.Duration {
-	if t.window > stickyLoadActivityRetention {
-		return t.window
+	ret := stickyLoadActivityRetention
+	if t.window > ret {
+		ret = t.window
 	}
-	return stickyLoadActivityRetention
+	if h := envFloat("LLM_GATEWAY_ROUTING_RECENCY_HORIZON_SECONDS", 30); h > 0 {
+		// +1s 余量：Duration 截断不得让 activity 比地平线先过期。
+		if horizon := time.Duration(h*float64(time.Second)) + time.Second; horizon > ret {
+			ret = horizon
+		}
+	}
+	return ret
 }
 
 // ObserveSession 记录"该会话此刻绑定在该凭据上"。在 sticky 绑定写入
@@ -308,7 +336,9 @@ func (t *StickyLoadTracker) Info(credentialID int) StickyLoadInfo {
 
 	t.snapMu.Lock()
 	snap, covered := t.snapshot[credentialID]
-	if covered && time.Since(t.snapAt) >= t.window {
+	// R46 F1 + R47：新鲜度判据用 min(window, 绝对顶)——window 被运维调大
+	// 时冻结快照的偏置窗口仍有界（stickyLoadSnapshotStaleCap）。
+	if covered && time.Since(t.snapAt) >= t.snapshotMaxAge {
 		covered = false
 	}
 	t.snapMu.Unlock()
@@ -356,7 +386,8 @@ func dedupeInts(ids []int) []int {
 	return out
 }
 
-// stickyLoadEnvInt 读 int env 配 fallback（评分容量的默认值用）。
+// stickyLoadEnvInt 读 int env 配 fallback（sticky 会话容量默认值用，
+// stickySessionCapacity 消费）。非正/非法值一律回落 fallback。
 func stickyLoadEnvInt(key string, fallback int) int {
 	v := os.Getenv(key)
 	if v == "" {

@@ -271,7 +271,8 @@ func (w *AutoRouteAffinityWorker) sweep(ctx context.Context) {
 // form is semantically identical (NULL actor passes, synthetic excluded) and
 // retention-independent: hot and parent are mutually exclusive (promote is
 // DELETE+INSERT), and each probe is an index descent on
-// idx_request_logs_hot_request_id / the partitioned request_id index.
+// pkey(request_id) / the partitioned request_id index (718 dropped the
+// redundant hot-side index; the pkey covers it).
 func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggregate, error) {
 	rows, err := w.db.Query(ctx, `
 		SELECT s.task_type,
