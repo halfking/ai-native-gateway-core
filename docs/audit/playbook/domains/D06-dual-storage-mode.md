@@ -62,3 +62,9 @@
 - **同表两份 DDL 先查真库定所有者**：task_type_tier_config 在 repo 有 202609_02（TEXT 型，表级表达式 UNIQUE 语法错误、从未可执行）与 deploy/sql/migrations/V370（BIGINT+COALESCE(tenant_id,0)，实表来源）两份分叉——"哪份是真的"以 information_schema 实表为准，不以文件为准。R43 裁决 V370 唯一所有者、202609_02 桩化，缺口由 `db.ensureTaskTypeTierConfig`（V370 形态+补 min_confidence 列）启动自愈。
 - **迁移五点同步三犯**（720/721/726）：726 只落文件副本，installer runner/main/embed 与 sequence 通道四点全缺、双契约测试红——作者只跑了 `./sql/migrations/startup/` 包，该包不含 installer/sequence 门禁。**门禁覆盖面声明比门禁本身重要**：交付清单必须逐通道打勾（canonical/embeddata/runner/main embed+map/parity/sequence/deploy V 系列 grep）。
 - deploy/ 目录纳入改动面 grep 范围：V 系列迁移不进 revision-sequence，是最易漏的第三通道。
+
+### R47 回注（2026-09-20，lite 行级 retention 收口 + 存储演进首落地）
+- **LiteRetentionWorker 两条并发/一致性纪律**（R46 F6 交付即欠账，本轮 F1/F2 收口）：①裸 ts 谓词删除必须有专用索引（复合索引首列 tenant_id/session_id 覆盖不到，idx_logs_ts）且分批执行（500/批）——SQLite 单条 DELETE 是隐式事务持写锁至语句结束，与请求路径共池时会挤到 busy_timeout；②sessions/turns 清理必须单事务 + updated_at 谓词在删除时刻求值（EXISTS 子查询）——"SELECT 收集→逐会话删 turns→按谓词删 sessions"三段式在缝隙内复活会话丢全部历史轮次。
+- **行级保留期无 opt-out 是既定语义**：ApplyLiteDefaults 把 ≤0 钳为默认 7 天（与 bodies/cache 保留期同款），文档/日志按"0 即 7d"口径，不要写"0 可关闭"。
+- **存储演进批首落地**：cache_metrics 月分区 TTL 进 stateTableTTLSpecs（689 helper 正则 ^<parent>_\d{4}_\d{2}$ 对 cache_metrics_YYYY_MM 直接适用，fallback 90d）；promote 积压水位 llm_gateway_hot_table_backlog_rows{table}（排水循环后逐表 COUNT，物理表名 label/label+_hot 双形态）。sessions 族分区 drop 仍需先看 gauge 水位再裁决（DROP=删用户历史）。
+- **lite 文档三件套**（deployment-guide/troubleshooting/README）与 worker 面必须同 commit 回注——"文档宣称无 worker 但 worker 已上线"是本轮 D06-1 实抓的失真形态。

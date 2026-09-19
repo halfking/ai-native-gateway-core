@@ -68,3 +68,9 @@
 ### R45 回注（2026-09-19，视图 NULL 投影读面陷阱）
 - **读 `request_logs_with_current_month` 的分析 SQL 必须用 `COALESCE(request_type,'main')` 口径**：视图的 session_turns_hot/session_turns 段把 request_type 投影为 `NULL::text`（session_turns 表无该列），裸 `='main'` 会漏掉全部业务行只余探测流量（R44 重写踩坑、R45 真库实测 24h 漏 99.3%/7d 漏 65%）。admin 读端 COALESCE 惯例是既定 SSOT。任何新分析 SQL commit 前真库实跑须验证**读面行数量级**而非只验"能跑通"。
 - **自跑通过 ≠ 语义正确**：R44 自验只发现不了该缺陷（无硬失败），独立子代理真库实跑才暴露——迁移三纪律#3 从迁移扩展到一切"我方自验"结论。
+
+### R47 回注（2026-09-20，读面纪律机制化 + 守卫测试）
+- **裸读守卫已上**：`internal/sqlreadguard/guard_test.go`（TestNoBareRequestLogsMotherReads + TestSQLReadGuardWhitelistCurrent）。扫描生产 Go 面（admin/autoroute/bg/cmd/db/discovery/domains/internal/provider/proxy/taskprofile，排除 *_test.go）+ sql/objects 与 scripts/analysis 的 .sql；正则 `\b(FROM|JOIN)\s+(public\.)?request_logs\b`（\b 天然排除 _hot/_with_/_without_ 视图引用）；Go `//` 与 SQL `--`（含原始字符串内注释行）注释提及自动豁免。新增裸读 = 红；豁免三通道：白名单文件级（LEGIT/DEBT(R47)/TOOLING 前缀）、行内 `sqlreadguard:allow`、双腿形态本身不再命中。
+- **白名单自清洁**：文件已无命中（删除或已双腿化）而白名单条目还在 → 红，强制移除。防"守卫通过即债务隐身"。清偿路径：逐文件双腿化 → 删条目 → 守卫确认。
+- **admin 读面债基线**（R47 初始 DEBT 白名单 25 Go + 6 SQL）：既有残留裸读并非 D07 一次性盘点所得，而是守卫机械扫描重新生成——人工清单覆盖半径不足（本轮实差：子代理报 13 文件，机械扫出 53 文件）。
+- **assertTaskInTenant 已双腿化**（hot∪母表双 EXISTS）：tenant 边界判定这类**安全闸**读面同样适用 8h 盲窗——闸判定错误直接变成跨租户 404 误伤。
