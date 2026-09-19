@@ -2,6 +2,7 @@ package executors
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -148,5 +149,59 @@ func TestLoadScoreStickyLoadPenalizesLoadedNode(t *testing.T) {
 	scoreLoaded := calculateLoadScore(loaded, r, context.Background(), r.LoadScoreWeights)
 	if scoreLoaded <= scoreIdle {
 		t.Fatalf("loaded node must score higher (worse): idle=%v loaded=%v", scoreIdle, scoreLoaded)
+	}
+}
+
+// TestFirstHopLotteryAvoidsStickyLoadedNode: 端到端证据——首跳由
+// promoteWeightedCandidate 加权轮询决定（评分只影响 failover 顺序），
+// 折算份额后满载节点的首跳占比必须显著低于 1/3 基线。
+func TestFirstHopLotteryAvoidsStickyLoadedNode(t *testing.T) {
+	tr := newScoringTracker(t)
+	r := &Router{LoadScoreWeights: DefaultLoadScoreWeights(), StickyLoad: tr}
+
+	limit := 4
+	mk := func(id int) provider.Candidate {
+		return provider.Candidate{
+			CredentialID: id, ProviderID: 1, RawModel: "m", Tier: 1,
+			SuccessRate: 1.0, ConcurrencyLimit: &limit, Weight: 100,
+		}
+	}
+	cands := []provider.Candidate{mk(11), mk(12), mk(13)}
+	// 节点 13 满载：4 会话/容量 4 → sticky 惩罚 1.0，且刚活跃 → recency ~1。
+	for i := 0; i < 4; i++ {
+		tr.ObserveSession(13, fmt.Sprintf("s%d", i))
+	}
+
+	policy := &provider.Policy{}
+	const rounds = 300
+	loadedFirst := 0
+	for i := 0; i < rounds; i++ {
+		ordered := r.planByTier(context.Background(),
+			append([]provider.Candidate(nil), cands...), policy, StrategyInput{})
+		if len(ordered) == 0 {
+			t.Fatal("planByTier returned no candidates")
+		}
+		if ordered[0].CredentialID == 13 {
+			loadedFirst++
+		}
+	}
+	share := float64(loadedFirst) / float64(rounds)
+	if share > 0.26 {
+		t.Fatalf("loaded node first-hop share %.3f (%d/%d) must sit well below the 1/3 baseline", share, loadedFirst, rounds)
+	}
+
+	// 对照组：未接线 tracker 时三节点等权，首跳应回到 ~1/3。
+	plain := &Router{LoadScoreWeights: DefaultLoadScoreWeights()}
+	loadedFirst = 0
+	for i := 0; i < rounds; i++ {
+		ordered := plain.planByTier(context.Background(),
+			append([]provider.Candidate(nil), cands...), policy, StrategyInput{})
+		if ordered[0].CredentialID == 13 {
+			loadedFirst++
+		}
+	}
+	share = float64(loadedFirst) / float64(rounds)
+	if share < 0.25 || share > 0.42 {
+		t.Fatalf("unwired control should stay near 1/3, got %.3f", share)
 	}
 }

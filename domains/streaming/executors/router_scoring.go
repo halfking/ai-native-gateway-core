@@ -529,3 +529,57 @@ func balancePenaltyForCandidate(c provider.Candidate) float64 {
 	}
 	return 1.0 - bal/watermark
 }
+
+// firstHopLotteryWeights 把三新惩罚折算成首跳加权轮询（promoteWeighted
+// CandidateWithWeights）的有效权重（2026-09-19）。
+//
+// 背景：planByTier 的首跳由纯 Weight 加权轮询决定，calculateLoadScore 的
+// 惩罚只影响 failover 顺序——新会话的节点选择恰恰发生在首跳，因此惩罚必须
+// 折进抽签份额。折算公式：
+//
+//	p   = Σ(wi·penalty_i) / Σwi            （三惩罚按评分权重归一）
+//	w'  = max(1, round(Weight · (1 − 0.9·p)))
+//
+// 满载惩罚 p=1 时份额缩到 0.1（floor 防全饿死——重载节点的硬隔离始终由
+// 冷却/熔断过滤负责，抽签只做倾斜）。三个权重 env 全为 0、tracker 未接线
+// 或所有候选折算后不变时返回 nil，调用方走纯 Weight 原路径。
+func firstHopLotteryWeights(cands []provider.Candidate, r *Router) []int {
+	if r == nil || r.StickyLoad == nil || len(cands) == 0 {
+		return nil
+	}
+	wSticky := envFloat("LLM_GATEWAY_ROUTING_W_STICKY", 0.15)
+	wRecency := envFloat("LLM_GATEWAY_ROUTING_W_RECENCY", 0.05)
+	wBalance := envFloat("LLM_GATEWAY_ROUTING_W_BALANCE", 0.05)
+	sum := wSticky + wRecency + wBalance
+	if sum <= 0 {
+		return nil
+	}
+
+	adjusted := make([]int, len(cands))
+	changed := false
+	for i, c := range cands {
+		if c.Weight <= 0 {
+			// 零/未知权重候选在原实现中本就不参与抽签，保持为零。
+			adjusted[i] = c.Weight
+			continue
+		}
+		p := (stickySessionPenalty(c, r)*wSticky +
+			recentRequestPenalty(c, r)*wRecency +
+			balancePenaltyForCandidate(c)*wBalance) / sum
+		if p > 1.0 {
+			p = 1.0
+		}
+		w := int(float64(c.Weight) * (1.0 - 0.9*p))
+		if w < 1 {
+			w = 1
+		}
+		adjusted[i] = w
+		if w != c.Weight {
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return adjusted
+}

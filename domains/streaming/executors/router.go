@@ -1088,6 +1088,11 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 		// health-aware order produced above for failover.
 		if len(sorted) > 1 {
 			counter := r.nextWeightCounter(sorted)
+			// 2026-09-19 sticky-session load balancing: 首跳抽签份额按三新
+			// 惩罚折算——sticky 会话多/刚被请求/余额低的节点份额缩小
+			//（floor 0.1，绝不归零，硬隔离仍由冷却过滤负责）。未接线
+			// tracker 或无变化时返回 nil，走纯 Weight 原路径。
+			lottery := firstHopLotteryWeights(sorted, r)
 			// Priority gate: the weighted lottery must stay inside the
 			// leading priority bucket, otherwise a high-weight standard
 			// candidate gets promoted to index 0 and receives the first
@@ -1096,16 +1101,16 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 			// is all-priority or all-standard the promotion is unchanged.
 			if r.PriorityRoutingEnabled {
 				if head := priorityPrefixLen(sorted); head > 0 && head < len(sorted) {
-					promoted := promoteWeightedCandidate(sorted[:head], counter)
+					promoted := promoteWeightedCandidateWithWeights(sorted[:head], counter, headSliceOrNil(lottery, head))
 					merged := make([]provider.Candidate, 0, len(sorted))
 					merged = append(merged, promoted...)
 					merged = append(merged, sorted[head:]...)
 					sorted = merged
 				} else {
-					sorted = promoteWeightedCandidate(sorted, counter)
+					sorted = promoteWeightedCandidateWithWeights(sorted, counter, lottery)
 				}
 			} else {
-				sorted = promoteWeightedCandidate(sorted, counter)
+				sorted = promoteWeightedCandidateWithWeights(sorted, counter, lottery)
 			}
 		}
 
@@ -1155,25 +1160,55 @@ func (r *Router) nextWeightCounter(cands []provider.Candidate) uint64 {
 }
 
 func promoteWeightedCandidate(cands []provider.Candidate, counter uint64) []provider.Candidate {
+	return promoteWeightedCandidateWithWeights(cands, counter, nil)
+}
+
+func headSliceOrNil(weights []int, head int) []int {
+	if weights == nil {
+		return nil
+	}
+	return weights[:head]
+}
+
+// promoteWeightedCandidateWithWeights 与 promoteWeightedCandidate 逻辑一致，
+// 但允许调用方传入与 cands 下标对齐的有效权重（effWeights）。effWeights
+// 为 nil 或某元素 ≤0 时该候选回退自身 Weight——nil 路径与原实现逐行为一致。
+// 2026-09-19: planByTier 用它把 sticky 会话/最近请求/余额惩罚折算进首跳
+// 加权轮询的份额，权重排序键（provider:cred:model）保持不变。
+func promoteWeightedCandidateWithWeights(cands []provider.Candidate, counter uint64, effWeights []int) []provider.Candidate {
 	if len(cands) <= 1 {
 		return cands
 	}
 
-	stable := append([]provider.Candidate(nil), cands...)
+	weightOf := func(i int, c provider.Candidate) int {
+		if effWeights != nil && i < len(effWeights) && effWeights[i] > 0 {
+			return effWeights[i]
+		}
+		return c.Weight
+	}
+
+	type weightedCandidate struct {
+		cand provider.Candidate
+		w    int
+	}
+	stable := make([]weightedCandidate, len(cands))
+	for i, c := range cands {
+		stable[i] = weightedCandidate{cand: c, w: weightOf(i, c)}
+	}
 	sort.SliceStable(stable, func(i, j int) bool {
-		if stable[i].ProviderID != stable[j].ProviderID {
-			return stable[i].ProviderID < stable[j].ProviderID
+		if stable[i].cand.ProviderID != stable[j].cand.ProviderID {
+			return stable[i].cand.ProviderID < stable[j].cand.ProviderID
 		}
-		if stable[i].CredentialID != stable[j].CredentialID {
-			return stable[i].CredentialID < stable[j].CredentialID
+		if stable[i].cand.CredentialID != stable[j].cand.CredentialID {
+			return stable[i].cand.CredentialID < stable[j].cand.CredentialID
 		}
-		return stable[i].RawModel < stable[j].RawModel
+		return stable[i].cand.RawModel < stable[j].cand.RawModel
 	})
 
 	totalWeight := 0
 	for _, c := range stable {
-		if c.Weight > 0 {
-			totalWeight += c.Weight
+		if c.w > 0 {
+			totalWeight += c.w
 		}
 	}
 	if totalWeight == 0 {
@@ -1184,19 +1219,19 @@ func promoteWeightedCandidate(cands []provider.Candidate, counter uint64) []prov
 	position = position * weightStride(totalWeight) % totalWeight
 	winner := stable[0]
 	for _, c := range stable {
-		if c.Weight <= 0 {
+		if c.w <= 0 {
 			continue
 		}
-		if position < c.Weight {
+		if position < c.w {
 			winner = c
 			break
 		}
-		position -= c.Weight
+		position -= c.w
 	}
 
 	winnerIndex := 0
 	for i, c := range cands {
-		if c.ProviderID == winner.ProviderID && c.CredentialID == winner.CredentialID && c.RawModel == winner.RawModel {
+		if c.ProviderID == winner.cand.ProviderID && c.CredentialID == winner.cand.CredentialID && c.RawModel == winner.cand.RawModel {
 			winnerIndex = i
 			break
 		}
@@ -1207,7 +1242,7 @@ func promoteWeightedCandidate(cands []provider.Candidate, counter uint64) []prov
 
 	out := append([]provider.Candidate(nil), cands...)
 	copy(out[1:winnerIndex+1], out[:winnerIndex])
-	out[0] = winner
+	out[0] = winner.cand
 	return out
 }
 

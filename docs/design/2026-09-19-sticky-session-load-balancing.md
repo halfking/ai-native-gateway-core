@@ -54,6 +54,33 @@
 
 `planCandidates` 在可用性过滤后对参与评分的凭据触发一次 `Refresh`（节流）。
 
+### B2. 首跳抽签份额折算（关键补充，第二提交）
+
+审计发现：`planByTier` 的**首跳**由 `promoteWeightedCandidate` 纯 Weight 加权
+轮询决定（"Weight controls the first attempt"），`calculateLoadScore` 只影响
+failover 顺序——只改评分无法影响新会话的首跳选择，而"新会话选择"恰恰发生在
+首跳。
+
+因此 `firstHopLotteryWeights` 把三惩罚按评分权重归一后折进首跳抽签的
+有效权重（`promoteWeightedCandidateWithWeights`，与原实现同构、可注入
+权重）：
+
+```
+p  = Σ(wi·penalty_i) / Σwi        （0..1）
+w' = max(1, round(Weight·(1−0.9·p)))   （floor 0.1，绝不归零）
+```
+
+- 满载惩罚 p=1 → 份额缩至 0.1：倾斜而非硬隔离——重载节点的硬隔离始终由
+  冷却/熔断过滤负责；
+- 三个权重 env 全 0、tracker 未接线、或折算后无变化 → 返回 nil 走纯
+  Weight 原路径（与历史行为逐字节一致）；
+- 权重排序键（provider:cred:model）与 stride 轮询语义不变；
+- priority 桶门（lottery 只在桶内）保持。
+
+端到端证据：`TestFirstHopLotteryAvoidsStickyLoadedNode`——三等权节点中
+满载节点（sticky 惩罚 1.0 + 刚活跃）首跳占比从基线 1/3 降至 ~12%，未接线
+对照组保持 1/3。
+
 ### C. 会话保持：瞬时保持 / 严重迁移（executor_dispatch.go + executor.go）
 
 - `dispatchForward` 失败分支记录：sticky 钉扎凭据被尝试且失败时的最终错误
