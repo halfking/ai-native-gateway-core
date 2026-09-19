@@ -7,7 +7,8 @@
 #   迁移检查（migrate_database）→ 构建 → 蓝绿部署 → /health 验证
 #
 # 参数：
-#   （无参数）          部署（幂等：若 127.0.0.1:8782 已有健康网关则直接报告并退出 0）
+#   （无参数）          部署（幂等：若 active 端口已有健康网关则直接报告并退出 0；
+#                      端口跟随 run/active-port 链，默认 8782）
 #   --dry-run           打印部署计划，不变更任何文件/容器/进程
 #   --down              停止当前本机部署（等价 scripts/deploy-local.sh stop）
 #   --status            查看部署状态
@@ -17,13 +18,27 @@
 # 共享资源铁律：
 #   本脚本永不创建/停止/删除共享基础设施（llm-gateway-pg / nbjl-redis /
 #   nbjl-mysql / shared-infra 网络）；依赖发现按 kind + 健康探测复用既有实例。
-#   运行时若由容器托管（如 llm-gateway-local-8782），--down 不影响容器生命周期，
-#   容器归 docker/groups.yaml 登记治理。
+#   运行时若由容器托管（如 llm-gateway-local-8782，容器名跟 active 端口），
+#   --down 不影响容器生命周期，容器归 docker/groups.yaml 登记治理。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIFIED="$SCRIPT_DIR/scripts/deploy-local.sh"
-HEALTH_URL="${LLM_GATEWAY_HEALTH_URL:-http://127.0.0.1:8782/health}"
+
+# 对外端口跟随 scripts/deploy-local.sh 的同一条解析链：
+# run/active-port 文件 → LLM_GATEWAY_ACTIVE_PORT/SERVICE_PORT → 8782。
+# 预检/容器名都不得硬编码 8782，否则操作者自定义端口后包装器永远走全量部署。
+active_listen_port() {
+  local root="${LLM_GATEWAY_ROOT:-$HOME/kaixuan/llm-gateway-go}" port
+  if [[ -s "$root/run/active-port" ]]; then
+    port="$(cat "$root/run/active-port" 2>/dev/null || true)"
+  fi
+  if [[ -z "${port:-}" ]]; then port="${LLM_GATEWAY_ACTIVE_PORT:-${SERVICE_PORT:-}}"; fi
+  printf '%s\n' "${port:-8782}"
+}
+PORT="$(active_listen_port)"
+HEALTH_URL="${LLM_GATEWAY_HEALTH_URL:-http://127.0.0.1:${PORT}/health}"
+CONTAINER_NAME="llm-gateway-local-${PORT}"
 
 if [[ ! -x "$UNIFIED" ]]; then
   printf '[deploy-local] error: unified entry missing: %s\n' "$UNIFIED" >&2
@@ -36,6 +51,11 @@ health_ok() {
   [[ "$code" == "200" || "$code" == "204" ]]
 }
 
+container_running() {
+  docker inspect "$CONTAINER_NAME" >/dev/null 2>&1 \
+    && [[ "$(docker inspect "$CONTAINER_NAME" --format '{{.State.Status}}')" == "running" ]]
+}
+
 case "${1:-deploy}" in
   --dry-run)
     shift
@@ -43,11 +63,10 @@ case "${1:-deploy}" in
     ;;
   --down)
     shift
-    if health_ok && docker inspect llm-gateway-local-8782 >/dev/null 2>&1 \
-       && [[ "$(docker inspect llm-gateway-local-8782 --format '{{.State.Status}}')" == "running" ]]; then
-      printf '[deploy-local] 8782 is served by container llm-gateway-local-8782 (groups.yaml registered).\n'
+    if health_ok && container_running; then
+      printf '[deploy-local] %s is served by container %s (groups.yaml registered).\n' "$PORT" "$CONTAINER_NAME"
       printf '[deploy-local] --down does not manage container runtimes; stop it explicitly if intended:\n'
-      printf '[deploy-local]   docker stop llm-gateway-local-8782\n'
+      printf '[deploy-local]   docker stop %s\n' "$CONTAINER_NAME"
       exit 0
     fi
     exec bash "$UNIFIED" stop "$@"
@@ -61,14 +80,13 @@ case "${1:-deploy}" in
     exec bash "$UNIFIED" verify "$@"
     ;;
   deploy)
-    # 幂等预检：8782 已有健康网关（容器或宿主进程）时不重复部署、不重启既有运行时。
+    # 幂等预检：active 端口已有健康网关（容器或宿主进程）时不重复部署、
+    # 不重启既有运行时。端口来自 active-port 解析链，与 scripts 侧一致。
     if health_ok; then
       runtime="host process"
-      docker inspect llm-gateway-local-8782 >/dev/null 2>&1 \
-        && [[ "$(docker inspect llm-gateway-local-8782 --format '{{.State.Status}}')" == "running" ]] \
-        && runtime="container llm-gateway-local-8782"
+      container_running && runtime="container $CONTAINER_NAME"
       printf '[deploy-local] gateway already healthy at %s (runtime: %s); nothing to do.\n' "$HEALTH_URL" "$runtime"
-      printf '[deploy-local] to redeploy, free port 8782 first, then re-run this script.\n' >&2
+      printf '[deploy-local] to redeploy, free port %s first, then re-run this script.\n' "$PORT" >&2
       exit 0
     fi
     # `${1:-deploy}` 默认分支下 $1 可能不存在；无参 shift 在 set -e 下静默 exit 1。

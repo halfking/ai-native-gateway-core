@@ -72,6 +72,8 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 KEEP_RELEASES="${KEEP_RELEASES:-3}"
 CLEANUP_DOWNLOADS=0
 DEPLOY_BUILD_LOCK_HELD=0
+# 本次部署已拉起、尚未晋升的候选实例端口（cleanup_deploy 兜底清理用）
+DEPLOY_CANDIDATE_PORT=
 LOCK_LOCAL_BUILD_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-build.lock"
 LOCK_BUILD_TARGET=local
 
@@ -170,6 +172,14 @@ release_build_lock() {
 cleanup_deploy() {
   local status=$?
   trap - EXIT INT TERM
+  # 2026-09-20：部署中途夭折（Ctrl-C / 未捕获 die）不能把已验证的候选实例
+  # 留在另一端口上裸奔——它会以 --restart unless-stopped 活过 Docker 重启，
+  # 占着 DB/Redis 连接，还是下一次部署端口误判的温床。候选未被晋升就清掉。
+  if [[ -n "${DEPLOY_CANDIDATE_PORT:-}" ]]; then
+    printf '[deploy-local] warning: deploy aborted with an unpromoted candidate on :%s — cleaning it up\n' "$DEPLOY_CANDIDATE_PORT" >&2
+    stop_instance "$DEPLOY_CANDIDATE_PORT" || true
+    DEPLOY_CANDIDATE_PORT=
+  fi
   release_build_lock
   exit "$status"
 }
@@ -1040,10 +1050,10 @@ deploy() {
   gate_credential_encryption_key
   bundle=$(stage_release "$binary")
   release_build_lock
-  # 2026-09-19（部署工单）：active 端口以实测监听为准（dl_resolve_active_port
-  # 会用 /healthz + TCP 探测复核 run/active-port 文件链），候选 = 8781/8782
-  # 轮换的另一侧，避免撞端口或探错端口。注意候选必须从「解析后的」active
-  # 推导——dl_candidate_port() 读的是文件链，文件失真时会跟实测 active 撞车。
+  # 2026-09-20（端口漂移修复）：active 端口以文件/env 链为准（dl_resolve_active_port
+  # 只用实测做诊断告警，不再改写结果）——本地无代理拓扑里 active 端口就是客户端
+  # 直连的对外契约端口，绝不因"另一侧有残留监听"而漂移。候选 = 8781/8782 契约对
+  # 的另一侧，避免撞端口。
   active_port=$(dl_resolve_active_port)
   if [[ "$active_port" == 8781 ]]; then
     candidate_port=8782
@@ -1053,21 +1063,35 @@ deploy() {
     candidate_port=$(dl_candidate_port)
   fi
   active_bundle="$BIN_DIR/current"
+  DEPLOY_CANDIDATE_PORT="$candidate_port"
   start_instance "$bundle" "$candidate_port"
   if ! verify_instance "$candidate_port" "$bundle"; then
-    stop_instance "$candidate_port"; die "candidate failed health/readiness/version gates; active release was preserved"
+    DEPLOY_CANDIDATE_PORT=; stop_instance "$candidate_port"; die "candidate failed health/readiness/version gates; active release was preserved"
   fi
   if [[ "${DEPLOY_SYNC_ADMIN_PASSWORD:-true}" == "true" ]]; then
-    sync_admin_password_from_env "$bundle/env" "$candidate_port"
+    # sync 失败此前是未守卫的 set -e 退出：候选被留在另一端口上（trap 修复前）
+    # ——现在显式收尾，保证 active 侧原样保留、候选不残留。
+    if ! sync_admin_password_from_env "$bundle/env" "$candidate_port"; then
+      DEPLOY_CANDIDATE_PORT=; stop_instance "$candidate_port"; die "admin password sync failed; active release was preserved"
+    fi
   fi
   if ! smoke_credential_decrypt "$candidate_port" "$bundle/env"; then
-    stop_instance "$candidate_port"; die "candidate failed credential decrypt smoke; active release was preserved"
+    DEPLOY_CANDIDATE_PORT=; stop_instance "$candidate_port"; die "candidate failed credential decrypt smoke; active release was preserved"
   fi
   if [[ -n "${LLM_GATEWAY_UPSTREAM_FILE:-}" && -f "$LLM_GATEWAY_UPSTREAM_FILE" ]]; then
+    # 代理分支：候选保持运行（nginx 上游切到它），trap 不许碰它。
+    DEPLOY_CANDIDATE_PORT=
     printf 'server 127.0.0.1:%s;\n' "$candidate_port" > "$LLM_GATEWAY_UPSTREAM_FILE"
     cp "$LLM_GATEWAY_UPSTREAM_FILE" "$RUN_DIR/active-upstream.conf"
   else
     warn 'no local proxy configured; using controlled restart (not zero-downtime)'
+    # 2026-09-20：候选的使命（验证 bundle + 密码同步 + 解密冒烟）到此完成，
+    # 在触碰 active 之前先停掉它——两个网关并跑会争启动 ensure 链的锁，把
+    # active 端口新实例的 readyz 从 ~2s 拖到 20s+（2026-09-20 实测 00:29
+    # 候选 2s 就绪、8782 侧 22s），对外停服窗口被无谓放大。停掉候选后
+    # active 端口的重启不再有并发争锁。
+    DEPLOY_CANDIDATE_PORT=
+    stop_instance "$candidate_port"
     # 2026-09-14：2102 cutover 首启在候选端口 verify 全绿、同一 bundle 在
     # active 端口 /readyz 60s 不 ready 一次（瞬态首启窗口，非 release 问
     # 题），单次失败即回滚把可恢复抖动变成部署失败。给一次完整的重启重
@@ -1094,7 +1118,6 @@ deploy() {
       [[ -e "$active_bundle" ]] && start_instance "$active_bundle" "$active_port"
       die 'credential decrypt smoke failed after cutover; previous release was restarted'
     fi
-    stop_instance "$candidate_port"
     candidate_port="$active_port"
   fi
   dl_atomic_switch "$RELEASE_VERSION"
