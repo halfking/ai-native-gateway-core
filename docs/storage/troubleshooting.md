@@ -91,10 +91,12 @@
   1. **retention 是否生效**：`retention.cache_hours` / `retention.session_bodies_days` 由
      `bg.CacheTrimmer`（默认 1h 周期）/ `bg.BodiesTrimmer`（默认 6h 周期）清理，两者随
      lite 模式装配自动启动，启动即先执行一次。检查启动日志 `cache trimmer 已启动` /
-     `bodies trimmer 已启动`，以及周期性出现的 `cache_trimmer: 清理完成` /
-     `bodies_trimmer: 清理完成`（含删除量与释放字节）；日志正常但目录仍涨，按第 2~5 步
-     继续排查。注意 `retention.request_logs_days` 当前**没有**对应的自动清理 worker，
-     SQLite 请求日志表只增不减；
+     `bodies trimmer 已启动` / `lite retention worker 已启动`，以及周期性出现的
+     `cache_trimmer: 清理完成` / `bodies_trimmer: 清理完成` / `lite retention sweep`
+     （含删除量与释放字节）；日志正常但目录仍涨，按第 2~5 步继续排查。
+     `retention.request_logs_days` 由 `bg.LiteRetentionWorker` 清理（R46 F6 起，
+     默认 7 天、无 opt-out）；bodies 文件按 `session_bodies_days`（默认 30 天）
+     独立保留，会话行删除后 body 文件有最长 23 天的孤儿窗口属预期；
   2. **cache 是否贴上限**：`du -sh data/cache`；L1.5 有 `cache_max_size_gb` 硬上限（按
      mtime 淘汰），若远小于上限仍在增长，增长主体不是 cache；
   3. **bodies 增长估算**：按 deployment-guide 的估算公式核对日增是否符合预期；不符合时

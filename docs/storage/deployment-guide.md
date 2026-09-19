@@ -131,8 +131,9 @@ go run ./cmd/gateway        # 或 go build -o bin/gateway ./cmd/gateway && ./bin
 
 启动期装配（`cmd/gateway/storage_mode_init.go`）：`LLM_GATEWAY_STORAGE_MODE=lite` 时旁路
 PG 初始化 → `ApplyLiteDefaults` → `Validate` → 创建存储工厂 → 创建 L1.5 FileCache
-（`CacheTTLHours` 小时 / `CacheMaxSizeGB` 换算字节）→ 启动 `bg.CacheTrimmer` 与
-`bg.BodiesTrimmer` 两个后台清理任务。SIGTERM/SIGINT 优雅关闭：先取消 trimmers（有界等待
+（`CacheTTLHours` 小时 / `CacheMaxSizeGB` 换算字节）→ 启动 `bg.CacheTrimmer`、
+`bg.BodiesTrimmer` 与 `bg.LiteRetentionWorker` 三个后台清理任务（R46 F6 起行级
+retention 生效）。SIGTERM/SIGINT 优雅关闭：先取消 trimmers（有界等待
 3s），再 `factory.Close()`（排空 bodies 异步写队列保证落盘），已真机 smoke 验证
 exit 0。
 
@@ -140,8 +141,8 @@ exit 0。
 
 - 启动日志出现 `storage lite 模式已启用`（slog，含 sqlite_path / bodies_dir / cache_dir /
   logs_dir / cache_ttl_hours / cache_max_size_gb / async_writers / retention_* 字段快照）。
-- 清理任务日志：`cache trimmer 已启动` 与 `bodies trimmer 已启动`（启动即先执行一次清理，
-  不用等一个完整周期）。
+- 清理任务日志：`cache trimmer 已启动`、`bodies trimmer 已启动` 与
+  `lite retention worker 已启动`（启动即先执行一次清理，不用等一个完整周期）。
 - 配置不合法会直接启动失败并给出明确报错（如
   `storage_mode "lite" requires a lite_storage section in yaml`）。
 - SQLite 文件生成：`sqlite_path` 对应文件出现，且同目录生成 `-wal` / `-shm` 两个 WAL
@@ -287,7 +288,7 @@ go run ./cmd/gateway
 | 字段 | 默认值 | 作用对象 | 清理方式 |
 |------|--------|----------|----------|
 | `session_bodies_days` | `30` | `bodies_dir` 下超过保留期的会话目录 | `bg.BodiesTrimmer`（lite 装配自动启动）：默认每 6 小时一轮，会话目录 mtime 超期即整目录删除（先统计体积再 RemoveAll），并顺带清理变空的分片/租户父目录 |
-| `request_logs_days` | `7` | 请求日志 | **lite 模式暂无自动清理 worker**（当前 trimmer 只覆盖 cache 与 bodies），SQLite `request_logs` 行需人工或后续任务清理 |
+| `request_logs_days` | `7` | SQLite `request_logs` 按行、`sessions`/`session_turns` 按会话（含全部轮次） | `bg.LiteRetentionWorker`（R46 F6 起 lite 装配自动启动）：默认每 6 小时一轮；无 opt-out（≤0 视为默认 7 天）。会话清理在单事务内以删除时刻的 `updated_at` 求值，清理缝隙内复活的会话整体豁免（R47） |
 | `cache_hours` | `24` | `cache_dir` 下过期的 L1.5 快照文件 | `bg.CacheTrimmer`（lite 装配自动启动）：默认每 1 小时一轮，按文件 mtime 删除过期缓存文件 |
 
 两个 trimmer 的 `Start(ctx)` 均为阻塞式，由 `storage_mode_init.go` 以协程启动；启动即先执行
@@ -314,6 +315,7 @@ cache 上限 ≤ cache_max_size_gb（硬上限，超出自动淘汰）
 示例：日 1 万轮次、原始 body 平均 100KB、gzip 省 70% → bodies 日增约 0.3GB，
 30 天保留约 9GB，加 10GB 缓存上限，规划 25GB 磁盘并预留 20% 余量。
 
-> 注意：`retention.request_logs_days` 在 lite 模式当前没有对应的自动清理 worker
-> （只有 cache / bodies 两个 trimmer 随 lite 装配启动），SQLite 请求日志表的增长需人工
-> 关注（见 troubleshooting "磁盘空间增长快"）。
+> 注意（R46 F6 后更新）：`retention.request_logs_days` 由 `bg.LiteRetentionWorker`
+> 自动清理（lite 装配启动，无 opt-out，≤0 视为默认 7 天）。注意 bodies 文件侧保留期
+> 仍由 `session_bodies_days`（默认 30 天）独立控制——会话行删除后其 body 文件最多
+> 再存活 23 天由 BodiesTrimmer 回收，属预期行为（见 troubleshooting "磁盘空间增长快"）。

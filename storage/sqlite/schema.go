@@ -64,6 +64,9 @@ CREATE TABLE IF NOT EXISTS request_logs (
 
 CREATE INDEX IF NOT EXISTS idx_logs_tenant_time ON request_logs (tenant_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_logs_session     ON request_logs (session_id, ts DESC);
+-- 裸 ts 谓词专用（LiteRetentionWorker 按 ts 分批清理；上面两个复合索引
+-- 首列均为 tenant_id/session_id，覆盖不到裸 ts）。
+CREATE INDEX IF NOT EXISTS idx_logs_ts          ON request_logs (ts);
 
 CREATE TABLE IF NOT EXISTS configs (
 	key        TEXT PRIMARY KEY,

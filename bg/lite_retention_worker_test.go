@@ -93,3 +93,45 @@ func TestLiteRetentionWorker_RunOnceIdempotent(t *testing.T) {
 			logsDel, sessDel, turnsDel)
 	}
 }
+
+// R47：清理期间被新写入复活的超龄会话必须整体豁免（会话与全部 turns
+// 都保留）——updated_at 谓词在删除时刻求值，而非沿用 sweep 开始时的
+// 收集快照（旧实现缝隙内复活会丢光历史 turns）。
+func TestLiteRetentionWorker_RevivedSessionKeepsTurns(t *testing.T) {
+	db, err := sqlite.OpenSQLite(":memory:")
+	if err != nil {
+		t.Skipf("sqlite driver unavailable in this build: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now().Unix()
+	old := now - 8*24*3600
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("exec %s: %v", q, err)
+		}
+	}
+	mustExec(`INSERT INTO sessions (id, tenant_id, created_at, updated_at) VALUES ('sess-old', 't1', ?, ?)`, old, old)
+	mustExec(`INSERT INTO session_turns (tenant_id, session_id, turn_no, ts) VALUES ('t1', 'sess-old', 1, ?)`, old)
+	mustExec(`INSERT INTO request_logs (request_id, tenant_id, ts, method, path) VALUES ('req-old', 't1', ?, 'POST', '/v1/chat')`, old)
+
+	// 复活：updated_at 刷到当下（等价于 sweep 缝隙内新 turn 写入的 bump）。
+	mustExec(`UPDATE sessions SET updated_at = ? WHERE id = 'sess-old'`, now)
+
+	w := NewLiteRetentionWorker(db, 7*24*time.Hour)
+	logsDel, sessDel, turnsDel, err := w.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if sessDel != 0 || turnsDel != 0 {
+		t.Fatalf("revived session must be exempt entirely, got sessions=%d turns=%d", sessDel, turnsDel)
+	}
+	if logsDel != 1 {
+		t.Fatalf("expected old request_log still swept, got %d", logsDel)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM session_turns WHERE session_id='sess-old'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("expected revived session's turns to survive, got %d (err=%v)", n, err)
+	}
+}
