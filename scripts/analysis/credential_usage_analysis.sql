@@ -82,7 +82,10 @@ credential_stats AS (
   LEFT JOIN providers p ON c.provider_id = p.id
   WHERE rl.ts BETWEEN tr.start_time AND tr.end_time
     AND rl.credential_id IS NOT NULL
-    AND rl.request_type = 'main'
+    -- R45（P1 修复）：视图 session_turns 段把 request_type 投影为 NULL，裸 = 'main'
+    -- 漏掉全部业务行（真库 24h 实测漏 99.3%）。缺省即 main 是生产读端既定惯例
+    -- （admin/session_online.go 等 COALESCE(request_type,'main')）。
+    AND COALESCE(rl.request_type, 'main') = 'main'
   GROUP BY
     rl.credential_id,
     c.label,
@@ -111,8 +114,9 @@ model_usage AS (
   CROSS JOIN time_range tr
   WHERE rl.ts BETWEEN tr.start_time AND tr.end_time
     AND rl.credential_id IS NOT NULL
-    AND rl.outbound_model IS NOT NULL
-    AND rl.request_type = 'main'   -- 与外层 total_requests 口径对齐（R44 F6）
+    -- R45（P2）：空串 outbound_model 不是真模型（真库 top_models 第一位全是空名条目），NULLIF 排除。
+    AND NULLIF(rl.outbound_model, '') IS NOT NULL
+    AND COALESCE(rl.request_type, 'main') = 'main'   -- 与外层 total_requests 口径对齐（R44 F6；R45 补 COALESCE）
   GROUP BY rl.credential_id, rl.outbound_model
 ),
 top_models AS (
@@ -135,7 +139,7 @@ error_breakdown AS (
     AND rl.credential_id IS NOT NULL
     AND rl.success = false
     AND rl.error_kind IS NOT NULL
-    AND rl.request_type = 'main'
+    AND COALESCE(rl.request_type, 'main') = 'main'
   GROUP BY rl.credential_id, rl.error_kind
 ),
 top_errors AS (
@@ -220,14 +224,14 @@ SELECT
 
   -- 利用率指标（7d 平均口径；峰值口径可改查 credential_model_peak_1m）
   CASE
-    WHEN cs.rpm_limit IS NOT NULL THEN
-      ROUND(100.0 * (cs.total_requests::numeric / 7 / 24 / 60) / cs.rpm_limit, 2)
+    WHEN NULLIF(cs.rpm_limit, 0) IS NOT NULL THEN
+      ROUND(100.0 * (cs.total_requests::numeric / 7 / 24 / 60) / NULLIF(cs.rpm_limit, 0), 2)
     ELSE NULL
   END AS rpm_utilization_pct,
 
   CASE
-    WHEN cs.tpm_limit IS NOT NULL THEN
-      ROUND(100.0 * (cs.total_tokens::numeric / 7 / 24 / 60) / cs.tpm_limit, 2)
+    WHEN NULLIF(cs.tpm_limit, 0) IS NOT NULL THEN
+      ROUND(100.0 * (cs.total_tokens::numeric / 7 / 24 / 60) / NULLIF(cs.tpm_limit, 0), 2)
     ELSE NULL
   END AS tpm_utilization_pct,
 
