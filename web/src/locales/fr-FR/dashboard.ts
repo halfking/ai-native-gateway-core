@@ -284,6 +284,7 @@ v2: {
     filterAllOptions: 'Tous',
     filterEmpty: 'Aucune option disponible',
     filterModel: 'Modèle',
+    filterGroup: 'Filtrer',
     filterProvider: 'Fournisseur',
     filterVendor: 'Vendor',
     filterAgent: 'Client',  // 2026-08-06 aligné avec zh-CN

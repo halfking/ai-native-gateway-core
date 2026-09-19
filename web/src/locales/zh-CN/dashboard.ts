@@ -263,6 +263,7 @@ export default {
     filterAllOptions: '全部',
     filterEmpty: '暂无可选项',
     filterModel: '模型',
+    filterGroup: '筛选',
     filterProvider: '供应商',
     filterVendor: '原厂',
     filterAgent: '客户端',  // 2026-07-27

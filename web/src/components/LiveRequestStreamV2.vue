@@ -304,7 +304,7 @@ function vendorOptionLabel(v: string) {
 
         <!-- 2026-07-24: 多维筛选（弹窗选择，选项完整显示） -->
         <div class="filter-group">
-          <span class="filter-group__label">筛选</span>
+          <span class="filter-group__label">{{ t('dashboard.liveStream.filterGroup') }}</span>
           <button
             type="button"
             class="filter-btn"
