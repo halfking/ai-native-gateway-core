@@ -47,6 +47,12 @@ type dispatchCtx struct {
 	retryPerCred   int
 	tTotal         time.Time
 	stickyCredID   *int // session-affinity pin (honored on first attempt; excluded once tried)
+	// stickyFailed / stickyFailKind (2026-09-19 会话保持): 本请求内 sticky
+	// 钉住的凭据是否被尝试过且失败，及其最终错误类型。由 dispatchForward
+	// 失败分支记录（pipeline 对同一请求的 attempt 串行，无需加锁），
+	// recordDispatchSuccess 据此决定会话"保持原绑定"还是"迁移到新节点"。
+	stickyFailed   bool
+	stickyFailKind errorsx.ErrorKind
 }
 
 // SetDispatchPipeline wires the V2 dispatch pipeline. The pipeline is the
@@ -830,7 +836,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	}()
 
 	if execErr == nil {
-		e.recordDispatchSuccess(params, cand, result)
+		e.recordDispatchSuccess(params, cand, result, dctx)
 		return dispatch.ForwardOutcome{Result: result}
 	}
 
@@ -841,6 +847,15 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		}
 	}
 	kind := e.recordDispatchError(params, cand, execErr)
+
+	// 2026-09-19 会话保持：sticky 钉住的凭据被尝试且失败时记录错误类型，
+	// 供成功路径判定"瞬时失败保持会话 / 严重失败迁移会话"。
+	// pipeline 对同一请求的 attempt 严格串行（failover mover 单owner），
+	// 这里无需加锁。
+	if dctx.stickyCredID != nil && cand.CredentialID == *dctx.stickyCredID {
+		dctx.stickyFailed = true
+		dctx.stickyFailKind = kind
+	}
 
 	// Audit 2026-09-08 #3: request_flow coverage for dispatch V2 stream
 	// interruptions. forwardForDispatch is the funnel every protocol
@@ -925,10 +940,15 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 // recordDispatchSuccess applies non-authoritative routing side effects
 // (sticky, route recorder, health tracker, and mnf reset). Focused subset of
 // the legacy loop's success block (executor.go:2566-2696).
-func (e *Executor) recordDispatchSuccess(params *ExecParams, cand provider.Candidate, result *ExecuteResult) {
+//
+// 2026-09-19 会话保持：dctx 携带 sticky 钉扎凭据的本请求失败史——
+// 瞬时错误 failover 成功后不重写 sticky（会话留在原节点，保住 prompt-cache
+// 亲和）；严重错误（IsCredentialFatal）或 sticky 节点本请求未被尝试
+//（被可用性过滤=冷却/熔断）时正常重写到实际服务节点（会话迁移）。
+func (e *Executor) recordDispatchSuccess(params *ExecParams, cand provider.Candidate, result *ExecuteResult, dctx *dispatchCtx) {
 	sideEffectCtx, sideEffectCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 	defer sideEffectCancel()
-	e.recordStickySuccess(params, cand.CredentialID)
+	e.recordStickySuccess(params, cand.CredentialID, dctx)
 	if e.Recorder != nil && e.legacyWritersEnabled() {
 		e.Recorder.RecordSuccess(sideEffectCtx, cand.CredentialID, cand.RawModel)
 	}

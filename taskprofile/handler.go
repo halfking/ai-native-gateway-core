@@ -3,6 +3,7 @@ package taskprofile
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -40,15 +41,73 @@ import (
 // source of truth.
 const OverlayEnvVar = "TASKPROFILE_OVERLAY"
 
+// AuditEvent describes one operator mutation attempt on the task-profile
+// module's four change endpoints (corrections create / import / reload /
+// apply-tier-config), delivered to the optional audit hook.
+//
+// R43 §五#3 发现（apply-tier-config 零审计留痕）→ 本回调落地（R45 补做，
+// 交接第 5 项）。设计约束：taskprofile 不 import admin（admin 依赖
+// taskprofile，反向会成环）——审计 sink 由接线侧（admin/handler.go）经
+// SetAuditHook 注入，event 携带原始 *http.Request 供 sink 提取操作者身份
+// （admin.GetAuthContext）。首个生产 sink 是结构化 slog（journald/日志管道
+// 可检索）；未来可换 DB 审计表 sink 而无需再动本包。
+//
+// 语义约定：
+//   - 只有"真实变更尝试"才发事件——校验拒绝（400）与 nil-pool 503 不发
+//     （没有变更意图落库，不属于审计面）；
+//   - success 与 failure 都发（失败的操作同样需要留痕：谁在何时试了什么）；
+//   - hook panic 隔离（审计绝不能打断端点），nil hook 零开销。
+type AuditEvent struct {
+	// Action 是端点级动作名：corrections-create / corrections-import /
+	// reload / apply-tier-config。
+	Action string
+	// Outcome: "success" | "failure"。
+	Outcome string
+	// Detail 携带端点特定的结果摘要（计数/版本/错误串）；可为 nil。
+	Detail map[string]any
+	// Request 是触发端点的原始请求；sink 从中提取 actor/tenant。变更端点
+	// 的 handler 路径上恒非 nil。
+	Request *http.Request
+}
+
+// 审计动作名（AuditEvent.Action 取值，接线侧与查询侧共用同一词表）。
+const (
+	AuditActionCorrectionCreate = "corrections-create"
+	AuditActionCorrectionImport = "corrections-import"
+	AuditActionReload           = "reload"
+	AuditActionApplyTierConfig  = "apply-tier-config"
+)
+
 // Handlers wires the admin endpoints to a store.
 type Handlers struct {
-	store *CorrectionStore
+	store     *CorrectionStore
+	auditHook func(AuditEvent)
 }
 
 // NewHandlers constructs the admin handlers over pool (may be nil → the
 // endpoints answer 503, same convention as the annotation handlers).
 func NewHandlers(pool *pgxpool.Pool) *Handlers {
 	return &Handlers{store: NewCorrectionStore(pool)}
+}
+
+// SetAuditHook attaches the optional operator-mutation audit sink. See
+// AuditEvent for the delivery semantics. The hook must be cheap and
+// non-blocking; panics inside it are isolated and never break the endpoint.
+func (h *Handlers) SetAuditHook(fn func(AuditEvent)) { h.auditHook = fn }
+
+// emitAudit delivers one audit event. nil hook / nil receiver = no-op; hook
+// panics are isolated with a Warn (mirrors telemetry firePersistedHooks).
+func (h *Handlers) emitAudit(action, outcome string, detail map[string]any, r *http.Request) {
+	if h == nil || h.auditHook == nil {
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Warn("taskprofile audit hook panic",
+				"action", action, "outcome", outcome, "panic", rec)
+		}
+	}()
+	h.auditHook(AuditEvent{Action: action, Outcome: outcome, Detail: detail, Request: r})
 }
 
 // SetRecorder attaches the optional FeedbackRecorder to the handlers' store.
@@ -151,6 +210,24 @@ func (h *Handlers) handleCreateCorrection(w http.ResponseWriter, r *http.Request
 		Annotator:     req.Annotator,
 		Reason:        req.Reason,
 	})
+	if err != nil {
+		// Record 尝试后的失败（未知请求/重复修正/DB 错）都是真实审计面：
+		// 谁、何时、试图把哪条请求改成什么类型。
+		h.emitAudit(AuditActionCorrectionCreate, "failure",
+			map[string]any{
+				"error":           err.Error(),
+				"request_id":      req.RequestID,
+				"human_task_type": req.HumanTaskType,
+				"annotator":       req.Annotator,
+			}, r)
+	} else {
+		h.emitAudit(AuditActionCorrectionCreate, "success",
+			map[string]any{
+				"request_id":      req.RequestID,
+				"human_task_type": req.HumanTaskType,
+				"annotator":       req.Annotator,
+			}, r)
+	}
 	switch {
 	case err == nil:
 		writeJSON(w, map[string]any{"success": true, "correction": correction})
@@ -264,9 +341,18 @@ func (h *Handlers) handleImportCorrections(w http.ResponseWriter, r *http.Reques
 	r.Body = http.MaxBytesReader(w, r.Body, 32<<20)
 	summary, err := h.store.ImportCorrectionsCSV(r.Context(), r.Body, 10000)
 	if err != nil {
+		h.emitAudit(AuditActionCorrectionImport, "failure",
+			map[string]any{"error": err.Error()}, r)
 		http.Error(w, "import: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	h.emitAudit(AuditActionCorrectionImport, "success",
+		map[string]any{
+			"total_rows": summary.TotalRows,
+			"imported":   summary.Imported,
+			"skipped":    summary.Skipped,
+			"row_errors": len(summary.RowErrors),
+		}, r)
 	writeJSON(w, map[string]any{"success": true, "summary": summary})
 }
 
@@ -301,12 +387,18 @@ func (h *Handlers) handleApplyTierConfig(w http.ResponseWriter, r *http.Request)
 			// startup, so a missing table means the ensure chain itself is
 			// disabled/broken — not "run the migration" (the original
 			// 202609_02 file was unexecutable PG DDL; fixed in R43).
+			h.emitAudit(AuditActionApplyTierConfig, "failure",
+				map[string]any{"error": "tier_config_table_missing", "task_types": req.TaskTypes}, r)
 			http.Error(w, "task_type_tier_config table not available (startup ensure chain did not create it; see db.ensureTaskTypeTierConfig)", http.StatusServiceUnavailable)
 			return
 		}
+		h.emitAudit(AuditActionApplyTierConfig, "failure",
+			map[string]any{"error": err.Error(), "task_types": req.TaskTypes}, r)
 		http.Error(w, "apply tier config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	h.emitAudit(AuditActionApplyTierConfig, "success",
+		map[string]any{"applied": applied, "task_types": req.TaskTypes}, r)
 	writeJSON(w, map[string]any{"success": true, "applied": applied})
 }
 
@@ -316,9 +408,13 @@ func (h *Handlers) handleApplyTierConfig(w http.ResponseWriter, r *http.Request)
 func (h *Handlers) handleReload(w http.ResponseWriter, r *http.Request) {
 	version, err := ReloadOverlay(os.Getenv(OverlayEnvVar))
 	if err != nil {
+		h.emitAudit(AuditActionReload, "failure",
+			map[string]any{"error": err.Error(), "overlay_env": OverlayEnvVar}, r)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	h.emitAudit(AuditActionReload, "success",
+		map[string]any{"registry_version": version}, r)
 	writeJSON(w, map[string]any{"success": true, "registry_version": version})
 }
 

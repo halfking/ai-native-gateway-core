@@ -2,6 +2,7 @@ package autoroute
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -183,5 +184,39 @@ func TestApplyTuningParam_BadJSON(t *testing.T) {
 	err := applyTuningParam(snap, "keywords.reasoning", []byte(`not json`))
 	if err == nil {
 		t.Error("malformed JSON should return error")
+	}
+}
+
+// R45（D11 复核）：llm_confidence 阈值 tuning 必须 clamp 到 (0,1]——
+// 超范围值拒绝而非原样写入（>0.85 会白付外呼且必被门拒，≤0 门失效）。
+func TestApplyTuningParam_LLMConfidenceClamp(t *testing.T) {
+	cases := []struct {
+		raw   string
+		want  float64
+		wantE bool
+	}{
+		{`0.75`, 0.75, false},
+		{`1`, 1, false},
+		{`0.9`, 0.9, false},
+		{`0`, 0, true},
+		{`-0.5`, 0, true},
+		{`1.2`, 0, true},
+	}
+	for _, tc := range cases {
+		snap := &tuningSnapshot{}
+		err := applyTuningParam(snap, "thresholds.llm_confidence", json.RawMessage(tc.raw))
+		if tc.wantE {
+			if err == nil {
+				t.Errorf("raw=%s: want error, got threshold=%v", tc.raw, snap.LLMConfidenceThreshold)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("raw=%s: unexpected error %v", tc.raw, err)
+			continue
+		}
+		if snap.LLMConfidenceThreshold != tc.want {
+			t.Errorf("raw=%s: threshold=%v, want %v", tc.raw, snap.LLMConfidenceThreshold, tc.want)
+		}
 	}
 }

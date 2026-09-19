@@ -741,8 +741,9 @@ func normaliseProfile(raw string) Profile {
 //
 // Errors:
 //   - Task hint invalid → ignored, falls through to heuristic
-//   - Heuristic error → escalate to LLM
-//   - LLM error      → return error (caller falls back to chat default)
+//   - Heuristic error → return error（不升级 LLM：本地信号都解析失败时
+//     外部分类器更无从下手；由 Decide/DecideV2 兜 default chat）
+//   - LLM error       → fail-open 保留 heuristic 结果（低置信度），不向调用方传错
 func (d *Decider) classify(ctx context.Context, sigs ClassificationSignals, hint TaskType) (*Classification, error) {
 	if isValidTaskType(hint) {
 		return &Classification{

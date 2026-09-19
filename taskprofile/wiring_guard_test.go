@@ -43,3 +43,24 @@ func TestOptimizerSideStore_StaysReadOnly(t *testing.T) {
 		t.Fatal("routing_optimizer_init.go no longer wires the CorrectionSource; confidence damping would silently stop")
 	}
 }
+
+// R45（R43 §五#3 落地）: 审计 hook 的生产接线钉桩——回调存在 ≠ 被调用
+// （2135 MiniMax 事故定式：翻译存在但从未接线）。admin/handler.go 必须对
+// taskprofile handlers 调用 SetAuditHook，否则四个变更端点的审计事件
+// 投递到 nil sink，R43 发现的"零审计留痕"原样复活。
+func TestAdminWiring_AttachesAuditHook(t *testing.T) {
+	src, err := os.ReadFile("../admin/handler.go")
+	if err != nil {
+		t.Fatalf("read admin/handler.go: %v", err)
+	}
+	s := string(src)
+	if !strings.Contains(s, "SetAuditHook(") {
+		t.Fatal("admin/handler.go does not call SetAuditHook on the taskprofile handlers — " +
+			"the four change endpoints would audit into a nil sink (R43 zero-audit-trail regression)")
+	}
+	// sink 必须提取 actor（GetAuthContext），否则审计事件无法归因到操作者。
+	if !strings.Contains(s, "GetAuthContext(ev.Request)") {
+		t.Fatal("audit sink no longer extracts the operator identity via GetAuthContext — " +
+			"taskprofile.audit events would be unattributable (actor=unknown for every mutation)")
+	}
+}
