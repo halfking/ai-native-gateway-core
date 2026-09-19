@@ -136,6 +136,14 @@ type Candidate struct {
 	MaxQueueDepth        *int     `json:"max_queue_depth,omitempty"`
 	MaxQueueWaitMS       *int     `json:"max_queue_wait_ms,omitempty"`
 	BalanceUSD           *float64 `json:"balance_usd"`
+	// PlanQuotaUsedPercent mirrors credentials.plan_quota_used_percent — the
+	// periodic-plan window utilization (5h / 7d, 0..100) written by the
+	// balance-floor / quota probes (zhipu, minimax) and 429-based passive
+	// inference. nil = no probe data. Consumed by the router's plan-quota
+	// penalty (2026-09-19 cost-aware routing): prefer plan credentials with
+	// more remaining window quota so sunk plan cost is used up, without
+	// burning any single 5h/weekly window to exhaustion.
+	PlanQuotaUsedPercent *float64 `json:"plan_quota_used_percent,omitempty"`
 	CircuitState         string   `json:"circuit_state"`
 	AvailabilityState    string   `json:"availability_state"`
 	QuotaState           string   `json:"quota_state"`
@@ -1484,7 +1492,11 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		c.tpm_limit,
 		c.max_queue_depth,
 		c.max_queue_wait_ms,
-			c.balance_usd::float8,
+				c.balance_usd::float8,
+				-- 2026-09-19 成本感知选路：周期性计划窗口用量（5h/7d 探测，
+				-- balance_floor_guard / periodic_quota_probe 写入）进入候选，
+				-- 供 router 的 plan-quota 惩罚消费。NULL=无探测数据。
+				c.plan_quota_used_percent::float8,
 			COALESCE(c.circuit_state, 'closed') AS circuit_state,
 			COALESCE(c.availability_state, 'ready') AS availability_state,
 			COALESCE(c.quota_state, 'ok') AS quota_state,
@@ -1545,18 +1557,26 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		       ON ma.raw_name = mo.canonical_raw_name
 		      AND COALESCE(ma.status, 'active') = 'active'
 		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
-		LEFT JOIN LATERAL (
-			SELECT
-				NULLIF(pp.plan_json->>'input_per_1m', '')::float8 AS plan_in,
-				NULLIF(pp.plan_json->>'output_per_1m', '')::float8 AS plan_out
-			FROM pricing_plans pp
-			WHERE pp.model_canonical_id = mc.id
-			  AND pp.effective_to IS NULL
-			  AND (pp.credential_id = c.id OR pp.credential_id IS NULL)
-			ORDER BY CASE WHEN pp.credential_id = c.id THEN 0 ELSE 1 END,
-			         pp.effective_from DESC
-			LIMIT 1
-		) pp_fb ON TRUE
+			LEFT JOIN LATERAL (
+				SELECT
+					NULLIF(pp.plan_json->>'input_per_1m', '')::float8 AS plan_in,
+					NULLIF(pp.plan_json->>'output_per_1m', '')::float8 AS plan_out
+				FROM pricing_plans pp
+				WHERE pp.model_canonical_id = mc.id
+				  AND pp.effective_to IS NULL
+				  AND (pp.credential_id = c.id OR pp.credential_id IS NULL)
+				-- 2026-09-19 成本自动填充优先级：凭据级 > 供应商级 > 全局。
+				-- 供应商维护的价格表（scope='provider', provider_id=p.id）
+				-- 从此真正参与候选取价，不再与全局行混级靠 effective_from
+				-- 决胜负。
+				ORDER BY CASE
+				           WHEN pp.credential_id = c.id THEN 0
+				           WHEN pp.provider_id = p.id THEN 1
+				           ELSE 2
+				         END,
+				         pp.effective_from DESC
+				LIMIT 1
+			) pp_fb ON TRUE
 		-- LEFT JOIN model_name_mapping for standardized name lookup fallback
 		LEFT JOIN model_name_mapping mnm
 		       ON mnm.raw_model_name = mo.canonical_raw_name
@@ -1761,6 +1781,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.MaxQueueDepth,
 			&cand.MaxQueueWaitMS,
 			&cand.BalanceUSD,
+			&cand.PlanQuotaUsedPercent,
 			&cand.CircuitState,
 			&cand.AvailabilityState,
 			&cand.QuotaState,
