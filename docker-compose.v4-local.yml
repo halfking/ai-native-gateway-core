@@ -6,9 +6,10 @@
 #   curl http://127.0.0.1:18781/healthz
 #
 # 依赖的宿主实例（均已在运行，不重建）:
-#   - llm-gateway-pg   (kx-citus-pg17:offline-arm64, 127.0.0.1:5432,
-#                       citus 13.3 + citus_columnar, DB=llm_gateway,
-#                       data source: $HOME/Downloads/llm-gateway-files/postgres/data)
+#   - llm-gateway-pg   (kx-citus-pg17:offline-arm64, 0.0.0.0:5432 自 2026-09-18
+#                       起 LAN 可达，scram 密码认证；citus 13.3 + citus_columnar,
+#                       DB=llm_gateway,
+#                       data source: $HOME/kaixuan/postgres)
 #   - nbjl-redis       (redis:7-alpine / Redis 7.4.11, shared-infra 容器名可达)
 #
 # 已评估弃用: kxmemory-rls-pg17 (pgvector:pg17) 无 citus/columnar 支持，
