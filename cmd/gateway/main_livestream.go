@@ -166,6 +166,11 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 	// Fallback when hub is nil (defensive; unreachable in normal operation
 	// because SetOnRequestLogEmitted is only wired when hub != nil).
 	//
+	// R45（D15+D16 复核注记）: 该分支的字段面**有意**保持最小集（身份/模型/
+	// token/成本/会话核心列），不追求与 hub 路径逐字段对齐——FailureStage/
+	// Agent/Probe/Identity/Parent 等派生列在不可达的防御分支里补齐只会制造
+	// 两份需要同步维护的漂移面。真实字段对齐判据只适用于 hub 路径。
+	//
 	// 2026-07-16: model fallback order matches the canonical fix in
 	// LiveRequestFromTelemetry: client → outbound. Without the hub we
 	// cannot resolve canonical_id (need DB), so client_supplied model

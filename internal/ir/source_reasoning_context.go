@@ -91,7 +91,11 @@ func SourceReasoningFromContext(ctx context.Context) (SourceReasoning, bool) {
 //     expression always wins over the carrier. In the Gemini-handler flow the
 //     step-6 body never carries these (that loss is the very defect being
 //     fixed), but the guard keeps the restore safe against future senders
-//     that preserve intent natively.
+//     that preserve intent natively. (R45 复核注记：该守卫只看 IR 结构字段；
+//     ParseOpenAI 把顶层 dialect thinking 对象收进 Extensions 而非
+//     ir.Thinking——若未来某发送方同时挂载体又在 body 自带 thinking 对象，
+//     applyThinkingToOpenAIChat 先渲染载体意图且 restoreExtensions 不覆盖
+//     已有键，载体将反超 body。当前生产不可达，登记为未来发送方陷阱。)
 //   - SourceProtocol is only overwritten when it is an OpenAI form — i.e.
 //     the ParseOpenAI stamp. A non-OpenAI SourceProtocol set by an upstream
 //     parse path is left untouched.
@@ -113,6 +117,60 @@ func RestoreSourceReasoning(req *InternalRequest, ctx context.Context) *Internal
 	switch req.SourceProtocol {
 	case ProtocolOpenAIChat, ProtocolOpenAIResponses, "":
 		req.SourceProtocol = src.SourceProtocol
+	}
+	return req
+}
+
+// anthropicMinBudget mirrors reasonnorm.AnthropicMinBudget (the hard floor for
+// Anthropic budget_tokens). Declared locally to avoid exporting reasonnorm
+// internals through this file; the canonical constant lives in reasonnorm.
+const anthropicMinBudget = 1024
+
+// ClampRestoredReasoningForAnthropic adapts a cross-protocol restored reasoning
+// intent (R45: Gemini thinkingConfig carried via SourceReasoning) to Anthropic's
+// budget constraints before SerializeAnthropic: budget ≥ 1024 and strictly
+// less than max_tokens. A client that chose its budget under Gemini's rules
+// (e.g. thinkingBudget=128, legal for Gemini 2.5 Pro) would otherwise produce
+// an invalid Anthropic thinking object and a 400 upstream.
+//
+// Semantics mirror reasonnorm.renderAnthropic: floor at 1024; cap at
+// max_tokens-1; if the cap cannot keep the budget above the floor, drop the
+// thinking intent entirely (a sendable request beats an unsendable one).
+// Type-only intents (disabled / enabled without budget) pass through
+// untouched; nil req is a no-op.
+func ClampRestoredReasoningForAnthropic(req *InternalRequest) *InternalRequest {
+	if req == nil {
+		return req
+	}
+	if b := req.Reasoning; b != nil && b.BudgetTokens != nil {
+		budget := *b.BudgetTokens
+		if budget > 0 {
+			if budget < anthropicMinBudget {
+				budget = anthropicMinBudget
+			}
+			if req.MaxTokens > 0 && budget >= req.MaxTokens {
+				budget = req.MaxTokens - 1
+			}
+			if budget < anthropicMinBudget {
+				req.Reasoning = nil
+				return req
+			}
+			*b.BudgetTokens = budget
+		}
+	}
+	if t := req.Thinking; t != nil && t.BudgetTokens > 0 {
+		budget := t.BudgetTokens
+		if budget < anthropicMinBudget {
+			budget = anthropicMinBudget
+		}
+		if req.MaxTokens > 0 && budget >= req.MaxTokens {
+			budget = req.MaxTokens - 1
+		}
+		if budget < anthropicMinBudget {
+			req.Thinking = nil
+			return req
+		}
+		t.BudgetTokens = budget
 	}
 	return req
 }

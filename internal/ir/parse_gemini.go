@@ -553,11 +553,27 @@ func parseGeminiGenerationConfig(raw json.RawMessage, ir *InternalRequest) error
 		ir.ResponseFormat = rf
 	}
 
-	// Map Gemini thinkingConfig to IR ReasoningConfig
+	// Map Gemini thinkingConfig to IR ReasoningConfig.
+	//
+	// R45（budget=0 反转缺陷修正）：Gemini 的 0 是"关闭推理"哨兵（reasonnorm
+	// norm.go renderGemini25 同语义：ModeDisabled → thinkingBudget: 0），-1 是
+	// dynamic（模型自行决定）。旧映射把任意非 nil budget 一律标 Type:"enabled"
+	// ——R45 的 context 恢复链使该 intent 首次真正到达上游线，budget=0 的
+	// 显式关推理请求会被渲染成 adaptive/enabled（语义反转）。0 → disabled；
+	// 负值 → enabled 且不携带 budget（各方言渲染为 adaptive/enabled 型开关，
+	// -1 数值本身不上 wire）。
 	if gc.ThinkingConfig != nil && gc.ThinkingConfig.ThinkingBudget != nil {
-		ir.Reasoning = &ReasoningConfig{
-			Type:         "enabled",
-			BudgetTokens: gc.ThinkingConfig.ThinkingBudget,
+		budget := *gc.ThinkingConfig.ThinkingBudget
+		switch {
+		case budget == 0:
+			ir.Reasoning = &ReasoningConfig{Type: "disabled"}
+		case budget < 0:
+			ir.Reasoning = &ReasoningConfig{Type: "enabled"}
+		default:
+			ir.Reasoning = &ReasoningConfig{
+				Type:         "enabled",
+				BudgetTokens: gc.ThinkingConfig.ThinkingBudget,
+			}
 		}
 	}
 

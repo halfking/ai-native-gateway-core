@@ -3,6 +3,8 @@ package ir
 import (
 	"context"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/internal/reasonnorm"
 )
 
 // source_reasoning_context_test.go — R45 Gemini thinking 专项的 IR 携带层
@@ -132,4 +134,88 @@ func TestRestoreSourceReasoning_ProtocolOverwriteScope(t *testing.T) {
 	if got.SourceProtocol != ProtocolGeminiGenerate {
 		t.Errorf("empty SourceProtocol should be filled from carrier: %q", got.SourceProtocol)
 	}
+}
+
+// R45（budget=0 反转缺陷）：Gemini 0=关闭推理哨兵（reasonnorm 同语义），
+// 负值=dynamic。旧映射一律 enabled 使显式关推理被恢复链渲染成开启。
+func TestParseGemini_ThinkingBudgetSemantics(t *testing.T) {
+	base := `"contents":[{"role":"user","parts":[{"text":"hi"}]}]`
+	cases := []struct {
+		name    string
+		body    string
+		wantTyp string
+		wantBud string // "" = BudgetTokens == nil
+	}{
+		{"zero disables", `{` + base + `,"generationConfig":{"thinkingConfig":{"thinkingBudget":0}}}`, "disabled", ""},
+		{"negative dynamic without budget", `{` + base + `,"generationConfig":{"thinkingConfig":{"thinkingBudget":-1}}}`, "enabled", ""},
+		{"positive carries budget", `{` + base + `,"generationConfig":{"thinkingConfig":{"thinkingBudget":4096}}}`, "enabled", "4096"},
+	}
+	for _, tc := range cases {
+		parsed, err := ParseGemini([]byte(tc.body))
+		if err != nil {
+			t.Fatalf("%s: ParseGemini: %v", tc.name, err)
+		}
+		if parsed.Reasoning == nil || parsed.Reasoning.Type != tc.wantTyp {
+			t.Errorf("%s: Reasoning = %+v, want Type=%q", tc.name, parsed.Reasoning, tc.wantTyp)
+			continue
+		}
+		if tc.wantBud == "" {
+			if parsed.Reasoning.BudgetTokens != nil {
+				t.Errorf("%s: BudgetTokens = %v, want nil", tc.name, *parsed.Reasoning.BudgetTokens)
+			}
+		} else if parsed.Reasoning.BudgetTokens == nil || *parsed.Reasoning.BudgetTokens != 4096 {
+			t.Errorf("%s: BudgetTokens = %v, want %s", tc.name, parsed.Reasoning.BudgetTokens, tc.wantBud)
+		}
+	}
+}
+
+// R45：budget=0（disabled）经恢复链渲染为显式关闭，不得反转为 adaptive。
+func TestRestoreSourceReasoning_DisabledBudgetNotInverted(t *testing.T) {
+	carried := SourceReasoning{Reasoning: &ReasoningConfig{Type: "disabled"}, SourceProtocol: ProtocolGeminiGenerate}
+	ctx := WithSourceReasoning(context.Background(), carried)
+	req := RestoreSourceReasoning(&InternalRequest{SourceProtocol: ProtocolOpenAIChat}, ctx)
+	if req.Reasoning.Type != "disabled" {
+		t.Fatalf("disabled intent must survive restore, got %+v", req.Reasoning)
+	}
+	// renderMiniMax/renderGenericThinking 对 ModeDisabled 输出 {"type":"disabled"}
+	intent, ok := openAIReasoningIntent(req)
+	if !ok || intent.Mode != reasonnorm.ModeDisabled {
+		t.Fatalf("intent = %+v (ok=%v), want ModeDisabled", intent, ok)
+	}
+}
+
+// R45：Anthropic 目标约束钳制（floor 1024 / cap max_tokens-1 / 放不下丢弃）。
+func TestClampRestoredReasoningForAnthropic(t *testing.T) {
+	mk := func(b int) *InternalRequest {
+		return &InternalRequest{Reasoning: &ReasoningConfig{Type: "enabled", BudgetTokens: &b}}
+	}
+	t.Run("floor clamps up", func(t *testing.T) {
+		req := ClampRestoredReasoningForAnthropic(mk(128))
+		if got := *req.Reasoning.BudgetTokens; got != 1024 {
+			t.Errorf("budget = %d, want 1024", got)
+		}
+	})
+	t.Run("max_tokens caps down", func(t *testing.T) {
+		req := mk(8192)
+		req.MaxTokens = 2048
+		req = ClampRestoredReasoningForAnthropic(req)
+		if got := *req.Reasoning.BudgetTokens; got != 2047 {
+			t.Errorf("budget = %d, want 2047", got)
+		}
+	})
+	t.Run("cannot fit drops thinking", func(t *testing.T) {
+		req := mk(8192)
+		req.MaxTokens = 1024
+		req = ClampRestoredReasoningForAnthropic(req)
+		if req.Reasoning != nil {
+			t.Errorf("unfittable thinking must be dropped, got %+v", req.Reasoning)
+		}
+	})
+	t.Run("type only untouched", func(t *testing.T) {
+		req := &InternalRequest{Reasoning: &ReasoningConfig{Type: "disabled"}}
+		got := ClampRestoredReasoningForAnthropic(req)
+		if got.Reasoning == nil || got.Reasoning.Type != "disabled" {
+			t.Errorf("type-only intent must pass through, got %+v", got.Reasoning)
+		}
+	})
 }
