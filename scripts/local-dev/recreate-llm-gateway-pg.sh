@@ -14,6 +14,9 @@
 #   2026-08-26  v1.0  Initial version
 #   2026-08-31  v1.1  Create-only password policy guard + corrected mechanism
 #                     notes (entrypoint writes password only at first initdb)
+#   2026-09-18  v1.2  PORT_BIND 127.0.0.1 -> 0.0.0.0: expose PG to LAN users
+#                     (pg_hba already scram-sha-256 password-only for all
+#                     remote hosts; password required, loopback still works)
 # -----------------------------------------------------------------------------
 # Usage:
 #   bash scripts/local-dev/recreate-llm-gateway-pg.sh
@@ -42,9 +45,11 @@ IMAGE="kx-citus-pg17:offline-arm64"
 # /Users/xutaohuang/kaixuan/postgres). The previous Downloads path is kept
 # as a rollback copy in operator notes — never point a fresh container at
 # it; doing so masks the real 22G bind. Port 15432 is reserved exclusively
-# for the 252 SSH tunnel; local PG owns host loopback port 5432.
+# for the 252 SSH tunnel. Since v1.2 (2026-09-18) port 5432 binds 0.0.0.0 so
+# LAN users can reach PG at <host-LAN-IP>:5432; auth is scram-sha-256
+# password-only for all non-socket connections (pg_hba.conf).
 DATA_DIR="${LLM_GATEWAY_PG_DATA_DIR:-$HOME/kaixuan/postgres}"
-PORT_BIND="127.0.0.1:5432:5432"
+PORT_BIND="${LLM_GATEWAY_PG_PORT_BIND:-0.0.0.0:5432:5432}"
 NETWORK="shared-infra"
 
 # Load 252 password
