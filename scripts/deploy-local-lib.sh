@@ -640,6 +640,50 @@ dl_active_port() {
   printf '%s\n' "$candidate"
 }
 dl_candidate_port() { local cur; cur=$(dl_active_port); [[ "$cur" == 8782 ]] && printf 8781 || printf 8782; }
+
+# 2026-09-19（部署工单）：蓝绿轮换前先实测哪个端口真的有网关在监听。
+# deploy-local.sh 与网关同机，127.0.0.1 是合法探测目标（远程部署路径
+# deploy-seamless.sh 的对应逻辑走 remote_ssh，勿混用）。
+dl_port_listening() {
+  local port="$1"
+  curl -fsS -o /dev/null --max-time 1 "http://127.0.0.1:${port}/healthz" 2>/dev/null && return 0
+  # /healthz 未应答不等于没人监听（网关可能在启动 ensure 链上，还没 bind
+  # 完 / 或 503）——退回裸 TCP 探测，只要端口有人占就当它在监听。
+  (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null
+}
+
+# 输出 8781/8782 中正在监听的端口（0-2 行）。
+dl_detect_active_port() {
+  local port
+  for port in 8781 8782; do
+    dl_port_listening "$port" && printf '%s\n' "$port"
+  done
+  return 0
+}
+
+# dl_active_port 的文件/env 链与实测监听复核后的 active 端口：
+#   恰好一个端口在监听 → 实测值优先（文件失真时纠正并 warn）
+#   两个都在监听       → 保留链式结果（另一侧多半是上次部署的残留候选，
+#                        start_instance 会先 stop_instance 该端口再起新候选）
+#   都没监听           → 保留链式结果（全新安装 / 网关已停）
+# 显式 LLM_GATEWAY_ACTIVE_PORT/SERVICE_PORT 自定义端口（非 8781/8782）时
+# 跳过复核，尊重操作者意图。
+dl_resolve_active_port() {
+  local declared probed count only
+  declared=$(dl_active_port)
+  [[ "$declared" == 8781 || "$declared" == 8782 ]] || { printf '%s\n' "$declared"; return 0; }
+  probed=$(dl_detect_active_port)
+  count=$(printf '%s\n' "$probed" | grep -c . || true)
+  if [[ "$count" == 1 ]]; then
+    only=$(printf '%s\n' "$probed" | head -n1)
+    if [[ "$only" != "$declared" ]]; then
+      printf '[deploy-local] warning: active-port 链给出 %s，但实测网关监听 %s —— 以实测为准（上次部署可能未收尾）\n' "$declared" "$only" >&2
+    fi
+    printf '%s\n' "$only"
+    return 0
+  fi
+  printf '%s\n' "$declared"
+}
 dl_wait_http() {
   local url="$1" deadline=$(( $(date +%s)+${2:-60} ))
   while (( $(date +%s) < deadline )); do curl -fsS --max-time 2 "$url" >/dev/null 2>&1 && return 0; sleep 1; done

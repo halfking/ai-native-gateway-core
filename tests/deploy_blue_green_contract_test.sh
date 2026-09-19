@@ -55,7 +55,18 @@ require 'seamless surfaces per-probe failure' 'remote_probe' "$ROOT/scripts/depl
 # default killed the candidate mid-schema-ensure and the deploy failed
 # with a confusing "Connection refused" on /healthz. 60s leaves headroom
 # for cold-start migrations without giving up the blast-radius bound.
-require 'seamless probe timeout >= 60s' 'PROBE_TIMEOUT_SECS:-60' "$ROOT/scripts/deploy-seamless.sh"
+# 2026-09-19: 60 -> 180s. Sticky-LB + taskprofile audit hook add a fresh
+# candidate ensure chain (routing_overrides_audit, passive_probe_state,
+# two promote-function repairs) that routinely exceeds 60s on the shared
+# 252 PG while the canary is still walking schema ensure (245 工单现场:
+# "Connection refused" 假超时). The >=60s floor remains the contract;
+# 180s is the new default in deploy-seamless.sh and both wrappers.
+require 'seamless probe timeout >= 60s (now 180s)' 'PROBE_TIMEOUT_SECS:-180' "$ROOT/scripts/deploy-seamless.sh"
+# 2026-09-19（部署工单）: 蓝绿轮换必须以目标机实测监听为准，候选端口严格
+# 在 8781/8782 契约对内轮换；127.0.0.1 探测只能出现在 remote_ssh 远端命令
+# 串里（本脚本跑在部署机）。
+require 'seamless probes actual listening port before rotation' 'detect_active_side' "$ROOT/scripts/deploy-seamless.sh"
+require 'seamless port arbitration via nginx upstream' 'upstream fragment' "$ROOT/scripts/deploy-seamless.sh"
 require 'local direct fallback is explicit' 'requires --proxy' "$ROOT/scripts/local-host-blue-green.sh"
 require 'install does not start traffic' 'never starts a candidate' "$ROOT/scripts/install-blue-green-assets.sh"
 # Crashed deploys can leave slots/<port> symlinks aimed at pruned releases;
