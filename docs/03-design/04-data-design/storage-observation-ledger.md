@@ -186,5 +186,5 @@ ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-19T01:00:42Z
 ```
 
 - 抽样 10/10 PASS（biz_multi×4、loop_single×3、sys×3），G1 四项零漂移。
-- claim 置位结构性漏镜像近 24h 未产生缺失（重起后首日干净）；待办（S4 停写前修复 claim 路径或登记 E6）维持。
+- claim 置位结构性漏镜像近 24h 未产生缺失（重起后首日干净）。**R44 收口更新（09-19，本轮观察落笔后补注）：真凶已定位并修复，非"后台 job 裸 UPDATE"**——ReplayFallback（DB 降级回放路径）绕行 onPersisted hooks，同事务 final-success claim 照常置位而 mirror hook 收不到终态信号；修复 2c5d1f804 抽出 firePersistedHooks 供 persistRequestLog 与回放共用，回放成功后补发（进 fallback 的 entry 此前从未成功落库，补发即 exactly-once；turns 按 request_id 幂等）。09-15 f403405b / 09-18 44728e27 两行缺失与"降级窗口积累→恢复后回放"时序吻合，该待办关闭（裁决详见 docs/audit/2026-09-19-r44-24h-audit-round.md §一 P1-E6）。R45 复核补登：回放为 at-least-once 语义（文件/ring 双通道，见 R45 轮文档 P2 登记）——单通道回放纪律入 runbook。
 - **连续归零累计 1/7**（09-19 计 Day 1，09-18 FAIL 清零后重起）。7 天达标 earliest 2026-09-25 每日轮。

@@ -13,3 +13,4 @@
 - R42（2026-09-18）：installer 全新装断链收口（516/520 五点同步+钉桩）、723 to_regclass 守卫、URSM v2 三路共享写门控、721 manual 谓词共享常量+TOCTOU 收口、后台余额失败落账、manual 戳条件化、i18n 6 语言补齐、anthropic_bridge bad_request_error 分支；新教训：自带 BEGIN/COMMIT 的迁移文件禁包外层事务。
 - 2026-09-18 R43：D02/D06/D07/D08/D09/D12/D15/D17 八域回注（Gemini budget intent 丢失上报批/表 DDL 双所有者裁决/726 五点三犯/符号存活验证/统计窗口口径/前端闭环三断点）；无新域、无检查项增删。
 - 2026-09-19 R44（24h 窗口轮，窗口 468a1ce82..HEAD）：D07/D08/D11/D15/D16 五域回注（分析 SQL 读面 hot∪母表+.sql 模板真库实跑门/errorsx 词表 SSOT+supplier_errors_unified 读法/fallback 置信度门在 decider 层/缺省不冒充两侧语义+分支字段面对齐/回放路径共享 onPersisted hooks）；E6 关闭（ReplayFallback 补发 hooks，S4 停写前置解除）。
+- 2026-09-19 R45（24h 窗口轮，窗口 51d6147c7..HEAD）：D01/D07/D08/D11/D15/D16 六域回注（视图 request_type NULL 投影必用 COALESCE 读/supplier_errors stage 空串聚合与 other_count/Jev 独立复核过+阈值 clamp/命中率显式 0 边界+兜底分支有意最小集/E6 at-least-once 语义+单通道回放纪律/死路径复活前重审旧代码）；Gemini thinking 专项落地+双 P2 自审收口（anthropic Q3 恢复+Anthropic 钳制、budget=0 语义反转）；154 迁移 726 应用收口。
