@@ -1405,6 +1405,9 @@ func main() {
 		resolver.SetDB(dbConn.Pool())
 	}
 	var stickyCache *executors.StickyCache // promoted to function scope so admin.SetHotReloadDeps (later in main) can wire the same instance
+	// stickyLoadTrackerForShutdown — R47：提升到函数作用域供停机段 Close
+	// sweep goroutine（进程级单例，此前只靠进程退出兜底）。
+	var stickyLoadTrackerForShutdown *executors.StickyLoadTracker
 	if providerClient.Enabled() {
 		stickyCache = executors.NewStickyCache()
 		if dbConn != nil && dbConn.Enabled() {
@@ -1433,7 +1436,8 @@ func main() {
 		// 会话滑窗 + 最近请求时间信号，接入 P2C 评分（新会话节点选择按
 		// 并发容量拉平 sticky 会话数，降低上游并发会话封禁风险）。
 		// 无 Redis 部署（252 形态）退化为纯本实例内存窗口。
-		stickyLoadTracker := executors.NewStickyLoadTracker()
+		stickyLoadTrackerForShutdown = executors.NewStickyLoadTracker()
+		stickyLoadTracker := stickyLoadTrackerForShutdown
 		if redisClientForCache != nil {
 			stickyLoadTracker.SetStore(ursmcache.NewStickyLoadStore(redisClientForCache.Client()))
 		}
@@ -7108,6 +7112,10 @@ func main() {
 		// monitor is idempotent and safely handles a not-started instance.
 		if candidateFailureMonitor != nil {
 			candidateFailureMonitor.Stop()
+		}
+		// R47：停 sticky 负载滑窗的 sweep goroutine（sync.Once 幂等）。
+		if stickyLoadTrackerForShutdown != nil {
+			stickyLoadTrackerForShutdown.Close()
 		}
 		// Stop dispatch before its RequestJourney Redis/PostgreSQL dependencies.
 		if pipeline != nil {

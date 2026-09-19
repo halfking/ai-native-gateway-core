@@ -58,7 +58,8 @@ func (s *StickyLoadStore) Observe(ctx context.Context, credentialID int, session
 }
 
 // Remove 会话离开某凭据（绑定被改写/删除）时主动移除 member，
-// 加速滑窗收敛——留给 admin 清理路径用，热路径不依赖。
+// 加速滑窗收敛——RESERVED（待 admin 清理路径）：当前生产零调用
+// （仅测试消费），热路径不依赖；接入清理路径前不删。
 func (s *StickyLoadStore) Remove(ctx context.Context, credentialID int, sessionKey string) error {
 	if s == nil || s.rdb == nil || sessionKey == "" {
 		return nil

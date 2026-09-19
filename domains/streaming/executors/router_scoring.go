@@ -75,7 +75,10 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 	qualityScore := calculateQualityScore(c)
 
 	headroom := calculateHeadroom(c, r)
-	headroomWeight := envFloat("LLM_GATEWAY_ROUTING_W_HEADROOM", 0.05)
+	// R47：负权重 clamp（F8④ 收尾）——headroomPenalty/capacityPenalty 变负
+	// 即变奖励（方向反转：低 headroom/低容量节点反被偏好），与首跳抽签
+	// 四权重同款钳制。
+	headroomWeight := clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_HEADROOM", 0.05))
 	latencyPenalty := 1.0 - latencyScore
 	headroomPenalty := 1.0 - headroom
 	// Capacity nudge (2026-08-13): a deliberately tiny term so the credential's
@@ -83,9 +86,9 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 	// higher-capacity nodes even outside exact ties. It saturates at the default
 	// weight (100) so normal pools are unaffected and only sub-default nodes get
 	// a small penalty; the dominant load/health terms and the capacity-aware
-	// tie-breaks (pickWeightedTie / banditOrder) carry the real weighting. Set
+	// tie-breaks (pickWeightedTie) carry the real weighting. Set
 	// LLM_GATEWAY_ROUTING_W_CAPACITY=0 to disable entirely.
-	capacityWeight := envFloat("LLM_GATEWAY_ROUTING_W_CAPACITY", 0.02)
+	capacityWeight := clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_CAPACITY", 0.02))
 	capacityPenalty := capacityPenaltyForWeight(c.Weight)
 	composite :=
 		concurrencyScore*weights.ConcurrencyWeight +
