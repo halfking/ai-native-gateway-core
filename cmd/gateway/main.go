@@ -1429,6 +1429,16 @@ func main() {
 		router.LiveLoad = peakCollector
 		routingRouter = router
 
+		// 2026-09-19 sticky-session load balancing：每凭据 5 分钟 sticky
+		// 会话滑窗 + 最近请求时间信号，接入 P2C 评分（新会话节点选择按
+		// 并发容量拉平 sticky 会话数，降低上游并发会话封禁风险）。
+		// 无 Redis 部署（252 形态）退化为纯本实例内存窗口。
+		stickyLoadTracker := executors.NewStickyLoadTracker()
+		if redisClientForCache != nil {
+			stickyLoadTracker.SetStore(ursmcache.NewStickyLoadStore(redisClientForCache.Client()))
+		}
+		router.StickyLoad = stickyLoadTracker
+
 		// Connect FpSlots to Router for load-aware P2C selection
 		router.FpSlots = fpSlots
 
