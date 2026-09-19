@@ -213,6 +213,34 @@ func newGeminiSyntheticRequest(original *http.Request, body []byte) *http.Reques
 	return req
 }
 
+// attachGeminiSourceReasoning stashes the inbound reasoning intent into the
+// request context (R45 Gemini thinking 专项).
+//
+// Step 6 below serializes the IR to the OpenAI wire form strictly BEFORE
+// routing, so req.TargetProvider is necessarily empty there and
+// applyThinkingToOpenAIChat cannot render the budget-shaped Reasoning intent
+// (generationConfig.thinkingConfig → Reasoning{Type:"enabled",BudgetTokens})
+// into the synthetic body. Without this carrier the executor's re-parse can
+// never recover the intent and it is silently dropped for every non-Gemini
+// target — the P5 defect class, Gemini-inbound remnant. The executor restores
+// it via ir.RestoreSourceReasoning at the point where the target dialect is
+// known (finalizeOpenAIUpstreamBody). Requests without thinkingConfig are
+// returned unchanged (no context mutation on the common path).
+func attachGeminiSourceReasoning(r *http.Request, irReq *ir.InternalRequest) *http.Request {
+	if r == nil || irReq == nil {
+		return r
+	}
+	src := ir.SourceReasoning{
+		Reasoning:      irReq.Reasoning,
+		Thinking:       irReq.Thinking,
+		SourceProtocol: ir.ProtocolGeminiGenerate,
+	}
+	if !src.HasReasoningIntent() {
+		return r
+	}
+	return r.WithContext(ir.WithSourceReasoning(r.Context(), src))
+}
+
 // ServeHTTP routes a Gemini-native request through the IR translation
 // pipeline and back to Gemini-native response format.
 func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -276,6 +304,10 @@ func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		irReq.Model = model
 	}
 	resolveRequestJourney(r, "", model, irReq.Model)
+
+	// Step 4.5 (R45 Gemini thinking 专项): 把入向推理意图（thinkingConfig →
+	// ir.Reasoning budget 形）挂进请求 context。详见 attachGeminiSourceReasoning。
+	r = attachGeminiSourceReasoning(r, irReq)
 
 	// Step 5: Mark streaming intent on the IR (URL action wins over body)
 	wantStream := action == "streamGenerateContent" || irReq.Stream

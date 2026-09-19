@@ -154,7 +154,58 @@ func TestGeminiSyntheticRequestPropagatesOriginalContext(t *testing.T) {
 		t.Fatalf("synthetic context error = %v, want context.Canceled", synthetic.Context().Err())
 	}
 	if got := synthetic.Header.Get("X-Gw-Client-Protocol"); got != ir.ProtocolGeminiGenerate {
-		t.Fatalf("client protocol = %q", got)
+		t.Fatalf("client protocol = %q, want %q", got, ir.ProtocolGeminiGenerate)
+	}
+}
+
+// R45 Gemini thinking 专项：handler 半程钉桩。step-4.5 挂载的 SourceReasoning
+// 必须经 newGeminiSyntheticRequest 的 context 派生进入合成请求——这是
+// executor 半程（executor_source_reasoning_test.go）能恢复意图的前提。
+func TestAttachGeminiSourceReasoning_CarriesIntoSyntheticRequest(t *testing.T) {
+	parsed, err := ir.ParseGemini([]byte(`{
+		"contents": [{"role":"user","parts":[{"text":"hi"}]}],
+		"generationConfig": {"thinkingConfig": {"thinkingBudget": 8192}}
+	}`))
+	if err != nil {
+		t.Fatalf("ParseGemini: %v", err)
+	}
+	if parsed.Reasoning == nil || parsed.Reasoning.BudgetTokens == nil || *parsed.Reasoning.BudgetTokens != 8192 {
+		t.Fatalf("precondition: parse_gemini must map thinkingBudget into budget-shaped Reasoning, got %+v", parsed.Reasoning)
+	}
+
+	original := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini:generateContent", nil)
+	attached := attachGeminiSourceReasoning(original, parsed)
+	if attached == original {
+		t.Fatal("request must be re-derived when intent is present")
+	}
+
+	synthetic := newGeminiSyntheticRequest(attached, []byte(`{}`))
+	src, ok := ir.SourceReasoningFromContext(synthetic.Context())
+	if !ok {
+		t.Fatal("synthetic request context lacks the carried SourceReasoning")
+	}
+	if src.Reasoning == nil || src.Reasoning.BudgetTokens == nil || *src.Reasoning.BudgetTokens != 8192 {
+		t.Errorf("carried Reasoning mismatch: %+v", src.Reasoning)
+	}
+	if src.SourceProtocol != ir.ProtocolGeminiGenerate {
+		t.Errorf("carried SourceProtocol = %q, want %q", src.SourceProtocol, ir.ProtocolGeminiGenerate)
+	}
+}
+
+// 无 thinkingConfig 的常态请求不得做 context 变换（热路径零开销）。
+func TestAttachGeminiSourceReasoning_NoIntentKeepsRequestUntouched(t *testing.T) {
+	parsed, err := ir.ParseGemini([]byte(`{
+		"contents": [{"role":"user","parts":[{"text":"hi"}]}]
+	}`))
+	if err != nil {
+		t.Fatalf("ParseGemini: %v", err)
+	}
+	original := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini:generateContent", nil)
+	if got := attachGeminiSourceReasoning(original, parsed); got != original {
+		t.Error("no-intent request must be returned as-is (no context mutation)")
+	}
+	if _, ok := ir.SourceReasoningFromContext(original.Context()); ok {
+		t.Error("no-intent request context must not carry SourceReasoning")
 	}
 }
 
