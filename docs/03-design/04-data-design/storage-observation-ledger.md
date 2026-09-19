@@ -175,3 +175,16 @@ ROUND_RESULT|sessions=10|fail=0|global_g2=1|verdict=FAIL|at=2026-09-18T01:01:22Z
 - 处置：幂等回填灌 1 行 → reaper 消化 → GLOBAL_G2 复验=0（09:04），outbox 清空。
 - **判定：本日（09-18）不计入连续归零**，计数自 2026-09-19 每日轮重新起算，7 天达标 earliest 顺延至 **2026-09-25 每日轮**。
 - **待办升级**：结构性漏镜像两天两现（累计 2 行/4 天），"每日回填兜底"依赖本 cron 持续运行；**S4 停写评估前必须落地修复（claim 路径补发 mirror 触发）或登记例外类 E6**——重放器架构对该类行天然无效（hook 从未收到终态信号，无登记可重放）。
+
+### 每日观察 2026-09-19 09:00 (+08)，build=417c9a8e/2141 —— **PASS，连续归零 Day 1/7（09-18 FAIL 清零后重起）**
+
+构建身份：417c9a8e/2141 在本仓库历史，含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-19T01:00:42Z
+```
+
+- 抽样 10/10 PASS（biz_multi×4、loop_single×3、sys×3），G1 四项零漂移。
+- claim 置位结构性漏镜像近 24h 未产生缺失（重起后首日干净）；待办（S4 停写前修复 claim 路径或登记 E6）维持。
+- **连续归零累计 1/7**（09-19 计 Day 1，09-18 FAIL 清零后重起）。7 天达标 earliest 2026-09-25 每日轮。
