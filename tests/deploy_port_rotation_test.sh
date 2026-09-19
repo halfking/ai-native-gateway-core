@@ -7,8 +7,10 @@
 #   2. deploy-seamless.sh detect_active_side：以目标机 ss 实测监听决定 active
 #      端口，候选严格在 8781/8782 契约对内轮换；双监听时用 nginx upstream
 #      仲裁，仲裁不了 fail-closed；全盲信 run/active-port 的旧行为已废除。
-#   3. deploy-local-lib.sh dl_resolve_active_port：本机 /healthz+TCP 实测复核
-#      文件链，单一监听以实测为准；自定义端口透传。
+#   3. deploy-local-lib.sh dl_resolve_active_port：本机 /healthz+TCP 实测仅做
+#      诊断告警；active 端口永远以文件/env 链为准（本地无代理拓扑里它是对外
+#      契约端口，2026-09-20 修复"单一监听实测优先"导致的 8781/8782 交替漂移）；
+#      自定义端口透传。
 #
 # offline-only：remote_ssh / target_field / dl_* 全部 stub，不触网。
 # =====================================================================
@@ -98,21 +100,25 @@ if [[ "$(sed -n 's/^PORT=//p' <<<"$out")" == 8781 ]]; then
   ok "detect: 无监听 → fresh 主机, active 取契约 8781"
 else bad "detect: 无监听场景输出异常: $out"; fi
 
-# ── 3. dl_resolve_active_port（本机实测复核文件链）────────────────
+# ── 3. dl_resolve_active_port（文件/env 链为准，实测仅告警）──────────
+# 2026-09-20 修订：本地无代理拓扑里 active 端口就是客户端直连的对外契约端口。
+# 旧语义"恰好一个端口在监听 → 实测优先"会让失败部署残留在另一侧的候选把
+# 下一次部署整体劫持过去（对外端口静默漂移），必须锁死为：declared 永远赢。
 lib_out="$(bash -c '
   set -uo pipefail
   source "'"$REPO_ROOT"'/scripts/deploy-local-lib.sh"
   dl_active_port() { printf "%s\n" "$STUB_DECLARED"; }
   dl_detect_active_port() { printf "%s\n" "$STUB_PROBED"; }
-  for tc in "8782|8781" "8781|8781" "8782|" "8782|8781
+  for tc in "8782|8781" "8781|8782" "8781|8781" "8782|" "8782|8781
 8782" "8790|"; do
     STUB_DECLARED="${tc%%|*}"; STUB_PROBED="${tc#*|}"
     printf "%s\n" "$(dl_resolve_active_port)"
   done
 ')"
-expectations=('8781' '8781' '8782' '8782' '8790')
+expectations=('8782' '8781' '8781' '8782' '8782' '8790')
 i=0
-descs=('文件说 8782 实测 8781 → 以实测为准'
+descs=('文件 8782 + 残留 8781 → 仍部署 8782（对外端口不可漂移，2026-09-20 主修复）'
+       '文件 8781 + 残留 8782 → 仍部署 8781（对称场景）'
        '文件与实测一致 8781'
        '无监听 → 保留链式结果'
        '双监听 → 保留链式结果(另一侧由 start_instance 清理)'
@@ -121,6 +127,34 @@ while IFS= read -r got; do
   if [[ "$got" == "${expectations[$i]}" ]]; then ok "resolve: ${descs[$i]}"; else bad "resolve: ${descs[$i]} 期望 ${expectations[$i]} 得到 $got"; fi
   i=$((i+1))
 done <<< "$lib_out"
+
+# 漂移场景必须大声告警（stderr），操作者能看到对外端口曾无人监听。
+warn_out="$(bash -c '
+  set -uo pipefail
+  source "'"$REPO_ROOT"'/scripts/deploy-local-lib.sh"
+  dl_active_port() { printf "8782\n"; }
+  dl_detect_active_port() { printf "8781\n"; }
+  dl_resolve_active_port 2>&1 >/dev/null | sed -n "1p"
+')"
+if printf '%s\n' "$warn_out" | grep -q "对外端口 8782 当前无人监听"; then
+  ok "resolve: 漂移场景输出诊断告警（残留将被清理、端口不漂移）"
+else
+  bad "resolve: 漂移场景缺少诊断告警，得到: $warn_out"
+fi
+
+# 一致/无监听场景不应误告警"另一侧有残留"。
+quiet_out="$(bash -c '
+  set -uo pipefail
+  source "'"$REPO_ROOT"'/scripts/deploy-local-lib.sh"
+  dl_active_port() { printf "8782\n"; }
+  dl_detect_active_port() { :; }
+  dl_resolve_active_port 2>&1 >/dev/null | grep -c "残留" || true
+')"
+if [[ "$quiet_out" == 0 ]]; then
+  ok "resolve: 无监听场景不误报残留"
+else
+  bad "resolve: 无监听场景误报残留告警 (count=$quiet_out)"
+fi
 
 printf '\n summary: %d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

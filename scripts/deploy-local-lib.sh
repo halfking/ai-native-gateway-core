@@ -661,26 +661,32 @@ dl_detect_active_port() {
   return 0
 }
 
-# dl_active_port 的文件/env 链与实测监听复核后的 active 端口：
-#   恰好一个端口在监听 → 实测值优先（文件失真时纠正并 warn）
-#   两个都在监听       → 保留链式结果（另一侧多半是上次部署的残留候选，
-#                        start_instance 会先 stop_instance 该端口再起新候选）
-#   都没监听           → 保留链式结果（全新安装 / 网关已停）
+# dl_active_port 的文件/env 链与实测监听复核后的 active 端口（2026-09-20 修订）。
+# 本地无代理拓扑里 active 端口就是对外契约端口（客户端直连 127.0.0.1:8782），
+# 实测永远不能改写它——否则一次失败部署留下的残留候选（8781）会把下一次
+# 部署整体劫持到 8781，对外端口 8782 静默死亡，再部署一次又可能翻回来，
+# 形成用户观察到的 8781/8782 交替。修订后的语义：
+#   文件/env 链结果永远优先（操作者意图 = 对外契约）
+#   实测仅用于诊断：declared 没人监听而另一侧有人 → 大声 warn，本次部署
+#   仍落回 declared（部署流程会在 cutover 阶段把 declared 端口重新拉起，
+#   并清掉另一侧残留），对外端口自愈而不是漂移。
+#   双监听 → declared（另一侧是残留候选，start_instance 起候选时先清理）
+#   都没监听 → declared（全新安装 / 网关已停）
 # 显式 LLM_GATEWAY_ACTIVE_PORT/SERVICE_PORT 自定义端口（非 8781/8782）时
-# 跳过复核，尊重操作者意图。
+# 同样透传，尊重操作者意图。
 dl_resolve_active_port() {
-  local declared probed count only
+  local declared probed
   declared=$(dl_active_port)
   [[ "$declared" == 8781 || "$declared" == 8782 ]] || { printf '%s\n' "$declared"; return 0; }
   probed=$(dl_detect_active_port)
-  count=$(printf '%s\n' "$probed" | grep -c . || true)
-  if [[ "$count" == 1 ]]; then
-    only=$(printf '%s\n' "$probed" | head -n1)
-    if [[ "$only" != "$declared" ]]; then
-      printf '[deploy-local] warning: active-port 链给出 %s，但实测网关监听 %s —— 以实测为准（上次部署可能未收尾）\n' "$declared" "$only" >&2
+  if ! printf '%s\n' "$probed" | grep -qx "$declared"; then
+    local other
+    other=$([[ "$declared" == 8781 ]] && printf 8782 || printf 8781)
+    if printf '%s\n' "$probed" | grep -qx "$other"; then
+      printf '[deploy-local] warning: 对外端口 %s 当前无人监听，而另一侧 %s 有残留网关 —— 仍按文件链部署到 %s（对外契约端口不可漂移），%s 将在本次部署中被清理\n' "$declared" "$other" "$declared" "$other" >&2
+    else
+      printf '[deploy-local] warning: 对外端口 %s 当前无人监听（全新安装或网关已停止）—— 部署仍落 %s\n' "$declared" "$declared" >&2
     fi
-    printf '%s\n' "$only"
-    return 0
   fi
   printf '%s\n' "$declared"
 }
