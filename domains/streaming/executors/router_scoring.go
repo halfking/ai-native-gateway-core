@@ -550,6 +550,10 @@ func balancePenaltyForCandidate(c provider.Candidate) float64 {
 		return 0
 	}
 	bal := *c.BalanceUSD
+	// R46 F8③: NaN 余额穿透比较会使惩罚变 NaN（同 planQuota 护栏）。
+	if math.IsNaN(bal) {
+		return 0
+	}
 	if bal <= 0 {
 		return 1.0
 	}
@@ -561,8 +565,8 @@ func balancePenaltyForCandidate(c provider.Candidate) float64 {
 }
 
 // planQuotaPenaltyForCandidate 把周期性计划凭据的窗口用量
-//（credentials.plan_quota_used_percent，0..100，探测数据）归一成 0..1 惩罚
-//（2026-09-19 成本感知选路）。仅对 billing round 1（token_plan/code_plan/
+// （credentials.plan_quota_used_percent，0..100，探测数据）归一成 0..1 惩罚
+// （2026-09-19 成本感知选路）。仅对 billing round 1（token_plan/code_plan/
 // agent_plan/monthly）生效：free 池有自己的 quota tracker，PAYG 按量计费
 // 没有窗口额度概念，二者均不适用。nil（无探测数据）fail-open → 0，不惩罚。
 // 方向：用量越高惩罚越高 → 路由偏好剩余额度多的计划凭据，配合 Round 1
@@ -578,6 +582,11 @@ func planQuotaPenaltyForCandidate(c provider.Candidate) float64 {
 		return 0
 	}
 	p := *c.PlanQuotaUsedPercent / 100.0
+	// R46 F8③: PG float8 允许存 'NaN'，NaN 与任何比较均 false 会直接穿透
+	// 下面的夹紧使 composite 变 NaN（P2C 比较恒 false、tie-break 退化）。
+	if math.IsNaN(p) {
+		return 0
+	}
 	if p < 0 {
 		return 0
 	}
@@ -587,8 +596,16 @@ func planQuotaPenaltyForCandidate(c provider.Candidate) float64 {
 	return p
 }
 
+// clampEnvWeight 把 env 权重中的负值归 0（R46 F8④）。
+func clampEnvWeight(w float64) float64 {
+	if w < 0 {
+		return 0
+	}
+	return w
+}
+
 // firstHopLotteryWeights 把三新惩罚+计划额度惩罚折算成首跳加权轮询
-//（promoteWeightedCandidateWithWeights）的有效权重（2026-09-19，计划额度
+// （promoteWeightedCandidateWithWeights）的有效权重（2026-09-19，计划额度
 // 维度为 2026-09-19 成本感知轮新增）。
 //
 // 背景：planByTier 的首跳由纯 Weight 加权轮询决定，calculateLoadScore 的
@@ -596,7 +613,8 @@ func planQuotaPenaltyForCandidate(c provider.Candidate) float64 {
 // 折进抽签份额。折算公式：
 //
 //	p   = Σ(wi·penalty_i) / Σwi            （各惩罚按评分权重归一）
-//	w'  = max(1, round(Weight · (1 − 0.9·p)))
+//	w'  = max(1, int(Weight · (1 − 0.9·p)))（int 截断非 round——R46 F8②
+//	      注释与实现对齐；测试钉的是整值，无实际偏差案例）
 //
 // 满载惩罚 p=1 时份额缩到 0.1（floor 防全饿死——重载节点的硬隔离始终由
 // 冷却/熔断过滤负责，抽签只做倾斜）。sticky/recency 仅在 Router.StickyLoad
@@ -611,6 +629,10 @@ func firstHopLotteryWeights(cands []provider.Candidate, r *Router) []int {
 	wRecency := envFloat("LLM_GATEWAY_ROUTING_W_RECENCY", 0.05)
 	wBalance := envFloat("LLM_GATEWAY_ROUTING_W_BALANCE", 0.05)
 	wPlanQuota := envFloat("LLM_GATEWAY_ROUTING_W_PLANQUOTA", 0.10)
+	// R46 F8④: 负权重按 0 处理——负值会缩小 sum、放大他人相对份额甚至
+	// 产生负折算权重（份额 > 原 Weight 的反向倾斜）。
+	wSticky, wRecency, wBalance, wPlanQuota =
+		clampEnvWeight(wSticky), clampEnvWeight(wRecency), clampEnvWeight(wBalance), clampEnvWeight(wPlanQuota)
 	stickyWired := r != nil && r.StickyLoad != nil
 	sum := wBalance + wPlanQuota
 	if stickyWired {

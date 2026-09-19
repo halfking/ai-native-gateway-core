@@ -1368,26 +1368,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		// + SetAuditHook 避免反向依赖 admin；本侧注入 sink：结构化 slog
 		// （journald/日志管道可检索），actor 从 admin 鉴权上下文提取。
 		// hook 在 taskprofile 内已 panic 隔离，这里保持非阻塞。
-		taskProfileHandlers.SetAuditHook(func(ev taskprofile.AuditEvent) {
-			actor, tenant := "unknown", "default"
-			if ev.Request != nil {
-				if ac := GetAuthContext(ev.Request); ac != nil {
-					if ac.Username != "" {
-						actor = ac.Username
-					}
-					if ac.TenantID != "" {
-						tenant = ac.TenantID
-					}
-				}
-			}
-			slog.Info("taskprofile.audit",
-				"action", ev.Action,
-				"outcome", ev.Outcome,
-				"actor", actor,
-				"tenant_id", tenant,
-				"detail", ev.Detail,
-			)
-		})
+		// R46 F5: sink 抽为命名函数 taskProfileAuditSink——行为可测
+		// （actor 提取此前零测试执行）。
+		taskProfileHandlers.SetAuditHook(taskProfileAuditSink)
 		taskProfileHandlers.RegisterTaskProfileRoutes(mux, admin)
 
 		// P2.2 Track C (2026-09-07): routing-opt admin API — stats / accuracy /

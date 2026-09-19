@@ -31,6 +31,9 @@ type Subscription struct {
 	LastFetchStatus string    `json:"last_fetch_status"` // success/failed
 	LastError       string    `json:"last_error"`
 	NodeCount       int       `json:"node_count"`
+	// Priority 是订阅的选路优先级（R46 F7 接线到 selectNodeExcluding 排序）：
+	// 数值越小优先级越高（沿用网关 manual_priority 惯例），0=未设置。
+	// 在节点健康等级（ConsecutiveFailures）相同的情况下生效。
 	Priority        int       `json:"priority"`
 	// BannedRegions 是订阅层禁用的地区码集合（如 {US,JP}）。其下节点的 Location
 	// 若落入该集合，则在出口选择阶段被过滤掉，用于把"地区规避"作为订阅级策略。

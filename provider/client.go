@@ -1565,6 +1565,13 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 				WHERE pp.model_canonical_id = mc.id
 				  AND pp.effective_to IS NULL
 				  AND (pp.credential_id = c.id OR pp.credential_id IS NULL)
+				  -- R46 F2: 作用域守卫——排除"其他供应商"的 provider 级行。
+				  -- admit 条件放行 credential_id IS NULL 的所有行，其中
+				  -- scope='provider' 且 provider_id 属于别的供应商的行此前会
+				  -- 落入 ELSE 2 档与全局行（provider_id IS NULL）仅按
+				  -- effective_from 决胜负，他供应商较新价格可冒充全局默认价。
+				  -- tenant 级行（scope='tenant'）是有意保留的 ELSE 2 档语义。
+				  AND NOT (pp.scope = 'provider' AND pp.provider_id IS NOT NULL AND pp.provider_id <> p.id)
 				-- 2026-09-19 成本自动填充优先级：凭据级 > 供应商级 > 全局。
 				-- 供应商维护的价格表（scope='provider', provider_id=p.id）
 				-- 从此真正参与候选取价，不再与全局行混级靠 effective_from

@@ -58,6 +58,10 @@ type Manager struct {
 	nextHealthChecks sync.Map // node_id -> time.Time
 	// subscriptionBans 缓存订阅级禁用地区，避免每次 selectNode 都查 DB。
 	subscriptionBans sync.Map // subscription_id -> []string
+	// subscriptionPriorities 缓存订阅优先级（R46 F7：此前 Priority 入库+API
+	// 可见但选路从不消费，是死配置）。语义沿用网关 manual_priority 惯例：
+	// 数值越小优先级越高；0 = 未设置，与健康节点同桶不特殊对待。
+	subscriptionPriorities sync.Map // subscription_id -> int
 	// nodeProbes 把同一节点 ID 的探活串行化（HealthCheckNode / swapProbeOne /
 	// healthCheckAllNodesInner 的 per-node 分支），防止并发的 checker.Check + write-back
 	// 对同一个 *Node 对象产生竞态。值是 *sync.Mutex，按需 lazy 创建。
@@ -354,6 +358,7 @@ func (m *Manager) selectNodeExcluding(ctx context.Context, subscriptionID *int, 
 	}
 	// 订阅层禁用地区：每个候选节点按其所在订阅取出订阅 banned，做并集过滤。
 	subscriptionBans := m.subscriptionBansSnapshot(subscriptionID)
+	subPriorities := m.subscriptionPrioritiesSnapshot()
 	m.selectionMu.Unlock()
 
 	activeNodes := make([]*Node, 0, len(candidates))
@@ -399,9 +404,22 @@ func (m *Manager) selectNodeExcluding(ctx context.Context, subscriptionID *int, 
 		}
 	}
 
+	// R46 F7: 排序键第 2 位按订阅优先级升序分桶（小值优先，沿用网关
+	// manual_priority 惯例；缺省 0 与"未设置"同桶）。放在 ConsecutiveFailures
+	// 之后：健康等级优先于运营偏好——高优先订阅的连败节点不得压过低优先
+	// 订阅的健康节点。
+	subPrioritiesSort := func(n *Node) int {
+		if p, ok := subPriorities[n.SubscriptionID]; ok {
+			return p
+		}
+		return 0
+	}
 	sort.Slice(activeNodes, func(i, j int) bool {
 		if activeNodes[i].ConsecutiveFailures != activeNodes[j].ConsecutiveFailures {
 			return activeNodes[i].ConsecutiveFailures < activeNodes[j].ConsecutiveFailures
+		}
+		if pi, pj := subPrioritiesSort(activeNodes[i]), subPrioritiesSort(activeNodes[j]); pi != pj {
+			return pi < pj
 		}
 		if activeNodes[i].SuccessRate != activeNodes[j].SuccessRate {
 			return activeNodes[i].SuccessRate > activeNodes[j].SuccessRate
@@ -671,11 +689,14 @@ func (m *Manager) refreshAllSubscriptionBans(ctx context.Context) {
 		seen[sub.ID] = struct{}{}
 		if len(sub.BannedRegions) == 0 {
 			m.subscriptionBans.Delete(sub.ID)
-			continue
+		} else {
+			bans := make([]string, len(sub.BannedRegions))
+			copy(bans, sub.BannedRegions)
+			m.subscriptionBans.Store(sub.ID, bans)
 		}
-		bans := make([]string, len(sub.BannedRegions))
-		copy(bans, sub.BannedRegions)
-		m.subscriptionBans.Store(sub.ID, bans)
+		// R46 F7: 优先级随同一轮订阅刷新维护；优先级变更走 UpdateSubscription
+		// → ReloadCache → 本函数，覆盖全部生效路径。
+		m.subscriptionPriorities.Store(sub.ID, sub.Priority)
 	}
 	// 清掉已删除订阅的残留。
 	m.subscriptionBans.Range(func(key, _ interface{}) bool {
@@ -685,9 +706,25 @@ func (m *Manager) refreshAllSubscriptionBans(ctx context.Context) {
 		}
 		if _, exists := seen[id]; !exists {
 			m.subscriptionBans.Delete(id)
+			m.subscriptionPriorities.Delete(id)
 		}
 		return true
 	})
+}
+
+// subscriptionPrioritiesSnapshot 返回订阅优先级快照（selectNodeExcluding
+// 排序键用）。
+func (m *Manager) subscriptionPrioritiesSnapshot() map[int]int {
+	out := make(map[int]int)
+	m.subscriptionPriorities.Range(func(key, value interface{}) bool {
+		if id, ok := key.(int); ok {
+			if p, ok := value.(int); ok {
+				out[id] = p
+			}
+		}
+		return true
+	})
+	return out
 }
 
 // healthCheckPolicy returns a consistent snapshot while callers may update the

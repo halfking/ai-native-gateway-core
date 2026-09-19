@@ -94,8 +94,8 @@ func TestStickyLoadTrackerRedisCrossInstance(t *testing.T) {
 
 // mockStickyLoadStore counts LoadBatch calls for refresh-throttle testing.
 type mockStickyLoadStore struct {
-	mu     sync.Mutex
-	loads  int
+	mu      sync.Mutex
+	loads   int
 	entries map[int]int
 }
 
@@ -157,6 +157,76 @@ func TestStickyLoadTrackerSnapshotCoversMemory(t *testing.T) {
 	tr.ObserveSession(1, "local-only") // 内存 1 个，也是写进 Redis 的同一个
 	tr.Refresh([]int{1})
 	waitFor(t, func() bool { return tr.Info(1).Sessions == 7 })
+}
+
+// R46 F1: 快照年龄超过 window 后失去"窗口内活跃会话数"的语义——Info
+// 必须回落本实例内存镜像，不得让冻结快照无限期参与评分（Redis 持续
+// 故障场景下旧快照会把空闲凭据记满 sticky 会话数）。
+func TestStickyLoadTrackerStaleSnapshotFallsBackToMemory(t *testing.T) {
+	store := &mockStickyLoadStore{entries: map[int]int{1: 7}}
+	tr := NewStickyLoadTracker()
+	defer tr.Close()
+	tr.SetStore(store)
+
+	tr.Refresh([]int{1})
+	waitFor(t, func() bool { return tr.Info(1).Sessions == 7 })
+
+	// 快照拨老到 window 之外；本地镜像有 1 个真实会话。
+	tr.snapMu.Lock()
+	tr.snapAt = time.Now().Add(-tr.window - time.Minute)
+	tr.snapMu.Unlock()
+	tr.ObserveSession(1, "local-session")
+
+	if got := tr.Info(1).Sessions; got != 1 {
+		t.Fatalf("expected stale snapshot to fall back to memory count 1, got %d", got)
+	}
+
+	// 快照回到新鲜窗口后恢复跨实例优先。
+	tr.snapMu.Lock()
+	tr.snapAt = time.Now()
+	tr.snapMu.Unlock()
+	waitFor(t, func() bool { return tr.Info(1).Sessions == 7 })
+}
+
+// R46 F1: LoadBatch panic 不得永久卡死单飞标志（refreshing 卡死会让
+// 快照从此不再刷新，效果等同 Redis 永久故障）。
+func TestStickyLoadTrackerRefreshPanicReleasesSingleFlight(t *testing.T) {
+	store := &panicStickyLoadStore{}
+	tr := NewStickyLoadTracker()
+	defer tr.Close()
+	tr.SetStore(store)
+
+	tr.Refresh([]int{1})
+	waitFor(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return store.loads >= 1
+	})
+
+	// 第一次刷新已 panic 恢复；第二次必须能再次进入（refreshing 已复位）。
+	tr.Refresh([]int{1})
+	waitFor(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return store.loads >= 2
+	})
+}
+
+// panicStickyLoadStore: LoadBatch 必然 panic 的故障 store。
+type panicStickyLoadStore struct {
+	mu    sync.Mutex
+	loads int
+}
+
+func (m *panicStickyLoadStore) Observe(_ context.Context, _ int, _ string, _ time.Time, _ time.Duration) error {
+	return nil
+}
+
+func (m *panicStickyLoadStore) LoadBatch(_ context.Context, _ []int, _ time.Duration) (map[int]int, map[int]int64) {
+	m.mu.Lock()
+	m.loads++
+	m.mu.Unlock()
+	panic("simulated store failure")
 }
 
 func waitFor(t *testing.T, cond func() bool) {

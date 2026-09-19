@@ -48,6 +48,8 @@ func TestOptimizerSideStore_StaysReadOnly(t *testing.T) {
 // （2135 MiniMax 事故定式：翻译存在但从未接线）。admin/handler.go 必须对
 // taskprofile handlers 调用 SetAuditHook，否则四个变更端点的审计事件
 // 投递到 nil sink，R43 发现的"零审计留痕"原样复活。
+// R46 F5: sink 从 handler.go 内联闭包抽出为命名函数 admin.taskProfileAuditSink
+// （行为可测），文本钉桩随之指向新文件；handler.go 钉 SetAuditHook 挂接点。
 func TestAdminWiring_AttachesAuditHook(t *testing.T) {
 	src, err := os.ReadFile("../admin/handler.go")
 	if err != nil {
@@ -58,9 +60,19 @@ func TestAdminWiring_AttachesAuditHook(t *testing.T) {
 		t.Fatal("admin/handler.go does not call SetAuditHook on the taskprofile handlers — " +
 			"the four change endpoints would audit into a nil sink (R43 zero-audit-trail regression)")
 	}
-	// sink 必须提取 actor（GetAuthContext），否则审计事件无法归因到操作者。
-	if !strings.Contains(s, "GetAuthContext(ev.Request)") {
+	// sink 必须是提取 actor 的生产 sink（GetAuthContext），否则审计事件无法
+	// 归因到操作者。
+	sink, err := os.ReadFile("../admin/taskprofile_audit_sink.go")
+	if err != nil {
+		t.Fatalf("read admin/taskprofile_audit_sink.go: %v", err)
+	}
+	sk := string(sink)
+	if !strings.Contains(sk, "GetAuthContext(ev.Request)") {
 		t.Fatal("audit sink no longer extracts the operator identity via GetAuthContext — " +
 			"taskprofile.audit events would be unattributable (actor=unknown for every mutation)")
+	}
+	if !strings.Contains(s, "SetAuditHook(taskProfileAuditSink)") {
+		t.Fatal("admin/handler.go no longer attaches taskProfileAuditSink as the audit hook — " +
+			"restore the wiring or update this pin in the same commit")
 	}
 }

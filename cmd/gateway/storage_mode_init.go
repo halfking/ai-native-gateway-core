@@ -140,8 +140,9 @@ func initStorageMode(cfg *config.Config, storageCfg *config.StorageConfig) (*sto
 		logsDir:    lite.LogsDir,
 	}
 
-	// 后台清理任务：两个 Start 均为阻塞式，由本处 go 启动；retention 取自
-	// Lite.Retention，清理周期沿用 worker 默认值（cache 1h / bodies 6h）。
+	// 后台清理任务：三个 Start 均为阻塞式，由本处 go 启动；retention 取自
+	// Lite.Retention，清理周期沿用 worker 默认值（cache 1h / bodies 6h /
+	// 行级 retention 6h）。
 	trimmerCtx, cancel := context.WithCancel(context.Background())
 	rt.trimmerCancel = cancel
 	cacheTrimmer := bg.NewCacheTrimmer(lite.CacheDir, time.Duration(lite.Retention.CacheHours)*time.Hour)
@@ -155,6 +156,22 @@ func initStorageMode(cfg *config.Config, storageCfg *config.StorageConfig) (*sto
 		defer rt.trimmerWG.Done()
 		bodiesTrimmer.Start(trimmerCtx)
 	}()
+
+	// 行级保留期 worker（R46 F6）：此前 RequestLogsDays 是死配置——文件侧
+	// 有两个 Trimmer，SQLite 行侧（request_logs/sessions/session_turns）无
+	// 任何 TTL，长跑单文件无界增长。sessions/turns 以会话为单位整体清理。
+	if sqlDB := f.SQLiteDB(); sqlDB != nil && lite.Retention.RequestLogsDays > 0 {
+		retention := bg.NewLiteRetentionWorker(sqlDB,
+			time.Duration(lite.Retention.RequestLogsDays)*24*time.Hour)
+		rt.trimmerWG.Add(1)
+		go func() {
+			defer rt.trimmerWG.Done()
+			retention.Start(trimmerCtx)
+		}()
+	} else {
+		slog.Warn("storage lite: 行级保留期 worker 未装配（request_logs_days<=0 或无 SQLite 句柄），SQLite 行数据不会自动清理",
+			"request_logs_days", lite.Retention.RequestLogsDays)
+	}
 
 	// 一致性对账 worker（审计 B-#2 接线）：lite 启动完成后低频（默认每日）
 	// 对「近期活跃且已空闲」的 session 跑 Reconcile。默认 report-only（结构化
