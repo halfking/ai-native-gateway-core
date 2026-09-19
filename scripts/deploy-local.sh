@@ -1040,7 +1040,18 @@ deploy() {
   gate_credential_encryption_key
   bundle=$(stage_release "$binary")
   release_build_lock
-  active_port=$(dl_active_port); candidate_port=$(dl_candidate_port)
+  # 2026-09-19（部署工单）：active 端口以实测监听为准（dl_resolve_active_port
+  # 会用 /healthz + TCP 探测复核 run/active-port 文件链），候选 = 8781/8782
+  # 轮换的另一侧，避免撞端口或探错端口。注意候选必须从「解析后的」active
+  # 推导——dl_candidate_port() 读的是文件链，文件失真时会跟实测 active 撞车。
+  active_port=$(dl_resolve_active_port)
+  if [[ "$active_port" == 8781 ]]; then
+    candidate_port=8782
+  elif [[ "$active_port" == 8782 ]]; then
+    candidate_port=8781
+  else
+    candidate_port=$(dl_candidate_port)
+  fi
   active_bundle="$BIN_DIR/current"
   start_instance "$bundle" "$candidate_port"
   if ! verify_instance "$candidate_port" "$bundle"; then

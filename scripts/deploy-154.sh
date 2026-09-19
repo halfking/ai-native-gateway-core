@@ -60,4 +60,9 @@ if [[ $FORCE_UNLOCK -eq 1 ]]; then
   ARGS+=(--force)
 fi
 
+# 透传健康探针超时：候选首跑 ensure 链 + 列交集检查在大表上常超 60s
+# （154 与 245 共享 252 PG，冷启动 ensure 链同量级）。
+# exec bash 会重启子 shell，不继承调用方未 export 的环境变量，所以显式 export 一次。
+export PROBE_TIMEOUT_SECS="${PROBE_TIMEOUT_SECS:-180}"
+
 exec bash "$SCRIPT_DIR/deploy-seamless.sh" deploy 154 "${ARGS[@]}"

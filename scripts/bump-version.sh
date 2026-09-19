@@ -103,27 +103,19 @@ GIT_TAG_PATCH=$(echo "$GIT_TAG" | sed 's/^v//')   # "2.4.1"
 HEAD_SHA=$(git rev-parse --short=8 HEAD 2>/dev/null || echo "$CURRENT_GIT_SHA")
 HEAD_DATE=$(date -u +%Y%m%d)
 
-# build_seq 反映代码变更，不是部署计数。
+# build_seq = 编译计数：每次编译（即每次调用本脚本）都 +1。
 #
-# 修复前：每次 bump 永远 +1 (CURRENT_SEQ+1)。后果是 245 上一次部署停在
-# 1957，而之后 91 次仅到 154 的重新部署把 build_seq 顶到 2048——同一份
-# commit 在两台机器上 build_seq 漂移 91。deploy-seamless 的 bump-version
-# 调用未区分"重跑同一 commit"与"代码真变了"。
-#
-# 修复后：仅当 git_sha 或 build_date 与 SSOT 不同（说明代码/日期变了）
-# 才递增；否则保留原 seq，使同代码多次部署 build_seq 一致。--seq 显式
-# 指定仍然尊重（修漂移或强制 +N）。
-SAME_CODE=0
-if [[ "$HEAD_SHA" == "$CURRENT_GIT_SHA" && "$HEAD_DATE" == "$(python3 -c "import json;print(json.load(open('$VERSION_JSON_PY'))['build_date'])" 2>/dev/null)" ]]; then
-  SAME_CODE=1
-fi
-if (( SAME_CODE == 1 )) && [[ -z "$TARGET_SEQ" ]]; then
-  NEW_SEQ="$CURRENT_SEQ"
-else
-  NEW_SEQ=$((CURRENT_SEQ + 1))
-  if [[ -n "$TARGET_SEQ" && "$TARGET_SEQ" -gt "$NEW_SEQ" ]]; then
-    NEW_SEQ="$TARGET_SEQ"
-  fi
+# 历史（2026-09 中旬）曾改成"git_sha/build_date 未变则保持原 seq"，动机是
+# 消除 245/154 同一 commit 重复部署造成的 seq 漂移。但 2026-09-19 工单否决
+# 了该策略：同代码重复部署会得到同一个 version 目录名，撞上
+# deploy-seamless.sh upload_release 的"拒绝覆盖当前活跃 release"防线，
+# 导致"序号/代码相同 → 不能更新"。现在每次编译都拿新序号：
+#   - 重复部署同代码：每次 seq +1，各自成为独立 release，可无限重发
+#   - 编译失败中断：version 文件已 bump 的序号自然跳过（计数器只增不减）
+#   - --seq 显式指定仍尊重（修漂移或强制 +N），要求 ≥ 当前 seq 保单调
+NEW_SEQ=$((CURRENT_SEQ + 1))
+if [[ -n "$TARGET_SEQ" && "$TARGET_SEQ" -gt "$NEW_SEQ" ]]; then
+  NEW_SEQ="$TARGET_SEQ"
 fi
 NEW_VERSION="${GIT_TAG_PATCH}-${HEAD_SHA}-${HEAD_DATE}-${NEW_SEQ}"
 NOW_DATE=$(date -u +%Y-%m-%d)
@@ -132,9 +124,6 @@ echo "📌 bump-version"
 echo "   current: seq=$CURRENT_SEQ version=$CURRENT_VERSION"
 echo "   target:  seq=$NEW_SEQ version=$NEW_VERSION"
 echo "   date:    $HEAD_DATE"
-if (( SAME_CODE == 1 )) && [[ -z "$TARGET_SEQ" ]]; then
-  echo "   ↳ git_sha/build_date 未变化，seq 保持不变（同代码重跑）"
-fi
 
 # ── dry-run 提前退出 ─────────────────────────────────────────────
 if [[ "$DRY_RUN" == "true" ]]; then

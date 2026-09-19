@@ -210,14 +210,19 @@ SSH_CMD="remote_ssh"
 # On success: prints the body on stdout (caller may ignore).
 # On failure: prints a single-line diagnostic on stdout (captured by the caller
 # via command substitution) explaining why the probe failed — curl exit code,
-# the last HTTP status seen, or a timeout marker. SSH transport failures are
-# reported as "ssh: <reason>". The function NEVER aborts the script; it is the
-# caller's job to inspect the captured diagnostic.
+# the last HTTP status seen, or a timeout marker. The function NEVER aborts the
+# script; it is the caller's job to inspect the captured diagnostic.
 #
 # URL is interpolated into a remote shell command. Callers MUST pass a
 # hardcoded path under the candidate's port (no user-supplied query string,
 # no single quotes). Current call sites pass http://127.0.0.1:<port>/{healthz,
 # readyz,version}, all of which are safe.
+#
+# 2026-09-19（部署工单不变量）: 本脚本运行在部署机、网关跑在目标机，curl
+# 一律经 remote_ssh 在目标机执行 —— 这里的 127.0.0.1 是网关主机的 loopback，
+# 不是部署机的。只有 deploy-local.sh（与网关同机）允许在本机直接 curl
+# 127.0.0.1。失败前缀用 "remote probe failed"，覆盖 ssh 层失败与远端探测
+# 超时两种情况，避免 "ssh transport failed" 让人误以为探到了部署机本机。
 remote_probe() {
   local url="$1" timeout="${2:-30}"
   local body
@@ -227,7 +232,7 @@ remote_probe() {
   # the caller can distinguish "transport failed" from "200 but wrong body"
   # without re-parsing the body itself.
   body=$(remote_ssh "deadline=\$((\$(date +%s)+${timeout})); while [ \"\$(date +%s)\" -lt \"\$deadline\" ]; do out=\$(curl -sS --max-time 2 -w '\n%{http_code}' '${url}' 2>&1); code=\$(printf '%s' \"\$out\" | tail -n1); body=\$(printf '%s' \"\$out\" | sed '\$d'); if printf '%s' \"\$code\" | grep -qE '^[0-9]+\$' && [ \"\$code\" -ge 200 ] && [ \"\$code\" -lt 400 ]; then printf '%s\n__CURL_OK__' \"\$body\"; exit 0; fi; sleep 1; done; printf 'probe timeout after ${timeout}s, last attempt: %s\n__CURL_FAIL__' \"\$out\"; exit 1" 2>&1) || {
-    printf 'ssh transport failed: %s' "$body"
+    printf 'remote probe failed (curl runs on %s via ssh): %s' "$TARGET" "$body"
     return 1
   }
   local marker
@@ -263,6 +268,82 @@ if mismatches:
     print("; ".join(mismatches) + f"; body={os.environ['"'"'VERSION_BODY'"'"']}")
     raise SystemExit(1)
 '
+}
+
+# detect_active_side — 部署前在目标机实测 8781/8782 哪个端口真正有网关在监听。
+#
+# 2026-09-19（部署工单）：旧逻辑直接信任 run/active-port 文件，但失败部署
+# （candidate-port 已写、active-port 未推进）、rollback 以及任何带外手工
+# systemctl 操作都会让该文件失真——失真的直接后果是候选与旧实例撞端口
+# （bind: address already in use），或探针打到一个没人监听的端口报
+# "Connection refused"（2026-09-19 245 工单现场即此形态）。本函数改用
+# ss -ltnp 实测两个契约端口：
+#   恰好一个在监听 → 它是 active；候选 = 契约对里的另一个
+#   两个都在监听   → 用 nginx upstream fragment（真实流量去向）仲裁 active，
+#                    另一侧视为残留实例，记入 DETECTED_STALE_PORT，由后续
+#                    预热步骤的 systemctl stop 清理；fragment 无法仲裁时
+#                    fail-closed，拒绝盲切
+#   都没监听       → 全新主机：active 取契约 active_port（8781）
+# 候选端口永远只在契约对 {8781, 8782} 内轮换，绝不落到其它值。
+# 所有探测命令都经 remote_ssh 在目标机执行——本脚本跑在部署机上，
+# 127.0.0.1 只允许出现在传给 remote_ssh 的远端命令串里（deploy-local.sh
+# 例外：它与网关同机）。
+#
+# 成功时设置三个全局变量；失败时返回 1（调用方 exit）。
+detect_active_side() {
+  local contract_active contract_candidate listeners line
+  local active_seen=0 candidate_seen=0 active_pid= candidate_pid=
+  contract_active=$(target_field "$TARGET" active_port)
+  contract_candidate=$(target_field "$TARGET" candidate_port)
+  DETECTED_ACTIVE_PORT=""
+  DETECTED_ACTIVE_UNIT=""
+  DETECTED_STALE_PORT=""
+
+  listeners=$(remote_ssh "ss -ltnp 2>/dev/null | grep -E ':${contract_active}[[:space:]]|:${contract_candidate}[[:space:]]' || true" 2>/dev/null || true)
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if printf '%s' "$line" | grep -q ":${contract_active}[[:space:]]"; then
+      active_seen=1
+      active_pid=$(printf '%s' "$line" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -n1)
+    else
+      candidate_seen=1
+      candidate_pid=$(printf '%s' "$line" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -n1)
+    fi
+  done <<< "$listeners"
+
+  if (( active_seen && candidate_seen )); then
+    local upstream_fragment_path upstream_port
+    upstream_fragment_path=$(target_field "$TARGET" upstream_fragment)
+    upstream_port=$(remote_ssh "sed -n 's/.*127\\.0\\.0\\.1:\\([0-9][0-9]*\\).*/\\1/p' '$upstream_fragment_path' 2>/dev/null | head -n1" 2>/dev/null || true)
+    if [[ "$upstream_port" == "$contract_active" || "$upstream_port" == "$contract_candidate" ]]; then
+      DETECTED_ACTIVE_PORT="$upstream_port"
+      if [[ "$upstream_port" == "$contract_active" ]]; then
+        DETECTED_STALE_PORT="$contract_candidate"
+      else
+        DETECTED_STALE_PORT="$contract_active"
+      fi
+      warn "端口 ${contract_active}/${contract_candidate} 均在监听：按 nginx upstream 仲裁 active=${upstream_port}；残留侧 ${DETECTED_STALE_PORT} 将在预热阶段清理"
+    else
+      err "${contract_active}/${contract_candidate} 均在监听，且 upstream fragment（${upstream_fragment_path}）无法仲裁流量去向（读到 '${upstream_port:-<空>}'）。疑似带外部署或残留实例，拒绝盲切；请 ssh 确认两端口进程归属后重跑。"
+      return 1
+    fi
+  elif (( active_seen )); then
+    DETECTED_ACTIVE_PORT="$contract_active"
+  elif (( candidate_seen )); then
+    DETECTED_ACTIVE_PORT="$contract_candidate"
+  else
+    warn "${contract_active}/${contract_candidate} 均无监听 —— 按 fresh 主机处理，active 取契约端口 ${contract_active}"
+    DETECTED_ACTIVE_PORT="$contract_active"
+  fi
+
+  # 解析 active 监听进程的 systemd unit（drain 阶段要停的就是它；
+  # ps -o unit= 把 pid 映射回 unit 名，比 run/active-service 文件可信）。
+  local unit_pid=""
+  if [[ "$DETECTED_ACTIVE_PORT" == "$contract_active" ]]; then unit_pid="$active_pid"; else unit_pid="$candidate_pid"; fi
+  if [[ -n "$unit_pid" ]]; then
+    DETECTED_ACTIVE_UNIT="$(remote_ssh "ps -o unit= -p '$unit_pid' 2>/dev/null" 2>/dev/null | tr -d '[:space:]' || true)"
+  fi
+  return 0
 }
 
 # Install the blue-green assets (canary unit template + nginx upstream
@@ -879,8 +960,52 @@ do_deploy() {
     warn "legacy-restart used; 2-second blue-green SLO is not applicable"
   else
   log "[8/9] 候选预热 + Nginx 原子切流"
-  active_port=$(remote_ssh "cat '$REMOTE_ROOT/run/active-port' 2>/dev/null" 2>/dev/null || true)
-  active_port=${active_port:-$(target_field "$TARGET" active_port)}
+  upstream_fragment=$(target_field "$TARGET" upstream_fragment)
+  candidate_unit=$(target_field "$TARGET" candidate_unit)
+  # 2026-09-19（部署工单）：active 端口以目标机实测监听为准（detect_active_side），
+  # run/active-port / run/active-service 文件只在实测拿不到 unit 时兜底。
+  # 候选端口严格 = 契约对 {8781, 8782} 中 active 的另一侧，绝不偏离。
+  detect_active_side || { err "无法确定 ${TARGET} 当前运行的网关端口，中止（旧实例未受影响）"; exit 1; }
+  active_port="$DETECTED_ACTIVE_PORT"
+  if [[ "$active_port" == "$(target_field "$TARGET" active_port)" ]]; then
+    candidate_port=$(target_field "$TARGET" candidate_port)
+  else
+    candidate_port=$(target_field "$TARGET" active_port)
+  fi
+  candidate_service="${candidate_unit%@.service}@${candidate_port}.service"
+  # active unit：实测 ps 归属 > 按端口推导 > run/active-service 记录。
+  # 端口推导规则：主 unit 的监听端口钉在 env 里 = 契约 active_port(8781)；
+  # 契约对的另一个端口(8782)上只可能是 canary@<port>。陈旧的 run/active-service
+  # 记录排在最后，只在推导也拿不准时兜底。
+  active_service="$DETECTED_ACTIVE_UNIT"
+  local recorded_service
+  recorded_service=$(remote_ssh "cat '$REMOTE_ROOT/run/active-service' 2>/dev/null" 2>/dev/null || true)
+  if [[ -z "$active_service" || "$active_service" == "unknown" ]]; then
+    if [[ "$active_port" == "$(target_field "$TARGET" active_port)" ]]; then
+      active_service="$SERVICE_NAME"
+    else
+      active_service="${candidate_unit%@.service}@${active_port}.service"
+    fi
+    [[ -n "$recorded_service" && "$recorded_service" == "$active_service" ]] || \
+      warn "active unit 无法从监听进程归属解析，按端口推导为 ${active_service}（run/active-service 记录: '${recorded_service:-<无>}'）"
+  fi
+  # 实测结果与 run/ 落笔不一致时（上次部署未收尾/带外操作），以实测为准回写，
+  # 后续 drift 复核基线就是真实状态而不是陈旧文件。
+  local recorded_port
+  recorded_port=$(remote_ssh "cat '$REMOTE_ROOT/run/active-port' 2>/dev/null" 2>/dev/null | tr -d '[:space:]' || true)
+  if [[ "$recorded_port" != "$active_port" ]]; then
+    warn "run/active-port 记录 '${recorded_port:-<无>}' 与实测监听 ${active_port} 不一致，已按实测回写"
+    remote_ssh "printf '%s\\n' '$active_port' > '$REMOTE_ROOT/run/active-port'" || true
+  fi
+  if [[ "$recorded_service" != "$active_service" ]]; then
+    warn "run/active-service 记录 '${recorded_service:-<无>}' 与实测 ${active_service} 不一致，已按实测回写"
+    remote_ssh "printf '%s\\n' '$active_service' > '$REMOTE_ROOT/run/active-service'" || true
+  fi
+  if [[ -n "$DETECTED_STALE_PORT" ]]; then
+    local stale_service="${candidate_unit%@.service}@${DETECTED_STALE_PORT}.service"
+    warn "清理残留监听 ${DETECTED_STALE_PORT}（stop ${stale_service}）"
+    remote_ssh "systemctl stop '$stale_service' >/dev/null 2>&1 || true" || true
+  fi
   # 2026-09-18（并发部署竞争排查）：带外变更漂移基线。锁只对"走本脚本的
   # 部署"互斥，锁不住手工 slots/run 改写（2026-09-18 事故 06:14/06:19 两次
   # 实测：手工 slot 与正规部署互相覆盖）。这里在预热前记下 active 侧状态，
@@ -888,13 +1013,6 @@ do_deploy() {
   # 出现带外变更就 fail-closed，让操作者重跑而不是叠出未知状态。
   baseline_active_port="$active_port"
   baseline_active_slot=$(remote_ssh "readlink '$REMOTE_ROOT/slots/$active_port' 2>/dev/null" 2>/dev/null || true)
-  candidate_port=$(target_field "$TARGET" candidate_port)
-  if [[ "$active_port" == "$candidate_port" ]]; then
-    candidate_port=$(target_field "$TARGET" active_port)
-  fi
-  upstream_fragment=$(target_field "$TARGET" upstream_fragment)
-  candidate_unit=$(target_field "$TARGET" candidate_unit)
-  candidate_service="${candidate_unit%@.service}@${candidate_port}.service"
   # 2026-08-31: env 245 has historically been deployed via the legacy stop/start
   # path, so the canary unit and active-upstream.conf fragment were never
   # installed on it. The first seamless run on a fresh / never-installed target
@@ -950,9 +1068,8 @@ do_deploy() {
       ok "    [drift-repair] canary unit 已同步为仓库契约"
     fi
   fi
-  if remote_ssh "test -f '$REMOTE_ROOT/run/active-service'"; then
-    active_service=$(remote_ssh "cat '$REMOTE_ROOT/run/active-service'")
-  fi
+  # （2026-09-19 起 active_service 由 detect_active_side 实测解析并回写
+  #  run/active-service；这里不再从文件读回，避免陈旧记录覆盖实测归属。）
   # 2026-09-18（并发部署竞争排查）：切流前带外漂移复核（与上方基线配对）。
   current_active_port=$(remote_ssh "cat '$REMOTE_ROOT/run/active-port' 2>/dev/null" 2>/dev/null || true)
   current_active_port=${current_active_port:-$(target_field "$TARGET" active_port)}
@@ -998,13 +1115,40 @@ do_deploy() {
   # deploy aborted with a confusing "Connection refused". 60s still
   # leaves enough headroom for cold-start migrations while bounding
   # blast radius if the candidate truly is broken.
-  local probe_timeout="${PROBE_TIMEOUT_SECS:-60}"
+  # 2026-09-19: 60 -> 180s. Sticky-LB (9179d678c) + taskprofile audit hook
+  # add a fresh candidate ensure chain of routing_overrides_audit (table +
+  # 3 indexes + trigger), passive_probe_state (table + 1 index + 3
+  # model_probe_state columns), probe state function fixes, plus two
+  # promote-function repairs (dashboard_access_events, session_bodies).
+  # On shared 252 PG that chain plus the existing backfills routinely
+  # exceeds 60s, so the canary is still walking schema ensure when the
+  # probe deadline fires and we see the misleading "Connection refused".
+  # 180s covers worst-case cold start for this release without inflating
+  # blast radius if the candidate really is broken.
+  local probe_timeout="${PROBE_TIMEOUT_SECS:-180}"
   local probe_failed=""
   local probe_detail=""
   log "    probe /healthz (timeout=${probe_timeout}s)"
   if ! probe_detail=$(remote_probe "$candidate_health_url" "$probe_timeout"); then
-    probe_failed="healthz"
-    warn "    /healthz failed: ${probe_detail}"
+    # 2026-09-20（可靠性）：网关要等 DB ensure 链全部走完才初始化 http.Server，
+    # 期间 /healthz 一直是 Connection refused（cmd/gateway/main.go: ensure →
+    # srv := &http.Server）。ensure 链耗时随迁移数量与 252 PG 负载波动，
+    # 61s-vs-60s 的擦边超时两天内在 245/154 各发生一次——超时瞬间候选
+    # 其实"还活着、马上就绪"。判死刑前先看进程：仍 active 就再给一个
+    # 完整探测窗口（有界：最多两个窗口），避免杀掉一个即将就绪的候选
+    # 再全量重走 ensure。进程已死（崩溃/被 systemd 放弃）则立即失败。
+    if remote_ssh "systemctl is-active --quiet '$candidate_service'" 2>/dev/null; then
+      warn "    /healthz 未在 ${probe_timeout}s 内就绪，但候选进程仍 active（多半仍在走 ensure 链）——追加一个完整探测窗口"
+      if probe_detail=$(remote_probe "$candidate_health_url" "$probe_timeout"); then
+        ok "    /healthz OK (追加窗口)"
+      else
+        probe_failed="healthz"
+        warn "    /healthz failed (追加窗口后仍超时): ${probe_detail}"
+      fi
+    else
+      probe_failed="healthz"
+      warn "    /healthz failed: ${probe_detail}"
+    fi
   else
     ok "    /healthz OK"
   fi
@@ -1042,6 +1186,7 @@ do_deploy() {
       remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'" || true
     fi
     err "候选实例未通过 ${probe_failed}: ${probe_detail}，旧实例保持服务"
+    err "  排查: 上方 journal 若显示仍在 ensure（列交集检查在大表上可 >3 分钟），用 PROBE_TIMEOUT_SECS=600 重跑；若 ensure 已走完仍 refused，查 candidate 端口 bind 报错"
     exit 1
   fi
   if ! zd_switch_upstream "$SSH_CMD" "$upstream_fragment" "$candidate_port"; then
@@ -1246,8 +1391,8 @@ do_deploy() {
   echo ""
   ok "✅ $TARGET 部署完成 (总 ${elapsed}s, 切换 ${switch_elapsed}s) — version=$version seq=$seq_val"
   echo ""
-  echo "验证:"
-  echo "  curl http://$TARGET/api/system/version   (或 ssh 后 curl localhost:8781)"
+  echo "验证（本机≠网关机，127.0.0.1 必须在目标机上执行）:"
+  echo "  ssh <目标机> 'curl http://127.0.0.1:8781/api/system/version'   (active 端口见上方 handoff 输出)"
   echo "  回滚: bash scripts/deploy-seamless.sh rollback $TARGET"
   echo "  状态: bash scripts/deploy-seamless.sh status $TARGET"
 }
@@ -1285,7 +1430,7 @@ do_rollback() {
       err "canonical rollback unit 启动失败，保持现有 canary 流量"
       exit 1
     fi
-    if ! remote_probe "http://127.0.0.1:${canonical_port}/healthz" 60 >/dev/null; then
+    if ! remote_probe "http://127.0.0.1:${canonical_port}/healthz" "${PROBE_TIMEOUT_SECS:-180}" >/dev/null; then
       err "canonical rollback healthz 失败，保持现有 canary 流量"
       exit 1
     fi

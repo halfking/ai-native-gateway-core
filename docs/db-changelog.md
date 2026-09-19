@@ -601,3 +601,9 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 |-----------|------|---------|--------|
 | 725 | `725_r41_request_logs_and_tmp_super_admin_bypass.sql` | `ddaca40c4c4289f9df7b1965e8c9250a730e385c2fb180681b29ff4ebe2c88e7` | applied+verified |
 
+## 2026-09-19T02:17:01Z — deploy 245 build_seq 2143 (9179d678)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 726 | `726_restore_credential_model_index_hot_unique.sql` | `29086bd8096121b1d94e80290766d6762936550dc7faa63e21b881423c9985bf` | applied+verified |
+
