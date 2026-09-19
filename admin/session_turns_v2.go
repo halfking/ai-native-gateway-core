@@ -706,7 +706,11 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 			            ELSE COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') END AS title,
 			       COALESCE(NULLIF(s.summary, ''), ss.summary, '') AS summary,
 			       s.summary_generated_at, s.total_turns, s.total_tokens, s.total_cost_usd,
-			       s.last_turn_no, s.last_model, s.last_provider,
+			       s.last_turn_no, s.last_model,
+		       -- 2026-09-20: sessions.last_provider 存的是 provider ID 的文本形式
+		       -- (migration 430)，直接透出前端会显示 "glm-5.3 · 34"。数值时 JOIN
+		       -- providers 取 display_name；非数值（空串/历史残留）原样回退。
+		       COALESCE(NULLIF(plp.display_name, ''), NULLIF(plp.code, ''), s.last_provider) AS last_provider,
 			       COALESCE(s.last_request_summary, '') AS last_request_summary,
 			       COALESCE(s.last_response_summary, '') AS last_response_summary,
 			       s.created_at, s.updated_at, s.closed_at, COALESCE(s.status, 'active') AS status,
@@ -717,8 +721,10 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 			       COALESCE(s.user_tags, ARRAY[]::text[]) AS user_tags,
 			       sam.status, sam.schema_version, sam.input_hash,
 			       sam.source_task_id, sam.updated_at, sam.payload
-			FROM public.sessions s
-			LEFT JOIN session_dim sd
+		FROM public.sessions s
+		LEFT JOIN providers plp
+			ON plp.id = CASE WHEN s.last_provider ~ '^[0-9]+$' THEN s.last_provider::bigint END
+		LEFT JOIN session_dim sd
 				ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
 			LEFT JOIN session_summaries ss
 				ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id

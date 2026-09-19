@@ -319,6 +319,7 @@ function vendorOptionLabel(v: string) {
           >
             <ModelPicker
               mode="multi"
+              compact
               :model-value="modelFilterSelected"
               :placeholder="t('dashboard.liveStream.filterModel')"
               title="筛选模型"

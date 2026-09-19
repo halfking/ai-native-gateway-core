@@ -17,12 +17,16 @@ const props = withDefaults(defineProps<{
   /** 厂商分组预览条数，超出显示「更多…」 */
   vendorPreviewLimit?: number
   title?: string
+  /** multi 模式下触发器是否用紧凑计数样式（单行「已选 N」，不铺 chips）。
+   *  工具栏内联场景用；默认 false 保持原有的 chips 展示。 */
+  compact?: boolean
 }>(), {
   mode: 'single',
   placeholder: '选择模型…',
   disabled: false,
   vendorPreviewLimit: 8,
   title: '选择模型',
+  compact: false,
 })
 
 const emit = defineEmits<{
@@ -233,7 +237,18 @@ watch(() => props.modelValue, () => {
 
 <template>
   <div class="model-picker" :class="{ disabled }">
-    <template v-if="isMulti">
+    <template v-if="isMulti && compact">
+      <button type="button" class="mp-trigger" :disabled="disabled" @click="openMain">
+        <span v-if="multiValues.length" class="mp-value">已选 {{ multiValues.length }} 个模型</span>
+        <span v-else class="mp-placeholder">{{ placeholder }}</span>
+        <span class="mp-actions">
+          <span v-if="multiValues.length" class="mp-badge">{{ multiValues.length }}</span>
+          <span class="mp-caret">▾</span>
+        </span>
+      </button>
+    </template>
+
+    <template v-else-if="isMulti">
       <div class="mp-trigger mp-trigger--multi" @click="openMain">
         <div v-if="multiValues.length" class="mp-chips" @click.stop>
           <span v-for="v in multiValues" :key="v" class="mp-chip">
