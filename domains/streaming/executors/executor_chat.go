@@ -1826,6 +1826,12 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			// ParseAnthropic 分支靠 SetContext(UpstreamCatalogCode) 在 transport
 			// 层二次还原兜底；本分支没有那次兜底，必须在序列化前直接标上。
 			irReq.TargetProvider = cand.CatalogCode
+			// R45 (2026-09-19, Gemini thinking 专项): Gemini 入向在 handler
+			// step-6 路由前序列化，thinkingConfig 的 budget 形 intent 已在
+			// 合成 body 中丢失。从请求 context 恢复（见 ir.SourceReasoning），
+			// 使 applyThinkingToOpenAIChat 能按本次已知的 TargetProvider
+			// 方言渲染。无携带值时为无操作（原生 OpenAI 入向不受影响）。
+			irReq = ir.RestoreSourceReasoning(irReq, params.R.Context())
 			serializedBody, serializeErr := irScoped.SerializeOpenAI(irReq)
 			if serializeErr != nil {
 				slog.Warn("finalizeOpenAIUpstreamBody: legacy IR serialization failed; preserving pre-validation body",
@@ -1869,6 +1875,8 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 				irReq2.Model = resolveOutboundModel(params, cand)
 				// 同上（2026-09-18）: 断路器兜底路径同样需要方言感知。
 				irReq2.TargetProvider = cand.CatalogCode
+				// R45: 断路器兜底路径同样恢复 context 携带的入向推理意图。
+				irReq2 = ir.RestoreSourceReasoning(irReq2, params.R.Context())
 				if fixedBytes, err3 := ir.SerializeOpenAI(irReq2); err3 == nil {
 					bodyBytes = fixedBytes
 					slog.Warn("finalizeOpenAIUpstreamBody: IR circuit open, validated via breaker-independent fallback",
@@ -1925,7 +1933,7 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		// tool messages reach upstream unmangled; MiniMax 4xx-cascades;
 		// gateway loops 90s; client gets 503.
 		preBodyBytes := len(bodyBytes)
-		bodyBytes = applyInlineValidation(bodyBytes, params.RequestID, cand.CatalogCode)
+		bodyBytes = applyInlineValidation(bodyBytes, params.RequestID, cand.CatalogCode, params.R.Context())
 		postBodyBytes := len(bodyBytes)
 		slog.Info("finalizeOpenAIUpstreamBody: legacy path (no IR) + inline validation",
 			"request_id", params.RequestID,
