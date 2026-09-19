@@ -36,6 +36,8 @@
 - [R30] refusal 块 parse 侧保留但三个响应序列化器全部丢弃 → refusal-only 响应坍缩空壳成功（契约）— 修复 692205664；钉桩 refusal→text 分支测试
 - [R30] JSONB 全走 `$N::text::jsonb` 为健康面基准，新增写入点必须延续（不变量）
 - [R30] Extensions+paramreg 未知字段跨协议保真为健康面基准
+- [R43→R45] Gemini 入向 thinkingConfig（budget 形 Reasoning）在 handler_gemini step-6 路由前序列化时 TargetProvider 必空 → openai_chat 方言不渲染 → 合成 body 天生丢 intent，executor 重解析无法恢复。**R45 完整修复（IR context 携带方案定稿）**：`ir.SourceReasoning`（Thinking/Reasoning/SourceProtocol 三字段）经请求 context 穿过合成请求（streamretry 派生链存活），executor `finalizeOpenAIUpstreamBody` 三分支（legacy_with_ir / 断路器兜底 / inline validation）在 TargetProvider 接线点后 `ir.RestoreSourceReasoning` 恢复。**SourceProtocol 必须随 intent 一同恢复**——ParseOpenAI 会把重解析 IR stamp 成 openai-chat，而 openAIReasoningIntent 的防双表达排除以 SourceProtocol 为键，不恢复协议身份合并即被自己的守卫拒掉。body 已有原生推理表达时 body 优先。真机实证：MiniMax 直连 pre 129→post 160 恰 +31B=`,"thinking":{"type":"adaptive"}`，上游 200；无 thinkingConfig 常态请求 delta=0 零回归
+- [R45 登记] `catalogToDialect` 未登记目录码：`volcengine-coding`/`volcano-normal`/`volcano-tokenplan`（ark 域名同源）→ DialectUnknown → thinking 恢复后仍走 loss 上报（真机实测 delta=0）；`azure-openai`/`google-gemini` 同类缺口但对 OpenAI-wire thinking 渲染无影响（openai_chat/gemini 方言本就不渲染 budget intent）。补登记须逐上游真机验证接受度（MiniMax 2013 教训：上游会收窄合法值），勿盲登
 
 ## 5. 子代理派发提示词
 
