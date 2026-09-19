@@ -284,6 +284,7 @@ v2: {
     filterAllOptions: 'Alle',
     filterEmpty: 'Keine Optionen verfügbar',
     filterModel: 'Modell',
+    filterGroup: 'Filter',
     filterProvider: 'Anbieter',
     filterVendor: 'Vendor',
     filterAgent: 'Client',  // 2026-08-06 Abgleich mit zh-CN

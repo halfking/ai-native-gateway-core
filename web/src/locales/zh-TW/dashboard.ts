@@ -275,6 +275,7 @@ offline: "下線資源",
     filterAllOptions: '全部',
     filterEmpty: '暫無可選項',
     filterModel: '模型',
+    filterGroup: '篩選',
     filterProvider: '供應商',
     filterVendor: '原廠',
     filterAgent: '客戶端',  // 2026-08-06 與 zh-CN 對齊

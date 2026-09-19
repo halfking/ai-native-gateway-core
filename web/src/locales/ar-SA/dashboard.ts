@@ -284,6 +284,7 @@ v2: {
     filterAllOptions: 'الكل',
     filterEmpty: 'لا توجد خيارات متاحة',
     filterModel: 'النموذج',
+    filterGroup: 'تصفية',
     filterProvider: 'المزود',
     filterVendor: 'المورّد',
     filterAgent: 'العميل',  // 2026-08-06 محاذاة مع zh-CN

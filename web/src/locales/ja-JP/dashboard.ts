@@ -275,6 +275,7 @@ tabs: {
     filterAllOptions: 'すべて',
     filterEmpty: '選択肢がありません',
     filterModel: 'モデル',
+    filterGroup: 'フィルター',
     filterProvider: 'プロバイダー',
     filterVendor: 'ベンダー',
     filterAgent: 'クライアント',  // 2026-08-06 zh-CN との整合

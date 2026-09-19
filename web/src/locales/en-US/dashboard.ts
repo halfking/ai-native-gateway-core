@@ -266,6 +266,7 @@ export default {
     filterAllOptions: 'All',
     filterEmpty: 'No options available',
     filterModel: 'Model',
+    filterGroup: 'Filter',
     filterProvider: 'Provider',
     filterVendor: 'Vendor',
     filterAgent: 'Client',  // 2026-07-27
