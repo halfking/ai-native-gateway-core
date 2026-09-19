@@ -47,8 +47,13 @@ func DefaultLoadScoreWeights() LoadScoreWeights {
 		IdentityWeight:    0.1,
 		LatencyWeight:     0.3,
 		QualityWeight:     0.2,
-		CostWeight:        envFloat("LLM_GATEWAY_ROUTING_W_COST", 0),
-		IQWeight:          envFloat("LLM_GATEWAY_ROUTING_W_IQ", 0),
+		// 2026-09-19 成本感知选路（docs/design/2026-09-19-two-layer-priority-
+		// and-cost-routing.md §2）：边际成本模型默认启用——Round 1（订阅/
+		// 计划/免费）边际成本=0 永不被价格压低，Round 2（按量）按混合单价
+		// 线性惩罚。效率维度（延迟 0.3+质量 0.2）仍主导，成本在同效率候选
+		// 间倾斜。env 置 0 可整体关闭（关闭时评分公式与 RT-2 之前完全一致）。
+		CostWeight: envFloat("LLM_GATEWAY_ROUTING_W_COST", 0.15),
+		IQWeight:   envFloat("LLM_GATEWAY_ROUTING_W_IQ", 0),
 	}
 }
 
@@ -130,9 +135,21 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 	if balanceWeight > 0 {
 		balancePenalty = balancePenaltyForCandidate(c)
 	}
+	// 2026-09-19 计划额度惩罚（5h/周窗口，docs/design §3）：周期性 tokenplan
+	// 的用量探测（credentials.plan_quota_used_percent，zhipu/minimax 探针与
+	// 429 被动推断写入）折成 0..1 惩罚——用量越高惩罚越高，流量被导向剩余
+	// 额度多的计划凭据：窗口重置前把额度用掉（沉没成本不浪费），同时避免
+	// 把单一 5h/周窗提前打爆（429→冷却→整窗闲置才是最大浪费）。无探测数据
+	// fail-open=0，PAYG/免费不适用。
+	planQuotaWeight := envFloat("LLM_GATEWAY_ROUTING_W_PLANQUOTA", 0.10)
+	var planQuotaPenalty float64
+	if planQuotaWeight > 0 {
+		planQuotaPenalty = planQuotaPenaltyForCandidate(c)
+	}
 	composite += stickyPenalty*stickyWeight +
 		recencyPenalty*recencyWeight +
-		balancePenalty*balanceWeight
+		balancePenalty*balanceWeight +
+		planQuotaPenalty*planQuotaWeight
 
 	if rand.Float64() < 0.1 {
 		slog.Info("LOAD_SCORE_V2",
@@ -151,6 +168,7 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 			"sticky_penalty", stickyPenalty,
 			"recency_penalty", recencyPenalty,
 			"balance_penalty", balancePenalty,
+			"plan_quota_penalty", planQuotaPenalty,
 			"composite", composite,
 		)
 	}
@@ -158,17 +176,29 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 	return composite
 }
 
-// calculateCostPenalty normalizes the shadow cost-optimized dimension — the
-// blended unit price (PriceInPer1M + PriceOutPer1M, USD per 1M tokens) — into
-// a 0..1 penalty for calculateLoadScore (M2 RT-2).
+// calculateCostPenalty normalizes the MARGINAL cost of the next request into a
+// 0..1 penalty for calculateLoadScore.
 //
-// Unknown-value semantics (README §5 R1, mirrors strategy_cost.go): an unknown
-// price is NOT free → max penalty 1.0, so unpriced candidates never outrank
-// cheap known ones when CostWeight is on. Known prices rise linearly with the
-// blended price and saturate at the soft cap (env LLM_GATEWAY_ROUTING_COST_CAP,
-// default $30/1M blended — roughly the premium-model frontier) so a single
-// expensive outlier cannot dominate the composite.
+// Billing-aware model (2026-09-19, docs/design/2026-09-19-two-layer-priority-
+// and-cost-routing.md §2): the routing cost dimension prices the *next*
+// request, not the sunk monthly fee —
+//
+//   - Round 1 (free / token_plan / code_plan / agent_plan / monthly): the
+//     periodic plan is already paid for, so the marginal cost of using the
+//     remaining quota is ≈0 → penalty 0 regardless of price fields. This also
+//     fixes the pre-2026-09-19 blind spot where a subscription credential
+//     without per-1M unit prices was scored as "most expensive" (unknown =
+//     max penalty) even though its true marginal cost is zero.
+//   - Round 2 (PAYG per_token &c.): the blended unit price
+//     (PriceInPer1M + PriceOutPer1M, USD per 1M tokens) rises linearly and
+//     saturates at the soft cap (env LLM_GATEWAY_ROUTING_COST_CAP, default
+//     $30/1M blended — roughly the premium-model frontier) so a single
+//     expensive outlier cannot dominate the composite. Unknown prices keep
+//     the RT-2 "unknown is NOT free" semantics: max penalty 1.0.
 func calculateCostPenalty(c provider.Candidate) float64 {
+	if provider.BillingRound(c.BillingMode) == 1 {
+		return 0
+	}
 	if c.PriceInPer1M == nil || c.PriceOutPer1M == nil {
 		return 1.0
 	}
@@ -530,27 +560,62 @@ func balancePenaltyForCandidate(c provider.Candidate) float64 {
 	return 1.0 - bal/watermark
 }
 
-// firstHopLotteryWeights 把三新惩罚折算成首跳加权轮询（promoteWeighted
-// CandidateWithWeights）的有效权重（2026-09-19）。
+// planQuotaPenaltyForCandidate 把周期性计划凭据的窗口用量
+//（credentials.plan_quota_used_percent，0..100，探测数据）归一成 0..1 惩罚
+//（2026-09-19 成本感知选路）。仅对 billing round 1（token_plan/code_plan/
+// agent_plan/monthly）生效：free 池有自己的 quota tracker，PAYG 按量计费
+// 没有窗口额度概念，二者均不适用。nil（无探测数据）fail-open → 0，不惩罚。
+// 方向：用量越高惩罚越高 → 路由偏好剩余额度多的计划凭据，配合 Round 1
+// 优先的整体结构实现"计划额度尽量用完不浪费，同时不把单一 5h/周窗打爆"。
+func planQuotaPenaltyForCandidate(c provider.Candidate) float64 {
+	if c.PlanQuotaUsedPercent == nil {
+		return 0
+	}
+	if c.BillingMode == "" || c.BillingMode == "free" {
+		return 0
+	}
+	if provider.BillingRound(c.BillingMode) != 1 {
+		return 0
+	}
+	p := *c.PlanQuotaUsedPercent / 100.0
+	if p < 0 {
+		return 0
+	}
+	if p > 1.0 {
+		return 1.0
+	}
+	return p
+}
+
+// firstHopLotteryWeights 把三新惩罚+计划额度惩罚折算成首跳加权轮询
+//（promoteWeightedCandidateWithWeights）的有效权重（2026-09-19，计划额度
+// 维度为 2026-09-19 成本感知轮新增）。
 //
 // 背景：planByTier 的首跳由纯 Weight 加权轮询决定，calculateLoadScore 的
 // 惩罚只影响 failover 顺序——新会话的节点选择恰恰发生在首跳，因此惩罚必须
 // 折进抽签份额。折算公式：
 //
-//	p   = Σ(wi·penalty_i) / Σwi            （三惩罚按评分权重归一）
+//	p   = Σ(wi·penalty_i) / Σwi            （各惩罚按评分权重归一）
 //	w'  = max(1, round(Weight · (1 − 0.9·p)))
 //
 // 满载惩罚 p=1 时份额缩到 0.1（floor 防全饿死——重载节点的硬隔离始终由
-// 冷却/熔断过滤负责，抽签只做倾斜）。三个权重 env 全为 0、tracker 未接线
-// 或所有候选折算后不变时返回 nil，调用方走纯 Weight 原路径。
+// 冷却/熔断过滤负责，抽签只做倾斜）。sticky/recency 仅在 Router.StickyLoad
+// 接线后参与；balance/plan_quota 只依赖 candidate 字段，无 StickyLoad 也生效。
+// 四个权重 env 全为 0、或所有候选折算后不变时返回 nil，调用方走纯 Weight
+// 原路径。
 func firstHopLotteryWeights(cands []provider.Candidate, r *Router) []int {
-	if r == nil || r.StickyLoad == nil || len(cands) == 0 {
+	if len(cands) == 0 {
 		return nil
 	}
 	wSticky := envFloat("LLM_GATEWAY_ROUTING_W_STICKY", 0.15)
 	wRecency := envFloat("LLM_GATEWAY_ROUTING_W_RECENCY", 0.05)
 	wBalance := envFloat("LLM_GATEWAY_ROUTING_W_BALANCE", 0.05)
-	sum := wSticky + wRecency + wBalance
+	wPlanQuota := envFloat("LLM_GATEWAY_ROUTING_W_PLANQUOTA", 0.10)
+	stickyWired := r != nil && r.StickyLoad != nil
+	sum := wBalance + wPlanQuota
+	if stickyWired {
+		sum += wSticky + wRecency
+	}
 	if sum <= 0 {
 		return nil
 	}
@@ -563,9 +628,14 @@ func firstHopLotteryWeights(cands []provider.Candidate, r *Router) []int {
 			adjusted[i] = c.Weight
 			continue
 		}
-		p := (stickySessionPenalty(c, r)*wSticky +
-			recentRequestPenalty(c, r)*wRecency +
-			balancePenaltyForCandidate(c)*wBalance) / sum
+		var weighted float64
+		if stickyWired {
+			weighted += stickySessionPenalty(c, r)*wSticky +
+				recentRequestPenalty(c, r)*wRecency
+		}
+		weighted += balancePenaltyForCandidate(c)*wBalance +
+			planQuotaPenaltyForCandidate(c)*wPlanQuota
+		p := weighted / sum
 		if p > 1.0 {
 			p = 1.0
 		}
