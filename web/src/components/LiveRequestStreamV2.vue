@@ -23,6 +23,7 @@ import LiveStreamLegend from './LiveStreamLegend.vue'
 import EmergencyDiagnosticModal from './EmergencyDiagnosticModal.vue'
 import RouteIncidentDrawer from './RouteIncidentDrawer.vue'
 import LiveStreamFilterDialog from './LiveStreamFilterDialog.vue'
+import ModelPicker from './ModelPicker.vue'
 import QueuePerspectivePanel from './QueuePerspectivePanel.vue'
 import RequestJourneyQueues from './RequestJourneyQueues.vue'
 import NodeStatusMatrix from './NodeStatusMatrix.vue'
@@ -85,7 +86,6 @@ const {
   applyAgentFilter,
   clearAllFilters,
   availableStatuses,
-  availableModels,
   availableProviders,
   availableVendors,
   availableAgents,
@@ -99,10 +99,15 @@ const {
   } = useLiveStreamFilters({ lanes: filterSourceLanes })
 
 // 2026-07-24: 筛选弹窗状态（保留在组件内，仅 UI 控制）
-const filterDialog = ref<'status' | 'model' | 'provider' | 'vendor' | 'agent' | null>(null)
+// 2026-09-19: 模型维度改用标准 ModelPicker（与 routing-v2 resolve 一致），不再走通用弹窗
+const filterDialog = ref<'status' | 'provider' | 'vendor' | 'agent' | null>(null)
 
-function openFilterDialog(kind: 'status' | 'model' | 'provider' | 'vendor' | 'agent') {
+function openFilterDialog(kind: 'status' | 'provider' | 'vendor' | 'agent') {
   filterDialog.value = kind
+}
+
+function onModelFilterPicked(value: string | string[]) {
+  applyModelFilter(Array.isArray(value) ? value : [])
 }
 
 // 2026-08-06: 供应商 HTTP 延时轮询抽到 useProviderLatency composable
@@ -307,15 +312,19 @@ function vendorOptionLabel(v: string) {
             {{ t('dashboard.liveStream.filterStatus') }}
             <span v-if="statusFilter.size > 0" class="filter-badge">{{ statusFilter.size }}</span>
           </button>
-          <button
-            type="button"
-            class="filter-btn"
-            :class="{ 'filter-btn--active': modelFilter.size > 0 }"
-            @click="openFilterDialog('model')"
+          <!-- 2026-09-19: 模型筛选改用标准 ModelPicker 多选组件（与 routing-v2 resolve 同源） -->
+          <div
+            class="filter-model-picker"
+            :class="{ 'filter-model-picker--active': modelFilter.size > 0 }"
           >
-            {{ t('dashboard.liveStream.filterModel') }}
-            <span v-if="modelFilter.size > 0" class="filter-badge">{{ modelFilter.size }}</span>
-          </button>
+            <ModelPicker
+              mode="multi"
+              :model-value="modelFilterSelected"
+              :placeholder="t('dashboard.liveStream.filterModel')"
+              title="筛选模型"
+              @update:model-value="onModelFilterPicked"
+            />
+          </div>
           <button
             type="button"
             class="filter-btn"
@@ -364,14 +373,6 @@ function vendorOptionLabel(v: string) {
           :searchable="false"
           @update:open="(v) => { if (!v) filterDialog = null }"
           @apply="applyStatusFilter"
-        />
-        <LiveStreamFilterDialog
-          :open="filterDialog === 'model'"
-          :title="t('dashboard.liveStream.filterModel')"
-          :options="availableModels"
-          :selected="modelFilterSelected"
-          @update:open="(v) => { if (!v) filterDialog = null }"
-          @apply="applyModelFilter"
         />
         <LiveStreamFilterDialog
           :open="filterDialog === 'provider'"
@@ -721,6 +722,35 @@ function vendorOptionLabel(v: string) {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* 2026-09-19: 模型筛选标准选择器（ModelPicker multi）——限宽融入筛选行 */
+.filter-model-picker {
+  flex: 0 0 auto;
+  width: 150px;
+  min-width: 110px;
+  max-width: 240px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  transition: all 0.15s ease;
+}
+
+.filter-model-picker:hover {
+  border-color: var(--accent);
+}
+
+.filter-model-picker--active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* 内层触发器去边框，与相邻 filter-btn 高度对齐 */
+.filter-model-picker :deep(.mp-trigger) {
+  border: 0;
+  background: transparent;
+  min-height: 26px;
+  padding: 2px 6px;
 }
 
 .filter-badge {
