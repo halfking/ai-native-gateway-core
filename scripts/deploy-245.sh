@@ -57,6 +57,10 @@ fi
 
 # 透传健康探针超时：候选首跑 ensure 链 + 列交集检查在大表上常超 60s。
 # exec bash 会重启子 shell，不继承调用方未 export 的环境变量，所以显式 export 一次。
-export PROBE_TIMEOUT_SECS="${PROBE_TIMEOUT_SECS:-180}"
+# 2026-09-20（可靠性）: 默认 180 -> 120s。120s 仍给典型 ensure 链（60-90s 区间）
+# 留 ~30s 余量；任何怀疑 ensure 真正超过 120s 的部署，用 PROBE_TIMEOUT_SECS=180
+# （或更高）覆盖即可，env var 透传链仍生效。如需完全退回到旧行为（180s 默认），
+# 加 PROBE_TIMEOUT_SECS=180 重跑 —— deploy-seamless.sh 内部也会随之回到 180s。
+export PROBE_TIMEOUT_SECS="${PROBE_TIMEOUT_SECS:-120}"
 
 exec bash "$SCRIPT_DIR/deploy-seamless.sh" deploy 245 "${ARGS[@]}"
