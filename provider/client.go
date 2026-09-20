@@ -131,11 +131,11 @@ type Candidate struct {
 	// concurrency: 用 ConcurrencyLimit 做 in-flight 上限; rpm: 用 RPMLimit 做令牌桶;
 	// tpm: 用 TPMLimit 做令牌桶(发送前预估 token); disabled: 不限流。
 	// 由 domains/dispatch 的凭据队列调速器消费。
-	ConcurrencyMode      string   `json:"concurrency_mode,omitempty"`
-	TPMLimit             *int     `json:"tpm_limit,omitempty"`
-	MaxQueueDepth        *int     `json:"max_queue_depth,omitempty"`
-	MaxQueueWaitMS       *int     `json:"max_queue_wait_ms,omitempty"`
-	BalanceUSD           *float64 `json:"balance_usd"`
+	ConcurrencyMode string   `json:"concurrency_mode,omitempty"`
+	TPMLimit        *int     `json:"tpm_limit,omitempty"`
+	MaxQueueDepth   *int     `json:"max_queue_depth,omitempty"`
+	MaxQueueWaitMS  *int     `json:"max_queue_wait_ms,omitempty"`
+	BalanceUSD      *float64 `json:"balance_usd"`
 	// PlanQuotaUsedPercent mirrors credentials.plan_quota_used_percent — the
 	// periodic-plan window utilization (5h / 7d, 0..100) written by the
 	// balance-floor / quota probes (zhipu, minimax) and 429-based passive
@@ -1350,11 +1350,35 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 	}
 	stdName := modelname.NormalizeRouteKey(model)
 	if stdName != "" {
-		_, _ = c.dbPool.Exec(ctx, `
-			INSERT INTO models_canonical (canonical_name, family, source, status)
-			VALUES ($1, 'unknown', 'auto_discovered', 'active')
-			ON CONFLICT (canonical_name) DO NOTHING
-		`, stdName)
+		// Junk-seed guard (2026-09-20): NormalizeRouteKey strips the vendor
+		// prefix, so a client model like "claude/opus-5" used to blind-INSERT
+		// a truncated canonical row "opus-5" even when claude-opus-5 already
+		// existed. Only seed when no active canonical matches stdName under
+		// separator/case folding AND stdName is not a bare suffix of an
+		// existing longer canonical (the classic truncation shape).
+		var blocker string
+		err := c.dbPool.QueryRow(ctx, `
+			SELECT canonical_name FROM models_canonical
+			WHERE status = 'active'
+			  AND (
+			    replace(replace(replace(replace(lower(canonical_name), '.', '_'), '-', '_'), ' ', '_'), '/', '_') = $1
+			    OR ('_' || replace(replace(replace(replace(lower(canonical_name), '.', '_'), '-', '_'), ' ', '_'), '/', '_')) LIKE '%-' || $1
+			  )
+			ORDER BY length(canonical_name), canonical_name
+			LIMIT 1
+		`, stdName).Scan(&blocker)
+		if err == nil {
+			slog.Debug("auto_discovered seed suppressed: existing canonical",
+				"client_model", model, "std_name", stdName, "existing", blocker)
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("auto_discovered seed guard query failed", "error", err)
+		} else {
+			_, _ = c.dbPool.Exec(ctx, `
+				INSERT INTO models_canonical (canonical_name, family, source, status)
+				VALUES ($1, 'unknown', 'auto_discovered', 'active')
+				ON CONFLICT (canonical_name) DO NOTHING
+			`, stdName)
+		}
 	}
 	return &resolveResponse{ClientModel: model, CanonicalID: nil, CanonicalName: "", ResolutionPath: "direct", RawModels: []string{stdName}}, nil
 }
