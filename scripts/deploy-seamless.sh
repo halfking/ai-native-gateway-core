@@ -1125,21 +1125,32 @@ do_deploy() {
   # probe deadline fires and we see the misleading "Connection refused".
   # 180s covers worst-case cold start for this release without inflating
   # blast radius if the candidate really is broken.
-  local probe_timeout="${PROBE_TIMEOUT_SECS:-180}"
+  # 2026-09-20（部署可靠性）: 180 -> 120s + 第二窗口有界 cap=60s。120s 仍
+  # 给典型 ensure 链（60-90s 区间）留有 ~30s 余量；观察到的擦边超时（61s
+  # 在 60s 默认上）发生在旧的 8 个 ensure 项上，加 sticky-LB / taskprofile
+  # audit 后虽然 ensure 项数增加，但共享 252 PG 缓存/连接池都是热路径，
+  # 90s 区间足以覆盖。180s 仍是 PROBE_TIMEOUT_SECS env var 显式覆盖的值
+  # ——任何怀疑 ensure 真正超过 120s 的部署，加 PROBE_TIMEOUT_SECS=180 重跑
+  # 即可（与原 180s 行为等价）。第二窗口从"完整 probe_timeout"收紧到 60s：
+  # 若第一窗口吃满（120s 都没拿到 200），候选只可能是"即将就绪"或"真坏"
+  # 两种情况，60s 足够分辨；最坏总时长从 240s（120+120）压到 180s（120+60）。
+  local probe_timeout="${PROBE_TIMEOUT_SECS:-120}"
+  local probe_retry_timeout="${PROBE_RETRY_TIMEOUT_SECS:-60}"
   local probe_failed=""
   local probe_detail=""
-  log "    probe /healthz (timeout=${probe_timeout}s)"
+  log "    probe /healthz (timeout=${probe_timeout}s, retry=${probe_retry_timeout}s)"
   if ! probe_detail=$(remote_probe "$candidate_health_url" "$probe_timeout"); then
     # 2026-09-20（可靠性）：网关要等 DB ensure 链全部走完才初始化 http.Server，
     # 期间 /healthz 一直是 Connection refused（cmd/gateway/main.go: ensure →
     # srv := &http.Server）。ensure 链耗时随迁移数量与 252 PG 负载波动，
     # 61s-vs-60s 的擦边超时两天内在 245/154 各发生一次——超时瞬间候选
     # 其实"还活着、马上就绪"。判死刑前先看进程：仍 active 就再给一个
-    # 完整探测窗口（有界：最多两个窗口），避免杀掉一个即将就绪的候选
-    # 再全量重走 ensure。进程已死（崩溃/被 systemd 放弃）则立即失败。
+    # 有界探测窗口（PROBE_RETRY_TIMEOUT_SECS，默认 60s；有界：仅一次），
+    # 避免杀掉一个即将就绪的候选再全量重走 ensure。进程已死（崩溃/被
+    # systemd 放弃）则立即失败。仍 active 但 retry 也超时 → 真坏，失败。
     if remote_ssh "systemctl is-active --quiet '$candidate_service'" 2>/dev/null; then
-      warn "    /healthz 未在 ${probe_timeout}s 内就绪，但候选进程仍 active（多半仍在走 ensure 链）——追加一个完整探测窗口"
-      if probe_detail=$(remote_probe "$candidate_health_url" "$probe_timeout"); then
+      warn "    /healthz 未在 ${probe_timeout}s 内就绪，但候选进程仍 active（多半仍在走 ensure 链）——追加 ${probe_retry_timeout}s 探测窗口"
+      if probe_detail=$(remote_probe "$candidate_health_url" "$probe_retry_timeout"); then
         ok "    /healthz OK (追加窗口)"
       else
         probe_failed="healthz"
@@ -1155,6 +1166,8 @@ do_deploy() {
   if [[ -z "$probe_failed" ]]; then
     log "    probe /readyz (timeout=${probe_timeout}s)"
     if ! probe_detail=$(remote_probe "$candidate_ready_url" "$probe_timeout"); then
+      # /readyz 比 /healthz 慢但通常已绑定同次 ensure；不走 retry 路径（DB/Redis
+      # ping 不一致就是 fail-closed 信号，不需要再等）。
       probe_failed="readyz"
       warn "    /readyz failed: ${probe_detail}"
     else
@@ -1430,7 +1443,14 @@ do_rollback() {
       err "canonical rollback unit 启动失败，保持现有 canary 流量"
       exit 1
     fi
-    if ! remote_probe "http://127.0.0.1:${canonical_port}/healthz" "${PROBE_TIMEOUT_SECS:-180}" >/dev/null; then
+    # 2026-09-20: host_rollback 路径探测 fallback 180 -> 120s。
+    # forward 探测（1137行）已统一到 120s，host_rollback 这里只有当
+    # deploy-154/245 没显式 export PROBE_TIMEOUT_SECS 时才会走 fallback
+    # ——正常 deploy 链路（export PROBE_TIMEOUT_SECS=120）走不到 180s。
+    # 默认值 120 与 forward 路径一致：候选是已被预热的旧版本，ensure 链
+    # 走热路径，60-90s 区间足以覆盖；怀疑 ensure 真正超过 120s 时，
+    # 仍可用 PROBE_TIMEOUT_SECS=180 显式覆盖（行为与原 180s 默认等价）。
+    if ! remote_probe "http://127.0.0.1:${canonical_port}/healthz" "${PROBE_TIMEOUT_SECS:-120}" >/dev/null; then
       err "canonical rollback healthz 失败，保持现有 canary 流量"
       exit 1
     fi
