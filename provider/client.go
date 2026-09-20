@@ -1356,17 +1356,17 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 		// existed. Only seed when no active canonical matches stdName under
 		// separator/case folding AND stdName is not a bare suffix of an
 		// existing longer canonical (the classic truncation shape).
+		//
+		// R50 fix (2026-09-21, live-DB verified): stdName is dash-form
+		// (NormalizeRouteKey output) while the left side folds to
+		// underscores — as written, `= $1` never matched and the suffix arm
+		// used '%-' which can never match an underscore-folded left side,
+		// so BOTH arms were dead and the guard suppressed nothing. Fold
+		// stdName to underscores too and match the suffix on '%_'.
 		var blocker string
-		err := c.dbPool.QueryRow(ctx, `
-			SELECT canonical_name FROM models_canonical
-			WHERE status = 'active'
-			  AND (
-			    replace(replace(replace(replace(lower(canonical_name), '.', '_'), '-', '_'), ' ', '_'), '/', '_') = $1
-			    OR ('_' || replace(replace(replace(replace(lower(canonical_name), '.', '_'), '-', '_'), ' ', '_'), '/', '_')) LIKE '%-' || $1
-			  )
-			ORDER BY length(canonical_name), canonical_name
-			LIMIT 1
-		`, stdName).Scan(&blocker)
+		// R50：守卫谓词收敛为 modelname.JunkSeedGuardSQL 单一实现
+		// （dash 形 stdName 对下划线折叠左侧的两臂全死缺陷同修）。
+		err := c.dbPool.QueryRow(ctx, modelname.JunkSeedGuardSQL, stdName).Scan(&blocker)
 		if err == nil {
 			slog.Debug("auto_discovered seed suppressed: existing canonical",
 				"client_model", model, "std_name", stdName, "existing", blocker)

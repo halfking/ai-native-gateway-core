@@ -22,7 +22,10 @@ BEGIN
     -- R49 审计（2026-09-20）补登记：以下三表对 models_canonical 是
     -- ON DELETE CASCADE 外键（342 迁移），DELETE loser 会无声级联删数据
     -- 且无备份可回滚 —— 必须先备份、重定向后再删。
-    'model_capability_profiles','model_capability_profile_audit','model_substitution_overrides'
+    'model_capability_profiles','model_capability_profile_audit','model_substitution_overrides',
+    -- R50 审计（2026-09-21）补登记：§2.3 会重定向但此前不进备份的两张表
+    -- ——重定向写坏时无备份可回滚，违背本脚本"必须先备份"自身原则。
+    'role_task_llm_mapping','tenant_model_policies_active'
   ]
   LOOP
     IF to_regclass(format('public.%I', t)) IS NOT NULL THEN
@@ -295,6 +298,42 @@ UPDATE models_canonical SET canonical_name = 'lfm-2.5-2.6b',             updated
 UPDATE models_canonical SET canonical_name = 'north-mini-code',          updated_at = now() WHERE canonical_name = 'north-mini-code:free';
 UPDATE models_canonical SET canonical_name = 'qwen-plus-2025-07-28',     updated_at = now() WHERE canonical_name = 'qwen-plus-2025-07-28:thinking';
 
+-- 6.5 R50 审计（2026-09-21）：§7 前置断言（真门禁）。
+-- 旧 V8 在 COMMIT 之后跑，是"事后核对器"而非门禁：①非 0 不回滚任何东西；
+-- ②342 迁移的三表 FK 全是 ON DELETE CASCADE，"重定向漏 → §7 级联删 →
+-- 行消失"的故障形态恰好也产出 V8=0（悬挂引用随父行一起没了）。因此把
+-- 悬挂检查挪到 DELETE 之前，非 0 直接 RAISE EXCEPTION 回滚整个事务；
+-- 342 未应用的库（252/本地实测如此）三表不存在则跳过对应臂。
+-- 兜底 truth：重定向按构造完备（§2.3 匹配所有指向 loser 的行）+
+-- bak_20260920_* 备份；末尾 V8 仅作事后留痕核对。
+DO $$
+DECLARE
+    dangling INT;
+BEGIN
+    dangling := 0;
+    IF to_regclass('public.model_capability_profiles') IS NOT NULL THEN
+      dangling := dangling + (SELECT count(*) FROM model_capability_profiles p
+        LEFT JOIN models_canonical mc ON mc.id = p.canonical_id WHERE mc.id IS NULL);
+    END IF;
+    IF to_regclass('public.model_capability_profile_audit') IS NOT NULL THEN
+      dangling := dangling + (SELECT count(*) FROM model_capability_profile_audit a
+        LEFT JOIN models_canonical mc ON mc.id = a.canonical_id WHERE mc.id IS NULL);
+    END IF;
+    IF to_regclass('public.model_substitution_overrides') IS NOT NULL THEN
+      dangling := dangling + (SELECT count(*) FROM model_substitution_overrides s
+        LEFT JOIN models_canonical mc ON mc.id = s.requested_canonical_id WHERE mc.id IS NULL);
+      dangling := dangling + (SELECT count(*) FROM model_substitution_overrides s
+        LEFT JOIN models_canonical mc ON mc.id = s.candidate_canonical_id WHERE mc.id IS NULL);
+    END IF;
+    IF to_regclass('public.role_task_llm_mapping') IS NOT NULL THEN
+      dangling := dangling + (SELECT count(*) FROM role_task_llm_mapping r
+        WHERE NOT EXISTS (SELECT 1 FROM models_canonical mc WHERE lower(mc.canonical_name) = lower(r.llm_canonical_name)));
+    END IF;
+    IF dangling > 0 THEN
+      RAISE EXCEPTION 'cleanup §6.5: % dangling canonical references before §7 DELETE — §2.3 redirect missed a table/column; aborting (transaction rolled back)', dangling;
+    END IF;
+END $$;
+
 -- 7. 删除: 归并 loser + 垃圾行
 DELETE FROM models_canonical mc
 USING merge_map m
@@ -342,16 +381,35 @@ SELECT 'V7 行数' AS check,
   (SELECT count(*) FROM model_aliases) AS aliases,
   (SELECT count(*) FROM provider_models) AS pm;
 
--- R49 审计（2026-09-20）V8：FK CASCADE 三表 + R48 role 表悬挂引用（应为 0）。
--- 任一非 0 说明 §2.3 重定向漏了对应表/列，禁止跑 §7 DELETE。
-SELECT 'V8 CASCADE 表悬挂引用(应为 0)' AS check, count(*) AS n FROM (
-  SELECT 1 FROM model_capability_profiles p LEFT JOIN models_canonical mc ON mc.id = p.canonical_id WHERE mc.id IS NULL
-  UNION ALL
-  SELECT 1 FROM model_capability_profile_audit a LEFT JOIN models_canonical mc ON mc.id = a.canonical_id WHERE mc.id IS NULL
-  UNION ALL
-  SELECT 1 FROM model_substitution_overrides s LEFT JOIN models_canonical mc ON mc.id = s.requested_canonical_id WHERE mc.id IS NULL
-  UNION ALL
-  SELECT 1 FROM model_substitution_overrides s LEFT JOIN models_canonical mc ON mc.id = s.candidate_canonical_id WHERE mc.id IS NULL
-  UNION ALL
-  SELECT 1 FROM role_task_llm_mapping r WHERE NOT EXISTS (SELECT 1 FROM models_canonical mc WHERE lower(mc.canonical_name) = lower(r.llm_canonical_name))
-) t;
+-- R50 修订（2026-09-21）：真门禁是 §6.5 的前置断言（COMMIT 前 RAISE
+-- EXCEPTION 回滚）；本段降级为事后留痕核对，且各臂带 to_regclass 守卫
+-- ——342 未应用的库三表不存在，此前裸查直接报 relation does not exist。
+DO $$
+DECLARE
+    n INT := 0;
+BEGIN
+    IF to_regclass('public.model_capability_profiles') IS NULL
+       AND to_regclass('public.role_task_llm_mapping') IS NULL THEN
+        RAISE NOTICE 'V8-skipped: 342 cascade tables not present on this DB';
+        RETURN;
+    END IF;
+    IF to_regclass('public.model_capability_profiles') IS NOT NULL THEN
+        n := n + (SELECT count(*) FROM model_capability_profiles p
+            LEFT JOIN models_canonical mc ON mc.id = p.canonical_id WHERE mc.id IS NULL);
+    END IF;
+    IF to_regclass('public.model_capability_profile_audit') IS NOT NULL THEN
+        n := n + (SELECT count(*) FROM model_capability_profile_audit a
+            LEFT JOIN models_canonical mc ON mc.id = a.canonical_id WHERE mc.id IS NULL);
+    END IF;
+    IF to_regclass('public.model_substitution_overrides') IS NOT NULL THEN
+        n := n + (SELECT count(*) FROM model_substitution_overrides s
+            LEFT JOIN models_canonical mc ON mc.id = s.requested_canonical_id WHERE mc.id IS NULL);
+        n := n + (SELECT count(*) FROM model_substitution_overrides s
+            LEFT JOIN models_canonical mc ON mc.id = s.candidate_canonical_id WHERE mc.id IS NULL);
+    END IF;
+    IF to_regclass('public.role_task_llm_mapping') IS NOT NULL THEN
+        n := n + (SELECT count(*) FROM role_task_llm_mapping r
+            WHERE NOT EXISTS (SELECT 1 FROM models_canonical mc WHERE lower(mc.canonical_name) = lower(r.llm_canonical_name)));
+    END IF;
+    RAISE NOTICE 'V8 CASCADE 表悬挂引用(应为 0): %', n;
+END $$;
