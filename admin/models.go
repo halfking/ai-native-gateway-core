@@ -354,12 +354,17 @@ func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
 	// (canonical_name), so variants that differ only by case or ./_/-/space//
 	// separators would silently coexist as two "standard" models and leak
 	// both spellings to clients. Reject them up front with the winner named.
+	// R50 fix (2026-09-21): collapse runs of separators on both sides —
+	// without it `claude--opus-5` folded to `claude__opus_5` which never
+	// equaled `claude-opus-5` → `claude_opus_5`, so a single request could
+	// mint a duplicate spelling (live hole, not just a race; the same
+	// run-collapse is NormalizeRouteKey's dupDashPattern semantics).
 	var existing string
 	err := h.db.QueryRow(ctx, `
 		SELECT canonical_name FROM models_canonical
 		WHERE lower(canonical_name) = lower($1)
-		   OR replace(replace(replace(replace(lower(canonical_name), '.', '_'), '-', '_'), ' ', '_'), '/', '_')
-		    = replace(replace(replace(replace(lower($1), '.', '_'), '-', '_'), ' ', '_'), '/', '_')
+		   OR regexp_replace(replace(replace(replace(replace(lower(canonical_name), '.', '_'), '-', '_'), ' ', '_'), '/', '_'), '[-_]{2,}', '_', 'g')
+		    = regexp_replace(replace(replace(replace(replace(lower($1), '.', '_'), '-', '_'), ' ', '_'), '/', '_'), '[-_]{2,}', '_', 'g')
 		ORDER BY length(canonical_name), canonical_name
 		LIMIT 1
 	`, canonicalName).Scan(&existing)

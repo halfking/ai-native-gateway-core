@@ -466,19 +466,16 @@ func (h *Handler) enrollCredentialModels(ctx context.Context, credentialID int, 
 			// provider/client.go resolveModelDB 的 auto_discovered 守卫同款
 			//（归一化相等 OR 裸后缀截断形）。命中且非自身时跳过 INSERT；
 			// 92f18cf22 只堵了 resolveModelDB 一处，此处是另一条持续回种源。
-			// TODO(R50)：三处归一化谓词（本处/client.go/admin/models.go 查重）
+			// R50 修正（2026-09-21，真库实测）：两处守卫原谓词两臂全死——
+			// stdName 是 dash 形而左侧折叠为下划线（`= $1` 恒 false），
+			// 截断臂 `'%-'` 对下划线左侧恒不匹配；现双侧对齐 + '%_' 匹配。
+			// TODO(R51)：三处归一化谓词（本处/client.go/admin/models.go 查重）
 			// 收敛到 modelname 包单一实现，避免口径漂移。
 			var blocker string
-			err := h.db.QueryRow(ctx, `
-				SELECT canonical_name FROM models_canonical
-				WHERE status = 'active'
-				  AND (
-				    replace(replace(replace(replace(lower(canonical_name), '.', '_'), '-', '_'), ' ', '_'), '/', '_') = $1
-				    OR ('_' || replace(replace(replace(replace(lower(canonical_name), '.', '_'), '-', '_'), ' ', '_'), '/', '_')) LIKE '%-' || $1
-				  )
-				ORDER BY length(canonical_name), canonical_name
-				LIMIT 1
-			`, stdName).Scan(&blocker)
+			// R50：守卫谓词收敛为 modelname.JunkSeedGuardSQL 单一实现
+			//（与 provider/client.go 同源，两臂全死缺陷同修）。
+			// TODO(R51)：admin/models.go createModel 查重谓词一并收敛。
+			err := h.db.QueryRow(ctx, modelname.JunkSeedGuardSQL, stdName).Scan(&blocker)
 			switch {
 			case err == nil && blocker != stdName:
 				slog.Debug("provider_refresh seed suppressed: existing canonical",
