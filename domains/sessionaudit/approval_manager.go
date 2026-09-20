@@ -77,7 +77,7 @@ func (m *ApprovalManager) WithTimeoutAction(action TimeoutAction) *ApprovalManag
 
 // Create 创建审批记录。
 //
-// 在事务内先 `SET LOCAL app.current_tenant = req.TenantID` 触发 RLS，
+// 在事务内先把 app.current_tenant 设为 req.TenantID 触发 RLS，
 // 然后插入。返回新生成的 UUID。
 func (m *ApprovalManager) Create(ctx context.Context, req *ApprovalRequest) (string, error) {
 	if req == nil {
@@ -137,7 +137,7 @@ func (m *ApprovalManager) Create(ctx context.Context, req *ApprovalRequest) (str
 // 二次比对行 tenant_id。两层防御都失败才会返回数据。
 //
 // expectedTenantID 空字符串 = super_admin 跨租户访问：
-//   - 事务内 SET LOCAL app.current_role='super_admin' 让 RLS bypass
+//   - 事务内 set_config('app.current_role','super_admin', is_local) 让 RLS bypass
 //   - 应用层不比对 tenant_id
 func (m *ApprovalManager) GetForTenant(ctx context.Context, approvalID, expectedTenantID string) (*ApprovalRecord, error) {
 	return m.getWithTx(ctx, approvalID, expectedTenantID)
@@ -304,7 +304,7 @@ func (m *ApprovalManager) List(ctx context.Context, filter *ApprovalFilter) ([]*
 // Approve 批准审批（带租户校验）。
 //
 // callerTenantID 非空时，应用层比对行 tenant_id 与 caller tenant。
-// 同时事务内 SET LOCAL app.current_tenant 触发 RLS。RLS 与应用层
+// 同时事务内设置 app.current_tenant 触发 RLS。RLS 与应用层
 // 任一拦截都不会跨租户更新。
 func (m *ApprovalManager) Approve(ctx context.Context, approvalID, callerTenantID, approvedBy, reason string) error {
 	return m.decide(ctx, approvalID, callerTenantID, approvedBy, reason, ApprovalApproved)
@@ -422,10 +422,11 @@ func (m *ApprovalManager) MarkTimeout(ctx context.Context) (int, error) {
 	return int(tag.RowsAffected()), nil
 }
 
-// setTenantGUC 在事务内 SET LOCAL app.current_tenant。
-// 单引号经过转义防止 SQL 注入。
+// setTenantGUC 在事务内把 app.current_tenant 设为租户 ID。
+// set_config(..., is_local := true) 与 SET LOCAL 语义等价，且走参数绑定，
+// 无需手工转义单引号。
 //
-// tenantID 为空字符串（super_admin 调用）→ 跳过 SET LOCAL，让 RLS policy
+// tenantID 为空字符串（super_admin 调用）→ 跳过设置，让 RLS policy
 // 默认按 NULLIF→'default' 过滤；调用方需同时设 app.current_role=
 // 'super_admin' 才能跨租户 bypass（见 setSuperAdminGUC）。
 func setTenantGUC(ctx context.Context, tx pgx.Tx, tenantID string) error {
@@ -433,26 +434,21 @@ func setTenantGUC(ctx context.Context, tx pgx.Tx, tenantID string) error {
 		// super_admin 跨租户调用：不设 tenant GUC
 		return nil
 	}
-	escaped := ""
-	for _, r := range tenantID {
-		if r == '\'' {
-			escaped += "''"
-		} else {
-			escaped += string(r)
-		}
-	}
-	_, err := tx.Exec(ctx, "SET LOCAL app.current_tenant = '"+escaped+"'")
-	if err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", tenantID); err != nil {
 		return fmt.Errorf("set tenant GUC: %w", err)
 	}
 	return nil
 }
 
-// setSuperAdminGUC 在事务内设置 SET LOCAL app.current_role='super_admin'，
+// setSuperAdminGUC 在事务内把 app.current_role 设为 'super_admin'，
 // 让 RLS policy bypass tenant 过滤（见 migrations/120_session_audit.sql）。
+//
+// 不能写成 SET LOCAL app.current_role=...：current_role 是 PostgreSQL 保留
+// 字，不能作为 customized-option 名的组成（252 生产日志实证每次调用都
+// syntax error at or near "current_role"，R41 起全部 super_admin 路径因此
+// 失败）。set_config 不经过 SET 语法解析，没有该限制。
 func setSuperAdminGUC(ctx context.Context, tx pgx.Tx) error {
-	_, err := tx.Exec(ctx, "SET LOCAL app.current_role = 'super_admin'")
-	if err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_role', 'super_admin', true)"); err != nil {
 		return fmt.Errorf("set role GUC: %w", err)
 	}
 	return nil

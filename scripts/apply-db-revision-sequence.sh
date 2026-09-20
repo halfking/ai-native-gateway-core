@@ -473,6 +473,14 @@ files=(
   # （rollup ON CONFLICT 42P10 全失败）在存量库的标准修复通道。
   # ctid 去重 + CREATE UNIQUE INDEX IF NOT EXISTS 幂等。
   "$ROOT_DIR/sql/migrations/startup/726_restore_credential_model_index_hot_unique.sql"
+  # 2026-09-20 252 PG SQL 日志审计轮（本轮交付）：727 慢查询索引三连——
+  # request_stage_events 保留清理 DELETE 补 created_at 索引（9 天均值 10.5s
+  # 撞 30s 批超时，retention 文件头 2026-09-05 预登记条件达成）；
+  # session_turns 父表 + session_turns_hot 独立表补 CASE 表达式索引
+  # （会话存在性 EXISTS 视图查询 P50 687ms→1.1ms，真库 A/B 实证）。
+  # CREATE INDEX CONCURRENTLY IF NOT EXISTS 幂等；2026-09-20 已在 252
+  # 存量真库实跑验证。
+  "$ROOT_DIR/sql/migrations/startup/727_sql_audit_slow_query_indexes.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

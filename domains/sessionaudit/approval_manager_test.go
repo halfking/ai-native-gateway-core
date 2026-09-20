@@ -35,8 +35,9 @@ func TestCreate_Success(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	mock.ExpectExec(`INSERT INTO approval_queue`).
 		WithArgs(
 			pgxmock.AnyArg(), // id (uuid)
@@ -108,8 +109,8 @@ func TestGet_NotFound(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	mock.ExpectExec(`SET LOCAL app.current_role`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	mock.ExpectQuery(`SELECT id, session_id, tenant_id`).
 		WithArgs("missing").
 		WillReturnError(pgx.ErrNoRows)
@@ -130,8 +131,9 @@ func TestGetForTenant_TenantMismatch(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{
 		"id", "session_id", "tenant_id", "request_id",
 		"detect_result", "snapshot",
@@ -161,8 +163,9 @@ func TestGetForTenant_OK(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{
 		"id", "session_id", "tenant_id", "request_id",
 		"detect_result", "snapshot",
@@ -204,8 +207,8 @@ func TestGetForTenant_SuperAdminBypass(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	mock.ExpectExec(`SET LOCAL app.current_role`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{
 		"id", "session_id", "tenant_id", "request_id",
 		"detect_result", "snapshot",
@@ -238,8 +241,9 @@ func TestList_DefaultsLimit(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{
 		"id", "session_id", "tenant_id", "request_id",
 		"detect_result", "snapshot",
@@ -269,8 +273,9 @@ func TestList_ClampLimit(t *testing.T) {
 	mock, _ := pgxmock.NewPool()
 	defer mock.Close()
 	mock.ExpectBeginTx(pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{
 		"id", "session_id", "tenant_id", "request_id",
 		"detect_result", "snapshot",
@@ -299,8 +304,8 @@ func TestList_SuperAdminBypass(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	mock.ExpectExec(`SET LOCAL app.current_role`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{
 		"id", "session_id", "tenant_id", "request_id",
 		"detect_result", "snapshot",
@@ -329,8 +334,9 @@ func TestApprove_OK(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{"tenant_id", "status"}).
 		AddRow("tenant-A", "pending")
 	mock.ExpectQuery(`SELECT tenant_id, status FROM approval_queue WHERE id = \$1 FOR UPDATE`).
@@ -353,8 +359,8 @@ func TestApprove_SuperAdminBypass(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_role`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{"tenant_id", "status"}).
 		AddRow("any-tenant", "pending")
 	mock.ExpectQuery(`SELECT tenant_id, status FROM approval_queue WHERE id = \$1 FOR UPDATE`).
@@ -378,8 +384,9 @@ func TestApprove_TenantMismatch(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{"tenant_id", "status"}).
 		AddRow("OTHER", "pending")
 	mock.ExpectQuery(`SELECT tenant_id, status FROM approval_queue WHERE id = \$1 FOR UPDATE`).
@@ -400,8 +407,9 @@ func TestApprove_AlreadyDecided(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{"tenant_id", "status"}).
 		AddRow("tenant-A", "approved") // 已经审批过
 	mock.ExpectQuery(`SELECT tenant_id, status FROM approval_queue WHERE id = \$1 FOR UPDATE`).
@@ -422,8 +430,9 @@ func TestReject_OK(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{"tenant_id", "status"}).
 		AddRow("tenant-A", "pending")
 	mock.ExpectQuery(`SELECT tenant_id, status FROM approval_queue WHERE id = \$1 FOR UPDATE`).
@@ -446,8 +455,9 @@ func TestApprove_NotFound(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	mock.ExpectQuery(`SELECT tenant_id, status FROM approval_queue WHERE id = \$1 FOR UPDATE`).
 		WithArgs("missing").
 		WillReturnError(pgx.ErrNoRows)
@@ -470,8 +480,8 @@ func TestMarkTimeout(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBegin()
-	mock.ExpectExec(`SET LOCAL app.current_role`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	mock.ExpectExec(`UPDATE approval_queue`).
 		WithArgs(ApprovalTimeout, ApprovalPending).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
