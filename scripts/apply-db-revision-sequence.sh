@@ -481,6 +481,11 @@ files=(
   # CREATE INDEX CONCURRENTLY IF NOT EXISTS 幂等；2026-09-20 已在 252
   # 存量真库实跑验证。
   "$ROOT_DIR/sql/migrations/startup/727_sql_audit_slow_query_indexes.sql"
+  # 2026-09-20 R48（ec605014c 交付本体，本条目为门禁收口补登记）：730
+  # session role hierarchy——会话角色识别 + role_task_llm_mapping 配置表
+  # （按角色×任务类型自动选 LLM）。CREATE TABLE IF NOT EXISTS 幂等。
+  # R48 提交时漏登记致契约门禁红（R33 期 715 同款缺口），补录于此。
+  "$ROOT_DIR/sql/migrations/startup/730_session_role_hierarchy.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
