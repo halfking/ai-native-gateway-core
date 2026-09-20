@@ -475,6 +475,13 @@ var r41RequestLogsSuperAdminBypassMigration725 []byte
 //go:embed embeddata/startup/726_restore_credential_model_index_hot_unique.sql
 var restoreCredentialModelIndexHotUniqueMigration726 []byte
 
+// R48 (2026-09-20): 730 session role hierarchy — sessions 角色三列 +
+// role_task_llm_mapping 二维路由表（role × task_kind → LLM 偏好）+
+// 轻量池 tier 修正。五点同步已随本次一并完成。
+//
+//go:embed embeddata/startup/730_session_role_hierarchy.sql
+var sessionRoleHierarchyMigration730 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -623,6 +630,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/724_task_type_corrections.sql":                                          taskTypeCorrectionsMigration724,
 	"startup/725_r41_request_logs_and_tmp_super_admin_bypass.sql":                    r41RequestLogsSuperAdminBypassMigration725,
 	"startup/726_restore_credential_model_index_hot_unique.sql":                      restoreCredentialModelIndexHotUniqueMigration726,
+	"startup/730_session_role_hierarchy.sql":                                         sessionRoleHierarchyMigration730,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 

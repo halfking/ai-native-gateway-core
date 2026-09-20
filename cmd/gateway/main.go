@@ -5114,6 +5114,15 @@ func main() {
 			workTypeRouteRefresher.Start(context.Background())
 			defer workTypeRouteRefresher.Stop()
 			decider.SetWorkTypeRouteStore(workTypeRouteStore)
+
+			// R48 (2026-09-20): role × kind LLM 偏好路由器（role_task_llm_mapping
+			// 表 + 内存默认表）。灰度开关 AUTO_ROLE_ROUTING_ENABLED 默认关闭，
+			// 装配不改变 flag-off 行为；refresher 让 admin 改表 1 分钟内生效。
+			roleLLMRouter := autoroute.NewRoleLLMRouter(dbConn.Pool())
+			roleLLMRouterRefresher := bg.NewRoleLLMRouterRefresher(roleLLMRouter)
+			roleLLMRouterRefresher.Start(context.Background())
+			defer func() { roleLLMRouterRefresher.Stop() }()
+			decider.SetRoleLLMRouter(roleLLMRouter)
 			// 2026-07-17 (audit H1): wire the apiKeyID -> tenantID resolver so
 			// tenant-scoped default routing rows can actually match. Without
 			// this, TenantResolver stays nil, tenantID is always empty, and every

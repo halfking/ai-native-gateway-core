@@ -172,6 +172,9 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// sequence registration completed by R43 (2026-09-18) — same
 		// five-point gap as 720/721/725.
 		"726_restore_credential_model_index_hot_unique.sql": restoreCredentialModelIndexHotUniqueMigration726,
+		// 730 (R48, 2026-09-20): session role hierarchy — five-point sync
+		// completed in the same round as the canonical copy landed.
+		"730_session_role_hierarchy.sql": sessionRoleHierarchyMigration730,
 	}
 
 	for name, embedded := range expected {
