@@ -51,6 +51,14 @@ const (
 	TimeoutActionApprove                      // 超时自动批准
 )
 
+// String 返回动作的配置字面量，用于日志留痕。
+func (a TimeoutAction) String() string {
+	if a == TimeoutActionApprove {
+		return "auto_approve"
+	}
+	return "reject"
+}
+
 // ApprovalManager 审批流程管理器。
 type ApprovalManager struct {
 	pool          ApprovalDBTX
@@ -438,6 +446,8 @@ func (m *ApprovalManager) markTimeoutBatch(ctx context.Context) (int, error) {
 			)
 			UPDATE approval_queue q
 			SET status = $1,
+			    approved_by = 'system:timeout',
+			    approved_at = NOW(),
 			    reason = 'Auto-rejected: timeout after ' || extract(epoch from (now() - q.created_at)) || ' seconds'
 			FROM expired
 			WHERE q.id = expired.id
