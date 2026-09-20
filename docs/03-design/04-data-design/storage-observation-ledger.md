@@ -188,3 +188,17 @@ ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-19T01:00:42Z
 - 抽样 10/10 PASS（biz_multi×4、loop_single×3、sys×3），G1 四项零漂移。
 - claim 置位结构性漏镜像近 24h 未产生缺失（重起后首日干净）。**R44 收口更新（09-19，本轮观察落笔后补注）：真凶已定位并修复，非"后台 job 裸 UPDATE"**——ReplayFallback（DB 降级回放路径）绕行 onPersisted hooks，同事务 final-success claim 照常置位而 mirror hook 收不到终态信号；修复 2c5d1f804 抽出 firePersistedHooks 供 persistRequestLog 与回放共用，回放成功后补发（进 fallback 的 entry 此前从未成功落库，补发即 exactly-once；turns 按 request_id 幂等）。09-15 f403405b / 09-18 44728e27 两行缺失与"降级窗口积累→恢复后回放"时序吻合，该待办关闭（裁决详见 docs/audit/2026-09-19-r44-24h-audit-round.md §一 P1-E6）。R45 复核补登：回放为 at-least-once 语义（文件/ring 双通道，见 R45 轮文档 P2 登记）——单通道回放纪律入 runbook。
 - **连续归零累计 1/7**（09-19 计 Day 1，09-18 FAIL 清零后重起）。7 天达标 earliest 2026-09-25 每日轮。
+
+### 每日观察 2026-09-20 09:02 (+08)，build=ca68b4d6/2155 —— **首扫 FAIL（claim 结构性漏镜像第 3 例，回填兜回归零）；本日不计入，计数自 09-21 重起**
+
+构建身份：ca68b4d6/2155 在本仓库历史，含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=1|verdict=FAIL
+ROUND_RESULT|sessions=10|fail=0|global_g2=1|verdict=FAIL|at=2026-09-20T01:02:06Z
+```
+
+- 抽样 10/10 PASS、G1 四项零漂移；缺失行 `7c69781a…`（00:00:49，business/main，outbox 空=hook 静默跳过）。
+- 处置：幂等回填灌 1 行 → reaper 消化 → GLOBAL_G2 复验=0（09:05），outbox 清空。
+- **判定：本日（09-20）不计入连续归零**，计数自 2026-09-21 每日轮重新起算，7 天达标 earliest 顺延至 **2026-09-27 每日轮**。
+- **频率量化（升级为 S4 前最高优待办）**：claim 置位 is_final_success 结构性漏镜像实测频率——09-15、09-18、09-20 各 1 行，**约每 2 天 1 行**。按此频率，7 天连续归零窗口期望被打断 2~4 次，观察期靠"回填兜底"几乎无法自然凑满。**建议：先落 claim 路径修复（UPDATE 置位后补发 mirror 触发/直接登记 outbox）再重启计数**，否则观察期语义已退化为"回填兜底运行正常性验证"。
