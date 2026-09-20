@@ -487,3 +487,85 @@ func TestDecideV2_RoleRoute_CreditStaysWithTier(t *testing.T) {
 		t.Fatalf("tier's own filter must be credited to work_type_route, got %q", dec.RoutingSource)
 	}
 }
+
+// pinnedOverrideStore 构造带 pin 的 override 快照：glm-5.3 钉在 chat|smart，
+// 且刻意不在 tier 配置内（tierFilterStore 的 chat 只有 glm-5.2）——
+// R49 F9 场景复刻：tier 过滤若不把 pins 并入豁免名单，pin 模型被滤除、
+// 后置 PromotePins 空转。
+func pinnedOverrideStore() *OverrideStore {
+	ov := NewOverrideStore(nil)
+	ov.snapshot.Store(&overrideSnapshot{
+		byTaskProfile: map[string][]Override{
+			"chat|smart": {{ID: 1, TaskType: "chat", Profile: "smart", Mode: OverridePin, ModelChosen: "glm-5.3"}},
+		},
+		LoadedAt: time.Now(),
+	})
+	return ov
+}
+
+// TestDecide_RoleRouting_PinSurvivesTierFilter —— R49 F9 回归钉桩（V1）：
+// tier 豁免名单必须 append(pins, rolePrefs...) 同时豁免两者。期望链路：
+// tier 过滤保住 glm-5.2 + glm-5.3(pin豁免) + minimax-m3(role豁免) →
+// role promotion 提升 minimax-m3 → PromotePins 把 glm-5.3 压回首位
+// （pin 是最强约束，RoutingSource 终态 override_pin）。
+func TestDecide_RoleRouting_PinSurvivesTierFilter(t *testing.T) {
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	defer SetGlobalFeatureFlagsForTest(old)
+
+	cands := []ScoredCandidate{
+		{Candidate: Candidate{CanonicalName: "glm-5.2", CredentialID: 11, RawModel: "glm-5.2"}, Breakdown: ScoringBreakdown{Composite: 80}},
+		{Candidate: Candidate{CanonicalName: "glm-5.3", CredentialID: 12, RawModel: "glm-5.3"}, Breakdown: ScoringBreakdown{Composite: 70}},
+		{Candidate: Candidate{CanonicalName: "minimax-m3", CredentialID: 13, RawModel: "minimax-m3"}, Breakdown: ScoringBreakdown{Composite: 40}},
+	}
+	cls := &stubClassifier{name: "heuristic", out: &Classification{Primary: TaskChat, Confidence: 0.9, Classifier: "heuristic", Reason: "test"}}
+	d := NewDecider(cls, nil, &stubIndex{cands: cands}, NewMemoryProfileStore())
+	d.SetRoleLLMRouter(NewRoleLLMRouter(nil))
+	d.SetWorkTypeRouteStore(tierFilterStore())
+	d.SetOverrideStore(pinnedOverrideStore())
+
+	dec, err := d.Decide(context.Background(), roleSearchSignals(RoleWorker), 0, "", "", "")
+	if err != nil {
+		t.Fatalf("Decide err: %v", err)
+	}
+	if dec.ChosenModel != "glm-5.3" {
+		t.Fatalf("pin glm-5.3 must survive tier filter and win, got %s", dec.ChosenModel)
+	}
+	if dec.RoutingSource != "override_pin" {
+		t.Fatalf("RoutingSource: got %q, want override_pin", dec.RoutingSource)
+	}
+}
+
+// TestDecideV2_RoleRouting_PinSurvivesTierFilter —— F9 镜像钉桩（V2）：
+// V2 自 ebfab01ac 起即 append(pins, rolePrefs...)，本用例防其回退为裸
+// rolePrefs。
+func TestDecideV2_RoleRouting_PinSurvivesTierFilter(t *testing.T) {
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true, UseChannelQualityRouting: true})
+	defer SetGlobalFeatureFlagsForTest(old)
+
+	idx := &Index{
+		entries: []Candidate{
+			{CredentialID: 11, CanonicalID: 11, CanonicalName: "glm-5.2", Tags: []string{"chat"}, SuccessRate: 0.95},
+			{CredentialID: 12, CanonicalID: 12, CanonicalName: "glm-5.3", Tags: []string{"chat"}, SuccessRate: 0.93},
+			{CredentialID: 13, CanonicalID: 13, CanonicalName: "minimax-m3", Tags: []string{"chat"}, SuccessRate: 0.90},
+		},
+		lastRefresh: time.Now(),
+	}
+	cls := &v2TestClassifier{task: TaskChat}
+	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
+	d.SetRoleLLMRouter(NewRoleLLMRouter(nil))
+	d.SetWorkTypeRouteStore(tierFilterStore())
+	d.SetOverrideStore(pinnedOverrideStore())
+
+	dec, err := d.DecideV2(context.Background(), roleSearchSignals(RoleWorker), 0, "", "", "")
+	if err != nil {
+		t.Fatalf("DecideV2 err: %v", err)
+	}
+	if dec.ChosenModel != "glm-5.3" {
+		t.Fatalf("V2 pin glm-5.3 must survive tier filter and win, got %s", dec.ChosenModel)
+	}
+	if dec.RoutingSource != "override_pin" {
+		t.Fatalf("V2 RoutingSource: got %q, want override_pin", dec.RoutingSource)
+	}
+}
