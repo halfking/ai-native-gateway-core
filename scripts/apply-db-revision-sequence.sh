@@ -481,6 +481,13 @@ files=(
   # CREATE INDEX CONCURRENTLY IF NOT EXISTS 幂等；2026-09-20 已在 252
   # 存量真库实跑验证。
   "$ROOT_DIR/sql/migrations/startup/727_sql_audit_slow_query_indexes.sql"
+  # 2026-09-21 252 PG SQL 日志审计复核轮：728 request_logs 分区侧
+  # credential+model 表达式索引（父表 + 存量月分区三段式，hot 侧
+  # sql/objects 已有）——provider-model 抽屉轮询查询窗口跨入月分区时
+  # Parallel Seq Scan（pss 10 天 184,620 次/累计 8.6h 全库第一；
+  # 72h 窗 EXPLAIN ANALYZE 实测 105s）。CREATE INDEX CONCURRENTLY
+  # IF NOT EXISTS 幂等；本日已在 252 存量真库实跑验证。
+  "$ROOT_DIR/sql/migrations/startup/728_sql_audit_request_logs_credential_model_index.sql"
   # 2026-09-20 R48（ec605014c 交付本体，本条目为门禁收口补登记）：730
   # session role hierarchy——会话角色识别 + role_task_llm_mapping 配置表
   # （按角色×任务类型自动选 LLM）。CREATE TABLE IF NOT EXISTS 幂等。
