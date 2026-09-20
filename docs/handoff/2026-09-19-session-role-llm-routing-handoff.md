@@ -1,8 +1,46 @@
 # Handoff: 会话角色识别 + 按任务类型自动选 LLM（auto 模式优化）
 
-> 日期: 2026-09-19（设计）/ 2026-09-20（R48 实施 + 步骤 8 数据库侧）
-> 状态: **代码已合入 main（R48）；252 库 730 已应用验证；.34 库待连接串**。
-> 待办: §0.1 —— .34 canonical 实测 + 730 应用 + 本地端到端（连接串是唯一前置）。
+> 日期: 2026-09-19（设计）/ 2026-09-20（R48 实施 + 步骤 8 数据库侧 + 245 端到端）
+> 状态: **全部完成**——代码（R48 + 两轮修正 915d00e21/ebfab01ac）已推 main；
+> 252 库 730 已应用验证；245 网关端到端三断言实测通过（详见 §0.2）。
+> .34 库：用户改方案（网关跑 245、库用 252），.34 不再是本功能路径。
+
+### 0.2 2026-09-20 245 端到端验证记录（用户指定：网关 245、库 252）
+
+通道：`ssh 245`（root@8.136.114.245:25022）→ systemd-run 隔离测试实例
+（8783 端口、`/opt/llm-gateway-go/.env` 共享配置 + `AUTO_ROLE_ROUTING_ENABLED=true`
++ `LLM_GATEWAY_RUNTIME_ROLE=traffic-only` + `LLM_GATEWAY_DB_BOOT_RETRY_SECONDS=75s`，
+binary 从 origin/main ebfab01ac vendored 构建）。`.env` 的 DSN 指向
+172.16.2.210:5432 = 252 私网 IP（已核实）= pg-252-pg17（730 已应用）。
+
+**断言结果（响应头 X-Gw-Auto-Decision + request_logs_hot.auto_decision 双重复核）**：
+- T1 `worker`+搜索 → **chosen=minimax-m3 / session_role=worker / task_kind=search /
+  routing_source=role_route**，HTTP 200，DB 落库一致 ✅
+- T2c `worker`+分析（重量池）→ **chosen=glm-5.3 / task_kind=analysis /
+  routing_source=role_route**，DB 落库一致 ✅（重量池机制端到端证实）
+- T3 `main`（显式角色头）→ 默认路由不变、无 routing_source，DB 落库一致 ✅
+- T2 `worker`+技术方案 → task_kind=solution 判定正确，但 chosen=glm-5.2、
+  无 role_route——**根因是环境而非代码**：252 当前实时可用性门（recommend_v2
+  filterCurrentlyAvailable 的 12 层 SQL 门逐条验证）下 gpt-5.6-sol 全部 6 条
+  绑定被挡（cred61 唯一健康者死于 quota_state=permanently_exhausted、cred60
+  节点退避、其余 auth_failed/cooling/lifecycle disabled），claude-opus-5/
+  grok-4.6/deepseek-v4-pro 同为 0 条可过；`promoteFirstPresent`"全不在场
+  静默让位"是设计行为。直接请求 `model=gpt-5.6-sol` 同样 503 no_candidate
+  佐证。**重量池通道恢复后（充值/解禁聚合器凭据），T2 将按种子命中。**
+
+**本轮第二次代码修正（commit ebfab01ac）**：245 首轮 e2e 抓到 R48 实现缺口
+——`applyTierPolicyWithRoutes` 是硬过滤（仅 pin 豁免）且先于 role promotion
+执行，tier 配置不含偏好模型时把 gpt-5.6-sol 滤除、role_route 静默让位，
+违背文档化级联 pin > role_route > work_type tier。修复：role 偏好提前算出
+并入 `ApplyTierPolicyWithWorkType` 的 pinned 豁免参数（该参数仅过滤豁免、
+无 pin 语义），V1/V2 同修；回归测试 `TestDecide{,V2}_RoleRouting_SurvivesTierFilter`
+已验证旧代码 FAIL / 新代码 PASS。
+
+运维注意（复跑要点）：① 测试实例必须带 `LLM_GATEWAY_DB_BOOT_RETRY_SECONDS=75s`
+（EnsureSchema 在生产 DB 负载下 ~40s，默认 20s 预算会降级 no-DB 模式 →
+executor_unavailable 503）；② .env 里 `LLM_GATEWAY_LISTEN` 会覆盖
+systemd-run 的 Environment=（EnvironmentFile 后生效），改端口需复制 .env 修改；
+③ 请求用唯一 `X-Gw-Session-Id` 避免 intent 缓存串测。
 > 目标: 支撑多子代理并行场景下的会话角色识别，并在 auto 模式下按
 > 「会话角色 × 任务类型」自动选择 LLM，提高效率、降低成本。
 
@@ -287,11 +325,11 @@ sql/migrations/startup/730_session_role_hierarchy.{sql,down.sql}，
 | sessions 表前提验证 | `\d sessions` 确认分区表存在（430 迁移产物）后再应用 730 |
 | 子会话行的创建方 | 客户端自建 or 编排器代建（决定 sessions.agent_role/parent_session_id 的写入路径；当前仅请求头→路由层，未落库） |
 
-## 8. 步骤 8 执行清单（2026-09-20 执行进度：第 1/2/6 项在 252 已完成，.34 与端到端待连接串）
+## 8. 步骤 8 执行清单（2026-09-20 终态：1/2/5/6 在 252 完成，3/4 在 245 完成，全部实测）
 
-1. ✅(252) `psql` 查 canonical_name——**9/9 全部匹配，种子/内存表无需改**。⛔(.34) 连接串未获得（TCP 可达、SASL 拒绝全部 dev 凭据组合、SSH 密钥 denied）。
-2. ✅(252) sessions 分区前提验证（5 分区，三列已级联）+ 730 应用（含应用前三处修正，见 §0.1）+ 幂等复跑 `INSERT 0 0`。⛔(.34) 待连接串。
-3. ⛔ 本地起网关：`LLM_GATEWAY_DATABASE_URL=$DSN AUTO_ROLE_ROUTING_ENABLED=true ./llm-gateway`——待 .34 连接串（252 隧道 11033 密码不匹配，不在生产库造测试角色）。
-4. ⛔ `curl -N $ENDPOINT/v1/chat/completions -H 'X-Gw-Agent-Role: worker' -d '{"model":"auto","messages":[{"role":"user","content":"帮我搜索一下 pg 索引优化资料"}]}'` → 响应头 `X-Gw-Auto-Decision` 应含 `"chosen_model":"minimax-m3"`、`"session_role":"worker"`、`"task_kind":"search"`、`"routing_source":"role_route"`。
-5. ⛔ `SELECT auto_decision::jsonb->>'routing_source', auto_decision::jsonb->>'session_role' FROM request_logs ORDER BY created_at DESC LIMIT 1;` 复核 JSONB 落库。
-6. ✅ 252 库 730 应用走 `ssh 252` + `podman exec pg-252-pg17 psql`（EXECUTE-ON-252.md 通道的现代等价物：该文档写的是直接 psql，实际容器化后走 podman exec；无 Go 依赖，纯 SQL）。
+1. ✅(252) canonical_name 实测 **9/9 匹配**——种子/内存表无需改口径。⛔(.34) 用户改方案后不再是本功能路径。
+2. ✅(252) sessions 分区前提（5 分区、三列级联）+ 730 应用（含三处应用前修正，见 §0.1）+ 幂等复跑 `INSERT 0 0`。
+3. ✅(245) AUTO_ROLE_ROUTING_ENABLED=true 测试实例（8783）：worker+搜索 → minimax-m3/session_role=worker/task_kind=search/routing_source=role_route（头+DB 双复核，见 §0.2）。
+4. ✅(245) 重量池：worker+分析 → glm-5.3+role_route（DB）；main → 默认不变。worker+方案→gpt-5.6-sol 当前不可满足：252 实时通道全为 0（逐门验证，见 §0.2），通道恢复后按种子自动命中；tier 过滤缺陷已修（ebfab01ac）。
+5. ✅(252) request_logs_hot.auto_decision JSONB 复核——与响应头完全一致（注意：热数据在 request_logs_hot，request_logs 为归档位）。
+6. ✅(252→245 通道) 730 应用走 `ssh 252` → `podman exec pg-252-pg17 psql`；网关侧 DSN 由 245 `.env` 指向 252 私网 172.16.2.210:5432。
