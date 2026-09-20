@@ -122,7 +122,7 @@ func dailyProbeAuditSQL() string {
 			WHERE rl.ts >= now() - ` + probeUsageWindowInterval + `
 			  AND rl.credential_id IS NOT NULL
 			  AND pm.raw_model_name <> ''
-			  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl") + `
+			  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
 			  AND (pm.raw_model_name = rl.client_model
 			       OR pm.raw_model_name = rl.outbound_model
 			       OR pm.outbound_model_name = rl.outbound_model)

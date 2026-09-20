@@ -77,10 +77,19 @@ func credentialTwoProbeSuccessGateSQL(credIDExpr string) string {
 }
 
 // probeTrafficExclusionPredicate matches request_logs rows that were NOT
-// produced by the probe system itself ('probe' quality flag). Every usage
-// scan must exclude probe traffic, otherwise probes count as usage and the
-// scan keeps re-probing what only probes ever touched (INV-3).
-const probeTrafficExclusionPredicate = "NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE)"
+// produced by the probe system itself. Two arms (R49 audit fix, 2026-09-20):
+//   - 'probe' quality flag — set on the SYNTHETIC direct-round rows written by
+//     active_probe_emitter;
+//   - origin_stage <> 'business' — the gateway round of a probe flows through
+//     the normal pipeline where it is stamped origin_stage='node_probe' (and
+//     never gets the quality flag), so the flag arm alone left those rows
+//     counting as "usage" in every scanner (INV-3 was nominal only).
+//
+// Both format verbs take the same request_logs alias (pass it twice).
+// Every usage scan must exclude probe traffic, otherwise probes count as
+// usage and the scan keeps re-probing what only probes ever touched (INV-3).
+const probeTrafficExclusionPredicate = "(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE)" +
+	" AND COALESCE(%s.origin_stage, 'business') = 'business')"
 
 // probeFailureEvidenceWindowSQL is the credential-level failure-evidence
 // window (INV-5): how far back a candidate failure still counts as "this

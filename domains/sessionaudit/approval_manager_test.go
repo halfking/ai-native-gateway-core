@@ -475,6 +475,8 @@ func TestApprove_NotFound(t *testing.T) {
 // RLS Phase 2 (R41 P1-6): wrapped in own tx with super_admin role GUC
 // (approval_queue policy's role 分支即满足), 规避 autocommit GUC 不生效
 // 导致非 default 租户 pending 永不被超时终结。
+//
+// R49 修订：FOR UPDATE SKIP LOCKED + LIMIT 分批，批返回值 < batchSize 即止。
 func TestMarkTimeout(t *testing.T) {
 	mock, _ := pgxmock.NewPool()
 	defer mock.Close()
@@ -482,8 +484,8 @@ func TestMarkTimeout(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\)`).
 		WillReturnResult(pgxmock.NewResult("SELECT", 0))
-	mock.ExpectExec(`UPDATE approval_queue`).
-		WithArgs(ApprovalTimeout, ApprovalPending).
+	mock.ExpectExec(`UPDATE approval_queue q`).
+		WithArgs(ApprovalTimeout, ApprovalPending, approvalTimeoutBatchSize).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
 	mock.ExpectCommit()
 
@@ -494,6 +496,35 @@ func TestMarkTimeout(t *testing.T) {
 	}
 	if n != 3 {
 		t.Errorf("expected 3 updated, got %d", n)
+	}
+}
+
+// TestMarkTimeout_MultiBatch（R49 审计 P1 钉桩）：积压超过单批上限时循环
+// 分批推进，每批独立事务提交——首批打满 batchSize 触发下一批，末批不满
+// 即收敛，总量为两批之和。
+func TestMarkTimeout_MultiBatch(t *testing.T) {
+	mock, _ := pgxmock.NewPool()
+	defer mock.Close()
+
+	expectBatch := func(rows int64) {
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\)`).
+			WillReturnResult(pgxmock.NewResult("SELECT", 0))
+		mock.ExpectExec(`UPDATE approval_queue q`).
+			WithArgs(ApprovalTimeout, ApprovalPending, approvalTimeoutBatchSize).
+			WillReturnResult(pgxmock.NewResult("UPDATE", rows))
+		mock.ExpectCommit()
+	}
+	expectBatch(int64(approvalTimeoutBatchSize)) // 首批打满 → 触发下一批
+	expectBatch(2)                               // 末批不满 → 收敛
+
+	m := NewApprovalManager(mock, 15*time.Minute)
+	n, err := m.MarkTimeout(context.Background())
+	if err != nil {
+		t.Fatalf("MarkTimeout: %v", err)
+	}
+	if n != int(approvalTimeoutBatchSize)+2 {
+		t.Errorf("expected %d updated across batches, got %d", approvalTimeoutBatchSize+2, n)
 	}
 }
 

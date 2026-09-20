@@ -18,7 +18,11 @@ BEGIN
     'model_fingerprints','model_iq_runs','provider_scores','api_key_model_cost',
     'model_credit_rates','sticky_sessions','pricing_plans','prompt_injection_llm_engines',
     'credential_model_index_hot','credential_model_index_2026_10',
-    'tenant_model_policies','ursm_node_snapshot_min'
+    'tenant_model_policies','ursm_node_snapshot_min',
+    -- R49 审计（2026-09-20）补登记：以下三表对 models_canonical 是
+    -- ON DELETE CASCADE 外键（342 迁移），DELETE loser 会无声级联删数据
+    -- 且无备份可回滚 —— 必须先备份、重定向后再删。
+    'model_capability_profiles','model_capability_profile_audit','model_substitution_overrides'
   ]
   LOOP
     IF to_regclass(format('public.%I', t)) IS NOT NULL THEN
@@ -227,6 +231,23 @@ BEGIN
   IF to_regclass('public.ursm_node_snapshot_min') IS NOT NULL THEN
     EXECUTE 'UPDATE ursm_node_snapshot_min u SET canonical_name = m.winner FROM merge_map m WHERE lower(u.canonical_name) = lower(m.loser)';
   END IF;
+  -- R49 审计（2026-09-20）：FK ON DELETE CASCADE 三表必须先重定向——
+  -- 否则 §7 DELETE loser 时静默级联删掉能力画像/替换策略且无备份。
+  IF to_regclass('public.model_capability_profiles') IS NOT NULL THEN
+    EXECUTE 'UPDATE model_capability_profiles x SET canonical_id = (SELECT id FROM models_canonical WHERE canonical_name = m.winner) FROM merge_map m WHERE x.canonical_id = (SELECT id FROM models_canonical WHERE canonical_name = m.loser)';
+  END IF;
+  IF to_regclass('public.model_capability_profile_audit') IS NOT NULL THEN
+    EXECUTE 'UPDATE model_capability_profile_audit x SET canonical_id = (SELECT id FROM models_canonical WHERE canonical_name = m.winner) FROM merge_map m WHERE x.canonical_id = (SELECT id FROM models_canonical WHERE canonical_name = m.loser)';
+  END IF;
+  IF to_regclass('public.model_substitution_overrides') IS NOT NULL THEN
+    EXECUTE 'UPDATE model_substitution_overrides x SET requested_canonical_id = (SELECT id FROM models_canonical WHERE canonical_name = m.winner) FROM merge_map m WHERE x.requested_canonical_id = (SELECT id FROM models_canonical WHERE canonical_name = m.loser)';
+    EXECUTE 'UPDATE model_substitution_overrides x SET candidate_canonical_id = (SELECT id FROM models_canonical WHERE canonical_name = m.winner) FROM merge_map m WHERE x.candidate_canonical_id = (SELECT id FROM models_canonical WHERE canonical_name = m.loser)';
+  END IF;
+  -- R48 新表（730）按名引用 canonical：后续 admin/API 写入 loser 拼写的行
+  -- 会悬空（promoteFirstPresent 静默让位），一并重定向。
+  IF to_regclass('public.role_task_llm_mapping') IS NOT NULL THEN
+    EXECUTE 'UPDATE role_task_llm_mapping r SET llm_canonical_name = m.winner FROM merge_map m WHERE lower(r.llm_canonical_name) = lower(m.loser)';
+  END IF;
 END $$;
 
 -- 2.4 work_type_model_route: 拼写切换 + 清除垃圾路由(4-bit)
@@ -308,7 +329,7 @@ FROM provider_models p LEFT JOIN models_canonical mc ON mc.id = p.canonical_id
 WHERE p.canonical_id IS NOT NULL AND mc.id IS NULL;
 
 SELECT 'V5 关键模型唯一性(每行应为 1)' AS check, k.nm, count(mc.id) AS c
-FROM (VALUES ('glm-5.3'),('glm-5.3-flash'),('claude-sonnet-5'),('claude-opus-5'),('claude-opus-4-8'),('claude-fable-5'),('grok-4.6'),('deepseek-v4-flash'),('deepseek-v4-pro'),('kimi-k3'),('minimax-m3')) AS k(nm)
+FROM (VALUES ('glm-5.3'),('glm-5.3-flash'),('claude-sonnet-5'),('claude-opus-5'),('claude-opus-4-8'),('claude-fable-5'),('grok-4.6'),('deepseek-v4-flash'),('deepseek-v4-pro'),('kimi-k3'),('minimax-m3'),('gpt-5.6-sol')) AS k(nm)
 LEFT JOIN models_canonical mc ON replace(replace(lower(mc.canonical_name),'.','-'),'_','-') = replace(replace(lower(k.nm),'.','-'),'_','-')
 GROUP BY k.nm;
 
@@ -320,3 +341,17 @@ SELECT 'V7 行数' AS check,
   (SELECT count(*) FROM models_canonical) AS canonical,
   (SELECT count(*) FROM model_aliases) AS aliases,
   (SELECT count(*) FROM provider_models) AS pm;
+
+-- R49 审计（2026-09-20）V8：FK CASCADE 三表 + R48 role 表悬挂引用（应为 0）。
+-- 任一非 0 说明 §2.3 重定向漏了对应表/列，禁止跑 §7 DELETE。
+SELECT 'V8 CASCADE 表悬挂引用(应为 0)' AS check, count(*) AS n FROM (
+  SELECT 1 FROM model_capability_profiles p LEFT JOIN models_canonical mc ON mc.id = p.canonical_id WHERE mc.id IS NULL
+  UNION ALL
+  SELECT 1 FROM model_capability_profile_audit a LEFT JOIN models_canonical mc ON mc.id = a.canonical_id WHERE mc.id IS NULL
+  UNION ALL
+  SELECT 1 FROM model_substitution_overrides s LEFT JOIN models_canonical mc ON mc.id = s.requested_canonical_id WHERE mc.id IS NULL
+  UNION ALL
+  SELECT 1 FROM model_substitution_overrides s LEFT JOIN models_canonical mc ON mc.id = s.candidate_canonical_id WHERE mc.id IS NULL
+  UNION ALL
+  SELECT 1 FROM role_task_llm_mapping r WHERE NOT EXISTS (SELECT 1 FROM models_canonical mc WHERE lower(mc.canonical_name) = lower(r.llm_canonical_name))
+) t;

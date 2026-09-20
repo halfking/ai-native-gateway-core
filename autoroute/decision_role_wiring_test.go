@@ -353,3 +353,137 @@ func TestDecideV2_RoleRouting_SurvivesTierFilter(t *testing.T) {
 		t.Fatalf("V2 RoutingSource: got %q, want role_route", dec.RoutingSource)
 	}
 }
+
+// ── R49 审计轮回归钉桩（2026-09-20）──
+
+// TestDecide_RoleRouting_MainDBRowReachable —— R49 审计 P1：原实现的调用方
+// 门禁（roleRoutedRoles 仅三个子代理角色）把 SelectLLM 内部"DB 行对任意角色
+// 生效（admin 显式给 main 配行可达）"的语义短路，main 的 DB 行成死数据。
+// 修订后门禁即 SelectLLM 返回值：main + 显式 DB 行必须可达并提升。
+func TestDecide_RoleRouting_MainDBRowReachable(t *testing.T) {
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	defer SetGlobalFeatureFlagsForTest(old)
+
+	router := NewRoleLLMRouter(nil)
+	storeSnapshotForTest(router, map[roleKindKey][]roleRouteEntry{
+		// 管理员显式给 main×analysis 配行（内存默认表不含 main）。
+		{Role: RoleMain, Kind: KindAnalysis}: {
+			{CanonicalName: "grok-4.6", Priority: 100},
+		},
+	})
+	cands := []ScoredCandidate{
+		{Candidate: Candidate{CanonicalName: "glm-5.3", CredentialID: 1, RawModel: "glm-5.3"}, Breakdown: ScoringBreakdown{Composite: 90}},
+		{Candidate: Candidate{CanonicalName: "grok-4.6", CredentialID: 2, RawModel: "grok-4.6"}, Breakdown: ScoringBreakdown{Composite: 30}},
+	}
+	cls := &stubClassifier{name: "heuristic", out: &Classification{Primary: TaskChat, Confidence: 0.9, Classifier: "heuristic", Reason: "test"}}
+	d := NewDecider(cls, nil, &stubIndex{cands: cands}, NewMemoryProfileStore())
+	d.SetRoleLLMRouter(router)
+
+	dec, err := d.Decide(context.Background(), ClassificationSignals{
+		AgentRole:      RoleMain,
+		LastUserPrompt: "帮我深入分析一下这个问题的根因", // kind=analysis
+	}, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("Decide err: %v", err)
+	}
+	if dec.ChosenModel != "grok-4.6" {
+		t.Fatalf("main explicit DB row must be reachable: got %s", dec.ChosenModel)
+	}
+	if dec.RoutingSource != "role_route" {
+		t.Fatalf("RoutingSource: got %q, want role_route", dec.RoutingSource)
+	}
+}
+
+// TestDecide_RoleRouting_KindChangeInvalidatesCache —— R49 审计 P1：同会话
+// 同角色下 task_kind 跨轮变化必须失效缓存重判（原实现只比 Role/WorkType，
+// 首轮"总结一下"缓存的轻池模型会固化整个会话 TTL/50hit）。
+func TestDecide_RoleRouting_KindChangeInvalidatesCache(t *testing.T) {
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	defer SetGlobalFeatureFlagsForTest(old)
+
+	d := newRoleTestDecider(t)
+	ctx := context.Background()
+
+	// 第一轮：worker + search → minimax-m3（轻池），缓存 Kind=search。
+	first, err := d.Decide(ctx, roleSearchSignals(RoleWorker), 0, "", "", "sess-kind")
+	if err != nil {
+		t.Fatalf("first Decide err: %v", err)
+	}
+	if first.ChosenModel != "minimax-m3" {
+		t.Fatalf("first: model=%s", first.ChosenModel)
+	}
+	cached, ok := d.intentCache.Get("sess-kind")
+	if !ok || cached.Kind != KindSearch {
+		t.Fatalf("cached kind: ok=%v kind=%q", ok, cached.Kind)
+	}
+
+	// 第二轮：同会话同角色但任务变为分析 → kind 身份变化，缓存必须失效，
+	// 重判命中 worker×analysis 重量池首选 glm-5.3（池内首位，命中即 winner）。
+	analysisSig := roleSearchSignals(RoleWorker)
+	analysisSig.LastUserPrompt = "帮我深入分析一下这个问题的根因"
+	second, err := d.Decide(ctx, analysisSig, 0, "", "", "sess-kind")
+	if err != nil {
+		t.Fatalf("second Decide err: %v", err)
+	}
+	if second.Classifier == "session_cache" {
+		t.Fatalf("kind change must invalidate cache, got session_cache reuse")
+	}
+	if second.ChosenModel != "glm-5.3" {
+		t.Fatalf("kind change must re-route to weight pool (glm-5.3), got %s", second.ChosenModel)
+	}
+}
+
+// tierPrefStore：chat 任务 tier 配置只选 kimi-k3（secondary）。场景构造
+// （豁免模型不进 tier 资格表，故需三模型）：自然头名 glm-5.3 不在 tier 配置
+// 且非豁免 → 被滤除；role 偏好 minimax-m3 经豁免分支原地保留升为头名。
+func tierPrefStore() *WorkTypeRouteStore {
+	wt := NewWorkTypeRouteStore(nil)
+	wt.snapshot.Store(&wtRouteSnapshot{
+		byTaskType: map[string][]WorkTypeRoute{
+			"chat": {{WorkTypeKey: "acc-chat", L1TaskType: "chat", CanonicalName: "kimi-k3", Tier: "secondary", Weight: 1}},
+		},
+		byWorkTypeKey: map[string][]WorkTypeRoute{},
+		workTypeL1:    map[string]string{},
+	})
+	return wt
+}
+
+// TestDecideV2_RoleRoute_CreditStaysWithTier —— R49 审计 P2：tier policy 滤除
+// 自然头名、role 偏好模型经豁免原地升为头名时（promoteFirstPresent i==0
+// 空转），换型功劳应记 work_type_route 而非 role_route（V2 判定基准从 tier
+// 前 winner 改为 tier 后 winner，与 V1 对齐；旧基准会把 tier 滤除误标成
+// role_route）。
+func TestDecideV2_RoleRoute_CreditStaysWithTier(t *testing.T) {
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{
+		UseChannelQualityRouting: true,
+		AutoRoleRoutingEnabled:   true,
+	})
+	defer SetGlobalFeatureFlagsForTest(old)
+
+	idx := &Index{
+		entries: []Candidate{
+			{CredentialID: 1, CanonicalID: 1, CanonicalName: "glm-5.3", Tags: []string{"chat"}, SuccessRate: 0.95},
+			{CredentialID: 2, CanonicalID: 2, CanonicalName: "minimax-m3", Tags: []string{"chat"}, SuccessRate: 0.90},
+			{CredentialID: 3, CanonicalID: 3, CanonicalName: "kimi-k3", Tags: []string{"chat"}, SuccessRate: 0.85},
+		},
+		lastRefresh: time.Now(),
+	}
+	cls := &v2TestClassifier{task: TaskChat}
+	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
+	d.SetRoleLLMRouter(NewRoleLLMRouter(nil))
+	d.SetWorkTypeRouteStore(tierPrefStore())
+
+	dec, err := d.DecideV2(context.Background(), roleSearchSignals(RoleWorker), 0, "", "", "")
+	if err != nil {
+		t.Fatalf("DecideV2 err: %v", err)
+	}
+	if dec.ChosenModel != "minimax-m3" {
+		t.Fatalf("tier-filtered head must hand over to exempt role pref, got %s", dec.ChosenModel)
+	}
+	if dec.RoutingSource != "work_type_route" {
+		t.Fatalf("tier's own filter must be credited to work_type_route, got %q", dec.RoutingSource)
+	}
+}

@@ -3121,6 +3121,29 @@ func main() {
 		// pipeline (ApprovalGateHook → approval_queue).
 		approvalTimeout := sessionAuditApprovalTimeoutFromEnv()
 		approvalMgr = sessionaudit.NewApprovalManager(dbConn.Pool(), approvalTimeout)
+		// R49 修订（2026-09-20 审计 P2）：接线 session_audit.timeout_action
+		// 旋钮——此前 WithTimeoutAction 无任何生产调用点，settings_kv 的该键
+		// 根本到不了 MarkTimeout（运维改 auto_approve 会静默无效，文档口径
+		// "当前=reject"实为未接线的巧合）。仅 auto_approve 放行；deny/
+		// escalate/未知值一律保持 reject fail-safe。settings 未就绪（nil）
+		// 时同样落 reject 默认。
+		if settings.Global != nil {
+			if sp := settings.Global.Spec("session_audit.timeout_action"); sp != nil {
+				if raw, _, err := settings.Global.EffectiveValue(sp.Scope, "session_audit.timeout_action", ""); err == nil && len(raw) > 0 {
+					var action string
+					if json.Unmarshal(raw, &action) == nil {
+						switch action {
+						case "auto_approve":
+							approvalMgr = approvalMgr.WithTimeoutAction(sessionaudit.TimeoutActionApprove)
+							slog.Warn("session audit timeout action = auto_approve: expired approvals will be AUTO-APPROVED by the timeout sweep")
+						case "deny", "escalate", "":
+						default:
+							slog.Warn("session_audit.timeout_action unknown value, keeping reject fail-safe", "value", action)
+						}
+					}
+				}
+			}
+		}
 		adminHandler.SetApprovalManager(approvalMgr)
 		slog.Info("session audit approval manager wired",
 			"timeout", approvalTimeout.String())

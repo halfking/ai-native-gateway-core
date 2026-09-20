@@ -366,6 +366,14 @@ func (m *ApprovalManager) decide(ctx context.Context, approvalID, callerTenantID
 	return nil
 }
 
+// approvalTimeoutBatchSize caps a single MarkTimeout batch. The sweep runs
+// under the worker's 10s deadline, and the GUC bug (fixed 2026-09-20) kept
+// every sweep failing since R41 — so the first working sweep faces the whole
+// accumulated backlog. A single all-rows UPDATE either trips the deadline
+// (whole tx rolls back, zero progress, retry loop forever) or queues behind
+// a concurrent decide() row lock. Batches commit independently (R49 audit P1).
+const approvalTimeoutBatchSize = 500
+
 // MarkTimeout 标记超时的审批为 timeout / auto-approved 状态。
 //
 // 行为由 m.timeoutAction 控制：
@@ -380,24 +388,59 @@ func (m *ApprovalManager) decide(ctx context.Context, approvalID, callerTenantID
 // 走 NULLIF→'default' fallback，降权后非 default 租户的 pending 永不被超时
 // 终结。修法：包显式事务 + setSuperAdminGUC，与同包 beginSuperAdminTx
 // 风格一致（policy role 分支即满足）。
+//
+// R49 修订（2026-09-20 审计 P1）：FOR UPDATE SKIP LOCKED + LIMIT 分批，每批
+// 独立事务循环提交——存量积压的首个 sweep 增量推进而非全量单语句（10s 预算
+// 内跑不完即整体回滚、一行未清、60s 后面对同一全集死循环）；SKIP LOCKED
+// 避免与并发 decide() 的行锁互拖。
 func (m *ApprovalManager) MarkTimeout(ctx context.Context) (int, error) {
+	total := 0
+	for {
+		n, err := m.markTimeoutBatch(ctx)
+		if err != nil {
+			return total, err
+		}
+		total += n
+		if n < approvalTimeoutBatchSize {
+			return total, nil
+		}
+	}
+}
+
+func (m *ApprovalManager) markTimeoutBatch(ctx context.Context) (int, error) {
 	var sql string
 	switch m.timeoutAction {
 	case TimeoutActionApprove:
 		sql = `
-			UPDATE approval_queue
+			WITH expired AS (
+				SELECT id FROM approval_queue
+				WHERE status = $2 AND expires_at < now()
+				ORDER BY expires_at
+				LIMIT $3
+				FOR UPDATE SKIP LOCKED
+			)
+			UPDATE approval_queue q
 			SET status = $1,
 			    approved_by = 'system:timeout',
 			    approved_at = NOW(),
-			    reason = 'Auto-approved: timeout after ' || extract(epoch from (now() - created_at)) || ' seconds'
-			WHERE status = $2 AND expires_at < now()
+			    reason = 'Auto-approved: timeout after ' || extract(epoch from (now() - q.created_at)) || ' seconds'
+			FROM expired
+			WHERE q.id = expired.id
 		`
 	default:
 		sql = `
-			UPDATE approval_queue
+			WITH expired AS (
+				SELECT id FROM approval_queue
+				WHERE status = $2 AND expires_at < now()
+				ORDER BY expires_at
+				LIMIT $3
+				FOR UPDATE SKIP LOCKED
+			)
+			UPDATE approval_queue q
 			SET status = $1,
-			    reason = 'Auto-rejected: timeout after ' || extract(epoch from (now() - created_at)) || ' seconds'
-			WHERE status = $2 AND expires_at < now()
+			    reason = 'Auto-rejected: timeout after ' || extract(epoch from (now() - q.created_at)) || ' seconds'
+			FROM expired
+			WHERE q.id = expired.id
 		`
 	}
 	target := ApprovalApproved
@@ -412,7 +455,7 @@ func (m *ApprovalManager) MarkTimeout(ctx context.Context) (int, error) {
 	if err := setSuperAdminGUC(ctx, tx); err != nil {
 		return 0, err
 	}
-	tag, err := tx.Exec(ctx, sql, target, ApprovalPending)
+	tag, err := tx.Exec(ctx, sql, target, ApprovalPending, approvalTimeoutBatchSize)
 	if err != nil {
 		return 0, fmt.Errorf("mark timeout: %w", err)
 	}

@@ -795,7 +795,7 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 			SELECT 1 FROM request_logs_hot rl
 			WHERE rl.credential_id = cmb.credential_id
 			  AND rl.ts >= now() - ` + probeUsageWindowInterval + `
-			  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl") + `
+			  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
 			  AND (pm.raw_model_name = rl.client_model
 			       OR pm.raw_model_name = rl.outbound_model
 			       OR pm.outbound_model_name = rl.outbound_model)
