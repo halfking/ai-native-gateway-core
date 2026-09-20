@@ -3,6 +3,8 @@ package sessionaudit
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -538,5 +540,19 @@ func TestDecide_EmptyApprovalID(t *testing.T) {
 	}
 	if err := m.Reject(context.Background(), "", "t", "u", "r"); err == nil {
 		t.Error("expected error for empty id")
+	}
+}
+
+// TestMarkTimeout_RejectBranchAuditFields（R50 审计 P3 钉桩）：timeout-reject
+// 分支必须与 approve 分支同样写 approved_by/approved_at——否则"谁在何时终结
+// 此审批"的审计查询对该分支无法回答（仅 reason 内嵌秒数可反推）。
+func TestMarkTimeout_RejectBranchAuditFields(t *testing.T) {
+	b, err := os.ReadFile("approval_manager.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	if got := strings.Count(src, "approved_by = 'system:timeout'"); got != 2 {
+		t.Errorf("approval_manager.go has %d 'system:timeout' approved_by writes, want 2 (approve + reject branches)", got)
 	}
 }
