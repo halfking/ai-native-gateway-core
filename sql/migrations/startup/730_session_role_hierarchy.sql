@@ -15,6 +15,21 @@
 --             unknown），不污染现有 21 个 TaskType；③ UNIQUE 键加入 priority
 --             以支持同一 (role,kind) 多行偏好（primary/secondary）；
 --             ④ provider_models 轻量模型 tier 修正 tier-b → tier-c。
+--   2026-09-20 R48 应用前二次修正（尚未在任何库应用过，就地修订不留迁移碎片）:
+--             ⑤ ④ 的 tier 修正加列存在性守卫——252 实测发现 provider_models
+--             基线 schema 只有 canonical_id/canonical_raw_name，根本没有
+--             canonical_name 列（202609_03 从未在 252 应用，其自身 UPDATE 也
+--             引用了不存在的列）；列缺失时本节降级为 NOTICE 跳过而非报错
+--             回滚整个迁移。Go 决策路径不读 provider_models.tier
+--             （autoroute/work_type_route_store.go 用 primary/secondary 体系），
+--             跳过不影响 role_route 行为。⑥ 第 6 节 bad_tier 校验同步守卫。
+--             ⑦ 第 6 节验证块 information_schema.columns 误用 pg_tables 风格
+--             列名 schemaname/tablename（正确为 table_schema/table_name），
+--             252 首放 ON_ERROR_STOP 拦截后修正——事务原子回滚未留半程状态。
+--             ⑧ UNIQUE 约束补 NULLS NOT DISTINCT：PG 默认 NULLS DISTINCT，
+--             tenant_id IS NULL 的平台级种子行永不触发 ON CONFLICT，重放一次
+--             翻倍一次（252 实测 48→96）。改为 NULLS NOT DISTINCT + 第 2.5 节
+--             自愈去重（按约束键分组保最小 id），已污染库重放即修复。
 --
 -- 设计：
 --   1. public.sessions 增加 3 列：agent_role / parent_session_id / parent_task_id。
@@ -34,7 +49,9 @@
 --        （保持 Decider 默认路径不变，main 的显式覆盖由管理员按需手工插入）。
 --
 -- Idempotent: YES (ADD COLUMN IF NOT EXISTS, CREATE TABLE IF NOT EXISTS,
---                      ON CONFLICT DO NOTHING, tier UPDATE 带 <> 守卫)
+--                      UNIQUE NULLS NOT DISTINCT 保证平台级种子 ON CONFLICT 真正
+--                      可重放 + 2.5 节对旧版库自愈去重，tier UPDATE 带 <> 守卫
+--                      且列缺失时整体跳过)
 -- Breaking: NO（所有新列可空/带默认值，向后兼容现有会话行）
 -- Down: 730_session_role_hierarchy.down.sql
 
@@ -89,7 +106,10 @@ CREATE TABLE IF NOT EXISTS public.role_task_llm_mapping (
     CONSTRAINT role_task_llm_mapping_kind_check
         CHECK (task_kind IN ('search', 'summarize', 'git_ops', 'ops', 'analysis', 'planning', 'solution', 'unknown')),
     CONSTRAINT role_task_llm_mapping_unique
-        UNIQUE (tenant_id, agent_role, task_kind, priority)
+        -- NULLS NOT DISTINCT（PG15+）：平台级行 tenant_id IS NULL，若用默认
+        -- NULLS DISTINCT，两条同键 NULL 行不冲突，种子 ON CONFLICT 永不命中，
+        -- 每次重放都会翻倍插入（252 实测 48→96 后修正）。
+        UNIQUE NULLS NOT DISTINCT (tenant_id, agent_role, task_kind, priority)
 );
 
 COMMENT ON TABLE public.role_task_llm_mapping IS
@@ -98,6 +118,55 @@ COMMENT ON TABLE public.role_task_llm_mapping IS
 CREATE INDEX IF NOT EXISTS idx_role_task_llm_mapping_lookup
     ON public.role_task_llm_mapping (tenant_id, agent_role, task_kind, enabled, priority)
     WHERE enabled = TRUE;
+
+-- 2.5 自愈归一（对已按本迁移早期版本建表的库生效；新库此处全部空转）：
+--     ① 按 (tenant_id, agent_role, task_kind, priority) 去重，保最小 id——
+--        早期版本的 UNIQUE 是默认 NULLS DISTINCT，NULL 平台行重放翻倍；
+--     ② 若唯一约束仍是旧式（NULLS DISTINCT），换成 NULLS NOT DISTINCT。
+--     顺序必须是先去重再换约束（换约束时若仍有重复行会 duplicate key 失败）。
+DO $$
+DECLARE
+    dup_count INT;
+    old_style_constraints INT;
+BEGIN
+    SELECT COUNT(*) INTO dup_count
+    FROM public.role_task_llm_mapping r
+    WHERE r.id <> (SELECT MIN(r2.id) FROM public.role_task_llm_mapping r2
+                   WHERE r2.tenant_id IS NOT DISTINCT FROM r.tenant_id
+                     AND r2.agent_role = r.agent_role
+                     AND r2.task_kind = r.task_kind
+                     AND r2.priority = r.priority);
+
+    IF dup_count > 0 THEN
+        DELETE FROM public.role_task_llm_mapping r
+        WHERE r.id <> (SELECT MIN(r2.id) FROM public.role_task_llm_mapping r2
+                       WHERE r2.tenant_id IS NOT DISTINCT FROM r.tenant_id
+                         AND r2.agent_role = r.agent_role
+                         AND r2.task_kind = r.task_kind
+                         AND r2.priority = r.priority);
+        RAISE NOTICE '730: removed % duplicate role_task_llm_mapping rows (NULLS DISTINCT reseed drift)', dup_count;
+    END IF;
+
+    -- 旧式检测走 pg_get_constraintdef 文本（默认 NULLS DISTINCT 的定义里
+    -- 不含 NULLS NOT DISTINCT 字样），不依赖 pg_constraint 的版本相关内部列
+    -- （PG17.10 实测无 nulls_distinct 列，直接引用会报错回滚）。
+    SELECT COUNT(*) INTO old_style_constraints
+    FROM pg_constraint c
+    WHERE c.conrelid = 'public.role_task_llm_mapping'::regclass
+      AND c.contype = 'u'
+      AND c.conname = 'role_task_llm_mapping_unique'
+      AND position('NULLS NOT DISTINCT' in pg_get_constraintdef(c.oid)) = 0;
+
+    IF old_style_constraints > 0 THEN
+        ALTER TABLE public.role_task_llm_mapping
+            DROP CONSTRAINT role_task_llm_mapping_unique;
+        ALTER TABLE public.role_task_llm_mapping
+            ADD CONSTRAINT role_task_llm_mapping_unique
+            UNIQUE NULLS NOT DISTINCT (tenant_id, agent_role, task_kind, priority);
+        RAISE NOTICE '730: role_task_llm_mapping_unique upgraded to NULLS NOT DISTINCT';
+    END IF;
+END;
+$$;
 
 -- =====================================================================
 -- 3. 默认种子映射（仅在首次 apply 时插入；后续可由 admin 调整）
@@ -182,20 +251,46 @@ VALUES
 ON CONFLICT (tenant_id, agent_role, task_kind, priority) DO NOTHING;
 
 -- =====================================================================
--- 4. provider_models 轻量模型 tier 修正（R48）
+-- 4. provider_models 轻量模型 tier 修正（R48；应用前二次修正：加列守卫）
 -- =====================================================================
 -- 202609_03 把 minimax-m3 归为 tier-b、glm-5.3-flash / kimi-k3 被"未分类默认
 -- tier-b"兜底；用户口径（handoff §1）将这四个模型定位为轻量池 → tier-c。
 -- deepseek-v4-flash 在 202609_03 已是 tier-c，列入 IN 列表仅为幂等兜底，
 -- WHERE 守卫保证已正确的行零改动（可重放）。
+--
+-- ⚠ 列存在性守卫（2026-09-20 252 实测发现）：基线 schema 的 provider_models
+-- 只有 canonical_id/canonical_raw_name，没有 canonical_name 列；202609_03
+-- 在 252 从未应用（其 UPDATE 自身也引用了不存在的列）。两列（tier +
+-- canonical_name）任一缺失时本节降级为 NOTICE 跳过，避免整笔迁移在此
+-- 报错回滚。Go 决策路径不读 provider_models.tier（work_type 走
+-- primary/secondary 体系，模型成本粗评走 models_canonical.cost_tier），
+-- 跳过不影响 role_route 行为；列将来由 202609_03 补齐后重放本迁移即可
+-- 补上 tier-c 归一。
 
-UPDATE public.provider_models
-SET tier = 'tier-c'
-WHERE canonical_name IN ('minimax-m3', 'glm-5.3-flash', 'kimi-k3', 'deepseek-v4-flash')
-  AND COALESCE(tier, '') <> 'tier-c';
+DO $$
+DECLARE
+    has_tier_cols BOOLEAN;
+BEGIN
+    SELECT COUNT(*) = 2 INTO has_tier_cols
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'provider_models'
+      AND column_name IN ('tier', 'canonical_name');
 
-COMMENT ON COLUMN public.provider_models.tier IS
-    'Model tier classification: tier-a (high-perf, $15-50/1M), tier-b (standard, $5-15/1M), tier-c (economy, $0.5-5/1M)。730/R48 修正：minimax-m3/glm-5.3-flash/kimi-k3/deepseek-v4-flash 归入 tier-c（轻量池，role_route 路由目标）。';
+    IF has_tier_cols THEN
+        UPDATE public.provider_models
+        SET tier = 'tier-c'
+        WHERE canonical_name IN ('minimax-m3', 'glm-5.3-flash', 'kimi-k3', 'deepseek-v4-flash')
+          AND COALESCE(tier, '') <> 'tier-c';
+
+        EXECUTE 'COMMENT ON COLUMN public.provider_models.tier IS '
+            '''Model tier classification: tier-a (high-perf, $15-50/1M), tier-b (standard, $5-15/1M), tier-c (economy, $0.5-5/1M)。730/R48 修正：minimax-m3/glm-5.3-flash/kimi-k3/deepseek-v4-flash 归入 tier-c（轻量池，role_route 路由目标）。''';
+        RAISE NOTICE '730: provider_models light-pool models normalized to tier-c';
+    ELSE
+        RAISE NOTICE '730: provider_models lacks tier/canonical_name columns (202609_03 not applied here) — tier normalization skipped, harmless for role_route';
+    END IF;
+END;
+$$;
 
 -- =====================================================================
 -- 5. RLS — role_task_llm_mapping
@@ -226,12 +321,16 @@ DECLARE
     tbl_count INT;
     mapping_count INT;
     bad_tier_count INT;
+    has_tier_cols BOOLEAN;
 BEGIN
     -- 验证 sessions 3 个新列都已创建
+    -- （information_schema.columns 的列名是 table_schema/table_name；
+    --   2026-09-20 应用前二次修正：初版误写成 pg_tables 风格的
+    --   schemaname/tablename，在 252 首放时 ON_ERROR_STOP 当场拦截。）
     SELECT COUNT(*) INTO col_count
     FROM information_schema.columns
-    WHERE schemaname = 'public'
-      AND tablename  = 'sessions'
+    WHERE table_schema = 'public'
+      AND table_name  = 'sessions'
       AND column_name IN ('agent_role', 'parent_session_id', 'parent_task_id');
 
     IF col_count < 3 THEN
@@ -256,20 +355,31 @@ BEGIN
         RAISE EXCEPTION 'Migration 730: default mappings not seeded (got %, want >= 48)', mapping_count;
     END IF;
 
-    -- 验证轻量池 tier 修正生效
-    SELECT COUNT(*) INTO bad_tier_count
-    FROM public.provider_models
-    WHERE canonical_name IN ('minimax-m3', 'glm-5.3-flash', 'kimi-k3', 'deepseek-v4-flash')
-      AND COALESCE(tier, '') <> 'tier-c';
+    -- 验证轻量池 tier 修正生效（仅当 provider_models 具备 tier+canonical_name
+    -- 两列时才校验——列缺失场景见第 4 节守卫说明，跳过为预期行为）
+    SELECT COUNT(*) = 2 INTO has_tier_cols
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'provider_models'
+      AND column_name IN ('tier', 'canonical_name');
 
-    IF bad_tier_count > 0 THEN
-        RAISE EXCEPTION 'Migration 730: light-pool models still not tier-c (%)', bad_tier_count;
+    IF has_tier_cols THEN
+        SELECT COUNT(*) INTO bad_tier_count
+        FROM public.provider_models
+        WHERE canonical_name IN ('minimax-m3', 'glm-5.3-flash', 'kimi-k3', 'deepseek-v4-flash')
+          AND COALESCE(tier, '') <> 'tier-c';
+
+        IF bad_tier_count > 0 THEN
+            RAISE EXCEPTION 'Migration 730: light-pool models still not tier-c (%)', bad_tier_count;
+        END IF;
+        RAISE NOTICE 'provider_models: light-pool models normalized to tier-c';
+    ELSE
+        RAISE NOTICE 'provider_models: tier columns absent — tier normalization skipped (harmless for role_route)';
     END IF;
 
     RAISE NOTICE '===== Migration 730 (R48) SUCCESSFUL =====';
     RAISE NOTICE 'sessions: added agent_role, parent_session_id, parent_task_id';
     RAISE NOTICE 'role_task_llm_mapping: % default rows seeded', mapping_count;
-    RAISE NOTICE 'provider_models: light-pool models normalized to tier-c';
 END;
 $$;
 
