@@ -63,8 +63,9 @@ const probeNecessityGateTimeout = 3 * time.Second
 
 // Skip reason codes (ReasonCode in ProbeQueueResult / metric label).
 const (
-	SkipReasonAllNodesHealthy  = "not_necessary_all_nodes_healthy"
-	SkipReasonLastProbeHealthy = "not_necessary_last_probe_healthy"
+	SkipReasonAllNodesHealthy   = "not_necessary_all_nodes_healthy"
+	SkipReasonLastProbeHealthy  = "not_necessary_last_probe_healthy"
+	SkipReasonTwoModelSuccesses = "not_necessary_two_model_successes"
 )
 
 // skipReasonSSEPrefix marks a terminal SSE transition as a necessity skip.
@@ -182,20 +183,117 @@ func (s *ProbeService) SetRemoveSkippedFn(fn func(ctx context.Context, task Prob
 	}
 }
 
-// probeUnnecessary evaluates the two skip conditions. Returns ("", "", nil)
+// SetTwoSiblingSuccessesFn overrides condition ③'s evidence lookup (INV-4).
+// Production leaves it nil and uses the SQL path in
+// conditionTwoSiblingProbeSuccesses.
+func (s *ProbeService) SetTwoSiblingSuccessesFn(fn func(ctx context.Context, credID int, model string) (bool, error)) {
+	if s != nil {
+		s.twoSiblingSuccessesFn = fn
+	}
+}
+
+// probeUnnecessary evaluates the skip conditions. Returns ("", "", nil)
 // when the probe must run, (reasonCode, detail, nil) when it must be skipped,
 // or an error when the evidence could not be read (callers fail open and run
 // the probe).
+//
+// 2026-09-20 probe-volume policy: condition ③ (two-sibling-probe-successes)
+// sits between ① and ②. ① is the strongest (redis says everything healthy)
+// but fails open on TTL expiry; ③ covers exactly that hole with DB evidence —
+// two distinct models of the credential were probe-verified within 24h.
+//
+// Each condition fails open INDEPENDENTLY: an evidence error in one condition
+// must not hide a provable skip in a later condition, so errors are logged
+// and evaluation continues. Only when every condition came back "must probe"
+// (or errored) does the gate return no-skip / the last error.
 func (s *ProbeService) probeUnnecessary(ctx context.Context, task ProbeQueueTask) (string, string, error) {
 	if s.healthEvidence == nil {
 		return "", "", fmt.Errorf("necessity gate unavailable: no health evidence source")
 	}
-	if code, detail, err := s.conditionAllNodesHealthy(ctx, task); err != nil {
-		return "", "", err
-	} else if code != "" {
-		return code, detail, nil
+	var lastErr error
+	for _, cond := range []struct {
+		name string
+		fn   func(context.Context, ProbeQueueTask) (string, string, error)
+	}{
+		{"all_nodes_healthy", s.conditionAllNodesHealthy},
+		{"two_sibling_probe_successes", s.conditionTwoSiblingProbeSuccesses},
+		{"last_probe_healthy", s.conditionLastProbeHealthy},
+	} {
+		code, detail, err := cond.fn(ctx, task)
+		if err != nil {
+			slog.Debug("probe_necessity: condition evidence error, continuing",
+				"condition", cond.name, "queue_id", task.ID, "error", err)
+			lastErr = err
+			continue
+		}
+		if code != "" {
+			return code, detail, nil
+		}
 	}
-	return s.conditionLastProbeHealthy(ctx, task)
+	return "", "", lastErr
+}
+
+// conditionTwoSiblingProbeSuccesses is skip condition ③ (2026-09-20
+// probe-volume policy, INV-4): the credential already has ≥2 distinct models
+// whose latest completed probe run succeeded within 24h, AND the pair being
+// probed carries no error state of its own (binding available, node_probe_state
+// row absent or healthy-parked). "连续两个模型都探测成功了，其它的模型也不需要
+// 探测" — sibling verification stands in for this model's probe.
+//
+// Exemptions (the probe MUST still run):
+//   - the pair's binding is unavailable (available=FALSE): it has its own
+//     error/degradation signal and needs direct re-verification (this is the
+//     recovery-reverify population today-success submits);
+//   - the pair's node_probe_state row is in an error ladder (last_err_code
+//     set or consecutive_failures > 0): per-pair failure tracking is never
+//     short-circuited by sibling successes.
+//
+// Fails open on any evidence error.
+func (s *ProbeService) conditionTwoSiblingProbeSuccesses(ctx context.Context, task ProbeQueueTask) (string, string, error) {
+	credID := int(task.CredentialID)
+	model := task.RawModel
+	if s.twoSiblingSuccessesFn != nil {
+		skip, fnErr := s.twoSiblingSuccessesFn(ctx, credID, model)
+		if fnErr != nil {
+			return "", "", fnErr
+		}
+		if skip {
+			return SkipReasonTwoModelSuccesses,
+				fmt.Sprintf("two sibling models under credential %d probed successfully within 24h and pair %s carries no error state", credID, model),
+				nil
+		}
+		return "", "", nil
+	}
+	if s.worker == nil || s.worker.db == nil {
+		return "", "", fmt.Errorf("no worker db wired for two-sibling-success lookup")
+	}
+	// Single query: pair-local error state + credential-level two-success
+	// gate. eligible=true ⇒ skip.
+	var eligible bool
+	err := s.worker.db.QueryRow(ctx, `
+		SELECT COALESCE(cmb.available, TRUE) = TRUE
+		   AND (nps.credential_id IS NULL OR ` + nodeProbeHealthyParkedSQL("nps") + `)
+		   AND ` + credentialTwoProbeSuccessGateSQL("cmb.credential_id") + `
+		FROM credential_model_bindings cmb
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		LEFT JOIN node_probe_state nps
+		       ON nps.credential_id = cmb.credential_id
+		      AND nps.raw_model_name = pm.raw_model_name
+		WHERE cmb.credential_id = $1
+		  AND pm.raw_model_name = $2`,
+		credID, model).Scan(&eligible)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", nil // no binding row — not this condition's call
+		}
+		return "", "", fmt.Errorf("read two-sibling-success evidence: %w", err)
+	}
+	if !eligible {
+		return "", "", nil
+	}
+	return SkipReasonTwoModelSuccesses,
+		fmt.Sprintf("two sibling models under credential %d probed successfully within 24h and pair %s carries no error state", credID, model),
+		nil
 }
 
 // conditionAllNodesHealthy is skip condition ①: the current model is not in

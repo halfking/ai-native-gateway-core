@@ -1089,11 +1089,8 @@ func TestReconcileStaleNodeProbeStateSQLGuards(t *testing.T) {
 		// ── 只读 ──
 		"FROM node_probe_state nps",
 		"cmb.available = TRUE",
-		// ── 状态谓词：拿掉还失败的行 ──
-		"nps.last_direct_ok  IS DISTINCT FROM TRUE",
-		"nps.last_gateway_ok IS DISTINCT FROM TRUE",
-		"nps.next_retry_at IS NULL",
-		"nps.next_retry_at > now()",
+		// ── 状态谓词（2026-09-20 探测量策略）：仅未证实健康/失败行 ──
+		"AND NOT " + nodeProbeHealthyParkedSQL("nps"),
 		"COALESCE(nps.paused, FALSE) = FALSE",
 
 		// ── 硬保护 ──
@@ -1114,6 +1111,17 @@ func TestReconcileStaleNodeProbeStateSQLGuards(t *testing.T) {
 	for _, want := range mustContain {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("reconcileStaleNodeProbeStateSQL missing %q in:\n%s", want, sql)
+		}
+	}
+	// 2026-09-20 探测量策略：健康停放行（未来/NULL 的 next_retry_at）不得再
+	// 被判为 stale —— 那是这个 30s tick 的健康行重提交引擎（成功写入 +1h，
+	// reconciler 视未来时间为 stale → 无限重探测闭环的根因之一）。
+	for _, banned := range []string{
+		"nps.next_retry_at > now()",
+		"nps.next_retry_at IS NULL",
+	} {
+		if strings.Contains(sql, banned) {
+			t.Fatalf("reconcileStaleNodeProbeStateSQL must NOT contain %q (healthy-parked rows are not stale):\n%s", banned, sql)
 		}
 	}
 	// Strictly read-only: no UPDATE / SET / INSERT statements.

@@ -653,12 +653,15 @@ func probeSkipRecentSuccessEnabled() bool {
 // request success already proves it healthy, making the synthetic probe
 // redundant this cycle (probe-recovery closeout P5, 2026-09-13).
 //
-// Evidence bar (ALL must hold, else the probe runs):
+// Evidence bar (ANY holds, else the probe runs):
 //   - a successful request within the last 30 minutes (last_used_at — the
-//     dispatch path stamps it on every routed request);
-//   - health_status currently healthy/unknown (a failure write anywhere
-//     makes the row probe-eligible again);
-//   - the previous probe did not fail (last_probe_success false → probe).
+//     dispatch path stamps it on every routed request), health_status
+//     healthy/unknown, and the previous probe did not fail; OR
+//   - 2026-09-20 probe-volume policy (INV-5): the credential is healthy, its
+//     last probe succeeded, and it has NO candidate failure in the last 24h.
+//     Idle-but-healthy credentials no longer get the hourly synthetic probe —
+//     normal state has no scheduled probing; errors flip health_status (or
+//     log a failure) and make the row eligible again.
 //
 // DB errors fail OPEN (probe runs) — this is a cost optimization, not a gate.
 func skipProbeOnRecentTrafficSuccess(ctx context.Context, db *pgxpool.Pool, credID int) bool {
@@ -667,9 +670,15 @@ func skipProbeOnRecentTrafficSuccess(ctx context.Context, db *pgxpool.Pool, cred
 	}
 	var ok bool
 	err := db.QueryRow(ctx, `
-		SELECT COALESCE(c.last_used_at, to_timestamp(0)) > now() - INTERVAL '30 minutes'
-		   AND c.health_status IN ('healthy', 'unknown')
-		   AND COALESCE(c.last_probe_success, TRUE)
+		SELECT (
+		    COALESCE(c.last_used_at, to_timestamp(0)) > now() - INTERVAL '30 minutes'
+		    AND c.health_status IN ('healthy', 'unknown')
+		    AND COALESCE(c.last_probe_success, TRUE)
+		) OR (
+		    c.health_status = 'healthy'
+		    AND COALESCE(c.last_probe_success, FALSE)
+		    AND NOT ` + credentialFailureEvidenceSQL("c.id", probeFailureEvidenceWindowSQL) + `
+		)
 		FROM credentials c WHERE c.id = $1
 	`, credID).Scan(&ok)
 	if err != nil {
