@@ -191,6 +191,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// role_task_llm_mapping (role × task_kind → LLM preference) +
 			// light-pool tier corrections on provider_models.
 			"730_session_role_hierarchy.sql",
+			// 731 (R50, 2026-09-21): auto_route_selections role attribution —
+			// agent_role/task_kind/routing_source on parent + hot tables so
+			// affinity learning can exclude forced role-route selections.
+			"731_auto_route_selection_role_attribution.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}

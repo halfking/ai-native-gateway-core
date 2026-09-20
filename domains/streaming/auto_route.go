@@ -501,6 +501,12 @@ func buildAutoSelection(r *http.Request, sessionID string, wire *autoRouteDecisi
 		CostSensitive:          features.CostSensitive,
 		FeatureVersion:         features.FeatureVersion,
 		ContentHash:            features.ContentHash,
+		// R50 (migration 731): role-route attribution — flag-off 时三值皆空
+		//（wire 只在 flag on 时透出 SessionRole/TaskKind，RoutingSource 仅
+		// role_route 命中时非空），旧行为字节不变。
+		SessionRole:   wire.SessionRole,
+		TaskKind:      wire.TaskKind,
+		RoutingSource: wire.RoutingSource,
 	}
 }
 
