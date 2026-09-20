@@ -200,3 +200,42 @@ func readSource(name string) (string, error) {
 	}
 	return string(b), nil
 }
+
+// ─── R50：探测排除谓词全调用面闭环 ────────────────────────────────────
+
+// TestProbeExclusionPredicateCallSitesR50 pins the R50 closure of the probe
+// traffic exclusion: every usage/success-scanning site added in the R50 round
+// must go through the shared dual-arm predicate (quality_flags +
+// origin_stage). Direct-probe rows carry the 'probe' flag, but the probe
+// gateway round is stamped origin_stage='node_probe' with NO flag — single
+// arm sites let it count as usage (INV-3 was nominal; R49 F4 + R50 closed
+// the remaining faces).
+func TestProbeExclusionPredicateCallSitesR50(t *testing.T) {
+	cases := []struct {
+		file  string
+		wants int // minimum number of Sprintf call sites expected in the file
+	}{
+		{"credential_selfcheck.go", 1}, // selfcheckRecentFallback (usage scope)
+		{"model_probe.go", 2},          // featuredCycle + watchdog usage CTE
+		{"shared_pick.go", 1},          // Priority-1 most-used model pick
+		{"passive_probe_listener.go", 3},
+	}
+	for _, tc := range cases {
+		src, err := readSource(tc.file)
+		if err != nil {
+			t.Fatalf("read %s: %v", tc.file, err)
+		}
+		got := strings.Count(src, `fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")`)
+		if got < tc.wants {
+			t.Errorf("%s has %d dual-arm exclusion call sites, want >= %d", tc.file, got, tc.wants)
+		}
+	}
+	// The selfcheck usage scan must NOT carry the old single-arm spelling.
+	selfcheckSrc, err := readSource("credential_selfcheck.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(selfcheckSrc, "AND NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)") {
+		t.Errorf("credential_selfcheck.go still has a single-arm usage scan; use probeTrafficExclusionPredicate")
+	}
+}

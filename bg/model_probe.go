@@ -400,6 +400,9 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 			        FROM request_logs_hot rl
 			        WHERE rl.success
 			          AND rl.ts > now() - make_interval(hours => $2)
+			          -- R50: dual-arm probe exclusion — watchdog backoff is a
+			          -- usage scan (INV-3); probe-only models must back off too.
+			          AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
 			          AND COALESCE(rl.outbound_model, rl.client_model) <> ''
 			        GROUP BY raw_model
 			    ) t
