@@ -58,7 +58,17 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		// of HitCount happens under a single write lock (Get→HitCount++→Put
 		// raced across concurrent requests on the same session).
 		if cached, ok := d.intentCache.IncrementHit(sessionID); ok {
-			if cached.WorkType != requestedWorkType {
+			// R48: 会话角色变化即身份变化，缓存结论失效重判（仅 flag 开启时）。
+			roleMismatch := d.roleRoutingActive() &&
+				normalizeAgentRole(cached.Role) != normalizeAgentRole(sigs.AgentRole)
+			if roleMismatch {
+				d.intentCache.Invalidate(sessionID)
+				slog.Info("autoroute.v2: session role changed, reclassifying",
+					"session_id", sessionID,
+					"cached_role", cached.Role,
+					"new_role", sigs.AgentRole,
+				)
+			} else if cached.WorkType != requestedWorkType {
 				d.intentCache.Invalidate(sessionID)
 			} else if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
 				// 新增：验证缓存的模型是否仍可用
@@ -103,6 +113,12 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 							CacheReused:        true,
 							DecidedAt:          time.Now(),
 							RoutingSource:      "session_cache",
+						}
+						// R48: 缓存命中也带角色/任务类型审计字段（flag 开启时）；
+						// 旧缓存缺 kind 时归一为 unknown，保持审计形态一致。
+						if d.roleRoutingActive() {
+							decision.SessionRole = string(normalizeAgentRole(cached.Role))
+							decision.TaskKind = string(normalizeTaskKind(cached.Kind))
 						}
 						d.annotateTreatment(ctx, apiKeyID, decision)
 						d.populateShadow(ctx, sigs, decision)
@@ -205,6 +221,12 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	if d.overrideStore != nil && len(d.overrideStore.GetPins(task, prof)) > 0 {
 		keepFullCandidateSet = true
 	}
+	// R48: role 路由开启且请求带可路由角色时，偏好模型可能在 top-N 之外，
+	// 需要全候选窗口（与 work-type/pin 同一处理）。
+	roleRoutingOn := d.roleRoutingActive() && roleRoutedRoles[normalizeAgentRole(sigs.AgentRole)]
+	if roleRoutingOn {
+		keepFullCandidateSet = true
+	}
 	if keepFullCandidateSet {
 		if poolSize := len(idx.Snapshot()); poolSize > candidateTopN {
 			candidateTopN = poolSize
@@ -255,6 +277,25 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	}
 	tierChangedWinner := len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforeBoostWinner
 
+	// Step 3b（R48, 2026-09-20）: role × kind promotion —— work-type tier
+	// policy 之后、pin promote 之前插入，admin pin 仍是最强约束。仅
+	// AUTO_ROLE_ROUTING_ENABLED 开启 + 子代理角色时介入；flag-off / main /
+	// unknown 路径零改动（决策字节级不变）。
+	roleKind := TaskKind("")
+	roleChangedWinner := false
+	if d.roleRoutingActive() {
+		roleKind = ClassifyTaskKind(sigs)
+	}
+	if roleRoutingOn {
+		role := normalizeAgentRole(sigs.AgentRole)
+		if prefs := d.roleLLMRouter.SelectLLM(role, roleKind); len(prefs) > 0 {
+			if promoted, hit := promoteFirstPresent(recommended, prefs); hit != "" {
+				recommended = promoted
+				roleChangedWinner = len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforeBoostWinner
+			}
+		}
+	}
+
 	beforePinWinner := ""
 	if len(recommended) > 0 {
 		beforePinWinner = recommended[0].Candidate.CanonicalName
@@ -265,6 +306,8 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	pinChangedWinner := len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforePinWinner
 	if pinChangedWinner {
 		routingSource = "override_pin"
+	} else if roleChangedWinner {
+		routingSource = "role_route"
 	} else if tierChangedWinner || (len(recommended) > 0 && recommended[0].Breakdown.RouteTier != "") {
 		routingSource = "work_type_route"
 	}
@@ -306,6 +349,11 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		DecidedAt:          time.Now(),
 		RoutingSource:      routingSource,
 	}
+	// R48: role 路由审计字段（flag 开启时；无论是否命中提升都记录观察值）。
+	if d.roleRoutingActive() {
+		decision.SessionRole = string(normalizeAgentRole(sigs.AgentRole))
+		decision.TaskKind = string(normalizeTaskKind(roleKind))
+	}
 	d.annotateTreatment(ctx, apiKeyID, decision)
 	d.populateShadow(ctx, sigs, decision)
 
@@ -342,7 +390,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 
 	// Step 6: 缓存决策
 	if sessionID != "" && d.intentCache != nil {
-		d.intentCache.Put(sessionID, CachedIntent{
+		cachedPut := CachedIntent{
 			TaskType:     decision.TaskType,
 			WorkType:     requestedWorkType,
 			ChosenModel:  decision.ChosenModel,
@@ -350,7 +398,13 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 			Profile:      decision.Profile,
 			Confidence:   decision.Confidence,
 			Classifier:   decision.Classifier,
-		})
+		}
+		// R48: 角色/任务类型随 intent 缓存（flag 开启时），跨轮复用不退化。
+		if d.roleRoutingActive() {
+			cachedPut.Role = normalizeAgentRole(sigs.AgentRole)
+			cachedPut.Kind = normalizeTaskKind(roleKind)
+		}
+		d.intentCache.Put(sessionID, cachedPut)
 	}
 
 	return decision, nil
