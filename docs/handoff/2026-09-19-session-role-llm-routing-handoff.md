@@ -1,8 +1,8 @@
 # Handoff: 会话角色识别 + 按任务类型自动选 LLM（auto 模式优化）
 
-> 日期: 2026-09-19（设计）/ 2026-09-20（R48 实施）
-> 状态: **代码已实现并合入 main（R48）**；灰度开关 `AUTO_ROLE_ROUTING_ENABLED` 默认关闭。
-> 唯一待办：§8 数据库侧验证（.34 库连接串 + canonical_name 实测 + 迁移应用 + 端到端）。
+> 日期: 2026-09-19（设计）/ 2026-09-20（R48 实施 + 步骤 8 数据库侧）
+> 状态: **代码已合入 main（R48）；252 库 730 已应用验证；.34 库待连接串**。
+> 待办: §0.1 —— .34 canonical 实测 + 730 应用 + 本地端到端（连接串是唯一前置）。
 > 目标: 支撑多子代理并行场景下的会话角色识别，并在 auto 模式下按
 > 「会话角色 × 任务类型」自动选择 LLM，提高效率、降低成本。
 
@@ -39,6 +39,63 @@
 2. SelectLLM 的角色门禁挡在 DB 快照查询前，admin 给 main 的显式行不可达——改为 DB 行优先于内置保守口径。
 3. 缓存命中路径 TaskKind 空值未归一（flag-off 期写入的旧缓存）——`normalizeTaskKind` 统一为 unknown；同时消除 roleKind 在 main 角色下的重复计算。
 4. 测试预判错误 3 处（通道顺序导致的实际命中）在跑测试后修正为真实行为断言。
+
+### 0.1 2026-09-20 步骤 8 执行记录（数据库侧；本节为最新状态）
+
+**252 库：730 已应用并验证 ✅；.34 库：连接串未获得，仍阻塞 ⛔。**
+
+实测与修正（按发生顺序，全部有命令输出佐证）：
+
+1. **252 canonical_name 实测：9/9 全部匹配**（minimax-m3 / glm-5.3-flash /
+   kimi-k3 / deepseek-v4-flash / glm-5.3 / claude-opus-5 / gpt-5.6-sol /
+   grok-4.6 / deepseek-v4-pro 均原样存在）→ 730 种子与
+   `builtinRoleLLMPreference` **无需改口径**（仓库 `configs/` 各 env、
+   `~/.pgpass`、env-injector 均不存在 .34 凭据；.34:5432 TCP 可达但
+   SASL 全部拒Auth；SSH 22/2222 密钥均 denied——连接串只能等用户提供）。
+2. **应用前修正 ①（tier 列守卫）**：252 实测 `provider_models` 基线 schema
+   只有 `canonical_id`/`canonical_raw_name`，**没有 `canonical_name` 列**
+   （202609_03 从未在 252 应用，其 UPDATE 自身也引用不存在的列）。
+   730 第 4 节原样执行会报错回滚 → 改为 DO 块探测 `tier`+`canonical_name`
+   两列，缺失时 NOTICE 跳过；第 6 节 bad_tier 校验同步守卫。
+   Go 决策路径不读 `provider_models.tier`（work_type 走 primary/secondary，
+   成本粗评走 `models_canonical.cost_tier`），跳过不影响 role_route。
+3. **应用前修正 ②（验证块列名）**：第 6 节 `information_schema.columns`
+   误用 pg_tables 风格 `schemaname`/`tablename`（正确 `table_schema`/
+   `table_name`）——252 首放 ON_ERROR_STOP 当场拦截，事务原子回滚未留
+   半程状态，修正后重放成功。
+4. **应用前修正 ③（NULLS DISTINCT 种子翻倍）**：UNIQUE 默认 NULLS
+   DISTINCT，`tenant_id IS NULL` 的平台级种子行**永不触发 ON CONFLICT**，
+   重放一次翻倍一次（252 实测 48→96）→ 唯一约束改
+   `UNIQUE NULLS NOT DISTINCT`（PG15+，两目标库均 PG17）+ 新增 2.5 节
+   自愈去重（按约束键保最小 id，先去重再换约束）；旧式约束检测走
+   `pg_get_constraintdef` 文本（PG17.10 的 `pg_constraint` 无
+   `nulls_distinct` 列，直接引用会报错）。
+5. **252 应用结果**（`ssh 252` → `podman exec pg-252-pg17 psql`，
+   ON_ERROR_STOP=1）：`===== Migration 730 (R48) SUCCESSFUL =====`；
+   sessions 三列已加并级联到全部 5 个分区；`role_task_llm_mapping`
+   48 行（worker/search→minimax-m3、worker/solution→gpt-5.6-sol、
+   worker/planning→claude-opus-5、worker/unknown→glm-5.3-flash，无 main 行）；
+   3 个索引 + RLS + 2 policy 就位；tier 节按守卫 NOTICE 跳过（预期）。
+   **幂等复跑两遍**：第二遍 `INSERT 0 48`（暴露修正 ③ 的翻倍 bug），
+   修正后第三遍 `INSERT 0 0` + SUCCESSFUL，行数稳定 48——真幂等已证。
+6. **installer 双份同步**：三处修正后 `cmp` 字节一致，
+   `TestStartupFiles|Parity|Embedded` 契约测试绿。
+7. **端到端（§8 步骤 3-5）未做**：本地起网关需要 .34 DSN；
+   252 隧道（115.29.212.252:11033）TCP 可达但密码不匹配，
+   在 252 生产库上造测试角色跑 e2e 不合适——等 .34 连接串后一次做完。
+
+**.34 连接串到位后的剩余动作**（预计 ≤10 分钟，迁移文件已就绪）：
+```bash
+DSN='postgres://<user>:<pass>@192.168.31.34:5432/llm_gateway?sslmode=disable'
+# 1. canonical 实测（252 已 9/9，预期一致；有出入才需要改种子+内存表镜像）
+psql "$DSN" -c "SELECT canonical_name FROM models_canonical WHERE canonical_name IN ('minimax-m3','glm-5.3-flash','kimi-k3','deepseek-v4-flash','glm-5.3','claude-opus-5','gpt-5.6-sol','grok-4.6','deepseek-v4-pro')"
+# 2. 前提验证 + 应用（幂等，成功标志 RAISE NOTICE SUCCESSFUL）
+psql "$DSN" -c "\d+ sessions"          # 确认分区表
+psql "$DSN" -v ON_ERROR_STOP=1 -f sql/migrations/startup/730_session_role_hierarchy.sql
+# 3. e2e：LLM_GATEWAY_DATABASE_URL=$DSN AUTO_ROLE_ROUTING_ENABLED=true 起本地网关
+#    curl 带 X-Gw-Agent-Role: worker 的 search/planning 请求 → 验 X-Gw-Auto-Decision
+#    头 + request_logs.auto_decision JSONB（§8 步骤 4-5 断言）
+```
 
 ---
 
@@ -230,11 +287,11 @@ sql/migrations/startup/730_session_role_hierarchy.{sql,down.sql}，
 | sessions 表前提验证 | `\d sessions` 确认分区表存在（430 迁移产物）后再应用 730 |
 | 子会话行的创建方 | 客户端自建 or 编排器代建（决定 sessions.agent_role/parent_session_id 的写入路径；当前仅请求头→路由层，未落库） |
 
-## 8. 步骤 8 执行清单（拿到连接串后照此做）
+## 8. 步骤 8 执行清单（2026-09-20 执行进度：第 1/2/6 项在 252 已完成，.34 与端到端待连接串）
 
-1. `psql "$DSN" -c "SELECT canonical_name FROM models_canonical WHERE ..."`（上表清单）——有出入先改种子/内存表再继续。
-2. `psql "$DSN" -f sql/migrations/startup/730_session_role_hierarchy.sql`（幂等可重放；`RAISE NOTICE '===== Migration 730 (R48) SUCCESSFUL ====='` 为成功标志）。
-3. 本地起网关：`LLM_GATEWAY_DATABASE_URL=$DSN AUTO_ROLE_ROUTING_ENABLED=true ./llm-gateway`（或对应启动脚本）。
-4. `curl -N $ENDPOINT/v1/chat/completions -H 'X-Gw-Agent-Role: worker' -d '{"model":"auto","messages":[{"role":"user","content":"帮我搜索一下 pg 索引优化资料"}]}'` → 响应头 `X-Gw-Auto-Decision` 应含 `"chosen_model":"minimax-m3"`、`"session_role":"worker"`、`"task_kind":"search"`、`"routing_source":"role_route"`。
-5. `SELECT auto_decision::jsonb->>'routing_source', auto_decision::jsonb->>'session_role' FROM request_logs ORDER BY created_at DESC LIMIT 1;` 复核 JSONB 落库。
-6. 252 库走 deploy/EXECUTE-ON-252.md 通道应用 730（纯 SQL，无 Go 依赖）。
+1. ✅(252) `psql` 查 canonical_name——**9/9 全部匹配，种子/内存表无需改**。⛔(.34) 连接串未获得（TCP 可达、SASL 拒绝全部 dev 凭据组合、SSH 密钥 denied）。
+2. ✅(252) sessions 分区前提验证（5 分区，三列已级联）+ 730 应用（含应用前三处修正，见 §0.1）+ 幂等复跑 `INSERT 0 0`。⛔(.34) 待连接串。
+3. ⛔ 本地起网关：`LLM_GATEWAY_DATABASE_URL=$DSN AUTO_ROLE_ROUTING_ENABLED=true ./llm-gateway`——待 .34 连接串（252 隧道 11033 密码不匹配，不在生产库造测试角色）。
+4. ⛔ `curl -N $ENDPOINT/v1/chat/completions -H 'X-Gw-Agent-Role: worker' -d '{"model":"auto","messages":[{"role":"user","content":"帮我搜索一下 pg 索引优化资料"}]}'` → 响应头 `X-Gw-Auto-Decision` 应含 `"chosen_model":"minimax-m3"`、`"session_role":"worker"`、`"task_kind":"search"`、`"routing_source":"role_route"`。
+5. ⛔ `SELECT auto_decision::jsonb->>'routing_source', auto_decision::jsonb->>'session_role' FROM request_logs ORDER BY created_at DESC LIMIT 1;` 复核 JSONB 落库。
+6. ✅ 252 库 730 应用走 `ssh 252` + `podman exec pg-252-pg17 psql`（EXECUTE-ON-252.md 通道的现代等价物：该文档写的是直接 psql，实际容器化后走 podman exec；无 Go 依赖，纯 SQL）。
