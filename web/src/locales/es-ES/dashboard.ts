@@ -1,6 +1,7 @@
 export default {
   title: "Panel",
   refresh: "Actualizar",
+  modelsSelectedCount: '{n} modelos seleccionados',  // R50 ModelPicker compact
 tabs: {
     board: 'Board',
     liveStream: 'Flujo de solicitudes en vivo',

@@ -661,7 +661,27 @@ func (w *NodeProbeWorker) Stop() {
 	})
 }
 
+// loop 是 loopOnce 的守护包装（R50 审计 P3）：原实现 recover 后直接返回，
+// 探测一旦 panic 即静默停摆且无任何调度面感知。现 panic 后按 30s 起步、
+// 5min 封顶的指数退避自动重启；ctx 取消 / Stop 时正常退出。
 func (w *NodeProbeWorker) loop(ctx context.Context) {
+	backoff := 30 * time.Second
+	for {
+		w.loopOnce(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.stopCh:
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < 5*time.Minute {
+			backoff *= 2
+		}
+	}
+}
+
+func (w *NodeProbeWorker) loopOnce(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("node_probe_worker panic", "recover", r)

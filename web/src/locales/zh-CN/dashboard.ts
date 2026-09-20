@@ -3,6 +3,7 @@
 export default {
   title: '仪表盘',
   refresh: '刷新',
+  modelsSelectedCount: '已选 {n} 个模型',  // R50 ModelPicker compact 触发器
   tabs: {
     board: '看板',
     liveStream: '实时请求流',

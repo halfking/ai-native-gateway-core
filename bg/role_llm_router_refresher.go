@@ -90,9 +90,7 @@ func (r *RoleLLMRouterRefresher) run(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	if err := r.router.Reload(ctx); err != nil {
-		slog.Warn("role llm router initial reload failed", "error", err)
-	}
+	r.reloadRecovered(ctx, "initial")
 	ticker := time.NewTicker(r.tick)
 	defer ticker.Stop()
 	for {
@@ -102,9 +100,20 @@ func (r *RoleLLMRouterRefresher) run(ctx context.Context) {
 		case <-r.stop:
 			return
 		case <-ticker.C:
-			if err := r.router.Reload(ctx); err != nil {
-				slog.Warn("role llm router periodic reload failed", "error", err)
-			}
+			r.reloadRecovered(ctx, "periodic")
 		}
+	}
+}
+
+// reloadRecovered 守护单次 Reload（R50 审计 P3：goroutine 原先无任何
+// recover，单次 panic 即整进程崩溃）——panic 记日志后 tick 循环继续。
+func (r *RoleLLMRouterRefresher) reloadRecovered(ctx context.Context, stage string) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("role llm router refresher reload panic", "stage", stage, "recover", rec)
+		}
+	}()
+	if err := r.router.Reload(ctx); err != nil {
+		slog.Warn("role llm router "+stage+" reload failed", "error", err)
 	}
 }

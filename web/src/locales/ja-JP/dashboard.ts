@@ -1,6 +1,7 @@
 export default {
   title: "ダッシュボード",
   refresh: "更新",
+  modelsSelectedCount: '{n} 個のモデルを選択中',  // R50 ModelPicker compact
 tabs: {
     board: 'ボード',
     liveStream: 'リアルタイムリクエスト',

@@ -62,7 +62,9 @@ func (p *TodaySuccessProbe) Start(ctx context.Context) {
 	}
 	p.startOnce.Do(func() {
 		go func() {
-			p.run(ctx)
+			// R50 审计 P3：裸 go 无 recover，单次 panic 即整进程崩溃——
+			// 每轮 run 单独守护，panic 后循环继续。
+			p.runRecovered(ctx)
 			ticker := time.NewTicker(todaySuccessProbeInterval)
 			defer ticker.Stop()
 			for {
@@ -72,7 +74,7 @@ func (p *TodaySuccessProbe) Start(ctx context.Context) {
 				case <-p.stopCh:
 					return
 				case <-ticker.C:
-					p.run(ctx)
+					p.runRecovered(ctx)
 				}
 			}
 		}()
@@ -89,6 +91,16 @@ func (p *TodaySuccessProbe) Stop() {
 		return
 	}
 	p.stopOnce.Do(func() { close(p.stopCh) })
+}
+
+// runRecovered 守护单轮 run：panic 记日志后由 Start 的 tick 循环继续下一轮。
+func (p *TodaySuccessProbe) runRecovered(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("today_success_probe: run panic recovered", "recover", rec)
+		}
+	}()
+	p.run(ctx)
 }
 
 func (p *TodaySuccessProbe) run(ctx context.Context) {

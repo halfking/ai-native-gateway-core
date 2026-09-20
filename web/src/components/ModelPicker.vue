@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   getAvailableModels,
   type AvailableVersion,
   type AvailableModelsResponse,
   type PopularModel,
 } from '../api'
+
+const { t } = useI18n()
 
 type Mode = 'single' | 'multi'
 
@@ -76,7 +79,9 @@ const multiValues = computed<string[]>(() =>
 const triggerLabel = computed(() => {
   if (isMulti.value) {
     if (!multiValues.value.length) return ''
-    return `已选 ${multiValues.value.length} 个模型`
+    // R50: 硬编码中文改 i18n（与 461dd883c 同族收尾）——8 个非 zh locale
+    // 此前显示中文。
+    return t('dashboard.modelsSelectedCount', { n: multiValues.value.length })
   }
   return singleValue.value
 })
