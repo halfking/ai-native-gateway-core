@@ -267,3 +267,89 @@ func TestDecideV2_RoleRouting_FlagOff_Unchanged(t *testing.T) {
 		t.Fatalf("flag-off V2 audit fields must stay empty: %q/%q", dec.SessionRole, dec.TaskKind)
 	}
 }
+
+// tierFilterStore 构造一个 work-type tier 路由快照：chat 任务只配置
+// glm-5.2（secondary）——刻意不含任何 role 偏好模型，复刻 245 e2e 实测
+// 事故形态（worker+solution 的 gpt-5.6-sol 被 secondary 档硬过滤）。
+func tierFilterStore() *WorkTypeRouteStore {
+	wt := NewWorkTypeRouteStore(nil)
+	wt.snapshot.Store(&wtRouteSnapshot{
+		byTaskType: map[string][]WorkTypeRoute{
+			"chat": {{WorkTypeKey: "acc-chat", L1TaskType: "chat", CanonicalName: "glm-5.2", Tier: "secondary", Weight: 1}},
+		},
+		byWorkTypeKey: map[string][]WorkTypeRoute{},
+		workTypeL1:    map[string]string{},
+	})
+	return wt
+}
+
+// TestDecide_RoleRouting_SurvivesTierFilter —— R48 修订（2026-09-20，245
+// e2e 实测抓到）：work-type tier 硬过滤在 role promotion 之前执行，若
+// tier 配置不含偏好模型，gpt-5.6-sol 被滤除 → role_route 静默让位，
+// 违背文档化级联 pin > role_route > work_type tier。修订后 role 偏好
+// 并入 tier 豁免名单（无 pin 提升语义），必须仍命中 role_route。
+func TestDecide_RoleRouting_SurvivesTierFilter(t *testing.T) {
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	defer SetGlobalFeatureFlagsForTest(old)
+
+	// 候选池：glm-5.2 分高在前（tier 命中者），gpt-5.6-sol 分低在尾部。
+	cands := []ScoredCandidate{
+		{Candidate: Candidate{CanonicalName: "glm-5.2", CredentialID: 11, RawModel: "glm-5.2"}, Breakdown: ScoringBreakdown{Composite: 80}},
+		{Candidate: Candidate{CanonicalName: "glm-5.3", CredentialID: 12, RawModel: "glm-5.3"}, Breakdown: ScoringBreakdown{Composite: 70}},
+		{Candidate: Candidate{CanonicalName: "gpt-5.6-sol", CredentialID: 13, RawModel: "gpt-5.6-sol"}, Breakdown: ScoringBreakdown{Composite: 30}},
+	}
+	cls := &stubClassifier{name: "heuristic", out: &Classification{Primary: TaskChat, Confidence: 0.9, Classifier: "heuristic", Reason: "test"}}
+	d := NewDecider(cls, nil, &stubIndex{cands: cands}, NewMemoryProfileStore())
+	d.SetRoleLLMRouter(NewRoleLLMRouter(nil))
+	d.SetWorkTypeRouteStore(tierFilterStore())
+
+	dec, err := d.Decide(context.Background(), ClassificationSignals{
+		AgentRole:      RoleWorker,
+		LastUserPrompt: "帮我写一份技术方案", // kind=solution → 重量池 gpt-5.6-sol
+	}, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("Decide err: %v", err)
+	}
+	if dec.ChosenModel != "gpt-5.6-sol" {
+		t.Fatalf("worker+solution must promote gpt-5.6-sol through tier filter, got %s", dec.ChosenModel)
+	}
+	if dec.RoutingSource != "role_route" {
+		t.Fatalf("RoutingSource: got %q, want role_route", dec.RoutingSource)
+	}
+}
+
+// TestDecideV2_RoleRouting_SurvivesTierFilter —— V2（生产默认路径）同修
+// 的对应用例：tier 过滤后 gpt-5.6-sol 必须幸存并翻盘。
+func TestDecideV2_RoleRouting_SurvivesTierFilter(t *testing.T) {
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	defer SetGlobalFeatureFlagsForTest(old)
+
+	idx := &Index{
+		entries: []Candidate{
+			{CredentialID: 11, CanonicalID: 11, CanonicalName: "glm-5.2", Tags: []string{"chat"}, SuccessRate: 0.95},
+			{CredentialID: 12, CanonicalID: 12, CanonicalName: "glm-5.3", Tags: []string{"chat"}, SuccessRate: 0.94},
+			{CredentialID: 13, CanonicalID: 13, CanonicalName: "gpt-5.6-sol", Tags: []string{"chat"}, SuccessRate: 0.90},
+		},
+		lastRefresh: time.Now(),
+	}
+	cls := &v2TestClassifier{task: TaskChat}
+	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
+	d.SetRoleLLMRouter(NewRoleLLMRouter(nil))
+	d.SetWorkTypeRouteStore(tierFilterStore())
+
+	dec, err := d.DecideV2(context.Background(), ClassificationSignals{
+		AgentRole:      RoleWorker,
+		LastUserPrompt: "帮我写一份技术方案",
+	}, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("DecideV2 err: %v", err)
+	}
+	if dec.ChosenModel != "gpt-5.6-sol" {
+		t.Fatalf("V2 worker+solution must promote gpt-5.6-sol through tier filter, got %s", dec.ChosenModel)
+	}
+	if dec.RoutingSource != "role_route" {
+		t.Fatalf("V2 RoutingSource: got %q, want role_route", dec.RoutingSource)
+	}
+}
