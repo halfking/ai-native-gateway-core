@@ -2625,7 +2625,12 @@ SELECT model_key, cnt FROM (
     LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
     WHERE rl.ts >= $1
       AND rl.success = TRUE
+      -- R50: dual-arm probe exclusion (bg.probeTrafficExclusionPredicate
+      -- shape, inlined to avoid an admin→bg import): the probe gateway
+      -- round carries origin_stage='node_probe' and no 'probe' flag, so the
+      -- flag arm alone let it inflate "popular models".
       AND NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)
+      AND COALESCE(rl.origin_stage, 'business') = 'business'
       AND ($2 = '' OR rl.tenant_id = $2)
       AND rl.client_model IS NOT NULL AND rl.client_model != ''
     GROUP BY model_key

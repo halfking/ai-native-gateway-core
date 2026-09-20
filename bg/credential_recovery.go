@@ -1719,6 +1719,11 @@ func lookbackCandidateSQL() string {
 		  -- UT-CR-09: only nodes with a SUCCESS inside the lookback window
 		  -- are candidates. Outside the window / no success → excluded,
 		  -- nothing triggers.
+		  -- R50 note: probe rows are deliberately counted here (no
+		  -- origin_stage arm). A probe success IS proof the binding works —
+		  -- the direction is self-limiting (probe success restores
+		  -- availability and exits the recovery candidate set), unlike the
+		  -- usage scans where R49 F4/R50 closed the loop.
 		  AND (
 		      EXISTS (
 		          SELECT 1 FROM request_logs_hot rl

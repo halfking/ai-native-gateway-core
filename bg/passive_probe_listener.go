@@ -117,11 +117,15 @@ func (l *PassiveProbeListener) resetCountersOnSuccess(ctx context.Context) {
 			-- 154), so recent successes were invisible and "consecutive"
 			-- streaks never reset. pollNewErrors already reads the
 			-- current-month surface; every recent-window read must too.
-			FROM request_logs_with_current_month
-			WHERE success = TRUE
-			  AND ts > NOW() - INTERVAL '5 minutes'
-			  AND credential_id IS NOT NULL
-			  AND outbound_model IS NOT NULL
+			-- R50: probe traffic excluded (dual-arm) — the passive listener
+			-- profiles BUSINESS traffic; probe rows would both arm and
+			-- reset streaks for models probes touch.
+			FROM request_logs_with_current_month rl
+			WHERE ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
+			  AND rl.success = TRUE
+			  AND rl.ts > NOW() - INTERVAL '5 minutes'
+			  AND rl.credential_id IS NOT NULL
+			  AND rl.outbound_model IS NOT NULL
 		) AS success_pairs
 		WHERE pps.credential_id = success_pairs.credential_id
 		  AND pps.raw_model_name = success_pairs.raw_model_name
@@ -185,6 +189,10 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		  AND rl.error_kind = ANY($1)
 		  AND rl.error_kind IS NOT NULL
 		  AND COALESCE(rl.failure_stage, 'upstream') = 'upstream'
+		  -- R50: dual-arm probe exclusion — a probe's own upstream failure
+		  -- is real, but feeding it back here re-arms probes on probe-only
+		  -- traffic (the same self-reinforcement INV-3 closed for usage).
+		  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
 		  AND rl.credential_id IS NOT NULL
 		  AND rl.outbound_model IS NOT NULL
 		  AND pps.credential_id IS NULL
@@ -215,11 +223,14 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		    -- 2026-09-10: same cold-parent staleness as resetCountersOnSuccess —
 		    -- recent traffic lives in request_logs_hot, which only the
 		    -- current-month surface exposes.
-		    FROM request_logs_with_current_month
-		    WHERE ts > NOW() - INTERVAL '5 minutes'
-		      AND credential_id IS NOT NULL
-		      AND outbound_model IS NOT NULL
-		    GROUP BY credential_id, COALESCE(outbound_model, client_model)
+		    -- R50: probe traffic excluded so the error_rate denominator is
+		    -- business traffic only (consistent with Step 1 above).
+		    FROM request_logs_with_current_month rl
+		    WHERE rl.ts > NOW() - INTERVAL '5 minutes'
+		      AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
+		      AND rl.credential_id IS NOT NULL
+		      AND rl.outbound_model IS NOT NULL
+		    GROUP BY rl.credential_id, COALESCE(rl.outbound_model, rl.client_model)
 		) AS win
 		WHERE pps.credential_id = win.credential_id
 		  AND pps.raw_model_name = win.raw_model_name

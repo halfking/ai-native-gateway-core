@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -79,10 +80,13 @@ func PickProbeModelForCredential(ctx context.Context, db pickDB, credID int) (Pi
 	var topModel string
 	err = db.QueryRow(ctx, `
 		SELECT client_model
-		FROM request_logs_with_current_month
-		WHERE credential_id = $1
+		FROM request_logs_with_current_month rl
+		WHERE rl.credential_id = $1
 		  AND ts > now() - interval '7 days'
 		  AND success = TRUE
+		  -- R50: dual-arm probe exclusion (INV-3) — a model only probes ever
+		  -- touched must not win "most-used" and steer the probe target.
+		  AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
 		  AND client_model IS NOT NULL
 		GROUP BY client_model
 		ORDER BY count(*) DESC

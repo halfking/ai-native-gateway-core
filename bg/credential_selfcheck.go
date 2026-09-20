@@ -240,6 +240,12 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 			FROM request_logs_hot rl
 			WHERE rl.credential_id = c.id
 			  AND rl.ts >= now() - interval '24 hours'
+			  -- R50 note: probe rows are deliberately INCLUDED here (no
+			  -- origin_stage arm). A failed probe is genuine evidence the
+			  -- credential is unhealthy — unlike usage scans (INV-3), the
+			  -- self-reinforcing direction is damped by the
+			  -- credentialSelfcheckWindow between picks. Same trade-off as
+			  -- the deferred F18 candidate_failure_logs attribution.
 			  AND (rl.success = FALSE OR COALESCE(rl.status_code, 0) >= 400)
 		) e ON e.last_error_at IS NOT NULL
 		LEFT JOIN LATERAL (
@@ -475,7 +481,10 @@ func (w *CredentialSelfcheckWorker) selfcheckRecentFallback(ctx context.Context,
 			  -- 2026-09-20 probe-volume policy: 3-day usage scope (was 7 days)
 			  AND rl.ts >= now() - interval '3 days'
 			  AND rl.success = TRUE
-			  AND NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)
+			  -- R50: dual-arm exclusion (quality_flags + origin_stage) — the
+			  -- probe gateway round carries no 'probe' flag, only the flag arm
+			  -- let it count as usage here (same gap R49 F4 closed elsewhere).
+			  ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
 			  AND COALESCE(rl.client_model, '') <> ''
 		) ranked
 		GROUP BY model ORDER BY count DESC, model LIMIT 10`, credentialID, tenant)
