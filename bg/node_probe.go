@@ -803,6 +803,15 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 	//
 	// The 2-second flash-protection in Manager.UpdateOnFailure still
 	// prevents transient noise (a success within 2s) from re-arming.
+	//
+	// 2026-09-20 probe-volume policy (INV-2): the re-arm condition gains a
+	// healthy-parked branch. Success now parks rows 30 days out
+	// (MarkNodeProbeHealthy / mirrorNodeProbeState / runOne success), so a
+	// future next_retry_at alone no longer implies "mid-ladder" — it is
+	// usually a healthy row parked by design. A fresh REAL failure must
+	// restart tracking immediately for exactly those rows. Ladder rows
+	// (last_err_code set or consecutive_failures > 0) keep the 2026-07-16
+	// semantics: their schedule is left alone so the chain can advance.
 	_, _ = w.db.Exec(ctx, `
 		INSERT INTO node_probe_state (credential_id, raw_model_name, next_retry_at, next_retry_seconds, paused, in_flight_until, consecutive_failures, last_err_code)
 		VALUES ($1, $2, now() + interval '5 seconds', 5, FALSE, NULL, 0, NULL)
@@ -810,32 +819,39 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 		SET next_retry_at = CASE
 		        WHEN node_probe_state.paused = TRUE
 		          OR node_probe_state.next_retry_at <= now()
+		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
 		        THEN now() + interval '5 seconds'
 		        ELSE node_probe_state.next_retry_at
 		    END,
 		    next_retry_seconds = CASE
 		        WHEN node_probe_state.paused = TRUE
 		          OR node_probe_state.next_retry_at <= now()
+		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
 		        THEN 5
 		        ELSE node_probe_state.next_retry_seconds
 		    END,
 		    in_flight_until = CASE
 		        WHEN node_probe_state.paused = TRUE
 		          OR node_probe_state.next_retry_at <= now()
+		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
 		        THEN NULL
 		        ELSE node_probe_state.in_flight_until
 		    END,
 		    paused = FALSE,
-		    -- Reset the counter only when the cycle is being restarted
-		    -- from a paused row. For already-expired rows the worker
-		    -- (runOne) owns the counter and increments it by 1 per round;
-		    -- touching it here would collapse the ladder back to rung 1.
+		    -- Reset the counter when the cycle is being restarted from a
+		    -- paused or healthy-parked row. For already-expired ladder rows
+		    -- the worker (runOne) owns the counter and increments it by 1 per
+		    -- round; touching it here would collapse the ladder back to rung 1.
 		    consecutive_failures = CASE
-		        WHEN node_probe_state.paused = TRUE THEN 0
+		        WHEN node_probe_state.paused = TRUE
+		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
+		        THEN 0
 		        ELSE node_probe_state.consecutive_failures
 		    END,
 		    last_err_code = CASE
-		        WHEN node_probe_state.paused = TRUE THEN NULL
+		        WHEN node_probe_state.paused = TRUE
+		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
+		        THEN NULL
 		        ELSE node_probe_state.last_err_code
 		    END,
 		    updated_at = now()
@@ -1251,12 +1267,21 @@ func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
 // merely exists, so a stricter filter would stop pumping probeable rows, and
 // a (re)created binding lets the row re-enter the pump automatically —
 // mirroring the eligibility gate's re-entry semantics.
+//
+// 2026-09-20 probe-volume policy (INV-1): the pump only enqueues rows with
+// row-level error evidence (recorded err code, pending failure counter, or
+// never confirmed healthy). Healthy-parked rows — including legacy rows whose
+// 30-day-parked next_retry_at has elapsed — stay out: probing a pair that
+// succeeded (business or probe) with zero error signal is exactly the
+// "normal-state continuous probing" this policy removes. The first real
+// failure flips the row back into this filter via Submit's re-arm.
 func pumpDueStatesSQL() string {
 	return `
 		SELECT nps.credential_id, nps.raw_model_name, COALESCE(cred.tenant_id, 'default')
 		FROM node_probe_state nps
 		JOIN credentials cred ON cred.id = nps.credential_id
 		WHERE nps.paused = FALSE AND nps.next_retry_at <= now()
+		  AND ` + nodeProbeErrorEvidenceSQL("nps") + `
 		  AND ` + automaticProbeEligibilityExistsSQL("nps.credential_id") + `
 		  AND EXISTS (
 			SELECT 1
@@ -1313,12 +1338,14 @@ func nonBlockingWake(ch chan<- struct{}) {
 // ladder rolls over — up to the 6h ladder cap after the most recent
 // failure (the ladder no longer parks rows indefinitely).
 //
-// The "next_retry_at = now() + 1h" choice mirrors runOne's success
-// branch (BUG #6 fix, 2026-07-22). Previously was 24h; that left
-// credentials un-probed for 24h after every successful probe, which
-// was too long for upstream changes (key rotation, quota change,
-// model deprecation) to be detected. Capped to 1h so the asset
-// health probe + credential_recovery ticker can act within an hour.
+// The "next_retry_at = now() + 30 days" choice is the 2026-09-20 probe-volume
+// policy: park, don't re-arm (docs/probe/2026-09-20-probe-volume-optimization.md).
+// The pre-2026-09-20 value (+1h) meant every successful business request armed
+// another probe one hour later, so healthy in-use pairs were re-probed
+// indefinitely by the pump/reconcile loop. A healthy-parked row
+// (last_direct_ok=TRUE, no err, no failure counter) is now invisible to every
+// scheduler; the first new real failure re-arms it to now()+5s via Submit's
+// ON CONFLICT healthy-parked branch.
 //
 // 2026-09-08: also writes through to credential_model_bindings and
 // credentials (syncHealthyNodeSurfaces). The executor calls this on every
@@ -1334,14 +1361,14 @@ func MarkNodeProbeHealthy(ctx context.Context, db *pgxpool.Pool, credentialID in
 			last_direct_ok, last_gateway_ok,
 			last_err_code, last_err_detail,
 			updated_at
-		) VALUES ($1, $2, 0, 1, now(), now() + interval '1 hour', 3600, FALSE, NULL, TRUE, TRUE, NULL, NULL, now())
+		) VALUES ($1, $2, 0, 1, now(), now() + interval '30 days', 2592000, FALSE, NULL, TRUE, TRUE, NULL, NULL, now())
 		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
 		SET consecutive_failures = 0,
 		    consecutive_successes = node_probe_state.consecutive_successes + 1,
 		    last_attempt_at = now(),
-		    next_retry_at = now() + interval '1 hour',
-		    next_retry_seconds = 3600,
-		    paused = FALSE,
+		    next_retry_at = now() + interval '30 days',
+		    next_retry_seconds = 2592000,
+		    paused = node_probe_state.paused,
 		    in_flight_until = NULL,
 		    last_direct_ok = TRUE,
 		    last_gateway_ok = TRUE,
@@ -2132,27 +2159,22 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	durationMs := int(now.Sub(startedAt).Milliseconds())
 
 	if success {
-		// 2026-07-22 fix (BUG #6): previous value was 24h, which left
-		// the credential un-probed for 24h after every successful
-		// probe. Combined with the backoff chain (30s → 1m → 5m → 1h →
-		// 2h → 24h), a cred that just hit attempt=6 (24h cooldown)
-		// was effectively never re-checked for a full day after the
-		// last failure — long enough for the upstream to silently
-		// change (rotate API key, quota change, deprecation) without
-		// the gateway noticing. Capped to 1h: the active_probe
-		// submitter (consecutive_threshold=2, line 2184-ish) and
-		// credential_recovery 60s ticker can act on any new auth /
-		// availability state within ~1h of upstream change. The
-		// asset health probe still runs hourly, so this is a
-		// layered defense — the cred is re-probed at most once per
-		// hour instead of once per day.
+		// 2026-09-20 probe-volume policy: success parks the row 30 days out
+		// instead of re-arming +1h. The 2026-07-22 BUG #6 fix chose +1h so a
+		// silently-changed upstream (key rotation, quota, deprecation) would
+		// be re-checked within an hour; in practice it turned every probe
+		// success into another probe an hour later, indefinitely, for
+		// healthy pairs. Under the error-gated policy the failure detectors
+		// (active_probe submitter consecutive_threshold=2, request-path
+		// Submit, credential_recovery ticker) own change detection: the first
+		// real failure re-arms this row to now()+5s immediately.
 		if _, err := w.db.Exec(ctx, `
 				UPDATE node_probe_state SET
 					consecutive_failures = 0,
 					consecutive_successes = consecutive_successes + 1,
 					last_attempt_at = now(),
-					next_retry_at = now() + interval '1 hour',
-					next_retry_seconds = 3600,
+					next_retry_at = now() + interval '30 days',
+					next_retry_seconds = 2592000,
 					paused = FALSE,
 					last_run_id = NULL,
 					last_direct_ok = TRUE,

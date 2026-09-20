@@ -26,20 +26,53 @@ func TestDailyProbeAuditSQLFiltersMissingBindingPairs(t *testing.T) {
 	for _, want := range []string{
 		"FROM credential_model_bindings cmb",
 		"JOIN provider_models pm ON pm.id = cmb.provider_model_id",
-		"cmb.credential_id = recent.credential_id",
+		"cmb.credential_id = recent.id",
 		"pm.raw_model_name = recent.raw_model_name",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("daily audit SQL missing binding-chain filter fragment %q:\n%s", want, sql)
 		}
 	}
-	// The filter must sit in the outer WHERE (before ORDER BY) so binding-less
-	// pairs never consume a submission slot. The correlation anchor
-	// `cmb.credential_id = recent.credential_id` is unique to the outer EXISTS
-	// (the request_logs branch correlates `cmb.credential_id = rl.credential_id`).
-	filterPos := strings.Index(sql, "cmb.credential_id = recent.credential_id")
-	orderByPos := strings.Index(sql, "ORDER BY")
+	// The filter must sit in the outer WHERE (before the final ORDER BY) so
+	// binding-less pairs never consume a submission slot. The correlation
+	// anchor `cmb.credential_id = recent.id` is unique to the outer EXISTS.
+	// Anchor on the OUTER ORDER BY ("ORDER BY recent.id") — the CTEs above
+	// legitimately carry their own ORDER BY (row_number / DISTINCT ON).
+	filterPos := strings.Index(sql, "cmb.credential_id = recent.id")
+	orderByPos := strings.Index(sql, "ORDER BY recent.id")
 	if filterPos < 0 || orderByPos < 0 || filterPos > orderByPos {
-		t.Fatalf("binding-chain filter must be applied before ORDER BY (filter=%d order=%d)", filterPos, orderByPos)
+		t.Fatalf("binding-chain filter must be applied before the outer ORDER BY (filter=%d order=%d)", filterPos, orderByPos)
+	}
+}
+
+// TestDailyProbeAuditSQLErrorGated pins the 2026-09-20 probe-volume policy
+// (docs/probe/2026-09-20-probe-volume-optimization.md): the daily audit is an
+// error-gated verification scan, not a fleet census.
+func TestDailyProbeAuditSQLErrorGated(t *testing.T) {
+	sql := dailyProbeAuditSQL()
+	for _, want := range []string{
+		// INV-3: probe traffic must not count as usage (self-sustaining loop).
+		"NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)",
+		// INV-3: 3-day usage scope on the request_logs branch.
+		probeUsageWindowInterval,
+		// INV-5: usage branch only for credentials with failure evidence.
+		credentialFailureEvidenceSQL("c.id", probeUsageWindowInterval),
+		// INV-4: two-recent-probe-success gate on BOTH branches.
+		credentialTwoProbeSuccessGateSQL("u.id"),
+		credentialTwoProbeSuccessGateSQL("f.id"),
+		// per-credential usage cap (2 most recently used models).
+		"rn <= 2",
+		// bounded run.
+		"LIMIT $1",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("daily audit SQL missing policy fragment %q:\n%s", want, sql)
+		}
+	}
+	if dailyProbeAuditBatch != 100 {
+		t.Fatalf("daily audit batch = %d, want 100 (bounded run)", dailyProbeAuditBatch)
+	}
+	if dailyProbeUsagePerCredentialCap != 2 {
+		t.Fatalf("usage per-credential cap = %d, want 2", dailyProbeUsagePerCredentialCap)
 	}
 }

@@ -169,6 +169,12 @@ type ProbeService struct {
 	siblingModelsFn func(ctx context.Context, credID int, model string) ([]string, error)
 	lastProbeRunFn  func(ctx context.Context, credID int, model string) (*nodeProbeRunSummary, error)
 	removeSkippedFn func(ctx context.Context, task ProbeQueueTask, reason string)
+	// twoSiblingSuccessesFn overrides condition ③'s evidence lookup
+	// (2026-09-20 probe-volume policy, INV-4): bool = "credential already has
+	// two recently probe-verified models and the pair carries no error state".
+	// error fails open (probe runs). Tests stub it; production uses the SQL
+	// path in probe_necessity.go.
+	twoSiblingSuccessesFn func(ctx context.Context, credID int, model string) (bool, error)
 	// skipQueue overrides the queue the skip-removal path runs through —
 	// tests stub it (Remove + publishRemovedTransition) instead of building
 	// a *ProbeQueue on a live pgxpool. Production leaves it nil so removal
@@ -820,13 +826,16 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 		return
 	}
 	if success {
+		// 2026-09-20 probe-volume policy: park 30 days instead of re-arming
+		// +1h — a probe success must not schedule the next probe. A new real
+		// failure re-arms via Submit's healthy-parked branch (+5s).
 		_, _ = w.db.Exec(ctx, `
 			UPDATE node_probe_state SET
 				consecutive_failures = 0,
 				consecutive_successes = consecutive_successes + 1,
 				last_attempt_at = now(),
-				next_retry_at = now() + interval '1 hour',
-				next_retry_seconds = 3600,
+				next_retry_at = now() + interval '30 days',
+				next_retry_seconds = 2592000,
 				paused = FALSE,
 				last_direct_ok = TRUE,
 				last_gateway_ok = TRUE,

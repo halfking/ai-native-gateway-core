@@ -472,7 +472,8 @@ func (w *CredentialSelfcheckWorker) selfcheckRecentFallback(ctx context.Context,
 			LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
 			WHERE rl.credential_id = $1
 			  AND rl.tenant_id = $2
-			  AND rl.ts >= now() - interval '7 days'
+			  -- 2026-09-20 probe-volume policy: 3-day usage scope (was 7 days)
+			  AND rl.ts >= now() - interval '3 days'
 			  AND rl.success = TRUE
 			  AND NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)
 			  AND COALESCE(rl.client_model, '') <> ''
