@@ -72,7 +72,9 @@ func (a *DailyProbeAudit) Start(ctx context.Context) {
 	}
 	a.startOnce.Do(func() {
 		go func() {
-			a.run(ctx)
+			// R50 审计 P3：裸 go 无 recover，单次 panic 即整进程崩溃——
+			// 每轮 run 单独守护，panic 后循环继续（带 recover 的 runRecovered）。
+			a.runRecovered(ctx)
 			ticker := time.NewTicker(dailyProbeInterval)
 			defer ticker.Stop()
 			for {
@@ -82,7 +84,7 @@ func (a *DailyProbeAudit) Start(ctx context.Context) {
 				case <-a.stopCh:
 					return
 				case <-ticker.C:
-					a.run(ctx)
+					a.runRecovered(ctx)
 				}
 			}
 		}()
@@ -164,6 +166,16 @@ func dailyProbeAuditSQL() string {
 		  )
 		ORDER BY recent.id, recent.raw_model_name
 		LIMIT $1`
+}
+
+// runRecovered 守护单轮 run：panic 记日志后由 Start 的 tick 循环继续下一轮。
+func (a *DailyProbeAudit) runRecovered(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("daily_probe_audit: run panic recovered", "recover", rec)
+		}
+	}()
+	a.run(ctx)
 }
 
 func (a *DailyProbeAudit) run(ctx context.Context) {

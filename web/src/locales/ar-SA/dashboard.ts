@@ -1,6 +1,7 @@
 export default {
   title: "لوحة المعلومات",
   refresh: "تحديث",
+  modelsSelectedCount: 'تم اختيار {n} من النماذج',  // R50 ModelPicker compact
 tabs: {
     board: 'Board',
     liveStream: 'تدفق الطلبات المباشر',

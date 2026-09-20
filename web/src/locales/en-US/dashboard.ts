@@ -6,6 +6,7 @@
 export default {
   title: 'Dashboard',
   refresh: 'Refresh',
+  modelsSelectedCount: '{n} models selected',  // R50 ModelPicker compact trigger
   tabs: {
     board: 'Board',
     liveStream: 'Live Request Stream',
