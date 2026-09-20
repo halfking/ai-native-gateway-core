@@ -486,6 +486,10 @@ files=(
   # （按角色×任务类型自动选 LLM）。CREATE TABLE IF NOT EXISTS 幂等。
   # R48 提交时漏登记致契约门禁红（R33 期 715 同款缺口），补录于此。
   "$ROOT_DIR/sql/migrations/startup/730_session_role_hierarchy.sql"
+  # 2026-09-21 R50 审计轮：731 auto_route_selections 角色路由归因三列
+  # （agent_role/task_kind/routing_source，父表+hot 双表 ADD COLUMN IF NOT
+  # EXISTS 幂等）——亲和学习剔除 role 强制选型行的数据基础。
+  "$ROOT_DIR/sql/migrations/startup/731_auto_route_selection_role_attribution.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

@@ -175,6 +175,9 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// 730 (R48, 2026-09-20): session role hierarchy — five-point sync
 		// completed in the same round as the canonical copy landed.
 		"730_session_role_hierarchy.sql": sessionRoleHierarchyMigration730,
+		// 731 (R50, 2026-09-21): auto_route_selections role attribution —
+		// five-point sync completed in the same round as the canonical copy.
+		"731_auto_route_selection_role_attribution.sql": autoRouteSelectionRoleAttributionMigration731,
 	}
 
 	for name, embedded := range expected {
