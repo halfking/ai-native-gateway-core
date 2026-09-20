@@ -267,13 +267,27 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		beforeBoostWinner = recommended[0].Candidate.CanonicalName
 	}
 	tierFailoverModels := []string(nil)
+	// R48 修订（2026-09-20，245 e2e 实测抓到）：role 偏好必须在 work-type
+	// tier 过滤之前算出并并入 tier 豁免名单——applyTierPolicyWithRoutes 的
+	// pinned 参数仅用于过滤豁免（无 pin 提升语义）。不并入则文档化级联
+	// pin > role_route > work_type tier 自相矛盾：tier 配置不含偏好模型时
+	// （实测 worker+solution 的 gpt-5.6-sol 被 glm-5.2 secondary 档滤除）
+	// promoteFirstPresent 找不到偏好，role_route 静默让位。
+	roleKind := TaskKind("")
+	if d.roleRoutingActive() {
+		roleKind = ClassifyTaskKind(sigs)
+	}
+	rolePrefs := []string(nil)
+	if roleRoutingOn {
+		rolePrefs = d.roleLLMRouter.SelectLLM(normalizeAgentRole(sigs.AgentRole), roleKind)
+	}
 	if d.workTypeRouteStore != nil {
 		pins := []string(nil)
 		if d.overrideStore != nil {
 			pins = d.overrideStore.GetPins(task, prof)
 		}
 		tierFailoverModels = d.workTypeRouteStore.TierFailoverModelsWithWorkType(recommended, task, requestedWorkType)
-		recommended = d.workTypeRouteStore.ApplyTierPolicyWithWorkType(recommended, task, requestedWorkType, pins)
+		recommended = d.workTypeRouteStore.ApplyTierPolicyWithWorkType(recommended, task, requestedWorkType, append(pins, rolePrefs...))
 	}
 	tierChangedWinner := len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforeBoostWinner
 
@@ -281,18 +295,11 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	// policy 之后、pin promote 之前插入，admin pin 仍是最强约束。仅
 	// AUTO_ROLE_ROUTING_ENABLED 开启 + 子代理角色时介入；flag-off / main /
 	// unknown 路径零改动（决策字节级不变）。
-	roleKind := TaskKind("")
 	roleChangedWinner := false
-	if d.roleRoutingActive() {
-		roleKind = ClassifyTaskKind(sigs)
-	}
-	if roleRoutingOn {
-		role := normalizeAgentRole(sigs.AgentRole)
-		if prefs := d.roleLLMRouter.SelectLLM(role, roleKind); len(prefs) > 0 {
-			if promoted, hit := promoteFirstPresent(recommended, prefs); hit != "" {
-				recommended = promoted
-				roleChangedWinner = len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforeBoostWinner
-			}
+	if len(rolePrefs) > 0 {
+		if promoted, hit := promoteFirstPresent(recommended, rolePrefs); hit != "" {
+			recommended = promoted
+			roleChangedWinner = len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforeBoostWinner
 		}
 	}
 

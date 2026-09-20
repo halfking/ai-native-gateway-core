@@ -580,8 +580,20 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	if d.overrideStore != nil {
 		recommended = d.overrideStore.FilterBanned(recommended, task, prof)
 	}
+	// R48 修订（2026-09-20，245 e2e 实测抓到）：role 偏好必须在 work-type
+	// tier 过滤之前算出并并入 tier 豁免名单（该参数仅用于过滤豁免，无 pin
+	// 提升语义），否则 tier 配置不含偏好模型时 role_route 静默让位，
+	// 违背文档化级联 pin > role_route > work_type tier。与 V2 同修。
+	roleKind := TaskKind("")
+	if d.roleRoutingActive() {
+		roleKind = ClassifyTaskKind(sigs)
+	}
+	rolePrefs := []string(nil)
+	if roleRoutingOn {
+		rolePrefs = d.roleLLMRouter.SelectLLM(normalizeAgentRole(sigs.AgentRole), roleKind)
+	}
 	if d.workTypeRouteStore != nil {
-		recommended = d.workTypeRouteStore.ApplyTierPolicyWithWorkType(recommended, task, requestedWorkType, nil)
+		recommended = d.workTypeRouteStore.ApplyTierPolicyWithWorkType(recommended, task, requestedWorkType, rolePrefs)
 	}
 
 	// Step 3b（R48, 2026-09-20）: role × kind promotion —— work-type tier
@@ -589,22 +601,15 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	// 仅 AUTO_ROLE_ROUTING_ENABLED 开启 + 子代理角色（worker/planner/
 	// orchestrator）时介入；偏好列表中首个在候选池的模型提升到首位，
 	// 全不在则静默让位。flag-off / main / unknown 路径零改动（字节级不变）。
-	roleKind := TaskKind("")
 	preRoleWinner := ""
 	if len(recommended) > 0 {
 		preRoleWinner = recommended[0].Candidate.CanonicalName
 	}
-	if d.roleRoutingActive() {
-		roleKind = ClassifyTaskKind(sigs)
-	}
-	if roleRoutingOn {
-		role := normalizeAgentRole(sigs.AgentRole)
-		if prefs := d.roleLLMRouter.SelectLLM(role, roleKind); len(prefs) > 0 {
-			if promoted, hit := promoteFirstPresent(recommended, prefs); hit != "" {
-				recommended = promoted
-				if hit != preRoleWinner {
-					routingSource = "role_route"
-				}
+	if len(rolePrefs) > 0 {
+		if promoted, hit := promoteFirstPresent(recommended, rolePrefs); hit != "" {
+			recommended = promoted
+			if hit != preRoleWinner {
+				routingSource = "role_route"
 			}
 		}
 	}
