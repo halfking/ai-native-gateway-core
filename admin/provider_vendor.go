@@ -36,6 +36,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -43,6 +44,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
@@ -458,16 +460,46 @@ func (h *Handler) enrollCredentialModels(ctx context.Context, credentialID int, 
 			// families are preserved by the CASE guard. See
 			// provider_vendor_family_test.go for the regression guard.
 			family := familyForProviderRefresh(stdName)
-			//nolint:errcheck // best-effort exec, non-critical
-			h.db.Exec(ctx, `
-				INSERT INTO models_canonical (canonical_name, family, source, status)
-				VALUES ($1, $2, 'provider_refresh', 'active')
-				ON CONFLICT (canonical_name) DO UPDATE SET
-					family = CASE
-						WHEN models_canonical.family = 'unknown' THEN EXCLUDED.family
-				ELSE models_canonical.family
-				END
-			`, stdName, family)
+			// Junk-seed guard（R49 审计收口，2026-09-20）：StandardizeName 剥
+			// vendor 前缀，探测返回 "claude/opus-5" 会在 claude-opus-5 已存在
+			// 时盲插截断行 "opus-5"——cleanup 脚本清完又被回种。谓词与
+			// provider/client.go resolveModelDB 的 auto_discovered 守卫同款
+			//（归一化相等 OR 裸后缀截断形）。命中且非自身时跳过 INSERT；
+			// 92f18cf22 只堵了 resolveModelDB 一处，此处是另一条持续回种源。
+			// TODO(R50)：三处归一化谓词（本处/client.go/admin/models.go 查重）
+			// 收敛到 modelname 包单一实现，避免口径漂移。
+			var blocker string
+			err := h.db.QueryRow(ctx, `
+				SELECT canonical_name FROM models_canonical
+				WHERE status = 'active'
+				  AND (
+				    replace(replace(replace(replace(lower(canonical_name), '.', '_'), '-', '_'), ' ', '_'), '/', '_') = $1
+				    OR ('_' || replace(replace(replace(replace(lower(canonical_name), '.', '_'), '-', '_'), ' ', '_'), '/', '_')) LIKE '%-' || $1
+				  )
+				ORDER BY length(canonical_name), canonical_name
+				LIMIT 1
+			`, stdName).Scan(&blocker)
+			switch {
+			case err == nil && blocker != stdName:
+				slog.Debug("provider_refresh seed suppressed: existing canonical",
+					"std_name", stdName, "existing", blocker)
+			case err == nil, errors.Is(err, pgx.ErrNoRows):
+				// blocker == stdName（自身已存在 → 走冲突修复路径）或查无
+				// 阻断行 → 正常 INSERT。守卫查询本身失败时不放行（与
+				// client.go 同款 fail-closed）。
+				//nolint:errcheck // best-effort exec, non-critical
+				h.db.Exec(ctx, `
+					INSERT INTO models_canonical (canonical_name, family, source, status)
+					VALUES ($1, $2, 'provider_refresh', 'active')
+					ON CONFLICT (canonical_name) DO UPDATE SET
+						family = CASE
+							WHEN models_canonical.family = 'unknown' THEN EXCLUDED.family
+					ELSE models_canonical.family
+					END
+				`, stdName, family)
+			default:
+				slog.Warn("provider_refresh seed guard query failed, skipping insert", "std_name", stdName, "error", err)
+			}
 		}
 		if uErr := h.upsertModelForProvider(ctx, credentialID, m); uErr != nil {
 			failed++

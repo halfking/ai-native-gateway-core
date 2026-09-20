@@ -61,9 +61,14 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 			// R48: 会话角色变化即身份变化，缓存结论失效重判（仅 flag 开启时）。
 			roleMismatch := d.roleRoutingActive() &&
 				normalizeAgentRole(cached.Role) != normalizeAgentRole(sigs.AgentRole)
-			if roleMismatch {
+			// R49 修订（2026-09-20 审计 P1）：task_kind 跨轮变化同样失效重判
+			//（与 V1 同款——首轮 kind 的模型被缓存放大会话级固化；旧缓存
+			// Kind 为空时与 unknown 归一同形，纯闲聊会话不误伤）。
+			kindMismatch := d.roleRoutingActive() &&
+				normalizeTaskKind(cached.Kind) != normalizeTaskKind(ClassifyTaskKind(sigs))
+			if roleMismatch || kindMismatch {
 				d.intentCache.Invalidate(sessionID)
-				slog.Info("autoroute.v2: session role changed, reclassifying",
+				slog.Info("autoroute.v2: session role/kind changed, reclassifying",
 					"session_id", sessionID,
 					"cached_role", cached.Role,
 					"new_role", sigs.AgentRole,
@@ -223,7 +228,15 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	}
 	// R48: role 路由开启且请求带可路由角色时，偏好模型可能在 top-N 之外，
 	// 需要全候选窗口（与 work-type/pin 同一处理）。
-	roleRoutingOn := d.roleRoutingActive() && roleRoutedRoles[normalizeAgentRole(sigs.AgentRole)]
+	// R49 修订（2026-09-20 审计 P1）：门禁交给 SelectLLM 返回值（DB 行对任意
+	// 角色生效，admin 显式给 main 配行可达；详见 V1 同款注释）。
+	roleKind := TaskKind("")
+	rolePrefs := []string(nil)
+	if d.roleRoutingActive() {
+		roleKind = ClassifyTaskKind(sigs)
+		rolePrefs = d.roleLLMRouter.SelectLLM(normalizeAgentRole(sigs.AgentRole), roleKind)
+	}
+	roleRoutingOn := len(rolePrefs) > 0
 	if roleRoutingOn {
 		keepFullCandidateSet = true
 	}
@@ -273,14 +286,8 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	// pin > role_route > work_type tier 自相矛盾：tier 配置不含偏好模型时
 	// （实测 worker+solution 的 gpt-5.6-sol 被 glm-5.2 secondary 档滤除）
 	// promoteFirstPresent 找不到偏好，role_route 静默让位。
-	roleKind := TaskKind("")
-	if d.roleRoutingActive() {
-		roleKind = ClassifyTaskKind(sigs)
-	}
-	rolePrefs := []string(nil)
-	if roleRoutingOn {
-		rolePrefs = d.roleLLMRouter.SelectLLM(normalizeAgentRole(sigs.AgentRole), roleKind)
-	}
+	// roleKind/rolePrefs 已在候选窗口展开前算出（R49 修订：门禁即 SelectLLM
+	// 返回值），此处直接复用。
 	if d.workTypeRouteStore != nil {
 		pins := []string(nil)
 		if d.overrideStore != nil {
@@ -295,11 +302,19 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	// policy 之后、pin promote 之前插入，admin pin 仍是最强约束。仅
 	// AUTO_ROLE_ROUTING_ENABLED 开启 + 子代理角色时介入；flag-off / main /
 	// unknown 路径零改动（决策字节级不变）。
+	// R49 修订（2026-09-20 审计 P2）：role_route 判定基准改为 tier 后 winner
+	//（与 V1 的 preRoleWinner 同款）——tier policy 已把 winner 换成 role 偏好
+	// 模型本身时（promoteFirstPresent i==0 空转），功劳属 work_type_route 而
+	// 非 role_route；同输入下 V1/V2 审计标签不再分叉。
+	postTierWinner := ""
+	if len(recommended) > 0 {
+		postTierWinner = recommended[0].Candidate.CanonicalName
+	}
 	roleChangedWinner := false
 	if len(rolePrefs) > 0 {
 		if promoted, hit := promoteFirstPresent(recommended, rolePrefs); hit != "" {
 			recommended = promoted
-			roleChangedWinner = len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforeBoostWinner
+			roleChangedWinner = len(recommended) > 0 && recommended[0].Candidate.CanonicalName != postTierWinner
 		}
 	}
 

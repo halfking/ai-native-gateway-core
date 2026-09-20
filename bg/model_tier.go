@@ -152,7 +152,7 @@ func (m *ModelTier) refresh(ctx context.Context) {
 				FROM request_logs_hot rl
 				WHERE rl.success
 				  AND rl.ts > now() - make_interval(hours => $1)
-				  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl") + `
+				  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
 				  AND COALESCE(rl.outbound_model, rl.client_model) IS NOT NULL
 				  AND COALESCE(rl.outbound_model, rl.client_model) <> ''
 				GROUP BY COALESCE(rl.outbound_model, rl.client_model)

@@ -119,20 +119,28 @@ var taskKindChannels = []struct {
 			"solution design", "propose a solution", "design a solution",
 			"write a solution", "solution document", "remediation plan",
 		},
-		enWords: nil,
+		// R49 修订（2026-09-20 审计 P2）：补 "solution" 裸词——重量池两通道
+		// 中 solution 词表最窄（此前 enWords 为 nil），物化命名漏报即落
+		// unknown→轻池，违背文件头"重任务误判轻池代价更高"的优先级声明。
+		// 词边界匹配下不误伤其它词。
+		enWords: []string{"solution"},
 	},
 	{
 		kind: KindPlanning,
 		phrases: []string{
 			// 中文
-			"规划", "制定计划", "工作计划", "项目计划", "任务拆解", "拆解任务",
+			"规划", "计划", "制定计划", "工作计划", "项目计划", "任务拆解", "拆解任务",
 			"拆分任务", "任务划分", "任务分解", "工作分解", "排期", "里程碑",
 			"路线图", "优先级排序", "迭代计划", "冲刺计划",
 			// 英文多词短语
 			"create a plan", "write a plan", "project plan", "work breakdown",
 			"task breakdown", "break down the", "milestone plan", "sprint plan",
 		},
-		enWords: []string{"roadmap", "milestones", "prioritize"},
+		// R49 修订（2026-09-20 审计 P2）：补 "plan" 裸词（词边界匹配不误伤）
+		// 与中文 "计划" 裸词——"plan the migration"/"计划迁移" 这类高频物化
+		// 命名此前落 unknown→轻池。运维语境（部署/重启等）在 ops 通道先行
+		// 命中，不受影响。
+		enWords: []string{"plan", "roadmap", "milestones", "prioritize"},
 	},
 	{
 		kind: KindAnalysis,

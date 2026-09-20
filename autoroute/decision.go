@@ -422,6 +422,15 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 			if d.roleRoutingActive() && normalizeAgentRole(cached.Role) != normalizeAgentRole(sigs.AgentRole) {
 				d.intentCache.Invalidate(sessionID)
 				recordCacheMiss()
+			} else if d.roleRoutingActive() &&
+				normalizeTaskKind(cached.Kind) != normalizeTaskKind(ClassifyTaskKind(sigs)) {
+				// R49 修订（2026-09-20 审计 P1）：同会话同角色下 task_kind 跨轮
+				// 变化同样是路由身份变化——首轮"总结一下"缓存轻池后，第二轮
+				// "深入分析"若复用缓存，kind 路由在 TTL/50hit 内静默失效。
+				// kind 分类是纯函数（微秒级），失效代价可忽略；旧缓存 Kind 为
+				// 空时与 unknown 归一同形，不会误伤纯闲聊会话。
+				d.intentCache.Invalidate(sessionID)
+				recordCacheMiss()
 			} else if cached.WorkType != requestedWorkType {
 				d.intentCache.Invalidate(sessionID)
 				recordCacheMiss() // F-7: workType mismatch invalidated cache
@@ -534,7 +543,17 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	candidateTopN := resultTopN
 	// R48: role 路由开启且请求带可路由角色时，偏好模型可能在 top-N 之外，
 	// 需要全候选窗口（与 work-type/pin 同一处理）。
-	roleRoutingOn := d.roleRoutingActive() && roleRoutedRoles[normalizeAgentRole(sigs.AgentRole)]
+	// R49 修订（2026-09-20 审计 P1）：门禁交给 SelectLLM 返回值——原实现先按
+	// roleRoutedRoles（仅 worker/planner/orchestrator）拦门，SelectLLM 内部
+	// "DB 行对任意角色生效（admin 显式给 main 配行可达）"的语义被调用方短路，
+	// main/unknown 的 DB 行成死数据。flag 开启即询 SelectLLM，返回非空才算命中。
+	roleKind := TaskKind("")
+	rolePrefs := []string(nil)
+	if d.roleRoutingActive() {
+		roleKind = ClassifyTaskKind(sigs)
+		rolePrefs = d.roleLLMRouter.SelectLLM(normalizeAgentRole(sigs.AgentRole), roleKind)
+	}
+	roleRoutingOn := len(rolePrefs) > 0
 	if d.workTypeRouteStore != nil &&
 		(d.workTypeRouteStore.HasRoutes(task) || requestedWorkType != "") {
 		if poolSize := len(d.index.Snapshot()); poolSize > candidateTopN {
@@ -584,16 +603,15 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	// tier 过滤之前算出并并入 tier 豁免名单（该参数仅用于过滤豁免，无 pin
 	// 提升语义），否则 tier 配置不含偏好模型时 role_route 静默让位，
 	// 违背文档化级联 pin > role_route > work_type tier。与 V2 同修。
-	roleKind := TaskKind("")
-	if d.roleRoutingActive() {
-		roleKind = ClassifyTaskKind(sigs)
-	}
-	rolePrefs := []string(nil)
-	if roleRoutingOn {
-		rolePrefs = d.roleLLMRouter.SelectLLM(normalizeAgentRole(sigs.AgentRole), roleKind)
+	// R49 修订（2026-09-20 审计 P2）：V1 tier 豁免并入 pins，与 V2 对齐——
+	// V1 原样传 rolePrefs 时，admin pin 不在 tier 配置内会被硬过滤、后置
+	// PromotePins 空转（V2 自 ebfab01ac 起即为 append(pins, rolePrefs...)）。
+	pins := []string(nil)
+	if d.overrideStore != nil {
+		pins = d.overrideStore.GetPins(task, prof)
 	}
 	if d.workTypeRouteStore != nil {
-		recommended = d.workTypeRouteStore.ApplyTierPolicyWithWorkType(recommended, task, requestedWorkType, rolePrefs)
+		recommended = d.workTypeRouteStore.ApplyTierPolicyWithWorkType(recommended, task, requestedWorkType, append(pins, rolePrefs...))
 	}
 
 	// Step 3b（R48, 2026-09-20）: role × kind promotion —— work-type tier

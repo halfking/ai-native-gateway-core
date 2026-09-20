@@ -137,7 +137,7 @@ func todaySuccessProbeSQL() string {
 			JOIN provider_models pm ON pm.id = cmb.provider_model_id
 			WHERE rl.ts >= now() - interval '24 hours'
 			  AND rl.success = TRUE
-			  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl") + `
+			  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
 			  AND rl.credential_id IS NOT NULL
 			  AND pm.raw_model_name <> ''
 			  AND (pm.raw_model_name = rl.client_model

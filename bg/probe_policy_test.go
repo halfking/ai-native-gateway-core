@@ -50,8 +50,10 @@ func TestProbePolicyPredicatesShape(t *testing.T) {
 	if !strings.Contains(fe, "cfl.credential_id = c.id") || !strings.Contains(fe, "interval '24 hours'") {
 		t.Fatalf("failureEvidence malformed: %s", fe)
 	}
-	// INV-3: probe traffic exclusion predicate.
-	if got, want := probeTrafficExclusionPredicate, "NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE)"; got != want {
+	// INV-3: probe traffic exclusion predicate — 双臂（R49 审计修复）：
+	// quality_flags 直探轮合成行 + origin_stage 网关轮落点，缺一不可。
+	if got, want := probeTrafficExclusionPredicate,
+		"(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE) AND COALESCE(%s.origin_stage, 'business') = 'business')"; got != want {
 		t.Fatalf("probeTrafficExclusion = %q, want %q", got, want)
 	}
 	if probeUsageWindowInterval != "interval '3 days'" {
@@ -104,7 +106,7 @@ func TestFeaturedCycleErrorGated(t *testing.T) {
 		`credentialTwoProbeSuccessGateSQL("c.id")`,
 		"SELECT 1 FROM request_logs_hot rl",
 		"probeUsageWindowInterval",
-		`fmt.Sprintf(probeTrafficExclusionPredicate, "rl")`,
+		`fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("featuredCycle SQL missing policy fragment %q", want)
