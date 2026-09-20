@@ -135,13 +135,19 @@ func (w *FeatureStatsWorker) computeSingleFeatureDistribution(ctx context.Contex
 	// R43 (2026-09-18): 与 computeDedupRate 对齐为 UTC 半开窗——原
 	// `DATE(ts) = $1` 按会话时区求值（db DSN 未钉扎 TimeZone），同名
 	// stat_date 两表底层窗口可错位最多 8h，且 DATE() 不可 sargable。
+	// 2026-09-21 (252 PG 日志审计轮): `$1` 必须显式 `::timestamptz`——
+	// 网关连接是 QueryExecModeSimpleProtocol（db/db.go），$1 会被内联为
+	// 无型别字面量，PG17 把 `'…' + INTERVAL '1 day'` 解析成 interval+
+	// interval 而报 "invalid input syntax for type interval"（252 生产
+	// 每轮聚合必炸、feature_distribution_stats 断更）。显式 cast 在两种
+	// 协议模式下都收敛为 timestamptz + interval。
 	query := `
 		WITH feature_counts AS (
-			SELECT 
+			SELECT
 				COALESCE(` + featureName + `, 'NULL') AS feature_value,
 				COUNT(*) AS row_count
 			FROM auto_route_selections
-			WHERE ts >= $1 AND ts < $1 + INTERVAL '1 day'
+			WHERE ts >= $1 AND ts < $1::timestamptz + INTERVAL '1 day'
 			GROUP BY COALESCE(` + featureName + `, 'NULL')
 		),
 		total AS (
@@ -170,11 +176,11 @@ func (w *FeatureStatsWorker) computeDedupRate(ctx context.Context, statDate time
 	// PRIVACY: 只查询 content_hash（SHA256哈希，非可逆），不查询原始内容
 	query := `
 		WITH daily_data AS (
-			SELECT 
+			SELECT
 				COUNT(*) AS total_rows,
 				COUNT(DISTINCT content_hash) AS unique_hashes
 			FROM auto_route_selections
-			WHERE ts >= $1 AND ts < $1 + INTERVAL '1 day'
+			WHERE ts >= $1 AND ts < $1::timestamptz + INTERVAL '1 day'
 			  AND content_hash IS NOT NULL
 		),
 		top_dupes AS (
@@ -182,7 +188,7 @@ func (w *FeatureStatsWorker) computeDedupRate(ctx context.Context, statDate time
 				content_hash,
 				COUNT(*) AS count
 			FROM auto_route_selections
-			WHERE ts >= $1 AND ts < $1 + INTERVAL '1 day'
+			WHERE ts >= $1 AND ts < $1::timestamptz + INTERVAL '1 day'
 			  AND content_hash IS NOT NULL
 			GROUP BY content_hash
 			HAVING COUNT(*) > 1
