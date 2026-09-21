@@ -191,7 +191,14 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 			Data      string          `json:"data"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
-		Usage      struct {
+		// R51 审计 P3：Claude 4.5+ 的 container（code execution 容器）对象
+		// 原样保留 —— 响应侧没有结构化 Container 解析，只有请求侧
+		// （parse_anthropic.go）；此前它既不在 IR 结构里、又被
+		// transformation 的响应标准字段集认作"标准字段"，两端都不认，
+		// 被静默丢弃且无扩展兜底。现捕获原文放进 Extensions，由
+		// transport 层 restoreExtensions 往返还原。
+		Container json.RawMessage `json:"container,omitempty"`
+		Usage     struct {
 			InputTokens              int `json:"input_tokens"`
 			OutputTokens             int `json:"output_tokens"`
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"` // audit-ir-multimodal (2026-07-13)
@@ -225,6 +232,14 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 	if src.Usage.CacheReadInputTokens > 0 {
 		v := src.Usage.CacheReadInputTokens
 		ir.Usage.CacheReadTokens = &v
+	}
+
+	// container 原文进 Extensions，走标准扩展往返（见上方字段注释）。
+	if len(src.Container) > 0 && string(bytes.TrimSpace(src.Container)) != "null" {
+		if ir.Extensions == nil {
+			ir.Extensions = make(map[string]json.RawMessage, 1)
+		}
+		ir.Extensions["container"] = append(json.RawMessage(nil), src.Container...)
 	}
 
 	for _, c := range src.Content {
