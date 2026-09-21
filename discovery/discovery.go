@@ -763,7 +763,15 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 				)
 				ELSE models_canonical.tags
 			END,
-			status = 'active',
+			// 2026-09-21: a 'disabled' canonical is an explicit operator
+			// kill — the discovery/refresh feed must never resurrect it
+			// (same rule as taxonomy_sync upsertAlias and alias_sync's
+			// WHERE status <> 'disabled' guard). Before this guard, every
+			// provider tick flipped 09-20's disabled qwen3-max-cn /
+			// deepseek-v4-*-ga rows back to 'active' (observed live).
+			status = CASE WHEN models_canonical.status = 'disabled'
+				THEN models_canonical.status
+				ELSE 'active' END,
 			/* 2026-08-09 sticky-modality fix.
 			   The previous expression was
 			     modality = COALESCE(models_canonical.modality, $4)
@@ -930,7 +938,15 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 				)
 				ELSE models_canonical.tags
 			END,
-			status = 'active',
+			// 2026-09-21: a 'disabled' canonical is an explicit operator
+			// kill — the discovery/refresh feed must never resurrect it
+			// (same rule as taxonomy_sync upsertAlias and alias_sync's
+			// WHERE status <> 'disabled' guard). Before this guard, every
+			// provider tick flipped 09-20's disabled qwen3-max-cn /
+			// deepseek-v4-*-ga rows back to 'active' (observed live).
+			status = CASE WHEN models_canonical.status = 'disabled'
+				THEN models_canonical.status
+				ELSE 'active' END,
 			modality = CASE
 				WHEN models_canonical.modality = 'text' AND $5 <> 'text'
 				THEN $5

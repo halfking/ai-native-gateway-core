@@ -114,6 +114,15 @@ type StandardModelMatch struct {
 // the joined match is promoted above the base-exact one (see demote below).
 func MatchStandardModels(rawName string, canonicalNames []string) []StandardModelMatch {
 	prefix, base := splitVendorPrefix(rawName)
+	// 2026-09-21: a trailing "-cn" token is upstream distribution noise, not
+	// a model variant — the 2026-09-20/21 canonical audit found kling/wan/
+	// viduq3/qwen "-cn" rows whose base never existed anywhere, with zero
+	// traffic and zero routes, re-seeded from the provider feed minutes after
+	// every manual cleanup. Strip it before scoring so a re-reported "x-cn"
+	// auto-links to its base canonical instead of seeding a duplicate row.
+	// Deliberate variants ("-thinking"/"-fast") keep seeding their own rows:
+	// containmentCap stays below AutoLinkThreshold for them.
+	base = stripCNSuffix(base)
 	joined := joinVendorBase(prefix, base)
 
 	scored := make([]scoredMatch, 0, len(canonicalNames)/4+1)
@@ -200,6 +209,15 @@ func demotePrefixJunkMatch(scored []scoredMatch) {
 			return
 		}
 	}
+}
+
+// stripCNSuffix drops one trailing "-cn" token ("kling-v2-1-cn" →
+// "kling-v2-1"). A bare "cn" is left alone.
+func stripCNSuffix(base string) string {
+	if len(base) > 3 && strings.HasSuffix(base, "-cn") {
+		return base[:len(base)-3]
+	}
+	return base
 }
 
 // isStrictTokenSuffix reports whether suffix is a proper token-level suffix

@@ -14,14 +14,26 @@
 # ============================================================================
 set -euo pipefail
 
+# 凭据策略(2026-09-21 脱敏):本脚本不内嵌任何密码 — DSN/口令一律由调用方
+# 通过 env 提供(与 configs/env-252.sh 的 SSOT loader 约定一致),缺失即退出。
+# 供 cron 调用时,由 automation prompt 先 source envs loader 再导出这两个变量。
+: "${LLM_GATEWAY_DATABASE_URL:?LLM_GATEWAY_DATABASE_URL not set — source configs/env-local.sh first}"
+: "${CHECK_SHARED_PG_PASS:?CHECK_SHARED_PG_PASS not set — source configs/env-252.sh first}"
+
 GJC_BIN="${GJC_BIN:-/tmp/govern-junk-canonical}"
-LOCAL_DSN="${LLM_GATEWAY_DATABASE_URL:-postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@127.0.0.1:5432/llm_gateway?sslmode=disable}"
+if [[ ! -x "$GJC_BIN" ]]; then
+  # 二进制缺失(如宿主重启清了 /tmp):从当前 checkout 现场重建
+  GJC_BIN="$(mktemp /tmp/govern-junk-canonical.XXXXXX)"
+  (cd "$(dirname "$(dirname "$(readlink -f "$0")")")"     && go build -o "$GJC_BIN" ./scripts/govern-junk-canonical) || {
+    echo "FATAL: cannot build govern-junk-canonical" >&2; exit 2; }
+fi
+LOCAL_DSN="$LLM_GATEWAY_DATABASE_URL"
 SSH_HOST="${CHECK_SSH_HOST:-154}"
 SHARED_PG_HOST="${CHECK_SHARED_PG_HOST:-172.16.2.210}"
 SHARED_PG_PORT="${CHECK_SHARED_PG_PORT:-5432}"
 SHARED_PG_USER="${CHECK_SHARED_PG_USER:-llm_gateway}"
 SHARED_PG_DB="${CHECK_SHARED_PG_DB:-llm_gateway}"
-SHARED_PG_PASS="${CHECK_SHARED_PG_PASS:-4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg}"
+SHARED_PG_PASS="$CHECK_SHARED_PG_PASS"
 
 # 上次基线: .34 active=887 / 252 active=780 / dup=0
 BASELINE_LOCAL_ACTIVE="${BASELINE_LOCAL_ACTIVE:-887}"

@@ -84,7 +84,21 @@ END $$;
 
 -- 3. 嵌套子事务:每行独立 SAVEPOINT,任一行失败不影响其余(本轮全 0 流量 + 同 id
 --    rename 风险极低,但仍按长期建议保留 SAVEPOINT 模式)
+--
+--    2026-09-21 .34 实测修正:多数 -cn canonical 已有指向自身的 ACTIVE self-alias,
+--    纯 INSERT+NOT EXISTS 会把它们 skip 掉(首跑只插入 1/19,post-commit 断言拦截)。
+--    改为 UPSERT 语义:先 UPDATE 既有 self-alias 到 deprecated+cn,再补插缺失行。
 BEGIN;
+  UPDATE model_aliases ma
+  SET status='deprecated', surface='cn',
+      notes='backward-compat alias for unmapped -cn canonical renamed 2026-09-21'
+  FROM models_canonical mc
+  JOIN rename_map m ON m.loser = mc.canonical_name
+  WHERE ma.canonical_id = mc.id AND ma.raw_name = mc.canonical_name
+    AND mc.status='active'
+    AND (ma.status <> 'deprecated' OR COALESCE(ma.surface,'') <> 'cn');
+  -- expected ~18 rows on .34 (self-aliases already existed)
+
   INSERT INTO model_aliases (canonical_id, raw_name, status, surface, notes)
   SELECT mc.id, mc.canonical_name, 'deprecated', 'cn',
          'backward-compat alias for unmapped -cn canonical renamed 2026-09-21'
@@ -95,7 +109,7 @@ BEGIN;
       SELECT 1 FROM model_aliases ma
       WHERE ma.canonical_id = mc.id AND ma.raw_name = mc.canonical_name
     );
-  -- expected 19 row insert (idempotent skip when alias exists)
+  -- expected ~1 row on .34 (only wan2.6-t2v lacked a self-alias)
 COMMIT;
 
 BEGIN;
