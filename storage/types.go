@@ -37,6 +37,29 @@ type TurnMeta struct {
 	CompletionTokens    int
 }
 
+// TurnDetails 会话轮次特征层（Lite 链路 v3 对等：PG17 session_turn_details
+// 的 SQLite 瘦身投影）。零值字段落 NULL；数组/JSON 字段以序列化文本落库。
+type TurnDetails struct {
+	TenantID     string
+	SessionID    string
+	TurnNo       int
+	RequestID    string
+	Timestamp    time.Time
+	Model        string
+	Provider     string
+	CredentialID string
+	Success      *bool
+	StatusCode   int
+	ErrorKind    string
+	LatencyMs    int
+	CostUSD      float64
+	ClientModel  string
+	RequestType  string
+	RequestClass string
+	QualityFlags []string
+	Attachments  json.RawMessage
+}
+
 // RequestLog 请求日志。
 type RequestLog struct {
 	RequestID  string

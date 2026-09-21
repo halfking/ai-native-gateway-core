@@ -49,6 +49,52 @@ CREATE TABLE IF NOT EXISTS session_turns (
 
 CREATE INDEX IF NOT EXISTS idx_turns_session ON session_turns (session_id, turn_no);
 
+-- 会话存储解耦 v3（2026-09-20）：turn 特征层，PG17 session_turn_details
+-- 的 SQLite 瘦身投影。元数据在 session_turns、原文在 body 文件，本表只
+-- 承载轮次特征（模型/路由/质量/请求分类）。quality_flags 以 JSON 数组
+-- 文本落库，attachments 同。幂等 UPSERT 由 sink 侧 ON CONFLICT 承担。
+CREATE TABLE IF NOT EXISTS session_turn_details (
+	tenant_id    TEXT NOT NULL,
+	session_id   TEXT NOT NULL,
+	turn_no      INTEGER NOT NULL,
+	request_id   TEXT NOT NULL,
+	ts           INTEGER,
+	model        TEXT,
+	provider     TEXT,
+	credential_id TEXT,
+	success      INTEGER,
+	status_code  INTEGER,
+	error_kind   TEXT,
+	latency_ms   INTEGER,
+	cost_usd     REAL,
+	client_model TEXT,
+	request_type TEXT,
+	request_class TEXT,
+	quality_flags TEXT,
+	attachments  TEXT,
+	PRIMARY KEY (tenant_id, session_id, turn_no)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_turn_details_request ON session_turn_details (tenant_id, request_id);
+CREATE INDEX IF NOT EXISTS idx_turn_details_ts ON session_turn_details (ts);
+
+-- 拼装视图：turns 元数据 × details 特征（LEFT：无特征行的轮次仍输出，
+-- 与 PG17 canonical 视图 732 的 LEFT 语义对齐）。Lite 管理端读端由此
+-- 逐步替代 request_logs 直读（S4 停写后唯一读路径）。
+CREATE VIEW IF NOT EXISTS session_logs_view AS
+SELECT
+	t.tenant_id, t.session_id, t.turn_no, t.ts,
+	t.compression_strategy, t.prompt_tokens, t.completion_tokens, t.metadata,
+	d.request_id, d.model, d.provider, d.credential_id,
+	d.success, d.status_code, d.error_kind, d.latency_ms, d.cost_usd,
+	d.client_model, d.request_type, d.request_class,
+	d.quality_flags, d.attachments
+FROM session_turns t
+LEFT JOIN session_turn_details d
+	ON d.tenant_id = t.tenant_id
+	AND d.session_id = t.session_id
+	AND d.turn_no = t.turn_no;
+
 CREATE TABLE IF NOT EXISTS request_logs (
 	request_id  TEXT PRIMARY KEY,
 	tenant_id   TEXT NOT NULL,
