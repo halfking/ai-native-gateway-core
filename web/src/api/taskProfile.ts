@@ -4,7 +4,7 @@
 // 用途: 标注工作台提交人工标注时，同步把"人工确认/改判的任务类型"作为
 // 逐请求修正写入 task_type_corrections，形成分类反馈闭环。
 
-import { req } from './_core'
+import { req, headers, ApiError } from './_core'
 
 export interface TaskProfileInfo {
   task_type: string
@@ -63,6 +63,8 @@ export interface TaskTypeCorrection {
 export interface CorrectionStatsResponse {
   since: string
   stats: Record<string, TaskProfileCorrectionStat>
+  // 每个被修正任务类型的当前分层建议（handler.go handleCorrectionStats）。
+  suggestions?: Record<string, TaskProfileSuggestion>
   recent: TaskTypeCorrection[]
 }
 
@@ -106,4 +108,56 @@ export function applyTierConfig(taskTypes?: string[]): Promise<{ applied: Applie
 /** 重新加载 overlay 档案文件（TASKPROFILE_OVERLAY；未配置则复位内嵌默认）。 */
 export function reloadTaskProfile(): Promise<{ registry_version: string }> {
   return req('POST', '/api/admin/task-profile/reload', {})
+}
+
+export interface ExportCorrectionsOptions {
+  sinceDays?: number
+}
+
+// 直接拿 blob（前端下载落盘用），不走 req —— 后端返回 text/csv，req 会按
+// JSON 解析必然抛错。认证复用 _core.headers()（HttpOnly cookie / Bearer 同
+// 一套裁决），不再手写 token 逻辑。
+export async function exportCorrectionsBlob(opts: ExportCorrectionsOptions = {}): Promise<Blob> {
+  const sinceDays = opts.sinceDays ?? 30
+  const resp = await fetch(
+    `/api/admin/task-profile/corrections/export?since_days=${sinceDays}`,
+    { headers: headers('GET'), credentials: 'same-origin' }
+  )
+  if (!resp.ok) {
+    let msg = resp.statusText
+    try { msg = await resp.text() } catch { /* keep statusText */ }
+    throw new ApiError(resp.status, msg || 'export failed')
+  }
+  return resp.blob()
+}
+
+export interface ImportCorrectionsResult {
+  success: boolean
+  summary: {
+    total_rows: number
+    imported: number
+    skipped: number
+    row_errors: { line?: number; message: string }[]
+  }
+}
+
+// 发送**裸 CSV 文本**——后端 handleImportCorrections 直接把 r.Body 喂给
+// csv 解析器（taskprofile/handler.go），multipart 信封会让首行 header 校验
+// 必然失败（2026-09-19 审计修正：原实现用 FormData，与后端契约不匹配）。
+export async function importCorrectionsFile(file: File): Promise<ImportCorrectionsResult> {
+  const csvText = await file.text()
+  const h = headers('POST')
+  h['Content-Type'] = 'text/csv; charset=utf-8'
+  const resp = await fetch('/api/admin/task-profile/corrections/import', {
+    method: 'POST',
+    headers: h,
+    credentials: 'same-origin',
+    body: csvText,
+  })
+  if (!resp.ok) {
+    let msg = resp.statusText
+    try { msg = await resp.text() } catch { /* keep statusText */ }
+    throw new ApiError(resp.status, msg || 'import failed')
+  }
+  return resp.json() as Promise<ImportCorrectionsResult>
 }
