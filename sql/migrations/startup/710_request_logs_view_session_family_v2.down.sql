@@ -33,7 +33,7 @@ BEGIN
   INTO base_has_fp, base_has_raw;
 
   -- 42P16 守卫（2026-09-21 契约测试 down 链实测）：CREATE OR REPLACE VIEW
-  -- 不能变更既有列类型。canonical 处于会话 v2 体（710/732）时 agent_name、
+  -- 不能变更既有列类型。canonical 处于会话 v2 体（710/734）时 agent_name、
   -- origin_actor、client_protocol 等列自 session_turns 直出为 text，v1 体按
   -- request_logs 形态收窄为 varchar——OR REPLACE 直接 42P16 炸停回滚链。
   -- 先 DROP 再 CREATE（同事务原子替换；v_* 分析视图读 request_logs 表而非

@@ -50,7 +50,7 @@ type SessionWriterV2 struct {
 	// memoraWriter（706，可选）：会话首 turn 时写初始环境/上下文快照。
 	// nil 时跳过（旧部署/测试无需该表存在）。
 	memoraWriter *SessionMemoraWriter
-	// detailsWriter（731/732 会话存储解耦 v3，可选）：每 turn 特征层
+	// detailsWriter（733/734 会话存储解耦 v3，可选）：每 turn 特征层
 	// session_turn_details(_hot) 写入。nil 或表族缺席时跳过。
 	detailsWriter *SessionTurnDetailsWriter
 
@@ -113,7 +113,7 @@ func (w *SessionWriterV2) SetMemoraWriter(mw *SessionMemoraWriter) {
 }
 
 // SetDetailsWriter wires the optional session_turn_details feature-layer
-// writer (731/732 v3). Call before the first Write; nil (or an unavailable
+// writer (733/734 v3). Call before the first Write; nil (or an unavailable
 // probe) disables the details write — the turn+bodies path is unaffected.
 func (w *SessionWriterV2) SetDetailsWriter(dw *SessionTurnDetailsWriter) {
 	w.detailsWriter = dw
@@ -300,7 +300,7 @@ type ProcessedRequest struct {
 	// Multimodal content tracking
 	MultimodalTypes []string // Types present: ["image", "audio", "video", "document"]
 
-	// Details（731/732 会话存储解耦 v3）：turn 特征层。nil = 无特征可写
+	// Details（733/734 会话存储解耦 v3）：turn 特征层。nil = 无特征可写
 	//（陈旧 bridge / 非 mirror 写方）；键（SessionID/TurnNo）由 Write 在
 	// AppendTurn 返回后补齐。
 	Details *DetailsRecord
@@ -606,7 +606,7 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		return fmt.Errorf("write bodies: %w", err)
 	}
 
-	// 731/732 特征层：与 turn+bodies 同事务（任一失败整体回滚）。键由
+	// 733/734 特征层：与 turn+bodies 同事务（任一失败整体回滚）。键由
 	// AppendTurn 返回的 turnNo 补齐；幂等 upsert 支持晚到回填重放。
 	if req.Details != nil && w.detailsWriter != nil {
 		detailsRec := *req.Details

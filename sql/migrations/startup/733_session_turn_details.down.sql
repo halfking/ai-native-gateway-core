@@ -1,5 +1,5 @@
--- Migration 731 down: 撤销 session_turn_details 表族。
--- 前置：732 视图已先回滚（down 按号逆序），否则视图引用本表会 2BP01。
+-- Migration 733 down: 撤销 session_turn_details 表族。
+-- 前置：734 视图已先回滚（down 按号逆序），否则视图引用本表会 2BP01。
 
 BEGIN;
 

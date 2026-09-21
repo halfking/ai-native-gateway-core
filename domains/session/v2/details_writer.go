@@ -1,7 +1,7 @@
 // Package sessionv2 — details_writer.go
 //
 // 会话存储解耦 v3（docs/storage/2026-09-20-session-storage-decoupling-plan.md
-// §3.3，migration 731/732）：session_turn_details 特征层写入器。
+// §3.3，migration 733/734）：session_turn_details 特征层写入器。
 //
 // 职责：把 ProcessedRequest.Details（mirror bridge s1b_fields 从
 // telemetry.RequestLogEntry 补采的 30+ 特征列）与 turn 行同事务落
@@ -15,7 +15,7 @@
 //	· 幂等 upsert：ON CONFLICT (tenant_id, request_id, partition_date)
 //	  DO UPDATE——telemetry 晚到回填/重放取最新值（与 request_logs 的
 //	  in_progress→终态 UPDATE 语义对齐）；
-//	· 可选：表族缺席（731 未跑的陈旧库/极简测试桩）时整体跳过，
+//	· 可选：表族缺席（733 未跑的陈旧库/极简测试桩）时整体跳过，
 //	  零错误零降级（SetDetailsWriter(nil) 同效）。
 package v2
 
@@ -37,7 +37,7 @@ type DetailsRecord struct {
 	RequestID string
 	Ts        time.Time
 
-	// 视图契约组（732 LEFT JOIN 替换 NULL 占位的 30 列）
+	// 视图契约组（734 LEFT JOIN 替换 NULL 占位的 30 列）
 	ClientModel       *string
 	ProviderID        *int64
 	ClientProfile     *string
@@ -129,17 +129,17 @@ const insertDetailsSQL = `
 		request_class       = EXCLUDED.request_class,
 		due_at              = EXCLUDED.due_at`
 
-// SessionTurnDetailsWriter writes the 731 details feature layer, sharing the
+// SessionTurnDetailsWriter writes the 733 details feature layer, sharing the
 // turn+bodies transaction.
 type SessionTurnDetailsWriter struct {
 	// available gates the writer on table presence (probe once at wiring);
-	// false makes UpsertDetailsInTx a no-op for pre-731 databases.
+	// false makes UpsertDetailsInTx a no-op for pre-733 databases.
 	available bool
 }
 
 // NewSessionTurnDetailsWriter returns a writer; available comes from the
-// wiring layer's one-time probe (details family present = migration 731
-// applied). False keeps every write a no-op — pre-731 databases degrade to
+// wiring layer's one-time probe (details family present = migration 733
+// applied). False keeps every write a no-op — pre-733 databases degrade to
 // the 710 view shape with zero errors.
 func NewSessionTurnDetailsWriter(available bool) *SessionTurnDetailsWriter {
 	return &SessionTurnDetailsWriter{available: available}

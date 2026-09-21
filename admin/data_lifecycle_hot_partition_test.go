@@ -201,7 +201,7 @@ func TestHotPromoteTableMap(t *testing.T) {
 		"session_memora_hot",
 		"session_censors_hot",
 		"session_tools_hot",
-		// 731（会话存储解耦 v3）：turn 特征层
+		// 733（会话存储解耦 v3）：turn 特征层
 		"session_turn_details_hot",
 	}
 	for _, name := range expected {

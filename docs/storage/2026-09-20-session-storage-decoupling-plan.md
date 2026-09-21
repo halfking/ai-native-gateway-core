@@ -1,8 +1,9 @@
 # 会话存储解耦方案 v3 —— session_turn_details 特征层落地
 
 > 日期：2026-09-20（2026-09-21 批判式审计修正）
-> 状态：已实施（migration **731/732** + 写入器 + Lite 链路对等）。
-> 迁移原编 727/728，与 origin 上 R46/R48 已占用的 727-730 撞号，重编 731/732。
+> 状态：已实施（migration **733/734** + 写入器 + Lite 链路对等）。
+> 迁移编号两度撞号：原编 727/728（撞 R46/R48 的 727-730）→ 731/732（推前 pull 实测再撞
+> origin 731_auto_route）→ **终编 733/734**。
 > 前置：docs/04-implementation/plan/2026-08-25-request-session-persistence-final-plan.md、
 > migration 706/707/710/712/713（S1a 宽表 + 710 拼装视图 + mirror outbox + cost 精度）
 
@@ -30,9 +31,9 @@
    让"按会话切分、按层取数"成为自然操作：分解器只读 turns+bodies 重建上下文，
    计费/路由分析只读 details，互不拖拽大字段。
 
-## 3. Full 链路实施（migration 731/732）
+## 3. Full 链路实施（migration 733/734）
 
-### 3.1 `session_turn_details`（731）
+### 3.1 `session_turn_details`（733）
 
 - 分区：`PARTITION BY RANGE (partition_date)`，hot 表 `session_turn_details_hot`（heap，autovacuum 调优）
 - 键：`UNIQUE (tenant_id, request_id, partition_date)`（对齐 session_turns_hot 冲突键），
@@ -50,7 +51,7 @@
   - **多维 token / 安全 / 上游组**：reasoning_tokens, image_tokens, audio_tokens, video_tokens,
     provider_tokens, protocol_conversion, rate_limit_status, content_safety_score, dlp_violations,
     sensitive_keywords, upstream_endpoint, task_id, task_title, api_key_fingerprint, provider_model
-- 回填（**731 首版两处缺陷已审计修正**）：
+- 回填（**733 首版两处缺陷已审计修正**）：
   - 候选行 = **session_turns(hot ∪ parent)**：首版只扫父表，漏掉尚未 promote 的热表 turns
     （writer 只覆盖部署后的新 turn，错过回填即永久缺行）；本地实测部署窗口 + 热表遗漏
     累积 30,041 行存量缺口，修正版复放 8.5s 全量闭合。
@@ -63,24 +64,24 @@
 - promote：`promote_session_turn_details_hot_to_partition`（镜像 526/707 契约：显式列清单 + 原子 CTE），
   挂入 `bg/partition_manager.go` 调度（与 session_turns_hot 同批）
 
-### 3.2 视图升级（732）
+### 3.2 视图升级（734）
 
 - `projectionExprsV2` 改为 overlay 结构：基础表达式不变，30 个 NULL 占位按位置替换为 `d.<col>`
 - `canonicalV2DDL(baseHasFP, baseHasRaw, hasDetails)`：
   - hasDetails=true：session 分支 `LEFT JOIN session_turn_details_hot/parent d ON d.tenant_id=t.tenant_id
     AND d.request_id=t.request_id AND d.partition_date=t.partition_date`（LEFT 保语义：无 details 行时
     仍输出 NULL，行为向后兼容）
-  - hasDetails=false（陈旧库/731 未跑）：回退 710 形态，不引用 d.*
+  - hasDetails=false（陈旧库/733 未跑）：回退 710 形态，不引用 d.*
 - 探测：ensure 启动时 probe `session_turn_details(_hot)` 存在性；v2 检测 `LIKE '%session_turns%'`
   **且（按库况）要求 `LIKE '%session_turn_details%'`**
-- **down 契约（本轮审计补全）**：down 按号逆序 732.down → 731.down；732.down 的
-  「已是 710 体」守卫必须 `NOT LIKE '%session_turn_details%'`（否则 732 体被误判为 710 体
-  跳过重建，731 down DROP 表族时 canonical 视图残留依赖 → 2BP01 炸停回滚链）；
+- **down 契约（本轮审计补全）**：down 按号逆序 734.down → 733.down；734.down 的
+  「已是 710 体」守卫必须 `NOT LIKE '%session_turn_details%'`（否则 734 体被误判为 710 体
+  跳过重建，733 down DROP 表族时 canonical 视图残留依赖 → 2BP01 炸停回滚链）；
   710.down 改先 DROP 再 CREATE（`CREATE OR REPLACE VIEW` 不能变更列类型，会话体
   text → v1 体 varchar 的 42P16）
 - `SessionFamilyTurnsSourceSQL()`（S3 wave-1 原生读端）同步带 JOIN
-- 契约测试改指 732 文件的 `$proj$/$names$` 块；live 重放顺序 731 → 710 → 732；
-  down 链 732.down → 731.down → 710.down 分步断言
+- 契约测试改指 734 文件的 `$proj$/$names$` 块；live 重放顺序 733 → 710 → 734；
+  down 链 734.down → 733.down → 710.down 分步断言
 
 ### 3.3 写入路径
 
@@ -94,7 +95,7 @@
 ## 4. Lite 链路实施
 
 - `storage/sqlite/schema.go`：+`session_turn_details`（SQLite 类型对等）+ `session_logs_view`
-  （turns LEFT JOIN details，本地管理端读端逐步切换的目标；LEFT 语义与 PG17 canonical 732 对齐）
+  （turns LEFT JOIN details，本地管理端读端逐步切换的目标；LEFT 语义与 PG17 canonical 734 对齐）
 - `cmd/gateway/lite_telemetry_sink.go`：journal 追加 details 行（entry 上可得的特征列）；
   `request_logs` 写入受 `storage.request_logs_write_enabled` 门控（默认开，S4 同门）
 
@@ -108,13 +109,13 @@
 ## 6. 验收（本地 Full 链路）
 
 - [x] `go build ./... && go vet ./...`
-- [x] 契约测试（offline）`TestViewV2ProjectionContractSync`（含 732 overlay/回退双形态断言）
+- [x] 契约测试（offline）`TestViewV2ProjectionContractSync`（含 734 overlay/回退双形态断言）
 - [x] 迁移唯一性 `TestNumericUpMigrationVersionsAreUnique`
 - [x] **live 等价** `TestRequestLogsViewV2EnsureMatchesMigration`（真实目录克隆 scratch：
-      ensure ≡ 732 重放 viewdef 全等 + details_join=true；**down 链 732→731→710 首次全通**——
+      ensure ≡ 734 重放 viewdef 全等 + details_join=true；**down 链 734→733→710 首次全通**——
       该测试在本轮审计前从未跑绿，接连暴露 42703 / 2BP01 / 42P16 三个缺陷）
 - [x] 五点同步门禁：`TestPromoteSpecsCoversAllDefaultPartitions` + `TestHotPromoteTableMap`
-- [x] 六点同步登记：`scripts/apply-db-revision-sequence.sh` 显式清单追加 731/732
+- [x] 六点同步登记：`scripts/apply-db-revision-sequence.sh` 显式清单追加 733/734
 - [x] deploy-local.sh 部署（2.5.6.2156→2158 三次蓝绿，`--root` 指向本 worktree）
 - [x] 迁移落库 + 回填缺口闭合：首版回填 438,156 行后实测仍差 **30,041 行**（热表遗漏 +
       部署窗口）；修正版复放 8.5s 插入 30,062 行，缺口 → 9（零特征 turns 设计语义），
@@ -149,9 +150,9 @@
    交集克隆库可能不存在，硬引用即 42703 炸停部署通道；契约外列一律动态探测
    回退 NULL，契约内列才可硬引用。
 8. **（审计新增）down 链三类盲区**：①「已是目标体」探针要排除更新的体形
-  （732 体同样含 `session_turns`，只 LIKE 不 NOT LIKE 会误判跳过）；②
+  （734 体同样含 `session_turns`，只 LIKE 不 NOT LIKE 会误判跳过）；②
   `CREATE OR REPLACE VIEW` 不能变更列类型（42P16），跨体形回滚先 DROP 再
-  CREATE 同事务替换；③ down 测试必须按号逆序（732→731→710）并分步断言，
+  CREATE 同事务替换；③ down 测试必须按号逆序（734→733→710）并分步断言，
   才能把这些盲区钉在门禁里。
 9. **（审计新增）live 契约测试不可「声明可跑」**：本轮前 live 重放测试从未
    真正跑绿；「测试存在」≠「测试通过」，交付证据以实测输出为准。
