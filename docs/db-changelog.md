@@ -607,3 +607,11 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 |-----------|------|---------|--------|
 | 726 | `726_restore_credential_model_index_hot_unique.sql` | `29086bd8096121b1d94e80290766d6762936550dc7faa63e21b881423c9985bf` | applied+verified |
 
+## 2026-09-21T00:58:06Z — deploy 245 build_seq 2156 (293b29a0)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 727 | `727_sql_audit_slow_query_indexes.sql` | `5895650658784fd89fd446f97cd1ed9363f3d26584ee8b4f5bb7708a5f6513ca` | applied+verified |
+| 730 | `730_session_role_hierarchy.sql` | `a1f92257263d95b22b59873cd28cf0f6c2464f236d6a8d8c2c8eb26148762fb5` | applied+verified |
+| 731 | `731_auto_route_selection_role_attribution.sql` | `5708c93964bc2fe4cda0509062bc24edda5e9cf35e368f4336b2f69cf68fab77` | applied+verified |
+
