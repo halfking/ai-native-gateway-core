@@ -14,14 +14,16 @@ import (
 )
 
 // Contract test (offline, no DB): the Go-side session projection must carry
-// the same expression sequence as the migration file's `proj` block, and the
-// Go DDL composer must mirror the migration's shape-conditional lateral
-// composition. This is the cheap first line of defense; the full viewdef
-// equivalence runs live in TestRequestLogsViewV2EnsureMatchesMigration.
+// the same expression sequence as the migration file's `proj` block (734:
+// details-joined canonical), and the Go DDL composer must mirror the
+// migration's shape-conditional lateral composition plus the hasDetails
+// fallback (no d.* references on 733-less databases). This is the cheap first
+// line of defense; the full viewdef equivalence runs live in
+// TestRequestLogsViewV2EnsureMatchesMigration.
 func TestViewV2ProjectionContractSync(t *testing.T) {
 	// Locate the migration file relative to the db package.
 	sqlPath := filepath.Join("..", "sql", "migrations", "startup",
-		"710_request_logs_view_session_family_v2.sql")
+		"734_request_logs_view_details_join.sql")
 	raw, err := os.ReadFile(sqlPath)
 	if err != nil {
 		t.Fatalf("read migration file: %v", err)
@@ -69,7 +71,7 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 		return parts
 	}
 
-	goExprs := splitExprs(normalize(sessionFamilyProjectionV2))
+	goExprs := splitExprs(normalize(sessionFamilyProjection(true)))
 	sqlExprs := splitExprs(normalize(sqlProj))
 	if len(goExprs) == 0 || len(sqlExprs) == 0 {
 		t.Fatalf("empty projection (go=%d sql=%d)", len(goExprs), len(sqlExprs))
@@ -86,16 +88,38 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 		t.Fatalf("frozen contract: projection must carry 113 expressions, got %d", len(goExprs))
 	}
 
+	// 734 details overlay: the canonical projection must reference the details
+	// layer on the 30 contract columns; the legacy fallback must reference
+	// none (733-less databases keep the 710 NULL placeholders).
+	canonical := sessionFamilyProjection(true)
+	legacy := sessionFamilyProjection(false)
+	if !strings.Contains(canonical, "d.client_model") ||
+		!strings.Contains(canonical, "d.quality_flags") ||
+		!strings.Contains(canonical, "d.request_class") {
+		t.Error("canonical (734) projection must carry d.* details references")
+	}
+	if strings.Contains(legacy, "d.") {
+		t.Error("legacy (710-fallback) projection must not reference the details alias")
+	}
+
 	// Shape-conditional lateral composition: frozen chain appends 4 lateral
 	// columns, dynamic chain only 2 — both must total base+5 (frozen) /
 	// base+3 (dynamic) = 113 columns on the same base count.
-	if frozen := canonicalV2DDL(false, false); !strings.Contains(frozen, "source.system_fingerprint") ||
+	if frozen := canonicalV2DDL(false, false, true); !strings.Contains(frozen, "source.system_fingerprint") ||
 		!strings.Contains(frozen, "source.raw_model_name") {
 		t.Error("frozen-chain v2 DDL must laterally append system_fingerprint and raw_model_name")
 	}
-	if dynamic := canonicalV2DDL(true, true); strings.Contains(dynamic, "source.system_fingerprint") ||
+	if dynamic := canonicalV2DDL(true, true, true); strings.Contains(dynamic, "source.system_fingerprint") ||
 		strings.Contains(dynamic, "source.raw_model_name") {
 		t.Error("dynamic-chain v2 DDL must not re-append columns the base wrapper already carries")
+	}
+	// hasDetails=false fallback: no details JOIN, no d.* references.
+	if legacyDDL := canonicalV2DDL(false, false, false); strings.Contains(legacyDDL, "session_turn_details") {
+		t.Error("hasDetails=false DDL must not join the details family")
+	}
+	if detailsDDL := canonicalV2DDL(false, false, true); !strings.Contains(detailsDDL, "LEFT JOIN public.session_turn_details_hot") ||
+		!strings.Contains(detailsDDL, "LEFT JOIN public.session_turn_details ") {
+		t.Error("hasDetails=true DDL must LEFT JOIN both details hot and parent")
 	}
 
 	// Name-order contract: the migration file's $names$ block must equal the
@@ -211,6 +235,18 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	var dbName string
 	_ = pool.QueryRow(ctx, `SELECT current_database()`).Scan(&dbName)
 	t.Logf("scratch db = %q", dbName)
+
+	// 733 must precede the ensure so the details family exists and the
+	// ensure composes the 734 (details-joined) shape.
+	migration733, err := os.ReadFile(filepath.Join("..", "sql", "migrations", "startup",
+		"733_session_turn_details.sql"))
+	if err != nil {
+		t.Fatalf("read migration 733: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(migration733)); err != nil {
+		t.Fatalf("apply 733 on scratch: %v", err)
+	}
+
 	if err := db.ensureRequestLogsCurrentMonthView(ctx); err != nil {
 		t.Fatalf("ensure (v2 cold build): %v", err)
 	}
@@ -221,6 +257,9 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	if !strings.Contains(ensureViewdef, "session_turns") {
 		t.Fatal("ensure produced a non-v2 body on a session-family database")
 	}
+	if !strings.Contains(ensureViewdef, "session_turn_details") {
+		t.Fatal("ensure must produce the 734 details-joined body when 733 tables exist")
+	}
 	// Idempotency: second pass must not change the definition.
 	if err := db.ensureRequestLogsCurrentMonthView(ctx); err != nil {
 		t.Fatalf("ensure (idempotent second pass): %v", err)
@@ -229,8 +268,9 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		t.Fatal("second ensure pass changed the view definition")
 	}
 
-	// Migration equivalence: drop the canonical, replay the 710 file, and
-	// require the exact same view definition.
+	// Migration equivalence: drop the canonical, replay the 710 file then the
+	// 734 file (production migration order), and require the exact same view
+	// definition as the ensure.
 	if _, err := pool.Exec(ctx, `DROP VIEW public.request_logs_with_current_month`); err != nil {
 		t.Fatalf("drop canonical before migration replay: %v", err)
 	}
@@ -242,24 +282,37 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	if _, err := pool.Exec(ctx, string(migrationSQL)); err != nil {
 		t.Fatalf("apply 710 migration on scratch: %v", err)
 	}
+	migration734, err := os.ReadFile(filepath.Join("..", "sql", "migrations", "startup",
+		"734_request_logs_view_details_join.sql"))
+	if err != nil {
+		t.Fatalf("read migration 734: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(migration734)); err != nil {
+		t.Fatalf("apply 734 migration on scratch: %v", err)
+	}
 	migrationViewdef := viewDefinition(t, ctx, pool)
 	if migrationViewdef != ensureViewdef {
-		t.Fatalf("ensure and migration 710 produce different view definitions:\n--- ensure ---\n%s\n--- migration ---\n%s",
+		t.Fatalf("ensure and migrations 710+734 produce different view definitions:\n--- ensure ---\n%s\n--- migration ---\n%s",
 			ensureViewdef, migrationViewdef)
 	}
 
-	// Data semantics: dedup + D4 NULL passthrough.
+	// Data semantics: dedup + D4 NULL passthrough + details overlay.
 	seed := `
-		INSERT INTO public.request_logs_hot (request_id, gw_session_id, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name)
-		VALUES ('req-v1-only', 'sess-legacy', 10, 5, 1, 'immediate', 'm-alpha')
-		     , ('req-dual', 'sess-dual', 20, 8, 2, 'immediate', 'm-beta');
+		INSERT INTO public.request_logs_hot (request_id, gw_session_id, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name, client_model, quality_flags)
+		VALUES ('req-v1-only', 'sess-legacy', 10, 5, 1, 'immediate', 'm-alpha', 'cli-alpha', '{}')
+		     , ('req-dual', 'sess-dual', 20, 8, 2, 'immediate', 'm-beta', 'cli-beta', '{}');
 		INSERT INTO public.request_logs (request_id, gw_session_id, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name)
 		VALUES ('req-parent-only', NULL, 1, 2, 3, 'immediate', 'm-gamma');
-		INSERT INTO public.session_turns_hot (session_id, tenant_id, request_id, ts, turn_no, model, success, status_code, credits_charged)
-		VALUES ('sess-dual', 'default', 'req-dual', now(), 1, 'm-beta-live', true, 200, 7)
-		     , ('sys:probe:cred9:20260914', 'default', 'req-synthetic', now(), 1, 'm-probe', true, 200, 0);
-		INSERT INTO public.session_turns (session_id, tenant_id, request_id, ts, turn_no, model, success, status_code, credits_charged)
-		VALUES ('sess-live', 'default', 'req-turn-parent', now(), 1, 'm-live', true, 200, 3);
+		INSERT INTO public.session_turns_hot (session_id, tenant_id, request_id, ts, turn_no, model, success, status_code, credits_charged, partition_date)
+		VALUES ('sess-dual', 'default', 'req-dual', now(), 1, 'm-beta-live', true, 200, 7, CURRENT_DATE)
+		     , ('sys:probe:cred9:20260914', 'default', 'req-synthetic', now(), 1, 'm-probe', true, 200, 0, CURRENT_DATE);
+		INSERT INTO public.session_turns (session_id, tenant_id, request_id, ts, turn_no, model, success, status_code, credits_charged, partition_date)
+		VALUES ('sess-live', 'default', 'req-turn-parent', now(), 1, 'm-live', true, 200, 3, CURRENT_DATE);
+		-- 733 特征层：req-dual 的 hot 行带特征；req-turn-parent 走 parent 分支
+		INSERT INTO public.session_turn_details_hot (session_id, tenant_id, request_id, turn_no, ts, partition_date, client_model, quality_flags, request_class)
+		VALUES ('sess-dual', 'default', 'req-dual', 1, now(), CURRENT_DATE, 'cli-beta-client', '{empty_tool_name}', 'immediate');
+		INSERT INTO public.session_turn_details (session_id, tenant_id, request_id, turn_no, ts, partition_date, client_model, request_class)
+		VALUES ('sess-live', 'default', 'req-turn-parent', 1, now(), CURRENT_DATE, 'cli-live-client', 'scheduled');
 	`
 	if _, err := pool.Exec(ctx, seed); err != nil {
 		t.Fatalf("seed scratch rows: %v", err)
@@ -285,6 +338,42 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		t.Fatalf("D4 synthetic session must surface as NULL gw_session_id on the compat view, got %q", *syntheticGW)
 	}
 
+	// Details overlay: hot-branch join surfaces client_model/quality_flags;
+	// parent-branch join surfaces request_class; a turn without a details row
+	// still yields NULL (LEFT semantics, 710-compatible).
+	var dualClientModel string
+	var dualQualityFlags []string
+	if err := pool.QueryRow(ctx, `
+		SELECT client_model::text, quality_flags FROM public.request_logs_with_current_month
+		WHERE request_id = 'req-dual'
+	`).Scan(&dualClientModel, &dualQualityFlags); err != nil {
+		t.Fatalf("details hot overlay probe failed: %v", err)
+	}
+	if dualClientModel != "cli-beta-client" {
+		t.Fatalf("details hot overlay: client_model = %q, want %q", dualClientModel, "cli-beta-client")
+	}
+	if len(dualQualityFlags) != 1 || dualQualityFlags[0] != "empty_tool_name" {
+		t.Fatalf("details hot overlay: quality_flags = %v, want [empty_tool_name]", dualQualityFlags)
+	}
+	var liveClass string
+	if err := pool.QueryRow(ctx, `
+		SELECT request_class FROM public.request_logs_with_current_month WHERE request_id = 'req-turn-parent'
+	`).Scan(&liveClass); err != nil {
+		t.Fatalf("details parent overlay probe failed: %v", err)
+	}
+	if liveClass != "scheduled" {
+		t.Fatalf("details parent overlay: request_class = %q, want %q", liveClass, "scheduled")
+	}
+	var syntheticClientModel *string
+	if err := pool.QueryRow(ctx, `
+		SELECT client_model FROM public.request_logs_with_current_month WHERE request_id = 'req-synthetic'
+	`).Scan(&syntheticClientModel); err != nil {
+		t.Fatalf("missing-details probe failed: %v", err)
+	}
+	if syntheticClientModel != nil {
+		t.Fatalf("turn without details row must surface NULL client_model, got %q", *syntheticClientModel)
+	}
+
 	var rows int
 	if err := pool.QueryRow(ctx, `
 		SELECT count(*) FROM public.request_logs_with_current_month
@@ -296,7 +385,32 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		t.Fatalf("view coverage = %d rows, want 5 (both branches visible)", rows)
 	}
 
-	// Down migration restores a v1 (request_logs-only) body.
+	// Down chain in reverse numeric order (733 header contract: 734 down
+	// runs first, then 733 down). 734 down must rebuild the 710 body — its
+	// "already v2" probe must NOT mistake the 734 details-joined body for the
+	// 710 shape, or the family drop below hits 2BP01 (view dependency).
+	down734, err := os.ReadFile(filepath.Join("..", "sql", "migrations", "startup",
+		"734_request_logs_view_details_join.down.sql"))
+	if err != nil {
+		t.Fatalf("read 734 down: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(down734)); err != nil {
+		t.Fatalf("apply 734 down: %v", err)
+	}
+	postDown732 := viewDefinition(t, ctx, pool)
+	if !strings.Contains(postDown732, "session_turns") || strings.Contains(postDown732, "session_turn_details") {
+		t.Fatal("734 down must restore the 710 body (v2, no details join)")
+	}
+	// 733 down then drops the details family cleanly (no view dependency left).
+	down733, err := os.ReadFile(filepath.Join("..", "sql", "migrations", "startup",
+		"733_session_turn_details.down.sql"))
+	if err != nil {
+		t.Fatalf("read 733 down: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(down733)); err != nil {
+		t.Fatalf("apply 733 down: %v", err)
+	}
+	// 710 down then restores a v1 (request_logs-only) body.
 	downSQL, err := os.ReadFile(filepath.Join("..", "sql", "migrations", "startup",
 		"710_request_logs_view_session_family_v2.down.sql"))
 	if err != nil {
@@ -305,7 +419,7 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	if _, err := pool.Exec(ctx, string(downSQL)); err != nil {
 		t.Fatalf("apply 710 down: %v", err)
 	}
-	if downViewdef := viewDefinition(t, ctx, pool); strings.Contains(downViewdef, "session_turns") {
+	if v1Viewdef := viewDefinition(t, ctx, pool); strings.Contains(v1Viewdef, "session_turns") {
 		t.Fatal("710 down must restore a v1 (non-session) view body")
 	}
 }

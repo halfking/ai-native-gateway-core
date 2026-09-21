@@ -85,11 +85,38 @@ func credentialTwoProbeSuccessGateSQL(credIDExpr string) string {
 //     never gets the quality flag), so the flag arm alone left those rows
 //     counting as "usage" in every scanner (INV-3 was nominal only).
 //
+// BOTH arms reference origin_stage, so this predicate is only valid against
+// the physical request_logs tables (hot / parent / partitions) where migration
+// 428 added the column and the X-LLM-Origin-Stage bridge populates it
+// (verified on the real DB: 11.6k node_probe rows stamped vs 3.1k business).
+// It must NOT be used against the canonical 113-column view — see
+// probeTrafficExclusionPredicateView below.
+//
 // Both format verbs take the same request_logs alias (pass it twice).
 // Every usage scan must exclude probe traffic, otherwise probes count as
 // usage and the scan keeps re-probing what only probes ever touched (INV-3).
 const probeTrafficExclusionPredicate = "(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE)" +
 	" AND COALESCE(%s.origin_stage, 'business') = 'business')"
+
+// probeTrafficExclusionPredicateView is the frozen-113-column-contract variant
+// for request_logs_with_current_month. R49 self-audit correction
+// (2026-09-20): origin_stage is NOT part of the view's frozen 113-column
+// contract (neither projected from session_turns nor present in the pre-485
+// frozen v1 chain), so the physical-table predicate above 42703s against the
+// view on every environment. The view-safe marker set — all three present in
+// canonicalColumnOrderV2 on every branch — mirrors the mirror's own probe
+// classification (synthetic_session.go: "origin_stage/origin_actor/task_type
+// 含 probe"):
+//   - 'probe' quality flag (v1 branch, direct-round synthetic rows);
+//   - task_type = 'probe_triggered' (ActiveProbeWorker rows);
+//   - origin_actor IN the probe gateway actors (session branch AND v1 branch:
+//     probeGateway sends X-LLM-Origin-Actor: node-probe-worker, ActiveProbe
+//     sends active-probe-worker; verified populated on the real view).
+//
+// Both format verbs take the same view alias (pass it twice).
+const probeTrafficExclusionPredicateView = "(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE)" +
+	" AND COALESCE(%s.task_type, '') <> 'probe_triggered'" +
+	" AND COALESCE(%s.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker'))"
 
 // probeFailureEvidenceWindowSQL is the credential-level failure-evidence
 // window (INV-5): how far back a candidate failure still counts as "this

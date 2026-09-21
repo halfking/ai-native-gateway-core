@@ -50,8 +50,30 @@ func initSessionV2Writer(pool *pgxpool.Pool) *v2.SessionWriterV2 {
 	writer := v2.NewSessionWriterV2(turnWriter, bodiesWriter, aggregator, turnLogsWriter)
 	// 706（存储优化方案 v2 S1a）：session_memora 首 turn 快照写点。
 	writer.SetMemoraWriter(v2.NewSessionMemoraWriter(pool))
+	// 733/734（会话存储解耦 v3）：session_turn_details 特征层写点。表族
+	// 缺席（733 未跑）时 writer 整体 no-op，turn+bodies 不受影响。
+	writer.SetDetailsWriter(v2.NewSessionTurnDetailsWriter(probeSessionTurnDetails(context.Background(), pool)))
 	slog.Info("session V2 writer initialized (shadow hook remains feature-gated)")
 	return writer
+}
+
+// probeSessionTurnDetails reports whether the 733 details family exists
+// (startup migrations run before serving, so a single probe suffices; a
+// transient failure reports false and the layer stays off until restart).
+func probeSessionTurnDetails(ctx context.Context, pool *pgxpool.Pool) bool {
+	if pool == nil {
+		return false
+	}
+	var exists bool
+	if err := pool.QueryRow(ctx, `
+		SELECT to_regclass('public.session_turn_details_hot') IS NOT NULL
+		   AND to_regclass('public.session_turn_details') IS NOT NULL
+	`).Scan(&exists); err != nil || !exists {
+		slog.Warn("session V2: session_turn_details family absent (migration 733 not applied); details layer off",
+			"error", err)
+		return false
+	}
+	return true
 }
 
 // startSessionAggregateOutboxReaper boots the durable retry queue for

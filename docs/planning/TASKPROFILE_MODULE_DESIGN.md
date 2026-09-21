@@ -138,3 +138,44 @@ Prometheus 分类反馈计数器由此真正开始计数（该聚合器此前零
 - [x] 本地部署验证（071x 记录见会话总结）
 - [x] 252 部署验证
 - [x] **变更端点审计 hook**（R43 §五#3 登记 → R45 2026-09-19 落地）：`Handlers.SetAuditHook(func(AuditEvent))`，四个变更端点（corrections create / import / reload / apply-tier-config）的**真实变更尝试**（success 与 failure）都投递事件；校验拒绝与 nil-pool 503 不投递（无变更意图）；hook panic 隔离、nil 零开销。taskprofile 不 import admin（避免反向依赖成环）——`AuditEvent` 携带原始 *http.Request，生产 sink 由 admin/handler.go 注入（首个 sink = 结构化 slog `taskprofile.audit`，actor 从 admin 鉴权上下文提取；未来可换 DB 审计表 sink 无需再动本包）。钉桩：默认门 `handler_audit_test.go` ×5（reload 成功/失败、无尝试不发、panic 隔离、nil no-op）+ 真库集成 `e2e_audit_hook_integration_test.go`（create 成功/重复失败、import 成功 detail.imported、apply 成功 detail.applied=1 行 documentation 升级）。
+
+## 八、审计轮补记（2026-09-19）
+
+本节是对 §五~§七 声明内容的**实证复核**与修正，含对上轮审计自身结论的再修正。
+
+### 8.1 上轮声明 vs 实证
+
+| 上轮声明 | 实证结果 |
+|---|---|
+| "覆盖率 92%" | **无依据**。实测：单元 39.1%→39.4%（新增超长字段用例后），`-tags=integration` 真库 80.2%→**80.7%** |
+| "前端缺 export/import 函数" | 在 a8d3a5bbe 时点为真；并行会话已补 `exportCorrectionsBlob`/`importCorrectionsFile`——但引入两个新缺陷（见 8.2） |
+| "AnnotationView 未调 applyTierConfig" | 属实，但**修正方式变更**：不做标注提交后的自动 apply（全局 tier config 变更不应是标注动作的隐式副作用，违背 §5.2 显式原则），改为统计视图提供显式"应用分层建议"按钮 |
+| "252 未验证 corrections/apply/export" | 上轮审计表述失准——09-18 会话已在 252 实测过 corrections POST / export GET / apply POST（冒烟级），但未覆盖 import 与 UI 面 |
+
+### 8.2 本轮实证发现的真实缺陷
+
+1. **main 前端 TS 编译失败**：并行会话补的 `exportCorrectionsBlob/importCorrectionsFile` 使用未定义的 `getToken()`（TS2304×2）。`npm run build` 不含 vue-tsc，坏代码绕过了构建——"构建绿 ≠ 类型绿"。
+2. **import 契约错配**：`importCorrectionsFile` 发 multipart FormData，而后端 `handleImportCorrections` 直接把 `r.Body` 喂给 CSV 解析器——multipart 信封使首行 header 校验必然 400。该函数从未可用。
+3. **导出/导入/应用无任何 UI 消费**：闭环最后一公里断裂。
+4. **ImportCorrectionsCSV 逐行 Exec**：10k 行 = 10k 次 RTT，共享库上分钟级。
+5. **ApplySuggestions 非事务**：中途失败留下部分写入。
+6. **CSV 字段无长度上限**：病态长字段可进入扫描器（认证+参数化 SQL 兜底，风险低但廉价可堵）。
+7. （并行 R43 已修，避免重复）import body 无上限 → R43 已加 32MB MaxBytesReader + 审计 hook；ApplySuggestions ON CONFLICT 42P10 → R43 已裁决 V370 形态 `COALESCE(tenant_id, 0)`。
+
+### 8.3 本轮修正
+
+- 后端（taskprofile/csv.go）：ImportCorrectionsCSV 改单次 `pgx.Batch`（逐行 RowAffected 记账不变）；ApplySuggestions 事务化（**保留 R43 的 `COALESCE(tenant_id, 0)` 修复与注释**）；parseCorrectionRecord 全字段 512B 上限（`csvString`）。pool nil 检查前移。
+- 前端（web/src/api/taskProfile.ts）：修 `getToken` 未定义（改用 `_core.headers()` 认证裁决）；`importCorrectionsFile` 改发裸 CSV 文本对齐后端契约。
+- 前端 UI（web/src/views/AnnotationStatsView.vue）：新增"任务类型修正统计"区（修正率排序表 + 每类当前建议层/tier_source），导出 CSV / 导入 CSV（file input → 裸文本）/ 应用分层建议（confirm 后 `applyTierConfig([])`）三按钮；i18n 键补齐 8 语言。
+- 测试：csv_test 增超长字段拒绝用例；vue-tsc、i18n:check（新增键 8 语言零缺失）、vitest 929 用例、go 单元/集成全绿。
+
+### 8.4 流程教训（入册）
+
+本会话曾基于**上下文压缩前的过期快照**编辑共享热区，拼接脚本一度覆盖 R43 已裁决的 ON CONFLICT 修复——靠 `git diff` 复核发现并回滚重做。重申 [[commit-push-workflow-expectation]] 的既有教训：**编辑任何文件前先读 HEAD 真实形态，绝不凭记忆/旧快照动手**；并行审计轮（R43~R49）与功能会话共享工作树，凡是"上次读过"的文件都可能已被改写。
+
+### 8.5 更新后的遗留清单
+
+1. 分层建议落库后**运行时消费仍为零**：`autoroute.NewTierSelector` 无生产构造点（R43 起注释已标注），apply 只是持久化运营意图。TierSelector 生产化是独立工作。
+2. 前端类型检查未进 build 管道（`npm run build` 不跑 vue-tsc），坏类型可上 main——建议 CI 加 `npm run typecheck` 门禁。
+3. 252 部署脚本不发 web 资产，前端改动无法经 `deploy-252-gateway.sh` 上 252 验证（本轮 UI 验证仅到本地构建+单测级）。
+4. CSV 导入错误行号在多行引号记录下可能不精确（csv.Reader 无行号直读），低风险挂账。

@@ -60,12 +60,24 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 			return
 		}
 
-		auth := r.Header.Get("Authorization")
-		if len(auth) < 7 || auth[:7] != "Bearer " {
+		// Anthropic Messages clients authenticate with x-api-key per the
+		// Anthropic spec (Claude Code with ANTHROPIC_API_KEY sends ONLY this
+		// header). Without the fallback they die here with 401 missing_key
+		// before the /v1/messages handler — whose extractBearerToken has
+		// honored x-api-key since 2026-06-26 — ever sees the request
+		// (observed 2026-09-21: claude-cli 401s on 154, zero rows in
+		// request_logs_hot). Precedence matches extractBearerToken:
+		// Authorization Bearer first, x-api-key only as fallback.
+		provided := ""
+		if auth := r.Header.Get("Authorization"); len(auth) >= 7 && auth[:7] == "Bearer " {
+			provided = auth[7:]
+		} else if key := r.Header.Get("x-api-key"); key != "" {
+			provided = key
+		}
+		if provided == "" {
 			writeAuthUnauthorized(r.Context(), w, i18n.MsgMissingAuth, "missing_key")
 			return
 		}
-		provided := auth[7:]
 
 		// Exact-match on the deployed static key FIRST, even when it carries
 		// an "sk-" prefix (deployments set LLM_GATEWAY_API_KEY=sk-gw* on
