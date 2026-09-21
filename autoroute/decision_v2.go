@@ -337,6 +337,16 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		recommended = d.overrideStore.PromotePins(recommended, task, prof)
 	}
 	pinChangedWinner := len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforePinWinner
+	// R51 修订（2026-09-21 审计，R50 F14 同型存量）：admin pin 翻盘后同理——
+	// tierFailoverModels 在 pin promote 之前计算，pin 胜者（被 tier 滤除靠
+	// 豁免复活、或仅分数落后）整体缺席恢复链；pin 首选穷尽时 dispatch 换模
+	// 梯子（handler D5 / PreferredModels）直接跳到 tier 头名，pin 意图在恢复
+	// 链断裂。同构复用 withRoleFailoverHead（单元素 prefs = pinned 胜者）把
+	// pinned 模型置顶，tier 计划保序去重随后；pin 是最强约束，置顶在 role
+	// 置顶之后执行即天然压过。计划为空（无 tier 配置）不强造。
+	if pinChangedWinner && len(tierFailoverModels) > 0 && len(recommended) > 0 {
+		tierFailoverModels = withRoleFailoverHead(tierFailoverModels, []string{recommended[0].Candidate.CanonicalName}, recommended)
+	}
 	if pinChangedWinner {
 		routingSource = "override_pin"
 	} else if roleChangedWinner {

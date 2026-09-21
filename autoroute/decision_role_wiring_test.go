@@ -650,3 +650,86 @@ func TestDecideV2_TierFailoverChain_NoRole_Unchanged(t *testing.T) {
 		t.Fatalf("no-role tier plan must stay [glm-5.2], got %v", dec.TierFailoverModels)
 	}
 }
+
+// TestDecideV2_PinWinner_HeadsTierFailoverChain —— R51 审计（R50 F14 同型
+// 存量）：admin pin 翻盘后 TierFailoverModels 必须以 pinned 模型打头
+// （Decision 契约 "starts with the selected model"）。tierFailoverModels 在
+// pin promote 之前计算，pin 胜者（此处 glm-5.3 不在 tier 配置、靠豁免复活）
+// 整体缺席恢复链——pin 首选穷尽时 dispatch 换模梯子直接跳到 tier 头名
+// glm-5.2。修复前必红（[glm-5.2]），修复后 pinned 置顶、tier 计划保序随后。
+func TestDecideV2_PinWinner_HeadsTierFailoverChain(t *testing.T) {
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{})
+	defer SetGlobalFeatureFlagsForTest(old)
+
+	idx := &Index{
+		entries: []Candidate{
+			{CredentialID: 11, CanonicalID: 11, CanonicalName: "glm-5.2", Tags: []string{"chat"}, SuccessRate: 0.95},
+			{CredentialID: 12, CanonicalID: 12, CanonicalName: "glm-5.3", Tags: []string{"chat"}, SuccessRate: 0.94},
+		},
+		lastRefresh: time.Now(),
+	}
+	cls := &v2TestClassifier{task: TaskChat}
+	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
+	d.SetWorkTypeRouteStore(tierFilterStore())
+	d.SetOverrideStore(pinnedOverrideStore())
+
+	dec, err := d.DecideV2(context.Background(), ClassificationSignals{}, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("DecideV2 err: %v", err)
+	}
+	if dec.ChosenModel != "glm-5.3" {
+		t.Fatalf("precondition: pin must flip winner to glm-5.3, got %s", dec.ChosenModel)
+	}
+	if dec.RoutingSource != "override_pin" {
+		t.Fatalf("RoutingSource: got %q, want override_pin", dec.RoutingSource)
+	}
+	want := []string{"glm-5.3", "glm-5.2"}
+	if len(dec.TierFailoverModels) != len(want) {
+		t.Fatalf("TierFailoverModels = %v, want %v", dec.TierFailoverModels, want)
+	}
+	for i := range want {
+		if dec.TierFailoverModels[i] != want[i] {
+			t.Fatalf("TierFailoverModels = %v, want %v (pinned model must head the chain, tier plan retained)", dec.TierFailoverModels, want)
+		}
+	}
+}
+
+// TestDecideV2_PinNoFlip_TierFailoverChainUnchanged —— R51 护栏：pin 未翻盘
+// （pinned 即自然头名）时 tier 恢复计划维持原状，置顶修复不外溢。
+func TestDecideV2_PinNoFlip_TierFailoverChainUnchanged(t *testing.T) {
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{})
+	defer SetGlobalFeatureFlagsForTest(old)
+
+	ov := NewOverrideStore(nil)
+	ov.snapshot.Store(&overrideSnapshot{
+		byTaskProfile: map[string][]Override{
+			"chat|smart": {{ID: 2, TaskType: "chat", Profile: "smart", Mode: OverridePin, ModelChosen: "glm-5.2"}},
+		},
+		LoadedAt: time.Now(),
+	})
+
+	idx := &Index{
+		entries: []Candidate{
+			{CredentialID: 11, CanonicalID: 11, CanonicalName: "glm-5.2", Tags: []string{"chat"}, SuccessRate: 0.95},
+			{CredentialID: 12, CanonicalID: 12, CanonicalName: "glm-5.3", Tags: []string{"chat"}, SuccessRate: 0.94},
+		},
+		lastRefresh: time.Now(),
+	}
+	cls := &v2TestClassifier{task: TaskChat}
+	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
+	d.SetWorkTypeRouteStore(tierFilterStore())
+	d.SetOverrideStore(ov)
+
+	dec, err := d.DecideV2(context.Background(), ClassificationSignals{}, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("DecideV2 err: %v", err)
+	}
+	if dec.ChosenModel != "glm-5.2" {
+		t.Fatalf("precondition: pin on natural head must not flip, got %s", dec.ChosenModel)
+	}
+	if len(dec.TierFailoverModels) != 1 || dec.TierFailoverModels[0] != "glm-5.2" {
+		t.Fatalf("no-flip tier plan must stay [glm-5.2], got %v", dec.TierFailoverModels)
+	}
+}
