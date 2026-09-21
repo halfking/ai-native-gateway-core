@@ -203,4 +203,36 @@ if ! grep -q "position('no_eligible_model' in pg_get_constraintdef" \
   exit 1
 fi
 
+# 2026-09-21 内容指纹重放清单（纪律⑨，F4 机制债收口）三重自清洁：
+#   1. 条目格式必须为 "basename|sha256(64 hex)"；
+#   2. 重放目标必须是通道 files=() 数组的注册文件；
+#   3. 指纹必须与文件当前内容一致——文件再改动而条目未同步时门禁变红，
+#      并直接打印正确的 sha（更新条目一次复制即可）。
+replays_block="$(awk '/^legacy_content_replays=\(/{inside=1} inside{print} inside && /^\)$/{exit}' "$SCRIPT")"
+[[ -n "$replays_block" ]] || { printf 'could not extract legacy_content_replays\n' >&2; exit 1; }
+eval "$replays_block"
+for entry in "${legacy_content_replays[@]}"; do
+  base="${entry%%|*}"
+  sha="${entry##*|}"
+  if [[ "$base" == "$entry" || "$sha" == "$entry" || "${#sha}" -ne 64 || ! "$sha" =~ ^[0-9a-f]+$ ]]; then
+    printf 'malformed legacy_content_replays entry (expected "basename|sha256"): %s\n' "$entry" >&2
+    exit 1
+  fi
+  printf '%s\n' "$sequence" | grep -qF "/${base}\"" || {
+    printf 'legacy_content_replays target %s is not registered in the sequence files array\n' "$base" >&2
+    exit 1
+  }
+  target="$ROOT_DIR/sql/migrations/startup/$base"
+  [[ -f "$target" ]] || { printf 'legacy_content_replays target missing: %s\n' "$base" >&2; exit 1; }
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "$target" | cut -d' ' -f1)
+  else
+    actual=$(shasum -a 256 "$target" | cut -d' ' -f1)
+  fi
+  if [[ "$actual" != "$sha" ]]; then
+    printf 'stale legacy_content_replays fingerprint for %s: entry %.12s… actual %.12s… (update the entry to the actual sha)\n' "$base" "$sha" "$actual" >&2
+    exit 1
+  fi
+done
+
 printf 'apply-db-revision-sequence contract passed\n'
