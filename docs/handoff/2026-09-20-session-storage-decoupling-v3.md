@@ -1,7 +1,7 @@
 # Handoff：会话存储解耦 v3 —— session_turn_details 特征层（2026-09-20，2026-09-21 审计修正）
 
 > 状态：**已实施 + 批判式审计修正 + 测试全绿 + 已提交推送**
-> （deploy-local.sh 2.5.6.2158，VERIFY_PASS=1；审计修正随 e5ee9fa2e / 21bb48da4 入库）
+> （deploy-local.sh 2.5.6.2158，VERIFY_PASS=1；审计修正随 035f9382e / 8e86ddcbc 入库，终编 733/734 随 35bab24a6 入库）
 > 方案文档：docs/storage/2026-09-20-session-storage-decoupling-plan.md
 > 前序审计：session_turns 替代 request_logs 盘点（11 视图依赖/~50 缺列/双写/mirror 3.71%）
 
