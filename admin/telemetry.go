@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -101,8 +103,15 @@ type batchEntry struct {
 	RequestLog  *requestLogInput  `json:"request_log,omitempty"`
 }
 
+// ingesterDB 是 telemetry ingest worker 的持久化注入缝：生产传 *pgxpool.Pool，
+// 单测可注入 pgxmock.Pool（与 telemetry 包的 requestLogDB 缝同构）。
+type ingesterDB interface {
+	Begin(context.Context) (pgx.Tx, error)
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
 type telemetryIngester struct {
-	db    *pgxpool.Pool
+	db    ingesterDB
 	queue chan any
 	done  chan struct{}
 	wg    sync.WaitGroup
@@ -330,90 +339,97 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		return
 	}
 
-	// 2026-07-05 migration 341: INSERT directly targets request_logs_hot
-	// (独立热表，0-7 天数据窗口)。所有 INSERT/UPDATE/DELETE 统一写入 _hot 表，
-	// 后台 partition_manager 会定期将冷数据（>7 天）迁移到月度分区。
-	//
-	// 2026-07-21 Ticket #10: Modified to NOT include request_body/response_body.
-	// These are now written to request_logs_bodies_hot (see below).
-	// Only preview fields remain in the metadata table.
-	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_hot (
-			request_id, ts, tenant_id, application_id, api_key_id,
-			end_user_id, client_model, outbound_model,
-			credential_id, provider_id, canonical_id,
-			client_profile, request_mode,
-			prompt_tokens, completion_tokens,
-			cache_read_tokens, cache_write_tokens, total_tokens,
-			cost_usd, latency_ms, success, error_kind, search_text,
-			identity_hash, response_checksum,
-			transform_rule_id, egress_protocol, failure_detail_code,
-			request_preview, transform_summary, response_preview,
-			stream_first_chunk_ms, stream_chunk_count, stream_done_received,
-			stream_interrupted,
-			stream_chunks_sent,
-			upstream_finish_reason
-		) VALUES (
-			$1, now(), $2, $3, $4,
-			$5, $6, $7,
-			$8, $9, $10,
-			$11, $12,
-			$13, $14,
-			$15, $16, $17,
-			$18, $19, $20, $21, $22,
-			$23, $24,
-			$25, $26, $27,
-			$28, $29, $30,
-			$31,
-			COALESCE($32, 0),
-			$33
+	// S4 停写门控（storage.request_logs_write_enabled，与 telemetry client /
+	// Lite sink 同门）：关停后本路径只保留上方 usage_ledger 计费行，跳过
+	// request_logs_hot 主行与 request_logs_bodies_hot 正文（session 六表族是
+	// 唯一事实源）；提交逻辑不变。
+	if settings.GetPlatformBool("storage.request_logs_write_enabled", true) {
+		// 2026-07-05 migration 341: INSERT directly targets request_logs_hot
+		// (独立热表，0-7 天数据窗口)。所有 INSERT/UPDATE/DELETE 统一写入 _hot 表，
+		// 后台 partition_manager 会定期将冷数据（>7 天）迁移到月度分区。
+		//
+		// 2026-07-21 Ticket #10: Modified to NOT include request_body/response_body.
+		// These are now written to request_logs_bodies_hot (see below).
+		// Only preview fields remain in the metadata table.
+		_, err = tx.Exec(ctx, `
+			INSERT INTO request_logs_hot (
+				request_id, ts, tenant_id, application_id, api_key_id,
+				end_user_id, client_model, outbound_model,
+				credential_id, provider_id, canonical_id,
+				client_profile, request_mode,
+				prompt_tokens, completion_tokens,
+				cache_read_tokens, cache_write_tokens, total_tokens,
+				cost_usd, latency_ms, success, error_kind, search_text,
+				identity_hash, response_checksum,
+				transform_rule_id, egress_protocol, failure_detail_code,
+				request_preview, transform_summary, response_preview,
+				stream_first_chunk_ms, stream_chunk_count, stream_done_received,
+				stream_interrupted,
+				stream_chunks_sent,
+				upstream_finish_reason
+			) VALUES (
+				$1, now(), $2, $3, $4,
+				$5, $6, $7,
+				$8, $9, $10,
+				$11, $12,
+				$13, $14,
+				$15, $16, $17,
+				$18, $19, $20, $21, $22,
+				$23, $24,
+				$25, $26, $27,
+				$28, $29, $30,
+				$31,
+				COALESCE($32, 0),
+				$33,
+				$34, $35, $36
+			)
+			ON CONFLICT (request_id) DO UPDATE SET
+				ts = EXCLUDED.ts
+		`,
+			e.RequestID, nonEmptyDefault(e.TenantID), e.ApplicationID, e.APIKeyID,
+			e.EndUserID, e.ClientModel, e.OutboundModel,
+			e.CredentialID, e.ProviderID, e.CanonicalID,
+			e.ClientProfile, e.RequestMode,
+			e.PromptTokens, e.CompletionTokens,
+			e.CacheReadTokens, e.CacheWriteTokens, totalTok,
+			e.CostUSD, e.LatencyMs, e.Success, e.ErrorKind, search,
+			e.IdentityHash, e.ResponseChecksum,
+			e.TransformRuleID, e.EgressProtocol, e.FailureDetailCode,
+			e.RequestPreview, e.TransformSummary, e.ResponsePreview,
+			e.StreamFirstChunkMs, e.StreamChunkCount, e.StreamDoneReceived,
+			e.StreamInterrupted,
+			e.StreamChunksSent,
+			e.UpstreamFinishReason,
 		)
-		ON CONFLICT (request_id) DO UPDATE SET
-			ts = EXCLUDED.ts
-	`,
-		e.RequestID, nonEmptyDefault(e.TenantID), e.ApplicationID, e.APIKeyID,
-		e.EndUserID, e.ClientModel, e.OutboundModel,
-		e.CredentialID, e.ProviderID, e.CanonicalID,
-		e.ClientProfile, e.RequestMode,
-		e.PromptTokens, e.CompletionTokens,
-		e.CacheReadTokens, e.CacheWriteTokens, totalTok,
-		e.CostUSD, e.LatencyMs, e.Success, e.ErrorKind, search,
-		e.IdentityHash, e.ResponseChecksum,
-		e.TransformRuleID, e.EgressProtocol, e.FailureDetailCode,
-		e.RequestPreview, e.TransformSummary, e.ResponsePreview,
-		e.StreamFirstChunkMs, e.StreamChunkCount, e.StreamDoneReceived,
-		e.StreamInterrupted,
-		e.StreamChunksSent,
-		e.UpstreamFinishReason,
-	)
-	if err != nil {
-		t.classifyAndCount("request_logs_hot", e.RequestID, err)
-		slog.Warn("telemetry ingest request_logs failed", "request_id", e.RequestID, "error", err)
-		return
-	}
+		if err != nil {
+			t.classifyAndCount("request_logs_hot", e.RequestID, err)
+			slog.Warn("telemetry ingest request_logs failed", "request_id", e.RequestID, "error", err)
+			return
+		}
 
-	// 2026-07-21 Ticket #10: Persist full bodies in request_logs_bodies_hot.
-	// This path must tolerate both historical UNIQUE (request_id, ts) and
-	// migration-455 UNIQUE (request_id) deployments, because live hosts can
-	// report schema_migrations=455 while still serving the old unique index.
-	err = upsertRequestLogBodies(ctx, tx, e.RequestID, e.RequestBody, e.ResponseBody)
+		// 2026-07-21 Ticket #10: Persist full bodies in request_logs_bodies_hot.
+		// This path must tolerate both historical UNIQUE (request_id, ts) and
+		// migration-455 UNIQUE (request_id) deployments, because live hosts can
+		// report schema_migrations=455 while still serving the old unique index.
+		err = upsertRequestLogBodies(ctx, tx, e.RequestID, e.RequestBody, e.ResponseBody)
 
-	if err != nil {
-		t.classifyAndCount("request_logs_bodies_hot", e.RequestID, err)
-		slog.Warn("telemetry ingest bodies failed", "request_id", e.RequestID, "error", err)
-		return
-	}
+		if err != nil {
+			t.classifyAndCount("request_logs_bodies_hot", e.RequestID, err)
+			slog.Warn("telemetry ingest bodies failed", "request_id", e.RequestID, "error", err)
+			return
+		}
 
-	// 2026-08-26: bump the recently-used ZSET so the admin "凭据路由模型"
-	// picker has a Redis fast path mirroring the request_logs_hot aggregate.
-	// Fires only on successful user requests (probes do not write here) and
-	// only when the row actually persisted. Best-effort: Redis errors are
-	// swallowed so the ingest contract is unchanged. ClientModel is the
-	// canonical name the gateway resolves before writing request_logs_hot
-	// (the request_log_ingest schema does not carry a separate canonical
-	// field — ClientModel is the lower-cased canonical form on this path).
-	if rc := t.redisClient.Load(); rc != nil && e.Success {
-		RecordRecentlyUsedModel(ctx, rc, nonEmptyDefault(e.TenantID), derefStr(e.ClientModel), false)
+		// 2026-08-26: bump the recently-used ZSET so the admin "凭据路由模型"
+		// picker has a Redis fast path mirroring the request_logs_hot aggregate.
+		// Fires only on successful user requests (probes do not write here) and
+		// only when the row actually persisted. Best-effort: Redis errors are
+		// swallowed so the ingest contract is unchanged. ClientModel is the
+		// canonical name the gateway resolves before writing request_logs_hot
+		// (the request_log_ingest schema does not carry a separate canonical
+		// field — ClientModel is the lower-cased canonical form on this path).
+		if rc := t.redisClient.Load(); rc != nil && e.Success {
+			RecordRecentlyUsedModel(ctx, rc, nonEmptyDefault(e.TenantID), derefStr(e.ClientModel), false)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
