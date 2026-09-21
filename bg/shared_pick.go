@@ -84,9 +84,10 @@ func PickProbeModelForCredential(ctx context.Context, db pickDB, credID int) (Pi
 		WHERE rl.credential_id = $1
 		  AND ts > now() - interval '7 days'
 		  AND success = TRUE
-		  -- R50: dual-arm probe exclusion (INV-3) — a model only probes ever
+		  -- R50 dual-arm exclusion, frozen-view variant (R49 自纠 S1：origin_stage 不在
+		  -- 113 列契约，视图读面必须用 view 谓词；INV-3) — a model only probes ever
 		  -- touched must not win "most-used" and steer the probe target.
-		  AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
+		  AND `+fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")+`
 		  AND client_model IS NOT NULL
 		GROUP BY client_model
 		ORDER BY count(*) DESC
