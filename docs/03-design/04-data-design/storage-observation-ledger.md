@@ -202,3 +202,16 @@ ROUND_RESULT|sessions=10|fail=0|global_g2=1|verdict=FAIL|at=2026-09-20T01:02:06Z
 - 处置：幂等回填灌 1 行 → reaper 消化 → GLOBAL_G2 复验=0（09:05），outbox 清空。
 - **判定：本日（09-20）不计入连续归零**，计数自 2026-09-21 每日轮重新起算，7 天达标 earliest 顺延至 **2026-09-27 每日轮**。
 - **频率量化（升级为 S4 前最高优待办）**：claim 置位 is_final_success 结构性漏镜像实测频率——09-15、09-18、09-20 各 1 行，**约每 2 天 1 行**。按此频率，7 天连续归零窗口期望被打断 2~4 次，观察期靠"回填兜底"几乎无法自然凑满。**建议：先落 claim 路径修复（UPDATE 置位后补发 mirror 触发/直接登记 outbox）再重启计数**，否则观察期语义已退化为"回填兜底运行正常性验证"。
+
+### 每日观察 2026-09-21 09:00 (+08)，build=293b29a0/2156 —— **PASS，连续归零 Day 1/7（09-20 FAIL 清零后重起）**
+
+构建身份：293b29a0/2156 在本仓库历史，含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=7|fail=0|global_g2=0|verdict=PASS|at=2026-09-21T01:00:39Z
+```
+
+- 抽样 7/7 PASS（biz_multi×1、loop_single×3、sys×3；多轮会话样本偏少系当日流量构成，非异常），G1 四项零漂移。
+- claim 置位结构性漏镜像近 24h 未产生缺失（09-20 回填后干净一整天）；待办（S4 停写前修复 claim 路径或登记 E6）维持，等待用户拍板。
+- **连续归零累计 1/7**（09-21 计 Day 1，09-20 FAIL 清零后重起）。7 天达标 earliest 2026-09-27 每日轮。
