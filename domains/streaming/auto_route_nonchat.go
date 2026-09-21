@@ -135,6 +135,14 @@ func (h *MessagesHandler) maybeResolveAutoForMessages(reqBody *messagesRequestBo
 	}
 	sigs := extractSignalsForMessages(reqBody, rawBody)
 	sigs.ClientType = extractClientTypeWithPrompt(r, sigs.SystemPrompt)
+	// R49 修订（2026-09-20 审计 P1）：/v1/messages 协议面同样解析会话角色头
+	//（与 chat completions 路径 auto_route.go 同款）——缺失时 worker 子代理经
+	// Anthropic 协议的 role 路由静默失效，且跨协议共用 session_id 时
+	// role 缓存互相打失效。
+	sigs.AgentRole = autoroute.ResolveAgentRoleFromHeaders(
+		r.Header.Get(autoroute.AgentRoleHeader),
+		r.Header.Get(autoSourceActorHeader),
+	)
 	headerProfile := r.Header.Get(autoProfileHeader)
 	taskHint := autoroute.TaskType(r.Header.Get(autoTaskHintHeader))
 	sessionID := r.Header.Get("X-Gw-Session-Id")
@@ -177,6 +185,12 @@ func (h *ResponsesHandler) maybeResolveAutoForResponses(reqBody *responsesReques
 	}
 	sigs := extractSignalsForResponses(reqBody, rawBody)
 	sigs.ClientType = extractClientTypeWithPrompt(r, sigs.SystemPrompt)
+	// R49 修订（2026-09-20 审计 P1）：/v1/responses 协议面同款角色头解析
+	//（见上方 maybeResolveAutoForMessages 注释）。
+	sigs.AgentRole = autoroute.ResolveAgentRoleFromHeaders(
+		r.Header.Get(autoroute.AgentRoleHeader),
+		r.Header.Get(autoSourceActorHeader),
+	)
 	headerProfile := r.Header.Get(autoProfileHeader)
 	taskHint := autoroute.TaskType(r.Header.Get(autoTaskHintHeader))
 	sessionID := r.Header.Get("X-Gw-Session-Id")

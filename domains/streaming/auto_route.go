@@ -93,25 +93,32 @@ const maxWireDecisionBytes = 16 * 1024
 // autoRouteDecision is the wire format of X-Gw-Auto-Decision. Stable
 // JSON schema — clients may parse it for observability.
 type autoRouteDecision struct {
-	TaskType                  string               `json:"task_type"`
-	Confidence                float64              `json:"confidence"`
-	Profile                   string               `json:"profile"`
-	Classifier                string               `json:"classifier"`
-	Reason                    string               `json:"reason"`
-	ChosenModel               string               `json:"chosen_model"`
-	ChosenRawModel            string               `json:"chosen_raw_model"`
-	ChosenCredID              int64                `json:"chosen_credential_id"`
-	EnabledFeatures           []string             `json:"enabled_features,omitempty"`
-	FilterReasons             []string             `json:"filter_reasons,omitempty"`
-	CacheReused               bool                 `json:"cache_reused"`
-	FallbackUsed              bool                 `json:"fallback_used"`
-	ExperimentID              string               `json:"experiment,omitempty"`
-	Treatment                 autoroute.Treatment  `json:"treatment,omitempty"`
-	AssignmentVersion         string               `json:"assignment_version,omitempty"`
-	AssignmentKeyHash         string               `json:"assignment_key_hash,omitempty"`
-	EmbeddingShadowTask       string               `json:"embedding_shadow_task,omitempty"`
-	EmbeddingShadowSimilarity *float64             `json:"embedding_shadow_similarity,omitempty"`
-	CandidatesTop3            []autoRouteCandidate `json:"candidates_top3"`
+	TaskType                  string              `json:"task_type"`
+	Confidence                float64             `json:"confidence"`
+	Profile                   string              `json:"profile"`
+	Classifier                string              `json:"classifier"`
+	Reason                    string              `json:"reason"`
+	ChosenModel               string              `json:"chosen_model"`
+	ChosenRawModel            string              `json:"chosen_raw_model"`
+	ChosenCredID              int64               `json:"chosen_credential_id"`
+	EnabledFeatures           []string            `json:"enabled_features,omitempty"`
+	FilterReasons             []string            `json:"filter_reasons,omitempty"`
+	CacheReused               bool                `json:"cache_reused"`
+	FallbackUsed              bool                `json:"fallback_used"`
+	ExperimentID              string              `json:"experiment,omitempty"`
+	Treatment                 autoroute.Treatment `json:"treatment,omitempty"`
+	AssignmentVersion         string              `json:"assignment_version,omitempty"`
+	AssignmentKeyHash         string              `json:"assignment_key_hash,omitempty"`
+	EmbeddingShadowTask       string              `json:"embedding_shadow_task,omitempty"`
+	EmbeddingShadowSimilarity *float64            `json:"embedding_shadow_similarity,omitempty"`
+	// R48 (2026-09-20) role 路由审计字段。omitempty + 仅在值非空时映射：
+	// flag-off / 无角色头时序列化字节与本特性加入前完全一致。
+	SessionRole string `json:"session_role,omitempty"`
+	TaskKind    string `json:"task_kind,omitempty"`
+	// RoutingSource 仅在 role_route 命中时映射到 wire（刻意不全量透出：
+	// 其余来源值 V1/V2 早已落库，全量透出会改变 flag-off 字节流）。
+	RoutingSource  string               `json:"routing_source,omitempty"`
+	CandidatesTop3 []autoRouteCandidate `json:"candidates_top3"`
 
 	// Process-local inputs for pre-first-byte dispatch recovery. They are not
 	// serialized into the response header or audit JSON.
@@ -348,6 +355,13 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 	sigs := extractSignalsForAuto(reqBody, rawBody)
 	// 从 HTTP 头 + 系统提示词语义匹配提取客户端/智能体类型
 	sigs.ClientType = extractClientTypeWithPrompt(r, sigs.SystemPrompt)
+	// R48 (2026-09-20): 会话角色识别——X-Gw-Agent-Role 声明为主，
+	// 网关内部 loopback 的 X-Gw-Source-Actor 推断为辅（该头已被 R35-R1
+	// 中间件按 loopback 令牌剥离，到达此处只可能可信）。
+	sigs.AgentRole = autoroute.ResolveAgentRoleFromHeaders(
+		r.Header.Get(autoroute.AgentRoleHeader),
+		r.Header.Get(autoSourceActorHeader),
+	)
 
 	headerProfile := r.Header.Get(autoProfileHeader)
 	taskHint := autoroute.TaskType(r.Header.Get(autoTaskHintHeader))
@@ -487,6 +501,12 @@ func buildAutoSelection(r *http.Request, sessionID string, wire *autoRouteDecisi
 		CostSensitive:          features.CostSensitive,
 		FeatureVersion:         features.FeatureVersion,
 		ContentHash:            features.ContentHash,
+		// R50 (migration 731): role-route attribution — flag-off 时三值皆空
+		//（wire 只在 flag on 时透出 SessionRole/TaskKind，RoutingSource 仅
+		// role_route 命中时非空），旧行为字节不变。
+		SessionRole:   wire.SessionRole,
+		TaskKind:      wire.TaskKind,
+		RoutingSource: wire.RoutingSource,
 	}
 }
 
@@ -539,6 +559,13 @@ func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
 		AssignmentVersion:   d.AssignmentVersion,
 		AssignmentKeyHash:   d.AssignmentKeyHash,
 		EmbeddingShadowTask: d.EmbeddingShadowTask,
+		// R48: 仅非空时透出，flag-off wire 字节不变。
+		SessionRole: d.SessionRole,
+		TaskKind:    d.TaskKind,
+	}
+	// R48: routing_source 仅 role_route 命中时出现在 wire（见字段注释）。
+	if d.RoutingSource == "role_route" {
+		wire.RoutingSource = d.RoutingSource
 	}
 	if d.EmbeddingShadowTask != "" {
 		similarity := d.EmbeddingShadowSimilarity

@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -14,10 +15,13 @@ const (
 	todaySuccessProbeInterval = 15 * time.Minute
 	todaySuccessProbeLookback = 24 * time.Hour
 	todaySuccessProbeBatch    = 40
-	// Healthy pairs are re-probed at most hourly (same cadence as the
-	// node_probe_state success re-arm). Business success already stamps
-	// last_attempt_at, so busy healthy nodes are never probed at all.
-	todaySuccessHealthySkipAfter = time.Hour
+	// todaySuccessPerCredentialCap bounds how many pairs ONE credential may
+	// contribute per tick (2026-09-20 probe-volume policy): the scan is a
+	// recovery re-verification, not a fleet census. Two is the policy's
+	// consecutive-success budget — with the credential-level two-success
+	// gate, a credential that recovers is verified twice and then skipped
+	// until a new failure re-arms it.
+	todaySuccessPerCredentialCap = 2
 )
 
 type todaySuccessProbeDB interface {
@@ -25,8 +29,20 @@ type todaySuccessProbeDB interface {
 }
 
 // TodaySuccessProbe submits a bounded set of (credential, model) pairs that
-// had a successful business request today. Failed or never-probed pairs are
-// always included; recently healthy pairs are skipped so the scan stays cheap.
+// had a successful business request today but are currently judged unhealthy
+// (binding unavailable or last probe failed), so recovery is re-verified.
+//
+// 2026-09-20 probe-volume policy (docs/probe/2026-09-20-probe-volume-optimization.md):
+// previously this scanner re-probed every recently-used pair whose
+// last_attempt_at was older than 60 minutes — an hourly re-probe of the
+// healthy fleet by design. Now:
+//   - only pairs with a current unhealthy signal are submitted (available=FALSE
+//     or last_direct_ok=FALSE); healthy pairs are never re-probed here —
+//     business success is the health evidence;
+//   - credentials that already have ≥2 distinct models whose latest probe run
+//     succeeded within 24h are skipped entirely (两连成功早停);
+//   - each credential contributes at most todaySuccessPerCredentialCap pairs
+//     per tick, most-recently-used first.
 type TodaySuccessProbe struct {
 	db     todaySuccessProbeDB
 	worker *NodeProbeWorker
@@ -46,7 +62,9 @@ func (p *TodaySuccessProbe) Start(ctx context.Context) {
 	}
 	p.startOnce.Do(func() {
 		go func() {
-			p.run(ctx)
+			// R50 审计 P3：裸 go 无 recover，单次 panic 即整进程崩溃——
+			// 每轮 run 单独守护，panic 后循环继续。
+			p.runRecovered(ctx)
 			ticker := time.NewTicker(todaySuccessProbeInterval)
 			defer ticker.Stop()
 			for {
@@ -56,14 +74,15 @@ func (p *TodaySuccessProbe) Start(ctx context.Context) {
 				case <-p.stopCh:
 					return
 				case <-ticker.C:
-					p.run(ctx)
+					p.runRecovered(ctx)
 				}
 			}
 		}()
-		slog.Info("today success probe started",
+		slog.Info("today success probe started (recovery re-verify only)",
 			"interval", todaySuccessProbeInterval,
 			"lookback", todaySuccessProbeLookback,
-			"batch", todaySuccessProbeBatch)
+			"batch", todaySuccessProbeBatch,
+			"per_credential_cap", todaySuccessPerCredentialCap)
 	})
 }
 
@@ -72,6 +91,16 @@ func (p *TodaySuccessProbe) Stop() {
 		return
 	}
 	p.stopOnce.Do(func() { close(p.stopCh) })
+}
+
+// runRecovered 守护单轮 run：panic 记日志后由 Start 的 tick 循环继续下一轮。
+func (p *TodaySuccessProbe) runRecovered(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("today_success_probe: run panic recovered", "recover", rec)
+		}
+	}()
+	p.run(ctx)
 }
 
 func (p *TodaySuccessProbe) run(ctx context.Context) {
@@ -104,31 +133,52 @@ func (p *TodaySuccessProbe) run(ctx context.Context) {
 	slog.Info("today success probe queued", "pairs", submitted)
 }
 
+// todaySuccessProbeSQL is extracted for guard tests (same pattern as
+// pumpDueStatesSQL). It returns pairs that (a) carried real (non-probe)
+// successful traffic in the last 24h, (b) are currently judged unhealthy —
+// binding unavailable OR last probe round failed — and (c) belong to a
+// credential that has NOT already been re-verified by two distinct models
+// probing successfully within 24h (两连成功早停). Each credential contributes
+// at most todaySuccessPerCredentialCap pairs, most-recently-used first.
 func todaySuccessProbeSQL() string {
 	return `
-		SELECT rl.credential_id, pm.raw_model_name
-		FROM request_logs_hot rl
-		JOIN credential_model_bindings cmb ON cmb.credential_id = rl.credential_id
-		JOIN provider_models pm ON pm.id = cmb.provider_model_id
-		LEFT JOIN node_probe_state nps
-		  ON nps.credential_id = rl.credential_id
-		 AND nps.raw_model_name = pm.raw_model_name
-		WHERE rl.ts >= now() - interval '24 hours'
-		  AND rl.success = TRUE
-		  AND NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)
-		  AND rl.credential_id IS NOT NULL
-		  AND pm.raw_model_name <> ''
-		  AND (pm.raw_model_name = rl.client_model
-		       OR pm.raw_model_name = rl.outbound_model
-		       OR pm.outbound_model_name = rl.outbound_model)
-		  AND (
-		      nps.credential_id IS NULL
-		      OR COALESCE(cmb.available, FALSE) = FALSE
-		      OR COALESCE(nps.last_direct_ok, FALSE) = FALSE
-		      OR nps.last_attempt_at IS NULL
-		      OR nps.last_attempt_at < now() - interval '60 minutes'
-		  )
-		GROUP BY rl.credential_id, pm.raw_model_name
-		ORDER BY MAX(rl.ts) DESC, rl.credential_id, pm.raw_model_name
+		WITH used AS (
+			SELECT rl.credential_id AS id, pm.raw_model_name, MAX(rl.ts) AS last_used_at
+			FROM request_logs_hot rl
+			JOIN credential_model_bindings cmb ON cmb.credential_id = rl.credential_id
+			JOIN provider_models pm ON pm.id = cmb.provider_model_id
+			WHERE rl.ts >= now() - interval '24 hours'
+			  AND rl.success = TRUE
+			  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
+			  AND rl.credential_id IS NOT NULL
+			  AND pm.raw_model_name <> ''
+			  AND (pm.raw_model_name = rl.client_model
+			       OR pm.raw_model_name = rl.outbound_model
+			       OR pm.outbound_model_name = rl.outbound_model)
+			GROUP BY rl.credential_id, pm.raw_model_name
+		), unhealthy AS (
+			SELECT used.id, used.raw_model_name, used.last_used_at
+			FROM used
+			JOIN credential_model_bindings cmb ON cmb.credential_id = used.id
+			JOIN provider_models pm ON pm.id = cmb.provider_model_id
+			  AND pm.raw_model_name = used.raw_model_name
+			LEFT JOIN node_probe_state nps
+			  ON nps.credential_id = used.id
+			 AND nps.raw_model_name = used.raw_model_name
+			WHERE COALESCE(cmb.available, TRUE) = FALSE
+			   OR COALESCE(nps.last_direct_ok, TRUE) = FALSE
+		), ranked AS (
+			SELECT unhealthy.*,
+			       row_number() OVER (
+			           PARTITION BY unhealthy.id
+			           ORDER BY unhealthy.last_used_at DESC, unhealthy.raw_model_name
+			       ) AS rn
+			FROM unhealthy
+			WHERE NOT ` + credentialTwoProbeSuccessGateSQL("unhealthy.id") + `
+		)
+		SELECT id, raw_model_name
+		FROM ranked
+		WHERE rn <= ` + fmt.Sprintf("%d", todaySuccessPerCredentialCap) + `
+		ORDER BY last_used_at DESC, id, raw_model_name
 		LIMIT $1`
 }

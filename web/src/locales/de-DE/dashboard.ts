@@ -1,6 +1,7 @@
 export default {
   title: "Dashboard",
   refresh: "Aktualisieren",
+  modelsSelectedCount: '{n} Modelle ausgewählt',  // R50 ModelPicker compact
 tabs: {
     board: 'Board',
     liveStream: 'Live-Anfragestream',

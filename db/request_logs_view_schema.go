@@ -41,6 +41,15 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// 734：details 特征层在场时，最新 v3 体须含 session_turn_details JOIN；
+	// 老库（733 未跑）回退 710 形态仍视为健康，零 DDL。
+	var detailsFamilyExists bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT to_regclass('public.session_turn_details_hot') IS NOT NULL
+		   AND to_regclass('public.session_turn_details') IS NOT NULL
+	`).Scan(&detailsFamilyExists); err != nil {
+		return fmt.Errorf("probe session_turn_details family: %w", err)
+	}
 	var canonicalExists, bodyIsV2 bool
 	// 体形探测基于 pg_views 行内求值（视图缺失时 EXISTS 子查询零行，
 	// pg_get_viewdef 不会被求值——不能直接对 '...'::regclass 取视图定义，
@@ -56,8 +65,9 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 			WHERE schemaname = 'public'
 			  AND viewname = 'request_logs_with_current_month'
 			  AND pg_get_viewdef(schemaname || '.' || viewname, true) LIKE '%session_turns%'
+			  AND (NOT $1 OR pg_get_viewdef(schemaname || '.' || viewname, true) LIKE '%session_turn_details%')
 		)
-	`).Scan(&canonicalExists, &bodyIsV2); err != nil {
+	`, detailsFamilyExists).Scan(&canonicalExists, &bodyIsV2); err != nil {
 		return fmt.Errorf("probe request_logs_with_current_month existence: %w", err)
 	}
 	if canonicalExists && bodyIsV2 {
@@ -173,15 +183,16 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if _, err := d.pool.Exec(ctx, canonicalV2DDL(baseHasFP, baseHasRaw)); err != nil {
+		if _, err := d.pool.Exec(ctx, canonicalV2DDL(baseHasFP, baseHasRaw, detailsFamilyExists)); err != nil {
 			return fmt.Errorf("rebuild request_logs_with_current_month as session-family v2: %w", err)
 		}
 		if _, err := d.pool.Exec(ctx, `COMMENT ON VIEW public.request_logs_with_current_month IS `+
 			canonicalV2Comment); err != nil {
 			return fmt.Errorf("comment request_logs_with_current_month v2: %w", err)
 		}
-		slog.Info("request_logs_with_current_month view upgraded to session-family v2 body " +
-			"(session_turns(_hot) projection UNION ALL frozen v1 body with anti-join dedup)")
+		slog.Info("request_logs_with_current_month view upgraded to session-family v2 body "+
+			"(session_turns(_hot) projection UNION ALL frozen v1 body with anti-join dedup)",
+			"details_join", detailsFamilyExists)
 		return nil
 	}
 
@@ -415,23 +426,60 @@ var projectionExprsV2 = []string{
 // sources (alias fixed to t), each expression explicitly named to the frozen
 // contract. Column mapping contract: sql/migrations/startup/
 // 710_request_logs_view_session_family_v2.sql header.
-var sessionFamilyProjectionV2 = buildSessionProjection()
+// detailsProjectionColumns is the 734 view-contract group: details column
+// name → the v1 frozen-contract NULL type. withDetails=true projections emit
+// `d.<name>` at these positions; false falls back to the 710 NULL placeholders.
+// Types match public.session_turn_details DDL (migration 733) exactly, so the
+// UNION ALL positional typing is unchanged in both shapes.
+var detailsProjectionColumns = map[string]string{
+	"client_model": "text", "provider_id": "bigint", "client_profile": "text",
+	"virtual_ip": "text", "virtual_mac": "text", "affinity_hit": "boolean",
+	"transform_rule_id": "text", "gw_task_id": "text", "api_key_prefix": "text",
+	"owner_user": "text", "application_code": "text", "key_alias": "text",
+	"api_key_owner_user": "text", "auto_profile": "text", "confidence_num": "numeric(4,3)",
+	"model_chosen": "text", "strategy_used": "text", "compression_reason": "text",
+	"outbound_msg_count": "integer", "outbound_token_est": "integer", "outbound_msg_hashes": "jsonb",
+	"quality_flags": "text[]", "quality_fix_actions": "jsonb", "quality_score": "numeric(3,2)",
+	"stream_chunk_errors": "integer", "stream_chunks_sent": "integer", "attachments": "jsonb",
+	"request_type": "text", "request_class": "text", "due_at": "timestamptz",
+}
 
-func buildSessionProjection() string {
-	if len(projectionExprsV2) != len(canonicalColumnOrderV2) {
-		panic(fmt.Sprintf("session projection drift: %d exprs vs %d contract names",
-			len(projectionExprsV2), len(canonicalColumnOrderV2)))
+// buildSessionProjectionExprs composes the 113 session-branch expressions by
+// canonical column name: details positions flip between NULL placeholders
+// (710 shape) and d.<col> (734 shape); everything else stays positional with
+// projectionExprsV2.
+func buildSessionProjectionExprs(withDetails bool) []string {
+	out := make([]string, len(projectionExprsV2))
+	for i, name := range canonicalColumnOrderV2 {
+		if withDetails {
+			if _, ok := detailsProjectionColumns[name]; ok {
+				out[i] = "d." + name
+				continue
+			}
+		}
+		out[i] = projectionExprsV2[i]
 	}
-	parts := make([]string, len(projectionExprsV2))
-	for i, expr := range projectionExprsV2 {
+	return out
+}
+
+// sessionFamilyProjection renders the named projection (details-aware). Both
+// the view-ensure chain and native readers go through this one composer.
+func sessionFamilyProjection(withDetails bool) string {
+	exprs := buildSessionProjectionExprs(withDetails)
+	if len(exprs) != len(canonicalColumnOrderV2) {
+		panic(fmt.Sprintf("session projection drift: %d exprs vs %d contract names",
+			len(exprs), len(canonicalColumnOrderV2)))
+	}
+	parts := make([]string, len(exprs))
+	for i, expr := range exprs {
 		parts[i] = expr + " AS " + canonicalColumnOrderV2[i]
 	}
 	return strings.Join(parts, ",\n\t\t")
 }
 
-// canonicalV2Comment 与迁移 710 的 COMMENT ON VIEW 同文（COMMENT 的 IS 只收
+// canonicalV2Comment 与迁移 734 的 COMMENT ON VIEW 同文（COMMENT 的 IS 只收
 // 单个字面量，不能像 SQL 赋值那样 || 拼接）。
-const canonicalV2Comment = `'存储优化方案 v2 S2 拼装体（710）: session_turns(_hot) 113 列会话投影 UNION ALL v1 体（hot∪parent + 577/610/696/700 lateral，冻结）× 反连接（request_id 已入 turns 的 v1 行不再输出）。缺源列 NULL 补位、派生映射与 sys:% 合成会话 NULL 语义登记见迁移文件列映射契约。S4 停写 + 历史 TTL 退出后收敛为纯会话体。'`
+const canonicalV2Comment = `'会话存储解耦 v3（734）: 710 拼装体升级——session 分支 LEFT JOIN session_turn_details(_hot)（733 特征层，键 tenant_id+request_id+partition_date），30 个 NULL 占位列换真实特征列（client_model/quality_*/stream_chunk_errors/request_class 等）。LEFT 语义：details 缺行时 NULL，与 710 逐位兼容。仍 NULL：id/test_col/test_tab_indent/provider_model。'`
 
 // canonicalColumnOrderV2 是 113 列的契约顺序（= 现网 canonical 视图列序）。
 // UNION ALL 按位置匹型：会话分支按此顺序展开投影；v1 分支内层（包装链 +
@@ -471,7 +519,7 @@ var canonicalColumnOrderV2 = []string{
 	"due_at", "system_fingerprint", "raw_model_name",
 }
 
-// canonicalV2DDL 组装 710 视图体。baseHasFP/baseHasRaw 描述基础包装
+// canonicalV2DDL 组装 710/734 视图体。baseHasFP/baseHasRaw 描述基础包装
 // （request_logs_with_current_month_without_customer_id）是否已自带
 // system_fingerprint/raw_model_name——冻结链（577/610 时代交集，生产/本机
 // 现网）不带，v1 分支按 700 形态 lateral 追加 4 列；动态重建链（680 引导/
@@ -480,7 +528,11 @@ var canonicalColumnOrderV2 = []string{
 // 不同：动态链 fp/raw 位于 customer/class/due 之前），外层按
 // canonicalColumnOrderV2 按名归一化后与会话分支按位置对齐。反连接守卫走
 // idx_session_turns_request / idx_session_turns_hot_request。
-func canonicalV2DDL(baseHasFP, baseHasRaw bool) string {
+//
+// hasDetails（734）：true 时 session 分支 LEFT JOIN session_turn_details(_hot)
+// 特征层（键 tenant_id+request_id+partition_date），30 个 NULL 占位换 d.<col>；
+// false（733 未跑的陈旧库）回退 710 形态，零 d.* 引用。
+func canonicalV2DDL(baseHasFP, baseHasRaw, hasDetails bool) string {
 	appendCols := []string{"source.request_class", "source.due_at"}
 	if !baseHasFP {
 		appendCols = append(appendCols, "source.system_fingerprint")
@@ -499,13 +551,28 @@ func canonicalV2DDL(baseHasFP, baseHasRaw bool) string {
 	for i, c := range lateralCols {
 		parentCols[i] = "p" + strings.TrimPrefix(c, "h")
 	}
+	proj := sessionFamilyProjection(hasDetails)
+	hotJoin := ""
+	parentJoin := ""
+	if hasDetails {
+		hotJoin = `
+	LEFT JOIN public.session_turn_details_hot d
+	  ON d.tenant_id = t.tenant_id
+	 AND d.request_id = t.request_id
+	 AND d.partition_date = t.partition_date`
+		parentJoin = `
+	LEFT JOIN public.session_turn_details d
+	  ON d.tenant_id = t.tenant_id
+	 AND d.request_id = t.request_id
+	 AND d.partition_date = t.partition_date`
+	}
 	return fmt.Sprintf(`
 	CREATE OR REPLACE VIEW public.request_logs_with_current_month AS
 	SELECT %s
-	FROM public.session_turns_hot t
+	FROM public.session_turns_hot t%s
 	UNION ALL
 	SELECT %s
-	FROM public.session_turns t
+	FROM public.session_turns t%s
 	UNION ALL
 	SELECT %s
 	FROM (
@@ -524,7 +591,8 @@ func canonicalV2DDL(baseHasFP, baseHasRaw bool) string {
 	) rl
 	WHERE NOT EXISTS (SELECT 1 FROM public.session_turns_hot th WHERE th.request_id = rl.request_id)
 	  AND NOT EXISTS (SELECT 1 FROM public.session_turns tp WHERE tp.request_id = rl.request_id)`,
-		sessionFamilyProjectionV2, sessionFamilyProjectionV2,
+		proj, hotJoin,
+		proj, parentJoin,
 		strings.Join(canonicalColumnOrderV2, ", "),
 		strings.Join(appendCols, ", "),
 		strings.Join(lateralCols, ", "),
@@ -533,10 +601,14 @@ func canonicalV2DDL(baseHasFP, baseHasRaw bool) string {
 
 // SessionFamilyTurnsSourceSQL returns a parenthesized FROM-source emitting the
 // frozen 113-column request-logs shape straight from the session-turn family
-// (hot ∪ parent), for S3 wave-1 native readers (plan §4-S3: admin 日志读端
-// 分波去视图化). It reuses buildSessionProjection() so the view ensure chain
-// and native readers share one copy of the column-mapping contract; a shape
-// change in 710 terms updates both.
+// (hot ∪ parent, details-joined per 734), for S3 wave-1 native readers
+// (plan §4-S3: admin 日志读端分波去视图化). It reuses
+// sessionFamilyProjection(true) so the view ensure chain and native readers
+// share one copy of the column-mapping contract.
+//
+// Callers require migration 733 (session_turn_details family) to be applied —
+// native readers run post-migration by construction (startup migrations
+// precede serving).
 //
 // The returned source carries no alias — callers append one (e.g. `rl`).
 // Unlike the 710 view it omits the frozen-v1 branch and anti-join entirely:
@@ -545,8 +617,12 @@ func canonicalV2DDL(baseHasFP, baseHasRaw bool) string {
 // (i.e. before S4 stop-write + TTL retirement of windows that predate the
 // session mirror).
 func SessionFamilyTurnsSourceSQL() string {
-	return "(SELECT " + sessionFamilyProjectionV2 +
+	return "(SELECT " + sessionFamilyProjection(true) +
 		" FROM public.session_turns_hot t" +
-		" UNION ALL SELECT " + sessionFamilyProjectionV2 +
-		" FROM public.session_turns t)"
+		" LEFT JOIN public.session_turn_details_hot d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date" +
+		" UNION ALL SELECT " + sessionFamilyProjection(true) +
+		" FROM public.session_turns t" +
+		" LEFT JOIN public.session_turn_details d" +
+		" ON d.tenant_id = t.tenant_id AND d.request_id = t.request_id AND d.partition_date = t.partition_date)"
 }

@@ -52,6 +52,15 @@ type AutoSelection struct {
 	CanonicalID int64
 	ChosenModel string
 
+	// R50 (migration 731): role-route attribution. Populated from the wire
+	// decision only when the R48 role-routing flag is on; empty otherwise.
+	// routing_source mirrors wire.RoutingSource (non-empty = 'role_route'),
+	// so affinity learning can exclude forced selections from the
+	// (task_type, profile) reward cells.
+	SessionRole   string
+	TaskKind      string
+	RoutingSource string
+
 	CandidateRank   int
 	CompositeScore  float64
 	AffinityScore   float64
@@ -222,7 +231,7 @@ func (w *selectionWriter) flush(batch []AutoSelection) {
 	}
 }
 
-const selectionColumnCount = 35 // Updated for structured features v1
+const selectionColumnCount = 38 // 35 (structured features v1) + 3 (R50 role attribution)
 
 func (w *selectionWriter) insertBatch(ctx context.Context, sels []AutoSelection) error {
 	values := make([]string, 0, len(sels))
@@ -296,6 +305,10 @@ func (w *selectionWriter) insertBatch(ctx context.Context, sels []AutoSelection)
 			nullableBool(s.CostSensitive),
 			featureVer,
 			nullableString(s.ContentHash),
+			// R50 role attribution (migration 731, 3 new columns)
+			nullableString(s.SessionRole),
+			nullableString(s.TaskKind),
+			nullableString(s.RoutingSource),
 		)
 
 	}
@@ -315,7 +328,8 @@ func (w *selectionWriter) insertBatch(ctx context.Context, sels []AutoSelection)
     detected_language, prompt_length_bucket, context_length_bucket, turn_count_bucket,
     has_code_indicator, has_math_indicator, has_table_indicator, has_multimedia_indicator,
     intent_category, domain_hint, complexity_bucket, latency_sensitive, cost_sensitive,
-    feature_version, content_hash
+    feature_version, content_hash,
+    agent_role, task_kind, routing_source
 ) VALUES ` + joinStrings(values, ",") + `
 ON CONFLICT DO NOTHING`
 

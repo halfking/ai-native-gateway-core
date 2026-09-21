@@ -51,6 +51,14 @@ const (
 	TimeoutActionApprove                      // 超时自动批准
 )
 
+// String 返回动作的配置字面量，用于日志留痕。
+func (a TimeoutAction) String() string {
+	if a == TimeoutActionApprove {
+		return "auto_approve"
+	}
+	return "reject"
+}
+
 // ApprovalManager 审批流程管理器。
 type ApprovalManager struct {
 	pool          ApprovalDBTX
@@ -77,7 +85,7 @@ func (m *ApprovalManager) WithTimeoutAction(action TimeoutAction) *ApprovalManag
 
 // Create 创建审批记录。
 //
-// 在事务内先 `SET LOCAL app.current_tenant = req.TenantID` 触发 RLS，
+// 在事务内先把 app.current_tenant 设为 req.TenantID 触发 RLS，
 // 然后插入。返回新生成的 UUID。
 func (m *ApprovalManager) Create(ctx context.Context, req *ApprovalRequest) (string, error) {
 	if req == nil {
@@ -137,7 +145,7 @@ func (m *ApprovalManager) Create(ctx context.Context, req *ApprovalRequest) (str
 // 二次比对行 tenant_id。两层防御都失败才会返回数据。
 //
 // expectedTenantID 空字符串 = super_admin 跨租户访问：
-//   - 事务内 SET LOCAL app.current_role='super_admin' 让 RLS bypass
+//   - 事务内 set_config('app.current_role','super_admin', is_local) 让 RLS bypass
 //   - 应用层不比对 tenant_id
 func (m *ApprovalManager) GetForTenant(ctx context.Context, approvalID, expectedTenantID string) (*ApprovalRecord, error) {
 	return m.getWithTx(ctx, approvalID, expectedTenantID)
@@ -304,7 +312,7 @@ func (m *ApprovalManager) List(ctx context.Context, filter *ApprovalFilter) ([]*
 // Approve 批准审批（带租户校验）。
 //
 // callerTenantID 非空时，应用层比对行 tenant_id 与 caller tenant。
-// 同时事务内 SET LOCAL app.current_tenant 触发 RLS。RLS 与应用层
+// 同时事务内设置 app.current_tenant 触发 RLS。RLS 与应用层
 // 任一拦截都不会跨租户更新。
 func (m *ApprovalManager) Approve(ctx context.Context, approvalID, callerTenantID, approvedBy, reason string) error {
 	return m.decide(ctx, approvalID, callerTenantID, approvedBy, reason, ApprovalApproved)
@@ -366,6 +374,14 @@ func (m *ApprovalManager) decide(ctx context.Context, approvalID, callerTenantID
 	return nil
 }
 
+// approvalTimeoutBatchSize caps a single MarkTimeout batch. The sweep runs
+// under the worker's 10s deadline, and the GUC bug (fixed 2026-09-20) kept
+// every sweep failing since R41 — so the first working sweep faces the whole
+// accumulated backlog. A single all-rows UPDATE either trips the deadline
+// (whole tx rolls back, zero progress, retry loop forever) or queues behind
+// a concurrent decide() row lock. Batches commit independently (R49 audit P1).
+const approvalTimeoutBatchSize = 500
+
 // MarkTimeout 标记超时的审批为 timeout / auto-approved 状态。
 //
 // 行为由 m.timeoutAction 控制：
@@ -380,24 +396,61 @@ func (m *ApprovalManager) decide(ctx context.Context, approvalID, callerTenantID
 // 走 NULLIF→'default' fallback，降权后非 default 租户的 pending 永不被超时
 // 终结。修法：包显式事务 + setSuperAdminGUC，与同包 beginSuperAdminTx
 // 风格一致（policy role 分支即满足）。
+//
+// R49 修订（2026-09-20 审计 P1）：FOR UPDATE SKIP LOCKED + LIMIT 分批，每批
+// 独立事务循环提交——存量积压的首个 sweep 增量推进而非全量单语句（10s 预算
+// 内跑不完即整体回滚、一行未清、60s 后面对同一全集死循环）；SKIP LOCKED
+// 避免与并发 decide() 的行锁互拖。
 func (m *ApprovalManager) MarkTimeout(ctx context.Context) (int, error) {
+	total := 0
+	for {
+		n, err := m.markTimeoutBatch(ctx)
+		if err != nil {
+			return total, err
+		}
+		total += n
+		if n < approvalTimeoutBatchSize {
+			return total, nil
+		}
+	}
+}
+
+func (m *ApprovalManager) markTimeoutBatch(ctx context.Context) (int, error) {
 	var sql string
 	switch m.timeoutAction {
 	case TimeoutActionApprove:
 		sql = `
-			UPDATE approval_queue
+			WITH expired AS (
+				SELECT id FROM approval_queue
+				WHERE status = $2 AND expires_at < now()
+				ORDER BY expires_at
+				LIMIT $3
+				FOR UPDATE SKIP LOCKED
+			)
+			UPDATE approval_queue q
 			SET status = $1,
 			    approved_by = 'system:timeout',
 			    approved_at = NOW(),
-			    reason = 'Auto-approved: timeout after ' || extract(epoch from (now() - created_at)) || ' seconds'
-			WHERE status = $2 AND expires_at < now()
+			    reason = 'Auto-approved: timeout after ' || extract(epoch from (now() - q.created_at)) || ' seconds'
+			FROM expired
+			WHERE q.id = expired.id
 		`
 	default:
 		sql = `
-			UPDATE approval_queue
+			WITH expired AS (
+				SELECT id FROM approval_queue
+				WHERE status = $2 AND expires_at < now()
+				ORDER BY expires_at
+				LIMIT $3
+				FOR UPDATE SKIP LOCKED
+			)
+			UPDATE approval_queue q
 			SET status = $1,
-			    reason = 'Auto-rejected: timeout after ' || extract(epoch from (now() - created_at)) || ' seconds'
-			WHERE status = $2 AND expires_at < now()
+			    approved_by = 'system:timeout',
+			    approved_at = NOW(),
+			    reason = 'Auto-rejected: timeout after ' || extract(epoch from (now() - q.created_at)) || ' seconds'
+			FROM expired
+			WHERE q.id = expired.id
 		`
 	}
 	target := ApprovalApproved
@@ -412,7 +465,7 @@ func (m *ApprovalManager) MarkTimeout(ctx context.Context) (int, error) {
 	if err := setSuperAdminGUC(ctx, tx); err != nil {
 		return 0, err
 	}
-	tag, err := tx.Exec(ctx, sql, target, ApprovalPending)
+	tag, err := tx.Exec(ctx, sql, target, ApprovalPending, approvalTimeoutBatchSize)
 	if err != nil {
 		return 0, fmt.Errorf("mark timeout: %w", err)
 	}
@@ -422,10 +475,11 @@ func (m *ApprovalManager) MarkTimeout(ctx context.Context) (int, error) {
 	return int(tag.RowsAffected()), nil
 }
 
-// setTenantGUC 在事务内 SET LOCAL app.current_tenant。
-// 单引号经过转义防止 SQL 注入。
+// setTenantGUC 在事务内把 app.current_tenant 设为租户 ID。
+// set_config(..., is_local := true) 与 SET LOCAL 语义等价，且走参数绑定，
+// 无需手工转义单引号。
 //
-// tenantID 为空字符串（super_admin 调用）→ 跳过 SET LOCAL，让 RLS policy
+// tenantID 为空字符串（super_admin 调用）→ 跳过设置，让 RLS policy
 // 默认按 NULLIF→'default' 过滤；调用方需同时设 app.current_role=
 // 'super_admin' 才能跨租户 bypass（见 setSuperAdminGUC）。
 func setTenantGUC(ctx context.Context, tx pgx.Tx, tenantID string) error {
@@ -433,26 +487,21 @@ func setTenantGUC(ctx context.Context, tx pgx.Tx, tenantID string) error {
 		// super_admin 跨租户调用：不设 tenant GUC
 		return nil
 	}
-	escaped := ""
-	for _, r := range tenantID {
-		if r == '\'' {
-			escaped += "''"
-		} else {
-			escaped += string(r)
-		}
-	}
-	_, err := tx.Exec(ctx, "SET LOCAL app.current_tenant = '"+escaped+"'")
-	if err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", tenantID); err != nil {
 		return fmt.Errorf("set tenant GUC: %w", err)
 	}
 	return nil
 }
 
-// setSuperAdminGUC 在事务内设置 SET LOCAL app.current_role='super_admin'，
+// setSuperAdminGUC 在事务内把 app.current_role 设为 'super_admin'，
 // 让 RLS policy bypass tenant 过滤（见 migrations/120_session_audit.sql）。
+//
+// 不能写成 SET LOCAL app.current_role=...：current_role 是 PostgreSQL 保留
+// 字，不能作为 customized-option 名的组成（252 生产日志实证每次调用都
+// syntax error at or near "current_role"，R41 起全部 super_admin 路径因此
+// 失败）。set_config 不经过 SET 语法解析，没有该限制。
 func setSuperAdminGUC(ctx context.Context, tx pgx.Tx) error {
-	_, err := tx.Exec(ctx, "SET LOCAL app.current_role = 'super_admin'")
-	if err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_role', 'super_admin', true)"); err != nil {
 		return fmt.Errorf("set role GUC: %w", err)
 	}
 	return nil

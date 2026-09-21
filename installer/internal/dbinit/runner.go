@@ -186,6 +186,15 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// unique index dropped by 718 — without it fresh installs fail
 			// auto route rollup with SQLSTATE 42P10 (154 production incident).
 			"726_restore_credential_model_index_hot_unique.sql",
+			// 730 (R48, 2026-09-20): session role hierarchy — sessions
+			// agent_role/parent_session_id/parent_task_id columns +
+			// role_task_llm_mapping (role × task_kind → LLM preference) +
+			// light-pool tier corrections on provider_models.
+			"730_session_role_hierarchy.sql",
+			// 731 (R50, 2026-09-21): auto_route_selections role attribution —
+			// agent_role/task_kind/routing_source on parent + hot tables so
+			// affinity learning can exclude forced role-route selections.
+			"731_auto_route_selection_role_attribution.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}

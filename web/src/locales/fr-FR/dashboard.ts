@@ -1,6 +1,7 @@
 export default {
   title: "Tableau de bord",
   refresh: "Actualiser",
+  modelsSelectedCount: '{n} modèles sélectionnés',  // R50 ModelPicker compact
 tabs: {
     board: 'Board',
     liveStream: 'Flux de requêtes en direct',

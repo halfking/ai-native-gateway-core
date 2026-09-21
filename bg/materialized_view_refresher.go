@@ -76,6 +76,18 @@ const (
 	// mvDriftAlertCooldown prevents a persistent drift from sending an alert on
 	// every ten-minute refresh cycle. Metrics remain updated on every check.
 	mvDriftAlertCooldown = 30 * time.Minute
+
+	// mvRefreshStatementTimeout lifts the connection-default statement_timeout
+	// for the REFRESH statement only (2026-09-21, 252 PG 日志审计轮). The
+	// llm_gateway role carries `statement_timeout=30s` (252 生产角色级配置，
+	// 兜底所有应用语句)，而 routing_analytics_7d 的 REFRESH CONCURRENTLY
+	// 单次物化 ~17M 行、均值 6.2s 但 ~50% 周期在 29.9s 被角色级上限击杀
+	// （252 生产日志 6.3h 窗口：38 次超时 / 35 次慢完成）——陈旧度契约
+	// （15min）被打破，admin 端点退化回基础视图重查询。客户端 ctx 上限
+	// RefreshTimeout=5min 本就允许更久，这里把该连接的语句上限抬到
+	// 180s（< 5min ctx，且 < RefreshInterval 的 2 倍，不会堆积周期），
+	// 用后立刻 RESET，不污染连接池归还后的其他语句。
+	mvRefreshStatementTimeout = "180s"
 )
 
 // MaterializedViewRefresher manages periodic refresh of routing analytics
@@ -352,18 +364,31 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 		return nil
 	}
 
-	if !useAdvisoryLock {
-		_, err = r.db.Exec(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+viewName)
-		return err
-	}
-
-	// Pin one connection for the whole lock/refresh/unlock sequence:
-	// advisory locks are session-scoped, and pool.Exec may hop connections.
+	// Pin one connection for the whole timeout/refresh(/lock/unlock) sequence:
+	// the session-level statement_timeout below and advisory locks are both
+	// session-scoped, and pool.Exec may hop connections.
 	conn, err := r.db.Acquire(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Release()
+
+	// Lift the role-level statement_timeout (252 生产 llm_gateway 角色=30s)
+	// for this session only; see mvRefreshStatementTimeout. Reset via
+	// WithoutCancel so a canceled/failed refresh still returns a clean
+	// connection to the pool.
+	if _, err := conn.Exec(ctx,
+		"SET statement_timeout = '"+mvRefreshStatementTimeout+"'"); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), "RESET statement_timeout")
+	}()
+
+	if !useAdvisoryLock {
+		_, err = conn.Exec(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+viewName)
+		return err
+	}
 
 	var locked bool
 	if err := conn.QueryRow(ctx,

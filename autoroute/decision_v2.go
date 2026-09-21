@@ -58,7 +58,22 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		// of HitCount happens under a single write lock (Get→HitCount++→Put
 		// raced across concurrent requests on the same session).
 		if cached, ok := d.intentCache.IncrementHit(sessionID); ok {
-			if cached.WorkType != requestedWorkType {
+			// R48: 会话角色变化即身份变化，缓存结论失效重判（仅 flag 开启时）。
+			roleMismatch := d.roleRoutingActive() &&
+				normalizeAgentRole(cached.Role) != normalizeAgentRole(sigs.AgentRole)
+			// R49 修订（2026-09-20 审计 P1）：task_kind 跨轮变化同样失效重判
+			//（与 V1 同款——首轮 kind 的模型被缓存放大会话级固化；旧缓存
+			// Kind 为空时与 unknown 归一同形，纯闲聊会话不误伤）。
+			kindMismatch := d.roleRoutingActive() &&
+				normalizeTaskKind(cached.Kind) != normalizeTaskKind(ClassifyTaskKind(sigs))
+			if roleMismatch || kindMismatch {
+				d.intentCache.Invalidate(sessionID)
+				slog.Info("autoroute.v2: session role/kind changed, reclassifying",
+					"session_id", sessionID,
+					"cached_role", cached.Role,
+					"new_role", sigs.AgentRole,
+				)
+			} else if cached.WorkType != requestedWorkType {
 				d.intentCache.Invalidate(sessionID)
 			} else if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
 				// 新增：验证缓存的模型是否仍可用
@@ -103,6 +118,12 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 							CacheReused:        true,
 							DecidedAt:          time.Now(),
 							RoutingSource:      "session_cache",
+						}
+						// R48: 缓存命中也带角色/任务类型审计字段（flag 开启时）；
+						// 旧缓存缺 kind 时归一为 unknown，保持审计形态一致。
+						if d.roleRoutingActive() {
+							decision.SessionRole = string(normalizeAgentRole(cached.Role))
+							decision.TaskKind = string(normalizeTaskKind(cached.Kind))
 						}
 						d.annotateTreatment(ctx, apiKeyID, decision)
 						d.populateShadow(ctx, sigs, decision)
@@ -205,6 +226,20 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	if d.overrideStore != nil && len(d.overrideStore.GetPins(task, prof)) > 0 {
 		keepFullCandidateSet = true
 	}
+	// R48: role 路由开启且请求带可路由角色时，偏好模型可能在 top-N 之外，
+	// 需要全候选窗口（与 work-type/pin 同一处理）。
+	// R49 修订（2026-09-20 审计 P1）：门禁交给 SelectLLM 返回值（DB 行对任意
+	// 角色生效，admin 显式给 main 配行可达；详见 V1 同款注释）。
+	roleKind := TaskKind("")
+	rolePrefs := []string(nil)
+	if d.roleRoutingActive() {
+		roleKind = ClassifyTaskKind(sigs)
+		rolePrefs = d.roleLLMRouter.SelectLLM(normalizeAgentRole(sigs.AgentRole), roleKind)
+	}
+	roleRoutingOn := len(rolePrefs) > 0
+	if roleRoutingOn {
+		keepFullCandidateSet = true
+	}
 	if keepFullCandidateSet {
 		if poolSize := len(idx.Snapshot()); poolSize > candidateTopN {
 			candidateTopN = poolSize
@@ -245,15 +280,43 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		beforeBoostWinner = recommended[0].Candidate.CanonicalName
 	}
 	tierFailoverModels := []string(nil)
+	// R48 修订（2026-09-20，245 e2e 实测抓到）：role 偏好必须在 work-type
+	// tier 过滤之前算出并并入 tier 豁免名单——applyTierPolicyWithRoutes 的
+	// pinned 参数仅用于过滤豁免（无 pin 提升语义）。不并入则文档化级联
+	// pin > role_route > work_type tier 自相矛盾：tier 配置不含偏好模型时
+	// （实测 worker+solution 的 gpt-5.6-sol 被 glm-5.2 secondary 档滤除）
+	// promoteFirstPresent 找不到偏好，role_route 静默让位。
+	// roleKind/rolePrefs 已在候选窗口展开前算出（R49 修订：门禁即 SelectLLM
+	// 返回值），此处直接复用。
 	if d.workTypeRouteStore != nil {
 		pins := []string(nil)
 		if d.overrideStore != nil {
 			pins = d.overrideStore.GetPins(task, prof)
 		}
 		tierFailoverModels = d.workTypeRouteStore.TierFailoverModelsWithWorkType(recommended, task, requestedWorkType)
-		recommended = d.workTypeRouteStore.ApplyTierPolicyWithWorkType(recommended, task, requestedWorkType, pins)
+		recommended = d.workTypeRouteStore.ApplyTierPolicyWithWorkType(recommended, task, requestedWorkType, append(pins, rolePrefs...))
 	}
 	tierChangedWinner := len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforeBoostWinner
+
+	// Step 3b（R48, 2026-09-20）: role × kind promotion —— work-type tier
+	// policy 之后、pin promote 之前插入，admin pin 仍是最强约束。仅
+	// AUTO_ROLE_ROUTING_ENABLED 开启 + 子代理角色时介入；flag-off / main /
+	// unknown 路径零改动（决策字节级不变）。
+	// R49 修订（2026-09-20 审计 P2）：role_route 判定基准改为 tier 后 winner
+	//（与 V1 的 preRoleWinner 同款）——tier policy 已把 winner 换成 role 偏好
+	// 模型本身时（promoteFirstPresent i==0 空转），功劳属 work_type_route 而
+	// 非 role_route；同输入下 V1/V2 审计标签不再分叉。
+	postTierWinner := ""
+	if len(recommended) > 0 {
+		postTierWinner = recommended[0].Candidate.CanonicalName
+	}
+	roleChangedWinner := false
+	if len(rolePrefs) > 0 {
+		if promoted, hit := promoteFirstPresent(recommended, rolePrefs); hit != "" {
+			recommended = promoted
+			roleChangedWinner = len(recommended) > 0 && recommended[0].Candidate.CanonicalName != postTierWinner
+		}
+	}
 
 	beforePinWinner := ""
 	if len(recommended) > 0 {
@@ -265,6 +328,8 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	pinChangedWinner := len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforePinWinner
 	if pinChangedWinner {
 		routingSource = "override_pin"
+	} else if roleChangedWinner {
+		routingSource = "role_route"
 	} else if tierChangedWinner || (len(recommended) > 0 && recommended[0].Breakdown.RouteTier != "") {
 		routingSource = "work_type_route"
 	}
@@ -306,6 +371,11 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		DecidedAt:          time.Now(),
 		RoutingSource:      routingSource,
 	}
+	// R48: role 路由审计字段（flag 开启时；无论是否命中提升都记录观察值）。
+	if d.roleRoutingActive() {
+		decision.SessionRole = string(normalizeAgentRole(sigs.AgentRole))
+		decision.TaskKind = string(normalizeTaskKind(roleKind))
+	}
 	d.annotateTreatment(ctx, apiKeyID, decision)
 	d.populateShadow(ctx, sigs, decision)
 
@@ -342,7 +412,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 
 	// Step 6: 缓存决策
 	if sessionID != "" && d.intentCache != nil {
-		d.intentCache.Put(sessionID, CachedIntent{
+		cachedPut := CachedIntent{
 			TaskType:     decision.TaskType,
 			WorkType:     requestedWorkType,
 			ChosenModel:  decision.ChosenModel,
@@ -350,7 +420,13 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 			Profile:      decision.Profile,
 			Confidence:   decision.Confidence,
 			Classifier:   decision.Classifier,
-		})
+		}
+		// R48: 角色/任务类型随 intent 缓存（flag 开启时），跨轮复用不退化。
+		if d.roleRoutingActive() {
+			cachedPut.Role = normalizeAgentRole(sigs.AgentRole)
+			cachedPut.Kind = normalizeTaskKind(roleKind)
+		}
+		d.intentCache.Put(sessionID, cachedPut)
 	}
 
 	return decision, nil

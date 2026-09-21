@@ -172,6 +172,12 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// sequence registration completed by R43 (2026-09-18) — same
 		// five-point gap as 720/721/725.
 		"726_restore_credential_model_index_hot_unique.sql": restoreCredentialModelIndexHotUniqueMigration726,
+		// 730 (R48, 2026-09-20): session role hierarchy — five-point sync
+		// completed in the same round as the canonical copy landed.
+		"730_session_role_hierarchy.sql": sessionRoleHierarchyMigration730,
+		// 731 (R50, 2026-09-21): auto_route_selections role attribution —
+		// five-point sync completed in the same round as the canonical copy.
+		"731_auto_route_selection_role_attribution.sql": autoRouteSelectionRoleAttributionMigration731,
 	}
 
 	for name, embedded := range expected {
@@ -346,6 +352,22 @@ func TestStartupFilesAreAllEmbedded(t *testing.T) {
 	}
 }
 
+// psqlConcurrencyRequired lists canonical startup migrations that may NOT be
+// synced into the installer five points: they use CREATE INDEX CONCURRENTLY
+// (727 via \gexec), which PostgreSQL refuses inside a transaction block — and
+// the installer's dbinit runner applies every file through
+// `psql --single-transaction` (installer/internal/dbinit/runner.go). Copying
+// them in would abort every FRESH INSTALL at that migration (R49 audit,
+// 2026-09-20: the naive five-point sync would have been a P0). These files
+// ship exclusively through the revision-sequence channel
+// (scripts/apply-db-revision-sequence.sh, psql -f without a transaction
+// wrapper) against EXISTING databases; fresh installs skip the indexes, which
+// are performance-only — a non-concurrent variant may be added later if a
+// fresh install ever needs them on day one.
+var psqlConcurrencyRequired = map[string]string{
+	"727_sql_audit_slow_query_indexes.sql": "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
+}
+
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17
 // audit) closes the drift direction no test covered: a canonical migration
 // that never reached the installer (704/705/709/710 drifted out — R30
@@ -382,6 +404,12 @@ func TestCanonicalStartupMigrationsAtOrAbove704AreRegistered(t *testing.T) {
 			continue // non-numeric asset (e.g. dated repair scripts)
 		}
 		if num < 704 {
+			continue
+		}
+		if reason, exempt := psqlConcurrencyRequired[name]; exempt {
+			// Deliberate channel split, not drift — but keep it visible so the
+			// exemption is re-evaluated whenever the file set changes.
+			t.Logf("canonical startup migration %q intentionally not in installer: %s", name, reason)
 			continue
 		}
 		if _, ok := registered[name]; !ok {

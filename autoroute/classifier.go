@@ -138,6 +138,12 @@ type ClassificationSignals struct {
 	// "roocode", "vscode", "copilot", "windsurf"). Extracted from User-Agent
 	// or X-Gw-Client-Type header. Non-empty value is a strong coding signal.
 	ClientType string
+
+	// AgentRole（R48, 2026-09-20）是会话角色标识：X-Gw-Agent-Role 头声明，
+	// 或网关内部 loopback 的 X-Gw-Source-Actor 推断（见 session_role.go
+	// 信任模型）。unknown = 未声明——分类器不消费该字段（TaskType 语义
+	// 不变），仅 role_llm_router 在 AUTO_ROLE_ROUTING_ENABLED 开启时读取。
+	AgentRole AgentRole
 }
 
 // String returns a sanitized string representation of ClassificationSignals
@@ -147,7 +153,7 @@ type ClassificationSignals struct {
 // Privacy guarantee: The returned string does NOT contain any prompt text,
 // message content, or reversible content features.
 func (s ClassificationSignals) String() string {
-	return fmt.Sprintf("ClassificationSignals{SystemPrompt:%d chars, LastUserPrompt:%d chars, MessageCount:%d, EstimatedTokens:%d, ToolCount:%d, HasImages:%v, Language:%s, HasCodeBlock:%v, HasToolResults:%v, ClientType:%s}",
+	return fmt.Sprintf("ClassificationSignals{SystemPrompt:%d chars, LastUserPrompt:%d chars, MessageCount:%d, EstimatedTokens:%d, ToolCount:%d, HasImages:%v, Language:%s, HasCodeBlock:%v, HasToolResults:%v, ClientType:%s, AgentRole:%s}",
 		len(s.SystemPrompt),
 		len(s.LastUserPrompt),
 		s.MessageCount,
@@ -158,6 +164,7 @@ func (s ClassificationSignals) String() string {
 		s.HasCodeBlock,
 		s.HasToolResults,
 		s.ClientType,
+		s.AgentRole,
 	)
 }
 
@@ -179,6 +186,11 @@ func (s ClassificationSignals) MarshalJSON() ([]byte, error) {
 		"has_code_block":    s.HasCodeBlock,
 		"has_tool_results":  s.HasToolResults,
 		"client_type":       s.ClientType,
+	}
+	// R48: 角色是枚举短字符串，非提示词内容，按原值入审计 JSON。
+	// 仅非空时输出——flag-off/无角色头时保持序列化字节与加字段前一致。
+	if s.AgentRole != "" {
+		sanitized["agent_role"] = s.AgentRole
 	}
 	return json.Marshal(sanitized)
 }

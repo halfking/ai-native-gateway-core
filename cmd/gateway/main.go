@@ -3121,6 +3121,11 @@ func main() {
 		// pipeline (ApprovalGateHook → approval_queue).
 		approvalTimeout := sessionAuditApprovalTimeoutFromEnv()
 		approvalMgr = sessionaudit.NewApprovalManager(dbConn.Pool(), approvalTimeout)
+		// R49 接线 session_audit.timeout_action；R50 审计 P2 修订：装配期
+		// 一次性读取违背 spec 的 HotReload:true 契约（UI 改 deny 收紧后
+		// 清扫仍按旧值放行直至重启），动作解析已下沉到 ApprovalTimeoutWorker
+		// 的每轮 sweep（resolveSessionAuditTimeoutAction，见下方 worker
+		// 构造点）。这里保持 reject 默认即可。
 		adminHandler.SetApprovalManager(approvalMgr)
 		slog.Info("session audit approval manager wired",
 			"timeout", approvalTimeout.String())
@@ -4694,7 +4699,48 @@ func main() {
 		// 已通过 adminHandler.SetApprovalManager 注入；这里直接构造 worker
 		// 并把 mgr 复用过去。
 		if approvalMgr != nil {
-			approvalTimeoutWorker := bg.NewApprovalTimeoutWorker(approvalMgr)
+			// R50 审计 P2：timeout_action spec 声明 HotReload:true，改为每轮
+			// sweep 重读。仅 auto_approve 放行；deny/escalate/空/未知值/
+			// settings 未就绪一律 reject fail-safe。escalate 未实现，配置
+			// 变化时显式 Warn 不静默；留痕只在配置值变化时打，避免 60s tick
+			// 刷日志。
+			lastConfiguredTimeoutAction := "\x00init"
+			resolveSessionAuditTimeoutAction := func() sessionaudit.TimeoutAction {
+				action := sessionaudit.TimeoutActionReject
+				configured := ""
+				if settings.Global != nil {
+					if sp := settings.Global.Spec("session_audit.timeout_action"); sp != nil {
+						if raw, _, err := settings.Global.EffectiveValue(sp.Scope, "session_audit.timeout_action", ""); err == nil && len(raw) > 0 {
+							var s string
+							if json.Unmarshal(raw, &s) == nil {
+								configured = s
+							}
+						}
+					}
+				}
+				switch configured {
+				case "auto_approve":
+					action = sessionaudit.TimeoutActionApprove
+				case "deny", "escalate", "":
+				default:
+					configured = "unknown:" + configured
+				}
+				if configured != lastConfiguredTimeoutAction {
+					switch configured {
+					case "auto_approve":
+						slog.Warn("session audit timeout action = auto_approve: expired approvals will be AUTO-APPROVED by the timeout sweep")
+					case "escalate":
+						slog.Warn("session audit timeout action = escalate: NOT IMPLEMENTED, acting as reject (fail-safe)")
+					case "deny", "":
+					default:
+						slog.Warn("session_audit.timeout_action unknown value, keeping reject fail-safe", "value", configured)
+					}
+					slog.Info("session audit timeout action resolved", "configured", configured, "action", action.String())
+					lastConfiguredTimeoutAction = configured
+				}
+				return action
+			}
+			approvalTimeoutWorker := bg.NewApprovalTimeoutWorker(approvalMgr).WithActionResolver(resolveSessionAuditTimeoutAction)
 			approvalTimeoutWorker.Start(context.Background())
 			defer approvalTimeoutWorker.Stop()
 			slog.Info("approval timeout worker started")
@@ -5114,6 +5160,15 @@ func main() {
 			workTypeRouteRefresher.Start(context.Background())
 			defer workTypeRouteRefresher.Stop()
 			decider.SetWorkTypeRouteStore(workTypeRouteStore)
+
+			// R48 (2026-09-20): role × kind LLM 偏好路由器（role_task_llm_mapping
+			// 表 + 内存默认表）。灰度开关 AUTO_ROLE_ROUTING_ENABLED 默认关闭，
+			// 装配不改变 flag-off 行为；refresher 让 admin 改表 1 分钟内生效。
+			roleLLMRouter := autoroute.NewRoleLLMRouter(dbConn.Pool())
+			roleLLMRouterRefresher := bg.NewRoleLLMRouterRefresher(roleLLMRouter)
+			roleLLMRouterRefresher.Start(context.Background())
+			defer func() { roleLLMRouterRefresher.Stop() }()
+			decider.SetRoleLLMRouter(roleLLMRouter)
 			// 2026-07-17 (audit H1): wire the apiKeyID -> tenantID resolver so
 			// tenant-scoped default routing rows can actually match. Without
 			// this, TenantResolver stays nil, tenantID is always empty, and every
