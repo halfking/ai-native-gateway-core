@@ -74,6 +74,32 @@ func TestParseSubscriptionBodyFormatsAndDialability(t *testing.T) {
 	}
 }
 
+// TestGuessLocationHKNames 覆盖 HK 规避的常见命名形态（R51：此前
+// "Hong Kong 01" 分词成 HONG/KONG 后不命中整词，规避可被节点命名绕过）。
+func TestGuessLocationHKNames(t *testing.T) {
+	for _, name := range []string{
+		"香港 01",
+		"香港01",
+		"HK-Home",
+		"hk_home",
+		"hongkong",
+		"HongKong-02",
+		"Hong Kong 01",
+		"Hong.Kong",
+		"hong_kong_03",
+		"HONG  KONG", // 多空格分隔
+		"香港 HK 中转",
+	} {
+		if got := guessLocation(name); got != "HK" {
+			t.Fatalf("guessLocation(%q) = %q, want HK", name, got)
+		}
+	}
+	// 词组匹配不得误伤非相邻词："HONG X KONG" 不是 HONG KONG 短语。
+	if got := guessLocation("Hong via Kong relay"); got != "" {
+		t.Fatalf("guessLocation(non-adjacent) = %q, want empty", got)
+	}
+}
+
 func TestSanitizeSecretsAndBodyExcerpt(t *testing.T) {
 	secret := "SensitiveValue123"
 	for _, key := range []string{

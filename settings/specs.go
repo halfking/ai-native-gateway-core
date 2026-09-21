@@ -53,6 +53,8 @@ func PlatformSpecs() []*Spec {
 	// Gateway admission controls are platform-scoped and must be registered so
 	// settings_kv values can override the environment fallback.
 	out = append(out, GatewaySpecs()...)
+	// 2026-09-21: R51 代理出口平台级默认禁用地区（海外默认禁 HK 的规避 overlay）。
+	out = append(out, ProxySpecs()...)
 	return out
 }
 
