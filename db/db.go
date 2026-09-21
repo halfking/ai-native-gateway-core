@@ -582,6 +582,16 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 	backfillDeadline := time.Now().Add(sessionSummariesBackfillSlice)
 	watermark := ""
 	backfilled := 0
+	// 2026-09-22 252 SQL 日志审计轮：backfill 段先收紧 statement_timeout。
+	// 252 生产 llm_gateway 角色级 rolconfig=30s：chunk 在锁竞争下烧满 30s 才被
+	// 57014 击杀，每次 boot（ApplyMigrations ×2 attempts）各烧 30s，烧穿
+	// LLM_GATEWAY_DB_BOOT_RETRY_SECONDS 预算 → "postgres disabled" DB-less →
+	// 蓝绿部署 readyz 永不过（245 部署 blocker 实锤，600s 探针两轮不复收敛）。
+	// chunk 的设计语义本就是"竞争即快失败、下个 boot 续跑"——5s 快失败把
+	// miss 代价从 30s 降到 5s，静默 boot 上 chunk 照常完成推进水位。
+	if _, err := conn.Exec(ctx, `SET statement_timeout = '5s'`); err != nil {
+		return err
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -629,7 +639,8 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 
 	// 3) Archival indexes, built CONCURRENTLY so hot-path DML never blocks.
 	// The pinned conn raises statement_timeout for the build (shared PG
-	// default is 30s) and restores it before release.
+	// default is 30s) and restores it before release. The backfill phase
+	// above deliberately ran at 5s fast-fail; see the comment there.
 	if _, err := conn.Exec(ctx, `SET statement_timeout = '10min'`); err != nil {
 		return err
 	}
