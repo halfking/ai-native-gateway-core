@@ -20,6 +20,7 @@ import { isNavItemActive } from '../../config/appNav'
 // 2026-09-13: 菜单构建（静态分组 + 插件/运维中心合并 + 角色过滤）抽到
 // useAppNav，与 AppNavDrawer（移动抽屉）共用；行为不变。
 import { navDrawerOpen, useAppNav } from '../../composables/useAppNav'
+import { useRequestAnomalyBadge } from '../../composables/useRequestAnomalyBadge'
 import { useBreakpoint } from '../../composables/useBreakpoint'
 
 export interface VersionInfo {
@@ -65,6 +66,10 @@ onBeforeUnmount(() => {
 // 菜单数据与激活状态解析来自 useAppNav（共享单例，运维中心/插件菜单
 // 的后台加载也由其统一触发，见 composable 内 startBackgroundLoading）。
 const { navGroups, navPrimaryResolved, navLabel } = useAppNav()
+// 2026-09-21: 「格式异常监控」导航徽标——未解决的请求侧异常计数
+// （/format-anomalies 请求错误 tab 数据源），60s 轮询、仅 super_admin。
+const { counts: requestAnomalyCounts } = useRequestAnomalyBadge()
+const requestAnomalyCount = computed(() => requestAnomalyCounts.value.unresolved)
 // <1024 布局决策口径：菜单区替换为汉堡按钮，抽屉导航接管（方案 §4.4）
 const { isMobile } = useBreakpoint()
 
@@ -253,6 +258,11 @@ function groupActive(id: string): boolean {
           >
             <span class="app-topbar__dropdown-icon" aria-hidden="true">{{ item.icon }}</span>
             <span>{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction', '激活') : item.label) }}</span>
+            <span
+              v-if="item.path === '/format-anomalies' && requestAnomalyCount > 0"
+              class="app-topbar__item-badge"
+              :title="t('nav.badge.formatAnomalies', '未解决的请求侧异常')"
+            >{{ requestAnomalyCount > 99 ? '99+' : requestAnomalyCount }}</span>
           </a>
           <router-link
             v-else
@@ -268,6 +278,11 @@ function groupActive(id: string): boolean {
           >
             <span class="app-topbar__dropdown-icon" aria-hidden="true">{{ item.icon }}</span>
             <span>{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction', '激活') : item.label) }}</span>
+            <span
+              v-if="item.path === '/format-anomalies' && requestAnomalyCount > 0"
+              class="app-topbar__item-badge"
+              :title="t('nav.badge.formatAnomalies', '未解决的请求侧异常')"
+            >{{ requestAnomalyCount > 99 ? '99+' : requestAnomalyCount }}</span>
           </router-link>
         </template>
       </div>
@@ -454,6 +469,22 @@ function groupActive(id: string): boolean {
   width: 18px;
   text-align: center;
   font-size: 14px;
+  flex-shrink: 0;
+}
+/* 2026-09-21: 导航项计数徽标（格式异常监控等）。 */
+.app-topbar__item-badge {
+  margin-left: auto;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bd);
+  color: var(--danger-bd);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
   flex-shrink: 0;
 }
 

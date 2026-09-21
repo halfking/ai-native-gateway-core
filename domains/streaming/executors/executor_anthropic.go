@@ -20,8 +20,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
-	"github.com/kaixuan/llm-gateway-go/internal/paramguard"
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
+	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/pool"
@@ -703,7 +703,7 @@ func (e *Executor) finalizeAnthropicRequestBody(params *ExecParams, cand provide
 	} else if params != nil && len(runnerMeta) > 0 {
 		params.CompressionRunnerMeta = runnerMeta
 	}
-	return paramguard.Apply(bodyBytes, paramreg.DialectAnthropic)
+	return e.applyParamguardLedger(params, bodyBytes, paramreg.DialectAnthropic)
 }
 
 // executeAnthropic is the Q3/Q4 (anthropic-messages upstream) path of
@@ -1218,6 +1218,32 @@ func (e *Executor) executeAnthropicOnce(
 					headers: resp.Header.Clone(),
 				}
 			}
+			// reqprobe (2026-09-21): anthropic-messages 出站的请求侧异常
+			// 仅记录（模式回退是候选级协议变更、Q4 直传体的中途改写会
+			// 破坏字节契约，均不在本执行器自动尝试），供管理页人工分类。
+			if e.RequestProbe != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
+				if diag, ok := reqprobe.Diagnose(reqprobe.Input{
+					HTTPStatus:   resp.StatusCode,
+					ErrorBody:    body,
+					OutboundBody: bodyBytes,
+					ErrorKind:    string(errKind),
+					Protocol:     cand.Protocol,
+				}); ok {
+					e.RequestProbe.RecordTerminal(reqprobe.Input{
+						HTTPStatus:   resp.StatusCode,
+						ErrorBody:    body,
+						OutboundBody: bodyBytes,
+						ErrorKind:    string(errKind),
+						Protocol:     cand.Protocol,
+					}, diag, reqprobe.TerminalMeta{
+						RequestID:     params.RequestID,
+						ProviderID:    cand.ProviderID,
+						ProviderCode:  cand.CatalogCode,
+						ClientModel:   params.ClientModel,
+						OutboundModel: cand.RawModel,
+					}, false)
+				}
+			}
 			// 2026-07-03 (Bug #N, same as executor_chat.go): preserve
 			// the precise errKind via a typed *upstreampkg.Error so the
 			// outer Execute() loop and CandidateFailureLogger can read
@@ -1301,17 +1327,17 @@ func (e *Executor) executeAnthropicOnce(
 		outcome := ae.StreamResponse(params.R.Context(), responseSink(params), resp)
 		if outcome.Interrupted && (outcome.Reason == "client_cancel" || outcome.Kind == errorsx.KindCanceled) {
 			return &ExecuteResult{
-					Response:    resp,
-					Candidate:   cand,
-					LatencyMs:   latencyMs,
-					RequestBody: append([]byte(nil), bodyBytes...),
-					InboundBody: sourceBody,
-				}, &streamInterruptedError{
-					reason:       outcome.Reason,
-					credentialID: cand.CredentialID,
-					resumable:    false,
-					kind:         errorsx.KindCanceled,
-				}
+				Response:    resp,
+				Candidate:   cand,
+				LatencyMs:   latencyMs,
+				RequestBody: append([]byte(nil), bodyBytes...),
+				InboundBody: sourceBody,
+			}, &streamInterruptedError{
+				reason:       outcome.Reason,
+				credentialID: cand.CredentialID,
+				resumable:    false,
+				kind:         errorsx.KindCanceled,
+			}
 		}
 		if outcome.Interrupted {
 			streamKind := outcome.Kind
