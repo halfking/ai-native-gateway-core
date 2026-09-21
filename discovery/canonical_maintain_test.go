@@ -147,3 +147,63 @@ func TestSplitFamilyIDs_TrackVendorCanonicalFamilies(t *testing.T) {
 		}
 	}
 }
+
+// 2026-09-21 regression (Fix B of the -cn re-seed audit): the seed-path
+// canonical upsert must carry the disabled-stays-disabled guard. Before the
+// guard, every discovery/refresh tick resurrected operator-disabled rows
+// whose upstream still reported the exact name — qwen3-max-cn and the
+// deepseek-v4-*-ga rows flipped back to 'active' overnight (observed live
+// on .34, 2026-09-21 08:2x). Same operator-kill rule as taxonomy_sync
+// ("a 'disabled' taxonomy target is never reactivated") and alias_sync's
+// WHERE status <> 'disabled'.
+func TestEnsureCanonicalAndAliases_SeedUpsertNeverResurrectsDisabled(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	// Empty active catalog: "qwen3-max-cn" finds no match and falls through
+	// to the seed INSERT ... ON CONFLICT branch.
+	mock.ExpectQuery(`FROM models_canonical`).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "canonical_name"}))
+
+	// The upsert's DO UPDATE must CASE-guard status on the existing row's
+	// disabled state instead of blindly writing 'active'. The seed branch
+	// writes via QueryRow, returning (id, canonical_name).
+	seedUpsertSQL := `(?s)INSERT INTO models_canonical.*ON CONFLICT \(canonical_name\) DO UPDATE SET` +
+		`.*status = CASE WHEN models_canonical\.status = 'disabled'` +
+		`.*THEN models_canonical\.status` +
+		`.*ELSE 'active' END`
+	mock.ExpectQuery(seedUpsertSQL).
+		WithArgs("qwen3-max-cn", pgxmock.AnyArg(), pgxmock.AnyArg(), "discovery", pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(91))
+
+	// Alias seeding for the new row proceeds as usual (one INSERT per
+	// deduped normalized alias, same mirroring as the matched-path test).
+	seen := map[string]struct{}{}
+	for _, alias := range GenerateAliases("qwen3-max-cn", "qwen3-max-cn") {
+		normalized := modelname.CanonicalizeClientModel(alias)
+		if normalized == "" {
+			continue
+		}
+		if _, dup := seen[normalized]; dup {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		mock.ExpectExec(`INSERT INTO model_aliases`).
+			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+			WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	}
+
+	id, name, err := EnsureCanonicalAndAliases(context.Background(), mock, "qwen3-max-cn", "discovery")
+	if err != nil {
+		t.Fatalf("EnsureCanonicalAndAliases: %v", err)
+	}
+	if id != 91 || name != "qwen3-max-cn" {
+		t.Fatalf("seed path should keep the raw-derived canonical name, got (%d, %q)", id, name)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

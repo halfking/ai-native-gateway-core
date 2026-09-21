@@ -140,3 +140,32 @@ pm_id: 2661061(OpenRouter/21,raw=`x-ai/grok-4.3`)/3501307(Vapeur/36,raw=`grok-4.
 - `provider/client.go` 的 auto_discovered / provider_refresh 路径未对接 Anthropic/xAI 的公开目录校验。9 行里有 7 行是 `source=provider_refresh`,意味着 provider 上游说什么我们就信什么。
 - 建议 R51 引入白名单校验:对 `anthropic-claude` / `xai-grok` family,canonical_name 必须命中 Anthropic/xAI 公开文档里的白名单才允许 seed。未知模型走 quarantine 状态(`status='quarantine'`),需 ops 审核后才提升 active。
 - 本轮不抓 9 行的硬根因(避免打断 ops 审核流程),但 R51 必修。
+## 11. 2026-09-21 下午公开目录检证结果(证据刷新,行状态不动)
+
+同日下午对 9 行做公开目录 web 检证 + 双库现值复查。**结论:5 行确认为真实模型,1 行真实但上游已退役,3 行为聚合渠道 SKU。** 与 09:33 时"大概率是别名/伪装"的假设相比大幅翻转;fable 家族的"高危"定性撤销。行 status 一律不动,仍由 ops 按 §9 流程执行;本节只更新决策依据。
+
+### 11.1 检证结论
+
+| # | canonical | 检证结果 | 证据 | 建议动作(供 ops 采纳) |
+|---:|---|---|---|---|
+| 1-4 | `claude-fable-5` / `-5-1` / `-5-thinking` / `-latest` | **真实模型** | Anthropic 2026-06-09 正式发布 Claude Fable 5("Mythos-class, safe for general use"),platform.claude.com 有文档,CNBC/Wikipedia 独立佐证 | 全部保留 active;撤销"高危"标记;无需 provider 触达 |
+| 5 | `claude-opus-4.1` | **真实但已退役** | Anthropic Model Deprecations:2026-06-05 通知、2026-08-05 退役,API 请求现返回错误 | disable 2 条 OpenRouter pm 行 + canonical 标 disabled(reason=upstream retired 2026-08-05);我方 0 流量,零风险 |
+| 6-8 | `claude-opus-4.7-fast` / `-4.8-fast` / `-5-fast` | **聚合渠道 SKU**(非伪造) | OpenRouter 2026-07-24 上架 opus-5-fast;4.7-fast 见于 Cursor/Emergent 渠道;均不在 Anthropic 官方文档 | 维持 PENDING 但降级为低优先(各 1 pm、0 流量);向 OpenRouter 确认 SKU 归属即可 |
+| 9 | `grok-4.3` | **真实模型** | docs.x.ai 定价页在列;OCI `xai.grok-4.3`、Bedrock 企业版有售;VentureBeat 报道 | 保留 active;无需触达 |
+
+### 11.2 双库现值复查(2026-09-21 午后,本地 .34)
+
+| # | canonical | pm | req_7d | vs 09:33 |
+|---:|---|---:|---:|---|
+| 1 | claude-fable-5 | 8 | 1231 | ≈平(1234) |
+| 2 | claude-fable-5-1 | 4 | 29 | ≈平(25) |
+| 3 | claude-fable-5-thinking | 1 | 0 | 平 |
+| 4 | claude-fable-latest | 1 | 0 | 平 |
+| 5-9 | 其余 5 行 | 不变 | 0 | 平 |
+
+252(shared)侧 9 行均不在 -cn 批次内,状态独立;本轮 252 预检确认其不受 `-cn` rename 延期影响(参见 `2026-09-21-unmapped-cn-round2.md` §3)。
+
+### 11.3 检证方法备注
+
+- 检证时间为 2026-09-21,来源含 Anthropic/xAI 官方文档、platform.claude.com、CNBC、VentureBeat、OCI/Bedrock 目录页;第三方聚合目录(big-agi、Referee 等)仅用于 -fast SKU 的存在性佐证。
+- **教训入档**:09:33 版 tracker 把 fable 判为"relay 改写或伪装"的概率排序,是"不在训练目录=可疑"的推断;对 2026-06 后发布的新模型,先查官方发布记录再定性,避免误伤高流量真实模型。
