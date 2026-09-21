@@ -6,7 +6,7 @@
 
 ```bash
 # SSH 到252服务器
-ssh user@192.168.1.252
+ssh user@<env:LAN_GATEWAY_IP>
 
 # 进入项目目录
 cd /path/to/llm-gateway-go
@@ -22,7 +22,7 @@ git pull origin main
 
 ```bash
 # SSH 到252服务器
-ssh user@192.168.1.252
+ssh user@<env:LAN_GATEWAY_IP>
 
 # 执行 SQL 脚本
 psql -h localhost -U postgres -d llm_gateway \
@@ -34,7 +34,7 @@ psql -h localhost -U postgres -d llm_gateway \
 ```bash
 # 在本地执行
 cat deploy/sql/migrations/2026-07-26-provider-profile-system.sql | \
-  ssh user@192.168.1.252 "psql -h localhost -U postgres -d llm_gateway"
+  ssh user@<env:LAN_GATEWAY_IP> "psql -h localhost -U postgres -d llm_gateway"
 ```
 
 ---

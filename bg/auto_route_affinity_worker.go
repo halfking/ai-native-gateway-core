@@ -35,12 +35,15 @@ package bg
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -50,6 +53,13 @@ const (
 	affinityInterval = 15 * time.Minute
 	affinityWindow   = 14 * 24 * time.Hour // learning lookback
 	affinitySweepTO  = 3 * time.Minute
+
+	// affinityDistLockTTL bounds how long the Redis-elected leader holds the
+	// affinity token (R31 audit §四#1). Must exceed the sweep timeout
+	// (affinitySweepTO = 3m) so a slow-but-alive sweep never loses its lease
+	// mid-cycle; distlock auto-renews at ttl/3 while the process is alive.
+	affinityDistLockTTL = 5 * time.Minute
+
 	// affinityMinRewardN was removed: GROUP BY guarantees COUNT(*)>=1, so the
 	// previous guard was a tautology. Real small-sample defence lives at read
 	// time (AffinityMinSamples / AffinityTenantMinSamples).
@@ -98,11 +108,32 @@ type AutoRouteAffinityWorker struct {
 
 	stopOnce sync.Once
 	started  atomic.Bool
+
+	// distLock is the optional Redis-backed leader election manager (R31
+	// audit §四#1). Nil (or Enabled()==false) makes every instance sweep
+	// exactly as before this change.
+	distLock distlock.Manager
 }
 
 // NewAutoRouteAffinityWorker constructs the worker.
 func NewAutoRouteAffinityWorker(db *pgxpool.Pool) *AutoRouteAffinityWorker {
 	return &AutoRouteAffinityWorker{db: db, done: make(chan struct{})}
+}
+
+// SetDistLock wires the Redis-backed distributed lock manager used for
+// cross-instance sweep dedup (token-bucket leader election, R31 audit §四#1).
+// Optional: when never called, or called with a manager whose Enabled() is
+// false, every instance sweeps exactly as before. MUST be called before
+// Start(): the field is read unsynchronized by the sweep goroutine (R34
+// 2026-09-17 audit — the previous "safe after Start" wording promised a
+// happens-before edge that does not exist).
+//
+// The affinity sweep has an extra reason to elect a single leader: the EMA
+// fold in upsertAggregates is a read-modify-write per bucket, and two
+// interleaved instances double-fold one window's reward (alpha 0.15 applied
+// twice). It converges eventually, but the election removes the drift.
+func (w *AutoRouteAffinityWorker) SetDistLock(mgr distlock.Manager) {
+	w.distLock = mgr
 }
 
 // Start launches the sweep loop. Idempotent.
@@ -129,6 +160,13 @@ func (w *AutoRouteAffinityWorker) Stop() {
 }
 
 func (w *AutoRouteAffinityWorker) run(ctx context.Context) {
+	// Panic guard (audit 2026-09-05 G-#1): a sweep panic must not kill the
+	// process; it would also skip close(w.done) below and hang Stop forever.
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("auto-route affinity worker panic", "recover", rec)
+		}
+	}()
 	defer close(w.done)
 
 	ticker := time.NewTicker(affinityInterval)
@@ -140,7 +178,7 @@ func (w *AutoRouteAffinityWorker) run(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	case <-time.After(3 * time.Minute):
-		w.sweep(ctx)
+		w.safeSweep(ctx)
 	}
 
 	for {
@@ -148,9 +186,20 @@ func (w *AutoRouteAffinityWorker) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.sweep(ctx)
+			w.safeSweep(ctx)
 		}
 	}
+}
+
+// safeSweep wraps one sweep cycle in a per-cycle panic guard (R36 2026-09-17
+// audit, closes R34 遗留#6) — see AutoRouteSettleWorker.safeSweep.
+func (w *AutoRouteAffinityWorker) safeSweep(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("auto-route affinity sweep panic (cycle skipped, worker alive)", "recover", rec)
+		}
+	}()
+	w.sweep(ctx)
 }
 
 func (w *AutoRouteAffinityWorker) sweep(ctx context.Context) {
@@ -159,6 +208,18 @@ func (w *AutoRouteAffinityWorker) sweep(ctx context.Context) {
 	}
 	sweepCtx, cancel := context.WithTimeout(ctx, affinitySweepTO)
 	defer cancel()
+
+	// R31 (audit §四#1): token-bucket cross-instance dedup — one leader per
+	// tick, followers skip without queueing. Distinct key from the settle
+	// worker so the two intervals (5m / 15m) elect independently. Without
+	// Redis both instances sweep as before.
+	if h := acquireSweepDistLock(sweepCtx, w.distLock, "auto_route_affinity", affinityDistLockTTL, "auto_route_affinity"); h != nil {
+		defer h.Release(context.WithoutCancel(sweepCtx))
+		if !h.IsLeader() {
+			slog.Info("auto-route affinity skipped, redis token held by another instance")
+			return
+		}
+	}
 
 	aggs, err := w.aggregate(sweepCtx)
 	if err != nil {
@@ -188,6 +249,30 @@ func (w *AutoRouteAffinityWorker) sweep(ctx context.Context) {
 // full (task, profile, canonical, tenant) key. Only rows with a reward are
 // counted — abandoned rows (reward IS NULL) are excluded so they cannot drag a
 // model's score down for reasons unrelated to model quality.
+//
+// R38 (R37 §四 #1 closing): synthetic rounds are excluded by an explicit
+// origin_actor predicate (LEFT JOIN request_logs_hot). The reward IS NOT NULL
+// guard alone was insufficient — a future write path that stamps a real
+// reward on a goal-* row (e.g. ad-hoc backfill, manual reconcile) would slip
+// through and pollute task_model_affinity. The view auto_route_selections_all
+// does not project origin_actor (selections carry only features + reward),
+// so the request_logs join is the only reliable way to enforce the
+// synthetic-round gate at the aggregate face. NULL origin_actor is treated as
+// ordinary traffic (legacy inserts predate the column).
+//
+// R46 F4 (affinity 盲窗三选一裁决, R43 §五#2 顺延收口): the old LEFT JOIN hit
+// request_logs_hot only — settled rows older than the ~8h hot retention saw
+// NULL origin_actor and slipped past the gate. Ruling (measured on the live
+// DB, see docs/audit/2026-09-19-r46-48h-audit-round.md §四): NOT EXISTS probes
+// over hot ∪ parent = 110ms / 14d window; literal view JOIN =
+// 6.98s + the turns-preferred view injects duplicate request faces (rejected);
+// settle-time redundant write + migration 727 = full five-point sync cost to
+// defend a write path that does not exist today (rejected). The NOT EXISTS
+// form is semantically identical (NULL actor passes, synthetic excluded) and
+// retention-independent: hot and parent are mutually exclusive (promote is
+// DELETE+INSERT), and each probe is an index descent on
+// pkey(request_id) / the partitioned request_id index (718 dropped the
+// redundant hot-side index; the pkey covers it).
 func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggregate, error) {
 	rows, err := w.db.Query(ctx, `
 		SELECT s.task_type,
@@ -201,12 +286,22 @@ func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggr
 		       COALESCE(AVG(s.cost_usd), 0),
 		       COALESCE(AVG(ss.health_score), 0),
 		       AVG(s.reward)
-		FROM auto_route_selections s
+		FROM auto_route_selections_all s
 		LEFT JOIN session_summaries ss
 		       ON ss.session_key = s.session_id
 		WHERE s.reward IS NOT NULL
 		  AND s.canonical_id IS NOT NULL
 		  AND s.settled_at >= NOW() - $1::interval
+		  AND NOT EXISTS (
+		      SELECT 1 FROM request_logs_hot rl
+		      WHERE rl.request_id = s.request_id
+		        AND (COALESCE(rl.origin_actor, '') LIKE 'goal-%'
+		          OR COALESCE(rl.origin_actor, '') IN ('auto-title-generator','auto-summary-generator','session-summary')))
+		  AND NOT EXISTS (
+		      SELECT 1 FROM request_logs rl
+		      WHERE rl.request_id = s.request_id
+		        AND (COALESCE(rl.origin_actor, '') LIKE 'goal-%'
+		          OR COALESCE(rl.origin_actor, '') IN ('auto-title-generator','auto-summary-generator','session-summary')))
 		GROUP BY s.task_type, s.profile, s.canonical_id, s.chosen_model, COALESCE(s.tenant_id, '')
 	`, affinityWindow.String())
 	if err != nil {
@@ -248,12 +343,26 @@ func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggr
 func (w *AutoRouteAffinityWorker) upsertAggregates(ctx context.Context, aggs []affinityAggregate) (platformRows, tenantRows int) {
 	for _, a := range aggs {
 		// Look up the existing EMA so it can be blended.
-		var prevEMA, prevAvgReward float64
-		_ = w.db.QueryRow(ctx, `
-			SELECT COALESCE(ema_reward, 0), COALESCE(avg_reward, 0)
+		var prevEMA float64
+		// R34 (2026-09-17 audit): a failed read must not fold as prevEMA=0 —
+		// UpdateEMA weights the previous value at 0.85, so a transient DB
+		// error silently zeroed this bucket's whole learning history and the
+		// upsert then overwrote it. ErrNoRows is the legitimate new-bucket
+		// case and keeps the zero baseline; anything else skips the window.
+		switch scanErr := w.db.QueryRow(ctx, `
+			SELECT COALESCE(ema_reward, 0)
 			FROM task_model_affinity
 			WHERE task_type = $1 AND profile = $2 AND canonical_id = $3 AND tenant_id = $4
-		`, a.taskType, a.profile, a.canonicalID, a.tenantID).Scan(&prevEMA, &prevAvgReward)
+		`, a.taskType, a.profile, a.canonicalID, a.tenantID).Scan(&prevEMA); {
+		case errors.Is(scanErr, pgx.ErrNoRows):
+			// New bucket — prevEMA stays 0.
+		case scanErr != nil:
+			slog.Warn("auto_route_affinity: prev EMA read failed, skipping bucket",
+				"task_type", a.taskType, "profile", a.profile,
+				"canonical_id", a.canonicalID, "tenant_id", a.tenantID,
+				"error", scanErr)
+			continue
+		}
 
 		// Fold this window's average reward into the running EMA. The EMA is the
 		// signal shrinkage pulls toward (via avg_reward); a single bad window
@@ -342,6 +451,7 @@ func (w *AutoRouteAffinityWorker) applyStalenessDecay(ctx context.Context) error
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	type staleRow struct {
 		taskType, profile, tenantID string
 		canonicalID                 int64
@@ -354,16 +464,13 @@ func (w *AutoRouteAffinityWorker) applyStalenessDecay(ctx context.Context) error
 		// Scan errors in pgx v5 terminate iteration. Treat as sweep-fatal.
 		if err := rows.Scan(&r.taskType, &r.profile, &r.canonicalID, &r.tenantID,
 			&r.affinity, &r.lastSampled); err != nil {
-			rows.Close()
 			return err
 		}
 		stale = append(stale, r)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return err
 	}
-	rows.Close()
 
 	now := time.Now()
 	for _, r := range stale {

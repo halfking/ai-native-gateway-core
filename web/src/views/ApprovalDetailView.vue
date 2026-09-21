@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { localeRef } from '../i18n'
+import { fmtDateMedium } from '../i18n/useFormat'
 import { useRouter, useRoute } from 'vue-router'
 import { getApprovalDetail, approveApproval, rejectApproval, type ApprovalDetail } from '../api/approval'
 import PageBackLink from '../components/PageBackLink.vue'
+import AppSpinner from '../components/AppSpinner.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -70,18 +71,6 @@ function getStatusLabel(status: string): string {
     case 'timeout': return '已超时'
     default: return status
   }
-}
-
-function formatDate(dateStr: string): string {
-  const date = new Date(dateStr)
-  return date.toLocaleString(localeRef.value, {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
 }
 
 function formatCost(cost?: number): string {
@@ -207,9 +196,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Loading -->
-    <div v-if="loading" class="loading-container">
-      <div class="loading-spinner">加载中...</div>
-    </div>
+    <AppSpinner v-if="loading" label="加载中..." />
 
     <!-- Content -->
     <div v-else-if="approval" class="content">
@@ -259,13 +246,13 @@ onBeforeUnmount(() => {
 
           <div class="info-item">
             <div class="info-label">创建时间</div>
-            <div class="info-value">{{ formatDate(approval.created_at) }}</div>
+            <div class="info-value">{{ fmtDateMedium(approval.created_at) }}</div>
           </div>
 
           <div class="info-item">
             <div class="info-label">过期时间</div>
             <div class="info-value">
-              {{ formatDate(approval.expires_at) }}
+              {{ fmtDateMedium(approval.expires_at) }}
               <span v-if="approval.time_left && isPending" class="time-left">
                 (剩余: {{ approval.time_left }})
               </span>
@@ -279,7 +266,7 @@ onBeforeUnmount(() => {
 
           <div v-if="approval.approved_at" class="info-item">
             <div class="info-label">审批时间</div>
-            <div class="info-value">{{ formatDate(approval.approved_at) }}</div>
+            <div class="info-value">{{ fmtDateMedium(approval.approved_at) }}</div>
           </div>
 
           <div v-if="approval.reason" class="info-item info-item-full">
@@ -443,7 +430,7 @@ onBeforeUnmount(() => {
             <div class="timeline-dot timeline-dot-blue"></div>
             <div class="timeline-content">
               <div class="timeline-title">请求创建</div>
-              <div class="timeline-time">{{ formatDate(approval.created_at) }}</div>
+              <div class="timeline-time">{{ fmtDateMedium(approval.created_at) }}</div>
             </div>
           </div>
 
@@ -451,7 +438,7 @@ onBeforeUnmount(() => {
             <div class="timeline-dot" :class="`timeline-dot-${getStatusColor(approval.status)}`"></div>
             <div class="timeline-content">
               <div class="timeline-title">{{ getStatusLabel(approval.status) }}</div>
-              <div class="timeline-time">{{ formatDate(approval.approved_at) }}</div>
+              <div class="timeline-time">{{ fmtDateMedium(approval.approved_at) }}</div>
               <div v-if="approval.approved_by" class="timeline-detail">审批人: {{ approval.approved_by }}</div>
               <div v-if="approval.reason" class="timeline-detail">说明: {{ approval.reason }}</div>
             </div>
@@ -518,8 +505,8 @@ onBeforeUnmount(() => {
 }
 
 .message-error {
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.3);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 
@@ -536,10 +523,6 @@ onBeforeUnmount(() => {
   padding: 64px;
 }
 
-.loading-spinner {
-  font-size: 16px;
-  color: var(--text-secondary);
-}
 
 .content {
   display: flex;
@@ -657,7 +640,7 @@ onBeforeUnmount(() => {
 }
 
 .badge-red {
-  background: rgba(248, 113, 113, 0.15);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 
@@ -677,8 +660,8 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   padding: 12px;
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.3);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
   border-radius: 6px;
 }
 
@@ -743,7 +726,7 @@ onBeforeUnmount(() => {
 }
 
 .role-system {
-  background: rgba(139, 148, 158, 0.2);
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
   color: var(--muted);
 }
 
@@ -939,7 +922,7 @@ onBeforeUnmount(() => {
 }
 
 .btn-success:hover:not(:disabled) {
-  background: #2cc189;
+  background: color-mix(in srgb, var(--success) 88%, #000);
 }
 
 .btn-danger {
@@ -949,7 +932,7 @@ onBeforeUnmount(() => {
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: #f65e5e;
+  background: var(--danger-dark);
 }
 
 .btn-secondary {

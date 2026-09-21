@@ -56,7 +56,7 @@ f54ae6de8 commit author = `zcode <zcode@local>`，但 commit message 是上一�
 - 184 prod 引用 → 154 (现 prod)
 - 注释中 71/184 → 71/252 或加 154/252 映射说明
 - 占位符用 `<env:HOST_*>` (rule 47)
-- IP `14.103.112.184` → 用作迁移说明文本（合规豁免）
+- IP `<env:HOST_184_IP>` → 用作迁移说明文本（合规豁免）
 
 ### 3.2 保留文件（合规豁免 — rule 36 / rule 39 例外）
 
@@ -134,7 +134,7 @@ stash@{0}: On main: preserve-concurrent-release-metadata-20260819
 stash@{1}: On main: ZCode WIP telemetry/client.go - preserved 2026-08-19
 stash@{2}: On main: ZCode 3rd iteration captured for next session (避免本会话无限循环)
 
-$ grep -rln "14.103.112.184" --include="*.md" --include="*.sh" . | grep -v archive | grep -v vendor | grep -v node_modules | grep -v changelogs/2026-08 | grep -v session-logs
+$ grep -rln "<env:HOST_184_IP>" --include="*.md" --include="*.sh" . | grep -v archive | grep -v vendor | grep -v node_modules | grep -v changelogs/2026-08 | grep -v session-logs
 ./CHANGELOG.md                              (记录 redaction 工作本身)
 ./deploy/sql/DEPLOYMENT_PLAN.md            (v1.0 历史方案, owner 待归档)
 ./.kiro/skills/deploy-184.RETIRED.md        (RETIRED 标记)

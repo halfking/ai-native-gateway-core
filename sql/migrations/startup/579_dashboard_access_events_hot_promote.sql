@@ -22,7 +22,7 @@
 -- Date: 2026-08-25
 --
 -- Companion of Migration 534 (handoff_logs_hot) and Migration 526
--- (session_turns_hot) and Migration 574 (session_module_executions_hot).
+-- (session_turns_hot) and Migration 580 (session_module_executions_hot).
 
 \set ON_ERROR_STOP on
 

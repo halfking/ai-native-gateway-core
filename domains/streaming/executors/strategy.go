@@ -18,6 +18,11 @@ type StrategyInput struct {
 	Canonical        string
 	RequestID        string
 	LoadScoreWeights LoadScoreWeights
+	// StickySnapshot (R48 §4 B 方案)：planCandidates 调用一次
+	// r.StickyLoad.Snapshot(ids) 后构造的本请求 sticky/recency 视图快照。
+	// calculateLoadScore 优先读此 map 替代每候选 Info()，把 n×2 次写锁降为
+	// 1 次。为 nil/缺 key 时回退 Info()，向后兼容旧 StrategyInput 构造面。
+	StickySnapshot map[int]StickyLoadInfo
 }
 
 // Strategy 是 omni-ref2 GW-03 的窄路由策略接口。
@@ -53,7 +58,8 @@ func (p2cStrategy) Name() string { return "p2c" }
 func (s p2cStrategy) Score(ctx context.Context, cand provider.Candidate, in StrategyInput) (float64, error) {
 	// calculateLoadScore 需要 *Router 取 limiter/fpslot 状态；strategy 不持有 ctx
 	// 里的 router 引用，通过 p2cStrategy.r 注入。
-	return calculateLoadScore(cand, s.r, ctx, in.LoadScoreWeights), nil
+	// Strategy.Score 路径不走 planCandidates，不走 sticky snapshot 优化（保守走 Info() 回退）。
+	return calculateLoadScore(cand, s.r, ctx, in.LoadScoreWeights, in), nil
 }
 
 // NewP2CStrategy 构造一个复用现有 P2C loadScore 的 Strategy。

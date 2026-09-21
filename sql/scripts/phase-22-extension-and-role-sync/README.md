@@ -85,21 +85,21 @@ The script converts these from heap → columnar using `ALTER TABLE ... SET ACCE
 
 ### Apply extensions first
 ```bash
-PGPASSWORD='CGpGfdG9De502/bdQYXD0Cr4akCVXaJ3' psql -U kxuser -d postgres \
+PGPASSWORD="${PGPASSWORD:?set PGPASSWORD}" psql -U kxuser -d postgres \
   -h localhost -p 5434 \
   -f 00-extensions.sql
 ```
 
 ### Apply roles
 ```bash
-PGPASSWORD='CGpGfdG9De502/bdQYXD0Cr4akCVXaJ3' psql -U kxuser -d postgres \
+PGPASSWORD="${PGPASSWORD:?set PGPASSWORD}" psql -U kxuser -d postgres \
   -h localhost -p 5434 \
   -f 01-roles.sql
 ```
 
 ### Apply columnar conversion
 ```bash
-PGPASSWORD='CGpGfdG9De502/bdQYXD0Cr4akCVXaJ3' psql -U kxuser -d llm_gateway \
+PGPASSWORD="${PGPASSWORD:?set PGPASSWORD}" psql -U kxuser -d llm_gateway \
   -h localhost -p 5434 \
   -f 02-columnar-tables.sql
 ```

@@ -3,7 +3,8 @@
 // core (domains/streaming/state) through its public API and cover the
 // four spec cases:
 //
-//   - Case 1 (cancel propagation): covered in tests/integration/...
+//   - Case 1 (cancel propagation): covered below through the public
+//     RequestContext cancellation channel.
 //   - Case 2 (empty candidate set): SKIPPED at the state-machine level
 //     — see "ASSUMPTIONS / BLOCKERS" in the report. The state machine
 //     has no concept of a candidate set; that lives in the routing
@@ -58,22 +59,6 @@ func driveToStreaming(t *testing.T, ctx context.Context, rt *state.Runtime) {
 		}
 		if err := ctx.Err(); err != nil {
 			t.Fatalf("ctx done during drive: %v", err)
-		}
-		runtime.Gosched()
-	}
-}
-
-// waitForTerminal blocks until rt reaches a terminal state or the
-// supplied context is cancelled, whichever comes first.
-func waitForTerminal(t *testing.T, ctx context.Context, rt *state.Runtime) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for !rt.State().IsTerminal() {
-		if err := ctx.Err(); err != nil {
-			t.Fatalf("ctx done while waiting for terminal: %v", err)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("did not reach terminal within 2s; current=%s", rt.State())
 		}
 		runtime.Gosched()
 	}
@@ -246,6 +231,53 @@ func TestStreamStateMachine_HappyPath(t *testing.T) {
 	ps.Stop()
 	if ps.Running() {
 		t.Errorf("ticker goroutine still running after Run() returned")
+	}
+}
+
+// TestStreamStateMachine_CancelPropagationThroughRequestContext verifies the
+// cancellation channel used by the handler/retry bridge. A client-facing
+// cancellation enters through Runtime.Cancel, closes reqCtx.Cancelled, and
+// drives the runtime to its terminal cancelled state without accepting any
+// later stream events.
+func TestStreamStateMachine_CancelPropagationThroughRequestContext(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), e2eTestDeadline)
+	defer cancel()
+
+	rctx := state.NewRequestContext("req-cancel-channel-e2e", "tenant-1")
+	rt := state.NewRuntime(rctx)
+	done := make(chan error, 1)
+	go func() { done <- rt.Run(ctx) }()
+
+	rt.Emit(state.EventAuthed)
+	rt.Emit(state.EventRouted)
+	rt.Emit(state.EventCompressingSkipped)
+	rt.Emit(state.EventFirstByte)
+	driveToStreaming(t, ctx, rt)
+
+	rt.Cancel(context.Canceled)
+	select {
+	case <-rctx.Cancelled():
+	case <-ctx.Done():
+		t.Fatalf("request cancellation channel was not closed: %v", ctx.Err())
+	}
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Run returned nil after request cancellation")
+		}
+	case <-ctx.Done():
+		t.Fatalf("Run did not return after request cancellation: %v", ctx.Err())
+	}
+
+	if got := rt.State(); got != state.StateCancelled {
+		t.Fatalf("final state=%s want=%s", got, state.StateCancelled)
+	}
+	rt.Emit(state.EventStreamEnded)
+	if got := rt.State(); got != state.StateCancelled {
+		t.Fatalf("state changed after cancellation: got=%s want=%s", got, state.StateCancelled)
 	}
 }
 

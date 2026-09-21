@@ -1,0 +1,319 @@
+{
+  "summary": {
+    "claude-opus-5": {
+      "test_key": 13,
+      "agent_workflow": 3,
+      "long_doc": 1,
+      "reasoning": 3
+    },
+    "claude-sonnet-5": {
+      "agent_workflow": 13,
+      "code_review": 7
+    },
+    "deepseek-v4-flash": {
+      "test_key": 10
+    }
+  },
+  "details": [
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_a972dcd4-cfd9-43a3-99b7-3f58926ab2b6",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: pong"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_964569f8-8173-42b1-bfce-bd381f0f64f2",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: pong"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_4a32bccb-e754-4921-a7a4-c8884d55684d",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: pong"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_5d750d44-1e43-422d-91ae-8f437ac255aa",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: pong"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_4cddae03-c5a9-428a-a406-9c6af2f3a71d",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: pong"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_ce483ce0-95e3-4126-b9e4-ab23774f2f63",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: pong"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_069071f2-d417-47bd-aa9f-41174abc569f",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_b100c0eb-70c5-4c67-a1b0-b1f31824e38b",
+      "task_type": "long_doc",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_1d1c2e53-1c85-4ab1-95e5-4655bdeb4808",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_e09c56e4-92be-4aa2-9226-5d4eeb9da76b",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: pong"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_541d6052-af48-4b4e-b48b-be6b8cabd165",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: pong"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_6a241a89-8e08-4b2e-9c6c-8c2732b88f71",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: pong"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_df310e42-38da-4437-856e-2d71b6b7de81",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_d4f33cd9-4b32-4b00-8181-e69c9d9ba75e",
+      "task_type": "reasoning",
+      "conversation_preview": "User: [smm_v1:733fd64ad8c769c2]\n[Gateway compacted conversation summary - prior turns collapsed to fit context. Use direct quotes for exact identifiers, errors, user corrections. The first user messag"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_e1066623-aff6-4657-9274-6501a76a8568",
+      "task_type": "reasoning",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_b2ad03a7-a2cb-443d-89b9-f60cb0011c2f",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: pong"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_6f8e1491-e7da-4d0d-a68c-6edbfd32b7f0",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: pong"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_7d027870-2673-4d6a-9b07-997816227822",
+      "task_type": "reasoning",
+      "conversation_preview": "User: [smm_v1:733fd64ad8c769c2]\n[Gateway compacted conversation summary - prior turns collapsed to fit context. Use direct quotes for exact identifiers, errors, user corrections. The first user messag"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_b304a72f-d253-463a-a005-601b4f66b04f",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: pong"
+    },
+    {
+      "model": "claude-opus-5",
+      "session_id": "gw_64734a97-b9ef-470a-bd93-ab8a3fced85c",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: pong"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_2e58c290-949b-452e-b3dc-0d302dc17c8f",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_fac428b2-3e6d-4cc8-adbc-c2a7899aa8fe",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: [smm_v1:733fd64ad8c769c2]\n[Gateway compacted conversation summary - prior turns collapsed to fit context. Use direct quotes for exact identifiers, errors, user corrections. The first user messag"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_a410a35f-3ffe-4c1c-9fca-f1854f9662ff",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_77dab5ac-3909-4c1b-8031-e21664f21dba",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: [smm_v1:733fd64ad8c769c2]\n[Gateway compacted conversation summary - prior turns collapsed to fit context. Use direct quotes for exact identifiers, errors, user corrections. The first user messag"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_0dd70e6b-ba3f-4836-aa74-90c8fd98f5d3",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_d2ffcc00-7293-4f15-8812-212f0cf64e20",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_7f7b5b90-d777-4943-9465-7cad8035b466",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_89e1a20d-1634-4541-b410-e1eade866d61",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_82fef06a-ca5e-4591-b28e-3f8dc350ac47",
+      "task_type": "code_review",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_33bf9a3c-efce-40b1-971c-3e53ccacd605",
+      "task_type": "code_review",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_8980be7c-eed1-4600-8e31-60c73eb9b31d",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_eeba58f1-2002-42a9-8d03-f98fd91083d6",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: [smm_v1:733fd64ad8c769c2]\n[Gateway compacted conversation summary - prior turns collapsed to fit context. Use direct quotes for exact identifiers, errors, user corrections. The first user messag"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_2ebc5dc1-65d9-4f95-be67-b196214cb9ce",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_8ed13f02-6b82-4923-a2b7-ebf9a544326d",
+      "task_type": "code_review",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_4a78e42d-e605-490b-ae3e-47f8d0068eb6",
+      "task_type": "code_review",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_1b9a2d7a-9bba-4af3-bdce-f822afb3544d",
+      "task_type": "code_review",
+      "conversation_preview": "User: [smm_v1:733fd64ad8c769c2]\n[Gateway compacted conversation summary - prior turns collapsed to fit context. Use direct quotes for exact identifiers, errors, user corrections. The first user messag"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_2f3b4d7b-cad5-4cc9-86df-b70c8e922b85",
+      "task_type": "code_review",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_5d9393e3-2f07-4824-ad28-73a022a468e1",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: [smm_v1:733fd64ad8c769c2]\n[Gateway compacted conversation summary - prior turns collapsed to fit context. Use direct quotes for exact identifiers, errors, user corrections. The first user messag"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_47013860-0144-4213-8d95-33c28b118d54",
+      "task_type": "code_review",
+      "conversation_preview": "User: <system-reminder>\nThe following skills are available for use with the Skill tool:\n\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-researcher/SKILL.md)\n- acc-discussion-co"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "session_id": "gw_e23811ab-0835-4778-87c9-cfd859858b56",
+      "task_type": "agent_workflow",
+      "conversation_preview": "User: [smm_v1:733fd64ad8c769c2]\n[Gateway compacted conversation summary - prior turns collapsed to fit context. Use direct quotes for exact identifiers, errors, user corrections. The first user messag"
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "session_id": "gw_25a00a52-024e-4be8-a8b0-6b43fbcc53af",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: "
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "session_id": "gw_814bcc4f-bc68-4d34-9772-c6bc93833fc2",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: "
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "session_id": "gw_39b76908-2fda-471f-b8c7-b1bba0347044",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: "
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "session_id": "gw_ce38b20b-5f9d-4786-951b-30e34a4ee7be",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: "
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "session_id": "gw_1e59c091-22c7-454e-82b3-cb5b08c7f2f9",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: "
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "session_id": "gw_a15d7a7a-19c4-4b44-848f-9d4e95c1e986",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: "
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "session_id": "gw_313a3f2b-c90b-4d6e-b7d7-89b0f9ff2064",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping"
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "session_id": "gw_2a1983cf-2080-4b5c-9c46-63edf6e306de",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: "
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "session_id": "gw_33080aa2-def1-4937-a3b5-47903bf8a74a",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: "
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "session_id": "gw_4bb21b92-89b0-412e-b3c4-9eb546f8da7d",
+      "task_type": "test_key",
+      "conversation_preview": "User: ping\nAssistant: "
+    }
+  ]
+}

@@ -216,8 +216,7 @@
                   >{{ t('dataLifecycle.storageOverview.buttons.reindex') }}</button>
                 </div>
                 <div v-if="busy[tRow.table]" class="row-status">
-                  <span class="spinner"></span>
-                  <span class="status-text">{{ busy[tRow.table] }}</span>
+                  <AppSpinner inline :label="busy[tRow.table]" />
                 </div>
                 <div v-else-if="lastResult[tRow.table]" class="row-result" :class="lastResult[tRow.table]!.success ? 'ok' : 'err'">
                   <span v-if="lastResult[tRow.table]!.success">
@@ -311,6 +310,8 @@ import { ref, computed, onMounted, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
+import { formatDateTime } from '../../utils/datetime'
+import AppSpinner from '../../components/AppSpinner.vue'
 import {
   dataLifecycleStorage,
   dataLifecycleTableSizes,
@@ -563,9 +564,10 @@ function formatNumber(n: number): string {
   return n.toLocaleString(localeRef.value)
 }
 
+// 审计 R3#10：时间格式化统一走 utils/datetime.ts（unix 秒 → 毫秒）。
+// 注：原实现是 UTC ISO 截断，统一后与全站一致使用本地时区渲染。
 function formatTime(unix: number): string {
-  if (!unix) return '—'
-  return new Date(unix * 1000).toISOString().slice(0, 19).replace('T', ' ')
+  return formatDateTime(unix ? unix * 1000 : null)
 }
 
 defineExpose({ load, loadTables })
@@ -825,7 +827,7 @@ function fmtNum(n: number) {
   color: var(--accent-h);
 }
 
-@media (max-width: 800px) {
+@media (max-width: 768px) {
   .grid-2 { grid-template-columns: 1fr; }
   .local-logs-grid { grid-template-columns: 1fr; }
 }

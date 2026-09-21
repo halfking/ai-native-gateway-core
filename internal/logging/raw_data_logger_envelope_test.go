@@ -95,7 +95,7 @@ func TestAsyncRawDataLogger_DefaultOn(t *testing.T) {
 		t.Fatalf("NewAsyncRawDataLogger: %v", err)
 	}
 	t.Cleanup(func() { _ = logger.Close() })
-	if !logger.baseLogger.enabled {
+	if !logger.baseLogger.sinkEnabled() {
 		t.Errorf("expected base logger to be enabled by default")
 	}
 }
@@ -296,9 +296,18 @@ func TestLockFreeAnomalyReporter_StampsRawLogLocation(t *testing.T) {
 	// omitempty); a freshly rotated file legitimately starts at 0. We
 	// therefore only assert the file key is present and the offset
 	// round-trips through the locator's signature.
-	if !strings.Contains(string(body), `"raw_log_file":"`+report.RawLogFile+`"`) {
+	var encoded struct {
+		Anomalies []struct {
+			RawLogFile string `json:"raw_log_file"`
+		} `json:"anomalies"`
+	}
+	if err := json.Unmarshal(body, &encoded); err != nil {
+		t.Fatalf("decode raw_log_file payload: %v", err)
+	}
+	if len(encoded.Anomalies) == 0 || encoded.Anomalies[0].RawLogFile != report.RawLogFile {
 		t.Errorf("expected raw_log_file value to round-trip in payload, got %s", body)
 	}
+
 }
 
 // TestLockFreeAnomalyReporter_NilLocatorLeavesFieldsEmpty confirms that

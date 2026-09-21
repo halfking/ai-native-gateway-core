@@ -42,12 +42,15 @@ func TestConcurrencyGovernorZeroGiveUpWaitsForRelease(t *testing.T) {
 // a saturated concurrency governor (cap=2, used=2 → GovernorSaturated).
 func TestConcurrencySnapshotUsesCapNotQueueDepth(t *testing.T) {
 	p := NewPipeline(Deps{})
+	q99 := make(chan *QueuedRequest, 300)
 	cf := &credForwarder{
-		cred:  CredentialRef{CredentialID: 99, ProviderID: 1, ConcurrencyMode: ModeConcurrency, ConcurrencyLimit: 2},
-		limit: 300,
-		gov:   newConcurrencyGovernor(2),
-		pipe:  p,
+		cred:   CredentialRef{CredentialID: 99, ProviderID: 1, ConcurrencyMode: ModeConcurrency, ConcurrencyLimit: 2},
+		gov:    newConcurrencyGovernor(2),
+		pipe:   p,
+		wakeCh: make(chan struct{}),
 	}
+	cf.queue.Store(&q99)
+	cf.limit.Store(300)
 	cf.gov.(*concurrencyGovernor).used.Store(2)
 
 	p.credMu.Lock()
@@ -91,7 +94,7 @@ func TestAcquireGiveUpZeroBudgetConcurrency(t *testing.T) {
 	cf := &credForwarder{cred: ref, gov: newGovernor(ref), pipe: p}
 	qr := NewQueuedRequest("g", "t", "m", context.Background(), nil)
 	qr.SelectedCred = ref
-	got := cf.acquireGiveUp(qr)
+	got := cf.acquireGiveUp(qr, cf.govLocked())
 	if !got.IsZero() {
 		t.Fatalf("concurrency zero-budget giveUp = %v, want zero time.Time", got)
 	}
@@ -108,7 +111,7 @@ func TestAcquireGiveUpZeroBudgetRPM(t *testing.T) {
 	qr := NewQueuedRequest("g", "t", "m", context.Background(), nil)
 	qr.SelectedCred = ref
 	before := time.Now()
-	got := cf.acquireGiveUp(qr)
+	got := cf.acquireGiveUp(qr, cf.govLocked())
 	if got.IsZero() || got.Before(before.Add(-time.Millisecond)) {
 		t.Fatalf("rpm zero-budget giveUp = %v, want ~now", got)
 	}

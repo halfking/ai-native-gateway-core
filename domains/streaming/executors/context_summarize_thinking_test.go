@@ -74,6 +74,7 @@ func TestHandleContextLengthRecovery_EmitsThinkingOnMechanicalTrim(t *testing.T)
 		413, // upstream returned 413 → handleContextLengthRecovery is the
 		// right path. (We don't actually send the request; the function
 		// only uses `status` for log lines.)
+		nil, // no error body → no discovered limit, keep the configured window
 	)
 
 	// 5) Assert: the mechanical trim succeeded, the body shrank, AND

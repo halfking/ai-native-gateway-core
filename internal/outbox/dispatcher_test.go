@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -66,6 +67,34 @@ func TestDispatcher_ConfigCustom(t *testing.T) {
 	}
 	if d.asmEndpoint != "http://custom:9090/events" {
 		t.Errorf("asmEndpoint = %s", d.asmEndpoint)
+	}
+}
+
+func TestDispatcherUpdateGaugeMetricsConcurrentThrottle(t *testing.T) {
+	mockDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mockDB.Close()
+
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM outbox_events WHERE status = 'pending'`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM outbox_events WHERE status = 'dlq'`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	d := NewDispatcher(DispatcherConfig{DB: mockDB, ASMEndpoint: "http://asm", HMACSecret: "test"})
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.updateGaugeMetrics(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -204,7 +233,8 @@ func (errorConnector) Driver() driver.Driver { return nil }
 //   - success  → RecordEventSent + ObserveDeliveryDuration(success=true)
 //   - http fail (not at max) → RecordEventFailed(reason) + RecordEventRetried
 //   - http fail (at max, moved to DLQ) → RecordEventFailed(reason) only
-//   - corrupt payload → RecordEventFailed("validation") (+ retry if not at max)
+//   - corrupt payload → RecordEventFailed("validation") only — markDLQ
+//     directly, no retry (a malformed payload can never succeed)
 //   - no claimable event → no metric changes
 //
 // Without these, the dispatcher could ship without ever incrementing the

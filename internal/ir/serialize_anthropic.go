@@ -266,7 +266,7 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 				continue
 			}
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				f.field,
 				ifaceNonEmpty(src, ProtocolOpenAIChat),
 				ProtocolAnthropicMessages,
@@ -283,7 +283,7 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 	// kept for symmetry with other same-protocol guards).
 	if req.PreviousResponseID != "" && src != ProtocolAnthropicMessages {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"previous_response_id",
 			ifaceNonEmpty(src, ProtocolOpenAIChat),
 			ProtocolAnthropicMessages,
@@ -296,7 +296,7 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 	// semantically. (When SourceProtocol is Anthropic this is normal usage.)
 	if req.TopK != nil && *req.TopK == 0 && src == ProtocolOpenAIChat {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"top_k",
 			ProtocolOpenAIChat,
 			ProtocolAnthropicMessages,
@@ -356,9 +356,6 @@ func serializeAnthropicSystem(system *SystemPrompt) any {
 	return system.Content
 }
 
-// serializeAnthropicMessages converts IR messages to Anthropic format.
-// targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
-// 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
 // serializeAnthropicMessages converts IR messages to Anthropic format.
 // targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
 // 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
@@ -525,14 +522,22 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 		// 或 url 类型误带 data。Anthropic API 要求：
 		//   type=base64 → media_type + data
 		//   type=url    → url
+		//   type=file   → file_id（Files API 预上传文件引用）
 		srcType := block.Image.Type
 		if srcType == "" {
-			// 兼容旧数据：有 Data 视为 base64，否则视为 url
-			if block.Image.Data != "" {
+			// 兼容旧数据：有 Data 视为 base64，有 FileID 视为 file，否则视为 url
+			switch {
+			case block.Image.Data != "":
 				srcType = "base64"
-			} else {
+			case block.Image.FileID != "":
+				srcType = "file"
+			default:
 				srcType = "url"
 			}
+		}
+		// IR 内部以 "file_id" 标注文件引用，Anthropic 线上协议类型名为 "file"
+		if srcType == "file_id" {
+			srcType = "file"
 		}
 		source := map[string]any{"type": srcType}
 		switch srcType {
@@ -547,6 +552,10 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 			if block.Image.URL != "" {
 				source["url"] = block.Image.URL
 			}
+		case "file":
+			if block.Image.FileID != "" {
+				source["file_id"] = block.Image.FileID
+			}
 		default:
 			// 未知类型：尽量保留信息
 			if block.Image.MediaType != "" {
@@ -557,6 +566,9 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 			}
 			if block.Image.Data != "" {
 				source["data"] = block.Image.Data
+			}
+			if block.Image.FileID != "" {
+				source["file_id"] = block.Image.FileID
 			}
 		}
 		out["source"] = source
@@ -584,7 +596,10 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 			out[fieldName] = block.ToolResult.ToolUseID
 			out["is_error"] = block.ToolResult.IsError
 
-			// Serialize content - can be text blocks
+			// Serialize content - blocks of any supported type (text, image,
+			// document, ...). Anthropic tool_result content accepts the same
+			// block shapes as user messages, so non-text blocks must survive
+			// the round trip instead of being silently dropped.
 			if len(block.ToolResult.Content) > 0 {
 				content := make([]map[string]any, 0, len(block.ToolResult.Content))
 				for _, cb := range block.ToolResult.Content {
@@ -593,9 +608,12 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 							"type": "text",
 							"text": cb.Text,
 						})
+					} else {
+						content = append(content, serializeAnthropicContentBlock(cb, targetProvider, modelName))
 					}
 				}
-				if len(content) == 1 {
+				// 单一 text 块保持字符串简写形态（既有线上的契约行为）
+				if len(content) == 1 && len(block.ToolResult.Content) == 1 && block.ToolResult.Content[0].Type == "text" {
 					out["content"] = content[0]["text"]
 				} else {
 					out["content"] = content
@@ -618,7 +636,9 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 		}
 
 	case "redacted_thinking":
-		out["thinking"] = block.RedactedThinking
+		// A-#17: Anthropic wire format carries the encrypted payload under
+		// "data", not "thinking".
+		out["data"] = block.RedactedThinking
 
 	case "document":
 		// Serialize Anthropic document block
@@ -630,15 +650,43 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 				if block.Document.Source.MediaType != "" {
 					source["media_type"] = block.Document.Source.MediaType
 				}
-				if block.Document.Source.Type == "base64" && block.Document.Source.Data != "" {
+				switch {
+				case block.Document.Source.Type == "file" || block.Document.Source.Type == "file_id" || block.Document.Source.FileID != "":
+					// Files API 预上传文档：{"type":"file","file_id":"file_..."}
+					// A-#18(b): OpenAI file 文档（parse_openai 现在写 FileID）
+					// 与历史 Data 编码（session 恢复行把 FileID 折叠进 Data）
+					// 都统一从这里输出，避免空源 {"type":"file_id"}。
+					source["type"] = "file"
+					fid := block.Document.Source.FileID
+					if fid == "" && (block.Document.Source.Type == "file" || block.Document.Source.Type == "file_id") {
+						fid = block.Document.Source.Data
+					}
+					if fid != "" {
+						source["file_id"] = fid
+					}
+				case block.Document.Source.Type == "base64" && block.Document.Source.Data != "":
 					source["data"] = block.Document.Source.Data
-				} else if block.Document.Source.Type == "url" {
+				case block.Document.Source.Type == "url":
 					url := block.Document.Source.URL
 					if url == "" { // compatibility with pre-canonical IR rows
 						url = block.Document.Source.Data
 					}
 					if url != "" {
 						source["url"] = url
+					}
+				default:
+					// 2026-09-05 round2 复审: text/csv/unknown source types
+					// (e.g. the real Anthropic wire form
+					// {"type":"text","media_type":...,"data":...}) must keep
+					// their payload on the same-protocol round trip — mirror
+					// the top-level serializeAnthropicDocuments default
+					// projection so the message-level switch does not emit a
+					// bare {"type":"text"} with the body silently dropped.
+					if block.Document.Source.Data != "" {
+						source["data"] = block.Document.Source.Data
+					}
+					if block.Document.Source.URL != "" {
+						source["url"] = block.Document.Source.URL
 					}
 				}
 				out["source"] = source
@@ -811,20 +859,49 @@ func serializeAnthropicCacheControl(cc []CacheControl) any {
 func serializeAnthropicDocuments(docs []Document) []map[string]any {
 	result := make([]map[string]any, 0, len(docs))
 	for _, doc := range docs {
-		docMap := map[string]any{
-			"type": doc.Type,
-			"source": map[string]any{
-				"type": doc.Source.Type,
-			},
+		source := map[string]any{
+			"type": doc.Source.Type,
 		}
 		if doc.Source.MediaType != "" {
-			docMap["source"].(map[string]any)["media_type"] = doc.Source.MediaType
+			source["media_type"] = doc.Source.MediaType
 		}
-		if doc.Source.Data != "" {
-			docMap["source"].(map[string]any)["data"] = doc.Source.Data
+		// A-#18(a): mirror the message-level document block switch — a Files
+		// API pre-uploaded document must emit {"type":"file","file_id":...},
+		// never a truncated {"type":"file"} with no id. IR-internal "file_id"
+		// maps to the wire type "file"; legacy rows that carry the id in Data
+		// (session restore collapses FileID into Data) still resolve.
+		switch {
+		case doc.Source.Type == "file" || doc.Source.Type == "file_id" || doc.Source.FileID != "":
+			source["type"] = "file"
+			fid := doc.Source.FileID
+			if fid == "" && (doc.Source.Type == "file" || doc.Source.Type == "file_id") {
+				fid = doc.Source.Data
+			}
+			if fid != "" {
+				source["file_id"] = fid
+			}
+		case doc.Source.Type == "base64" && doc.Source.Data != "":
+			source["data"] = doc.Source.Data
+		case doc.Source.Type == "url":
+			url := doc.Source.URL
+			if url == "" { // compatibility with pre-canonical IR rows
+				url = doc.Source.Data
+			}
+			if url != "" {
+				source["url"] = url
+			}
+		default:
+			// text/csv/unknown: keep the historical payload projection.
+			if doc.Source.Data != "" {
+				source["data"] = doc.Source.Data
+			}
+			if doc.Source.URL != "" {
+				source["url"] = doc.Source.URL
+			}
 		}
-		if doc.Source.URL != "" {
-			docMap["source"].(map[string]any)["url"] = doc.Source.URL
+		docMap := map[string]any{
+			"type":   doc.Type,
+			"source": source,
 		}
 		if doc.Title != "" {
 			docMap["title"] = doc.Title
@@ -952,20 +1029,6 @@ func validateAnthropicToolCallIntegrity(messages []map[string]any, targetProvide
 	}
 
 	return nil
-}
-
-// mapEffortToBudget maps OpenAI-style reasoning effort level to Anthropic thinking
-// budget_tokens.
-//
-// Deprecated: new code should call reasonnormEffortToBudget directly; this
-// wrapper remains for any callers that haven't been migrated yet.
-// audit-provider-multimodal (2026-07-13): Cross-protocol reasoning effort → budget mapping.
-func mapEffortToBudget(effort string) int {
-	b, ok := reasonnormEffortToBudget(effort)
-	if !ok || b == 0 {
-		return 8192
-	}
-	return b
 }
 
 // reasonnormEffortToBudget delegates to the canonical effort→budget table from

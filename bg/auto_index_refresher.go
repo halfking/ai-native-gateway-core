@@ -179,6 +179,37 @@ func (r *AutoIndexRefresher) RefreshOnce(ctx context.Context) error {
 // Both halves share the same ON CONFLICT DO UPDATE suffix so live
 // metrics always overwrite the conservative half-2 baseline as soon as
 // a credential gets real traffic.
+// credentialModelIndexRollupSQLs returns the (delete, insert) statement pair
+// that refreshes credential_model_index_hot for one bucket. Exposed for the
+// SQL-shape regression tests (2026-09-10: an extra ")" in half-2 plus an
+// ungrouped outer reference in half-1 kept the rollup failing on every tick).
+//
+// 2026-09-10 (PG log audit): RefreshOnce runs from BOTH the 5-min ticker and
+// the auto_route_refresh LISTEN listener with no mutual exclusion. The
+// DELETE+INSERT pair is not atomic, so two overlapping runs interleave as
+// DELETE(A) → DELETE(B) → INSERT(A) → INSERT(B) and the second INSERT hits
+//   duplicate key value violates unique constraint "idx_credential_model_index_hot_unique"
+// (observed 2026-09-10 04:18 CST). Re-adding ON CONFLICT DO UPDATE makes each
+// INSERT idempotent against rows a concurrent run already committed. The
+// 2026-07-20 P2-#6 reason ON CONFLICT was originally dropped — "cannot affect
+// row a second time" (21000) within ONE statement — cannot recur here: the
+// DISTINCT ON (bucket, credential_id, raw_model) tail already guarantees a
+// single row per conflict key per statement, so the clause now only ever
+// resolves against rows committed by the *other* run.
+func credentialModelIndexRollupSQLs() (deleteSQL, insertSQL string) {
+	deleteSQL = `DELETE FROM credential_model_index_hot
+			WHERE (bucket, credential_id, raw_model) IN (
+				SELECT bucket, credential_id, raw_model FROM (` + rollupCredentialModelIndexSQL + `) _fresh
+			)`
+	insertSQL = `INSERT INTO credential_model_index_hot (
+	    bucket, credential_id, raw_model, canonical_id,
+	    billing_mode, unit_price_in_per_1m, unit_price_out_per_1m, context_window,
+	    success_rate, p95_latency_ms, active_sessions, concurrency_limit, pressure_ratio,
+	    score_smart, score_speed_first, score_cost_first
+	) ` + rollupCredentialModelIndexSQL + rollupCredentialModelIndexONCONFLICT
+	return deleteSQL, insertSQL
+}
+
 func (r *AutoIndexRefresher) rollupCredentialModelIndex(ctx context.Context, bucket time.Time) (int, error) {
 	// 2026-07-20 P2-#6: split into DELETE + INSERT to avoid
 	// "ON CONFLICT DO UPDATE command cannot affect row a second time"
@@ -187,19 +218,10 @@ func (r *AutoIndexRefresher) rollupCredentialModelIndex(ctx context.Context, buc
 	// triple. Two-statement version preserves the original semantics
 	// (live metrics overwrite baseline) but does it via DELETE-then-INSERT
 	// instead of ON CONFLICT.
-	deleteSQL := `DELETE FROM credential_model_index_hot
-		WHERE (bucket, credential_id, raw_model) IN (
-			SELECT bucket, credential_id, raw_model FROM (` + rollupCredentialModelIndexSQL + `) _fresh
-		)`
+	deleteSQL, insertSQL := credentialModelIndexRollupSQLs()
 	if _, err := r.db.Exec(ctx, deleteSQL, bucket); err != nil {
 		return 0, fmt.Errorf("delete: %w", err)
 	}
-	insertSQL := `INSERT INTO credential_model_index_hot (
-	    bucket, credential_id, raw_model, canonical_id,
-	    billing_mode, unit_price_in_per_1m, unit_price_out_per_1m, context_window,
-	    success_rate, p95_latency_ms, active_sessions, concurrency_limit, pressure_ratio,
-	    score_smart, score_speed_first, score_cost_first
-	) ` + rollupCredentialModelIndexSQL
 	tag, err := r.db.Exec(ctx, insertSQL, bucket)
 	if err != nil {
 		return 0, fmt.Errorf("insert: %w", err)
@@ -268,6 +290,52 @@ func (r *AutoIndexRefresher) rollupModelTaskIndex(ctx context.Context, bucket ti
 const rollupCredentialModelIndexSQL = `
 WITH fresh AS (
 -- ── Half 1: traffic-derived rows (5-min window from request_logs) ─────────
+-- 2026-09-10 修复：peak 子查询改为关联内层 q 的分组列。原来子查询里引用
+-- COALESCE(rl.outbound_model, rl.client_model)，它只是 GROUP BY 表达式而非
+-- 裸列，PG 报 "subquery uses ungrouped column"。聚合下推到 q，外层再取
+-- (credential_id, raw_model) 的最新 peak 桶。
+SELECT
+    q.bucket,
+    q.credential_id,
+    q.raw_model,
+    q.canonical_id,
+    q.billing_mode,
+    q.unit_price_in_per_1m,
+    q.unit_price_out_per_1m,
+    q.context_window,
+    q.success_rate,
+    q.p95_latency_ms,
+    -- active_sessions 从 credential_model_peak_1m 的最新桶拉取（dispatch 的
+    -- PeakCollector 每分钟写入），驱动 autoroute 的并发感知压力评分。没数据
+    -- 时回落 0（保持与 cold-start baseline 的安全行为一致）。
+    COALESCE((
+      SELECT GREATEST(p.peak_concurrent, 0)
+      FROM credential_model_peak_1m p
+      WHERE p.credential_id = q.credential_id
+        AND p.raw_model     = q.raw_model
+        AND p.bucket <= $1
+      ORDER BY p.bucket DESC
+      LIMIT 1
+    ), 0) AS active_sessions,
+    q.concurrency_limit,
+    -- pressure_ratio 从 active_sessions / concurrency_limit 计算（NULL/0 安全）。
+    CASE
+      WHEN q.concurrency_limit IS NULL OR q.concurrency_limit <= 0 THEN 0
+      ELSE LEAST(1.0, COALESCE((
+        SELECT GREATEST(p.peak_concurrent, 0)::numeric
+        FROM credential_model_peak_1m p
+        WHERE p.credential_id = q.credential_id
+          AND p.raw_model     = q.raw_model
+          AND p.bucket <= $1
+        ORDER BY p.bucket DESC
+        LIMIT 1
+      ), 0) / q.concurrency_limit)
+    END AS pressure_ratio,
+    q.score_smart,
+    q.score_speed_first,
+    q.score_cost_first,
+    1 AS half_no
+FROM (
 SELECT
     $1::timestamptz AS bucket,
     rl.credential_id,
@@ -280,13 +348,7 @@ SELECT
     -- success rate over the bucket window
     COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) AS success_rate,
     COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms)::int, 1000) AS p95_latency_ms,
-    -- active_sessions / concurrency_limit / pressure_ratio:
-    --   advisory fields, set to 0 here (no subquery).
-    --   The customer_cost_view recomputes active_concurrent live from
-    --   request_logs so this static value is informational only.
-    0                          AS active_sessions,
     MAX(cr.concurrency_limit)  AS concurrency_limit,
-    0::numeric                 AS pressure_ratio,
     -- Simplified pre-computed scores (no subquery; pressure assumed 0).
     -- smart weights: price=25 speed=25 stab=20 match=25 pressure=10 ctx=15
     (COALESCE(100 * (1 - LEAST(1.0, AVG(mo.unit_price_in_per_1m + mo.unit_price_out_per_1m) / 20.0)), 50) * 0.25
@@ -308,8 +370,7 @@ SELECT
    + COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) * 100 * 0.15
     + 50 * 0.20
     + 100 * 0.05
-    + 80 * 0.10)::numeric(8,4) AS score_cost_first,
-    1 AS half_no
+    + 80 * 0.10)::numeric(8,4) AS score_cost_first
 FROM request_logs_hot rl
 JOIN credentials cr ON cr.id = rl.credential_id
 LEFT JOIN model_offers mo
@@ -324,6 +385,7 @@ WHERE rl.ts >= NOW() - INTERVAL '5 minutes'
   AND COALESCE(cr.lifecycle_status, 'active') = 'active'
 GROUP BY rl.credential_id, COALESCE(rl.outbound_model, rl.client_model),
          mo.canonical_id, mo.billing_mode
+) q
 
 UNION ALL
 
@@ -350,9 +412,31 @@ SELECT
     mc.context_window,
     0.9::numeric(5,4)                   AS success_rate,
     1000::int                           AS p95_latency_ms,
-    0::int                              AS active_sessions,
+    -- 2026-09-09 P0：cold-start baseline 也从 credential_model_peak_1m 拉
+    -- 最新并发；若冷启动凭据此前无流量，回落 0（与原行为一致）。
+    COALESCE((
+      SELECT GREATEST(p.peak_concurrent, 0)
+      FROM credential_model_peak_1m p
+      WHERE p.credential_id = v.credential_id
+        AND p.raw_model = pm.raw_model_name
+        AND p.bucket <= $1
+      ORDER BY p.bucket DESC
+      LIMIT 1
+    ), 0)::int AS active_sessions,
     c.concurrency_limit,
-    0::numeric(5,4)                     AS pressure_ratio,
+    -- 同步计算 pressure_ratio，与 traffic 半保持对称。
+    CASE
+      WHEN c.concurrency_limit IS NULL OR c.concurrency_limit <= 0 THEN 0::numeric(5,4)
+      ELSE LEAST(1.0, COALESCE((
+        SELECT GREATEST(p.peak_concurrent, 0)::numeric
+        FROM credential_model_peak_1m p
+        WHERE p.credential_id = v.credential_id
+          AND p.raw_model = pm.raw_model_name
+          AND p.bucket <= $1
+        ORDER BY p.bucket DESC
+        LIMIT 1
+      ), 0) / c.concurrency_limit)::numeric(5,4)
+    END AS pressure_ratio,
     50::numeric(8,4)                    AS score_smart,
     50::numeric(8,4)                    AS score_speed_first,
     50::numeric(8,4)                    AS score_cost_first,

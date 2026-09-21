@@ -53,8 +53,11 @@ type Deps struct {
 	// RetryScheduler, when non-nil, defers same-credential retries until
 	// retry_at (v4 T3-8). nil keeps the legacy immediate-retry behavior.
 	// The caller owns the scheduler's lifecycle (pipeline does not Close it).
-	RetryScheduler       RetryScheduler
-	ObservationSink      ObservationSink
+	RetryScheduler  RetryScheduler
+	ObservationSink ObservationSink
+	// JournalSink (audit-24h-20260828-r3) receives the per-request attempt
+	// journal snapshot exactly once at terminal time. nil = disabled.
+	JournalSink          JournalSink
 	QueueObservationSink QueueObservationSink
 	SessionAffinitySink  SessionAffinitySink
 	MinuteStatsSink      MinuteStatsSink
@@ -79,8 +82,22 @@ type Pipeline struct {
 	// retryScheduler optionally defers failed re-execution until retry_at.
 	// nil ⇒ immediate failover (legacy behavior).
 	retryScheduler RetryScheduler
+	// dueScheduler (v6 G-Ⅱ, 定时请求) parks requests whose DueAt is in the
+	// future and re-admits them into Tier-0 at the due time. Unlike
+	// retryScheduler it is pipeline-owned: created in Start, closed in Stop.
+	dueScheduler *HeapRetryScheduler
+	// dimensionIndex (v6 G-Ⅳ, 分维队列) tracks request membership per
+	// model/credential/provider dimension. Observation-only — never gates
+	// execution.
+	dimensionIndex *DimensionIndex
 	// queueMirror optionally projects queue state to Redis (observation only).
 	queueMirror *QueueMirror
+	// queueBackend (V6-W1.7) is the optional CLUSTER admission plane (Tier-0
+	// waiting room + lane capacities + due visibility, memory|redis). nil or
+	// the local pass-through keeps the pure in-process behavior; redis adds
+	// a cluster-wide check BEFORE the local primitives (fail-open on Redis
+	// outage). Never moves execution between instances (connection affinity).
+	queueBackend QueueBackend
 	// affinitySink persists successful session routes and invalidates a failed
 	// sticky credential. It is best-effort and never gates execution.
 	affinitySink    SessionAffinitySink
@@ -107,6 +124,19 @@ type Pipeline struct {
 	started  atomic.Bool
 	shutdown atomic.Bool
 
+	// drainerWg / forwarderWg (audit 2026-09-05 C-#2) sub-track the producers
+	// of dispatchIn (runModelDrainer goroutines) and failoverCh (credForwarder
+	// loop goroutines) inside the pipeline-wide wg. Dispatcher/failover
+	// shutdown drains wait on them so the drain loop's "channel empty"
+	// observation is final: a worker that exited while a producer was still
+	// handing items in would orphan those requests (Submit caller hangs on
+	// qr.ResultCh until its ctx expires — 2h for survival streams).
+	// Add sites mirror wg's exactly (getOrCreateModelQueue / newCredForwarder,
+	// both shutdown-gated under modelMu / credMu), so a Wait that started after
+	// the matching Stop barrier can never race a late Add.
+	drainerWg   sync.WaitGroup
+	forwarderWg sync.WaitGroup
+
 	// V3.1 waterfall ring (recent completed request timelines for admin UI).
 	waterfallOnce sync.Once
 	waterfall     *waterfallRing
@@ -124,6 +154,28 @@ type Pipeline struct {
 	observationClosed bool
 	observationWg     sync.WaitGroup
 
+	// journalSink (audit-24h-20260828-r3) holds the terminal-time consumer
+	// of the per-request attempt journal. Mirrors observationSink — guarded
+	// by its own mutex so emitJournalSnapshot can read lock-free against
+	// SetJournalSink.
+	journalSinkMu sync.RWMutex
+	journalSink   JournalSink
+
+	// journal delivery queue (audit 2026-09-05 C-#4): complete() used to call
+	// sink.ApplyJournalSnapshot synchronously, putting an unbounded DB write on
+	// the serial completion path (the production sink serializes the whole
+	// process under one mutex). Snapshots are now built synchronously in
+	// complete() (qr is not safe to touch after complete returns) and handed
+	// to a single background worker through this bounded queue. Drops are
+	// best-effort-logged like every other terminal side-channel.
+	// journalChMu guards create/close/send: the send is non-blocking under the
+	// lock so a Stop-time close can never race an in-flight send (send on a
+	// closed channel would panic).
+	journalChMu   sync.Mutex
+	journalCh     chan journalDeliveryItem
+	journalClosed bool
+	journalWg     sync.WaitGroup
+
 	queueObservationMu   sync.RWMutex
 	queueObservationSink QueueObservationSink
 	inFlight             atomic.Int64
@@ -137,6 +189,7 @@ type Pipeline struct {
 	// value.
 	backendMu       sync.RWMutex
 	governorBackend GovernorBackend
+	policyMu        sync.Mutex
 
 	// snapshotObserver (Stage C.2): optional 100ms tick that walks the
 	// credForwarders map under credMu and emits a GovernorSnapshot per
@@ -167,6 +220,14 @@ type Pipeline struct {
 	// and SnapshotForCred fails open (ok=false).
 	credStateCacheMu sync.RWMutex
 	credStateCache   map[int]SnapshotState
+
+	// pendingGov (Stage F): per-cred Governor produced by ApplyPolicy but
+	// not yet attached to a live credForwarder. Consulted by
+	// getOrCreateForwarder under credMu so that a policy published BEFORE
+	// the first request creates a forwarder uses the spec-derived Governor
+	// instead of the CredentialRef snapshot. Map entry is deleted when the
+	// forwarder claims it.
+	pendingGov map[int]Governor
 }
 
 type observationItem struct {
@@ -192,6 +253,19 @@ func (p *Pipeline) SetObservationSink(sink ObservationSink) {
 	p.observationSinkMu.Lock()
 	p.observationSink = sink
 	p.observationSinkMu.Unlock()
+}
+
+// SetJournalSink replaces the optional terminal-time journal sink. Safe
+// before or after Start; a nil sink disables journal emission. Mirrors
+// SetObservationSink and is invoked at shutdown by the composition root to
+// release the sink reference promptly.
+func (p *Pipeline) SetJournalSink(sink JournalSink) {
+	if p == nil {
+		return
+	}
+	p.journalSinkMu.Lock()
+	p.journalSink = sink
+	p.journalSinkMu.Unlock()
 }
 
 // SetQueueObservationSink replaces the queue read-model sink.
@@ -256,6 +330,7 @@ func NewPipeline(deps Deps) *Pipeline {
 		forwardFunc:          deps.ForwardFunc,
 		allowModelChange:     deps.AllowModelChange,
 		observationSink:      deps.ObservationSink,
+		journalSink:          deps.JournalSink,
 		queueObservationSink: deps.QueueObservationSink,
 		affinitySink:         deps.SessionAffinitySink,
 		minuteStatsSink:      deps.MinuteStatsSink,
@@ -265,6 +340,7 @@ func NewPipeline(deps Deps) *Pipeline {
 		forwarders:           make(map[int]*credForwarder),
 		snapshotAgeMS:        make(map[int]int64),
 		credStateCache:       make(map[int]SnapshotState),
+		pendingGov:           make(map[int]Governor),
 		stopCh:               make(chan struct{}),
 	}
 	cfg := DefaultConfig()
@@ -276,8 +352,23 @@ func NewPipeline(deps Deps) *Pipeline {
 	p.registry = NewLifecycleRegistry(cfg.RegistryCapacity, cfg.CompletedWatermark, 0)
 	p.totalQueue = newTotalExecutionQueue(cfg.TotalQueueCapacity)
 	p.registry.SetEvictHook(p.emitRegistryEviction)
+	p.dimensionIndex = NewDimensionIndex(DimensionIndexConfig{
+		TTL:            time.Duration(cfg.DimensionTTLSeconds) * time.Second,
+		PerKeyCapacity: cfg.DimensionCapacity,
+		MaxKeys:        defaultDimensionMaxKeys,
+	})
 	p.cfg.Store(&cfg)
 	return p
+}
+
+// DimensionIndex exposes the per-dimension membership index for admin reads
+// (v6 G-Ⅳ). Nil-safe callers only — the index is always constructed with the
+// pipeline.
+func (p *Pipeline) DimensionIndex() *DimensionIndex {
+	if p == nil {
+		return nil
+	}
+	return p.dimensionIndex
 }
 
 // SetRetryScheduler swaps the optional timed-retry scheduler (before or
@@ -298,10 +389,13 @@ func (p *Pipeline) NewDefaultRetryScheduler() *HeapRetryScheduler {
 	if p == nil {
 		return nil
 	}
+	// maxItems (audit 2026-09-14 R28 #15b): same bound style as Start() —
+	// DispatcherWorkers*64, mirroring the failoverCh capacity idiom. 0 would
+	// keep the legacy unbounded heap.
 	return NewHeapRetrySchedulerWithCloseHandler(
 		p.onRetryDue,
 		func(qr *QueuedRequest) { p.complete(qr, ForwardOutcome{Err: ErrShutdown}) },
-		nil, nil)
+		nil, nil, p.config().DispatcherWorkers*64)
 }
 
 // SetQueueMirror wires the optional Redis queue-state mirror. Nil disables
@@ -348,15 +442,25 @@ func (p *Pipeline) GovernorBackend() GovernorBackend {
 	return p.governorBackend
 }
 
-// governorForCredential uses Redis enforcement for all configured modes.
-func (p *Pipeline) governorForCredential(cred CredentialRef) Governor {
+// governorForCredential returns the live Governor for a credential.
+//
+// specRevision is the policy revision stamped onto the Redis-backed
+// GovernorSpec. Cold-start (newCredForwarder) passes p.ActiveRevision() so the
+// freshly constructed forwarder carries the currently-active revision;
+// ApplyPolicy passes pol.Revision so a hot-swapped Redis governor is tagged
+// with the revision the publisher will publish, not the previous one. Backend
+// failure is propagated as an ErrGovernorUnavailable-wrapped error so
+// ApplyPolicy can fail-closed (no swap, no revision advance);
+// newCredForwarder wraps this in a fail-open fallback so a transient Redis
+// outage cannot block the very first dispatch to a fresh forwarder.
+func (p *Pipeline) governorForCredential(cred CredentialRef, specRevision uint64) (Governor, error) {
 	backend := p.GovernorBackend()
 	mode := cred.ConcurrencyMode
 	if mode == "" {
 		mode = ModeConcurrency
 	}
 	if backend == nil || backend.Kind() != BackendRedisEnforce {
-		return newGovernor(cred)
+		return newGovernor(cred), nil
 	}
 	limit := cred.ConcurrencyLimit
 	if mode == ModeRPM {
@@ -365,21 +469,21 @@ func (p *Pipeline) governorForCredential(cred CredentialRef) Governor {
 		limit = cred.TPMLimit
 	}
 	if limit <= 0 || mode == ModeDisabled {
-		return newGovernor(cred)
+		return newGovernor(cred), nil
 	}
 
 	gov, err := backend.New(context.Background(), GovernorSpec{
 		CredentialID: cred.CredentialID,
 		ProviderID:   cred.ProviderID,
-		Mode:         ModeConcurrency,
+		Mode:         mode,
 		Limit:        limit,
 		RPMLimit:     cred.RPMLimit,
 		TPMLimit:     cred.TPMLimit,
 		Backend:      BackendRedisEnforce,
-		Revision:     p.ActiveRevision(),
+		Revision:     specRevision,
 	})
 	if err == nil && gov != nil {
-		return gov
+		return gov, nil
 	}
 	if err == nil {
 		err = errors.New("governor backend returned nil governor")
@@ -388,8 +492,9 @@ func (p *Pipeline) governorForCredential(cred CredentialRef) Governor {
 		"credential_id", cred.CredentialID,
 		"provider_id", cred.ProviderID,
 		"backend", backend.Kind(),
+		"revision", specRevision,
 		"error", err)
-	return unavailableGovernor{mode: mode, err: fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)}
+	return nil, fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)
 }
 
 // SetGovernorSnapshotObserver wires the optional C.2 snapshot observer.
@@ -420,11 +525,157 @@ func (p *Pipeline) SetGovernorSnapshotObserver(o *governorSnapshotObserver) {
 // revision. Stage E's policy_publisher calls this after a successful
 // ApplyPolicySnapshot; Stage C.2's observer reads it via
 // Pipeline.ActiveRevision. Safe before/after Start.
+//
+// NOTE: retained as an internal helper for tests / shadow-load
+// scenarios. Production code paths MUST go through Pipeline.ApplyPolicy
+// (Stage F) so that the active revision moves together with the
+// forwarder governor swap and the backend NotifyRevisions round-trip.
 func (p *Pipeline) SetActivePolicyRevision(rev uint64) {
 	if p == nil {
 		return
 	}
 	p.activePolicyRevision.Store(rev)
+}
+
+// ApplyPolicy is the Stage F live-path entry point for a new
+// GovernorPolicy. It is the production implementation behind
+// policy_applier.ApplyPolicySnapshot (policy_applier.go:17): a strictly-
+// monotonic revision stamps the new active policy; each spec rebuilds
+// the per-credential Governor and either swaps it on the live
+// credForwarder or queues it for the first forwarder construction.
+//
+// Backend wiring: when GovernorBackend is BackendRedisEnforce, the
+// backend's NotifyRevisions round-trip MUST succeed before any local
+// swap or revision stamp advance; otherwise the active revision stays
+// put so the next NOTIFY replays the same delta (mirrors the
+// publisher's Stage E fail-closed contract).
+//
+// Mode/limit derivation reuses governorForCredential so the same mode-
+// mapping rules govern cold-start and live-swap. Specs whose
+// CredentialID is not in the credentials table are still parsed; their
+// Governor is built from the spec alone, so a forwarder created later
+// for that ID picks up the spec-derived Governor via pendingGov.
+func (p *Pipeline) ApplyPolicy(ctx context.Context, pol GovernorPolicy) error {
+	if p == nil {
+		return errors.New("dispatch: nil pipeline")
+	}
+	p.policyMu.Lock()
+	defer p.policyMu.Unlock()
+	if pol.Revision == 0 {
+		return errors.New("dispatch: ApplyPolicy revision must be > 0")
+	}
+	current := p.activePolicyRevision.Load()
+	if pol.Revision <= current {
+		// No-op per the ApplyPolicySnapshot contract: same-or-older
+		// revisions mean the upstream publisher replayed a known delta.
+		return nil
+	}
+	backend := p.GovernorBackend()
+
+	// 1. Backend NotifyRevisions FIRST (fail-closed). We need the cluster-
+	// wide pubsub to acknowledge the new revision before any local swap so
+	// that a partial failure does not leave this process out of sync with
+	// its peers.
+	if backend != nil && backend.Kind() == BackendRedisEnforce {
+		if err := backend.NotifyRevisions(ctx, pol.Revision); err != nil {
+			return fmt.Errorf("dispatch: notify backend revision %d: %w", pol.Revision, err)
+		}
+	}
+
+	// 2. Build a credentialID -> Governor map from the new specs. Specs
+	// without a matching live credForwarder are stashed in pendingGov so
+	// getOrCreateForwarder picks them up when the forwarder is finally
+	// constructed for that credential.
+	//
+	// Limit semantics: spec.Limit is mode-dependent (concurrency cap, RPM,
+	// or TPM). The canonical contract is one canonical limit per mode, so
+	// we route it into the corresponding CredentialRef field based on
+	// spec.Mode. When the publisher populates the mirror fields, the max
+	// of canonical-vs-mirror wins because a populated mirror is the
+	// upstream-declared value (e.g. RPM mirrors TPM when publisher has a
+	// richer view).
+	newGovByCredID := make(map[int]Governor, len(pol.Specs))
+	newDepthByCredID := make(map[int]int, len(pol.Specs))
+	defDepth := p.config().MaxQueueDepth
+	for _, spec := range pol.Specs {
+		cred := specToCredentialRef(spec)
+		gov, err := p.governorForCredential(cred, pol.Revision)
+		if err != nil {
+			// Fail-closed: any backend error leaves activePolicyRevision
+			// pinned and pendingGov untouched. The publisher's retry loop
+			// will replay the same policy delta on the next NOTIFY.
+			return fmt.Errorf("dispatch: build governor for credential %d: %w", spec.CredentialID, err)
+		}
+		newGovByCredID[spec.CredentialID] = gov
+		// Effective queue depth: an explicit max_queue_depth wins; otherwise
+		// fall back to the pipeline's global default — the same fallback
+		// getOrCreateForwarder uses when constructing a fresh forwarder.
+		d := spec.MaxQueueDepth
+		if d <= 0 {
+			d = defDepth
+		}
+		newDepthByCredID[spec.CredentialID] = d
+	}
+
+	// 3. Swap on live credForwarders and queue the rest.
+	p.credMu.Lock()
+	for credID, newGov := range newGovByCredID {
+		if cf, ok := p.forwarders[credID]; ok {
+			cf.replaceGov(newGov)
+			// Stage F residual: hot-reload the forwarder's queue depth so a
+			// live forwarder tracks max_queue_depth changes instead of the
+			// value it captured at construction.
+			if want := newDepthByCredID[credID]; int64(want) != cf.Limit() {
+				cf.replaceDepth(want)
+			}
+			continue
+		}
+		p.pendingGov[credID] = newGov
+	}
+	// 4. Stamp the active revision while forwarders remain locked so an
+	// observer cannot pair a new Governor with the old policy revision.
+	p.activePolicyRevision.Store(pol.Revision)
+	p.credMu.Unlock()
+	return nil
+}
+
+// specToCredentialRef derives the CredentialRef for a GovernorSpec.
+//
+// spec.Limit is mode-dependent: the canonical limit for the credential's
+// mode. RPMLimit/TPMLimit on the spec are upstream mirrors — when both are
+// populated we use the max so a richer upstream view wins, matching the
+// pre-Stage-F publisher behavior.
+//
+// This belongs in pipeline.go rather than governor_spec.go because it is
+// part of the policy-application contract, not the backend-call contract.
+func specToCredentialRef(spec GovernorSpec) CredentialRef {
+	cred := CredentialRef{
+		CredentialID:    spec.CredentialID,
+		ProviderID:      spec.ProviderID,
+		ConcurrencyMode: spec.Mode,
+		MaxQueueDepth:   spec.MaxQueueDepth,
+		MaxQueueWaitMS:  spec.MaxQueueWaitMS,
+	}
+	switch spec.Mode {
+	case ModeRPM:
+		cred.RPMLimit = spec.Limit
+		if spec.RPMLimit > cred.RPMLimit {
+			cred.RPMLimit = spec.RPMLimit
+		}
+		cred.TPMLimit = spec.TPMLimit
+	case ModeTPM:
+		cred.TPMLimit = spec.Limit
+		if spec.TPMLimit > cred.TPMLimit {
+			cred.TPMLimit = spec.TPMLimit
+		}
+		cred.RPMLimit = spec.RPMLimit
+	default:
+		// ModeConcurrency or ModeDisabled or empty (default concurrency).
+		cred.ConcurrencyLimit = spec.Limit
+		cred.RPMLimit = spec.RPMLimit
+		cred.TPMLimit = spec.TPMLimit
+	}
+	return cred
 }
 
 // ActiveRevision satisfies SnapshotProvider; returns the current
@@ -435,6 +686,8 @@ func (p *Pipeline) ActiveRevision() uint64 {
 	}
 	return p.activePolicyRevision.Load()
 }
+
+var _ ApplyPolicySnapshot = (*Pipeline)(nil)
 
 // SnapshotForCred satisfies SnapshotProvider. Reads from the
 // per-cred cache populated by ForEachCredSnapshot (and consumed by
@@ -550,11 +803,19 @@ func (p *Pipeline) snapshotForCredForwarderLocked(cf *credForwarder) GovernorSna
 	}
 	p.backendMu.RUnlock()
 
+	// Stage F: capture the Governor under govMu.RLock. The caller already
+	// holds credMu, so ordering is credMu -> govMu which matches the
+	// ApplyPolicy path (credMu -> govMu.Lock). Holding RLock for the type-
+	// switch block is fine: the observer tick is the only goroutine that
+	// walks forwarders in this way, and ApplyPolicy holds govMu.Lock for
+	// only the duration of the pointer assignment.
+	gov := cf.govLocked()
+
 	snap := GovernorSnapshot{
 		SpecRevision: p.activePolicyRevision.Load(),
 		Backend:      backendKind,
-		Mode:         cf.gov.Mode(),
-		Limit:        int(cf.limit),
+		Mode:         gov.Mode(),
+		Limit:        int(cf.limit.Load()),
 		InFlight:     int(cf.depth.Load()),
 		QueueDepth:   int(cf.depth.Load()),
 		State:        SnapshotStateReady,
@@ -564,7 +825,7 @@ func (p *Pipeline) snapshotForCredForwarderLocked(cf *credForwarder) GovernorSna
 	}
 	// Pull governor-specific "Used" counters without changing the
 	// Governor interface — type-assert on the four impls.
-	switch g := cf.gov.(type) {
+	switch g := gov.(type) {
 	case *concurrencyGovernor:
 		// Limit must be the concurrency cap (g.cap), NOT the Tier-2 queue
 		// depth (cf.limit, default 300). Comparing used vs queue depth made
@@ -673,6 +934,18 @@ func (p *Pipeline) Start() {
 	p.observationWg.Add(1)
 	go p.runObservations()
 
+	// v6 G-Ⅱ (定时请求): pipeline-owned due scheduler. Parked requests are
+	// parked at Tier-0 drain time and re-admitted via onScheduledDue; Close
+	// completes still-parked requests with ErrShutdown so Submit callers
+	// never block through a shutdown.
+	// maxItems (audit 2026-09-14 R28 #15b) bounds the parked heap at
+	// DispatcherWorkers*64 (same idiom as the failoverCh capacity above);
+	// Schedule refuses (callers fall back to their immediate path) beyond it.
+	p.dueScheduler = NewHeapRetrySchedulerWithCloseHandler(
+		p.onScheduledDue,
+		func(qr *QueuedRequest) { p.complete(qr, ForwardOutcome{Err: ErrShutdown}) },
+		nil, nil, cfg.DispatcherWorkers*64)
+
 	// Stage C.2: start the optional snapshot observer. Its lifecycle is
 	// independent of the Pipeline's wg — Stop() drains it explicitly so
 	// no in-flight walk races with the credForwarder cancel loop below.
@@ -713,6 +986,12 @@ func (p *Pipeline) Stop() {
 		return
 	}
 	close(p.stopCh)
+	// v6 G-Ⅱ: close the due scheduler BEFORE waiting on workers so parked
+	// scheduled requests complete with ErrShutdown instead of leaking their
+	// Submit callers.
+	if p.dueScheduler != nil {
+		p.dueScheduler.Close()
+	}
 	p.modelMu.Lock()
 	p.models = map[string]*modelQueue{}
 	p.modelMu.Unlock()
@@ -744,7 +1023,37 @@ func (p *Pipeline) Stop() {
 	}
 	p.observationChMu.Unlock()
 	p.observationWg.Wait()
+	// Audit 2026-09-05 C-#4: close the journal snapshot delivery queue and
+	// give its worker a bounded drain window so the last batch of terminal
+	// snapshots is flushed before the process exits instead of dying in the
+	// FIFO. The close is under journalChMu so it cannot race an in-flight
+	// enqueueJournalSnapshot send; late senders see journalClosed and drop.
+	p.journalChMu.Lock()
+	p.journalClosed = true
+	if p.journalCh != nil {
+		close(p.journalCh)
+	}
+	p.journalChMu.Unlock()
+	journalDone := make(chan struct{})
+	go func() {
+		p.journalWg.Wait()
+		close(journalDone)
+	}()
+	select {
+	case <-journalDone:
+	case <-time.After(journalDrainTimeout):
+		// A wedged sink must not hang process exit; the worker keeps draining
+		// in the background and exits once the channel (already closed) is
+		// empty. Queued snapshots are lost — best-effort contract.
+		slog.Warn("dispatch: journal sink drain timed out on Stop, dropping queued snapshots",
+			"timeout", journalDrainTimeout)
+	}
 	p.queueMirror.Close()
+	// V6-W1.7: stop the cluster admission plane's background work (redis
+	// heartbeat loop) after every worker has drained.
+	if p.queueBackend != nil {
+		_ = p.queueBackend.Close()
+	}
 }
 
 // Submit enqueues a request into the Tier-1 model queue and blocks until the
@@ -771,7 +1080,13 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 		p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrShutdown})
 		return nil, ErrShutdown
 	}
-	// Stamp before the FIFO handoff. After totalQueue accepts the request its
+	// v6 G-Ⅱ: bound scheduled requests to maxScheduleAhead so dead client
+	// timers cannot park in the due heap forever.
+	if qr.DueAt.After(time.Now().Add(maxScheduleAhead)) {
+		p.emitRequestTerminal(qr, ForwardOutcome{Err: ErrScheduleTooFar})
+		return nil, ErrScheduleTooFar
+	}
+	// Stamp before the FIFO hand-off. After totalQueue accepts the request its
 	// worker may complete it immediately, so later writes would race metrics.
 	if qr.EnqueuedAt.IsZero() {
 		qr.EnqueuedAt = time.Now()
@@ -780,7 +1095,13 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 	// LifecycleRegistry is a projection only. Its admission result must never
 	// reject execution; totalQueue is the sole execution capacity boundary.
 	p.registry.RegisterPending(qr.ID, qr.RequestedModel, time.Now())
-	if !p.totalQueue.tryEnqueue(qr) {
+	p.dimensionIndex.Track(qr, time.Now())
+	// V6-W1.7: cluster admission first, then the local CAS. When the local
+	// bound refuses after the cluster admitted, the compensating release
+	// below returns the token (admit/release symmetry). No backend / local
+	// backend → admitTotal is a free pass-through.
+	if !p.admitTotal(ctx, qr) || !p.totalQueue.tryEnqueue(qr) {
+		p.releaseClusterTotal(qr)
 		metricOverflow.WithLabelValues("total_queue_full").Inc()
 		p.observeOverflow("total_queue_full")
 		overflow := &OverflowError{Reason: "total_queue_full", RetryAfter: DefaultOverflowRetryAfter}
@@ -799,12 +1120,7 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 		default:
 		}
 		qr.abandoned.Store(true)
-		// Clean up Registry to prevent unfinishedCount leak (P0 fix)
-		if !qr.completed.CompareAndSwap(false, true) {
-			return nil, ctx.Err()
-		}
-		p.totalQueue.release(qr)
-		p.registry.MarkCompleted(qr.ID, time.Now())
+		p.complete(qr, ForwardOutcome{Err: ctx.Err()})
 		return nil, ctx.Err()
 	}
 }
@@ -842,33 +1158,88 @@ func (p *Pipeline) runTotalDrainer() {
 			if qr == nil {
 				continue
 			}
-			if p.shutdown.Load() {
-				p.totalQueue.release(qr)
-				p.complete(qr, ForwardOutcome{Err: ErrShutdown})
-				return
-			}
-			if !p.enqueueModelFromTotal(queueKeyFor(qr.RequestedModel), qr) {
-				p.totalQueue.release(qr)
-				if p.shutdown.Load() {
-					p.complete(qr, ForwardOutcome{Err: ErrShutdown})
-					return
-				}
-				p.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
-			} else {
-				p.totalQueue.release(qr)
-			}
-		case <-p.stopCh:
-			for {
-				select {
-				case qr := <-p.totalQueue.ch:
-					if qr != nil {
-						p.totalQueue.release(qr)
-						p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+			// C-#14 (audit round2): recover per item so a panic in the
+			// scheduling callbacks cannot kill the drainer goroutine; the
+			// take-once releases make the recovery sweep safe (same pattern
+			// as forwarder.attempt).
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						slog.Error("total drainer panic recovered",
+							"request_id", qr.ID, "panic", recovered)
+						p.releaseTotal(qr)
+						p.complete(qr, ForwardOutcome{
+							Err:       fmt.Errorf("total drainer panic: %v", recovered),
+							ErrorKind: "dispatch_panic",
+						})
 					}
-				default:
-					return
-				}
+				}()
+				p.drainTotalOne(qr)
+			}()
+		case <-p.stopCh:
+			p.drainTotalQueueResidue()
+			return
+		}
+	}
+}
+
+// drainTotalOne processes one Tier-0 item (schedule park or model-lane
+// hand-off). Split from runTotalDrainer so the panic guard stays readable.
+func (p *Pipeline) drainTotalOne(qr *QueuedRequest) {
+	if p.shutdown.Load() {
+		p.releaseTotal(qr)
+		p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+		// Audit 2026-09-05 C-#2: complete the CURRENT request only was
+		// not enough — the rest of the Tier-0 buffer (capacity 1000)
+		// must be drained too, or those Submit callers hang until
+		// their ctx expires.
+		p.drainTotalQueueResidue()
+		return
+	}
+	// v6 G-Ⅱ (定时请求): a future DueAt parks the request back
+	// into the pending set (due heap) instead of executing it. The
+	// Tier-0 slot is released so scheduled backlog never consumes
+	// the waiting room; the promoter re-admits at the due time.
+	// minScheduleLead: a DueAt inside the lead window executes
+	// immediately — parking must leave enough room to finish the
+	// park-side metadata writes before the picker takes ownership.
+	if qr.DueAt.After(time.Now().Add(minScheduleLead)) {
+		if p.parkScheduledRequest(qr) {
+			p.releaseTotal(qr)
+			return
+		}
+		// Scheduler unavailable (shutting down) → execute now.
+	}
+	if !p.enqueueModelFromTotal(queueKeyFor(qr.RequestedModel), qr) {
+		p.releaseTotal(qr)
+		if p.shutdown.Load() {
+			p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+			p.drainTotalQueueResidue()
+			return
+		}
+		p.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
+	} else {
+		p.releaseTotal(qr)
+	}
+}
+
+// drainTotalQueueResidue completes every request still buffered in the Tier-0
+// total FIFO with ErrShutdown (audit 2026-09-05 C-#2). Non-blocking: producers
+// (Submit / onScheduledDue) check shutdown before tryEnqueue, so the buffer is
+// final for practical purposes by the time stopCh fired; anything that still
+// races in afterwards is the pre-existing Submit-vs-Stop admission window
+// (bounded by the caller's ctx), unchanged by this fix.
+func (p *Pipeline) drainTotalQueueResidue() {
+	for {
+		select {
+		case qr := <-p.totalQueue.ch:
+			if qr == nil {
+				continue
 			}
+			p.releaseTotal(qr)
+			p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+		default:
+			return
 		}
 	}
 }
@@ -886,27 +1257,42 @@ func (p *Pipeline) enqueueModelFromTotal(name string, qr *QueuedRequest) bool {
 		if p.shutdown.Load() || ctxOf(qr).Err() != nil {
 			return false
 		}
-		mq.mu.Lock()
-		depth := mq.depth.Add(1)
-		metricModelQueueDepth.WithLabelValues().Inc()
-		select {
-		case mq.ch <- qr:
-			p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: name, Depth: depth, Delta: 1, AbsoluteDepth: true})
-			p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
-				RequestID: qr.ID,
-				Action:    liveactions.ActionModelEnqueued,
-				Model:     name,
-				Detail: map[string]string{
-					"queue_depth": strconv.FormatInt(mq.depth.Load(), 10),
-				},
-			})
-			qr.emitObservation(Observation{Type: ObservationModelEnqueued, Stage: StageModelQueue, Model: name, ResolvedModel: qr.ResolvedModel})
-			mq.mu.Unlock()
-			return true
-		default:
-			mq.depth.Add(-1)
-			metricModelQueueDepth.WithLabelValues().Dec()
-			mq.mu.Unlock()
+		// V6-W1.7: cluster lane slot, reserved per attempt; released again
+		// when the local lane cannot take the request (backpressure loop).
+		// No backend / local → free pass-through.
+		if p.reserveLane(ctxOf(qr), LaneModel, name, p.config().MaxQueueDepth, &qr.clusterModel) {
+			mq.mu.Lock()
+			// Audit 2026-09-05 C-#2: shutdown gate INSIDE the mq.mu section so
+			// check+send is atomic against drainModelQueueOnShutdown — a sender
+			// that already holds mq.ch must either have completed its send
+			// (the drain then collects the request) or never get in at all.
+			if p.shutdown.Load() {
+				mq.mu.Unlock()
+				p.releaseLaneAdmission(&qr.clusterModel)
+				return false
+			}
+			depth := mq.depth.Add(1)
+			metricModelQueueDepth.WithLabelValues().Inc()
+			select {
+			case mq.ch <- qr:
+				p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: name, Depth: depth, Delta: 1, AbsoluteDepth: true})
+				p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
+					RequestID: qr.ID,
+					Action:    liveactions.ActionModelEnqueued,
+					Model:     name,
+					Detail: map[string]string{
+						"queue_depth": strconv.FormatInt(mq.depth.Load(), 10),
+					},
+				})
+				qr.emitObservation(Observation{Type: ObservationModelEnqueued, Stage: StageModelQueue, Model: name, ResolvedModel: qr.resolvedModel()})
+				mq.mu.Unlock()
+				return true
+			default:
+				mq.depth.Add(-1)
+				metricModelQueueDepth.WithLabelValues().Dec()
+				mq.mu.Unlock()
+				p.releaseLaneAdmission(&qr.clusterModel)
+			}
 		}
 		select {
 		case <-p.stopCh:
@@ -918,6 +1304,112 @@ func (p *Pipeline) enqueueModelFromTotal(name string, qr *QueuedRequest) bool {
 	}
 }
 
+// minScheduleLead is the minimum remaining time before DueAt for the drainer
+// to park a scheduled request. Inside the window the request executes
+// immediately: Schedule() hands ownership to the picker goroutine, so all
+// park-side writes must complete strictly before the picker can fire.
+const minScheduleLead = 100 * time.Millisecond
+
+// parkScheduledRequest parks a not-yet-due scheduled request in the due heap
+// (v6 G-Ⅱ). All metadata is written BEFORE Schedule — Schedule is the
+// ownership handoff to the picker goroutine, after which this goroutine must
+// not touch qr. Returns false when the scheduler refused (shutting down);
+// the caller then treats the request as immediate (the acceptance notice may
+// already have been sent — harmless: the request simply runs right away).
+func (p *Pipeline) parkScheduledRequest(qr *QueuedRequest) bool {
+	if p == nil || p.dueScheduler == nil || ctxOf(qr).Err() != nil {
+		return false
+	}
+	// Cancellation race guard (audit 2026-09-05 round2 C-#12): a terminal
+	// complete()/abandon in the caller's goroutine must not be followed by
+	// journal/registry/mirror writes for a request that already left.
+	if qr.completed.Load() || qr.abandoned.Load() {
+		return false
+	}
+	dueAt := qr.DueAt
+	now := time.Now()
+	at := dueAt
+	qr.emitObservation(Observation{
+		Type:          ObservationRetryScheduled,
+		Stage:         StageRetrying,
+		Model:         qr.RequestedModel,
+		ResolvedModel: qr.resolvedModel(),
+		RetryReason:   "scheduled_wait",
+		RetryAt:       &at,
+	})
+	p.registry.MarkRetryScheduled(qr.ID, dueAt)
+	p.queueMirror.MirrorRetryAt(qr.ID, dueAt)
+	// v6 G-Ⅱ: dedicated scheduled key so the Redis-side pending set
+	// distinguishes 定时停靠 from failure backoff (observation-only).
+	p.queueMirror.MirrorScheduledAt(qr.ID, dueAt)
+	// V6-W1.7: cluster due view (observation-only; pickup stays local).
+	if p.queueBackend != nil {
+		_ = p.queueBackend.ParkDue(context.WithoutCancel(ctxOf(qr)), qr.ID, dueAt)
+	}
+	qr.recordDecision(JournalEntry{
+		Model:   qr.resolvedModel(),
+		Action:  NextActionScheduledWait,
+		Attempt: qr.AttemptCount,
+		At:      now,
+	})
+	p.dimensionIndex.UpdateWait(qr, dueAt, NextActionScheduledWait, now)
+	metricScheduledParked.Inc()
+	qr.notifyDispatch(DispatchNotice{
+		Kind:     NoticeKindScheduled,
+		Message:  scheduledAcceptedMessage(dueAt),
+		RetryAt:  dueAt,
+		WaitHint: waitHint(dueAt.Sub(now)),
+		ToModel:  qr.RequestedModel,
+		Attempt:  qr.AttemptCount,
+	})
+	return p.dueScheduler.Schedule(qr, dueAt)
+}
+
+// onScheduledDue is the due-scheduler pickup: the parked request re-enters
+// Tier-0 admission at (or just after) its DueAt.
+func (p *Pipeline) onScheduledDue(qr *QueuedRequest, dueAt time.Time) {
+	if qr == nil || qr.completed.Load() {
+		return // already terminal (client cancel raced the timer)
+	}
+	if p.shutdown.Load() {
+		p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+		return
+	}
+	if ctxOf(qr).Err() != nil {
+		p.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
+		return
+	}
+	now := time.Now()
+	p.registry.MarkInFlight(qr.ID, now)
+	p.queueMirror.ClearRetryAt(qr.ID)
+	p.queueMirror.ClearScheduledAt(qr.ID)
+	if p.queueBackend != nil {
+		_ = p.queueBackend.ClearDue(context.WithoutCancel(ctxOf(qr)), qr.ID)
+	}
+	metricScheduledDue.Inc()
+	qr.notifyDispatch(DispatchNotice{
+		Kind:    NoticeKindScheduled,
+		Message: "定时请求到期，开始执行",
+		RetryAt: dueAt,
+	})
+	// The first admission (Submit → parkScheduledRequest → releaseTotal)
+	// already consumed the take-once release token. Re-arm it before the
+	// second enqueue, otherwise the drainer's release CAS-fails and this
+	// Tier-0 slot leaks permanently (audit 2026-09-10 P0: cumulative
+	// total_queue_full once enough scheduled requests have passed through).
+	qr.totalQueueDone.Store(false)
+	if !p.admitTotal(ctxOf(qr), qr) || !p.totalQueue.tryEnqueue(qr) {
+		// Nothing entered the local queue; re-consume the token so the
+		// take-once release inside complete() cannot decrement a slot that
+		// was never taken.
+		qr.totalQueueDone.Store(true)
+		p.releaseClusterTotal(qr)
+		metricOverflow.WithLabelValues("total_queue_full_on_due").Inc()
+		p.observeOverflow("total_queue_full_on_due")
+		p.complete(qr, ForwardOutcome{Err: &OverflowError{Reason: "total_queue_full_on_due", RetryAfter: DefaultOverflowRetryAfter}})
+	}
+}
+
 // enqueueModel pushes qr into the named model queue, creating it (and its
 // drainer goroutine) on first use. Returns false if the model queue is full
 // (overflow) or the pipeline is shutting down (admission refused).
@@ -926,10 +1418,25 @@ func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 	if mq == nil {
 		return false
 	}
-	resolvedModel := qr.ResolvedModel
+	// V6-W1.7: cluster lane slot before the local channel; released again
+	// when the local lane refuses (caller follows the existing full path).
+	if !p.reserveLane(ctxOf(qr), LaneModel, name, p.config().MaxQueueDepth, &qr.clusterModel) {
+		return false
+	}
+	resolvedModel := qr.resolvedModel()
 	qr.journeyMu.Lock()
 	enqueuedAt := time.Now()
 	mq.mu.Lock()
+	// Audit 2026-09-05 C-#2: shutdown gate INSIDE the mq.mu section (same
+	// rationale as enqueueModelFromTotal — check+send must be atomic against
+	// drainModelQueueOnShutdown so a raced enqueue can never land in a lane
+	// whose drainer already exited).
+	if p.shutdown.Load() {
+		mq.mu.Unlock()
+		qr.journeyMu.Unlock()
+		p.releaseLaneAdmission(&qr.clusterModel)
+		return false
+	}
 	// Reserve the observable depth before handing qr to mq.ch. The channel send
 	// can wake the drainer immediately; incrementing after a successful send
 	// races the drainer's decrement and leaves a phantom queue item.
@@ -963,6 +1470,7 @@ func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 		metricModelQueueDepth.WithLabelValues().Dec()
 		mq.mu.Unlock()
 		qr.journeyMu.Unlock()
+		p.releaseLaneAdmission(&qr.clusterModel)
 		return false
 	}
 }
@@ -985,6 +1493,7 @@ func (p *Pipeline) getOrCreateModelQueue(name string) *modelQueue {
 	mq := &modelQueue{name: name, ch: make(chan *QueuedRequest, p.config().MaxQueueDepth)}
 	p.models[name] = mq
 	p.wg.Add(1)
+	p.drainerWg.Add(1) // audit 2026-09-05 C-#2: sub-track dispatchIn producers
 	go p.runModelDrainer(mq)
 	return mq
 }
@@ -1001,8 +1510,14 @@ func (p *Pipeline) getOrCreateModelQueue(name string) *modelQueue {
 // (with ErrShutdown) if stopCh wins the inner select. Otherwise qr is
 // silently dropped — its Submit caller blocks forever on qr.ResultCh and
 // the goroutine leaks. See TestStopNoDrainLoss.
+//
+// Shutdown also drains whatever is still BUFFERED in mq.ch (audit 2026-09-05
+// C-#2): Stop clears p.models and the drainer exits, so residue left in the
+// lane's channel would never be completed either. See
+// TestStopDrainsModelQueueResidue.
 func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 	defer p.wg.Done()
+	defer p.drainerWg.Done() // audit 2026-09-05 C-#2 (runs first; wg.Done last as before)
 	for {
 		select {
 		case qr := <-mq.ch:
@@ -1012,6 +1527,9 @@ func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 			slog.Debug("dispatch: model dequeue", "model", mq.name, "depth", depth)
 			p.observeQueue(QueueObservation{Kind: QueueModelDepth, Model: mq.name, Depth: depth, Delta: -1, AbsoluteDepth: true})
 			mq.mu.Unlock()
+			// V6-W1.7: the request left the model lane — return the cluster
+			// slot at the same point the local depth is given back.
+			p.releaseLaneAdmission(&qr.clusterModel)
 
 			// V3.1: Record T2 timestamp (model queue dequeue, routing start)
 			qr.SetT2_TotalDequeued()
@@ -1030,9 +1548,48 @@ func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 				// decremented; we MUST report outcome to the Submit caller
 				// or it leaks forever waiting on qr.ResultCh.
 				p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+				// Anything still buffered in the lane has the same fate now
+				// that this drainer is about to exit.
+				p.drainModelQueueOnShutdown(mq)
 				return
 			}
 		case <-p.stopCh:
+			p.drainModelQueueOnShutdown(mq)
+			return
+		}
+	}
+}
+
+// drainModelQueueOnShutdown completes every request still buffered in a model
+// lane with ErrShutdown (audit 2026-09-05 C-#2). It runs under mq.mu so the
+// "channel is empty" observation is atomic w.r.t. enqueueModel /
+// enqueueModelFromTotal: both check p.shutdown INSIDE their mq.mu section
+// before sending, so once the drain observes an empty channel under the lock,
+// no later enqueue can land (any sender entering mq.mu afterwards observes
+// shutdown=true — Stop's shutdown store happens-before close(stopCh), which
+// happens-before this drain).
+func (p *Pipeline) drainModelQueueOnShutdown(mq *modelQueue) {
+	if p == nil || mq == nil {
+		return
+	}
+	mq.mu.Lock()
+	var residue []*QueuedRequest
+	for {
+		select {
+		case qr := <-mq.ch:
+			residue = append(residue, qr)
+		default:
+			mq.mu.Unlock()
+			for _, qr := range residue {
+				mq.depth.Add(-1)
+				metricModelQueueDepth.WithLabelValues().Dec()
+				p.releaseLaneAdmission(&qr.clusterModel)
+				p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+			}
+			if n := len(residue); n > 0 {
+				slog.Warn("dispatch: model queue residue completed on shutdown",
+					"model", mq.name, "requests", n)
+			}
 			return
 		}
 	}
@@ -1044,17 +1601,53 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 	if !qr.completed.CompareAndSwap(false, true) {
 		return
 	}
+	// V6-W1.6 R9: the terminal journal entry rides inside the completion CAS
+	// so it is written exactly once and no entry can follow it (invariant 3).
+	// Written before Complete() so the dimension snapshots see the full trace.
+	terminalKind := out.ErrorKind
+	if terminalKind == "" && out.Err != nil {
+		terminalKind = classifyError(out.Err)
+	}
+	cred := qr.selectedCredential()
+	qr.recordDecision(JournalEntry{
+		Model:        qr.resolvedModel(),
+		CredentialID: cred.CredentialID,
+		ProviderID:   cred.ProviderID,
+		Vendor:       cred.Vendor,
+		Action:       terminalActionOf(out),
+		ErrorKind:    terminalKind,
+		HTTPStatus:   out.HTTPStatus,
+		Attempt:      qr.AttemptCount,
+	})
 	// V4 R1.1: registry terminal transition (completed; kept until the
 	// R1.8 watermark evicts it). Bookkeeping bypass — never gates delivery.
 	now := time.Now()
 	p.registry.MarkCompleted(qr.ID, now)
 	p.queueMirror.ClearRetryAt(qr.ID)
+	p.queueMirror.ClearScheduledAt(qr.ID)
+	// V6-W1.7: due view cleanup + defensive admission sweep. The lane
+	// leave-points normally released the tokens already; take-once makes
+	// this a no-op then (a safety net when a request dies parked in a lane).
+	if p.queueBackend != nil {
+		_ = p.queueBackend.ClearDue(context.WithoutCancel(ctxOf(qr)), qr.ID)
+	}
+	p.releaseAllClusterAdmissions(qr)
+	// v6 G-Ⅳ: terminal transition mutates the membership entries in place;
+	// entries stay in their dimension rings until TTL/capacity evicts them.
+	p.dimensionIndex.Complete(qr, out, now)
 
 	// V3.1: Record T9 timestamp (response end - stream completed)
 	qr.SetT9_ResponseEnd()
 	p.recordSessionAffinity(qr, out)
 	p.recordMinuteStats(qr, out)
 	p.emitRequestTerminal(qr, out)
+	// audit-24h-20260828-r3: ship the per-request attempt journal to the
+	// optional JournalSink so post-hoc ops/CS diagnosis can see the trace
+	// after the global /api/admin/dispatch/journal endpoint was removed in
+	// ff18dc3b6. Runs before the abandoned-guard so a caller that already
+	// left still gets the trace persisted (the trace is for the system, not
+	// the caller). Exactly-once is guaranteed by the CAS at line 1402.
+	p.emitJournalSnapshot(qr)
 
 	// V3.1: Export stage histograms + waterfall/projection samples even if the
 	// caller already left — abandoned requests still carry useful latency signal.
@@ -1077,8 +1670,8 @@ func (p *Pipeline) emitRequestTerminal(qr *QueuedRequest, out ForwardOutcome) {
 	event := Observation{
 		Type:          ObservationRequestSucceeded,
 		Stage:         StageTerminal,
-		ResolvedModel: qr.ResolvedModel,
-		Model:         qr.ResolvedModel,
+		ResolvedModel: qr.resolvedModel(),
+		Model:         qr.resolvedModel(),
 		Outcome:       OutcomeSuccess,
 	}
 	if out.Err != nil {
@@ -1095,6 +1688,145 @@ func (p *Pipeline) emitRequestTerminal(qr *QueuedRequest, out ForwardOutcome) {
 		}
 	}
 	qr.emitObservation(event)
+}
+
+// emitJournalSnapshot reads the optional terminal-time journal sink and, if
+// present and the journal is non-empty, queues a detached snapshot for
+// delivery. The journal's terminal entry is already in the ring at this point
+// (recordDecision at the top of complete), so consumers see the full trace.
+//
+// Audit 2026-09-05 C-#4: the snapshot is BUILT synchronously here (qr's
+// lifecycle ends when complete returns — JournalSnapshot() returns a detached
+// copy, verified in journal.go) but DELIVERED asynchronously by a single
+// background worker: the production sink (main_dispatch_observation.go
+// journey adapter) serializes the whole process behind one mutex and performs
+// untimed DB writes, so a synchronous ApplyJournalSnapshot on the completion
+// path was a global head-of-line blocker whenever the DB degraded. Delivery
+// remains best-effort: a full queue drops the snapshot with a metric + log,
+// like every other terminal side-channel (observations, queue mirror).
+//
+// Per ADR 2026-08-28-requestjourney-journal-snapshot.md §Decision point 3,
+// snapshots are bounded by maxJournalSnapshotEvents. When the journal exceeds
+// this limit, the oldest entries are dropped and the snapshot's Truncated
+// field is set to true, preserving the most recent execution context.
+//
+// §Decision point 4 / §6 extensions (audit-24h-20260829-r5 §5.5 merged):
+// SnapshotVersion is the terminal-time journalSeq (idempotency key);
+// CallerTenantID / CallerAuthorized are stamped from the trusted dispatch
+// path so downstream sinks can short-circuit duplicate retries and reject
+// unauthorized callers.
+func (p *Pipeline) emitJournalSnapshot(qr *QueuedRequest) {
+	if p == nil || qr == nil {
+		return
+	}
+	p.journalSinkMu.RLock()
+	sink := p.journalSink
+	p.journalSinkMu.RUnlock()
+	if sink == nil {
+		return
+	}
+	entries := qr.JournalSnapshot()
+	if len(entries) == 0 {
+		return
+	}
+
+	// Apply bounded consumer limit: keep the most recent maxJournalSnapshotEvents
+	// entries. The terminal entry is always included (it's the newest).
+	var truncated bool
+	var truncatedCount int
+	if len(entries) > maxJournalSnapshotEvents {
+		truncatedCount = len(entries) - maxJournalSnapshotEvents
+		entries = entries[truncatedCount:]
+		truncated = true
+	}
+
+	snap := JournalSnapshot{
+		TenantID:         qr.TenantID,
+		RequestID:        qr.ID,
+		Entries:          entries,
+		Truncated:        truncated,
+		TruncatedCount:   truncatedCount,
+		SnapshotVersion:  int64(qr.journalSeq),
+		CallerTenantID:   qr.TenantID, // trusted in dispatch's terminal path
+		CallerAuthorized: true,
+	}
+	p.enqueueJournalSnapshot(journalDeliveryItem{
+		// Capture the request ctx (cancel-detached) now: qr is not safe to
+		// read after complete() returns.
+		ctx:  context.WithoutCancel(ctxOf(qr)),
+		snap: snap,
+	})
+}
+
+// journalDeliveryItem is one queued snapshot hand-off to the background
+// delivery worker. ctx is the completion-time request ctx with cancellation
+// stripped (mirrors the previous synchronous sink invocation).
+type journalDeliveryItem struct {
+	ctx  context.Context
+	snap JournalSnapshot
+}
+
+// journalDeliveryQueueCapacity bounds the snapshot FIFO between complete()
+// and the delivery worker. Sized for terminal-rate bursts; overflow drops.
+const journalDeliveryQueueCapacity = 256
+
+// journalDrainTimeout bounds how long Stop() waits for the delivery worker to
+// flush the queue on shutdown — enough to keep the last batch of snapshots
+// without letting a wedged sink hang process exit.
+const journalDrainTimeout = 5 * time.Second
+
+// enqueueJournalSnapshot hands one snapshot to the background delivery
+// worker, spawning the worker lazily on first use (a pipeline that never
+// wires a sink — or never completes a journaled request — pays nothing).
+// The send is non-blocking UNDER journalChMu so it can never race Stop's
+// close of the same channel (send-on-closed panics otherwise).
+func (p *Pipeline) enqueueJournalSnapshot(item journalDeliveryItem) {
+	p.journalChMu.Lock()
+	defer p.journalChMu.Unlock()
+	if p.journalClosed {
+		// Pipeline already stopped; the delivery worker is gone. Drop with a
+		// metric — terminal delivery is best-effort by contract.
+		metricJournalSnapshotDropped.WithLabelValues("stopped").Inc()
+		return
+	}
+	if p.journalCh == nil {
+		p.journalCh = make(chan journalDeliveryItem, journalDeliveryQueueCapacity)
+		p.journalWg.Add(1)
+		go p.runJournalDelivery()
+	}
+	select {
+	case p.journalCh <- item:
+	default:
+		// Queue full: drop rather than block the completion path (the very
+		// head-of-line blocking this queue exists to prevent).
+		metricJournalSnapshotDropped.WithLabelValues("queue_full").Inc()
+		slog.Warn("dispatch: journal snapshot delivery queue full, dropping snapshot",
+			"request_id", item.snap.RequestID,
+			"capacity", journalDeliveryQueueCapacity)
+	}
+}
+
+// runJournalDelivery is the single background consumer of the snapshot FIFO.
+// It reads the sink per item under journalSinkMu so SetJournalSink swaps at
+// runtime are honored (same contract as the observation worker).
+func (p *Pipeline) runJournalDelivery() {
+	defer p.journalWg.Done()
+	for item := range p.journalCh {
+		p.journalSinkMu.RLock()
+		sink := p.journalSink
+		p.journalSinkMu.RUnlock()
+		if sink == nil {
+			continue
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("dispatch journal sink panic", "request_id", item.snap.RequestID, "panic", r)
+				}
+			}()
+			sink.ApplyJournalSnapshot(item.ctx, item.snap)
+		}()
+	}
 }
 
 // resultLabel maps a ForwardOutcome to the closed-enum "result" label used by
@@ -1122,39 +1854,65 @@ func (p *Pipeline) recordStageMetrics(qr *QueuedRequest, out ForwardOutcome) {
 // a full Pipeline).
 func observeStageMetrics(qr *QueuedRequest, out ForwardOutcome) {
 	result := resultLabel(out)
+	t0, t1, t2, t3, t4, t5, t6, t7, t8, t9 := qr.StageTimestamps()
+	stage := func(t *time.Time) time.Time {
+		if t == nil {
+			return time.Time{}
+		}
+		return *t
+	}
+	stages := [10]time.Time{stage(t0), stage(t1), stage(t2), stage(t3), stage(t4), stage(t5), stage(t6), stage(t7), stage(t8), stage(t9)}
 
-	if s, ok := stageSeconds(qr.stages[ReqStageArrived], qr.stages[ReqStageCredDequeued]); ok {
+	if s, ok := stageSeconds(stages[ReqStageArrived], stages[ReqStageCredDequeued]); ok {
 		metricStageQueueWaitT0T6.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageTotalEnqueued], qr.stages[ReqStageTotalDequeued]); ok {
+	if s, ok := stageSeconds(stages[ReqStageTotalEnqueued], stages[ReqStageTotalDequeued]); ok {
 		metricStageTotalQueueT1T2.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageModelEnqueued], qr.stages[ReqStageModelDequeued]); ok {
+	if s, ok := stageSeconds(stages[ReqStageModelEnqueued], stages[ReqStageModelDequeued]); ok {
 		metricStageModelQueueT3T4.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageCredEnqueued], qr.stages[ReqStageCredDequeued]); ok {
+	if s, ok := stageSeconds(stages[ReqStageCredEnqueued], stages[ReqStageCredDequeued]); ok {
 		metricStageCredQueueT5T6.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageTotalDequeued], qr.stages[ReqStageCredEnqueued]); ok {
+	if s, ok := stageSeconds(stages[ReqStageTotalDequeued], stages[ReqStageCredEnqueued]); ok {
 		metricStageRoutingT2T5.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageCredDequeued], qr.stages[ReqStageForwardStart]); ok {
+	if s, ok := stageSeconds(stages[ReqStageCredDequeued], stages[ReqStageForwardStart]); ok {
 		metricStageAcquireT6T7.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageForwardStart], qr.stages[ReqStageResponseStart]); ok {
+	if s, ok := stageSeconds(stages[ReqStageForwardStart], stages[ReqStageResponseStart]); ok {
 		metricStageUpstreamT7T8.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageResponseStart], qr.stages[ReqStageResponseEnd]); ok {
+	if s, ok := stageSeconds(stages[ReqStageResponseStart], stages[ReqStageResponseEnd]); ok {
 		metricStageStreamingT8T9.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageArrived], qr.stages[ReqStageResponseEnd]); ok {
+	if s, ok := stageSeconds(stages[ReqStageArrived], stages[ReqStageResponseEnd]); ok {
 		metricStageTotalT0T9.WithLabelValues(result).Observe(s)
 	}
 }
 
 // routeFailover hands a pre-firstbyte failure to the ③ mover.
 func (p *Pipeline) routeFailover(qr *QueuedRequest, out ForwardOutcome) {
+	// Terminal race (audit 2026-09-05 C-#1): if the caller's ctx.Done path
+	// already CAS-won complete(), handoff to the mover would race its
+	// unsynchronized journal/count mutations — drop instead.
+	if qr.completed.Load() || qr.abandoned.Load() {
+		return
+	}
+	// Audit 2026-09-14 R28 #15a: ctx-aware handoff. The ③ mover already
+	// re-checks ctx after dequeue (onRetryDue / runFailover), but parking the
+	// item on the bounded failoverCh while the caller is already gone makes
+	// the queue absorb work that can never be delivered. When the request ctx
+	// is done we complete the qr with the ctx error instead (zero-drop
+	// semantics: the request is terminal, never discarded) so the Submit
+	// caller is released immediately. Deliberately NO `default` branch — a
+	// live ctx must still wait on failoverCh/stopCh exactly as before.
 	select {
+	case <-ctxOf(qr).Done():
+		metricOverflow.WithLabelValues("failover_ctx_done").Inc()
+		p.observeOverflow("failover_ctx_done")
+		p.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
 	case p.failoverCh <- failoverItem{qr: qr, out: out}:
 	case <-p.stopCh:
 		// Pipeline is shutting down and the failover channel may never be
@@ -1175,7 +1933,19 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 		p.observeOverflow("shutdown")
 		return false
 	}
+	// V6-W1.7: cluster lane capacity mirrors the local forwarder bound
+	// (per-cred override wins over config, same as getOrCreateForwarder).
+	laneCap := cred.MaxQueueDepth
+	if laneCap <= 0 {
+		laneCap = p.config().MaxQueueDepth
+	}
+	if !p.reserveLane(ctxOf(qr), LaneCredential, itoa(cred.CredentialID), laneCap, &qr.clusterCred) {
+		metricOverflow.WithLabelValues("cred_queue_full").Inc()
+		p.observeOverflow("cred_queue_full")
+		return false
+	}
 	if !cf.tryReserve() {
+		p.releaseLaneAdmission(&qr.clusterCred)
 		metricOverflow.WithLabelValues("cred_queue_full").Inc()
 		p.observeOverflow("cred_queue_full")
 		return false
@@ -1193,12 +1963,17 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	// ResolvedModel (tryModelChange) while this goroutine is still emitting —
 	// same bug class as the T5 ordering above (caught by go test -race,
 	// TestModelChange).
-	reqID, model, emitCtx := qr.ID, qr.ResolvedModel, ctxOf(qr)
+	reqID, model, emitCtx := qr.ID, qr.resolvedModel(), ctxOf(qr)
 
 	qr.journeyMu.Lock()
 	cf.handoffMu.Lock()
 	select {
-	case cf.queue <- qr:
+	case *cf.queue.Load() <- qr:
+		// The forwarder waits on handoffMu before reading the request, so this
+		// successful-send marker is published before its node-selected event.
+		// Keeping MarkNode after the send prevents the observation index from
+		// advertising a credential/provider lane that rejected the request.
+		p.dimensionIndex.MarkNode(qr, cred, time.Now())
 		depth := cf.depth.Load()
 		metricCredQueueDepth.WithLabelValues(itoa(cred.CredentialID), cred.ConcurrencyMode).Inc()
 		p.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cred.CredentialID, Mode: cred.ConcurrencyMode, Depth: depth, Delta: 1, AbsoluteDepth: true})
@@ -1230,6 +2005,7 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 		cf.handoffMu.Unlock()
 		qr.journeyMu.Unlock()
 		cf.depth.Add(-1)
+		p.releaseLaneAdmission(&qr.clusterCred)
 		metricOverflow.WithLabelValues("cred_queue_full").Inc()
 		p.observeOverflow("cred_queue_full")
 		return false
@@ -1255,6 +2031,13 @@ func (p *Pipeline) getOrCreateForwarder(cred CredentialRef) *credForwarder {
 		depth = p.config().MaxQueueDepth
 	}
 	cf := newCredForwarder(cred, depth, p)
+	// Stage F: prefer the spec-derived Governor queued by an earlier
+	// ApplyPolicy over the CredentialRef snapshot. Fall back to the
+	// ref-derived Governor when no spec has been published yet.
+	if cached, ok := p.pendingGov[cred.CredentialID]; ok && cached != nil {
+		cf.replaceGov(cached)
+		delete(p.pendingGov, cred.CredentialID)
+	}
 	p.forwarders[cred.CredentialID] = cf
 	return cf
 }
@@ -1270,7 +2053,7 @@ func (p *Pipeline) getForwarderIfExists(credentialID int) *credForwarder {
 // governor fails over immediately instead of parking the request. The old
 // 30s hard floor was deliberately REMOVED — see UT-DQ-02.
 func (p *Pipeline) queueWaitBudget(qr *QueuedRequest) time.Duration {
-	ms := qr.SelectedCred.MaxQueueWaitMS
+	ms := qr.selectedCredential().MaxQueueWaitMS
 	if ms <= 0 {
 		ms = p.config().MaxQueueWaitMS
 	}

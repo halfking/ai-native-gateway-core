@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -150,6 +151,16 @@ func (r *ModelProbeRunner) Start(ctx context.Context) {
 // cycle is the "强化自检" lever (需求: 常用模型加强自检). It only probes models
 // matched by globalIsFeaturedModel and writes model_probe_runs (read-only w.r.t.
 // state unless the consensus cycle also runs), so it is safe to run standalone.
+//
+// 2026-09-13 closeout (P4): also starts the recovering sweeper. With the
+// consensus loop off, model_probe_state rows in state='recovering' had NO
+// driver at all — every row's next_retry_at went stale (prod evidence:
+// 113 rows due since 2026-07-20, six cmb rows stuck 'model_probe_broken',
+// models unroutable until manual force-recover). The sweeper drains exactly
+// that dead-end set through the existing consensus machinery; it does not
+// touch healthy rows (the nonfeatured watchdog extends those) or featured
+// deep-ping targets, so the "no duplicate probes in new mode" invariant
+// still holds.
 func (r *ModelProbeRunner) StartFeaturedOnly(ctx context.Context) {
 	fctx, cancel := context.WithCancel(ctx)
 	r.featuredCancel.Store(&cancel)
@@ -163,8 +174,159 @@ func (r *ModelProbeRunner) StartFeaturedOnly(ctx context.Context) {
 	// non-featured bindings — no HTTP probe, just timestamp arithmetic. This
 	// keeps "其它模型降频" honest in the default new mode.
 	go r.nonfeaturedWatchdogLoop(fctx)
+	go r.recoveringSweeperLoop(fctx)
 	r.startManualProbeWorker(fctx)
-	slog.Info("model probe featured-only cycle (常用模型 deep ping) + nonfeatured watchdog started")
+	slog.Info("model probe featured-only cycle (常用模型 deep ping) + nonfeatured watchdog + recovering sweeper started")
+}
+
+// recoveringSweeperInterval is the sweep cadence for the recovering dead-end
+// set. 30 minutes matches broken_probe_reviver: a row the reviver flips
+// broken_confirmed → recovering is drained within one interval, and a
+// failing verify walks the consensus backoff ladder rather than the sweep
+// cadence.
+const recoveringSweeperInterval = 30 * time.Minute
+
+// recoveringSweepBatch bounds one sweep. Consensus verify probes are real
+// upstream requests; 10 per 30min keeps the worst-case overhead at
+// 480 requests/day fleet-wide even if every recovering row is stuck.
+const recoveringSweepBatch = 10
+
+// recoveringSweepTickBudget bounds one tick BETWEEN probes (never mid-probe —
+// cancelling a probe mid-flight would record a false consensus failure).
+const recoveringSweeperTickBudget = 5 * time.Minute
+
+// recoveringSweepProbeTimeout is the per-probe ceiling for one TriggerManual
+// consensus verify. probeModel applies its own request timeouts; this is the
+// outer guard so a wedged upstream cannot pin the sweeper goroutine.
+const recoveringSweepProbeTimeout = 90 * time.Second
+
+// recoveringSweeperLoop periodically drains model_probe_state rows stuck in
+// state='recovering' whose next_retry_at has elapsed (probe-recovery
+// closeout P4, 2026-09-13). Only runs in new probe mode (started from
+// StartFeaturedOnly); in legacy mode the consensus cycle already owns them.
+func (r *ModelProbeRunner) recoveringSweeperLoop(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("recovering sweeper panic", "recover", rec)
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(2 * time.Minute): // initial stagger, after first featured tick
+	}
+	r.recoveringSweepTickGuarded(ctx)
+	ticker := time.NewTicker(recoveringSweeperInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.recoveringSweepTickGuarded(ctx)
+		}
+	}
+}
+
+// recoveringSweepTickGuarded isolates a single sweep's panic: this loop is
+// the only driver of recovering rows (R3 fix) — an unguarded tick panic
+// would silently retire the sweeper and strand every recovering row.
+func (r *ModelProbeRunner) recoveringSweepTickGuarded(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("recovering sweeper tick panic", "recover", rec, "stack", string(debug.Stack()))
+		}
+	}()
+	r.recoveringSweepTick(ctx)
+}
+
+// recoveringSweepTick selects due recovering rows and runs them through the
+// same cycle machinery the consensus loop uses, so verify successes clear
+// cmb 'model_probe_broken' and failures advance the consensus backoff
+// exactly like the legacy path. The credential-level guards mirror the
+// consensus target query: suspended / hard-quota / manual-disabled
+// credentials keep their rows parked until the credential itself recovers
+// (the model probe never overrides a credential-level verdict).
+func (r *ModelProbeRunner) recoveringSweepTick(ctx context.Context) {
+	// 2026-09-13 audit round F5: the probe phase must NOT share one short
+	// budget context — a near-expiry ctx would cancel TriggerManual
+	// mid-request and record a FALSE failure into the consensus for a
+	// possibly-healthy model. The SELECT gets a bounded ctx; each probe
+	// gets its own full timeout, and the tick-level budget is enforced
+	// only BETWEEN probes.
+	selectCtx, cancelSelect := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelSelect()
+	deadline := time.Now().Add(recoveringSweeperTickBudget)
+
+	type recoveringRow struct {
+		CredID   int
+		RawModel string
+	}
+	var ids []recoveringRow
+	rows, err := r.db.Query(selectCtx, `
+		SELECT mps.credential_id, mps.raw_model_name
+		FROM model_probe_state mps
+		JOIN credentials c ON c.id = mps.credential_id
+		JOIN providers p ON p.id = c.provider_id
+		WHERE mps.state = 'recovering'
+		  AND (mps.next_retry_at IS NULL OR mps.next_retry_at <= NOW())
+		  AND COALESCE(c.status, 'active') = 'active'
+		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		  AND COALESCE(c.availability_state, 'ready') NOT IN ('suspended')
+		  AND COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(p.enabled, FALSE) = TRUE
+		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		ORDER BY mps.next_retry_at ASC NULLS FIRST
+		LIMIT $1
+	`, recoveringSweepBatch)
+	if err != nil {
+		slog.Warn("recovering sweeper: select failed", "error", err)
+		return
+	}
+	for rows.Next() {
+		var row recoveringRow
+		if err := rows.Scan(&row.CredID, &row.RawModel); err != nil {
+			continue
+		}
+		ids = append(ids, row)
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return
+	}
+
+	swept := 0
+	for _, id := range ids {
+		if parentDone := ctx.Done(); parentDone != nil {
+			select {
+			case <-parentDone:
+				slog.Warn("recovering sweeper: parent cancelled",
+					"swept", swept, "remaining", len(ids)-swept)
+				return
+			default:
+			}
+		}
+		if !time.Now().Before(deadline) {
+			slog.Warn("recovering sweeper: tick budget exhausted between probes",
+				"swept", swept, "remaining", len(ids)-swept)
+			return
+		}
+		probeCtx, cancelProbe := context.WithTimeout(ctx, recoveringSweepProbeTimeout)
+		err := r.TriggerManual(probeCtx, id.CredID, id.RawModel)
+		cancelProbe()
+		if err != nil {
+			slog.Debug("recovering sweeper: manual trigger failed",
+				"credential_id", id.CredID, "raw_model", id.RawModel, "error", err)
+			continue
+		}
+		swept++
+	}
+	if swept > 0 {
+		slog.Info("recovering sweeper: drained due recovering probes",
+			"swept", swept,
+			"selected", len(ids))
+	}
 }
 
 // nonfeaturedWatchdogLoop extends next_retry_at on healthy_confirmed bindings
@@ -201,7 +363,7 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 	if mult <= 1 {
 		return
 	}
-	windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 168)
+	windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 72)
 	topN := settings.GetPlatformInt("probe.featured_usage_top_n", 20)
 	if topN <= 0 {
 		topN = 0 // only static featured applies when kill-switch is on
@@ -238,6 +400,9 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 			        FROM request_logs_hot rl
 			        WHERE rl.success
 			          AND rl.ts > now() - make_interval(hours => $2)
+			          -- R50: dual-arm probe exclusion — watchdog backoff is a
+			          -- usage scan (INV-3); probe-only models must back off too.
+			          AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
 			          AND COALESCE(rl.outbound_model, rl.client_model) <> ''
 			        GROUP BY raw_model
 			    ) t
@@ -584,6 +749,16 @@ func (r *ModelProbeRunner) featuredCycleLoop(ctx context.Context) {
 // It does NOT update model_probe_state — the result is recorded as a
 // model_probe_runs row for visibility and the probe outcome goes through
 // the same consensus state machine on the next L1+L2 cycle.
+//
+// 2026-09-20 probe-volume policy (docs/probe/2026-09-20-probe-volume-optimization.md):
+// the cycle is now error-gated. 常用模型强化自检 stays, but only for credentials
+// that actually need verification — deep-pinging every credential's featured
+// list every 15 minutes was normal-state continuous probing. Three gates:
+//   - INV-3: the model carried real (non-probe) traffic on THIS credential in
+//     the last 3 days;
+//   - INV-5: the credential has failure evidence in the last 24h;
+//   - INV-4: the credential has NOT already been re-verified by two distinct
+//     models whose latest probe run succeeded within 24h.
 func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 	timeout, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -604,6 +779,30 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		  AND COALESCE(c.status, 'active') = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.enabled, FALSE) = TRUE
+		  -- 2026-09-17: skip pairs the authoritative surfaces already judge
+		  -- unavailable. This cycle is read-only w.r.t. state (recordRun with
+		  -- state_change='unchanged'), so deep-pinging an unavailable binding
+		  -- cannot restore it — it only burns an upstream request and logs a
+		  -- failed run every cycle. That was the gpt-image-2-on-apigpt shape:
+		  -- the model sits in routing_policy.featured_models, the relay 404s
+		  -- it, and every 30-min cycle re-recorded the guaranteed failure.
+		  AND COALESCE(cmb.available, TRUE) = TRUE
+		  -- 2026-09-20 INV-5: only credentials with failure evidence get the
+		  -- deep ping; healthy credentials' business traffic is the evidence.
+		  AND ` + credentialFailureEvidenceSQL("c.id", probeFailureEvidenceWindowSQL) + `
+		  -- 2026-09-20 INV-4: two recently probe-verified models stop the pass.
+		  AND NOT ` + credentialTwoProbeSuccessGateSQL("c.id") + `
+		  -- 2026-09-20 INV-3: the model must have real (non-probe) traffic on
+		  -- THIS credential within the 3-day probe scope window.
+		  AND EXISTS (
+			SELECT 1 FROM request_logs_hot rl
+			WHERE rl.credential_id = cmb.credential_id
+			  AND rl.ts >= now() - ` + probeUsageWindowInterval + `
+			  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
+			  AND (pm.raw_model_name = rl.client_model
+			       OR pm.raw_model_name = rl.outbound_model
+			       OR pm.outbound_model_name = rl.outbound_model)
+		  )
 		LIMIT $1
 	`, MaxBatchPerCycle*4 /* bound scan; Go-side globalIsFeaturedModel further filters */)
 	if err != nil {
@@ -793,7 +992,7 @@ func (r *ModelProbeRunner) reconcileBrokenConfirmedBindings(ctx context.Context)
 func (r *ModelProbeRunner) applyPassiveBoosts(ctx context.Context) {
 	rows, err := r.db.Query(ctx, `
 		SELECT DISTINCT credential_id, raw_model_name
-		FROM candidate_failure_logs
+		FROM candidate_failure_logs_with_current_month
 		WHERE ts > NOW() - INTERVAL '5 minutes'
 	`)
 	if err != nil {
@@ -1374,13 +1573,17 @@ func (r *ModelProbeRunner) verifyTargetModality(ctx context.Context, t probeTarg
 
 // GetState returns the current consensus state for a binding (used by
 // the admin API to show "2/3 successful — next attempt in 4m").
+//
+// 2026-09-17 数据源统一:改读 v_node_probe_state_compat(node_probe_state 的
+// 旧词汇投影)。model_probe_state 在 useNewProbeMode 下停更,直接读会把
+// 冻结的旧状态(如早已 410 的节点显示 healthy)回给管理端。
 func (r *ModelProbeRunner) GetState(ctx context.Context, credentialID int, rawModel string) (*ProbeStateRow, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT credential_id, raw_model_name, state,
 		       consecutive_successes, consecutive_failures, total_attempts,
 		       last_attempt_at, next_retry_at, last_status,
 		       last_state_change_at, last_state_change_run
-		FROM model_probe_state
+		FROM v_node_probe_state_compat
 		WHERE credential_id = $1 AND raw_model_name = $2
 	`, credentialID, rawModel)
 	var s ProbeStateRow
@@ -1399,6 +1602,7 @@ func (r *ModelProbeRunner) GetState(ctx context.Context, credentialID int, rawMo
 
 // ListStates returns all probe states for a given provider, optionally
 // filtered by state.  Used by the providers-page "自动测试" tab.
+// 2026-09-17 数据源统一:读 v_node_probe_state_compat(见 GetState 注释)。
 func (r *ModelProbeRunner) ListStates(ctx context.Context, providerID int, stateFilter string) ([]ProbeStateRow, error) {
 	args := []any{providerID}
 	q := `
@@ -1406,7 +1610,7 @@ func (r *ModelProbeRunner) ListStates(ctx context.Context, providerID int, state
 		       mps.consecutive_successes, mps.consecutive_failures, mps.total_attempts,
 		       mps.last_attempt_at, mps.next_retry_at, mps.last_status,
 		       mps.last_state_change_at, mps.last_state_change_run
-		FROM model_probe_state mps
+		FROM v_node_probe_state_compat mps
 		JOIN credentials c ON c.id = mps.credential_id
 		WHERE c.provider_id = $1
 	`

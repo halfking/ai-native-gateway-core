@@ -3,11 +3,14 @@ import { createI18n } from 'vue-i18n'
 import { describe, expect, it } from 'vitest'
 import RoutingAttemptsTimeline from './RoutingAttemptsTimeline.vue'
 import requestJourneys from '../locales/zh-CN/requestJourneys'
+// 2026-09-05 审计 F2-#1/#2：组件改经 utils/errorVocab.ts 消费 errorVocab.*
+// 命名空间，fixture 需一并装入。
+import errorVocab from '../locales/zh-CN/errorVocab'
 
 const i18n = createI18n({
   legacy: false,
   locale: 'zh-CN',
-  messages: { 'zh-CN': { requestJourneys } },
+  messages: { 'zh-CN': { requestJourneys, errorVocab } },
 })
 
 function mountTimeline(props: Record<string, unknown>) {

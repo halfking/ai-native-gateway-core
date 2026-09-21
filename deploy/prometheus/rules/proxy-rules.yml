@@ -1,0 +1,119 @@
+groups:
+  - name: proxy_alerts
+    interval: 30s
+    rules:
+      # Runbook links intentionally use repository-relative paths; see docs/operations/proxy-ops-manual.md.
+      - alert: ProxyNoDialableNodes
+        expr: llm_gateway_proxy_nodes_total > 0 and llm_gateway_proxy_nodes_dialable == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: proxy
+        annotations:
+          summary: "代理系统无可拨号节点"
+          description: "存在代理节点但当前没有可拨号节点，所有需要代理的请求可能失败。"
+          runbook_url: "docs/operations/proxy-ops-manual.md#无可拨号节点"
+
+      - alert: ProxyNodeHealthCritical
+        expr: |
+          (llm_gateway_proxy_nodes_total > 0)
+          and ((llm_gateway_proxy_nodes_total - llm_gateway_proxy_nodes_unhealthy)
+            / clamp_min(llm_gateway_proxy_nodes_total, 1) < 0.5)
+        for: 5m
+        labels:
+          severity: critical
+          component: proxy
+        annotations:
+          summary: "代理节点健康率低于 50%"
+          description: "代理节点健康率持续低于 50%。"
+          runbook_url: "docs/operations/proxy-ops-manual.md#节点健康率异常"
+
+      - alert: ProxySubscriptionRefreshLow
+        expr: |
+          sum(rate(llm_gateway_proxy_subscription_refresh_total{status="success"}[5m]))
+            / clamp_min(sum(rate(llm_gateway_proxy_subscription_refresh_total[5m])), 1e-9) < 0.95
+          and sum(rate(llm_gateway_proxy_subscription_refresh_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          component: proxy
+        annotations:
+          summary: "代理订阅刷新成功率低于 95%"
+          description: "代理订阅刷新成功率持续低于 95%。"
+          runbook_url: "docs/operations/proxy-ops-manual.md#订阅刷新失败"
+
+      - alert: ProxyNodeHealthLow
+        expr: |
+          (llm_gateway_proxy_nodes_total > 0)
+          and ((llm_gateway_proxy_nodes_total - llm_gateway_proxy_nodes_unhealthy)
+            / clamp_min(llm_gateway_proxy_nodes_total, 1) < 0.8)
+        for: 5m
+        labels:
+          severity: warning
+          component: proxy
+        annotations:
+          summary: "代理节点健康率低于 80%"
+          description: "代理节点健康率持续低于 80%。"
+          runbook_url: "docs/operations/proxy-ops-manual.md#节点健康率异常"
+
+      - alert: ProxyPasswordDecryptFailed
+        expr: increase(llm_gateway_proxy_password_decrypt_failed_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: proxy
+        annotations:
+          summary: "代理节点密码解密失败"
+          description: "近 5 分钟出现代理节点密码解密失败。"
+          runbook_url: "docs/operations/proxy-ops-manual.md#密码解密失败"
+
+      - alert: ProxyNodeSelectionFailureHigh
+        expr: |
+          sum(rate(llm_gateway_proxy_node_selection_total{result!="success"}[5m]))
+            / clamp_min(sum(rate(llm_gateway_proxy_node_selection_total[5m])), 1e-9) > 0.1
+          and sum(rate(llm_gateway_proxy_node_selection_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: proxy
+        annotations:
+          summary: "代理节点选择失败率超过 10%"
+          description: "代理节点选择失败率持续超过 10%。"
+          runbook_url: "docs/operations/proxy-ops-manual.md#节点选择失败"
+
+      - alert: ProxyHealthCheckSlow
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(llm_gateway_proxy_node_health_check_duration_seconds_bucket[5m]))) > 5
+        for: 10m
+        labels:
+          severity: info
+          component: proxy
+        annotations:
+          summary: "代理节点健康检查耗时 P95 超过 5 秒"
+          description: "代理节点健康检查耗时 P95 持续超过 5 秒。"
+          runbook_url: "docs/operations/proxy-ops-manual.md#健康检查耗时"
+
+      - alert: ProxySubscriptionRefreshSlow
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(llm_gateway_proxy_subscription_refresh_duration_seconds_bucket[5m]))) > 30
+        for: 10m
+        labels:
+          severity: info
+          component: proxy
+        annotations:
+          summary: "代理订阅刷新耗时 P95 超过 30 秒"
+          description: "代理订阅刷新耗时 P95 持续超过 30 秒。"
+          runbook_url: "docs/operations/proxy-ops-manual.md#订阅刷新失败"
+
+      - alert: ProxyTransportInvalidationsHigh
+        expr: increase(llm_gateway_proxy_transport_invalidations_total[10m]) > 50
+        for: 5m
+        labels:
+          severity: info
+          component: proxy
+        annotations:
+          summary: "代理 Transport 连接池失效次数过多"
+          description: "近 10 分钟 Transport 失效次数超过 50。"
+          runbook_url: "docs/operations/proxy-ops-manual.md#连接池异常"

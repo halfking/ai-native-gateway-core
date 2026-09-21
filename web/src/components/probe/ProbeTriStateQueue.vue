@@ -24,6 +24,8 @@ import {
 } from '../../api-selfcheck'
 import { acquireProbeStream, useProbeStream, type ProbeOrigin } from '../../composables/probeStreamStore'
 import { credentialDisplayName, loadCredentialLabels } from '../../composables/useCredentialLabels'
+import { fmtDateTime24h } from '../../i18n/useFormat'
+import { formatTimeOnly } from '../../utils/datetime'
 
 // 前端 cap 与后端 probeCompletedWindow (=200) 同步。
 const MAX_COMPLETED = 200
@@ -73,6 +75,9 @@ const firstLoading = ref(true)
 const apiDegraded = ref(false)
 const pageHidden = ref(typeof document !== 'undefined' ? document.hidden : false)
 const expandedKeys = ref(new Set<string>())
+const completedProviderFilter = ref('')
+const completedCredentialFilter = ref('')
+const completedModelFilter = ref('')
 /** in_flight 实时耗时的“当前时刻”，仅页面可见时推进 */
 const nowMs = ref(Date.now())
 
@@ -102,20 +107,13 @@ const OUTCOME_LABEL: Record<ProbeOutcome, string> = {
 
 function fmtClock(ms?: number): string {
   if (!ms) return '—'
-  return new Date(ms).toLocaleTimeString('zh-CN', { hour12: false })
+  return formatTimeOnly(ms, { locale: 'zh-CN', options: { hour12: false } })
 }
 
 function fmtMs(v?: number): string {
   if (v === undefined || v === null) return '—'
   if (v >= 1000) return (v / 1000).toFixed(2) + 's'
   return v + 'ms'
-}
-
-function fmtDateTime(iso?: string): string {
-  if (!iso) return '—'
-  const t = new Date(iso)
-  if (Number.isNaN(t.getTime())) return '—'
-  return t.toLocaleString('zh-CN', { hour12: false })
 }
 
 /** 距目标时刻的相对文案（“45s 后”/“已到”） */
@@ -370,8 +368,40 @@ const inFlightCards = computed(() =>
 const completedCards = computed(() =>
   [...cards.value.values()]
     .filter((c) => c.status === 'completed')
+    .filter((c) => !completedProviderFilter.value || providerFilterKey(c) === completedProviderFilter.value)
+    .filter((c) => !completedCredentialFilter.value || String(c.credential_id) === completedCredentialFilter.value)
+    .filter((c) => !completedModelFilter.value || c.raw_model === completedModelFilter.value)
     .sort((a, b) => sortTs(b) - sortTs(a))
 )
+
+const completedProviders = computed(() => uniqueSorted(
+  [...cards.value.values()]
+    .filter((c) => c.status === 'completed')
+    .map(providerFilterKey)
+    .filter(Boolean),
+))
+
+const completedCredentials = computed(() => uniqueSorted(
+  [...cards.value.values()]
+    .filter((c) => c.status === 'completed')
+    .map((c) => String(c.credential_id))
+    .filter(Boolean),
+))
+
+const completedModels = computed(() => uniqueSorted(
+  [...cards.value.values()]
+    .filter((c) => c.status === 'completed')
+    .map((c) => c.raw_model)
+    .filter(Boolean),
+))
+
+function providerFilterKey(c: ProbeCard): string {
+  return c.provider_name || c.provider_code || (c.provider_id ? `provider-${c.provider_id}` : '')
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return [...new Set(values)].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+}
 
 /** 失败卡的退避下一跳：同 dedup_key 的 pending 重臂行 next_retry_at_ms */
 const backoffByDedup = computed(() => {
@@ -528,6 +558,20 @@ function credentialTitle(c: ProbeCard): string {
             <h4 class="tri-section-title">已完成</h4>
             <span class="tri-count">{{ completedCards.length }}<span class="tri-count-cap">/200</span></span>
           </header>
+          <div class="completed-filters" data-testid="completed-filters">
+            <select v-model="completedProviderFilter" aria-label="按供应商过滤已完成自检">
+              <option value="">全部供应商</option>
+              <option v-for="provider in completedProviders" :key="provider" :value="provider">{{ provider }}</option>
+            </select>
+            <select v-model="completedCredentialFilter" aria-label="按凭据过滤已完成自检">
+              <option value="">全部凭据</option>
+              <option v-for="credential in completedCredentials" :key="credential" :value="credential">凭据 #{{ credential }}</option>
+            </select>
+            <select v-model="completedModelFilter" aria-label="按模型过滤已完成自检">
+              <option value="">全部模型</option>
+              <option v-for="model in completedModels" :key="model" :value="model">{{ model }}</option>
+            </select>
+          </div>
           <div v-if="completedCards.length" class="tri-cards tri-cards--large">
             <TransitionGroup name="probe-in">
               <div
@@ -555,7 +599,7 @@ function credentialTitle(c: ProbeCard): string {
                   <div class="probe-detail-row"><span class="probe-detail-label">延迟</span><span>{{ fmtMs(c.latency_ms) }}</span></div>
                   <div class="probe-detail-row"><span class="probe-detail-label">HTTP</span><span>{{ c.http_status ?? '—' }}</span></div>
                   <div class="probe-detail-row"><span class="probe-detail-label">错误码</span><span>{{ c.reason_code || '—' }}</span></div>
-                  <div class="probe-detail-row"><span class="probe-detail-label">观察时间</span><span>{{ fmtDateTime(c.finished_at) }}</span></div>
+                  <div class="probe-detail-row"><span class="probe-detail-label">观察时间</span><span>{{ fmtDateTime24h(c.finished_at) }}</span></div>
                   <div class="probe-detail-row"><span class="probe-detail-label">尝试</span><span>{{ c.attempt }}/{{ c.max_attempts }}</span></div>
                   <div class="probe-detail-row"><span class="probe-detail-label">命令</span><span>{{ c.command || '—' }}</span></div>
                 </div>
@@ -661,6 +705,24 @@ function credentialTitle(c: ProbeCard): string {
 
 .tri-cards--large .probe-card {
   width: 100%;
+}
+
+.completed-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.completed-filters select {
+  max-width: 240px;
+  min-width: 132px;
+  border: 1px solid var(--kx-border);
+  border-radius: 4px;
+  background: var(--kx-surface);
+  color: var(--kx-text);
+  font-size: 12px;
+  padding: 4px 6px;
 }
 
 .probe-card {
@@ -843,8 +905,7 @@ function credentialTitle(c: ProbeCard): string {
 }
 
 .probe-in-leave-active {
-  transition: transform 0.2s ease, opacity 0.2s ease;
-  position: absolute;
+  transition: none;
 }
 
 .probe-in-leave-to {

@@ -1,6 +1,7 @@
 // ja-JP/index.ts — 日本語モジュールの集約。新しいモジュールはここで import + 集約します。
 import common from './common'
 import customer from './customer'
+import annotation from './annotation'
 import nav from './nav'
 import login from './login'
 import app from './app'
@@ -23,6 +24,7 @@ import decisions from './decisions'
 import decisionsView from './decisionsView'
 import auditLog from './auditLog'
 import freePool from './freePool'
+import freeDiscovery from './freeDiscovery'
 import models from './models'
 import pricingManagement from './pricingManagement'
 import standardModelPricing from './standardModelPricing'
@@ -32,7 +34,9 @@ import sessions from './sessions'
 import compression from './compression'
 import examples from './examples'
 import dataLifecycle from './dataLifecycle'
-import tuning from './tuning'
+import turnDigest from './turnDigest'
+import errorVocab from './errorVocab'
+import sessionTimeline from './sessionTimeline'
 import correlations from './correlations'
 import tenantModelPolicyPanel from './tenantModelPolicyPanel'
 import clientConfigDialog from './clientConfigDialog'
@@ -40,7 +44,6 @@ import memoraStatusButton from './memoraStatusButton'
 import slotInfoCard from './slotInfoCard'
 import gatewayApiKeyPicker from './gatewayApiKeyPicker'
 import statusBadge from './statusBadge'
-import tagEditor from './tagEditor'
 import modelCatalogFilterBar from './modelCatalogFilterBar'
 import sixDimScoreBar from './sixDimScoreBar'
 import catalogPanel from './catalogPanel'
@@ -59,6 +62,7 @@ import routingOverride from './routingOverride'
 import routingDefault from './routingDefault'
 import approval from './approval'
 import probeHealth from './probeHealth'
+import errorTrend from './errorTrend'
 import tenantModels from './tenantModels'
 import publicPortal from './public'
 import requestJourneys from './requestJourneys'
@@ -66,10 +70,13 @@ import requestRegistry from './requestRegistry'
 import requestJourneyDetail from './requestJourneyDetail'
 import connectionRegistry from './connectionRegistry'
 import nodeHealthTimeline from './nodeHealthTimeline'
+import proxy from './proxy'
+import requestDetail from './requestDetail'
 
 export default {
   common,
   customer,
+  annotation,
   nav,
   login,
   app,
@@ -92,6 +99,7 @@ export default {
   decisionsView,
   auditLog,
   freePool,
+  freeDiscovery,
   models,
   pricingManagement,
   standardModelPricing,
@@ -101,7 +109,9 @@ export default {
   compression,
   examples,
   dataLifecycle,
-  tuning,
+  turnDigest,
+  errorVocab,
+  sessionTimeline,
   correlations,
   tenantModelPolicyPanel,
   clientConfigDialog,
@@ -109,7 +119,6 @@ export default {
   slotInfoCard,
   gatewayApiKeyPicker,
   statusBadge,
-  tagEditor,
   modelCatalogFilterBar,
   sixDimScoreBar,
   catalogPanel,
@@ -127,6 +136,7 @@ export default {
   routingDefault,
   approval,
   probeHealth,
+  errorTrend,
   tenantModels,
   public: publicPortal,
   requestJourneys,
@@ -134,4 +144,6 @@ export default {
   requestJourneyDetail,
   connectionRegistry,
   nodeHealthTimeline,
+  proxy,
+  requestDetail,
 }

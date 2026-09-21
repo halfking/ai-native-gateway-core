@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -138,6 +139,37 @@ var defaultPolicies = map[ErrorKind]CoolingPolicy{
 	errorsx.KindConcurrent: {InitialCooling: 2 * time.Minute, MaxCooling: 2 * time.Minute, RecoveryType: RecoveryAuto, ShrinkFactor: 0.5},
 }
 
+// freeTierPolicies (2026-09-15, 245 free-capacity plan) is the cooling profile
+// for billing_mode='free' credentials (on 245 that is the NVIDIA NIM free
+// pool). Rationale, from the 24h log evidence on 245:
+//
+//   - A free provider is "long-term flaky but occasionally usable". Its
+//     capacity is exactly what we must NOT discard for minutes: the default
+//     KindConcurrent policy (2 min flat) turned a single "engine busy" 503 on
+//     a 1-concurrency credential into a 2-minute outage even though the
+//     vendor was alive and free again milliseconds later. "Busy" on a
+//     1-concurrency free tier is the NORMAL state, not a health incident.
+//   - The transient family (60s flat + escalation) similarly punished bursts:
+//     326 "circuit opened" cycles / 24h flapped 18/8 and 18/19, and every
+//     open window discarded usable free capacity while requests bounced with
+//     KindCircuitOpen (36 + 23 rows in candidate_failure_logs_hot).
+//
+// Shorter cooling lets the soft-demote path (cmi.success_rate / URSM quality
+// score, which already ranks free bindings behind healthy paid ones) do the
+// ranking, while the breaker only hard-stops genuinely sustained outages.
+// Escalation for the transient family still applies after the threshold, so a
+// truly dead free credential still stops receiving first attempts.
+var freeTierPolicies = map[ErrorKind]CoolingPolicy{
+	errorsx.KindTransient:          {InitialCooling: 15 * time.Second, MaxCooling: 15 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	errorsx.KindTimeout:            {InitialCooling: 15 * time.Second, MaxCooling: 15 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	errorsx.KindNetwork:            {InitialCooling: 15 * time.Second, MaxCooling: 15 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	errorsx.KindStreamTimeout:      {InitialCooling: 15 * time.Second, MaxCooling: 15 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	errorsx.KindConcurrent:         {InitialCooling: 5 * time.Second, MaxCooling: 5 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	errorsx.KindUpstreamDown:       {InitialCooling: 15 * time.Second, MaxCooling: 5 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
+	errorsx.KindUpstreamOverloaded: {InitialCooling: 15 * time.Second, MaxCooling: 2 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
+	errorsx.KindRateLimit:          {InitialCooling: 30 * time.Second, MaxCooling: 2 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.7},
+}
+
 // ---------------------------------------------------------------------------
 // Breaker
 // ---------------------------------------------------------------------------
@@ -149,6 +181,7 @@ type Breaker struct {
 	failCount      atomic.Int32
 	consecutive    atomic.Int32
 	halfOpenProbes atomic.Int32
+	freeTier       atomic.Bool // billing_mode='free': use freeTierPolicies cooling
 	coolingPolicy  CoolingPolicy
 
 	mu             sync.Mutex
@@ -290,11 +323,20 @@ func (b *Breaker) tryTransitionToHalfOpen() bool {
 	}
 
 	if time.Now().After(b.coolingExpires) {
+		previous := b.State()
+		coolingDuration := b.coolingExpires.Sub(b.openSince)
+		if coolingDuration < 0 {
+			coolingDuration = 0
+		}
 		b.state.Store(int32(StateHalfOpen))
 		b.halfOpenProbes.Store(0)
 		b.nextProbeAt = time.Now()
 		slog.Info("circuit half-open",
 			"key", b.key,
+			"previous_state", previous.String(),
+			"new_state", StateHalfOpen.String(),
+			"error_kind", b.lastErrorKind,
+			"cooling_duration_ms", coolingDuration.Milliseconds(),
 			"cooling_cycle", b.coolingCycle,
 		)
 		return true
@@ -312,6 +354,14 @@ var transientFamily = map[ErrorKind]bool{
 	KindStreamTimeout: true,
 }
 
+// MarkFreeTier switches this breaker onto the freeTierPolicies cooling
+// profile (billing_mode='free' credentials). Idempotent; safe to call on
+// every failure recording. See freeTierPolicies for the rationale.
+func (b *Breaker) MarkFreeTier() { b.freeTier.Store(true) }
+
+// IsFreeTier reports whether the free-tier cooling profile is active.
+func (b *Breaker) IsFreeTier() bool { return b.freeTier.Load() }
+
 // RecordFailure records a failure and transitions the circuit state.
 func (b *Breaker) RecordFailure(kind ErrorKind) {
 	// 2026-07-03 P0 fix: client bugs (tool_call_id_mismatch, invalid_request_format,
@@ -325,18 +375,31 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 	defer b.mu.Unlock()
 
 	now := time.Now()
+	previous := b.State()
 	policy, ok := defaultPolicies[kind]
 	if !ok {
 		policy = b.coolingPolicy
+	}
+	// 2026-09-15 (245 free-capacity plan): free-tier credentials cool on the
+	// shortened freeTierPolicies profile so a busy/blip on an occasionally-
+	// usable free provider does not discard its capacity for minutes. The
+	// state machine (thresholds, half-open probe) is unchanged — only the
+	// cooling durations differ.
+	if b.freeTier.Load() {
+		if fp, ok := freeTierPolicies[kind]; ok {
+			policy = fp
+		}
 	}
 	// 2026-07-09: 同族错误不重置连续失败计数
 	lastIsTransient := transientFamily[b.lastErrorKind]
 	nowIsTransient := transientFamily[kind]
 	if b.lastErrorKind != "" && b.lastErrorKind != kind && !(lastIsTransient && nowIsTransient) {
 		b.consecutive.Store(0)
-		if policy.RecoveryType == RecoveryExponential {
-			b.coolingCycle = 0
-		}
+		// R34 (2026-09-17 audit): reset the cooling cycle on any error-family
+		// change. Previously only a successor whose own policy was exponential
+		// reset it, so upstream_down(cycle 3) → timeout kept the stale cycle
+		// and the next escalation started at 2³× the initial cooling.
+		b.coolingCycle = 0
 	}
 
 	b.lastFailureAt = now
@@ -364,7 +427,10 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 		b.coolingCycle = 0
 		slog.Warn("circuit quarantined",
 			"key", b.key,
+			"previous_state", previous.String(),
+			"new_state", StateQuarantined.String(),
 			"error_kind", kind,
+			"cooling_duration_ms", int64(0),
 		)
 
 	case RecoveryAuto, RecoveryExponential:
@@ -372,14 +438,14 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 		b.halfOpenProbes.Store(0)
 		b.openSince = now
 
+		var coolingDuration time.Duration
 		if policy.RecoveryType == RecoveryExponential {
 			b.coolingCycle++
-			cooling := policy.InitialCooling * time.Duration(math.Pow(2, float64(b.coolingCycle-1)))
-			if cooling > policy.MaxCooling {
-				cooling = policy.MaxCooling
-			}
+			cooling := exponentialCooling(policy.InitialCooling, policy.MaxCooling, b.coolingCycle)
+			coolingDuration = cooling
 			b.coolingExpires = now.Add(cooling)
 			if b.coolingCycle >= 5 {
+
 				slog.Warn("circuit repeated cooling cycles",
 					"key", b.key,
 					"cycle", b.coolingCycle,
@@ -388,7 +454,9 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 				)
 			}
 		} else {
+			coolingDuration = policy.InitialCooling
 			b.coolingExpires = now.Add(policy.InitialCooling)
+
 			// Escalate: 3 consecutive transient/timeout/network → use exponential policy.
 			// 2026-08-08 P0 Fix: do NOT escalate upstream_overloaded here. Overloaded
 			// is a supplier-side short-lived condition that already gets its own
@@ -400,11 +468,43 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 			case KindTransient, KindTimeout, KindNetwork, KindStreamTimeout:
 				if consecutive >= autoRecoveryFailureThreshold {
 					escalated := defaultPolicies[KindUpstreamDown]
-					b.coolingExpires = now.Add(escalated.InitialCooling)
+					// Free tier escalates onto its own (shorter) UpstreamDown
+					// profile: a sustained free outage still backs off, but the
+					// ceiling stays the free profile's 5 min, not 30 min.
+					if fp, ok := freeTierPolicies[KindUpstreamDown]; ok && b.freeTier.Load() {
+						escalated = fp
+					}
+					// R31 (audit 2026-09-16 §四#10): this branch previously wrote
+					// a flat escalated.InitialCooling and never advanced
+					// coolingCycle, so the "exponential" in the log was false —
+					// every sustained outage cooled the same 15s forever (free
+					// profile: permanently, paid: until a different kind
+					// happened to route here) and the cycle>=5 sustained-outage
+					// alert below could never fire for this family. Advance the
+					// cycle and compute the duration from the escalated policy,
+					// capped at its MaxCooling — the same formula the
+					// RecoveryExponential branch above uses. RecordSuccess resets
+					// coolingCycle, so single blips never climb past the first
+					// step; only genuine sustained failures back off.
+					b.coolingCycle++
+					cooling := exponentialCooling(escalated.InitialCooling, escalated.MaxCooling, b.coolingCycle)
+					coolingDuration = cooling
+					b.coolingExpires = now.Add(cooling)
+
+					if b.coolingCycle >= 5 {
+						slog.Warn("circuit repeated cooling cycles",
+							"key", b.key,
+							"cycle", b.coolingCycle,
+							"cooling", cooling,
+							"error_kind", kind,
+						)
+					}
 					slog.Warn("circuit escalated to exponential cooling",
 						"key", b.key,
 						"consecutive", consecutive,
 						"error_kind", kind,
+						"cycle", b.coolingCycle,
+						"cooling", cooling,
 					)
 				}
 			}
@@ -412,7 +512,10 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 
 		slog.Warn("circuit opened",
 			"key", b.key,
+			"previous_state", previous.String(),
+			"new_state", StateOpen.String(),
 			"error_kind", kind,
+			"cooling_duration_ms", coolingDuration.Milliseconds(),
 			"cooling_until", b.coolingExpires.Format(time.RFC3339),
 			"cycle", b.coolingCycle,
 		)
@@ -430,6 +533,25 @@ func failureConfirmationThreshold(policy CoolingPolicy) int32 {
 	}
 }
 
+// exponentialCooling computes InitialCooling·2^(cycle-1) clamped to max.
+// R34 (2026-09-17 audit): the naive int64 multiply overflows/wraps once the
+// cycle count is large enough — a sustained multi-hour outage advances
+// coolingCycle without bound (free profile ~30 cycles ≈ 2h), and the wrapped
+// duration can come out negative, which defeats the `> max` clamp and makes
+// coolingExpires land in the past (breaker stops protecting the credential).
+// Do the math in float64 and clamp before the int64 conversion.
+func exponentialCooling(initial, max time.Duration, cycle int) time.Duration {
+	step := cycle - 1
+	if step < 0 {
+		step = 0
+	}
+	v := float64(initial) * math.Pow(2, float64(step))
+	if v <= 0 || v >= float64(max) {
+		return max
+	}
+	return time.Duration(v)
+}
+
 // RecordSuccess records a success and transitions the circuit to CLOSED.
 func (b *Breaker) RecordSuccess() {
 	b.mu.Lock()
@@ -445,6 +567,10 @@ func (b *Breaker) RecordSuccess() {
 	if prev != StateClosed {
 		slog.Info("circuit closed",
 			"key", b.key,
+			"previous_state", prev.String(),
+			"new_state", StateClosed.String(),
+			"error_kind", b.lastErrorKind,
+			"cooling_duration_ms", int64(0),
 		)
 	}
 }
@@ -453,14 +579,22 @@ func (b *Breaker) RecordSuccess() {
 func (b *Breaker) Reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	previous := b.State()
 	b.state.Store(int32(StateClosed))
 	b.consecutive.Store(0)
 	b.failCount.Store(0)
 	b.coolingCycle = 0
 	b.halfOpenProbes.Store(0)
 	b.lastFailureAt = time.Time{}
+	lastErrorKind := b.lastErrorKind
 	b.lastErrorKind = ""
-	slog.Info("circuit reset", "key", b.key)
+	slog.Info("circuit reset",
+		"key", b.key,
+		"previous_state", previous.String(),
+		"new_state", StateClosed.String(),
+		"error_kind", lastErrorKind,
+		"cooling_duration_ms", int64(0),
+	)
 }
 
 // Stats returns diagnostic information about the breaker.
@@ -474,6 +608,7 @@ func (b *Breaker) Stats() map[string]any {
 		"consecutive_failures": b.consecutive.Load(),
 		"total_failures":       b.failCount.Load(),
 		"cooling_cycle":        b.coolingCycle,
+		"free_tier":            b.freeTier.Load(),
 	}
 	if !b.lastFailureAt.IsZero() {
 		stats["last_failure_at"] = b.lastFailureAt.Format(time.RFC3339)
@@ -587,6 +722,25 @@ func (m *Manager) RecordFailure(providerID, credentialID int, kind ErrorKind) {
 	b.RecordFailure(kind)
 }
 
+// RecordFailureWithBillingMode records a failure and, when the billing mode
+// is "free", marks the breaker for the shortened freeTierPolicies cooling
+// profile first (2026-09-15, 245 free-capacity plan). The mark is sticky:
+// a credential observed as free once keeps the profile until process
+// restart, matching the stable billing_mode column it derives from.
+//
+// R31 (audit 2026-09-16 §四#5): an empty billingMode deliberately falls back
+// to the paid profile — an unknown billing mode must never silently adopt
+// the free profile's laxer cooling. On the live paths the empty case is
+// unreachable anyway: every candidate SQL COALESCEs mo.billing_mode to
+// 'per_token' (provider/client.go), so callers always pass a concrete mode.
+func (m *Manager) RecordFailureWithBillingMode(providerID, credentialID int, kind ErrorKind, billingMode string) {
+	b := m.GetOrCreate(providerID, credentialID)
+	if strings.EqualFold(strings.TrimSpace(billingMode), "free") {
+		b.MarkFreeTier()
+	}
+	b.RecordFailure(kind)
+}
+
 // RecordSuccess records a success on the appropriate breaker.
 func (m *Manager) RecordSuccess(providerID, credentialID int) {
 	b := m.GetOrCreate(providerID, credentialID)
@@ -599,28 +753,13 @@ func (m *Manager) Allow(providerID, credentialID int) bool {
 	return b.Allow()
 }
 
-// ProbeCheck performs a half-open probe: if the circuit is HALF_OPEN,
-// it returns true. The caller should make a lightweight probe request
-// and then call RecordSuccess/RecordFailure.
-func (m *Manager) ProbeCheck(providerID, credentialID int) bool {
-	b := m.GetOrCreate(providerID, credentialID)
-	state := b.State()
-	if state == StateHalfOpen {
-		return true
-	}
-	// Also allow if it transitioned from OPEN to HALF_OPEN concurrently
-	if state == StateOpen && b.Allow() {
-		return b.State() == StateHalfOpen
-	}
-	return false
-}
-
-// CloseProbe completes a half-open probe by recording the result.
-func (m *Manager) CloseProbe(providerID, credentialID int, success bool, kind ErrorKind) {
-	b := m.GetOrCreate(providerID, credentialID)
-	if success {
-		b.RecordSuccess()
-	} else {
-		b.RecordFailure(kind)
-	}
-}
+// R31 (audit 2026-09-16 §四#5): Manager.ProbeCheck / Manager.CloseProbe were
+// removed as dead seams. They were the explicit half-open probe API of the
+// pre-unified probe design and had zero production callers — probe
+// scheduling is owned by ProbeQueue/StateObserver since 2026-09-01, probe
+// recovery closes the breaker through the live half-open lifecycle
+// (Allow + RecordSuccess / ReleaseProbe), and reducer probe-phase effects
+// (EffectRecordCircuitFailure on PhaseDirectProbe/GatewayProbe) reach the
+// breaker billing-aware via the adapter. CloseProbe also recorded failures
+// billing-blind, which would have re-introduced the free-profile gap had it
+// ever been wired.

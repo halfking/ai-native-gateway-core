@@ -8,7 +8,10 @@
 package executors
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -122,4 +125,24 @@ func TestChooseLeastCooledCandidate_FailOpen(t *testing.T) {
 	got := r.chooseLeastCooledCandidate(candidates)
 	require.NotNil(t, got)
 	assert.Equal(t, 1, got.CredentialID, "Redis read failure must fail-open to the first candidate")
+}
+
+func TestTryDegradedMode_LogsStableOverrideFields(t *testing.T) {
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	r := &Router{}
+	got := r.tryDegradedMode(context.Background(), []provider.Candidate{{
+		CredentialID: 1, ProviderID: 2, RawModel: "minimax-m3", Routable: true,
+		AvailabilityState: "cooling",
+	}})
+	require.Len(t, got, 1)
+	var record map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &record))
+	assert.Equal(t, true, record["degraded_override"])
+	assert.Equal(t, "degraded_override", record["route_override"])
+	assert.Equal(t, "degraded", record["effective_route_status"])
+	assert.Equal(t, "availability:cooling", record["fallback_reason"])
 }

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -31,10 +32,15 @@ type versionInfoStruct struct {
 
 // versionJSONPaths 按优先级返回 version.json 候选路径。
 func versionJSONPaths() []string {
-	return []string{
+	paths := make([]string, 0, 3)
+	if path := strings.TrimSpace(os.Getenv("LLM_GATEWAY_VERSION_FILE")); path != "" {
+		paths = append(paths, path)
+	}
+	paths = append(paths,
 		"/opt/llm-gateway-go/version.json",
 		"version.json",
-	}
+	)
+	return paths
 }
 
 // loadVersionOnce 从 version.json 加载版本信息（只执行一次）。

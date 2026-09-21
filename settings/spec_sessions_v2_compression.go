@@ -27,3 +27,4 @@ func SessionsV2CompressionPlatformSpecs() []*Spec {
 		},
 	}
 }
+

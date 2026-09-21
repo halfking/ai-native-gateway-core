@@ -1,10 +1,29 @@
 package bg
 
+// ----------------------------------------------------------------------------
+// MERGE AUDIT NOTE (2026-08-27, conflict resolution: keep HEAD / local)
+//
+// During merge of origin/main into local main, this file conflicted. Both
+// sides added fields/methods to BalanceQuotaProbe. Per policy, the LOCAL
+// (HEAD) version is preserved as the primary code. The REMOTE (origin/main)
+// version was originally retained as a commented-out reference block at the
+// bottom of this file; it was removed in the R36 redundancy sweep (2026-09-17)
+// — retrieve it from git history (pre-R36 revisions, merge commit 4b512d640)
+// if a diff against it is ever needed.
+// The local additions (probeNowAsync, onQuotaRecharged, forceCooldown,
+// forceMu, forceLastSeen fields, plus SetProbeNowAsync / SetOnQuotaRecharged
+// / OnQuotaRecharged methods, the forceCooldown env-var parsing in
+// NewBalanceQuotaProbe, and the 2026-08-23 hzx-2 audit additions doc
+// block) were authored on this branch and must not be lost when
+// integrating origin/main.
+// ----------------------------------------------------------------------------
+
 import (
 	"context"
 	"errors"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -45,10 +64,26 @@ type BalanceQuotaProbe struct {
 	stopCh         chan struct{}
 	stopOnce       sync.Once
 
+	// lifecycleMu + started/workerDone: 与 PeriodicQuotaProbe 同款生命周期
+	// 守卫——Start 无重入保护会叠出双份 ticker 循环（每 tick 双份探测提交），
+	// goroutine 顶层 recover 防单次 panic 击穿网关进程
+	// （2026-09-14 审计 A-P2-2/A-P2-3）。
+	lifecycleMu sync.Mutex
+	started     bool
+	workerDone  chan struct{}
+
 	// probeNowAsync (optional, 2026-08-23 hzx-2): lets ForceProbe bypass
 	// the 2-min tick by invoking CredentialProbeV2.ProbeNowAsync. Wired
 	// from cmd/gateway/main.go after both workers are constructed.
 	probeNowAsync func(credID int)
+
+	// 2026-08-26 hzx-2 / 充值回调 webhook (落点 B):
+	//
+	// 由 cmd/gateway/webhooks.QuotaRechargedHandler 注入，HMAC 验签通过后
+	// 异步调用 OnQuotaRecharged(credID, source)，把"用户已充值"信号从
+	// 2 分钟 tick 提到秒级。回调内部走 credProbeV2.SubmitFastProbe /
+	// ProbeNowAsync 两条路径，与 admin ForceProbe 复用同一套调度链。
+	onQuotaRecharged func(credID int, source string)
 
 	// forceCooldown caps how often the same credential can be
 	// admin-forced within a single process. Operators can click
@@ -98,13 +133,71 @@ func (p *BalanceQuotaProbe) SetProbeNowAsync(fn func(credID int)) {
 	p.probeNowAsync = fn
 }
 
+// SetOnQuotaRecharged wires the recharge-callback hook fired by
+// cmd/gateway/webhooks.QuotaRechargedHandler. Optional — nil is safe
+// (the webhook just becomes a 200-OK echo with no follow-up).
+//
+// 2026-08-26 hzx-2: webhook 注入后，秒级恢复链路成立；nil-safe 保证
+// 单测 / 老启动路径不会 panic。
+func (p *BalanceQuotaProbe) SetOnQuotaRecharged(fn func(credID int, source string)) {
+	p.onQuotaRecharged = fn
+}
+
+// OnQuotaRecharged accepts a provider recharge signal and schedules exactly one
+// re-check. It prefers the immediate probe path; the delayed queue is only a
+// compatibility fallback when the immediate worker is unavailable. This avoids
+// charging two upstream probes for one accepted webhook.
+//
+// credID <= 0 is ignored (same behavior as ForceProbe).
+// Balance-floor-pulled credentials remain owned by the floor guard; a chat
+// probe would incorrectly restore them while their balance evidence is stale.
+func (p *BalanceQuotaProbe) OnQuotaRecharged(credID int, source string) {
+	if credID <= 0 {
+		return
+	}
+	if p.credentialFloorPulled(credID) {
+		slog.Info("balance_quota_probe: recharge webhook ignored for balance_floor-pulled credential (guard owns recovery)", "credential_id", credID, "source", source)
+		return
+	}
+	if p.probeNowAsync != nil {
+		p.probeNowAsync(credID)
+	} else if p.probeSubmitter != nil {
+		p.probeSubmitter(credID)
+	}
+	if p.onQuotaRecharged != nil {
+		p.onQuotaRecharged(credID, source)
+	}
+	slog.Info("balance_quota_probe: webhook-triggered probe dispatched",
+		"credential_id", credID,
+		"source", source,
+		"mode", map[bool]string{true: "immediate", false: "delayed_fallback"}[p.probeNowAsync != nil])
+}
+
 func (p *BalanceQuotaProbe) Start(ctx context.Context) {
+	p.lifecycleMu.Lock()
+	if p.started {
+		p.lifecycleMu.Unlock()
+		return
+	}
+	p.started = true
+	if p.workerDone == nil {
+		p.workerDone = make(chan struct{})
+	}
+	p.lifecycleMu.Unlock()
 	slog.Info("balance_quota_probe started",
 		"interval", p.interval,
 		"target_states", []string{"balance_exhausted", "permanently_exhausted"},
 		"force_cooldown", p.forceCooldown,
 	)
 	go func() {
+		defer close(p.workerDone)
+		// 顶层 recover：tick 路径含 DB 扫描与结果分类，未捕获 panic 会
+		// 直接终止整个网关进程（2026-09-14 审计 A-P2-2）。
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("balance_quota_probe panic", "panic", r, "stack", string(debug.Stack()))
+			}
+		}()
 		ticker := time.NewTicker(p.interval)
 		defer ticker.Stop()
 		for {
@@ -116,12 +209,22 @@ func (p *BalanceQuotaProbe) Start(ctx context.Context) {
 				slog.Info("balance_quota_probe stopped")
 				return
 			case <-ticker.C:
-				if err := p.probeBalanceExhausted(ctx); err != nil {
-					slog.Error("balance_quota_probe failed", "error", err)
-				}
+				p.runGuardedTick(ctx)
 			}
 		}
 	}()
+}
+
+// runGuardedTick 隔离单次 tick 的 panic：单轮失败/异常不应终止后续调度。
+func (p *BalanceQuotaProbe) runGuardedTick(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("balance_quota_probe tick panic", "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+	if err := p.probeBalanceExhausted(ctx); err != nil {
+		slog.Error("balance_quota_probe failed", "error", err)
+	}
 }
 
 func (p *BalanceQuotaProbe) Stop() {
@@ -221,7 +324,6 @@ func (p *BalanceQuotaProbe) ForceProbe(credID int) bool {
 		return false
 	}
 
-	p.recordBalanceCheck(credID, "admin_force")
 	return true
 }
 
@@ -265,12 +367,21 @@ func (p *BalanceQuotaProbe) credentialEligibleForForceProbe(credID int) (bool, e
 // probeBalanceExhausted 探测 balance_exhausted 和 permanently_exhausted 状态的凭据。
 //
 // 选择条件：
-//   - quota_state IN ('balance_exhausted', 'permanently_exhausted')
+//   - quota_state IN ('balance_exhausted', 'permanently_exhausted')，
+//     OR 挂起矛盾行（availability_state='suspended' 且 quota_state='ok'
+//     且 recover_at=NULL —— 2026-09-13 closeout P3：这类行此前没有任何
+//     探测来源，只能人工 force-enable；纳入慢速复验后，探测成功经
+//     writeHealth 翻回 ready，为 availSQL 的 suspended 证据恢复分支提供
+//     health 证据）
 //   - lifecycle_status = 'active'
 //   - 凭据和 provider 都未被手动禁用
 //   - provider 已启用
 //   - 有配置 default_probe_model，或可从 credential_model_bindings 中
 //     选出至少一个可用探测模型（fallback）
+//   - 2026-09-13 closeout P3 到期闸：last_probe_at 距今不足
+//     quotaProbeBackoff(probe_consecutive_failures) 的行跳过，本轮不探。
+//     原先每 2min 全量轰炸"没充值"的确定死亡凭据（720 次/天/凭据），
+//     指数退避后稳态 ≤1 次/小时/凭据，充值后最迟 1h 自动恢复。
 //
 // 探测结果：
 //   - 成功：credential_probe_v2 会清除 quota_state='ok'，恢复 availability_state='ready'
@@ -295,11 +406,69 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 		SELECT c.id
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
-		WHERE c.quota_state IN ('balance_exhausted', 'permanently_exhausted')
-		  AND c.lifecycle_status = 'active'
-		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		WHERE (
+		      c.quota_state IN ('balance_exhausted', 'permanently_exhausted')
+		      OR (
+		          -- suspended-revalidation set (P3): the contradictory
+		          -- suspended+quota-ok+NULL-recover rows. Slower floor
+		          -- cadence than the quota set via the backoff expression
+		          -- below; see credential_recovery.go availSQL for the
+		          -- matching evidence-based restore. Rows that ALREADY carry
+		          -- fresh healthy evidence are excluded — availSQL restores
+		          -- those within one 30s tick without another probe.
+		          c.availability_state = 'suspended'
+		          AND c.availability_recover_at IS NULL
+		          AND COALESCE(c.quota_state, 'ok') = 'ok'
+		          AND NOT (
+		              c.health_status = 'healthy'
+		              AND c.health_checked_at > now() - INTERVAL '2 hours'
+		          )
+		      )
+		      OR (
+		          -- 2026-09-13 audit round F4: auto-disabled revalidation. An
+		          -- auto-disabled credential whose revalidation probe returns
+		          -- 401/403 flips to auth_failed and would otherwise fall out
+		          -- of every recovery set (this scan required 'suspended'; the
+		          -- availSQL tick requires lifecycle='active') — stranded
+		          -- again. Revalidate ANY auto-disabled, quota-ok, non-ready
+		          -- row once its availability backoff has expired; writeHealth
+		          -- flips it fully (ready + lifecycle active) on success.
+		          c.lifecycle_status = 'disabled'
+		          AND c.auto_disabled_at IS NOT NULL
+		          AND COALESCE(c.quota_state, 'ok') = 'ok'
+		          AND COALESCE(c.availability_state, 'ready') <> 'ready'
+		          AND (c.availability_recover_at IS NULL OR c.availability_recover_at <= now())
+		      )
+		      )
+  AND COALESCE(c.state_reason_code, '') <> 'balance_floor' -- balance_floor guard exemption
+  AND c.status = 'active'
+  -- 2026-09-13 closeout (P3): admit auto-disabled rows (auto_disabled_at
+  -- set) — writeHealth already sanctions re-enabling exactly this class
+  -- on a successful probe (auto_enabled_reason='periodic_quota_probe_
+  -- recovered'). Prod evidence: ALL six suspended+quota-ok contradictory
+  -- rows (creds 9/13/23/24/25/30) were auto-disabled by the availability
+  -- <50% rule, then stranded — no probe target could ever reach them.
+  AND (
+      c.lifecycle_status = 'active'
+      OR (
+          c.lifecycle_status = 'disabled'
+          AND c.auto_disabled_at IS NOT NULL
+      )
+  )
+  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
+		  -- due gate (P3): exponential re-probe interval by consecutive
+		  -- probe failures — 2min, 4min, 8min, 16min, 32min, then capped at
+		  -- 1h. First failure stays on the 2min rung so a genuine transient
+		  -- or a quick recharge is still noticed within one interval.
+		  AND (
+		      c.last_probe_at IS NULL
+		      OR now() - c.last_probe_at >= LEAST(
+		          INTERVAL '2 minutes' * POWER(2, LEAST(COALESCE(c.probe_consecutive_failures, 0), 5)),
+		          INTERVAL '1 hour'
+		      )
+		  )
 		  AND (
 		      COALESCE(c.default_probe_model, '') <> ''
 		      OR EXISTS (
@@ -325,10 +494,11 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 			slog.Warn("balance_quota_probe: scan failed", "error", err)
 			continue
 		}
-		if p.probeSubmitter != nil {
+		if p.probeNowAsync != nil {
+			p.probeNowAsync(credID)
+		} else if p.probeSubmitter != nil {
 			p.probeSubmitter(credID)
 		}
-		p.recordBalanceCheck(credID, "scheduled")
 		count++
 	}
 	if count > 0 {
@@ -341,29 +511,21 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 	return nil
 }
 
-// recordBalanceCheck stamps credentials.balance_last_checked_at so
-// dashboards can show "last balance check" latency. Errors are logged
-// but never block the probe — the timestamp is observability, not
-// correctness.
-func (p *BalanceQuotaProbe) recordBalanceCheck(credID int, source string) {
+// credentialFloorPulled reports whether the balance-floor guard owns recovery.
+// Fail open on database errors so a transient outage does not swallow webhooks.
+func (p *BalanceQuotaProbe) credentialFloorPulled(credID int) bool {
 	if p.db == nil {
-		return
+		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	tag, err := p.db.Exec(ctx, `
-		UPDATE credentials
-		SET balance_last_checked_at = now(),
-		    state_updated_at        = now()
+	var reason string
+	err := p.db.QueryRow(ctx, `
+		SELECT COALESCE(state_reason_code, '')
+		FROM credentials
 		WHERE id = $1
-	`, credID)
-	if err != nil {
-		slog.Debug("balance_quota_probe: balance_last_checked_at update failed",
-			"credential_id", credID, "source", source, "error", err)
-		return
-	}
-	if tag.RowsAffected() == 0 {
-		slog.Debug("balance_quota_probe: balance_last_checked_at update affected 0 rows",
-			"credential_id", credID, "source", source)
-	}
+		  AND quota_state = 'balance_exhausted'
+		  AND COALESCE(state_reason_code, '') = 'balance_floor'
+	`, credID).Scan(&reason)
+	return err == nil && reason == "balance_floor"
 }

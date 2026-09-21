@@ -1,14 +1,18 @@
 # 文档归档索引
 
-> 自动生成 by docs-archive v1.0 — 最后更新：2026-08-17 19:07:32
+> 自动生成 by docs-archive v1.0 — 最后更新：2026-09-14（人工补录 2026-09-14 文档整理归档 2 篇）
 
 ## 归档统计
 
-- 总归档：224 篇
+- 总归档：226 篇
 
 ## 按月份分组
 
-### 2026-08（46 篇）
+### 2026-09（1 篇）
+
+- [2026-09/MOCK_PROVIDER_SYSTEM_TEST_REPORT_20260907.md](2026-09/MOCK_PROVIDER_SYSTEM_TEST_REPORT_20260907.md) — Mock Provider 7 场景综合系统测试报告（最终全量通过运行） (2026-09-07)
+
+### 2026-08（47 篇）
 
 - [2026-08/AUDIT_24H_CREDENTIAL_STATE_20260807.md](2026-08/AUDIT_24H_CREDENTIAL_STATE_20260807.md) — 24h 修改审计报告 — 凭据+模型状态机 (2026-08-07)
 - [2026-08/AUDIT_CROSSCUTTING_CONCURRENCY_20260813.md](2026-08/AUDIT_CROSSCUTTING_CONCURRENCY_20260813.md) — Cross-Cutting Concurrency & Reliability Audit — Integration Report (2026-08-13)
@@ -37,6 +41,7 @@
 - [2026-08/FIX_ROUTING_NODE_STATUS.md](2026-08/FIX_ROUTING_NODE_STATUS.md) — 路由节点状态修复实施方案
 - [2026-08/IMPLEMENTATION_SUMMARY_MODEL_QUALITY.md](2026-08/IMPLEMENTATION_SUMMARY_MODEL_QUALITY.md) — LLM模型质量监控系统 - 实施总结
 - [2026-08/LOCAL_TEST_PLAN_20260813.md](2026-08/LOCAL_TEST_PLAN_20260813.md) — 本地集成测试计划 - 路由 Fail-Safe 机制
+- [2026-08/merge-audit-2026-08-26-local-precedence.md](2026-08/merge-audit-2026-08-26-local-precedence.md) — Merge Audit: Local Precedence（合并 7b3e69bf6 一次性审计记录） (2026-08-26)
 - [2026-08/PARTITION_AUTOMATION_FIX_SUMMARY.md](2026-08/PARTITION_AUTOMATION_FIX_SUMMARY.md) — 分区自动化修复实施总结
 - [2026-08/process/2026-08-02-request-flow-step1-4-execution.md](2026-08/process/2026-08-02-request-flow-step1-4-execution.md) — 2026-08-02-request-flow-step1-4-execution
 - [2026-08/process/2026-08-06-deployment-guide.md](2026-08/process/2026-08-06-deployment-guide.md) — 2026-08-06-deployment-guide

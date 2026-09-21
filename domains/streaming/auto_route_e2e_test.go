@@ -126,6 +126,108 @@ func TestAutoRouteE2E_Chat_Success(t *testing.T) {
 	}
 }
 
+// TestAutoRouteE2E_Chat_WireCarriesSignalsForSelection pins the recording
+// contract behind the 2026-09-07 training-data defect: recordAutoSelection
+// used to re-derive a fresh wire via decisionToWire(decision), which never
+// populates wire.signals — so auto_route_selections rows were written with
+// zero-value signals (detected_language="unknown", prompt_length_bucket="xs",
+// content_hash=sha256("\n") for every row), leaving the exported training
+// set unusable. The chat path must record from the SAME wire that already
+// carries extractSignalsForAuto output.
+func TestAutoRouteE2E_Chat_WireCarriesSignalsForSelection(t *testing.T) {
+	ch := &ChatHandler{}
+	ch.SetAutoRoute(newE2EDecider())
+
+	const userPrompt = "write a function to reverse a string in Go"
+	reqBody := &chatRequestBody{Model: autoRequestMagic, Messages: []byte(`[{"role":"user","content":"` + userPrompt + `"}]`)}
+	rawBody := []byte(`{"model":"auto","messages":[{"role":"user","content":"` + userPrompt + `"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	_, wire, shouldFail := ch.maybeResolveAuto(reqBody, rawBody, req, 7)
+	if shouldFail || wire == nil {
+		t.Fatalf("expected success wire, got shouldFail=%v wire=%v", shouldFail, wire)
+	}
+
+	// The recording path consumes wire.signals — they must carry the prompt.
+	if wire.signals.LastUserPrompt != userPrompt {
+		t.Fatalf("wire.signals.LastUserPrompt: got %q, want %q",
+			wire.signals.LastUserPrompt, userPrompt)
+	}
+	if wire.signals.Language == "" {
+		t.Fatal("wire.signals.Language must be extracted, got empty")
+	}
+
+	features := autoroute.ExtractStructuredFeatures(wire.signals, wire.Profile)
+
+	// Degenerate zero-value signature: empty signals make detectLanguageEnum
+	// fall through to "unknown". A real English prompt must resolve to "en".
+	if features.DetectedLanguage != "en" {
+		t.Fatalf("features.DetectedLanguage: got %q, want %q (empty-signals regression produces %q)",
+			features.DetectedLanguage, "en", "unknown")
+	}
+	if features.PromptLengthBucket == "" {
+		t.Fatal("features.PromptLengthBucket must be populated")
+	}
+	if features.ContentHash == "" {
+		t.Fatal("features.ContentHash must be populated")
+	}
+	// The empty-signals content hash is sha256("\n") — the exact constant that
+	// collapsed every training row to one dedup key. The populated wire must
+	// never produce it.
+	degenerate := autoroute.ExtractStructuredFeatures(autoroute.ClassificationSignals{}, "smart")
+	if features.ContentHash == degenerate.ContentHash {
+		t.Fatalf("features.ContentHash matches the zero-value-signals hash %q — "+
+			"selection recording lost wire.signals again", degenerate.ContentHash)
+	}
+}
+
+// TestBuildAutoSelection_TranslatesWireSignalsIntoFeatures pins the second
+// half of the 2026-09-07 recording fix: buildAutoSelection must derive the
+// structured feature columns from the wire's OWN signals, never from a
+// zero-value signals struct.
+func TestBuildAutoSelection_TranslatesWireSignalsIntoFeatures(t *testing.T) {
+	sigs := autoroute.ClassificationSignals{
+		SystemPrompt:    "You are a coding agent.",
+		LastUserPrompt:  "用一句话介绍北京",
+		MessageCount:    2,
+		Language:        "zh",
+		EstimatedTokens: 40,
+	}
+	wire := &autoRouteDecision{
+		TaskType:    "chat",
+		Profile:     "smart",
+		Classifier:  "heuristic_v2",
+		ChosenModel: "glm-5.1",
+		Confidence:  0.85,
+		signals:     sigs,
+	}
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-Request-Id", "req-sig-test")
+
+	sel := buildAutoSelection(r, "sess-1", wire)
+
+	if sel.DetectedLanguage != "zh" {
+		t.Fatalf("DetectedLanguage: got %q, want %q (zero-value signals would yield %q)",
+			sel.DetectedLanguage, "zh", "unknown")
+	}
+	if sel.PromptLengthBucket == "" || sel.ContextLengthBucket == "" {
+		t.Fatalf("length buckets must be populated, got prompt=%q ctx=%q",
+			sel.PromptLengthBucket, sel.ContextLengthBucket)
+	}
+	if sel.ContentHash == "" {
+		t.Fatal("ContentHash must be populated")
+	}
+	degenerate := autoroute.ExtractStructuredFeatures(autoroute.ClassificationSignals{}, "smart")
+	if sel.ContentHash == degenerate.ContentHash {
+		t.Fatalf("ContentHash matches zero-value-signals hash %q", degenerate.ContentHash)
+	}
+	// Decision fields must still flow through unchanged.
+	if sel.ChosenModel != "glm-5.1" || sel.TaskType != "chat" || sel.RequestID != "req-sig-test" {
+		t.Fatalf("decision fields drifted: model=%q task=%q request=%q",
+			sel.ChosenModel, sel.TaskType, sel.RequestID)
+	}
+}
+
 // TestAutoRouteE2E_Messages_Success verifies the /v1/messages (Anthropic)
 // path with the flag enabled.
 func TestAutoRouteE2E_Messages_Success(t *testing.T) {
@@ -317,4 +419,48 @@ func TestAutoRouteE2E_ConsistencyAcrossProtocols(t *testing.T) {
 		t.Fatalf("task type mismatch across protocols: chat=%q messages=%q responses=%q",
 			chatWire.TaskType, msgsWire.TaskType, respWire.TaskType)
 	}
+}
+
+// TestAutoRouteE2E_NonChat_AgentRoleHeaderParsed（R49 自审钉桩，2026-09-20）：
+// /v1/messages 与 /v1/responses 协议面必须解析 X-Gw-Agent-Role——上一轮
+// a7baa1f5a 修复前这两个面 sigs.AgentRole 恒空（角色路由静默失效），当时
+// 只有修复声明、没有本测试。断言经 wire.signals 可观测。
+func TestAutoRouteE2E_NonChat_AgentRoleHeaderParsed(t *testing.T) {
+	enableAutoOnAllProtocols(t)
+
+	t.Run("messages", func(t *testing.T) {
+		ch := &ChatHandler{}
+		ch.SetAutoRoute(newE2EDecider())
+		h := &MessagesHandler{chatHandler: ch}
+		rb := &messagesRequestBody{Model: autoRequestMagic, Messages: []byte(`[{"role":"user","content":"write a function"}]`)}
+		rawBody := []byte(`{"model":"auto","messages":[{"role":"user","content":"write a function"}]}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		req.Header.Set(autoroute.AgentRoleHeader, "worker")
+
+		_, wire, shouldFail := h.maybeResolveAutoForMessages(rb, rawBody, req, 7)
+		if shouldFail || wire == nil {
+			t.Fatalf("shouldFail=%v wire=%v", shouldFail, wire)
+		}
+		if wire.signals.AgentRole != autoroute.RoleWorker {
+			t.Fatalf("messages path must parse agent role header, got %q", wire.signals.AgentRole)
+		}
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		ch := &ChatHandler{}
+		ch.SetAutoRoute(newE2EDecider())
+		h := &ResponsesHandler{chatHandler: ch}
+		rb := &responsesRequestBody{Model: autoRequestMagic, Input: []byte(`"write a function"`)}
+		rawBody := []byte(`{"model":"auto","input":"write a function"}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		req.Header.Set(autoroute.AgentRoleHeader, "worker")
+
+		_, wire, shouldFail := h.maybeResolveAutoForResponses(rb, rawBody, req, 7)
+		if shouldFail || wire == nil {
+			t.Fatalf("shouldFail=%v wire=%v", shouldFail, wire)
+		}
+		if wire.signals.AgentRole != autoroute.RoleWorker {
+			t.Fatalf("responses path must parse agent role header, got %q", wire.signals.AgentRole)
+		}
+	})
 }

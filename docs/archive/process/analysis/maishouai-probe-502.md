@@ -22,5 +22,5 @@
 **最可能的根因：k3s gateway 无法访问 maishouai.top**（GFW 拦截或缺少代理出口）
 
 ## 参考
-- 252 上的旧 systemd unit 配置了 `HTTP_PROXY=http://kaixuan-184:KaixuanEgress2026@172.31.0.2:7890`，但该实例未运行
+- 252 上的旧 systemd unit 配置了 `HTTP_PROXY=http://kaixuan-184:<REDACTED_PROXY_PASSWORD>@172.31.0.2:7890`，但该实例未运行
 - k3s gateway 可能没有配置代理，而 maishouai.top 在国内可能被 GFW 拦截

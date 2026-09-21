@@ -114,7 +114,7 @@ A: 编辑 `build-backend.sh`，注释掉不需要的平台。
 A: 在虚拟机或Docker容器中测试，避免影响本地环境。
 
 **Q: Cloudreve 账号是什么？**
-A: 56551681@qq.com / Veritrans&9527（需验证可用性）
+A: 56551681@qq.com / __REDACTED_SSH_PASSWORD__（需验证可用性）
 
 ## 📞 支持
 

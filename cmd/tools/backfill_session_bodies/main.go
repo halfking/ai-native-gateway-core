@@ -1,0 +1,155 @@
+// Command backfill_session_bodies derives and writes per-turn message deltas into
+// public.session_bodies for one session, sourced from the accumulated
+// request_logs bodies (the matryoshka). It is part of the "full switch to
+// Sessions V2" preparation: historical sessions that predate the V2 dual-write
+// have no session_bodies, so this tool backfills them so V2 can serve the detail
+// page and be validated against request_logs.
+//
+// The request_logs → session_turns metadata backfill (backfill_session_v2_turns
+// SQL function, see cmd/tools/backfill_sessions_v2_v2) should be run first so the
+// session_turns rows exist; session_bodies is written independently here.
+//
+// Usage:
+//
+//	go run ./cmd/tools/backfill_session_bodies \
+//	    --dsn="$DB" --tenant=tenant_xxx --session=gw_abc... --dry-run=true
+//
+// Exit codes:
+//	0 — completed (rows written or dry-run reported)
+//	1 — argument / DB / write error
+package main
+
+import (
+	"context"
+	"flag"
+	"log"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
+)
+
+type turnRow struct {
+	turnNo    int
+	requestID string
+	tenantID  string
+	ts        time.Time
+	reqBody   []byte
+	respBody  []byte
+}
+
+func main() {
+	dsn := flag.String("dsn", "", "Postgres DSN (required)")
+	tenant := flag.String("tenant", "", "tenant id (optional; empty = any)")
+	session := flag.String("session", "", "gw_session_id (required)")
+	dryRun := flag.Bool("dry-run", true, "when true, derive and report but do not write session_bodies")
+	useHot := flag.Bool("use-hot", false, "query from request_logs_bodies_hot instead of partitioned table")
+	flag.Parse()
+
+	if *dsn == "" || *session == "" {
+		log.Fatal("--dsn and --session are required")
+	}
+
+	pool, err := pgxpool.New(context.Background(), *dsn)
+	if err != nil {
+		log.Fatalf("pool: %v", err)
+	}
+	defer pool.Close()
+
+	// Step 1: Query request_logs only (fast: ~15ms for 2 turns).
+	// Avoids slow LEFT JOIN on large request_logs_bodies partitions.
+	rows, err := pool.Query(context.Background(), `
+		SELECT request_id, tenant_id, ts
+		FROM request_logs
+		WHERE gw_session_id = $1 AND ($2 = '' OR tenant_id = $2)
+		ORDER BY ts ASC, request_id ASC`, *session, *tenant)
+	if err != nil {
+		log.Fatalf("query request_logs: %v", err)
+	}
+
+	var turnRows []turnRow
+	turnNo := 1
+	for rows.Next() {
+		var r turnRow
+		if err := rows.Scan(&r.requestID, &r.tenantID, &r.ts); err != nil {
+			log.Fatalf("scan turn metadata: %v", err)
+		}
+		r.turnNo = turnNo
+		turnNo++
+		turnRows = append(turnRows, r)
+	}
+	if err := rows.Err(); err != nil {
+		log.Fatalf("iterate turns: %v", err)
+	}
+	rows.Close()
+
+	// Step 2: Fetch bodies individually (small queries, avoids partition scan).
+	// Use request_logs_bodies_hot if --use-hot is specified (for recent sessions)
+	bodiesTable := "request_logs_bodies"
+	if *useHot {
+		bodiesTable = "request_logs_bodies_hot"
+	}
+	
+	var fullMsgs, respMsgs [][]Msg
+	for i := range turnRows {
+		var reqBody, respBody []byte
+		query := `SELECT request_body, response_body FROM ` + bodiesTable + ` WHERE request_id = $1`
+		err := pool.QueryRow(context.Background(), query, turnRows[i].requestID).Scan(&reqBody, &respBody)
+		if err != nil {
+			log.Fatalf("fetch bodies turn %d request_id=%s from %s: %v", turnRows[i].turnNo, turnRows[i].requestID, bodiesTable, err)
+		}
+		turnRows[i].reqBody = reqBody
+		turnRows[i].respBody = respBody
+
+		full, err := ParseRequestMessages(reqBody)
+		if err != nil {
+			log.Fatalf("turn %d parse request: %v", turnRows[i].turnNo, err)
+		}
+		resp, err := ParseResponseMessages(respBody)
+		if err != nil {
+			log.Fatalf("turn %d parse response: %v", turnRows[i].turnNo, err)
+		}
+		fullMsgs = append(fullMsgs, full)
+		respMsgs = append(respMsgs, resp)
+	}
+
+	reqDeltas, respDeltas := DeriveTurnDeltas(fullMsgs, respMsgs)
+
+	writer := v2.NewSessionBodiesWriter(pool)
+	written := 0
+	for i, r := range turnRows {
+		rec := v2.BodiesRecord{
+			SessionID:     *session,
+			TurnNo:        r.turnNo,
+			TenantID:      r.tenantID,
+			RequestID:     r.requestID,
+			Ts:            r.ts,
+			RequestDelta:  toV2Messages(reqDeltas[i]),
+			ResponseDelta: toV2Messages(respDeltas[i]),
+		}
+		if len(rec.RequestDelta) == 0 && len(rec.ResponseDelta) == 0 {
+			continue
+		}
+		if *dryRun {
+			log.Printf("[dry-run] turn %d request_id=%s req_delta=%d resp_delta=%d",
+				r.turnNo, r.requestID, len(rec.RequestDelta), len(rec.ResponseDelta))
+			written++
+			continue
+		}
+		if err := writer.WriteBodies(context.Background(), rec); err != nil {
+			log.Fatalf("write bodies turn %d: %v", r.turnNo, err)
+		}
+		written++
+	}
+
+	log.Printf("backfill session_bodies: session=%s tenant=%s turns=%d bodies=%d dryRun=%v",
+		*session, *tenant, len(turnRows), written, *dryRun)
+}
+
+func toV2Messages(in []Msg) []v2.Message {
+	out := make([]v2.Message, 0, len(in))
+	for _, m := range in {
+		out = append(out, v2.Message{Role: m.Role, Content: m.Content})
+	}
+	return out
+}

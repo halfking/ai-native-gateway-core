@@ -103,7 +103,7 @@ func (c *summaryCache) invalidateCredential(credentialID int) {
 		return
 	}
 	for key := range c.entries {
-		if strings.Contains(key, fmt.Sprintf(":c%d:", credentialID)) || strings.Contains(key, ":c0:") {
+		if strings.Contains(key, fmt.Sprintf(":c%d:", credentialID)) {
 			delete(c.entries, key)
 		}
 	}
@@ -145,6 +145,10 @@ func (m *CredentialMonitorHandlers) RegisterMonitorRoutes(mux *http.ServeMux, wr
 	mux.HandleFunc("/api/credentials/decisions", wrap(m.handleCredentialDecisions))
 	mux.HandleFunc("/api/credentials/clear-manual-disabled", wrap(m.handleClearManualDisabled))
 	mux.HandleFunc("/api/credentials/set-manual-disabled", wrap(m.handleSetManualDisabled))
+	// 2026-09-06: time-series heatmap visualization
+	mux.HandleFunc("/api/credentials/heatmap", wrap(m.handleCredentialHeatmap))
+	// 2026-09-07: merged routing/probe/state-change timeline (路由记录 tab)
+	mux.HandleFunc("/api/credentials/routing-log", wrap(m.handleCredentialRoutingLog))
 }
 
 // CredentialMonitorSummary represents a credential's monitoring state.
@@ -170,6 +174,8 @@ type CredentialMonitorSummary struct {
 	ModelTotal            int     `json:"model_total,omitempty"`
 	ModelAvailable        int     `json:"model_available,omitempty"`
 	BrokenModelCount      int     `json:"broken_model_count,omitempty"`
+	EffectiveState        string  `json:"effective_state"`
+	EffectiveReason       string  `json:"effective_reason,omitempty"`
 	// Models is the per-(credential, model) availability breakdown. Replaces the
 	// single-model recent_window_stats field (2026-06-22). Each entry carries
 	// the probe state, offer/binding availability and the live last-N success
@@ -188,8 +194,6 @@ type CredentialMonitorSummary struct {
 // uses to admit/exclude a binding.
 type CredentialModelStatus struct {
 	RawModelName             string  `json:"raw_model_name"`
-	StandardizedName         *string `json:"standardized_name,omitempty"`
-	CanonicalName            *string `json:"canonical_name,omitempty"`
 	OfferAvailable           bool    `json:"offer_available"`
 	OfferUnavailableReason   *string `json:"offer_unavailable_reason,omitempty"`
 	BindingAvailable         bool    `json:"binding_available"`
@@ -222,7 +226,7 @@ type CredentialModelStatus struct {
 // shape changes. The in-memory cache uses the version as part of the key, so
 // older cached responses (with the previous schema) are automatically
 // ignored after a redeploy — no manual flush needed.
-const monitorSummarySchemaVersion = 8
+const monitorSummarySchemaVersion = 7
 
 func monitorSummaryMeta(created, expires time.Time, cacheHit bool, serverDuration time.Duration) map[string]any {
 	return map[string]any{
@@ -306,8 +310,6 @@ func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
 					COUNT(*) FILTER (WHERE COALESCE(mps.state, 'unknown') = 'broken_confirmed') AS broken_model_count,
 					json_agg(json_build_object(
 						'raw_model_name', mo.raw_model_name,
-						'standardized_name', mo.standardized_name,
-						'canonical_name', (SELECT mc.canonical_name FROM models_canonical mc WHERE mc.id = mo.canonical_id),
 						'offer_available', COALESCE(mo.available, TRUE),
 						'offer_unavailable_reason', mo.unavailable_reason,
 						'binding_available', COALESCE(cmb.available, TRUE),
@@ -324,7 +326,7 @@ func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
 				LEFT JOIN credential_model_bindings cmb
 					ON cmb.credential_id = mo.credential_id
 				   AND cmb.provider_model_id = (SELECT id FROM provider_models pm WHERE pm.raw_model_name = mo.raw_model_name AND pm.provider_id = c.provider_id LIMIT 1)
-				LEFT JOIN model_probe_state mps
+				LEFT JOIN v_node_probe_state_compat mps
 					ON mps.credential_id = mo.credential_id
 				   AND mps.raw_model_name = mo.raw_model_name
 				WHERE mo.credential_id = c.id
@@ -372,7 +374,7 @@ func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
 			LEFT JOIN credential_model_bindings cmb
 				ON cmb.credential_id = mo.credential_id
 			   AND cmb.provider_model_id = (SELECT id FROM provider_models pm WHERE (pm.raw_model_name = mo.raw_model_name OR pm.standardized_name = mo.standardized_name) AND pm.provider_id = c.provider_id LIMIT 1)
-			LEFT JOIN model_probe_state mps
+			LEFT JOIN v_node_probe_state_compat mps
 				ON mps.credential_id = mo.credential_id
 			   AND (mps.raw_model_name = mo.raw_model_name OR mps.raw_model_name = mo.standardized_name)
 			%s
@@ -397,8 +399,6 @@ func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
 				FROM (
 					SELECT
 						mo.raw_model_name,
-						mo.standardized_name,
-						(SELECT mc.canonical_name FROM models_canonical mc WHERE mc.id = mo.canonical_id) AS canonical_name,
 						COALESCE(mo.available, TRUE) AS offer_available,
 						mo.unavailable_reason AS offer_unavailable_reason,
 						COALESCE(cmb.available, TRUE) AS binding_available,
@@ -424,7 +424,7 @@ func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
 					LEFT JOIN credential_model_bindings cmb
 						ON cmb.credential_id = mo.credential_id
 					   AND cmb.provider_model_id = (SELECT id FROM provider_models pm WHERE pm.raw_model_name = mo.raw_model_name AND pm.provider_id = c.provider_id LIMIT 1)
-					LEFT JOIN model_probe_state mps
+					LEFT JOIN v_node_probe_state_compat mps
 						ON mps.credential_id = mo.credential_id
 					   AND mps.raw_model_name = mo.raw_model_name
 					-- P95: bg rollup (5min bucket, latest 1) - main hot path
@@ -514,7 +514,7 @@ func runMonitorSummary(ctx context.Context, db pgxQueryer, p monitorSummarySQLPa
 		); scanErr != nil {
 			scanFailures++
 			slog.Warn("monitor summary scan failed",
-				"credential_id", p.CredentialID, "provider_id", p.ProviderID, "error", scanErr.Error())
+				"credential_id", p.ProviderID, "error", scanErr.Error())
 			continue
 		}
 
@@ -531,13 +531,22 @@ func runMonitorSummary(ctx context.Context, db pgxQueryer, p monitorSummarySQLPa
 			s.AggregatedSuccessRate = &r
 		}
 
+		state := deriveCredentialDisplayState(credentialStateInput{
+			Status:          s.Status,
+			LifecycleStatus: "active", // monitor SQL does not select lifecycle_status; status/manual gates remain authoritative here.
+			Availability:    s.AvailabilityState,
+			QuotaState:      s.QuotaState,
+			HealthStatus:    s.HealthStatus,
+			ManualDisabled:  s.ManualDisabled,
+		})
+		s.EffectiveState = string(state.State)
+		s.EffectiveReason = state.Reason
+
 		if detailMode || coreMode {
 			models := make([]CredentialModelStatus, 0)
 
 			if len(modelsJSON) > 0 && string(modelsJSON) != "null" {
-				if err := json.Unmarshal(modelsJSON, &models); err != nil {
-					return startedAt, summaries, fmt.Errorf("models JSON decode failed for credential %d: %w", s.ID, err)
-				}
+				_ = json.Unmarshal(modelsJSON, &models)
 			}
 			s.Models = models
 			for i := range models {
@@ -594,10 +603,6 @@ type WindowStats struct {
 func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if m == nil || m.h == nil || m.h.db == nil {
-		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 
@@ -677,6 +682,11 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 		return
 	}
 
+	// Lazy init recorder if redis is available
+	if m.recorder == nil && m.redisClient != nil {
+		m.recorder = credentialhealth.NewRecorder(m.redisClient, 2*time.Hour, 100)
+	}
+
 	credentialID := queryInt(r, "credential_id", 0)
 	model := queryString(r, "model")
 	minutes := queryInt(r, "minutes", 60)
@@ -698,11 +708,40 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	entries, source, err := m.loadSlidingWindowEntries(ctx, credentialID, model, minutes, limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get window: %v", err))
-		return
+	// ── Primary: Redis recorder (per-call granularity) ──────────────────
+	source := "redis"
+	// Initialize as a non-nil slice so the JSON response serializes to [] (not
+	// null) when there are no entries — otherwise the frontend's
+	// windowEntries.length throws "Cannot read properties of null".
+	entries := make([]credentialhealth.CallEntry, 0)
+	if m.recorder != nil && m.recorder.Enabled() {
+		since := time.Now().Add(-time.Duration(minutes) * time.Minute)
+		entries, _ = m.recorder.GetRecent(ctx, credentialID, model, since)
 	}
+
+	// ── Fallback: request_logs (when Redis is down or empty) ────────────
+	if len(entries) == 0 {
+		source = "request_logs"
+		rlEntries, err := m.slidingWindowFromRequestLogs(ctx, credentialID, model, minutes, limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get window: %v", err))
+			return
+		}
+		entries = rlEntries
+	}
+
+	// Guard against nil (Redis GetRecent + the fallback both return nil when
+	// empty). A nil slice serializes to JSON null, which crashes the frontend
+	// (windowEntries.length). Force a non-nil empty slice.
+	if entries == nil {
+		entries = make([]credentialhealth.CallEntry, 0)
+	}
+
+	// Limit to requested count (entries are already newest-first from Redis)
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+
 	stats := credentialhealth.ComputeStats(entries)
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -713,16 +752,24 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 		"source":         source,
 		"total_returned": len(entries),
 		"entries":        entries,
-		"stats":          slidingWindowStatsMap(stats),
+		"stats": map[string]any{
+			"total":        stats.Total,
+			"success":      stats.Success,
+			"failed":       stats.Failed,
+			"failure_rate": stats.FailureRate,
+			"error_kinds":  stats.ErrorKinds,
+		},
 	})
 }
 
-// slidingWindowFromRequestLogs builds CallEntry timeline data directly from
-// the request_logs table. Used when the Redis recorder is unavailable. Uses
-// idx_request_logs_credential_ts (credential_id, ts DESC) so the LIMIT scan
-// is an index descent.
-func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Context, credentialID int, model string, minutes, limit int) ([]credentialhealth.CallEntry, error) {
-	rows, err := m.h.db.Query(ctx, `
+// slidingWindowQuery 构造凭据监控抽屉的 request_logs 回退查询。2026-09-21
+// 提取为函数：真库回归测试（sliding_window_realdb_test.go）复用同一文本，
+// 防测试与生产 SQL 漂移——bg/feature_stats_worker.go featureDistributionQuery
+// 同款。视图 request_logs_with_current_month 冻结不可改投影（R37 定案），
+// 729 迁移以 (CASE credential, ts DESC) 表达式索引伺服其 session_turns
+// 分支的长窗分支。
+func slidingWindowQuery() string {
+	return `
 		SELECT COALESCE(request_id, ''), EXTRACT(EPOCH FROM ts)::bigint * 1000,
 		       success, COALESCE(latency_ms, 0), COALESCE(error_kind, '')
 		FROM request_logs_with_current_month
@@ -734,7 +781,15 @@ func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Con
 		  AND ts > NOW() - ($3 || ' minutes')::interval
 		ORDER BY ts DESC
 		LIMIT $4
-	`, credentialID, model, fmt.Sprintf("%d", minutes), limit)
+	`
+}
+
+// slidingWindowFromRequestLogs builds CallEntry timeline data directly from
+// the request_logs table. Used when the Redis recorder is unavailable. Uses
+// idx_request_logs_credential_ts (credential_id, ts DESC) so the LIMIT scan
+// is an index descent.
+func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Context, credentialID int, model string, minutes, limit int) ([]credentialhealth.CallEntry, error) {
+	rows, err := m.h.db.Query(ctx, slidingWindowQuery(), credentialID, model, fmt.Sprintf("%d", minutes), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -755,9 +810,6 @@ func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Con
 		}
 		out = append(out, e)
 	}
-	if err := rows.Err(); err != nil {
-		return out, fmt.Errorf("rows iteration failed: %w", err)
-	}
 	return out, nil
 }
 
@@ -767,13 +819,6 @@ func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Con
 func (m *CredentialMonitorHandlers) handlePromote(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if RequireSuperAdminForWrite(w, r) {
-		return
-	}
-	if m == nil || m.h == nil || m.h.db == nil {
-		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 
@@ -827,13 +872,6 @@ func (m *CredentialMonitorHandlers) handlePromote(w http.ResponseWriter, r *http
 func (m *CredentialMonitorHandlers) handleDemote(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if RequireSuperAdminForWrite(w, r) {
-		return
-	}
-	if m == nil || m.h == nil || m.h.db == nil {
-		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 
@@ -895,13 +933,6 @@ func (m *CredentialMonitorHandlers) handleDemote(w http.ResponseWriter, r *http.
 func (m *CredentialMonitorHandlers) handleSetConcurrencyAuto(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	if RequireSuperAdminForWrite(w, r) {
-		return
-	}
-	if m == nil || m.h == nil || m.h.db == nil {
-		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 
@@ -1025,10 +1056,7 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if RequireSuperAdminForWrite(w, r) {
-		return
-	}
-	if m == nil || m.h == nil || m.h.db == nil {
+	if m.h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
@@ -1107,6 +1135,24 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())
 			return
 		}
+		// 2026-09-17 数据源统一:展示面已切到 node_probe_state,手动下线必须
+		// 同步写入新系统(pause 探测队列 + 标记 last_err_code),否则凭据列表
+		// 与 probe-health 显示的仍是切换前的自动探测状态。
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO node_probe_state
+			    (credential_id, raw_model_name, next_retry_at, next_retry_seconds,
+			     paused, consecutive_failures, last_err_code, last_attempt_at, updated_at)
+			VALUES ($1, $2, NOW() + INTERVAL '100 years', 0, TRUE, 0, 'manual_offline', NOW(), NOW())
+			ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+			    paused = TRUE,
+			    next_retry_at = NOW() + INTERVAL '100 years',
+			    last_err_code = 'manual_offline',
+			    last_attempt_at = NOW(),
+			    updated_at = NOW()
+		`, req.CredentialID, req.RawModel); err != nil {
+			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())
+			return
+		}
 		newAvailable = false
 		newReason = &offlineReason
 	} else {
@@ -1146,6 +1192,25 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			    last_attempt_at = NOW(),
 			    next_retry_at = NOW(),
 			    last_status = 'manual_online'
+		`, req.CredentialID, req.RawModel); err != nil {
+			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())
+			return
+		}
+		// 2026-09-17 数据源统一:手动上线同步恢复新系统(un-pause + 立即排队重探)。
+		// R36: DO UPDATE 同时清 last_err_code/last_err_detail,否则手动上线后
+		// 展示面继续残留 manual_offline/上次探测错误码直到下一轮探测。
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO node_probe_state
+			    (credential_id, raw_model_name, next_retry_at, next_retry_seconds,
+			     paused, consecutive_failures, last_attempt_at, updated_at)
+			VALUES ($1, $2, NOW(), 5, FALSE, 0, NOW(), NOW())
+			ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+			    paused = FALSE,
+			    next_retry_at = NOW(),
+			    consecutive_failures = 0,
+			    last_err_code = NULL,
+			    last_err_detail = NULL,
+			    updated_at = NOW()
 		`, req.CredentialID, req.RawModel); err != nil {
 			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())
 			return
@@ -1259,13 +1324,11 @@ func runModelHistory(ctx context.Context, db pgxQueryer, credentialID int, rawMo
 				al.actor            AS actor,
 				COALESCE(al.after_json->>'reason', '') AS reason
 			FROM routing_audit_log al
-			JOIN credentials c ON c.id = (al.after_json->>'credential_id')::int
 			WHERE al.target_type = 'credential_model'
 			  AND al.action IN ('credential.model_toggle_online', 'credential.model_toggle_offline')
 			  AND (al.after_json->>'credential_id')::int = $1
 			  AND al.after_json->>'raw_model_name' = $2
-			  AND ($4 = '' OR c.tenant_id = $4)
-			  AND ($4 = '' OR al.tenant_id = $4 OR al.tenant_id IS NULL)
+			  AND ($4 = '' OR al.tenant_id = $4)
 		)
 		SELECT ts, source, triggered_by, event,
 		       probe_status, http_status, error_code, error_message,
@@ -1436,8 +1499,7 @@ func runCredentialDecisions(ctx context.Context, db pgxQueryer, p credentialDeci
 	clauses := ""
 	if p.IsTenantAdmin {
 		args = append(args, p.TenantID)
-		tenantArg := len(args)
-		clauses += fmt.Sprintf(" AND rdl.tenant_id = $%d AND EXISTS (SELECT 1 FROM credentials c WHERE c.id = rdl.chosen_credential_id AND c.tenant_id = $%d)", tenantArg, tenantArg)
+		clauses += fmt.Sprintf(" AND rdl.tenant_id = $%d", len(args))
 	}
 	if p.ModelFilter != "" {
 		args = append(args, p.ModelFilter)
@@ -1449,7 +1511,7 @@ func runCredentialDecisions(ctx context.Context, db pgxQueryer, p credentialDeci
 		SELECT rdl.ts, rdl.request_id::text, rdl.model, rdl.tier, rdl.success,
 		       rdl.latency_ms, rdl.error_class, rdl.chosen_provider_id,
 		       rdl.client_model, rdl.outbound_model, rdl.sticky_hit
-		FROM routing_decision_log_with_current_month rdl
+		FROM routing_decision_log rdl
 		WHERE rdl.chosen_credential_id = $1%s
 		ORDER BY rdl.ts DESC
 		LIMIT $%d
@@ -1519,14 +1581,14 @@ func (m *CredentialMonitorHandlers) handleCredentialDecisions(w http.ResponseWri
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
 
 	credentialID := queryInt(r, "credential_id", 0)
 	if credentialID == 0 {
 		writeError(w, http.StatusBadRequest, "credential_id required")
-		return
-	}
-	if m == nil || m.h == nil || m.h.db == nil {
-		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 
@@ -1573,19 +1635,12 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if RequireSuperAdminForWrite(w, r) {
-		return
-	}
-	if m == nil || m.h == nil || m.h.db == nil {
-		writeError(w, http.StatusServiceUnavailable, "database not configured")
-		return
-	}
 
 	var req struct {
 		CredentialID int    `json:"credential_id"`
 		Reason       string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -1679,20 +1734,13 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if RequireSuperAdminForWrite(w, r) {
-		return
-	}
-	if m == nil || m.h == nil || m.h.db == nil {
-		writeError(w, http.StatusServiceUnavailable, "database not configured")
-		return
-	}
 
 	var req struct {
 		CredentialID   int    `json:"credential_id"`
 		ManualDisabled bool   `json:"manual_disabled"`
 		Reason         string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}

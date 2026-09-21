@@ -8,6 +8,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"strconv"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/admin"
+	"github.com/kaixuan/llm-gateway-go/db"
+	"github.com/kaixuan/llm-gateway-go/domains/session"
 )
 
 func gatewayEventSecret() string {
@@ -82,6 +85,149 @@ func liveStreamCachedDurationsFromEnv() (time.Duration, time.Duration) {
 	return ttl, cleanup
 }
 
+// bootRetryBudgetEnv parses a non-negative duration used as a bounded
+// startup retry budget (2026-09-04 availability work). Unlike
+// positiveDurationEnv, an explicit "0" is honoured as "single attempt, no
+// retry"; missing and malformed values fall back to the supplied default.
+func bootRetryBudgetEnv(key string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration < 0 {
+		slog.Warn("invalid boot retry budget env, using default",
+			"key", key, "value", value, "default", fallback.String())
+		return fallback
+	}
+	return duration
+}
+
+// openDBWithBootRetry opens the configured database with a bounded startup
+// retry budget (2026-09-04 availability work). An empty URL returns nil —
+// the intentional DB-less mode — exactly like db.Open. When Open fails
+// (ping or migrations) and the budget has not elapsed, it waits 2s and
+// retries, so a PostgreSQL that recovers shortly after the gateway boots no
+// longer permanently bricks the process into no-DB mode. The budget is
+// checked BETWEEN attempts: failing pings cost ≤3s each, keeping the
+// worst-case boot inside the documented systemd TimeoutStartSec=90s window.
+// LLM_GATEWAY_DB_BOOT_RETRY_SECONDS (default 20s, 0 = single attempt).
+func openDBWithBootRetry(ctx context.Context, databaseURL string) *db.DB {
+	if databaseURL == "" {
+		return nil
+	}
+	budget := bootRetryBudgetEnv("LLM_GATEWAY_DB_BOOT_RETRY_SECONDS", 20*time.Second)
+	deadline := time.Now().Add(budget)
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		remaining := time.Until(deadline)
+		if attempt > 1 && remaining <= 0 {
+			break
+		}
+		attemptCtx := ctx
+		cancel := func() {}
+		if budget > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, remaining)
+		}
+		conn, err := db.Open(attemptCtx, databaseURL)
+		cancel()
+		if err == nil {
+			if attempt > 1 {
+				slog.Info("postgres connected after boot retry", "attempts", attempt)
+			}
+			return conn
+		}
+		lastErr = err
+		// R39 (2026-09-17): a catalog error (missing table/column/function,
+		// blocked-by-view rewrite) is a schema mismatch, not "postgres
+		// unreachable" — retrying the connection cannot fix it and only
+		// burns the whole boot budget before the same "postgres disabled"
+		// path (the 245 deploy-blocker shape). Fast-fail with an
+		// actionable log instead of retrying.
+		if db.IsSchemaMismatchError(err) {
+			slog.Error("postgres schema mismatch at boot — NOT a connectivity problem; skipping connection retries",
+				"error", err,
+				"hint", "this deployment role lacks expected schema objects; run the DB bootstrap/migrations for this role or point LLM_GATEWAY_DATABASE_URL at the right database")
+			return nil
+		}
+		if time.Now().After(deadline) || budget == 0 {
+			break
+		}
+		slog.Warn("postgres unreachable at boot, retrying",
+			"attempt", attempt, "error", err, "budget", budget.String())
+		select {
+		case <-time.After(2 * time.Second):
+		case <-ctx.Done():
+			slog.Warn("postgres disabled (shutdown during boot retry)", "error", lastErr)
+			return nil
+		}
+	}
+	slog.Warn("postgres disabled", "error", lastErr, "retry_budget", budget.String())
+	return nil // Prevent using a closed connection pool
+}
+
+// keyStoreSyncIntervalFromEnv parses LLM_GATEWAY_KEYSTORE_SYNC_INTERVAL
+// (2026-09-04 api-keys in-memory replica). Missing/malformed/negative values
+// fall back to the 5-minute default; an explicit 0 disables the feature and
+// restores pure lazy per-key verification.
+func keyStoreSyncIntervalFromEnv() time.Duration {
+	value := strings.TrimSpace(os.Getenv("LLM_GATEWAY_KEYSTORE_SYNC_INTERVAL"))
+	if value == "" {
+		return 5 * time.Minute
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration < 0 {
+		slog.Warn("invalid key store sync interval env, using default",
+			"key", "LLM_GATEWAY_KEYSTORE_SYNC_INTERVAL", "value", value, "default", "5m")
+		return 5 * time.Minute
+	}
+	return duration
+}
+
+// keyStoreSnapshotDirFromEnv parses LLM_GATEWAY_KEYSTORE_SNAPSHOT_DIR
+// (2026-09-04 cold-start gear). Default "./data/keystore"; the explicit
+// values "off"/"disable"/"none" (case-insensitive) disable snapshot
+// persistence entirely.
+func keyStoreSnapshotDirFromEnv() string {
+	value := strings.TrimSpace(os.Getenv("LLM_GATEWAY_KEYSTORE_SNAPSHOT_DIR"))
+	switch strings.ToLower(value) {
+	case "":
+		return "./data/keystore"
+	case "off", "disable", "none":
+		return ""
+	default:
+		return value
+	}
+}
+
+// pingRedisWithBootRetry pings the session Redis client until it answers or
+// the budget elapses (checked between attempts; each ping is bounded by a
+// 5s timeout). Returns the last error. Keeps container start-order races
+// and short Redis failovers from disabling sessions/URSM for the whole
+// process lifetime. LLM_GATEWAY_REDIS_BOOT_RETRY_SECONDS (default 30s,
+// 0 = single attempt).
+func pingRedisWithBootRetry(client *session.RedisClient, budget time.Duration) error {
+	deadline := time.Now().Add(budget)
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		lastErr = client.Ping(pingCtx)
+		pingCancel()
+		if lastErr == nil {
+			if attempt > 1 {
+				slog.Info("redis reachable after boot retry", "attempts", attempt)
+			}
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return lastErr
+		}
+		slog.Warn("redis ping failed at boot, retrying",
+			"attempt", attempt, "error", lastErr, "budget", budget.String())
+		time.Sleep(2 * time.Second)
+	}
+}
+
 // sessionAuditApprovalTimeoutFromEnv 读取 SESSION_AUDIT_APPROVAL_TIMEOUT
 // 环境变量并解析为 time.Duration。支持 "30s" / "15m" / "1h" 格式。
 // 无效输入或缺失时退化为 15m。2026-06-27 audit fix。
@@ -139,11 +285,9 @@ func useNewProbeMode() bool {
 // Each member relies on the system API key directly or shares the group's
 // lifecycle, so partial startup is deliberately avoided.
 // canStartGatewayDependentNewProbes gates the new probe/self-check worker
-// group on a usable system API key. The check intentionally re-reads
-// EnsureSystemAPIKeyFromEnv so deployments that do not have a system
-// key cached in DB (or whose key generation fails) skip all four
-// gateway-dependent workers in one go instead of each running with an
-// empty Authorization header.
+// group on a usable system API key: deployments without a usable key skip
+// all four gateway-dependent workers in one go instead of each running
+// with an empty Authorization header.
 func canStartGatewayDependentNewProbes(apiKey string) bool {
 	if strings.TrimSpace(apiKey) == "" {
 		return false

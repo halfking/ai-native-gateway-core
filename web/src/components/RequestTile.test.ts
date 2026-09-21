@@ -129,3 +129,85 @@ describe('RequestTile display format', () => {
     llm.unmount()
   })
 })
+
+// ─── 2026-09-18: 缓存命中 + 会话 ID tooltip（实时请求流字段补齐） ───────────
+describe('RequestTile cache & session tooltip', () => {
+  const cacheI18n = createI18n({
+    legacy: false,
+    locale: 'zh-CN',
+    messages: {
+      'zh-CN': {
+        dashboard: {
+          liveStream: {
+            legend: { success: '成功' },
+            tooltip: {
+              tokens: 'Token',
+              tokenFormat: '{p} + {c}',
+              cache: '缓存',
+              cacheFormat: '读{r}/写{w}（命中率{pct}）',
+              sessionId: '会话',
+            },
+          },
+        },
+      },
+    },
+  })
+
+  function mountLarge(tile: RequestTileType) {
+    return mount(RequestTile, {
+      props: { tile, groupBy: 'model', isHighlighted: false, isDimmed: false, mode: 'large' },
+      global: { plugins: [cacheI18n] },
+    })
+  }
+
+  it('renders cache read/write tokens and hit ratio (read/(read+prompt))', () => {
+    const w = mountLarge(baseTile({
+      is_probe: false, status: 'success',
+      prompt_tokens: 738, completion_tokens: 210,
+      cache_read_tokens: 1200, cache_write_tokens: 340,
+      gw_session_id: 'gw_cache_case_1',
+    }))
+    const title = w.attributes('title') ?? ''
+    // 1200 / (1200 + 738) = 61.9% → 62%
+    expect(title).toContain('1200')
+    expect(title).toContain('340')
+    expect(title).toContain('62%')
+    expect(title).toContain('gw_cache_case_1')
+    w.unmount()
+  })
+
+  it('omits cache/session lines when fields are not reported (never fakes zeros)', () => {
+    const w = mountLarge(baseTile({ is_probe: false, status: 'success', prompt_tokens: 5, completion_tokens: 2 }))
+    const title = w.attributes('title') ?? ''
+    expect(title).not.toContain('缓存')
+    expect(title).not.toContain('会话')
+    expect(title).not.toContain('0%')
+    w.unmount()
+  })
+
+  it('renders cache line without ratio when denominator is zero', () => {
+    const w = mountLarge(baseTile({
+      is_probe: false, status: 'success',
+      cache_read_tokens: 0, cache_write_tokens: 4, gw_session_id: 'gw_zero_read',
+    }))
+    const title = w.attributes('title') ?? ''
+    expect(title).toContain('缓存')
+    expect(title).toContain('—')
+    expect(title).toContain('gw_zero_read')
+    w.unmount()
+  })
+
+  // R44: prompt_tokens 缺省时不得把缺省当 0 —— 只报 cache_read 的上游会
+  // 冒充 100% 命中率，与"缺省不冒充"承诺同源。
+  it('renders cache line without ratio when prompt_tokens is missing (never fakes 100%)', () => {
+    const w = mountLarge(baseTile({
+      is_probe: false, status: 'success',
+      cache_read_tokens: 500, cache_write_tokens: 0, gw_session_id: 'gw_no_prompt',
+    }))
+    const title = w.attributes('title') ?? ''
+    expect(title).toContain('缓存')
+    expect(title).toContain('—')
+    expect(title).not.toContain('100%')
+    w.unmount()
+  })
+})

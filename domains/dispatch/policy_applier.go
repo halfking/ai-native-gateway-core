@@ -27,7 +27,7 @@ type ApplyPolicySnapshot interface {
 	// ActiveRevision returns the currently applied revision; 0 means no
 	// policy has been applied yet. Used for diagnostics and for the Stage
 	// E "is this process synced?" check.
-	ActiveRevision(ctx context.Context) uint64
+	ActiveRevision() uint64
 }
 
 // recordingApplier is an in-test stub that records every ApplyPolicy call
@@ -56,13 +56,21 @@ func (r *recordingApplier) ApplyPolicy(ctx context.Context, pol GovernorPolicy) 
 	if r.applyErr != nil {
 		return r.applyErr
 	}
+	// Strict-monotonic contract: same-or-older revisions are a no-op per
+	// the ApplyPolicySnapshot interface. Older-revision regressions would
+	// silently move the test double out of step with the production
+	// Pipeline (which rejects them at the policyMu guard), making this
+	// double unsuitable for cross-validation against real impls.
+	if pol.Revision <= r.active {
+		return nil
+	}
 	r.last = pol
 	r.active = pol.Revision
 	r.calls++
 	return nil
 }
 
-func (r *recordingApplier) ActiveRevision(ctx context.Context) uint64 {
+func (r *recordingApplier) ActiveRevision() uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.active

@@ -14,14 +14,11 @@ import (
 // (sanitize imports compression; the reverse would cycle). If either side
 // drifts, Invalidate cascades would delete the wrong keys and the L3
 // SanitizeMapRef would point at nothing.
-//
-// T11-P0 v2: keys now include tenantHash; pin with explicit tenant to ensure
-// both sides hash the same way.
 func TestSessionSanitizeRedisKeyMatches(t *testing.T) {
-	if got, want := compression.SessionSanitizeRedisKey("tA", "s1"), SanitizeRedisKey("tA", "s1"); got != want {
+	if got, want := compression.SessionSanitizeRedisKey("s1"), SanitizeRedisKey("s1"); got != want {
 		t.Fatalf("map key drift: compression=%q sanitize=%q", got, want)
 	}
-	if got, want := compression.SessionSanitizeOffsetRedisKey("tA", "s1"), SanitizeOffsetRedisKey("tA", "s1"); got != want {
+	if got, want := compression.SessionSanitizeOffsetRedisKey("s1"), SanitizeOffsetRedisKey("s1"); got != want {
 		t.Fatalf("offset key drift: compression=%q sanitize=%q", got, want)
 	}
 }
@@ -30,9 +27,6 @@ func TestSessionSanitizeRedisKeyMatches(t *testing.T) {
 // input middleware rewrites the body, the downstream handler must see BOTH
 // the placeholder map (legacy context value) and the compression.SanitizeInfo
 // bridge payload used to populate SessionState v8 L3 fields.
-//
-// T11-P0 v2: MapRef 必须包含 tenantHash；测试在 request 上设 X-Gw-Tenant-Id，
-// 期望 middleware 与 mirror 函数一致。
 func TestMiddlewarePublishesSanitizeInfo(t *testing.T) {
 	mw, err := NewSanitizeInputMiddleware(mustSanitizer(t), nil, 0)
 	if err != nil {
@@ -52,16 +46,15 @@ func TestMiddlewarePublishesSanitizeInfo(t *testing.T) {
 	body := `{"model":"m","messages":[{"role":"user","content":"call me at 13800138000 or mail a@b.com"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("X-Gw-Session-Id", "sess-sc1")
-	req.Header.Set("X-Gw-Tenant-Id", "tenant-sc1")
 	rec := httptest.NewRecorder()
 	mw.Wrap(next).ServeHTTP(rec, req)
 
 	if !infoOK {
 		t.Fatal("SanitizeInfo missing from context after sanitization")
 	}
-	wantRef := compression.SessionSanitizeRedisKey(HashTenant("tenant-sc1"), "sess-sc1")
-	if gotInfo.MapRef != wantRef {
-		t.Fatalf("MapRef = %q, want %q", gotInfo.MapRef, wantRef)
+	wantMapRef := compression.SessionSanitizeRedisKey(HashTenant("_unknown"), "sess-sc1")
+	if gotInfo.MapRef != wantMapRef {
+		t.Fatalf("MapRef = %q, want %q", gotInfo.MapRef, wantMapRef)
 	}
 	if gotInfo.Stats.PlaceholderCount != 2 {
 		t.Fatalf("PlaceholderCount = %d, want 2 (phone + email)", gotInfo.Stats.PlaceholderCount)
@@ -71,6 +64,87 @@ func TestMiddlewarePublishesSanitizeInfo(t *testing.T) {
 	}
 	if gotInfo.Stats.SanitizedAt == 0 {
 		t.Fatal("SanitizedAt must be stamped")
+	}
+	if len(gotInfo.MessageRefs) != 1 {
+		t.Fatalf("MessageRefs len = %d, want 1", len(gotInfo.MessageRefs))
+	}
+	ref := gotInfo.MessageRefs[0]
+	if ref.RawIndex != 0 || ref.SanitizedIndex != 0 || !ref.Changed || ref.PlaceholderCount != 2 {
+		t.Errorf("message provenance = %+v, want index 0/0 changed with 2 placeholders", ref)
+	}
+	if ref.RawHash == "" || ref.SanitizedHash == "" || ref.RawHash == ref.SanitizedHash {
+		t.Errorf("message provenance hashes = raw:%q sanitized:%q, want distinct non-empty hashes", ref.RawHash, ref.SanitizedHash)
+	}
+	if strings.Contains(ref.RawHash, "13800138000") || strings.Contains(ref.RawHash, "a@b.com") {
+		t.Fatal("message provenance hash must not contain original PII")
+	}
+}
+
+func TestMiddlewareUsesBodySessionIDForSanitizeOwnership(t *testing.T) {
+	mw, err := NewSanitizeInputMiddleware(mustSanitizer(t), nil, 0)
+	if err != nil {
+		t.Fatalf("middleware: %v", err)
+	}
+	var got compression.SanitizeInfo
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = compression.SanitizeInfoFromContext(r.Context())
+	})
+	body := `{"session_id":"body-session","messages":[{"role":"user","content":"call 13800138000"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	mw.Wrap(next).ServeHTTP(httptest.NewRecorder(), req)
+	want := compression.SessionSanitizeRedisKey(HashTenant("_unknown"), "body-session")
+	if got.MapRef != want {
+		t.Fatalf("body session MapRef = %q, want %q", got.MapRef, want)
+	}
+}
+
+func TestMiddlewareBodySessionIDOverridesConflictingHeader(t *testing.T) {
+	mw, err := NewSanitizeInputMiddleware(mustSanitizer(t), nil, 0)
+	if err != nil {
+		t.Fatalf("middleware: %v", err)
+	}
+	var got compression.SanitizeInfo
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = compression.SanitizeInfoFromContext(r.Context())
+	})
+	body := `{"session_id":"body-session","messages":[{"role":"user","content":"mail a@b.com"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("X-Gw-Session-Id", "header-session")
+	mw.Wrap(next).ServeHTTP(httptest.NewRecorder(), req)
+	want := compression.SessionSanitizeRedisKey(HashTenant("_unknown"), "body-session")
+	if got.MapRef != want {
+		t.Fatalf("conflicting session MapRef = %q, want %q", got.MapRef, want)
+	}
+}
+
+func TestMiddlewarePublishesMessageLevelProvenanceForUnchangedMessages(t *testing.T) {
+	mw, err := NewSanitizeInputMiddleware(mustSanitizer(t), nil, 0)
+	if err != nil {
+		t.Fatalf("middleware: %v", err)
+	}
+
+	var got compression.SanitizeInfo
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = compression.SanitizeInfoFromContext(r.Context())
+	})
+	body := `{"model":"m","messages":[{"role":"system","content":"plain"},{"role":"user","content":"call 13800138000"},{"role":"assistant","content":"reply"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("X-Gw-Session-Id", "sess-provenance")
+	mw.Wrap(next).ServeHTTP(httptest.NewRecorder(), req)
+
+	if len(got.MessageRefs) != 3 {
+		t.Fatalf("MessageRefs len = %d, want one ref per message", len(got.MessageRefs))
+	}
+	if got.MessageRefs[0].Changed || got.MessageRefs[2].Changed {
+		t.Fatalf("unchanged messages incorrectly marked changed: %+v", got.MessageRefs)
+	}
+	if !got.MessageRefs[1].Changed || got.MessageRefs[1].PlaceholderCount != 1 {
+		t.Fatalf("sanitized message provenance = %+v", got.MessageRefs[1])
+	}
+	for i, ref := range got.MessageRefs {
+		if ref.RawIndex != i || ref.SanitizedIndex != i || ref.RawHash == "" || ref.SanitizedHash == "" {
+			t.Errorf("ref[%d] = %+v, want aligned non-empty fingerprints", i, ref)
+		}
 	}
 }
 

@@ -361,27 +361,27 @@ COMMENT ON FUNCTION cleanup_expired_session_turn_logs() IS
 DO $$
 BEGIN
     -- 验证表存在
-    IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'gateway' AND tablename = 'sessions') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'sessions') THEN
         RAISE EXCEPTION 'Table public.sessions not created';
     END IF;
-    
-    IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'gateway' AND tablename = 'session_turns') THEN
+
+    IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'session_turns') THEN
         RAISE EXCEPTION 'Table public.session_turns not created';
     END IF;
-    
-    IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'gateway' AND tablename = 'session_bodies') THEN
+
+    IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'session_bodies') THEN
         RAISE EXCEPTION 'Table public.session_bodies not created';
     END IF;
-    
-    IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'gateway' AND tablename = 'session_turn_logs') THEN
+
+    IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'session_turn_logs') THEN
         RAISE EXCEPTION 'Table public.session_turn_logs not created';
     END IF;
-    
+
     -- 验证RLS已启用
     IF NOT EXISTS (
-        SELECT 1 FROM pg_tables 
-        WHERE schemaname = 'gateway' 
-        AND tablename = 'sessions' 
+        SELECT 1 FROM pg_tables
+        WHERE schemaname = 'public'
+        AND tablename = 'sessions'
         AND rowsecurity = true
     ) THEN
         RAISE EXCEPTION 'RLS not enabled on public.sessions';

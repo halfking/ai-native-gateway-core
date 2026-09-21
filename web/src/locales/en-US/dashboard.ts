@@ -6,6 +6,7 @@
 export default {
   title: 'Dashboard',
   refresh: 'Refresh',
+  modelsSelectedCount: '{n} models selected',  // R50 ModelPicker compact trigger
   tabs: {
     board: 'Board',
     liveStream: 'Live Request Stream',
@@ -230,6 +231,9 @@ export default {
         failure: 'Request failed',
       },
       tokenFormat: '{p} + {c}',
+      cache: 'Cache',
+      cacheFormat: 'read {r} / write {w} (hit {pct})',
+      sessionId: 'Session',
     },
     connecting: 'Connecting…',
     reconnecting: 'Reconnecting…',
@@ -237,6 +241,7 @@ export default {
     empty: 'No live requests',
     emptyWaiting: 'Waiting for live request stream data…',
     groupByQueue: 'By Queue',
+    groupByCredential: 'By credential',
     groupByVendor: 'By vendor',
     groupByProvider: 'By provider',
     groupByModel: 'By model',
@@ -262,6 +267,7 @@ export default {
     filterAllOptions: 'All',
     filterEmpty: 'No options available',
     filterModel: 'Model',
+    filterGroup: 'Filter',
     filterProvider: 'Provider',
     filterVendor: 'Vendor',
     filterAgent: 'Client',  // 2026-07-27
@@ -289,6 +295,7 @@ export default {
     idleReasonNoTraffic: 'No traffic (5 minutes idle)',
     cacheWindow: 'Cache / window',
     connectionDetailTitle: 'Click for connection details',
+    dimensionCredential: 'Credential',
     dimensionVendor: 'Vendor',
     dimensionProvider: 'Provider',
     dimensionModel: 'Model',

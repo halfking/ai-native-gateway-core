@@ -9,7 +9,8 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
-      - ./rules:/etc/prometheus/rules
+      - ./rules:/etc/prometheus/rules:ro
+      - ./alerts:/etc/prometheus/alerts:ro
       # 2026-08-06: secrets/admin_token is required by the new
       # llm-gateway scrape job (bearer_token_file in prometheus.yml).
       # Create the file with `echo "$LLM_GATEWAY_ADMIN_API_KEY" > secrets/admin_token`
@@ -77,6 +78,12 @@ services:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning
       - ./dashboards:/etc/grafana/provisioning/telemetry-dashboards:ro
+      - ./grafana/r12-raw-sink-rollout.json:/etc/grafana/provisioning/dashboards/r12-raw-sink-rollout.json:ro
+      # The proxy dashboards live in deploy/grafana; mount them read-only into the existing file provider path.
+      - ../grafana/proxy-overview-dashboard.json:/etc/grafana/provisioning/dashboards/proxy-overview-dashboard.json:ro
+      - ../grafana/proxy-node-dashboard.json:/etc/grafana/provisioning/dashboards/proxy-node-dashboard.json:ro
+      - ../grafana/proxy-performance-dashboard.json:/etc/grafana/provisioning/dashboards/proxy-performance-dashboard.json:ro
+      - ../grafana/proxy-subscription-dashboard.json:/etc/grafana/provisioning/dashboards/proxy-subscription-dashboard.json:ro
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}

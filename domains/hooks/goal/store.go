@@ -25,9 +25,14 @@ func (s *PGStore) GetSession(ctx context.Context, tenantID, sessionID string) (*
 	                 completed_at, audit_result, created_at,
 	                 COALESCE(model_switch_count, 0),
 	                 COALESCE(repeat_count, 0),
-	                 COALESCE(last_response_hash, ''),
-	                 COALESCE(current_model, '')
-	          FROM goal_sessions WHERE tenant_id = $1 AND session_id = $2`
+		                 COALESCE(last_response_hash, ''),
+		                 COALESCE(current_model, ''),
+		                 COALESCE(continue_attempt, 0),
+		                 COALESCE(last_completion_judgement, ''),
+		                 COALESCE(sub_agents_total, 0),
+		                 COALESCE(sub_agents_completed, 0),
+		                 COALESCE(sub_agents_pending, 0)
+		          FROM goal_sessions WHERE tenant_id = $1 AND session_id = $2`
 
 	var session Session
 	var completedAt sql.NullTime
@@ -38,7 +43,8 @@ func (s *PGStore) GetSession(ctx context.Context, tenantID, sessionID string) (*
 		&session.RetryCount, &session.DecisionCount, &session.AutoContinueCount,
 		&session.LastActivityAt, &completedAt, &auditResult, &session.CreatedAt,
 		&session.ModelSwitchCount, &session.RepeatCount, &session.LastResponseHash,
-		&session.CurrentModel,
+		&session.CurrentModel, &session.ContinueAttempt, &session.LastCompletionJudgement,
+		&session.SubAgentsTotal, &session.SubAgentsCompleted, &session.SubAgentsPending,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -61,12 +67,16 @@ func (s *PGStore) CreateSession(ctx context.Context, session *Session) error {
 	                                      retry_count, decision_count, auto_continue_count,
 	                                      last_activity_at, created_at,
 	                                      model_switch_count, repeat_count,
-	                                      last_response_hash, current_model)
-	          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, 0, '', $10)`
+	                                      last_response_hash, current_model,
+	                                      continue_attempt, last_completion_judgement,
+	                                      sub_agents_total, sub_agents_completed, sub_agents_pending)
+	          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, 0, '', $10, $11, $12, $13, $14, $15)`
 	_, err := s.db.ExecContext(ctx, query,
 		session.SessionID, session.TenantID, session.State, session.OriginalGoal,
 		session.RetryCount, session.DecisionCount, session.AutoContinueCount,
 		session.LastActivityAt, session.CreatedAt, session.CurrentModel,
+		session.ContinueAttempt, session.LastCompletionJudgement,
+		session.SubAgentsTotal, session.SubAgentsCompleted, session.SubAgentsPending,
 	)
 	return err
 }
@@ -191,5 +201,62 @@ func (s *PGStore) AddRetryCount(ctx context.Context, tenantID, sessionID string,
 	_, err := s.db.ExecContext(ctx, `UPDATE goal_sessions
 		SET retry_count = retry_count + $3, last_activity_at = NOW()
 		WHERE tenant_id = $1 AND session_id = $2`, tenantID, sessionID, delta)
+	return err
+}
+
+// RecordSubAgents (2026-09-03) persists the latest client-reported sub-agent
+// snapshot into goal_sessions. Used by the CompletionDetector sub-agent gate
+// (hasPendingSubAgents) and by the goal-mode continue payload builder.
+//
+// Fail-open: any error is logged and swallowed — sub-agent reporting is a
+// best-effort signal, never a blocker for goal execution.
+func (s *PGStore) RecordSubAgents(ctx context.Context, tenantID, sessionID string, total, completed, pending int) error {
+	if s == nil || s.db == nil || tenantID == "" || sessionID == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE goal_sessions
+		SET sub_agents_total = $3,
+		    sub_agents_completed = $4,
+		    sub_agents_pending = $5,
+		    last_sub_agents_report_at = NOW(),
+		    last_activity_at = NOW()
+		WHERE tenant_id = $1 AND session_id = $2`,
+		tenantID, sessionID, total, completed, pending)
+	return err
+}
+
+// ClaimContinueAttempt atomically reserves a client-signal attempt before the
+// signal is emitted. The returned attempt is 1-based. A false claim means the
+// session is missing or its signal budget is exhausted.
+func (s *PGStore) ClaimContinueAttempt(ctx context.Context, tenantID, sessionID string, maxAllowed int) (int, bool, error) {
+	if s == nil || s.db == nil || tenantID == "" || sessionID == "" || maxAllowed <= 0 {
+		return 0, false, nil
+	}
+	var attempt int
+	err := s.db.QueryRowContext(ctx, `UPDATE goal_sessions
+		SET continue_attempt = continue_attempt + 1,
+		    last_activity_at = NOW()
+		WHERE tenant_id = $1 AND session_id = $2 AND continue_attempt < $3
+		RETURNING continue_attempt`, tenantID, sessionID, maxAllowed).Scan(&attempt)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return attempt, true, nil
+}
+
+// RecordLastCompletionJudgement (2026-09-03) persists the latest detector
+// verdict. Useful for debugging "why did the goal decide to fire/not-fire".
+func (s *PGStore) RecordLastCompletionJudgement(ctx context.Context, tenantID, sessionID, judgement string) error {
+	if s == nil || s.db == nil || tenantID == "" || sessionID == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE goal_sessions
+		SET last_completion_judgement = $3,
+		    last_activity_at = NOW()
+		WHERE tenant_id = $1 AND session_id = $2`,
+		tenantID, sessionID, judgement)
 	return err
 }

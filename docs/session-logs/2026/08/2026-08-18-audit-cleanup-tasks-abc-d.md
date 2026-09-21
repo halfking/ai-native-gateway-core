@@ -26,7 +26,7 @@
 ## 3. 为什么这样做
 
 - **任务 A**（rule 31 §1 + rule 39）：PROJECT_CONFIG.md 是 AI 每次会话首读文件，但其指向已废弃
-  的 184 server + 含明文密码 `Veritrans&9527` / `Kaixuan2026&#*9527`（后者已在
+  的 184 server + 含明文密码 `__REDACTED_SSH_PASSWORD__` / `__REDACTED_SSH_PASSWORD__`（后者已在
   `scripts/scan-secrets.replacements` 已知泄露列表）。不修会误导未来会话。
 - **任务 B**：3b6bdce18 已修复 metric 注册问题但未部署到 245；5 条告警规则
   (`CredentialReveal*Spike` / `*CachedAmplification` / `*NotFoundDrift` / `*TotalStalled`)
@@ -45,7 +45,7 @@
 |---|---|
 | PROJECT_CONFIG.md redact 彻底 | `bash scripts/scan-secrets.sh --paths=PROJECT_CONFIG.md` → 0 BLOCK，8 WARN（仅 `kxpms.cn` 公网域名）|
 | pre-commit-check.sh | PASS=4 FAIL=0 WARN=0 SKIP=2（go vet / SQL / migration NNN / migration down.sql 全过；vue-tsc 与 token compliance 因 web 文件未变更自动 skip）|
-| 占位符 ↔ SSOT 对账 | `<env:HOST_154>` ↔ `envs/servers/47.97.111.154/metadata.yaml:1` ✓；`<env:SSHPASS>` ↔ `envs/common/ssh-keys.yaml:9` ✓；`<env:COMMON_PG_*>` ↔ `envs/common/database.yaml:9-10,26-27` ✓ |
+| 占位符 ↔ SSOT 对账 | `<env:HOST_154>` ↔ `envs/servers/<env:HOST_154_IP>/metadata.yaml:1` ✓；`<env:SSHPASS>` ↔ `envs/common/ssh-keys.yaml:9` ✓；`<env:COMMON_PG_*>` ↔ `envs/common/database.yaml:9-10,26-27` ✓ |
 | 245 deploy 状态 | `curl http://localhost:8781/api/system/version` → `{"build_seq":1617,"git_sha":"d7ebf25f7","version":"v2.5.0"}` ✓ |
 | 245 metric 可见 | `curl /metrics` 输出 `llmgw_credential_reveal_failure_total{provider_id="0",reason="<7 reasons>"} = 0` 全部 7 系列 ✓ |
 | Prometheus 抓取 | `curl http://127.0.0.1:9090/api/v1/query?query=llmgw_credential_reveal_failure_total` → series count: 7 ✓ |
@@ -55,7 +55,7 @@
 
 ## 5. 遗留与风险
 
-- **shell 中 `LLM_GATEWAY_ADMIN_PASSWORD=Veritrans&9527` 明文残留**（env-injector list 输出捕获）：
+- **shell 中 `LLM_GATEWAY_ADMIN_PASSWORD=__REDACTED_SSH_PASSWORD__` 明文残留**（env-injector list 输出捕获）：
   不在本任务范围（rule 11 §1 + rule 42 防止越界）。但提示此前某次部署/初始化脚本把
   明文密码 export 到环境变量。建议 owner 单独 PR 排查（哪些脚本会 export？是否走
   `<env:...>` 占位符更安全？）。

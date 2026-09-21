@@ -28,21 +28,32 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	"github.com/kaixuan/llm-gateway-go/modelname"
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
+
+// offerQuerier is the DB surface the model-offer handlers need. Both
+// *pgxpool.Pool (production) and pgxmock.PgxPoolIface (handler-level
+// regression tests, provider_offer_force_recover_test.go) satisfy it —
+// same mockability pattern as pgxQueryer in quality_correlations.go.
+type offerQuerier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
 func (h *Handler) handleProviderModelOffer(w http.ResponseWriter, r *http.Request, providerID int, offerPath string) {
 	if offerPath == "" {
-		if r.Method == http.MethodPost {
-			h.createProviderOffer(w, r, providerID)
-			return
-		}
 		writeError(w, http.StatusBadRequest, "offer_id required")
 		return
 	}
@@ -73,9 +84,19 @@ func (h *Handler) handleProviderModelOffer(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, providerID, offerID int) {
+	serveUpdateModelOffer(w, r, h.db, providerID, offerID)
+}
+
+func serveUpdateModelOffer(w http.ResponseWriter, r *http.Request, db offerQuerier, providerID, offerID int) {
 	var req struct {
 		StandardizedName *string `json:"standardized_name"`
 		CanonicalID      *int    `json:"canonical_id"`
+		// ClearCanonicalID unlinks the standard model entirely. Needed as a
+		// separate flag because "canonical_id": null is indistinguishable
+		// from an omitted field, AND because the model_offers INSTEAD OF
+		// UPDATE trigger COALESCEs canonical_id — a NULL write through the
+		// view would silently keep the old value.
+		ClearCanonicalID bool `json:"clear_canonical"`
 		// OutboundModelName is the upstream-side model identifier — e.g. a
 		// Volcano Ark endpoint ID like "ep-20241227XXXX".  When set, the
 		// gateway uses this instead of raw_model_name when calling the
@@ -88,8 +109,14 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		// clears it (falls back to models_canonical). This is the per-credential
 		// lever the operator needs when a provider's real context window
 		// diverges from the standardized catalog value.
-		ContextWindow *int `json:"context_window"`
+		ContextWindow        *int     `json:"context_window"`
+		UnitPriceInPer1M     *float64 `json:"unit_price_in_per_1m"`
+		UnitPriceOutPer1M    *float64 `json:"unit_price_out_per_1m"`
+		CacheReadPricePer1M  *float64 `json:"cache_read_price_per_1m"`
+		CacheWritePricePer1M *float64 `json:"cache_write_price_per_1m"`
+		BillingMode          *string  `json:"billing_mode"`
 	}
+
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
@@ -100,7 +127,7 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 
 	var currentID int
 	var rawName string
-	err := h.db.QueryRow(ctx, `
+	err := db.QueryRow(ctx, `
 		SELECT mo.id, mo.raw_model_name FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		WHERE mo.id = $1 AND c.provider_id = $2
@@ -110,56 +137,120 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		return
 	}
 
-	if req.CanonicalID != nil {
+	// R16 (2026-09-12) audit P3: the canonical-set / standardized branches
+	// were errcheck-silent — a failed UPDATE still returned 200 with stale
+	// read-back (the operator believes the edit landed). Track partial
+	// failures, warn, and surface them in the response.
+	var partialErrors []string
+	if req.ClearCanonicalID {
+		// Write provider_models directly: the view trigger's COALESCE
+		// would keep the old canonical_id on a NULL write.
+		// 2026-09-11 audit fix: locate the row via the binding
+		// (model_offers.id IS credential_model_bindings.id) — the previous
+		// "c.id = pm.provider_id" join compared a credential id against a
+		// PROVIDER id and never matched a single row, silently no-oping.
+		// The cmb.id = $1 locator is regression-pinned by
+		// TestUpdateModelOffer_ClearCanonical_UsesBindingJoin.
+		// Migration 693: canonical_cleared_at is the persistent admin-unbind
+		// marker — without it the next discovery refresh re-linked the offer
+		// via UpsertCredentialModel's COALESCE(EXCLUDED.canonical_id, ...)
+		// within one cycle, so the operator's unlink silently reverted.
+		tag, err := db.Exec(ctx, `
+			UPDATE provider_models pm
+			SET canonical_id = NULL,
+			    canonical_cleared_at = now(),
+			    updated_at = now()
+			WHERE pm.id = (
+				SELECT cmb.provider_model_id FROM credential_model_bindings cmb
+				WHERE cmb.id = $1
+			)
+		`, offerID)
+		if err != nil {
+			slog.Warn("clear canonical_id failed",
+				"offer_id", offerID, "provider_id", providerID, "error", err)
+			partialErrors = append(partialErrors, "clear_canonical: "+err.Error())
+		} else if tag.RowsAffected() == 0 {
+			slog.Warn("clear canonical_id matched no provider_models row",
+				"offer_id", offerID, "provider_id", providerID)
+			partialErrors = append(partialErrors, "clear_canonical: no provider_models row matched")
+		}
+	} else if req.CanonicalID != nil {
 		var canonName string
-		err := h.db.QueryRow(ctx, `SELECT canonical_name FROM models_canonical WHERE id = $1`, *req.CanonicalID).Scan(&canonName)
+		err := db.QueryRow(ctx, `SELECT canonical_name FROM models_canonical WHERE id = $1`, *req.CanonicalID).Scan(&canonName)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "canonical model not found")
 			return
 		}
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE model_offers SET canonical_id = $1 WHERE id = $2`, *req.CanonicalID, offerID)
+		if _, err := db.Exec(ctx, `UPDATE model_offers SET canonical_id = $1 WHERE id = $2`, *req.CanonicalID, offerID); err != nil {
+			slog.Warn("set canonical_id failed", "offer_id", offerID, "error", err)
+			partialErrors = append(partialErrors, "canonical_id: "+err.Error())
+		}
+		// Migration 693: an explicit canonical re-link (this PATCH, i.e. the
+		// operator picking a standard model in the frontend) lifts the
+		// admin-unbind marker so discovery maintains the link again. The
+		// model_offers INSTEAD OF UPDATE trigger doesn't know the column,
+		// so clear it on the base table, using the same binding locator as
+		// the clear_canonical branch above.
+		if _, err := db.Exec(ctx, `
+			UPDATE provider_models
+			SET canonical_cleared_at = NULL, updated_at = now()
+			WHERE id = (
+				SELECT cmb.provider_model_id FROM credential_model_bindings cmb
+				WHERE cmb.id = $1
+			)
+		`, offerID); err != nil {
+			slog.Warn("lift canonical_cleared_at failed", "offer_id", offerID, "error", err)
+			partialErrors = append(partialErrors, "canonical_cleared_at: "+err.Error())
+		}
 		if req.StandardizedName == nil {
-			//nolint:errcheck // best-effort exec, non-critical
-			h.db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, canonName, offerID)
+			if _, err := db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, canonName, offerID); err != nil {
+				slog.Warn("mirror standardized_name to model_offers failed", "offer_id", offerID, "error", err)
+				partialErrors = append(partialErrors, "standardized_name: "+err.Error())
+			}
 			// 2026-06-19 audit: mirror the write to the underlying
 			// provider_models table.  model_offers is a VIEW with an
 			// INSTEAD OF UPDATE trigger that re-derives standardized_name
 			// from raw_model_name on conflict, which was clobbering the
 			// admin's manual edit ("一会就被刷新").  Writing both sides
 			// keeps the view and the base table in lockstep.
-			//nolint:errcheck // best-effort exec, non-critical
-			h.db.Exec(ctx, `
+			// 2026-09-11 audit fix: locate the row via the binding
+			// (model_offers.id IS credential_model_bindings.id).  The
+			// previous join compared a credential id against the PROVIDER
+			// id column and never updated anything.
+			if _, err := db.Exec(ctx, `
 				UPDATE provider_models
-				SET standardized_name = $1
+				SET standardized_name = $1, updated_at = now()
 				WHERE id = (
-					SELECT pm.id FROM provider_models pm
-					JOIN model_offers mo ON mo.raw_model_name = pm.raw_model_name
-					JOIN credentials c ON c.id = pm.provider_id AND c.id = mo.credential_id
-					WHERE mo.id = $2
-					LIMIT 1
+					SELECT cmb.provider_model_id FROM credential_model_bindings cmb
+					WHERE cmb.id = $2
 				)
-			`, canonName, offerID)
+			`, canonName, offerID); err != nil {
+				slog.Warn("mirror standardized_name to provider_models failed", "offer_id", offerID, "error", err)
+				partialErrors = append(partialErrors, "standardized_name_mirror: "+err.Error())
+			}
 		}
 	}
 
 	if req.StandardizedName != nil {
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, *req.StandardizedName, offerID)
+		if _, err := db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, *req.StandardizedName, offerID); err != nil {
+			slog.Warn("set standardized_name failed", "offer_id", offerID, "error", err)
+			partialErrors = append(partialErrors, "standardized_name: "+err.Error())
+		}
 		// 2026-06-19 audit: mirror to provider_models so the view's
 		// INSTEAD OF UPDATE trigger cannot re-clobber the value.
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `
+		// 2026-09-11 audit fix: same provider-id/credential-id join bug as
+		// above — see the canonical_id branch for details.
+		if _, err := db.Exec(ctx, `
 			UPDATE provider_models
-			SET standardized_name = $1
+			SET standardized_name = $1, updated_at = now()
 			WHERE id = (
-				SELECT pm.id FROM provider_models pm
-				JOIN model_offers mo ON mo.raw_model_name = pm.raw_model_name
-				JOIN credentials c ON c.id = pm.provider_id AND c.id = mo.credential_id
-				WHERE mo.id = $2
-				LIMIT 1
+				SELECT cmb.provider_model_id FROM credential_model_bindings cmb
+				WHERE cmb.id = $2
 			)
-		`, *req.StandardizedName, offerID)
+		`, *req.StandardizedName, offerID); err != nil {
+			slog.Warn("mirror standardized_name to provider_models failed", "offer_id", offerID, "error", err)
+			partialErrors = append(partialErrors, "standardized_name_mirror: "+err.Error())
+		}
 	}
 
 	// outbound_model_name is independent of canonical_id / standardized_name;
@@ -167,7 +258,7 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 	// Use NULLIF('') so that an explicit empty string clears the column
 	// (reverting to raw_model_name at query time).
 	if req.OutboundModelName != nil {
-		if _, err := h.db.Exec(ctx, `
+		if _, err := db.Exec(ctx, `
 			UPDATE model_offers
 			SET outbound_model_name = NULLIF($1, ''),
 			    updated_at = NOW()
@@ -184,7 +275,26 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		)
 	}
 
-	// 522: per-credential×model context window calibration. We write the
+	if req.UnitPriceInPer1M != nil || req.UnitPriceOutPer1M != nil || req.CacheReadPricePer1M != nil || req.CacheWritePricePer1M != nil || req.BillingMode != nil {
+		if req.BillingMode != nil && *req.BillingMode != "" && !isValidBillingMode(*req.BillingMode) {
+			writeError(w, http.StatusBadRequest, "invalid billing_mode")
+			return
+		}
+		if _, err := db.Exec(ctx, `
+				UPDATE credential_model_bindings
+				SET unit_price_in_per_1m = COALESCE($1, unit_price_in_per_1m),
+				    unit_price_out_per_1m = COALESCE($2, unit_price_out_per_1m),
+				    cache_read_price_per_1m = COALESCE($3, cache_read_price_per_1m),
+				    cache_write_price_per_1m = COALESCE($4, cache_write_price_per_1m),
+				    billing_mode = COALESCE(NULLIF($5, ''), billing_mode), updated_at = now()
+				WHERE id = $6
+			`, req.UnitPriceInPer1M, req.UnitPriceOutPer1M, req.CacheReadPricePer1M, req.CacheWritePricePer1M, req.BillingMode, offerID); err != nil {
+			writeError(w, http.StatusInternalServerError, "update pricing failed")
+			return
+		}
+		invalidateRoutingCaches(r.Context(), db, "credential_model_bindings", offerID)
+	}
+
 	// credential_model_bindings row directly (not via the model_offers view)
 	// because the INSTEAD OF UPDATE trigger uses COALESCE() and cannot express
 	// "clear the override to NULL" — the only way to fall back to the canonical
@@ -194,7 +304,7 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 	// an operator decision.
 	if req.ContextWindow != nil {
 		if *req.ContextWindow > 0 {
-			if _, err := h.db.Exec(ctx, `
+			if _, err := db.Exec(ctx, `
 				UPDATE credential_model_bindings
 				SET context_window_override = $1,
 				    context_window_source = 'manual',
@@ -206,7 +316,7 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 				return
 			}
 		} else {
-			if _, err := h.db.Exec(ctx, `
+			if _, err := db.Exec(ctx, `
 				UPDATE credential_model_bindings
 				SET context_window_override = NULL,
 				    context_window_source = 'catalog',
@@ -233,31 +343,26 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		// Migration 524 widens the DB trigger to NOTIFY on the column, but we
 		// also fire an explicit NOTIFY here (matching the other manual-override
 		// endpoints) so a missed DB-event path can't strand sibling processes.
-		invalidateRoutingCaches(r.Context(), h.db, "credential_model_bindings", offerID)
+		invalidateRoutingCaches(r.Context(), db, "credential_model_bindings", offerID)
 	}
 
-	var result struct {
-		ID                    int     `json:"id"`
-		RawModelName          string  `json:"raw_model_name"`
-		StandardizedName      *string `json:"standardized_name"`
-		CanonicalID           *int    `json:"canonical_id"`
-		CanonicalName         *string `json:"canonical_name"`
-		OutboundModelName     *string `json:"outbound_model_name"`
-		ContextWindow         *int    `json:"context_window"`
-		ContextWindowOverride *int    `json:"context_window_override"`
-	}
+	var result offerUpdateResult
 	//nolint:errcheck // scan error non-critical
-	h.db.QueryRow(ctx, `
+	db.QueryRow(ctx, `
 		SELECT mo.id, mo.raw_model_name, mo.standardized_name, mo.canonical_id,
 		       mc.canonical_name, mo.outbound_model_name,
 		       COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
-		       mo.context_window_override
+		       mo.context_window_override, cmb.unit_price_in_per_1m, cmb.unit_price_out_per_1m,
+		       cmb.cache_read_price_per_1m, cmb.cache_write_price_per_1m, cmb.billing_mode
 		FROM model_offers mo
 		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
+		LEFT JOIN credential_model_bindings cmb ON cmb.id = mo.id
 		WHERE mo.id = $1
 	`, offerID).Scan(&result.ID, &result.RawModelName, &result.StandardizedName,
 		&result.CanonicalID, &result.CanonicalName, &result.OutboundModelName,
-		&result.ContextWindow, &result.ContextWindowOverride)
+		&result.ContextWindow, &result.ContextWindowOverride, &result.UnitPriceInPer1M,
+		&result.UnitPriceOutPer1M, &result.CacheReadPricePer1M, &result.CacheWritePricePer1M,
+		&result.BillingMode)
 
 	// 2026-06-19 audit: any PATCH that touches standardized_name /
 	// canonical_id / outbound_model_name can change the data
@@ -265,29 +370,85 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 	// process-wide cache so the next page render re-reads the DB.
 	// 522: context_window also feeds the candidate trim threshold, so a
 	// calibration change must flush the cache too.
-	if req.CanonicalID != nil || req.StandardizedName != nil || req.OutboundModelName != nil || req.ContextWindow != nil {
+	if req.ClearCanonicalID || req.CanonicalID != nil || req.StandardizedName != nil || req.OutboundModelName != nil || req.ContextWindow != nil {
 		InvalidateAvailableModelsCache()
 	}
 
+	// R16: partial branch failures ride along as partial_errors — the 200
+	// read-back alone could reflect stale values when a branch failed.
+	if len(partialErrors) > 0 {
+		writeJSON(w, http.StatusOK, struct {
+			offerUpdateResult
+			PartialErrors []string `json:"partial_errors"`
+		}{offerUpdateResult: result, PartialErrors: partialErrors})
+		return
+	}
 	writeJSON(w, http.StatusOK, result)
 }
 
+// offerUpdateResult is the read-back payload of serveUpdateModelOffer.
+type offerUpdateResult struct {
+	ID                    int      `json:"id"`
+	RawModelName          string   `json:"raw_model_name"`
+	StandardizedName      *string  `json:"standardized_name"`
+	CanonicalID           *int     `json:"canonical_id"`
+	CanonicalName         *string  `json:"canonical_name"`
+	OutboundModelName     *string  `json:"outbound_model_name"`
+	ContextWindow         *int     `json:"context_window"`
+	ContextWindowOverride *int     `json:"context_window_override"`
+	UnitPriceInPer1M      *float64 `json:"unit_price_in_per_1m"`
+	UnitPriceOutPer1M     *float64 `json:"unit_price_out_per_1m"`
+	CacheReadPricePer1M   *float64 `json:"cache_read_price_per_1m"`
+	CacheWritePricePer1M  *float64 `json:"cache_write_price_per_1m"`
+	BillingMode           *string  `json:"billing_mode"`
+}
+
+type canonicalOption struct {
+	ID            int    `json:"id"`
+	CanonicalName string `json:"canonical_name"`
+	DisplayName   string `json:"display_name"`
+	Family        string `json:"family"`
+}
+
+// canonicalMatch is one ranked entry of the standard-model matching result
+// (modelname.MatchStandardModels) returned in the suggestions payload.
+type canonicalMatch struct {
+	ID            int     `json:"id"`
+	CanonicalName string  `json:"canonical_name"`
+	DisplayName   string  `json:"display_name"`
+	Family        string  `json:"family"`
+	Score         float64 `json:"score"`
+}
+
 func (h *Handler) getModelOfferSuggestions(w http.ResponseWriter, r *http.Request, providerID, offerID int) {
+	serveModelOfferSuggestions(w, r, h.db, providerID, offerID)
+}
+
+func serveModelOfferSuggestions(w http.ResponseWriter, r *http.Request, db offerQuerier, providerID, offerID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	var rawName string
-	err := h.db.QueryRow(ctx, `
-		SELECT mo.raw_model_name FROM model_offers mo
+	var canonicalCleared bool
+	// Migration 693: also fetch whether the operator unbound this offer
+	// (provider_models.canonical_cleared_at IS NOT NULL). model_offers.id
+	// IS credential_model_bindings.id (view definition), so the binding→
+	// provider_models hop locates the exact base row.
+	err := db.QueryRow(ctx, `
+		SELECT mo.raw_model_name,
+		       (pm.canonical_cleared_at IS NOT NULL) AS canonical_cleared
+		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
+		JOIN credential_model_bindings cmb ON cmb.id = mo.id
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		WHERE mo.id = $1 AND c.provider_id = $2
-	`, offerID, providerID).Scan(&rawName)
+	`, offerID, providerID).Scan(&rawName, &canonicalCleared)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "offer not found")
 		return
 	}
 
-	rows, err := h.db.Query(ctx, `
+	rows, err := db.Query(ctx, `
 		SELECT id, canonical_name, COALESCE(display_name,''), COALESCE(family,'')
 		FROM models_canonical WHERE status = 'active' ORDER BY canonical_name
 	`)
@@ -297,25 +458,72 @@ func (h *Handler) getModelOfferSuggestions(w http.ResponseWriter, r *http.Reques
 	}
 	defer rows.Close()
 
-	type canonicalOption struct {
-		ID            int    `json:"id"`
-		CanonicalName string `json:"canonical_name"`
-		DisplayName   string `json:"display_name"`
-		Family        string `json:"family"`
-	}
 	options := make([]canonicalOption, 0)
+	names := make([]string, 0, 64)
 	for rows.Next() {
 		var o canonicalOption
 		if err := rows.Scan(&o.ID, &o.CanonicalName, &o.DisplayName, &o.Family); err != nil {
 			continue
 		}
 		options = append(options, o)
+		names = append(names, o.CanonicalName)
+	}
+	// 2026-09-11 audit: don't silently truncate the catalog on a
+	// mid-iteration connection failure.
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "scan catalog failed: "+err.Error())
+		return
+	}
+
+	// 2026-09-10: match the raw name against the standard-model catalog
+	// instead of echoing the raw name back. "cluade/opus-5" now suggests
+	// canonical "claude-opus-5" (re-join vendor prefix + typo tolerance)
+	// and "grok/4.6" suggests "grok-4.6" (prefix join). rule_based keeps
+	// its legacy meaning (a suggested standardized_name string) but is
+	// now the matched standard name when one is confident enough.
+	byName := make(map[string]canonicalOption, len(options))
+	for _, o := range options {
+		byName[strings.ToLower(o.CanonicalName)] = o
+	}
+	ranked := modelname.MatchStandardModels(rawName, names)
+	matches := make([]canonicalMatch, 0, 8)
+	suggestedID := 0
+	ruleBased := modelname.NormalizeRouteKey(rawName)
+	// Migration 693: an admin-unbound offer gets no auto-suggestion —
+	// suggesting the very model the operator explicitly unlinked would
+	// invite a one-click undo of their decision. suggested_canonical_id
+	// stays 0 (the established "no confident match" value the frontend
+	// already handles); the ranked matches list is still returned so the
+	// operator keeps the options to re-link by hand.
+	if !canonicalCleared && len(ranked) > 0 && ranked[0].Score >= modelname.AutoLinkThreshold {
+		if o, ok := byName[strings.ToLower(ranked[0].Name)]; ok {
+			suggestedID = o.ID
+			ruleBased = o.CanonicalName
+		}
+	}
+	for _, m := range ranked {
+		o, ok := byName[strings.ToLower(m.Name)]
+		if !ok {
+			continue
+		}
+		matches = append(matches, canonicalMatch{
+			ID: o.ID, CanonicalName: o.CanonicalName,
+			DisplayName: o.DisplayName, Family: o.Family, Score: m.Score,
+		})
+		if len(matches) >= 8 {
+			break
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"offer_id":          offerID,
-		"raw_model_name":    rawName,
-		"rule_based":        rawName,
+		"offer_id":               offerID,
+		"raw_model_name":         rawName,
+		"rule_based":             ruleBased,
+		"suggested_canonical_id": suggestedID,
+		// Migration 693: lets the UI distinguish "no confident match" from
+		// "admin unbound, suggestion intentionally suppressed".
+		"canonical_cleared": canonicalCleared,
+		"matches":           matches,
 		"canonical_options": options,
 	})
 }
@@ -398,6 +606,26 @@ func (h *Handler) toggleModelOfferState(w http.ResponseWriter, r *http.Request, 
 // The model_offers INSERT trigger propagates admin_protected on fresh rows;
 // this call also covers the ON CONFLICT case where the row already existed
 // unprotected (the trigger's conflict branch leaves admin_protected as-is).
+// forceRecoverActor resolves the operator identifier for audit trails.
+// R21 (2026-09-13) audit P2: the drawer path never sends X-Admin-User, so a
+// header-only lookup collapsed every UI-triggered mutation to the constant
+// "admin" and the R16 who-dimension was lost. JWT auth context first (same
+// shape as fdActor), legacy header second, anonymous constant last.
+func forceRecoverActor(r *http.Request) string {
+	if auth := GetAuthContext(r); auth != nil {
+		if auth.Username != "" {
+			return auth.Username
+		}
+		if auth.UserID != 0 {
+			return "user-" + strconv.Itoa(auth.UserID)
+		}
+	}
+	if header := r.Header.Get("X-Admin-User"); header != "" {
+		return header
+	}
+	return "admin"
+}
+
 func (h *Handler) pinAdminProtectedOffers(ctx context.Context, credentialID int, rawModelNames []string) {
 	if h == nil || h.db == nil || len(rawModelNames) == 0 {
 		return
@@ -439,6 +667,26 @@ func (h *Handler) handleForceRecover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R16 (2026-09-12) audit P2: force-recover is a super_admin availability
+	// mutation and used to leave NO audit trail (fixed state_reason_detail
+	// string only — the exact "no who/why" pattern the 06-23 minimax incident
+	// review criticized). Actor comes from X-Admin-User; reason is accepted
+	// in the body (optional — the drawer button sends none) and folded into
+	// the model_offer_events reason_detail.
+	actor := forceRecoverActor(r)
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		body.Reason = ""
+	}
+	detail := "admin force-recover"
+	if trimmed := strings.TrimSpace(body.Reason); trimmed != "" {
+		detail = "admin force-recover: " + actor + ": " + trimmed
+	} else {
+		detail = "admin force-recover: " + actor
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -446,7 +694,8 @@ func (h *Handler) handleForceRecover(w http.ResponseWriter, r *http.Request) {
 	// When admin manually recovers a credential (e.g., after fixing revoked keys),
 	// we need to reset availability_state to 'ready' so the background recovery
 	// worker can pick it up (bg/credential_recovery.go skips suspended/auth_failed).
-	tag, err := h.db.Exec(ctx, `
+	var providerID int
+	err = h.db.QueryRow(ctx, `
 		UPDATE credentials
 		SET availability_state = CASE
 		        WHEN availability_state IN ('suspended', 'auth_failed') THEN 'ready'
@@ -454,22 +703,47 @@ func (h *Handler) handleForceRecover(w http.ResponseWriter, r *http.Request) {
 		    END,
 		    availability_recover_at = now() - INTERVAL '1 second',
 		    state_reason_code = NULL,
-		    state_reason_detail = 'admin force-recover',
+		    state_reason_detail = $2,
 		    state_updated_at = now()
 		WHERE id = $1 AND lifecycle_status = 'active'
-	`, credID)
+		RETURNING provider_id
+	`, credID, detail).Scan(&providerID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "credential not found or not active")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "update failed")
 		return
 	}
-	if tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "credential not found or not active")
-		return
+
+	// Audit trail: model_offer_events row, same ledger the manual-disable
+	// endpoints write (source='admin'), so credential availability history is
+	// queryable from one table. Best-effort: an INSERT failure must not fail
+	// the force-recover, but it is logged — it must not vanish silently.
+	if _, aerr := h.db.Exec(ctx, `
+		INSERT INTO model_offer_events
+		    (source, action, credential_id, provider_id, raw_model_name, reason_code, reason_detail)
+		VALUES ('admin', 'force_recover', $1, $2, '', 'credential_force_recover', $3)
+	`, credID, providerID, detail); aerr != nil {
+		slog.Warn("force_recover_audit_insert_failed",
+			"credential_id", credID, "error", aerr)
 	}
+
+	// R16 (2026-09-12) audit P2: mirror applyForceEnable's recovery chain
+	// (admin/routing.go) — a bare credentials-row flip leaves keys marked
+	// exhausted by the old auth result and the in-memory circuit/fpslot
+	// state filtering this node out for up to 5 minutes.
+	provider.InvalidateCredentialKeyCache(credID)
+	provider.ResetKeyRotatorForCredential(credID)
+	h.resetInMemoryNodeState(ctx, credID, providerID, "", true)
+	invalidateRoutingCaches(r.Context(), h.db, "credentials", credID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"triggered":     true,
 		"credential_id": credID,
+		"actor":         actor,
+		"detail":        detail,
 	})
 }
 
@@ -499,10 +773,7 @@ func (h *Handler) setProviderManualDisabled(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "reason is required")
 		return
 	}
-	actor := r.Header.Get("X-Admin-User")
-	if actor == "" {
-		actor = "admin"
-	}
+	actor := forceRecoverActor(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -572,10 +843,7 @@ func (h *Handler) setCredentialManualDisabled(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "reason is required")
 		return
 	}
-	actor := r.Header.Get("X-Admin-User")
-	if actor == "" {
-		actor = "admin"
-	}
+	actor := forceRecoverActor(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -708,10 +976,7 @@ func (h *Handler) setDefaultProbeModel(w http.ResponseWriter, r *http.Request, p
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	actor := r.Header.Get("X-Admin-User")
-	if actor == "" {
-		actor = "admin"
-	}
+	actor := forceRecoverActor(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -764,10 +1029,7 @@ func (h *Handler) setDefaultProbeModel(w http.ResponseWriter, r *http.Request, p
 // Looks up via request_logs (7d most-used client_model) and falls back to
 // domestic provider random pick. Manual source is preserved.
 func (h *Handler) pickDefaultProbeModel(w http.ResponseWriter, r *http.Request, providerID, credID int) {
-	actor := r.Header.Get("X-Admin-User")
-	if actor == "" {
-		actor = "admin"
-	}
+	actor := forceRecoverActor(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 

@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 
@@ -105,7 +104,7 @@ func (h *SensitiveWordsHandler) handleMatch(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req MatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
 		return
 	}

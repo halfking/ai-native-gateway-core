@@ -9,6 +9,7 @@
 package bg
 
 import (
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -257,7 +258,7 @@ func parseErrorCodeAndMessage(body string) (string, string) {
 			code = e.Error.Type
 		}
 		if code != "" || e.Error.Message != "" {
-			return code, e.Error.Message
+			return code, string(errorsx.SanitizeErrorText([]byte(e.Error.Message), 500))
 		}
 	}
 	return "", ""
@@ -301,10 +302,10 @@ func detectRateLimitKind(body, errCode string) string {
 }
 
 func truncateProbeBody(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
+	// audit R8 P1: probe error bodies reach admin UI via
+	// model_probe_runs.error_message — redact credential echoes and cut on
+	// UTF-8 boundaries (byte slicing shredded CJK into invalid UTF-8).
+	return string(errorsx.SanitizeErrorText([]byte(s), n))
 }
 
 // probeWithRetry performs up to 4 attempts with backoff. Non-retryable

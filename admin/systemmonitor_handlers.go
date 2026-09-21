@@ -85,7 +85,7 @@ func (h *Handler) handleSystemMonitorSubmit(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var req submitRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
@@ -430,7 +430,7 @@ func (h *Handler) handleSystemMonitorConcurrency(w http.ResponseWriter, r *http.
 	var body struct {
 		MonitorConcurrency int `json:"monitor_concurrency"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := readJSONRequired(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}

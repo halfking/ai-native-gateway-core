@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -57,7 +58,16 @@ func ResolveRawBinding(ctx context.Context, db DBQuerier, credentialID int, requ
 		return exact[0], nil
 	}
 	if len(exact) > 1 {
-		return "", &ambiguousError{candidates: exact}
+		// 2026-09-06 P0.3 fix: when ambiguous, select the first candidate
+		// instead of failing. This allows RestoreOnSuccess hot-path recovery
+		// to proceed even when a credential has multiple similar model bindings
+		// (e.g., MiniMax-M2.7 and MiniMax-M2.7-highspeed).
+		slog.Warn("modelbinding: ambiguous exact model binding, using first candidate",
+			"credential_id", credentialID,
+			"requested_model", requestedModel,
+			"candidates", exact,
+			"selected", exact[0])
+		return exact[0], nil
 	}
 
 	candidates, err := rawBindingCandidates(ctx, db, credentialID, modelname.NormalizeRouteKeyAliases(requestedModel), false)
@@ -70,7 +80,17 @@ func ResolveRawBinding(ctx context.Context, db DBQuerier, credentialID int, requ
 	case 1:
 		return candidates[0], nil
 	default:
-		return "", &ambiguousError{candidates: candidates}
+		// 2026-09-06 P0.3 fix: when ambiguous after normalization, select
+		// the first candidate. The normalized path is a fallback when exact
+		// matching fails, so ambiguity here is even less critical.
+		normalized := modelname.NormalizeRouteKeyAliases(requestedModel)
+		slog.Warn("modelbinding: ambiguous normalized model binding, using first candidate",
+			"credential_id", credentialID,
+			"requested_model", requestedModel,
+			"normalized", normalized,
+			"candidates", candidates,
+			"selected", candidates[0])
+		return candidates[0], nil
 	}
 }
 

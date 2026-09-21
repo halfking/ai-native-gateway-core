@@ -1,11 +1,11 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { RoutingCandidate } from '../api/routing'
 import type { LiveNodeStatus } from '../composables/liveStreamStore'
 import { statusClass } from '../utils/nodeDetailFormat'
 import { credentialDisplayName, useCredentialLabels } from '../composables/useCredentialLabels'
 import { useNodeDetailDrawerLoad, type NodeDetailTab } from '../composables/useNodeDetailDrawerLoad'
 import { useNodeDetailDrawerActions } from '../composables/useNodeDetailDrawerActions'
-import RequestLogDrawer from './RequestLogDrawer.vue'
 import NodeDetailConcurrencyPanel from './NodeDetailConcurrencyPanel.vue'
 import NodeDetailOtherModelsPanel from './NodeDetailOtherModelsPanel.vue'
 import NodeDetailAvailabilityPanel from './NodeDetailAvailabilityPanel.vue'
@@ -47,8 +47,8 @@ const {
 } = load
 
 const {
-  jumpToSessionSummary, openRequestDetail, closeRequestDetail,
-  testNow, saveSettings, onEmergencyApplied, setCredentialDisabled, toggleSelectedModel,
+  openRequestDetail,
+  testNow, saveSettings, changeLifecycle, onEmergencyApplied, setCredentialDisabled, toggleSelectedModel,
 } = useNodeDetailDrawerActions({
   emit, canEdit, currentNode, candidate, selectedModel, selectedModelStatus,
   saving, actionMessage, actionError, pingResult, lifecycle, manualPriority, priorityFlag, routingTier, weight,
@@ -56,6 +56,14 @@ const {
 })
 
 const node = currentNode
+// 2026-09-05: 人工禁用状态（设置与维护 tab 展示 + 解禁入口）。
+// monitor.summary 的 manual_disabled 是权威来源；实时流节点作为兜底，
+// state_reason_detail 用于在禁用时展示原因说明。
+const manualDisabled = computed(() => monitor.value?.manual_disabled || currentNode.value?.manual_disabled || false)
+const manualStateDetail = computed(() => {
+  if (!manualDisabled.value) return ''
+  return monitor.value?.state_reason_detail || monitor.value?.state_reason_code || ''
+})
 </script>
 
 <template>
@@ -154,7 +162,9 @@ const node = currentNode
               :ping-result="pingResult"
               :candidate="candidate"
               :candidate-loading="candidateLoading"
-              v-model:lifecycle="lifecycle"
+              :lifecycle="lifecycle"
+              :manual-disabled="manualDisabled"
+              :manual-state-detail="manualStateDetail"
               v-model:manual-priority="manualPriority"
               v-model:priority-flag="priorityFlag"
               v-model:routing-tier="routingTier"
@@ -163,6 +173,7 @@ const node = currentNode
               :selected-model-status="selectedModelStatus"
               @test-now="testNow"
               @save-settings="saveSettings"
+              @lifecycle-change="changeLifecycle"
               @set-credential-disabled="setCredentialDisabled"
               @toggle-selected-model="toggleSelectedModel"
             >
@@ -193,18 +204,12 @@ const node = currentNode
         </template>
       </div>
     </aside>
-    <RequestLogDrawer
-      :request-id="detailRequestId"
-      stack-level="nested"
-      @close="closeRequestDetail"
-      @generate-session-summary="jumpToSessionSummary"
-    />
   </Teleport>
 </template>
 
 <style scoped>
 .nd-mask { position: fixed; inset: 0; z-index: 3000; background: color-mix(in srgb, var(--kx-text) 38%, transparent); }
-.nd-drawer { position: fixed; z-index: 3001; top: 0; right: 0; width: min(940px, 94vw); height: 100vh; display: flex; flex-direction: column; background: var(--kx-surface); box-shadow: -12px 0 32px rgba(0,0,0,.24); color: var(--kx-text); }
+.nd-drawer { position: fixed; z-index: 3001; top: 0; right: 0; width: min(940px, 94vw); height: 100vh; height: 100dvh; display: flex; flex-direction: column; background: var(--kx-surface); box-shadow: -12px 0 32px var(--overlay-light); color: var(--kx-text); }
 .nd-header { padding: 18px 22px 14px; border-bottom: 1px solid var(--kx-border); display:flex; justify-content:space-between; gap:16px; }
 .nd-eyebrow,.nd-muted,small { color: var(--kx-muted); font-size:12px; }
 .nd-header h2 { margin:4px 0 7px; font-size:18px; overflow-wrap:anywhere; }
@@ -218,6 +223,6 @@ const node = currentNode
 .nd-notice--warn { background:color-mix(in srgb, var(--kx-warning) 12%, transparent); color:var(--kx-warning); }
 .nd-notice--ok { background:color-mix(in srgb, var(--kx-success) 12%, transparent); color:var(--kx-success); }
 .nd-notice--error { background:color-mix(in srgb, var(--kx-danger) 12%, transparent); color:var(--kx-danger); }
-@media (max-width:700px) { .nd-drawer { width:100vw; }.nd-header { padding:14px; flex-direction:column; }.nd-body { padding:12px; }.nd-header-actions { justify-content:flex-end; } }
+@media (max-width:768px) { .nd-drawer { width:100vw; }.nd-header { padding:14px; flex-direction:column; }.nd-body { padding:12px; }.nd-header-actions { justify-content:flex-end; } }
 </style>
 <style src="../styles/node-detail-drawer.css"></style>

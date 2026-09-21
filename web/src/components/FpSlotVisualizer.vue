@@ -171,7 +171,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
 }
 .fp-cell:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  box-shadow: 0 4px 12px var(--overlay-light);
   z-index: 5;
 }
 
@@ -224,7 +224,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
   height: 18px;
   border: none;
   border-radius: 4px;
-  background: rgba(0,0,0,0.3);
+  background: var(--overlay-light);
   color: var(--on-primary);
   font-size: 14px;
   line-height: 18px;

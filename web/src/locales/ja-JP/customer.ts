@@ -167,4 +167,7 @@ export default {
     reactivate: '重新激活',
     loadFailed: '查询 License 信息失败: {msg}',
   },
+  versionsUpgradeConfirmBody: 'サービスを {version}（{label}）へアップグレードします。処理中は短期間利用できなくなります。重要なタスクが実行中でないことを確認してください。',
+  versionsUpgradeConfirmTitle: 'アップグレードの確認',
+  versionsUpgradeConfirmStart: 'アップグレード開始',
 }

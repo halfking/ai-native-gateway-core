@@ -23,20 +23,20 @@ const (
 
 // RuntimeAlertEvent is a persisted runtime telemetry alert.
 type RuntimeAlertEvent struct {
-	ID              int64      `json:"id"`
-	RuleKey         string     `json:"rule_key"`
-	InstanceID      string     `json:"instance_id"`
-	Severity        string     `json:"severity"`
-	Title           string     `json:"title"`
-	Message         string     `json:"message"`
-	Status          string     `json:"status"`
-	MetricValue     float64    `json:"metric_value"`
-	DetectedAt      time.Time  `json:"detected_at"`
-	AckedAt         *time.Time `json:"acked_at,omitempty"`
-	AckedBy         string     `json:"acked_by,omitempty"`
-	ResolvedAt      *time.Time `json:"resolved_at,omitempty"`
-	ResolvedBy      string     `json:"resolved_by,omitempty"`
-	SuppressedUntil *time.Time `json:"suppressed_until,omitempty"`
+	ID               int64      `json:"id"`
+	RuleKey          string     `json:"rule_key"`
+	InstanceID       string     `json:"instance_id"`
+	Severity         string     `json:"severity"`
+	Title            string     `json:"title"`
+	Message          string     `json:"message"`
+	Status           string     `json:"status"`
+	MetricValue      float64    `json:"metric_value"`
+	DetectedAt       time.Time  `json:"detected_at"`
+	AckedAt          *time.Time `json:"acked_at,omitempty"`
+	AckedBy          string     `json:"acked_by,omitempty"`
+	ResolvedAt       *time.Time `json:"resolved_at,omitempty"`
+	ResolvedBy       string     `json:"resolved_by,omitempty"`
+	SuppressedUntil  *time.Time `json:"suppressed_until,omitempty"`
 }
 
 type runtimeAlertCandidate struct {
@@ -53,7 +53,7 @@ func EvaluateRuntimeAlertCandidates(metrics collector.RuntimeMetrics) []runtimeA
 	if metrics.CPUUsagePct >= 95 {
 		out = append(out, runtimeAlertCandidate{
 			RuleKey: RuleCPUHigh, Severity: "warning", Title: "CPU 使用率过高",
-			Message:     fmt.Sprintf("instance %s cpu %.1f%% >= 95%%", metrics.InstanceID, metrics.CPUUsagePct),
+			Message: fmt.Sprintf("instance %s cpu %.1f%% >= 95%%", metrics.InstanceID, metrics.CPUUsagePct),
 			MetricValue: metrics.CPUUsagePct,
 		})
 	}
@@ -62,7 +62,7 @@ func EvaluateRuntimeAlertCandidates(metrics collector.RuntimeMetrics) []runtimeA
 		if ratio >= 0.95 {
 			out = append(out, runtimeAlertCandidate{
 				RuleKey: RuleDiskHigh, Severity: "critical", Title: "磁盘使用率过高",
-				Message:     fmt.Sprintf("instance %s disk %.1f%% >= 95%%", metrics.InstanceID, ratio*100),
+				Message: fmt.Sprintf("instance %s disk %.1f%% >= 95%%", metrics.InstanceID, ratio*100),
 				MetricValue: ratio * 100,
 			})
 		}
@@ -70,7 +70,7 @@ func EvaluateRuntimeAlertCandidates(metrics collector.RuntimeMetrics) []runtimeA
 	if metrics.Last5MinSuccessPct > 0 && metrics.Last5MinSuccessPct < 90 {
 		out = append(out, runtimeAlertCandidate{
 			RuleKey: RuleLowSuccessRate, Severity: "warning", Title: "请求成功率偏低",
-			Message:     fmt.Sprintf("instance %s success %.1f%% < 90%%", metrics.InstanceID, metrics.Last5MinSuccessPct),
+			Message: fmt.Sprintf("instance %s success %.1f%% < 90%%", metrics.InstanceID, metrics.Last5MinSuccessPct),
 			MetricValue: metrics.Last5MinSuccessPct,
 		})
 	}

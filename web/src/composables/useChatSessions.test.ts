@@ -13,13 +13,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { effectScope } from 'vue'
 import { useChatSessions } from './useChatSessions'
 
-/** Filter Storage.setItem / removeItem spy calls down to the main v2 chat key.
+/** Filter Storage.setItem / removeItem spy calls down to the main v3 chat key.
  *  Typed loosely to avoid coupling the helper to vitest's MockInstance
  *  overload (which differs between 1.x minor versions). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mainKeyCalls(spy: any): number {
   return spy.mock.calls.filter(
-    ([k]: [unknown]) => typeof k === 'string' && k.startsWith('llmgw_chat_v2'),
+    ([k]: [unknown]) => typeof k === 'string' && k.startsWith('llmgw_chat_v3'),
   ).length
 }
 
@@ -219,5 +219,83 @@ describe('useChatSessions — LP6 debounced persistence', () => {
     expect(mainKeyCalls(setItemSpy)).toBe(countAfterStop)
 
     setItemSpy.mockRestore()
+  })
+})
+
+describe('useChatSessions — settings v3 normalize', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    localStorage.clear()
+  })
+
+  it('creates sessions with default stream settings', () => {
+    const scope = effectScope()
+    scope.run(() => {
+      const api = useChatSessions()
+      const s = api.activeSession.value!
+      expect(s.settings.mode).toBe('stream')
+      expect(s.settings.temperature).toBe(0.7)
+      expect(s.settings.maxTokens).toBe(2048)
+      expect(s.settings.stop).toEqual([])
+    })
+    scope.stop()
+  })
+
+  it('patches settings and persists under v3 key', () => {
+    const scope = effectScope()
+    scope.run(() => {
+      const api = useChatSessions()
+      api.updateActive({
+        settings: {
+          ...api.activeSession.value!.settings,
+          mode: 'chat',
+          temperature: 0.2,
+          systemPrompt: 'Be brief',
+        },
+      })
+      expect(api.activeSession.value!.settings.mode).toBe('chat')
+      expect(api.activeSession.value!.settings.temperature).toBe(0.2)
+      api.flushPersist()
+      const raw = localStorage.getItem(
+        [...Array(localStorage.length).keys()]
+          .map((i) => localStorage.key(i)!)
+          .find((k) => k.startsWith('llmgw_chat_v3'))!,
+      )
+      expect(raw).toBeTruthy()
+      const parsed = JSON.parse(raw!)
+      expect(parsed[0].settings.mode).toBe('chat')
+      expect(parsed[0].settings.systemPrompt).toBe('Be brief')
+    })
+    scope.stop()
+  })
+
+  it('normalizes legacy v2 sessions missing settings', () => {
+    const legacy = [
+      {
+        id: 'legacy-1',
+        taskId: 'chat-web-x',
+        gwSessionId: null,
+        apiKeyId: null,
+        title: '旧会话',
+        messages: [],
+        model: 'auto',
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ]
+    localStorage.setItem('llmgw_chat_v2:anon', JSON.stringify(legacy))
+    const scope = effectScope()
+    scope.run(() => {
+      const api = useChatSessions()
+      const s = api.sessions.value.find((x) => x.id === 'legacy-1') ?? api.activeSession.value
+      expect(s?.settings.mode).toBe('stream')
+      expect(s?.settings.maxTokens).toBe(2048)
+    })
+    scope.stop()
   })
 })

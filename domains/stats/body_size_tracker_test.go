@@ -118,7 +118,26 @@ func TestBodySizeTracker_ImplausiblyLargeSize(t *testing.T) {
 	}
 }
 
-// TestBodySizeTracker_NilRedisClient verifies the constructor handles a
+func TestBodySizeTracker_RefreshesStatsTTL(t *testing.T) {
+	tracker, _ := newTestBodySizeTracker(t)
+	requestBytes, responseBytes := 100, 200
+	tracker.Record(&telemetry.RequestLogEntry{
+		RequestID:     "ttl",
+		RequestBytes:  &requestBytes,
+		ResponseBytes: &responseBytes,
+	})
+
+	for _, key := range []string{
+		keyBodyReqSum, keyBodyReqCount, keyBodyReqMax,
+		keyBodyRespSum, keyBodyRespCount, keyBodyRespMax,
+	} {
+		ttl, err := tracker.rdb.TTL(context.Background(), key).Result()
+		if err != nil || ttl <= 0 || ttl > bodySizeStatsTTL {
+			t.Fatalf("TTL(%s) = %v, %v; want (0, %v]", key, ttl, err, bodySizeStatsTTL)
+		}
+	}
+}
+
 // nil Redis client gracefully — Record becomes a no-op and GetStats
 // returns an error rather than panicking.
 func TestBodySizeTracker_NilRedisClient(t *testing.T) {

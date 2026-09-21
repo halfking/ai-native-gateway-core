@@ -78,9 +78,9 @@ LIMIT 1
 //   - factor: 阈值因子（P99 用 1.5）
 func (s *PerformanceScorer) calculateLatencyScore(latency float64, factor float64) float64 {
 	// 阈值
-	t1 := 500 * factor  // 优秀阈值
-	t2 := 1000 * factor // 良好阈值
-	t3 := 3000 * factor // 及格阈值
+	t1 := 500 * factor   // 优秀阈值
+	t2 := 1000 * factor  // 良好阈值
+	t3 := 3000 * factor  // 及格阈值
 
 	switch {
 	case latency <= t1:

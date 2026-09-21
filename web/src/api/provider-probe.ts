@@ -61,14 +61,18 @@ export interface ProbeRun {
   latency_ms: number
   state_change: 'recovered' | 'broke' | 'unchanged'
   state_applied: boolean
-  triggered_by: 'scheduler' | 'manual'
+  // 2026-09-17 数据源统一: node_probe_runs 的 trigger_kind(request_failure /
+  // sync_request / credential_recovery / …),不再是旧系统的 scheduler|manual 二值。
+  triggered_by: string
   created_at: string
 }
 
 export interface ProbeState {
   credential_id: number
   raw_model_name: string
-  state: 'unknown' | 'recovering' | 'healthy_confirmed' | 'broken_confirmed'
+  // 2026-09-17 数据源统一: state 来自 v_node_probe_state_compat(node_probe_state
+  // 投影),新增 suspicious/probing;旧值保留兼容。
+  state: 'unknown' | 'recovering' | 'healthy_confirmed' | 'broken_confirmed' | 'suspicious' | 'probing'
   consecutive_successes: number
   consecutive_failures: number
   total_attempts: number

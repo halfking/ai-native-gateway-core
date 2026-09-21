@@ -28,6 +28,17 @@ html[data-theme='light'] {
   --kx-text-on-primary: #ffffff;
   --kx-shadow-sm: 0 8px 24px rgba(30, 55, 100, 0.06);
   --kx-shadow-md: 0 16px 40px rgba(30, 50, 90, 0.1);
+  /* 2026-09-13 响应式改造 P0：间距/字号令牌（方案 §4.2）。
+   * 新组件（components/ui/ 等）一律消费令牌，禁止再手写散落的间距/字号魔法数。 */
+  --kx-space-1: 4px;
+  --kx-space-2: 8px;
+  --kx-space-3: 12px;
+  --kx-space-4: 16px;
+  --kx-space-5: 24px;
+  --kx-space-6: 32px;
+  --kx-font-sm: 12px;
+  --kx-font-md: 14px;
+  --kx-font-lg: 16px;
   /* Gateway alias bridge — 旧组件仍引用 --bg/--card/--border 等 */
   --bg:        var(--kx-bg);
   --sidebar:   var(--kx-sidebar);
@@ -87,13 +98,52 @@ html[data-theme='light'] {
   --probe-dark-bg:     #e8edf3;
   --purple:            #a78bfa;
   --magenta:           #d946ef;
+  --pink:              #ec4899;
   --accent-dark:       #1d3f9e;
+  --accent-darker:     #1e3a8a;
   --danger-dark:       #a02d28;
+  --danger-darker:     #7f1d1d;
   --success-dark:      #0f6b47;
+  --success-darker:    #166534;
   --warning-dark:      #92610f;
+  --warning-darker:    #78350f;
+  --github-blue:       #1f6feb;
+  /* 浅色调辅助(用于 chart 渐变 / 状态点强调) */
+  --success-light:     #6ee7b7;
+  --purple-light:      #cba6f7;
+  --purple-dark:       #3730a3;
+  /* 表面/容器背景(代码块 / 暗模式投影) */
+  --bg-elevated:       #1e1e2e;
+  /* 厂商品牌色 (走 token, light/dark 通用) */
+  --vendor-openai:     #10a37f;
+  --vendor-anthropic:  #d97757;
+  --vendor-google:     #4285f4;
+  --vendor-deepseek:   #3b82f6;
+  --vendor-minimax:    #ec4899;
+  --vendor-zhipu:      #06b6d4;
+  --vendor-idle:       #374151;
   /* 文本反白 */
   --on-primary:  var(--kx-text-on-primary);
   --radius:    8px;
+  /* === Pill / Chip 设计原语 (P1-8) === */
+  --pill-radius: 999px;
+  --pill-padding-y: 1px;
+  --pill-padding-x: 8px;
+  --pill-padding-x-sm: 7px;
+  --pill-padding-x-xs: 6px;
+  --pill-font-size: 11px;
+  --pill-font-size-sm: 10px;
+  --pill-font-weight: 600;
+  --chip-radius: 12px;
+  --chip-radius-tight: 5px;
+  --chip-padding-y: 3px;
+  --chip-padding-x: 9px;
+  --chip-font-size: 12px;
+  --tone-ok-bg:    color-mix(in srgb, var(--kx-success) 14%, transparent);
+  --tone-err-bg:   color-mix(in srgb, var(--kx-danger)  14%, transparent);
+  --tone-warn-bg:  color-mix(in srgb, var(--kx-warning) 16%, transparent);
+  --tone-info-bg:  color-mix(in srgb, var(--kx-primary) 14%, transparent);
+  --tone-muted-bg: var(--bg-subtle, var(--surface-secondary));
   color-scheme: light;
 }
 
@@ -175,11 +225,50 @@ html[data-theme='dark'] {
   --probe-cyan-deep:   #075985;
   --probe-dark-bg: #0e1a29;
   --accent-dark:   #2d5fe3;
+  --accent-darker: #1e3a8a;
   --danger-dark:   #dc5f56;
+  --danger-darker: #7f1d1d;
   --success-dark:  #35b47c;
+  --success-darker: #15803d;
   --warning-dark:  #d29a2b;
+  --warning-darker: #78350f;
+  --pink:          #f472b6;
+  --github-blue:   #58a6ff;
+  /* 浅色调辅助(用于 chart 渐变 / 状态点强调) */
+  --success-light: #6ee7b7;
+  --purple-light:  #cba6f7;
+  --purple-dark:   #3730a3;
+  /* 表面/容器背景(代码块 / 暗模式投影) */
+  --bg-elevated:   #1e1e2e;
+  /* 厂商品牌色 (双主题统一) */
+  --vendor-openai:     #10a37f;
+  --vendor-anthropic:  #d97757;
+  --vendor-google:     #4285f4;
+  --vendor-deepseek:   #3b82f6;
+  --vendor-minimax:    #ec4899;
+  --vendor-zhipu:      #06b6d4;
+  --vendor-idle:       #374151;
   --on-primary:  var(--kx-text-on-primary);
   --radius:    8px;
+  /* === Pill / Chip 设计原语 (P1-8, dark) === */
+  --pill-radius: 999px;
+  --pill-padding-y: 1px;
+  --pill-padding-x: 8px;
+  --pill-padding-x-sm: 7px;
+  --pill-padding-x-xs: 6px;
+  --pill-font-size: 11px;
+  --pill-font-size-sm: 10px;
+  --pill-font-weight: 600;
+  --chip-radius: 12px;
+  --chip-radius-tight: 5px;
+  --chip-padding-y: 3px;
+  --chip-padding-x: 9px;
+  --chip-font-size: 12px;
+  --tone-ok-bg:    color-mix(in srgb, var(--kx-success) 14%, transparent);
+  --tone-err-bg:   color-mix(in srgb, var(--kx-danger)  14%, transparent);
+  --tone-warn-bg:  color-mix(in srgb, var(--kx-warning) 16%, transparent);
+  --tone-info-bg:  color-mix(in srgb, var(--kx-primary) 14%, transparent);
+  --tone-muted-bg: var(--bg-subtle, var(--surface-secondary));
   color-scheme: dark;
 }
 
@@ -417,7 +506,6 @@ tbody tr:hover { background: var(--row-hover); }
   width: 100%;
 }
 .modal h3 { margin-bottom: 16px; font-size: 16px; }
-.modal-overlay-stacked { z-index: 110; }
 
 .modal-safe-area {
   position: fixed;
@@ -445,6 +533,7 @@ tbody tr:hover { background: var(--row-hover); }
   width: 540px;
   max-width: 90vw;
   height: 100vh;
+  height: 100dvh;
   overflow-y: auto;
   border-radius: 0;
   display: flex;
@@ -650,7 +739,7 @@ tbody tr:hover { background: var(--row-hover); }
   gap: 16px;
   align-items: start;
 }
-@media (max-width: 960px) {
+@media (max-width: 1024px) {
   .provider-detail-grid { grid-template-columns: 1fr; }
 }
 

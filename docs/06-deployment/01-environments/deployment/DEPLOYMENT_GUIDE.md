@@ -92,27 +92,27 @@ systemctl start llm-gateway-go.service
 4. **上传文件**
    ```bash
    # 备份现有文件
-   ssh root@47.97.111.154 -p 25022 "cd /opt/llm-gateway-go && \
+   ssh root@<env:HOST_154_IP> -p 25022 "cd /opt/llm-gateway-go && \
      mkdir -p backups/backup-$(date +%Y%m%d-%H%M%S) && \
      cp llm-gateway-go backups/backup-$(date +%Y%m%d-%H%M%S)/ && \
      cp -r web backups/backup-$(date +%Y%m%d-%H%M%S)/"
 
    # 上传后端
-   scp -P 25022 llm-gateway-go root@47.97.111.154:/opt/llm-gateway-go/
+   scp -P 25022 llm-gateway-go root@<env:HOST_154_IP>:/opt/llm-gateway-go/
 
    # 上传前端
-   rsync -avz -e "ssh -p 25022" web/dist/ root@47.97.111.154:/opt/llm-gateway-go/web/
+   rsync -avz -e "ssh -p 25022" web/dist/ root@<env:HOST_154_IP>:/opt/llm-gateway-go/web/
    ```
 
 5. **重启服务**
    ```bash
-   ssh root@47.97.111.154 -p 25022 "systemctl stop llm-gateway-go.service && systemctl start llm-gateway-go.service"
+   ssh root@<env:HOST_154_IP> -p 25022 "systemctl stop llm-gateway-go.service && systemctl start llm-gateway-go.service"
    ```
 
 6. **验证部署**
    ```bash
    # 检查服务状态
-   ssh root@47.97.111.154 -p 25022 "systemctl status llm-gateway-go.service"
+   ssh root@<env:HOST_154_IP> -p 25022 "systemctl status llm-gateway-go.service"
 
    # 检查首页
    curl -I https://llm.kxpms.cn
@@ -194,11 +194,11 @@ WantedBy=multi-user.target
 
 ```bash
 # 1. 列出可用备份
-ssh root@47.97.111.154 -p 25022 "ls -la /opt/llm-gateway-go/backups/"
+ssh root@<env:HOST_154_IP> -p 25022 "ls -la /opt/llm-gateway-go/backups/"
 
 # 2. 选择备份并回滚
 BACKUP_DIR="backup-20260708-205000"
-ssh root@47.97.111.154 -p 25022 "
+ssh root@<env:HOST_154_IP> -p 25022 "
   cd /opt/llm-gateway-go &&
   cp backups/$BACKUP_DIR/llm-gateway-go . &&
   rm -rf web &&
@@ -215,22 +215,22 @@ curl https://llm.kxpms.cn/healthz
 
 ### 查看服务状态
 ```bash
-ssh root@47.97.111.154 -p 25022 "systemctl status llm-gateway-go.service"
+ssh root@<env:HOST_154_IP> -p 25022 "systemctl status llm-gateway-go.service"
 ```
 
 ### 查看实时日志
 ```bash
-ssh root@47.97.111.154 -p 25022 "journalctl -u llm-gateway-go.service -f"
+ssh root@<env:HOST_154_IP> -p 25022 "journalctl -u llm-gateway-go.service -f"
 ```
 
 ### 查看最近日志
 ```bash
-ssh root@47.97.111.154 -p 25022 "journalctl -u llm-gateway-go.service --since '10 minutes ago'"
+ssh root@<env:HOST_154_IP> -p 25022 "journalctl -u llm-gateway-go.service --since '10 minutes ago'"
 ```
 
 ### 搜索错误
 ```bash
-ssh root@47.97.111.154 -p 25022 "journalctl -u llm-gateway-go.service | grep -i error"
+ssh root@<env:HOST_154_IP> -p 25022 "journalctl -u llm-gateway-go.service | grep -i error"
 ```
 
 ## 故障排查清单

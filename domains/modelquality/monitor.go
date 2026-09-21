@@ -53,6 +53,7 @@ type QualityMonitor struct {
 	running    bool
 	stopChan   chan struct{}
 	lastScores map[string]*QualityScore // key: provider:model
+	gate       *NodeInFlightGate
 }
 
 // MonitorStorage 监控数据存储接口
@@ -88,6 +89,7 @@ func NewQualityMonitor(config *MonitorConfig, executor BenchmarkExecutor, storag
 		storage:    storage,
 		alerter:    alerter,
 		lastScores: make(map[string]*QualityScore),
+		gate:       NewNodeInFlightGate(),
 		stopChan:   make(chan struct{}),
 	}
 }
@@ -240,6 +242,12 @@ func (m *QualityMonitor) testModel(ctx context.Context, target ModelTarget, suit
 	if displayName == "" {
 		displayName = fmt.Sprintf("%s:%s", target.Provider, target.ModelName)
 	}
+	release, ok := m.gate.TryAcquire(target.Provider, target.ModelName, target.CredentialID)
+	if !ok {
+		slog.Info("quality monitor: node benchmark already in flight", "model", displayName, "trigger", trigger)
+		return nil
+	}
+	defer release()
 
 	slog.Info("quality monitor: testing model",
 		"model", displayName, "trigger", trigger)

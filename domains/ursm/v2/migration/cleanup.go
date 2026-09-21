@@ -3,11 +3,13 @@ package migration
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -338,8 +340,17 @@ func (c *Cleanup) cleanupOne(ctx context.Context, it Item, now time.Time) Cleanu
 		res.Reason = fmt.Sprintf("status=%s not eligible", it.Status)
 		return res
 	}
-	fields, err := c.RDB.HGetAll(ctx, it.SourceKey).Result()
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE errors
+	// when the source key collides with a non-hash type. ErrKeyNotFound
+	// (key absent) collapses into the existing 'source already absent' /
+	// CleanupStatusSkipped path — same semantic as the len(fields)==0 branch.
+	fields, err := redissafe.SafeHGetAll(ctx, c.RDB, it.SourceKey)
 	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			res.Status = CleanupStatusSkipped
+			res.Reason = "source already absent"
+			return res
+		}
 		res.Status = CleanupStatusRefused
 		res.Reason = "hgetall failed: " + err.Error()
 		return res
@@ -451,8 +462,15 @@ func (c *EntryCleaner) DeleteExact(ctx context.Context, entry EntryRecord) (Clea
 		entry.SourceKey == entry.TargetKey || !c.authorizes(entry) {
 		return CleanerEntryResult{Status: CleanerSkippedIneligible}, nil
 	}
-	fields, err := c.rdb.HGetAll(ctx, entry.SourceKey).Result()
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE errors.
+	// ErrKeyNotFound collapses into the existing CleanerSkippedMissing path
+	// (matches the raw HGetAll contract: empty map → skipped, since the
+	// source has been DEL'd between the PTTL probe and the HGETALL).
+	fields, err := redissafe.SafeHGetAll(ctx, c.rdb, entry.SourceKey)
 	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return CleanerEntryResult{Status: CleanerSkippedMissing}, nil
+		}
 		return CleanerEntryResult{}, fmt.Errorf("ursm.v2: cleanup read %s: %w", entry.SourceKey, err)
 	}
 	if len(fields) == 0 {

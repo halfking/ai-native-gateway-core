@@ -176,7 +176,7 @@ func (h *PromptInjectionHandler) updatePolicy(w http.ResponseWriter, r *http.Req
 	adminUser := authEmail(r)
 
 	var req PromptInjectionPolicy
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
 	}
@@ -360,7 +360,7 @@ func (h *PromptInjectionHandler) listRules(w http.ResponseWriter, r *http.Reques
 
 func (h *PromptInjectionHandler) createRule(w http.ResponseWriter, r *http.Request) {
 	var req PromptInjectionRule
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
 	}
@@ -391,7 +391,7 @@ func (h *PromptInjectionHandler) createRule(w http.ResponseWriter, r *http.Reque
 
 func (h *PromptInjectionHandler) updateRule(w http.ResponseWriter, r *http.Request, ruleID string) {
 	var req PromptInjectionRule
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
 	}
@@ -457,7 +457,7 @@ func (h *PromptInjectionHandler) toggleRule(w http.ResponseWriter, r *http.Reque
 	var req struct {
 		Enabled bool `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
 		return
 	}
@@ -792,7 +792,7 @@ func (h *PromptInjectionHandler) createEngine(w http.ResponseWriter, r *http.Req
 	adminUser := authEmail(r)
 
 	var req LLMEngine
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
 	}
@@ -825,7 +825,7 @@ func (h *PromptInjectionHandler) createEngine(w http.ResponseWriter, r *http.Req
 
 func (h *PromptInjectionHandler) updateEngine(w http.ResponseWriter, r *http.Request, engineID string) {
 	var req LLMEngine
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
 	}
@@ -883,7 +883,7 @@ func (h *PromptInjectionHandler) testEngine(w http.ResponseWriter, r *http.Reque
 	var req struct {
 		TestInput string `json:"test_input"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
 		return
 	}
@@ -968,7 +968,7 @@ func (h *PromptInjectionHandler) handleSeverityMatrix(w http.ResponseWriter, r *
 
 	case http.MethodPut:
 		var req []SeverityAction
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := readJSONRequired(r, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
 			return
 		}
@@ -1085,7 +1085,7 @@ func (h *PromptInjectionHandler) createCanaryToken(w http.ResponseWriter, r *htt
 	adminUser := authEmail(r)
 
 	var req CanaryToken
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
 		return
 	}
@@ -1115,7 +1115,7 @@ func (h *PromptInjectionHandler) createCanaryToken(w http.ResponseWriter, r *htt
 
 func (h *PromptInjectionHandler) updateCanaryToken(w http.ResponseWriter, r *http.Request, tokenID string) {
 	var req CanaryToken
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
 		return
 	}

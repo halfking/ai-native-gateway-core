@@ -84,3 +84,36 @@ groups:
           summary: "Raw audit JSONL write/rotate/sync failed >=1 time in the last 5m"
           description: "raw_data_logger (audit JSONL) failed to write or rotate. Audit pipeline integrity compromised. Audit §3.6 R-3.4."
           runbook: "Check disk space, fs health, file permissions on $LLM_GATEWAY_RAW_AUDIT_DIR. If repeated, switch audit sink to P2-2 cross-machine replication."
+
+      - alert: RawSinkDroppedEntries
+        expr: increase(llm_gateway_raw_sink_dropped_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          audit_id: R12
+        annotations:
+          summary: "Raw sink dropped audit entries"
+          description: "Buffered or legacy raw sink lost entries; inspect sink mode, queue capacity, and disk health."
+          runbook: "Switch to legacy after preserving evidence, then inspect raw sink buffer/queue and disk health."
+
+      - alert: RawSinkCloseDrainTimeout
+        expr: increase(llm_gateway_raw_sink_close_drain_timeout_total[15m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          audit_id: R12
+        annotations:
+          summary: "Raw sink close drain exceeded its deadline"
+          description: "Shutdown may have left accepted audit entries undrained."
+          runbook: "Inspect close-drain duration and pending counts; repeat a controlled shutdown before rollout expansion."
+
+      - alert: RawSinkFlushLatencyHigh
+        expr: histogram_quantile(0.99, sum by (le, sink) (rate(llm_gateway_raw_sink_flush_duration_seconds_bucket[15m]))) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          audit_id: R12
+        annotations:
+          summary: "Raw sink flush P99 exceeds 500ms"
+          description: "Raw audit flush latency is elevated; compare with the legacy baseline before expanding rollout."
+          runbook: "Check disk/fsync latency and actual batch sizes; roll back to legacy if the P99 regression persists."

@@ -28,22 +28,26 @@
 #     一个名为 "Warning: ..." 的伪目录, systemd 立即 203/EXEC).
 # =====================================================================
 set -e
-# All connection details and credentials must be injected by env-injector.
+# All connection details must be injected by env-injector. The target may use
+# key authentication by default; password authentication is enabled only when
+# an explicit SSHPASS_154/DEPLOY_SSH_PASS value is present.
 HOP_KEY=${SSH_WRAPPER_HOP_KEY:-}
 HOP_HOST=${SSH_WRAPPER_HOP_HOST:-}
 HOP_PORT=${SSH_WRAPPER_HOP_PORT:-25022}
+TARGET_KEY=${SSH_WRAPPER_TARGET_KEY:-}
 TARGET_PASS=${SSHPASS_154:-${DEPLOY_SSH_PASS:-}}
 TARGET_IP=${SSH_WRAPPER_TARGET_IP:-}
 TARGET_HOST=${SSH_WRAPPER_TARGET_HOST:-}
 TARGET_PRIVATE_HOST=${SSH_WRAPPER_TARGET_PRIVATE_HOST:-}
 TARGET_PORT=${SSH_WRAPPER_TARGET_PORT:-25022}
-SSH_BIN=/usr/bin/ssh
-SSHPASS_BIN=/usr/bin/sshpass
+SSH_BIN=${SSH_BIN:-/usr/bin/ssh}
+SSHPASS_BIN=${SSHPASS_BIN:-/usr/bin/sshpass}
 
-if [[ -z "$HOP_KEY" || -z "$HOP_HOST" || -z "$TARGET_PASS" || -z "$TARGET_IP" || -z "$TARGET_HOST" ]]; then
-  printf '%s\n' 'ssh-wrapper-154: hop key/host, target IP/host, and SSHPASS_154 are required' >&2
+if [[ -z "$HOP_KEY" || -z "$HOP_HOST" || ( -z "$TARGET_KEY" && -z "$TARGET_PASS" ) || -z "$TARGET_IP" || -z "$TARGET_HOST" ]]; then
+  echo "ssh-wrapper-154: inject hop key/host, target IP/host, and target key or explicit password" >&2
   exit 64
 fi
+
 
 # 解析 ssh 参数: 找 host (root@IP) 和 remote command (剩余 args)
 HOST=""
@@ -67,13 +71,19 @@ done
 # 只对 154 重定向
 if [[ "$HOST" == *@"$TARGET_HOST" ]] || [[ -n "$TARGET_PRIVATE_HOST" && "$HOST" == *@"$TARGET_PRIVATE_HOST" ]]; then
   TARGET_USER="${HOST%@*}"
-  exec env SSHPASS="$TARGET_PASS" "$SSHPASS_BIN" -e "$SSH_BIN" \
-    -q -p "$TARGET_PORT" -i "$HOP_KEY" \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    -o LogLevel=QUIET \
-    -o "ProxyCommand=$SSH_BIN -i $HOP_KEY -p $HOP_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=QUIET -W %h:%p $HOP_HOST" \
+  SSH_ARGS=(-q -p "$TARGET_PORT")
+  [[ -n "$TARGET_KEY" ]] && SSH_ARGS+=(-i "$TARGET_KEY")
+  SSH_ARGS+=(
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -o LogLevel=QUIET
+    -o "ProxyCommand=$SSH_BIN -i $HOP_KEY -p $HOP_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=QUIET -W %h:%p $HOP_HOST"
     "$TARGET_USER@$TARGET_IP" "${REMOTE_ARGS[@]}"
+  )
+  if [[ -n "$TARGET_PASS" ]]; then
+    exec env SSHPASS="$TARGET_PASS" "$SSHPASS_BIN" -e "$SSH_BIN" "${SSH_ARGS[@]}"
+  fi
+  exec "$SSH_BIN" "${SSH_ARGS[@]}"
 fi
 
 # 其他 host 不重定向, 加 -q 抑制 Warning

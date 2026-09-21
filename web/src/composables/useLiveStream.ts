@@ -30,9 +30,14 @@ export {
 
 export function useLiveStream() {
   const release = acquireLiveStream()
+  // 2026-09-01 (P1 audit fix): onRequestEvicted now returns an unregister
+  // function; use it as the composable's eviction listener cleanup hook so
+  // each consumer only removes its own callback (no singleton overwrite).
+  let evictUnregister: (() => void) | null = null
 
   onBeforeUnmount(() => {
     release()
+    evictUnregister?.()
   })
 
   return {
@@ -46,6 +51,11 @@ export function useLiveStream() {
     togglePause,
     reset: resetStream,
     reconnect: reconnectStream,
-    onRequestEvicted: (cb: ((id: string) => void) | null) => setOnRequestEvicted(cb),
+    onRequestEvicted: (cb: ((id: string) => void) | null) => {
+      // Each call returns a fresh unregister; dispose any previous one first
+      // so consumers can call onRequestEvicted multiple times safely.
+      evictUnregister?.()
+      evictUnregister = setOnRequestEvicted(cb)
+    },
   }
 }

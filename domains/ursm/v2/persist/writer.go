@@ -3,14 +3,17 @@ package persist
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 type Writer struct {
@@ -61,12 +64,14 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 
 	// 1. Read recovery_epoch from the hash written by recovery.Manager.
 	epochKey := store.EpochKey(w.prefix)
-	epochStr, err := w.rdb.HGet(ctx, epochKey, "counter").Result()
+	epochHash, err := redissafe.SafeHGetAll(ctx, w.rdb, epochKey)
 	var recoveryEpoch int64
-	if err == nil {
-		recoveryEpoch = atoi64(epochStr)
-	} else if err != redis.Nil {
+	if errors.Is(err, redissafe.ErrKeyNotFound) {
+		// An uninitialized epoch is equivalent to zero.
+	} else if err != nil {
 		return nil, fmt.Errorf("ursm.v2.persist: read recovery epoch: %w", err)
+	} else {
+		recoveryEpoch = atoi64(epochHash["counter"])
 	}
 
 	// 2. 扫描所有 node keys
@@ -80,6 +85,19 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 	for iter.Next(ctx) {
 		k := iter.Val()
 
+		// request_dedup markers (<nodeKey>:request_dedup:<sha256hex>,
+		// record_request.go requestDedupKey) are STRING flags written with
+		// SET NX EX, not node state hashes. The legacy grammar's trailing
+		// rejoin would "decode" them into a node tuple and SafeHGetAll's
+		// wrong-type error would abort the whole snapshot batch every tick
+		// (P4, docs/audit/2026-09-12-r14-observation-p5p4-readonly.md §C).
+		// They are not snapshot state: skip before parse — same exemption
+		// the migration preflight already applies. Unknown wrong-type keys
+		// must still abort below.
+		if strings.Contains(k, ":request_dedup:") {
+			continue
+		}
+
 		// 4. Decode the node key under either grammar. A key neither
 		// grammar can decode is ambiguous: it is excluded from the
 		// snapshot and left to the migration preflight's NO-GO
@@ -90,9 +108,18 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 			continue
 		}
 
-		// 5. Read hash fields.
-		hash, err := w.rdb.HGetAll(ctx, k).Result()
-		if err != nil || len(hash) == 0 {
+		// 5. Read hash fields through the type-checking wrapper. A missing key
+		// is normal during TTL expiry; any other read error must be visible so
+		// a corrupted node key cannot silently disappear from the snapshot.
+		hash, err := redissafe.SafeHGetAll(ctx, w.rdb, k)
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			continue
+		}
+		if err != nil {
+			slog.Warn("ursm.v2: persist failed to read node hash", "operation", "hgetall", "error", err)
+			return nil, fmt.Errorf("ursm.v2.persist: read node hash: %w", err)
+		}
+		if len(hash) == 0 {
 			continue
 		}
 		tenantID := parsed.TenantID

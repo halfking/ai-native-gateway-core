@@ -33,6 +33,11 @@ type DurableAttemptRunnerImpl struct {
 	exec     AttemptExecutor
 	resolver providerResolver
 	verifier DurableKeyVerifier
+	// BudgetProvider optionally supplies a task-scoped upstream attempt
+	// budget so every detached execution of the same task shares one call
+	// ceiling, mirroring the request-wide budget the foreground coordinator
+	// owns. nil keeps the executor default (one budget per execution).
+	BudgetProvider func(taskID string) *executors.UpstreamAttemptBudget
 }
 
 // NewDurableAttemptRunner wires the production runner. exec/resolver are the
@@ -55,6 +60,11 @@ func (r *DurableAttemptRunnerImpl) Run(ctx context.Context, task *durable.Task, 
 	if err != nil {
 		return nil, fmt.Errorf("durable runner: snapshot decode: %w", err)
 	}
+	if r.verifier == nil {
+		// Miswired startup must surface as a bounded runner error (worker
+		// reschedules), never as a per-task panic loop.
+		return nil, errors.New("durable runner: key verifier not wired")
+	}
 
 	ki, err := r.verifier.VerifyByID(ctx, snapshot.APIKeyID)
 	if err != nil {
@@ -75,14 +85,16 @@ func (r *DurableAttemptRunnerImpl) Run(ctx context.Context, task *durable.Task, 
 		return nil, fmt.Errorf("durable runner: re-verify key %d: %w", snapshot.APIKeyID, err)
 	}
 
-	// Dynamic candidate rebuild: model/profile/tenant come from the
-	// re-verified authorization context, never from the snapshot's frozen
-	// world (circuit/limiter/credential state has moved on).
-	profile := ""
-	if ki.DefaultClientProfile != nil {
+	// Routing identity inputs are frozen at acceptance: the snapshot's model
+	// and client profile define the request that was authorized. Only live
+	// node/circuit/credential state is re-derived below. Snapshots written
+	// before client_profile was persisted fall back to the key's current
+	// default (the historical behavior).
+	profile := snapshot.ClientProfile
+	if profile == "" && ki.DefaultClientProfile != nil {
 		profile = *ki.DefaultClientProfile
 	}
-	cands, _, _, err := resolveCandidatesForRequest(ctx, r.resolver, snapshot.ClientModel, profile, ki.TenantID, snapshot.NormalizedBody)
+	cands, policy, _, err := resolveCandidatesForRequest(ctx, r.resolver, snapshot.ClientModel, profile, ki.TenantID, snapshot.NormalizedBody)
 	if err != nil || len(cands) == 0 {
 		kind := errorsx.KindNoAvailableChannel
 		if err != nil {
@@ -111,6 +123,7 @@ func (r *DurableAttemptRunnerImpl) Run(ctx context.Context, task *durable.Task, 
 		ClientModel:          snapshot.ClientModel,
 		ClientID:             clientID,
 		Candidates:           cands,
+		Policy:               policy,
 		ClientProtocol:       snapshot.ClientProtocol,
 		SessionID:            snapshot.SessionID,
 		TenantID:             ki.TenantID,
@@ -119,6 +132,15 @@ func (r *DurableAttemptRunnerImpl) Run(ctx context.Context, task *durable.Task, 
 		AppID:                &appID,
 		ApiKeyID:             &keyID,
 		ToolsRequested:       snapshot.ToolsRequested,
+	}
+	if snapshot.Endpoint == "/v1/responses" {
+		// Native Responses candidates require the preserved request body;
+		// without it every detached pass fails unsupported_feature and burns
+		// the task budget. The foreground path sets the same pair.
+		params.ResponsesBodyBytes = snapshot.NormalizedBody
+	}
+	if r.BudgetProvider != nil {
+		params.UpstreamAttempts = r.BudgetProvider(task.ID)
 	}
 
 	result := ExecuteAttempt(ctx, r.exec, nil, params)

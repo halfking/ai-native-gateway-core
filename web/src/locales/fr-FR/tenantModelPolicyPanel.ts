@@ -66,4 +66,5 @@ export default {
     deleteFailed: 'Échec de la suppression',
     restoreFailed: 'Échec de la restauration',
   },
+  softDeleteConfirm: 'Supprimer (logiquement) la stratégie {name} ? (récupérable)',
 }

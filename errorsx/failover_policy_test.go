@@ -24,8 +24,9 @@ func TestDecideFailover(t *testing.T) {
 		{"periodic quota ejects only credential and skips node probe", 429, `{"error":{"message":"usage limit exceeded","window_type":"total"}}`, "", false, ScopeCredential, true, false, 0, DefaultFrontendWait},
 		{"rate limit honors retry after", 429, `rate limit`, "7", false, ScopeModel, false, true, 1, DefaultFrontendWait},
 		{"concurrent failure probes backups", 503, `service overloaded`, "", false, ScopeModel, false, true, DefaultProbeFanout, DefaultFrontendWait},
-		{"upstream overload delays without probing", 502, `Our servers are currently overloaded. Please try again later.`, "", false, ScopeModel, false, false, 0, DefaultFrontendWait},
+		{"upstream overload delays and probes", 502, `Our servers are currently overloaded. Please try again later.`, "", false, ScopeModel, false, true, 1, DefaultFrontendWait},
 		{"model error does not probe", 404, `model foo is not found`, "", false, ScopeModel, false, false, 0, 0},
+		{"client request shape does not probe (2026-09-18 flap fix)", 400, `{"type":"error","error":{"type":"bad_request_error","message":"invalid params, invalid thinking.type: \"enabled\" (allowed: adaptive, disabled) (2013)","http_code":"400"}}`, "", false, ScopeModel, false, false, 0, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -36,7 +37,7 @@ func TestDecideFailover(t *testing.T) {
 			if tt.retryAfter == "7" && got.RetryAfter != 7*time.Second {
 				t.Fatalf("retry after=%s, want 7s", got.RetryAfter)
 			}
-			if tt.name == "upstream overload delays without probing" && got.RetryAfter != DefaultOverloadRetryDelay {
+			if tt.name == "upstream overload delays and probes" && got.RetryAfter != DefaultOverloadRetryDelay {
 				t.Fatalf("overload retry delay=%s, want %s", got.RetryAfter, DefaultOverloadRetryDelay)
 			}
 		})

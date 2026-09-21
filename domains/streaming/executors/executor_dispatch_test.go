@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -14,8 +16,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
-	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/nodehealth"
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -299,6 +301,12 @@ func TestDispatchUsesJourneyAttemptIDForNodeHealthReduction(t *testing.T) {
 	if decision.AttemptID != journeyAttemptID {
 		t.Fatalf("reducer attempt ID = %q, journey UUID = %q", decision.AttemptID, journeyAttemptID)
 	}
+	// Node health keys by the binding-scoped raw model (OfferRawModel →
+	// RawModel fallback), NOT the standardized client name: a client-facing
+	// name can map to multiple provider bindings and keying by it would
+	// merge their empty-response / health windows. The fixture sets
+	// RawModel="vendor-model-a" with no OfferRawModel, so the reducer's
+	// BindingRawModel() fallback must yield "vendor-model-a".
 	if decision.Node != (nodehealth.NodeKey{TenantID: "tenant-a", ProviderID: 7, CredentialID: 22, Model: "vendor-model-a"}) {
 		t.Fatalf("node = %+v", decision.Node)
 	}
@@ -384,6 +392,135 @@ func TestForwardForDispatchReducesFailureAndCancellationOnce(t *testing.T) {
 	})
 }
 
+func TestForwardForDispatchAcceptsStreamOnlyNativeCapability(t *testing.T) {
+	// Audit-2026-08-29: regression guard for the dispatch↔executeOpenAI
+	// capability-gate asymmetry. native_responses_stream is verified
+	// independently of native_responses_nonstream (migration 612), so a
+	// credential that opts in to SSE only must NOT be rejected by the
+	// dispatch gate before executeOpenAI has a chance to forward it.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"event: response.created\ndata: {\"type\":\"response.created\"}\n\n"+
+				"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"+
+				"event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n")
+	}))
+	defer upstream.Close()
+
+	limiter := newLimiterForTest()
+	defer limiter.Stop()
+	exec := newOverloadTestExecutor()
+	exec.Circuit = newCircuitManagerForTest()
+	exec.Limiter = limiter
+	exec.NativeResponsesStream = func(_ context.Context, w http.ResponseWriter, resp *http.Response, _ string, _ *audit.StreamCapture, _ *atomic.Bool) StreamOutcome {
+		defer resp.Body.Close()
+		_, _ = io.Copy(w, resp.Body)
+		return StreamOutcome{ChunkCount: 1}
+	}
+
+	candidate := provider.Candidate{
+		CredentialID:                  33,
+		ProviderID:                    44,
+		BaseURL:                       upstream.URL,
+		Protocol:                      "openai-responses",
+		CatalogCode:                   "openai",
+		RawModel:                      "gpt-responses-stream-only",
+		APIKey:                        "sk-stream-only",
+		SupportsNativeResponsesStream: true,
+		// SupportsNativeResponses intentionally false: stream-only credential.
+		Routable:          true,
+		LifecycleStatus:   "active",
+		AvailabilityState: "ready",
+		QuotaState:        "ok",
+		CircuitState:      "closed",
+	}
+	params := &ExecParams{
+		W:                  httptest.NewRecorder(),
+		R:                  httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
+		IsStream:           true,
+		BodyBytes:          []byte(`{"model":"gpt-responses","messages":[]}`),
+		ResponsesBodyBytes: []byte(`{"model":"gpt-responses","input":"hello"}`),
+		ClientProtocol:     "openai-responses",
+		ClientModel:        "gpt-responses",
+		OutboundModel:      "gpt-responses",
+		RequestID:          "dispatch-stream-only-cap",
+	}
+	dctx := &dispatchCtx{
+		params:       params,
+		candidates:   []provider.Candidate{candidate},
+		retryPerCred: 0,
+		tTotal:       time.Now(),
+	}
+
+	out := exec.forwardForDispatch(dctx, candidate, "stream-only-attempt", func() {})
+	if out.Err != nil {
+		t.Fatalf("forward outcome err = %v, want stream-only capability to be honoured", out.Err)
+	}
+	result, ok := out.Result.(*ExecuteResult)
+	if !ok || result == nil || result.Response == nil {
+		t.Fatalf("forward outcome result = %+v, want upstream call to succeed", out.Result)
+	}
+}
+
+func TestForwardForDispatchRejectsNoNativeCapability(t *testing.T) {
+	// Counter-case to TestForwardForDispatchAcceptsStreamOnlyNativeCapability:
+	// a credential without either stream OR non-stream native Responses
+	// capability must still be rejected at the dispatch gate (the executeOpenAI
+	// gate would reject it too, but failing fast at dispatch keeps the audit
+	// signal clean and avoids burning an upstream circuit probe).
+	called := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	limiter := newLimiterForTest()
+	defer limiter.Stop()
+	exec := newOverloadTestExecutor()
+	exec.Circuit = newCircuitManagerForTest()
+	exec.Limiter = limiter
+
+	candidate := provider.Candidate{
+		CredentialID: 33,
+		ProviderID:   44,
+		BaseURL:      upstream.URL,
+		Protocol:     "openai-responses",
+		CatalogCode:  "openai",
+		RawModel:     "gpt-responses-no-cap",
+		APIKey:       "sk-no-cap",
+		// Neither SupportsNativeResponses nor SupportsNativeResponsesStream.
+		Routable:          true,
+		LifecycleStatus:   "active",
+		AvailabilityState: "ready",
+		QuotaState:        "ok",
+		CircuitState:      "closed",
+	}
+	params := &ExecParams{
+		R:                  httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
+		IsStream:           true,
+		BodyBytes:          []byte(`{"model":"gpt-responses","messages":[]}`),
+		ResponsesBodyBytes: []byte(`{"model":"gpt-responses","input":"hello"}`),
+		ClientProtocol:     "openai-responses",
+		ClientModel:        "gpt-responses",
+		RequestID:          "dispatch-no-native-cap",
+	}
+	dctx := &dispatchCtx{
+		params:       params,
+		candidates:   []provider.Candidate{candidate},
+		retryPerCred: 0,
+		tTotal:       time.Now(),
+	}
+
+	out := exec.forwardForDispatch(dctx, candidate, "no-cap-attempt", func() {})
+	if out.Err == nil {
+		t.Fatalf("forward outcome err = nil, want capability rejection")
+	}
+	if called {
+		t.Fatal("upstream was contacted; dispatch gate must reject before executeOpenAI")
+	}
+}
+
 func TestDispatchReducerDuplicateAppliesOnce(t *testing.T) {
 	capture := &dispatchHealthCapture{}
 	exec := &Executor{NodeOutcomeReducer: nodehealth.NewOutcomeReducer(), NodeHealthAdapter: capture}
@@ -430,196 +567,42 @@ func TestCopyQueueTimestampsToError(t *testing.T) {
 	}
 }
 
-func TestDispatchNodeHealthUsesOfferRawModelForBindingIdentity(t *testing.T) {
-	capture := &dispatchHealthCapture{}
-	exec := &Executor{NodeOutcomeReducer: nodehealth.NewOutcomeReducer(), NodeHealthAdapter: capture}
-	params := &ExecParams{RequestID: "binding-model", TenantID: "tenant-a", Model: "client-model"}
-	candidate := provider.Candidate{
-		ProviderID: 7, CredentialID: 22,
-		RawModel: "shared-outbound-alias", OfferRawModel: "binding-model-a", StandardizedName: "client-model",
-	}
-	_, applied := exec.reduceDispatchForwardOutcome(context.Background(), params, candidate, "binding-attempt",
-		dispatch.ForwardOutcome{}, time.Now(), true)
-	if !applied {
-		t.Fatal("expected node-health reduction to apply")
-	}
-	decisions := capture.snapshot()
-	if len(decisions) != 1 || decisions[0].Node.Model != "binding-model-a" {
-		t.Fatalf("node health identity = %+v, want offer raw binding model", decisions)
-	}
-}
-
-// TestForwardForDispatch_AllKeysInvalidPropagatesQuotaError locks the C1+C2
-// wiring: when the key rotator's ResolveKey returns -1 (all keys exhausted) AND
-// AllKeysInvalid is true, the dispatch forward error must be a typed
-// *upstream.Error with Kind=KindQuota and StatusCode=429 so the credential-level
-// circuit breaker opens (not a generic transient). The upstream HTTP layer is
-// never reached.
-func TestForwardForDispatch_AllKeysInvalidPropagatesQuotaError(t *testing.T) {
-	rotator := credential.NewKeyRotator()
-	const credID = 90
-	rotator.EnsureCred(credID, 3)
-	// mark all 3 keys terminal so ResolveKey returns -1 and AllKeysInvalid is true
-	for i := 0; i < 3; i++ {
-		rotator.RecordKeyFailure(credID, i, errorsx.KindQuotaPermanent)
-	}
-	if !rotator.AllKeysInvalid(credID) {
-		t.Fatal("precondition: all keys should be invalid")
+// TestDispatchErrToExecuteErrorPreservesUpstreamRateLimit pins the
+// 2026-09-07 mock-system-test §5.3 fix: when the dispatch exhaustion chain
+// terminates in an upstream 429, the ExecuteError must carry KindRateLimit
+// so the handler returns HTTP 429 + Retry-After instead of 503
+// model_not_found. Other upstream kinds keep the legacy transient mapping.
+func TestDispatchErrToExecuteErrorPreservesUpstreamRateLimit(t *testing.T) {
+	upstreamErr := &upstreampkg.Error{
+		Kind:       errorsx.KindRateLimit,
+		Message:    "Rate limit",
+		StatusCode: 429,
+		RetryAfter: 7 * time.Second,
 	}
 
-	limiter := newLimiterForTest()
-	defer limiter.Stop()
-	exec := &Executor{
-		Circuit:         newCircuitManagerForTest(),
-		Limiter:         limiter,
-		UpstreamTimeout: 5 * time.Second,
-		StreamTimeout:   10 * time.Second,
+	ee := dispatchErrToExecuteError(&dispatch.ExhaustedError{Cause: upstreamErr})
+	if !ee.Exhausted || ee.LastKind != errorsx.KindRateLimit {
+		t.Fatalf("exhausted rate-limit mapping = (Exhausted=%v, LastKind=%q), want exhausted rate_limit", ee.Exhausted, ee.LastKind)
 	}
-	candidate := provider.Candidate{
-		ProviderID: 5, CredentialID: credID, Protocol: "openai-completions",
-		RawModel: "model-q", StandardizedName: "model-q", APIKey: "primary-key",
-		APIKeys:    []string{"primary-key", "key-1", "key-2"},
-		KeyRotator: rotator,
-	}
-	params := &ExecParams{
-		W:           httptest.NewRecorder(),
-		R:           httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
-		BodyBytes:   []byte(`{"model":"model-q","messages":[{"role":"user","content":"hi"}]}`),
-		ClientModel: "model-q", Model: "model-q", RequestID: "all-keys-invalid", TenantID: "t",
-	}
-	dctx := &dispatchCtx{params: params, candidates: []provider.Candidate{candidate}, retryPerCred: 0, tTotal: time.Now()}
 
-	out := exec.forwardForDispatch(dctx, candidate, "quota-attempt", func() {})
-	if out.Err == nil {
-		t.Fatal("expected error when all keys invalid")
+	// Other upstream kinds deliberately keep the blanket transient mapping
+	// (handler-side classification unchanged).
+	ee = dispatchErrToExecuteError(&dispatch.ExhaustedError{
+		Cause: &upstreampkg.Error{Kind: errorsx.KindUpstreamDown, StatusCode: 502},
+	})
+	if !ee.Exhausted || ee.LastKind != errorsx.KindTransient {
+		t.Fatalf("non-rate-limit mapping = (Exhausted=%v, LastKind=%q), want exhausted transient", ee.Exhausted, ee.LastKind)
 	}
-	var ue *upstreampkg.Error
-	if !errors.As(out.Err, &ue) || ue == nil {
-		t.Fatalf("error must be *upstream.Error, got %T: %v", out.Err, out.Err)
-	}
-	if ue.Kind != upstreampkg.KindQuota {
-		t.Fatalf("Kind = %q, want %q", ue.Kind, upstreampkg.KindQuota)
-	}
-	if ue.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("StatusCode = %d, want 429", ue.StatusCode)
-	}
-	if out.ErrorKind != string(errorsx.KindQuota) {
-		t.Fatalf("ErrorKind = %q, want %q", out.ErrorKind, errorsx.KindQuota)
-	}
-}
 
-// TestForwardForDispatch_RecordKeyFailureGatedOnResolvedKeyIdx locks the C2
-// fix: RecordKeyFailure must NOT be called when resolvedKeyIdx < 0 (the
-// keys-exhausted branches where idx stays -1 by construction). We verify by
-// using the AllKeysInvalid path: after the forward, the rotator's key states
-// must be UNCHANGED (no new failure recorded on any key).
-func TestForwardForDispatch_RecordKeyFailureGatedOnResolvedKeyIdx(t *testing.T) {
-	rotator := credential.NewKeyRotator()
-	const credID = 92
-	rotator.EnsureCred(credID, 3)
-	// Make all keys terminal (so ResolveKey returns -1, resolvedKeyIdx stays -1)
-	for i := 0; i < 3; i++ {
-		rotator.RecordKeyFailure(credID, i, errorsx.KindQuotaPermanent)
+	// Deeply wrapped (fmt.Errorf %w) still unwraps.
+	ee = dispatchErrToExecuteError(fmt.Errorf("dispatch failed: %w", upstreamErr))
+	if ee.LastKind != errorsx.KindRateLimit {
+		t.Fatalf("wrapped rate-limit kind = %q, want rate_limit", ee.LastKind)
 	}
-	// Snapshot totalFailures before the dispatch forward
-	type keySnapshot struct {
-		totalFailures int64
-		totalRequests int64
-		status        credential.KeyStatus
-	}
-	snapBefore := func() []keySnapshot {
-		// KeyRotator doesn't expose internal state; use KeyCount + ResolveKey +
-		// AllKeysInvalid as indirect probes. The real invariant: if
-		// RecordKeyFailure were called, the key's consecutiveFailures would
-		// increment. But terminal keys already have max failures. So we verify
-		// indirectly: the forward must not call RecordKeyFailure because
-		// resolvedKeyIdx=-1. We verify the OUTCOME: the error is typed
-		// *upstream.Error (not a generic transient), proving we took the
-		// AllKeysInvalid branch (not the sentinel branch).
-		return nil
-	}
-	_ = snapBefore
 
-	limiter := newLimiterForTest()
-	defer limiter.Stop()
-	exec := &Executor{
-		Circuit:         newCircuitManagerForTest(),
-		Limiter:         limiter,
-		UpstreamTimeout: 5 * time.Second,
-		StreamTimeout:   10 * time.Second,
-	}
-	candidate := provider.Candidate{
-		ProviderID: 5, CredentialID: credID, Protocol: "openai-completions",
-		RawModel: "model-g", StandardizedName: "model-g", APIKey: "primary",
-		APIKeys:    []string{"primary", "k1", "k2"},
-		KeyRotator: rotator,
-	}
-	params := &ExecParams{
-		W:           httptest.NewRecorder(),
-		R:           httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
-		BodyBytes:   []byte(`{"model":"model-g","messages":[{"role":"user","content":"hi"}]}`),
-		ClientModel: "model-g", Model: "model-g", RequestID: "gate-test", TenantID: "t",
-	}
-	dctx := &dispatchCtx{params: params, candidates: []provider.Candidate{candidate}, retryPerCred: 0, tTotal: time.Now()}
-
-	out := exec.forwardForDispatch(dctx, candidate, "gate-attempt", func() {})
-	// The error must be the typed *upstream.Error (AllKeysInvalid branch), proving
-	// resolvedKeyIdx stayed -1 and the RecordKeyFailure gate (line 616) was
-	// skipped. If the gate were broken, RecordKeyFailure would be called with
-	// idx=-1, which is a no-op (idx < 0 check in RecordKeyFailure). So the gate
-	// is doubly safe: the caller-side gate (resolvedKeyIdx >= 0) AND the
-	// callee-side guard (idx < 0 returns false). This test locks the caller-side
-	// gate by verifying the typed-error outcome.
-	var ue *upstreampkg.Error
-	if !errors.As(out.Err, &ue) || ue == nil {
-		t.Fatalf("error must be *upstream.Error (proves AllKeysInvalid branch), got %T: %v", out.Err, out.Err)
-	}
-	if ue.Kind != upstreampkg.KindQuota {
-		t.Fatalf("Kind = %q, want %q", ue.Kind, upstreampkg.KindQuota)
-	}
-	// AllKeysInvalid must still be true (no state change from RecordKeyFailure)
-	if !rotator.AllKeysInvalid(credID) {
-		t.Fatal("AllKeysInvalid should still be true after gated forward")
-	}
-}
-
-// TestForwardForDispatch_SingleKeyNoRotatorSkipsKeyBookkeeping verifies that
-// when KeyRotator is nil (single-key credential), resolvedKeyIdx stays -1 and
-// neither RecordKeySuccess nor RecordKeyFailure is called. The upstream HTTP
-// call proceeds normally.
-func TestForwardForDispatch_SingleKeyNoRotatorSkipsKeyBookkeeping(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","model":"model-s","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
-	}))
-	defer upstream.Close()
-
-	limiter := newLimiterForTest()
-	defer limiter.Stop()
-	exec := &Executor{
-		Circuit:         newCircuitManagerForTest(),
-		Limiter:         limiter,
-		UpstreamTimeout: 5 * time.Second,
-		StreamTimeout:   10 * time.Second,
-	}
-	candidate := provider.Candidate{
-		ProviderID: 5, CredentialID: 93, BaseURL: upstream.URL, Protocol: "openai-completions",
-		RawModel: "model-s", StandardizedName: "model-s", APIKey: "single-key",
-		// KeyRotator is nil -> single-key path
-	}
-	params := &ExecParams{
-		W:           httptest.NewRecorder(),
-		R:           httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
-		BodyBytes:   []byte(`{"model":"model-s","messages":[{"role":"user","content":"hi"}]}`),
-		ClientModel: "model-s", Model: "model-s", RequestID: "single-key", TenantID: "t",
-	}
-	dctx := &dispatchCtx{params: params, candidates: []provider.Candidate{candidate}, retryPerCred: 0, tTotal: time.Now()}
-
-	out := exec.forwardForDispatch(dctx, candidate, "single-attempt", func() {})
-	if out.Err != nil {
-		t.Fatalf("single-key forward should succeed, got: %v", out.Err)
-	}
-	if out.Result == nil {
-		t.Fatal("expected non-nil result on success")
+	// Legacy sentinels keep their mappings.
+	ee = dispatchErrToExecuteError(dispatch.ErrNoRoute)
+	if !ee.Exhausted || ee.LastKind != errorsx.KindConcurrent {
+		t.Fatalf("ErrNoRoute mapping = (Exhausted=%v, LastKind=%q), want exhausted concurrent", ee.Exhausted, ee.LastKind)
 	}
 }

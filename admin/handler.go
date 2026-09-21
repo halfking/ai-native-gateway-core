@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin/distlock" // 2026-08-19 title-gen per-session distributed lock
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
@@ -26,19 +28,25 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
-	"github.com/kaixuan/llm-gateway-go/domains/session"         //nolint:depguard // session state manager
-	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
+	"github.com/kaixuan/llm-gateway-go/domains/session"      //nolint:depguard // session state manager
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 	v2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
+	"github.com/kaixuan/llm-gateway-go/internal/httpx"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore" //nolint:depguard // 2026-08-06 auto summary persistence
 	"github.com/kaixuan/llm-gateway-go/internal/titlestore"   //nolint:depguard // durable title fencing/tombstone state
 	"github.com/kaixuan/llm-gateway-go/pending"
+	"github.com/kaixuan/llm-gateway-go/proxy"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	"github.com/kaixuan/llm-gateway-go/security/sensitive"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	"github.com/kaixuan/llm-gateway-go/taskprofile"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -53,15 +61,41 @@ type Handler struct {
 	secret               string
 	encKey               []byte
 	keyring              *secret.Keyring // AES-256-GCM keyring; nil → Fernet legacy
-	discSvc              *discovery.Service
-	credCycler           *bg.CredentialCycler
-	credRecov            *bg.CredentialRecovery
-	envCleaner           *bg.EnvelopeCleaner
-	stickyClean          *bg.StickyCleaner
-	taxSync              *bg.TaxonomySync
-	probeV2              *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
-	probePicker          *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
-	modelProbe           *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
+	// requestAnomalies (2026-09-21) 请求侧异常（reqprobe）存储门面；
+	// nil → /api/admin/request-anomalies* 返回 503。SetRequestAnomalyStore
+	// 在启动时按 Full(Redis)/lite(内存) 模式注入。
+	requestAnomalies *reqprobe.Coordinator
+	// freeDiscovery (2026-09-09): 免费资源自动发现服务 (084 迁移三表).
+	// SetFreeDiscovery 在启动时注入; nil = 路由返回 503 (no-DB 模式).
+	freeDiscovery *freeDiscoveryDeps
+	// scanSchedulerStatus (2026-09-14, R20 §二.6): liveness probe for the
+	// periodic scan worker. nil → /api/free-discovery/scan-scheduler/status
+	// returns 503. Set by SetScanSchedulerStatus at startup.
+	scanSchedulerStatus ScanSchedulerStatusProvider
+	discSvc             *discovery.Service
+	credCycler          *bg.CredentialCycler
+	credRecov           *bg.CredentialRecovery
+	envCleaner          *bg.EnvelopeCleaner
+	stickyClean         *bg.StickyCleaner
+	taxSync             *bg.TaxonomySync
+	// 2026-08-26 hot-reload: in-process sticky cache for clear-for-credential
+	// on PATCH binding/credential. Cleared by HandleRoutingCandidateBindingUpdate
+	// and updateCredential so new sessions can re-enter load balancing
+	// without waiting for the sticky TTL to expire.
+	stickyCache StickyCacheClearer
+	// 2026-08-26 hot-reload: in-process limiter for hot-update of
+	// concurrency_limit on PATCH credential/binding. The Limiter pool's
+	// per-credential semaphore capacity is refreshed by
+	// HandleRoutingCandidateBindingUpdate / updateCredential.
+	limiter     LimiterCapacitySetter
+	probeV2     *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
+	probePicker *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
+	modelProbe  *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
+	// 2026-08-29 代理管理：由 proxyRuntime() 惰性构建（见 admin/proxy.go），
+	// 避免改动所有 Handler 构造点。请求路径不会启动后台 goroutine。
+	proxyOnce  sync.Once
+	proxyMgr   *proxy.Manager
+	proxyStore proxy.Store
 	// balanceQuotaProbe (2026-08-23 hzx-2 audit) backs the admin
 	// "force re-check after recharge" endpoint. nil → the route is
 	// still registered (URL stays stable across deployments); the
@@ -89,7 +123,10 @@ type Handler struct {
 	// /alerts can read live data from the CandidateFailureMonitor.
 	cfHandlers  *candidateFailureHandlers
 	vceHandlers *vendorCredentialErrorHandlers
-	fpSlots     *credentialfpslot.Manager
+	// 2026-09-05 审计闭环1: backs GET /api/errors/trend（supplier_error_stats
+	// 预聚合读端 + supplier_errors_unified 明细兜底）。
+	errorsTrendHandlers *errorsTrendHandlers
+	fpSlots             *credentialfpslot.Manager
 	// pendingStore (Track C C7, 2026-06-18) is the durable cache
 	// for client reconnect and vendor async retry. nil disables
 	// the /api/admin/pending-responses* endpoints; the GET
@@ -321,12 +358,31 @@ type Handler struct {
 	// submitted. nil → the endpoint silently skips this step.
 	autoHealOneShot func(ctx context.Context, credentialID int) int
 
+	// requestDetailStore (2026-08-25): in-flight request meta + per-request_id
+	// local body files. Locator prefers memory/file before DB dual-write.
+	requestDetailStore   *requestdetail.Store
+	requestDetailLocator *requestdetail.Locator
+	// liveStreamRedisStore (2026-08-30): optional Redis-backed live
+	// request cache. When non-nil, SetRequestDetailStore wires it as the
+	// Locator's LiveDetailReader so swim-lane clicks resolve immediately.
+	liveStreamRedisStore *LiveStreamRedisStore
+	// requestDetailRetry preserves the operator-supplied retry policy when
+	// the locator is rebuilt after live-stream wiring.
+	requestDetailRetry    LocatorRetryConfig
+	requestDetailRetrySet bool
+
 	// rateLimiter (V3.2-LP5, 2026-08-14) 节点操作限流器：test-now 1req/s per-cred + 10req/min per-operator。
 	rateLimiter *nodeOperationsRateLimiter
 	// statsShadowExecutor runs bounded, read-only legacy/canonical comparisons.
 	statsShadowExecutor *statsShadowExecutor
 	// auditLogger (V3.2-LP5, 2026-08-14) 节点操作审计：异步写入 request_state_transitions。
 	auditLogger *nodeOperationAuditLogger
+}
+
+// refreshDB returns the pool used by catalog writes during an admin model
+// refresh. Keeping the accessor local avoids widening Handler's public API.
+func (h *Handler) refreshDB() *pgxpool.Pool {
+	return h.db
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -480,6 +536,21 @@ func (h *Handler) SetLiveStreamSSE(hub *LiveStreamSSEHub) {
 	h.liveStreamHub = hub
 }
 
+// SetLiveStreamRedisStore wires the Redis-backed live-stream detail
+// cache so the unified request detail locator can answer swim-lane
+// clicks immediately, before the eventual request_logs write.
+// Pass nil to disable. It is safe to call before or after
+// SetRequestDetailStore; the existing retry policy is preserved when
+// the locator is rebuilt.
+func (h *Handler) SetLiveStreamRedisStore(store *LiveStreamRedisStore) {
+	h.liveStreamRedisStore = store
+	// Rebuild the locator if the request-detail store was already
+	// configured so a later wiring still picks up the live reader.
+	if h.requestDetailStore != nil {
+		h.SetRequestDetailStore(h.requestDetailStore)
+	}
+}
+
 // SetRequestTraceHandler (2026-07-17) wires the trace viewer endpoints.
 // nil disables the page.
 func (h *Handler) SetRequestTraceHandler(rth *RequestTraceHandler) {
@@ -557,22 +628,11 @@ func (h *Handler) encryptCred(plaintext []byte) (string, error) {
 // a legacy Fernet token.  Returns (plaintext, isLegacy, error).
 // When isLegacy=true the caller MAY re-encrypt and update the DB row.
 func (h *Handler) decryptCred(ciphertext string) (string, bool, error) {
-	if secret.IsV1Envelope(ciphertext) {
-		if h.keyring == nil {
-			return "", false, errorf("AES-GCM keyring not configured")
-		}
-		pt, err := secret.DecryptAESGCM([]byte(ciphertext), h.keyring)
-		if err != nil {
-			return "", false, err
-		}
-		return string(pt), false, nil
+	pt, isLegacy, err := secret.DecryptAny(ciphertext, h.keyring, h.encKey)
+	if err != nil {
+		return "", false, err
 	}
-	// Legacy Fernet path
-	if len(h.encKey) != 32 {
-		return "", false, errorf("legacy encryption key not configured")
-	}
-	pt, err := decryptFernet([]byte(ciphertext), h.encKey)
-	return pt, err == nil, err
+	return string(pt), isLegacy, nil
 }
 
 // decryptCredStr is a convenience wrapper over decryptCred that returns only
@@ -617,6 +677,36 @@ func (h *Handler) SetBackgroundServices(credCycler *bg.CredentialCycler, credRec
 	h.envCleaner = envCleaner
 	h.stickyClean = stickyClean
 	h.taxSync = taxSync
+}
+
+// 2026-08-26 hot-reload: small interfaces decouple admin handlers from the
+// concrete Limiter / StickyCache types. The executors.StickyCache and
+// credential.Limiter types already implement these (duck-typed). Defined
+// here so admin/handler.go doesn't have to import the heavy packages just
+// for two methods.
+
+// StickyCacheClearer is the small surface of executors.StickyCache that the
+// admin handler needs to clear sticky bindings for one credential.
+type StickyCacheClearer interface {
+	ClearForCredential(credID int) (int, error)
+}
+
+// LimiterCapacitySetter is the small surface of credential.Limiter that
+// the admin handler needs to hot-update concurrency capacity.
+type LimiterCapacitySetter interface {
+	SetCredentialCapacity(providerID, credentialID, capacity int)
+}
+
+// SetHotReloadDeps wires the runtime caches that PATCH endpoints need to
+// invalidate when admin changes a credential's priority / weight /
+// concurrency_limit. Called from cmd/gateway/main.go.
+func (h *Handler) SetHotReloadDeps(stickyCache StickyCacheClearer, limiter LimiterCapacitySetter) {
+	if stickyCache != nil {
+		h.stickyCache = stickyCache
+	}
+	if limiter != nil {
+		h.limiter = limiter
+	}
 }
 
 // SetProbeServices injects the 900-series background services (spec §4-5).
@@ -786,6 +876,14 @@ func (h *Handler) superAdmin(fn http.HandlerFunc) http.HandlerFunc {
 	return SuperAdminMiddleware(fn, h.db, h.secret)
 }
 
+// providerConsole wraps the provider console tree with
+// ProviderConsoleMiddleware: super_admin keeps full access, and a
+// default-tenant tenant_admin gets read-only access plus credential API
+// key rotation (2026-09-04). Everything else is unchanged.
+func (h *Handler) providerConsole(fn http.HandlerFunc) http.HandlerFunc {
+	return ProviderConsoleMiddleware(fn, h.db, h.secret)
+}
+
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Public routes (no Bearer admin key)
 	mux.HandleFunc("/api/auth/token", h.handleLogin)
@@ -804,6 +902,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/format-anomaly-summary", h.superAdmin(h.handleFormatAnomalySummary))
 	mux.HandleFunc("/api/admin/format-anomalies", h.superAdmin(h.handleFormatAnomalies))
 	mux.HandleFunc("/api/admin/format-anomalies/", h.superAdmin(h.handleFormatAnomalySubrouter))
+	// reqprobe (2026-09-21): 请求侧异常（参数被拒/模式不匹配）列表、
+	// 徽标计数与批量解决；存储与部署模式无关（Full=Redis / lite=内存）。
+	mux.HandleFunc("/api/admin/request-anomalies", h.superAdmin(h.handleRequestAnomalies))
+	mux.HandleFunc("/api/admin/request-anomalies/", h.superAdmin(h.handleRequestAnomalySubrouter))
 	// 2026-07-28: model integrity detection (model_mismatch,
 	// finish_refusal, finish_truncation, empty_response, repeated_content,
 	// fingerprint_drift). See domains/streaming/integrity/ and
@@ -1054,7 +1156,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-08-15 V3.3-OBS (OBS-BE6): 会话轮次-子请求树（仅元数据，分页）。
 	// 主请求按 ts 排序派生 turn_number，子请求经 parent_request_id 关联，
 	// request_type 优先 510 迁移列、缺失回退 origin_actor（X-Gw-Source-Actor 落库）。
-	mux.HandleFunc("/api/admin/sessions/{id}/turns", admin(h.handleSessionTurnsTree))
+	mux.HandleFunc("/api/admin/sessions/{id}/turns", admin(h.handleSessionTurnsListRouted))
 
 	// Public polling endpoint (no auth) — clients poll this to learn whether
 	// their pending approval was approved/rejected/timeout. Cross-tenant
@@ -1077,13 +1179,22 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/routing/probe", h.superAdmin(h.handleRoutingProbe))
 	mux.HandleFunc("/api/routing/manual-priority", h.superAdmin(h.handleRoutingManualPriority))
 	mux.HandleFunc("/api/routing/score-details", admin(h.handleRoutingScoreDetails))
+	// Audit 2026-09-14 R28 #13: scoring-weights is a DISPLAY-ONLY knob — it
+	// feeds the /api/routing/resolve and /api/routing/score-details preview
+	// endpoints only, never the live routing hot path (which reads
+	// executors.DefaultLoadScoreWeights). GET/PATCH responses carry
+	// "display_only":true + "note" to disclose this to API consumers.
 	mux.HandleFunc("/api/routing/scoring-weights", h.superAdmin(h.handleRoutingScoringWeights))
 	mux.HandleFunc("/api/routing/featured-models", admin(h.handleRoutingFeaturedModelsDynamic))
 	mux.HandleFunc("/api/telemetry/decision-log", admin(h.handleTelemetryDecisionLog))
 	mux.HandleFunc("/api/telemetry/request-log", admin(h.handleTelemetryRequestLog))
 	mux.HandleFunc("/api/telemetry/batch", admin(h.handleTelemetryBatch))
-	mux.HandleFunc("/api/providers", h.superAdmin(h.handleProvidersRoot))
-	mux.HandleFunc("/api/providers/", h.superAdmin(h.handleProviders))
+	// 2026-09-04: 供应商列表/详情树改挂 providerConsole —— super_admin 行为
+	// 不变；default 租户 tenant_admin 获得只读 + 凭据 API Key 轮换。
+	// seed-from-catalog 与 /credentials/ 强制恢复仍为 super_admin 专属。
+	mux.HandleFunc("/api/credentials/", h.admin(h.handleUnifiedCredentialSecrets))
+	mux.HandleFunc("/api/providers", h.providerConsole(h.handleProvidersRoot))
+	mux.HandleFunc("/api/providers/", h.providerConsole(h.handleProviders))
 	mux.HandleFunc("/api/providers/seed-from-catalog", h.superAdmin(h.handleSeedFromCatalog))
 	mux.HandleFunc("/api/providers/credentials/", h.superAdmin(h.handleForceRecover))
 
@@ -1104,6 +1215,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	if h.vceHandlers == nil {
 		h.vceHandlers = &vendorCredentialErrorHandlers{db: h.db}
 	}
+	if h.errorsTrendHandlers == nil {
+		h.errorsTrendHandlers = &errorsTrendHandlers{db: h.db}
+	}
+	mux.HandleFunc("/api/errors/trend", admin(h.errorsTrendHandlers.getErrorsTrend))
 	mux.HandleFunc("/api/candidate-failures", admin(h.cfHandlers.listCandidateFailures))
 	mux.HandleFunc("/api/candidate-failures/stats", admin(h.cfHandlers.getCandidateFailureStats))
 	mux.HandleFunc("/api/candidate-failures/credential/{id}", admin(h.cfHandlers.getCandidateFailuresByCredential))
@@ -1124,6 +1239,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))
 	mux.HandleFunc("/api/logs", admin(h.handleLogsRoot))
 	mux.HandleFunc("/api/logs/", admin(h.handleLogs))
+	// 2026-08-25: unified request detail (memory/file → request_logs → session_turns)
+	mux.HandleFunc("/api/admin/request-detail/", admin(h.handleUnifiedRequestDetail))
 	// 2026-08-09: 跨会话轮次列表端点（复用 session_turns 表）
 	mux.HandleFunc("/api/admin/turns", admin(h.handleTurnsList))
 	// 2026-08-10: 会话分组轮次列表端点（最外层会话 + 内层轮次，分层展示）
@@ -1153,6 +1270,23 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/session-crosstalk", h.admin(h.handleSessionCrosstalkCheck))
 	mux.HandleFunc("/api/tasks/", admin(h.handleTasks))
 	mux.HandleFunc("/api/free-pool/status", h.admin(h.handleFreePoolStatus))
+	// ── 免费资源自动发现 (2026-09-09, 084 迁移) ──
+	mux.HandleFunc("GET /api/free-discovery/templates", h.admin(h.handleFreeDiscoveryTemplates))
+	mux.HandleFunc("POST /api/free-discovery/templates", h.admin(h.handleFreeDiscoveryTemplates))
+	mux.HandleFunc("GET /api/free-discovery/templates/presets", h.admin(h.handleFreeDiscoveryPresets))
+	mux.HandleFunc("POST /api/free-discovery/templates/import-orbi", h.admin(h.handleFreeDiscoveryImportOrbi))
+	mux.HandleFunc("GET /api/free-discovery/templates/{id}", h.admin(h.handleFreeDiscoveryTemplateByID))
+	mux.HandleFunc("PUT /api/free-discovery/templates/{id}", h.admin(h.handleFreeDiscoveryTemplateByID))
+	mux.HandleFunc("PATCH /api/free-discovery/templates/{id}", h.admin(h.handleFreeDiscoveryTemplateByID))
+	mux.HandleFunc("DELETE /api/free-discovery/templates/{id}", h.admin(h.handleFreeDiscoveryTemplateByID))
+	mux.HandleFunc("POST /api/free-discovery/scan", h.admin(h.handleFreeDiscoveryScan))
+	mux.HandleFunc("GET /api/free-discovery/tasks", h.admin(h.handleFreeDiscoveryTasks))
+	mux.HandleFunc("GET /api/free-discovery/tasks/{id}", h.admin(h.handleFreeDiscoveryTask))
+	mux.HandleFunc("GET /api/free-discovery/tasks/{id}/results", h.admin(h.handleFreeDiscoveryTaskResults))
+	// superAdmin(而非 admin): scheduler 全局单例,last_error 携带其他租户
+	// 模板的上游地址/响应片段/env 变量名(2026-09-14 审计轮 D-P3-3)。
+	mux.HandleFunc("GET /api/free-discovery/scan-scheduler/status", h.superAdmin(h.handleFreeDiscoveryScanSchedulerStatus))
+	mux.HandleFunc("POST /api/free-discovery/import", h.admin(h.handleFreeDiscoveryImport))
 	mux.HandleFunc("/api/free-pool/register", h.superAdmin(h.handleFreePoolRegister))
 	mux.HandleFunc("/api/free-pool/models", h.admin(h.handleFreePoolModels))
 	mux.HandleFunc("/api/free-pool/catalog", h.admin(h.handleFreePoolCatalog))
@@ -1172,6 +1306,20 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/free-pool/quick-entry", h.superAdmin(h.handleFreePoolQuickEntry))
 	mux.HandleFunc("/api/free-pool/keys", h.superAdmin(h.handleFreePoolKeysRouter))
 	mux.HandleFunc("/api/free-pool/keys/", h.superAdmin(h.handleFreePoolKeysSubRouter))
+
+	// 2026-08-29 代理管理（出口基础设施，仅 superAdmin）
+	mux.HandleFunc("/api/proxy/status", h.superAdmin(h.handleProxyStatus))
+	mux.HandleFunc("/api/proxy/subscriptions", h.superAdmin(h.handleProxySubscriptionsRoot))
+	mux.HandleFunc("/api/proxy/subscriptions/", h.superAdmin(h.handleProxySubscriptions))
+	mux.HandleFunc("/api/proxy/nodes", h.superAdmin(h.handleProxyNodesRoot))
+	mux.HandleFunc("/api/proxy/nodes/", h.superAdmin(h.handleProxyNodes))
+	mux.HandleFunc("/api/proxy/health-check-all", h.superAdmin(h.handleProxyHealthCheckAll))
+	mux.HandleFunc("/api/proxy/swap", h.superAdmin(h.handleProxySwap))
+	mux.HandleFunc("/api/proxy/policy", h.superAdmin(h.handleProxyPolicy))
+	// 审计修复 R5：trailing-slash 路径返回 405 而不是让 net/http 默认 404，
+	// 防止浏览器/代理在自动重定向时吞掉错误。
+	mux.HandleFunc("/api/proxy/policy/", h.superAdmin(h.handleProxyPolicySlash))
+	mux.HandleFunc("/api/proxy/regions", h.superAdmin(h.handleProxyRegions))
 	if h.freePoolSSE != nil {
 		mux.HandleFunc("/api/free-pool/stream", h.admin(h.freePoolSSE.HandleStream))
 	}
@@ -1201,6 +1349,49 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 			autoH.SetFeedbackAnalyzer(h.feedbackAnalyzer)
 		}
 		autoH.RegisterAutoRouteRoutes(mux, h.superAdmin)
+
+		// P2.1+ Human annotation Web workflow (2026-09-06).
+		// admin middleware: allows any authenticated user to annotate samples.
+		// Annotation routes are registered here to keep them with other auto-route endpoints.
+		mux.HandleFunc("/api/admin/annotations/samples", admin(h.handleAnnotationSamples))
+		// First-turn workbench (2026-09-14): one row per session's turn_no=1
+		// request with its auto-route decision + annotation summary.
+		mux.HandleFunc("/api/admin/annotations/first-turn-samples", admin(h.handleAnnotationFirstTurnSamples))
+		mux.HandleFunc("/api/admin/annotations/stats", admin(h.handleAnnotationStats))
+		mux.HandleFunc("/api/admin/annotations/batch", admin(h.handleBatchAnnotate))
+		mux.HandleFunc("/api/admin/annotations/", admin(h.handleDeleteAnnotation)) // DELETE /annotations/{request_id}
+		mux.HandleFunc("/api/admin/annotations", admin(h.handleCreateAnnotation))  // POST /annotations
+
+		// taskprofile (2026-09-18): 任务类型档案 + 逐请求人工修正反馈闭环。
+		// Consolidates task taxonomy + model-tier data in one plugin-style
+		// module; corrections feed routingopt.PostClassify (human ×2 weight).
+		// Same admin middleware tier as the P2.1 annotation endpoints.
+		// R43 (2026-09-18): attach the classification-feedback recorder HERE —
+		// admin POST/import is the only production write path into the
+		// corrections store; without it the Prometheus classification feedback
+		// counters stay at zero (routingopt side is read-only).
+		taskProfileHandlers := taskprofile.NewHandlers(h.db)
+		taskProfileHandlers.SetRecorder(autoroute.NewClassificationFeedbackAggregator())
+		// R45（R43 §五#3 落地）: 四个变更端点（corrections create/import、
+		// reload、apply-tier-config）的审计留痕。taskprofile 定义 AuditEvent
+		// + SetAuditHook 避免反向依赖 admin；本侧注入 sink：结构化 slog
+		// （journald/日志管道可检索），actor 从 admin 鉴权上下文提取。
+		// hook 在 taskprofile 内已 panic 隔离，这里保持非阻塞。
+		// R46 F5: sink 抽为命名函数 taskProfileAuditSink——行为可测
+		// （actor 提取此前零测试执行）。
+		taskProfileHandlers.SetAuditHook(taskProfileAuditSink)
+		taskProfileHandlers.RegisterTaskProfileRoutes(mux, admin)
+
+		// P2.2 Track C (2026-09-07): routing-opt admin API — stats / accuracy /
+		// parameters / metrics. DB-only: aggregates routing_feedback_log +
+		// routing_optimization_state through h.db (no in-memory optimizer
+		// dependency); nil pool → 503. Same admin middleware as annotations.
+		// metrics (2026-09-16): 5 分钟聚合表只读投影（R30 P3 遗留债——
+		// 该表首个生产读者），支持 hours/task_type/provider 过滤。
+		mux.HandleFunc("/api/admin/routing-opt/stats", admin(h.handleRoutingOptStats))
+		mux.HandleFunc("/api/admin/routing-opt/accuracy", admin(h.handleRoutingOptAccuracy))
+		mux.HandleFunc("/api/admin/routing-opt/parameters", admin(h.handleRoutingOptParameters))
+		mux.HandleFunc("/api/admin/routing-opt/metrics", admin(h.handleRoutingOptMetrics))
 
 		// Phase 2a analytics (matrix / flow / model-task-index / decision-replay).
 		// superAdmin only: these expose cross-tenant credential/model routing
@@ -1255,9 +1446,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	}
 }
 
+// writeJSON 写 JSON 响应；marshal 失败时记日志并返回 500 兜底体。
+// 薄委托 internal/httpx（2026-09-04 writeJSON 收敛），错误分支语义保留在本地。
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	data, err := json.Marshal(v)
-	if err != nil {
+	if err := httpx.WriteJSON(w, status, "application/json", v); err != nil {
 		slog.Error("json marshal failed", "error", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -1265,12 +1457,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 		w.Write([]byte(`{"error":{"detail":"json marshal failed"}}`))
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	//nolint:errcheck // HTTP write error non-recoverable
-	w.Write(data)
-	//nolint:errcheck // HTTP write error non-recoverable
-	w.Write([]byte("\n"))
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
@@ -1289,13 +1475,28 @@ func writeErrorWithCode(w http.ResponseWriter, status int, code, msg string) {
 	})
 }
 
+func readJSONRequired(r *http.Request, v any) error {
+	if r == nil || r.Body == nil {
+		return jsonbody.ErrEmptyBody
+	}
+	return readJSON(r, v)
+}
+
 func readJSON(r *http.Request, v any) error {
-	if r.Body == nil {
+	if r == nil || r.Body == nil {
 		return nil
 	}
+	// 2026-08-27 P1 fix: Add 2MB size limit to prevent OOM from malicious payloads.
+	// This protects all 82 admin endpoints using readJSON.
+	const maxAdminBodySize = 2 << 20 // 2 MiB
+	limited := http.MaxBytesReader(nil, r.Body, maxAdminBodySize)
 	//nolint:errcheck // best-effort close
 	defer r.Body.Close()
-	return json.NewDecoder(r.Body).Decode(v)
+	raw, err := io.ReadAll(limited)
+	if err != nil {
+		return err
+	}
+	return jsonbody.DecodeBody(raw, v)
 }
 
 func queryInt(r *http.Request, key string, def int) int {
@@ -1345,33 +1546,37 @@ func (h *Handler) handleDefaultLimits(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// keyDefaultRateLimitRPM/Concurrent/TPM are settings_kv keys backing the
+// legacy app_settings table (Q4:C migration). The legacy table was dropped
+// from the canonical schema (sql/migrations/startup/022_settings_kv.sql) in
+// favor of settings_kv; the admin handler kept a SELECT/INSERT that hit
+// 42P01 on every boot, so we now read/write through settings.Global, which
+// is hot-reload-aware and matches the runtime path used by the gateway.
+const (
+	keyDefaultRateLimitRPM        = "default.rate_limit_rpm"
+	keyDefaultRateLimitConcurrent = "default.rate_limit_concurrent"
+	keyDefaultRateLimitTPM        = "default.rate_limit_tpm"
+)
+
 func (h *Handler) getDefaultLimits(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	_, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	var rateLimitRPM, rateLimitConcurrent *int
-	var rateLimitTPM *int
-
-	err := h.db.QueryRow(ctx, `
-		SELECT rate_limit_rpm, rate_limit_concurrent, rate_limit_tpm
-		FROM app_settings
-		WHERE tenant_id = 'default' AND app_id = 'gateway'
-	`).Scan(&rateLimitRPM, &rateLimitConcurrent, &rateLimitTPM)
-
-	if err != nil {
-		// Return hardcoded defaults if not found
-		writeJSON(w, http.StatusOK, map[string]any{
-			"rate_limit_rpm":        60,
-			"rate_limit_concurrent": 20,
-			"rate_limit_tpm":        nil,
-		})
-		return
+	rpm := settings.GetPlatformInt(keyDefaultRateLimitRPM, 60)
+	concurrent := settings.GetPlatformInt(keyDefaultRateLimitConcurrent, 20)
+	// TPM stays *int in the API contract: nil means "unset / no limit".
+	var tpm *int
+	if raw, _, err := settings.Global.EffectiveValue(settings.ScopePlatform, keyDefaultRateLimitTPM, ""); err == nil && len(raw) > 0 {
+		var v int
+		if jerr := json.Unmarshal(raw, &v); jerr == nil {
+			tpm = &v
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"rate_limit_rpm":        rateLimitRPM,
-		"rate_limit_concurrent": rateLimitConcurrent,
-		"rate_limit_tpm":        rateLimitTPM,
+		"rate_limit_rpm":        rpm,
+		"rate_limit_concurrent": concurrent,
+		"rate_limit_tpm":        tpm,
 	})
 }
 
@@ -1386,23 +1591,31 @@ func (h *Handler) setDefaultLimits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	_, err := h.db.Exec(ctx, `
-		INSERT INTO app_settings (tenant_id, app_id, rate_limit_rpm, rate_limit_concurrent, rate_limit_tpm, updated_at)
-		VALUES ('default', 'gateway', $1, $2, $3, now())
-		ON CONFLICT (tenant_id, app_id) DO UPDATE SET
-			rate_limit_rpm = EXCLUDED.rate_limit_rpm,
-			rate_limit_concurrent = EXCLUDED.rate_limit_concurrent,
-			rate_limit_tpm = EXCLUDED.rate_limit_tpm,
-			updated_at = now()
-	`, req.RateLimitRPM, req.RateLimitConcurrent, req.RateLimitTPM)
-
-	if err != nil {
-		slog.Error("setDefaultLimits failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to save default limits")
+	if h.settingsStore == nil || settings.Global == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings store unavailable")
 		return
+	}
+
+	if req.RateLimitRPM != nil {
+		if _, err := h.settingsStore.Set(settings.ScopePlatform, keyDefaultRateLimitRPM, *req.RateLimitRPM); err != nil {
+			slog.Error("setDefaultLimits rpm failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to save default.rate_limit_rpm")
+			return
+		}
+	}
+	if req.RateLimitConcurrent != nil {
+		if _, err := h.settingsStore.Set(settings.ScopePlatform, keyDefaultRateLimitConcurrent, *req.RateLimitConcurrent); err != nil {
+			slog.Error("setDefaultLimits concurrent failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to save default.rate_limit_concurrent")
+			return
+		}
+	}
+	if req.RateLimitTPM != nil {
+		if _, err := h.settingsStore.Set(settings.ScopePlatform, keyDefaultRateLimitTPM, *req.RateLimitTPM); err != nil {
+			slog.Error("setDefaultLimits tpm failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to save default.rate_limit_tpm")
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

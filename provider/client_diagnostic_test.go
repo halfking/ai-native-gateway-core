@@ -80,6 +80,17 @@ func TestCandidate_UnavailableReason_MinimaxM3(t *testing.T) {
 			},
 			wantNonEmpty: true,
 		},
+		{
+			name: "open circuit rejects minimax-m3",
+			candidate: Candidate{
+				Routable:          true,
+				CircuitState:      "open",
+				LifecycleStatus:   "active",
+				AvailabilityState: "ready",
+				QuotaState:        "ok",
+			},
+			wantNonEmpty: true,
+		},
 	}
 
 	for _, tt := range tests {

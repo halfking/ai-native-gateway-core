@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -12,6 +13,12 @@ import (
 // runDispatcher is a ① Model Dispatcher worker. It consumes from dispatchIn,
 // resolves the model, picks a credential (RouteFunc), and enqueues into the
 // credential's Tier-2 queue. On exhaustion it triggers model-change.
+//
+// Shutdown (audit 2026-09-05 C-#2): every request still buffered in dispatchIn
+// when stopCh fires is completed with ErrShutdown instead of being orphaned —
+// a dropped qr means its Submit caller blocks on qr.ResultCh until ctx expiry
+// (2h for survival streams). Mirrors runModelDrainer's stopCh handling and
+// runTotalDrainer's stopCh drain. See TestStopDrainsDispatchInResidue.
 func (p *Pipeline) runDispatcher() {
 	defer p.wg.Done()
 	for {
@@ -20,8 +27,59 @@ func (p *Pipeline) runDispatcher() {
 			if !ok {
 				return
 			}
-			p.dispatch(qr)
+			if p.shutdown.Load() {
+				// stopCh is already closed and the select randomly picked the
+				// receive branch: this is buffered residue. Complete it
+				// directly — do NOT run executor callbacks (model resolve /
+				// route) on a stopped pipeline.
+				p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+				continue
+			}
+			// C-#14 (audit round2): modelResolveFunc/routeFunc are complex
+			// cross-package callbacks; a panic here would kill the whole
+			// process. Recover, complete the qr, keep the worker alive
+			// (same pattern as forwarder.attempt).
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						slog.Error("dispatch worker panic recovered",
+							"request_id", qr.ID, "panic", recovered)
+						p.complete(qr, ForwardOutcome{
+							Err:       fmt.Errorf("dispatch panic: %v", recovered),
+							ErrorKind: "dispatch_panic",
+						})
+					}
+				}()
+				p.dispatch(qr)
+			}()
 		case <-p.stopCh:
+			p.shutdownDrainDispatchIn()
+			return
+		}
+	}
+}
+
+// shutdownDrainDispatchIn completes every request still buffered in
+// dispatchIn with ErrShutdown (audit 2026-09-05 C-#2).
+//
+// Ordering guarantee (why the drain is lossless): the sole producers of
+// dispatchIn are the per-model runModelDrainer goroutines. Waiting for them
+// FIRST — after a modelMu barrier that makes the producer set final
+// (getOrCreateModelQueue spawns drainers only under modelMu with a shutdown
+// guard, so after the barrier no new drainer can join) — guarantees nothing
+// is sent into dispatchIn after the drain loop observes it empty. Without
+// this wait, a drainer whose inner select randomly picked the send branch
+// (both branches ready once stopCh closed) could land a qr AFTER the drain
+// exited, with no consumer left.
+func (p *Pipeline) shutdownDrainDispatchIn() {
+	p.modelMu.Lock()
+	p.modelMu.Unlock() // barrier: producer set is now final (no new drainers)
+	p.drainerWg.Wait() // every runModelDrainer has exited
+	for {
+		select {
+		case qr := <-p.dispatchIn:
+			p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+		default:
 			return
 		}
 	}
@@ -30,13 +88,22 @@ func (p *Pipeline) runDispatcher() {
 // dispatch handles one request through model-resolution + credential selection.
 // Bounded retry on "credential queue full" to avoid spinning.
 func (p *Pipeline) dispatch(qr *QueuedRequest) {
+	// Cancellation race guard (audit 2026-09-05 round2 C-#12): while this item
+	// sat in dispatchIn, Submit's ctx.Done path may have CAS-won complete() and
+	// stamped the terminal journal entry in the caller's goroutine. Everything
+	// below (model resolve, routeFunc, recordDecision, enqueue) would then race
+	// the terminal writer on unsynchronized journal/counts fields and burn
+	// scheduling budget for a caller that already left. Mirrors move()'s guard.
+	if qr == nil || qr.completed.Load() || qr.abandoned.Load() {
+		return
+	}
 	// V3.1: Record T4 timestamp (model queue dequeued - start model resolution)
 	// Note: In current architecture, dispatchIn acts as the model queue.
 	// T3 (model enqueue) is set in runModelDrainer when feeding dispatchIn.
 	qr.SetT4_ModelDequeued()
 
 	// Resolve model (auto / empty → concrete).
-	if qr.ResolvedModel == "" {
+	if qr.resolvedModel() == "" {
 		resolved, alts, err := p.modelResolveFunc(qr.Ctx, qr.RequestedModel, nil)
 		if err != nil || resolved == "" {
 			slog.Debug("dispatch: model resolve failed",
@@ -46,7 +113,7 @@ func (p *Pipeline) dispatch(qr *QueuedRequest) {
 			p.complete(qr, ForwardOutcome{Err: ErrNoRoute})
 			return
 		}
-		qr.ResolvedModel = resolved
+		qr.setResolvedModel(resolved)
 		if len(qr.ModelAlternatives) == 0 && len(alts) > 0 {
 			qr.ModelAlternatives = append([]string(nil), alts...)
 		}
@@ -74,12 +141,11 @@ func (p *Pipeline) selectAndEnqueue(qr *QueuedRequest) ([]CredentialRef, bool) {
 	if err != nil || len(refs) == 0 {
 		return refs, false
 	}
-	refs = sortPriorityClusters(refs)
 	for _, ref := range refs {
 		if qr.hasTriedCredential(ref.CredentialID) {
 			continue
 		}
-		if !p.providerSwitchAllowed(qr, ref.ProviderID) {
+		if !providerSwitchAllowed(qr, ref.ProviderID) {
 			qr.markTriedCredential(ref.CredentialID)
 			continue
 		}
@@ -129,60 +195,32 @@ func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutco
 	// UT-FO-05): combination exhaustion fires here — BEFORE the attempt
 	// budget can matter — with the tried model/node/reason summary attached.
 	completeCause := func() {
-		outcome.Err = p.exhaustedTerminal(qr, terminalErr(cause))
+		outcome.Err = exhaustedTerminal(qr, terminalErr(cause))
 		p.complete(qr, outcome)
 	}
-	if !p.modelChangeEnabled() || !qr.AllowModelChange {
+	if d := PlanNoRoute(qr, p.modelChangeEnabled()); d.Action == NextActionFailed {
 		p.emitNoRouteIfCause(qr, cause)
 		completeCause()
 		return
 	}
-	qr.markTriedModel(qr.ResolvedModel)
-	var (
-		alts []string
-		err  error
-	)
-	if p.modelRecommendFunc != nil {
-		alts, err = p.modelRecommendFunc(qr.Ctx, qr, triedList(qr.TriedModels))
-	} else {
-		alts = qr.ModelAlternatives
-		if len(alts) == 0 {
-			_, alts, err = p.modelResolveFunc(qr.Ctx, qr.RequestedModel, triedList(qr.TriedModels))
-		}
-	}
-	if err != nil {
+	qr.markTriedModel(qr.resolvedModel())
+	d := PlanModelChange(qr, p.modelChangeCandidates(qr))
+	if d.Action != NextActionSwitchModel {
 		p.emitNoRouteIfCause(qr, cause)
 		completeCause()
 		return
 	}
-	if len(alts) == 0 {
-		p.emitNoRouteIfCause(qr, cause)
-		completeCause()
-		return
-	}
-	// Take the first alternative not already tried.
-	chosen := ""
-	for _, a := range alts {
-		if _, tried := qr.TriedModels[a]; !tried {
-			chosen = a
-			break
-		}
-	}
-	if chosen == "" {
-		p.emitNoRouteIfCause(qr, cause)
-		completeCause()
-		return
-	}
+	chosen := d.NextModel
 	// An alternative model remains: continuation, so the attempt budget
 	// guards it. (Exhaustion terminals above already returned by now —
 	// this is the R2.4 priority: 组合穷尽 > 预算. )
-	if qr.AttemptCount >= maxAttempts {
+	if AttemptBudgetLeft(qr) <= 0 {
 		p.terminateOnAttemptCap(qr, outcome)
 		return
 	}
 	// V3.3-OBS OBS-B1 (2026-08-15): model_switch 动作事件（24 号 §2：
 	// from/to/reason；不产生新 request_id）。
-	fromModel := qr.ResolvedModel
+	fromModel := qr.resolvedModel()
 	p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
 		RequestID: qr.ID,
 		Action:    liveactions.ActionModelSwitch,
@@ -201,7 +239,32 @@ func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutco
 		ToModel:       chosen,
 		SwitchReason:  "no_node",
 	})
-	qr.ResolvedModel = chosen
+	// v6 G-Ⅴ (回队打标) + G-Ⅲ (换模型 think 通知)：请求带着上一轮的失败
+	// 标志换道重进 Tier-1，客户端在同一连接上看到模型切换进度。
+	// W1.6 R9: journal 继承上一条的 ErrorKind/HTTPStatus/Vendor ——
+	// entry 构造先于 recordDecision（后者会重写 LastFailover 投影）。
+	// 2026-09-01 P0 fix: populate FromModel/ToModel so the journal→journey
+	// bridge can emit valid EventModelSwitched events.
+	now := time.Now()
+	qr.recordDecision(JournalEntry{
+		Model:      fromModel,
+		Vendor:     qr.LastFailover.Vendor,
+		Action:     NextActionSwitchModel,
+		ErrorKind:  qr.LastFailover.ErrorKind,
+		HTTPStatus: qr.LastFailover.HTTPStatus,
+		Attempt:    qr.AttemptCount,
+		At:         now,
+		FromModel:  fromModel,
+		ToModel:    chosen,
+	})
+	qr.notifyDispatch(DispatchNotice{
+		Kind:      NoticeKindModelSwitch,
+		Message:   fmt.Sprintf("模型 %s 无可用节点，切换到 %s 继续执行…", fromModel, chosen),
+		FromModel: fromModel,
+		ToModel:   chosen,
+		Attempt:   qr.AttemptCount,
+	})
+	qr.setResolvedModel(chosen)
 	qr.TriedCredentials = make(map[int]struct{})
 	qr.CredRetryCount = 0
 	qr.InitialProviderID = 0
@@ -223,17 +286,41 @@ func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutco
 	}
 }
 
+// modelChangeCandidates fetches the alternative models for the ladder — the
+// only I/O step of the model-change decision, kept executor-side so the
+// planner stays pure. nil on failure: the planner then decides the
+// exhaustion terminal.
+func (p *Pipeline) modelChangeCandidates(qr *QueuedRequest) []string {
+	var (
+		alts []string
+		err  error
+	)
+	if p.modelRecommendFunc != nil {
+		alts, err = p.modelRecommendFunc(qr.Ctx, qr, triedList(qr.TriedModels))
+	} else {
+		alts = qr.ModelAlternatives
+		if len(alts) == 0 {
+			_, alts, err = p.modelResolveFunc(qr.Ctx, qr.RequestedModel, triedList(qr.TriedModels))
+		}
+	}
+	if err != nil {
+		return nil
+	}
+	return alts
+}
+
 func (p *Pipeline) selectCredential(qr *QueuedRequest, ref CredentialRef) {
-	qr.SelectedCred = ref
-	qr.vendor = ref.Vendor
+	qr.setSelectedCredential(ref)
+	qr.setVendor(ref.Vendor)
 	if qr.InitialProviderID == 0 {
 		qr.InitialProviderID = ref.ProviderID
 	}
+	resolvedModel := qr.resolvedModel()
 	qr.emitObservation(Observation{
 		Type:          ObservationCredentialSelected,
 		Stage:         StageNodeSelection,
-		ResolvedModel: qr.ResolvedModel,
-		Model:         qr.ResolvedModel,
+		ResolvedModel: resolvedModel,
+		Model:         resolvedModel,
 		ProviderID:    int64(ref.ProviderID),
 		Provider:      ref.Vendor,
 		CredentialID:  int64(ref.CredentialID),
@@ -270,33 +357,32 @@ func (p *Pipeline) emitNoRouteIfCause(qr *QueuedRequest, cause error) {
 		return
 	}
 	if cause == ErrNoRoute || errors.Is(cause, ErrNoRoute) {
-		p.emitNoRoute(qr, qr.ResolvedModel, "all_credentials_exhausted")
+		p.emitNoRoute(qr, qr.resolvedModel(), "all_credentials_exhausted")
 	}
 }
 
-// scheduleCapacityRetry schedules a request for capacity retry after 5 seconds.
-// Called when all credentials under the current model have full queues.
+// scheduleCapacityRetry schedules a request for capacity retry after the
+// planner pacing (capacityRetryDelay, capacityRetryDelay × maxCapacityRetries
+// total). Called when all credentials under the current model have full queues.
 func (p *Pipeline) scheduleCapacityRetry(qr *QueuedRequest) {
-	const capacityRetryDelay = 5 * time.Second
-	const maxCapacityRetries = 12 // 5s × 12 = 60s max wait
-
-	// Check retry limit to prevent infinite loops
-	if qr.CapacityRetryCount >= maxCapacityRetries {
+	now := time.Now()
+	d := PlanCapacityWait(qr, now)
+	if d.Action != NextActionCapacityWait {
 		// Exceeded max capacity wait time → escalate to model-change
 		p.tryModelChange(qr, errCapacitySaturated)
 		return
 	}
 
 	qr.CapacityRetryCount++
-	retryAt := time.Now().Add(capacityRetryDelay)
+	retryAt := d.RetryAt
 
 	// Use existing HeapRetryScheduler infrastructure
 	if p.retryScheduler != nil && ctxOf(qr).Err() == nil {
 		observation := Observation{
 			Type:          ObservationRetryScheduled,
 			Stage:         StageRetrying,
-			ResolvedModel: qr.ResolvedModel,
-			Model:         qr.ResolvedModel,
+			ResolvedModel: qr.resolvedModel(),
+			Model:         qr.resolvedModel(),
 			RetryReason:   "capacity_saturated",
 		}
 		at := retryAt
@@ -307,6 +393,24 @@ func (p *Pipeline) scheduleCapacityRetry(qr *QueuedRequest) {
 		p.queueMirror.MirrorRetryAt(qr.ID, retryAt)
 
 		if p.retryScheduler.Schedule(qr, retryAt) {
+			// v6 G-Ⅲ/G-Ⅴ: 供应商并发/限流到达时的等待通知（think 通道，
+			// 不影响会话）+ 回队打标。凭据不标记 tried（队列满是暂态）。
+			now := time.Now()
+			qr.recordDecision(JournalEntry{
+				Model:   qr.resolvedModel(),
+				Action:  NextActionCapacityWait,
+				Attempt: qr.AttemptCount,
+				At:      now,
+			})
+			p.dimensionIndex.UpdateWait(qr, retryAt, NextActionCapacityWait, now)
+			qr.notifyDispatch(DispatchNotice{
+				Kind:     NoticeKindQueued,
+				Message:  fmt.Sprintf("所有节点并发/限流已满，排队等待中（第 %d/%d 轮，%s 后重试）…", qr.CapacityRetryCount, maxCapacityRetries, waitHint(capacityRetryDelay)),
+				RetryAt:  retryAt,
+				WaitHint: waitHint(capacityRetryDelay),
+				ToModel:  qr.resolvedModel(),
+				Attempt:  qr.AttemptCount,
+			})
 			return
 		}
 	}

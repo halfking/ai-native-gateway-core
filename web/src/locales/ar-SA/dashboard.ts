@@ -1,6 +1,7 @@
 export default {
   title: "لوحة المعلومات",
   refresh: "تحديث",
+  modelsSelectedCount: 'تم اختيار {n} من النماذج',  // R50 ModelPicker compact
 tabs: {
     board: 'Board',
     liveStream: 'تدفق الطلبات المباشر',
@@ -214,6 +215,9 @@ v2: {
       },
 
       tokenFormat: '{p} + {c}',
+      cache: 'التخزين المؤقت',
+      cacheFormat: 'قراءة {r} / كتابة {w} ({pct})',
+      sessionId: 'الجلسة',
     },
     connecting: "...جارٍ الاتصال",
     reconnecting: "...جارٍ إعادة الاتصال",
@@ -221,7 +225,7 @@ v2: {
     empty: "لا توجد طلبات مباشرة",
 
     emptyWaiting: 'في انتظار بيانات البث المباشر للطلبات…',
-    groupByVendor: 'حسب المورّد', groupByProvider: 'حسب المزوّد', groupByModel: 'حسب النموذج',
+    groupByCredential: 'حسب بيانات الاعتماد', groupByVendor: 'حسب المورّد', groupByProvider: 'حسب المزوّد', groupByModel: 'حسب النموذج',
     modeSmall: 'صغير',
     modeLarge: 'كبير',
     modeSmallTitle: 'وضع صغير: أعمدة عمودية، تستوعب المزيد من الطلبات (افتراضي)',
@@ -234,7 +238,7 @@ v2: {
     businessTitle: 'عرض طلبات الأعمال الحقيقية فقط',
     probeTitle: 'عرض طلبات الفحص فقط',
     cacheWindow: 'ذاكرة التخزين المؤقت / النافذة', connectionDetailTitle: 'انقر لعرض تفاصيل الاتصال',
-    dimensionVendor: 'المورّد', dimensionProvider: 'المزوّد', dimensionModel: 'النموذج',
+    dimensionCredential: 'بيانات الاعتماد', dimensionVendor: 'المورّد', dimensionProvider: 'المزوّد', dimensionModel: 'النموذج',
     statusOpen: 'متصل', statusConnecting: 'جارٍ الاتصال', statusReconnecting: 'جارٍ إعادة الاتصال',
     statusUnsupported: 'غير مدعوم', statusClosed: 'غير متصل',
     sseDetailTitle: 'تفاصيل اتصال SSE', sseStatusLabel: 'حالة الاتصال', sseUrlLabel: 'عنوان SSE',
@@ -281,6 +285,7 @@ v2: {
     filterAllOptions: 'الكل',
     filterEmpty: 'لا توجد خيارات متاحة',
     filterModel: 'النموذج',
+    filterGroup: 'تصفية',
     filterProvider: 'المزود',
     filterVendor: 'المورّد',
     filterAgent: 'العميل',  // 2026-08-06 محاذاة مع zh-CN

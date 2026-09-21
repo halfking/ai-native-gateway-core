@@ -7,13 +7,17 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
@@ -39,10 +43,21 @@ type EmbeddingsHandler struct {
 	// autoIndex enables model="auto" for embeddings (22 章 §22.2).
 	// When nil, model="auto" is passed through unchanged.
 	autoIndex *autoroute.Index
+	// failureLogger feeds each failed candidate into the shared
+	// candidate_failure_logs_hot ledger (plus the supplier_errors_hot
+	// projection) — same writer the chat executor uses. Optional wiring;
+	// nil disables the ledger writes (2026-09-14 audit #8).
+	failureLogger *executors.CandidateFailureWriter
 }
 
 func NewEmbeddingsHandler(providerResolver embeddingProviderResolver, upstreamClient *upstream.Client) *EmbeddingsHandler {
 	return &EmbeddingsHandler{provider: providerResolver, upstream: upstreamClient}
+}
+
+// SetFailureLogger wires the shared candidate-failure ledger writer. Pass nil
+// to disable (default) — every call site is nil-safe.
+func (h *EmbeddingsHandler) SetFailureLogger(writer *executors.CandidateFailureWriter) {
+	h.failureLogger = writer
 }
 
 func (h *EmbeddingsHandler) SetAuth(keyVerifier *authentication.KeyVerifier, rateLimiter ratelimit.RPMLimiter) {
@@ -155,11 +170,20 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Typed trailing state for the exhaustion response: Kind decides 429 vs
+	// 502, and Retry-After is kept per Kind family (R27 #11-3) so a window
+	// quoted by one family can never leak onto another family's terminal
+	// response. Same-family windows collapse to the max (worst constraint).
+	var lastKind errorsx.ErrorKind
+	retryAfterByKind := make(map[errorsx.ErrorKind]time.Duration)
 	var lastErr string
+	attempt := 0
 	for _, candidate := range candidates {
 		if !candidate.IsAvailable() || candidate.APIKey == "" || candidate.Protocol == "anthropic-messages" {
 			continue
 		}
+		attemptStart := time.Now()
+		attempt++
 		upstreamBody, marshalErr := rewriteEmbeddingModel(payload, candidate.RawModel)
 		if marshalErr != nil {
 			lastErr = marshalErr.Error()
@@ -177,17 +201,49 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		resp, upstreamErr := h.upstream.Do(upstreamReq)
 		if upstreamErr != nil {
+			// 5xx / network path: Do already classified (status+body) and
+			// captured the body; harvest Kind + per-family Retry-After for
+			// exhaustion, then fail over to the next candidate.
+			h.logCandidateFailure(requestID, keyInfo, candidate, attempt, upstreamErr.Kind, upstreamErr, attemptStart)
+			lastKind = upstreamErr.Kind
+			if upstreamErr.RetryAfter > retryAfterByKind[upstreamErr.Kind] {
+				retryAfterByKind[upstreamErr.Kind] = upstreamErr.RetryAfter
+			}
 			lastErr = upstreamErr.Error()
+			continue
+		}
+		// 2026-09-13 audit fix + 2026-09-14 audit #8: only 2xx responses are
+		// relayed verbatim. Everything else is classified via
+		// ErrorFromResponse (the chat executor's lossy-signal fix) BEFORE the
+		// body is drained, then either fails over (retryable /
+		// credential-fatal / anything not client-determined) or renders a
+		// terminal client-determined family as a gateway-shaped error.
+		if !isEmbeddingPassthroughStatus(resp.StatusCode) {
+			typedErr := upstream.ErrorFromResponse(resp)
+			_ = resp.Body.Close()
+			if typedErr == nil {
+				lastErr = fmt.Sprintf("upstream HTTP %d", resp.StatusCode)
+				continue
+			}
+			h.logCandidateFailure(requestID, keyInfo, candidate, attempt, typedErr.Kind, typedErr, attemptStart)
+			if isEmbeddingTerminalClientKind(typedErr.Kind) {
+				// Client-determined terminal family: every sibling credential
+				// would answer identically, so no failover — surface the
+				// gateway shape immediately.
+				h.writeTerminalEmbeddingError(w, requestID, typedErr)
+				return
+			}
+			lastKind = typedErr.Kind
+			if typedErr.RetryAfter > retryAfterByKind[typedErr.Kind] {
+				retryAfterByKind[typedErr.Kind] = typedErr.RetryAfter
+			}
+			lastErr = typedErr.Message
 			continue
 		}
 		responseBody, readErr := readLimitedResponse(resp.Body, maxEmbeddingsResponseBytes)
 		_ = resp.Body.Close()
 		if readErr != nil {
 			lastErr = readErr.Error()
-			continue
-		}
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
-			lastErr = fmt.Sprintf("upstream HTTP %d", resp.StatusCode)
 			continue
 		}
 		if autoDecision != "" {
@@ -201,7 +257,106 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Warn("embedding candidates exhausted", "request_id", requestID, "model", model, "error", lastErr)
-	writeErrorJSON(w, http.StatusBadGateway, requestID, "All embedding providers failed", "server_error", "upstream_error")
+	// Contract: exhaustion status follows the semantic family of the last
+	// error Kind (429 throttled / 503 overloaded / 504 timeout / 502 dead).
+	// Retry-After is read from the terminating family's own bucket only
+	// (R27 #11-3): a 120s window quoted by an earlier 429 candidate must not
+	// ride on a 503 exhaustion response. 429 terminal with hint=0 sends no
+	// header (unchanged).
+	status, errType, code := http.StatusBadGateway, "server_error", "upstream_error"
+	if lastKind != "" && errorsx.HTTPStatusForKind(lastKind) != http.StatusBadGateway {
+		if hint := retryAfterByKind[lastKind]; hint > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(hint.Seconds()))))
+		}
+		switch errorsx.HTTPStatusForKind(lastKind) {
+		case http.StatusTooManyRequests:
+			status, errType, code = http.StatusTooManyRequests, "rate_limit_error", "rate_limit_exhausted"
+		case http.StatusServiceUnavailable:
+			status, errType, code = http.StatusServiceUnavailable, "overloaded_error", "overloaded_exhausted"
+		case http.StatusGatewayTimeout:
+			status, errType, code = http.StatusGatewayTimeout, "timeout_error", "timeout_exhausted"
+		}
+	}
+	writeErrorJSON(w, status, requestID, "All embedding providers failed", errType, code)
+}
+
+// isEmbeddingPassthroughStatus reports whether an upstream embedding response
+// may be relayed verbatim. 2026-09-14 audit #8: tightened to 2xx only
+// (200/201/206) — the previous pass-through of every other status leaked
+// vendor bodies (402/408/422/...) straight to the client.
+func isEmbeddingPassthroughStatus(status int) bool {
+	switch status {
+	case http.StatusOK, http.StatusCreated, http.StatusPartialContent:
+		return true
+	default:
+		return false
+	}
+}
+
+// isEmbeddingTerminalClientKind reports the client-determined terminal
+// families: the request itself (input content, size, model identity) is the
+// problem, so sibling candidates would fail identically and failover is
+// wasted fan-out (2026-09-14 audit #8).
+func isEmbeddingTerminalClientKind(kind errorsx.ErrorKind) bool {
+	switch kind {
+	case errorsx.KindContentFilter, errorsx.KindContextLength, errorsx.KindClientBug,
+		errorsx.KindModelNotFound, errorsx.KindModelDeprecated, errorsx.KindUnsupportedFeature:
+		return true
+	default:
+		return false
+	}
+}
+
+// writeTerminalEmbeddingError renders a terminal client-determined family as
+// a gateway-shaped error: 400 invalid_request_error / 404 model_not_found /
+// 410 gone. The message carries only the sanitized upstream reason — vendor
+// bodies and status codes are never relayed verbatim.
+func (h *EmbeddingsHandler) writeTerminalEmbeddingError(w http.ResponseWriter, requestID string, typedErr *upstream.Error) {
+	status, errType, code := http.StatusBadRequest, "invalid_request_error", "invalid_request"
+	switch typedErr.Kind {
+	case errorsx.KindModelNotFound:
+		status, code = http.StatusNotFound, "model_not_found"
+	case errorsx.KindModelDeprecated:
+		status, code = http.StatusGone, "model_deprecated"
+	case errorsx.KindContextLength:
+		code = "context_length_exceeded"
+	case errorsx.KindContentFilter:
+		code = "content_filter"
+	case errorsx.KindUnsupportedFeature:
+		code = "unsupported_feature"
+	case errorsx.KindClientBug:
+		code = "client_bug"
+	}
+	reason := strings.TrimSpace(string(errorsx.SanitizeErrorText([]byte(typedErr.Message), 256)))
+	if reason == "" {
+		reason = string(typedErr.Kind)
+	}
+	writeErrorJSON(w, status, requestID, "Embedding request rejected by upstream ("+reason+")", errType, code)
+}
+
+// logCandidateFailure feeds one failed embedding candidate into the shared
+// candidate-failure ledger (LogFailureWithKind usage mirrors the chat
+// executor's dispatch path). Best-effort and nil-safe: without wiring, the
+// ledger write is skipped.
+func (h *EmbeddingsHandler) logCandidateFailure(requestID string, keyInfo *authentication.KeyInfo, candidate provider.Candidate, attempt int, kind errorsx.ErrorKind, execErr error, startedAt time.Time) {
+	if h.failureLogger == nil || execErr == nil {
+		return
+	}
+	tenantID := ""
+	if keyInfo != nil {
+		tenantID = keyInfo.TenantID
+	}
+	perAttemptMs := int(time.Since(startedAt).Milliseconds())
+	h.failureLogger.LogFailureWithKind(
+		requestID, tenantID, "",
+		candidate.CredentialID, candidate.ProviderID,
+		candidate.RawModel, attempt,
+		execErr, kind, nil, &perAttemptMs,
+		map[string]any{
+			"supplier":      candidate.CatalogCode,
+			"failure_stage": "upstream",
+		},
+	)
 }
 
 func (h *EmbeddingsHandler) authenticate(w http.ResponseWriter, r *http.Request, requestID string) (*authentication.KeyInfo, bool) {

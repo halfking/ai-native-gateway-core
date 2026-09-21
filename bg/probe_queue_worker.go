@@ -35,6 +35,24 @@ type ProbeQueueWorker struct {
 	// 250ms poll) — it is a maintenance sweep, not a hot-path step.
 	reviveMu sync.Mutex
 	reviveAt time.Time
+
+	// onQuotaRecovered is the dispatcher-facing notification fired from
+	// processTask's success branch (the legacy executor path AND the
+	// ProbeService path) once a credential's quota / availability state
+	// has been flipped back to healthy. Wired from main.go via
+	// SetOnQuotaRecovered; nil → processTask stays silent (the routing
+	// layer falls back to candCache TTL).
+	//
+	// 2026-08-26 quota-recovery-notify fix: closes the "DB says ready but
+	// cache still excludes credential" gap on the fast_probe path
+	// (ProbeQueueWorker + ProbeService + NodeProbeWorker.Submit).
+	onQuotaRecovered func(credID int, source string)
+
+	// completeFn (audit 2026-09-11) is the test seam over complete(); nil
+	// falls through to the real ProbeQueue.Complete path. Exists so tests
+	// can assert that a necessity-skipped (ErrProbeNotNecessary) task is
+	// NOT completed against its already-deleted queue row.
+	completeFn func(ctx context.Context, task ProbeQueueTask, result ProbeQueueResult)
 }
 
 // SetProbeService injects the node-probe execution owner after construction
@@ -47,10 +65,30 @@ func (w *ProbeQueueWorker) SetProbeService(ps *ProbeService) {
 	}
 }
 
+// SetOnQuotaRecovered wires the dispatcher-facing notification fired from
+// processTask's success branch. The (credID, source) signature lets the
+// integrator route the label + invalidator from a single closure. Safe to
+// call multiple times; the latest non-nil setter wins. nil → processTask
+// stays silent (the routing layer falls back to candCache TTL).
+//
+// 2026-08-26 quota-recovery-notify fix: without this hook the durable
+// probe queue's success path would complete the queue row but the routing
+// layer's candidate cache would still exclude the credential until TTL
+// elapses, so the first chat request after a recharge still picks a
+// fallback node.
+func (w *ProbeQueueWorker) SetOnQuotaRecovered(fn func(credID int, source string)) {
+	if w == nil || fn == nil {
+		return
+	}
+	w.onQuotaRecovered = fn
+}
+
 func NewProbeQueueWorker(cfg ProbeQueueWorkerConfig) *ProbeQueueWorker {
-	// A worker claims and executes exactly one task. Workers provide parallelism;
-	// serially processing a claimed batch can let later leases expire.
-	cfg.BatchSize = 1
+	if cfg.BatchSize <= 0 {
+		// A worker claims one task at a time. Claiming a batch then executing it
+		// serially lets later tasks lose their leases before they start.
+		cfg.BatchSize = 1
+	}
 	if cfg.Workers <= 0 {
 		cfg.Workers = 1
 	}
@@ -105,11 +143,19 @@ func (w *ProbeQueueWorker) run(ctx context.Context) {
 }
 
 func (w *ProbeQueueWorker) processBatch(ctx context.Context) error {
+	// 2026-09-17 (R39): the instance-level decrypt circuit must gate the
+	// queue path too, not just the legacy drainDue loop — a wrong-key
+	// instance claiming durable queue rows fails every direct round with
+	// endpoint_build and (before the mirrorNodeProbeState CASE WHEN guard)
+	// advanced the shared consecutive_failures ladder. Mirrors drainDue.
+	if w.cfg.ProbeService != nil && w.cfg.ProbeService.worker.decryptCircuitTripped() {
+		return nil
+	}
 	if _, err := w.cfg.Queue.RequeueExpiredLeases(ctx); err != nil {
 		return err
 	}
 	w.maybeReviveExpiredReady(ctx)
-	tasks, err := w.cfg.Queue.Claim(ctx, w.cfg.BatchSize, w.cfg.Lease)
+	tasks, err := w.cfg.Queue.Claim(ctx, 1, w.cfg.Lease)
 	if err != nil {
 		return err
 	}
@@ -151,8 +197,17 @@ func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask)
 	if task.Command == "node_probe" && w.cfg.ProbeService != nil {
 		result, err := w.cfg.ProbeService.Run(ctx, task)
 		if err != nil {
-			if errors.Is(err, ErrProbeOutOfScope) {
-				slog.Info("probe_service skipped out-of-scope task", "queue_id", task.ID)
+			// Necessity gate (2026-09-11 自检必要性检查): the probe was
+			// skipped before execution and its queue row + node_probe_state
+			// mirror were already deleted by the skip path. There is nothing
+			// left to Complete — completing would only log a confusing
+			// 0-rows "lease lost" warning against a deleted row.
+			if errors.Is(err, ErrProbeNotNecessary) {
+				slog.Info("probe_service skipped unnecessary task", "queue_id", task.ID, "reason", result.ReasonCode)
+				return
+			}
+			if errors.Is(err, ErrProbeOutOfScope) || errors.Is(err, ErrProbeAutomaticIneligible) {
+				slog.Info("probe_service skipped task", "queue_id", task.ID, "reason", result.ReasonCode)
 				w.complete(ctx, task, result)
 				return
 			}
@@ -175,6 +230,14 @@ func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask)
 			return
 		}
 		w.completeNodeProbe(ctx, task, result)
+		// 2026-08-26 quota-recovery-notify fix: when the unified node_probe
+		// path returned a successful ProbeQueueResult, notify the dispatcher
+		// so the per-credential candidate cache invalidates immediately and
+		// the next chat request re-plans with the recovered binding visible.
+		// nil hook → silent, routing layer falls back to candCache TTL.
+		if result.Status == ProbeQueueSuccess && w.onQuotaRecovered != nil {
+			w.onQuotaRecovered(int(task.CredentialID), "fast_probe")
+		}
 		return
 	}
 	target, err := w.cfg.Executor.LoadTarget(ctx, int(task.CredentialID), task.RawModel)
@@ -198,6 +261,12 @@ func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask)
 			HTTPStatus: result.HTTPStatus, LatencyMs: result.LatencyMs,
 			BodyPreview: result.RespPreview,
 		})
+		// 2026-08-26 quota-recovery-notify fix: on the legacy executor
+		// success branch, notify the dispatcher so the per-credential
+		// candidate cache invalidates immediately. nil hook → silent.
+		if w.onQuotaRecovered != nil {
+			w.onQuotaRecovered(int(task.CredentialID), "fast_probe")
+		}
 		return
 	}
 	w.completeFailure(ctx, task, result.ErrCode, result.ErrMsg, result.HTTPStatus, result.LatencyMs, result.RespPreview)
@@ -246,6 +315,13 @@ func (w *ProbeQueueWorker) completeNodeProbe(ctx context.Context, task ProbeQueu
 }
 
 func (w *ProbeQueueWorker) complete(ctx context.Context, task ProbeQueueTask, result ProbeQueueResult) {
+	if w == nil {
+		return
+	}
+	if w.completeFn != nil {
+		w.completeFn(ctx, task, result)
+		return
+	}
 	if err := w.cfg.Queue.Complete(ctx, task, result); err != nil {
 		if errors.Is(err, ErrProbeLeaseLost) {
 			slog.Info("probe queue task completion skipped after lease loss", "queue_id", taskID(task))

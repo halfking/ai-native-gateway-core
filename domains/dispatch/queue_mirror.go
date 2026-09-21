@@ -28,7 +28,13 @@ import (
 //	llmgw:dispatch:mirror:v1:t1_depth:{model}      → Tier-1 lane depth (int)
 //	llmgw:dispatch:mirror:v1:t2_depth:{credential} → Tier-2 lane depth (int)
 //	llmgw:dispatch:mirror:v1:inflight              → aggregate in-flight (int)
-//	llmgw:dispatch:mirror:v1:retry_at:{request_id} → retry_at unix millis
+//	llmgw:dispatch:mirror:v1:retry_at:{request_id} → retry_at unix millis (error/capacity requeue)
+//	llmgw:dispatch:mirror:v1:scheduled_at:{request_id} → 定时请求 due_at unix millis (v6 G-Ⅱ;
+//	                                                  distinct from retry_at so ops can tell
+//	                                                  scheduled parking from failure backoff)
+//
+// The pending set in Redis is therefore the union of retry_at:* (error/
+// capacity requeues) and scheduled_at:* (定时请求停靠) — both observation-only.
 //
 // All keys carry a TTL (default 10 min) so a dead instance's mirror fades
 // out instead of lying forever. Writes are ASYNC BYPASS: a bounded channel
@@ -89,8 +95,11 @@ type MirrorMetadata struct {
 	Credentials []LaneDepth
 	// InFlight is the aggregate in-flight gauge.
 	InFlight int64
-	// Retries lists pending retry_at entries.
+	// Retries lists pending retry_at entries (error/capacity requeues).
 	Retries []RetryAtEntry
+	// Scheduled lists parked 定时请求 with their due_at (v6 G-Ⅱ). Kept
+	// separate from Retries so the Redis-side pending set is classifiable.
+	Scheduled []RetryAtEntry
 }
 
 // QueueMirror mirrors queue observations into Redis. A nil *QueueMirror (or
@@ -223,6 +232,28 @@ func (m *QueueMirror) ClearRetryAt(requestID string) {
 	m.enqueue(QueueMirrorOperation{key: m.prefix + ":retry_at:" + requestID, del: true})
 }
 
+// MirrorScheduledAt records one parked 定时请求 (v6 G-Ⅱ). Distinct key family
+// from retry_at so RebuildMetadata can separate scheduled parking from failure
+// backoff; same observation-only contract and TTL.
+func (m *QueueMirror) MirrorScheduledAt(requestID string, dueAt time.Time) {
+	if m == nil || requestID == "" {
+		return
+	}
+	m.enqueue(QueueMirrorOperation{
+		key:   m.prefix + ":scheduled_at:" + requestID,
+		value: strconv.FormatInt(dueAt.UnixMilli(), 10),
+	})
+}
+
+// ClearScheduledAt drops one scheduled mirror key (due fired / request
+// terminal).
+func (m *QueueMirror) ClearScheduledAt(requestID string) {
+	if m == nil || requestID == "" {
+		return
+	}
+	m.enqueue(QueueMirrorOperation{key: m.prefix + ":scheduled_at:" + requestID, del: true})
+}
+
 // Flush blocks until every op enqueued before the barrier has been applied
 // (or dropped). Bounded wait keeps a wedged worker from hanging callers.
 func (m *QueueMirror) Flush() {
@@ -261,6 +292,7 @@ func (m *QueueMirror) RebuildMetadata(ctx context.Context) (MirrorMetadata, erro
 		Models:      []LaneDepth{},
 		Credentials: []LaneDepth{},
 		Retries:     []RetryAtEntry{},
+		Scheduled:   []RetryAtEntry{},
 	}
 	if m == nil {
 		return metadata, nil
@@ -290,10 +322,11 @@ func (m *QueueMirror) RebuildMetadata(ctx context.Context) (MirrorMetadata, erro
 // built as prefix+infix+name, so HasPrefix checks are unambiguous.
 func (m *QueueMirror) classifyKey(key, value string, metadata *MirrorMetadata) {
 	const (
-		t1Infix     = ":t1_depth:"
-		t2Infix     = ":t2_depth:"
-		inflightKey = ":inflight"
-		retryInfix  = ":retry_at:"
+		t1Infix        = ":t1_depth:"
+		t2Infix        = ":t2_depth:"
+		inflightKey    = ":inflight"
+		retryInfix     = ":retry_at:"
+		scheduledInfix = ":scheduled_at:"
 	)
 	depth, _ := strconv.ParseInt(value, 10, 64)
 	switch {
@@ -316,6 +349,15 @@ func (m *QueueMirror) classifyKey(key, value string, metadata *MirrorMetadata) {
 		}
 		metadata.Retries = append(metadata.Retries, RetryAtEntry{
 			RequestID: strings.TrimPrefix(key, m.prefix+retryInfix),
+			RetryAt:   time.UnixMilli(ms),
+		})
+	case strings.HasPrefix(key, m.prefix+scheduledInfix):
+		ms, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return
+		}
+		metadata.Scheduled = append(metadata.Scheduled, RetryAtEntry{
+			RequestID: strings.TrimPrefix(key, m.prefix+scheduledInfix),
 			RetryAt:   time.UnixMilli(ms),
 		})
 	}

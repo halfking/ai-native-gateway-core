@@ -334,7 +334,7 @@ onMounted(load)
 .alert-danger {
   padding: 8px 12px;
   border-radius: 4px;
-  background: rgba(239, 68, 68, 0.1);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
   color: var(--danger);
   margin-bottom: 12px;
 }

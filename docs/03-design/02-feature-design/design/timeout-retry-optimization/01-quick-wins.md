@@ -10,7 +10,7 @@
 
 ```bash
 # SSH到154服务器
-ssh root@47.97.111.154 -p 25022
+ssh root@<env:HOST_154_IP> -p 25022
 
 # 备份现有配置
 cp /etc/llm-gateway-go/env /etc/llm-gateway-go/env.bak.$(date +%Y%m%d-%H%M%S)
@@ -37,7 +37,7 @@ journalctl -u llm-gateway-go -n 20 -f
 **监控验证**:
 ```bash
 # 30分钟后检查超时情况
-ssh root@47.97.111.154 -p 25022 "journalctl -u llm-gateway-go --since '30 minutes ago' --no-pager | grep -c 'stream_timeout'"
+ssh root@<env:HOST_154_IP> -p 25022 "journalctl -u llm-gateway-go --since '30 minutes ago' --no-pager | grep -c 'stream_timeout'"
 ```
 
 ---

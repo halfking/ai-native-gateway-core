@@ -106,4 +106,10 @@ export default {
     node: 'Node {node}',
     model: 'Model {model}',
   },
+  attempts: {
+    provider: 'Provider {id}',
+    model: 'Model: {value}',
+    credential: 'Credential: {value}',
+    empty: 'No routing fallback attempts recorded',
+  },
 }

@@ -1,12 +1,14 @@
 package streaming
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,10 +31,14 @@ import (
 )
 
 type messagesRequestBody struct {
-	Model         string          `json:"model"`
-	Messages      json.RawMessage `json:"messages"`
-	MaxTokens     int             `json:"max_tokens"`
-	System        string          `json:"system,omitempty"`
+	Model     string          `json:"model"`
+	Messages  json.RawMessage `json:"messages"`
+	MaxTokens int             `json:"max_tokens"`
+	// System is json.RawMessage because Anthropic accepts BOTH shapes — a
+	// plain string and an array of content blocks (possibly with
+	// cache_control). Declaring it string made any block-array system
+	// hard-fail the whole body unmarshal (R12 候选4).
+	System        json.RawMessage `json:"system,omitempty"`
 	Stream        bool            `json:"stream"`
 	Temperature   *float64        `json:"temperature,omitempty"`
 	TopP          *float64        `json:"top_p,omitempty"`
@@ -84,6 +90,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptProviderID   *int
 		attemptCredentialID *int
 		attemptRequestBody  []byte
+		autoWire            *autoRouteDecision
 	)
 	attemptLogged := &attemptLoggedFlag
 	// 2026-06-26: ALWAYS generate a server-side UUID. The
@@ -262,6 +269,11 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request", "Request body too large")
 		return
 	}
+	// ── Gateway prompt admission preflight ───────────────────────────────────
+	// Provider-aware compression runs later after candidate resolution.
+	if pb, applied, _ := preflightCompress(bodyBytes, "anthropic-messages"); applied {
+		bodyBytes = pb
+	}
 	// ── Prompt budget guard (2026-08-24, 245 memcg OOM) ──────────────────
 	// 拒绝发生在 JSON 解析 / 上游转发之前；见 request_meta.go 注释。
 	if estTokens, over := promptBudgetExceeded(bodyBytes); over {
@@ -325,10 +337,18 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"auto-route temporarily unavailable; pass an explicit model name and retry")
 			return
 		}
-		bodyBytes = newBody
+		// Flag-off auto returns (nil, nil, false): keep the original body
+		// instead of zeroing it (parity with the chat path nil guard).
+		if newBody != nil {
+			bodyBytes = newBody
+		}
 		attemptClientModel = reqBody.Model
 		if wire != nil {
 			writeAutoDecisionHeader(w, wire)
+			logCtx.SetAutoDecision(wire)
+			autoWire = wire
+		} else {
+			logCtx.IsAutoRequest = true
 		}
 	}
 
@@ -364,11 +384,19 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, isStream)); !rlOutcome.Skipped {
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {
+			recordGatewayRateLimitRejection(rlOutcome)
 			attemptErrCode = "rate_limit_exceeded"
 			attemptErrMsg = "rate limit exceeded"
 			if attemptClientModel == "" {
 				attemptClientModel = clientModel
 			}
+			logCtx.SetKey(keyInfo)
+			logCtx.SetClientModel(attemptClientModel)
+			logCtx.Body = bodyBytes
+			applyProvisionalGatewaySessionHeader(r, provisionalSessionID)
+			h.chatHandler.insertRateLimitedPlaceholder(logCtx)
+			logCtx.EmitRateLimited(attemptErrCode, attemptErrMsg, nil, nil)
+			*attemptLogged = true
 			writeAnthropicError(w, 529, "rate_limit_error", "Rate limit exceeded. Please wait and retry.")
 			return
 		}
@@ -410,14 +438,13 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		// Client provided session ID — resolve SessionInfo for context
-		// propagation, but honor the client's ID even if Redis doesn't
-		// know it yet (first request in a new session).
-		if keyInfo != nil && h.chatHandler.sessionGetter != nil {
-			if si, getErr := h.chatHandler.sessionGetter.Get(r.Context(), sessionID); getErr == nil && si != nil {
-				sessionInfo = si
-			}
-		}
+		// Client provided session ID — 2026-09-08: normalize to the gateway
+		// namespace (deriveGatewaySessionID) and register unknown honored ids
+		// via EnsureV2WithID, mirroring the chat handler path. The previous
+		// verbatim honor left bare-UUID client identities in a heterogeneous
+		// namespace (turn aggregation stuck at 1) and never registered the
+		// session, so every follow-up request re-hit ErrSessionNotFound.
+		sessionID, sessionInfo = normalizeAndRegisterClientSession(r, sessionID, h.chatHandler.sessionGetter, keyInfo)
 	}
 	if sessionID == "" {
 		// Last-resort fallback: use the provisional id so downstream
@@ -426,6 +453,9 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r = applyResolvedGatewaySession(r, sessionID, sessionInfo)
 	logCtx.SetSession(sessionInfo)
+	if autoWire != nil {
+		recordAutoSelectionFromWire(r, sessionID, autoWire)
+	}
 	if h.chatHandler.requestLogger != nil {
 		tenantID := "default"
 		if keyInfo != nil {
@@ -528,7 +558,8 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, rc.httpStatus, "api_error", rc.message)
 		return
 	}
-	if len(candidates) == 0 {
+	survivalEligible := isStream && (durableStream != nil || h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID))
+	if len(candidates) == 0 && !survivalEligible {
 		// This is the real no_candidate case - no database error, just no matching providers
 		attemptErrCode = "no_candidate"
 		attemptErrMsg = fmt.Sprintf("No available provider for model '%s'", clientModel)
@@ -539,6 +570,9 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		releaseDurableBeforeSurvival(durableStream, "no_candidate")
 		writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", attemptErrMsg)
 		return
+	}
+	if len(candidates) == 0 {
+		slog.Info("initial route has no candidates; entering request survival", "request_id", requestID, "model", clientModel)
 	}
 	if len(candidates) > 0 {
 		pid := candidates[0].ProviderID
@@ -597,7 +631,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		clientID.Fingerprint.ClientProfile, clientID.IdentityHash,
 		attemptProviderID, attemptCredentialID, canonicalID,
 		canonicalNameFromResolution(modelResolution), // 2026-07-27: 标准模型名 (migration 458)
-		bodyBytes, txResult, egressProtocol, isStream,
+		bodyBytes, "anthropic-messages", txResult, egressProtocol, isStream,
 		gwSessionID, gwTaskID,
 		logCtx,
 	)
@@ -617,15 +651,35 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
+	// v6 G-Ⅱ: X-Gw-Due-At 定时请求（到期前停在 dispatch 的到期堆）。
+	dispatchDueAt := parseDispatchDueAt(r)
+	// V6-W1.6 R8: class 一并写入 logCtx，供首行与完成 UPDATE 落库（608）。
+	applyRequestClassToLogCtx(logCtx, dispatchDueAt)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
 			W:                          streamWriter,
 			R:                          r,
 			BodyBytes:                  upstreamBody,
+			FailoverNotices:            executors.NewFailoverNoticeCollector(),
 			IsStream:                   isStream,
 			StreamSurvivesClientCancel: explicitStreamSession(r.Context()),
 			PreStreamPrepared:          preStreamPrepared,
+			DispatchDueAt:              dispatchDueAt,
 			OnStreamReady:              func() {},
+			// v6 G-Ⅲ: dispatch 回队/切换通知走 `: thinking:` SSE 注释
+			// 通道（不影响会话内容；preStream 为 nil 时安全跳过）。
+			OnNodeJump: func(message string) {
+				if preStream != nil {
+					preStream.writeThinking(message)
+				}
+			},
+			// 审计 R9 候选 17：首字节后流中终态失败补发同款注释帧，
+			// 让客户端在连接关闭前拿到失败原因（不进会话内容）。
+			OnMidStreamFailure: func(message string) {
+				if preStream != nil {
+					preStream.writeThinking(message)
+				}
+			},
 			OnStreamHeartbeat: func() error {
 				if preStream != nil {
 					return preStream.session.Heartbeat()
@@ -770,7 +824,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var responseBody []byte
 	if !isStream {
-		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID)
+		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID, executors.EstimateAnthropicInputTokens(bodyBytes))
 	}
 
 	// Phase D (2026-06-22): use InboundBody (original client body) for audit
@@ -787,8 +841,10 @@ func convertToChatBody(req *messagesRequestBody) map[string]any {
 	}
 
 	var messages []any
-	if req.System != "" {
-		messages = append(messages, map[string]any{"role": "system", "content": req.System})
+	if len(req.System) > 0 && string(req.System) != "null" {
+		if sys := convertAnthropicSystem(req.System); sys != "" {
+			messages = append(messages, map[string]any{"role": "system", "content": sys})
+		}
 	}
 
 	var rawMessages []json.RawMessage
@@ -797,8 +853,9 @@ func convertToChatBody(req *messagesRequestBody) map[string]any {
 			for _, raw := range rawMessages {
 				var msg map[string]any
 				if json.Unmarshal(raw, &msg) == nil {
-					converted := convertAnthropicMessage(msg)
-					messages = append(messages, converted)
+					for _, converted := range convertAnthropicMessage(msg) {
+						messages = append(messages, converted)
+					}
 				}
 			}
 		}
@@ -850,32 +907,72 @@ func ConvertAnthropicBodyToOpenAI(bodyBytes []byte) ([]byte, error) {
 	return json.Marshal(chatBody)
 }
 
-func convertAnthropicMessage(msg map[string]any) map[string]any {
+// convertAnthropicMessage converts one Anthropic Messages message into zero
+// or more OpenAI chat messages. It returns a slice because a user message
+// carrying parallel tool_result blocks expands into one {"role":"tool"}
+// message PER result (R12 候选4).
+func convertAnthropicMessage(msg map[string]any) []map[string]any {
 	role, _ := msg["role"].(string)
 	content := msg["content"]
 
 	switch role {
 	case "user", "assistant":
 	default:
-		return msg
+		return []map[string]any{msg}
 	}
 
 	switch c := content.(type) {
 	case string:
-		return map[string]any{"role": role, "content": c}
+		return []map[string]any{{"role": role, "content": c}}
 	case []any:
 		return convertBlockMessage(role, c)
 	default:
-		return map[string]any{"role": role, "content": fmt.Sprint(c)}
+		return []map[string]any{{"role": role, "content": fmt.Sprint(c)}}
 	}
 }
 
-func convertBlockMessage(role string, blocks []any) map[string]any {
+// convertBlockMessage converts one Anthropic content-block message into
+// OpenAI chat message(s), preserving block order. Each tool_result becomes
+// its own {"role":"tool","tool_call_id":...} message — the previous
+// implementation returned at the FIRST tool_result, silently dropping every
+// parallel tool result and any trailing text (R12 候选4). Non-tool blocks
+// accumulate into a single trailing message with the source role.
+func convertBlockMessage(role string, blocks []any) []map[string]any {
+	out := make([]map[string]any, 0, len(blocks))
 	var textParts []string
 	var toolCalls []map[string]any
 	var passthrough []map[string]any
 	var contentParts []any
 	var hasNonTextContent bool
+
+	// flushRoleMessage appends the accumulated non-tool content as one
+	// message with the source role (assistant tool_calls / user content).
+	flushRoleMessage := func() {
+		if len(toolCalls) > 0 {
+			result := map[string]any{
+				"role":       role,
+				"tool_calls": toolCalls,
+			}
+			if hasNonTextContent {
+				result["content"] = contentParts
+			} else if len(textParts) > 0 {
+				result["content"] = strings.Join(textParts, "\n")
+			}
+			out = append(out, result)
+			return
+		}
+		if hasNonTextContent {
+			out = append(out, map[string]any{"role": role, "content": contentParts})
+			return
+		}
+		if len(passthrough) > 0 {
+			out = append(out, map[string]any{"role": role, "content": passthrough})
+			return
+		}
+		if len(textParts) > 0 {
+			out = append(out, map[string]any{"role": role, "content": strings.Join(textParts, "\n")})
+		}
+	}
 
 	for _, b := range blocks {
 		block, ok := b.(map[string]any)
@@ -907,11 +1004,11 @@ func convertBlockMessage(role string, blocks []any) map[string]any {
 				toolUseID, _ = block["id"].(string)
 			}
 			content := extractBlockText(block["content"])
-			return map[string]any{
+			out = append(out, map[string]any{
 				"role":         "tool",
 				"tool_call_id": toolUseID,
 				"content":      content,
-			}
+			})
 		case "image":
 			source, _ := block["source"].(map[string]any)
 			if source != nil {
@@ -939,26 +1036,30 @@ func convertBlockMessage(role string, blocks []any) map[string]any {
 			contentParts = append(contentParts, block)
 		}
 	}
-	if len(toolCalls) > 0 {
-		result := map[string]any{
-			"role":       role,
-			"tool_calls": toolCalls,
-		}
-		if hasNonTextContent {
-			result["content"] = contentParts
-		} else if len(textParts) > 0 {
-			result["content"] = strings.Join(textParts, "\n")
-		}
-		return result
+	flushRoleMessage()
+	if len(out) == 0 {
+		// A message with no recognised content still yields one (empty)
+		// message so the chat body keeps a valid turn.
+		return []map[string]any{{"role": role, "content": ""}}
 	}
-	if hasNonTextContent {
-		return map[string]any{"role": role, "content": contentParts}
-	}
+	return out
+}
 
-	if len(passthrough) > 0 {
-		return map[string]any{"role": role, "content": passthrough}
+// convertAnthropicSystem accepts both Anthropic system shapes — a plain
+// string or an array of content blocks (e.g. text blocks with cache_control)
+// — and returns the joined plain text for the OpenAI system message.
+// R12 候选4: the field was previously declared string, so a block-array
+// system hard-failed the whole body unmarshal and the request 400'd.
+func convertAnthropicSystem(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
 	}
-	return map[string]any{"role": role, "content": strings.Join(textParts, "\n")}
+	var blocks []any
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		return extractBlockText(blocks)
+	}
+	return ""
 }
 
 func extractBlockText(content any) string {
@@ -1182,10 +1283,24 @@ func convertAnthropicToolChoice(raw json.RawMessage) any {
 	return v
 }
 
-func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string) []byte {
+func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string, inputEstimate int) []byte {
 	if len(body) == 0 {
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error", "Failed to read upstream response")
 		return nil
+	}
+
+	// 2026-09-21 usage-zero 专项观测(env 门控, 默认关闭): 上游 body 进 handler
+	// 时的形态与 usage 有无, 用于定位"上游有 usage、客户端收 0"的丢失点。
+	if os.Getenv("LLM_GATEWAY_DEBUG_MESSAGES_BODY") == "true" {
+		head := body
+		if len(head) > 240 {
+			head = head[:240]
+		}
+		slog.Info("debug: messages non-stream upstream body at handler",
+			"request_id", requestID,
+			"bytes", len(body),
+			"has_usage", bytes.Contains(body, []byte(`"usage"`)),
+			"head", string(head))
 	}
 
 	format, empty := classifyNonStreamUpstreamResponse(body)
@@ -1199,12 +1314,55 @@ func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []b
 		anthropicBody = convertChatResponseToAnthropic(body, clientModel, requestID)
 	}
 
+	// 2026-09-21: usage-zero 兜底。流式路径自审计 R3 #2 起用请求体估算填充
+	// message_start.usage.input_tokens;非流式路径此前没有等价兜底,一旦上游
+	// usage 在管线中丢失,Claude Code 拿到恒 0 的 input_tokens 会系统性低估
+	// 上下文,压缩过晚直至溢出。这里与流式同源同值(executors 估算器),
+	// 仅在最终 usage 全 0 且估算非 0 时补 input_tokens。
+	if inputEstimate > 0 {
+		anthropicBody = patchAnthropicUsageInput(anthropicBody, inputEstimate)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Id", requestID)
 	w.WriteHeader(http.StatusOK)
 	//nolint:errcheck // HTTP write error non-recoverable
 	w.Write(anthropicBody)
 	return anthropicBody
+}
+
+// patchAnthropicUsageInput 把全 0 的 usage.input_tokens 替换为请求体估算值。
+// body 非 Anthropic 消息形状、usage 缺失或 input_tokens 非 0 时原样返回;
+// 重marshal 失败也原样返回(兜底路径永不劣化主路径)。
+func patchAnthropicUsageInput(body []byte, inputEstimate int) []byte {
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return body
+	}
+	usageRaw, ok := resp["usage"]
+	if !ok {
+		return body
+	}
+	var usage map[string]any
+	if err := json.Unmarshal(usageRaw, &usage); err != nil {
+		return body
+	}
+	in, _ := usage["input_tokens"].(float64)
+	out, _ := usage["output_tokens"].(float64)
+	if in != 0 || out != 0 {
+		return body
+	}
+	usage["input_tokens"] = inputEstimate
+	patched, err := json.Marshal(usage)
+	if err != nil {
+		return body
+	}
+	resp["usage"] = patched
+	out2, err := json.Marshal(resp)
+	if err != nil {
+		return body
+	}
+	return out2
 }
 
 func convertChatResponseToAnthropic(body []byte, clientModel, requestID string) []byte {

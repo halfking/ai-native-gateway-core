@@ -204,6 +204,14 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		MaxAutoContinueCount: getEnvInt("LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE", preset.MaxContinueCount),
 		CompletionConfidence: getEnvFloat("LLM_GATEWAY_GOAL_COMPLETION_CONFIDENCE", preset.CompletionConfidence),
 
+		// Client-driven control signals remain opt-in on both sides: the
+		// tenant setting / env default enables production behavior, while
+		// X-Gw-Capabilities authorizes it per request.
+		ClientSignalEnabled:          getEnvBool("LLM_GATEWAY_GOAL_CLIENT_DRIVEN", false),
+		ClientSignalMode:             getEnv("LLM_GATEWAY_GOAL_CLIENT_SIGNAL_MODE", "auto"),
+		HandoffSignalThresholdTokens: getEnvInt("LLM_GATEWAY_GOAL_HANDOFF_SIGNAL_THRESHOLD", 200000),
+		ClientSignalOnToolCalls:      getEnvBool("LLM_GATEWAY_GOAL_CLIENT_SIGNAL_ON_TOOL_CALLS", false),
+
 		// Audit/Fix settings from preset
 		UseAudit:             getEnvBool("LLM_GATEWAY_GOAL_AUDIT_ENABLED", preset.UseAudit),
 		UseAutorouteForAudit: getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_AUDIT", preset.UseAutorouteAudit),
@@ -242,6 +250,23 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		"auto_fix", goalCfg.AutoFixEnabled,
 		"monthly_limit", goalCfg.MonthlyTokenLimit,
 	)
+
+	// 2026-09-17 silent-degradation guard (会话优化v4/18 §5): the completion
+	// detector's LLM-judge strategy and the audit hook both need the shared
+	// LLMGatewayAutoLLM* endpoint. When goal mode is enabled but the endpoint
+	// is missing, they quietly degrade to keyword heuristics — completion
+	// verdicts get noticeably worse with zero operator feedback. Warn loudly
+	// at boot so the misconfiguration surfaces before the first misjudged
+	// session. R34: audit-only deployments (goal.audit_enabled without
+	// goal.enabled) share the same LLM dependency, so they warn too.
+	// Known gap, accepted: a tenant flipping goal.enabled at runtime via
+	// settings hot-reload gets no boot-time warning.
+	if (goalCfg.Enabled || goalCfg.UseAudit) && !llmCallerConfigured() {
+		slog.Warn("goal_control: goal/audit enabled but LLMGatewayAutoLLMEndpoint is not configured; "+
+			"LLM-judge completion detection and audit degrade to keyword heuristics",
+			"fix", "set LLMGatewayAutoLLMEndpoint (and LLMGatewayAutoLLMApiKey/Model) to restore full judgement",
+			"impact", "keyword-only completion detection may misjudge 'done' claims and audit will skip its LLM step")
+	}
 
 	// Enforce the budget-exhaustion invariant: the loop detector's
 	// budgetExhausted branch only fires when MaxFollowUpDepth can accommodate
@@ -458,10 +483,6 @@ func parseModelList(s string) []string {
 	return out
 }
 
-// buildGoalLLMCaller builds the LLMCaller for goal judgement calls from the
-// shared LLMGatewayAutoLLM* env vars. When no endpoint is set, returns a no-op
-// caller so the feature can be enabled (keyword detection / continue logic
-// don't need an LLM) without a hard runtime dependency.
 // buildSanitizeRestoreInterceptor 构造 SmartSaniGuard 占位符还原拦截器。
 // 返回 nil 时表示该能力未启用（Redis 不可用或 sanitizer 失败）。
 func buildSanitizeRestoreInterceptor(redisClient *redis.Client, detector *sanitize.PatternDetector) (response.ResponseInterceptor, error) {
@@ -477,7 +498,8 @@ func buildSanitizeRestoreInterceptor(redisClient *redis.Client, detector *saniti
 
 // buildSanitizeInputMiddleware 构造 SmartSaniGuard 输入脱敏中间件。
 // 返回的函数可直接传给 chatHandler.SetSanitizeInputMiddleware。
-func buildSanitizeInputMiddleware(redisClient *redis.Client, detector *sanitize.PatternDetector) (func(http.Handler) http.Handler, error) {
+// db 非 nil 时挂 706 的 session_censors DB 双写 sink（best-effort）。
+func buildSanitizeInputMiddleware(redisClient *redis.Client, detector *sanitize.PatternDetector, db *sql.DB) (func(http.Handler) http.Handler, error) {
 	if redisClient == nil {
 		return nil, nil
 	}
@@ -488,6 +510,9 @@ func buildSanitizeInputMiddleware(redisClient *redis.Client, detector *sanitize.
 	mw, err := sanitize.NewSanitizeInputMiddleware(s, redisClient, 30*time.Minute)
 	if err != nil {
 		return nil, err
+	}
+	if db != nil {
+		mw.SetCensorSink(sanitize.NewPostgresCensorSink(db))
 	}
 	return mw.Wrap, nil
 }
@@ -517,14 +542,14 @@ func newSanitizePatternDetector() *sanitize.PatternDetector {
 // 入口：main.go 在调用 initGoalControl 之外单独调用本函数，
 //
 //	bgDataPlaneOnly 与 !bgDataPlaneOnly 两个分支都会执行。
-func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redis.Client) *sanitize.PatternDetector {
+func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redis.Client, db *sql.DB) *sanitize.PatternDetector {
 	if chatHandler == nil || redisClient == nil {
 		return nil
 	}
 	detector := newSanitizePatternDetector()
 
 	// 1. 输入侧中间件（chatHandler.ServeHTTP 入口处生效）
-	mwFn, mwErr := buildSanitizeInputMiddleware(redisClient, detector)
+	mwFn, mwErr := buildSanitizeInputMiddleware(redisClient, detector, db)
 	if mwErr != nil || mwFn == nil {
 		slog.Warn("smart_sani_guard: input middleware init failed, skip request-side",
 			"error", mwErr)

@@ -67,7 +67,7 @@ Status: ✅ Pushed to origin/main
 cd /Users/__USER_1__/workspace/official-deploy
 
 # 1. 在 184 上构建镜像
-export K8S_SSH_PASSWORD='Kaixuan2025&9900#'
+export K8S_SSH_PASSWORD='<REDACTED_SSH_PASSWORD>'
 ./scripts/deploy-llm-gateway-go-184.sh --only app
 
 # 2. 部署到 71

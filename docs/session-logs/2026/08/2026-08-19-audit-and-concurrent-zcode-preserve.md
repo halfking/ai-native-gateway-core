@@ -67,7 +67,7 @@
    b7b89888c）需要被 245 拿到才能在生产跑通，否则 245 上的 admin/routing.go
    还是会有语法错（如果有人手工合并过 WIP 的话）。
 4. **PROJECT_CONFIG.md 脱敏持久性**：d7ebf25f7 修了 PROJECT_CONFIG.md，但
-   工作区 shell 中仍残留 `LLM_GATEWAY_ADMIN_PASSWORD=Veritrans&9527` 明文
+   工作区 shell 中仍残留 `LLM_GATEWAY_ADMIN_PASSWORD=__REDACTED_SSH_PASSWORD__` 明文
    （env-injector list 可捕获）。未在本任务范围。Owner 应排查哪些脚本会 export
    明文密码。
 5. **未补 deploy artifacts 的测试**：deploy-245.sh 自动 bump 版本文件已 commit

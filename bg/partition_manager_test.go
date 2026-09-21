@@ -1,6 +1,11 @@
 package bg
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,6 +38,14 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 		"ensure_dashboard_events_partition":          false, // Migration 383
 		"ensure_cache_metrics_partition":             false, // Migration 475
 		"ensure_handoff_logs_partition":              false, // Migration 532
+		"ensure_auto_route_selections_partition":     false, // Migration 656
+		"ensure_supplier_errors_partition":           false, // Migration V371 (2026-09-05, D-2#13)
+		// 2026-09-12 审计（694 跟进）：cfl ensure 自 689/694 是真实 body，
+		// 接入预建以消除 UTC 会话下月初缝隙行 promote 失败 + 7d trim 静默
+		// 删数据的复发面（473 同族）。
+		"ensure_candidate_failure_logs_partition": false, // Migration 689/694
+		// 706（存储优化方案 v2 S1a）：三新表族一次调用覆盖
+		"ensure_session_family_partitions":        false, // Migration 706
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
@@ -67,8 +80,17 @@ func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
 		"promote_candidate_failure_logs_hot_to_partition":    false, // Migration 392
 		"promote_session_turns_hot_to_partition":             false, // Migration 526
 		"promote_handoff_logs_hot_to_partition":              false, // Migration 532
-		"promote_session_module_executions_hot_to_partition": false, // Migration 578 (88c6fbf7b 引入, 原编号 574 与 candidate_binding 冲突, merge 时重编号)
-		"promote_dashboard_access_events_hot_to_partition":   false, // Migration 575 (88c6fbf7b)
+		"promote_session_module_executions_hot_to_partition": false, // Migration 580
+		"promote_dashboard_access_events_hot_to_partition":   false, // Migration 579 (body repaired by 607)
+		"promote_session_bodies_hot_to_partition":            false, // Migration 615
+		"promote_auto_route_selections_hot_to_partition":     false, // Migration 656
+		"promote_supplier_errors_hot_to_partition":           false, // Migration V371 (2026-09-05, D-2#1)
+		// 706（存储优化方案 v2 S1a）：三新表族
+		"promote_session_memora_hot_to_partition":            false, // Migration 706
+		"promote_session_censors_hot_to_partition":           false, // Migration 706
+		"promote_session_tools_hot_to_partition":             false, // Migration 706
+		// 733（会话存储解耦 v3）：turn 特征层
+		"promote_session_turn_details_hot_to_partition":      false, // Migration 733
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
@@ -139,6 +161,19 @@ func TestArchiveSpecsScheduling(t *testing.T) {
 			t.Errorf("archive function %s not scheduled in archiveSpecs()", fn)
 		}
 	}
+
+	// drop_old_state_partitions (migration 391) returns a bare bigint
+	// count, not the (status, rows_migrated, partition_dropped) tuple the
+	// archive_* fns return; runArchive must probe it with the scalar query
+	// shape or every day-2 run dies with 42703 "column status does not
+	// exist" (pg log 2026-09-03/04 audit). The two archive_* fns must NOT
+	// be scalar.
+	for _, s := range specs {
+		wantScalar := s.fnName == "drop_old_state_partitions"
+		if s.scalarResult != wantScalar {
+			t.Errorf("archiveSpec %s scalarResult=%v, want %v", s.fnName, s.scalarResult, wantScalar)
+		}
+	}
 }
 
 func TestArchiveOldPartitionsDayWindow(t *testing.T) {
@@ -184,6 +219,87 @@ func TestResolvePromoteConfigHandoffRetention(t *testing.T) {
 	}
 }
 
+// TestPromoteSpecsCoverAdminHotPromoteTableMap guards the 2026-09-05
+// D-2#1 drift: admin/data_lifecycle_hot_partition.go registers hot tables
+// for the manual promote endpoint while bg.promoteSpecs() drives the hourly
+// background scheduler. supplier_errors_hot shipped in admin's map (V371)
+// but was missing from promoteSpecs(), so the hot table only ever moved
+// when an admin clicked the button and grew without bound.
+//
+// admin imports bg, so this test cannot import admin (import cycle), and
+// admin's hotPromoteTableMap is unexported. Instead of a hand-copied
+// mirror (which itself can drift), parse the registry straight out of the
+// admin source file and require the two fnName sets to be equal.
+//
+// Note: label equality is intentionally NOT asserted across the two
+// registries — bg labels feed metrics + advisory-lock keys while admin
+// labels are API table names, and they legitimately differ for three
+// legacy tables (request_logs_bodies[_hot], credit_ledger[_hot],
+// tool_usage_stats[_hot]). The fnName is what selects the SQL function,
+// so set equality on fnNames is the invariant that matters.
+func TestPromoteSpecsCoverAdminHotPromoteTableMap(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "admin", "data_lifecycle_hot_partition.go"))
+	if err != nil {
+		t.Fatalf("read admin registry source: %v", err)
+	}
+
+	// Extract "table_label": "promote_fn_name" pairs from the
+	// hotPromoteTableMap literal. Only map-entry lines match; the map is
+	// the single place in the file with this `"x": "promote_..."`
+	// shape (verified against the 2026-09-05 source).
+	entryRe := regexp.MustCompile(`"([a-z0-9_]+)":\s*"(promote_[a-z0-9_]+)"`)
+	adminByFn := map[string]string{}
+	for _, line := range strings.Split(string(source), "\n") {
+		m := entryRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		adminByFn[m[2]] = m[1]
+	}
+	if len(adminByFn) < 15 {
+		t.Fatalf("parsed %d admin hotPromoteTableMap entries, expected >= 15 — the admin source layout likely changed; update this test", len(adminByFn))
+	}
+
+	promoteByFn := map[string]string{}
+	for _, s := range promoteSpecs() {
+		promoteByFn[s.fnName] = s.label
+	}
+
+	for fn, adminLabel := range adminByFn {
+		label, ok := promoteByFn[fn]
+		if !ok {
+			t.Errorf("admin hotPromoteTableMap registers %q (label %q) but promoteSpecs() does not schedule it — background promote never runs for this hot table (D-2#1 regression)", fn, adminLabel)
+			continue
+		}
+		if label != adminLabel && label+"_hot" != adminLabel && label != adminLabel+"_hot" {
+			t.Errorf("fn %q: admin label %q vs promoteSpecs label %q differ beyond the _hot suffix convention", fn, adminLabel, label)
+		}
+	}
+	for fn, label := range promoteByFn {
+		if _, ok := adminByFn[fn]; !ok {
+			t.Errorf("promoteSpecs() schedules %q (label %q) but admin hotPromoteTableMap has no such entry — manual promote endpoint cannot reach this table", fn, label)
+		}
+	}
+}
+
+// TestResolvePromoteConfigAutoRouteSelectionsFloor pins the audit H-3 fix:
+// the settle worker needs settleDelay(2min) + settleAbandonAfter(4h) to
+// finish before promote drains auto_route_selections_hot (settle is
+// hot-only), so the effective retention must never drop below 5h even if
+// lifecycle.hot_retention_hours is configured lower.
+func TestResolvePromoteConfigAutoRouteSelectionsFloor(t *testing.T) {
+	retention, batch := resolvePromoteConfig("auto_route_selections_hot")
+	if retention < 5*time.Hour {
+		t.Fatalf("auto_route_selections_hot retention = %v, want >= 5h floor (settleDelay+settleAbandonAfter+margin)", retention)
+	}
+	if retention != 8*time.Hour {
+		t.Fatalf("auto_route_selections_hot retention = %v, want 8h default", retention)
+	}
+	if batch < 100 || batch > 50_000 {
+		t.Fatalf("auto_route_selections_hot batch = %d, outside safety bounds", batch)
+	}
+}
+
 func TestPromoteLockKeyDeterministic(t *testing.T) {
 	a := promoteLockKey("request_logs_bodies")
 	b := promoteLockKey("request_logs_bodies")
@@ -192,5 +308,96 @@ func TestPromoteLockKeyDeterministic(t *testing.T) {
 	}
 	if a == promoteLockKey("request_logs_hot") {
 		t.Fatalf("promoteLockKey collision between distinct labels")
+	}
+}
+
+func TestPartitionManagerStopBeforeStartIsSafe(t *testing.T) {
+	pm := NewPartitionManager(nil, time.Hour)
+	done := make(chan struct{})
+	go func() {
+		pm.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stop before Start blocked")
+	}
+}
+
+func TestPartitionManagerStartStopIsIdempotent(t *testing.T) {
+	pm := NewPartitionManager(nil, time.Hour)
+	pm.SetPromoteInterval(0)
+	pm.Start(context.Background())
+	pm.Start(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		pm.Stop()
+		pm.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("idempotent Stop did not complete")
+	}
+}
+
+func TestPartitionManagerPromoteIntervalNonPositiveDoesNotPanic(t *testing.T) {
+	pm := NewPartitionManager(nil, time.Hour)
+	pm.SetPromoteInterval(0)
+	pm.promoteDefaultToPartitions(context.Background())
+	pm.SetPromoteInterval(-time.Second)
+	pm.promoteDefaultToPartitions(context.Background())
+}
+
+// TestHotTableTSColumn 钉 R48 §五#3 oldest-row-age gauge 的 ts 列映射。
+// 当 schema 演化新增 hot 表时必须同步更新 hotTableTSColumn switch。
+func TestHotTableTSColumn(t *testing.T) {
+	cases := []struct {
+		label string
+		want  string
+	}{
+		// 默认 ts（大多数 hot 表）
+		{"request_logs_hot", "ts"},
+		{"usage_ledger_hot", "ts"},
+		{"routing_decision_log_hot", "ts"},
+		{"request_wal_hot", "ts"},
+		{"credential_model_index_hot", "ts"},
+		{"request_logs_bodies_hot", "ts"},
+		{"credit_ledger_hot", "ts"},
+		{"tool_usage_stats_hot", "ts"},
+		// sessions 族用 created_at（R48 侦察确认）
+		{"session_turns_hot", "created_at"},
+		{"session_memora_hot", "created_at"},
+		{"session_censors_hot", "created_at"},
+		{"session_tools_hot", "created_at"},
+		{"session_bodies_hot", "created_at"},
+		{"session_module_executions_hot", "created_at"},
+		// 其他用 created_at 的
+		{"candidate_failure_logs_hot", "created_at"},
+		{"auto_route_selections_hot", "created_at"},
+		{"dashboard_access_events_hot", "created_at"},
+		{"session_last_requests", "created_at"},
+		// 未声明但兜底默认 ts（防止 map miss 时出错）
+		{"unknown_future_hot", "ts"},
+	}
+	for _, tc := range cases {
+		got := hotTableTSColumn(tc.label)
+		if got != tc.want {
+			t.Errorf("hotTableTSColumn(%q) = %q, want %q", tc.label, got, tc.want)
+		}
+	}
+}
+
+// TestHotTableTSColumn_TSQLInjectionGuard 钉 R48 §五#3 防 SQL 注入：
+// 即使将来 hotTableTSColumn switch 被扩展，ts 列名必须保持白名单。
+func TestHotTableTSColumn_TSQLInjectionGuard(t *testing.T) {
+	// 直接调函数：返回值是 switch 产物，本身受 map 控制；模拟异常输入
+	// （label 含特殊字符）走 default 分支返回 "ts"，不会产生非法列名。
+	got := hotTableTSColumn("evil'; DROP TABLE x; --")
+	if got != "ts" && got != "created_at" {
+		t.Errorf("untrusted label must not produce arbitrary column name, got %q", got)
 	}
 }

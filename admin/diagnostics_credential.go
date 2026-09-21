@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 // =============================================================================
@@ -219,8 +220,9 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// 1. 清 credential
-	if _, err := h.db.Exec(ctx, `
+	// 1. 清 credential。R16 (2026-09-12): guard lifecycle_status — archived /
+	// disabled credentials must not be resurrected by a diagnostic click.
+	tag, err := h.db.Exec(ctx, `
 		UPDATE credentials
 		SET availability_state = 'ready',
 		    availability_recover_at = NULL,
@@ -229,9 +231,14 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 		    state_reason_code = NULL,
 		    state_reason_detail = 'admin force-recover via diagnostic',
 		    state_updated_at = now()
-		WHERE id = $1
-	`, credID); err != nil {
+		WHERE id = $1 AND lifecycle_status = 'active'
+	`, credID)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("credential update failed: %v", err))
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "credential not found or not active")
 		return
 	}
 	// 2. 清该 credential 的所有 binding
@@ -260,13 +267,52 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("probe state update failed: %v", err))
 		return
 	}
+	// 3.5 R36 (2026-09-17 audit): the reset must clear BOTH probe systems —
+	// v_routable gates on node_probe_state (node_probe_failed), so resetting
+	// only the legacy table left the binding blocked despite "修复成功".
+	// Same dual-clear contract as force_enable (admin/routing.go).
+	if _, err := h.db.Exec(ctx, `
+		UPDATE node_probe_state SET
+		    last_direct_ok    = TRUE,
+		    last_gateway_ok   = TRUE,
+		    last_err_code     = NULL,
+		    last_err_detail   = NULL,
+		    next_retry_at     = now(),
+		    next_retry_seconds = 0,
+		    consecutive_failures = 0,
+		    paused            = FALSE,
+		    in_flight_until   = NULL,
+		    updated_at        = now()
+		WHERE credential_id = $1 AND last_direct_ok = FALSE
+	`, credID); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("node probe state update failed: %v", err))
+		return
+	}
 	// 4. invalidate routing caches (触发路由器重载)
 	invalidateRoutingCaches(r.Context(), h.db, "credentials", credID)
 
+	// R16 (2026-09-12): also drop the in-process key cache / key-rotator
+	// health so the "已重置" promise is true immediately instead of waiting
+	// ≤5min for the in-memory circuit + fpslot state to converge
+	// (mirrors applyForceEnable's recovery chain).
+	provider.InvalidateCredentialKeyCache(credID)
+	provider.ResetKeyRotatorForCredential(credID)
+
+	// R21 (2026-09-13) audit P2: the comment above claimed to mirror
+	// applyForceEnable's recovery chain but skipped resetInMemoryNodeState —
+	// in-memory circuit cooling / fpslot cooldown kept filtering the node for
+	// up to ~5 min after a "successful" recovery click.
+	var providerID int
+	if err := h.db.QueryRow(ctx, `SELECT provider_id FROM credentials WHERE id = $1`, credID).Scan(&providerID); err == nil {
+		h.resetInMemoryNodeState(ctx, credID, providerID, "", true)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"triggered":     true,
-		"credential_id": credID,
-		"timestamp":     time.Now().UTC().Format(time.RFC3339),
-		"message":       "凭据已强制恢复，credential / binding / probe_state 已重置",
+		"triggered":             true,
+		"credential_id":         credID,
+		"timestamp":             time.Now().UTC().Format(time.RFC3339),
+		"message":               "凭据已强制恢复，credential / binding / probe_state 已重置",
+		"key_cache_invalidated": true,
+		"key_rotator_reset":     true,
 	})
 }

@@ -14,7 +14,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -432,7 +431,7 @@ func (h *Handler) HandleSessionRecycle(w http.ResponseWriter, r *http.Request) {
 		Operator string `json:"operator,omitempty"`
 	}
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body) // 允许空 body
+		_ = readJSONRequired(r, &body) // 允许空 body
 	}
 	if body.Reason == "" {
 		body.Reason = "manual_admin"

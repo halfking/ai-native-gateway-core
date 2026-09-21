@@ -12,9 +12,13 @@
  *   - OBS-BE3 pipeline 字段缺省时整层隐藏，禁止零值冒充（13号门禁）
  *   - 三态：加载 Skeleton / 空 EmptyState / 错误 ErrorBanner
  *   - 动画只用 transform/opacity
+ *
+ * 2026-08-28: 接收上层筛选条件（模型/供应商/原厂/客户端/状态），
+ *            只显示符合条件的模型分组。条件清空则显示所有。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import type { LiveStatus, LiveModelCategory } from '../composables/useLiveStream'
 import { getFeatured, resolveRouting, reorderCandidateBindings, type CandidateBindingReorderItem, type RoutingCandidate } from '../api/routing'
 import { getRequestLogTopModels, type TopRequestModel } from '../api/logs'
 import { getSlidingWindow, getSlidingWindowBatch, type CallEntry } from '../api/credential-monitor'
@@ -22,11 +26,16 @@ import {
   queueRef,
   nodesRef,
   liveStreamState,
+  snapshotRef,
   getNodesForModel,
   getRequestsForCredential,
+  getRequestActions,
+  type ActionEvent,
   type LiveNodeStatus,
   type LiveRequest,
+  type LiveStreamTile,
 } from '../composables/liveStreamStore'
+import { recentIOForGroup } from '../composables/useModelRecentStatusStrip'
 import { isSuperAdmin, isAuthenticated } from '../store'
 import { ApiError } from '../api/_core'
 import { readLiveStreamPreferences, writeLiveStreamPreferences, type QueueStatusBucket } from '../composables/liveStreamPreferences'
@@ -46,6 +55,31 @@ import {
 import { credentialDisplayName as credentialLabelById, useCredentialLabels } from '../composables/useCredentialLabels'
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
+import { openRequestDetailPage } from '../utils/openRequestDetailPage'
+import { formatTimeOnly } from '../utils/datetime'
+import ModelIOStrips from './ModelIOStrips.vue'
+
+// 2026-08-28: 接收上层筛选条件（从 LiveRequestStreamV2 的 useLiveStreamFilters 传入）
+interface Props {
+  /** 模型筛选（空集合表示不筛选） */
+  modelFilter?: Set<string>
+  /** 供应商筛选（空集合表示不筛选） */
+  providerFilter?: Set<string>
+  /** 原厂筛选（空集合表示不筛选） */
+  vendorFilter?: Set<LiveModelCategory>
+  /** 客户端筛选（空集合表示不筛选） */
+  agentFilter?: Set<string>
+  /** 状态筛选（空集合表示不筛选） */
+  statusFilter?: Set<LiveStatus>
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  modelFilter: () => new Set(),
+  providerFilter: () => new Set(),
+  vendorFilter: () => new Set(),
+  agentFilter: () => new Set(),
+  statusFilter: () => new Set(),
+})
 
 const { t } = useI18n()
 const queue = queueRef
@@ -155,10 +189,22 @@ interface ModelScopeMeta {
   featured: boolean
   hotRequests: number
   aliases: Set<string>
+  /**
+   * Preferred display name for the scope (canonical_name when available,
+   * otherwise the model alias itself). Used as the section title text and
+   * as the primary sort key so users can locate a model alphabetically.
+   */
+  displayName: string
 }
 
 interface ModelGroup {
   model: string
+  /**
+   * Standard (canonical) display name for the model — used for the section
+   * title and as the primary sort key so users can locate a model
+   * alphabetically. Falls back to `model` when no canonical mapping is known.
+   */
+  displayName: string
   nodes: LiveNodeStatus[]
   requestCount: number
   featured: boolean
@@ -204,6 +250,11 @@ function modelKey(model: string): string {
 // 点击模型分组中的节点卡片：把「模型 + 节点」一起传给详情抽屉。
 // aliases 含分组 scope key 与该组的 raw 模型名，取该节点在此分组下的
 // raw 绑定作为 scope 模型（与 monitor/sliding-window/history 的 raw 命名一致）。
+function openRequestFromQueue(requestId: string | undefined) {
+  if (!requestId) return
+  openRequestDetailPage(requestId)
+}
+
 function openNode(node: LiveNodeStatus, aliases: string[] = []) {
   selectedNode.value = node
   const aliasSet = aliases.map(modelKey)
@@ -230,17 +281,28 @@ async function loadModelScope() {
     return
   }
   const scope = new Map<string, ModelScopeMeta>()
-  const addScope = (model: string, isFeatured: boolean, hotRequests: number) => {
+  const addScope = (model: string, isFeatured: boolean, hotRequests: number, displayName?: string) => {
     const key = modelKey(model)
     if (!key) return
-    const current = scope.get(key) ?? { key, featured: false, hotRequests: 0, aliases: new Set<string>() }
+    const current = scope.get(key)
+      ?? { key, featured: false, hotRequests: 0, aliases: new Set<string>(), displayName: model.trim() }
     current.featured ||= isFeatured
     current.hotRequests = Math.max(current.hotRequests, hotRequests)
     current.aliases.add(key)
+    // Prefer the longest/most-readable name we've seen for this scope so the
+    // section title picks "GPT-4o" over a raw alias like "gpt-4o-2024-08-06"
+    // when both resolve to the same canonical model.
+    const incoming = (displayName ?? model).trim()
+    if (incoming && (!current.displayName || incoming.length > current.displayName.length)) {
+      current.displayName = incoming
+    }
     scope.set(key, current)
   }
   if (featured.status === 'fulfilled') featured.value.featured_models.forEach(model => addScope(model, true, 0))
-  if (hot.status === 'fulfilled') hot.value.items.forEach((model: TopRequestModel) => addScope(model.canonical_name || model.display_name, false, model.request_count))
+  if (hot.status === 'fulfilled') hot.value.items.forEach((model: TopRequestModel) => {
+    const display = (model.canonical_name && model.canonical_name.trim()) || model.display_name
+    addScope(display, false, model.request_count, display)
+  })
   const aliases = new Map<string, string>()
   const candidatesByRawModel = new Map<string, RoutingCandidate[]>()
   const revisionsByCanonical = new Map<number, string>()
@@ -250,6 +312,10 @@ async function loadModelScope() {
     try {
       const resolved = await resolveRouting(name, undefined, false, { signal: controller.signal })
       if (controller.signal.aborted) return
+      // Canonical name (when present) is the authoritative standard label for
+      // this scope — overwrite any alias-only displayName we collected earlier.
+      const canonicalName = resolved.canonical_name?.trim()
+      if (canonicalName) meta.displayName = canonicalName
       const assignAlias = (raw: string) => {
         const key = modelKey(raw)
         if (!key) return
@@ -387,6 +453,7 @@ const modelGroups = computed<ModelGroup[]>(() => {
     }
     groups.push({
       model: scopeKey,
+      displayName: meta.displayName,
       nodes: orderedNodes,
       requestCount: requestIds.size,
       featured: meta.featured,
@@ -404,8 +471,67 @@ const modelGroups = computed<ModelGroup[]>(() => {
       rawModels: [...rawModelList],
     })
   }
-  return groups.sort((a, b) => Number(b.featured) - Number(a.featured) || b.hotRequests - a.hotRequests || b.nodes.length - a.nodes.length || a.model.localeCompare(b.model))
+  // Alphabetical by canonical displayName — operators scan top→bottom to find
+  // a model, so the canonical label (not the lowercased scope key) is the
+  // primary key. Featured/hot are deprioritized to ties so the user sees a
+  // stable alphabetical order regardless of which one happens to be hot.
+  return groups.sort((a, b) =>
+    a.displayName.localeCompare(b.displayName, 'zh-CN', { sensitivity: 'base' })
+    || Number(b.featured) - Number(a.featured)
+    || b.hotRequests - a.hotRequests
+    || a.model.localeCompare(b.model),
+  )
 })
+
+/** 与「按模型」泳道同源：snapshot.dimensions.model */
+const modelDimensionLanes = computed(() => snapshotRef.value?.dimensions?.model ?? [])
+
+// ── 输入/输出双队列（2026-09-01） ─────────────────────────────────────────
+// 输入 = 当前在途请求（in_progress tile）；输出 = 客户端最终结果
+// （success/failure/rate_limited tile，后端 SetTerminal CAS 保证终态
+// 每请求只写一次，重试成功 → 最终绿）。「经重试后成功」标记来自
+// request_lifecycle 动作时间线（node_switch / retry 信号），动作回放
+// 窗口之外缺省不标记，不做假阳性。
+const rescuedMemo = new Map<string, { actionCount: number; verdict: boolean }>()
+
+function isRescuedRequest(requestId: string, actions: ActionEvent[]): boolean {
+  if (!requestId || actions.length === 0) return false
+  // memo 按 actionCount 失效：同长度不同内容的替换（同 seq last-write-wins）
+  // 极罕见，误标代价仅为一个装饰性角标，不值得每帧全量重扫。
+  const memo = rescuedMemo.get(requestId)
+  if (memo && memo.actionCount === actions.length) return memo.verdict
+  const verdict = actions.some(action =>
+    action.action === 'node_switch'
+    || action.retry === true
+    || (typeof action.retry_seq === 'number' && action.retry_seq > 1))
+  rescuedMemo.set(requestId, { actionCount: actions.length, verdict })
+  // 有界缓存：请求 id 无限增长，超限时按插入序淘汰最旧的一条。
+  if (rescuedMemo.size > 4000) {
+    const oldest = rescuedMemo.keys().next().value
+    if (oldest !== undefined) rescuedMemo.delete(oldest)
+  }
+  return verdict
+}
+
+function ioForGroup(group: ModelGroup): {
+  inflight: LiveStreamTile[]
+  terminal: LiveStreamTile[]
+  successRate: number | null
+  failed: number
+  rescuedIds: Set<string>
+} {
+  const io = recentIOForGroup(
+    { model: group.model, displayName: group.displayName, aliases: group.aliases },
+    modelDimensionLanes.value,
+  )
+  const rescuedIds = new Set<string>()
+  for (const tile of io.terminal) {
+    if (tile.status === 'success' && isRescuedRequest(tile.request_id, getRequestActions(tile.request_id))) {
+      rescuedIds.add(tile.request_id)
+    }
+  }
+  return { inflight: io.inflight, terminal: io.terminal, successRate: io.successRate, failed: io.failed, rescuedIds }
+}
 
 // ── 节点状态过滤（在用 / 降级 / 人工禁用 / 配额耗尽） ─────────────────────
 // 每个节点只归属一个主状态桶：人工禁用 > 耗尽/暂停 > 降级 > 在用。
@@ -430,10 +556,75 @@ function passesStatusFilter(n: LiveNodeStatus): boolean {
   return statusFilter.value[nodeStatusBucket(n)]
 }
 
+// ── 上层筛选条件应用（2026-08-28） ─────────────────────────────────────
+// 将 LiveRequestStreamV2 的筛选条件（模型/供应商/原厂/客户端/状态）应用到模型分组。
+// 空集合表示不筛选（显示所有）。
+
+function passesUpperFilters(group: ModelGroup): boolean {
+  // 模型筛选：匹配 rawModels 或 aliases（case-insensitive）
+  if (props.modelFilter.size > 0) {
+    const normalizedFilter = Array.from(props.modelFilter).map(m => modelKey(m))
+    const matchesModel = group.rawModels.some(raw => normalizedFilter.includes(modelKey(raw)))
+      || group.aliases.some(alias => normalizedFilter.includes(alias))
+    if (!matchesModel) return false
+  }
+
+  // 供应商/原厂/客户端/状态筛选：从关联的请求中提取
+  // 2026-08-29 修复：同时从节点元数据和请求中获取数据，避免无请求时筛选失败
+  const credentialIds = new Set(group.nodes.map(n => n.credential_id))
+  const groupRequests: LiveRequest[] = []
+  for (const credId of credentialIds) {
+    groupRequests.push(...getRequestsForCredential(credId))
+  }
+
+  // 供应商筛选：从节点的 provider_code 或请求中至少有一个匹配
+  if (props.providerFilter.size > 0) {
+    const hasMatchingProviderInNodes = group.nodes.some(n =>
+      n.provider_code && props.providerFilter.has(n.provider_code)
+    )
+    const hasMatchingProviderInRequests = groupRequests.some(r => 
+      r.provider_code && props.providerFilter.has(r.provider_code)
+    )
+    if (!hasMatchingProviderInNodes && !hasMatchingProviderInRequests) return false
+  }
+
+  // 原厂筛选：仅从请求中匹配（节点本身没有 model_category）
+  // 但如果没有请求，则不应用此筛选条件（保留该分组）
+  if (props.vendorFilter.size > 0 && groupRequests.length > 0) {
+    const hasMatchingVendor = groupRequests.some(r =>
+      r.model_category && props.vendorFilter.has(r.model_category)
+    )
+    if (!hasMatchingVendor) return false
+  }
+
+  // 客户端筛选：仅从请求中匹配（节点本身没有 agent_name）
+  // 但如果没有请求，则不应用此筛选条件（保留该分组）
+  if (props.agentFilter.size > 0 && groupRequests.length > 0) {
+    const hasMatchingAgent = groupRequests.some(r => {
+      const agent = (r.agent_name || '').trim().toLowerCase()
+      return agent && props.agentFilter.has(agent)
+    })
+    if (!hasMatchingAgent) return false
+  }
+
+  // 状态筛选：仅从请求中匹配（节点本身没有请求状态）
+  // 但如果没有请求，则不应用此筛选条件（保留该分组）
+  if (props.statusFilter.size > 0 && groupRequests.length > 0) {
+    const hasMatchingStatus = groupRequests.some(r => 
+      r.status && props.statusFilter.has(r.status)
+    )
+    if (!hasMatchingStatus) return false
+  }
+
+  return true
+}
+
 // 仅展示当前过滤命中的节点；过滤全部命中数 + 命中节点
+// 2026-08-28: 先应用上层筛选（模型/供应商/原厂/客户端/状态），再应用节点状态过滤
 const filteredModelGroups = computed<ModelGroup[]>(() => {
   return modelGroups.value
-    .map(group => ({ ...group, nodes: group.nodes.filter(passesStatusFilter) }))
+    .filter(passesUpperFilters) // 上层筛选
+    .map(group => ({ ...group, nodes: group.nodes.filter(passesStatusFilter) })) // 节点状态过滤
     .filter(group => group.nodes.length > 0)
 })
 
@@ -660,6 +851,20 @@ function providerLabel(n: LiveNodeStatus): string {
   return n.provider_code || (n.provider_id ? `P${n.provider_id}` : '—')
 }
 
+/** Node card title: `{provider}/{credentialLabel}` for the model-group view.
+ *  Falls back to `{provider}/#{credentialId}` when no label is known — the
+ *  `/` separator keeps the provider anchor readable while still disambiguating
+ *  the credential. Centralized here so the request-list rows share the same
+ *  format. */
+function nodeCardTitle(n: LiveNodeStatus, group?: ModelGroup): string {
+  void labelRevision.value
+  const cachedLabel = credentialLabelForId(n.credential_id)
+  const label = (n.credential_label || cachedLabel || '').trim()
+  const provider = providerLabel(n)
+  if (label) return `${provider}/${label}`
+  return `${provider}/#${n.credential_id}`
+}
+
 function nodeTitle(n: LiveNodeStatus, group?: ModelGroup): string {
   void labelRevision.value
   const candidate = group ? candidateForNode(group, n.credential_id) : undefined
@@ -876,14 +1081,45 @@ function formatLatency(ms: number | null | undefined): string {
 }
 
 function formatTs(ts: string | undefined): string {
-  if (!ts) return ''
-  try {
-    const d = new Date(ts)
-    if (Number.isNaN(d.getTime())) return ts
-    return d.toLocaleTimeString()
-  } catch {
-    return ts
-  }
+  return formatTimeOnly(ts, { empty: '' })
+}
+
+// ── 请求记录行可读性（2026-09-01）：行内展示请求 ID + 标题 ─────────────────
+// 请求 ID 全长很长，行内固定显示前 12 位（与泳道 tile tooltip 同口径），
+// 完整 ID 悬停可见。标题 = 子请求类型徽标 + 模型名 + 客户端（agent_name），
+// 与 RequestTile 的 CHILD_TYPE_SHORT 缩写保持一致，让操作员不看详情页
+// 也能分辨"是谁发的什么请求"。
+const REQUEST_TYPE_SHORT: Record<string, string> = {
+  title: '标题',
+  summary: '总结',
+  sensitive_word: '敏感词',
+  probe: '探测',
+  chat: '对话',
+  unknown: '未知',
+}
+
+function shortRequestId(requestId: string | undefined): string {
+  const id = (requestId ?? '').trim()
+  if (!id) return '—'
+  return id.length > 12 ? `${id.slice(0, 12)}…` : id
+}
+
+function requestDisplayTitle(request: LiveRequest): string {
+  const parts: string[] = []
+  if (request.requestType) parts.push(REQUEST_TYPE_SHORT[request.requestType] ?? request.requestType)
+  parts.push(request.model || '—')
+  const agent = (request.agent_name ?? '').trim()
+  if (agent) parts.push(`@${agent}`)
+  return parts.join(' ')
+}
+
+function requestTitleTooltip(request: LiveRequest): string {
+  const lines: string[] = [`请求ID: ${request.request_id || '—'}`]
+  if (request.requestType) lines.push(`类型: ${request.requestType}`)
+  if (request.model) lines.push(`模型: ${request.model}`)
+  if (request.agent_name) lines.push(`客户端: ${request.agent_name}`)
+  if (request.status) lines.push(`状态: ${request.status}`)
+  return lines.join('\n')
 }
 </script>
 
@@ -1009,13 +1245,30 @@ function formatTs(ts: string | undefined): string {
           <div class="qp-model-compact">
             <button type="button" class="qp-model-group-toggle" :aria-expanded="expandedModels.has(group.model)" @click="toggleModel(group.model)">
               <span class="qp-model-group-caret" :class="{ 'qp-model-group-caret--open': expandedModels.has(group.model) }">▸</span>
-              <strong class="qp-model-group-name">{{ group.model }}</strong>
+              <strong class="qp-model-group-name">{{ group.displayName }}</strong>
             </button>
             <span v-if="group.featured" class="qp-model-tag">特色</span>
             <span v-if="group.hotRequests" class="qp-model-tag qp-model-tag--hot">热门 {{ group.hotRequests }}</span>
             <span class="qp-pill">{{ group.nodes.length }} 节点</span>
-            <span class="qp-pill" :class="{ 'qp-pill--active': group.requestCount > 0 }">{{ group.requestCount }} 当前请求</span>
+            <!-- 请求图标（缩微版）：右侧显示该模型当前正在处理的请求数；
+                 默认折叠状态下仍能直接看到是否在跑流量，无需展开。 -->
+            <span
+              class="qp-model-rq-icon"
+              :class="{ 'qp-model-rq-icon--active': group.requestCount > 0 }"
+              :title="`${group.requestCount} 当前请求`"
+              aria-hidden="true"
+            >
+              <svg viewBox="0 0 16 16" width="12" height="12" focusable="false">
+                <rect x="2" y="3" width="12" height="2.4" rx="0.6" fill="currentColor" opacity="0.55" />
+                <rect x="2" y="6.8" width="9" height="2.4" rx="0.6" fill="currentColor" :opacity="group.requestCount > 0 ? 0.95 : 0.35" />
+                <rect x="2" y="10.6" width="11" height="2.4" rx="0.6" fill="currentColor" :opacity="group.requestCount > 0 ? 0.8 : 0.25" />
+              </svg>
+              <span class="qp-model-rq-count">{{ group.requestCount }}</span>
+            </span>
             <span class="qp-pill qp-pill--hint" :title="dragDisabledHint(group)">{{ canReorder(group) ? '拖动调整优先级' : '优先级排序不可用' }}</span>
+            <ModelIOStrips v-bind="ioForGroup(group)" />
+          </div>
+          <div v-if="expandedModels.has(group.model)" class="qp-model-group-body">
             <div class="qp-model-nodes">
               <div
                 v-for="(node, nodeIndex) in group.nodes"
@@ -1031,7 +1284,7 @@ function formatTs(ts: string | undefined): string {
                   type="button"
                   class="qp-node-card"
                   :class="nodeCardTone(node)"
-                  :title="`${nodeTitle(node, group)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
+                  :title="`${nodeCardTitle(node, group)}：${nodeStatusSummary(node)}${node.last_error ? `；${node.last_error}` : ''}`"
                   @click="openNode(node, group.aliases)"
                 >
                   <span
@@ -1045,7 +1298,7 @@ function formatTs(ts: string | undefined): string {
                   >⋮⋮</span>
                   <span class="qp-node-card-title">
                     <span v-if="isPriorityNode(group, node)" class="qp-node-priority-flag" title="优先节点：额度用完前优先路由">★</span>
-                    {{ nodeTitle(node, group) }}
+                    {{ nodeCardTitle(node, group) }}
                   </span>
                   <span class="qp-node-card-dots" :title="`熔断 ${node.circuit_state || '未知'} · 可用性 ${node.availability_state || '未知'} · 配额 ${node.quota_state || '未知'} · 健康 ${node.health_status || '未知'}`">
                     <i class="qp-dot" :class="dotClass(circuitOk(node))" /><i class="qp-dot" :class="dotClass(availabilityOk(node))" /><i class="qp-dot" :class="dotClass(quotaOk(node))" /><i class="qp-dot" :class="dotClass(healthOk(node))" />
@@ -1079,13 +1332,25 @@ function formatTs(ts: string | undefined): string {
                 </button>
               </div>
             </div>
-          </div>
-          <div v-if="expandedModels.has(group.model)" class="qp-model-group-body">
             <p class="qp-model-detail-hint">{{ t('requestJourneys.nodeDetailHint') }}</p>
             <ul v-if="group.nodes.some(node => requestsForNode(node, group.aliases).length)" class="qp-model-group-requests">
               <template v-for="node in group.nodes" :key="node.credential_id">
-                <li v-for="request in requestsForNode(node, group.aliases)" :key="request.request_id" class="qp-model-group-request">
-                  <span class="qp-rq-node">{{ nodeTitle(node, group) }}</span><span class="qp-rq-model">{{ request.model || '—' }}</span><span class="qp-rq-status" :class="`qp-rq-status--${request.status}`">{{ request.status || '—' }}</span><span v-if="typeof request.latency_ms === 'number'" class="qp-rq-latency">{{ formatLatency(request.latency_ms) }}</span><span v-if="request.error_kind" class="qp-rq-err">{{ request.error_kind }}</span><span class="qp-rq-ts">{{ formatTs(request.ts) }}</span>
+                <li
+                  v-for="request in requestsForNode(node, group.aliases)"
+                  :key="request.request_id"
+                  class="qp-model-group-request qp-model-group-request--clickable"
+                  role="button"
+                  tabindex="0"
+                  :title="requestTitleTooltip(request)"
+                  @click="openRequestFromQueue(request.request_id)"
+                  @keydown.enter="openRequestFromQueue(request.request_id)"
+                >
+                  <span
+                    v-if="request.request_id"
+                    class="qp-rq-id"
+                    :title="request.request_id"
+                    @click.stop
+                  >{{ shortRequestId(request.request_id) }}</span><span class="qp-rq-node">{{ nodeCardTitle(node, group) }}</span><span class="qp-rq-model">{{ requestDisplayTitle(request) }}</span><span class="qp-rq-status" :class="`qp-rq-status--${request.status}`">{{ request.status || '—' }}</span><span v-if="typeof request.latency_ms === 'number'" class="qp-rq-latency">{{ formatLatency(request.latency_ms) }}</span><span v-if="request.error_kind" class="qp-rq-err">{{ request.error_kind }}</span><span class="qp-rq-ts">{{ formatTs(request.ts) }}</span>
                 </li>
               </template>
             </ul>
@@ -1309,7 +1574,8 @@ function formatTs(ts: string | undefined): string {
   padding: 4px 0;
   color: var(--kx-text);
 }
-.qp-model-compact { display:flex; align-items:center; gap:7px; flex-wrap:wrap; padding:7px 9px; }
+.qp-model-compact { display:flex; align-items:center; gap:7px; flex-wrap:nowrap; padding:7px 9px; min-width:0; }
+.qp-model-compact > .model-io-strips { flex: 1 1 auto; }
 .qp-model-tag { font-size:10px; padding:2px 6px; border-radius:999px; color:var(--kx-accent); background:color-mix(in srgb, var(--kx-accent) 12%, transparent); }
 .qp-model-tag--hot { color:var(--kx-warning); background:color-mix(in srgb, var(--kx-warning) 12%, transparent); }
 .qp-model-nodes { display:flex; gap:6px; flex-wrap:wrap; flex:1 1 100%; padding-left:18px; }
@@ -1428,8 +1694,29 @@ function formatTs(ts: string | undefined): string {
   border-top: 1px dashed var(--kx-border);
   color: var(--kx-text);
 }
+.qp-model-group-request--clickable {
+  cursor: pointer;
+  border-radius: 4px;
+  margin: 0 -4px;
+}
+.qp-model-group-request--clickable:hover {
+  background: color-mix(in srgb, var(--kx-primary) 8%, transparent);
+}
 .qp-model-group-request:first-child {
   border-top: none;
+}
+.qp-rq-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--kx-text-secondary, var(--kx-muted, var(--kx-text)));
+  background: var(--kx-bg, var(--kx-surface));
+  border: 1px solid var(--kx-border);
+  border-radius: 4px;
+  padding: 0 5px;
+  white-space: nowrap;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .qp-rq-model {
   font-weight: 500;
@@ -1522,4 +1809,27 @@ function formatTs(ts: string | undefined): string {
   color: var(--kx-muted, var(--kx-text-secondary));
   cursor: help;
 }
+
+/* 模型标题右侧请求图标：默认折叠时也能一眼看到模型在跑流量。
+   三层条形 = 模拟请求纸面，"active" 状态下加深以提示有在途请求。 */
+.qp-model-rq-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  color: var(--kx-muted, var(--kx-text-secondary));
+  background: var(--kx-bg, var(--kx-surface));
+  border: 1px solid var(--kx-border);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.qp-model-rq-icon svg { display: block; }
+.qp-model-rq-icon--active {
+  color: var(--kx-primary);
+  border-color: color-mix(in srgb, var(--kx-primary) 40%, var(--kx-border));
+  background: color-mix(in srgb, var(--kx-primary) 8%, var(--kx-surface));
+}
+.qp-model-rq-count { font-weight: 600; }
 </style>

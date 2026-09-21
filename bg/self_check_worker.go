@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -86,7 +87,7 @@ func NewSelfCheckWorker(db *pgxpool.Pool, apiKey, baseURL string, keyring *secre
 		if envURL := os.Getenv("LLM_GATEWAY_SELF_CHECK_BASE_URL"); envURL != "" {
 			baseURL = envURL
 		} else {
-			baseURL = "http://127.0.0.1:8781/v1"
+			baseURL = loopback.GatewayBase() + "/v1"
 		}
 	}
 	return &SelfCheckWorker{
@@ -824,27 +825,26 @@ func truncateStrSC(s string, maxLen int) string {
 func EnsureSystemAPIKey(ctx context.Context, db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring, secretKey string) (string, error) {
 	// Try to find an existing system key that belongs to this worker.
 	var ciphertext []byte
-	var keyHash string
 	err := db.QueryRow(ctx, `
-		SELECT key_ciphertext, key_hash FROM api_keys
+		SELECT key_ciphertext FROM api_keys
 		WHERE COALESCE(is_system, FALSE) = TRUE AND status = 'active'
 		  AND owner_user = 'self-check-worker'
 		ORDER BY created_at DESC LIMIT 1`,
-	).Scan(&ciphertext, &keyHash)
+	).Scan(&ciphertext)
 	if err == nil && len(ciphertext) > 0 {
 		if keyring != nil {
 			pt, err := secret.DecryptAESGCM(ciphertext, keyring)
-			if err == nil && systemAPIKeyHashMatches(secretKey, string(pt), keyHash) {
+			if err == nil {
 				return string(pt), nil
 			}
 		}
 		if len(encKey) == 32 {
 			pt, err := secret.DecryptFernet(ciphertext, encKey)
-			if err == nil && systemAPIKeyHashMatches(secretKey, pt, keyHash) {
+			if err == nil {
 				return pt, nil
 			}
 		}
-		slog.Warn("self_check_worker: existing system key cannot authenticate, creating new one")
+		slog.Warn("self_check_worker: existing system key exists but cannot decrypt, creating new one")
 	}
 
 	// Generate a new system key.
@@ -852,7 +852,7 @@ func EnsureSystemAPIKey(ctx context.Context, db *pgxpool.Pool, encKey []byte, ke
 	// CRITICAL: key_hash must be HMAC-SHA256(secretKey, raw) — the same transform the
 	// data-plane verifier uses at lookup time. Storing the plaintext (as the old code did)
 	// means the verifier's WHERE key_hash = HMAC(...) never matches → 401 invalid_key.
-	keyHash = authentication.HashAPIKey(secretKey, newKey)
+	keyHash := authentication.HashAPIKey(secretKey, newKey)
 	keyPrefix := newKey[:10] + "****"
 
 	var encCiphertext string
@@ -884,10 +884,6 @@ func EnsureSystemAPIKey(ctx context.Context, db *pgxpool.Pool, encKey []byte, ke
 	return newKey, nil
 }
 
-func systemAPIKeyHashMatches(secretKey, rawKey, storedHash string) bool {
-	return rawKey != "" && storedHash != "" && authentication.HashAPIKey(secretKey, rawKey) == storedHash
-}
-
 func randomHexSC(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b) // Use crypto/rand for security
@@ -895,9 +891,4 @@ func randomHexSC(n int) string {
 		b[i] = "0123456789abcdef"[b[i]%16]
 	}
 	return string(b)
-}
-
-// EnsureSystemAPIKeyFromEnv reads the system API key from env var (no DB interaction).
-func EnsureSystemAPIKeyFromEnv() string {
-	return os.Getenv("LLM_GATEWAY_SELF_CHECK_API_KEY")
 }

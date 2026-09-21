@@ -1,0 +1,12 @@
+event: content_block_delta
+data: {"delta":{"text":"Hi","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message_start
+data: {"message":{"id":"chatcmpl-1","model":"gpt-4o","usage":{"cache_read_input_tokens":100,"input_tokens":1500,"output_tokens":0}},"type":"message_start"}
+
+event: message_delta
+data: {"delta":{"stop_reason":"end_turn"},"type":"message_delta","usage":{"output_tokens":50}}
+
+event: message_stop
+data: {"type":"message_stop"}
+

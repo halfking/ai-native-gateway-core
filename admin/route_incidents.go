@@ -69,7 +69,8 @@ func (h *RouteIncidentsHandler) RegisterRoutes(mux *http.ServeMux, superAdmin fu
 // Query parameters:
 //
 //	state     — "active" | "recovering" | "recovered" (optional)
-//	visible   — "1" to exclude recovered (optional)
+//	visible   — "1" (default) hides recovered and below-threshold pending
+//	            rows; "0" returns the full ledger including pending
 //	limit     — page size 1..500 (default 100)
 //
 // Super-admin: tenant_id="" returns all tenants. Tenant-admin calls
@@ -83,8 +84,12 @@ func (h *RouteIncidentsHandler) handleList(w http.ResponseWriter, r *http.Reques
 	}
 	q := r.URL.Query()
 	filter := routeincident.ListFilter{
-		State:       strings.TrimSpace(q.Get("state")),
-		OnlyVisible: q.Get("visible") == "1",
+		State: strings.TrimSpace(q.Get("state")),
+		// R34 (2026-09-17 audit): pending rows (streak below the visibility
+		// threshold) are transient bookkeeping, not dashboard entities —
+		// hide them from the default list like recovered rows; visible=0
+		// opts back into the full ledger.
+		OnlyVisible: q.Get("visible") != "0",
 	}
 	if l := parseIntDefault(q.Get("limit"), 0); l > 0 {
 		filter.Limit = l

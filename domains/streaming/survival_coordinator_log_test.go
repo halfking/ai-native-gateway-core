@@ -55,11 +55,7 @@ func TestSurvivalCoordinator_LogsCoverAttemptDiscardAndTerminal(t *testing.T) {
 		BodyBytes: []byte(`{"model":"glm-5.2"}`),
 		Capture:   audit.NewStreamCapture(),
 	}
-	res := h.coordinator().Run(withStreamingContext(harnessCtx(), streamingRequestContext{
-		RequestID:   params.RequestID,
-		TenantID:    "tenant-obs",
-		ClientModel: params.Model,
-	}), h.sw, params)
+	res := h.coordinator().Run(harnessCtx(), h.sw, params)
 	if !res.Succeed {
 		t.Fatalf("coordinator did not succeed: decision=%+v err=%v", res.Decision, res.FinalAttempt.FinalError)
 	}
@@ -85,6 +81,11 @@ func TestSurvivalCoordinator_LogsCoverAttemptDiscardAndTerminal(t *testing.T) {
 		switch rec["msg"] {
 		case "survival_attempt_outcome":
 			gotOutcome = true
+			for _, field := range []string{"request_id", "attempt_id", "attempt", "route_override", "fallback_reason", "effective_route_status"} {
+				if _, ok := rec[field]; !ok {
+					t.Errorf("survival_attempt_outcome missing stable field %q: %v", field, rec)
+				}
+			}
 			if rec["provider_id"] == nil {
 				t.Errorf("survival_attempt_outcome missing provider_id: %v", rec)
 			}
@@ -93,6 +94,11 @@ func TestSurvivalCoordinator_LogsCoverAttemptDiscardAndTerminal(t *testing.T) {
 			}
 		case "survival_attempt_discarded":
 			gotDiscarded = true
+			for _, field := range []string{"request_id", "attempt_id", "attempt", "route_override", "fallback_reason", "effective_route_status"} {
+				if _, ok := rec[field]; !ok {
+					t.Errorf("survival_attempt_discarded missing stable field %q: %v", field, rec)
+				}
+			}
 			if _, ok := rec["buffer_bytes"]; !ok {
 				t.Errorf("survival_attempt_discarded missing buffer_bytes: %v", rec)
 			}
@@ -105,9 +111,6 @@ func TestSurvivalCoordinator_LogsCoverAttemptDiscardAndTerminal(t *testing.T) {
 	}
 	if !gotOutcome {
 		t.Errorf("missing survival_attempt_outcome in log: %s", buf.String())
-	}
-	if !strings.Contains(buf.String(), `"request_id":"req-obs-disposable"`) {
-		t.Errorf("survival logs missing request_id correlation: %s", buf.String())
 	}
 	if !sawProviderRawModel {
 		t.Errorf("survival_attempt_outcome never carried raw_model=glm-5.2: %s", buf.String())
@@ -162,11 +165,7 @@ func TestSurvivalCoordinator_LogsCaptureResumeBlocked(t *testing.T) {
 		BodyBytes: []byte(`{"model":"minimax-m3"}`),
 		Capture:   audit.NewStreamCapture(),
 	}
-	res := co.Run(withStreamingContext(harnessCtx(), streamingRequestContext{
-		RequestID:   params.RequestID,
-		TenantID:    "tenant-resume",
-		ClientModel: params.Model,
-	}), h.sw, params)
+	res := co.Run(harnessCtx(), h.sw, params)
 	if res.Decision.Action != TaskActionResumeBlocked {
 		t.Fatalf("action=%s want resume_blocked", res.Decision.Action.String())
 	}
@@ -183,14 +182,16 @@ func TestSurvivalCoordinator_LogsCaptureResumeBlocked(t *testing.T) {
 	if !strings.Contains(buf.String(), `"survival_resume_blocked"`) {
 		t.Fatalf("missing survival_resume_blocked in log: %s", buf.String())
 	}
-	if !strings.Contains(buf.String(), `"request_id":"req-resume-blocked"`) {
-		t.Errorf("resume-blocked log missing request_id correlation: %s", buf.String())
-	}
 	if !strings.Contains(buf.String(), `"provider_id":14`) {
 		t.Errorf("survival_resume_blocked missing provider_id=14: %s", buf.String())
 	}
 	if !strings.Contains(buf.String(), `"raw_model":"minimax-m3"`) {
 		t.Errorf("survival_resume_blocked missing raw_model=minimax-m3: %s", buf.String())
+	}
+	for _, field := range []string{"request_id", "attempt_id", "attempt", "route_override", "fallback_reason", "effective_route_status"} {
+		if !strings.Contains(buf.String(), `"`+field+`"`) {
+			t.Errorf("survival_resume_blocked missing stable field %q: %s", field, buf.String())
+		}
 	}
 }
 
@@ -212,13 +213,16 @@ type committedAttemptExecutor struct {
 
 func (c committedAttemptExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
 	// params.W is the *GateWriter wrapped around the AttemptCommitGate by
-	// ExecuteAttempt. Writing a content chunk advances the gate to
+	// ExecuteAttempt. Writing content chunks advances the gate to
 	// CommitStateContent; the gate then refuses any subsequent Discard.
+	// 2026-09-01 fix: minimax-m3 now has a 50-chunk holdback window, so we
+	// must write enough chunks to exceed the holdback and trigger commit.
 	if params != nil && params.W != nil {
 		// OpenAI Chat protocol: data: {role:assistant, content:"hi"}\n\n
-		// The leading "data: " + closing blank line is what makes the gate
-		// classify it as semantic content (commit).
-		_, _ = params.W.Write([]byte(`data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n"))
+		// Write 51 chunks to exceed the minimax-m3 holdback of 50 chunks.
+		for i := 0; i < 51; i++ {
+			_, _ = params.W.Write([]byte(`data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n"))
+		}
 	}
 	return nil, &executors.ExecuteError{
 		LastKind: errorsx.KindTransient,

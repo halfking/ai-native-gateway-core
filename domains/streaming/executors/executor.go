@@ -3,12 +3,15 @@ package executors
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,7 +40,10 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/clienttype"
 	"github.com/kaixuan/llm-gateway-go/internal/irconv"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
+	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
+	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
+	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -201,6 +207,17 @@ type IntegrityCandidate struct {
 	StreamAborted bool
 }
 
+// ContextLimitUpdater (2026-09-01 P2) persists discovered context limits to
+// credential_model_bindings.context_window_override with source='discovery'.
+// Called by handleContextLengthRecovery when the upstream error body carries
+// the real limit and it differs from the configured value by >5%.
+//
+// The interface allows test doubles and no-op implementations. The concrete
+// *dbx.DBContextLimitUpdater writes to the database; nil disables the feature.
+type ContextLimitUpdater interface {
+	UpdateContextLimit(ctx context.Context, credentialID int, rawModel string, limit int) (bool, error)
+}
+
 // UpstreamRequestLogger records the exact body sent to an upstream provider.
 // Implementations are optional so existing diagnostic fakes stay compatible.
 type UpstreamRequestLogger interface {
@@ -332,7 +349,8 @@ type StreamOutcome = struct {
 	Kind errorsx.ErrorKind
 }
 
-type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+type StreamHandler func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome
 
 // ProbeSyncFunc is the contract bg.NodeProbeWorker.ProbeSync satisfies.
 // Defined here (rather than imported from bg) so the executors package
@@ -370,7 +388,8 @@ type StreamWrapperFunc func(w http.ResponseWriter, resp *http.Response, norm Nor
 // pc is an optional pending-store capturer (Track C C5, 2026-06-21)
 // that records the SSE body so it can be replayed on client reconnect.
 // Wired from main.go so the routing package does not import relay.
-type AnthropicPassthroughFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+type AnthropicPassthroughFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
 
 // ChatToAnthropicFunc converts an OpenAI chat completions body to
 // Anthropic Messages format. Wired from main.go so the routing
@@ -386,20 +405,27 @@ type AnthropicToOpenAIFunc func(body []byte) ([]byte, error)
 // AnthropicToOpenAIFunc: reads Anthropic-format SSE upstream and
 // writes OpenAI-format SSE chunks to w (Q3 path: openai client →
 // anthropic upstream). pc is the optional pending-store capturer.
-type AnthropicToOpenAISSEFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+type AnthropicToOpenAISSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
 
 // AnthropicToResponsesSSEFunc is the streaming counterpart that reads
 // Anthropic-format SSE upstream and writes OpenAI Responses API SSE to w.
 // Used by executeAnthropic when ClientProtocol == "openai-responses"
 // (Phase E, 2026-07-01). Same signature as AnthropicToOpenAISSEFunc
 // so the executor wiring is symmetric.
-type AnthropicToResponsesSSEFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+type AnthropicToResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
 
 // OpenAIToResponsesSSEFunc is the streaming counterpart that reads
 // OpenAI chat.completion.chunk SSE upstream and writes OpenAI Responses
 // API SSE to w. Used by executeOpenAI when ClientProtocol ==
 // "openai-responses" (Phase E, 2026-07-01).
-type OpenAIToResponsesSSEFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+type OpenAIToResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+
+// NativeResponsesSSEFunc forwards an already-native OpenAI Responses SSE stream
+// without converting it through the Chat Completions bridge.
+type NativeResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, requestID string, capture *audit.StreamCapture, clientSemanticVisible *atomic.Bool) StreamOutcome
 
 // AnthropicToChatResponseFunc is the non-stream counterpart that
 // converts an Anthropic Messages JSON body into an OpenAI
@@ -419,12 +445,19 @@ type ChatResponseToAnthropicFunc func(body []byte, clientModel, requestID string
 
 // OpenAIToAnthropicSSEFunc is the Q2 streaming **response** counterpart
 // of AnthropicToOpenAIStream: reads OpenAI-format SSE upstream and
-// writes Anthropic-format SSE to the client. Used by executeOpenAI
-// when ClientProtocol == "anthropic-messages" AND the upstream is
+// writes Anthropic-format SSE to the client. Used by executeOpenAI when
+// ClientProtocol == "anthropic-messages" AND the upstream is
 // OpenAI-shaped (cand.Protocol != "anthropic-messages").
 //
+// inputTokensEstimate is the request-derived prompt token estimate written
+// into the client's message_start.usage.input_tokens (审计 R3 #2). The
+// OpenAI upstream only reports prompt_tokens (if ever) at stream end,
+// while Anthropic clients need it at stream head; see
+// input_token_estimate.go. 0 means "no estimate available" (legacy wire).
+//
 // Wired from main.go (streaming.StreamOpenAIToAnthropicSSE).
-type OpenAIToAnthropicSSEFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+type OpenAIToAnthropicSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any, inputTokensEstimate int) StreamOutcome
 
 // SanitizeAnthropicToolsFunc strips OpenAI/custom tool type wrappers from
 // an Anthropic Messages request body before forwarding to upstream.
@@ -503,19 +536,22 @@ type Executor struct {
 	// synchronous candidate loop. See executor_dispatch.go.
 	dispatchPipeline         *dispatch.Pipeline
 	dispatchModelRecommender DispatchModelRecommender
-
-	// Stage D: capacity-aware soft-sort hook. When capacityAwareSortOn
-	// is true AND capacityAwareSnapFn is non-nil, dispatchRoute
-	// re-ranks the candidate list so credentials reporting
-	// SnapshotStateQueueFull / SnapshotStateGovernorSaturated move to
-	// the tail while preserving relative order. Default (zero value)
-	// is a strict no-op so existing call sites stay green.
-	capacityAwareSortOn bool
-	capacityAwareSnapFn func(int) (dispatch.SnapshotState, bool)
-
+	capacityAwareSortOn      bool
+	capacityAwareSnapFn      func(int) (dispatch.SnapshotState, bool)
 	// traceRecorder (2026-07-17) 注入请求链路追踪器,记录 upstream_request /
 	// stream_start 事件。nil 时降级为 NoopRecorder 等价。
 	traceRecorder gwtrace.Recorder
+
+	// RequestProbe (2026-09-21) 请求侧异常探测：上游 4xx 时的参数剔除
+	// 重试、native responses→chat 模式回退重试与结果记录（见
+	// reqprobe_integration.go）。nil 时全部行为关闭，仅影响探测特性。
+	RequestProbe *reqprobe.Coordinator
+
+	// ParamLedger (2026-09-22) 参数协商账本：paramguard/reqprobe 的出站
+	// 调整按 request_id 记账，native responses 回程把 reasoning.effort
+	// 回显还原为客户端原值（见 paramledger_integration.go）。nil 时全部
+	// 行为关闭。Full 模式下由 main.go 注入带 Redis 镜像的实例。
+	ParamLedger *paramledger.Ledger
 
 	// liveActions (2026-08-15, V3.3-OBS OBS-B1) 请求生命周期动作事件发射器
 	// （credential_selected / upstream_request / reply / node_switch /
@@ -572,6 +608,9 @@ type Executor struct {
 	// "openai-responses". Wired from main.go via
 	// streaming.StreamOpenAIToResponsesSSE.
 	OpenAIToResponsesStream OpenAIToResponsesSSEFunc
+	// NativeResponsesStream forwards a verified native Responses SSE stream
+	// without converting it through the Chat bridge.
+	NativeResponsesStream NativeResponsesSSEFunc
 	// AnthropicToChatResponse is the Q3 non-stream counterpart:
 	// converts an Anthropic Messages JSON body into an OpenAI
 	// chat.completion JSON body. Used by executeAnthropic when
@@ -810,15 +849,6 @@ type Executor struct {
 	// Nil disables route-node health recording.
 	Recorder RouteNodeRecorder
 
-	// UnifiedProbeScheduler (2026-06-28): intelligent probe scheduler that
-	// maintains accurate state for all credential×model combinations.
-	// When non-nil, real-time request feedback is sent via OnRealRequest
-	// to enable <30s failure detection and adaptive health tracking.
-	// Nil disables real-time feedback (preserves legacy behavior).
-	UnifiedProbeScheduler interface {
-		OnRealRequest(ctx context.Context, credID int64, rawModel string, success bool, errMsg string)
-	}
-
 	// StateObserver (2026-07-01 Phase 2.x): credential state manager that
 	// records real request outcomes (success/failure) and triggers adaptive
 	// probing. When non-nil, UpdateOnSuccess/UpdateOnFailure are called with
@@ -876,6 +906,17 @@ type Executor struct {
 	// 该字段是接口而不是具体类型，executors 包不依赖 integrity 子包，
 	// 注入的实例在底层是 *integrity.Detector 包装。
 	IntegrityDetector IntegrityDetector
+
+	// ContextLimitUpdater (2026-09-01 P2): async persistence of discovered
+	// context limits to credential_model_bindings.context_window_override with
+	// source='discovery'. Called by handleContextLengthRecovery when the
+	// upstream error body carries the real limit and it differs from the
+	// configured value by >5%. Nil disables the feature (no persistence;
+	// discovered limits are used for the current request only).
+	ContextLimitUpdater ContextLimitUpdater
+	// ContextLimitUpdateQueue is the bounded, owned async persistence worker.
+	// It must be stopped before the shared DB pool is closed.
+	ContextLimitUpdateQueue *ContextLimitUpdateQueue
 }
 
 // DefaultFallbackChain (Phase 2, 2026-07-19) returns a sensible default
@@ -1078,6 +1119,24 @@ func (e *Executor) logUpstreamResponse(params *ExecParams, protocol string, body
 	}
 }
 
+func safeUpstreamBodyDigest(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	digest := sha256.Sum256(body)
+	return fmt.Sprintf("%x", digest[:8])
+}
+
+func (e *Executor) redactClientResponse(params *ExecParams, body []byte) []byte {
+	if e == nil || e.RedactBodyFn == nil || len(body) == 0 {
+		return body
+	}
+	if params == nil {
+		return e.RedactBodyFn(body, "", "")
+	}
+	return e.RedactBodyFn(body, params.SessionID, params.TenantID)
+}
+
 func (e *Executor) logClientResponse(params *ExecParams, protocol string, body []byte) {
 	if e.RawDataLogger == nil {
 		return
@@ -1095,11 +1154,90 @@ func (e *Executor) logClientResponse(params *ExecParams, protocol string, body [
 	}
 }
 
+// FailoverNoticeHeader is the non-streaming transport for dispatch notices
+// (v6 G-Ⅲ): the final response carries a base64(JSON) digest of every
+// pre-first-byte notice under this header. Streaming requests keep the
+// `: thinking:` SSE side-band and never set this header. Notices are
+// pre-first-byte by construction (ADR-Disp-003), so at notice time a
+// non-streaming response's headers are still mutable.
+const FailoverNoticeHeader = "X-Gateway-Failover-Notice"
+
+const (
+	// failoverNoticeMaxCount bounds the digest: keep the most recent notices
+	// (the final switch explains the served candidate) and stay far below
+	// realistic HTTP header size limits.
+	failoverNoticeMaxCount = 8
+	// failoverNoticeMaxMessage truncates over-verbose notice messages
+	// (rune-safe) — the header is a digest, not a log.
+	failoverNoticeMaxMessage = 200
+)
+
+// FailoverNoticeCollector accumulates dispatch notices for one request's
+// non-streaming response header. All methods are safe for concurrent use:
+// notices are delivered from dispatcher/failover goroutines while the
+// handler goroutine may read the digest.
+type FailoverNoticeCollector struct {
+	mu    sync.Mutex
+	items []dispatch.DispatchNotice
+}
+
+// NewFailoverNoticeCollector returns a ready-to-use collector. Wire it into
+// ExecParams.FailoverNotices at the protocol entry points (handler.go /
+// messages.go / responses.go); internal sub-executions may leave it nil.
+func NewFailoverNoticeCollector() *FailoverNoticeCollector {
+	return &FailoverNoticeCollector{}
+}
+
+// Add appends one notice, truncating its message and keeping only the most
+// recent failoverNoticeMaxCount entries.
+func (c *FailoverNoticeCollector) Add(n dispatch.DispatchNotice) {
+	if n.Message != "" {
+		runes := []rune(n.Message)
+		if len(runes) > failoverNoticeMaxMessage {
+			n.Message = string(runes[:failoverNoticeMaxMessage])
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.items = append(c.items, n)
+	if len(c.items) > failoverNoticeMaxCount {
+		c.items = c.items[len(c.items)-failoverNoticeMaxCount:]
+	}
+}
+
+// HeaderValue renders the accumulated notices as base64(JSON array) for
+// FailoverNoticeHeader, or "" when nothing was collected. Marshal errors
+// (not expected for this struct) degrade to "" instead of failing the
+// response path.
+func (c *FailoverNoticeCollector) HeaderValue() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.Lock()
+	items := c.items
+	c.mu.Unlock()
+	if len(items) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(items)
+	if err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
 type ExecParams struct {
-	W         http.ResponseWriter
-	R         *http.Request
-	BodyBytes []byte
-	IsStream  bool
+	W http.ResponseWriter
+	R *http.Request
+	// BodyBytes is the protocol-rendered body used by legacy Chat/Anthropic
+	// upstreams. ResponsesBodyBytes preserves the post-auto-route native
+	// Responses envelope for an explicitly enabled native candidate.
+	BodyBytes          []byte
+	ResponsesBodyBytes []byte
+	IsStream           bool
+	// ForceCompression bypasses only the auto-threshold gate for an already
+	// enabled strategy runner. It never enables a disabled compression policy.
+	ForceCompression bool
 	// StreamSurvivesClientCancel explicitly grants the stream a lifetime beyond
 	// the client connection (session capture or durable/survival ownership).
 	// Provisional correlation session IDs must not set this flag.
@@ -1127,6 +1265,8 @@ type ExecParams struct {
 	// bridges invoke it only for the first real content/tool SSE frame; non-stream
 	// execution invokes it after the complete successful response is available.
 	FirstSemanticByteCallback func()
+	// ClientSemanticBytesVisible records an attempt-scoped client-visible semantic commit.
+	ClientSemanticBytesVisible *atomic.Bool
 	// OnStreamReady is called exactly once right before the executor hands
 	// control to the normal stream writer. Kept for compatibility; heartbeat
 	// owners now remain active until the request reaches a terminal outcome.
@@ -1159,7 +1299,27 @@ type ExecParams struct {
 	// credential after a failure. The handler uses this to send a thinking
 	// event (SSE event: thinking) to the client, displaying node failover
 	// status without entering the conversation. Optional.
-	OnNodeJump           func(message string)
+	OnNodeJump func(message string)
+	// OnMidStreamFailure is invoked when a streaming response dies
+	// terminal AFTER chunks already reached the client (audit R9
+	// candidate 17): ADR-Disp-003 forbids switching nodes post-first-byte,
+	// so without this callback the client sees the connection simply stop
+	// mid-answer with no explanation. The handler bridges it to the
+	// preStream `: thinking:` SSE comment side-band (parser-safe, never
+	// enters the conversation). Optional; nil disables the channel.
+	// Rollback switch: LLM_GATEWAY_MIDSTREAM_FAILURE_NOTICE=false.
+	OnMidStreamFailure func(message string)
+	// FailoverNotices accumulates pre-first-byte dispatch notices for
+	// non-streaming requests, whose transport has no `: thinking:` SSE
+	// side-band. The dispatch bridge renders the accumulated notices into
+	// the FailoverNoticeHeader response header so non-streaming clients
+	// still learn why (and how often) their request failovered before the
+	// final answer. Pointer-shared on purpose: ExecParams is copied by
+	// value across attempt boundaries (execute_attempt.go, executor_chat.go),
+	// so every copy observes the same collector. nil disables the channel —
+	// notices then fall back to the legacy DispatchNoticeDroppedTotal
+	// accounting.
+	FailoverNotices      *FailoverNoticeCollector
 	SuppressSuccessWrite bool
 	// AttachmentMetadata carries the extractor's stored-attachment records
 	// (MM-1) so the executor can swap inline base64 blocks for gateway URLs
@@ -1196,8 +1356,11 @@ type ExecParams struct {
 	// Empty defaults to "openai-completions". Used by executeAnthropic to
 	// decide whether the body needs Q3 conversion (openai->anthropic).
 	ClientProtocol string
-	SessionKey     string
-	StickyKey      string
+	// CompressionRunnerMeta carries body-free strategy runner stats into
+	// ExecuteResult/request telemetry. It is request-scoped and optional.
+	CompressionRunnerMeta []byte
+	SessionKey            string
+	StickyKey             string
 	// SessionID is the X-Gw-Session-Id from the request (may be empty for non-session requests).
 	// 2026-06-25: Used by multi-level sticky routing (L1: session+model).
 	SessionID string
@@ -1253,6 +1416,12 @@ type ExecParams struct {
 	// resolved the initial candidates. Dispatch V2 reuses it when lazily resolving
 	// candidates for an alternate model.
 	DispatchRequestModality string
+	// DispatchDueAt schedules future execution (v6 G-Ⅱ, 定时请求). Zero =
+	// immediate. Populated from the X-Gw-Due-At request header by the
+	// handler; the pipeline parks the request in its due heap until the
+	// time elapses. Beyond the pipeline's schedule-ahead cap the Submit call
+	// fails with dispatch.ErrScheduleTooFar (mapped to a client-error kind).
+	DispatchDueAt time.Time
 	// DispatchAllowProviderChange permits dispatch V2 to leave the provider of
 	// the first selected credential. When false it may still switch credentials
 	// within the same provider.
@@ -1342,6 +1511,9 @@ func responseSink(params *ExecParams) http.ResponseWriter {
 	if params != nil && params.IsStream && params.FirstSemanticByteCallback != nil {
 		if target, ok := writer.(interface{ SetFirstSemanticByteCallback(func()) }); ok {
 			target.SetFirstSemanticByteCallback(params.FirstSemanticByteCallback)
+			if visible, ok := writer.(interface{ SetClientSemanticVisibility(func()) }); ok && params.ClientSemanticBytesVisible != nil {
+				visible.SetClientSemanticVisibility(func() { params.ClientSemanticBytesVisible.Store(true) })
+			}
 			return writer
 		}
 		return &firstSemanticResponseWriter{ResponseWriter: writer, callback: params.FirstSemanticByteCallback}
@@ -1386,28 +1558,11 @@ func (e *Executor) SetLiveActions(em *liveactions.Emitter) {
 	}
 }
 
-// SetCapacityAwareSort (Stage D) wires the optional capacity-aware
-// soft-sort hook consumed by dispatchRoute. When on=true AND snapFn
-// != nil, dispatchRoute re-ranks the candidate list using ApplySoftPenalty
-// so credentials reporting QueueFull / GovernorSaturated move to the
-// tail while preserving relative order.
-//
-// snapFn must satisfy the signature produced by
-// dispatch.SnapshotFnFromProvider; nil snapFn disables the sort
-// regardless of the on flag (fail-open).
-//
-// Composition-root order (mirrors Stage B/C):
-//
-//	NewExecutor → SetDispatchPipeline → SetCapacityAwareSort → Start
-//
-// Callers that don't want the feature should leave this unset — the
-// zero-value (on=false, snapFn=nil) is a strict no-op.
 func (e *Executor) SetCapacityAwareSort(on bool, snapFn func(int) (dispatch.SnapshotState, bool)) {
-	if e == nil {
-		return
+	if e != nil {
+		e.capacityAwareSortOn = on
+		e.capacityAwareSnapFn = snapFn
 	}
-	e.capacityAwareSortOn = on
-	e.capacityAwareSnapFn = snapFn
 }
 
 // legacyWritersEnabled 返回"是否应执行旧的状态写入路径"（FpSlots Recorder /
@@ -1488,108 +1643,38 @@ func buildEnhancedErrorContext(params *ExecParams, kind errorsx.ErrorKind, execE
 }
 
 func (e *Executor) stripVendorFields(body []byte, catalogCode string) []byte {
-	// 2026-07-20 fix: Guard against empty/invalid catalogCode to prevent panic.
-	// Third-party providers (provider_id 36/314/5917) have empty catalog_code,
-	// causing nil pointer dereference when passed as empty string.
-	if catalogCode == "" && len(body) == 0 {
+	// Keep the executor callbacks as compatibility injection points while
+	// using the shared registry for normalization and safe top-level inference.
+	if len(body) == 0 {
 		return body
 	}
-
-	code := strings.ToLower(strings.TrimSpace(catalogCode))
-
-	// 2026-07-20: When catalog_code is empty (third-party providers),
-	// auto-detect vendor fields in the response body to prevent downstream
-	// parsing errors. This fixes 5xx errors for gpt-5.2/gpt-5.6-luna/Minimax-m3
-	// from providers without catalog_code.
-	if code == "" && len(body) > 0 {
-		// Auto-detect minimax fields (nvext, base_resp, etc.)
-		if bytes.Contains(body, []byte(`"nvext"`)) ||
-			bytes.Contains(body, []byte(`"base_resp"`)) ||
-			bytes.Contains(body, []byte(`"input_sensitive"`)) {
+	if catalogCode != "" {
+		code := strings.ToLower(strings.TrimSpace(catalogCode))
+		switch code {
+		case vendorstrip.VendorMiniMax:
 			if e.StripMinimaxFields != nil {
-				stripped := e.StripMinimaxFields(body)
-				slog.Info("stripVendorFields: auto-detected minimax fields",
-					"catalog_code", catalogCode,
-					"original_bytes", len(body),
-					"stripped_bytes", len(stripped))
-				return stripped
-			} else {
-				slog.Warn("stripVendorFields: detected minimax fields but StripMinimaxFields is nil",
-					"catalog_code", catalogCode,
-					"body_preview", string(body[:min(100, len(body))]))
+				return e.StripMinimaxFields(body)
 			}
-		}
-		// Auto-detect zhipu fields (zhipu_request_id, web_search_results, etc.)
-		if bytes.Contains(body, []byte(`"zhipu_request_id"`)) ||
-			bytes.Contains(body, []byte(`"web_search_results"`)) {
+		case vendorstrip.VendorZhipu, "glm":
 			if e.StripZhipuFields != nil {
-				stripped := e.StripZhipuFields(body)
-				slog.Info("stripVendorFields: auto-detected zhipu fields",
-					"catalog_code", catalogCode,
-					"original_bytes", len(body),
-					"stripped_bytes", len(stripped))
-				return stripped
-			} else {
-				slog.Warn("stripVendorFields: detected zhipu fields but StripZhipuFields is nil",
-					"catalog_code", catalogCode,
-					"body_preview", string(body[:min(100, len(body))]))
+				return e.StripZhipuFields(body)
 			}
-		}
-		// Auto-detect deepseek fields (deepseek_request_id, model_type, etc.)
-		if bytes.Contains(body, []byte(`"deepseek_request_id"`)) ||
-			bytes.Contains(body, []byte(`"cache_hit_tokens"`)) {
+		case vendorstrip.VendorDeepSeek:
 			if e.StripDeepSeekFields != nil {
-				stripped := e.StripDeepSeekFields(body)
-				slog.Info("stripVendorFields: auto-detected deepseek fields",
-					"catalog_code", catalogCode,
-					"original_bytes", len(body),
-					"stripped_bytes", len(stripped))
-				return stripped
-			} else {
-				slog.Warn("stripVendorFields: detected deepseek fields but StripDeepSeekFields is nil",
-					"catalog_code", catalogCode,
-					"body_preview", string(body[:min(100, len(body))]))
+				return e.StripDeepSeekFields(body)
 			}
-		}
-		// Auto-detect doubao fields (doubao_request_id, seeddance_request_id, etc.)
-		if bytes.Contains(body, []byte(`"doubao_request_id"`)) ||
-			bytes.Contains(body, []byte(`"seeddance_request_id"`)) {
+		case vendorstrip.VendorDoubao:
 			if e.StripDoubaoFields != nil {
-				stripped := e.StripDoubaoFields(body)
-				slog.Info("stripVendorFields: auto-detected doubao fields",
-					"catalog_code", catalogCode,
-					"original_bytes", len(body),
-					"stripped_bytes", len(stripped))
-				return stripped
-			} else {
-				slog.Warn("stripVendorFields: detected doubao fields but StripDoubaoFields is nil",
-					"catalog_code", catalogCode,
-					"body_preview", string(body[:min(100, len(body))]))
+				return e.StripDoubaoFields(body)
 			}
 		}
+		return vendorstrip.DefaultRegistry.Strip(body, code)
+	}
+	_, policy := vendorstrip.DefaultRegistry.Resolve(body, catalogCode)
+	if policy == nil {
 		return body
 	}
-
-	// Explicit catalog_code routing
-	switch code {
-	case "minimax":
-		if e.StripMinimaxFields != nil {
-			return e.StripMinimaxFields(body)
-		}
-	case "zhipu":
-		if e.StripZhipuFields != nil {
-			return e.StripZhipuFields(body)
-		}
-	case "deepseek":
-		if e.StripDeepSeekFields != nil {
-			return e.StripDeepSeekFields(body)
-		}
-	case "doubao":
-		if e.StripDoubaoFields != nil {
-			return e.StripDoubaoFields(body)
-		}
-	}
-	return body
+	return policy.StripFields(body)
 }
 
 type ExecuteResult struct {
@@ -1627,9 +1712,10 @@ type ExecuteResult struct {
 	// into request_logs.compression_reason / compression_strategy /
 	// compression_meta so operators can SQL-trace the parent-child chain
 	// per v7 §6.
-	CompressionReason   *string
-	CompressionStrategy *string
-	CompressionMeta     []byte // JSON-encoded v7 §3.2 schema
+	CompressionReason     *string
+	CompressionStrategy   *string
+	CompressionMeta       []byte // JSON-encoded v7 §3.2 schema
+	CompressionRunnerMeta []byte // metadata-only strategy runner stats
 	// V3.1 dispatch queue timestamps (from QueuedRequest after Pipeline.Submit).
 	// Nil when dispatch path is off or stage was never reached.
 	T0ArrivedAt       *time.Time
@@ -1672,6 +1758,11 @@ type AttemptRecord struct {
 	RawModel     string            `json:"raw_model"`
 	Kind         errorsx.ErrorKind `json:"kind"`
 	Reason       string            `json:"reason,omitempty"`
+	// 2026-09-05 审计闭环2：诊断维度（全为 omitempty，旧 JSON 消费者兼容）。
+	Supplier   string `json:"supplier,omitempty"`
+	HTTPStatus int    `json:"http_status,omitempty"`
+	LatencyMs  int64  `json:"latency_ms,omitempty"`
+	Stage      string `json:"stage,omitempty"`
 }
 
 type ExecuteError struct {
@@ -1830,12 +1921,9 @@ func freeCredentialsTolerateTransient(billingMode string, kind errorsx.ErrorKind
 //   - it records lastTransientCred for the sync retry loop's inline probe
 //   - it emits the "trying next candidate" log line
 //
-// The previous comment here claimed this was "streaming's ONLY failover
-// safeguard" and that a missing kind "silently becomes all_candidates_failed".
-// That was wrong and actively misleading: KindNetwork and KindConcurrent are
-// IsRetryable and absent from this list, yet they fail over correctly today —
-// purely because of where the closing brace sits. Anyone adding a kind here
-// expecting to switch failover on would be changing nothing.
+// Failover still happens if a kind is missing (the loop falls through).
+// KindNetwork and KindConcurrent are listed so lastTransientCred and the
+// "trying next candidate" log stay consistent with IsRetryable.
 //
 // The flip side is the real hazard: appending any statement after that
 // `continue` converts both it and the credential-fatal `continue` above it from
@@ -1851,7 +1939,9 @@ func isTransientFailoverKind(kind errorsx.ErrorKind) bool {
 		errorsx.KindUpstreamDown,
 		errorsx.KindUpstreamOverloaded,
 		errorsx.KindEmptyResponse,
-		errorsx.KindNoAvailableChannel:
+		errorsx.KindNoAvailableChannel,
+		errorsx.KindNetwork,
+		errorsx.KindConcurrent:
 		return true
 	}
 	return false
@@ -1937,10 +2027,27 @@ var fpReleaseWorkerOnce sync.Once
 func ensureFpReleaseWorker() {
 	fpReleaseWorkerOnce.Do(func() {
 		go func() {
+			// Audit-2026-08-29 (§5 hardening): this worker is started via
+			// sync.Once in init() and runs for the process lifetime. A panic
+			// in job.m.Release (Redis Lua script or network error) would kill
+			// the worker permanently, causing fpReleaseQueue to fill to 1024
+			// and all subsequent releaseFpLease calls to fall back to the
+			// synchronous 1s timeout path — adding hot-path latency and
+			// potentially leaking fp slots. Wrap each job in recover so the
+			// worker survives individual panics.
 			for job := range fpReleaseQueue {
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				job.m.Release(ctx, job.lease)
-				cancel()
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							slog.Warn("fp release worker panicked during Release",
+								"panic", r,
+								"stack", string(debug.Stack()))
+						}
+					}()
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+					job.m.Release(ctx, job.lease)
+					cancel()
+				}()
 			}
 		}()
 	})
@@ -1949,6 +2056,12 @@ func ensureFpReleaseWorker() {
 func init() { ensureFpReleaseWorker() }
 
 func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error) {
+	defer func() {
+		if result != nil && len(params.CompressionRunnerMeta) > 0 {
+			result.CompressionRunnerMeta = append([]byte(nil), params.CompressionRunnerMeta...)
+			result.CompressionMeta = mergeCompressionMeta(result.CompressionMeta, params.CompressionRunnerMeta)
+		}
+	}()
 	if params.UpstreamAttempts == nil {
 		params.UpstreamAttempts = NewUpstreamAttemptBudget(DefaultUpstreamAttemptLimit)
 	}
@@ -1992,9 +2105,11 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		params.R = params.R.WithContext(session.SetTenantID(params.R.Context(), params.TenantID))
 	}
 
-	// Keep the inbound body immutable across candidate failover. Per-candidate
-	// protocol rendering works from this snapshot and never re-enters attachment extraction.
+	// Keep both inbound protocol bodies immutable across candidate failover.
+	// Per-candidate rendering works from these snapshots and never re-enters
+	// attachment extraction.
 	params.BodyBytes = append([]byte(nil), params.BodyBytes...)
+	params.ResponsesBodyBytes = append([]byte(nil), params.ResponsesBodyBytes...)
 	if !params.diagnosticsLogged && e.RawDataLogger != nil {
 		requestID := diagnosticRequestID(params)
 		protocol := diagnosticProtocol(params.ClientProtocol, "openai-completions")
@@ -2195,11 +2310,26 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 			}
 			reasonCounts[reason]++
 		}
-		slog.Warn("executor: no candidates after router",
+		// 2026-09-15 (245 audit): input_candidates==0 means the router never
+		// produced a candidate list at all — the client model has no index
+		// rows (no binding / no canonical mapping / catalog gap), which is a
+		// different failure from "rows existed but every one was filtered".
+		// The empty reasons:{} map used to be the only signal, which made
+		// these no_candidate rows (408 keyed requests/24h on 245) look like a
+		// routing mystery instead of a catalog gap.
+		reasonHint := ""
+		if len(params.Candidates) == 0 {
+			reasonHint = "no_catalog_rows_for_model"
+		}
+		logAttrs := []any{
 			"input_candidates", len(params.Candidates),
 			"client_model", params.ClientModel,
 			"reasons", reasonCounts,
-		)
+		}
+		if reasonHint != "" {
+			logAttrs = append(logAttrs, "reason_hint", reasonHint)
+		}
+		slog.Warn("executor: no candidates after router", logAttrs...)
 		// ── 2026-08-15 (V3.3-OBS OBS-B1): no_route 动作事件 ──────────────────
 		// Router 过滤后无可用候选。blocked_reasons 摘要（reason:count）。
 		{
@@ -2528,21 +2658,22 @@ func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, ra
 
 	// Self-healing: temporarily exclude this (credential, raw_model) pair
 	// from routing so the gateway stops sending requests to a model the
-	// upstream no longer serves. The pair is suppressed for five minutes;
-	// after seven consecutive failures the streak is cleared and direct
-	// routing is re-armed while the next targeted probe waits one hour.
+	// upstream no longer serves. We write node_probe_state with
+	// last_direct_ok=FALSE and a 5-minute next_retry_at window.
 	//
 	// Both refreshIndexSQL (autoroute/index.go) and filterCurrentlyAvailable
-	// (autoroute/recommend_v2.go) honor last_direct_ok and next_retry_at.
+	// (autoroute/recommend_v2.go) filter on:
+	//   nps.last_direct_ok = false AND nps.next_retry_at > now()
+	// so the pair disappears from the candidate pool for 5 minutes. After
+	// the window expires the pair is eligible again; if it still 404s,
+	// this function re-arms the exclusion. The bg node-probe worker owns
+	// the long-term retry ladder and will eventually set last_direct_ok=TRUE
+	// when an upstream probe confirms the model is back.
+	//
 	// This is scoped to the specific (credential, model) pair — it does
 	// NOT cool the entire credential, so other models on the same
 	// credential remain routable.
-
-	const (
-		mnfCoolWindow     = 5 * time.Minute
-		mnfResetThreshold = 7
-		mnfResetBackoff   = 1 * time.Hour
-	)
+	const mnfCoolWindow = 5 * time.Minute
 	_, mnfErr := e.DB.Pool().Exec(ctx, `
 		INSERT INTO node_probe_state (
 			credential_id, raw_model_name,
@@ -2561,36 +2692,119 @@ func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, ra
 			$4, NULL,
 			now()
 		)
-			ON CONFLICT (credential_id, raw_model_name) DO UPDATE
-			SET last_direct_ok = CASE
-			        WHEN node_probe_state.consecutive_failures + 1 >= $5 THEN TRUE
-			        ELSE FALSE
-			    END,
-			    last_gateway_ok = FALSE,
-			    last_attempt_at = now(),
-			    next_retry_at = CASE
-			        WHEN node_probe_state.consecutive_failures + 1 >= $5
-			            THEN now() + $6::interval
-			        ELSE now() + $3::interval
-			    END,
-			    next_retry_seconds = CASE
-			        WHEN node_probe_state.consecutive_failures + 1 >= $5
-			            THEN EXTRACT(EPOCH FROM $6::interval)::int
-			        ELSE EXTRACT(EPOCH FROM $3::interval)::int
-			    END,
-			    consecutive_failures = CASE
-			        WHEN node_probe_state.consecutive_failures + 1 >= $5 THEN 0
-			        ELSE node_probe_state.consecutive_failures + 1
-			    END,
-			    last_err_code = $4,
-			    in_flight_until = NULL,
-			    updated_at = now()
-		`, credentialID, rawModel, mnfCoolWindow.String(), errorCode, mnfResetThreshold, mnfResetBackoff.String())
+		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
+		SET last_direct_ok = FALSE,
+		    last_gateway_ok = FALSE,
+		    last_attempt_at = now(),
+		    next_retry_at = now() + $3::interval,
+		    next_retry_seconds = EXTRACT(EPOCH FROM $3::interval)::int,
+		    consecutive_failures = node_probe_state.consecutive_failures + 1,
+		    last_err_code = $4,
+		    in_flight_until = NULL,
+		    updated_at = now()
+	`, credentialID, rawModel, mnfCoolWindow.String(), errorCode)
 	if mnfErr != nil {
 		slog.Warn("record_model_not_found: node_probe_state UPSERT failed",
 			"credential_id", credentialID,
 			"raw_model", rawModel,
 			"error", mnfErr)
+	}
+}
+
+// transientSuppressErrorCode maps a dispatch failure kind to the short-
+// suppression error_code written to node_probe_state. The second return is
+// false for kinds that must NOT arm the suppression: model_not_found /
+// model_deprecated (recordModelNotFound owns those), client bugs and
+// context-length (the upstream is healthy, the request is wrong), auth /
+// quota (credential-level policies own those), and canceled (the caller went
+// away; nothing is wrong with the pair).
+func transientSuppressErrorCode(kind errorsx.ErrorKind) (string, bool) {
+	switch kind {
+	case errorsx.KindRateLimit:
+		return "http_429", true
+	case errorsx.KindTransient:
+		return "http_5xx", true
+	case errorsx.KindTimeout, errorsx.KindStreamTimeout:
+		return "timeout", true
+	case errorsx.KindNetwork:
+		return "network", true
+	case errorsx.KindUpstreamDown, errorsx.KindUpstreamOverloaded:
+		return "upstream_down", true
+	case errorsx.KindConcurrent:
+		return "concurrent", true
+	default:
+		return "", false
+	}
+}
+
+// recordTransientDispatchFailure arms the short (5-minute) routing
+// suppression for a (credential, raw_model) pair whose dispatch forward just
+// failed with a transient upstream error (429 / 5xx / timeout / network).
+//
+// 2026-09-14 audit O2: 429/5xx previously only fed the
+// cmi.success_rate → Reliability soft feedback (5-10min lag), which the 48h
+// fallback pool (composite constant 50) bypasses entirely, so a dead pair
+// kept receiving fallback traffic. This generalizes the model_not_found
+// hard-suppression precedent in recordModelNotFound: same node_probe_state
+// UPSERT (last_direct_ok=FALSE, next_retry_at=now()+5min), so
+// refreshIndexSQL (autoroute/index.go) and filterCurrentlyAvailable
+// (autoroute/recommend_v2.go) drop the pair from every candidate pool —
+// including the fallback hot pool — while the window is armed. Recovery is
+// owned by the bg NodeProbeWorker (both the URSM stateManager branch and the
+// authoritative branch read this table; 429 pairs are not probed
+// immediately per SC-11). Unlike recordModelNotFound, no model_probe_runs
+// evidence row is written: 404s are rare probe-actionable signals, while
+// transient errors are common and would flood the probe history.
+//
+// 2026-09-15 (245 free-capacity plan): billing_mode='free' pairs arm a 60s
+// window instead of 5 min. A single transient blip on an occasionally-usable
+// free provider must not idle its (often single-concurrency) capacity for
+// five minutes — the breaker's free-tier profile already bounds the hard
+// stop, and the URSM soft-demote ranks a noisy free binding behind healthy
+// paid ones without removing it from the pool.
+func (e *Executor) recordTransientDispatchFailure(ctx context.Context, credentialID int, rawModel string, errorCode string, billingMode string) {
+	if e.DB == nil || !e.DB.Enabled() || credentialID <= 0 || rawModel == "" {
+		return
+	}
+	suppressWindow := 5 * time.Minute
+	if strings.EqualFold(strings.TrimSpace(billingMode), "free") {
+		suppressWindow = time.Minute
+	}
+	_, err := e.DB.Pool().Exec(ctx, `
+		INSERT INTO node_probe_state (
+			credential_id, raw_model_name,
+			consecutive_failures, consecutive_successes,
+			last_attempt_at, next_retry_at, next_retry_seconds,
+			paused, in_flight_until,
+			last_direct_ok, last_gateway_ok,
+			last_err_code, last_err_detail,
+			updated_at
+		) VALUES (
+			$1, $2,
+			1, 0,
+			now(), now() + $3::interval, EXTRACT(EPOCH FROM $3::interval)::int,
+			FALSE, NULL,
+			FALSE, FALSE,
+			$4, NULL,
+			now()
+		)
+		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
+		SET last_direct_ok = FALSE,
+		    last_gateway_ok = FALSE,
+		    last_attempt_at = now(),
+		    next_retry_at = now() + $3::interval,
+		    next_retry_seconds = EXTRACT(EPOCH FROM $3::interval)::int,
+		    consecutive_failures = node_probe_state.consecutive_failures + 1,
+		    last_err_code = $4,
+		    in_flight_until = NULL,
+		    updated_at = now()
+	`, credentialID, rawModel, suppressWindow.String(), errorCode)
+	if err != nil {
+		slog.Warn("record_transient_dispatch_failure: node_probe_state UPSERT failed",
+			"credential_id", credentialID,
+			"raw_model", rawModel,
+			"error_code", errorCode,
+			"error", err)
 	}
 }
 
@@ -2865,7 +3079,14 @@ func stickyHitForChosen(stickyCredentialID *int, chosenCredentialID int) *bool {
 	return boolPtrCompat(*stickyCredentialID == chosenCredentialID)
 }
 
-func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
+// recordStickySuccess 在请求成功后写回 sticky 绑定并喂 sticky 负载滑窗。
+//
+// 2026-09-19 会话保持：当本请求带着 sticky 钉扎、钉扎节点被尝试且以
+// 非致命错误失败、最终由其他节点服务时（stickyPreserveBinding），
+// 不重写绑定——会话留在原节点，下一次请求仍优先回到原节点（prompt-cache
+// 亲和）。持续失败由节点健康冷却兜底：sticky 节点连败进入冷却后被
+// 过滤出候选，此路径自然走"未被尝试 → 迁移"分支。
+func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int, dctx *dispatchCtx) {
 	if e.Router == nil || e.Router.Sticky == nil || params == nil {
 		return
 	}
@@ -2873,6 +3094,20 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 	// Do not create bindings during that interval that could affect routing
 	// after the module is enabled again.
 	if !ratelimit.IsRateLimitEnabled() {
+		return
+	}
+
+	if stickyPreserveBinding(dctx, credentialID) {
+		slog.Info("sticky: transient failover, keeping session binding on original node",
+			"sticky_credential_id", *dctx.stickyCredID,
+			"served_credential_id", credentialID,
+			"error_kind", string(dctx.stickyFailKind),
+			"session_id", params.SessionID,
+			"request_id", params.RequestID,
+		)
+		if e.Router.StickyLoad != nil {
+			e.Router.StickyLoad.ObserveActivity(credentialID)
+		}
 		return
 	}
 
@@ -2887,11 +3122,24 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 			params.Model,
 			credentialID,
 		)
+		// 2026-09-19: 绑定写入即观察——会话计入该节点的 5 分钟滑窗。
+		if e.Router.StickyLoad != nil {
+			if l1, _, _ := buildStickyKeys(
+				params.TenantID, params.AppID, params.ApiKeyID,
+				params.ClientID.Fingerprint.ClientProfile,
+				params.SessionID, params.Model,
+			); l1 != "" {
+				e.Router.StickyLoad.ObserveSession(credentialID, l1)
+			}
+		}
 		return
 	}
 
 	// Fallback to L3-only recording
 	if params.StickyKey == "" || params.Policy == nil {
+		if e.Router.StickyLoad != nil {
+			e.Router.StickyLoad.ObserveActivity(credentialID)
+		}
 		return
 	}
 	// Policy.StickyTTLSeconds is in seconds (DB column `sticky_ttl_seconds`).
@@ -2903,6 +3151,29 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 		stickyTTL = time.Minute
 	}
 	e.Router.Sticky.RecordSuccess(params.StickyKey, credentialID, stickyTTL)
+	if e.Router.StickyLoad != nil {
+		e.Router.StickyLoad.ObserveActivity(credentialID)
+	}
+}
+
+// stickyPreserveBinding 判定"瞬时失败 failover 成功后是否保持会话在原
+// sticky 节点"。保持（返回 true）需同时满足：
+//   - 本请求有 sticky 钉扎，且实际服务节点 ≠ 钉扎节点（发生了 failover）；
+//   - 钉扎节点确实被尝试过且失败（stickyFailed）——若它根本没进候选
+//     （冷却/熔断/被过滤）或请求未触达它，视为严重情形，走迁移；
+//   - 失败类型非 credential-fatal（瞬时：超时/网络/429/过载等；
+//     严重：auth/quota 系列，见 errorsx.IsCredentialFatal）。
+func stickyPreserveBinding(dctx *dispatchCtx, servedCredentialID int) bool {
+	if dctx == nil || dctx.stickyCredID == nil {
+		return false
+	}
+	if *dctx.stickyCredID == servedCredentialID {
+		return false // 同节点成功：正常刷新绑定，不涉及保持/迁移
+	}
+	if !dctx.stickyFailed {
+		return false // sticky 节点未被尝试（被过滤/未触达）→ 迁移
+	}
+	return !errorsx.IsCredentialFatal(dctx.stickyFailKind)
 }
 
 func fpSlotTenantID(params *ExecParams) string {
@@ -3024,6 +3295,67 @@ func mayRetryInterruptedStream(params *ExecParams, interrupted *streamInterrupte
 		}
 	}
 	return true
+}
+
+// midStreamFailureNoticeEnabled is the rollback switch for the candidate-17
+// mid-stream terminal notice (LLM_GATEWAY_MIDSTREAM_FAILURE_NOTICE, default
+// on). Same env-restart semantics as the other LLM_GATEWAY_* stream toggles.
+func midStreamFailureNoticeEnabled() bool {
+	raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_MIDSTREAM_FAILURE_NOTICE"))
+	if raw == "" {
+		return true
+	}
+	on, err := strconv.ParseBool(strings.ToLower(raw))
+	if err != nil {
+		return true
+	}
+	return on
+}
+
+// maybeNotifyMidStreamFailure emits the post-first-byte terminal-failure
+// side-band (audit R9 candidate 17).
+//
+// When a stream dies after chunks already reached the client, ADR-Disp-003
+// forbids a transparent node switch (dispatch/forwarder.go treats
+// BytesSent=true as terminal), so the request is over — but until now the
+// client had no in-band hint: the SSE stream just stopped mid-answer. This
+// fires the OnMidStreamFailure callback once per terminal interruption so
+// the handler can write a `: thinking:` SSE comment frame (parser-safe for
+// opencode's Zod union, never enters the conversation).
+//
+// Called from the forwardForDispatch funnel — the one path every protocol
+// executor's mid-stream failure passes through — right where bytesSent is
+// settled, which is by construction the terminal decision point (sent>0 ⇒
+// dispatcher completes the request without failover).
+//
+// Skipped for client-side interruptions (cancel/disconnect): the recipient
+// is gone, and a stale comment frame could mask the real close reason.
+func maybeNotifyMidStreamFailure(params *ExecParams, sie *streamInterruptedError, bytesSent bool) {
+	if params == nil || params.OnMidStreamFailure == nil || sie == nil || !bytesSent {
+		return
+	}
+	if isClientStreamInterruption(sie.kind, sie.reason) {
+		return
+	}
+	if !midStreamFailureNoticeEnabled() {
+		slog.Debug("executor: mid-stream failure notice suppressed by switch",
+			"request_id", params.RequestID,
+			"reason", sie.reason,
+		)
+		return
+	}
+	sent := 0
+	if params.Capture != nil {
+		sent, _ = params.Capture.ChunkCountersSnapshot()
+	}
+	msg := fmt.Sprintf("upstream stream interrupted (%s) after %d chunk(s); no further failover possible, stream closing", sie.reason, sent)
+	slog.Info("executor: mid-stream terminal failure notice emitted",
+		"request_id", params.RequestID,
+		"credential_id", sie.credentialID,
+		"reason", sie.reason,
+		"chunks_sent", sent,
+	)
+	params.OnMidStreamFailure(msg)
 }
 
 // upstreamRetryAfterHint extracts an upstream-requested retry delay from

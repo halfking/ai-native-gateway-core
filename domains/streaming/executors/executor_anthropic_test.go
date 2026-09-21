@@ -2,7 +2,9 @@ package executors
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
 func TestAnthropicExecutor_BuildRequest_Passthrough(t *testing.T) {
@@ -72,7 +77,8 @@ func TestAnthropicExecutor_StreamResponse_Passthrough(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	ae := &AnthropicExecutor{}
-	outcome := ae.StreamResponse(rec, resp)
+	// P1-2 fix (2026-08-28): Add ctx parameter.
+	outcome := ae.StreamResponse(context.Background(), rec, resp)
 	if outcome.Interrupted {
 		t.Errorf("stream should not be interrupted: %s", outcome.Reason)
 	}
@@ -700,6 +706,222 @@ func TestAnthropicExecutor_Q4PassthroughSkipsQualityHook(t *testing.T) {
 	// Body must still be passed through to the client.
 	if !strings.Contains(rec.Body.String(), `"tool_use"`) {
 		t.Fatalf("Q4 body must pass through, got %s", rec.Body.String())
+	}
+}
+
+func TestAnthropicExecutor_EmptyNativeMessagesResponseIsRetryable(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"missing content", `{"type":"message"}`},
+		{"empty content", `{"type":"message","content":[]}`},
+		{"empty text", `{"type":"message","content":[{"type":"text","text":""}]}`},
+		{"empty thinking", `{"type":"message","content":[{"type":"thinking","thinking":""}]}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !isEmptyAnthropicMessagesResponse([]byte(tt.body)) {
+				t.Fatalf("isEmptyAnthropicMessagesResponse(%s) = false, want true", tt.body)
+			}
+		})
+	}
+
+	for _, body := range []string{
+		`{"type":"message","content":[{"type":"text","text":"hello"}]}`,
+		`{"type":"message","content":[{"type":"thinking","thinking":"reasoning"}]}`,
+		`{"type":"message","content":[{"type":"thinking","thinking":"","signature":"sig_1"}]}`,
+		`{"type":"message","content":[{"type":"redacted_thinking","data":"opaque"}]}`,
+		`{"type":"message","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}]}`,
+		`{"type":"message","content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{}}]}`,
+		`{"type":"error","error":{"type":"api_error","message":"boom"}}`,
+		`{"id":"unknown-shape"}`,
+		// R16 (2026-09-12): unrecognized block types count as output so the
+		// body reaches the WriteNonStreamResponse OnlyUnsupportedBlocks guard
+		// (KindConversion, stage=gateway) instead of an empty-response
+		// failover. container_upload is the case b2639182b was fixed for.
+		`{"type":"message","content":[{"type":"container_upload","id":"ctn_1"}]}`,
+		`{"type":"message","content":[{"type":"code_execution_tool_result","content":[]}]}`,
+	} {
+		if isEmptyAnthropicMessagesResponse([]byte(body)) {
+			t.Fatalf("isEmptyAnthropicMessagesResponse(%s) = true, want false", body)
+		}
+	}
+}
+
+// TestAnthropicExecutor_UnknownOnlyBodiesFailAsConversionNotEmpty locks the
+// R16 ordering contract of executeAnthropicOnce: the empty gate must let
+// unknown-block-only bodies through so WriteNonStreamResponse can attribute
+// them as KindConversion (stage=gateway: no provider demotion, no billing),
+// never as KindEmptyResponse (failover + provider demotion + billing refused).
+func TestAnthropicExecutor_UnknownOnlyBodiesFailAsConversionNotEmpty(t *testing.T) {
+	body := []byte(`{"type":"message","role":"assistant","model":"claude-opus-4-8","content":[{"type":"container_upload","id":"ctn_1"}],"stop_reason":"end_turn"}`)
+
+	if isEmptyAnthropicMessagesResponse(body) {
+		t.Fatal("precondition: unknown-only body must pass the empty gate")
+	}
+
+	ae := &AnthropicExecutor{
+		ClientProtocol: "openai-chat",
+		ProviderID:     1,
+		IR:             unknownOnlyIRStub{},
+	}
+	rec := httptest.NewRecorder()
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader(body)),
+	}
+	_, err := ae.WriteNonStreamResponse(rec, resp, "claude-opus-4-8", "fix", nil)
+	if err == nil {
+		t.Fatal("WriteNonStreamResponse must fail unknown-only bodies as conversion, got nil error")
+	}
+	var upErr *upstreampkg.Error
+	if !errors.As(err, &upErr) {
+		t.Fatalf("expected *upstream.Error, got %T: %v", err, err)
+	}
+	if upErr.Kind != errorsx.KindConversion {
+		t.Fatalf("kind = %s, want %s (KindEmptyResponse would demote the provider)", upErr.Kind, errorsx.KindConversion)
+	}
+	if !strings.Contains(upErr.Message, "container_upload") {
+		t.Fatalf("conversion error must name the offending block type, got: %s", upErr.Message)
+	}
+}
+
+// unknownOnlyIRStub implements irconv.Converter minimally: response parsing
+// delegates to the real ir.ParseAnthropicResponse, request-side methods are
+// unused by WriteNonStreamResponse.
+type unknownOnlyIRStub struct{}
+
+func (unknownOnlyIRStub) ParseOpenAI(body []byte) (*ir.InternalRequest, error) {
+	return nil, errors.New("not implemented")
+}
+func (unknownOnlyIRStub) ParseAnthropic(body []byte) (*ir.InternalRequest, error) {
+	return nil, errors.New("not implemented")
+}
+func (unknownOnlyIRStub) ParseResponses(body []byte) (*ir.InternalRequest, error) {
+	return nil, errors.New("not implemented")
+}
+func (unknownOnlyIRStub) SerializeOpenAI(req *ir.InternalRequest) ([]byte, error) {
+	return nil, errors.New("not implemented")
+}
+func (unknownOnlyIRStub) SerializeAnthropic(req *ir.InternalRequest) ([]byte, error) {
+	return nil, errors.New("not implemented")
+}
+func (unknownOnlyIRStub) ParseAnthropicResponse(body []byte) (*ir.InternalResponse, error) {
+	return ir.ParseAnthropicResponse(body)
+}
+func (unknownOnlyIRStub) ParseOpenAIResponse(body []byte) (*ir.InternalResponse, error) {
+	return ir.ParseOpenAIResponse(body)
+}
+func (unknownOnlyIRStub) SerializeOpenAIResponse(resp *ir.InternalResponse, clientModel string) ([]byte, error) {
+	return ir.SerializeOpenAIResponse(resp, clientModel)
+}
+func (unknownOnlyIRStub) SerializeAnthropicResponse(resp *ir.InternalResponse, clientModel string) ([]byte, error) {
+	return nil, errors.New("not implemented")
+}
+func (unknownOnlyIRStub) SerializeResponses(chunk *ir.StreamChunk, itemID string) string {
+	return ""
+}
+func (unknownOnlyIRStub) SerializeResponsesResponse(resp *ir.InternalResponse, clientModel string) ([]byte, error) {
+	return nil, errors.New("not implemented")
+}
+
+func TestExecutorAnthropic_EmptyNativeMessagesResponseDoesNotWriteClient(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_empty","type":"message","content":[]}`))
+	}))
+	defer upstream.Close()
+
+	e := &Executor{UpstreamTimeout: time.Second, StreamTimeout: time.Second}
+	params := &ExecParams{
+		R:              httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)),
+		W:              httptest.NewRecorder(),
+		BodyBytes:      []byte(`{"model":"claude-sonnet-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`),
+		Model:          "claude-sonnet-5",
+		ClientModel:    "claude-sonnet-5",
+		ClientProtocol: "anthropic-messages",
+	}
+	candidate := provider.Candidate{BaseURL: upstream.URL, APIKey: "test", Protocol: "anthropic-messages", RawModel: "claude-sonnet-5"}
+
+	// maxRetries=2 proves the same-credential retry ladder is skipped: an
+	// empty response must go straight to candidate failover (KindEmptyResponse
+	// is deliberately outside errorsx.IsRetryable).
+	_, err := e.executeAnthropic(params, candidate, 2, time.Now(), nil)
+	var ue *upstreampkg.Error
+	if !errors.As(err, &ue) {
+		t.Fatalf("error = %T %v, want bare *upstreampkg.Error for candidate failover", err, err)
+	}
+	var retry *retryableError
+	if errors.As(err, &retry) {
+		t.Fatal("empty response must not be wrapped in retryableError (no same-credential retries)")
+	}
+	if ue.Kind != errorsx.KindEmptyResponse {
+		t.Fatalf("kind = %q, want %q", ue.Kind, errorsx.KindEmptyResponse)
+	}
+	if got := classifyExecError(err); got != errorsx.KindEmptyResponse {
+		t.Fatalf("classifyExecError = %q, want %q", got, errorsx.KindEmptyResponse)
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("upstream hits = %d, want exactly 1 (empty response must not retry the same credential)", upstreamHits)
+	}
+	if got := params.W.(*httptest.ResponseRecorder).Body.String(); got != "" {
+		t.Fatalf("client received body before failover: %q", got)
+	}
+}
+
+// A mid-read client cancellation reads as KindCanceled: it must surface as a
+// bare upstream error so executeAnthropic's retry ladder returns it
+// immediately instead of retrying a dead request with backoff.
+func TestAnthropicReadBodyError_CanceledNotRetryable(t *testing.T) {
+	err := anthropicReadBodyError(context.Canceled, &http.Response{StatusCode: 200, Header: http.Header{}})
+	var retry *retryableError
+	if errors.As(err, &retry) {
+		t.Fatal("canceled read must not be wrapped in retryableError")
+	}
+	var ue *upstreampkg.Error
+	if !errors.As(err, &ue) || ue.Kind != errorsx.KindCanceled {
+		t.Fatalf("err = %T %v, want upstream.Error with kind canceled", err, err)
+	}
+}
+
+func TestAnthropicReadBodyError_NetworkRetryable(t *testing.T) {
+	err := anthropicReadBodyError(errors.New("read tcp: connection reset by peer"), &http.Response{StatusCode: 200, Header: http.Header{}})
+	var retry *retryableError
+	if !errors.As(err, &retry) {
+		t.Fatalf("network read error must stay retryable, got %T", err)
+	}
+	if got := classifyExecError(err); got != errorsx.KindNetwork {
+		t.Fatalf("kind = %q, want network", got)
+	}
+}
+
+type closeTrackingBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *closeTrackingBody) Close() error { b.closed = true; return nil }
+
+func TestDefaultAnthropicPassthrough_ClosesBody(t *testing.T) {
+	body := &closeTrackingBody{Reader: strings.NewReader("data: hello\n\n")}
+	rec := httptest.NewRecorder()
+
+	// P1-2 fix (2026-08-28): Add ctx parameter.
+	outcome := defaultAnthropicPassthrough(context.Background(), rec, &http.Response{Body: body, StatusCode: 200})
+
+	if outcome.Interrupted || outcome.Reason != "" {
+		t.Fatalf("outcome = %+v, want zero value", outcome)
+	}
+	if rec.Body.String() != "data: hello\n\n" {
+		t.Fatalf("body = %q, want passthrough bytes", rec.Body.String())
+	}
+	if !body.closed {
+		t.Fatal("defaultAnthropicPassthrough must close the upstream body")
 	}
 }
 

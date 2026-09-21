@@ -8,6 +8,8 @@ export interface CredentialMonitorSummary {
   provider_name: string
   label: string
   status: string
+  effective_state?: string | null
+  effective_reason?: string | null
   availability_state: string
   health_status: string
   quota_state: string
@@ -379,5 +381,183 @@ export function setManualDisabled(credentialId: number, disabled: boolean, reaso
     'POST',
     '/api/credentials/set-manual-disabled',
     { credential_id: credentialId, manual_disabled: disabled, reason }
+  )
+}
+
+// ── Routing log timeline (2026-09-07) ────────────────────────────────────
+//
+// Merged time line for the 路由记录 tab: per-request routing decisions,
+// self-test (probe) runs, and status-change events (probe consensus flips +
+// manual model toggles). See docs/FEATURE-REQ-credential-heatmap-routing-log.md §5.
+
+export type RoutingLogKind = 'all' | 'routing' | 'probe' | 'state_change'
+export type RoutingLogResult = 'all' | 'success' | 'failed'
+
+export interface RoutingLogEntry {
+  ts: string
+  kind: 'routing' | 'probe' | 'state_change'
+  change?: 'recovered' | 'broke' | 'online' | 'offline'
+  model: string
+  credential_id?: number | null
+  credential_label: string
+  provider_name: string
+  success?: boolean | null
+  status: string
+  latency_ms?: number | null
+  error_code?: string | null
+  error_message?: string | null
+  request_id?: string | null
+  tier?: number | null
+  source: string
+  actor?: string | null
+  // F-4 (2026-09-07 audit): contract fields per FEATURE-REQ §5
+  http_status?: number | null      // probe: upstream HTTP status code
+  sticky?: boolean | null          // routing: sticky_hit (session affinity)
+  outbound_model?: string | null   // routing: model sent to provider
+  detail?: string | null           // unified: additional context/metadata
+}
+
+export interface RoutingLogMeta {
+  time_start: string
+  time_end: string
+  kind: string
+  model: string
+  result: string
+  limit: number
+  offset: number
+  duration_ms: number
+}
+
+export interface RoutingLogResponse {
+  meta: RoutingLogMeta
+  entries: RoutingLogEntry[]
+  total: number
+}
+
+export interface RoutingLogQueryOptions {
+  timeStart: string
+  timeEnd: string
+  kind?: RoutingLogKind
+  model?: string
+  result?: RoutingLogResult
+  credentialId?: number
+  limit?: number
+  offset?: number
+}
+
+export function getCredentialRoutingLog(options: RoutingLogQueryOptions, requestOptions?: RequestOptions) {
+  const params = new URLSearchParams()
+  params.set('time_start', options.timeStart)
+  params.set('time_end', options.timeEnd)
+  if (options.kind && options.kind !== 'all') params.set('kind', options.kind)
+  if (options.model) params.set('model', options.model)
+  if (options.result && options.result !== 'all') params.set('result', options.result)
+  if (options.credentialId) params.set('credential_id', String(options.credentialId))
+  if (options.limit) params.set('limit', String(options.limit))
+  if (options.offset) params.set('offset', String(options.offset))
+  return req<RoutingLogResponse>(
+    'GET',
+    `/api/credentials/routing-log?${params.toString()}`,
+    undefined,
+    requestOptions,
+  )
+}
+
+// ── Credential Heatmap (2026-09-06) ──────────────────────────────────────
+//
+// Time-series visualization of credential health status across multiple
+// models and time buckets. Supports dynamic granularity (1m, 5m, 15m, 1h, 1d)
+// and filtering by credential IDs, model names, and time ranges.
+
+export interface HeatmapBucket {
+  time_bucket: string
+  status: string
+  total_requests: number
+  success_count: number
+  failed_count: number
+  success_rate: number
+  avg_latency_ms: number | null
+  p95_latency_ms: number | null
+  error_distribution: Record<string, number>
+  sample_request_ids: string[]
+}
+
+/** 当前节点状态(单一事实源 node_probe_state,与 probe-health/路由同源)。 */
+export interface HeatmapNodeStatus {
+  /** healthy_confirmed | broken_confirmed | suspicious | probing | unknown(手动下线) | unprobed(尚无状态行) */
+  state: string
+  /** 路由当前是否可用(与路由判定一致) */
+  routable: boolean
+  last_direct_ok: boolean | null
+  last_err_code?: string | null
+  last_attempt_at?: string | null
+  next_retry_at?: string | null
+  consecutive_failures: number
+  consecutive_successes: number
+  paused: boolean
+}
+
+export interface HeatmapModel {
+  raw_model_name: string
+  buckets: HeatmapBucket[]
+  node_status?: HeatmapNodeStatus | null
+}
+
+export interface HeatmapCredential {
+  credential_id: number
+  label: string
+  provider_name: string
+  models: HeatmapModel[]
+}
+
+export interface HeatmapMeta {
+  time_start: string
+  time_end: string
+  granularity: string
+  bucket_count: number
+  cache_hit: boolean
+  generated_at: string
+  expires_at: string
+  duration_ms: number
+}
+
+export interface HeatmapResponse {
+  meta: HeatmapMeta
+  credentials: HeatmapCredential[]
+}
+
+export interface HeatmapQueryOptions {
+  credentialIds?: number[]
+  models?: string[]
+  excludeSelfTest?: boolean
+}
+
+export function getCredentialHeatmap(
+  timeStart: string,
+  timeEnd: string,
+  granularity: '1m' | '5m' | '15m' | '1h' | '1d',
+  options?: HeatmapQueryOptions,
+  requestOptions?: RequestOptions,
+): Promise<HeatmapResponse> {
+  const params = new URLSearchParams()
+  params.set('time_start', timeStart)
+  params.set('time_end', timeEnd)
+  params.set('granularity', granularity)
+  
+  if (options?.excludeSelfTest !== undefined) {
+    params.set('exclude_self_test', String(options.excludeSelfTest))
+  }
+  if (options?.credentialIds?.length) {
+    params.set('credential_ids', options.credentialIds.join(','))
+  }
+  if (options?.models?.length) {
+    params.set('models', options.models.join(','))
+  }
+  
+  return req<HeatmapResponse>(
+    'GET',
+    `/api/credentials/heatmap?${params.toString()}`,
+    undefined,
+    requestOptions,
   )
 }

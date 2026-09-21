@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -73,7 +74,18 @@ func NewStickyCache() *StickyCache {
 }
 
 // SetRedisStore 注入 StickyRedisStore(URSM v2 过渡), nil 时退化为纯内存。
+//
+// Dormant 副本警示（R37, 2026-09-17）：StickyCache 目前生产零调用（生产走
+// executors/sticky.go），本实现是它的逐字孪生。59eb7fa06 在 executors 侧
+// 修过 typed-nil crash（调用方持 *ursmcache.StickyCache 具体指针、Redis
+// 不可用时传 typed-nil，接口判空失效 → nil receiver panic，252 实抓）；
+// 这里同步归一化，防止本副本被复制粘贴复活时带回同款 crash。
 func (s *StickyCache) SetRedisStore(store StickyRedisStore) {
+	if store != nil {
+		if v := reflect.ValueOf(store); v.Kind() == reflect.Pointer && v.IsNil() {
+			store = nil
+		}
+	}
 	s.mu.Lock()
 	s.redisStore = store
 	s.mu.Unlock()

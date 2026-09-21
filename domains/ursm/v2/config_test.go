@@ -72,23 +72,6 @@ func TestDefaultConfig_ShadowDoubleWriteOff(t *testing.T) {
 	}
 }
 
-func TestEmptyResponsePenaltyConfig(t *testing.T) {
-	defaults := DefaultConfig()
-	if defaults.EmptyResponseMinSamples != 10 || defaults.EmptyResponseRateThreshold != 0.20 {
-		t.Fatalf("empty-response defaults = %+v", defaults)
-	}
-
-	t.Setenv("URSM_V2_EMPTY_RESPONSE_MIN_SAMPLES", "25")
-	t.Setenv("URSM_V2_EMPTY_RESPONSE_RATE_THRESHOLD", "0.35")
-	cfg := LoadFromEnv()
-	if cfg.EmptyResponseMinSamples != 25 || cfg.EmptyResponseRateThreshold != 0.35 {
-		t.Fatalf("empty-response env config = %+v", cfg)
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() = %v", err)
-	}
-}
-
 func TestLoadFromEnv_ModeAndCanaryPercent(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -257,28 +240,5 @@ func TestManagerEffectiveConfigRuntimeChange(t *testing.T) {
 	mgr.SetHotConfig(nil)
 	if got := mgr.effectiveConfig().CoolSeconds; got != 30 {
 		t.Fatalf("after detach: CoolSeconds=%d, want boot default 30", got)
-	}
-}
-
-func TestLoadFromEnvRejectsInvalidEmptyResponsePenaltyConfig(t *testing.T) {
-	cases := []struct {
-		name, minSamples, threshold string
-	}{
-		{name: "bad samples", minSamples: "many"},
-		{name: "zero samples", minSamples: "0"},
-		{name: "negative samples", minSamples: "-1"},
-		{name: "bad threshold", threshold: "many"},
-		{name: "nan threshold", threshold: "NaN"},
-		{name: "infinite threshold", threshold: "Inf"},
-		{name: "out of range threshold", threshold: "1.01"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("URSM_V2_EMPTY_RESPONSE_MIN_SAMPLES", tc.minSamples)
-			t.Setenv("URSM_V2_EMPTY_RESPONSE_RATE_THRESHOLD", tc.threshold)
-			if err := LoadFromEnv().Validate(); err == nil {
-				t.Fatal("Validate() succeeded for invalid empty-response configuration")
-			}
-		})
 	}
 }

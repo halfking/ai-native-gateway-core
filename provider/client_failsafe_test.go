@@ -152,8 +152,10 @@ func TestCandidateCacheGenerationBlocksInFlightWriteback(t *testing.T) {
 	resp, _, err := client.fetchCandidateGeneration("model", 1, func() (*resolveResponse, error) {
 		return nonEmptyResolveResponse(), nil
 	})
-	if resp != nil || !errors.Is(err, errCandidateCacheInvalidated) {
-		t.Fatalf("stale generation = (%#v, %v), want nil invalidated error", resp, err)
+	// 2026-09-07: the fresh response is returned alongside the invalidated
+	// error so getCandidates can serve it (uncached) instead of failing.
+	if resp == nil || !errors.Is(err, errCandidateCacheInvalidated) {
+		t.Fatalf("stale generation = (%#v, %v), want fresh response with invalidated error", resp, err)
 	}
 	if len(client.candCache) != 0 {
 		t.Fatal("stale generation wrote into cache")
@@ -217,7 +219,7 @@ func TestCandidateGenerationDoesNotShareOldFlight(t *testing.T) {
 	}
 }
 
-func TestCandidateGenerationMismatchDoesNotReturnOrWriteInFlightResult(t *testing.T) {
+func TestCandidateGenerationMismatchServesFreshWithoutCaching(t *testing.T) {
 	client := &Client{candCache: make(map[string]cacheEntry[*resolveResponse])}
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -246,8 +248,10 @@ func TestCandidateGenerationMismatchDoesNotReturnOrWriteInFlightResult(t *testin
 	close(release)
 
 	got := <-result
-	if got.resp != nil {
-		t.Fatalf("generation-mismatched response returned = %#v, want nil", got.resp)
+	// 2026-09-07: the fetched response is returned (serve-don't-cache) even
+	// though the generation changed mid-flight; it must not enter the cache.
+	if got.resp == nil {
+		t.Fatal("generation-mismatched fetch dropped the fresh response")
 	}
 	if !errors.Is(got.err, errCandidateCacheInvalidated) {
 		t.Fatalf("generation-mismatched error = %v, want invalidated error", got.err)
@@ -310,6 +314,69 @@ func TestCandidateCacheInvalidationAdvancesGeneration(t *testing.T) {
 	InvalidateCandidateCacheForCredential(1)
 	if client.candGeneration != 2 || len(client.candCache) != 0 {
 		t.Fatalf("credential invalidation = generation %d, cache size %d; want generation 2 and empty cache", client.candGeneration, len(client.candCache))
+	}
+}
+
+// TestCredentialInvalidationWithoutPlanMatchSkipsGenerationBump pins the
+// 2026-09-07 granularity fix (mock system test §5.1/§5.2): invalidating a
+// credential that appears in no cached plan deletes nothing and must NOT
+// advance the global generation — background probe writes for unrelated
+// credentials previously invalidated in-flight lookups for every model,
+// surfacing as 500 "candidate lookup invalidated after N attempts".
+func TestCredentialInvalidationWithoutPlanMatchSkipsGenerationBump(t *testing.T) {
+	old := defaultClient
+	defer func() { defaultClient = old }()
+
+	client := &Client{
+		candCache: map[string]cacheEntry[*resolveResponse]{
+			"model": {value: nonEmptyResolveResponse()}, // plan contains credential 1 only
+		},
+		candGeneration: 7,
+	}
+	defaultClient = client
+
+	InvalidateCandidateCacheForCredential(42)
+	if client.candGeneration != 7 {
+		t.Fatalf("unrelated credential invalidation advanced generation to %d, want 7", client.candGeneration)
+	}
+	if len(client.candCache) != 1 {
+		t.Fatalf("unrelated credential invalidation deleted entries: %d remain, want 1", len(client.candCache))
+	}
+}
+
+// TestServeStaleOnGenerationExhausted pins the 2026-09-07 fallback: when
+// repeated invalidations exhaust the retry budget, a stale-but-usable entry
+// is served instead of failing the request; dead contexts and unusable
+// entries still fail.
+func TestServeStaleOnGenerationExhausted(t *testing.T) {
+	entry := cacheEntry[*resolveResponse]{
+		value:   nonEmptyResolveResponse(),
+		expires: time.Now().Add(-time.Second), // expired but inside stale grace
+	}
+
+	client := &Client{candCache: map[string]cacheEntry[*resolveResponse]{"model": entry}}
+	cands, _, ok := client.serveStaleOnGenerationExhausted(context.Background(), "model", errCandidateCacheInvalidated)
+	if !ok || len(cands) == 0 {
+		t.Fatalf("stale fallback = (%v, %d candidates), want serve", ok, len(cands))
+	}
+
+	// No previous invalidation: refuse.
+	if _, _, ok := client.serveStaleOnGenerationExhausted(context.Background(), "model", nil); ok {
+		t.Fatal("nil invalidated error must not serve stale")
+	}
+	// Entry past the stale grace: refuse.
+	expired := cacheEntry[*resolveResponse]{
+		value:   nonEmptyResolveResponse(),
+		expires: time.Now().Add(-(candidateCacheStaleGrace + time.Minute)),
+	}
+	client2 := &Client{candCache: map[string]cacheEntry[*resolveResponse]{"model": expired}}
+	if _, _, ok := client2.serveStaleOnGenerationExhausted(context.Background(), "model", errCandidateCacheInvalidated); ok {
+		t.Fatal("entry past stale grace must not serve")
+	}
+	// Dead context: refuse.
+	client3 := &Client{candCache: map[string]cacheEntry[*resolveResponse]{"model": entry}}
+	if _, _, ok := client3.serveStaleOnGenerationExhausted(canceledCtx(), "model", errCandidateCacheInvalidated); ok {
+		t.Fatal("canceled context must not serve stale")
 	}
 }
 

@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue'
 import { localeRef } from '../i18n'
+import { formatDateTime } from '../utils/datetime'
 
 export type ToolId = 'zcode' | 'opencode' | 'cursor' | 'cherry_studio' | 'roocode'
 export type OS = 'macos' | 'windows' | 'linux'
@@ -219,7 +220,7 @@ export function generateShellScript(
 
     if (isWin) {
       return `:: Roo Code / VS Code 配置脚本 (Windows PowerShell)
-:: 生成时间: ${new Date().toLocaleString(localeRef.value)}
+:: 生成时间: ${formatDateTime(new Date(), { locale: localeRef.value })}
 
 $SettingsPath = "$env:APPDATA\\Code\\User\\settings.json"
 $BackupPath = "$SettingsPath.backup.$(Get-Date -Format 'yyyyMMddHHmmss')"
@@ -246,7 +247,7 @@ Write-Host "请重启 VS Code / Roo Code 使配置生效。"
     } else {
       return `#!/bin/bash
 # Roo Code / VS Code 配置脚本 (macOS / Linux)
-# 生成时间: ${new Date().toLocaleString(localeRef.value)}
+# 生成时间: ${formatDateTime(new Date(), { locale: localeRef.value })}
 
 SETTINGS_PATH="${settingsPath}"
 BACKUP_PATH="${settingsPath}.backup.$(date +%Y%m%d%H%M%S)"
@@ -295,7 +296,7 @@ echo "请重启 VS Code / Roo Code 使配置生效。"
 
   if (isWin) {
     return `:: ZCode / OpenCode 配置脚本 (Windows PowerShell)
-:: 生成时间: ${new Date().toLocaleString(localeRef.value)}
+:: 生成时间: ${formatDateTime(new Date(), { locale: localeRef.value })}
 :: 路径: ${path}
 
 $CONFIG_DIR = "${dirPart.replace('\\\\', '\\\\\\\\')}"
@@ -320,7 +321,7 @@ Write-Host "请重启 ZCode 使配置生效。"
   } else {
     return `#!/bin/bash
 # ZCode / OpenCode 配置脚本 (macOS / Linux)
-# 生成时间: ${new Date().toLocaleString(localeRef.value)}
+# 生成时间: ${formatDateTime(new Date(), { locale: localeRef.value })}
 # 路径: ${path}
 
 CONFIG_DIR="${path.replace('~/', '$HOME/').replace('/.zcode/', '/.zcode/v2/').split('/').slice(0, -1).join('/') || '$HOME/.zcode/v2'}"

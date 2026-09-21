@@ -32,6 +32,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/sessiondigest"
 )
 
 // TurnInList 是跨会话轮次列表的单行记录，继承 TurnListItem 的所有字段，
@@ -119,7 +121,8 @@ func (h *Handler) handleTurnsList(w http.ResponseWriter, r *http.Request) {
 			COALESCE(t.submit_mode, '') AS submit_mode,
 			COALESCE(t.injection_verdict, '') AS injection_verdict,
 			COALESCE(t.output_verdict, '') AS output_verdict,
-			COALESCE(t.attachment_count, 0) AS attachment_count
+			COALESCE(t.attachment_count, 0) AS attachment_count,
+			t.digest
 		FROM public.session_turns_with_current_month t
 		WHERE %s
 		ORDER BY t.ts DESC, t.session_id DESC, t.turn_no DESC
@@ -137,7 +140,10 @@ func (h *Handler) handleTurnsList(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]TurnInList, 0, limit)
 	for rows.Next() {
-		var it TurnInList
+		var (
+			it                 TurnInList
+			persistedDigestRaw []byte
+		)
 		if err := rows.Scan(
 			&it.SessionID, &it.TurnNo, &it.Ts,
 			&it.ProjectID, &it.Namespace, &it.ParentRequestID, &it.TaskType,
@@ -145,11 +151,20 @@ func (h *Handler) handleTurnsList(w http.ResponseWriter, r *http.Request) {
 			&it.RequestTokens, &it.ResponseTokens, &it.CostUSD,
 			&it.Model, &it.Provider, &it.StatusCode,
 			&it.SubmitMode, &it.InjectionVerdict, &it.OutputVerdict,
-			&it.AttachmentCount,
+			&it.AttachmentCount, &persistedDigestRaw,
 		); err != nil {
 			slog.Warn("admin handleTurnsList scan failed", "err", err.Error())
 			writeError(w, http.StatusInternalServerError, "scan turn failed")
 			return
+		}
+		// Persisted-digest only: this endpoint deliberately does not join
+		// session_bodies_unified (that's the whole point of avoiding the
+		// cross-session body-read cost), so unlike the per-session
+		// list/detail endpoints there is no live-reconstruction fallback.
+		// Turns written before migration 636, or with a digest that fails
+		// to unmarshal, surface with Digest == nil rather than a body read.
+		if persisted, err := sessiondigest.Unmarshal(persistedDigestRaw); err == nil && persisted != nil {
+			it.Digest = turnDigestFromPayload(persisted.Payload)
 		}
 		items = append(items, it)
 	}

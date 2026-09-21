@@ -1,6 +1,7 @@
 package executors
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -79,7 +80,8 @@ type ProtocolHandler interface {
 	// StreamResponse reads an upstream streaming response and writes
 	// it to the client. Returns StreamOutcome describing whether
 	// the stream completed cleanly, was interrupted, etc.
-	StreamResponse(w http.ResponseWriter, resp *http.Response) StreamOutcome
+	// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+	StreamResponse(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome
 
 	// ExtractUsage pulls token counts out of the upstream response.
 	// For OpenAI, this is a single body read. For Anthropic, the

@@ -106,6 +106,7 @@ export default {
     cacheReadPrice: '缓存读价（每百万）',
     cacheWritePrice: '缓存写价（每百万）',
     currency: '币种',
+    unset: '未设置',
     billingMode: '计费模式',
     billingPerToken: '按 Token',
     billingPerRequest: '按次',

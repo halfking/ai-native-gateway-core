@@ -116,6 +116,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptProviderID   *int
 		attemptCredentialID *int
 		attemptRequestBody  []byte
+		autoWire            *autoRouteDecision
 	)
 	attemptLogged := &attemptLoggedFlag
 	// 2026-06-26: ALWAYS generate a server-side UUID. The
@@ -259,6 +260,12 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeResponsesError(w, http.StatusRequestEntityTooLarge, "Request body too large", "invalid_request", "body_too_large")
 		return
 	}
+	// ── Gateway prompt admission preflight ───────────────────────────────────
+	// Provider-aware compression runs later after candidate resolution.
+	if pb, applied, pbEst := preflightCompress(bodyBytes, "openai-responses"); applied {
+		_ = pbEst
+		bodyBytes = pb
+	}
 	// ── Prompt budget guard (2026-08-24, 245 memcg OOM) ──────────────────
 	// 拒绝发生在 JSON 解析 / 上游转发之前；见 request_meta.go 注释。
 	if estTokens, over := promptBudgetExceeded(bodyBytes); over {
@@ -285,15 +292,6 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chatBody := convertResponsesToChatBody(&reqBody)
-	chatBodyBytes, err := json.Marshal(chatBody)
-	if err != nil {
-		attemptErrCode = "conversion_error"
-		attemptErrMsg = "internal conversion error"
-		attemptClientModel = reqBody.Model
-		writeResponsesError(w, http.StatusInternalServerError, "Internal conversion error", "server_error", "conversion_error")
-		return
-	}
 	attemptClientModel = reqBody.Model
 	requestedModel := reqBody.Model
 
@@ -312,12 +310,33 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"server_error", "auto_route_decider_failed")
 			return
 		}
-		bodyBytes = newBody
+		// Flag-off auto returns (nil, nil, false): keep the original body
+		// instead of zeroing it (parity with the chat path nil guard).
+		if newBody != nil {
+			bodyBytes = newBody
+		}
 		attemptClientModel = reqBody.Model
 		if wire != nil {
 			writeAutoDecisionHeader(w, wire)
+			logCtx.SetAutoDecision(wire)
+			autoWire = wire
+		} else {
+			logCtx.IsAutoRequest = true
 		}
 	}
+
+	// Build the legacy Chat fallback only after auto-route has rewritten the
+	// Responses model, so both protocol bodies describe the same attempt.
+	chatBody := convertResponsesToChatBody(&reqBody)
+	chatBodyBytes, err := json.Marshal(chatBody)
+	if err != nil {
+		attemptErrCode = "conversion_error"
+		attemptErrMsg = "internal conversion error"
+		attemptClientModel = reqBody.Model
+		writeResponsesError(w, http.StatusInternalServerError, "Internal conversion error", "server_error", "conversion_error")
+		return
+	}
+	responsesBodyBytes := append([]byte(nil), bodyBytes...)
 
 	// 2026-07-14: lowercase at the wire boundary.
 	clientModel := modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
@@ -347,11 +366,19 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, isStream)); !rlOutcome.Skipped {
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {
+			recordGatewayRateLimitRejection(rlOutcome)
 			attemptErrCode = "rate_limit_exceeded"
 			attemptErrMsg = "rate limit exceeded"
 			if attemptClientModel == "" {
 				attemptClientModel = clientModel
 			}
+			logCtx.SetKey(keyInfo)
+			logCtx.SetClientModel(attemptClientModel)
+			logCtx.Body = bodyBytes
+			applyProvisionalGatewaySessionHeader(r, provisionalSessionID)
+			h.chatHandler.insertRateLimitedPlaceholder(logCtx)
+			logCtx.EmitRateLimited(attemptErrCode, attemptErrMsg, nil, nil)
+			*attemptLogged = true
 			writeResponsesError(w, http.StatusTooManyRequests, "Rate limit exceeded", "rate_limit_exceeded", "rate_limit_exceeded")
 			return
 		}
@@ -386,20 +413,22 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		// Client provided session ID — resolve SessionInfo for context
-		// propagation, but honor the client's ID even if Redis doesn't
-		// know it yet (first request in a new session).
-		if keyInfo != nil && h.chatHandler.sessionGetter != nil {
-			if si, getErr := h.chatHandler.sessionGetter.Get(r.Context(), sessionID); getErr == nil && si != nil {
-				sessionInfo = si
-			}
-		}
+		// Client provided session ID — 2026-09-08: normalize to the gateway
+		// namespace (deriveGatewaySessionID) and register unknown honored ids
+		// via EnsureV2WithID, mirroring the chat handler path. The previous
+		// verbatim honor left bare-UUID client identities in a heterogeneous
+		// namespace (turn aggregation stuck at 1) and never registered the
+		// session, so every follow-up request re-hit ErrSessionNotFound.
+		sessionID, sessionInfo = normalizeAndRegisterClientSession(r, sessionID, h.chatHandler.sessionGetter, keyInfo)
 	}
 	if sessionID == "" {
 		sessionID = provisionalSessionID
 	}
 	r = applyResolvedGatewaySession(r, sessionID, sessionInfo)
 	logCtx.SetSession(sessionInfo)
+	if autoWire != nil {
+		recordAutoSelectionFromWire(r, sessionID, autoWire)
+	}
 	if h.chatHandler.requestLogger != nil {
 		tenantID := "default"
 		if keyInfo != nil {
@@ -510,16 +539,20 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeResponsesError(w, http.StatusBadRequest, attemptErrMsg, "invalid_request_error", "invalid_model")
 			return
 		}
-		// This is the real no_candidate case - no database error, just no matching providers
-		attemptErrCode = "no_candidate"
-		attemptErrMsg = fmt.Sprintf("No available provider for model '%s'", clientModel)
-		latency := int(time.Since(startTime).Milliseconds())
-		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
-			nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
-		*attemptLogged = true
-		releaseDurableBeforeSurvival(durableStream, "no_candidate")
-		writeResponsesError(w, http.StatusServiceUnavailable, attemptErrMsg, "server_error", "no_candidate")
-		return
+		survivalEligible := isStream && (durableStream != nil || h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID))
+		if !survivalEligible {
+			// This is the real no_candidate case - no database error, just no matching providers
+			attemptErrCode = "no_candidate"
+			attemptErrMsg = fmt.Sprintf("No available provider for model '%s'", clientModel)
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+				nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			releaseDurableBeforeSurvival(durableStream, "no_candidate")
+			writeResponsesError(w, http.StatusServiceUnavailable, attemptErrMsg, "server_error", "no_candidate")
+			return
+		}
+		slog.Info("initial route has no candidates; entering request survival", "request_id", requestID, "model", clientModel)
 	}
 	if len(candidates) > 0 {
 		pid := candidates[0].ProviderID
@@ -573,7 +606,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		clientID.Fingerprint.ClientProfile, clientID.IdentityHash,
 		attemptProviderID, attemptCredentialID, canonicalID,
 		canonicalNameFromResolution(modelResolution), // 2026-07-27: 标准模型名 (migration 458)
-		bodyBytes, txResult, egressProtocol, isStream,
+		bodyBytes, "openai-responses", txResult, egressProtocol, isStream,
 		gwSessionID, gwTaskID,
 		logCtx,
 	)
@@ -596,15 +629,36 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	dispatchAllowProviderChange, dispatchAllowModelChange, dispatchModelAlternatives := responsesDispatchOptions(
 		logCtx, hasMultipleProviders(candidates),
 	)
+	// v6 G-Ⅱ: X-Gw-Due-At 定时请求（到期前停在 dispatch 的到期堆）。
+	dispatchDueAt := parseDispatchDueAt(r)
+	// V6-W1.6 R8: class 一并写入 logCtx，供首行与完成 UPDATE 落库（608）。
+	applyRequestClassToLogCtx(logCtx, dispatchDueAt)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
 			W:                          streamWriter,
 			R:                          r,
 			BodyBytes:                  chatBodyBytes,
+			ResponsesBodyBytes:         responsesBodyBytes,
+			FailoverNotices:            executors.NewFailoverNoticeCollector(),
 			IsStream:                   isStream,
 			StreamSurvivesClientCancel: explicitStreamSession(r.Context()),
 			PreStreamPrepared:          preStreamPrepared,
+			DispatchDueAt:              dispatchDueAt,
 			OnStreamReady:              func() {},
+			// v6 G-Ⅲ: dispatch 回队/切换通知走 `: thinking:` SSE 注释
+			// 通道（不影响会话内容；preStream 为 nil 时安全跳过）。
+			OnNodeJump: func(message string) {
+				if preStream != nil {
+					preStream.writeThinking(message)
+				}
+			},
+			// 审计 R9 候选 17：首字节后流中终态失败补发同款注释帧，
+			// 让客户端在连接关闭前拿到失败原因（不进会话内容）。
+			OnMidStreamFailure: func(message string) {
+				if preStream != nil {
+					preStream.writeThinking(message)
+				}
+			},
 			OnStreamHeartbeat: func() error {
 				if preStream != nil {
 					return preStream.session.Heartbeat()
@@ -1309,6 +1363,8 @@ func writeResponsesError(w http.ResponseWriter, statusCode int, message, errType
 	})
 }
 
+// responsesStreamWrapper is a deprecated compatibility wrapper around the
+// text-only legacy Responses path; production routing uses the IR bridge.
 func responsesStreamWrapper(requestID, clientModel, outboundModel string, capture *audit.StreamCapture) executors.StreamWrapperFunc { //nolint:unused
 	return func(w http.ResponseWriter, resp *http.Response, norm executors.NormalizerFunc, cap *audit.StreamCapture) executors.StreamOutcome {
 		c := cap
@@ -1316,6 +1372,8 @@ func responsesStreamWrapper(requestID, clientModel, outboundModel string, captur
 			c = capture
 		}
 		_ = norm
-		return StreamResponsesSSE(w, resp, clientModel, outboundModel, requestID, c)
+		// P1-2 fix (2026-08-28): Extract context from resp.Request for gate propagation.
+		ctx := resp.Request.Context()
+		return StreamResponsesSSE(ctx, w, resp, clientModel, outboundModel, requestID, c)
 	}
 }

@@ -66,17 +66,13 @@ describe('mergeDelta', () => {
     __testing.resetStream()
     __testing.state.snapshot = {
       summary: { total: 2, success: 2, failure: 0 },
-      detail_dimensions: {
-        vendor: [lane('anthropic', 1), lane('openai', 1, [tile('r1')])],
-        provider: [],
-        model: [],
-      },
       dimensions: {
+        credential: [],
         vendor: [lane('anthropic', 1), lane('openai', 1, [tile('r1')])],
         provider: [],
         model: [],
       },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     }
   })
@@ -86,11 +82,12 @@ describe('mergeDelta', () => {
     const delta: LiveStreamDelta = {
       summary: { total: 3, success: 3, failure: 0 },
       changed_lanes: {
+        credential: [],
         vendor: [lane('anthropic', 2), lane('openai', 1, [tile('r1')])],
         provider: [],
         model: [],
       },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     }
     __testing.mergeDelta(delta)
@@ -103,11 +100,12 @@ describe('mergeDelta', () => {
     const delta: LiveStreamDelta = {
       summary: { total: 3, success: 3, failure: 0 },
       changed_lanes: {
+        credential: [],
         vendor: [lane('anthropic', 1), lane('openai', 2, [tile('r1'), tile('r2')])],
         provider: [],
         model: [],
       },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     }
     __testing.mergeDelta(delta)
@@ -118,16 +116,16 @@ describe('mergeDelta', () => {
   it('drops trimmed tiles while preserving surviving tile identity', () => {
     const survivor = tile('r2')
     __testing.state.snapshot!.dimensions.vendor[1].requests = [tile('r1'), survivor]
-    __testing.state.snapshot!.detail_dimensions.vendor[1].requests = [tile('r1'), survivor]
-
+    
     const delta: LiveStreamDelta = {
       summary: { total: 2, success: 2, failure: 0 },
       changed_lanes: {
+        credential: [],
         vendor: [lane('anthropic', 1), lane('openai', 1, [tile('r2')])],
         provider: [],
         model: [],
       },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     }
 
@@ -152,6 +150,7 @@ describe('mergeDelta', () => {
     const delta: LiveStreamDelta = {
       summary: { total: 4, success: 3, failure: 0 },
       changed_lanes: {
+        credential: [],
         vendor: [
           lane('google', 1, [tile('r3')]),
           lane('anthropic', 2),
@@ -160,13 +159,41 @@ describe('mergeDelta', () => {
         provider: [],
         model: [],
       },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     }
     __testing.mergeDelta(delta)
     const after = __testing.state.snapshot!.dimensions.vendor
     expect(after.map((l) => l.id)).toEqual(['google', 'anthropic', 'openai'])
     expect(after[2]).toBe(openaiBefore)
+  })
+
+  it('merges credential lanes from an SSE delta', () => {
+    const delta: LiveStreamDelta = {
+      summary: { total: 1, success: 1, failure: 0 },
+      changed_lanes: {
+        credential: [{
+          ...lane('credential-42', 1, [tile('r-credential')]),
+          dimension: 'credential',
+          name: 'Primary credential',
+        }],
+        vendor: [],
+        provider: [],
+        model: [],
+      },
+      dimension_legends: {
+        credential: [{ key: 'credential-42', name: 'Primary credential', count: 1 }],
+        vendor: [],
+        provider: [],
+        model: [],
+      },
+      status_legends: [],
+    }
+
+    __testing.mergeDelta(delta)
+
+    expect(__testing.state.snapshot!.dimensions.credential[0]?.name).toBe('Primary credential')
+    expect(__testing.state.snapshot!.dimension_legends.credential[0]?.key).toBe('credential-42')
   })
 })
 
@@ -179,9 +206,8 @@ describe('mergeSnapshotFromServer', () => {
     __testing.resetStream()
     __testing.state.snapshot = {
       summary: { total: 1, success: 1, failure: 0 },
-      detail_dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-      dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimensions: { credential: [], vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     }
   })
@@ -189,9 +215,8 @@ describe('mergeSnapshotFromServer', () => {
   it('removes lanes omitted by an authoritative snapshot', () => {
     __testing.mergeSnapshotFromServer({
       summary: { total: 0, success: 0, failure: 0 },
-      detail_dimensions: { vendor: [], provider: [], model: [] },
-      dimensions: { vendor: [], provider: [], model: [] },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimensions: { credential: [], vendor: [], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     })
     expect(__testing.state.snapshot!.dimensions.vendor.map((l) => l.id)).toEqual([])
@@ -200,9 +225,8 @@ describe('mergeSnapshotFromServer', () => {
   it('updates summary from incoming without dropping lanes', () => {
     __testing.mergeSnapshotFromServer({
       summary: { total: 2, success: 2, failure: 0 },
-      detail_dimensions: { vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
-      dimensions: { vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimensions: { credential: [], vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     })
     expect(__testing.state.snapshot!.summary.total).toBe(2)
@@ -216,9 +240,8 @@ describe('mergeSnapshotFromServer', () => {
       ts: '2026-07-14T00:01:00Z',
       snapshot: {
         summary: { total: 2, success: 2, failure: 0 },
-        detail_dimensions: { vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
-        dimensions: { vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        dimensions: { credential: [], vendor: [lane('openai', 2, [tile('r1'), tile('r2')])], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
       },
     })
@@ -229,11 +252,12 @@ describe('mergeSnapshotFromServer', () => {
     const delta: LiveStreamDelta = {
       summary: { total: 2, success: 2, failure: 0 },
       changed_lanes: {
+        credential: [],
         vendor: [lane('anthropic', 2), lane('openai', 1, [tile('r1')])],
         provider: [],
         model: [],
       },
-      dimension_legends: { vendor: [], provider: [], model: [] },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     }
     __testing.handleEnvelope({ type: 'idle_marker', ts: '2026-07-14T00:01:00Z', delta })
@@ -252,9 +276,8 @@ describe('mergeSnapshotFromServer', () => {
       ts: '2026-07-14T00:01:00Z',
       snapshot: {
         summary: { total: 1, success: 1, failure: 0 },
-        detail_dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-        dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        dimensions: { credential: [], vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
         latest_request_ts: '2026-07-14T12:00:02Z',
       },
@@ -271,9 +294,8 @@ describe('mergeSnapshotFromServer', () => {
       ts: '2026-07-14T00:01:00Z',
       snapshot: {
         summary: { total: 1, success: 1, failure: 0 },
-        detail_dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-        dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        dimensions: { credential: [], vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
         latest_request_ts: '2026-07-14T12:00:02Z',
       },
@@ -284,9 +306,8 @@ describe('mergeSnapshotFromServer', () => {
       ts: '2026-07-14T00:02:00Z',
       snapshot: {
         summary: { total: 999, success: 999, failure: 0 },
-        detail_dimensions: { vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
-        dimensions: { vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        dimensions: { credential: [], vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
         latest_request_ts: '2026-07-14T12:00:01Z',
       },
@@ -304,9 +325,8 @@ describe('mergeSnapshotFromServer', () => {
       ts: '2026-07-14T00:01:00Z',
       snapshot: {
         summary: { total: 1, success: 1, failure: 0 },
-        detail_dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-        dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        dimensions: { credential: [], vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
         latest_request_ts: '2026-07-14T12:00:01Z',
       },
@@ -318,11 +338,12 @@ describe('mergeSnapshotFromServer', () => {
       delta: {
         summary: { total: 2, success: 2, failure: 0 },
         changed_lanes: {
+          credential: [],
           vendor: [lane('openai', 2, [{ ...tile('r2'), timestamp: '2026-07-14T12:00:03Z' }])],
           provider: [],
           model: [],
         },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
       },
     })
@@ -333,9 +354,8 @@ describe('mergeSnapshotFromServer', () => {
       ts: '2026-07-14T00:02:00Z',
       snapshot: {
         summary: { total: 999, success: 999, failure: 0 },
-        detail_dimensions: { vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
-        dimensions: { vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        dimensions: { credential: [], vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
         latest_request_ts: '2026-07-14T12:00:02Z',
       },
@@ -428,16 +448,12 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
       snapshot: {
         summary: { total: 3, success: 3, failure: 0 },
         dimensions: {
+          credential: [],
           vendor: [lane('openai', 3, [...newestFirst])],
           provider: [lane('openai', 3, [...newestFirst])],
           model: [lane('gpt-4o', 3, [...newestFirst])],
         },
-        detail_dimensions: {
-          vendor: [lane('openai', 3, [...newestFirst])],
-          provider: [lane('openai', 3, [...newestFirst])],
-          model: [lane('gpt-4o', 3, [...newestFirst])],
-        },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
         latest_request_ts: tsAt(30),
       },
@@ -450,7 +466,7 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
         'middle',
         'newest',
       ])
-      const detailRequests = __testing.state.snapshot!.detail_dimensions[dimension][0].requests
+      const detailRequests = __testing.state.snapshot!.dimensions[dimension][0].requests
       expect(detailRequests.map((request) => request.request_id)).toEqual([
         'oldest',
         'middle',
@@ -472,11 +488,12 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
       delta: {
         summary: { total: 2, success: 2, failure: 0 },
         changed_lanes: {
+          credential: [],
           vendor: [lane('new-vendor', 2, newestFirst)],
           provider: [],
           model: [],
         },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
       },
     })
@@ -485,23 +502,23 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
       .toEqual(['oldest', 'newest'])
   })
 
-  it('truncates to 20 keeping the NEWEST tiles when over capacity', () => {
+  it('truncates to 50 keeping the NEWEST tiles when over capacity', () => {
     const incoming: LiveStreamTile[] = []
-    // 25 tiles, oldest first in the authoritative sense
-    for (let i = 0; i < 25; i++) incoming.push({ ...tile(`r${i}`), timestamp: tsAt(i) })
+    // 60 tiles, oldest first in the authoritative sense
+    for (let i = 0; i < 60; i++) incoming.push({ ...tile(`r${i}`), timestamp: tsAt(i) })
     // backend delivers ASC (oldest first); reverse simulates legacy DESC wire order
     incoming.reverse()
     const existing: LiveStreamTile[] = []
     __testing.mergeTilesById(existing, incoming)
-    expect(existing).toHaveLength(20)
-    // tiles 5..24 survive (the 20 newest)
-    expect(existing[0].request_id).toBe('r5')
-    expect(existing[19].request_id).toBe('r24')
+    expect(existing).toHaveLength(50)
+    // tiles 10..59 survive (the 50 newest)
+    expect(existing[0].request_id).toBe('r10')
+    expect(existing[49].request_id).toBe('r59')
   })
 
   it('a new request always appears in the visible window (defect 1 regression)', () => {
-    // Pre-existing lane already at capacity (20 tiles)
-    const existing: LiveStreamTile[] = Array.from({ length: 20 }, (_, i) => ({
+    // Pre-existing lane already at capacity (50 tiles)
+    const existing: LiveStreamTile[] = Array.from({ length: 50 }, (_, i) => ({
       ...tile(`old${i}`),
       timestamp: tsAt(i),
     }))
@@ -529,9 +546,8 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
         ts: '2026-07-26T00:00:00Z',
         snapshot: {
           summary: { total: tiles.length, success: tiles.length, failure: 0 },
-          dimensions: { vendor: [lane('openai', tiles.length, tiles)], provider: [], model: [] },
-          detail_dimensions: { vendor: [lane('openai', tiles.length, tiles)], provider: [], model: [] },
-          dimension_legends: { vendor: [], provider: [], model: [] },
+          dimensions: { credential: [], vendor: [lane('openai', tiles.length, tiles)], provider: [], model: [] },
+          dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
           status_legends: [],
           latest_request_ts: tiles[tiles.length - 1]?.timestamp || '',
         },
@@ -599,9 +615,8 @@ describe('request_lifecycle stage_category patch', () => {
       ts: tsAt(1),
       snapshot: {
         summary: { total: 1, success: 0, failure: 0, in_progress: 1 },
-        dimensions: { vendor: [lane('openai', 1, [inflight])], provider: [], model: [] },
-        detail_dimensions: { vendor: [lane('openai', 1, [inflight])], provider: [], model: [] },
-        dimension_legends: { vendor: [], provider: [], model: [] },
+        dimensions: { credential: [], vendor: [lane('openai', 1, [inflight])], provider: [], model: [] },
+        dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
         status_legends: [],
         latest_request_ts: tsAt(1),
       },
@@ -620,5 +635,58 @@ describe('request_lifecycle stage_category patch', () => {
     } as LiveStreamEnvelope)
     const patched = __testing.state.snapshot!.dimensions.vendor[0].requests[0]
     expect(patched.stage_category).toBe('llm')
+  })
+})
+
+// 2026-09-01 regression guard: visibility listener lifecycle must follow
+// the refCount of active consumers. Before commit 82e324b79 the listener
+// was registered at module load and never removed, causing the
+// "dashboard 路由失效" bug — every navigation left a dangling
+// visibilitychange handler behind.
+describe('liveStreamStore visibility listener lifecycle', () => {
+  it('attaches the visibility listener only while at least one consumer holds a ref', () => {
+    // We can't directly enumerate jsdom listeners; instead we verify the
+    // store-side invariant that refCount drops to zero once all consumers
+    // release, and a re-acquire is symmetric (no leaked handler from a
+    // prior session).
+    expect(__testing.refCount()).toBe(0)
+
+    const releaseA = __testing.acquireForTest()
+    expect(__testing.refCount()).toBe(1)
+
+    const releaseB = __testing.acquireForTest()
+    expect(__testing.refCount()).toBe(2)
+
+    releaseA()
+    expect(__testing.refCount()).toBe(1)
+    // B is still alive — listener must remain attached.
+
+    releaseB()
+    expect(__testing.refCount()).toBe(0)
+    // Last consumer released — listener must detach.
+  })
+
+  it('does not leak visibility listeners across acquire/release cycles', () => {
+    // 100 acquire/release cycles; refCount must end at zero so the
+    // listener is fully detached before the next test runs.
+    for (let i = 0; i < 100; i++) {
+      const release = __testing.acquireForTest()
+      release()
+    }
+    expect(__testing.refCount()).toBe(0)
+  })
+
+  it('a fresh consumer after full release starts a new refCount from 1 (not 2)', () => {
+    // Defends against a subtle bug where releasing the last consumer
+    // forgot to reset refCount, causing the next acquire() to skip
+    // openConnection() because the cached count was still > 0.
+    const releaseA = __testing.acquireForTest()
+    releaseA()
+    expect(__testing.refCount()).toBe(0)
+
+    const releaseB = __testing.acquireForTest()
+    expect(__testing.refCount()).toBe(1)
+    releaseB()
+    expect(__testing.refCount()).toBe(0)
   })
 })

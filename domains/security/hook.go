@@ -6,11 +6,11 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/kaixuan/llm-gateway-go/domain"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domain/governance"      // Verdict 类型
-	"github.com/kaixuan/llm-gateway-go/domains/moduleexec"     // 模块执行记录器
+	"github.com/kaixuan/llm-gateway-go/domain"               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domain/governance"    // Verdict 类型
+	"github.com/kaixuan/llm-gateway-go/domains/moduleexec"    // 模块执行记录器
 	"github.com/kaixuan/llm-gateway-go/domains/moduleregistry" // 模块标识注册表
-	"github.com/kaixuan/llm-gateway-go/domains/pipeline"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/pipeline"     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // SecurityHook 把 Registry 接入 Pipeline。
@@ -123,13 +123,13 @@ func (h *SecurityHook) applyCachedVerdicts(ctx context.Context, env *domain.Pipe
 		// 降级：如果缓存数据损坏，重新执行扫描
 		return h.executeDirectly(ctx, env)
 	}
-
+	
 	// 写入 Governance 状态
 	state := env.EnsureGovernance()
 	for _, v := range verdicts {
 		state.RecordVerdict(v)
 	}
-
+	
 	return nil
 }
 
@@ -138,26 +138,26 @@ func mapToVerdicts(detail map[string]interface{}) ([]*governance.Verdict, error)
 	if detail == nil {
 		return []*governance.Verdict{}, nil
 	}
-
+	
 	verdictsRaw, ok := detail["verdicts"]
 	if !ok {
 		return []*governance.Verdict{}, nil
 	}
-
+	
 	verdictsArray, ok := verdictsRaw.([]interface{})
 	if !ok {
 		return nil, fmt.Errorf("verdicts is not an array, got %T", verdictsRaw)
 	}
-
+	
 	verdicts := make([]*governance.Verdict, 0, len(verdictsArray))
 	for i, vr := range verdictsArray {
 		vm, ok := vr.(map[string]interface{})
 		if !ok {
 			return nil, fmt.Errorf("verdict[%d] is not a map, got %T", i, vr)
 		}
-
+		
 		verdict := &governance.Verdict{}
-
+		
 		// 安全的类型转换
 		if v, ok := vm["plugin_name"].(string); ok {
 			verdict.PluginName = v
@@ -177,10 +177,10 @@ func mapToVerdicts(detail map[string]interface{}) ([]*governance.Verdict, error)
 		if v, ok := vm["fix_action"].(string); ok {
 			verdict.FixAction = v
 		}
-
+		
 		verdicts = append(verdicts, verdict)
 	}
-
+	
 	return verdicts, nil
 }
 

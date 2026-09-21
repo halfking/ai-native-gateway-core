@@ -212,6 +212,51 @@ func TestExtractOpenAI_DoesNotSkipMixedSystemReminderText(t *testing.T) {
 	}
 }
 
+// TestExtractOpenAI_SkipsSummaryMarkerForFirstUser covers the real-world
+// marker-nesting bug (audit #6): when a session has already gone through
+// one LLM-summary compression round, the outbound body's first "user"
+// message is the gateway-injected smm_v1 marker, not the real user intent.
+// If extractOpenAI pinned that marker as B-track (FirstUser), the next
+// compression round's RebuildOpenAIAfterSummary would re-emit it verbatim
+// alongside the freshly generated marker, nesting summaries indefinitely.
+func TestExtractOpenAI_SkipsSummaryMarkerForFirstUser(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"` + CompactionMarkerPrefix + `deadbeef]\n[Gateway compacted conversation summary...]\nprior summary text"},
+		{"role":"user","content":"turn1 user"},
+		{"role":"assistant","content":"turn1 assistant"}
+	]}`)
+	ret, err := extractOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ret.IsPinnedFirstUser() {
+		t.Fatal("real first user must still be pinned")
+	}
+	if jsonContains(ret.FirstUser, CompactionMarkerPrefix) {
+		t.Error("summary marker message must not be pinned as first user")
+	}
+	if !jsonContains(ret.FirstUser, "turn1 user") {
+		t.Error("the real first user message must be pinned")
+	}
+	if ret.FirstUserIndex != 1 {
+		t.Errorf("FirstUserIndex: want 1, got %d", ret.FirstUserIndex)
+	}
+}
+
+func TestExtractAnthropic_SkipsSummaryMarkerForFirstUser(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"` + CompactionMarkerPrefix + `deadbeef]\n[Gateway compacted conversation summary...]\nprior summary text"},
+		{"role":"user","content":"turn1 user"}
+	]}`)
+	ret, err := extractAnthropic(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ret.FirstUserIndex != 1 || !jsonContains(ret.FirstUser, "turn1 user") {
+		t.Fatalf("unexpected first user: index=%d message=%s", ret.FirstUserIndex, stringValue(ret.FirstUser))
+	}
+}
+
 func TestExtractAnthropic_SkipsSystemReminderForFirstUser(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[
 		{"role":"user","content":"<system-reminder>runtime metadata</system-reminder>"},

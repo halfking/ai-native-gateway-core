@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { ElLoadingDirective } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import TrendLineChart from './analytics/TrendLineChart.vue'
 import type { BoardTrendPoint } from '../api/board'
@@ -15,6 +16,9 @@ import {
 } from '../api/usage'
 import type { BoardTimeQuery, BoardTimeRange } from '../utils/boardTimeRange'
 import { formatBoardRangeLabel } from '../utils/boardTimeRange'
+
+// v-loading is not globally registered in this project — bind the directive locally.
+const vLoading = ElLoadingDirective
 
 const props = defineProps<{
   open: boolean
@@ -684,7 +688,7 @@ watch(() => props.timeQuery, () => {
   transform: translateX(-8px);
 }
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .pue-drawer {
     width: 100vw;
   }

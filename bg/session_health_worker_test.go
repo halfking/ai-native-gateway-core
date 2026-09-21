@@ -283,11 +283,11 @@ func TestHealthScoreZeroFloor(t *testing.T) {
 		PIIDetected             bool
 		ToxicOutputDetected     bool
 	}{
-		RequestCount:            1,    // abandoned (-15)
-		ErrorCount:              1,    // error_ended (-30) + per_error (-3)
+		RequestCount:            1,  // abandoned (-15)
+		ErrorCount:              1,  // error_ended (-30) + per_error (-3)
 		AvgLatencyMs:            6000, // high_latency (-15)
-		ModelSwitchCount:        5,    // model_switch (-10)
-		ComplianceIssuesCount:   5,    // compliance (-30 cap)
+		ModelSwitchCount:        5,  // model_switch (-10)
+		ComplianceIssuesCount:   5,  // compliance (-30 cap)
 		PromptInjectionDetected: true, // prompt_injection (-20)
 		PIIDetected:             true, // pii + toxic (-30 cap)
 		ToxicOutputDetected:     true,

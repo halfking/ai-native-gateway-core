@@ -59,7 +59,7 @@ func ParseGemini(body []byte) (*InternalRequest, error) {
 		if !knownFields[key] && len(val) > 0 && string(val) != "null" {
 			extensions[key] = val
 			// Step 4.10 (2026-07-28): parse-time unknown-field anomaly.
-			ReportUnknownField("unknown", ProtocolGeminiGenerate, key, nil)
+			ReportParseUnknownField("unknown", ProtocolGeminiGenerate, key, nil)
 		}
 	}
 
@@ -147,7 +147,7 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 			FileData         json.RawMessage `json:"fileData"`
 			FunctionCall     json.RawMessage `json:"functionCall"`
 			FunctionResponse json.RawMessage `json:"functionResponse"`
-			Thought          string          `json:"thought"`
+			Thought          json.RawMessage `json:"thought"`
 		} `json:"parts"`
 	}
 	if err := json.Unmarshal(raw, &contents); err != nil {
@@ -165,13 +165,23 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 		}
 
 		msg := Message{Role: role}
-		for _, p := range c.Parts {
-			// Gemini thinking part
-			if p.Thought != "" {
-				msg.Content = append(msg.Content, ContentBlock{
-					Type:     "thinking",
-					Thinking: &ThinkingBlock{Thinking: p.Thought},
-				})
+		for partIdx, p := range c.Parts {
+			// Gemini thinking part. R34 (2026-09-17 audit): the real wire
+			// marker is a boolean ("thought": true, text rides in "text" —
+			// see docs/archive gemini generate-content reference); a string
+			// unmarshal of `true` failed the whole request with 400. The
+			// legacy gateway-only string shape stays tolerated.
+			if isThought, legacyText := geminiThoughtMarker(p.Thought); isThought {
+				thoughtText := p.Text
+				if thoughtText == "" {
+					thoughtText = legacyText
+				}
+				if thoughtText != "" {
+					msg.Content = append(msg.Content, ContentBlock{
+						Type:     "thinking",
+						Thinking: &ThinkingBlock{Thinking: thoughtText},
+					})
+				}
 				continue
 			}
 
@@ -210,10 +220,14 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 					if len(fc.Args) > 0 {
 						argsStr = string(fc.Args)
 					}
+					// Gemini does not assign tool_use IDs in the wire format, and parallel
+					// functionCall parts of the same Name would otherwise collapse onto a
+					// single ID. Disambiguate by the position within this content entry's
+					// parts array so parallel calls round-trip with distinct IDs.
 					msg.Content = append(msg.Content, ContentBlock{
 						Type: "tool_use",
 						ToolUse: &ToolUse{
-							ID:    "gemini_call_" + fc.Name,
+							ID:    fmt.Sprintf("gemini_call_%s_%d", fc.Name, partIdx),
 							Name:  fc.Name,
 							Input: fc.Args,
 						},
@@ -230,8 +244,11 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 					Response json.RawMessage `json:"response"`
 				}
 				if err := json.Unmarshal(p.FunctionResponse, &fr); err == nil && fr.Name != "" {
+					// Mirror the disambiguator used on the function_call side: parallel
+					// functionResponse parts of the same Name get the same partIdx
+					// disambiguator so the tool_use_id round-trips correctly.
 					result := &ToolResult{
-						ToolUseID: "gemini_call_" + fr.Name,
+						ToolUseID: fmt.Sprintf("gemini_call_%s_%d", fr.Name, partIdx),
 						Content: []ContentBlock{
 							{Type: "text", Text: string(fr.Response)},
 						},
@@ -263,6 +280,27 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 
 // geminiMediaBlock dispatches an inline_data part into the correct IR block
 // (image/audio/video) based on MIME type.
+// geminiThoughtMarker decodes the "thought" field of a Gemini part.
+// The real wire marker is a boolean ("thought": true marks the part as
+// thinking; the text itself rides in "text" — see the archived Gemini
+// generate-content reference). Older gateway builds emitted the thinking
+// text directly in "thought"; tolerate that legacy string shape too.
+// Returns (isThought, legacyText).
+func geminiThoughtMarker(raw json.RawMessage) (bool, string) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false, ""
+	}
+	var b bool
+	if err := json.Unmarshal(raw, &b); err == nil {
+		return b, ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s != "", s
+	}
+	return false, ""
+}
+
 func geminiMediaBlock(mimeType, base64Data string) ContentBlock {
 	switch {
 	case len(mimeType) >= 5 && mimeType[:5] == "image":
@@ -454,6 +492,8 @@ func parseGeminiGenerationConfig(raw json.RawMessage, ir *InternalRequest) error
 		ResponseMimeType string                `json:"responseMimeType,omitempty"`
 		ResponseSchema   json.RawMessage       `json:"responseSchema,omitempty"`
 		CandidateCount   *int                  `json:"candidateCount,omitempty"`
+		PresencePenalty  *float64              `json:"presencePenalty,omitempty"`
+		FrequencyPenalty *float64              `json:"frequencyPenalty,omitempty"`
 		Seed             *int64                `json:"seed,omitempty"`
 		ThinkingConfig   *GeminiThinkingConfig `json:"thinkingConfig,omitempty"`
 	}
@@ -476,6 +516,32 @@ func parseGeminiGenerationConfig(raw json.RawMessage, ir *InternalRequest) error
 	if gc.CandidateCount != nil {
 		ir.N = *gc.CandidateCount
 	}
+	// 2026-09-05 audit A-#3: GenerationConfig declared these fields but the
+	// parse struct never read them, so they vanished on the Gemini round trip
+	// (same silent-loss shape as the safetySettings fix above).
+	ir.PresencePenalty = gc.PresencePenalty
+	ir.FrequencyPenalty = gc.FrequencyPenalty
+
+	// Unknown generationConfig subfields must not disappear silently: the
+	// top-level whitelist already pulled "generationConfig" out of Extensions,
+	// so without this anomaly the only trace was the raw payload.
+	knownSubfields := map[string]bool{
+		"temperature": true, "topP": true, "topK": true, "maxOutputTokens": true,
+		"stopSequences": true, "responseMimeType": true, "responseSchema": true,
+		"candidateCount": true, "presencePenalty": true, "frequencyPenalty": true,
+		"seed": true, "thinkingConfig": true,
+		// Gemini also documents responseLogprobs / logprobs — parsed upstream
+		// is not wired yet, but they are known fields, not anomalies.
+		"responseLogprobs": true, "logprobs": true,
+	}
+	var rawSubfields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawSubfields); err == nil {
+		for key := range rawSubfields {
+			if !knownSubfields[key] {
+				ReportUnknownField("", ProtocolGeminiGenerate, "generationConfig."+key, nil)
+			}
+		}
+	}
 
 	// Map Gemini responseMimeType/Schema to IR ResponseFormat
 	if gc.ResponseMimeType == "application/json" {
@@ -487,11 +553,27 @@ func parseGeminiGenerationConfig(raw json.RawMessage, ir *InternalRequest) error
 		ir.ResponseFormat = rf
 	}
 
-	// Map Gemini thinkingConfig to IR ReasoningConfig
+	// Map Gemini thinkingConfig to IR ReasoningConfig.
+	//
+	// R45（budget=0 反转缺陷修正）：Gemini 的 0 是"关闭推理"哨兵（reasonnorm
+	// norm.go renderGemini25 同语义：ModeDisabled → thinkingBudget: 0），-1 是
+	// dynamic（模型自行决定）。旧映射把任意非 nil budget 一律标 Type:"enabled"
+	// ——R45 的 context 恢复链使该 intent 首次真正到达上游线，budget=0 的
+	// 显式关推理请求会被渲染成 adaptive/enabled（语义反转）。0 → disabled；
+	// 负值 → enabled 且不携带 budget（各方言渲染为 adaptive/enabled 型开关，
+	// -1 数值本身不上 wire）。
 	if gc.ThinkingConfig != nil && gc.ThinkingConfig.ThinkingBudget != nil {
-		ir.Reasoning = &ReasoningConfig{
-			Type:         "enabled",
-			BudgetTokens: gc.ThinkingConfig.ThinkingBudget,
+		budget := *gc.ThinkingConfig.ThinkingBudget
+		switch {
+		case budget == 0:
+			ir.Reasoning = &ReasoningConfig{Type: "disabled"}
+		case budget < 0:
+			ir.Reasoning = &ReasoningConfig{Type: "enabled"}
+		default:
+			ir.Reasoning = &ReasoningConfig{
+				Type:         "enabled",
+				BudgetTokens: gc.ThinkingConfig.ThinkingBudget,
+			}
 		}
 	}
 

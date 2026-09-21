@@ -354,7 +354,16 @@ func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest)
 
 	if err != nil {
 		if fallback := rl.fallbackWriter(); fallback != nil {
-			if fallbackErr := fallback.WriteRequestWAL(ctx, req.RequestID+":initial", req); fallbackErr != nil {
+			// 2026-09-07: the DB write above usually fails BECAUSE ctx is
+			// already dead (client disconnect cancelled the request ctx, or
+			// the 5s timeout fired). Reusing that ctx for the WAL fallback
+			// guaranteed the backup failed too ("initial fallback failed:
+			// context canceled") and the row was lost entirely. The fallback
+			// is a local file write — give it its own fresh deadline.
+			fbCtx, fbCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			fallbackErr := fallback.WriteRequestWAL(fbCtx, req.RequestID+":initial", req)
+			fbCancel()
+			if fallbackErr != nil {
 				slog.Warn("request_logger: initial fallback failed", "request_id", req.RequestID, "error", fallbackErr)
 			}
 			return nil
@@ -422,7 +431,14 @@ func (rl *RequestLogger) UpdateSync(ctx context.Context, update *LogUpdate) erro
 	defer cancel()
 	err := rl.persistUpdate(ctx, update)
 	if fallback := rl.fallbackWriter(); err != nil && fallback != nil {
-		if fallbackErr := fallback.WriteRequestWAL(ctx, update.RequestID+":update", update); fallbackErr != nil {
+		// 2026-09-07: same dead-ctx trap as CreateInitial — persistUpdate
+		// often fails BECAUSE this ctx expired, so the WAL fallback must
+		// not reuse it ("UpdateSync failed: context canceled" lost the
+		// terminal update and left the row stale mid-flight).
+		fbCtx, fbCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		fallbackErr := fallback.WriteRequestWAL(fbCtx, update.RequestID+":update", update)
+		fbCancel()
+		if fallbackErr != nil {
 			return fallbackErr
 		}
 		return nil
@@ -474,7 +490,7 @@ func (rl *RequestLogger) writeOverflowMarker(update *LogUpdate, reason string) {
 	}
 }
 
-func (rl *RequestLogger) fallbackUpdates(ctx context.Context, updates []*LogUpdate) {
+func (rl *RequestLogger) fallbackUpdates(updates []*LogUpdate) {
 	fallback := rl.fallbackWriter()
 	if fallback == nil {
 		for _, update := range updates {
@@ -484,6 +500,11 @@ func (rl *RequestLogger) fallbackUpdates(ctx context.Context, updates []*LogUpda
 		}
 		return
 	}
+	// 2026-09-07: build a fresh deadline instead of inheriting the caller's
+	// flush ctx — when the batch DB write failed on timeout/cancel that ctx
+	// is spent, and every fallback write below would fail with it.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	for _, update := range updates {
 		if err := fallback.WriteRequestWAL(ctx, update.RequestID+":update", update); err != nil {
 			rl.fallbackWriteFailure.Add(1)
@@ -544,14 +565,14 @@ func (rl *RequestLogger) flushBatch(batch []*LogUpdate) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if rl.db == nil {
-		rl.fallbackUpdates(ctx, batch)
+		rl.fallbackUpdates(batch)
 		return
 	}
 
 	tx, err := rl.db.Begin(ctx)
 	if err != nil {
 		slog.Warn("request_logger: flush batch begin failed", "error", err)
-		rl.fallbackUpdates(ctx, batch)
+		rl.fallbackUpdates(batch)
 		return
 	}
 	//nolint:errcheck
@@ -586,14 +607,14 @@ func (rl *RequestLogger) flushBatch(batch []*LogUpdate) {
 				)
 				cancel()
 			}
-			rl.fallbackUpdates(ctx, batch)
+			rl.fallbackUpdates(batch)
 			return
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		slog.Warn("request_logger: flush batch commit failed", "error", err)
-		rl.fallbackUpdates(ctx, batch)
+		rl.fallbackUpdates(batch)
 	}
 }
 

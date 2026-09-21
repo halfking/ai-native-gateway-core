@@ -8,7 +8,6 @@ const targets = [
   'src/components/StatusBadge.vue',
   'src/components/analytics/RouteFlowSankey.vue',
   'src/components/shell/AppTopbar.vue',
-  'src/components/shell/LifecycleShell.vue',
   'src/components/shell/UserMenuDropdown.vue',
 ]
 const styleSource = readFileSync(resolve(process.cwd(), 'src/style.css'), 'utf8')

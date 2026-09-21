@@ -1,0 +1,16 @@
+/* confirm-dialog.css — 统一确认框（ElMessageBox）层级修复（2026-09-05）
+ *
+ * 问题：confirmDialog 基于 ElMessageBox，其蒙层 z-index 由 PopupManager 派发
+ * （基准 2000 起递增，见 --el-index-popper）。而业务侧抽屉/弹层层级更高：
+ *   - NodeDetailDrawer 蒙层 3000 / 抽屉本体 3001
+ *   - Journey/NodeStatusMatrix 等模态 2900
+ *   - CandidateSettingsDialog 等自制模态 9999
+ * 导致在节点详情抽屉里点「强制启用」等按钮时，确认框被盖在抽屉后面。
+ *
+ * 修复：用 !important 覆盖 ElMessageBox 蒙层（.el-overlay.is-message-box）的
+ * 内联 z-index，将其提升到全站所有层之上（>9999）。确认框是模态决策入口，
+ * 任何场景都应置顶，故采用全局规则而非逐调用点传参。
+ */
+.el-overlay.is-message-box {
+  z-index: 10000 !important;
+}

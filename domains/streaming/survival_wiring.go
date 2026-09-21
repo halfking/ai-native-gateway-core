@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/internal/retryowner"
@@ -68,18 +69,11 @@ func (h *ChatHandler) runSurvivalCoordinator(
 
 	params := buildExecParams(w)
 	params.R = frozenReq
-	// Keep survival decision logs on the same correlation chain as the
-	// handler/executor logs. ExecuteAttempt derives its request context from
-	// params.R, so attach the context before the coordinator starts.
-	frozenCtx = withStreamingContext(frozenCtx, streamingRequestContext{
-		RequestID:       params.RequestID,
-		ParentRequestID: params.ParentRequestID,
-		SessionID:       params.SessionID,
-		TenantID:        params.TenantID,
-		ClientModel:     params.Model,
-	})
-	frozenReq = r.WithContext(frozenCtx)
-	params.R = frozenReq
+	// The legacy handler factory pre-allocates its 100-call budget for the
+	// goal-retry owner. Survival chooses the effective day/night retry budget
+	// from its start-time snapshot, so let the coordinator allocate the shared
+	// request-survival budget before the first upstream call.
+	params.UpstreamAttempts = nil
 
 	// The handler-owned StreamSession stays active through terminal completion.
 	// OnStreamReady is retained for compatibility but no longer stops heartbeat;
@@ -108,14 +102,26 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		Protocol:           protocol,
 		Options:            h.survivalOptions,
 		TransportHeartbeat: params.OnStreamHeartbeat,
+		RetryNotice: func(ctx context.Context, attempt int, decision TaskDecision, wait time.Duration) error {
+			if params.OnNodeJump == nil {
+				return nil
+			}
+			params.OnNodeJump(fmt.Sprintf("正在等待可用节点并重试（第 %d 次，原因=%s，等待 %s）", attempt, decision.Reason, wait.Round(time.Second)))
+			return nil
+		},
 		Refresh: func(ctx context.Context) {
-			cands, _, _, err := resolveCandidatesForRequest(
+			cands, policy, _, err := resolveCandidatesForRequest(
 				ctx, h.provider, params.ClientModel, params.ClientID.Fingerprint.ClientProfile,
 				tenantID, params.BodyBytes,
 			)
-			if err == nil && len(cands) > 0 {
-				params.Candidates = cands
+			if err != nil {
+				slog.Warn("survival candidate refresh failed", "request_id", params.RequestID, "error", err)
+				return
 			}
+			// A successful empty refresh is meaningful: it prevents retrying a
+			// stale route while the coordinator keeps the client connection alive.
+			params.Candidates = cands
+			params.Policy = policy
 		},
 		// NOTE: the coordinator's durable Reschedule seam stays unwired
 		// here: store.Reschedule clears the lease while the coordinator
@@ -139,6 +145,7 @@ func (h *ChatHandler) runSurvivalCoordinator(
 	lastRawModel := ""
 	lastKinds := ""
 	lastCommitState := ""
+	attemptHistory := ""
 	if res.FinalAttempt != nil {
 		lastCommitState = res.FinalAttempt.CommitState.String()
 		if res.FinalAttempt.ExecResult != nil {
@@ -158,6 +165,22 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		}
 		lastKinds = strings.Join(kinds, ",")
 	}
+	if len(res.History.PriorAttempts) > 0 {
+		historyParts := make([]string, 0, len(res.History.PriorAttempts))
+		for _, prior := range res.History.PriorAttempts {
+			historyParts = append(historyParts, fmt.Sprintf("%d:%d/%d/%s/%s/%s", prior.AttemptNo, prior.ProviderID,
+				prior.CredentialID, prior.Model, prior.Kind, prior.Action))
+			if res.FinalAttempt == nil || res.FinalAttempt.ExecResult == nil {
+				if prior.ProviderID != 0 {
+					lastProviderID = prior.ProviderID
+				}
+				if prior.Model != "" {
+					lastRawModel = prior.Model
+				}
+			}
+		}
+		attemptHistory = strings.Join(historyParts, ";")
+	}
 	slog.Info("request_survival_finished",
 		"request_id", params.RequestID,
 		"succeed", res.Succeed,
@@ -170,6 +193,7 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		"provider_id", lastProviderID,
 		"raw_model", lastRawModel,
 		"client_model", params.Model,
+		"attempt_history", attemptHistory,
 	)
 	if durable != nil {
 		var body []byte
@@ -177,8 +201,10 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		if capture != nil {
 			body, contentType = capture.result()
 		}
-		settleDurableStream(frozenCtx, durable, res, body, contentType, frozenCtx.Err() != nil)
+		clientDisconnected := res.Decision.Reason == "client_disconnected"
+		settleDurableStream(frozenCtx, durable, res, body, contentType, clientDisconnected)
 	}
+
 	if res.Succeed {
 		return res.FinalAttempt.ExecResult, nil
 	}
@@ -200,7 +226,11 @@ func durableBeforeSemanticCommit(durable *DurableStreamBinding) func(context.Con
 	if durable == nil {
 		return nil
 	}
-	return func(_ context.Context, state CommitState) error { return durable.Checkpoint(state) }
+	return func(ctx context.Context, state CommitState) error {
+		// Durable ownership outlives the client connection; fencing and the
+		// binding's own timeout still bound this write.
+		return durable.CheckpointContext(context.WithoutCancel(ctx), state)
+	}
 }
 
 // renderSurvivalTerminal writes the final protocol frame(s) for a task the
@@ -211,22 +241,27 @@ func renderSurvivalTerminal(sw *SerializedStreamWriter, protocol ClientProtocol,
 	if sw == nil {
 		return
 	}
-	reasonJSON, _ := json.Marshal("gateway request survival ended: " + decision.Reason)
-	actionJSON, _ := json.Marshal("gateway_survival_" + decision.Action.String())
+	retryable := decision.Action == TaskActionRetryNow || decision.Action == TaskActionWaitRecovery
+	code := "gateway_survival_" + decision.Action.String()
+	message := "gateway request survival ended: " + decision.Reason
+	reasonJSON, _ := json.Marshal(message)
+	actionJSON, _ := json.Marshal(code)
+	retryJSON, _ := json.Marshal(retryable)
+	reasonCodeJSON, _ := json.Marshal(decision.Reason)
 	var frames string
 	switch protocol {
 	case ProtocolAnthropic:
 		frames = fmt.Sprintf(
-			"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":%s}}\n\n",
-			reasonJSON)
+			"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":%s,\"reason\":%s,\"retryable\":%s,\"code\":%s}}\n\n",
+			reasonJSON, reasonCodeJSON, retryJSON, actionJSON)
 	case ProtocolOpenAIResponses:
 		frames = fmt.Sprintf(
-			"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":%s,\"message\":%s}}}\n\n",
-			actionJSON, reasonJSON)
+			"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":%s,\"message\":%s,\"reason\":%s,\"retryable\":%s}}}\n\n",
+			actionJSON, reasonJSON, reasonCodeJSON, retryJSON)
 	default: // OpenAI Chat
 		frames = fmt.Sprintf(
-			"data: {\"error\":{\"message\":%s,\"type\":\"server_error\",\"code\":%s}}\n\ndata: [DONE]\n\n",
-			reasonJSON, actionJSON)
+			"data: {\"error\":{\"message\":%s,\"type\":\"server_error\",\"code\":%s,\"reason\":%s,\"retryable\":%s}}\n\ndata: [DONE]\n\n",
+			reasonJSON, actionJSON, reasonCodeJSON, retryJSON)
 	}
 	if _, err := sw.Write([]byte(frames)); err == nil {
 		sw.Flush()

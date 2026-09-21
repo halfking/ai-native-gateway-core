@@ -58,7 +58,35 @@ export default {
   input: {
     placeholder: '輸入訊息…（Enter 傳送，Shift+Enter 換行）',
     send: '傳送',
+    stop: 'Stop',
+    waitingChat: 'Waiting for full reply…',
     sending: '產生中…',
+  },
+
+  mode: {
+    label: 'Response mode',
+    stream: 'Stream',
+    chat: 'Chat',
+    badgeStream: 'Stream',
+    badgeChat: 'Chat',
+  },
+  params: {
+    title: 'Model parameters',
+    open: 'Params',
+    nextTurnHint: 'Parameter changes apply to the next turn.',
+    systemPrompt: 'System prompt',
+    systemPromptPlaceholder: 'Set role, tone, and constraints…',
+    temperature: 'Temperature',
+    maxTokens: 'Max Tokens',
+    topP: 'Top P',
+    presencePenalty: 'Presence Penalty',
+    frequencyPenalty: 'Frequency Penalty',
+    stop: 'Stop sequences',
+    stopPlaceholder: 'Comma-separated stop strings',
+    showAdvanced: 'Show advanced',
+    hideAdvanced: 'Hide advanced',
+    reset: 'Reset defaults',
+    done: 'Done',
   },
   modal: {
     summaryTitle: '會話總結',
@@ -89,4 +117,6 @@ export default {
   sending: '產生中…',
   send: '傳送',
   copySummary: '複製總結',
+  suggestStream: 'Timed out or waited too long — switch back to streaming mode.',
+  aborted: 'Generation stopped',
 }

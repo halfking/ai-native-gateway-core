@@ -66,7 +66,14 @@ BEGIN
     v_work_type         := NEW.work_type;
 
     IF v_total_tokens > 0 THEN
-        v_token_ratio := v_prompt_tokens::DECIMAL(10,6) / v_total_tokens::DECIMAL(10,6);
+        -- 2026-09-05 PG log audit: 这里曾写 v_prompt_tokens::DECIMAL(10,6) /
+        -- v_total_tokens::DECIMAL(10,6)——DECIMAL(10,6) 只有 4 位整数，任何
+        -- total_tokens ≥ 10000 的请求（长上下文 agent 流量的常态）都会在
+        -- 触发器里 22003 并回滚整条 request_logs 事务。572 曾修复过本行，
+        -- 但部署序列里 563 晚于 572 执行，旧函数体把修复覆盖回去；本文件
+        -- 同步改为无界 numeric（比值 ≤ 1，赋给 DECIMAL(10,6) 只做舍入），
+        -- 661 则对已应用 563 的存量库重申修复体。
+        v_token_ratio := v_prompt_tokens::numeric / v_total_tokens::numeric;
     ELSE
         v_token_ratio := 0.5;
     END IF;

@@ -2,7 +2,7 @@
 // 2026-07-05: 实时请求流泳道系统的核心类型定义
 // 2026-07-05 v2: 完善字符截断、空闲块、状态枚举
 
-export type GroupByDimension = 'queue' | 'vendor' | 'provider' | 'model'
+export type GroupByDimension = 'queue' | 'credential' | 'vendor' | 'provider' | 'model'
 
 // 2026-07-23: 泳道展示模式 — small=竖条（默认，容量更大），large=卡片
 export type SwimLaneMode = 'small' | 'large'
@@ -53,6 +53,7 @@ export interface RequestTile {
   status: string          // success, in_progress, failure
   success?: boolean       // derived flag: status === 'success'
   credential_id?: number  // optional, only present when available
+  credential_label?: string // optional, credential display name (2026-08-27)
   client_model?: string   // optional, the original client-facing model name
   // 2026-07-27: 客户端感知 (从 SSE 推送,显示在 tile 角标)
   agent_name?: string
@@ -63,6 +64,11 @@ export interface RequestTile {
   cost_usd?: number
   prompt_tokens?: number
   completion_tokens?: number
+  // 2026-09-18: 缓存 token + 会话身份（泳道 tile 直通后端 LiveStreamTile，
+  // tooltip 渲染"缓存 X (命中率 Y%)"与"会话 ID"）。缺省 = 未上报，不渲染。
+  cache_read_tokens?: number
+  cache_write_tokens?: number
+  gw_session_id?: string
   // 2026-07-13: error-triggered probe fields
   is_probe?: boolean
   probe_origin?: 'direct' | 'gateway' | 'scheduled'
@@ -89,6 +95,7 @@ export interface DimensionStat {
 
 // 三维度统计数据
 export interface DimensionStats {
+  credential: DimensionStat[]
   vendor: DimensionStat[]
   provider: DimensionStat[]
   model: DimensionStat[]

@@ -31,93 +31,11 @@ package bg
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
-
-// autoRouteListenerContainer returns an isolated Postgres pool with the
-// minimal credentials schema + auto_route_refresh trigger installed. The
-// returned cleanup closes the pool and terminates the container (or just
-// the pool when TEST_PG_URL is supplied).
-//
-// pgxpool.New does a single ping during construction; on Docker Desktop
-// the mapped TCP socket occasionally resets the first probe while the
-// container's "ready" log fires before postgres fully accepts
-// connections. Retry on connection-level errors until either we succeed
-// or the context expires (matches the convention used by
-// domains/hooks/handoff/migration_527_testcontainers_integration_test.go).
-func autoRouteListenerContainer(t *testing.T, ctx context.Context) (*pgxpool.Pool, func()) {
-	t.Helper()
-	openPool := func(dsn string) (*pgxpool.Pool, error) {
-		var (
-			pool *pgxpool.Pool
-			err  error
-		)
-		for attempt := 0; attempt < 30; attempt++ {
-			pool, err = pgxpool.New(ctx, dsn)
-			if err == nil {
-				pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
-				pingErr := pool.Ping(pingCtx)
-				pingCancel()
-				if pingErr == nil {
-					return pool, nil
-				}
-				pool.Close()
-				err = pingErr
-			}
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(time.Second):
-			}
-		}
-		return nil, err
-	}
-
-	if dsn := os.Getenv("TEST_PG_URL"); dsn != "" {
-		pool, err := openPool(dsn)
-		if err != nil {
-			t.Fatalf("connect TEST_PG_URL: %v", err)
-		}
-		mustExec(t, ctx, pool, autoRouteListenerSchema)
-		return pool, func() { pool.Close() }
-	}
-	container, err := postgres.Run(ctx, "postgres:16-alpine",
-		postgres.WithDatabase("auto_route_listener"),
-		postgres.WithUsername("auto_route_listener"),
-		postgres.WithPassword("auto_route_listener"),
-	)
-	if err != nil {
-		t.Fatalf("start postgres: %v", err)
-	}
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		_ = container.Terminate(ctx)
-		t.Fatalf("connection string: %v", err)
-	}
-	pool, err := openPool(dsn)
-	if err != nil {
-		_ = container.Terminate(ctx)
-		t.Fatalf("pgxpool.New: %v", err)
-	}
-	mustExec(t, ctx, pool, autoRouteListenerSchema)
-	cleanup := func() {
-		pool.Close()
-		terminateCtx, terminateCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer terminateCancel()
-		if err := container.Terminate(terminateCtx); err != nil {
-			t.Errorf("terminate postgres: %v", err)
-		}
-	}
-	return pool, cleanup
-}
 
 // autoRouteListenerSchema mirrors the production baseline's credentials
 // trigger definition (see deploy/sql/schemas/baseline/01-schema.sql:27802
@@ -161,13 +79,6 @@ FOR EACH ROW WHEN (OLD.* IS DISTINCT FROM NEW.*)
 EXECUTE FUNCTION public.notify_auto_route_refresh();
 `
 
-func mustExec(t *testing.T, ctx context.Context, pool *pgxpool.Pool, sql string) {
-	t.Helper()
-	if _, err := pool.Exec(ctx, sql); err != nil {
-		t.Fatalf("exec schema: %v", err)
-	}
-}
-
 // seedCredential inserts a baseline row so the UPDATE in each test has
 // something to mutate (the trigger fires only when OLD.* IS DISTINCT
 // FROM NEW.*).
@@ -188,7 +99,7 @@ func TestAutoRouteRealtimeListener_IntegrationTriggerFiresRefreshOnce(t *testing
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	pool, cleanup := autoRouteListenerContainer(t, ctx)
+	pool, cleanup := DispatchPostgresContainer(t, ctx, autoRouteListenerSchema)
 	defer cleanup()
 
 	fake := &fakeRefresher{}
@@ -226,7 +137,7 @@ func TestAutoRouteRealtimeListener_IntegrationBurstCoalescesInRealListen(t *test
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	pool, cleanup := autoRouteListenerContainer(t, ctx)
+	pool, cleanup := DispatchPostgresContainer(t, ctx, autoRouteListenerSchema)
 	defer cleanup()
 
 	fake := &fakeRefresher{}
@@ -272,7 +183,7 @@ func TestAutoRouteRealtimeListener_IntegrationStopReturnsPromptlyAfterRealListen
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	pool, cleanup := autoRouteListenerContainer(t, ctx)
+	pool, cleanup := DispatchPostgresContainer(t, ctx, autoRouteListenerSchema)
 	defer cleanup()
 
 	fake := &fakeRefresher{}
@@ -324,7 +235,7 @@ func TestAutoRouteRealtimeListener_IntegrationContextCancelStopsPendingRefresh(t
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	pool, cleanup := autoRouteListenerContainer(t, ctx)
+	pool, cleanup := DispatchPostgresContainer(t, ctx, autoRouteListenerSchema)
 	defer cleanup()
 
 	fake := &fakeRefresher{}

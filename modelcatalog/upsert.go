@@ -29,6 +29,14 @@ type Querier interface {
 //   - Manually disabled bindings (available=false AND unavailable_reason LIKE 'manual%')
 //     keep their availability flags unchanged.
 //   - All other states (including legacy soft-delete reason='deleted') are re-enabled.
+//   - canonical_cleared_at IS NOT NULL (migration 693, admin unbind marker):
+//     the ON CONFLICT branch keeps the stored canonical_id — i.e. NULL after
+//     an operator unlink — and refuses the incoming EXCLUDED value. Discovery
+//     (discovery.Service.upsertModel, the only non-nil canonicalID caller)
+//     and the admin per-provider refresh path therefore can no longer
+//     silently re-link an offer the operator unbound; only an explicit
+//     operator action (admin PATCH canonical_id / InsertManualCredentialModel
+//     with a canonical ID) clears the marker.
 //
 // 2026-07-14: enforces the gateway-wide case rule:
 //   - rawName is the PROVIDER-facing name (e.g. NVIDIA NIM "z-ai/glm-5.2",
@@ -78,7 +86,16 @@ upsert_pm AS (
     SELECT cred.provider_id, $2, $3, $5, $4, TRUE, 'discovery', NOW() FROM cred
     ON CONFLICT (provider_id, raw_model_name) DO UPDATE SET
         canonical_raw_name = COALESCE(EXCLUDED.canonical_raw_name, provider_models.canonical_raw_name),
-        canonical_id = COALESCE(EXCLUDED.canonical_id, provider_models.canonical_id),
+        -- Migration 693: an admin unbind (canonical_cleared_at set by
+        -- clear_canonical) must survive discovery refreshes. The COALESCE
+        -- alone would re-link the row on the very next cycle because
+        -- discovery always passes a non-NULL canonical_id, so gate the
+        -- write on the marker and keep the stored (NULL) value instead.
+        canonical_id = CASE
+            WHEN provider_models.canonical_cleared_at IS NOT NULL
+            THEN provider_models.canonical_id
+            ELSE COALESCE(EXCLUDED.canonical_id, provider_models.canonical_id)
+        END,
         standardized_name = COALESCE(EXCLUDED.standardized_name, provider_models.standardized_name),
         source = 'discovery',
         last_seen_at = NOW(),
@@ -150,6 +167,10 @@ type ManualInsertParams struct {
 // credential_model_bindings with admin_protected=TRUE so discovery/refresh
 // will not overwrite or expire the row.
 //
+// Migration 693: when p.CanonicalID names a standard model, an existing
+// admin-unbind marker (provider_models.canonical_cleared_at) is lifted —
+// a manual enroll with an explicit canonical ID is an operator re-link.
+//
 // Returns the credential_model_bindings.id (model_offers.id).
 func InsertManualCredentialModel(ctx context.Context, db Querier, p ManualInsertParams) (bindingID int64, err error) {
 	if strings.TrimSpace(p.RawName) == "" {
@@ -191,6 +212,14 @@ upsert_pm AS (
     ON CONFLICT (provider_id, raw_model_name) DO UPDATE SET
         canonical_raw_name = COALESCE(EXCLUDED.canonical_raw_name, provider_models.canonical_raw_name),
         canonical_id = COALESCE(EXCLUDED.canonical_id, provider_models.canonical_id),
+        -- Migration 693: naming a canonical model here is an explicit
+        -- operator (re)link, so it lifts the admin-unbind marker; without
+        -- an EXCLUDED canonical_id the marker (and the unlink it records)
+        -- is preserved.
+        canonical_cleared_at = CASE
+            WHEN EXCLUDED.canonical_id IS NOT NULL THEN NULL
+            ELSE provider_models.canonical_cleared_at
+        END,
         standardized_name = COALESCE(EXCLUDED.standardized_name, provider_models.standardized_name),
         outbound_model_name = COALESCE(EXCLUDED.outbound_model_name, provider_models.outbound_model_name),
         source = 'manual',
@@ -360,4 +389,101 @@ func PreserveDisableState(available bool, unavailableReason *string, adminProtec
 		return true
 	}
 	return false
+}
+
+// DefaultProbeModelSourceRefreshLatest is the source label stamped on
+// credentials.default_probe_model_source when AutoFillDefaultProbeModel
+// picks a value. It is distinct from 'manual' (operator-pinned) and the
+// shared_pick.go labels ('auto:request_log', 'auto:domestic_featured',
+// 'auto:domestic_random') so daily repicks (DefaultProbePicker) can
+// overwrite a refresh-latest pick with a more informed one (e.g. a
+// request_log hot model) while still refusing to overwrite 'manual'.
+const DefaultProbeModelSourceRefreshLatest = "auto:refresh_latest"
+
+// AutoFillDefaultProbeModel seeds credentials.default_probe_model when the
+// operator never set one. It picks the most recently FIRST-observed
+// (provider_models.created_at DESC) routable binding under the
+// credential and writes its provider-facing name
+// (COALESCE(outbound_model_name, raw_model_name)) into default_probe_model.
+//
+// Why "newest created_at" and not "newest last_seen_at":
+//   - last_seen_at is bumped on EVERY refresh, so it converges across
+//     the whole cmb set the moment a refresh completes — useless for
+//     ranking.
+//   - created_at is set ONCE at first INSERT and only changes when the
+//     row is dropped/recreated (which ClearCredentialBindings handles
+//     explicitly). It is the canonical "this model was added at time T"
+//     timestamp and matches the user-intent reading of "最新的模型".
+//
+// Why outbound/raw and NOT standardized_name (2026-08-31 round-6 audit
+// correction): default_probe_model is sent verbatim to the upstream in
+// the probe chat request (credential_probe_v2.probeCredential), so it
+// must be a name the upstream accepts. standardized_name is the
+// client-facing normalized key (prefix-stripped, lowercased) — for
+// NIM-style vendors whose raw name carries a vendor prefix
+// ("z-ai/glm-5.2"), storing "glm-5.2" would 404 every probe. This
+// matches the established picker convention in bg/shared_pick.go
+// (COALESCE(pm.outbound_model_name, pm.raw_model_name)), per
+// .handoff/selfcheck-audit-2026-08-26.md §2.2.
+//
+// 2026-08-31 hzx-2 round-4: closes the "credential with no
+// default_probe_model never gets probed" gap exposed by PeriodicQuotaProbe
+// (see bg/periodic_quota_probe.go). Without this hook the per-model
+// upsert loop populates cmb but leaves default_probe_model empty, so the
+// credential is silently skipped by the periodic / balance / fast probe
+// paths even though it has routable bindings.
+//
+// Guards:
+//   - default_probe_model is NULL/empty: never overwrite an existing
+//     pick. Operators who set a manual pin keep their pin.
+//   - default_probe_model_source <> 'manual': defensive — even if
+//     default_probe_model happens to be empty, never stomp a manual
+//     source marker (the admin path writes both atomically but the
+//     ordering is not guaranteed during a migration).
+//   - The pick only runs when the credential has at least one routable
+//     binding (cmb.available = TRUE AND pm.available = TRUE) — empty
+//     cmb is a no-op.
+//
+// Returns the model name actually written (may be empty when no eligible
+// pick was found), so the caller can log success vs skip.
+func AutoFillDefaultProbeModel(ctx context.Context, db Querier, credentialID int) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("database not configured")
+	}
+	if credentialID <= 0 {
+		return "", nil
+	}
+	var picked string
+	err := db.QueryRow(ctx, `
+		UPDATE credentials c
+		SET default_probe_model = sub.probe_model,
+		    default_probe_model_source = $2,
+		    default_probe_model_picked_at = NOW(),
+		    state_updated_at = NOW()
+		FROM (
+		    SELECT COALESCE(pm.outbound_model_name, pm.raw_model_name) AS probe_model
+		    FROM credential_model_bindings cmb
+		    JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		    WHERE cmb.credential_id = $1
+		      AND COALESCE(cmb.available, FALSE) = TRUE
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+		      AND COALESCE(pm.available, FALSE) = TRUE
+		    ORDER BY pm.created_at DESC, pm.id DESC
+		    LIMIT 1
+		) sub
+		WHERE c.id = $1
+		  AND (c.default_probe_model IS NULL OR c.default_probe_model = '')
+		  AND COALESCE(c.default_probe_model_source, '') <> 'manual'
+		RETURNING sub.probe_model
+	`, credentialID, DefaultProbeModelSourceRefreshLatest).Scan(&picked)
+	if err != nil {
+		// pgx returns ErrNoRows when the UPDATE matched zero rows —
+		// that's the expected "already pinned / no eligible binding"
+		// outcome and should not surface as an error to the caller.
+		if err == pgx.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	return picked, nil
 }

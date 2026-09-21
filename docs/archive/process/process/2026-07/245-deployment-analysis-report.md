@@ -128,7 +128,7 @@ WHERE provider_id IN (587, 2451)
 
 ```sql
 -- 连接数据库
-psql 'postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@172.16.2.210:5432/llm_gateway?sslmode=disable'
+psql 'postgres://llm_gateway:***REDACTED***@172.16.2.210:5432/llm_gateway?sslmode=disable'
 
 -- 修复 gpt-5.6-luna
 BEGIN;
@@ -270,7 +270,7 @@ WHERE ts > NOW() - INTERVAL '1 hour'
 ### 立即执行（方案 A）
 
 ```bash
-ssh -p 25022 root@8.136.114.245 "psql 'postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@172.16.2.210:5432/llm_gateway?sslmode=disable' << 'EOF'
+ssh -p 25022 root@8.136.114.245 "psql 'postgres://llm_gateway:***REDACTED***@172.16.2.210:5432/llm_gateway?sslmode=disable' << 'EOF'
 BEGIN;
 UPDATE models_canonical
 SET context_window = 128000, updated_at = NOW()

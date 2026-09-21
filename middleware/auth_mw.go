@@ -39,7 +39,10 @@ func NewAuthMiddleware(apiKey string) *AuthMiddleware {
 			// admin/handler.go. Verified 2026-06-30 via grep — see
 			// docs/audit/2026-06-30-weekly-audit-report.md P0-3.
 			bypass: BypassRule{
-				ExactPaths:   []string{"/healthz", "/metrics", "/"},
+				// 2026-08-29：加 /readyz + /version。供 scripts/lifecycle/preflight.sh 三段检查使用。
+				// /readyz 返回 DB+Redis 是否就绪（K8s readiness），/version 暴露 build metadata。
+				// 两者均无敏感信息，必须 anon 可达。
+				ExactPaths:   []string{"/healthz", "/healthz/full", "/readyz", "/version", "/metrics", "/"},
 				PathPrefixes: []string{"/api/", "/admin/", "/assets/", "/maintain/", "/plugins/"},
 			},
 		},
@@ -57,12 +60,44 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 			return
 		}
 
-		auth := r.Header.Get("Authorization")
-		if len(auth) < 7 || auth[:7] != "Bearer " {
+		// Anthropic Messages clients authenticate with x-api-key per the
+		// Anthropic spec (Claude Code with ANTHROPIC_API_KEY sends ONLY this
+		// header). Without the fallback they die here with 401 missing_key
+		// before the /v1/messages handler — whose extractBearerToken has
+		// honored x-api-key since 2026-06-26 — ever sees the request
+		// (observed 2026-09-21: claude-cli 401s on 154, zero rows in
+		// request_logs_hot). Precedence matches extractBearerToken:
+		// Authorization Bearer first, x-api-key only as fallback.
+		provided := ""
+		if auth := r.Header.Get("Authorization"); len(auth) >= 7 && auth[:7] == "Bearer " {
+			provided = auth[7:]
+		} else if key := r.Header.Get("x-api-key"); key != "" {
+			provided = key
+		}
+		if provided == "" {
 			writeAuthUnauthorized(r.Context(), w, i18n.MsgMissingAuth, "missing_key")
 			return
 		}
-		provided := auth[7:]
+
+		// Exact-match on the deployed static key FIRST, even when it carries
+		// an "sk-" prefix (deployments set LLM_GATEWAY_API_KEY=sk-gw* on
+		// 154/245). Without this, the sk- branch below hands the static key
+		// to the DB verifier, where it lands in tier "default" (12 RPM) —
+		// every probe / self-check / ops caller then queues behind the
+		// minute bucket, burning the caller's entire timeout budget
+		// (observed 2026-08-26: kimi-k3 requests queued ~55-94s on 245 and
+		// died with "context canceled" 502). Exact match cannot shadow
+		// other users' keys — only the deployed key equal to expectedKey
+		// ever takes this branch.
+		if subtle.ConstantTimeCompare([]byte(m.expectedKey), []byte(provided)) == 1 {
+			// Mark ctx with a sentinel that OriginMiddleware uses to decide
+			// whether inbound X-LLM-Origin-Stage / X-LLM-Origin-Actor are
+			// trustworthy. Also read by checkGatewayRateLimit to skip the
+			// shared RPM bucket for the static data-plane key.
+			ctx := RegisterAuthOwnerUser(r.Context(), "global-auth-passed")
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
 
 		// Data-plane sk-* keys are NOT validated here. They are verified
 		// per-request by domains/authentication.KeyVerifier against
@@ -74,37 +109,23 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 		// and nginx failover to the backup replica rejected the primary's
 		// key during every deploy/restart window (2026-08-24 incident).
 		// Rule 20 §2: /v1/* accepts sk-* via the DB verifier; the static
-		// key below only covers non-sk- internal callers (health probes,
-		// self-check, deploy scripts).
+		// key only covers non-sk- internal callers (health probes,
+		// self-check, deploy scripts) and the exact-match case above.
 		if strings.HasPrefix(provided, "sk-") {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		if subtle.ConstantTimeCompare([]byte(m.expectedKey), []byte(provided)) != 1 {
-			// 2026-08-24: log a non-sensitive key prefix (same convention as
-			// api_keys.key_prefix) so operators can tell WHICH misconfigured
-			// internal caller is being rejected — the 2026-08-24 incident
-			// needed cross-replica experiments to trace this gate.
-			slog.Warn("auth: invalid API key",
-				"remote", r.RemoteAddr,
-				"path", r.URL.Path,
-				"key_prefix", bearerKeyPrefixForLog(provided),
-			)
-			writeAuthUnauthorized(r.Context(), w, i18n.MsgInvalidKey, "invalid_key")
-			return
-		}
-
-		// Mark ctx with a sentinel that OriginMiddleware uses to decide
-		// whether inbound X-LLM-Origin-Stage / X-LLM-Origin-Actor are
-		// trustworthy.  AuthMiddleware only knows about the static
-		// expected key (no DB access), so it cannot distinguish "user
-		// with their own key" from "system worker calling with the
-		// global key".  OriginMiddleware trusts X-LLM-Origin-* only
-		// when this sentinel is present AND the actor name is in the
-		// trusted list (middleware/origin_mw.go:trustedOriginOwners).
-		ctx := RegisterAuthOwnerUser(r.Context(), "global-auth-passed")
-		next.ServeHTTP(w, r.WithContext(ctx))
+		// 2026-08-24: log a non-sensitive key prefix (same convention as
+		// api_keys.key_prefix) so operators can tell WHICH misconfigured
+		// internal caller is being rejected — the 2026-08-24 incident
+		// needed cross-replica experiments to trace this gate.
+		slog.Warn("auth: invalid API key",
+			"remote", r.RemoteAddr,
+			"path", r.URL.Path,
+			"key_prefix", bearerKeyPrefixForLog(provided),
+		)
+		writeAuthUnauthorized(r.Context(), w, i18n.MsgInvalidKey, "invalid_key")
 	})
 }
 

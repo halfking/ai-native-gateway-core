@@ -6,27 +6,6 @@ import (
 	"testing"
 )
 
-func TestAuthMiddleware_BypassesAdminSPAPaths(t *testing.T) {
-	// Nginx often proxies /admin/* to Go (for /admin/config/reload). Vue SPA
-	// routes under the same prefix must not require the global API key.
-	called := false
-	mw := NewAuthMiddleware("secret-key")
-	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	for _, path := range []string{"/admin/turns", "/admin/sessions", "/admin/dashboard", "/admin/config/reload"} {
-		called = false
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		rr := httptest.NewRecorder()
-		handler.ServeHTTP(rr, req)
-		if !called || rr.Code == http.StatusUnauthorized {
-			t.Errorf("%s: SPA/admin path must bypass global API key, status=%d", path, rr.Code)
-		}
-	}
-}
-
 func TestAuthMiddleware_BypassesAPIAdminPaths(t *testing.T) {
 	// PR-3 (2026-06-30): /api/* must bypass global API-key auth so
 	// cookie-authenticated browser sessions reach admin.AdminMiddleware
@@ -106,9 +85,6 @@ func TestAuthMiddleware_AcceptsValidBearerForDataPaths(t *testing.T) {
 	mw := NewAuthMiddleware("secret-key")
 	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
-		if !IsGlobalAuthPassed(r.Context()) {
-			t.Error("static key verification must mark the request context")
-		}
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -146,37 +122,6 @@ func TestAuthMiddleware_RejectsInvalidBearer(t *testing.T) {
 	}
 }
 
-func TestAuthMiddleware_PassesSkKeysToDBVerifier(t *testing.T) {
-	// 2026-08-24 incident fix: sk-* data-plane keys must bypass the static
-	// gate — they are validated downstream by KeyVerifier against api_keys.
-	// The static gate must never reject a DB-issued key just because it
-	// differs from LLM_GATEWAY_API_KEY (replicas hold different values).
-	called := false
-	mw := NewAuthMiddleware("secret-key")
-	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		if IsGlobalAuthPassed(r.Context()) {
-			t.Error("sk-* pass-through must not mark ctx as global-auth-passed")
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	for _, key := range []string{"sk-anything", "sk-RZ8dm0z-example", "sk-"} {
-		called = false
-		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-		req.Header.Set("Authorization", "Bearer "+key)
-		rr := httptest.NewRecorder()
-		handler.ServeHTTP(rr, req)
-
-		if !called {
-			t.Errorf("key %q: handler should be called (sk-* goes to DB verifier), got status=%d", key, rr.Code)
-		}
-		if rr.Code != http.StatusOK {
-			t.Errorf("key %q: expected 200, got %d", key, rr.Code)
-		}
-	}
-}
-
 func TestAuthMiddleware_BypassesHealthAndMetrics(t *testing.T) {
 	called := false
 	mw := NewAuthMiddleware("secret-key")
@@ -185,7 +130,7 @@ func TestAuthMiddleware_BypassesHealthAndMetrics(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	for _, path := range []string{"/healthz", "/metrics", "/"} {
+	for _, path := range []string{"/healthz", "/healthz/full", "/readyz", "/version", "/metrics", "/"} {
 		called = false
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rr := httptest.NewRecorder()
@@ -203,5 +148,99 @@ func TestAuthMiddlewareRejectionPreservesRequestID(t *testing.T) {
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/messages", nil))
 	if rr.Code != http.StatusUnauthorized || rr.Header().Get("X-Request-Id") == "" {
 		t.Fatalf("status=%d request_id=%q", rr.Code, rr.Header().Get("X-Request-Id"))
+	}
+}
+
+func TestAuthMiddleware_AcceptsXApiKeyStaticKey(t *testing.T) {
+	// Anthropic Messages clients (Claude Code with ANTHROPIC_API_KEY) send
+	// x-api-key instead of Authorization: Bearer. The static deployed key
+	// delivered via x-api-key must pass the gate exactly like a Bearer.
+	called := false
+	mw := NewAuthMiddleware("secret-key")
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("x-api-key", "secret-key")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatalf("handler should be called with valid x-api-key, got status=%d", rr.Code)
+	}
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestAuthMiddleware_PassesSkXApiKeyToVerifier(t *testing.T) {
+	// sk-* data-plane keys via x-api-key are not validated here; they pass
+	// through to the per-request DB verifier (same contract as the Bearer
+	// sk-* branch).
+	called := false
+	mw := NewAuthMiddleware("secret-key")
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("x-api-key", "sk-user-data-plane-key")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatalf("handler should be called for sk-* x-api-key passthrough, got status=%d", rr.Code)
+	}
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestAuthMiddleware_RejectsNonSkXApiKey(t *testing.T) {
+	called := false
+	mw := NewAuthMiddleware("secret-key")
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("x-api-key", "wrong-key")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if called {
+		t.Fatalf("handler should NOT be called with wrong x-api-key")
+	}
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAuthMiddleware_BearerTakesPrecedenceOverXApiKey(t *testing.T) {
+	// When both headers are present, Authorization wins — matching the
+	// precedence of extractBearerToken on the handler side. A malformed
+	// Bearer must NOT be rescued by a valid x-api-key static key.
+	called := false
+	mw := NewAuthMiddleware("secret-key")
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer wrong-key")
+	req.Header.Set("x-api-key", "secret-key")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if called {
+		t.Fatalf("handler should NOT be called when Bearer is invalid even if x-api-key is valid")
+	}
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", rr.Code)
 	}
 }

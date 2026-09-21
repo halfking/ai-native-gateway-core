@@ -406,6 +406,45 @@ func (sc *StreamCapture) AddQualityFlag(flag string) {
 	sc.QualityFlags = append(sc.QualityFlags, flag)
 }
 
+// QualityStateSnapshot returns independent copies of the quality processor
+// state so a stream transformer can safely derive its next state.
+func (sc *StreamCapture) QualityStateSnapshot() ([]string, map[string]int) {
+	if sc == nil {
+		return nil, nil
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	flags := append([]string(nil), sc.QualityFlags...)
+	seen := make(map[string]int, len(sc.QualitySeenToolCallIDs))
+	for id, count := range sc.QualitySeenToolCallIDs {
+		seen[id] = count
+	}
+	return flags, seen
+}
+
+// SetQualityFlags replaces the quality flags with a caller-owned snapshot.
+func (sc *StreamCapture) SetQualityFlags(flags []string) {
+	if sc == nil {
+		return
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.QualityFlags = append(sc.QualityFlags[:0], flags...)
+}
+
+// SetQualitySeenToolCallIDs replaces the tool-call id state with a copy.
+func (sc *StreamCapture) SetQualitySeenToolCallIDs(seen map[string]int) {
+	if sc == nil {
+		return
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.QualitySeenToolCallIDs = make(map[string]int, len(seen))
+	for id, count := range seen {
+		sc.QualitySeenToolCallIDs[id] = count
+	}
+}
+
 func (sc *StreamCapture) Snapshot() (chunkCount, ttfbMs int, done, interrupted bool, checksum string) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()

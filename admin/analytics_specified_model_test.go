@@ -75,7 +75,7 @@ func TestBuildMatrixQuery_AllMetrics(t *testing.T) {
 			t.Errorf("metric=%s: %v", m, err)
 			continue
 		}
-		if !strings.Contains(q, "SELECT") || !strings.Contains(q, "FROM request_logs") {
+		if !strings.Contains(q, "SELECT") || !strings.Contains(q, "FROM routing_analytics_source") {
 			t.Errorf("metric=%s: malformed query:\n%s", m, q)
 		}
 	}
@@ -387,7 +387,59 @@ func TestBuildFlowL23Query_AdmitsNullIsAutoRequest(t *testing.T) {
 	}
 }
 
-// TestBuildAuditTaskDistributionQuery_AdmitsNullIsAutoRequest — same
+// TestBusinessRequestFilter_ExcludesProbeTraffic pins the shared analytics
+// predicate so self-check and legacy probe rows cannot enter heatmap/Sankey
+// aggregates, while rows with an unset origin_stage remain eligible.
+func TestBusinessRequestFilter_ExcludesProbeTraffic(t *testing.T) {
+	q := businessRequestFilter("")
+	for _, stage := range []string{"self_check", "node_probe", "system_health", "probe_direct", "probe_v2", "model_probe", "passive_probe", "manual"} {
+		if !strings.Contains(q, stage) {
+			t.Fatalf("business filter missing probe stage %q: %s", stage, q)
+		}
+	}
+	for _, fragment := range []string{
+		"COALESCE(origin_stage, '') NOT IN",
+		"COALESCE(task_type, '') <> 'probe_triggered'",
+		"COALESCE(request_id, '') NOT LIKE 'probe-%'",
+	} {
+		if !strings.Contains(q, fragment) {
+			t.Fatalf("business filter missing compatibility guard %q: %s", fragment, q)
+		}
+	}
+	if strings.Contains(q, "origin_stage IS NOT NULL") {
+		t.Fatal("business filter must retain historical rows with NULL origin_stage")
+	}
+}
+
+func TestAnalyticsQueries_UseBusinessRequestFilter(t *testing.T) {
+	queries := []struct {
+		name string
+		q    string
+	}{
+		{"matrix", mustMatrixQueryForTest(t)},
+		{"flow_l12", buildFlowL12Query()},
+		{"flow_l23", buildFlowL23Query()},
+	}
+	for _, tc := range queries {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, fragment := range []string{"origin_stage", "probe_triggered", "probe-%"} {
+				if !strings.Contains(tc.q, fragment) {
+					t.Fatalf("%s query missing business filter fragment %q:\n%s", tc.name, fragment, tc.q)
+				}
+			}
+		})
+	}
+}
+
+func mustMatrixQueryForTest(t *testing.T) string {
+	t.Helper()
+	q, err := buildMatrixQuery("task_type", "count")
+	if err != nil {
+		t.Fatalf("buildMatrixQuery: %v", err)
+	}
+	return q
+}
+
 // guard for the audit task_distribution query.
 func TestBuildAuditTaskDistributionQuery_AdmitsNullIsAutoRequest(t *testing.T) {
 	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)

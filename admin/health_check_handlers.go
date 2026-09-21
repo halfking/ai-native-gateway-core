@@ -1,7 +1,7 @@
 package admin
 
 import (
-	"encoding/json"
+	"context"
 	"net/http"
 	"time"
 
@@ -96,7 +96,7 @@ func (h *HealthCheckHandler) Dismiss(w http.ResponseWriter, r *http.Request) {
 		By     string `json:"by"`
 		Reason string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := readJSONRequired(r, &body); err != nil {
 		writeJSON(w, 400, map[string]any{"error": "invalid json"})
 		return
 	}
@@ -119,30 +119,69 @@ func (h *HealthCheckHandler) Dismiss(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
-// ExecuteFix applies the fix_sql of a finding.
+// cannedFix maps a finding's entity_type to the parameterized statement that
+// implements its one-click fix. The fix_sql column is display/copy text built
+// by bg.RunChecks from DB string columns that upstream model catalogs can
+// influence — executing it verbatim would be a stored-SQL injection, so only
+// these canned statements (with entity_id as the sole argument) may run.
+func cannedFix(entityType string) (string, bool) {
+	switch entityType {
+	case "billing_mismatch":
+		// plan_type is re-read from the credential at fix time (fresher than
+		// the check snapshot and never attacker-controlled: CHECK-constrained).
+		return `UPDATE credential_model_bindings cmb
+			SET billing_mode = c.plan_type, plan_type_origin = 'manual_fix', plan_type_updated_at = now()
+			FROM credentials c
+			WHERE c.id = cmb.credential_id AND cmb.id = $1`, true
+	case "canonical_id_null":
+		// Same exact-match semantics as bg.autoFixCanonicalID, including the
+		// migration-693 admin-unbind guard.
+		return `UPDATE provider_models pm
+			SET canonical_id = mc.id
+			FROM models_canonical mc
+			WHERE mc.canonical_name = pm.raw_model_name
+			  AND pm.canonical_cleared_at IS NULL
+			  AND pm.id = $1`, true
+	default:
+		return "", false
+	}
+}
+
+// ExecuteFix applies the fix for a finding via its canned parameterized
+// statement. Stored fix_sql is never executed.
 func (h *HealthCheckHandler) ExecuteFix(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID int64 `json:"id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := readJSONRequired(r, &body); err != nil {
 		writeJSON(w, 400, map[string]any{"error": "invalid json"})
 		return
 	}
-	var fixSQL string
-	err := h.db.QueryRow(r.Context(), `
-		SELECT fix_sql FROM routing_health_checks WHERE id = $1 AND status = 'open'`, body.ID).Scan(&fixSQL)
-	if err != nil || fixSQL == "" {
-		writeJSON(w, 404, map[string]any{"error": "not found or no fix_sql"})
-		return
+	status, resp := runHealthCheckFix(r.Context(), h.db, body.ID)
+	writeJSON(w, status, resp)
+}
+
+// runHealthCheckFix is the pgxExecRower-parameterized core of ExecuteFix so
+// tests can drive it against pgxmock.
+func runHealthCheckFix(ctx context.Context, db pgxExecRower, id int64) (int, map[string]any) {
+	var entityType string
+	var entityID int64
+	err := db.QueryRow(ctx, `
+		SELECT entity_type, entity_id FROM routing_health_checks WHERE id = $1 AND status = 'open'`, id).Scan(&entityType, &entityID)
+	if err != nil {
+		return 404, map[string]any{"error": "not found or no fix available"}
 	}
-	tag, execErr := h.db.Exec(r.Context(), fixSQL)
+	stmt, ok := cannedFix(entityType)
+	if !ok {
+		return 400, map[string]any{"error": "this finding has no one-click fix; follow the guidance in detail", "entity_type": entityType}
+	}
+	tag, execErr := db.Exec(ctx, stmt, entityID)
 	if execErr != nil {
-		writeJSON(w, 500, map[string]any{"error": execErr.Error(), "sql": fixSQL})
-		return
+		return 500, map[string]any{"error": execErr.Error()}
 	}
-	h.db.Exec(r.Context(), `
-		UPDATE routing_health_checks SET status = 'manual_fixed', auto_fixed_at = now(), auto_fix_result = 'applied', updated_at = now() WHERE id = $1`, body.ID)
-	writeJSON(w, 200, map[string]any{"ok": true, "rows_affected": tag.RowsAffected()})
+	db.Exec(ctx, `
+		UPDATE routing_health_checks SET status = 'manual_fixed', auto_fixed_at = now(), auto_fix_result = 'applied', updated_at = now() WHERE id = $1`, id)
+	return 200, map[string]any{"ok": true, "rows_affected": tag.RowsAffected()}
 }
 
 func (h *HealthCheckHandler) RegisterRoutes(mux *http.ServeMux) {

@@ -228,7 +228,7 @@ defeats the entire purpose of the hook.
 `scripts/scan-secrets.config` — 4 KNOWN_LEAK patterns from BLOCK to
 WARN. Reasoning:
 - The leak source was already patched (`cmd/test_sql/main.go` no
-  longer contains `4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg`)
+  longer contains `***REDACTED***`)
 - The scanner was matching the literal string in any file it scanned
 - WARN keeps the audit trail (next time someone re-introduces the
   password they'll still see a finding) without blocking push

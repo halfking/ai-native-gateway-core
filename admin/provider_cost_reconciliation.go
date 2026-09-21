@@ -12,7 +12,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -71,7 +70,7 @@ func (h *ProviderCostReconciliationHandler) handleImportBill(w http.ResponseWrit
 		return
 	}
 	var req importBillRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}

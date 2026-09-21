@@ -254,7 +254,7 @@ KillMode=mixed
 | 2 | §1 其他 service | + llmgo-prometheus/alertmanager, quality-service, collector-service, aegis, ai-native-maintain, aliyun, cloudmonitor, chronyd, crond | `systemctl list-units --type=service --state=running` |
 | 3 | §6 certbot-renew.timer | **启用**，下次运行 `Thu 2026-08-20 08:09:19 CST`。但 certbot **只管 `download.kxpms.cn`**；`llmgo.kxpms.cn` / `llm.kxpms.cn` cert 手工放置在 `/etc/letsencrypt/live/kxpms.cn/` | `systemctl list-timers certbot-renew.timer` + `certbot certificates` |
 | 4 | §6 nginx 重复 listen | 已确认（IPv4 80×6 + 443 ssl http2×3 + IPv6 80×1 + 443 ssl×1），与 154 模式相同；只 WARN 不 FAIL | `nginx -T 2>&1 \| grep "^listen" \| sort \| uniq -c` |
-| 5 | §8 local-redis | **245 无本地 redis**（`ps -ef \| grep redis` 空，`ss -tlnp \| grep 6379` 空），只用 252 shared redis (172.16.2.210:6389) | `ps -ef + ss -tlnp` |
+| 5 | §8 local-redis | **245 无本地 redis**（`ps -ef \| grep redis` 空，`ss -tlnp \| grep 6379` 空），只用 252 shared redis (<env:HOST_252_INTERNAL_IP>:6389) | `ps -ef + ss -tlnp` |
 | 6 | §11 245 stability report | **不存在**。项目内只有 154 stability report（archived）。计划 pre-prod 验收 1 周后产出 `docs/design/2026-08-XX-245-stability-report.md` | `find docs -name "*stability*245*"` |
 
 ### 4.2 commit

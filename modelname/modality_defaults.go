@@ -248,6 +248,20 @@ var modalityRules = []modalityRule{
 	{"grok-vision-", "vision", 1}, // grok-vision-beta (12 chars)
 	{"grok-", "text", 1},          // fallback to text (5 chars)
 
+	// SenseTime SenseNova — 2026-08-29 (612): multimodal 兜底
+	// 6.7 / 6.8 Flash-Lite 接受 text + image 输入；U1 Fast / U1.5 Lite 输出图像。
+	// 顺序按 specificity 降序，避免短前缀覆盖长前缀。
+	{"sensenova-u1-fast", "multimodal", 0},   // exact: text in / image out
+	{"sensenova-u1.5-lite", "multimodal", 0}, // exact: text in / image out
+	{"sensenova-6.7-flash-lite", "multimodal", 0},
+	{"sensenova-6.8-flash-lite", "multimodal", 0},
+	{"sensenova-flash-lite", "multimodal", 1}, // *.flash-lite 系列（含 6.x / 未来 9.x）
+	{"sensenova-u1", "multimodal", 1},         // sensenova-u1.* 系列
+	{"sensenova-u", "multimodal", 1},          // sensenova-u* 系列 future-proof（U1/U2/...）
+	{"sensenova-6", "multimodal", 1},          // 6.x 系列 future-proof
+	{"sensenova-", "text", 1},                 // 其它 sensenova-* fallback 到 text
+	{"sensechat-", "text", 1},                 // 历史 sensechat 系列（已确认纯文本）
+
 	// StepFun - Vision first
 	{"step-1v-", "vision", 1},
 	{"step-", "text", 1},

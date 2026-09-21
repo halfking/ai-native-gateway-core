@@ -17,6 +17,7 @@
 // 跳；scope=all（super_admin 全局入站）的卡片按 RequestJourneyQueues 同款
 // 规则禁用跳转，避免暴露跨租户详情）。
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { formatTimeOnly } from '../utils/datetime'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getRequestJourneyQueues } from '../api/request-journeys'
@@ -30,6 +31,7 @@ import {
   liveStreamState,
   type ActionEvent,
 } from '../composables/liveStreamStore'
+import { fmtDateTime24h } from '../i18n/useFormat'
 
 const router = useRouter()
 const { t, locale } = useI18n()
@@ -97,7 +99,7 @@ function outcomeLabel(o?: 'success' | 'failure' | 'canceled'): string {
 
 function fmtClock(ms?: number): string {
   if (!ms) return '—'
-  return new Date(ms).toLocaleTimeString(locale.value, { hour12: false })
+  return formatTimeOnly(ms, { locale: locale.value, options: { hour12: false } })
 }
 
 function fmtMs(v?: number): string {
@@ -113,13 +115,6 @@ function fmtCountdown(targetMs?: number): string {
   if (delta < 60_000) return Math.ceil(delta / 1000) + 's 后'
   if (delta < 3_600_000) return Math.ceil(delta / 60_000) + 'm 后'
   return Math.ceil(delta / 3_600_000) + 'h 后'
-}
-
-function fmtDateTime(iso?: string): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return '—'
-  return d.toLocaleString(locale.value, { hour12: false })
 }
 
 function elapsedOf(c: RegistryCard): string {
@@ -525,7 +520,7 @@ function openSearchJourney() {
                   <div v-if="c.error_kind" class="reg-detail-row"><span class="reg-detail-label">{{ t('requestRegistry.detail.error') }}</span><span>{{ c.error_kind }}</span></div>
                   <div v-if="c.http_status" class="reg-detail-row"><span class="reg-detail-label">{{ t('requestRegistry.detail.http') }}</span><span>{{ c.http_status }}</span></div>
                   <div v-if="c.attempt" class="reg-detail-row"><span class="reg-detail-label">{{ t('requestRegistry.detail.attempt') }}</span><span>{{ c.attempt }}</span></div>
-                  <div v-if="c.finished_at" class="reg-detail-row"><span class="reg-detail-label">{{ t('requestRegistry.detail.finishedAt') }}</span><span>{{ fmtDateTime(c.finished_at) }}</span></div>
+                  <div v-if="c.finished_at" class="reg-detail-row"><span class="reg-detail-label">{{ t('requestRegistry.detail.finishedAt') }}</span><span>{{ fmtDateTime24h(c.finished_at) }}</span></div>
                 </div>
               </div>
             </TransitionGroup>

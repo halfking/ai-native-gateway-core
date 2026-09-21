@@ -2,7 +2,6 @@ package v2
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -18,18 +17,16 @@ import (
 // behaviour. Tweak these in DefaultScoringWeights() rather than at
 // call sites.
 type ScoringWeights struct {
-	Price        float64
-	Latency      float64
-	Stability    float64
-	EmptyPenalty float64
+	Price     float64
+	Latency   float64
+	Stability float64
 }
 
 func DefaultScoringWeights() ScoringWeights {
 	return ScoringWeights{
-		Price:        0.4,
-		Latency:      0.4,
-		Stability:    0.2,
-		EmptyPenalty: 0.2,
+		Price:     0.4,
+		Latency:   0.4,
+		Stability: 0.2,
 	}
 }
 
@@ -54,12 +51,6 @@ type Config struct {
 	Window30mTTL        time.Duration
 	NodeTTL             time.Duration
 	ScoringWeights      ScoringWeights
-	// EmptyResponseMinSamples and EmptyResponseRateThreshold control a
-	// binding-scoped soft routing penalty. The state key remains tenant +
-	// credential + raw model; no provider-wide or canonical-model action is
-	// derived from this telemetry.
-	EmptyResponseMinSamples    int
-	EmptyResponseRateThreshold float64
 	// LRUMirrorSize is the capacity of the process-local NodeMirror LRU
 	// (M2, spec Decision 2). Default 100000. 0 disables the mirror (every
 	// FilterAndScore reads Redis). The mirror is a read accelerator only;
@@ -92,6 +83,15 @@ type Config struct {
 	// the Redis read path (and are rejected if that fails). Runtime override:
 	// settings_kv llmgw_ursm_mirror_grace_enabled.
 	MirrorGraceEnabled bool
+	// OutageGrace bounds how long FilterAndScoreOutageFallback may serve
+	// read-only routing from soft-expired NodeMirror entries after Redis
+	// becomes unreachable (availability gear, 2026-09-04). Default 30m.
+	// 0 disables the gear: an unreachable Redis rejects authoritative
+	// routes (the pre-2026-09 fail-closed contract). Unlike
+	// MirrorGraceEnabled this is boot-only (URSM_V2_OUTAGE_GRACE_SECONDS)
+	// because it trades routing-state freshness for availability and ops
+	// should size the window to their Redis HA budget deliberately.
+	OutageGrace time.Duration
 	// ShadowDoubleWrite opts shadow mode into writing sidecar records to
 	// the v2 store. Default false. P0-3 (audit §7.1) flips this true during
 	// the 7-day cutover comparison window. Routing stays on legacy
@@ -125,10 +125,8 @@ func DefaultConfig() Config {
 		// Spec §5 参数总表 / §14.5 “快恢复” — degraded nodes return to the
 		// pool within 15min of the last probe/record touch. Hot-configurable
 		// via settings_kv (see LoadHot).
-		NodeTTL:                    15 * time.Minute,
-		ScoringWeights:             DefaultScoringWeights(),
-		EmptyResponseMinSamples:    10,
-		EmptyResponseRateThreshold: 0.20,
+		NodeTTL:        15 * time.Minute,
+		ScoringWeights: DefaultScoringWeights(),
 		// 2026-07-27 (M2): process LRU mirror defaults (spec Decision 2).
 		LRUMirrorSize:    100000,
 		LRUMirrorSoftTTL: 30 * time.Second,
@@ -144,6 +142,11 @@ func DefaultConfig() Config {
 		// §14.3 target gear: mirror never bypasses a dead Redis. The grace
 		// gear is opt-in per deployment via settings_kv.
 		MirrorGraceEnabled: false,
+		// 2026-09-04 availability gear: a hard Redis outage may serve
+		// soft-expired mirror entries read-only for up to this window
+		// instead of 503-ing every request. Sized well past a sentinel
+		// failover; 0 opts back into strict fail-closed.
+		OutageGrace: 30 * time.Minute,
 		// P0-3: shadow double-write is opt-in. Operators must explicitly
 		// flip URSM_V2_SHADOW_DOUBLE_WRITE=1 for the cutover comparison
 		// window. Default off keeps v2 Redis namespace clean.
@@ -219,22 +222,6 @@ func LoadFromEnv() Config {
 		}
 	}
 	// 2026-07-24: 支持通过环境变量配置 URSM v2 冷却时间
-	if v := strings.TrimSpace(os.Getenv("URSM_V2_EMPTY_RESPONSE_MIN_SAMPLES")); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 {
-			c.loadErr = fmt.Errorf("URSM_V2_EMPTY_RESPONSE_MIN_SAMPLES must be a positive integer")
-		} else {
-			c.EmptyResponseMinSamples = n
-		}
-	}
-	if v := strings.TrimSpace(os.Getenv("URSM_V2_EMPTY_RESPONSE_RATE_THRESHOLD")); v != "" {
-		n, err := strconv.ParseFloat(v, 64)
-		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) || n < 0 || n > 1 {
-			c.loadErr = fmt.Errorf("URSM_V2_EMPTY_RESPONSE_RATE_THRESHOLD must be a number from 0 to 1")
-		} else {
-			c.EmptyResponseRateThreshold = n
-		}
-	}
 	if v := os.Getenv("URSM_V2_COOL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			c.CoolSeconds = n
@@ -259,6 +246,22 @@ func LoadFromEnv() Config {
 	if v := strings.ToLower(strings.TrimSpace(os.Getenv("URSM_V2_SHADOW_DOUBLE_WRITE"))); v != "" {
 		if v == "1" || v == "true" || v == "yes" {
 			c.ShadowDoubleWrite = true
+		}
+	}
+	// 2026-09-04 availability gear: URSM_V2_OUTAGE_GRACE_SECONDS bounds the
+	// read-only mirror-serving window during a hard Redis outage. 0 or
+	// negative disables the gear (strict fail-closed); the value is capped
+	// at 24h so a typo cannot pin stale routing state forever.
+	if v := os.Getenv("URSM_V2_OUTAGE_GRACE_SECONDS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			c.loadErr = fmt.Errorf("URSM_V2_OUTAGE_GRACE_SECONDS must be an integer: %w", err)
+		} else if n <= 0 {
+			c.OutageGrace = 0
+		} else if n > 86400 {
+			c.OutageGrace = 24 * time.Hour
+		} else {
+			c.OutageGrace = time.Duration(n) * time.Second
 		}
 	}
 	// Boot-only key schema mode (doc 14 §3). Fail closed on a typo: the
@@ -288,12 +291,6 @@ func (c Config) Validate() error {
 	}
 	if err := validateStrictCanaryScope(c); err != nil {
 		return err
-	}
-	if c.EmptyResponseMinSamples < 1 {
-		return fmt.Errorf("URSM_V2_EMPTY_RESPONSE_MIN_SAMPLES must be positive")
-	}
-	if c.EmptyResponseRateThreshold < 0 || c.EmptyResponseRateThreshold > 1 {
-		return fmt.Errorf("URSM_V2_EMPTY_RESPONSE_RATE_THRESHOLD must be between 0 and 1")
 	}
 	return nil
 }

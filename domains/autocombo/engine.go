@@ -248,6 +248,14 @@ type ScoredProvider struct {
 
 // sortCandidates 在 provider.Candidate 上跑评分排序，返回按分数降序的副本。
 //
+// Sorting-ownership contract (audit 2026-09-14 R28 #14): this score is the
+// 粗排 (coarse ranking) — it decides the MaxCandidates survival set in
+// VirtualFactory.BuildFromCandidates (top-scored head survives the
+// truncation). The executor Router is the 精排 (fine ranking): it re-orders
+// the surviving candidates WITHIN each tier via P2C to pick attempt order.
+// The two layers must not be conflated: a low autocombo score means "risk
+// being truncated", not "tried last".
+//
 // 评分使用和旧 Engine 相同的 6 维权重 (HealthScore / LatencyP95 /
 // QuotaRemaining / Cost / TaskFit / TierAffinity)，但映射到 provider.Candidate
 // 的实际字段：P95 延迟、RecentSuccessRate (作为 HealthScore)、单位价格

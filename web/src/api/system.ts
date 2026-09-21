@@ -132,6 +132,12 @@ export function getHealth(full = false) {
   return req<HealthResponse>('GET', `/healthz${full ? '?full=true' : ''}`)
 }
 
+// Public readiness endpoint — returns database/redis connectivity status
+// without requiring admin token (unlike /healthz?full=true)
+export function getReadyz() {
+  return req<HealthResponse>('GET', '/readyz')
+}
+
 // 2026-07-14: 30s system-health snapshot for the GDRT H badge.
 //   ok       — green:  recent 30s success rate >= 80%
 //   degraded — red:    recent 30s success rate <  80%

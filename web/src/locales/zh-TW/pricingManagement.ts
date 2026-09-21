@@ -107,6 +107,7 @@ export default {
     cacheReadPrice: '快取讀價（每百萬）',
     cacheWritePrice: '快取寫價（每百萬）',
     currency: '幣種',
+    unset: '未設定',
     billingMode: '計費模式',
     billingPerToken: '依 Token',
     billingPerRequest: '依次',

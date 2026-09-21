@@ -208,6 +208,8 @@ h2 {
   color: var(--muted);
 }
 .filter-bar select {
+  /* width:auto 覆盖全局 select width:100%，避免筛选下拉占满整行 */
+  width: auto;
   padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--bg);

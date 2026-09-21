@@ -30,6 +30,10 @@ func entitlementGateEnabled() bool {
 // client-forged/default one). pluginBaseFor returns the plugin's listen URL for a
 // pluginID ("" => not running => 502).
 func registerPluginAPIProxy(mux *http.ServeMux, secret []byte, pluginBaseFor func(pluginID string) string, moduleKeyFor func(pluginID string) (moduleID string, licenseRequired bool), authorizer pluginEntitlementAuthorizer, pool *pgxpool.Pool, adminSecret string) {
+	registerPluginAPIProxyWithCapabilities(mux, secret, pluginBaseFor, moduleKeyFor, authorizer, pool, adminSecret, nil)
+}
+
+func registerPluginAPIProxyWithCapabilities(mux *http.ServeMux, secret []byte, pluginBaseFor func(pluginID string) string, moduleKeyFor func(pluginID string) (moduleID string, licenseRequired bool), authorizer pluginEntitlementAuthorizer, pool *pgxpool.Pool, adminSecret string, capabilities *pluginruntime.CapabilityRegistry) {
 	gateEnabled := entitlementGateEnabled()
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pluginID := r.PathValue("pluginId")
@@ -39,6 +43,14 @@ func registerPluginAPIProxy(mux *http.ServeMux, secret []byte, pluginBaseFor fun
 			return
 		}
 		auth := admin.GetAuthContext(r)
+		if capabilities != nil {
+			path := r.URL.Path
+			if i := strings.Index(path, "/api"); i >= 0 { path = path[i+len("/api"):]; if path == "" { path = "/" } }
+			if capability := capabilities.Required(r.Method, path); capability != "" && !capabilities.Allows(pluginID, capability) {
+				pluginruntime.CapabilityDenied(w, capability)
+				return
+			}
+		}
 		if gateEnabled {
 			moduleID, licenseRequired := moduleKeyFor(pluginID)
 			if licenseRequired {

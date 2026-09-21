@@ -213,7 +213,7 @@ func (c *DurableCopy) CopyEntry(ctx context.Context, ledgerID, owner string, epo
 	if err != nil {
 		return EntryCopyResult{}, fmt.Errorf("ursm.v2: read copied target PTTL: %w", err)
 	}
-	milliseconds := pttl.Milliseconds()
+	milliseconds := pttlMillis(pttl)
 	if err := c.PG.PersistCopyOutcome(ctx, CopyOutcome{
 		LedgerID: ledgerID, Owner: owner, Epoch: epoch, SourceKey: entry.SourceKey, TargetKey: entry.TargetKey,
 		Generation: entry.Generation, FieldChecksum: entry.FieldChecksum, State: StatusCopied, CopiedPTTLMs: &milliseconds,

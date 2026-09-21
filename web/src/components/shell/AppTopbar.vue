@@ -16,14 +16,12 @@ import SystemStatusIndicator from '../SystemStatusIndicator.vue'
 import UserMenuDropdown from './UserMenuDropdown.vue'
 import { detectTheme, logoSrc } from '../../theme'
 import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from '../../config/brand'
-import { isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps } from '../../store'
-import { NAV_GROUPS, NAV_PRIMARY_ITEMS, isNavItemActive, visibleNavGroups, visibleNavItems, type NavGroup } from '../../config/appNav'
-import {
-  LOCAL_OPS_MENU,
-  onMaintainAvailabilityChange,
-  resolveOpsMenu,
-  type OpsMenuGroup,
-} from '../../config/edition'
+import { isNavItemActive } from '../../config/appNav'
+// 2026-09-13: 菜单构建（静态分组 + 插件/运维中心合并 + 角色过滤）抽到
+// useAppNav，与 AppNavDrawer（移动抽屉）共用；行为不变。
+import { navDrawerOpen, useAppNav } from '../../composables/useAppNav'
+import { useRequestAnomalyBadge } from '../../composables/useRequestAnomalyBadge'
+import { useBreakpoint } from '../../composables/useBreakpoint'
 
 export interface VersionInfo {
   version?: string
@@ -57,95 +55,23 @@ onMounted(() => {
   document.addEventListener('click', handleOutside)
   window.addEventListener('resize', onWindowChange)
   window.addEventListener('scroll', onWindowChange, true)
-  void refreshOpsMenu()
-  void checkActivationStatus()
-  stopMaintainWatch = onMaintainAvailabilityChange(() => {
-    void refreshOpsMenu()
-  })
 })
 onBeforeUnmount(() => {
   logoObserver?.disconnect()
   document.removeEventListener('click', handleOutside)
   window.removeEventListener('resize', onWindowChange)
   window.removeEventListener('scroll', onWindowChange, true)
-  stopMaintainWatch?.()
-  stopMaintainWatch = null
 })
 
-const isSuperAdmin = computed(() => checkSuperAdmin())
-const isPlatformOps = computed(() => checkPlatformOps())
-const isTenantPortal = computed(() => !isPlatformOps.value)
-
-const isActivated = ref(false)
-
-// 检查激活状态
-async function checkActivationStatus() {
-  try {
-    const resp = await fetch('/api/system/bootstrap/status')
-    if (resp.ok) {
-      const data = await resp.json()
-      isActivated.value = data.activated === true
-    }
-  } catch {
-    // 忽略错误，默认未激活
-  }
-}
-
-const navPrimaryItems = computed(() => visibleNavItems(NAV_PRIMARY_ITEMS, {
-  isSuperAdmin: isSuperAdmin.value,
-  isPlatformOps: isPlatformOps.value,
-  isTenantPortal: isTenantPortal.value,
-  isActivated: isActivated.value,
-}))
-
-const opsMenuOverrides = ref<OpsMenuGroup[] | null>(null)
-
-function mergeRemoteOps(localGroups: NavGroup[], remote: OpsMenuGroup[] | null): NavGroup[] {
-  if (!remote || !remote.length) return localGroups
-  const merged: NavGroup[] = []
-  for (const g of localGroups) {
-    if (g.id === 'opsplatform') continue
-    merged.push(g)
-  }
-  for (const g of remote) {
-    merged.push({
-      id: g.id,
-      label: g.label,
-      items: g.items.map((it) => ({
-        path: it.path,
-        label: it.label,
-        labelKey: it.labelKey,
-        icon: it.icon || '•',
-        super: it.super,
-        hideForTenant: it.hide_for_tenant,
-        external: it.external,
-        exact: false,
-      })),
-    })
-  }
-  return merged
-}
-
-const navGroups = computed(() => {
-  const local = visibleNavGroups(NAV_GROUPS, {
-    isSuperAdmin: isSuperAdmin.value,
-    isPlatformOps: isPlatformOps.value,
-    isTenantPortal: isTenantPortal.value,
-    isActivated: isActivated.value,
-  })
-  if (!opsMenuOverrides.value) return local
-  return mergeRemoteOps(local, opsMenuOverrides.value)
-})
-
-async function refreshOpsMenu() {
-  try {
-    opsMenuOverrides.value = await resolveOpsMenu()
-  } catch {
-    opsMenuOverrides.value = LOCAL_OPS_MENU
-  }
-}
-
-let stopMaintainWatch: (() => void) | null = null
+// 菜单数据与激活状态解析来自 useAppNav（共享单例，运维中心/插件菜单
+// 的后台加载也由其统一触发，见 composable 内 startBackgroundLoading）。
+const { navGroups, navPrimaryResolved, navLabel } = useAppNav()
+// 2026-09-21: 「格式异常监控」导航徽标——未解决的请求侧异常计数
+// （/format-anomalies 请求错误 tab 数据源），60s 轮询、仅 super_admin。
+const { counts: requestAnomalyCounts } = useRequestAnomalyBadge()
+const requestAnomalyCount = computed(() => requestAnomalyCounts.value.unresolved)
+// <1024 布局决策口径：菜单区替换为汉堡按钮，抽屉导航接管（方案 §4.4）
+const { isMobile } = useBreakpoint()
 
 const openGroupId = ref<string | null>(null)
 const dropdownStyle = ref<Record<string, string>>({})
@@ -225,12 +151,11 @@ const activeGroup = computed(() =>
 function groupActive(id: string): boolean {
   return navGroups.value
     .find((g) => g.id === id)?.items
-    .some((it) => isNavItemActive(it.path, route.path, it.exact)) ?? false
+    // items 现在是 { item, resolved } 包装；分组高亮按原始 path 匹配，
+    // 因为未激活时 resolved.path 会重定向到激活页，不应点亮所属分组。
+    .some(({ item }) => isNavItemActive(item.path, route.path, item.exact)) ?? false
 }
 
-function navLabel(labelKey: string | undefined, fallback: string): string {
-  return labelKey ? t(labelKey) : fallback
-}
 </script>
 
 <template>
@@ -250,20 +175,43 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
       </span>
     </a>
 
-    <nav class="app-topbar__nav" :aria-label="t('nav.mainAria', '主导航')">
-      <template v-for="item in navPrimaryItems" :key="item.path + item.label">
+    <!-- 2026-09-13 方案 §4.4：<1024（isMobile 布局决策口径）菜单区替换为汉堡
+         按钮，抽屉导航（AppNavDrawer，App.vue 挂载）接管；>=1024 渲染保持
+         原 DOM 结构不变（桌面零回归红线）。 -->
+    <button
+      v-if="isMobile"
+      type="button"
+      class="app-topbar__hamburger"
+      :aria-label="t('nav.mainAria', '主导航')"
+      aria-haspopup="dialog"
+      :aria-expanded="navDrawerOpen"
+      @click="navDrawerOpen = true"
+    >
+      <span class="app-topbar__hamburger-bar" aria-hidden="true"></span>
+      <span class="app-topbar__hamburger-bar" aria-hidden="true"></span>
+      <span class="app-topbar__hamburger-bar" aria-hidden="true"></span>
+    </button>
+
+    <nav v-else class="app-topbar__nav" :aria-label="t('nav.mainAria', '主导航')">
+      <template v-for="{ item, resolved } in navPrimaryResolved" :key="item.path + item.label">
         <a
-          v-if="item.external"
-          :href="item.path"
+          v-if="resolved.external"
+          :href="resolved.path"
           class="app-topbar__link app-topbar__link--primary"
-          :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
-        >{{ navLabel(item.labelKey, item.label) }}</a>
+          :class="{
+            active: isNavItemActive(resolved.path, route.path, item.exact),
+            'app-topbar__link--activate': resolved.activateAction,
+          }"
+        >{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction', '激活') : item.label) }}</a>
         <router-link
           v-else
-          :to="item.path"
+          :to="resolved.path"
           class="app-topbar__link app-topbar__link--primary"
-          :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
-        >{{ navLabel(item.labelKey, item.label) }}</router-link>
+          :class="{
+            active: isNavItemActive(resolved.path, route.path, item.exact),
+            'app-topbar__link--activate': resolved.activateAction,
+          }"
+        >{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction', '激活') : item.label) }}</router-link>
       </template>
 
       <div
@@ -296,29 +244,45 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
         @mouseenter="cancelLeave"
         @mouseleave="closeAll()"
       >
-        <template v-for="item in activeGroup.items" :key="item.path + item.label">
+        <template v-for="{ item, resolved } in activeGroup.items" :key="item.path + item.label">
           <a
-            v-if="item.external"
-            :href="item.path"
+            v-if="resolved.external"
+            :href="resolved.path"
             class="app-topbar__dropdown-item"
+            :class="{ 'app-topbar__dropdown-item--activate': resolved.activateAction }"
+            :title="resolved.activateAction ? t('nav.item.activateActionTip', '点击前往激活本机') : undefined"
             role="menuitem"
-            :target="item.path.startsWith('http') ? '_blank' : undefined"
-            :rel="item.path.startsWith('http') ? 'noopener' : undefined"
+            :target="resolved.path.startsWith('http') ? '_blank' : undefined"
+            :rel="resolved.path.startsWith('http') ? 'noopener' : undefined"
             @click="closeAll()"
           >
             <span class="app-topbar__dropdown-icon" aria-hidden="true">{{ item.icon }}</span>
-            <span>{{ navLabel(item.labelKey, item.label) }}</span>
+            <span>{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction', '激活') : item.label) }}</span>
+            <span
+              v-if="item.path === '/format-anomalies' && requestAnomalyCount > 0"
+              class="app-topbar__item-badge"
+              :title="t('nav.badge.formatAnomalies', '未解决的请求侧异常')"
+            >{{ requestAnomalyCount > 99 ? '99+' : requestAnomalyCount }}</span>
           </a>
           <router-link
             v-else
-            :to="item.path"
+            :to="resolved.path"
             class="app-topbar__dropdown-item"
-            :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
+            :class="{
+              active: isNavItemActive(resolved.path, route.path, item.exact),
+              'app-topbar__dropdown-item--activate': resolved.activateAction,
+            }"
+            :title="resolved.activateAction ? t('nav.item.activateActionTip', '点击前往激活本机') : undefined"
             role="menuitem"
             @click="closeAll()"
           >
             <span class="app-topbar__dropdown-icon" aria-hidden="true">{{ item.icon }}</span>
-            <span>{{ navLabel(item.labelKey, item.label) }}</span>
+            <span>{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction', '激活') : item.label) }}</span>
+            <span
+              v-if="item.path === '/format-anomalies' && requestAnomalyCount > 0"
+              class="app-topbar__item-badge"
+              :title="t('nav.badge.formatAnomalies', '未解决的请求侧异常')"
+            >{{ requestAnomalyCount > 99 ? '99+' : requestAnomalyCount }}</span>
           </router-link>
         </template>
       </div>
@@ -438,6 +402,17 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
   font-weight: 700;
 }
 
+/* 2026-09-04: 未激活时「激活」CTA — 强调色 + 加粗，引导用户先完成激活。
+   与 .active 状态共用主题 token，保证明暗主题一致。 */
+.app-topbar__link--activate {
+  color: var(--kx-primary, var(--accent));
+  font-weight: 700;
+}
+.app-topbar__dropdown-item--activate {
+  color: var(--kx-primary, var(--accent));
+  font-weight: 700;
+}
+
 .app-topbar__group {
   position: relative;
 }
@@ -496,6 +471,22 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
   font-size: 14px;
   flex-shrink: 0;
 }
+/* 2026-09-21: 导航项计数徽标（格式异常监控等）。 */
+.app-topbar__item-badge {
+  margin-left: auto;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bd);
+  color: var(--danger-bd);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
 
 .app-topbar__actions {
   display: flex;
@@ -543,6 +534,31 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
 @keyframes app-topbar-dropdown-enter {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* 2026-09-13 方案 §4.4：移动壳层汉堡按钮（仅 <1024 由 v-if 渲染，桌面不出现）。
+   触摸目标 ≥44px（对齐 responsive-base.css 的移动端兜底口径）。 */
+.app-topbar__hamburger {
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  width: 40px;
+  height: 40px;
+  padding: 0 9px;
+  border: 1px solid var(--kx-border, var(--border));
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  font-family: inherit;
+}
+.app-topbar__hamburger-bar {
+  display: block;
+  width: 100%;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--kx-text, var(--text));
 }
 
 @media (max-width: 768px) {

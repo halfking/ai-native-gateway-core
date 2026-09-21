@@ -96,11 +96,12 @@ type Storage struct {
 }
 
 // NewStorage 构造一个 Storage，使用本地文件系统作为默认存储后端。
-// baseDir 为空时默认 ./data/attachments。
+// baseDir 必须显式提供；为空时直接返回错误，避免静默以 cwd 为锚点
+// 创建 ./data/attachments 把附件写到源码目录里（incident 2026-09-03）。
 // 如果 baseDir 不存在会自动创建（0755）。
 func NewStorage(baseDir string) (*Storage, error) {
 	if baseDir == "" {
-		baseDir = "./data/attachments"
+		return nil, errors.New("attachments: NewStorage requires a non-empty baseDir; set LLM_GATEWAY_ATTACHMENT_DIR or pass an absolute path")
 	}
 	abs, err := filepath.Abs(baseDir)
 	if err != nil {
@@ -165,14 +166,14 @@ func (s *Storage) BaseDir() string {
 	return s.baseDir
 }
 
-// SetBaseDir 热切换存储根目录。dir 为空时默认 ./data/attachments。
+// SetBaseDir 热切换存储根目录。dir 必须显式提供；为空时返回错误。
 // 注意：仅对本地文件系统后端有效，其他后端返回错误。
 func (s *Storage) SetBaseDir(dir string) error {
 	if s == nil {
 		return errors.New("attachments: storage is nil")
 	}
 	if dir == "" {
-		dir = "./data/attachments"
+		return errors.New("attachments: SetBaseDir requires a non-empty dir; set LLM_GATEWAY_ATTACHMENT_DIR or pass an absolute path")
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {

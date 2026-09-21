@@ -123,6 +123,10 @@ type CanonHandlers struct {
 // They must be configured to the same value, or verification will reject
 // every plugin call with 401.
 func registerPluginCanonRoutes(mux *http.ServeMux, secret []byte, h CanonHandlers, opts ...pluginruntime.CanonOption) {
+	registerPluginCanonRoutesWithCapabilities(mux, secret, h, nil, opts...)
+}
+
+func registerPluginCanonRoutesWithCapabilities(mux *http.ServeMux, secret []byte, h CanonHandlers, capabilities *pluginruntime.CapabilityRegistry, opts ...pluginruntime.CanonOption) {
 	// Session dispatch: /sessions, /sessions/{id}, /sessions/{id}/{sub}.
 	// The {sub} segment is "turns", "panorama", or "" (detail). Anything else
 	// 404s rather than falling through.
@@ -189,6 +193,10 @@ func registerPluginCanonRoutes(mux *http.ServeMux, secret []byte, h CanonHandler
 
 	wrappedSession := pluginruntime.VerifyPluginContext(secret, scopedAdminContext(sessionDispatch), opts...)
 	wrappedAnalytics := pluginruntime.VerifyPluginContext(secret, scopedAdminContext(analyticsDispatch), opts...)
+	if capabilities != nil {
+		wrappedSession = pluginruntime.VerifyPluginContext(secret, pluginruntime.RequireRouteCapability(capabilities, scopedAdminContext(sessionDispatch)), opts...)
+		wrappedAnalytics = pluginruntime.VerifyPluginContext(secret, pluginruntime.RequireRouteCapability(capabilities, scopedAdminContext(analyticsDispatch)), opts...)
+	}
 
 	mux.Handle("GET /_gateway/plugin/v1/sessions", wrappedSession)
 	mux.Handle("GET /_gateway/plugin/v1/sessions/{gw_session_id}", wrappedSession)

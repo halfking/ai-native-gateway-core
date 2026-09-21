@@ -1,6 +1,7 @@
 export default {
   title: "Tableau de bord",
   refresh: "Actualiser",
+  modelsSelectedCount: '{n} modèles sélectionnés',  // R50 ModelPicker compact
 tabs: {
     board: 'Board',
     liveStream: 'Flux de requêtes en direct',
@@ -214,6 +215,9 @@ v2: {
       },
 
       tokenFormat: '{p} + {c}',
+      cache: 'Cache',
+      cacheFormat: 'lecture {r} / écriture {w} (taux {pct})',
+      sessionId: 'Session',
     },
     connecting: "Connexion…",
     reconnecting: "Reconnexion…",
@@ -221,7 +225,7 @@ v2: {
     empty: "Aucune requête en temps réel",
 
     emptyWaiting: 'En attente des données du flux de requêtes en direct…',
-    groupByVendor: 'Par fournisseur', groupByProvider: 'Par fournisseur', groupByModel: 'Par modèle',
+    groupByCredential: 'Par identifiant', groupByVendor: 'Par fournisseur', groupByProvider: 'Par fournisseur', groupByModel: 'Par modèle',
     modeSmall: 'Petit',
     modeLarge: 'Grand',
     modeSmallTitle: 'Mode petit : barres verticales, contient plus de requêtes (par défaut)',
@@ -234,7 +238,7 @@ v2: {
     businessTitle: 'Afficher uniquement les vraies requêtes métier',
     probeTitle: 'Afficher uniquement les requêtes de sonde',
     cacheWindow: 'Cache / fenêtre', connectionDetailTitle: 'Cliquer pour les détails de connexion',
-    dimensionVendor: 'Fournisseur', dimensionProvider: 'Fournisseur', dimensionModel: 'Modèle',
+    dimensionCredential: 'Identifiant', dimensionVendor: 'Fournisseur', dimensionProvider: 'Fournisseur', dimensionModel: 'Modèle',
     statusOpen: 'Connecté', statusConnecting: 'Connexion en cours', statusReconnecting: 'Reconnexion',
     statusUnsupported: 'Non pris en charge', statusClosed: 'Déconnecté',
     sseDetailTitle: 'Détails de connexion SSE', sseStatusLabel: 'État de connexion', sseUrlLabel: 'URL SSE',
@@ -281,6 +285,7 @@ v2: {
     filterAllOptions: 'Tous',
     filterEmpty: 'Aucune option disponible',
     filterModel: 'Modèle',
+    filterGroup: 'Filtrer',
     filterProvider: 'Fournisseur',
     filterVendor: 'Vendor',
     filterAgent: 'Client',  // 2026-08-06 aligné avec zh-CN

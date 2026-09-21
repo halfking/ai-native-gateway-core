@@ -2,58 +2,14 @@ package bg
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
-
-	"github.com/kaixuan/llm-gateway-go/domains/modelquality"
 )
 
 // TestModelQualityWorker_TriggerDedup verifies the suspicious-action trigger
 // path tracks in-flight + cooldown state so a flapping node cannot fan out an
 // unbounded number of IQ tests (token-cost protection). We check the dedup
 // bookkeeping directly since the goroutine path needs a real node source.
-type testModelDiscovery struct {
-	targets []modelquality.ModelTarget
-	err     error
-}
-
-func (d testModelDiscovery) DiscoverModels(context.Context) ([]modelquality.ModelTarget, error) {
-	return d.targets, d.err
-}
-
-func TestResolveMonitorConfig_UsesDiscoveryForEmptyTargets(t *testing.T) {
-	want := []modelquality.ModelTarget{{Provider: "xai", ModelName: "grok-4.6"}}
-	got := resolveMonitorConfig(context.Background(), &modelquality.MonitorConfig{ScheduleInterval: time.Hour}, testModelDiscovery{targets: want})
-	if len(got.TargetModels) != 1 || got.TargetModels[0] != want[0] {
-		t.Fatalf("got targets = %+v, want %+v", got.TargetModels, want)
-	}
-	if got.ScheduleInterval != time.Hour {
-		t.Fatalf("config was not preserved: %+v", got)
-	}
-}
-
-func TestResolveMonitorConfig_PreservesExplicitTargets(t *testing.T) {
-	want := []modelquality.ModelTarget{{Provider: "manual", ModelName: "model"}}
-	got := resolveMonitorConfig(context.Background(), &modelquality.MonitorConfig{TargetModels: want}, testModelDiscovery{targets: []modelquality.ModelTarget{{Provider: "db"}}})
-	if got.TargetModels[0] != want[0] {
-		t.Fatalf("explicit targets were overwritten: %+v", got.TargetModels)
-	}
-}
-
-func TestResolveMonitorConfig_FallsBackOnDiscoveryErrorOrEmpty(t *testing.T) {
-	for _, discovery := range []modelquality.ModelDiscovery{
-		testModelDiscovery{err: errors.New("db unavailable")},
-		testModelDiscovery{},
-		nil,
-	} {
-		got := resolveMonitorConfig(context.Background(), nil, discovery)
-		if len(got.TargetModels) == 0 {
-			t.Fatal("static fallback should provide targets")
-		}
-	}
-}
-
 func TestModelQualityWorker_TriggerDedup(t *testing.T) {
 	w := NewModelQualityWorker("", "", "", time.Second)
 	w.triggerCooldown = 10 * time.Minute

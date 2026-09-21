@@ -84,6 +84,12 @@ export interface CredentialCheckResult {
   models_endpoint_resolved: string | null
   models_endpoint_template: string | null
   discovery_strategy: string | null
+  // 2026-09-02: typed models-error kind + redacted preview. When the
+  // upstream returns HTML on /v1/models, this is "non_json_body" and the
+  // UI renders a tailored hint instead of leaking raw "<html>…" into
+  // the credential detail drawer.
+  models_error_kind?: string | null
+  models_error_preview?: string | null
 }
 
 export interface DiagnoseProviderResponse {
@@ -145,6 +151,19 @@ export function toggleProvider(id: number) {
   return req<{ id: number; enabled: boolean }>('PATCH', `/api/providers/${id}/toggle`)
 }
 
+// 2026-08-31: 软删除供应商（DELETE /api/providers/{id}）。
+// 服务端级联将该供应商下所有未删除的凭据置为 status='deleted'，并在
+// providers.deleted_at 上打时间戳。行保留在表里供审计 / FK 完整。
+// 软删除后该供应商不会出现在任何列表与路由中。
+export function deleteProvider(id: number) {
+  return req<{
+    message: string
+    provider_id: number
+    deleted_at: string
+    cascaded_credential_cnt: number
+  }>('DELETE', `/api/providers/${id}`)
+}
+
 export function checkProvider(id: number) {
   return req<{ accepted: boolean; reason: string; run?: { id: number; status: string } }>('POST', `/api/providers/${id}/check`)
 }
@@ -167,7 +186,9 @@ export function probeProviderURL(providerId: number) {
   return req<ProbeURLResult>('POST', `/api/providers/${providerId}/probe-url`)
 }
 
-export type CredentialStatus = 'active' | 'cooling' | 'degraded' | 'quarantine' | 'quota_expired' | 'disabled'
+// 2026-08-31: 增加 'deleted' 终态（migration 627）。前端列表按 status
+// 过滤时不再展示 'deleted' 凭据（服务端 listCredentials 已自动过滤）。
+export type CredentialStatus = 'active' | 'cooling' | 'degraded' | 'quarantine' | 'quota_expired' | 'disabled' | 'deleted'
 
 export interface CredentialQuota {
   id: number
@@ -217,13 +238,21 @@ export interface ProviderCredential {
   state_reason_detail?: string | null
   // 900-series: default probe model (spec §4)
   default_probe_model?: string | null
-  default_probe_model_source?: 'manual' | 'auto:request_log' | 'auto:domestic_random' | 'cleared' | null
+  // Sources: admin pin (manual), shared picker (bg/shared_pick.go),
+  // refresh-time auto-fill (modelcatalog.AutoFillDefaultProbeModel), or
+  // explicitly cleared. Keep in sync with the Go-side writers.
+  default_probe_model_source?: 'manual' | 'auto:request_log' | 'auto:domestic_featured' | 'auto:domestic_random' | 'auto:refresh_latest' | 'cleared' | null
   default_probe_model_picked_at?: string | null
   health_status?: 'unknown' | 'healthy' | 'warning' | 'unreachable'
   health_checked_at?: string | null
   health_source?: 'models' | 'probe' | 'mixed' | 'none' | null
   health_warning_code?: string | null
   health_error?: string | null
+  // 2026-09-02: typed health-error kind. Populated only by the live
+  // /check-health response (CredentialCheckResult) and not by the static
+  // listCredentials payload — operators must click "立即检测" once after a
+  // credential edit for the typed kind to appear next to health_error.
+  health_error_kind?: string | null
   health_latency_ms?: number | null
   health_probe_model?: string | null
   // v0.81: API model-list verification status (null = not yet probed)
@@ -249,6 +278,13 @@ export interface ProviderCredential {
   // Per-credential USD balance (from /api/providers/{id}/credentials
   // detail endpoint). Optional because some legacy list paths omit it.
   balance_usd?: number | string | null
+  // Migration 721 (2026-09-18): balance provenance metadata surfaced by
+  // listCredentials. balance_source='manual' rows are protected from
+  // automatic probe overwrites for 24h.
+  balance_currency?: string | null
+  balance_last_checked_at?: string | null
+  balance_source?: 'manual' | 'api' | null
+  balance_error?: string | null
   quotas: CredentialQuota[]
   quota_summary: CredentialQuotaSummary | null
   // v735: route-side plan type. Drives v_routable_credential_models
@@ -256,6 +292,18 @@ export interface ProviderCredential {
   // /providers/{id} → creds drawer. NULL/empty means "no plan, behaves
   // like 'token'" for routing purposes.
   plan_type?: string | null
+  // migration 701: per-credential balance floors (NULL = disabled; PATCH 0 =
+  // clear). bg/balance_floor_guard pulls a credential below any configured
+  // floor and auto-restores it past the hysteresis band.
+  balance_floor_usd?: number | null
+  quota_floor_tokens?: number | null
+  quota_floor_percent?: number | null
+  // Plan-probe readout written by balance_floor_guard (zhipu/minimax only).
+  plan_quota_kind?: string | null
+  plan_quota_windows?: unknown
+  plan_quota_remaining_tokens?: number | null
+  plan_quota_used_percent?: number | null
+  plan_quota_checked_at?: string | null
 }
 
 export interface CredentialUsage {
@@ -289,7 +337,12 @@ export function addCredential(
 }
 
 export function deleteCredential(providerId: number, credId: number) {
-  return req<void>('DELETE', `/api/providers/${providerId}/credentials/${credId}`)
+  // 2026-08-31: 软删除凭据 → 服务端把 status 翻转为 'deleted'。
+  // 该终态凭据在 listCredentials、listProviders、路由表等所有列表
+  // 中均不出现；model_offers / credential_keys 等子表保留行。
+  return req<{ message: string; credential_id: number; new_status: string }>(
+    'DELETE', `/api/providers/${providerId}/credentials/${credId}`
+  )
 }
 
 export function updateCredential(providerId: number, credId: number, data: Partial<{
@@ -304,6 +357,10 @@ export function updateCredential(providerId: number, credId: number, data: Parti
   plan_type: string | null
   tags: string[]
   notes: string
+  // migration 701: balance-floor guard floors. Omit = no change, 0 = clear.
+  balance_floor_usd: number | null
+  quota_floor_tokens: number | null
+  quota_floor_percent: number | null
 }>) {
   return req<{ message: string }>('PATCH', `/api/providers/${providerId}/credentials/${credId}`, data)
 }
@@ -314,6 +371,75 @@ export function getCredentialUsage(providerId: number, credId: number, days = 7)
 
 export function revealCredentialKey(providerId: number, credId: number) {
   return req<{ credential_id: number; api_key: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/reveal`)
+}
+
+// Migration 721 (2026-09-18): on-demand vendor balance probe behind the
+// credential drawer's "刷新余额" button. GET-only vendor balance API, never
+// consumes tokens. success=false keeps the previous balance_usd and carries
+// the probe error for inline rendering; a 400 means the vendor has no
+// balance endpoint at all (plan vendors report via plan_quota_* instead).
+export interface RefreshBalanceResponse {
+  success: boolean
+  balance_usd?: number
+  balance_currency?: string
+  balance_source?: 'api'
+  balance_checked_at?: string
+  error?: string
+}
+
+export function refreshCredentialBalance(providerId: number, credId: number) {
+  return req<RefreshBalanceResponse>(
+    'POST', `/api/providers/${providerId}/credentials/${credId}/refresh-balance`
+  )
+}
+
+export function revealUnifiedCredentialKey(credId: number) {
+  return req<{ credential_id: number; api_key: string }>('POST', `/api/credentials/${credId}/reveal`)
+}
+
+export interface SetUnifiedCredentialKeyRequest {
+  api_key: string
+}
+
+export function setUnifiedCredentialKey(credId: number, body: SetUnifiedCredentialKeyRequest) {
+  return req<RotateCredentialPrimaryKeyResponse>(
+    'POST',
+    `/api/credentials/${credId}/set-key`,
+    body,
+  )
+}
+
+// 2026-09-02: rotate a credential's primary secret without changing its
+// identity or model bindings. The backend (admin/provider_credential.go
+// rotateCredentialPrimaryKey) requires raw_model_name so it can validate
+// the binding before the swap and queue a probe afterwards.
+//
+// Probe status mirrors the queueCredentialRotationProbe return value:
+//   - "queued"             probe was queued for manual model probing
+//   - "queue_unavailable"  probe queue refused (warned to slog, surfaced to 0)
+//   - "not_configured"     modelProbe pipeline not configured
+// probe_queued is a strict boolean derived from probe_status === "queued".
+export interface RotateCredentialPrimaryKeyRequest {
+  api_key: string
+  raw_model_name: string
+}
+
+export interface RotateCredentialPrimaryKeyResponse {
+  message: string
+  probe_status: string
+  probe_queued: boolean
+}
+
+export function rotateCredentialPrimaryKey(
+  providerId: number,
+  credId: number,
+  body: RotateCredentialPrimaryKeyRequest,
+) {
+  return req<RotateCredentialPrimaryKeyResponse>(
+    'POST',
+    `/api/providers/${providerId}/credentials/${credId}/rotate-primary-key`,
+    body,
+  )
 }
 
 // ── GET helper (was: GET with POST fallback) ─────────────────────────────
@@ -415,6 +541,11 @@ export interface ModelOffer {
   success_rate: number | null
   input_price: number | null
   output_price: number | null
+  unit_price_in_per_1m?: number | null
+  unit_price_out_per_1m?: number | null
+  cache_read_price_per_1m?: number | null
+  cache_write_price_per_1m?: number | null
+  billing_mode?: string | null
   last_seen_at: string | null
   routing_tier: string
   availability_source: string
@@ -572,6 +703,19 @@ export interface ModelOfferSuggestion {
   offer_id: number
   raw_model_name: string
   rule_based: string
+  // 2026-09-10: backend matches the raw name against the standard-model
+  // catalog (vendor-prefix re-join + bounded typo tolerance, e.g.
+  // "cluade/opus-5" → "claude-opus-5", "grok/4.6" → "grok-4.6").
+  // suggested_canonical_id is 0 when no match clears the confidence
+  // threshold.
+  suggested_canonical_id: number
+  matches: Array<{
+    id: number
+    canonical_name: string
+    display_name: string | null
+    family: string | null
+    score: number
+  }>
   canonical_options: Array<{
     id: number
     canonical_name: string
@@ -590,6 +734,10 @@ export function updateModelOffer(
   body: {
     standardized_name?: string | null
     canonical_id?: number | null
+    // 2026-09-10: explicit unlink of the standard model. Needed because
+    // "canonical_id": null is indistinguishable from an omitted field and
+    // the model_offers view trigger masks NULL writes with COALESCE.
+    clear_canonical?: boolean
     // outbound_model_name is the upstream-side model identifier (e.g. a
     // Volcano Ark endpoint ID like "ep-20241227XXXX").  Pass an empty
     // string to clear it (revert to raw_model_name).
@@ -600,6 +748,11 @@ export function updateModelOffer(
     // The backend writes directly to credential_model_bindings
     // (skipping the model_offers view INSTEAD OF UPDATE trigger).
     context_window?: number | null
+    unit_price_in_per_1m?: number | null
+    unit_price_out_per_1m?: number | null
+    cache_read_price_per_1m?: number | null
+    cache_write_price_per_1m?: number | null
+    billing_mode?: string | null
   }
 ) {
   return req<{
@@ -612,6 +765,11 @@ export function updateModelOffer(
     outbound_model_name: string | null
     context_window: number | null
     context_window_override: number | null
+    unit_price_in_per_1m: number | null
+    unit_price_out_per_1m: number | null
+    cache_read_price_per_1m: number | null
+    cache_write_price_per_1m: number | null
+    billing_mode: string | null
   }>('PATCH', `/api/providers/${providerId}/models/${offerId}`, body)
 }
 

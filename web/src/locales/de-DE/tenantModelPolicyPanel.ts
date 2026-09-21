@@ -66,4 +66,5 @@ export default {
     deleteFailed: 'Löschen fehlgeschlagen',
     restoreFailed: 'Wiederherstellen fehlgeschlagen',
   },
+  softDeleteConfirm: 'Richtlinie {name} soft-löschen? (wiederherstellbar)',
 }

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { localeRef } from '../../i18n'
+import { fmtDateTime24h } from '../../i18n/useFormat'
 import { attachmentFilesystemStats, attachmentFilesystemCleanup } from '../../api'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -98,9 +99,7 @@ async function executeCleanup() {
     alert('请填写清理原因')
     return
   }
-  if (!confirm(`确认删除 ${cleanupForm.value.olderThanDays} 天前的文件？\n原因：${cleanupForm.value.reason}`)) {
-    return
-  }
+  if (!(await confirmDialog(t('dataLifecycle.confirmFileCleanup', { days: cleanupForm.value.olderThanDays, reason: cleanupForm.value.reason })))) return
   cleanupLoading.value = true
   try {
     const result = await attachmentFilesystemCleanup({
@@ -126,11 +125,6 @@ function formatBytes(bytes: number): string {
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
-}
-
-function formatDate(dateStr: string | null): string {
-  if (!dateStr) return '-'
-  return new Date(dateStr).toLocaleString(localeRef.value)
 }
 
 onMounted(() => {
@@ -171,7 +165,7 @@ defineExpose({ load })
 
       <div class="stat-card">
         <div class="stat-label">最早文件时间</div>
-        <div class="stat-value-small">{{ formatDate(stats.oldest_file_time) }}</div>
+        <div class="stat-value-small">{{ fmtDateTime24h(stats.oldest_file_time) }}</div>
       </div>
 
       <!-- 磁盘空间统计 -->

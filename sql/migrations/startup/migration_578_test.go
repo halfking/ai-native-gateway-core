@@ -25,7 +25,7 @@ import (
 // would see the new filtered hash disagree with the persisted one until
 // each scope is naturally bumped.
 func TestMigration574FilterScopeHashContract(t *testing.T) {
-	up := string(migrationFile(t, "574_candidate_binding_scope_filter_disabled.sql"))
+	up := string(migrationFile(t, "578_candidate_binding_scope_filter_disabled.sql"))
 
 	for _, want := range []string{
 		"BEGIN;",
@@ -120,7 +120,7 @@ func TestMigration574FilterScopeHashContract(t *testing.T) {
 // the rollback behaviour of 571 (priority hash). The hash self-heals on
 // the next binding write to each scope.
 func TestMigration574FilterScopeHashDownReverts(t *testing.T) {
-	down := string(migrationFile(t, "574_candidate_binding_scope_filter_disabled.down.sql"))
+	down := string(migrationFile(t, "578_candidate_binding_scope_filter_disabled.down.sql"))
 
 	for _, want := range []string{
 		"BEGIN;",

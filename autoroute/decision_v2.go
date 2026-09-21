@@ -4,18 +4,35 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/routingopt"
 )
 
 // DecideV2 是新的决策逻辑，集成了：
 //  1. 会话缓存可用性重校验
 //  2. 调用 RecommendV2 进行候选推荐
 //  3. 改进的审计与日志
+//  4. P2.2 optimizer 插件集成（PreClassify/PostClassify/RecommendModel/RecordFeedback）
 //
 // 通过 Feature Flag 控制是否启用。
 func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiKeyID int, headerProfile string, taskHint TaskType, sessionID string) (*Decision, error) {
+	// F-7: 监控路由决策耗时
+	defer recordDecisionLatency(time.Now())
+
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	// P2.2: attach request metadata so optimizer hooks can read
+	// userID/session/client without changing the interface signatures.
+	if d.optimizer != nil {
+		ctx = routingopt.WithRequestMeta(ctx, routingopt.RequestMeta{
+			UserID:     apiKeyID,
+			SessionID:  sessionID,
+			ClientType: sigs.ClientType,
+		})
+	}
+
 	// 类型断言：获取具体的 *Index 类型以访问 V2 方法
 	idx, ok := d.index.(*Index)
 	if !ok {
@@ -41,7 +58,22 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		// of HitCount happens under a single write lock (Get→HitCount++→Put
 		// raced across concurrent requests on the same session).
 		if cached, ok := d.intentCache.IncrementHit(sessionID); ok {
-			if cached.WorkType != requestedWorkType {
+			// R48: 会话角色变化即身份变化，缓存结论失效重判（仅 flag 开启时）。
+			roleMismatch := d.roleRoutingActive() &&
+				normalizeAgentRole(cached.Role) != normalizeAgentRole(sigs.AgentRole)
+			// R49 修订（2026-09-20 审计 P1）：task_kind 跨轮变化同样失效重判
+			//（与 V1 同款——首轮 kind 的模型被缓存放大会话级固化；旧缓存
+			// Kind 为空时与 unknown 归一同形，纯闲聊会话不误伤）。
+			kindMismatch := d.roleRoutingActive() &&
+				normalizeTaskKind(cached.Kind) != normalizeTaskKind(ClassifyTaskKind(sigs))
+			if roleMismatch || kindMismatch {
+				d.intentCache.Invalidate(sessionID)
+				slog.Info("autoroute.v2: session role/kind changed, reclassifying",
+					"session_id", sessionID,
+					"cached_role", cached.Role,
+					"new_role", sigs.AgentRole,
+				)
+			} else if cached.WorkType != requestedWorkType {
 				d.intentCache.Invalidate(sessionID)
 			} else if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
 				// 新增：验证缓存的模型是否仍可用
@@ -87,6 +119,13 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 							DecidedAt:          time.Now(),
 							RoutingSource:      "session_cache",
 						}
+						// R48: 缓存命中也带角色/任务类型审计字段（flag 开启时）；
+						// 旧缓存缺 kind 时归一为 unknown，保持审计形态一致。
+						if d.roleRoutingActive() {
+							decision.SessionRole = string(normalizeAgentRole(cached.Role))
+							decision.TaskKind = string(normalizeTaskKind(cached.Kind))
+						}
+						d.annotateTreatment(ctx, apiKeyID, decision)
 						d.populateShadow(ctx, sigs, decision)
 						return decision, nil
 					}
@@ -118,6 +157,26 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	// Step 1: 解析 profile
 	profile := d.resolveProfile(ctx, apiKeyID, headerProfile)
 
+	// P2.2: PreClassify plugin hook (enhance signals before classification)
+	if d.optimizer != nil {
+		enhanced, err := d.optimizer.PreClassify(ctx, &sigs)
+		if err != nil {
+			slog.WarnContext(ctx, "optimizer.PreClassify failed, using original signals",
+				"err", err, "api_key_id", apiKeyID)
+		} else if enhanced != nil {
+			// Extract Original signals from the enhanced wrapper.
+			// The interface{} type is used to avoid circular dependency;
+			// real implementation returns *routingopt.EnhancedSignals with GetOriginal() method.
+			if e, ok := enhanced.(interface{ GetOriginal() interface{} }); ok {
+				if orig := e.GetOriginal(); orig != nil {
+					if origSigs, ok := orig.(*ClassificationSignals); ok {
+						sigs = *origSigs
+					}
+				}
+			}
+		}
+	}
+
 	// Step 2: 任务分类
 	cls, err := d.classify(ctx, sigs, taskHint)
 	if err != nil {
@@ -131,6 +190,24 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		slog.Warn("autoroute.v2: classification failed, using default chat",
 			"error", err,
 		)
+	}
+
+	// P2.2: PostClassify plugin hook (adjust confidence after classification)
+	if d.optimizer != nil {
+		adjustedConf, err := d.optimizer.PostClassify(ctx, string(cls.Primary), cls.Confidence)
+		if err != nil {
+			slog.WarnContext(ctx, "optimizer.PostClassify failed, using original confidence",
+				"err", err, "task_type", cls.Primary, "confidence", cls.Confidence)
+		} else {
+			// Clamp adjusted confidence to [0.0, 1.0]
+			if adjustedConf < 0.0 {
+				adjustedConf = 0.0
+			}
+			if adjustedConf > 1.0 {
+				adjustedConf = 1.0
+			}
+			cls.Confidence = adjustedConf
+		}
 	}
 
 	// Step 3: 候选推荐（使用新逻辑）
@@ -147,6 +224,20 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	keepFullCandidateSet := d.workTypeRouteStore != nil &&
 		(d.workTypeRouteStore.HasRoutes(task) || len(requestedWorkType) > 0)
 	if d.overrideStore != nil && len(d.overrideStore.GetPins(task, prof)) > 0 {
+		keepFullCandidateSet = true
+	}
+	// R48: role 路由开启且请求带可路由角色时，偏好模型可能在 top-N 之外，
+	// 需要全候选窗口（与 work-type/pin 同一处理）。
+	// R49 修订（2026-09-20 审计 P1）：门禁交给 SelectLLM 返回值（DB 行对任意
+	// 角色生效，admin 显式给 main 配行可达；详见 V1 同款注释）。
+	roleKind := TaskKind("")
+	rolePrefs := []string(nil)
+	if d.roleRoutingActive() {
+		roleKind = ClassifyTaskKind(sigs)
+		rolePrefs = d.roleLLMRouter.SelectLLM(normalizeAgentRole(sigs.AgentRole), roleKind)
+	}
+	roleRoutingOn := len(rolePrefs) > 0
+	if roleRoutingOn {
 		keepFullCandidateSet = true
 	}
 	if keepFullCandidateSet {
@@ -166,6 +257,11 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		FilterNotes:      &filterReasons,
 	})
 
+	// P2.2: plugin re-ranking. Runs before explicit-default/override so
+	// admin pins and tenant defaults keep precedence over the optimizer.
+	// P2.5: cls/sigs additionally feed the ONNX ML re-ranker's features.
+	recommended = d.recommendWithOptimizer(ctx, recommended, cls, sigs, profile, apiKeyID, sessionID, sigs.ClientType)
+
 	// Step 3a (M2): 路由来源标签。V2 不调用 defaultRoutingStore（explicit_default
 	// 是 V1 的隐式 tag 路径；V2 用 channel-quality routing 取代），所以 V2 的
 	// 来源只有 implicit_tag / override_pin / session_cache 三种。
@@ -184,15 +280,54 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		beforeBoostWinner = recommended[0].Candidate.CanonicalName
 	}
 	tierFailoverModels := []string(nil)
+	// R48 修订（2026-09-20，245 e2e 实测抓到）：role 偏好必须在 work-type
+	// tier 过滤之前算出并并入 tier 豁免名单——applyTierPolicyWithRoutes 的
+	// pinned 参数仅用于过滤豁免（无 pin 提升语义）。不并入则文档化级联
+	// pin > role_route > work_type tier 自相矛盾：tier 配置不含偏好模型时
+	// （实测 worker+solution 的 gpt-5.6-sol 被 glm-5.2 secondary 档滤除）
+	// promoteFirstPresent 找不到偏好，role_route 静默让位。
+	// roleKind/rolePrefs 已在候选窗口展开前算出（R49 修订：门禁即 SelectLLM
+	// 返回值），此处直接复用。
 	if d.workTypeRouteStore != nil {
 		pins := []string(nil)
 		if d.overrideStore != nil {
 			pins = d.overrideStore.GetPins(task, prof)
 		}
 		tierFailoverModels = d.workTypeRouteStore.TierFailoverModelsWithWorkType(recommended, task, requestedWorkType)
-		recommended = d.workTypeRouteStore.ApplyTierPolicyWithWorkType(recommended, task, requestedWorkType, pins)
+		recommended = d.workTypeRouteStore.ApplyTierPolicyWithWorkType(recommended, task, requestedWorkType, append(pins, rolePrefs...))
 	}
 	tierChangedWinner := len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforeBoostWinner
+
+	// Step 3b（R48, 2026-09-20）: role × kind promotion —— work-type tier
+	// policy 之后、pin promote 之前插入，admin pin 仍是最强约束。仅
+	// AUTO_ROLE_ROUTING_ENABLED 开启 + 子代理角色时介入；flag-off / main /
+	// unknown 路径零改动（决策字节级不变）。
+	// R49 修订（2026-09-20 审计 P2）：role_route 判定基准改为 tier 后 winner
+	//（与 V1 的 preRoleWinner 同款）——tier policy 已把 winner 换成 role 偏好
+	// 模型本身时（promoteFirstPresent i==0 空转），功劳属 work_type_route 而
+	// 非 role_route；同输入下 V1/V2 审计标签不再分叉。
+	postTierWinner := ""
+	if len(recommended) > 0 {
+		postTierWinner = recommended[0].Candidate.CanonicalName
+	}
+	roleChangedWinner := false
+	if len(rolePrefs) > 0 {
+		if promoted, hit := promoteFirstPresent(recommended, rolePrefs); hit != "" {
+			recommended = promoted
+			roleChangedWinner = len(recommended) > 0 && recommended[0].Candidate.CanonicalName != postTierWinner
+		}
+	}
+	// R50 修订（F14，2026-09-21 审计）：role 命中翻盘后 tier 恢复计划必须以
+	// 选中模型打头（Decision.TierFailoverModels 契约 "starts with the selected
+	// model"）。tierFailoverModelsWithRoutes 构造时不带豁免臂，role 偏好靠
+	// 豁免入选（被 tier 滤除后复活）的模型整体缺席恢复链——winner 穷尽时
+	// dispatch 换模梯子（handler D5 / PreferredModels）直接跳到 tier 头名，
+	// role 意图在恢复链断裂。这里把 rolePrefs ∩ 候选池按 role 顺序搬到梯子
+	// 头部（winner 天然是首个命中者），tier 计划保序去重随后。计划为空
+	// （无 tier 配置）不强造，维持 recommender 全局重排兜底。
+	if roleChangedWinner && len(tierFailoverModels) > 0 && len(recommended) > 0 {
+		tierFailoverModels = withRoleFailoverHead(tierFailoverModels, rolePrefs, recommended)
+	}
 
 	beforePinWinner := ""
 	if len(recommended) > 0 {
@@ -204,6 +339,8 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	pinChangedWinner := len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforePinWinner
 	if pinChangedWinner {
 		routingSource = "override_pin"
+	} else if roleChangedWinner {
+		routingSource = "role_route"
 	} else if tierChangedWinner || (len(recommended) > 0 && recommended[0].Breakdown.RouteTier != "") {
 		routingSource = "work_type_route"
 	}
@@ -245,7 +382,16 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		DecidedAt:          time.Now(),
 		RoutingSource:      routingSource,
 	}
+	// R48: role 路由审计字段（flag 开启时；无论是否命中提升都记录观察值）。
+	if d.roleRoutingActive() {
+		decision.SessionRole = string(normalizeAgentRole(sigs.AgentRole))
+		decision.TaskKind = string(normalizeTaskKind(roleKind))
+	}
+	d.annotateTreatment(ctx, apiKeyID, decision)
 	d.populateShadow(ctx, sigs, decision)
+
+	// P2.2: fire-and-forget feedback for the learning loop (fresh decisions only).
+	d.recordFeedbackAsync(ctx, decision, apiKeyID, sessionID, sigs.ClientType)
 
 	slog.Info("autoroute.v2: decision made",
 		"chosen_model", decision.ChosenModel,
@@ -277,7 +423,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 
 	// Step 6: 缓存决策
 	if sessionID != "" && d.intentCache != nil {
-		d.intentCache.Put(sessionID, CachedIntent{
+		cachedPut := CachedIntent{
 			TaskType:     decision.TaskType,
 			WorkType:     requestedWorkType,
 			ChosenModel:  decision.ChosenModel,
@@ -285,7 +431,13 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 			Profile:      decision.Profile,
 			Confidence:   decision.Confidence,
 			Classifier:   decision.Classifier,
-		})
+		}
+		// R48: 角色/任务类型随 intent 缓存（flag 开启时），跨轮复用不退化。
+		if d.roleRoutingActive() {
+			cachedPut.Role = normalizeAgentRole(sigs.AgentRole)
+			cachedPut.Kind = normalizeTaskKind(roleKind)
+		}
+		d.intentCache.Put(sessionID, cachedPut)
 	}
 
 	return decision, nil

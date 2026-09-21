@@ -14,7 +14,7 @@ dev `llm.itestu.cn` 仍 502（根因未变：252 nginx vhost `127.0.0.1:11008` �
 | 项 | 2026-08-16 handoff 描述 | 本会话实测 |
 |---|---|---|
 | dev 是否阻断 245 晋级 | "被 dev 端点门禁阻断" | 245 healthz 200 且 version 一致；dev 阻塞不波及 245 |
-| `llm.kxpms.cn` DNS | 未提及 | `115.29.212.252`（同 252 IP），后端 200（vhost 指向 154） |
+| `llm.kxpms.cn` DNS | 未提及 | `<env:HOST_252_IP>`（同 252 IP），后端 200（vhost 指向 154） |
 | 245 是否就绪 | 仅描述为晋级路径 | 当前 `version=1573`，可走 deploy-test dry-run |
 
 ## 4. 任务 B 已落地的客观证据

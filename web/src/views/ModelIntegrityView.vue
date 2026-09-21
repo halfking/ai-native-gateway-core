@@ -7,6 +7,7 @@
 // endpoints). It adds a fingerprint-drift tab, which the format
 // anomalies view has no equivalent for.
 import { useI18n } from 'vue-i18n'
+import { formatDateTime } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { computed, onMounted, ref } from 'vue'
 import {
@@ -108,13 +109,16 @@ function severityClass(severity: string) {
 
 function fmtTime(value?: string) {
   if (!value) return '—'
-  return new Date(value).toLocaleString(localeRef.value, {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
+  return formatDateTime(value, {
+    locale: localeRef.value,
+    options: {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    },
   })
 }
 
@@ -644,7 +648,7 @@ textarea {
   font-size: 13px;
 }
 .table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-hover);
 }
 .empty {
   text-align: center;
@@ -712,7 +716,7 @@ code {
 .modal-mask {
   position: fixed;
   inset: 0;
-  background: rgba(15, 17, 23, 0.78);
+  background: var(--overlay-strong);
   backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
@@ -767,7 +771,7 @@ textarea {
   width: 100%;
   margin-top: 8px;
 }
-@media (max-width: 1200px) {
+@media (max-width: 1024px) {
   .filters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -777,7 +781,7 @@ textarea {
     align-self: end;
   }
 }
-@media (max-width: 900px) {
+@media (max-width: 1024px) {
   .page {
     padding: 14px;
   }

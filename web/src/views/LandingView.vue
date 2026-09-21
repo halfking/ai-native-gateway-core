@@ -235,7 +235,7 @@ function openLogin() {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface-elevated);
-  box-shadow: 0 10px 32px rgba(30, 45, 75, 0.04);
+  box-shadow: 0 10px 32px var(--kx-shadow-sm);
   text-align: left;
 }
 

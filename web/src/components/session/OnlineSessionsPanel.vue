@@ -18,6 +18,7 @@
  * 设计约束：颜色只用 var(--kx-*)；三态（Skeleton / Empty / Error）。
  */
 import { onMounted, ref } from 'vue'
+import { formatDateTime } from '../../utils/datetime'
 import {
   fetchOnlineSessions,
   SessionObsApiError,
@@ -81,9 +82,7 @@ function fmtLatency(ms: number | null | undefined): string {
 
 function fmtTime(iso: string | undefined): string {
   if (!iso) return '—'
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return '—'
-  return d.toLocaleString()
+  return formatDateTime(iso)
 }
 
 function errorText(e: SessionObsApiError | null): string {

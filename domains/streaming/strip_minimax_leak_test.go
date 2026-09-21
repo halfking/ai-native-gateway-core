@@ -7,7 +7,7 @@ import (
 )
 
 func TestStripMinimaxFieldsBody_RemovesLeakedFunctionCalls(t *testing.T) {
-	body := []byte(`{"model":"glm-5.1","choices":[{"message":{"role":"assistant","content":"answer","reasoning_content":"plan\n<function_calls>\n...\n<]minimax[>\n<tool_call>"},"finish_reason":"stop"}]}`)
+	body := []byte(`{"model":"glm-5.1","choices":[{"message":{"role":"assistant","content":"answer","reasoning_content":"plan\n<function_calls>\n...\n<]minimax[>\n<tool_call>\n{\"name\":\"search\"}\n</tool_call>"},"finish_reason":"stop"}]}`)
 
 	got := StripMinimaxFieldsBody(body)
 	if strings.Contains(string(got), "<function_calls>") || strings.Contains(string(got), "<]minimax[>") {
@@ -28,7 +28,7 @@ func TestStripMinimaxFieldsBody_RemovesLeakedFunctionCalls(t *testing.T) {
 }
 
 func TestStripMinimaxFieldsBody_CleansStreamingDelta(t *testing.T) {
-	body := []byte(`{"choices":[{"delta":{"content":"visible","reasoning_content":"<function_calls>internal"}}]}`)
+	body := []byte(`{"choices":[{"delta":{"content":"visible","reasoning_content":"<function_calls>internal\n<tool_call>\n{}\n</tool_call>"}}]}`)
 
 	got := StripMinimaxFieldsBody(body)
 	var response map[string]any
@@ -64,5 +64,19 @@ func TestStripMinimaxFieldsBody_PreservesOrdinaryXMLText(t *testing.T) {
 	got := StripMinimaxFieldsBody(body)
 	if string(got) != string(body) {
 		t.Fatalf("ordinary XML text changed: got %s, want %s", got, body)
+	}
+}
+
+func TestStripMinimaxFieldsBody_PreservesUnclosedFunctionCallsText(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"content":"documentation: <function_calls> is an XML example and continues here"}}]}`)
+
+	got := StripMinimaxFieldsBody(body)
+	var response map[string]any
+	if err := json.Unmarshal(got, &response); err != nil {
+		t.Fatalf("response is invalid JSON: %v", err)
+	}
+	content := response["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)["content"]
+	if content != "documentation: <function_calls> is an XML example and continues here" {
+		t.Fatalf("unclosed marker content changed: got %q", content)
 	}
 }

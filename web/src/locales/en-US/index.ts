@@ -10,6 +10,7 @@ import keys from './keys'
 import requests from './requests'
 import trace from './trace'
 import credentialMonitor from './credentialMonitor'
+import annotation from './annotation'
 import providers from './providers'
 import landing from './landing'
 import dashboard from './dashboard'
@@ -23,6 +24,7 @@ import decisions from './decisions'
 import decisionsView from './decisionsView'
 import auditLog from './auditLog'
 import freePool from './freePool'
+import freeDiscovery from './freeDiscovery'
 import models from './models'
 import pricingManagement from './pricingManagement'
 import standardModelPricing from './standardModelPricing'
@@ -33,7 +35,9 @@ import sessions from './sessions'
 import compression from './compression'
 import examples from './examples'
 import dataLifecycle from './dataLifecycle'
-import tuning from './tuning'
+import turnDigest from './turnDigest'
+import errorVocab from './errorVocab'
+import sessionTimeline from './sessionTimeline'
 import correlations from './correlations'
 import tenantModelPolicyPanel from './tenantModelPolicyPanel'
 import clientConfigDialog from './clientConfigDialog'
@@ -41,7 +45,6 @@ import memoraStatusButton from './memoraStatusButton'
 import slotInfoCard from './slotInfoCard'
 import gatewayApiKeyPicker from './gatewayApiKeyPicker'
 import statusBadge from './statusBadge'
-import tagEditor from './tagEditor'
 import modelCatalogFilterBar from './modelCatalogFilterBar'
 import sixDimScoreBar from './sixDimScoreBar'
 import catalogPanel from './catalogPanel'
@@ -59,6 +62,7 @@ import routingAudit from './routingAudit'
 import routingOverride from './routingOverride'
 import approval from './approval'
 import probeHealth from './probeHealth'
+import errorTrend from './errorTrend'
 import tenantModels from './tenantModels'
 import publicPortal from './public'
 import requestJourneys from './requestJourneys'
@@ -66,6 +70,8 @@ import requestRegistry from './requestRegistry'
 import requestJourneyDetail from './requestJourneyDetail'
 import connectionRegistry from './connectionRegistry'
 import nodeHealthTimeline from './nodeHealthTimeline'
+import proxy from './proxy'
+import requestDetail from './requestDetail'
 
 export default {
   common,
@@ -78,6 +84,7 @@ export default {
   requests,
   trace,
   credentialMonitor,
+  annotation,
   providers,
   landing,
   dashboard,
@@ -91,6 +98,7 @@ export default {
   decisionsView,
   auditLog,
   freePool,
+  freeDiscovery,
   models,
   pricingManagement,
   standardModelPricing,
@@ -101,7 +109,9 @@ export default {
   compression,
   examples,
   dataLifecycle,
-  tuning,
+  turnDigest,
+  errorVocab,
+  sessionTimeline,
   correlations,
   tenantModelPolicyPanel,
   clientConfigDialog,
@@ -109,7 +119,6 @@ export default {
   slotInfoCard,
   gatewayApiKeyPicker,
   statusBadge,
-  tagEditor,
   modelCatalogFilterBar,
   sixDimScoreBar,
   catalogPanel,
@@ -127,6 +136,7 @@ export default {
   routingOverride,
   approval,
   probeHealth,
+  errorTrend,
   tenantModels,
   customer,
   public: publicPortal,
@@ -135,4 +145,6 @@ export default {
   requestJourneyDetail,
   connectionRegistry,
   nodeHealthTimeline,
+  proxy,
+  requestDetail,
 }

@@ -30,6 +30,12 @@ const (
 	// ForwardOutcome.RetryAfter, take priority over the ladder.
 	retryBaseDelay = 5 * time.Second
 	retryMaxDelay  = 120 * time.Second
+
+	// maxScheduleAhead bounds how far in the future a scheduled request
+	// (DueAt) may park in the due heap (v6 G-Ⅱ, 定时请求). Prevents
+	// unbounded parking; the executor maps the rejection to a 4xx family
+	// error so clients can fix the timestamp.
+	maxScheduleAhead = 24 * time.Hour
 )
 
 // Sentinel errors produced by the dispatch pipeline. The executor maps these
@@ -56,6 +62,11 @@ var ErrOverflow = errors.New("dispatch: entry queue full")
 
 // ErrShutdown is returned when Submit is called after the pipeline stopped.
 var ErrShutdown = errors.New("dispatch: pipeline shut down")
+
+// ErrScheduleTooFar is returned by Submit when a scheduled request's DueAt
+// lies beyond maxScheduleAhead (v6 G-Ⅱ). The executor maps it to a
+// client-error kind (4xx), not an upstream failure.
+var ErrScheduleTooFar = errors.New("dispatch: scheduled execution time too far in the future")
 
 // ErrGovernorUnavailable is the strict fail-closed sentinel returned by
 // GovernorBackend / Governor implementations when the backend cannot

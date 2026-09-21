@@ -16,8 +16,8 @@
 ## 方式 A — 从 Git 源码一键部署（开发/内网）
 
 ```bash
-git clone https://github.com/halfking/ai-native-gateway.git
-cd SI-LLM-Gateway   # 或本仓库 llm-gateway-go-cursor
+git clone https://github.com/halfking/ai-native-gateway-core.git
+cd ai-native-gateway-core   # 或本仓库 llm-gateway-go-cursor
 
 # Linux / macOS — 交互向导
 bash deploy/one-click/install.sh

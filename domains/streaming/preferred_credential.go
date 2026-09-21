@@ -12,10 +12,10 @@
 //
 //  1. HTTP header   X-LLMGW-Preferred-Credential: 42
 //  2. JSON body     { "metadata": { "preferred_credential": "42" } }   (OpenAI
-//                   Chat Completions / Responses API — both tolerate unknown
-//                   fields in metadata)
+//     Chat Completions / Responses API — both tolerate unknown
+//     fields in metadata)
 //  3. JSON body     { "metadata": { "preferred_credential": "42" } }   (Anthropic
-//                   Messages — typed *anthropicMeta; extended below)
+//     Messages — typed *anthropicMeta; extended below)
 //
 // SECURITY: This is a routing override. If any client could set it, every
 // caller could blackhole any credential by always selecting the worst one,

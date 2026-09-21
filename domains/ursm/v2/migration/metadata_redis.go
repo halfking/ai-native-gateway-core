@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -90,9 +91,14 @@ func (s *MetadataHash) Read(ctx context.Context) (Metadata, error) {
 	if s.Prefix == "" || s.RDB == nil {
 		return Metadata{}, fmt.Errorf("migration: metadata store: missing prefix/redis client")
 	}
-	values, err := s.RDB.HGetAll(ctx, MetadataKey(s.Prefix)).Result()
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE.
+	// ErrKeyNotFound collapses into the existing empty-metadata return.
+	values, err := redissafe.SafeHGetAll(ctx, s.RDB, MetadataKey(s.Prefix))
 	if err != nil {
-		return Metadata{}, fmt.Errorf("migration: hgetall metadata: %w", err)
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return Metadata{}, nil
+		}
+		return Metadata{}, fmt.Errorf("migration: safe hgetall metadata: %w", err)
 	}
 	if len(values) == 0 {
 		return Metadata{}, nil

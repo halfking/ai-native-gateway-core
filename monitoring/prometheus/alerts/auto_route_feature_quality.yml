@@ -1,0 +1,198 @@
+# Prometheus Alerting Rules for AUTO Route Feature Quality Monitoring
+# Part of: P2.3 - Monitor Feature Distribution and Deduplication Rate
+# Ref: docs/implementation-plans/p2-tasks-auto-route-ml-training.md
+#
+# Privacy: Alerts only expose aggregated metrics, no prompt content.
+#
+# Installation:
+#   1. Copy this file to Prometheus config directory
+#   2. Add to prometheus.yml:
+#      rule_files:
+#        - "alerts/auto_route_feature_quality.yml"
+#   3. Reload Prometheus: kill -HUP <prometheus_pid>
+
+groups:
+  - name: auto_route_feature_quality
+    interval: 5m
+    rules:
+      # Alert 1: Feature concentration > 90% (excluding language which naturally concentrates)
+      # Impact: Model training bias, poor generalization
+      - alert: FeatureConcentration
+        expr: |
+          max by (feature_name, feature_value) (
+            (
+              feature_distribution_stats_percentage{feature_name!="detected_language"}
+            )
+          ) > 90
+        for: 1h
+        labels:
+          severity: warning
+          component: auto_route
+          subsystem: ml_training
+        annotations:
+          summary: "Feature {{ $labels.feature_name }} is over-concentrated"
+          description: |
+            Feature {{ $labels.feature_name }} has value {{ $labels.feature_value }} 
+            with {{ $value }}% concentration (threshold: 90%).
+            This may cause ML model training bias and poor generalization.
+            
+            Action: Review data collection strategy or feature engineering logic.
+          dashboard: "https://grafana.example.com/d/auto-route-feature-quality"
+          runbook: "https://docs.example.com/runbooks/auto-route-structured-features#feature-concentration"
+
+      # Alert 2: Deduplication rate > 50% (more than half are duplicates)
+      # Impact: Wasted storage, biased training data
+      - alert: HighDuplicationRate
+        expr: |
+          dedup_stats_dedup_rate > 50
+        for: 2h
+        labels:
+          severity: warning
+          component: auto_route
+          subsystem: ml_training
+        annotations:
+          summary: "High duplication rate detected"
+          description: |
+            Current deduplication rate is {{ $value }}% (threshold: 50%).
+            More than half of the samples are duplicates based on content_hash.
+            
+            This wastes storage and may bias ML training toward repetitive patterns.
+            
+            Action: 
+              1. Check if content_hash generation is working correctly
+              2. Review top duplicate hashes in dedup_stats table
+              3. Consider implementing request deduplication at ingestion
+          dashboard: "https://grafana.example.com/d/auto-route-feature-quality"
+          runbook: "https://docs.example.com/runbooks/auto-route-structured-features#high-duplication"
+
+      # Alert 3: Feature fill rate < 80% (too many NULL values)
+      # Impact: Incomplete training data, poor model performance
+      - alert: LowFeatureFillRate
+        expr: |
+          min by (feature_name) (
+            feature_quality_metrics_fill_rate_pct
+          ) < 80
+        for: 30m
+        labels:
+          severity: warning
+          component: auto_route
+          subsystem: ml_training
+        annotations:
+          summary: "Feature {{ $labels.feature_name }} has low fill rate"
+          description: |
+            Feature {{ $labels.feature_name }} has only {{ $value }}% fill rate (threshold: 80%).
+            This means more than 20% of samples are missing this feature.
+            
+            Impact: Incomplete training data, reduced model performance.
+            
+            Action:
+              1. Check feature extraction logic in autoroute/structured_features.go
+              2. Review logs for extraction errors
+              3. Verify input data quality (prompt, messages, context)
+          dashboard: "https://grafana.example.com/d/auto-route-feature-quality"
+          runbook: "https://docs.example.com/runbooks/auto-route-structured-features#low-fill-rate"
+
+      # Alert 4: No stats computed for today (worker might be down)
+      # Impact: Loss of monitoring visibility
+      - alert: FeatureStatsWorkerDown
+        expr: |
+          (time() - max(dedup_stats_created_at)) > 7200
+        for: 15m
+        labels:
+          severity: critical
+          component: auto_route
+          subsystem: ml_training
+        annotations:
+          summary: "Feature stats worker appears to be down"
+          description: |
+            No feature statistics have been computed in the last 2 hours.
+            Last stats were created at {{ $value | humanizeTimestamp }}.
+            
+            This likely means the FeatureStatsWorker background job is not running.
+            
+            Action:
+              1. Check if gateway service is running
+              2. Review logs for worker errors
+              3. Verify database connectivity
+              4. Restart gateway service if needed
+          dashboard: "https://grafana.example.com/d/auto-route-feature-quality"
+          runbook: "https://docs.example.com/runbooks/auto-route-structured-features#worker-down"
+
+      # Alert 5: Feature extraction failure spike (>5% NULL for normally-filled features)
+      # Impact: Data quality degradation
+      - alert: FeatureExtractionFailureSpike
+        expr: |
+          (
+            feature_distribution_stats_percentage{feature_value="NULL"}
+            /
+            on(feature_name) group_left
+            avg_over_time(
+              feature_distribution_stats_percentage{feature_value="NULL"}[7d]
+            )
+          ) > 2
+        for: 1h
+        labels:
+          severity: warning
+          component: auto_route
+          subsystem: ml_training
+        annotations:
+          summary: "Feature {{ $labels.feature_name }} extraction failure spike"
+          description: |
+            Feature {{ $labels.feature_name }} NULL percentage is {{ $value }}x higher 
+            than the 7-day average.
+            
+            This indicates a sudden degradation in feature extraction quality.
+            
+            Action:
+              1. Check recent code changes to feature extraction logic
+              2. Review error logs for extraction failures
+              3. Verify input data format changes (API contract changes)
+          dashboard: "https://grafana.example.com/d/auto-route-feature-quality"
+          runbook: "https://docs.example.com/runbooks/auto-route-structured-features#extraction-failure"
+
+      # Alert 6: Language distribution shift (>20% change from 7-day average)
+      # Impact: Possible data source change or bug
+      - alert: LanguageDistributionShift
+        expr: |
+          abs(
+            feature_distribution_stats_percentage{feature_name="detected_language"}
+            -
+            avg_over_time(
+              feature_distribution_stats_percentage{feature_name="detected_language"}[7d]
+            )
+          ) > 20
+        for: 2h
+        labels:
+          severity: info
+          component: auto_route
+          subsystem: ml_training
+        annotations:
+          summary: "Language {{ $labels.feature_value }} distribution shifted"
+          description: |
+            Language {{ $labels.feature_value }} percentage changed by >20% 
+            from the 7-day average.
+            
+            This may indicate:
+              - New user segment or traffic source
+              - Language detection bug
+              - Data source change
+            
+            Action: Review traffic sources and language detection accuracy.
+          dashboard: "https://grafana.example.com/d/auto-route-feature-quality"
+          runbook: "https://docs.example.com/runbooks/auto-route-structured-features#distribution-shift"
+
+# Prometheus Scrape Config Example (add to prometheus.yml):
+#
+# scrape_configs:
+#   - job_name: 'llm-gateway-feature-stats'
+#     scrape_interval: 1m
+#     static_configs:
+#       - targets: ['localhost:9090']
+#     metric_relabel_configs:
+#       # Expose feature_distribution_stats as metrics
+#       - source_labels: [__name__]
+#         regex: 'pg_stat_user_tables.*'
+#         action: drop
+#
+# Note: Actual metric exposition requires a PostgreSQL exporter or custom exporter.
+# For now, alerts can query PostgreSQL directly via Grafana datasource.

@@ -37,6 +37,9 @@ func PlatformSpecs() []*Spec {
 	// 2026-08-07: V2 session read-path master switch (docs/omni-ref3 A1).
 	// Platform-scoped, default on, kill-switch via admin/platform settings.
 	out = append(out, SessionsV2CompressionPlatformSpecs()...)
+	// 2026-09-08: 会话摘要 per-turn digest 输入层（24h 审计第二轮 B#4）。
+	// Platform-scoped, default off（改变摘要输入即改变线上摘要输出，显式开启）。
+	out = append(out, SessionsSummaryPerTurnDigestPlatformSpecs()...)
 	// 2026-08-11: V2 多层队列调度（模型/凭据队列 + 并发模式削峰 + 分层故障转移）。
 	out = append(out, DispatchSpecs()...)
 	// 2026-08-17: per-credential, per-client quota enforcement (FP-slot + concurrency).
@@ -47,7 +50,8 @@ func PlatformSpecs() []*Spec {
 	// out = append(out, CredentialClientQuotaSpecs()...)
 	// 2026-08-20: 项目归属（LLM 推断）平台级主开关，默认关闭。
 	out = append(out, ProjectAttributionSpecs()...)
-	// 2026-08-24: gateway prompt budget, hot-reloadable through admin settings.
+	// Gateway admission controls are platform-scoped and must be registered so
+	// settings_kv values can override the environment fallback.
 	out = append(out, GatewaySpecs()...)
 	return out
 }

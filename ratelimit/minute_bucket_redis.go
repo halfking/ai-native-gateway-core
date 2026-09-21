@@ -59,6 +59,10 @@ return 1
 `)
 
 func (l *RedisLimiter) admitRPMRedis(ctx context.Context, keyID, limit int, notify func(AdmissionResult)) (AdmissionResult, error) {
+	return l.admitRPMRedisWithBudget(ctx, keyID, limit, 0, notify)
+}
+
+func (l *RedisLimiter) admitRPMRedisWithBudget(ctx context.Context, keyID, limit int, maxWait time.Duration, notify func(AdmissionResult)) (AdmissionResult, error) {
 	if limit <= 0 {
 		return AdmissionResult{Admitted: true}, nil
 	}
@@ -84,6 +88,19 @@ func (l *RedisLimiter) admitRPMRedis(ctx context.Context, keyID, limit int, noti
 		return result, ErrMinuteBucketFull
 	case 2:
 		result.Waiting = true
+		// Budget check: position-th waiter is admitted at ~ceil(position/limit)
+		// minute boundaries from now (worst case: full window to next bucket,
+		// then one window per `limit` queue slots). Reject fast when the
+		// estimate exceeds the caller's remaining budget so the request does
+		// not burn its whole upstream timeout waiting in the queue.
+		windowsAhead := (result.Position + limit - 1) / limit
+		estWait := time.Until(time.Unix((time.Now().Unix()/60+1)*60, 0)) +
+			time.Duration(windowsAhead-1)*time.Minute
+		result.EstimatedWaitSec = int(estWait.Round(time.Second) / time.Second)
+		if maxWait > 0 && estWait > maxWait {
+			_, _ = minuteBucketCancelScript.Run(context.Background(), l.client, []string{queueKey}, token).Result()
+			return result, ErrQueueBudgetExceeded
+		}
 		if notify != nil {
 			notify(result)
 		}

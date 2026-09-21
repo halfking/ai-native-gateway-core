@@ -58,7 +58,35 @@ export default {
   input: {
     placeholder: 'メッセージを入力…（Enter で送信、Shift+Enter で改行）',
     send: '送信',
+    stop: 'Stop',
+    waitingChat: 'Waiting for full reply…',
     sending: '生成中…',
+  },
+
+  mode: {
+    label: 'Response mode',
+    stream: 'Stream',
+    chat: 'Chat',
+    badgeStream: 'Stream',
+    badgeChat: 'Chat',
+  },
+  params: {
+    title: 'Model parameters',
+    open: 'Params',
+    nextTurnHint: 'Parameter changes apply to the next turn.',
+    systemPrompt: 'System prompt',
+    systemPromptPlaceholder: 'Set role, tone, and constraints…',
+    temperature: 'Temperature',
+    maxTokens: 'Max Tokens',
+    topP: 'Top P',
+    presencePenalty: 'Presence Penalty',
+    frequencyPenalty: 'Frequency Penalty',
+    stop: 'Stop sequences',
+    stopPlaceholder: 'Comma-separated stop strings',
+    showAdvanced: 'Show advanced',
+    hideAdvanced: 'Hide advanced',
+    reset: 'Reset defaults',
+    done: 'Done',
   },
   modal: {
     summaryTitle: 'セッション要約',
@@ -89,4 +117,6 @@ export default {
   sending: '生成中…',
   send: '送信',
   copySummary: '要約をコピー',
+  suggestStream: 'Timed out or waited too long — switch back to streaming mode.',
+  aborted: 'Generation stopped',
 }

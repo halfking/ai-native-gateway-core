@@ -2,7 +2,9 @@ package handoff
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,10 +12,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 )
 
-// stubSettings implements SettingsGetter.
+func TestHandoffSchemaMismatchOnlyMatchesUndefinedColumn(t *testing.T) {
+	if !handoffSchemaMismatch(&pgconn.PgError{Code: "42703", Message: `column "session_key" does not exist`}) {
+		t.Fatal("undefined-column PostgreSQL error should trigger schema mismatch handling")
+	}
+	for _, err := range []error{
+		&pgconn.PgError{Code: "42501", Message: "permission denied"},
+		&pgconn.PgError{Code: "42P01", Message: "relation does not exist"},
+		sql.ErrConnDone,
+		errors.New("connection reset"),
+	} {
+		if handoffSchemaMismatch(err) {
+			t.Fatalf("error %v should not trigger schema mismatch handling", err)
+		}
+	}
+}
+
 type stubSettings struct {
 	mu     sync.Mutex
 	values map[string]any

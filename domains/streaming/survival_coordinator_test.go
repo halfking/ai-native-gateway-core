@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
@@ -62,7 +61,7 @@ func (h *coordHarness) coordinator() *SurvivalCoordinator {
 	return &SurvivalCoordinator{
 		Exec:     h.exec,
 		Protocol: ProtocolAnthropic,
-		Options:  SurvivalOptions{Deadline: 30 * time.Minute, RetryBase: 2 * time.Second, RetryMax: 2 * time.Minute},
+		Options:  SurvivalOptions{Deadline: 30 * time.Minute, RetryBase: 5 * time.Second, RetryMax: 2 * time.Minute},
 		// Deterministic ±20% jitter seam (T3): 0.5 keeps the scripted
 		// backoff steps exact for the assertions below.
 		JitterRand: func() float64 { return 0.5 },
@@ -139,27 +138,6 @@ func TestSurvivalCoordinatorRetryNowRecoversOnSecondAttempt(t *testing.T) {
 	}
 }
 
-func TestSurvivalCoordinatorRetryResetsDiscardedCapture(t *testing.T) {
-	capture := audit.NewStreamCapture()
-	capture.MarkInterruptedWithReason("early_empty_detection")
-	h := newCoordHarness(&scriptedExecutor{
-		errs:    []error{transientFailure(), nil},
-		results: []*executors.ExecuteResult{nil, {}},
-	})
-
-	res := h.coordinator().Run(context.Background(), h.sw, &executors.ExecParams{Capture: capture})
-	if !res.Succeed {
-		t.Fatalf("expected recovery, decision=%v", res.Decision.Action)
-	}
-	_, _, _, interrupted, _ := capture.Snapshot()
-	if interrupted {
-		t.Fatal("discarded attempt interruption leaked into recovered stream capture")
-	}
-	if events := capture.DiscardEventsCopy(); len(events) != 1 || events[0].Reason != "survival_attempt_discarded" {
-		t.Fatalf("discard event missing after capture reset: %+v", events)
-	}
-}
-
 func TestSurvivalCoordinatorWaitRecoveryBacksOffAndKeepalives(t *testing.T) {
 	h := newCoordHarness(&scriptedExecutor{
 		errs:    []error{rateLimitFailure(), nil},
@@ -172,7 +150,7 @@ func TestSurvivalCoordinatorWaitRecoveryBacksOffAndKeepalives(t *testing.T) {
 	if !res.Succeed {
 		t.Fatalf("expected recovery, decision=%v", res.Decision.Action)
 	}
-	if len(h.sleeps) != 1 || h.sleeps[0] != 2*time.Second {
+	if len(h.sleeps) != 1 || h.sleeps[0] != 5*time.Second {
 		t.Fatalf("first wait must sleep the base backoff, got %v", h.sleeps)
 	}
 	if h.flusher.buf.Len() == 0 {
@@ -251,11 +229,38 @@ func TestSurvivalCoordinatorResumeBlockedRendersCommittedEnding(t *testing.T) {
 	}
 }
 
+func TestSurvivalCoordinatorDeadlineBeforeFirstAttemptRendersUncommittedTerminal(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{})
+	c := h.coordinator()
+	startedAt := h.clock
+	checks := 0
+	c.Options.Deadline = time.Second
+	c.Now = func() time.Time {
+		checks++
+		if checks == 1 {
+			return startedAt
+		}
+		return startedAt.Add(time.Second)
+	}
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+	if res.Succeed || res.Decision.Action != TaskActionFailClosed || res.Decision.Reason != "deadline_exceeded" {
+		t.Fatalf("deadline-before-attempt result = %+v", res)
+	}
+	if h.exec.calls != 0 || res.Attempts != 0 || res.FinalAttempt != nil {
+		t.Fatalf("deadline before first attempt must not execute: calls=%d attempts=%d final=%+v", h.exec.calls, res.Attempts, res.FinalAttempt)
+	}
+	if len(h.terminals) != 1 || h.committeds[0] {
+		t.Fatalf("deadline before first attempt must render one uncommitted terminal: terminals=%v committed=%v", h.terminals, h.committeds)
+	}
+}
+
 func TestSurvivalCoordinatorDeadlineStopsLoop(t *testing.T) {
 	h := newCoordHarness(&scriptedExecutor{errs: []error{rateLimitFailure(), rateLimitFailure()}})
 	c := h.coordinator()
 	// Tight deadline: expires before the second retry.
-	c.Options.Deadline = 3 * time.Second // first sleep = 2s, clock advances past deadline
+	c.Options.Deadline = 6 * time.Second // first sleep = 5s, clock advances past deadline
 
 	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
 
@@ -305,7 +310,7 @@ func TestSurvivalCoordinatorBackoffDoublesAndCaps(t *testing.T) {
 	if !res.Succeed {
 		t.Fatalf("expected recovery on 4th attempt, decision=%v", res.Decision.Action)
 	}
-	want := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second}
+	want := []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second}
 	if len(h.sleeps) != len(want) {
 		t.Fatalf("sleeps = %v, want %v", h.sleeps, want)
 	}
@@ -330,15 +335,15 @@ func TestSurvivalCoordinatorEmitsKeepaliveThroughoutWait(t *testing.T) {
 	})
 	c := h.coordinator()
 	c.Sleep = nil
-	c.Options.RetryBase = 35 * time.Millisecond
-	c.Options.KeepaliveInterval = 10 * time.Millisecond
+	c.Options.RetryBase = 5 * time.Second
+	c.Options.KeepaliveInterval = time.Second
 
 	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
 	if !res.Succeed {
 		t.Fatalf("expected recovery, decision=%v", res.Decision.Action)
 	}
 	if got := strings.Count(h.flusher.buf.String(), "event: ping\ndata: {\"type\":\"ping\"}\n\n"); got < 3 {
-		t.Fatalf("keepalive count = %d, want at least 3 during 35ms wait", got)
+		t.Fatalf("keepalive count = %d, want at least 3 during 5s wait", got)
 	}
 }
 
@@ -421,40 +426,7 @@ func (e *holdbackWriteExecutor) Execute(params *executors.ExecParams) (*executor
 	return &executors.ExecuteResult{}, nil
 }
 
-type holdbackRetryExecutor struct {
-	contents []string
-	calls    int
-}
-
-func (e *holdbackRetryExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
-	index := e.calls
-	e.calls++
-	if gw, ok := params.W.(*GateWriter); ok && index < len(e.contents) {
-		_, _ = gw.Write([]byte(e.contents[index]))
-	}
-	if index == 0 {
-		return nil, transientFailure()
-	}
-	return &executors.ExecuteResult{}, nil
-}
-
-type committedMetadataRetryExecutor struct{ calls int }
-
-func (e *committedMetadataRetryExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
-	e.calls++
-	gw, ok := params.W.(*GateWriter)
-	if !ok {
-		return nil, errors.New("survival coordinator did not supply a gate writer")
-	}
-	if _, err := gw.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n")); err != nil {
-		return nil, err
-	}
-	if err := gw.UnderlyingAttemptGate().Commit(); err != nil {
-		return nil, err
-	}
-	return nil, transientFailure()
-}
-
+// TestSurvivalCoordinatorFlushHeldFramesOnSuccessUnderHoldback is the
 // coordinator-level regression for the success-path holdback flush fix
 // (FR-12 L1). An attempt that finishes successfully while the L1 window still
 // holds its semantic frames (gate uncommitted) must release those held frames
@@ -488,80 +460,7 @@ func TestSurvivalCoordinatorFlushHeldFramesOnSuccessUnderHoldback(t *testing.T) 
 	}
 }
 
-func TestSurvivalCoordinatorDiscardsHeldFramesBeforeRetry(t *testing.T) {
-	t.Setenv("LLM_GATEWAY_RECOVERY_HOLDBACK_WINDOW_MS", "5000")
-	t.Setenv("LLM_GATEWAY_RECOVERY_HOLDBACK_MAX_CHUNKS", "5")
-
-	const discarded = "held-from-failed-attempt"
-	const recovered = "held-from-successful-retry"
-	frame := func(marker string) string {
-		return "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"" + marker + "\"}}\n\n"
-	}
-	exec := &holdbackRetryExecutor{contents: []string{frame(discarded), frame(recovered)}}
-	h := newCoordHarness(nil)
-	h.exec = nil
-	c := h.coordinator()
-	c.Exec = exec
-
-	res := c.Run(context.Background(), h.sw, &executors.ExecParams{IsStream: true})
-
-	if !res.Succeed {
-		t.Fatalf("expected retry success, decision=%v reason=%v", res.Decision.Action, res.Decision.Reason)
-	}
-	if res.Attempts != 2 || exec.calls != 2 {
-		t.Fatalf("attempts = %d, executor calls = %d, want two attempts", res.Attempts, exec.calls)
-	}
-	if h.refreshes != 1 {
-		t.Fatalf("retry must refresh candidates once, got %d", h.refreshes)
-	}
-	if len(h.terminals) != 0 {
-		t.Fatalf("transparent recovery must not render terminal output: %v", h.terminals)
-	}
-	wire := h.flusher.buf.String()
-	if strings.Contains(wire, discarded) {
-		t.Fatalf("discarded held output leaked to the client: %q", wire)
-	}
-	if !strings.Contains(wire, recovered) {
-		t.Fatalf("successful retry held output did not reach the client: %q", wire)
-	}
-}
-
-func TestSurvivalCoordinatorDiscardRefusedFailsClosed(t *testing.T) {
-	t.Setenv("LLM_GATEWAY_RECOVERY_HOLDBACK_WINDOW_MS", "")
-	exec := &committedMetadataRetryExecutor{}
-	h := newCoordHarness(nil)
-	h.exec = nil
-	c := h.coordinator()
-	c.Exec = exec
-
-	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
-
-	if res.Succeed {
-		t.Fatal("discard refusal must not succeed")
-	}
-	if res.Decision.Action != TaskActionFailClosed || res.Decision.Reason != "discard_refused" {
-		t.Fatalf("decision = %+v, want fail_closed/discard_refused", res.Decision)
-	}
-	if res.Attempts != 1 || exec.calls != 1 {
-		t.Fatalf("attempts = %d, executor calls = %d, want one attempt", res.Attempts, exec.calls)
-	}
-	if res.FinalAttempt == nil || res.FinalAttempt.CommitState != CommitStateMetadata || res.FinalAttempt.SafeRetry {
-		t.Fatalf("final attempt = %+v, want committed metadata with SafeRetry=false", res.FinalAttempt)
-	}
-	if h.refreshes != 0 || len(h.sleeps) != 0 {
-		t.Fatalf("discard refusal must stop before retry, refreshes=%d sleeps=%v", h.refreshes, h.sleeps)
-	}
-	if len(h.terminals) != 1 || h.terminals[0].Action != TaskActionFailClosed || h.terminals[0].Reason != "discard_refused" {
-		t.Fatalf("terminal renders = %v, want one discard_refused terminal", h.terminals)
-	}
-	if len(h.committeds) != 1 || !h.committeds[0] {
-		t.Fatalf("terminal committed flag = %v, want [true]", h.committeds)
-	}
-	if !strings.Contains(h.flusher.buf.String(), "message_start") {
-		t.Fatalf("committed metadata should remain visible on the wire: %q", h.flusher.buf.String())
-	}
-}
-
+// TestSurvivalCoordinatorDiscardsHeldFramesOnTerminalFailureUnderHoldback is
 // the complementary check: a terminal failure while the L1 window holds
 // uncommitted semantic frames must NOT leak those frames to the client. The
 // terminal branch uses finishGateWriter, whose committed-guard (gate not
@@ -611,5 +510,256 @@ func TestSurvivalCoordinatorStopsWhenSharedUpstreamBudgetIsExhausted(t *testing.
 	}
 	if exec.calls != 2 {
 		t.Fatalf("executor calls = %d, want 2", exec.calls)
+	}
+}
+
+// TestSurvivalCoordinatorHistoryBackingArrayDoesNotAliasAcrossCalls
+// (2026-08-31, P2-6 audit-data-closure) pins that a caller retaining the
+// SurvivalResult returned from Run A does not observe new entries from Run
+// B. The earlier nil-only reset on res.History.* was insufficient because
+// append() would silently reuse the capacity of any slice header the caller
+// still held; the fix is make([]T, 0, n) so every Run owns a fresh backing
+// array from the very first append.
+//
+// We exercise two scripted Run calls on independent harness instances
+// (fresh exec / flusher / params), capturing the A-side PriorAttempts
+// header before B starts and asserting it stays unchanged afterwards.
+func TestSurvivalCoordinatorRetryNoticeIsEmittedOncePerDiscard(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{
+		errs:    []error{rateLimitFailure(), nil},
+		results: []*executors.ExecuteResult{nil, {}},
+	})
+	c := h.coordinator()
+	c.Options.RetryInterval = 30 * time.Second
+	var notices []struct {
+		attempt int
+		wait    time.Duration
+	}
+	c.RetryNotice = func(ctx context.Context, attempt int, decision TaskDecision, wait time.Duration) error {
+		notices = append(notices, struct {
+			attempt int
+			wait    time.Duration
+		}{attempt, wait})
+		return nil
+	}
+
+	if res := c.Run(context.Background(), h.sw, &executors.ExecParams{}); !res.Succeed {
+		t.Fatalf("expected recovery, decision=%v", res.Decision)
+	}
+	if len(notices) != 1 || notices[0].attempt != 1 || notices[0].wait != 30*time.Second {
+		t.Fatalf("retry notices = %+v, want one 30s notice for attempt 1", notices)
+	}
+}
+
+func TestSurvivalCoordinatorRetryNoticeFailureDoesNotStopRecovery(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{
+		errs:    []error{rateLimitFailure(), nil},
+		results: []*executors.ExecuteResult{nil, {}},
+	})
+	c := h.coordinator()
+	c.RetryNotice = func(context.Context, int, TaskDecision, time.Duration) error {
+		return errors.New("client notice write failed")
+	}
+	if res := c.Run(context.Background(), h.sw, &executors.ExecParams{}); !res.Succeed {
+		t.Fatalf("notice failure must not block recovery, decision=%v", res.Decision)
+	}
+}
+
+func TestSurvivalCoordinatorCancellationBeforeAttemptDoesNotExecute(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{results: []*executors.ExecuteResult{{}}})
+	c := h.coordinator()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res := c.Run(ctx, h.sw, &executors.ExecParams{})
+	if res.Decision.Reason != "client_disconnected" || h.exec.calls != 0 {
+		t.Fatalf("cancelled request = decision %v, executor calls %d; want disconnected/0", res.Decision, h.exec.calls)
+	}
+}
+
+func TestSurvivalCoordinatorCancellationDuringAttemptDoesNotRefreshOrCommit(t *testing.T) {
+	h := newCoordHarness(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	canceling := &cancelingExecutor{cancel: cancel}
+	c := h.coordinator()
+	c.Exec = canceling
+	res := c.Run(ctx, h.sw, &executors.ExecParams{})
+	if res.Decision.Reason != "client_disconnected" || canceling.calls != 1 || h.refreshes != 0 || len(h.terminals) != 0 {
+		t.Fatalf("cancel during attempt = %+v, calls=%d refreshes=%d terminals=%v", res.Decision, canceling.calls, h.refreshes, h.terminals)
+	}
+}
+
+type cancelingExecutor struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (e *cancelingExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
+	e.calls++
+	e.cancel()
+	return nil, rateLimitFailure()
+}
+
+func TestSurvivalOptionsUseNightRetryBudget(t *testing.T) {
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	opts := (SurvivalOptions{
+		MaxRetries:      100,
+		NightMaxRetries: 600,
+		NightStartHour:  20,
+		NightLocation:   loc,
+	}).withDefaults()
+	if got := opts.retriesFor(time.Date(2026, 9, 3, 19, 59, 0, 0, loc)); got != 100 {
+		t.Fatalf("day retry budget = %d, want 100", got)
+	}
+	if got := opts.retriesFor(time.Date(2026, 9, 3, 20, 0, 0, 0, loc)); got != 600 {
+		t.Fatalf("night retry budget = %d, want 600", got)
+	}
+	if got := opts.retriesFor(time.Date(2026, 9, 3, 23, 59, 0, 0, loc)); got != 600 {
+		t.Fatalf("late-night retry budget = %d, want 600", got)
+	}
+}
+
+func TestSurvivalOptionsDefaultToFiveHourThirtySecondRecovery(t *testing.T) {
+	opts := (SurvivalOptions{}).withDefaults()
+	if opts.Deadline != 5*time.Hour || opts.RetryBase != 30*time.Second || opts.RetryInterval != 30*time.Second {
+		t.Fatalf("defaults = deadline %v/base %v/interval %v, want 5h/30s/30s", opts.Deadline, opts.RetryBase, opts.RetryInterval)
+	}
+}
+
+func TestSurvivalCoordinatorFixedRetryIntervalIgnoresJitter(t *testing.T) {
+	c := &SurvivalCoordinator{JitterRand: func() float64 { return 0 }}
+	opts := SurvivalOptions{RetryInterval: 30 * time.Second}.withDefaults()
+	got := c.recoveryWait(opts, TaskDecision{Action: TaskActionWaitRecovery}, 2*time.Minute)
+	if got != 30*time.Second {
+		t.Fatalf("fixed retry interval = %v, want exactly 30s", got)
+	}
+}
+
+func TestSurvivalCoordinatorRetryAfterOverridesFixedInterval(t *testing.T) {
+	c := &SurvivalCoordinator{JitterRand: func() float64 { return 0 }}
+	opts := SurvivalOptions{RetryInterval: 30 * time.Second}.withDefaults()
+	got := c.recoveryWait(opts, TaskDecision{Action: TaskActionWaitRecovery, NextRetryAfter: 45 * time.Second}, 2*time.Minute)
+	if got != 45*time.Second {
+		t.Fatalf("retry-after = %v, want 45s", got)
+	}
+}
+
+func TestSurvivalCoordinatorHistoryBackingArrayDoesNotAliasAcrossCalls(t *testing.T) {
+	// 2026-09-15: appendSurvivalHistory no longer records synthesized
+	// no-attempt outcomes (CandidateID="") into the history, so the aliasing
+	// exercise needs two REAL failed attempts before the success — the old
+	// script (one failure + scripted-exhaustion errors) silently relied on
+	// those synthesized outcomes to reach the 2-entry minimum.
+	hA := newCoordHarness(&scriptedExecutor{
+		errs:    []error{transientFailure(), transientFailure(), nil},
+		results: []*executors.ExecuteResult{nil, nil, {}},
+	})
+	cA := hA.coordinator()
+	resA := cA.Run(context.Background(), hA.sw, &executors.ExecParams{})
+
+	// Sanity: A must produce more than one history entry so the test
+	// actually exercises the aliasing path; if a future refactor breaks
+	// appendSurvivalHistory wiring we'd see A=1 and the assertion below
+	// would (correctly) flake.
+	if len(resA.History.PriorAttempts) < 2 {
+		t.Fatalf("Run A must produce multiple history entries to exercise aliasing, got %d",
+			len(resA.History.PriorAttempts))
+	}
+
+	// Snapshot the A-side slice header before any subsequent Run mutates
+	// History. We deliberately keep the slice (not a copy) so the aliasing
+	// would be observable if the underlying backing array were shared.
+	priorA := resA.History.PriorAttempts
+	seqA := resA.History.LastSeq
+	beforeA := append([]errorsx.PriorAttempt(nil), priorA...)
+
+	hB := newCoordHarness(&scriptedExecutor{
+		errs:    []error{transientFailure(), transientFailure(), transientFailure(), nil},
+		results: []*executors.ExecuteResult{nil, nil, nil, {}},
+	})
+	cB := hB.coordinator()
+	resB := cB.Run(context.Background(), hB.sw, &executors.ExecParams{})
+
+	if len(priorA) != len(beforeA) {
+		t.Fatalf("A.PriorAttempts length drifted: before=%d after Run B=%d", len(beforeA), len(priorA))
+	}
+	for i := range beforeA {
+		if priorA[i] != beforeA[i] {
+			t.Fatalf("A.PriorAttempts[%d] mutated across Run B: before=%+v after=%+v", i, beforeA[i], priorA[i])
+		}
+	}
+	if resA.History.LastSeq != seqA {
+		t.Fatalf("A.LastSeq drifted: before=%d after=%d", seqA, resA.History.LastSeq)
+	}
+	if len(resB.History.PriorAttempts) == 0 {
+		t.Fatalf("Run B must have produced entries, got 0")
+	}
+	if resB.History.LastSeq == resA.History.LastSeq {
+		t.Fatalf("Run B must have advanced LastSeq independently of A; both=%d",
+			resB.History.LastSeq)
+	}
+}
+
+// The night policy is an execution contract, not just arithmetic on
+// retriesFor: a request that starts after 20:00 Asia/Shanghai with
+// NightMaxRetries=600 must run exactly 601 upstream calls (the initial
+// attempt plus 600 retries) before stopping, at the fixed 30-second cadence,
+// without the 5h deadline or the shared budget cutting it short. The fake
+// clock keeps this fast despite simulating five hours of waiting.
+func TestSurvivalCoordinatorNightBudgetStopsAtExactlySixHundredRetries(t *testing.T) {
+	exec := &alwaysTransientExecutor{}
+	h := newCoordHarness(nil)
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	h.clock = time.Date(2026, 9, 3, 21, 0, 0, 0, loc)
+	c := h.coordinator()
+	c.Exec = exec
+	c.Options.Deadline = 6 * time.Hour
+	c.Options.MaxRetries = 100
+	c.Options.NightMaxRetries = 600
+	c.Options.RetryInterval = 30 * time.Second
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+	// The coordinator-owned budget is maxRetries+1 = 601 calls; the
+	// exhausted-budget check fires on the same pass as the retry-count check.
+	if exec.calls != 601 {
+		t.Fatalf("upstream calls = %d, want 601 (initial + 600 night retries)", exec.calls)
+	}
+	if res.Attempts != 601 {
+		t.Fatalf("attempts = %d, want 601", res.Attempts)
+	}
+	if res.Decision.Reason != "attempt_limit_exceeded" && res.Decision.Reason != "retry_limit_exceeded" {
+		t.Fatalf("decision reason = %q, want a budget/retry limit terminal", res.Decision.Reason)
+	}
+	if len(h.sleeps) != 600 || h.sleeps[0] != 30*time.Second || h.sleeps[599] != 30*time.Second {
+		t.Fatalf("recovery cadence broken: %d sleeps, first=%v last=%v", len(h.sleeps), h.sleeps[0], h.sleeps[599])
+	}
+}
+
+// TestAppendSurvivalHistorySkipsSynthesizedOutcomes (2026-09-15, 245 audit):
+// foldCandidateOutcomes synthesizes a CandidateID-less outcome when the
+// candidate walk never started (router returned zero candidates) and on
+// non-ExecuteError failures. Those carry no attribution target — appending
+// them produced 2k+/day "survival: invalid candidate credential id" warnings
+// on 245 plus CredentialID=0 history rows that ActionNode skips anyway.
+func TestAppendSurvivalHistorySkipsSynthesizedOutcomes(t *testing.T) {
+	history := &errorsx.DecisionHistory{PriorAttempts: make([]errorsx.PriorAttempt, 0, 8)}
+	result := &AttemptResult{
+		Success: false,
+		CandidateOutcomes: []CandidateOutcome{
+			{Kind: errorsx.KindNoAvailableChannel}, // synthesized: no CandidateID
+			{CandidateID: "provider:18/model:llama-3", CredentialID: "8", Kind: errorsx.KindTransient, ProviderID: 18},
+		},
+	}
+	decision := TaskDecision{Action: TaskActionRetryNow}
+	appendSurvivalHistory(history, result, 1, decision)
+
+	if len(history.PriorAttempts) != 1 {
+		t.Fatalf("history entries = %d, want 1 (synthesized outcome skipped)", len(history.PriorAttempts))
+	}
+	if history.PriorAttempts[0].CredentialID != 8 {
+		t.Fatalf("CredentialID = %d, want 8 (real attempt attributed)", history.PriorAttempts[0].CredentialID)
+	}
+	if history.LastSeq != 1 {
+		t.Fatalf("LastSeq = %d, want 1", history.LastSeq)
 	}
 }

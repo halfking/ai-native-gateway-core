@@ -1,0 +1,495 @@
+package freediscovery
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/kaixuan/llm-gateway-go/secret"
+)
+
+// ErrTemplateNotFound means the template does not exist (including templates hidden by RLS
+// from another tenant).
+var ErrTemplateNotFound = errors.New("freediscovery: provider template not found")
+
+// ErrTemplateDisabled means the template has been disabled (admins can observe it but the scan
+// entry point must reject it, to prevent scan requests carrying an upstream API key from being
+// executed against a disabled template). Callers should map this to 409 Conflict.
+var ErrTemplateDisabled = errors.New("freediscovery: provider template is disabled")
+
+// ErrTaskStateConflict means a task state-machine transition was rejected
+// (repeated POST scans, concurrent overwrites, etc.). Callers should map this to 409 Conflict.
+var ErrTaskStateConflict = errors.New("freediscovery: task state transition rejected")
+
+// ErrTaskNotFound means the task does not exist (including tasks hidden by RLS
+// from another tenant). Callers should map this to 404 Not Found; db faults are
+// not this sentinel and must keep returning 500.
+var ErrTaskNotFound = errors.New("freediscovery: task not found")
+
+// TemplateManager handles provider template CRUD. All reads and writes go through RLS:
+// SET LOCAL app.current_tenant is set inside the transaction, matching the
+// tenant_isolation_* policy contract in migrations 075/084 (see the analogous
+// implementation in freeresource.QuotaTracker).
+type TemplateManager struct {
+	db      *sql.DB
+	keyring *secret.Keyring // nil = plaintext-key encryption to storage is unsupported (env-reference mode only).
+}
+
+// NewTemplateManager creates the template manager. keyring may be nil:
+// in that case Create/Update carrying plaintext APIKey will return an error and the caller
+// should switch to APIKeyEnv.
+func NewTemplateManager(db *sql.DB, keyring *secret.Keyring) *TemplateManager {
+	return &TemplateManager{db: db, keyring: keyring}
+}
+
+// Create inserts a template. Returns the full row after creation.
+func (m *TemplateManager) Create(ctx context.Context, tenantID string, req *CreateTemplateRequest) (*ProviderTemplate, error) {
+	if msg := req.ValidateCreate(); msg != "" {
+		return nil, fmt.Errorf("%s", msg)
+	}
+	if req.APIKey != "" {
+		if m.keyring == nil {
+			return nil, errors.New("freediscovery: plaintext api_key requires the credential keyring; use api_key_env instead")
+		}
+	}
+
+	var (
+		ciphertext []byte
+		err        error
+	)
+	if req.APIKey != "" {
+		env, encErr := secret.EncryptAESGCM([]byte(req.APIKey), m.keyring)
+		if encErr != nil {
+			return nil, fmt.Errorf("freediscovery: encrypt api key: %w", encErr)
+		}
+		ciphertext = []byte(env)
+	}
+
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	apiType := req.APIType
+	if apiType == "" {
+		apiType = APITypeOpenAICompletions
+	}
+	modelsEndpoint := req.ModelsEndpoint
+	if modelsEndpoint == "" {
+		modelsEndpoint = "/models"
+	}
+	tosVerdict := req.TosVerdict
+	if tosVerdict == "" {
+		tosVerdict = "unknown"
+	}
+
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("freediscovery: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := setTenantTx(ctx, tx, tenantID); err != nil {
+		return nil, err
+	}
+
+	var id int64
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO provider_templates (
+			tenant_id, provider_code, display_name, base_url, api_type,
+			api_key_env, api_key_encrypted, models_endpoint, quota_endpoint,
+			tos_url, tos_verdict, tos_notes, enabled, created_by
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		RETURNING id`,
+		tenantID, req.ProviderCode, req.DisplayName, req.BaseURL, string(apiType),
+		nullableStr(req.APIKeyEnv), ciphertext, modelsEndpoint, nullableStr(req.QuotaEndpoint),
+		nullableStr(req.TosURL), tosVerdict, nullableStr(req.TosNotes), enabled, nullableStr(req.CreatedBy),
+	).Scan(&id)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return nil, fmt.Errorf("freediscovery: template for provider %q already exists in tenant %q", req.ProviderCode, tenantID)
+		}
+		return nil, fmt.Errorf("freediscovery: insert template: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("freediscovery: commit create: %w", err)
+	}
+
+	slog.Info("freediscovery: provider template created",
+		"tenant_id", tenantID, "provider_code", req.ProviderCode, "template_id", id)
+	return m.Get(ctx, tenantID, id)
+}
+
+// Get reads a template by ID. Cross-tenant IDs return ErrTemplateNotFound (RLS-filtered).
+func (m *TemplateManager) Get(ctx context.Context, tenantID string, id int64) (*ProviderTemplate, error) {
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("freediscovery: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := setTenantTx(ctx, tx, tenantID); err != nil {
+		return nil, err
+	}
+
+	t, err := scanTemplate(tx.QueryRowContext(ctx, `
+		SELECT id, tenant_id, provider_code, display_name, base_url, api_type,
+		       COALESCE(api_key_env,''), api_key_encrypted, COALESCE(models_endpoint,'/models'),
+		       COALESCE(quota_endpoint,''), COALESCE(tos_url,''), tos_verdict, COALESCE(tos_notes,''),
+		       enabled, COALESCE(created_by,''), created_at, updated_at,
+		       COALESCE(consecutive_scan_failures, 0), last_scan_failure_at, auto_disabled_at
+		FROM provider_templates WHERE id = $1`, id))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrTemplateNotFound
+		}
+		return nil, fmt.Errorf("freediscovery: get template %d: %w", id, err)
+	}
+	return t, nil
+}
+
+// List lists the tenant's templates. When enabledOnly is true, only enabled templates are returned.
+func (m *TemplateManager) List(ctx context.Context, tenantID string, enabledOnly bool) ([]*ProviderTemplate, error) {
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("freediscovery: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := setTenantTx(ctx, tx, tenantID); err != nil {
+		return nil, err
+	}
+
+	q := `
+		SELECT id, tenant_id, provider_code, display_name, base_url, api_type,
+		       COALESCE(api_key_env,''), api_key_encrypted, COALESCE(models_endpoint,'/models'),
+		       COALESCE(quota_endpoint,''), COALESCE(tos_url,''), tos_verdict, COALESCE(tos_notes,''),
+		       enabled, COALESCE(created_by,''), created_at, updated_at,
+		       COALESCE(consecutive_scan_failures, 0), last_scan_failure_at, auto_disabled_at
+		FROM provider_templates`
+	if enabledOnly {
+		q += ` WHERE enabled = TRUE`
+	}
+	q += ` ORDER BY provider_code`
+
+	rows, err := tx.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("freediscovery: list templates: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*ProviderTemplate
+	for rows.Next() {
+		t, err := scanTemplate(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// Update partially updates a template. Nil pointer fields mean "no change".
+func (m *TemplateManager) Update(ctx context.Context, tenantID string, id int64, req *UpdateTemplateRequest) (*ProviderTemplate, error) {
+	// First read the current value (also validates existence + tenant visibility).
+	cur, err := m.Get(ctx, tenantID, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var ciphertext []byte
+	clearCiphertext := false
+	if req.APIKey != nil && *req.APIKey != "" {
+		if m.keyring == nil {
+			return nil, errors.New("freediscovery: plaintext api_key requires the credential keyring; use api_key_env instead")
+		}
+		env, encErr := secret.EncryptAESGCM([]byte(*req.APIKey), m.keyring)
+		if encErr != nil {
+			return nil, fmt.Errorf("freediscovery: encrypt api key: %w", encErr)
+		}
+		ciphertext = []byte(env)
+	}
+	if req.APIKey != nil && *req.APIKey == "" {
+		// Empty-string semantics: clear the stored ciphertext (ciphertext has priority over env references,
+		// so it must be cleared to allow switching back).
+		clearCiphertext = true
+	}
+
+	if req.DisplayName != nil {
+		cur.DisplayName = *req.DisplayName
+	}
+	if req.BaseURL != nil {
+		if msg := isValidBaseURL(*req.BaseURL); msg != "" {
+			return nil, errors.New("freediscovery: " + msg)
+		}
+		cur.BaseURL = *req.BaseURL
+	}
+	if req.APIType != nil {
+		switch *req.APIType {
+		case APITypeOpenAICompletions, APITypeGoogleGenerativeAI, APITypeAnthropic:
+			cur.APIType = *req.APIType
+		default:
+			return nil, errors.New("freediscovery: invalid api_type")
+		}
+	}
+	if req.APIKeyEnv != nil {
+		cur.APIKeyEnv = *req.APIKeyEnv
+	}
+	if ciphertext != nil {
+		cur.APIKeyEncrypted = ciphertext
+	}
+	if clearCiphertext {
+		cur.APIKeyEncrypted = nil
+	}
+	if req.ModelsEndpoint != nil && *req.ModelsEndpoint != "" {
+		if msg := isValidModelsEndpoint(*req.ModelsEndpoint); msg != "" {
+			return nil, errors.New("freediscovery: " + msg)
+		}
+		cur.ModelsEndpoint = *req.ModelsEndpoint
+	}
+	if req.QuotaEndpoint != nil {
+		cur.QuotaEndpoint = *req.QuotaEndpoint
+	}
+	if req.TosURL != nil {
+		cur.TosURL = *req.TosURL
+	}
+	if req.TosVerdict != nil {
+		if !isValidTosVerdict(*req.TosVerdict) {
+			return nil, errors.New("freediscovery: invalid tos_verdict")
+		}
+		cur.TosVerdict = *req.TosVerdict
+	}
+	if req.TosNotes != nil {
+		cur.TosNotes = *req.TosNotes
+	}
+	if req.Enabled != nil {
+		cur.Enabled = *req.Enabled
+		// Health feedback: operator manually enables → clear auto-disable state to allow retry.
+		if *req.Enabled {
+			cur.ConsecutiveScanFailures = 0
+			cur.LastScanFailureAt = nil
+			cur.AutoDisabledAt = nil
+		}
+	}
+	if cur.DisplayName == "" {
+		return nil, errors.New("freediscovery: display_name cannot be empty")
+	}
+
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("freediscovery: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := setTenantTx(ctx, tx, tenantID); err != nil {
+		return nil, err
+	}
+
+	// R30 审计 F-2（2026-09-16）：改为只 SET 请求涉及的字段。此前的全字段
+	// 回写会把 Get 时取的旧快照写回——若调度器在 Get 与 UPDATE 之间恰好
+	// 累加了失败计数或置 enabled=false（自动禁用），一次只改 display_name
+	// 的 PATCH 会把自动禁用静默复活。健康三列仅在显式重新启用时清零。
+	setParts := make([]string, 0, 14)
+	args := []any{id}
+	addSet := func(col string, v any) {
+		args = append(args, v)
+		setParts = append(setParts, fmt.Sprintf("%s=$%d", col, len(args)))
+	}
+	addSet("display_name", cur.DisplayName)
+	addSet("base_url", cur.BaseURL)
+	addSet("api_type", string(cur.APIType))
+	addSet("api_key_env", nullableStr(cur.APIKeyEnv))
+	addSet("api_key_encrypted", cur.APIKeyEncrypted)
+	addSet("models_endpoint", cur.ModelsEndpoint)
+	addSet("quota_endpoint", nullableStr(cur.QuotaEndpoint))
+	addSet("tos_url", nullableStr(cur.TosURL))
+	addSet("tos_verdict", cur.TosVerdict)
+	addSet("tos_notes", nullableStr(cur.TosNotes))
+	if req.Enabled != nil {
+		addSet("enabled", *req.Enabled)
+		if *req.Enabled {
+			// Health feedback: operator manually enables → clear auto-disable state to allow retry.
+			addSet("consecutive_scan_failures", 0)
+			addSet("last_scan_failure_at", nil)
+			addSet("auto_disabled_at", nil)
+		}
+	}
+
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(
+		`UPDATE provider_templates SET %s WHERE id=$1`, strings.Join(setParts, ", ")),
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("freediscovery: update template %d: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("freediscovery: commit update: %w", err)
+	}
+
+	slog.Info("freediscovery: provider template updated", "tenant_id", tenantID, "template_id", id)
+	return m.Get(ctx, tenantID, id)
+}
+
+// Delete removes a template. Related historical tasks are preserved via ON DELETE SET NULL
+// (the provider_code redundant column remains for traceability).
+func (m *TemplateManager) Delete(ctx context.Context, tenantID string, id int64) error {
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("freediscovery: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := setTenantTx(ctx, tx, tenantID); err != nil {
+		return err
+	}
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM provider_templates WHERE id=$1`, id)
+	if err != nil {
+		return fmt.Errorf("freediscovery: delete template %d: %w", id, err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrTemplateNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("freediscovery: commit delete: %w", err)
+	}
+	slog.Info("freediscovery: provider template deleted", "tenant_id", tenantID, "template_id", id)
+	return nil
+}
+
+// ResolveAPIKey resolves the template's upstream credential:
+//  1. decrypt the api_key_encrypted ciphertext (keyring must be available)
+//  2. resolve the api_key_env environment variable reference
+//
+// Keyless templates return an empty string. Returns (key, source, error).
+func (m *TemplateManager) ResolveAPIKey(ctx context.Context, t *ProviderTemplate) (string, string, error) {
+	_ = ctx
+	if t == nil || !t.HasCredential() {
+		return "", "none", nil
+	}
+	if len(t.APIKeyEncrypted) > 0 {
+		if m.keyring == nil {
+			return "", "", errors.New("freediscovery: template has encrypted key but no keyring configured")
+		}
+		pt, err := secret.DecryptAESGCM(string(t.APIKeyEncrypted), m.keyring)
+		if err != nil {
+			return "", "", fmt.Errorf("freediscovery: decrypt template key: %w", err)
+		}
+		return string(pt), "encrypted", nil
+	}
+	// Env reference: support both "$VAR" and bare "VAR" forms (Orbi templates use $VAR).
+	ref := t.APIKeyEnv
+	ref = strings.TrimPrefix(ref, "$")
+	if ref == "" {
+		return "", "none", nil
+	}
+	val := envLookup(ref)
+	if val == "" {
+		return "", "", fmt.Errorf(
+			"freediscovery: environment variable %s (referenced by provider template %d '%s') is not set or empty. "+
+				"Fix: export %s=your-api-key in your shell, or use encrypted storage via Keyring",
+			ref, t.ID, t.ProviderCode, ref,
+		)
+	}
+	return val, "env:" + ref, nil
+}
+
+func scanTemplate(row interface {
+	Scan(dest ...any) error
+}) (*ProviderTemplate, error) {
+	var (
+		t                       ProviderTemplate
+		apiType                 string
+		createdAt               sql.NullTime
+		updatedAt               sql.NullTime
+		lastScanFailureAt       sql.NullTime
+		autoDisabledAt          sql.NullTime
+	)
+	if err := row.Scan(
+		&t.ID, &t.TenantID, &t.ProviderCode, &t.DisplayName, &t.BaseURL, &apiType,
+		&t.APIKeyEnv, &t.APIKeyEncrypted, &t.ModelsEndpoint,
+		&t.QuotaEndpoint, &t.TosURL, &t.TosVerdict, &t.TosNotes,
+		&t.Enabled, &t.CreatedBy, &createdAt, &updatedAt,
+		&t.ConsecutiveScanFailures, &lastScanFailureAt, &autoDisabledAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrTemplateNotFound
+		}
+		return nil, fmt.Errorf("freediscovery: scan template: %w", err)
+	}
+	t.APIType = APIType(apiType)
+	if createdAt.Valid {
+		t.CreatedAt = createdAt.Time
+	}
+	if updatedAt.Valid {
+		t.UpdatedAt = updatedAt.Time
+	}
+	if lastScanFailureAt.Valid {
+		t.LastScanFailureAt = &lastScanFailureAt.Time
+	}
+	if autoDisabledAt.Valid {
+		t.AutoDisabledAt = &autoDisabledAt.Time
+	}
+	return &t, nil
+}
+
+// ErrInvalidTenantID is returned when a tenant_id fails the
+// [A-Za-z0-9_-]{1,64} allowlist. Callers (admin handlers) map this to 400
+// via fdStatusFor. Previously setTenantTx silently remapped such IDs to
+// the shared 'default' bucket — a cross-tenant data-blending risk if a
+// malformed or hostile tenant_id ever reached the DB layer.
+var ErrInvalidTenantID = errors.New("freediscovery: tenant_id must only allow [A-Za-z0-9_-] up to 64 characters")
+
+// setTenantTx sets the RLS tenant GUC inside a transaction.
+// Matches freeresource.QuotaTracker: SET LOCAL + escapeTenant allowlist escaping.
+// Non-empty tenant IDs that fail the allowlist are rejected (ErrInvalidTenantID)
+// rather than silently remapped to 'default' (R20 §2.5 P2).
+func setTenantTx(ctx context.Context, tx *sql.Tx, tenantID string) error {
+	if tenantID == "" {
+		return nil // Let RLS fall back to 'default'.
+	}
+	if !isValidTenantID(tenantID) {
+		return ErrInvalidTenantID
+	}
+	_, err := tx.ExecContext(ctx,
+		fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", tenantID))
+	if err != nil {
+		return fmt.Errorf("freediscovery: set rls tenant: %w", err)
+	}
+	return nil
+}
+
+// isValidTenantID is the [A-Za-z0-9_-]{1,64} allowlist shared by setTenantTx
+// and the admin boundary guard. It mirrors freeresource.isValidTenantID so
+// the RLS GUC is only ever fed an identifier that is safe to inline
+// unquoted (get_current_tenant() in migrations 075/084 has no quoting).
+func isValidTenantID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// envLookup is an independent env-reading entry point that tests can override
+// (t.Setenv goes through the real os.Getenv).
+var envLookup = os.Getenv
+
+func nullableStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// timeNow is an independent clock entry point that tests can override.
+var timeNow = time.Now

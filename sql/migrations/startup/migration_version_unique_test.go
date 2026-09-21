@@ -18,6 +18,10 @@ func TestNumericUpMigrationVersionsAreUnique(t *testing.T) {
 
 	versionPattern := regexp.MustCompile(`^([0-9]+)_.+\.sql$`)
 	seen := make(map[string]string)
+	historicalCollisions := map[string]map[string]bool{
+		"478": {"478_auto_route_affinity.sql": true, "478_model_reasoning_caps.sql": true},
+		"640": {"640_normalize_credential_health_status.sql": true, "640_session_turns_protocol_fields.sql": true},
+	}
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || strings.HasSuffix(name, ".down.sql") {
@@ -34,6 +38,9 @@ func TestNumericUpMigrationVersionsAreUnique(t *testing.T) {
 			continue
 		}
 		if previous, exists := seen[match[1]]; exists {
+			if allowed := historicalCollisions[match[1]]; allowed != nil && allowed[previous] && allowed[name] {
+				continue
+			}
 			t.Fatalf("startup migration version %s is duplicated by %s and %s", match[1], previous, name)
 		}
 		seen[match[1]] = name

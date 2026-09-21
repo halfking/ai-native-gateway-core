@@ -1,0 +1,50 @@
+request_journey_observation_outbox
+id|bigint
+tenant_id|text
+request_id|text
+seq|bigint
+payload|jsonb
+payload_hash|text
+status|text
+attempts|integer
+next_retry_at|timestamp with time zone
+claim_owner|text
+claim_until|timestamp with time zone
+claim_fencing_token|bigint
+last_error|text
+created_at|timestamp with time zone
+updated_at|timestamp with time zone
+retry_at
+request_journey_observation_outbox_attempts_chk
+request_journey_observation_outbox_claim_fence_chk
+request_journey_observation_outbox_processing_lease_chk
+request_journey_observation_outbox_seq_chk
+request_journey_observation_outbox_status_chk
+idx_request_journey_observation_outbox_due
+idx_request_journey_observation_outbox_lease
+idx_request_journey_observation_outbox_tenant
+request_journey_observation_outbox_identity_uq
+request_journey_observation_outbox_pkey
+request_journey_observation_outbox|t|t
+request_state_transitions|t|f
+request_journey_observation_outbox_super_admin_bypass|*
+request_journey_observation_outbox_tenant_isolation|*
+idx_request_journey_observation_outbox_due|CREATE INDEX idx_request_journey_observation_outbox_due ON public.request_journey_observation_outbox USING btree (next_retry_at, created_at) WHERE (status = ANY (ARRAY['pending'::text, 'failed'::text]))
+idx_request_journey_observation_outbox_lease|CREATE INDEX idx_request_journey_observation_outbox_lease ON public.request_journey_observation_outbox USING btree (claim_until, created_at) WHERE (status = 'processing'::text)
+idx_request_journey_observation_outbox_tenant|CREATE INDEX idx_request_journey_observation_outbox_tenant ON public.request_journey_observation_outbox USING btree (tenant_id, created_at)
+request_state_transitions_retry_at_event_chk
+INSERT 0 1
+ version |                          description                          |          applied_at          
+---------+---------------------------------------------------------------+------------------------------
+ 552     | RequestJourney durable observation outbox and retry_at parity | 2026-08-21 22:39:16.63289+08
+(1 row)
+
+ version 
+---------
+ V359
+ 999
+ 552
+ 549
+ 548
+(5 rows)
+

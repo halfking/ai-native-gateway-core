@@ -29,8 +29,8 @@ var (
 	// dashboardAPIDuration observes API response time in seconds.
 	dashboardAPIDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "llmgw_dashboard_api_duration_seconds",
-			Help:    "Dashboard API response duration in seconds.",
+			Name: "llmgw_dashboard_api_duration_seconds",
+			Help: "Dashboard API response duration in seconds.",
 			Buckets: []float64{0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30},
 		},
 		[]string{"endpoint"},
@@ -74,8 +74,8 @@ var (
 	// dashboardQueryRowsReturned observes number of rows returned per query.
 	dashboardQueryRowsReturned = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "llmgw_dashboard_query_rows_returned",
-			Help:    "Number of rows returned by Dashboard API queries.",
+			Name: "llmgw_dashboard_query_rows_returned",
+			Help: "Number of rows returned by Dashboard API queries.",
 			Buckets: []float64{1, 10, 50, 100, 500, 1000, 5000, 10000},
 		},
 		[]string{"endpoint"},

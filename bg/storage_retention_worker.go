@@ -43,8 +43,8 @@ type StorageRetentionWorker struct {
 	// 由调用方注入（从 settings_kv 读取）。返回 enabled=false 则 worker 空转。
 	ConfigProvider StorageRetentionConfigFunc
 
-	cancel context.CancelFunc
-	done   chan struct{}
+	// lifecycle 由 BaseWorker 统一管理（审计报告 2026-08-31 模式 C）。
+	*BaseWorker
 }
 
 // StorageRetentionConfigFunc 返回当前清理配置。
@@ -69,7 +69,7 @@ func NewStorageRetentionWorker(attachmentStorage AttachmentStorageService, logDi
 		LogArchiveDays:    7,
 		LogDeleteDays:     30,
 		ConfigProvider:    cfgProvider,
-		done:              make(chan struct{}),
+		BaseWorker:        NewBaseWorker("storage-retention"),
 	}
 }
 
@@ -82,27 +82,33 @@ func (w *StorageRetentionWorker) attachmentDir() string {
 	return w.AttachmentStorage.BaseDir()
 }
 
-// Start 启动后台 goroutine。
+// Start 启动后台 goroutine。重复调用是幂等的；每个实例只拥有一个 run loop。
 func (w *StorageRetentionWorker) Start(ctx context.Context) {
-	cctx, cancel := context.WithCancel(ctx)
-	w.cancel = cancel
-	go w.run(cctx)
+	if w == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !w.BaseWorker.Start(ctx, w.run) {
+		return
+	}
 	slog.Info("storage retention worker started",
 		"interval", w.CheckInterval.String(),
 		"attachment_dir", w.attachmentDir(),
 		"log_dir", w.LogDir)
 }
 
-// Stop 终止 goroutine 并等待退出。
+// Stop 终止 goroutine 并等待退出。未启动或重复 Stop 均安全返回。
 func (w *StorageRetentionWorker) Stop() {
-	if w.cancel != nil {
-		w.cancel()
+	if w == nil {
+		return
 	}
-	<-w.done
+	w.BaseWorker.Stop()
 }
 
 func (w *StorageRetentionWorker) run(ctx context.Context) {
-	defer close(w.done)
+	defer w.BaseWorker.NotifyStopped()
 	t := time.NewTicker(w.CheckInterval)
 	defer t.Stop()
 	for {
@@ -168,7 +174,7 @@ func (w *StorageRetentionWorker) cleanupLogs(ctx context.Context) {
 	archiveDir := filepath.Join(w.LogDir, "archive")
 	if dirExistsBG(archiveDir) {
 		deleteCutoff := time.Now().AddDate(0, 0, -w.LogDeleteDays)
-		_ = filepath.WalkDir(archiveDir, func(p string, d fs.DirEntry, err error) error {
+		_ = walkDirSafe(archiveDir, func(p string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return nil
 			}
@@ -191,7 +197,7 @@ func (w *StorageRetentionWorker) cleanupLogs(ctx context.Context) {
 		}
 	}
 	backupCutoff := time.Now().AddDate(0, 0, -w.LogDeleteDays)
-	_ = filepath.WalkDir(w.LogDir, func(p string, d fs.DirEntry, err error) error {
+	_ = walkDirSafe(w.LogDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
@@ -232,7 +238,7 @@ func (w *StorageRetentionWorker) cleanupAttachmentsLRU(ctx context.Context, atta
 		size  int64
 	}
 	var items []fileItem
-	_ = filepath.WalkDir(attachmentDir, func(p string, d fs.DirEntry, err error) error {
+	_ = walkDirSafe(attachmentDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
@@ -285,4 +291,46 @@ func (w *StorageRetentionWorker) diskUsagePercent(path string) float64 {
 func dirExistsBG(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// walkDirSafeRepeatedErrorThreshold is the number of consecutive identical
+// filepath.WalkDir errors after which we abort the walk. The audit (P2-7,
+// audit 2026-08-31) observed that callbacks silently returned nil on every
+// error, so a permission-denied subtree or a vanished symlink farm kept the
+// worker grinding through the same error per entry. Aborting after a small
+// run of repeated errors bounds the no-progress case without affecting the
+// normal "skip and continue" path where errors are interleaved with
+// successful entries.
+const walkDirSafeRepeatedErrorThreshold = 8
+
+// walkDirSafe wraps filepath.WalkDir so that a small number of consecutive
+// errors stops the traversal, while isolated errors (permission denied on
+// one file, transient lookup failure) still let the walk continue. Errors
+// are logged at warn level so operators can correlate with the metric in
+// bg/metrics.go.
+func walkDirSafe(root string, fn fs.WalkDirFunc) error {
+	if root == "" {
+		return nil
+	}
+	var lastErr error
+	consecutive := 0
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			consecutive++
+			if consecutive >= walkDirSafeRepeatedErrorThreshold && lastErr != nil && err.Error() == lastErr.Error() {
+				slog.Warn("storage retention: aborting walk after repeated identical errors",
+					"root", root, "path", p, "error", err.Error(),
+					"consecutive_count", consecutive)
+				return err
+			}
+			lastErr = err
+			slog.Debug("storage retention: walk skipped entry",
+				"root", root, "path", p, "error", err.Error())
+			return nil
+		}
+		consecutive = 0
+		lastErr = nil
+		return fn(p, d, nil)
+	})
+	return err
 }

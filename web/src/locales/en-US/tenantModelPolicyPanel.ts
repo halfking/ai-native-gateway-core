@@ -66,4 +66,5 @@ export default {
     deleteFailed: 'Failed to delete',
     restoreFailed: 'Failed to restore',
   },
+  softDeleteConfirm: 'Soft-delete policy {name}? (recoverable)',
 }

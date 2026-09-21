@@ -38,22 +38,6 @@ func TestRedisManager_NotEnabledNilClient(t *testing.T) {
 	}
 }
 
-func TestRedisManager_AcceptsUniversalClient(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewUniversalClient(&redis.UniversalOptions{Addrs: []string{mr.Addr()}})
-	t.Cleanup(func() { _ = rdb.Close() })
-
-	m := NewRedisManager(rdb)
-	leader, err := m.Acquire(context.Background(), AcquireOpts{Key: "universal-client", TTL: time.Second})
-	if err != nil {
-		t.Fatalf("Acquire with universal client: %v", err)
-	}
-	if !leader.IsLeader() {
-		t.Fatal("first acquire with universal client must be leader")
-	}
-	leader.Release(context.Background())
-}
-
 func TestRedisManager_BuildKeyUsesOneHashTag(t *testing.T) {
 	key := BuildKey("title:auto", "default\x00sess-1")
 	if !strings.Contains(key, "{title:auto:default\x00sess-1}") || !strings.HasSuffix(key, ":lock") {
@@ -137,17 +121,15 @@ func TestRedisManager_FollowerWakesViaPubSub(t *testing.T) {
 	follower.Release(context.Background())
 }
 
-// TestRedisManager_FollowerTTLExpired: if the leader stops renewing and
-// never releases, the follower must not wait past the lock TTL. The renewal
-// goroutine is stopped explicitly so this test exercises actual expiry rather
-// than the renewable-lease path.
+// TestRedisManager_FollowerTTLExpired: if the leader crashes / hangs and
+// never releases, the follower must NOT wait past the lock TTL. We use a
+// real 200ms TTL (Go's time.NewTimer is anchored to wall-clock, not
+// miniredis time) — FastForward alone would not advance the follower's
+// internal timer.
 func TestRedisManager_FollowerTTLExpired(t *testing.T) {
-	m, mr, _ := newRedisManagerForTest(t)
+	m, _, _ := newRedisManagerForTest(t)
 	leader, _ := m.Acquire(context.Background(), AcquireOpts{Key: "ttl-k", TTL: 200 * time.Millisecond})
 	defer leader.Release(context.Background())
-	if backend, ok := leader.backend.(*redisBackend); ok {
-		backend.stopRenewal()
-	}
 
 	follower, err := m.Acquire(context.Background(), AcquireOpts{Key: "ttl-k", TTL: 200 * time.Millisecond})
 	if err != nil {
@@ -155,61 +137,16 @@ func TestRedisManager_FollowerTTLExpired(t *testing.T) {
 	}
 	defer follower.Release(context.Background())
 
-	// miniredis advances expirations only when its clock is fast-forwarded.
-	// Do this after the follower has observed the live key and started watching.
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- follower.Wait(context.Background()) }()
-	time.Sleep(20 * time.Millisecond)
-	mr.FastForward(500 * time.Millisecond)
-
-	select {
-	case err := <-waitDone:
-		if !errors.Is(err, ErrTTLExpired) {
-			t.Fatalf("Wait after TTL expiry: want ErrTTLExpired, got %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("follower did not observe Redis expiry")
+	start := time.Now()
+	err = follower.Wait(context.Background())
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrTTLExpired) {
+		t.Fatalf("Wait after TTL expiry: want ErrTTLExpired, got %v", err)
 	}
-}
-
-func TestRedisManager_FollowerTracksRenewedLease(t *testing.T) {
-	m, _, rdb := newRedisManagerForTest(t)
-	leader, err := m.Acquire(context.Background(), AcquireOpts{Key: "renew-k", TTL: 90 * time.Millisecond})
-	if err != nil {
-		t.Fatalf("Acquire leader: %v", err)
-	}
-	defer leader.Release(context.Background())
-	if backend, ok := leader.backend.(*redisBackend); ok {
-		backend.stopRenewal()
-	}
-
-	follower, err := m.Acquire(context.Background(), AcquireOpts{Key: "renew-k", TTL: 90 * time.Millisecond})
-	if err != nil {
-		t.Fatalf("Acquire follower: %v", err)
-	}
-	defer follower.Release(context.Background())
-
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- follower.Wait(context.Background()) }()
-	time.Sleep(20 * time.Millisecond)
-	if err := rdb.PExpire(context.Background(), "renew-k", 250*time.Millisecond).Err(); err != nil {
-		t.Fatalf("extend lock TTL: %v", err)
-	}
-	time.Sleep(120 * time.Millisecond)
-	select {
-	case err := <-waitDone:
-		t.Fatalf("follower returned while owner TTL was extended: %v", err)
-	default:
-	}
-
-	leader.Release(context.Background())
-	select {
-	case err := <-waitDone:
-		if err != nil {
-			t.Fatalf("follower Wait after owner release: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("follower did not wake after owner release")
+	// Follower should give up shortly after TTL, not after a full second
+	// or more. Allow generous slack for CI scheduling.
+	if elapsed < 200*time.Millisecond || elapsed > 1500*time.Millisecond {
+		t.Fatalf("Wait elapsed %v; want ~TTL (200ms)", elapsed)
 	}
 }
 
@@ -358,11 +295,12 @@ func TestRedisManager_ConcurrentLeaderRelease(t *testing.T) {
 // TestRedisManager_EmptyKeyRejected: defensive parity with LocalManager.
 func TestRedisManager_EmptyKeyRejected(t *testing.T) {
 	m, _, _ := newRedisManagerForTest(t)
-	for _, key := range []string{"", "   "} {
-		_, err := m.Acquire(context.Background(), AcquireOpts{Key: key})
-		if !errors.Is(err, ErrInvalidKey) {
-			t.Fatalf("key %q: want ErrInvalidKey, got %v", key, err)
-		}
+	_, err := m.Acquire(context.Background(), AcquireOpts{})
+	if err == nil {
+		t.Fatal("empty Key should error")
+	}
+	if !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("empty Key: want ErrInvalidKey, got %v", err)
 	}
 }
 

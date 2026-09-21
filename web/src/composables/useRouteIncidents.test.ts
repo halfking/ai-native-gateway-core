@@ -23,6 +23,7 @@ function makeUpdate(over: Partial<RouteIncidentUpdate> = {}): RouteIncidentUpdat
     affected_lanes: [
       { dimension: 'model', value: 'gpt-4o' },
       { dimension: 'provider', value: 'provider-7' },
+      { dimension: 'credential', value: 'credential-99' },
     ],
     last_error: { kind: 'rate_limited', stage: 'upstream' },
     route_key: {
@@ -52,6 +53,9 @@ describe('useRouteIncidents', () => {
 
     const providerLane = incidentsForLane('provider', 'provider-7')
     expect(providerLane).toHaveLength(1)
+
+    const credentialLane = incidentsForLane('credential', 'credential-99')
+    expect(credentialLane).toHaveLength(1)
   })
 
   it('updates the same incident on a second envelope without duplication', () => {
@@ -77,6 +81,7 @@ describe('useRouteIncidents', () => {
     const { incidentsForLane } = useRouteIncidents()
     expect(incidentsForLane('model', 'gpt-4o')).toHaveLength(0)
     expect(incidentsForLane('provider', 'provider-7')).toHaveLength(0)
+    expect(incidentsForLane('credential', 'credential-99')).toHaveLength(0)
   })
 
   it('forbids diagnosis for the "Other" aggregate lane', () => {

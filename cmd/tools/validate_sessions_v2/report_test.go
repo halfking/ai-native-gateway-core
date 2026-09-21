@@ -91,6 +91,34 @@ func TestDetermineStatus_ErrorTakesPrecedence(t *testing.T) {
 	}
 }
 
+func TestBatchGatePassed(t *testing.T) {
+	base := BatchSummary{
+		Candidates:      120,
+		SessionsChecked: 100,
+		SessionsOK:      98,
+		SessionsWarning: 2,
+	}
+	cases := []struct {
+		name    string
+		summary BatchSummary
+		want    bool
+	}{
+		{"passes with warnings", base, true},
+		{"candidate loader error", func() BatchSummary { s := base; s.LoaderErrors = 1; return s }(), false},
+		{"skipped candidate", func() BatchSummary { s := base; s.Skipped = 1; return s }(), false},
+		{"too few candidates", func() BatchSummary { s := base; s.Candidates = 99; return s }(), false},
+		{"too few checked", func() BatchSummary { s := base; s.SessionsChecked = 99; return s }(), false},
+		{"validation error", func() BatchSummary { s := base; s.SessionsError = 1; return s }(), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := BatchGatePassed(tc.summary, 100); got != tc.want {
+				t.Fatalf("BatchGatePassed() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestGenerateBatchReport(t *testing.T) {
 	sessions := []SessionReport{
 		{SessionID: "s1", Status: "ok"},

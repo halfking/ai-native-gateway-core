@@ -5,9 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/pkg/httputil"
 )
 
 // InferenceCheckResult represents the result of an AI inference check.
@@ -132,12 +133,11 @@ func (c *InferenceChecker) doInferenceCheck(
 		result.Error = fmt.Errorf("request failed: %w", err)
 		return result
 	}
-	defer resp.Body.Close()
-
-	// Read response
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		result.Error = fmt.Errorf("read response: %w", err)
+	// Responses are bounded to protect the checker; the helper drains the
+	// remainder before closing so keep-alive connections remain reusable.
+	respBody, bodyErr := httputil.ReadPrefixAndDrain(resp.Body, 4<<20)
+	if bodyErr != nil {
+		result.Error = fmt.Errorf("read response: %w", bodyErr)
 		return result
 	}
 

@@ -18,6 +18,16 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/handlers"
 )
 
+// stubVerifier 是 KeyVerifier 测试桩（§0-F2 契约：tenant 来自验证结果，
+// 不再信任 X-Tenant-ID 头）。结构化满足 handlers.SetAuth 的未导出接口。
+type stubVerifier struct{ tenant string }
+
+func (s stubVerifier) Enabled() bool { return true }
+
+func (s stubVerifier) Verify(_ context.Context, _ string) (handlers.GoalRunKeyInfo, error) {
+	return handlers.GoalRunKeyInfo{ID: 1, TenantID: s.tenant}, nil
+}
+
 // validChatBody 模拟客户端发起的 /v1/chat/completions 请求，含 goal 字段。
 const validChatBody = `{
 	"model": "gpt-4",
@@ -49,6 +59,11 @@ func anyArgs(n int) []any {
 	}
 	return args
 }
+
+const (
+	stubTenant   = "tenant_e2e"      // 正常 e2e 租户
+	attackTenant = "tenant_attacker" // 隔离用例的攻击者租户
+)
 
 func validNewGoalRunInputE2E() goalrun.NewGoalRunInput {
 	return goalrun.NewGoalRunInput{
@@ -97,6 +112,7 @@ func TestE2E_ChatGoalRun_CreatedAndQueriable(t *testing.T) {
 	}
 
 	handler := handlers.NewGoalRunHandler(store, slog.Default())
+	handler.SetAuth(stubVerifier{tenant: stubTenant})
 
 	// ── Step 1: ChatHandler 调用 GoalIntegrator（v1 ChatHandler 切点）
 	resolved, err := integrator.ParseAndCreate(
@@ -155,13 +171,13 @@ func TestE2E_ChatGoalRun_CreatedAndQueriable(t *testing.T) {
 		"", time.Now(), time.Now(), time.Time{},
 	)
 	mock.ExpectQuery(`SELECT .+ FROM goal_runs`).
-		WithArgs(resolved.GoalRunID).
+		WithArgs(resolved.GoalRunID, stubTenant).
 		WillReturnRows(rows)
 
 	// ── Step 2: 客户端拿 goal_run_id 调用 GET /v1/goal-runs/{id}
 	url := "/v1/goal-runs/" + resolved.GoalRunID
 	statusReq := httptest.NewRequest(http.MethodGet, url, nil)
-	statusReq.Header.Set("X-Tenant-ID", "tenant_e2e")
+	statusReq.Header.Set("Authorization", "Bearer sk-e2e")
 	statusReq.Header.Set("X-Session-ID", "sess_e2e")
 
 	statusRec := httptest.NewRecorder()
@@ -240,44 +256,24 @@ func TestE2E_TenantIsolation_StatusQuery(t *testing.T) {
 	}
 	defer mock.Close()
 
-	rows := pgxmock.NewRows([]string{
-		"id", "tenant_id", "api_key_id", "root_goal_id",
-		"root_session_id", "current_session_id",
-		"root_request_id", "last_request_id", "last_durable_task_id",
-		"status", "policy_version", "policy_snapshot",
-		"instruction_hash", "redacted_instruction_summary",
-		"turn_count", "follow_up_count", "retry_count",
-		"model_switch_count", "handoff_count", "tokens_used",
-		"last_progress_hash",
-		"deadline_at", "lease_owner", "lease_until", "version",
-		"terminal_reason", "created_at", "updated_at", "completed_at",
-	}).AddRow(
-		"gr_sec", "tenant_owner", "1", "",
-		"sess", "sess",
-		"req", "", "",
-		"queued", 1, []byte(`{}`),
-		"hash", "",
-		0, 0, 0,
-		0, 0, int64(0),
-		"",
-		time.Now().Add(time.Hour), "", time.Time{}, int64(1),
-		"", time.Now(), time.Now(), time.Time{},
-	)
-	mock.ExpectQuery(`SELECT .+ FROM goal_runs`).
-		WithArgs("gr_sec").
-		WillReturnRows(rows)
-
 	store := goalrun.NewStore(mock)
+	// R29：store 查询带 tenant 谓词——攻击者租户在 SQL 层 0 行 → 404
+	//（不泄露 run 存在性）；伪造 X-Tenant-ID 头不再有任何效果。
+	mock.ExpectQuery(`SELECT .+ FROM goal_runs`).
+		WithArgs("gr_sec", attackTenant).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}))
+
 	handler := handlers.NewGoalRunHandler(store, slog.Default())
+	handler.SetAuth(stubVerifier{tenant: attackTenant})
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/goal-runs/gr_sec", nil)
-	req.Header.Set("X-Tenant-ID", "tenant_attacker")
+	req.Header.Set("Authorization", "Bearer sk-attacker")
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 forbidden for cross-tenant attack, got %d", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 not_found for cross-tenant attack, got %d", rec.Code)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

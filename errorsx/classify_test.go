@@ -1316,3 +1316,111 @@ func TestQuotaResetsReFiveHourWordBoundary(t *testing.T) {
 		}
 	}
 }
+
+// TestHTTPStatusForKind (2026-09-13 audit fix): single source of truth for
+// the client-facing status when a typed error escapes the failover chain.
+// Semantic families: 429 throttle, 503 overload, 504 timeout, 502 dead.
+// Everything else — including future kinds — falls through to 502.
+func TestHTTPStatusForKind(t *testing.T) {
+	cases := []struct {
+		kind ErrorKind
+		want int
+	}{
+		{KindRateLimit, 429},
+		{KindQuota, 429},
+		{KindQuotaPeriodic, 429},
+		{KindQuotaBalance, 429},
+		{KindQuotaPermanent, 429},
+		{KindConcurrent, 503},
+		{KindUpstreamOverloaded, 503},
+		{KindTimeout, 504},
+		{KindStreamTimeout, 504},
+		{KindNetwork, 502},
+		{KindUpstreamDown, 502},
+		{KindAuth, 502},
+		{KindTransient, 502},
+		{KindCanceled, 502},
+		{"future_unknown_kind", 502},
+	}
+	for _, tc := range cases {
+		if got := HTTPStatusForKind(tc.kind); got != tc.want {
+			t.Errorf("HTTPStatusForKind(%q) = %d, want %d", tc.kind, got, tc.want)
+		}
+	}
+}
+
+// TestNVIDIAFunctionNotFoundClassifiesAsModelNotFound (2026-09-15, 245 audit):
+// NVIDIA NIM names its served models "functions" and answers a dead/renamed
+// model id with 404 {"detail":"Function '<id>': Not found for account ..."}.
+// The body matched no noun in modelNotFoundRe, so it fell through to the
+// status-only default (KindTransient, retryable) and kept a removed function
+// in the retry loop while flapping the credential's circuit breaker (326
+// "circuit opened" cycles / 24h on 245). It must classify as
+// KindModelNotFound so the binding-scoped cooling arms.
+func TestNVIDIAFunctionNotFoundClassifiesAsModelNotFound(t *testing.T) {
+	body := []byte(`{"status":404,"title":"Not Found","detail":"Function '2fddadfb-7e76-4c8a-9b82-f7d3fab94471': Not found for account 'VsXuAcSW69UbnmjujOTz67OLU8nxeAcIrq5RzvDbex0'"}`)
+	if got := ClassifyErrorWithBody(404, body); got != KindModelNotFound {
+		t.Errorf("ClassifyErrorWithBody(404, NIM function body) = %q, want %q", got, KindModelNotFound)
+	}
+	// "no such function" phrasing (generic noun form) also maps to
+	// model_not_found, mirroring "no such model".
+	if got := ClassifyErrorWithBody(404, []byte(`no such function: foo`)); got != KindModelNotFound {
+		t.Errorf("ClassifyErrorWithBody(404, no-such-function) = %q, want %q", got, KindModelNotFound)
+	}
+	// Real model strings keep matching.
+	if got := ClassifyErrorWithBody(404, []byte(`Model gpt-9 does not exist`)); got != KindModelNotFound {
+		t.Errorf("ClassifyErrorWithBody(404, model-does-not-exist) = %q, want %q", got, KindModelNotFound)
+	}
+	// A quoted function id inside a NON-404/4xx status must not suddenly
+	// become model_not_found (5xx bodies stay connectivity failures).
+	if got := ClassifyErrorWithBody(502, body); got != KindUpstreamDown {
+		t.Errorf("ClassifyErrorWithBody(502, NIM function body) = %q, want %q", got, KindUpstreamDown)
+	}
+}
+
+// TestWrappedGenericWeb404IsUpstreamDown (2026-09-15, 245 audit): a
+// "404 page not found" body that reached ClassifyError through the legacy
+// fmt.Errorf("upstream %d: %s") wrapping used to land in KindTransient and
+// re-dial the same dead endpoint. A wrong BASE_URL path is an upstream
+// fault, not a retryable transient.
+func TestWrappedGenericWeb404IsUpstreamDown(t *testing.T) {
+	err := fmt.Errorf("upstream 404: 404 page not found\n")
+	if got := ClassifyError(err, nil); got != KindUpstreamDown {
+		t.Errorf("ClassifyError(wrapped 404 page not found) = %q, want %q", got, KindUpstreamDown)
+	}
+	// A genuinely unknown-model wrapped body still classifies by content.
+	err2 := fmt.Errorf("upstream 404: model llama-9 does not exist")
+	if got := ClassifyError(err2, nil); got != KindModelNotFound {
+		t.Errorf("ClassifyError(wrapped model-does-not-exist) = %q, want %q", got, KindModelNotFound)
+	}
+}
+
+// TestWrappedFunctionNotFoundNotModelNotFound (R30 audit F3, 2026-09-16):
+// the status-less wrapped path must NOT claim the `function` noun — a bare
+// "no such function" string is usually the client's own tool-calling mistake
+// echoed upstream, and KindModelNotFound hard-terminals the survival task and
+// cools the (credential,model) binding. Body paths (with a status gate) keep
+// the full noun list.
+func TestWrappedFunctionNotFoundNotModelNotFound(t *testing.T) {
+	if got := ClassifyError(fmt.Errorf("tool dispatch failed: no such function: foo"), nil); got == KindModelNotFound {
+		t.Errorf("ClassifyError(wrapped no-such-function) = %q, must not be model_not_found", got)
+	}
+	// ...while the status-gated body path still classifies it.
+	if got := ClassifyErrorWithBody(404, []byte(`no such function: foo`)); got != KindModelNotFound {
+		t.Errorf("ClassifyErrorWithBody(404, no-such-function) = %q, want %q", got, KindModelNotFound)
+	}
+}
+
+// TestClassifyResponseBodyGeneric404Guard (R30 audit F4, 2026-09-16): an SSE
+// error chunk carrying a generic web-server 404 body must not become
+// KindModelNotFound — parity with ClassifyErrorWithBody's V20 guard.
+func TestClassifyResponseBodyGeneric404Guard(t *testing.T) {
+	body := []byte(`<html><head><title>404 Not Found</title></head><body><center><h1>404 Not Found</h1><hr>nginx</center></body></html>`)
+	if got := ClassifyResponseBody(404, body); got == KindModelNotFound {
+		t.Errorf("ClassifyResponseBody(404, nginx 404) = %q, must not be model_not_found", got)
+	}
+	// A real model-not-found body keeps classifying.
+	if got := ClassifyResponseBody(404, []byte(`{"error":{"message":"Model gpt-9 does not exist","type":"invalid_request_error"}}`)); got != KindModelNotFound {
+		t.Errorf("ClassifyResponseBody(404, model-does-not-exist) = %q, want %q", got, KindModelNotFound)
+	}
+}

@@ -290,4 +290,67 @@ describe('i18n parity gate', () => {
       .sort()
     expect(missing, `i18n keys referenced in CredsTab.vue but missing in zh-CN (${missing.length}):\n` + missing.map((k) => `  - ${k}`).join('\n')).toEqual([])
   })
+
+  // -------------------------------------------------------------------------
+  // P2-11 (2026-08-31 audit): menu-config.json is generated from
+  // src/config/appNav.ts at build time (`node scripts/export-menu-config.mjs`)
+  // and every entry with a `label` is paired with a `labelKey` pointing at a
+  // locale string. Until this gate existed, a typo or namespace drift in
+  // either direction (appNav labelKey references a key the locale never
+  // defined, or a locale ships a translation under an old key that
+  // appNav no longer uses) would silently render "[nav.item.foo]" at
+  // runtime — only visible after the next deploy. The gate below reads the
+  // exported menu-config.json, walks the tree for labelKey strings, and
+  // asserts each one resolves under the zh-CN leaf-key set.
+  //
+  // The check is intentionally narrow: only labelKey, only against zh-CN.
+  // The locale-superset test above already covers cross-locale parity, and
+  // broader menu structure (paths, icons, scopes) is asserted by
+  // appNav.test.ts.
+  // -------------------------------------------------------------------------
+  it('menu-config.json labelKey fields resolve in zh-CN (P2-11)', () => {
+    const menuPath = join(__dirname, '..', '..', 'public', 'menu-config.json')
+    if (!existsSync(menuPath)) {
+      // Defensive: if menu-config.json is missing (e.g. fresh checkout
+      // before the first build), skip rather than fail. The build pipeline
+      // regenerates this file; running the parity gate against an absent
+      // artefact would mask the real coverage.
+      return
+    }
+    const raw = readFileSync(menuPath, 'utf8')
+    const parsed = JSON.parse(raw) as JsonObject
+    const labelKeys = new Set<string>()
+    const stack: unknown[] = [parsed]
+    while (stack.length > 0) {
+      const node = stack.pop()
+      if (node === null || node === undefined) continue
+      if (Array.isArray(node)) {
+        // Arrays in menu-config.json hold nav items / group items; push
+        // each element so we can descend into them.
+        for (const el of node) stack.push(el)
+        continue
+      }
+      if (!isPlainObject(node)) continue
+      const lk = node['labelKey']
+      if (typeof lk === 'string' && lk.length > 0) {
+        labelKeys.add(lk)
+      }
+      for (const v of Object.values(node)) {
+        if (isPlainObject(v) || Array.isArray(v)) stack.push(v)
+      }
+    }
+
+    // Sanity: the gate only makes sense if the menu actually carries
+    // labelKey fields. A return without assertions would silently pass,
+    // so we require at least one labelKey before declaring success.
+    expect(labelKeys.size, 'menu-config.json carried no labelKey fields — has export-menu-config.mjs been run?').toBeGreaterThan(0)
+
+    const zhKeys = collectLeafKeys(loadLocale(SOURCE_LOCALE))
+    const missing = [...labelKeys].filter((k) => !zhKeys.has(k)).sort()
+    expect(
+      missing,
+      `menu-config.json labelKey entries not defined in ${SOURCE_LOCALE} (${missing.length}):\n` +
+        missing.map((k) => `  - ${k}`).join('\n'),
+    ).toEqual([])
+  })
 })

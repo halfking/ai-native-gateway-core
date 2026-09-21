@@ -3,6 +3,7 @@ package persist
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -50,6 +51,69 @@ func TestWriterCollectsEmptyRedis(t *testing.T) {
 	_ = rows
 	_ = sql.ErrNoRows
 	_ = (*pgxpool.Pool)(nil)
+}
+
+func TestWriterRejectsWrongTypeNodeHash(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	if err := rdb.Set(context.Background(), "ursm:v2:node:tenant-a:42:model", "not-a-hash", 0).Err(); err != nil {
+		t.Fatalf("seed wrong-type node: %v", err)
+	}
+
+	_, err := New(rdb, "ursm:v2:", nil).Collect(context.Background())
+	if err == nil {
+		t.Fatal("Collect should surface a wrong-type node hash error")
+	}
+	if !strings.Contains(err.Error(), "read node hash") {
+		t.Fatalf("Collect error = %v, want read node hash context", err)
+	}
+}
+
+// TestWriterSkipsRequestDedupMarkerKeys pins the P4 fix
+// (docs/audit/2026-09-12-r14-observation-p5p4-readonly.md §C): Collect
+// scans node:* and requestDedupKey (record_request.go) writes STRING
+// flags under that namespace; the legacy grammar's trailing rejoin used
+// to "decode" them into node tuples, so one live dedup marker made
+// SafeHGetAll abort the whole snapshot batch every tick and
+// ursm_node_snapshot_min stalled from 2026-09-11 21:16. Marker keys must
+// be skipped before parse in every grammar's shape, while genuine node
+// hashes in the same scan still collect and unknown wrong-type keys
+// still abort (TestWriterRejectsWrongTypeNodeHash).
+func TestWriterSkipsRequestDedupMarkerKeys(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+	if err := rdb.HSet(ctx, "ursm:v2:node:12:gpt-5.6-sol", map[string]string{
+		"available": "1", "health": "ok", "generation": "2",
+	}).Err(); err != nil {
+		t.Fatalf("seed node: %v", err)
+	}
+	dedupMarkers := []string{
+		// legacy node key + marker suffix (the leak: rejoin swallows the
+		// suffix into RawModel)
+		"ursm:v2:node:12:gpt-5.6-sol:request_dedup:ab12cd34",
+		// tenant-scoped legacy node key + marker suffix
+		"ursm:v2:node:tenant-a:42:model:with:colon:request_dedup:ef56ab78",
+		// k2-shaped node key + marker suffix (strict grammar rejects the
+		// suffix; the skip must happen before parse either way)
+		"ursm:v2:node:k2:dGVuYW50LWE:42:bW9kZWw:request_dedup:0192abcd",
+	}
+	for _, k := range dedupMarkers {
+		if err := rdb.Set(ctx, k, "1", 0).Err(); err != nil {
+			t.Fatalf("seed dedup marker %s: %v", k, err)
+		}
+	}
+
+	rows, err := New(rdb, "ursm:v2:", nil).Collect(ctx)
+	if err != nil {
+		t.Fatalf("Collect aborted on dedup markers: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("row count=%d, want 1 — dedup markers must not become rows", len(rows))
+	}
+	if rows[0].CredentialID != 12 || rows[0].RawModel != "gpt-5.6-sol" {
+		t.Fatalf("unexpected identity: %+v", rows[0])
+	}
 }
 
 // TestWriterCollectsHealthStatusBridge pins the persist half of UT-UR-12

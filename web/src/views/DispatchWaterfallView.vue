@@ -15,6 +15,7 @@ import QueueWaterfallTimeline from '../components/QueueWaterfallTimeline.vue'
 import DispatchWaterfallToolbar from '../components/DispatchWaterfallToolbar.vue'
 import DispatchWaterfallStatus from '../components/DispatchWaterfallStatus.vue'
 import DispatchWaterfallDetail from '../components/DispatchWaterfallDetail.vue'
+import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 
 const router = useRouter()
 const loading = ref(false)
@@ -85,6 +86,14 @@ function openSession() {
   void router.push(`/admin/sessions/${encodeURIComponent(sid)}`)
 }
 
+function openFullscreen() {
+  const id = selected.value?.request_id?.trim()
+  if (!id) return
+  selected.value = null
+  selectedId.value = null
+  openRequestDetailPage(id, { tab: 'waterfall' }, router)
+}
+
 function startPoll() {
   stopPoll()
   if (!autoRefresh.value) return
@@ -146,6 +155,7 @@ onBeforeUnmount(stopPoll)
       :selected="selected"
       @close="selected = null; selectedId = null"
       @open-session="openSession"
+      @open-fullscreen="openFullscreen"
     />
   </div>
 </template>

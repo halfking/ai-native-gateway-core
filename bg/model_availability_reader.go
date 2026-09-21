@@ -2,11 +2,12 @@ package bg
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -42,9 +43,17 @@ func (r *ModelAvailabilityReader) Read(ctx context.Context, credentialID int, ra
 		return nil, nil
 	}
 	readStart := time.Now()
-	data, err := r.redis.HGetAll(ctx, modelAvailabilityKey(credentialID, rawModel)).Result()
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE.
+	// ErrKeyNotFound (key absent) collapses into the existing cache-miss
+	// nil-return path; TypedError / network errors propagate as the
+	// original code did.
+	data, err := redissafe.SafeHGetAll(ctx, r.redis, modelAvailabilityKey(credentialID, rawModel))
 	recordAvailabilityReadDuration(time.Since(readStart).Seconds())
 	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			recordAvailabilityCacheRead("availability_reader", "miss")
+			return nil, nil
+		}
 		return nil, err
 	}
 	if len(data) == 0 {
@@ -83,16 +92,23 @@ func (r *ModelAvailabilityReader) ReadByModel(ctx context.Context, rawModel stri
 	if !r.Enabled() {
 		return nil, nil
 	}
-	keys, err := loadAvailabilityIndex(ctx, r.redis)
-	if err != nil {
+	// KEYS → SCAN: KEYS 是 O(N) 全键扫描，会阻塞共享 Redis 主线程；
+	// SCAN 用 cursor 增量扫描替代，与 ScanKeys() 保持一致的模式。
+	pattern := fmt.Sprintf("llmgw:avail:*:%s", rawModel)
+	var keys []string
+	iter := r.redis.Scan(ctx, 0, pattern, 256).Iterator()
+	for iter.Next(ctx) {
+		keys = append(keys, iter.Val())
+	}
+	if err := iter.Err(); err != nil {
 		return nil, err
 	}
 	out := make([]ModelAvailabilitySnapshotWithCredential, 0, len(keys))
 	for _, key := range keys {
-		if !strings.HasSuffix(key, ":"+rawModel) {
-			continue
-		}
-		data, err := r.redis.HGetAll(ctx, key).Result()
+		// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE.
+		// Best-effort iteration — errors (including TypedError / ErrKeyNotFound)
+		// continue to the next key, same as the original HGetAll error path.
+		data, err := redissafe.SafeHGetAll(ctx, r.redis, key)
 		if err != nil || len(data) == 0 {
 			continue
 		}
@@ -121,27 +137,23 @@ func (r *ModelAvailabilityReader) ScanKeys(ctx context.Context, credentialID int
 	if !r.Enabled() {
 		return nil, nil
 	}
-	keys, err := loadAvailabilityIndex(ctx, r.redis)
-	if err != nil {
+	pattern := "llmgw:avail:*"
+	if credentialID > 0 {
+		pattern = fmt.Sprintf("llmgw:avail:%d:*", credentialID)
+	}
+	iter := r.redis.Scan(ctx, 0, pattern, 256).Iterator()
+	var keys []string
+	for iter.Next(ctx) {
+		keys = append(keys, iter.Val())
+		if len(keys) >= 4096 {
+			// Cap admin enumeration to keep the endpoint cheap.
+			break
+		}
+	}
+	if err := iter.Err(); err != nil {
 		return nil, err
 	}
-	if credentialID <= 0 {
-		if len(keys) > 4096 {
-			return keys[:4096], nil
-		}
-		return keys, nil
-	}
-	prefix := "llmgw:avail:" + strconv.Itoa(credentialID) + ":"
-	filtered := make([]string, 0, len(keys))
-	for _, key := range keys {
-		if strings.HasPrefix(key, prefix) {
-			filtered = append(filtered, key)
-			if len(filtered) >= 4096 {
-				break
-			}
-		}
-	}
-	return filtered, nil
+	return keys, nil
 }
 
 // ReadCredentials returns every cached availability entry for a single raw

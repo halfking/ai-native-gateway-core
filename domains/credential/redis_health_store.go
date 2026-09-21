@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -355,11 +356,12 @@ func (s *RedisHealthStore) LoadFromRedis(ctx context.Context) (int, error) {
 		key := iter.Val()
 		id := key[len(s.keyPrefix):]
 
-		// 读取hash
-		data, err := s.client.HGetAll(ctx, key).Result()
+		// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
+		data, err := redissafe.SafeHGetAll(ctx, s.client, key)
 		if err != nil {
+			// Do not log the full Redis key: it contains the credential ID.
 			s.logger.Warn("failed to load health state from redis",
-				"key", key, "error", err)
+				"operation", "hgetall", "error", err)
 			continue
 		}
 
@@ -403,7 +405,8 @@ func (s *RedisHealthStore) verifyConsistency(id string, memCred *Credential) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	data, err := s.client.HGetAll(ctx, s.key(id)).Result()
+	// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
+	data, err := redissafe.SafeHGetAll(ctx, s.client, s.key(id))
 	if err != nil {
 		return // 静默失败，不影响读取
 	}

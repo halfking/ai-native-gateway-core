@@ -18,7 +18,7 @@ func makeState(msgCount, tokenEst int, lastCompressedAt, recentlyCompressedAt in
 
 // trigger-1: token threshold
 func TestWindow_TokenTrigger(t *testing.T) {
-	// contextWindow=1000 tokens, threshold = 1000 * 0.85 * 3.5 = 2975 chars
+	// contextWindow=1000 tokens, threshold = 1000 * 0.80 * 3.5 = 2800 chars
 	// body is 3000 chars → should trigger
 	body := make([]byte, 3000)
 	state := makeState(5, 850, 0, 0)
@@ -109,8 +109,8 @@ func TestWindow_NilStateSmallBodyDoesNotTrigger(t *testing.T) {
 
 // trigger-7: boundary — exactly at token threshold → should NOT trigger
 func TestWindow_TokenThresholdExact(t *testing.T) {
-	// threshold = 1000 * 0.85 * 3.5 = 2975
-	body := make([]byte, 2975)
+	// threshold = 1000 * 0.80 * 3.5 = 2800
+	body := make([]byte, 2800)
 	state := makeState(5, 850, 0, 0)
 	res := ShouldTriggerWindow(body, state, 1000, false, time.Now())
 	if res.Reason == "sliding_window_token" {

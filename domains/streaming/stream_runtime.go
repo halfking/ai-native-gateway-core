@@ -16,6 +16,7 @@ type streamRuntimeConfig struct {
 	streamChunkTimeout       time.Duration
 	firstByteTimeout         time.Duration
 	keepaliveInterval        time.Duration
+	sseMaxLineBytes          int
 	enablePreStreamKeepalive bool
 	// 2026-07-15: content-gate buffers the first few chunks before writing
 	// to the client, so the executor can transparently failover an empty
@@ -53,6 +54,7 @@ func currentStreamRuntimeConfig() streamRuntimeConfig {
 				// tool-call contexts often exceed 120s to first byte.
 				firstByteTimeout:            durationSecondsOrDefault(cfg.FirstByteTimeout, 180*time.Second),
 				keepaliveInterval:           durationSecondsOrDefault(cfg.KeepaliveInterval, 15*time.Second),
+				sseMaxLineBytes:             positiveIntOrDefault(cfg.SSEMaxLineBytes, 16<<20),
 				enablePreStreamKeepalive:    cfg.EnablePreStreamKeepalive || envKeepaliveEnabled,
 				enableEmptyStreamGate:       cfg.EnableEmptyStreamGate && envEmptyGateEnabled,
 				emptyStreamEarlyEmptyChunks: earlyEmptyChunks,
@@ -67,6 +69,7 @@ func currentStreamRuntimeConfig() streamRuntimeConfig {
 		// 2026-08-04: 120→180s default for thinking/long-running models.
 		firstByteTimeout:            envDurationSeconds("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", 180*time.Second),
 		keepaliveInterval:           envDurationSeconds("LLM_GATEWAY_KEEPALIVE_INTERVAL", 15*time.Second),
+		sseMaxLineBytes:             envPositiveInt("LLM_GATEWAY_SSE_MAX_LINE_BYTES", 16<<20),
 		enablePreStreamKeepalive:    envKeepaliveEnabled,
 		enableEmptyStreamGate:       envEmptyGateEnabled,
 		emptyStreamEarlyEmptyChunks: earlyEmptyChunks,
@@ -90,6 +93,25 @@ func envDurationSeconds(key string, def time.Duration) time.Duration {
 		return def
 	}
 	return time.Duration(s) * time.Second
+}
+
+func positiveIntOrDefault(value, def int) int {
+	if value <= 0 {
+		return def
+	}
+	return value
+}
+
+func envPositiveInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
 }
 
 func envNonNegativeInt(key string, def int) int {

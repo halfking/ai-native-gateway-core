@@ -106,4 +106,10 @@ export default {
     node: 'Node {node}',
     model: 'Model {model}',
   },
+  attempts: {
+    provider: 'المزود {id}',
+    model: 'النموذج: {value}',
+    credential: 'بيانات الاعتماد: {value}',
+    empty: 'لا توجد محاولات توجيه بديلة مسجلة',
+  },
 }

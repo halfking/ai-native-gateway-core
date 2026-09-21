@@ -226,4 +226,5 @@ export default {
   unknown: '未探测',
   unreachable: '不可达',
   warning: '警示',
+  nameMappingDeleteConfirm: '確定要刪除這條對映嗎？',
 }

@@ -63,6 +63,20 @@ type ModeConfig struct {
 	// completion verdict to count as "done". Lower = more eager to declare
 	// completion (fewer continues), higher = more conservative.
 	CompletionConfidence float64
+
+	// Client-driven signal settings. These are goal-local gates; request
+	// capability booleans are supplied by the response layer and never read
+	// from the streaming package here.
+	ClientSignalEnabled          bool
+	ClientSignalMode             string
+	HandoffSignalThresholdTokens int
+	// ClientSignalOnToolCalls (2026-09-17) additionally emits a budget-free
+	// advisory gw-continue when a goal session ends a turn with
+	// finish_reason=tool_calls. The legacy self-call cannot execute tools,
+	// but a capability-declaring client runs its own tool loop and may stop
+	// it without finishing the goal — the advisory frame tells it the goal is
+	// still open. Opt-in: see 会话优化v4/18-Goal影子指令与续跑优化方案.md §4.
+	ClientSignalOnToolCalls bool
 	// MaxFollowUpDepth / MaxFollowUpsPerSession override the hard-coded
 	// follow-up engine limits in domains/streaming. Zero = use the engine
 	// defaults (MaxFollowUpDepth=15, MaxFollowUpsPerSession=50).
@@ -107,6 +121,16 @@ type Session struct {
 	CompletedAt       *time.Time
 	AuditResult       json.RawMessage
 	CreatedAt         time.Time
+
+	// ── Client-signal state (2026-09-03) ────────────────────────────────────
+	// ContinueAttempt is the number of client-driven continue signals claimed
+	// for this session. It is hydrated from goal_sessions so signal budgets
+	// survive process restarts.
+	ContinueAttempt         int
+	LastCompletionJudgement string
+	SubAgentsTotal          int
+	SubAgentsCompleted      int
+	SubAgentsPending        int
 
 	// ── Loop-detection tracking (2026-07-06) ─────────────────────────────
 	// ModelSwitchCount     how many times we've rotated to a fallback model.
@@ -155,9 +179,19 @@ type GoalStore interface {
 	RecordResponse(ctx context.Context, tenantID, sessionID string, responseHash string, resetOnProgress bool) (int, error)
 	// AtomicModelSwitch atomically bumps model_switch_count if under maxAllowed,
 	// sets current_model to newModel, and resets auto_continue_count to 0 so the
-	// rotated model gets a fresh continue budget. Returns true if this caller
-	// won the rotation (false = already at the switch cap).
+	// rotated model gets a fresh continue budget. Returns true if this caller won
+	// the rotation (false = already at the switch cap).
 	AtomicModelSwitch(ctx context.Context, tenantID, sessionID, newModel string, maxAllowed int) (bool, error)
+
+	// Client-signal persistence is optional so existing GoalStore test doubles
+	// and handoff-only stores remain source-compatible.
+}
+
+// GoalClientSignalStore provides optional durable client-signal state.
+type GoalClientSignalStore interface {
+	ClaimContinueAttempt(ctx context.Context, tenantID, sessionID string, maxAllowed int) (attempt int, claimed bool, err error)
+	RecordSubAgents(ctx context.Context, tenantID, sessionID string, total, completed, pending int) error
+	RecordLastCompletionJudgement(ctx context.Context, tenantID, sessionID, judgement string) error
 }
 
 // allowedNonTerminalStates lists the source states from which a transition
@@ -222,12 +256,15 @@ func (h *ModeHook) InterceptNonStream(ctx context.Context, req *response.Interce
 		slog.Info("goal_mode_activated", "session_id", req.SessionID, "method", reason)
 
 		goalSession = &Session{
-			SessionID:      req.SessionID,
-			TenantID:       req.TenantID,
-			State:          StateActive,
-			OriginalGoal:   "Goal from session",
-			LastActivityAt: time.Now(),
-			CreatedAt:      time.Now(),
+			SessionID:          req.SessionID,
+			TenantID:           req.TenantID,
+			State:              StateActive,
+			OriginalGoal:       "Goal from session",
+			LastActivityAt:     time.Now(),
+			CreatedAt:          time.Now(),
+			SubAgentsTotal:     req.SubAgentsTotal,
+			SubAgentsCompleted: req.SubAgentsCompleted,
+			SubAgentsPending:   req.SubAgentsPending,
 		}
 		if err := h.db.CreateSession(ctx, goalSession); err != nil {
 			slog.Warn("failed to create goal session", "error", err)
@@ -246,7 +283,7 @@ func (h *ModeHook) InterceptNonStream(ctx context.Context, req *response.Interce
 	// between concurrent tenants — passing it as an argument keeps each
 	// tenant's verdict isolated.
 	minConfidence := h.loadFloat(req.TenantID, "goal.completion_confidence", h.config.CompletionConfidence)
-	completed, confidence, reason := h.detector.IsCompleted(ctx, req, minConfidence)
+	completed, confidence, reason := h.detector.IsCompletedWithSubAgents(ctx, req, minConfidence, goalSession.SubAgentsPending)
 	if completed {
 		slog.Info("task_completed", "session_id", req.SessionID, "confidence", confidence, "reason", reason)
 		// CompareAndSetState guards against the loop-exhaustion / provider-retry
@@ -301,10 +338,35 @@ func (h *ModeHook) decideAndContinue(ctx context.Context, req *response.Intercep
 
 	// Path 1: still within budget and the turn looks unfinished → normal continue.
 	if decision.canContinue && h.shouldAutoContinue(ctx, req, sess, req.FinishReason, alreadyKnownIncomplete) {
+		if signal := h.tryBuildClientSignal(ctx, req, sess); signal != nil {
+			return signal, nil
+		}
 		if followUp := h.tryAtomicContinue(ctx, req, ""); followUp != nil {
+
 			return followUp, nil
 		}
 		return nil, nil
+	}
+
+	// Path 1.5 (2026-09-17): tool_calls ending with a client-driven
+	// capability. shouldAutoContinue deliberately declines tool_calls turns —
+	// the legacy self-call cannot execute tools — but a capability-declaring
+	// client runs its own tool loop and may stop it without finishing the
+	// goal. An advisory gw-continue (no hint, no budget consumption) tells it
+	// the goal is still open. Opt-in via goal.client_signal_on_tool_calls;
+	// see 会话优化v4/18-Goal影子指令与续跑优化方案.md §4.
+	//
+	// R34 (2026-09-17): the advisory yields whenever the loop detector wants a
+	// model rotation (decision.switchModel). switchModel generation is
+	// finish_reason-agnostic (budget exhaustion and repeat detection both fire
+	// on tool_calls turns), so without this guard a session whose every turn
+	// ends in tool_calls would emit advisories forever while the rotation
+	// escape channel — and the switch_budget_exhausted give-up that depends on
+	// AtomicModelSwitch actually running — is permanently starved.
+	if req.FinishReason == "tool_calls" && !decision.giveUp && decision.switchModel == "" && h.toolCallsSignalEnabled(req.TenantID) {
+		if signal := h.tryBuildAdvisoryToolSignal(ctx, req, sess); signal != nil {
+			return signal, nil
+		}
 	}
 
 	// Path 2: loop detected and we have a model to rotate to.
@@ -415,7 +477,6 @@ func (h *ModeHook) tryAtomicContinue(ctx context.Context, req *response.Intercep
 	won, err := h.db.AtomicAutoContinue(ctx, req.TenantID, req.SessionID, maxContinue)
 	if err != nil {
 		slog.Warn("atomic_auto_continue_failed", "error", err, "session_id", req.SessionID)
-		// Fall back to non-atomic increment to avoid losing the continue.
 		_ = h.db.IncrementAutoContinueCount(ctx, req.TenantID, req.SessionID)
 		won = true
 	}
@@ -428,7 +489,110 @@ func (h *ModeHook) tryAtomicContinue(ctx context.Context, req *response.Intercep
 	}
 }
 
-// InterceptStreamChunk is a no-op for goal mode.
+func (h *ModeHook) tryBuildClientSignal(ctx context.Context, req *response.InterceptRequest, sess *Session) *response.InterceptResult {
+	if !h.clientSignalEnabled(req.TenantID) {
+		return nil
+	}
+	mode := h.loadString(req.TenantID, "goal.client_signal_mode", h.config.ClientSignalMode)
+	kind := "gw-continue"
+	if req.HandoffSignalAllowed && req.TokensUsed >= h.loadInt(req.TenantID, "goal.handoff_signal_threshold_tokens", h.config.HandoffSignalThresholdTokens) && (mode == "auto" || mode == "handoff" || mode == "both") {
+		kind = "gw-handoff"
+	} else if mode == "handoff" {
+		return nil
+	}
+	if kind == "gw-continue" {
+		if !req.ClientSignalAllowed || !(mode == "" || mode == "auto" || mode == "continue" || mode == "both") {
+			return nil
+		}
+	}
+	max := h.loadInt(req.TenantID, "goal.max_auto_continue_count", h.config.MaxAutoContinueCount)
+	attempt := sess.ContinueAttempt
+	if kind == "gw-continue" {
+		var claimed bool
+		var err error
+		if signalStore, ok := h.db.(GoalClientSignalStore); ok {
+			attempt, claimed, err = signalStore.ClaimContinueAttempt(ctx, req.TenantID, req.SessionID, max)
+		} else {
+			return nil
+		}
+		if err != nil || !claimed {
+			return nil
+		}
+	}
+	payload := map[string]interface{}{
+		"type": "gw_continue", "version": 1, "reason": "goal_incomplete",
+		"request_id": req.RequestID, "session_id": req.SessionID, "attempt": attempt,
+		"max_attempts": max, "hint": "请继续下一步", "tokens_used": req.TokensUsed,
+		"context_window": req.ContextWindow, "sub_agents_pending": sess.SubAgentsPending,
+	}
+	if kind == "gw-handoff" {
+		payload["type"] = "gw_handoff"
+		payload["reason"] = "context_near_limit"
+		payload["handoff_threshold"] = h.loadInt(req.TenantID, "goal.handoff_signal_threshold_tokens", h.config.HandoffSignalThresholdTokens)
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	return &response.InterceptResult{ClientSignalKind: kind, ClientSignalPayload: body, ClientSignalAttempts: attempt, Action: kind}
+}
+
+func (h *ModeHook) clientSignalEnabled(tenantID string) bool {
+	return h.loadBool(tenantID, "goal.client_signal_enabled", h.config.ClientSignalEnabled)
+}
+
+// toolCallsSignalEnabled reports whether the advisory tool_calls signal
+// (Path 1.5) is enabled for the tenant. Independent of clientSignalEnabled:
+// the advisory frame is only meaningful to capability-declaring clients, but
+// an operator may want it without switching the whole continue budget flow
+// over to client-driven mode.
+func (h *ModeHook) toolCallsSignalEnabled(tenantID string) bool {
+	return h.loadBool(tenantID, "goal.client_signal_on_tool_calls", h.config.ClientSignalOnToolCalls)
+}
+
+// tryBuildAdvisoryToolSignal emits a budget-free advisory gw-continue when a
+// goal turn ended with finish_reason=tool_calls (Path 1.5).
+//
+// Differences from the regular continue signal (tryBuildClientSignal):
+//   - "advisory": true and NO "hint" field — the payload is status
+//     information ("goal still open"), not an instruction to append the hint
+//     as a user message. Appending a hint mid-tool-loop would pollute the
+//     client conversation between tool rounds.
+//   - No ClaimContinueAttempt: tool-heavy sessions would exhaust the small
+//     continue budget before a genuinely stuck situation arrives. `attempt`
+//     merely echoes the current value.
+//
+// Gates: the client must have declared the continue capability (legacy
+// clients never see client signals), client_signal_mode must allow continue,
+// and pending sub-agents suppress the frame — work is still in flight.
+// Path 1's shouldAutoContinue never self-calls for tool_calls turns; Path 2
+// (model switch) is a separate decision that takes precedence over this
+// advisory — see decideAndContinue.
+func (h *ModeHook) tryBuildAdvisoryToolSignal(ctx context.Context, req *response.InterceptRequest, sess *Session) *response.InterceptResult {
+	if !req.ClientSignalAllowed || sess.SubAgentsPending > 0 {
+		return nil
+	}
+	mode := h.loadString(req.TenantID, "goal.client_signal_mode", h.config.ClientSignalMode)
+	if !(mode == "" || mode == "auto" || mode == "continue" || mode == "both") {
+		return nil
+	}
+	payload := map[string]interface{}{
+		"type": "gw_continue", "version": 1, "reason": "goal_incomplete",
+		"advisory": true, "finish_reason": "tool_calls",
+		"request_id": req.RequestID, "session_id": req.SessionID,
+		"attempt":            sess.ContinueAttempt,
+		"max_attempts":       h.loadInt(req.TenantID, "goal.max_auto_continue_count", h.config.MaxAutoContinueCount),
+		"tokens_used":        req.TokensUsed,
+		"context_window":     req.ContextWindow,
+		"sub_agents_pending": sess.SubAgentsPending,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	return &response.InterceptResult{ClientSignalKind: "gw-continue", ClientSignalPayload: body, ClientSignalAttempts: sess.ContinueAttempt, Action: "gw-continue"}
+}
+
 func (h *ModeHook) InterceptStreamChunk(ctx context.Context, chunk []byte, meta *response.StreamMeta) (*response.ChunkResult, error) {
 	return nil, nil
 }
@@ -456,13 +620,19 @@ func (h *ModeHook) InterceptStreamEnd(ctx context.Context, meta *response.Stream
 	}
 
 	req := &response.InterceptRequest{
-		SessionID:    meta.SessionID,
-		RequestID:    meta.RequestID,
-		TenantID:     meta.TenantID,
-		ClientModel:  meta.ClientModel,
-		ResponseBody: meta.ResponseBody,
-		FinishReason: meta.FinishReason,
-		IsStreaming:  true,
+		SessionID:            meta.SessionID,
+		RequestID:            meta.RequestID,
+		TenantID:             meta.TenantID,
+		ClientModel:          meta.ClientModel,
+		ResponseBody:         meta.ResponseBody,
+		FinishReason:         meta.FinishReason,
+		IsStreaming:          true,
+		TokensUsed:           meta.TokensUsed,
+		ContextWindow:        meta.ContextWindow,
+		MessageCount:         meta.MessageCount,
+		FollowUpAction:       meta.FollowUpAction,
+		ClientSignalAllowed:  meta.ClientSignalAllowed,
+		HandoffSignalAllowed: meta.HandoffSignalAllowed,
 	}
 
 	// If we have a reassembled body, treat this exactly like the non-stream
@@ -470,7 +640,7 @@ func (h *ModeHook) InterceptStreamEnd(ctx context.Context, meta *response.Stream
 	// decideAndContinue (which also handles model switching on loops).
 	if len(meta.ResponseBody) > 0 {
 		minConfidence := h.loadFloat(meta.TenantID, "goal.completion_confidence", h.config.CompletionConfidence)
-		completed, confidence, reason := h.detector.IsCompleted(ctx, req, minConfidence)
+		completed, confidence, reason := h.detector.IsCompletedWithSubAgents(ctx, req, minConfidence, goalSession.SubAgentsPending)
 		if completed {
 			slog.Info("task_completed_stream", "session_id", meta.SessionID, "confidence", confidence, "reason", reason)
 			if won, _ := h.db.CompareAndSetState(ctx, meta.TenantID, meta.SessionID, allowedNonTerminalStates(), StateCompleted); !won {
@@ -492,8 +662,12 @@ func (h *ModeHook) InterceptStreamEnd(ctx context.Context, meta *response.Stream
 		// Body path already ran IsCompleted and got false → known-incomplete.
 		if res, _ := h.decideAndContinue(ctx, req, goalSession, true); res != nil {
 			return &response.EndResult{
-				InjectFollowUp: res.InjectFollowUp,
-				Action:         res.Action,
+				InjectFollowUp:       res.InjectFollowUp,
+				Action:               res.Action,
+				Metadata:             res.Metadata,
+				ClientSignalKind:     res.ClientSignalKind,
+				ClientSignalPayload:  res.ClientSignalPayload,
+				ClientSignalAttempts: res.ClientSignalAttempts,
 			}, nil
 		}
 		return nil, nil
@@ -616,7 +790,10 @@ func (h *ModeHook) triggerAudit(ctx context.Context, req *response.InterceptRequ
 		"model":    model,
 		"messages": []map[string]string{{"role": "user", "content": auditPrompt}},
 		"stream":   false,
-		"metadata": map[string]string{"task_type_hint": "code_audit"},
+		// R37 (R35-R2 附带清账): the previous "metadata": {"task_type_hint":
+		// "code_audit"} had zero consumers since its introduction — the L1
+		// classifier owns task typing for auto bodies. Reintroduce only with
+		// a wired reader in the autoroute entry path.
 	}
 
 	body, _ := json.Marshal(reqBody)

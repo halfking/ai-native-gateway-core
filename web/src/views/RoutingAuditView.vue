@@ -3,7 +3,7 @@
 
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { localeRef } from '../i18n'
+import { fmtDateTime24h } from '../i18n/useFormat'
 import {
   getRoutingAudit,
   type RoutingAuditEntry,
@@ -61,11 +61,6 @@ function shortModel(m?: string): string {
   return m.length > 18 ? m.slice(0, 15) + '...' : m
 }
 
-function fmtDate(d?: string): string {
-  if (!d) return '—'
-  return new Date(d).toLocaleString(localeRef.value)
-}
-
 const summary = computed(() => {
   const total = entries.value.length
   return {
@@ -91,15 +86,15 @@ onMounted(load)
       </div>
       <div class="summary-card">
         <div class="summary-label">{{ t('routingAudit.summary.inserts') }}</div>
-        <div class="summary-value" style="color: #22c55e">{{ summary.insert }}</div>
+        <div class="summary-value" style="color: var(--success)">{{ summary.insert }}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">{{ t('routingAudit.summary.updates') }}</div>
-        <div class="summary-value" style="color: #3b82f6">{{ summary.update }}</div>
+        <div class="summary-value" style="color: var(--accent)">{{ summary.update }}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">{{ t('routingAudit.summary.deletes') }}</div>
-        <div class="summary-value" style="color: #ef4444">{{ summary.delete }}</div>
+        <div class="summary-value" style="color: var(--danger)">{{ summary.delete }}</div>
       </div>
     </div>
 
@@ -166,7 +161,7 @@ onMounted(load)
         <tbody>
           <template v-for="e in entries" :key="e.id">
             <tr :class="['audit-row', actionClass(e.action)]">
-              <td class="mono">{{ fmtDate(e.ts) }}</td>
+              <td class="mono">{{ fmtDateTime24h(e.ts) }}</td>
               <td>
                 <span :class="['action-badge', actionClass(e.action)]">
                   {{ actionLabel(e.action) }}
@@ -282,6 +277,8 @@ h2 {
 }
 .filter-bar input,
 .filter-bar select {
+  /* width:auto 覆盖全局 input/select width:100%，避免筛选控件占满整行 */
+  width: auto;
   padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--bg);
@@ -385,7 +382,7 @@ h2 {
 }
 .btn-expand:hover { background: var(--kx-text); }
 .expand-row {
-  background: #050505;
+  background: var(--bg-subtle);
 }
 .expand-row td {
   padding: 12px 16px;

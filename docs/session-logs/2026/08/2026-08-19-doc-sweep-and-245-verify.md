@@ -60,7 +60,7 @@ ps -p 72414 -o pid,etime,pcpu  # ZCode Helper Renderer 仍跑，CPU 90%+
 
 ### 3.2 P3 文件 sweep（rule 39 铁律 1）
 
-**Sweep 1 - 14.103.112.184 IP 引用**:
+**Sweep 1 - <env:HOST_184_IP> IP 引用**:
 - `docs/06-deployment/01-environments/deployment/CONFIGURATION_GUIDE.md:19,20,130`
   → 全部替换为 154/252 占位符
 - `cmd/compression-bench/README.md:212-220` → 252 (PG17) 端口转发 + 占位符
@@ -103,16 +103,16 @@ go test -short -count=1 -timeout=120s \
   ./admin/ ./provider/ ./bg/ ./domains/ursm/...           # 全部 PASS
 
 # 4. 245 healthz 验证
-curl http://8.136.114.245:8781/healthz                    # OK
-curl http://8.136.114.245:8781/api/system/version         # 2.5.0-b3036166-20260818-1618
+curl http://<env:HOST_245_IP>:8781/healthz                    # OK
+curl http://<env:HOST_245_IP>:8781/api/system/version         # 2.5.0-b3036166-20260818-1618
 
 # 5. 245 binary 含 applyURSMOverlay
 strings /opt/llm-gateway-go/current/gateway | grep applyURSMOverlay
 # → github.com/kaixuan/llm-gateway-go/admin.applyURSMOverlay ✓
 
 # 6. 245 reveal-metric（handoff §4.2 关键验证）
-curl -H "Authorization: Bearer sk-admin-llm-gateway-2026" \
-  http://8.136.114.245:8781/metrics | grep llmgw_credential_reveal
+curl -H "Authorization: Bearer <env:LLM_GATEWAY_ADMIN_API_KEY>" \
+  http://<env:HOST_245_IP>:8781/metrics | grep llmgw_credential_reveal
 # → llmgw_credential_reveal_failure_total{provider_id="0",reason="..."} 0
 #   7 个 reason 全部 pre-warmed (cached/decrypt_error/not_configured/not_found/other/rotation/unknown_format)
 ```
@@ -133,7 +133,7 @@ handoff §4.2 目标: "deploy b3036166d 修复版本到 245 + curl /metrics 验�
 1. **`deploy/sql/DEPLOYMENT_PLAN.md` 归档**: 整篇 v1.0 关于 184 + PG/Citus 部署。
    应 mv 到 `docs/archive/2026-07/specs/deployment-plan-v1-184-pg-citus.md` 并加
    deprecation banner。本会话未做（避免又一轮 ZCode rebase 循环）。
-2. **`envs/` 仓库 Veritrans&9527 默认密码**: env-injector list 输出明文暴露。
+2. **`envs/` 仓库 __REDACTED_SSH_PASSWORD__ 默认密码**: env-injector list 输出明文暴露。
    跨项目 SSOT 设计如此（rule 47 §3 双写明文 + 加密），但屏幕/日志泄露风险
    由 owner 决策 rotation 周期。本会话**不擅自动**（rule 10 §2.3 human_only）。
 

@@ -1,6 +1,7 @@
 // Auto-translated draft (ar-SA) · 2026-07-02 · please review
 // common.ts — نصوص مشتركة: الأزرار، الحالات، الملاحظات، الترقيم.
 export default {
+  credentialFallback: 'بيانات اعتماد',
   button: {
     cancel: 'إلغاء',
     confirm: 'تأكيد',
@@ -77,6 +78,8 @@ export default {
   pagination: {
     total: 'إجمالي {n} عنصر',
     page: 'الصفحة {n}',
+    pageOf: "صفحة {page} من {pages}",
+    perPage: "لكل صفحة",
     pageSize: '{n} عناصر لكل صفحة',
     previous: 'السابق',
     next: 'التالي',
@@ -121,6 +124,7 @@ export default {
   cancel: 'إلغاء',
   close: 'إغلاق',
   confirm: 'تأكيد',
+  confirmTitle: 'يرجى التأكيد',
   count: 'العدد',
   create: 'إنشاء',
   createdAt: 'تاريخ الإنشاء',
@@ -132,6 +136,7 @@ export default {
   enabled: 'مفعّل',
   lastOccurred: 'آخر حدوث',
   loading: 'جارٍ التحميل…',
+  never: 'مطلقًا',
   module: 'الوحدة',
   no: 'لا',
   refresh: 'تحديث',

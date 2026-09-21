@@ -149,5 +149,7 @@ export default {
       minutes: '{n} min',
       hours: '{n} h',
     },
-  }
+  },
+  rulesDeleteConfirm: 'Supprimer cette règle ?',
+  approversDeleteConfirm: 'Supprimer cet approbateur ?',
 }

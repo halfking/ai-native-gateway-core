@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -55,7 +54,7 @@ func (h *Handler) updateModelModality(w http.ResponseWriter, r *http.Request, id
 		Modality string `json:"modality"`
 		Reason   string `json:"reason,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}

@@ -8,7 +8,7 @@ graph TD
     Landing --> ClickSignIn[点击 Sign in]
     ClickSignIn --> LoginModal[登录弹窗打开<br/>显示用户名/密码输入框]
 
-    LoginModal --> FillForm[填写表单<br/>admin / Veritrans&9527]
+    LoginModal --> FillForm[填写表单<br/>admin / __REDACTED_SSH_PASSWORD__]
     FillForm --> SubmitLogin[点击登录按钮]
 
     SubmitLogin --> AuthAPI[POST /api/auth/token]

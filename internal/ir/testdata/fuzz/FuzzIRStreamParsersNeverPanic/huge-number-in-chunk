@@ -1,0 +1,2 @@
+go test fuzz v1
+string("data: {\"choices\":[{\"delta\":{\"content\":\"\\u0000\"},\"usage\":{\"total_tokens\":1e999}}]}")

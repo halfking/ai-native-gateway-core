@@ -1,0 +1,622 @@
+[
+  {
+    "sample_hash": "0f30f2f17c002879",
+    "sample_idx": 0,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 3.832828998565674,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.3125979900360107,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.022686243057251,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.9387528896331787,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "29c1dd97c37f5459",
+    "sample_idx": 1,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.401554822921753,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 4.013063907623291,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.0503389835357666,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.7328910827636719,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "d5f3bf8534085862",
+    "sample_idx": 2,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.809541940689087,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.06158709526062,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.0430550575256348,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.869049072265625,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "7d576fddae09c569",
+    "sample_idx": 3,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.27902889251709,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 3.127652168273926,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.0481657981872559,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.657750129699707,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "0dfd1eb88184710d",
+    "sample_idx": 4,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 3.3262929916381836,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.8174121379852295,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.0297348499298096,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.6658339500427246,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "660c6b288099347c",
+    "sample_idx": 5,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": false,
+        "content": "",
+        "latency": 5.09525465965271,
+        "error": "HTTP 503: {\"error\":{\"code\":\"model_not_found\",\"gateway_debug\":{\"attempts\":null,\"kind\":\"\",\"retryable\":false,\"stage\":\"execution\",\"tried\":0},\"kind\":\"no_candidates\",\"message\":\"No available provider for model 'claude"
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "已了解。我看到系统中有很多可用的技能，涵盖了从代码审查、部署、文档处理到安全测试等各个方面。\n\n如果你需要使用其中任何一个技能，或者需要我帮助完成某个任务，请告诉我具体需求。",
+        "latency": 5.932810068130493,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": false,
+        "content": "",
+        "latency": 2.302605152130127,
+        "error": "'content'"
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "<tool_call>\n<function=Read>\n<parameter=file_path>\n/Users/xutaohuang/.agents/skills/llm-gateway-deploy-test/SKILL.md\n</parameter>\n</function>\n</tool_call>",
+        "latency": 1.5062661170959473,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "90c628e9666656d8",
+    "sample_idx": 6,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 4.137310028076172,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 3.096575975418091,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.953948974609375,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.6980950832366943,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "716448297d69fd25",
+    "sample_idx": 7,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.3726441860198975,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.617252826690674,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.0287261009216309,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.6194748878479004,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "3f6429959a45ffff",
+    "sample_idx": 8,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.8505499362945557,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.367408037185669,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.0512769222259521,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.6228630542755127,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "d8ec02871c4d6f89",
+    "sample_idx": 9,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.9475290775299072,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.20355486869812,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.0571436882019043,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.6174569129943848,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "8508401bf32e6932",
+    "sample_idx": 10,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.7264389991760254,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 4.415264129638672,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.0429351329803467,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.6277968883514404,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "02662bb082afcbbf",
+    "sample_idx": 11,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.742602825164795,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.2831497192382812,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.0806689262390137,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.6223359107971191,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "cb03098d69a20712",
+    "sample_idx": 12,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.416365146636963,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 4.197304010391235,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.04805588722229,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.8202569484710693,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "a1189f9d1825e3d8",
+    "sample_idx": 13,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 3.0295348167419434,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 4.078994035720825,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.0222792625427246,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.6123497486114502,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "b8ce000c8984b83e",
+    "sample_idx": 14,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.588887929916382,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.0924642086029053,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.068720817565918,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.6346240043640137,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "5ee06a618c5596f4",
+    "sample_idx": 15,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.625732183456421,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 3.716014862060547,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.0642659664154053,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.6265480518341064,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "50aeb45f4c63d169",
+    "sample_idx": 16,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 3.556735038757324,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.373778820037842,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.0584619045257568,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.8412182331085205,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "ba6ad817f2c09342",
+    "sample_idx": 17,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 1.9888980388641357,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.1169888973236084,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.0500402450561523,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.6303019523620605,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "b75a47bc3e6e08f4",
+    "sample_idx": 18,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.728562831878662,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.07194185256958,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.0344603061676025,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.6178121566772461,
+        "error": null
+      }
+    }
+  },
+  {
+    "sample_hash": "5113336a7dd920e6",
+    "sample_idx": 19,
+    "gold_label": null,
+    "results": {
+      "claude-sonnet-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.5654709339141846,
+        "error": null
+      },
+      "claude-opus-5": {
+        "success": true,
+        "content": "pong",
+        "latency": 2.373445987701416,
+        "error": null
+      },
+      "qwen-baseline": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 1.0297038555145264,
+        "error": null
+      },
+      "qwen-dflash2": {
+        "success": true,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "latency": 0.6224660873413086,
+        "error": null
+      }
+    }
+  }
+]

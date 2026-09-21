@@ -16,6 +16,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: []
   'open-session': []
+  'open-fullscreen': []
 }>()
 
 const laid = computed(() => layoutRows([props.selected]))
@@ -44,6 +45,11 @@ function credentialLabel(id: number): string {
           </p>
         </div>
         <div class="actions">
+          <button
+            class="btn btn-sm"
+            type="button"
+            @click="emit('open-fullscreen')"
+          >全屏详情</button>
           <button
             v-if="selected.session_id"
             class="btn btn-sm"

@@ -141,8 +141,7 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 			SUM(COALESCE(rl.outbound_token_est, 0))::bigint AS total_tok_after,
 			SUM(CASE WHEN rb.outbound_body IS NOT NULL THEN COALESCE(rl.outbound_token_est, 0) ELSE 0 END)::bigint AS compressed_tok
 		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb
-		  ON rb.request_id = rl.request_id
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`
 		GROUP BY strategy
@@ -169,6 +168,11 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		}
 		result.StrategyDistribution[strategy] = cnt
 		totalToksAfter += int64(tokAfter)
+	}
+	if err := aggRows.Err(); err != nil {
+		slog.Warn("compression_stats agg iteration failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
 	}
 
 	if result.TotalRequests > 0 {
@@ -237,6 +241,9 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 				result.TokenBandForced = &v
 			}
 		}
+		if err := bandRows.Err(); err != nil {
+			slog.Warn("compression_stats band iteration failed", "error", err)
+		}
 	}
 
 	rangeHours := to.Sub(from).Hours()
@@ -255,8 +262,7 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 			COUNT(*) AS total,
 			COUNT(rb.outbound_body)::int AS compressed
 		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb
-		  ON rb.request_id = rl.request_id
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`
 		GROUP BY bucket
@@ -285,6 +291,9 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 				Compressed: b.Compressed,
 				Rate:       rate,
 			})
+		}
+		if err := bucketRows.Err(); err != nil {
+			slog.Warn("compression_stats bucket iteration failed", "error", err)
 		}
 	}
 

@@ -88,7 +88,7 @@ export interface BoardQuery {
   provider_id?: number
 }
 
-export function fetchDashboardBoard(params: BoardQuery = {}): Promise<BoardPayload> {
+export function fetchDashboardBoard(params: BoardQuery = {}, signal?: AbortSignal): Promise<BoardPayload> {
   const qs = new URLSearchParams()
   if (params.start && params.end) {
     qs.set('start', params.start)
@@ -100,7 +100,7 @@ export function fetchDashboardBoard(params: BoardQuery = {}): Promise<BoardPaylo
   if (params.provider_id != null) qs.set('provider_id', String(params.provider_id))
   const q = qs.toString()
   const suffix = q ? `?${q}&include_operational=1` : '?include_operational=1'
-  return req<BoardPayload>('GET', `/api/admin/dashboard/board${suffix}`)
+  return req<BoardPayload>('GET', `/api/admin/dashboard/board${suffix}`, undefined, { signal })
 }
 
 export function fetchBoardOperational(): Promise<BoardOperationalPayload> {

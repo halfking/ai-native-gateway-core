@@ -1431,4 +1431,5 @@ promptInjectionCategories: {
     promptInjectionCategoryLegacy: '兼容旧分类',
     promptInjectionCategoryUnknown: '其他',
   },
+  metaTitleClearConfirm: 'このセッションのタイトルをクリアしますか？',
 }

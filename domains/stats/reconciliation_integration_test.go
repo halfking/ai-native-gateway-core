@@ -101,22 +101,30 @@ func TestReconciliation_PostgreSQL(t *testing.T) {
 
 	// Insert usage_facts (source of truth)
 	_, err = conn.Exec(ctx, `
-		INSERT INTO usage_facts 
-			(event_id, request_id, occurred_at, tenant_id, traffic_class, status,
-			 provider_id, canonical_id, raw_model_name, 
-			 prompt_tokens, completion_tokens, total_tokens, cost_amount, credits_charged)
-		VALUES 
-			('evt1', 'req1', $1, 'tenant1', 'business', 'success', 1, 10, 'gpt-4', 100, 50, 150, 0.01, 150),
-			('evt2', 'req2', $1, 'tenant1', 'business', 'success', 1, 10, 'gpt-4', 200, 100, 300, 0.02, 300),
-			('evt3', 'req3', $1, 'tenant1', 'business', 'error', 1, 10, 'gpt-4', 50, 0, 50, 0.005, 50)
-	`, today.Add(12*time.Hour))
+			INSERT INTO usage_facts
+				(event_id, request_id, revision, occurred_at, tenant_id, traffic_class, status,
+				 provider_id, canonical_id, raw_model_name,
+				 prompt_tokens, completion_tokens, total_tokens, cost_amount, credits_charged)
+			VALUES
+				('evt1', 'req1', 1, $1, 'tenant1', 'business', 'success', 1, 10, 'gpt-4', 90, 40, 130, 0.009, 130),
+				('evt1', 'req1', 2, $1, 'tenant1', 'business', 'success', 1, 10, 'gpt-4', 110, 60, 170, 0.011, 170),
+				('evt2', 'req2', 1, $1, 'tenant1', 'business', 'success', 1, 10, 'gpt-4', 200, 100, 300, 0.02, 300),
+				('evt3', 'req3', 1, $1, 'tenant1', 'business', 'error', 1, 10, 'gpt-4', 50, 0, 50, 0.005, 50)
+		`, today.Add(12*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.Exec(ctx, `
+			INSERT INTO stats_event_dedup (event_id, occurred_at)
+			VALUES ('evt1', $1), ('evt2', $1), ('evt3', $1)
+		`, today.Add(12*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Insert stats_usage_daily with intentional small discrepancy (within auto-repair threshold)
-	// Facts: 3 requests, 2 success, 1 failure, 350 prompt, 150 completion, 500 total, 0.035 cost, 500 credits
-	// Projection: slightly off by ~1% to trigger auto-repair
+	// Facts (latest dedup revision): 3 requests, 2 success, 1 failure,
+	// 360 prompt, 160 completion, 520 total, 0.036 cost, 520 credits.
+	// The stale revision for evt1 must not contribute to reconciliation.
 	_, err = conn.Exec(ctx, `
 		INSERT INTO stats_usage_daily
 			(day_utc, tenant_id, provider_id, canonical_id, raw_model_name, traffic_class,

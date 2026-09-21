@@ -11,10 +11,12 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
@@ -41,6 +43,69 @@ import (
 
 // responsesScaffold holds the IDs and writer state shared by both
 // orchestrators. Created once per stream, used until response.completed.
+const (
+	// These limits keep a malformed or unusually verbose upstream stream from
+	// retaining unbounded data while the bridge waits for its terminal event.
+	maxResponsesBridgeTextBytes          = 4 * 1024 * 1024
+	maxResponsesBridgeToolArgumentsBytes = 1 * 1024 * 1024
+)
+
+// errResponsesTerminalWrite signals that at least one terminal SSE event
+// failed to reach the wire (or capturer) — callers must not latch the
+// attempt gate on a half-written terminal.
+var errResponsesTerminalWrite = errors.New("responses terminal write failed")
+
+type responsesToolTerminalState struct {
+	ID        string
+	Name      string
+	Arguments strings.Builder
+}
+
+// responsesToolHold implements arg-first lazy opening for the Responses
+// bridges, mirroring the pendingArgs hold in anthropic_stream.go: an
+// argument fragment whose function name has not arrived yet must never
+// reach the client as response.function_call_arguments.delta. The item
+// would dangle without a prior response.output_item.added (the serializer
+// only opens an item once Name is known) and the terminal nameless guard
+// would then omit the call entirely, leaving the client holding unusable
+// deltas for an item that never existed. Fragments are buffered per tool
+// index (bounded) and replayed as the first delta when the name arrives.
+type responsesToolHold struct {
+	opened  map[int]bool
+	pending map[int]string
+}
+
+func newResponsesToolHold() *responsesToolHold {
+	return &responsesToolHold{opened: make(map[int]bool), pending: make(map[int]string)}
+}
+
+// adjust rewrites one tool-call delta in place so serialization stays
+// consistent with what the client has already seen. Returns false when the
+// buffered prefix would exceed the tool-argument bound (caller aborts with
+// conversionOverflow, matching the bounded-accumulator discipline).
+func (h *responsesToolHold) adjust(tc *ir.StreamToolCallDelta) bool {
+	if tc.Name != "" {
+		if !h.opened[tc.Index] {
+			h.opened[tc.Index] = true
+			if pending := h.pending[tc.Index]; pending != "" {
+				tc.Arguments = pending + tc.Arguments
+			}
+			delete(h.pending, tc.Index)
+		}
+		return true
+	}
+	if tc.Arguments == "" || h.opened[tc.Index] {
+		return true
+	}
+	combined := h.pending[tc.Index] + tc.Arguments
+	if len(combined) > maxResponsesBridgeToolArgumentsBytes {
+		return false
+	}
+	h.pending[tc.Index] = combined
+	tc.Arguments = ""
+	return true
+}
+
 type responsesScaffold struct {
 	w           http.ResponseWriter
 	flusher     http.Flusher
@@ -50,6 +115,11 @@ type responsesScaffold struct {
 	respID  string // "resp_" + requestID-derived suffix
 	msgID   string // "msg_" + requestID-derived suffix
 	created int64  // unix timestamp
+
+	// Terminal state is kept separately from wire emission so reasoning and
+	// tool-call streams are represented in the final Responses envelope too.
+	reasoningText strings.Builder
+	toolStates    map[int]*responsesToolTerminalState
 
 	// pc is the optional pending capturer so initial/final envelope events
 	// are still recorded when the client has already gone away (Track C C5).
@@ -84,7 +154,9 @@ func newResponsesScaffold(w http.ResponseWriter, flusher http.Flusher, requestID
 		respID:      respID,
 		msgID:       msgID,
 		created:     time.Now().Unix(),
+		toolStates:  make(map[int]*responsesToolTerminalState),
 	}
+
 }
 
 func (s *responsesScaffold) attachCapturer(pc *pendingCapturer, cw *clientStreamWriter) {
@@ -92,62 +164,79 @@ func (s *responsesScaffold) attachCapturer(pc *pendingCapturer, cw *clientStream
 	s.clientWriter = cw
 }
 
+// appendResponsesBounded appends only while the bridge's terminal-state
+// accumulator remains within its local bound. The caller turns false into a
+// conversion outcome; it must never silently emit a truncated terminal value.
+func appendResponsesBounded(builder *strings.Builder, value string, limit int) bool {
+	if builder == nil || len(value) > limit-builder.Len() {
+		return false
+	}
+	builder.WriteString(value)
+	return true
+}
+
+// responsesDeltaFits checks accumulator capacity before the corresponding
+// Responses SSE delta is written. This prevents a client-visible delta from
+// being omitted from the terminal response after an overflow is detected.
+func responsesDeltaFits(scaffold *responsesScaffold, fullText *strings.Builder, chunk *ir.StreamChunk) bool {
+	if scaffold == nil || fullText == nil || chunk == nil || chunk.Delta == nil {
+		return true
+	}
+	delta := chunk.Delta
+	if len(delta.Content) > maxResponsesBridgeTextBytes-fullText.Len() ||
+		len(delta.ReasoningContent) > maxResponsesBridgeTextBytes-scaffold.reasoningText.Len() {
+		return false
+	}
+	for _, tc := range delta.ToolCalls {
+		state := scaffold.toolStates[tc.Index]
+		used := 0
+		if state != nil {
+			used = state.Arguments.Len()
+		}
+		if len(tc.Arguments) > maxResponsesBridgeToolArgumentsBytes-used {
+			return false
+		}
+	}
+	return true
+}
+
 // writeSSEEvent writes a single Responses API SSE event. When pc is
 // attached, the same bytes are appended to the capturer so the envelope
 // survives a client disconnect.
-func (s *responsesScaffold) writeSSEEvent(event string, payload any) {
+func (s *responsesScaffold) writeSSEEvent(event string, payload any) bool {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return
+		return false
 	}
 	line := fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)
+	ok := true
 	if s.clientWriter != nil {
-		s.clientWriter.write(line)
+		ok = s.clientWriter.write(line)
 	} else {
-		writeSSE(s.w, event, payload)
+		ok = safeWriteSSE(s.w, line)
 	}
 	if s.pc != nil {
 		s.pc.append(line)
 	}
+	return ok
 }
 
 // writeInitialEvents emits the Responses API opening sequence so SDK
 // clients see a well-formed response envelope from the first event.
 func (s *responsesScaffold) writeInitialEvents() {
 	s.writeSSEEvent("response.created", map[string]any{
-		"type": "response.created",
-		"response": map[string]any{
-			"id":         s.respID,
-			"object":     "response",
-			"created_at": s.created,
-			"model":      s.clientModel,
-			"status":     "in_progress",
-			"output":     []any{},
+		"type": "response.created", "response": map[string]any{
+			"id": s.respID, "object": "response", "created_at": s.created,
+			"model": s.clientModel, "status": "in_progress", "output": []any{},
 		},
 	})
-
 	s.writeSSEEvent("response.output_item.added", map[string]any{
-		"type":         "response.output_item.added",
-		"output_index": 0,
-		"item": map[string]any{
-			"type":    "message",
-			"id":      s.msgID,
-			"status":  "in_progress",
-			"role":    "assistant",
-			"content": []any{},
-		},
+		"type": "response.output_item.added", "output_index": 0,
+		"item": map[string]any{"type": "message", "id": s.msgID, "status": "in_progress", "role": "assistant", "content": []any{}},
 	})
-
 	s.writeSSEEvent("response.content_part.added", map[string]any{
-		"type":          "response.content_part.added",
-		"item_id":       s.msgID,
-		"output_index":  0,
-		"content_index": 0,
-		"part": map[string]any{
-			"type":        "output_text",
-			"text":        "",
-			"annotations": []any{},
-		},
+		"type": "response.content_part.added", "item_id": s.msgID, "output_index": 0,
+		"content_index": 0, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
 	})
 }
 
@@ -163,15 +252,36 @@ func (s *responsesScaffold) finishAttempt(gate *AttemptCommitGate, fullText, fin
 		if s.pc == nil || s.clientWriter == nil || !s.clientWriter.clientDisconnected {
 			return
 		}
+		// Detached-client replay path: the envelope goes only into the
+		// pending capturer, never onto the wire. The coordinator keeps
+		// terminal ownership — do NOT latch the gate here.
+		s.writeFinalEvents(fullText, finishReason, "", inputTokens, outputTokens, totalTokens)
+		return
 	}
-	s.writeFinalEvents(fullText, finishReason, inputTokens, outputTokens, totalTokens)
+	// audit #2: the protocol terminal reached the wire through a committed
+	// gate — latch it so the survival coordinator's renderTerminal cannot
+	// append a second terminal (completed + response.failed).
+	// R34 (2026-09-17 audit): latch only on a successful write, matching the
+	// interrupted-tail contract (18933bc6c) — a failed wire write must keep
+	// the coordinator's fallback authority instead of swallowing both
+	// terminals.
+	if s.writeFinalEvents(fullText, finishReason, "", inputTokens, outputTokens, totalTokens) == nil {
+		gate.MarkTerminalRendered()
+	}
 }
 
 func (s *responsesScaffold) finishInterrupted(gate *AttemptCommitGate, fullText, reason string, inputTokens, outputTokens int) {
 	if !gate.MayWriteTerminal() {
 		return
 	}
-	s.writeFinalEvents(fullText, "length", inputTokens, outputTokens, inputTokens+outputTokens)
+	// audit #11: the interruption reason is already in hand here — pass it
+	// through so response.completed carries incomplete_details.reason instead
+	// of a bare "length" finish. "length" stays the default finish form.
+	// R34: same success-gated latch as finishAttempt above.
+	if s.writeFinalEvents(fullText, "length", reason, inputTokens, outputTokens, inputTokens+outputTokens) == nil {
+		// audit #2: latch the committed terminal (see finishAttempt).
+		gate.MarkTerminalRendered()
+	}
 }
 
 // writeFinalEvents emits response.output_text.done, response.output_item.done,
@@ -179,63 +289,155 @@ func (s *responsesScaffold) finishInterrupted(gate *AttemptCommitGate, fullText,
 // accumulated visible text from all delta chunks. finishReason is the
 // raw OpenAI-form value ("stop" | "length" | "tool_calls" | ""); status
 // is the Responses API form ("completed" | "incomplete").
-func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inputTokens, outputTokens, totalTokens int) {
+// openaiFinishReasonIsError reports finish_reason values that signal abnormal
+// termination on OpenAI-compatible providers (content_filter/refusal and
+// GLM-style network_error/sensitive). These must not surface as a successful
+// "completed" terminal envelope.
+func openaiFinishReasonIsError(fr string) bool {
+	switch fr {
+	// R36 (2026-09-17 audit): "refusal" added — the non-streaming Responses
+	// mapping (internal/ir mapFinishReasonToResponsesStatus) already reports
+	// refusal as incomplete/content_filter; the streaming bridge must not
+	// render a refusal-only upstream response as a successful "completed".
+	case "content_filter", "refusal", "network_error", "sensitive", "error":
+		return true
+	}
+	return false
+}
+
+// writeFinalEvents emits response.output_text.done, response.output_item.done,
+// and response.completed with aggregated usage. fullText is the
+// accumulated visible text from all delta chunks. finishReason is the
+// raw OpenAI-form value ("stop" | "length" | "tool_calls" | ""); status
+// is the Responses API form ("completed" | "incomplete").
+// R34: returns nil only when every terminal event was written successfully —
+// callers latch the attempt gate on that (see finishAttempt/finishInterrupted).
+func (s *responsesScaffold) writeFinalEvents(fullText, finishReason, incompleteReason string, inputTokens, outputTokens, totalTokens int) error {
+	writeErr := error(nil)
+	emit := func(event string, payload any) {
+		if !s.writeSSEEvent(event, payload) {
+			writeErr = errResponsesTerminalWrite
+		}
+	}
 	status := "completed"
-	if finishReason == "length" {
+	if finishReason == "length" || openaiFinishReasonIsError(finishReason) {
 		status = "incomplete"
 	}
 
-	textDone := map[string]any{
-		"type":          "response.output_text.done",
-		"item_id":       s.msgID,
-		"output_index":  0,
-		"content_index": 0,
-		"text":          fullText,
+	// Close every semantic stream explicitly. A tool-only (or mixed) response
+	// must not be represented as a message-only response in the terminal
+	// envelope. Keep the legacy message item for text/reasoning streams.
+	if s.reasoningText.Len() > 0 {
+		emit("response.reasoning_text.done", map[string]any{
+			"type": "response.reasoning_text.done", "item_id": s.msgID,
+			"output_index": 0, "content_index": 0, "text": s.reasoningText.String(),
+		})
 	}
-	s.writeSSEEvent("response.output_text.done", textDone)
-
-	itemDone := map[string]any{
-		"type":         "response.output_item.done",
-		"output_index": 0,
-		"item": map[string]any{
-			"type":   "message",
-			"id":     s.msgID,
-			"status": status,
-			"role":   "assistant",
-			"content": []map[string]any{
-				{"type": "output_text", "text": fullText, "annotations": []any{}},
-			},
-		},
+	indices := make([]int, 0, len(s.toolStates))
+	for index := range s.toolStates {
+		indices = append(indices, index)
 	}
-	s.writeSSEEvent("response.output_item.done", itemDone)
+	sort.Ints(indices)
+	emittedToolItems := 0
+	for _, index := range indices {
+		state := s.toolStates[index]
+		if state == nil {
+			continue
+		}
+		// Unified empty-name rejection: a terminal function_call item
+		// without a name is not a legal Responses API output item. The
+		// deltas were still streamed (fragments), but the terminal
+		// envelope omits the unfulfilled call.
+		if state.Name == "" {
+			continue
+		}
+		emittedToolItems++
+		item := map[string]any{
+			"type": "function_call", "id": state.ID, "call_id": state.ID,
+			"name": state.Name, "arguments": state.Arguments.String(), "status": status,
+		}
+		emit("response.function_call_arguments.done", map[string]any{
+			"type": "response.function_call_arguments.done", "item_id": state.ID,
+			"output_index": index, "call_id": state.ID, "name": state.Name,
+			"arguments": state.Arguments.String(),
+		})
+		emit("response.output_item.done", map[string]any{
+			"type": "response.output_item.done", "output_index": index, "item": item,
+		})
+	}
 
-	completed := map[string]any{
-		"type": "response.completed",
-		"response": map[string]any{
-			"id":         s.respID,
-			"object":     "response",
-			"created_at": s.created,
-			"model":      s.clientModel,
-			"status":     status,
-			"output": []map[string]any{
-				{
-					"type":   "message",
-					"id":     s.msgID,
-					"status": status,
-					"role":   "assistant",
-					"content": []map[string]any{
-						{"type": "output_text", "text": fullText, "annotations": []any{}},
-					},
+	// Preserve the historical message terminal events for ordinary and mixed
+	// streams, but omit the synthetic message for a tool-only response.
+	hasMessage := len(indices) == 0 || fullText != "" || s.reasoningText.Len() > 0
+	// Degenerate-stream guard: if every tool item was dropped by the
+	// nameless guard and the stream carries no text or reasoning, a
+	// status=completed envelope with an empty output array would be a
+	// false success — the upstream did emit (suppressed) content. Downgrade
+	// to incomplete so clients can retry or fail over instead of treating
+	// the empty response as a trustworthy result.
+	if len(indices) > 0 && emittedToolItems == 0 && fullText == "" && s.reasoningText.Len() == 0 {
+		status = "incomplete"
+	}
+	if hasMessage {
+		emit("response.output_text.done", map[string]any{
+			"type": "response.output_text.done", "item_id": s.msgID,
+			"output_index": 0, "content_index": 0, "text": fullText,
+		})
+		emit("response.output_item.done", map[string]any{
+			"type": "response.output_item.done", "output_index": 0,
+			"item": map[string]any{
+				"type": "message", "id": s.msgID, "status": status,
+				"role": "assistant", "content": []map[string]any{
+					{"type": "output_text", "text": fullText, "annotations": []any{}},
 				},
 			},
-			"usage": map[string]any{
-				"input_tokens":  inputTokens,
-				"output_tokens": outputTokens,
-				"total_tokens":  totalTokens,
-			},
+		})
+	}
+
+	output := make([]map[string]any, 0, len(indices)+1)
+	for _, index := range indices {
+		state := s.toolStates[index]
+		if state == nil {
+			continue
+		}
+		// Unified empty-name rejection: keep response.completed.output in
+		// lockstep with the output_item.done events above.
+		if state.Name == "" {
+			continue
+		}
+		output = append(output, map[string]any{
+			"type": "function_call", "id": state.ID, "call_id": state.ID,
+			"name": state.Name, "arguments": state.Arguments.String(), "status": status,
+		})
+	}
+	if hasMessage {
+		output = append(output, map[string]any{
+			"type": "message", "id": s.msgID, "status": status, "role": "assistant",
+			"content": []map[string]any{{"type": "output_text", "text": fullText, "annotations": []any{}}},
+		})
+	}
+	completed := map[string]any{
+		"type": "response.completed", "response": map[string]any{
+			"id": s.respID, "object": "response", "created_at": s.created,
+			"model": s.clientModel, "status": status, "output": output,
+			"usage": map[string]any{"input_tokens": inputTokens, "output_tokens": outputTokens, "total_tokens": totalTokens},
 		},
 	}
-	s.writeSSEEvent("response.completed", completed)
+	// audit #11: a status=incomplete envelope without incomplete_details is a
+	// protocol gap — Responses SDK clients contract on the reason. Prefer the
+	// caller-supplied interruption reason; otherwise map the finish reason
+	// ("length" → "max_output_tokens" etc.). Omit the field when no explicit
+	// cause is known.
+	if status == "incomplete" {
+		if incompleteReason == "" {
+			incompleteReason = ir.MapFinishReasonToResponsesIncompleteReason(finishReason)
+		}
+		if incompleteReason != "" {
+			completed["incomplete_details"] = map[string]any{"reason": incompleteReason}
+		}
+	}
+	emit("response.completed", completed)
+	return writeErr
 }
 
 // StreamAnthropicSSEToResponses reads Anthropic SSE upstream and writes
@@ -254,7 +456,10 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inpu
 //     follow the last delta.
 //   - Accumulated usage flows into `response.completed.usage` — never
 //     emitted as a standalone event.
+//
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamAnthropicSSEToResponses(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
@@ -262,13 +467,15 @@ func StreamAnthropicSSEToResponses(
 	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
 	return StreamAnthropicSSEToResponsesWithDiagnostics(
-		w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
+		ctx, w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
 	)
 }
 
 // StreamAnthropicSSEToResponsesWithDiagnostics converts an Anthropic stream
 // to Responses SSE with optional best-effort diagnostics.
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamAnthropicSSEToResponsesWithDiagnostics(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
@@ -308,7 +515,8 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate = wrapAttemptWriter(w, ProtocolOpenAIResponses)
+	// P1-2 fix (2026-08-28): Pass context to gate for checkpoint propagation.
+	w, gate = wrapAttemptWriter(ctx, w, ProtocolOpenAIResponses)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -328,7 +536,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
+		// Initial flush write failed — client disconnected before any frame left;
+		// retry is pointless and would violate the no-replay contract.
 	}
 
 	if clientModel == "" {
@@ -342,16 +552,21 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 	scaffold := newResponsesScaffold(w, flusher, requestID, clientModel)
 	scaffold.attachCapturer(pc, clientWriter)
 	scaffold.writeInitialEvents()
-
-	var ctx context.Context
-	if resp.Request != nil {
-		ctx = resp.Request.Context()
-	} else {
-		ctx = context.Background()
+	if clientWriter.clientDisconnected {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("client_write_failed")
+		}
+		if pc != nil {
+			pc.markInterrupted("client_write_failed")
+		}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
 	}
 
+	// P1-2 fix (2026-08-28): ctx is now a function parameter, removed redundant declaration.
+
 	runtimeCfg := currentStreamRuntimeConfig()
-	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
+	// 审计闭环6：ctx 取消时强制 Close 底层 body，解除阻塞中的 Read。
+	reader := bufio.NewReaderSize(newCtxCancellableBody(ctx, resp.Body), anthropicSSEBufSize)
 
 	var (
 		inputTokens  int
@@ -367,6 +582,20 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		// for input_json_delta, so the bridge maintains this lookup.
 		toolCallIDs         = make(map[int]string)
 		messageStopReceived bool
+		conversionOverflow  bool
+		// toolHold defers arg-first tool_call fragments until the function
+		// name arrives (see responsesToolHold) — keeps the Responses wire
+		// free of deltas referencing an item that was never opened.
+		toolHold = newResponsesToolHold()
+		// emittedContent (audit-24h-20260828-r3 P1-B parity, Phase E):
+		// tracks whether any client-visible semantic bytes — text,
+		// thinking, tool-call deltas — reached the wire. Set true inside
+		// writeChunkIR for content-bearing deltas; read at the two
+		// clean-EOF return paths (lines ~460 and ~479) to decide
+		// whether to surface KindEmptyResponse for fail-over, matching
+		// the non-stream detector at executor_anthropic.go:1273 and the
+		// passthrough detector at anthropic_passthrough_stream.go:147-178.
+		emittedContent bool
 	)
 
 	// writeChunkIR serializes one IR StreamChunk via the Responses API
@@ -380,6 +609,10 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			return
 		}
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			if !responsesDeltaFits(scaffold, &fullText, chunk) {
+				conversionOverflow = true
+				return
+			}
 			for i := range chunk.Delta.ToolCalls {
 				tc := &chunk.Delta.ToolCalls[i]
 				if tc.Name != "" && tc.ID != "" {
@@ -390,28 +623,76 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 						tc.ID = id
 					}
 				}
+				if !toolHold.adjust(tc) {
+					conversionOverflow = true
+					return
+				}
 			}
 		}
 		sseLine := chunk.SerializeResponses(scaffold.msgID)
 		if sseLine == "" {
 			return
 		}
-		clientWriter.write(sseLine)
-		diagnosticCollector.observeEmittedChunk(chunk)
+		written := clientWriter.write(sseLine)
+		if !written {
+			// Keep consuming upstream and building the pending replay body, but
+			// do not count this failed frame as client-visible output.
+		}
 		if pc != nil {
 			pc.append(sseLine)
 		}
 		if capture != nil {
 			capture.ObserveChunk(chunk)
-			if !clientWriter.clientDisconnected {
+			if written {
 				capture.RecordChunkSent()
 			}
 		}
-		chunkCount++
+		if written {
+			diagnosticCollector.observeEmittedChunk(chunk)
+			chunkCount++
+		}
 
-		// Track visible text for the final response.output_text.done payload.
+		// Mark semantic emission: any non-empty text / thinking /
+		// tool-call delta reaches the client as part of sseLine above.
+		// Envelope / scaffold events (e.g. response.created) are NOT
+		// semantic emission.
+		if written && chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			if chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" {
+				emittedContent = true
+			}
+			for _, tc := range chunk.Delta.ToolCalls {
+				if tc.Arguments != "" || tc.Name != "" {
+					emittedContent = true
+					break
+				}
+			}
+		}
+
+		// Track terminal state with bounded accumulators; overflow is handled
+		// by the orchestrator instead of emitting a silently truncated result.
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
-			fullText.WriteString(chunk.Delta.Content)
+			if !appendResponsesBounded(&fullText, chunk.Delta.Content, maxResponsesBridgeTextBytes) ||
+				!appendResponsesBounded(&scaffold.reasoningText, chunk.Delta.ReasoningContent, maxResponsesBridgeTextBytes) {
+				conversionOverflow = true
+				return
+			}
+			for _, tc := range chunk.Delta.ToolCalls {
+				state := scaffold.toolStates[tc.Index]
+				if state == nil {
+					state = &responsesToolTerminalState{}
+					scaffold.toolStates[tc.Index] = state
+				}
+				if tc.ID != "" {
+					state.ID = tc.ID
+				}
+				if tc.Name != "" {
+					state.Name = tc.Name
+				}
+				if !appendResponsesBounded(&state.Arguments, tc.Arguments, maxResponsesBridgeToolArgumentsBytes) {
+					conversionOverflow = true
+					return
+				}
+			}
 		}
 	}
 
@@ -454,6 +735,37 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 					// stream right after the finish_reason chunk instead of
 					// emitting a terminal event).
 					if finishReason != "" {
+						if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, clientWriter.clientDisconnected) {
+							if capture != nil {
+								capture.MarkInterruptedWithReason("anthropic_empty_response")
+							}
+							if pc != nil {
+								pc.markInterrupted("anthropic_empty_response")
+							}
+							return StreamOutcome{Interrupted: true, Reason: "anthropic_empty_response", Kind: errorsx.KindEmptyResponse, Resumable: true, ChunkCount: chunkCount}
+						}
+						// 2026-09-13 fix: a benign EOF (upstream closed after
+						// finish_reason without message_stop) is a SUCCESSFUL
+						// stream — the client must still receive the terminal
+						// envelope. Without this finishAttempt the bridge
+						// returned a success outcome with no response.completed,
+						// leaving Responses SDK clients (codex ≥0.80) waiting on
+						// an unterminated stream. MayWriteTerminal inside
+						// finishAttempt keeps pre-commit attempts silent for
+						// transparent failover.
+						//
+						// FlushHoldback first: the survival L1 holdback window
+						// (5s/20 chunks) holds semantic frames WITHOUT advancing
+						// the gate commit state, so short streams end entirely
+						// inside the window and MayWriteTerminal would stay
+						// false forever (commit_state=metadata at finish). The
+						// coordinator's Finish flushes held deltas but nobody
+						// re-renders the terminal afterwards — force-close the
+						// window here so the commit lands BEFORE the terminal
+						// rendering decision.
+						if err := gate.FlushHoldback(); err != nil {
+							slog.Warn("responses bridge: flush holdback before completed failed", "request_id", requestID, "error", err.Error())
+						}
 						scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 						return StreamOutcome{ChunkCount: chunkCount}
 					}
@@ -472,6 +784,31 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 						capture.MarkInterruptedWithReason(outcome.Reason)
 					}
 					return outcome
+				}
+				if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, clientWriter.clientDisconnected) {
+					if capture != nil {
+						capture.MarkInterruptedWithReason("anthropic_empty_response")
+					}
+					if pc != nil {
+						pc.markInterrupted("anthropic_empty_response")
+					}
+					return StreamOutcome{Interrupted: true, Reason: "anthropic_empty_response", Kind: errorsx.KindEmptyResponse, Resumable: true, ChunkCount: chunkCount}
+				}
+				// audit-24h-20260828-r3 P1-B parity (Phase E): classify a
+				// clean upstream with no semantic output before rendering
+				// response.completed. A pending capturer alone is not evidence
+				// of client disconnect; only an observed write failure enables
+				// completed replay.
+				// Audit R20 (2026-09-13): the duplicate IsAnthropicStreamEmpty
+				// check that used to sit here was unreachable copy-left from
+				// the 5b249f31d indent refactor — removed.
+				// FlushHoldback: force-close the survival L1 holdback window so
+				// held deltas commit BEFORE the terminal rendering decision —
+				// otherwise a stream that ends inside the window (commit_state
+				// stuck at metadata) skips response.completed entirely.
+				if err := gate.FlushHoldback(); err != nil {
+					slog.Warn("responses bridge: flush holdback before completed failed",
+						"request_id", requestID, "error", err.Error())
 				}
 				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				return StreamOutcome{ChunkCount: chunkCount}
@@ -571,11 +908,22 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		}
 
 		writeChunkIR(chunk)
+		if conversionOverflow {
+			outcome = StreamOutcome{Interrupted: true, Reason: "responses_conversion_accumulator_limit", Kind: errorsx.KindConversion, Resumable: false, ChunkCount: chunkCount}
+			if capture != nil {
+				capture.MarkInterruptedWithReason(outcome.Reason)
+			}
+			scaffold.finishInterrupted(gate, fullText.String(), outcome.Reason, inputTokens, outputTokens)
+			return outcome
+		}
 
 		// Incremental integrity breach (repeated-content loop): cut the
 		// stream so the executor can failover. Mirrors stream.go.
 		if capture != nil && capture.IntegrityBreached() {
-			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+			// Integrity failures are resumable interruptions, never successful
+			// completions. Emit an incomplete terminal only for committed attempts;
+			// deferred gates leave terminal rendering to the coordinator.
+			scaffold.finishInterrupted(gate, fullText.String(), capture.IntegrityBreachReason(), inputTokens, outputTokens)
 			return integrityBreachOutcome(capture, chunkCount)
 		}
 	}
@@ -589,7 +937,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 // StreamOpenAIToResponsesSSE reads OpenAI chat.completion.chunk SSE
 // upstream and writes OpenAI Responses API SSE to the client. The mirror
 // of StreamAnthropicSSEToResponses for the OpenAI upstream path.
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamOpenAIToResponsesSSE(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
@@ -597,13 +947,15 @@ func StreamOpenAIToResponsesSSE(
 	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
 	return StreamOpenAIToResponsesSSEWithDiagnostics(
-		w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
+		ctx, w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
 	)
 }
 
 // StreamOpenAIToResponsesSSEWithDiagnostics converts an OpenAI stream to
 // Responses SSE with optional best-effort diagnostics.
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamOpenAIToResponsesSSEWithDiagnostics(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
@@ -643,7 +995,8 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate = wrapAttemptWriter(w, ProtocolOpenAIResponses)
+	// P1-2 fix (2026-08-28): Pass context to gate for checkpoint propagation.
+	w, gate = wrapAttemptWriter(ctx, w, ProtocolOpenAIResponses)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -663,7 +1016,9 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
+		// Initial flush write failed — client disconnected before any frame left;
+		// retry is pointless and would violate the no-replay contract.
 	}
 
 	if clientModel == "" {
@@ -677,13 +1032,17 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 	scaffold := newResponsesScaffold(w, flusher, requestID, clientModel)
 	scaffold.attachCapturer(pc, clientWriter)
 	scaffold.writeInitialEvents()
-
-	var ctx context.Context
-	if resp.Request != nil {
-		ctx = resp.Request.Context()
-	} else {
-		ctx = context.Background()
+	if clientWriter.clientDisconnected {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("client_write_failed")
+		}
+		if pc != nil {
+			pc.markInterrupted("client_write_failed")
+		}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
 	}
+
+	// P1-2 fix (2026-08-28): ctx is now a function parameter, removed redundant declaration.
 
 	runtimeCfg := currentStreamRuntimeConfig()
 	bodyCloser := resp.Body
@@ -702,6 +1061,12 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		// correct item_id (matching the Responses API contract).
 		toolCallIDs          = make(map[int]string)
 		upstreamDoneReceived bool
+		conversionOverflow   bool
+		// toolHold defers arg-first tool_call fragments until the function
+		// name arrives (see responsesToolHold). Some upstreams stream
+		// argument fragments before the name; emitting their deltas would
+		// reference an output_item that was never opened.
+		toolHold = newResponsesToolHold()
 	)
 
 	writeChunkIR := func(chunk *ir.StreamChunk) {
@@ -709,6 +1074,10 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 			return
 		}
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			if !responsesDeltaFits(scaffold, &fullText, chunk) {
+				conversionOverflow = true
+				return
+			}
 			for i := range chunk.Delta.ToolCalls {
 				tc := &chunk.Delta.ToolCalls[i]
 				if tc.Name != "" && tc.ID != "" {
@@ -719,26 +1088,84 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 						tc.ID = id
 					}
 				}
+				if !toolHold.adjust(tc) {
+					conversionOverflow = true
+					return
+				}
 			}
 		}
 		sseLine := chunk.SerializeResponses(scaffold.msgID)
 		if sseLine == "" {
 			return
 		}
-		clientWriter.write(sseLine)
-		diagnosticCollector.observeEmittedChunk(chunk)
+		written := clientWriter.write(sseLine)
+		if !written {
+			// Keep consuming upstream and building the pending replay body, but
+			// do not count this failed frame as client-visible output.
+		}
 		if pc != nil {
 			pc.append(sseLine)
 		}
 		if capture != nil {
 			capture.ObserveChunk(chunk)
-			if !clientWriter.clientDisconnected {
+			if written {
 				capture.RecordChunkSent()
 			}
 		}
-		chunkCount++
+		if written {
+			diagnosticCollector.observeEmittedChunk(chunk)
+			chunkCount++
+		}
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
-			fullText.WriteString(chunk.Delta.Content)
+			if !appendResponsesBounded(&fullText, chunk.Delta.Content, maxResponsesBridgeTextBytes) ||
+				!appendResponsesBounded(&scaffold.reasoningText, chunk.Delta.ReasoningContent, maxResponsesBridgeTextBytes) {
+				conversionOverflow = true
+				return
+			}
+			for _, tc := range chunk.Delta.ToolCalls {
+				state := scaffold.toolStates[tc.Index]
+				if state == nil {
+					state = &responsesToolTerminalState{}
+					scaffold.toolStates[tc.Index] = state
+				}
+				if tc.ID != "" {
+					state.ID = tc.ID
+				}
+				if tc.Name != "" {
+					state.Name = tc.Name
+				}
+				if !appendResponsesBounded(&state.Arguments, tc.Arguments, maxResponsesBridgeToolArgumentsBytes) {
+					conversionOverflow = true
+					return
+				}
+			}
+		}
+	}
+
+	// audit R21 (2026-09-13): Q2 empty-stream parity — the last of the six
+	// bridges without an empty gate. A clean OpenAI upstream end with zero
+	// semantic output (role/usage-only choices + [DONE]) previously rendered
+	// a legal-but-empty response.completed and returned success, so the
+	// executor never failed over. Classify on accumulated semantic state
+	// (text / reasoning / tool calls), not on chunkCount — scaffolding and
+	// empty deltas must not mask an empty response. Interrupted paths and
+	// the holdback window are untouched (transparent failover semantics).
+	responsesHasSemanticOutput := func() bool {
+		return fullText.Len() > 0 || scaffold.reasoningText.Len() > 0 || len(scaffold.toolStates) > 0
+	}
+	returnEmptyOutcome := func() StreamOutcome {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("openai_empty_response")
+		}
+		if pc != nil {
+			pc.markInterrupted("openai_empty_response")
+		}
+		return StreamOutcome{
+			Interrupted: true,
+			Reason:      "openai_empty_response",
+			Kind:        errorsx.KindEmptyResponse,
+			Resumable:   true,
+			ChunkCount:  chunkCount,
 		}
 	}
 
@@ -774,6 +1201,19 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 						capture.MarkInterruptedWithReason(outcome.Reason)
 					}
 					return outcome
+				}
+				// audit R21: empty gate BEFORE FlushHoldback — a held-free empty
+				// stream must fail over, not render a legal-but-empty
+				// response.completed (mirrors Q2 anthropic_stream.go ordering).
+				if !responsesHasSemanticOutput() {
+					return returnEmptyOutcome()
+				}
+				// FlushHoldback: force-close the survival L1 holdback window so
+				// held deltas commit BEFORE the terminal rendering decision —
+				// otherwise a stream that ends inside the window (commit_state
+				// stuck at metadata) skips response.completed entirely.
+				if err := gate.FlushHoldback(); err != nil {
+					slog.Warn("responses bridge: flush holdback before completed failed", "request_id", requestID, "error", err.Error())
 				}
 				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				return StreamOutcome{ChunkCount: chunkCount}
@@ -826,6 +1266,18 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		payload := strings.TrimPrefix(trimmed, "data: ")
 		if payload == "[DONE]" {
 			upstreamDoneReceived = true
+			// audit R21: empty gate BEFORE FlushHoldback — same parity as the
+			// clean-EOF return above.
+			if !responsesHasSemanticOutput() {
+				return returnEmptyOutcome()
+			}
+			// FlushHoldback: force-close the survival L1 holdback window so
+			// held deltas commit BEFORE the terminal rendering decision —
+			// otherwise a stream that ends inside the window (commit_state
+			// stuck at metadata) skips response.completed entirely.
+			if err := gate.FlushHoldback(); err != nil {
+				slog.Warn("responses bridge: flush holdback before completed failed", "request_id", requestID, "error", err.Error())
+			}
 			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 			return StreamOutcome{ChunkCount: chunkCount}
 		}
@@ -887,11 +1339,22 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		}
 
 		writeChunkIR(chunk)
+		if conversionOverflow {
+			outcome = StreamOutcome{Interrupted: true, Reason: "responses_conversion_accumulator_limit", Kind: errorsx.KindConversion, Resumable: false, ChunkCount: chunkCount}
+			if capture != nil {
+				capture.MarkInterruptedWithReason(outcome.Reason)
+			}
+			scaffold.finishInterrupted(gate, fullText.String(), outcome.Reason, inputTokens, outputTokens)
+			return outcome
+		}
 
 		// Incremental integrity breach (repeated-content loop): cut the
 		// stream so the executor can failover. Mirrors stream.go.
 		if capture != nil && capture.IntegrityBreached() {
-			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+			// Integrity failures are resumable interruptions, never successful
+			// completions. Emit an incomplete terminal only for committed attempts;
+			// deferred gates leave terminal rendering to the coordinator.
+			scaffold.finishInterrupted(gate, fullText.String(), capture.IntegrityBreachReason(), inputTokens, outputTokens)
 			return integrityBreachOutcome(capture, chunkCount)
 		}
 	}

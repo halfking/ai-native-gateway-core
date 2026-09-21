@@ -2,7 +2,6 @@ package distlock
 
 import (
 	"context"
-	"strings"
 	"sync"
 )
 
@@ -45,7 +44,7 @@ func (m *LocalManager) Acquire(_ context.Context, opts AcquireOpts) (*Handle, er
 	if m == nil {
 		return nil, ErrNotEnabled
 	}
-	if strings.TrimSpace(opts.Key) == "" {
+	if opts.Key == "" {
 		distlockAcquireTotal.WithLabelValues("unknown", "invalid").Inc()
 		return nil, ErrInvalidKey
 	}

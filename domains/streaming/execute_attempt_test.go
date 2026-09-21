@@ -34,7 +34,7 @@ func (f *fakeAttemptExecutor) Execute(params *executors.ExecParams) (*executors.
 }
 
 func newAttemptGateForTest() *AttemptCommitGate {
-	return NewAttemptCommitGate(ProtocolAnthropic,
+	return NewAttemptCommitGate(context.Background(), ProtocolAnthropic,
 		NewSerializedStreamWriter(io.Discard), GateOptions{Mode: GateModeBuffered})
 }
 
@@ -135,6 +135,14 @@ func TestExecuteAttemptNoCandidatesSynthesizesOutcome(t *testing.T) {
 	if len(res.CandidateOutcomes) != 1 ||
 		res.CandidateOutcomes[0].Kind != errorsx.KindNoAvailableChannel {
 		t.Fatalf("expected single no_available_channel outcome, got %+v", res.CandidateOutcomes)
+	}
+}
+
+func TestFoldCandidateOutcomesPreservesTypedRetryableKinds(t *testing.T) {
+	err := &executors.ExecuteError{LastKind: errorsx.KindEmptyResponse, LastErr: errors.New("empty upstream response")}
+	outcomes := foldCandidateOutcomes(err, "test-request-id", nil)
+	if len(outcomes) != 1 || outcomes[0].Kind != errorsx.KindEmptyResponse {
+		t.Fatalf("outcomes = %+v, want one empty_response outcome", outcomes)
 	}
 }
 

@@ -1,56 +1,109 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import {
   getVendorCredentialErrorDetail,
   type VendorCredentialErrorDetail,
   type VendorErrorHours,
+  type VendorRecentFailure,
 } from '../../api/vendor-credential-error'
+import {
+  errorKindBadgeClass,
+  errorKindI18nKey,
+  errorStageBadgeClass,
+  errorStageI18nKey,
+  rawVocabFallback,
+  retryableBadgeClass,
+  retryableI18nKey,
+} from '../../utils/errorVocab'
+import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
+// 审计 R3#10：时间格式化统一走 utils/datetime.ts（全站单一实现）。
+import { formatDateTime } from '../../utils/datetime'
 
 const props = defineProps<{
   credentialId?: number
 }>()
 
 const { t } = useI18n()
+const router = useRouter()
 const pd = (key: string, params?: Record<string, unknown>): string =>
   t(`providerDetail.errorDetail.${key}`, params ?? {})
+
+// 2026-09-05 审计 F2-#2：error_kind / stage / retryable 徽标与
+// RoutingAttemptsTimeline 共享 utils/errorVocab.ts 单一词表，
+// 同一 error_kind 在两处渲染一致的本地化标签 + 徽标 tone。
+function formatErrorKind(kind?: string | null): string {
+  const key = errorKindI18nKey(kind)
+  if (key) return t(key)
+  return kind ? rawVocabFallback(kind) : '—'
+}
+
+function formatStage(stage?: string | null): string {
+  const key = errorStageI18nKey(stage)
+  if (key) return t(key)
+  return stage ?? '—'
+}
+
+function formatRetryable(retryable?: boolean | null): string | null {
+  const key = retryableI18nKey(retryable)
+  return key ? t(key) : null
+}
+
+// 审计 F2-#4：request_id 可点击跳转 request-detail（复用全局工具）。
+function openFailureRequest(item: VendorRecentFailure): void {
+  openRequestDetailPage(item.request_id, undefined, router)
+}
 
 const hours = ref<VendorErrorHours>('24')
 const loading = ref(false)
 const error = ref('')
 const data = ref<VendorCredentialErrorDetail | null>(null)
+let requestSequence = 0
+let requestController: AbortController | null = null
 
 const hasCredential = computed(() => Number.isInteger(props.credentialId) && (props.credentialId ?? 0) > 0)
-
-function formatTime(value: string | null | undefined): string {
-  if (!value) return '—'
-  return new Date(value).toLocaleString()
-}
 
 function formatScore(value: number | null | undefined): string {
   return value == null ? '—' : value.toFixed(1)
 }
 
 async function loadData() {
+  const sequence = ++requestSequence
+  requestController?.abort()
+  requestController = null
   if (!hasCredential.value) {
     data.value = null
     error.value = ''
+    loading.value = false
     return
   }
+  const controller = new AbortController()
+  requestController = controller
   loading.value = true
   error.value = ''
   try {
-    data.value = await getVendorCredentialErrorDetail(props.credentialId as number, hours.value)
+    const result = await getVendorCredentialErrorDetail(props.credentialId as number, hours.value, { signal: controller.signal })
+    if (sequence === requestSequence) data.value = result
   } catch (err: unknown) {
+    if (sequence !== requestSequence || controller.signal.aborted) return
     data.value = null
     error.value = err instanceof Error ? err.message : pd('loadFailed')
   } finally {
-    loading.value = false
+    if (sequence === requestSequence) {
+      loading.value = false
+      requestController = null
+    }
   }
 }
 
 watch(() => props.credentialId, loadData, { immediate: true })
 watch(hours, loadData)
+onBeforeUnmount(() => {
+  requestSequence++
+  requestController?.abort()
+  requestController = null
+})
 </script>
 
 <template>
@@ -77,6 +130,10 @@ watch(hours, loadData)
           <div class="status-item"><span>{{ pd('circuit') }}</span><strong>{{ data.credential.circuit_state }}</strong></div>
           <div class="status-item"><span>{{ pd('consecutiveFailures') }}</span><strong>{{ data.credential.consecutive_failures }}</strong></div>
           <div class="status-item"><span>{{ pd('balance') }}</span><strong>{{ data.credential.balance_usd == null ? '—' : `${data.credential.balance_usd} ${data.credential.balance_currency ?? ''}` }}</strong></div>
+          <!-- R12 候选18 尾巴：payload 一直携带 health_error / health_latency_ms，
+               但面板从未渲染——补上探活时延与探活错误两个状态项。 -->
+          <div class="status-item"><span>{{ pd('healthLatency') }}</span><strong>{{ data.credential.health_latency_ms != null ? `${data.credential.health_latency_ms}ms` : '—' }}</strong></div>
+          <div class="status-item status-item--wide"><span>{{ pd('healthError') }}</span><strong>{{ data.credential.health_error || '—' }}</strong></div>
         </div>
 
         <div v-if="data.credential.state_reason_detail" class="reason-line">
@@ -86,10 +143,23 @@ watch(hours, loadData)
         <section class="section-block">
           <h3>{{ pd('summary') }}</h3>
           <table v-if="data.error_summary.length" class="data-table">
-            <thead><tr><th>{{ pd('errorKind') }}</th><th>{{ pd('count') }}</th><th>{{ pd('statusCodes') }}</th><th>{{ pd('lastSeen') }}</th></tr></thead>
+            <thead><tr><th>{{ pd('errorKind') }}</th><th>{{ pd('count') }}</th><th>{{ pd('retryableCount') }}</th><th>{{ pd('stageDist') }}</th><th>{{ pd('statusCodes') }}</th><th>{{ pd('lastSeen') }}</th></tr></thead>
             <tbody><tr v-for="item in data.error_summary" :key="item.error_kind">
-              <td><span class="badge badge-red">{{ item.error_kind }}</span></td>
-              <td>{{ item.count }}</td><td>{{ item.distinct_status_codes }}</td><td>{{ formatTime(item.last_seen) }}</td>
+              <td><span class="badge" :class="errorKindBadgeClass(item.error_kind)">{{ formatErrorKind(item.error_kind) }}</span></td>
+              <td>{{ item.count }}</td>
+              <td>{{ item.retryable_count ?? 0 }}/{{ item.count }}</td>
+              <td>
+                <template v-if="item.stage_counts && Object.keys(item.stage_counts).length">
+                  <span
+                    v-for="(n, stage) in item.stage_counts"
+                    :key="stage"
+                    class="badge stage-badge"
+                    :class="errorStageBadgeClass(stage)"
+                  >{{ formatStage(stage) }}×{{ n }}</span>
+                </template>
+                <template v-else>—</template>
+              </td>
+              <td>{{ item.distinct_status_codes }}</td><td>{{ formatDateTime(item.last_seen) }}</td>
             </tr></tbody>
           </table>
           <div v-else class="empty-hint">{{ pd('noErrors') }}</div>
@@ -98,9 +168,32 @@ watch(hours, loadData)
         <section class="section-block">
           <h3>{{ pd('recentFailures') }}</h3>
           <table v-if="data.recent_failures.length" class="data-table failures-table">
-            <thead><tr><th>{{ pd('time') }}</th><th>{{ pd('model') }}</th><th>{{ pd('kind') }}</th><th>{{ pd('httpStatus') }}</th><th>{{ pd('message') }}</th><th>{{ pd('upstreamPreview') }}</th></tr></thead>
+            <thead><tr><th>{{ pd('time') }}</th><th>{{ pd('requestId') }}</th><th>{{ pd('model') }}</th><th>{{ pd('supplier') }}</th><th>{{ pd('kind') }}</th><th>{{ pd('errorCode') }}</th><th>{{ pd('httpStatus') }}</th><th>{{ pd('stage') }}</th><th>{{ pd('retry') }}</th><th>{{ pd('latency') }}</th><th>{{ pd('message') }}</th><th>{{ pd('upstreamPreview') }}</th></tr></thead>
             <tbody><tr v-for="item in data.recent_failures" :key="`${item.request_id}-${item.attempt_index}-${item.ts}`">
-              <td>{{ formatTime(item.ts) }}</td><td>{{ item.raw_model_name }}</td><td>{{ item.error_kind }}</td><td>{{ item.upstream_status_code ?? '—' }}</td>
+              <td>{{ formatDateTime(item.ts) }}</td>
+              <td>
+                <button
+                  v-if="item.request_id"
+                  type="button"
+                  class="request-link"
+                  :title="pd('openRequestTitle')"
+                  @click="openFailureRequest(item)"
+                >{{ item.request_id }}</button>
+                <span v-else>—</span>
+              </td>
+              <td>{{ item.raw_model_name }}</td>
+              <td>{{ item.supplier || '—' }}</td>
+              <td>
+                <span class="badge" :class="errorKindBadgeClass(item.error_kind)">{{ formatErrorKind(item.error_kind) }}</span>
+              </td>
+              <td>{{ item.error_code || '—' }}</td>
+              <td>{{ item.upstream_status_code ?? '—' }}</td>
+              <td>{{ formatStage(item.stage) }}</td>
+              <td>
+                <span v-if="formatRetryable(item.retryable)" class="badge" :class="retryableBadgeClass(item.retryable)">{{ formatRetryable(item.retryable) }}</span>
+                <span v-else>—</span>
+              </td>
+              <td>{{ item.latency_ms != null ? `${item.latency_ms}ms` : '—' }}</td>
               <td class="message-cell">{{ item.error_message ?? '—' }}</td><td class="preview-cell">{{ item.upstream_response_preview ?? '—' }}</td>
             </tr></tbody>
           </table>
@@ -121,17 +214,34 @@ watch(hours, loadData)
 </template>
 
 <style scoped>
+.badge-orange { background: var(--warning-bg); color: var(--warning); }
+/* 审计 F2-#2：与 RoutingAttemptsTimeline 共享词表徽标 tone（badge class 同名）。 */
+.badge-success { background: var(--success-bg); color: var(--success); }
+.badge-muted { background: var(--neutral-bg); color: var(--muted); }
+/* 审计 R3：错误分布表的阶段分布徽标（同词表 tone，仅补间距）。 */
+.stage-badge { margin-right: 4px; margin-bottom: 2px; display: inline-block; }
+.request-link {
+  max-width: 180px; padding: 0; border: 0; background: none; color: var(--accent);
+  font: inherit; font-family: monospace; cursor: pointer; text-align: left;
+  display: inline-block; vertical-align: bottom;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.request-link:hover { text-decoration: underline; }
+
 .error-detail-tab { font-size: 12px; }
 .toolbar, .status-grid { display: flex; gap: 12px; align-items: center; }
 .toolbar { justify-content: space-between; margin-bottom: 12px; }
 .section-title, h3 { font-size: 14px; font-weight: 600; }
 .status-grid { align-items: stretch; flex-wrap: wrap; margin-bottom: 12px; }
 .status-item { min-width: 130px; padding: 10px 12px; border: 1px solid var(--border-color); background: var(--card-bg); }
+/* R12 候选18：探活错误文本较长，给两倍宽度并允许换行。 */
+.status-item--wide { min-width: 280px; flex: 1 1 280px; }
+.status-item--wide strong { word-break: break-all; white-space: normal; }
 .status-item span { display: block; color: var(--muted); margin-bottom: 4px; }
 .reason-line, .section-block { margin-top: 12px; }
 .reason-line { color: var(--muted); }
 .data-table { width: 100%; font-size: 12px; }
 .message-cell, .preview-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty-hint { color: var(--muted); text-align: center; padding: 24px; }
-@media (max-width: 720px) { .status-item { flex: 1 1 42%; } .failures-table { min-width: 760px; } }
+@media (max-width: 768px) { .status-item { flex: 1 1 42%; } .failures-table { min-width: 1180px; } }
 </style>

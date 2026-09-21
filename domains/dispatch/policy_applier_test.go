@@ -10,7 +10,7 @@ import (
 
 func TestRecordingApplierInitialActiveRevisionIsZero(t *testing.T) {
 	a := NewRecordingApplier(nil)
-	if got := a.ActiveRevision(context.Background()); got != 0 {
+	if got := a.ActiveRevision(); got != 0 {
 		t.Fatalf("initial active revision: got %d want 0", got)
 	}
 }
@@ -31,7 +31,7 @@ func TestRecordingApplierRecordsCalls(t *testing.T) {
 	if rec.last.Revision != 5 {
 		t.Fatalf("last revision: got %d want 5", rec.last.Revision)
 	}
-	if got := a.ActiveRevision(context.Background()); got != 5 {
+	if got := a.ActiveRevision(); got != 5 {
 		t.Fatalf("active revision: got %d want 5", got)
 	}
 }
@@ -46,15 +46,18 @@ func TestRecordingApplierPropagatesError(t *testing.T) {
 	if rec.calls != 0 {
 		t.Fatalf("failed apply must not bump calls: got %d", rec.calls)
 	}
-	if got := a.ActiveRevision(context.Background()); got != 0 {
+	if got := a.ActiveRevision(); got != 0 {
 		t.Fatalf("active revision after failure: got %d want 0", got)
 	}
 }
 
 // Concurrent ApplyPolicy must serialize (single-writer contract) and the
-// final ActiveRevision must reflect the last successfully applied call.
-// Stage E will use the same hook to assert no torn reads under
-// shadow-load tests.
+// final ActiveRevision must reflect the highest revision that landed. With
+// the strict-monotonic contract, calls with revision <= active are no-ops,
+// so the number of recorded calls is at least 1 and at most N — exactly 1
+// when the goroutines happen to be served in decreasing order, exactly N
+// when served in increasing order. The invariant under test is that
+// ActiveRevision equals the max revision supplied and never regresses.
 func TestRecordingApplierConcurrentApplySerializes(t *testing.T) {
 	a := NewRecordingApplier(nil)
 	const N = 64
@@ -74,26 +77,39 @@ func TestRecordingApplierConcurrentApplySerializes(t *testing.T) {
 	}
 	wg.Wait()
 	rec, _ := AsRecordingApplier(a)
-	if rec.calls != N {
-		t.Fatalf("calls: got %d want %d", rec.calls, N)
+	if rec.calls < 1 || rec.calls > N {
+		t.Fatalf("calls: got %d want 1..%d (monotonic guard rejects older revs)", rec.calls, N)
 	}
-	got := a.ActiveRevision(context.Background())
-	if got == 0 || got > N {
-		t.Fatalf("active revision out of range: got %d", got)
+	got := a.ActiveRevision()
+	if got != N {
+		t.Fatalf("active revision: got %d want %d (highest revision must win)", got, N)
 	}
 }
 
-// Stage E "no-op publication" contract: a GovernorPolicy whose Revision
-// is not strictly greater than ActiveRevision() is a no-op (record the
-// call but do not change state). Stage A only verifies the type is
-// capable of carrying that semantics — the strict-monotonicity rule is
-// enforced by the production impl that lands in Stage E.
-func TestRecordingApplierAcceptsAnyRevisionForNow(t *testing.T) {
+// Stage E/F monotonic contract: a GovernorPolicy whose Revision is not
+// strictly greater than the current ActiveRevision is a no-op — calls is
+// NOT bumped and active does NOT regress. Stage A documented the opposite
+// behavior ("accepts any revision") only because the production impl had
+// not yet been wired; that test double is now expected to honor the same
+// contract as the Pipeline, otherwise the two impls drift apart in tests.
+func TestRecordingApplierRejectsOlderRevision(t *testing.T) {
 	a := NewRecordingApplier(nil)
-	_ = a.ApplyPolicy(context.Background(), GovernorPolicy{Revision: 3})
-	_ = a.ApplyPolicy(context.Background(), GovernorPolicy{Revision: 3}) // same rev
+	if err := a.ApplyPolicy(context.Background(), GovernorPolicy{Revision: 3}); err != nil {
+		t.Fatalf("first ApplyPolicy: %v", err)
+	}
+	// Same revision is a no-op (publisher replay).
+	if err := a.ApplyPolicy(context.Background(), GovernorPolicy{Revision: 3}); err != nil {
+		t.Fatalf("replay ApplyPolicy: %v", err)
+	}
+	// Older revision MUST be a no-op (active must not regress).
+	if err := a.ApplyPolicy(context.Background(), GovernorPolicy{Revision: 1}); err != nil {
+		t.Fatalf("older ApplyPolicy: %v", err)
+	}
 	rec, _ := AsRecordingApplier(a)
-	if rec.calls != 2 {
-		t.Fatalf("calls: got %d want 2 (Stage A allows same-rev replay)", rec.calls)
+	if rec.calls != 1 {
+		t.Fatalf("calls: got %d want 1 (replay + older must not bump counter)", rec.calls)
+	}
+	if got := a.ActiveRevision(); got != 3 {
+		t.Fatalf("active revision after older apply: got %d want 3", got)
 	}
 }

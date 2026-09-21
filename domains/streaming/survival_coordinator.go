@@ -2,12 +2,19 @@ package streaming
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log/slog"
 	"math/rand"
 	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // survival_coordinator.go — SR-06 (doc 18 §5.1, §7, §8, §9.1)
@@ -19,8 +26,8 @@ import (
 // pass, AggregateTaskOutcome for the task-level verdict.
 //
 //   - retry-now: discard the uncommitted attempt, refresh candidates,
-//     back off (base), retry immediately after;
-//   - wait-recovery: emit a keepalive comment, sleep the backoff window,
+//     wait for the configured recovery cadence, then retry;
+//   - wait-recovery: emit a keepalive comment, sleep the recovery window,
 //     refresh candidates, retry;
 //   - resume-blocked / fail-terminal / fail-closed: hand the final
 //     protocol rendering to the Terminal seam and stop.
@@ -32,16 +39,16 @@ import (
 // SurvivalOptions bounds the coordinator loop (doc 18 §5.1 interactive
 // deadline, §8.4 retry delay, §8.5 storm prevention).
 //
-// Termination priority (会话优化 v4 §8-14 / R2.4, T3): 组合穷尽 > 2h 时限 >
-// 100 次预算 — the deadline is the STRONGER stop condition versus the retry
-// budget (worst-case 100 × 120s backoff ≈ 3.2h exceeds it).
+// Termination priority: candidate exhaustion > the interactive deadline >
+// the retry budget. The deadline is the stronger stop condition for a
+// long-lived in-connection request.
 type SurvivalOptions struct {
-	// Deadline is the total in-connection budget. 0 → 2 hours (v4 T3:
-	// 24h → 2h, aligned with the 2h request-cache TTL; env override
-	// LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS still wins
-	// through the config wiring in cmd/gateway/main.go).
+	// Deadline is the total in-connection budget. Zero defaults to five
+	// hours, matching the interactive recovery policy.
+
 	Deadline time.Duration
-	// RetryBase is the first backoff step. 0 → 2s.
+	// RetryBase is the first backoff step. Zero defaults to 30 seconds.
+
 	RetryBase time.Duration
 	// RetryMax caps the backoff growth. 0 or values above 120s → 120s.
 	RetryMax time.Duration
@@ -49,25 +56,65 @@ type SurvivalOptions struct {
 	MaxRetries int
 	// KeepaliveInterval controls connection heartbeats while waiting. 0 → 15s.
 	KeepaliveInterval time.Duration
+	// RetryInterval makes recovery pacing fixed instead of exponential when set.
+	// It is intended for long-lived no-capacity recovery and is jittered by the
+	// same bounded jitter policy as the legacy backoff.
+	RetryInterval time.Duration
+	// NightMaxRetries overrides MaxRetries from NightStartHour (inclusive) until
+	// midnight in NightLocation. Zero keeps the ordinary MaxRetries value.
+	NightMaxRetries int
+	NightStartHour  int
+	NightLocation   *time.Location
 }
 
 func (o SurvivalOptions) withDefaults() SurvivalOptions {
 	if o.Deadline <= 0 {
-		o.Deadline = 2 * time.Hour
+		o.Deadline = 5 * time.Hour
+
 	}
 	if o.RetryBase <= 0 {
-		o.RetryBase = 2 * time.Second
+		o.RetryBase = 30 * time.Second
+		// A zero-value options struct opts into the current long-lived recovery
+		// cadence. Explicit RetryBase values retain the historical exponential
+		// behavior unless RetryInterval is also supplied.
+		o.RetryInterval = 30 * time.Second
 	}
 	if o.RetryMax <= 0 || o.RetryMax > 2*time.Minute {
 		o.RetryMax = 2 * time.Minute
 	}
-	if o.MaxRetries <= 0 || o.MaxRetries > executors.DefaultUpstreamAttemptLimit {
+	if o.RetryBase > o.RetryMax && o.RetryInterval <= 0 {
+		o.RetryBase = o.RetryMax
+	}
+	if o.RetryInterval < 0 {
+		o.RetryInterval = 0
+	}
+	if o.MaxRetries <= 0 || o.MaxRetries > executors.MaxUpstreamAttemptLimit-1 {
 		o.MaxRetries = executors.DefaultUpstreamAttemptLimit
+	}
+	if o.NightMaxRetries <= 0 || o.NightMaxRetries > executors.MaxUpstreamAttemptLimit-1 {
+		o.NightMaxRetries = 600
+	}
+	if o.NightStartHour < 0 || o.NightStartHour > 23 {
+		o.NightStartHour = 20
+	}
+	if o.NightLocation == nil {
+		o.NightLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 	}
 	if o.KeepaliveInterval <= 0 {
 		o.KeepaliveInterval = 15 * time.Second
 	}
 	return o
+}
+
+func (o SurvivalOptions) retriesFor(now time.Time) int {
+	if o.NightMaxRetries <= 0 {
+		return o.MaxRetries
+	}
+	local := now.In(o.NightLocation)
+	if local.Hour() >= o.NightStartHour {
+		return o.NightMaxRetries
+	}
+	return o.MaxRetries
 }
 
 // SurvivalResult is the coordinator's final verdict for the task.
@@ -81,6 +128,11 @@ type SurvivalResult struct {
 	FinalAttempt *AttemptResult
 	// Attempts counts bounded executor passes.
 	Attempts int
+	// History is the bounded, content-free decision history retained for the
+	// lifetime of this request. It complements FinalAttempt: the latter is only
+	// the most recent pass, while History prevents a refresh from reusing an
+	// exhausted node/model combination.
+	History errorsx.DecisionHistory
 }
 
 // SurvivalCoordinator drives one request's in-connection recovery loop.
@@ -93,6 +145,12 @@ type SurvivalCoordinator struct {
 	Protocol ClientProtocol
 	// Options bound the loop.
 	Options SurvivalOptions
+	// PrefixCache (FR-12 L2 wiring, design resume-blocked-long-stream-recovery
+	// §3.3 point 1): overrides the process-wide CommittedPrefixCache the
+	// gates observe committed semantic bytes into. nil (production wiring —
+	// the field is not set by survival_wiring) falls back to the package
+	// singleton; tests inject a bounded instance.
+	PrefixCache *CommittedPrefixCache
 
 	// Now / Sleep are the clock seams. Sleep must honor ctx cancellation.
 	Now   func() time.Time
@@ -111,6 +169,10 @@ type SurvivalCoordinator struct {
 	// the HTTP session. It bypasses semantic/durable capture while sharing the
 	// connection's serialized writer.
 	TransportHeartbeat func() error
+	// RetryNotice reports one discarded recoverable attempt. It must use a
+	// transport-only frame and never include upstream bodies or credentials.
+	// Notice failures are observable but do not change the retry decision.
+	RetryNotice func(ctx context.Context, attempt int, decision TaskDecision, wait time.Duration) error
 	// Terminal renders the final protocol frame(s) once the task ends.
 	// committed reports whether the client already saw semantic output
 	// (resume-blocked) and therefore needs a well-formed stream ending
@@ -178,6 +240,9 @@ func (c *SurvivalCoordinator) keepalive(sw *SerializedStreamWriter) error {
 }
 
 func (c *SurvivalCoordinator) waitWithKeepalive(ctx context.Context, sw *SerializedStreamWriter, wait, interval time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := c.keepalive(sw); err != nil {
 		return err
 	}
@@ -202,15 +267,57 @@ func (c *SurvivalCoordinator) waitWithKeepalive(ctx context.Context, sw *Seriali
 	}
 }
 
+func (c *SurvivalCoordinator) recoveryWait(opts SurvivalOptions, decision TaskDecision, backoff time.Duration) time.Duration {
+	// An explicit upstream recovery time is authoritative. It is constrained by
+	// the request deadline in Run rather than silently replaced with RetryMax.
+	if decision.NextRetryAfter > 0 {
+		return decision.NextRetryAfter
+	}
+	if opts.RetryInterval > 0 {
+		// RetryInterval is an operator-selected cadence, not a backoff seed. Keep
+		// it exact so a configured 30-second policy remains 30 seconds.
+		return opts.RetryInterval
+	}
+	return applyBackoffJitter(backoff, c.JitterRand)
+}
+
+func (c *SurvivalCoordinator) notifyRetry(ctx context.Context, attempt int, decision TaskDecision, wait time.Duration) {
+	if c.RetryNotice == nil {
+		return
+	}
+	if err := c.RetryNotice(ctx, attempt, decision, wait); err != nil {
+		slog.Warn("survival retry notice failed", "attempt", attempt, "action", decision.Action.String(), "reason", decision.Reason, "error", err)
+	}
+}
+
+func survivalCancellationDecision(err error) TaskDecision {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
+	}
+	return TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
+}
+
 // Run drives the recovery loop until the task reaches a terminal state,
 // the deadline expires or ctx is cancelled. sw is the shared serialized
 // writer over the real connection; the caller owns its construction.
 func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWriter, params *executors.ExecParams) SurvivalResult {
-	opts := c.Options.withDefaults()
-	if params.UpstreamAttempts == nil {
-		params.UpstreamAttempts = executors.NewUpstreamAttemptBudget(opts.MaxRetries)
+	if params == nil || c.Exec == nil {
+		return SurvivalResult{Decision: TaskDecision{Action: TaskActionFailClosed, Reason: "survival_unavailable"}}
 	}
-	deadline := c.now().Add(opts.Deadline)
+	if err := ctx.Err(); err != nil {
+		return SurvivalResult{Decision: survivalCancellationDecision(err)}
+	}
+
+	opts := c.Options.withDefaults()
+	startedAt := c.now()
+	maxRetries := opts.retriesFor(startedAt)
+	// MaxRetries is retries after the initial attempt, while the shared budget
+	// counts actual upstream calls. Allocate room for both when coordinator owns
+	// the budget; a caller-provided budget remains the stricter authority.
+	if params.UpstreamAttempts == nil {
+		params.UpstreamAttempts = executors.NewUpstreamAttemptBudget(maxRetries + 1)
+	}
+	deadline := startedAt.Add(opts.Deadline)
 	backoff := opts.RetryBase
 
 	// FR-12 L1 revocable window: hold the first HoldbackMaxChunks semantic
@@ -221,11 +328,57 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	// resume_blocked/committed_output. Unstable models (glm-5.2, minimax-m3)
 	// drop the connection a few chunks in far more often than they fail after a
 	// full response, so a real window converts most of those into invisible
-	// retries. Defaults match StreamRecoveryConfig; tunable via
-	// LLM_GATEWAY_RECOVERY_HOLDBACK_* env (window 0 disables).
-	hbWindow, hbChunks := RecoveryHoldbackFromEnv()
+	// retries. 2026-09-01 P0 fix: use model-specific holdback tuning to provide
+	// extended windows for unstable models while keeping stable models at the
+	// default 5s/20 chunks. Tunable via LLM_GATEWAY_RECOVERY_HOLDBACK_* env.
+	hbWindow, hbChunks := RecoveryHoldbackForModel(params.Model)
+
+	// FR-12 L2 committed-prefix aligned continuation (design
+	// resume-blocked-long-stream-recovery §3.3 points 1/2): the default
+	// LLM_GATEWAY_RECOVERY_L2_MODE=off leaves every gate, cache and recovery
+	// decision byte-identical to the pre-L2 build. shadow folds only
+	// wire-proven semantic frames into a request-scoped prefix cache and
+	// observes naturally occurring follow-up attempts; it never starts a replay
+	// or changes bytes, retry budget, ladder decisions or terminal rendering.
+	// enforce additionally asks the recovery ladder for an aligned continuation
+	// after committed_output. The entry is dropped when Run returns (succeed /
+	// error / envelope — every Run exit is request terminal).
+	l2 := recoveryL2RuntimeFromEnv()
+	if l2.observeEnabled() && c.PrefixCache != nil {
+		l2.cache = c.PrefixCache
+	}
+	if l2.observeEnabled() && l2.cache == nil {
+		l2.mode = RecoveryL2ModeOff
+	}
+	if l2.observeEnabled() {
+		defer l2.cache.Remove(params.RequestID)
+	}
+	// l2Replay arms the NEXT attempt as an L2 aligned replay; l2RecoveryNo /
+	// l2LastScoreBP feed the ladder's budget and miss-escalation semantics;
+	// l2Used records that a replay's suffix actually reached the client.
+	var l2Replay *ReplayAlignmentOptions
+	var l2RecoveryNo int
+	var l2LastScoreBP uint16
+	var l2Used bool
+	// R36: one-shot guard for the uncommitted context-length
+	// compress-and-retry (see the retry branch below).
+	var ctxLenCompressRetried bool
 
 	res := SurvivalResult{}
+	// 2026-08-31 (P2-6 audit-data-closure): allocate res.History with zero
+	// length and a fresh backing array so the append in
+	// appendSurvivalHistory never aliases storage carried over from a prior
+	// Run call. The earlier nil-only assignment was insufficient: append()
+	// would silently reuse the capacity of any slice header the caller had
+	// retained from a previous Run, causing new entries from Run B to
+	// appear in the A.History slice the caller still held. Using make with
+	// a small initial cap guarantees a fresh allocation and bounds the
+	// first few appends before any growth.
+	res.History.PriorAttempts = make([]errorsx.PriorAttempt, 0, 8)
+	res.History.TriedNodes = nil
+	res.History.TriedModels = nil
+	res.History.Terminal = false
+	res.History.LastSeq = 0
 	// recoveryStart anchors gateway_survival_recovery_latency_seconds: the
 	// instant the task saw its first recoverable failure.
 	var recoveryStart time.Time
@@ -239,20 +392,147 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	)
 
 	for {
-		gate := NewAttemptCommitGate(c.Protocol, sw, GateOptions{Mode: GateModeBuffered, RequestID: params.RequestID, HoldbackWindow: hbWindow, HoldbackMaxChunks: hbChunks, BeforeSemanticCommit: func(state CommitState) error {
+		if err := ctx.Err(); err != nil {
+			res.Decision = survivalCancellationDecision(err)
+			return res
+		}
+		if !c.now().Before(deadline) {
+			res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
+			c.renderTerminal(res.Decision, nil, false)
+			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+			return res
+		}
+		// 2026-09-01: attempt-start line. Without it the log only shows the
+		// OUTCOME of each pass, so a request that ends in resume_blocked gives
+		// no way to tell whether the L1 holdback window was even active (the
+		// glm-5.2 / minimax-m3 failure class hinges on exactly that) nor how
+		// much of the interactive deadline remained.
+		log.Info("survival_attempt_start",
+			"request_id", params.RequestID,
+			"attempt", res.Attempts+1,
+			"holdback_window_ms", hbWindow.Milliseconds(),
+			"holdback_max_chunks", hbChunks,
+			"l2_aligned_replay", l2Replay != nil,
+			"deadline_remaining_sec", int(deadline.Sub(c.now()).Seconds()),
+			"backoff_ms", backoff.Milliseconds(),
+		)
+		// P1-2 fix (2026-08-28): Pass ctx to gate for checkpoint context propagation.
+		gateOpts := GateOptions{Mode: GateModeBuffered, RequestID: params.RequestID, HoldbackWindow: hbWindow, HoldbackMaxChunks: hbChunks, BeforeSemanticCommit: func(ctx context.Context, state CommitState) error {
 			if c.BeforeSemanticCommit == nil {
 				return nil
 			}
 			return c.BeforeSemanticCommit(ctx, state)
-		}})
+		}}
+		if l2.observeEnabled() {
+			// L2 wiring point 1: fold every wire-proven semantic frame into
+			// the committed-prefix cache (Observe is only armed while L2 is
+			// enabled — the default-off hot path never touches the cache).
+			gateOpts.PrefixObserve = l2.cache.Observe
+		}
+		if l2.shadowEnabled() && res.Attempts > 0 {
+			if committed, ok := l2.cache.Snapshot(params.RequestID); ok {
+				gateOpts.ShadowAlignment = &ShadowAlignmentOptions{Committed: committed, Aligner: NewPrefixAligner(l2.cfg.AlignmentThresholdBP)}
+				gateOpts.ShadowAlignmentResult = func(result ShadowAlignmentResult) {
+					metrics.RecordStreamRecoveryL2Shadow(c.Protocol.String(), result.Result)
+				}
+			}
+		}
+		l2ReplayThisAttempt := l2Replay != nil
+		if l2ReplayThisAttempt {
+			// L2 aligned replay (design §3.3 point 3): the aligner's
+			// suppression window replaces the L1 holdback — frames stay
+			// discardable until prefix alignment proves no duplication.
+			gateOpts.HoldbackWindow = 0
+			gateOpts.HoldbackMaxChunks = 0
+			gateOpts.ReplayAlignment = l2Replay
+			l2Replay = nil
+		}
+		gate := NewAttemptCommitGate(ctx, c.Protocol, sw, gateOpts)
 
 		gw := NewGateWriterWithResponse(gate, params.W)
 		attemptParams := *params
 		attemptParams.W = gw
 		res.FinalAttempt = ExecuteAttempt(ctx, c.Exec, gate, &attemptParams)
+		// Shadow evaluation settles only after the ordinary attempt completed.
+		// It never feeds a result back into the recovery ladder or gate state.
+		if l2.shadowEnabled() {
+			gate.FinishShadowObservation()
+		}
 		res.Attempts++
+		if err := ctx.Err(); err != nil {
+			if gate.State() < CommitStateContent {
+				_ = gate.Discard()
+			}
+			res.Decision = survivalCancellationDecision(err)
+			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+			return res
+		}
+		if !c.now().Before(deadline) {
+			if gate.State() < CommitStateContent {
+				_ = gate.Discard()
+			}
+			res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
+			c.renderTerminal(res.Decision, gate, false)
+			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+			return res
+		}
 		recordSurvivalAttempt(res.FinalAttempt)
-		res.Decision = AggregateTaskOutcome(res.FinalAttempt)
+		res.Decision = AggregateTaskOutcomeWithHistory(res.FinalAttempt, res.History)
+		// R36 (2026-09-17 audit, closes R35-gap 遗留#2): one-shot
+		// compress-and-retry for an uncommitted context-length failure. The
+		// central policy hard-pins that kind FailTerminal regardless of
+		// commit state, so the survival budget never worked for mid-stream
+		// overflows (the executor tiered ladder only sees HTTP 4xx before
+		// first byte). The override lives HERE, not in the shared decision
+		// layer: the durable recovery worker aggregates the same kinds but
+		// re-runs attempts from the original snapshot without a body-rewrite
+		// hook, and must not open a no-compress retry loop. Committed
+		// failures keep the terminal (commit-block rule untouched).
+		if survivalCtxLenCompressRetryDue(ctxLenCompressRetried, res.Decision, res.FinalAttempt) {
+			ctxLenCompressRetried = true
+			res.Decision = TaskDecision{
+				Action: TaskActionRetryNow,
+				Reason: "context_length_uncommitted_compress_retry",
+			}
+		}
+		appendSurvivalHistory(&res.History, res.FinalAttempt, res.Attempts, res.Decision)
+		if l2ReplayThisAttempt {
+			// L2 replay verdict (design §3.3 point 3): an alignment miss —
+			// or a stream that ended before a verdict could form — voids the
+			// replay attempt (nothing client-visible was emitted from it)
+			// and degrades to the existing resume_blocked envelope path
+			// below; L3/L4 stay at their current default-off state.
+			decided, alignment := gate.AlignmentOutcome()
+			l2LastScoreBP = alignment.ScoreBP
+			if decided && alignment.Aligned {
+				l2Used = true
+			} else {
+				res.Decision = TaskDecision{Action: TaskActionResumeBlocked, Reason: "l2_alignment_miss"}
+			}
+		}
+
+		if l2.shadowEnabled() && res.Decision.Action == TaskActionResumeBlocked && gateOpts.ShadowAlignment == nil {
+			shadowUnavailable := ShadowAlignmentResult{
+				Result:                    "unavailable",
+				Applied:                   false,
+				ClientBytesUnchanged:      true,
+				RecoveryBehaviorUnchanged: true,
+				L2Mode:                    RecoveryL2ModeShadow,
+			}
+			log.Info("survival_l2_shadow",
+				"request_id", params.RequestID,
+				"result", shadowUnavailable.Result,
+				"score_bp", 0,
+				"common_bytes", 0,
+				"hash_only", false,
+				"aligned", false,
+				"applied", false,
+				"client_bytes_unchanged", true,
+				"recovery_behavior_unchanged", true,
+				"l2_mode", string(RecoveryL2ModeShadow),
+			)
+			metrics.RecordStreamRecoveryL2Shadow(c.Protocol.String(), shadowUnavailable.Result)
+		}
 
 		// 2026-08-19: log the per-attempt verdict right after aggregation so
 		// the committed/resume-blocked transition is visible regardless of
@@ -292,8 +572,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				}
 			}
 		}
-		log.Info("survival_attempt_outcome",
-			"attempt", res.Attempts,
+		log.Info("survival_attempt_outcome", append(survivalRouteLogAttrs(params.RequestID, res.Attempts, res.Decision),
 			"committed", res.FinalAttempt.CommitState >= CommitStateContent,
 			"commit_state", res.FinalAttempt.CommitState.String(),
 			"kinds", strings.Join(attemptKinds, ","),
@@ -302,7 +581,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			"reason", res.Decision.Reason,
 			"provider_id", lastProviderID,
 			"raw_model", lastRawModel,
-		)
+		)...)
 
 		switch res.Decision.Action {
 		case TaskActionSucceed:
@@ -313,19 +592,57 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			// would wrongly swallow them and the client would see an empty
 			// body. FinishAttempt refuses a discarded gate, so this stays safe.
 			if err := gw.Finish(); err != nil {
+				finishBufBytes, finishHoldbackHeld, finishGateState := gate.Snapshot()
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				// 2026-09-01: the finish error itself was previously dropped, so a
+				// success-path attempt that died while releasing held frames was
+				// indistinguishable from a genuine client disconnect.
 				log.Warn("survival_task_ended",
 					"attempt", res.Attempts,
 					"action", res.Decision.Action.String(),
 					"reason", res.Decision.Reason,
 					"committed", res.FinalAttempt.CommitState >= CommitStateContent,
 					"succeed", false,
+					"finish_error", err.Error(),
+					"buffer_bytes", finishBufBytes,
+					"holdback_held", finishHoldbackHeld,
+					"gate_state", finishGateState.String(),
+					"provider_id", lastProviderID,
+					"raw_model", lastRawModel,
+				)
+				return res
+			}
+			if err := gate.Commit(); err != nil {
+				commitBufBytes, commitHoldbackHeld, commitGateState := gate.Snapshot()
+				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
+				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				// 2026-09-01: this branch returned entirely silently, so a failed
+				// final commit left no trace at all in the logs.
+				log.Error("survival_task_ended",
+					"attempt", res.Attempts,
+					"action", res.Decision.Action.String(),
+					"reason", res.Decision.Reason,
+					"committed", res.FinalAttempt.CommitState >= CommitStateContent,
+					"succeed", false,
+					"commit_error", err.Error(),
+					"buffer_bytes", commitBufBytes,
+					"holdback_held", commitHoldbackHeld,
+					"gate_state", commitGateState.String(),
+					"provider_id", lastProviderID,
+					"raw_model", lastRawModel,
 				)
 				return res
 			}
 			res.Succeed = true
+			if l2Used {
+				// R12.9: the request completed through at least one L2
+				// aligned-continuation replay whose suffix reached the client.
+				RecordStreamRecoverySuccess(RecoveryModeAligned)
+			}
+
 			recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 			if !recoveryStart.IsZero() {
@@ -343,7 +660,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		case TaskActionRetryNow, TaskActionWaitRecovery:
 			if params.UpstreamAttempts != nil && params.UpstreamAttempts.Exhausted() {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "attempt_limit_exceeded"}
-				c.renderTerminal(res.Decision, gate)
+				c.renderTerminal(res.Decision, gate, false)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				log.Warn("survival_task_ended",
 					"attempt", res.Attempts,
@@ -356,9 +673,9 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				)
 				return res
 			}
-			if res.Attempts-1 >= opts.MaxRetries {
+			if res.Attempts-1 >= maxRetries {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "retry_limit_exceeded"}
-				c.renderTerminal(res.Decision, gate)
+				c.renderTerminal(res.Decision, gate, false)
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				log.Warn("survival_task_ended",
@@ -379,7 +696,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			gateStateStr := gateState.String()
 			if err := gate.Discard(); err != nil {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "discard_refused"}
-				c.renderTerminal(res.Decision, gate)
+				c.renderTerminal(res.Decision, gate, false)
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				log.Error("survival_discard_refused",
@@ -392,8 +709,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				)
 				return res
 			}
-			log.Info("survival_attempt_discarded",
-				"attempt", res.Attempts,
+			log.Info("survival_attempt_discarded", append(survivalRouteLogAttrs(params.RequestID, res.Attempts, res.Decision),
 				"buffer_bytes", bufferBytes,
 				"holdback_held", holdbackHeld,
 				"state", gateState,
@@ -401,7 +717,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				"raw_model", lastRawModel,
 				"action", res.Decision.Action.String(),
 				"reason", res.Decision.Reason,
-			)
+			)...)
 			// Record the discard into the audit capture so request_logs_hot
 			// .discard_events JSONB column carries the buffer size and
 			// decision context for offline post-mortem.
@@ -417,14 +733,46 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 					DecisionAction: res.Decision.Action.String(),
 					DecisionReason: res.Decision.Reason,
 				})
-				// The discarded attempt may have marked the shared capture as
-				// interrupted. Reset per-attempt state before replaying so a later
-				// successful candidate cannot inherit a stale failure terminal.
-				params.Capture.Reset()
 			}
-			if c.now().After(deadline) {
+			// R36 (2026-09-17 audit): one-shot compress-and-retry for an
+			// uncommitted context-length failure. The decision layer now
+			// returns RetryNow for that shape (attempt_outcome.go
+			// centralActionForTaskWithHistory); this is the body half —
+			// without it the retry would re-send the same oversized body and
+			// burn the remaining attempts on the identical window error.
+			// Mechanical trim only (no LLM summarizer this deep): a modest
+			// shrink resolves marginal overflows; a failed shrink renders
+			// terminal immediately instead of re-colliding.
+			if !ctxLenCompressRetried && len(params.BodyBytes) > 0 && survivalAttemptHasKind(res.FinalAttempt, errorsx.KindContextLength) {
+				ctxLenCompressRetried = true
+				if trimmed, ok := survivalCompressBodyForRetry(params.BodyBytes); ok {
+					log.Info("survival_context_length_compress_retry", append(survivalRouteLogAttrs(params.RequestID, res.Attempts, res.Decision),
+						"body_bytes_before", len(params.BodyBytes),
+						"body_bytes_after", len(trimmed),
+						"provider_id", lastProviderID,
+						"raw_model", lastRawModel,
+					)...)
+					params.BodyBytes = trimmed
+				} else {
+					res.Decision = TaskDecision{Action: TaskActionFailTerminal, Reason: "context_length_compress_retry_failed"}
+					c.renderTerminal(res.Decision, gate, false)
+					recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
+					recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+					log.Warn("survival_task_ended",
+						"attempt", res.Attempts,
+						"action", res.Decision.Action.String(),
+						"reason", res.Decision.Reason,
+						"committed", res.FinalAttempt.CommitState >= CommitStateContent,
+						"succeed", false,
+						"provider_id", lastProviderID,
+						"raw_model", lastRawModel,
+					)
+					return res
+				}
+			}
+			if !c.now().Before(deadline) {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
-				c.renderTerminal(res.Decision, gate)
+				c.renderTerminal(res.Decision, gate, false)
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				log.Warn("survival_task_ended",
@@ -438,14 +786,18 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				)
 				return res
 			}
-			wait := backoff
-			if res.Decision.Action == TaskActionWaitRecovery &&
-				res.Decision.NextRetryAfter > wait && res.Decision.NextRetryAfter <= opts.RetryMax {
-				wait = res.Decision.NextRetryAfter
+			wait := c.recoveryWait(opts, res.Decision, backoff)
+			remaining := deadline.Sub(c.now())
+			if wait > remaining {
+				wait = remaining
 			}
-			// ±20% jitter on the final backoff (Retry-After adopted values
-			// included) spreads retry storms across clients (T3).
-			wait = applyBackoffJitter(wait, c.JitterRand)
+			if wait <= 0 {
+				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
+				c.renderTerminal(res.Decision, gate, false)
+				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				return res
+			}
 			if recoveryStart.IsZero() {
 				recoveryStart = c.now()
 			}
@@ -453,10 +805,11 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			if res.Decision.Action == TaskActionWaitRecovery {
 				waitState = survivalStateWaiting
 			}
+			c.notifyRetry(ctx, res.Attempts, res.Decision, wait)
 			if c.Reschedule != nil {
 				if err := c.Reschedule(ctx, c.now().Add(wait), res.Decision.Reason); err != nil {
 					res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "durable_reschedule_failed"}
-					c.renderTerminal(res.Decision, gate)
+					c.renderTerminal(res.Decision, gate, false)
 					recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 					recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 					log.Error("survival_task_ended",
@@ -473,7 +826,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			}
 			recordSurvivalTransition(survivalStateRunning, waitState, res.Decision.Reason)
 			if err := c.waitWithKeepalive(ctx, sw, wait, opts.KeepaliveInterval); err != nil {
-				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
+				res.Decision = survivalCancellationDecision(err)
 				recordSurvivalTransition(waitState, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				log.Warn("survival_task_ended",
@@ -485,6 +838,19 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				)
 				return res
 			}
+			if err := ctx.Err(); err != nil {
+				res.Decision = survivalCancellationDecision(err)
+				recordSurvivalTransition(waitState, survivalTerminalToState(res.Decision), res.Decision.Reason)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				return res
+			}
+			if !c.now().Before(deadline) {
+				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
+				c.renderTerminal(res.Decision, gate, false)
+				recordSurvivalTransition(waitState, survivalTerminalToState(res.Decision), res.Decision.Reason)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				return res
+			}
 			if res.Decision.Action == TaskActionWaitRecovery && res.FinalAttempt != nil {
 				observeSurvivalWait(res.FinalAttempt.LastKind(), wait)
 			}
@@ -492,9 +858,11 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			if c.Refresh != nil {
 				c.Refresh(ctx)
 			}
-			backoff *= 2
-			if backoff > opts.RetryMax {
-				backoff = opts.RetryMax
+			if opts.RetryInterval <= 0 {
+				backoff *= 2
+				if backoff > opts.RetryMax {
+					backoff = opts.RetryMax
+				}
 			}
 			log.Debug("survival_attempt_recovery_resumed",
 				"attempt", res.Attempts,
@@ -505,8 +873,32 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			continue
 
 		default: // ResumeBlocked / FailTerminal / FailClosed
+			// L2 wiring point 2 (design §3.3): a committed_output
+			// resume_blocked verdict first asks the FR-12 recovery ladder
+			// (NextRecoveryActionCtx — emits survival_recovery_action with the
+			// request correlation attrs) for an aligned continuation; only
+			// when the ladder cannot offer one does the existing envelope
+			// path below run. Inert while L2 is disabled (the default):
+			// resume_blocked keeps its exact pre-L2 behavior. A replay that
+			// already missed (reason l2_alignment_miss) never re-asks.
+			if l2.enforceEnabled() && res.Decision.Action == TaskActionResumeBlocked && res.Decision.Reason != "l2_alignment_miss" {
+				if plan := c.l2AlignedReplayPlan(ctx, log, params, res, l2, l2RecoveryNo, l2LastScoreBP, deadline, maxRetries); plan != nil {
+					// Keep the interrupted attempt's trailing partial bytes
+					// on the wire (and observed) exactly as the envelope path
+					// below would, then arm the aligned replay. The next loop
+					// iteration re-checks ctx/deadline before executing it.
+					_ = finishGateWriter(gw, gate)
+					l2Replay = plan
+					l2RecoveryNo++
+					continue
+				}
+			}
 			_ = finishGateWriter(gw, gate)
-			c.renderTerminal(res.Decision, gate)
+			// An L2 replay that missed leaves the LAST gate uncommitted (the
+			// replay was voided), but the client already saw the interrupted
+			// attempt's bytes — the terminal must render as committed so the
+			// stream ends well-formed instead of hanging.
+			c.renderTerminal(res.Decision, gate, res.Decision.Reason == "l2_alignment_miss")
 			recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 			recordSurvivalResumeSafetyBlocked(res.Decision, res.FinalAttempt)
 			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
@@ -516,18 +908,157 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			// survival ended: committed_output" failure class — it carries
 			// the same fields the SSE envelope does plus the
 			// request-correlation context the envelope cannot.
-			log.Warn("survival_resume_blocked",
-				"attempt", res.Attempts,
+			log.Warn("survival_resume_blocked", append(survivalRouteLogAttrs(params.RequestID, res.Attempts, res.Decision),
 				"action", res.Decision.Action.String(),
-				"reason", res.Decision.Reason,
-				"committed", res.FinalAttempt.CommitState >= CommitStateContent,
+				// An L2 miss voids the replay gate, but the interrupted
+				// attempt's bytes are client-visible — keep the flag true to
+				// what the client actually saw.
+				"committed", res.FinalAttempt.CommitState >= CommitStateContent || res.Decision.Reason == "l2_alignment_miss",
 				"commit_state", res.FinalAttempt.CommitState.String(),
 				"kinds", strings.Join(attemptKinds, ","),
 				"provider_id", lastProviderID,
 				"raw_model", lastRawModel,
-			)
+			)...)
+			requestflow.Log(requestflow.Event{
+				Stage: "survival", RequestID: params.RequestID, Model: lastRawModel,
+				ProviderID: lastProviderID, Kind: strings.Join(attemptKinds, ","),
+				Action: res.Decision.Action.String(), Reason: res.Decision.Reason,
+				Retryable: false,
+				Committed: res.FinalAttempt.CommitState >= CommitStateContent || res.Decision.Reason == "l2_alignment_miss",
+				Attempt:   res.Attempts,
+			})
 			return res
 		}
+	}
+}
+
+// l2AlignedReplayPlan consults the FR-12 ladder (NextRecoveryActionCtx — the
+// ctx-aware variant, so the survival_recovery_action log line carries the
+// request correlation attrs) for a committed_output resume_blocked verdict
+// (design resume-blocked-long-stream-recovery §3.3 point 2). It returns a
+// ReplayAlignmentOptions when an aligned-continuation replay may run NOW;
+// nil keeps the existing resume_blocked envelope path (no committed-prefix
+// entry, prefix beyond the replay buffer bound, upstream-attempt/retry
+// budget or deadline exhausted, or the ladder's verdict is not aligned
+// continuation — e.g. recovery budget exhausted, which with the default
+// config already degrades to the error envelope).
+func (c *SurvivalCoordinator) l2AlignedReplayPlan(
+	ctx context.Context,
+	log *streamLogger,
+	params *executors.ExecParams,
+	res SurvivalResult,
+	l2 recoveryL2Runtime,
+	recoveryNo int,
+	lastScoreBP uint16,
+	deadline time.Time,
+	maxRetries int,
+) *ReplayAlignmentOptions {
+	if res.FinalAttempt == nil || res.FinalAttempt.FinalError == nil {
+		return nil
+	}
+	if params.UpstreamAttempts != nil && params.UpstreamAttempts.Exhausted() {
+		return nil
+	}
+	if res.Attempts-1 >= maxRetries {
+		return nil
+	}
+	if !c.now().Before(deadline) {
+		return nil
+	}
+	prefix, ok := l2.cache.Snapshot(params.RequestID)
+	if !ok || prefix.TotalBytes <= 0 || prefix.TotalBytes > maxL2ReplayCommittedBytes {
+		return nil
+	}
+	// The coordinator's own retry loop already consumed the same-node resend
+	// budget, so report L0 exhausted to the ladder; CommittedChunks > 0 skips
+	// the L1 branch; RecoveryMode/AlignmentScoreBP carry the previous replay's
+	// verdict so a re-ask after an aligned replay that failed mid-suffix
+	// keeps the ladder's miss-escalation semantics intact.
+	state := &StreamRecoveryState{
+		RecoveryNo:       uint16(recoveryNo),
+		SameNodeRetries:  uint8(max(1, l2.cfg.SameNodeStreamRetries)),
+		CommittedChunks:  1,
+		CommittedBytes:   uint32(prefix.TotalBytes),
+		AlignmentScoreBP: lastScoreBP,
+	}
+	if recoveryNo > 0 {
+		state.RecoveryMode = RecoveryModeAligned
+	}
+	act := NextRecoveryActionCtx(ctx, state, l2.cfg, res.FinalAttempt.FinalError)
+	if act.Kind != RecoveryActionAlignedContinuation {
+		return nil
+	}
+	log.Info("survival_l2_replay_armed",
+		"request_id", params.RequestID,
+		"attempt", res.Attempts,
+		"recovery_no", recoveryNo,
+		"committed_bytes", prefix.TotalBytes,
+	)
+	return &ReplayAlignmentOptions{
+		Committed: prefix,
+		Aligner:   NewPrefixAligner(l2.cfg.AlignmentThresholdBP),
+	}
+}
+
+// survivalRouteLogAttrs provides stable, content-free dimensions shared by every
+// survival outcome/discard/resume-blocked event. attempt_id is deterministic for
+// a request and coordinator pass, while the route fields remain queryable even
+// when the router did not return a candidate.
+// survivalAttemptHasKind reports whether any candidate outcome folded into
+// the attempt carries the given error kind.
+func survivalAttemptHasKind(r *AttemptResult, kind errorsx.ErrorKind) bool {
+	if r == nil {
+		return false
+	}
+	for _, co := range r.CandidateOutcomes {
+		if co.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// survivalCtxLenCompressRetryDue reports whether the survival coordinator
+// should convert this terminal decision into the one-shot context-length
+// compress-and-retry: decision is terminal, nothing client-semantic was
+// committed, some candidate folded KindContextLength, and the one-shot
+// budget for this request is not yet spent. The body rewrite itself happens
+// in the retry branch via survivalCompressBodyForRetry.
+func survivalCtxLenCompressRetryDue(retried bool, d TaskDecision, r *AttemptResult) bool {
+	if retried || d.Action != TaskActionFailTerminal {
+		return false
+	}
+	if r != nil && r.CommitState >= CommitStateContent {
+		return false
+	}
+	return survivalAttemptHasKind(r, errorsx.KindContextLength)
+}
+
+// survivalCompressBodyForRetry performs the one-shot mechanical trim for an
+// uncommitted context-length retry. The window is derived from the body
+// itself (≈tokens at 4 bytes/token) so no provider catalog lookup is needed
+// this deep in the coordinator. CompressMessagesIfNeeded only acts on
+// chat/anthropic "messages"-shaped bodies and returns the input unchanged
+// otherwise (responses protocol → unchanged → caller renders terminal,
+// matching the pre-R36 behavior for that protocol).
+func survivalCompressBodyForRetry(body []byte) ([]byte, bool) {
+	trimmed := compression.CompressMessagesIfNeededBody(body, len(body)/4)
+	if len(trimmed) == 0 || len(trimmed) >= len(body) {
+		return nil, false
+	}
+	return trimmed, true
+}
+
+func survivalRouteLogAttrs(requestID string, attempt int, decision TaskDecision) []any {
+	attemptID := fmt.Sprintf("%s/%d", requestID, attempt)
+	return []any{
+		"request_id", requestID,
+		"attempt_id", attemptID,
+		"attempt", attempt,
+		"route_override", "none",
+		"fallback_reason", decision.Reason,
+		"effective_route_status", "normal",
+		"recovery_action", decision.Action.String(),
 	}
 }
 
@@ -566,10 +1097,30 @@ func finishGateWriter(w interface{ Finish() error }, gate *AttemptCommitGate) er
 	return nil
 }
 
-func (c *SurvivalCoordinator) renderTerminal(decision TaskDecision, gate *AttemptCommitGate) {
+// renderTerminal hands the final protocol rendering to the Terminal seam.
+// clientCommitted ORs in an out-of-band committed signal: an L2 replay miss
+// voids the last gate (uncommitted by design) even though an earlier attempt
+// of the same request already put bytes on the wire.
+//
+// audit #2: when the bridge already rendered a protocol terminal for this
+// attempt (gate.TerminalRendered — e.g. a committed integrity breach emitted
+// response.completed(incomplete) via responsesScaffold.finishInterrupted),
+// rendering again would put a SECOND terminal on the wire
+// (completed(incomplete) + response.failed). Suppress it: one attempt, one
+// terminal. The voided L2 replay gate never latches, so the
+// l2_alignment_miss envelope path below keeps its behavior.
+func (c *SurvivalCoordinator) renderTerminal(decision TaskDecision, gate *AttemptCommitGate, clientCommitted bool) {
 	if c.Terminal == nil {
 		return
 	}
-	committed := gate != nil && gate.Committed()
+	if gate != nil && gate.TerminalRendered() {
+		slog.Warn("survival_terminal_already_rendered",
+			"attempt_action", decision.Action.String(),
+			"attempt_reason", decision.Reason,
+			"client_committed", clientCommitted,
+		)
+		return
+	}
+	committed := clientCommitted || (gate != nil && gate.Committed())
 	c.Terminal(decision, committed)
 }

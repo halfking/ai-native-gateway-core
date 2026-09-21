@@ -11,6 +11,9 @@ import {
   getSessionSnapshot,
 } from '../api/sessions_v2'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElButton } from 'element-plus'
 const props = defineProps<{
   sessionId: string
   title?: string
@@ -137,8 +140,9 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   align-items: flex-start;
   padding: 16px 24px;
-  background: white;
-  border-bottom: 1px solid var(--surface-secondary);
+  background: var(--bg-card, var(--card, var(--kx-surface)));
+  border-bottom: 1px solid var(--border, var(--surface-secondary));
+  color: var(--text, var(--kx-text));
   position: sticky;
   top: 0;
   z-index: 10;

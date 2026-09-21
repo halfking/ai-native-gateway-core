@@ -106,6 +106,26 @@ func TestPromptClassificationMatrix(t *testing.T) {
 		{"trap_write_story_is_creative", ClassificationSignals{LastUserPrompt: "写一个关于太空探索的故事"}, TaskCreative, 0},
 		{"trap_write_blog_is_creative", ClassificationSignals{LastUserPrompt: "写一篇关于 AI 的博客文章"}, TaskCreative, 0},
 		{"trap_write_plan_is_planning", ClassificationSignals{LastUserPrompt: "帮我写一份微服务架构方案，拆解各模块任务"}, TaskPlanning, 0},
+
+		// ── 2026-09-14 匹配复审修复回归（6 项缺口，详 suites: auto_matching_suite.jsonl）──
+		// planning 动宾组合："制定"与"方案"被修饰语隔开
+		{"fix_planning_verb_target_gap", ClassificationSignals{LastUserPrompt: "帮我制定一个数据迁移方案，先给出整体思路"}, TaskPlanning, 0.8},
+		// creative 命名 pattern："起"与"名字"被隔开
+		{"fix_creative_naming_pattern", ClassificationSignals{LastUserPrompt: "给智能台灯产品起几个有创意的名字"}, TaskCreative, 0.5},
+		// creative 关键词"润色"
+		{"fix_creative_polish_keyword", ClassificationSignals{LastUserPrompt: "帮我把这封邮件润色得更正式一些"}, TaskCreative, 0.3},
+		// "分析+代码对象"归 code（原"分析"归 reasoning 关键词，打平错归）
+		{"fix_codeanalysis_beats_reasoning", ClassificationSignals{LastUserPrompt: "帮我分析这段代码哪里性能比较差，给出优化建议"}, TaskCode, 0.5},
+		// "分析+数据对象"仍归 reasoning（补偿 pattern）
+		{"fix_dataanalysis_still_reasoning", ClassificationSignals{LastUserPrompt: "分析这组数据的分布规律"}, TaskReasoning, 0.5},
+		// 情感二分类归 intent_classification
+		{"fix_sentiment_is_intent", ClassificationSignals{LastUserPrompt: "判断这条评论是正面还是负面：物流很快，包装完好"}, TaskIntentClassification, 0.8},
+		// system 提示词审计短语不再触发 code_audit 硬覆盖（gap_sysprompt_haiku 修复）；
+		// 角色定义中的"代码审查助手"仍经关键词通道偏向 code 族任务——语义上
+		// system 角色定义了 key 的任务域，保证仅是"不被硬覆盖劫持"。
+		{"fix_sysprompt_audit_no_hijack", ClassificationSignals{SystemPrompt: "你是一个代码审查助手，负责把关代码质量。", LastUserPrompt: "帮我写一首关于春天的俳句"}, TaskCode, 0},
+		// 但 system 审计短语 + user 提到代码对象，仍应归 code_audit
+		{"fix_sysprompt_audit_with_code_still_audit", ClassificationSignals{SystemPrompt: "你是代码审查助手。", LastUserPrompt: "请检查这个函数有没有问题"}, TaskCodeAudit, 0.8},
 	}
 
 	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())

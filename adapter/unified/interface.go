@@ -1,3 +1,16 @@
+// Package unified was a 2025 sketch of a second, provider-agnostic IR
+// (Adapter / UnifiedRequest / UnifiedResponse) sitting beside internal/ir.
+//
+// Deprecated 2026-08-30: not the canonical IR.
+//
+// The canonical protocol surface is internal/ir + domains/transformation.
+// Production protocol work (including the Responses SSE event stream) must
+// continue through those packages. This package is retained only for
+// regression tests that historically referenced its types; no production
+// code (cmd/gateway, internal/ir, domains/transformation) imports it.
+//
+// See docs/handoff/2026-08-30-main-integration-data-closure-audit.md
+// "Deferred audit findings" item D for the constraint rationale.
 package unified
 
 import (

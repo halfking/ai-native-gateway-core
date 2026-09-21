@@ -12,7 +12,6 @@ package admin
 // Permission: wrapped with superAdmin (same as RegisterAutoRouteRoutes).
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -168,7 +167,7 @@ func (h *AutoRouteHandlers) listDefaultRouting(w http.ResponseWriter, r *http.Re
 
 func (h *AutoRouteHandlers) createDefaultRouting(w http.ResponseWriter, r *http.Request) {
 	var req DefaultRoutingCreateReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSONErr(w, http.StatusBadRequest, fmt.Sprintf("invalid body: %v", err))
 		return
 	}
@@ -312,7 +311,7 @@ func (h *AutoRouteHandlers) deleteDefaultRouting(w http.ResponseWriter, r *http.
 
 func (h *AutoRouteHandlers) updateDefaultRouting(w http.ResponseWriter, r *http.Request, id int64) {
 	var req DefaultRoutingUpdateReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSONErr(w, http.StatusBadRequest, fmt.Sprintf("invalid body: %v", err))
 		return
 	}

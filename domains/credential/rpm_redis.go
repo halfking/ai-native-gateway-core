@@ -133,6 +133,7 @@ func (r *RedisRPMLimiter) CheckAndReserve(ctx context.Context, providerID, crede
 	now := float64(time.Now().UnixNano()) / float64(time.Second)
 	result, err := r.script.Run(redisCtx, r.client, []string{r.redisKey(providerID, credentialID)}, limit, now, int(rpmWindowSeconds)).Slice()
 	if err == nil && len(result) == 2 {
+		recordRPMMode(true)
 		allowed, okAllowed := redisInt(result[0])
 		count, okCount := redisInt(result[1])
 		if okAllowed && okCount {
@@ -144,7 +145,9 @@ func (r *RedisRPMLimiter) CheckAndReserve(ctx context.Context, providerID, crede
 		err = fmt.Errorf("unexpected lua result length")
 	}
 
-	slog.Warn("redis rpm limiter failed, fallback to memory", "error", err, "provider_id", providerID, "credential_id", credentialID)
+	recordRPMFallback("redis_error")
+	recordRPMMode(false)
+	slog.Warn("redis rpm limiter degraded to local process limit; global RPM guarantee unavailable", "error", err, "provider_id", providerID, "credential_id", credentialID)
 	if ctx.Err() != nil {
 		return false, 0, ctx.Err()
 	}

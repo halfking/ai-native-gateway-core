@@ -134,6 +134,9 @@ import {
   ChatDotRound, Connection, Money, CircleCheck, Odometer, Timer, DocumentCopy, Coin, ArrowUp, ArrowDown,
 } from '@element-plus/icons-vue'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElIcon } from 'element-plus'
 export interface DashboardStats {
   totalSessions: number
   totalSessionsChange: number | null
@@ -206,10 +209,10 @@ const changeClass = (change: number, isNegative: boolean) => {
 .stat-card:hover { transform: translateY(-2px); }
 .stat-content { display: flex; align-items: center; gap: 12px; }
 .stat-icon { width: 48px; height: 48px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.icon-accent  { background: color-mix(in srgb, var(--accent, #6366f1) 16%, transparent); }
-.icon-success { background: rgba(63, 185, 80, 0.16); }
-.icon-danger  { background: rgba(248, 81, 73, 0.16); }
-.icon-warning { background: rgba(210, 153, 34, 0.16); }
+.icon-accent  { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.icon-success { background: color-mix(in srgb, var(--success) 16%, transparent); }
+.icon-danger  { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.icon-warning { background: color-mix(in srgb, var(--warning) 16%, transparent); }
 .icon-muted   { background: var(--neutral-bg); }
 .stat-info { flex: 1; min-width: 0; }
 .stat-label { font-size: 13px; color: var(--muted, var(--text-secondary)); margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -219,7 +222,7 @@ const changeClass = (change: number, isNegative: boolean) => {
 .stat-change-bad { color: var(--danger, var(--danger)); }
 .stat-change-neutral { color: var(--muted, var(--text-secondary)); }
 .stat-subtext { font-size: 12px; color: var(--muted, var(--text-secondary)); }
-@media (max-width: 1600px) { .stat-value { font-size: 20px; } }
+@media (max-width: 1440px) { .stat-value { font-size: 20px; } }
 @media (max-width: 768px) {
   .dashboard-stats-row { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
   .stat-content { gap: 8px; }

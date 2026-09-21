@@ -138,10 +138,12 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 		return passthrough(clientModel), nil
 	}
 	normalized := variants[0]
-	// 2026-07-14: all SQL columns compared below are persisted lowercase
-	// (model_aliases.raw_name, models_canonical.canonical_name). Compare
-	// against the lowercased client model instead of wrapping each
-	// column in lower(...).
+	// canonical_name is persisted lowercase (exact compare); but
+	// model_aliases.raw_name preserves client case — since 2026-09-18 the
+	// alias queries match with lower(ma.raw_name) = lower($1), which hits
+	// the functional partial index idx_model_aliases_lower_raw_name_status
+	// (and drops the old COALESCE(status,'active') — the column is NOT NULL
+	// DEFAULT 'active'). Do NOT "optimize" back to raw equality.
 	rawLookup := modelname.CanonicalizeClientModel(clientModel)
 	profile := strings.TrimSpace(strings.ToLower(clientProfile))
 
@@ -183,13 +185,21 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 		}, nil
 	}
 
+	// Alias phase: a raw_name can legitimately map to MULTIPLE canonicals —
+	// discovery seeds the bare family alias (`deepseek-v4`) for every raw
+	// whose date suffix / wrapper token it strips (`deepseek-v4-flash-260425`
+	// → `deepseek-v4-flash` → `deepseek-v4`), one per provider canonical.
+	// LIMIT 1 without ORDER BY was nondeterministic over that set; ORDER BY
+	// length(name), name resolves it to the most-base (undated) row — the
+	// same "shorter name wins, then alphabetical" tie-break the matcher's
+	// betterMatch uses.
 	for _, v := range variants {
 		err := r.dbPool.QueryRow(ctx, `
 			SELECT mc.id, mc.canonical_name
 			FROM model_aliases ma
 			JOIN models_canonical mc ON mc.id = ma.canonical_id
-			WHERE ma.raw_name = $1
-			  AND COALESCE(ma.status, 'active') = 'active'
+			WHERE lower(ma.raw_name) = lower($1)
+			  AND ma.status = 'active'
 			  AND COALESCE(mc.status, 'active') = 'active'
 			  AND (
 			      ma.client_profiles IS NULL
@@ -197,6 +207,7 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 			      OR $2 = ANY(ma.client_profiles)
 			      OR $2 = ''
 			  )
+			ORDER BY length(mc.canonical_name), mc.canonical_name
 			LIMIT 1
 		`, modelname.CanonicalizeClientModel(v), profile).Scan(&canonicalID, &canonicalName)
 		if err == nil && canonicalID != nil {
@@ -228,8 +239,8 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 			SELECT mc.id, mc.canonical_name
 			FROM model_aliases ma
 			JOIN models_canonical mc ON mc.id = ma.canonical_id
-			WHERE ma.raw_name = $1
-			  AND COALESCE(ma.status, 'active') = 'active'
+			WHERE lower(ma.raw_name) = lower($1)
+			  AND ma.status = 'active'
 			  AND COALESCE(mc.status, 'active') = 'active'
 			  AND (
 			      ma.client_profiles IS NULL
@@ -237,6 +248,7 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 			      OR $2 = ANY(ma.client_profiles)
 			      OR $2 = ''
 			  )
+			ORDER BY length(mc.canonical_name), mc.canonical_name
 			LIMIT 1
 		`, rawLookup, profile).Scan(&canonicalID, &canonicalName)
 		if err == nil && canonicalID != nil {

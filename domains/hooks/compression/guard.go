@@ -67,6 +67,8 @@ const (
 	GuardStageLite GuardStage = "lite"
 	// GuardStageCaveman (GW-07): Caveman stage 的 NeverWorse 守卫标签。
 	GuardStageCaveman GuardStage = "caveman"
+	// GuardStageToolFocused (GW-09): Tool-Focused stage 的 NeverWorse 守卫标签。
+	GuardStageToolFocused GuardStage = "toolfocused"
 )
 
 // NeverWorse enforces the rtk safety contract for a single transform stage.

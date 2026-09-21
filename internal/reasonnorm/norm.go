@@ -19,6 +19,8 @@
 package reasonnorm
 
 import (
+	"strings"
+
 	"github.com/kaixuan/llm-gateway-go/internal/reasoncap"
 )
 
@@ -159,6 +161,21 @@ func abs(x int) int {
 		return -x
 	}
 	return x
+}
+
+// NormalizeEffortAlias 归一客户端 effort 写法差异（2026-09-22）。
+// 同一档位存在两种拼写：OpenAI / Claude Code 新客户端发 "x-high"（连字符），
+// 而 effortOrder 与 reasoncap 能力表统一用 "xhigh"。此前 "x-high" 落进
+// effortIndex 的 medium 兜底档，ClampEffort 的就近映射会系统性失真
+// （对 [low,medium] 类模型会错选 medium）。归一只做拼写统一，
+// 不改变档位语义。
+func NormalizeEffortAlias(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "x-high", "x_high":
+		return "xhigh"
+	default:
+		return effort
+	}
 }
 
 // ─── Render: Intent → per-dialect output ──────────────────────────────────────

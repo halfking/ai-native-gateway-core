@@ -102,9 +102,14 @@ services:
       LLM_GATEWAY_SEED_ADMIN_PASSWORD: "${LLM_GATEWAY_SEED_ADMIN_PASSWORD:?required in .env.deploy-test}"
       LLM_GATEWAY_ATTACHMENT_DIR: "/tmp/attachments"
       LLM_GATEWAY_BACKUP_DIR: "/tmp/llm-gateway-backups"
+      LLM_GATEWAY_RAW_LOG_DIR: "/tmp/raw-logs"
       OPS_NODE_REGION: "deploy-test"
     volumes:
       - ./configs:/configs:ro
+      # 附件/备份/raw-logs 使用宿主机目录，便于测试产物检查与清理。
+      - ${HOST_ATTACHMENT_DIR:-./data/attachments}:/tmp/attachments
+      - ${HOST_BACKUP_DIR:-./data/backups}:/tmp/llm-gateway-backups
+      - ${HOST_RAW_LOG_DIR:-./data/raw-logs}:/tmp/raw-logs
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:8781/healthz | grep -q ok || exit 1"]
       interval: 5s

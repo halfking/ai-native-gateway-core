@@ -80,7 +80,7 @@ function close() {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 24px 48px var(--overlay-light);
 }
 
 .user-info-dialog__header {

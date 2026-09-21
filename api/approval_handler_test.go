@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // Mock implementations
@@ -708,5 +710,39 @@ func BenchmarkListApprovals(b *testing.B) {
 		req := httptest.NewRequest(http.MethodGet, "/api/admin/approvals", nil)
 		w := httptest.NewRecorder()
 		handler.ListApprovals(w, req)
+	}
+}
+
+func TestApprovalMutationsRejectNonCanonicalBodies(t *testing.T) {
+	for _, path := range []string{"/api/v1/approvals/test-approval-123/approve", "/api/v1/approvals/test-approval-123/reject"} {
+		t.Run(path, func(t *testing.T) {
+			calls := 0
+			mgr := &mockApprovalManager{
+				approveFunc: func(context.Context, string, string, string, string) error { calls++; return nil },
+				rejectFunc:  func(context.Context, string, string, string, string) error { calls++; return nil },
+			}
+			h := NewApprovalHandler(mgr, &mockAuthService{tenantID: "tenant-1"})
+			for _, body := range [][]byte{nil, []byte("null"), []byte(`{"reason":"ok"}{"extra":true}`), bytes.Repeat([]byte("x"), jsonbody.MaxRequiredBody+1)} {
+				r := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+				w := httptest.NewRecorder()
+				if strings.HasSuffix(path, "/reject") && string(body) == `{"reason":"ok"}{"extra":true}` { /* same malformed contract */
+				}
+				if strings.HasSuffix(path, "/reject") && body == nil { /* required body */
+				}
+				if strings.HasSuffix(path, "/reject") && string(body) == "null" { /* required body */
+				}
+				handle := h.ApproveApproval
+				if strings.HasSuffix(path, "/reject") {
+					handle = h.RejectApproval
+				}
+				handle(w, r)
+				if w.Code != http.StatusBadRequest {
+					t.Fatalf("body %q status=%d", body, w.Code)
+				}
+			}
+			if calls != 0 {
+				t.Fatalf("manager called %d times", calls)
+			}
+		})
 	}
 }

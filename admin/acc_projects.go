@@ -44,15 +44,15 @@ type accProjectsResponse struct {
 
 // projectSyncResult 是 admin/bg 看到的同步结果。
 type projectSyncResult struct {
-	Synced        bool      `json:"synced"`
-	Message       string    `json:"message"`
-	Source        string    `json:"source"`
-	SyncedAt      time.Time `json:"synced_at,omitempty"`
-	Upserted      int       `json:"upserted"`
-	Disabled      int       `json:"disabled"`
-	ACCCount      int       `json:"acc_count"`
-	Tenant        string    `json:"tenant,omitempty"`
-	TablesReached bool      `json:"tables_reached"`
+	Synced    bool      `json:"synced"`
+	Message   string    `json:"message"`
+	Source    string    `json:"source"`
+	SyncedAt  time.Time `json:"synced_at,omitempty"`
+	Upserted  int       `json:"upserted"`
+	Disabled  int       `json:"disabled"`
+	ACCCount  int       `json:"acc_count"`
+	Tenant    string    `json:"tenant,omitempty"`
+	TablesReached bool  `json:"tables_reached"`
 }
 
 // 项目同步的 HTTP 边界常量：与 acc_work_types.go 保持一致（15s 超时、
@@ -426,12 +426,12 @@ func (h *ProjectHandlers) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	type item struct {
-		Ref       string     `json:"ref"`
-		Name      string     `json:"name"`
-		Enabled   bool       `json:"enabled"`
-		FromACC   bool       `json:"from_acc"`
-		SyncedAt  *time.Time `json:"synced_at,omitempty"`
-		UpdatedAt time.Time  `json:"updated_at"`
+		Ref        string     `json:"ref"`
+		Name       string     `json:"name"`
+		Enabled    bool       `json:"enabled"`
+		FromACC    bool       `json:"from_acc"`
+		SyncedAt   *time.Time `json:"synced_at,omitempty"`
+		UpdatedAt  time.Time  `json:"updated_at"`
 	}
 	items := []item{}
 	for rows.Next() {

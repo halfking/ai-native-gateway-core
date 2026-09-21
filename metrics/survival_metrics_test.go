@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // describeName returns the fully-qualified metric name a collector declares.

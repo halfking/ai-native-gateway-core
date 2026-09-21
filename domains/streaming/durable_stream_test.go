@@ -23,8 +23,11 @@ type fakeForegroundStore struct {
 	fakeDurableHandlerStore
 	renews          []durableRenewCall
 	checks          []durable.CheckpointParams
+	checkpointErrs  []error
 	terminals       []durable.TerminalCommit
 	renewErr        error
+	renewStarted    chan struct{}
+	renewCanceled   chan struct{}
 	checkErr        error
 	rescheduleErr   error
 	rescheduleCalls int
@@ -43,7 +46,17 @@ type durableRenewCall struct {
 	token  int64
 }
 
-func (f *fakeForegroundStore) RenewLease(_ context.Context, taskID, owner string, token int64, _ time.Time) error {
+func (f *fakeForegroundStore) RenewLease(ctx context.Context, taskID, owner string, token int64, _ time.Time) error {
+	if f.renewStarted != nil {
+		select {
+		case f.renewStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.renewCanceled != nil {
+		<-ctx.Done()
+		close(f.renewCanceled)
+	}
 	if f.renewErr != nil {
 		return f.renewErr
 	}
@@ -63,7 +76,8 @@ func (f *fakeForegroundStore) Reschedule(_ context.Context, p durable.Reschedule
 	return nil
 }
 
-func (f *fakeForegroundStore) CheckpointCommitState(_ context.Context, p durable.CheckpointParams) error {
+func (f *fakeForegroundStore) CheckpointCommitState(ctx context.Context, p durable.CheckpointParams) error {
+	f.checkpointErrs = append(f.checkpointErrs, ctx.Err())
 	if f.checkErr != nil {
 		return f.checkErr
 	}
@@ -206,14 +220,15 @@ func TestDurableStreamBindingStopWaitsForRenewalExit(t *testing.T) {
 		200*time.Millisecond)
 
 	b.mu.Lock()
-	stopCh := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	doneCh := make(chan struct{})
-	b.stopRenew, b.renewDone = stopCh, doneCh
+	b.renewCtx, b.renewCancel, b.renewDone = ctx, cancel, doneCh
+	b.renewInterval = 100 * time.Millisecond
 	b.mu.Unlock()
-	// Simulate the renewal loop: exit only when Stop closes stopCh.
+	// Simulate the renewal loop: exit only when Stop cancels its context.
 	go func() {
 		defer close(doneCh)
-		<-stopCh
+		<-ctx.Done()
 	}()
 
 	stopStart := time.Now()
@@ -228,6 +243,33 @@ func TestDurableStreamBindingStopWaitsForRenewalExit(t *testing.T) {
 	case <-doneCh:
 	default:
 		t.Fatal("renewal goroutine still running after Stop returned")
+	}
+}
+
+func TestDurableStreamBindingRenewalCancellationStopsInFlightCall(t *testing.T) {
+	started := make(chan struct{}, 1)
+	canceled := make(chan struct{})
+	store := &fakeForegroundStore{renewStarted: started, renewCanceled: canceled}
+	b := newDurableStreamBinding(store,
+		&durable.Task{ID: "task-7", TenantID: "tenant-1", RequestID: "req-9",
+			SessionID: "sess-1", RequestHash: "hash-1", LeaseOwner: "gw-front", FencingToken: 1},
+		20*time.Millisecond)
+	b.Start()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("renewal did not start")
+	}
+
+	stopStart := time.Now()
+	b.Stop()
+	if elapsed := time.Since(stopStart); elapsed > time.Second {
+		t.Fatalf("Stop took %v; cancellation did not reach in-flight renewal", elapsed)
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("in-flight renewal did not observe cancellation")
 	}
 }
 
@@ -281,6 +323,35 @@ func TestSettleDurableStreamLeaseLossCountsBothMetricFamilies(t *testing.T) {
 	}
 	if got := gatherMetricValue(t, "durable_lease_lost_total"); got < beforeDurable+1 {
 		t.Fatalf("durable lease lost = %v, want >= %v", got, beforeDurable+1)
+	}
+}
+
+func TestDurableBeforeSemanticCommitSurvivesCanceledClientContext(t *testing.T) {
+	store := &fakeForegroundStore{}
+	b := newStreamBinding(store)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	hook := durableBeforeSemanticCommit(b)
+	if err := hook(ctx, CommitStateMetadata); err != nil {
+		t.Fatalf("canceled client context must not cancel durable checkpoint: %v", err)
+	}
+	if len(store.checks) != 1 || len(store.checkpointErrs) != 1 || store.checkpointErrs[0] != nil {
+		t.Fatalf("checkpoint context errors = %v, checks = %+v; want detached successful write", store.checkpointErrs, store.checks)
+	}
+}
+
+func TestSettleDurableStreamDeadlineDoesNotReleaseToWorker(t *testing.T) {
+	store := &fakeForegroundStore{}
+	b := newStreamBinding(store)
+	settleDurableStream(context.Background(), b,
+		SurvivalResult{Decision: TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}},
+		nil, "", false)
+	if len(store.resched) != 0 {
+		t.Fatalf("deadline settlement must not reschedule to worker: %+v", store.resched)
+	}
+	if len(store.terminals) != 1 || store.terminals[0].ReasonCode != "deadline_exceeded" {
+		t.Fatalf("deadline settlement terminals = %+v, want one terminal deadline_exceeded", store.terminals)
 	}
 }
 

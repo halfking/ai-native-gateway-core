@@ -160,7 +160,7 @@ func (s *PgxStore) ListRuntimeAlertsForInstance(ctx context.Context, instanceID 
 		       COALESCE(metric_value, 0), detected_at,
 		       acked_at, COALESCE(acked_by, ''), resolved_at, COALESCE(resolved_by, ''),
 		       suppressed_until
-		FROM runtime_alerts
+		FROM runtime_alert_events
 		WHERE instance_id = $1
 		  AND status IN ('triggered', 'acknowledged', 'suppressed')
 		ORDER BY detected_at DESC

@@ -2,6 +2,7 @@ package v2
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 )
@@ -21,6 +22,12 @@ func TestBodiesRecord_HasAttachmentFields(t *testing.T) {
 	}
 	if rec.RequestAttachments[0].ObjectKey != "k1" {
 		t.Fatalf("attachment object_key mismatch: %s", rec.RequestAttachments[0].ObjectKey)
+	}
+}
+
+func TestSafeJSONMarshal_ReportsEncodingErrors(t *testing.T) {
+	if _, err := safeJSONMarshal(math.NaN()); err == nil {
+		t.Fatal("expected NaN encoding to fail")
 	}
 }
 

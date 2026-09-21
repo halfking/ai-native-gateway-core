@@ -15,8 +15,30 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
-	"github.com/kaixuan/llm-gateway-go/metrics"
 )
+
+// q2ToolStreamBlock tracks one OpenAI tool_calls[] entry as it is relayed
+// into Anthropic content_block events. Anthropic's protocol requires
+// sequential blocks: start (with id/name) → input_json_delta fragments →
+// stop. OpenAI's contract instead splits fragments across chunks keyed by
+// tool_calls[].index, where only the first fragment carries id/name.
+type q2ToolStreamBlock struct {
+	anthropicIdx int
+	id           string
+	name         string
+	started      bool
+	stopped      bool
+	pendingArgs  string
+}
+
+// maxAnthropicStreamPendingArgsBytes bounds the arg-first lazy-open hold
+// (audit #10): a nameless tool_calls fragment's arguments are buffered in
+// state.pendingArgs until the function name arrives. An upstream that never
+// sends the name would grow that buffer without bound — 1 MiB matches
+// maxResponsesBridgeToolArgumentsBytes in responses_bridge.go. Exceeding it
+// aborts the attempt with a conversion outcome instead of silently
+// accumulating.
+const maxAnthropicStreamPendingArgsBytes = 1 << 20
 
 // StreamOpenAIToAnthropicSSE converts OpenAI-format SSE (from upstream)
 // into Anthropic-format SSE (for client). Processes chunk["choices"][0]["delta"]
@@ -29,7 +51,9 @@ import (
 //
 // Evidence: Line 232-236 parse chunk["choices"], which is OpenAI-specific.
 // Anthropic uses content[] blocks, not choices[].
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamOpenAIToAnthropicSSE(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
@@ -37,19 +61,33 @@ func StreamOpenAIToAnthropicSSE(
 	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
 	return StreamOpenAIToAnthropicSSEWithDiagnostics(
-		w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
+		ctx, w, resp, clientModel, outboundModel, requestID, capture, pc, nil, 0,
 	)
 }
 
 // StreamOpenAIToAnthropicSSEWithDiagnostics converts an OpenAI stream with
 // optional best-effort diagnostics.
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+//
+// inputTokensEstimate (审计 R3 #2, 2026-09-09): request-derived prompt token
+// estimate emitted in message_start.usage.input_tokens. OpenAI upstreams
+// report prompt_tokens only in the final usage chunk (or not at all), while
+// Anthropic protocol requires input_tokens at stream head — SSE cannot
+// retroactively amend message_start, and Anthropic's message_delta.usage
+// carries only output_tokens. Claude Code et al. use that value for context
+// management; a hardcoded 0 systematically under-counts and delays
+// auto-compaction until overflow. 0 keeps the legacy wire shape. When the
+// real usage arrives mid-stream it is logged (estimate vs actual) for
+// estimator calibration and fed to the audit capture as before.
 func StreamOpenAIToAnthropicSSEWithDiagnostics(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
 	capture *audit.StreamCapture,
 	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
+	inputTokensEstimate int,
 ) (outcome StreamOutcome) {
 	bodyCloser := &onceReadCloser{ReadCloser: resp.Body}
 	//nolint:errcheck // best-effort close
@@ -83,7 +121,8 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate := wrapAttemptWriter(w, ProtocolAnthropic)
+	// P1-2 fix (2026-08-28): Pass context to gate for checkpoint propagation.
+	w, gate := wrapAttemptWriter(ctx, w, ProtocolAnthropic)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -104,7 +143,10 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		if pc != nil {
 			pc.markInterrupted("client_write_failed")
 		}
-		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: true}
+		// Client connection is dead before any frame — including headers —
+		// reaches the wire. A transparent retry would re-attempt the same
+		// header flush on the same dead connection, wasting an upstream call.
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
 	}
 
 	clientWriter := newClientStreamWriter(w, flusher)
@@ -135,12 +177,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		}
 	}
 
-	var ctx context.Context
-	if resp.Request != nil {
-		ctx = resp.Request.Context()
-	} else {
-		ctx = context.Background()
-	}
+	// P1-2 fix (2026-08-28): ctx is now a function parameter, removed redundant declaration.
 
 	// BUG-1 fix: hold the body closer so readNextStreamLine can close it on
 	// chunk timeout, unblocking the ReadString goroutine immediately.
@@ -150,7 +187,56 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	finalFinishReason := ""
 	outputTokens := 0
 	inputTokens := 0
+	// 2026-09-09 audit round 3: OpenAI-compatible upstreams surface prompt
+	// cache hits as usage.prompt_tokens_details.cached_tokens; without this
+	// the capture's cache columns stayed NULL for every such stream.
+	cachedTokens := 0
 	upstreamDoneReceived := false
+
+	// Q2 tool-call block state: keyed by the OpenAI tool_calls[].index (stable
+	// per spec across fragments), tracks the emitted Anthropic block and
+	// whether start/stop events have been sent. textBlockOpen latches false
+	// once the implicit text block 0 has been closed — Anthropic content
+	// blocks must be strictly sequential (no tool_use while text is open).
+	toolBlocks := make(map[int]*q2ToolStreamBlock)
+	var toolOrder []int
+	nextToolBlockIdx := 1
+	textBlockOpen := true
+	closeTextBlock := func() {
+		if !textBlockOpen {
+			return
+		}
+		textBlockOpen = false
+		writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	// Native reasoning_content (DeepSeek R1 / GLM-Z1 / QwQ, audit R8 P1):
+	// reasoning deltas land in their own thinking block so Anthropic clients
+	// see the chain-of-thought instead of silently losing it. Mirrors the
+	// non-stream converter (chat_to_anthropic_response.go): a signature-less
+	// thinking block — these upstreams do not provide one.
+	reasoningBlockOpen := false
+	reasoningBlockIdx := 0
+	closeReasoningBlock := func() {
+		if !reasoningBlockOpen {
+			return
+		}
+		reasoningBlockOpen = false
+		writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": reasoningBlockIdx})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	// midStreamHalt is set when processLine detects an upstream error encoded
+	// outside its normal channel — OpenAI-style data: {"error":{...}} chunks
+	// (several second-tier OpenAI-compatible upstreams send mid-stream errors
+	// this way instead of an SSE `event: error` frame) and GLM-style
+	// finish_reason values that actually mean failure. The read loop then
+	// bails and treats the attempt as an upstream interruption rather than
+	// silently dropping the error.
+	var midStreamHalt *StreamOutcome
 
 	// Phase 4 stream-end split: lazy probing of the running text content
 	// prefix. Most upstreams emit plain text and we want incremental
@@ -246,7 +332,12 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		"message": map[string]any{
 			"id": msgID, "type": "message", "role": "assistant", "content": []any{},
 			"model": clientModel, "stop_reason": nil, "stop_sequence": nil,
-			"usage": map[string]any{"input_tokens": 0, "output_tokens": 0},
+			// 审计 R3 #2 (2026-09-09)：input_tokens 用请求体估算值（estimateAnthropicInputTokens，
+			// executor 侧传入）而非恒 0。OpenAI 上游的 prompt_tokens 通常只出现在流尾
+			// usage 帧（甚至缺失），而 Anthropic 客户端（Claude Code 等）在流首就需要
+			// 该值管理上下文；SSE 不可回写，message_delta.usage 又仅承载 output_tokens，
+			// 故流首估算、流尾仅做日志比对。0 表示无估算可用（保持旧线上形状）。
+			"usage": map[string]any{"input_tokens": inputTokensEstimate, "output_tokens": 0},
 		},
 	}
 	captureSSE("message_start", initialMsg)
@@ -255,6 +346,22 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		"content_block": map[string]any{"type": "text", "text": ""},
 	})
 	captureSSE("ping", map[string]any{"type": "ping"})
+
+	// emitQ2GateError renders a sanitized Anthropic error frame only when
+	// the attempt already committed client-visible content; pre-content
+	// interruptions stay invisible so the executor can fail over transparently.
+	emitQ2GateError := func(code, message string) {
+		if !attemptHasClientSemanticOutput(gate, chunkCount) {
+			return
+		}
+		writeSSEWithCapturer(w, pc, "error", map[string]any{
+			"type":  "error",
+			"error": map[string]any{"type": code, "message": message},
+		})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
 
 	processLine := func(line string) bool {
 
@@ -303,11 +410,71 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				if v, ok := usage["completion_tokens"].(float64); ok {
 					outputTokens = int(v)
 				}
+				if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
+					if v, ok := details["cached_tokens"].(float64); ok {
+						cachedTokens = int(v)
+					}
+				}
+			}
+			// 审计 R3 #2 (2026-09-09)：流首 message_start 已按估算值发出（SSE
+			// 不可回写），真实 prompt_tokens 到达后在此记录偏差，供估算器校准
+			// 与运维观测；真实值同时进入下方审计 capture。
+			if inputTokens > 0 && inputTokensEstimate > 0 {
+				slog.Debug("anthropic stream: input_tokens estimate vs actual",
+					"request_id", requestID,
+					"estimated_input_tokens", inputTokensEstimate,
+					"actual_input_tokens", inputTokens,
+					"delta", inputTokens-inputTokensEstimate,
+				)
 			}
 			if capture != nil {
 				pt := inputTokens
 				ct := outputTokens
-				capture.ObserveUsage(&pt, &ct, nil, nil)
+				var cr *int
+				if cachedTokens > 0 {
+					cr = &cachedTokens
+				}
+				capture.ObserveUsage(&pt, &ct, cr, nil)
+			}
+		}
+
+		// 2026-08-28 spec audit: OpenAI-compatible upstreams (Qwen DashScope,
+		// some Kimi deployments, Azure) surface mid-stream failures as a bare
+		// data: {"error":{...}} chunk with no choices array. Treat it as an
+		// Anthropic-style terminal error instead of silently dropping it.
+		if rawErr, hasErr := chunk["error"]; hasErr {
+			var errObj map[string]any
+			if json.Unmarshal(rawErr, &errObj) == nil && errObj != nil {
+				code, _ := errObj["type"].(string)
+				if code == "" {
+					code, _ = errObj["code"].(string)
+				}
+				msg, _ := errObj["message"].(string)
+				kind := classifyAnthropicStreamError(code, []byte(data))
+				midStreamHalt = &StreamOutcome{
+					Interrupted: true,
+					Reason:      "upstream_error",
+					Kind:        kind,
+					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+					ChunkCount:  chunkCount,
+				}
+				if capture != nil {
+					capture.MarkInterruptedWithReason("upstream_error")
+				}
+				slog.Warn("anthropic stream: upstream mid-stream JSON error",
+					"request_id", requestID,
+					"client_model", clientModel,
+					"error_code", code,
+					"kind", string(kind),
+					"error_headline", truncateForLog(firstLineOfLogSafe(msg), 120),
+					"client_visible_chunks", chunkCount,
+				)
+				emitCode := code
+				if emitCode == "" {
+					emitCode = "api_error"
+				}
+				emitQ2GateError(emitCode, "upstream stream error: "+emitCode)
+				return true
 			}
 		}
 
@@ -322,6 +489,58 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 
 		choice := choices[0]
 		if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
+			// 2026-08-28 spec audit (Zhipu GLM): finish_reason is also an
+			// error channel on this vendor — network_error/sensitive/
+			// model_context_window_exceeded mean the stream FAILED rather
+			// than ended normally. Reclassify to an upstream interruption
+			// instead of mapping them to end_turn.
+			switch fr {
+			case "network_error":
+				midStreamHalt = &StreamOutcome{
+					Interrupted: true,
+					Reason:      "network_error",
+					Kind:        errorsx.KindNetwork,
+					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+					ChunkCount:  chunkCount,
+				}
+				if capture != nil {
+					capture.MarkInterruptedWithReason("network_error")
+				}
+				emitQ2GateError("network_error", "upstream stream error: network_error")
+				return true
+			case "sensitive":
+				midStreamHalt = &StreamOutcome{
+					Interrupted: true,
+					Reason:      "content_filter",
+					Kind:        errorsx.KindContentFilter,
+					Resumable:   false,
+					ChunkCount:  chunkCount,
+				}
+				if capture != nil {
+					capture.MarkInterruptedWithReason("content_filter")
+				}
+				emitQ2GateError("content_filter", "upstream refused to produce this content")
+				return true
+			case "model_context_window_exceeded":
+				// R35 (2026-09-17 audit P1): Resumable followed the chunk
+				// count, not a hardcoded false — with zero client-visible
+				// output the attempt is transparently retryable (survival
+				// failover / compressed re-request); once semantic output was
+				// committed the terminal frame is correct. Matches the
+				// empty-response and error-event branches in anthropic_bridge.
+				midStreamHalt = &StreamOutcome{
+					Interrupted: true,
+					Reason:      "context_length_exceeded",
+					Kind:        errorsx.KindContextLength,
+					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+					ChunkCount:  chunkCount,
+				}
+				if capture != nil {
+					capture.MarkInterruptedWithReason("context_length_exceeded")
+				}
+				emitQ2GateError("request_too_large", "upstream context window exceeded")
+				return true
+			}
 			finalFinishReason = fr
 		}
 
@@ -331,6 +550,57 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		}
 
 		textDelta, _ := delta["content"].(string)
+
+		// audit R8 P1: native reasoning_content → thinking_delta on a
+		// dedicated block. Text after the first reasoning delta can no
+		// longer target the closed implicit block 0, so it is redirected
+		// into the buffering accumulator and replayed by the Phase 4 split
+		// into a fresh block (Anthropic sequential-block rule).
+		if reasoningDelta, _ := delta["reasoning_content"].(string); reasoningDelta != "" {
+			if !reasoningBlockOpen {
+				closeTextBlock()
+				reasoningBlockIdx = nextToolBlockIdx
+				nextToolBlockIdx++
+				writeSSEWithCapturer(w, pc, "content_block_start", map[string]any{
+					"type":          "content_block_start",
+					"index":         reasoningBlockIdx,
+					"content_block": map[string]any{"type": "thinking", "thinking": ""},
+				})
+				reasoningBlockOpen = true
+				if capture != nil {
+					capture.MarkThinkingBlock()
+				}
+				if textAccMode == textAccProbing && probeBuf.Len() > 0 {
+					bufferedText.WriteString(probeBuf.String())
+					probeBuf.Reset()
+				}
+				textAccMode = textAccBuffering
+			}
+			writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": reasoningBlockIdx,
+				"delta": map[string]any{"type": "thinking_delta", "thinking": reasoningDelta},
+			})
+			if flusher != nil {
+				flusher.Flush()
+			}
+			chunkCount++
+			lastSend = time.Now()
+			if capture != nil {
+				capture.ObserveChunk(&ir.StreamChunk{
+					Type: ir.ChunkTypeDelta,
+					Delta: &ir.StreamDelta{
+						ReasoningContent: reasoningDelta,
+						DeltaType:        "reasoning",
+					},
+					SourceProtocol: ir.ProtocolOpenAIChat,
+				})
+				if capture.IntegrityBreached() {
+					return true
+				}
+			}
+		}
+
 		if textDelta != "" {
 			chunkCount++
 			// Phase 4 of 4: route the text delta through the accumulator
@@ -395,8 +665,31 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				if tcMap == nil {
 					continue
 				}
-				chunkCount++
-				idx := i + 1
+				// 2026-08-28 spec alignment: OpenAI tool_calls[].index is the
+				// stable aggregation key across chunks — the array position
+				// within THIS chunk is not. Map the OpenAI index to an
+				// Anthropic content-block index on first sight; later fragments
+				// for the same call only extend input_json_delta.
+				//
+				// The OpenAI spec requires every fragment to carry `index`.
+				// If a fragment omits it (rare upstream bug), fall back to
+				// the per-chunk array position so the fragment still binds
+				// to a block — but this can split a single call across two
+				// Anthropic blocks if the missing-index fragment comes first
+				// and a later fragment supplies the real index. We surface
+				// that case in logs and continue rather than drop the call.
+				openaiIdx := i
+				if v, ok := tcMap["index"].(float64); ok {
+					openaiIdx = int(v)
+					if openaiIdx != i {
+						slog.Warn("anthropic stream: tool_calls fragment index differs from array position",
+							"request_id", requestID,
+							"openai_index", openaiIdx,
+							"array_position", i,
+							"client_model", clientModel,
+						)
+					}
+				}
 				fn, _ := tcMap["function"].(map[string]any)
 				fnName := ""
 				if fn != nil {
@@ -404,42 +697,131 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				}
 				tcID, _ := tcMap["id"].(string)
 
-				// tool_calls_missing accounting: the moment we promise this
-				// tool call to the client via content_block_start, the
-				// tool_calls_missing detector must register it as emitted.
-				// Calling observeEmittedChunk on the IR parse site above
-				// (where the original audit found it) conflated "the parser
-				// saw the call" with "the client received it"; subsequent
-				// argument deltas for the same call are deliberately not
-				// counted again so emittedToolCallCount tracks distinct calls.
-				if diagnostics != nil {
-					diagnosticCollector.observeEmittedChunk(&ir.StreamChunk{
-						Type: ir.ChunkTypeDelta,
-						Delta: &ir.StreamDelta{
-							ToolCalls: []ir.StreamToolCallDelta{{Index: idx, ID: tcID}},
-						},
-					})
+				state := toolBlocks[openaiIdx]
+				if state == nil {
+					state = &q2ToolStreamBlock{
+						anthropicIdx: nextToolBlockIdx,
+						id:           tcID,
+						name:         fnName,
+					}
+					nextToolBlockIdx++
+					toolBlocks[openaiIdx] = state
+					toolOrder = append(toolOrder, openaiIdx)
+				}
+				if tcID != "" && state.id == "" {
+					state.id = tcID
+				}
+				if fnName != "" && state.name == "" {
+					state.name = fnName
 				}
 
-				startEvent := map[string]any{
-					"type":  "content_block_start",
-					"index": idx,
-					"content_block": map[string]any{
-						"type":  "tool_use",
-						"id":    tcID,
-						"name":  fnName,
-						"input": map[string]any{},
-					},
+				// Lazy block opening: an OpenAI tool_calls fragment without
+				// function.name carries no binding promise of a callable yet
+				// (name-first ordering is the documented convention; some
+				// upstreams stream argument fragments before the name).
+				// Opening a tool_use block with an EMPTY name violates the
+				// Anthropic wire format and hard-errors SDK clients. Hold
+				// the block closed and buffer argument fragments in
+				// pendingArgs; the real content_block_start fires when the
+				// name arrives (arg-first fragment), replaying the buffered
+				// prefix as the first input_json_delta.
+				if state.name == "" {
+					if fn != nil {
+						if args, _ := fn["arguments"].(string); args != "" {
+							state.pendingArgs += args
+							// audit #10: the hold is bounded. A stream of
+							// nameless fragments whose accumulated arguments
+							// exceed the cap aborts the attempt with a
+							// conversion outcome instead of retaining unbounded
+							// bytes while waiting for a name that never arrives.
+							// Committed attempts still get the Anthropic
+							// protocol terminal; uncommitted ones stay
+							// outcome-only (mirrors the responses bridge
+							// conversionOverflow handling).
+							if len(state.pendingArgs) > maxAnthropicStreamPendingArgsBytes {
+								midStreamHalt = &StreamOutcome{
+									Interrupted: true,
+									Reason:      "anthropic_stream_arg_accumulator_limit",
+									Kind:        errorsx.KindConversion,
+									Resumable:   false,
+									ChunkCount:  chunkCount,
+								}
+								if capture != nil {
+									capture.MarkInterruptedWithReason(midStreamHalt.Reason)
+								}
+								slog.Warn("anthropic stream: nameless tool-call argument hold exceeded accumulator limit",
+									"request_id", requestID,
+									"client_model", clientModel,
+									"pending_args_bytes", len(state.pendingArgs),
+									"limit_bytes", maxAnthropicStreamPendingArgsBytes,
+								)
+								writeAnthropicInterruptedTail(w, flusher, pc, gate, chunkCount, msgID, clientModel, outputTokens, inputTokens, capture)
+								return true
+							}
+						}
+					}
+					continue
 				}
-				writeSSEWithCapturer(w, pc, "content_block_start", startEvent)
+
+				chunkCount++
+				if !state.started {
+					// tool_calls_missing accounting: the moment we promise this
+					// tool call to the client via content_block_start, the
+					// tool_calls_missing detector must register it as emitted.
+					// Calling observeEmittedChunk on the IR parse site above
+					// (where the original audit found it) conflated "the parser
+					// saw the call" with "the client received it"; subsequent
+					// argument deltas for the same call are deliberately not
+					// counted again so emittedToolCallCount tracks distinct calls.
+					if diagnostics != nil {
+						diagnosticCollector.observeEmittedChunk(&ir.StreamChunk{
+							Type: ir.ChunkTypeDelta,
+							Delta: &ir.StreamDelta{
+								ToolCalls: []ir.StreamToolCallDelta{{Index: state.anthropicIdx, ID: state.id}},
+							},
+						})
+					}
+
+					// Anthropic content blocks are sequential: close the
+					// implicit text block (index 0) and any open thinking
+					// block before opening the first tool_use block.
+					closeTextBlock()
+					closeReasoningBlock()
+					// Once the text block is closed, any further text_delta
+					// upstream emits would target an already-closed block and
+					// violate Anthropic's protocol. Buffer them instead and
+					// emit them on the close path (Phase 4 split) before the
+					// tool block stop events.
+					if textAccMode == textAccPassthrough {
+						textAccMode = textAccBuffering
+					}
+
+					startEvent := map[string]any{
+						"type":  "content_block_start",
+						"index": state.anthropicIdx,
+						"content_block": map[string]any{
+							"type":  "tool_use",
+							"id":    state.id,
+							"name":  state.name,
+							"input": map[string]any{},
+						},
+					}
+					writeSSEWithCapturer(w, pc, "content_block_start", startEvent)
+					state.started = true
+				}
 
 				if fn != nil {
 					args, _ := fn["arguments"].(string)
-					if args != "" {
+					// Include anything buffered during the lazy-open hold;
+					// the name-bearing fragment flushes it even when its own
+					// arguments field is empty.
+					partial := state.pendingArgs + args
+					state.pendingArgs = ""
+					if partial != "" {
 						argEvent := map[string]any{
 							"type":  "content_block_delta",
-							"index": idx,
-							"delta": map[string]any{"type": "input_json_delta", "partial_json": args},
+							"index": state.anthropicIdx,
+							"delta": map[string]any{"type": "input_json_delta", "partial_json": partial},
 						}
 						writeSSEWithCapturer(w, pc, "content_block_delta", argEvent)
 					}
@@ -447,6 +829,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				lastSend = time.Now()
 			}
 		}
+
 		return false
 	}
 
@@ -457,7 +840,13 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			reader = prependDoneFrame(reader)
 		}
 		if processLine(firstLine) {
+			if midStreamHalt != nil {
+				return *midStreamHalt
+			}
 			outcome = integrityBreachOutcome(capture, 0)
+			// audit #3: committed clients get message_delta/message_stop
+			// (stop_reason=max_tokens); uncommitted stay silent for failover.
+			writeAnthropicInterruptedTail(w, flusher, pc, gate, chunkCount, msgID, clientModel, outputTokens, inputTokens, capture)
 			return outcome
 		}
 	}
@@ -475,55 +864,27 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				outcome.Reason = "client_cancel"
 				outcome.Kind = errorsx.KindCanceled
 			case streamReadEOF:
-				if !upstreamDoneReceived {
-					// 2026-08-23: same recovery as stream.go — if a
-					// finish_reason was already observed, the upstream
-					// has declared the response complete; do NOT mark this
-					// as an interruption (avoids 11-minute survival
-					// retries on minimax and similar upstreams that close
-					// the TCP stream after the terminal chunk without
-					// sending a separate `[DONE]` sentinel).
-					finalFinish := ""
+				// 2026-09-13 fix (benign-EOF parity with the responses
+				// bridge): some upstreams — notably minimax-style relays —
+				// close the stream right after the finish_reason chunk
+				// instead of emitting [DONE]. A finish_reason already
+				// accumulated means the stream COMPLETED semantically; treat
+				// the missing [DONE] as benign upstream non-compliance and
+				// fall through to the normal Phase-4 tail so the client still
+				// receives message_delta/message_stop. The failure-shaped
+				// finish_reasons (network_error/sensitive/context window)
+				// return via midStreamHalt before EOF, so finalFinishReason
+				// here is always a normal stop. Only EOF with NO finish_reason
+				// is a genuine interruption.
+				if !upstreamDoneReceived && finalFinishReason == "" {
 					if capture != nil {
-						finalFinish = capture.FinalFinishReason()
+						capture.MarkInterruptedWithReason("eof_without_done")
 					}
-					if finalFinish != "" {
-						// 2026-08-23 audit fix: the client speaks the
-						// Anthropic Messages protocol, so synthesize the
-						// correct `message_stop` terminator (not the OpenAI
-						// `[DONE]` sentinel). An Anthropic client does not
-						// recognize `data: [DONE]` and would hang / treat the
-						// response as incomplete.
-						if gate.MayWriteTerminal() || pc != nil {
-							writeAnthropicTail(w, flusher, pc, msgID, clientModel, finalFinish, outputTokens, inputTokens, capture)
-						}
-						metrics.Global().RecordStreamSynthesizedDone()
-						outcome.Interrupted = false
-						outcome.Reason = ""
-						outcome.Kind = ""
-						outcome.Resumable = false
-						if capture != nil {
-							capture.ObserveChunk(&ir.StreamChunk{
-								Type:           ir.ChunkTypeDone,
-								FinishReason:   finalFinish,
-								SourceProtocol: ir.ProtocolAnthropicMessages,
-							})
-						}
-						slog.Info("anthropic EOF after finish_reason — synthesized message_stop",
-							"client_model", clientModel,
-							"finish_reason", finalFinish,
-							"chunk_count", chunkCount,
-						)
-					} else {
-						if capture != nil {
-							capture.MarkInterruptedWithReason("eof_without_done")
-						}
-						outcome.Interrupted = true
-						outcome.Reason = "eof_without_done"
-						outcome.Kind = errorsx.KindUpstreamDown
-						outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
-						outcome.ChunkCount = chunkCount
-					}
+					outcome.Interrupted = true
+					outcome.Reason = "eof_without_done"
+					outcome.Kind = errorsx.KindUpstreamDown
+					outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
+					outcome.ChunkCount = chunkCount
 				}
 			case streamReadTimeout:
 				slog.Warn("anthropic stream read timeout", "error", readResult.err)
@@ -574,8 +935,54 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			continue
 		}
 		if processLine(line) {
+			if midStreamHalt != nil {
+				return *midStreamHalt
+			}
 			outcome = integrityBreachOutcome(capture, 0)
+			// audit #3: committed clients get message_delta/message_stop
+			// (stop_reason=max_tokens); uncommitted stay silent for failover.
+			writeAnthropicInterruptedTail(w, flusher, pc, gate, chunkCount, msgID, clientModel, outputTokens, inputTokens, capture)
 			return outcome
+		}
+	}
+
+	// 2026-09-13 fix: the survival L1 holdback window (5s/20 chunks) holds
+	// semantic frames WITHOUT advancing the gate commit state, so short
+	// streams end entirely inside the window. Without flushing, the Phase-4
+	// tail decision below sees MayWriteTerminal()==false and skips
+	// message_delta/message_stop — the client gets "message_start but no
+	// content blocks" (claude code 529 / keep-alive-only pathology).
+	// Force-close the window on the clean path so held frames commit and the
+	// tail renders. Interrupted outcomes keep the holdback intact: the
+	// coordinator discards held frames on transparent failover.
+	if !outcome.Interrupted {
+		if err := gate.FlushHoldback(); err != nil {
+			slog.Warn("openai_to_anthropic: flush holdback before tail failed", "request_id", requestID, "error", err.Error())
+		}
+	}
+
+	// 2026-09-13 fix (Q2 empty-stream parity): a clean upstream end with ZERO
+	// semantic deltas (no text / thinking / tool_call — usage-only chunks do
+	// not count) is an empty response, not a success. Previously the bridge
+	// wrote the message_delta/message_stop tail and returned a non-interrupted
+	// outcome, so the executor never failed over: relay upstreams returning
+	// 200 + empty-choice streams surfaced to Anthropic clients as
+	// "message_start but no content blocks" (claude code 529 / keep-alive-only
+	// pathology). Return a resumable empty-response outcome instead so the
+	// executor tries the next candidate; in buffered-gate mode the
+	// pre-declared scaffolding never committed and is discarded with the
+	// attempt (transparent failover, mirrors Q3/Q4 IsAnthropicStreamEmpty and
+	// the OpenAI chat early-empty gate).
+	if !outcome.Interrupted && chunkCount == 0 {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("anthropic_empty_response")
+		}
+		return StreamOutcome{
+			Interrupted: true,
+			Reason:      "anthropic_empty_response",
+			Kind:        errorsx.KindEmptyResponse,
+			Resumable:   true,
+			ChunkCount:  0,
 		}
 	}
 
@@ -593,6 +1000,10 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	pendingContent := (textAccMode == textAccProbing && probeBuf.Len() > 0) ||
 		(textAccMode == textAccBuffering && bufferedText.Len() > 0)
 	if (!outcome.Interrupted || !outcome.Resumable) && (gate.MayWriteTerminal() || pendingContent) {
+		// The reasoning block streams live (already committed to the wire);
+		// close it before the flush split opens any fresh text blocks so
+		// block indices stay strictly sequential.
+		closeReasoningBlock()
 		switch textAccMode {
 		case textAccProbing:
 			if probeBuf.Len() > 0 {
@@ -603,12 +1014,137 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				})
 			}
 		case textAccBuffering:
-			flushBufferedText(w, flusher, pc, bufferedText.String(), capture)
-		case textAccPassthrough:
-			writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
-			if flusher != nil {
-				flusher.Flush()
+			// When the Q2 tool-call state machine already closed the implicit
+			// text block (index 0) before opening the first tool_use block,
+			// flushBufferedText would re-emit the stop event. We've also
+			// redirected post-tool-call text into the buffer to keep the
+			// protocol ordering valid; here we still need to emit those
+			// buffered text deltas, but on the existing block 0 if it is
+			// already closed that would re-target it. flushBufferedText's
+			// SplitLeadingThink path opens a new thinking/text block, so
+			// the buffered tail lands in a fresh block and avoids the
+			// already-closed block 0.
+			if textBlockOpen {
+				flushBufferedText(w, flusher, pc, bufferedText.String(), capture)
+				textBlockOpen = false
+			} else if bufferedText.Len() > 0 {
+				// Replay the buffered tail through a new text block
+				// (Anthropic sequential block rule). flushBufferedText
+				// itself already handles the stop-0 already-emitted case
+				// by emitting a thinking/text block; but its stop-0 emit
+				// would still fire on the no-think path. Skip flushBufferedText
+				// entirely and replay via a direct start/delta/stop on a
+				// fresh block index chosen by nextToolBlockIdx.
+				think, rest, ok := textsplit.SplitLeadingThink(bufferedText.String())
+				newIdx := nextToolBlockIdx
+				nextToolBlockIdx++
+				if ok {
+					if think != "" {
+						writeSSEWithCapturer(w, pc, "content_block_start", map[string]any{
+							"type":          "content_block_start",
+							"index":         newIdx,
+							"content_block": map[string]any{"type": "thinking", "thinking": ""},
+						})
+						writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
+							"type":  "content_block_delta",
+							"index": newIdx,
+							"delta": map[string]any{"type": "thinking_delta", "thinking": think},
+						})
+						writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": newIdx})
+						if capture != nil {
+							capture.MarkThinkingBlock()
+						}
+						newIdx++
+						nextToolBlockIdx++
+					}
+					if rest != "" {
+						writeSSEWithCapturer(w, pc, "content_block_start", map[string]any{
+							"type":          "content_block_start",
+							"index":         newIdx,
+							"content_block": map[string]any{"type": "text", "text": ""},
+						})
+						writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
+							"type":  "content_block_delta",
+							"index": newIdx,
+							"delta": map[string]any{"type": "text_delta", "text": rest},
+						})
+						writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": newIdx})
+					}
+				} else {
+					writeSSEWithCapturer(w, pc, "content_block_start", map[string]any{
+						"type":          "content_block_start",
+						"index":         newIdx,
+						"content_block": map[string]any{"type": "text", "text": ""},
+					})
+					writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
+						"type":  "content_block_delta",
+						"index": newIdx,
+						"delta": map[string]any{"type": "text_delta", "text": bufferedText.String()},
+					})
+					writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": newIdx})
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
 			}
+		case textAccPassthrough:
+			// When the Q2 tool-call state machine already closed the implicit
+			// text block (index 0) before opening the first tool_use block,
+			// don't emit a duplicate stop here.
+			if textBlockOpen {
+				writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+				textBlockOpen = false
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}
+
+		// Anthropic requires content_block_stop for every opened tool_use
+		// block before the message_delta; close any still-open tool blocks
+		// in first-open order.
+		for _, openaiIdx := range toolOrder {
+			st := toolBlocks[openaiIdx]
+			if st == nil {
+				continue
+			}
+			if !st.started {
+				// Lazy-open hold never released: the upstream ended the
+				// stream without ever naming this tool call, so nothing was
+				// emitted for it. Record the drop for audit; emitting a
+				// name-less tool_use block would violate the wire format.
+				if capture != nil {
+					capture.AddQualityFlag("tool_name_never_arrived")
+				}
+				slog.Warn("anthropic stream: tool call ended without a name; dropped",
+					"request_id", requestID,
+					"openai_index", openaiIdx,
+					"buffered_args_bytes", len(st.pendingArgs),
+				)
+				continue
+			}
+			if !st.stopped {
+				writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{
+					"type":  "content_block_stop",
+					"index": st.anthropicIdx,
+				})
+				st.stopped = true
+			}
+		}
+		// Only promise tool_use semantics when at least one tool_use block
+		// actually reached the wire. A stream whose only tool call was held
+		// nameless and dropped must not report stop_reason=tool_use with
+		// zero tool_use blocks on the wire — the client would wait for tool
+		// results that can never come.
+		hasStartedTool := false
+		for _, openaiIdx := range toolOrder {
+			if st := toolBlocks[openaiIdx]; st != nil && st.started {
+				hasStartedTool = true
+				break
+			}
+		}
+		if hasStartedTool {
+			finalFinishReason = "tool_calls"
 		}
 
 		// Content delivery above may have committed the gate. A detached client
@@ -634,7 +1170,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	return outcome
 }
 
-func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, pc *pendingCapturer, msgID, clientModel, finishReason string, outputTokens int, inputTokens int, capture *audit.StreamCapture) {
+func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, pc *pendingCapturer, msgID, clientModel, finishReason string, outputTokens int, inputTokens int, capture *audit.StreamCapture) bool {
 	stopReason := mapAnthropicStopReason(finishReason)
 
 	// Record usage in capture for audit trail (IR-based)
@@ -663,10 +1199,29 @@ func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, pc *pending
 		},
 		"usage": map[string]any{"output_tokens": outputTokens},
 	}
-	writeSSEWithCapturer(w, pc, "message_delta", deltaPayload)
+	deltaWritten := writeSSEWithCapturer(w, pc, "message_delta", deltaPayload)
+	stopWritten := writeSSEWithCapturer(w, pc, "message_stop", map[string]any{"type": "message_stop"})
+	return deltaWritten && stopWritten && safeFlush(flusher)
+}
 
-	writeSSEWithCapturer(w, pc, "message_stop", map[string]any{"type": "message_stop"})
-	flusher.Flush()
+// writeAnthropicInterruptedTail renders the Anthropic protocol terminal
+// (message_delta + message_stop) after an integrity-breach cut (audit #3).
+// finishReason "length" maps through mapAnthropicStopReason to
+// stop_reason="max_tokens", signalling a truncated — not completed — turn.
+// Without it a committed client (one that already saw content_block_delta
+// events) is left hanging on message_start with no terminal event.
+//
+// Gate layering mirrors the chat tail (writeChatInterruptedTail): the tail
+// renders only for attempts the client already owns (MayWriteTerminal or
+// client-visible semantic output); uncommitted attempts stay byte-silent so
+// the survival coordinator can discard and fail over transparently.
+func writeAnthropicInterruptedTail(w http.ResponseWriter, flusher http.Flusher, pc *pendingCapturer, gate *AttemptCommitGate, chunkCount int, msgID, clientModel string, outputTokens, inputTokens int, capture *audit.StreamCapture) {
+	if !(gate.MayWriteTerminal() || attemptHasClientSemanticOutput(gate, chunkCount)) {
+		return
+	}
+	if writeAnthropicTail(w, flusher, pc, msgID, clientModel, "length", outputTokens, inputTokens, capture) {
+		gate.MarkTerminalRendered()
+	}
 }
 
 // writeSSEWithCapturer is the capturer-aware variant of writeSSE for the
@@ -674,17 +1229,17 @@ func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, pc *pending
 // capturer buffer so the gateway can replay them via the pending-response
 // endpoint on client reconnect (Track C C5, 2026-06-21). nil pc is fine —
 // it just writes to w.
-func writeSSEWithCapturer(w http.ResponseWriter, pc *pendingCapturer, event string, payload any) {
+func writeSSEWithCapturer(w http.ResponseWriter, pc *pendingCapturer, event string, payload any) bool {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return
+		return false
 	}
 	line := fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)
-	//nolint:errcheck // HTTP write error non-recoverable
-	w.Write([]byte(line))
+	written := safeWriteSSE(w, line)
 	if pc != nil {
 		pc.append(line)
 	}
+	return written
 }
 
 func writeSSE(w http.ResponseWriter, event string, payload any) {

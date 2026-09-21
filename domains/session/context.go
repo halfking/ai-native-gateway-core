@@ -35,21 +35,21 @@ type SessionContext struct {
 
 	// ─── 数据快照（每个阶段更新）───
 	// 客户端原始请求
-	ClientRawBody []byte              // 原始 JSON 字节
-	ClientIR      *ir.InternalRequest // 解析后的 IR
-	ClientHeaders http.Header         // 客户端请求头
-	ClientMethod  string              // HTTP 方法
-	ClientPath    string              // 请求路径
+	ClientRawBody []byte                 // 原始 JSON 字节
+	ClientIR      *ir.InternalRequest    // 解析后的 IR
+	ClientHeaders http.Header            // 客户端请求头
+	ClientMethod  string                 // HTTP 方法
+	ClientPath    string                 // 请求路径
 
 	// 上游请求
 	UpstreamBody []byte              // 转换后的上游请求体
 	UpstreamIR   *ir.InternalRequest // 上游请求 IR
 
 	// LLM 响应
-	LLMRawResponse  []byte               // 上游原始响应
-	LLMResponseIR   *ir.InternalResponse // 解析后的响应 IR
-	LLMStatusCode   int                  // 上游 HTTP 状态码
-	LLMResponseTime time.Duration        // LLM 响应时间
+	LLMRawResponse   []byte               // 上游原始响应
+	LLMResponseIR    *ir.InternalResponse // 解析后的响应 IR
+	LLMStatusCode    int                  // 上游 HTTP 状态码
+	LLMResponseTime  time.Duration        // LLM 响应时间
 
 	// 客户端响应
 	ClientResponseIR *ir.InternalResponse // 转换后的响应 IR
@@ -59,8 +59,8 @@ type SessionContext struct {
 	Attachments []attachments.AttachmentMetadata // 附件列表（只存元数据）
 
 	// ─── 流式状态 ───
-	IsStreaming   bool                 // 是否流式请求
-	StreamCapture *audit.StreamCapture // 流式捕获器
+	IsStreaming   bool                  // 是否流式请求
+	StreamCapture *audit.StreamCapture  // 流式捕获器
 
 	// ─── 时间戳 ───
 	CreatedAt         time.Time // 请求开始时间

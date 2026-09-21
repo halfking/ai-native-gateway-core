@@ -25,7 +25,7 @@ Executor
   |
   +--> provider candidate query and lifecycle/routability filters
   +--> URSM/state backend + tier/billing/sticky/protocol affinity
-  +--> P2C/Bandit ordering and shadow strategy observation
+  +--> P2C ordering (sticky/cost penalty folded in) and shadow strategy observation
   +--> FP slot / concurrency / RPM resource gates
   v
 Dispatch Pipeline
@@ -37,7 +37,7 @@ Dispatch Pipeline
 Response
   |
   +--> OpenAI/Anthropic/Responses/Gemini response conversion
-  +--> SSE keepalive, stall/EOF/error classification, client cancellation
+  +--> bounded SSE physical-line reader (SSEMaxLineBytes), keepalive, stall/EOF/error classification, client cancellation
   +--> pre-first-byte retry, credential/provider/model failover when allowed
   v
 Persistence / observation

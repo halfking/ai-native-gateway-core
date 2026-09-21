@@ -48,9 +48,11 @@ const (
 	recordDropsLog = 50
 	// asyncWorkerJoinTimeout bounds Stop() 的 worker join。action worker
 	// 最坏一次 poll ≈ actionReadTimeout(2s) + CredentialLabelsFor(500ms);
-	// record drainer 最坏要排空 cap 条 × 200ms。超时后只 Warn 不悬挂:
-	// 进程正在退出, 慢 worker 在后台自行跑完或随进程消亡。
-	asyncWorkerJoinTimeout = 3 * time.Second
+	// record drainer 最坏要排空 cap 条 × 200ms ≈ 51s。
+	// P1-9 fix (2026-08-28): Increased from 3s to 60s to allow drainer to
+	// complete queue flush before process exit, reducing data loss during
+	// graceful shutdown (k8s SIGTERM window is typically 30-60s).
+	asyncWorkerJoinTimeout = 60 * time.Second
 	// liveStreamRecordWriteTimeout 是单条 store.Record 的写超时,
 	// 2026-08-25 从 Publish 的两处内联 200ms 常量化 (drainer 与同步兜底
 	// 共用同一预算, 行为与旧同步路径一致)。

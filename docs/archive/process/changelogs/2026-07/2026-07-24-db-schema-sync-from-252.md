@@ -17,7 +17,7 @@
 | 同步目标 | 本地 Docker `llm-gateway-pg` → `llm_gateway` DB |
 | 网络通道 | `ssh -L 15432:172.16.2.210:5432 root@115.29.212.252 -i ~/.ssh/56_id_rsa` |
 | 同步方式 | 直接执行 DDL（`ALTER TABLE ADD COLUMN` / `CREATE TABLE` / `CREATE INDEX`），非 `pg_dump` 全量还原（避免覆盖本地数据）|
-| 凭据 | `PG_PASS_252=4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg`（来自 `env-252.sh`），本地 `llm_gateway_db_pass_2026_secure` |
+| 凭据 | `PG_PASS_252=***REDACTED***`（来自 `env-252.sh`），本地 `llm_gateway_db_pass_2026_secure` |
 | 同步范围 | 仅结构（schema），**不动数据** |
 
 ## 同步前差异

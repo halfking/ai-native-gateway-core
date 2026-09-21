@@ -353,6 +353,93 @@ func TestManager_TimeoutTriggersProbeAfterFirstFailure(t *testing.T) {
 	}
 }
 
+func TestRateLimitDoesNotTriggerImmediateProbe(t *testing.T) {
+	m := NewManager(nil, nil)
+	var probes int
+	m.SetActiveProbeSubmitter(func(int, string, string, string) { probes++ }, 2)
+	ctx := context.Background()
+
+	m.UpdateOnFailure(ctx, 12, "rate-limit-model", errorsx.KindRateLimit, "req-1", "default", "")
+	if probes != 0 {
+		t.Fatalf("rate-limit failure should not trigger an immediate probe, got %d", probes)
+	}
+
+	m.UpdateOnFailure(ctx, 12, "rate-limit-model", errorsx.KindRateLimit, "req-2", "default", "")
+	if probes != 1 {
+		t.Fatalf("second rate-limit failure should trigger the threshold probe, got %d", probes)
+	}
+}
+
+func TestConsecutiveFailsCappedAt10(t *testing.T) {
+	m := NewManager(nil, nil)
+	ctx := context.Background()
+	for i := 1; i <= 12; i++ {
+		m.UpdateOnFailure(ctx, 13, "capped-model", errorsx.KindTimeout,
+			"req-"+itoa((i-1)%9+1), "default", "free")
+	}
+
+	state, _ := m.GetState(ctx, 13, "capped-model")
+	if state == nil {
+		t.Fatal("expected state after repeated failures")
+	}
+	if state.ConsecutiveFails != 10 {
+		t.Fatalf("consecutive failures should be capped at 10, got %d", state.ConsecutiveFails)
+	}
+	if state.LastError != string(errorsx.KindTimeout) {
+		t.Fatalf("last error should remain recorded, got %q", state.LastError)
+	}
+}
+
+func TestBackoffReturnsToFastTierAfterRecovery(t *testing.T) {
+	ctx := context.Background()
+	m := NewManager(nil, nil)
+	defer m.Stop()
+	m.SetProbeSubmitter(func(int) {}, nil)
+
+	credID, model := 14, "recovery-model"
+	failureAt := time.Now().Add(-time.Minute)
+	m.setToMemCache(m.cacheKey(credID, model), &State{
+		CredentialID:     credID,
+		Model:            model,
+		Available:        false,
+		ConsecutiveFails: 10,
+		LastFailureAt:    &failureAt,
+		LastError:        string(errorsx.KindTimeout),
+	})
+
+	m.UpdateOnSuccess(ctx, credID, model, 100, "req-recovered")
+	state, _ := m.GetState(ctx, credID, model)
+	if state == nil || state.ConsecutiveFails != 0 {
+		t.Fatalf("recovery should reset consecutive failures, got state=%+v", state)
+	}
+	// Move past the flapping guard so the next transient failures exercise the
+	// tiered reprobe scheduler rather than the immediate post-success grace period.
+	oldSuccess := time.Now().Add(-3 * time.Second)
+	state.LastSuccessAt = &oldSuccess
+	m.setToMemCache(m.cacheKey(credID, model), state)
+
+	for i := 1; i <= 3; i++ {
+		m.UpdateOnFailure(ctx, credID, model, errorsx.KindTimeout,
+			"req-"+itoa(i), "default", "")
+	}
+
+	key := fmt.Sprintf("%d", credID)
+	m.pendingTimersMu.Lock()
+	pending := m.pendingTimers[key]
+	var dueAt time.Time
+	if pending != nil {
+		dueAt = pending.dueAt
+	}
+	m.pendingTimersMu.Unlock()
+	if pending == nil {
+		t.Fatal("expected a reprobe timer after the third post-recovery failure")
+	}
+	remaining := time.Until(dueAt)
+	if remaining < 25*time.Second || remaining > 35*time.Second {
+		t.Fatalf("post-recovery reprobe should use the 30s tier, due in %v", remaining)
+	}
+}
+
 // TestManager_FreeCredentialTransientTolerated 验证 2026-07-14 修复：
 // billing_mode="free" 的凭据在 transient 错误（timeout/stream_timeout/network/
 // rate_limit/upstream_down）连续失败时，不进入 cooling（Available 保持 true、

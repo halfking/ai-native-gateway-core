@@ -242,7 +242,7 @@ func (h *Handler) settingsPut(w http.ResponseWriter, r *http.Request, key string
 		Value        json.RawMessage `json:"value"`
 		ConfirmToken string          `json:"confirm_token,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := readJSONRequired(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}

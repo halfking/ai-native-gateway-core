@@ -2,9 +2,31 @@
 
 ## Scope and behavior
 
+Both **streaming** and **non-streaming** empty responses are classified as `empty_response` and
+trigger immediate candidate failover before any client-visible content is committed.
+
+### Streaming detection
+
 `empty_stream_no_content` and `early_empty_detection` are classified as `empty_response`.
-The gateway immediately fails over before client-visible content is committed. Empty responses
-also update URSM v2 telemetry, scoped to exactly:
+
+### Non-streaming detection (2026-08-27)
+
+The executor detects a semantically empty 2xx response body before `WriteHeader`:
+
+- **OpenAI Chat** (`executor_chat.go`): `choices` missing/empty, or `choices[0].message` has no
+  `content`, `reasoning_content`, or `tool_calls`.
+- **Anthropic Messages** (`executor_anthropic.go`): `content` missing/empty, or all blocks are
+  empty `text`/`thinking` (a `tool_use` block, even with empty input, is not empty; a `thinking`
+  block with a `signature` is not empty).
+
+A non-stream empty response returns a bare `*upstream.Error` with `KindEmptyResponse` (NOT wrapped
+in `retryableError`) so the outer candidate loop fails over immediately instead of retrying the
+same credential with backoff. The handler-side 502 ("模型未返回任何内容") remains the final fallback
+when all candidates are empty.
+
+### Routing and telemetry
+
+Empty responses also update URSM v2 telemetry, scoped to exactly:
 
 ```text
 tenant_id + credential_id + raw_model

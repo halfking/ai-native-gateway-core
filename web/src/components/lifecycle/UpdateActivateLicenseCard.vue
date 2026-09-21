@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { LicenseStatus } from '../../api/updateActivate'
+import { formatDateTime } from '../../utils/datetime'
 import { isLicenseActive, licenseStateLabel } from '../../utils/labels'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElButton, ElCard, ElEmpty, ElSkeleton, ElTag } from 'element-plus'
 /** UpdateActivateLicenseCard — 复用 /maintain/activate 的 status-panel 样式，
  *  展示激活效果：状态点 + 状态文案 + 订阅 tier + license key + 有效期 + 设备名。
  *  数据来源 maintain-api /license/status（由父组件注入）。 */
@@ -29,17 +33,13 @@ const isActive = computed(() => isLicenseActive(props.status?.state))
 const expiresDisplay = computed(() => {
   const ts = props.status?.expires_at
   if (!ts) return ''
-  const d = new Date(ts)
-  if (Number.isNaN(d.getTime())) return ts
-  return d.toLocaleString()
+  return formatDateTime(ts, { empty: '' })
 })
 
 const heartbeatDisplay = computed(() => {
   const ts = props.status?.last_heartbeat
   if (!ts) return ''
-  const d = new Date(ts)
-  if (Number.isNaN(d.getTime())) return ts
-  return d.toLocaleString()
+  return formatDateTime(ts, { empty: '' })
 })
 </script>
 
@@ -141,15 +141,10 @@ const heartbeatDisplay = computed(() => {
 .status-dot--idle { background: var(--muted); }
 .status-label { font-size: 15px; }
 
-.chip {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  background: var(--kx-primary-soft);
-  color: var(--kx-primary);
-}
-.chip--tier { font-weight: 500; }
+/* .chip / .chip--tier 从全局 styles/pill-chip.css 继承（P1-8）。
+ * 注意：全局 .chip 默认带 border: 1px solid var(--kx-border)，本组件原风格
+ * 是 "纯背景无边框"，补一条 scoped 覆盖保证视觉一致。 */
+.chip { border: 0; padding: 2px 10px; }
 
 .ml { margin-left: 4px; }
 

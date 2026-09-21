@@ -125,7 +125,7 @@ func TestHandleControlledBodyUsesTokenTenantOnly(t *testing.T) {
 	requestBody := `{"messages":[{"role":"user","content":"first"},{"role":"user","content":"last"}]}`
 	mock.ExpectQuery(`(?s)SELECT rl\.ts,.*rl\.request_id = \$1.*rl\.tenant_id = \$2`).
 		WithArgs("req-1", "tenant-a").
-		WillReturnRows(pgxmock.NewRows([]string{"ts", "request_body", "response_body", "outbound_body"}).AddRow(occurred, &requestBody, nil, nil))
+		WillReturnRows(pgxmock.NewRows([]string{"ts", "request_body", "response_body"}).AddRow(occurred, &requestBody, nil))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/bodies/internal://body/req-1/prompt", nil)
 	req.SetPathValue("body_ref", "internal://body/req-1/prompt")
@@ -150,9 +150,9 @@ func TestLookupControlledBodyBindsTenantToHotQuery(t *testing.T) {
 	responseBody := `{"choices":[{"text":"world"}]}`
 	mock.ExpectQuery(`(?s)SELECT rl\.ts,.*rl\.request_id = \$1.*rl\.tenant_id = \$2`).
 		WithArgs("req-1", "tenant-a").
-		WillReturnRows(pgxmock.NewRows([]string{"ts", "request_body", "response_body", "outbound_body"}).AddRow(occurred, &requestBody, &responseBody, nil))
+		WillReturnRows(pgxmock.NewRows([]string{"ts", "request_body", "response_body"}).AddRow(occurred, &requestBody, &responseBody))
 
-	gotAt, gotRequest, gotResponse, _, err := (&Handler{bodyDB: mock}).lookupControlledBody(context.Background(), "req-1", "tenant-a")
+	gotAt, gotRequest, gotResponse, err := (&Handler{bodyDB: mock}).lookupControlledBody(context.Background(), "req-1", "tenant-a")
 	require.NoError(t, err)
 	require.Equal(t, occurred, gotAt)
 	require.NotNil(t, gotRequest)
@@ -174,7 +174,7 @@ func TestLookupControlledBodyTenantMismatchReturnsNoRows(t *testing.T) {
 		WithArgs("req-1", "tenant-b").
 		WillReturnError(jwt.ErrTokenInvalidClaims)
 
-	_, _, _, _, err = (&Handler{bodyDB: mock}).lookupControlledBody(context.Background(), "req-1", "tenant-b")
+	_, _, _, err = (&Handler{bodyDB: mock}).lookupControlledBody(context.Background(), "req-1", "tenant-b")
 	require.Error(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -295,7 +295,7 @@ func TestHandleControlledBodyFallsBackToArchiveView(t *testing.T) {
 		WithArgs("req-archive", "tenant-a").WillReturnError(pgx.ErrNoRows)
 	mock.ExpectQuery(`(?s)SELECT rl\.ts,.*FROM request_logs_with_current_month.*rl\.request_id = \$1.*rl\.tenant_id = \$2`).
 		WithArgs("req-archive", "tenant-a").
-		WillReturnRows(pgxmock.NewRows([]string{"ts", "request_body", "response_body", "outbound_body"}).AddRow(occurred, &requestBody, nil, nil))
+		WillReturnRows(pgxmock.NewRows([]string{"ts", "request_body", "response_body"}).AddRow(occurred, &requestBody, nil))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/bodies/internal://body/req-archive/prompt", nil)
 	req.SetPathValue("body_ref", "internal://body/req-archive/prompt")

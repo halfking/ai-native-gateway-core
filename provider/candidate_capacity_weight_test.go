@@ -17,14 +17,14 @@ func TestApplyCapacityWeightedLB(t *testing.T) {
 	intp := func(v int) *int { return &v }
 
 	cases := []struct {
-		name    string
-		weight  int // manual weight from mo.weight (SQL COALESCE default 100)
-		manual  *int
-		auto    *int
-		wantMin int // inclusive lower bound on the derived weight
-		wantMax int // inclusive upper bound on the derived weight
-		wantEq  int // when >0, the derived weight must equal exactly this
-		note    string
+		name     string
+		weight   int // manual weight from mo.weight (SQL COALESCE default 100)
+		manual   *int
+		auto     *int
+		wantMin  int // inclusive lower bound on the derived weight
+		wantMax  int // inclusive upper bound on the derived weight
+		wantEq   int // when >0, the derived weight must equal exactly this
+		note     string
 	}{
 		{
 			name:   "auto_only_becomes_weight",

@@ -1,5 +1,6 @@
 // quality.ts — same-origin wrappers for /api/quality/* (Admin UI).
-// Prefer this over quality-api-client.ts (axios + hardcoded baseURL).
+// Uses the shared req/_core client (the old axios-based quality-api-client
+// wrapper was removed in the R16 dead-code sweep).
 
 import { headers } from './_core'
 import type {

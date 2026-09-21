@@ -151,7 +151,7 @@ func ClassifyError(err error) *RetryableError {
 	// Check if it's an HTTPError and classify by status code
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
-		return ClassifyHTTPError(httpErr.StatusCode, httpErr.Err)
+		return classifyHTTPError(httpErr.StatusCode, httpErr.Err, httpErr.RetryAfter)
 	}
 
 	// Unknown error type - conservative: non-retriable
@@ -166,6 +166,9 @@ func ClassifyError(err error) *RetryableError {
 type HTTPError struct {
 	StatusCode int
 	Err        error
+	// RetryAfter preserves the upstream Retry-After header when available.
+	// It may be either delta-seconds or an HTTP-date.
+	RetryAfter string
 }
 
 func (e *HTTPError) Error() string {
@@ -178,7 +181,11 @@ func (e *HTTPError) Unwrap() error {
 
 // ClassifyHTTPError determines if an HTTP error is retriable based on status code.
 func ClassifyHTTPError(statusCode int, err error) *RetryableError {
-	httpErr := &HTTPError{StatusCode: statusCode, Err: err}
+	return classifyHTTPError(statusCode, err, "")
+}
+
+func classifyHTTPError(statusCode int, err error, retryAfter string) *RetryableError {
+	httpErr := &HTTPError{StatusCode: statusCode, Err: err, RetryAfter: retryAfter}
 
 	// Retriable HTTP status codes
 	switch {

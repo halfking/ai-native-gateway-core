@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"model\":\"\\u0000\",\"messages\":null,\"metadata\":{\"k\":\"\\u0000\"},\"unknown\":null}")

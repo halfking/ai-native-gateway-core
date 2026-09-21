@@ -84,13 +84,6 @@ func (s *SerializedStreamWriter) WriteTransportFrame(p []byte) (int, error) {
 func (s *SerializedStreamWriter) write(p []byte, capture bool) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if capture && s.captureLimit > 0 && !s.captureOverflow {
-		if len(s.capture)+len(p) > s.captureLimit {
-			s.captureOverflow = true
-		} else {
-			s.capture = append(s.capture, p...)
-		}
-	}
 	if s.detached {
 		return len(p), nil
 	}
@@ -99,6 +92,24 @@ func (s *SerializedStreamWriter) write(p []byte, capture bool) (int, error) {
 		s.detached = true
 		s.detachErr = err
 		return n, err
+	}
+	// 2026-08-28 audit fix: treat short writes as errors to preserve
+	// fail-closed semantics. A writer returning (n < len(p), nil) violates
+	// io.Writer contract and would leave the gate believing bytes were sent
+	// while the underlying connection dropped part of the frame.
+	if n < len(p) {
+		s.detached = true
+		s.detachErr = io.ErrShortWrite
+		return n, io.ErrShortWrite
+	}
+	if capture && s.captureLimit > 0 && !s.captureOverflow {
+		if len(s.capture)+n > s.captureLimit {
+			// Clear capture on overflow so replay cannot consume a truncated body.
+			s.captureOverflow = true
+			s.capture = nil
+		} else {
+			s.capture = append(s.capture, p[:n]...)
+		}
 	}
 	return n, nil
 }

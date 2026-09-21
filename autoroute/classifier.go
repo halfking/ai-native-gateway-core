@@ -32,6 +32,7 @@ package autoroute
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -137,6 +138,61 @@ type ClassificationSignals struct {
 	// "roocode", "vscode", "copilot", "windsurf"). Extracted from User-Agent
 	// or X-Gw-Client-Type header. Non-empty value is a strong coding signal.
 	ClientType string
+
+	// AgentRole（R48, 2026-09-20）是会话角色标识：X-Gw-Agent-Role 头声明，
+	// 或网关内部 loopback 的 X-Gw-Source-Actor 推断（见 session_role.go
+	// 信任模型）。unknown = 未声明——分类器不消费该字段（TaskType 语义
+	// 不变），仅 role_llm_router 在 AUTO_ROLE_ROUTING_ENABLED 开启时读取。
+	AgentRole AgentRole
+}
+
+// String returns a sanitized string representation of ClassificationSignals
+// suitable for logging. All prompt content is replaced with length indicators
+// to prevent accidental leakage of sensitive content in logs.
+//
+// Privacy guarantee: The returned string does NOT contain any prompt text,
+// message content, or reversible content features.
+func (s ClassificationSignals) String() string {
+	return fmt.Sprintf("ClassificationSignals{SystemPrompt:%d chars, LastUserPrompt:%d chars, MessageCount:%d, EstimatedTokens:%d, ToolCount:%d, HasImages:%v, Language:%s, HasCodeBlock:%v, HasToolResults:%v, ClientType:%s, AgentRole:%s}",
+		len(s.SystemPrompt),
+		len(s.LastUserPrompt),
+		s.MessageCount,
+		s.EstimatedTokens,
+		s.ToolCount,
+		s.HasImages,
+		s.Language,
+		s.HasCodeBlock,
+		s.HasToolResults,
+		s.ClientType,
+		s.AgentRole,
+	)
+}
+
+// MarshalJSON returns a sanitized JSON representation of ClassificationSignals
+// suitable for logging and telemetry. All prompt content is replaced with
+// length indicators to prevent accidental leakage of sensitive content.
+//
+// Privacy guarantee: The returned JSON does NOT contain any prompt text,
+// message content, or reversible content features.
+func (s ClassificationSignals) MarshalJSON() ([]byte, error) {
+	sanitized := map[string]any{
+		"system_prompt_len": len(s.SystemPrompt),
+		"last_user_len":     len(s.LastUserPrompt),
+		"message_count":     s.MessageCount,
+		"estimated_tokens":  s.EstimatedTokens,
+		"tool_count":        s.ToolCount,
+		"has_images":        s.HasImages,
+		"language":          s.Language,
+		"has_code_block":    s.HasCodeBlock,
+		"has_tool_results":  s.HasToolResults,
+		"client_type":       s.ClientType,
+	}
+	// R48: 角色是枚举短字符串，非提示词内容，按原值入审计 JSON。
+	// 仅非空时输出——flag-off/无角色头时保持序列化字节与加字段前一致。
+	if s.AgentRole != "" {
+		sanitized["agent_role"] = s.AgentRole
+	}
+	return json.Marshal(sanitized)
 }
 
 // Classification is the structured output of a classifier. The decider
@@ -244,7 +300,10 @@ func DefaultKeywords() KeywordSet {
 			"step by step", "explain why", "analyze",
 			// 中文
 			"证明", "推导", "求解", "计算", "推理", "逻辑",
-			"分析", "证明题", "推导过程", "步骤",
+			// "分析" 2026-09-14 复审从 reasoning 关键词降级：它同时高频出现
+			// 在代码分析请求里，与 code 通道打平时按优先级错归 reasoning；
+			// 数据/代码分析改由 patterns.go 的"分析+对象"正则精确承接。
+			"证明题", "推导过程", "步骤",
 		},
 		Code: []string{
 			// English
@@ -278,8 +337,24 @@ func DefaultKeywords() KeywordSet {
 			// 中文
 			"写一篇", "撰写", "创作", "故事", "小说", "诗歌",
 			"翻译", "总结", "摘要", "文案",
+			// 2026-09-14 复审补充：润色/改写与命名类创作（此前"润色这封邮件"
+			// "起几个名字"落到 chat）
+			"润色", "改写", "扩写", "俳句", "打油诗",
 		},
 	}
+}
+
+// codeOutputNegated 报告文本是否显式声明不需要产出代码（概念/流程解释类
+// 提问常见 "no code needed""不用写代码"）。仅用于抑制关键词层的 code 评分，
+// 不影响 pattern 层与硬覆盖通道（2026-09-15 二轮 en_chat_api_explain）。
+var codeNegationPhrases = []string{
+	"no code", "without code", "not write code", "don't write code",
+	"no need to write code",
+	"不用写代码", "无需写代码", "不需要写代码", "不要写代码", "无需代码", "不用代码", "不要代码",
+}
+
+func codeOutputNegated(text string) bool {
+	return containsAnyPhrase(text, codeNegationPhrases)
 }
 
 // HeuristicClassifier implements Classifier using only signal extraction
@@ -542,6 +617,17 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 		}
 	}
 
+	// 显式否定代码产出守卫（2026-09-15 二轮 en_chat_api_explain）："No code
+	// needed, just the concept" 的字面 "code" 命中 code 关键词（0.40）压过
+	// chat 基线，概念解释类请求被错拉成 code。文本显式声明不产出代码时，
+	// 抑制**仅来自关键词层**的 code 评分；pattern 层的结构信号
+	// （动词+编程对象等）不受影响——真正带编程结构的请求仍归 code。
+	if codeOutputNegated(text) {
+		if _, hasPattern := patternHits[TaskCode]; !hasPattern {
+			delete(scores, TaskCode)
+		}
+	}
+
 	// Default baseline for chat (so we always have a non-zero answer)
 	// Lowered to 0.1 so a single keyword hit can beat it.
 	scores[TaskChat] = 0.1
@@ -682,10 +768,6 @@ func rankSecondary(scores map[TaskType]float64, winner TaskType) []TaskScore {
 		out = out[:3]
 	}
 	return out
-}
-
-func buildReason(winner TaskType, reasoningHits, codeHits, creativeHits int, hasCodeBlock bool) string { //nolint:unused
-	return buildReasonEx(winner, reasoningHits, codeHits, creativeHits, hasCodeBlock, "")
 }
 
 // buildReasonEx is the extended version that also surfaces a pattern-match

@@ -21,7 +21,17 @@ import (
 const (
 	maxRawLogFileSize  = 100 * 1024 * 1024 // 100MB/文件
 	maxRawLogKeepCount = 10                // 保留最近 10 个文件
+
+	// rawDataLoggerRotateAttempts bounds the collision retry loop. A collision
+	// is expected only when the filesystem clock is coarser than the filename
+	// timestamp, so a short bounded loop is enough without delaying failures
+	// caused by permissions or an unavailable directory.
+	rawDataLoggerRotateAttempts = 8
 )
+
+// rawDataLoggerNow is package-scoped so rotation collision tests can hold the
+// clock stable while exercising the sequence-suffix fallback.
+var rawDataLoggerNow = time.Now
 
 // 特性：
 //   - 回转日志文件，单个文件最大 100MB（rule 11 §3 红线）
@@ -42,6 +52,12 @@ type RawDataLogger struct {
 	// 即历史写入字节总数（受 mu 保护）。
 	currentPath   string
 	currentOffset int64
+
+	// R12（2026-09-11）幂等 Close 契约：首次 Close 关闭文件并记住错误，
+	// 后续调用返回同一错误（预研 §2.3 勘误 6：此前仅靠 file==nil 近似
+	// 幂等，无法区分"已关闭"与"rotate 失败等未初始化"状态）。
+	closed   bool
+	closeErr error
 }
 
 // RawDataEntry 原始数据日志条目
@@ -262,8 +278,20 @@ func (l *RawDataLogger) writeEntries(entries []RawDataEntry) {
 	defer l.mu.Unlock()
 
 	if l.file == nil {
-		slog.Warn("raw_data_logger: file not initialized")
-		return
+		// 2026-09-12 审计：rotate 失败会清空 l.file，若只报警不重建，
+		// 一次瞬时故障（ENOSPC 抖动等）= 审计管道静默死亡直到重启，
+		// 且初始失败仅 +1，持续丢数无信号。这里每批惰性重试重建；
+		// 仍失败则计数，让 rawaudit_write_failed_total 持续反映丢失面。
+		// Close 之后的 write 必须保持 noop 契约（TestRawSinkContract_
+		// CloseThenLogIsNoop），不得重建文件。
+		if l.closed {
+			return
+		}
+		if err := l.rotate(); err != nil {
+			slog.Error("raw_data_logger: lazy re-open after earlier rotate failure", "err", err)
+			metrics.Global().RecordRawAuditWriteFailure()
+			return
+		}
 	}
 
 	for _, entry := range entries {
@@ -277,6 +305,7 @@ func (l *RawDataLogger) writeEntries(entries []RawDataEntry) {
 		if l.currentSize+int64(len(data)) > l.maxSize {
 			if err := l.rotate(); err != nil {
 				slog.Error("raw_data_logger: failed to rotate log", "err", err)
+				metrics.Global().RecordRawAuditWriteFailure()
 				return
 			}
 		}
@@ -300,26 +329,133 @@ func (l *RawDataLogger) writeEntries(entries []RawDataEntry) {
 
 	if err := l.file.Sync(); err != nil {
 		slog.Error("raw_data_logger: failed to sync file", "err", err)
+		metrics.Global().RecordRawAuditWriteFailure()
 	}
+}
+
+// writeEntriesFallible 是 writeEntries 的可错变体，供 BufferedRawSink 的
+// 写失败重试降级使用（R12 预研 §4）。返回已完整写出的条目数与首个错误：
+//   - rotate / 写失败：返回 (已写出条数, err)；失败批次剩余条目不再写出，
+//     由调用方决定重试或丢弃（与 writeEntries 的"静默丢弃剩余"同源行为，
+//     此处显式化为返回值）。
+//   - marshal 失败：单条跳过，计入已写出（与 writeEntries 的 continue 对齐）。
+//   - fsync 失败：条目已全部写出，返回 (len(entries), err)——调用方不得
+//     重试，否则会重复写已落盘条目。
+//
+// metric（RecordRawAuditWriteFailure）与 slog 行为与 writeEntries 一致。
+func (l *RawDataLogger) writeEntriesFallible(entries []RawDataEntry) (int, error) {
+	if len(entries) == 0 {
+		return 0, nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.file == nil {
+		// 同 writeEntries 的惰性重建：rotate 失败后不允许 sink 永久死亡；
+		// Close 之后保持 noop 契约。
+		if l.closed {
+			return 0, fmt.Errorf("raw_data_logger: closed")
+		}
+		if err := l.rotate(); err != nil {
+			slog.Error("raw_data_logger: lazy re-open after earlier rotate failure", "err", err)
+			metrics.Global().RecordRawAuditWriteFailure()
+			return 0, fmt.Errorf("raw_data_logger: lazy re-open failed: %w", err)
+		}
+	}
+
+	written := 0
+	for _, entry := range entries {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			slog.Error("raw_data_logger: failed to marshal entry", "err", err)
+			written++
+			continue
+		}
+		data = append(data, '\n')
+
+		if l.currentSize+int64(len(data)) > l.maxSize {
+			if err := l.rotate(); err != nil {
+				slog.Error("raw_data_logger: failed to rotate log", "err", err)
+				metrics.Global().RecordRawAuditWriteFailure()
+				return written, err
+			}
+		}
+
+		n, err := l.file.Write(data)
+		if err != nil {
+			slog.Error("raw_data_logger: failed to write entry", "err", err)
+			// P0-2 (audit §3.6 R-3.4): 同 writeEntries —— 计数审计管道
+			// 失败，供 rawaudit_write_failed_total 告警规则消费。
+			metrics.Global().RecordRawAuditWriteFailure()
+			return written, err
+		}
+		l.currentSize += int64(n)
+		l.currentOffset += int64(n)
+		written++
+	}
+
+	if err := l.file.Sync(); err != nil {
+		slog.Error("raw_data_logger: failed to sync file", "err", err)
+		metrics.Global().RecordRawAuditWriteFailure()
+		return len(entries), err
+	}
+	return len(entries), nil
+}
+
+// Sync 将已接受条目落盘并 fsync（RawSink 屏障语义，R12）。同步直写路径
+// 每批 writeEntries 末尾已 fsync，这里对最后一次写盘后的文件再补一次
+// Sync，作为显式屏障；disabled / 尚无文件时返回 nil。
+func (l *RawDataLogger) Sync() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.enabled || l.file == nil {
+		return nil
+	}
+	return l.file.Sync()
+}
+
+// sinkEnabled 报告 sink 是否接受条目（rawEntryWriter 契约）。
+func (l *RawDataLogger) sinkEnabled() bool {
+	return l.enabled
 }
 
 // rotate 回转日志文件
 func (l *RawDataLogger) rotate() error {
-	// 关闭当前文件
+	// 关闭当前文件，并立即清空引用，避免失败路径留下已关闭句柄。
 	if l.file != nil {
-		if err := l.file.Close(); err != nil {
+		oldFile := l.file
+		l.file = nil
+		if err := oldFile.Close(); err != nil {
 			slog.Warn("raw_data_logger: failed to close old log file", "err", err)
 		}
 	}
 
-	// 生成唯一文件名，避免同一秒内轮转时重新打开旧文件。
-	timestamp := time.Now().UTC().Format("20060102_150405.000000000")
-	filename := fmt.Sprintf("raw_data_%s_%d.jsonl", timestamp, time.Now().UnixNano())
-	filePath := filepath.Join(l.baseDir, filename)
+	// 生成唯一文件名，避免同一时钟 tick 内轮转时 O_EXCL 撞名。
+	var (
+		file     *os.File
+		filePath string
+		err      error
+	)
+	for attempt := 0; attempt < rawDataLoggerRotateAttempts; attempt++ {
+		now := rawDataLoggerNow()
+		timestamp := now.UTC().Format("20060102_150405.000000000")
+		filename := fmt.Sprintf("raw_data_%s_%d", timestamp, now.UnixNano())
+		if attempt > 0 {
+			filename += fmt.Sprintf("_%d", attempt)
+		}
+		filename += ".jsonl"
+		filePath = filepath.Join(l.baseDir, filename)
 
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+		file, err = os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+		if err == nil {
+			break
+		}
+		if !os.IsExist(err) {
+			return fmt.Errorf("failed to create raw data log file: %w", err)
+		}
+	}
 	if err != nil {
-		return fmt.Errorf("failed to create raw data log file: %w", err)
+		return fmt.Errorf("failed to create raw data log file after %d attempts: %w", rawDataLoggerRotateAttempts, err)
 	}
 
 	l.file = file
@@ -331,14 +467,15 @@ func (l *RawDataLogger) rotate() error {
 
 	// 2026-08-18: 清理旧文件（保留最近 10 个，rule 11 §3）。
 	// 单文件 100MB × 10 ≈ 1000MB 上限。
-	go l.cleanupOldFiles(maxRawLogKeepCount)
+	// baseDir 值捕获：rotate 持锁期求值，goroutine 不再读共享可变字段（-race 竞争根修）。
+	go l.cleanupOldFiles(l.baseDir, maxRawLogKeepCount)
 
 	return nil
 }
 
 // cleanupOldFiles 清理旧的日志文件，保留最近N个
-func (l *RawDataLogger) cleanupOldFiles(keepCount int) {
-	files, err := filepath.Glob(filepath.Join(l.baseDir, "raw_data_*.jsonl"))
+func (l *RawDataLogger) cleanupOldFiles(baseDir string, keepCount int) {
+	files, err := filepath.Glob(filepath.Join(baseDir, "raw_data_*.jsonl"))
 	if err != nil {
 		slog.Warn("raw_data_logger: failed to list old files", "err", err)
 		return
@@ -378,7 +515,8 @@ func (l *RawDataLogger) cleanupOldFiles(keepCount int) {
 	}
 }
 
-// Close 关闭日志记录器
+// Close 关闭日志记录器。幂等（R12 契约）：首次调用关闭文件并记住错误，
+// 后续调用返回同一错误。
 func (l *RawDataLogger) Close() error {
 	if !l.enabled {
 		return nil
@@ -387,11 +525,15 @@ func (l *RawDataLogger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.file != nil {
-		return l.file.Close()
+	if l.closed {
+		return l.closeErr
 	}
-
-	return nil
+	l.closed = true
+	if l.file != nil {
+		l.closeErr = l.file.Close()
+		l.file = nil
+	}
+	return l.closeErr
 }
 
 // CurrentLocation returns the path of the raw data log file currently

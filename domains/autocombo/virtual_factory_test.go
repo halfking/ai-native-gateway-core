@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -516,5 +517,57 @@ func TestFakeQuotaTracker_PropagatesErrors(t *testing.T) {
 	}
 	if ok {
 		t.Errorf("expected ok=false on error")
+	}
+}
+
+// TestVirtualFactory_BuildFromCandidates_TruncationKeepsHighScoreHead
+// (audit 2026-09-14 R28 #14): pins the sorting-ownership contract at the
+// MaxCandidates truncation — 评分=粗排 decides the survival set (the
+// top-scored head survives; the score tail is dropped BEFORE the Router's
+// tier-internal P2C fine ranking ever sees the pool).
+func TestVirtualFactory_BuildFromCandidates_TruncationKeepsHighScoreHead(t *testing.T) {
+	const poolSize = 60
+	const maxCandidates = 50
+
+	spec := baseSpec(t)
+	spec.MaxCandidates = maxCandidates
+
+	// Latency is the only scoring dimension: score order == latency order
+	// (lower latency → higher score). Candidate i carries latency 100+i so
+	// the pool is strictly ordered and the expected truncation is exact.
+	candidates := make([]provider.Candidate, 0, poolSize)
+	catalog := make([]CatalogEntry, 0, poolSize)
+	for i := 0; i < poolSize; i++ {
+		model := fmt.Sprintf("free-model-%02d", i)
+		candidates = append(candidates, cand(i+1, "openrouter", model, "free", 100+i, 0, 0.9))
+		catalog = append(catalog, CatalogEntry{ProviderCode: "openrouter", ModelID: model, FreeType: "recurring-daily", ToSVerdict: "ok"})
+	}
+
+	tracker := &fakeQuotaTracker{} // nil results → pass-through
+	vf := NewVirtualFactoryWith(nil, tracker)
+	vf.loadCatalogFn = func(ctx context.Context, tenantID string, spec *AutoComboSpec) ([]CatalogEntry, error) {
+		return catalog, nil
+	}
+
+	got, err := vf.BuildFromCandidates(context.Background(), spec, candidates, "default")
+	if err != nil {
+		t.Fatalf("BuildFromCandidates: %v", err)
+	}
+	if len(got) != maxCandidates {
+		t.Fatalf("truncated pool = %d candidates, want %d", len(got), maxCandidates)
+	}
+
+	// The head must be the highest-scoring (lowest-latency) half of the pool.
+	for i, c := range got {
+		wantLatency := 100 + i
+		if c.P95LatencyMs != wantLatency {
+			t.Fatalf("survivor[%d] latency = %d, want %d (high-score head must survive truncation)", i, c.P95LatencyMs, wantLatency)
+		}
+	}
+	// The score tail (latencies 150..159) must be gone, not reordered in.
+	for _, c := range got {
+		if c.P95LatencyMs > 100+maxCandidates-1 {
+			t.Fatalf("score-tail candidate with latency %d survived truncation", c.P95LatencyMs)
+		}
 	}
 }

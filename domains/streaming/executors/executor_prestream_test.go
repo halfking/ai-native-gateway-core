@@ -46,13 +46,13 @@ func TestUpstreamContext_SessionStreamDetachesCancellationAndRetainsTenant(t *te
 	if got := session.GetTenantIDFromContext(upstreamCtx); got != "tenant-a" {
 		t.Fatalf("tenant ID = %q, want tenant-a", got)
 	}
-	// 2026-08-04: streaming contexts deliberately carry NO wall-clock
-	// deadline. A long-running agent task is bounded by inactivity signals
-	// (ResponseHeaderTimeout on the transport, streamChunkTimeout in the
-	// bridge read loop) rather than total age, so it is not falsely
-	// interrupted simply for running longer than 15 minutes.
-	if _, ok := upstreamCtx.Deadline(); ok {
-		t.Fatal("streaming upstream context must NOT carry a wall-clock deadline (stall-based timeout only)")
+	deadline, ok := upstreamCtx.Deadline()
+	if !ok {
+		t.Fatal("detached durable stream must carry a wall-clock deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= time.Hour || remaining > detachedStreamMaxLifetime {
+		t.Fatalf("detached stream deadline remaining = %v, want within (1h, %v]", remaining, detachedStreamMaxLifetime)
 	}
 }
 
@@ -154,7 +154,7 @@ func TestExecuteOpenAI_Q2BridgeOwnsResponseBody(t *testing.T) {
 		NewRouter(NewStickyCache(), credential.NewLimiter()), credential.NewManager(), credential.NewLimiter(),
 		pool.NewPoolManager(nil), nil, func(chunk []byte, isStream bool) []byte { return chunk }, nil, nil,
 	)
-	exec.OpenAIToAnthropicStream = func(_ http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture, _ any) StreamOutcome {
+	exec.OpenAIToAnthropicStream = func(_ context.Context, _ http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture, _ any, _ int) StreamOutcome {
 		bridgeCalls.Add(1)
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -214,7 +214,7 @@ func TestExecuteOpenAI_StreamPreStreamStopOrdering(t *testing.T) {
 		pool.NewPoolManager(nil),
 		nil,
 		func(chunk []byte, isStream bool) []byte { return chunk },
-		func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome {
+		func(_ context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome {
 			// This is the production StreamChat injection point. It is
 			// called AFTER OnStreamReady has already been fired. We
 			// verify the order and forward the body verbatim.
@@ -361,7 +361,8 @@ func TestExecuteOpenAI_StreamSuccessRecordedOnlyAfterBodyCompletes(t *testing.T)
 			exec.PostExecutionHook = spy
 			exec.StreamRetryThreshold = 50
 			wireDispatchPipelineForTest(t, exec)
-			exec.StreamChat = func(http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
+			// P1-2 fix (2026-08-28): Added ctx parameter to match new signature.
+			exec.StreamChat = func(context.Context, http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
 				time.Sleep(tc.streamWait)
 				return tc.outcome
 			}
@@ -523,7 +524,8 @@ func TestExecuteOpenAI_GLM52NetworkFailureFailsOverWithoutClientError(t *testing
 	)
 	exec.StreamRetryThreshold = 50
 	wireDispatchPipelineForTest(t, exec)
-	exec.StreamChat = func(http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
+	// P1-2 fix (2026-08-28): Added ctx parameter to match new signature.
+	exec.StreamChat = func(context.Context, http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
 		if streamCalls.Add(1) <= 3 {
 			return StreamOutcome{Interrupted: true, Reason: "network_error", Kind: errorsx.KindNetwork, Resumable: true}
 		}
@@ -597,7 +599,7 @@ func TestExecuteOpenAI_NetworkStreamFailureFailsOverToNextCandidate(t *testing.T
 	)
 	exec.StreamRetryThreshold = 50
 	wireDispatchPipelineForTest(t, exec)
-	exec.StreamChat = func(http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
+	exec.StreamChat = func(context.Context, http.ResponseWriter, *http.Response, string, string, string, NormalizerFunc, *audit.StreamCapture, bool) StreamOutcome {
 		if streamCalls.Add(1) == 1 {
 			return StreamOutcome{
 				Interrupted: true,

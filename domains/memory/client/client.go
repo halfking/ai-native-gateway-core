@@ -10,11 +10,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/pkg/httputil"
 )
 
 // Client is a thin HTTP client for the Memora / MemOS product API.
@@ -112,9 +112,9 @@ func (c *Client) Ping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	//nolint:errcheck // best-effort close
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 256))
+	if _, err := httputil.ReadPrefixAndDrain(resp.Body, 256); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -171,13 +171,13 @@ func (c *Client) addMessageOnce(ctx context.Context, userID string, messages []m
 	if err != nil {
 		return err
 	}
-	//nolint:errcheck // best-effort close
-	defer resp.Body.Close()
+	body, bodyErr := httputil.ReadPrefixAndDrain(resp.Body, 512)
+	if bodyErr != nil {
+		return bodyErr
+	}
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return &httpError{status: resp.StatusCode, body: string(body)}
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }
 
@@ -348,10 +348,11 @@ func (c *Client) searchWithTimeout(ctx context.Context, userID, query string, to
 	if err != nil {
 		return nil, err
 	}
-	//nolint:errcheck // best-effort close
-	defer resp.Body.Close()
+	responseBody, bodyErr := httputil.ReadPrefixAndDrain(resp.Body, 4<<20)
+	if bodyErr != nil {
+		return nil, bodyErr
+	}
 	if resp.StatusCode >= 400 {
-		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil, fmt.Errorf("memos search status=%d", resp.StatusCode)
 	}
 	var raw struct {
@@ -372,7 +373,7 @@ func (c *Client) searchWithTimeout(ctx context.Context, userID, query string, to
 			} `json:"text_mem"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+	if err := json.Unmarshal(responseBody, &raw); err != nil {
 		return nil, err
 	}
 	out := make([]memory.Memory, 0, topK)

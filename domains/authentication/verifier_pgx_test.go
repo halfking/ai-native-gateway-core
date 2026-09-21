@@ -62,7 +62,8 @@ func TestKeyVerifier_Verify_Cache_StaleKeyPrefix(t *testing.T) {
 		"default_client_profile", "owner_user", "rate_limit_rpm", "rate_limit_concurrent",
 		"rate_limit_tpm", "key_tier", "budget_usd", "status", "key_alias",
 		"customer_id", // 2026-07-15 (migration 407): applications.customer_id
-	}).AddRow(1, "tenant-x", 1, "app1", "sk-1", nil, nil, nil, nil, nil, "default", nil, "active", nil, nil)
+		"expires_at",  // 2026-09-04 keystore: read-time expiry validation
+	}).AddRow(1, "tenant-x", 1, "app1", "sk-1", nil, nil, nil, nil, nil, "default", nil, "active", nil, nil, nil)
 	mp.ExpectQuery(`SELECT`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnRows(rows)
@@ -296,18 +297,17 @@ func TestKeyVerifier_CheckBudget_OK(t *testing.T) {
 	}
 }
 
-func TestSetDB_EnablesVerifier(t *testing.T) {
+func TestSetDB_NilPoolKeepsVerifierDisabled(t *testing.T) {
 	kv := NewKeyVerifier()
-	if kv.Enabled() {
-		t.Fatal("should be disabled before SetDB")
-	}
-	// 用一个真实 *pgxpool.Pool 适配器（nil pool 即可测试 Enabled）
 	kv.SetDB(nil, "secret")
-	// dbPool is non-nil interface holding nil pool
-	// Enabled() returns true if dbPool != nil && secretKey != ""
-	// We cannot easily construct a *pgxpool.Pool with pgxmock, so check secretKey path:
-	if !kv.Enabled() {
-		t.Fatal("should be enabled after SetDB")
+	if kv.Enabled() {
+		t.Fatal("nil DB pool must not enable the verifier")
+	}
+	if _, err := kv.VerifyByID(context.Background(), 1); err == nil {
+		t.Fatal("VerifyByID with nil DB must return an error")
+	}
+	if err := kv.CheckBudget(context.Background(), 1); err != nil {
+		t.Fatalf("disabled CheckBudget should be a no-op, got %v", err)
 	}
 }
 

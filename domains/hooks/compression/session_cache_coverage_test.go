@@ -12,6 +12,7 @@ package compression
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -320,13 +321,15 @@ func TestToCutMarker_WithMarker(t *testing.T) {
 
 func TestClearCutMarker_Normal(t *testing.T) {
 	s := &SessionState{
-		HasCutMarker:   true,
-		CutCreatedAt:   1,
-		CutSourceMsgs:  2,
-		CutIndex:       3,
-		CutStrategy:    "x",
-		CutBytesBefore: 4,
-		CutBytesAfter:  5,
+		HasCutMarker:        true,
+		CutCreatedAt:        1,
+		CutSourceMsgs:       2,
+		CutIndex:            3,
+		CutStrategy:         "x",
+		CutBytesBefore:      4,
+		CutBytesAfter:       5,
+		CutPreSanitizeStart: 1,
+		CutPreSanitizeEnd:   2,
 	}
 	s.ClearCutMarker()
 	if s.HasCutMarker {
@@ -337,6 +340,9 @@ func TestClearCutMarker_Normal(t *testing.T) {
 	}
 	if s.CutStrategy != "" {
 		t.Error("ClearCutMarker: CutStrategy not reset")
+	}
+	if s.CutPreSanitizeStart != 0 || s.CutPreSanitizeEnd != 0 {
+		t.Error("ClearCutMarker: PSOR fields not reset")
 	}
 }
 
@@ -450,6 +456,8 @@ func TestEncodeDecodeSessionStateFields_RoundTrip(t *testing.T) {
 		CutStrategy:          "aggressive",
 		CutBytesBefore:       1024,
 		CutBytesAfter:        512,
+		CutPreSanitizeStart:  1,
+		CutPreSanitizeEnd:    3,
 		AuditedAt:            1699999900,
 		AuditScore:           8,
 		SecurityScore:        7,
@@ -458,6 +466,13 @@ func TestEncodeDecodeSessionStateFields_RoundTrip(t *testing.T) {
 		ApprovalStatus:       ApprovalStatePending,
 		ApprovalID:           "appr-uuid",
 		OptimizationApplied:  OptSummarize,
+		RawTokenEstimate:     120,
+		RawMsgCount:          12,
+		CompressedTokens:     80,
+		CompressedMsgs:       8,
+		SanitizeMapRef:       "session:s1:sanitize",
+		SanitizeStats:        SanitizeStats{PlaceholderCount: 2, SecretCount: 1, SanitizedAt: 1699999901},
+		CompressionQuality:   CompressionQualityScore{TokenSavingsPercent: 33.3, OverallScore: 91},
 	}
 	fields := encodeSessionStateFields(original)
 
@@ -485,6 +500,9 @@ func TestEncodeDecodeSessionStateFields_RoundTrip(t *testing.T) {
 	if decoded.CutStrategy != original.CutStrategy {
 		t.Errorf("round-trip CutStrategy mismatch")
 	}
+	if decoded.CutPreSanitizeStart != original.CutPreSanitizeStart || decoded.CutPreSanitizeEnd != original.CutPreSanitizeEnd {
+		t.Errorf("round-trip PSOR mismatch: got [%d,%d], want [%d,%d]", decoded.CutPreSanitizeStart, decoded.CutPreSanitizeEnd, original.CutPreSanitizeStart, original.CutPreSanitizeEnd)
+	}
 	if decoded.SummaryMarker != original.SummaryMarker {
 		t.Errorf("round-trip SummaryMarker mismatch")
 	}
@@ -496,6 +514,41 @@ func TestEncodeDecodeSessionStateFields_RoundTrip(t *testing.T) {
 	}
 	if decoded.OptimizationApplied != original.OptimizationApplied {
 		t.Errorf("round-trip OptimizationApplied mismatch")
+	}
+	if decoded.RawTokenEstimate != original.RawTokenEstimate || decoded.RawMsgCount != original.RawMsgCount ||
+		decoded.CompressedTokens != original.CompressedTokens || decoded.CompressedMsgs != original.CompressedMsgs {
+		t.Errorf("round-trip v8 counters mismatch: got %+v", decoded)
+	}
+	if decoded.SanitizeMapRef != original.SanitizeMapRef || decoded.SanitizeStats != original.SanitizeStats {
+		t.Errorf("round-trip sanitize state mismatch")
+	}
+	if decoded.CompressionQuality != original.CompressionQuality {
+		t.Errorf("round-trip compression quality mismatch")
+	}
+	if decoded.SanitizeMessageRefs != nil {
+		t.Fatalf("unexpected sanitize message refs in legacy round-trip: %+v", decoded.SanitizeMessageRefs)
+	}
+}
+
+func TestEncodeDecodeSessionStateFields_MessageProvenanceRoundTrip(t *testing.T) {
+	original := &SessionState{
+		SchemaVersion: schemaVersion,
+		SanitizeMessageRefs: []SanitizedMessageRef{
+			{RawIndex: 0, SanitizedIndex: 0, RawHash: "raw", SanitizedHash: "san", Changed: true, PlaceholderCount: 2},
+			{RawIndex: 1, SanitizedIndex: 1, RawHash: "same", SanitizedHash: "same", Changed: false},
+		},
+	}
+	fields := encodeSessionStateFields(original)
+	raw := map[string]string{}
+	for i := 0; i+1 < len(fields); i += 2 {
+		raw[fields[i].(string)] = fields[i+1].(string)
+	}
+	decoded := &SessionState{}
+	if err := decodeSessionStateFields(raw, decoded); err != nil {
+		t.Fatalf("decodeSessionStateFields: %v", err)
+	}
+	if !reflect.DeepEqual(decoded.SanitizeMessageRefs, original.SanitizeMessageRefs) {
+		t.Fatalf("message provenance mismatch: got %+v, want %+v", decoded.SanitizeMessageRefs, original.SanitizeMessageRefs)
 	}
 }
 
@@ -679,9 +732,13 @@ func TestInvalidate_RemovesFromAllTiers(t *testing.T) {
 // silently no-ops and stale sanitize maps leak until TTL.
 //
 // Without the fix, the deleted sanitize keys would be
-//   session:t:s1:sanitize / session:t:s1:sanitize:offsets
+//
+//	session:t:s1:sanitize / session:t:s1:sanitize:offsets
+//
 // (raw tenant "t"), but the writer stores them under
-//   session:<sha256("t")[:8]>:s1:sanitize / ...:offsets
+//
+//	session:<sha256("t")[:8]>:s1:sanitize / ...:offsets
+//
 // so the deletes never hit and the test fails.
 func TestInvalidate_DeletesSanitizeKeysWithTenantHash(t *testing.T) {
 	redis := newFakeRedis()

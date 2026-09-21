@@ -48,10 +48,10 @@
 - Ledger：插入 `repository_schema_migrations` (scope=startup, version=044, checksum=2770fb0628594271143dc32a2ee3bbb4f1d3482a0eb0b6493e11a715053dcbb2)
 - 应用时间：2026-08-18 22:10:10
 
-**目的地 2：252 podman (`pg-252-pg17`, port 5432 内部 172.16.2.210)**
+**目的地 2：252 podman (`pg-252-pg17`, port 5432 内部 <env:HOST_252_INTERNAL_IP>)**
 - 数据库：`llm_gateway`，owner：`llm_gateway` (superuser)
 - 应用前快照约束：同本地，无 `probe_now`
-- 应用命令：`ssh -p 25022 root@115.29.212.252 "podman exec -i pg-252-pg17 psql -U llm_gateway -d llm_gateway -v ON_ERROR_STOP=1" < 044.sql`
+- 应用命令：`ssh -p 25022 root@<env:HOST_252_IP> "podman exec -i pg-252-pg17 psql -U llm_gateway -d llm_gateway -v ON_ERROR_STOP=1" < 044.sql`
 - 结果：`ALTER TABLE` ×2 成功
 - 验证写入 `probe_now`：成功；恢复为 `fast_reprobe`（cred id=40 原值）
 - Ledger：`repository_schema_migrations` 表不存在 → **新建**（`CREATE TABLE IF NOT EXISTS`），再插入 044 记录
@@ -103,7 +103,7 @@ CHECK (((health_source IS NULL) OR (health_source = ANY (ARRAY['models'::text, '
 - **CHANGELOG.md + 本会话日志未 commit**：因 drop stash 后 working tree 干净，但老板未授权 commit（"请继续"指 DB 同步，不是 commit）；如需 commit，请明确指令
 - **dropped stash 内容**：v1614 release artifacts（v1616 已 supersede）、PROJECT_CONFIG.md 154 更新（属另一会话）、`245-reveal-metric` handoff（属 owner）
 - **244_local 容器未跑 044**：本地 docker 仅修了 `llm-gateway-pg`（port 5432）；其他本地 PG 容器（`openpocket-pg-it`, `redclaw-postgres`）未涉及
-- **245 server 未跑 044**：245 的 `8.136.114.245` 不在本次任务范围；245 的 credentials 表也可能缺 `probe_now` 约束放宽，但因 `ccf3929b9` commit 已包含修复，下次 245 部署即生效
+- **245 server 未跑 044**：245 的 `<env:HOST_245_IP>` 不在本次任务范围；245 的 credentials 表也可能缺 `probe_now` 约束放宽，但因 `ccf3929b9` commit 已包含修复，下次 245 部署即生效
 
 ## 8. 下一步建议
 

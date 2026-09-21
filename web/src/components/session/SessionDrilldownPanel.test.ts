@@ -3,6 +3,7 @@
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createI18n } from 'vue-i18n'
 import SessionDrilldownPanel from './SessionDrilldownPanel.vue'
 import {
   SessionObsApiError,
@@ -21,6 +22,18 @@ vi.mock('../../api/sessionTurnsTree', async (importOriginal) => {
     fetchOnlineSessions: (...args: unknown[]) => fetchOnlineSessionsMock(...args),
     fetchSessionTurnsTree: (...args: unknown[]) => fetchSessionTurnsTreeMock(...args),
   }
+})
+
+const i18n = createI18n({
+  legacy: false,
+  globalInjection: true,
+  locale: 'zh-CN',
+  fallbackLocale: 'en',
+  messages: {
+    'zh-CN': {
+      turnDigest: { view: '查看摘要' },
+    },
+  },
 })
 
 const onlinePage: OnlineSessionsResponse = {
@@ -67,7 +80,7 @@ describe('SessionDrilldownPanel', () => {
     fetchOnlineSessionsMock.mockResolvedValue(onlinePage)
     fetchSessionTurnsTreeMock.mockResolvedValue(turnsPage)
 
-    const w = mount(SessionDrilldownPanel)
+    const w = mount(SessionDrilldownPanel, { global: { plugins: [i18n] } })
     await flushPromises()
 
     // 初始：在线会话列表
@@ -101,7 +114,7 @@ describe('SessionDrilldownPanel', () => {
       new SessionObsApiError('not_found', 404, 'session not found')
     )
 
-    const w = mount(SessionDrilldownPanel)
+    const w = mount(SessionDrilldownPanel, { global: { plugins: [i18n] } })
     await flushPromises()
     await w.find('[data-session-id="sess-drill"]').trigger('click')
     await flushPromises()

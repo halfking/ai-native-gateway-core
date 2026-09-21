@@ -296,7 +296,7 @@ onMounted(() => {
   font-size: 12px;
   color: var(--muted);
 }
-@media (max-width: 900px) {
+@media (max-width: 1024px) {
   .pp-list {
     grid-template-columns: 1fr;
   }

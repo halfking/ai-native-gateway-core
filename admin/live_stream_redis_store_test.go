@@ -12,6 +12,8 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 func TestLiveStreamRedisStore_RecordAndReplay(t *testing.T) {
@@ -239,7 +241,7 @@ func TestIdleMarkerUsesScanTimeAsTs(t *testing.T) {
 	}
 }
 
-func TestLiveStreamRedisStore_TrimDimensionQueueToTwenty(t *testing.T) {
+func TestLiveStreamRedisStore_TrimDimensionQueueToVisibleLimit(t *testing.T) {
 	mr, err := miniredis.Run()
 	if err != nil {
 		t.Fatalf("miniredis: %v", err)
@@ -249,9 +251,10 @@ func TestLiveStreamRedisStore_TrimDimensionQueueToTwenty(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 
-	for i := 0; i < 25; i++ {
+	total := LiveStreamLaneVisibleLimit + 5
+	for i := 0; i < total; i++ {
 		req := LiveRequest{
-			RequestID:     fmt.Sprintf("req-%02d", i),
+			RequestID:     fmt.Sprintf("req-%03d", i),
 			Ts:            base.Add(time.Duration(i) * time.Second).UTC().Format(time.RFC3339),
 			Model:         "gpt-4o",
 			ModelCategory: "openai",
@@ -277,8 +280,9 @@ func TestLiveStreamRedisStore_TrimDimensionQueueToTwenty(t *testing.T) {
 	}
 	// Dimension queues store slim tile JSON members, so compare the decoded
 	// request id rather than the raw member.
-	if len(oldest) == 0 || requestIDFromDimensionQueueMember(oldest[0]) != "req-05" {
-		t.Fatalf("oldest member=%v want req-05 (first 5 trimmed)", oldest)
+	wantOldest := fmt.Sprintf("req-%03d", total-LiveStreamLaneVisibleLimit)
+	if len(oldest) == 0 || requestIDFromDimensionQueueMember(oldest[0]) != wantOldest {
+		t.Fatalf("oldest member=%v want %q (first 5 trimmed)", oldest, wantOldest)
 	}
 }
 
@@ -304,6 +308,60 @@ func TestLiveRequestTile_ProbeFields(t *testing.T) {
 	}
 }
 
+// 2026-09-18: 缓存 token + 会话身份必须同时走通 payload 持久化与 tile 投影，
+// 前端 "缓存 X (命中率 Y%) / 会话 ID" tooltip 才能在 replay/snapshot 重建后不丢。
+func TestLiveRequestCacheAndSessionFields_RoundTrip(t *testing.T) {
+	cacheRead, cacheWrite := 1200, 340
+	req := LiveRequest{
+		RequestID:        "req-cache-1",
+		Ts:               time.Now().UTC().Format(time.RFC3339),
+		TenantID:         "default",
+		GwSessionID:      "  gw_round_trip  ",
+		Model:            "minimax-m3",
+		Status:           "success",
+		CacheReadTokens:  &cacheRead,
+		CacheWriteTokens: &cacheWrite,
+	}
+
+	data, err := marshalLiveRequestRedisPayload(req)
+	if err != nil {
+		t.Fatalf("marshalLiveRequestRedisPayload: %v", err)
+	}
+	back, err := unmarshalLiveRequestRedisPayload(data)
+	if err != nil {
+		t.Fatalf("unmarshalLiveRequestRedisPayload: %v", err)
+	}
+	if back.CacheReadTokens == nil || *back.CacheReadTokens != cacheRead {
+		t.Fatalf("payload roundtrip lost cache_read_tokens: %#v", back.CacheReadTokens)
+	}
+	if back.CacheWriteTokens == nil || *back.CacheWriteTokens != cacheWrite {
+		t.Fatalf("payload roundtrip lost cache_write_tokens: %#v", back.CacheWriteTokens)
+	}
+	if back.GwSessionID != "  gw_round_trip  " {
+		t.Fatalf("payload roundtrip lost gw_session_id: %q", back.GwSessionID)
+	}
+
+	tile := liveRequestTile(back)
+	if tile.CacheReadTokens == nil || *tile.CacheReadTokens != cacheRead {
+		t.Fatalf("tile lost cache_read_tokens: %#v", tile.CacheReadTokens)
+	}
+	if tile.CacheWriteTokens == nil || *tile.CacheWriteTokens != cacheWrite {
+		t.Fatalf("tile lost cache_write_tokens: %#v", tile.CacheWriteTokens)
+	}
+	if tile.GwSessionID != "gw_round_trip" {
+		t.Fatalf("tile expected trimmed gw_session_id=gw_round_trip, got %q", tile.GwSessionID)
+	}
+
+	// 零值（无缓存上报）不得以 0 冒充 —— omitempty 必须真的缺省。
+	noCache, err := marshalLiveRequestRedisPayload(LiveRequest{RequestID: "req-nocache", Ts: req.Ts})
+	if err != nil {
+		t.Fatalf("marshalLiveRequestRedisPayload(no cache): %v", err)
+	}
+	if strings.Contains(noCache, "cache_read_tokens") || strings.Contains(noCache, "cache_write_tokens") {
+		t.Fatalf("payload without cache must omit cache fields, got %s", noCache)
+	}
+}
+
 func TestLiveStreamRedisStore_NilClient(t *testing.T) {
 	store := NewLiveStreamRedisStore(nil)
 	ctx := context.Background()
@@ -324,66 +382,35 @@ func TestLiveStreamRedisStore_NilClient(t *testing.T) {
 	}
 }
 
-func TestDimensionQueueKeyInfoBuildsActivityKeyScope(t *testing.T) {
-	tests := []struct {
-		name string
-		key  string
-		want string
-		ok   bool
-	}{
-		{name: "global provider", key: liveStreamDimPrefix + "provider:MiniMax", want: liveStreamActivityKey("", "provider", "MiniMax"), ok: true},
-		{name: "tenant model", key: "llmgw:live:tenant:default:dim:model:minimax-m3", want: liveStreamActivityKey("default", "model", "minimax-m3"), ok: true},
-		{name: "invalid dimension", key: liveStreamDimPrefix + "status:success", ok: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			info, ok := dimensionQueueKeyInfo(tt.key)
-			if ok != tt.ok {
-				t.Fatalf("ok=%v want %v (%#v)", ok, tt.ok, info)
-			}
-			if ok {
-				got := liveStreamActivityKey(info.tenantID, info.dimension, info.dimensionKey)
-				if got != tt.want {
-					t.Fatalf("activity key=%q want %q", got, tt.want)
-				}
-			}
-		})
-	}
+// countingRecorder is a minimal metrics.Recorder that only counts
+// RecordLiveStreamRecordDropped(reason) calls. All other methods are
+// no-ops so the test does not have to satisfy the full Recorder surface.
+type countingRecorder struct {
+	metrics.NoopRecorder
+	drops atomic.Int64
 }
 
-func TestLiveStreamRedisStore_ActivityKeysUseDimensionIndexes(t *testing.T) {
-	mr := miniredis.RunT(t)
-	defer mr.Close()
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer rdb.Close()
-	store := NewLiveStreamRedisStore(rdb)
-	ctx := context.Background()
+func (c *countingRecorder) RecordLiveStreamRecordDropped(reason string) {
+	c.drops.Add(1)
+}
 
-	if err := store.Record(ctx, LiveRequest{
-		RequestID: "indexed-1", Ts: time.Now().UTC().Format(time.RFC3339), TenantID: "default",
-		Model: "minimax-m3", ModelCategory: "minimax", ProviderCode: "MiniMax", Status: "success",
-	}, ""); err != nil {
-		t.Fatalf("Record: %v", err)
+// TestLiveStreamRedisStore_RecordDroppedMetric_NilClient (2026-08-31, P2-2)
+// pins that Record() with a nil client emits the
+// "store_unconfigured" silent-drop metric. Without this contract test a
+// future refactor could remove the metric call site and the operator
+// dashboard would silently go dark.
+func TestLiveStreamRedisStore_RecordDroppedMetric_NilClient(t *testing.T) {
+	rec := &countingRecorder{}
+	prev := metrics.Global()
+	metrics.SetGlobal(rec)
+	t.Cleanup(func() { metrics.SetGlobal(prev) })
+
+	store := NewLiveStreamRedisStore(nil)
+	if err := store.Record(context.Background(), LiveRequest{RequestID: "test"}, ""); err != nil {
+		t.Fatalf("Record with nil client should return nil, got %v", err)
 	}
-	keys, err := store.activityKeysFromDimensionIndexes(ctx)
-	if err != nil {
-		t.Fatalf("activityKeysFromDimensionIndexes: %v", err)
-	}
-	want := map[string]bool{
-		liveStreamActivityKey("", "vendor", "minimax"):        false,
-		liveStreamActivityKey("", "provider", "MiniMax"):      false,
-		liveStreamActivityKey("", "model", "minimax-m3"):      false,
-		liveStreamActivityKey("default", "vendor", "minimax"): false,
-	}
-	for _, key := range keys {
-		if _, ok := want[key]; ok {
-			want[key] = true
-		}
-	}
-	for key, found := range want {
-		if !found {
-			t.Errorf("missing indexed activity key %q", key)
-		}
+	if got := rec.drops.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 silent-drop metric increment, got %d", got)
 	}
 }
 
@@ -416,6 +443,7 @@ func TestLiveRequestRedisPayload_OnlyObservationFields(t *testing.T) {
 		"type": {}, "request_id": {}, "ts": {}, "tenant_id": {}, "gw_session_id": {},
 		"model": {}, "model_category": {}, "provider_code": {}, "status": {},
 		"latency_ms": {}, "prompt_tokens": {}, "completion_tokens": {}, "total_tokens": {},
+		"cache_read_tokens": {}, "cache_write_tokens": {},
 		"cost_usd": {}, "error_kind": {}, "client_profile": {}, "identity_hash": {}, "credits_charged": {},
 	}
 	for key := range raw {
@@ -1037,12 +1065,13 @@ func TestBuildLiveStreamSnapshot_TopNOthers(t *testing.T) {
 			t.Fatalf("should not have synthetic others lane after removing aggregation: %#v", lane)
 		}
 	}
-	if len(s.DetailDimensions["vendor"]) != 7 {
-		t.Fatalf("detail dimensions must retain all 7 vendors, got %d", len(s.DetailDimensions["vendor"]))
+	// DetailDimensions removed in P0 optimization - Dimensions is the single source of truth
+	if len(s.Dimensions["vendor"]) != 7 {
+		t.Fatalf("dimensions must retain all 7 vendors, got %d", len(s.Dimensions["vendor"]))
 	}
-	for _, lane := range s.DetailDimensions["vendor"] {
+	for _, lane := range s.Dimensions["vendor"] {
 		if lane.ID == "__others__" || lane.IsOthers {
-			t.Fatalf("detail dimensions must not contain synthetic others lane: %#v", lane)
+			t.Fatalf("dimensions must not contain synthetic others lane: %#v", lane)
 		}
 	}
 }
@@ -1071,8 +1100,9 @@ func TestBuildLiveStreamSnapshot_NoOthersWhenFiveOrFewer(t *testing.T) {
 			t.Fatalf("did not expect others lane when dimension count <= 5: %#v", lane)
 		}
 	}
-	if len(s.DetailDimensions["vendor"]) != 5 {
-		t.Fatalf("detail dimensions should contain 5 raw vendors, got %d", len(s.DetailDimensions["vendor"]))
+	// DetailDimensions removed in P0 optimization - Dimensions is the single source of truth
+	if len(s.Dimensions["vendor"]) != 5 {
+		t.Fatalf("dimensions should contain 5 raw vendors, got %d", len(s.Dimensions["vendor"]))
 	}
 }
 
@@ -1389,7 +1419,7 @@ func TestBuildLiveStreamLanes_StableAlphabeticalOrder(t *testing.T) {
 		{RequestID: "r2", ModelCategory: "openai", Status: "success"},
 		{RequestID: "r3", ModelCategory: "anthropic", Status: "success"},
 	}
-	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	lanes, _ := buildLiveStreamLanes("vendor", items)
 	if len(lanes) < 2 {
 		t.Fatalf("expected at least 2 lanes, got %d", len(lanes))
 	}
@@ -1406,13 +1436,12 @@ func TestBuildLiveStreamLanes_StableAlphabeticalOrder(t *testing.T) {
 	}
 }
 
-// 2026-07-26: the lane ordering contract is ASC (oldest first).
-// SwimLaneTrack.vue paints index 0 leftmost and slices the last N, and
-// lastTiles() caps each lane by taking items[len-limit:]. Both mean
-// "oldest on the left, newest on the right, oldest truncated" when the
-// lane builder emits ASC. buildLiveStreamLanes therefore sorts each lane
-// itself rather than inheriting the caller's order, so the dimension-queue
-// path and the main-queue replay path agree.
+// 2026-08-27: the lane ordering contract is ASC FIFO (oldest left → newest
+// right), flipped deliberately by 730cbaef8. SwimLaneTrack paints index 0
+// leftmost and lastTiles() caps each lane by keeping the tail (newest N).
+// buildLiveStreamLanes therefore sorts each lane itself rather than
+// inheriting the caller's order, so the dimension-queue path and the
+// main-queue replay path agree.
 func TestBuildLiveStreamLanes_LaneRequestsAreASC(t *testing.T) {
 	// Deliberately shuffled: the lane builder must not depend on the
 	// caller pre-sorting its input.
@@ -1422,7 +1451,7 @@ func TestBuildLiveStreamLanes_LaneRequestsAreASC(t *testing.T) {
 		{RequestID: "r4", Ts: "2026-07-20T00:00:03Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "failure"},
 		{RequestID: "r2", Ts: "2026-07-20T00:00:01Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},
 	}
-	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	lanes, _ := buildLiveStreamLanes("vendor", items)
 	if len(lanes) != 1 {
 		t.Fatalf("expected 1 lane, got %d", len(lanes))
 	}
@@ -1436,15 +1465,18 @@ func TestBuildLiveStreamLanes_LaneRequestsAreASC(t *testing.T) {
 				lanes[0].ID, i, requests[i-1].Timestamp, requests[i].Timestamp)
 		}
 	}
-	// ASC means the newest request is what the UI paints rightmost.
+	// ASC FIFO: the oldest request is painted leftmost, newest rightmost.
+	if requests[0].RequestID != "r1" {
+		t.Fatalf("expected oldest request (r1) at head, got %q", requests[0].RequestID)
+	}
 	if requests[len(requests)-1].RequestID != "r4" {
 		t.Fatalf("expected newest request (r4) at tail, got %q", requests[len(requests)-1].RequestID)
 	}
 }
 
-// 2026-07-26: the per-lane cap must drop the OLDEST tiles. Under ASC
-// ordering lastTiles keeps items[len-limit:] = the newest N, so a busy lane
-// always shows its most recent window.
+// 2026-08-27: under the ASC FIFO contract lastTiles() keeps items[len-N:],
+// i.e. the newest N tiles — the cap must drop the OLDEST so a busy lane
+// keeps showing fresh traffic instead of freezing on its first tiles.
 func TestBuildLiveStreamLanes_LaneCapKeepsNewest(t *testing.T) {
 	base := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	total := liveStreamLaneLimit + 5
@@ -1460,7 +1492,7 @@ func TestBuildLiveStreamLanes_LaneCapKeepsNewest(t *testing.T) {
 		})
 	}
 
-	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	lanes, _ := buildLiveStreamLanes("vendor", items)
 	if len(lanes) != 1 {
 		t.Fatalf("expected 1 lane, got %d", len(lanes))
 	}
@@ -1530,9 +1562,9 @@ func TestLanesChanged_DetectsActualChanges(t *testing.T) {
 // different lane.requests on consecutive snapshots — the swim-lane
 // "rolling"/jumping symptom.
 //
-// 2026-07-26: the asserted contract is now ASC (oldest first) to match
-// what the dashboard renders and what lastTiles() truncates against.
-func TestSnapshotFromDimensionQueues_RequestsAreASC(t *testing.T) {
+// 2026-07-26: the asserted contract is now DESC (newest first) to match
+// what the dashboard renders and what firstTiles() truncates against.
+func TestSnapshotFromDimensionQueues_RequestsAreDESC(t *testing.T) {
 	mr := miniredis.RunT(t)
 	defer mr.Close()
 
@@ -1702,6 +1734,173 @@ func TestBuildLiveStreamSnapshot_DedupesSummaryAndLaneMembers(t *testing.T) {
 	}
 }
 
+func TestBuildLiveStreamSnapshot_CredentialLaneUsesProviderAndCredential(t *testing.T) {
+	items := []LiveRequest{
+		{
+			RequestID:       "labeled",
+			Ts:              "2026-08-27T00:00:01Z",
+			Model:           "claude-sonnet-4",
+			ProviderCode:    "Anthropic 官方",
+			CredentialID:    42,
+			CredentialLabel: "生产主凭据",
+			Status:          "success",
+		},
+		{
+			RequestID:    "fallback",
+			Ts:           "2026-08-27T00:00:02Z",
+			Model:        "claude-sonnet-4",
+			ProviderCode: "Anthropic 官方",
+			CredentialID: 43,
+			Status:       "success",
+		},
+		// 2026-08-27: renamed credential — the newest request carries the
+		// current label; the lane must show it, not the first-seen snapshot.
+		{
+			RequestID:       "renamed",
+			Ts:              "2026-08-27T00:00:03Z",
+			Model:           "claude-sonnet-4",
+			ProviderCode:    "Anthropic 官方",
+			CredentialID:    42,
+			CredentialLabel: "生产主凭据-新名",
+			Status:          "success",
+		},
+		// 2026-08-27: legacy-format idle marker (pre-ID-keying writer). It must
+		// NOT spawn a ghost credential lane during the TTL migration window.
+		{
+			Type:            "idle_marker",
+			RequestID:       "idle-legacy",
+			Ts:              "2026-08-27T00:00:04Z",
+			CredentialLabel: "Anthropic 官方/生产主凭据",
+			Status:          "idle",
+		},
+	}
+
+	snapshot := BuildLiveStreamSnapshot(items)
+	lanes := snapshot.Dimensions["credential"]
+	if len(lanes) != 2 {
+		t.Fatalf("credential lanes=%d want 2 (legacy idle-only lane must be dropped): %#v", len(lanes), lanes)
+	}
+
+	byID := make(map[string]LiveStreamLane, len(lanes))
+	for _, lane := range lanes {
+		byID[lane.ID] = lane
+	}
+
+	// 2026-08-27: Lane.ID is the stable credential_id; Lane.Name is the
+	// display string resolved from the NEWEST request (rename wins).
+	expectations := []struct {
+		id   string
+		name string
+	}{
+		{id: "42", name: "Anthropic 官方/生产主凭据-新名"},
+		{id: "43", name: "Anthropic 官方/凭据 #43"},
+	}
+
+	for _, expect := range expectations {
+		lane, ok := byID[expect.id]
+		if !ok {
+			t.Fatalf("missing credential lane ID=%q: %#v", expect.id, lanes)
+		}
+		if lane.Name != expect.name {
+			t.Fatalf("lane ID=%q name=%q want %q", expect.id, lane.Name, expect.name)
+		}
+	}
+
+	// Legends: Key must match Lane.ID (credential_id), Name must match the
+	// lane display name.
+	for _, legend := range snapshot.DimensionLegends["credential"] {
+		lane, ok := byID[legend.Key]
+		if !ok {
+			t.Fatalf("legend key=%q does not match any lane ID", legend.Key)
+		}
+		if legend.Name != lane.Name {
+			t.Fatalf("legend key=%q name=%q want %q (lane display name)", legend.Key, legend.Name, lane.Name)
+		}
+	}
+}
+
+func TestBuildLiveStreamLanes_CredentialSortsByNameThenNumericID(t *testing.T) {
+	items := []LiveRequest{
+		// Same provider, labels sorted "B*" < "C*" — id 9 (label B) must come
+		// before id 10 (label C) even though "10" < "9" lexicographically.
+		{RequestID: "r1", Ts: "2026-08-27T00:00:01Z", ProviderCode: "P", CredentialID: 9, CredentialLabel: "B凭据", Status: "success"},
+		{RequestID: "r2", Ts: "2026-08-27T00:00:02Z", ProviderCode: "P", CredentialID: 10, CredentialLabel: "C凭据", Status: "success"},
+		{RequestID: "r3", Ts: "2026-08-27T00:00:03Z", ProviderCode: "P", CredentialID: 2, CredentialLabel: "C凭据", Status: "success"},
+		{RequestID: "r4", Ts: "2026-08-27T00:00:04Z", ProviderCode: "P", CredentialID: 1, CredentialLabel: "A凭据", Status: "success"},
+	}
+
+	snapshot := BuildLiveStreamSnapshot(items)
+	lanes := snapshot.Dimensions["credential"]
+	// Name order "P/A凭据" < "P/B凭据" < "P/C凭据"; the two "P/C凭据" lanes
+	// tie-break on numeric id (2 before 10, NOT lexicographic "10" < "2").
+	wantOrder := []string{"1", "9", "2", "10"}
+	if len(lanes) != len(wantOrder) {
+		t.Fatalf("credential lanes=%d want %d: %#v", len(lanes), len(wantOrder), lanes)
+	}
+	for i, want := range wantOrder {
+		if lanes[i].ID != want {
+			t.Fatalf("lane[%d].ID=%q want %q (order by name then numeric id)", i, lanes[i].ID, want)
+		}
+	}
+	if !(lanes[2].ID == "2" && lanes[3].ID == "10") {
+		t.Fatalf("name-equal lanes must tie-break on numeric id, got %q then %q", lanes[2].ID, lanes[3].ID)
+	}
+}
+
+func TestCreateIdleMarkerForDimension_CredentialCarriesNumericID(t *testing.T) {
+	ts := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	marker := createIdleMarkerForDimension("credential", "42", "tenant-a", ts)
+
+	if marker.CredentialID != 42 {
+		t.Fatalf("idle marker CredentialID=%d want 42 (frontend highlight needs the id)", marker.CredentialID)
+	}
+	if got := liveStreamCredentialKey(marker); got != "42" {
+		t.Fatalf("idle marker lane key=%q want %q", got, "42")
+	}
+	tile := liveRequestTile(marker)
+	if tile.CredentialID != 42 {
+		t.Fatalf("idle tile CredentialID=%d want 42", tile.CredentialID)
+	}
+}
+
+func TestBuildLiveStreamLanes_CredentialRejectsNonPositiveIDs(t *testing.T) {
+	items := []LiveRequest{
+		{RequestID: "zero", Ts: "2026-08-27T00:00:01Z", ProviderCode: "P", CredentialID: 0, CredentialLabel: "zero", Status: "success"},
+		{RequestID: "negative", Ts: "2026-08-27T00:00:02Z", ProviderCode: "P", CredentialID: -1, CredentialLabel: "negative", Status: "success"},
+		{RequestID: "valid", Ts: "2026-08-27T00:00:03Z", ProviderCode: "P", CredentialID: 7, CredentialLabel: "valid", Status: "success"},
+	}
+
+	snapshot := BuildLiveStreamSnapshot(items)
+	lanes := snapshot.Dimensions["credential"]
+	if len(lanes) != 1 || lanes[0].ID != "7" {
+		t.Fatalf("credential lanes=%#v want only positive ID 7", lanes)
+	}
+}
+func TestLiveStreamCredentialKey_UnknownProviderKeepsShape(t *testing.T) {
+	// 2026-08-27: liveStreamCredentialKey now returns stable credential_id
+	got := liveStreamCredentialKey(LiveRequest{CredentialID: 7})
+	if got != "7" {
+		t.Fatalf("credential key=%q want %q", got, "7")
+	}
+
+	got = liveStreamCredentialKey(LiveRequest{ProviderCode: "供应商", CredentialLabel: "生产", CredentialID: 99})
+	if got != "99" {
+		t.Fatalf("credential key=%q want %q (CredentialID takes precedence)", got, "99")
+	}
+
+	// Idle markers inherit the lane key directly from CredentialLabel
+	got = liveStreamCredentialKey(LiveRequest{Type: "idle_marker", CredentialLabel: "42"})
+	if got != "42" {
+		t.Fatalf("idle credential key=%q want %q", got, "42")
+	}
+
+	// Requests without CredentialID return empty string
+	got = liveStreamCredentialKey(LiveRequest{ProviderCode: "供应商", CredentialLabel: "生产"})
+	if got != "" {
+		t.Fatalf("credential key without ID=%q want empty", got)
+	}
+}
+
 func TestSlimTileFormat(t *testing.T) {
 	now := time.Now().UTC()
 	errorKind := "5xx"
@@ -1793,6 +1992,8 @@ func TestSlimTileFormatSizeReduction(t *testing.T) {
 
 func float64Ptr(v float64) *float64 { return &v }
 
+// lastTiles caps a lane whose items are sorted ASC (oldest first), so the
+// kept tail is the newest N — the FIFO contract from 730cbaef8.
 func TestLastTiles(t *testing.T) {
 	tiles := []LiveStreamTile{
 		{RequestID: "oldest", Timestamp: "2026-07-26T12:00:00Z"},
@@ -1807,7 +2008,7 @@ func TestLastTiles(t *testing.T) {
 		assert.Equal(t, "oldest", result[0].RequestID)
 	})
 
-	t.Run("returns last N when limit < length", func(t *testing.T) {
+	t.Run("keeps newest N when limit < length", func(t *testing.T) {
 		result := lastTiles(tiles, 2)
 		assert.Equal(t, 2, len(result))
 		assert.Equal(t, "newer", result[0].RequestID)
@@ -2023,11 +2224,12 @@ func TestBuildLiveStreamSnapshot_DedupesIdleMarkersPerLane(t *testing.T) {
 	if len(lane.Requests) != 2 {
 		t.Fatalf("expected one normal tile plus one idle tile, got %#v", lane.Requests)
 	}
-	if lane.Requests[1].RequestID != "req-new" {
-		t.Fatalf("new normal request should be rightmost, got %#v", lane.Requests)
-	}
+	// ASC FIFO: the idle marker (10:05) precedes the newer request (10:06).
 	if lane.Requests[0].RequestID != newIdle.RequestID || lane.Requests[0].Status != "idle" {
-		t.Fatalf("expected idle marker before newest request on the left, got %#v", lane.Requests)
+		t.Fatalf("expected newest idle marker first under ASC ordering, got %#v", lane.Requests)
+	}
+	if lane.Requests[1].RequestID != "req-new" {
+		t.Fatalf("new normal request should be the newest (rightmost) tile, got %#v", lane.Requests)
 	}
 	for _, tile := range lane.Requests {
 		if tile.Status == "idle" && tile.RequestID == oldIdle.RequestID {
@@ -2399,9 +2601,9 @@ func TestComputeScopeDelta_DropsDegradedSnapshot(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer rdb.Close()
 	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{RedisClient: rdb, InitialReplayLimit: 200})
-	// 2026-08-25 (merge audit): 同 sse_audit 测试 — 06408163c 的 2s 节流会在
-	// 窗口内重放上一次 delta, 与"degraded snapshot 必须丢弃"的非节流断言冲突。
-	// 关闭节流, 保持对丢弃语义的直接验证。
+	// Disable the 2s snapshot throttle (2026-08-25): this test exercises the
+	// degraded-snapshot guard, which must run on the immediate second read —
+	// the throttle would just replay the cached baseline delta instead.
 	hub.SetSnapshotMinInterval(0)
 	ctx := context.Background()
 

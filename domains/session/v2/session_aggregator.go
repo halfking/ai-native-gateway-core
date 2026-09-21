@@ -74,6 +74,26 @@ type SessionUpdate struct {
 	LastModel           string
 	LastProvider        string
 
+	// Session metadata (set on first turn, preserved thereafter)
+	ClientType string
+
+	// 访问维度/项目（706，首值优先：COALESCE(NULLIF(EXCLUDED.x,''), x)。
+	// 会话归属维度，取首个非空请求的值固化；后续轮不覆盖。
+	ProjectID     string
+	APIKeyID      string
+	ApplicationID string
+	EndUserID     string
+	OwnerUser     string
+	ClientIP      string
+	AgentName     string
+
+	// 730 会话角色归因三列（R50 F15 写入方）。与 706 同款首值优先：
+	// AgentRole ""=未声明（SQL 侧 COALESCE(NULLIF(…),'main') 落列默认，
+	// CHECK 五值约束不变）；parent 双列 ""→NULL（部分索引谓词依赖 NULL 语义）。
+	AgentRole       string
+	ParentSessionID string
+	ParentTaskID    string
+
 	// Incremental counters (add to existing)
 	TurnIncrement   int
 	TokensIncrement int
@@ -201,6 +221,10 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			total_turns, total_tokens, total_cost_usd,
 			last_turn_no, last_request_summary, last_response_summary,
 			last_model, last_provider,
+			client_type,
+			project_id, api_key_id, application_id, end_user_id,
+			owner_user, client_ip, agent_name,
+			agent_role, parent_session_id, parent_task_id,
 			partition_date
 		) VALUES (
 			$1, $2,
@@ -208,8 +232,16 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			$4, $5, $6,
 			$7, $8, $9,
 			$10, $11,
-			$12
+			$12,
+			$13, $14, $15, $16,
+			$17, $18, $19,
+			COALESCE(NULLIF($20, ''), 'main'),
+			NULLIF($21, ''), NULLIF($22, ''),
+			$23
 		)
+		-- 租户守卫（2026-09-07 审计）：客户端提供的 gw_ 会话 id 在 Redis
+		-- 缓存过期后无法做归属校验，WHERE 挡住他租户 key 用同 id 混写
+		-- 本行计数/摘要 —— 冲突但不满足租户条件时整条 UPDATE 跳过。
 		ON CONFLICT (session_id, partition_date)
 		DO UPDATE SET
 			updated_at = EXCLUDED.updated_at,
@@ -220,13 +252,38 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			last_request_summary = EXCLUDED.last_request_summary,
 			last_response_summary = EXCLUDED.last_response_summary,
 			last_model = EXCLUDED.last_model,
-			last_provider = EXCLUDED.last_provider
+			last_provider = EXCLUDED.last_provider,
+			client_type = EXCLUDED.client_type,
+			project_id = COALESCE(NULLIF(EXCLUDED.project_id, ''), public.sessions.project_id),
+			api_key_id = COALESCE(NULLIF(EXCLUDED.api_key_id, ''), public.sessions.api_key_id),
+			application_id = COALESCE(NULLIF(EXCLUDED.application_id, ''), public.sessions.application_id),
+			end_user_id = COALESCE(NULLIF(EXCLUDED.end_user_id, ''), public.sessions.end_user_id),
+			owner_user = COALESCE(NULLIF(EXCLUDED.owner_user, ''), public.sessions.owner_user),
+			client_ip = COALESCE(NULLIF(EXCLUDED.client_ip, ''), public.sessions.client_ip),
+			agent_name = COALESCE(NULLIF(EXCLUDED.agent_name, ''), public.sessions.agent_name),
+			-- 730 归因三列（R50 F15）：首值优先。agent_role 的空值已在
+			-- VALUES 臂归一为 'main'（列 NOT NULL），EXCLUDED 恒为合法五值
+			-- 之一、不触碰 CHECK。冲突臂用"默认可精化"语义：存量仍是 'main'
+			-- （未归因默认）时允许后续轮声明精化，任何已固化角色不被默认值
+			-- 降级——不能用 COALESCE(NULLIF(EXCLUDED...))，否则重放轮的
+			-- 归一默认 'main' 会覆盖首写角色（真库演练实捕，pgxmock 测不出）。
+			agent_role = CASE
+				WHEN public.sessions.agent_role = 'main' THEN EXCLUDED.agent_role
+				ELSE public.sessions.agent_role
+			END,
+			parent_session_id = COALESCE(EXCLUDED.parent_session_id, public.sessions.parent_session_id),
+			parent_task_id = COALESCE(EXCLUDED.parent_task_id, public.sessions.parent_task_id)
+		WHERE public.sessions.tenant_id = EXCLUDED.tenant_id
 	`,
 		update.SessionID, update.TenantID,
 		update.UpdatedAt,
 		update.TurnIncrement, update.TokensIncrement, update.CostIncrement,
 		update.LastTurnNo, update.LastRequestSummary, update.LastResponseSummary,
 		update.LastModel, update.LastProvider,
+		update.ClientType,
+		update.ProjectID, update.APIKeyID, update.ApplicationID, update.EndUserID,
+		update.OwnerUser, update.ClientIP, update.AgentName,
+		update.AgentRole, update.ParentSessionID, update.ParentTaskID,
 		partitionDate,
 	)
 	if err != nil {
@@ -321,9 +378,18 @@ type SessionSnapshot struct {
 
 // CloseSession marks a session as closed
 func (a *SessionAggregator) CloseSession(ctx context.Context, tenantID, sessionID string) error {
+	// 706：关闭时计算 duration_ms = closed_at - created_at（方案 §3 D3）。
 	_, err := a.db.Exec(ctx, `
 		UPDATE public.sessions
-		SET status = 'closed', closed_at = NOW()
+		SET status = 'closed',
+		    closed_at = NOW(),
+		    duration_ms = CASE
+		        WHEN closed_at IS NOT NULL AND created_at IS NOT NULL
+		            THEN GREATEST(0, (EXTRACT(EPOCH FROM (closed_at - created_at)) * 1000)::BIGINT)
+		        WHEN created_at IS NOT NULL
+		            THEN GREATEST(0, (EXTRACT(EPOCH FROM (NOW() - created_at)) * 1000)::BIGINT)
+		        ELSE duration_ms
+		    END
 		WHERE tenant_id = $1 AND session_id = $2
 	`, tenantID, sessionID)
 

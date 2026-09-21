@@ -3,6 +3,15 @@ import App from './App.vue'
 import { router } from './router'
 import { i18n } from './i18n'
 import './style.css'
+import 'element-plus/dist/index.css'
+// EP 组件暗色变量（html.dark 门控）。styles/element-dark.css 对 --el-* 的应用
+// 令牌映射依赖本文件中的先后顺序（同特异性后者胜出）。
+import 'element-plus/theme-chalk/dark/css-vars.css'
+import './styles/element-dark.css'
+import './styles/pill-chip.css'
+import './styles/confirm-dialog.css'
+import './styles/responsive-base.css'
+import './styles/foldable.css'
 import { initErrorReporter, createVueErrorHandler } from './utils/errorReporter'
 
 // 初始化全局错误上报

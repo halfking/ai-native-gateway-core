@@ -2,7 +2,7 @@
 
 > **LP1 follow-up (2026-08-25)** — 迁移 573 因 PG 的 `CREATE OR REPLACE VIEW`
 > 不能移除已有列而阻塞所有部署（原 commit `446638792` `.sql.skip`）。
-> 此次把 view 重建改为 `DROP + CREATE`，并在生产（172.16.2.210/llm_gateway）
+> 此次把 view 重建改为 `DROP + CREATE`，并在生产（<env:HOST_252_INTERNAL_IP>/llm_gateway）
 > 直接验证后 un-skip deploy gate。
 
 ## 背景
@@ -48,7 +48,7 @@ DROP。pg_depend 不记录 view→基表列级依赖（PG 17 改用 parse tree �
 加回 3 列 jsonb NULLABLE + 重建 view + 重建 `request_logs_bodies_progress` view。
 预计 < 5 分钟，rollback 后业务接口立即恢复。
 
-## 验证（生产 172.16.2.210/llm_gateway）
+## 验证（生产 <env:HOST_252_INTERNAL_IP>/llm_gateway）
 
 - 迁移应用：2026-08-25 01:09，`psql --single-transaction -v ON_ERROR_STOP=1`
   （失败自动 ROLLBACK，第一次 dry-run 因漏 DROP `bodies_progress` 失败，已

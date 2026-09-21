@@ -7,6 +7,8 @@ import {
   logArchive, logCleanup, logArchiveList,
   type LogConfig, type LogFile, type LogStats, type LogOpResult,
 } from '../../api'
+import { confirmDialog } from '../../composables/useConfirmDialog'
+import { formatDateTime } from '../../utils/datetime'
 
 const { t } = useI18n()
 const config = ref<LogConfig | null>(null)
@@ -146,7 +148,7 @@ async function doArchive() {
 
 async function doCleanup() {
   if (!cleanupForm.value.dry_run) {
-    if (!confirm(`确认删除 ${cleanupForm.value.older_than_days} 天前的日志文件？此操作不可恢复。`)) return
+    if (!(await confirmDialog(t('dataLifecycle.confirmLogCleanup', { days: cleanupForm.value.older_than_days })))) return
   }
   opLoading.value = true
   opResult.value = null
@@ -166,9 +168,9 @@ async function doCleanup() {
   }
 }
 
+// 审计 R3#10：时间格式化统一走 utils/datetime.ts。
 function formatTime(s: string | null): string {
-  if (!s) return '-'
-  return new Date(s).toLocaleString(localeRef.value)
+  return formatDateTime(s, { locale: localeRef.value, empty: '-' })
 }
 
 onMounted(() => {
@@ -473,7 +475,7 @@ function fmtNum(n: number) {
 .op-box h4 { margin: 0 0 4px; font-size: 14px; color: var(--text); }
 .op-desc { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
 .op-desc.danger { color: var(--danger); }
-.op-result { margin-top: 16px; padding: 12px; background: rgba(63,185,80,.08); border: 1px solid var(--success-bd); border-radius: 4px; color: var(--text); }
+.op-result { margin-top: 16px; padding: 12px; background: color-mix(in srgb, var(--success) 14%, transparent); border: 1px solid var(--success-bd); border-radius: 4px; color: var(--text); }
 .op-result-row { display: flex; gap: 24px; font-size: 13px; flex-wrap: wrap; }
 .op-result-row code { background: var(--bg-subtle); border: 1px solid var(--border); padding: 1px 6px; border-radius: 4px; color: var(--accent-h); font-family: ui-monospace, SFMono-Regular, monospace; }
 .highlight { color: var(--success); }

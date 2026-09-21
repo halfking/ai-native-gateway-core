@@ -7,7 +7,7 @@
 ## 1. 背景
 
 2026-08-18 OpenCode 完成 PROJECT_CONFIG.md redact（commit `d7ebf25f7`），但
-后续 sweep 发现 3 个**当前活跃文档**仍含旧 184 server（14.103.112.184）引用，
+后续 sweep 发现 3 个**当前活跃文档**仍含旧 184 server（<env:HOST_184_IP>）引用，
 不符合 rule 39"仓库内零明文"原则。本会话把这 3 处修掉。
 
 历史归档（`docs/archive/**` + `CHANGELOG.md` + `docs/changelogs/2026-08-18-*`）
@@ -19,7 +19,7 @@
 |---|------|-----|---------|------|
 | 1 | `docs/06-deployment/01-environments/deployment/CONFIGURATION_GUIDE.md` | 19 | .env 文件名 | `.env.184.enc` → `.env.154.enc` |
 | 2 | `docs/06-deployment/01-environments/deployment/CONFIGURATION_GUIDE.md` | 20 | .env 文件名 | `.env.71.enc` → `.env.252.enc` |
-| 3 | `docs/06-deployment/01-environments/deployment/CONFIGURATION_GUIDE.md` | 130 | 公网 IP 占位符示例 | `14.103.112.184` → `<env:HOST_154>` |
+| 3 | `docs/06-deployment/01-environments/deployment/CONFIGURATION_GUIDE.md` | 130 | 公网 IP 占位符示例 | `<env:HOST_184_IP>` → `<env:HOST_154>` |
 | 4 | `cmd/compression-bench/README.md` | 212-220 | 连接 K8s DB 端口转发示例 | 184 → 252 (PG17)，端口 18432 → 25232，DSN 走 `<env:LLM_GATEWAY_DB_PASS>` |
 | 5 | `cmd/verify-model-fetch/main.go` | 4 | 注释 host 说明 | `71/184` → `154/252` |
 
@@ -56,7 +56,7 @@
 1. **`deploy/sql/DEPLOYMENT_PLAN.md` 归档**：整篇 v1.0 关于 184 + PG/Citus 部署，
    应 mv 到 `docs/archive/2026-07/specs/deployment-plan-v1-184-pg-citus.md`
    并加 deprecation banner。
-2. **`envs/` 仓库 Veritrans&9527 默认密码**：handoff 提到 owner 应排查
+2. **`envs/` 仓库 __REDACTED_SSH_PASSWORD__ 默认密码**：handoff 提到 owner 应排查
    哪些脚本 export 明文。当前 SSOT 设计如此（rule 47 §3 双写明文 + 加密），
    但屏幕/日志泄露风险由 owner 决策 rotation 周期。
 

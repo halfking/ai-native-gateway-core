@@ -17,7 +17,7 @@
 # 历史:
 #   - 2026-07-10 统一为 version.json 单一来源 (admin/misc.go 重构)
 #     * 废弃：.deploy_seq / build_seq / 分散的环境变量
-#     * 新增：env 变量 LLM_GATEWAY_VERSION_JSON 作为快速注入通道
+#     * 新增：env 变量 LLM_GATEWAY_VERSION_FILE 作为实例级 version.json 覆盖通道
 #
 # 计算规则:
 #   git tag → <tag>
@@ -47,6 +47,16 @@ VERSION_JSON="$PROJECT_ROOT/version.json"
 WEB_PUBLIC_VERSION_JSON="$PROJECT_ROOT/web/public/version.json"
 WEB_DIST_VERSION_JSON="$PROJECT_ROOT/web/dist/version.json"
 
+# Windows 部署宿主（Git Bash + 原生 Windows python）：python3 -c 代码串内
+# 嵌入的 $VERSION_JSON 若是 MSYS POSIX 形态（/z/...），MSYS 参数转换不覆盖
+# 串内路径，native python 打不开 → CURRENT_SEQ 回退 0 → bump 产出 seq=1
+# 击穿单调性。cygpath -m 转为 Z:/... 混合形态；macOS 无 cygpath 时原样回退。
+if command -v cygpath >/dev/null 2>&1; then
+  VERSION_JSON_PY="$(cygpath -m "$VERSION_JSON" 2>/dev/null || printf %s "$VERSION_JSON")"
+else
+  VERSION_JSON_PY="$VERSION_JSON"
+fi
+
 # ── 参数 ────────────────────────────────────────────────────────
 TARGET_SEQ=""
 DRY_RUN=false
@@ -63,17 +73,27 @@ done
 [[ -f "$VERSION_JSON" ]] || { echo "bump-version: $VERSION_JSON 不存在" >&2; exit 1; }
 
 # 用 python 解析 JSON (避免 grep 复杂正则多语言问题)
-CURRENT_SEQ=$(python3 -c "import json; print(json.load(open('$VERSION_JSON'))['build_seq'])" 2>/dev/null \
+CURRENT_SEQ=$(python3 -c "import json; print(json.load(open('$VERSION_JSON_PY'))['build_seq'])" 2>/dev/null \
   || echo 0)
-CURRENT_GIT_SHA=$(python3 -c "import json; print(json.load(open('$VERSION_JSON')).get('git_sha',''))" 2>/dev/null \
+CURRENT_GIT_SHA=$(python3 -c "import json; print(json.load(open('$VERSION_JSON_PY')).get('git_sha',''))" 2>/dev/null \
   || echo "")
-CURRENT_VERSION=$(python3 -c "import json; print(json.load(open('$VERSION_JSON'))['version'])" 2>/dev/null \
+CURRENT_VERSION=$(python3 -c "import json; print(json.load(open('$VERSION_JSON_PY'))['version'])" 2>/dev/null \
   || echo "v0.0.0")
 
 # git tag (e.g. "v2.4.1") — 这是 NEW_VERSION 的 tag 部分
-# 跳过 archive/* / sr-* / release/* 等工作分支 tag；只有 semver 风格的 vX.Y.Z
-# 才应当出现在 git_tag 字段。其余情况回落到 v0.0.0，脚本仍能正常 bump。
-GIT_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+# 跳过 archive/* / sr-* / release/* 等工作分支 tag；只有 semver 风格的
+# X.Y.Z 才应当出现在 git_tag 字段。仓库同时存在 v 前缀（v2.4.1）与裸
+# semver（2.5.x，2026-09 起）两种 tag，按版本号统一取最新 —— 此前 v 前缀
+# 优先，遗留的 v2.5.0 会遮蔽后续裸 2.5.x，版本随每次 bump 回落（2026-09-05
+# 部署 stamp 由 2.5.3 回退 2.5.0 即此因）。两种都缺失时仍回落 v0.0.0。
+GIT_TAG=$(
+  {
+    git tag --list 'v[0-9]*.[0-9]*.[0-9]*'
+    git tag --list '[0-9]*.[0-9]*.[0-9]*'
+  } | awk '{ bare=$0; sub(/^v/, "", bare); print bare "\t" $0 }' \
+    | sort -t. -k1,1n -k2,2n -k3,3n \
+    | tail -n 1 | cut -f2
+)
 if [[ -z "$GIT_TAG" ]]; then
   GIT_TAG="v0.0.0"
 fi
@@ -82,6 +102,17 @@ GIT_TAG_PATCH=$(echo "$GIT_TAG" | sed 's/^v//')   # "2.4.1"
 # 新版本号
 HEAD_SHA=$(git rev-parse --short=8 HEAD 2>/dev/null || echo "$CURRENT_GIT_SHA")
 HEAD_DATE=$(date -u +%Y%m%d)
+
+# build_seq = 编译计数：每次编译（即每次调用本脚本）都 +1。
+#
+# 历史（2026-09 中旬）曾改成"git_sha/build_date 未变则保持原 seq"，动机是
+# 消除 245/154 同一 commit 重复部署造成的 seq 漂移。但 2026-09-19 工单否决
+# 了该策略：同代码重复部署会得到同一个 version 目录名，撞上
+# deploy-seamless.sh upload_release 的"拒绝覆盖当前活跃 release"防线，
+# 导致"序号/代码相同 → 不能更新"。现在每次编译都拿新序号：
+#   - 重复部署同代码：每次 seq +1，各自成为独立 release，可无限重发
+#   - 编译失败中断：version 文件已 bump 的序号自然跳过（计数器只增不减）
+#   - --seq 显式指定仍尊重（修漂移或强制 +N），要求 ≥ 当前 seq 保单调
 NEW_SEQ=$((CURRENT_SEQ + 1))
 if [[ -n "$TARGET_SEQ" && "$TARGET_SEQ" -gt "$NEW_SEQ" ]]; then
   NEW_SEQ="$TARGET_SEQ"

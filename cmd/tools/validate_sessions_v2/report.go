@@ -44,14 +44,18 @@ type BatchReport struct {
 	SettleWindow   string          `json:"settle_window,omitempty"`
 	Summary        BatchSummary    `json:"summary"`
 	Sessions       []SessionReport `json:"sessions"`
+	GatePassed     bool            `json:"gate_passed"`
 }
 
 // BatchSummary contains aggregate statistics for batch validation
 type BatchSummary struct {
+	Candidates      int `json:"candidates"`
 	SessionsChecked int `json:"sessions_checked"`
 	SessionsOK      int `json:"sessions_ok"`
 	SessionsWarning int `json:"sessions_warning"`
 	SessionsError   int `json:"sessions_error"`
+	LoaderErrors    int `json:"loader_errors"`
+	Skipped         int `json:"skipped"`
 }
 
 // ReportGenerator generates validation reports in various formats
@@ -199,7 +203,8 @@ func (g *ReportGenerator) GenerateBatchReport(
 		report.SettleWindow = settleWindow.String()
 	}
 
-	// Calculate summary
+	// Calculate summary. Loader failures are tracked separately by the batch gate;
+	// a report containing only successfully loaded sessions cannot prove parity.
 	report.Summary.SessionsChecked = len(sessions)
 	for _, session := range sessions {
 		switch session.Status {
@@ -213,6 +218,21 @@ func (g *ReportGenerator) GenerateBatchReport(
 	}
 
 	return report
+}
+
+// BatchGatePassed applies the release parity gate to an already populated summary.
+// Warnings are allowed only when every candidate loaded successfully and the minimum
+// settled-session sample is present; skipped or loader-error candidates always fail.
+func BatchGatePassed(summary BatchSummary, minimumSessions int) bool {
+	if minimumSessions <= 0 {
+		minimumSessions = 100
+	}
+	return summary.Candidates >= minimumSessions &&
+		summary.SessionsChecked >= minimumSessions &&
+		summary.SessionsOK+summary.SessionsWarning >= minimumSessions &&
+		summary.SessionsError == 0 &&
+		summary.LoaderErrors == 0 &&
+		summary.Skipped == 0
 }
 
 // FormatJSON formats a report as JSON
@@ -301,10 +321,13 @@ func (g *ReportGenerator) FormatTextBatch(report *BatchReport) string {
 
 	// Summary
 	buf.WriteString("Summary:\n")
+	buf.WriteString(fmt.Sprintf("  Candidates:      %d\n", report.Summary.Candidates))
 	buf.WriteString(fmt.Sprintf("  Sessions Checked: %d\n", report.Summary.SessionsChecked))
 	buf.WriteString(fmt.Sprintf("  ✓ OK:            %d\n", report.Summary.SessionsOK))
 	buf.WriteString(fmt.Sprintf("  ⚠ Warnings:      %d\n", report.Summary.SessionsWarning))
-	buf.WriteString(fmt.Sprintf("  ✗ Errors:        %d\n\n", report.Summary.SessionsError))
+	buf.WriteString(fmt.Sprintf("  ✗ Errors:        %d\n", report.Summary.SessionsError))
+	buf.WriteString(fmt.Sprintf("  Loader Errors:   %d\n", report.Summary.LoaderErrors))
+	buf.WriteString(fmt.Sprintf("  Skipped:         %d\n\n", report.Summary.Skipped))
 
 	// Session details (show errors and warnings only)
 	errorSessions := []SessionReport{}
@@ -335,11 +358,12 @@ func (g *ReportGenerator) FormatTextBatch(report *BatchReport) string {
 		buf.WriteString("\n")
 	}
 
-	// Exit code hint
-	if report.Summary.SessionsError > 0 {
-		buf.WriteString("Exit Code: 1 (errors found)\n")
+	// Exit code hint. BatchGatePassed is computed by the caller because it
+	// includes candidate loader failures and the minimum settled-session gate.
+	if !report.GatePassed {
+		buf.WriteString("Exit Code: 1 (parity gate failed)\n")
 	} else {
-		buf.WriteString("Exit Code: 0 (no errors)\n")
+		buf.WriteString("Exit Code: 0 (parity gate passed)\n")
 	}
 
 	buf.WriteString(strings.Repeat("=", 80) + "\n")

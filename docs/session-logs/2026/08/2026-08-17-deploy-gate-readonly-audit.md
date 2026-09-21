@@ -33,10 +33,10 @@
 | `http://127.0.0.1:8781/healthz` (local) | — | **200**（2.5ms） | 本机监听方为 docker gateway 容器（pid 1040 `com.docke`） |
 | `http://127.0.0.1:8780/healthz` (local alt) | — | `connection refused` | 与 handoff 一致：旧 8780 路径未在 local 工作区复活 |
 | `http://127.0.0.1:11008/healthz` (NPS tunnel) | — | `connection refused` | 与 handoff 一致：252 上 NPS 11008 上游不在本机 |
-| `https://llm.itestu.cn/healthz` (dev) | `115.29.212.252` | **502**（nginx 0 上游；`connect() failed (111: Connection refused)` 推断自 252 nginx vhost） | 与 2026-08-16 handoff §6 完全一致；**根因未变** |
+| `https://llm.itestu.cn/healthz` (dev) | `<env:HOST_252_IP>` | **502**（nginx 0 上游；`connect() failed (111: Connection refused)` 推断自 252 nginx vhost） | 与 2026-08-16 handoff §6 完全一致；**根因未变** |
 | `https://llm.itestu.cn/v1/models` 等其他路径 | — | 全部 502 | nginx 上游共用 11008 通路，整站不可用 |
-| `https://llmgo.kxpms.cn/healthz` (245) | `8.136.114.245` | **200**；`{"status":"ok","version":"2.5.0-102c885e-20260817-1573-102c885e"}` | **hitherto 假设 dev 阻断 245 实际并不成立** |
-| `https://llm.kxpms.cn/healthz` (prod) | `115.29.212.252`（同 252 IP） | **200**；`{"status":"ok","version":"2.5.0-7b086ed5-20260816-1571-7b086ed5"}` | 252 nginx 上的 `llm.kxpms.cn` vhost 上游仍在工作（指向 154 后端），并非整 252 不可用 |
+| `https://llmgo.kxpms.cn/healthz` (245) | `<env:HOST_245_IP>` | **200**；`{"status":"ok","version":"2.5.0-102c885e-20260817-1573-102c885e"}` | **hitherto 假设 dev 阻断 245 实际并不成立** |
+| `https://llm.kxpms.cn/healthz` (prod) | `<env:HOST_252_IP>`（同 252 IP） | **200**；`{"status":"ok","version":"2.5.0-7b086ed5-20260816-1571-7b086ed5"}` | 252 nginx 上的 `llm.kxpms.cn` vhost 上游仍在工作（指向 154 后端），并非整 252 不可用 |
 | `https://llm.kxpms.cn/` | — | 302 → `/maintain/home` | 与既有运维页一致 |
 
 **重要事实校正**（与 2026-08-16 handoff / v4 文档基线对比）：

@@ -53,17 +53,17 @@ describe('errorKindLabel', () => {
 
 describe('errorKindBg', () => {
   it('returns amber for timeout/disconnect', () => {
-    expect(errorKindBg('timeout')).toBe('rgba(245, 158, 11, 0.22)')
-    expect(errorKindBg('client_disconnect')).toBe('rgba(245, 158, 11, 0.22)')
+    expect(errorKindBg('timeout')).toBe('var(--warning-bd)')
+    expect(errorKindBg('client_disconnect')).toBe('var(--warning-bd)')
   })
   it('returns red for 5xx', () => {
-    expect(errorKindBg('upstream_5xx')).toBe('rgba(239, 68, 68, 0.22)')
+    expect(errorKindBg('upstream_5xx')).toBe('color-mix(in srgb, var(--danger) 14%, transparent)')
   })
   it('returns yellow for 4xx', () => {
-    expect(errorKindBg('rate_limit')).toBe('rgba(251, 191, 36, 0.22)')
+    expect(errorKindBg('rate_limit')).toBe('var(--warning-bd)')
   })
   it('returns purple for routing/not_found', () => {
-    expect(errorKindBg('model_not_found')).toBe('rgba(167, 139, 250, 0.22)')
+    expect(errorKindBg('model_not_found')).toBe('color-mix(in srgb, var(--purple) 22%, transparent)')
   })
   it('returns transparent for empty', () => {
     expect(errorKindBg('')).toBe('transparent')

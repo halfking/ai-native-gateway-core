@@ -271,7 +271,7 @@ func TestClassifyProbeErrorKind_AllStatuses(t *testing.T) {
 		{"unknown_status", "probe_direct_unknown"},
 	}
 	for _, c := range cases {
-		got := classifyProbeErrorKind(&ProbeResult{Status: c.status}, "direct")
+		got := classifyProbeErrorKind(&ProbeResult{Status: c.status})
 		if got != c.want {
 			t.Errorf("classifyProbeErrorKind(%q) = %q, want %q", c.status, got, c.want)
 		}
@@ -294,7 +294,7 @@ func TestClassifyProbeErrorKind_FailedByErrCode(t *testing.T) {
 	}
 	for _, c := range cases {
 		r := &ProbeResult{Status: ProbeStatusFailed, ErrCode: c.errCode}
-		if got := classifyProbeErrorKind(r, "direct"); got != c.want {
+		if got := classifyProbeErrorKind(r); got != c.want {
 			t.Errorf("classifyProbeErrorKind(Failed, errCode=%q) = %q, want %q", c.errCode, got, c.want)
 		}
 	}
@@ -338,15 +338,8 @@ func TestClassifyProbeFailureStage(t *testing.T) {
 
 func TestClassifyProbeErrorKind_HTTP5xxWithStatus(t *testing.T) {
 	r := &ProbeResult{Status: ProbeStatusHTTP5xx, HTTPStatus: 503}
-	if got := classifyProbeErrorKind(r, "direct"); got != "probe_direct_http_503" {
+	if got := classifyProbeErrorKind(r); got != "probe_direct_http_503" {
 		t.Errorf("503 classification = %q, want probe_direct_http_503", got)
-	}
-}
-
-func TestClassifyProbeErrorKind_UsesGatewayOrigin(t *testing.T) {
-	r := &ProbeResult{Status: ProbeStatusAuth}
-	if got := classifyProbeErrorKind(r, "gateway"); got != "probe_gateway_auth_failed" {
-		t.Errorf("gateway auth classification = %q, want probe_gateway_auth_failed", got)
 	}
 }
 

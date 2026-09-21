@@ -3,7 +3,6 @@ package streaming
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
@@ -14,44 +13,22 @@ import (
 // without requiring a database or real executor.
 func TestGoalRetryLoop_Integration(t *testing.T) {
 	t.Run("context cancellation stops execution", func(t *testing.T) {
-		// Deterministic cancellation: the mock executor signals on a channel
-		// after its first (failed) call, and a goroutine selects on that
-		// channel to fire cancel(). This guarantees cancel happens exactly
-		// after the first attempt's failure — no timing races under CI load
-		// or GOMAXPROCS=1.
-		cancelCh := make(chan struct{}, 1)
+		// Setup
 		attempts := 0
-		var attemptsMu sync.Mutex
 		mockExecute := func(ctx context.Context) error {
-			attemptsMu.Lock()
 			attempts++
-			first := attempts == 1
-			attemptsMu.Unlock()
-			if first {
-				// Signal the cancellation goroutine that the first attempt
-				// has started and failed, so it can fire cancel().
-				select {
-				case cancelCh <- struct{}{}:
-				default:
-				}
-			}
+			// Simulate long operation
+			time.Sleep(100 * time.Millisecond)
 			return errors.New("transient error")
 		}
 
 		// Create a context that will be cancelled
 		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
 
-		// Cancel exactly after the first attempt's failure is reported.
+		// Cancel after first attempt
 		go func() {
-			select {
-			case <-cancelCh:
-				cancel()
-			case <-time.After(5 * time.Second):
-				// Safety net so the test fails fast instead of hanging if
-				// the executor never runs.
-				cancel()
-			}
+			time.Sleep(150 * time.Millisecond)
+			cancel()
 		}()
 
 		// Execute retry loop simulation
@@ -106,8 +83,6 @@ func TestGoalRetryLoop_Integration(t *testing.T) {
 		// Verify
 		require.Error(t, finalErr)
 		require.True(t, errors.Is(finalErr, context.Canceled), "should be cancelled")
-		// Cancel fires after the first attempt, so at most 1-2 attempts
-		// should run before the loop observes the cancelled context.
 		require.LessOrEqual(t, attempts, 2, "should not execute many times after cancellation")
 		t.Logf("Attempts made: %d, Retries: %d", attempts, retriesPerformed)
 	})

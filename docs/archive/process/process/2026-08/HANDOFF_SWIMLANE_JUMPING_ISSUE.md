@@ -33,7 +33,7 @@
 **Dashboard Access**:
 - URL: https://llmgo.kxpms.cn/admin/dashboard
 - Username: admin
-- Password: Veritrans&9527
+- Password: __REDACTED_SSH_PASSWORD__
 
 **API Access**:
 - Base URL: https://llm.kxpms.cn/v1
@@ -54,7 +54,7 @@
 ## Investigation Tasks
 
 ### 1. 复现问题 (高优先级)
-- [ ] 登录dashboard (admin/Veritrans&9527)
+- [ ] 登录dashboard (admin/__REDACTED_SSH_PASSWORD__)
 - [ ] 导航到泳道视图
 - [ ] 筛选或定位到 apiclaude vendor
 - [ ] 观察最后一条记录的行为
@@ -266,8 +266,8 @@ curl -H "Authorization: Bearer $API_KEY" \
 - User: halfking/H+8~REvY5*VDHaE
 - Base URL: https://token.sensenova.cn/v1
 - API Keys:
-  - sk-goEP1nTb4LXxtfNjBuqlrWkcpiJxJe7k
-  - sk-4yvbe7jBk16mXLc4xEKiLushtRlQmnxK
+  - <REDACTED_API_KEY>
+  - <REDACTED_API_KEY>
 - Models: glm-5.2
 
 ### 火山 (Volcano) - TokenPlan

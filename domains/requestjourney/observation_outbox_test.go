@@ -20,7 +20,7 @@ func TestObservationOutboxEnqueueIsIdempotentAndConflictsOnDifferentPayload(t *t
 
 	event := testJourneyEvent("tenant-a", "request-1", 1)
 	now := time.Unix(1700000000, 123456000).UTC()
-	outbox := newObservationOutbox(mock, NewPostgresRepository(mock), nil, "worker-a")
+	outbox := NewObservationOutbox(mock, NewPostgresRepository(mock), nil, "worker-a")
 	outbox.clock = func() time.Time { return now }
 
 	mock.ExpectBegin()
@@ -57,7 +57,7 @@ func TestObservationOutboxClaimAndDeliverLeavesLeaseSafeAck(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Unix(1700000000, 0).UTC()
-	outbox := newObservationOutbox(mock, NewPostgresRepository(mock), nil, "worker-a")
+	outbox := NewObservationOutbox(mock, NewPostgresRepository(mock), nil, "worker-a")
 	outbox.clock = func() time.Time { return now }
 	outbox.batch = 1
 
@@ -96,6 +96,29 @@ func TestObservationOutboxClaimAndDeliverLeavesLeaseSafeAck(t *testing.T) {
 	}
 }
 
+func TestObservationOutboxCloseBeforeStartIsTerminalAndIdempotent(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	outbox := NewObservationOutbox(mock, NewPostgresRepository(mock), nil, "worker-lifecycle")
+	if outbox == nil {
+		t.Fatal("expected outbox")
+	}
+	if err := outbox.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	outbox.Start()
+	if err := outbox.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestObservationOutboxReleaseRequiresActiveFencedLease(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -104,7 +127,7 @@ func TestObservationOutboxReleaseRequiresActiveFencedLease(t *testing.T) {
 	defer mock.Close()
 
 	now := time.Unix(1700000000, 0).UTC()
-	outbox := newObservationOutbox(mock, NewPostgresRepository(mock), nil, "worker-a")
+	outbox := NewObservationOutbox(mock, NewPostgresRepository(mock), nil, "worker-a")
 	outbox.clock = func() time.Time { return now }
 	claim := claimedObservation{ID: 7, Owner: "worker-a", ClaimFencingToken: 2, Attempts: 2}
 	cause := errors.New("redis unavailable")

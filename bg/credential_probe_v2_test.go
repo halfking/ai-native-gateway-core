@@ -143,6 +143,135 @@ func TestWriteHealth_HardQuotaBypassOnSuccess(t *testing.T) {
 	}
 }
 
+// TestWriteHealth_HardQuotaFailureBooksKeeping pins the 2026-09-14 audit
+// A-P1-1 fix: when a probe of a hard-quota row FAILS ($8=NULL), the main
+// UPDATE matches 0 rows (hard-quota guard) — but the failure must still
+// advance last_probe_at / probe_consecutive_failures via the dedicated
+// bookkeeping UPDATE. Without it the exponential due-gate never climbs and
+// the dead upstream is re-bombed on every 2-min tick (the exact shape
+// f8322dc04 R4 set out to eliminate). The bookkeeping UPDATE must NOT touch
+// quota_state (hard-quota state stays authoritative) and must keep the
+// lifecycle/manual-disabled guards.
+func TestWriteHealth_HardQuotaFailureBooksKeeping(t *testing.T) {
+	src, err := os.ReadFile("credential_probe_v2.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	for _, want := range []string{
+		// The 0-rows branch gates the bookkeeping UPDATE on failures only.
+		"if pr.HealthStatus != \"healthy\" {",
+		// The bookkeeping UPDATE advances the probe ladder…
+		"probe_consecutive_failures = COALESCE(credentials.probe_consecutive_failures, 0) + 1",
+		"last_probe_success = FALSE",
+		// …targets ONLY hard-quota rows (the guard-miss case)…
+		"AND quota_state IN ('permanently_exhausted', 'balance_exhausted')",
+		// …and keeps the manual-disable guard.
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("hard-quota failure bookkeeping is missing %q (A-P1-1 regression)", want)
+		}
+	}
+	// The bookkeeping UPDATE must not write quota_state (COALESCE($8, …) /
+	// quota assignments belong to the main write only). Extract the
+	// bookkeeping statement and check it has no quota_state assignment.
+	start := strings.Index(body, "if pr.HealthStatus != \"healthy\" {")
+	if start < 0 {
+		t.Fatalf("bookkeeping branch not found")
+	}
+	end := strings.Index(body[start:], "slog.Info(\"credential probe v2: writeHealth skipped stale result\"")
+	if end < 0 {
+		t.Fatalf("bookkeeping branch end not found")
+	}
+	bookkeeping := body[start : start+end]
+	if strings.Contains(bookkeeping, "quota_state =") {
+		t.Fatalf("bookkeeping UPDATE must not assign quota_state (hard-quota state must stay authoritative)")
+	}
+	if !strings.Contains(bookkeeping, "COALESCE(manual_disabled, FALSE) = FALSE") {
+		t.Fatalf("bookkeeping UPDATE must keep the manual-disable guard")
+	}
+}
+
+// TestWriteHealth_EvidenceAtOptimisticGate pins the 2026-09-14 audit R28 #5
+// fix: a FAILURE verdict is only evidence from the probe's start time — the
+// network I/O can take tens of seconds and a state write landing mid-flight
+// (admin reset, balance_floor guard pull, writer.go quota branch) is fresher
+// and must not be clobbered. Contract:
+//
+//   - probeResult carries EvidenceAt (probe-start timestamp);
+//   - every failure-producing call site stamps it (cycleAll per-row T0,
+//     cycleAll decrypt-failure literal, ProbeNow via its existing probeStart);
+//   - the main UPDATE WHERE gains `($ok OR $evidence IS NULL OR
+//     state_updated_at < $evidence)` — success writes stay unconditional
+//     (same semantics as the hard-quota OR-bypass pinned above), unset
+//     evidence fails open;
+//   - the R27 bookkeeping UPDATE (A-P1-1) must stay UNgated — bookkeeping is
+//     probe self-accounting, not a health verdict, and must never be lost to
+//     a race;
+//   - the race case gets its own log line, separate from the pre-existing
+//     "skipped stale result" guard-miss message;
+//   - the race-discriminating SELECT must run BEFORE the bookkeeping UPDATE
+//     (which stamps state_updated_at and would mask every guard miss as a
+//     race).
+func TestWriteHealth_EvidenceAtOptimisticGate(t *testing.T) {
+	src, err := os.ReadFile("credential_probe_v2.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	for _, want := range []string{
+		// Evidence stamp flows from probe start to writeHealth.
+		"EvidenceAt time.Time",
+		"rowT0 := time.Now()",
+		"pr.EvidenceAt = rowT0",
+		"pr.EvidenceAt = probeStart",
+		"EvidenceAt:",
+		// Gate in the main UPDATE: success unconditional, unset evidence
+		// fails open, failure only when nobody wrote during the probe.
+		"OR $11::timestamptz IS NULL",
+		"COALESCE(state_updated_at, to_timestamp(0)) < $11::timestamptz",
+		// evidenceAt is bound as the 11th parameter of the main UPDATE.
+		"credID, evidenceAt)",
+		// Split race-lost log, distinct from the guard-miss message.
+		"writeHealth dropped stale failure result (state changed during probe)",
+		"writeHealth skipped stale result",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("EvidenceAt optimistic gate is missing %q (R28 #5 regression)", want)
+		}
+	}
+
+	// The R27 bookkeeping UPDATE must remain UNgated by the evidence
+	// condition — extract it exactly like
+	// TestWriteHealth_HardQuotaFailureBooksKeeping and assert no $11/evidence
+	// parameter leaked into its WHERE.
+	bookStart := strings.Index(body, "if pr.HealthStatus != \"healthy\" {")
+	if bookStart < 0 {
+		t.Fatalf("bookkeeping branch not found")
+	}
+	bookEnd := strings.Index(body[bookStart:], "slog.Info(\"credential probe v2: writeHealth skipped stale result\"")
+	if bookEnd < 0 {
+		t.Fatalf("bookkeeping branch end not found")
+	}
+	bookkeeping := body[bookStart : bookStart+bookEnd]
+	for _, banned := range []string{"$11", "evidenceAt", "state_updated_at <"} {
+		if strings.Contains(bookkeeping, banned) {
+			t.Fatalf("R27 bookkeeping UPDATE must stay unconditional, found %q inside it (A-P1-1 regression)", banned)
+		}
+	}
+
+	// The race-discriminating SELECT must run BEFORE the bookkeeping branch:
+	// bookkeeping stamps state_updated_at and would turn every guard miss
+	// into a false "race lost" diagnosis.
+	raceIdx := strings.Index(body, "touchedDuringProbe")
+	if raceIdx < 0 {
+		t.Fatalf("race-discriminating SELECT not found")
+	}
+	if raceIdx > bookStart {
+		t.Fatalf("race SELECT must run before the bookkeeping UPDATE (bookkeeping stamps state_updated_at)")
+	}
+}
+
 func TestWriteHealth_ClosesBindingFailuresWithoutCredentialWideWrite(t *testing.T) {
 	src, err := os.ReadFile("credential_probe_v2.go")
 	if err != nil {
@@ -155,7 +284,10 @@ func TestWriteHealth_ClosesBindingFailuresWithoutCredentialWideWrite(t *testing.
 		"c.restoreBindingOnProbeSuccess(execCtx, credID, pr.HealthProbeModel)",
 		"available := pr.AvailabilityState == \"ready\" && !pr.BindingOnly",
 		"state = \"model_binding\"",
-		"Available:     pr.AvailabilityState == \"ready\" && !pr.BindingOnly",
+		"modelAvailable := available",
+		"if pr.BindingOnly {",
+		"modelAvailable = model != pr.HealthProbeModel",
+		"Available:     modelAvailable",
 		"UPDATE credential_model_bindings cmb",
 		"pm.raw_model_name = $2",
 		"cmb.unavailable_reason = 'auto_probe_model_binding'",
@@ -177,7 +309,11 @@ func TestWriteHealth_FansOutBoundRawModels(t *testing.T) {
 		"COALESCE(cmb.available, TRUE) = TRUE",
 		"COALESCE(pm.available, TRUE) = TRUE",
 		"if err := rows.Err(); err != nil",
-		"writeModels := uniqueStringSet([]string{pr.HealthProbeModel}, c.loadBoundRawModels(execCtx, credID))",
+		// 2026-08-26 self-check audit: pin the failure-branch call site
+		// (the cache mirrors current DB state when the probe is sick).
+		// The healthy-ready branch uses loadBoundRawModelsAll instead;
+		// covered by TestCredentialProbeV2_CacheFanOutIncludesAllBindings.
+		"uniqueStringSet([]string{pr.HealthProbeModel}, c.loadBoundRawModels(execCtx, credID))",
 		"for _, model := range writeModels",
 		"c.cache.Set(execCtx, credID, model",
 		"Model:         model",

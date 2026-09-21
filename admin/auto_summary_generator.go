@@ -17,8 +17,8 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore"
-	"github.com/kaixuan/llm-gateway-go/internal/titlestore"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -268,7 +268,7 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 	// Rolling gate: skip if fewer than autoSummaryRollingTurnGate new turns
 	// have happened since the last summary. Best-effort; on any DB error we
 	// fall back to "always run" so a transient outage doesn't freeze summaries.
-	shouldRun, reason, lastSum, err := g.shouldTriggerSummary(ctx, tenantID, sessionID)
+	shouldRun, reason, lastSum, err := g.shouldTriggerSummary(ctx, sessionID)
 	if err != nil {
 		logger.Warn("summary trigger gate error; falling back to always-run", "error", err)
 	}
@@ -353,21 +353,7 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 		logger.Error("auto_summary: summary persisted but title task lookup failed", "error", err)
 		return
 	}
-	if g.handler.titleStore == nil {
-		metrics.AutoSummaryTrigger.WithLabelValues("title_sync_error").Inc()
-		logger.Error("auto_summary: title store unavailable")
-		return
-	}
-	owner := fmt.Sprintf("auto-summary:%s:%d", sessionID, time.Now().UnixNano())
-	claim, err := g.handler.titleStore.BeginMutation(ctx, titlestore.Claim{
-		TenantID: tenantID, SessionID: sessionID, Owner: owner,
-		TTL: 60 * time.Second, Source: titlestore.SourceAutoSummary,
-		SourcePriority: titlestore.SourcePrioritySummary, TaskID: taskID,
-	})
-	if err == nil {
-		_, err = g.handler.titleStore.CommitTitle(ctx, claim, tenantID, sessionID, canonicalTitle, taskID)
-	}
-	if err != nil {
+	if err := g.handler.upsertSessionTitle(ctx, taskID, sessionID, canonicalTitle, "auto-summary:"+model, 0); err != nil {
 		metrics.AutoSummaryTrigger.WithLabelValues("title_sync_error").Inc()
 		logger.Error("auto_summary: summary persisted but canonical title sync failed", "error", err)
 		return
@@ -398,9 +384,9 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 //     | "db_error"
 //   - lastSum   time.Time
 //   - err       error
-func (g *AutoSummaryGenerator) shouldTriggerSummary(ctx context.Context, tenantID, sessionID string) (bool, string, time.Time, error) {
+func (g *AutoSummaryGenerator) shouldTriggerSummary(ctx context.Context, sessionID string) (bool, string, time.Time, error) {
 	// Rule 1: Check minimum session length (total turns across all time)
-	totalTurns, err := g.store.CountTotalTurns(ctx, tenantID, sessionID)
+	totalTurns, err := g.store.CountTotalTurns(ctx, sessionID)
 	if err != nil {
 		return true, "db_error", time.Time{}, err
 	}
@@ -410,7 +396,7 @@ func (g *AutoSummaryGenerator) shouldTriggerSummary(ctx context.Context, tenantI
 	}
 
 	// Rule 2 & 3: Check rolling gate (incremental turns since last summary)
-	last, err := g.store.LastSummarized(ctx, tenantID, sessionID)
+	last, err := g.store.LastSummarized(ctx, sessionID)
 	if err != nil && !isPgxNoRows(err) {
 		return true, "db_error", time.Time{}, err
 	}
@@ -418,7 +404,7 @@ func (g *AutoSummaryGenerator) shouldTriggerSummary(ctx context.Context, tenantI
 		// Never summarized before, and we have >= minTurns — allow
 		return true, "never_summarized", time.Time{}, nil
 	}
-	n, err := g.store.CountNewTurns(ctx, tenantID, sessionID, last)
+	n, err := g.store.CountNewTurns(ctx, sessionID, last)
 	if err != nil {
 		return true, "db_error", last, err
 	}
@@ -720,6 +706,9 @@ func (g *AutoSummaryGenerator) doCallSummaryOnce(
 	}
 	req.Header.Set(autoSourceActorHeader, autoSummaryOriginActor)
 	req.Header.Set("X-Gw-Is-Auto", "true")
+	// R37 (R35-R1): prove this self-call is loopback — without the per-boot
+	// token, RequestIDMiddleware strips the correlation headers above.
+	req.Header.Set(loopback.TokenHeader, loopback.Token())
 	if task.DeviceSeed != "" {
 		req.Header.Set("X-Device-Seed", task.DeviceSeed)
 	}
@@ -914,7 +903,7 @@ func (g *AutoSummaryGenerator) getGatewayEndpoint() string {
 	if endpoint := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ENDPOINT")); endpoint != "" {
 		return endpoint
 	}
-	return "http://127.0.0.1:8781"
+	return loopback.GatewayBase()
 }
 
 // errStringSummary is the nil-safe err → string helper used in slog fields.

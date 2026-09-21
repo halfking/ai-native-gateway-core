@@ -1,0 +1,10 @@
+# 开发/测试依赖
+# 安装: pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+pytest>=8.0
+
+# ONNX导出（可选，用于阶段4 Go集成；不装也不影响训练/评估）
+skl2onnx>=1.17
+onnxruntime>=1.18

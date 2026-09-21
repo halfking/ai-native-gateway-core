@@ -3,6 +3,7 @@ package v2
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -176,6 +177,16 @@ type AttachmentRef struct {
 	Replayable     bool      `json:"replayable"`       // Whether attachment can be replayed to upstream
 }
 
+// Bodies kind semantics (migration 708, storage plan v2 D2):
+//   - turn_delta: per-turn incremental row (all legacy rows backfilled to this)
+//   - final_full: the session's latest complete outbound snapshot; one row per
+//     session per partition (turn_no=0, request_id='final_full:<session>',
+//     guarded by the uq_session_bodies*_final_full partial unique indexes)
+const (
+	BodiesKindTurnDelta = "turn_delta"
+	BodiesKindFinalFull = "final_full"
+)
+
 // BodiesRecord represents turn bodies (incremental deltas)
 type BodiesRecord struct {
 	SessionID string
@@ -196,6 +207,18 @@ type BodiesRecord struct {
 	ResponseAttachments []AttachmentRef
 }
 
+// FinalFullRecord is the session's latest complete outbound snapshot
+// (storage plan v2 S1b). Written per-turn via idempotent upsert — the plan's
+// original "assemble at session close" has no close hook in this codebase
+// (CloseSession has zero callers, 2026-09-14 audit), so per-turn overwrite of
+// the same one-row-per-session slot was chosen; see migration 708 comments.
+type FinalFullRecord struct {
+	SessionID    string
+	TenantID     string
+	Ts           time.Time
+	OutboundBody []Message
+}
+
 // safeJSONMarshal marshals v to JSON, falling back to a safe placeholder on error.
 // This prevents "invalid input syntax for type json" PostgreSQL errors when
 // json.Marshal produces invalid JSON (e.g., from NaN/Inf floats or malformed UTF-8).
@@ -203,26 +226,14 @@ type BodiesRecord struct {
 func safeJSONMarshal(v interface{}) ([]byte, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
-		// Fallback to empty array/object depending on type
-		switch v.(type) {
-		case []interface{}, []Message, []AttachmentRef:
-			return []byte("[]"), nil
-		default:
-			return []byte("{}"), nil
-		}
+		return nil, fmt.Errorf("marshal JSON: %w", err)
 	}
-
-	// Extra safety: if marshal succeeded but produced empty string,
-	// replace with null to avoid PostgreSQL parse errors
 	if len(data) == 0 {
-		return []byte("null"), nil
+		return nil, errors.New("marshal JSON produced empty output")
 	}
-
-	// Validate it's actually parseable JSON
 	if !json.Valid(data) {
-		return []byte("null"), nil
+		return nil, errors.New("marshal JSON produced invalid output")
 	}
-
 	return data, nil
 }
 
@@ -233,7 +244,7 @@ func jsonTextOrNull(data []byte) string {
 	return string(data)
 }
 
-// WriteBodies writes turn bodies to public.session_bodies
+// WriteBodies writes turn bodies to public.session_bodies_hot
 //
 // This is the backwards-compatible wrapper that runs against the writer's own
 // pool. Prefer WriteBodiesInTx when you need turn + bodies to commit atomically
@@ -242,6 +253,9 @@ func jsonTextOrNull(data []byte) string {
 // The key optimization is RequestDelta only contains messages that
 // were not present in the previous turn, avoiding exponential growth
 // of storing full history in every row.
+//
+// Architecture: All writes go to session_bodies_hot (8-hour retention window),
+// then promoted to monthly partitions via PartitionManager.
 func (w *SessionBodiesWriter) WriteBodies(ctx context.Context, rec BodiesRecord) error {
 	return w.WriteBodiesInTx(ctx, w.db, rec)
 }
@@ -288,19 +302,25 @@ func (w *SessionBodiesWriter) WriteBodiesInTx(ctx context.Context, tx bodiesDB, 
 
 	partitionDate := calendarDate(rec.Ts)
 
+	// Write to session_bodies_hot (8-hour window), not directly to partitioned table
+	// PartitionManager promotes rows to session_bodies monthly partitions after 8h
+	// 708: kind is always 'turn_delta' for per-turn rows; the final_full
+	// snapshot row is written by WriteFinalFullInTx.
 	_, err = tx.Exec(ctx, `
-		INSERT INTO public.session_bodies AS existing (
+		INSERT INTO public.session_bodies_hot AS existing (
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
 			request_attachments, response_attachments,
+			kind,
 			partition_date
 		) VALUES (
 			$1, $2, $3, $4, $5,
 			$6::text::jsonb, $7::text::jsonb, $8::text::jsonb,
 			$9::text::jsonb, $10::text::jsonb,
-			$11
+			$11,
+			$12
 		)
-		ON CONFLICT (tenant_id, session_id, turn_no, partition_date)
+		ON CONFLICT (tenant_id, request_id, partition_date)
 		DO UPDATE SET
 			response_delta = CASE
 				WHEN EXCLUDED.response_delta IS NULL OR EXCLUDED.response_delta = 'null'::jsonb
@@ -321,6 +341,7 @@ func (w *SessionBodiesWriter) WriteBodiesInTx(ctx context.Context, tx bodiesDB, 
 		rec.SessionID, rec.TurnNo, rec.TenantID, rec.RequestID, rec.Ts,
 		jsonTextOrNull(requestDeltaJSON), jsonTextOrNull(responseDeltaJSON), jsonTextOrNull(outboundBodyJSON),
 		jsonTextOrNull(requestAttachmentsJSON), jsonTextOrNull(responseAttachmentsJSON),
+		BodiesKindTurnDelta,
 		partitionDate,
 	)
 
@@ -331,18 +352,53 @@ func (w *SessionBodiesWriter) WriteBodiesInTx(ctx context.Context, tx bodiesDB, 
 	return nil
 }
 
+// WriteFinalFullInTx upserts the session's latest complete outbound snapshot
+// (storage plan v2 S1b, migration 708). One row per (tenant, session,
+// partition): turn_no=0, request_id='final_full:<session>', kind='final_full'.
+// The (tenant_id, request_id, partition_date) unique constraint carries the
+// idempotent upsert; the uq_session_bodies*_final_full partial unique indexes
+// additionally guard against stray duplicate final_full rows.
+func (w *SessionBodiesWriter) WriteFinalFullInTx(ctx context.Context, tx bodiesDB, rec FinalFullRecord) error {
+	outboundJSON, err := safeJSONMarshal(rec.OutboundBody)
+	if err != nil {
+		return fmt.Errorf("marshal final_full outbound: %w", err)
+	}
+	partitionDate := calendarDate(rec.Ts)
+	_, err = tx.Exec(ctx, `
+		INSERT INTO public.session_bodies_hot (
+			session_id, turn_no, tenant_id, request_id, ts,
+			outbound_body, kind, partition_date
+		) VALUES (
+			$1, 0, $2, $3, $4,
+			$5::text::jsonb, $6, $7
+		)
+		ON CONFLICT (tenant_id, request_id, partition_date)
+		DO UPDATE SET
+			outbound_body = EXCLUDED.outbound_body,
+			ts = EXCLUDED.ts
+	`,
+		rec.SessionID, rec.TenantID, "final_full:"+rec.SessionID, rec.Ts,
+		jsonTextOrNull(outboundJSON), BodiesKindFinalFull, partitionDate,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert final_full: %w", err)
+	}
+	return nil
+}
+
 // GetBodies retrieves turn bodies by session_id and turn_no
 func (w *SessionBodiesWriter) GetBodies(ctx context.Context, tenantID, sessionID string, turnNo int) (*BodiesRecord, error) {
 	var rec BodiesRecord
 	var requestDeltaJSON, responseDeltaJSON, outboundBodyJSON []byte
 	var requestAttachmentsJSON, responseAttachmentsJSON []byte
 
+	// Use unified view to read from both hot table and partitions
 	query := `
 		SELECT 
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
 			request_attachments, response_attachments
-		FROM public.session_bodies
+		FROM public.session_bodies_unified
 		WHERE tenant_id = $1 AND session_id = $2 AND turn_no = $3
 		LIMIT 1
 	`
@@ -411,12 +467,13 @@ func getLatestBodies(ctx context.Context, db bodiesDB, tenantID, sessionID strin
 	var requestDeltaJSON, responseDeltaJSON, outboundBodyJSON []byte
 	var requestAttachmentsJSON, responseAttachmentsJSON []byte
 
+	// Use unified view to read from both hot table and partitions
 	err := db.QueryRow(ctx, `
 		SELECT
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
 			request_attachments, response_attachments
-		FROM public.session_bodies
+		FROM public.session_bodies_unified
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no DESC
 		LIMIT 1
@@ -457,17 +514,43 @@ func getLatestBodies(ctx context.Context, db bodiesDB, tenantID, sessionID strin
 			return nil, fmt.Errorf("unmarshal latest response_attachments: %w", err)
 		}
 	}
+
+	// 708 / storage plan v2 S1b: when the final_full gate is on, per-turn rows
+	// stop carrying outbound_body. The previous-outbound baseline (delta
+	// derivation + submit-mode detection) then reads the session's final_full
+	// snapshot row, falling back to the legacy per-turn outbound above
+	// (plan D2: "差集提取改读 final_full；未命中回退旧 outbound_body").
+	if len(rec.OutboundBody) == 0 {
+		var finalFullJSON []byte
+		err := db.QueryRow(ctx, `
+			SELECT outbound_body
+			FROM public.session_bodies_unified
+			WHERE tenant_id = $1 AND session_id = $2
+			  AND kind = 'final_full'
+			  AND outbound_body IS NOT NULL
+			ORDER BY ts DESC
+			LIMIT 1
+		`, tenantID, sessionID).Scan(&finalFullJSON)
+		if err == nil && len(finalFullJSON) > 0 && string(finalFullJSON) != "null" {
+			if err := json.Unmarshal(finalFullJSON, &rec.OutboundBody); err != nil {
+				return nil, fmt.Errorf("unmarshal final_full outbound: %w", err)
+			}
+		} else if err != nil && err != pgx.ErrNoRows {
+			return nil, fmt.Errorf("query final_full outbound: %w", err)
+		}
+	}
 	return &rec, nil
 }
 
 // ListAllBodies retrieves all turn bodies for a session
+// Use unified view to read from both hot table and partitions
 func (w *SessionBodiesWriter) ListAllBodies(ctx context.Context, tenantID, sessionID string) ([]BodiesRecord, error) {
 	query := `
 		SELECT 
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
 			request_attachments, response_attachments
-		FROM public.session_bodies
+		FROM public.session_bodies_unified
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no ASC
 	`

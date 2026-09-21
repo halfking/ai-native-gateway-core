@@ -100,7 +100,7 @@
 
 - [ ] **设置环境变量**
   ```bash
-  export K8S_SSH_PASSWORD='Kaixuan2025&9900#'
+  export K8S_SSH_PASSWORD='<REDACTED_SSH_PASSWORD>'
   ```
 
 - [ ] **运行部署脚本**

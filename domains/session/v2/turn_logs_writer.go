@@ -51,6 +51,9 @@ func (w *TurnLogsWriter) WriteStage(ctx context.Context, rec TurnLogRecord) erro
 		latencyMs = 0
 	}
 
+	// string() + $7::text::jsonb (not []byte): the pool forces pgx
+	// SimpleProtocol, which binds []byte as bytea hex and any jsonb cast
+	// then fails with 22P02 (doc §3.2; internal/dbx/jsonb.go).
 	_, err = w.db.Exec(ctx, `
 		INSERT INTO public.session_turn_logs (
 			session_id, turn_no, tenant_id, request_id,
@@ -59,13 +62,13 @@ func (w *TurnLogsWriter) WriteStage(ctx context.Context, rec TurnLogRecord) erro
 			expires_at
 		) VALUES (
 			$1, $2, $3, $4,
-			$5, $6, $7, $8,
+			$5, $6, $7::text::jsonb, $8,
 			$9, $10, $11,
 			$12
 		)
 	`,
 		rec.SessionID, rec.TurnNo, rec.TenantID, rec.RequestID,
-		rec.Stage, rec.StageStatus, eventDataJSON, rec.ErrorMsg,
+		rec.Stage, rec.StageStatus, string(eventDataJSON), rec.ErrorMsg,
 		rec.StartedAt, rec.CompletedAt, latencyMs,
 		time.Now().Add(24*time.Hour), // TTL: 24 hours
 	)

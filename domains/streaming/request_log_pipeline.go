@@ -10,15 +10,16 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/authentication"                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	agenttelemetry "github.com/kaixuan/llm-gateway-go/telemetry" //nolint:depguard // aliased: system-prompt extractor for agent fallback (avoids clash with /domains/hooks/observability/telemetry)
 )
@@ -28,75 +29,6 @@ import (
 // transitively through other helpers.)
 func jsonMarshal(v any) ([]byte, error) {
 	return json.Marshal(v)
-}
-
-// synthesizeStreamBodyFromText packages a raw streamed assistant message
-// into a minimal OpenAI-style chat completion JSON envelope. This is the
-// last-resort fallback used by the failure-row writer when the upstream
-// bytes were streamed straight to the client wire (and so c.ResponseBody
-// is empty) but StreamCapture.textContent still holds the partial text.
-// The shape is intentionally generic: it does NOT pretend the response was
-// non-streaming — the JSON envelope just makes the text queryable in
-// request_logs.response_body alongside the streaming metadata columns
-// (upstream_finish_reason, stream_chunks_sent, …).
-//
-// 2026-08-23: introduced so that eof_without_done / stream_timeout /
-// first_byte_timeout / client_disconnected failures keep their partial
-// upstream output for post-mortem analysis.
-func synthesizeStreamBodyFromText(text string) string {
-	if strings.TrimSpace(text) == "" {
-		return ""
-	}
-	if len(text) > maxStreamBodyTextBytes {
-		// Rune-aware truncation: a raw byte slice could cut a multi-byte
-		// UTF-8 sequence (Chinese / emoji) and produce invalid bytes that
-		// PostgreSQL rejects with SQLSTATE 22021, dropping the whole row.
-		text = truncateUTF8(text, maxStreamBodyTextBytes)
-	}
-	envelope := map[string]any{
-		"id":      "partial-stream",
-		"object":  "chat.completion.partial",
-		"model":   "unknown",
-		"choices": []map[string]any{{
-			"index":         0,
-			"finish_reason": nil,
-			"message":       map[string]any{"role": "assistant", "content": text},
-		}},
-	}
-	b, err := json.Marshal(envelope)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
-// maxStreamBodyTextBytes caps the persisted partial text so a runaway
-// upstream (or a misconfigured client that doesn't read the stream) does
-// not blow up request_logs_bodies with multi-megabyte rows. 2 MiB
-// matches the existing maxTextContentBytes cap in audit.go.
-const maxStreamBodyTextBytes = 2 * 1024 * 1024
-
-// truncateUTF8 truncates s to at most limit bytes without splitting a
-// multi-byte UTF-8 rune. A raw byte slice (s[:limit]) could cut a multi-byte
-// sequence and produce invalid bytes that PostgreSQL rejects with SQLSTATE
-// 22021, dropping the whole request_logs row.
-func truncateUTF8(s string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	if len(s) <= limit {
-		return s
-	}
-	cut := 0
-	for i, r := range s {
-		next := i + utf8.RuneLen(r)
-		if next > limit {
-			cut = i
-			break
-		}
-		cut = next
-	}
-	return s[:cut]
 }
 
 // RequestLogContext caches request facts across handler lifecycle stages
@@ -120,9 +52,16 @@ type RequestLogContext struct {
 	// UUID that is the primary audit key) so client retries that reuse
 	// the same id do not collapse into one row.
 	ClientRequestID string
-	StartTime       time.Time
-	Request         *http.Request
-	Session         *session.Session
+	// RequestClass / DueAt carry the V6-W1.6 R8 request class
+	// (immediate|scheduled, from X-Gw-Due-At) so BOTH the initial
+	// request_logs_hot row and the completion UPDATE persist it
+	// (migration 608). Set next to parseDispatchDueAt in each protocol
+	// handler; empty RequestClass or zero DueAt means immediate.
+	RequestClass string
+	DueAt        time.Time
+	StartTime    time.Time
+	Request      *http.Request
+	Session      *session.Session
 
 	// ProvisionalSessionID is the auto-generated session id that the
 	// handler attaches to early-failure branches via
@@ -138,12 +77,18 @@ type RequestLogContext struct {
 	// body. It is telemetry-only: compression uses the assembled outbound body
 	// after session delta-append and prior summaries have been applied.
 	PromptTokensEstimate *int
-	ClientModel          string
-	OutboundModel        string
-	EndUser              string
-	ProviderID           *int
-	CredentialID         *int
-	ResponseBody         []byte
+	// These fields are retained for telemetry compatibility. The receipt-time
+	// preflight no longer compresses because the provider context window is not
+	// known until candidates are resolved; candidate-aware compression is recorded
+	// by the executor/session compression metadata.
+	PreflightCompressedTokens    *int
+	PreflightCompressedPostBytes *int
+	ClientModel                  string
+	OutboundModel                string
+	EndUser                      string
+	ProviderID                   *int
+	CredentialID                 *int
+	ResponseBody                 []byte
 
 	// v2.0 auto-route fields (populated when model="auto" was used)
 	IsAutoRequest  bool
@@ -175,6 +120,14 @@ type RequestLogContext struct {
 	OutboundTokenBand         string
 	OutboundPriorLayerTokens  int
 	OutboundCompressionReason string
+	// OutboundProvenance (R35, 2026-09-17 audit P0-1) carries the original→
+	// compressed/sanitized provenance write-through: a pre-merged JSON object
+	// with alignment_map / sanitize_message_refs / window_source keys, folded
+	// into request_logs.compression_meta (and thence sessions_v2 metadata via
+	// the mirror whitelist, which already knows these keys). Without this the
+	// V2 read path (applyCompressionMeta) read keys no writer ever produced.
+	// Size-capped at the producer (see buildOutboundProvenance).
+	OutboundProvenance []byte
 
 	ErrCode string
 	ErrMsg  string
@@ -257,7 +210,7 @@ type RequestLogContext struct {
 	StreamCapture *audit.StreamCapture
 
 	meta     requestAttemptMeta
-	logged   bool
+	logged   atomic.Bool
 	terminal atomic.Bool
 }
 
@@ -457,6 +410,17 @@ func (c *RequestLogContext) SetOutboundModel(model string) {
 func (c *RequestLogContext) SetRoute(providerID, credentialID *int) {
 	c.ProviderID = providerID
 	c.CredentialID = credentialID
+}
+
+// SetPreflightCompress is retained for compatibility with older callers. New
+// candidate-aware compression should be represented in compression metadata.
+// Empty/nil logCtx is a no-op so callers don't need nil-guard.
+func (c *RequestLogContext) SetPreflightCompress(estimatedTokens, postBytes int) {
+	if c == nil {
+		return
+	}
+	c.PreflightCompressedTokens = &estimatedTokens
+	c.PreflightCompressedPostBytes = &postBytes
 }
 
 // ApplyQueueTimestampsFromResult copies V3.1 T0–T9 from a successful ExecuteResult.
@@ -756,12 +720,15 @@ func (c *RequestLogContext) IsTerminal() bool {
 
 func (c *RequestLogContext) MarkLogged() {
 	if c != nil {
-		c.logged = true
-		c.terminal.CompareAndSwap(false, true)
+		// Logging completion and request terminality are independent lifecycle
+		// transitions. In particular, an early placeholder or a safety-net
+		// marker must not win the terminal CAS and prevent the real outcome from
+		// being captured later.
+		c.logged.Store(true)
 	}
 }
 func (c *RequestLogContext) IsLogged() bool {
-	return c != nil && (c.logged || c.IsTerminal())
+	return c != nil && c.logged.Load()
 }
 
 // MarkProbeHoldStart is invoked by the executor when it enters the
@@ -878,6 +845,9 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	}
 
 	gwSessionID, gwTaskID := c.SessionTask()
+	// R50 F15：730 sessions 归因三列的采集点（role/父会话头；父任务复用
+	// gwTaskID）。仅进 Mirror-only 传输字段，request_logs 列契约不动。
+	agentRole, parentSessionID := gwAgentAttributionFromRequest(c.Request)
 	clientProfile := c.meta.ClientProfile
 	identityHash := c.meta.IdentityHash
 	if c.Request != nil && (clientProfile == "" || identityHash == "") {
@@ -897,7 +867,12 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	}
 	var responseBodyText *string
 	if len(c.ResponseBody) > 0 {
-		v := string(c.ResponseBody)
+		// E-#2 (audit round2): upstream error bodies can echo credentials
+		// (Bearer / sk-* / api_key= on 401/403); the telemetry client only
+		// repairs UTF-8, it does not redact. Redact at the entry builder,
+		// same as the candidate-failure path; full body is preserved
+		// (redaction without truncation).
+		v := string(errorsx.RedactCredentialShapes(c.ResponseBody))
 		responseBodyText = &v
 	}
 
@@ -919,31 +894,8 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		requestPreviewPtr = strPtr(preview)
 	}
 	var responsePreviewPtr *string
-	if preview := responsePreview(c.ResponseBody); preview != "" {
+	if preview := responsePreview(errorsx.RedactCredentialShapes(c.ResponseBody)); preview != "" {
 		responsePreviewPtr = strPtr(preview)
-	}
-
-	// 2026-08-23: streaming requests flush bytes to the client wire and
-	// never buffer them back into c.ResponseBody. When the stream is
-	// interrupted mid-flight (eof_without_done, stream_timeout,
-	// client_disconnected, network_error, first_byte_timeout, …) the
-	// partial text the gateway already received from upstream lives only
-	// in c.StreamCapture.textContent / .preview. Persist that partial
-	// payload onto the failure row so post-mortem analysis can see what
-	// the model had produced before the interruption — without this,
-	// every failed streaming request shows NULL response_body, which
-	// makes upstream diagnostics (chunk_count, finish_reason, partial
-	// text) impossible to reconstruct.
-	if responseBodyText == nil && c.StreamCapture != nil {
-		if text := c.StreamCapture.TextContentSnapshot(); strings.TrimSpace(text) != "" {
-			synth := synthesizeStreamBodyFromText(text)
-			responseBodyText = &synth
-		}
-		if responsePreviewPtr == nil {
-			if prev := c.StreamCapture.PreviewSnapshot(); prev != "" {
-				responsePreviewPtr = strPtr(prev)
-			}
-		}
 	}
 
 	detailCode := mapGatewayErrorToDetail(errCode)
@@ -1032,6 +984,8 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		RequestMode:       strPtr(c.RequestMode()),
 		GwSessionID:       strPtr(gwSessionID),
 		GwTaskID:          strPtr(gwTaskID),
+		AgentRole:         strPtr(agentRole),
+		ParentSessionID:   strPtr(parentSessionID),
 		LatencyMs:         &latency,
 		Success:           false,
 		RequestStatus:     strPtr(status),
@@ -1082,6 +1036,11 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	// persisted row so operators can SQL JOIN auto-title rows back to their
 	// parent user request.
 	applyParentCorrelationFields(reqLog, c)
+	// V6-W1.6 R8 (migration 608): 完成态 UPDATE 携带请求类型（幂等）。
+	if reqLog.RequestClass == nil {
+		reqLog.RequestClass = requestClassPtr(c)
+		reqLog.DueAt = requestDueAtPtr(c)
+	}
 	if len(c.OutboundBody) > 0 {
 		reqLog.OutboundBody = json.RawMessage(c.OutboundBody)
 	}
@@ -1106,22 +1065,61 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	return reqLog
 }
 
+// recordTerminalEntryLoss makes a failed terminal-entry build observable. A
+// nil entry must never silently consume the terminal transition: operators need
+// to distinguish a terminal request-log metadata loss from an ordinary outcome.
+func (c *RequestLogContext) recordTerminalEntryLoss(kind, errCode string) {
+	if c == nil {
+		return
+	}
+	cause := errors.New("BuildFailureEntry returned nil")
+	c.recordMetadataLoss("terminal_request_log_entry", cause)
+	ctx := context.Background()
+	if c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	if c.handler != nil {
+		c.handler.recordDataLoss(ctx, "terminal_request_log_entry_missing", string(SeverityHigh), c.RequestID,
+			"terminal request log entry missing; outcome="+kind+" error_code="+errCode,
+			map[string]any{"outcome": kind, "error_code": errCode, "terminal": true})
+		return
+	}
+	slog.Error("terminal request log entry missing", "request_id", c.RequestID, "outcome", kind, "error_code", errCode)
+}
+
+// minimalTerminalEntry preserves a terminal row when the rich builder fails.
+// It intentionally contains only stable identity/outcome fields and is not a
+// substitute for the metadata-loss anomaly emitted by recordTerminalEntryLoss.
+func (c *RequestLogContext) minimalTerminalEntry(errCode, status string) *telemetry.RequestLogEntry {
+	if c == nil {
+		return nil
+	}
+	now := time.Now()
+	return &telemetry.RequestLogEntry{
+		RequestID:         c.RequestID,
+		EventAt:           &now,
+		TenantID:          "default",
+		Success:           false,
+		RequestStatus:     strPtr(status),
+		ErrorKind:         strPtr(errCode),
+		FailureDetailCode: strPtr("terminal_request_log_entry_missing"),
+	}
+}
+
 // EmitFailure writes/updates request_logs for a non-success exit.
 func (c *RequestLogContext) EmitFailure(errCode, errMessage string, providerID, credentialID *int) {
 	if c == nil || c.handler == nil {
 		return
 	}
 	markRequestJourneyFailure(c.Request, c.KeyInfo, errCode)
-	// 2026-08-02 (GAP 2): Use SetTerminal CAS so that success/failure/
-	// disconnect three-way race has a single in-process winner. If
-	// another path already claimed the terminal transition, skip the
-	// emit entirely (the DB-level L-2 guard still prevents terminal
-	// regression, but this avoids a double telemetry emit in-process).
-	if !c.SetTerminal("failure", nil) {
-		return
-	}
+	// Build before claiming terminal so a nil entry cannot consume the terminal
+	// CAS. The winner captures the exact entry it emits.
 	reqLog := c.BuildFailureEntry(errCode, errMessage, providerID, credentialID)
 	if reqLog == nil {
+		c.recordTerminalEntryLoss("failure", errCode)
+		reqLog = c.minimalTerminalEntry(errCode, telemetry.RequestStatusFailure)
+	}
+	if !c.SetTerminal("failure", reqLog) {
 		return
 	}
 	if c.handler.requestLogHook != nil {
@@ -1130,13 +1128,21 @@ func (c *RequestLogContext) EmitFailure(errCode, errMessage string, providerID, 
 	if c.handler.telemetryClient != nil && c.handler.telemetryClient.Enabled() {
 		c.handler.telemetryClient.EmitRequestLogUpdate(reqLog)
 	}
+	// 2026-09-08 audit (Track A): auto-route failures are the signal the
+	// routing feedback loop was missing — before this, decision-time feedback
+	// was hardcoded IsSuccess=true and failures never reached the optimizer.
+	// The degenerate minimalTerminalEntry rows carry no IsAutoRequest marker,
+	// so they are (safely) skipped by the nil check.
+	if reqLog.IsAutoRequest != nil && *reqLog.IsAutoRequest {
+		autoroute.ReportRoutingOutcome(routingOutcomeFromEntry(reqLog))
+	}
 	// 2026-07-15: 侧表 request_context_attrs（best-effort）。
 	if c.handler.telemetryClient != nil {
 		if attrs := BuildContextAttrsEntry(c, c.KeyInfo, &c.meta, c.Request.Context()); attrs != nil {
 			c.handler.telemetryClient.EmitContextAttrs(attrs)
 		}
 	}
-	c.logged = true
+	c.logged.Store(true)
 }
 
 // EmitRateLimited records a gateway-side rate-limit rejection (RPM/concurrent
@@ -1151,13 +1157,14 @@ func (c *RequestLogContext) EmitRateLimited(errCode, errMessage string, provider
 		return
 	}
 	markRequestJourneyFailure(c.Request, c.KeyInfo, errCode)
-	// 2026-08-02 (GAP 2): Use SetTerminal CAS so that success/failure/
-	// disconnect three-way race has a single in-process winner.
-	if !c.SetTerminal("rate_limited", nil) {
-		return
-	}
+	// Build before claiming terminal so a nil entry cannot consume the terminal
+	// CAS. The winner captures the exact entry it emits.
 	reqLog := c.buildEntry(errCode, errMessage, providerID, credentialID, telemetry.RequestStatusRateLimited)
 	if reqLog == nil {
+		c.recordTerminalEntryLoss("rate_limited", errCode)
+		reqLog = c.minimalTerminalEntry(errCode, telemetry.RequestStatusRateLimited)
+	}
+	if !c.SetTerminal("rate_limited", reqLog) {
 		return
 	}
 	if c.handler.requestLogHook != nil {
@@ -1166,17 +1173,85 @@ func (c *RequestLogContext) EmitRateLimited(errCode, errMessage string, provider
 	if c.handler.telemetryClient != nil && c.handler.telemetryClient.Enabled() {
 		c.handler.telemetryClient.EmitRequestLogUpdate(reqLog)
 	}
+	// 2026-09-09 audit round 3 (#4): rate-limited requests previously left NO
+	// routing_decision_log signal at all — the only gateway early-exit class
+	// that didn't (every other early exit goes through emitFailedDecisionLog).
+	// Emit an explicit not-run-class row so a rate-limit storm is visible in
+	// the decision log, not just request_logs. Reuses the EXISTING vocabulary
+	// (no new enum): success=false, error_class/failure_detail_code = the
+	// rate-limit error code (rate_limit_exceeded / key_throttled / ...),
+	// failure_stage="gateway" — the documented two-value stage enum already
+	// means "never reached an upstream provider". chosen_provider_id /
+	// chosen_credential_id stay nil (nothing was chosen, nothing ran), so
+	// provider/credential-scoped aggregations (ErrorDetailTab, candidate
+	// failure stats) are unaffected; the row only surfaces in
+	// request-scoped decision views.
+	c.emitRateLimitedDecisionLog(errCode)
+	// Track A note (2026-09-08): rate-limited requests deliberately do NOT
+	// report a routing outcome — the request never reached any upstream, so
+	// there is nothing to learn about the chosen model here. The stashed
+	// decision-time feedback simply expires via the registry TTL (legacy
+	// placeholder semantics), mirroring how the settle worker abandons
+	// selections with no request_log row.
 	if c.handler.telemetryClient != nil {
 		if attrs := BuildContextAttrsEntry(c, c.KeyInfo, &c.meta, c.Request.Context()); attrs != nil {
 			c.handler.telemetryClient.EmitContextAttrs(attrs)
 		}
 	}
-	c.logged = true
+	c.logged.Store(true)
 }
 
 // failAndMark emits a failure row immediately (explicit exit paths).
 func (c *RequestLogContext) failAndMark(errCode, errMsg string, providerID, credentialID *int) {
 	c.EmitFailure(errCode, errMsg, providerID, credentialID)
+}
+
+// emitRateLimitedDecisionLog writes the explicit not-run-class
+// routing_decision_log row for a gateway rate-limit rejection (2026-09-09
+// audit round 3 #4). Shape mirrors emitFailedDecisionLog: success=false,
+// error_class = failure_detail_code = errCode, candidates_tried=0 — plus
+// failure_stage="gateway" (the existing two-value stage enum meaning "never
+// reached an upstream provider", which is exactly the rate-limit case).
+// No provider/credential is attributed: the request was never dispatched,
+// so provider-scoped error statistics cannot be polluted. Best-effort, same
+// Enabled()/nil guards as the sibling emitters.
+func (c *RequestLogContext) emitRateLimitedDecisionLog(errCode string) {
+	if c == nil || c.handler == nil || c.handler.telemetryClient == nil || !c.handler.telemetryClient.Enabled() {
+		return
+	}
+	c.handler.telemetryClient.EmitDecisionLog(c.buildRateLimitedDecisionEntry(errCode))
+}
+
+// buildRateLimitedDecisionEntry projects a gateway rate-limit rejection onto
+// the not-run-class routing_decision_log row. Pure: no I/O, safe on nil
+// receiver (returns a minimal row with the required identity fields).
+func (c *RequestLogContext) buildRateLimitedDecisionEntry(errCode string) *telemetry.DecisionLogEntry {
+	entry := &telemetry.DecisionLogEntry{
+		RequestID:         "",
+		TenantID:          "default",
+		Model:             "<unknown>",
+		Success:           false,
+		ErrorClass:        strPtr(errCode),
+		FailureStage:      strPtr("gateway"),
+		FailureDetailCode: strPtr(errCode),
+	}
+	if c == nil {
+		return entry
+	}
+	entry.RequestID = c.RequestID
+	entry.LatencyMs = c.LatencyMs()
+	clientModel := c.ClientModel
+	if clientModel == "" {
+		clientModel = "<unknown>"
+	}
+	entry.Model = clientModel
+	entry.ClientModel = strPtr(clientModel)
+	if ki := c.KeyInfo; ki != nil {
+		kid := ki.ID
+		entry.APIKeyID = &kid
+		entry.TenantID = ki.TenantID
+	}
+	return entry
 }
 
 // applySessionCompressorFields copies v3 session compressor outbound fields
@@ -1207,8 +1282,8 @@ func applySessionCompressorFields(entry *telemetry.RequestLogEntry, c *RequestLo
 	if len(c.OutboundBody) > 0 {
 		entry.OutboundBody = json.RawMessage(c.OutboundBody)
 	}
-	if c.OutboundStrategy == "" && c.OutboundTokenBand == "" {
-		return // no compression rewrite or threshold observation to persist
+	if c.OutboundStrategy == "" && c.OutboundTokenBand == "" && len(c.OutboundProvenance) == 0 {
+		return // no compression rewrite, threshold observation, or provenance to persist
 	}
 	if len(c.OutboundMsgHashes) > 0 {
 		entry.OutboundMsgHashes = json.RawMessage(c.OutboundMsgHashes)
@@ -1224,10 +1299,11 @@ func applySessionCompressorFields(entry *telemetry.RequestLogEntry, c *RequestLo
 
 	// Merge window-triggered, summary, and multi-layer threshold facts into
 	// compression_meta without clobbering fields written by other transforms.
-	if c.OutboundWindowTriggered != "" || c.OutboundSummaryMarker != "" || c.OutboundTokenBand != "" {
+	if c.OutboundWindowTriggered != "" || c.OutboundSummaryMarker != "" || c.OutboundTokenBand != "" || len(c.OutboundProvenance) > 0 {
 		merged, err := mergeCompressionMetaV3(entry.CompressionMeta,
 			c.OutboundWindowTriggered, c.OutboundSummaryMarker,
-			c.OutboundTokenBand, c.OutboundTokenEst, c.OutboundPriorLayerTokens)
+			c.OutboundTokenBand, c.OutboundTokenEst, c.OutboundPriorLayerTokens,
+			c.OutboundProvenance)
 		if err != nil {
 			c.recordMetadataLoss("compression_meta", err)
 		}
@@ -1271,6 +1347,7 @@ func mergeCompressionMetaV3(
 	windowTriggered, summaryMarker, tokenBand string,
 	outboundTokens *int,
 	priorLayerTokens int,
+	provenance json.RawMessage,
 ) (json.RawMessage, error) {
 	m := make(map[string]any)
 	if len(existing) > 0 {
@@ -1291,6 +1368,20 @@ func mergeCompressionMetaV3(
 			m["outbound_tokens"] = *outboundTokens
 		}
 	}
+	if len(provenance) > 0 {
+		var prov map[string]any
+		if err := json.Unmarshal(provenance, &prov); err == nil {
+			for k, v := range prov {
+				// First writer wins: an earlier transform's own provenance
+				// key is never clobbered by the producer-side block (the
+				// transform ran later in the chain and its view is more
+				// specific). "Producer wins" would be backwards here.
+				if _, exists := m[k]; !exists {
+					m[k] = v
+				}
+			}
+		}
+	}
 	if len(m) == 0 {
 		return existing, nil
 	}
@@ -1299,6 +1390,71 @@ func mergeCompressionMetaV3(
 		return existing, err
 	}
 	return b, nil
+}
+
+// buildOutboundProvenance assembles the R35 provenance write-through payload:
+// the compressor's AlignmentMap (identity/occurrence per source message), the
+// sanitizer's SanitizedMessageRefs, and provider-window source telemetry — the
+// per-request counts of retained / summary-folded / dropped messages that no
+// exporter previously answered. Both record slices are hash-only (no
+// plaintext) and hard-capped so compression_meta stays far below its JSONB
+// comfort zone; on overflow the arrays are truncated and a *_truncated flag
+// kept, on runaway size only the counters survive.
+func buildOutboundProvenance(r *http.Request, alignment []compression.AlignmentInfo) []byte {
+	prov := make(map[string]any, 3)
+
+	windowSource := map[string]int{}
+	for _, a := range alignment {
+		kind := a.TargetKind
+		if kind == "" {
+			if a.IsCompressed {
+				kind = "summary"
+			} else {
+				kind = "retained"
+			}
+		}
+		windowSource[kind]++
+	}
+	if len(windowSource) > 0 {
+		prov["window_source"] = windowSource
+	}
+
+	const maxRecords = 256
+	if len(alignment) > 0 {
+		if len(alignment) > maxRecords {
+			alignment = alignment[:maxRecords]
+			prov["alignment_map_truncated"] = true
+		}
+		prov["alignment_map"] = alignment
+	}
+
+	if r != nil {
+		if info, ok := compression.SanitizeInfoFromContext(r.Context()); ok && len(info.MessageRefs) > 0 {
+			refs := info.MessageRefs
+			if len(refs) > maxRecords {
+				refs = refs[:maxRecords]
+				prov["sanitize_refs_truncated"] = true
+			}
+			prov["sanitize_message_refs"] = refs
+		}
+	}
+
+	if len(prov) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(prov)
+	if err != nil {
+		return nil
+	}
+	if len(b) > 128*1024 {
+		// Counters-only fallback: never let provenance bloat the JSONB meta.
+		fallback := map[string]any{"window_source": windowSource}
+		if b, err := json.Marshal(fallback); err == nil {
+			return b
+		}
+		return nil
+	}
+	return b
 }
 
 // applyRoutingMetadata (spec §12 GAP 3) merges the per-request

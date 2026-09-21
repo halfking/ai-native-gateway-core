@@ -1,0 +1,35 @@
+# D16 流程闭环（部署/角色/worker 生命周期）子代理报告（窗口：67f78247c..294e0f65d）
+
+> 原文存档（主代理已逐条亲读复核，处置见轮文档）。子代理：Explore，2026-09-17。只读审计，未修改任何文件。
+
+## 一、发现（候选，待主代理复核）
+
+| # | 级别候选 | 发现 | 证据 file:line | 建议处置 |
+|---|---|---|---|---|
+| 1 | P2 | **eb5a922c7 的 smart-discovery 修复落在"留档死拷贝"，运行时路径未被修也未被子代理测试覆盖**。deploy-local.sh 运行时 source 的是 SSOT（`$AIAN_DEPLOY_LIB/smart-discovery.sh` = ~/workspace/ai-native-tools/deploy-lib，仓外独立 commit 16f87fd），不是本仓 legacy 拷贝。SSOT 版只修了缺陷#1（恢复窗口误判），缺陷#2（`psql -lqt` 不带 `-d` → 无用户同名库的通用容器必判 not usable）与#3（`grep -c llm_gateway` 子串误配 llm_gateway_backup 等兄弟库 → HAS_DB=1 假阳性）在运行时仍活着。触发路径：deploy-local.sh deploy/status → detect_existing_containers → SSOT pg_container_usable 探测一个未按规范初始化的 PG 容器 → 误判 → DL_PG_CONTAINER 落空 / 假 HAS_DB | scripts/deploy-local.sh:203-205（source SSOT）；scripts/_shared-lib.sh:4（legacy=留档）；scripts/deploy-lib.legacy/smart-discovery.sh:75-130（已修拷贝）；~/workspace/ai-native-tools/deploy-lib/smart-discovery.sh:110-116（运行时仍 `-lqt` 无 `-d` + `grep -c` 子串）；SSOT 仓 commit 16f87fd | 把 legacy 版的精确 pg_database 探测回灌 SSOT（仓外通道），或至少在本仓登记 SSOT 缺陷#2/#3 |
+| 2 | P2 | **test-dl-pg-preflight-required.sh 在窗口内被 ef408a026 悄悄打断，现已必红**：R37 把 `pg_container=$(dl_pg_container_name)` 提为 dl_wait_pg_isready 无条件前缀语句，而测试 harness 未 stub 该函数 → eval 后第一次调用即 "command not found"（127），harness `set -euo pipefail` 直接退出 → 全部 5 个 tcase rc≠期望 FAIL。6f5c1b00b 时该调用仅在 `DL_DOCKER=1` 分支内（harness 设 0 不触达）所以当时绿；改函数后未重跑/未同步测试（测试文件窗口内仅 6f5c1b00b 一次触碰）。触发路径：`bash tests/lib/test-dl-pg-preflight-required.sh` → FAIL×5 exit 1 | scripts/deploy-local-lib.sh:691（无条件调用）vs tests/lib/test-dl-pg-preflight-required.sh:39-48（stub 清单缺 dl_pg_container_name）；git：lib 于 ef408a026 改、test 最后触于 6f5c1b00b | harness 补 `dl_pg_container_name(){ printf 'llm-gateway-pg'; }`（或 `printf '\n'`）stub 并实跑转绿（conventions §5 钉桩门） |
+| 3 | P2 | **test-smart-discovery-pg.sh 的 "HAS_DB=1 exported" 用例静态分析下永不可能通过**：`pg_container_usable` 在 `out=$(...)` 子 shell 中执行，其 `export DL_DISCOVERED_PG_HAS_DB=1` 随子 shell 消亡；父 shell `set \| grep` 必为空 → arc=1≠erc=0 → 该用例确定性 FAIL → 整套 exit 1。提示该测试提交时未跑到全绿。触发路径：运行该测试（且需 docker）→ 第 2 用例必挂 | tests/lib/test-smart-discovery-pg.sh:40-41（子 shell 调用）、:42（父 shell 断言） | 改为父 shell 直调（不捕获）后断言，或删该用例；复核 commit message 的"已验证"声明 |
+| 4 | P3 | **preflight docker-exec 分支仍可选中"已停止"容器，external-DB + =1 时会误杀健康部署**：`dl_pg_container_name` 用 `docker ps -a`（含 stopped），分支条件只看 `DL_DOCKER`/容器名非空，不看 `DL_DB_MODE` 与运行态。触发路径：调用方自带 DSN（DL_DB_MODE=external，lib:150）但本机残留一个 stopped llm-gateway-pg → 90s 全程 exec 失败 → 默认 warn 空烧 90s；若 DL_PG_PREFLIGHT_REQUIRED=1 则 die（对健康 external PG 误 fail-closed）。这正是 D16 域文档 R37 教训"docker exec 选容器会误选 stopped 容器"的残留面 | scripts/deploy-local-lib.sh:696-702（分支无 DB_MODE 守卫）、:724-734（`docker ps -a` 于 729）、:150 | 分支加 `[[ "$DL_DB_MODE" == docker ]]` 或只对 running 容器 exec；=1 提示文档同步 |
+| 5 | P3 | **无密码段 DSN 的 user 解析错误使 preflight 必空烧 90s**：`user` 正则 `^postgres(ql)?://([^:]+):.*` 对 `postgresql://u@host:5432/db` 会把 `u@host` 当 user → `-U u@host` 永远探不通 → 跑满 90s 后 warn（=1 则对合法 DSN die）。commit 声称 "passwordless DSNs stay valid" 只对"无端口"形态成立（那又会因 port 空被判 unparseable 跳过）。非本窗回归（正则原样搬出），但 6f5c1b00b 的声明与现实不符 | scripts/deploy-local-lib.sh:668（user 正则）、:673-680（空段守卫） | user 段允许 `@`：`([^@:]+)`；并修正注释声明 |
+| 6 | P3 | **DL_PG_PREFLIGHT_REQUIRED=1 的启用计划指向一个无法验证它的环境**：注释称"245 preprod 验证后才会开 1"，但 245 走 deploy-seamless.sh（不 source deploy-local-lib.sh），该 gate 只在 deploy-local 路径存在——等待 245 验证的计划永不成立，gate 当前是无人能按计划启用的 opt-in | scripts/deploy-local-lib.sh:649-654（启用计划注释）、:656；scripts/deploy-seamless.sh:42-68（仅 source AIAN_DEPLOY_LIB 三件，无 deploy-local-lib）；scripts/deploy-local.sh:774 | 修正注释（改为"在 deploy-local 252/本机验证"）或明确负责验证的宿主 |
+| 7 | P3 | **legacy db-changelog 的 override 回退是静默降级**：`DB_CHANGELOG_REPO_ROOT` 已设但目录缺 `sql/migrations` 时不报错，静默落回 `BASH_SOURCE/../..` 相对布局——SSOT 分离布局下该回退必解析到共享库目录（正是 3461a416c 要修的病根），等于坏值与未设置同罪。实际风险低：两个运行时调用方都在入口对钉扎值做了 fail-fast 校验 | scripts/deploy-lib.legacy/db-changelog.sh:23-27（invalid 值静默 fallthrough）；守卫在 scripts/deploy-local.sh:9-13、scripts/deploy-seamless.sh:45-48 | override 设置但校验失败时 `_db_err` 报错而非静默回退 |
+
+另注（0a015af51 闭环收尾，非缺陷）：模板修复的生效通道已闭环——deploy-seamless 检测到目标 unit 与仓库契约不一致即自动重装+daemon-reload（drift-repair），候选下次启动即带新角色；须注意重装后**旧 active 仍以 traffic-only 角色运行至切流成功为止**，候选探针失败回滚则孤儿 worker 状态延续——本窗内生产已实切并验证（incident §5：2127-0a015af5，runtime_role=active，队列 516→483 消化中），该残余已自然关闭。
+
+## 二、核实为健康的面
+
+- **154 worker 所有权对账（模板角色集合 ↔ 启动要求闭环）**：空角色归一化 active（config/runtime_role.go:17-27、config/config.go:531）→ `bgDataPlaneOnly=false`（cmd/gateway/main.go:2773）。全部 `!bgDataPlaneOnly` 专属 worker 逐一对账：model discovery（main.go:2848）、credCycler（:3847）、error-triggered probe + durable probe queue worker（:4038→:4125）、taxonomy sync（:4701）、weekly rollup/statsMinuteRollup/slotSuggester（:4846）、audit/handoff trimmer 等 O5 维护写者（:5171）——移除模板角色行后 154 全部恢复认领；credential_recovery 与 quota-probe 族为 traffic-only 上的**有意例外**（config/runtime_role.go:50-86、main.go:3878），245 模板保留 traffic-only（deploy/llmgo-245-canary@.service:29）与其 data-plane 设计一致；非 canary 的 deploy/llm-gateway-go.service 不设角色。
+- **模板变更生效通道**：install-blue-green-assets.sh 仅写文件+daemon-reload、备份旧 unit（scripts/install-blue-green-assets.sh:51-83）；deploy-seamless.sh:919-935 drift-repair 在 unit 与仓库契约不一致时自动重装并复核——repo 模板修复无需人工登机，下一次 154 部署自动生效（生产 15:33 已实切验证）。
+- **b535c9c0e set -e 修复面**：detect_existing_containers 四处函数尾/块尾 `[[ ]] && cmd` 已全部 if 形化（scripts/deploy-local.sh:216-223、242、276）；全文件扫描剩余 `&&`-list 均为左短路边（循环 continue/守卫），set -e 下安全；`-buildvcs=false` 覆盖宿主与容器全部 4 个 go build 位点（deploy-local.sh:571、:630；deploy-seamless.sh:757、:796）。
+- **6f5c1b00b gate 本体语义**：默认 0 warn-only 且 `dl_wait_pg_isready || true` 调用形状保持（scripts/deploy-local.sh:774，测试 :73 亦有形状守卫）；=1 时 parse 失败与超时均在容器启动前 die（deploy-local-lib.sh:673-680、:718-720）；lib 自带 die 回退有 `declare -F` 守卫且被 deploy-local.sh:161 品牌化 die 覆盖（deploy-local-lib.sh:16-18）；DSN 解析从死代码改为"先提取、后校验 user/host/port/db 非空"（:668-680）。
+- **eb5a922c7 legacy 拷贝实现本身**：pg_isready 15s 门 + 钉 `-d postgres` + `pg_database` 精确存在性查询 + 就绪后连接失败如实告警（scripts/deploy-lib.legacy/smart-discovery.sh:90-130）——代码正确，只是躺在留档拷贝里（见发现#1）。
+- **apply-db-revision-sequence.sh 同期变更**：718/719 两行登记纯增量（scripts/apply-db-revision-sequence.sh:427-434），对应 .sql 与 .down.sql 均真实存在于 sql/migrations/startup/，符合 conventions §5 登记纪律。
+- **DB_CHANGELOG_REPO_ROOT 运行时链路**：deploy-local.sh:9-13 与 deploy-seamless.sh:45-48 钉扎+fail-fast；SSOT db-changelog.sh:27-28 override #1 优先生效；未设置时 legacy 回退行为与窗前逐字一致（3461a416c 的 override 分支前置、fallthrough 原样）。
+
+## 三、未覆盖项与原因
+
+- **154 宿主机 /etc/llm-gateway-go/env 实际不含 LLM_GATEWAY_RUNTIME_ROLE / BG mode** —— 需真机凭据；模板注释的单方声明（deploy/llm-gateway-go-canary@.service:23-25）无法在本仓证实。
+- **154 YAML config 是否携带 runtime_role**（config/config.go:858-859 的 merge 路径可在 env 为空时从 YAML 回灌角色，重新引入 traffic-only）—— config 文件不在仓内，需上机核对。
+- **两个契约测试的实跑确认（发现#2/#3 的运行时证据）** —— 运行会写临时文件/起 docker 容器，只读纪律禁止；以上为静态推演候选，建议主代理跑一次取实证。
+- **SSOT 仓（~/workspace/ai-native-tools）全量审计** —— 超出本仓窗口；仅为闭环核实读了 smart-discovery.sh 与 db-changelog.sh 两文件及其 git log。
+- **deploy-lib.legacy 是否还有 tests 之外的 consumer** —— 仅检索了 scripts/、deploy/、tests/ 三处；.agents/skills/*/SKILL.md 中的历史流程文本未逐一核。

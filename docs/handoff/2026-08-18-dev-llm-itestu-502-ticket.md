@@ -21,7 +21,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://llm.itestu.cn/healthz   # → 
 
 ## 根因（2026-08-17 实测）
 
-252（115.29.212.252）上 nginx 的 `llm.itestu.cn` vhost 将请求代理到
+252（<env:HOST_252_IP>）上 nginx 的 `llm.itestu.cn` vhost 将请求代理到
 `127.0.0.1:11008`，但该端口当前**没有任何进程监听**（dev 网关实例未运行或未部署到该端口）。
 
 ## 修复选项（按建议顺序）

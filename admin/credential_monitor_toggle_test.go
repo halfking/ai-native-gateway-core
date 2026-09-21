@@ -48,7 +48,10 @@ func TestMonitorSummaryCoreModeSQLShape(t *testing.T) {
 			strings.Contains(frag, "credential_model_call_history") ||
 			strings.Contains(frag, "percentile_cont")
 		hasCoreOffer := strings.Contains(frag, "model_offers") &&
-			strings.Contains(frag, "model_probe_state")
+			// 2026-09-17 数据源统一: probe_state 列改读 v_node_probe_state_compat
+			// (node_probe_state 投影);旧 model_probe_state 仍被手动上下线写入。
+			(strings.Contains(frag, "model_probe_state") ||
+				strings.Contains(frag, "v_node_probe_state_compat"))
 		hasTenantGuard := strings.Contains(frag, "tenant_id")
 		switch {
 		case hasHeavy:
@@ -284,7 +287,6 @@ func TestModelToggleHandler_RoutesRegistered(t *testing.T) {
 	for _, path := range []string{
 		"/api/credentials/monitor-summary",
 		"/api/credentials/sliding-window",
-		"/api/credentials/sliding-window/batch",
 		"/api/credentials/promote",
 		"/api/credentials/demote",
 		"/api/credentials/set-concurrency-auto",

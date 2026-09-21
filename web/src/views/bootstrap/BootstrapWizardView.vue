@@ -652,10 +652,10 @@ onMounted(async () => {
 .wizard-steps__item.is-active {
   border-color: var(--accent);
   color: var(--accent);
-  background: rgba(30, 79, 214, 0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 .wizard-steps__item.is-done {
-  border-color: #86b7a0;
+  border-color: var(--success);
   color: var(--success-dark);
 }
 .wizard-steps__index {
@@ -667,7 +667,7 @@ onMounted(async () => {
   justify-content: center;
   font-size: 12px;
   font-weight: 700;
-  background: #eef2f8;
+  background: var(--bg-secondary);
 }
 .wizard-steps__item.is-active .wizard-steps__index {
   background: var(--accent);
@@ -689,7 +689,7 @@ onMounted(async () => {
 .agree-list {
   margin: 8px 0 16px;
   padding-left: 1.2em;
-  color: #3d4d66;
+  color: var(--text);
   line-height: 1.7;
   font-size: 14px;
 }

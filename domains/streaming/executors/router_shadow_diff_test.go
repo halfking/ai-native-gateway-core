@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
@@ -107,8 +108,54 @@ func TestRouterShadowQueueFullRecordsDrop(t *testing.T) {
 	router.enqueueURSMv2Shadow(candidate, candidate, "tenant", "m", "request-3")
 	waitForShadowCount(t, shadow.OutcomeDropped, before+1)
 
+	// 2026-08-31 (P2-3 observability): the queue-full path must also
+	// surface to the dedicated ursm_shadow_enqueued_total counter with
+	// result="queue_full". The other two enqueue results ("enqueued",
+	// "queue_full") should also be visible at this point.
+	enqueueTotal := readEnqueueTotalCounter(t)
+	if got := enqueueTotal["queue_full"]; got < 1 {
+		t.Fatalf("expected ursm_shadow_enqueued_total{result=queue_full} >= 1, got %v", got)
+	}
+	if got := enqueueTotal["enqueued"]; got < 2 {
+		t.Fatalf("expected ursm_shadow_enqueued_total{result=enqueued} >= 2, got %v", got)
+	}
+
 	close(release)
 	router.StopShadowWorker()
+}
+
+// readEnqueueTotalCounter (2026-08-31, P2-3) reads the current snapshot of
+// the ursm_shadow_enqueued_total time series grouped by result label. Used
+// to verify the P2-3 wiring without coupling tests to internal counters.
+func readEnqueueTotalCounter(t *testing.T) map[string]float64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	out := map[string]float64{
+		"enqueued":       0,
+		"sampled_out":    0,
+		"queue_full":     0,
+		"worker_stopped": 0,
+	}
+	for _, family := range families {
+		if family.GetName() != "ursm_shadow_enqueued_total" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			var result string
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "result" {
+					result = label.GetValue()
+				}
+			}
+			if c := metric.GetCounter(); c != nil {
+				out[result] = c.GetValue()
+			}
+		}
+	}
+	return out
 }
 
 func TestRouterShadowDiffDoesNotChangeLegacyOrder(t *testing.T) {

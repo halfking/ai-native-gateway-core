@@ -44,6 +44,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
@@ -61,14 +62,17 @@ func (h *Handler) loadCredentialRowLiteAny(ctx context.Context, credID int) (cre
 			c.secret_ciphertext,
 			pc.models_endpoint_template,
 			COALESCE(pc.discovery_strategy, 'auto'),
-			pc.models_manifest_json
+			pc.models_manifest_json,
+			COALESCE(p.kind, 'cloud'),
+			COALESCE(pc.capabilities, '{}'::jsonb)
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
-		WHERE c.id = $1
+		WHERE c.id = $1 AND c.status <> 'deleted' AND p.deleted_at IS NULL
 	`, credID).Scan(&c.id, &c.label, &c.providerID, &c.providerName,
 		&c.baseURL, &c.protocol, &c.catalogCode,
-		&c.secretCipher, &c.modelsEndpointTpl, &c.discoveryStrategy, &c.modelsManifestJSON)
+		&c.secretCipher, &c.modelsEndpointTpl, &c.discoveryStrategy, &c.modelsManifestJSON,
+		&c.providerKind, &c.catalogCaps)
 	return c, err
 }
 
@@ -92,16 +96,18 @@ func resolveModelsEndpointURL(baseURL string, template *string) (url string, exp
 // forceAPI=true (manual refresh / health probe): always try vendor API first
 // even when discovery_strategy is "manifest"; manifest is fallback only.
 // forceAPI=false (scheduled discovery): manifest_only and empty template skip API.
-func (h *Handler) resolveModelsForCredential(ctx context.Context, cred credentialRowLite, apiKey string, forceAPI bool) (models []string, source string, err error) {
+// Returns models, source, rawJSON, and error. rawJSON is the raw response body
+// from the vendor API (nil when source is manifest-only).
+func (h *Handler) resolveModelsForCredential(ctx context.Context, cred credentialRowLite, apiKey string, forceAPI bool) (models []string, source string, rawJSON []byte, err error) {
 	desc := providercap.Resolve(cred.protocol, cred.catalogCode)
 	if !desc.SupportsModelsEndpoint {
 		// Anthropic-compatible upstreams (e.g. minimax /anthropic) have no /models
 		// listing; use catalog manifest when operator forces a refresh or probe.
 		models, mErr := extractManifestModels(cred.modelsManifestJSON)
 		if mErr != nil || len(models) == 0 {
-			return nil, "none", fmt.Errorf("provider has no /models endpoint and manifest is empty")
+			return nil, "none", nil, fmt.Errorf("provider has no /models endpoint and manifest is empty")
 		}
-		return models, "manifest_only", nil
+		return models, "manifest_only", nil, nil
 	}
 
 	modelsURL, explicitTemplate := resolveModelsEndpointURL(cred.baseURL, cred.modelsEndpointTpl)
@@ -109,16 +115,16 @@ func (h *Handler) resolveModelsForCredential(ctx context.Context, cred credentia
 	if skipAPI {
 		models, err = extractManifestModels(cred.modelsManifestJSON)
 		if err != nil || len(models) == 0 {
-			return nil, "manifest_only", err
+			return nil, "manifest_only", nil, err
 		}
-		return models, "manifest_only", nil
+		return models, "manifest_only", nil, nil
 	}
 
 	var fetchErr error
 	if explicitTemplate && modelsURL != "" {
-		models, fetchErr = h.fetchVendorModelsFromURLs(ctx, []string{modelsURL}, cred, apiKey)
+		models, rawJSON, fetchErr = h.fetchVendorModelsFromURLs(ctx, []string{modelsURL}, cred, apiKey)
 	} else {
-		models, fetchErr = h.fetchVendorModelsFromURLs(ctx, modelsURLCandidatesForCred(cred.baseURL, cred.modelsEndpointTpl, desc), cred, apiKey)
+		models, rawJSON, fetchErr = h.fetchVendorModelsFromURLs(ctx, modelsURLCandidatesForCred(cred.baseURL, cred.modelsEndpointTpl, desc), cred, apiKey)
 	}
 	if fetchErr == nil && len(models) > 0 {
 		// Merge in catalog-manifest models that the live /models list omits.
@@ -129,28 +135,20 @@ func (h *Handler) resolveModelsForCredential(ctx context.Context, cred credentia
 		manifestModels, _ := extractManifestModels(cred.modelsManifestJSON)
 		if len(manifestModels) > 0 {
 			models = mergeModelIDs(models, manifestModels)
-			return models, "api+manifest", nil
+			return models, "api+manifest", rawJSON, nil
 		}
-		return models, "api", nil
+		return models, "api", rawJSON, nil
 	}
 
 	// Fallback to manifest when API fails or returns empty.
 	fallback, _ := extractManifestModels(cred.modelsManifestJSON)
 	if len(fallback) > 0 {
-		// 2026-08-22: when the API rejected our credentials (401/403),
-		// don't silently swallow the error in the manifest fallback path
-		// — discoverAndUpsertForCredential uses errors.Is(err,
-		// errVendorAuthRejected) to decide whether to record a
-		// health=unreachable reason that helps the operator debug.
-		if errors.Is(fetchErr, errVendorAuthRejected) {
-			return fallback, "manifest", fetchErr
-		}
-		return fallback, "manifest", nil
+		return fallback, "manifest", nil, nil
 	}
 	if fetchErr != nil {
-		return nil, "api", fetchErr
+		return nil, "api", nil, fetchErr
 	}
-	return nil, "api", fmt.Errorf("no models found from vendor API or manifest")
+	return nil, "api", nil, fmt.Errorf("no models found from vendor API or manifest")
 }
 
 // mergeModelIDs appends manifest entries that are not already present in the
@@ -282,7 +280,7 @@ func (h *Handler) VerifyAllCredentialModelFetches(ctx context.Context, providerI
 			cred.modelsEndpointTpl = tplPtr
 		}
 
-		models, source, fetchErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
+		models, source, _, fetchErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
 		res.Source = source
 		res.ModelCount = len(models)
 		if fetchErr != nil {
@@ -357,29 +355,6 @@ func (h *Handler) VerifyAllCredentialModelUpserts(ctx context.Context, providerI
 	return out, nil
 }
 
-// errVendorAuthRejected marks a vendor /models endpoint that returned
-// 401 or 403. discoverAndUpsertForCredential treats this as a soft
-// failure and falls back to the catalog manifest when one is available,
-// so a credential whose API key type has not been migrated yet still
-// produces a usable set of bindings instead of an empty result.
-var errVendorAuthRejected = errors.New("vendor auth rejected")
-
-// classifyVendorAuthReason extracts a short "401" / "403" token from a wrapped
-// errVendorAuthRejected for use in the credentials.health_error column. Falls
-// back to the stringified error when no status is present.
-func classifyVendorAuthReason(err error) string {
-	if err == nil {
-		return "auth error"
-	}
-	s := err.Error()
-	for _, code := range []string{"401", "403"} {
-		if strings.Contains(s, code) {
-			return code
-		}
-	}
-	return "auth error"
-}
-
 // familyForProviderRefresh is the family mapping that
 // discoverAndUpsertForCredential must use when inserting a vendor-API
 // derived name into models_canonical. It is a thin wrapper around
@@ -415,26 +390,7 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 		return 0, 0, fmt.Errorf("decrypt credential: %w", decErr)
 	}
 
-	models, source, fErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
-	// 2026-08-22: vendor /models returned 401/403 (errVendorAuthRejected)
-	// and the catalog manifest has known-good models. Fall back to the
-	// manifest so the credential still produces a usable binding set;
-	// mark health as unreachable with a reason explaining the API auth
-	// failure so the operator can fix the key separately.
-	if errors.Is(fErr, errVendorAuthRejected) {
-		manifest, mErr := extractManifestModels(cred.modelsManifestJSON)
-		if mErr == nil && len(manifest) > 0 {
-			slog.Warn("discoverAndUpsertForCredential: vendor auth rejected, falling back to catalog manifest",
-				"credential_id", cred.id,
-				"provider_id", cred.providerID,
-				"manifest_count", len(manifest),
-			)
-			h.updateCredHealth(ctx, cred.id, "unreachable",
-				fmt.Sprintf("vendor /models returned %s; using catalog manifest as fallback", classifyVendorAuthReason(fErr)))
-			upserted, failed, _ = h.enrollCredentialModels(ctx, cred.id, manifest)
-			return upserted, failed, nil
-		}
-	}
+	models, source, rawJSON, fErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
 	if len(models) == 0 {
 		var msg string
 		if fErr != nil {
@@ -459,29 +415,33 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 		return 0, 0, fmt.Errorf("vendor API failed; only manifest fallback available (%d models)", len(models))
 	}
 
-	upserted, failed, enrollErr := h.enrollCredentialModels(ctx, cred.id, models)
-	if upserted == 0 && failed > 0 {
-		// 2026-08-22: surface the actual underlying error (canonical
-		// upsert vs. binding upsert) so the operator can tell whether
-		// the failure was a constraint violation, a connectivity issue,
-		// or a logic bug — instead of the generic "model enrollment
-		// failed for every discovered model" message that masked the
-		// real problem for provider 14 (MiniMax).
-		var detail string
-		if enrollErr != nil {
-			detail = enrollErr.Error()
-		} else {
-			detail = fmt.Sprintf("%d models failed, no first error captured", failed)
-		}
-		h.updateCredHealth(ctx, cred.id, "unreachable",
-			"model enrollment failed for every discovered model: "+detail)
-		return upserted, failed, fmt.Errorf("model enrollment failed for every discovered model: %s", detail)
+	upserted, failed = h.enrollCredentialModels(ctx, cred.id, models)
+
+	// 2026-09-07 本地托管供应商：模型注册后立即回填 context window
+	//（ollama /api/show 与 catalog 兜底）。Best-effort，不影响 refresh 结果。
+	// F-11 修复：传递 rawJSON（之前为 nil）。
+	discovery.ApplyLocalContextWindows(ctx, h.db, cred.providerKind, cred.catalogCaps, cred.baseURL, cred.id, models, rawJSON)
+
+	// 2026-08-31 hzx-2 round-4: auto-fill default_probe_model when the
+	// operator never set one. Mirrors the discovery worker so a manual
+	// admin refresh (POST /api/providers/{id}/refresh-models) has the
+	// same effect on operators who onboard a fresh credential mid-flight
+	// and immediately fire the refresh button — they should not have to
+	// wait for the next discovery tick to see a probe target written.
+	// Best-effort: a DB error here is logged but does not fail the
+	// refresh call.
+	if picked, autoErr := modelcatalog.AutoFillDefaultProbeModel(ctx, h.db, cred.id); autoErr != nil {
+		slog.Warn("admin refresh: auto-fill default_probe_model failed",
+			"credential_id", cred.id, "error", autoErr)
+	} else if picked != "" {
+		slog.Info("admin refresh: auto-filled default_probe_model",
+			"credential_id", cred.id,
+			"default_probe_model", picked,
+			"source", modelcatalog.DefaultProbeModelSourceRefreshLatest,
+		)
 	}
-	if source == "manifest" {
-		h.updateCredHealth(ctx, cred.id, "unreachable", "vendor API unavailable; catalog manifest used")
-	} else {
-		h.updateCredHealth(ctx, cred.id, "healthy", "")
-	}
+
+	h.updateCredHealth(ctx, cred.id, "healthy", "")
 	return upserted, failed, nil
 }
 
@@ -489,43 +449,62 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 // the same binding tables used by the routing resolver. Health checks can run
 // before the periodic discovery worker, so this keeps a newly verified
 // credential routable immediately.
-//
-// 2026-08-22: previously this loop wrote models_canonical with a thin SQL
-// and never read back its id, leaving refresh-generated bindings with
-// provider_models.canonical_id=NULL. It now delegates to
-// discovery.EnsureCanonicalAndAliases (the same path the periodic worker
-// uses) and passes the returned canonicalID through to the binding upsert.
-func (h *Handler) enrollCredentialModels(ctx context.Context, credentialID int, models []string) (upserted, failed int, firstErr error) {
-	db := h.refreshDB()
+func (h *Handler) enrollCredentialModels(ctx context.Context, credentialID int, models []string) (upserted, failed int) {
 	for _, m := range models {
-		canonicalID, _, ensureErr := discovery.EnsureCanonicalAndAliases(ctx, db, m, "provider_refresh")
-		if ensureErr != nil {
-			slog.Warn("enrollCredentialModels: ensure canonical failed",
-				"credential_id", credentialID,
-				"raw_model", m,
-				"error", ensureErr,
-			)
-			failed++
-			if firstErr == nil {
-				firstErr = fmt.Errorf("ensure canonical for %q: %w", m, ensureErr)
+		stdName := modelname.StandardizeName(m)
+		if stdName != "" {
+			// Use discovery.InferFamily so the family column matches the
+			// discovery pipeline (claude-* → anthropic-claude, gpt-* →
+			// openai-gpt, etc). On conflict we repair historical rows
+			// that the legacy 'unknown' literal left behind — admin-edited
+			// families are preserved by the CASE guard. See
+			// provider_vendor_family_test.go for the regression guard.
+			family := familyForProviderRefresh(stdName)
+			// Junk-seed guard（R49 审计收口，2026-09-20）：StandardizeName 剥
+			// vendor 前缀，探测返回 "claude/opus-5" 会在 claude-opus-5 已存在
+			// 时盲插截断行 "opus-5"——cleanup 脚本清完又被回种。谓词与
+			// provider/client.go resolveModelDB 的 auto_discovered 守卫同款
+			//（归一化相等 OR 裸后缀截断形）。命中且非自身时跳过 INSERT；
+			// 92f18cf22 只堵了 resolveModelDB 一处，此处是另一条持续回种源。
+			// R50 修正（2026-09-21，真库实测）：两处守卫原谓词两臂全死——
+			// stdName 是 dash 形而左侧折叠为下划线（`= $1` 恒 false），
+			// 截断臂 `'%-'` 对下划线左侧恒不匹配；现双侧对齐 + '%_' 匹配。
+			// TODO(R51)：三处归一化谓词（本处/client.go/admin/models.go 查重）
+			// 收敛到 modelname 包单一实现，避免口径漂移。
+			var blocker string
+			// R50：守卫谓词收敛为 modelname.JunkSeedGuardSQL 单一实现
+			//（与 provider/client.go 同源，两臂全死缺陷同修）。
+			// TODO(R51)：admin/models.go createModel 查重谓词一并收敛。
+			err := h.db.QueryRow(ctx, modelname.JunkSeedGuardSQL, stdName).Scan(&blocker)
+			switch {
+			case err == nil && blocker != stdName:
+				slog.Debug("provider_refresh seed suppressed: existing canonical",
+					"std_name", stdName, "existing", blocker)
+			case err == nil, errors.Is(err, pgx.ErrNoRows):
+				// blocker == stdName（自身已存在 → 走冲突修复路径）或查无
+				// 阻断行 → 正常 INSERT。守卫查询本身失败时不放行（与
+				// client.go 同款 fail-closed）。
+				//nolint:errcheck // best-effort exec, non-critical
+				h.db.Exec(ctx, `
+					INSERT INTO models_canonical (canonical_name, family, source, status)
+					VALUES ($1, $2, 'provider_refresh', 'active')
+					ON CONFLICT (canonical_name) DO UPDATE SET
+						family = CASE
+							WHEN models_canonical.family = 'unknown' THEN EXCLUDED.family
+					ELSE models_canonical.family
+					END
+				`, stdName, family)
+			default:
+				slog.Warn("provider_refresh seed guard query failed, skipping insert", "std_name", stdName, "error", err)
 			}
-			continue
 		}
-		if uErr := h.upsertModelForProvider(ctx, db, credentialID, m, &canonicalID); uErr != nil {
-			slog.Warn("enrollCredentialModels: upsert binding failed",
-				"credential_id", credentialID,
-				"raw_model", m,
-				"error", uErr,
-			)
+		if uErr := h.upsertModelForProvider(ctx, credentialID, m); uErr != nil {
 			failed++
-			if firstErr == nil {
-				firstErr = fmt.Errorf("upsert binding for %q: %w", m, uErr)
-			}
 			continue
 		}
 		upserted++
 	}
-	return upserted, failed, firstErr
+	return upserted, failed
 }
 
 // isProviderRefreshSourceUsable reports whether model discovery returned a
@@ -576,10 +555,10 @@ func (h *Handler) applyCatalogHeaderProfile(ctx context.Context, req *http.Reque
 	}
 }
 
-func (h *Handler) fetchVendorModels(ctx context.Context, url string, cred credentialRowLite, apiKey string) ([]string, error) {
+func (h *Handler) fetchVendorModels(ctx context.Context, url string, cred credentialRowLite, apiKey string) ([]string, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	setModelsAuthHeaders(req, cred.protocol, apiKey)
 	h.applyCatalogHeaderProfile(ctx, req, cred.catalogCode)
@@ -588,24 +567,22 @@ func (h *Handler) fetchVendorModels(ctx context.Context, url string, cred creden
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return nil, fmt.Errorf("%w: %d %s", errVendorAuthRejected, resp.StatusCode, string(body))
-		}
-		return nil, fmt.Errorf("models endpoint returned %d: %s", resp.StatusCode, string(body))
+		return nil, nil, &modelresponse.HTTPBodyError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return parseVendorModelsBody(body)
+	models, parseErr := parseVendorModelsBody(body)
+	return models, body, parseErr
 }
 
 // DebugFetchVendorModelsRaw is a diagnostic helper: it fetches the given URL
@@ -677,21 +654,23 @@ func (h *Handler) DebugChatProbe(ctx context.Context, credID int, model string) 
 
 // fetchVendorModelsFromURLs tries catalog-resolved candidate URLs in order;
 // requires HTTP 200 with a parseable model list (used by refresh + health probe).
-func (h *Handler) fetchVendorModelsFromURLs(ctx context.Context, urls []string, cred credentialRowLite, apiKey string) ([]string, error) {
-	var errs []error
+// Returns models, rawJSON, and error. rawJSON is the raw response body from the
+// first successful URL.
+func (h *Handler) fetchVendorModelsFromURLs(ctx context.Context, urls []string, cred credentialRowLite, apiKey string) ([]string, []byte, error) {
+	var lastErr error
 	for _, u := range urls {
-		models, err := h.fetchVendorModels(ctx, u, cred, apiKey)
+		models, rawJSON, err := h.fetchVendorModels(ctx, u, cred, apiKey)
 		if err == nil && len(models) > 0 {
-			return models, nil
+			return models, rawJSON, nil
 		}
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", u, err))
+			lastErr = err
 		}
 	}
-	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
+	if lastErr != nil {
+		return nil, nil, lastErr
 	}
-	return nil, fmt.Errorf("no models found from any candidate URL")
+	return nil, nil, fmt.Errorf("no models found from any candidate URL")
 }
 
 func parseVendorModelsBody(data []byte) ([]string, error) {
@@ -761,12 +740,7 @@ func extractManifestModels(manifest *string) ([]string, error) {
 // upsertModelForProvider upserts one binding directly on base tables.
 // Manual disables (reason LIKE 'manual%') are preserved; legacy soft-deletes
 // and auto disables are re-enabled when the vendor still lists the model.
-//
-// 2026-08-22: now accepts the canonical_id of the row produced by
-// EnsureCanonicalAndAliases so provider_models.canonical_id is wired up
-// immediately on first refresh instead of waiting for the hourly discovery
-// worker. Tests inject a pgxmock-backed Querier via SetRefreshDBOverride.
-func (h *Handler) upsertModelForProvider(ctx context.Context, db modelcatalog.Querier, credentialID int, rawName string, canonicalID *int) error {
+func (h *Handler) upsertModelForProvider(ctx context.Context, credentialID int, rawName string) error {
 	// 2026-07-14: NIM vendor prefix (z-ai/glm-5.2, minimaxai/minimax-m3 ...)
 	// must be stripped so that "glm-5.2" client requests route to the
 	// right offer. CanonicalizeClientModel already strips the prefix;
@@ -777,36 +751,13 @@ func (h *Handler) upsertModelForProvider(ctx context.Context, db modelcatalog.Qu
 	standardizedName := modelname.NormalizeRouteKey(rawName)
 	return modelcatalog.UpsertCredentialModel(
 		ctx,
-		db,
+		h.db,
 		credentialID,
 		rawName,          // provider-facing name, keep casing
 		canonicalRawName, // client-facing lowercase key
 		standardizedName, // standardized_name = lower(NormalizeRouteKey(raw))
-		canonicalID,
+		nil,
 	)
-}
-
-// refreshDB returns the Querier that enrollCredentialModels and
-// discoverAndUpsertForCredential should target. Tests inject a pgxmock
-// pool via SetRefreshDBOverride; production callers transparently use
-// the real *pgxpool.Pool stored on the Handler.
-func (h *Handler) refreshDB() modelcatalog.Querier {
-	if refreshDBOverride != nil {
-		return refreshDBOverride
-	}
-	return h.db
-}
-
-var refreshDBOverride modelcatalog.Querier
-
-// SetRefreshDBOverride lets tests substitute the refresh path's database
-// handle with a pgxmock pool. Nil disables the override and falls back to
-// the real Handler.db. Tests MUST restore the prior value (typically via
-// t.Cleanup) to avoid leaking state across tests.
-func SetRefreshDBOverride(db modelcatalog.Querier) (restore func()) {
-	prev := refreshDBOverride
-	refreshDBOverride = db
-	return func() { refreshDBOverride = prev }
 }
 
 func (h *Handler) updateCredHealth(ctx context.Context, credentialID int, status, errMsg string) {

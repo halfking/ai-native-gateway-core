@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onBeforeUnmount, watch } from 'vue'
+import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { localeRef } from '../i18n'
-import { useRoute } from 'vue-router'
+import { fmtDateCompact } from '../i18n/useFormat'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   getRequestLogs,
@@ -18,7 +20,20 @@ import { getProviders, getProviderCredentials } from '../api/providers'
 import ModelPicker from '../components/ModelPicker.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import SessionSummaryDrawer from '../components/SessionSummaryDrawer.vue'
+import PaginationBar from '../components/ui/PaginationBar.vue'
+// 2026-09-13 P2：表格容器收敛到 ui/DataTable 包裹模式（方案 §4.5.5 姿势 1）
+import DataTable from '../components/ui/DataTable.vue'
+// 2026-09-13 P4：折叠屏横跨（isSpanning）时 列表|详情 双栏（方案 §4.6）
+import { useViewportSegments } from '../composables/useViewportSegments'
+import StatCard from '../components/ui/StatCard.vue'
+import { usePagination } from '../composables/usePagination'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
+import { openRequestDetailPage } from '../utils/openRequestDetailPage'
+
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElDatePicker } from 'element-plus'
+const { isSpanning } = useViewportSegments()
 
 const rows = ref<RequestLogRow[]>([])
 const keys = ref<ApiKey[]>([])
@@ -36,7 +51,7 @@ type TimePreset =
   | 'h1' | 'h6' | 'h24' | 'd3' | 'd7'
   | 'today' | 'thisWeek' | 'thisMonth' | 'thisYear'
   | 'custom'
-type DateRange = [Date | string, Date | string]
+type DateRange = [string, string]
 const timePreset = ref<TimePreset>('h24')
 const customDateRange = ref<DateRange | null>(null)
 const successFilter = ref<'' | 'success' | 'failure' | 'rate_limited' | 'in_progress'>('')
@@ -154,7 +169,7 @@ function clampCustomDateRange() {
   const end = new Date(endValue)
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return
   const maxEnd = new Date(start.getTime() + 3 * 24 * 3600 * 1000)
-  if (end > maxEnd) customDateRange.value = [start, maxEnd]
+  if (end > maxEnd) customDateRange.value = [start.toISOString(), maxEnd.toISOString()]
 }
 
 function normalizeTimePresetForTenant() {
@@ -391,7 +406,12 @@ function timeRange() {
 }
 
 function onModelFilterChange(name: string | string[]) {
-  modelFilter.value = typeof name === 'string' ? name.trim() : ''
+  // 选择模型后立即重发请求。ModelPicker 是单选交互（用户点完即期望生效），
+  // 不像 provider/credential 下拉那样依赖手动点击「查询」按钮。
+  // 注：v-model 已经在 @update:model-value 之前把 modelFilter.value 更新好了，
+  // 此处不要做 "next === modelFilter.value" 的短路判断 —— 那样会导致
+  // 所有选择（包括新选模型）都被跳过。
+  resetPageAndLoad()
 }
 
 const ERROR_KIND_LABELS: Record<string, string> = {
@@ -810,29 +830,23 @@ async function load() {
   }
 }
 
-function changePage(delta: number) {
-  const max = Math.max(1, Math.ceil(total.value / pageSize.value))
-  const next = page.value + delta
-  if (next < 1 || next > max) return
-  page.value = next
-  load()
-}
+// 2026-09-12: 分页状态收敛到 usePagination + PaginationBar（方案 §4.5.6），
+// 替换原 changePage/resetPageAndLoad 手写实现；resetPageAndLoad 保留原名，
+// 作为全文件 12 处筛选/查询入口的统一别名（语义不变：回第 1 页 + 重拉）。
+const pager = usePagination({ page, pageSize, total, onChange: load })
+const resetPageAndLoad = pager.reset
 
-function resetPageAndLoad() {
-  page.value = 1
-  load()
+function onPageSizeChange(size: number) {
+  pageSize.value = size
+  resetPageAndLoad()
 }
 
 function fmtTs(ts: string) {
-  return new Date(ts).toLocaleString(localeRef.value, { hour12: false })
-}
-
-function fmtDate(ts: string) {
-  return new Date(ts).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+  return formatDateTime(ts, { locale: localeRef.value, options: { hour12: false } })
 }
 
 function fmtTime(ts: string) {
-  return new Date(ts).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return formatTimeOnly(ts, { locale: 'zh-CN', options: { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' } })
 }
 
 function token(v: number | null | undefined, usageSource?: 'llm' | 'estimated' | null) {
@@ -879,9 +893,11 @@ function shortHash(v: string | null | undefined) {
   return v ? `${v.slice(0, 12)}…` : t('requests.none')
 }
 
+const route = useRoute()
+const router = useRouter()
+
 function showDetail(requestId: string) {
-  openDetailWithTrace.value = false
-  activeRequestId.value = requestId
+  openRequestDetailPage(requestId, undefined, router)
 }
 
 function closeDetail() {
@@ -972,13 +988,9 @@ function calcSavingDetail(row: any): { savingStr: string; tokenSavingStr: string
   return { savingStr, tokenSavingStr, msgReductionStr, hasSaving: true }
 }
 
-const route = useRoute()
-
 // super_admin 在每条日志行可直接打开共享请求详情，并展开流程面板。
 function gotoTrace(requestId: string) {
-  if (!requestId) return
-  openDetailWithTrace.value = true
-  activeRequestId.value = requestId
+  openRequestDetailPage(requestId, { tab: 'flow' }, router)
 }
 
 onMounted(async () => {
@@ -1004,7 +1016,7 @@ onMounted(async () => {
     const s = new Date(q.from)
     const e = new Date(q.to)
     if (!isNaN(s.getTime()) && !isNaN(e.getTime())) {
-      customDateRange.value = [s, e]
+      customDateRange.value = [s.toISOString(), e.toISOString()]
     }
   }
   normalizeTimePresetForTenant()
@@ -1056,7 +1068,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div>
+  <div :class="{ 'app-shell--spanning': isSpanning }">
+    <div :class="isSpanning ? 'span-left' : 'rl-contents'">
     <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <h2 style="margin:0">请求日志</h2>
       <div style="display:flex;gap:8px;align-items:center">
@@ -1084,7 +1097,7 @@ onMounted(async () => {
       <span>逐出 {{ bodyCache.evictions }}</span>
     </div>
 
-    <div v-if="!isDefaultTenant()" class="tenant-notice" style="margin-bottom:12px;padding:8px 12px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);border-radius:6px;font-size:12px;color:#3b82f6">
+    <div v-if="!isDefaultTenant()" class="tenant-notice" style="margin-bottom:12px;padding:8px 12px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);border-radius:6px;font-size:12px;color:var(--accent)">
       非 default 租户只能查看最近 3 天的请求日志
     </div>
 
@@ -1162,26 +1175,11 @@ onMounted(async () => {
           </div>
         </div>
         <div class="stats-grid stats-grid--compact" style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">
-          <div class="stat-card stat-card--compact">
-            <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.inputTokenLabel') }}</div>
-            <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.prompt_tokens) }}</div>
-          </div>
-          <div class="stat-card stat-card--compact">
-            <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.outputTokenLabel') }}</div>
-            <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.completion_tokens) }}</div>
-          </div>
-          <div class="stat-card stat-card--compact">
-            <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.cacheReadLabel') }}</div>
-            <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.cache_read_tokens) }}</div>
-          </div>
-          <div class="stat-card stat-card--compact">
-            <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.cacheWriteLabel') }}</div>
-            <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.cache_write_tokens) }}</div>
-          </div>
-          <div class="stat-card stat-card--compact">
-            <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.costLabel') }}</div>
-            <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatCost(aggregate.cost_usd) }}</div>
-          </div>
+          <StatCard compact :label="t('requests.list.filter.inputTokenLabel')" :value="formatStatNumber(aggregate.prompt_tokens)" />
+          <StatCard compact :label="t('requests.list.filter.outputTokenLabel')" :value="formatStatNumber(aggregate.completion_tokens)" />
+          <StatCard compact :label="t('requests.list.filter.cacheReadLabel')" :value="formatStatNumber(aggregate.cache_read_tokens)" />
+          <StatCard compact :label="t('requests.list.filter.cacheWriteLabel')" :value="formatStatNumber(aggregate.cache_write_tokens)" />
+          <StatCard compact :label="t('requests.list.filter.costLabel')" :value="formatStatCost(aggregate.cost_usd)" />
         </div>
       </div>
 
@@ -1265,17 +1263,16 @@ onMounted(async () => {
             <td style="padding:3px 6px;border:1px solid var(--border)">触发 LLM 无损摘要（保留关键事实、路径、ID、错误等）→ 摘要失败时降级为机械裁剪</td>
           </tr>
           <tr>
-            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:#b45309">机械裁剪 (mechanical_trim)</td>
+            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:var(--warning-dark)">机械裁剪 (mechanical_trim)</td>
             <td style="padding:3px 6px;border:1px solid var(--border)">上游 4xx context_length / 滑动窗口摘要失败</td>
             <td style="padding:3px 6px;border:1px solid var(--border)">从最早消息开始逐对裁剪，保留 system + 首条 user + 最近 N 对</td>
           </tr>
           <tr>
-            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:#6d28d9">Memora 注入</td>
+            <td style="padding:3px 6px;border:1px solid var(--border);white-space:nowrap;color:var(--purple)">Memora 注入</td>
             <td style="padding:3px 6px;border:1px solid var(--border)">上下文超限时检索 Memora L1 事实</td>
             <td style="padding:3px 6px;border:1px solid var(--border)">将历史事实作为"动态上下文"注入请求</td>
           </tr>
         </table>
-      </div>
     </div>
 
     <!-- 2026-08-10: 筛选条件区可折叠卡片。
@@ -1435,26 +1432,19 @@ onMounted(async () => {
       </div>
     </div>
 
-    <div v-if="!loading && total > 0" class="pagination-bar">
-      <div class="pagination-info">
-        <span>共 {{ total }} 条</span>
-        <span v-if="total > 0">· 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页</span>
-        <span class="pagination-divider">·</span>
-        <span class="page-size-label">每页</span>
-        <select v-model.number="pageSize" @change="resetPageAndLoad" class="page-size-select">
-          <option :value="50">50</option>
-          <option :value="100">100</option>
-          <option :value="200">200</option>
-          <option :value="500">500</option>
-        </select>
-      </div>
-      <div class="pagination-controls">
-        <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="changePage(-1)">上一页</button>
-        <button class="btn btn-ghost btn-sm" :disabled="page >= Math.ceil(total / pageSize)" @click="changePage(1)">下一页</button>
-      </div>
-    </div>
+    <PaginationBar
+      v-if="!loading && total > 0"
+      :page="page"
+      :page-size="pageSize"
+      :total="total"
+      :page-sizes="[50, 100, 200, 500]"
+      @prev="pager.prev"
+      @next="pager.next"
+      @change-size="onPageSizeChange"
+    />
 
-    <div class="card" style="overflow-x:auto">
+    <div class="card">
+      <DataTable min-width="960px">
       <table class="data-table request-log-table" style="width:100%;font-size:12px">
         <thead>
           <tr>
@@ -1487,7 +1477,7 @@ onMounted(async () => {
               <span class="cell-line1">{{ r.trace_seq ?? t('requests.none') }}</span>
             </td>
             <td class="col-time" :title="`${r.request_id} · ${fmtTs(r.ts)}`">
-              <div class="cell-line1">{{ fmtDate(r.ts) }}</div>
+              <div class="cell-line1">{{ fmtDateCompact(r.ts) }}</div>
               <div class="cell-line2">{{ fmtTime(r.ts) }}</div>
             </td>
             <td class="col-trace" @click.stop="filterByTrace(r)">
@@ -1580,27 +1570,22 @@ onMounted(async () => {
           </tr>
         </tbody>
       </table>
+      </DataTable>
     </div>
 
-    <div v-if="!loading && total > 0" class="pagination-bar">
-      <div class="pagination-info">
-        <span>共 {{ total }} 条</span>
-        <span>· 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页</span>
-        <span class="pagination-divider">·</span>
-        <span class="page-size-label">每页</span>
-        <select v-model.number="pageSize" @change="resetPageAndLoad" class="page-size-select">
-          <option :value="50">50</option>
-          <option :value="100">100</option>
-          <option :value="200">200</option>
-          <option :value="500">500</option>
-        </select>
-      </div>
-      <div class="pagination-controls">
-        <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="changePage(-1)">上一页</button>
-        <button class="btn btn-ghost btn-sm" :disabled="page >= Math.ceil(total / pageSize)" @click="changePage(1)">下一页</button>
-      </div>
-    </div>
+    <PaginationBar
+      v-if="!loading && total > 0"
+      :page="page"
+      :page-size="pageSize"
+      :total="total"
+      :page-sizes="[50, 100, 200, 500]"
+      @prev="pager.prev"
+      @next="pager.next"
+      @change-size="onPageSizeChange"
+    />
 
+    </div>
+    <div :class="isSpanning ? 'span-right request-logs-detail-pane' : 'rl-contents'">
     <RequestLogDrawer
       :request-id="activeRequestId"
       mode="request-logs"
@@ -1610,6 +1595,7 @@ onMounted(async () => {
       @filter-session="onDrawerFilterSession"
       @open-request="onDrawerOpenRequest"
     />
+    </div>
 
     <SessionSummaryDrawer
       :open="summaryDrawerOpen"
@@ -1619,6 +1605,7 @@ onMounted(async () => {
       @filter-session="onDrawerFilterSession"
       @open-request="onDrawerOpenRequest"
     />
+  </div>
   </div>
 </template>
 
@@ -1814,7 +1801,7 @@ onMounted(async () => {
 }
 .compression-badge.strategy-memora_l1_inject {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
-  color: #6d28d9;
+  color: var(--purple);
 }
 .compression-badge.strategy-llm_summary {
   background: var(--info-bg);
@@ -1829,14 +1816,14 @@ onMounted(async () => {
    in the logs table. */
 .compression-badge.strategy-delta_append {
   background: rgba(20, 184, 166, 0.12);
-  color: #0f766e;
+  color: var(--probe-cyan);
   border: 1px solid rgba(20, 184, 166, 0.3);
 }
 .compression-badge.strategy-sliding_window_token,
 .compression-badge.strategy-sliding_window_count,
 .compression-badge.strategy-sliding_window_idle {
   background: color-mix(in srgb, var(--magenta) 12%, transparent);
-  color: #7e22ce;
+  color: var(--magenta);
   border: 1px solid color-mix(in srgb, var(--magenta) 30%, transparent);
 }
 .col-compress {
@@ -1873,64 +1860,8 @@ onMounted(async () => {
 .cell-line1.muted {
   color: var(--text-secondary);
 }
-.pagination-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 12px;
-  padding: 8px 12px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  flex-wrap: nowrap;
-}
-.pagination-info {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--muted);
-  font-size: 12px;
-  flex-wrap: nowrap;
-  white-space: nowrap;
-  flex-shrink: 0;
-  min-width: 0;
-}
-.pagination-controls {
-  display: flex;
-  gap: 8px;
-  flex-wrap: nowrap;
-  flex-shrink: 0;
-}
-.page-size-select {
-  width: auto;
-  min-width: 0;
-  max-width: 96px;
-  padding: 2px 6px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
-  font-size: 12px;
-}
-.page-size-label {
-  color: var(--muted);
-  font-size: 12px;
-}
-.pagination-divider {
-  color: var(--muted);
-  opacity: 0.6;
-}
-@media (max-width: 720px) {
-  .pagination-bar {
-    flex-wrap: wrap;
-  }
-  .pagination-info,
-  .pagination-controls {
-    width: 100%;
-    justify-content: space-between;
-  }
-}
+/* 2026-09-12: .pagination-bar/.page-size-* 样式随分页栏收敛到
+ * components/ui/PaginationBar.vue（标准 768px 断点），此处副本删除。 */
 
 /* v3 compression savings text in the table compression column */
 .cell-line2.saving-text {

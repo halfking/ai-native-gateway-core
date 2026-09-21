@@ -116,14 +116,14 @@ func (e *Exporter) ExportFromTx(ctx context.Context, tx pgx.Tx, sessionID, tenan
 		SELECT
 			rl.id::text, rl.role, rl.parent_request_id,
 			rl.compression_reason, rl.compression_strategy, rl.compression_meta,
-			rl.attachments, rl.created_at,
-			rb.request_body AS request_body,
-			rb.response_body AS response_body,
+			rl.attachments, rl.ts,
+			COALESCE(rb.request_body, ''::jsonb) AS request_body,
+			COALESCE(rb.response_body, ''::jsonb) AS response_body,
 			rl.client_model, rl.outbound_model
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
-		ORDER BY rl.created_at ASC, rl.id ASC
+		ORDER BY rl.ts ASC, rl.id ASC
 	`, sessionID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
@@ -242,14 +242,14 @@ func (e *Exporter) ExportSession(ctx context.Context, sessionID, tenantID string
 		SELECT
 			rl.id::text, rl.role, rl.parent_request_id,
 			rl.compression_reason, rl.compression_strategy, rl.compression_meta,
-			rl.attachments, rl.created_at,
-			rb.request_body AS request_body,
-			rb.response_body AS response_body,
+			rl.attachments, rl.ts,
+			COALESCE(rb.request_body, ''::jsonb) AS request_body,
+			COALESCE(rb.response_body, ''::jsonb) AS response_body,
 			rl.client_model, rl.outbound_model
-		FROM request_logs_with_current_month rl
+ 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
-		ORDER BY rl.created_at ASC, rl.id ASC
+		ORDER BY rl.ts ASC, rl.id ASC
 	`, sessionID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
@@ -428,12 +428,15 @@ func (e *Exporter) ListRecentSessions(ctx context.Context, tenantID string, limi
 // 不修改聚合字段（first_request_at / last_request_at / total_cost_usd 等），
 // 这些字段由 request_logs 触发器自动维护；只覆盖用户语义相关的 title/summary
 // / key_topics/user_intent。
-func (e *Exporter) UpsertSummary(ctx context.Context, sessionID string, result SummaryResult) error {
+func (e *Exporter) UpsertSummary(ctx context.Context, sessionID, tenantID string, result SummaryResult) error {
 	if e == nil || e.store == nil {
 		return ErrorDBUnavailable
 	}
 	if sessionID == "" {
 		return fmt.Errorf("sessionforensics: missing session_id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
 	}
 	if result.Title == "" && result.Summary == "" {
 		return fmt.Errorf("sessionforensics: empty title and summary, refusing to drop existing data")
@@ -449,19 +452,32 @@ func (e *Exporter) UpsertSummary(ctx context.Context, sessionID string, result S
 	}
 
 	// INSERT/UPSERT 不需要 RETURNING；用 Exec 接口
-	_, err := e.store.Query(ctx, `
+	// INSERT/UPSERT 不需要 RETURNING；Store 没有 Exec 接口，走 Query。
+	// R43 (2026-09-18): 迭代器必须排干并 Close——pgx 的 Query 在 rows.Close
+	// 之前一直占住池连接，此前直接丢弃 RowIterator 导致每次调用泄漏一个
+	// 连接（auto 摘要常态写入，池终将耗尽）。
+	it, err := e.store.Query(ctx, `
 		INSERT INTO session_summaries
 			(session_key, tenant_id, first_request_at, last_request_at,
 			 title, summary, key_topics, user_intent)
-		VALUES ($1, 'default', NOW(), NOW(),
-				NULLIF($2, ''), NULLIF($3, ''), $4::text[], NULLIF($5, ''))
+		VALUES ($1, $2, NOW(), NOW(),
+				NULLIF($3, ''), NULLIF($4, ''), $5::text[], NULLIF($6, ''))
 		ON CONFLICT (session_key) DO UPDATE SET
 			title      = COALESCE(EXCLUDED.title,      session_summaries.title),
 			summary    = COALESCE(EXCLUDED.summary,    session_summaries.summary),
 			key_topics = COALESCE(EXCLUDED.key_topics, session_summaries.key_topics),
 			user_intent= COALESCE(EXCLUDED.user_intent,session_summaries.user_intent)
-	`, sessionID, result.Title, result.Summary, topicsArray, userIntent)
-	return err
+	`, sessionID, tenantID, result.Title, result.Summary, topicsArray, userIntent)
+	if err != nil {
+		return err
+	}
+	for it.Next() {
+	}
+	if err := it.Err(); err != nil {
+		_ = it.Close()
+		return err
+	}
+	return it.Close()
 }
 
 // joinForPGArray 把 []string 格式化为 PG text[] 字面量（`a,b,c`）。

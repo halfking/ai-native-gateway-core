@@ -30,6 +30,7 @@ package autoroute
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -229,6 +230,12 @@ func applyTuningParam(snap *tuningSnapshot, key string, value json.RawMessage) e
 		var v float64
 		if err := json.Unmarshal(value, &v); err != nil {
 			return err
+		}
+		// R45（D11 复核）：阈值既驱动"何时升级 LLM"也驱动 R44 的置信度门。
+		// 无 clamp 时 >0.85 的 tuning 会每次白付 fallback 外呼（LLM 槽恒返
+		// 0.85 必被门拒）；≤0 则门形同虚设。钳到 (0,1] 保持 fail-safe。
+		if v <= 0 || v > 1 {
+			return fmt.Errorf("thresholds.llm_confidence %v out of range (0,1]", v)
 		}
 		snap.LLMConfidenceThreshold = v
 	case "thresholds.long_context_tokens":

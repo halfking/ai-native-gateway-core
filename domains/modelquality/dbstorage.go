@@ -3,10 +3,10 @@ package modelquality
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sort"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -86,10 +86,6 @@ func (s *DBStorage) SaveScore(ctx context.Context, score *QualityScore) error {
 	if score.Accuracy <= 0 && score.Stability <= 0 {
 		status = "failed"
 	}
-
-	// 1. Append the run row. Keep the complete benchmark summary so history
-	// remains auditable (question count/correct count/trigger/timestamp are not
-	// derivable from QualityScore alone after the test finishes).
 	benchmarkType := score.BenchmarkType
 	if benchmarkType == "" {
 		benchmarkType = BenchmarkTypeMMLULite
@@ -102,40 +98,93 @@ func (s *DBStorage) SaveScore(ctx context.Context, score *QualityScore) error {
 	if testedAt.IsZero() {
 		testedAt = time.Now()
 	}
+
+	// Keep the append-only history row and latest cache update atomic. A failed
+	// cache write must not leave history claiming a successful persistence.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin save score transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	const insertRun = `
 		INSERT INTO model_iq_runs (
 			credential_id, provider_id, raw_model_name, canonical_id,
 			benchmark_type, total_questions, correct_count, accuracy,
 			stability, latency_p95, overall_score, grade,
 			probe_kind, trigger_kind, status, error, tested_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NULL,$16)`
-	_, err = s.pool.Exec(ctx, insertRun,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`
+	_, err = tx.Exec(ctx, insertRun,
 		score.CredentialID, providerID, rawName, nullableInt64(canonicalID),
 		benchmarkType, score.TotalQuestions, score.CorrectCount, score.Accuracy,
 		nullableFloat(score.Stability), nullableFloat(score.Latency), score.OverallScore,
 		nullableStr(score.Grade), stringOrDefault(string(score.ProbeKind), "direct"),
-		triggerKind, status, testedAt,
+		triggerKind, status, nullableStr(score.Error), testedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert model_iq_runs: %w", err)
 	}
 
-	// Failed runs remain in the audit table but must not replace the node's
-	// latest usable value or distort avg/min/max aggregates.
+	// Failed runs remain in history but must not replace the usable latest cache.
 	if status != "failed" {
-		if err := s.upsertNodeLatest(ctx, score.CredentialID, rawName, score); err != nil {
-			slog.Warn("model_iq: upsert node_iq_latest failed", "err", err,
-				"credential_id", score.CredentialID, "model", rawName)
+		if err := upsertNodeLatest(ctx, tx, score.CredentialID, rawName, score, testedAt); err != nil {
+			return fmt.Errorf("upsert node_iq_latest: %w", err)
 		}
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit save score transaction: %w", err)
+	}
 	if s.optionalBackup != nil {
 		_ = s.optionalBackup.SaveScore(ctx, score)
 	}
 	return nil
 }
 
-// resolveNode looks up provider_id + canonical_id + raw_model_name for a
+// upsertNodeLatest updates scalar latest values only when testedAt is newer,
+// while always recomputing aggregates from the complete successful history.
+func upsertNodeLatest(ctx context.Context, tx pgx.Tx, credentialID int, rawModel string, score *QualityScore, testedAt time.Time) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO node_iq_latest (credential_id, raw_model_name, overall_score, grade,
+		                            sample_count, avg_score, min_score, max_score,
+		                            tested_at, updated_at)
+		VALUES ($1, $2, $3, $4,
+		        (SELECT count(*) FROM model_iq_runs WHERE credential_id=$1 AND raw_model_name=$2 AND status IN ('success','partial')),
+		        (SELECT COALESCE(avg(overall_score), $3) FROM model_iq_runs WHERE credential_id=$1 AND raw_model_name=$2 AND status IN ('success','partial')),
+		        (SELECT COALESCE(min(overall_score), $3) FROM model_iq_runs WHERE credential_id=$1 AND raw_model_name=$2 AND status IN ('success','partial')),
+		        (SELECT COALESCE(max(overall_score), $3) FROM model_iq_runs WHERE credential_id=$1 AND raw_model_name=$2 AND status IN ('success','partial')),
+		        $5, now())
+		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
+		   SET overall_score = CASE WHEN node_iq_latest.tested_at IS NULL OR node_iq_latest.tested_at <= EXCLUDED.tested_at THEN EXCLUDED.overall_score ELSE node_iq_latest.overall_score END,
+		       grade = CASE WHEN node_iq_latest.tested_at IS NULL OR node_iq_latest.tested_at <= EXCLUDED.tested_at THEN EXCLUDED.grade ELSE node_iq_latest.grade END,
+		       tested_at = GREATEST(node_iq_latest.tested_at, EXCLUDED.tested_at),
+		       updated_at = now(),
+		       sample_count = (SELECT count(*) FROM model_iq_runs WHERE credential_id=$1 AND raw_model_name=$2 AND status IN ('success','partial')),
+		       avg_score = (SELECT COALESCE(avg(overall_score), EXCLUDED.overall_score) FROM model_iq_runs WHERE credential_id=$1 AND raw_model_name=$2 AND status IN ('success','partial')),
+		       min_score = (SELECT COALESCE(min(overall_score), EXCLUDED.overall_score) FROM model_iq_runs WHERE credential_id=$1 AND raw_model_name=$2 AND status IN ('success','partial')),
+		       max_score = (SELECT COALESCE(max(overall_score), EXCLUDED.overall_score) FROM model_iq_runs WHERE credential_id=$1 AND raw_model_name=$2 AND status IN ('success','partial'))`,
+		credentialID, rawModel, score.OverallScore, nullableStr(score.Grade), testedAt)
+	return err
+}
+
+// upsertNodeLatest is retained as a small compatibility wrapper for callers
+// inside this package; SaveScore uses the transaction-aware implementation.
+func (s *DBStorage) upsertNodeLatest(ctx context.Context, credentialID int, rawModel string, score *QualityScore) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	testedAt := score.Timestamp
+	if testedAt.IsZero() {
+		testedAt = time.Now()
+	}
+	if err := upsertNodeLatest(ctx, tx, credentialID, rawModel, score, testedAt); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // credential+model. The caller-supplied score.ModelName is usually the raw
 // provider model name; if it doesn't match a binding we fall back to it verbatim.
 func (s *DBStorage) resolveNode(ctx context.Context, score *QualityScore) (providerID, canonicalID int64, rawName string, err error) {
@@ -161,38 +210,6 @@ func (s *DBStorage) resolveNode(ctx context.Context, score *QualityScore) (provi
 		return 0, 0, rawName, fmt.Errorf("resolve node (cred=%d model=%s): %w", score.CredentialID, score.ModelName, err)
 	}
 	return providerID, canonicalID, rawName, nil
-}
-
-// upsertNodeLatest sets the node's latest score and recomputes avg/min/max +
-// sample_count from model_iq_runs so the cache stays self-consistent.
-func (s *DBStorage) upsertNodeLatest(ctx context.Context, credentialID int, rawModel string, score *QualityScore) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO node_iq_latest (credential_id, raw_model_name, overall_score, grade,
-		                            sample_count, avg_score, min_score, max_score,
-		                            tested_at, updated_at)
-		VALUES ($1, $2, $3, $4, 1, $3, $3, $3, now(), now())
-		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
-		  SET overall_score = EXCLUDED.overall_score,
-		      grade         = EXCLUDED.grade,
-		      tested_at     = now(),
-		      updated_at    = now(),
-		      sample_count  = (SELECT count(*) FROM model_iq_runs
-		                        WHERE credential_id=$1 AND raw_model_name=$2
-		                          AND status IN ('success','partial')),
-		      avg_score     = (SELECT COALESCE(avg(overall_score), EXCLUDED.overall_score)
-		                        FROM model_iq_runs
-		                        WHERE credential_id=$1 AND raw_model_name=$2
-		                          AND status IN ('success','partial')),
-		      min_score     = (SELECT COALESCE(min(overall_score), EXCLUDED.overall_score)
-		                        FROM model_iq_runs
-		                        WHERE credential_id=$1 AND raw_model_name=$2
-		                          AND status IN ('success','partial')),
-		      max_score     = (SELECT COALESCE(max(overall_score), EXCLUDED.overall_score)
-		                        FROM model_iq_runs
-		                        WHERE credential_id=$1 AND raw_model_name=$2
-		                          AND status IN ('success','partial'))`,
-		credentialID, rawModel, score.OverallScore, nullableStr(score.Grade))
-	return err
 }
 
 // GetLatestScore returns the most recent QualityScore for a node (or the

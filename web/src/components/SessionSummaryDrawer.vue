@@ -12,6 +12,7 @@ import {
   type SessionSummaryToMemoraResponse,
 } from '../api/logs'
 import { downloadSessionSummaryExport } from '../utils/sessionSummaryExport'
+import { formatDateTime } from '../utils/datetime'
 
 const props = defineProps<{
   open: boolean
@@ -62,7 +63,7 @@ function stepState(id: StepId): StepState {
 }
 
 function fmtTs(ts: string) {
-  return new Date(ts).toLocaleString(localeRef.value, { hour12: false })
+  return formatDateTime(ts, { locale: localeRef.value, options: { hour12: false } })
 }
 
 function shortId(id: string) {
@@ -294,6 +295,7 @@ async function writeMemora() {
 .ssd-panel {
   width: min(720px, 96vw);
   height: 100vh;
+  height: 100dvh;
   overflow-y: auto;
   border-radius: 0;
   padding: 16px 20px 24px;

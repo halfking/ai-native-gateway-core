@@ -18,29 +18,34 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/safehttpclient"
 	"golang.org/x/sync/singleflight"
 )
 
 // LarkBotConfig 飞书机器人配置。
 type LarkBotConfig struct {
-	AppID             string // 应用 ID
-	AppSecret         string // 应用 Secret（敏感）
-	VerificationToken string // 回调验证 Token
-	EncryptKey        string // 回调加密 Key（敏感）
-	BaseURL           string // 可选，默认 https://open.feishu.cn
+	AppID             string   // 应用 ID
+	AppSecret         string   // 应用 Secret（敏感）
+	VerificationToken string   // 回调验证 Token
+	EncryptKey        string   // 回调加密 Key（敏感）
+	BaseURL           string   // 可选，默认 https://open.feishu.cn
+	Allowlist         []string // SSRF 白名单(默认拦私网/回环/元数据端点,自建内网端点放行)
 }
 
 // LarkBotChannel 飞书通知渠道。
 type LarkBotChannel struct {
 	config      LarkBotConfig
-	httpClient  *http.Client
+	httpClient  *safehttpclient.SafeHTTPClient
 	tokenMu     sync.RWMutex
 	accessToken string
 	tokenExpire time.Time
@@ -54,8 +59,11 @@ func NewLarkBotChannel(config LarkBotConfig) *LarkBotChannel {
 		config.BaseURL = "https://open.feishu.cn"
 	}
 	return &LarkBotChannel{
-		config:     config,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		config: config,
+		// 2026-09-08 audit: 与 webhook 渠道(F-6)对齐 — 管理端可配 BaseURL 的
+		// 出口一律走 safehttpclient(拦私网/元数据端点 + DNS 重绑定防御)。
+		// 默认打公有云 API 不受影响;自建内网端点经 config.Allowlist 放行。
+		httpClient: safehttpclient.NewWithAllowlist(30*time.Second, config.Allowlist),
 	}
 }
 
@@ -262,12 +270,70 @@ func (c *LarkBotChannel) refreshAccessToken(ctx context.Context) error {
 	return nil
 }
 
+type larkHTTPError struct {
+	statusCode int
+	retryAfter time.Duration
+	err        error
+}
+
+func (e *larkHTTPError) Error() string { return e.err.Error() }
+func (e *larkHTTPError) Unwrap() error { return e.err }
+
+// failures. Retry policy:
+//   - HTTP 5xx, 408, 429, or net errors: up to 3 retries with 100/500/2000 ms
+//     backoff (Retry-After header respected when present).
+//   - HTTP 200 with Feishu code 99991663 / 99991661 (token expired / invalid):
+//     force one token refresh and retry once.
+//   - Other 4xx: surfaced immediately, no retry (operator error).
 func (c *LarkBotChannel) sendJSON(ctx context.Context, path string, body map[string]any) error {
-	url := c.config.BaseURL + path
 	bs, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("notification: lark marshal: %w", err)
 	}
+	url := c.config.BaseURL + path
+
+	const maxAttempts = 4
+	backoffs := []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond, 2 * time.Second}
+
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			wait := backoffs[attempt]
+			var httpErr *larkHTTPError
+			if errors.As(lastErr, &httpErr) && httpErr.retryAfter > wait {
+				wait = httpErr.retryAfter
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("notification: lark ctx done during backoff: %w", ctx.Err())
+			case <-time.After(wait):
+			}
+		}
+
+		err := c.sendJSONOnce(ctx, url, bs)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		// Only retry on transient signals. Permanent failures (4xx, malformed)
+		// return immediately so we don't loop forever on caller errors.
+		retry, refresh := classifyLarkSendErr(err)
+		if !retry {
+			return err
+		}
+		if refresh {
+			if refreshErr := c.refreshAccessToken(ctx); refreshErr != nil {
+				return fmt.Errorf("notification: lark token refresh after %d: %w (original: %v)", attempt, refreshErr, err)
+			}
+		}
+	}
+	return lastErr
+}
+
+// sendJSONOnce performs a single POST. Returned errors are inspected by
+// classifyLarkSendErr to decide whether to retry.
+func (c *LarkBotChannel) sendJSONOnce(ctx context.Context, url string, bs []byte) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bs))
 	if err != nil {
 		return fmt.Errorf("notification: lark new req: %w", err)
@@ -290,7 +356,11 @@ func (c *LarkBotChannel) sendJSON(ctx context.Context, path string, body map[str
 
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("notification: lark status %d: %s", resp.StatusCode, string(raw))
+		return &larkHTTPError{
+			statusCode: resp.StatusCode,
+			retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+			err:        fmt.Errorf("notification: lark status %d: %s", resp.StatusCode, string(raw)),
+		}
 	}
 
 	var result struct {
@@ -304,6 +374,47 @@ func (c *LarkBotChannel) sendJSON(ctx context.Context, path string, body map[str
 		return fmt.Errorf("notification: lark api: %s (code %d)", result.Msg, result.Code)
 	}
 	return nil
+}
+
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if when, err := http.ParseTime(value); err == nil {
+		if wait := when.Sub(now); wait > 0 {
+			return wait
+		}
+	}
+	return 0
+}
+
+// classifyLarkSendErr returns (retryable?, requiresTokenRefresh?).
+func classifyLarkSendErr(err error) (bool, bool) {
+	if err == nil {
+		return false, false
+	}
+	msg := err.Error()
+	// HTTP transport-level failure (DNS, TCP, TLS, EOF) → retry.
+	if strings.Contains(msg, "lark http:") {
+		return true, false
+	}
+	// HTTP 5xx / 408 / 429 → retry.
+	if strings.Contains(msg, "lark status 5") || strings.Contains(msg, "lark status 408") || strings.Contains(msg, "lark status 429") {
+		return true, false
+	}
+	// Feishu token-expired codes → refresh + retry once.
+	if strings.Contains(msg, "(code 99991663)") || strings.Contains(msg, "(code 99991661)") {
+		return true, true
+	}
+	// HTTP 401 → token refresh + retry once.
+	if strings.Contains(msg, "lark status 401") {
+		return true, true
+	}
+	return false, false
 }
 
 // convertToLarkCard 将通用 InteractiveCard 转为飞书卡片 JSON。

@@ -52,7 +52,14 @@ func (h *Handler) handleCredentialModels(w http.ResponseWriter, r *http.Request,
 }
 
 func (h *Handler) listCredentialModels(w http.ResponseWriter, ctx context.Context, credentialID int) {
-	rows, err := h.db.Query(ctx, offerListSQLFor(ctx, h.db)+`
+	serveListCredentialModels(w, ctx, h.db, credentialID)
+}
+
+// serveListCredentialModels is the offerQuerier seam of the credential-scoped
+// model list, mirroring serveGetProviderModels — same pgxmock testability
+// pattern as provider_offer_force_recover.go.
+func serveListCredentialModels(w http.ResponseWriter, ctx context.Context, db offerQuerier, credentialID int) {
+	rows, err := db.Query(ctx, offerListSQLFor(ctx, db)+`
 		WHERE mo.credential_id = $1
 		ORDER BY mo.raw_model_name
 	`, credentialID)
@@ -70,6 +77,12 @@ func (h *Handler) listCredentialModels(w http.ResponseWriter, ctx context.Contex
 			continue
 		}
 		offers = append(offers, o)
+	}
+	// 2026-09-11 audit: surface mid-iteration failures instead of returning a
+	// silently truncated list (same guard as getProviderModels).
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, offers)
 }
@@ -250,4 +263,3 @@ func (h *Handler) refreshCredentialModels(w http.ResponseWriter, r *http.Request
 		"provider_id":        providerID,
 	})
 }
-

@@ -1,11 +1,24 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 )
+
+func TestResolveWaterfallByRequestMemoryFirst(t *testing.T) {
+	mem := dispatch.WaterfallRequest{RequestID: "r1", Result: "success"}
+	got, source, ok := resolveWaterfallByRequest(context.Background(), mem, true, "r1", "")
+	if !ok || source != "memory" || got.RequestID != "r1" {
+		t.Fatalf("got=%+v source=%s ok=%v", got, source, ok)
+	}
+	_, source, ok = resolveWaterfallByRequest(context.Background(), dispatch.WaterfallRequest{}, false, "missing", "")
+	if ok || source != "none" {
+		t.Fatalf("miss source=%s ok=%v", source, ok)
+	}
+}
 
 func TestMergeWaterfallLists(t *testing.T) {
 	mem := []dispatch.WaterfallRequest{

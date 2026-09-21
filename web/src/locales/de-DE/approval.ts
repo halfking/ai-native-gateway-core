@@ -149,5 +149,7 @@ export default {
       minutes: '{n} Min.',
       hours: '{n} Std.',
     },
-  }
+  },
+  rulesDeleteConfirm: 'Diese Regel löschen?',
+  approversDeleteConfirm: 'Diesen Genehmiger löschen?',
 }

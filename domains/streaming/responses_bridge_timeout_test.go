@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -64,14 +65,14 @@ func TestResponsesBridges_PreCommitTimeoutRemainsResumable(t *testing.T) {
 			name:       "anthropic",
 			wantReason: "chunk_timeout",
 			run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamAnthropicSSEToResponses(w, resp, "claude-test", "claude-test", "req-timeout-anthropic", nil, nil)
+				return StreamAnthropicSSEToResponses(context.Background(), w, resp, "claude-test", "claude-test", "req-timeout-anthropic", nil, nil)
 			},
 		},
 		{
 			name:       "openai",
 			wantReason: "stream_timeout",
 			run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamOpenAIToResponsesSSE(w, resp, "gpt-test", "gpt-test", "req-timeout-openai", nil, nil)
+				return StreamOpenAIToResponsesSSE(context.Background(), w, resp, "gpt-test", "gpt-test", "req-timeout-openai", nil, nil)
 			},
 		},
 	}
@@ -116,14 +117,14 @@ func TestResponsesBridges_PostCommitTimeoutIsNotResumable(t *testing.T) {
 			name: "anthropic",
 			data: "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
 			run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamAnthropicSSEToResponses(w, resp, "claude-test", "claude-test", "req-post-timeout-anthropic", nil, nil)
+				return StreamAnthropicSSEToResponses(context.Background(), w, resp, "claude-test", "claude-test", "req-post-timeout-anthropic", nil, nil)
 			},
 		},
 		{
 			name: "openai",
 			data: "data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
 			run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamOpenAIToResponsesSSE(w, resp, "gpt-test", "gpt-test", "req-post-timeout-openai", nil, nil)
+				return StreamOpenAIToResponsesSSE(context.Background(), w, resp, "gpt-test", "gpt-test", "req-post-timeout-openai", nil, nil)
 			},
 		},
 	}
@@ -166,13 +167,13 @@ func TestResponsesBridge_PostCommitNetworkFailureIsNotResumable(t *testing.T) {
 		{
 			name: "anthropic",
 			run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamAnthropicSSEToResponses(w, resp, "claude-test", "claude-test", "req-post-network-anthropic", nil, nil)
+				return StreamAnthropicSSEToResponses(context.Background(), w, resp, "claude-test", "claude-test", "req-post-network-anthropic", nil, nil)
 			},
 		},
 		{
 			name: "openai",
 			run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamOpenAIToResponsesSSE(w, resp, "gpt-test", "gpt-test", "req-post-network-openai", nil, nil)
+				return StreamOpenAIToResponsesSSE(context.Background(), w, resp, "gpt-test", "gpt-test", "req-post-network-openai", nil, nil)
 			},
 		},
 	} {
@@ -206,7 +207,7 @@ func TestResponsesBridge_NoSemanticNetworkFailureRemainsResumable(t *testing.T) 
 		Request: httptest.NewRequest(http.MethodPost, "http://gateway.test/v1/stream", nil),
 	}
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-test", "claude-test", "req-pre-network-anthropic", nil, nil)
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-test", "claude-test", "req-pre-network-anthropic", nil, nil)
 	require.True(t, out.Interrupted)
 	require.Equal(t, "network_error", out.Reason)
 	require.True(t, out.Resumable)

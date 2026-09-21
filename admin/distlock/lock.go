@@ -25,7 +25,6 @@ const (
 const (
 	releaseChannelSuffix = ":release"
 	defaultTTL           = 60 * time.Second
-	minimumTTL           = 30 * time.Millisecond
 	handshakeTimeout     = 3 * time.Second
 )
 
@@ -71,17 +70,14 @@ const renewScript = `if redis.call('GET', KEYS[1]) == ARGV[1] then
 end
 return 0`
 
-type RedisManager struct{ rdb redis.UniversalClient }
+type RedisManager struct{ rdb *redis.Client }
 
-func NewRedisManager(rdb redis.UniversalClient) *RedisManager { return &RedisManager{rdb: rdb} }
-func (m *RedisManager) Enabled() bool                         { return m != nil && m.rdb != nil }
+func NewRedisManager(rdb *redis.Client) *RedisManager { return &RedisManager{rdb: rdb} }
+func (m *RedisManager) Enabled() bool                 { return m != nil && m.rdb != nil }
 
 func normalizeTTL(ttl time.Duration) time.Duration {
 	if ttl <= 0 {
 		return defaultTTL
-	}
-	if ttl < minimumTTL {
-		return minimumTTL
 	}
 	return ttl
 }
@@ -175,7 +171,7 @@ func (m *RedisManager) Acquire(ctx context.Context, opts AcquireOpts) (h *Handle
 }
 
 type redisBackend struct {
-	rdb   redis.UniversalClient
+	rdb   *redis.Client
 	key   string
 	token string
 	ttl   time.Duration
@@ -332,59 +328,17 @@ func newTerminalFollower(key, scope string, err error) *Handle {
 	return h
 }
 
-func (h *Handle) startRedisWatcher(rdb redis.UniversalClient) {
+func (h *Handle) startRedisWatcher(rdb *redis.Client) {
 	go func() {
-		remaining := h.ttl
-		timer := time.NewTimer(remaining)
+		timer := time.NewTimer(h.ttl)
 		defer timer.Stop()
-		resetTimer := func(next time.Duration) {
-			if next <= 0 {
-				next = time.Millisecond
-			}
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(next)
-		}
-		checkState := func() (time.Duration, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
-			defer cancel()
-			value, err := rdb.Get(ctx, h.key).Result()
-			if errors.Is(err, redis.Nil) {
-				return 0, ErrTTLExpired
-			}
-			if err != nil {
-				return 0, fmt.Errorf("distlock: follower expiry recheck %q: %w", h.key, err)
-			}
-			if value != h.expectedToken {
-				return 0, ErrLockReplaced
-			}
-			pttl, err := rdb.PTTL(ctx, h.key).Result()
-			if err != nil {
-				return 0, fmt.Errorf("distlock: follower expiry PTTL %q: %w", h.key, err)
-			}
-			if pttl == -1*time.Millisecond {
-				return 0, ErrPTTLInvalid
-			}
-			if pttl == -2*time.Millisecond || pttl <= 0 {
-				return 0, ErrTTLExpired
-			}
-			return pttl, nil
-		}
 		for {
 			select {
 			case <-h.terminalDone:
 				return
 			case <-timer.C:
-				next, err := checkState()
-				if err != nil {
-					h.finish(err)
-					return
-				}
-				resetTimer(next)
+				h.finish(ErrTTLExpired)
+				return
 			case msg, ok := <-h.channel:
 				if !ok {
 					h.finish(ErrPubSubClosed)

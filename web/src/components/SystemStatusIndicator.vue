@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
-import { getHealth, getBackgroundTasksStatus, type HealthResponse, type BackgroundTasksStatus } from '../api/system'
+import { getHealth, getReadyz, getBackgroundTasksStatus, type HealthResponse, type BackgroundTasksStatus } from '../api/system'
 import { isAuthenticated } from '../store'
 
 const health = ref<HealthResponse | null>(null)
@@ -82,6 +82,21 @@ const aliveTasksCount = computed(() => {
   return { alive, total: tasks.length }
 })
 
+// 2026-09-03: T 徽章三态 (authenticated + alive=true → ok; authenticated + 部分 alive → warning;
+// unauthenticated or fetch failed → unknown with explanatory tooltip). 之前 `:class="ok"` 直接绑 `alive === total`
+// 让 unauthenticated 用户的 T 一直保持灰，运维误以为 tasks 都挂了。
+const tasksBadgeState = computed<'ok' | 'warning' | 'unknown'>(() => {
+  if (aliveTasksCount.value === null) return 'unknown'
+  return aliveTasksCount.value.alive === aliveTasksCount.value.total ? 'ok' : 'warning'
+})
+
+const tasksBadgeTitle = computed(() => {
+  if (aliveTasksCount.value === null) {
+    return 'Tasks (登录后查看)'
+  }
+  return `Tasks (${aliveTasksCount.value.alive}/${aliveTasksCount.value.total} alive)`
+})
+
 function formatLatency(latency?: string): string {
   if (!latency) return ''
   // Convert "1.234567ms" to "1.2ms"
@@ -115,32 +130,22 @@ async function loadStatus() {
   error.value = null
 
   try {
-    // Load health. 2026-07-10: always use ?full=true so the SPA can render
-    // the database/redis sub-status (the basic /healthz only returns
-    // status/version). The /healthz?full=true endpoint requires an admin JWT,
-    // which the SPA auto-attaches via _core.ts headers() when store.jwtToken
-    // is set (authBearer() returns it). If the user is not logged in
-    // (no JWT, no cookie), the call returns 401 and we fall back to the
-    // public basic healthz for status/version display.
-    //
-    // 2026-08-24: when the SPA knows the visitor is unauthenticated, skip
-    // the authenticated calls entirely instead of firing guaranteed 401s
-    // every 30s — this indicator mounts on every page (incl. public
-    // /?login=1) and was a top source of the 96k/day /api 401 storm.
-    const authed = isAuthenticated()
-    if (authed) {
-      try {
-        health.value = await getHealth(true)
-      } catch (e) {
-        // 401 or network error → fall back to public basic /healthz
-        console.warn('full healthz unavailable, falling back to basic', e)
-        health.value = await getHealth()
-      }
-    } else {
-      health.value = await getHealth()
+    // Load basic health (public endpoint) - returns status, version, Ready flag
+    // Load readiness (public endpoint) - returns database/redis connectivity
+    const [healthRes, readyRes] = await Promise.all([
+      getHealth(),
+      getReadyz(),
+    ])
+
+    // Merge: use health for status/version, readyRes for database/redis details
+    health.value = {
+      ...healthRes,
+      database: readyRes.database,
+      redis: readyRes.redis,
     }
 
-    // Load background tasks (admin-only endpoint — authed visitors only)
+    // Load background tasks (admin endpoint — requires user JWT auth)
+    const authed = isAuthenticated()
     if (authed) {
       try {
         bgTasks.value = await getBackgroundTasksStatus()
@@ -183,7 +188,11 @@ onUnmounted(() => {
       <span class="compact-indicator" :class="{ ok: health?.status === 'ok' }" title="Gateway">G</span>
       <span class="compact-indicator" :class="{ ok: health?.database?.connected }" title="Database">D</span>
       <span class="compact-indicator" :class="{ ok: health?.redis?.connected }" title="Redis">R</span>
-      <span class="compact-indicator" :class="{ ok: aliveTasksCount && aliveTasksCount.alive === aliveTasksCount.total }" title="Tasks">T</span>
+      <span
+        class="compact-indicator"
+        :class="{ ok: tasksBadgeState === 'ok', warning: tasksBadgeState === 'warning', unknown: tasksBadgeState === 'unknown' }"
+        :title="tasksBadgeTitle"
+      >T</span>
     </div>
 
     <Teleport to="body">
@@ -305,6 +314,24 @@ onUnmounted(() => {
   background: var(--success-soft);
   color: var(--success);
   border-color: var(--success);
+}
+
+/* 2026-09-03: 三态徽章（ok/warning/unknown），替代之前 `unknown === grey` 的视觉缺陷。
+   设计 token（--warning / --warning-bg / --bg-hover）已在 web/src/style.css 全局定义，
+   这里不带 hex fallback — 否则会被 src/components/color-token-compliance.test.ts
+   抓到硬编码颜色（在 light/dark 切换时也会漏出"不一致的"色块）。 */
+.compact-indicator.warning {
+  background: var(--warning-bg, var(--bg-hover));
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.compact-indicator.unknown {
+  background: var(--bg-hover);
+  color: var(--muted);
+  border-color: var(--border);
+  /* dotted 边框提示"未鉴权 / 未采集"，避免与"已挂"混淆 */
+  border-style: dashed;
 }
 
 .status-dropdown {

@@ -51,7 +51,7 @@ func ParseAnthropic(body []byte) (*InternalRequest, error) {
 		if !knownFields[key] && len(value) > 0 && string(value) != "null" {
 			extensions[key] = value
 			// Step 4.10 (2026-07-28): parse-time unknown-field anomaly.
-			ReportUnknownField("unknown", ProtocolAnthropicMessages, key, nil)
+			ReportParseUnknownField("unknown", ProtocolAnthropicMessages, key, nil)
 		}
 	}
 
@@ -292,12 +292,6 @@ func parseAnthropicMessage(msg map[string]any) (*Message, error) {
 		irMsg.ToolCallID = toolCallID
 	}
 
-	// Handle source (for tool role results that aren't in content blocks)
-	if source, ok := msg["source"].(string); ok {
-		// This is a special case for some Anthropic responses
-		_ = source
-	}
-
 	return irMsg, nil
 }
 
@@ -376,7 +370,12 @@ func parseAnthropicContentBlocks(blocks []any) ([]ContentBlock, error) {
 			irBlock.Thinking = &ThinkingBlock{Thinking: thinking, Signature: sig}
 
 		case "redacted_thinking":
-			if rt, ok := blockMap["thinking"].(string); ok {
+			// A-#17 (audit round2): the real wire format is
+			// {"type":"redacted_thinking","data":"..."}; fall back to the
+			// legacy "thinking" key for IR rows persisted by older builds.
+			if rt, ok := blockMap["data"].(string); ok {
+				irBlock.RedactedThinking = rt
+			} else if rt, ok := blockMap["thinking"].(string); ok {
 				irBlock.RedactedThinking = rt
 			}
 
@@ -459,7 +458,9 @@ func parseAnthropicContentBlock(blockMap map[string]any) *ContentBlock {
 			irBlock.Thinking = &ThinkingBlock{Thinking: thinking, Signature: sig}
 		}
 	case "redacted_thinking":
-		if rt, ok := blockMap["thinking"].(string); ok {
+		if rt, ok := blockMap["data"].(string); ok {
+			irBlock.RedactedThinking = rt
+		} else if rt, ok := blockMap["thinking"].(string); ok {
 			irBlock.RedactedThinking = rt
 		}
 	}
@@ -476,6 +477,8 @@ func parseAnthropicImageBlock(block map[string]any) *ImageSource {
 		img.MediaType, _ = source["media_type"].(string)
 		img.URL, _ = source["url"].(string)
 		img.Data, _ = source["data"].(string)
+		// Anthropic Files API: {"type":"file","file_id":"file_..."}
+		img.FileID, _ = source["file_id"].(string)
 	}
 
 	return img
@@ -497,6 +500,8 @@ func parseAnthropicDocumentBlock(block map[string]any) *DocumentBlock {
 		doc.Source.Type, _ = source["type"].(string)
 		doc.Source.MediaType, _ = source["media_type"].(string)
 		doc.Source.Data, _ = source["data"].(string)
+		// Anthropic Files API: {"type":"file","file_id":"file_..."}
+		doc.Source.FileID, _ = source["file_id"].(string)
 		if url, ok := source["url"].(string); ok {
 			doc.Source.URL = url
 			doc.Source.Data = url // legacy projection; serializers prefer URL
@@ -644,6 +649,12 @@ func parseAnthropicDocuments(raw json.RawMessage) ([]Document, error) {
 				doc.Source.MediaType, _ = source["media_type"].(string)
 				doc.Source.Data, _ = source["data"].(string)
 				doc.Source.URL, _ = source["url"].(string)
+				// A-#18(a): Anthropic Files API top-level documents carry
+				// {"type":"file","file_id":"file_..."} — same shape as the
+				// message-level document block (parseAnthropicDocumentBlock).
+				// Without this the file_id was dropped and the round trip
+				// emitted a truncated {"source":{"type":"file"}}.
+				doc.Source.FileID, _ = source["file_id"].(string)
 			}
 
 			if cc, ok := docMap["cache_control"].(map[string]any); ok {

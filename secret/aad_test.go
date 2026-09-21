@@ -1,8 +1,8 @@
 package secret
 
 import (
-	"bytes"
 	"errors"
+	"bytes"
 	"strings"
 	"testing"
 )

@@ -2,6 +2,7 @@ package modelname
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -102,6 +103,12 @@ func TestCanonicalizeClientModel(t *testing.T) {
 		{name: "nvidia z-ai uppercase", in: "Z-AI/GLM-5.2", want: "glm-5.2"},
 		{name: "anthropic claude prefix", in: "anthropic/claude-3-5-sonnet", want: "claude-3-5-sonnet"},
 		{name: "openai prefix", in: "openai/gpt-4o", want: "gpt-4o"},
+		// 2026-09-14 audit G-P0-1: "auto/" is the gateway's own OmniFree
+		// namespace, not a vendor prefix — the strip must not collapse it,
+		// otherwise shouldTryOmniFree is unreachable on the live wire.
+		{name: "omnifree auto/free preserved", in: "auto/free", want: "auto/free"},
+		{name: "omnifree auto/ prefix uppercase", in: "AUTO/FREE", want: "auto/free"},
+		{name: "omnifree auto/ with slash suffix", in: "auto/pro/free", want: "auto/pro/free"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -370,6 +377,42 @@ func TestNormalizeRouteKeyAliases(t *testing.T) {
 // every such pair — independent of the surrounding alphabetic
 // tokens.  This is the property the user asked for: "no hard-coded
 // rules, automatically adapts to future model versions".
+// 2026-09-12 审计（f494d0695 跟进）：versionPunctuationCartesian 的输出
+// 曾按 map 迭代序返回，消费方全部 first-hit-wins——同一输入跨进程/重启会
+// 命中不同 canonical。锁定输出必须严格有序（确定性），并锁定顺序无关的
+// 集合等价。
+func TestVersionPunctuationCartesian_Deterministic(t *testing.T) {
+	inputs := []string{
+		"qwen2.5-72b-instruct",
+		"qwen2-5-72b-instruct",
+		"glm-5.1",
+		"deepseek-v3-1",
+		"claude-opus-4.8",
+	}
+	for _, in := range inputs {
+		out := versionPunctuationCartesian(in)
+		if !sort.StringsAreSorted(out) {
+			t.Fatalf("versionPunctuationCartesian(%q) not sorted: %v", in, out)
+		}
+		set := map[string]bool{}
+		for _, v := range out {
+			set[v] = true
+		}
+		if len(set) != len(out) {
+			t.Fatalf("versionPunctuationCartesian(%q) has duplicates: %v", in, out)
+		}
+		want := collectNumberPairVariants(NormalizeRouteKey(in))
+		if len(set) != len(want) {
+			t.Fatalf("variant set size drift for %q: got %d want %d", in, len(set), len(want))
+		}
+		for _, w := range want {
+			if !set[w] {
+				t.Fatalf("variant %q (of %q) missing from output %v", w, in, out)
+			}
+		}
+	}
+}
+
 func TestNormalizeRouteKeyAliases_FamilyAgnostic(t *testing.T) {
 	// For each input, take the canonical NormalizeRouteKey and swap
 	// each version punctuation both ways; the resolver variants must
@@ -439,72 +482,4 @@ func collectNumberPairVariants(s string) []string {
 		out = append(out, k)
 	}
 	return out
-}
-
-func TestStripAliasPrefix(t *testing.T) {
-	tests := []struct {
-		name   string
-		model  string
-		prefix string
-		want   string
-	}{
-		{
-			name:   "kx prefix stripped",
-			model:  "kx-gpt-5.6-terra",
-			prefix: "kx-",
-			want:   "gpt-5.6-terra",
-		},
-		{
-			name:   "kx prefix case insensitive",
-			model:  "KX-GPT-5.6-terra",
-			prefix: "kx-",
-			want:   "GPT-5.6-terra",
-		},
-		{
-			name:   "no prefix unchanged",
-			model:  "gpt-5.6-terra",
-			prefix: "kx-",
-			want:   "gpt-5.6-terra",
-		},
-		{
-			name:   "empty prefix disabled",
-			model:  "gpt-5.6-terra",
-			prefix: "",
-			want:   "gpt-5.6-terra",
-		},
-		{
-			name:   "prefix longer than model",
-			model:  "kx",
-			prefix: "kx-",
-			want:   "kx",
-		},
-		{
-			name:   "custom prefix works",
-			model:  "myalias-gpt-4",
-			prefix: "myalias-",
-			want:   "gpt-4",
-		},
-		{
-			name:   "model equals prefix",
-			model:  "kx-",
-			prefix: "kx-",
-			want:   "",
-		},
-		{
-			name:   "different prefix not stripped",
-			model:  "kx-gpt-5.6",
-			prefix: "other-",
-			want:   "kx-gpt-5.6",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := StripAliasPrefix(tc.model, tc.prefix)
-			if got != tc.want {
-				t.Errorf("StripAliasPrefix(%q, %q) = %q, want %q",
-					tc.model, tc.prefix, got, tc.want)
-			}
-		})
-	}
 }

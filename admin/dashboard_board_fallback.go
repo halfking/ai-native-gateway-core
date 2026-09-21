@@ -99,7 +99,7 @@ func (h *Handler) fallbackBoardTrends(ctx context.Context, tenantID string, tr b
 
 func (h *Handler) fallbackBoardPies(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, error) {
 	types := map[string]string{
-		"clients":         "client_profile",
+		"clients":         "agent_name",
 		"virtual_ips":     "virtual_ip",
 		"identity_hashes": "identity_hash",
 		"models":          "model",
@@ -165,7 +165,15 @@ func (h *Handler) fallbackDimPie(ctx context.Context, tenantID string, tr boardT
 func fallbackDimGroupExpr(alias, dimType string) (expr string, onlyFailures bool) {
 	unknown := "'__unknown__'"
 	switch dimType {
+	case "agent_name":
+		// 2026-09-03 (audit closure): the dashboard 'clients' pie reads
+		// from the agent_name column (canonical client-type identifier)
+		// rather than client_profile (legacy device-fingerprint column).
+		return fmt.Sprintf("COALESCE(NULLIF(%s.agent_name, ''), %s)", alias, unknown), false
 	case "client_profile":
+		// Legacy dim kept for backward-compat with operators comparing
+		// old vs new tagging. Once enough history accumulates under
+		// agent_name the live 'clients' path drops this case.
 		return fmt.Sprintf("COALESCE(NULLIF(%s.client_profile, ''), %s)", alias, unknown), false
 	case "virtual_ip":
 		return fmt.Sprintf("COALESCE(NULLIF(%s.virtual_ip, ''), %s)", alias, unknown), false
@@ -204,8 +212,11 @@ func (h *Handler) fallbackErrorDrill(
 	switch dimension {
 	case "provider":
 		groupExpr = fmt.Sprintf("COALESCE(%s.provider_id::text, '__unknown__')", alias)
-	case "client", "client_profile":
-		groupExpr = fmt.Sprintf("COALESCE(NULLIF(%s.client_profile, ''), '__unknown__')", alias)
+	// 2026-09-03 (audit closure): the error drill-down's "client" dimension
+	// now prefers agent_name (canonical client-type identifier) and falls
+	// back to client_profile for legacy rows that pre-date the rename.
+	case "client", "client_profile", "agent_name":
+		groupExpr = fmt.Sprintf("COALESCE(NULLIF(%s.agent_name, ''), COALESCE(NULLIF(%s.client_profile, ''), '__unknown__'))", alias, alias)
 	default:
 		groupExpr = fmt.Sprintf("COALESCE(NULLIF(%s.client_model, ''), NULLIF(%s.outbound_model, ''), '__unknown__')", alias, alias)
 	}
