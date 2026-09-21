@@ -817,10 +817,15 @@ EOF
     # 2026-09-19 加速：--cache-from 复用上一版本镜像的层 —— 即使
     # Dockerfile 改了应用代码，只要 BASE_IMAGE/go.mod/go.sum 这几层哈希一致
     # 就能跳过重编，缩短增量构建 30-70%。失败不致命（无旧镜像也能继续）。
+    # R51 审计 P3：cache-from 不能引用正在创建的同版本 tag（对新版本永远
+    # miss），改用固定的 cache-latest tag —— build 成功后 docker tag 打上，
+    # 下一版本即可命中旧层。
+    local cache_tag="kx-llm-gateway-local:cache-latest"
     docker build -q --build-arg "BASE_IMAGE=$image" \
-      --cache-from "kx-llm-gateway-local:${RELEASE_VERSION}" \
+      --cache-from "$cache_tag" \
       -f "$image_file" -t "kx-llm-gateway-local:${RELEASE_VERSION}" "$bundle" >/dev/null \
       || dl_die "docker build for runtime image failed (tag=kx-llm-gateway-local:${RELEASE_VERSION})"
+    docker tag "kx-llm-gateway-local:${RELEASE_VERSION}" "$cache_tag" >/dev/null 2>&1 || true
     local runtime_env="$RUN_DIR/${name}.env"
     cp "$bundle/env" "$runtime_env"; chmod 0600 "$runtime_env"
     sed -i.bak -E \

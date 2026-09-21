@@ -720,6 +720,25 @@ upload_release() {
   ok "bundle 上传完成"
 }
 
+# carry_forward_web_remote <new_version>
+# --no-frontend 语义修正（2026-09-22）：把刚上传 release 的 web/ 用线上
+# current 发布的 web 原样顶替，避免把检出陈旧 web/dist 发布上线。
+# 返回 0=已顶替；1=无法顶替（无 current / current 即新版本 / current 无
+# web / 远端拷贝失败），调用方降级保留 staged web 并 warn。
+carry_forward_web_remote() {
+  local new_version=$1
+  local probe
+  probe=$(remote_ssh "cur=\$(readlink -f '$REMOTE_ROOT/current' 2>/dev/null || true); new=\$(readlink -f '$REMOTE_ROOT/releases/$new_version' 2>/dev/null || true); if [ -n \"\$cur\" ] && [ \"\$cur\" != \"\$new\" ] && [ -d \"\$cur/web\" ] && [ -f \"\$cur/web/index.html\" ]; then echo \"OK:\$cur\"; else echo NO; fi" 2>/dev/null || true)
+  if [[ "$probe" != OK:* ]]; then
+    return 1
+  fi
+  local cur_rel=${probe#OK:}
+  remote_ssh "set -e; rm -rf '$REMOTE_ROOT/releases/$new_version/web'; cp -a '$cur_rel/web' '$REMOTE_ROOT/releases/$new_version/web'; chown -R root:root '$REMOTE_ROOT/releases/$new_version/web'" \
+    || return 1
+  log "[carry-forward] web ← $cur_rel"
+  return 0
+}
+
 # ── 子命令: deploy ─────────────────────────────────────────────
 do_deploy() {
   local version bundle_dir deploy_start
@@ -821,7 +840,7 @@ do_deploy() {
     (cd web && npm run build 2>&1 | tail -5)
     ok "web/dist 已生成"
   else
-    warn "跳过前端 (--no-frontend)，仅更新二进制"
+    warn "跳过前端构建 (--no-frontend)：web 不取检出的 web/dist，上传后用线上 current 发布原样顶替"
   fi
   # 陈旧二进制三重防线（同 deploy-local.sh build_backend，bc6e696b3）：
   # 1) 构建前 rm -f 旧产物（见上）2) 显式检查 go build 退出码，失败立即
@@ -924,6 +943,21 @@ do_deploy() {
   # 5. upload
   log "[5/9] upload → $TARGET"
   upload_release "$bundle_dir" "$version" || { err "上传失败，中止"; exit 1; }
+
+  # 5.5 --no-frontend carry-forward（2026-09-22 总览页陈旧事故根修）：
+  # 跳过前端构建时，staged bundle 的 web/ 来自检出的 web/dist——检出 dist
+  # 可能长期未重建（245 检出 dist 停在 V3.2 之前的构建，连续 --no-frontend
+  # 部署把线上前端整体回退了一个多月，总览页丢失「按处理队列」）。
+  # 正确语义：--no-frontend = "二进制更新，web 沿用线上"。SHA256SUMS 只覆盖
+  # 二进制/version/VERSION/configs、不覆盖 web，远端原样顶替安全。首次部署
+  # （无 current）时保留 staged web 并显式 warn。
+  if [[ "$SKIP_FRONTEND" == "true" ]]; then
+    if carry_forward_web_remote "$version"; then
+      ok "--no-frontend: web 已沿用线上 current 发布"
+    else
+      warn "--no-frontend: 线上无可用 current web，保留检出 staged web（可能陈旧）"
+    fi
+  fi
 
   # 6. verify (远端 sha256)
   log "[6/9] verify bundle (sha256)"

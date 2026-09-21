@@ -1318,7 +1318,8 @@ func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []b
 	// message_start.usage.input_tokens;非流式路径此前没有等价兜底,一旦上游
 	// usage 在管线中丢失,Claude Code 拿到恒 0 的 input_tokens 会系统性低估
 	// 上下文,压缩过晚直至溢出。这里与流式同源同值(executors 估算器),
-	// 仅在最终 usage 全 0 且估算非 0 时补 input_tokens。
+	// 仅在 input_tokens 缺失/为 0 且估算非 0 时补(R51 放宽: 不再要求
+	// output_tokens 也为 0; usage 键整体缺失时构造对象), 真实上报永不覆盖。
 	if inputEstimate > 0 {
 		anthropicBody = patchAnthropicUsageInput(anthropicBody, inputEstimate)
 	}
@@ -1331,28 +1332,33 @@ func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []b
 	return anthropicBody
 }
 
-// patchAnthropicUsageInput 把全 0 的 usage.input_tokens 替换为请求体估算值。
-// body 非 Anthropic 消息形状、usage 缺失或 input_tokens 非 0 时原样返回;
-// 重marshal 失败也原样返回(兜底路径永不劣化主路径)。
+// patchAnthropicUsageInput 把缺失或为 0 的 usage.input_tokens 替换为请求体
+// 估算值。body 非 Anthropic 消息形状、usage 无法解析时原样返回; input_tokens
+// 已非 0(上游真实上报, 计费路径)时绝不覆盖——无论 output_tokens 是否为 0,
+// 只看 input; 上游响应完全没有 usage 键(或为 null)时构造一个仅含估算
+// input 的 usage 对象。重marshal 失败也原样返回(兜底路径永不劣化主路径)。
 func patchAnthropicUsageInput(body []byte, inputEstimate int) []byte {
 	var resp map[string]json.RawMessage
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return body
 	}
-	usageRaw, ok := resp["usage"]
-	if !ok {
-		return body
+	usage := map[string]any{}
+	if usageRaw, ok := resp["usage"]; ok {
+		if err := json.Unmarshal(usageRaw, &usage); err != nil {
+			return body
+		}
+		if usage == nil { // "usage": null — treat as absent
+			usage = map[string]any{}
+		}
 	}
-	var usage map[string]any
-	if err := json.Unmarshal(usageRaw, &usage); err != nil {
-		return body
-	}
-	in, _ := usage["input_tokens"].(float64)
-	out, _ := usage["output_tokens"].(float64)
-	if in != 0 || out != 0 {
+	if in, _ := usage["input_tokens"].(float64); in != 0 {
 		return body
 	}
 	usage["input_tokens"] = inputEstimate
+	if _, ok := usage["output_tokens"]; !ok {
+		// Constructed-from-scratch usage keeps the Anthropic shape.
+		usage["output_tokens"] = 0
+	}
 	patched, err := json.Marshal(usage)
 	if err != nil {
 		return body

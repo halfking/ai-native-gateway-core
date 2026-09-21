@@ -3,6 +3,7 @@ package reqprobe
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -235,6 +236,84 @@ func TestMemoryStoreFIFOCap(t *testing.T) {
 	_, total, _ := s.List(ctx, Filter{})
 	if total > MemoryMaxRecords {
 		t.Fatalf("total = %d exceeds cap", total)
+	}
+}
+
+// countingStore 包装 MemoryStore，统计 LearnedParams 回源次数并阻塞首次
+// 调用，用于验证 Coordinator 缓存回源的 singleflight 合并（R51 审计 P3）。
+type countingStore struct {
+	*MemoryStore
+	mu       sync.Mutex
+	calls    int
+	release  chan struct{}
+	released bool
+}
+
+func (s *countingStore) LearnedParams(ctx context.Context, providerCode, outboundModel string) []string {
+	s.mu.Lock()
+	s.calls++
+	release := s.release
+	s.mu.Unlock()
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+	}
+	return s.MemoryStore.LearnedParams(ctx, providerCode, outboundModel)
+}
+
+func TestCoordinatorLearnedParamsSingleflight(t *testing.T) {
+	s := &countingStore{MemoryStore: NewMemoryStore(), release: make(chan struct{})}
+	ctx := context.Background()
+	rec := Record{ProviderCode: "xai", OutboundModel: "grok-4.6", Trigger: TriggerParamRejected,
+		Param: "reasoning_effort", HTTPStatus: 400, ErrorKind: "client_bug", RecoveredCount: 1}
+	if _, err := s.Upsert(ctx, rec); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	c := NewCoordinator(s)
+	defer c.Close()
+
+	const n = 16
+	var wg sync.WaitGroup
+	results := make([][]string, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = c.LearnedParams(ctx, "xai", "grok-4.6")
+		}(i)
+	}
+	// 让全部 goroutine 进入回源（首个调用阻塞在 release 上），再放行。
+	waitFor(t, func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.calls >= 1
+	})
+	time.Sleep(50 * time.Millisecond) // 给并发请求进入 singleflight 等待的窗口
+	close(s.release)
+	wg.Wait()
+
+	s.mu.Lock()
+	calls := s.calls
+	s.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("LearnedParams store calls = %d, want 1 (singleflight must merge)", calls)
+	}
+	for i, got := range results {
+		if len(got) != 1 || got[0] != "reasoning_effort" {
+			t.Fatalf("result[%d] = %v, want [reasoning_effort]", i, got)
+		}
+	}
+
+	// 命中缓存：不再回源。
+	_ = c.LearnedParams(ctx, "xai", "grok-4.6")
+	s.mu.Lock()
+	calls = s.calls
+	s.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("cached call re-fetched store (calls=%d)", calls)
 	}
 }
 

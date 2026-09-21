@@ -89,3 +89,75 @@ func TestGetTurnsMetaEmpty(t *testing.T) {
 		t.Fatalf("GetTurnsMeta = %v, want 非 nil 空切片", metas)
 	}
 }
+
+// TestTurnDetailsRetryIdempotentByRequestID（R51, 2026-09-21）：lite sink 的
+// journal 链非原子（details 写点在 markJournaled 之前），失败重试会以新轮号
+// 重写同一 request_id。details 的幂等键是 UNIQUE(tenant_id, request_id)，
+// UPSERT 冲突目标必须覆盖该唯一索引：重试不得撞唯一索引报错（否则
+// telemetry 侧永久失败至 failPermanent），也不得产生重复行。
+func TestTurnDetailsRetryIdempotentByRequestID(t *testing.T) {
+	db := openTestDB(t)
+	store := NewSQLiteTurnsStore(db)
+	ctx := context.Background()
+
+	base := time.Date(2026, 9, 21, 8, 0, 0, 0, time.UTC)
+	first := &storage.TurnDetails{
+		TenantID:   "tenant-a",
+		SessionID:  "sess-1",
+		TurnNo:     1,
+		RequestID:  "req-1",
+		Timestamp:  base,
+		Model:      "model-a",
+		Success:    &[]bool{true}[0],
+		StatusCode: 200,
+		LatencyMs:  100,
+	}
+	if err := store.WriteTurnDetails(ctx, first); err != nil {
+		t.Fatalf("首次写入 details: %v", err)
+	}
+
+	// 模拟失败重试：链路非原子导致轮号推进为 2，同一 request_id 再写。
+	retry := &storage.TurnDetails{
+		TenantID:   "tenant-a",
+		SessionID:  "sess-1",
+		TurnNo:     2,
+		RequestID:  "req-1",
+		Timestamp:  base.Add(time.Second),
+		Model:      "model-b",
+		Success:    &[]bool{true}[0],
+		StatusCode: 200,
+		LatencyMs:  200,
+	}
+	if err := store.WriteTurnDetails(ctx, retry); err != nil {
+		t.Fatalf("重试写入 details（不应撞 request_id 唯一索引）: %v", err)
+	}
+
+	var (
+		turnNo    int
+		model     string
+		latencyMs int
+	)
+	if err := db.QueryRow(
+		`SELECT turn_no, model, latency_ms FROM session_turn_details WHERE tenant_id = ? AND request_id = ?`,
+		"tenant-a", "req-1",
+	).Scan(&turnNo, &model, &latencyMs); err != nil {
+		t.Fatalf("读回 details: %v", err)
+	}
+	var n int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM session_turn_details WHERE tenant_id = ? AND session_id = ?`,
+		"tenant-a", "sess-1",
+	).Scan(&n); err != nil {
+		t.Fatalf("统计 details 行数: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("details 行数 = %d, want 1（重试不得产生重复行）", n)
+	}
+	// 轮号保持首写锚点，特征列覆盖为重试的最新值。
+	if turnNo != 1 {
+		t.Fatalf("turn_no = %d, want 1（幂等键为 (tenant, request)，轮号不随重试迁移）", turnNo)
+	}
+	if model != "model-b" || latencyMs != 200 {
+		t.Fatalf("特征未覆盖为最新值: model=%s latency_ms=%d, want model-b/200", model, latencyMs)
+	}
+}

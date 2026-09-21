@@ -106,8 +106,10 @@ var standardResponseFields = map[string]bool{
 }
 
 // isStandardResponseField 报告字段名是否是响应体的协议标准字段。
+// 与 isStandardField 一致做 ToLower/TrimSpace 归一化（R51 审计 P3），
+// 避免带空白/大小写抖动的键绕过响应侧过滤。
 func isStandardResponseField(field string) bool {
-	return standardResponseFields[field]
+	return standardResponseFields[strings.ToLower(strings.TrimSpace(field))]
 }
 
 // irHandledFields 缓存注册表的 IR 已处理字段集合。
