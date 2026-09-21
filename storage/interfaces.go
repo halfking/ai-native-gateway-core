@@ -43,6 +43,13 @@ type TurnsStore interface {
 	GetTurnsMeta(ctx context.Context, tenantID, sessionID string) ([]*TurnMeta, error)
 }
 
+// TurnDetailsWriter 会话轮次特征层写点（会话存储解耦 v3，可选能力）。
+// 由 SQLiteTurnsStore 实现（Lite 链路）；实现方缺席时消费方跳过特征写，
+// 元数据/正文路径不受影响。
+type TurnDetailsWriter interface {
+	WriteTurnDetails(ctx context.Context, d *TurnDetails) error
+}
+
 // RequestLogStore 请求日志存储。
 type RequestLogStore interface {
 	WriteRequest(ctx context.Context, req *RequestLog) error

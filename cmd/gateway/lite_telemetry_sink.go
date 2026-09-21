@@ -30,10 +30,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/kaixuan/llm-gateway-go/storage"
 )
 
@@ -52,6 +54,9 @@ type liteRequestLogSink struct {
 	// lister 可选：body 侧的 turn 清单（FileBodiesStore 实现），用于重启后
 	// 续排轮号。工厂返回的接口不保证实现它，缺失时退化为进程内计数。
 	lister storage.BodiesLister
+	// detailsWriter 可选：turn 特征层写点（会话存储解耦 v3，SQLite
+	// session_turn_details）。turns store 未实现该可选接口时跳过。
+	detailsWriter storage.TurnDetailsWriter
 
 	mu          sync.Mutex
 	nextTurn    map[string]int      // "tenant/session" → 下一轮号（1 起）
@@ -79,6 +84,10 @@ func (r *storageRuntime) newLiteRequestLogSink() *liteRequestLogSink {
 	}
 	if lister, ok := bodies.(storage.BodiesLister); ok {
 		s.lister = lister
+	}
+	// 会话存储解耦 v3：SQLite turns store 实现了可选特征层写点即接线。
+	if dw, ok := s.turns.(storage.TurnDetailsWriter); ok {
+		s.detailsWriter = dw
 	}
 	return s
 }
@@ -113,24 +122,28 @@ func (s *liteRequestLogSink) PersistRequestLog(ctx context.Context, entry *telem
 		(reqBody != "" || respBody != "") &&
 		!s.alreadyJournaled(entry.RequestID)
 
-	// 1) request_logs 行
-	row := &storage.RequestLog{
-		RequestID:  entry.RequestID,
-		TenantID:   tenantID,
-		SessionID:  sessionID,
-		Timestamp:  eventAt,
-		Method:     "POST", // 网关业务端点均为 POST（chat/embeddings/responses）
-		Path:       strPtrValue(entry.ClientEndpoint),
-		StatusCode: liteEntryStatusCode(entry),
-		Duration:   time.Duration(intPtrValue(entry.LatencyMs)) * time.Millisecond,
-	}
-	if journal {
-		// has_body 仅在 body 文件确实会落盘时置位，避免悬空标记
-		// （request_logs 行读回 Body 恒 nil，由 bodies store 按 session+turn 读）。
-		row.Body = json.RawMessage("{}")
-	}
-	if err := s.logs.WriteRequest(ctx, row); err != nil {
-		return fmt.Errorf("lite sink: request_logs %s: %w", entry.RequestID, err)
+	// 1) request_logs 行 —— S4 停写门控（storage.request_logs_write_enabled，
+	// 与 Full 链路 PG request_logs 同门）：关停后 Lite 仅保留会话族
+	// （sessions + turns + details + body 文件），日志读端走 session_logs_view。
+	if settings.GetPlatformBool("storage.request_logs_write_enabled", true) {
+		row := &storage.RequestLog{
+			RequestID:  entry.RequestID,
+			TenantID:   tenantID,
+			SessionID:  sessionID,
+			Timestamp:  eventAt,
+			Method:     "POST", // 网关业务端点均为 POST（chat/embeddings/responses）
+			Path:       strPtrValue(entry.ClientEndpoint),
+			StatusCode: liteEntryStatusCode(entry),
+			Duration:   time.Duration(intPtrValue(entry.LatencyMs)) * time.Millisecond,
+		}
+		if journal {
+			// has_body 仅在 body 文件确实会落盘时置位，避免悬空标记
+			//（request_logs 行读回 Body 恒 nil，由 bodies store 按 session+turn 读）。
+			row.Body = json.RawMessage("{}")
+		}
+		if err := s.logs.WriteRequest(ctx, row); err != nil {
+			return fmt.Errorf("lite sink: request_logs %s: %w", entry.RequestID, err)
+		}
 	}
 	if !journal {
 		return nil
@@ -175,6 +188,31 @@ func (s *liteRequestLogSink) PersistRequestLog(ctx context.Context, entry *telem
 		CompletionTokens:    intPtrValue(entry.CompletionTokens),
 	}); err != nil {
 		return fmt.Errorf("lite sink: turn meta %s/%s#%d: %w", tenantID, sessionID, turnNo, err)
+	}
+	// 会话存储解耦 v3：turn 特征层（模型/路由/质量/请求分类），
+	// 与 turn meta 同轮写；写点缺席（旧 turns store）时跳过。
+	if s.detailsWriter != nil {
+		if err := s.detailsWriter.WriteTurnDetails(ctx, &storage.TurnDetails{
+			TenantID:     tenantID,
+			SessionID:    sessionID,
+			TurnNo:       turnNo,
+			RequestID:    entry.RequestID,
+			Timestamp:    eventAt,
+			Model:        strPtrValue(entry.OutboundModel),
+			ClientModel:  strPtrValue(entry.ClientModel),
+			CredentialID: intPtrStr(entry.CredentialID),
+			Success:      &entry.Success,
+			StatusCode:   intPtrValue(entry.UpstreamStatusCode),
+			ErrorKind:    strPtrValue(entry.ErrorKind),
+			LatencyMs:    intPtrValue(entry.LatencyMs),
+			CostUSD:      floatPtrValue(entry.CostUSD),
+			RequestType:  strPtrValue(entry.RequestType),
+			RequestClass: strPtrValue(entry.RequestClass),
+			QualityFlags: entry.QualityFlags,
+			Attachments:  entry.Attachments,
+		}); err != nil {
+			return fmt.Errorf("lite sink: turn details %s/%s#%d: %w", tenantID, sessionID, turnNo, err)
+		}
 	}
 	s.markJournaled(entry.RequestID)
 	return nil
@@ -309,6 +347,23 @@ func strPtrValue(p *string) string {
 
 // intPtrValue 解引用 *int，nil 返回 0。
 func intPtrValue(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// intPtrStr 解引用 *int 为十进制字符串，nil 返回空串（TurnDetails 的
+// credential_id 文本投影）。
+func intPtrStr(p *int) string {
+	if p == nil || *p == 0 {
+		return ""
+	}
+	return strconv.Itoa(*p)
+}
+
+// floatPtrValue 解引用 *float64，nil 返回 0。
+func floatPtrValue(p *float64) float64 {
 	if p == nil {
 		return 0
 	}

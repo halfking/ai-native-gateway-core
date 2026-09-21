@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // csv.go — bulk CSV export/import of task-type corrections, closing the data
@@ -34,6 +36,20 @@ const CorrectionCSVHeader = "request_id,auto_task_type,human_task_type,agrees,cl
 // correctionCSVTime is the canonical timestamp layout (RFC3339; parse is
 // lenient via time.RFC3339 after trimming).
 const correctionCSVTime = time.RFC3339
+
+// csvFieldMaxLen caps any single CSV string field. Pure garbage guard for
+// bulk files: the admin API is authenticated and all SQL is parameterized,
+// but a 2 MB annotator name still should not reach the scanner.
+const csvFieldMaxLen = 512
+
+// csvString trims and length-caps one CSV field.
+func csvString(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if len(v) > csvFieldMaxLen {
+		return "", fmt.Errorf("field exceeds %d bytes", csvFieldMaxLen)
+	}
+	return v, nil
+}
 
 // ExportCorrectionsCSV streams all corrections since `since` (limit rows) as
 // CSV into w. Pure formatting over Recent — no extra SQL.
@@ -171,13 +187,24 @@ func parseCorrectionRecord(rec []string) (CorrectionImportRow, error) {
 	if len(rec) != 9 {
 		return CorrectionImportRow{}, fmt.Errorf("want 9 columns, got %d", len(rec))
 	}
-	trim := func(i int) string { return strings.TrimSpace(rec[i]) }
+	trim := func(i int) (string, error) { return csvString(rec[i]) }
+	requestID, err0 := trim(0)
+	autoType, err1 := trim(1)
+	humanType, err2 := trim(2)
+	annotator, err3 := trim(6)
+	reason, err4 := trim(7)
+	profile, err5 := trim(5)
+	for i, e := range []error{err0, err1, err2, err3, err4, err5} {
+		if e != nil {
+			return CorrectionImportRow{}, fmt.Errorf("column %d: %w", i, e)
+		}
+	}
 	row := CorrectionImportRow{
-		RequestID:     trim(0),
-		AutoTaskType:  trim(1),
-		HumanTaskType: trim(2),
-		Annotator:     trim(6),
-		Reason:        trim(7),
+		RequestID:     requestID,
+		AutoTaskType:  autoType,
+		HumanTaskType: humanType,
+		Annotator:     annotator,
+		Reason:        reason,
 	}
 	if row.RequestID == "" {
 		return CorrectionImportRow{}, errors.New("request_id required")
@@ -194,9 +221,13 @@ func parseCorrectionRecord(rec []string) (CorrectionImportRow, error) {
 	if !IsValidReason(row.Reason) {
 		return CorrectionImportRow{}, fmt.Errorf("reason %q invalid; valid: %s", row.Reason, reasonsCSV())
 	}
-	agrees, err := strconv.ParseBool(trim(3))
+	agreeStr, aerr := trim(3)
+	if aerr != nil {
+		return CorrectionImportRow{}, fmt.Errorf("column 3: %w", aerr)
+	}
+	agrees, err := strconv.ParseBool(agreeStr)
 	if err != nil {
-		return CorrectionImportRow{}, fmt.Errorf("agrees %q must be true/false", trim(3))
+		return CorrectionImportRow{}, fmt.Errorf("agrees %q must be true/false", agreeStr)
 	}
 	row.Agrees = agrees
 	// Freeze the verdict semantics: agrees must match the labels.
@@ -204,17 +235,17 @@ func parseCorrectionRecord(rec []string) (CorrectionImportRow, error) {
 		return CorrectionImportRow{}, fmt.Errorf("agrees=%v contradicts auto=%q human=%q",
 			agrees, row.AutoTaskType, row.HumanTaskType)
 	}
-	if v := trim(4); v != "" {
+	if v, terr := trim(4); terr == nil && v != "" {
 		f, err := strconv.ParseFloat(v, 64)
 		if err != nil || f < 0 || f > 1 {
 			return CorrectionImportRow{}, fmt.Errorf("classifier_confidence %q must be a float in [0,1]", v)
 		}
 		row.Confidence = &f
 	}
-	if v := trim(5); v != "" {
-		row.Profile = &v
+	if profile != "" {
+		row.Profile = &profile
 	}
-	if v := trim(8); v != "" {
+	if v, terr := trim(8); terr == nil && v != "" {
 		t, err := time.Parse(correctionCSVTime, v)
 		if err != nil {
 			return CorrectionImportRow{}, fmt.Errorf("created_at %q must be RFC3339", v)
@@ -229,23 +260,40 @@ func parseCorrectionRecord(rec []string) (CorrectionImportRow, error) {
 // ImportCorrectionsCSV parses and inserts; existing request_ids are skipped.
 // Returns the import summary for the API response.
 func (s *CorrectionStore) ImportCorrectionsCSV(ctx context.Context, r io.Reader, maxRows int) (ImportResultSummary, error) {
+	if s.pool == nil {
+		return ImportResultSummary{}, errors.New("taskprofile: no DB pool")
+	}
 	rows, rowErrs, err := ParseCorrectionsCSV(r, maxRows)
 	if err != nil {
 		return ImportResultSummary{}, err
 	}
-	if s.pool == nil {
-		return ImportResultSummary{}, errors.New("taskprofile: no DB pool")
-	}
 	summary := ImportResultSummary{TotalRows: len(rows) + len(rowErrs), RowErrors: rowErrs}
+	if len(rows) == 0 {
+		return summary, nil
+	}
+
+	const insertSQL = `
+		INSERT INTO task_type_corrections
+			(request_id, auto_task_type, human_task_type, agrees,
+			 classifier_confidence, profile, annotator, reason, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (request_id) DO NOTHING
+	`
+	// 2026-09-19 audit: the per-row Exec loop paid one RTT per row (a 10k-row
+	// file would take minutes on a contended shared DB); a single pgx.Batch
+	// pays one. Per-row accounting still works: pgx returns batch results in
+	// queue order, each with its own CommandTag.
+	batch := &pgx.Batch{}
 	for _, row := range rows {
-		tag, err := s.pool.Exec(ctx, `
-			INSERT INTO task_type_corrections
-				(request_id, auto_task_type, human_task_type, agrees,
-				 classifier_confidence, profile, annotator, reason, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-			ON CONFLICT (request_id) DO NOTHING
-		`, row.RequestID, row.AutoTaskType, row.HumanTaskType, row.Agrees,
+		batch.Queue(insertSQL,
+			row.RequestID, row.AutoTaskType, row.HumanTaskType, row.Agrees,
 			row.Confidence, row.Profile, row.Annotator, row.Reason, row.CreatedAt)
+	}
+	br := s.pool.SendBatch(ctx, batch)
+	defer br.Close()
+
+	for _, row := range rows {
+		tag, err := br.Exec()
 		if err != nil {
 			summary.RowErrors = append(summary.RowErrors,
 				CorrectionRowError{Message: fmt.Sprintf("insert %s: %v", row.RequestID, err)})
@@ -305,15 +353,26 @@ func (s *CorrectionStore) ApplySuggestions(ctx context.Context, taskTypes []stri
 		}
 	}
 	applied := make([]AppliedTierConfig, 0, len(taskTypes))
+	if len(taskTypes) == 0 {
+		return applied, nil
+	}
+	// 2026-09-19 audit: a mid-loop failure used to leave a partial write
+	// (some types applied, others not). All-or-nothing via one transaction.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tier-config tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	for _, tt := range taskTypes {
 		if !IsValidTaskType(tt) {
-			return applied, fmt.Errorf("unknown task_type %q", tt)
+			return nil, fmt.Errorf("unknown task_type %q", tt)
 		}
 		sug := Suggest(tt, 1.0, stats)
 		// R43 (2026-09-18): ON CONFLICT 推断必须匹配表的**真实**唯一索引
 		// （deploy V370：tenant_id BIGINT + COALESCE(tenant_id, 0) 哨兵）。
 		// 原来按 202609_02 的 COALESCE(tenant_id,'') 推断，真表上 42P10。
-		tag, err := s.pool.Exec(ctx, `
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO task_type_tier_config
 				(task_type, preferred_tier, fallback_tiers, min_confidence, tenant_id, enabled, description)
 			VALUES ($1, $2, $3, $4, NULL, TRUE, $5)
@@ -325,17 +384,18 @@ func (s *CorrectionStore) ApplySuggestions(ctx context.Context, taskTypes []stri
 				description = EXCLUDED.description,
 				updated_at = NOW()
 		`, tt, sug.Tier, sug.FallbackTiers, sug.MinConfidence,
-			fmt.Sprintf("taskprofile suggestion (source=%s, registry=%s)", sug.TierSource, SnapshotVersion()))
-		if err != nil {
-			return applied, fmt.Errorf("upsert task_type_tier_config %s: %w", tt, err)
+			fmt.Sprintf("taskprofile suggestion (source=%s, registry=%s)", sug.TierSource, SnapshotVersion())); err != nil {
+			return nil, fmt.Errorf("upsert task_type_tier_config %s: %w", tt, err)
 		}
-		_ = tag
 		applied = append(applied, AppliedTierConfig{
 			TaskType:      tt,
 			PreferredTier: sug.Tier,
 			MinConfidence: sug.MinConfidence,
 			TierSource:    sug.TierSource,
 		})
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit tier-config tx: %w", err)
 	}
 	return applied, nil
 }

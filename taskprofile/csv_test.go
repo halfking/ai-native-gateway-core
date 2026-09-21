@@ -56,6 +56,9 @@ func TestParseCorrectionsCSV_Rejections(t *testing.T) {
 		"duplicate in file":  CorrectionCSVHeader + "\n" + validCSVRow("req-1", "coding", "coding", "true") + "\n" + validCSVRow("req-1", "chat", "chat", "true") + "\n",
 		"empty request_id":   CorrectionCSVHeader + "\n" + validCSVRow("", "coding", "coding", "true") + "\n",
 		"empty auto_task":    CorrectionCSVHeader + "\n" + validCSVRow("req-1", "", "coding", "false") + "\n",
+		// 2026-09-19 audit: 单字段超过 csvFieldMaxLen(512) 必须整行拒绝，
+		// 防止 bulk 文件里的病态长字段进入扫描器。
+		"oversize field": CorrectionCSVHeader + "\n" + validCSVRow("req-1", strings.Repeat("coding", 100), "coding", "false") + "\n",
 	}
 	for name, payload := range cases {
 		rows, errs, err := ParseCorrectionsCSV(strings.NewReader(payload), 100)

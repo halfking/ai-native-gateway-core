@@ -121,7 +121,7 @@ func (l *PassiveProbeListener) resetCountersOnSuccess(ctx context.Context) {
 			-- profiles BUSINESS traffic; probe rows would both arm and
 			-- reset streaks for models probes touch.
 			FROM request_logs_with_current_month rl
-			WHERE ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
+			WHERE `+fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")+`
 			  AND rl.success = TRUE
 			  AND rl.ts > NOW() - INTERVAL '5 minutes'
 			  AND rl.credential_id IS NOT NULL
@@ -192,7 +192,7 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		  -- R50: dual-arm probe exclusion — a probe's own upstream failure
 		  -- is real, but feeding it back here re-arms probes on probe-only
 		  -- traffic (the same self-reinforcement INV-3 closed for usage).
-		  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
+		  AND `+fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")+`
 		  AND rl.credential_id IS NOT NULL
 		  AND rl.outbound_model IS NOT NULL
 		  AND pps.credential_id IS NULL
@@ -227,7 +227,7 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		    -- business traffic only (consistent with Step 1 above).
 		    FROM request_logs_with_current_month rl
 		    WHERE rl.ts > NOW() - INTERVAL '5 minutes'
-		      AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
+		      AND `+fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")+`
 		      AND rl.credential_id IS NOT NULL
 		      AND rl.outbound_model IS NOT NULL
 		    GROUP BY rl.credential_id, COALESCE(rl.outbound_model, rl.client_model)
