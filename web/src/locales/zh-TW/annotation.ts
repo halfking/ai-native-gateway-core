@@ -144,7 +144,6 @@ export default {
     count: '次數',
     percentage: '百分比',
     distribution: '分佈',
-    distribution: '分佈',
     taskCorrections: '任務類型修正統計（taskprofile）',
     exportCsv: '匯出 CSV',
     exporting: '匯出中...',

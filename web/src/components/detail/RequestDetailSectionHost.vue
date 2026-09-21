@@ -25,7 +25,6 @@ defineProps<{
   attempts: WaterfallAttempt[]
   waterfallLoading: boolean
   waterfallError: string
-  waterfallSource: string
 }>()
 
 const emit = defineEmits<{
@@ -55,7 +54,6 @@ const emit = defineEmits<{
       :attempts="attempts"
       :loading="waterfallLoading"
       :error="waterfallError"
-      :source="waterfallSource"
     />
     <RequestWaterfallPanel
       v-else-if="section === 'attempts'"

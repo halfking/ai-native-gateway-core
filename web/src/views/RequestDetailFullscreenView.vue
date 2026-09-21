@@ -32,7 +32,7 @@ const loader = useRequestDetailLoader()
 const {
   metaLoading, metaError, log, unified, sessionSnap, sessionId,
   requestBody, responseBody, outboundBody, waterfallLoading, waterfallError,
-  waterfall, waterfallSource, attempts, loadMeta, onSectionNeed, dispose,
+  waterfall, attempts, loadMeta, onSectionNeed, dispose,
 } = loader
 
 const requestId = computed(() => String(route.params.requestId || '').trim())
@@ -73,34 +73,6 @@ watch(viewMode, (mode) => {
 
 onUnmounted(() => dispose())
 
-async function onSelectTurn(rid: string) {
-  if (rid === requestId.value) return
-  await router.replace({
-    name: 'request-detail',
-    params: { requestId: rid },
-    query: { ...route.query, mode: 'session-turns' },
-  })
-}
-
-function openAsRequest(rid: string) {
-  viewMode.value = 'request'
-  void router.replace({
-    name: 'request-detail',
-    params: { requestId: rid },
-    query: { tab: section.value, mode: 'request' },
-  })
-}
-
-function switchMode(mode: ViewMode) {
-  if (mode === 'session-turns' && !sessionId.value) return
-  viewMode.value = mode
-  void router.replace({
-    name: 'request-detail',
-    params: { requestId: requestId.value },
-    query: { ...route.query, mode },
-  })
-}
-
 function goBack() {
   if (window.history.length > 1) router.back()
   else void router.push('/request-logs')
@@ -115,23 +87,41 @@ function openSession() {
   if (sid) void router.push(`/admin/sessions/${encodeURIComponent(sid)}`)
 }
 
+function replaceRequestDetailRoute(
+  requestId: string,
+  mode: ViewMode,
+  tab: DetailSection,
+) {
+  return router.replace({
+    name: 'request-detail',
+    params: { requestId },
+    // Request-detail authorization comes from the authenticated tenant context,
+    // not a URL query. Keep this route contract deliberately narrow so stale
+    // session/list query state cannot leak into a request-detail transition.
+    query: { mode, tab },
+  })
+}
+
+async function onSelectTurn(rid: string) {
+  if (rid === requestId.value) return
+  await replaceRequestDetailRoute(rid, 'session-turns', section.value)
+}
+
+function openAsRequest(rid: string) {
+  viewMode.value = 'request'
+  void replaceRequestDetailRoute(rid, 'request', section.value)
+}
+
+function switchMode(mode: ViewMode) {
+  if (mode === 'session-turns' && !sessionId.value) return
+  viewMode.value = mode
+  void replaceRequestDetailRoute(requestId.value, mode, section.value)
+}
+
 function gotoSection(s: DetailSection) {
   section.value = s
   viewMode.value = 'request'
-  // 2026-08-30: pin the navigation to the request-detail route, the active
-  // requestId, mode=request, and the target tab. Spreading route.query
-  // alone can drop the param when previous queries (e.g. mode=session-turns)
-  // overwrite the requestId-derived path and the router resolves to the
-  // dashboard root.
-  // 2026-09-19: Only preserve tenant query param to avoid carrying over
-  // stale query params that might interfere with routing.
-  const query: Record<string, string> = { mode: 'request', tab: s }
-  if (route.query.tenant) query.tenant = String(route.query.tenant)
-  void router.replace({
-    name: 'request-detail',
-    params: { requestId: requestId.value },
-    query,
-  })
+  void replaceRequestDetailRoute(requestId.value, 'request', s)
 }
 
 function onSummaryUpdated(snap: Record<string, unknown>) {
@@ -267,7 +257,6 @@ const snapGeneratedAt = computed(() => {
           :attempts="attempts"
           :waterfall-loading="waterfallLoading"
           :waterfall-error="waterfallError"
-          :waterfall-source="waterfallSource"
           @goto="gotoSection"
         />
       </div>
