@@ -79,6 +79,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/secret"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 const (
@@ -661,13 +663,52 @@ func (w *NodeProbeWorker) Stop() {
 	})
 }
 
+// nodeProbeLoop 退避参数（loop 的 panic 自动重启策略）。
+const (
+	// R50 引入：panic 重启按 30s 起步、5min 封顶的指数退避。
+	nodeProbeLoopInitialBackoff = 30 * time.Second
+	nodeProbeLoopMaxBackoff     = 5 * time.Minute
+	// R51 审计 P3：loopOnce 只在 panic 或 ctx/stop 时返回，"健康运行"只能
+	// 用运行时长度量。上一轮存活 ≥3 个 tick（90s，真正干过活）后的 panic
+	// 视作偶发故障——退避重置到起步值，不再被历史 panic 序列把重启间隔
+	// 永久钉在封顶值。
+	nodeProbeLoopHealthyRunAge = 3 * nodeProbeTickInterval
+)
+
+// nodeProbeWorkerRestartsTotal 统计 loop panic 自动重启次数（R51 审计 P3）。
+// 只增不减：健康运行重置的是退避，不是计数——用于发现反复 panic 的 worker。
+var nodeProbeWorkerRestartsTotal = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "llmgw_node_probe_worker_restarts_total",
+	Help: "Total number of node_probe_worker loop restarts after a recovered panic.",
+})
+
+// nextProbeLoopBackoff 计算 panic 重启后的下一次退避：上一轮健康运行足够久
+// 则重置到起步值；否则翻倍、封顶。（原实现无健康重置，且封顶判断有误——
+// 240s<5min 会翻成 8min——本函数把封顶修正为真正的 min(×2, 5min)。）
+func nextProbeLoopBackoff(prevBackoff, previousRun time.Duration) time.Duration {
+	if previousRun >= nodeProbeLoopHealthyRunAge {
+		return nodeProbeLoopInitialBackoff
+	}
+	if prevBackoff < nodeProbeLoopMaxBackoff {
+		if next := prevBackoff * 2; next < nodeProbeLoopMaxBackoff {
+			return next
+		}
+	}
+	return nodeProbeLoopMaxBackoff
+}
+
 // loop 是 loopOnce 的守护包装（R50 审计 P3）：原实现 recover 后直接返回，
 // 探测一旦 panic 即静默停摆且无任何调度面感知。现 panic 后按 30s 起步、
 // 5min 封顶的指数退避自动重启；ctx 取消 / Stop 时正常退出。
+// R51 审计 P3：重启打 Prometheus 计数 + 带累计值/上轮时长的日志；健康运行
+// （≥3 tick）后的 panic 重置退避。
 func (w *NodeProbeWorker) loop(ctx context.Context) {
-	backoff := 30 * time.Second
+	backoff := nodeProbeLoopInitialBackoff
+	restarts := 0
 	for {
+		started := time.Now()
 		w.loopOnce(ctx)
+		ran := time.Since(started)
 		select {
 		case <-ctx.Done():
 			return
@@ -675,9 +716,15 @@ func (w *NodeProbeWorker) loop(ctx context.Context) {
 			return
 		case <-time.After(backoff):
 		}
-		if backoff < 5*time.Minute {
-			backoff *= 2
-		}
+		// 能走到这里说明上一轮 loopOnce 是 panic 退出（正常退出只经由
+		// ctx/stop，那两个分支已在上面 return）。
+		restarts++
+		nodeProbeWorkerRestartsTotal.Inc()
+		backoff = nextProbeLoopBackoff(backoff, ran)
+		slog.Warn("node_probe_worker: loop restarted after recovered panic",
+			"restarts_total", restarts,
+			"previous_run", ran.Round(time.Second),
+			"next_backoff", backoff)
 	}
 }
 

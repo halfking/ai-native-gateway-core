@@ -249,13 +249,15 @@ func recordHotTableOldestRowAge(table string, ageSeconds float64) {
 // R48 §五#3：观测 sessions 族 TTL 裁决前置——需要知道每张表的最旧
 // 行落在哪一列。本映射必须与 sql/migrations 中对应表的 CREATE 保持一致，
 // 添加新 hot 表时必须同步更新此处。
+// R51 (2026-09-21)：移除 harness_hot / session_audit_logs_hot /
+// probe_feedback_hot 三条映射——仓库中无这三张表的建表/写入路径（幽灵表），
+// 留在白名单里只会让本映射与实际 CREATE 的"必须一致"契约失真。
 func hotTableTSColumn(label string) string {
 	switch label {
 	case "session_turns_hot", "session_memora_hot", "session_censors_hot",
 		"session_tools_hot", "session_bodies_hot", "session_module_executions_hot",
 		"auto_route_selections_hot", "candidate_failure_logs_hot",
-		"dashboard_access_events_hot", "harness_hot", "session_last_requests",
-		"session_audit_logs_hot", "probe_feedback_hot":
+		"dashboard_access_events_hot", "session_last_requests":
 		return "created_at"
 	default:
 		return "ts"

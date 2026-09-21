@@ -186,9 +186,20 @@ func (w *CredentialSelfcheckWorker) loop(ctx context.Context) {
 		case <-w.stopCh:
 			return
 		case <-ticker.C:
-			w.cycleOnce(ctx)
+			w.cycleOnceRecovered(ctx)
 		}
 	}
+}
+
+// cycleOnceRecovered 守护单轮 selfcheck cycle（R51 审计 P2：loop goroutine
+// 原先无任何 recover，单次 panic 即整进程崩溃）——panic 记日志后 tick 循环继续。
+func (w *CredentialSelfcheckWorker) cycleOnceRecovered(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("credential_selfcheck_worker: cycle panic recovered", "recover", rec)
+		}
+	}()
+	w.cycleOnce(ctx)
 }
 
 func (w *CredentialSelfcheckWorker) cycleOnce(ctx context.Context) {

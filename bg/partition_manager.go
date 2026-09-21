@@ -1012,6 +1012,11 @@ func promoteSpecs() []archiveSpec {
 // `promoteBatchSize` rows (caller loops) or 0 rows (caller breaks
 // out). On error we log and move to the next table so one broken
 // function does not starve the others.
+//
+// R51 (2026-09-21): the promoteCycleMaxBatches budget is shared across all
+// tables, but each table is guaranteed at least one batch per cycle even
+// after the budget is exhausted — otherwise late-ordered specs (e.g.
+// session_turn_details_hot) starve behind large backlogged tables.
 // promoteLockKey returns a stable advisory-lock key for a hot-table label.
 // Both gateway instances (e.g. 245 + 154) share the same PostgreSQL, so two
 // concurrent hourly promote cycles can race the same *_hot table and one
@@ -1038,14 +1043,17 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 	}
 	cycleCtx, cycleCancel := context.WithTimeout(ctx, promoteCycleTimeout)
 	defer cycleCancel()
+	// R51 (2026-09-21)：batches 是全周期共享预算，排位靠后的表（如
+	// session_turn_details_hot，promoteSpecs 第 10 位）在前序大表积压耗尽
+	// 预算后整个周期颗粒无收。改为每表保底至少 1 批：预算耗尽后，尚未跑过
+	// 批的表仍允许再跑一批才让位；外层循环因此遍历全部 spec，不再提前 break。
 	batches := 0
-	budgetExhausted := false
 	for _, s := range promoteSpecs() {
 		retention, batchSize := resolvePromoteConfig(s.label)
 		lockKey := promoteLockKey(s.label)
+		tableRanBatch := false
 		for {
-			if cycleCtx.Err() != nil || batches >= promoteCycleMaxBatches {
-				budgetExhausted = true
+			if cycleCtx.Err() != nil || (batches >= promoteCycleMaxBatches && tableRanBatch) {
 				break
 			}
 			batchStart := time.Now() // 2026-08-29 P2: track duration
@@ -1138,6 +1146,7 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 				break
 			}
 			batches++
+			tableRanBatch = true
 			// 2026-08-29 P2: record successful batch
 			recordPromoteBatch(s.label, n)
 			slog.Info("partition_manager: promote batch",
@@ -1150,9 +1159,6 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 		// 前置门禁。失败时 -1 保持 last gauge value，不发噪。
 		if age := pm.hotTableOldestRowAge(ctx, s.label); age >= 0 {
 			recordHotTableOldestRowAge(s.label, age)
-		}
-		if budgetExhausted {
-			break
 		}
 	}
 	pm.analyzePartitionStats(ctx)
