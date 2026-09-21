@@ -62,6 +62,7 @@ Handles all user-facing LLM requests with OpenAI/Anthropic/Responses/Gemini comp
 - `/v1/chat/completions` - OpenAI Chat Completions
 - `/v1/completions` - OpenAI Legacy Completions
 - `/v1/messages` - Anthropic Messages API
+- `/v1/messages/count_tokens` - Anthropic Message token counting
 - `/v1/responses` - Responses API
 - `/v1/embeddings` - Embeddings (OpenAI-compatible)
 - `/v1/models` - Available models
