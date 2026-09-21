@@ -1,6 +1,7 @@
 export default {
   title: "儀表板",
   refresh: "重新整理",
+  modelsSelectedCount: '已選 {n} 個模型',  // R50 ModelPicker compact 觸發器
 tabs: {
     board: '看板',
     liveStream: '即時請求流',

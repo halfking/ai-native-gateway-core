@@ -50,6 +50,9 @@ type SessionWriterV2 struct {
 	// memoraWriter（706，可选）：会话首 turn 时写初始环境/上下文快照。
 	// nil 时跳过（旧部署/测试无需该表存在）。
 	memoraWriter *SessionMemoraWriter
+	// detailsWriter（733/734 会话存储解耦 v3，可选）：每 turn 特征层
+	// session_turn_details(_hot) 写入。nil 或表族缺席时跳过。
+	detailsWriter *SessionTurnDetailsWriter
 
 	// aggWg tracks the in-flight aggregate snapshot goroutines so Stop can
 	// wait for them (spec §6.3). Each Write that reaches the aggregate step
@@ -107,6 +110,13 @@ func NewSessionWriterV2(tw *TurnWriter, bw *SessionBodiesWriter, sa *SessionAggr
 // Call before the first Write; nil disables the snapshot write.
 func (w *SessionWriterV2) SetMemoraWriter(mw *SessionMemoraWriter) {
 	w.memoraWriter = mw
+}
+
+// SetDetailsWriter wires the optional session_turn_details feature-layer
+// writer (733/734 v3). Call before the first Write; nil (or an unavailable
+// probe) disables the details write — the turn+bodies path is unaffected.
+func (w *SessionWriterV2) SetDetailsWriter(dw *SessionTurnDetailsWriter) {
+	w.detailsWriter = dw
 }
 
 // Stop signals shutdown and waits for all in-flight aggregate goroutines to
@@ -228,16 +238,16 @@ type ProcessedRequest struct {
 	// 补位登记）。
 
 	// 访问维度（sessions 存首值做会话归属，turns 存每轮值做计费精确到轮）。
-	APIKeyID          string
-	ApplicationID     string
-	EndUserID         string
-	CustomerID        int64
-	OwnerUser         string
-	ClientIP          string
+	APIKeyID           string
+	ApplicationID      string
+	EndUserID          string
+	CustomerID         int64
+	OwnerUser          string
+	ClientIP           string
 	ClientForwardedFor string
-	AgentName         string
-	AgentType         string
-	VirtualClientID   string
+	AgentName          string
+	AgentType          string
+	VirtualClientID    string
 
 	// 计费组（credits_charged 是计费事实源，D7 双读校验前提）。
 	CreditsCharged int64
@@ -259,19 +269,19 @@ type ProcessedRequest struct {
 	RawModelName    string
 
 	// 诊断组。
-	TraceEvents         json.RawMessage
-	FailureStage        string
-	FailureDetailCode   string
-	UpstreamStatusCode  int
+	TraceEvents          json.RawMessage
+	FailureStage         string
+	FailureDetailCode    string
+	UpstreamStatusCode   int
 	UpstreamFinishReason string
-	StreamFirstChunkMs  int
-	StreamChunkCount    int
-	StreamInterrupted   bool
-	StreamDoneSent      bool
-	ClientRequestID     string
-	ClientEndpoint      string
-	ClientTimeout       bool
-	EgressProtocol      string
+	StreamFirstChunkMs   int
+	StreamChunkCount     int
+	StreamInterrupted    bool
+	StreamDoneSent       bool
+	ClientRequestID      string
+	ClientEndpoint       string
+	ClientTimeout        bool
+	EgressProtocol       string
 
 	// 检索/完整性组。
 	RequestPreview    string
@@ -289,6 +299,11 @@ type ProcessedRequest struct {
 
 	// Multimodal content tracking
 	MultimodalTypes []string // Types present: ["image", "audio", "video", "document"]
+
+	// Details（733/734 会话存储解耦 v3）：turn 特征层。nil = 无特征可写
+	//（陈旧 bridge / 非 mirror 写方）；键（SessionID/TurnNo）由 Write 在
+	// AppendTurn 返回后补齐。
+	Details *DetailsRecord
 
 	// Processing stages (for turn logs)
 	ProcessingStages []ProcessingStage
@@ -495,53 +510,53 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		RequestDeltaJSON:  nil,
 		ResponseDeltaJSON: nil,
 
-		APIKeyID:           req.APIKeyID,
-		ApplicationID:      req.ApplicationID,
-		EndUserID:          req.EndUserID,
-		CustomerID:         req.CustomerID,
-		CreditsCharged:     req.CreditsCharged,
-		CostDisplay:        req.CostDisplay,
-		CostCurrency:       req.CostCurrency,
-		WorkType:           req.WorkType,
-		TokenBand:          req.TokenBand,
-		UsageSource:        req.UsageSource,
-		IsAutoRequest:      req.IsAutoRequest,
-		AutoDecision:       req.AutoDecision,
-		AutoConfidence:     req.AutoConfidence,
-		TaskTypeChosen:     req.TaskTypeChosen,
-		RoutingAttempts:    []byte(req.RoutingAttempts),
-		RoutingSummary:     req.RoutingSummary,
-		CanonicalID:        req.CanonicalID,
-		CanonicalModel:     req.CanonicalModel,
-		RawModelName:       req.RawModelName,
-		TraceEvents:        []byte(req.TraceEvents),
-		FailureStage:       req.FailureStage,
-		FailureDetailCode:  req.FailureDetailCode,
-		UpstreamStatusCode: req.UpstreamStatusCode,
+		APIKeyID:             req.APIKeyID,
+		ApplicationID:        req.ApplicationID,
+		EndUserID:            req.EndUserID,
+		CustomerID:           req.CustomerID,
+		CreditsCharged:       req.CreditsCharged,
+		CostDisplay:          req.CostDisplay,
+		CostCurrency:         req.CostCurrency,
+		WorkType:             req.WorkType,
+		TokenBand:            req.TokenBand,
+		UsageSource:          req.UsageSource,
+		IsAutoRequest:        req.IsAutoRequest,
+		AutoDecision:         req.AutoDecision,
+		AutoConfidence:       req.AutoConfidence,
+		TaskTypeChosen:       req.TaskTypeChosen,
+		RoutingAttempts:      []byte(req.RoutingAttempts),
+		RoutingSummary:       req.RoutingSummary,
+		CanonicalID:          req.CanonicalID,
+		CanonicalModel:       req.CanonicalModel,
+		RawModelName:         req.RawModelName,
+		TraceEvents:          []byte(req.TraceEvents),
+		FailureStage:         req.FailureStage,
+		FailureDetailCode:    req.FailureDetailCode,
+		UpstreamStatusCode:   req.UpstreamStatusCode,
 		UpstreamFinishReason: req.UpstreamFinishReason,
-		StreamFirstChunkMs: req.StreamFirstChunkMs,
-		StreamChunkCount:   req.StreamChunkCount,
-		StreamInterrupted:  req.StreamInterrupted,
-		StreamDoneSent:     req.StreamDoneSent,
-		ClientRequestID:    req.ClientRequestID,
-		ClientEndpoint:     req.ClientEndpoint,
-		ClientTimeout:      req.ClientTimeout,
-		EgressProtocol:     req.EgressProtocol,
-		SearchText:         "",
-		RequestPreview:     req.RequestPreview,
-		ResponsePreview:    req.ResponsePreview,
-		TransformSummary:   req.TransformSummary,
-		IdentityHash:       req.IdentityHash,
-		RequestChecksum:    req.RequestChecksum,
-		ResponseChecksum:   req.ResponseChecksum,
-		SystemFingerprint:  req.SystemFingerprint,
-		OriginStage:        req.OriginStage,
-		OriginActor:        req.OriginActor,
-		ClientIP:           req.ClientIP,
-		ClientForwardedFor: req.ClientForwardedFor,
-		AgentName:          req.AgentName,
-		AgentType:          req.AgentType,
-		VirtualClientID:    req.VirtualClientID,
+		StreamFirstChunkMs:   req.StreamFirstChunkMs,
+		StreamChunkCount:     req.StreamChunkCount,
+		StreamInterrupted:    req.StreamInterrupted,
+		StreamDoneSent:       req.StreamDoneSent,
+		ClientRequestID:      req.ClientRequestID,
+		ClientEndpoint:       req.ClientEndpoint,
+		ClientTimeout:        req.ClientTimeout,
+		EgressProtocol:       req.EgressProtocol,
+		SearchText:           "",
+		RequestPreview:       req.RequestPreview,
+		ResponsePreview:      req.ResponsePreview,
+		TransformSummary:     req.TransformSummary,
+		IdentityHash:         req.IdentityHash,
+		RequestChecksum:      req.RequestChecksum,
+		ResponseChecksum:     req.ResponseChecksum,
+		SystemFingerprint:    req.SystemFingerprint,
+		OriginStage:          req.OriginStage,
+		OriginActor:          req.OriginActor,
+		ClientIP:             req.ClientIP,
+		ClientForwardedFor:   req.ClientForwardedFor,
+		AgentName:            req.AgentName,
+		AgentType:            req.AgentType,
+		VirtualClientID:      req.VirtualClientID,
 	}
 
 	// S1b 灰度开关①：每轮正文同步进 session_turns（宽表路线第一步）。
@@ -589,6 +604,22 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	}
 	if err := w.bodiesWriter.WriteBodiesInTx(lockCtx, tx, bodiesRec); err != nil {
 		return fmt.Errorf("write bodies: %w", err)
+	}
+
+	// 733/734 特征层：与 turn+bodies 同事务（任一失败整体回滚）。键由
+	// AppendTurn 返回的 turnNo 补齐；幂等 upsert 支持晚到回填重放。
+	if req.Details != nil && w.detailsWriter != nil {
+		detailsRec := *req.Details
+		detailsRec.SessionID = req.SessionID
+		detailsRec.TenantID = req.TenantID
+		detailsRec.RequestID = req.RequestID
+		detailsRec.TurnNo = turnNo
+		if detailsRec.Ts.IsZero() {
+			detailsRec.Ts = req.Timestamp
+		}
+		if err := w.detailsWriter.UpsertDetailsInTx(lockCtx, tx, detailsRec); err != nil {
+			return fmt.Errorf("write details: %w", err)
+		}
 	}
 
 	// S1b 灰度开关②（写点）：每会话"最后完整快照"行。方案 D2 原设计为

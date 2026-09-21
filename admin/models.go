@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/kaixuan/llm-gateway-go/catalog"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
@@ -324,7 +327,13 @@ func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	displayName := req.CanonicalName
+	canonicalName := strings.TrimSpace(req.CanonicalName)
+	if canonicalName == "" {
+		writeError(w, http.StatusBadRequest, "canonical_name is required")
+		return
+	}
+
+	displayName := canonicalName
 	if req.DisplayName != nil && *req.DisplayName != "" {
 		displayName = *req.DisplayName
 	}
@@ -341,14 +350,47 @@ func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
 		outputPrice = *req.OutputPriceCNY
 	}
 
-	var id int
+	// Dedup gate: the only DB-level uniqueness is exact-string
+	// (canonical_name), so variants that differ only by case or ./_/-/space//
+	// separators would silently coexist as two "standard" models and leak
+	// both spellings to clients. Reject them up front with the winner named.
+	// R50 fix (2026-09-21): collapse runs of separators on both sides —
+	// without it `claude--opus-5` folded to `claude__opus_5` which never
+	// equaled `claude-opus-5` → `claude_opus_5`, so a single request could
+	// mint a duplicate spelling (live hole, not just a race; the same
+	// run-collapse is NormalizeRouteKey's dupDashPattern semantics).
+	var existing string
 	err := h.db.QueryRow(ctx, `
+		SELECT canonical_name FROM models_canonical
+		WHERE lower(canonical_name) = lower($1)
+		   OR regexp_replace(replace(replace(replace(replace(lower(canonical_name), '.', '_'), '-', '_'), ' ', '_'), '/', '_'), '[-_]{2,}', '_', 'g')
+		    = regexp_replace(replace(replace(replace(replace(lower($1), '.', '_'), '-', '_'), ' ', '_'), '/', '_'), '[-_]{2,}', '_', 'g')
+		ORDER BY length(canonical_name), canonical_name
+		LIMIT 1
+	`, canonicalName).Scan(&existing)
+	if err == nil {
+		writeError(w, http.StatusConflict,
+			"duplicate canonical model: "+canonicalName+" already exists as "+existing)
+		return
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "dedup check failed: "+err.Error())
+		return
+	}
+
+	var id int
+	err = h.db.QueryRow(ctx, `
 		INSERT INTO models_canonical (canonical_name, display_name, modality, status, input_price_cny, output_price_cny)
 		VALUES ($1, $2, $3, 'active', $4, $5)
 		ON CONFLICT (canonical_name) DO NOTHING
 		RETURNING id
-	`, req.CanonicalName, displayName, modality, inputPrice, outputPrice).Scan(&id)
+	`, canonicalName, displayName, modality, inputPrice, outputPrice).Scan(&id)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Exact-name race lost between the gate above and the insert.
+			writeError(w, http.StatusConflict, "duplicate canonical model: "+canonicalName)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
 		return
 	}

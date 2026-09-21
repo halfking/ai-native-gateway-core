@@ -410,6 +410,14 @@ func (m *Manager) selectNodeExcluding(ctx context.Context, subscriptionID *int, 
 	// 订阅的健康节点。
 	subPrioritiesSort := func(n *Node) int {
 		if p, ok := subPriorities[n.SubscriptionID]; ok {
+			// R50: 读侧 clamp 到 [0,99]——50859fe75 只堵了 API 写入口，
+			// 存量负值行会排到 0 值订阅之前（越权最高优先）。
+			if p < 0 {
+				return 0
+			}
+			if p > 99 {
+				return 99
+			}
 			return p
 		}
 		return 0

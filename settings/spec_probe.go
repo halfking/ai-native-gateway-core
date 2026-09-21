@@ -197,9 +197,9 @@ func ProbeSpecs() []*Spec {
 			Category:        CategoryProbe,
 			Min:             floatPtr(1),
 			Max:             floatPtr(2160), // 90d (hot table retention)
-			Default:         168,
+			Default:         72,
 			Description:     "用量统计窗口（小时）",
-			DescriptionLong: "计算用量 Top-N 时回看的窗口长度（默认 168=7 天）。",
+			DescriptionLong: "计算用量 Top-N 时回看的窗口长度（默认 72=3 天，2026-09-20 探测策略：与探测的 3 天使用范围对齐；统计已排除探测自身流量）。",
 			Unit:            "小时",
 			DangerLevel:     Safe,
 			HotReload:       true,

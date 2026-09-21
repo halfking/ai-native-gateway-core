@@ -363,7 +363,7 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 	if mult <= 1 {
 		return
 	}
-	windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 168)
+	windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 72)
 	topN := settings.GetPlatformInt("probe.featured_usage_top_n", 20)
 	if topN <= 0 {
 		topN = 0 // only static featured applies when kill-switch is on
@@ -400,6 +400,9 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 			        FROM request_logs_hot rl
 			        WHERE rl.success
 			          AND rl.ts > now() - make_interval(hours => $2)
+			          -- R50: dual-arm probe exclusion — watchdog backoff is a
+			          -- usage scan (INV-3); probe-only models must back off too.
+			          AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
 			          AND COALESCE(rl.outbound_model, rl.client_model) <> ''
 			        GROUP BY raw_model
 			    ) t
@@ -746,6 +749,16 @@ func (r *ModelProbeRunner) featuredCycleLoop(ctx context.Context) {
 // It does NOT update model_probe_state — the result is recorded as a
 // model_probe_runs row for visibility and the probe outcome goes through
 // the same consensus state machine on the next L1+L2 cycle.
+//
+// 2026-09-20 probe-volume policy (docs/probe/2026-09-20-probe-volume-optimization.md):
+// the cycle is now error-gated. 常用模型强化自检 stays, but only for credentials
+// that actually need verification — deep-pinging every credential's featured
+// list every 15 minutes was normal-state continuous probing. Three gates:
+//   - INV-3: the model carried real (non-probe) traffic on THIS credential in
+//     the last 3 days;
+//   - INV-5: the credential has failure evidence in the last 24h;
+//   - INV-4: the credential has NOT already been re-verified by two distinct
+//     models whose latest probe run succeeded within 24h.
 func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 	timeout, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -774,6 +787,22 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		  -- the model sits in routing_policy.featured_models, the relay 404s
 		  -- it, and every 30-min cycle re-recorded the guaranteed failure.
 		  AND COALESCE(cmb.available, TRUE) = TRUE
+		  -- 2026-09-20 INV-5: only credentials with failure evidence get the
+		  -- deep ping; healthy credentials' business traffic is the evidence.
+		  AND ` + credentialFailureEvidenceSQL("c.id", probeFailureEvidenceWindowSQL) + `
+		  -- 2026-09-20 INV-4: two recently probe-verified models stop the pass.
+		  AND NOT ` + credentialTwoProbeSuccessGateSQL("c.id") + `
+		  -- 2026-09-20 INV-3: the model must have real (non-probe) traffic on
+		  -- THIS credential within the 3-day probe scope window.
+		  AND EXISTS (
+			SELECT 1 FROM request_logs_hot rl
+			WHERE rl.credential_id = cmb.credential_id
+			  AND rl.ts >= now() - ` + probeUsageWindowInterval + `
+			  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
+			  AND (pm.raw_model_name = rl.client_model
+			       OR pm.raw_model_name = rl.outbound_model
+			       OR pm.outbound_model_name = rl.outbound_model)
+		  )
 		LIMIT $1
 	`, MaxBatchPerCycle*4 /* bound scan; Go-side globalIsFeaturedModel further filters */)
 	if err != nil {

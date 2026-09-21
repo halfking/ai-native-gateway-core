@@ -13,6 +13,7 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -136,9 +137,13 @@ func (m *ModelTier) refresh(ctx context.Context) {
 	// model-name is COALESCE(outbound_model, client_model). GROUP BY raw_model
 	// dedupes across alias variants (audit issue #11).
 	if topN := settings.GetPlatformInt("probe.featured_usage_top_n", 20); topN > 0 {
-		windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 168)
+		// 2026-09-20 probe-volume policy: default window 72h (3 days) — the
+		// probe scoping window. Also exclude probe traffic: without the flag
+		// probes themselves fed the Top-N, keeping probed-but-unused models
+		// "featured" and deep-pinged forever (self-sustaining loop).
+		windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 72)
 		if windowHours <= 0 {
-			windowHours = 168
+			windowHours = 72
 		}
 		if rows, err := m.db.Query(ctx, `
 			SELECT raw_model FROM (
@@ -147,6 +152,7 @@ func (m *ModelTier) refresh(ctx context.Context) {
 				FROM request_logs_hot rl
 				WHERE rl.success
 				  AND rl.ts > now() - make_interval(hours => $1)
+				  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
 				  AND COALESCE(rl.outbound_model, rl.client_model) IS NOT NULL
 				  AND COALESCE(rl.outbound_model, rl.client_model) <> ''
 				GROUP BY COALESCE(rl.outbound_model, rl.client_model)

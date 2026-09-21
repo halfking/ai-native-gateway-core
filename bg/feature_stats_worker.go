@@ -129,39 +129,50 @@ func (w *FeatureStatsWorker) computeFeatureDistributions(ctx context.Context, st
 	return nil
 }
 
-// computeSingleFeatureDistribution 计算单个特征的分布。
-func (w *FeatureStatsWorker) computeSingleFeatureDistribution(ctx context.Context, statDate time.Time, featureName string) error {
-	// PRIVACY: 只查询结构化特征列，不查询 prompt/messages/response
-	// R43 (2026-09-18): 与 computeDedupRate 对齐为 UTC 半开窗——原
-	// `DATE(ts) = $1` 按会话时区求值（db DSN 未钉扎 TimeZone），同名
-	// stat_date 两表底层窗口可错位最多 8h，且 DATE() 不可 sargable。
-	query := `
+// featureDistributionQuery 构造单特征分布聚合 SQL（R49 自审计提取为函数，
+// 供真库集成测试直接复用同一文本——防止测试与生产 SQL 漂移）。
+func featureDistributionQuery(featureName string) string {
+	return `
 		WITH feature_counts AS (
-			SELECT 
+			SELECT
 				COALESCE(` + featureName + `, 'NULL') AS feature_value,
 				COUNT(*) AS row_count
 			FROM auto_route_selections
-			WHERE ts >= $1 AND ts < $1 + INTERVAL '1 day'
+			WHERE ts >= $1 AND ts < $1::timestamptz + INTERVAL '1 day'
 			GROUP BY COALESCE(` + featureName + `, 'NULL')
 		),
 		total AS (
 			SELECT SUM(row_count) AS total_rows FROM feature_counts
 		)
 		INSERT INTO feature_distribution_stats (stat_date, feature_name, feature_value, row_count, percentage)
-		SELECT 
+		SELECT
 			$1 AS stat_date,
 			$2 AS feature_name,
 			fc.feature_value,
 			fc.row_count,
 			ROUND(100.0 * fc.row_count / NULLIF(t.total_rows, 0), 2) AS percentage
 		FROM feature_counts fc, total t
-		ON CONFLICT (stat_date, feature_name, feature_value) 
-		DO UPDATE SET 
+		ON CONFLICT (stat_date, feature_name, feature_value)
+		DO UPDATE SET
 			row_count = EXCLUDED.row_count,
 			percentage = EXCLUDED.percentage
 	`
+}
 
-	_, err := w.db.Exec(ctx, query, statDate, featureName)
+// computeSingleFeatureDistribution 计算单个特征的分布。
+func (w *FeatureStatsWorker) computeSingleFeatureDistribution(ctx context.Context, statDate time.Time, featureName string) error {
+	// PRIVACY: 只查询结构化特征列，不查询 prompt/messages/response
+	// R43 (2026-09-18): 与 computeDedupRate 对齐为 UTC 半开窗——原
+	// `DATE(ts) = $1` 按会话时区求值（db DSN 未钉扎 TimeZone），同名
+	// stat_date 两表底层窗口可错位最多 8h，且 DATE() 不可 sargable。
+	// 2026-09-21 (252 PG 日志审计轮): `$1` 必须显式 `::timestamptz`——
+	// 网关连接是 QueryExecModeSimpleProtocol（db/db.go），$1 会被内联为
+	// 无型别字面量，PG17 把 `'…' + INTERVAL '1 day'` 解析成 interval+
+	// interval 而报 "invalid input syntax for type interval"（252 生产
+	// 每轮聚合必炸、feature_distribution_stats 断更）。显式 cast 在两种
+	// 协议模式下都收敛为 timestamptz + interval。真库回归：
+	// feature_stats_mvrefresh_integration_test.go（SimpleProtocol 实证）。
+	_, err := w.db.Exec(ctx, featureDistributionQuery(featureName), statDate, featureName)
 	return err
 }
 
@@ -170,11 +181,11 @@ func (w *FeatureStatsWorker) computeDedupRate(ctx context.Context, statDate time
 	// PRIVACY: 只查询 content_hash（SHA256哈希，非可逆），不查询原始内容
 	query := `
 		WITH daily_data AS (
-			SELECT 
+			SELECT
 				COUNT(*) AS total_rows,
 				COUNT(DISTINCT content_hash) AS unique_hashes
 			FROM auto_route_selections
-			WHERE ts >= $1 AND ts < $1 + INTERVAL '1 day'
+			WHERE ts >= $1 AND ts < $1::timestamptz + INTERVAL '1 day'
 			  AND content_hash IS NOT NULL
 		),
 		top_dupes AS (
@@ -182,7 +193,7 @@ func (w *FeatureStatsWorker) computeDedupRate(ctx context.Context, statDate time
 				content_hash,
 				COUNT(*) AS count
 			FROM auto_route_selections
-			WHERE ts >= $1 AND ts < $1 + INTERVAL '1 day'
+			WHERE ts >= $1 AND ts < $1::timestamptz + INTERVAL '1 day'
 			  AND content_hash IS NOT NULL
 			GROUP BY content_hash
 			HAVING COUNT(*) > 1

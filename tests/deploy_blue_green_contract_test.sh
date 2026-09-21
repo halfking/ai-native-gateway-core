@@ -59,9 +59,13 @@ require 'seamless surfaces per-probe failure' 'remote_probe' "$ROOT/scripts/depl
 # candidate ensure chain (routing_overrides_audit, passive_probe_state,
 # two promote-function repairs) that routinely exceeds 60s on the shared
 # 252 PG while the canary is still walking schema ensure (245 工单现场:
-# "Connection refused" 假超时). The >=60s floor remains the contract;
-# 180s is the new default in deploy-seamless.sh and both wrappers.
-require 'seamless probe timeout >= 60s (now 180s)' 'PROBE_TIMEOUT_SECS:-180' "$ROOT/scripts/deploy-seamless.sh"
+# "Connection refused" 假超时). The >=60s floor remains the contract.
+# 2026-09-20 (e5879c497): 180 -> 120s (default tightened back) and the
+# second (retry) window bounded at PROBE_RETRY_TIMEOUT_SECS:-60. Both
+# defaults pinned here (R49 audit: the 180s assertion was left stale and
+# kept this gate red at HEAD).
+require 'seamless probe timeout >= 60s (now 120s)' 'PROBE_TIMEOUT_SECS:-120' "$ROOT/scripts/deploy-seamless.sh"
+require 'seamless second probe window bounded at 60s' 'PROBE_RETRY_TIMEOUT_SECS:-60' "$ROOT/scripts/deploy-seamless.sh"
 # 2026-09-19（部署工单）: 蓝绿轮换必须以目标机实测监听为准，候选端口严格
 # 在 8781/8782 契约对内轮换；127.0.0.1 探测只能出现在 remote_ssh 远端命令
 # 串里（本脚本跑在部署机）。

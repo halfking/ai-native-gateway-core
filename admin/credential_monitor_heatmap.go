@@ -288,7 +288,11 @@ func buildHeatmapSQL(p heatmapQueryParams) (string, []any) {
 		// ActiveProbeWorker sets task_type='probe_triggered' and every probe
 		// path tags quality_flags with 'probe'. request_context_attrs.is_probe
 		// is NOT usable here — direct-probe rows carry no rca row at all.
-		whereClauses = append(whereClauses, "COALESCE(rl.task_type, '') <> 'probe_triggered' AND NOT ('probe' = ANY(rl.quality_flags))")
+		// R50: added the origin_stage arm (bg.probeTrafficExclusionPredicate
+		// shape, inlined) — the probe gateway round has origin_stage=
+		// 'node_probe' and never gets the flag, so it leaked into the
+		// business heatmap.
+		whereClauses = append(whereClauses, "COALESCE(rl.task_type, '') <> 'probe_triggered' AND NOT ('probe' = ANY(rl.quality_flags)) AND COALESCE(rl.origin_stage, 'business') = 'business'")
 	}
 
 	if p.TenantID != "" {

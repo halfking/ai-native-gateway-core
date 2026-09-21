@@ -112,6 +112,14 @@ type FeatureFlags struct {
 	AutoOptimizationV3Version      string
 	AutoOptimizationV3Scope        TreatmentScope
 	AutoOptimizationV3AutoRollback bool
+
+	// AutoRoleRoutingEnabled（R48, 2026-09-20）开启会话角色 × 任务类型
+	// (TaskKind) 的 LLM 路由：worker/planner/orchestrator 子代理的请求按
+	// role_llm_router 偏好提升候选。默认 false——关闭时 Decide/DecideV2
+	// 的决策结果与序列化字节和本特性加入之前完全一致（role 路由代码块
+	// 整体跳过，审计字段保持零值/omitempty）。
+	// 环境变量：AUTO_ROLE_ROUTING_ENABLED。
+	AutoRoleRoutingEnabled bool
 }
 
 // DefaultFeatureFlags returns the default flags.
@@ -152,6 +160,8 @@ func DefaultFeatureFlags() *FeatureFlags {
 		AutoOptimizationV3VariantPct:   0,
 		AutoOptimizationV3Scope:        TreatmentScopeTenant,
 		AutoOptimizationV3AutoRollback: false,
+		// R48 role 路由：默认关闭（flag-off 决策字节级不变）。
+		AutoRoleRoutingEnabled: false,
 	}
 }
 
@@ -193,6 +203,8 @@ func LoadFeatureFlagsFromEnv() *FeatureFlags {
 		AutoOptimizationV3Version:      os.Getenv("AUTO_OPTIMIZATION_V3_VERSION"),
 		AutoOptimizationV3Scope:        parseTreatmentScope(os.Getenv("AUTO_OPTIMIZATION_V3_SCOPE")),
 		AutoOptimizationV3AutoRollback: getEnvBool("AUTO_OPTIMIZATION_V3_AUTO_ROLLBACK", false),
+		// R48 role 路由灰度开关（默认 false）。
+		AutoRoleRoutingEnabled: getEnvBool("AUTO_ROLE_ROUTING_ENABLED", false),
 	}
 
 	if flags.EnableV2Logic {
@@ -311,6 +323,9 @@ func activeFeatureNames(flags *FeatureFlags) []string {
 	}
 	if flags.UseStandardIQGate && flags.MinStandardIQ > 0 {
 		features = append(features, "standard_iq_gate")
+	}
+	if flags.AutoRoleRoutingEnabled {
+		features = append(features, "role_routing")
 	}
 	return features
 }

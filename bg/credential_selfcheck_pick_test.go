@@ -100,7 +100,7 @@ func TestPickDueCredentialRotatesLeastRecentlyChecked(t *testing.T) {
 	}
 }
 
-func TestSelfcheckUsesSharedSevenDayModelSource(t *testing.T) {
+func TestSelfcheckUsesSharedRecentModelSource(t *testing.T) {
 	src, err := os.ReadFile("credential_selfcheck.go")
 	if err != nil {
 		t.Fatal(err)
@@ -108,8 +108,11 @@ func TestSelfcheckUsesSharedSevenDayModelSource(t *testing.T) {
 	body := string(src)
 	for _, want := range []string{
 		"recentmodels.Read",
-		"interval '7 days'",
-		"NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)",
+			// 2026-09-20 探测量策略：SQL 回退窗口从 7 天对齐到 3 天使用范围
+		"interval '3 days'",
+		// R50：双臂探测排除（quality_flags + origin_stage）——单臂旧拼写
+		// 已被 TestProbeExclusionPredicateCallSitesR50 一并禁用。
+		`fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")`,
 		"unavailable_recover_at <= now()",
 	} {
 		if !strings.Contains(body, want) {

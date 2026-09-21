@@ -320,31 +320,42 @@ func TestRunOneMissingBindingDropsOrphanStateRow(t *testing.T) {
 	}
 }
 
-// TestNodeProbeSuccessNextRetryOneHour pins BUG #6 fix (2026-07-22):
-// after a successful probe, next_retry_at should be 1 hour away, not
-// 24 hours. Source-grep verifies both the runOne success branch and
-// MarkNodeProbeHealthy write the 1-hour interval; a future refactor
-// that accidentally restores the 24-hour value (e.g. copy-paste from
-// the older comment block) will fail this test.
-func TestNodeProbeSuccessNextRetryOneHour(t *testing.T) {
+// TestNodeProbeSuccessParksRow pins the 2026-09-20 probe-volume policy
+// (supersedes the BUG #6 1-hour re-arm): a successful probe must PARK the
+// node_probe_state row 30 days out instead of re-arming the next probe.
+// The pre-2026-09-20 "+1h" value made every probe success schedule another
+// probe an hour later — the engine behind normal-state continuous probing.
+// Source-grep verifies the runOne success branch AND MarkNodeProbeHealthy
+// write the 30-day park; Submit's ON CONFLICT must keep the healthy-parked
+// re-arm branch so a fresh real failure restarts tracking at +5s.
+func TestNodeProbeSuccessParksRow(t *testing.T) {
 	src, err := os.ReadFile("node_probe.go")
 	if err != nil {
 		t.Fatalf("read source: %v", err)
 	}
 	body := string(src)
 	mustContain := []string{
-		// runOne success branch
-		"next_retry_at = now() + interval '1 hour'",
-		"next_retry_seconds = 3600",
+		// runOne + MarkNodeProbeHealthy success branches park 30 days
+		"next_retry_at = now() + interval '30 days'",
+		"next_retry_seconds = 2592000",
+		// INV-2: Submit re-arms healthy-parked rows on a fresh failure.
+		// Source-grep must match the helper CALL (the rendered predicate
+		// only exists at runtime).
+		`nodeProbeHealthyParkedSQL("node_probe_state")`,
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
-			t.Fatalf("BUG #6 regression: node_probe.go missing %q", want)
+			t.Fatalf("probe-volume policy regression: node_probe.go missing %q", want)
 		}
 	}
-	// And no 24-hour success branch should remain.
-	if strings.Contains(body, "now() + interval '24 hours'") {
-		t.Fatalf("BUG #6 regression: node_probe.go still has 24-hour success interval")
+	// The old re-arm intervals must stay gone.
+	for _, banned := range []string{
+		"now() + interval '1 hour'",
+		"now() + interval '24 hours'",
+	} {
+		if strings.Contains(body, banned) {
+			t.Fatalf("probe-volume policy regression: node_probe.go still re-arms success with %q", banned)
+		}
 	}
 }
 

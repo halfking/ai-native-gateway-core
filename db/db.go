@@ -422,6 +422,12 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureTaskTypeCorrections(migCtx); err != nil {
 		return err
 	}
+	// R50 审计 F17 收口: 730 的 role_task_llm_mapping（role_llm_router
+	// refresher 每分钟轮询、SelectLLM DB 覆盖源）主通道 ensure——缺表环境
+	// 此前每分钟 42P01 Warn 且 DB 覆盖静默失效。
+	if err := db.ensureRoleTaskLLMMapping(migCtx); err != nil {
+		return err
+	}
 	// R43 (2026-09-18): task_type_tier_config（ApplySuggestions 落盘目标）——
 	// 原迁移 202609_02 表级表达式 UNIQUE 在 PG 上不可执行，表从未被建出。
 	if err := db.ensureTaskTypeTierConfig(migCtx); err != nil {
@@ -1628,6 +1634,55 @@ func (d *DB) ensureTaskTypeCorrections(ctx context.Context) error {
 // 在 PG 上不可执行（从未在任何库生效）；ApplySuggestions 原 ON CONFLICT
 // 按 202609_02 的 COALESCE(tenant_id,”) 推断，在 V370 真表上 42P10——
 // apply 端点在有表库上报 500、无表库上报 503，两头都死。本 ensure 与
+// ensureRoleTaskLLMMapping mirrors sql/migrations/startup/
+// 730_session_role_hierarchy.sql §2 —— R48 会话角色×任务类型 LLM 路由配置表。
+// R50 审计（F17 收口）：bg/role_llm_router_refresher 每分钟轮询该表，但
+// ApplyMigrations 主通道此前零 ensure——缺表环境（如只跑过旧快照的库）每分钟
+// 42P01 Warn 且 DB 覆盖静默失效（SelectLLM 回退 builtin 表）。对齐 724
+// ensureTaskTypeCorrections 先例补"二进制启动即生效"的自愈。
+// 注意：刻意**不**写 schema_migrations('730')——本 ensure 只覆盖迁移的
+// 第 2 节（映射表），sessions 三列/种子/provider_models 修正仍属 730 通道
+// 职责；标记整迁移已应用会让通道跳过 730 文件造成缺列。
+// 幂等：CREATE TABLE / INDEX IF NOT EXISTS，已应用库上为 no-op（种子不在此
+// 重复——730 的 ON CONFLICT DO NOTHING 种子由通道负责）。
+func (d *DB) ensureRoleTaskLLMMapping(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+			CREATE TABLE IF NOT EXISTS public.role_task_llm_mapping (
+			    id                 BIGSERIAL PRIMARY KEY,
+			    tenant_id          VARCHAR(255),
+			    agent_role         TEXT NOT NULL,
+			    task_kind          TEXT NOT NULL,
+			    llm_canonical_name TEXT NOT NULL,
+			    priority           INT  NOT NULL DEFAULT 100,
+			    enabled            BOOLEAN NOT NULL DEFAULT TRUE,
+			    note               TEXT,
+			    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			    CONSTRAINT role_task_llm_mapping_role_check
+			        CHECK (agent_role IN ('main', 'orchestrator', 'planner', 'worker', 'unknown')),
+			    CONSTRAINT role_task_llm_mapping_kind_check
+			        CHECK (task_kind IN ('search', 'summarize', 'git_ops', 'ops', 'analysis', 'planning', 'solution', 'unknown')),
+			    CONSTRAINT role_task_llm_mapping_unique
+			        UNIQUE NULLS NOT DISTINCT (tenant_id, agent_role, task_kind, priority)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_role_task_llm_mapping_lookup
+			    ON public.role_task_llm_mapping (tenant_id, agent_role, task_kind, enabled, priority)
+			    WHERE enabled = TRUE;
+
+			COMMENT ON TABLE public.role_task_llm_mapping IS
+			    '730/R48: 按 agent_role × task_kind 的二维 LLM 路由配置（priority 升序为偏好顺序，SelectLLM 依次尝试首个在候选池中的模型）。';
+		`)
+	if err != nil {
+		return err
+	}
+	slog.Info("role_task_llm_mapping schema ensured (migration 730 §2)")
+	return nil
+}
+
 // ensureTaskTypeCorrections 同"二进制启动即生效"模式补齐 V370 形态。
 // 幂等：CREATE ... IF NOT EXISTS / DO NOTHING，已有行与运维改动不被覆盖。
 func (d *DB) ensureTaskTypeTierConfig(ctx context.Context) error {
