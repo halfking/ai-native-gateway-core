@@ -104,4 +104,9 @@ export default {
   publicSupport: '技術支援',
 
   skip: '跳到主要内容',
+
+  // 2026-09-21: 导航徽标 tooltip
+  badge: {
+    formatAnomalies: '未解決的請求側異常',
+  },
 }

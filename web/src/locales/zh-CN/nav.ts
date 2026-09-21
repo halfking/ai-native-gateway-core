@@ -98,4 +98,9 @@ export default {
   publicSupport: '技术支持',
   // 2026-07-21: a11y skip-link target, used by LifecycleShell.vue.
   skip: '跳到主要内容',
+
+  // 2026-09-21: 导航徽标 tooltip
+  badge: {
+    formatAnomalies: '未解决的请求侧异常',
+  },
 }

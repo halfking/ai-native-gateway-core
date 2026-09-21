@@ -112,7 +112,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
+	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
+	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
@@ -860,6 +862,14 @@ func main() {
 	var stateManager *credentialstate.Manager // 2026-06-30: credential×model state manager
 	var lastSystemSession *session.LastSystemSessionIndex
 	var sessionPref *session.SessionPreference
+	// reqProbeCoord (2026-09-21) 请求侧异常探测（参数剔除/模式回退重试 +
+	// 记录）。按部署模式选存储：Redis 可用 → RedisStore（跨重启保留，
+	// Full 形态），否则 MemoryStore（lite 形态，重启清零）。装配在
+	// executor 构造前，注入点两处：routingExec.RequestProbe 与
+	// adminHandler.SetRequestAnomalyStore。
+	var reqProbeCoord *reqprobe.Coordinator
+	// paramLedger (2026-09-22) 参数协商账本：见 executor 构造段的装配说明。
+	var paramLedger *paramledger.Ledger
 	// 2026-07-28 request-flow Step 3 (spec §6.3 + Step 3): session_state_init
 	// 返回的 DBWriter 需要在 telemetryClient.Stop 之后、pools.CloseAll 之前
 	// 显式 Stop（flush 排空）。声明为函数级变量以便 shutdown goroutine 访问；
@@ -1517,6 +1527,28 @@ func main() {
 		// domains/credential（reputation worker 每日聚合使用）。
 
 		norm := streaming.NewNormalizer()
+		// reqprobe (2026-09-21): 请求侧异常探测协调器。fpSlotRedis 非空
+		// 说明 Redis 通道已 ping 通（Full 形态）；lite/无 Redis 形态落
+		// 进程内存。full 但 Redis 不可达的场景同样安全降级为内存。
+		if fpSlotRedis != nil {
+			reqProbeCoord = reqprobe.NewCoordinator(reqprobe.NewRedisStore(fpSlotRedis, "llmgw:reqanom"))
+			slog.Info("reqprobe coordinator wired (redis-backed)")
+		} else {
+			reqProbeCoord = reqprobe.NewCoordinator(reqprobe.NewMemoryStore())
+			slog.Info("reqprobe coordinator wired (in-memory, lite mode)")
+		}
+		// paramledger (2026-09-22): 参数协商账本——paramguard/reqprobe 的
+		// 出站调整记账，native responses 回程把 reasoning.effort 回显还原
+		// 为客户端原值。主存为进程内存（流式逐帧还原零网络）；Full 形态
+		// 异步镜像到 Redis 供跨进程审计。
+		if fpSlotRedis != nil {
+			paramLedger = paramledger.New(paramledger.RedisMirror(fpSlotRedis, "llmgw:paramledger"))
+			slog.Info("paramledger wired (in-memory + redis mirror)")
+		} else {
+			paramLedger = paramledger.New(nil)
+			slog.Info("paramledger wired (in-memory, lite mode)")
+		}
+		streaming.SetParamLedger(paramLedger)
 		routingExec = executors.NewExecutor(
 			router, cm, lim, pools, upClient,
 			norm.NormalizeChunk,
@@ -1553,6 +1585,8 @@ func main() {
 			},
 			auditSink,
 		)
+		routingExec.RequestProbe = reqProbeCoord
+		routingExec.ParamLedger = paramLedger
 		routingExec.XMLCoerceNonStream = streaming.CoerceXMLToolCallsInChatResponse
 		routingExec.QualityProcessNonStream = streaming.WrapQualityProcessNonStream()
 		routingExec.QualitySetMode = streaming.WrapSetQualityFixModeOnContext()
@@ -2880,6 +2914,12 @@ func main() {
 		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
 		if adminHandler != nil {
 			adminHandler.StartProxyRuntime()
+		}
+		// reqprobe (2026-09-21): 管理页（/format-anomalies 请求错误 tab +
+		// 导航徽标）直读同一协调器。reqProbeCoord 在 provider 路由未启用时
+		// 为 nil，路由保留、请求时 503。
+		if reqProbeCoord != nil {
+			adminHandler.SetRequestAnomalyStore(reqProbeCoord)
 		}
 		// ── 免费资源自动发现 (2026-09-09, 084 迁移) ──
 		// stdlib 桥接 + credential keyring 注入; no-DB 模式下 SetFreeDiscovery

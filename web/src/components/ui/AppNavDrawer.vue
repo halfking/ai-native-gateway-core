@@ -14,6 +14,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppDrawer from './AppDrawer.vue'
 import { navDrawerOpen, useAppNav } from '../../composables/useAppNav'
+import { useRequestAnomalyBadge } from '../../composables/useRequestAnomalyBadge'
 import { isNavItemActive } from '../../config/appNav'
 
 const props = withDefaults(
@@ -29,6 +30,9 @@ const props = withDefaults(
 
 const { t } = useI18n()
 const { route, navGroups, navPrimaryResolved, navLabel } = useAppNav()
+// 2026-09-21: 「格式异常监控」未解决请求侧异常徽标（与 AppTopbar 同源）。
+const { counts: requestAnomalyCounts } = useRequestAnomalyBadge()
+const requestAnomalyCount = computed(() => requestAnomalyCounts.value.unresolved)
 
 type ResolvedItem = { item: { path: string; label: string; icon?: string; exact?: boolean; labelKey?: string }, resolved: { path: string; external?: boolean; activateAction?: boolean } }
 type Section = { id: string; flat: boolean; label?: string; labelKey?: string; items: ResolvedItem[] }
@@ -147,6 +151,10 @@ function itemLabel(item: ResolvedItem): string {
             >
               <span class="app-nav-drawer__icon" aria-hidden="true">{{ item.icon }}</span>
               <span>{{ itemLabel({ item, resolved }) }}</span>
+              <span
+                v-if="item.path === '/format-anomalies' && requestAnomalyCount > 0"
+                class="app-nav-drawer__badge"
+              >{{ requestAnomalyCount > 99 ? '99+' : requestAnomalyCount }}</span>
             </a>
             <router-link
               v-else
@@ -160,6 +168,10 @@ function itemLabel(item: ResolvedItem): string {
             >
               <span class="app-nav-drawer__icon" aria-hidden="true">{{ item.icon }}</span>
               <span>{{ itemLabel({ item, resolved }) }}</span>
+              <span
+                v-if="item.path === '/format-anomalies' && requestAnomalyCount > 0"
+                class="app-nav-drawer__badge"
+              >{{ requestAnomalyCount > 99 ? '99+' : requestAnomalyCount }}</span>
             </router-link>
           </li>
         </ul>
@@ -235,6 +247,22 @@ function itemLabel(item: ResolvedItem): string {
   cursor: pointer;
   font-family: inherit;
   transition: background 0.15s ease, color 0.15s ease;
+}
+/* 2026-09-21: 导航项计数徽标（格式异常监控等）。 */
+.app-nav-drawer__badge {
+  margin-left: auto;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bd);
+  color: var(--danger-bd);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  flex-shrink: 0;
 }
 .app-nav-drawer__item:hover {
   background: var(--kx-primary-soft, var(--bg-subtle));
