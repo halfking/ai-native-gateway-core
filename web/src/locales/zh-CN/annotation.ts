@@ -144,7 +144,6 @@ export default {
     count: '数量',
     percentage: '占比',
     distribution: '分布',
-    distribution: '分布',
     taskCorrections: '任务类型修正统计（taskprofile）',
     exportCsv: '导出 CSV',
     exporting: '导出中...',

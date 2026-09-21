@@ -144,7 +144,6 @@ export default {
     count: 'Nombre',
     percentage: 'Pourcentage',
     distribution: 'Distribution',
-    distribution: 'Distribution',
     taskCorrections: 'Corrections de types de tâches (taskprofile)',
     exportCsv: 'Exporter CSV',
     exporting: 'Export...',
