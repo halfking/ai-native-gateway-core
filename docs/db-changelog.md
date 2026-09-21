@@ -615,3 +615,15 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 | 730 | `730_session_role_hierarchy.sql` | `a1f92257263d95b22b59873cd28cf0f6c2464f236d6a8d8c2c8eb26148762fb5` | applied+verified |
 | 731 | `731_auto_route_selection_role_attribution.sql` | `5708c93964bc2fe4cda0509062bc24edda5e9cf35e368f4336b2f69cf68fab77` | applied+verified |
 
+## 2026-09-21T07:00:03Z — deploy 154 build_seq 2160 (29b4ea64)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 729 | `729_sql_audit_session_turns_credential_ts_index.sql` | `07b6d86db07598f59dd30d856b025d36bf798f31e198a100c68e9bfd768a4a4b` | applied+verified |
+
+
+## 2026-09-21T16:25:00+08:00 — deploy local build_seq 2167 (03b43979, R51 审计轮)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 735 | `735_models_canonical_active_folded_unique.sql` | `d3552a3fcc97ed4f7f54610c6fac6986f98676bd0ea7f87ec82f5df9f5ff2b30` | applied+verified |
