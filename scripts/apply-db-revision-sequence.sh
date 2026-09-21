@@ -497,6 +497,15 @@ files=(
   # （agent_role/task_kind/routing_source，父表+hot 双表 ADD COLUMN IF NOT
   # EXISTS 幂等）——亲和学习剔除 role 强制选型行的数据基础。
   "$ROOT_DIR/sql/migrations/startup/731_auto_route_selection_role_attribution.sql"
+  # 2026-09-20 会话存储解耦 v3（六点同步登记：db.Open ensure 链不扫 SQL
+  # 文件，新迁移必须进本清单才会在存量库应用）：原编 727/728 与 origin
+  # 上 R46/R48 撞号，重编 731/732。731 建 session_turn_details 特征层
+  # 表族（hot + 月分区 + RLS + promote + request_logs 反向回填）；
+  # 732 把 canonical 视图 session 分支 30 个 NULL 占位换成 details
+  # LEFT JOIN。Go 侧 ensure（ensureRequestLogsCurrentMonthView）在表族
+  # 缺席时自动回退 710 形态，双形态兼容。
+  "$ROOT_DIR/sql/migrations/startup/731_session_turn_details.sql"
+  "$ROOT_DIR/sql/migrations/startup/732_request_logs_view_details_join.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
