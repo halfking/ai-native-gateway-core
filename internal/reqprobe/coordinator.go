@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // Coordinator 是 executor / admin 与 Store 之间的门面：
@@ -22,6 +24,10 @@ type Coordinator struct {
 
 	mu      sync.Mutex
 	learned map[string]learnedEntry // key: providerCode|model → 参数集 + 过期时间
+
+	// R51 审计 P3：缓存到期瞬间并发请求会各自同步回源 Store（Redis
+	// HGETALL）——singleflight 把同一 key 的并发回源合并为一次。
+	learnSF singleflight.Group
 }
 
 type learnedEntry struct {
@@ -146,10 +152,17 @@ func (c *Coordinator) LearnedParams(ctx context.Context, providerCode, outboundM
 	}
 	c.mu.Unlock()
 
-	params := c.store.LearnedParams(ctx, providerCode, outboundModel)
-	c.mu.Lock()
-	c.learned[key] = learnedEntry{params: params, expiry: now.Add(learnedCacheTTL)}
-	c.mu.Unlock()
+	// singleflight 合并同一 key 的并发回源（错过缓存的请求只有一个真正
+	// 打 Store，其余共享结果）；ctx 透传调用方的，执行者被取消时共享方
+	// 拿到空结果走 fail-open（不剔除），与回源失败语义一致。
+	v, _, _ := c.learnSF.Do(key, func() (any, error) {
+		params := c.store.LearnedParams(ctx, providerCode, outboundModel)
+		c.mu.Lock()
+		c.learned[key] = learnedEntry{params: params, expiry: time.Now().Add(learnedCacheTTL)}
+		c.mu.Unlock()
+		return params, nil
+	})
+	params, _ := v.([]string)
 	return params
 }
 

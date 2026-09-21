@@ -31,6 +31,12 @@ ORDER BY turn_no ASC;`
 	// 会话存储解耦 v3：turn 特征层（PG17 session_turn_details 的 SQLite
 	// 投影）。request_id 唯一索引守护重放幂等；quality_flags/attachments
 	// 以 JSON 文本落库，空值 NULL。
+	// R51 (2026-09-21)：冲突目标必须与该唯一索引 (tenant_id, request_id)
+	// 对齐——lite sink 的 journal 链非原子（details 写点在 markJournaled
+	// 之前），失败重试会以新轮号重写同一 request_id；若冲突目标落在
+	// (tenant,session,turn) 主键上，重试行撞 request_id 唯一索引 → 永久
+	// 失败至 failPermanent。以 (tenant_id, request_id) 为幂等键 DO UPDATE：
+	// 特征列覆盖为最新值，轮号保持首写锚点不迁移。
 	upsertTurnDetailsSQL = `
 INSERT INTO session_turn_details (
 	tenant_id, session_id, turn_no, request_id, ts,
@@ -38,8 +44,7 @@ INSERT INTO session_turn_details (
 	latency_ms, cost_usd, client_model, request_type, request_class,
 	quality_flags, attachments
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (tenant_id, session_id, turn_no) DO UPDATE SET
-	request_id = excluded.request_id,
+ON CONFLICT (tenant_id, request_id) DO UPDATE SET
 	ts = excluded.ts,
 	model = excluded.model,
 	provider = excluded.provider,
@@ -118,9 +123,11 @@ func (s *SQLiteTurnsStore) GetTurnsMeta(ctx context.Context, tenantID, sessionID
 	return metas, nil
 }
 
-// WriteTurnDetails 写入单轮特征层（会话存储解耦 v3）；同一
-// (tenant, session, turn) 重复写入时 UPSERT 覆盖为最新值。零值转 NULL；
-// QualityFlags/Attachments 以 JSON 文本落库。Timestamp 零值自动取当前时间。
+// WriteTurnDetails 写入单轮特征层（会话存储解耦 v3）；幂等键为
+// UNIQUE(tenant_id, request_id)，同一 request_id 重复写入（含重试以新轮号
+// 重写的场景）时 UPSERT 覆盖特征列为最新值、轮号保持首写锚点。
+// 零值转 NULL；QualityFlags/Attachments 以 JSON 文本落库。Timestamp 零值
+// 自动取当前时间。
 func (s *SQLiteTurnsStore) WriteTurnDetails(ctx context.Context, d *storage.TurnDetails) error {
 	if d == nil {
 		return errors.New("sqlite: 轮次特征不能为空")
