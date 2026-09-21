@@ -61,6 +61,25 @@ func defaultAgentPatterns() []agentPatternEntry {
 		{"kiro", []string{"you are kiro", "kiro ide"}},
 		{"cursor", []string{"you are an ai assistant in cursor", "cursor ide", "you are cursor", "operate in cursor"}},
 		{"vscode", []string{"visual studio code", "vscode"}},
+		// 2026-09-21 audit: domestic coding-agent clients. Place these
+		// BEFORE the bare Claude fallback so that a MiniMax Code system
+		// prompt that mentions Claude (it powers MiniMax Code under the
+		// hood) still resolves to "minimax-code".
+		{"minimax-code", []string{
+			"you are minimax code",
+			"minimax-code cli",
+			"minimax code by anthropic",
+			"minimax-code interactive",
+			"minimax's official cli",
+		}},
+		{"deepseek-code", []string{
+			"you are deepseek code",
+			"deepseek-code cli",
+			"deepseek ide coding",
+			"deepseek chat coding mode",
+			"deepseek-coder",
+			"deepseek-v3 coding",
+		}},
 		// Bare Claude / Anthropic fallback — only fires when no more-specific
 		// agent above matched. Useful for custom Claude-API clients that embed
 		// Claude as the model and self-identify as plain Claude.
@@ -312,55 +331,111 @@ func APIKeyFingerprint(rawKey string) string {
 // ExtractAgentName extracts agent name from User-Agent or custom headers
 // Priority: X-Agent-Name > User-Agent parsing > "unknown"
 func ExtractAgentName(r *http.Request) string {
-	// Custom header for explicit agent identification
-	if agentName := r.Header.Get("X-Agent-Name"); agentName != "" {
-		return agentName
+	return ExtractAgentNameFromRequest(r, nil)
+}
+
+// ExtractAgentNameFromRequest is the body-aware variant of ExtractAgentName.
+// Detection order:
+//
+//  1. X-Agent-Name header (explicit override)
+//  2. User-Agent pattern matching → if the result is a *specific* agent
+//     (claude-code / cursor / minimax-code / …) return it
+//  3. If the UA-derived name is "weak" (unknown / go-client / python-client
+//     / curl / postman / insomnia) OR no UA at all, fall through to
+//     body-marker detection — catches domestic coding-agent clients whose
+//     User-Agent is generic but whose body carries a
+//     metadata.{zcode_version,client_type,deepseek_session_id} field,
+//     a model name prefix, or tool-name conventions
+//  4. If body-marker is empty, return the weak UA-derived name (so callers
+//     still see the underlying client lib)
+//
+// When body is nil or empty, step 3 collapses and the function returns the
+// weak UA-derived name as before.
+//
+// 2026-09-21 audit (P1: client detection parity for domestic coding agents).
+func ExtractAgentNameFromRequest(r *http.Request, body []byte) string {
+	// 1. Custom header for explicit agent identification
+	if r != nil {
+		if agentName := r.Header.Get("X-Agent-Name"); agentName != "" {
+			return agentName
+		}
 	}
 
-	// Parse User-Agent
-	ua := r.Header.Get("User-Agent")
-	if ua == "" {
-		return "unknown"
+	// 2. User-Agent matching.
+	ua := ""
+	if r != nil {
+		ua = r.Header.Get("User-Agent")
+	}
+	uaDerived := ""
+	if ua != "" {
+		uaLower := strings.ToLower(ua)
+		switch {
+		case strings.Contains(uaLower, "claude-code"):
+			return "claude-code"
+		case strings.Contains(uaLower, "opencode"):
+			return "opencode"
+		case strings.Contains(uaLower, "zcode"):
+			return "zcode"
+		case strings.Contains(uaLower, "codex"):
+			return "codex"
+		case strings.Contains(uaLower, "cursor"):
+			return "cursor"
+		case strings.Contains(uaLower, "vscode"):
+			return "vscode"
+		case strings.Contains(uaLower, "roocode"), strings.Contains(uaLower, "roo-code"):
+			return "roocode"
+		case strings.Contains(uaLower, "windsurf"):
+			return "windsurf"
+		case strings.Contains(uaLower, "zed"):
+			return "zed"
+		case strings.Contains(uaLower, "jetbrains"):
+			return "jetbrains"
+		case strings.Contains(uaLower, "github-copilot"), strings.Contains(uaLower, "copilot"):
+			return "copilot"
+		// 2026-09-21 audit: domestic coding-agent clients.
+		case strings.Contains(uaLower, "minimax-code"):
+			return "minimax-code"
+		case strings.Contains(uaLower, "deepseek-code"), strings.Contains(uaLower, "deepseek-ide"),
+			strings.Contains(uaLower, "deepseek-cli"):
+			return "deepseek-code"
+		case strings.Contains(uaLower, "postman"):
+			uaDerived = "postman"
+		case strings.Contains(uaLower, "insomnia"):
+			uaDerived = "insomnia"
+		case strings.Contains(uaLower, "python"):
+			uaDerived = "python-client"
+		case strings.Contains(uaLower, "go-http-client"):
+			uaDerived = "go-client"
+		case strings.Contains(uaLower, "curl"):
+			uaDerived = "curl"
+		default:
+			uaDerived = "unknown"
+		}
 	}
 
-	// Detect common agent patterns
-	ua = strings.ToLower(ua)
-	switch {
-	case strings.Contains(ua, "claude-code"):
-		return "claude-code"
-	case strings.Contains(ua, "opencode"):
-		return "opencode"
-	case strings.Contains(ua, "zcode"):
-		return "zcode"
-	case strings.Contains(ua, "codex"):
-		return "codex"
-	case strings.Contains(ua, "cursor"):
-		return "cursor"
-	case strings.Contains(ua, "vscode"):
-		return "vscode"
-	case strings.Contains(ua, "roocode"), strings.Contains(ua, "roo-code"):
-		return "roocode"
-	case strings.Contains(ua, "windsurf"):
-		return "windsurf"
-	case strings.Contains(ua, "zed"):
-		return "zed"
-	case strings.Contains(ua, "jetbrains"):
-		return "jetbrains"
-	case strings.Contains(ua, "github-copilot"), strings.Contains(ua, "copilot"):
-		return "copilot"
-	case strings.Contains(ua, "postman"):
-		return "postman"
-	case strings.Contains(ua, "insomnia"):
-		return "insomnia"
-	case strings.Contains(ua, "python"):
-		return "python-client"
-	case strings.Contains(ua, "go-http-client"):
-		return "go-client"
-	case strings.Contains(ua, "curl"):
-		return "curl"
-	default:
+	// 3. Body-level marker detection — only fires when the UA-derived
+	//    name is weak or absent. Reads metadata.* fields, model name
+	//    prefix, tool-name namespace, and the X-Code-Session-Id header
+	//    (MiniMax Code session marker).
+	if len(body) > 0 || (r != nil && r.Header.Get("X-Code-Session-Id") != "") {
+		var xCode string
+		if r != nil {
+			xCode = r.Header.Get("X-Code-Session-Id")
+		}
+		if ct := ExtractClientTypeFromBody(body, xCode); ct != "" {
+			return ct
+		}
+	}
+
+	// 4. No UA match and no body marker: return whatever the UA-derived
+	//    weak name was so the caller still sees the underlying client lib
+	//    (curl / python-client / etc.) rather than losing it. If there
+	//    was no UA at all, fall back to "unknown" for backwards
+	//    compatibility with the legacy ExtractAgentName contract.
+	if uaDerived == "" {
 		return "unknown"
 	}
+	return uaDerived
 }
 
 // ExtractAgentType determines agent type from headers and patterns
