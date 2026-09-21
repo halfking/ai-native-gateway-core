@@ -128,6 +128,89 @@ func TestEnsureCanonicalAndAliases_MatchedPathRunsMaintenance(t *testing.T) {
 	}
 }
 
+// 2026-09-21 regression (Fix B alias-side gap): the alias upserts behind
+// discovery ticks must carry alias_sync's WHERE status <> 'disabled' guard.
+// Commit 29b4ea64b guarded the canonical row but left the model_aliases
+// upserts unguarded, so every tick resurrected operator-disabled ALIAS pairs
+// back to 'active' (a disabled alias still resolves routes — the kill never
+// stuck). 'deprecated' pairs must still reactivate, matching rebuildAliasIndex.
+const aliasUpsertGuardSQL = `(?s)INSERT INTO model_aliases.*ON CONFLICT \(canonical_id, raw_name\) DO UPDATE SET` +
+	`.*status = 'active'` +
+	`.*WHERE model_aliases\.status <> 'disabled'`
+
+func expectGuardedAliasUpserts(mock pgxmock.PgxPoolIface, canonicalID int, rawName, canonicalName string) {
+	seen := map[string]struct{}{}
+	for _, alias := range GenerateAliases(rawName, canonicalName) {
+		normalized := modelname.CanonicalizeClientModel(alias)
+		if normalized == "" {
+			continue
+		}
+		if _, dup := seen[normalized]; dup {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		mock.ExpectExec(aliasUpsertGuardSQL).
+			WithArgs(canonicalID, normalized).
+			WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	}
+}
+
+// Matched-standard fast path: seedCanonicalAliases' upsert must keep the
+// disabled-stays-disabled WHERE guard.
+func TestEnsureCanonicalAndAliases_MatchedPathAliasUpsertNeverResurrectsDisabled(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	rawName := "cluade/opus-5"
+	mock.ExpectQuery(`FROM models_canonical`).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "canonical_name"}).AddRow(42, "claude-opus-5"))
+
+	mock.ExpectExec(`(?s)UPDATE models_canonical.*WHERE id = \$1`).
+		WithArgs(42, "anthropic-claude", splitFamilyIDs, modelname.InferModality(rawName)).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	expectGuardedAliasUpserts(mock, 42, rawName, "claude-opus-5")
+
+	if _, _, err := EnsureCanonicalAndAliases(context.Background(), mock, rawName, "discovery"); err != nil {
+		t.Fatalf("EnsureCanonicalAndAliases: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Seed path (no catalog match): the per-alias upsert loop after the seed
+// canonical INSERT must carry the same guard. This is the same SQL shape
+// Service.upsertModel writes via s.db (concrete pool, covered indirectly
+// through this shared seam).
+func TestEnsureCanonicalAndAliases_SeedPathAliasUpsertNeverResurrectsDisabled(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	rawName := "qwen3-max-cn"
+	mock.ExpectQuery(`FROM models_canonical`).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "canonical_name"}))
+
+	mock.ExpectQuery(`(?s)INSERT INTO models_canonical.*ON CONFLICT \(canonical_name\) DO UPDATE SET`).
+		WithArgs(rawName, pgxmock.AnyArg(), pgxmock.AnyArg(), "discovery", pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(91))
+
+	expectGuardedAliasUpserts(mock, 91, rawName, rawName)
+
+	if _, _, err := EnsureCanonicalAndAliases(context.Background(), mock, rawName, "discovery"); err != nil {
+		t.Fatalf("EnsureCanonicalAndAliases: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // splitFamilyIDs is passed positionally as $3 and evaluated with
 // = ANY(...), so only the CONTENT must track vendorCanonicalFamilies —
 // but silently drifting from the map (e.g. a new split token added to

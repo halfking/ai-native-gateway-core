@@ -104,6 +104,73 @@ func TestPatchAnthropicUsageInput_MalformedSafe(t *testing.T) {
 	}
 }
 
+// 2026-09-21 R51: upstream response with NO usage key at all — the function
+// used to bail out and the client kept input_tokens=0; it must now construct
+// a usage object carrying the estimate (observed live on Anthropic-format
+// bodies whose pipeline dropped usage).
+func TestPatchAnthropicUsageInput_MissingUsageKeyConstructs(t *testing.T) {
+	body := []byte(`{"id":"msg_x","model":"m","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","type":"message"}`)
+	out := patchAnthropicUsageInput(body, 178)
+	var resp struct {
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("unmarshal: %v; body=%s", err, out)
+	}
+	if resp.Usage.InputTokens != 178 {
+		t.Errorf("input_tokens = %d, want 178 (constructed usage)", resp.Usage.InputTokens)
+	}
+	if resp.Usage.OutputTokens != 0 {
+		t.Errorf("output_tokens = %d, want 0 (constructed shape)", resp.Usage.OutputTokens)
+	}
+	// Non-usage fields must survive the reconstruction.
+	if !strings.Contains(string(out), `"msg_x"`) {
+		t.Errorf("response id lost: %s", out)
+	}
+}
+
+// R51: input missing/zero while output is real — the old both-zero gate
+// refused to backfill; real output must be preserved and only input filled.
+func TestPatchAnthropicUsageInput_ZeroInputNonZeroOutput(t *testing.T) {
+	body := []byte(`{"usage":{"output_tokens":37},"content":[]}`)
+	out := patchAnthropicUsageInput(body, 178)
+	var resp struct {
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Usage.InputTokens != 178 {
+		t.Errorf("input_tokens = %d, want 178 (backfilled despite output>0)", resp.Usage.InputTokens)
+	}
+	if resp.Usage.OutputTokens != 37 {
+		t.Errorf("output_tokens = %d, want 37 (untouched)", resp.Usage.OutputTokens)
+	}
+}
+
+// R51: "usage": null must behave like a missing key, not panic on a nil map.
+func TestPatchAnthropicUsageInput_NullUsageConstructs(t *testing.T) {
+	body := []byte(`{"usage":null,"content":[]}`)
+	out := patchAnthropicUsageInput(body, 178)
+	var resp struct {
+		Usage struct {
+			InputTokens int `json:"input_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("unmarshal: %v; body=%s", err, out)
+	}
+	if resp.Usage.InputTokens != 178 {
+		t.Errorf("input_tokens = %d, want 178 (null usage constructed)", resp.Usage.InputTokens)
+	}
+}
+
 // ── writeNonStreamResponse usage 兜底集成 ──────────────────────────────────
 
 func TestWriteNonStreamResponse_PatchesZeroUsageWithEstimate(t *testing.T) {
