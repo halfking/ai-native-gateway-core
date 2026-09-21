@@ -1,6 +1,6 @@
 // Package sessionv2mirror — s1b_fields.go
 //
-// 会话存储解耦 v3（migration 731/732，docs/storage/
+// 会话存储解耦 v3（migration 733/734，docs/storage/
 // 2026-09-20-session-storage-decoupling-plan.md §3.3）：把
 // telemetry.RequestLogEntry 上 710 视图 NULL 占位组的特征列补采进
 // session_turn_details 特征层，随 turn+bodies 同事务落 hot。
@@ -14,10 +14,10 @@
 //	  outbound_token_est/outbound_msg_hashes/quality_flags/
 //	  quality_fix_actions/quality_score/stream_chunk_errors/
 //	  stream_chunks_sent/attachments/request_type/request_class/due_at
-//	· 缺源 4 列（RequestLogEntry 无字段，保持 NULL；历史值由 731 回填
+//	· 缺源 4 列（RequestLogEntry 无字段，保持 NULL；历史值由 733 回填
 //	  从 request_logs 补齐，后续管道接线登记）：virtual_ip/virtual_mac/
 //	  key_alias/owner_user
-//	· 储备组（node_switch_count 等 24 列）entry 无源，列已在 731 建好，
+//	· 储备组（node_switch_count 等 24 列）entry 无源，列已在 733 建好，
 //	  待 S3 视图迁移接线。
 //
 // 全部指针安全：nil 字段跳过，落库转 SQL NULL（DetailsRecord 零值语义）。
@@ -39,7 +39,7 @@ func applyStorageS1BFields(req *v2.ProcessedRequest, entry *telemetry.RequestLog
 		return
 	}
 	d := &v2.DetailsRecord{
-		// 视图契约组（732 LEFT JOIN 替换 NULL 占位）
+		// 视图契约组（734 LEFT JOIN 替换 NULL 占位）
 		ClientModel:       strPtrVal(entry.ClientModel),
 		ClientProfile:     strPtrVal(entry.ClientProfile),
 		AffinityHit:       boolPtrVal(entry.AffinityHit),

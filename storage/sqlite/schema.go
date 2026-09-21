@@ -79,7 +79,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_turn_details_request ON session_turn_detai
 CREATE INDEX IF NOT EXISTS idx_turn_details_ts ON session_turn_details (ts);
 
 -- 拼装视图：turns 元数据 × details 特征（LEFT：无特征行的轮次仍输出，
--- 与 PG17 canonical 视图 732 的 LEFT 语义对齐）。Lite 管理端读端由此
+-- 与 PG17 canonical 视图 734 的 LEFT 语义对齐）。Lite 管理端读端由此
 -- 逐步替代 request_logs 直读（S4 停写后唯一读路径）。
 CREATE VIEW IF NOT EXISTS session_logs_view AS
 SELECT

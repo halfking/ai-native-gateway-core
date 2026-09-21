@@ -1,4 +1,4 @@
--- Migration 731: 会话存储解耦 v3 —— session_turn_details 特征层（Full 链路）
+-- Migration 733: 会话存储解耦 v3 —— session_turn_details 特征层（Full 链路）
 --
 -- docs/storage/2026-09-20-session-storage-decoupling-plan.md §3：
 -- 四表分层 sessions(聚合) / session_turns(元数据瘦核心) /
@@ -7,7 +7,7 @@
 -- 本迁移建 details 表族（hot + 月分区；不建 default 分区，见 §3）：
 --   · 视图契约组 30 列：710 canonical 视图 session 分支的 NULL 占位列
 --     （client_model / quality_* / stream_chunk_errors / request_class 等），
---     732 起 LEFT JOIN 本表替换占位，管理端/回放不再回源 request_logs。
+--     734 起 LEFT JOIN 本表替换占位，管理端/回放不再回源 request_logs。
 --   · 分析储备组 9 列：v_node_switch_analysis / v_timeout_effectiveness /
 --     v_continuation_effectiveness 三视图待迁列（S3）。
 --   · 多维 token / 安全 / 上游组 15 列。
@@ -25,7 +25,7 @@
 -- （列集合契约校验 + 目录派生列清单 + advisory lock + ensure partition）。
 --
 -- Compatibility: 纯新增表族，零既有表变更。
--- Down: DROP 表族/函数/序列（732 视图依赖本表，down 按号逆序先 732 后 731）。
+-- Down: DROP 表族/函数/序列（734 视图依赖本表，down 按号逆序先 734 后 733）。
 
 BEGIN;
 
@@ -113,7 +113,7 @@ PARTITION BY RANGE (partition_date);
 COMMENT ON TABLE public.session_turn_details IS
     'V3 特征层：与 session_turns 1:1（tenant_id+request_id+partition_date），'
     '承载 710 视图 NULL 占位列 + 分析/安全/多维 token 特征，懒加载不进热路径。'
-    '元数据在 session_turns，原文在 session_bodies。Created: 2026-09-20, Migration 731';
+    '元数据在 session_turns，原文在 session_bodies。Created: 2026-09-20, Migration 733';
 
 -- =============================================
 -- 2. hot 表（heap，与父表同形）
@@ -191,9 +191,9 @@ WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05',
 
 COMMENT ON TABLE public.session_turn_details_hot IS
     'session_turn_details 的 hot 层：writer 只写这里，promote 冷却后搬月分区。'
-    'Created: 2026-09-20, Migration 731';
+    'Created: 2026-09-20, Migration 733';
 
--- 视图 732 的 LEFT JOIN 键 + writer upsert 键
+-- 视图 734 的 LEFT JOIN 键 + writer upsert 键
 CREATE INDEX IF NOT EXISTS idx_session_turn_details_hot_request
     ON public.session_turn_details_hot (request_id, partition_date);
 CREATE INDEX IF NOT EXISTS idx_session_turn_details_hot_session
@@ -361,7 +361,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.promote_session_turn_details_hot_to_partition(INTERVAL, INTEGER) IS
-    'Move cold rows from session_turn_details_hot to monthly partitions (731,
+    'Move cold rows from session_turn_details_hot to monthly partitions (733,
      707-mirror contract: set-equality column check + catalog-derived list).';
 
 -- =============================================
@@ -390,7 +390,7 @@ BEGIN
        OR to_regclass('public.request_logs') IS NULL
        OR to_regclass('public.session_turns') IS NULL
        OR to_regclass('public.session_turns_hot') IS NULL THEN
-        RAISE NOTICE '731 backfill skipped: source tables absent';
+        RAISE NOTICE '733 backfill skipped: source tables absent';
         RETURN;
     END IF;
 
@@ -534,7 +534,7 @@ BEGIN
         EXIT WHEN v_inserted = 0;
     END LOOP;
 
-    RAISE NOTICE '731 backfill inserted % session_turn_details rows', v_total;
+    RAISE NOTICE '733 backfill inserted % session_turn_details rows', v_total;
 END $$;
 
 COMMIT;

@@ -41,8 +41,8 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	// 732：details 特征层在场时，最新 v3 体须含 session_turn_details JOIN；
-	// 老库（731 未跑）回退 710 形态仍视为健康，零 DDL。
+	// 734：details 特征层在场时，最新 v3 体须含 session_turn_details JOIN；
+	// 老库（733 未跑）回退 710 形态仍视为健康，零 DDL。
 	var detailsFamilyExists bool
 	if err := d.pool.QueryRow(ctx, `
 		SELECT to_regclass('public.session_turn_details_hot') IS NOT NULL
@@ -426,10 +426,10 @@ var projectionExprsV2 = []string{
 // sources (alias fixed to t), each expression explicitly named to the frozen
 // contract. Column mapping contract: sql/migrations/startup/
 // 710_request_logs_view_session_family_v2.sql header.
-// detailsProjectionColumns is the 732 view-contract group: details column
+// detailsProjectionColumns is the 734 view-contract group: details column
 // name → the v1 frozen-contract NULL type. withDetails=true projections emit
 // `d.<name>` at these positions; false falls back to the 710 NULL placeholders.
-// Types match public.session_turn_details DDL (migration 731) exactly, so the
+// Types match public.session_turn_details DDL (migration 733) exactly, so the
 // UNION ALL positional typing is unchanged in both shapes.
 var detailsProjectionColumns = map[string]string{
 	"client_model": "text", "provider_id": "bigint", "client_profile": "text",
@@ -446,7 +446,7 @@ var detailsProjectionColumns = map[string]string{
 
 // buildSessionProjectionExprs composes the 113 session-branch expressions by
 // canonical column name: details positions flip between NULL placeholders
-// (710 shape) and d.<col> (732 shape); everything else stays positional with
+// (710 shape) and d.<col> (734 shape); everything else stays positional with
 // projectionExprsV2.
 func buildSessionProjectionExprs(withDetails bool) []string {
 	out := make([]string, len(projectionExprsV2))
@@ -477,9 +477,9 @@ func sessionFamilyProjection(withDetails bool) string {
 	return strings.Join(parts, ",\n\t\t")
 }
 
-// canonicalV2Comment 与迁移 732 的 COMMENT ON VIEW 同文（COMMENT 的 IS 只收
+// canonicalV2Comment 与迁移 734 的 COMMENT ON VIEW 同文（COMMENT 的 IS 只收
 // 单个字面量，不能像 SQL 赋值那样 || 拼接）。
-const canonicalV2Comment = `'会话存储解耦 v3（732）: 710 拼装体升级——session 分支 LEFT JOIN session_turn_details(_hot)（731 特征层，键 tenant_id+request_id+partition_date），30 个 NULL 占位列换真实特征列（client_model/quality_*/stream_chunk_errors/request_class 等）。LEFT 语义：details 缺行时 NULL，与 710 逐位兼容。仍 NULL：id/test_col/test_tab_indent/provider_model。'`
+const canonicalV2Comment = `'会话存储解耦 v3（734）: 710 拼装体升级——session 分支 LEFT JOIN session_turn_details(_hot)（733 特征层，键 tenant_id+request_id+partition_date），30 个 NULL 占位列换真实特征列（client_model/quality_*/stream_chunk_errors/request_class 等）。LEFT 语义：details 缺行时 NULL，与 710 逐位兼容。仍 NULL：id/test_col/test_tab_indent/provider_model。'`
 
 // canonicalColumnOrderV2 是 113 列的契约顺序（= 现网 canonical 视图列序）。
 // UNION ALL 按位置匹型：会话分支按此顺序展开投影；v1 分支内层（包装链 +
@@ -519,7 +519,7 @@ var canonicalColumnOrderV2 = []string{
 	"due_at", "system_fingerprint", "raw_model_name",
 }
 
-// canonicalV2DDL 组装 710/732 视图体。baseHasFP/baseHasRaw 描述基础包装
+// canonicalV2DDL 组装 710/734 视图体。baseHasFP/baseHasRaw 描述基础包装
 // （request_logs_with_current_month_without_customer_id）是否已自带
 // system_fingerprint/raw_model_name——冻结链（577/610 时代交集，生产/本机
 // 现网）不带，v1 分支按 700 形态 lateral 追加 4 列；动态重建链（680 引导/
@@ -529,9 +529,9 @@ var canonicalColumnOrderV2 = []string{
 // canonicalColumnOrderV2 按名归一化后与会话分支按位置对齐。反连接守卫走
 // idx_session_turns_request / idx_session_turns_hot_request。
 //
-// hasDetails（732）：true 时 session 分支 LEFT JOIN session_turn_details(_hot)
+// hasDetails（734）：true 时 session 分支 LEFT JOIN session_turn_details(_hot)
 // 特征层（键 tenant_id+request_id+partition_date），30 个 NULL 占位换 d.<col>；
-// false（731 未跑的陈旧库）回退 710 形态，零 d.* 引用。
+// false（733 未跑的陈旧库）回退 710 形态，零 d.* 引用。
 func canonicalV2DDL(baseHasFP, baseHasRaw, hasDetails bool) string {
 	appendCols := []string{"source.request_class", "source.due_at"}
 	if !baseHasFP {
@@ -601,12 +601,12 @@ func canonicalV2DDL(baseHasFP, baseHasRaw, hasDetails bool) string {
 
 // SessionFamilyTurnsSourceSQL returns a parenthesized FROM-source emitting the
 // frozen 113-column request-logs shape straight from the session-turn family
-// (hot ∪ parent, details-joined per 732), for S3 wave-1 native readers
+// (hot ∪ parent, details-joined per 734), for S3 wave-1 native readers
 // (plan §4-S3: admin 日志读端分波去视图化). It reuses
 // sessionFamilyProjection(true) so the view ensure chain and native readers
 // share one copy of the column-mapping contract.
 //
-// Callers require migration 731 (session_turn_details family) to be applied —
+// Callers require migration 733 (session_turn_details family) to be applied —
 // native readers run post-migration by construction (startup migrations
 // precede serving).
 //

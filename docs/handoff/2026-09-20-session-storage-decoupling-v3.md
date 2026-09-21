@@ -7,13 +7,13 @@
 
 ## 一、本次交付
 
-### 迁移（PG17 Full 链路，**731/732，原编 727/728 与 origin R46/R48 撞号重编**）
-- `sql/migrations/startup/731_session_turn_details.sql`(+down)：`session_turn_details`
+### 迁移（PG17 Full 链路，**终编 733/734**；两度撞号：原编 727/728 撞 R46/R48 的 727-730 → 731/732 再撞 origin 731_auto_route，推前 pull 实测捕获后终编）
+- `sql/migrations/startup/733_session_turn_details.sql`(+down)：`session_turn_details`
   特征层表族（月分区+hot+RLS 4 策略+promote 707 镜像形态+request_logs 批量回填）
-- `sql/migrations/startup/732_request_logs_view_details_join.sql`(+down)：canonical 视图
+- `sql/migrations/startup/734_request_logs_view_details_join.sql`(+down)：canonical 视图
   session 分支 LEFT JOIN details，30 个 NULL 占位 → 真实特征列
 - `sql/migrations/startup/710_...down.sql`：42P16 修正（见 §二-4）
-- `scripts/apply-db-revision-sequence.sh`：登记 731/732（**六点同步**——db.Open 只跑
+- `scripts/apply-db-revision-sequence.sh`：登记 733/734（**六点同步**——db.Open 只跑
   Go ensure 链不扫 SQL 文件，不登记则 245/154 存量库永不应用）
 
 ### Go（Full 链路写入/视图）
@@ -27,15 +27,15 @@
 - `db/request_logs_view_schema.go`：投影 overlay（`detailsProjectionColumns` 30 列位置
   覆盖）+ `canonicalV2DDL(baseHasFP, baseHasRaw, hasDetails)` 三态 + ensure 探测
   details 家族在场决定形态（缺席回退 710 形态，零 d.* 引用）
-- `db/view_schema_v2_contract_test.go`：指向 732 文件；live 重放 731→710→732；
-  down 链 732.down→731.down→710.down 分步断言；新增 overlay/回退双形态断言
+- `db/view_schema_v2_contract_test.go`：指向 734 文件；live 重放 733→710→734；
+  down 链 734.down→733.down→710.down 分步断言；新增 overlay/回退双形态断言
 - `cmd/gateway/session_v2_init.go`：probeSessionTurnDetails + SetDetailsWriter 接线
 - `bg/partition_manager.go`(+test)、`admin/data_lifecycle_hot_partition.go`(+test)：
   promote 调度 + 手动入口登记（五点同步，测试强制）
 
 ### Lite 链路（SQLite+files+memory，与 Full 严格区分）
 - `storage/sqlite/schema.go`：`session_turn_details` 表 + `session_logs_view` 拼装视图
-  （LEFT JOIN，与 PG17 canonical 732 语义对齐）
+  （LEFT JOIN，与 PG17 canonical 734 语义对齐）
 - `storage/sqlite/turns_store.go`：WriteTurnDetails（UPSERT，零值 NULL）
 - `storage/{types,interfaces}.go`：TurnDetails 结构 + TurnDetailsWriter 可选接口
 - `cmd/gateway/lite_telemetry_sink.go`：journal 追加 details 写（模型/凭据/状态/
@@ -48,26 +48,26 @@
 > 缺口量化。前轮 handoff 的「测试全绿（offline+live 重放可跑）」**不符实**——live
 > 测试从未跑绿，接连暴露下列缺陷。
 
-1. **[P1] 回填漏热表**：731 首版候选行只扫 `session_turns` 父表，漏 `session_turns_hot`。
+1. **[P1] 回填漏热表**：733 首版候选行只扫 `session_turns` 父表，漏 `session_turns_hot`。
    热表里尚未 promote 的 turns 由旧二进制写入、永不再被 writer 覆盖，缺口随 promote
    单调累积。**实测：宣称「增量 ~226 行」，真实存量缺口 30,041 行（15.9% 新近 turns）**。
    修正：候选/ensure 双循环改 `session_turns(hot ∪ parent)`；本地复放 8.5s 插入 30,062
-   行全量闭合。245/154/252 尚未应用 731，将在部署时拿到修正版。
+   行全量闭合。245/154/252 尚未应用 733，将在部署时拿到修正版。
 2. **[P0-部署阻断] 回填硬引用冻结契约外附加列**：储备/多维组 24 列
    （node_switch_count 等）在 canonical 冻结 113 列契约之外，陈旧库/交集克隆库的
    request_logs 可能没有——live 契约测试实测 42703 炸停。修正：24 列按
    information_schema 交集动态回退 `NULL::<type>`；30 个视图契约列保持硬引用
    （冻结契约成员必有，测试克隆实证）。
-3. **[P0-回滚阻断] 732.down 探针盲区**：「已是 v2 体」守卫只 `LIKE '%session_turns%'`，
-   732 details-joined 体同样含该串 → 被误判为 710 体跳过重建，731 down DROP 表族时
+3. **[P0-回滚阻断] 734.down 探针盲区**：「已是 v2 体」守卫只 `LIKE '%session_turns%'`，
+   734 details-joined 体同样含该串 → 被误判为 710 体跳过重建，733 down DROP 表族时
    canonical 残留依赖 **2BP01**。修正：加 `NOT LIKE '%session_turn_details%'`；
    契约测试 down 链改为按号逆序分步断言。
 4. **[P2-回滚阻断] 710.down 42P16**：`CREATE OR REPLACE VIEW` 不能变更列类型
    （会话体 agent_name text → v1 体 varchar(255)），canonical 处于会话体时该 down
    自 710 落地起就不可用（此前被上游失败掩盖）。修正：先 DROP 再 CREATE 同事务替换。
-5. **卫生项**：重编号残留同步（732 文件头/RAISE EXCEPTION/promote COMMENT/DB 视图
-   COMMENT 与 Go canonicalV2Comment 同文/约 20 处 Go 注释）；731 头注释"default 兜底"
-   与实现矛盾修正；方案文档「28 列」实为 30 列；731.down 头 2BP10 笔误；`*.bak`
+5. **卫生项**：重编号残留同步（734 文件头/RAISE EXCEPTION/promote COMMENT/DB 视图
+   COMMENT 与 Go canonicalV2Comment 同文/约 20 处 Go 注释）；733 头注释"default 兜底"
+   与实现矛盾修正；方案文档「28 列」实为 30 列；733.down 头 2BP10 笔误；`*.bak`
    备份清除；`run/`、`raw-logs/` 入 .gitignore。
 
 ## 三、验证证据（本地 Docker PG llm-gateway-pg / 8782 蓝绿）
@@ -76,7 +76,7 @@
   + TestNumericUpMigrationVersionsAreUnique）、session/v2、sessionv2mirror、storage/sqlite、
   admin、bg 测试 ok；gofmt 干净（本次改动集内）。
 - **live 等价**（TestRequestLogsViewV2EnsureMatchesMigration，真实目录克隆 scratch）：
-  ensure ≡ 732 重放 viewdef 全等，details_join=true；down 链 732→731→710 首次全通。
+  ensure ≡ 734 重放 viewdef 全等，details_join=true；down 链 734→733→710 首次全通。
 - **live 缺口量化**：30,041 →（静态修正版复放 8.5s，+30,062 行）→ 9 →（动态版幂等复放，
   按需补增量 237 行）→ 残余 ~24 行 = 在途事务 + 零特征 turns（s1b 全零跳写的设计语义，
   视图 LEFT NULL 与 710 占位等价）。
@@ -98,7 +98,7 @@
 4. **缺源 4 列**：virtual_ip/virtual_mac/key_alias/owner_user 需 telemetry entry
    补字段或 identity enrichment 管道接线
 5. **部署窗口残差**：蓝绿切换点前后秒级流量由旧二进制写入、无 details 行——
-   与本轮修复的存量缺口同源但量级为秒级；可在 S4 前用 731 回填段幂等复跑兜底
+   与本轮修复的存量缺口同源但量级为秒级；可在 S4 前用 733 回填段幂等复跑兜底
    （或后续补一个 admin 手动回填入口）
 6. **并行会话 WIP**：worktree 内另有 reqprobe 特性未提交改动（admin/handler.go、
    cmd/gateway/main.go、streaming executors、internal/reqprobe/），属另一会话，
