@@ -3,8 +3,11 @@ package proxy
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // TestIsRegionBanned 覆盖订阅层 + 节点层禁用地区的并集语义。
@@ -449,5 +452,104 @@ func TestC5ReloadCacheSweepsActiveSelectionsForDeletedSubscriptions(t *testing.T
 	}
 	if !hasTwo {
 		t.Errorf("active selection for subscription 2 (still present in store) must be preserved")
+	}
+}
+
+// fakeSettingsBackend 是最小 settings 后端：从 map 供值（值须为 JSON 编码）。
+type fakeSettingsBackend struct {
+	store map[string][]byte
+}
+
+func (f *fakeSettingsBackend) Get(_ settings.Scope, key string) ([]byte, error) {
+	return f.store[key], nil
+}
+func (f *fakeSettingsBackend) Set(_ settings.Scope, _ string, _ any) ([]byte, error) {
+	return nil, nil
+}
+func (f *fakeSettingsBackend) GetTenant(_, key string) ([]byte, error) {
+	return f.store[key], nil
+}
+func (f *fakeSettingsBackend) SetTenant(_, _ string, _ any) ([]byte, error) {
+	return nil, nil
+}
+
+// registerDefaultBannedRegionsSpec 在测试 registry 里只注册 R51 的
+// proxy.default_banned_regions（默认 "HK" 来自 Spec.Default）。
+func registerDefaultBannedRegionsSpec(t *testing.T, registry *settings.Registry) {
+	t.Helper()
+	for _, sp := range settings.PlatformSpecs() {
+		if sp.Key == "proxy.default_banned_regions" {
+			if err := registry.RegisterSpec(sp); err != nil {
+				t.Fatalf("register %s: %v", sp.Key, err)
+			}
+			return
+		}
+	}
+	t.Fatal("spec proxy.default_banned_regions not found in settings.PlatformSpecs()")
+}
+
+// TestSelectBestNodeAppliesDefaultBannedRegionsOverlay (R51)
+// 订阅未禁 HK，但平台级默认禁用（proxy.default_banned_regions，Spec 默认 HK）
+// 时，HK 节点在选择路径被禁；settings 改为空字符串后恢复放行——热更新生效。
+func TestSelectBestNodeAppliesDefaultBannedRegionsOverlay(t *testing.T) {
+	prevGlobal := settings.Global
+	t.Cleanup(func() { settings.Global = prevGlobal })
+
+	store := map[string][]byte{}
+	registry := settings.NewRegistry()
+	registry.RegisterBackend(settings.ScopePlatform, &fakeSettingsBackend{store: store})
+	registry.RegisterBackend(settings.EnvBackendScope, settings.NewStoreEnv())
+	registerDefaultBannedRegionsSpec(t, registry)
+	settings.Global = registry
+
+	newStore := func() *fakeStoreForBans {
+		return &fakeStoreForBans{
+			subs:  []*Subscription{{ID: 1, Name: "subA", Status: "active"}},
+			nodes: []*Node{{ID: 11, SubscriptionID: 1, Name: "HK-A", Protocol: ProtocolHTTP, Server: "1.1.1.1", Port: 80, Status: "active", Location: "HK"}},
+		}
+	}
+
+	// 1) Spec 默认（DB/env 均未配置）→ overlay=HK，唯一 HK 节点被禁。
+	mgr := NewManager(newStore(), nil, nil)
+	mgr.refreshAllSubscriptionBans(context.Background())
+	if _, err := mgr.SelectBestNode(context.Background(), nil); err == nil {
+		t.Fatal("SelectBestNode with overlay=HK should reject the only HK node")
+	} else if !strings.Contains(err.Error(), "region ban") {
+		t.Fatalf("SelectBestNode error = %v, want region ban failure", err)
+	}
+
+	// 2) settings 改为空字符串 → overlay 关闭，节点放行。
+	store["proxy.default_banned_regions"] = []byte(`""`)
+	mgr2 := NewManager(newStore(), nil, nil)
+	mgr2.refreshAllSubscriptionBans(context.Background())
+	got, err := mgr2.SelectBestNode(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("SelectBestNode with empty overlay: %v", err)
+	}
+	if got == nil || got.ID != 11 {
+		t.Fatalf("SelectBestNode picked %v, want node id=11 after overlay cleared", got)
+	}
+
+	// 3) settings 改为多地区列表（大小写/空白混合）→ overlay 重新生效。
+	store["proxy.default_banned_regions"] = []byte(`" hk , US ,"`)
+	if got := defaultBannedRegionsOverlay(); len(got) != 2 || got[0] != "HK" || got[1] != "US" {
+		t.Fatalf("defaultBannedRegionsOverlay() = %v, want [HK US]", got)
+	}
+	mgr3 := NewManager(newStore(), nil, nil)
+	mgr3.refreshAllSubscriptionBans(context.Background())
+	if _, err := mgr3.SelectBestNode(context.Background(), nil); err == nil {
+		t.Fatal("SelectBestNode with overlay=[HK US] should reject the HK node")
+	}
+}
+
+// TestDefaultBannedRegionsOverlayUnregistered (R51)
+// settings 未注册该键（如独立单测环境）时不启用 overlay，避免隐式禁区。
+func TestDefaultBannedRegionsOverlayUnregistered(t *testing.T) {
+	prevGlobal := settings.Global
+	t.Cleanup(func() { settings.Global = prevGlobal })
+	settings.Global = settings.NewRegistry()
+
+	if got := defaultBannedRegionsOverlay(); got != nil {
+		t.Fatalf("defaultBannedRegionsOverlay() = %v, want nil when spec unregistered", got)
 	}
 }

@@ -357,7 +357,10 @@ func (m *Manager) selectNodeExcluding(ctx context.Context, subscriptionID *int, 
 		threshold = 3
 	}
 	// 订阅层禁用地区：每个候选节点按其所在订阅取出订阅 banned，做并集过滤。
+	// R51：叠加平台级默认禁用地区 overlay（proxy.default_banned_regions，
+	// 默认 HK），存量订阅未回填 banned_regions 也被规避覆盖。
 	subscriptionBans := m.subscriptionBansSnapshot(subscriptionID)
+	overlayBans := defaultBannedRegionsOverlay()
 	subPriorities := m.subscriptionPrioritiesSnapshot()
 	m.selectionMu.Unlock()
 
@@ -375,7 +378,7 @@ func (m *Manager) selectNodeExcluding(ctx context.Context, subscriptionID *int, 
 			undialable++
 			continue
 		}
-		if IsRegionBanned(node.Location, subscriptionBans[node.SubscriptionID], node.BannedRegions) {
+		if IsRegionBanned(node.Location, subscriptionBans[node.SubscriptionID], node.BannedRegions, overlayBans) {
 			regionBanned++
 			continue
 		}
@@ -388,7 +391,7 @@ func (m *Manager) selectNodeExcluding(ctx context.Context, subscriptionID *int, 
 			if m.metrics != nil {
 				m.metrics.IncEgressSelection("region_banned")
 			}
-			return nil, fmt.Errorf("all %d candidate(s) excluded by region ban (subscription banned regions: %v)", regionBanned, subscriptionBans)
+			return nil, fmt.Errorf("all %d candidate(s) excluded by region ban (subscription banned regions: %v, platform default banned regions: %v)", regionBanned, subscriptionBans, overlayBans)
 		case undialable > 0:
 			result = "no_dialable"
 			if m.metrics != nil {

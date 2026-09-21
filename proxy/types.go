@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // 直接可用协议：Go 的 net/http 只能通过 http/https/socks5 代理拨号。
@@ -210,23 +212,45 @@ func normalizeRegion(s string) string {
 	return strings.ToUpper(strings.TrimSpace(s))
 }
 
-// IsRegionBanned 判断给定的 region（节点 Location）是否被订阅层+节点层禁用。
-// 任一层包含即视为禁用（集合并集）。输入在函数边界统一 trim + 大写，避免
-// 非 PgStore 实现或手工录入因大小写/空白差异绕过地区规避规则。
-func IsRegionBanned(region string, subscriptionBans, nodeBans []string) bool {
+// IsRegionBanned 判断给定的 region（节点 Location）是否被任一禁用列表命中
+// （订阅层 + 节点层 + 平台级 overlay，多列表取并集）。输入在函数边界统一
+// trim + 大写，避免非 PgStore 实现或手工录入因大小写/空白差异绕过地区规避
+// 规则。region 为空（未知地区）不误杀，一律放行。
+func IsRegionBanned(region string, banLists ...[]string) bool {
 	region = normalizeRegion(region)
 	if region == "" {
 		return false
 	}
-	for _, r := range subscriptionBans {
-		if normalizeRegion(r) == region {
-			return true
-		}
-	}
-	for _, r := range nodeBans {
-		if normalizeRegion(r) == region {
-			return true
+	for _, bans := range banLists {
+		for _, r := range bans {
+			if normalizeRegion(r) == region {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// defaultBannedRegionsKey 平台级默认禁用地区的 settings 键（R51），与
+// settings/spec_proxy.go 的 Spec 保持一致。海外模型厂商普遍屏蔽香港（R35
+// 决策），Spec.Default 为 "HK"；选择路径把该列表与订阅层/节点层禁用取并集，
+// 存量订阅未回填 banned_regions 也被覆盖。此处 fallback 留空：默认值挂
+// Spec.Default，仅在注册了 PlatformSpecs 的进程（生产启动）生效，避免
+// 未注册 settings 的环境（如单测）隐式启用 overlay。
+const defaultBannedRegionsKey = "proxy.default_banned_regions"
+
+// defaultBannedRegionsOverlay 读取平台级默认禁用地区列表（逗号分隔地区码，
+// 已归一化）。每次调用实时读 settings，改键即热生效。
+func defaultBannedRegionsOverlay() []string {
+	raw := settings.GetPlatformString(defaultBannedRegionsKey, "")
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if r := normalizeRegion(part); r != "" {
+			out = append(out, r)
+		}
+	}
+	return out
 }

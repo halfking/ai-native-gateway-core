@@ -538,40 +538,44 @@ func decodeSSLegacyHost(host string) (string, bool) {
 // ---------------------------------------------------------------------------
 
 // locationRules 从节点名尽力推断地区码。Keywords 为子串匹配（中文等），
-// Tokens 为 ASCII 整词匹配（避免 "US" 命中 "Russia" 之类的误判）。
+// Tokens 为 ASCII 整词匹配（避免 "US" 命中 "Russia" 之类的误判），
+// Phrases 为相邻词组匹配（大写、任意非字母数字分隔），如 "HONG KONG" 可
+// 命中 "Hong Kong 01"/"Hong.Kong"。R51 注记：HK 此前只有整词 HK/HONGKONG，
+// "Hong Kong 01" 分词成 HONG/KONG 后漏识别，导致规避被节点命名绕过。
 // 顺序敏感：更具体的规则必须在前（如 "印度尼西亚" 必须早于 "印度"）。
 var locationRules = []struct {
 	Code     string
 	Keywords []string
 	Tokens   []string
+	Phrases  []string
 }{
-	{"TW", []string{"台湾", "臺灣", "台北"}, []string{"TW", "TAIWAN"}},
-	{"HK", []string{"香港"}, []string{"HK", "HONGKONG"}},
-	{"MO", []string{"澳门", "澳門"}, []string{"MO", "MACAO", "MACAU"}},
-	{"AU", []string{"澳洲", "澳大利亚"}, []string{"AU", "AUSTRALIA"}},
-	{"US", []string{"美国", "美國"}, []string{"US", "USA"}},
-	{"JP", []string{"日本", "东京", "大阪"}, []string{"JP", "JAPAN"}},
-	{"SG", []string{"新加坡", "狮城"}, []string{"SG", "SINGAPORE"}},
-	{"KR", []string{"韩国", "韓國", "首尔"}, []string{"KR", "KOREA"}},
-	{"GB", []string{"英国", "英國", "伦敦"}, []string{"UK", "GB"}},
-	{"ID", []string{"印度尼西亚", "印尼"}, nil}, // 必须早于 IN
-	{"IN", []string{"印度"}, nil},
-	{"DE", []string{"德国", "德國"}, nil},
-	{"FR", []string{"法国", "法國"}, nil},
-	{"IT", []string{"意大利"}, nil},
-	{"NO", []string{"挪威"}, nil},
-	{"CA", []string{"加拿大"}, []string{"CANADA"}},
-	{"RU", []string{"俄罗斯", "俄羅斯"}, nil},
-	{"UA", []string{"乌克兰", "烏克蘭"}, nil},
-	{"AE", []string{"阿联酋", "迪拜"}, nil},
-	{"NG", []string{"尼日利亚"}, nil},
-	{"TH", []string{"泰国", "泰國"}, nil},
-	{"TR", []string{"土耳其"}, nil},
-	{"VN", []string{"越南"}, nil},
-	{"PH", []string{"菲律宾", "菲律賓"}, nil},
-	{"MY", []string{"马来西亚", "馬來西亞"}, nil},
-	{"BR", []string{"巴西"}, nil},
-	{"AR", []string{"阿根廷"}, nil},
+	{"TW", []string{"台湾", "臺灣", "台北"}, []string{"TW", "TAIWAN"}, nil},
+	{"HK", []string{"香港"}, []string{"HK", "HONGKONG"}, []string{"HONG KONG"}},
+	{"MO", []string{"澳门", "澳門"}, []string{"MO", "MACAO", "MACAU"}, nil},
+	{"AU", []string{"澳洲", "澳大利亚"}, []string{"AU", "AUSTRALIA"}, nil},
+	{"US", []string{"美国", "美國"}, []string{"US", "USA"}, nil},
+	{"JP", []string{"日本", "东京", "大阪"}, []string{"JP", "JAPAN"}, nil},
+	{"SG", []string{"新加坡", "狮城"}, []string{"SG", "SINGAPORE"}, nil},
+	{"KR", []string{"韩国", "韓國", "首尔"}, []string{"KR", "KOREA"}, nil},
+	{"GB", []string{"英国", "英國", "伦敦"}, []string{"UK", "GB"}, nil},
+	{"ID", []string{"印度尼西亚", "印尼"}, nil, nil}, // 必须早于 IN
+	{"IN", []string{"印度"}, nil, nil},
+	{"DE", []string{"德国", "德國"}, nil, nil},
+	{"FR", []string{"法国", "法國"}, nil, nil},
+	{"IT", []string{"意大利"}, nil, nil},
+	{"NO", []string{"挪威"}, nil, nil},
+	{"CA", []string{"加拿大"}, []string{"CANADA"}, nil},
+	{"RU", []string{"俄罗斯", "俄羅斯"}, nil, nil},
+	{"UA", []string{"乌克兰", "烏克蘭"}, nil, nil},
+	{"AE", []string{"阿联酋", "迪拜"}, nil, nil},
+	{"NG", []string{"尼日利亚"}, nil, nil},
+	{"TH", []string{"泰国", "泰國"}, nil, nil},
+	{"TR", []string{"土耳其"}, nil, nil},
+	{"VN", []string{"越南"}, nil, nil},
+	{"PH", []string{"菲律宾", "菲律賓"}, nil, nil},
+	{"MY", []string{"马来西亚", "馬來西亞"}, nil, nil},
+	{"BR", []string{"巴西"}, nil, nil},
+	{"AR", []string{"阿根廷"}, nil, nil},
 }
 
 // guessLocation 尽力从节点名推断地区码，识别不出时返回空串。
@@ -580,6 +584,9 @@ func guessLocation(name string) string {
 		return ""
 	}
 	tokens := asciiTokens(name)
+	// 词组匹配口径：名字切词后以单空格重连，使 "Hong Kong"、"Hong.Kong"、
+	// "hong_kong"、"Hong  Kong" 等分隔形态统一命中同一 phrase。
+	joined := strings.Join(asciiFields(name), " ")
 	for _, rule := range locationRules {
 		for _, kw := range rule.Keywords {
 			if strings.Contains(name, kw) {
@@ -591,20 +598,30 @@ func guessLocation(name string) string {
 				return rule.Code
 			}
 		}
+		for _, phrase := range rule.Phrases {
+			if strings.Contains(joined, phrase) {
+				return rule.Code
+			}
+		}
 	}
 	return ""
 }
 
 // asciiTokens 提取名字里的 ASCII 单词（大写）用于整词匹配。
 func asciiTokens(name string) map[string]bool {
-	fields := strings.FieldsFunc(strings.ToUpper(name), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
+	fields := asciiFields(name)
 	tokens := make(map[string]bool, len(fields))
 	for _, f := range fields {
 		tokens[f] = true
 	}
 	return tokens
+}
+
+// asciiFields 返回名字里的 ASCII 单词（大写、保序），供整词/词组匹配。
+func asciiFields(name string) []string {
+	return strings.FieldsFunc(strings.ToUpper(name), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
 }
 
 // ---------------------------------------------------------------------------
