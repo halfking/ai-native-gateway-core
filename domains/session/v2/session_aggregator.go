@@ -87,6 +87,13 @@ type SessionUpdate struct {
 	ClientIP      string
 	AgentName     string
 
+	// 730 会话角色归因三列（R50 F15 写入方）。与 706 同款首值优先：
+	// AgentRole ""=未声明（SQL 侧 COALESCE(NULLIF(…),'main') 落列默认，
+	// CHECK 五值约束不变）；parent 双列 ""→NULL（部分索引谓词依赖 NULL 语义）。
+	AgentRole       string
+	ParentSessionID string
+	ParentTaskID    string
+
 	// Incremental counters (add to existing)
 	TurnIncrement   int
 	TokensIncrement int
@@ -217,6 +224,7 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			client_type,
 			project_id, api_key_id, application_id, end_user_id,
 			owner_user, client_ip, agent_name,
+			agent_role, parent_session_id, parent_task_id,
 			partition_date
 		) VALUES (
 			$1, $2,
@@ -227,7 +235,9 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			$12,
 			$13, $14, $15, $16,
 			$17, $18, $19,
-			$20
+			COALESCE(NULLIF($20, ''), 'main'),
+			NULLIF($21, ''), NULLIF($22, ''),
+			$23
 		)
 		-- 租户守卫（2026-09-07 审计）：客户端提供的 gw_ 会话 id 在 Redis
 		-- 缓存过期后无法做归属校验，WHERE 挡住他租户 key 用同 id 混写
@@ -250,7 +260,19 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			end_user_id = COALESCE(NULLIF(EXCLUDED.end_user_id, ''), public.sessions.end_user_id),
 			owner_user = COALESCE(NULLIF(EXCLUDED.owner_user, ''), public.sessions.owner_user),
 			client_ip = COALESCE(NULLIF(EXCLUDED.client_ip, ''), public.sessions.client_ip),
-			agent_name = COALESCE(NULLIF(EXCLUDED.agent_name, ''), public.sessions.agent_name)
+			agent_name = COALESCE(NULLIF(EXCLUDED.agent_name, ''), public.sessions.agent_name),
+			-- 730 归因三列（R50 F15）：首值优先。agent_role 的空值已在
+			-- VALUES 臂归一为 'main'（列 NOT NULL），EXCLUDED 恒为合法五值
+			-- 之一、不触碰 CHECK。冲突臂用"默认可精化"语义：存量仍是 'main'
+			-- （未归因默认）时允许后续轮声明精化，任何已固化角色不被默认值
+			-- 降级——不能用 COALESCE(NULLIF(EXCLUDED...))，否则重放轮的
+			-- 归一默认 'main' 会覆盖首写角色（真库演练实捕，pgxmock 测不出）。
+			agent_role = CASE
+				WHEN public.sessions.agent_role = 'main' THEN EXCLUDED.agent_role
+				ELSE public.sessions.agent_role
+			END,
+			parent_session_id = COALESCE(EXCLUDED.parent_session_id, public.sessions.parent_session_id),
+			parent_task_id = COALESCE(EXCLUDED.parent_task_id, public.sessions.parent_task_id)
 		WHERE public.sessions.tenant_id = EXCLUDED.tenant_id
 	`,
 		update.SessionID, update.TenantID,
@@ -261,6 +283,7 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 		update.ClientType,
 		update.ProjectID, update.APIKeyID, update.ApplicationID, update.EndUserID,
 		update.OwnerUser, update.ClientIP, update.AgentName,
+		update.AgentRole, update.ParentSessionID, update.ParentTaskID,
 		partitionDate,
 	)
 	if err != nil {

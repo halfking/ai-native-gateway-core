@@ -178,6 +178,12 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// 731 (R50, 2026-09-21): auto_route_selections role attribution —
 		// five-point sync completed in the same round as the canonical copy.
 		"731_auto_route_selection_role_attribution.sql": autoRouteSelectionRoleAttributionMigration731,
+		// 733/734 (R50, 2026-09-21 catch-up): session storage decoupling v3.
+		// Delivered by the v3 session line (as 731/732, renumbered on
+		// collision) without the installer five points — the shared gate
+		// stayed red until this round synced them. Transaction-safe.
+		"733_session_turn_details.sql":           sessionTurnDetailsMigration733,
+		"734_request_logs_view_details_join.sql": requestLogsViewDetailsJoinMigration734,
 	}
 
 	for name, embedded := range expected {
@@ -366,6 +372,11 @@ func TestStartupFilesAreAllEmbedded(t *testing.T) {
 // fresh install ever needs them on day one.
 var psqlConcurrencyRequired = map[string]string{
 	"727_sql_audit_slow_query_indexes.sql": "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
+	// 728 (d4d54520c, 2026-09-21): same \gexec CONCURRENTLY shape as 727 —
+	// exemption added retroactively by the R50 audit round after the shared
+	// gate caught it (the migration shipped without any installer-side
+	// disposition). Ships via the revision-sequence channel only.
+	"728_sql_audit_request_logs_credential_model_index.sql": "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
 }
 
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17

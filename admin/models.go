@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/kaixuan/llm-gateway-go/catalog"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 )
 
 // Alias create/bulk-import statements. 2026-09-12: both used to arbitrate on
@@ -359,15 +361,10 @@ func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
 	// equaled `claude-opus-5` → `claude_opus_5`, so a single request could
 	// mint a duplicate spelling (live hole, not just a race; the same
 	// run-collapse is NormalizeRouteKey's dupDashPattern semantics).
+	// R50 F19 收敛：谓词迁入 modelname.DedupCanonicalNameSQL 单一实现
+	// （fold 链与两处回种守卫同源），本文件不再手写 SQL 谓词。
 	var existing string
-	err := h.db.QueryRow(ctx, `
-		SELECT canonical_name FROM models_canonical
-		WHERE lower(canonical_name) = lower($1)
-		   OR regexp_replace(replace(replace(replace(replace(lower(canonical_name), '.', '_'), '-', '_'), ' ', '_'), '/', '_'), '[-_]{2,}', '_', 'g')
-		    = regexp_replace(replace(replace(replace(replace(lower($1), '.', '_'), '-', '_'), ' ', '_'), '/', '_'), '[-_]{2,}', '_', 'g')
-		ORDER BY length(canonical_name), canonical_name
-		LIMIT 1
-	`, canonicalName).Scan(&existing)
+	err := h.db.QueryRow(ctx, modelname.DedupCanonicalNameSQL, canonicalName).Scan(&existing)
 	if err == nil {
 		writeError(w, http.StatusConflict,
 			"duplicate canonical model: "+canonicalName+" already exists as "+existing)
@@ -386,6 +383,16 @@ func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
 		RETURNING id
 	`, canonicalName, displayName, modality, inputPrice, outputPrice).Scan(&id)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			// DB 兜底（F19）：SELECT-then-INSERT 并发窗口的胜者仲裁交给
+			// 唯一约束。当前生效的是 exact-name 唯一（23505 同码）；
+			// 折叠表达式唯一索引（uq_models_canonical_active_folded_name）
+			// 待真库 6 组重复对数据对账后建（R51），届时本分支同样兜住
+			// 折叠拼写竞态。
+			writeError(w, http.StatusConflict, "duplicate canonical model: "+canonicalName)
+			return
+		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Exact-name race lost between the gate above and the insert.
 			writeError(w, http.StatusConflict, "duplicate canonical model: "+canonicalName)

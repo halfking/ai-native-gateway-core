@@ -832,50 +832,7 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 	// restart tracking immediately for exactly those rows. Ladder rows
 	// (last_err_code set or consecutive_failures > 0) keep the 2026-07-16
 	// semantics: their schedule is left alone so the chain can advance.
-	_, _ = w.db.Exec(ctx, `
-		INSERT INTO node_probe_state (credential_id, raw_model_name, next_retry_at, next_retry_seconds, paused, in_flight_until, consecutive_failures, last_err_code)
-		VALUES ($1, $2, now() + interval '5 seconds', 5, FALSE, NULL, 0, NULL)
-		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
-		SET next_retry_at = CASE
-		        WHEN node_probe_state.paused = TRUE
-		          OR node_probe_state.next_retry_at <= now()
-		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
-		        THEN now() + interval '5 seconds'
-		        ELSE node_probe_state.next_retry_at
-		    END,
-		    next_retry_seconds = CASE
-		        WHEN node_probe_state.paused = TRUE
-		          OR node_probe_state.next_retry_at <= now()
-		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
-		        THEN 5
-		        ELSE node_probe_state.next_retry_seconds
-		    END,
-		    in_flight_until = CASE
-		        WHEN node_probe_state.paused = TRUE
-		          OR node_probe_state.next_retry_at <= now()
-		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
-		        THEN NULL
-		        ELSE node_probe_state.in_flight_until
-		    END,
-		    paused = FALSE,
-		    -- Reset the counter when the cycle is being restarted from a
-		    -- paused or healthy-parked row. For already-expired ladder rows
-		    -- the worker (runOne) owns the counter and increments it by 1 per
-		    -- round; touching it here would collapse the ladder back to rung 1.
-		    consecutive_failures = CASE
-		        WHEN node_probe_state.paused = TRUE
-		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
-		        THEN 0
-		        ELSE node_probe_state.consecutive_failures
-		    END,
-		    last_err_code = CASE
-		        WHEN node_probe_state.paused = TRUE
-		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
-		        THEN NULL
-		        ELSE node_probe_state.last_err_code
-		    END,
-		    updated_at = now()
-	`, credID, model)
+	_, _ = w.db.Exec(ctx, nodeProbeSubmitUpsertSQL(), credID, model)
 	key := fmt.Sprintf("%d|%s", credID, model)
 	w.mu.Lock()
 	w.triggers[key] = nodeProbeTrigger{

@@ -36,6 +36,13 @@ func applyStorageS1AFields(req *v2.ProcessedRequest, entry *telemetry.RequestLog
 	req.AgentType = strVal(entry.AgentType)
 	req.VirtualClientID = strVal(entry.VirtualClientID)
 
+	// 730 会话角色归因三列（R50 F15 写入方）：role/父会话是 Mirror-only
+	// 传输字段；父任务复用 GwTaskID 关联头。空串零值由 upsert 的
+	// NULLIF/COALESCE 归一（'main' 列默认 / NULL）。
+	req.AgentRole = strVal(entry.AgentRole)
+	req.ParentSessionID = strVal(entry.ParentSessionID)
+	req.ParentTaskID = strVal(entry.GwTaskID)
+
 	// client_type 断供修复（plan §1 sessions 行④）：mirror bridge 从不填
 	// ClientType，sessions.client_type 因此长期为空。以 agent 名/型推导
 	// （agent_name 是客户端自报身份，最贴近 client_type 的

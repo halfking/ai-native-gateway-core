@@ -249,6 +249,14 @@ type ProcessedRequest struct {
 	AgentType          string
 	VirtualClientID    string
 
+	// 730 会话角色归因三列（R50 F15 写入方）：agent_role 取
+	// ResolveAgentRoleFromHeaders 的已解析值（""=未声明，SQL 侧落 'main'
+	// 列默认）；parent_session_id 来自 X-Gw-Parent-Session-Id；parent_task_id
+	// 复用 X-Gw-Task-Id 关联头。三列均会话首值优先（与 706 访问维度同款）。
+	AgentRole       string
+	ParentSessionID string
+	ParentTaskID    string
+
 	// 计费组（credits_charged 是计费事实源，D7 双读校验前提）。
 	CreditsCharged int64
 	CostDisplay    float64
@@ -673,6 +681,9 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		OwnerUser:           req.OwnerUser,
 		ClientIP:            req.ClientIP,
 		AgentName:           req.AgentName,
+		AgentRole:           req.AgentRole,
+		ParentSessionID:     req.ParentSessionID,
+		ParentTaskID:        req.ParentTaskID,
 		TurnIncrement:       1,
 		TokensIncrement:     req.PromptTokens + req.CompletionTokens,
 		CostIncrement:       req.CostUSD,
@@ -758,6 +769,9 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 			OwnerUser:           req.OwnerUser,
 			ClientIP:            req.ClientIP,
 			AgentName:           req.AgentName,
+			AgentRole:           req.AgentRole,
+			ParentSessionID:     req.ParentSessionID,
+			ParentTaskID:        req.ParentTaskID,
 			TurnIncrement:       1,
 			TokensIncrement:     req.PromptTokens + req.CompletionTokens,
 			CostIncrement:       req.CostUSD,

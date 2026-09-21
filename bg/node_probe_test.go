@@ -338,15 +338,26 @@ func TestNodeProbeSuccessParksRow(t *testing.T) {
 		// runOne + MarkNodeProbeHealthy success branches park 30 days
 		"next_retry_at = now() + interval '30 days'",
 		"next_retry_seconds = 2592000",
-		// INV-2: Submit re-arms healthy-parked rows on a fresh failure.
-		// Source-grep must match the helper CALL (the rendered predicate
-		// only exists at runtime).
-		`nodeProbeHealthyParkedSQL("node_probe_state")`,
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
 			t.Fatalf("probe-volume policy regression: node_probe.go missing %q", want)
 		}
+	}
+	// INV-2: Submit re-arms healthy-parked rows on a fresh failure.
+	// R50 F20: the upsert statement moved verbatim into
+	// nodeProbeSubmitUpsertSQL (probe_policy.go) so behavior tests can
+	// execute it against a real DB — the predicate text lives there now;
+	// here we pin that Submit routes through the builder.
+	policySrc, err := os.ReadFile("probe_policy.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	if !strings.Contains(string(policySrc), `nodeProbeHealthyParkedSQL("node_probe_state")`) {
+		t.Fatalf("probe-volume policy regression: nodeProbeSubmitUpsertSQL missing the healthy-parked re-arm predicate")
+	}
+	if !strings.Contains(body, "nodeProbeSubmitUpsertSQL()") {
+		t.Fatalf("probe-volume policy regression: node_probe.go Submit no longer uses nodeProbeSubmitUpsertSQL")
 	}
 	// The old re-arm intervals must stay gone.
 	for _, banned := range []string{

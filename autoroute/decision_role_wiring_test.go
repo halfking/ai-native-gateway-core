@@ -569,3 +569,84 @@ func TestDecideV2_RoleRouting_PinSurvivesTierFilter(t *testing.T) {
 		t.Fatalf("V2 RoutingSource: got %q, want override_pin", dec.RoutingSource)
 	}
 }
+
+// ── R50 审计轮（2026-09-21）──
+
+// TestDecideV2_RoleWinner_HeadsTierFailoverChain —— R50 F14：role 命中翻盘后
+// TierFailoverModels 必须以选中模型打头（Decision 契约 "starts with the
+// selected model"）。tierFailoverModelsWithRoutes 构造不带豁免臂，被 tier
+// 滤除后靠豁免复活的 role 偏好（含 prefs 尾部备选）整体缺席 dispatch 换模
+// 梯子（handler D5 / PreferredModels）；修复后 rolePrefs ∩ 候选池按 role
+// 顺序打头、tier 计划保序去重随后。
+func TestDecideV2_RoleWinner_HeadsTierFailoverChain(t *testing.T) {
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{AutoRoleRoutingEnabled: true})
+	defer SetGlobalFeatureFlagsForTest(old)
+
+	// gpt-5.6-sol 与 grok-4.6（worker+solution 内置 prefs 双臂）都不在
+	// tierFilterStore 的 chat 配置（仅 glm-5.2@secondary）内——两者均靠
+	// 豁免复活，修复前 tierFailoverModels=[glm-5.2]，winner 缺席。
+	idx := &Index{
+		entries: []Candidate{
+			{CredentialID: 11, CanonicalID: 11, CanonicalName: "glm-5.2", Tags: []string{"chat"}, SuccessRate: 0.95},
+			{CredentialID: 12, CanonicalID: 12, CanonicalName: "glm-5.3", Tags: []string{"chat"}, SuccessRate: 0.94},
+			{CredentialID: 13, CanonicalID: 13, CanonicalName: "gpt-5.6-sol", Tags: []string{"chat"}, SuccessRate: 0.90},
+			{CredentialID: 14, CanonicalID: 14, CanonicalName: "grok-4.6", Tags: []string{"chat"}, SuccessRate: 0.89},
+		},
+		lastRefresh: time.Now(),
+	}
+	cls := &v2TestClassifier{task: TaskChat}
+	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
+	d.SetRoleLLMRouter(NewRoleLLMRouter(nil))
+	d.SetWorkTypeRouteStore(tierFilterStore())
+
+	dec, err := d.DecideV2(context.Background(), ClassificationSignals{
+		AgentRole:      RoleWorker,
+		LastUserPrompt: "帮我写一份技术方案",
+	}, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("DecideV2 err: %v", err)
+	}
+	if dec.ChosenModel != "gpt-5.6-sol" {
+		t.Fatalf("precondition: worker+solution must promote gpt-5.6-sol, got %s", dec.ChosenModel)
+	}
+	want := []string{"gpt-5.6-sol", "grok-4.6", "glm-5.2"}
+	if len(dec.TierFailoverModels) != len(want) {
+		t.Fatalf("TierFailoverModels = %v, want %v", dec.TierFailoverModels, want)
+	}
+	for i := range want {
+		if dec.TierFailoverModels[i] != want[i] {
+			t.Fatalf("TierFailoverModels = %v, want %v (selected model must head the chain, role prefs in role order, tier plan retained)", dec.TierFailoverModels, want)
+		}
+	}
+}
+
+// TestDecideV2_TierFailoverChain_NoRole_Unchanged —— R50 F14 护栏：无 role
+// 干预时 tier 恢复计划维持原状（头名=选中模型，tier 序），修复不外溢。
+func TestDecideV2_TierFailoverChain_NoRole_Unchanged(t *testing.T) {
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{})
+	defer SetGlobalFeatureFlagsForTest(old)
+
+	idx := &Index{
+		entries: []Candidate{
+			{CredentialID: 11, CanonicalID: 11, CanonicalName: "glm-5.2", Tags: []string{"chat"}, SuccessRate: 0.95},
+			{CredentialID: 12, CanonicalID: 12, CanonicalName: "glm-5.3", Tags: []string{"chat"}, SuccessRate: 0.94},
+		},
+		lastRefresh: time.Now(),
+	}
+	cls := &v2TestClassifier{task: TaskChat}
+	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
+	d.SetWorkTypeRouteStore(tierFilterStore())
+
+	dec, err := d.DecideV2(context.Background(), ClassificationSignals{}, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("DecideV2 err: %v", err)
+	}
+	if dec.ChosenModel != "glm-5.2" {
+		t.Fatalf("precondition: tier head glm-5.2 must win, got %s", dec.ChosenModel)
+	}
+	if len(dec.TierFailoverModels) != 1 || dec.TierFailoverModels[0] != "glm-5.2" {
+		t.Fatalf("no-role tier plan must stay [glm-5.2], got %v", dec.TierFailoverModels)
+	}
+}

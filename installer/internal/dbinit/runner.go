@@ -195,6 +195,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// agent_role/task_kind/routing_source on parent + hot tables so
 			// affinity learning can exclude forced role-route selections.
 			"731_auto_route_selection_role_attribution.sql",
+			// 733/734 (R50, 2026-09-21 five-point catch-up): session storage
+			// decoupling v3 — session_turn_details feature-layer family and
+			// the canonical view details JOIN. Delivered by the v3 session
+			// line as 731/732, renumbered to 733/734 on collision; the
+			// installer sync never followed. Transaction-safe (no
+			// CONCURRENTLY), so the regular single-transaction channel applies.
+			"733_session_turn_details.sql",
+			"734_request_logs_view_details_join.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}
