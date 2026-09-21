@@ -6781,9 +6781,10 @@ func main() {
 		slog.Info("A4 Phase 1 context window calibration enabled (/api/admin/models/context-window/{id})")
 
 		// 2026-08-11 (479): V2 多层队列调度实时快照（Tier-3 显示与统计）。
-		mux.HandleFunc("/api/admin/dispatch/queues", wrapAdmin(handleDispatchQueues))
-		mux.HandleFunc("/api/admin/dispatch/waterfall", wrapAdmin(handleDispatchWaterfall))
-		// v6 G-Ⅳ (2026-08-27): 分维成员索引（模型/凭据/供应商）查询。
+			mux.HandleFunc("/api/admin/dispatch/queues", wrapAdmin(handleDispatchQueues))
+			mux.HandleFunc("/api/admin/dispatch/waterfall", wrapAdmin(handleDispatchWaterfall))
+			mux.HandleFunc("/api/admin/dispatch/waterfall/request/", wrapAdmin(handleDispatchWaterfallByRequest))
+			// v6 G-Ⅳ (2026-08-27): 分维成员索引（模型/凭据/供应商）查询。
 		mux.HandleFunc("/api/admin/dispatch/dimensions", wrapAdmin(handleDispatchDimensions))
 		// V6-W1.6 R10（2026-08-27 范围修正）：按请求查分维成员归属；执行轨迹
 		// (AttemptJournal) 通过 tenant/request-scoped journal snapshot 端点查询。
