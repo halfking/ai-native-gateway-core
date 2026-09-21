@@ -89,6 +89,8 @@ func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
 		"promote_session_memora_hot_to_partition":            false, // Migration 706
 		"promote_session_censors_hot_to_partition":           false, // Migration 706
 		"promote_session_tools_hot_to_partition":             false, // Migration 706
+		// 733（会话存储解耦 v3）：turn 特征层
+		"promote_session_turn_details_hot_to_partition":      false, // Migration 733
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
