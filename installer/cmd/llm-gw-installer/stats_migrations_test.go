@@ -368,9 +368,14 @@ func TestStartupFilesAreAllEmbedded(t *testing.T) {
 // 728 (2026-09-21, R50 follow-up): same \gexec + CONCURRENTLY shape as 727;
 // sql/migrations/startup/728_sql_audit_request_logs_credential_model_index.sql
 // header comment self-certifies "实现约束与 727 相同".
+//
+// 729 (2026-09-21, 252 部署验证轮): same three-phase \gexec + CONCURRENTLY
+// shape as 727/728 (header comment "实现约束与 727/728 相同"); ships
+// exclusively through the revision-sequence channel like its predecessors.
 var psqlConcurrencyRequired = map[string]string{
 	"727_sql_audit_slow_query_indexes.sql":                  "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
 	"728_sql_audit_request_logs_credential_model_index.sql": "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
+	"729_sql_audit_session_turns_credential_ts_index.sql":   "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
 }
 
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17
