@@ -317,6 +317,17 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 			roleChangedWinner = len(recommended) > 0 && recommended[0].Candidate.CanonicalName != postTierWinner
 		}
 	}
+	// R50 修订（F14，2026-09-21 审计）：role 命中翻盘后 tier 恢复计划必须以
+	// 选中模型打头（Decision.TierFailoverModels 契约 "starts with the selected
+	// model"）。tierFailoverModelsWithRoutes 构造时不带豁免臂，role 偏好靠
+	// 豁免入选（被 tier 滤除后复活）的模型整体缺席恢复链——winner 穷尽时
+	// dispatch 换模梯子（handler D5 / PreferredModels）直接跳到 tier 头名，
+	// role 意图在恢复链断裂。这里把 rolePrefs ∩ 候选池按 role 顺序搬到梯子
+	// 头部（winner 天然是首个命中者），tier 计划保序去重随后。计划为空
+	// （无 tier 配置）不强造，维持 recommender 全局重排兜底。
+	if roleChangedWinner && len(tierFailoverModels) > 0 && len(recommended) > 0 {
+		tierFailoverModels = withRoleFailoverHead(tierFailoverModels, rolePrefs, recommended)
+	}
 
 	beforePinWinner := ""
 	if len(recommended) > 0 {

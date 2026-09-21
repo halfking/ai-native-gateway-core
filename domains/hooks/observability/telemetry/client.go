@@ -297,6 +297,13 @@ type RequestLogEntry struct {
 	ResponseBody       *string `json:"response_body,omitempty"`
 	GwSessionID        *string `json:"gw_session_id,omitempty"`
 	GwTaskID           *string `json:"gw_task_id,omitempty"`
+	// AgentRole/ParentSessionID（R50 F15，2026-09-21）：会话角色归因三列的
+	// 前两列（第三列 parent_task_id 复用 GwTaskID）。与下方 Mirror-only
+	// 维度同款契约：request_logs 持久化 SQL 不落这些字段，仅作进程内 +
+	// session_mirror_outbox JSON 载荷传输，供 sessionv2mirror 桥进
+	// public.sessions 的 agent_role / parent_session_id 列（730）。
+	AgentRole       *string `json:"agent_role,omitempty"`
+	ParentSessionID *string `json:"parent_session_id,omitempty"`
 	// Mirror-only transport dimensions. The request_logs persistence SQL ignores
 	// these fields; onPersisted consumers use them to build the V2 request DTO.
 	ProjectID       *string `json:"project_id,omitempty"`

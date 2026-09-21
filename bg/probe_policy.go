@@ -25,6 +25,61 @@ func nodeProbeHealthyParkedSQL(alias string) string {
 		" AND COALESCE(" + alias + ".consecutive_failures, 0) = 0)"
 }
 
+// nodeProbeSubmitUpsertSQL renders NodeProbeWorker.Submit's non-queue upsert
+// (INV-2 re-arm semantics). Extracted verbatim from the former inline literal
+// (R50 F20, 2026-09-21) so behavior tests can execute the real statement
+// against a real database instead of pinning its text:
+//   - paused / expired / healthy-parked rows re-arm at now+5s (paused and
+//     parked rows also reset consecutive_failures and last_err_code);
+//   - mid-ladder rows (future next_retry_at with error evidence) keep their
+//     schedule and counter so the backoff chain can advance.
+func nodeProbeSubmitUpsertSQL() string {
+	return `
+		INSERT INTO node_probe_state (credential_id, raw_model_name, next_retry_at, next_retry_seconds, paused, in_flight_until, consecutive_failures, last_err_code)
+		VALUES ($1, $2, now() + interval '5 seconds', 5, FALSE, NULL, 0, NULL)
+		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
+		SET next_retry_at = CASE
+		        WHEN node_probe_state.paused = TRUE
+		          OR node_probe_state.next_retry_at <= now()
+		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
+		        THEN now() + interval '5 seconds'
+		        ELSE node_probe_state.next_retry_at
+		    END,
+		    next_retry_seconds = CASE
+		        WHEN node_probe_state.paused = TRUE
+		          OR node_probe_state.next_retry_at <= now()
+		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
+		        THEN 5
+		        ELSE node_probe_state.next_retry_seconds
+		    END,
+		    in_flight_until = CASE
+		        WHEN node_probe_state.paused = TRUE
+		          OR node_probe_state.next_retry_at <= now()
+		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
+		        THEN NULL
+		        ELSE node_probe_state.in_flight_until
+		    END,
+		    paused = FALSE,
+		    -- Reset the counter when the cycle is being restarted from a
+		    -- paused or healthy-parked row. For already-expired ladder rows
+		    -- the worker (runOne) owns the counter and increments it by 1 per
+		    -- round; touching it here would collapse the ladder back to rung 1.
+		    consecutive_failures = CASE
+		        WHEN node_probe_state.paused = TRUE
+		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
+		        THEN 0
+		        ELSE node_probe_state.consecutive_failures
+		    END,
+		    last_err_code = CASE
+		        WHEN node_probe_state.paused = TRUE
+		          OR (` + nodeProbeHealthyParkedSQL("node_probe_state") + `)
+		        THEN NULL
+		        ELSE node_probe_state.last_err_code
+		    END,
+		    updated_at = now()
+	`
+}
+
 // nodeProbeErrorEvidenceSQL renders the row-level error-evidence predicate for
 // a node_probe_state row aliased by alias: the row carries a recorded failure,
 // an active failure counter, or was never confirmed healthy. pumpDueStatesToQueue

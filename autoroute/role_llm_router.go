@@ -209,3 +209,39 @@ func promoteFirstPresent(candidates []ScoredCandidate, prefs []string) ([]Scored
 	}
 	return candidates, ""
 }
+
+// withRoleFailoverHead（R50 F14）把 role 意图并入 tier 恢复计划头部：
+// prefs 中仍在候选池者按 role 顺序打头（首个命中者即选中模型，满足
+// TierFailoverModels "starts with the selected model" 契约），tierPlan
+// 保序去重随后。成员资格以候选池为准——被 tier 滤除后靠豁免复活的
+// role 偏好（不在 tierPlan 里）由此进入恢复链。
+func withRoleFailoverHead(tierPlan, prefs []string, candidates []ScoredCandidate) []string {
+	if len(tierPlan) == 0 {
+		return nil
+	}
+	inPool := make(map[string]struct{}, len(candidates))
+	for i := range candidates {
+		inPool[candidates[i].Candidate.CanonicalName] = struct{}{}
+	}
+	out := make([]string, 0, len(tierPlan)+len(prefs))
+	seen := make(map[string]struct{}, len(tierPlan)+len(prefs))
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		if _, dup := seen[name]; dup {
+			return
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	for _, want := range prefs {
+		if _, ok := inPool[want]; ok {
+			add(want)
+		}
+	}
+	for _, name := range tierPlan {
+		add(name)
+	}
+	return out
+}

@@ -489,6 +489,17 @@ var sessionRoleHierarchyMigration730 []byte
 //go:embed embeddata/startup/731_auto_route_selection_role_attribution.sql
 var autoRouteSelectionRoleAttributionMigration731 []byte
 
+// R50 (2026-09-21): 733/734 会话存储解耦 v3（session_turn_details 特征层 +
+// canonical 视图 details JOIN）。本体由 v3 会话线交付（731/732 撞号重编
+// 733/734），漏做 installer 五点同步致契约门禁红，本处补齐（事务兼容，
+// 走常规 single-transaction 通道）。
+//
+//go:embed embeddata/startup/733_session_turn_details.sql
+var sessionTurnDetailsMigration733 []byte
+
+//go:embed embeddata/startup/734_request_logs_view_details_join.sql
+var requestLogsViewDetailsJoinMigration734 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -639,6 +650,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/726_restore_credential_model_index_hot_unique.sql":                      restoreCredentialModelIndexHotUniqueMigration726,
 	"startup/730_session_role_hierarchy.sql":                                         sessionRoleHierarchyMigration730,
 	"startup/731_auto_route_selection_role_attribution.sql":                          autoRouteSelectionRoleAttributionMigration731,
+	"startup/733_session_turn_details.sql":                                           sessionTurnDetailsMigration733,
+	"startup/734_request_logs_view_details_join.sql":                                 requestLogsViewDetailsJoinMigration734,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 

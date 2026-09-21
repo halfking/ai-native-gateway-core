@@ -86,3 +86,35 @@ func TestApplyStorageS1BFieldsZeroEntrySkips(t *testing.T) {
 }
 
 func strP(s string) *string { return &s }
+
+// TestEntryToProcessedRequest_SessionAttribution730 —— R50 F15 写入方桥钉桩：
+// 730 sessions 归因三列必须经 Mirror-only 传输字段（AgentRole/ParentSessionID/
+// GwTaskID）从 RequestLogEntry 抵达 ProcessedRequest，upsertSessionSnapshot
+// 才有源可写（此前三列 289k 行全为默认/NULL）。修复前：req 三字段恒零值。
+func TestEntryToProcessedRequest_SessionAttribution730(t *testing.T) {
+	role := "worker"
+	parent := "gw_parent_abc"
+	task := "task-9"
+	entry := &telemetry.RequestLogEntry{
+		RequestID:       "r-attr",
+		GwSessionID:     strPtrPtr("gw_sess_attr"),
+		AgentRole:       &role,
+		ParentSessionID: &parent,
+		GwTaskID:        &task,
+	}
+	req := entryToProcessedRequest(entry, "gw_sess_attr")
+	if req == nil {
+		t.Fatalf("entryToProcessedRequest returned nil")
+	}
+	if req.AgentRole != "worker" {
+		t.Errorf("AgentRole: got %q, want worker", req.AgentRole)
+	}
+	if req.ParentSessionID != "gw_parent_abc" {
+		t.Errorf("ParentSessionID: got %q, want gw_parent_abc", req.ParentSessionID)
+	}
+	if req.ParentTaskID != "task-9" {
+		t.Errorf("ParentTaskID: got %q, want task-9 (from GwTaskID)", req.ParentTaskID)
+	}
+}
+
+func strPtrPtr(s string) *string { return &s }

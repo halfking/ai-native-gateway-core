@@ -845,6 +845,9 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	}
 
 	gwSessionID, gwTaskID := c.SessionTask()
+	// R50 F15：730 sessions 归因三列的采集点（role/父会话头；父任务复用
+	// gwTaskID）。仅进 Mirror-only 传输字段，request_logs 列契约不动。
+	agentRole, parentSessionID := gwAgentAttributionFromRequest(c.Request)
 	clientProfile := c.meta.ClientProfile
 	identityHash := c.meta.IdentityHash
 	if c.Request != nil && (clientProfile == "" || identityHash == "") {
@@ -981,6 +984,8 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		RequestMode:       strPtr(c.RequestMode()),
 		GwSessionID:       strPtr(gwSessionID),
 		GwTaskID:          strPtr(gwTaskID),
+		AgentRole:         strPtr(agentRole),
+		ParentSessionID:   strPtr(parentSessionID),
 		LatencyMs:         &latency,
 		Success:           false,
 		RequestStatus:     strPtr(status),
