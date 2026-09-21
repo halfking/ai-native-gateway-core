@@ -8,6 +8,7 @@ import HomeView from './views/HomeView.vue'
 import ForbiddenView from './views/ForbiddenView.vue'
 
 // All other views are lazy-loaded to reduce initial bundle size
+const MaintainUnavailableView = () => import('./views/MaintainUnavailableView.vue')
 const ProvidersView = () => import('./views/ProvidersView.vue')
 const KeysView = () => import('./views/KeysView.vue')
 const KeyDetailView = () => import('./views/KeyDetailView.vue')
@@ -22,12 +23,14 @@ const RoutingOverrideView = () => import('./views/RoutingOverrideView.vue')
 const QualityCorrelationsView = () => import('./views/QualityCorrelationsView.vue')
 const RoutingAuditView = () => import('./views/RoutingAuditView.vue')
 const RequestLogsView = () => import('./views/RequestLogsView.vue')
+const RequestDetailFullscreenView = () => import('./views/RequestDetailFullscreenView.vue')
 const DispatchWaterfallView = () => import('./views/DispatchWaterfallView.vue')
 const ModelsView = () => import('./views/ModelsView.vue')
 const ProviderDetailView = () => import('./views/ProviderDetailView.vue')
 const PricingManagementView = () => import('./views/PricingManagementView.vue')
 const StandardModelPricingView = () => import('./views/StandardModelPricingView.vue')
 const FreePoolView = () => import('./views/FreePoolView.vue')
+const FreeDiscoveryView = () => import('./views/FreeDiscoveryView.vue')
 const TenantsView = () => import('./views/TenantsView.vue')
 const TenantDetailView = () => import('./views/TenantDetailView.vue')
 const RoutingDashboardView = () => import('./views/RoutingDashboardView.vue')
@@ -42,8 +45,7 @@ const MaaSPricingView = () => import('./views/tenant/MaaSPricingView.vue')
 const MaaSUsageView = () => import('./views/tenant/MaaSUsageView.vue')
 const MaaSOrderView = () => import('./views/tenant/MaaSOrderView.vue')
 const TenantModelsView = () => import('./views/tenant/TenantModelsView.vue')
-const CredentialMonitorView = () => import('./views/CredentialMonitorView.vue')
-const ProbeHealthView = () => import('./views/ProbeHealthView.vue')
+const CredentialMonitorView = () => import('./views/CredentialMonitorWithTabs.vue')
 const ProbeHealthDetailView = () => import('./views/ProbeHealthDetailView.vue')
 const AgentRegistryView = () => import('./views/AgentRegistryView.vue')
 const FormatAnomaliesView = () => import('./views/FormatAnomaliesView.vue')
@@ -59,10 +61,16 @@ const UsageCostView = () => import('./views/admin/UsageCost.vue')
 const SessionDetailView = () => import('./views/admin/SessionDetailPage.vue')
 // 2026-08-09: 跨会话轮次列表页
 const TurnsListView = () => import('./views/TurnsListView.vue')
+// 2026-08-29: 代理管理
+const ProxyView = () => import('./views/ProxyView.vue')
 const ClientAnalyticsView = () => import('./views/ClientAnalyticsView.vue')
 const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
 const UserProfileListView = () => import('./views/UserProfileListView.vue')
 const UserProfileView = () => import('./views/UserProfileView.vue')
+
+// P2.1+ Human Annotation Web workflow (2026-09-06)
+const AnnotationView = () => import('./views/AnnotationView.vue')
+const AnnotationStatsView = () => import('./views/AnnotationStatsView.vue')
 
 // T9 — 请求注册表 / Journey 详情 / 连接注册台 / 节点恢复时间线（mock stage）
 const RequestRegistryView = () => import('./views/RequestRegistryView.vue')
@@ -138,6 +146,23 @@ function isPlatformOpsView(): boolean {
   return isSuperAdmin() && isDefaultTenant()
 }
 
+// 2026-09-04: 供应商控制台 —— super_admin，或 default 租户的 tenant_admin
+// （凭据 API Key 修改对该角色开放，见 store.isProviderConsoleView）。
+// 与 isSuperAdmin 一样带 localStorage 兜底，防深链进入时 userInfo 未水合。
+function isProviderConsoleView(): boolean {
+  if (isSuperAdmin()) return true
+  let info = store.userInfo
+  if (!info?.role) {
+    try {
+      const raw = typeof localStorage !== 'undefined'
+        ? localStorage.getItem('llmgw_user_info')
+        : null
+      if (raw) info = JSON.parse(raw)
+    } catch { /* corrupt cache */ }
+  }
+  return info?.role === 'tenant_admin' && info?.tenant_id === 'default'
+}
+
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -148,13 +173,18 @@ export const router = createRouter({
     { path: '/',                   component: HomeView, meta: { public: true } },
 
     // super_admin only — providers, catalog, free pool, tenants, audit logs
-    { path: '/providers',          component: ProvidersView,       meta: { requiresSuper: true } },
-    { path: '/providers/:id',      component: ProviderDetailView,  meta: { requiresSuper: true } },
+    // 2026-09-04: 供应商列表/详情改挂 providerConsole —— super_admin，或
+    // default 租户 tenant_admin（凭据 API Key 修改对其开放）。
+    { path: '/providers',          component: ProvidersView,       meta: { requiresProviderConsole: true } },
+    { path: '/providers/:id',      component: ProviderDetailView,  meta: { requiresProviderConsole: true } },
     { path: '/key-applications',   component: KeyApplicationsView, meta: { requiresSuper: true } },
     { path: '/catalog',            redirect: (to) => ({ path: '/models', query: { ...to.query, tab: 'catalog' } }) },
     { path: '/routing-v2',         component: RoutingDashboardView, meta: { requiresSuper: true } },
     { path: '/routing-v2/credentials', component: CredentialMonitorView }, // 2026-07-04: 允许 tenant_admin 访问
-    { path: '/probe-health',       component: ProbeHealthView,      meta: { requiresSuper: true } },
+    // 2026-09-07 probe-health integration: the standalone page folds into the
+    // credential monitor's super-only「探测健康」tab; keep /probe-health/detail
+    // (model drill-down) as-is.
+    { path: '/probe-health',       redirect: { path: '/routing-v2/credentials', query: { tab: 'probe-health' } } },
     { path: '/probe-health/detail', component: ProbeHealthDetailView, meta: { requiresSuper: true } },
     // 2026-07-23: 系统监测面板（v1）—— 入站需 super_admin 才能操作。
     // 设计依据 docs/会话优化v2/32-系统监测模块设计.md §5
@@ -162,8 +192,12 @@ export const router = createRouter({
     { path: '/routing-v2/work-types',         component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/settings', component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/:key',     component: WorkTypesView, meta: { requiresSuper: true } },
+    // P2.1+ Human annotation Web workflow (2026-09-06): accessible by any authenticated user
+    { path: '/routing-v2/annotations',        component: AnnotationView },
+    { path: '/routing-v2/annotations/stats',  component: AnnotationStatsView },
     { path: '/routing-policy',     component: RoutingPolicyView,   meta: { requiresSuper: true } },
     { path: '/free-pool',          component: FreePoolView,        meta: { requiresSuper: true } },
+    { path: '/free-discovery',     component: FreeDiscoveryView,   meta: { requiresSuper: true } },
     { path: '/tenants',            component: TenantsView,         meta: { requiresSuper: true } },
     { path: '/tenants/:tenantId',  component: TenantDetailView,    meta: { requiresSuper: true } },
     { path: '/audit-logs',        component: AuditLogView,         meta: { requiresSuper: true } },
@@ -201,6 +235,11 @@ export const router = createRouter({
     { path: '/routing/overrides/audit', component: RoutingAuditView, meta: { requiresSuper: true } },
     { path: '/quality-correlations',  component: QualityCorrelationsView, meta: { requiresSuper: true } },
     { path: '/request-logs',       component: RequestLogsView },
+    {
+      path: '/request-detail/:requestId',
+      name: 'request-detail',
+      component: RequestDetailFullscreenView,
+    },
     { path: '/dispatch/waterfall', component: DispatchWaterfallView, meta: { requiresPlatformOps: true } },
     { path: '/admin/session-analytics/users', component: UserProfileListView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/users/:owner', component: UserProfileView, meta: { requiresAuth: true } },
@@ -216,9 +255,10 @@ export const router = createRouter({
     { path: '/admin/approvals',    component: ApprovalListView, meta: { requiresSuper: true } },
     { path: '/admin/approvals/:id', component: ApprovalDetailView, meta: { requiresSuper: true } },
     { path: '/admin/output-compliance', component: OutputComplianceView, meta: { requiresSuper: true } },
-    { path: '/admin/usage',        component: UsageCostView }, // 用量成本视图 (T2.4)
+    { path: '/admin/usage',        component: UsageCostView, meta: { requiresSuper: true } }, // 用量成本视图 (T2.4)；R34: 与相邻 admin 路由对齐补权限 meta
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表
+    { path: '/admin/proxy',        component: ProxyView, meta: { requiresSuper: true } }, // 2026-08-29: 代理管理
     // T9 — 请求注册表 / Journey 详情 / 连接注册台 / 节点恢复时间线
     { path: '/admin/request-registry', component: RequestRegistryView, meta: { requiresSuper: true } },
     { path: '/admin/request-registry/journey/:requestId', name: 'request-journey-detail', component: RequestJourneyDetailView, meta: { requiresSuper: true } },
@@ -237,6 +277,10 @@ export const router = createRouter({
     { path: '/customer/license', redirect: '/customer/update-activate' },
     { path: '/customer/agreement', redirect: '/customer/update-activate' },
     { path: '/customer/offline-activation', component: CustomerOfflineActivationView, meta: { public: true } },
+
+    // Maintain paths must never fall through to the Gateway catch-all.
+    { path: '/maintain', component: MaintainUnavailableView, meta: { public: true } },
+    { path: '/maintain/:pathMatch(.*)*', component: MaintainUnavailableView, meta: { public: true } },
 
     // Operations Platform — legacy /ops/* bookmarks → maintain SPA (full page)
     externalMaintainRedirect('/ops/licenses', '/maintain/ops/licenses'),
@@ -320,10 +364,17 @@ router.beforeEach(async (to) => {
       // Already going to home with login=1, allow
       return
     }
-    // 第一次访问：等 hydration 完成
+    // 第一次访问：等 hydration 完成。
+    // 加超时上限：若 auth 始终未就绪（接口挂掉 / 竞态），30ms 轮询会永远
+    // 卡住、Promise 永不 resolve，导航死锁。超过阈值则 fail-open 放行，
+    // 由后续 isAuthed() 检查兜底（未登录走 login 流程），不再无限轮询。
+    const AUTH_HYDRATE_MAX_WAIT_MS = 10_000
+    const startedAt = Date.now()
     return new Promise<void>((resolve) => {
       const check = () => {
-        if (store.authHydrated) {
+        if (store.authHydrated && store.userInfo && store.userInfo.id) {
+          resolve()
+        } else if (Date.now() - startedAt >= AUTH_HYDRATE_MAX_WAIT_MS) {
           resolve()
         } else {
           setTimeout(check, 30)
@@ -342,6 +393,11 @@ router.beforeEach(async (to) => {
   }
   // 3. Super-admin role check
   if (to.meta.requiresSuper && !isSuperAdmin()) {
+    return { path: '/forbidden' }
+  }
+  // 3a. Provider console (super_admin 或 default 租户 tenant_admin —
+  // 凭据 API Key 修改 2026-09-04)
+  if (to.meta.requiresProviderConsole && !isProviderConsoleView()) {
     return { path: '/forbidden' }
   }
   // 3b. Ops-center routes only when Maintain is available (or forced on)

@@ -1,14 +1,242 @@
 package streaming
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 )
+
+type healthTestConnector struct{ err error }
+
+func (c healthTestConnector) Ping(context.Context) error { return c.err }
+
+func TestHealthHandlerReadyzRequiresBothDependencies(t *testing.T) {
+	tests := []struct {
+		name  string
+		db    dbConnector
+		redis redisConnector
+		want  int
+	}{
+		{name: "healthy", db: healthTestConnector{}, redis: healthTestConnector{}, want: http.StatusOK},
+		{name: "missing database", redis: healthTestConnector{}, want: http.StatusServiceUnavailable},
+		{name: "missing redis", db: healthTestConnector{}, want: http.StatusServiceUnavailable},
+		{name: "database error", db: healthTestConnector{err: errors.New("private db error")}, redis: healthTestConnector{}, want: http.StatusServiceUnavailable},
+		{name: "redis error", db: healthTestConnector{}, redis: healthTestConnector{err: errors.New("private redis error")}, want: http.StatusServiceUnavailable},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := NewHealthHandler(nil, nil, nil, tt.db, tt.redis)
+			r := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != tt.want {
+				t.Fatalf("status = %d, want %d; body=%s", w.Code, tt.want, w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), "private ") {
+				t.Fatalf("anonymous readiness leaked dependency error: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+// TestHealthHandlerReadyzJSONContract locks down the /readyz response shape
+// so the frontend SystemStatusIndicator.vue can keep relying on the public
+// fields without having to fall back to admin-only /healthz?full=true.
+//
+// Contract (audit 2026-09-03, follow-up to commit 9d21f671c):
+//   - status field is always "ready" or "not_ready"
+//   - database and redis fields are always present (may be null when connector is nil)
+//   - when present, the inner ResourceStatus.error field MUST be empty string
+//     (anonymous endpoint must not leak backend ping error strings)
+//   - frontend uses .connected and .latency; never reads .error
+func TestHealthHandlerReadyzJSONContract(t *testing.T) {
+	cases := []struct {
+		name          string
+		db            dbConnector
+		redis         redisConnector
+		wantStatus    string
+		wantHTTPCode  int
+		wantDBConn    bool
+		wantRedisConn bool
+	}{
+		{
+			name:          "all healthy",
+			db:            healthTestConnector{},
+			redis:         healthTestConnector{},
+			wantStatus:    "ready",
+			wantHTTPCode:  http.StatusOK,
+			wantDBConn:    true,
+			wantRedisConn: true,
+		},
+		{
+			name:          "db connector nil",
+			redis:         healthTestConnector{},
+			wantStatus:    "not_ready",
+			wantHTTPCode:  http.StatusServiceUnavailable,
+			wantDBConn:    false,
+			wantRedisConn: true,
+		},
+		{
+			name:          "redis connector nil",
+			db:            healthTestConnector{},
+			wantStatus:    "not_ready",
+			wantHTTPCode:  http.StatusServiceUnavailable,
+			wantDBConn:    true,
+			wantRedisConn: false,
+		},
+		{
+			name:          "db ping fails with private error",
+			db:            healthTestConnector{err: errors.New("private db error")},
+			redis:         healthTestConnector{},
+			wantStatus:    "not_ready",
+			wantHTTPCode:  http.StatusServiceUnavailable,
+			wantDBConn:    false,
+			wantRedisConn: true,
+		},
+		{
+			name:          "redis ping fails with private error",
+			db:            healthTestConnector{},
+			redis:         healthTestConnector{err: errors.New("private redis error")},
+			wantStatus:    "not_ready",
+			wantHTTPCode:  http.StatusServiceUnavailable,
+			wantDBConn:    true,
+			wantRedisConn: false,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			h := NewHealthHandler(nil, nil, nil, tt.db, tt.redis)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+			if w.Code != tt.wantHTTPCode {
+				t.Fatalf("http status = %d, want %d; body=%s", w.Code, tt.wantHTTPCode, w.Body.String())
+			}
+
+			var body struct {
+				Status   string          `json:"status"`
+				Database *ResourceStatus `json:"database"`
+				Redis    *ResourceStatus `json:"redis"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode /readyz body: %v (body=%s)", err, w.Body.String())
+			}
+
+			if body.Status != tt.wantStatus {
+				t.Errorf("status field = %q, want %q", body.Status, tt.wantStatus)
+			}
+
+			// database / redis fields must be present (even when nil connectors
+			// give nil status); pointer-not-nil distinguishes "field absent"
+			// from "field present with nil value", but since the handler
+			// always emits these fields we only require pointer values.
+			// When connector is nil, healthResourceStatus returns nil so the
+			// JSON value will be null. When connector pings OK or errors,
+			// healthResourceStatus returns a non-nil *ResourceStatus with
+			// Error stripped.
+			if tt.db != nil && body.Database == nil {
+				t.Errorf("database field missing despite non-nil connector (body=%s)", w.Body.String())
+			}
+			if tt.redis != nil && body.Redis == nil {
+				t.Errorf("redis field missing despite non-nil connector (body=%s)", w.Body.String())
+			}
+
+			// Lock down the privacy contract: Error must always be empty in
+			// the anonymous response. If a future refactor renames ResourceStatus.Error,
+			// the strip block in serveReadyz will fail to compile (Go won't
+			// silently no-op), but this test catches drift if the strip is
+			// removed entirely.
+			if body.Database != nil && body.Database.Error != "" {
+				t.Errorf("database.error leaked to anonymous endpoint: %q", body.Database.Error)
+			}
+			if body.Redis != nil && body.Redis.Error != "" {
+				t.Errorf("redis.error leaked to anonymous endpoint: %q", body.Redis.Error)
+			}
+
+			if body.Database != nil && body.Database.Connected != tt.wantDBConn {
+				t.Errorf("database.connected = %v, want %v", body.Database.Connected, tt.wantDBConn)
+			}
+			if body.Redis != nil && body.Redis.Connected != tt.wantRedisConn {
+				t.Errorf("redis.connected = %v, want %v", body.Redis.Connected, tt.wantRedisConn)
+			}
+		})
+	}
+}
+
+func TestHealthHandlerHealthzIsLivenessWhenDependencyFails(t *testing.T) {
+	h := NewHealthHandler(nil, nil, nil, healthTestConnector{}, healthTestConnector{err: errors.New("private redis error")})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body HealthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode healthz response: %v", err)
+	}
+	if body.Ready {
+		t.Fatalf("healthz ready = true, want false")
+	}
+	if strings.Contains(w.Body.String(), "private redis error") {
+		t.Fatalf("anonymous liveness leaked dependency error: %s", w.Body.String())
+	}
+}
+
+func TestHealthHandlerVersionDoesNotRequireDependencies(t *testing.T) {
+	h := NewHealthHandler(nil, nil, nil, nil, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/version", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode version response: %v", err)
+	}
+	h.SetRuntimeIdentity("traffic-only", ":8782")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/version", nil))
+	if !strings.Contains(w.Body.String(), `"runtime_role":"traffic-only"`) || !strings.Contains(w.Body.String(), `"listen":":8782"`) {
+		t.Fatalf("version response missing runtime identity: %s", w.Body.String())
+	}
+	for _, key := range []string{"version", "git_sha", "build_seq", "build_date", "module", "runtime_role", "listen"} {
+		if _, ok := body[key]; !ok {
+			t.Fatalf("version response missing %q: %s", key, w.Body.String())
+		}
+	}
+}
+
+func TestApplyActualOutboundBodyPrefersExecutorBody(t *testing.T) {
+	logCtx := &RequestLogContext{OutboundBody: []byte(`{"messages":[{"role":"system","content":"old"}]}`)}
+	result := &executors.ExecuteResult{RequestBody: []byte(`{"system":"new","messages":[{"role":"user","content":"hi"}]}`)}
+
+	applyActualOutboundBody(logCtx, result)
+
+	if got := string(logCtx.OutboundBody); got != string(result.RequestBody) {
+		t.Fatalf("OutboundBody = %s, want executor request body %s", got, result.RequestBody)
+	}
+}
+
+func TestApplyActualOutboundBodyKeepsSnapshotWithoutExecutorBody(t *testing.T) {
+	original := []byte(`{"messages":[{"role":"user","content":"snapshot"}]}`)
+	logCtx := &RequestLogContext{OutboundBody: append([]byte(nil), original...)}
+
+	applyActualOutboundBody(logCtx, &executors.ExecuteResult{})
+
+	if got := string(logCtx.OutboundBody); got != string(original) {
+		t.Fatalf("OutboundBody = %s, want existing snapshot %s", got, original)
+	}
+}
 
 func TestSuccessUpstreamStatusCode(t *testing.T) {
 	if got := successUpstreamStatusCode(&executors.ExecuteResult{Response: &http.Response{StatusCode: http.StatusCreated}}); got != http.StatusCreated {
@@ -619,4 +847,140 @@ func TestEstimatePromptTokensFromBytes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPropagateIsAutoRequestToEntry (2026-09-16 F1 fix,
+// p2.2-staging-verification-report §A4) — the success terminal must carry the
+// auto marker onto reqLog so the tuning-signal emit and
+// autoroute.ReportRoutingOutcome gates fire for successful auto requests.
+// Before the fix the marker never reached the success entry: 09-16 154 canary
+// observed stashed=120 / matched=22 (= all failures) / expired→98 (= all
+// successes).
+func TestPropagateIsAutoRequestToEntry(t *testing.T) {
+	existing := false
+	tests := []struct {
+		name      string
+		entry     *telemetry.RequestLogEntry
+		logCtx    *RequestLogContext
+		wantNil   bool
+		wantValue bool
+	}{
+		{
+			name:      "auto logCtx propagates true",
+			entry:     &telemetry.RequestLogEntry{},
+			logCtx:    &RequestLogContext{IsAutoRequest: true},
+			wantNil:   false,
+			wantValue: true,
+		},
+		{
+			name:      "non-auto logCtx leaves entry nil",
+			entry:     &telemetry.RequestLogEntry{},
+			logCtx:    &RequestLogContext{IsAutoRequest: false},
+			wantNil:   true,
+			wantValue: false,
+		},
+		{
+			name:      "nil logCtx leaves entry nil",
+			entry:     &telemetry.RequestLogEntry{},
+			logCtx:    nil,
+			wantNil:   true,
+			wantValue: false,
+		},
+		{
+			name:      "existing marker is never overwritten",
+			entry:     &telemetry.RequestLogEntry{IsAutoRequest: &existing},
+			logCtx:    &RequestLogContext{IsAutoRequest: true},
+			wantNil:   false,
+			wantValue: false,
+		},
+		{
+			name:      "nil entry is a safe no-op",
+			entry:     nil,
+			logCtx:    &RequestLogContext{IsAutoRequest: true},
+			wantNil:   true,
+			wantValue: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			propagateIsAutoRequestToEntry(tc.entry, tc.logCtx)
+			if tc.entry == nil {
+				return
+			}
+			if tc.wantNil && tc.entry.IsAutoRequest != nil {
+				t.Fatalf("IsAutoRequest = %v, want nil", *tc.entry.IsAutoRequest)
+			}
+			if !tc.wantNil {
+				if tc.entry.IsAutoRequest == nil {
+					t.Fatalf("IsAutoRequest = nil, want %v", tc.wantValue)
+				}
+				if got := *tc.entry.IsAutoRequest; got != tc.wantValue {
+					t.Fatalf("IsAutoRequest = %v, want %v", got, tc.wantValue)
+				}
+			}
+		})
+	}
+}
+
+// TestPropagateIsAutoRequestToEntry_FullAutoFields (R35 2026-09-17, 撤并对账
+// 钉桩) locks the extended single-marker→full-field contract adopted from the
+// parallel R34 fix (01bd55ed7): the success terminal must carry
+// TaskType/OutboundModel/AutoDecision/AutoConfidence alongside IsAutoRequest,
+// never overwriting fields already present. Two downstream consumers depend on
+// the full set: emitTuningSignal (gate = IsAutoRequest && TaskType, reads
+// AutoDecision/AutoConfidence) and the sessionv2mirror internal-loopback
+// exclusion (business auto turns carry TaskType → telemetry.IsInternalAutoEntry
+// must be false → the turn stays mirrored in session_turns, GLOBAL_G2 intact).
+func TestPropagateIsAutoRequestToEntry_FullAutoFields(t *testing.T) {
+	decision := json.RawMessage(`{"task_type":"coding","classifier":"embedding"}`)
+	logCtx := &RequestLogContext{
+		IsAutoRequest:  true,
+		TaskType:       "coding",
+		OutboundModel:  "gpt-test",
+		AutoDecision:   decision,
+		AutoConfidence: 0.8,
+	}
+	entry := &telemetry.RequestLogEntry{}
+	propagateIsAutoRequestToEntry(entry, logCtx)
+	if entry.IsAutoRequest == nil || !*entry.IsAutoRequest {
+		t.Fatalf("IsAutoRequest not propagated: %v", entry.IsAutoRequest)
+	}
+	if entry.TaskType == nil || *entry.TaskType != "coding" {
+		t.Fatalf("TaskType not propagated: %v", entry.TaskType)
+	}
+	if entry.OutboundModel == nil || *entry.OutboundModel != "gpt-test" {
+		t.Fatalf("OutboundModel not propagated: %v", entry.OutboundModel)
+	}
+	if entry.AutoDecision == nil || *entry.AutoDecision != string(decision) {
+		t.Fatalf("AutoDecision not propagated: %v", entry.AutoDecision)
+	}
+	if entry.AutoConfidence == nil || *entry.AutoConfidence != 0.8 {
+		t.Fatalf("AutoConfidence not propagated: %v", entry.AutoConfidence)
+	}
+	// Mirror contract: a business auto turn (TaskType present) must NOT be
+	// classified as an internal loopback — otherwise the turn is dropped from
+	// session_turns while request_logs still claims it (GLOBAL_G2 break).
+	if telemetry.IsInternalAutoEntry(entry) {
+		t.Fatal("business auto turn with TaskType must not be mirror-excluded")
+	}
+
+	// Never-overwrite: pre-set fields survive a second propagation.
+	preset := "keep"
+	entry2 := &telemetry.RequestLogEntry{TaskType: &preset, IsAutoRequest: new(bool)}
+	propagateIsAutoRequestToEntry(entry2, logCtx)
+	if *entry2.TaskType != "keep" {
+		t.Fatalf("existing TaskType overwritten: %q", *entry2.TaskType)
+	}
+	if *entry2.IsAutoRequest {
+		t.Fatal("existing IsAutoRequest=false overwritten")
+	}
+
+	// Non-auto / nil contexts stay no-ops.
+	plain := &telemetry.RequestLogEntry{}
+	propagateIsAutoRequestToEntry(plain, &RequestLogContext{IsAutoRequest: false, TaskType: "coding"})
+	if plain.IsAutoRequest != nil || plain.TaskType != nil {
+		t.Fatalf("non-auto logCtx must not set auto fields: %+v", plain)
+	}
+	propagateIsAutoRequestToEntry(nil, logCtx)
+	propagateIsAutoRequestToEntry(entry, nil)
 }

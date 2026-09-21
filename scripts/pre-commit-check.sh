@@ -212,6 +212,11 @@ check_migration_has_down() {
   return 0
 }
 
+# ── 3c. High-numbered migration delivery path ───────────────────────────
+check_canonical_migration_delivery_path() {
+  bash scripts/apply-db-revision-sequence_test.sh >/dev/null
+}
+
 # ── 4. Vue type-check ──────────────────────────────────────────────────
 check_vue_tsc() {
   if [[ ! -d web ]]; then
@@ -261,10 +266,12 @@ check_web_token_compliance() {
   fi
   local files
   # Staged + working-tree + untracked web/src changes; covers all commit paths.
+  # *.test.ts excluded: assertion strings in tests are fixtures, not styles
+  # (same semantics as color-token-audit.mjs's own test-file skip).
   files=$( { git diff --cached --name-only -- 'web/src/**'; \
              git diff --name-only -- 'web/src/**'; \
              git ls-files --others --exclude-standard -- 'web/src/**'; } \
-          | grep -E '\.(vue|ts|css)$' | sort -u)
+          | grep -E '\.(vue|ts|css)$' | grep -v '\.test\.ts$' | sort -u)
   if [[ -z "$files" ]]; then
     return 0
   fi
@@ -318,6 +325,7 @@ run_check "go vet"                  check_go_vet
 run_check "SQL: no SET+placeholder" check_sql_set_local
 run_check "Migration: unique NNN"   check_migration_unique
 run_check "Migration: has down.sql" check_migration_has_down
+run_check "Migration: canonical delivery" check_canonical_migration_delivery_path
 if has_staged_web_changes; then
   if [[ -d web/node_modules ]]; then
     run_vue_tsc

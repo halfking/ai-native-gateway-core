@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/httpx"
 )
 
 // Handler 提供附件下载和查询的 HTTP 接口。
@@ -103,9 +104,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", contentType)
+	// 审计 R8 P2：上传 MIME 客户端可控，禁用浏览器 MIME 嗅探，
+	// 防 Content-Type 被嗅探改写绕过下方的强制下载。
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 
-	// 图片类型支持内联显示；非图片强制下载。
-	if !strings.HasPrefix(contentType, "image/") {
+	// 图片类型支持内联显示；非图片强制下载。SVG 是可携带脚本的 XML
+	// 文档（image/ 前缀判断对它失效），内联渲染即网关域存储型 XSS，
+	// 单独强制下载。
+	if !strings.HasPrefix(contentType, "image/") || contentType == "image/svg+xml" {
 		filename := filepath.Base(relPath)
 		w.Header().Set("Content-Disposition",
 			fmt.Sprintf("attachment; filename=%q", filename))
@@ -128,7 +134,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 //
 // 从 request_logs.attachments 列读取该请求的附件元数据数组并返回 JSON。
 // 路径中的 request_id 由上层 mux 提取后传入。
-func (h *Handler) ListByRequest(w http.ResponseWriter, r *http.Request, requestID string) {
+// R35 (2026-09-17 audit P1): tenantID 非空时（tenant_admin 调用方由 admin
+// 包装层传入）附加租户谓词——此前仅按 request_id 查询，租户管理员可枚举
+// 任意请求的附件元数据（含下载路径）进而跨租户取文件。
+func (h *Handler) ListByRequest(w http.ResponseWriter, r *http.Request, requestID string, tenantScope ...string) {
 	if requestID == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_request_id",
 			"request_id is required")
@@ -143,12 +152,21 @@ func (h *Handler) ListByRequest(w http.ResponseWriter, r *http.Request, requestI
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	tenantID := ""
+	if len(tenantScope) > 0 {
+		tenantID = strings.TrimSpace(tenantScope[0])
+	}
+
 	var raw []byte
 	// Query from view (hot + partitions) to include recent 7-day data
-	err := h.dbPool.QueryRow(ctx,
-		`SELECT attachments::text FROM request_logs_with_current_month WHERE request_id = $1 ORDER BY ts DESC LIMIT 1`,
-		requestID,
-	).Scan(&raw)
+	query := `SELECT attachments::text FROM request_logs_with_current_month WHERE request_id = $1`
+	args := []any{requestID}
+	if tenantID != "" {
+		query += ` AND tenant_id = $2`
+		args = append(args, tenantID)
+	}
+	query += ` ORDER BY ts DESC LIMIT 1`
+	err := h.dbPool.QueryRow(ctx, query, args...).Scan(&raw)
 
 	if err != nil {
 		// 无附件或请求不存在：返回空数组而非错误
@@ -180,16 +198,16 @@ func (h *Handler) ListByRequest(w http.ResponseWriter, r *http.Request, requestI
 
 // ─── 响应辅助 ───────────────────────────────────────────────────
 
+// writeJSONOK / writeJSONError 薄委托 internal/httpx（2026-09-04 writeJSON
+// 收敛）；charset 差异保留在本地。
 func writeJSONOK(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(v)
+	//nolint:errcheck // best-effort, matches previous streaming helper
+	httpx.WriteJSON(w, http.StatusOK, "application/json; charset=utf-8", v)
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	//nolint:errcheck // best-effort, matches previous streaming helper
+	httpx.WriteJSON(w, status, "application/json; charset=utf-8", map[string]any{
 		"error": map[string]any{
 			"code":    code,
 			"message": message,

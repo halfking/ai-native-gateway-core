@@ -12,6 +12,7 @@ export default {
     opsplatform: 'Ops Center',
     guide: 'Integration Guide',
     chat: 'Chat',
+    plugins: 'Plugins',
   },
 
   item: {
@@ -23,12 +24,15 @@ export default {
     models: 'Models & Catalog',
     routingOverview: 'Routing Overview',
     credentialMonitor: 'Credential Monitor',
+    annotations: 'Human Annotation',
+    annotationStats: 'Annotation Statistics',
     probeHealth: 'Probe Health',
     systemMonitor: 'System Monitoring',
     providers: 'Providers',
     pricing: 'Cost Pricing',
     modelPricing: 'Pricing Management',
     freePool: 'Free Resources',
+    freeDiscovery: 'Free Discovery',
     tenants: 'Tenant Management',
     users: 'User Management',
     keys: 'API Keys',
@@ -47,6 +51,7 @@ export default {
     wechatBot: 'WeChat Bot',
     sessionContext: 'Session Context',
     settings: 'System Settings',
+    proxy: 'Proxy Management',
     dataLifecycle: 'Data Lifecycle',
     formatAnomalies: 'Format Anomalies',
     modelIntegrity: 'Model Integrity',
@@ -61,6 +66,9 @@ export default {
     chat: 'Chat',
     updateActivate: 'Update & Activate',
     licenseActivate: 'License Activation',
+    // 2026-09-04: activate CTA shown in place of gated ops entries (e.g. Auto Update) when not activated
+    activateAction: 'Activate',
+    activateActionTip: 'Click to activate this instance',
     siteInfo: 'Site Info',
     licenseStatus: 'License Status',
     licenseAgreement: 'User License Agreement',
@@ -74,6 +82,7 @@ export default {
     opsOverview: 'Ops Overview',
     opsDownloads: 'Releases & Downloads',
     opsProductEntry: 'Product Entry',
+    supportDonate: 'Sponsorship & Donation',
   },
 
   // 2026-07-21: top-bar & public nav
@@ -88,4 +97,9 @@ export default {
   publicSupport: 'Support',
   // 2026-07-21: a11y skip-link target, used by LifecycleShell.vue.
   skip: 'Skip to main content',
+
+  // 2026-09-21: 导航徽标 tooltip
+  badge: {
+    formatAnomalies: 'Unresolved request-side anomalies',
+  },
 }

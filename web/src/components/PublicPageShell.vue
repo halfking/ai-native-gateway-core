@@ -42,7 +42,9 @@ const { t } = useI18n()
   --pub-border: var(--border);
   --pub-text: var(--text);
   --pub-muted: var(--muted);
+  /* 2026-09-13 P1c: dvh fallback（移动端地址栏收起时不留缝） */
   min-height: calc(100vh - 69px);
+  min-height: calc(100dvh - 69px);
   padding: 1.25rem 1rem 2rem;
   background:
     radial-gradient(ellipse 80% 50% at 50% -10%, color-mix(in srgb, var(--accent) 14%, transparent), transparent),
@@ -150,7 +152,7 @@ const { t } = useI18n()
   font-size: 12px;
   font-family: ui-monospace, monospace;
   color: var(--border);
-  background: rgba(15, 23, 42, 0.75);
+  background: var(--overlay-strong);
   word-break: break-all;
 }
 
@@ -184,5 +186,14 @@ const { t } = useI18n()
 :deep(.el-descriptions__content) {
   background: var(--pub-panel) !important;
   color: var(--pub-text) !important;
+}
+
+/* 2026-09-13 P1c：--pub-max 960px 在 <768 降为全宽 + 12px 内边距（只做
+   增量 media，不改桌面态） */
+@media (max-width: 768px) {
+  .pub-page {
+    --pub-max: 100%;
+    padding: 1rem 12px 1.5rem;
+  }
 }
 </style>

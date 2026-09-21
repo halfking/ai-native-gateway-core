@@ -113,7 +113,7 @@ describe('waterfallTimeline', () => {
 
   it('clamps tiny bars to a visible minimum width', () => {
     const laid = layoutBar({
-      key: 'total', label: '总队列', color: '#409EFF',
+      key: 'total', label: '总队列', color: 'var(--accent)',
       start: 0, end: 1, ms: 1, synthesized: true,
     }, 0, 10_000)
     expect(laid.widthPct).toBe(0.4)

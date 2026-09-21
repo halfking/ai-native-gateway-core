@@ -426,6 +426,39 @@ func (v *SessionValidator) checkBodiesIntegrity(v2Turns []V2Turn, v2Bodies []V2B
 
 	var jsonErrors []string
 	var compressedModes []string
+	var integrityErrors []string
+
+	// Every loaded turn must have exactly one body row in the canonical view.
+	// This makes a missing hot row a hard parity failure instead of a warning.
+	turnsByKey := make(map[string]V2Turn, len(v2Turns))
+	for _, turn := range v2Turns {
+		key := fmt.Sprintf("%d:%s", turn.TurnNo, turn.RequestID)
+		if _, exists := turnsByKey[key]; exists {
+			integrityErrors = append(integrityErrors, fmt.Sprintf("duplicate V2 turn %s", key))
+		}
+		turnsByKey[key] = turn
+	}
+	bodiesByKey := make(map[string]int, len(v2Bodies))
+	for _, body := range v2Bodies {
+		key := fmt.Sprintf("%d:%s", body.TurnNo, body.RequestID)
+		bodiesByKey[key]++
+		if body.TenantID != "" && body.TenantID != v.tenantID {
+			integrityErrors = append(integrityErrors, fmt.Sprintf("turn %d: body tenant mismatch", body.TurnNo))
+		}
+		if body.SessionID != "" && body.SessionID != v.sessionID {
+			integrityErrors = append(integrityErrors, fmt.Sprintf("turn %d: body session mismatch", body.TurnNo))
+		}
+	}
+	for key := range turnsByKey {
+		if bodiesByKey[key] == 0 {
+			integrityErrors = append(integrityErrors, fmt.Sprintf("turn %s: body missing", key))
+		}
+	}
+	for key, count := range bodiesByKey {
+		if count > 1 {
+			integrityErrors = append(integrityErrors, fmt.Sprintf("duplicate body %s (%d rows)", key, count))
+		}
+	}
 
 	for _, body := range v2Bodies {
 		// Check request_delta JSON validity
@@ -463,12 +496,14 @@ func (v *SessionValidator) checkBodiesIntegrity(v2Turns []V2Turn, v2Bodies []V2B
 		}
 	}
 
-	// Report results
-	if len(jsonErrors) > 0 {
-		check.Description = fmt.Sprintf("%d JSON parsing error(s)", len(jsonErrors))
-		check.Details = jsonErrors
+	// Report results. JSON, cardinality, tenant, and body-presence failures are
+	// hard errors; compressed modes remain the explicitly documented warning.
+	if len(jsonErrors) > 0 || len(integrityErrors) > 0 {
+		check.Passed = false
+		check.Description = fmt.Sprintf("%d body integrity issue(s), %d JSON parsing error(s)", len(integrityErrors), len(jsonErrors))
+		check.Details = append(integrityErrors, jsonErrors...)
 	} else if len(compressedModes) > 0 {
-		check.Passed = true // Still passes, but note compressed modes
+		check.Passed = true
 		check.Severity = "warning"
 		check.Description = fmt.Sprintf(
 			"All JSON valid; %d turn(s) use compressed mode (strict body comparison not possible)",
@@ -476,7 +511,7 @@ func (v *SessionValidator) checkBodiesIntegrity(v2Turns []V2Turn, v2Bodies []V2B
 		)
 		check.Details = compressedModes
 	} else {
-		check.Description = "All bodies have valid JSON"
+		check.Description = "All bodies have valid JSON and match loaded turns"
 	}
 
 	return check

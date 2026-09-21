@@ -108,7 +108,7 @@ disaster. v2 is a follow-up.
 # /data/pg-data-252-pg17/litestream.yml
 dbs:
   - name: llm_gateway
-    url: postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@127.0.0.1:5432/llm_gateway?sslmode=disable
+    url: postgres://llm_gateway:***REDACTED***@127.0.0.1:5432/llm_gateway?sslmode=disable
     #   user created during install (NOT the gateway app user) — needs
     #   REPLICATION privilege; PG17 default `postgres` superuser works.
     replica:

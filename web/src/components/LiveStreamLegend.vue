@@ -224,7 +224,7 @@ function handleClick(key: string) {
   height: 12px;
   border-radius: 2px;
   flex-shrink: 0;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 0 0 1px var(--overlay-light);
 }
 
 .legend-swatch--border {

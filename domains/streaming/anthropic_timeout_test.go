@@ -53,7 +53,7 @@ func TestAnthropicPassthroughSilentUpstreamTimesOutAndClosesBody(t *testing.T) {
 	}
 	done := make(chan StreamOutcome, 1)
 	go func() {
-		done <- StreamAnthropicPassthrough(httptest.NewRecorder(), resp, "claude", "claude", "req-timeout", nil, nil)
+		done <- StreamAnthropicPassthrough(context.Background(), httptest.NewRecorder(), resp, "claude", "claude", "req-timeout", nil, nil)
 	}()
 	select {
 	case outcome := <-done:
@@ -76,7 +76,7 @@ func TestAnthropicPassthroughHalfLineTimesOutAndClosesBody(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusOK, Body: body, Request: httptest.NewRequest(http.MethodPost, "http://gateway.test", nil)}
 	done := make(chan StreamOutcome, 1)
 	go func() {
-		done <- StreamAnthropicPassthrough(httptest.NewRecorder(), resp, "claude", "claude", "req-half-line", nil, nil)
+		done <- StreamAnthropicPassthrough(context.Background(), httptest.NewRecorder(), resp, "claude", "claude", "req-half-line", nil, nil)
 	}()
 	select {
 	case outcome := <-done:
@@ -100,7 +100,7 @@ func TestAnthropicPassthroughRequestCancelReturnsClientCancel(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusOK, Body: body, Request: req}
 	done := make(chan StreamOutcome, 1)
 	go func() {
-		done <- StreamAnthropicPassthrough(httptest.NewRecorder(), resp, "claude", "claude", "req-cancel", nil, nil)
+		done <- StreamAnthropicPassthrough(ctx, httptest.NewRecorder(), resp, "claude", "claude", "req-cancel", nil, nil)
 	}()
 	time.Sleep(20 * time.Millisecond)
 	cancel()
@@ -125,7 +125,7 @@ func TestAnthropicFirstByteTimeoutClosesBodyAndReturns(t *testing.T) {
 	}
 	done := make(chan StreamOutcome, 1)
 	go func() {
-		done <- StreamOpenAIToAnthropicSSE(httptest.NewRecorder(), resp, "model-a", "model-a", "request-timeout", nil, nil)
+		done <- StreamOpenAIToAnthropicSSE(context.Background(), httptest.NewRecorder(), resp, "model-a", "model-a", "request-timeout", nil, nil)
 	}()
 	select {
 	case outcome := <-done:

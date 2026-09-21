@@ -217,6 +217,7 @@ export default {
     loading: '加载中…',
     globalTitle: '全局策略',
     weightsTitle: '综合得分系数',
+    weightsDisplayOnlyHint: '仅影响诊断预览接口，不作用于线上路由',
     featuredTitle: '特色模型 (Featured)',
     featuredDescription: '选择标准模型名称，将在路由总览中以 ★ 标记，并可启用「仅特色」筛选。',
     featuredPlaceholder: '选择特色模型…',

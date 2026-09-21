@@ -40,9 +40,9 @@ type TaskAnalyticsSummary struct {
 // TaskAnalyticsDetailResponse 任务详情响应
 type TaskAnalyticsDetailResponse struct {
 	TaskAnalyticsSummary
-	RelatedClients []RelatedClientItem `json:"related_clients"`
-	DailyCostTrend []DailyCostPoint    `json:"daily_cost_trend"`
-	RecentSessions []RecentSessionItem `json:"recent_sessions"`
+	RelatedClients []RelatedClientItem   `json:"related_clients"`
+	DailyCostTrend []DailyCostPoint      `json:"daily_cost_trend"`
+	RecentSessions []RecentSessionItem   `json:"recent_sessions"`
 }
 
 // RelatedClientItem 关联客户端项

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import type { Approver } from '../api/approval'
+import { confirmDialog } from '../composables/useConfirmDialog'
+import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
   modelValue: Approver[]
@@ -9,6 +11,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [value: Approver[]]
 }>()
+
+const { t } = useI18n()
 
 const showDialog = ref(false)
 const editingIndex = ref<number | null>(null)
@@ -85,14 +89,13 @@ function saveApprover() {
   showDialog.value = false
 }
 
-function removeApprover(index: number) {
-  if (confirm('确认删除该审批人？')) {
-    const list = [...approvers.value]
-    list.splice(index, 1)
-    // Reorder priorities
-    list.forEach((a, i) => a.priority = i)
-    approvers.value = list
-  }
+async function removeApprover(index: number) {
+  if (!(await confirmDialog(t('approval.approversDeleteConfirm')))) return
+  const list = [...approvers.value]
+  list.splice(index, 1)
+  // Reorder priorities
+  list.forEach((a, i) => a.priority = i)
+  approvers.value = list
 }
 
 function toggleEnabled(index: number) {
@@ -376,9 +379,9 @@ function moveDown(index: number) {
 }
 
 .btn-icon.btn-danger:hover:not(:disabled) {
-  background: rgba(248, 113, 113, 0.1);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
-  border-color: rgba(248, 113, 113, 0.3);
+  border-color: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 /* Dialog styles */
@@ -388,7 +391,7 @@ function moveDown(index: number) {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--overlay-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -401,7 +404,7 @@ function moveDown(index: number) {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 24px var(--overlay-medium);
 }
 
 .dialog-header {

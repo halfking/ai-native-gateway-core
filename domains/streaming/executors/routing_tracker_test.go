@@ -286,3 +286,98 @@ func TestClassifyResult_PopulatedUpstreamError_2026_07_20(t *testing.T) {
 		})
 	}
 }
+
+// ─── candidate-pool placeholder compaction (P1-3, 2026-09) ────────────────
+
+// buildPendingPool mimics streaming/handler.go's pre-population: one
+// ResultPending entry per planned candidate (capped at 10 plus a truncation
+// marker).
+func buildPendingPool(n int) *RoutingAttemptsTracker {
+	tr := NewRoutingAttemptsTracker()
+	for i := 0; i < n; i++ {
+		tr.Add(RoutingAttempt{
+			ProviderID: int64(i + 1), CredentialID: int64(i + 100),
+			RawModel: "test-model", Result: ResultPending,
+			ErrorMessage: fmt.Sprintf("candidate #%d from routing", i+1),
+		})
+	}
+	return tr
+}
+
+// A first-try success plus a pre-populated candidate pool must serialize to
+// nil: this restores the "single success → store nothing" optimization that
+// the placeholders defeated, and keeps auto_route_settle_worker's
+// retry_count = jsonb_array_length(routing_attempts) - 1 honest (a pool of
+// 10 placeholders would have counted as 10 retries).
+func TestRoutingAttemptsTracker_FirstTrySuccessWithPoolPersistsNothing(t *testing.T) {
+	tr := buildPendingPool(10)
+	tr.Add(RoutingAttempt{ProviderID: 1, CredentialID: 100, RawModel: "test-model", Result: "success", LatencyMs: 42})
+
+	data, err := tr.ToJSONBytes()
+	if err != nil {
+		t.Fatalf("ToJSONBytes: %v", err)
+	}
+	if data != nil {
+		t.Fatalf("expected nil payload for first-try success, got %s", data)
+	}
+	if s := tr.Summary(); s != "" {
+		t.Fatalf("expected empty summary for first-try success, got %q", s)
+	}
+}
+
+// On failure the untried-candidate tail must SURVIVE so operators can see the
+// full routing plan in the log detail view.
+func TestRoutingAttemptsTracker_PendingKeptWhenNoSuccess(t *testing.T) {
+	tr := buildPendingPool(5)
+	tr.Add(RoutingAttempt{ProviderID: 1, CredentialID: 100, RawModel: "test-model", Result: "timeout", LatencyMs: 5000})
+
+	data, err := tr.ToJSONBytes()
+	if err != nil {
+		t.Fatalf("ToJSONBytes: %v", err)
+	}
+	if data == nil {
+		t.Fatal("expected non-nil payload on failure")
+	}
+	var decoded struct {
+		Attempts []RoutingAttempt `json:"attempts"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	pending := 0
+	for _, a := range decoded.Attempts {
+		if a.Result == ResultPending {
+			pending++
+		}
+	}
+	if pending != 5 {
+		t.Fatalf("expected 5 pending placeholders preserved on failure, got %d (payload %s)", pending, data)
+	}
+}
+
+// After a failover the persisted array must contain ONLY real attempts (the
+// failed one + the successful one), never placeholders.
+func TestRoutingAttemptsTracker_FailoverDropsPendingButKeepsFailures(t *testing.T) {
+	tr := buildPendingPool(8)
+	tr.Add(RoutingAttempt{ProviderID: 1, CredentialID: 100, RawModel: "m", Result: "rate_limit", LatencyMs: 900, HTTPStatus: 429})
+	tr.Add(RoutingAttempt{ProviderID: 2, CredentialID: 200, RawModel: "m", Result: "success", LatencyMs: 120})
+
+	data, err := tr.ToJSONBytes()
+	if err != nil {
+		t.Fatalf("ToJSONBytes: %v", err)
+	}
+	var decoded struct {
+		Attempts []RoutingAttempt `json:"attempts"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(decoded.Attempts) != 2 {
+		t.Fatalf("expected exactly 2 real attempts after compaction, got %d: %s", len(decoded.Attempts), data)
+	}
+	for i, a := range decoded.Attempts {
+		if a.Result == ResultPending {
+			t.Fatalf("attempt[%d] still pending after compaction: %s", i, data)
+		}
+	}
+}

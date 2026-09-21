@@ -24,13 +24,9 @@ GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info() { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
-# Decrypt env to get DB password
-ENC_FILE="$PROJECT_ROOT/.env.prod.enc"
-if [[ -f "$ENC_FILE" ]]; then
-    export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
-    [[ -f "$SOPS_AGE_KEY_FILE" ]] || warn "No SOPS key — using known password"
-fi
-DB_PASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg"
+# Database credentials are never inferred from a checked-in fallback.
+: "${LLM_GATEWAY_DB_PASSWORD:?LLM_GATEWAY_DB_PASSWORD must be set}"
+DB_PASSWORD="$LLM_GATEWAY_DB_PASSWORD"
 DB_USER="llm_gateway"
 DB_NAME="llm_gateway"
 

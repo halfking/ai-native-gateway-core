@@ -300,7 +300,7 @@
                 </div>
                 <div class="param">
                   <label>最近活跃</label>
-                  <span class="param-val">{{ selectedOffer.last_seen_at ? new Date(selectedOffer.last_seen_at).toLocaleString() : '-' }}</span>
+                  <span class="param-val">{{ selectedOffer.last_seen_at ? formatDateTime(selectedOffer.last_seen_at) : '-' }}</span>
                 </div>
               </div>
             </div>
@@ -482,6 +482,7 @@
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { formatDateTime } from '../utils/datetime'
 import { ref, computed, onMounted, watch } from 'vue'
 import { store, isReadOnlyMode, authBearer } from '../store'
 import ModelPicker from '../components/ModelPicker.vue'
@@ -1145,7 +1146,7 @@ onMounted(fetchData)
 
 /* Tree View */
 .pm-body { min-height: 60vh; }
-.pm-tree { width: 100%; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; max-height: calc(100vh - 320px); }
+.pm-tree { width: 100%; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; max-height: calc(100vh - 320px); max-height: calc(100dvh - 320px); }
 .drawer-title { margin: 0; color: var(--text); font-size: 16px; }
 .drawer-body { flex: 1; overflow-y: auto; }
 .tree-family { margin-bottom: 4px; }
@@ -1277,9 +1278,9 @@ onMounted(fetchData)
 .batch-pricing-form { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .batch-pricing-form h4 { margin: 0 0 10px; font-size: 13px; color: var(--accent-h); }
 .batch-pricing-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
-@media (max-width: 600px) { .batch-pricing-grid { grid-template-columns: 1fr 1fr; } }
-.alert-success { background: var(--success-soft, rgba(22, 132, 91, 0.08)); border: 1px solid var(--success); color: var(--success); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
-.alert-danger { background: var(--danger-soft, rgba(194, 65, 59, 0.08)); border: 1px solid var(--danger); color: var(--danger); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
+@media (max-width: 768px) { .batch-pricing-grid { grid-template-columns: 1fr 1fr; } }
+.alert-success { background: var(--success-soft); border: 1px solid var(--success); color: var(--success); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
+.alert-danger { background: var(--danger-soft); border: 1px solid var(--danger); color: var(--danger); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
 .inherit-details { max-height: 300px; overflow-y: auto; margin: 12px 0; }
 .inherit-row { padding: 4px 0; font-size: 13px; color: var(--muted); }
 </style>

@@ -47,12 +47,12 @@ func ColumnarInvariantCheck(ctx context.Context, pool *pgxpool.Pool) (int, error
 	defer rows.Close()
 
 	type row struct {
-		ParentName    string
-		Compliant     int
-		Noncompliant  int
-		TotalBytes    int64
-		HeapBytes     int64
-		ColumnarBytes int64
+		ParentName        string
+		Compliant         int
+		Noncompliant      int
+		TotalBytes        int64
+		HeapBytes         int64
+		ColumnarBytes     int64
 	}
 	var (
 		total        int

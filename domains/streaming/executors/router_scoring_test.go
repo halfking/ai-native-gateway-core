@@ -24,7 +24,7 @@ func TestCalculateLoadScore_BalancedWeights(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	score := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights)
+	score := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights, StrategyInput{})
 
 	// 验证分数在合理范围内
 	assert.GreaterOrEqual(t, score, 0.0)
@@ -225,6 +225,167 @@ func TestCandidatePressure_NilRouterFallback(t *testing.T) {
 	assert.InDelta(t, 0.5, candidatePressure(c, nil), 1e-9)
 }
 
+// fakeLiveLoad is a minimal Router.LiveLoad implementation used by the
+// dispatch-aware regression tests below. The production PeakCollector
+// satisfies the same interface; we substitute a stub to keep tests
+// hermetic (no DB pool required).
+type fakeLiveLoad struct {
+	concurrent map[credModelKey]int64
+}
+
+type credModelKey struct {
+	CredID int64
+	Model  string
+}
+
+func (f *fakeLiveLoad) GetLiveConcurrent(credID int64, model string) int64 {
+	if f == nil {
+		return 0
+	}
+	return f.concurrent[credModelKey{CredID: credID, Model: model}]
+}
+
+// TestConcurrencyScore_ReadsDispatchLiveLoad (regression, 2026-09-09 P0):
+//
+// 245 production log evidence:
+//   credential 42: 803 requests (57%), credential 21: 502 (36%),
+//   credential 45: 76 (5%),  credential 29: 22 (2%)
+//
+// All four had concurrency_score=0 in the LOAD_SCORE_V2 sample, so P2C
+// fell back to pickWeightedTie and stuck group A (weight=20) on group B
+// (weight=10) at ~93:7. Root cause: dispatch_v2 calls
+// AcquireAllNoCredLayer which deliberately skips the Limiter's credential
+// semaphore, so r.Limiter.Credential().Used() is always 0. The fix routes
+// scoring through Router.LiveLoad (wired to PeakCollector in main.go), so
+// dispatch's actual Acquire/Release on the credential layer is what
+// calculateConcurrencyScore / calculateIdentityScore see.
+//
+// This test pins the new behaviour: even with a Limiter present (legacy
+// deployments), LiveLoad overrides it; with no Limiter (current dispatch_v2
+// path), LiveLoad alone drives the score.
+func TestConcurrencyScore_ReadsDispatchLiveLoad(t *testing.T) {
+	ll := &fakeLiveLoad{
+		concurrent: map[credModelKey]int64{
+			{CredID: 42, Model: "MiniMax-M3"}: 19, // saturated (capacity 20)
+			{CredID: 21, Model: "MiniMax-M3"}: 18, // near saturated
+			{CredID: 45, Model: "minimax-m3"}: 0,  // idle
+		},
+	}
+	limit := 20
+	cBusy := provider.Candidate{
+		ProviderID: 14, CredentialID: 42, RawModel: "MiniMax-M3",
+		ConcurrencyLimit: &limit,
+	}
+	cIdle := provider.Candidate{
+		ProviderID: 5917, CredentialID: 45, RawModel: "minimax-m3",
+		ConcurrencyLimit: &limit,
+	}
+
+	t.Run("live_load_drives_score_when_wired", func(t *testing.T) {
+		r := &Router{LiveLoad: ll}
+		// busy credential: 19/20 = 0.95 pressure
+		assert.InDelta(t, 0.95, calculateConcurrencyScore(cBusy, r, context.Background()), 1e-9)
+		// idle credential: 0/20 = 0
+		assert.InDelta(t, 0.0, calculateConcurrencyScore(cIdle, r, context.Background()), 1e-9)
+	})
+
+	t.Run("live_load_takes_capacity_from_candidate", func(t *testing.T) {
+		// LiveLoad is wired (dispatch_v2 path). The Limiter is also present
+		// but its seeded capacity is the global default (50), not the
+		// per-credential DB value (20). The fix must use Candidate.ConcurrencyLimit
+		// for capacity, otherwise saturation penalty never fires.
+		limiter := credential.NewWithLimits(10, 10, 50, 2)
+		defer limiter.Stop()
+		// Saturate the limiter — irrelevant since LiveLoad path bypasses it.
+		for i := 0; i < 50; i++ {
+			if !limiter.Credential(14, 42).TryAcquire() {
+				t.Fatalf("setup: limiter token %d", i)
+			}
+		}
+		r := &Router{Limiter: limiter, LiveLoad: ll}
+		// Capacity comes from Candidate.ConcurrencyLimit=20, not from Limiter=50.
+		// LiveLoad says 19/20 = 0.95.
+		assert.InDelta(t, 0.95, calculateConcurrencyScore(cBusy, r, context.Background()), 1e-9)
+	})
+
+	t.Run("legacy_path_uses_limiter_capacity", func(t *testing.T) {
+		// No LiveLoad → legacy dispatch path. Limiter IS the source of truth
+		// (AcquireAll acquires the credential semaphore). Limiter.Capacity
+		// is preferred over Candidate.ConcurrencyLimit because admin can
+		// hot-update the in-process semaphore via SetCredentialCapacity.
+		limiter := credential.NewWithLimits(10, 10, 4, 2)
+		defer limiter.Stop()
+		if !limiter.Credential(14, 42).TryAcquire() {
+			t.Fatal("setup: token")
+		}
+		c := provider.Candidate{ProviderID: 14, CredentialID: 42, RawModel: "MiniMax-M3"}
+		// ConcurrencyLimit not set on candidate; capacity from Limiter (4).
+		// Used=1 → 1/4 = 0.25.
+		r := &Router{Limiter: limiter} // LiveLoad nil
+		assert.InDelta(t, 0.25, calculateConcurrencyScore(c, r, context.Background()), 1e-9)
+	})
+
+	t.Run("identity_score_same_signal", func(t *testing.T) {
+		r := &Router{LiveLoad: ll}
+		// Same source, same result — confirms identity_score no longer
+		// collapses to 0 just because the credential semaphore is idle.
+		assert.InDelta(t, 0.95, calculateIdentityScore(cBusy, r), 1e-9)
+		assert.InDelta(t, 0.0, calculateIdentityScore(cIdle, r), 1e-9)
+	})
+
+	t.Run("nil_live_load_falls_back_to_limiter", func(t *testing.T) {
+		limiter := credential.NewWithLimits(10, 10, 5, 2)
+		defer limiter.Stop()
+		// 2 of 5 acquired
+		if !limiter.Credential(14, 42).TryAcquire() {
+			t.Fatal("setup token 1")
+		}
+		if !limiter.Credential(14, 42).TryAcquire() {
+			t.Fatal("setup token 2")
+		}
+		r := &Router{Limiter: limiter} // LiveLoad nil
+		// Candidate has no per-credential ConcurrencyLimit, so capacity
+		// comes from Limiter (5). 2/5 = 0.4.
+		c := provider.Candidate{ProviderID: 14, CredentialID: 42, RawModel: "MiniMax-M3"}
+		assert.InDelta(t, 0.4, calculateConcurrencyScore(c, r, context.Background()), 1e-9)
+	})
+}
+
+// TestConcurrencyScore_DistributesAcrossCandidatesByConcurrency (regression,
+// 2026-09-09 P0):
+//
+// The original symptom was "all requests concentrate on credential 42".
+// Simulate a 2-candidate pool with the same weight and verify P2C selects
+// the idle one once the busy one is reported as in-flight via LiveLoad.
+// Pre-fix the busy-vs-idle distinction vanished because concurrency_score
+// was always 0, so pickWeightedTie would have flipped a fair coin and the
+// busy credential kept getting picked by random chance — never penalized
+// for being saturated.
+func TestConcurrencyScore_DistributesAcrossCandidatesByConcurrency(t *testing.T) {
+	limit := 20
+	ll := &fakeLiveLoad{
+		concurrent: map[credModelKey]int64{
+			{CredID: 42, Model: "MiniMax-M3"}: 20, // saturated
+			{CredID: 45, Model: "minimax-m3"}: 0,  // idle
+		},
+	}
+	r := &Router{LiveLoad: ll}
+	busyScore := calculateConcurrencyScore(provider.Candidate{
+		ProviderID: 14, CredentialID: 42, RawModel: "MiniMax-M3",
+		ConcurrencyLimit: &limit,
+	}, r, context.Background())
+	idleScore := calculateConcurrencyScore(provider.Candidate{
+		ProviderID: 5917, CredentialID: 45, RawModel: "minimax-m3",
+		ConcurrencyLimit: &limit,
+	}, r, context.Background())
+	// The idle candidate must have a strictly lower concurrency score so
+	// that P2C's `scoreB < scoreA` branch picks it on every draw. Pre-fix
+	// both were 0 → tie → pickWeightedTie → 50/50 random.
+	if !(idleScore < busyScore) {
+		t.Fatalf("idle concurrency_score (%f) must be < busy (%f) so P2C picks idle", idleScore, busyScore)
+	}
+}
+
 func TestMathPow(t *testing.T) {
 	if mathPow(2, 3) != 8 {
 		t.Errorf("mathPow(2,3) = %v, want 8", mathPow(2, 3))
@@ -241,4 +402,31 @@ func TestLerp(t *testing.T) {
 	if lerp(800, 800, 1500, 1.00, 0.85) != 1.00 {
 		t.Errorf("lerp at start should be 1.00")
 	}
+}
+
+// R47：F8④ 收尾钉桩——负权重被 clamp 到 0，方向不反转（负 headroom/
+// capacity 权重曾使对应惩罚项变奖励：低 headroom、低容量节点反被偏好）。
+func TestCalculateLoadScore_NegativeWeightsClamped(t *testing.T) {
+	router := &Router{LoadScoreWeights: DefaultLoadScoreWeights()}
+	candidate := provider.Candidate{
+		CredentialID:     1,
+		ProviderID:       1,
+		P95LatencyMs:     500,
+		SuccessRate:      0.95,
+		ConcurrencyLimit: intPtr(50),
+	}
+	ctx := context.Background()
+
+	t.Setenv("LLM_GATEWAY_ROUTING_W_HEADROOM", "0")
+	zero := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights, StrategyInput{})
+
+	t.Setenv("LLM_GATEWAY_ROUTING_W_HEADROOM", "-5")
+	negativeHeadroom := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights, StrategyInput{})
+	assert.InDelta(t, zero, negativeHeadroom, 1e-12,
+		"negative W_HEADROOM must clamp to 0 (same score as W_HEADROOM=0)")
+
+	t.Setenv("LLM_GATEWAY_ROUTING_W_CAPACITY", "-3")
+	negativeCapacity := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights, StrategyInput{})
+	assert.InDelta(t, zero, negativeCapacity, 1e-12,
+		"negative W_CAPACITY must clamp to 0 (same score as W_HEADROOM=0 baseline)")
 }

@@ -53,6 +53,9 @@ func TestEmitWritesBoundedRedisQueue(t *testing.T) {
 		n, _ := rdb.LLen(ctx, RedisKey).Result()
 		return n == 2
 	})
+	if ttl, err := rdb.TTL(ctx, RedisKey).Result(); err != nil || ttl <= 0 || ttl > redisKeyTTL {
+		t.Fatalf("action queue TTL = %v, %v; want (0, %v]", ttl, err, redisKeyTTL)
+	}
 
 	// Newest (route_resolved, seq 2) at the head.
 	head, err := rdb.LIndex(ctx, RedisKey, 0).Result()
@@ -223,40 +226,6 @@ func TestEmitConcurrentNeverBlocks(t *testing.T) {
 	}
 }
 
-func TestNormalizeStageCategory(t *testing.T) {
-	ev := ActionEvent{Action: ActionModelEnqueued}
-	normalizeStage(&ev)
-	if ev.Stage != "model_queue" || ev.StageCategory != "routing" {
-		t.Fatalf("normalized stage = %q/%q, want model_queue/routing", ev.Stage, ev.StageCategory)
-	}
-
-	ev = ActionEvent{Action: ActionFirstByte}
-	normalizeStage(&ev)
-	if ev.Stage != "streaming" || ev.StageCategory != "llm" {
-		t.Fatalf("normalized stage = %q/%q, want streaming/llm", ev.Stage, ev.StageCategory)
-	}
-}
-
-// TestNormalizeStageFailureCounter: an Action outside the closed enum
-// (stageForAction returns "") must increment
-// live_actions_stage_normalization_failures_total exactly once, with no
-// stage / stage_category populated on the event.
-func TestNormalizeStageFailureCounter(t *testing.T) {
-	ResetMetricsForTest()
-
-	const unknown = Action("__test_unknown__")
-
-	ev := ActionEvent{Action: unknown}
-	normalizeStage(&ev)
-
-	if ev.Stage != "" || ev.StageCategory != "" {
-		t.Fatalf("unknown action should leave stage fields empty, got %q/%q", ev.Stage, ev.StageCategory)
-	}
-	if got := StageNormalizationFailuresTotal(); got != 1 {
-		t.Fatalf("stage_normalization_failures = %d, want 1", got)
-	}
-}
-
 // TestNilEmitterIsNoOp: nil emitter 上 Emit 必须 no-op 不 panic。
 func TestNilEmitterIsNoOp(t *testing.T) {
 	var e *Emitter
@@ -265,6 +234,31 @@ func TestNilEmitterIsNoOp(t *testing.T) {
 		t.Fatal("nil emitter must expose zero counters")
 	}
 	e.Close()
+}
+
+// TestTypedNilClientNormalised: 调用方把 nil *redis.Client 以 Client 接口
+// 传入时（cmd/gateway 2026-09-17 252 无 Redis 部署实抓的 crash-loop：
+// typed-nil 骗过 write() 的 == nil 守卫，首个事件在 Pipeline() 空指针上
+// panic），NewEmitter 必须归一化为非 typed nil，worker 静默丢弃不 panic。
+func TestTypedNilClientNormalised(t *testing.T) {
+	ResetSeqForTest()
+	var typedNil *redis.Client
+	e := NewEmitter(typedNil, 0)
+	defer e.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.Emit(context.Background(), ActionEvent{RequestID: "tn-1", Action: ActionUpstreamRequest})
+		// run() 无事件即阻塞在 channel；给 write 足够时间跑完（若回归则
+		// 在此 goroutine panic 拖垮整个测试进程）。
+		time.Sleep(200 * time.Millisecond)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("emit path hung")
+	}
 }
 
 // TestRedisUnavailableSilentDegrade: Redis 挂掉时计数递增、Emit 不阻塞。

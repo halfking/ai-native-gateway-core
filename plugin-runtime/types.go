@@ -4,7 +4,21 @@ package pluginruntime
 
 import "time"
 
-const SupportedAPIContract = "gateway-plugin-v1"
+const (
+	SupportedAPIContract   = "gateway-plugin-v1"
+	SupportedAPIContractV2 = "gateway-plugin-v2"
+)
+
+// License declares the optional activation licensing policy in manifest v2.
+type License struct {
+	Mode     string   `json:"mode,omitempty"`
+	Required bool     `json:"required,omitempty"`
+	Features []string `json:"features,omitempty"`
+}
+
+// ConfigSchema is intentionally opaque at the wire level; manifest validation
+// checks the bounded JSON-Schema subset before it is exposed to a UI.
+type ConfigSchema map[string]any
 
 // BindingPhase identifies the lifecycle seam where a plugin binding runs.
 type BindingPhase string
@@ -93,6 +107,9 @@ type Manifest struct {
 	GatewayCompatibility GatewayCompatibility `json:"gateway_compatibility"`
 	Runtime              Runtime              `json:"runtime"`
 	Capabilities         []string             `json:"capabilities"`
+	Permissions          []string             `json:"permissions,omitempty"`
+	Hooks                []string             `json:"hooks,omitempty"`
+	ConfigSchema         ConfigSchema         `json:"config_schema,omitempty"`
 	Bindings             []PluginBinding      `json:"bindings,omitempty"`
 	Pages                []Page               `json:"pages"`
 	Web                  Web                  `json:"web"`
@@ -137,8 +154,9 @@ type Web struct {
 }
 
 type Activation struct {
-	ModuleKey       string `json:"module_key"`
-	LicenseRequired bool   `json:"license_required"`
+	ModuleKey       string  `json:"module_key"`
+	LicenseRequired bool    `json:"license_required"`
+	License         License `json:"license,omitempty"`
 }
 
 type HandshakeResponse struct {

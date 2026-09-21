@@ -1,5 +1,6 @@
 import { computed, ref, type Ref } from 'vue'
 import { getCredentialMonitorSummary } from '../api/credential-monitor'
+import { i18n } from '../i18n'
 import { getCurrentTenantId } from '../store'
 
 const LABEL_TTL_MS = 60_000
@@ -94,14 +95,32 @@ export function credentialLabelForId(id: number | null | undefined): string | nu
   return cache.labels.value.get(id) || null
 }
 
+/**
+ * Default display prefix for unlabeled credentials, resolved through i18n at
+ * call time (2026-09-05 audit F2-#3: the previous hardcoded zh-CN '凭据'
+ * leaked into en/fr/de/... locales). Callers may still pass an explicit
+ * prefix to keep the historical signature compatible.
+ */
+function defaultCredentialPrefix(): string {
+  try {
+    const translated = i18n.global.t('common.credentialFallback')
+    // When the global i18n instance has no locale messages (e.g. unit tests
+    // that never installed the plugin), vue-i18n echoes the key back — fall
+    // back to a neutral prefix instead of rendering the key path.
+    return translated === 'common.credentialFallback' ? 'Credential' : translated
+  } catch {
+    return 'Credential'
+  }
+}
+
 export function credentialDisplayName(
   id: number | null | undefined,
-  prefix = '凭据',
+  prefix?: string,
 ): string {
   if (id == null || !Number.isFinite(id) || id <= 0) return '—'
   const label = credentialLabelForId(id)
   if (label) return label
-  return `${prefix} #${id}`
+  return `${prefix ?? defaultCredentialPrefix()} #${id}`
 }
 
 export function displaySyntheticCredentialModel(modelName: string): string {

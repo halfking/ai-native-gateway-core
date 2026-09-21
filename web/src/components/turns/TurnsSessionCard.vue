@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { SessionChildRequest, SessionTurnTreeItem } from '../../api/sessionTurnsTree'
 import type { TurnGroupItem, TurnsSessionGroup } from '../../api/turns'
+import { formatDateTime } from '../../utils/datetime'
 import {
   childOpsLabel,
   formatMs,
@@ -84,7 +85,7 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
         <span v-if="session.owner_user" class="ctx-badge owner">用户 {{ session.owner_user }}</span>
         <span v-if="sessionClient(session)" class="ctx-badge client">{{ session.application_code ? '智能体' : '客户端' }} {{ sessionClient(session) }}</span>
         <span v-if="session.api_key_label" class="ctx-badge apikey">API Key {{ session.api_key_label }}</span>
-        <span v-if="session.start_time" class="ts">开始 {{ new Date(session.start_time).toLocaleString() }}</span>
+        <span v-if="session.start_time" class="ts">开始 {{ formatDateTime(session.start_time) }}</span>
         <span v-for="tag in session.user_tags" :key="tag" class="badge tag">#{{ tag }}</span>
       </div>
 
@@ -111,7 +112,7 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
       </div>
 
       <div class="session-foot">
-        <span class="ts">更新 {{ new Date(session.updated_at).toLocaleString() }}</span>
+        <span class="ts">更新 {{ formatDateTime(session.updated_at) }}</span>
         <button class="link" type="button" @click.stop="emit('openSession')">进入会话详情 →</button>
       </div>
     </div>
@@ -131,7 +132,7 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
         <div class="col col-req">
           <div class="meta">
             <span class="turn-no">#{{ turn.turn_no }}</span>
-            <span class="ts">{{ new Date(turn.ts).toLocaleString() }}</span>
+            <span class="ts">{{ formatDateTime(turn.ts) }}</span>
             <span v-if="turn.attempt_no" class="mini-badge warn">failover#{{ turn.attempt_no }}</span>
             <span :class="['verdict', `tag-${turn.injection_verdict || 'skip'}`]">inj: {{ turn.injection_verdict || 'skip' }}</span>
             <span v-if="turn.latency_ms !== undefined" class="ts">⏱ {{ formatMs(turn.latency_ms) }}</span>
@@ -230,7 +231,7 @@ function opsForTurn(turnNo: number): SessionChildRequest[] {
 .child-ops { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .ops-chip { background: var(--primary-soft); color: var(--accent); }
 .ops-hint, .empty { text-align: center; color: var(--text-secondary); padding: 12px 16px; font-size: 13px; }
-@media (max-width: 760px) {
+@media (max-width: 768px) {
   .turn-row { grid-template-columns: 1fr; gap: 10px; }
   .col + .col { padding-top: 10px; border-left: 0; border-top: 1px dashed var(--border); }
   .session-title { max-width: 100%; }

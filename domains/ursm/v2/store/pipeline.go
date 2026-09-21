@@ -2,12 +2,12 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
-	"github.com/redis/go-redis/v9"
-
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 type NodeQuery struct {
@@ -39,11 +39,13 @@ func (s *Store) PipelineNodeViews(ctx context.Context, prefix string, qs []NodeQ
 		query    NodeQuery
 		primary  string // key read in the first pipeline; "" ⇒ no read at all
 		fallback string // legacy key used in dual mode when the primary misses
-		cmd      *redis.MapStringStringCmd
+		raw      map[string]string
+		err      error
 	}
 	mode := s.schemaMode
 	slots := make([]slot, len(qs))
-	pipe := s.rdb.Pipeline()
+	primaryKeys := make([]string, 0, len(qs))
+	primaryIndexes := make([]int, 0, len(qs))
 	for i, q := range qs {
 		sl := slot{query: q}
 		if mode == KeySchemaModeLegacy {
@@ -54,53 +56,51 @@ func (s *Store) PipelineNodeViews(ctx context.Context, prefix string, qs []NodeQ
 				sl.fallback = NodeKeyForTenant(prefix, q.TenantID, q.CredentialID, q.RawModel)
 			}
 		} else if mode == KeySchemaModeDual {
-			// The canonical grammar cannot represent this tuple (empty
-			// tenant); legacy compatibility carries it (doc 14 §2).
 			sl.primary = NodeKeyForTenant(prefix, q.TenantID, q.CredentialID, q.RawModel)
 		}
 		if sl.primary != "" {
-			sl.cmd = pipe.HGetAll(ctx, sl.primary)
+			primaryKeys = append(primaryKeys, sl.primary)
+			primaryIndexes = append(primaryIndexes, i)
 		}
 		slots[i] = sl
 	}
-	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
-		return nil, fmt.Errorf("ursm.v2: pipeline exec: %w", err)
+	primaryResults, err := redissafe.SafeHGetAllPipeline(ctx, s.rdb.Pipeline(), primaryKeys)
+	if err != nil {
+		return nil, fmt.Errorf("ursm.v2: pipeline read: %w", err)
+	}
+	pending := make([]int, 0, len(qs))
+	for j, i := range primaryIndexes {
+		sl := &slots[i]
+		sl.raw, sl.err = primaryResults[j].Fields, primaryResults[j].Err
+		if sl.err != nil && !errors.Is(sl.err, redissafe.ErrKeyNotFound) {
+			return nil, fmt.Errorf("ursm.v2: primary node %q: %w", sl.primary, sl.err)
+		}
+		if len(sl.raw) == 0 && sl.fallback != "" {
+			pending = append(pending, i)
+		}
 	}
 
 	now := time.Now()
 	out := make([]api.NodeView, len(qs))
-	pending := make([]int, 0, len(qs))
 	for i, sl := range slots {
-		var raw map[string]string
-		if sl.cmd != nil {
-			r, err := sl.cmd.Result()
-			if err == nil {
-				raw = r
-			} else if err != redis.Nil {
-				return nil, fmt.Errorf("ursm.v2: hgetall: %w", err)
-			}
+		if sl.fallback == "" || (sl.err == nil && len(sl.raw) > 0) {
+			out[i] = nodeViewFromHash(sl.query, sl.raw, now)
 		}
-		if len(raw) == 0 && sl.fallback != "" {
-			pending = append(pending, i)
-			continue
-		}
-		out[i] = nodeViewFromHash(slots[i].query, raw, now)
 	}
-
 	if len(pending) > 0 {
-		pipe2 := s.rdb.Pipeline()
-		for _, i := range pending {
-			slots[i].cmd = pipe2.HGetAll(ctx, slots[i].fallback)
+		fallbackKeys := make([]string, len(pending))
+		for j, i := range pending {
+			fallbackKeys[j] = slots[i].fallback
 		}
-		if _, err := pipe2.Exec(ctx); err != nil && err != redis.Nil {
-			return nil, fmt.Errorf("ursm.v2: pipeline exec (fallback): %w", err)
+		fallbackResults, err := redissafe.SafeHGetAllPipeline(ctx, s.rdb.Pipeline(), fallbackKeys)
+		if err != nil {
+			return nil, fmt.Errorf("ursm.v2: fallback pipeline read: %w", err)
 		}
-		for _, i := range pending {
-			raw, err := slots[i].cmd.Result()
-			if err != nil && err != redis.Nil {
-				return nil, fmt.Errorf("ursm.v2: hgetall (fallback): %w", err)
+		for j, i := range pending {
+			if ferr := fallbackResults[j].Err; ferr != nil && !errors.Is(ferr, redissafe.ErrKeyNotFound) {
+				return nil, fmt.Errorf("ursm.v2: fallback node %q: %w", slots[i].fallback, ferr)
 			}
-			out[i] = nodeViewFromHash(slots[i].query, raw, now)
+			out[i] = nodeViewFromHash(slots[i].query, fallbackResults[j].Fields, now)
 		}
 	}
 	return out, nil

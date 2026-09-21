@@ -54,10 +54,11 @@ func TestResolveRawBinding(t *testing.T) {
 			want:    "deepseek-v4-flash-260425",
 		},
 		{
-			name:    "ambiguous alias fails without selecting a binding",
+			name:    "ambiguous alias selects first candidate (2026-09-06 P0.3 fix)",
 			results: []string{"", "deepseek-v4-flash\x1fdeepseek-v4-flash-260425"},
 			request: "deepseek-flash",
-			wantErr: ErrAmbiguousModelBinding,
+			want:    "deepseek-v4-flash",
+			wantErr: nil,
 		},
 	}
 

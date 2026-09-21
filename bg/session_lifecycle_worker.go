@@ -20,6 +20,8 @@
 // 接入点：cmd/gateway/main.go 与 cmd/gateway-v2/main.go 在 init bg services 时
 //         构造 + Start。
 
+// UNUSED (R35 audit 2026-09-17): zero production callers, zero test references — registered as
+// cleanup candidate R35-DEBT in docs/audit/2026-09-17-r35-gap-audit-round.md §四. Delete after roadmap confirmation.
 package bg
 
 import (
@@ -375,7 +377,6 @@ func (w *SessionLifecycleWorker) evictExcess(ctx context.Context) (int, error) {
 			tenants = append(tenants, t)
 		}
 	}
-	rows.Close()
 
 	count := 0
 	for _, tenantID := range tenants {
@@ -439,7 +440,6 @@ func (w *SessionLifecycleWorker) evictOneTenant(ctx context.Context, tenantID st
 			candidates = append(candidates, c)
 		}
 	}
-	rows.Close()
 
 	count := 0
 	for _, c := range candidates {

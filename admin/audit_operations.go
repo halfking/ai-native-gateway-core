@@ -35,21 +35,21 @@ import (
 
 // AuditOperationEntry 是 admin 节点操作审计的一行 API 投影。
 type AuditOperationEntry struct {
-	RequestID      string         `json:"request_id"`
-	ProviderID     int64          `json:"provider_id"`
-	Operation      string         `json:"operation"`
-	FromState      string         `json:"from_state,omitempty"`
-	ToState        string         `json:"to_state,omitempty"`
-	OperatorID     string         `json:"operator_id,omitempty"`
-	CorrelationID  string         `json:"correlation_id,omitempty"`
-	IdempotencyKey string         `json:"idempotency_key,omitempty"`
-	Status         string         `json:"status,omitempty"`
-	LatencyMs      int64          `json:"latency_ms,omitempty"`
-	Reason         string         `json:"reason,omitempty"`
-	Enabled        bool           `json:"enabled,omitempty"`
-	Source         string         `json:"source,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
-	Raw            map[string]any `json:"raw,omitempty"`
+	RequestID       string         `json:"request_id"`
+	ProviderID      int64          `json:"provider_id"`
+	Operation       string         `json:"operation"`
+	FromState       string         `json:"from_state,omitempty"`
+	ToState         string         `json:"to_state,omitempty"`
+	OperatorID      string         `json:"operator_id,omitempty"`
+	CorrelationID   string         `json:"correlation_id,omitempty"`
+	IdempotencyKey  string         `json:"idempotency_key,omitempty"`
+	Status          string         `json:"status,omitempty"`
+	LatencyMs       int64          `json:"latency_ms,omitempty"`
+	Reason          string         `json:"reason,omitempty"`
+	Enabled         bool           `json:"enabled,omitempty"`
+	Source          string         `json:"source,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
+	Raw             map[string]any `json:"raw,omitempty"`
 }
 
 const (

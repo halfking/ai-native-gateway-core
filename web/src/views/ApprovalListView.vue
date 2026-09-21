@@ -5,6 +5,11 @@ import { localeRef } from '../i18n'
 import { useRouter } from 'vue-router'
 import { getApprovalList, approveApproval, rejectApproval, getApprovalStats, type ApprovalItem, type ApprovalStats } from '../api/approval'
 import { isSuperAdmin } from '../store'
+import { confirmDialog } from '../composables/useConfirmDialog'
+import { formatDateTime, formatRelativeTime } from '../utils/datetime'
+import { useActionMessage } from '../composables/useActionMessage'
+import AppSpinner from '../components/AppSpinner.vue'
+import EmptyState from '../components/EmptyState.vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -13,8 +18,8 @@ const router = useRouter()
 const loading = ref(false)
 const approvals = ref<ApprovalItem[]>([])
 const stats = ref<ApprovalStats | null>(null)
-const error = ref<string | null>(null)
-const successMessage = ref<string | null>(null)
+// 审计 R3#10：操作反馈条统一走 useActionMessage（自动消失/计时器清理收敛）。
+const { message: successMessage, error, notifySuccess, notifyError, clearMessage, clearError } = useActionMessage()
 
 // Filters
 const statusFilter = ref<string>('pending')
@@ -106,28 +111,25 @@ function getStatusLabel(status: string): string {
   return labels[status] || status
 }
 
+// 审计 R3#10：相对时间统一走 utils/datetime.formatRelativeTime
+//（超过 7 天回退绝对时间，与原实现一致）。
 function formatDate(dateStr: string): string {
-  const date = new Date(dateStr)
-  const now = new Date()
-  const diff = now.getTime() - date.getTime()
-  const seconds = Math.floor(diff / 1000)
-  const minutes = Math.floor(seconds / 60)
-  const hours = Math.floor(minutes / 60)
-  const days = Math.floor(hours / 24)
-
-  if (days > 7) {
-    return date.toLocaleDateString(localeRef.value, {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    })
-  }
-  if (days > 0) return t('approval.list.relativeTime.daysAgo', { n: days })
-  if (hours > 0) return t('approval.list.relativeTime.hoursAgo', { n: hours })
-  if (minutes > 0) return t('approval.list.relativeTime.minutesAgo', { n: minutes })
-  return t('approval.list.relativeTime.justNow')
+  return formatRelativeTime(dateStr, {
+    justNow: t('approval.list.relativeTime.justNow'),
+    minutesAgo: (n) => t('approval.list.relativeTime.minutesAgo', { n }),
+    hoursAgo: (n) => t('approval.list.relativeTime.hoursAgo', { n }),
+    daysAgo: (n) => t('approval.list.relativeTime.daysAgo', { n }),
+    older: (d) => formatDateTime(d, {
+      locale: localeRef.value,
+      options: {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      },
+    }),
+  })
 }
 
 function formatCost(cost?: number): string {
@@ -137,7 +139,7 @@ function formatCost(cost?: number): string {
 
 async function loadApprovals() {
   loading.value = true
-  error.value = null
+  clearError()
 
   try {
     const params = {
@@ -157,7 +159,7 @@ async function loadApprovals() {
     totalPages.value = response.total_pages
     currentPage.value = response.page
   } catch (e: any) {
-    error.value = e.message || t('approval.list.errors.loadListFailed')
+    notifyError(e.message || t('approval.list.errors.loadListFailed'))
   } finally {
     loading.value = false
   }
@@ -172,18 +174,17 @@ async function loadStats() {
 }
 
 async function quickApprove(item: ApprovalItem) {
-  if (!confirm(t('approval.list.confirm.approve', { id: item.request_id }))) {
+  if (!(await confirmDialog(t('approval.list.confirm.approve', { id: item.request_id })))) {
     return
   }
 
   try {
     await approveApproval(item.request_id)
-    successMessage.value = t('approval.list.success.approved')
-    setTimeout(() => successMessage.value = null, 3000)
+    notifySuccess(t('approval.list.success.approved'))
     await loadApprovals()
     await loadStats()
   } catch (e: any) {
-    error.value = e.message || t('approval.list.errors.approveFailed')
+    notifyError(e.message || t('approval.list.errors.approveFailed'))
   }
 }
 
@@ -195,12 +196,11 @@ async function quickReject(item: ApprovalItem) {
 
   try {
     await rejectApproval(item.request_id, reason)
-    successMessage.value = t('approval.list.success.rejected')
-    setTimeout(() => successMessage.value = null, 3000)
+    notifySuccess(t('approval.list.success.rejected'))
     await loadApprovals()
     await loadStats()
   } catch (e: any) {
-    error.value = e.message || t('approval.list.errors.rejectFailed')
+    notifyError(e.message || t('approval.list.errors.rejectFailed'))
   }
 }
 
@@ -278,13 +278,13 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
     <div v-if="error" class="message message-error">
       <span class="message-icon">❌</span>
       {{ error }}
-      <button class="message-close" @click="error = null">×</button>
+      <button class="message-close" @click="clearError">×</button>
     </div>
 
     <div v-if="successMessage" class="message message-success">
       <span class="message-icon">✅</span>
       {{ successMessage }}
-      <button class="message-close" @click="successMessage = null">×</button>
+      <button class="message-close" @click="clearMessage">×</button>
     </div>
 
     <!-- Stats Cards -->
@@ -352,13 +352,11 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
     <!-- Table -->
     <div class="table-container">
-      <div v-if="loading && approvals.length === 0" class="loading-state">
-        <div class="loading-spinner">{{ t('approval.list.loading') }}</div>
-      </div>
+      <AppSpinner v-if="loading && approvals.length === 0" :label="t('approval.list.loading')" />
 
-      <div v-else-if="filteredApprovals.length === 0" class="empty-state">
+      <EmptyState v-else-if="filteredApprovals.length === 0" padding="64px">
         <p>{{ t('approval.list.empty') }}</p>
-      </div>
+      </EmptyState>
 
       <table v-else class="data-table">
         <thead>
@@ -527,8 +525,8 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .message-error {
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.3);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 
@@ -619,6 +617,8 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .form-select,
 .form-input {
+  /* width:auto 覆盖全局 input/select width:100%，筛选控件按内容宽度排布 */
+  width: auto;
   padding: 8px 12px;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -680,7 +680,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .table-row:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-hover);
 }
 
 .link-button {
@@ -743,7 +743,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .badge-red {
-  background: rgba(248, 113, 113, 0.15);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
 }
 
@@ -828,13 +828,13 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .btn-danger {
-  background: rgba(248, 113, 113, 0.15);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   color: var(--danger);
   border-color: var(--danger);
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: rgba(248, 113, 113, 0.25);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 .btn-sm {
@@ -848,7 +848,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
   min-width: 32px;
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 1024px) {
   .stats-grid {
     grid-template-columns: repeat(3, 1fr);
   }

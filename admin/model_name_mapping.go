@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -189,7 +188,7 @@ type createModelNameMappingRequest struct {
 // createModelNameMapping creates a new model name mapping
 func (h *Handler) createModelNameMapping(w http.ResponseWriter, r *http.Request) {
 	var req createModelNameMappingRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON in request body")
 		return
 	}
@@ -260,7 +259,7 @@ type updateModelNameMappingRequest struct {
 // updateModelNameMapping updates an existing model name mapping
 func (h *Handler) updateModelNameMapping(w http.ResponseWriter, r *http.Request, id int) {
 	var req updateModelNameMappingRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON in request body")
 		return
 	}

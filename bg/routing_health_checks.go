@@ -17,9 +17,20 @@ type HealthCheckDef struct {
 
 func AllHealthChecks() []HealthCheckDef {
 	return []HealthCheckDef{
-		{CheckID: "canonical_id_null", Severity: "critical", Query: `SELECT pm.id, pm.raw_model_name, mc.id FROM provider_models pm JOIN models_canonical mc ON mc.canonical_name = pm.raw_model_name WHERE pm.canonical_id IS NULL ORDER BY pm.id LIMIT 200`},
+		// canonical_cleared_at (migration 693) guards every auto re-link:
+		// a row the operator explicitly unbound must not be flagged as
+		// critical here, or the check list keeps offering a one-click fix
+		// that undoes the admin decision — and autoFixCanonicalID below
+		// would silently re-link it on its next pass.
+		{CheckID: "canonical_id_null", Severity: "critical", Query: `SELECT pm.id, pm.raw_model_name, mc.id FROM provider_models pm JOIN models_canonical mc ON mc.canonical_name = pm.raw_model_name WHERE pm.canonical_id IS NULL AND pm.canonical_cleared_at IS NULL ORDER BY pm.id LIMIT 200`},
 		{CheckID: "billing_mismatch", Severity: "warning", Query: `SELECT cmb.id, c.id || ':' || pm.raw_model_name, c.plan_type, cmb.billing_mode FROM credential_model_bindings cmb JOIN credentials c ON c.id = cmb.credential_id JOIN provider_models pm ON pm.id = cmb.provider_model_id WHERE c.plan_type IN ('token_plan','code_plan','agent_plan') AND cmb.billing_mode NOT IN ('token_plan','code_plan','agent_plan') ORDER BY cmb.id LIMIT 200`},
-		{CheckID: "probe_missing", Severity: "warning", Query: `SELECT cmb.id, c.id || ':' || pm.raw_model_name, pm.raw_model_name, c.id FROM credential_model_bindings cmb JOIN provider_models pm ON pm.id = cmb.provider_model_id JOIN credentials c ON c.id = cmb.credential_id WHERE cmb.available = TRUE AND c.status = 'active' AND c.lifecycle_status = 'active' AND NOT EXISTS (SELECT 1 FROM model_probe_state mps WHERE mps.credential_id = cmb.credential_id AND mps.raw_model_name = pm.raw_model_name) ORDER BY cmb.id LIMIT 200`},
+		// probe_missing (R39 fix): used to read the legacy model_probe_state
+		// directly. Under the new probe mode (default since 86e09daa7) that
+		// table is frozen, so every newly added binding showed up as a
+		// permanent false-positive warning. v_node_probe_state_compat is the
+		// single source of truth projection and is populated in BOTH modes
+		// (legacy runOne/queue paths mirror into node_probe_state).
+		{CheckID: "probe_missing", Severity: "warning", Query: `SELECT cmb.id, c.id || ':' || pm.raw_model_name, pm.raw_model_name, c.id FROM credential_model_bindings cmb JOIN provider_models pm ON pm.id = cmb.provider_model_id JOIN credentials c ON c.id = cmb.credential_id WHERE cmb.available = TRUE AND c.status = 'active' AND c.lifecycle_status = 'active' AND NOT EXISTS (SELECT 1 FROM v_node_probe_state_compat nps WHERE nps.credential_id = cmb.credential_id AND nps.raw_model_name = pm.raw_model_name) ORDER BY cmb.id LIMIT 200`},
 		{CheckID: "family_unknown", Severity: "warning", Query: `SELECT id, canonical_name, canonical_name, canonical_name FROM models_canonical WHERE (family = 'unknown' OR family IS NULL) AND canonical_name ~* '^(claude|gpt|o[1-4]|llama|gemini|gemma|mistral|mixtral|ministral|glm|kimi|moonshot|step|stepfun|doubao|seed|qwen|deepseek|minimax|mimo|baichuan|yi|spark|xinghuo|pangu|ernie|wenxin|hunyuan|abab|falcon|nemotron|phi|sonar|grok|command|embed|rerank|bloom|pythia)' ORDER BY id LIMIT 200`},
 		{CheckID: "circuit_open", Severity: "warning", Query: `SELECT cmb.id, c.id || ':' || pm.raw_model_name, c.circuit_state, c.availability_state FROM credential_model_bindings cmb JOIN provider_models pm ON pm.id = cmb.provider_model_id JOIN credentials c ON c.id = cmb.credential_id WHERE cmb.available = TRUE AND c.circuit_state NOT IN ('closed', 'disabled') ORDER BY c.circuit_state, cmb.id LIMIT 50`},
 		{CheckID: "credential_active_not_routable", Severity: "warning", Query: `SELECT c.id, c.label || ':' || COALESCE(p.display_name, 'unknown'), c.availability_state, c.circuit_state FROM credentials c JOIN providers p ON p.id = c.provider_id WHERE c.status = 'active' AND c.lifecycle_status = 'active' AND EXISTS (SELECT 1 FROM credential_model_bindings cmb WHERE cmb.credential_id = c.id) AND NOT EXISTS (SELECT 1 FROM v_routable_credential_models v WHERE v.credential_id = c.id AND v.is_routable = TRUE) ORDER BY c.id LIMIT 50`},
@@ -36,6 +47,7 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 			err = fmt.Errorf("query %s: %w", chk.CheckID, qErr)
 			return
 		}
+		defer rows.Close()
 		found := 0
 		for rows.Next() {
 			found++
@@ -65,7 +77,11 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 				detail = fmt.Sprintf("cred_plan='%s' cmb_billing='%s' → v.is_routable=false", credPlan, cmbBilling)
 				parts := strings.SplitN(credModel, ":", 2)
 				if len(parts) == 2 {
-					fixSQL = fmt.Sprintf("UPDATE credential_model_bindings cmb SET billing_mode = '%s', plan_type_origin = 'manual_fix', plan_type_updated_at = now() FROM provider_models pm WHERE pm.id = cmb.provider_model_id AND cmb.credential_id = %s AND pm.raw_model_name = '%s';", credPlan, parts[0], parts[1])
+					// fix_sql is display/copy text only — raw_model_name comes
+					// from upstream model catalogs, so the literal must be
+					// escaped and one-click fixes run the parameterized
+					// canned statement in admin.cannedFix instead of this text.
+					fixSQL = fmt.Sprintf("UPDATE credential_model_bindings cmb SET billing_mode = %s, plan_type_origin = 'manual_fix', plan_type_updated_at = now() FROM provider_models pm WHERE pm.id = cmb.provider_model_id AND cmb.credential_id = %s AND pm.raw_model_name = %s; -- display only, applied via parameterized fix channel", pgQuoteLiteral(credPlan), parts[0], pgQuoteLiteral(parts[1]))
 				}
 
 			case "probe_missing":
@@ -112,8 +128,6 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 				fixSQL = fmt.Sprintf("-- 调用 admin API: POST /api/admin/diagnostics/routing-blocked/fix\n-- Body: {\"provider_id\": <该 credential 的 provider_id>}")
 			}
 
-			rows.Close()
-
 			_, insErr := db.Exec(ctx, `
 				INSERT INTO routing_health_checks
 					(check_id, severity, entity_type, entity_id, entity_name, detail, fix_sql, status, created_at, updated_at)
@@ -133,7 +147,6 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 				newWarning++
 			}
 		}
-		rows.Close()
 		if rows.Err() != nil {
 			err = fmt.Errorf("rows %s: %w", chk.CheckID, rows.Err())
 			return
@@ -153,12 +166,24 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 	return
 }
 
+// pgQuoteLiteral doubles single quotes so DB string values (which upstream
+// model catalogs can influence) stay inside SQL string literals when fix_sql
+// is rendered. The result is display/copy text only — one-click fixes run the
+// parameterized canned statements in admin.cannedFix, never this text.
+func pgQuoteLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
 func autoFixCanonicalID(ctx context.Context, db *pgxpool.Pool, now time.Time) (int, error) {
+	// Migration 693: same guard as the canonical_id_null check query — the
+	// marker (canonical_cleared_at) records an operator unbind, and this
+	// exact-match auto-fix must never resurrect it.
 	tag, err := db.Exec(ctx, `
 		UPDATE provider_models pm
 		SET canonical_id = mc.id
 		FROM models_canonical mc
 		WHERE pm.canonical_id IS NULL
+		  AND pm.canonical_cleared_at IS NULL
 		  AND pm.raw_model_name = mc.canonical_name`)
 	if err != nil {
 		return 0, err

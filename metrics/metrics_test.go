@@ -54,6 +54,10 @@ func TestNoopRecorder(t *testing.T) {
 	r.RecordShadowWriteFailure("session_v2")
 	r.RecordRingBufferDropped(3)
 	r.RecordRawAuditWriteFailure()
+	r.RecordRawSinkFlush("buffered", 2*time.Millisecond, 7)
+	r.RecordRawSinkDropped("buffered", "buffer_full", 2)
+	r.RecordRawSinkCloseDrain("buffered", time.Millisecond, false)
+	r.RecordRawSinkFrameLookup("buffered", "hit")
 }
 
 // TestPrometheusRecorder 测试 Prometheus 实现
@@ -149,6 +153,32 @@ func TestPrometheusRecorder_URSMv2ShadowCounters(t *testing.T) {
 // promauto which registers to the default global registry; creating
 // a second recorder would panic with "duplicate metrics collector
 // registration attempted").
+func TestPrometheusRecorder_R12RawSinkMetrics(t *testing.T) {
+	r := testRecorder
+	readCounter := func(counter interface{ Write(*dto.Metric) error }) float64 {
+		m := &dto.Metric{}
+		if err := counter.Write(m); err != nil {
+			t.Fatalf("counter.Write: %v", err)
+		}
+		return m.GetCounter().GetValue()
+	}
+	beforeDrop := readCounter(r.rawSinkDropped.WithLabelValues("buffered", "buffer_full"))
+	beforeLookup := readCounter(r.rawSinkFrameLookup.WithLabelValues("buffered", "hit"))
+	r.RecordRawSinkFlush("buffered", 2*time.Millisecond, 7)
+	r.RecordRawSinkDropped("buffered", "buffer_full", 2)
+	r.RecordRawSinkCloseDrain("buffered", time.Millisecond, true)
+	r.RecordRawSinkFrameLookup("buffered", "hit")
+	if got := readCounter(r.rawSinkDropped.WithLabelValues("buffered", "buffer_full")); got != beforeDrop+2 {
+		t.Fatalf("raw sink dropped=%v, want %v", got, beforeDrop+2)
+	}
+	if got := readCounter(r.rawSinkFrameLookup.WithLabelValues("buffered", "hit")); got != beforeLookup+1 {
+		t.Fatalf("frame lookup hit=%v, want %v", got, beforeLookup+1)
+	}
+	if r.rawSinkFlushSeconds.WithLabelValues("buffered") == nil {
+		t.Fatal("flush histogram was not initialized")
+	}
+}
+
 func TestPrometheusRecorder_ShadowWriteCounters(t *testing.T) {
 	r := testRecorder
 
@@ -309,7 +339,14 @@ func TestOmniFreeInfraFailureMetricContract(t *testing.T) {
 	t.Fatal("omnifree_infra_failure_total was not registered")
 }
 
-func TestEmptyResponseMetricsUseFixedReasonLabels(t *testing.T) {
+// TestPrometheusRecorder_LiveStreamRecordDropped (2026-08-31, P2-2) pins
+// that the silent-drop counter is registered with the expected label values
+// and that Inc() actually moves the underlying counter. Mirrors the
+// ShadowWrite counter test to keep the wiring contract from regressing
+// silently.
+func TestPrometheusRecorder_LiveStreamRecordDropped(t *testing.T) {
+	r := testRecorder
+
 	readCounter := func(counter interface{ Write(*dto.Metric) error }) float64 {
 		m := &dto.Metric{}
 		if err := counter.Write(m); err != nil {
@@ -318,22 +355,54 @@ func TestEmptyResponseMetricsUseFixedReasonLabels(t *testing.T) {
 		return m.GetCounter().GetValue()
 	}
 
-	for input, label := range map[string]string{
-		"empty_stream_no_content": "done_no_content",
-		"early_empty_detection":   "early_empty",
-		"arbitrary-upstream-text": "other",
-	} {
-		counter := emptyResponseAttempts.WithLabelValues(label)
-		before := readCounter(counter)
-		RecordEmptyResponseAttempt(input)
-		if got := readCounter(counter); got != before+1 {
-			t.Fatalf("emptyResponseAttempts{%s}=%v, want %v", label, got, before+1)
-		}
+	// Both known reason labels are pre-initialised at constructor time so
+	// that even when no Record() call has ever happened, the time series
+	// is observable in /metrics with value 0.
+	for _, reason := range []string{"store_unconfigured", "redis_unavailable"} {
+		before := readCounter(r.liveStreamRecordDroppedTotal.WithLabelValues(reason))
+		r.RecordLiveStreamRecordDropped(reason)
+		after := readCounter(r.liveStreamRecordDroppedTotal.WithLabelValues(reason))
+		assert.Equal(t, before+1, after,
+			"liveStreamRecordDroppedTotal{%s} must increment by 1", reason)
 	}
 
-	before := readCounter(emptyResponsePenaltyApplied)
-	RecordURSMSoftEmptyResponsePenalty()
-	if got := readCounter(emptyResponsePenaltyApplied); got != before+1 {
-		t.Fatalf("emptyResponsePenaltyApplied=%v, want %v", got, before+1)
+	// Confirm the metric is registered under the expected name with
+	// exactly one label ("reason") and no tenant_id per GW-00.
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather Prometheus metrics: %v", err)
 	}
+	var found bool
+	for _, family := range families {
+		if family.GetName() != "gateway_live_stream_record_dropped_total" {
+			continue
+		}
+		found = true
+		metrics := family.GetMetric()
+		if len(metrics) < 2 {
+			t.Fatalf("expected at least 2 label series, got %d", len(metrics))
+		}
+		for _, m := range metrics {
+			var hasReason bool
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "reason" {
+					hasReason = true
+				}
+				if l.GetName() == "tenant_id" {
+					t.Fatalf("tenant_id label forbidden per GW-00, got %+v", m.GetLabel())
+				}
+			}
+			assert.True(t, hasReason, "every series must have a reason label: %+v", m.GetLabel())
+		}
+	}
+	assert.True(t, found, "gateway_live_stream_record_dropped_total was not registered")
+}
+
+// TestNoopRecorder_LiveStreamRecordDropped pins that the NoopRecorder
+// satisfies the interface without panicking (mirrors the
+// TestNoopRecorder_ShadowWriteNoCrash contract).
+func TestNoopRecorder_LiveStreamRecordDropped(t *testing.T) {
+	n := NewNoopRecorder()
+	n.RecordLiveStreamRecordDropped("store_unconfigured")
+	n.RecordLiveStreamRecordDropped("redis_unavailable")
 }

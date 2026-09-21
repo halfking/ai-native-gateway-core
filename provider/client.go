@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -13,11 +14,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/kaixuan/llm-gateway-go/internal/probemode"
 )
 
 // Suspicious-exit metrics. Registered once at package init so the
@@ -127,11 +131,19 @@ type Candidate struct {
 	// concurrency: 用 ConcurrencyLimit 做 in-flight 上限; rpm: 用 RPMLimit 做令牌桶;
 	// tpm: 用 TPMLimit 做令牌桶(发送前预估 token); disabled: 不限流。
 	// 由 domains/dispatch 的凭据队列调速器消费。
-	ConcurrencyMode      string   `json:"concurrency_mode,omitempty"`
-	TPMLimit             *int     `json:"tpm_limit,omitempty"`
-	MaxQueueDepth        *int     `json:"max_queue_depth,omitempty"`
-	MaxQueueWaitMS       *int     `json:"max_queue_wait_ms,omitempty"`
-	BalanceUSD           *float64 `json:"balance_usd"`
+	ConcurrencyMode string   `json:"concurrency_mode,omitempty"`
+	TPMLimit        *int     `json:"tpm_limit,omitempty"`
+	MaxQueueDepth   *int     `json:"max_queue_depth,omitempty"`
+	MaxQueueWaitMS  *int     `json:"max_queue_wait_ms,omitempty"`
+	BalanceUSD      *float64 `json:"balance_usd"`
+	// PlanQuotaUsedPercent mirrors credentials.plan_quota_used_percent — the
+	// periodic-plan window utilization (5h / 7d, 0..100) written by the
+	// balance-floor / quota probes (zhipu, minimax) and 429-based passive
+	// inference. nil = no probe data. Consumed by the router's plan-quota
+	// penalty (2026-09-19 cost-aware routing): prefer plan credentials with
+	// more remaining window quota so sunk plan cost is used up, without
+	// burning any single 5h/weekly window to exhaustion.
+	PlanQuotaUsedPercent *float64 `json:"plan_quota_used_percent,omitempty"`
 	CircuitState         string   `json:"circuit_state"`
 	AvailabilityState    string   `json:"availability_state"`
 	QuotaState           string   `json:"quota_state"`
@@ -145,12 +157,15 @@ type Candidate struct {
 	SupportsPromptCache  bool     `json:"supports_prompt_cache"`
 	CacheMode            string   `json:"cache_mode"`
 	ManualPriority       int      `json:"manual_priority"`
-	Priority             bool     `json:"priority"`
-	ActiveSessions       int      `json:"active_sessions"`
-	ConsecutiveFailures  int      `json:"consecutive_failures"`
-	CompositeScore       float64  `json:"composite_score"`
-	Currency             string   `json:"currency"`
-	BillingMode          string   `json:"billing_mode"`
+	// Priority is the explicit operator priority flag on a credential-model
+	// binding. It is additive to ManualPriority: routing keeps ManualPriority
+	// ordering while callers can surface this boolean in admin projections.
+	Priority            bool    `json:"priority"`
+	ActiveSessions      int     `json:"active_sessions"`
+	ConsecutiveFailures int     `json:"consecutive_failures"`
+	CompositeScore      float64 `json:"composite_score"`
+	Currency            string  `json:"currency"`
+	BillingMode         string  `json:"billing_mode"`
 	// ContextWindow is the upstream model's context window in tokens. Precedence
 	// (migration 523): credential×model override (credential_model_bindings
 	// .context_window_override) > canonical override (models_canonical
@@ -158,8 +173,14 @@ type Candidate struct {
 	// Used by the Q1/Q2/Q3 client-side context trim path
 	// (transformation.CompressMessagesIfNeeded). nil means "unknown" — in which
 	// case the trim path is a no-op.
-	ContextWindow *int   `json:"context_window,omitempty"`
-	APIKey        string `json:"-"`
+	ContextWindow *int `json:"context_window,omitempty"`
+	// SupportsNativeResponses is an opt-in binding capability for verified
+	// non-stream native Responses request/response handling. Streaming remains
+	// disabled until a separate SSE capability is implemented and verified.
+	SupportsNativeResponses bool `json:"supports_native_responses,omitempty"`
+	// SupportsNativeResponsesStream is an independently verified native Responses SSE capability.
+	SupportsNativeResponsesStream bool   `json:"supports_native_responses_stream,omitempty"`
+	APIKey                        string `json:"-"`
 	// APIKeys holds additional decrypted keys for multi-key rotation (beyond the
 	// primary APIKey). nil/empty for single-key credentials. Index 0 in the
 	// rotator corresponds to APIKey (primary); indices 1..N correspond here.
@@ -204,7 +225,16 @@ func (c *Candidate) CalcCost(promptTokens, completionTokens int, cacheReadTokens
 		promptCost -= float64(*cacheWriteTokens) * pIn
 		promptCost += float64(*cacheWriteTokens) * *c.CacheWritePricePer1M
 	}
-	return (promptCost + float64(completionTokens)*pOut) / 1_000_000.0
+	cost := (promptCost + float64(completionTokens)*pOut) / 1_000_000.0
+	// Prices come from ::float8 columns — a manually edited 'NaN' or a cache
+	// price above the input price would otherwise yield NaN/negative cost that
+	// propagates silently through billing and sorting.
+	if math.IsNaN(cost) || math.IsInf(cost, 0) || cost < 0 {
+		slog.Warn("cost computation out of range; clamped to 0",
+			"provider_id", c.ProviderID, "credential_id", c.CredentialID, "raw_model", c.RawModel)
+		return 0
+	}
+	return cost
 }
 
 func (c *Candidate) IsAvailable() bool {
@@ -232,6 +262,9 @@ func (c *Candidate) UnavailableReason() string {
 	}
 	if c.LifecycleStatus != "" && c.LifecycleStatus != "active" {
 		reasons = append(reasons, "lifecycle:"+c.LifecycleStatus)
+	}
+	if c.CircuitState == "open" {
+		reasons = append(reasons, "circuit:open")
 	}
 	switch c.AvailabilityState {
 	case "suspended":
@@ -441,28 +474,45 @@ func InvalidateAllCandidateCache() {
 // and K are bounded (cache holds at most a few hundred entries; PlanOrder
 // is the candidate count for one model) so the per-call cost is
 // negligible compared to the avoided DB roundtrips.
+//
+// 2026-09-07 (mock system test §5.1/§5.2): the global generation now only
+// advances when at least one cached plan actually contained this
+// credential. Background probe workers call this for every probe result;
+// with a large probe backlog the unconditional bump repeatedly
+// invalidated in-flight lookups for unrelated models, surfacing as 500
+// "candidate lookup invalidated after N attempts" (3–21% of raw requests
+// under 10-way concurrency). An invalidation that deletes nothing cannot
+// change any cached plan, so in-flight lookups stay valid.
 func InvalidateCandidateCacheForCredential(credentialID int) {
 	if defaultClient == nil || credentialID == 0 {
 		return
 	}
 	defaultClient.mu.Lock()
-	defer defaultClient.mu.Unlock()
-	defaultClient.candGeneration++
+	deleted := 0
 	for key, entry := range defaultClient.candCache {
 		if entry.value == nil {
 			delete(defaultClient.candCache, key)
+			deleted++
 			continue
 		}
 		for _, p := range entry.value.PlanOrder {
 			if p.CredentialID == credentialID {
 				delete(defaultClient.candCache, key)
+				deleted++
 				break
 			}
 		}
 	}
-	slog.Debug("candidate cache invalidated for credential",
-		"credential_id", credentialID,
-	)
+	if deleted > 0 {
+		defaultClient.candGeneration++
+	}
+	defaultClient.mu.Unlock()
+	if deleted > 0 {
+		slog.Debug("candidate cache invalidated for credential",
+			"credential_id", credentialID,
+			"entries_deleted", deleted,
+		)
+	}
 }
 
 // ResetKeyRotatorForCredential clears the shared in-memory multi-key rotation
@@ -509,10 +559,18 @@ func InvalidateCredentialKeyCache(credentialID int) {
 }
 
 func (c *Client) Enabled() bool {
+	// dbPool is written by SetDB (potentially after early readers run); read
+	// it under mu to avoid racing a lazy reconfiguration.
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.dbPool != nil
 }
 
 func (c *Client) SetDB(pool *pgxpool.Pool, secretKey, credentialEncryptionKey string) {
+	// Write under c.mu so concurrent readers (Enabled, fetchReveal, rotator
+	// users) never see a partially configured client.
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.dbPool = pool
 	if key, err := secret.FernetKeyFromSecret(secretKey, credentialEncryptionKey); err == nil {
 		c.fernetKey = key
@@ -525,7 +583,20 @@ func (c *Client) SetDB(pool *pgxpool.Pool, secretKey, credentialEncryptionKey st
 		slog.Warn("credential keyring unavailable; AES-GCM v1 envelopes will fail to decrypt", "error", kerr)
 	}
 	if pool != nil {
+		// Stop any prior rotator's sweeper before overwriting — a reconfigure
+		// path must not leak the previous background goroutine.
+		if c.keyRotator != nil {
+			c.keyRotator.StopSweeper()
+		}
 		c.keyRotator = credential.NewKeyRotator()
+		// Start the sweeper so a stale KeyStatusInvalid key auto-recovers to
+		// active after credential.DefaultInvalidCooldown. Without this, a
+		// transient 401 during a key-rotation overlap would permanently eject
+		// the key from rotation until an admin ResetKey or a process restart.
+		// context.Background() here is fine: the sweeper runs for the lifetime
+		// of the rotator, which is the lifetime of the process. StopSweeper
+		// above is the explicit shutdown path.
+		c.keyRotator.StartSweeper(context.Background())
 	}
 }
 
@@ -624,30 +695,72 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 		})
 		if errors.Is(err, errCandidateCacheInvalidated) {
 			invalidatedErr = err
+			// 2026-09-07 (mock system test §5.1): the fetch itself succeeded —
+			// the response was read from the DB moments ago and is fresher
+			// than any cached entry — so serve it directly (uncached) instead
+			// of retrying. Deliberately no generation re-check here: serving
+			// is the point of this branch.
+			if resp != nil {
+				policy, _ := c.getPolicyCached(ctx)
+				cands := c.enrichWithAPIKeys(ctx, resp)
+				if len(cands) == 0 && candidateCount(resp) > 0 {
+					logCandidateDiagnostic("enrich_empty",
+						"model", routeModel,
+						"profile", profile,
+						"tenant_id", tenantID,
+						"cache_key", key,
+						"invalidated_fetch_served", true,
+						"plan_count", planCount(resp),
+						"candidate_count", candidateCount(resp),
+						"enriched_count", len(cands),
+					)
+				}
+				return cands, policy, nil
+			}
 			continue
 		}
 		if err != nil {
-			// Stale fallback is limited to retryable failures, live contexts, and
-			// non-empty entries that are still inside the fresh TTL plus grace.
+			// Stale fallback is limited to retryable failures, live contexts,
+			// and non-empty entries. Two windows (2026-09-04 availability
+			// work): the original 30s grace past expiry, then the wider
+			// candidateOutageGrace for a DB that stays down — without the
+			// second window every request fails ~60s into a DB outage.
 			c.mu.RLock()
 			staleEntry, ok := c.candCache[key]
 			c.mu.RUnlock()
-			if !ok || !canServeStaleCandidateCache(ctx, err, staleEntry, time.Now()) {
+			now := time.Now()
+			serveStale := ok && canServeStaleCandidateCache(ctx, err, staleEntry, now)
+			serveOutage := !serveStale && ok && canServeCandidateCacheDuringOutage(ctx, err, staleEntry, now)
+			if !serveStale && !serveOutage {
 				return nil, DefaultPolicy(), err
 			}
 
 			cacheAge := time.Since(staleEntry.expires)
-			recordCandidateDiagnostic("db_unavailable")
-			slog.Warn("[candidate_diag] database unavailable, serving stale cache",
-				"model", routeModel,
-				"profile", profile,
-				"tenant_id", tenantID,
-				"cache_key", key,
-				"cache_age", cacheAge,
-				"plan_count", planCount(staleEntry.value),
-				"candidate_count", candidateCount(staleEntry.value),
-				"db_error", err.Error(),
-			)
+			if serveOutage {
+				recordCandidateDiagnostic("db_outage_stale")
+				slog.Warn("[candidate_diag] database outage, serving expired cache beyond grace",
+					"model", routeModel,
+					"profile", profile,
+					"tenant_id", tenantID,
+					"cache_key", key,
+					"cache_age", cacheAge,
+					"plan_count", planCount(staleEntry.value),
+					"candidate_count", candidateCount(staleEntry.value),
+					"db_error", err.Error(),
+				)
+			} else {
+				recordCandidateDiagnostic("db_unavailable")
+				slog.Warn("[candidate_diag] database unavailable, serving stale cache",
+					"model", routeModel,
+					"profile", profile,
+					"tenant_id", tenantID,
+					"cache_key", key,
+					"cache_age", cacheAge,
+					"plan_count", planCount(staleEntry.value),
+					"candidate_count", candidateCount(staleEntry.value),
+					"db_error", err.Error(),
+				)
+			}
 
 			cands := c.enrichWithAPIKeys(ctx, staleEntry.value)
 			if !c.candidateGenerationIsCurrent(queryGeneration) {
@@ -689,7 +802,45 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 		return cands, policy, nil
 	}
 
+	// 2026-09-07 (mock system test §5.1): retries exhausted on repeated
+	// invalidations without a usable fetch. Serve a stale-but-usable entry
+	// that survived the invalidations rather than failing the request with
+	// a 500 — at worst the plan is candidateCacheTTL+grace old, and the
+	// next request re-fetches fresh state anyway.
+	if cands, policy, ok := c.serveStaleOnGenerationExhausted(ctx, key, invalidatedErr); ok {
+		return cands, policy, nil
+	}
 	return nil, DefaultPolicy(), candidateGenerationRetryError(candidateGenerationTries, invalidatedErr)
+}
+
+// serveStaleOnGenerationExhausted is the last-resort fallback of
+// getCandidates after candidateGenerationTries consecutive invalidations:
+// serve a stale-but-usable cached entry instead of a hard 500. Reports
+// whether it served.
+func (c *Client) serveStaleOnGenerationExhausted(ctx context.Context, key string, invalidatedErr error) ([]Candidate, *Policy, bool) {
+	if invalidatedErr == nil || ctx.Err() != nil {
+		return nil, nil, false
+	}
+	c.mu.RLock()
+	staleEntry, ok := c.candCache[key]
+	c.mu.RUnlock()
+	if !ok || !staleCandidateCacheUsable(staleEntry, time.Now()) {
+		return nil, nil, false
+	}
+	cands := c.enrichWithAPIKeys(ctx, staleEntry.value)
+	if len(cands) == 0 {
+		return nil, nil, false
+	}
+	recordCandidateDiagnostic("generation_exhausted_stale")
+	slog.Warn("[candidate_diag] candidate lookup repeatedly invalidated, serving stale cache",
+		"cache_key", key,
+		"cache_age", time.Since(staleEntry.expires),
+		"plan_count", planCount(staleEntry.value),
+		"candidate_count", candidateCount(staleEntry.value),
+		"last_error", invalidatedErr.Error(),
+	)
+	policy, _ := c.getPolicyCached(ctx)
+	return cands, policy, true
 }
 
 func (c *Client) fetchCandidateGeneration(key string, queryGeneration uint64, fetch func() (*resolveResponse, error)) (*resolveResponse, bool, error) {
@@ -700,6 +851,16 @@ func (c *Client) fetchCandidateGeneration(key string, queryGeneration uint64, fe
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		if candidateGenerationChanged(queryGeneration, c.candGeneration) {
+			// 2026-09-07 (mock system test §5.1): when the DB fetch itself
+			// succeeded, return the just-fetched response alongside the
+			// invalidated error instead of discarding it. The data is
+			// fresher than anything in the cache — it was read moments ago —
+			// so the caller can serve it directly (uncached) rather than
+			// burning retries and eventually failing the request with 500.
+			if fetchErr == nil && resp != nil {
+				return candidateFlightResult{response: resp, generation: queryGeneration},
+					&candidateGenerationInvalidatedError{queried: queryGeneration, current: c.candGeneration}
+			}
 			return nil, &candidateGenerationInvalidatedError{queried: queryGeneration, current: c.candGeneration}
 		}
 		if fetchErr != nil {
@@ -728,6 +889,13 @@ func (c *Client) fetchCandidateGeneration(key string, queryGeneration uint64, fe
 		return candidateFlightResult{response: resp, generation: queryGeneration}, nil
 	})
 	if err != nil {
+		// Pass the invalidated error through, but keep a successfully
+		// fetched response (2026-09-07) so the caller can serve it without
+		// retrying — see the invalidated branch in getCandidates.
+		result, _ := v.(candidateFlightResult)
+		if errors.Is(err, errCandidateCacheInvalidated) && result.response != nil {
+			return result.response, shared, err
+		}
 		return nil, shared, err
 	}
 
@@ -775,6 +943,27 @@ func staleCandidateCacheUsable(entry cacheEntry[*resolveResponse], now time.Time
 
 func canServeStaleCandidateCache(ctx context.Context, err error, entry cacheEntry[*resolveResponse], now time.Time) bool {
 	return ctx != nil && ctx.Err() == nil && isRetryableDBError(err) && staleCandidateCacheUsable(entry, now)
+}
+
+// candidateOutageGrace bounds how long an expired-but-present candidate
+// cache entry may still serve while the DB query fails with a retryable
+// infrastructure error (2026-09-04 availability work). The original
+// staleCandidateCacheUsable window (TTL 30s + 30s grace) covers blips;
+// without this wider window every relay request fails ~60s into a real DB
+// outage because getCandidates is a hard prerequisite of routing.
+const candidateOutageGrace = time.Hour
+
+// canServeCandidateCacheDuringOutage reports whether the expired entry may
+// be served past the ordinary stale grace because the DB has been down for
+// an extended period. Same preconditions as canServeStaleCandidateCache
+// (live context, retryable error, non-empty entry) but with the outage
+// window; the db_empty_fallback path in fetchCandidateGeneration
+// deliberately keeps the SHORT window so a healthy-but-changed DB is never
+// masked by hour-old cache.
+func canServeCandidateCacheDuringOutage(ctx context.Context, err error, entry cacheEntry[*resolveResponse], now time.Time) bool {
+	return ctx != nil && ctx.Err() == nil && isRetryableDBError(err) &&
+		candidateResponseNonEmpty(entry.value) &&
+		!entry.expires.IsZero() && now.Before(entry.expires.Add(candidateOutageGrace))
 }
 
 func logCandidateDiagnostic(event string, args ...any) {
@@ -1083,7 +1272,11 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 		}, nil
 	}
 
-	// (2) alias match across the variant matrix.
+	// (2) alias match across the variant matrix. ORDER BY length(name), name:
+	// a raw_name can map to multiple canonicals (discovery seeds the bare
+	// family alias for every date-suffix/wrapper-stripped raw, one per
+	// provider canonical), so LIMIT 1 without ORDER BY was nondeterministic.
+	// Shortest = the most-base/undated row, same tie-break as the matcher.
 	for _, v := range variants {
 		err := c.dbPool.QueryRow(ctx, `
 			SELECT mc.id, mc.canonical_name
@@ -1098,6 +1291,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			      OR $2 = ANY(ma.client_profiles)
 			      OR $2 = ''
 			  )
+			ORDER BY length(mc.canonical_name), mc.canonical_name
 			LIMIT 1
 		`, modelname.CanonicalizeClientModel(v), profile).Scan(&canonicalID, &canonicalName)
 		if err == nil && canonicalID != nil {
@@ -1125,7 +1319,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 
 	// (3) full original client_model as a final fallback (covers
 	// case-sensitivity edge cases where the operator stored the
-	// alias in mixed case).
+	// alias in mixed case). Same deterministic ORDER BY as phase (2).
 	if rawLookup != "" && rawLookup != strings.ToLower(modelname.NormalizeRouteKey(model)) {
 		err := c.dbPool.QueryRow(ctx, `
 			SELECT mc.id, mc.canonical_name
@@ -1140,6 +1334,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			      OR $2 = ANY(ma.client_profiles)
 			      OR $2 = ''
 			  )
+			ORDER BY length(mc.canonical_name), mc.canonical_name
 			LIMIT 1
 		`, rawLookup, profile).Scan(&canonicalID, &canonicalName)
 		if err == nil && canonicalID != nil {
@@ -1155,11 +1350,35 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 	}
 	stdName := modelname.NormalizeRouteKey(model)
 	if stdName != "" {
-		_, _ = c.dbPool.Exec(ctx, `
-			INSERT INTO models_canonical (canonical_name, family, source, status)
-			VALUES ($1, 'unknown', 'auto_discovered', 'active')
-			ON CONFLICT (canonical_name) DO NOTHING
-		`, stdName)
+		// Junk-seed guard (2026-09-20): NormalizeRouteKey strips the vendor
+		// prefix, so a client model like "claude/opus-5" used to blind-INSERT
+		// a truncated canonical row "opus-5" even when claude-opus-5 already
+		// existed. Only seed when no active canonical matches stdName under
+		// separator/case folding AND stdName is not a bare suffix of an
+		// existing longer canonical (the classic truncation shape).
+		//
+		// R50 fix (2026-09-21, live-DB verified): stdName is dash-form
+		// (NormalizeRouteKey output) while the left side folds to
+		// underscores — as written, `= $1` never matched and the suffix arm
+		// used '%-' which can never match an underscore-folded left side,
+		// so BOTH arms were dead and the guard suppressed nothing. Fold
+		// stdName to underscores too and match the suffix on '%_'.
+		var blocker string
+		// R50：守卫谓词收敛为 modelname.JunkSeedGuardSQL 单一实现
+		// （dash 形 stdName 对下划线折叠左侧的两臂全死缺陷同修）。
+		err := c.dbPool.QueryRow(ctx, modelname.JunkSeedGuardSQL, stdName).Scan(&blocker)
+		if err == nil {
+			slog.Debug("auto_discovered seed suppressed: existing canonical",
+				"client_model", model, "std_name", stdName, "existing", blocker)
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("auto_discovered seed guard query failed", "error", err)
+		} else {
+			_, _ = c.dbPool.Exec(ctx, `
+				INSERT INTO models_canonical (canonical_name, family, source, status)
+				VALUES ($1, 'unknown', 'auto_discovered', 'active')
+				ON CONFLICT (canonical_name) DO NOTHING
+			`, stdName)
+		}
 	}
 	return &resolveResponse{ClientModel: model, CanonicalID: nil, CanonicalName: "", ResolutionPath: "direct", RawModels: []string{stdName}}, nil
 }
@@ -1297,24 +1516,33 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		c.tpm_limit,
 		c.max_queue_depth,
 		c.max_queue_wait_ms,
-			c.balance_usd::float8,
+				c.balance_usd::float8,
+				-- 2026-09-19 成本感知选路：周期性计划窗口用量（5h/7d 探测，
+				-- balance_floor_guard / periodic_quota_probe 写入）进入候选，
+				-- 供 router 的 plan-quota 惩罚消费。NULL=无探测数据。
+				c.plan_quota_used_percent::float8,
 			COALESCE(c.circuit_state, 'closed') AS circuit_state,
 			COALESCE(c.availability_state, 'ready') AS availability_state,
 			COALESCE(c.quota_state, 'ok') AS quota_state,
 			COALESCE(c.lifecycle_status, 'active') AS lifecycle_status,
 			COALESCE(mo.unit_price_in_per_1m, pp_fb.plan_in)::float8 AS unit_price_in_per_1m,
 			COALESCE(mo.unit_price_out_per_1m, pp_fb.plan_out)::float8 AS unit_price_out_per_1m,
-			COALESCE(mo.cache_read_price_per_1m, 0)::float8 AS cache_read_price_per_1m,
-			COALESCE(mo.cache_write_price_per_1m, 0)::float8 AS cache_write_price_per_1m,
+			mo.cache_read_price_per_1m::float8 AS cache_read_price_per_1m,
+			mo.cache_write_price_per_1m::float8 AS cache_write_price_per_1m,
 			-- is_routable comes from the unified VIEW (manual > auto priority).
 			-- Spec: 2026-06-12-credential-availability-audit-design §3.1
 			COALESCE(v.is_routable, FALSE) AS runtime_routable,
 			v.unavailable_reason,
-			CASE WHEN cc.capability = 'prompt_caching' AND cc.supported IS TRUE THEN TRUE ELSE FALSE END AS supports_prompt_cache,
-			COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
+				CASE WHEN cc.capability = 'prompt_caching' AND cc.supported IS TRUE THEN TRUE ELSE FALSE END AS supports_prompt_cache,
+				COALESCE(cmcap.supported, FALSE) AS supports_native_responses,
+			COALESCE(cmstream.supported, FALSE) AS supports_native_responses_stream,
+				COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
 				COALESCE(mo.manual_priority, 99)::int AS manual_priority,
-				COALESCE(mo.priority, FALSE) AS priority,
-				COALESCE(mo.active_sessions, 0)::int AS active_sessions,
+			-- 2026-09-07 (678): model_offers 视图补了 priority 列(== manual_priority),
+			-- 但更稳的是直接引用 manual_priority:这是视图上唯一非空源,任何历史/未来
+			-- priority 别名变化不会再次引入 42703。
+			COALESCE(mo.manual_priority, 0) <> 0 AS priority,
+			COALESCE(mo.active_sessions, 0)::int AS active_sessions,
 			COALESCE(mo.consecutive_failures, 0)::int AS consecutive_failures,
 			COALESCE(mo.currency, 'USD') AS currency,
 			COALESCE(mo.billing_mode, 'per_token') AS billing_mode,
@@ -1342,28 +1570,51 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		LEFT JOIN v_routable_credential_models v
 		       ON v.credential_id = mo.credential_id
 		      AND (v.raw_model_name = mo.raw_model_name OR v.raw_model_name = mo.standardized_name)
-		LEFT JOIN credential_capabilities cc ON cc.credential_id = c.id AND cc.capability = 'prompt_caching'
-		LEFT JOIN model_aliases ma
+			LEFT JOIN credential_capabilities cc ON cc.credential_id = c.id AND cc.capability = 'prompt_caching'
+			LEFT JOIN credential_model_capabilities cmcap
+			       ON cmcap.credential_model_binding_id = mo.id
+			      AND cmcap.capability = 'native_responses_nonstream'
+			LEFT JOIN credential_model_capabilities cmstream
+			       ON cmstream.credential_model_binding_id = mo.id
+			      AND cmstream.capability = 'native_responses_stream'
+			LEFT JOIN model_aliases ma
 		       ON ma.raw_name = mo.canonical_raw_name
 		      AND COALESCE(ma.status, 'active') = 'active'
 		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
+			LEFT JOIN LATERAL (
+				SELECT
+					NULLIF(pp.plan_json->>'input_per_1m', '')::float8 AS plan_in,
+					NULLIF(pp.plan_json->>'output_per_1m', '')::float8 AS plan_out
+				FROM pricing_plans pp
+				WHERE pp.model_canonical_id = mc.id
+				  AND pp.effective_to IS NULL
+				  AND (pp.credential_id = c.id OR pp.credential_id IS NULL)
+				  -- R46 F2: 作用域守卫——排除"其他供应商"的 provider 级行。
+				  -- admit 条件放行 credential_id IS NULL 的所有行，其中
+				  -- scope='provider' 且 provider_id 属于别的供应商的行此前会
+				  -- 落入 ELSE 2 档与全局行（provider_id IS NULL）仅按
+				  -- effective_from 决胜负，他供应商较新价格可冒充全局默认价。
+				  -- tenant 级行（scope='tenant'）是有意保留的 ELSE 2 档语义。
+				  -- 注意（R47 注释精确化）：tier-1 判据 provider_id = p.id 不
+				  -- 校验 scope，scope='tenant' 且带 provider_id=p.id 的混合行
+				  -- 会落供应商档而非 ELSE 2——CHECK 不禁止该畸形形态，现网
+				  -- tenant 行 provider_id 均为 NULL 不触发；数据卫生问题。
+				  AND NOT (pp.scope = 'provider' AND pp.provider_id IS NOT NULL AND pp.provider_id <> p.id)
+				-- 2026-09-19 成本自动填充优先级：凭据级 > 供应商级 > 全局。
+				-- 供应商维护的价格表（scope='provider', provider_id=p.id）
+				-- 从此真正参与候选取价，不再与全局行混级靠 effective_from
+				-- 决胜负。
+				ORDER BY CASE
+				           WHEN pp.credential_id = c.id THEN 0
+				           WHEN pp.provider_id = p.id THEN 1
+				           ELSE 2
+				         END,
+				         pp.effective_from DESC
+				LIMIT 1
+			) pp_fb ON TRUE
 		-- LEFT JOIN model_name_mapping for standardized name lookup fallback
 		LEFT JOIN model_name_mapping mnm
 		       ON mnm.raw_model_name = mo.canonical_raw_name
-		-- pricing_plans fallback when credential_model_bindings prices are NULL.
-		LEFT JOIN LATERAL (
-			SELECT
-				NULLIF(pp.plan_json->>'input_per_1m', '')::float8 AS plan_in,
-				NULLIF(pp.plan_json->>'output_per_1m', '')::float8 AS plan_out
-			FROM pricing_plans pp
-			WHERE pp.model_canonical_id = mo.canonical_id
-			  AND pp.effective_to IS NULL
-			  AND (pp.credential_id = mo.credential_id OR pp.credential_id IS NULL)
-			ORDER BY
-				CASE WHEN pp.credential_id = mo.credential_id THEN 0 ELSE 1 END,
-				pp.effective_from DESC NULLS LAST
-			LIMIT 1
-		) pp_fb ON TRUE
 		-- Last-N success rate over request_logs. LATERAL so each candidate
 		-- row carries its own recent (rate, samples). STABLE function, hits
 		-- idx_request_logs_credential_ts (credential_id, ts DESC) so the
@@ -1388,18 +1639,75 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		  -- failures; without this filter the pair stays routable as long as
 		  -- the credential-level availability_state is 'ready', so the router
 		  -- keeps re-selecting it (the cred-11/minimax-m3 loop).
-		  AND NOT EXISTS (
-		      SELECT 1 FROM model_probe_state mps
-		      WHERE mps.credential_id = c.id
-		        AND mps.raw_model_name = mo.raw_model_name
-		        AND mps.state = 'broken_confirmed'
-		  )
-		  -- Recent success rate is a preference signal, not an availability
-		  -- signal. Hard-excluding a degraded sibling leaves a failing primary
-		  -- with no failover path, even when that sibling is still serviceable.
-		  -- Authoritative permanent/manual/probe state remains enforced by
-		  -- v_routable_credential_models above; ORDER BY below demotes lower
-		  -- recent success rates while preserving them for automatic failover.
+		  AND `+brokenPairExcludeSQL("mps", "c.id", "mo.raw_model_name")+`
+		  -- 2026-06-22 defect (3) hard gate: exclude pairs whose real recent
+		  -- success rate is below 0.5 once we have at least 20 samples. The
+		  -- min-sample threshold avoids cold-start false positives (a brand-new
+		  -- credential with 1 unlucky failure). Pairs in the 0.5-0.9 band are
+		  -- kept but soft-de-prioritized via RecentSuccessRate in the router.
+		  -- 2026-07-15: restored to 0.5. The 2026-06-23 temporary 0.3 was
+		  -- lowered to absorb the 54% failure spike from a resource leak;
+		  -- the leak is fixed and the rolling 50-request window has long
+		  -- since rotated past it.
+			  AND NOT (
+			      -- Free/token-plan credentials intentionally stay routable after
+			      -- transient failures; the executor and state manager soft-demote
+			      -- them instead of hard-excluding the only route.
+			      COALESCE(mo.billing_mode, 'per_token') <> 'free'
+			      -- MERGE-AUDIT 2026-08-27: preserve the prior hard-gate terms
+			      -- below for review, but disable exclusion so a degraded sibling
+			      -- remains routable and can be soft-demoted by ORDER BY.
+			      AND FALSE
+			      AND COALESCE(rsr.rate, 1.0) < 0.5
+			      -- A single-candidate model needs a recovery chance. Circuit,
+			      -- model-probe and permanent-state guards still apply; the
+			      -- rolling-rate gate is a failover preference only when a
+			      -- sibling offer can actually take traffic.
+			      AND EXISTS (
+			          SELECT 1
+			          FROM model_offers mo_sibling
+			                  JOIN credentials c_sibling ON c_sibling.id = mo_sibling.credential_id
+			                  JOIN providers p_sibling ON p_sibling.id = c_sibling.provider_id
+			                  LEFT JOIN v_routable_credential_models v_sibling
+			                         ON v_sibling.credential_id = mo_sibling.credential_id
+			                        AND (v_sibling.raw_model_name = mo_sibling.raw_model_name
+			                             OR v_sibling.raw_model_name = mo_sibling.standardized_name)
+			          WHERE mo_sibling.credential_id <> mo.credential_id
+			            AND mo_sibling.available = TRUE
+			            AND COALESCE(v_sibling.is_routable, FALSE) = TRUE
+			            AND COALESCE(c_sibling.status, 'active') = 'active'
+			            AND COALESCE(c_sibling.lifecycle_status, 'active') = 'active'
+			            AND COALESCE(c_sibling.manual_disabled, FALSE) = FALSE
+			            /* 2026-08-08 audit note: this c_sibling.quota_state predicate
+			               deliberately does NOT exclude periodic_exhausted, while
+			               GetProbeCandidates (line ~578) DOES exclude it. Intentional:
+			               this subquery asks "does ANY sibling binding exist that COULD
+			               take traffic" (the sibling EXISTS gate for the lone-candidate
+			               fail-open path), not "which sibling should we route to". A
+			               periodic-exhausted sibling is still a potential failover
+			               target because its window resets in minutes/hours;
+			               routing-time selection is filtered separately above. */
+			            AND COALESCE(c_sibling.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
+			            AND COALESCE(p_sibling.enabled, FALSE) = TRUE
+			            AND COALESCE(p_sibling.manual_disabled, FALSE) = FALSE
+			            AND (
+			                mo_sibling.standardized_name = mo.standardized_name
+			                OR mo_sibling.canonical_raw_name = mo.canonical_raw_name
+			            )
+			            /* 2026-08-08 P0 Fix: a sibling that admin has explicitly
+			               disabled via the binding-level unavailable_reason='manual'
+			               (or via credentials.manual_disabled / providers.manual_disabled)
+			               must NOT count as a live failover. Without this guard, the
+			               sibling EXISTS subquery returns TRUE while no real sibling
+			               can take traffic — the lone routable candidate gets hard-
+			               excluded by the recent_success_rate gate below, producing
+			               candidates_count=0 and 503 for every Claude/GPT request. */
+			            AND COALESCE(mo_sibling.unavailable_reason, '') NOT LIKE 'manual%'
+			            AND COALESCE(c_sibling.manual_disabled, FALSE) = FALSE
+			            AND COALESCE(p_sibling.manual_disabled, FALSE) = FALSE
+			            AND `+brokenPairExcludeSQL("mps_sibling", "mo_sibling.credential_id", "mo_sibling.raw_model_name")+`
+			      )
+			  )
 
 		  AND (
 		      -- (1) exact match on the offer's canonical_raw_name (lowercase)
@@ -1425,9 +1733,10 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 				OR lower(mc.canonical_name) = $1
 			)
 
-			ORDER BY
-				CASE WHEN COALESCE(mo.priority, FALSE) AND COALESCE(c.quota_state, 'ok') = 'ok' THEN 0 ELSE 1 END,
-				CASE COALESCE(mo.billing_mode, 'per_token')
+		ORDER BY
+			-- 2026-09-07 (678): mo.priority 不在视图里;manual_priority>0 等价于"被手动置顶"。
+			CASE WHEN COALESCE(mo.manual_priority, 0) > 0 AND COALESCE(c.quota_state, 'ok') = 'ok' THEN 0 ELSE 1 END,
+			CASE COALESCE(mo.billing_mode, 'per_token')
 				WHEN 'free' THEN 1
 				WHEN 'token_plan' THEN 1
 				WHEN 'code_plan' THEN 1
@@ -1507,6 +1816,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.MaxQueueDepth,
 			&cand.MaxQueueWaitMS,
 			&cand.BalanceUSD,
+			&cand.PlanQuotaUsedPercent,
 			&cand.CircuitState,
 			&cand.AvailabilityState,
 			&cand.QuotaState,
@@ -1518,6 +1828,8 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.Routable,
 			&cand.BlockReason,
 			&cand.SupportsPromptCache,
+			&cand.SupportsNativeResponses,
+			&cand.SupportsNativeResponsesStream,
 			&cand.CacheMode,
 			&cand.ManualPriority,
 			&cand.Priority,
@@ -1589,10 +1901,15 @@ func applyCapacityWeightedLB(cand *Candidate, concurrencyLimitAuto *int) {
 		return
 	}
 	// Respect an explicit operator weight (anything other than the SQL
-	// default of 100). This preserves the manual escape hatch.
+	// default of 100). This preserves the manual escape hatch. The value is
+	// clamped to capacityWeightMax so a stray model_offers.weight of 10^6
+	// cannot monopolize the weighted first pick (R28 audit #22a) — the same
+	// ceiling the capacity-derived branch already applies.
 	if cand.Weight != defaultManualWeight {
 		if cand.Weight <= 0 {
 			cand.Weight = defaultManualWeight
+		} else if cand.Weight > capacityWeightMax {
+			cand.Weight = capacityWeightMax
 		}
 		return
 	}
@@ -1774,6 +2091,22 @@ func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int)
 			continue
 		}
 		if err != nil {
+			// DB-outage availability gear (2026-09-04): an infrastructure
+			// error must not strip routing of credentials whose plaintext
+			// this process revealed recently. Serve the expired positive
+			// entry within revealOutageGrace. Generation-bumped (rotated)
+			// credentials are exempt — their entry was deleted and must
+			// NOT resurface.
+			if isRetryableDBError(err) {
+				if key, ok := c.getStaleRevealedKey(credentialID); ok {
+					slog.Warn("reveal: db unavailable, serving stale key cache",
+						"credential_id", credentialID,
+						"provider_id", providerID,
+						"db_error", err.Error(),
+					)
+					return key, nil
+				}
+			}
 			return "", err
 		}
 		return v.(string), nil
@@ -1781,7 +2114,39 @@ func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int)
 	return "", fmt.Errorf("%w (credential_id=%d)", secret.ErrRevealRotation, credentialID)
 }
 
+// revealOutageGrace bounds how long an expired positive keyCache entry may
+// serve while reveal fetches fail with retryable DB errors. Without it every
+// relay request through a cached credential fails 5 minutes into a DB
+// outage (the positive TTL), which defeats the candidate-cache outage
+// window above. One hour aligns with candidateOutageGrace.
+const revealOutageGrace = time.Hour
+
+// getStaleRevealedKey returns the expired-but-present positive entry for a
+// credential when its age past expiry is within revealOutageGrace. Only the
+// generation-checked positive cache is consulted; negative entries never
+// yield a key.
+func (c *Client) getStaleRevealedKey(credentialID int) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	entry, ok := c.keyCache[credentialID]
+	if !ok || entry.value == "" {
+		return "", false
+	}
+	if time.Since(entry.expires) > revealOutageGrace {
+		return "", false
+	}
+	return entry.value, true
+}
+
 func (c *Client) cacheRevealFailureIfCurrent(credentialID int, generation uint64, fetchErr error) {
+	if isRetryableDBError(fetchErr) {
+		// DB-outage guard (2026-09-04): an unreachable database is not a
+		// broken credential. Negative-caching it would flip every reveal to
+		// a cached failure for decryptFailureCacheTTL even after the DB
+		// recovers, and blocks the stale-serve path above from being tried
+		// on the next request.
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.keyGeneration[credentialID] == generation {
@@ -2021,7 +2386,11 @@ func (c *Client) maybeExitSuspicious(credentialID int, rawModel string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	data, err := c.redis.HGetAll(ctx, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel)).Result()
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE errors
+	// when the availability key collides with a non-hash type. Errors and
+	// empty maps both fall through to recordSuspiciousExit("noop") — the
+	// original behaviour for missing or invalid state.
+	data, err := redissafe.SafeHGetAll(ctx, c.redis, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel))
 	if err != nil || len(data) == 0 || data["state"] != "suspicious" {
 		recordSuspiciousExit("noop")
 		return
@@ -2035,11 +2404,41 @@ func (c *Client) maybeExitSuspicious(credentialID int, rawModel string) {
 	c.asyncExitSuspicious(credentialID, rawModel)
 }
 
+// brokenPairExcludeSQL returns the NOT EXISTS clause implementing the
+// 2026-06-22 defect-(2) guard: drop (credential, model) pairs the ACTIVE
+// probe system has proven broken (three consecutive targeted-probe
+// failures). R36 (A-3 sweep): the source table follows the probe mode via
+// internal/probemode.GuardStateTable — under the new probe stack the legacy
+// model_probe_state is frozen, so reading it here kept frozen
+// broken_confirmed rows excluded forever while new-system verdicts never
+// reached this filter.
+func brokenPairExcludeSQL(alias, credCol, modelCol string) string {
+	// Composed with strings.Builder (no raw-string backticks) so the
+	// sql_comment_syntax_test backtick-parity scanner cannot mistake the
+	// surrounding Go comments for SQL text.
+	var b strings.Builder
+	b.WriteString("NOT EXISTS (\n")
+	b.WriteString("\t\tSELECT 1 FROM " + probemode.GuardStateTable() + " " + alias + "\n")
+	b.WriteString("\t\tWHERE " + alias + ".credential_id = " + credCol + "\n")
+	b.WriteString("\t\t  AND " + alias + ".raw_model_name = " + modelCol + "\n")
+	b.WriteString("\t\t  AND " + alias + ".state = 'broken_confirmed'\n")
+	b.WriteString("\t)")
+	return b.String()
+}
+
 func (c *Client) defaultAsyncExitSuspicious(credentialID int, rawModel string) {
 	if c.dbPool == nil || c.redis == nil {
 		return
 	}
 	go func() {
+		if probemode.Enabled() {
+			// R36 (A-3 sweep): under the new probe mode model_probe_state is a
+			// frozen table — this legacy fast-path write has no consumer (the
+			// new system's node_probe_state has no 'suspicious' state and
+			// re-probes on its own scheduler). Keep the dispatch metric, skip
+			// the dead write.
+			return
+		}
 		bgCtx, bgCancel := context.WithTimeout(context.Background(), time.Second)
 		defer bgCancel()
 		dbStart := time.Now()
@@ -2064,18 +2463,12 @@ func (c *Client) defaultAsyncExitSuspicious(credentialID int, rawModel string) {
 			return
 		}
 		nextRetryAt := time.Now().Add(30 * time.Second).UTC().Format(time.RFC3339Nano)
-		key := fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel)
-		pipe := c.redis.Pipeline()
-		pipe.HSet(bgCtx, key, map[string]any{
+		if cacheErr := c.redis.HSet(bgCtx, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel), map[string]any{
 			"state":         "recovering",
 			"updated_at":    time.Now().UTC().Format(time.RFC3339Nano),
 			"next_retry_at": nextRetryAt,
 			"source":        "call_exit",
-		})
-		pipe.SAdd(bgCtx, "llmgw:avail:index", key)
-		pipe.Expire(bgCtx, "llmgw:avail:index", 4*time.Hour)
-		pipe.Set(bgCtx, "llmgw:avail:index:ready", "1", 4*time.Hour)
-		if _, cacheErr := pipe.Exec(bgCtx); cacheErr != nil {
+		}).Err(); cacheErr != nil {
 			slog.Warn("provider: maybeExitSuspicious cache update failed",
 				"credential_id", credentialID,
 				"raw_model", rawModel,

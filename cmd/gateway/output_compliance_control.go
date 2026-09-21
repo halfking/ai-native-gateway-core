@@ -65,7 +65,7 @@ func buildRedactBodyFn(db *sql.DB) func([]byte, string, string) []byte {
 // for a session in one DB round-trip:
 //   - dataOwner   = session_dim.owner_user
 //   - callerOwner = the api_key_owner_user of the most recent request in the session
-//     (i.e. the owner of the key currently driving this session)
+//                   (i.e. the owner of the key currently driving this session)
 //
 // Any error degrades to ("","") which the owner rule treats conservatively
 // (redact). This is acceptable: a failed lookup should never leak sensitive data.

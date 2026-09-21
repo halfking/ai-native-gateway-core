@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -38,6 +39,8 @@ import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { isSuperAdmin } from '../store'
 import { ApiError } from '../api/_core'
 import { assignSpacedPriorities } from '../utils/queueNodeCards'
+// 2026-09-13 P3：弹层收敛到 ui/AppModal（方案 §4.5.7）
+import AppModal from '../components/ui/AppModal.vue'
 
 const { t } = useI18n()
 
@@ -876,7 +879,7 @@ const heroChips = computed(() => {
       chips.push({ label: t('routing.mappings'), value: String(wtSyncMeta.value.route_count) })
       if (wtSyncMeta.value.last_synced_at) {
         const d = new Date(wtSyncMeta.value.last_synced_at)
-        chips.push({ label: t('routing.accSync'), value: d.toLocaleString() })
+        chips.push({ label: t('routing.accSync'), value: formatDateTime(d) })
       }
     }
     return chips
@@ -1084,15 +1087,16 @@ onUnmounted(() => stopPoll())
         </div>
       </template>
 
-      <div v-if="cellModalOpen && cellPopup" class="modal-overlay" @click.self="closeCellModal">
-        <div class="modal-panel card compact-card">
-          <div class="card-toolbar">
-            <div class="toolbar-left">
-              <span class="toolbar-title">{{ cellPopup.row }} × {{ displayTaskKey(cellPopup.col) }}</span>
-              <span class="text-muted">最近决策</span>
-            </div>
-            <button class="btn btn-ghost btn-sm" @click="closeCellModal">关闭</button>
-          </div>
+      <!-- 2026-09-13 P3：cell 决策弹层迁移 ui/AppModal -->
+      <AppModal
+        v-if="cellPopup"
+        :model-value="cellModalOpen"
+        :title="`${cellPopup.row} × ${displayTaskKey(cellPopup.col)}`"
+        size="sm"
+        @update:model-value="(v: boolean) => { if (!v) closeCellModal() }"
+        @close="closeCellModal"
+      >
+          <div class="text-muted" style="margin:-4px 0 8px;font-size:12px">最近决策</div>
           <div v-if="cellLoading" class="loading-hint">加载…</div>
           <template v-else>
             <div v-if="cellDecisions.length" class="compact-decisions">
@@ -1103,7 +1107,7 @@ onUnmounted(() => stopPoll())
                 :class="{ active: modalDecisionId === d.request_id }"
                 @click="openDecisionModal(d.request_id)"
               >
-                <span class="text-muted">{{ new Date(d.ts).toLocaleString() }}</span>
+                <span class="text-muted">{{ formatDateTime(d.ts) }}</span>
                 <span class="badge badge-blue">{{ d.task_type || '-' }}</span>
                 <span v-if="d.work_type" class="badge badge-gray">{{ d.work_type }}</span>
                 <span class="model-name">{{ d.outbound_model || d.auto_decision?.chosen_model || '-' }}</span>
@@ -1121,8 +1125,7 @@ onUnmounted(() => stopPoll())
               compact
             />
           </template>
-        </div>
-      </div>
+      </AppModal>
     </div>
 
     <!-- ═══ Tab A: Overview ═══ -->
@@ -1517,7 +1520,7 @@ onUnmounted(() => stopPoll())
             </thead>
             <tbody>
               <tr v-for="(e, i) in resolveLog" :key="i">
-                <td>{{ new Date(e.ts).toLocaleTimeString() }}</td>
+                <td>{{ formatTimeOnly(e.ts) }}</td>
                 <td class="model-name">{{ e.model }}</td>
                 <td>{{ e.profile || '—' }}</td>
                 <td class="mono-sm text-muted">{{ e.path }}</td>
@@ -1594,7 +1597,7 @@ onUnmounted(() => stopPoll())
             <tbody>
               <template v-for="d in decisions" :key="d.request_id">
                 <tr class="model-row" @click="onExpandDecision(d.request_id)">
-                  <td>{{ new Date(d.ts).toLocaleTimeString() }}</td>
+                  <td>{{ formatTimeOnly(d.ts) }}</td>
                   <td><span class="badge badge-blue">{{ d.task_type || d.auto_decision?.task_type || '-' }}</span></td>
                   <td>{{ d.auto_profile || d.auto_decision?.profile || '-' }}</td>
                   <td class="model-name">{{ d.auto_decision?.chosen_model || d.outbound_model || '-' }}</td>
@@ -1758,7 +1761,7 @@ onUnmounted(() => stopPoll())
   flex-direction: column;
   height: 100%;
 }
-@media (max-width: 900px) {
+@media (max-width: 768px) {
   .analytics-charts { grid-template-columns: 1fr; }
 }
 .card-toolbar.clickable { cursor: pointer; user-select: none; }
@@ -1931,7 +1934,7 @@ onUnmounted(() => stopPoll())
   border-radius: 3px;
   font-size: 10px;
 }
-.l2-cred.top { border-color: var(--success); background: rgba(63,185,80,.08); }
+.l2-cred.top { border-color: var(--success); background: color-mix(in srgb, var(--success) 14%, transparent); }
 .l2-rank { font-weight: 700; color: var(--muted); font-size: 9px; }
 .l2-prov { font-weight: 500; }
 

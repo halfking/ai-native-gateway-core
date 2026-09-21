@@ -367,7 +367,7 @@ func (h *SelfCheckHandler) handleUpdateSettings(w http.ResponseWriter, r *http.R
 		MaxTokens      *int            `json:"max_tokens_per_run"`
 		FeaturedModels json.RawMessage `json:"featured_model_ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := readJSONRequired(r, &body); err != nil {
 		writeJSON(w, 400, map[string]any{"error": "invalid json"})
 		return
 	}
@@ -466,6 +466,9 @@ func (h *SelfCheckHandler) handleUpdateSettings(w http.ResponseWriter, r *http.R
 // endpoint hard-disabled the button, which left operators with no manual
 // self-check exactly when the automated pipeline was dead.
 //
+// 2026-09-03: reason 字段改成中文友好版，便于 UI 直接显示在 tooltip 上。
+// error_code 保持稳定，UI 用它决定"未启用 vs 异常"的按钮文案。
+//
 // Route: GET /api/self-check/trigger/availability (admin).
 func (h *SelfCheckHandler) handleTriggerAvailability(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -484,7 +487,9 @@ func (h *SelfCheckHandler) handleTriggerAvailability(w http.ResponseWriter, r *h
 	}
 	if !available {
 		if scNewProbeMode() {
-			resp["reason"] = "no probe path wired (worker retired in new probe mode and probe queue unavailable)"
+			// 新探测模式下 trigger 已迁移到节点探测队列，UI 触发按钮有意禁用；
+			// 这不是故障，运维需要知道"为什么禁用"而不是"触发挂了"。
+			resp["reason"] = "自检触发已迁移到节点探测队列（probe queue），手动触发按钮已禁用。如需手动触发，请走节点操作 API 或重启用 legacy selfcheck。"
 			resp["error_code"] = "self_check.trigger.no_probe_path"
 		} else {
 			resp["reason"] = "self-check worker is not initialized (server may still be starting)"
@@ -502,7 +507,7 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 	var body struct {
 		Model string `json:"model"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+	if err := readJSONRequired(r, &body); err != nil && err != io.EOF {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
@@ -513,17 +518,203 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 		// worker was retired — during the 2026-08-18 glm-5.2 incident that
 		// left operators with no way to demand fresh evidence).
 		if h.probeEnqueue != nil {
-			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 			defer cancel()
-			n, err := h.probeEnqueue(ctx, body.Model)
-			if err != nil {
-				writeJSON(w, 503, map[string]any{"error": "trigger failed", "message": err.Error()})
-				return
+
+			// When model is empty, trigger self-check for all models based on settings.
+			models := []string{}
+			if body.Model == "" {
+				// Load self-check settings to determine which models to test.
+				var settings struct {
+					Enabled        bool
+					ModelSource    string
+					MaxModels      int
+					FeaturedModels json.RawMessage
+				}
+				err := h.db.QueryRow(ctx, `
+					SELECT enabled, model_source, max_models, featured_model_ids
+					FROM self_check_settings WHERE id=1`,
+				).Scan(&settings.Enabled, &settings.ModelSource, &settings.MaxModels, &settings.FeaturedModels)
+				if err != nil {
+					if errors.Is(err, pgx.ErrNoRows) {
+						// Seed default settings if missing.
+						if seedErr := h.ensureSelfCheckSettingsRow(ctx); seedErr != nil {
+							writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "settings not initialized: " + seedErr.Error()})
+							return
+						}
+						// Retry after seeding.
+						err = h.db.QueryRow(ctx, `
+							SELECT enabled, model_source, max_models, featured_model_ids
+							FROM self_check_settings WHERE id=1`,
+						).Scan(&settings.Enabled, &settings.ModelSource, &settings.MaxModels, &settings.FeaturedModels)
+					}
+					if err != nil {
+						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to load settings: " + err.Error()})
+						return
+					}
+					if !settings.Enabled {
+						writeJSON(w, http.StatusConflict, map[string]any{"error": "trigger failed", "message": "self-check is disabled in current settings"})
+						return
+					}
+					if settings.MaxModels <= 0 {
+						writeJSON(w, http.StatusBadRequest, map[string]any{"error": "trigger failed", "message": "max_models must be greater than zero"})
+						return
+					}
+					if settings.ModelSource != "featured" && settings.ModelSource != "top10" && settings.ModelSource != "both" {
+						writeJSON(w, http.StatusBadRequest, map[string]any{"error": "trigger failed", "message": "invalid model_source in settings: " + settings.ModelSource})
+						return
+					}
+				}
+
+				// Build candidates using the same eligibility gates as the actual
+				// probe fan-out. Preserve configured/ranked order and deduplicate.
+				eligible := make(map[string]struct{})
+				rows, err := h.db.Query(ctx, `
+					SELECT DISTINCT pm.raw_model_name
+					FROM provider_models pm
+					JOIN credential_model_bindings cmb ON cmb.provider_model_id = pm.id
+					JOIN credentials c ON c.id = cmb.credential_id
+					JOIN providers p ON p.id = c.provider_id
+					WHERE COALESCE(c.status, 'active') = 'active'
+					  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+					  AND COALESCE(p.enabled, TRUE) = TRUE
+					  AND COALESCE(p.manual_disabled, FALSE) = FALSE`)
+				if err != nil {
+					writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to select eligible models: " + err.Error()})
+					return
+				}
+				for rows.Next() {
+					var model string
+					if err := rows.Scan(&model); err != nil {
+						rows.Close()
+						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read eligible models: " + err.Error()})
+						return
+					}
+					if strings.TrimSpace(model) != "" {
+						eligible[model] = struct{}{}
+					}
+				}
+				if err := rows.Err(); err != nil {
+					rows.Close()
+					writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read eligible models: " + err.Error()})
+					return
+				}
+				rows.Close()
+
+				seen := make(map[string]struct{}, settings.MaxModels)
+				addModel := func(model string) {
+					if len(models) >= settings.MaxModels || strings.TrimSpace(model) == "" {
+						return
+					}
+					if _, ok := eligible[model]; !ok {
+						return
+					}
+					if _, ok := seen[model]; ok {
+						return
+					}
+					seen[model] = struct{}{}
+					models = append(models, model)
+				}
+				var featured []string
+				if err := json.Unmarshal(settings.FeaturedModels, &featured); err != nil && len(settings.FeaturedModels) > 0 {
+					writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "invalid featured_model_ids: " + err.Error()})
+					return
+				}
+				if settings.ModelSource == "featured" || settings.ModelSource == "both" {
+					for _, model := range featured {
+						addModel(model)
+					}
+				}
+				if settings.ModelSource == "top10" || settings.ModelSource == "both" {
+					rows, err := h.db.Query(ctx, `
+						SELECT pm.raw_model_name
+						FROM provider_models pm
+						JOIN credential_model_bindings cmb ON cmb.provider_model_id = pm.id
+						JOIN credentials c ON c.id = cmb.credential_id
+						JOIN providers p ON p.id = c.provider_id
+						WHERE COALESCE(c.status, 'active') = 'active'
+						  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+						  AND COALESCE(p.enabled, TRUE) = TRUE
+						  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+						GROUP BY pm.raw_model_name
+						ORDER BY COUNT(DISTINCT cmb.credential_id) DESC, pm.raw_model_name
+						LIMIT $1`, settings.MaxModels)
+					if err != nil {
+						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to select top models: " + err.Error()})
+						return
+					}
+					for rows.Next() {
+						var model string
+						if err := rows.Scan(&model); err != nil {
+							rows.Close()
+							writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read top models: " + err.Error()})
+							return
+						}
+						addModel(model)
+					}
+					if err := rows.Err(); err != nil {
+						rows.Close()
+						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read top models: " + err.Error()})
+						return
+					}
+					rows.Close()
+				}
+				if len(models) == 0 {
+					writeJSON(w, 400, map[string]any{"error": "trigger failed", "message": "no models to test based on current settings"})
+					return
+				}
+
+			} else {
+				// Single model specified.
+				models = []string{body.Model}
 			}
-			writeJSON(w, 200, map[string]any{
-				"ok": true, "mode": "probe_queue", "enqueued": n,
-				"message": "node_probe tasks enqueued", "model": body.Model,
-			})
+
+			// Trigger self-check for each selected model. Single-model requests
+			// intentionally use the same fan-out envelope as multi-model requests
+			// so callers can rely on one response contract.
+			totalEnqueued := 0
+			failedModels := 0
+			results := make(map[string]any)
+			for _, model := range models {
+				n, err := h.probeEnqueue(ctx, model)
+				if err != nil {
+					failedModels++
+					results[model] = map[string]any{"error": err.Error(), "enqueued": 0}
+				} else {
+					results[model] = map[string]any{"enqueued": n}
+					totalEnqueued += n
+				}
+			}
+
+			status := http.StatusOK
+			message := "node_probe tasks enqueued"
+			var topLevelError string
+			if failedModels == len(models) {
+				status = http.StatusServiceUnavailable
+				topLevelError = "trigger failed"
+				for _, model := range models {
+					if result, ok := results[model].(map[string]any); ok {
+						if errMessage, ok := result["error"].(string); ok && errMessage != "" {
+							message = errMessage
+							break
+						}
+					}
+				}
+			}
+			response := map[string]any{
+				"ok":            failedModels == 0,
+				"mode":          "probe_queue",
+				"enqueued":      totalEnqueued,
+				"models_tested": len(models),
+				"models_failed": failedModels,
+				"message":       message,
+				"models":        models,
+				"results":       results,
+			}
+			if topLevelError != "" {
+				response["error"] = topLevelError
+			}
+			writeJSON(w, status, response)
 			return
 		}
 		// 410 Gone: this endpoint is intentionally retired under the new

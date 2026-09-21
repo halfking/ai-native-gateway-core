@@ -616,7 +616,7 @@ onMounted(load)
 
 .badge-purple { background: color-mix(in srgb, var(--accent) 15%, var(--surface-primary)); color: var(--accent-h); }
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .search-input { max-width: 100%; width: 100%; }
   .tag-row { margin-left: 0; width: 100%; }
 }

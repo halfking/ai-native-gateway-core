@@ -1,0 +1,13 @@
+-- 719 down: 文档化 no-op（同 718 惯例）。
+--
+-- A/C 段 drop 的是约束/DESC 影蔽的冗余索引，且 ensure 侧创建者已同步删除，
+-- 重建只会恢复写放大与复活循环。
+-- B 段的 idx_request_logs_parent_request_id 属跨通道所有权冲突对的败方，
+-- 重建它会复活"两父索引各挂 5 叶"的双份存储；canonical 所有权在
+-- idx_request_logs_parent_ts（ensure db.go + startup/013 + 三份 baseline）。
+-- 如确需回退 B 段（例如某环境仍有代码按名引用 parent_request_id），
+-- 请显式（V369 原体形态，分区父表 plain）：
+--   CREATE INDEX idx_request_logs_parent_request_id
+--       ON request_logs (parent_request_id, ts DESC)
+--       WHERE parent_request_id IS NOT NULL;
+SELECT 1;  -- no-op

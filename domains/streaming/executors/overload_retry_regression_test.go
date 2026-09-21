@@ -1,6 +1,7 @@
 package executors
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -35,7 +36,7 @@ func newOverloadTestExecutor() *Executor {
 		pool.NewPoolManager(nil),
 		nil,
 		func(chunk []byte, isStream bool) []byte { return chunk },
-		func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome {
+		func(_ context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome {
 			defer func() { _ = resp.Body.Close() }()
 			buf := make([]byte, 4096)
 			n, _ := resp.Body.Read(buf)

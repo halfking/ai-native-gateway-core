@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -70,7 +71,7 @@ func (s *Store) RecordRequest(ctx context.Context, nodeKey, win1m, win5m, win30m
 	if s == nil || s.rdb == nil {
 		return RecordResult{}, ErrRedisUnavailable
 	}
-	res, err := RecordRequestScript.Run(ctx, s.rdb,
+	res, err := redissafe.RunScript(ctx, s.rdb, RecordRequestScript, "record_request.lua",
 		[]string{nodeKey, win1m, win5m, win30m, requestDedupKey(nodeKey, o.DedupKey)},
 		recordRequestArgv(o)...,
 	).Slice()
@@ -131,7 +132,8 @@ func (s *Store) recordRequestDual(ctx context.Context, ks NodeKeySet, o RecordOu
 	} else if ks.TenantID != "" {
 		return RecordResult{}, fmt.Errorf("ursm.v2: derive k2 key set: %w", err)
 	}
-	res, err := RecordRequestDualScript.Run(ctx, s.rdb, keys, recordRequestArgv(o)...).Slice()
+	res, err := redissafe.RunScript(ctx, s.rdb, RecordRequestDualScript, "record_request_dual.lua",
+		keys, recordRequestArgv(o)...).Slice()
 	if err != nil {
 		return RecordResult{}, fmt.Errorf("ursm.v2: record_request_dual: %w", err)
 	}

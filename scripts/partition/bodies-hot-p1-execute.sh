@@ -35,26 +35,23 @@ if (( 10#$HOUR < 2 || 10#$HOUR >= 5 )); then
 fi
 echo "✓ 窗口内（$(date '+%H:%M')），继续。"
 
-# ── 加载 252 凭据 ───────────────────────────────────────────────────────────
+# ── 加载 252 凭据与受控隧道 ─────────────────────────────────────────────────
 # shellcheck disable=SC1091
-source "$HOME/workspace/ai-native-tools/envs/loader.sh" --all --project llm-gateway-go --server 115.29.212.252 --mode plain >/dev/null 2>&1 \
+source "$HOME/workspace/ai-native-tools/envs/loader.sh" --project llm-gateway-go >/dev/null 2>&1 \
   || { echo "✗ envs loader 失败" >&2; exit 1; }
+export PG_PASS_252="${PG_PASS_252:-${COMMON_PG_SUPERUSER_PASS:?COMMON_PG_SUPERUSER_PASS not loaded}}"
+# shellcheck disable=SC1091
+source "$REPO_ROOT/configs/env-252.sh"
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/252-db-tunnel.sh"
 
-# ── 1) 自愈 SSH 隧道 ────────────────────────────────────────────────────────
-ensure_tunnel() {
-  if lsof -tiTCP:15432 -sTCP:LISTEN >/dev/null 2>&1; then
-    echo "✓ 隧道 15432 已存在"
-    return 0
-  fi
-  echo "→ 重建隧道 15432 → 252"
-  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
-      -o ExitOnForwardFailure=yes -i "$SSH_KEY_252" -f -N -p 25022 \
-      -L 15432:172.16.2.210:5432 root@115.29.212.252
-  sleep 2
-  lsof -tiTCP:15432 -sTCP:LISTEN >/dev/null 2>&1 \
-    && echo "✓ 隧道已建立" || { echo "✗ 隧道建立失败" >&2; exit 1; }
-}
-ensure_tunnel
+# The helper resolves the current container address and only tears down a
+# listener created by this process.
+if ! db252_tunnel_ensure; then
+  echo "✗ managed 252 tunnel unavailable" >&2
+  exit 1
+fi
+trap db252_tunnel_teardown EXIT
 
 # ── 2) swap 重写（脚本内部窗口守卫再确认一次） ──────────────────────────────
 echo; echo "──── [2] swap 重写 ────"
@@ -63,7 +60,7 @@ bash scripts/partition/bodies-hot-repack.sh --env=252 --mode=swap \
 
 # ── 3) 新活表防复发 reloptions（swap 后新表不继承 reloptions） ───────────────
 echo; echo "──── [3] 新活表 reloptions ────"
-PGOPTIONS='-c statement_timeout=0 -c idle_in_transaction_session_timeout=0' PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -X -h 127.0.0.1 -p 15432 -U "$COMMON_PG_SUPERUSER" -d llm_gateway -v ON_ERROR_STOP=1 -c "
+PGOPTIONS='-c statement_timeout=0 -c idle_in_transaction_session_timeout=0' PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -X -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 -c "
 ALTER TABLE public.request_logs_bodies_hot SET (
   fillfactor = 90,
   autovacuum_enabled = true,

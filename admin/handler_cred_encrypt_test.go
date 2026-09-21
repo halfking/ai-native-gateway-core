@@ -9,6 +9,7 @@ package admin
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 
@@ -50,7 +51,7 @@ func newTestHandlerWithKeyring(t *testing.T) *Handler {
 // Fernet base64-url "gAAAAA" prefix (NOT raw 0x80 bytes).
 func TestEncryptDecryptRoundTrip_FernetPath(t *testing.T) {
 	h := newTestHandler(t)
-	const plaintext = "sk-test-fernet-round-trip-key"
+	const plaintext = "sk-000000000000000000000000000000000000000000000000000000000000"
 
 	envelope, err := h.encryptCred([]byte(plaintext))
 	if err != nil {
@@ -106,6 +107,57 @@ func TestEncryptDecryptRoundTrip_KeyringPath(t *testing.T) {
 	}
 	if pt != plaintext {
 		t.Fatalf("round-trip mismatch: got %q want %q", pt, plaintext)
+	}
+}
+
+// TestDecryptCred_V1LegacyFernetEnvelope exercises the historical envelope
+// format used by credential 17. It must use the Fernet fallback even when an
+// AES-GCM keyring is also configured.
+func TestDecryptCred_V1LegacyFernetEnvelope(t *testing.T) {
+	h := newTestHandlerWithKeyring(t)
+	const plaintext = "sk-test-v1-legacy-fernet"
+
+	token, err := encryptFernet([]byte(plaintext), h.encKey)
+	if err != nil {
+		t.Fatalf("encryptFernet: %v", err)
+	}
+	envelope := "v1:legacy:" + base64.RawURLEncoding.EncodeToString(token)
+
+	pt, isLegacy, err := h.decryptCred(envelope)
+	if err != nil {
+		t.Fatalf("decryptCred: %v", err)
+	}
+	if !isLegacy {
+		t.Fatalf("expected isLegacy=true for v1:legacy Fernet envelope")
+	}
+	if pt != plaintext {
+		t.Fatalf("decrypt mismatch: got %q want %q", pt, plaintext)
+	}
+	if _, _, err := h.decryptCred("v1:legacy:not-base64"); err == nil {
+		t.Fatal("decryptCred must reject malformed v1:legacy payload")
+	}
+}
+
+// TestDecryptCred_V1AESGCMRetainsDecryptError ensures malformed authenticated
+// AES data keeps the direct AES error classification.
+func TestDecryptCred_V1AESGCMRetainsDecryptError(t *testing.T) {
+	h := newTestHandlerWithKeyring(t)
+	wrong := [32]byte{1}
+	wrongKR, err := secret.NewKeyring(map[string][32]byte{"k1": wrong}, "k1")
+	if err != nil {
+		t.Fatalf("NewKeyring: %v", err)
+	}
+	envelope, err := secret.EncryptAESGCM([]byte("plaintext"), wrongKR)
+	if err != nil {
+		t.Fatalf("EncryptAESGCM: %v", err)
+	}
+
+	_, _, err = h.decryptCred(envelope)
+	if err == nil {
+		t.Fatal("decryptCred must reject mismatched AES-GCM data")
+	}
+	if !errors.Is(err, secret.ErrDecrypt) {
+		t.Fatalf("expected ErrDecrypt, got %v", err)
 	}
 }
 

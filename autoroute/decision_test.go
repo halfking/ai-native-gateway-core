@@ -2,6 +2,7 @@ package autoroute
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -111,6 +112,53 @@ func TestDecide_LLMFallback_TriggersOnLowConfidence(t *testing.T) {
 		t.Fatalf("expected llm fallback, got %s", dec.Classifier)
 	}
 	if dec.TaskType != TaskCode {
+		t.Fatalf("task: got %s", dec.TaskType)
+	}
+}
+
+// TestDecide_FallbackError_KeepsHeuristic pins the decider's fail-open
+// contract: a fallback classifier error (transport/4xx/bad payload/breaker)
+// must keep the heuristic result — never block the route. (R44: previously
+// untested; classifier_jev_test.go's header cited this file as its pin.)
+func TestDecide_FallbackError_KeepsHeuristic(t *testing.T) {
+	heuristic := &stubClassifier{name: "heuristic", out: &Classification{Primary: TaskChat, Confidence: 0.5, Classifier: "heuristic"}}
+	failing := &stubClassifier{name: "jev", err: errors.New("stub fallback failure")}
+	idx := &stubIndex{cands: []ScoredCandidate{{Candidate: Candidate{CanonicalName: "m"}}}}
+	d := NewDecider(heuristic, failing, idx, nil)
+	d.LLMConfidenceThreshold = 0.7
+
+	dec, err := d.Decide(context.Background(), ClassificationSignals{}, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("fallback error must not propagate: %v", err)
+	}
+	if dec.Classifier != "heuristic" {
+		t.Fatalf("expected heuristic kept on fallback error, got %s", dec.Classifier)
+	}
+	if dec.TaskType != TaskChat {
+		t.Fatalf("task: got %s", dec.TaskType)
+	}
+}
+
+// TestDecide_FallbackBelowThreshold_KeepsHeuristic pins the R44 confidence
+// gate on the fallback result: Jev can return arbitrary low confidence (the
+// LLM slot's hardcoded 0.85 always passed), and a below-threshold external
+// verdict must not replace the heuristic winner — it would otherwise be
+// sticky-cached for the whole session via the intent cache.
+func TestDecide_FallbackBelowThreshold_KeepsHeuristic(t *testing.T) {
+	heuristic := &stubClassifier{name: "heuristic", out: &Classification{Primary: TaskChat, Confidence: 0.5, Classifier: "heuristic"}}
+	jev := &stubClassifier{name: "jev", out: &Classification{Primary: TaskCode, Confidence: 0.4, Classifier: "jev"}}
+	idx := &stubIndex{cands: []ScoredCandidate{{Candidate: Candidate{CanonicalName: "m"}}}}
+	d := NewDecider(heuristic, jev, idx, nil)
+	d.LLMConfidenceThreshold = 0.7
+
+	dec, err := d.Decide(context.Background(), ClassificationSignals{}, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if dec.Classifier != "heuristic" {
+		t.Fatalf("expected heuristic kept on low-confidence fallback, got %s", dec.Classifier)
+	}
+	if dec.TaskType != TaskChat {
 		t.Fatalf("task: got %s", dec.TaskType)
 	}
 }

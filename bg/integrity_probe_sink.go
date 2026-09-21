@@ -88,6 +88,9 @@ func (s *PostgresIntegrityProbeResultSink) Record(parent context.Context, task P
 	} else if result.RespPreview != "" {
 		ctxPayload["response_preview"] = truncateProbeText(result.RespPreview, 512)
 	}
+	// string() (not []byte): the pool forces pgx SimpleProtocol, which binds
+	// []byte as bytea hex — invalid for the jsonb context column. Mirrors
+	// internal/dbx/jsonb.go and the recorder in domains/streaming/integrity.
 	contextJSON, err := json.Marshal(ctxPayload)
 	if err != nil {
 		return fmt.Errorf("marshal integrity probe context: %w", err)
@@ -119,10 +122,10 @@ func (s *PostgresIntegrityProbeResultSink) Record(parent context.Context, task P
 			ts, tenant_id, provider_id, credential_id,
 			outbound_model, raw_model_name, anomaly_type, severity,
 			expected_value, actual_value, sample, context
-		) VALUES (now(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		) VALUES (now(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text::jsonb)`,
 		nilIfEmpty(tenantID), nullableInt64(providerID), nullableInt64(credentialID),
 		nilIfEmpty(outboundModel), nilIfEmpty(rawModel), anomaly, severity,
-		anomaly, status, nilIfEmpty(sample), contextJSON)
+		anomaly, status, nilIfEmpty(sample), string(contextJSON))
 	if err != nil {
 		return fmt.Errorf("insert integrity probe result: %w", err)
 	}

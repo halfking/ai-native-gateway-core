@@ -47,9 +47,6 @@ fi
 # 调试: export SSH_RETRY_VERBOSE=1 可看到每次重试
 : "${SSH_RETRY_VERBOSE:=0}"
 
-# 调试: export SSH_RETRY_VERBOSE=1 可看到每次重试
-: "${SSH_RETRY_VERBOSE:=0}"
-
 # ── 状态: master sockets map (target -> socket_path) ─────────────
 _SSH_RETRY_SOCKETS=()
 

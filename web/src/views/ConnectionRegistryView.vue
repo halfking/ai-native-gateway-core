@@ -12,6 +12,7 @@ import {
   fetchConnectionByRequestId,
   type ConnectionSnapshot,
 } from '../api/connection-registry'
+import { fmtDateTime24h } from '../i18n/useFormat'
 
 const router = useRouter()
 const { t, locale } = useI18n()
@@ -32,13 +33,6 @@ const filterText = ref('')
 
 let pollTimer: number | undefined
 let tickTimer: number | undefined
-
-function fmtDateTime(iso?: string): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return '—'
-  return d.toLocaleString(locale.value, { hour12: false })
-}
 
 function elapsedOf(iso?: string): string {
   if (!iso) return '—'
@@ -274,7 +268,7 @@ onUnmounted(() => {
                   <td>{{ c.protocol || '—' }}</td>
                   <td>{{ c.close_reason || '—' }}</td>
                   <td>{{ c.frames_written ?? 0 }}</td>
-                  <td>{{ fmtDateTime(c.registered_at) }}</td>
+                  <td>{{ fmtDateTime24h(c.registered_at) }}</td>
                 </tr>
               </tbody>
             </table>

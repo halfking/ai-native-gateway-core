@@ -32,7 +32,7 @@ bash deploy/phase0/deploy.sh --target=kaixuan-1
 bash deploy/phase0/verify.sh kaixuan-1
 
 # 3. 监控 24 小时
-watch -n 60 'ssh root@192.168.31.28 "curl -s http://localhost:8781/metrics | grep -E ttfb"'
+watch -n 60 'ssh root@<env:KAIXUAN1_IP> "curl -s http://localhost:8781/metrics | grep -E ttfb"'
 ```
 
 ---

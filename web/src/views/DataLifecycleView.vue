@@ -209,6 +209,7 @@ import FilesystemMaintenance from './data-lifecycle/FilesystemMaintenance.vue'
 import StorageConfig from './data-lifecycle/StorageConfig.vue'
 import DegradationRecovery from './data-lifecycle/DegradationRecovery.vue'
 import LogManagement from './data-lifecycle/LogManagement.vue'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -360,15 +361,16 @@ async function previewCleanup() {
   }
 }
 
-function executeCleanup() {
+async function executeCleanup() {
   if (!previewResult.value) {
     alert(t('dataLifecycle.needPreview'))
     return
   }
-  const confirmed = confirm(
-    `确认${cleanupForm.action === 'delete' ? '删除' : '归档'} ${formatNumber(previewResult.value.affected_rows)} 行数据？\n` +
-    `预计释放空间: ${previewResult.value.estimated_freed_human}\n\n` +
-    `此操作不可逆！`
+  const confirmed = await confirmDialog(
+    t(cleanupForm.action === 'delete' ? 'dataLifecycle.confirmDeleteCleanup' : 'dataLifecycle.confirmArchiveCleanup', {
+      rows: formatNumber(previewResult.value.affected_rows),
+      size: previewResult.value.estimated_freed_human,
+    }),
   )
   if (!confirmed) return
   alert(t('dataLifecycle.executeNotImpl'))
@@ -636,7 +638,7 @@ onUnmounted(() => {
 
 .empty-hint { text-align: center; padding: 32px; color: var(--muted); font-size: 13px; }
 
-@media (max-width: 800px) {
+@media (max-width: 768px) {
   .stats-row { grid-template-columns: repeat(2, 1fr); }
   .charts-row { grid-template-columns: 1fr; }
   .form-row-dates { grid-template-columns: 1fr; }

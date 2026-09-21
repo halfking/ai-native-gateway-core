@@ -24,6 +24,10 @@ export interface CompressionStats {
   total_outbound_tokens?: number
   estimated_original_tokens?: number
   estimated_tokens_saved?: number
+  token_band_below?: number
+  token_band_preliminary?: number
+  token_band_forced?: number
+  summary_mode_rows?: number
   hourly_series: HourBucket[]
 }
 

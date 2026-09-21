@@ -12,12 +12,16 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hostedtask"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
+	"github.com/kaixuan/llm-gateway-go/internal/handlers"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/irconv"
 	"github.com/kaixuan/llm-gateway-go/pending"
@@ -85,6 +89,38 @@ func (a sessionAuthAdapter) Verify(ctx context.Context, rawKey string) (session.
 		return session.KeyInfo{}, err
 	}
 	return session.KeyInfo{ID: ki.ID, TenantID: ki.TenantID}, nil
+}
+
+// hostedtaskAuthAdapter bridges authentication.KeyVerifier to the
+// hosted-task facade's KeyVerifier (hosted-task-delegation-design §2.4:
+// tenant/api_key 一律取自验证后 context)。error 原样透传不包装 —— handler
+// 端基于跨包 *authentication.InvalidKeyError 做类型断言，包装会破坏断言。
+type hostedtaskAuthAdapter struct {
+	kv *authentication.KeyVerifier
+}
+
+func (a hostedtaskAuthAdapter) Enabled() bool { return a.kv != nil && a.kv.Enabled() }
+func (a hostedtaskAuthAdapter) Verify(ctx context.Context, rawKey string) (hostedtask.KeyInfo, error) {
+	ki, err := a.kv.Verify(ctx, rawKey)
+	if err != nil {
+		return hostedtask.KeyInfo{}, err
+	}
+	return hostedtask.KeyInfo{ID: int64(ki.ID), TenantID: ki.TenantID}, nil
+}
+
+// goalrunAuthAdapter bridges authentication.KeyVerifier to the GoalRun status
+// handler's verifier (§0-F2：挂载 /v1/goal-runs 前补 KeyVerifier 归属校验)。
+type goalrunAuthAdapter struct {
+	kv *authentication.KeyVerifier
+}
+
+func (a goalrunAuthAdapter) Enabled() bool { return a.kv != nil && a.kv.Enabled() }
+func (a goalrunAuthAdapter) Verify(ctx context.Context, rawKey string) (handlers.GoalRunKeyInfo, error) {
+	ki, err := a.kv.Verify(ctx, rawKey)
+	if err != nil {
+		return handlers.GoalRunKeyInfo{}, err
+	}
+	return handlers.GoalRunKeyInfo{ID: ki.ID, TenantID: ki.TenantID}, nil
 }
 
 // extractTenantIDFromUpstreamResp extracts tenantID from the upstream request
@@ -191,6 +227,12 @@ func saveCapturedPending(store *pending.Store, pc *streaming.PendingCapturer, re
 //	LLMGatewayAutoLLMModel    model name (default "gpt-4o-mini")
 //	LLMGatewayAutoLLMTimeout  seconds (default 3)
 func buildAutoLLMCaller() autoroute.LLMCaller {
+	// The Prometheus mirror hooks default to no-ops and nothing else assigns
+	// them; without this wiring llm_gateway_llm_classifier_* stays at zero
+	// forever (audit 2026-09-15: the family had never been fed in production).
+	autoroute.RecordLLMMetricCall = telemetry.RecordLLMClassifierCall
+	autoroute.RecordLLMCircuitBreakerState = telemetry.RecordLLMCircuitBreakerState
+
 	caller, enabled := autoroute.BuildHTTPLlmCallerFromEnv(os.Getenv)
 	if !enabled {
 		return autoroute.DisabledCaller{}
@@ -202,6 +244,33 @@ func buildAutoLLMCaller() autoroute.LLMCaller {
 		Inner:   autoroute.NewCircuitBreakerCaller(caller),
 		Metrics: &autoroute.CallerMetrics{},
 	}
+}
+
+// buildAutoFallbackClassifier selects which implementation occupies the
+// decider's fallback-classifier slot (heuristic → low confidence → X).
+//
+// Selection logic:
+//  1. LLM_GATEWAY_JEV_CLASSIFIER enabled + TYPESAFE_API_KEY set:
+//     JevClassifier (TypeSafe System One /v1/systemone choice call,
+//     70–500ms, fail-open identical to the LLM path). Default OFF.
+//  2. Otherwise: the historical LLM fallback via buildAutoLLMCaller.
+//
+// The telemetry assignments are mirrored here (idempotent) so the Jev
+// path also feeds llm_gateway_llm_classifier_* — buildAutoLLMCaller is
+// skipped entirely when Jev wins, and the vars default to no-ops.
+func buildAutoFallbackClassifier() autoroute.Classifier {
+	autoroute.RecordLLMMetricCall = telemetry.RecordLLMClassifierCall
+	autoroute.RecordLLMCircuitBreakerState = telemetry.RecordLLMCircuitBreakerState
+	if jc, ok := autoroute.BuildJevClassifierFromEnv(os.Getenv); ok {
+		// R44: 双兜底配置并存时旧 LLM endpoint 会被静默闲置——只有一条 Jev
+		// 启用 Info 不够，运维需要一条点名的 Warn 才能发现配置冲突。
+		if strings.TrimSpace(os.Getenv("LLMGatewayAutoLLMEndpoint")) != "" {
+			slog.Warn("cmd/gateway: Jev classifier occupies the auto fallback slot; " +
+				"LLMGatewayAutoLLMEndpoint/ApiKey/Model config is present but inert")
+		}
+		return jc
+	}
+	return autoroute.NewLLMFallbackClassifierWithCaller(buildAutoLLMCaller())
 }
 
 // irAdapter implements routing.IRConverter by wrapping the ir package functions.

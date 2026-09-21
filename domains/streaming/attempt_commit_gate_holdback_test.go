@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"bytes"
+	"context"
 	"testing"
 	"time"
 
@@ -26,7 +27,7 @@ func TestAttemptCommitGateHoldbackHoldsSemanticFramesAndDiscards(t *testing.T) {
 	var buf bytes.Buffer
 	sw := NewSerializedStreamWriter(&buf)
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
-	gate := NewAttemptCommitGate(ProtocolOpenAIChat, sw, GateOptions{
+	gate := NewAttemptCommitGate(context.Background(), ProtocolOpenAIChat, sw, GateOptions{
 		Mode:              GateModeBuffered,
 		HoldbackWindow:    5 * time.Second,
 		HoldbackMaxChunks: 20,
@@ -55,7 +56,7 @@ func TestAttemptCommitGateHoldbackChunkBoundaryFlushes(t *testing.T) {
 	sw := NewSerializedStreamWriter(&buf)
 	base := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	current := base
-	gate := NewAttemptCommitGate(ProtocolOpenAIChat, sw, GateOptions{
+	gate := NewAttemptCommitGate(context.Background(), ProtocolOpenAIChat, sw, GateOptions{
 		Mode:              GateModeBuffered,
 		HoldbackWindow:    5 * time.Second,
 		HoldbackMaxChunks: 3,
@@ -83,7 +84,7 @@ func TestAttemptCommitGateHoldbackTimeBoundaryFlushes(t *testing.T) {
 	sw := NewSerializedStreamWriter(&buf)
 	base := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	current := base
-	gate := NewAttemptCommitGate(ProtocolOpenAIChat, sw, GateOptions{
+	gate := NewAttemptCommitGate(context.Background(), ProtocolOpenAIChat, sw, GateOptions{
 		Mode:              GateModeBuffered,
 		HoldbackWindow:    5 * time.Second,
 		HoldbackMaxChunks: 20,
@@ -109,7 +110,7 @@ func TestAttemptCommitGateHoldbackFlushAtStreamEnd(t *testing.T) {
 	var buf bytes.Buffer
 	sw := NewSerializedStreamWriter(&buf)
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
-	gate := NewAttemptCommitGate(ProtocolOpenAIChat, sw, GateOptions{
+	gate := NewAttemptCommitGate(context.Background(), ProtocolOpenAIChat, sw, GateOptions{
 		Mode:              GateModeBuffered,
 		HoldbackWindow:    5 * time.Second,
 		HoldbackMaxChunks: 20,
@@ -133,11 +134,11 @@ func TestAttemptCommitGateHoldbackBeforeSemanticCommitHook(t *testing.T) {
 	sw := NewSerializedStreamWriter(&buf)
 	hookStates := make([]CommitState, 0, 2)
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
-	gate := NewAttemptCommitGate(ProtocolOpenAIChat, sw, GateOptions{
+	gate := NewAttemptCommitGate(context.Background(), ProtocolOpenAIChat, sw, GateOptions{
 		Mode:              GateModeBuffered,
 		HoldbackWindow:    time.Second,
 		HoldbackMaxChunks: 2,
-		BeforeSemanticCommit: func(s CommitState) error {
+		BeforeSemanticCommit: func(_ context.Context, s CommitState) error {
 			hookStates = append(hookStates, s)
 			return nil
 		},
@@ -157,7 +158,7 @@ func TestAttemptCommitGateZeroHoldbackKeepsLegacyBehavior(t *testing.T) {
 	// immediately — byte-identical to the pre-T13 gate.
 	var buf bytes.Buffer
 	sw := NewSerializedStreamWriter(&buf)
-	gate := NewAttemptCommitGate(ProtocolOpenAIChat, sw, GateOptions{Mode: GateModeBuffered})
+	gate := NewAttemptCommitGate(context.Background(), ProtocolOpenAIChat, sw, GateOptions{Mode: GateModeBuffered})
 	require.NoError(t, gate.WriteFrame(openAIContentFrame("first")))
 	assert.True(t, gate.Committed(), "no holdback → first semantic frame commits")
 	assert.Equal(t, 0, gate.HoldbackHeldChunks())

@@ -223,6 +223,9 @@ func TestCheckBodiesIntegrity_ValidJSON(t *testing.T) {
 	}
 	v2Bodies := []V2Body{
 		{
+			RequestID:     "",
+			SessionID:     "",
+			TenantID:      "",
 			TurnNo:        1,
 			RequestDelta:  json.RawMessage(`[{"role": "user", "content": "hello"}]`),
 			ResponseDelta: json.RawMessage(`[{"role": "assistant", "content": "hi"}]`),

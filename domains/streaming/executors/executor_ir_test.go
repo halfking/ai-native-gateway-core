@@ -440,7 +440,7 @@ func TestIRConverter_LegacyPath(t *testing.T) {
 	// Set up executor WITHOUT IR converter
 	executor := &Executor{}
 
-	openAIBody := `{"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": false}`
+	openAIBody := `{"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	cand := provider.Candidate{
 		Protocol: "openai-completions",

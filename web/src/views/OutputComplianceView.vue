@@ -3,6 +3,9 @@ import { useI18n } from 'vue-i18n'
 import { ref, onMounted, computed } from 'vue'
 import { listSettings, updateSetting, SettingItem } from '../api/settings'
 import { req } from '../api/_core'
+import { fmtDateTime24h } from '../i18n/useFormat'
+import { useActionMessage } from '../composables/useActionMessage'
+import AppSpinner from '../components/AppSpinner.vue'
 
 const { t } = useI18n({ useScope: 'global' })
 
@@ -100,8 +103,8 @@ const config = ref<OutputComplianceConfig>({
 
 const configLoading = ref(false)
 const configSaving = ref(false)
-const configError = ref('')
-const configSuccess = ref('')
+// 审计 R3#10：操作反馈条统一走 useActionMessage（自动消失/计时器清理收敛）。
+const { message: configSuccess, error: configError, notifySuccess, notifyError, clearError: clearConfigError } = useActionMessage()
 
 const filterTenantID = ref('')
 const filterCheckType = ref('')
@@ -162,7 +165,7 @@ async function loadRecords() {
 // ========== 加载配置 ==========
 async function loadConfig() {
   configLoading.value = true
-  configError.value = ''
+  clearConfigError()
   try {
     const settings = await listSettings({ category: 'output_compliance' })
     const items = 'items' in settings ? settings.items : (settings as unknown as SettingItem[])
@@ -209,7 +212,7 @@ async function loadConfig() {
       }
     }
   } catch (e: unknown) {
-    configError.value = e instanceof Error ? e.message : String(e)
+    notifyError(e instanceof Error ? e.message : String(e))
   } finally {
     configLoading.value = false
   }
@@ -218,8 +221,7 @@ async function loadConfig() {
 // ========== 保存配置 ==========
 async function saveConfig() {
   configSaving.value = true
-  configError.value = ''
-  configSuccess.value = ''
+  clearConfigError()
   try {
     const mapping: Record<keyof OutputComplianceConfig, string> = {
       enabled: 'output_compliance.enabled',
@@ -251,25 +253,15 @@ async function saveConfig() {
     for (const [key, settingKey] of Object.entries(mapping)) {
       await updateSetting(settingKey, { value: (config.value as any)[key] })
     }
-    configSuccess.value = t('outputCompliance.config.saveSuccess')
-    setTimeout(() => { configSuccess.value = '' }, 3000)
+    notifySuccess(t('outputCompliance.config.saveSuccess'))
   } catch (e: unknown) {
-    configError.value = e instanceof Error ? e.message : String(e)
+    notifyError(e instanceof Error ? e.message : String(e))
   } finally {
     configSaving.value = false
   }
 }
 
 // ========== 辅助函数 ==========
-function fmtDate(s: string) {
-  if (!s) return '-'
-  try {
-    return new Date(s).toLocaleString()
-  } catch {
-    return s
-  }
-}
-
 function changeRecordsPage(delta: number) {
   const next = recordsPage.value + delta
   if (next < 1 || next > totalPages.value) return
@@ -326,10 +318,7 @@ onMounted(() => {
 
     <!-- 概览标签页 -->
     <div v-if="activeTab === 'overview'">
-      <div v-if="statsLoading" class="loading-state">
-        <span class="spinner"></span>
-        {{ t('outputCompliance.loading') }}
-      </div>
+      <AppSpinner v-if="statsLoading" :label="t('outputCompliance.loading')" />
       <div v-else-if="statsError" class="error-banner">⚠️ {{ statsError }}</div>
       <div v-else-if="stats" class="stats-grid">
         <div class="stat-card">
@@ -400,8 +389,7 @@ onMounted(() => {
           <tbody v-if="recordsLoading">
             <tr>
               <td colspan="9" class="loading-cell">
-                <span class="spinner"></span>
-                {{ t('outputCompliance.loading') }}
+                <AppSpinner inline :label="t('outputCompliance.loading')" />
               </td>
             </tr>
           </tbody>
@@ -430,7 +418,7 @@ onMounted(() => {
                 </span>
               </td>
               <td class="content-preview">{{ rec.content_preview }}</td>
-              <td class="date-cell">{{ fmtDate(rec.created_at) }}</td>
+              <td class="date-cell">{{ fmtDateTime24h(rec.created_at) }}</td>
             </tr>
           </tbody>
         </table>
@@ -452,10 +440,7 @@ onMounted(() => {
 
     <!-- 配置标签页 -->
     <div v-if="activeTab === 'config'" class="config-panel">
-      <div v-if="configLoading" class="loading-state">
-        <span class="spinner"></span>
-        {{ t('outputCompliance.config.loading') }}
-      </div>
+      <AppSpinner v-if="configLoading" :label="t('outputCompliance.config.loading')" />
       <div v-else-if="configError" class="error-banner">⚠️ {{ configError }}</div>
       <div v-else class="config-form">
         <div v-if="configSuccess" class="success-banner">✅ {{ configSuccess }}</div>
@@ -633,7 +618,7 @@ onMounted(() => {
 }
 
 .stat-card {
-  background: white;
+  background: var(--card);
   border: 1px solid var(--surface-secondary);
   border-radius: 8px;
   padding: 1rem;
@@ -663,6 +648,8 @@ onMounted(() => {
 
 .filter-input,
 .filter-select {
+  /* width:auto 覆盖全局 input/select width:100%，避免筛选控件占满整行 */
+  width: auto;
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -678,7 +665,7 @@ onMounted(() => {
 
 /* 表格 */
 .table-container {
-  background: white;
+  background: var(--card);
   border: 1px solid var(--surface-secondary);
   border-radius: 8px;
   overflow-x: auto;
@@ -767,14 +754,14 @@ onMounted(() => {
 
 .btn-primary {
   background: var(--accent);
-  color: white;
+  color: var(--on-primary);
 }
 
 .btn-primary:hover { background: var(--accent); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .btn-secondary {
-  background: white;
+  background: var(--card);
   color: var(--muted);
   border: 1px solid var(--border);
 }
@@ -847,7 +834,7 @@ onMounted(() => {
 
 .success-banner {
   background: var(--success-bg);
-  border: 1px solid #6ee7b7;
+  border: 1px solid var(--success-bd);
   color: var(--success-strong);
   padding: 0.75rem 1rem;
   border-radius: 6px;
@@ -856,7 +843,7 @@ onMounted(() => {
 
 /* 配置面板 */
 .config-panel {
-  background: white;
+  background: var(--card);
   border-radius: 8px;
   padding: 1.5rem;
 }

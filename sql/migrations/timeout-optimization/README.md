@@ -54,7 +54,7 @@ migrations/timeout-optimization/
 
 ```bash
 # 1. 确保环境变量已配置
-export DB_HOST=172.16.2.210
+export DB_HOST=<env:HOST_252_INTERNAL_IP>
 export DB_PORT=5432
 export DB_NAME=llm_gateway
 export DB_USER=postgres
@@ -76,7 +76,7 @@ cd /path/to/llm-gateway-go-3/migrations/timeout-optimization
 
 ```bash
 # 连接到数据库
-psql -h 172.16.2.210 -U postgres -d llm_gateway
+psql -h <env:HOST_252_INTERNAL_IP> -U postgres -d llm_gateway
 
 # 执行迁移1
 \i 001_create_system_settings.sql
@@ -165,10 +165,10 @@ SELECT * FROM get_session_last_request('test_session_123');
 cd migrations/timeout-optimization/logs
 ls -lt backup_*.sql | head -1  # 找到最新备份
 
-psql -h 172.16.2.210 -U postgres -d llm_gateway < backup_YYYYMMDD_HHMMSS.sql
+psql -h <env:HOST_252_INTERNAL_IP> -U postgres -d llm_gateway < backup_YYYYMMDD_HHMMSS.sql
 
 # 2. 或手动删除新增对象
-psql -h 172.16.2.210 -U postgres -d llm_gateway <<EOF
+psql -h <env:HOST_252_INTERNAL_IP> -U postgres -d llm_gateway <<EOF
 -- 删除新表
 DROP TABLE IF EXISTS session_last_requests CASCADE;
 DROP TABLE IF EXISTS system_settings CASCADE;

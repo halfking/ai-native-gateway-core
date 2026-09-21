@@ -12,6 +12,7 @@ export default {
   tabProbe: 'Vérification auto',
   tabProbeTitle: 'Voir les enregistrements de vérification auto (les liaisons échouées sont re-vérifiées toutes les 10 minutes)',
   tabSettings: 'Paramètres',
+  tabErrorDetail: 'Erreurs du fournisseur',
   loading: 'Chargement…',
   loadingFallback: '...',
   refresh: 'Actualiser',
@@ -61,4 +62,9 @@ export default {
     failureCount: 'Failures',
     totalTokens: 'Total tokens',
   },
+  // 2026-08-31: provider soft delete (terminal)
+  deleteBtn: "Supprimer le fournisseur",
+  deleteTitle: "Supprimer (soft-delete) ce fournisseur. Le fournisseur et tous ses identifiants seront retirés de toutes les listes et du routage. Action irréversible.",
+  deleteConfirm: "Supprimer le fournisseur « {name} » ? Tous ses identifiants seront également marqués supprimés et toutes les routes de modèles associées s'arrêteront immédiatement. Action irréversible.",
+  deleteFailed: "Échec de la suppression du fournisseur",
 }

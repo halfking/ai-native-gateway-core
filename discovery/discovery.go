@@ -38,6 +38,15 @@ type Service struct {
 	discovered  int
 	keyring     *secret.Keyring
 	fernetKey   []byte
+
+	// 2026-09-10: short-lived snapshot of the active standard-model
+	// catalog used by matchExistingCanonicalCached so the per-model
+	// upsert loop links to existing standard rows without re-scanning
+	// models_canonical for every raw name. Guarded by canonMu, NOT the
+	// status mu above (different contention profile).
+	canonMu       sync.Mutex
+	canonCatalog  []canonicalRef
+	canonCachedAt time.Time
 }
 
 // NewService creates a new discovery service.
@@ -56,6 +65,11 @@ func NewService(db *pgxpool.Pool, interval time.Duration) *Service {
 }
 
 // SetKeyring sets the AES-GCM keyring for credential decryption.
+// CONTRACT: call once at boot, BEFORE Start — the field is written without a
+// lock while the discovery goroutine reads it in decryptCredential. Today's
+// wiring (cmd/gateway) only ever calls this before Start, which establishes
+// the happens-before edge; runtime key rotation would be a data race and must
+// switch to atomic.Pointer first (R34 2026-09-17 audit note).
 func (s *Service) SetKeyring(kr *secret.Keyring) {
 	s.keyring = kr
 }
@@ -278,6 +292,8 @@ type credential struct {
 	ModelsEndpointTemplate *string // from provider_catalog, may be NULL
 	DiscoveryStrategy      string  // from provider_catalog
 	ModelsManifestJSON     *string // from provider_catalog, JSON manifest fallback
+	ProviderKind           string  // 2026-09-07: providers.kind — "local" 启用本地上下文回填
+	CatalogCapabilities    []byte  // 2026-09-07: provider_catalog.capabilities JSONB（本地托管元数据）
 }
 
 func (s *Service) loadCredentials(ctx context.Context, providerID int) ([]credential, error) {
@@ -307,7 +323,9 @@ func (s *Service) loadCredentials(ctx context.Context, providerID int) ([]creden
 			c.secret_ciphertext,
 			pc.models_endpoint_template,
 			COALESCE(pc.discovery_strategy, 'auto'),
-			pc.models_manifest_json
+			pc.models_manifest_json,
+			COALESCE(p.kind, 'cloud'),
+			COALESCE(pc.capabilities, '{}'::jsonb)
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
@@ -325,7 +343,9 @@ func (s *Service) loadCredentials(ctx context.Context, providerID int) ([]creden
 			c.secret_ciphertext,
 			pc.models_endpoint_template,
 			COALESCE(pc.discovery_strategy, 'auto'),
-			pc.models_manifest_json
+			pc.models_manifest_json,
+			COALESCE(p.kind, 'cloud'),
+			COALESCE(pc.capabilities, '{}'::jsonb)
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
@@ -341,7 +361,7 @@ func (s *Service) loadCredentials(ctx context.Context, providerID int) ([]creden
 	var creds []credential
 	for rows.Next() {
 		var c credential
-		if err := rows.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.BaseURL, &c.Protocol, &c.CatalogCode, &c.SecretCipher, &c.ModelsEndpointTemplate, &c.DiscoveryStrategy, &c.ModelsManifestJSON); err != nil {
+		if err := rows.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.BaseURL, &c.Protocol, &c.CatalogCode, &c.SecretCipher, &c.ModelsEndpointTemplate, &c.DiscoveryStrategy, &c.ModelsManifestJSON, &c.ProviderKind, &c.CatalogCapabilities); err != nil {
 			slog.Warn("loadCredentials scan failed", "error", err)
 			continue
 		}
@@ -378,13 +398,15 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([
 	}
 
 	var (
-		models []string
-		err    error
+		models      []string
+		rawModelsJS []byte
+		err         error
 	)
+	isLocal := isLocalProviderKind(cred.ProviderKind)
 	if explicitTemplate && modelsURL != "" {
-		models, err = s.fetchModels(ctx, modelsURL, apiKey)
+		models, rawModelsJS, err = s.fetchModelsRaw(ctx, modelsURL, apiKey)
 	} else {
-		models, err = s.fetchModelsFromURLs(ctx, upstreamurl.ModelsURLCandidates(cred.BaseURL), apiKey)
+		models, rawModelsJS, err = s.fetchModelsRawFromURLs(ctx, upstreamurl.ModelsURLCandidates(cred.BaseURL), apiKey)
 	}
 	if err != nil {
 		slog.Debug("models API call failed, falling back to manifest",
@@ -410,6 +432,35 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([
 			continue
 		}
 		count++
+	}
+
+	// 2026-09-07 本地托管供应商：回填 context window。
+	// 本地 /v1/models 通常不带 context 信息，这里按优先级解析：
+	//   1. /v1/models 响应中的 max_model_len / context_length / context_window
+	//   2. ollama: POST /api/show 逐模型查询 model_info.*.context_length
+	//   3. catalog capabilities.default_context_window 兜底
+	// 结果写入 credential_model_bindings.context_window_override（source='local-discovery'）。
+	if isLocal {
+		s.applyLocalContextWindows(ctx, cred, models, rawModelsJS)
+	}
+
+	// 2026-08-31 hzx-2 round-4: auto-fill default_probe_model so the
+	// periodic / balance / fast probe paths have a probe target even
+	// when the operator never set one. The pick is "newest model
+	// (provider_models.created_at DESC) under this credential that is
+	// still routable" — see modelcatalog.AutoFillDefaultProbeModel for
+	// the full contract and guard list. Best-effort: a DB error here
+	// is logged but does not abort the rest of the refresh.
+	if picked, autoErr := modelcatalog.AutoFillDefaultProbeModel(ctx, s.db, cred.ID); autoErr != nil {
+		slog.Warn("discovery: auto-fill default_probe_model failed",
+			"credential_id", cred.ID, "provider", cred.ProviderName, "error", autoErr)
+	} else if picked != "" {
+		slog.Info("discovery: auto-filled default_probe_model",
+			"credential_id", cred.ID,
+			"provider", cred.ProviderName,
+			"default_probe_model", picked,
+			"source", modelcatalog.DefaultProbeModelSourceRefreshLatest,
+		)
 	}
 
 	s.updateCredentialHealth(ctx, cred.ID, "healthy", "")
@@ -443,6 +494,22 @@ func (s *Service) discoverFromManifest(ctx context.Context, cred credential) ([]
 		}
 		count++
 	}
+	// 2026-08-31 hzx-2 round-4: same auto-fill hook as the API path —
+	// see discoverForCredential. Manifest-only suppliers (e.g. azure-openai)
+	// must also get a default_probe_model the moment their first
+	// manifest comes through.
+	if count > 0 {
+		if picked, autoErr := modelcatalog.AutoFillDefaultProbeModel(ctx, s.db, cred.ID); autoErr != nil {
+			slog.Warn("discovery: manifest auto-fill default_probe_model failed",
+				"credential_id", cred.ID, "error", autoErr)
+		} else if picked != "" {
+			slog.Info("discovery: manifest auto-filled default_probe_model",
+				"credential_id", cred.ID,
+				"default_probe_model", picked,
+				"source", modelcatalog.DefaultProbeModelSourceRefreshLatest,
+			)
+		}
+	}
 	return models, count, nil
 }
 
@@ -470,31 +537,39 @@ func modelsEndpointURL(baseURL string, template *string) string {
 }
 
 func (s *Service) fetchModels(ctx context.Context, url, apiKey string) ([]string, error) {
+	models, _, err := s.fetchModelsRaw(ctx, url, apiKey)
+	return models, err
+}
+
+// fetchModelsRaw 返回模型列表和原始响应体。原始响应体供本地供应商
+// （kind='local'）解析 context window 字段（vLLM max_model_len 等）。
+func (s *Service) fetchModelsRaw(ctx context.Context, url, apiKey string) ([]string, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("models endpoint returned %d: %s", resp.StatusCode, string(body))
+		return nil, nil, &modelresponse.HTTPBodyError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return extractModelIDs(body)
+	models, err := extractModelIDs(body)
+	return models, body, err
 }
 
 func (s *Service) fetchModelsFromURLs(ctx context.Context, urls []string, apiKey string) ([]string, error) {
@@ -512,6 +587,25 @@ func (s *Service) fetchModelsFromURLs(ctx context.Context, urls []string, apiKey
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("no models found from any candidate URL")
+}
+
+// fetchModelsRawFromURLs 同 fetchModelsFromURLs，但返回首个成功响应的原始
+// JSON（本地供应商的 context window 解析需要）。
+func (s *Service) fetchModelsRawFromURLs(ctx context.Context, urls []string, apiKey string) ([]string, []byte, error) {
+	var lastErr error
+	for _, u := range urls {
+		models, raw, err := s.fetchModelsRaw(ctx, u, apiKey)
+		if err == nil && len(models) > 0 {
+			return models, raw, nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+	}
+	if lastErr != nil {
+		return nil, nil, lastErr
+	}
+	return nil, nil, fmt.Errorf("no models found from any candidate URL")
 }
 
 // extractModelIDs parses various /v1/models response formats.
@@ -573,36 +667,68 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 	//     "z-ai/glm-5.2", Meta "meta/llama-3.3-70b-instruct") and is kept
 	//     unchanged in provider_models.raw_model_name.
 	canonicalRawName := modelname.CanonicalizeClientModel(rawName)
-	canonicalName := NormalizeModelName(rawName)
-	family := InferFamily(canonicalName)
+	standardizedName := NormalizeModelName(rawName)
 
-	// Upsert into models_canonical. The INSERT path writes a seed tags
-	// array with `family:<id>` so a freshly discovered model is never
-	// visible in the /models family-chip filter with an empty tag set
-	// (2026-06-20 incident: 459 active models had family=... but
-	// tags='{}', making the family chip in ModelsView's quick-filter
-	// row return 0 rows). The ON CONFLICT branch:
-	//   1. preserves any existing tag set the admin might have
-	//      edited by hand, and only appends `family:<id>` if not
-	//      already there;
-	//   2. normalizes a stale "split" family id (e.g. existing row
-	//      has family='claude' from a pre-P1 scan, but the canonical
-	//      id is 'anthropic-claude') — when the existing family is
-	//      one of the known split tokens we update to the canonical
-	//      form and swap the corresponding family:<id> tag; an
-	//      admin-edited family that *differs* from what we'd
-	//      compute (i.e. NOT a known split token) is left alone so
-	//      we don't trample manual classifications.
-	//
-	// 2026-07-14: canonical_name is now always written as lowercase so
-	// internal SQL joins don't need `lower(...) = lower(...)` wrappers.
-	//
-	// 2026-07-20: modality is seeded using modelname.InferModality for
-	// zero-cost initialization. Actual probe validation happens later.
-	inferredModality := modelname.InferModality(rawName)
-
+	// 2026-09-10: prefer matching the raw name to an EXISTING standard
+	// model over deriving a fresh canonical from it. Provider feeds like
+	// "cluade/opus-5" or "grok/4.6" used to seed junk standard rows
+	// ("opus-5" / "4.6" — NormalizeRouteKey simply drops the vendor
+	// prefix) even though "claude-opus-5" / "grok-4.6" were already in
+	// models_canonical. A confident match (score ≥ AutoLinkThreshold)
+	// reuses that standard row and its name for standardized_name.
 	var canonicalID int
-	err := s.db.QueryRow(ctx, `
+	var canonicalName string
+	matchedRef, matched := s.matchExistingCanonicalCached(ctx, rawName)
+	if matched {
+		canonicalID = matchedRef.id
+		canonicalName = matchedRef.name
+		standardizedName = matchedRef.name
+		slog.Debug("raw model matched to existing standard model",
+			"raw_model_name", rawName,
+			"canonical_name", canonicalName)
+		// 2026-09-11: the fast path used to return before the ON CONFLICT
+		// maintenance below ever ran, so a matched row never got the
+		// family:<id> tag backfill, the split-family normalization, or the
+		// 2026-08-09 sticky-modality repair (a matched row stuck at
+		// modality='text' 503s every image request). Re-apply the same
+		// three rules with one guarded UPDATE. Best-effort: the matched
+		// row itself is valid, so a failed repair must not block alias /
+		// binding ingestion.
+		if err := maintainMatchedCanonical(ctx, s.db, matchedRef.id, matchedRef.name, rawName); err != nil {
+			slog.Warn("matched canonical maintenance failed",
+				"canonical_id", matchedRef.id,
+				"raw_model_name", rawName,
+				"error", err)
+		}
+	} else {
+		canonicalName = NormalizeModelName(rawName)
+		family := InferFamily(canonicalName)
+		// Upsert into models_canonical. The INSERT path writes a seed tags
+		// array with `family:<id>` so a freshly discovered model is never
+		// visible in the /models family-chip filter with an empty tag set
+		// (2026-06-20 incident: 459 active models had family=... but
+		// tags='{}', making the family chip in ModelsView's quick-filter
+		// row return 0 rows). The ON CONFLICT branch:
+		//   1. preserves any existing tag set the admin might have
+		//      edited by hand, and only appends `family:<id>` if not
+		//      already there;
+		//   2. normalizes a stale "split" family id (e.g. existing row
+		//      has family='claude' from a pre-P1 scan, but the canonical
+		//      id is 'anthropic-claude') — when the existing family is
+		//      one of the known split tokens we update to the canonical
+		//      form and swap the corresponding family:<id> tag; an
+		//      admin-edited family that *differs* from what we'd
+		//      compute (i.e. NOT a known split token) is left alone so
+		//      we don't trample manual classifications.
+		//
+		// 2026-07-14: canonical_name is now always written as lowercase so
+		// internal SQL joins don't need `lower(...) = lower(...)` wrappers.
+		//
+		// 2026-07-20: modality is seeded using modelname.InferModality for
+		// zero-cost initialization. Actual probe validation happens later.
+		inferredModality := modelname.InferModality(rawName)
+
+		err := s.db.QueryRow(ctx, `
 		INSERT INTO models_canonical (canonical_name, family, tags, source, status, modality)
 		VALUES ($1, $2, ARRAY['family:' || $2]::text[], 'discovery', 'active', $4)
 		ON CONFLICT (canonical_name) DO UPDATE SET
@@ -637,7 +763,15 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 				)
 				ELSE models_canonical.tags
 			END,
-			status = 'active',
+			// 2026-09-21: a 'disabled' canonical is an explicit operator
+			// kill — the discovery/refresh feed must never resurrect it
+			// (same rule as taxonomy_sync upsertAlias and alias_sync's
+			// WHERE status <> 'disabled' guard). Before this guard, every
+			// provider tick flipped 09-20's disabled qwen3-max-cn /
+			// deepseek-v4-*-ga rows back to 'active' (observed live).
+			status = CASE WHEN models_canonical.status = 'disabled'
+				THEN models_canonical.status
+				ELSE 'active' END,
 			/* 2026-08-09 sticky-modality fix.
 			   The previous expression was
 			     modality = COALESCE(models_canonical.modality, $4)
@@ -664,8 +798,9 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 			END
 		RETURNING id
 	`, canonicalName, family, splitFamilyIDs, inferredModality).Scan(&canonicalID)
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
 	}
 
 	// Upsert into model_aliases. raw_name is also enforced lowercase here
@@ -692,9 +827,12 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 		ctx,
 		s.db,
 		cred.ID,
-		rawName,                              // provider-facing: keep casing
-		canonicalRawName,                     // client-facing lowercase key (no vendor prefix)
-		modelname.NormalizeRouteKey(rawName), // 2026-07-14: standardized_name = stripped lower
+		rawName,          // provider-facing: keep casing
+		canonicalRawName, // client-facing lowercase key (no vendor prefix)
+		// 2026-07-14: lowercase stripped form; 2026-09-10: when the raw
+		// name matched an existing standard model, standardizedName now
+		// carries that canonical name instead of a truncated raw name.
+		standardizedName,
 		&canonicalID,
 	)
 }
@@ -738,12 +876,35 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 	if db == nil {
 		return 0, "", fmt.Errorf("database not configured")
 	}
-	canonicalName = NormalizeModelName(rawName)
-	family := InferFamily(canonicalName)
-	inferredModality := modelname.InferModality(rawName)
 	if source == "" {
 		source = "discovery"
 	}
+
+	// 2026-09-10: match against the EXISTING standard-model catalog first
+	// (see upsertModel). Only when no catalog name scores above
+	// AutoLinkThreshold do we fall back to seeding a new canonical row
+	// derived from the raw name.
+	if lister, ok := db.(canonicalListQuerier); ok {
+		if ref, matched := matchExistingCanonical(ctx, lister, rawName); matched {
+			// 2026-09-11: maintenance parity with Service.upsertModel —
+			// see maintainMatchedCanonical. Best-effort (warn-only),
+			// matching the policy there.
+			if maintErr := maintainMatchedCanonical(ctx, db, ref.id, ref.name, rawName); maintErr != nil {
+				slog.Warn("matched canonical maintenance failed",
+					"canonical_id", ref.id,
+					"raw_model_name", rawName,
+					"error", maintErr)
+			}
+			if aliasErr := seedCanonicalAliases(ctx, db, rawName, ref.id, ref.name); aliasErr != nil {
+				return 0, "", aliasErr
+			}
+			return ref.id, ref.name, nil
+		}
+	}
+
+	canonicalName = NormalizeModelName(rawName)
+	family := InferFamily(canonicalName)
+	inferredModality := modelname.InferModality(rawName)
 
 	err = db.QueryRow(ctx, `
 		INSERT INTO models_canonical (canonical_name, family, tags, source, status, modality)
@@ -777,7 +938,15 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 				)
 				ELSE models_canonical.tags
 			END,
-			status = 'active',
+			// 2026-09-21: a 'disabled' canonical is an explicit operator
+			// kill — the discovery/refresh feed must never resurrect it
+			// (same rule as taxonomy_sync upsertAlias and alias_sync's
+			// WHERE status <> 'disabled' guard). Before this guard, every
+			// provider tick flipped 09-20's disabled qwen3-max-cn /
+			// deepseek-v4-*-ga rows back to 'active' (observed live).
+			status = CASE WHEN models_canonical.status = 'disabled'
+				THEN models_canonical.status
+				ELSE 'active' END,
 			modality = CASE
 				WHEN models_canonical.modality = 'text' AND $5 <> 'text'
 				THEN $5
@@ -812,6 +981,35 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 	}
 
 	return canonicalID, canonicalName, nil
+}
+
+// seedCanonicalAliases writes the alias rows that make rawName (and its
+// generated variants) resolve to canonicalID. Shared by the matched-standard
+// fast path and the legacy seed-new-canonical path of
+// EnsureCanonicalAndAliases.
+func seedCanonicalAliases(ctx context.Context, db modelcatalog.Querier, rawName string, canonicalID int, canonicalName string) error {
+	aliases := GenerateAliases(rawName, canonicalName)
+	seenAliases := make(map[string]struct{}, len(aliases))
+	for _, alias := range aliases {
+		normalizedAlias := modelname.CanonicalizeClientModel(alias)
+		if normalizedAlias == "" {
+			continue
+		}
+		if _, seen := seenAliases[normalizedAlias]; seen {
+			continue
+		}
+		seenAliases[normalizedAlias] = struct{}{}
+		if _, execErr := db.Exec(ctx, `
+			INSERT INTO model_aliases (canonical_id, raw_name, status)
+			VALUES ($1, $2, 'active')
+			ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
+				status = 'active',
+				updated_at = NOW()
+		`, canonicalID, normalizedAlias); execErr != nil {
+			return fmt.Errorf("upsert model_alias %q: %w", normalizedAlias, execErr)
+		}
+	}
+	return nil
 }
 
 // expireStaleModels marks any model_offers row that wasn't returned by the

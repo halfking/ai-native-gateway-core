@@ -24,9 +24,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
+	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 )
 
-// initSessionV2Writer 创建 SessionWriterV2 及其所有子 writer。
+// initSessionV2Writer creates SessionWriterV2 and all of its sub-writers.
 //
 // 返回 nil 当 pool 为 nil 时（no DB mode），调用方负责 nil-check。
 //
@@ -47,8 +48,154 @@ func initSessionV2Writer(pool *pgxpool.Pool) *v2.SessionWriterV2 {
 	turnLogsWriter := v2.NewTurnLogsWriter(pool)
 
 	writer := v2.NewSessionWriterV2(turnWriter, bodiesWriter, aggregator, turnLogsWriter)
+	// 706（存储优化方案 v2 S1a）：session_memora 首 turn 快照写点。
+	writer.SetMemoraWriter(v2.NewSessionMemoraWriter(pool))
+	// 733/734（会话存储解耦 v3）：session_turn_details 特征层写点。表族
+	// 缺席（733 未跑）时 writer 整体 no-op，turn+bodies 不受影响。
+	writer.SetDetailsWriter(v2.NewSessionTurnDetailsWriter(probeSessionTurnDetails(context.Background(), pool)))
 	slog.Info("session V2 writer initialized (shadow hook remains feature-gated)")
 	return writer
+}
+
+// probeSessionTurnDetails reports whether the 733 details family exists
+// (startup migrations run before serving, so a single probe suffices; a
+// transient failure reports false and the layer stays off until restart).
+func probeSessionTurnDetails(ctx context.Context, pool *pgxpool.Pool) bool {
+	if pool == nil {
+		return false
+	}
+	var exists bool
+	if err := pool.QueryRow(ctx, `
+		SELECT to_regclass('public.session_turn_details_hot') IS NOT NULL
+		   AND to_regclass('public.session_turn_details') IS NOT NULL
+	`).Scan(&exists); err != nil || !exists {
+		slog.Warn("session V2: session_turn_details family absent (migration 733 not applied); details layer off",
+			"error", err)
+		return false
+	}
+	return true
+}
+
+// startSessionAggregateOutboxReaper boots the durable retry queue for
+// session aggregate snapshot updates (audit-data-closure-C, 2026-08-31).
+//
+// The writer enqueues an outbox row in the SAME transaction as the turn
+// + bodies insert; this reaper drains it with FOR UPDATE SKIP LOCKED and
+// exponential backoff. Returning *v2.SessionAggregateOutboxReaper (the
+// concrete return of StartSessionAggregateOutboxReaper) is nil when the
+// pool is unavailable. The returned handle is what stopSessionAggregateOutboxReaper
+// uses to drain in-flight ticks before the DB pool is closed.
+func startSessionAggregateOutboxReaper(ctx context.Context, pool *pgxpool.Pool) any {
+	if pool == nil {
+		slog.Warn("session aggregate outbox reaper: nil pool, reaper disabled")
+		return nil
+	}
+	aggregator := v2.NewSessionAggregator(pool)
+	return v2.StartSessionAggregateOutboxReaper(ctx, pool, aggregator)
+}
+
+// stopSessionAggregateOutboxReaper drains the reaper's in-flight tick.
+// Nil-safe. Idempotent (Stop closes doneCh at most once).
+//
+// MUST be called BEFORE pools.CloseAll() and AFTER telemetryClient.Stop so
+// that (a) the DB connection is still usable while the final tick finishes
+// and (b) no new outbox rows are being enqueued concurrently.
+func stopSessionAggregateOutboxReaper(reaper any) {
+	if reaper == nil {
+		return
+	}
+	type stopper interface{ Stop() }
+	if s, ok := reaper.(stopper); ok {
+		s.Stop()
+		slog.Info("session aggregate outbox reaper stopped")
+	}
+}
+
+// startSessionMirrorOutboxReaper boots the durable replay queue for the
+// sessionv2mirror shadow write (spec §12 GAP 2 closure, migration 712).
+//
+// The mirror hook registers failed writes (timeout / DB error / all 8 slots
+// busy) in session_mirror_outbox with the full entry JSON as payload; this
+// reaper drains it with FOR UPDATE SKIP LOCKED and exponential backoff,
+// replaying through the same entryToProcessedRequest bridge into the same
+// SessionWriterV2 (request_id idempotent). Also wires the hook-side
+// registration pool (nil pool disables registration; the hook then falls
+// back to the in-process backlog). Controlled by
+// sessions_v2.mirror_outbox (registration, default on) and
+// sessions_v2.mirror_outbox_replay (drain, default on), both hot-reload.
+// Returning `any` keeps main.go decoupled (same pattern as the aggregate
+// outbox reaper).
+func startSessionMirrorOutboxReaper(ctx context.Context, pool *pgxpool.Pool, writer *v2.SessionWriterV2) any {
+	if pool == nil {
+		slog.Warn("session mirror outbox: nil pool, GAP-2 replay disabled")
+		sessionv2mirror.InitMirrorOutbox(nil)
+		return nil
+	}
+	sessionv2mirror.InitMirrorOutbox(pool)
+	if writer == nil {
+		slog.Warn("session mirror outbox: nil V2 writer, replay disabled (registration still active)")
+		return nil
+	}
+	return sessionv2mirror.StartMirrorOutboxReaper(ctx, pool, writer)
+}
+
+// stopSessionMirrorOutboxReaper drains the mirror outbox reaper's in-flight
+// tick. Nil-safe. MUST run before pools.CloseAll() and after
+// telemetryClient.Stop so no new registrations race the shutdown.
+func stopSessionMirrorOutboxReaper(reaper any) {
+	if reaper == nil {
+		return
+	}
+	type stopper interface{ Stop() }
+	if s, ok := reaper.(stopper); ok {
+		s.Stop()
+		slog.Info("session mirror outbox reaper stopped")
+	}
+}
+
+// startSessionDigestBackfill boots the turn-digest jsonb backfill job
+// (turn-digest 第二阶段, 2026-09-04). The job rebuilds sessiondigest
+// envelopes for session_turns rows whose digest column is still NULL
+// (pre-migration-456 turns) so the admin read path serves them from the
+// persisted column instead of an on-the-fly rebuild.
+//
+// Config (env, hot-reload not required for a bounded one-time drain):
+//
+//	SESSIONS_V2_DIGEST_BACKFILL_ENABLED (default true) — kill switch
+//	SESSIONS_V2_DIGEST_BACKFILL_RATE     (default 100)  — writes/second cap
+//	SESSIONS_V2_DIGEST_BACKFILL_BATCH    (default 100)  — rows per tx batch
+//
+// Like the outbox reaper, the returned handle is what stopSessionDigestBackfill
+// uses to drain the in-flight batch before the DB pool is closed. Returning
+// `any` keeps main.go decoupled from the concrete type (same pattern as
+// startSessionAggregateOutboxReaper).
+func startSessionDigestBackfill(ctx context.Context, pool *pgxpool.Pool) any {
+	if pool == nil {
+		slog.Warn("session digest backfill: nil pool, backfill disabled")
+		return nil
+	}
+	if !envBool("SESSIONS_V2_DIGEST_BACKFILL_ENABLED", true) {
+		slog.Info("session digest backfill disabled via SESSIONS_V2_DIGEST_BACKFILL_ENABLED")
+		return nil
+	}
+	rate := envInt("SESSIONS_V2_DIGEST_BACKFILL_RATE", 100)
+	batch := envInt("SESSIONS_V2_DIGEST_BACKFILL_BATCH", 100)
+	slog.Info("session digest backfill starting",
+		"rate_per_sec", rate, "batch", batch)
+	return v2.StartSessionDigestBackfill(ctx, pool, batch, rate)
+}
+
+// stopSessionDigestBackfill drains the backfill job's in-flight batch.
+// Nil-safe. Idempotent. MUST run before pools.CloseAll().
+func stopSessionDigestBackfill(job any) {
+	if job == nil {
+		return
+	}
+	type stopper interface{ Stop() }
+	if s, ok := job.(stopper); ok {
+		s.Stop()
+		slog.Info("session digest backfill stopped")
+	}
 }
 
 // stopSessionV2Writer drains the writer's lifecycle-managed aggregate

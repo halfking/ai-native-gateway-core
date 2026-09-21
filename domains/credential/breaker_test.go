@@ -1,11 +1,55 @@
 package credential
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
+
+func TestCircuitTransitionLogsExposeStableStateFields(t *testing.T) {
+	source, err := os.ReadFile("breaker.go")
+	if err != nil {
+		t.Fatalf("read breaker.go: %v", err)
+	}
+	text := string(source)
+	for _, logMessage := range []string{
+		"circuit half-open",
+		"circuit quarantined",
+		"circuit opened",
+		"circuit closed",
+		"circuit reset",
+	} {
+		idx := strings.Index(text, `slog.`)
+		for idx >= 0 {
+			if end := strings.Index(text[idx:], logMessage); end >= 0 {
+				idx += end
+				break
+			}
+			next := strings.Index(text[idx+len("slog."):], "slog.")
+			if next < 0 {
+				idx = -1
+				break
+			}
+			idx += len("slog.") + next
+		}
+		if idx < 0 {
+			t.Fatalf("transition log %q not found", logMessage)
+		}
+		end := idx + 350
+		if end > len(text) {
+			end = len(text)
+		}
+		entry := text[idx:end]
+		for _, field := range []string{"previous_state", "new_state", "error_kind", "cooling_duration_ms"} {
+			if !strings.Contains(entry, field) {
+				t.Fatalf("transition log %q missing stable field %q", logMessage, field)
+			}
+		}
+	}
+}
 
 func TestNewBreakerIsClosed(t *testing.T) {
 	b := New(1, 2)
@@ -200,16 +244,26 @@ func TestRateLimitExponentialBackoff(t *testing.T) {
 func TestTransientEscalation(t *testing.T) {
 	b := New(1, 1)
 
-	// 3 consecutive transient failures → escalate to exponential cooling
-	b.RecordFailure(KindTransient)
+	// R31 (audit §四#10): the escalation now follows a real exponential curve.
+	// 2 consecutive transient failures → escalate onto the UpstreamDown
+	// profile at its initial 30s step; each further sustained failure doubles
+	// the cooling (30s → 60s), capped at the profile's 30min ceiling.
 	b.RecordFailure(KindTransient)
 	b.RecordFailure(KindTransient)
 
 	b.mu.Lock()
-	cooling := time.Until(b.coolingExpires)
+	cycle1, d1 := b.coolingCycle, b.coolingExpires.Sub(b.openSince)
 	b.mu.Unlock()
-	if cooling < 28*time.Second || cooling > 32*time.Second {
-		t.Fatalf("expected ~30s cooling after escalation, got %v", cooling)
+	if cycle1 != 1 || d1 != 30*time.Second {
+		t.Fatalf("expected escalation cycle 1 with ~30s cooling, got cycle %d / %v", cycle1, d1)
+	}
+
+	b.RecordFailure(KindTransient)
+	b.mu.Lock()
+	cycle2, d2 := b.coolingCycle, b.coolingExpires.Sub(b.openSince)
+	b.mu.Unlock()
+	if cycle2 != 2 || d2 != 60*time.Second {
+		t.Fatalf("expected escalation cycle 2 with ~60s cooling, got cycle %d / %v", cycle2, d2)
 	}
 }
 
@@ -321,31 +375,35 @@ func TestManagerStats(t *testing.T) {
 	}
 }
 
-func TestManagerProbeCheck(t *testing.T) {
+// R31 (audit 2026-09-16 §四#5): the explicit probe API (ProbeCheck/CloseProbe)
+// was removed as a dead seam; this keeps the underlying half-open recovery
+// contract pinned through the live API — Allow consumes a half-open probe,
+// and RecordSuccess closes the circuit so the next Allow passes.
+func TestManagerHalfOpenRecoveryViaLiveAPI(t *testing.T) {
 	m := NewManager()
-	m.RecordFailure(1, 1, KindTransient)
-	m.RecordFailure(1, 1, KindTransient)
-	m.RecordFailure(1, 1, KindTransient)
-
-	// Should not probe while still cooling
-	if m.ProbeCheck(1, 1) {
-		t.Fatal("should not probe while open")
+	for i := 0; i < 3; i++ {
+		m.RecordFailure(1, 1, KindTransient)
 	}
 
-	// Manually expire cooling
+	// Should not allow while still cooling
+	if m.Allow(1, 1) {
+		t.Fatal("should not allow while open")
+	}
+
+	// Manually expire cooling so Allow transitions OPEN → HALF_OPEN
 	b := m.Get(1, 1)
 	b.mu.Lock()
 	b.coolingExpires = time.Now().Add(-1 * time.Second)
 	b.mu.Unlock()
 
-	if !m.ProbeCheck(1, 1) {
-		t.Fatal("should probe after cooling expiry")
+	if !m.Allow(1, 1) {
+		t.Fatal("should allow the half-open probe after cooling expiry")
 	}
 
-	// Close the probe with success
-	m.CloseProbe(1, 1, true, "")
+	// A success on the half-open probe closes the breaker
+	m.RecordSuccess(1, 1)
 	if m.Allow(1, 1) != true {
-		t.Fatal("should allow after probe success")
+		t.Fatal("should allow after probe success closes the circuit")
 	}
 }
 
@@ -696,4 +754,146 @@ func TestManagerResetSingleCredential(t *testing.T) {
 
 	// Resetting a never-created breaker is a no-op, not a panic.
 	m.Reset(42, 999)
+}
+
+// TestFreeTierCoolingProfile (2026-09-15, 245 free-capacity plan): a
+// billing_mode='free' credential cools on the shortened freeTierPolicies
+// profile — "engine busy" on a 1-concurrency free provider is a normal,
+// milliseconds-scale condition, and a 2-minute hard stop discarded usable
+// free capacity (326 circuit-open cycles / 24h on NVIDIA NIM 18/8+18/19).
+func TestFreeTierCoolingProfile(t *testing.T) {
+	m := NewManager()
+
+	// Paid breaker: KindConcurrent cools 2 minutes (default policy).
+	m.RecordFailure(1, 100, errorsx.KindConcurrent)
+	m.RecordFailure(1, 100, errorsx.KindConcurrent)
+	paid := m.Get(1, 100)
+	if paid.State() != StateOpen {
+		t.Fatalf("paid breaker should be open after 2 concurrent failures, got %s", paid.State())
+	}
+	paidCooling := parseCoolingExpires(t, paid.Stats())
+	if paidCooling < time.Minute {
+		t.Fatalf("paid concurrent cooling should be ~2min, got %v", paidCooling)
+	}
+
+	// Free breaker: same two failures, but cooling is ~5 seconds.
+	m.RecordFailureWithBillingMode(1, 200, errorsx.KindConcurrent, "free")
+	m.RecordFailureWithBillingMode(1, 200, errorsx.KindConcurrent, "free")
+	free := m.Get(1, 200)
+	if !free.IsFreeTier() {
+		t.Fatal("free breaker should be marked as free tier")
+	}
+	if free.State() != StateOpen {
+		t.Fatalf("free breaker should be open after 2 concurrent failures, got %s", free.State())
+	}
+	freeCooling := parseCoolingExpires(t, free.Stats())
+	if freeCooling > 10*time.Second {
+		t.Fatalf("free concurrent cooling should be ~5s, got %v", freeCooling)
+	}
+
+	// The free profile only applies to breakers seen with billing_mode=free;
+	// a paid credential must not inherit it.
+	if m.Get(1, 100).IsFreeTier() {
+		t.Fatal("paid breaker must not be marked free tier")
+	}
+}
+
+// TestFreeTierTransientEscalationOwnsFreeProfile: sustained transient
+// failures on a free credential still escalate, but onto the free UpstreamDown
+// profile (15s first step) instead of the paid 30s — a dead free provider
+// backs off without pinning its capacity for half-hour ceilings. R31 (audit
+// §四#10) note: the curve is real now (15s → 30s → …); the free profile's
+// 5-minute ceiling clamp is pinned in TestEscalatedCoolingBacksOffExponentially.
+func TestFreeTierTransientEscalationOwnsFreeProfile(t *testing.T) {
+	m := NewManager()
+	m.RecordFailureWithBillingMode(2, 300, errorsx.KindTransient, "free")
+	m.RecordFailureWithBillingMode(2, 300, errorsx.KindTransient, "free")
+	free := m.Get(2, 300)
+	if free.State() != StateOpen {
+		t.Fatalf("free breaker should be open after repeated transient failures, got %s", free.State())
+	}
+	free.mu.Lock()
+	cycle, d := free.coolingCycle, free.coolingExpires.Sub(free.openSince)
+	free.mu.Unlock()
+	if cycle != 1 || d != 15*time.Second {
+		t.Fatalf("free escalation should start on the free profile's 15s step, got cycle %d / %v", cycle, d)
+	}
+}
+
+// parseCoolingExpires decodes the RFC3339 cooling_expires diagnostic field
+// from Breaker.Stats into a remaining duration.
+func parseCoolingExpires(t *testing.T, stats map[string]any) time.Duration {
+	t.Helper()
+	raw, ok := stats["cooling_expires"]
+	if !ok {
+		t.Fatal("stats missing cooling_expires")
+	}
+	str, ok := raw.(string)
+	if !ok {
+		t.Fatalf("cooling_expires = %T, want string", raw)
+	}
+	ts, err := time.Parse(time.RFC3339, str)
+	if err != nil {
+		t.Fatalf("parse cooling_expires %q: %v", str, err)
+	}
+	return time.Until(ts)
+}
+
+// R31 (audit 2026-09-16 §四#10): the transient-family escalation previously
+// wrote a flat InitialCooling and never advanced coolingCycle, so the
+// "exponential" in its log was false, a sustained outage cooled the same step
+// forever, and the cycle>=5 sustained-outage alert could never fire. This pins
+// the repaired behaviour: the cycle advances and the duration follows the
+// escalated policy's exponential curve, capped at that policy's MaxCooling.
+func TestEscalatedCoolingBacksOffExponentially(t *testing.T) {
+	m := NewManager()
+
+	// Paid: escalates onto defaultPolicies[KindUpstreamDown] (30s initial,
+	// 30min ceiling): 30s → 60s → 120s …
+	b := m.GetOrCreate(9, 9)
+	b.RecordFailure(KindNetwork) // pending confirmation (threshold 2)
+	b.RecordFailure(KindNetwork) // opens, escalation cycle 1
+	b.mu.Lock()
+	cycle1, d1 := b.coolingCycle, b.coolingExpires.Sub(b.openSince)
+	b.mu.Unlock()
+	if cycle1 != 1 || d1 != 30*time.Second {
+		t.Fatalf("first escalation: cycle=%d cooling=%v, want cycle 1 / 30s", cycle1, d1)
+	}
+
+	b.RecordFailure(KindNetwork) // sustained failure → cycle 2
+	b.mu.Lock()
+	cycle2, d2 := b.coolingCycle, b.coolingExpires.Sub(b.openSince)
+	b.mu.Unlock()
+	if cycle2 != 2 || d2 != 60*time.Second {
+		t.Fatalf("second escalation: cycle=%d cooling=%v, want cycle 2 / 60s", cycle2, d2)
+	}
+
+	// Free: escalates onto freeTierPolicies[KindUpstreamDown] (15s initial,
+	// 5min ceiling) — 15s → 30s → …, and the ceiling must actually clamp
+	// instead of cooling 15s flat forever.
+	bf := m.GetOrCreate(8, 8)
+	bf.MarkFreeTier()
+	bf.RecordFailure(KindTimeout)
+	bf.RecordFailure(KindTimeout)
+	bf.mu.Lock()
+	cycleF1, dF1 := bf.coolingCycle, bf.coolingExpires.Sub(bf.openSince)
+	bf.mu.Unlock()
+	if cycleF1 != 1 || dF1 != 15*time.Second {
+		t.Fatalf("free first escalation: cycle=%d cooling=%v, want cycle 1 / 15s", cycleF1, dF1)
+	}
+
+	// Cycles 2..6: 30s, 60s, 120s, 240s, then 480s clamps to the 300s ceiling.
+	for i := 2; i <= 6; i++ {
+		bf.RecordFailure(KindTimeout)
+		bf.mu.Lock()
+		cycle, d := bf.coolingCycle, bf.coolingExpires.Sub(bf.openSince)
+		bf.mu.Unlock()
+		want := time.Duration(15 * (1 << uint(i-1)) * int(time.Second))
+		if want > 5*time.Minute {
+			want = 5 * time.Minute
+		}
+		if cycle != i || d != want {
+			t.Fatalf("free escalation cycle %d: cycle=%d cooling=%v, want %v", i, cycle, d, want)
+		}
+	}
 }

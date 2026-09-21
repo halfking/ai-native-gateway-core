@@ -454,3 +454,18 @@ func TestStreamRetry_CancelDuringBackoff(t *testing.T) {
 	}
 	t.Logf("SP-03 CancelDuringBackoff: elapsed=%v (under 100ms threshold)", elapsed)
 }
+
+func TestClassifyErrorPreservesRetryAfter(t *testing.T) {
+	classified := ClassifyError(&HTTPError{
+		StatusCode: http.StatusTooManyRequests,
+		RetryAfter: "7",
+		Err:        errors.New("rate limited"),
+	})
+	var httpErr *HTTPError
+	if !errors.As(classified.Err, &httpErr) {
+		t.Fatalf("classified error = %T, want *HTTPError", classified.Err)
+	}
+	if httpErr.RetryAfter != "7" {
+		t.Fatalf("RetryAfter = %q, want 7", httpErr.RetryAfter)
+	}
+}

@@ -600,6 +600,52 @@ func TestRecoverExpired_SuspendedSQLGuard(t *testing.T) {
 	}
 }
 
+// TestRecoverExpired_SkipsManuallyDisabled pins the 2026-09-08
+// self-check audit fix: all THREE UPDATE surfaces in RecoverExpired()
+// must carry a credential-level manual_disabled guard. Without it the
+// 1-minute tick could flip a manually-disabled credential (or its
+// bindings) back to available/ready, overriding operator intent —
+// admin UI would show a ready state the operator explicitly turned off.
+//
+// Guards asserted by reading the source:
+//  1. cmb UPDATE      → EXISTS(... c.id = cmb.credential_id AND COALESCE(c.manual_disabled, FALSE) = FALSE)
+//  2. model_offers    → EXISTS(... c.id = mo.credential_id  AND COALESCE(c.manual_disabled, FALSE) = FALSE)
+//  3. credentials     → AND COALESCE(manual_disabled, FALSE) = FALSE in the UPDATE ... WHERE
+func TestRecoverExpired_SkipsManuallyDisabled(t *testing.T) {
+	src, err := os.ReadFile("checker.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+
+	cmbGuard := regexp.MustCompile(
+		`UPDATE credential_model_bindings[\s\S]*?EXISTS\s*\(\s*` +
+			`SELECT 1 FROM credentials c\s*` +
+			`WHERE c\.id = cmb\.credential_id\s*` +
+			`AND COALESCE\(c\.manual_disabled,\s*FALSE\)\s*=\s*FALSE\s*\)`,
+	)
+	if !cmbGuard.MatchString(body) {
+		t.Fatalf("RecoverExpired cmb UPDATE lost the credential manual_disabled EXISTS guard — " +
+			"the 1-min tick would restore bindings of manually-disabled credentials")
+	}
+	moGuard := regexp.MustCompile(
+		`UPDATE model_offers[\s\S]*?EXISTS\s*\(\s*` +
+			`SELECT 1 FROM credentials c\s*` +
+			`WHERE c\.id = mo\.credential_id\s*` +
+			`AND COALESCE\(c\.manual_disabled,\s*FALSE\)\s*=\s*FALSE\s*\)`,
+	)
+	if !moGuard.MatchString(body) {
+		t.Fatalf("RecoverExpired model_offers UPDATE lost the credential manual_disabled EXISTS guard")
+	}
+	credGuard := regexp.MustCompile(
+		`UPDATE credentials[\s\S]*?AND COALESCE\(manual_disabled,\s*FALSE\)\s*=\s*FALSE`,
+	)
+	if !credGuard.MatchString(body) {
+		t.Fatalf("RecoverExpired credentials UPDATE lost the manual_disabled guard — " +
+			"manually-disabled credentials would be flipped back to availability_state='ready'")
+	}
+}
+
 // extractSnippet returns a 200-char window around the first occurrence
 // of needle in body, for nicer test failure messages.
 func extractSnippet(body, needle string) string {

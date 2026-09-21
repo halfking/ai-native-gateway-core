@@ -194,3 +194,35 @@ func TestSignToken_StampsAudience(t *testing.T) {
 		t.Fatalf("iss = %v want llm-gateway", mc["iss"])
 	}
 }
+func TestVerifyTokenRequiresIssuerAndAudience(t *testing.T) {
+	newTestSigner(t)
+	cases := []struct {
+		name     string
+		issuer   string
+		audience []string
+		wantErr  bool
+	}{
+		{"valid", "llm-gateway", []string{AudienceName}, false},
+		{"missing issuer", "", []string{AudienceName}, true},
+		{"wrong issuer", "other-service", []string{AudienceName}, true},
+		{"missing audience", "llm-gateway", nil, true},
+		{"wrong audience", "llm-gateway", []string{"other-api"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+				"user_id": 1, "tenant_id": "default", "username": "alice", "role": "user",
+				"iss": tc.issuer, "aud": tc.audience,
+				"exp": time.Now().Add(time.Hour).Unix(),
+			})
+			raw, err := tok.SignedString(jwtSecret(legacySecret))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = VerifyToken(raw, legacySecret)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}

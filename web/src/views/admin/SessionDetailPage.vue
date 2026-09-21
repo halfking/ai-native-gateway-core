@@ -3,22 +3,59 @@
  * SessionDetailPage — admin session detail (summary + request_logs turn tree).
  *
  * Turn list uses SessionTurnsTimeline (GET …/turns → session_turns_tree.go).
- * The legacy sessions_v2 turn list targeted gateway.session_turns and no longer
- * matches the registered /turns handler.
+ * Clicking a turn opens the fullscreen request detail in session-turns mode.
+ * The "view digest" button on each turn opens a side drawer showing the
+ * generated turn digest (user input, assistant output, metrics, events, tools).
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { getSessionSnapshot } from '../../api/sessions_v2'
 import { ApiError } from '../../api/_core'
 import SessionSummaryBar from '../../components/SessionSummaryBar.vue'
 import SessionTurnsTimeline from '../../components/session/SessionTurnsTimeline.vue'
+import TurnDigestDrawer from '../../components/session/TurnDigestDrawer.vue'
+import { useTurnTitleSummary } from '../../composables/useTurnTitleSummary'
+import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
 
 const route = useRoute()
+const router = useRouter()
 const sessionId = computed(() => String(route.params.id || ''))
 
 const snapshotError = ref('')
 const snapshot = ref<Record<string, unknown> | null>(null)
 let snapshotController: AbortController | null = null
+
+// Digest drawer state — opened from the inline "view digest" button on each
+// turn card. Reset on sessionId change / unmount so the drawer never points
+// at a stale turn after navigating between sessions.
+const digestOpen = ref(false)
+const digestTurnNo = ref<number | null>(null)
+// 2026-09-05 audit F2-#9: the turn detail response has no title/summary, so
+// the drawer's fallbacks come from the turns list (cached per session).
+const { ensureTurnTitleSummary, lookupTurnTitleSummary } = useTurnTitleSummary()
+const digestTitle = ref('')
+const digestSummary = ref('')
+
+function showDigest(payload: { turnNumber: number }) {
+  digestTurnNo.value = payload.turnNumber
+  digestTitle.value = ''
+  digestSummary.value = ''
+  digestOpen.value = true
+  void ensureTurnTitleSummary(sessionId.value).then(() => {
+    // Ignore the resolved lookup if the user already switched turns.
+    if (digestTurnNo.value !== payload.turnNumber) return
+    const item = lookupTurnTitleSummary(sessionId.value, payload.turnNumber)
+    digestTitle.value = item.title
+    digestSummary.value = item.summary
+  })
+}
+
+function closeDigest() {
+  digestOpen.value = false
+  digestTurnNo.value = null
+  digestTitle.value = ''
+  digestSummary.value = ''
+}
 
 async function loadSnapshot() {
   const id = sessionId.value
@@ -37,13 +74,20 @@ async function loadSnapshot() {
   }
 }
 
+function openTurn(payload: { requestId: string; turnNumber: number }) {
+  openRequestDetailPage(payload.requestId, { mode: 'session-turns' }, router)
+}
+
 onMounted(loadSnapshot)
 
 watch(sessionId, () => {
+  // Session navigation: drop any open drawer before loading the new snapshot.
+  closeDigest()
   loadSnapshot()
 })
 
 onBeforeUnmount(() => {
+  closeDigest()
   snapshotController?.abort()
 })
 </script>
@@ -63,7 +107,23 @@ onBeforeUnmount(() => {
       <div v-if="snapshotError" class="error snapshot-error" role="alert">
         会话摘要加载失败：{{ snapshotError }}
       </div>
-      <SessionTurnsTimeline v-if="sessionId" :key="sessionId" :session-id="sessionId" />
+      <SessionTurnsTimeline
+        v-if="sessionId"
+        :key="sessionId"
+        :session-id="sessionId"
+        @open-request="openTurn"
+        @show-digest="showDigest"
+      />
+      <TurnDigestDrawer
+        v-if="sessionId"
+        :model-value="digestOpen"
+        :session-id="sessionId"
+        :turn-no="digestTurnNo"
+        :title="digestTitle"
+        :summary="digestSummary"
+        @update:model-value="(value: boolean) => { if (!value) closeDigest() }"
+        @close="closeDigest"
+      />
     </div>
   </div>
 </template>
@@ -72,6 +132,7 @@ onBeforeUnmount(() => {
 .session-detail {
   background: var(--kx-bg, var(--surface-secondary));
   min-height: 100vh;
+  min-height: 100dvh;
 }
 .list {
   padding: 16px 24px;
@@ -79,9 +140,9 @@ onBeforeUnmount(() => {
   margin: 0 auto;
 }
 .error {
-  color: var(--kx-danger, #b42318);
+  color: var(--kx-danger, var(--danger));
   background: var(--kx-danger-soft, var(--danger-bg));
-  border: 1px solid color-mix(in srgb, var(--kx-danger, #b42318) 40%, var(--kx-border, #f3b4b0));
+  border: 1px solid color-mix(in srgb, var(--kx-danger, var(--danger)) 40%, var(--kx-border, var(--danger-bg)));
   padding: 10px 12px;
   border-radius: 6px;
   margin-bottom: 10px;

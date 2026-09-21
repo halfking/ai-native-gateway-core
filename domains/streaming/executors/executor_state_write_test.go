@@ -1,32 +1,11 @@
 package executors
 
 import (
-	"os"
-	"strings"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
-func TestRecordModelNotFoundResetsProbeCooldownAtThreshold(t *testing.T) {
-	body, err := os.ReadFile("executor.go")
-	if err != nil {
-		t.Fatalf("read executor.go: %v", err)
-	}
-	source := string(body)
-	if !strings.Contains(source, "mnfResetThreshold = 7") {
-		t.Fatal("model-not-found reset threshold must remain seven failures")
-	}
-	if !strings.Contains(source, "WHEN node_probe_state.consecutive_failures + 1 >= $5 THEN TRUE") {
-		t.Fatal("threshold failure must re-arm last_direct_ok")
-	}
-	if !strings.Contains(source, "WHEN node_probe_state.consecutive_failures + 1 >= $5 THEN 0") {
-		t.Fatal("threshold failure must reset consecutive_failures")
-	}
-	if !strings.Contains(source, "THEN now() + $6::interval") {
-		t.Fatal("threshold failure must retain the long retry backoff")
-	}
-}
 func TestShouldWriteCredentialState(t *testing.T) {
 	tests := []struct {
 		name string

@@ -43,6 +43,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	met "github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -309,16 +310,21 @@ type LiveRequest struct {
 	// GwSessionID is the LLM-Gateway session id (request_logs.gw_session_id)
 	// if the request was sent through a session. Empty when the request
 	// is one-off (e.g. a /v1/chat/completions call without a session).
-	GwSessionID      string   `json:"gw_session_id,omitempty"`
-	Model            string   `json:"model"`          // Standard model name (canonical preferred; 2026-07-16: outbound-only as last-resort fallback so tile matches the dimension key)
-	CanonicalName    string   `json:"canonical_name"` // Standard model name for aggregation (canonical_name in DB)
-	ModelCategory    string   `json:"model_category"`
-	ProviderCode     string   `json:"provider_code"`
-	Status           string   `json:"status"`
-	LatencyMs        *int     `json:"latency_ms,omitempty"`
-	PromptTokens     *int     `json:"prompt_tokens,omitempty"`
-	CompletionTokens *int     `json:"completion_tokens,omitempty"`
-	TotalTokens      *int     `json:"total_tokens,omitempty"`
+	GwSessionID      string `json:"gw_session_id,omitempty"`
+	Model            string `json:"model"`          // Standard model name (canonical preferred; 2026-07-16: outbound-only as last-resort fallback so tile matches the dimension key)
+	CanonicalName    string `json:"canonical_name"` // Standard model name for aggregation (canonical_name in DB)
+	ModelCategory    string `json:"model_category"`
+	ProviderCode     string `json:"provider_code"`
+	Status           string `json:"status"`
+	LatencyMs        *int   `json:"latency_ms,omitempty"`
+	PromptTokens     *int   `json:"prompt_tokens,omitempty"`
+	CompletionTokens *int   `json:"completion_tokens,omitempty"`
+	TotalTokens      *int   `json:"total_tokens,omitempty"`
+	// 2026-09-18: 缓存 token 投影（request_logs.cache_read_tokens /
+	// cache_write_tokens）。可空语义与其余 token 字段一致 —— 缺省渲染 "—"，
+	// 禁止零值冒充（前端 tooltip 计算缓存命中率时以 null 跳过）。
+	CacheReadTokens  *int     `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens *int     `json:"cache_write_tokens,omitempty"`
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
 	ErrorKind        *string  `json:"error_kind,omitempty"`
 	FailureStage     *string  `json:"failure_stage,omitempty"` // "gateway" | "upstream" — failure origin
@@ -346,6 +352,12 @@ type LiveRequest struct {
 	ParentRequestID string         `json:"parent_request_id,omitempty"`
 	RequestType     string         `json:"request_type,omitempty"`
 	Children        []*LiveRequest `json:"children,omitempty"`
+
+	// 2026-08-26: 凭据维度泳道（实时请求流"按凭据"分组的身份）。
+	// CredentialID 是稳定身份；CredentialLabel 是显示名（凭据标签），
+	// 空时由 liveStreamCredentialKey / 前端回退为 "凭据 #ID"。
+	CredentialID    int    `json:"credential_id,omitempty"`
+	CredentialLabel string `json:"credential_label,omitempty"`
 }
 
 // LiveStreamConfig controls hub behaviour. Zero values are safe and
@@ -482,11 +494,17 @@ type LiveStreamSSEHub struct {
 	// 调用 SnapshotFromDimensionQueues 数百次, 制造 ZRevRange 慢查询风暴.
 	// 改为最小刷新间隔 (默认 2s, env LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_MIN_INTERVAL):
 	// 在窗口内复用上一次成功的 delta (delta 缓存), 不重复跑 Redis pipeline.
-	lastSnapshotAtMu     sync.RWMutex
-	lastSnapshotAt       map[string]time.Time      // key = scope.cacheKey
-	lastDeltaByScope     map[string]*LiveStreamDelta // 上次成功的 delta 缓存 (供节流命中时复用)
-	lastDeltaMu          sync.RWMutex
-	snapshotMinInterval  time.Duration              // 最小刷新间隔; 0 禁用节流
+	lastSnapshotAtMu    sync.RWMutex
+	lastSnapshotAt      map[string]time.Time        // key = scope.cacheKey
+	lastDeltaByScope    map[string]*LiveStreamDelta // 上次成功的 delta 缓存 (供节流命中时复用)
+	lastDeltaMu         sync.RWMutex
+	snapshotMinInterval time.Duration // 最小刷新间隔; 0 禁用节流
+
+	// 2026-08-26: 快照终态 overlay 节流。"请求已完成但 tile 卡在 in_progress"
+	// 修复第 3 环：每个 scope 至多每 60s 对 in_progress 卡死 tile 做一次
+	// DB request_logs 状态对账（详见 overlaySnapshotTerminalStatuses）。
+	terminalOverlayMu sync.Mutex
+	terminalOverlayAt map[string]time.Time // key = scope.cacheKey（初始帧用连接级 key）
 	// 淘汰阈值统一使用 cfg.CachedSnapshotTTL，不再单独维护字段。
 
 	// Metrics (added 2026-07-03 for monitoring)
@@ -535,7 +553,7 @@ type LiveStreamSSEHub struct {
 	// Redis LIST and fans filtered batches out to SSE clients.
 	actionMu          sync.Mutex
 	actionCursor      string               // unique key of the newest processed action entry ("" = 未消费)
-	actionTenantIndex map[string]string    // request_id → tenant (bounded ownership index)
+	actionTenantIndex *lruCache            // request_id → tenant (LRU-bounded ownership index, 2026-08-27 P1 fix)
 	actionTenantMiss  map[string]time.Time // negative cache for unresolved lookups
 	actionsDelivered  int64
 	actionScanErrors  int64
@@ -658,22 +676,23 @@ func (h *LiveStreamSSEHub) fanOutNodeUpdate() {
 func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEHub {
 	cfg.defaults()
 	h := &LiveStreamSSEHub{
-		db:                db,
-		cfg:               cfg,
-		store:             NewLiveStreamRedisStore(cfg.RedisClient),
-		register:          make(chan *liveStreamClient, 16),
-		unregister:        make(chan *liveStreamClient, 16),
-		broadcast:         make(chan LiveRequest, cfg.BroadcastQueueSize),
-		clients:           make(map[*liveStreamClient]struct{}),
-		lastActivity:      time.Now(),
-		stopCh:            make(chan struct{}),
-		cachedSnapshot:    make(map[string]*cachedSnapshotEntry),
-		lastSnapshotAt:    make(map[string]time.Time),
-		lastDeltaByScope:  make(map[string]*LiveStreamDelta),
+		db:                  db,
+		cfg:                 cfg,
+		store:               NewLiveStreamRedisStore(cfg.RedisClient),
+		register:            make(chan *liveStreamClient, 16),
+		unregister:          make(chan *liveStreamClient, 16),
+		broadcast:           make(chan LiveRequest, cfg.BroadcastQueueSize),
+		clients:             make(map[*liveStreamClient]struct{}),
+		lastActivity:        time.Now(),
+		stopCh:              make(chan struct{}),
+		cachedSnapshot:      make(map[string]*cachedSnapshotEntry),
+		lastSnapshotAt:      make(map[string]time.Time),
+		lastDeltaByScope:    make(map[string]*LiveStreamDelta),
+		terminalOverlayAt:   make(map[string]time.Time),
 		snapshotMinInterval: defaultLiveStreamSnapshotMinInterval,
-		actionTenantIndex: make(map[string]string),
-		actionTenantMiss:  make(map[string]time.Time),
-		instanceID:        generateLiveStreamInstanceID(),
+		actionTenantIndex:   newLRUCache(actionTenantIndexCap), // 2026-08-27 P1 fix: use LRU instead of random eviction
+		actionTenantMiss:    make(map[string]time.Time),
+		instanceID:          generateLiveStreamInstanceID(),
 		// 2026-08-25 (fix-154): 异步化基础设施。actionTrigger cap=1 ——
 		// 主循环非阻塞投递, worker 忙时 tick 合并; recordQueue cap 见
 		// live_stream_async.go 的 recordQueueCapacity。done chan 由各自
@@ -708,6 +727,26 @@ func generateLiveStreamInstanceID() string {
 		return fmt.Sprintf("h-%d", time.Now().UnixNano())
 	}
 	return fmt.Sprintf("h-%s", hex.EncodeToString(b[:]))
+}
+
+// tryRegister sends the client to the hub without ever blocking the HTTP
+// handler goroutine: when the run loop is wedged by a slow client or the
+// hub is stopping, a bare `h.register <- c` send would leak the whole SSE
+// connection handler (goroutine + socket) forever.
+func (h *LiveStreamSSEHub) tryRegister(client *liveStreamClient, ctx context.Context) bool {
+	t := time.NewTimer(3 * time.Second)
+	defer t.Stop()
+	select {
+	case h.register <- client:
+		return true
+	case <-h.stopCh:
+		return false
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		slog.Warn("live stream hub register timed out; run loop wedged")
+		return false
+	}
 }
 
 // Run drives the hub event loop. Blocks until Stop() is called.
@@ -844,6 +883,12 @@ func (h *LiveStreamSSEHub) Run() {
 			h.fanOutKeepalive()
 		case <-cacheCleanupTicker.C:
 			h.evictStaleCachedSnapshots()
+			// 2026-08-29: 这 4 个 sync.Map 是懒加载 + 永不过期 (Store on miss,
+			// 从无 Delete/Range 淘汰), 随 catalog 规模只增不减。虽然按 catalog
+			// 基数有界, 但在 245 3.5G/3G-cgroup 主机上仍属于无谓的常驻内存。
+			// 复用清理 ticker 周期性 Clear, 下次访问重新查 DB (catalog 稳定,
+			// 重查代价极低), 防止其无限常驻。
+			h.evictStaleLabelCaches()
 		case <-healthTicker.C:
 			h.checkAndBroadcastHealth()
 		case <-snapshotRefreshTicker.C:
@@ -1012,6 +1057,10 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 		return nil
 	}
 
+	// 2026-08-26: 终态 overlay —— 把卡死在 in_progress 的 tile 用 DB 终态纠正
+	// （per-scope 60s 节流，避免每个 2s tick 打 DB）。
+	snapshot = h.maybeOverlaySnapshotTerminal(ctx, scope.cacheKey, snapshot)
+
 	delta := ComputeDelta(cached, snapshot)
 	h.cachedSnapshot[scope.cacheKey] = &cachedSnapshotEntry{
 		snapshot:     snapshot,
@@ -1028,6 +1077,21 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 	return delta
 }
 
+// evictStaleLabelCaches periodically clears the four lazy sync.Map label
+// caches (providerCache / credentialLabelCache / modelFamilyCache /
+// canonicalCache). They are populated on every miss via Store() and never
+// evicted, so they only grow with catalog cardinality for the process
+// lifetime. Clearing them on the cleanup ticker forces a cheap re-query on
+// next access — bounded, never-leaking memory under the 3GB cgroup.
+//
+// 2026-08-29: see cacheCleanupTicker handler.
+func (h *LiveStreamSSEHub) evictStaleLabelCaches() {
+	h.providerCache.Clear()
+	h.credentialLabelCache.Clear()
+	h.modelFamilyCache.Clear()
+	h.canonicalCache.Clear()
+}
+
 // evictStaleCachedSnapshots removes cached snapshots for scopes that are both
 // inactive and older than CachedSnapshotTTL. Connected SSE clients retain
 // their scope baseline so their next request continues as a delta rather than
@@ -1036,6 +1100,8 @@ func (h *LiveStreamSSEHub) evictStaleCachedSnapshots() {
 	now := time.Now()
 	activeScopes := h.activeScopes()
 	var evicted int64
+
+	// Clean cachedSnapshot map
 	h.cachedSnapshotMu.Lock()
 	for key, entry := range h.cachedSnapshot {
 		if _, active := activeScopes[key]; active {
@@ -1048,6 +1114,58 @@ func (h *LiveStreamSSEHub) evictStaleCachedSnapshots() {
 	}
 	remain := int64(len(h.cachedSnapshot))
 	h.cachedSnapshotMu.Unlock()
+
+	// Clean actionTenantMiss map (P1-7)
+	h.actionMu.Lock()
+	for key, ts := range h.actionTenantMiss {
+		if _, active := activeScopes[key]; active {
+			continue
+		}
+		if now.Sub(ts) > h.cfg.CachedSnapshotTTL {
+			delete(h.actionTenantMiss, key)
+		}
+	}
+	h.actionMu.Unlock()
+
+	// Clean lastDeltaByScope map (P1-7)
+	h.lastDeltaMu.Lock()
+	for key := range h.lastDeltaByScope {
+		if _, active := activeScopes[key]; active {
+			continue
+		}
+		// Check lastSnapshotAt to determine staleness
+		h.lastSnapshotAtMu.RLock()
+		lastAccess, exists := h.lastSnapshotAt[key]
+		h.lastSnapshotAtMu.RUnlock()
+		if !exists || now.Sub(lastAccess) > h.cfg.CachedSnapshotTTL {
+			delete(h.lastDeltaByScope, key)
+		}
+	}
+	h.lastDeltaMu.Unlock()
+
+	// Clean lastSnapshotAt map (P1-7)
+	h.lastSnapshotAtMu.Lock()
+	for key, ts := range h.lastSnapshotAt {
+		if _, active := activeScopes[key]; active {
+			continue
+		}
+		if now.Sub(ts) > h.cfg.CachedSnapshotTTL {
+			delete(h.lastSnapshotAt, key)
+		}
+	}
+	h.lastSnapshotAtMu.Unlock()
+
+	// Clean terminalOverlayAt map (P1-7)
+	h.terminalOverlayMu.Lock()
+	for key, ts := range h.terminalOverlayAt {
+		if _, active := activeScopes[key]; active {
+			continue
+		}
+		if now.Sub(ts) > h.cfg.CachedSnapshotTTL {
+			delete(h.terminalOverlayAt, key)
+		}
+	}
+	h.terminalOverlayMu.Unlock()
 
 	atomic.AddInt64(&h.cachedSnapshotEvictions, evicted)
 
@@ -1119,6 +1237,8 @@ func (h *LiveStreamSSEHub) pushScopeSnapshot(tenantID string, isSuper bool) {
 	}
 
 	scope := newLiveStreamScope(tenantID, isSuper)
+	// 2026-08-26: 周期性全量刷新也带上终态 overlay（约束见函数 doc）。
+	snapshot = h.maybeOverlaySnapshotTerminal(ctx, scope.cacheKey, snapshot)
 	env := LiveStreamEnvelope{
 		Type:      "snapshot_refresh",
 		Timestamp: time.Now().UTC(),
@@ -1876,6 +1996,15 @@ func (h *LiveStreamSSEHub) writeEvent(c *liveStreamClient, data []byte) bool {
 			c.closed = true
 		}
 	}()
+	// Write deadline: a client that stopped reading but holds the TCP
+	// connection open would otherwise block this write at the kernel
+	// buffer, wedging the entire fan-out loop (every other client and the
+	// register/unregister paths). Deadline-wise eviction trades one slow
+	// client for the health of all others.
+	rc := http.NewResponseController(c.w)
+	if err := rc.SetWriteDeadline(time.Now().Add(5 * time.Second)); err == nil {
+		defer rc.SetWriteDeadline(time.Time{}) //nolint:errcheck // clear for keepalive cadence
+	}
 	if _, err := fmt.Fprintf(c.w, "event: message\ndata: %s\n\n", data); err != nil {
 		return false
 	}
@@ -2155,8 +2284,21 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 		tenantID: tenantID,
 		isSuper:  isSuper,
 	}
-	h.register <- client
-	defer func() { h.unregister <- client }()
+	// Register with interruptible sends: when the hub run-loop is wedged
+	// (slow clients blocking fan-out) or shutting down, a blocking send here
+	// would leak the request goroutine and its socket.
+	if !h.tryRegister(client, r.Context()) {
+		http.Error(w, "live stream unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer func() {
+		select {
+		case h.unregister <- client:
+		case <-h.stopCh:
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}()
 
 	// Initial replay (oldest → newest so client renders left-to-right).
 	// Include current Redis health so the client can show warnings immediately.
@@ -2176,6 +2318,9 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 				snapshot = ss
 			}
 		}
+		// 2026-08-26: 初始帧用 DB 终态纠正卡死的 in_progress tile（连接级
+		// 触发，不走 scope 节流 —— 连接建立本来就是低频事件）。
+		snapshot = h.overlaySnapshotTerminalStatuses(r.Context(), snapshot)
 		data, mErr := json.Marshal(LiveStreamEnvelope{
 			Type:      "initial_data",
 			Timestamp: time.Now().UTC(),
@@ -2219,7 +2364,10 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 	if h.store != nil {
 		items, err := h.store.Replay(ctx, tenantID, isSuper, limit)
 		if err == nil && len(items) > 0 {
-			return items, nil
+			// 2026-08-26: Redis 回放可能含有卡死的 in_progress tile（forwarder
+			// 丢弃 persisted 终态 / Record 锁失败等遗留路径）。用 DB
+			// request_logs 的终态覆盖一次，让卡住 tile 在初始帧即被纠正。
+			return h.overlayTerminalStatuses(ctx, items), nil
 		}
 		if err != nil {
 			slog.Debug("live stream redis replay failed", "err", err.Error())
@@ -2254,8 +2402,12 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		       rl.prompt_tokens,
 		       rl.completion_tokens,
 		       rl.total_tokens,
+		       rl.cache_read_tokens,
+		       rl.cache_write_tokens,
 		       rl.cost_usd::float8,
-		       rl.error_kind
+		       rl.error_kind,
+		       COALESCE(rl.credential_id, 0) AS credential_id,
+		       COALESCE(c.label, '') AS credential_label
 		FROM request_logs_with_current_month rl
 		LEFT JOIN credentials c ON c.id = rl.credential_id
 		LEFT JOIN providers p ON p.id = COALESCE(c.provider_id, rl.provider_id)
@@ -2279,7 +2431,8 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		if err := rows.Scan(
 			&r.RequestID, &ts, &r.TenantID, &r.GwSessionID, &r.Model,
 			&r.CanonicalName, &r.ProviderCode, &r.Status, &r.LatencyMs, &r.PromptTokens,
-			&r.CompletionTokens, &r.TotalTokens, &r.CostUSD, &r.ErrorKind,
+			&r.CompletionTokens, &r.TotalTokens, &r.CacheReadTokens, &r.CacheWriteTokens, &r.CostUSD, &r.ErrorKind,
+			&r.CredentialID, &r.CredentialLabel,
 		); err != nil {
 			continue
 		}
@@ -2311,6 +2464,157 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// liveStreamTerminalOverlayMinAge 只覆盖"明显卡住"的进行中 tile：正常 LLM
+// 请求在数秒~一两分钟内会由 persisted 终态补偿更新；超过该阈值还在
+// in_progress 的大概率是补偿丢失，需要以 DB request_logs 为准纠正。
+const liveStreamTerminalOverlayMinAge = 90 * time.Second
+
+// liveStreamSnapshotOverlayInterval 限制快照级 overlay 的数据库访问频率
+// （computeScopeDelta 每 2s tick 都会被调用，不能让每个 tick 打 DB）。
+const liveStreamSnapshotOverlayInterval = 60 * time.Second
+
+// overlayTerminalStatuses 用 DB request_logs 的终态覆盖 Redis 回放中仍停在
+// in_progress 的请求。仅查询比 liveStreamTerminalOverlayMinAge 更旧的
+// in_progress 请求；无 DB / 无候选时原样返回。2026-08-26: "请求已完成但
+// tile 非终态" 修复的第 3 环（回放兜底）。
+func (h *LiveStreamSSEHub) overlayTerminalStatuses(ctx context.Context, items []LiveRequest) []LiveRequest {
+	if h == nil || h.db == nil || len(items) == 0 {
+		return items
+	}
+	cutoff := time.Now().Add(-liveStreamTerminalOverlayMinAge)
+	var stale []string
+	for _, item := range items {
+		if item.Type == "idle_marker" {
+			continue
+		}
+		if status := strings.TrimSpace(item.Status); status != "" && status != "in_progress" {
+			continue
+		}
+		ts, err := time.Parse(time.RFC3339, item.Ts)
+		if err != nil || ts.After(cutoff) {
+			continue
+		}
+		stale = append(stale, item.RequestID)
+	}
+	if len(stale) == 0 {
+		return items
+	}
+	statuses := h.terminalStatusesFromDB(ctx, stale)
+	if len(statuses) == 0 {
+		return items
+	}
+	for i := range items {
+		if st, ok := statuses[items[i].RequestID]; ok && st != "" {
+			items[i].Status = st
+		}
+	}
+	return items
+}
+
+// terminalStatusesFromDB 批量查询给定 request_id 的 DB 终态（排除
+// in_progress / 空）。问不到/失败返回空 map —— best-effort，
+// overlay 失败不阻塞 SSE。
+func (h *LiveStreamSSEHub) terminalStatusesFromDB(ctx context.Context, requestIDs []string) map[string]string {
+	if h == nil || h.db == nil || len(requestIDs) == 0 {
+		return nil
+	}
+	qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	rows, err := h.db.Query(qctx, `
+		SELECT request_id, request_status
+		FROM request_logs_with_current_month
+		WHERE request_id = ANY($1)
+		  AND COALESCE(request_status, '') NOT IN ('', 'in_progress')
+	`, requestIDs)
+	if err != nil {
+		slog.Debug("live stream terminal overlay query failed", "count", len(requestIDs), "err", err.Error())
+		return nil
+	}
+	defer rows.Close()
+	out := make(map[string]string, len(requestIDs))
+	for rows.Next() {
+		var id, status string
+		if err := rows.Scan(&id, &status); err != nil {
+			continue
+		}
+		out[id] = status
+	}
+	return out
+}
+
+// overlaySnapshotTerminalStatuses 快照级终态覆盖：对快照中所有维度的
+// in_progress tile（且 tile 比阈值更旧）用 DB 终态纠正。调用点：
+// HandleLiveStream 初始帧 / computeScopeDelta (带 per-scope 60s 节流) /
+// pushScopeSnapshot。无 DB、快照无卡死 tile 时零开销返回原快照。
+func (h *LiveStreamSSEHub) overlaySnapshotTerminalStatuses(ctx context.Context, snapshot *LiveStreamSnapshot) *LiveStreamSnapshot {
+	if h == nil || h.db == nil || snapshot == nil {
+		return snapshot
+	}
+	cutoff := time.Now().Add(-liveStreamTerminalOverlayMinAge)
+	stale := make([]string, 0, 64)
+	seen := map[string]struct{}{}
+	for _, lanes := range snapshot.Dimensions {
+		for _, lane := range lanes {
+			for i := range lane.Requests {
+				tile := &lane.Requests[i]
+				if tile.Status != "in_progress" || tile.RequestID == "" || strings.HasPrefix(tile.RequestID, "idle-") {
+					continue
+				}
+				ts, err := time.Parse(time.RFC3339, tile.Timestamp)
+				if err != nil || ts.After(cutoff) {
+					continue
+				}
+				if _, ok := seen[tile.RequestID]; !ok {
+					seen[tile.RequestID] = struct{}{}
+					stale = append(stale, tile.RequestID)
+				}
+			}
+		}
+	}
+	if len(stale) == 0 {
+		return snapshot
+	}
+	statuses := h.terminalStatusesFromDB(ctx, stale)
+	if len(statuses) == 0 {
+		return snapshot
+	}
+	fixed := 0
+	for _, lanes := range snapshot.Dimensions {
+		for _, lane := range lanes {
+			for i := range lane.Requests {
+				if st, ok := statuses[lane.Requests[i].RequestID]; ok && st != "" {
+					lane.Requests[i].Status = st
+					met.RecordLiveStreamTileOverlayDBLookup(st)
+					fixed++
+				}
+			}
+		}
+	}
+	if fixed > 0 {
+		slog.Info("live stream: overlaid terminal statuses from DB on snapshot",
+			"fixed_tiles", fixed, "stale_checked", len(stale))
+	}
+	return snapshot
+}
+
+// maybeOverlaySnapshotTerminal 是 overlaySnapshotTerminalStatuses 的节流封装：
+// 同一 scope 每 liveStreamSnapshotOverlayInterval 至多打一次 DB。初始帧
+// 等低频路径可传 force=true（HandleLiveStream 的连接级调用）。
+func (h *LiveStreamSSEHub) maybeOverlaySnapshotTerminal(ctx context.Context, scopeKey string, snapshot *LiveStreamSnapshot) *LiveStreamSnapshot {
+	if h == nil || h.db == nil || snapshot == nil {
+		return snapshot
+	}
+	h.terminalOverlayMu.Lock()
+	last, ok := h.terminalOverlayAt[scopeKey]
+	if ok && time.Since(last) < liveStreamSnapshotOverlayInterval {
+		h.terminalOverlayMu.Unlock()
+		return snapshot
+	}
+	h.terminalOverlayAt[scopeKey] = time.Now()
+	h.terminalOverlayMu.Unlock()
+	return h.overlaySnapshotTerminalStatuses(ctx, snapshot)
 }
 
 // classifyModelCategoryFallback provides pattern-based vendor classification
@@ -2513,6 +2817,14 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 			v := int(*entry.CreditsCharged)
 			out.CreditsCharged = &v
 		}
+		// 2026-09-18: 缓存 token 投影（telemetry 已持久化 cache_read/write_tokens，
+		// 这里只透传，可空语义保持）。
+		if entry.CacheReadTokens != nil {
+			out.CacheReadTokens = entry.CacheReadTokens
+		}
+		if entry.CacheWriteTokens != nil {
+			out.CacheWriteTokens = entry.CacheWriteTokens
+		}
 		if entry.GwSessionID != nil && out.GwSessionID == "" {
 			out.GwSessionID = strings.TrimSpace(*entry.GwSessionID)
 		}
@@ -2526,63 +2838,6 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 		}
 	}
 
-	return out
-}
-
-// QueryChildRequests (2026-08-13, V3.2 BE-A3) returns the child/extended
-// requests (title_gen / summary / sensitive_check / compression / other)
-// linked to a parent request via request_logs.parent_request_id.
-// Used by the homepage live-stream to render the parent/child tree.
-// Depth is capped at 3 with a visited-set cycle guard. PG is the source of
-// truth (migration 510 added the parent_request_id partial index); Redis is
-// not used here because child links are queried on demand, not streamed.
-func (h *LiveStreamSSEHub) QueryChildRequests(ctx context.Context, parentRequestID string) []*LiveRequest {
-	if h.db == nil || parentRequestID == "" {
-		return nil
-	}
-	const maxDepth = 3
-	visited := map[string]bool{parentRequestID: true}
-	var out []*LiveRequest
-	var walk func(parentID string, depth int)
-	walk = func(parentID string, depth int) {
-		if depth > maxDepth {
-			return
-		}
-		rows, err := h.db.Query(ctx, `
-			SELECT request_id, COALESCE(request_type,'main'), COALESCE(request_status,''),
-			       latency_ms, success
-			FROM request_logs_hot
-			WHERE parent_request_id = $1
-			ORDER BY ts ASC
-			LIMIT 20`, parentID)
-		if err != nil {
-			slog.Debug("query child requests failed", "parent", parentID, "error", err)
-			return
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var rid, rtype, status string
-			var latency *int
-			var success bool
-			if rows.Scan(&rid, &rtype, &status, &latency, &success) != nil {
-				continue
-			}
-			if visited[rid] {
-				continue // 循环保护
-			}
-			visited[rid] = true
-			child := &LiveRequest{
-				RequestID:       rid,
-				RequestType:     normalizeLiveRequestType(rtype),
-				Status:          status,
-				LatencyMs:       latency,
-				ParentRequestID: parentRequestID,
-			}
-			out = append(out, child)
-			walk(rid, depth+1) // 递归子请求的子请求（深度≤3）
-		}
-	}
-	walk(parentRequestID, 1)
 	return out
 }
 

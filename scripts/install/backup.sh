@@ -40,13 +40,16 @@ if [[ -f "${INSTALL_DIR}/VERSION" ]]; then
 fi
 
 # 备份数据库
+# 2026-09-07: 默认 PG 用户走 LLM_GATEWAY_PG_USER；本地 llm-gateway-pg
+# 唯一登录角色是 llm_gateway（旧默认 postgres 在该容器上不存在）。
 echo ""
 echo "📦 备份数据库..."
 if command -v pg_dump &>/dev/null && [[ -f "${INSTALL_DIR}/config/config.yaml" ]]; then
     DB_PASS=$(grep "password:" "${INSTALL_DIR}/config/config.yaml" | awk '{print $2}' || echo "")
     if [[ -n "$DB_PASS" ]]; then
         DB_NAME=$(grep "database:" "${INSTALL_DIR}/config/config.yaml" | awk '{print $2}' || echo "llm_gateway")
-        if PGPASSWORD="$DB_PASS" pg_dump -h localhost -U postgres "$DB_NAME" > "$BACKUP_PATH/database.sql" 2>/dev/null; then
+        DB_USER="${LLM_GATEWAY_PG_USER:-llm_gateway}"
+        if PGPASSWORD="$DB_PASS" pg_dump -h localhost -U "$DB_USER" "$DB_NAME" > "$BACKUP_PATH/database.sql" 2>/dev/null; then
             SIZE=$(du -h "$BACKUP_PATH/database.sql" | cut -f1)
             echo "   ✅ database.sql ($SIZE)"
         fi

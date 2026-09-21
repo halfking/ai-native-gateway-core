@@ -1,6 +1,7 @@
 package credential
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -23,6 +24,18 @@ const (
 // invalid (mirrors OmniRoute apiKeyRotator.ts FAILURE_THRESHOLD = 2).
 const failureThreshold = 2
 
+// DefaultInvalidCooldown is how long a KeyStatusInvalid key stays out of
+// rotation before the sweeper auto-recovers it back to active. Tuned for the
+// common transient case: provider-side rate-limit window or a brief 401
+// during a key-rotation overlap — typically a few minutes, but operators
+// may need up to ~15 minutes for an upstream quota window to roll over.
+const DefaultInvalidCooldown = 15 * time.Minute
+
+// DefaultSweepInterval is how often the background sweeper runs to flip
+// stale-invalid keys back to active. Small relative to DefaultInvalidCooldown
+// so recovered keys become eligible promptly after their cooldown elapses.
+const DefaultSweepInterval = 1 * time.Minute
+
 // keyHealth is the in-memory per-key health record. Not persisted; a process
 // restart resets all keys to active (intentional, matches OmniRoute behavior).
 type keyHealth struct {
@@ -32,6 +45,11 @@ type keyHealth struct {
 	totalFailures       int64
 	lastSuccess         time.Time
 	lastFailure         time.Time
+	// invalidSince is stamped the first time the key transitions to
+	// KeyStatusInvalid. Used by the sweeper to auto-recover stale invalid
+	// keys back to active after DefaultInvalidCooldown elapses. Zero for
+	// keys that have never been invalid.
+	invalidSince time.Time
 }
 
 // KeyRotator holds per-credential multi-key rotation state. It is the Go
@@ -49,6 +67,17 @@ type KeyRotator struct {
 	states map[int][]keyHealth
 	// round-robin cursors per credential.
 	cursors map[int]int
+
+	// sweepOnce guards sweeper goroutine start/stop so StartSweeper is
+	// idempotent across calls.
+	sweepOnce sync.Once
+	// sweepMu guards sweepCancel access in StopSweeper — concurrent stop
+	// calls (or a stop racing a fresh start) must not panic or double-cancel.
+	sweepMu sync.Mutex
+	// sweepCancel is set by StartSweeper to terminate the background sweep
+	// goroutine on shutdown. nil if the sweeper was never started or has
+	// been stopped.
+	sweepCancel context.CancelFunc
 }
 
 // NewKeyRotator creates an empty rotator.
@@ -172,6 +201,7 @@ func (kr *KeyRotator) RecordKeyFailure(credentialID, idx int, kind errorsx.Error
 	if states[idx].consecutiveFailures >= failureThreshold {
 		if states[idx].status != KeyStatusInvalid {
 			states[idx].status = KeyStatusInvalid
+			states[idx].invalidSince = time.Now()
 			return true
 		}
 	} else if states[idx].consecutiveFailures > 0 {
@@ -211,6 +241,7 @@ func (kr *KeyRotator) ResetKey(credentialID, idx int) {
 	}
 	states[idx].status = KeyStatusActive
 	states[idx].consecutiveFailures = 0
+	states[idx].invalidSince = time.Time{}
 }
 
 // ResetCredential drops all in-memory key state for a credential. The next
@@ -229,4 +260,95 @@ func (kr *KeyRotator) KeyCount(credentialID int) int {
 	kr.mu.Lock()
 	defer kr.mu.Unlock()
 	return len(kr.states[credentialID])
+}
+
+// SweepInvalid flips every KeyStatusInvalid key whose invalidSince is older
+// than cooldown back to KeyStatusActive and zeroes its consecutiveFailures.
+// Terminal keys are intentionally NOT touched — they mark non-recoverable
+// failures (402 balance, revoked auth) that only an admin ResetKey or
+// re-issuance can lift.
+//
+// now is injected so tests can drive a synthetic clock; cooldown <= 0 uses
+// DefaultInvalidCooldown. Returns the number of keys recovered so callers
+// can log/meter the event.
+func (kr *KeyRotator) SweepInvalid(now time.Time, cooldown time.Duration) int {
+	if cooldown <= 0 {
+		cooldown = DefaultInvalidCooldown
+	}
+	kr.mu.Lock()
+	defer kr.mu.Unlock()
+	recovered := 0
+	for credID, states := range kr.states {
+		for idx := range states {
+			if states[idx].status != KeyStatusInvalid {
+				continue
+			}
+			if states[idx].invalidSince.IsZero() {
+				// Defensive: invalid status without a timestamp (only reachable
+				// if a future migration leaves one dangling). Treat as stale
+				// so it isn't skipped forever.
+				states[idx].invalidSince = now
+				continue
+			}
+			if now.Sub(states[idx].invalidSince) < cooldown {
+				continue
+			}
+			states[idx].status = KeyStatusActive
+			states[idx].consecutiveFailures = 0
+			states[idx].invalidSince = time.Time{}
+			recovered++
+			slog.Info("keyrotator: stale invalid key recovered to active",
+				"credential_id", credID, "key_index", idx,
+				"cooldown", cooldown.String())
+		}
+	}
+	return recovered
+}
+
+// StartSweeper launches a background goroutine that periodically calls
+// SweepInvalid with DefaultInvalidCooldown / DefaultSweepInterval. The
+// sweeper runs until StopSweeper is called or the rotator is replaced.
+//
+// Idempotent: a second call while the sweeper is already running is a
+// no-op. The rotator itself remains safe for concurrent use regardless of
+// whether the sweeper is running.
+//
+// Note: callers that want to restart the sweeper after a stop must construct
+// a fresh rotator — KeyRotator is cheap (no I/O), so this is the simplest
+// race-free design and matches the rotator's process-lifetime ownership.
+func (kr *KeyRotator) StartSweeper(parent context.Context) {
+	kr.sweepOnce.Do(func() {
+		ctx, cancel := context.WithCancel(parent)
+		kr.sweepCancel = cancel
+		go kr.sweepLoop(ctx)
+	})
+}
+
+// StopSweeper terminates the background sweeper if it was started. Safe to
+// call from multiple goroutines and idempotent; a no-op when the sweeper
+// was never started.
+func (kr *KeyRotator) StopSweeper() {
+	// Ensure Do's once-handle has run if StartSweeper was never called,
+	// so we don't race with a future StartSweeper reading sweepCancel.
+	kr.sweepOnce.Do(func() {})
+	kr.sweepMu.Lock()
+	cancel := kr.sweepCancel
+	kr.sweepCancel = nil
+	kr.sweepMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (kr *KeyRotator) sweepLoop(ctx context.Context) {
+	ticker := time.NewTicker(DefaultSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			kr.SweepInvalid(time.Now(), DefaultInvalidCooldown)
+		}
+	}
 }

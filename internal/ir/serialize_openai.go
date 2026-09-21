@@ -3,6 +3,10 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
+	"github.com/kaixuan/llm-gateway-go/internal/reasoncap"
+	"github.com/kaixuan/llm-gateway-go/internal/reasonnorm"
 )
 
 // SerializeOpenAI serializes an InternalRequest into an OpenAI Chat Completions request body.
@@ -20,17 +24,10 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 		out["max_tokens"] = req.MaxTokens
 	}
 
-	// Streaming — ALWAYS serialize the stream flag (including when false).
-	//
-	// 2026-08-21 fix (glm-5.2 / minimax-m3 stability A/B): the prior `if true`
-	// gate silently dropped the field for `stream:false` requests. OpenAI
-	// Chat Completions spec defaults to non-streaming when the field is
-	// absent, but several proxy layers we route through (NVIDIA NIM, the
-	// aliyun-backed oneapi endpoint at 129.146.135.219:3000) interpret the
-	// absent field as streaming-by-default and respond with `text/event-stream`
-	// containing only a boilerplate `{"choices":[],"usage":{...}}` chunk.
-	// Explicit `stream:false` in the outgoing body fixes the round-trip.
-	out["stream"] = req.Stream
+	// Streaming
+	if req.Stream {
+		out["stream"] = true
+	}
 
 	// Sampling parameters
 	if req.Temperature != nil {
@@ -158,9 +155,15 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 
 	// Messages (system prompt becomes first message)
 	messages := serializeOpenAIMessages(req)
+	// 2026-09-18 P5（MiniMax thinking 事故收尾）: Anthropic/Gemini 入向的
+	// 推理意图（ir.Thinking / Reasoning.BudgetTokens）在此前只走 loss 上报、
+	// 从不出向 —— Claude Code 经网关到 MiniMax/DeepSeek 等 OpenAI 形态上游
+	// 时推理意图被静默丢弃。现按 TargetProvider 方言经 reasonnorm.Render
+	// 输出；方言无法表达时维持原 loss 上报。
+	thinkingRendered := applyThinkingToOpenAIChat(out, req)
 	// Step 4.10 (2026-07-28): emit explicit anomaly when source fields
 	// cannot be expressed on the OpenAI Chat Completions wire format.
-	reportSerializeOpenAILosses(req)
+	reportSerializeOpenAILosses(req, thinkingRendered)
 	if len(messages) > 0 {
 		out["messages"] = messages
 	}
@@ -204,15 +207,181 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// applyThinkingToOpenAIChat renders request-level reasoning intent that the
+// OpenAI Chat wire has no native field for into the target provider's
+// reasoning dialect, and reports whether anything was written to out.
+//
+// 2026-09-18 P5（MiniMax thinking 事故收尾）: parse_anthropic consumes
+// `thinking` into ir.Thinking and parse_gemini maps thinkingConfig into
+// Reasoning{Type:"enabled",BudgetTokens}; before this hook both were only
+// reported as protocol loss by reportSerializeOpenAILosses, so Anthropic-
+// protocol clients (Claude Code) and Gemini-protocol clients routed to
+// OpenAI-form thinking upstreams (MiniMax M3, DeepSeek, GLM, Ark, Qwen)
+// silently lost their reasoning intent.
+//
+// Dialect keying follows the 2026-09-18 incident lesson: the dialect comes
+// from req.TargetProvider (resolveTargetDialect), never from the model name.
+// reasoncap.Resolve is deliberately NOT used here — it keys caps by model
+// name, which is the exact failure class that made the original fix inert
+// (a claude-* model name routed to a MiniMax upstream would resolve
+// Anthropic caps and emit an Anthropic thinking object at an OpenAI-wire
+// upstream). We instead synthesize minimal Caps from the target dialect;
+// clamping against model-specific budget ranges is therefore not performed,
+// which is safe because every dialect in the family collapses the intent to
+// a bare type toggle (no budget fields reach the wire).
+//
+// Dialects covered: minimax / deepseek / glm / ark / qwen — the generic
+// thinking-object family plus Qwen's enable_thinking. kimi / grok / mistral
+// / vllm / ollama and unknown dialects stay on the loss-report path: their
+// OpenAI-wire reasoning surfaces are either unverified against this gateway
+// (kimi) or effort-only field shapes we do not want to guess at. Plain
+// openai_chat targets are unchanged too — an Anthropic thinking object is
+// not valid there and dropping it (with the loss report) remains correct.
+//
+// Keys already present in out are never overwritten (IR/serializer output
+// wins, mirroring restoreExtensions).
+func applyThinkingToOpenAIChat(out map[string]any, req *InternalRequest) bool {
+	if req == nil {
+		return false
+	}
+	intent, haveIntent := openAIReasoningIntent(req)
+	if !haveIntent {
+		return false
+	}
+	dst := resolveTargetDialect(req, ProtocolOpenAIChat)
+	caps, ok := syntheticReasonCaps(dst)
+	if !ok {
+		return false
+	}
+	res := reasonnorm.Render(intent, caps, req.MaxTokens)
+	if res.IsEmpty() {
+		return false
+	}
+	rendered := false
+	if res.ThinkingObject != nil {
+		if _, exists := out["thinking"]; !exists {
+			out["thinking"] = res.ThinkingObject
+			rendered = true
+		}
+	}
+	if res.EnableThinking != nil {
+		if _, exists := out["enable_thinking"]; !exists {
+			out["enable_thinking"] = *res.EnableThinking
+			rendered = true
+		}
+	}
+	if res.ThinkingBudget != nil {
+		if _, exists := out["thinking_budget"]; !exists {
+			out["thinking_budget"] = *res.ThinkingBudget
+			rendered = true
+		}
+	}
+	if res.ReasoningEffort != "" {
+		if _, exists := out["reasoning_effort"]; !exists {
+			out["reasoning_effort"] = res.ReasoningEffort
+			rendered = true
+		}
+	}
+	return rendered
+}
+
+// openAIReasoningIntent extracts the cross-protocol reasoning intent for
+// OpenAI-wire serialization. Priority: ir.Thinking (Anthropic inbound), then
+// the budget-shaped Reasoning fallback (Gemini inbound). OpenAI-protocol
+// sources are excluded from the fallback: their reasoning_effort is already
+// serialized natively, and re-deriving a thinking object from it would
+// double-express the intent.
+func openAIReasoningIntent(req *InternalRequest) (reasonnorm.Intent, bool) {
+	if req.Thinking != nil {
+		switch req.Thinking.Type {
+		case "disabled":
+			return reasonnorm.Intent{Mode: reasonnorm.ModeDisabled}, true
+		case "adaptive":
+			return reasonnorm.Intent{Mode: reasonnorm.ModeAdaptive, BudgetTokens: req.Thinking.BudgetTokens}, true
+		default:
+			// "enabled" and unrecognized types: treat as enabled. An unknown
+			// type with a budget still expresses "think, roughly this much".
+			return reasonnorm.Intent{Mode: reasonnorm.ModeEnabled, BudgetTokens: req.Thinking.BudgetTokens}, true
+		}
+	}
+	if src := req.SourceProtocol; src == ProtocolOpenAIChat || src == ProtocolOpenAIResponses {
+		return reasonnorm.Intent{}, false
+	}
+	r := req.Reasoning
+	if r == nil || r.Effort != "" {
+		// Effort-shaped reasoning is OpenAI-native and already serialized as
+		// reasoning_effort; budget-shaped (Gemini thinkingConfig) is not.
+		return reasonnorm.Intent{}, false
+	}
+	if r.Type == "disabled" {
+		return reasonnorm.Intent{Mode: reasonnorm.ModeDisabled}, true
+	}
+	budget := 0
+	if r.BudgetTokens != nil {
+		budget = *r.BudgetTokens
+	}
+	if budget > 0 || r.Type == "enabled" {
+		return reasonnorm.Intent{Mode: reasonnorm.ModeEnabled, BudgetTokens: budget}, true
+	}
+	return reasonnorm.Intent{}, false
+}
+
+// syntheticReasonCaps maps a paramreg target dialect to the minimal reasoncap
+// Caps needed by reasonnorm.Render for OpenAI-wire output. ok=false means the
+// dialect has no verified OpenAI-wire reasoning surface here — callers keep
+// the loss-report behavior.
+func syntheticReasonCaps(dst paramreg.Dialect) (reasoncap.Caps, bool) {
+	capsOf := func(d reasoncap.Dialect) (reasoncap.Caps, bool) {
+		return reasoncap.Caps{
+			Supported:  true,
+			Dialect:    d,
+			CanDisable: true, // family members all accept an explicit off toggle
+		}, true
+	}
+	switch dst {
+	case paramreg.DialectMiniMax:
+		return capsOf(reasoncap.DialectMiniMax)
+	case paramreg.DialectDeepSeek:
+		return capsOf(reasoncap.DialectDeepSeek)
+	case paramreg.DialectGLM:
+		return capsOf(reasoncap.DialectGLM)
+	case paramreg.DialectArk:
+		return capsOf(reasoncap.DialectArk)
+	case paramreg.DialectQwen:
+		return capsOf(reasoncap.DialectQwen)
+	}
+	return reasoncap.Caps{}, false
+}
+
+// systemPlainText flattens IR System to plain text for text-only system
+// surfaces (OpenAI system message, Responses instructions). Content wins when
+// set; otherwise Anthropic/Gemini parse paths leave Parts-only systems, which
+// must not be silently dropped.
+func systemPlainText(sys *SystemPrompt) string {
+	if sys == nil {
+		return ""
+	}
+	if sys.Content != "" {
+		return sys.Content
+	}
+	parts := make([]string, 0, len(sys.Parts))
+	for _, block := range sys.Parts {
+		if block.Text != "" {
+			parts = append(parts, block.Text)
+		}
+	}
+	return joinTextParts(parts)
+}
+
 // serializeOpenAIMessages converts IR messages to OpenAI format.
 func serializeOpenAIMessages(req *InternalRequest) []map[string]any {
 	messages := make([]map[string]any, 0, len(req.Messages)+1)
 
 	// Prepend system message if present
-	if req.System != nil && req.System.Content != "" {
+	if text := systemPlainText(req.System); text != "" {
 		messages = append(messages, map[string]any{
 			"role":    "system",
-			"content": req.System.Content,
+			"content": text,
 		})
 	}
 
@@ -371,6 +540,14 @@ func serializeOpenAIMessageContent(blocks []ContentBlock) []map[string]any {
 						mt = "image/png"
 					}
 					url = "data:" + mt + ";base64," + block.Image.Data
+				}
+
+				// A-#18(c): file_id-only 图片在 Chat Completions 上没有
+				// image_url 表达。输出 image_url:"" 会产生上游拒收的空字段，
+				// 因此跳过该块；损失由 reportSerializeOpenAILosses 显式上报
+				// （本函数拿不到 message 索引与 SourceProtocol）。
+				if url == "" && block.Image.FileID != "" {
+					continue
 				}
 
 				imageURL := map[string]any{"url": url}
@@ -662,8 +839,24 @@ func serializeOpenAIDocumentBlock(doc *DocumentBlock) map[string]any {
 			url = doc.Source.Data
 		}
 		fileInner["file_data"] = url
-	case "file_id":
-		fileInner["file_id"] = doc.Source.Data
+	case "file", "file_id":
+		// 2026-09-05 round2 复审: Anthropic-native Files API documents parse
+		// with Type="file" (parse_anthropic keeps the wire type as-is), so
+		// "file" must take the same path as the IR-internal "file_id" —
+		// previously it fell through with no case and the id was silently
+		// dropped, leaving a filename-only block. Prefer the unified FileID
+		// field; fall back to Data for legacy rows (parse_openai used to
+		// encode the id there, and session restore collapses FileID into
+		// Data).
+		fid := doc.Source.FileID
+		if fid == "" {
+			fid = doc.Source.Data
+		}
+		// 空值护栏: a double-empty source has no identity left — never emit
+		// file_id:""; reportSerializeOpenAILosses records the loss instead.
+		if fid != "" {
+			fileInner["file_id"] = fid
+		}
 	case "text":
 		fileInner["file_data"] = doc.Source.Data
 	}
@@ -701,7 +894,7 @@ func serializeOpenAIDocumentBlock(doc *DocumentBlock) map[string]any {
 // An empty SourceProtocol is treated as "unknown / cross-protocol default"
 // to preserve historical fixture behavior for tests that build IR directly
 // without setting SourceProtocol.
-func reportSerializeOpenAILosses(req *InternalRequest) {
+func reportSerializeOpenAILosses(req *InternalRequest, thinkingRendered bool) {
 	if req == nil {
 		return
 	}
@@ -712,7 +905,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 	// accept the field via ExtensionsBag; round-trip is lossless).
 	if req.TopK != nil && src != ProtocolOpenAIChat && src != ProtocolOpenAIResponses {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"top_k",
 			ifaceNonEmpty(src, ProtocolAnthropicMessages),
 			ProtocolOpenAIChat,
@@ -725,12 +918,74 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 	// concept. Skip when source == OpenAI Chat (same-protocol with target).
 	for i, msg := range req.Messages {
 		for j, block := range msg.Content {
+			// A-#18(c): a Files-API file_id image has no image_url
+			// representation on Chat Completions — the content serializer
+			// drops the block (never emits image_url:""). No same-protocol
+			// guard: parse_openai never produces FileID images, so any
+			// FileID here is cross-protocol or session-restored, and the
+			// drop is a real loss in both cases.
+			//
+			// 2026-09-05 round2 复审: the block.Type == "image" guard keeps
+			// the report truthful if a future writer ever attaches Image to
+			// a raw-passthrough block (which the wire would keep verbatim —
+			// reporting that as lost would be a false positive).
+			if block.Type == "image" && block.Image != nil && block.Image.FileID != "" && block.Image.URL == "" && block.Image.Data == "" {
+				ReportProtocolLoss(
+					"unknown",
+					fieldPathMessageContent(i, j, "image.file_id"),
+					ifaceNonEmpty(src, ProtocolAnthropicMessages),
+					ProtocolOpenAIChat,
+					"loss",
+					"file_id image reference cannot be expressed as an OpenAI Chat image_url; block dropped",
+					map[string]any{"message_index": i, "content_index": j},
+				)
+			}
+			// 2026-09-05 round2 复审: a document block typed as a Files-API
+			// reference whose FileID and Data are both empty serializes as a
+			// filename-only file block — the identity is unrecoverable on the
+			// wire. Same no-same-protocol-guard rationale as the file_id
+			// image above: parsers always fill the id, so a double-empty
+			// source is a real loss (degenerate programmatic IR only).
+			if block.Document != nil && block.Document.Source != nil &&
+				(block.Document.Source.Type == "file" || block.Document.Source.Type == "file_id") &&
+				block.Document.Source.FileID == "" && block.Document.Source.Data == "" {
+				ReportProtocolLoss(
+					"unknown",
+					fieldPathMessageContent(i, j, "document.file_id"),
+					ifaceNonEmpty(src, ProtocolAnthropicMessages),
+					ProtocolOpenAIChat,
+					"loss",
+					"file_id document reference carries neither FileID nor Data; upstream receives a filename-only file block",
+					map[string]any{"message_index": i, "content_index": j},
+				)
+			}
+			// 2026-09-05 round2 复审: Anthropic tool_result blocks accept
+			// image children, but every Chat tool path flattens tool content
+			// to text — nested images are dropped on the wire. Walk the
+			// nested content so the drop is reported like any other loss
+			// (nested text does survive and is not reported here).
+			if block.ToolResult != nil {
+				for k, cb := range block.ToolResult.Content {
+					if cb.Type != "image" || cb.Image == nil {
+						continue
+					}
+					ReportProtocolLoss(
+						"unknown",
+						fieldPathMessageContent(i, j, "tool_result.content["+smallItoa(k)+"].image"),
+						ifaceNonEmpty(src, ProtocolAnthropicMessages),
+						ProtocolOpenAIChat,
+						"loss",
+						"image inside tool_result cannot be expressed on OpenAI Chat; tool content is flattened to text and the image is dropped",
+						map[string]any{"message_index": i, "content_index": j, "tool_content_index": k},
+					)
+				}
+			}
 			if src == ProtocolOpenAIChat {
 				continue
 			}
 			if block.Thinking != nil && block.Thinking.Signature != "" {
 				ReportProtocolLoss(
-					requestIDFromIR(req),
+					"unknown",
 					fieldPathMessageContent(i, j, "thinking.signature"),
 					ifaceNonEmpty(src, ProtocolAnthropicMessages),
 					ProtocolOpenAIChat,
@@ -741,7 +996,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 			}
 			if block.RedactedThinking != "" {
 				ReportProtocolLoss(
-					requestIDFromIR(req),
+					"unknown",
 					fieldPathMessageContent(i, j, "redacted_thinking"),
 					ifaceNonEmpty(src, ProtocolAnthropicMessages),
 					ProtocolOpenAIChat,
@@ -758,7 +1013,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 	if src != ProtocolOpenAIChat {
 		if len(req.CacheControl) > 0 {
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				"cache_control",
 				ifaceNonEmpty(src, ProtocolAnthropicMessages),
 				ProtocolOpenAIChat,
@@ -769,7 +1024,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 		}
 		if len(req.Documents) > 0 {
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				"documents",
 				ifaceNonEmpty(src, ProtocolAnthropicMessages),
 				ProtocolOpenAIChat,
@@ -778,9 +1033,12 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 				nil,
 			)
 		}
-		if req.Thinking != nil {
+		// 2026-09-18 P5: 当 thinking 已按目标方言渲染出向时不再是丢失。
+		// 注意thinking 对象本身可跨方言表达（GenericThinkingObject），但
+		// thinking.signature / redacted_thinking（上方逐消息上报）仍是真丢失。
+		if req.Thinking != nil && !thinkingRendered {
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				"thinking",
 				ifaceNonEmpty(src, ProtocolAnthropicMessages),
 				ProtocolOpenAIChat,
@@ -789,9 +1047,27 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 				nil,
 			)
 		}
+		// R43 (2026-09-18, P5 补课补漏): budget-shaped 请求级 Reasoning（Gemini
+		// thinkingConfig → Reasoning{Type:"enabled",BudgetTokens}）此前无丢失
+		// 上报——openAIReasoningIntent 只对 thinking 族目标方言渲染它，所以
+		// 在 plain openai_chat 目标（Gemini handler 路由前的 step-6 序列化，
+		// TargetProvider 必为空）intent 被静默丢弃，正是 P5 要消灭的形态。
+		if req.Reasoning != nil && req.Reasoning.Effort == "" &&
+			src != ProtocolOpenAIChat && src != ProtocolOpenAIResponses &&
+			req.Thinking == nil && !thinkingRendered {
+			ReportProtocolLoss(
+				"unknown",
+				"reasoning.budget_tokens",
+				ifaceNonEmpty(src, ProtocolGeminiGenerate),
+				ProtocolOpenAIChat,
+				"loss",
+				"budget-shaped reasoning intent has no OpenAI Chat representation and no thinking-family target dialect is known at this serialization point; dropped",
+				map[string]any{"budget_tokens": req.Reasoning.BudgetTokens},
+			)
+		}
 		if len(req.MCPServers) > 0 {
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				"mcp_servers",
 				ifaceNonEmpty(src, ProtocolAnthropicMessages),
 				ProtocolOpenAIChat,
@@ -802,7 +1078,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 		}
 		if req.ContextManagement != nil {
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				"context_management",
 				ifaceNonEmpty(src, ProtocolAnthropicMessages),
 				ProtocolOpenAIChat,
@@ -813,7 +1089,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 		}
 		if req.Container != nil {
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				"container",
 				ifaceNonEmpty(src, ProtocolAnthropicMessages),
 				ProtocolOpenAIChat,
@@ -856,7 +1132,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 				continue
 			}
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				f.field,
 				ifaceNonEmpty(src, ProtocolOpenAIChat),
 				ProtocolOpenAIChat,
@@ -878,7 +1154,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 		isOpenAISource := src == ProtocolOpenAIChat || src == ProtocolOpenAIResponses
 		if !isOpenAISource {
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				"previous_response_id",
 				ifaceNonEmpty(src, ProtocolOpenAIChat),
 				ProtocolOpenAIChat,
@@ -888,14 +1164,6 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 			)
 		}
 	}
-}
-
-// requestIDFromIR returns the request id from the IR's first message raw
-// content if present, else "unknown". Today the IR does not carry an
-// explicit RequestID field; we keep a placeholder for cross-protocol
-// tests. Future revision may add RequestID to InternalRequest directly.
-func requestIDFromIR(_ *InternalRequest) string {
-	return "unknown"
 }
 
 // ifaceNonEmpty returns s if non-empty, otherwise the fallback.

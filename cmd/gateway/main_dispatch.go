@@ -3,6 +3,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -37,6 +39,7 @@ var gatewayLiveActionsEmitter *liveactions.Emitter
 var gatewayActionBridge *streaming.ActionBridge
 
 var gatewayRequestJourneySink dispatch.ObservationSink
+var gatewayRequestJourneyJournalSink dispatch.JournalSink
 var gatewayMinuteStats *dispatch.MinuteStatsAggregator
 
 func stableGatewayInstanceID() string {
@@ -49,11 +52,22 @@ func stableGatewayInstanceID() string {
 	return "llm-gateway"
 }
 
-// wireDispatchPipeline builds the V2 dispatch pipeline from the executor,
-// starts its worker pools, injects it into the executor, and returns it. If
-// routingExec is nil the pipeline is skipped — and since AUDIT_24H B2b
-// (2026-08-17) the executor has no fallback path, so a nil routingExec means
-// every request fails with "dispatch pipeline not wired" (a wiring bug).
+// journalSnapshotReceiptOwner adds a process-local nonce to the stable gateway
+// identity. Receipt leases use it for fencing; a hostname alone is shared by
+// sibling processes on one host and must not grant reclaim rights.
+func journalSnapshotReceiptOwner(instanceID string) string {
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err == nil {
+		return instanceID + ":" + hex.EncodeToString(nonce[:])
+	}
+	return instanceID + ":" + strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+// wireDispatchPipeline builds the V2 dispatch pipeline from the executor and
+// injects all request-independent projections. The composition root must wire
+// QueueBackend, GovernorBackend, snapshot observation, and capacity-aware
+// routing before calling Pipeline.Start so the first lazily-created
+// credential forwarder sees the live policy backend.
 func wireDispatchPipeline(routingExec *executors.Executor) *dispatch.Pipeline {
 	if routingExec == nil {
 		slog.Warn("dispatch: routingExec nil, V2 pipeline not wired")
@@ -61,17 +75,17 @@ func wireDispatchPipeline(routingExec *executors.Executor) *dispatch.Pipeline {
 	}
 	p := routingExec.NewDispatchPipeline()
 	p.SetObservationSink(gatewayRequestJourneySink)
+	// audit-24h-20260828-r3: wire the attempt journal sink so the
+	// per-request execution trace flows into requestjourney at terminal
+	// time. Mirror of the SetObservationSink call above.
+	p.SetJournalSink(gatewayRequestJourneyJournalSink)
 	projection := dispatch.NewQueueProjection()
 	gatewayQueueProjection.Store(projection)
 	p.SetQueueObservationSink(projection)
 	// V3.3-OBS OBS-B1 (2026-08-15): 动作事件发射器注入 dispatch pipeline。
 	// nil 安全（发射点全部 no-op），发射器本身旁路异步、满即丢。
 	p.SetLiveActions(gatewayLiveActionsEmitter)
-	p.Start()
-	routingExec.SetDispatchPipeline(p)
 	gatewayDispatchPipeline = p
-	slog.Info("dispatch_v2 pipeline wired (only execute path, AUDIT_24H B2b)",
-		"allow_model_change", dispatch.IsModelChangeEnabled())
 	return p
 }
 
@@ -135,6 +149,38 @@ func handleDispatchWaterfall(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(snap)
 }
 
+// handleDispatchWaterfallByRequest serves
+// GET /api/admin/dispatch/waterfall/request/{request_id}
+func handleDispatchWaterfallByRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	const prefix = "/api/admin/dispatch/waterfall/request/"
+	requestID := strings.TrimPrefix(r.URL.Path, prefix)
+	requestID = strings.Trim(requestID, "/")
+	if requestID == "" || strings.Contains(requestID, "/") {
+		http.Error(w, "request_id required", http.StatusBadRequest)
+		return
+	}
+	tenantID := admin.EffectiveTenantIDAll(r)
+	var mem dispatch.WaterfallRequest
+	memOK := false
+	if projection := gatewayQueueProjection.Load(); projection != nil {
+		mem, memOK = projection.FindWaterfallByRequestID(requestID, tenantID)
+	}
+	item, source, ok := resolveWaterfallByRequest(r.Context(), mem, memOK, requestID, tenantID)
+	if !ok {
+		http.Error(w, "waterfall request not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"request": item,
+		"source":  source,
+	})
+}
+
 // handleDispatchMinuteStats serves the Redis-backed immediate operational
 // projection. Persistent financial reporting remains under /api/admin/stats.
 func handleDispatchMinuteStats(w http.ResponseWriter, r *http.Request) {
@@ -162,4 +208,92 @@ func handleDispatchMinuteStats(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"bucket": bucket.UTC().Truncate(time.Minute), "items": stats})
+}
+
+// handleDispatchDimensions serves GET /api/admin/dispatch/dimensions — the
+// per-dimension request membership index (v6 G-Ⅳ, 分维队列). Requests stay in
+// their model/credential/provider rings after completion until TTL/capacity
+// eviction, answering "which requests ran or are waiting on this node".
+//
+// Query:
+//   - kind: model|credential|provider (default model)
+//   - id:   dimension id (model name / credential id / provider id)
+//   - limit (default 50, max 200)
+//   - no id → returns the per-dimension key summary with live entry counts
+func handleDispatchDimensions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	pipeline := gatewayDispatchPipeline
+	if pipeline == nil || pipeline.DimensionIndex() == nil {
+		http.Error(w, "dispatch pipeline not wired", http.StatusServiceUnavailable)
+		return
+	}
+	index := pipeline.DimensionIndex()
+	q := r.URL.Query()
+	kind := dispatch.DimensionKind(strings.TrimSpace(q.Get("kind")))
+	switch kind {
+	case dispatch.DimensionModel, dispatch.DimensionCredential, dispatch.DimensionProvider:
+	default:
+		http.Error(w, "kind must be model|credential|provider", http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(q.Get("id"))
+	limit := 50
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if id == "" {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"kind":       kind,
+			"dimensions": index.Dimensions()[kind],
+		})
+		return
+	}
+	snap := index.Snapshot(kind, id, limit)
+	if snap.Entries == nil {
+		snap.Entries = []dispatch.DimensionEntry{}
+	}
+	_ = json.NewEncoder(w).Encode(snap)
+}
+
+// handleDispatchRequestDimensions serves
+// GET /api/admin/dispatch/request-dimensions/{request_id} (V6-W1.6 R10,
+// scope-corrected 2026-08-27): the request's dimension MEMBERSHIP entries
+// (model/credential/provider + state/outcome/last action). The execution
+// trace (AttemptJournal) is attached to the request itself — post-hoc path
+// queries go to the request's own journey projection, NOT this endpoint.
+func handleDispatchRequestDimensions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	const prefix = "/api/admin/dispatch/request-dimensions/"
+	requestID := strings.Trim(strings.TrimPrefix(r.URL.Path, prefix), "/")
+	if requestID == "" || strings.Contains(requestID, "/") {
+		http.Error(w, "request_id required", http.StatusBadRequest)
+		return
+	}
+	pipeline := gatewayDispatchPipeline
+	if pipeline == nil || pipeline.DimensionIndex() == nil {
+		http.Error(w, "dispatch pipeline not wired", http.StatusServiceUnavailable)
+		return
+	}
+	entries, ok := pipeline.DimensionIndex().EntriesByRequest(requestID)
+	if !ok {
+		http.Error(w, "request not found in dimension index (TTL window expired or unknown request)", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"request_id": requestID,
+		"entries":    entries,
+	})
 }

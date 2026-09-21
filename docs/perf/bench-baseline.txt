@@ -1,0 +1,19 @@
+# bench-baseline（由 scripts/perf/bench_compare.sh --update 生成，请提交入库）
+# date: 2026-09-05T05:53:27
+# go: go1.26.4
+# os: Darwin/arm64
+# git: db88b7573 (dirty)
+# note: make bench-baseline
+# 阈值与用法见 scripts/perf/README.md
+BenchmarkDetectProtocol-8	1	7519 ns/op	5752 B/op	120 allocs/op
+BenchmarkParseAnthropic-8	1	22687 ns/op	15662 B/op	261 allocs/op
+BenchmarkParseOpenAI-8	1	20078 ns/op	15814 B/op	234 allocs/op
+BenchmarkQueueProjectionSnapshot-8	1	2640 ns/op	4000 B/op	12 allocs/op
+BenchmarkQueueProjectionSnapshotWaterfall-8	1	8703 ns/op	34096 B/op	67 allocs/op
+BenchmarkRequestStageTimestamps/attempts=1-8	1	1260 ns/op	2239 B/op	17 allocs/op
+BenchmarkRequestStageTimestamps/attempts=3-8	1	1634 ns/op	2239 B/op	17 allocs/op
+BenchmarkSerializeAnthropic-8	1	7689 ns/op	10551 B/op	178 allocs/op
+BenchmarkSerializeOpenAI-8	1	5554 ns/op	7399 B/op	125 allocs/op
+BenchmarkValidateSSEDataFrame-8	1	935.7 ns/op	1487 B/op	25 allocs/op
+BenchmarkValidateSSEDataFrame_Invalid-8	1	88.69 ns/op	200 B/op	5 allocs/op
+Benchmark_CalculatePressurePenalty-8	1	1.552 ns/op	0 B/op	0 allocs/op

@@ -31,6 +31,8 @@ GITIGNORE="$REPO_ROOT/.gitignore"
 SOPS_YAML="$REPO_ROOT/.sops.yaml"
 SCAN="$REPO_ROOT/scripts/scan-secrets.sh"
 BASELINE="$REPO_ROOT/scripts/scan-secrets.baseline"
+PRIVATE_REPLACEMENTS="$REPO_ROOT/scripts/scan-secrets.private.replacements"
+SYNC_SCRIPT="$REPO_ROOT/scripts/sync-to-github.sh"
 ENV_252="$REPO_ROOT/.env.252.enc"
 ENV_KAIXUAN_1="$REPO_ROOT/.env.kaixuan-1.enc"
 
@@ -211,6 +213,40 @@ EOF
   rm -rf "$tmpdir"
 }
 
+# Public mirror history replacement inputs must preserve the private table as
+# an untracked, explicitly ignored local-only artifact.
+test_private_replacements_guard() {
+  echo "── private_replacements_guard ──"
+  [[ -f "$GITIGNORE" ]] || { log_fail ".gitignore missing"; return; }
+  assert_contains "private replacement table is ignored" "$(cat "$GITIGNORE")" '/scripts/scan-secrets.private.replacements'
+
+  if git -C "$REPO_ROOT" ls-files --error-unmatch -- scripts/scan-secrets.private.replacements >/dev/null 2>&1; then
+    log_fail "private replacement table must not be tracked"
+  else
+    log_pass "private replacement table is not tracked"
+  fi
+
+  if git -C "$REPO_ROOT" check-ignore -q -- scripts/scan-secrets.private.replacements; then
+    log_pass "private replacement table is protected by .gitignore"
+  else
+    log_fail "private replacement table is not protected by .gitignore"
+  fi
+}
+
+# The public-mirror entry point must reject the history-rewrite escape hatch
+# before it inspects remotes, scanners, or replacement tables.
+test_sync_refuses_history_bypass() {
+  echo "── sync_refuses_history_bypass ──"
+  local out rc
+  out=$(bash "$SYNC_SCRIPT" --skip-history-rewrite 2>&1)
+  rc=$?
+  if [[ $rc -ne 0 ]] && [[ "$out" == *"not permitted"* ]]; then
+    log_pass "sync script rejects --skip-history-rewrite"
+  else
+    log_fail "sync script accepted --skip-history-rewrite (rc=$rc)"
+  fi
+}
+
 # ---- runner --------------------------------------------------------------
 
 run_all() {
@@ -223,6 +259,8 @@ run_all() {
   test_scan_secrets_skips_enc
   test_baseline
   test_scan_secrets_does_not_exempt_non_sops
+  test_private_replacements_guard
+  test_sync_refuses_history_bypass
 
   echo
   echo "───────────────────────────────────────────────────────────────"
@@ -243,6 +281,8 @@ if [[ $# -gt 0 ]]; then
     scan_skips)               test_scan_secrets_skips_enc ;;
     baseline)                 test_baseline ;;
     no_bypass)                test_scan_secrets_does_not_exempt_non_sops ;;
+    private_replacements)     test_private_replacements_guard ;;
+    sync_bypass)              test_sync_refuses_history_bypass ;;
     all|*)                    run_all ;;
   esac
 else

@@ -84,11 +84,12 @@ func DecideFailover(status int, body []byte, retryAfterHeader string, clientOrig
 		decision.ReasonCode = "provider_concurrent_overload"
 	case KindUpstreamOverloaded:
 		// A relay-side overload is recoverable capacity pressure. Delay the
-		// next attempt, preserve the upstream body in request logs, and keep
-		// the credential-model binding routable for later traffic.
+		// next attempt, keep the binding routable, and enqueue a probe so the
+		// node is re-checked instead of staying unmarked while shedding load.
 		decision.Scope = ScopeModel
 		decision.RetryAfter = parseRetryAfter(retryAfterHeader, DefaultOverloadRetryDelay)
-		decision.EnqueueProbe = false
+		decision.EnqueueProbe = true
+		decision.ProbeFanout = 1
 		decision.ReasonCode = "provider_upstream_overloaded"
 	case KindNoAvailableChannel:
 		// 2026-08-09: OneAPI/new-api distributor "no available channel for
@@ -108,7 +109,15 @@ func DecideFailover(status int, body []byte, retryAfterHeader string, clientOrig
 		decision.EnqueueProbe = true
 		decision.ProbeFanout = DefaultProbeFanout
 		decision.ReasonCode = "upstream_transient_failure"
-	case KindModelNotFound, KindModelDeprecated, KindUnsupportedFeature, KindContextLength, KindContentFilter, KindToolCallIdMismatch:
+	case KindModelNotFound, KindModelDeprecated, KindUnsupportedFeature, KindContextLength, KindContentFilter, KindToolCallIdMismatch, KindClientBug:
+		// 2026-09-18 audit (R42 merged the formerly separate KindClientBug
+		// case — identical field-for-field): a request-shape 400 (invalid
+		// params / MiniMax invalid thinking.type 2013 / invalid_request_format
+		// / Zhipu 1214) fails on EVERY credential — a follow-up probe with a
+		// well-formed ping would succeed and prove nothing about the failing
+		// traffic, only burn an upstream request. UpdateOnFailure already
+		// skips client bugs, so no recovery probe is needed to un-cool
+		// anything.
 		decision.Scope = ScopeModel
 		decision.EnqueueProbe = false
 		decision.FrontendWait = 0

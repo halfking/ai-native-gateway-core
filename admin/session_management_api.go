@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // SessionManagementAPI 提供会话管理的列表、详情、更新等功能
@@ -370,7 +371,7 @@ func (h *Handler) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req SessionUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, jsonbody.MaxRequiredBody, true); err != nil {
 		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}

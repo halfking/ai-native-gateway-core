@@ -2,13 +2,11 @@ package credential
 
 import (
 	"context"
-	"errors"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
-	"github.com/kaixuan/llm-gateway-go/modelbinding"
 	"github.com/pashagolub/pgxmock/v4"
 )
 
@@ -293,7 +291,7 @@ func TestWriteOnError_PerModelKind_EmptyRawModel_AllBindings(t *testing.T) {
 	}
 }
 
-func TestWriteOnError_PerModelKind_AmbiguousAliasDoesNotUpdateBinding(t *testing.T) {
+func TestWriteOnError_PerModelKind_AmbiguousAliasUsesFirstBinding(t *testing.T) {
 	mockDB := newSQLOnlyMock()
 	defer mockDB.Close()
 
@@ -303,14 +301,17 @@ func TestWriteOnError_PerModelKind_AmbiguousAliasDoesNotUpdateBinding(t *testing
 	mockDB.ExpectQuery(`SELECT COALESCE`).
 		WithArgs(42, pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"raw_models"}).AddRow("deepseek-v4-flash\x1fdeepseek-v4-flash-260425"))
+	mockDB.ExpectExec(`UPDATE credential_model_bindings`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), 42, "deepseek-v4-flash").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	w := &Writer{dbPool: mockDB}
 	err := w.WriteOnError(context.Background(), 42, "deepseek-flash", Failure{Kind: errorsx.KindRateLimit})
-	if !errors.Is(err, modelbinding.ErrAmbiguousModelBinding) {
-		t.Fatalf("WriteOnError() error = %v, want ambiguous binding error", err)
+	if err != nil {
+		t.Fatalf("WriteOnError() error = %v, want nil after selecting first binding", err)
 	}
 	if err := mockDB.ExpectationsWereMet(); err != nil {
-		t.Fatalf("ambiguous alias must not update a binding: %v", err)
+		t.Fatalf("ambiguous alias should update the selected binding: %v", err)
 	}
 }
 

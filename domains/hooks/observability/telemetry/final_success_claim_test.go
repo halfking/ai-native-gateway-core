@@ -60,7 +60,7 @@ func TestClaimSessionFinalSuccess_GrantPathRunsInSameTxWithSavepoint(t *testing.
 	mock.ExpectExec(`RELEASE SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("RELEASE", 0))
 
-	claimSessionFinalSuccess(context.Background(), tx, "req-claim-1")
+	claimSessionFinalSuccess(context.Background(), nil, tx, "req-claim-1")
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -82,7 +82,7 @@ func TestClaimSessionFinalSuccess_UniqueViolationDegradesToNormalSuccess(t *test
 	mock.ExpectExec(`ROLLBACK TO SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("ROLLBACK", 0))
 
-	claimSessionFinalSuccess(context.Background(), tx, "req-claim-loser")
+	claimSessionFinalSuccess(context.Background(), nil, tx, "req-claim-loser")
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -103,15 +103,15 @@ func TestClaimSessionFinalSuccess_OtherErrorsDegrade(t *testing.T) {
 	mock.ExpectExec(`ROLLBACK TO SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("ROLLBACK", 0))
 
-	claimSessionFinalSuccess(context.Background(), tx, "req-claim-42703")
+	claimSessionFinalSuccess(context.Background(), nil, tx, "req-claim-42703")
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestClaimSessionFinalSuccess_Guards(t *testing.T) {
-	// 空 requestID / nil tx：不产生任何语句。
-	claimSessionFinalSuccess(context.Background(), nil, "req-x")
-	claimSessionFinalSuccess(context.Background(), nil, "")
+	// 空 requestID / nil tx / nil Client：不产生任何语句。
+	claimSessionFinalSuccess(context.Background(), nil, nil, "req-x")
+	claimSessionFinalSuccess(context.Background(), nil, nil, "")
 }
 
 // UT-FS-02（单元侧）：只有「成功终态 + 非空 gw_session_id」才尝试 claim。
@@ -132,6 +132,45 @@ func TestShouldClaimFinalSuccess(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			require.Equal(t, tc.want, shouldClaimFinalSuccess(tc.entry))
+		})
+	}
+}
+
+// R34 (2026-09-17)：网关内部回环（auto-title gt_/auto-summary gs_ 分支会话）
+// 不得 claim is_final_success —— sessionv2mirror 经 IsInternalAutoEntry 把
+// 它们排除在 session_turns 之外，claim 了就会留下「is_final_success=TRUE
+// 但无 turns」的行，GLOBAL_G2 对账恒 >0（F1 修复让成功终态带上了
+// IsAutoRequest 之后暴露）。业务 auto 轮带 TaskType，仍正常 claim。
+func TestShouldClaimFinalSuccess_ExcludesInternalLoopbacks(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry *RequestLogEntry
+		want  bool
+	}{
+		{"auto-title loopback (origin_actor list) never claims", &RequestLogEntry{
+			RequestID: "gt-1", Success: true, GwSessionID: strptr("gt_gw_s1"),
+			IsAutoRequest: boolptr(true), OriginActor: strptr("auto-title-generator"),
+		}, false},
+		{"auto-summary loopback (request_type) never claims", &RequestLogEntry{
+			RequestID: "gs-1", Success: true, GwSessionID: strptr("gs_gw_s1"),
+			IsAutoRequest: boolptr(true), RequestType: strptr("summary"),
+		}, false},
+		{"taskless auto entry (decider-nil fallback) never claims", &RequestLogEntry{
+			RequestID: "ga-1", Success: true, GwSessionID: strptr("gw_s1"),
+			IsAutoRequest: boolptr(true),
+		}, false},
+		{"business auto turn with TaskType still claims", &RequestLogEntry{
+			RequestID: "ba-1", Success: true, GwSessionID: strptr("gw_s1"),
+			IsAutoRequest: boolptr(true), TaskType: strptr("coding"),
+		}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, shouldClaimFinalSuccess(tc.entry))
+			// 同一判定必须与镜像排除一致（构造保证）：claim 的行不该被镜像排除。
+			if tc.want {
+				require.False(t, IsInternalAutoEntry(tc.entry), "claiming entry must not be mirror-excluded")
+			}
 		})
 	}
 }
@@ -159,15 +198,18 @@ func TestUpdateRequestLog_AppendsFinalSuccessClaimOnTerminalSuccess(t *testing.T
 	mock.ExpectExec(`UPDATE usage_ledger_hot`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	// request_logs_hot 终态 UPDATE（RETURNING ts，97 个绑定参数；含 t0..t9）
+	// request_logs_hot 终态 UPDATE（RETURNING ts，99 个绑定参数；含 t0..t9 与 608 的 request_class/due_at）
 	mock.ExpectExec(`UPDATE request_logs_hot`).
-		WithArgs(anyArgs(97)...).
+		WithArgs(anyArgs(99)...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	// bodies 侧表 upsert
 	mock.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
 		WithArgs(anyArgs(4)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	// v4 T7 claim（同事务）
+	// v4 T7 claim（同事务）。2026-09-12 起 Client 直传非 nil，claim 先查
+	// heap 月度分区目录（空结果 → 无缓存 → promoted 守卫跳过）。
+	mock.ExpectQuery(`FROM pg_inherits`).
+		WillReturnRows(pgxmock.NewRows([]string{"relname"}))
 	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
 	mock.ExpectExec(claimSQLPattern).
@@ -207,7 +249,7 @@ func TestUpdateRequestLog_FailurePathSkipsClaim(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`UPDATE request_logs_hot`).
-		WithArgs(anyArgs(97)...).
+		WithArgs(anyArgs(99)...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
 		WithArgs(anyArgs(4)...).
@@ -222,15 +264,15 @@ func TestUpdateRequestLog_FailurePathSkipsClaim(t *testing.T) {
 }
 
 // TestClaimSessionFinalSuccess_HeapPartitionsGuard 验证 2026-08-25 columnar 安全修复:
-// 当 Client 注册了非空 heap 月度分区列表, claim 语句必须拼装 promoted guard
+// 当 Client 携带非空 heap 月度分区列表, claim 语句必须拼装 promoted guard
 // (UNION ALL 多个 heap 月度分区, 排除 columnar 月份). 这覆盖生产路径, 避免
 // `FROM request_logs promoted` 触发 SQLSTATE 0A000.
+//
+// 2026-09-12: Client 由调用方直传 (2026-08-26 merge d2cbaf88b 丢失 main.go
+// SetClaimClient 接线 → 生产 promoted 守卫从未生效 → 23505 卡死 promote,
+// P2 冷迁移停摆 2.5 天). holder 已删除, 编译器保证不再可漏接.
 func TestClaimSessionFinalSuccess_HeapPartitionsGuard(t *testing.T) {
 	mock, tx := newClaimMock(t)
-
-	// SetClaimClient 把当前实例注入 holder, claim 路径会取其 heap 月度分区.
-	prev := loadClientForClaim()
-	t.Cleanup(func() { SetClaimClient(prev) })
 
 	c := NewClient()
 	c.heapPartitions = []string{
@@ -239,7 +281,6 @@ func TestClaimSessionFinalSuccess_HeapPartitionsGuard(t *testing.T) {
 		"request_logs_2026_09", // heap
 	}
 	c.heapPartitionsCachedAt = time.Now()
-	SetClaimClient(c)
 
 	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
@@ -251,6 +292,6 @@ func TestClaimSessionFinalSuccess_HeapPartitionsGuard(t *testing.T) {
 	mock.ExpectExec(`RELEASE SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("RELEASE", 0))
 
-	claimSessionFinalSuccess(context.Background(), tx, "req-claim-guard")
+	claimSessionFinalSuccess(context.Background(), c, tx, "req-claim-guard")
 	require.NoError(t, mock.ExpectationsWereMet())
 }

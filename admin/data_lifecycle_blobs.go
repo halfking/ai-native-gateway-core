@@ -4,14 +4,6 @@
 // 业务背景：
 //   llm-gateway-go 并不在本地磁盘存"附件文件"，但 request_logs 表的
 //   request_body 和 outbound_body (JSONB) 在多模态/工具调用场景下
-//
-// 2026-08-24 Phase 1: outbound_body has been removed from the main
-// `request_logs_hot` table. The dedicated `request_logs_bodies_hot` table is
-// the SOLE outbound_body store; outbound_body is written via
-// upsertRequestLogBodies in the same tx. Admin blob top / cleanup queries
-// therefore only see outbound_body for legacy rows that still carry a value
-// (none expected post-Phase-1 deploy) and must operate on the bodies_hot
-// table for outbound storage monitoring + cleanup.
 //   会塞入 base64 图片、文件内容、长上下文等"附件型"大对象。
 //   仓库的 owner 把这些大字段也叫做"附件"，并希望和磁盘配额一起
 //   治理（按大小/年龄清理、Top-N 占用排行、按策略轮转）。
@@ -106,19 +98,17 @@ func (h *Handler) handleDataLifecycleBlobTop(w http.ResponseWriter, r *http.Requ
 
 	rows, err := h.db.Query(ctx, `
 		SELECT
-			request_id,
-			COALESCE(gw_session_id, ''),
-			COALESCE(tenant_id, ''),
-			ts,
-			COALESCE((SELECT pg_column_size(rb.request_body) FROM request_logs_bodies_hot rb WHERE rb.request_id = rl.request_id), 0),
-			-- 2026-08-24 Phase 1: outbound_body moved to request_logs_bodies_hot;
-			-- LEFT JOIN to that table for size reporting. Rows missing a body
-			-- side table entry get outbound_body_bytes=0.
-			COALESCE((SELECT pg_column_size(rb.outbound_body) FROM request_logs_bodies_hot rb WHERE rb.request_id = rl.request_id), 0),
-			COALESCE(outbound_model, '')
-		FROM request_logs_hot rl
+			rl.request_id,
+			COALESCE(rl.gw_session_id, ''),
+			COALESCE(rl.tenant_id, ''),
+			rl.ts,
+			COALESCE(pg_column_size(rb.request_body), 0),
+			COALESCE(pg_column_size(rb.outbound_body), 0),
+			COALESCE(rl.outbound_model, '')
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		`+where+`
-		ORDER BY (COALESCE((SELECT pg_column_size(rb.request_body) FROM request_logs_bodies_hot rb WHERE rb.request_id = rl.request_id),0) + COALESCE((SELECT pg_column_size(rb.outbound_body) FROM request_logs_bodies_hot rb WHERE rb.request_id = rl.request_id), 0)) DESC
+		ORDER BY (COALESCE(pg_column_size(rb.request_body),0) + COALESCE(pg_column_size(rb.outbound_body),0)) DESC
 		LIMIT `+strconv.Itoa(limit), args...)
 	if err != nil {
 		slog.Warn("blobs top query failed", "error", err)
@@ -196,19 +186,21 @@ func (h *Handler) handleBlobCleanup(w http.ResponseWriter, r *http.Request, exec
 	args := []interface{}{}
 	argIdx := 1
 	if isTenantAdmin || scope == "current" {
-		where += " AND tenant_id = $" + strconv.Itoa(argIdx)
+		where += " AND rl.tenant_id = $" + strconv.Itoa(argIdx)
 		args = append(args, GetTenantID(r))
 		argIdx++
 	}
 	if req.OlderThanDays > 0 {
-		where += " AND ts < NOW() - ($" + strconv.Itoa(argIdx) + " || ' days')::interval"
+		where += " AND rl.ts < NOW() - ($" + strconv.Itoa(argIdx) + " || ' days')::interval"
 		args = append(args, strconv.Itoa(req.OlderThanDays))
 		argIdx++
 	}
+
 	if req.LargerThanKB > 0 {
-		where += " AND (pg_column_size(request_body) > $" + strconv.Itoa(argIdx) +
-			" * 1024 OR COALESCE((SELECT pg_column_size(rb.outbound_body) FROM request_logs_bodies_hot rb WHERE rb.request_id = rl.request_id), 0) > $" + strconv.Itoa(argIdx) + " * 1024)"
+		where += " AND (pg_column_size(rb.request_body) > $" + strconv.Itoa(argIdx) +
+			" * 1024 OR pg_column_size(rb.outbound_body) > $" + strconv.Itoa(argIdx) + " * 1024)"
 		args = append(args, req.LargerThanKB)
+		argIdx++
 	}
 
 	startedAt := time.Now().UTC()
@@ -217,19 +209,16 @@ func (h *Handler) handleBlobCleanup(w http.ResponseWriter, r *http.Request, exec
 		Executed:  execute,
 	}
 
-	// 1. 估算（两个 SELECT — 主表 + 侧表 bodies_hot）
+	// 1. 估算（两个 SELECT）
 	var reqAffected, outAffected int64
 	var freedBytes int64
-
-	// 主表 request_logs_hot 现在不再保存 request_body / outbound_body
-	// (Phase 1: bodies 全部归口到 request_logs_bodies_hot)。这里读取侧表的
-	// 行数与体积作为估算 / 执行的真实来源。
 	err := h.db.QueryRow(ctx, `
 		SELECT
-			COUNT(*) FILTER (WHERE request_body IS NOT NULL),
-			COUNT(*) FILTER (WHERE outbound_body IS NOT NULL),
-			COALESCE(SUM(COALESCE(pg_column_size(request_body),0) + COALESCE(pg_column_size(outbound_body),0)), 0)::bigint
-		FROM request_logs_bodies_hot rl
+			COUNT(*) FILTER (WHERE rb.request_body IS NOT NULL),
+			COUNT(*) FILTER (WHERE rb.outbound_body IS NOT NULL),
+			COALESCE(SUM(COALESCE(pg_column_size(rb.request_body),0) + COALESCE(pg_column_size(rb.outbound_body),0)), 0)::bigint
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		`+where, args...).Scan(&reqAffected, &outAffected, &freedBytes)
 	if err != nil {
 		slog.Warn("blob cleanup preview failed", "error", err)
@@ -251,20 +240,23 @@ func (h *Handler) handleBlobCleanup(w http.ResponseWriter, r *http.Request, exec
 	// 2. 执行（仅 super_admin）
 	if execute {
 		// 2026-07-05 migration 341: UPDATE targets request_logs_hot (独立热表)。
-		// 2026-08-24 Phase 1: body 全部归口 request_logs_bodies_hot; UPDATE
-		// 直接打侧表，主表上的 body 列本就永远是 NULL，无需触碰。
+		// Blob 清理仅针对热表中的 0-7 天数据，已迁移到月度分区的数据不受影响。
 		_, err := h.db.Exec(ctx, `
-			UPDATE request_logs_bodies_hot AS rl
-			SET request_body = NULL,
-			    outbound_body = NULL
-			`+where, args...)
+				UPDATE request_logs_bodies_hot rb
+				SET request_body = NULL,
+				    outbound_body = NULL
+				FROM request_logs_hot rl
+				`+where+`
+				  AND rb.request_id = rl.request_id`, args...)
+
 		if err != nil {
 			slog.Error("blob cleanup execute failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "执行失败: "+err.Error())
 			return
 		}
-		// VACUUM 释放空间
+		// VACUUM 释放 request body 热表空间。
 		_, _ = h.db.Exec(ctx, `VACUUM (VERBOSE, ANALYZE) request_logs_bodies_hot`)
+
 	}
 
 	resp.FinishedAt = time.Now().UTC().Format(time.RFC3339)

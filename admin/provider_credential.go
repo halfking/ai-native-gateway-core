@@ -58,9 +58,17 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	// 2026-09-07 本地托管供应商（kind='local'）：本地推理服务不校验
+	// Authorization，允许 api_key 为空 —— 自动写入占位密钥（照常加密存储，
+	// 供 discovery/relay 的既有解密链路使用）。占位密钥不可轮转/修改。
+	providerKind := h.providerKindByID(r.Context(), providerID)
+	isLocal := isLocalKind(providerKind)
 	if req.APIKey == "" {
-		writeError(w, http.StatusBadRequest, "api_key required")
-		return
+		if !isLocal {
+			writeError(w, http.StatusBadRequest, "api_key required")
+			return
+		}
+		req.APIKey = localNoKeyPlaceholder
 	}
 	planType := "token"
 	if req.PlanType != nil && *req.PlanType != "" {
@@ -176,9 +184,13 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 
 	rows, err := h.db.Query(ctx, `
 		SELECT c.id, c.provider_id, COALESCE(c.label,''), COALESCE(c.status,'active'),
-		       COALESCE(c.trust_level,'standard'), c.concurrency_limit,
+		       COALESCE(c.trust_level,'trusted'), c.concurrency_limit,
 		       COALESCE(c.fp_slot_limit, 20) AS fp_slot_limit,  -- 2026-06-24: 5→20
 		       c.balance_usd::float8,
+		       COALESCE(c.balance_currency, 'USD') AS balance_currency,
+		       c.balance_last_checked_at,
+		       c.balance_source,
+		       c.balance_error,
 		       COALESCE(c.plan_type,'per_token') AS plan_type,
 		       COALESCE(c.circuit_state,'closed'),
 		       c.circuit_opened_at,
@@ -214,9 +226,19 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			       c.rpm_limit,
 			       c.tpm_limit,
 			       c.max_queue_depth,
-		       c.max_queue_wait_ms
+		       c.max_queue_wait_ms,
+		       c.balance_floor_usd::float8,
+		       c.quota_floor_tokens,
+		       c.quota_floor_percent::float8,
+		       c.plan_quota_kind,
+		       c.plan_quota_windows,
+		       c.plan_quota_remaining_tokens,
+		       c.plan_quota_used_percent::float8,
+		       c.plan_quota_checked_at
 		FROM credentials c
 		WHERE c.provider_id = $1
+		  -- 2026-08-31: 软删除的凭据不在任何列表中返回
+		  AND c.status <> 'deleted'
 		ORDER BY c.id
 	`, providerID)
 	if err != nil {
@@ -226,54 +248,68 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 	defer rows.Close()
 
 	type cred struct {
-		ID                     int        `json:"id"`
-		ProviderID             int        `json:"provider_id"`
-		Label                  string     `json:"label"`
-		Status                 string     `json:"status"`
-		TrustLevel             string     `json:"trust_level"`
-		ConcurrencyLimit       *int       `json:"concurrency_limit"`
-		BalanceUSD             *float64   `json:"balance_usd"`
-		PlanType               string     `json:"plan_type"`
-		CircuitState           string     `json:"circuit_state"`
-		CircuitOpenedAt        *time.Time `json:"circuit_opened_at"`
-		ConsecutiveFailures    int        `json:"consecutive_failures"`
-		CoolingUntil           *time.Time `json:"cooling_until"`
-		LifecycleStatus        string     `json:"lifecycle_status"`
-		AvailabilityState      string     `json:"availability_state"`
-		AvailabilityRecoverAt  *time.Time `json:"availability_recover_at"`
-		QuotaState             string     `json:"quota_state"`
-		QuotaRecoverAt         *time.Time `json:"quota_recover_at"`
-		StateReasonCode        *string    `json:"state_reason_code"`
-		StateReasonDetail      *string    `json:"state_reason_detail"`
-		StateUpdatedAt         *time.Time `json:"state_updated_at"`
-		HealthStatus           string     `json:"health_status"`
-		HealthCheckedAt        *time.Time `json:"health_checked_at"`
-		HealthSource           *string    `json:"health_source"`
-		HealthWarningCode      *string    `json:"health_warning_code"`
-		HealthError            *string    `json:"health_error"`
-		HealthLatencyMs        *int       `json:"health_latency_ms"`
-		HealthProbeModel       *string    `json:"health_probe_model"`
-		ApiModelsOk            *bool      `json:"api_models_ok"`
-		ApiModelsLastCheckedAt *time.Time `json:"api_models_last_checked_at"`
-		ApiModelsError         *string    `json:"api_models_error"`
-		EffectiveAt            *time.Time `json:"effective_at"`
-		ExpiresAt              *time.Time `json:"expires_at"`
-		Tags                   []string   `json:"tags"`
-		Notes                  string     `json:"notes"`
-		KeyMasked              *string    `json:"key_masked"`
-		KeyMaskError           *string    `json:"key_mask_error"`
-		FpSlotLimit            *int       `json:"fp_slot_limit"`
-		FpSlotsUsed            *int       `json:"fp_slots_used"`
-		FpSlotsFree            *int       `json:"fp_slots_free"`
-		EffectiveFpSlotLimit   *int       `json:"effective_fp_slot_limit"`
-		ManualDisabled         bool       `json:"manual_disabled"`
-		CreatedAt              *time.Time `json:"created_at"`
-		UpdatedAt              *time.Time `json:"updated_at"`
-		ConcurrencyMode        string     `json:"concurrency_mode"`
-		RPMLimit               *int       `json:"rpm_limit"`
-		TPMLimit               *int       `json:"tpm_limit"`
-		MaxQueueDepth          *int       `json:"max_queue_depth"`
-		MaxQueueWaitMS         *int       `json:"max_queue_wait_ms"`
+		ID                       int             `json:"id"`
+		ProviderID               int             `json:"provider_id"`
+		Label                    string          `json:"label"`
+		Status                   string          `json:"status"`
+		TrustLevel               string          `json:"trust_level"`
+		ConcurrencyLimit         *int            `json:"concurrency_limit"`
+		BalanceUSD               *float64        `json:"balance_usd"`
+		BalanceCurrency          string          `json:"balance_currency"`
+		BalanceLastCheckedAt     *time.Time      `json:"balance_last_checked_at"`
+		BalanceSource            *string         `json:"balance_source"`
+		BalanceError             *string         `json:"balance_error"`
+		PlanType                 string          `json:"plan_type"`
+		CircuitState             string          `json:"circuit_state"`
+		CircuitOpenedAt          *time.Time      `json:"circuit_opened_at"`
+		ConsecutiveFailures      int             `json:"consecutive_failures"`
+		CoolingUntil             *time.Time      `json:"cooling_until"`
+		LifecycleStatus          string          `json:"lifecycle_status"`
+		AvailabilityState        string          `json:"availability_state"`
+		AvailabilityRecoverAt    *time.Time      `json:"availability_recover_at"`
+		QuotaState               string          `json:"quota_state"`
+		QuotaRecoverAt           *time.Time      `json:"quota_recover_at"`
+		StateReasonCode          *string         `json:"state_reason_code"`
+		StateReasonDetail        *string         `json:"state_reason_detail"`
+		StateUpdatedAt           *time.Time      `json:"state_updated_at"`
+		HealthStatus             string          `json:"health_status"`
+		HealthCheckedAt          *time.Time      `json:"health_checked_at"`
+		HealthSource             *string         `json:"health_source"`
+		HealthWarningCode        *string         `json:"health_warning_code"`
+		HealthError              *string         `json:"health_error"`
+		HealthLatencyMs          *int            `json:"health_latency_ms"`
+		HealthProbeModel         *string         `json:"health_probe_model"`
+		ApiModelsOk              *bool           `json:"api_models_ok"`
+		ApiModelsLastCheckedAt   *time.Time      `json:"api_models_last_checked_at"`
+		ApiModelsError           *string         `json:"api_models_error"`
+		EffectiveAt              *time.Time      `json:"effective_at"`
+		ExpiresAt                *time.Time      `json:"expires_at"`
+		Tags                     []string        `json:"tags"`
+		Notes                    string          `json:"notes"`
+		KeyMasked                *string         `json:"key_masked"`
+		KeyMaskError             *string         `json:"key_mask_error"`
+		FpSlotLimit              *int            `json:"fp_slot_limit"`
+		FpSlotsUsed              *int            `json:"fp_slots_used"`
+		FpSlotsFree              *int            `json:"fp_slots_free"`
+		EffectiveFpSlotLimit     *int            `json:"effective_fp_slot_limit"`
+		ManualDisabled           bool            `json:"manual_disabled"`
+		EffectiveState           string          `json:"effective_state"`
+		EffectiveReason          string          `json:"effective_reason,omitempty"`
+		CreatedAt                *time.Time      `json:"created_at"`
+		UpdatedAt                *time.Time      `json:"updated_at"`
+		ConcurrencyMode          string          `json:"concurrency_mode"`
+		RPMLimit                 *int            `json:"rpm_limit"`
+		TPMLimit                 *int            `json:"tpm_limit"`
+		MaxQueueDepth            *int            `json:"max_queue_depth"`
+		MaxQueueWaitMS           *int            `json:"max_queue_wait_ms"`
+		BalanceFloorUSD          *float64        `json:"balance_floor_usd"`
+		QuotaFloorTokens         *int64          `json:"quota_floor_tokens"`
+		QuotaFloorPercent        *float64        `json:"quota_floor_percent"`
+		PlanQuotaKind            *string         `json:"plan_quota_kind"`
+		PlanQuotaWindows         json.RawMessage `json:"plan_quota_windows"`
+		PlanQuotaRemainingTokens *int64          `json:"plan_quota_remaining_tokens"`
+		PlanQuotaUsedPercent     *float64        `json:"plan_quota_used_percent"`
+		PlanQuotaCheckedAt       *time.Time      `json:"plan_quota_checked_at"`
 	}
 
 	var creds []cred
@@ -288,6 +324,10 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			&c.TrustLevel, &c.ConcurrencyLimit,
 			&c.FpSlotLimit,
 			&balanceUSD,
+			&c.BalanceCurrency,
+			&c.BalanceLastCheckedAt,
+			&c.BalanceSource,
+			&c.BalanceError,
 			&c.PlanType,
 			&c.CircuitState,
 			&c.CircuitOpenedAt,
@@ -324,6 +364,14 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			&c.TPMLimit,
 			&c.MaxQueueDepth,
 			&c.MaxQueueWaitMS,
+			&c.BalanceFloorUSD,
+			&c.QuotaFloorTokens,
+			&c.QuotaFloorPercent,
+			&c.PlanQuotaKind,
+			&c.PlanQuotaWindows,
+			&c.PlanQuotaRemainingTokens,
+			&c.PlanQuotaUsedPercent,
+			&c.PlanQuotaCheckedAt,
 		); err != nil {
 			slog.Warn("listCredentials scan failed", "error", err)
 			continue
@@ -334,6 +382,16 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		}
 
 		c.Tags = parseTags(tagsStr)
+		state := deriveCredentialDisplayState(credentialStateInput{
+			Status:          c.Status,
+			LifecycleStatus: c.LifecycleStatus,
+			Availability:    c.AvailabilityState,
+			QuotaState:      c.QuotaState,
+			HealthStatus:    c.HealthStatus,
+			ManualDisabled:  c.ManualDisabled,
+		})
+		c.EffectiveState = string(state.State)
+		c.EffectiveReason = state.Reason
 		if len(ciphertext) > 0 {
 			if plaintext, decErr := h.decryptCredStr(string(ciphertext)); decErr != nil {
 				errCode := "decrypt_failed"
@@ -409,12 +467,23 @@ type updateCredentialRequest struct {
 	TPMLimit         *int     `json:"tpm_limit"`
 	MaxQueueDepth    *int     `json:"max_queue_depth"`
 	MaxQueueWaitMS   *int     `json:"max_queue_wait_ms"`
+	// 2026-09-13 migration 701: 余额/套餐下限（NULL = 不启用）。显式传 0
+	// 表示清除下限（percent=0 若按字面解释会是"已用>=0 即摘出"，语义危险，
+	// 统一约定 0=清除）。bg/balance_floor_guard 周期评估，低于下限摘出路由
+	// 池，充值/窗口重置后自动恢复。
+	BalanceFloorUSD   *float64 `json:"balance_floor_usd"`
+	QuotaFloorTokens  *int64   `json:"quota_floor_tokens"`
+	QuotaFloorPercent *float64 `json:"quota_floor_percent"`
 }
 
 func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	var req updateCredentialRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.Status != nil && !isCredentialStatus(strings.TrimSpace(*req.Status)) {
+		writeError(w, http.StatusBadRequest, "invalid status; allowed: active, cooling, degraded, quarantine, quota_expired, disabled, deleted")
 		return
 	}
 	if req.ConcurrencyMode != nil && *req.ConcurrencyMode != "" && !isValidConcurrencyMode(*req.ConcurrencyMode) {
@@ -431,6 +500,18 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	}
 	if req.TPMLimit != nil && *req.TPMLimit < 0 {
 		writeError(w, http.StatusBadRequest, "tpm_limit must be >= 0")
+		return
+	}
+	if req.BalanceFloorUSD != nil && (*req.BalanceFloorUSD < 0 || *req.BalanceFloorUSD > 1e9) {
+		writeError(w, http.StatusBadRequest, "balance_floor_usd must be in [0, 1e9]; 0 clears the floor")
+		return
+	}
+	if req.QuotaFloorTokens != nil && *req.QuotaFloorTokens < 0 {
+		writeError(w, http.StatusBadRequest, "quota_floor_tokens must be >= 0; 0 clears the floor")
+		return
+	}
+	if req.QuotaFloorPercent != nil && (*req.QuotaFloorPercent < 0 || *req.QuotaFloorPercent > 100) {
+		writeError(w, http.StatusBadRequest, "quota_floor_percent must be in [0, 100]; 0 clears the floor")
 		return
 	}
 
@@ -450,17 +531,24 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	var currentConcurrency sql.NullInt32
 	var currentFpSlot sql.NullInt32
 	var previousPlan sql.NullString
+	var currentStatus string
 	var currentRevision int64
 	if err := tx.QueryRow(ctx, `
-		SELECT concurrency_limit, fp_slot_limit, plan_type, revision
+		SELECT concurrency_limit, fp_slot_limit, plan_type, status, revision
 		FROM credentials
 		WHERE id = $1 AND provider_id = $2
-		FOR UPDATE`, credID, providerID).Scan(&currentConcurrency, &currentFpSlot, &previousPlan, &currentRevision); err != nil {
+		FOR UPDATE`, credID, providerID).Scan(&currentConcurrency, &currentFpSlot, &previousPlan, &currentStatus, &currentRevision); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "credential not found")
 		} else {
 			writeError(w, http.StatusInternalServerError, "load credential failed: "+err.Error())
 		}
+		return
+	}
+	// 2026-08-31: 'deleted' 是终态。凭据抽屉的状态下拉可以 PATCH 任意
+	// status（含 active），不拦会把已删凭据复活回列表/路由。
+	if currentStatus == "deleted" {
+		writeError(w, http.StatusConflict, "credential is deleted (terminal state); re-create it instead")
 		return
 	}
 
@@ -529,7 +617,26 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		sets = append(sets, "notes = "+arg(*req.Notes))
 	}
 	if req.BalanceUSD != nil {
-		sets = append(sets, "balance_usd = "+arg(*req.BalanceUSD))
+		// Migration 721: a manual PATCH write is operator-calibrated evidence —
+		// stamp it so balance_floor_guard.refreshBalance and probe_v2's
+		// balance probe skip this row for the 24h manual-protection window
+		// instead of silently overwriting the calibrated value with an API
+		// read. Clearing balance_error mirrors "the operator just asserted a
+		// known-good number".
+		// R42 (2026-09-18 audit): stamp ONLY when the value actually changes.
+		// The drawer form always carries balance_usd, so an unrelated edit
+		// (tags/notes/label) used to flip source→manual and silently suspend
+		// the automatic balance probes for 24h; re-asserting the unchanged
+		// value keeps the row's existing provenance. The CASE compares the
+		// OLD balance_usd (UPDATE SET right-hand sides see the pre-image).
+		balArg := arg(*req.BalanceUSD)
+		valueChanged := "balance_usd IS DISTINCT FROM " + balArg
+		sets = append(sets,
+			"balance_usd = "+balArg,
+			"balance_source = CASE WHEN "+valueChanged+" THEN 'manual' ELSE balance_source END",
+			"balance_last_checked_at = CASE WHEN "+valueChanged+" THEN NOW() ELSE balance_last_checked_at END",
+			"balance_error = CASE WHEN "+valueChanged+" THEN NULL ELSE balance_error END",
+		)
 	}
 	if req.PlanType != nil {
 		sets = append(sets, "plan_type = "+arg(*req.PlanType), "plan_type_updated_at = NOW()")
@@ -548,6 +655,27 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	}
 	if req.MaxQueueWaitMS != nil {
 		sets = append(sets, "max_queue_wait_ms = "+arg(*req.MaxQueueWaitMS))
+	}
+	if req.BalanceFloorUSD != nil {
+		if *req.BalanceFloorUSD <= 0 {
+			sets = append(sets, "balance_floor_usd = NULL")
+		} else {
+			sets = append(sets, "balance_floor_usd = "+arg(*req.BalanceFloorUSD))
+		}
+	}
+	if req.QuotaFloorTokens != nil {
+		if *req.QuotaFloorTokens <= 0 {
+			sets = append(sets, "quota_floor_tokens = NULL")
+		} else {
+			sets = append(sets, "quota_floor_tokens = "+arg(*req.QuotaFloorTokens))
+		}
+	}
+	if req.QuotaFloorPercent != nil {
+		if *req.QuotaFloorPercent <= 0 {
+			sets = append(sets, "quota_floor_percent = NULL")
+		} else {
+			sets = append(sets, "quota_floor_percent = "+arg(*req.QuotaFloorPercent))
+		}
 	}
 	if len(sets) == 0 {
 		if err := tx.Commit(ctx); err != nil {
@@ -621,6 +749,26 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		settings.WriteAudit(ctx, h.db, *fpSlotAudit)
 	}
 	provider.InvalidateAllCandidateCache()
+
+	// 2026-08-26 hot-reload: when concurrency_limit changes, refresh the
+	// in-process Limiter semaphore so the new capacity takes effect for
+	// new in-flight requests within the same PATCH round-trip — no service
+	// restart, no 30s candCache wait. Also clear every sticky binding that
+	// points at this credential so new sessions can re-enter load
+	// balancing (otherwise L2 sticky would still pin new sessions to the
+	// previous credential for up to 60s).
+	if h.limiter != nil && req.ConcurrencyLimit != nil {
+		h.limiter.SetCredentialCapacity(providerID, credID, *req.ConcurrencyLimit)
+	}
+	if h.stickyCache != nil {
+		if cleared, err := h.stickyCache.ClearForCredential(credID); err != nil {
+			slog.Warn("sticky hot-reload: clear failed on credential PATCH",
+				"credential_id", credID, "error", err)
+		} else if cleared > 0 {
+			slog.Info("sticky hot-reload: cleared bindings on credential PATCH",
+				"credential_id", credID, "cleared", cleared)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"credential_id": credID, "revision": revision, "message": "updated"})
 }
 
@@ -628,6 +776,10 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 // changing its identity or model bindings. The selected bound model is probed
 // after commit so operators get immediate recovery evidence.
 func (h *Handler) rotateCredentialPrimaryKey(w http.ResponseWriter, r *http.Request, providerID, credID int) {
+	h.rotateCredentialPrimaryKeyWithOptions(w, r, providerID, credID, false)
+}
+
+func (h *Handler) rotateCredentialPrimaryKeyWithOptions(w http.ResponseWriter, r *http.Request, providerID, credID int, allowEmptyModel bool) {
 	var req struct {
 		APIKey       string `json:"api_key"`
 		RawModelName string `json:"raw_model_name"`
@@ -645,8 +797,21 @@ func (h *Handler) rotateCredentialPrimaryKey(w http.ResponseWriter, r *http.Requ
 	}
 	apiKeyBlank := strings.TrimSpace(req.APIKey) == ""
 	req.RawModelName = strings.TrimSpace(req.RawModelName)
-	if apiKeyBlank || req.RawModelName == "" {
-		writeError(w, http.StatusBadRequest, "api_key and raw_model_name required")
+
+	// 2026-09-07 本地托管供应商：占位凭据由系统自动管理，不允许轮转。
+	// 放在入参校验之后 —— 无效输入的 400 语义与 DB 访问顺序保持与历史
+	// 行为一致（TestRotateCredentialPrimaryKeyRejectsInvalidInputBeforeDB
+	// 用 nil DB 验证"先校验后落库"契约）。
+	if apiKeyBlank || (!allowEmptyModel && req.RawModelName == "") {
+		if apiKeyBlank {
+			writeError(w, http.StatusBadRequest, "api_key required")
+		} else {
+			writeError(w, http.StatusBadRequest, "api_key and raw_model_name required")
+		}
+		return
+	}
+	if isLocalKind(h.providerKindByID(r.Context(), providerID)) {
+		writeError(w, http.StatusBadRequest, errLocalCredentialImmutable)
 		return
 	}
 
@@ -669,32 +834,36 @@ func (h *Handler) rotateCredentialPrimaryKey(w http.ResponseWriter, r *http.Requ
 		}
 	}()
 
-	var bindingExists bool
-	err = tx.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1
-			FROM credentials c
-			JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
-			JOIN provider_models pm ON pm.id = cmb.provider_model_id
-			WHERE c.id = $1
-			  AND c.provider_id = $2
-			  AND pm.provider_id = c.provider_id
-			  AND pm.raw_model_name = $3
-			FOR UPDATE OF c, cmb, pm
-		)`, credID, providerID, req.RawModelName).Scan(&bindingExists)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "validate model binding failed")
-		return
-	}
-	if !bindingExists {
-		writeError(w, http.StatusBadRequest, "raw_model_name is not bound to credential")
-		return
+	if req.RawModelName != "" {
+		var bindingExists bool
+		err = tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM credentials c
+				JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
+				JOIN provider_models pm ON pm.id = cmb.provider_model_id
+				WHERE c.id = $1
+				  AND c.provider_id = $2
+				  AND pm.provider_id = c.provider_id
+				  AND pm.raw_model_name = $3
+				FOR UPDATE OF c, cmb, pm
+			)`, credID, providerID, req.RawModelName).Scan(&bindingExists)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "validate model binding failed")
+			return
+		}
+		if !bindingExists {
+			writeError(w, http.StatusBadRequest, "raw_model_name is not bound to credential")
+			return
+		}
 	}
 
 	tag, err := tx.Exec(ctx, `
 		UPDATE credentials
 		SET secret_ciphertext = $1, updated_at = NOW()
-		WHERE id = $2 AND provider_id = $3`, encrypted, credID, providerID)
+		WHERE id = $2
+		  AND provider_id = $3
+		  AND status NOT IN ('deleted', 'disabled')`, encrypted, credID, providerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "rotate primary key failed")
 		return
@@ -740,16 +909,71 @@ func (h *Handler) queueCredentialRotationProbe(credID int, rawModelName string) 
 	return "queued"
 }
 
+// deleteCredential 软删除凭据（status → 'deleted'）。
+//
+// 2026-08-31 operator request: 凭据删除后将状态置为 'deleted'，在所有
+// 列表中不再出现。区别于 updateCredential 将 status 置为 'disabled'：
+// 'disabled' 仍可在 UI 的"已停用"分组内恢复；'deleted' 是终态，列表
+// 端点（listCredentials / listProviders / v_routable_credential_models）
+// 一律通过 status = 'active' 过滤自然排除它。model_offers、credential_keys
+// 等子表保留行以维持 FK 与历史日志完整。
+//
+// 同步失效候选缓存、清理 sticky 路由、并写一条 routing_audit_log 记录
+// 终态来源（管理员 / API key / 触发的具体路径）。
 func (h *Handler) deleteCredential(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	_, err := h.db.Exec(ctx, `UPDATE credentials SET status = 'disabled' WHERE id = $1 AND provider_id = $2`, credID, providerID)
+
+	// 2026-08-31: 软删除 → status='deleted' + lifecycle_status='retired'。
+	// 只改 status 不够：domains/credential、providerprofile 等域代码以
+	// lifecycle_status='active' 为存活判据，batchRecover 等后台任务也按
+	// lifecycle 过滤。两轴同时置终态，任一过滤路径都不会再命中。
+	// 仅当当前 status 不是 'deleted' 时执行 UPDATE，避免重复点击产生
+	// 空 audit 行。
+	tag, err := h.db.Exec(ctx, `
+		UPDATE credentials
+		SET status = 'deleted',
+		    lifecycle_status = 'retired',
+		    updated_at = NOW()
+		WHERE id = $1
+		  AND provider_id = $2
+		  AND status <> 'deleted'
+	`, credID, providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "delete failed")
+		writeError(w, http.StatusInternalServerError, "delete failed: "+err.Error())
 		return
 	}
+	if tag.RowsAffected() == 0 {
+		// 已是 'deleted' 状态；幂等返回 200，避免前端重复点按钮报错。
+		writeJSON(w, http.StatusOK, map[string]any{
+			"message":       "already deleted",
+			"credential_id": credID,
+		})
+		return
+	}
+
 	provider.InvalidateAllCandidateCache()
-	writeJSON(w, http.StatusOK, map[string]string{"message": "revoked"})
+	provider.InvalidateCredentialKeyCache(credID)
+	provider.ResetKeyRotatorForCredential(credID)
+	if h.stickyCache != nil {
+		if cleared, scErr := h.stickyCache.ClearForCredential(credID); scErr != nil {
+			slog.Warn("deleteCredential: clear sticky failed", "credential_id", credID, "error", scErr)
+		} else if cleared > 0 {
+			slog.Info("deleteCredential: cleared sticky bindings", "credential_id", credID, "cleared", cleared)
+		}
+	}
+
+	h.writeAuditLog(r, "credential.deleted", "credential", credID, map[string]any{
+		"provider_id":  providerID,
+		"soft_deleted": true,
+		"new_status":   "deleted",
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":       "deleted",
+		"credential_id": credID,
+		"new_status":    "deleted",
+	})
 }
 
 // resetCredentialFpSlots clears all fingerprint slots for a credential.
@@ -817,7 +1041,7 @@ func (h *Handler) releaseCredentialFpSlot(w http.ResponseWriter, r *http.Request
 	var body struct {
 		SlotIndex int `json:"slot_index"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := readJSONRequired(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
@@ -954,4 +1178,202 @@ func (h *Handler) lookupSessionTitles(ctx context.Context, holders []string) map
 		}
 	}
 	return result
+}
+
+// getProviderErrorStats 返回指定 provider 的错误统计。
+// 审计修复 (2026-08-30)：P1-8 - Admin API 错误统计展示
+//
+// GET /admin/providers/{id}/error-stats?hours=24&limit=100
+//
+// 查询参数：
+//   - hours: 统计时间范围（小时），默认 24
+//   - limit: 返回记录数限制，默认 100
+//   - resolved: 是否只显示已解决的错误（true/false/all），默认 all
+func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, providerID int) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// 解析查询参数（带边界校验）
+	hours := 24
+	if hoursStr := r.URL.Query().Get("hours"); hoursStr != "" {
+		if parsed, err := strconv.Atoi(hoursStr); err == nil && parsed > 0 && parsed <= 720 {
+			hours = parsed
+		} else {
+			slog.Debug("getProviderErrorStats: invalid hours, using default",
+				"input", hoursStr, "default", 24)
+		}
+	}
+
+	limit := 100
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 && parsed <= 1000 {
+			limit = parsed
+		} else {
+			slog.Debug("getProviderErrorStats: invalid limit, using default",
+				"input", limitStr, "default", 100)
+		}
+	}
+
+	resolvedFilter := r.URL.Query().Get("resolved") // "true", "false", "all"
+	if resolvedFilter == "" {
+		resolvedFilter = "all"
+	}
+
+	// 2026-09-01 (P0-1 24h-audit round2): optional credential attribution
+	// filter. provider_error_details.credential_id was added by migration 639.
+	// Empty / invalid / "all" → aggregate every credential (previous
+	// behaviour). Valid ints narrow the result to that credential only, which
+	// is what the credential-detail panel needs ("this credential's errors").
+	credentialFilter := r.URL.Query().Get("credential_id")
+	if credentialFilter != "" && credentialFilter != "all" {
+		if parsed, err := strconv.Atoi(credentialFilter); err != nil || parsed <= 0 {
+			slog.Debug("getProviderErrorStats: invalid credential_id, aggregating all",
+				"input", credentialFilter)
+			credentialFilter = ""
+		}
+	} else {
+		credentialFilter = ""
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// 验证 provider 存在性（与 getProvider 保持一致语义）
+	var exists bool
+	if err := h.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL)`,
+		providerID).Scan(&exists); err != nil {
+		slog.Error("getProviderErrorStats: provider existence check failed",
+			"provider_id", providerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "provider not found")
+		return
+	}
+
+	// 参数化 SQL：所有用户输入通过 $N 传递，无字符串拼接
+	// credential_id 过滤（2026-09-01 P0-1）：$5 为空时聚合全部凭据；非空时
+	// 按 provider_error_details.credential_id::text 精确匹配（迁移 639 新列，
+	// TEXT 类型，来源 candidate_failure_logs_hot.credential_id::text）。
+	//
+	// RLS Phase 2 适配 (R41 P1-3): provider_error_details 的 policy 是
+	// `(current_role=super_admin OR bypass_rls=true OR tenant_id=current_tenant)`，
+	// 但 admin handler 是跨租户面板（provider 维度非租户维度），必须显式事务 +
+	// super_admin/bypass 旁路（setAllTenantGUC）。
+	query := `
+		SELECT
+			model_name,
+			endpoint,
+			credential_id::text,
+			error_type,
+			error_code,
+			error_message,
+			aggregation_bucket,
+			occurrences,
+			first_seen_at,
+			last_seen_at,
+			resolved,
+			created_at,
+			updated_at
+		FROM provider_error_details
+		WHERE provider_id = $1
+		  AND aggregation_bucket >= NOW() - ($3 * INTERVAL '1 hour')
+		  AND ($4 = 'all' OR resolved = ($4 = 'true'))
+		  AND ($5 = '' OR credential_id::text = $5)
+		ORDER BY last_seen_at DESC, occurrences DESC
+		LIMIT $2
+	`
+
+	type errorStat struct {
+		ModelName         string    `json:"model_name"`
+		Endpoint          string    `json:"endpoint"`
+		CredentialID      *string   `json:"credential_id"` // 迁移639前的历史行为 NULL
+		ErrorType         string    `json:"error_type"`
+		ErrorCode         *string   `json:"error_code"`
+		ErrorMessage      string    `json:"error_message"`
+		AggregationBucket time.Time `json:"aggregation_bucket"`
+		Occurrences       int       `json:"occurrences"`
+		FirstSeenAt       time.Time `json:"first_seen_at"`
+		LastSeenAt        time.Time `json:"last_seen_at"`
+		Resolved          bool      `json:"resolved"`
+		CreatedAt         time.Time `json:"created_at"`
+		UpdatedAt         time.Time `json:"updated_at"`
+	}
+
+	var stats []errorStat
+	err := withAllTenantReadOnlyTx(ctx, h.db, func(tx pgx.Tx) error {
+		rows, qerr := tx.Query(ctx, query, providerID, limit, hours, resolvedFilter, credentialFilter)
+		if qerr != nil {
+			return qerr
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var s errorStat
+			if serr := rows.Scan(
+				&s.ModelName,
+				&s.Endpoint,
+				&s.CredentialID,
+				&s.ErrorType,
+				&s.ErrorCode,
+				&s.ErrorMessage,
+				&s.AggregationBucket,
+				&s.Occurrences,
+				&s.FirstSeenAt,
+				&s.LastSeenAt,
+				&s.Resolved,
+				&s.CreatedAt,
+				&s.UpdatedAt,
+			); serr != nil {
+				slog.Warn("getProviderErrorStats scan failed", "error", serr)
+				continue
+			}
+			stats = append(stats, s)
+		}
+
+		// 审计修复 (2026-08-30)：检查迭代过程中的错误
+		// R16 (2026-09-12)：升级为 500——与 provider_models.go:129 确立的
+		// "500 优于静默截断"约定一致，凭据错误统计不完整时不得伪装为完整。
+		if rerr := rows.Err(); rerr != nil {
+			slog.Error("getProviderErrorStats rows iteration error",
+				"provider_id", providerID, "error", rerr)
+			return rerr
+		}
+		return nil
+	})
+	if err != nil {
+		// SQL 错误或迭代错误都映射为 500——与原行为一致（保持原错误日志口径）。
+		slog.Error("getProviderErrorStats failed", "provider_id", providerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "provider error stats query failed")
+		return
+	}
+
+	if stats == nil {
+		stats = []errorStat{}
+	}
+
+	// 统计汇总
+	var totalOccurrences int64
+	resolvedCount := 0
+	for _, s := range stats {
+		totalOccurrences += int64(s.Occurrences)
+		if s.Resolved {
+			resolvedCount++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"provider_id":       providerID,
+		"time_range_hours":  hours,
+		"credential_id":     nilIfEmpty(credentialFilter),
+		"total_errors":      len(stats),
+		"total_occurrences": totalOccurrences,
+		"resolved_count":    resolvedCount,
+		"unresolved_count":  len(stats) - resolvedCount,
+		"errors":            stats,
+	})
 }

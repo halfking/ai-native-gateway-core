@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 // Schema-aware read precedence for PipelineNodeViews (doc 14 §5.2.1/§5.3).
@@ -48,6 +51,21 @@ func TestPipelineNodeViewsDualReadsCanonicalFirst(t *testing.T) {
 	// Both present → canonical wins.
 	if !views[1].Available {
 		t.Fatalf("canonical value must win when both grammars exist, got %+v", views[1])
+	}
+}
+
+func TestPipelineNodeViewsDualDoesNotMaskCanonicalWrongType(t *testing.T) {
+	s, _ := newTestStore(t)
+	s.SetKeySchemaMode(KeySchemaModeDual)
+	ctx := context.Background()
+	q := NodeQuery{TenantID: "typed", CredentialID: 9, RawModel: "m"}
+	keys := NodeKeySetForTenant("ursm:v2:", q.TenantID, q.CredentialID, q.RawModel)
+	if err := s.rdb.Set(ctx, keys.Node, "corrupt", 0).Err(); err != nil {
+		t.Fatalf("seed canonical wrong type: %v", err)
+	}
+	_, err := s.PipelineNodeViews(ctx, "ursm:v2:", []NodeQuery{q})
+	if !errors.Is(err, redissafe.ErrWrongType) {
+		t.Fatalf("error=%v, want ErrWrongType without legacy fallback", err)
 	}
 }
 

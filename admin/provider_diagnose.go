@@ -19,7 +19,6 @@ import (
 	"context"
 	"math"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
@@ -34,7 +33,7 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 	var enabled bool
 	err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(code,''), COALESCE(base_url,''), COALESCE(protocol,''), enabled
-		FROM providers WHERE id = $1 AND tenant_id = 'default'
+		FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL
 	`, providerID).Scan(&providerCode, &baseURL, &protocol, &enabled)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "provider not found")
@@ -42,9 +41,15 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 	}
 
 	type modelsProbe struct {
-		StatusCode   int      `json:"status_code"`
-		LatencyMs    int      `json:"latency_ms"`
-		Error        string   `json:"error,omitempty"`
+		StatusCode int    `json:"status_code"`
+		LatencyMs  int    `json:"latency_ms"`
+		Error      string `json:"error,omitempty"`
+		// 2026-09-02: error kind / preview surface so the UI can render a
+		// tailored message instead of leaking raw "<html>…" into the admin
+		// health panel when the upstream returns a non-JSON body on
+		// /v1/models (e.g. a reverse-proxy / gateway error page).
+		ErrorKind    string   `json:"error_kind,omitempty"`
+		ErrorPreview string   `json:"error_preview,omitempty"`
 		ModelsCount  int      `json:"models_count"`
 		SampleModels []string `json:"sample_models"`
 	}
@@ -124,12 +129,17 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 				Error:     modelsErr.Error(),
 			}
 		} else {
-			cd.ModelsProbe = modelsProbe{
+			mp := modelsProbe{
 				StatusCode:   modelsResp.statusCode,
 				LatencyMs:    modelsLatency,
 				ModelsCount:  modelsResp.modelCount,
 				SampleModels: modelsResp.sampleModels,
 			}
+			if modelsResp.modelsErrKind != "" {
+				mp.ErrorKind = modelsResp.modelsErrKind
+				mp.ErrorPreview = modelsResp.modelsErrText
+			}
+			cd.ModelsProbe = mp
 		}
 
 		var testModel string
@@ -238,14 +248,18 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 			if ecRows.Scan(&kind, &cnt) != nil {
 				continue
 			}
+			// 2026-09-01 (P0-3 24h-audit round2): shared exact-match
+			// classification; see classifyDiagnoseErrorKind for the
+			// rationale (substring matching here was dead code + over-match).
+			auth, rateLimit, timeout, modelNotFound := classifyDiagnoseErrorKind(kind)
 			switch {
-			case strings.Contains(kind, "auth") || strings.Contains(kind, "401") || strings.Contains(kind, "403"):
+			case auth:
 				ec.AuthErrors += cnt
-			case strings.Contains(kind, "rate") || strings.Contains(kind, "429"):
+			case rateLimit:
 				ec.RateLimitErrors += cnt
-			case strings.Contains(kind, "timeout") || strings.Contains(kind, "deadline"):
+			case timeout:
 				ec.TimeoutErrors += cnt
-			case strings.Contains(kind, "model") || strings.Contains(kind, "404"):
+			case modelNotFound:
 				ec.ModelNotFoundErrors += cnt
 			default:
 				ec.OtherErrors += cnt
@@ -346,13 +360,16 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 	//nolint:errcheck // scan error non-critical
 	h.db.QueryRow(ctx, `
 		SELECT COALESCE(code,''), COALESCE(base_url,''), COALESCE(protocol,''), enabled
-		FROM providers WHERE id = $1 AND tenant_id = 'default'
+		FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL
 	`, providerID).Scan(&providerCode, &baseURL, &protocol, &enabled)
 
 	type modelsProbe struct {
-		StatusCode   int      `json:"status_code"`
-		LatencyMs    int      `json:"latency_ms"`
-		Error        string   `json:"error,omitempty"`
+		StatusCode int    `json:"status_code"`
+		LatencyMs  int    `json:"latency_ms"`
+		Error      string `json:"error,omitempty"`
+		// 2026-09-02: see struct definition above.
+		ErrorKind    string   `json:"error_kind,omitempty"`
+		ErrorPreview string   `json:"error_preview,omitempty"`
 		ModelsCount  int      `json:"models_count"`
 		SampleModels []string `json:"sample_models"`
 	}
@@ -379,7 +396,7 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 		       COALESCE(c.circuit_state,'closed'), COALESCE(c.availability_state,'ready'),
 		       COALESCE(c.health_status,'unknown'), COALESCE(c.consecutive_failures,0),
 		       c.secret_ciphertext
-		FROM credentials c WHERE c.provider_id = $1 AND c.status = 'active' ORDER BY c.id
+		FROM credentials c JOIN providers p ON p.id = c.provider_id WHERE c.provider_id = $1 AND p.deleted_at IS NULL AND c.status = 'active' ORDER BY c.id
 	`, providerID)
 
 	var credDiags []credDiag
@@ -416,7 +433,12 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 			if modelsErr != nil {
 				cd.ModelsProbe = modelsProbe{LatencyMs: modelsLatency, Error: modelsErr.Error()}
 			} else {
-				cd.ModelsProbe = modelsProbe{StatusCode: modelsResp.statusCode, LatencyMs: modelsLatency, ModelsCount: modelsResp.modelCount, SampleModels: modelsResp.sampleModels}
+				mp := modelsProbe{StatusCode: modelsResp.statusCode, LatencyMs: modelsLatency, ModelsCount: modelsResp.modelCount, SampleModels: modelsResp.sampleModels}
+				if modelsResp.modelsErrKind != "" {
+					mp.ErrorKind = modelsResp.modelsErrKind
+					mp.ErrorPreview = modelsResp.modelsErrText
+				}
+				cd.ModelsProbe = mp
 			}
 
 			var testModel string
@@ -494,14 +516,18 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 			if ecRows.Scan(&kind, &cnt) != nil {
 				continue
 			}
+			// 2026-09-01 (P0-3 24h-audit round2): same shared exact-match
+			// classification as diagnoseProvider above — the two aggregate
+			// loops must never diverge again.
+			auth, rateLimit, timeout, modelNotFound := classifyDiagnoseErrorKind(kind)
 			switch {
-			case strings.Contains(kind, "auth") || strings.Contains(kind, "401") || strings.Contains(kind, "403"):
+			case auth:
 				ec.AuthErrors += cnt
-			case strings.Contains(kind, "rate") || strings.Contains(kind, "429"):
+			case rateLimit:
 				ec.RateLimitErrors += cnt
-			case strings.Contains(kind, "timeout") || strings.Contains(kind, "deadline"):
+			case timeout:
 				ec.TimeoutErrors += cnt
-			case strings.Contains(kind, "model") || strings.Contains(kind, "404"):
+			case modelNotFound:
 				ec.ModelNotFoundErrors += cnt
 			default:
 				ec.OtherErrors += cnt
@@ -540,5 +566,36 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 			"models_coverage_pct": coveragePct, "avg_latency_ms": avgLatency,
 		},
 		"error_classification": ec, "health_scores": scores,
+	}
+}
+
+// classifyDiagnoseErrorKind buckets one error_kind value (errorsx.ErrorKind
+// string, or the SQL-side COALESCE fallback "other") into the five
+// diagnose summary counters. Exact match only; unknown kinds fall to
+// OtherErrors so new classifier kinds surface instead of silently joining
+// a wrong bucket.
+func classifyDiagnoseErrorKind(kind string) (auth, rateLimit, timeout, modelNotFound bool) {
+	switch kind {
+	// Auth family: credential invalid / revoked / forbidden upstream.
+	case "auth", "auth_revoked":
+		return true, false, false, false
+	// Rate-limit family: quota windows and upstream 429-class signals.
+	// fp_slot_saturated / circuit_open are gateway-side admission signals
+	// logged by dispatch preflight (executor_dispatch.go) — grouping them
+	// here is deliberate: they correlate with the same credentials the
+	// operator is diagnosing for throttling, and they are definitively NOT
+	// auth / timeout / model errors.
+	case "rate_limit", "concurrent", "quota", "quota_periodic", "quota_balance",
+		"quota_permanent", "fp_slot_saturated", "circuit_open":
+		return false, true, false, false
+	// Timeout family: both stream-level and request-level deadlines.
+	case "timeout", "stream_timeout":
+		return false, false, true, false
+	// Model-family terminal rejections. model_deprecated stays in this
+	// bucket (the requested model does not exist upstream anymore).
+	case "model_not_found", "model_deprecated", "no_available_channel":
+		return false, false, false, true
+	default:
+		return false, false, false, false
 	}
 }

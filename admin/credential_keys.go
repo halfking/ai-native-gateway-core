@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -96,6 +95,7 @@ func (h *Handler) listCredentialKeys(w http.ResponseWriter, r *http.Request, pro
 		FROM credential_keys ck
 		JOIN credentials c ON c.id = ck.credential_id
 		WHERE ck.credential_id = $1 AND c.provider_id = $2
+          AND c.status <> 'deleted'
 		ORDER BY ck.kid_index
 	`, credID, providerID)
 	if err != nil {
@@ -161,6 +161,12 @@ func (h *Handler) addCredentialKey(w http.ResponseWriter, r *http.Request, provi
 		return
 	}
 
+	// 2026-09-07 本地托管供应商：凭据由系统自动管理，不允许追加 extra key。
+	if isLocalKind(h.providerKindByID(r.Context(), providerID)) {
+		writeError(w, http.StatusBadRequest, errLocalCredentialImmutable)
+		return
+	}
+
 	encrypted, err := h.encryptCred([]byte(req.APIKey))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "encryption failed")
@@ -181,7 +187,7 @@ func (h *Handler) addCredentialKey(w http.ResponseWriter, r *http.Request, provi
 	err = tx.QueryRow(ctx, `
 		SELECT tenant_id
 		FROM credentials
-		WHERE id = $1 AND provider_id = $2
+		WHERE id = $1 AND provider_id = $2 AND status <> 'deleted'
 		FOR UPDATE
 	`, credID, providerID).Scan(&credTenant)
 	if err != nil {
@@ -245,7 +251,7 @@ func (h *Handler) deleteCredentialKey(w http.ResponseWriter, r *http.Request, pr
 	if err := tx.QueryRow(ctx, `
 		SELECT tenant_id
 		FROM credentials
-		WHERE id = $1 AND provider_id = $2
+		WHERE id = $1 AND provider_id = $2 AND status <> 'deleted'
 		FOR UPDATE
 	`, credID, providerID).Scan(&credTenant); err != nil {
 		writeError(w, http.StatusNotFound, "credential not found")
@@ -285,7 +291,7 @@ func (h *Handler) resetCredentialKey(w http.ResponseWriter, r *http.Request, pro
 		Status string `json:"status"`
 	}
 	// body optional; default to "active"
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = readJSONRequired(r, &req)
 	if req.Status == "" {
 		req.Status = "active"
 	}
@@ -308,7 +314,7 @@ func (h *Handler) resetCredentialKey(w http.ResponseWriter, r *http.Request, pro
 	if err := tx.QueryRow(ctx, `
 		SELECT tenant_id
 		FROM credentials
-		WHERE id = $1 AND provider_id = $2
+		WHERE id = $1 AND provider_id = $2 AND status <> 'deleted'
 		FOR UPDATE
 	`, credID, providerID).Scan(&credTenant); err != nil {
 		writeError(w, http.StatusNotFound, "credential not found")

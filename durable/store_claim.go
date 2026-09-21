@@ -81,7 +81,12 @@ const claimSelectSQL = `
 	WHERE commit_state IN ('none', 'metadata')
 	  AND status IN ('waiting_recovery', 'retry_scheduled', 'running')
 	  AND (status <> 'running' OR lease_until < $2)
-	  AND next_retry_at IS NOT NULL AND next_retry_at <= $2 + INTERVAL '5 seconds'
+	  -- 2026-09-21 (252 PG SQL 日志审计复核轮自审计): $2 必须显式
+	  -- ::timestamptz——网关连接是 QueryExecModeSimpleProtocol（db/db.go），
+	  -- $2 被内联为无型别字面量，PG17 会把 时间字面量 + INTERVAL 解析为
+	  -- interval+interval 而必炸（同 bg/feature_stats_worker.go 根修；
+	  -- 252 生产 pss 零调用=休眠哑弹，durable 模式一启用即触发）。
+	  AND next_retry_at IS NOT NULL AND next_retry_at <= $2::timestamptz + INTERVAL '5 seconds'
 	  AND deadline_at > $2
 	  AND (lease_until IS NULL OR lease_until < $2)
 	  AND NOT EXISTS (SELECT 1 FROM durable_task_settlement_intents si WHERE si.task_id = durable_llm_tasks.id)
@@ -112,6 +117,11 @@ func (s *Store) ClaimRunnable(ctx context.Context, opts ClaimOptions) ([]*Task, 
 		return nil, fmt.Errorf("durable: begin claim: %w", err)
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+
+	// worker 全租户扫描：旁路双 GUC（RLS §五 Phase1#2）。
+	if err := setAllTenantBypassGUC(ctx, tx); err != nil {
+		return nil, err
+	}
 
 	rows, err := tx.Query(ctx, claimSelectSQL, opts.Batch, now)
 	if err != nil {
@@ -167,7 +177,9 @@ func (s *Store) ClaimRunnable(ctx context.Context, opts ClaimOptions) ([]*Task, 
 // RenewLease 为 running 任务续租。必须携带 (lease_owner, fencing_token)；
 // 0 行（租约被夺/token 失效/任务不在 running）返回 ErrLeaseLost。
 func (s *Store) RenewLease(ctx context.Context, taskID, owner string, token int64, until time.Time) error {
-	tag, err := s.db.Exec(ctx, `
+	// worker 单语句写包显式事务设旁路 GUC：autocommit 下 is_local GUC 语句
+	// 结束即回收，降权后会被 RLS 过滤成假性 ErrLeaseLost（rls.go）。
+	tag, err := s.execWithBypassTx(ctx, `
 			UPDATE durable_llm_tasks
 			SET lease_until = $4, updated_at = $5
 			WHERE id = $1 AND lease_owner = $2 AND fencing_token = $3 AND status = 'running'`,
@@ -201,6 +213,11 @@ func (s *Store) Reschedule(ctx context.Context, p RescheduleParams) error {
 		return fmt.Errorf("durable: begin reschedule: %w", err)
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+
+	// worker 路径：旁路双 GUC（RLS §五 Phase1#2）。
+	if err := setAllTenantBypassGUC(ctx, tx); err != nil {
+		return err
+	}
 
 	var (
 		tenantID, requestID, sessionID string

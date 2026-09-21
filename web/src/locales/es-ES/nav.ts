@@ -9,9 +9,11 @@ export default {
     dataOps: "Operaciones de datos",
     guide: "Guía de integración",
     chat: "Chat",
+    plugins: "Complementos",
     opsplatform: "运维平台"
   },
   item: {
+    activateAction: 'Activar',
     overview: "Resumen",
     tenantModels: "Modelos estándar",
     tenantAccount: "Mi cuenta",
@@ -20,12 +22,15 @@ export default {
     models: "Modelos y catálogo",
     routingOverview: "Panorama de enrutamiento",
     credentialMonitor: "Monitor de credenciales",
+    annotations: 'Anotación manual',
+    annotationStats: 'Estadísticas de anotación',
     probeHealth: "Salud del sondeo",
     systemMonitor: "Monitoreo del sistema",
     providers: "Proveedores",
     pricing: "Precios de coste",
     modelPricing: "Gestión de precios",
     freePool: "Pool gratuito",
+    freeDiscovery: "Descubrimiento gratuito",
     routingDefaults: "Routing Defaults",
     tenants: "Inquilinos",
     users: "Usuarios",
@@ -46,6 +51,7 @@ export default {
     wechatBot: "Bot de WeChat",
     sessionContext: "Contexto de sesión",
     settings: "Ajustes del sistema",
+    proxy: "Gestión de proxies",
     dataLifecycle: "Ciclo de vida de datos",
     formatAnomalies: "Monitor de anomalías de formato",
     modelIntegrity: "Monitor de integridad del modelo",
@@ -70,6 +76,8 @@ export default {
     tenantAutoUpdate: "Mis Actualizaciones"
 ,
     updateActivate: 'Update & Activate',
+    // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
+    activateActionTip: 'Haz clic para activar esta instancia',
 
     licenseActivate: 'License Activation',
 
@@ -82,6 +90,7 @@ export default {
     licenseOffline: 'Offline Activation',
 
     telemetryScope: 'Data Collection Scope',
+    supportDonate: 'Patrocinio y Donación',
   },
 
   mainAria: 'Navegación principal',
@@ -95,4 +104,9 @@ export default {
   publicSupport: 'Soporte',
 
   skip: 'Skip to main content',
+
+  // 2026-09-21: 导航徽标 tooltip
+  badge: {
+    formatAnomalies: 'Anomalías de solicitud sin resolver',
+  },
 }

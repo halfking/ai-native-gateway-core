@@ -9,15 +9,18 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // observability for fastReprobeDelay (2026-08-26 P1-2)
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -34,24 +37,37 @@ import (
 //
 // Spec: docs/superpowers/specs/2026-06-12-credential-availability-audit-design.md §5
 type CredentialProbeV2 struct {
-	db                 *pgxpool.Pool
-	encKey             []byte
-	keyring            *secret.Keyring
-	cache              *ModelAvailabilityCache
-	interval           time.Duration
-	fastReprobeDelay   time.Duration
-	fastReprobeQueue   chan int // credential IDs
-	fastReprobeMu      sync.Mutex
-	fastReprobePending map[int]struct{}
-	cancel             context.CancelFunc
-	done               chan struct{}
-	started            bool
-	stopped            bool
-	lifecycleMu        sync.Mutex
-	probeWG            sync.WaitGroup
+	db                    *pgxpool.Pool
+	encKey                []byte
+	keyring               *secret.Keyring
+	cache                 *ModelAvailabilityCache
+	interval              time.Duration
+	fastReprobeDelay      time.Duration
+	fastReprobeQueue      chan int // credential IDs
+	fastReprobeMu         sync.Mutex
+	fastReprobePending    map[int]struct{}
+	immediateProbeMu      sync.Mutex
+	immediateProbePending map[int]struct{}
+	cancel                context.CancelFunc
+	done                  chan struct{}
+	started               bool
+	stopped               bool
+	lifecycleMu           sync.Mutex
+	probeWG               sync.WaitGroup
 
 	// 新增：状态管理器引用
 	stateManager credentialstate.StateObserver
+
+	// onQuotaRecovered is the dispatcher-facing notification fired from
+	// cycleAll's healthy-ready success branch. The hook is consulted AFTER
+	// writeHealth has flipped the credential back to ready (so the cache
+	// invalidation can take effect immediately on the next chat request),
+	// with source="cycle_all" so the metric counter and dispatcher handler
+	// can distinguish this path from fast_probe and probe_queue. nil → the
+	// probe path stays silent (routing layer falls back to candCache TTL).
+	// 2026-08-26 quota-recovery-notify fix: closes the
+	// "DB says ready but cache still excludes credential" gap.
+	onQuotaRecovered func(credID int, source string)
 
 	probeCtxMu sync.RWMutex
 	probeCtx   context.Context
@@ -68,6 +84,12 @@ type CredentialProbeV2 struct {
 // next tick" failure mode in scenario tests.
 func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 	interval := 1 * time.Hour
+	// User principle: "按 token 计费、非周期性的节点至少 5 分钟一次探测"
+	// (see .handoff/selfcheck-audit-2026-08-26.md §2.1). 5 minutes is the
+	// minimum cadence the user is willing to pay for; the reactive fastReprobe
+	// path inherits the same cadence. Operators can still override via
+	// LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY if they explicitly accept
+	// the higher probe cost.
 	fastDelay := 5 * time.Minute
 	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_CRED_PROBE_V2_INTERVAL")); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
@@ -83,17 +105,27 @@ func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 			slog.Warn("credential probe v2: invalid LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY, using 5m", "value", v, "error", err)
 		}
 	}
-	return &CredentialProbeV2{
-		db:                 db,
-		encKey:             encKey,
-		interval:           interval,
-		fastReprobeDelay:   fastDelay,
-		fastReprobeQueue:   make(chan int, 64),
-		fastReprobePending: make(map[int]struct{}),
-		done:               make(chan struct{}),
+	probe := &CredentialProbeV2{
+		db:                    db,
+		encKey:                encKey,
+		interval:              interval,
+		fastReprobeDelay:      fastDelay,
+		fastReprobeQueue:      make(chan int, 64),
+		fastReprobePending:    make(map[int]struct{}),
+		immediateProbePending: make(map[int]struct{}),
+		done:                  make(chan struct{}),
 	}
+	// 2026-08-26 P1-2: publish the effective delay so the gauge
+	// llmgw_routing_fast_reprobe_delay_seconds reflects the chosen value
+	// (operator override or 30s default) from process start.
+	met.RoutingFastReprobeDelaySeconds.Set(fastDelay.Seconds())
+	return probe
 }
 
+// CONTRACT: call once at boot, BEFORE Start — the field is written without
+// a lock while probe goroutines read it in decryptCiphertext. Runtime key
+// rotation would be a data race; switch to atomic.Pointer first if that is
+// ever needed (R34 2026-09-17 audit note).
 func (c *CredentialProbeV2) SetKeyring(kr *secret.Keyring) {
 	c.keyring = kr
 }
@@ -105,6 +137,23 @@ func (c *CredentialProbeV2) SetAvailabilityCache(cache *ModelAvailabilityCache) 
 // SetStateManager 设置状态管理器（新增）
 func (c *CredentialProbeV2) SetStateManager(sm credentialstate.StateObserver) {
 	c.stateManager = sm
+}
+
+// SetOnQuotaRecovered wires the dispatcher-facing notification fired from
+// cycleAll's healthy-ready success branch. The (credID, source) signature
+// lets the integrator route the label + invalidator from a single closure.
+// Safe to call multiple times; the latest non-nil setter wins. nil → the
+// probe path stays silent (the routing layer falls back to candCache TTL).
+//
+// 2026-08-26 quota-recovery-notify fix: without this hook the probe path
+// would write healthy into the DB but the routing layer's candidate cache
+// would still exclude the credential until TTL elapses, so the first chat
+// request after a recharge still picks a fallback node.
+func (c *CredentialProbeV2) SetOnQuotaRecovered(fn func(credID int, source string)) {
+	if fn == nil {
+		return
+	}
+	c.onQuotaRecovered = fn
 }
 
 // SubmitFastProbe queues a delayed credential probe. At most one pending
@@ -235,8 +284,10 @@ func (c *CredentialProbeV2) Stop() {
 // ProbeNowAsync executes a credential probe immediately in the background.
 // It is used after a caller has already applied its own backoff. Unlike
 // SubmitFastProbe, it does not add the separate five-minute fast-reprobe delay.
+// At most one immediate probe may run for a credential at once so webhook
+// replays and overlapping recovery paths cannot multiply billable probes.
 func (c *CredentialProbeV2) ProbeNowAsync(credID int) {
-	if c == nil {
+	if c == nil || credID <= 0 {
 		return
 	}
 	c.lifecycleMu.Lock()
@@ -251,10 +302,23 @@ func (c *CredentialProbeV2) ProbeNowAsync(credID int) {
 		c.lifecycleMu.Unlock()
 		return
 	}
+	c.immediateProbeMu.Lock()
+	if _, pending := c.immediateProbePending[credID]; pending {
+		c.immediateProbeMu.Unlock()
+		c.lifecycleMu.Unlock()
+		return
+	}
+	c.immediateProbePending[credID] = struct{}{}
+	c.immediateProbeMu.Unlock()
 	c.probeWG.Add(1)
 	c.lifecycleMu.Unlock()
 	go func() {
 		defer c.probeWG.Done()
+		defer func() {
+			c.immediateProbeMu.Lock()
+			delete(c.immediateProbePending, credID)
+			c.immediateProbeMu.Unlock()
+		}()
 		c.ProbeNow(ctx, credID)
 	}()
 }
@@ -331,6 +395,11 @@ type v2Snapshot struct {
 	DefaultProbeModel      string
 	ProviderProtocol       string
 	CatalogCode            string // P3: balance probe vendor routing
+	// ProbeConsecutiveFailures is the credential's probe-failure ladder
+	// counter (probe-recovery closeout P2, 2026-09-13). The auth backoff
+	// in classifyProbeFailure callers derives availability_recover_at from
+	// counter+1 so repeated 401/403 probes decay from 15min to a 24h cap.
+	ProbeConsecutiveFailures int
 }
 
 // cycleAll iterates active credentials, sends /v1/models + mini chat "hi",
@@ -347,7 +416,8 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		       c.secret_ciphertext,
 		       COALESCE(c.default_probe_model, ''),
 		       COALESCE(p.protocol, 'openai-completions'),
-		       COALESCE(p.catalog_code, '')
+		       COALESCE(p.catalog_code, ''),
+		       COALESCE(c.probe_consecutive_failures, 0)
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.status = 'active'
@@ -357,6 +427,15 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		  AND COALESCE(p.enabled, FALSE) = TRUE
 		  AND COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
 		  AND c.availability_state <> 'suspended'
+		  -- 2026-09-13 audit round F1: a row with a FUTURE
+		  -- availability_recover_at is deliberately parked — auth ladder
+		  -- (P2, 15m→24h), rate_limited (60s), unreachable (5min). Probing
+		  -- it again now would defeat the ladder: the recovery tick
+		  -- releases the row exactly when the backoff expires, and the next
+		  -- hourly cycle then re-measures it. Without this gate a
+		  -- permanently-revoked key was still hit once per hour (plus the
+		  -- fast reprobe) regardless of the ladder.
+		  AND (c.availability_recover_at IS NULL OR c.availability_recover_at <= now())
 		  AND COALESCE(c.default_probe_model, '') <> ''
 		ORDER BY c.id
 	`)
@@ -370,6 +449,7 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 	healthy := 0
 	warn := 0
 	failed := 0
+	skippedRecentSuccess := 0
 
 	probeStart := time.Now()
 
@@ -378,7 +458,21 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		var ciphertext []byte
 		if err := rows.Scan(&s.ID, &s.Status, &s.LifecycleStatus, &s.ManualDisabled,
 			&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
-			&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol, &s.CatalogCode); err != nil {
+			&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol, &s.CatalogCode,
+			&s.ProbeConsecutiveFailures); err != nil {
+			continue
+		}
+
+		// 2026-09-13 closeout (audit R5 / P5): a credential with fresh
+		// successful REAL traffic and a currently-green health verdict does
+		// not need the hourly synthetic probe — the traffic IS the probe.
+		// Skipping it removes the largest healthy-fleet probe cost without
+		// touching failure detection: any failure flips health_status away
+		// from healthy/unknown (or last_probe_success false), and the row
+		// becomes eligible again immediately. Fail-open by design: if
+		// last_used_at is NULL the row is probed as before.
+		if skipProbeOnRecentTrafficSuccess(timeoutCtx, c.db, s.ID) {
+			skippedRecentSuccess++
 			continue
 		}
 
@@ -390,6 +484,9 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 				"error", decErr,
 			)
 			recoverAt := time.Now().Add(5 * time.Minute)
+			// #5 (R28): decrypt failure is also a stale-evidence-prone failure
+			// write — stamp EvidenceAt so the optimistic gate in writeHealth
+			// applies to it as well.
 			c.writeHealth(timeoutCtx, s.ID, probeResult{
 				HealthStatus:          "unreachable",
 				HealthError:           "decrypt failed",
@@ -397,12 +494,17 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 				AvailabilityState:     "unreachable",
 				AvailabilityRecoverAt: &recoverAt,
 				StateReasonCode:       "decrypt_failed",
+				EvidenceAt:            time.Now(),
 			})
 			failed++
 			continue
 		}
 		s.APIKey = apiKey
 
+		// #5 (R28, 2026-09-14): per-row evidence timestamp — the failure
+		// verdict produced below is only trusted by writeHealth while nobody
+		// touched the row's state after this instant.
+		rowT0 := time.Now()
 		// Verify the probe model is still routable
 		ok, errMsg := c.probeCredential(timeoutCtx, s)
 		checked++
@@ -419,6 +521,18 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 			healthy++
 		} else {
 			pr = classifyProbeFailure(errMsg)
+			// 2026-09-13 closeout (P2): probe-level auth failures carry an
+			// exponential recover_at (15m→24h cap) instead of NULL. The old
+			// NULL let the 30s recovery tick flip auth_failed straight back
+			// to ready, so a permanently-revoked key oscillated
+			// ready→auth_failed→ready every hour with one wasted vendor
+			// request per cycle. With the ladder the tick only releases the
+			// credential when the backoff expires; a success resets the
+			// counter (writeHealth).
+			if pr.AvailabilityState == "auth_failed" {
+				prRecoverAt := authProbeBackoffRecoverAt(s.ProbeConsecutiveFailures + 1)
+				pr.AvailabilityRecoverAt = &prRecoverAt
+			}
 			pr.HealthLatencyMs = int(time.Since(probeStart).Milliseconds())
 			failed++
 			if pr.HealthStatus == "warning" {
@@ -435,13 +549,43 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 			}
 		}
 		pr.HealthProbeModel = s.DefaultProbeModel
+		pr.EvidenceAt = rowT0 // #5 (R28): optimistic-concurrency evidence stamp
 		c.writeHealth(timeoutCtx, s.ID, pr)
 
+		// 2026-08-26 quota-recovery-notify fix: after writeHealth has flipped
+		// the credential back to ready, notify the dispatcher so the
+		// per-credential candidate cache invalidates immediately and the
+		// next chat request re-plans with the recovered binding visible
+		// (instead of waiting for the candCache TTL or the next 5-min
+		// PeriodicQuotaProbe tick). nil hook → silent, routing layer falls
+		// back to its TTL. We deliberately reuse the existing
+		// AvailabilityState=="ready" check rather than threading a new flag
+		// from writeHealth — the dispatcher only cares about "the credential
+		// flipped back to routable", and writeHealth is the single writer
+		// of availability_state (the routing layer already trusts its
+		// verdict).
+		if ok && pr.AvailabilityState == "ready" && c.onQuotaRecovered != nil {
+			c.onQuotaRecovered(s.ID, "cycle_all")
+		}
+
 		// P3: balance probe for supported vendors (only when healthy).
+		// Migration 721 (2026-09-18): the WHERE skips rows hand-calibrated
+		// by an operator within the last 24h (balance_source='manual') so
+		// the hourly automatic probe cannot silently overwrite a manual
+		// balance correction. The predicate is the shared
+		// ManualBalanceProtectionPredicate (balance_manual_protection.go),
+		// also used by the floor guard's candidate SELECT — one constant, no
+		// manual syncing.
 		if pr.AvailabilityState == "ready" {
 			if balUSD, ok := c.probeBalance(timeoutCtx, s); ok {
 				if _, err := c.db.Exec(timeoutCtx,
-					`UPDATE credentials SET balance_usd = $1 WHERE id = $2`,
+					`UPDATE credentials
+					 SET balance_usd = $1,
+					     balance_source = 'api',
+					     balance_last_checked_at = NOW(),
+					     balance_error = NULL
+					 WHERE id = $2
+					   AND `+ManualBalanceProtectionPredicate,
 					balUSD, s.ID,
 				); err != nil {
 					slog.Warn("credential probe v2: balance_usd write failed",
@@ -450,16 +594,40 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 					slog.Debug("credential probe v2: balance_usd updated",
 						"credential_id", s.ID, "balance_usd", balUSD)
 				}
+			} else {
+				// R42: same failure stamp as the floor guard — a broken
+				// vendor balance endpoint must be visible without waiting
+				// for an operator to click ⟳. checked_at is deliberately
+				// NOT bumped (hourly cycle cadence unchanged, #12a fail-open)
+				// and manual rows are protected by the guard predicate.
+				slog.Warn("credential probe v2: balance probe failed",
+					"credential_id", s.ID)
+				if _, uerr := c.db.Exec(timeoutCtx,
+					`UPDATE credentials
+					 SET balance_error = $1
+					 WHERE id = $2
+					   AND `+ManualBalanceProtectionPredicate,
+					balanceProbeFailStamp(), s.ID,
+				); uerr != nil {
+					slog.Warn("credential probe v2: balance_error stamp write failed",
+						"credential_id", s.ID, "error", uerr)
+				}
 			}
 		}
 
-		// P2: fast reprobe after auth_failed or unreachable.
-		if pr.AvailabilityState == "auth_failed" || pr.AvailabilityState == "unreachable" {
-			select {
-			case c.fastReprobeQueue <- s.ID:
-			default:
-			}
+		// P2: fast reprobe after unreachable. Route through the
+		// deduplicating submitter so cycle scans share the same pending mark and
+		// lifecycle handling as quota-triggered probes.
+		//
+		// 2026-09-13 audit round F2: auth_failed is deliberately NOT fast-
+		// reprobed. A 401/403 now carries the exponential ladder in
+		// availability_recover_at (15m→24h); a follow-up probe 5 minutes
+		// later would burn a vendor request and defeat the decay. unreachable
+		// (5min ladder, plausibly transient) keeps the fast reprobe.
+		if pr.AvailabilityState == "unreachable" {
+			c.SubmitFastProbe(s.ID)
 		}
+
 	}
 
 	slog.Info("credential probe v2: cycle complete",
@@ -467,7 +635,56 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		"healthy", healthy,
 		"warning", warn,
 		"failed", failed,
+		"skipped_recent_success", skippedRecentSuccess,
 	)
+}
+
+// probeSkipRecentSuccessEnv toggles the P5 recent-success skip in cycleAll.
+// Default ON ("成功后不要重复探测"); set to false/0/off to restore the
+// probe-every-active-credential-hourly behaviour.
+const probeSkipRecentSuccessEnv = "LLM_GATEWAY_PROBE_SKIP_RECENT_SUCCESS"
+
+func probeSkipRecentSuccessEnabled() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(probeSkipRecentSuccessEnv)))
+	return v == "" || v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+// skipProbeOnRecentTrafficSuccess reports whether a credential's own recent
+// request success already proves it healthy, making the synthetic probe
+// redundant this cycle (probe-recovery closeout P5, 2026-09-13).
+//
+// Evidence bar (ANY holds, else the probe runs):
+//   - a successful request within the last 30 minutes (last_used_at — the
+//     dispatch path stamps it on every routed request), health_status
+//     healthy/unknown, and the previous probe did not fail; OR
+//   - 2026-09-20 probe-volume policy (INV-5): the credential is healthy, its
+//     last probe succeeded, and it has NO candidate failure in the last 24h.
+//     Idle-but-healthy credentials no longer get the hourly synthetic probe —
+//     normal state has no scheduled probing; errors flip health_status (or
+//     log a failure) and make the row eligible again.
+//
+// DB errors fail OPEN (probe runs) — this is a cost optimization, not a gate.
+func skipProbeOnRecentTrafficSuccess(ctx context.Context, db *pgxpool.Pool, credID int) bool {
+	if !probeSkipRecentSuccessEnabled() {
+		return false
+	}
+	var ok bool
+	err := db.QueryRow(ctx, `
+		SELECT (
+		    COALESCE(c.last_used_at, to_timestamp(0)) > now() - INTERVAL '30 minutes'
+		    AND c.health_status IN ('healthy', 'unknown')
+		    AND COALESCE(c.last_probe_success, TRUE)
+		) OR (
+		    c.health_status = 'healthy'
+		    AND COALESCE(c.last_probe_success, FALSE)
+		    AND NOT ` + credentialFailureEvidenceSQL("c.id", probeFailureEvidenceWindowSQL) + `
+		)
+		FROM credentials c WHERE c.id = $1
+	`, credID).Scan(&ok)
+	if err != nil {
+		return false
+	}
+	return ok
 }
 
 type probeResult struct {
@@ -481,13 +698,28 @@ type probeResult struct {
 	QuotaState            string
 	StateReasonCode       string
 	// BindingOnly means the probe reached and authenticated the credential,
-	// but its selected model is not callable. Only that credential-model node
-	// may be removed from routing; sibling models must remain unaffected.
+	// but its selected model is not callable. Only that credential-model
+	// node may be removed from routing; sibling models must remain
+	// unaffected. 2026-08-26 self-check audit (apigpt / gpt-5.6-terra):
+	// distinguishes per-binding model failures from credential-wide
+	// failures so writeHealth only acts on the targeted (cmb) row.
 	BindingOnly bool
+	// EvidenceAt is the probe-START timestamp backing this verdict (#5, R28
+	// 2026-09-14, optimistic concurrency gate). A failure verdict is only
+	// evidence from the past: the probe's network I/O can take tens of
+	// seconds, and a state write that lands during the flight (admin
+	// reset-state, balance_floor guard pull, writer.go quota branch, …) is
+	// FRESHER than the probe's conclusion. writeHealth therefore trusts a
+	// failure write only while state_updated_at < EvidenceAt. Success
+	// verdicts bypass the gate unconditionally — same semantics as the
+	// hard-quota OR-bypass: a live 2xx is the freshest evidence there is.
+	// Zero value disables the gate (fail-open) for callers that don't set it.
+	EvidenceAt time.Time
 }
 
-// loadBoundRawModels returns distinct available raw models bound to a credential.
-// A probe-time lookup failure is non-fatal: callers retain the default probe model.
+// loadBoundRawModels returns distinct available raw models bound to a
+// credential. A probe-time lookup failure is non-fatal: callers retain the
+// default probe model.
 func (c *CredentialProbeV2) loadBoundRawModels(ctx context.Context, credID int) []string {
 	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -526,6 +758,8 @@ func (c *CredentialProbeV2) loadBoundRawModels(ctx context.Context, credID int) 
 	return models
 }
 
+// uniqueStringSet merges any number of string slices, dedupes, and drops
+// empties. Order is preserved by first-seen.
 func uniqueStringSet(values ...[]string) []string {
 	seen := make(map[string]struct{})
 	out := make([]string, 0)
@@ -625,9 +859,17 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 	runChat := func() (bool, string) {
 		if desc.ChatProbeEndpoint == upstreamurl.EpMessages {
 			msgURL := providercap.ProbeEndpointURL(s.BaseURL, desc)
+			if blocked, reason := providercap.EgressBlocked(msgURL); blocked {
+				providercap.WarnBlocked("probe_v2.chat", msgURL, reason)
+				return false, "egress blocked: " + reason
+			}
 			return c.miniAnthropic(ctx, httpClient, s.APIKey, s.DefaultProbeModel, msgURL, 20)
 		}
 		chatURL := providercap.ProbeEndpointURL(s.BaseURL, desc)
+		if blocked, reason := providercap.EgressBlocked(chatURL); blocked {
+			providercap.WarnBlocked("probe_v2.chat", chatURL, reason)
+			return false, "egress blocked: " + reason
+		}
 		ok, errMsg := c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, chatURL, 1)
 		if !ok && strings.Contains(errMsg, "max_tokens") {
 			// Some legacy gateways reject max_tokens < 2; retry with 2.
@@ -776,11 +1018,11 @@ func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Clien
 }
 
 func truncateBody(b []byte) string {
-	s := strings.TrimSpace(string(b))
-	if len(s) > 200 {
-		return s[:200]
-	}
-	return s
+	// audit R8 P1: 401/403 error bodies often echo the very credential being
+	// probed (Bearer token / sk- key). Redact before the text lands in
+	// credentials.health_error, which admin UI renders verbatim; cut on
+	// UTF-8 boundaries so CJK bodies stay valid UTF-8 for PostgreSQL.
+	return string(errorsx.SanitizeErrorText([]byte(strings.TrimSpace(string(b))), 200))
 }
 
 // miniAnthropic sends a single-shot /v1/messages request with x-api-key +
@@ -823,6 +1065,37 @@ func (c *CredentialProbeV2) miniAnthropic(ctx context.Context, httpClient *http.
 	return false, fmt.Sprintf("messages status %d: %s", resp.StatusCode, truncateBody(respBody))
 }
 
+// authProbeBackoffBase is the first-rung recovery delay for a probe-level
+// auth failure (probe-recovery closeout P2, 2026-09-13). It matches the
+// writer.go KindAuth cooldown so a probe 401/403 and a traffic 401/403 cool
+// for the same initial window.
+const authProbeBackoffBase = 15 * time.Minute
+
+// authProbeBackoffCap bounds the auth probe ladder. A permanently revoked
+// key is re-validated at most once per day at steady state — enough to
+// notice a vendor-side unblock within a day, far below any abuse threshold.
+const authProbeBackoffCap = 24 * time.Hour
+
+// authProbeBackoffRecoverAt returns the availability_recover_at for the
+// n-th consecutive failed auth probe: 15m, 30m, 1h, 2h, 4h, 8h, 16h, then
+// capped at 24h. n must be >= 1 (callers pass counter+1). A successful
+// probe or successful real traffic resets the counter (writeHealth /
+// RestoreOnSuccess), returning the cadence to the first rung.
+func authProbeBackoffRecoverAt(n int) time.Time {
+	if n < 1 {
+		n = 1
+	}
+	step := n - 1
+	if step > 7 {
+		step = 7
+	}
+	d := authProbeBackoffBase << uint(step)
+	if d > authProbeBackoffCap || d <= 0 {
+		d = authProbeBackoffCap
+	}
+	return time.Now().Add(d)
+}
+
 func classifyProbeFailure(errMsg string) probeResult {
 	pr := probeResult{HealthSource: "probe"}
 	switch {
@@ -850,18 +1123,32 @@ func classifyProbeFailure(errMsg string) probeResult {
 		// ID (outbound_model_name) to be callable.  We mark health=warning so
 		// admins see something is wrong, but availability_state stays "ready"
 		// so routing for the OTHER models on this credential is NOT blocked.
-		// admin will see state_reason_code="endpoint_id_required" and can
-		// either set outbound_model_name on the binding or pick a different
-		// default_probe_model.
+		// BindingOnly=true tells writeHealth to flip ONLY the probe model
+		// binding to unavailable — sibling bindings must stay routable
+		// (apigpt / gpt-5.6-terra audit, 2026-08-26).
 		pr.HealthStatus = "warning"
 		pr.AvailabilityState = "ready"
 		pr.HealthError = errMsg
 		pr.StateReasonCode = probeutil.EndpointIDRequiredErrCode
 		pr.BindingOnly = true
-	case isModelBindingProbeError(errMsg):
-		// An explicit model response is binding-scoped. Do not convert this
-		// into credential-level unavailable state: the same credential can
-		// still serve its other bound models.
+	case isPerModelChatFailure(errMsg):
+		// 2026-08-26 self-check audit: a probe-model "model not found"
+		// (404) or "model deprecated" (410) reported by the chat
+		// endpoint is a per-binding failure, not a credential-wide one.
+		// The credential may still serve sibling models under the same
+		// apigpt account — the user's principle is "如果一个模型可用，
+		// 默认应该所有模型均可用" and the corollary is "if only the
+		// probe_model is broken, sibling models must remain routable".
+		// Mark the binding unavailable and keep availability_state='ready'
+		// so the routing layer still considers the credential (it just
+		// won't pick the broken model until an operator updates
+		// default_probe_model).
+		//
+		// Note: the same upstream message from the /v1/models endpoint
+		// is *credential-scoped* — a 404 from /v1/models means the
+		// provider refused to enumerate any models for this account
+		// (auth/revocation/scope removal). isPerModelChatFailure
+		// guards against that path by requiring the chat-level prefix.
 		pr.HealthStatus = "warning"
 		pr.AvailabilityState = "ready"
 		pr.HealthError = errMsg
@@ -878,17 +1165,32 @@ func classifyProbeFailure(errMsg string) probeResult {
 	return pr
 }
 
-// isModelBindingProbeError accepts only chat-probe responses. A similarly
-// worded failure from the provider's /models endpoint is provider/API evidence
-// and must remain credential-scoped.
-func isModelBindingProbeError(errMsg string) bool {
-	message := strings.ToLower(errMsg)
-	if !strings.HasPrefix(message, "chat status ") && !strings.HasPrefix(message, "messages status ") {
+// isPerModelChatFailure returns true when the errMsg describes a
+// failure that applies only to the probed model — the credential may
+// still be healthy. Currently recognises chat-level 404 "model not
+// found" and 410 "model deprecated" responses emitted by upstream
+// vendors that have removed the model from their catalog.
+//
+// Note: 402 "payment required" / 401 / 403 / 429 are explicitly NOT in
+// this set — those are credential-wide and must keep the original
+// availability handling. endpoint_id_required has its own branch and
+// pre-empts the 404 check above.
+//
+// The chat-level prefix requirement (`chat status 404` or
+// `messages status 404`) keeps the same upstream message from the
+// /v1/models endpoint (`models endpoint unreachable (...)`) on the
+// credential-scoped path — a 404 from /v1/models means the provider
+// refused to enumerate any models for this account (auth/revocation/
+// scope removal) and must NOT be treated as a single-binding failure.
+func isPerModelChatFailure(errMsg string) bool {
+	if !(strings.Contains(errMsg, "model not found") ||
+		strings.Contains(errMsg, "model has been deprecated")) {
 		return false
 	}
-	return strings.Contains(message, "model not found") ||
-		strings.Contains(message, "model has been deprecated") ||
-		strings.Contains(message, "model is deprecated")
+	return strings.Contains(errMsg, "chat status 404") ||
+		strings.Contains(errMsg, "chat status 410") ||
+		strings.Contains(errMsg, "messages status 404") ||
+		strings.Contains(errMsg, "messages status 410")
 }
 
 // writeHealth persists probe results with manual-disable guard.
@@ -910,8 +1212,14 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 	if pr.StateReasonCode != "" {
 		stateReason = &pr.StateReasonCode
 	}
+	// #5 (R28, 2026-09-14): nil evidence → optimistic gate skipped (fail-open
+	// for any caller that doesn't stamp EvidenceAt).
+	var evidenceAt *time.Time
+	if !pr.EvidenceAt.IsZero() {
+		evidenceAt = &pr.EvidenceAt
+	}
 
-	if _, err := c.db.Exec(execCtx, `
+	result, err := c.db.Exec(execCtx, `
 		UPDATE credentials
 		SET health_status = $1,
 		    health_error = $2,
@@ -926,9 +1234,9 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		    -- 同步清除残留的 quota_recover_at，避免状态不一致
 		    -- (quota_state='ok' 但 quota_recover_at 指向未来时间)。
 		    -- 失败分支不传 $8，COALESCE 保持旧值，这里的 CASE 也不会触发。
-		    quota_recover_at = CASE 
-		        WHEN COALESCE($8, quota_state) = 'ok' THEN NULL 
-		        ELSE quota_recover_at 
+		    quota_recover_at = CASE
+		        WHEN COALESCE($8, quota_state) = 'ok' THEN NULL
+		        ELSE quota_recover_at
 		    END,
 		    lifecycle_status = CASE
 		        WHEN COALESCE($8, '') = 'ok'
@@ -966,15 +1274,39 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		        ELSE auto_disabled_reason
 		    END,
 		    state_reason_code = $9,
-		    state_updated_at = NOW()
+		    state_updated_at = NOW(),
+		    -- 2026-09-13 closeout (P2/P3): probe bookkeeping for the auth
+		    -- backoff ladder and the quota-probe due gate. Failures climb the
+		    -- ladder (recover_at = base << n, capped); any healthy probe
+		    -- resets it. last_probe_at feeds the balance/periodic probe
+		    -- "due" filter so a dead credential is re-probed on an
+		    -- exponential schedule instead of every tick.
+		    last_probe_at = NOW(),
+		    probe_consecutive_failures = CASE
+		        WHEN $1 = 'healthy' THEN 0
+		        ELSE COALESCE(credentials.probe_consecutive_failures, 0) + 1
+		    END,
+		    last_probe_success = ($1 = 'healthy')
 		WHERE id = $10
 		  AND (
 		      lifecycle_status = 'active'
 		      OR (
 		          lifecycle_status = 'disabled'
 		          AND auto_disabled_at IS NOT NULL
-		          AND COALESCE(quota_state, 'ok') = 'periodic_exhausted'
-		          AND (quota_recover_at IS NULL OR quota_recover_at <= now())
+		          AND (
+		              -- 2026-08-07 P0 死锁修复：periodic_exhausted 且恢复期已到
+		              -- 的自动禁用行允许写入（探活成功可自动启用）。
+		              (
+		                  COALESCE(quota_state, 'ok') = 'periodic_exhausted'
+		                  AND (quota_recover_at IS NULL OR quota_recover_at <= now())
+		              )
+		              -- 2026-09-13 closeout (P3): quota-ok 自动禁用行（可用性
+		              -- 低于阈值被自动禁用、availability suspended、recover_at
+		              -- NULL）也允许写入——suspended-revalidation 目标集探测它们，
+		              -- 成功经下方 CASE 翻回 active/ready，否则这批行没有任何
+		              -- 探测写入通道（prod creds 9/13/23/24/25/30）。
+		              OR COALESCE(quota_state, 'ok') = 'ok'
+		          )
 		      )
 		  )
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
@@ -999,76 +1331,601 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		      COALESCE($8, '') = 'ok'
 		      OR quota_state NOT IN ('permanently_exhausted', 'balance_exhausted')
 		  )
+		  -- #5 (R28, 2026-09-14): 乐观并发闸。失败结论只是"探测开始时刻"的证据，
+		  -- 探测网络 I/O 可长达数十秒，期间其它写者（admin reset-state、floor guard
+		  -- 摘出、writer.go 配额分支等）落库的状态更新鲜，不得被旧失败结论覆盖。
+		  -- 成功写无条件放行 —— 与上面硬配额 OR-bypass 同语义：探活成功是最新的
+		  -- 事实。$11 IS NULL（调用方未盖 EvidenceAt 戳）时闸门失效、照旧写入。
+		  AND (
+		      COALESCE($8, '') = 'ok'
+		      OR $11::timestamptz IS NULL
+		      OR COALESCE(state_updated_at, to_timestamp(0)) < $11::timestamptz
+		  )
 	`, pr.HealthStatus, pr.HealthError, pr.HealthLatencyMs, pr.HealthProbeModel,
 		pr.HealthSource, pr.AvailabilityState, recoverAt,
-		quotaState, stateReason, credID); err != nil {
+		quotaState, stateReason, credID, evidenceAt)
+	if err != nil {
 		slog.Warn("credential probe v2: writeHealth failed",
 			"credential_id", credID, "health_status", pr.HealthStatus, "error", err)
+		return
+	}
+	if result.RowsAffected() == 0 {
+		// #5 (R28, 2026-09-14): 0 rows 有两种成因，日志必须区分 —— 硬配额/
+		// 生命周期守卫命中（既有行为），或乐观并发闸拦下竞态丢写（探测期间
+		// 状态已被其它写者更新）。判别 SELECT 必须在下面的簿记 UPDATE 之前
+		// 执行：簿记会推进 state_updated_at，把每个守卫 miss 都伪装成竞态。
+		okWrite := quotaState != nil && *quotaState == "ok"
+		raceLost := false
+		if evidenceAt != nil && !okWrite {
+			var touchedDuringProbe bool
+			if qerr := c.db.QueryRow(execCtx, `
+				SELECT COALESCE(state_updated_at, to_timestamp(0)) >= $1
+				FROM credentials WHERE id = $2
+			`, *evidenceAt, credID).Scan(&touchedDuringProbe); qerr == nil && touchedDuringProbe {
+				raceLost = true
+			}
+		}
+		// 硬配额守卫命中（0 rows）：quota_state 保持硬配额权威是对的，但
+		// 不能连探针簿记一起吞掉——last_probe_at 供 balance/periodic 探测
+		// 的指数到期闸使用，丢失它会把该行钉死在最快节奏（2min tick 每 tick
+		// 重打死上游，恰是 f8322dc04 R4 要消灭的轰炸形态；2026-09-14 审计
+		// A-P1-1）。失败时用无硬配额守卫的簿记 UPDATE 单独推进梯子；
+		// quota_state / lifecycle / auto_* 列一律不动。成功（healthy）被
+		// 硬配额守卫挡住的情形不存在（守卫对 $8='ok' 放行）。
+		// R27 簿记分支保持无条件（不加 #5 乐观闸条件）：簿记只是探针自身的
+		// 节奏记账，不是健康结论，竞态也不能丢。
+		if pr.HealthStatus != "healthy" {
+			if _, err := c.db.Exec(execCtx, `
+				UPDATE credentials
+				SET health_status = $1,
+				    health_error = $2,
+				    health_checked_at = NOW(),
+				    health_latency_ms = $3,
+				    health_probe_model = $4,
+				    health_source = $5,
+				    availability_state = $6,
+				    availability_recover_at = $7,
+				    state_reason_code = $8,
+				    state_updated_at = NOW(),
+				    last_probe_at = NOW(),
+				    probe_consecutive_failures = COALESCE(credentials.probe_consecutive_failures, 0) + 1,
+				    last_probe_success = FALSE
+				WHERE id = $9
+				  AND (
+				      lifecycle_status = 'active'
+				      OR (lifecycle_status = 'disabled' AND auto_disabled_at IS NOT NULL)
+				  )
+				  AND COALESCE(manual_disabled, FALSE) = FALSE
+				  AND quota_state IN ('permanently_exhausted', 'balance_exhausted')
+			`, pr.HealthStatus, pr.HealthError, pr.HealthLatencyMs, pr.HealthProbeModel,
+				pr.HealthSource, pr.AvailabilityState, recoverAt, stateReason, credID); err != nil {
+				slog.Warn("credential probe v2: hard-quota bookkeeping update failed",
+					"credential_id", credID, "health_status", pr.HealthStatus, "error", err)
+			}
+		}
+		if raceLost {
+			// #5 竞态丢写：失败结论已过期（探测期间状态被更新），属预期
+			// 自保护，不是守卫命中 —— 单独文案供日志检索，不算异常。
+			slog.Info("credential probe v2: writeHealth dropped stale failure result (state changed during probe)",
+				"credential_id", credID, "health_status", pr.HealthStatus,
+				"evidence_at", pr.EvidenceAt)
+		} else {
+			slog.Info("credential probe v2: writeHealth skipped stale result",
+				"credential_id", credID, "health_status", pr.HealthStatus)
+		}
 		return
 	}
 	if pr.BindingOnly {
 		c.writeBindingUnavailable(execCtx, credID, pr)
 	} else if pr.AvailabilityState == "ready" {
+		// 2026-08-26 self-check audit (apigpt / gpt-5.6-terra case):
+		// restoreBindingOnProbeSuccess only clears bindings whose
+		// unavailable_reason='auto_probe_model_binding' (the per-model
+		// probe-revert ladder). For a token-billing credential that was
+		// down for balance_exhausted, sibling bindings often had been
+		// marked unavailable via auto_rate_limit / auto_concurrent /
+		// continuous_failure during the outage — and restoreBindingOnProbeSuccess
+		// would not touch them. Once the credential recovers to 'ready',
+		// v_routable_credential_models still filters them out because
+		// cmb.available=FALSE, so the operator sees the credential as
+		// "ready" but the bound model still routes nowhere.
+		//
+		// User principle: "if one model under a credential is healthy,
+		// all sibling models should be reachable; clear the old model
+		// list and replace with the freshly observed list. If the
+		// upstream /v1/models fetch fails, do NOT touch the binding
+		// list."  We honor that by fanning the recovery across every
+		// cmb row under the credential whose current reason is one of
+		// the auto-* ladders (the upstream health evidence applies to
+		// the whole credential — apigpt's account is healthy, not just
+		// gpt-5.6-terra).
+		c.restoreAllBindingsOnCredentialSuccess(execCtx, credID, pr.HealthProbeModel)
 		c.restoreBindingOnProbeSuccess(execCtx, credID, pr.HealthProbeModel)
 	}
 
-	writeModels := uniqueStringSet([]string{pr.HealthProbeModel}, c.loadBoundRawModels(execCtx, credID))
+	// 2026-08-26 self-check audit: on the healthy-ready branch, fan the
+	// cache write across EVERY bound raw model (regardless of the
+	// current cmb.available state) so the cache reflects the freshly
+	// recovered binding set. On the failure branch, keep the existing
+	// cmb.available=TRUE filter — the cache mirrors current DB state
+	// when the upstream is sick.
+	var writeModels []string
+	if !pr.BindingOnly && pr.AvailabilityState == "ready" {
+		writeModels = uniqueStringSet([]string{pr.HealthProbeModel}, c.loadBoundRawModelsAll(execCtx, credID))
+	} else {
+		writeModels = uniqueStringSet([]string{pr.HealthProbeModel}, c.loadBoundRawModels(execCtx, credID))
+	}
 	if len(writeModels) == 0 {
 		writeModels = []string{pr.HealthProbeModel}
 	}
+	// 2026-08-26 self-check audit (apigpt / gpt-5.6-terra): on the
+	// healthy-ready branch the cache must reflect the freshly
+	// recovered binding set, including every sibling model the probe
+	// indirectly validated. On the failure branch the cache mirrors
+	// current DB state (only the models currently marked cmb.available).
+	//
+	// BindingOnly failures (e.g. probe_model endpoint_id_required,
+	// 404 model not found) leave availability_state='ready' so the
+	// credential stays routable for sibling models, but the failed
+	// model itself must NOT appear "available" in the cache. The
+	// cache writes one entry per model in writeModels; the failed
+	// model flips to state="model_binding" while siblings stay
+	// healthy_confirmed.
+	//
+	// `available` is shared between the cache fan-out and the
+	// StateManager UpdateFromProbe below — both surfaces must agree
+	// on whether the probe_model is currently routable. The single
+	// source of truth keeps the credentialstate cache in lock-step
+	// with the Redis model availability cache so a future router
+	// that reads either gets a consistent answer.
+	available := pr.AvailabilityState == "ready" && !pr.BindingOnly
+	state := pr.HealthStatus
+	if state == "healthy" {
+		state = "healthy_confirmed"
+	}
+	if pr.BindingOnly {
+		// Per-model probe failure — the credential itself is healthy,
+		// only the probe_model binding is down. writeBindingUnavailable
+		// has already flipped cmb.available=FALSE for the probe model
+		// (see top of writeHealth), so the cache must reflect that.
+		state = "model_binding"
+	} else if !available && pr.AvailabilityState != "" {
+		state = pr.AvailabilityState
+	}
 	if c.cache != nil && c.cache.Enabled() && pr.HealthProbeModel != "" {
-		available := pr.AvailabilityState == "ready" && !pr.BindingOnly
-		state := pr.HealthStatus
-		if state == "healthy" {
-			state = "healthy_confirmed"
-		}
-		if !available && !pr.BindingOnly && pr.AvailabilityState != "" {
-			state = pr.AvailabilityState
-		}
-		if pr.BindingOnly {
-			state = "model_binding"
-		}
 		for _, model := range writeModels {
+			// For BindingOnly failures, only the probe model itself
+			// should be reported unavailable in the cache; sibling models
+			// remain routable.
+			modelAvailable := available
+			modelState := state
+			if pr.BindingOnly && model != pr.HealthProbeModel {
+				modelAvailable = true
+				modelState = "healthy_confirmed"
+			}
 			if err := c.cache.Set(execCtx, credID, model, modelAvailabilityFields(
-				credID, model, state, available, pr.HealthStatus, 0, 0,
-				recoverAt, pr.HealthSource,
+				credID,
+				model,
+				modelState,
+				modelAvailable,
+				pr.HealthStatus,
+				0,
+				0,
+				recoverAt,
+				pr.HealthSource,
 			)); err != nil {
 				slog.Warn("credential probe v2: cache write failed",
-					"credential_id", credID, "probe_model", model, "error", err)
+					"credential_id", credID,
+					"probe_model", model,
+					"error", err)
 			}
 		}
 	}
 
 	// 新增：同步到状态管理器
-	if c.stateManager != nil && pr.HealthProbeModel != "" {
+	if c.stateManager != nil && len(writeModels) > 0 {
 		now := time.Now()
+		// Fan the per-model update over writeModels so the
+		// StateManager cache mirrors the same binding set the Redis
+		// model availability cache just wrote. The single
+		// `pr.AvailabilityState == "ready" && !pr.BindingOnly`
+		// expression below is the source of truth shared with the
+		// cache fan-out — both surfaces must agree on whether each
+		// model is currently routable.
+		//
+		// For BindingOnly failures, only the probe_model itself is
+		// down — sibling models stay available. For credential-wide
+		// successes, every bound model is fresh-confirmed.
 		for _, model := range writeModels {
-			state := &credentialstate.State{
+			lastSuccess := &now
+			modelAvailable := available
+			if pr.BindingOnly {
+				modelAvailable = model != pr.HealthProbeModel
+				if model == pr.HealthProbeModel {
+					// Probe model failed at the binding level;
+					// there is no successful probe timestamp to report.
+					lastSuccess = nil
+				}
+			}
+			if pr.AvailabilityState != "ready" {
+				lastSuccess = nil
+			}
+			c.stateManager.UpdateFromProbe(execCtx, &credentialstate.State{
 				CredentialID:  credID,
 				Model:         model,
-				Available:     pr.AvailabilityState == "ready" && !pr.BindingOnly,
+				Available:     modelAvailable,
 				HealthStatus:  pr.HealthStatus,
 				AvgLatencyMs:  pr.HealthLatencyMs,
 				LastUpdatedAt: now,
-				LastSuccessAt: func() *time.Time {
-					if pr.AvailabilityState != "ready" {
-						return nil
-					}
-					return &now
-				}(),
-				LastError: pr.HealthError,
+				LastSuccessAt: lastSuccess,
+				LastError:     pr.HealthError,
+
 				RecoverAt: recoverAt,
 				Source:    "probe_v2",
-			}
-			c.stateManager.UpdateFromProbe(execCtx, state)
+			})
 		}
 	}
 }
 
+// restoreAllBindingsOnCredentialSuccess is the 2026-08-26 self-check audit
+// fix for the apigpt / gpt-5.6-terra recharge scenario. Once the
+// credential-level probe comes back healthy (writeHealth sees
+// AvailabilityState='ready'), this helper fans the recovery across every
+// cmb row under the credential whose current unavailable_reason is one of
+// the auto-* / continuous_failure ladders.
+//
+// Why a separate helper:
+//   - restoreBindingOnProbeSuccess only clears `auto_probe_model_binding`
+//     (the per-model probe-revert ladder). Other reasons
+//     (auto_rate_limit, auto_concurrent, auto_stream_timeout,
+//     continuous_failure) were left untouched even when the underlying
+//     upstream was healthy again.
+//   - The user's principle: "一旦这个模型成功了，应该先拉取凭据下所有
+//     模型清单，如果成功拉到，就清空原来凭据下的模型清单，用新清单
+//     替换。"  We honor that with a single credential-scoped UPDATE that
+//     reflects "the account is healthy → every binding the upstream
+//     accepts is routable".
+//
+// Hard guards (preserved):
+//   - unavailable_reason NOT LIKE 'manual%' — operator pin.
+//   - unavailable_reason <> 'model_probe_broken' — permanent broken flag
+//     owned by bg/model_probe.go's own recovery ladder.
+//   - admin_protected = FALSE — admin pin.
+//   - cmb.available = FALSE — only flip rows that are currently down.
+//
+// Mirrors the same clearing to model_offers so /api/routing/resolve
+// ("test route") and the admin UI stay in lock-step with the production
+// router (v_routable_credential_models). The candidate cache is invalidated
+// so the router's next read sees the fresh state.
+//
+// probeModel is the model the probe actually called; it's logged for
+// observability but not used as a filter — the recovery applies to every
+// sibling binding, not just the probe model.
+func (c *CredentialProbeV2) restoreAllBindingsOnCredentialSuccess(ctx context.Context, credID int, probeModel string) {
+	if c.db == nil {
+		return
+	}
+	execCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// 1. Clear cmb rows that an automated ladder had marked unavailable.
+	// The predicate intentionally covers:
+	//   - continuous_failure    (credentialhealth/checker.go:markDegraded)
+	//   - auto_*                (domains/credential/writer.go:writeModelLevelFailureOnly)
+	//   - auto_probe_model_binding (this file: writeBindingUnavailable)
+	//   - probe_*               (bg/node_probe.go — rare under balance_exhausted,
+	//     but defensive)
+	result, err := c.db.Exec(execCtx, `
+		UPDATE credential_model_bindings cmb
+		SET available              = TRUE,
+		    unavailable_reason     = NULL,
+		    unavailable_at         = NULL,
+		    unavailable_recover_at = NULL,
+		    updated_at             = NOW()
+		WHERE cmb.credential_id = $1
+		  AND cmb.available = FALSE
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(cmb.unavailable_reason, '') <> 'model_probe_broken'
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+	`, credID)
+	if err != nil {
+		slog.Warn("credential probe v2: restoreAllBindingsOnCredentialSuccess failed",
+			"credential_id", credID, "probe_model", probeModel, "error", err)
+		return
+	}
+	cmbRows := int(result.RowsAffected())
+
+	// 2. Mirror to model_offers so /api/routing/resolve and the admin
+	// UI match the cmb side. Same guard set as the cmb UPDATE — the
+	// mirrors can otherwise drift if a later change adds a guard to
+	// one side but not the other.
+	moResult, err := c.db.Exec(execCtx, `
+		UPDATE model_offers mo
+		SET available          = TRUE,
+		    unavailable_reason = NULL,
+		    unavailable_at     = NULL,
+		    updated_at         = NOW()
+		WHERE mo.credential_id = $1
+		  AND mo.available = FALSE
+		  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(mo.unavailable_reason, '') <> 'model_probe_broken'
+		  AND COALESCE(mo.admin_protected, FALSE) = FALSE
+	`, credID)
+	if err != nil {
+		slog.Warn("credential probe v2: restoreAllBindingsOnCredentialSuccess mirror failed",
+			"credential_id", credID, "probe_model", probeModel, "error", err)
+		// Continue — cmb side succeeded; cache invalidation still applies.
+	}
+	moRows := int(moResult.RowsAffected())
+
+	if cmbRows > 0 || moRows > 0 {
+		slog.Info("credential probe v2: recharge recovery fan-out cleared bindings",
+			"credential_id", credID,
+			"probe_model", probeModel,
+			"cmb_rows", cmbRows,
+			"model_offers_rows", moRows,
+			"trigger", "apigpt_recharge_2026_08_26",
+		)
+		provider.InvalidateCandidateCacheForCredential(credID)
+	}
+}
+
+// loadBoundRawModelsAll returns distinct raw_model_name values bound to a
+// credential WITHOUT filtering on cmb.available. Used by the healthy probe
+// branch so the cache fan-out reflects the freshly recovered binding set,
+// including bindings that had been marked unavailable during the prior
+// balance_exhausted window.
+//
+// Sibling to loadBoundRawModels (which keeps the cmb.available=TRUE filter
+// for the failure branch where the cache mirrors current DB state).
+//
+// fallbackProbeModel picks a probe model for credentials that never had
+// default_probe_model configured (2026-09-08: ProbeNow used to skip them
+// silently, so quota recovery never fired). Prefer a binding that is still
+// routable — an unavailable binding tells us nothing about the credential —
+// and only then fall back to any bound model. Results are sorted so the
+// choice is stable across ticks.
+func (c *CredentialProbeV2) fallbackProbeModel(ctx context.Context, credID int) string {
+	pick := func(models []string) string {
+		if len(models) == 0 {
+			return ""
+		}
+		sorted := append([]string(nil), models...)
+		sort.Strings(sorted)
+		return sorted[0]
+	}
+	if m := pick(c.loadBoundRawModels(ctx, credID)); m != "" {
+		return m
+	}
+	return pick(c.loadBoundRawModelsAll(ctx, credID))
+}
+
+// loadBoundRawModelsAll returns distinct raw_model_name values bound to a
+// credential WITHOUT filtering on cmb.available. Used by the healthy probe
+// branch so the cache fan-out reflects the freshly recovered binding set,
+// including bindings that had been marked unavailable during the prior
+// balance_exhausted window.
+//
+// Errors and empty result both return nil — callers fall back to the
+// probe-model-only list.
+func (c *CredentialProbeV2) loadBoundRawModelsAll(ctx context.Context, credID int) []string {
+	if c.db == nil {
+		return nil
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	rows, err := c.db.Query(queryCtx, `
+		SELECT DISTINCT pm.raw_model_name
+		FROM credential_model_bindings cmb
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		WHERE cmb.credential_id = $1
+		  AND COALESCE(pm.available, TRUE) = TRUE
+		  AND pm.raw_model_name <> ''
+	`, credID)
+	if err != nil {
+		slog.Warn("credential probe v2: loadBoundRawModelsAll query failed",
+			"credential_id", credID, "error", err)
+		return nil
+	}
+	defer rows.Close()
+
+	models := make([]string, 0)
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err == nil && model != "" {
+			models = append(models, model)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("credential probe v2: loadBoundRawModelsAll rows failed",
+			"credential_id", credID, "error", err)
+		return nil
+	}
+	return models
+}
+
+// ProbeNow is the unified external entry point for "fire a credential
+// probe right now, on demand". It is the API surface used by the bg
+// fast-reprobe path (after auth_failed/unreachable) AND reserved for
+// future admin manual-trigger endpoints. Auto + manual now share one
+// code path so the retry policy (2s/5s backoff) and result handling
+// stay in lock-step — admin never has to know whether to retry.
+//
+// The probe uses probeCredential internally, which already wraps step1
+// (GET /v1/models) and step2 (mini chat "hi") in the shared
+// probeutil.ProbeRetryDelays loop, so transient upstream issues are
+// absorbed before the credential is marked degraded.
+//
+// ctx should carry an outer deadline; ProbeNow itself enforces a 30s
+// upper bound so a slow probe cannot trap the caller. The result is
+// persisted via writeHealth (same columns the scheduled cycleAll writes
+// to: health_status, availability_state, availability_recover_at, ...).
+//
+// The probeSource field in the resulting health row identifies the
+// caller so the admin UI can distinguish "scheduled hourly probe" from
+// "fast reprobe after auth_failed" from "admin manual trigger" without
+// cross-referencing logs.
+func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
+	if c == nil || c.db == nil || credID <= 0 {
+		return
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var s v2Snapshot
+	var ciphertext []byte
+	err := c.db.QueryRow(timeoutCtx, `
+		SELECT c.id, c.status, c.lifecycle_status, COALESCE(c.manual_disabled, FALSE),
+		       COALESCE(c.quota_state, 'ok'),
+		       COALESCE(p.enabled, FALSE), COALESCE(p.manual_disabled, FALSE),
+		       COALESCE(p.base_url, ''),
+		       c.secret_ciphertext,
+		       COALESCE(c.default_probe_model, ''),
+		       COALESCE(p.protocol, 'openai-completions'),
+		       COALESCE(p.catalog_code, ''),
+		       COALESCE(c.probe_consecutive_failures, 0)
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		WHERE c.id = $1
+		  AND c.status = 'active'
+		  AND (
+		      c.lifecycle_status = 'active'
+		      OR (
+		          c.lifecycle_status = 'disabled'
+		          AND c.auto_disabled_at IS NOT NULL
+		          AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		      )
+		  )
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND p.enabled = TRUE
+		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+	`, credID).Scan(
+		&s.ID, &s.Status, &s.LifecycleStatus, &s.ManualDisabled,
+		&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
+		&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol, &s.CatalogCode,
+		&s.ProbeConsecutiveFailures,
+	)
+	if err != nil {
+		slog.Debug("credential probe v2: ProbeNow skipped (credential not active or missing)",
+			"credential_id", credID, "error", err)
+		return
+	}
+	apiKey, decErr := decryptCiphertext(ciphertext, c.keyring, c.encKey)
+	if decErr != nil {
+		slog.Warn("credential probe v2: ProbeNow decrypt failed",
+			"credential_id", credID, "error", decErr)
+		return
+	}
+	s.APIKey = apiKey
+	if strings.TrimSpace(s.DefaultProbeModel) == "" {
+		s.DefaultProbeModel = c.fallbackProbeModel(timeoutCtx, credID)
+	}
+	if strings.TrimSpace(s.DefaultProbeModel) == "" {
+		slog.Debug("credential probe v2: ProbeNow skipped (no probe model)",
+			"credential_id", credID)
+		return
+	}
+	probeStart := time.Now()
+	ok, errMsg := c.probeCredential(timeoutCtx, s)
+	var pr probeResult
+	if ok {
+		pr = probeResult{
+			HealthStatus:      "healthy",
+			HealthLatencyMs:   int(time.Since(probeStart).Milliseconds()),
+			HealthSource:      "probe_now",
+			AvailabilityState: "ready",
+			QuotaState:        "ok", // 探测成功时主动清除 periodic_exhausted
+		}
+		slog.Info("credential probe v2: ProbeNow ok",
+			"credential_id", credID,
+			"latency_ms", pr.HealthLatencyMs)
+	} else {
+		pr = classifyProbeFailure(errMsg)
+		// 2026-09-13 closeout (P2): same exponential auth ladder as cycleAll —
+		// ProbeNow is the executor behind the quota probes and the recovery
+		// ticker's immediate submits, so without the ladder a permanently
+		// revoked key was re-probed at the caller's fixed cadence forever.
+		if pr.AvailabilityState == "auth_failed" {
+			prRecoverAt := authProbeBackoffRecoverAt(s.ProbeConsecutiveFailures + 1)
+			pr.AvailabilityRecoverAt = &prRecoverAt
+		}
+		pr.HealthLatencyMs = int(time.Since(probeStart).Milliseconds())
+		pr.HealthSource = "probe_now"
+		slog.Info("credential probe v2: ProbeNow failed",
+			"credential_id", credID,
+			"availability_state", pr.AvailabilityState,
+			"probe_consecutive_failures", s.ProbeConsecutiveFailures+1,
+			"final_error", errMsg)
+	}
+	pr.HealthProbeModel = s.DefaultProbeModel
+	// #5 (R28): probeStart was taken immediately before probeCredential — it
+	// IS the evidence timestamp for optimistic-concurrency gating.
+	pr.EvidenceAt = probeStart
+	c.writeHealth(timeoutCtx, credID, pr)
+	if ok && pr.AvailabilityState == "ready" && c.onQuotaRecovered != nil {
+		c.onQuotaRecovered(credID, "probe_now")
+	}
+}
+
+// probeOne is kept as a private alias for the internal fast-reprobe path
+// so the existing call site (line 109) compiles unchanged. Prefer
+// ProbeNow for any new caller — it is the public, retry-aware entry
+// point. probeOne now shares the exact same code path with admin's
+// future manual triggers: one unified ProbeNow.
+func (c *CredentialProbeV2) probeOne(ctx context.Context, credID int) {
+	c.ProbeNow(ctx, credID)
+}
+
+// probeBalance fetches the account balance for supported vendors (P3).
+// Returns (balanceUSD, true) on success, (0, false) otherwise.
+// 2026-09-13: HTTP+JSONPath body moved to providercap.FetchBalanceUSD so
+// bg/balance_floor_guard reuses the exact same fetch/parse semantics.
+func (c *CredentialProbeV2) probeBalance(ctx context.Context, s v2Snapshot) (float64, bool) {
+	desc := providercap.Resolve(s.ProviderProtocol, s.CatalogCode)
+	balURL := providercap.BalanceURL(s.BaseURL, desc)
+	if balURL == "" {
+		return 0, false
+	}
+	// 2026-09-09 audit round 3 (#10): balance probes carry s.APIKey to an
+	// admin-configured URL — never send it into a metadata range.
+	if blocked, reason := providercap.EgressBlocked(balURL); blocked {
+		providercap.WarnBlocked("probe_v2.balance", balURL, reason)
+		return 0, false
+	}
+	balUSD, ok := providercap.FetchBalanceUSD(ctx, nil, balURL, s.APIKey, desc)
+	if !ok {
+		slog.Debug("credential probe v2: balance probe failed",
+			"credential_id", s.ID, "url", balURL)
+	}
+	return balUSD, ok
+}
+
+// decryptCiphertext attempts to decrypt with keyring first, then fallback to
+// Fernet (32-byte AES).
+func decryptCiphertext(ciphertext []byte, kr *secret.Keyring, encKey []byte) (string, error) {
+	if len(ciphertext) == 0 {
+		return "", nil
+	}
+	if kr != nil {
+		pt, _, err := secret.DecryptAny(string(ciphertext), kr, encKey)
+		if err == nil {
+			return string(pt), nil
+		}
+	}
+	if len(encKey) == 32 {
+		pt, err := secret.DecryptFernet(ciphertext, encKey)
+		if err == nil {
+			return pt, nil
+		}
+	}
+	return "", fmt.Errorf("no decryption key available (keyring=%v, fernet=%d bytes)", kr != nil, len(encKey))
+}
+
 // writeBindingUnavailable closes a model-scoped probe failure across the
-// binding table and derived node state. Credential health was already saved by
-// writeHealth as reachable/ready, so this helper must never update credentials
-// availability or lifecycle fields.
+// binding table. Credential-level health was already saved by writeHealth
+// (typically reachable/ready), so this helper must never update
+// credentials availability or lifecycle fields.
 func (c *CredentialProbeV2) writeBindingUnavailable(ctx context.Context, credID int, pr probeResult) {
 	if pr.HealthProbeModel == "" {
 		return
@@ -1098,8 +1955,9 @@ func (c *CredentialProbeV2) writeBindingUnavailable(ctx context.Context, credID 
 }
 
 // restoreBindingOnProbeSuccess closes the binding-only self-check loop. It
-// restores exactly the model this probe called and only when this probe was the
-// actor that disabled it; manual and other automated holds remain untouched.
+// restores exactly the model this probe called and only when this probe
+// was the actor that disabled it; manual and other automated holds remain
+// untouched.
 func (c *CredentialProbeV2) restoreBindingOnProbeSuccess(ctx context.Context, credID int, rawModel string) {
 	if rawModel == "" {
 		return
@@ -1127,195 +1985,4 @@ func (c *CredentialProbeV2) restoreBindingOnProbeSuccess(ctx context.Context, cr
 	if result.RowsAffected() > 0 {
 		provider.InvalidateCandidateCacheForCredential(credID)
 	}
-}
-
-// ProbeNow is the unified external entry point for "fire a credential
-// probe right now, on demand". It is the API surface used by the bg
-// fast-reprobe path (after auth_failed/unreachable) AND reserved for
-// future admin manual-trigger endpoints. Auto + manual now share one
-// code path so the retry policy (2s/5s backoff) and result handling
-// stay in lock-step — admin never has to know whether to retry.
-//
-// The probe uses probeCredential internally, which already wraps step1
-// (GET /v1/models) and step2 (mini chat "hi") in the shared
-// probeutil.ProbeRetryDelays loop, so transient upstream issues are
-// absorbed before the credential is marked degraded.
-//
-// ctx should carry an outer deadline; ProbeNow itself enforces a 30s
-// upper bound so a slow probe cannot trap the caller. The result is
-// persisted via writeHealth (same columns the scheduled cycleAll writes
-// to: health_status, availability_state, availability_recover_at, ...).
-//
-// The probeSource field in the resulting health row identifies the
-// caller so the admin UI can distinguish "scheduled hourly probe" from
-// "fast reprobe after auth_failed" from "admin manual trigger" without
-// cross-referencing logs.
-func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
-	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	var s v2Snapshot
-	var ciphertext []byte
-	err := c.db.QueryRow(timeoutCtx, `
-		SELECT c.id, c.status, c.lifecycle_status, COALESCE(c.manual_disabled, FALSE),
-		       COALESCE(c.quota_state, 'ok'),
-		       COALESCE(p.enabled, FALSE), COALESCE(p.manual_disabled, FALSE),
-		       COALESCE(p.base_url, ''),
-		       c.secret_ciphertext,
-		       COALESCE(c.default_probe_model, ''),
-		       COALESCE(p.protocol, 'openai-completions'),
-		       COALESCE(p.catalog_code, '')
-		FROM credentials c
-		JOIN providers p ON p.id = c.provider_id
-		WHERE c.id = $1
-		  AND c.status = 'active'
-		  AND (
-		      c.lifecycle_status = 'active'
-		      OR (
-		          c.lifecycle_status = 'disabled'
-		          AND c.auto_disabled_at IS NOT NULL
-		          AND COALESCE(c.quota_state, 'ok') = 'periodic_exhausted'
-		          AND (c.quota_recover_at IS NULL OR c.quota_recover_at <= now())
-		      )
-		  )
-		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
-		  AND COALESCE(c.default_probe_model, '') <> ''
-	`, credID).Scan(
-		&s.ID, &s.Status, &s.LifecycleStatus, &s.ManualDisabled,
-		&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
-		&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol, &s.CatalogCode,
-	)
-	if err != nil {
-		slog.Debug("credential probe v2: ProbeNow skipped (credential not active or missing)",
-			"credential_id", credID, "error", err)
-		return
-	}
-	apiKey, decErr := decryptCiphertext(ciphertext, c.keyring, c.encKey)
-	if decErr != nil {
-		slog.Warn("credential probe v2: ProbeNow decrypt failed",
-			"credential_id", credID, "error", decErr)
-		return
-	}
-	s.APIKey = apiKey
-	probeStart := time.Now()
-	ok, errMsg := c.probeCredential(timeoutCtx, s)
-	var pr probeResult
-	if ok {
-		pr = probeResult{
-			HealthStatus:      "healthy",
-			HealthLatencyMs:   int(time.Since(probeStart).Milliseconds()),
-			HealthSource:      "probe_now",
-			AvailabilityState: "ready",
-			QuotaState:        "ok", // 探测成功时主动清除 periodic_exhausted
-		}
-		slog.Info("credential probe v2: ProbeNow ok",
-			"credential_id", credID,
-			"latency_ms", pr.HealthLatencyMs)
-	} else {
-		pr = classifyProbeFailure(errMsg)
-		pr.HealthLatencyMs = int(time.Since(probeStart).Milliseconds())
-		pr.HealthSource = "probe_now"
-		slog.Info("credential probe v2: ProbeNow failed",
-			"credential_id", credID,
-			"availability_state", pr.AvailabilityState,
-			"final_error", errMsg)
-	}
-	pr.HealthProbeModel = s.DefaultProbeModel
-	c.writeHealth(timeoutCtx, credID, pr)
-}
-
-// probeOne is kept as a private alias for the internal fast-reprobe path
-// so the existing call site (line 109) compiles unchanged. Prefer
-// ProbeNow for any new caller — it is the public, retry-aware entry
-// point. probeOne now shares the exact same code path with admin's
-// future manual triggers: one unified ProbeNow.
-func (c *CredentialProbeV2) probeOne(ctx context.Context, credID int) {
-	c.ProbeNow(ctx, credID)
-}
-
-// probeBalance fetches the account balance for supported vendors (P3).
-// Returns (balanceUSD, true) on success, (0, false) otherwise.
-func (c *CredentialProbeV2) probeBalance(ctx context.Context, s v2Snapshot) (float64, bool) {
-	desc := providercap.Resolve(s.ProviderProtocol, s.CatalogCode)
-	balURL := providercap.BalanceURL(s.BaseURL, desc)
-	if balURL == "" {
-		return 0, false
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, balURL, nil)
-	if err != nil {
-		return 0, false
-	}
-	providercap.ApplyAuthHeaders(req, desc, s.APIKey)
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		slog.Debug("credential probe v2: balance probe failed",
-			"credential_id", s.ID, "url", balURL, "error", err)
-		return 0, false
-	}
-	//nolint:errcheck // best-effort close
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, false
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if err != nil {
-		return 0, false
-	}
-	var parsed any
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return 0, false
-	}
-	parts := strings.Split(desc.BalanceJSONPath, ".")
-	cur := parsed
-	for _, p := range parts {
-		switch v := cur.(type) {
-		case map[string]any:
-			cur = v[p]
-		case []any:
-			idx := 0
-			//nolint:errcheck // best-effort parse, non-critical
-			fmt.Sscanf(p, "%d", &idx)
-			if idx >= len(v) {
-				return 0, false
-			}
-			cur = v[idx]
-		default:
-			return 0, false
-		}
-		if cur == nil {
-			return 0, false
-		}
-	}
-	switch v := cur.(type) {
-	case float64:
-		return v, true
-	case string:
-		var f float64
-		if _, err2 := fmt.Sscanf(v, "%f", &f); err2 == nil {
-			return f, true
-		}
-	}
-	return 0, false
-}
-
-// decryptCiphertext attempts to decrypt with keyring first, then fallback to
-// Fernet (32-byte AES).
-func decryptCiphertext(ciphertext []byte, kr *secret.Keyring, encKey []byte) (string, error) {
-	if len(ciphertext) == 0 {
-		return "", nil
-	}
-	if kr != nil {
-		pt, _, err := secret.DecryptAny(string(ciphertext), kr, encKey)
-		if err == nil {
-			return string(pt), nil
-		}
-	}
-	if len(encKey) == 32 {
-		pt, err := secret.DecryptFernet(ciphertext, encKey)
-		if err == nil {
-			return pt, nil
-		}
-	}
-	return "", fmt.Errorf("no decryption key available (keyring=%v, fernet=%d bytes)", kr != nil, len(encKey))
 }

@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { formatDateTime } from '../utils/datetime'
+import { useActionMessage } from '../composables/useActionMessage'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
@@ -14,6 +16,10 @@ import {
   type ModelNameMapping,
 } from '../api'
 import ActiveFilterChips from '../components/ActiveFilterChips.vue'
+// 2026-09-13 P3：壳层收敛到 ui 组件（方案 §4.5.2/§4.5.7/§4.5.8）
+import PageHeader from '../components/ui/PageHeader.vue'
+import AppDrawer from '../components/ui/AppDrawer.vue'
+import AppModal from '../components/ui/AppModal.vue'
 import CatalogPanel from '../components/CatalogPanel.vue'
 import ModelPicker from '../components/ModelPicker.vue'
 import { useFilterChips } from '../composables/useFilterChips'
@@ -21,6 +27,7 @@ import ModelCatalogFilterBar from '../components/ModelCatalogFilterBar.vue'
 import { useDynamicNamespaceFilters } from '../composables/useDynamicNamespaceFilters'
 import { isReadOnlyMode, isPlatformOpsView } from '../store'
 import { normalizeTags, resolveVendor, matchesModelCatalogSearch } from '../utils/modelCatalog'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -97,8 +104,14 @@ const showFeaturedDrawer = ref(false)
 const featuredArray = ref<string[]>([])
 const featuredLoading = ref(false)
 const featuredSaving = ref(false)
-const featuredError = ref('')
-const featuredMessage = ref('')
+// 审计 R3#10：操作反馈条统一走 useActionMessage。
+const {
+  message: featuredMessage,
+  error: featuredError,
+  notifySuccess: notifyFeaturedOk,
+  notifyError: notifyFeaturedErr,
+  clear: clearFeaturedMsg,
+} = useActionMessage()
 const featuredRecommendPreview = ref<FeaturedModel[]>([])
 const featuredRecommendLoading = ref(false)
 const featuredRecommendMessage = ref('')
@@ -111,9 +124,14 @@ const nameMappingsTotal = ref(0)
 const nameMappingsPage = ref(1)
 const nameMappingsPageSize = ref(50)
 const nameMappingsLoading = ref(false)
-const nameMappingsError = ref('')
+const {
+  message: nameMappingsMessage,
+  error: nameMappingsError,
+  notifySuccess: notifyNameMappingsOk,
+  notifyError: notifyNameMappingsErr,
+  clearError: clearNameMappingsError,
+} = useActionMessage()
 const nameMappingsSearch = ref('')
-const nameMappingsMessage = ref('')
 const showNameMappingModal = ref(false)
 const editingNameMapping = ref<ModelNameMapping | null>(null)
 const nameMappingForm = ref({ raw_model_name: '', standardized_name: '', description: '' })
@@ -259,7 +277,7 @@ async function loadModels() {
 
 async function loadNameMappings() {
   nameMappingsLoading.value = true
-  nameMappingsError.value = ''
+  clearNameMappingsError()
   try {
     const r = await listModelNameMappings({
       page: nameMappingsPage.value,
@@ -269,20 +287,19 @@ async function loadNameMappings() {
     nameMappings.value = r.items
     nameMappingsTotal.value = r.total
   } catch (e: unknown) {
-    nameMappingsError.value = e instanceof Error ? e.message : '加载失败'
+    notifyNameMappingsErr(e instanceof Error ? e.message : '加载失败')
   } finally {
     nameMappingsLoading.value = false
   }
 }
 
 async function syncNameMappings() {
-  nameMappingsMessage.value = ''
   try {
     const r = await syncModelNameMappings()
-    nameMappingsMessage.value = `同步完成：从 provider_models 导入了 ${r.provider_models} 条映射`
+    notifyNameMappingsOk(`同步完成：从 provider_models 导入了 ${r.provider_models} 条映射`)
     await loadNameMappings()
   } catch (e: unknown) {
-    nameMappingsMessage.value = e instanceof Error ? e.message : '同步失败'
+    notifyNameMappingsErr(e instanceof Error ? e.message : '同步失败')
   }
 }
 
@@ -309,11 +326,11 @@ function closeNameMappingModal() {
 
 async function saveNameMapping() {
   if (!nameMappingForm.value.raw_model_name.trim() || !nameMappingForm.value.standardized_name.trim()) {
-    nameMappingsError.value = '原始名称和标准名称都不能为空'
+    notifyNameMappingsErr('原始名称和标准名称都不能为空')
     return
   }
   nameMappingSaving.value = true
-  nameMappingsError.value = ''
+  clearNameMappingsError()
   try {
     if (editingNameMapping.value) {
       await updateModelNameMapping(editingNameMapping.value.id, {
@@ -330,19 +347,19 @@ async function saveNameMapping() {
     closeNameMappingModal()
     await loadNameMappings()
   } catch (e: unknown) {
-    nameMappingsError.value = e instanceof Error ? e.message : '保存失败'
+    notifyNameMappingsErr(e instanceof Error ? e.message : '保存失败')
   } finally {
     nameMappingSaving.value = false
   }
 }
 
 async function removeNameMapping(id: number) {
-  if (!confirm('确定要删除这条映射吗？')) return
+  if (!(await confirmDialog(t('models.nameMappingDeleteConfirm')))) return
   try {
     await deleteModelNameMapping(id)
     await loadNameMappings()
   } catch (e: unknown) {
-    nameMappingsError.value = e instanceof Error ? e.message : '删除失败'
+    notifyNameMappingsErr(e instanceof Error ? e.message : '删除失败')
   }
 }
 
@@ -663,8 +680,7 @@ async function loadDiscoveryStatus() {
 
 async function openFeaturedDrawer() {
   showFeaturedDrawer.value = true
-  featuredError.value = ''
-  featuredMessage.value = ''
+  clearFeaturedMsg()
   featuredRecommendPreview.value = []
   featuredRecommendMessage.value = ''
   try {
@@ -672,7 +688,7 @@ async function openFeaturedDrawer() {
     const r = await getFeatured()
     featuredArray.value = (r.featured_models || []).slice()
   } catch (e: unknown) {
-    featuredError.value = e instanceof Error ? e.message : t('models.loadFeaturedFailed')
+    notifyFeaturedErr(e instanceof Error ? e.message : t('models.loadFeaturedFailed'))
     featuredArray.value = []
   } finally {
     featuredLoading.value = false
@@ -681,23 +697,21 @@ async function openFeaturedDrawer() {
 
 function closeFeaturedDrawer() {
   showFeaturedDrawer.value = false
-  featuredError.value = ''
-  featuredMessage.value = ''
+  clearFeaturedMsg()
   featuredRecommendPreview.value = []
   featuredRecommendMessage.value = ''
 }
 
 async function saveFeatured() {
   featuredSaving.value = true
-  featuredError.value = ''
-  featuredMessage.value = ''
+  clearFeaturedMsg()
   try {
     const list = featuredArray.value.map((s) => s.trim()).filter(Boolean)
     const r = await patchFeatured(list)
     featuredArray.value = (r.featured_models || []).slice()
-    featuredMessage.value = `特色模型已更新（${list.length}）`
+    notifyFeaturedOk(`特色模型已更新（${list.length}）`)
   } catch (e: unknown) {
-    featuredError.value = e instanceof Error ? e.message : t('models.saveFailed')
+    notifyFeaturedErr(e instanceof Error ? e.message : t('models.saveFailed'))
   } finally {
     featuredSaving.value = false
   }
@@ -778,8 +792,8 @@ watch(activeTab, async (tab) => {
 
 <template>
   <div>
-    <div class="page-header">
-      <h2>{{ t('models.page.title') }}</h2>
+    <PageHeader :title="t('models.page.title')">
+      <template #actions>
       <div v-if="activeTab === 'canonical'" style="display:flex;gap:8px;align-items:center">
         <span class="badge badge-gray">{{ filtered.length }} 个模型</span>
         <button v-if="!readOnly" class="btn btn-ghost btn-sm" @click="openFeaturedDrawer">
@@ -807,7 +821,8 @@ watch(activeTab, async (tab) => {
           @input="() => { nameMappingsPage = 1; loadNameMappings() }"
         />
       </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="tab-bar" style="margin-bottom:16px">
       <button
@@ -846,7 +861,7 @@ watch(activeTab, async (tab) => {
         <h3>模型名称映射管理</h3>
       </div>
       <div class="card-body">
-        <div v-if="nameMappingsLoading" style="text-align:center;padding:32px;color:#888">加载中...</div>
+        <div v-if="nameMappingsLoading" style="text-align:center;padding:32px;color:var(--muted)">加载中...</div>
         <div v-else-if="nameMappingsError" class="alert alert-error" style="margin-bottom:12px">{{ nameMappingsError }}</div>
         <div v-else-if="nameMappingsMessage" class="alert alert-success" style="margin-bottom:12px">{{ nameMappingsMessage }}</div>
 
@@ -873,15 +888,15 @@ watch(activeTab, async (tab) => {
                   {{ m.auto_generated ? '是' : '否' }}
                 </span>
               </td>
-              <td class="muted small">{{ m.updated_at ? new Date(m.updated_at).toLocaleString('zh-CN') : '-' }}</td>
+              <td class="muted small">{{ m.updated_at ? formatDateTime(m.updated_at, { locale: 'zh-CN' }) : '-' }}</td>
               <td>
                 <button v-if="!readOnly && !m.auto_generated" class="btn btn-ghost btn-sm" @click="openNameMappingModal(m)">编辑</button>
-                <button v-if="!readOnly && !m.auto_generated" class="btn btn-ghost btn-sm" style="color:#dc3545" @click="removeNameMapping(m.id)">删除</button>
+                <button v-if="!readOnly && !m.auto_generated" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="removeNameMapping(m.id)">删除</button>
               </td>
             </tr>
           </tbody>
         </table>
-        <div v-else style="text-align:center;padding:32px;color:#888">
+        <div v-else style="text-align:center;padding:32px;color:var(--muted)">
           暂无映射记录，点击"新增映射"或"从 provider_models 同步"添加
         </div>
 
@@ -1055,13 +1070,13 @@ watch(activeTab, async (tab) => {
     </div>
 
     <!-- 特色模型抽屉 -->
-    <div v-if="showFeaturedDrawer" class="drawer-backdrop" @click="closeFeaturedDrawer">
-      <div class="drawer-panel card drawer-panel-wide" @click.stop>
-        <div class="drawer-header">
-          <h3>★ 特色模型 (Featured)</h3>
-          <button class="btn btn-ghost btn-sm" @click="closeFeaturedDrawer">关闭</button>
-        </div>
-        <div class="drawer-body">
+    <AppDrawer
+      v-model="showFeaturedDrawer"
+      title="★ 特色模型 (Featured)"
+      width="min(900px, 95vw)"
+      @close="closeFeaturedDrawer"
+    >
+      <div class="drawer-body">
           <p class="muted small" style="margin-top:0">
             路由 v2 在「仅特色」筛选、ClientConfig 默认模型集等场景使用此列表。已存 <code>routing_policy.featured_models</code>，仅 <code>default</code> 租户生效。
           </p>
@@ -1100,18 +1115,19 @@ watch(activeTab, async (tab) => {
               <button class="btn btn-ghost" @click="closeFeaturedDrawer">关闭</button>
             </div>
           </template>
-        </div>
       </div>
-    </div>
+    </AppDrawer>
 
-    <!-- 模型详情弹层 -->
-    <div v-if="detail" class="drawer-backdrop" @click="detail = null">
-      <div class="drawer-panel card drawer-panel-wide" @click.stop>
-        <div class="drawer-header">
-          <h3>{{ detail.canonical_name }}</h3>
-          <button class="btn btn-ghost btn-sm" @click="detail = null">关闭</button>
-        </div>
-        <div class="drawer-body">
+    <!-- 模型详情弹层 → ui/AppDrawer（2026-09-13 P3） -->
+    <AppDrawer
+      v-if="detail"
+      :model-value="true"
+      :title="detail.canonical_name"
+      width="min(900px, 95vw)"
+      @update:model-value="(v: boolean) => { if (!v) detail = null }"
+      @close="detail = null"
+    >
+      <div class="drawer-body">
           <div v-if="detailLoading" class="muted">加载中…</div>
 
           <!-- 基础信息 -->
@@ -1281,9 +1297,8 @@ watch(activeTab, async (tab) => {
               暂无供应商模型信息。请先运行模型扫描或手动添加模型别名。
             </div>
           </div>
-        </div>
       </div>
-    </div>
+    </AppDrawer>
 
     <!-- 新增模型弹层 -->
     <div v-if="showCreateModal" class="modal-overlay" @click.self="showCreateModal = false">
@@ -1350,16 +1365,16 @@ watch(activeTab, async (tab) => {
     </div>
 
     <!-- Name Mapping Modal -->
-    <div v-if="showNameMappingModal" class="modal-overlay" @click.self="closeNameMappingModal">
-      <div class="modal">
-        <div class="modal-header">
-          <h3>{{ editingNameMapping ? '编辑映射' : '新增映射' }}</h3>
-          <button class="btn btn-ghost btn-sm" @click="closeNameMappingModal">×</button>
-        </div>
-        <div class="modal-body">
+    <AppModal
+      v-model="showNameMappingModal"
+      :title="editingNameMapping ? '编辑映射' : '新增映射'"
+      size="sm"
+      @close="closeNameMappingModal"
+    >
+      <div class="modal-body">
           <div v-if="nameMappingsError" class="alert alert-error" style="margin-bottom:12px">{{ nameMappingsError }}</div>
           <div class="form-group">
-            <label>原始名称 <span style="color:#dc3545">*</span></label>
+            <label>原始名称 <span style="color:var(--danger)">*</span></label>
             <input
               v-model="nameMappingForm.raw_model_name"
               class="input"
@@ -1369,7 +1384,7 @@ watch(activeTab, async (tab) => {
             <span class="help-text">供应商 API 返回的原始模型名称（如 minimaxai/minimax-m2.7）</span>
           </div>
           <div class="form-group">
-            <label>标准名称 <span style="color:#dc3545">*</span></label>
+            <label>标准名称 <span style="color:var(--danger)">*</span></label>
             <input
               v-model="nameMappingForm.standardized_name"
               class="input"
@@ -1382,14 +1397,13 @@ watch(activeTab, async (tab) => {
             <input v-model="nameMappingForm.description" class="input" placeholder="可选描述" />
           </div>
         </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost" @click="closeNameMappingModal">取消</button>
-          <button class="btn btn-primary" :disabled="nameMappingSaving || !nameMappingForm.raw_model_name || !nameMappingForm.standardized_name" @click="saveNameMapping">
-            {{ nameMappingSaving ? '保存中...' : '保存' }}
-          </button>
-        </div>
-      </div>
-    </div>
+      <template #footer>
+        <button class="btn btn-ghost" @click="closeNameMappingModal">取消</button>
+        <button class="btn btn-primary" :disabled="nameMappingSaving || !nameMappingForm.raw_model_name || !nameMappingForm.standardized_name" @click="saveNameMapping">
+          {{ nameMappingSaving ? '保存中...' : '保存' }}
+        </button>
+      </template>
+    </AppModal>
     </template>
   </div>
 </template>
@@ -1416,13 +1430,6 @@ watch(activeTab, async (tab) => {
   font-size: 11px;
   opacity: .75;
   margin-left: 2px;
-}
-
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
 }
 
 .filter-row {
@@ -1564,45 +1571,6 @@ watch(activeTab, async (tab) => {
   margin-top: 12px;
 }
 
-.drawer-backdrop {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: var(--overlay-strong);
-  z-index: 1000;
-}
-
-.drawer-panel {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 680px;
-  max-width: 90vw;
-  border-radius: 0;
-  overflow-y: auto;
-  z-index: 1001;
-}
-
-.drawer-panel-wide {
-  width: 860px;
-}
-
-.drawer-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 20px 24px;
-  border-bottom: 1px solid var(--border);
-}
-
-.drawer-header h3 {
-  margin: 0;
-  font-size: 18px;
-}
-
 .drawer-body {
   padding: 24px;
 }
@@ -1627,7 +1595,7 @@ watch(activeTab, async (tab) => {
   border-radius: 12px;
   width: 100%;
   max-width: 900px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 20px 60px var(--overlay-light);
 }
 
 .modal-header {
@@ -1788,12 +1756,10 @@ watch(activeTab, async (tab) => {
 .badge-purple { background: color-mix(in srgb, var(--accent) 15%, var(--surface-primary)); color: var(--accent-h); }
 .badge-gray { background: var(--bg-tertiary); color: var(--muted); }
 
-@media (max-width: 900px) {
+@media (max-width: 768px) {
   .form-grid, .alias-add { grid-template-columns: 1fr; }
   .span-2 { grid-column: span 1; }
   .create-modal { margin: 20px; }
-  .drawer-panel { width: 95vw; }
-  .drawer-panel-wide { width: 95vw; }
   .filter-card .card-header { align-items: flex-start; }
   .filter-heading { width: 100%; }
   .filter-header-actions { width: 100%; justify-content: flex-start; }

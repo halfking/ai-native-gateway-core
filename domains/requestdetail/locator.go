@@ -1,0 +1,336 @@
+package requestdetail
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"time"
+)
+
+type lookupScopeKey struct{}
+
+type LookupScope struct {
+	TenantID     string
+	Unrestricted bool
+}
+
+func WithLookupScope(ctx context.Context, scope LookupScope) context.Context {
+	return context.WithValue(ctx, lookupScopeKey{}, scope)
+}
+
+func LookupScopeFromContext(ctx context.Context) LookupScope {
+	if scope, ok := ctx.Value(lookupScopeKey{}).(LookupScope); ok {
+		return scope
+	}
+	return LookupScope{Unrestricted: true}
+}
+
+// BodyReader loads persisted bodies from a dual-write DB source.
+type BodyReader interface {
+	// ReadRequestLogsBodies returns ErrNotFound when metadata exists but no
+	// request-log body row exists. In that case the returned Meta is still
+	// populated so the locator can preserve the request identity while trying
+	// the session-turns fallback.
+	ReadRequestLogsBodies(ctx context.Context, requestID string, omitBody bool) (Bodies, Meta, error)
+	ReadSessionTurnsBodies(ctx context.Context, requestID string, omitBody bool) (Bodies, Meta, error)
+}
+
+// LiveDetailReader reads the latest in-flight request detail from the
+// Redis-backed live stream cache. It is invoked between the local
+// in-process store and the DB readers so a click on a live swim lane
+// returns immediately while the request is still being persisted to
+// request_logs / session_turns.
+//
+// LoadLiveDetail returns ErrNotFound when Redis has no entry for the
+// request id; the Locator falls through to the DB layers in that case.
+type LiveDetailReader interface {
+	LoadLiveDetail(ctx context.Context, scope LookupScope, requestID string) (Meta, error)
+}
+
+// ErrNotFound means no layer could supply the request.
+var ErrNotFound = errors.New("requestdetail: not found")
+
+// Default retry parameters for the L3 DB read-your-writes window. A single
+// 100ms retry catches the common case where telemetry just landed on a sibling
+// replica (or just finished its own async INSERT on this replica) and the
+// admin read happened a few milliseconds too early. Tunable via env:
+//
+//	LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY=2   // total attempts; 0 disables
+//	LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY_DELAY=100ms
+//
+// See docs/implementation/request-detail-cross-replica-visibility-20260828.md
+// §3 (方案 D, 短期).
+//
+// 2026-08-30: default raised from 1 → 2. The original single attempt
+// proved too tight when the live stream publishes a request that has
+// not yet been written to request_logs on the responding replica; two
+// short retries (≈100ms apart) collapse most cross-replica races
+// without inflating latency for the steady state.
+const (
+	defaultDBRetryCount = 2
+	defaultDBRetryDelay = 100 * time.Millisecond
+)
+
+// Locator resolves detail in order: memory → file → live (Redis) →
+// request_logs → session_turns.
+type Locator struct {
+	Store  *Store
+	Bodies BodyReader
+	Live   LiveDetailReader
+
+	// DBRetryCount is the number of total attempts (≥1) against ReadRequestLogsBodies
+	// when the first attempt returns ErrNotFound. 0 disables the retry entirely.
+	// Configurable via LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY; default 2.
+	DBRetryCount int
+
+	// DBRetryDelay is the pause between retry attempts. Default 100ms.
+	// Configurable via LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY_DELAY.
+	DBRetryDelay time.Duration
+}
+
+// Get resolves a request detail. When omitBody is true, only meta/source are filled.
+func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*Detail, error) {
+	if requestID == "" {
+		return nil, ErrNotFound
+	}
+	if l.Store != nil {
+		if meta, ok := l.Store.GetMeta(requestID); ok {
+			d := &Detail{
+				Source:      SourceMemory,
+				Persistence: PersistenceInFlight,
+				Meta:        meta,
+			}
+			if !omitBody {
+				if file, ok, err := l.Store.GetFile(requestID); err != nil && !errors.Is(err, ErrBodyTooLarge) {
+					return nil, err
+				} else if err == nil && ok {
+					bodies := file.Bodies
+					d.Bodies = &bodies
+					d.Source = SourceFile
+					if file.Meta.RequestID != "" {
+						d.Meta = mergeMeta(meta, file.Meta)
+					}
+				}
+			}
+			return d, nil
+		}
+		if file, ok, err := l.Store.GetFile(requestID); err != nil && !errors.Is(err, ErrBodyTooLarge) {
+			return nil, err
+		} else if err == nil && ok {
+			d := &Detail{
+				Source:      SourceFile,
+				Persistence: PersistenceInFlight,
+				Meta:        file.Meta,
+			}
+			if !omitBody {
+				bodies := file.Bodies
+				d.Bodies = &bodies
+			}
+			return d, nil
+		}
+	}
+
+	// 2026-08-30: live-stream Redis cache. Inserted between the local
+	// store and the DB readers so a click on a still-running swim lane
+	// returns metadata immediately instead of bouncing off the eventual
+	// request_logs write. Tenant gating is enforced by LoadLiveDetail.
+	// When the caller wants bodies, we treat the live hit as metadata
+	// only and fall through to the DB readers so the response still
+	// contains request/response bodies. This branch intentionally runs
+	// before the Bodies nil check: Redis-backed metadata remains useful
+	// even when the database reader is unavailable.
+	if l.Live != nil && omitBody {
+		scope := LookupScopeFromContext(ctx)
+		if liveMeta, liveErr := l.Live.LoadLiveDetail(ctx, scope, requestID); liveErr == nil {
+			d := &Detail{
+				Source:      SourceLive,
+				Persistence: PersistenceInFlight,
+				Meta:        liveMeta,
+			}
+			return d, nil
+		} else if !errors.Is(liveErr, ErrNotFound) {
+			// Treat unexpected live-store failures as a miss and fall
+			// through; the DB layer will surface a real error if it
+			// also fails. Do NOT block the locator on Redis hiccups.
+			_ = liveErr
+		}
+	}
+
+	if l.Bodies == nil {
+		return nil, ErrNotFound
+	}
+
+	// L3 DB lookup. Wrap the first attempt in a bounded retry so that a read
+	// arriving a few milliseconds after the writer's async INSERT can still
+	// observe the row. Retry is bounded by ctx (caller's deadline wins) and by
+	// Locator.DBRetryCount (0 disables). Non-ErrNotFound errors fall through
+	// unchanged — DB outages should not be artificially delayed by retries.
+	maxAttempts := l.DBRetryCount
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	delay := l.DBRetryDelay
+	if delay <= 0 {
+		delay = defaultDBRetryDelay
+	}
+
+	bodies, meta, err := l.readRequestLogsWithRetry(ctx, requestID, omitBody, maxAttempts, delay)
+	if err == nil {
+		d := &Detail{
+			Source:      SourceRequestLogs,
+			Persistence: PersistencePersisted,
+			Meta:        meta,
+		}
+		if !omitBody {
+			b := bodies
+			d.Bodies = &b
+		}
+		return d, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+
+	// A request-log row can outlive its body row (TTL, partial persistence, or
+	// a historical migration). Try the session store before giving up, while
+	// retaining the metadata returned by the request-log reader.
+	requestLogsMeta := meta
+	sessionLookupID := requestID
+	if requestLogsMeta.RequestID != "" {
+		sessionLookupID = requestLogsMeta.RequestID
+	}
+	bodies, sessionMeta, err := l.Bodies.ReadSessionTurnsBodies(ctx, sessionLookupID, omitBody)
+	if err == nil {
+		d := &Detail{
+			Source:      SourceSessionTurns,
+			Persistence: PersistencePersisted,
+			Meta:        mergeMeta(requestLogsMeta, sessionMeta),
+		}
+		if !omitBody {
+			b := bodies
+			d.Bodies = &b
+		}
+		return d, nil
+	}
+	if errors.Is(err, ErrNotFound) && requestLogsMeta.RequestID != "" {
+		// Metadata is still useful to the detail page even when both body stores
+		// are empty. Return it as a successful metadata-only response instead of
+		// misreporting an existing request as 404.
+		return &Detail{
+			Source:      SourceRequestLogs,
+			Persistence: PersistencePersisted,
+			Meta:        requestLogsMeta,
+			Warning:     "request body row not found in request_logs or session_turns; metadata-only fallback",
+		}, nil
+	}
+	return nil, err
+}
+
+// readRequestLogsWithRetry calls ReadRequestLogsBodies up to maxAttempts times
+// when the first call returns ErrNotFound. Any other error is returned
+// immediately (DB connectivity issues must not be hidden behind retries). On a
+// retry hit, the locator_db_retry_total{outcome="hit"} counter is incremented;
+// on exhaustion outcome="miss" is recorded.
+func (l *Locator) readRequestLogsWithRetry(
+	ctx context.Context,
+	requestID string,
+	omitBody bool,
+	maxAttempts int,
+	delay time.Duration,
+) (Bodies, Meta, error) {
+	if maxAttempts <= 1 {
+		return l.Bodies.ReadRequestLogsBodies(ctx, requestID, omitBody)
+	}
+	bodies, meta, err := l.Bodies.ReadRequestLogsBodies(ctx, requestID, omitBody)
+	if err == nil {
+		return bodies, meta, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return bodies, meta, err
+	}
+	for attempt := 2; attempt <= maxAttempts; attempt++ {
+		if err := sleepWithContext(ctx, delay); err != nil {
+			return bodies, meta, err
+		}
+		bodies, meta, err = l.Bodies.ReadRequestLogsBodies(ctx, requestID, omitBody)
+		if err == nil {
+			locatorDBRetryTotal.WithLabelValues("hit").Inc()
+			return bodies, meta, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			// Don't penalise the operator for transient infra errors with a
+			// retry-miss counter; only count the read-your-writes race.
+			return bodies, meta, err
+		}
+	}
+	locatorDBRetryTotal.WithLabelValues("miss").Inc()
+	return bodies, meta, err
+}
+
+// sleepWithContext pauses for d or returns ctx.Err() if the context is
+// cancelled first.
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func mergeMeta(base, overlay Meta) Meta {
+	out := base
+	if overlay.RequestID != "" {
+		out.RequestID = overlay.RequestID
+	}
+	if overlay.TenantID != "" {
+		out.TenantID = overlay.TenantID
+	}
+	if overlay.GwSessionID != nil {
+		out.GwSessionID = overlay.GwSessionID
+	}
+	if overlay.GwTaskID != nil {
+		out.GwTaskID = overlay.GwTaskID
+	}
+	if overlay.ClientModel != nil {
+		out.ClientModel = overlay.ClientModel
+	}
+	if overlay.Status != nil {
+		out.Status = overlay.Status
+	}
+	if overlay.Success != nil {
+		out.Success = overlay.Success
+	}
+	if overlay.LatencyMs != nil {
+		out.LatencyMs = overlay.LatencyMs
+	}
+	if overlay.TurnNumber != nil {
+		out.TurnNumber = overlay.TurnNumber
+	}
+	return out
+}
+
+// PtrTo is a helper that returns a pointer to a copy of v.
+// It reduces heap allocations when constructing pointer fields by enabling
+// stack-to-heap escape analysis optimization in patterns like: field = PtrTo(value)
+func PtrTo[T any](v T) *T {
+	return &v
+}
+
+// DecodeRaw helpers for callers that hold string bodies.
+func DecodeRaw(s *string) json.RawMessage {
+	if s == nil || *s == "" {
+		return nil
+	}
+	raw := json.RawMessage(*s)
+	if !json.Valid(raw) {
+		b, _ := json.Marshal(*s)
+		return b
+	}
+	return raw
+}

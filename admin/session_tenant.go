@@ -44,6 +44,9 @@ func requireSessionTaskAccess(w http.ResponseWriter, r *http.Request, ctx contex
 
 // assertTaskInTenant verifies that taskID has at least one request_log row
 // belonging to tenantID. Used to block cross-tenant session detail access.
+// R47：读面 hot∪母表双腿（对齐 request_trace.go 的既定形态）——单腿母表读
+// 对最近 8h 仍只在 request_logs_hot 的行盲区，租户内刚创建的 task 会被
+// 误判 404。
 func assertTaskInTenant(ctx context.Context, db *pgxpool.Pool, taskID, tenantID string) bool {
 	if db == nil || taskID == "" || tenantID == "" {
 		return false
@@ -51,9 +54,11 @@ func assertTaskInTenant(ctx context.Context, db *pgxpool.Pool, taskID, tenantID 
 	var exists bool
 	err := db.QueryRow(ctx, `
 		SELECT EXISTS(
+			SELECT 1 FROM request_logs_hot
+			WHERE gw_task_id = $1 AND tenant_id = $2
+		) OR EXISTS(
 			SELECT 1 FROM request_logs
 			WHERE gw_task_id = $1 AND tenant_id = $2
-			LIMIT 1
 		)
 	`, taskID, tenantID).Scan(&exists)
 	return err == nil && exists

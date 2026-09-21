@@ -143,7 +143,7 @@ FROM credentials WHERE id = 17;
 | open.bigmodel.cn (智谱) | `https://open.bigmodel.cn/api/coding/paas/v4/chat/completions` | ✅ 401 上游可达 | 429 限流正常 |
 | integrate.api.nvidia.com | `https://integrate.api.nvidia.com/v1/chat/completions` | ✅ 200 上游可达 | 410 模型下线（已配置）|
 | token.sensenova.cn | `https://token.sensenova.cn/v1/chat/completions` | ✅ 401 上游可达 | 正常 |
-| 129.146.135.219:3000 | `http://129.146.135.219:3000/v1/chat/completions` | ✅ 401 上游可达 | 500 限流 |
+| <env:ONEAPI_SUPPLIER_HOST>:3000 | `http://<env:ONEAPI_SUPPLIER_HOST>:3000/v1/chat/completions` | ✅ 401 上游可达 | 500 限流 |
 
 **结论**：所有 9 个被检测的上游 100% 健康，问题完全在网关侧的 credential 17 解密失败。
 

@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -89,4 +90,41 @@ func (f fakeSettingsBackend) GetTenant(_, key string) ([]byte, error) {
 
 func (f fakeSettingsBackend) SetTenant(_, _ string, _ any) ([]byte, error) {
 	return nil, nil
+}
+
+func TestDeriveGatewaySessionID(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty stays empty", in: "", want: ""},
+		{name: "gw prefix untouched", in: "gw_3e64af9f-6cbb-419a-b5af-2a6db72c9899", want: "gw_3e64af9f-6cbb-419a-b5af-2a6db72c9899"},
+		{name: "auto-title branch untouched", in: "gt_sess-abc", want: "gt_sess-abc"},
+		{name: "auto-summary branch untouched", in: "gs_sess-abc", want: "gs_sess-abc"},
+		// ZCode sends a stable bare-UUID x-session-id; it must map onto the
+		// gateway namespace instead of being re-minted per request.
+		{name: "bare uuid derived", in: "de9f325e-2d25-428c-917c-94b006ac761a", want: "gw_de9f325e-2d25-428c-917c-94b006ac761a"},
+		{name: "opaque id derived", in: "client-conv-42", want: "gw_client-conv-42"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := deriveGatewaySessionID(tt.in); got != tt.want {
+				t.Fatalf("deriveGatewaySessionID(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractSessionIDFromHeaders_LegacyIDDerivesGatewayNamespace(t *testing.T) {
+	r, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-Session-Id", "de9f325e-2d25-428c-917c-94b006ac761a")
+
+	if got := extractSessionIDFromHeaders(r); got != "de9f325e-2d25-428c-917c-94b006ac761a" {
+		t.Fatalf("extractSessionIDFromHeaders() = %q, want the sanitized legacy value", got)
+	}
+	if got := deriveGatewaySessionID(extractSessionIDFromHeaders(r)); got != "gw_de9f325e-2d25-428c-917c-94b006ac761a" {
+		t.Fatalf("derived = %q, want gw_-prefixed stable id", got)
+	}
 }

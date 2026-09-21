@@ -77,10 +77,13 @@ export function useDashboardBoard() {
   const operational = ref<BoardOperationalPayload | null>(null)
 
   let refreshTimer: number | undefined
-  let operationalTimer: number | undefined
   let refreshMs = DEFAULT_REFRESH_MS
   let unsubscribeTerminal: (() => void) | null = null
   let loadInFlight = false
+  let loadController: AbortController | null = null
+  let loadGeneration = 0
+  let refreshGeneration = 0
+  let refreshActive = false
   const appliedTerminalIds = new Set<string>()
 
   function mergeTerminalRequest(requestId: string, req: Parameters<typeof applyLiveRequestToBoard>[1]) {
@@ -122,16 +125,19 @@ export function useDashboardBoard() {
   }
 
   async function load(options?: { silent?: boolean }) {
-    if (loadInFlight) return
     const silent = options?.silent === true
     if (document.hidden && silent) return
+    const generation = ++loadGeneration
+    loadController?.abort()
+    const controller = new AbortController()
+    loadController = controller
     loadInFlight = true
-    if (!silent) {
-      loading.value = true
-    }
+    if (!silent) loading.value = true
     error.value = null
+    const query = toBoardTimeQuery(timeRange.value)
     try {
-      const fresh = await fetchDashboardBoard(toBoardTimeQuery(timeRange.value))
+      const fresh = await fetchDashboardBoard(query, controller.signal)
+      if (controller.signal.aborted || generation !== loadGeneration) return
       adoptBoardPayload(fresh, { silentReconcile: silent })
       if (fresh.operational) {
         operational.value = fresh.operational
@@ -139,11 +145,13 @@ export function useDashboardBoard() {
         await loadOperational()
       }
     } catch (e: unknown) {
+      if (controller.signal.aborted || generation !== loadGeneration) return
       error.value = e instanceof Error ? e.message : '加载失败'
     } finally {
-      loadInFlight = false
-      if (!silent) {
-        loading.value = false
+      if (generation === loadGeneration) {
+        loadInFlight = false
+        loadController = null
+        if (!silent) loading.value = false
       }
     }
   }
@@ -171,17 +179,6 @@ export function useDashboardBoard() {
     return base
   }
 
-  function scheduleOperationalPoll() {
-    // operational is bundled into board; no separate poll needed
-  }
-
-  function stopOperationalPoll() {
-    if (operationalTimer) {
-      clearInterval(operationalTimer)
-      operationalTimer = undefined
-    }
-  }
-
   function schedulePoll() {
     if (refreshTimer) clearInterval(refreshTimer)
     refreshTimer = window.setInterval(() => {
@@ -198,7 +195,8 @@ export function useDashboardBoard() {
       }
       return
     }
-    if (liveUpdatesEnabled.value) {
+    // Only restart polling if auto-refresh is still active
+    if (refreshActive && liveUpdatesEnabled.value) {
       void load({ silent: true })
       void loadOperational()
       schedulePoll()
@@ -206,27 +204,38 @@ export function useDashboardBoard() {
   }
 
   async function startAutoRefresh() {
+    const generation = ++refreshGeneration
+    refreshActive = true
+    // Clean up any existing timers and listeners first
     if (refreshTimer) clearInterval(refreshTimer)
     document.removeEventListener('visibilitychange', onVisibilityChange)
-    if (liveUpdatesEnabled.value) {
-      wireLiveUpdates()
-      refreshMs = await resolvePollIntervalMs()
-      void loadOperational()
-      scheduleOperationalPoll()
-      schedulePoll()
-      document.addEventListener('visibilitychange', onVisibilityChange)
-    } else {
+    
+    if (!liveUpdatesEnabled.value) {
+      refreshActive = false
       unwireLiveUpdates()
-      stopOperationalPoll()
+      return
     }
+    const resolvedMs = await resolvePollIntervalMs()
+    if (!refreshActive || generation !== refreshGeneration || !liveUpdatesEnabled.value) return
+    refreshMs = resolvedMs
+    wireLiveUpdates()
+    void loadOperational()
+    schedulePoll()
+    document.addEventListener('visibilitychange', onVisibilityChange)
   }
 
   function stopAutoRefresh() {
+    refreshActive = false
+    refreshGeneration += 1
+    loadController?.abort()
+    loadController = null
+    loadGeneration += 1
+    loadInFlight = false
     if (refreshTimer) {
       clearInterval(refreshTimer)
       refreshTimer = undefined
     }
-    stopOperationalPoll()
+    // Always remove the visibility listener when stopping
     document.removeEventListener('visibilitychange', onVisibilityChange)
     unwireLiveUpdates()
   }
@@ -238,7 +247,7 @@ export function useDashboardBoard() {
   }
 
   watch(liveUpdatesEnabled, (enabled) => {
-    if (enabled) {
+    if (enabled && refreshActive) {
       void startAutoRefresh()
     } else {
       if (refreshTimer) {

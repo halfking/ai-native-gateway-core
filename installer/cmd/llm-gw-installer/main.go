@@ -49,11 +49,23 @@ var sqlSchema []byte
 //go:embed embeddata/02-seed.sql
 var sqlSeed []byte
 
+//go:embed embeddata/startup/478_auto_route_affinity.sql
+var autoRouteAffinityMigration478 []byte
+
 //go:embed embeddata/startup/511_state_transitions_table.sql
 var requestJourneyMigration511 []byte
 
 //go:embed embeddata/startup/515_state_transitions_seq_unique.sql
 var requestJourneyMigration515 []byte
+
+// R42 (2026-09-18): durable family base tables — 657/722 prerequisites,
+// without which installer fresh installs aborted with 42P01 at 657.
+//
+//go:embed embeddata/startup/516_durable_llm_tasks.sql
+var durableLlmTasksMigration516 []byte
+
+//go:embed embeddata/startup/520_durable_task_settlement_intents.sql
+var durableTaskSettlementIntentsMigration520 []byte
 
 //go:embed embeddata/startup/521_repair_state_transitions_tenant.sql
 var requestJourneyMigration521 []byte
@@ -139,6 +151,9 @@ var modelOffersInsertPriorityPassthroughMigration570 []byte
 //go:embed embeddata/startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql
 var candidateBindingScopeRevisionCanonicalPriorityHashMigration571 []byte
 
+//go:embed embeddata/startup/572_session_summary_large_token_ratio.sql
+var sessionSummaryLargeTokenRatioMigration572 []byte
+
 //go:embed embeddata/startup/600_outbound_body_to_bodies_hot.sql
 var outboundBodyToBodiesHotMigration600 []byte
 
@@ -147,6 +162,504 @@ var requestLogsBodiesDropMetadataMigration601 []byte
 
 //go:embed embeddata/startup/602_request_logs_promote_atomic.sql
 var requestLogsPromoteAtomicMigration602 []byte
+
+//go:embed embeddata/startup/606_session_summaries_agent_expert_tags.sql
+var sessionSummariesAgentExpertTagsMigration606 []byte
+
+//go:embed embeddata/startup/618_request_journey_snapshot_receipts.sql
+var journalSnapshotReceiptsMigration618 []byte
+
+//go:embed embeddata/startup/614_session_bodies_hot.sql
+var sessionBodiesHotMigration614 []byte
+
+//go:embed embeddata/startup/615_session_bodies_hot_promote_function.sql
+var sessionBodiesHotPromoteMigration615 []byte
+
+//go:embed embeddata/startup/620_provider_error_details_tenant_scope.sql
+var providerErrorDetailsTenantScopeMigration620 []byte
+
+//go:embed embeddata/startup/621_provider_error_details_cleanup_index.sql
+var providerErrorDetailsCleanupIndexMigration621 []byte
+
+//go:embed embeddata/startup/622_provider_error_aggregator_state.sql
+var providerErrorAggregatorStateMigration622 []byte
+
+//go:embed embeddata/startup/623_journal_snapshot_receipts_projection_base.sql
+var journalSnapshotProjectionBaseMigration623 []byte
+
+//go:embed embeddata/startup/624_candidate_failure_logs_promote_atomic_v2.sql
+var candidateFailureLogsPromoteAtomicV2Migration624 []byte
+
+//go:embed embeddata/startup/625_session_bodies_unified_explicit.sql
+var sessionBodiesUnifiedExplicitMigration625 []byte
+
+//go:embed embeddata/startup/626_session_bodies_hot_promote_reconcile.sql
+var sessionBodiesHotPromoteReconcileMigration626 []byte
+
+//go:embed embeddata/startup/627_candidate_failure_logs_aggregation_id_unified.sql
+var candidateFailureLogsAggregationIdUnifiedMigration627 []byte
+
+//go:embed embeddata/startup/628_candidate_failure_logs_promote_atomic_v3.sql
+var candidateFailureLogsPromoteAtomicV3Migration628 []byte
+
+//go:embed embeddata/startup/629_audit_attachments_cleanup.sql
+var auditAttachmentsCleanupMigration629 []byte
+
+//go:embed embeddata/startup/630_session_aggregate_outbox.sql
+var sessionAggregateOutboxMigration630 []byte
+
+//go:embed embeddata/startup/631_provider_credential_soft_delete.sql
+var providerCredentialSoftDeleteMigration631 []byte
+
+//go:embed embeddata/startup/635_drop_session_turns_unified.sql
+var dropSessionTurnsUnifiedMigration635 []byte
+
+//go:embed embeddata/startup/637_session_bodies_unified_today_visible.sql
+var sessionBodiesUnifiedTodayVisibleMigration637 []byte
+
+//go:embed embeddata/startup/638_session_bodies_promote_guard.sql
+var sessionBodiesPromoteGuardMigration638 []byte
+
+//go:embed embeddata/startup/639_provider_error_details_credential.sql
+var providerErrorDetailsCredentialMigration639 []byte
+
+//go:embed embeddata/startup/644_tuning_views_selfcheck_and_candidate_failure_cache.sql
+var tuningViewsSelfcheckCandidateFailureCacheMigration644 []byte
+
+//go:embed embeddata/startup/645_session_bodies_hot_request_unique_repair.sql
+var sessionBodiesHotRequestUniqueRepairMigration645 []byte
+
+//go:embed embeddata/startup/646_proxy_management_canonical.sql
+var proxyManagementCanonicalMigration646 []byte
+
+//go:embed embeddata/startup/647_goal_client_signal.sql
+var goalClientSignalMigration647 []byte
+
+//go:embed embeddata/startup/649_routing_analytics_probe_filter.sql
+var routingAnalyticsProbeFilterMigration649 []byte
+
+//go:embed embeddata/startup/650_auto_route_selection_treatment_attribution.sql
+var autoRouteSelectionTreatmentAttributionMigration650 []byte
+
+//go:embed embeddata/startup/651_provider_quality_hot_rollup.sql
+var providerQualityHotRollupMigration651 []byte
+
+//go:embed embeddata/startup/652_system_monitor_fallback_queue.sql
+var systemMonitorFallbackQueueMigration652 []byte
+
+//go:embed embeddata/startup/653_archive_credential_model_index_canonical_return.sql
+var archiveCredentialModelIndexCanonicalReturnMigration653 []byte
+
+//go:embed embeddata/startup/654_archive_credential_model_index_detach_drop.sql
+var archiveCredentialModelIndexDetachDropMigration654 []byte
+
+//go:embed embeddata/startup/655_session_summaries_schema_reconcile.sql
+var sessionSummariesSchemaReconcileMigration655 []byte
+
+//go:embed embeddata/startup/656_auto_route_selections_hot.sql
+var autoRouteSelectionsHotMigration656 []byte
+
+//go:embed embeddata/startup/657_durable_llm_tasks_decision_history.sql
+var durableTasksDecisionHistoryMigration657 []byte
+
+//go:embed embeddata/startup/658_auto_route_structured_features.sql
+var autoRouteStructuredFeaturesMigration658 []byte
+
+//go:embed embeddata/startup/659_legacy_promote_atomic_cte.sql
+var legacyPromoteAtomicCTEMigration659 []byte
+
+//go:embed embeddata/startup/660_credential_model_weekly_peak_unique.sql
+var credentialModelWeeklyPeakUniqueMigration660 []byte
+
+//go:embed embeddata/startup/662_feature_distribution_stats.sql
+var featureDistributionStatsMigration662 []byte
+
+//go:embed embeddata/startup/663_training_export.sql
+var trainingExportMigration663 []byte
+
+//go:embed embeddata/startup/664_provider_error_details_agg_key_dedup.sql
+var providerErrorDetailsAggKeyDedupMigration664 []byte
+
+//go:embed embeddata/startup/632_audit_attachments_filesystem_cleanup.sql
+var auditAttachmentsFilesystemCleanupMigration632 []byte
+
+//go:embed embeddata/startup/666_orchestration_and_stats_tables.sql
+var orchestrationAndStatsTablesMigration666 []byte
+
+//go:embed embeddata/startup/667_llm_hourly_stats_timestamp_fix.sql
+var llmHourlyStatsTimestampFixMigration667 []byte
+
+//go:embed embeddata/startup/668_llm_hourly_stats_final_fix.sql
+var llmHourlyStatsFinalFixMigration668 []byte
+
+//go:embed embeddata/startup/669_training_human_annotations.sql
+var trainingHumanAnnotationsMigration669 []byte
+
+//go:embed embeddata/startup/670_routing_optimization.sql
+var routingOptimizationMigration670 []byte
+
+//go:embed embeddata/startup/671_local_provider_catalog.sql
+var localProviderCatalogMigration671 []byte
+
+//go:embed embeddata/startup/672_local_first_title_summary_routing.sql
+var localFirstTitleSummaryRoutingMigration672 []byte
+
+//go:embed embeddata/startup/673_annotation_stats_empty_table_fix.sql
+var annotationStatsEmptyTableFixMigration673 []byte
+
+//go:embed embeddata/startup/674_annotation_request_id_unique.sql
+var annotationRequestIdUniqueMigration674 []byte
+
+//go:embed embeddata/startup/675_qwen38_family_vendor.sql
+var qwen38FamilyVendorMigration675 []byte
+
+//go:embed embeddata/startup/676_routing_opt_active_fix.sql
+var routingOptActiveFixMigration676 []byte
+
+//go:embed embeddata/startup/677_session_summaries_canonical_bootstrap.sql
+var sessionSummariesCanonicalBootstrapMigration677 []byte
+
+//go:embed embeddata/startup/678_request_logs_bodies_hot_unique_repair_and_model_offers_columns.sql
+var requestLogsBodiesHotUniqueRepairMigration678 []byte
+
+//go:embed embeddata/startup/679_local_credential_unique.sql
+var localCredentialUniqueMigration679 []byte
+
+//go:embed embeddata/startup/680_request_logs_current_month_view_bootstrap.sql
+var requestLogsCurrentMonthViewBootstrapMigration680 []byte
+
+//go:embed embeddata/startup/681_provider_error_details_fingerprint_restore_8part.sql
+var providerErrorDetailsFingerprintRestore8partMigration681 []byte
+
+//go:embed embeddata/startup/682_model_offers_context_window_columns.sql
+var modelOffersContextWindowColumnsMigration682 []byte
+
+//go:embed embeddata/startup/683_session_dim_ownership_columns.sql
+var sessionDimOwnershipColumnsMigration683 []byte
+
+//go:embed embeddata/startup/684_drop_stale_provider_error_tenant_fingerprint.sql
+var dropStaleProviderErrorTenantFingerprintMigration684 []byte
+
+//go:embed embeddata/startup/685_task_default_routing_tenant_text.sql
+var taskDefaultRoutingTenantTextMigration685 []byte
+
+//go:embed embeddata/startup/686_fix_session_module_executions_2026_10_bounds.sql
+var fixSessionModuleExecutions2026_10BoundsMigration686 []byte
+
+//go:embed embeddata/startup/687_fix_473_partition_0800_bounds.sql
+var fix473Partition0800BoundsMigration687 []byte
+
+//go:embed embeddata/startup/688_promote_default_retention_align_go_scheduler.sql
+var promoteDefaultRetentionAlignGoSchedulerMigration688 []byte
+
+//go:embed embeddata/startup/689_candidate_failure_logs_partitions_heap.sql
+var candidateFailureLogsPartitionsHeapMigration689 []byte
+
+//go:embed embeddata/startup/690_session_summaries_archived_ttl_index.sql
+var sessionSummariesArchivedTTLIndexMigration690 []byte
+
+//go:embed embeddata/startup/691_proxy_region_policy.sql
+var proxyRegionPolicyMigration691 []byte
+
+//go:embed embeddata/startup/692_session_summaries_user_intent_widen.sql
+var sessionSummariesUserIntentWidenMigration692 []byte
+
+//go:embed embeddata/startup/693_provider_models_canonical_cleared_at.sql
+var providerModelsCanonicalClearedAtMigration693 []byte
+
+//go:embed embeddata/startup/694_partition_ensure_timezone.sql
+var partitionEnsureTimezoneMigration694 []byte
+
+//go:embed embeddata/startup/695_request_logs_promote_final_success_self_heal.sql
+var requestLogsPromoteFinalSuccessSelfHealMigration695 []byte
+
+//go:embed embeddata/startup/696_request_logs_view_system_fingerprint.sql
+var requestLogsViewSystemFingerprintMigration696 []byte
+
+//go:embed embeddata/startup/697_request_logs_promote_system_fingerprint.sql
+var requestLogsPromoteSystemFingerprintMigration697 []byte
+
+//go:embed embeddata/startup/698_promote_hot_partition_timezone_pin.sql
+var promoteHotPartitionTimezonePinMigration698 []byte
+
+//go:embed embeddata/startup/699_supplier_errors_ensure_timezone_pin.sql
+var supplierErrorsEnsureTimezonePinMigration699 []byte
+
+//go:embed embeddata/startup/700_request_logs_view_raw_model_name.sql
+var requestLogsViewRawModelNameMigration700 []byte
+
+//go:embed embeddata/startup/701_credential_balance_floor.sql
+var credentialBalanceFloorMigration701 []byte
+
+//go:embed embeddata/startup/703_supplier_errors_promote_timezone_pin.sql
+var supplierErrorsPromoteTimezonePinMigration703 []byte
+
+//go:embed embeddata/startup/706_session_family_s1a.sql
+var sessionFamilyS1aMigration706 []byte
+
+//go:embed embeddata/startup/707_session_turns_s1a.sql
+var sessionTurnsS1aMigration707 []byte
+
+//go:embed embeddata/startup/708_session_bodies_s1a.sql
+var sessionBodiesS1aMigration708 []byte
+
+//go:embed embeddata/startup/711_hosted_tasks.sql
+var hostedTasksMigration711 []byte
+
+//go:embed embeddata/startup/712_session_mirror_outbox.sql
+var sessionMirrorOutboxMigration712 []byte
+
+//go:embed embeddata/startup/713_session_turns_cost_precision.sql
+var sessionTurnsCostPrecisionMigration713 []byte
+
+// R34 (2026-09-17 audit): five-point sync backfill — 704/705/709/710 had
+// drifted out of the installer (R30 leftover #8), and 714/715 landed after
+// it. 714 has no Go-side ensure mirror, so the installer was the ONLY
+// delivery channel that could apply it on a fresh install and it was
+// silently missing there.
+//
+//go:embed embeddata/startup/704_plan_quota_probe_backoff.sql
+var planQuotaProbeBackoffMigration704 []byte
+
+//go:embed embeddata/startup/705_request_logs_reattach_detached_partitions.sql
+var requestLogsReattachDetachedPartitionsMigration705 []byte
+
+//go:embed embeddata/startup/709_work_type_route_coverage.sql
+var workTypeRouteCoverageMigration709 []byte
+
+//go:embed embeddata/startup/710_request_logs_view_session_family_v2.sql
+var requestLogsViewSessionFamilyV2Migration710 []byte
+
+//go:embed embeddata/startup/714_partition_timezone_pin_remaining.sql
+var partitionTimezonePinRemainingMigration714 []byte
+
+//go:embed embeddata/startup/715_route_incidents_pending_state.sql
+var routeIncidentsPendingStateMigration715 []byte
+
+//go:embed embeddata/startup/716_unify_probe_health_views.sql
+var unifyProbeHealthViewsMigration716 []byte
+
+//go:embed embeddata/startup/717_request_logs_hot_column_alignment.sql
+var requestLogsHotColumnAlignmentMigration717 []byte
+
+//go:embed embeddata/startup/718_drop_redundant_indexes_and_add_ttl_indexes.sql
+var dropRedundantIndexesMigration718 []byte
+
+//go:embed embeddata/startup/719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql
+var unifyEnsureShadowedIndexesMigration719 []byte
+
+//go:embed embeddata/startup/720_rls_policy_vocabulary_unification.sql
+var rlsPolicyVocabularyUnificationMigration720 []byte
+
+//go:embed embeddata/startup/721_credential_balance_source_and_error.sql
+var credentialBalanceSourceAndErrorMigration721 []byte
+
+//go:embed embeddata/startup/722_durable_family_schema_convergence.sql
+var durableFamilySchemaConvergenceMigration722 []byte
+
+//go:embed embeddata/startup/723_rls_enable_attachments_and_cfl_old.sql
+var rlsEnableAttachmentsAndCflOldMigration723 []byte
+
+//go:embed embeddata/startup/724_task_type_corrections.sql
+var taskTypeCorrectionsMigration724 []byte
+
+// R42 (2026-09-18): parallel-session 725 landed with canonical copies only
+// (same five-point gap as 720/721); registered here and below.
+//
+//go:embed embeddata/startup/725_r41_request_logs_and_tmp_super_admin_bypass.sql
+var r41RequestLogsSuperAdminBypassMigration725 []byte
+
+// R43 (2026-09-18): 726 (58384b0d8) landed with the embeddata copy only —
+// same five-point gap as 720/721/725; registered here and below.
+//
+//go:embed embeddata/startup/726_restore_credential_model_index_hot_unique.sql
+var restoreCredentialModelIndexHotUniqueMigration726 []byte
+
+// R48 (2026-09-20): 730 session role hierarchy — sessions 角色三列 +
+// role_task_llm_mapping 二维路由表（role × task_kind → LLM 偏好）+
+// 轻量池 tier 修正。五点同步已随本次一并完成。
+//
+//go:embed embeddata/startup/730_session_role_hierarchy.sql
+var sessionRoleHierarchyMigration730 []byte
+
+// R50 (2026-09-21): 731 auto_route_selections 角色路由归因三列
+// （agent_role/task_kind/routing_source，父表+hot 双表）——亲和学习
+// 剔除 role 强制选型行的数据基础。五点同步随本轮一并完成。
+//
+//go:embed embeddata/startup/731_auto_route_selection_role_attribution.sql
+var autoRouteSelectionRoleAttributionMigration731 []byte
+
+// R50 (2026-09-21): 733/734 会话存储解耦 v3（session_turn_details 特征层 +
+// canonical 视图 details JOIN）。本体由 v3 会话线交付（731/732 撞号重编
+// 733/734），漏做 installer 五点同步致契约门禁红，本处补齐（事务兼容，
+// 走常规 single-transaction 通道）。
+//
+//go:embed embeddata/startup/session_turns_hot_bootstrap.sql
+var sessionTurnsHotBootstrap []byte
+
+// taskprofile 后续轮 (2026-09-21): 733/734 会话存储解耦 v3 五点同步补齐
+// ——session v3 落地（035f9382e / 8e86ddcbc）只跑了 db.Open 与 schema 通道，
+// 五点同步移交本轮收口（733 特征层表族 + 734 canonical 视图 LEFT JOIN
+// 替换 30 个 NULL 占位）。需在 session_turns_hot_bootstrap 之后执行以
+// 保证 session_turn_details_hot 拿到 hot 表存在性。
+//
+//go:embed embeddata/startup/733_session_turn_details.sql
+var sessionTurnDetailsMigration733 []byte
+
+//go:embed embeddata/startup/734_request_logs_view_details_join.sql
+var requestLogsViewDetailsJoinMigration734 []byte
+
+// embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
+// 共用，避免两份 map 漂移（曾发生 632 拷入 embeddata 却没接线的静默丢失）。
+// 新增迁移时：embeddata/startup/ 放文件 → 此处加条目 → runner.go StartupFiles
+// 同步登记；stats_migrations_test.go 的双向对账会同时守住两个方向。
+var embeddedSQLFiles = map[string][]byte{
+	"00-prereqs.sql":                                                                 sqlPrereqs,
+	"01-schema.sql":                                                                  sqlSchema,
+	"02-seed.sql":                                                                    sqlSeed,
+	"startup/478_auto_route_affinity.sql":                                            autoRouteAffinityMigration478,
+	"startup/511_state_transitions_table.sql":                                        requestJourneyMigration511,
+	"startup/515_state_transitions_seq_unique.sql":                                   requestJourneyMigration515,
+	"startup/516_durable_llm_tasks.sql":                                              durableLlmTasksMigration516,
+	"startup/520_durable_task_settlement_intents.sql":                                durableTaskSettlementIntentsMigration520,
+	"startup/521_repair_state_transitions_tenant.sql":                                requestJourneyMigration521,
+	"startup/530_request_journey_contract.sql":                                       requestJourneyMigration530,
+	"startup/531_request_journey_tenant_uniqueness.sql":                              requestJourneyMigration531,
+	"startup/536_stats_analytics_foundation.sql":                                     statsMigration536,
+	"startup/537_usage_facts.sql":                                                    statsMigration537,
+	"startup/539_stats_reconciliation_tenant.sql":                                    statsMigration539,
+	"startup/540_stats_event_inbox_consumer.sql":                                     statsMigration540,
+	"startup/544_stats_adjustments_alignment.sql":                                    statsMigration544,
+	"startup/545_stats_reconciliation_phantom_resolution.sql":                        statsMigration545,
+	"startup/546_stats_reconciliation_diffs_unique.sql":                              statsMigration546,
+	"startup/547_session_project_attribution.sql":                                    statsMigration547,
+	"startup/548_stats_reconciliation_diffs_identity.sql":                            statsMigration548,
+	"startup/552_request_journey_durable_outbox.sql":                                 requestJourneyMigration552,
+	"startup/553_approval_resume_claim.sql":                                          approvalResumeMigration553,
+	"startup/554_goal_runs.sql":                                                      goalRunsMigration554,
+	"startup/555_goal_run_actions_lease_fencing.sql":                                 goalRunActionsLeaseFencingMigration555,
+	"startup/560_session_summaries_tenant_uniqueness.sql":                            sessionSummariesTenantUniquenessMigration560,
+	"startup/561_request_logs_view_origin_actor.sql":                                 requestLogsViewOriginActorMigration561,
+	"startup/562_fix_request_logs_bodies_partitions_heap.sql":                        fixRequestLogsBodiesPartitionsHeapMigration562,
+	"startup/563_session_summary_trigger_on_hot.sql":                                 sessionSummaryTriggerOnHotMigration563,
+	"startup/564_session_summary_backfill_safe.sql":                                  sessionSummaryBackfillSafeMigration564,
+	"startup/565_cost_usd_pricing_backfill.sql":                                      costUsdPricingBackfillMigration565,
+	"startup/566_credentials_governor_revision.sql":                                  credentialsGovernorRevisionMigration566,
+	"startup/567_session_analysis_metadata.sql":                                      sessionAnalysisMetadataMigration567,
+	"startup/568_credential_priority_flag.sql":                                       credentialPriorityFlagMigration568,
+	"startup/569_candidate_binding_scope_revision_canonical.sql":                     candidateBindingScopeRevisionCanonicalMigration569,
+	"startup/570_model_offers_insert_priority_passthrough.sql":                       modelOffersInsertPriorityPassthroughMigration570,
+	"startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql":       candidateBindingScopeRevisionCanonicalPriorityHashMigration571,
+	"startup/572_session_summary_large_token_ratio.sql":                              sessionSummaryLargeTokenRatioMigration572,
+	"startup/600_outbound_body_to_bodies_hot.sql":                                    outboundBodyToBodiesHotMigration600,
+	"startup/601_request_logs_bodies_drop_metadata.sql":                              requestLogsBodiesDropMetadataMigration601,
+	"startup/602_request_logs_promote_atomic.sql":                                    requestLogsPromoteAtomicMigration602,
+	"startup/606_session_summaries_agent_expert_tags.sql":                            sessionSummariesAgentExpertTagsMigration606,
+	"startup/618_request_journey_snapshot_receipts.sql":                              journalSnapshotReceiptsMigration618,
+	"startup/614_session_bodies_hot.sql":                                             sessionBodiesHotMigration614,
+	"startup/615_session_bodies_hot_promote_function.sql":                            sessionBodiesHotPromoteMigration615,
+	"startup/620_provider_error_details_tenant_scope.sql":                            providerErrorDetailsTenantScopeMigration620,
+	"startup/621_provider_error_details_cleanup_index.sql":                           providerErrorDetailsCleanupIndexMigration621,
+	"startup/622_provider_error_aggregator_state.sql":                                providerErrorAggregatorStateMigration622,
+	"startup/623_journal_snapshot_receipts_projection_base.sql":                      journalSnapshotProjectionBaseMigration623,
+	"startup/624_candidate_failure_logs_promote_atomic_v2.sql":                       candidateFailureLogsPromoteAtomicV2Migration624,
+	"startup/625_session_bodies_unified_explicit.sql":                                sessionBodiesUnifiedExplicitMigration625,
+	"startup/626_session_bodies_hot_promote_reconcile.sql":                           sessionBodiesHotPromoteReconcileMigration626,
+	"startup/627_candidate_failure_logs_aggregation_id_unified.sql":                  candidateFailureLogsAggregationIdUnifiedMigration627,
+	"startup/628_candidate_failure_logs_promote_atomic_v3.sql":                       candidateFailureLogsPromoteAtomicV3Migration628,
+	"startup/629_audit_attachments_cleanup.sql":                                      auditAttachmentsCleanupMigration629,
+	"startup/630_session_aggregate_outbox.sql":                                       sessionAggregateOutboxMigration630,
+	"startup/631_provider_credential_soft_delete.sql":                                providerCredentialSoftDeleteMigration631,
+	"startup/632_audit_attachments_filesystem_cleanup.sql":                           auditAttachmentsFilesystemCleanupMigration632,
+	"startup/635_drop_session_turns_unified.sql":                                     dropSessionTurnsUnifiedMigration635,
+	"startup/637_session_bodies_unified_today_visible.sql":                           sessionBodiesUnifiedTodayVisibleMigration637,
+	"startup/638_session_bodies_promote_guard.sql":                                   sessionBodiesPromoteGuardMigration638,
+	"startup/639_provider_error_details_credential.sql":                              providerErrorDetailsCredentialMigration639,
+	"startup/644_tuning_views_selfcheck_and_candidate_failure_cache.sql":             tuningViewsSelfcheckCandidateFailureCacheMigration644,
+	"startup/645_session_bodies_hot_request_unique_repair.sql":                       sessionBodiesHotRequestUniqueRepairMigration645,
+	"startup/646_proxy_management_canonical.sql":                                     proxyManagementCanonicalMigration646,
+	"startup/647_goal_client_signal.sql":                                             goalClientSignalMigration647,
+	"startup/649_routing_analytics_probe_filter.sql":                                 routingAnalyticsProbeFilterMigration649,
+	"startup/650_auto_route_selection_treatment_attribution.sql":                     autoRouteSelectionTreatmentAttributionMigration650,
+	"startup/651_provider_quality_hot_rollup.sql":                                    providerQualityHotRollupMigration651,
+	"startup/652_system_monitor_fallback_queue.sql":                                  systemMonitorFallbackQueueMigration652,
+	"startup/653_archive_credential_model_index_canonical_return.sql":                archiveCredentialModelIndexCanonicalReturnMigration653,
+	"startup/654_archive_credential_model_index_detach_drop.sql":                     archiveCredentialModelIndexDetachDropMigration654,
+	"startup/655_session_summaries_schema_reconcile.sql":                             sessionSummariesSchemaReconcileMigration655,
+	"startup/656_auto_route_selections_hot.sql":                                      autoRouteSelectionsHotMigration656,
+	"startup/657_durable_llm_tasks_decision_history.sql":                             durableTasksDecisionHistoryMigration657,
+	"startup/658_auto_route_structured_features.sql":                                 autoRouteStructuredFeaturesMigration658,
+	"startup/659_legacy_promote_atomic_cte.sql":                                      legacyPromoteAtomicCTEMigration659,
+	"startup/660_credential_model_weekly_peak_unique.sql":                            credentialModelWeeklyPeakUniqueMigration660,
+	"startup/662_feature_distribution_stats.sql":                                     featureDistributionStatsMigration662,
+	"startup/663_training_export.sql":                                                trainingExportMigration663,
+	"startup/664_provider_error_details_agg_key_dedup.sql":                           providerErrorDetailsAggKeyDedupMigration664,
+	"startup/666_orchestration_and_stats_tables.sql":                                 orchestrationAndStatsTablesMigration666,
+	"startup/667_llm_hourly_stats_timestamp_fix.sql":                                 llmHourlyStatsTimestampFixMigration667,
+	"startup/668_llm_hourly_stats_final_fix.sql":                                     llmHourlyStatsFinalFixMigration668,
+	"startup/669_training_human_annotations.sql":                                     trainingHumanAnnotationsMigration669,
+	"startup/670_routing_optimization.sql":                                           routingOptimizationMigration670,
+	"startup/671_local_provider_catalog.sql":                                         localProviderCatalogMigration671,
+	"startup/672_local_first_title_summary_routing.sql":                              localFirstTitleSummaryRoutingMigration672,
+	"startup/673_annotation_stats_empty_table_fix.sql":                               annotationStatsEmptyTableFixMigration673,
+	"startup/674_annotation_request_id_unique.sql":                                   annotationRequestIdUniqueMigration674,
+	"startup/675_qwen38_family_vendor.sql":                                           qwen38FamilyVendorMigration675,
+	"startup/676_routing_opt_active_fix.sql":                                         routingOptActiveFixMigration676,
+	"startup/677_session_summaries_canonical_bootstrap.sql":                          sessionSummariesCanonicalBootstrapMigration677,
+	"startup/678_request_logs_bodies_hot_unique_repair_and_model_offers_columns.sql": requestLogsBodiesHotUniqueRepairMigration678,
+	"startup/679_local_credential_unique.sql":                                        localCredentialUniqueMigration679,
+	"startup/680_request_logs_current_month_view_bootstrap.sql":                      requestLogsCurrentMonthViewBootstrapMigration680,
+	"startup/681_provider_error_details_fingerprint_restore_8part.sql":               providerErrorDetailsFingerprintRestore8partMigration681,
+	"startup/682_model_offers_context_window_columns.sql":                            modelOffersContextWindowColumnsMigration682,
+	"startup/683_session_dim_ownership_columns.sql":                                  sessionDimOwnershipColumnsMigration683,
+	"startup/684_drop_stale_provider_error_tenant_fingerprint.sql":                   dropStaleProviderErrorTenantFingerprintMigration684,
+	"startup/685_task_default_routing_tenant_text.sql":                               taskDefaultRoutingTenantTextMigration685,
+	"startup/686_fix_session_module_executions_2026_10_bounds.sql":                   fixSessionModuleExecutions2026_10BoundsMigration686,
+	"startup/687_fix_473_partition_0800_bounds.sql":                                  fix473Partition0800BoundsMigration687,
+	"startup/688_promote_default_retention_align_go_scheduler.sql":                   promoteDefaultRetentionAlignGoSchedulerMigration688,
+	"startup/689_candidate_failure_logs_partitions_heap.sql":                         candidateFailureLogsPartitionsHeapMigration689,
+	"startup/690_session_summaries_archived_ttl_index.sql":                           sessionSummariesArchivedTTLIndexMigration690,
+	"startup/691_proxy_region_policy.sql":                                            proxyRegionPolicyMigration691,
+	"startup/692_session_summaries_user_intent_widen.sql":                            sessionSummariesUserIntentWidenMigration692,
+	"startup/693_provider_models_canonical_cleared_at.sql":                           providerModelsCanonicalClearedAtMigration693,
+	"startup/694_partition_ensure_timezone.sql":                                      partitionEnsureTimezoneMigration694,
+	"startup/695_request_logs_promote_final_success_self_heal.sql":                   requestLogsPromoteFinalSuccessSelfHealMigration695,
+	"startup/696_request_logs_view_system_fingerprint.sql":                           requestLogsViewSystemFingerprintMigration696,
+	"startup/697_request_logs_promote_system_fingerprint.sql":                        requestLogsPromoteSystemFingerprintMigration697,
+	"startup/698_promote_hot_partition_timezone_pin.sql":                             promoteHotPartitionTimezonePinMigration698,
+	"startup/699_supplier_errors_ensure_timezone_pin.sql":                            supplierErrorsEnsureTimezonePinMigration699,
+	"startup/700_request_logs_view_raw_model_name.sql":                               requestLogsViewRawModelNameMigration700,
+	"startup/701_credential_balance_floor.sql":                                       credentialBalanceFloorMigration701,
+	"startup/703_supplier_errors_promote_timezone_pin.sql":                           supplierErrorsPromoteTimezonePinMigration703,
+	"startup/706_session_family_s1a.sql":                                             sessionFamilyS1aMigration706,
+	"startup/707_session_turns_s1a.sql":                                              sessionTurnsS1aMigration707,
+	"startup/708_session_bodies_s1a.sql":                                             sessionBodiesS1aMigration708,
+	"startup/711_hosted_tasks.sql":                                                   hostedTasksMigration711,
+	"startup/712_session_mirror_outbox.sql":                                          sessionMirrorOutboxMigration712,
+	"startup/713_session_turns_cost_precision.sql":                                   sessionTurnsCostPrecisionMigration713,
+	"startup/704_plan_quota_probe_backoff.sql":                                       planQuotaProbeBackoffMigration704,
+	"startup/705_request_logs_reattach_detached_partitions.sql":                      requestLogsReattachDetachedPartitionsMigration705,
+	"startup/709_work_type_route_coverage.sql":                                       workTypeRouteCoverageMigration709,
+	"startup/710_request_logs_view_session_family_v2.sql":                            requestLogsViewSessionFamilyV2Migration710,
+	"startup/714_partition_timezone_pin_remaining.sql":                               partitionTimezonePinRemainingMigration714,
+	"startup/715_route_incidents_pending_state.sql":                                  routeIncidentsPendingStateMigration715,
+	"startup/716_unify_probe_health_views.sql":                                       unifyProbeHealthViewsMigration716,
+	"startup/717_request_logs_hot_column_alignment.sql":                              requestLogsHotColumnAlignmentMigration717,
+	"startup/718_drop_redundant_indexes_and_add_ttl_indexes.sql":                     dropRedundantIndexesMigration718,
+	"startup/719_unify_ensure_shadowed_indexes_and_parent_index_owner.sql":           unifyEnsureShadowedIndexesMigration719,
+	"startup/720_rls_policy_vocabulary_unification.sql":                              rlsPolicyVocabularyUnificationMigration720,
+	"startup/721_credential_balance_source_and_error.sql":                            credentialBalanceSourceAndErrorMigration721,
+	"startup/722_durable_family_schema_convergence.sql":                              durableFamilySchemaConvergenceMigration722,
+	"startup/723_rls_enable_attachments_and_cfl_old.sql":                             rlsEnableAttachmentsAndCflOldMigration723,
+	"startup/724_task_type_corrections.sql":                                          taskTypeCorrectionsMigration724,
+	"startup/725_r41_request_logs_and_tmp_super_admin_bypass.sql":                    r41RequestLogsSuperAdminBypassMigration725,
+	"startup/726_restore_credential_model_index_hot_unique.sql":                      restoreCredentialModelIndexHotUniqueMigration726,
+	"startup/730_session_role_hierarchy.sql":                                         sessionRoleHierarchyMigration730,
+	"startup/731_auto_route_selection_role_attribution.sql":                          autoRouteSelectionRoleAttributionMigration731,
+	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
+	"startup/733_session_turn_details.sql":                                          sessionTurnDetailsMigration733,
+	"startup/734_request_logs_view_details_join.sql":                                 requestLogsViewDetailsJoinMigration734,
+}
 
 // 临时存放 embed SQL 的目录（运行时写入）
 
@@ -675,7 +1188,8 @@ func readAppImageTag() string {
 //	├── redis/                 Redis
 //	│   └── data/              bind-mount → /data
 //	├── attachments/           bind-mount → /opt/llm-gateway-go/data/attachments
-//	├── backups/               备份根目录
+//	├── raw-logs/              bind-mount → /opt/llm-gateway-go/data/raw-logs
+//	├── backups/               bind-mount → /opt/llm-gateway-go/data/backups
 //	│   ├── daily/
 //	│   └── manual/
 //	└── reports/               部署/运行报告
@@ -700,6 +1214,7 @@ func createDirectoryLayout(root string) error {
 		"redis",
 		"redis/data",
 		"attachments",
+		"raw-logs",
 		"backups",
 		"backups/daily",
 		"backups/manual",
@@ -746,7 +1261,8 @@ func (l DirectoryLayout) GenerateReadme() string {
 | ` + "`./db/init/`" + ` | SQL 初始化文件备份 | - |
 | ` + "`./redis/data/`" + ` | ⭐ Redis 数据 | /data |
 | ` + "`./attachments/`" + ` | ⭐ 应用附件 | /opt/llm-gateway-go/data/attachments |
-| ` + "`./backups/`" + ` | 全栈备份（pg_dump 等） | - |
+| ` + "`./raw-logs/`" + ` | ⭐ 原始请求/响应日志 | /opt/llm-gateway-go/data/raw-logs |
+| ` + "`./backups/`" + ` | ⭐ 数据库降级/全栈备份 | /opt/llm-gateway-go/data/backups |
 | ` + "`./reports/`" + ` | 部署报告 | - |
 
 ⭐ = bind-mount，容器重启数据不丢失
@@ -811,44 +1327,7 @@ func copySQLBackup(root string) error {
 		return err
 	}
 
-	files := map[string][]byte{
-		"00-prereqs.sql": sqlPrereqs,
-		"01-schema.sql":  sqlSchema,
-		"02-seed.sql":    sqlSeed,
-		"startup/511_state_transitions_table.sql":                                  requestJourneyMigration511,
-		"startup/515_state_transitions_seq_unique.sql":                             requestJourneyMigration515,
-		"startup/521_repair_state_transitions_tenant.sql":                          requestJourneyMigration521,
-		"startup/530_request_journey_contract.sql":                                 requestJourneyMigration530,
-		"startup/531_request_journey_tenant_uniqueness.sql":                        requestJourneyMigration531,
-		"startup/536_stats_analytics_foundation.sql":                               statsMigration536,
-		"startup/537_usage_facts.sql":                                              statsMigration537,
-		"startup/539_stats_reconciliation_tenant.sql":                              statsMigration539,
-		"startup/540_stats_event_inbox_consumer.sql":                               statsMigration540,
-		"startup/544_stats_adjustments_alignment.sql":                              statsMigration544,
-		"startup/545_stats_reconciliation_phantom_resolution.sql":                  statsMigration545,
-		"startup/546_stats_reconciliation_diffs_unique.sql":                        statsMigration546,
-		"startup/547_session_project_attribution.sql":                              statsMigration547,
-		"startup/548_stats_reconciliation_diffs_identity.sql":                      statsMigration548,
-		"startup/552_request_journey_durable_outbox.sql":                           requestJourneyMigration552,
-		"startup/553_approval_resume_claim.sql":                                    approvalResumeMigration553,
-		"startup/554_goal_runs.sql":                                                goalRunsMigration554,
-		"startup/555_goal_run_actions_lease_fencing.sql":                           goalRunActionsLeaseFencingMigration555,
-		"startup/560_session_summaries_tenant_uniqueness.sql":                      sessionSummariesTenantUniquenessMigration560,
-		"startup/561_request_logs_view_origin_actor.sql":                           requestLogsViewOriginActorMigration561,
-		"startup/562_fix_request_logs_bodies_partitions_heap.sql":                  fixRequestLogsBodiesPartitionsHeapMigration562,
-		"startup/563_session_summary_trigger_on_hot.sql":                           sessionSummaryTriggerOnHotMigration563,
-		"startup/564_session_summary_backfill_safe.sql":                            sessionSummaryBackfillSafeMigration564,
-		"startup/565_cost_usd_pricing_backfill.sql":                                costUsdPricingBackfillMigration565,
-		"startup/566_credentials_governor_revision.sql":                            credentialsGovernorRevisionMigration566,
-		"startup/567_session_analysis_metadata.sql":                                sessionAnalysisMetadataMigration567,
-		"startup/568_credential_priority_flag.sql":                                 credentialPriorityFlagMigration568,
-		"startup/569_candidate_binding_scope_revision_canonical.sql":               candidateBindingScopeRevisionCanonicalMigration569,
-		"startup/570_model_offers_insert_priority_passthrough.sql":                 modelOffersInsertPriorityPassthroughMigration570,
-		"startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql": candidateBindingScopeRevisionCanonicalPriorityHashMigration571,
-		"startup/600_outbound_body_to_bodies_hot.sql":                              outboundBodyToBodiesHotMigration600,
-		"startup/601_request_logs_bodies_drop_metadata.sql":                        requestLogsBodiesDropMetadataMigration601,
-		"startup/602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602,
-	}
+	files := embeddedSQLFiles
 	for name, content := range files {
 		path := filepath.Join(initDir, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -915,44 +1394,7 @@ func setupSQLDir() (string, func(), error) {
 	}
 	cleanup := func() { _ = os.RemoveAll(tmp) }
 
-	files := map[string][]byte{
-		"00-prereqs.sql": sqlPrereqs,
-		"01-schema.sql":  sqlSchema,
-		"02-seed.sql":    sqlSeed,
-		"startup/511_state_transitions_table.sql":                                  requestJourneyMigration511,
-		"startup/515_state_transitions_seq_unique.sql":                             requestJourneyMigration515,
-		"startup/521_repair_state_transitions_tenant.sql":                          requestJourneyMigration521,
-		"startup/530_request_journey_contract.sql":                                 requestJourneyMigration530,
-		"startup/531_request_journey_tenant_uniqueness.sql":                        requestJourneyMigration531,
-		"startup/536_stats_analytics_foundation.sql":                               statsMigration536,
-		"startup/537_usage_facts.sql":                                              statsMigration537,
-		"startup/539_stats_reconciliation_tenant.sql":                              statsMigration539,
-		"startup/540_stats_event_inbox_consumer.sql":                               statsMigration540,
-		"startup/544_stats_adjustments_alignment.sql":                              statsMigration544,
-		"startup/545_stats_reconciliation_phantom_resolution.sql":                  statsMigration545,
-		"startup/546_stats_reconciliation_diffs_unique.sql":                        statsMigration546,
-		"startup/547_session_project_attribution.sql":                              statsMigration547,
-		"startup/548_stats_reconciliation_diffs_identity.sql":                      statsMigration548,
-		"startup/552_request_journey_durable_outbox.sql":                           requestJourneyMigration552,
-		"startup/553_approval_resume_claim.sql":                                    approvalResumeMigration553,
-		"startup/554_goal_runs.sql":                                                goalRunsMigration554,
-		"startup/555_goal_run_actions_lease_fencing.sql":                           goalRunActionsLeaseFencingMigration555,
-		"startup/560_session_summaries_tenant_uniqueness.sql":                      sessionSummariesTenantUniquenessMigration560,
-		"startup/561_request_logs_view_origin_actor.sql":                           requestLogsViewOriginActorMigration561,
-		"startup/562_fix_request_logs_bodies_partitions_heap.sql":                  fixRequestLogsBodiesPartitionsHeapMigration562,
-		"startup/563_session_summary_trigger_on_hot.sql":                           sessionSummaryTriggerOnHotMigration563,
-		"startup/564_session_summary_backfill_safe.sql":                            sessionSummaryBackfillSafeMigration564,
-		"startup/565_cost_usd_pricing_backfill.sql":                                costUsdPricingBackfillMigration565,
-		"startup/566_credentials_governor_revision.sql":                            credentialsGovernorRevisionMigration566,
-		"startup/567_session_analysis_metadata.sql":                                sessionAnalysisMetadataMigration567,
-		"startup/568_credential_priority_flag.sql":                                 credentialPriorityFlagMigration568,
-		"startup/569_candidate_binding_scope_revision_canonical.sql":               candidateBindingScopeRevisionCanonicalMigration569,
-		"startup/570_model_offers_insert_priority_passthrough.sql":                 modelOffersInsertPriorityPassthroughMigration570,
-		"startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql": candidateBindingScopeRevisionCanonicalPriorityHashMigration571,
-		"startup/600_outbound_body_to_bodies_hot.sql":                              outboundBodyToBodiesHotMigration600,
-		"startup/601_request_logs_bodies_drop_metadata.sql":                        requestLogsBodiesDropMetadataMigration601,
-		"startup/602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602,
-	}
+	files := embeddedSQLFiles
 	for name, content := range files {
 		path := filepath.Join(tmp, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {

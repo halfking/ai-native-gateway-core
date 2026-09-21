@@ -43,8 +43,8 @@ func TestHandleTriggerAvailability_NoWorker(t *testing.T) {
 	if body.ErrorCode != "self_check.trigger.no_probe_path" {
 		t.Fatalf("unexpected error_code: %q", body.ErrorCode)
 	}
-	if !strings.Contains(body.Reason, "new probe mode") {
-		t.Fatalf("reason should mention new probe mode, got: %q", body.Reason)
+	if !strings.Contains(body.Reason, "节点探测队列") {
+		t.Fatalf("reason should mention probe queue migration (cn text), got: %q", body.Reason)
 	}
 }
 
@@ -141,7 +141,19 @@ func TestHandleTrigger_ProbeEnqueue(t *testing.T) {
 	}
 }
 
-// TestHandleTrigger_ProbeEnqueueError surfaces enqueue failures as 503.
+// TestHandleTrigger_ProbeEnqueueError reports individual enqueue failures in
+// the unified fan-out response envelope. Both single-model and multi-model
+// callers receive the same shape: 200 OK with a per-model results map that
+// records which models failed and why. The single-model 503 fast-path that
+// earlier lived in handleTrigger was removed by f8bf429ec
+// (fix(admin): harden batch self-check model selection), so the handler now
+// treats a single named model as a one-element fan-out.
+//
+// 2026-09-01 sync update (commit 24dead9d1 / audit bc48559b4 contract): when
+// EVERY requested model fails to enqueue, handleTrigger returns 503 with
+// {error, message, models_failed, results} so the UI doesn't render a
+// misleading 200 OK banner. Partial failures still return 200 with per-model
+// details.
 func TestHandleTrigger_ProbeEnqueueError(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_USE_NEW_PROBE_MODE", "true")
 	h := &SelfCheckHandler{}
@@ -156,7 +168,26 @@ func TestHandleTrigger_ProbeEnqueueError(t *testing.T) {
 	h.handleTrigger(rr, req)
 
 	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 (got %d)", rr.Code)
+		t.Fatalf("expected 503 on all-models enqueue failure (got %d, body=%s)", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Error        string `json:"error"`
+		Message      string `json:"message"`
+		Enqueued     int    `json:"enqueued"`
+		ModelsFailed int    `json:"models_failed"`
+		Results      map[string]struct {
+			Error    string `json:"error"`
+			Enqueued int    `json:"enqueued"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error != "trigger failed" || body.Message != "db down" || body.Enqueued != 0 || body.ModelsFailed != 1 {
+		t.Fatalf("unexpected envelope: %+v", body)
+	}
+	if body.Results["glm-5.2"].Error != "db down" || body.Results["glm-5.2"].Enqueued != 0 {
+		t.Fatalf("unexpected per-model result: %+v", body.Results["glm-5.2"])
 	}
 }
 

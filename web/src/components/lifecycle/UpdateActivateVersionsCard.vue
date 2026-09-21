@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 import type { CatalogResponse, Release, CatalogItem, UpgradeStatus } from '../../api/updateActivate'
+import { useI18n } from 'vue-i18n'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElButton, ElCard, ElEmpty, ElSkeleton, ElTag } from 'element-plus'
 /** UpdateActivateVersionsCard — 系统版本列表（最新 5 个）+ 升级→下载→安装→启动切换流程。
  *  复用 maintain /maintain/download + /maintain/upgrade 的视觉规范。 */
 
@@ -31,6 +36,8 @@ const emit = defineEmits<{
   (e: 'switch', payload: { version: string }): void
   (e: 'refresh'): void
 }>()
+
+const { t } = useI18n()
 
 const latestVersion = computed(() => props.upgradeStatus?.latest_version || props.currentVersion)
 const installedSet = computed(() => new Set([props.currentVersion, props.upgradeStatus?.current_version].filter(Boolean) as string[]))
@@ -96,15 +103,11 @@ async function startUpgrade() {
     ElMessage.error('未在版本目录中找到可下载的安装包')
     return
   }
-  try {
-    await ElMessageBox.confirm(
-      `即将把服务升级到 ${targetVersion}（${item.label}）。过程中服务会短暂不可用，请确认无重要任务正在进行。`,
-      '确认升级',
-      { confirmButtonText: '开始升级', cancelButtonText: '取消', type: 'warning' },
-    )
-  } catch {
-    return
-  }
+  const confirmed = await confirmDialog(
+    t('customer.versionsUpgradeConfirmBody', { version: targetVersion, label: item.label }),
+    { title: t('customer.versionsUpgradeConfirmTitle'), confirmButtonText: t('customer.versionsUpgradeConfirmStart') },
+  )
+  if (!confirmed) return
   upgrading.value = targetVersion
   resetSteps()
   await runUpgradeFlow(targetVersion, item)
@@ -301,8 +304,8 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   align-items: center;
   gap: 16px;
   padding: 14px 16px;
-  background: var(--kx-surface-soft, rgba(0, 0, 0, 0.03));
-  border: 1px solid var(--kx-border, rgba(0, 0, 0, 0.08));
+  background: var(--kx-surface-soft);
+  border: 1px solid var(--kx-border, var(--overlay-faint));
   border-radius: 10px;
   margin-bottom: 16px;
 }
@@ -330,7 +333,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   gap: 10px;
   padding: 8px 12px;
   margin-bottom: 12px;
-  background: rgba(217, 119, 6, 0.1);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
   border-left: 3px solid var(--kx-warning, var(--warning));
   border-radius: 4px;
   font-size: 13px;
@@ -349,7 +352,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   gap: 12px;
   align-items: center;
   padding: 10px 14px;
-  border: 1px solid var(--kx-border, rgba(0, 0, 0, 0.08));
+  border: 1px solid var(--kx-border, var(--overlay-faint));
   border-radius: 8px;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
@@ -389,15 +392,15 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 999px;
-  background: var(--kx-surface-soft, rgba(0, 0, 0, 0.05));
+  background: var(--kx-surface-soft, var(--overlay-faint));
   color: var(--muted, var(--muted));
 }
-.artifact-chip--more { background: rgba(0, 0, 0, 0.08); }
+.artifact-chip--more { background: var(--overlay-faint); }
 
 .upgrade-flow {
   padding: 16px;
-  background: var(--kx-surface-soft, rgba(0, 0, 0, 0.02));
-  border: 1px solid var(--kx-border, rgba(0, 0, 0, 0.06));
+  background: var(--kx-surface-soft);
+  border: 1px solid var(--kx-border);
   border-radius: 10px;
 }
 .upgrade-flow__head {
@@ -423,7 +426,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  border: 1px solid var(--kx-border, rgba(0, 0, 0, 0.08));
+  border: 1px solid var(--kx-border, var(--overlay-faint));
   border-radius: 8px;
   background: var(--kx-surface, var(--on-primary));
 }
@@ -439,7 +442,7 @@ async function runUpgradeFlow(version: string, item: CatalogItem) {
   justify-content: center;
   font-weight: 600;
   font-size: 13px;
-  background: var(--kx-primary-soft, rgba(37, 99, 235, 0.12));
+  background: var(--kx-primary-soft);
   color: var(--kx-primary, var(--accent));
 }
 .flow-step--done .flow-step__index { background: rgba(22, 163, 74, 0.15); color: var(--kx-success, var(--success)); }

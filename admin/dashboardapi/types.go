@@ -24,13 +24,13 @@ package dashboardapi
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/httpx"
 )
 
 // ────────────────────────────────────────────────────────────────
@@ -207,22 +207,16 @@ func writeErrorJSON(w http.ResponseWriter, status int, code, message, details st
 	writeJSONResponse(w, status, resp)
 }
 
-// writeJSONResponse 写入 JSON 响应（底层）
+// writeJSONResponse 写入 JSON 响应（底层）。
+// 薄委托 internal/httpx（2026-09-04 writeJSON 收敛）；charset 与 500 兜底体差异保留在本地。
 func writeJSONResponse(w http.ResponseWriter, status int, v interface{}) {
-	data, err := json.Marshal(v)
-	if err != nil {
+	if err := httpx.WriteJSON(w, status, "application/json; charset=utf-8", v); err != nil {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusInternalServerError)
 		//nolint:errcheck
 		w.Write([]byte(`{"success":false,"code":"INTERNAL_ERROR","message":"json marshal failed","timestamp":"` + time.Now().Format(time.RFC3339) + `"}`))
 		return
 	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	//nolint:errcheck
-	w.Write(data)
-	//nolint:errcheck
-	w.Write([]byte("\n"))
 }
 
 // ────────────────────────────────────────────────────────────────

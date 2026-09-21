@@ -117,6 +117,34 @@ func SessionsV2Specs() []*Spec {
 			Max:             floatPtr(3000),
 		},
 		{
+			// R29 审计（2026-09-15）：mirror shadow-write 失败登记（712
+			// session_mirror_outbox）与重放器的 kill switch。未注册时
+			// getPlatformBool 对 Spec==nil 直接返回 fallback 不读
+			// settings_kv——运维 PUT 无效，应急热关能力落空。
+			Key:             "sessions_v2.mirror_outbox",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategorySession,
+			Default:         true,
+			Description:     "Mirror 失败登记开关",
+			DescriptionLong: "shadow-write 失败的会话轮次持久登记到 session_mirror_outbox（迁移 712）。关闭后失败行只进进程内 backlog（重启即丢，GAP-2 修复前行为）。",
+			Unit:            "",
+			DangerLevel:     Warning,
+			HotReload:       true,
+		},
+		{
+			Key:             "sessions_v2.mirror_outbox_replay",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategorySession,
+			Default:         true,
+			Description:     "Mirror 失败重放开关",
+			DescriptionLong: "MirrorOutboxReaper 周期重放 session_mirror_outbox 欠账行到 V2 表。关闭后登记行滞留（pending gauge 持续增长），用于应急止血。",
+			Unit:            "",
+			DangerLevel:     Warning,
+			HotReload:       true,
+		},
+		{
 			Key:             "sessions_v2.compression_enabled",
 			Type:            TypeBool,
 			Scope:           ScopePlatform,
@@ -141,6 +169,18 @@ func SessionsV2Specs() []*Spec {
 			HotReload:       true,
 			Min:             floatPtr(1),
 			Max:             floatPtr(168), // 7天
+		},
+		{
+			Key:             "sessions_v2.turns_list_routing",
+			Type:            TypeEnum,
+			Scope:           ScopePlatform,
+			Category:        CategorySession,
+			Default:         "tree",
+			Options:         []string{"tree", "dual", "v2"},
+			Description:     "会话轮次列表路由模式",
+			DescriptionLong: "控制 /api/admin/sessions/{id}/turns 使用 tree、dual 对账或统一 V2 metadata 契约。",
+			DangerLevel:     Warning,
+			HotReload:       true,
 		},
 		{
 			// CO-5 (docs/修订0811/19 §3): sessions_v2.enabled 时

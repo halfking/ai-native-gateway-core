@@ -1,6 +1,7 @@
 export default {
   title: "Panel",
   refresh: "Actualizar",
+  modelsSelectedCount: '{n} modelos seleccionados',  // R50 ModelPicker compact
 tabs: {
     board: 'Board',
     liveStream: 'Flujo de solicitudes en vivo',
@@ -214,6 +215,9 @@ v2: {
       },
 
       tokenFormat: '{p} + {c}',
+      cache: 'Caché',
+      cacheFormat: 'lectura {r} / escritura {w} (aciertos {pct})',
+      sessionId: 'Sesión',
     },
     connecting: "Conectando…",
     reconnecting: "Reconectando…",
@@ -221,7 +225,7 @@ v2: {
     empty: "Sin solicitudes en vivo",
 
     emptyWaiting: 'Esperando datos del flujo de solicitudes en vivo…',
-    groupByVendor: 'Por proveedor', groupByProvider: 'Por proveedor', groupByModel: 'Por modelo',
+    groupByCredential: 'Por credencial', groupByVendor: 'Por proveedor', groupByProvider: 'Por proveedor', groupByModel: 'Por modelo',
     modeSmall: 'Pequeño',
     modeLarge: 'Grande',
     modeSmallTitle: 'Modo pequeño: barras verticales, caben más solicitudes (predeterminado)',
@@ -234,7 +238,7 @@ v2: {
     businessTitle: 'Mostrar solo solicitudes de negocio reales',
     probeTitle: 'Mostrar solo solicitudes de sonda',
     cacheWindow: 'Caché / ventana', connectionDetailTitle: 'Clic para ver detalles de la conexión',
-    dimensionVendor: 'Proveedor', dimensionProvider: 'Proveedor', dimensionModel: 'Modelo',
+    dimensionCredential: 'Credencial', dimensionVendor: 'Proveedor', dimensionProvider: 'Proveedor', dimensionModel: 'Modelo',
     statusOpen: 'Conectado', statusConnecting: 'Conectando', statusReconnecting: 'Reconectando',
     statusUnsupported: 'No compatible', statusClosed: 'Desconectado',
     sseDetailTitle: 'Detalles de conexión SSE', sseStatusLabel: 'Estado de conexión', sseUrlLabel: 'URL SSE',
@@ -281,6 +285,7 @@ v2: {
     filterAllOptions: 'Todos',
     filterEmpty: 'No hay opciones disponibles',
     filterModel: 'Modelo',
+    filterGroup: 'Filtrar',
     filterProvider: 'Proveedor',
     filterVendor: 'Vendor',
     filterAgent: 'Cliente',  // 2026-08-06 alineado con zh-CN

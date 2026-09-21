@@ -72,36 +72,15 @@ func TestSessionManager_PutGetExpiry(t *testing.T) {
 	s := &Session{
 		ProviderCode: "deepseek-web",
 		AccountLabel: "acct1",
-		TenantID:     "default",
 		Cookies:      []*http.Cookie{{Name: "token", Value: "abc"}},
 	}
 	m.Put(s)
-	got := m.Get("deepseek-web", "acct1", "default")
+	got := m.Get("deepseek-web", "acct1")
 	if got != s {
 		t.Fatal("Get after Put returned a different session")
 	}
-	if m.Get("deepseek-web", "nonexistent", "default") != nil {
+	if m.Get("deepseek-web", "nonexistent") != nil {
 		t.Fatal("Get for nonexistent account should return nil")
-	}
-}
-
-func TestSessionManager_TenantIsolation(t *testing.T) {
-	// audit round 2 C1: two tenants with the same provider+accountLabel must
-	// not share cookies. Pre-fix the map key was (provider, account) which
-	// collided across tenants; the fix is to include tenantID.
-	m := NewSessionManager()
-	a := &Session{ProviderCode: "deepseek-web", AccountLabel: "alice", TenantID: "tenantA", Cookies: []*http.Cookie{{Name: "token", Value: "A"}}}
-	b := &Session{ProviderCode: "deepseek-web", AccountLabel: "alice", TenantID: "tenantB", Cookies: []*http.Cookie{{Name: "token", Value: "B"}}}
-	m.Put(a)
-	m.Put(b)
-	if gotA := m.Get("deepseek-web", "alice", "tenantA"); gotA != a {
-		t.Fatal("tenantA session missing or cross-contaminated")
-	}
-	if gotB := m.Get("deepseek-web", "alice", "tenantB"); gotB != b {
-		t.Fatal("tenantB session missing or cross-contaminated")
-	}
-	if m.Get("deepseek-web", "alice", "tenantC") != nil {
-		t.Fatal("unknown tenant must return nil, not bleed from another tenant")
 	}
 }
 
@@ -110,11 +89,10 @@ func TestSessionManager_ExpiryEviction(t *testing.T) {
 	expired := &Session{
 		ProviderCode: "x-web",
 		AccountLabel: "acct",
-		TenantID:     "default",
 		ExpiresAt:    time.Now().Add(-1 * time.Minute), // already expired
 	}
 	m.Put(expired)
-	if m.Get("x-web", "acct", "default") != nil {
+	if m.Get("x-web", "acct") != nil {
 		t.Fatal("expired session should be evicted on Get")
 	}
 }

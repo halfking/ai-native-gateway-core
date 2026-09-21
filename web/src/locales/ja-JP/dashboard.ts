@@ -1,6 +1,7 @@
 export default {
   title: "ダッシュボード",
   refresh: "更新",
+  modelsSelectedCount: '{n} 個のモデルを選択中',  // R50 ModelPicker compact
 tabs: {
     board: 'ボード',
     liveStream: 'リアルタイムリクエスト',
@@ -205,6 +206,9 @@ tabs: {
       },
 
       tokenFormat: '{p} + {c}',
+      cache: 'キャッシュ',
+      cacheFormat: '読み{r}/書き{w}（ヒット率{pct}）',
+      sessionId: 'セッション',
     },
     connecting: "接続中…",
     reconnecting: "再接続中…",
@@ -212,7 +216,7 @@ tabs: {
     empty: "リアルタイムリクエストがありません",
 
     emptyWaiting: 'リアルタイムリクエストストリームデータを待機中…',
-    groupByVendor: 'ベンダー別', groupByProvider: 'プロバイダー別', groupByModel: 'モデル別',
+    groupByCredential: '認証情報別', groupByVendor: 'ベンダー別', groupByProvider: 'プロバイダー別', groupByModel: 'モデル別',
     modeSmall: '小',
     modeLarge: '大',
     modeSmallTitle: '小モード：縦棒表示、より多くのリクエストを収容（デフォルト）',
@@ -225,7 +229,7 @@ tabs: {
     businessTitle: '実業務の请求のみ表示',
     probeTitle: 'プローブ请求のみ表示',
     cacheWindow: 'キャッシュ / ウィンドウ', connectionDetailTitle: 'クリックで接続詳細を表示',
-    dimensionVendor: 'ベンダー', dimensionProvider: 'プロバイダー', dimensionModel: 'モデル',
+    dimensionCredential: '認証情報', dimensionVendor: 'ベンダー', dimensionProvider: 'プロバイダー', dimensionModel: 'モデル',
     statusOpen: '接続済み', statusConnecting: '接続中', statusReconnecting: '再接続中',
     statusUnsupported: '未対応', statusClosed: '未接続',
     sseDetailTitle: 'SSE 接続詳細', sseStatusLabel: '接続状態', sseUrlLabel: 'SSE URL',
@@ -272,6 +276,7 @@ tabs: {
     filterAllOptions: 'すべて',
     filterEmpty: '選択肢がありません',
     filterModel: 'モデル',
+    filterGroup: 'フィルター',
     filterProvider: 'プロバイダー',
     filterVendor: 'ベンダー',
     filterAgent: 'クライアント',  // 2026-08-06 zh-CN との整合

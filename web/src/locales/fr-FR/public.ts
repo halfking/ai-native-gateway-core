@@ -122,6 +122,13 @@ export default {
     subtitle: 'View bound license status, expiry, and device quotas for this instance',
   },
   upgrade: {
+    contactAdminButton: 'Contacter un administrateur pour appliquer la mise à niveau',
+
+    notifyAdminBody: 'Contactez un administrateur pour appliquer cette mise à niveau via /admin/autoupdate. Le portail client ne peut pas l\'exécuter directement.',
+    notifyAdminTitle: 'Intervention d\'un administrateur requise',
+    notifyAdminOk: 'Compris',
+    notifyAdminCopy: 'Copier la version',
+
     title: 'Software upgrade',
     subtitle: 'Check for updates; download offline packages from the download page',
   },

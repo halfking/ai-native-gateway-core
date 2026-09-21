@@ -271,7 +271,7 @@ func (h *OutputComplianceHandler) updatePolicy(w http.ResponseWriter, r *http.Re
 	adminUser := authEmail(r)
 
 	var req OutputCompliancePolicy
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
 	}
@@ -441,7 +441,7 @@ func (h *OutputComplianceHandler) createKeyword(w http.ResponseWriter, r *http.R
 	adminUser := authEmail(r)
 
 	var req OutputComplianceKeyword
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
 	}
@@ -616,7 +616,7 @@ func (h *OutputComplianceHandler) reviewItem(w http.ResponseWriter, r *http.Requ
 		var req struct {
 			Comment string `json:"comment"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		_ = readJSONRequired(r, &req)
 		comment = req.Comment
 	}
 
@@ -688,7 +688,7 @@ func (h *OutputComplianceHandler) createFeedback(w http.ResponseWriter, r *http.
 	reporter := authEmail(r)
 
 	var req OutputComplianceFeedback
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request: " + err.Error()})
 		return
 	}

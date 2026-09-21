@@ -1,0 +1,180 @@
+{
+  "violations": [
+    {
+      "file": "components/credential-monitor/CredentialDetailDrawer.vue",
+      "value": "rgba(139, 148, 158, 0.28)"
+    },
+    {
+      "file": "components/credential-monitor/CredentialDetailDrawer.vue",
+      "value": "rgba(16, 185, 129, 0.03)"
+    },
+    {
+      "file": "components/credential-monitor/CredentialDetailDrawer.vue",
+      "value": "rgba(239, 68, 68, 0.03)"
+    },
+    {
+      "file": "components/detail/RequestProcessingFlowDiagram.vue",
+      "value": "rgba(255,255,255,.35)"
+    },
+    {
+      "file": "components/detail/UnifiedRequestSessionDrawer.vue",
+      "value": "rgba(0, 0, 0, 0.45)"
+    },
+    {
+      "file": "components/lifecycle/UpdateActivateVersionsCard.vue",
+      "value": "rgba(217, 119, 6, 0.05)"
+    },
+    {
+      "file": "components/lifecycle/UpdateActivateVersionsCard.vue",
+      "value": "rgba(217, 119, 6, 0.18)"
+    },
+    {
+      "file": "components/lifecycle/UpdateActivateVersionsCard.vue",
+      "value": "rgba(22, 163, 74, 0.04)"
+    },
+    {
+      "file": "components/lifecycle/UpdateActivateVersionsCard.vue",
+      "value": "rgba(22, 163, 74, 0.05)"
+    },
+    {
+      "file": "components/lifecycle/UpdateActivateVersionsCard.vue",
+      "value": "rgba(22, 163, 74, 0.15)"
+    },
+    {
+      "file": "components/lifecycle/UpdateActivateVersionsCard.vue",
+      "value": "rgba(220, 38, 38, 0.05)"
+    },
+    {
+      "file": "components/lifecycle/UpdateActivateVersionsCard.vue",
+      "value": "rgba(220, 38, 38, 0.15)"
+    },
+    {
+      "file": "components/lifecycle/UpdateActivateVersionsCard.vue",
+      "value": "rgba(37, 99, 235, 0.06)"
+    },
+    {
+      "file": "components/routing/SmartRoutingConfigDrawer.vue",
+      "value": "rgba(0, 0, 0, 0.16)"
+    },
+    {
+      "file": "views/AnnotationStatsView.vue",
+      "value": "rgba(0, 0, 0, 0.1)"
+    },
+    {
+      "file": "views/AnnotationView.vue",
+      "value": "rgba(0, 0, 0, 0.15)"
+    },
+    {
+      "file": "views/AnnotationView.vue",
+      "value": "rgba(0, 0, 0, 0.2)"
+    },
+    {
+      "file": "views/AnnotationView.vue",
+      "value": "rgba(0, 0, 0, 0.5)"
+    },
+    {
+      "file": "views/ApprovalDetailView.vue",
+      "value": "rgba(52, 211, 153, 0.2)"
+    },
+    {
+      "file": "views/CorrelationsView.vue",
+      "value": "rgba(34,197,94,0.08)"
+    },
+    {
+      "file": "views/CredentialHeatmapView.vue",
+      "value": "rgba(0, 0, 0, 0.45)"
+    },
+    {
+      "file": "views/CredentialHeatmapView.vue",
+      "value": "rgba(15, 23, 42, 0.82)"
+    },
+    {
+      "file": "views/CredentialHeatmapView.vue",
+      "value": "rgba(239, 68, 68, 0.1)"
+    },
+    {
+      "file": "views/CredentialHeatmapView.vue",
+      "value": "rgba(239, 68, 68, 0.3)"
+    },
+    {
+      "file": "views/CredentialHeatmapView.vue",
+      "value": "rgba(255, 255, 255, 0.35)"
+    },
+    {
+      "file": "views/DashboardViewV2.vue",
+      "value": "rgba(251, 191, 36, 0.45)"
+    },
+    {
+      "file": "views/DecisionsView.vue",
+      "value": "rgba(239,68,68,.05)"
+    },
+    {
+      "file": "views/ModulesView.vue",
+      "value": "rgba(107, 114, 128, 0.15)"
+    },
+    {
+      "file": "views/ModulesView.vue",
+      "value": "rgba(52, 211, 153, 0.08)"
+    },
+    {
+      "file": "views/ProvidersView.vue",
+      "value": "rgba(0, 255, 128, 0.1)"
+    },
+    {
+      "file": "views/ProvidersView.vue",
+      "value": "rgba(255, 80, 80, 0.06)"
+    },
+    {
+      "file": "views/ProvidersView.vue",
+      "value": "rgba(255, 80, 80, 0.12)"
+    },
+    {
+      "file": "views/ProxyView.vue",
+      "value": "rgba(0, 0, 0, 0.5)"
+    },
+    {
+      "file": "views/RequestJourneyDetailView.vue",
+      "value": "rgba(220, 53, 69, 0.08)"
+    },
+    {
+      "file": "views/RequestLogsView.vue",
+      "value": "rgba(107, 114, 128, 0.1)"
+    },
+    {
+      "file": "views/RequestLogsView.vue",
+      "value": "rgba(20, 184, 166, 0.12)"
+    },
+    {
+      "file": "views/RequestLogsView.vue",
+      "value": "rgba(20, 184, 166, 0.3)"
+    },
+    {
+      "file": "views/RoutingLogView.vue",
+      "value": "rgba(239, 68, 68, 0.1)"
+    },
+    {
+      "file": "views/RoutingLogView.vue",
+      "value": "rgba(239, 68, 68, 0.3)"
+    },
+    {
+      "file": "views/RoutingOverrideView.vue",
+      "value": "rgba(234, 179, 8, 0.05)"
+    },
+    {
+      "file": "views/StandardModelPricingView.vue",
+      "value": "rgba(148, 163, 184, 0.18)"
+    },
+    {
+      "file": "views/StandardModelPricingView.vue",
+      "value": "rgba(244, 63, 94, 0.18)"
+    },
+    {
+      "file": "views/provider-detail/CredsTab.vue",
+      "value": "rgba(220, 38, 38, 0.06)"
+    },
+    {
+      "file": "views/provider-detail/QualityTab.vue",
+      "value": "rgba(128,128,128,0.2)"
+    }
+  ]
+}

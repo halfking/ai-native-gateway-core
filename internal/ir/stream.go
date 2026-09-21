@@ -19,30 +19,44 @@ import (
 // Complexity reduced from O(N²) to O(N): adding a new protocol only requires
 // one Parser + one Serializer.
 type StreamChunk struct {
-	Type ChunkType // "delta" | "usage" | "done" | "error"
+	Type ChunkType `json:"type"` // "delta" | "usage" | "done" | "error"
 
 	// Delta content (Type="delta")
-	Delta *StreamDelta
+	Delta *StreamDelta `json:"delta,omitempty"`
 
 	// Usage info (Type="usage")
-	Usage *StreamUsage
+	Usage *StreamUsage `json:"usage,omitempty"`
 
 	// Error info (Type="error")
-	Error *StreamError
+	Error *StreamError `json:"error,omitempty"`
 
 	// Metadata (present in all chunk types)
-	ID           string // Chunk ID (OpenAI: chatcmpl-xxx, Anthropic: msg_xxx)
-	Model        string // Model name
-	Created      int64  // Unix timestamp (OpenAI style; 0 if not available)
-	FinishReason string // When stream ends: "stop" | "length" | "tool_calls" | etc.
+	ID             string `json:"id"`              // Chunk ID (OpenAI: chatcmpl-xxx, Anthropic: msg_xxx)
+	Model          string `json:"model"`           // Model name
+	Created        int64  `json:"created"`         // Unix timestamp (OpenAI style; 0 if not available)
+	FinishReason   string `json:"finish_reason"`   // When stream ends: "stop" | "length" | "tool_calls" | etc.
+	CandidateIndex int    `json:"candidate_index"` // Gemini candidate index (zero is the backward-compatible default)
+
+	// StopReason carries the source protocol's NATIVE termination reason
+	// (audit-r2 A#2, 2026-09-08). FinishReason is normalized to the OpenAI
+	// vocabulary, which is lossy for Anthropic targets: e.g. "stop_sequence"
+	// maps to "stop" and would round-trip back as "end_turn". Serializers
+	// targeting Anthropic prefer StopReason over re-mapping FinishReason so
+	// Anthropic→Anthropic passthrough is lossless.
+	StopReason string `json:"stop_reason,omitempty"`
+
+	// StopSequence carries the Anthropic message_delta stop_sequence value —
+	// the matched custom sequence when stop_reason=="stop_sequence". OpenAI
+	// has no equivalent.
+	StopSequence string `json:"stop_sequence,omitempty"`
 
 	// Source protocol tracking (used by Serializer to determine output format)
-	SourceProtocol string // "openai-chat" | "anthropic-messages"
+	SourceProtocol string `json:"source_protocol"` // "openai-chat" | "anthropic-messages"
 
 	// Internal stream quality annotation. These fields are not serialized and
 	// preserve wire compatibility while exposing tool argument validation.
-	Quality             string // verified | partial | rejected
-	ArgumentsJSONReason string
+	Quality             string `json:"-"` // verified | partial | rejected
+	ArgumentsJSONReason string `json:"-"` //
 }
 
 // AnnotateArgumentsJSON validates completed streaming tool arguments without
@@ -82,22 +96,22 @@ const (
 // for audio output (OpenAI Realtime/gpt-4o-audio-preview) and thinking signature
 // propagation (Anthropic signature_delta).
 type StreamDelta struct {
-	Role             string                // "assistant" (first chunk only)
-	Content          string                // Text content delta
-	ReasoningContent string                // Thinking/reasoning delta (OpenAI: reasoning_content, Anthropic: thinking)
-	ToolCalls        []StreamToolCallDelta // Incremental tool calls
+	Role             string                `json:"role,omitempty"`              // "assistant" (first chunk only)
+	Content          string                `json:"content,omitempty"`           // Text content delta
+	ReasoningContent string                `json:"reasoning_content,omitempty"` // Thinking/reasoning delta (OpenAI: reasoning_content, Anthropic: thinking)
+	ToolCalls        []StreamToolCallDelta `json:"tool_calls,omitempty"`        // Incremental tool calls
 
 	// ThinkingSignature carries the Anthropic chain-of-thought verification
 	// token emitted at the end of a thinking block (signature_delta event).
 	// Critical for Anthropic multi-turn round-trip.
-	ThinkingSignature string
+	ThinkingSignature string `json:"thinking_signature,omitempty"`
 
 	// AudioDelta is the OpenAI audio output chunk (gpt-4o-audio-preview realtime).
-	AudioDelta *StreamAudioDelta
+	AudioDelta *StreamAudioDelta `json:"audio_delta,omitempty"`
 
 	// DeltaType is the explicit content type from the upstream provider:
 	//   "text" | "reasoning" | "audio" | "tool_call" | "signature" | ""
-	DeltaType string
+	DeltaType string `json:"delta_type,omitempty"`
 }
 
 // StreamAudioDelta carries incremental audio output (base64 PCM chunks +
@@ -105,15 +119,16 @@ type StreamDelta struct {
 type StreamAudioDelta struct {
 	Data       string `json:"data"`
 	Transcript string `json:"transcript"`
+	MIMEType   string `json:"mime_type,omitempty"`
 }
 
 // StreamToolCallDelta represents incremental tool call data.
 type StreamToolCallDelta struct {
-	Index     int    // Tool call array index (OpenAI convention)
-	ID        string // Tool call ID (first chunk only)
-	Type      string // "function" (OpenAI), "tool_use" (Anthropic maps to function)
-	Name      string // Function name (first chunk only)
-	Arguments string // Incremental JSON arguments
+	Index     int    `json:"index"`               // Tool call array index (OpenAI convention)
+	ID        string `json:"id,omitempty"`        // Tool call ID (first chunk only)
+	Type      string `json:"type,omitempty"`      // "function" (OpenAI), "tool_use" (Anthropic maps to function)
+	Name      string `json:"name,omitempty"`      // Function name (first chunk only)
+	Arguments string `json:"arguments,omitempty"` // Incremental JSON arguments
 }
 
 // StreamUsage holds token usage statistics for a stream chunk.
@@ -121,28 +136,28 @@ type StreamToolCallDelta struct {
 // audit-stream-multimodal (2026-07-13): Extended with cache tokens, reasoning
 // tokens, and multimodal token breakdowns for parity with non-stream Usage.
 type StreamUsage struct {
-	PromptTokens     int // Input tokens (Anthropic: input_tokens)
-	CompletionTokens int // Output tokens (Anthropic: output_tokens)
-	TotalTokens      int // Sum of prompt + completion
+	PromptTokens     int `json:"prompt_tokens"`     // Input tokens (Anthropic: input_tokens)
+	CompletionTokens int `json:"completion_tokens"` // Output tokens (Anthropic: output_tokens)
+	TotalTokens      int `json:"total_tokens"`      // Sum of prompt + completion
 
 	// Cache tokens (Anthropic prompt caching, OpenAI prompt caching)
-	CacheReadTokens  *int
-	CacheWriteTokens *int
+	CacheReadTokens  *int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
 
 	// Reasoning tokens (DeepSeek R1, OpenAI o1/o3)
-	ReasoningTokens *int
+	ReasoningTokens *int `json:"reasoning_tokens,omitempty"`
 
 	// Multimodal token breakdowns
-	ImageTokens *int
-	AudioTokens *int
-	VideoTokens *int
+	ImageTokens *int `json:"image_tokens,omitempty"`
+	AudioTokens *int `json:"audio_tokens,omitempty"`
+	VideoTokens *int `json:"video_tokens,omitempty"`
 }
 
 // StreamError represents an error in the stream.
 type StreamError struct {
-	Type    string // "timeout" | "upstream_error" | "invalid_chunk" | etc.
-	Message string // Human-readable error message
-	Code    string // Error code for programmatic handling
+	Type    string `json:"type"`    // "timeout" | "upstream_error" | "invalid_chunk" | etc.
+	Message string `json:"message"` // Human-readable error message
+	Code    string `json:"code"`    // Error code for programmatic handling
 }
 
 // ─── Parsers ────────────────────────────────────────────────────────────────
@@ -202,7 +217,7 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 			Index int `json:"index"`
 			Delta struct {
 				Role             string          `json:"role"`
-				Content          string          `json:"content"`
+				Content          json.RawMessage `json:"content"`
 				ReasoningContent string          `json:"reasoning_content"`
 				ToolCalls        json.RawMessage `json:"tool_calls"`
 				// audit-stream-multimodal (2026-07-13): OpenAI audio output delta
@@ -210,6 +225,13 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 			} `json:"delta"`
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
+		// In-band error frame (OpenAI-compatible providers emit
+		// {"error":{...}} as a data line instead of choices).
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
 		Usage *struct {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
@@ -230,6 +252,28 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 
 	if err := json.Unmarshal([]byte(payload), &raw); err != nil {
 		return nil, fmt.Errorf("unmarshal openai chunk: %w", err)
+	}
+
+	// In-band error frame: without this, {"error":{...}} data lines fell
+	// through to an empty delta chunk and downstream error handling (failover,
+	// Responses/Gemini error surfacing) never fired.
+	if raw.Error != nil {
+		chunk := &StreamChunk{
+			ID:             raw.ID,
+			Model:          raw.Model,
+			Created:        raw.Created,
+			Type:           ChunkTypeError,
+			SourceProtocol: ProtocolOpenAIChat,
+			Error: &StreamError{
+				Type:    raw.Error.Type,
+				Message: raw.Error.Message,
+				Code:    raw.Error.Code,
+			},
+		}
+		if chunk.Error.Code == "" {
+			chunk.Error.Code = raw.Error.Type
+		}
+		return chunk, nil
 	}
 
 	chunk := &StreamChunk{
@@ -286,10 +330,11 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 		choice := raw.Choices[0]
 		delta := choice.Delta
 
+		content := normalizeOpenAIStreamContent(delta.Content)
 		chunk.Type = ChunkTypeDelta
 		chunk.Delta = &StreamDelta{
 			Role:             delta.Role,
-			Content:          delta.Content,
+			Content:          content,
 			ReasoningContent: delta.ReasoningContent,
 		}
 		// Determine delta type for cross-protocol routing
@@ -298,7 +343,7 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 			chunk.Delta.DeltaType = "audio"
 		case delta.ReasoningContent != "":
 			chunk.Delta.DeltaType = "reasoning"
-		case delta.Content != "":
+		case content != "":
 			chunk.Delta.DeltaType = "text"
 		}
 
@@ -356,6 +401,33 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 	chunk.Type = ChunkTypeDelta
 	chunk.Delta = &StreamDelta{}
 	return chunk, nil
+}
+
+// normalizeOpenAIStreamContent accepts both standard OpenAI string deltas and
+// Qwen/DashScope's structured text delta array. Unknown block shapes do not
+// represent text and are intentionally omitted from the text-only StreamDelta.
+func normalizeOpenAIStreamContent(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+
+	var blocks []map[string]any
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return ""
+	}
+
+	var builder strings.Builder
+	for _, block := range blocks {
+		if value, ok := block["text"].(string); ok {
+			builder.WriteString(value)
+		}
+	}
+	return builder.String()
 }
 
 // ParseAnthropicStreamEvent parses an Anthropic SSE event into StreamChunk IR.
@@ -526,7 +598,8 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 	case "message_delta":
 		var evt struct {
 			Delta struct {
-				StopReason *string `json:"stop_reason"`
+				StopReason   *string `json:"stop_reason"`
+				StopSequence *string `json:"stop_sequence"`
 			} `json:"delta"`
 			Usage struct {
 				OutputTokens int `json:"output_tokens"`
@@ -547,8 +620,16 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 		}
 
 		if evt.Delta.StopReason != nil {
+			// audit-r2 A#2 (2026-09-08): keep the NATIVE stop_reason alongside
+			// the OpenAI-normalized FinishReason. FinishReason alone is lossy
+			// on the Anthropic target ("stop_sequence"→"stop"→"end_turn");
+			// StopReason lets the Anthropic serializer round-trip exactly.
+			chunk.StopReason = *evt.Delta.StopReason
 			// Map Anthropic stop_reason to OpenAI finish_reason
 			chunk.FinishReason = mapAnthropicFinishReasonToOpenAI(*evt.Delta.StopReason)
+		}
+		if evt.Delta.StopSequence != nil {
+			chunk.StopSequence = *evt.Delta.StopSequence
 		}
 
 		return chunk, nil
@@ -790,39 +871,59 @@ func (c *StreamChunk) SerializeAnthropic(msgID string, model string) string {
 		return fmt.Sprintf("event: error\ndata: %s\n\n", data)
 
 	case ChunkTypeUsage:
-		// Anthropic emits usage in message_start and message_delta
-		if c.Usage != nil && c.Usage.PromptTokens > 0 {
-			// message_start (input tokens)
+		// Anthropic emits usage in message_start and message_delta:
+		//   message_start  → input_tokens (+ cache tokens, output_tokens:0)
+		//   message_delta  → output_tokens (+ stop_reason)
+		//
+		// audit-r2 A#2 (2026-09-08): the previous if/else-if treated the two
+		// frames as mutually exclusive, so a single IR usage frame carrying
+		// BOTH halves (the OpenAI final usage chunk: prompt_tokens AND
+		// completion_tokens) took the message_start branch and silently
+		// dropped CompletionTokens — Anthropic clients never learned the
+		// output token count. Now each present half is emitted in protocol
+		// shape, from the same chunk when both are present.
+		if c.Usage == nil {
+			return ""
+		}
+
+		var output strings.Builder
+
+		hasInputSide := c.Usage.PromptTokens > 0 ||
+			c.Usage.CacheReadTokens != nil || c.Usage.CacheWriteTokens != nil
+		if hasInputSide {
+			usage := map[string]any{
+				// message_start always reports output_tokens (0 until the
+				// final count arrives in message_delta), matching upstream.
+				"input_tokens":  c.Usage.PromptTokens,
+				"output_tokens": 0,
+			}
+			if c.Usage.CacheWriteTokens != nil {
+				usage["cache_creation_input_tokens"] = *c.Usage.CacheWriteTokens
+			}
+			if c.Usage.CacheReadTokens != nil {
+				usage["cache_read_input_tokens"] = *c.Usage.CacheReadTokens
+			}
 			body := map[string]any{
 				"type": "message_start",
 				"message": map[string]any{
 					"id":    msgID,
 					"model": model,
-					"usage": map[string]any{
-						"input_tokens": c.Usage.PromptTokens,
-					},
+					"usage": usage,
 				},
 			}
 			data, _ := json.Marshal(body)
-			return fmt.Sprintf("event: message_start\ndata: %s\n\n", data)
-		} else if c.Usage != nil && c.Usage.CompletionTokens > 0 {
-			// message_delta (output tokens)
-			delta := map[string]any{}
-			if c.FinishReason != "" {
-				stopReason := mapOpenAIFinishReasonToAnthropic(c.FinishReason)
-				delta["stop_reason"] = stopReason
-			}
-			body := map[string]any{
-				"type":  "message_delta",
-				"delta": delta,
-				"usage": map[string]any{
-					"output_tokens": c.Usage.CompletionTokens,
-				},
-			}
-			data, _ := json.Marshal(body)
-			return fmt.Sprintf("event: message_delta\ndata: %s\n\n", data)
+			fmt.Fprintf(&output, "event: message_start\ndata: %s\n\n", data)
 		}
-		return ""
+
+		if body, ok := buildAnthropicMessageDelta(c); ok {
+			data, _ := json.Marshal(body)
+			fmt.Fprintf(&output, "event: message_delta\ndata: %s\n\n", data)
+		}
+
+		if output.Len() == 0 {
+			return ""
+		}
+		return output.String()
 
 	case ChunkTypeDelta:
 		if c.Delta == nil {
@@ -891,11 +992,64 @@ func (c *StreamChunk) SerializeAnthropic(msgID string, model string) string {
 			}
 		}
 
+		// audit-r2 A#2 (2026-09-08): a delta chunk can carry stream
+		// termination info — the OpenAI terminal chunk (delta:{} +
+		// finish_reason) or an Anthropic message_delta whose output_tokens
+		// count had not arrived yet. The old code dropped FinishReason on
+		// this branch entirely, so Anthropic clients never received the
+		// message_delta/stop_reason event that tells them WHY the stream
+		// ended (end_turn vs tool_use vs max_tokens...).
+		if body, ok := buildAnthropicMessageDelta(c); ok {
+			data, _ := json.Marshal(body)
+			fmt.Fprintf(&output, "event: message_delta\ndata: %s\n\n", data)
+		}
+
 		return output.String()
 
 	default:
 		return ""
 	}
+}
+
+// buildAnthropicMessageDelta constructs the Anthropic message_delta payload
+// for a chunk carrying termination info: stop_reason / stop_sequence and/or
+// output_tokens. Returns ok=false when the chunk has nothing this frame
+// should carry (plain content deltas, keep-alives).
+//
+// stop_reason resolution prefers the native chunk.StopReason (lossless
+// Anthropic→Anthropic passthrough) and falls back to re-mapping the
+// OpenAI-normalized FinishReason (OpenAI→Anthropic conversion).
+func buildAnthropicMessageDelta(c *StreamChunk) (map[string]any, bool) {
+	stopReason := ""
+	if c.StopReason != "" {
+		stopReason = c.StopReason
+	} else if c.FinishReason != "" {
+		stopReason = mapOpenAIFinishReasonToAnthropic(c.FinishReason)
+	}
+
+	outputTokens := 0
+	if c.Usage != nil && c.Usage.CompletionTokens > 0 {
+		outputTokens = c.Usage.CompletionTokens
+	}
+
+	if stopReason == "" && c.StopSequence == "" && outputTokens == 0 {
+		return nil, false
+	}
+
+	delta := map[string]any{}
+	if stopReason != "" {
+		delta["stop_reason"] = stopReason
+	}
+	if c.StopSequence != "" {
+		delta["stop_sequence"] = c.StopSequence
+	}
+	return map[string]any{
+		"type":  "message_delta",
+		"delta": delta,
+		"usage": map[string]any{
+			"output_tokens": outputTokens,
+		},
+	}, true
 }
 
 // SerializeResponses serializes StreamChunk IR to OpenAI Responses API SSE
@@ -993,7 +1147,35 @@ func (c *StreamChunk) SerializeResponses(itemID string) string {
 			fmt.Fprintf(&output, "event: response.reasoning_text.delta\ndata: %s\n\n", data)
 		}
 
-		// 3) Tool calls → response.output_item.added (new) +
+		// 3) Audio output stays typed on the Responses wire. Audio data and
+		// its transcript have distinct event types, so a transcript cannot be
+		// mistaken for visible output text (or silently dropped).
+		if c.Delta.AudioDelta != nil {
+			if c.Delta.AudioDelta.Data != "" {
+				body := map[string]any{
+					"type":          "response.audio.delta",
+					"item_id":       itemID,
+					"output_index":  0,
+					"content_index": 0,
+					"delta":         c.Delta.AudioDelta.Data,
+				}
+				data, _ := json.Marshal(body)
+				fmt.Fprintf(&output, "event: response.audio.delta\ndata: %s\n\n", data)
+			}
+			if c.Delta.AudioDelta.Transcript != "" {
+				body := map[string]any{
+					"type":          "response.audio_transcript.delta",
+					"item_id":       itemID,
+					"output_index":  0,
+					"content_index": 0,
+					"delta":         c.Delta.AudioDelta.Transcript,
+				}
+				data, _ := json.Marshal(body)
+				fmt.Fprintf(&output, "event: response.audio_transcript.delta\ndata: %s\n\n", data)
+			}
+		}
+
+		// 4) Tool calls → response.output_item.added (new) +
 		//                 response.function_call_arguments.delta (continued args)
 		for _, tc := range c.Delta.ToolCalls {
 			if tc.Name != "" {
@@ -1085,7 +1267,7 @@ func mapOpenAIFinishReasonToAnthropic(reason string) string {
 // audit-gemini-stream (2026-07-13): Completes the Gemini native adapter by
 // adding stream serialization. Map IR StreamDelta → Gemini parts:
 //   - text       → {"text": "..."}
-//   - reasoning  → {"thought": "..."} (Gemini 2.5+)
+//   - reasoning  → {"text": "...", "thought": true} (Gemini 2.5+)
 //   - tool_call  → {"functionCall": {"name": "...", "args": {...}}}
 //
 // Usage chunks emit usageMetadata with modality-aware token breakdowns.
@@ -1117,9 +1299,10 @@ func (c *StreamChunk) SerializeGemini() string {
 	case ChunkTypeUsage, ChunkTypeDelta:
 		body := map[string]any{}
 
-		// Build candidates array (most chunks have one candidate)
+		// StreamChunk carries one explicit Gemini candidate. Candidate index zero
+		// remains the backward-compatible default.
 		if c.Type == ChunkTypeDelta || c.FinishReason != "" {
-			candidate := map[string]any{"index": 0}
+			candidate := map[string]any{"index": c.CandidateIndex}
 
 			if c.Delta != nil {
 				parts := make([]map[string]any, 0)
@@ -1129,28 +1312,40 @@ func (c *StreamChunk) SerializeGemini() string {
 					parts = append(parts, map[string]any{"text": c.Delta.Content})
 				}
 
-				// Reasoning (Gemini 2.5+ thought)
+				// Reasoning (Gemini 2.5+ thought). R34: wire shape is the
+				// boolean marker beside the text, not text-in-"thought".
 				if c.Delta.ReasoningContent != "" {
-					parts = append(parts, map[string]any{"thought": c.Delta.ReasoningContent})
+					parts = append(parts, map[string]any{"text": c.Delta.ReasoningContent, "thought": true})
 				}
 
-				// Tool calls (functionCall)
+				// Tool calls (functionCall). A partial streamed call can contain
+				// arguments before its name, so preserve either field when present.
 				for _, tc := range c.Delta.ToolCalls {
-					if tc.Name != "" {
-						var args any = map[string]any{}
-						if tc.Arguments != "" {
-							if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
-								// Fallback: pass raw string
-								args = tc.Arguments
-							}
-						}
-						parts = append(parts, map[string]any{
-							"functionCall": map[string]any{
-								"name": tc.Name,
-								"args": args,
-							},
-						})
+					if tc.Name == "" && tc.Arguments == "" {
+						continue
 					}
+					functionCall := map[string]any{}
+					if tc.Name != "" {
+						functionCall["name"] = tc.Name
+					}
+					if tc.Arguments != "" {
+						var args any
+						if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
+							// The Gemini wire format cannot encode an incomplete JSON
+							// argument stream structurally; retain it as a raw string.
+							args = tc.Arguments
+						}
+						functionCall["args"] = args
+					}
+					parts = append(parts, map[string]any{"functionCall": functionCall})
+				}
+
+				if c.Delta.AudioDelta != nil {
+					inlineData := map[string]any{
+						"mimeType": c.Delta.AudioDelta.MIMEType,
+						"data":     c.Delta.AudioDelta.Data,
+					}
+					parts = append(parts, map[string]any{"inlineData": inlineData})
 				}
 
 				if len(parts) > 0 {

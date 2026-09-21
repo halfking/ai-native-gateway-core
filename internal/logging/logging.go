@@ -193,10 +193,21 @@ func Init(cfg Config, level slog.Level) (io.Writer, error) {
 	activeConfig = cfg
 	loggerMu.Unlock()
 
-	handler := slog.NewJSONHandler(mw, &slog.HandlerOptions{
+	jsonHandler := slog.NewJSONHandler(mw, &slog.HandlerOptions{
 		Level: level,
 	})
-	slog.SetDefault(slog.New(handler))
+
+	// 2026-08-26 Phase A: optionally wrap the JSON handler with a
+	// Bleve fan-out so /admin/logs/search can serve full-text
+	// queries against the live log pipeline. See bleve_fanout.go.
+	bleveCfg := bleveConfigFromEnv(filepath.Dir(cfg.File))
+	var top slog.Handler = jsonHandler
+	if bleveCfg.Enabled {
+		if idx := EnableBleveFanout(jsonHandler, bleveCfg); idx != nil {
+			top = NewBleveFanoutHandler(jsonHandler, idx)
+		}
+	}
+	slog.SetDefault(slog.New(top))
 
 	slog.Info("logging: file rotation enabled",
 		"file", cfg.File,
@@ -214,17 +225,20 @@ func Init(cfg Config, level slog.Level) (io.Writer, error) {
 // Write), so callers do NOT need to re-Init.
 func Shutdown() error {
 	if effectiveLogWriter == nil {
+		// Still drain any orphan indexer — harmless if nil.
+		DisableBleveFanout()
 		return nil
 	}
-	type syncCloser interface {
-		Sync() error
-		Close() error
-	}
+	// 2026-08-26 Phase A: stop the Bleve indexer first so no late
+	// record slips in while we close lumberjack.
+	DisableBleveFanout()
 	var firstErr error
-	if c, ok := effectiveLogWriter.(syncCloser); ok {
+	if c, ok := effectiveLogWriter.(interface{ Sync() error }); ok {
 		if err := c.Sync(); err != nil && !errors.Is(err, os.ErrInvalid) {
 			firstErr = err
 		}
+	}
+	if c, ok := effectiveLogWriter.(interface{ Close() error }); ok {
 		if err := c.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}

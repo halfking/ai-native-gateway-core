@@ -28,11 +28,23 @@ for arg in "$@"; do
   esac
 done
 
+echo "[verify] db252 tunnel and sync shell contracts"
+bash tests/db252_tunnel_test.sh
+
 echo "[verify] pre-commit checks"
 ./scripts/pre-commit-check.sh
 
+echo "[verify] migration channel contracts"
+bash scripts/apply-db-revision-sequence_test.sh
+
+echo "[verify] migration checksums (sql/migrations/startup vs docs/db-changelog.md)"
+./scripts/verify-migration-checksums.sh --quiet
+
 echo "[verify] full Go tests"
 go test ./... -count=1 -timeout=300s
+
+echo "[verify] privacy compliance tests"
+./scripts/verify-privacy-compliance.sh
 
 echo "[verify] Go vet"
 go vet ./...
@@ -47,10 +59,19 @@ else
 fi
 
 if [[ "$RUN_WEB" == true ]]; then
+  echo "[verify] frontend install"
+  (cd web && pnpm install --frozen-lockfile)
   echo "[verify] frontend typecheck"
-  (cd web && pnpm vue-tsc --noEmit)
+  (cd web && pnpm run typecheck)
+  echo "[verify] frontend tests"
+  (cd web && pnpm run test)
+  echo "[verify] frontend static gates (responsive breakpoints + el-* imports)"
+  (cd web && pnpm run responsive:check)
+  (cd web && pnpm run element:check)
+  echo "[verify] frontend color token gate (rule 12 P0 + baseline)"
+  (cd web && pnpm run color:check)
   echo "[verify] frontend build"
-  (cd web && pnpm build)
+  (cd web && pnpm run build)
 fi
 
 if rg -n '^(<<<<<<<|>>>>>>>)' --glob '!vendor/**' --glob '!web/node_modules/**' .; then

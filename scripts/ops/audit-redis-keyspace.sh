@@ -100,30 +100,18 @@ def scan(sock, pattern):
 with socket.create_connection((host, int(port)), 5) as sock:
     command(sock, "AUTH", password)
     command(sock, "SELECT", db)
-    patterns = (
-        "session:*",
-        "session_pref:*",
-        "requestjourney:*",
-        "pending_response:*",
-        "request:trace:*",
-        "ursm:*",
-        "llmgw:*",
-    )
-    all_keys = []
-    seen = set()
+    patterns = ("session:*", "session_pref:*", "requestjourney:*", "pending_response:*", "request:trace:*", "ursm:*", "llmgw:*")
+    seen, all_keys = set(), []
     for pattern in patterns:
         for key in scan(sock, pattern):
             if key not in seen:
                 seen.add(key)
                 all_keys.append(key)
-    counts, ttl_buckets = {}, {"persistent": 0, "lt_1h": 0, "lt_24h": 0, "gte_24h": 0}
+    counts = {}
+    ttl_buckets = {"persistent": 0, "lt_1h": 0, "lt_24h": 0, "gte_24h": 0}
     for key in all_keys:
         group = prefix(key)
         counts[group] = counts.get(group, 0) + 1
-
-    # TTL and orphan checks intentionally inspect a bounded sample. A full
-    # per-key TTL walk would recreate the Redis load this audit is meant to
-    # diagnose on a shared instance.
     for key in all_keys[:sample_limit]:
         ttl = int(command(sock, "TTL", key))
         if ttl == -1:
@@ -134,16 +122,13 @@ with socket.create_connection((host, int(port)), 5) as sock:
             ttl_buckets["lt_24h"] += 1
         else:
             ttl_buckets["gte_24h"] += 1
-
     prefs = scan(sock, "session_pref:*")
     pref_sample = prefs[:sample_limit]
     orphan_count = 0
-    for start in range(0, len(pref_sample), 250):
-        batch = pref_sample[start : start + 250]
-        for key in batch:
-            session_id = key.removeprefix("session_pref:")
-            if command(sock, "EXISTS", f"session:{session_id}") == "0":
-                orphan_count += 1
+    for key in pref_sample:
+        session_id = key.removeprefix("session_pref:")
+        if command(sock, "EXISTS", f"session:{session_id}") == "0":
+            orphan_count += 1
 
 print(f"REDIS_AUDIT_DB={db}")
 print(f"REDIS_AUDIT_TOTAL_KEYS={len(all_keys)}")

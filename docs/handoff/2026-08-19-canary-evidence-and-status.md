@@ -73,7 +73,7 @@ ba1ce1911 docs(audit,remediation): state machine remediation round 2 — 4-agent
 
 #### 问题 C：admin auth 路径不可用
 
-- 现象：`/api/admin/probe/system-health` 返回 `authentication required`（即使带 `LLM_GATEWAY_ADMIN_API_KEY=sk-admin-llm-gateway-2026` Bearer）
+- 现象：`/api/admin/probe/system-health` 返回 `authentication required`（即使带 `LLM_GATEWAY_ADMIN_API_KEY=<env:LLM_GATEWAY_ADMIN_API_KEY>` Bearer）
 - 推测根因：admin API 走 cookie/session 而非简单 bearer（origin 设计）
 - **不阻塞 canary**：跳过 dashboard 验证，改用 log + metric + 直查 PG
 

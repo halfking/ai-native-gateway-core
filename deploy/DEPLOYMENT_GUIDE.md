@@ -1,9 +1,12 @@
-# 审批通知系统部署验证指南
+# 审批通知系统专项 Runbook
 
-## ✅ 飞书凭证已验证
-- **App ID**: `cli_aac806f6bab89bd8`
-- **App Secret**: `ZrDWdRFnVfrbyrfEbew7nbkuXF1J0AC5`
-- **Token 测试**: ✅ 成功获取 tenant_access_token
+> 本文件是审批通知系统的专项验证手册，不是 Gateway 总部署指南。
+> 现役部署入口请使用 [`deploy/README.md`](README.md) 和
+> [`docs/06-deployment/01-environments/README.md`](../docs/06-deployment/01-environments/README.md)。
+>
+> **安全要求**：历史版本曾包含真实飞书 App ID/App Secret。相关凭据必须立即轮换，
+> 本文只允许使用环境变量占位符；不要把 secret 写入 shell history、日志、仓库或工单。
+> 轮换和审计属于人工操作，完成前不得宣称通知链路已验收。
 
 ---
 
@@ -21,10 +24,8 @@
 # 1. 获取 token（已验证可用）
 TOKEN=$(curl -s -X POST 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal' \
   -H 'Content-Type: application/json' \
-  -d '{
-    "app_id": "cli_aac806f6bab89bd8",
-    "app_secret": "ZrDWdRFnVfrbyrfEbew7nbkuXF1J0AC5"
-  }' | grep -o '"tenant_access_token":"[^"]*"' | cut -d'"' -f4)
+  -d "{\"app_id\":\"${LARK_APP_ID:?set LARK_APP_ID}\",\"app_secret\":\"${LARK_APP_SECRET:?set LARK_APP_SECRET}\"}" \
+  | grep -o '"tenant_access_token":"[^"]*"' | cut -d'"' -f4)
 
 # 2. 通过邮箱查询 Open ID
 curl -X POST 'https://open.feishu.cn/open-apis/contact/v3/users/batch_get_id' \
@@ -174,8 +175,8 @@ sudo nano /etc/systemd/system/llm-gateway.service
 
 # 添加以下环境变量到 [Service] 部分
 [Service]
-Environment="LARK_APP_ID=cli_aac806f6bab89bd8"
-Environment="LARK_APP_SECRET=ZrDWdRFnVfrbyrfEbew7nbkuXF1J0AC5"
+Environment="LARK_APP_ID=<set-via-secret-manager>"
+Environment="LARK_APP_SECRET=<set-via-secret-manager>"
 Environment="LLM_GATEWAY_ENABLE_SESSION_AUDIT=true"
 Environment="SESSION_AUDIT_APPROVAL_TIMEOUT=15m"
 Environment="LLM_GATEWAY_DB_HOST=localhost"
@@ -202,8 +203,8 @@ cat > /tmp/start_gateway_test.sh << 'EOF'
 #!/bin/bash
 
 # 飞书配置
-export LARK_APP_ID=cli_aac806f6bab89bd8
-export LARK_APP_SECRET=ZrDWdRFnVfrbyrfEbew7nbkuXF1J0AC5
+export LARK_APP_ID='<set-via-secret-manager>'
+export LARK_APP_SECRET='<set-via-secret-manager>'
 
 # 数据库配置（请修改为实际配置）
 export LLM_GATEWAY_DB_HOST=localhost
@@ -244,7 +245,7 @@ nano /tmp/start_gateway_test.sh
 
 ```
 ✅ INFO approval routing rules loaded count=1
-✅ INFO lark channel initialized app_id=cli_aac806f6bab89bd8
+✅ INFO lark channel initialized app_id=<redacted>
 ✅ INFO approval notifier initialized and injected to audit hook
 ✅ INFO session audit chat-time hook wired (v1) approval_timeout=15m0s
 ```
@@ -353,10 +354,8 @@ tail -f /tmp/gateway.log | grep -E 'notify|approval'
 # 手动发送测试消息
 TOKEN=$(curl -s -X POST 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal' \
   -H 'Content-Type: application/json' \
-  -d '{
-    "app_id": "cli_aac806f6bab89bd8",
-    "app_secret": "ZrDWdRFnVfrbyrfEbew7nbkuXF1J0AC5"
-  }' | grep -o '"tenant_access_token":"[^"]*"' | cut -d'"' -f4)
+  -d "{\"app_id\":\"${LARK_APP_ID:?set LARK_APP_ID}\",\"app_secret\":\"${LARK_APP_SECRET:?set LARK_APP_SECRET}\"}" \
+  | grep -o '"tenant_access_token":"[^"]*"' | cut -d'"' -f4)
 
 curl -X POST 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id' \
   -H "Authorization: Bearer $TOKEN" \

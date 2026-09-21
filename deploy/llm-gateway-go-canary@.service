@@ -1,0 +1,77 @@
+[Unit]
+# 2026-08-31: this is the runtime contract for blue-green candidates on env 154
+# and 245. We pin a unit that *follows the active binary symlink* (not a
+# per-port slot) because that is what production 154/245 currently run and
+# what the seamless deployer swap path assumes. The unit restarts on failure
+# so a transient bind or DB blip does not leave the candidate dead, and logs
+# go to journald so probe failures can be diagnosed without log scraping.
+#
+# Do NOT change ExecStart to a per-port slot (e.g. slots/%i/llm-gateway-go)
+# without first wiring the seamless deployer to populate slots/, OR you will
+# reproduce the 2026-08-31 incident where the candidate silently failed to
+# bind and the deploy script could not surface which probe failed.
+Description=LLM Gateway Go blue-green candidate (port %i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/llm-gateway-go
+# Shared configuration (DB URL, secrets, Redis) comes from the active env
+# file. The runtime role keys off a plain Environment= directive — the env
+# file does NOT set it, so systemd merge order between Environment= and
+# EnvironmentFile= is irrelevant here.
+EnvironmentFile=/etc/llm-gateway-go/env
+# 2026-09-17 worker-ownership regression: this template briefly carried
+# LLM_GATEWAY_RUNTIME_ROLE=traffic-only (inherited from the 245 pre-prod
+# template during the 09-17 "unify" pass). 154 is the ONLY full-mode instance
+# on the shared 252 DB (245 runs bg_mode=data-plane BY DESIGN), so the role
+# flip at the 09:09 deploy silently orphaned every !bgDataPlaneOnly worker
+# fleet-wide: durable probe queue (516 ready rows unclaimed), model
+# discovery, credential cycler, taxonomy sync, weekly rollups, audit
+# trimmers. The line is REMOVED — empty role normalizes to "active"
+# (config.RuntimeRole default), restoring the pre-09:09 ownership model
+# where the serving instance owns the workers. Blue-green overlap (two
+# active units for ~15-30s per deploy) is the long-standing steady state;
+# the queue consumes via SKIP LOCKED + leases and the other workers use
+# advisory locks / idempotent writes, all built for multi-instance.
+# 2026-09-10 窗口演练实抓（与 245 canary 同款）：候选冷启动 EnsureSchema 在
+# 生产 DB 负载下超过默认 20s boot 预算 → postgres disabled → readyz 503。
+# 候选预算提至 75s（高于实测 ~40s schema-ensure，低于 systemd 90s 上限）。
+Environment=LLM_GATEWAY_DB_BOOT_RETRY_SECONDS=75s
+
+# Per-instance identity, unified with env 245's llmgo-245-canary@.service:
+# %i is the candidate port and ALTERNATES between 8781 and 8782 on every
+# deploy (the deployer picks the port the active is NOT on). systemd cannot
+# expand %i inside EnvironmentFile=, so the port is pinned on ExecStart —
+# /usr/bin/env sets it directly in the exec environment, which
+# deterministically overrides anything the EnvironmentFile/Environment lines
+# set, regardless of systemd's merge order. (The previous Environment=:%i
+# form only worked because /etc/llm-gateway-go/env happens not to set
+# LLM_GATEWAY_LISTEN; one added line there would have silently broken every
+# candidate.)
+#
+# The candidate is pinned to its immutable slot so pre-warm never mutates
+# current or changes the running service's binary/version identity.
+ExecStart=/usr/bin/env LLM_GATEWAY_LISTEN=:%i LLM_GATEWAY_VERSION_FILE=/opt/llm-gateway-go/slots/%i/version.json LLM_GATEWAY_LOG_FILE=/opt/llm-gateway-go/logs/gateway-canary-%i.log /opt/llm-gateway-go/slots/%i/llm-gateway-go
+Restart=on-failure
+RestartSec=5s
+# Leave margin above the 75s DB boot retry budget so systemd does not kill
+# the candidate before the application can become ready.
+TimeoutStartSec=90s
+TimeoutStopSec=25s
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+LimitNOFILE=65536
+LimitNPROC=32768
+
+[Install]
+WantedBy=multi-user.target

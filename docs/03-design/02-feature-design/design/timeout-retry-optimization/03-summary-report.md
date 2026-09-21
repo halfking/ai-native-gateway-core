@@ -145,7 +145,7 @@ credential_id: 29
 **执行命令**:
 ```bash
 # 1. SSH到154
-ssh root@47.97.111.154 -p 25022
+ssh root@<env:HOST_154_IP> -p 25022
 
 # 2. 备份
 cd /etc/llm-gateway-go

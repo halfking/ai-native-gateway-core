@@ -3,6 +3,8 @@ package streaming
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,8 +66,6 @@ import (
 )
 
 const maxBodySize = 128 << 20 // 128MB - increased for large context models like claude-opus-4-8 (1M context)
-
-func MaxBodySize() int { return maxBodySize }
 
 type preStreamKeepalive struct {
 	session *StreamSession
@@ -299,6 +299,10 @@ type RequestIdentity struct {
 	ClientModel     string
 	SessionID       string
 	UserKey         string
+	// SubAgents (2026-09-03) — parsed snapshot from X-Gw-Sub-Agents header.
+	// Empty when the header is missing or malformed. Used by the goal hook
+	// (sub-agent gate) and the goal-mode continue payload builder.
+	SubAgents SubAgentSnapshot
 }
 
 // initializeRequestIdentity establishes one stable request and provisional
@@ -321,10 +325,20 @@ func initializeRequestIdentity(r *http.Request) RequestIdentity {
 	}
 	identity.SessionID = sanitizeGwSessionHeader(r.Header.Get("X-Gw-Session-Id"))
 	if identity.SessionID == "" {
-		identity.SessionID = generateSystemSessionID()
+		// 2026-09-08: a stable legacy client identity (e.g. ZCode's
+		// bare-UUID x-session-id) must win over the provisional random.
+		// Stamping a fresh gw_<uuid> here shadowed the client's id, and the
+		// chat handler then honored the RANDOM one — request rows from one
+		// client conversation never grouped and session turns stayed at 1.
+		if legacy := extractSessionIDFromHeaders(r); legacy != "" {
+			identity.SessionID = deriveGatewaySessionID(legacy)
+		} else {
+			identity.SessionID = generateSystemSessionID()
+		}
 		r.Header.Set("X-Gw-Session-Id", identity.SessionID)
 	}
 	identity.ClientType = strings.TrimSpace(r.Header.Get("X-Gw-Client-Type"))
+	identity.SubAgents = parseSubAgentsHeader(r.Header.Get(SubAgentHeader))
 	return identity
 }
 
@@ -365,6 +379,11 @@ func isBranchSessionID(sessionID string) bool {
 	return strings.HasPrefix(sessionID, "gt_") || strings.HasPrefix(sessionID, "gs_")
 }
 
+// Deprecated (2026-09-08 结构审计): 仅身份契约单测引用。导出的非生产入口
+// 不再对齐 deriveGatewaySessionID 的确定性映射(会 mint 随机 gw_),新代码
+// 一律走生产 handler 的 initializeRequestIdentity 路径,防止复活
+// b02a5c385 修掉的"随机 gw_ 覆写客户端稳定 id"缺陷。下轮清理候选。
+//
 // InitializeRequestIdentity is the exported helper that establishes one
 // stable request identity (server-issued request_id, optional client
 // request_id, and a provisional gateway session id) at the HTTP
@@ -710,9 +729,13 @@ type ChatHandler struct {
 	provider             providerResolver
 	sticky               *executors.StickyCache
 	keyVerifier          requestKeyVerifier
-	survivalAttemptExec  AttemptExecutor
-	rateLimiter          ratelimit.RPMLimiter
-	telemetryClient      *telemetry.Client
+	// staticDataPlaneKey (2026-09-14 audit H-P0-1): DB verifier 不可用
+	// （lite/no-DB 降级）时的兜底数据面闸——非空时要求 Bearer 与部署静态
+	// 密钥精确匹配（覆盖 middleware sk-* 透传洞），否则整段鉴权被跳过。
+	staticDataPlaneKey  string
+	survivalAttemptExec AttemptExecutor
+	rateLimiter         ratelimit.RPMLimiter
+	telemetryClient     *telemetry.Client
 	// profileEmitter (2026-07-15) 把请求/会话事件投到 clientprofile 画像聚合。
 	// nil 禁用画像聚合；调用方负责 graceful 注入（main.go SetupClientProfileIntegration）。
 	profileEmitter interface {
@@ -934,6 +957,10 @@ type ChatHandler struct {
 	// known fixes before validation. nil disables format detection (strict validation only).
 	formatDetector *FormatDetector
 
+	// goalSubAgentRecorder (2026-09-03, gw-continue feature) persists the
+	// X-Gw-Sub-Agents client report into goal_sessions.
+	goalSubAgentRecorder GoalSubAgentRecorder
+
 	// formatFixer (2026-07-26) applies automatic fixes to common format issues.
 	// Works with formatDetector to repair malformed requests (empty objects, wrong types).
 	// nil disables auto-fix (requests must be valid on arrival).
@@ -985,8 +1012,10 @@ type ResponseInterceptResult = response.InterceptResult
 // ResponseStreamMeta is an alias to response.StreamMeta.
 type ResponseStreamMeta = response.StreamMeta
 
-// dispatchFollowUpFunc (2026-07-11) is the seam used by injectFollowUpRequest
-type dispatchFollowUpFunc func(h *ChatHandler, ctx context.Context, sessionID string, body []byte, action string, authHeader string, attempt int) (status int, bodySnippet string)
+// dispatchFollowUpFunc (2026-07-11) is the seam used by injectFollowUpRequest.
+// parentRequestID (2026-09-17) is the originating client request_id, persisted
+// on the shadow turn via X-Gw-Parent-Request-Id (see 会话优化v4/18 §3).
+type dispatchFollowUpFunc func(h *ChatHandler, ctx context.Context, sessionID string, body []byte, action string, parentRequestID string, authHeader string, attempt int) (status int, bodySnippet string)
 
 // ResponseChunkResult is an alias to response.ChunkResult.
 type ResponseChunkResult = response.ChunkResult
@@ -1054,6 +1083,14 @@ func clientProtocolFromPath(path string) string {
 	default:
 		return "openai-completions"
 	}
+}
+
+func protocolConversionFlag(clientProtocol, upstreamProtocol string) *bool {
+	if clientProtocol == "" || upstreamProtocol == "" {
+		return nil
+	}
+	converted := clientProtocol != upstreamProtocol
+	return &converted
 }
 
 // emitAction 是 liveactions 注入的薄包装（同 emitTrace 的做法）。
@@ -1226,6 +1263,14 @@ func (h *ChatHandler) expandToolIDs(ctx context.Context, tenantID string, toolID
 func (h *ChatHandler) SetAuth(kv *authentication.KeyVerifier, rl ratelimit.RPMLimiter) {
 	h.keyVerifier = kv
 	h.rateLimiter = rl
+}
+
+// SetStaticDataPlaneKey arms the DB-verifier-unavailable fallback: when the
+// key verifier is not enabled (lite mode / no-DB degraded boot), every
+// data-plane request must present this exact key instead of being processed
+// unauthenticated (2026-09-14 audit H-P0-1).
+func (h *ChatHandler) SetStaticDataPlaneKey(key string) {
+	h.staticDataPlaneKey = key
 }
 
 // SetAdminAPIKey configures the operator token used to gate the
@@ -1446,6 +1491,13 @@ func (h *ChatHandler) SetGoalRetryRecorder(recorder GoalRetryRecorder) {
 // SetGoalOutcomeObserver wires fail-open Goal lifecycle observations.
 func (h *ChatHandler) SetGoalOutcomeObserver(observer goal.OutcomeObserver) {
 	h.goalOutcomeObserver = observer
+}
+
+// SetGoalSubAgentRecorder (2026-09-03) wires the goal-sessions sub-agent
+// recorder. The handler calls RecordSubAgents for every request carrying
+// X-Gw-Sub-Agents. Fail-open: nil disables persistence silently.
+func (h *ChatHandler) SetGoalSubAgentRecorder(recorder GoalSubAgentRecorder) {
+	h.goalSubAgentRecorder = recorder
 }
 
 func (h *ChatHandler) SetSessionGetter(sg interface {
@@ -1999,6 +2051,16 @@ func (h *ChatHandler) serveWithExecutor(
 				logCtx.SetClientModel("<unknown>")
 			}
 		}
+		// 2026-08-26 (kimi-k3 queue bug fix #2): rate-limit early-return
+		// bypassed recordInitialRequestLog (handler.go:3572), so the
+		// subsequent EmitRateLimited UPDATE hit 0 rows in
+		// request_logs_hot — leaving the failure unlogged while the WAL
+		// and Redis trace still recorded it. INSERT a minimal placeholder
+		// (RequestStatus=in_progress) so the UPDATE lands. Idempotent via
+		// INSERT … ON CONFLICT (request_id) DO UPDATE on
+		// request_logs_hot. Mirrors the recordInitialRequestLog seed
+		// surface without pulling in its 14-arg signature.
+		h.insertRateLimitedPlaceholder(logCtx)
 		logCtx.EmitRateLimited(errCode, errMsg, providerID, credentialID)
 		logCtx.MarkLogged()
 	}
@@ -2050,6 +2112,19 @@ func (h *ChatHandler) serveWithExecutor(
 		span := trace.SpanFromContext(r.Context())
 		observability.SetTenantAttrs(span, keyInfo.TenantID, "api_key",
 			fmt.Sprintf("key_%d", keyInfo.ID))
+	} else if h.staticDataPlaneKey != "" {
+		// 2026-09-14 audit H-P0-1: DB verifier unavailable (lite mode /
+		// no-DB degraded boot). The middleware sk-* passthrough previously
+		// ended here with NO auth — any Bearer sk-* was served. Require the
+		// deployed static key instead; downstream already handles the
+		// keyInfo==nil shape (it is today's path for this state).
+		rawKey := extractBearerToken(r)
+		if rawKey == "" || subtle.ConstantTimeCompare([]byte(h.staticDataPlaneKey), []byte(rawKey)) != 1 {
+			captureAndEmitFailure("invalid_key", "invalid api key (static-key fallback auth)", nil, nil)
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgInvalidKey, nil)
+			return
+		}
 	}
 
 	// ── Status checks (throttled key → hard rate-limit) ────────────────
@@ -2154,9 +2229,16 @@ func (h *ChatHandler) serveWithExecutor(
 		logCtx.EmitFailure("body_too_large", "request body exceeds 32 MiB limit", nil, nil)
 		logCtx.MarkLogged()
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
-			"error": map[string]string{"message": "request body exceeds 32 MiB limit", "type": "invalid_request", "code": "body_too-large"},
+			"error": map[string]string{"message": "request body exceeds 32 MiB limit", "type": "invalid_request", "code": "body_too_large"},
 		})
 		return
+	}
+	// ── Gateway prompt admission preflight ───────────────────────────────────
+	// Record the receipt-time estimate. Provider-aware compression runs later,
+	// after candidate resolution supplies the selected model context window.
+	if pb, applied, pbEst := preflightCompress(bodyBytes, "openai"); applied {
+		logCtx.SetPreflightCompress(pbEst, len(pb))
+		bodyBytes = pb
 	}
 	// ── Prompt budget guard (2026-08-24, 245 memcg OOM) ──────────────────
 	// 拒绝发生在 JSON 解析 / 上游转发之前；见 request_meta.go 注释。
@@ -2365,6 +2447,11 @@ func (h *ChatHandler) serveWithExecutor(
 		sessionID = extractSessionIDFromHeaders(r)
 	}
 	if sessionID != "" {
+		// 2026-09-08: a stable non-gateway client identity (e.g. ZCode's
+		// bare-UUID x-session-id) maps deterministically onto gw_<id>;
+		// letting it fall through to the CreateV2 fallback minted a fresh
+		// gw_<uuid> per request and turn aggregation never left 1.
+		sessionID = deriveGatewaySessionID(sessionID)
 		// Only inherit the request header for the lookup; the final
 		// resolved value is written back via applyResolvedGatewaySession
 		// once assignment finishes.
@@ -2414,6 +2501,54 @@ func (h *ChatHandler) serveWithExecutor(
 			if isBranchSessionID(sessionID) {
 				slog.Debug("branch session id preserved (no auto-create)",
 					"session_id", sessionID)
+			} else if strings.HasPrefix(sessionID, "gw_") {
+				// 2026-09-06 (pi plan risk #9): a client-supplied gw_ session
+				// id that Redis doesn't know yet is its FIRST request in a new
+				// session — honor the id verbatim, same contract as the
+				// /v1/responses handler (see the session resolution comment
+				// there). The previous auto-create REWROTE the id with a fresh
+				// gw_<uuid> on every request, so /v1/chat/completions callers
+				// tagging requests with X-Gw-Session-Id: gw_<dispatch_id> got a
+				// different session id per call: request_logs/sessions rows
+				// never grouped under the caller's id and correlation lookups
+				// found nothing. Session V2 turn aggregation keys off the
+				// request row's gw_session_id, so the sessions row for the
+				// client id is created by the normal completion path.
+				slog.Info("unknown client gw_ session honored without replacement",
+					"session_id", sessionID)
+				// 2026-09-07: honoring alone left the id permanently unknown —
+				// every follow-up request reusing it hit ErrSessionNotFound
+				// again, so Touch/session state never engaged and turns could
+				// not accumulate coherently. Register the session record
+				// (idempotent) so repeat ids resolve normally. Best-effort +
+				// async: registration failure must never fail the request.
+				if ensurer, ok := h.sessionGetter.(interface {
+					EnsureV2WithID(ctx context.Context, sessionID string, apiKeyID int, tenantID, deviceSeed, taskID string) (*session.Session, bool, error)
+				}); ok {
+					regDeviceSeed := r.Header.Get("X-Device-Seed")
+					if regDeviceSeed == "" {
+						regDeviceSeed = r.Header.Get("X-Machine-Id")
+					}
+					regTaskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
+					go func(sid string, key *authentication.KeyInfo, seed, task string) {
+						// 2026-09-08 audit: a bare goroutine panic would kill the
+						// whole process (http.Server recovery does not cover user
+						// goroutines) — never let best-effort registration crash
+						// the gateway.
+						defer func() {
+							if rec := recover(); rec != nil {
+								slog.Warn("session register (honored id) panicked",
+									"session_id", sid, "panic", rec)
+							}
+						}()
+						regCtx, regCancel := context.WithTimeout(context.Background(), 2*time.Second)
+						defer regCancel()
+						if _, _, err := ensurer.EnsureV2WithID(regCtx, sid, key.ID, key.TenantID, seed, task); err != nil {
+							slog.Warn("session register (honored id) failed",
+								"session_id", sid, "error", err)
+						}
+					}(sessionID, keyInfo, regDeviceSeed, regTaskID)
+				}
 			} else {
 				deviceSeed := r.Header.Get("X-Device-Seed")
 				if deviceSeed == "" {
@@ -2749,6 +2884,12 @@ func (h *ChatHandler) serveWithExecutor(
 	// "v3 Session-level intelligent compression" block after GetCandidates.
 
 	isStream := reqBody.Stream
+	if !isStream {
+		// Declare trailers before the executor commits headers. Values are set
+		// only when a negotiated response hook returns a client signal.
+		w.Header().Add("Trailer", "X-Gw-Client-Signal")
+		w.Header().Add("Trailer", "X-Gw-Client-Signal-Payload-B64")
+	}
 	rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter, notifyRateLimitWait(w, isStream))
 	h.emitTrace(r.Context(), requestID,
 		gwtrace.RateLimitCheck(!rlOutcome.Blocked, rateLimitOutcomeKind(rlOutcome), rlOutcome.Remaining).
@@ -2756,6 +2897,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if !rlOutcome.Skipped {
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {
+			recordGatewayRateLimitRejection(rlOutcome)
 			captureAndEmitRateLimited("rate_limit_exceeded", "rate limit exceeded", nil, nil)
 			writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "rate_limit_error", i18n.MsgRateLimitExceeded, nil)
 			return
@@ -3168,6 +3310,7 @@ func (h *ChatHandler) serveWithExecutor(
 		writeErrorJSON(w, rc.httpStatus, requestID, rc.message, "server_error", rc.code)
 		return
 	}
+	survivalEligible := isStream && (durableStream != nil || h.survivalTenantAllowed != nil && h.survivalTenantAllowed(tenantID))
 	if len(candidates) == 0 {
 		// 2026-07-14: Distinguish "model not recognized anywhere" (400
 		// invalid_model) from "model recognized but no routable provider right
@@ -3211,20 +3354,23 @@ func (h *ChatHandler) serveWithExecutor(
 				"blocked_reason": noCandReason,
 			},
 		})
-		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
-		logCtx.failAndMark("no_candidate",
-			fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil)
-		markLogged()
-		// 2026-08-09: the requested model has no routable node, but other
-		// models often do. Offer them so the caller can switch instead of
-		// polling a dead model. Task-type-aware when the session's type is
-		// known (header → autoroute session cache → inline heuristic), else
-		// ordered featured-then-popular. Availability is judged by
-		// v_routable_credential_models.is_routable — the same gate the router
-		// uses — so a suggested model is genuinely reachable right now.
-		alts := h.findModelAlternatives(r, &reqBody, bodyBytes, clientModel, keyInfo)
-		writeNoCandidateWithAlternatives(r.Context(), w, r, requestID, clientModel, alts)
-		return
+		if !survivalEligible {
+			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
+			logCtx.failAndMark("no_candidate",
+				fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil)
+			markLogged()
+			// 2026-08-09: the requested model has no routable node, but other
+			// models often do. Offer them so the caller can switch instead of
+			// polling a dead model. Task-type-aware when the session's type is
+			// known (header → autoroute session cache → inline heuristic), else
+			// ordered featured-then-popular. Availability is judged by
+			// v_routable_credential_models.is_routable — the same gate the router
+			// uses — so a suggested model is genuinely reachable right now.
+			alts := h.findModelAlternatives(r, &reqBody, bodyBytes, clientModel, keyInfo)
+			writeNoCandidateWithAlternatives(r.Context(), w, r, requestID, clientModel, alts)
+			return
+		}
+		slog.Info("initial route has no candidates; entering request survival", "request_id", requestID, "model", clientModel)
 	}
 	if len(candidates) > 0 {
 		// Stash the first candidate so the safety net can attribute
@@ -3265,7 +3411,10 @@ func (h *ChatHandler) serveWithExecutor(
 		explicitOutbound = renderOutboundFromTransform(txResult, candidates[0], tCtx.CanonicalName)
 	}
 
-	auditBuilder.OutboundModel(explicitOutbound).Provider(candidates[0].ProviderID).Credential(candidates[0].CredentialID)
+	auditBuilder.OutboundModel(explicitOutbound)
+	if len(candidates) > 0 {
+		auditBuilder.Provider(candidates[0].ProviderID).Credential(candidates[0].CredentialID)
+	}
 	if modelResolution != nil {
 		auditBuilder.ResolutionPath(modelResolution.ResolutionPath)
 		if modelResolution.CanonicalName != nil {
@@ -3399,7 +3548,11 @@ func (h *ChatHandler) serveWithExecutor(
 	// new turns to the compressed session history and, when the sliding
 	// window fires, produces a lossless LLM summary (or trims as fallback).
 	var scResult *compression.PrepareResult
-	if h.sessionCompressor != nil && gwSessionID != "" {
+	// SessionCompressor persists message hashes, summaries, and rebuild markers
+	// for Chat/Anthropic envelopes. Native Responses retains its input-shaped
+	// body through dispatch, where candidate-window and 4xx recovery use the
+	// Responses-specific compressor without corrupting session-cache state.
+	if h.sessionCompressor != nil && gwSessionID != "" && clientProtocolFromPath(r.URL.Path) != "openai-responses" {
 		// entering the compressing block — runtime transitioned EventRouted → EventCompressing below
 		tenantForSC := "default"
 		if keyInfo != nil {
@@ -3409,11 +3562,18 @@ func (h *ChatHandler) serveWithExecutor(
 		if isAnthropicMessagesPath(r.URL.Path) {
 			protocolForSC = "anthropic-messages"
 		}
-		// Resolve the target model context window from the first candidate.
-		// 0 when unknown (TOKEN trigger then relies on msg_count / idle only).
+		// Use the smallest known candidate window as a safe session-level
+		// baseline. Dispatch may reorder or fail over candidates after Prepare;
+		// a conservative baseline prevents a later small-window candidate from
+		// receiving an over-large session body.
 		ctxWindow := 0
-		if len(candidates) > 0 && candidates[0].ContextWindow != nil {
-			ctxWindow = *candidates[0].ContextWindow
+		for _, candidate := range candidates {
+			if candidate.ContextWindow == nil || *candidate.ContextWindow <= 0 {
+				continue
+			}
+			if ctxWindow == 0 || *candidate.ContextWindow < ctxWindow {
+				ctxWindow = *candidate.ContextWindow
+			}
 		}
 		scPrepareStart := time.Now()
 		// SP-02: state machine — body compression has started.
@@ -3501,7 +3661,13 @@ func (h *ChatHandler) serveWithExecutor(
 			logCtx.OutboundTokenBand = string(scResult.TokenBand)
 			logCtx.OutboundPriorLayerTokens = scResult.PriorLayerTokens
 			logCtx.OutboundCompressionReason = scResult.CompressionReason
-
+			// R35 (2026-09-17 audit P0-1): provenance write-through. The
+			// AlignmentMap and sanitizer MessageRefs used to live only in the
+			// V1 Redis session state / result memo — sessions_v2 metadata's
+			// provenance read path consumed keys no writer ever produced.
+			if prov := buildOutboundProvenance(r, scResult.AlignmentMap); len(prov) > 0 {
+				logCtx.OutboundProvenance = prov
+			}
 		}
 		if scResult != nil && scResult.CompressionStrategy != "" {
 			logCtx.OutboundStrategy = scResult.CompressionStrategy
@@ -3575,7 +3741,7 @@ func (h *ChatHandler) serveWithExecutor(
 		clientID.Fingerprint.ClientProfile, identityHash,
 		logCtx.ProviderID, logCtx.CredentialID, canonicalID,
 		canonicalNameFromResolution(modelResolution), // 2026-07-27: 标准模型名
-		bodyBytes, txResult, egressProtocol, isStream,
+		bodyBytes, clientProtocolFromPath(r.URL.Path), txResult, egressProtocol, isStream,
 		gwSessionID, gwTaskID,
 		logCtx,
 	)
@@ -3761,7 +3927,7 @@ func (h *ChatHandler) serveWithExecutor(
 			candTracker.Add(executors.RoutingAttempt{
 				ProviderName: fmt.Sprintf("... and %d more", len(candidates)-10),
 				RawModel:     clientModel,
-				Result:       "pending",
+				Result:       executors.ResultPending,
 				ErrorMessage: "truncated for payload size",
 			})
 			break
@@ -3776,7 +3942,7 @@ func (h *ChatHandler) serveWithExecutor(
 				return fmt.Sprintf("provider_%d", cand.ProviderID)
 			}(),
 			RawModel:     cand.RawModel,
-			Result:       "pending",
+			Result:       executors.ResultPending,
 			ErrorMessage: fmt.Sprintf("candidate #%d from routing", i+1),
 		})
 	}
@@ -3863,16 +4029,22 @@ func (h *ChatHandler) serveWithExecutor(
 	// one construction site, zero drift between the two paths.
 	upstreamAttempts := executors.NewUpstreamAttemptBudget(executors.DefaultUpstreamAttemptLimit)
 	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
+	// v6 G-Ⅱ: X-Gw-Due-At 定时请求（到期前停在 dispatch 的到期堆）。
+	dispatchDueAt := parseDispatchDueAt(r)
+	// V6-W1.6 R8: class 一并写入 logCtx，供首行与完成 UPDATE 落库（608）。
+	applyRequestClassToLogCtx(logCtx, dispatchDueAt)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
 			W:                          streamWriter,
 			UpstreamAttempts:           upstreamAttempts,
 			AttachmentMetadata:         attachmentsForOutbound(logCtx),
+			FailoverNotices:            executors.NewFailoverNoticeCollector(),
 			R:                          r,
 			BodyBytes:                  upstreamBody,
 			IsStream:                   isStream,
 			StreamSurvivesClientCancel: explicitStreamSession(r.Context()),
 			PreStreamPrepared:          preStreamPrepared,
+			DispatchDueAt:              dispatchDueAt,
 			// The StreamSession heartbeat remains active while the protocol
 			// bridge is blocked on upstream reads. The request-level defer owns
 			// shutdown at the terminal outcome.
@@ -3930,6 +4102,13 @@ func (h *ChatHandler) serveWithExecutor(
 			// Format: event: thinking + data: {"type":"thinking","content":"..."}
 			// Compatible with all major SSE parsers; Zod validation skips unknown event names.
 			OnNodeJump: func(message string) {
+				if preStream != nil {
+					preStream.writeThinking(message)
+				}
+			},
+			// 审计 R9 候选 17：首字节后流中终态失败（ADR-Disp-003 禁止切节点）
+			// 补发同款 `: thinking:` 注释帧，客户端在连接关闭前拿到原因。
+			OnMidStreamFailure: func(message string) {
 				if preStream != nil {
 					preStream.writeThinking(message)
 				}
@@ -4316,12 +4495,9 @@ goalRetryLoopDone:
 		}
 		return
 	}
-	if logCtx != nil && len(logCtx.OutboundBody) == 0 && result != nil && len(result.RequestBody) > 0 {
-		logCtx.OutboundBody = result.RequestBody
-	}
+	applyActualOutboundBody(logCtx, result)
 
 	// ── 2026-07-17: trace.route_credential ──────────────────────────────────
-	// 在 executor.Execute 返回后立即记录"实际命中的凭据"。 这是 trace 视图里
 	// 最关键的一行: 让运维看到"gpt-5.6-luna 请求 → 选中了 provider_id=12,
 	// credential_id=2451 (z-ai/glm-5.2, tier=premium)", 失败时凭据也记。
 	if result != nil && result.Candidate.ProviderID > 0 {
@@ -4393,6 +4569,7 @@ goalRetryLoopDone:
 						R:                  r,
 						BodyBytes:          rewritten,
 						AttachmentMetadata: attachmentsForOutbound(logCtx),
+						FailoverNotices:    executors.NewFailoverNoticeCollector(),
 						IsStream:           false,
 						ClientProtocol:     clientProtocol,
 						ClientModel:        nextModel,
@@ -4603,7 +4780,7 @@ goalRetryLoopDone:
 					"stage":             "execution",
 					"kind":              string(execErrTyped.LastKind),
 					"tried":             execErrTyped.Tried,
-					"retryable":         errorsx.IsRetryable(execErrTyped.LastKind),
+					"retryable":         errorsx.EffectiveRetryable(execErrTyped.LastKind),
 					"upstream_status":   upstreamStatusCode,
 					"failure_origin":    "upstream_credential",
 					"client_key_status": "valid",
@@ -4702,6 +4879,53 @@ goalRetryLoopDone:
 				return
 			}
 
+			// 2026-09-07 (mock system test §5.3): when EVERY candidate failed
+			// with an upstream 429, propagate rate-limit semantics — HTTP 429
+			// + Retry-After (upstream hint preferred, bounded) — instead of
+			// the generic 503 model_not_found, which stripped the Retry-After
+			// contract and mis-signaled "gateway broken" to SDK backoff logic
+			// that special-cases 429. Single-candidate 429 avoidance (routing
+			// away from the limited node) is unchanged.
+			if execErrTyped.LastKind == errorsx.KindRateLimit {
+				retryAfter := overloadRetryAfterSeconds(execErr)
+				msg := fmt.Sprintf("Rate limited by all providers for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried)
+				logCtx.SetOutboundModel(explicitOutbound)
+				logCtx.failAndMark("rate_limit",
+					fmt.Sprintf("No available provider for model '%s'. All %d candidates failed (rate limited).", clientModel, execErrTyped.Tried),
+					providerID, credentialID)
+				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, "rate_limit", failTrace, int(time.Since(startTime).Milliseconds()))
+				markLogged()
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				w.Header().Set("X-Gateway-Last-Kind", string(execErrTyped.LastKind))
+				debugInfo := map[string]any{
+					"stage":       "execution",
+					"kind":        string(execErrTyped.LastKind),
+					"tried":       execErrTyped.Tried,
+					"retryable":   true,
+					"retry_after": retryAfter,
+					"attempts":    execErrTyped.Attempts,
+				}
+				if preStreamPrepared {
+					exhaustedProviderID, exhaustedCredentialID := "", ""
+					if len(candidates) > 0 {
+						exhaustedProviderID = strconv.Itoa(candidates[0].ProviderID)
+						exhaustedCredentialID = strconv.Itoa(candidates[0].CredentialID)
+					}
+					recordPrewarmedExhaustion(
+						string(execErrTyped.LastKind),
+						"rate_limit",
+						exhaustedProviderID,
+						exhaustedCredentialID,
+						clientModel,
+					)
+					writePrewarmedStreamErrorWithKind(w, msg, "rate_limit_error", "rate_limit", string(execErrTyped.LastKind))
+					return
+				}
+				writeErrorJSONWithKindProto(proto, w, http.StatusTooManyRequests, requestID,
+					msg, "rate_limit_error", "rate_limit", string(execErrTyped.LastKind), debugInfo)
+				return
+			}
+
 			// = "model_not_found" but surface the REAL underlying
 			// kind in error.kind + X-Gateway-Last-Kind header. Many
 			// in-the-wild failures labeled model_not_found are
@@ -4754,11 +4978,22 @@ goalRetryLoopDone:
 				// fact that a client got an empty 200 only surfaced inside
 				// journal logs, which means an alert is set up days after
 				// the incident, not in time to act.
+				//
+				// 2026-09-05: candidates can legitimately be empty here
+				// ("all 0 candidates failed" — every credential for the
+				// model cooling/quota-exhausted); indexing candidates[0]
+				// panicked per request until the guard. Match the
+				// failureAttribution convention: no candidate, no attribution.
+				exhaustedProviderID, exhaustedCredentialID := "", ""
+				if len(candidates) > 0 {
+					exhaustedProviderID = strconv.Itoa(candidates[0].ProviderID)
+					exhaustedCredentialID = strconv.Itoa(candidates[0].CredentialID)
+				}
 				recordPrewarmedExhaustion(
 					string(execErrTyped.LastKind),
 					"model_not_found",
-					strconv.Itoa(candidates[0].ProviderID),
-					strconv.Itoa(candidates[0].CredentialID),
+					exhaustedProviderID,
+					exhaustedCredentialID,
 					clientModel,
 				)
 				writePrewarmedStreamErrorWithKind(w,
@@ -4773,7 +5008,7 @@ goalRetryLoopDone:
 					"kind":      string(execErrTyped.LastKind),
 					"attempts":  execErrTyped.Attempts,
 					"tried":     execErrTyped.Tried,
-					"retryable": errorsx.IsRetryable(execErrTyped.LastKind),
+					"retryable": errorsx.EffectiveRetryable(execErrTyped.LastKind),
 				})
 			return
 		}
@@ -4821,7 +5056,7 @@ goalRetryLoopDone:
 		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok {
 			debugInfo["kind"] = string(execErrTyped.LastKind)
 			debugInfo["attempts"] = execErrTyped.Attempts
-			debugInfo["retryable"] = errorsx.IsRetryable(execErrTyped.LastKind)
+			debugInfo["retryable"] = errorsx.EffectiveRetryable(execErrTyped.LastKind)
 		}
 		if preStreamPrepared {
 			writePrewarmedStreamError(w, "upstream request failed", "server_error", "provider_error")
@@ -4869,16 +5104,21 @@ goalRetryLoopDone:
 	if h.responseInterceptor != nil && result != nil {
 		// Calculate total message count from request body
 		msgCount := extractMessageCount(bodyBytes)
+		subAgents := parseSubAgentsHeader(r.Header.Get(SubAgentHeader))
+		tenantID := ""
+		if keyInfo != nil {
+			tenantID = keyInfo.TenantID
+		}
+		if h.goalSubAgentRecorder != nil && tenantID != "" && gwSessionID != "" && subAgents.Total > 0 {
+			if err := h.goalSubAgentRecorder.RecordSubAgents(r.Context(), tenantID, gwSessionID, subAgents.Total, subAgents.Completed, subAgents.Pending); err != nil {
+				slog.Debug("goal_sub_agents_persist_failed", "session_id", gwSessionID, "error", err)
+			}
+		}
 
 		interceptReq := &ResponseInterceptRequest{
-			SessionID: gwSessionID,
-			RequestID: requestID,
-			TenantID: func() string {
-				if keyInfo != nil {
-					return keyInfo.TenantID
-				}
-				return ""
-			}(),
+			SessionID:    gwSessionID,
+			RequestID:    requestID,
+			TenantID:     tenantID,
 			ClientModel:  clientModel,
 			ResponseBody: result.ResponseBody,
 			TokensUsed:   extractTotalTokens(result.ResponseBody, streamCapture),
@@ -4888,10 +5128,15 @@ goalRetryLoopDone:
 				}
 				return 0
 			}(),
-			MessageCount:   msgCount,
-			FinishReason:   extractFinishReason(result.ResponseBody),
-			IsStreaming:    isStream,
-			FollowUpAction: strings.TrimSpace(r.Header.Get("X-Gw-Follow-Up-Action")),
+			MessageCount:         msgCount,
+			FinishReason:         extractFinishReason(result.ResponseBody),
+			IsStreaming:          isStream,
+			FollowUpAction:       strings.TrimSpace(r.Header.Get("X-Gw-Follow-Up-Action")),
+			ClientSignalAllowed:  ClientSignalRequested(r),
+			HandoffSignalAllowed: HandoffSignalRequested(r),
+			SubAgentsTotal:       subAgents.Total,
+			SubAgentsCompleted:   subAgents.Completed,
+			SubAgentsPending:     subAgents.Pending,
 		}
 
 		if isStream {
@@ -4903,29 +5148,46 @@ goalRetryLoopDone:
 			// gets. When no capture is available the fields stay empty and
 			// the goal hook falls back to its legacy length-based behaviour.
 			interceptMeta := &ResponseStreamMeta{
-				SessionID:      gwSessionID,
-				RequestID:      requestID,
-				TenantID:       interceptReq.TenantID,
-				ClientModel:    clientModel,
-				ContextWindow:  interceptReq.ContextWindow,
-				MessageCount:   msgCount,
-				TokensUsed:     interceptReq.TokensUsed,
-				ResponseBody:   reassembleStreamBody(streamCapture),
-				FinishReason:   reassembleFinishReason(streamCapture),
-				FollowUpAction: interceptReq.FollowUpAction,
+				SessionID:            gwSessionID,
+				RequestID:            requestID,
+				TenantID:             interceptReq.TenantID,
+				ClientModel:          clientModel,
+				ContextWindow:        interceptReq.ContextWindow,
+				MessageCount:         msgCount,
+				TokensUsed:           interceptReq.TokensUsed,
+				ResponseBody:         reassembleStreamBody(streamCapture),
+				FinishReason:         reassembleFinishReason(streamCapture),
+				FollowUpAction:       interceptReq.FollowUpAction,
+				ClientSignalAllowed:  interceptReq.ClientSignalAllowed,
+				HandoffSignalAllowed: interceptReq.HandoffSignalAllowed,
+				SubAgentsTotal:       interceptReq.SubAgentsTotal,
+				SubAgentsCompleted:   interceptReq.SubAgentsCompleted,
+				SubAgentsPending:     interceptReq.SubAgentsPending,
 			}
 
 			if endResult, err := h.responseInterceptor.InterceptStreamEnd(r.Context(), interceptMeta); err != nil {
 				slog.Warn("response_interceptor_stream_end_failed", "error", err, "session_id", gwSessionID)
-			} else if endResult != nil && len(endResult.InjectFollowUp) > 0 {
-				// Inject follow-up request asynchronously.
-				// Carry the follow-up depth from the request context so
-				// recursive follow-ups are bounded by MaxFollowUpDepth.
-				// Detach from r.Context() (Background) since the response
-				// is already complete and r.Context() may be canceled.
-				followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
-				parentAuthHeader := h.buildHandoffAuthHeader(r)
-				go h.injectFollowUpRequest(followUpCtx, gwSessionID, endResult.InjectFollowUp, endResult.Action, parentAuthHeader)
+			} else if endResult != nil {
+				if endResult.ClientSignalKind != "" && !clientSignalKindAllowed(r, endResult.ClientSignalKind) {
+					slog.Warn("client_signal_capability_mismatch", "session_id", gwSessionID, "kind", endResult.ClientSignalKind)
+					endResult.ClientSignalKind = ""
+					endResult.ClientSignalPayload = nil
+				}
+				if frame := renderClientSignalFrame(endResult.ClientSignalKind, endResult.ClientSignalPayload); frame != "" {
+					if safeWriteSSE(w, frame) {
+						if flusher, ok := w.(http.Flusher); ok {
+							safeFlush(flusher)
+						}
+					} else {
+						slog.Warn("client_signal_stream_write_failed", "session_id", gwSessionID, "kind", endResult.ClientSignalKind)
+					}
+				} else if len(endResult.InjectFollowUp) > 0 {
+					// Legacy clients have not opted into a client signal, so retain
+					// the historical server-side follow-up behavior.
+					followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
+					parentAuthHeader := h.buildHandoffAuthHeader(r)
+					go h.injectFollowUpRequest(followUpCtx, gwSessionID, endResult.InjectFollowUp, endResult.Action, requestID, parentAuthHeader)
+				}
 			}
 		} else {
 			// For non-streaming, call InterceptNonStream
@@ -4937,12 +5199,20 @@ goalRetryLoopDone:
 					// Response was blocked, don't continue
 					return
 				}
-				if len(interceptResult.InjectFollowUp) > 0 {
-					// Inject follow-up request asynchronously.
-					// Carry the follow-up depth from the request context.
+				if interceptResult.ClientSignalKind != "" && !clientSignalKindAllowed(r, interceptResult.ClientSignalKind) {
+					slog.Warn("client_signal_capability_mismatch", "session_id", gwSessionID, "kind", interceptResult.ClientSignalKind)
+					interceptResult.ClientSignalKind = ""
+					interceptResult.ClientSignalPayload = nil
+				}
+				if interceptResult.ClientSignalKind != "" && len(interceptResult.ClientSignalPayload) > 0 {
+					w.Header().Set("X-Gw-Client-Signal", interceptResult.ClientSignalKind)
+					w.Header().Set("X-Gw-Client-Signal-Payload-B64", base64.StdEncoding.EncodeToString(interceptResult.ClientSignalPayload))
+				} else if len(interceptResult.InjectFollowUp) > 0 {
+					// Legacy clients have not opted into a client signal, so retain
+					// the historical server-side follow-up behavior.
 					followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
 					parentAuthHeader := h.buildHandoffAuthHeader(r)
-					go h.injectFollowUpRequest(followUpCtx, gwSessionID, interceptResult.InjectFollowUp, interceptResult.Action, parentAuthHeader)
+					go h.injectFollowUpRequest(followUpCtx, gwSessionID, interceptResult.InjectFollowUp, interceptResult.Action, requestID, parentAuthHeader)
 				}
 				// Apply ModifiedBody (e.g. output-compliance redaction).
 				//
@@ -5085,6 +5355,11 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	} else if evt.DecisionTrace != nil {
 		traceJSON, _ := json.Marshal(evt.DecisionTrace)
 		dl.DecisionTrace = traceJSON
+	} else if logCtx != nil && len(logCtx.AutoDecision) > 0 {
+		// Auto-route success: project the decision wire into the trace so
+		// fallback_used/task_type are observable in routing_decision_log
+		// (2026-09-14 audit O2 observability).
+		dl.DecisionTrace = autoDecisionTrace(logCtx.AutoDecision)
 	}
 	if result.Candidate.RawModel != "" {
 		dl.ResolvedRawModel = strPtr(result.Candidate.RawModel)
@@ -5370,6 +5645,21 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// child_request 帧因此从不发射。与初始写入保持同一套关联字段应用。
 	applyParentCorrelationFields(reqLog, logCtx)
 
+	// 2026-09-16 F1 fix (p2.2-staging-verification-report §A4): the success
+	// terminal entry never carried IsAutoRequest — the struct literal above
+	// has no such field and the marker only lived on logCtx — so BOTH
+	// downstream gates keyed on reqLog.IsAutoRequest evaluated false for
+	// every successful auto request: the tuning-signal emit (line ~6158) and
+	// ReportRoutingOutcome (line ~6173). Their stashed decisions then expired
+	// unreported after pendingFeedbackTTL and the P2.2 optimizer feedback
+	// stream degraded to failures-only (09-16 154 canary: stashed=120,
+	// matched=22 = ALL non-200s, expired→98 = ALL successes; aggregate table
+	// successful_requests=0 everywhere). The failure terminal already
+	// propagates the marker via BuildFailureEntry, which is why exactly the
+	// failures matched. Propagate from logCtx here, mirroring the
+	// GwSessionID P0 fix above.
+	propagateIsAutoRequestToEntry(reqLog, logCtx)
+
 	// v3: if v7 compression_strategy is empty but a session compressor strategy
 	// exists, prefer the session compressor value so the row is queryable.
 	// (v7 and v3 strategies are mutually exclusive in a single request.)
@@ -5454,6 +5744,19 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				reqLog.ErrorKind = strPtr("empty_response")
 				reqLog.FailureStage = strPtr("upstream_empty_response")
 				reqLog.FailureDetailCode = strPtr("zero_tokens_few_chunks")
+
+				// Emit Prometheus metric (2026-08-29)
+				modelName := ""
+				if reqLog.OutboundModel != nil {
+					modelName = *reqLog.OutboundModel
+				} else if reqLog.ClientModel != nil {
+					modelName = *reqLog.ClientModel
+				}
+				providerID := ""
+				if reqLog.ProviderID != nil {
+					providerID = fmt.Sprintf("%d", *reqLog.ProviderID)
+				}
+				metrics.Global().RecordSuccessEmptyResponse(modelName, providerID, reqLog.TenantID)
 			}
 		}
 
@@ -5476,6 +5779,50 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				reqLog.FailureStage = strPtr(string(errorsx.KindUpstreamContextLoss))
 				reqLog.FailureDetailCode = strPtr("prompt_tokens_body_mismatch")
 				reqLog.QualityFlags = append(reqLog.QualityFlags, QualityFlagUpstreamContextLoss)
+			}
+		}
+
+		// 2026-08-29 §4.4: Detect non-streaming success with empty response body.
+		// Runs only on non-streaming requests still marked success.
+		// Per design decision §4.1 (conservative approach), this does NOT modify
+		// reqLog.Success — it only logs and emits metrics for observability.
+		if capture == nil && reqLog.Success {
+			if detectEmptyNonStreamResponse(reqLog) {
+				modelName := ""
+				if reqLog.OutboundModel != nil {
+					modelName = *reqLog.OutboundModel
+				} else if reqLog.ClientModel != nil {
+					modelName = *reqLog.ClientModel
+				}
+
+				providerID := 0
+				if reqLog.ProviderID != nil {
+					providerID = *reqLog.ProviderID
+				}
+
+				slog.Warn("success_with_empty_response_body",
+					"request_id", reqLog.RequestID,
+					"tenant_id", reqLog.TenantID,
+					"model", modelName,
+					"provider_id", providerID,
+					"has_response_body", reqLog.ResponseBody != nil,
+					"response_body_len", func() int {
+						if reqLog.ResponseBody == nil {
+							return 0
+						}
+						return len(*reqLog.ResponseBody)
+					}(),
+				)
+
+				// Emit Prometheus metric (2026-08-29)
+				metrics.Global().RecordSuccessEmptyResponse(
+					modelName,
+					fmt.Sprintf("%d", providerID),
+					reqLog.TenantID,
+				)
+
+				// Add quality flag for downstream analysis
+				reqLog.QualityFlags = append(reqLog.QualityFlags, "empty_response_body")
 			}
 		}
 
@@ -5786,6 +6133,12 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// instead of an LCS-inferred verdict. The header never survives to the hook
 	// otherwise — the hook only sees the telemetry entry, not the request.
 	applySubmitModeHeader(reqLog, logCtx)
+	// V6-W1.6 R8 (migration 608): 完成态 UPDATE 也带上请求类型（幂等，
+	// 首行已写时保持原值，COALESCE 侧同样防回退）。
+	if reqLog.RequestClass == nil {
+		reqLog.RequestClass = requestClassPtr(logCtx)
+		reqLog.DueAt = requestDueAtPtr(logCtx)
+	}
 
 	// 2026-07-19: 填充路由尝试追踪数据到 telemetry
 	// 2026-07-20: Try result.RoutingTracker first (populated by the executor),
@@ -5798,6 +6151,16 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		if summary := tracker.Summary(); summary != "" {
 			reqLog.RoutingSummary = &summary
 		}
+	}
+
+	// 2026-09-12 指纹写路径贯通：上游 X-System-Fingerprint 此前只进
+	// integrity detector 的 context JSONB，request_logs_hot.system_fingerprint
+	// 专用列全表零行（603 建列后从未接线），7 天漂移检测器空转。此处统一
+	// 盖章（流式/非流式共用 emitTelemetry），经 persistSystemFingerprint 落列、
+	// 迁移 697 起 promote 携带进分区。
+	systemFingerprint := integrityHeader(result.Response, "X-System-Fingerprint")
+	if systemFingerprint != "" {
+		reqLog.SystemFingerprint = &systemFingerprint
 	}
 
 	h.telemetryClient.EmitRequestLogUpdate(reqLog)
@@ -5813,12 +6176,27 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// v2.1: emit implicit feedback signal for the auto-route tuning loop.
 	// Best-effort async write via the dedicated tuning writer; never blocks
 	// the request path on DB latency.
-	if reqLog.IsAutoRequest != nil && *reqLog.IsAutoRequest && reqLog.TaskType != nil {
+	// R37 (R35-R2 灰度口径): gateway-synthetic rounds must not write tuning
+	// signals — the shadow rounds' outcomes would skew the 7-day accuracy
+	// dashboards.
+	if reqLog.IsAutoRequest != nil && *reqLog.IsAutoRequest && reqLog.TaskType != nil &&
+		!autoroute.IsSyntheticActor(originActorOf(reqLog)) {
 		latencyMs := 0
 		if reqLog.LatencyMs != nil {
 			latencyMs = *reqLog.LatencyMs
 		}
 		h.emitTuningSignal(reqLog, reqLog.Success, latencyMs)
+	}
+
+	// 2026-09-08 audit (Track A): settle the routingopt feedback loop with the
+	// REAL upstream outcome. The decider used to record feedback at decision
+	// time with IsSuccess hardcoded true; the decision-time row is now parked
+	// in the autoroute outcome registry and backfilled here (and on the
+	// EmitFailure path) where success/latency/cost are final. Best-effort,
+	// non-blocking: a miss (cache reuse, already settled) is counted and
+	// dropped inside the registry.
+	if reqLog.IsAutoRequest != nil && *reqLog.IsAutoRequest {
+		autoroute.ReportRoutingOutcome(routingOutcomeFromEntry(reqLog))
 	}
 
 	// v2.2 (2026-06-22): auto-generate session title after first successful request.
@@ -5890,7 +6268,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			RawModel:           result.Candidate.RawModel,
 			RespModel:          streamRespModelForIntegrity(capture, responseBody),
 			ProviderResponseID: integrityHeader(result.Response, "X-Request-Id"),
-			SystemFingerprint:  integrityHeader(result.Response, "X-System-Fingerprint"),
+			SystemFingerprint:  systemFingerprint,
 			UsageSource:        strValueOrEmpty(reqLog.UsageSource),
 			FinishReason:       strValueOrEmpty(reqLog.UpstreamFinishReason),
 			PromptTokens:       reqLog.PromptTokens,
@@ -5919,6 +6297,46 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 // as a normal request (no skip).
 func shouldSkipAutoTitleGeneration(logCtx *RequestLogContext) bool {
 	return logCtx != nil && logCtx.IsAutoRequest
+}
+
+// propagateIsAutoRequestToEntry (2026-09-16 F1 fix,
+// p2.2-staging-verification-report §A4) mirrors logCtx.IsAutoRequest onto the
+// terminal request-log entry so the success-path gates keyed on
+// entry.IsAutoRequest — the tuning-signal emit and
+// autoroute.ReportRoutingOutcome — fire for successful auto requests. Before
+// this fix the success terminal never carried the marker (failure terminal
+// got it via BuildFailureEntry), so every successful auto decision sat in the
+// outcome registry until pendingFeedbackTTL evicted it unreported: the P2.2
+// optimizer feedback stream degraded to failures-only. Never overwrites a
+// marker already present on the entry.
+//
+// R34 (2026-09-17 audit, closes the F1 residual): the single-marker
+// propagation unblocked ReportRoutingOutcome (which only needs
+// IsAutoRequest), but the v2.1 tuning-signal gate also requires
+// entry.TaskType — which stayed nil on the success terminal, so implicit
+// tuning signals still never fired for successful auto requests. Mirror the
+// rest of the auto field family the same never-overwrite way.
+func propagateIsAutoRequestToEntry(entry *telemetry.RequestLogEntry, logCtx *RequestLogContext) {
+	if entry == nil || logCtx == nil || !logCtx.IsAutoRequest {
+		return
+	}
+	if entry.IsAutoRequest == nil {
+		entry.IsAutoRequest = boolPtr(true)
+	}
+	if entry.TaskType == nil && logCtx.TaskType != "" {
+		entry.TaskType = strPtr(logCtx.TaskType)
+	}
+	if entry.OutboundModel == nil && logCtx.OutboundModel != "" {
+		entry.OutboundModel = strPtr(logCtx.OutboundModel)
+	}
+	if entry.AutoDecision == nil && len(logCtx.AutoDecision) > 0 {
+		v := string(logCtx.AutoDecision)
+		entry.AutoDecision = &v
+	}
+	if entry.AutoConfidence == nil && logCtx.AutoConfidence > 0 {
+		conf := logCtx.AutoConfidence
+		entry.AutoConfidence = &conf
+	}
 }
 
 // shouldSkipAutoSummaryGeneration (2026-08-06) — symmetric companion to
@@ -6496,7 +6914,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 	clientProfile, identityHash string,
 	providerID, credentialID, canonicalID *int,
 	canonicalName string, // 2026-07-27: 标准模型名 (migration 458)
-	requestBody []byte,
+	requestBody []byte, clientProtocol string,
 	txResult *transformation.TransformResult,
 	egressProtocol string,
 	isStream bool,
@@ -6565,6 +6983,9 @@ func (h *ChatHandler) recordInitialRequestLog(
 		ProviderID:      providerID,
 		CredentialID:    credentialID,
 		CanonicalID:     canonicalID,
+		// V6-W1.6 R8 (migration 608): 请求类型（即时/定时）随首行落库。
+		RequestClass: requestClassPtr(autoCtx),
+		DueAt:        requestDueAtPtr(autoCtx),
 		// 2026-07-27: 标准模型名 (canonical_name),见 migration 458。
 		CanonicalModel: strPtr(canonicalName),
 		ClientProfile:  strPtr(clientProfile),
@@ -6580,13 +7001,16 @@ func (h *ChatHandler) recordInitialRequestLog(
 		// initial in_progress row carries the same classification as the eventual
 		// success UPDATE. The success path's emitTelemetry will overwrite this
 		// via tokenBandFromLogCtx.
-		TokenBand:         strPtrFromLogCtx(autoCtx),
-		RequestBody:       requestBodyText,
-		RequestPreview:    requestPreviewPtr,
-		TransformSummary:  transformSummaryPtr,
-		TransformRuleID:   transformRuleID,
-		EgressProtocol:    strPtr(egressProtocol),
-		StreamInterrupted: &streamInterrupted,
+		TokenBand:          strPtrFromLogCtx(autoCtx),
+		RequestBody:        requestBodyText,
+		RequestPreview:     requestPreviewPtr,
+		TransformSummary:   transformSummaryPtr,
+		TransformRuleID:    transformRuleID,
+		EgressProtocol:     strPtr(egressProtocol),
+		ClientProtocol:     strPtr(clientProtocol),
+		UpstreamProtocol:   strPtr(egressProtocol),
+		ProtocolConversion: protocolConversionFlag(clientProtocol, egressProtocol),
+		StreamInterrupted:  &streamInterrupted,
 		// 2026-06-26: preserve client-supplied X-Request-Id for debug
 		// (request_id itself is server-generated; see middleware/requestid_mw.go).
 		ClientRequestID: clientRequestIDPtr,
@@ -6731,80 +7155,6 @@ func (h *ChatHandler) serveFallback(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ReplaceModelInRequestBody replaces the "model" field in a JSON body.
-func ReplaceModelInRequestBody(body []byte, newModel string) []byte {
-	quotedOld := bytes.Contains(body, []byte(`"model"`))
-	if !quotedOld {
-		return body
-	}
-	pattern := []byte(`"model"`)
-	idx := bytes.Index(body, pattern)
-	if idx < 0 {
-		return body
-	}
-	after := body[idx+len(pattern):]
-	colonIdx := bytes.IndexByte(after, ':')
-	if colonIdx < 0 {
-		return body
-	}
-	rest := after[colonIdx+1:]
-	rest = bytes.TrimLeft(rest, " \t\n\r")
-	if len(rest) == 0 || rest[0] != '"' {
-		return body
-	}
-	endIdx := bytes.IndexByte(rest[1:], '"')
-	if endIdx < 0 {
-		return body
-	}
-	oldValue := rest[1 : endIdx+1]
-	if string(oldValue) == newModel {
-		return body
-	}
-	var buf bytes.Buffer
-	prefix := body[:idx+len(pattern)+colonIdx+1]
-	suffix := rest[endIdx+2:]
-	buf.Write(prefix)
-	buf.WriteString(" \"")
-	buf.WriteString(newModel)
-	buf.WriteByte('"')
-	buf.Write(suffix)
-	return buf.Bytes()
-}
-
-// ReplaceModelInResponseBody replaces whatever model is in the response with clientModel.
-func ReplaceModelInResponseBody(body []byte, clientModel string) []byte {
-	pattern := []byte(`"model"`)
-	idx := bytes.Index(body, pattern)
-	if idx < 0 {
-		return body
-	}
-	after := body[idx+len(pattern):]
-	colonIdx := bytes.IndexByte(after, ':')
-	if colonIdx < 0 {
-		return body
-	}
-	rest := after[colonIdx+1:]
-	rest = bytes.TrimLeft(rest, " \t\n\r")
-	if len(rest) < 2 || rest[0] != '"' {
-		return body
-	}
-	endIdx := bytes.IndexByte(rest[1:], '"')
-	if endIdx < 0 {
-		return body
-	}
-	oldValue := rest[1 : endIdx+1]
-	if string(oldValue) == clientModel {
-		return body
-	}
-	var buf bytes.Buffer
-	prefix := body[:idx+len(pattern)+colonIdx+1]
-	suffix := rest[endIdx+2:]
-	buf.Write(prefix)
-	buf.WriteString(`"` + clientModel + `"`)
-	buf.Write(suffix)
-	return buf.Bytes()
-}
-
 func requestHasTools(body []byte) bool {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(body, &obj); err != nil {
@@ -6834,12 +7184,25 @@ type ResourceStatus struct {
 	Connected bool   `json:"connected"`
 	Latency   string `json:"latency,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Mode explains the readiness semantics when the connector is not a live
+	// external dependency: "local" (lite storage: SQLite + local dirs carry
+	// persistence) or "not_required" (optional in this runtime mode).
+	Mode string `json:"mode,omitempty"`
 }
 
 // HealthResponse represents the health check response.
 type HealthResponse struct {
-	Status      string          `json:"status"`
-	Version     string          `json:"version"`
+	Status  string `json:"status"`
+	Version string `json:"version"`
+	// 2026-08-29 扩 fields：/healthz 暴露 git_sha + build_seq + build_date，
+	// 让 scripts/lifecycle/preflight.sh 的 /version 段能与切完后的 bundle version 比对。
+	// 字段保持 minimal，仅 SSOT；不要把 internal versionInfoStruct 全部泄出去。
+	GitSHA    string `json:"git_sha,omitempty"`
+	BuildSeq  int    `json:"build_seq,omitempty"`
+	BuildDate string `json:"build_date,omitempty"`
+	// Ready 标识依赖是否就绪：DB ping + Redis ping 都通时 true。
+	// 由 HealthHandler.ServeHTTP 在 anonymous 路径上设置（不暴露任何内网拓扑）。
+	Ready       bool            `json:"ready"`
 	Database    *ResourceStatus `json:"database,omitempty"`
 	Redis       *ResourceStatus `json:"redis,omitempty"`
 	Circuit     any             `json:"circuit,omitempty"`
@@ -6854,6 +7217,14 @@ type HealthHandler struct {
 	proxy   *upstreampkg.ProxyResolver
 	db      dbConnector
 	redis   redisConnector
+	// depsOptional marks the lite storage runtime: PostgreSQL is intentionally
+	// bypassed (SQLite + local dirs), so h.db == nil is a configuration fact
+	// rather than an init failure and must not fail readiness forever.
+	depsOptional bool
+	// Runtime identity is included in /version so a proxy can prove that it
+	// switched to the warmed candidate rather than merely seeing a live port.
+	runtimeRole string
+	listen      string
 }
 
 // dbConnector interface for database ping check
@@ -6871,6 +7242,36 @@ func NewHealthHandler(cm *credential.Manager, l *credential.Limiter, proxy *upst
 	return &HealthHandler{circuit: cm, limiter: l, proxy: proxy, db: db, redis: redis}
 }
 
+// SetRuntimeIdentity attaches non-sensitive process identity to /version.
+// It is intentionally separate from the constructor because config and Redis
+// are initialized at different points in the gateway composition root.
+func (h *HealthHandler) SetRuntimeIdentity(role, listen string) {
+	h.runtimeRole = role
+	h.listen = listen
+}
+
+// SetDepsOptional marks the runtime as lite storage mode (PostgreSQL bypassed).
+// Full mode keeps the historical fail-closed semantics; only the composition
+// root may call this, exactly once at startup.
+func (h *HealthHandler) SetDepsOptional(optional bool) {
+	h.depsOptional = optional
+}
+
+func healthResourceStatus(parent context.Context, connector interface{ Ping(context.Context) error }) *ResourceStatus {
+	if connector == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	err := connector.Ping(ctx)
+	status := &ResourceStatus{Connected: err == nil, Latency: time.Since(start).String()}
+	if err != nil {
+		status.Error = err.Error()
+	}
+	return status
+}
+
 // SetRedis updates the Redis connection for health checks (2026-07-08).
 // Called after Redis is initialized in main.go.
 func (h *HealthHandler) SetRedis(redis redisConnector) {
@@ -6878,9 +7279,31 @@ func (h *HealthHandler) SetRedis(redis redisConnector) {
 }
 
 func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// 2026-08-29：按 path 分发：
+	//   /version   仅 build metadata（version + git_sha + build_seq + build_date）
+	//   /readyz    严格门：DB + Redis 都通才 200，否则 503。K8s readiness 用。
+	//   /healthz   现有逻辑（anon 暴露 Ready，full=true 暴露 Circuit/Concurrency/Proxy 需 admin token）
+	switch r.URL.Path {
+	case "/version":
+		h.serveVersion(w)
+		return
+	case "/readyz":
+		h.serveReadyz(w, r)
+		return
+	}
+
+	// 2026-08-29：/healthz 暴露 git_sha / build_seq / build_date / ready（DB+Redis 是否通）。
+	// 字段保持 minimal，不暴露 internal versionInfoStruct 的全部内容；与
+	// scripts/lifecycle/preflight.sh 的 /version 段配合，让客户级升级器能确认
+	// 切完后的 binary 真的起来了，且依赖就绪。
+	// 解析 version.json 时拿到 GitSHA / BuildSeq / BuildDate；与 BuildNumber() 复用同一路径。
+	vInfo := resolveGatewayVersionInfo()
 	resp := HealthResponse{
-		Status:  "ok",
-		Version: resolveGatewayVersion(),
+		Status:    "ok",
+		Version:   vInfo.Version,
+		GitSHA:    vInfo.GitSHA,
+		BuildSeq:  vInfo.BuildSeq,
+		BuildDate: vInfo.BuildDate,
 	}
 
 	// NET-007 fix: ?full=true 必须 admin token（完整的 LLM_GATEWAY_ADMIN_API_KEY
@@ -6936,6 +7359,11 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				resp.Redis.Error = redisErr.Error()
 			}
 		}
+	} else {
+		// 匿名路径：DB + Redis ping 都通才算 ready=true。任一不通 → ready=false 但仍 200，
+		// 让 L1 healthz 在依赖故障时仍能 serve 探针（K8s liveness 不应 fail），
+		// 同时把 Ready=false 暴露给 readyz 端点做 L2 严格门。
+		resp.Ready = h.dependenciesReady(r)
 	}
 
 	// NET-007 fix: proxy 字段也属于敏感信息（暴露 internal.example.com 等内网
@@ -6952,6 +7380,162 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// serveVersion — /version 端点：仅 build metadata，anon 可访问。
+// scripts/lifecycle/preflight.sh 用它与切完后的 bundle version.json 比对。
+func (h *HealthHandler) serveVersion(w http.ResponseWriter) {
+	v := resolveGatewayVersionInfo()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	//nolint:errcheck
+	json.NewEncoder(w).Encode(map[string]any{
+		"version":      v.Version,
+		"git_sha":      v.GitSHA,
+		"build_seq":    v.BuildSeq,
+		"build_date":   v.BuildDate,
+		"module":       "llm-gateway-go",
+		"runtime_role": h.runtimeRole,
+		"listen":       h.listen,
+	})
+}
+
+// serveReadyz — /readyz 端点：DB + Redis 都通才 200，否则 503。
+// 严格门：与 /healthz 的 anon 路径区分——healthz 在 K8s liveness 中应 fail-open，
+// readyz 在 readiness 中应 fail-closed（依赖故障时摘流量）。
+//
+// 2026-09-03: 返回结构同时包含 `database` 与 `redis` ResourceStatus 字段，
+// 让前端 SystemStatusIndicator 的 D/R 徽章可以从这个匿名端点拿到真实
+// 连通性，而不必依赖 /healthz?full=true (需要 admin token)。Error 字段
+// 继续 strip，避免向匿名端点泄漏后端错误字符串。
+func (h *HealthHandler) serveReadyz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	// lite storage mode: PostgreSQL is bypassed by design, so readiness is
+	// governed by the optional Redis dependency only (2026-09-05 audit B1 —
+	// previously lite reported not_ready 503 forever).
+	if h.depsOptional {
+		resp := map[string]any{
+			"status":   "ready",
+			"mode":     "lite",
+			"database": &ResourceStatus{Connected: true, Mode: "local"},
+		}
+		if h.redis != nil {
+			redisStatus := healthResourceStatus(r.Context(), h.redis)
+			if redisStatus != nil {
+				redisStatus.Error = ""
+			}
+			resp["redis"] = redisStatus
+			if redisStatus == nil || !redisStatus.Connected {
+				resp["status"] = "not_ready"
+				w.WriteHeader(http.StatusServiceUnavailable)
+				//nolint:errcheck
+				json.NewEncoder(w).Encode(resp)
+				return
+			}
+		} else {
+			resp["redis"] = &ResourceStatus{Connected: true, Mode: "not_required"}
+		}
+		w.WriteHeader(http.StatusOK)
+		//nolint:errcheck
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	dbStatus := healthResourceStatus(r.Context(), h.db)
+	redisStatus := healthResourceStatus(r.Context(), h.redis)
+	if dbStatus != nil {
+		dbStatus.Error = "" // 不要向匿名端点泄漏 ping 错误细节
+	}
+	if redisStatus != nil {
+		redisStatus.Error = ""
+	}
+	resp := map[string]any{
+		"database": dbStatus,
+		"redis":    redisStatus,
+	}
+	allReady := dbStatus != nil && dbStatus.Connected &&
+		redisStatus != nil && redisStatus.Connected
+	if allReady {
+		resp["status"] = "ready"
+		w.WriteHeader(http.StatusOK)
+	} else {
+		resp["status"] = "not_ready"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	//nolint:errcheck
+	json.NewEncoder(w).Encode(resp)
+}
+
+// dependenciesReady — 内部 helper：DB ping + Redis ping（任一失败返回 false）。
+func (h *HealthHandler) dependenciesReady(r *http.Request) bool {
+	// lite storage mode: the DB is intentionally nil (SQLite + local dirs);
+	// only a configured-but-unreachable Redis blocks readiness (audit B1).
+	if h.depsOptional {
+		if h.redis == nil {
+			return true
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		return h.redis.Ping(ctx) == nil
+	}
+	// DB and Redis are mandatory runtime dependencies. A nil connector means
+	// initialization did not complete and must never be reported as ready.
+	if h.db == nil || h.redis == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := h.db.Ping(ctx); err != nil {
+		return false
+	}
+	ctx, cancel = context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	return h.redis.Ping(ctx) == nil
+}
+
+// healthVersionInfo 是 /healthz 暴露字段的子集（SSOT 来自 version.json）。
+// 不要把这个 struct 直接暴露给客户端——只暴露 HealthResponse 字段。
+type healthVersionInfo struct {
+	Version   string
+	GitSHA    string
+	BuildSeq  int
+	BuildDate string
+}
+
+// resolveGatewayVersionInfo reads the same instance-local override used by the
+// gateway version loader, then falls back to the active release paths.
+func resolveGatewayVersionInfo() healthVersionInfo {
+	candidates := make([]string, 0, 3)
+	if path := strings.TrimSpace(os.Getenv("LLM_GATEWAY_VERSION_FILE")); path != "" {
+		candidates = append(candidates, path)
+	}
+	candidates = append(candidates,
+		"/opt/llm-gateway-go/version.json",
+		"version.json",
+	)
+	out := healthVersionInfo{
+		Version:   "dev",
+		GitSHA:    "unknown",
+		BuildDate: "unknown",
+	}
+	for _, path := range candidates {
+		if raw, err := os.ReadFile(path); err == nil {
+			var v struct {
+				Version   string `json:"version"`
+				GitSHA    string `json:"git_sha"`
+				BuildSeq  int    `json:"build_seq"`
+				BuildDate string `json:"build_date"`
+			}
+			if err := json.Unmarshal(raw, &v); err == nil && v.Version != "" {
+				out.Version = v.Version
+				out.GitSHA = v.GitSHA
+				out.BuildSeq = v.BuildSeq
+				out.BuildDate = v.BuildDate
+				return out
+			}
+		}
+	}
+	return out
+}
+
 func extractBearerToken(r *http.Request) string {
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		if strings.HasPrefix(auth, "Bearer ") {
@@ -6965,6 +7549,43 @@ func extractBearerToken(r *http.Request) string {
 		return key
 	}
 	return ""
+}
+
+// insertRateLimitedPlaceholder ensures request_logs_hot has a row before the
+// rate-limit UPDATE writes its terminal fields. Used by the rate-limit
+// early-return path (handler.go captureAndEmitRateLimited) which bypasses
+// recordInitialRequestLog. Idempotent: INSERT … ON CONFLICT (request_id)
+// DO UPDATE means a subsequent UPDATE still lands on the same row.
+//
+// 2026-08-26: introduced to plug the kimi-k3 / RPM queue blind spot —
+// when the queue budget was exceeded the request returned 429/200 bytes
+// but never landed in request_logs_hot (only WAL + Redis trace did),
+// producing "request log row not found, retaining Redis trace" warnings
+// at FlushToPG. Mirrors the seed surface of recordInitialRequestLog
+// without pulling in its 14-arg signature.
+func (h *ChatHandler) insertRateLimitedPlaceholder(logCtx *RequestLogContext) {
+	if logCtx == nil || logCtx.IsLogged() {
+		return
+	}
+	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
+		return
+	}
+	minimal := &telemetry.RequestLogEntry{
+		RequestID:     logCtx.RequestID,
+		TenantID:      "default",
+		ClientModel:   strPtr(logCtx.ClientModel),
+		RequestStatus: strPtr(telemetry.RequestStatusInProgress),
+	}
+	if ki := logCtx.KeyInfo; ki != nil {
+		minimal.TenantID = ki.TenantID
+		kid := ki.ID
+		minimal.APIKeyID = &kid
+		if aid := appID(ki); aid != nil {
+			a := *aid
+			minimal.ApplicationID = &a
+		}
+	}
+	h.telemetryClient.EmitRequestLogInsert(minimal)
 }
 
 // resolveEndUser picks the best end-user identifier available for this
@@ -8086,6 +8707,13 @@ func StreamChunkErrorsFromLogCtxForTest(c *RequestLogContext) int {
 	return streamChunkErrorsFromLogCtx(c)
 }
 
+func applyActualOutboundBody(logCtx *RequestLogContext, result *executors.ExecuteResult) {
+	if logCtx == nil || result == nil || len(result.RequestBody) == 0 {
+		return
+	}
+	logCtx.OutboundBody = append(logCtx.OutboundBody[:0], result.RequestBody...)
+}
+
 // requestBytesFromLogCtx returns the request body size from logCtx.
 // Returns nil if logCtx is nil or RequestBodySize is 0 (to avoid storing
 // zero values in request_logs.request_bytes for requests without bodies).
@@ -8102,30 +8730,11 @@ func requestBytesFromLogCtx(c *RequestLogContext) *int {
 //
 // 2026-07-14: 移除对旧 VERSION 文件的依赖，统一读 version.json。
 func resolveGatewayVersion() string {
-	candidates := []string{
-		"/opt/llm-gateway-go/version.json",
-		"version.json",
+	v := resolveGatewayVersionInfo()
+	if v.GitSHA != "" && v.GitSHA != "unknown" {
+		return v.Version + "-" + v.GitSHA
 	}
-	for _, path := range candidates {
-		if raw, err := os.ReadFile(path); err == nil {
-			var v struct {
-				Version string `json:"version"`
-				GitSHA  string `json:"git_sha"`
-			}
-			if json.Unmarshal(raw, &v) == nil {
-				if v.Version != "" {
-					if v.GitSHA != "" {
-						return v.Version + "-" + v.GitSHA
-					}
-					return v.Version
-				}
-			}
-		}
-	}
-	if sha := strings.TrimSpace(os.Getenv("GIT_SHA")); sha != "" {
-		return "1.0.0-" + sha + "-" + time.Now().UTC().Format("2006-01-02")
-	}
-	return "0.2.0-unknown"
+	return v.Version
 }
 
 // detectEmptyStreamResponse checks if a streaming response is effectively empty.
@@ -8278,6 +8887,43 @@ func detectUpstreamContextLoss(m map[string]any, reqLog *telemetry.RequestLogEnt
 	}
 
 	return true
+}
+
+// detectEmptyNonStreamResponse checks for the anomalous pattern where a
+// non-streaming request is marked as successful but has no response body.
+// This mirrors the empty-response detection for streams (detectEmptyStreamResponse).
+//
+// Per §4.4 design (2026-08-29-success-empty-response-design.md), detection
+// does NOT modify settlement or already-sent responses; it only logs and
+// emits metrics for observability.
+//
+// Returns true when ALL of the following conditions hold:
+//   - Request is marked as successful (reqLog.Success == true)
+//   - Response body is missing or empty (nil, "", or "{}")
+//
+// Note: This function does not check isStream because the caller
+// (emitTelemetry) already guards the call with `if !isStream`.
+func detectEmptyNonStreamResponse(reqLog *telemetry.RequestLogEntry) bool {
+	if reqLog == nil {
+		return false
+	}
+
+	// Only check successful requests
+	if !reqLog.Success {
+		return false
+	}
+
+	// Missing or empty response_body
+	if reqLog.ResponseBody == nil {
+		return true
+	}
+
+	body := strings.TrimSpace(*reqLog.ResponseBody)
+	if body == "" || body == "{}" {
+		return true
+	}
+
+	return false
 }
 
 func hasStructuredToolCalls(value any) bool {

@@ -6,9 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 )
@@ -93,11 +93,11 @@ func TestInterceptingStreamWriterBuffersAndInterceptsSSEFrame(t *testing.T) {
 func TestInjectFollowUpCarriesAuthorizationHeader(t *testing.T) {
 	var gotAuth string
 	h := &ChatHandler{handoffFallbackAuth: "fallback-key"}
-	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, authHeader string, _ int) (int, string) {
+	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, authHeader string, _ int) (int, string) {
 		gotAuth = authHeader
 		return http.StatusOK, `{}`
 	}
-	h.injectFollowUpRequest(context.Background(), "sess-auth", []byte(`{}`), "handoff", "Bearer parent-key")
+	h.injectFollowUpRequest(context.Background(), "sess-auth", []byte(`{}`), "handoff", "req-parent", "Bearer parent-key")
 	if gotAuth != "Bearer parent-key" {
 		t.Fatalf("dispatcher received auth %q, want %q", gotAuth, "Bearer parent-key")
 	}
@@ -111,11 +111,11 @@ func TestInjectFollowUpCarriesAuthorizationHeader(t *testing.T) {
 func TestInjectFollowUpOmitsHeaderWhenEmpty(t *testing.T) {
 	var sawEmptyAuth bool
 	h := &ChatHandler{handoffFallbackAuth: ""}
-	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, authHeader string, _ int) (int, string) {
+	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, authHeader string, _ int) (int, string) {
 		sawEmptyAuth = authHeader == ""
 		return http.StatusOK, `{}`
 	}
-	h.injectFollowUpRequest(context.Background(), "sess-empty", []byte(`{}`), "handoff", "")
+	h.injectFollowUpRequest(context.Background(), "sess-empty", []byte(`{}`), "handoff", "", "")
 	if !sawEmptyAuth {
 		t.Fatal("dispatcher should receive empty auth when call site provides none")
 	}
@@ -127,13 +127,13 @@ func TestInjectFollowUpRespectsDepthLimit(t *testing.T) {
 	var calls int
 	h := &ChatHandler{
 		handoffFallbackAuth: "fallback",
-		dispatchFollowUpRequest: func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ int) (int, string) {
+		dispatchFollowUpRequest: func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ string, _ int) (int, string) {
 			calls++
 			return http.StatusOK, `{}`
 		},
 	}
 	ctx := withFollowUpDepth(context.Background(), MaxFollowUpDepth)
-	h.injectFollowUpRequest(ctx, "sess-deep", []byte(`{}`), "handoff", "k")
+	h.injectFollowUpRequest(ctx, "sess-deep", []byte(`{}`), "handoff", "req-deep", "k")
 	if calls != 0 {
 		t.Fatalf("depth-limit guard should block dispatch; got %d", calls)
 	}
@@ -145,7 +145,7 @@ func TestInjectFollowUpRespectsPerSessionCeiling(t *testing.T) {
 	var calls int
 	h := &ChatHandler{
 		handoffFallbackAuth: "fallback",
-		dispatchFollowUpRequest: func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ int) (int, string) {
+		dispatchFollowUpRequest: func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ string, _ int) (int, string) {
 			calls++
 			return http.StatusOK, `{}`
 		},
@@ -154,7 +154,7 @@ func TestInjectFollowUpRespectsPerSessionCeiling(t *testing.T) {
 	for i := 0; i < MaxFollowUpsPerSession; i++ {
 		recordSessionFollowUp("sess-ceil")
 	}
-	h.injectFollowUpRequest(context.Background(), "sess-ceil", []byte(`{}`), "handoff", "k")
+	h.injectFollowUpRequest(context.Background(), "sess-ceil", []byte(`{}`), "handoff", "req-ceil", "k")
 	if calls != 0 {
 		t.Fatalf("per-session ceiling should block dispatch; got %d", calls)
 	}
@@ -166,30 +166,33 @@ func TestInjectFollowUpEmptyBodyIsNoop(t *testing.T) {
 	var calls int
 	h := &ChatHandler{
 		handoffFallbackAuth: "fallback",
-		dispatchFollowUpRequest: func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ int) (int, string) {
+		dispatchFollowUpRequest: func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ string, _ int) (int, string) {
 			calls++
 			return http.StatusOK, `{}`
 		},
 	}
-	h.injectFollowUpRequest(context.Background(), "sess-empty-body", nil, "handoff", "k")
+	h.injectFollowUpRequest(context.Background(), "sess-empty-body", nil, "handoff", "req-noop", "k")
 	if calls != 0 {
 		t.Fatalf("empty follow-up body should be a no-op; got %d dispatches", calls)
 	}
 }
 
-// TestDefaultDispatchFollowUpAppliesAuthHeader checks the production
-// dispatcher's contract: the Authorization header supplied at the
-// orchestrator level is propagated verbatim to the synthetic request.
-func TestDefaultDispatchFollowUpAppliesAuthHeader(t *testing.T) {
+// TestInjectFollowUpSeamPropagatesAuthHeader (renamed from the misleading
+// TestDefaultDispatchFollowUpAppliesAuthHeader, R35-R7): this exercises the
+// SEAM — the stub is invoked instead of defaultDispatchFollowUp, so what is
+// pinned is that injectFollowUpRequest forwards the caller's Authorization
+// header to the dispatch seam verbatim. The production request-build path is
+// covered by TestBuildFollowUpRequestHitsLiveServer below.
+func TestInjectFollowUpSeamPropagatesAuthHeader(t *testing.T) {
 	var gotAuth string
 	var gotAction string
 	h := &ChatHandler{}
-	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, header string, _ int) (int, string) {
+	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, header string, _ int) (int, string) {
 		gotAuth = header
 		gotAction = "ok"
 		return http.StatusOK, `{}`
 	}
-	h.injectFollowUpRequest(context.Background(), "sess-prod", []byte(`{}`), "handoff", "Bearer system-key")
+	h.injectFollowUpRequest(context.Background(), "sess-prod", []byte(`{}`), "handoff", "req-prod", "Bearer system-key")
 
 	if gotAuth != "Bearer system-key" {
 		t.Fatalf("production dispatcher must propagate Authorization verbatim; got %q", gotAuth)
@@ -199,30 +202,41 @@ func TestDefaultDispatchFollowUpAppliesAuthHeader(t *testing.T) {
 	}
 }
 
-// TestDefaultDispatchFollowUpHitsLiveServer integrates the production
-// defaultDispatchFollowUp with a real httptest.Server so we observe
-// actual request header propagation end-to-end.
-func TestDefaultDispatchFollowUpHitsLiveServer(t *testing.T) {
-	var gotAuth string
-	var gotDepth string
+func parseOrDie(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	return u
+}
+
+// TestBuildFollowUpRequestHitsLiveServer (rewritten from the tautological
+// TestDefaultDispatchFollowUpHitsLiveServer, R35-R7): the old test built its
+// own request by hand and asserted the server saw exactly what it set —
+// production code was never exercised. This version drives the real
+// buildFollowUpRequest (defaultDispatchFollowUp's request-build path,
+// including the R37 real-depth header) and puts it on the wire.
+func TestBuildFollowUpRequestHitsLiveServer(t *testing.T) {
+	var gotAuth, gotDepth, gotActor, gotAttempt string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotDepth = r.Header.Get("X-Gw-Follow-Up-Depth")
+		gotActor = r.Header.Get(autoSourceActorHeader)
+		gotAttempt = r.Header.Get("X-Gw-Follow-Up-Attempt")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"choices":[]}`))
 	}))
 	defer srv.Close()
 
-	// defaultDispatchFollowUp uses literal "/v1/chat/completions" path.
-	// We verify contract via direct invocation against a *http.Request
-	// captured in the orchestrator's seam — since the orchestrator calls
-	// h.ServeHTTP via httptest.NewRecorder (not a live socket), we instead
-	// exercise the dispatcher's request-build path through direct test.
-	// Build a synthetic request via the same path defaultDispatchFollowUp
-	// would build, then verify it against the test server using http.Client.
-	req, _ := http.NewRequest("POST", srv.URL+"/v1/chat/completions", strings.NewReader(`{}`))
-	req.Header.Set("Authorization", "Bearer live-key")
-	req.Header.Set("X-Gw-Follow-Up-Depth", "1")
+	// Same construction defaultDispatchFollowUp performs: depth already
+	// incremented in the child context, then buildFollowUpRequest.
+	ctx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(context.Background())+1)
+	req, err := buildFollowUpRequest(ctx, "sess-live", []byte(`{}`), "goal_continue", "req-live", "Bearer live-key", 1)
+	if err != nil {
+		t.Fatalf("buildFollowUpRequest: %v", err)
+	}
+	req.URL = parseOrDie(t, srv.URL+"/v1/chat/completions")
 	resp, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatalf("live server unreachable: %v", err)
@@ -232,7 +246,30 @@ func TestDefaultDispatchFollowUpHitsLiveServer(t *testing.T) {
 		t.Fatalf("server saw Authorization=%q, want %q", gotAuth, "Bearer live-key")
 	}
 	if gotDepth != "1" {
-		t.Fatalf("server saw X-Gw-Follow-Up-Depth=%q, want %q", gotDepth, "1")
+		t.Fatalf("server saw X-Gw-Follow-Up-Depth=%q, want real depth %q", gotDepth, "1")
+	}
+	if gotActor != "goal-continue" {
+		t.Fatalf("server saw %s=%q, want goal-continue", autoSourceActorHeader, gotActor)
+	}
+	// R37 (R35-R8): the dead header must stay deleted.
+	if gotAttempt != "" {
+		t.Fatalf("X-Gw-Follow-Up-Attempt was resurrected: %q (zero readers, constant-lie header)", gotAttempt)
+	}
+}
+
+// TestFollowUpDepthHeaderTracksRealDepth pins the R37 fix: the header used
+// to hardcode "1" while nested follow-ups ran at depth 1..15.
+func TestFollowUpDepthHeaderTracksRealDepth(t *testing.T) {
+	ctx := withFollowUpDepth(context.Background(), 7)
+	req, err := buildFollowUpRequest(ctx, "s", []byte(`{}`), "handoff", "p", "k", 1)
+	if err != nil {
+		t.Fatalf("buildFollowUpRequest: %v", err)
+	}
+	if got := req.Header.Get("X-Gw-Follow-Up-Depth"); got != "7" {
+		t.Fatalf("X-Gw-Follow-Up-Depth = %q, want %q", got, "7")
+	}
+	if got := req.Header.Get("X-Gw-Follow-Up-Attempt"); got != "" {
+		t.Fatalf("X-Gw-Follow-Up-Attempt must stay deleted, got %q", got)
 	}
 }
 
@@ -295,12 +332,12 @@ func TestInjectFollowUpLogsAuthFailureOnMissingKey(t *testing.T) {
 		gotBody   string
 	)
 	h := &ChatHandler{handoffFallbackAuth: ""}
-	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ int) (int, string) {
+	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, _ string, _ string, _ int) (int, string) {
 		gotStatus = http.StatusUnauthorized
 		gotBody = `{"error":{"code":"missing_key"}}`
 		return gotStatus, gotBody
 	}
-	h.injectFollowUpRequest(context.Background(), "sess-auth-fail", []byte(`{}`), "handoff", "")
+	h.injectFollowUpRequest(context.Background(), "sess-auth-fail", []byte(`{}`), "handoff", "req-fail", "")
 	if gotStatus != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", gotStatus)
 	}
@@ -309,29 +346,91 @@ func TestInjectFollowUpLogsAuthFailureOnMissingKey(t *testing.T) {
 	}
 }
 
-// TestSweepSessionFollowUpsReapsIdle ensures idle counters are reaped so the
-// per-session map cannot grow without bound (2026-08-25 audit fix).
-func TestSweepSessionFollowUpsReapsIdle(t *testing.T) {
-	idle := &followUpCounter{}
-	idle.count.Store(5)
-	idle.lastActive.Store(time.Now().Add(-25 * time.Hour).Unix())
-	live := &followUpCounter{}
-	live.lastActive.Store(time.Now().Unix())
-	sessionFollowUpCounts.Store("sess-idle", idle)
-	sessionFollowUpCounts.Store("sess-live", live)
-	t.Cleanup(func() {
-		sessionFollowUpCounts.Delete("sess-idle")
-		sessionFollowUpCounts.Delete("sess-live")
-	})
-	// Reset the sweep throttle so the call is not suppressed.
-	sessionFollowUpLastSweep.Store(0)
-
-	sweepSessionFollowUps(time.Now().Unix())
-
-	if _, ok := sessionFollowUpCounts.Load("sess-idle"); ok {
-		t.Fatal("idle counter should be reaped")
+// TestInjectFollowUpPassesParentRequestID verifies the shadow-turn tagging
+// contract (会话优化v4/18 §3): the orchestrator must forward the originating
+// client request_id to the dispatch seam so defaultDispatchFollowUp can stamp
+// X-Gw-Parent-Request-Id on the synthetic request.
+func TestInjectFollowUpPassesParentRequestID(t *testing.T) {
+	var gotParent string
+	h := &ChatHandler{}
+	h.dispatchFollowUpRequest = func(_ *ChatHandler, _ context.Context, _ string, _ []byte, _ string, parentRequestID string, _ string, _ int) (int, string) {
+		gotParent = parentRequestID
+		return http.StatusOK, `{}`
 	}
-	if _, ok := sessionFollowUpCounts.Load("sess-live"); !ok {
-		t.Fatal("active counter must survive the sweep")
+	h.injectFollowUpRequest(context.Background(), "sess-parent", []byte(`{}`), "goal_continue", "req-abc-123", "k")
+	if gotParent != "req-abc-123" {
+		t.Fatalf("dispatcher received parentRequestID %q, want %q", gotParent, "req-abc-123")
+	}
+}
+
+// TestFollowUpSourceActorMapping locks the action→origin_actor mapping so
+// session_turns/request_logs keep one stable filter namespace (LIKE 'goal-%').
+// R34 (2026-09-17): audit family matches by prefix (covers audit_auto_fix,
+// aligning with the goal hook's own HasPrefix("audit") skip check); unknown
+// actions return "" (no X-Gw-Source-Actor header, origin_actor stays NULL) so
+// a future non-goal dispatch through this seam can't be misattributed to the
+// goal shadow-turn budget.
+func TestFollowUpSourceActorMapping(t *testing.T) {
+	cases := map[string]string{
+		"goal_continue":     "goal-continue",
+		"goal_model_switch": "goal-model-switch",
+		"audit":             "goal-audit",
+		"audit_auto_fix":    "goal-audit",
+		" audit":            "goal-audit",
+		"handoff":           "",
+		" something-else ":  "",
+		"":                  "",
+	}
+	for action, want := range cases {
+		if got := followUpSourceActor(action); got != want {
+			t.Fatalf("followUpSourceActor(%q) = %q, want %q", action, got, want)
+		}
+	}
+
+	// The header contract: an unmapped action must not produce a header at all.
+	req, err := buildFollowUpRequest(context.Background(), "s", []byte(`{}`), "handoff", "p1", "", 1)
+	if err != nil {
+		t.Fatalf("buildFollowUpRequest: %v", err)
+	}
+	if got := req.Header.Get(autoSourceActorHeader); got != "" {
+		t.Fatalf("unmapped action must omit %s, got %q", autoSourceActorHeader, got)
+	}
+}
+
+// TestBuildFollowUpRequestCorrelationHeaders asserts the header contract of
+// the synthetic shadow request: correlation headers present, X-Gw-Is-Auto
+// deliberately absent (setting it would route the turn into
+// isInternalAutoEntry and drop it from the session mirror).
+func TestBuildFollowUpRequestCorrelationHeaders(t *testing.T) {
+	req, err := buildFollowUpRequest(context.Background(), "sess-shadow", []byte(`{}`), "goal_continue", "req-parent-1", "Bearer k", 1)
+	if err != nil {
+		t.Fatalf("buildFollowUpRequest: %v", err)
+	}
+	if got := req.Header.Get("X-Gw-Session-Id"); got != "sess-shadow" {
+		t.Fatalf("X-Gw-Session-Id = %q", got)
+	}
+	if got := req.Header.Get("X-Gw-Follow-Up-Action"); got != "goal_continue" {
+		t.Fatalf("X-Gw-Follow-Up-Action = %q", got)
+	}
+	if got := req.Header.Get(autoSourceActorHeader); got != "goal-continue" {
+		t.Fatalf("%s = %q, want goal-continue", autoSourceActorHeader, got)
+	}
+	if got := req.Header.Get(autoParentRequestIDHeader); got != "req-parent-1" {
+		t.Fatalf("%s = %q, want req-parent-1", autoParentRequestIDHeader, got)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer k" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	if got := req.Header.Get(autoIsAutoHeader); got != "" {
+		t.Fatalf("%s must NOT be set on shadow turns (would trigger mirror exclusion), got %q", autoIsAutoHeader, got)
+	}
+
+	// Empty parent/actor-irrelevant fields must not produce empty headers.
+	req2, err := buildFollowUpRequest(context.Background(), "s", []byte(`{}`), "goal_continue", "", "", 1)
+	if err != nil {
+		t.Fatalf("buildFollowUpRequest: %v", err)
+	}
+	if got := req2.Header.Get(autoParentRequestIDHeader); got != "" {
+		t.Fatalf("empty parentRequestID must omit the header, got %q", got)
 	}
 }

@@ -50,6 +50,19 @@ func (f *fakeJourneyObserver) retryReasons() []string {
 	return append([]string(nil), f.reasons...)
 }
 
+func TestWrapHTTPErrorPreservesRetryAfter(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+	resp.Header.Set("Retry-After", "7")
+	err := WrapHTTPError(resp, errors.New("busy"))
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("error type = %T, want *HTTPError", err)
+	}
+	if httpErr.RetryAfter != "7" {
+		t.Fatalf("RetryAfter = %q, want 7", httpErr.RetryAfter)
+	}
+}
+
 func TestJourneyCarrierBinding(t *testing.T) {
 	observer := &fakeJourneyObserver{}
 	ctx := withRequestCarrier(context.Background())

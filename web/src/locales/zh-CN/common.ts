@@ -1,6 +1,7 @@
 // common.ts — 全站复用文案：按钮、状态、操作反馈、分页等。
 // 高频词（取消/确认/启用/禁用/加载中）在多个模块引用，优先抽取。
 export default {
+  credentialFallback: '凭据',
   copied: '已复制',
   add: '添加',
   button: {
@@ -79,6 +80,8 @@ export default {
   pagination: {
     total: '共 {n} 条',
     page: '第 {n} 页',
+    pageOf: "第 {page} / {pages} 页",
+    perPage: "每页",
     pageSize: '每页 {n} 条',
     previous: '上一页',
     next: '下一页',
@@ -123,6 +126,7 @@ export default {
   cancel: '取消',
   close: '关闭',
   confirm: '确认',
+  confirmTitle: '请确认',
   count: '数量',
   create: '新建',
   createdAt: '创建时间',
@@ -134,6 +138,7 @@ export default {
   enabled: '启用',
   lastOccurred: '最后发生',
   loading: '加载中…',
+  never: '从未',
   module: '模块',
   no: '否',
   refresh: '刷新',

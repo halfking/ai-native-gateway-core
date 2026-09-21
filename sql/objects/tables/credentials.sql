@@ -76,7 +76,6 @@ CREATE TABLE public.credentials (
     tpm_limit integer,
     max_queue_depth integer,
     max_queue_wait_ms integer,
-    revision bigint NOT NULL DEFAULT 0,
     auto_disabled_at timestamp with time zone,
     auto_disabled_reason text,
     auto_enabled_at timestamp with time zone,

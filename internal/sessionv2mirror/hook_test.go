@@ -3,6 +3,7 @@ package sessionv2mirror
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -188,14 +189,14 @@ func (w captureWriterV2) Write(_ context.Context, req *v2.ProcessedRequest) erro
 }
 
 func TestEntryToProcessedRequest_NilEntry(t *testing.T) {
-	req := entryToProcessedRequest(nil)
+	req := entryToProcessedRequest(nil, "")
 	if req != nil {
 		t.Fatal("expected nil for nil entry")
 	}
 }
 
 func TestEntryToProcessedRequest_NilGwSessionID(t *testing.T) {
-	req := entryToProcessedRequest(&telemetry.RequestLogEntry{RequestID: "r1"})
+	req := entryToProcessedRequest(&telemetry.RequestLogEntry{RequestID: "r1"}, "")
 	if req != nil {
 		t.Fatal("expected nil when GwSessionID is nil")
 	}
@@ -222,7 +223,7 @@ func TestEntryToProcessedRequest_CoreFields(t *testing.T) {
 		UpstreamStatusCode: intPtr(200),
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if req == nil {
 		t.Fatal("entryToProcessedRequest returned nil")
 	}
@@ -263,7 +264,7 @@ func TestEntryToProcessedRequest_UsageFields(t *testing.T) {
 		Success:          true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	check(t, "PromptTokens", req.PromptTokens, 100)
 	check(t, "CompletionTokens", req.CompletionTokens, 50)
 	check(t, "CacheReadTokens", req.CacheReadTokens, 10)
@@ -283,7 +284,7 @@ func TestEntryToProcessedRequest_CompressionFields(t *testing.T) {
 		Success:             true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if !req.CompressionApplied {
 		t.Error("expected CompressionApplied=true")
 	}
@@ -302,12 +303,60 @@ func TestEntryToProcessedRequest_CompressionSkipped(t *testing.T) {
 		GwSessionID: gwSessionPtr("sess_no_comp"),
 		Success:     true,
 	}
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if req.CompressionApplied {
 		t.Error("expected CompressionApplied=false when no compression strategy")
 	}
 	if req.CompressionMeta != nil {
 		t.Error("expected CompressionMeta=nil when no compression reason")
+	}
+}
+
+func TestEntryToProcessedRequest_CompressionMetaWhitelist(t *testing.T) {
+	strategy := "smart_window_llm"
+	reason := "token_threshold_forced_absolute"
+	ref := sanitizeMapRef("tenant", "sess_comp_meta")
+	meta := jsonRaw(fmt.Sprintf(`{
+			"strategy":"smart_window_llm",
+			"summary_marker":"[smm_v1:0123456789abcdef]",
+			"compressed_prefix_hash":"0123456789abcdef0123456789abcdef",
+			"tokens_before":2000000,
+			"cut_marker":{"version":1,"created_at":123,"source_msg_count":10,"system_msg_count":1,"cut_index":4,"strategy":"smart_window_llm","summary_marker":"[smm_v1:0123456789abcdef]","pre_sanitize_offset_range":[1,5],"summary_text":"must-not-mirror"},
+			"alignment_map":[{"original_index":2,"compressed_index":1,"is_compressed":true,"compressed_into":1,"hash":"0123456789abcdef0123456789abcdef","raw_content":"must-not-mirror"}],
+			"sanitize_map_ref":%q,
+			"sanitize_message_refs":[{"raw_index":2,"sanitized_index":2,"raw_hash":"0123456789abcdef0123456789abcdef","sanitized_hash":"fedcba9876543210fedcba9876543210","changed":true,"plaintext":"must-not-mirror"}],
+			"request_body":"must-not-mirror",
+			"pii":"must-not-mirror"
+		}`, ref))
+	entry := &telemetry.RequestLogEntry{
+		RequestID:           "req_comp_meta",
+		TenantID:            "tenant",
+		GwSessionID:         gwSessionPtr("sess_comp_meta"),
+		CompressionStrategy: &strategy,
+		CompressionReason:   &reason,
+		CompressionMeta:     meta,
+		Success:             true,
+	}
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
+	if req.CompressionMeta["summary_marker"] != "[smm_v1:0123456789abcdef]" {
+		t.Fatalf("summary marker not preserved: %#v", req.CompressionMeta)
+	}
+	cut, ok := req.CompressionMeta["cut_marker"].(map[string]interface{})
+	if !ok || cut["cut_index"] != float64(4) || cut["summary_text"] != nil {
+		t.Fatalf("cut marker filtering failed: %#v", req.CompressionMeta["cut_marker"])
+	}
+	if got := req.CompressionMeta["sanitize_map_ref"]; got != ref {
+		t.Fatalf("sanitize ref = %v, want %s", got, ref)
+	}
+	alignment := req.CompressionMeta["alignment_map"].([]map[string]interface{})
+	refs := req.CompressionMeta["sanitize_message_refs"].([]map[string]interface{})
+	if alignment[0]["raw_content"] != nil || refs[0]["plaintext"] != nil {
+		t.Fatalf("nested plaintext leaked: alignment=%#v refs=%#v", alignment, refs)
+	}
+	for _, forbidden := range []string{"request_body", "pii"} {
+		if _, ok := req.CompressionMeta[forbidden]; ok {
+			t.Fatalf("forbidden metadata %q was mirrored", forbidden)
+		}
 	}
 }
 
@@ -321,7 +370,7 @@ func TestEntryToProcessedRequest_RequestBodyParsing(t *testing.T) {
 		Success:     true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if len(req.RequestBody) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(req.RequestBody))
 	}
@@ -341,7 +390,7 @@ func TestEntryToProcessedRequest_ResponseBodyParsing(t *testing.T) {
 		Success:      true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if len(req.ResponseBody) != 1 {
 		t.Fatalf("expected 1 response message, got %d", len(req.ResponseBody))
 	}
@@ -363,7 +412,7 @@ func TestEntryToProcessedRequest_OutboundBodyParsing(t *testing.T) {
 		Success:          true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if len(req.OutboundBody) != 1 {
 		t.Fatalf("expected 1 outbound message, got %d", len(req.OutboundBody))
 	}
@@ -400,7 +449,7 @@ func TestEntryToProcessedRequest_OutboundBodyFullObject(t *testing.T) {
 		Success:             true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if len(req.OutboundBody) != 2 {
 		t.Fatalf("expected 2 outbound messages from full request object, got %d", len(req.OutboundBody))
 	}
@@ -421,7 +470,7 @@ func TestEntryToProcessedRequest_OutboundBodyBareArray(t *testing.T) {
 		Success:      true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if len(req.OutboundBody) != 1 {
 		t.Fatalf("expected 1 outbound message from bare array, got %d", len(req.OutboundBody))
 	}
@@ -440,7 +489,7 @@ func TestEntryToProcessedRequest_SubmitModeHeader(t *testing.T) {
 		Success:          true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	check(t, "SubmitModeHeader", req.SubmitModeHeader, "delta")
 }
 
@@ -453,7 +502,7 @@ func TestEntryToProcessedRequest_SubmitModeHeaderEmpty(t *testing.T) {
 		Success:     true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	check(t, "SubmitModeHeader", req.SubmitModeHeader, "")
 }
 
@@ -466,7 +515,7 @@ func TestEntryToProcessedRequest_UsesEventTime(t *testing.T) {
 		Success:     true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if !req.Timestamp.Equal(eventAt) {
 		t.Fatalf("Timestamp = %v, want event time %v", req.Timestamp, eventAt)
 	}
@@ -497,7 +546,7 @@ func TestEntryToProcessedRequest_AttachmentsParsing(t *testing.T) {
 		Success:     true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if len(req.Attachments) != 1 {
 		t.Fatalf("expected 1 attachment, got %d", len(req.Attachments))
 	}
@@ -527,7 +576,7 @@ func TestEntryToProcessedRequest_ResponseBodyWithToolCalls(t *testing.T) {
 		Success:      true,
 	}
 
-	req := entryToProcessedRequest(entry)
+	req := entryToProcessedRequest(entry, *entry.GwSessionID)
 	if len(req.ResponseBody) != 1 {
 		t.Fatalf("expected 1 response message, got %d", len(req.ResponseBody))
 	}

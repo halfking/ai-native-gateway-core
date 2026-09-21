@@ -51,6 +51,20 @@ func TestSanitizeJSONBPayload_UnrecoverableReturnsNull(t *testing.T) {
 	}
 }
 
+func TestAuditJSONBValidationFallbackEscapesPayload(t *testing.T) {
+	fallback := auditJSONBValidationFallback([]byte(`{"raw":"quote\\slash"}`))
+	if !json.Valid(fallback) {
+		t.Fatalf("fallback is invalid JSON: %q", fallback)
+	}
+	var decoded map[string]string
+	if err := json.Unmarshal(fallback, &decoded); err != nil {
+		t.Fatalf("decode fallback: %v", err)
+	}
+	if decoded["raw"] != `{"raw":"quote\\slash"}` {
+		t.Fatalf("fallback raw=%q", decoded["raw"])
+	}
+}
+
 func TestIsJSONBValidationError(t *testing.T) {
 	cases := map[error]bool{
 		nil: false,

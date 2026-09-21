@@ -107,9 +107,20 @@ BEGIN
     WHERE table_schema = 'public'
       AND table_name = 'session_turns_with_current_month';
 
-    IF cardinality(v_parent_columns) <> 50 OR cardinality(v_hot_columns) <> 50 THEN
-        RAISE EXCEPTION '526: expected 50 parent/hot columns, found parent=% hot=%',
+    IF cardinality(v_parent_columns) <> 51 OR cardinality(v_hot_columns) <> 51 THEN
+        RAISE EXCEPTION '526/636: expected 51 parent/hot columns, found parent=% hot=%',
             cardinality(v_parent_columns), cardinality(v_hot_columns);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute
+        WHERE attrelid IN ('public.session_turns'::regclass, 'public.session_turns_hot'::regclass)
+          AND attname = 'digest'
+          AND atttypid = 'jsonb'::regtype
+          AND NOT attnotnull
+    ) THEN
+        RAISE EXCEPTION '636: digest must be nullable JSONB on both parent and hot tables';
     END IF;
 
     IF EXISTS (
@@ -186,6 +197,12 @@ BEGIN
         RAISE EXCEPTION '526: promotion does not use the shared session advisory lock';
     END IF;
 
+    IF pg_get_functiondef(
+        'public.promote_session_turns_hot_to_partition(interval,integer)'::regprocedure
+    ) !~* 'digest' THEN
+        RAISE EXCEPTION '636: promotion does not retain digest';
+    END IF;
+
     IF NOT EXISTS (
         SELECT 1
         FROM pg_class
@@ -193,6 +210,12 @@ BEGIN
           AND 'security_invoker=true' = ANY (reloptions)
     ) THEN
         RAISE EXCEPTION '526: view must use security_invoker=true';
+    END IF;
+
+    IF cardinality(v_view_columns) <> 51
+       OR v_view_columns <> v_parent_columns
+       OR NOT ('digest' = ANY(v_view_columns)) THEN
+        RAISE EXCEPTION '636: view must expose all 51 columns including digest';
     END IF;
 
     IF NOT EXISTS (
@@ -238,13 +261,13 @@ BEGIN
     INSERT INTO public.session_turns_hot (
         id, session_id, turn_no, tenant_id, request_id,
         project_id, namespace, parent_request_id, task_type,
-        ts, partition_date, submit_mode, source_kind, quality
+        ts, partition_date, submit_mode, source_kind, quality, digest
     ) VALUES (
         -9223372036854770523,
         'test-526-session-ok', 1, 'test-526-tenant', 'test-526-promote-ok',
         'project-526', 'namespace-526', 'parent-526', 'analysis',
         '-infinity'::TIMESTAMPTZ, CURRENT_DATE,
-        'attachment_only', 'live', 'verified'
+        'attachment_only', 'live', 'verified', '{"source":"test-526"}'::JSONB
     ) RETURNING id INTO v_hot_id;
 
     SELECT public.promote_session_turns_hot_to_partition(INTERVAL '7 days', 1)
@@ -270,8 +293,9 @@ BEGIN
           AND parent_request_id = 'parent-526'
           AND task_type = 'analysis'
           AND submit_mode = 'attachment_only'
+          AND digest = '{"source":"test-526"}'::JSONB
     ) THEN
-        RAISE EXCEPTION '526: promoted row or scoped values are missing';
+        RAISE EXCEPTION '526/636: promoted row, scoped values, or digest are missing';
     END IF;
 
     INSERT INTO public.session_turns (

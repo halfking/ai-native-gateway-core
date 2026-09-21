@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 )
 
 type requestIDContextKey struct{} //nolint:unused
@@ -57,6 +60,21 @@ func (m *RequestIDMiddleware) Wrap(next http.Handler) http.Handler {
 		r.Header.Set("X-Request-Id", id)
 		w.Header().Set("X-Request-Id", id)
 		r = r.WithContext(context.WithValue(r.Context(), requestIDContextKey{}, id))
+
+		// R37 (R35-R1, 2026-09-17): the gateway correlation headers are
+		// client-forgeable — a forged X-Gw-Is-Auto removes the turn from the
+		// session_turns mirror, a forged X-Gw-Source-Actor:goal-% pollutes
+		// the goal shadow-round reconciliation, a forged
+		// X-Gw-Parent-Request-Id forges the loopback parent chain. Strip
+		// them unless the request presents this process's per-boot loopback
+		// token (the auto-title/summary self-calls do). Same trust posture
+		// as the X-Request-Id overwrite above.
+		if stripped := loopback.StripUntrustedCorrelationHeaders(r); len(stripped) > 0 {
+			slog.Warn("stripped untrusted gateway correlation headers (missing/invalid loopback token)",
+				"request_id", id,
+				"remote_addr", r.RemoteAddr,
+				"headers", strings.Join(stripped, ","))
+		}
 
 		next.ServeHTTP(w, r)
 	})

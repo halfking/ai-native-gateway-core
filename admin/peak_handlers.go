@@ -185,7 +185,7 @@ func (h *PeakHandlers) handleApply(w http.ResponseWriter, r *http.Request) {
 		Model        string `json:"model"`
 		NewLimit     int    `json:"new_limit"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}

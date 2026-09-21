@@ -13,6 +13,7 @@ export default {
     opsplatform: '运维中心',
     guide: '接入指南',
     chat: '对话',
+    plugins: '插件',
   },
 
   item: {
@@ -24,12 +25,15 @@ export default {
     models: '模型与目录',
     routingOverview: '路由全景',
     credentialMonitor: '凭据监控',
+    annotations: '人工标注',
+    annotationStats: '标注统计',
     probeHealth: '探测健康度',
     systemMonitor: '系统自检',
     providers: '供应商',
     pricing: '成本价格',
     modelPricing: '定价管理',
     freePool: '免费资源',
+    freeDiscovery: '免费发现',
     tenants: '租户管理',
     users: '用户管理',
     keys: 'API 密钥',
@@ -48,6 +52,7 @@ export default {
     wechatBot: '微信机器人',
     sessionContext: '会话上下文',
     settings: '系统设置',
+    proxy: '代理管理',
     dataLifecycle: '数据生命周期',
     formatAnomalies: '格式异常监控',
     modelIntegrity: '模型完整性监控',
@@ -62,6 +67,9 @@ export default {
     chat: '对话',
     updateActivate: '更新与激活',
     licenseActivate: '许可激活',
+    // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案
+    activateAction: '激活',
+    activateActionTip: '点击前往激活本机',
     siteInfo: '站点信息',
     licenseStatus: '许可状态',
     licenseAgreement: '用户许可协议',
@@ -75,6 +83,7 @@ export default {
     opsOverview: '运维总览',
     opsDownloads: '发布与下载',
     opsProductEntry: '产品入口',
+    supportDonate: '赞助与捐赠',
   },
 
   // 2026-07-21: 顶部水平导航 + 未登录公开页导航
@@ -89,4 +98,9 @@ export default {
   publicSupport: '技术支持',
   // 2026-07-21: a11y skip-link target, used by LifecycleShell.vue.
   skip: '跳到主要内容',
+
+  // 2026-09-21: 导航徽标 tooltip
+  badge: {
+    formatAnomalies: '未解决的请求侧异常',
+  },
 }

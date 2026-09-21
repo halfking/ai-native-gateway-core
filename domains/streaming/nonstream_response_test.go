@@ -43,7 +43,7 @@ func TestMessagesHandlerWriteNonStreamResponse_PassthroughAnthropic(t *testing.T
 	body := []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{}}],"stop_reason":"tool_use"}`)
 	recorder := httptest.NewRecorder()
 
-	got := (&MessagesHandler{}).writeNonStreamResponse(recorder, body, "claude-sonnet-5", "req-1")
+	got := (&MessagesHandler{}).writeNonStreamResponse(recorder, body, "claude-sonnet-5", "req-1", 0)
 	if recorder.Code != http.StatusOK || string(got) != string(body) || recorder.Body.String() != string(body) {
 		t.Fatalf("native Anthropic response was not preserved: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -51,7 +51,7 @@ func TestMessagesHandlerWriteNonStreamResponse_PassthroughAnthropic(t *testing.T
 
 func TestMessagesHandlerWriteNonStreamResponse_RejectsEmptyAnthropic(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	got := (&MessagesHandler{}).writeNonStreamResponse(recorder, []byte(`{"type":"message","content":[]}`), "claude-sonnet-5", "req-1")
+	got := (&MessagesHandler{}).writeNonStreamResponse(recorder, []byte(`{"type":"message","content":[]}`), "claude-sonnet-5", "req-1", 0)
 	if got != nil || recorder.Code != http.StatusBadGateway {
 		t.Fatalf("empty Anthropic response: got=%s status=%d", got, recorder.Code)
 	}

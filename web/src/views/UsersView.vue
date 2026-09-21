@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { localeRef } from '../i18n'
+import { fmtDateTime24h } from '../i18n/useFormat'
 import { ref, computed, onMounted } from 'vue'
 import { getUsers, createUser, updateUser, deleteUser, resetUserPassword, getTenantsAdmin } from '../api'
 import type { Tenant } from '../api'
 import { store, isReadOnlyMode, isTenantAdmin } from '../store'
 import { checkPasswordPolicy, passwordsMatch } from '../utils/passwordPolicy'
+import { confirmDialog } from '../composables/useConfirmDialog'
+// 2026-09-13 P3：页头/表格容器收敛到 ui 组件（方案 §4.5.2/§4.5.5）
+import PageHeader from '../components/ui/PageHeader.vue'
+import DataTable from '../components/ui/DataTable.vue'
 
 const { t } = useI18n()
 
@@ -104,7 +108,7 @@ async function handleToggle(u: User) {
 }
 
 async function handleDelete(u: User) {
-  if (!confirm(t('users.confirmDelete', { name: u.username }))) return
+  if (!(await confirmDialog(t('users.confirmDelete', { name: u.username })))) return
   try {
     await deleteUser(u.id)
     await load()
@@ -135,11 +139,6 @@ function roleLabel(r: string) {
   return r === 'super_admin' ? t('users.role.super_admin') : t('users.role.tenant_admin')
 }
 
-function fmtDate(s: string | null) {
-  if (!s) return '-'
-  return new Date(s).toLocaleString(localeRef.value)
-}
-
 function closeCreateModal() {
   showCreate.value = false
   form.value = { username: '', password: '', tenant_id: 'default', display_name: '', email: '', role: 'tenant_admin' }
@@ -162,10 +161,11 @@ onMounted(() => { load(); loadTenants() })
 
 <template>
   <div class="users-page">
-    <div class="page-header">
-      <h1>{{ t('users.title') }}</h1>
-      <button v-if="canCreateUsers" class="btn btn-primary" @click="showCreate = true">+ {{ t('users.create') }}</button>
-    </div>
+    <PageHeader :title="t('users.title')">
+      <template #actions>
+        <button v-if="canCreateUsers" class="btn btn-primary" @click="showCreate = true">+ {{ t('users.create') }}</button>
+      </template>
+    </PageHeader>
 
     <div v-if="readOnly" class="alert alert-info" style="margin-bottom:12px">
       {{ t('users.readOnlyNotice') }}
@@ -185,7 +185,8 @@ onMounted(() => { load(); loadTenants() })
 
     <div v-if="loading" class="loading">{{ t('users.loading') }}</div>
 
-    <table v-else class="table" style="width:100%">
+    <DataTable v-else min-width="820px">
+    <table class="table" style="width:100%">
       <thead>
         <tr>
           <th>{{ t('users.table.id') }}</th>
@@ -221,7 +222,7 @@ onMounted(() => { load(); loadTenants() })
               {{ u.enabled ? t('users.status.enabled') : t('users.status.disabled') }}
             </span>
           </td>
-          <td>{{ fmtDate(u.last_login_at) }}</td>
+          <td>{{ fmtDateTime24h(u.last_login_at) }}</td>
           <td>
             <button v-if="canResetPasswords" class="btn btn-ghost btn-sm" @click="resetPwdUser = u; newPwd = ''; resetConfirmPwd = ''">{{ t('users.action.resetPassword') }}</button>
             <button v-if="canDeleteUsers && u.id !== store.userInfo?.id" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="handleDelete(u)">{{ t('users.action.delete') }}</button>
@@ -230,6 +231,7 @@ onMounted(() => { load(); loadTenants() })
         </tr>
       </tbody>
     </table>
+    </DataTable>
 
     <!-- Create Modal -->
     <div v-if="showCreate" class="modal-backdrop" @click.self="closeCreateModal">
@@ -325,13 +327,6 @@ onMounted(() => { load(); loadTenants() })
 </template>
 
 <style scoped>
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
-.page-header h1 { font-size: 20px; margin: 0; }
 
 .badge-purple { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-h); }
 .badge-blue { background: var(--info-bg); color: var(--accent); }

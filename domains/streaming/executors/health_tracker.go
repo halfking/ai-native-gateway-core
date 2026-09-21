@@ -59,6 +59,38 @@ func (h *HealthTracker) Enabled() bool {
 	return h != nil && h.recorder != nil && h.tuner != nil && h.checker != nil
 }
 
+// healthWriteSlots bounds concurrently-running health side-effect goroutines
+// (2026-09-09 audit round 3): OnSuccess/OnError previously spawned one
+// unbounded goroutine per request — under an upstream incident every failed
+// candidate spawned one holding PG/Redis I/O for up to 10s, so a failure
+// storm flooded the shared connection pools with thousands of goroutines.
+// Drop-on-full loses window entries, never requests. The skew only appears
+// while the bound is saturated, i.e. exactly when the chain is already
+// failing; the alternative (unbounded spawn) took the pools down every
+// incident.
+var healthWriteSlots = make(chan struct{}, 32)
+
+// spawnHealthWrite runs fn on the bounded semaphore with drop-on-full and a
+// per-goroutine panic guard (a panicking side effect must not kill the
+// process, and must not hold its slot).
+func spawnHealthWrite(fn func()) {
+	select {
+	case healthWriteSlots <- struct{}{}:
+	default:
+		slog.Debug("health_tracker: write bound reached, side effect dropped")
+		return
+	}
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Warn("health_tracker: side effect panicked", "panic", rec)
+			}
+			<-healthWriteSlots
+		}()
+		fn()
+	}()
+}
+
 // OnSuccess records a successful call and checks for auto-scaleup opportunity.
 //
 // NOTE on context: callers pass params.R.Context() so the signature is
@@ -75,8 +107,8 @@ func (h *HealthTracker) OnSuccess(ctx context.Context, credentialID int, model s
 		return
 	}
 
-	// Record success in sliding window (async, non-blocking).
-	go func() {
+	// Record success in sliding window (async, bounded, non-blocking).
+	spawnHealthWrite(func() {
 		bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 		defer cancel()
 		entry := credentialhealth.CallEntry{
@@ -91,7 +123,7 @@ func (h *HealthTracker) OnSuccess(ctx context.Context, credentialID int, model s
 				"model", model,
 				"error", err)
 		}
-	}()
+	})
 
 	// Note: Auto-scaleup is handled by background worker, not per-request
 }
@@ -116,7 +148,7 @@ func (h *HealthTracker) OnError(ctx context.Context, credentialID int, model str
 		return
 	}
 
-	go func() {
+	spawnHealthWrite(func() {
 		// Bound the whole record→tune→check chain so a slow PG can't
 		// hold a goroutine open indefinitely; 10s is ample for two
 		// queries + one write.
@@ -157,5 +189,5 @@ func (h *HealthTracker) OnError(ctx context.Context, credentialID int, model str
 				"model", model,
 				"error", err)
 		}
-	}()
+	})
 }

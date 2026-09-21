@@ -21,9 +21,39 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 var errNoTelemetryDB = errors.New("telemetry database not configured")
+
+// pgErrorDiagnostics extracts the server-side error fields that err.Error()
+// omits (Detail/Hint/Table/Column/Constraint). 2026-09-05 PG log audit:
+// request-log persists failing with bare "numeric field overflow
+// (SQLSTATE 22003)" carry the offending precision/scale only in Detail —
+// without it the overflowing column cannot be located from gateway logs.
+func pgErrorDiagnostics(err error) string {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return ""
+	}
+	fields := make([]string, 0, 5)
+	if pgErr.Detail != "" {
+		fields = append(fields, "detail="+pgErr.Detail)
+	}
+	if pgErr.Hint != "" {
+		fields = append(fields, "hint="+pgErr.Hint)
+	}
+	if pgErr.TableName != "" {
+		fields = append(fields, "table="+pgErr.TableName)
+	}
+	if pgErr.ColumnName != "" {
+		fields = append(fields, "column="+pgErr.ColumnName)
+	}
+	if pgErr.ConstraintName != "" {
+		fields = append(fields, "constraint="+pgErr.ConstraintName)
+	}
+	return strings.Join(fields, "; ")
+}
 
 // heapPartitionNameRE 白名单: request_logs_<YYYY>_<MM>, 仅允许数字+下划线.
 var heapPartitionNameRE = regexp.MustCompile(`^request_logs_[0-9]{4}_[0-9]{2}$`)
@@ -31,29 +61,6 @@ var heapPartitionNameRE = regexp.MustCompile(`^request_logs_[0-9]{4}_[0-9]{2}$`)
 // quoteIdent 是 pgx.Identifier 等价的轻量版, 用于动态拼分区名 (避免注入).
 func quoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
-}
-
-// claimClientHolder 让 claimSessionFinalSuccess (无 Client 上下文的顶层函数)
-// 能拿到当前 gateway 实例的 Client. cmd/gateway/main.go 在 NewClient 后调用
-// SetClaimClient 一次, 单测无需设置 (holder 为 nil 时走 nil 分区安全路径).
-var (
-	claimClientMu sync.RWMutex
-	claimClient   *Client
-)
-
-// SetClaimClient 注册当前实例的 Client, 给 columnar-safe claim 路径使用.
-// 生产仅调用一次, 单测无需调用 (直接走 DB mock).
-func SetClaimClient(c *Client) {
-	claimClientMu.Lock()
-	claimClient = c
-	claimClientMu.Unlock()
-}
-
-func loadClientForClaim() *Client {
-	claimClientMu.RLock()
-	c := claimClient
-	claimClientMu.RUnlock()
-	return c
 }
 
 // OutboxWriter writes events to outbox_events table for Gateway → ASM delivery.
@@ -72,13 +79,39 @@ type execQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
+// RequestLogSink 是 lite 存储模式（无 PostgreSQL）下的请求日志持久化 sink。
+//
+// 背景（2026-09-05 审计 B2）：lite 模式跳过 PG 初始化后 dbPool 为 nil，
+// Enabled() 恒 false，整条 EmitRequestLog → worker → persist 管道惰性化，
+// 请求日志完全不落盘。SetRequestLogSink 注入本接口后：
+//   - Enabled() 视为已启用，请求日志照常入队（决策日志 / context_attrs
+//     侧表仍依赖 PG，lite 下继续跳过，不受影响）；
+//   - persistRequestLog 在 requestLogDatabase() 为 nil 时改走 sink，
+//     成功后与 PG 路径同样触发 onPersisted hooks 与 releaseBodies。
+//
+// full 模式从不注入 sink，所有路径行为零变化。
+type RequestLogSink interface {
+	// PersistRequestLog 持久化一条请求日志（INSERT 与 UPDATE 两类 op 都
+	// 经此入口，实现方需对同一 request_id 幂等/UPSERT）。返回错误时由
+	// telemetry flush 侧记 failPermanent 并告警，不阻塞请求热路径。
+	PersistRequestLog(ctx context.Context, entry *RequestLogEntry) error
+}
+
+// requestLogSinkHolder 是 atomic.Value 的装载类型（要求 Load 端类型断言稳定）。
+type requestLogSinkHolder struct {
+	sink RequestLogSink
+}
+
 type Client struct {
 	dbPool       *pgxpool.Pool
 	requestLogDB requestLogDB
 
-	queue chan any
-	done  chan struct{}
-	wg    sync.WaitGroup
+	// requestLogSinkStore 持有 lite 存储模式注入的非 PG 请求日志 sink
+	// （atomic.Value 一致性要求包装为同一具体类型）。
+	requestLogSinkStore atomic.Value // requestLogSinkHolder
+	queue               chan any
+	done                chan struct{}
+	wg                  sync.WaitGroup
 
 	lifecycleMu sync.RWMutex
 	stopped     atomic.Bool
@@ -94,8 +127,14 @@ type Client struct {
 	// on the caller's goroutine and MUST be non-blocking (use select
 	// with default for channel sends). May be nil.
 	onEmitted func(entry *RequestLogEntry)
-	fallback  dbdegradation.BackupWriter
-	degraded  atomic.Bool
+
+	// onDecisionEmitted mirrors onEmitted for decision rows: invoked
+	// synchronously inside EmitDecisionLog after the liveness guards pass
+	// (not stopped, PG enabled), before the queue/sync-insert decision.
+	// Registered via SetOnDecisionLogEmitted. May be nil.
+	onDecisionEmitted func(entry *DecisionLogEntry)
+	fallback          dbdegradation.BackupWriter
+	degraded          atomic.Bool
 
 	// outboxWriter (optional): writes request.completed events to outbox_events
 	// in the same transaction as request_logs INSERT for Gateway → ASM delivery.
@@ -183,11 +222,23 @@ type RequestLogEntry struct {
 	APIKeyID      *int         `json:"api_key_id,omitempty"`
 	EndUserID     *string      `json:"end_user_id,omitempty"`
 	CustomerID    *int64       `json:"customer_id,omitempty"`
-	ClientModel   *string      `json:"client_model,omitempty"`
-	OutboundModel *string      `json:"outbound_model,omitempty"`
-	CredentialID  *int         `json:"credential_id,omitempty"`
-	ProviderID    *int         `json:"provider_id,omitempty"`
-	CanonicalID   *int         `json:"canonical_id,omitempty"`
+	// RequestClass 是请求类型（V6-W1.6 R8，migration 610）：immediate|scheduled。
+	// nil 落库为 'immediate'（列 NOT NULL DEFAULT，INSERT 侧 COALESCE）；
+	// 由 handler 从 ExecParams.DispatchDueAt（X-Gw-Due-At 头）推导并盖章。
+	RequestClass *string `json:"request_class,omitempty"`
+	// DueAt 是定时请求的到期时刻（scheduled 时非 nil；immediate 为 nil）。
+	DueAt *time.Time `json:"due_at,omitempty"`
+	// SystemFingerprint 是上游 X-System-Fingerprint 响应头（2026-09-12 挂账
+	// 闭环）：此前仅被 integrity detector 写入 context JSONB，603 建的专用列
+	// 全表零行、7 天漂移检测器空转。现由 handler emitTelemetry 盖章，经
+	// persistSystemFingerprint 落 request_logs_hot 专用列，697 起随 promote
+	// 进月度分区。nil = 上游未返回该头。
+	SystemFingerprint *string `json:"system_fingerprint,omitempty"`
+	ClientModel       *string `json:"client_model,omitempty"`
+	OutboundModel     *string `json:"outbound_model,omitempty"`
+	CredentialID      *int    `json:"credential_id,omitempty"`
+	ProviderID        *int    `json:"provider_id,omitempty"`
+	CanonicalID       *int    `json:"canonical_id,omitempty"`
 	// 2026-07-27: 标准/canonical 模型名(全小写),从 models_canonical.canonical_name 提取。
 	// 之前需要每次 JOIN models_canonical 才能拿到标准名,实时请求流的模型筛
 	// 选因此无法直接做低成本的 GROUP BY。现在直接写,过滤 SQL 简单到极致。
@@ -226,6 +277,8 @@ type RequestLogEntry struct {
 	AgentName          *string `json:"agent_name,omitempty"`
 	AgentType          *string `json:"agent_type,omitempty"`
 	ClientProtocol     *string `json:"client_protocol,omitempty"`
+	UpstreamProtocol   *string `json:"upstream_protocol,omitempty"`
+	ProtocolConversion *bool   `json:"protocol_conversion,omitempty"`
 	VirtualClientID    *string `json:"virtual_client_id,omitempty"`
 	StreamFirstChunkMs *int    `json:"stream_first_chunk_ms,omitempty"`
 	StreamChunkCount   *int    `json:"stream_chunk_count,omitempty"`
@@ -244,6 +297,13 @@ type RequestLogEntry struct {
 	ResponseBody       *string `json:"response_body,omitempty"`
 	GwSessionID        *string `json:"gw_session_id,omitempty"`
 	GwTaskID           *string `json:"gw_task_id,omitempty"`
+	// AgentRole/ParentSessionID（R50 F15，2026-09-21）：会话角色归因三列的
+	// 前两列（第三列 parent_task_id 复用 GwTaskID）。与下方 Mirror-only
+	// 维度同款契约：request_logs 持久化 SQL 不落这些字段，仅作进程内 +
+	// session_mirror_outbox JSON 载荷传输，供 sessionv2mirror 桥进
+	// public.sessions 的 agent_role / parent_session_id 列（730）。
+	AgentRole       *string `json:"agent_role,omitempty"`
+	ParentSessionID *string `json:"parent_session_id,omitempty"`
 	// Mirror-only transport dimensions. The request_logs persistence SQL ignores
 	// these fields; onPersisted consumers use them to build the V2 request DTO.
 	ProjectID       *string `json:"project_id,omitempty"`
@@ -413,6 +473,18 @@ func NewClient() *Client {
 	return newClientWithBufSize(4096)
 }
 
+// NewClientWithRequestLogDB constructs a client around an injected
+// request-log DB surface (Exec/QueryRow/Begin). Production wiring uses
+// NewClient + SetDB(*pgxpool.Pool); this constructor exists so OUT-of-package
+// tests (domains/streaming) can drive decision-log emission with pgxmock —
+// it is the exported spelling of the in-package `&Client{requestLogDB: mockDB}`
+// literal. The worker lifecycle is identical to NewClient.
+func NewClientWithRequestLogDB(db requestLogDB) *Client {
+	c := newClientWithBufSize(4096)
+	c.requestLogDB = db
+	return c
+}
+
 // inferRequestTypeV32 derives the V3.2 request_type from the entry's existing
 // fields. Returns "main" for a plain client request (the column DEFAULT).
 // Precedence: explicit RequestType > compression > origin_actor > parent link.
@@ -453,6 +525,13 @@ func newClientWithBufSize(bufSize int) *Client {
 }
 
 func (c *Client) Enabled() bool {
+	return c != nil && (c.pgEnabled() || c.requestSink() != nil)
+}
+
+// pgEnabled 报告是否配置了 PostgreSQL 持久化后端（历史 Enabled 语义）。
+// 决策日志与 context_attrs 侧表只有 PG 实现，其发射门槛继续用本方法，
+// 注入 lite sink 不会让这两类条目进入队列后在 flush 侧反复失败告警。
+func (c *Client) pgEnabled() bool {
 	return c != nil && (c.dbPool != nil || c.requestLogDB != nil)
 }
 
@@ -493,6 +572,27 @@ func (c *Client) FindRecentGatewaySession(ctx context.Context, tenantID, identit
 func (c *Client) SetDB(pool *pgxpool.Pool) {
 	c.dbPool = pool
 	c.requestLogDB = pool
+}
+
+// SetRequestLogSink 注入 lite 存储模式的请求日志 sink（见 RequestLogSink 文档）。
+// 传入 nil 等价于摘除 sink，Client 回到纯 PG 行为。可在任意时刻调用
+// （内部 atomic.Value 存储，与运行中的 worker 并发安全）。
+func (c *Client) SetRequestLogSink(sink RequestLogSink) {
+	if c == nil {
+		return
+	}
+	c.requestLogSinkStore.Store(requestLogSinkHolder{sink: sink})
+}
+
+// requestSink 返回当前注入的 sink（未注入时 nil）。atomic 读，热路径安全。
+func (c *Client) requestSink() RequestLogSink {
+	if c == nil {
+		return nil
+	}
+	if h, ok := c.requestLogSinkStore.Load().(requestLogSinkHolder); ok {
+		return h.sink
+	}
+	return nil
 }
 
 func (c *Client) requestLogDatabase() requestLogDB {
@@ -537,10 +637,22 @@ func (c *Client) ReplayFallback(ctx context.Context, record dbdegradation.Backup
 		return err
 	}
 	normalizeRequestStatus(&entry)
+	var err error
 	if entry.Op == RequestLogUpdate {
-		return c.updateRequestLog(&entry)
+		err = c.updateRequestLog(&entry)
+	} else {
+		err = c.insertRequestLog(&entry)
 	}
-	return c.insertRequestLog(&entry)
+	if err == nil {
+		// R44 (storage ledger E6, 09-15/09-18 各 1 行 G2 缺失实锤): 回放路径
+		// 此前绕过 onPersisted hooks —— 同事务的 final-success claim 置位
+		// is_final_success 后 sessionv2mirror hook 永远收不到终态信号，
+		// 镜像行结构性缺失且重放器无法归零（无登记可重放）。进 fallback
+		// 文件的 entry 此前必然从未成功落库（degraded/写失败路径进入），
+		// hooks 从未对它触发过，此处补发即 exactly-once。
+		c.firePersistedHooks(&entry)
+	}
+	return err
 }
 
 // SetOnRequestLogPersisted registers the sole persisted hook (replaces any prior hooks).
@@ -586,14 +698,43 @@ func (c *Client) SetOnRequestLogEmitted(fn func(entry *RequestLogEntry)) {
 	c.lifecycleMu.Unlock()
 }
 
+// SetOnDecisionLogEmitted registers a hook invoked synchronously inside
+// EmitDecisionLog (before the queue/sync-insert decision), whenever the
+// client is live enough to accept a decision row (not stopped, PG enabled).
+// It mirrors SetOnRequestLogEmitted: runs on the caller's goroutine and MUST
+// be non-blocking. Primary consumer is test capture (routing_decision_log
+// has no lite sink, so a real DB pool would otherwise be required to observe
+// emissions); production code may use it for live mirrors.
+//
+// 2026-09-09 audit round 3 (#4): introduced for the rate-limited
+// not-run-class decision row wiring test.
+func (c *Client) SetOnDecisionLogEmitted(fn func(entry *DecisionLogEntry)) {
+	c.lifecycleMu.Lock()
+	c.onDecisionEmitted = fn
+	c.lifecycleMu.Unlock()
+}
+
 func (c *Client) EmitDecisionLog(entry *DecisionLogEntry) {
 	if c == nil {
 		return
 	}
 	c.lifecycleMu.RLock()
 	defer c.lifecycleMu.RUnlock()
-	if c.stopped.Load() || !c.Enabled() {
+	// 决策日志只有 PG 表（routing_decision_log_hot），无 lite sink；
+	// 注入 lite sink 时（Enabled()==true）也必须保持跳过，避免入队后
+	// 在 flush 侧以 errNoTelemetryDB 反复告警。
+	if c.stopped.Load() || !c.pgEnabled() {
 		return
+	}
+	if c.onDecisionEmitted != nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Warn("telemetry onDecisionEmitted panic", "request_id", entry.RequestID)
+				}
+			}()
+			c.onDecisionEmitted(entry)
+		}()
 	}
 	select {
 	case c.queue <- entry:
@@ -638,6 +779,9 @@ func (c *Client) EmitRequestLog(entry *RequestLogEntry) {
 		// Request logs power /request-logs — never silently drop on backpressure.
 		if err := c.persistRequestLog(entry); err != nil {
 			atomic.AddUint64(&c.failPermanent, 1)
+			if diag := pgErrorDiagnostics(err); diag != "" {
+				slog.Warn("telemetry pg error diagnostics", "request_id", entry.RequestID, "op", entry.Op, "diagnostics", diag)
+			}
 			if c.fallback != nil {
 				if fallbackErr := c.fallback.WriteRequestLog(context.Background(), entry.RequestID+":"+string(entry.Op), entry); fallbackErr != nil {
 					slog.Warn("telemetry request sync fallback failed", "request_id", entry.RequestID, "db_error", err, "fallback_error", fallbackErr)
@@ -772,6 +916,9 @@ func (c *Client) flush(batch []any) {
 		case *RequestLogEntry:
 			if err := c.persistRequestLog(v); err != nil {
 				atomic.AddUint64(&c.failPermanent, 1)
+				if diag := pgErrorDiagnostics(err); diag != "" {
+					slog.Warn("telemetry pg error diagnostics", "request_id", v.RequestID, "op", v.Op, "diagnostics", diag)
+				}
 				if c.fallback != nil {
 					if fallbackErr := c.fallback.WriteRequestLog(context.Background(), v.RequestID+":"+string(v.Op), v); fallbackErr != nil {
 						slog.Warn("telemetry request fallback failed", "request_id", v.RequestID, "db_error", err, "fallback_error", fallbackErr)
@@ -871,6 +1018,25 @@ func (c *Client) insertDecisionLog(entry *DecisionLogEntry) error {
 	return err
 }
 
+// firePersistedHooks invokes the onPersisted hooks (panic-isolated) after a
+// successful INSERT/UPDATE of a request_logs row. Shared by persistRequestLog
+// (worker/sync paths) and ReplayFallback (degraded-recovery replay path).
+func (c *Client) firePersistedHooks(entry *RequestLogEntry) {
+	c.lifecycleMu.RLock()
+	hooks := append([]func(*RequestLogEntry){}, c.onPersisted...)
+	c.lifecycleMu.RUnlock()
+	for _, hook := range hooks {
+		func(h func(*RequestLogEntry)) {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Warn("telemetry onPersisted panic", "request_id", entry.RequestID)
+				}
+			}()
+			h(entry)
+		}(hook)
+	}
+}
+
 func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 	normalizeRequestStatus(entry)
 	if c.degraded.Load() {
@@ -880,24 +1046,29 @@ func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 		return c.fallback.WriteRequestLog(context.Background(), entry.RequestID+":"+string(entry.Op), entry)
 	}
 	var err error
-	if entry.Op == RequestLogUpdate {
+	// lite 存储模式（2026-09-05 审计 B2）：无 PG 后端但注入了 sink 时，
+	// INSERT/UPDATE 两类 op 统一交给 sink（实现方负责按 request_id 幂等），
+	// 成功后走与 PG 路径完全相同的 onPersisted hooks / releaseBodies 收尾。
+	if sink := c.requestSink(); sink != nil && c.requestLogDatabase() == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = sink.PersistRequestLog(ctx, entry)
+		cancel()
+	} else if entry.Op == RequestLogUpdate {
 		err = c.updateRequestLog(entry)
 	} else {
 		err = c.insertRequestLog(entry)
 	}
 	if err == nil {
-		c.lifecycleMu.RLock()
-		hooks := append([]func(*RequestLogEntry){}, c.onPersisted...)
-		c.lifecycleMu.RUnlock()
-		for _, hook := range hooks {
-			func(h func(*RequestLogEntry)) {
-				defer func() {
-					if r := recover(); r != nil {
-						slog.Warn("telemetry onPersisted panic", "request_id", entry.RequestID)
-					}
-				}()
-				h(entry)
-			}(hook)
+		c.firePersistedHooks(entry)
+		if entry.Success && len(strings.TrimSpace(stringValue(entry.ResponseBody))) == 0 {
+			metrics.RecordSuccessfulResponseBodyMissing()
+			slog.Warn("successful request log missing response body",
+				"request_id", entry.RequestID,
+				"tenant_id", entry.TenantID,
+				"credential_id", entry.CredentialID,
+				"provider_id", entry.ProviderID,
+				"operation", entry.Op,
+			)
 		}
 		entry.releaseBodies()
 	}
@@ -921,6 +1092,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	if db == nil {
 		return errNoTelemetryDB
 	}
+	// Keep request class/due time inside the database domain before the
+	// asynchronous writer begins its transaction. This prevents a malformed
+	// caller from turning one bad audit field into a retried write failure.
+	normalizeRequestClassAndDueAt(entry, false)
 	// Defence-in-depth: scrub any invalid UTF-8 from all string-valued fields
 	// before INSERT.  PostgreSQL rejects invalid bytes with SQLSTATE 22021,
 	// which (because we wrap usage_ledger + request_logs + api_keys updates
@@ -1064,10 +1239,12 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			t3_model_enqueued_at, t4_model_dequeued_at,
 			t5_cred_enqueued_at, t6_cred_dequeued_at,
 			t7_forward_start_at, t8_response_start_at, t9_response_end_at,
-			-- 2026-08-19: streaming discard audit events.
-			discard_events,
-			customer_id
-		) VALUES (
+		-- 2026-08-19: streaming discard audit events.
+		discard_events,
+		customer_id,
+		-- V6-W1.6 R8 (migration 610): request class + scheduled due time.
+		request_class, due_at
+	) VALUES (
 		$1, now(), $2, $3, $4,
 		$5, $6, $7,
 		$8, $9, $10,
@@ -1089,20 +1266,19 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$48, $49, $50,
 		$51, $52, $53, $54, $55::text::jsonb, $56,
 		$57, $58,
-			$59, $60, $61,
-			$62::text::jsonb,
-			-- 2026-08-19: token-band observability.
-			$63,
-			-- v3 (2026-06-19) T23: session-level outbound body.
-			$64, $65, $66::text::jsonb,
-			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-			$67::text[], $68::text::jsonb, $69,
-			-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
-			$70,
-			-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-			$71::text::jsonb,
-			-- 2026-06-26: client-supplied X-Request-Id.
-			$72,
+		$59, $60, $61, $62::text::jsonb,
+		-- 2026-08-19: token-band observability.
+		$63,
+		-- v3 (2026-06-19) T23: session-level outbound body.
+		$64, $65, $66::text::jsonb,
+		-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+		$67::text[], $68::text::jsonb, $69,
+		-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
+		$70,
+		-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
+		$71::text::jsonb,
+		-- 2026-06-26: client-supplied X-Request-Id.
+		$72,
 		-- 2026-06-30: upstream diagnostics (migration 320).
 		$73, $74, $75,
 		$76, $77,
@@ -1114,13 +1290,17 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$83::text::jsonb, $84,
 		-- 2026-07-27: 客户端感知字段(主表 INSERT 必填).
 		$85, $86, $87, $88,
-			-- V3.1 queue timestamps (migration 491): 9-stage dispatch queue timestamps.
-			$89, $90, $91, $92, $93, $94, $95, $96, $97, $98,
-			-- 2026-08-19: streaming discard audit events.
-			$99::text::jsonb,
-			-- 2026-08-25 (migration 507): customer metadata.
-			$100
-		)
+		-- V3.1 queue timestamps (migration 491): 9-stage dispatch queue timestamps.
+		$89, $90, $91, $92, $93, $94, $95, $96, $97, $98,
+		-- 2026-08-19: streaming discard audit events.
+		$99::text::jsonb,
+		-- 2026-08-25 (migration 507): customer metadata.
+		$100,
+		-- V6-W1.6 R8 (migration 610): request class + due time. $101 stays
+		-- a bare placeholder (placeholder-alignment guard); the NOT NULL
+		-- default is resolved arg-side by requestClassArg.
+		$101, $102
+	)
 
 				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
 				-- Migration 455 (2026-07-23) gave request_logs_hot PRIMARY KEY (request_id),
@@ -1255,7 +1435,11 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		t7_forward_start_at  = COALESCE(EXCLUDED.t7_forward_start_at, request_logs_hot.t7_forward_start_at),
 		t8_response_start_at = COALESCE(EXCLUDED.t8_response_start_at, request_logs_hot.t8_response_start_at),
 			t9_response_end_at   = COALESCE(EXCLUDED.t9_response_end_at, request_logs_hot.t9_response_end_at),
-			discard_events       = COALESCE(EXCLUDED.discard_events, request_logs_hot.discard_events)
+			discard_events       = COALESCE(EXCLUDED.discard_events, request_logs_hot.discard_events),
+			-- V6-W1.6 R8 (migration 610): class never regresses to NULL;
+			-- due_at keeps the first non-null value.
+			request_class        = COALESCE(EXCLUDED.request_class, request_logs_hot.request_class),
+			due_at               = COALESCE(EXCLUDED.due_at, request_logs_hot.due_at)
 		-- 2026-07-27 (L-2): terminal-state guard, mirroring the WAL guard in
 
 		-- request_logger.go Update(). Without this, the deferred client-
@@ -1431,9 +1615,19 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		// 2026-08-25 (migration 507): customer metadata ($100 ↔ customer_id,
 		// the LAST column — keep aligned with the INSERT column list above).
 		entry.CustomerID,
+		// V6-W1.6 R8 (migration 610): $101 ↔ request_class (arg-side
+		// 'immediate' default for the NOT NULL column), $102 ↔ due_at.
+		requestClassArg(entry.RequestClass),
+		entry.DueAt,
 	)
 
 	if err != nil {
+		return err
+	}
+	if err := upsertProtocolMetadata(ctx, tx, entry); err != nil {
+		return err
+	}
+	if err := persistSystemFingerprint(ctx, tx, entry); err != nil {
 		return err
 	}
 
@@ -1489,7 +1683,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	// claim, SQLSTATE 23505 from uq_request_logs_hot_final_success_session)
 	// degrades to a normal success row — never fails the business write.
 	if shouldClaimFinalSuccess(entry) {
-		claimSessionFinalSuccess(ctx, tx, entry.RequestID)
+		claimSessionFinalSuccess(ctx, c, tx, entry.RequestID)
 	}
 
 	// Publish only the session opener here. The request is provisional until
@@ -1659,6 +1853,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	if db == nil {
 		return errNoTelemetryDB
 	}
+	normalizeRequestClassAndDueAt(entry, true)
 	sanitizeRequestLogEntry(entry)
 	totalTokens := total(entry.PromptTokens, entry.CompletionTokens)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1879,6 +2074,9 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 				ELSE attachments
 			END
 			, customer_id = COALESCE($97, customer_id)
+			-- V6-W1.6 R8 (migration 610): request class + due time.
+			, request_class = CASE WHEN $98 IS NULL THEN request_class ELSE $98 END
+			, due_at = CASE WHEN $98 IS NULL THEN due_at ELSE $99 END
 		   WHERE request_id = $1
 
 		     AND NOT (
@@ -2016,6 +2214,10 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.RoutingSummary,
 		attachmentsArgStr(entry.Attachments),
 		entry.CustomerID,
+		// V6-W1.6 R8 (migration 610): a nil $98 preserves both fields;
+		// otherwise $98/$99 are written as one invariant-preserving pair.
+		entry.RequestClass,
+		entry.DueAt,
 	)
 
 	if err != nil {
@@ -2046,6 +2248,12 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		strPtrToJSON(entry.ResponseBody),
 		jsonOrNull(entry.OutboundBody),
 	); err != nil {
+		return err
+	}
+	if err := upsertProtocolMetadata(ctx, tx, entry); err != nil {
+		return err
+	}
+	if err := persistSystemFingerprint(ctx, tx, entry); err != nil {
 		return err
 	}
 
@@ -2080,7 +2288,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	// RowsAffected==0 fallback above re-enters insertRequestLog, which
 	// claims on its own.
 	if shouldClaimFinalSuccess(entry) {
-		claimSessionFinalSuccess(ctx, tx, entry.RequestID)
+		claimSessionFinalSuccess(ctx, c, tx, entry.RequestID)
 	}
 	if c.outboxWriter != nil && entry.GwSessionID != nil && *entry.GwSessionID != "" && requestLogEntryTerminal(entry) {
 		completed, err := buildRequestCompletedEvent(ctx, tx, entry)
@@ -2095,16 +2303,59 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	return tx.Commit(ctx)
 }
 
+func upsertProtocolMetadata(ctx context.Context, tx pgx.Tx, entry *RequestLogEntry) error {
+	if entry == nil || entry.RequestID == "" ||
+		(entry.ClientProtocol == nil && entry.UpstreamProtocol == nil && entry.ProtocolConversion == nil) {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `
+		UPDATE request_logs_hot
+		   SET client_protocol = COALESCE(client_protocol, $2),
+		       upstream_protocol = COALESCE(upstream_protocol, $3),
+		       protocol_conversion = COALESCE(protocol_conversion, $4)
+		 WHERE request_id = $1
+	`, entry.RequestID, entry.ClientProtocol, entry.UpstreamProtocol, entry.ProtocolConversion)
+	return err
+}
+
+// persistSystemFingerprint 把 entry.SystemFingerprint 落到
+// request_logs_hot.system_fingerprint 专用列（2026-09-12 指纹写路径贯通，
+// 迁移 697 使其随 promote 进月度分区）。独立小 UPDATE 而非改 99 参数终态
+// UPDATE：零参数重排风险，且覆盖 UPDATE 主语句与 RowsAffected==0 回落
+// INSERT 两条路径（调用点在回落之后）。指纹每上游部署一份，last-write-wins；
+// entry 未携带时 no-op，历史语句集合不变。
+func persistSystemFingerprint(ctx context.Context, tx pgx.Tx, entry *RequestLogEntry) error {
+	if entry == nil || entry.SystemFingerprint == nil || *entry.SystemFingerprint == "" {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `
+		UPDATE request_logs_hot
+		   SET system_fingerprint = $2
+		 WHERE request_id = $1
+	`, entry.RequestID, *entry.SystemFingerprint)
+	return err
+}
+
 // shouldClaimFinalSuccess reports whether entry represents a terminal success
 // that carries a session key and therefore must attempt the v4 T7
 // session-level final-success claim. Failures, cancellations, client
 // disconnects and rows without a gw_session_id never claim (R6.2: 空
 // gw_session_id 不受唯一约束；失败/取消路径不改).
+//
+// 2026-09-17 R34: gateway-internal auto loopbacks (auto-title gt_/auto-summary
+// gs_ branch sessions) must not claim either. sessionv2mirror excludes them
+// from session_turns via IsInternalAutoEntry, so a claimed internal row would
+// leave is_final_success=TRUE with no mirrored turn — permanently inflating
+// the GLOBAL_G2 reconciliation counter. Business auto turns carry TaskType,
+// fail the IsInternalAutoEntry test, and still claim normally. The 2026-09-16
+// F1 fix started propagating IsAutoRequest onto success entries, which is what
+// made internal loopbacks reachable for this predicate at all.
 func shouldClaimFinalSuccess(entry *RequestLogEntry) bool {
 	return entry != nil &&
 		entry.Success &&
 		entry.GwSessionID != nil &&
-		*entry.GwSessionID != ""
+		*entry.GwSessionID != "" &&
+		!IsInternalAutoEntry(entry)
 }
 
 // claimSessionFinalSuccess marks the request_logs_hot row for requestID as
@@ -2186,19 +2437,21 @@ func (c *Client) heapRequestLogsPartitions(ctx context.Context, tx pgx.Tx) []str
 	return cached
 }
 
-func claimSessionFinalSuccess(ctx context.Context, tx pgx.Tx, requestID string) {
+func claimSessionFinalSuccess(ctx context.Context, c *Client, tx pgx.Tx, requestID string) {
 	// 2026-08-25: 列存分区安全. 旧实现直接 `FROM request_logs promoted` 半连接,
 	// 在 columnar 分区上会触发 0A000 (CTID scan over columnar). 改为只在
 	// pg_class.relam='h' 的 request_logs_<year>_<month> 月度分区里查, columnar
 	// 月份自动跳过. 没有 heap 月份时降级为跳过 (依赖 hot 唯一索引 + 8h 保留 +
 	// sql/scripts/report_duplicate_session_success.sql 兜底).
 	//
-	// 单调用上下文拿不到 Client 实例, 用一个包级 holder (loadClientForClaim)
-	// 拿到 *Client. 这条路径仅 claim 调用, holder 仅设一次 (cmd/gateway/main.go
-	// 创建 Client 后调用 SetClaimClient); 拿不到时按 0 个 heap 分区处理.
-	c := loadClientForClaim()
+	// 2026-09-12 (P2 冷迁移停滞根因): Client 由调用方 (*Client 方法) 直传,
+	// 不再走包级 holder + SetClaimClient. 2026-08-26 merge d2cbaf88b 回退
+	// main.go 后 holder 从未被重新接线, 生产 claim 一直走 nil 分支 — promoted
+	// 守卫整段跳过, 跨 8h promote 边界的长会话第二次成功 claim 出第二条
+	// is_final_success=TRUE, promote 撞 uq_<partition>_final_success_session
+	// (23505) 整批回滚, 冷迁移停摆 2.5 天. 直传后编译器保证接线不再可丢;
+	// c==nil 仅剩单测/退化场景 (守卫跳过, 依赖 promote 侧 695 自愈 demote).
 	if c == nil {
-		// 没有 Client (单测 / 无 DB), 用保守 SQL (不含 columnar 关联)
 		claimSessionFinalSuccessExec(ctx, tx, requestID, nil)
 		return
 	}
@@ -2327,14 +2580,15 @@ func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestI
 	// (request_id, ts) — the composite form triggers 42P10 at runtime.
 	// The UPDATE clause only replaces a body when this write supplied one.
 	_, err := tx.Exec(ctx, `
-		INSERT INTO request_logs_bodies_hot (request_id, ts, request_body, response_body, outbound_body)
-		VALUES ($1, now(), NULLIF($2, 'null')::jsonb, NULLIF($3, 'null')::jsonb, NULLIF($4, 'null')::jsonb)
-		ON CONFLICT (request_id) DO UPDATE
-			SET request_body  = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
-			    response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body),
-			    outbound_body = COALESCE(EXCLUDED.outbound_body, request_logs_bodies_hot.outbound_body),
-			    ts            = EXCLUDED.ts
-	`, requestID, reqJSON, respJSON, outJSON)
+	INSERT INTO request_logs_bodies_hot (request_id, ts, request_body, response_body, outbound_body)
+				SELECT $1, rl.ts, NULLIF($2, 'null')::jsonb, NULLIF($3, 'null')::jsonb, NULLIF($4, 'null')::jsonb
+				FROM request_logs_hot rl
+				WHERE rl.request_id = $1
+				ON CONFLICT (request_id) DO UPDATE
+					SET request_body  = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
+					    response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body),
+					    outbound_body = COALESCE(EXCLUDED.outbound_body, request_logs_bodies_hot.outbound_body)
+			`, requestID, reqJSON, respJSON, outJSON)
 	return err
 }
 
@@ -2773,6 +3027,8 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	sanitizeStringPtr(&e.ResponseChecksum)
 	sanitizeStringPtr(&e.TransformRuleID)
 	sanitizeStringPtr(&e.EgressProtocol)
+	sanitizeStringPtr(&e.ClientProtocol)
+	sanitizeStringPtr(&e.UpstreamProtocol)
 	sanitizeStringPtr(&e.FailureDetailCode)
 	sanitizeStringPtr(&e.FailureStage)
 	sanitizeStringPtr(&e.RequestPreview)
@@ -2985,6 +3241,8 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	mergeStringPtr(&dst.AgentName, src.AgentName)
 	mergeStringPtr(&dst.AgentType, src.AgentType)
 	mergeStringPtr(&dst.ClientProtocol, src.ClientProtocol)
+	mergeStringPtr(&dst.UpstreamProtocol, src.UpstreamProtocol)
+	mergeBoolPtr(&dst.ProtocolConversion, src.ProtocolConversion)
 	mergeStringPtr(&dst.VirtualClientID, src.VirtualClientID)
 	mergeIntPtr(&dst.RequestBytes, src.RequestBytes)
 	mergeIntPtr(&dst.ResponseBytes, src.ResponseBytes)
@@ -3188,11 +3446,20 @@ func lookupTurnNumber(ctx context.Context, tx pgx.Tx, sessionID string) int {
 	// Count existing requests in this session (including the current insert from the same tx)
 	// Since we're in the middle of the INSERT transaction, we need to count INCLUDING
 	// the row we just inserted. The turn_no should be: COUNT(*) for this session.
+	//
+	// 2026-09-17 audit: request_logs is RANGE-partitioned on ts. A bare
+	// gw_session_id predicate disables partition pruning, so every terminal
+	// request probed the gw_session_id index of EVERY monthly partition
+	// inside the write transaction. The 30d window restores pruning (1-2
+	// partitions); sessions outliving it restart turn numbering, which is
+	// acceptable — real sessions are far shorter, and the session/v2
+	// aggregator owns the authoritative turn_no anyway.
 	var count int
 	err := tx.QueryRow(ctx, `
-		SELECT COUNT(*) 
-		FROM request_logs 
+		SELECT COUNT(*)
+		FROM request_logs
 		WHERE gw_session_id = $1
+		  AND ts >= NOW() - INTERVAL '30 days'
 	`, sessionID).Scan(&count)
 
 	if err != nil {
@@ -3217,3 +3484,28 @@ func lookupTurnNumber(ctx context.Context, tx pgx.Tx, sessionID string) int {
 // inferRequestType derives the V3.2 request_type from the entry's existing
 // fields. Returns "main" for a plain client request (the column DEFAULT).
 // Precedence: explicit RequestType > compression > origin_actor > parent link.
+
+// requestClassArg resolves the request_class bind value. The database invariant
+// requires immediate rows to have no due_at and scheduled rows to have one;
+// normalizeRequestClassAndDueAt enforces that invariant before every write.
+func requestClassArg(c *string) string {
+	if c != nil && *c == "scheduled" {
+		return "scheduled"
+	}
+	return "immediate"
+}
+
+// normalizeRequestClassAndDueAt enforces the persisted domain invariant. Insert
+// callers always write a class; update callers preserve existing values unless
+// they explicitly provide RequestClass.
+func normalizeRequestClassAndDueAt(entry *RequestLogEntry, preserveWhenUnset bool) {
+	if entry == nil || (preserveWhenUnset && entry.RequestClass == nil) {
+		return
+	}
+	if entry.RequestClass != nil && *entry.RequestClass == "scheduled" && entry.DueAt != nil && !entry.DueAt.IsZero() {
+		return
+	}
+	immediate := "immediate"
+	entry.RequestClass = &immediate
+	entry.DueAt = nil
+}

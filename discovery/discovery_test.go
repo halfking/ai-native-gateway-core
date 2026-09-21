@@ -208,6 +208,18 @@ func TestInferFamily_VendorCollapsing(t *testing.T) {
 		{"", "unknown"},
 		{"   ", "unknown"},
 		{"mimo", "mimo"}, // single token, no dash
+
+		// 2026-08-29 (612): SenseTime / SenseNova — sensechat / sensenova → sensenova
+		{"sensechat-5", "sensenova"},
+		{"sensechat-5-thinking", "sensenova"},
+		{"sensechat-turbo", "sensenova"},
+		{"sensenova-xl", "sensenova"},
+		{"sensenova-6.7-flash-lite", "sensenova"},
+		{"sensenova-6.8-flash-lite", "sensenova"},
+		{"sensenova-u1-fast", "sensenova"},
+		{"sensenova-u1.5-lite", "sensenova"},
+		// 已经是 canonical family 的输入应原样返回
+		{"sensenova", "sensenova"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -106,4 +106,10 @@ export default {
     node: 'Node {node}',
     model: 'Model {model}',
   },
+  attempts: {
+    provider: '供應商 {id}',
+    model: '模型：{value}',
+    credential: '憑證：{value}',
+    empty: '暫無路由回退嘗試記錄',
+  },
 }

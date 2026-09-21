@@ -167,4 +167,7 @@ export default {
     reactivate: 'Re-activate',
     loadFailed: 'Failed to load license info: {msg}',
   },
+  versionsUpgradeConfirmBody: 'ستتم ترقية الخدمة إلى {version} ({label}). ستكون غير متاحة لفترة قصيرة — تأكد من عدم وجود مهام مهمة قيد التنفيذ.',
+  versionsUpgradeConfirmTitle: 'تأكيد الترقية',
+  versionsUpgradeConfirmStart: 'بدء الترقية',
 }

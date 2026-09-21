@@ -12,6 +12,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -26,27 +27,32 @@ import (
 )
 
 func main() {
-	dsn := flag.String("dsn", os.Getenv("DATABASE_URL"), "PostgreSQL DSN")
+	dsn := os.Getenv("DATABASE_URL")
 	days := flag.Int("days", 7, "Lookback window in days")
 	maxSamples := flag.Int("max-samples", 5000, "Max rows to process (0 = all)")
 	protocol := flag.String("protocol", "openai", "Protocol: openai or anthropic-messages")
 	contextWindow := flag.Int("context-window", 128000, "Model context window in tokens")
-	output := flag.String("output", "", "Write results JSON to this path (optional)")
+	output := flag.String("output", "", "Write aggregate-only JSON to this path (optional)")
 	skipLLMSummary := flag.Bool("skip-llm-summary", false, "Skip LLM-summary path (test mechanical only)")
 	shareSession := flag.Bool("share-session", false, "Use a single session_id for all rows (simulates a multi-turn conversation)")
 	serialExec := flag.Bool("serial", false, "Execute rows serially (required for share-session delta-append testing)")
 	testMode := flag.String("test-mode", "prepare", "Test mode: 'prepare' (full pipeline) or 'mechanical' (direct trim test)")
-	tempTable := flag.String("temp-table", "compression_bench_results", "Temp results table name")
+	persistResults := flag.Bool("persist-results", false, "Allow CREATE TABLE and INSERT results (disabled by default)")
+	tempTable := flag.String("temp-table", "compression_bench_results", "Results table name when --persist-results is set")
 	flag.Parse()
 
-	if *dsn == "" {
-		log.Fatal("-dsn or $DATABASE_URL is required")
+	if dsn == "" {
+		log.Fatal("DATABASE_URL is required")
+	}
+
+	if *shareSession && !*serialExec {
+		log.Fatal("--share-session requires --serial to preserve deterministic conversation order")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, *dsn)
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		log.Fatalf("connect to database: %v", err)
 	}
@@ -84,12 +90,19 @@ func main() {
 			rows[i].GwSessionID = sharedSessionID
 			rows[i].TenantID = sharedTenantID
 		}
-		log.Printf("share-session enabled: all rows use session_id=%s", sharedSessionID[:16])
+		log.Printf("share-session enabled: processing rows in one synthetic session")
 	}
 
-	// Create temp results table
-	if err := createTempTable(ctx, pool, *tempTable); err != nil {
-		log.Fatalf("create temp table: %v", err)
+	// Persisting benchmark rows is opt-in. The default path reads request_logs
+	// and emits aggregate metrics only, which is safe for sensitive production
+	// traffic and leaves the source database unchanged.
+	if *persistResults {
+		if !validTableName(*tempTable) {
+			log.Fatal("--temp-table must be a simple PostgreSQL identifier")
+		}
+		if err := createTempTable(ctx, pool, *tempTable); err != nil {
+			log.Fatalf("create temp table: %v", err)
+		}
 	}
 
 	// Process each row
@@ -139,11 +152,13 @@ func main() {
 		wg.Wait()
 	}
 
-	log.Printf("processed %d rows, inserting into %s", len(results), *tempTable)
-
-	// Insert results into DB
-	if err := insertResults(ctx, pool, *tempTable, results); err != nil {
-		log.Fatalf("insert results: %v", err)
+	if *persistResults {
+		log.Printf("processed %d rows, inserting into %s", len(results), *tempTable)
+		if err := insertResults(ctx, pool, *tempTable, results); err != nil {
+			log.Fatalf("insert results: %v", err)
+		}
+	} else {
+		log.Printf("processed %d rows in read-only aggregate mode", len(results))
 	}
 
 	// Compute summary statistics
@@ -154,7 +169,8 @@ func main() {
 
 	// Write JSON output if requested
 	if *output != "" {
-		if err := writeJSON(*output, summary, results); err != nil {
+		if err := writeJSON(*output, summary); err != nil {
+
 			log.Printf("write JSON: %v", err)
 		} else {
 			log.Printf("results written to %s", *output)
@@ -353,6 +369,10 @@ func trimmedMsgCount(body []byte) int {
 // ──────────────────────────────────────────────────────────────────────────────
 // Temp table
 // ──────────────────────────────────────────────────────────────────────────────
+
+var tableNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,62}$`)
+
+func validTableName(name string) bool { return tableNameRe.MatchString(name) }
 
 func createTempTable(ctx context.Context, pool *pgxpool.Pool, tableName string) error {
 	q := fmt.Sprintf(`
@@ -764,15 +784,18 @@ func min(a, b int) int {
 // JSON output
 // ──────────────────────────────────────────────────────────────────────────────
 
-func writeJSON(path string, s summary, results []benchResult) error {
+func writeJSON(path string, s summary) error {
 	type output struct {
-		Summary summary       `json:"summary"`
-		Results []benchResult `json:"results"`
+		Summary summary `json:"summary"`
+		Note    string  `json:"note"`
 	}
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return json.NewEncoder(f).Encode(output{Summary: s, Results: results})
+	return json.NewEncoder(f).Encode(output{
+		Summary: s,
+		Note:    "aggregate-only output; no request body, request, tenant, session, or timestamp identifiers are persisted",
+	})
 }

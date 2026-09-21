@@ -47,42 +47,13 @@ func TestScorePreferHigherSuccessRateWhenLowerScoreWins(t *testing.T) {
 		{ProviderID: 2, CredentialID: 2, RawModel: "m", BaseURLMs: 100},
 	}
 
-	scoreAndSort(views, seeds, DefaultConfig())
+	scoreAndSort(views, seeds, DefaultScoringWeights())
 
 	if views[0].ProviderID != 1 {
 		t.Fatalf("higher success rate must rank first under ascending score: %+v", views)
 	}
 	if views[0].Score >= views[1].Score {
 		t.Fatalf("higher success rate must have lower score, got %f vs %f", views[0].Score, views[1].Score)
-	}
-}
-
-func TestScoreEmptyResponsePenaltyRequiresSamplesAndThreshold(t *testing.T) {
-	base := []api.NodeView{
-		{ProviderID: 1, CredentialID: 1, RawModel: "m", SR5m: 1, Samples5m: 10, EmptyResponseRate5m: 0.8},
-		{ProviderID: 2, CredentialID: 2, RawModel: "m", SR5m: 1, Samples5m: 10, EmptyResponseRate5m: 0},
-	}
-	seeds := []CandidateSeed{
-		{ProviderID: 1, CredentialID: 1, RawModel: "m", BaseURLMs: 100},
-		{ProviderID: 2, CredentialID: 2, RawModel: "m", BaseURLMs: 100},
-	}
-	cfg := DefaultConfig()
-	cfg.ScoringWeights = ScoringWeights{EmptyPenalty: 1}
-	cfg.EmptyResponseMinSamples = 10
-	cfg.EmptyResponseRateThreshold = 0.2
-
-	scoreAndSort(base, seeds, cfg)
-	if base[0].ProviderID != 2 {
-		t.Fatalf("high empty-response rate must be soft-demoted after the sample threshold: %+v", base)
-	}
-
-	lowSample := []api.NodeView{
-		{ProviderID: 1, CredentialID: 1, RawModel: "m", SR5m: 1, Samples5m: 9, EmptyResponseRate5m: 1},
-		{ProviderID: 2, CredentialID: 2, RawModel: "m", SR5m: 1, Samples5m: 10, EmptyResponseRate5m: 0},
-	}
-	scoreAndSort(lowSample, seeds, cfg)
-	if lowSample[0].ProviderID != 1 || lowSample[0].Score != lowSample[1].Score {
-		t.Fatalf("low-sample empty-response telemetry must remain neutral: %+v", lowSample)
 	}
 }
 
@@ -103,7 +74,7 @@ func TestScoreSR5mMissingAndOutOfRangeUseSafePenalty(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			views := []api.NodeView{{SR5m: tt.sr5m, Samples5m: tt.samples}}
 			seeds := []CandidateSeed{{}}
-			scoreAndSort(views, seeds, Config{ScoringWeights: ScoringWeights{Stability: 1}})
+			scoreAndSort(views, seeds, ScoringWeights{Stability: 1})
 			wantScore := (1 - tt.want) * 1000
 			if math.Abs(views[0].Score-wantScore) > 1e-9 {
 				t.Fatalf("score=%f, want %f for sr5m=%v samples=%d", views[0].Score, wantScore, tt.sr5m, tt.samples)

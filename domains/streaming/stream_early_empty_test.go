@@ -50,7 +50,87 @@ func runEmptyGateForTest(t *testing.T, startingLine, remaining string) ([]string
 		&chunkCount,
 		nil,
 	)
+
 	return lines, outcome, recorder.Body.String()
+}
+
+func TestRunEmptyStreamGateVendorFieldsAreSanitized(t *testing.T) {
+	withEarlyEmptyThreshold(t, 0)
+	starting := `data: {"id":"start","choices":[{"delta":{"content":"hello"}}],"zhipu_request_id":"private"}` + "\n"
+	remaining := `data: {"id":"next","choices":[{"delta":{"content":"world"}}],"web_search_results":[{"title":"private"}]}` + "\n"
+	body := io.NopCloser(strings.NewReader(remaining))
+	recorder := httptest.NewRecorder()
+	lastSend := time.Now()
+	chunkCount := 0
+	lines, outcome := runEmptyStreamGateWithVendor(context.Background(), bufio.NewReader(body), body, recorder, recorder, nil, nil, nil, "gpt-test", new(string), starting, time.Second, &lastSend, &chunkCount, nil, "zhipu", StripZhipuFieldsBody, false)
+	if outcome != nil {
+		t.Fatalf("unexpected gate outcome: %+v", outcome)
+	}
+	joined := strings.Join(lines, "")
+	if strings.Contains(joined, "zhipu_request_id") || strings.Contains(joined, "web_search_results") {
+		t.Fatalf("vendor-private fields leaked from gate: %s", joined)
+	}
+}
+
+func TestRunEmptyStreamGateToolsRequestedTransformsBufferedXML(t *testing.T) {
+	withEarlyEmptyThreshold(t, 0)
+	starting := `data: {"id":"start","object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"}}]}` + "\n"
+	remaining := `data: {"id":"tool","object":"chat.completion.chunk","choices":[{"delta":{"content":"<tool_call><function=search><parameter=query>gateway</parameter></function></tool_call>"}}]}` + "\ndata: [DONE]\n\n"
+	body := io.NopCloser(strings.NewReader(remaining))
+	recorder := httptest.NewRecorder()
+	lastSend := time.Now()
+	chunkCount := 0
+	lines, outcome := runEmptyStreamGateWithVendor(context.Background(), bufio.NewReader(body), body, recorder, recorder, nil, nil, nil, "minimax-m3", new(string), starting, time.Second, &lastSend, &chunkCount, nil, "minimax", StripMinimaxFieldsBody, true)
+	if outcome != nil {
+		t.Fatalf("unexpected gate outcome: %+v", outcome)
+	}
+	joined := strings.Join(lines, "")
+	if strings.Contains(joined, "<tool_call>") {
+		t.Fatalf("buffered XML tool call leaked as text: %q", joined)
+	}
+	if !strings.Contains(joined, `"tool_calls"`) || !strings.Contains(joined, `"name":"search"`) {
+		t.Fatalf("expected structured tool call, got %q", joined)
+	}
+}
+
+func TestRunEmptyStreamGateTransformsSplitXMLToolCall(t *testing.T) {
+	withEarlyEmptyThreshold(t, 0)
+	starting := `data: {"id":"start","object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"}}]}` + "\n"
+	remaining := "data: {\"id\":\"tool-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"<tool_call><function=search>\"}}]}\n" +
+		"data: {\"id\":\"tool-2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"<parameter=query>gateway</parameter></function></tool_call>\"}}]}\n" +
+		"data: [DONE]\n\n"
+	body := io.NopCloser(strings.NewReader(remaining))
+	recorder := httptest.NewRecorder()
+	lastSend := time.Now()
+	chunkCount := 0
+	lines, outcome := runEmptyStreamGateWithVendor(context.Background(), bufio.NewReader(body), body, recorder, recorder, nil, nil, nil, "minimax-m3", new(string), starting, time.Second, &lastSend, &chunkCount, nil, "minimax", StripMinimaxFieldsBody, true)
+	if outcome != nil {
+		t.Fatalf("unexpected gate outcome: %+v", outcome)
+	}
+	joined := strings.Join(lines, "")
+	if strings.Contains(joined, "<tool_call>") {
+		t.Fatalf("split XML tool call leaked as text: %q", joined)
+	}
+	if !strings.Contains(joined, `"tool_calls"`) || !strings.Contains(joined, `"name":"search"`) {
+		t.Fatalf("expected structured split tool call, got %q", joined)
+	}
+}
+
+func TestStreamXMLToolCallOverflowIsDroppedAndBounded(t *testing.T) {
+	c := newStreamXMLToolCallCoercer()
+	content := "<tool_call><function=search>" + strings.Repeat("x", maxStreamXMLToolCallBytes) + "</function></tool_call>"
+	line := `data: {"id":"overflow","choices":[{"delta":{"content":"` + content + `"}}]}` + "\n"
+
+	got := c.apply(line, true)
+	if c.pending() {
+		t.Fatal("overflow must clear the buffered fragment")
+	}
+	if strings.Contains(got, content) {
+		t.Fatalf("overflow content leaked to output: %q", got)
+	}
+	if !strings.Contains(got, `"delta":{}`) {
+		t.Fatalf("overflow should emit a bounded empty delta, got %q", got)
+	}
 }
 
 func TestRunEmptyStreamGateEarlyEmptyDetection(t *testing.T) {

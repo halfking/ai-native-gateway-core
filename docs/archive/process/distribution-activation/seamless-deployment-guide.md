@@ -247,7 +247,7 @@ echo "[1] service: $(systemctl is-active llm-gateway-go.service)"
 echo "[2] version: $(curl -fsS http://localhost:8781/api/system/version)"
 echo "[3] postgres disabled: $(journalctl -u llm-gateway-go --since "3min ago" --no-pager -o cat | grep -c "postgres disabled")"
 echo "[4] background-tasks: $(curl -s -o /dev/null -w "%{http_code}" http://localhost:8781/api/system/background-tasks)"
-TOKEN=$(curl -fsS -X POST http://localhost:8781/api/auth/token -H "Content-Type: application/json" -d "{\"username\":\"admin\",\"password\":\"__REDACTED_ADMIN_PASSWORD__\"}" | python3 -c "import json,sys;print(json.load(sys.stdin).get(\"access_token\",\"\"))")
+TOKEN=$(curl -fsS -X POST http://localhost:8781/api/auth/token -H "Content-Type: application/json" -d "{\"username\":\"admin\",\"password\":\"__REDACTED_SSH_PASSWORD__\"}" | python3 -c "import json,sys;print(json.load(sys.stdin).get(\"access_token\",\"\"))")
 echo "[5] admin login: $([ -n "$TOKEN" ] && echo OK || echo FAIL)"
 '
 ```

@@ -47,4 +47,9 @@ export default {
     critical: 'critical',
     unknown: 'unknown',
   },
+  probeAllConfirm: '對模型 {model} 的全部 {n} 個憑證觸發探活?',
+  systemStartAllConfirm: '確認開始全部探測任務？將掃描所有 active 憑證的 binding。',
+  systemStopAllConfirm: '確認停止全部探測任務？已 claimed 的任務仍會跑完。',
+  systemTriggeredToast: '已觸發 {n} 任務, 失敗 {failed}',
+  systemStoppedToast: '已清空佇列 {n} 條任務',
 }

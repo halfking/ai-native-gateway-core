@@ -12,6 +12,7 @@
 //   4. Extend modal (per-row)
 
 import { ref, computed, onMounted } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import {
   getRoutingOverrides,
@@ -21,6 +22,7 @@ import {
   type RoutingOverride,
   type RoutingOverrideCreate,
 } from '../api'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -99,12 +101,12 @@ async function submitCreate() {
 
 // ── Delete action ───────────────────────────────────────────────
 async function deleteOverride(o: RoutingOverride) {
-  if (!confirm(t('routingOverride.table.deleteConfirm', {
+  if (!(await confirmDialog(t('routingOverride.table.deleteConfirm', {
     id: o.id,
     mode: o.mode,
     model: o.model_chosen ?? '*',
     task: o.task_type,
-  }))) {
+  })))) {
     return
   }
   try {
@@ -197,15 +199,15 @@ onMounted(loadOverrides)
       </div>
       <div class="summary-card">
         <div class="summary-label">{{ t('routingOverride.summary.bans') }}</div>
-        <div class="summary-value" style="color: #f97316">{{ summary.bans }}</div>
+        <div class="summary-value" style="color: var(--warning)">{{ summary.bans }}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">{{ t('routingOverride.summary.pins') }}</div>
-        <div class="summary-value" style="color: #22c55e">{{ summary.pins }}</div>
+        <div class="summary-value" style="color: var(--success)">{{ summary.pins }}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">{{ t('routingOverride.summary.expiring') }}</div>
-        <div class="summary-value" :style="{ color: summary.expiring > 0 ? '#eab308' : '#888' }">
+        <div class="summary-value" :style="{ color: summary.expiring > 0 ? 'var(--warning)' : 'var(--muted)' }">
           {{ summary.expiring }}
         </div>
       </div>
@@ -337,7 +339,7 @@ onMounted(loadOverrides)
             <td class="reason">{{ o.reason }}</td>
             <td>
               <span v-if="o.expires_at" :class="{ 'text-warn': isExpiring(o) }">
-                {{ new Date(o.expires_at).toLocaleString() }}
+                {{ formatDateTime(o.expires_at) }}
               </span>
               <span v-else class="text-muted">permanent</span>
             </td>

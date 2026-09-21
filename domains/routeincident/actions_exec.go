@@ -73,9 +73,13 @@ func recoverExecutor(ctx context.Context, tx pgx.Tx, snap *Incident, in *ActionR
 			targetState = v
 		}
 	}
-	allowedTarget := map[string]struct{}{"recovered": {}, "closed": {}}
+	// R34 (2026-09-17 audit): 'closed' is not a legal route_incidents.state
+	// (CHECK allows pending/active/recovering/recovered). The executor never
+	// wrote target_state today, but leaving it in the whitelist was a latent
+	// 23514 the moment a future change persisted the column.
+	allowedTarget := map[string]struct{}{"recovered": {}}
 	if _, ok := allowedTarget[targetState]; !ok {
-		return nil, nil, nil, fmt.Errorf("%w: target_state must be one of {recovered, closed}", ErrInvalidInput)
+		return nil, nil, nil, fmt.Errorf("%w: target_state must be \"recovered\"", ErrInvalidInput)
 	}
 
 	// Build the synthetic run. The result here is what the

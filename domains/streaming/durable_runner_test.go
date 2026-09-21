@@ -60,6 +60,10 @@ func (f *durableRunnerResolverFake) GetCandidatesByModality(_ context.Context, m
 func (f *durableRunnerResolverFake) ModelKnown(context.Context, string) bool { return true }
 
 func durableRunnerSnapshot(t *testing.T) *durable.Snapshot {
+	return durableRunnerSnapshotVariant(t, nil)
+}
+
+func durableRunnerSnapshotVariant(t *testing.T, mutate func(*DurableRequestSnapshotV1)) *durable.Snapshot {
 	t.Helper()
 	snap := DurableRequestSnapshotV1{
 		Version:            DurableSnapshotVersionV1,
@@ -76,6 +80,9 @@ func durableRunnerSnapshot(t *testing.T) *durable.Snapshot {
 		PolicyVersion:      DurablePolicyVersionV1,
 		RequestID:          "req-9",
 		TaskCorrelationID:  "req-9",
+	}
+	if mutate != nil {
+		mutate(&snap)
 	}
 	body, err := MarshalDurableSnapshotV1(snap)
 	if err != nil {
@@ -205,5 +212,109 @@ func TestDurableAttemptRunnerFoldsExecuteErrorKinds(t *testing.T) {
 	}
 	if attempt.ErrorKind != string(errorsx.KindRateLimit) {
 		t.Fatalf("ErrorKind = %q, want rate_limit", attempt.ErrorKind)
+	}
+}
+
+// A runner constructed without a verifier must fail closed with a bounded
+// runner error instead of panicking on every worker claim.
+func TestDurableAttemptRunnerNilVerifierFailsClosed(t *testing.T) {
+	runner := NewDurableAttemptRunner(&durableRunnerExecSpy{}, &durableRunnerResolverFake{}, nil)
+	if _, err := runner.Run(context.Background(), &durable.Task{ID: "task-7"}, durableRunnerSnapshot(t)); err == nil {
+		t.Fatal("nil verifier must surface as a runner error, not a panic")
+	}
+}
+
+// The client profile is a routing identity input frozen at acceptance; a key
+// whose default profile changed since the 202 must not re-route the recovery.
+func TestDurableAttemptRunnerPrefersSnapshotProfile(t *testing.T) {
+	keyProfile := "key-current"
+	verifier := &durableRunnerVerifierFake{info: &authentication.KeyInfo{
+		ID: 42, TenantID: "tenant-1", DefaultClientProfile: &keyProfile,
+	}}
+	resolver := &durableRunnerResolverFake{cands: []provider.Candidate{{ProviderID: 3}}}
+	runner := NewDurableAttemptRunner(&durableRunnerExecSpy{result: &executors.ExecuteResult{}}, resolver, verifier)
+	snap := durableRunnerSnapshotVariant(t, func(s *DurableRequestSnapshotV1) {
+		s.ClientProfile = "frozen-acceptance"
+	})
+
+	if _, err := runner.Run(context.Background(), &durable.Task{ID: "task-7"}, snap); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if resolver.lastProfile != "frozen-acceptance" {
+		t.Fatalf("resolver profile = %q, want the snapshot's frozen profile", resolver.lastProfile)
+	}
+}
+
+// Snapshots written before client_profile existed keep the historical
+// behavior: the re-verified key's default profile drives candidate rebuild.
+func TestDurableAttemptRunnerFallsBackToKeyProfileForLegacySnapshot(t *testing.T) {
+	keyProfile := "key-current"
+	verifier := &durableRunnerVerifierFake{info: &authentication.KeyInfo{
+		ID: 42, TenantID: "tenant-1", DefaultClientProfile: &keyProfile,
+	}}
+	resolver := &durableRunnerResolverFake{cands: []provider.Candidate{{ProviderID: 3}}}
+	runner := NewDurableAttemptRunner(&durableRunnerExecSpy{result: &executors.ExecuteResult{}}, resolver, verifier)
+
+	if _, err := runner.Run(context.Background(), &durable.Task{ID: "task-7"}, durableRunnerSnapshot(t)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if resolver.lastProfile != "key-current" {
+		t.Fatalf("resolver profile = %q, want key default for legacy snapshot", resolver.lastProfile)
+	}
+}
+
+// Detached /v1/responses recovery must carry the preserved native body and
+// the freshly resolved routing policy, exactly like the foreground path.
+func TestDurableAttemptRunnerRebuildsResponsesBodyAndPolicy(t *testing.T) {
+	profile := "p1"
+	verifier := &durableRunnerVerifierFake{info: &authentication.KeyInfo{
+		ID: 42, TenantID: "tenant-1", DefaultClientProfile: &profile,
+	}}
+	exec := &durableRunnerExecSpy{result: &executors.ExecuteResult{}}
+	resolver := &durableRunnerResolverFake{cands: []provider.Candidate{{ProviderID: 3}}}
+	runner := NewDurableAttemptRunner(exec, resolver, verifier)
+	snap := durableRunnerSnapshotVariant(t, func(s *DurableRequestSnapshotV1) {
+		s.Endpoint = "/v1/responses"
+		s.ClientProtocol = "openai-responses"
+		s.NormalizedBody = []byte(`{"model":"gpt-4o","input":"hi"}`)
+	})
+
+	if _, err := runner.Run(context.Background(), &durable.Task{ID: "task-7"}, snap); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	p := exec.captured
+	if p == nil {
+		t.Fatal("executor was not invoked")
+	}
+	if string(p.ResponsesBodyBytes) != `{"model":"gpt-4o","input":"hi"}` {
+		t.Fatalf("ResponsesBodyBytes = %q, want the preserved native body", p.ResponsesBodyBytes)
+	}
+	if p.Policy == nil {
+		t.Fatal("detached attempt must carry the resolved routing policy")
+	}
+}
+
+// The task-scoped budget provider must flow into the detached ExecParams so
+// repeated executions of one durable task share a single call ceiling.
+func TestDurableAttemptRunnerUsesSharedTaskBudget(t *testing.T) {
+	profile := "p1"
+	verifier := &durableRunnerVerifierFake{info: &authentication.KeyInfo{
+		ID: 42, TenantID: "tenant-1", DefaultClientProfile: &profile,
+	}}
+	exec := &durableRunnerExecSpy{result: &executors.ExecuteResult{}}
+	runner := NewDurableAttemptRunner(exec, &durableRunnerResolverFake{cands: []provider.Candidate{{ProviderID: 3}}}, verifier)
+	shared := executors.NewUpstreamAttemptBudget(2)
+	runner.BudgetProvider = func(taskID string) *executors.UpstreamAttemptBudget {
+		if taskID != "task-7" {
+			t.Fatalf("budget requested for %q, want task-7", taskID)
+		}
+		return shared
+	}
+
+	if _, err := runner.Run(context.Background(), &durable.Task{ID: "task-7"}, durableRunnerSnapshot(t)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if exec.captured == nil || exec.captured.UpstreamAttempts != shared {
+		t.Fatalf("detached attempt must use the shared task budget, got %v", exec.captured.UpstreamAttempts)
 	}
 }

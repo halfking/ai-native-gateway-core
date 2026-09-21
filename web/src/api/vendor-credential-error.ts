@@ -1,4 +1,4 @@
-import { req } from './_core'
+import { req, type RequestOptions } from './_core'
 
 export type VendorErrorHours = '1' | '24' | '168'
 
@@ -27,6 +27,9 @@ export interface VendorErrorKindStat {
   count: number
   last_seen: string
   distinct_status_codes: number
+  /** 2026-09-05 审计 E-#6 additive 字段，2026-09-09 审计 R3 接入展示。 */
+  retryable_count?: number
+  stage_counts?: Record<string, number>
 }
 
 export interface VendorRecentFailure {
@@ -39,6 +42,11 @@ export interface VendorRecentFailure {
   upstream_status_code: number | null
   upstream_response_preview: string | null
   latency_ms: number | null
+  /** 2026-09-05 审计闭环1：supplier_errors_unified 结构化维度透传。 */
+  supplier?: string | null
+  error_code?: string | null
+  retryable?: boolean | null
+  stage?: string | null
 }
 
 export interface VendorQualityScore {
@@ -62,10 +70,13 @@ export interface VendorCredentialErrorDetail {
 export function getVendorCredentialErrorDetail(
   credentialId: number,
   hours: VendorErrorHours = '24',
+  options?: RequestOptions,
 ) {
   const params = new URLSearchParams({ hours })
   return req<VendorCredentialErrorDetail>(
     'GET',
     `/api/vendors/credentials/${credentialId}/error-detail?${params.toString()}`,
+    undefined,
+    options,
   )
 }

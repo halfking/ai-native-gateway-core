@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -59,7 +58,7 @@ func (h *Handler) handleMaasSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, st)
 	case http.MethodPut:
 		var body maas.Settings
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := readJSONRequired(r, &body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
@@ -115,7 +114,7 @@ func (h *Handler) handleMaasModelRateByID(w http.ResponseWriter, r *http.Request
 	switch r.Method {
 	case http.MethodPut:
 		var body maas.ModelRateUpsert
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := readJSONRequired(r, &body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
@@ -128,7 +127,7 @@ func (h *Handler) handleMaasModelRateByID(w http.ResponseWriter, r *http.Request
 		var body struct {
 			Fields []string `json:"fields"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := readJSONRequired(r, &body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
@@ -169,7 +168,7 @@ func (h *Handler) handleMaasModelRateBatch(w http.ResponseWriter, r *http.Reques
 	var req struct {
 		Updates []maas.ModelRateUpsertWithID `json:"updates"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -200,7 +199,7 @@ func (h *Handler) handleMaasModelRateBatchReset(w http.ResponseWriter, r *http.R
 	var req struct {
 		Items []maas.BatchResetWithID `json:"items"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -232,7 +231,7 @@ func (h *Handler) handleMaasModelRateBatchFillGlobal(w http.ResponseWriter, r *h
 	var req struct {
 		Items []maas.BatchFillGlobalWithID `json:"items"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -387,7 +386,7 @@ func (h *Handler) handleMaasTenantAdmin(w http.ResponseWriter, r *http.Request) 
 			Amount int64  `json:"amount"`
 			Note   string `json:"note"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := readJSONRequired(r, &body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
@@ -405,7 +404,7 @@ func (h *Handler) handleMaasTenantAdmin(w http.ResponseWriter, r *http.Request) 
 			GrantedCredits int64  `json:"granted_credits"`
 			Note           string `json:"note"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := readJSONRequired(r, &body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
@@ -574,7 +573,7 @@ func (h *Handler) handleMaasOrders(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	case http.MethodPost:
 		var body maas.CreateOrderRequest
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := readJSONRequired(r, &body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
@@ -664,7 +663,7 @@ func (h *Handler) handleAdminMaasOrderByID(w http.ResponseWriter, r *http.Reques
 		var body struct {
 			Note string `json:"note"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = readJSONRequired(r, &body)
 		if err := svc.ConfirmOrder(r.Context(), id, body.Note); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return

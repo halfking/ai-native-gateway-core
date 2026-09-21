@@ -20,8 +20,8 @@ func TestDecideState_NoIncident_FirstFailure(t *testing.T) {
 	if !applied {
 		t.Fatal("first failure must open a new incident")
 	}
-	if state != StateActive {
-		t.Fatalf("want active, got %s", state)
+	if state != StatePending {
+		t.Fatalf("want pending (below threshold=3), got %s", state)
 	}
 	if fs != 1 || rs != 0 {
 		t.Fatalf("want streak 1/0, got %d/%d", fs, rs)
@@ -78,8 +78,38 @@ func TestDecideState_Recovering_FailureResetsToActive(t *testing.T) {
 func TestDecideState_Recovered_FailureReopens(t *testing.T) {
 	cur := mkIncident(StateRecovered, 0, 5)
 	state, fs, _, _ := DecideState(cur, TerminalFailure, DefaultThresholds())
-	if state != StateActive || fs != 1 {
-		t.Fatalf("want active 1 (reopen), got %s %d", state, fs)
+	if state != StatePending || fs != 1 {
+		t.Fatalf("want pending 1 (reopen below threshold), got %s %d", state, fs)
+	}
+}
+
+func TestDecideState_Pending_SecondFailure(t *testing.T) {
+	cur := mkIncident(StatePending, 1, 0)
+	state, fs, rs, applied := DecideState(cur, TerminalFailure, DefaultThresholds())
+	if !applied || state != StatePending || fs != 2 || rs != 0 {
+		t.Fatalf("want pending 2/0 (still below threshold=3), got %s %d/%d applied=%v", state, fs, rs, applied)
+	}
+}
+
+func TestDecideState_Pending_ThirdFailureBecomesActive(t *testing.T) {
+	cur := mkIncident(StatePending, 2, 0)
+	state, fs, rs, applied := DecideState(cur, TerminalFailure, DefaultThresholds())
+	if !applied || state != StateActive || fs != 3 || rs != 0 {
+		t.Fatalf("want active 3/0 (threshold reached), got %s %d/%d applied=%v", state, fs, rs, applied)
+	}
+}
+
+func TestDecideState_Pending_SuccessRecovers(t *testing.T) {
+	cur := mkIncident(StatePending, 2, 0)
+	state, fs, rs, applied := DecideState(cur, TerminalSuccess, DefaultThresholds())
+	if !applied || state != StateRecovered || fs != 0 || rs != 0 {
+		t.Fatalf("want recovered (success during pending clears), got %s %d/%d applied=%v", state, fs, rs, applied)
+	}
+}
+
+func TestDecideState_PendingNotVisible(t *testing.T) {
+	if StatePending.IsVisible() {
+		t.Fatal("pending state must not be visible on dashboard")
 	}
 }
 

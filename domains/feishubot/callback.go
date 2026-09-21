@@ -3,10 +3,12 @@ package feishubot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -72,8 +74,20 @@ func (h *CallbackHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// 2026-08-26 (P1-4 fix): cap the body at 1 MiB via
+	// http.MaxBytesReader. The previous io.ReadAll(r.Body) had no
+	// upper bound — a single unbounded chunked upload could exhaust
+	// the server's read buffer.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var mbErr *http.MaxBytesError
+		if errors.As(err, &mbErr) {
+			slog.Warn("feishu_bot: callback body exceeds 1 MiB",
+				"remote_addr", r.RemoteAddr)
+			http.Error(w, "body too large", http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "read body failed", http.StatusBadRequest)
 		return
 	}
@@ -86,9 +100,30 @@ func (h *CallbackHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 2026-08-26 (P1-3 fail-closed): when SignatureRequired is true
+	// (the recommended posture), the EncryptKey must be present
+	// AND non-empty. If an operator set SignatureRequired=true but
+	// forgot to fill in EncryptKey, the handler would fall through
+	// to the unauthenticated branch — silently accepting any
+	// callback. Refuse up front instead.
+	if cfg.SignatureRequired && cfg.EncryptKey == "" {
+		slog.Error("feishu_bot: signature required but EncryptKey not configured",
+			"remote_addr", r.RemoteAddr)
+		http.Error(w, "feishu_bot signature required but encrypt key not configured",
+			http.StatusServiceUnavailable)
+		return
+	}
+
 	var cb FeishuCallback
 	if err := json.Unmarshal(body, &cb); err != nil {
-		slog.Warn("feishu_bot: invalid callback json", "error", err, "body", string(body))
+		// 2026-08-27 (audit fix): never log the full body — callbacks
+		// may carry operator identities / card content, and the body
+		// can be up to the 1 MiB cap. Record size + a short escaped
+		// preview instead.
+		slog.Warn("feishu_bot: invalid callback json",
+			"error", err,
+			"body_bytes", len(body),
+			"body_preview", previewBody(body))
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
@@ -260,3 +295,18 @@ func (h *CallbackHandler) AsHTTPHandler() http.Handler {
 
 // Compile-time guard: avoid unused fmt import warning if all branches optimized out.
 var _ = fmt.Sprintf
+
+// previewBody returns a short, control-character-escaped preview of a
+// callback body safe for structured logs. Cap is 256 bytes — enough to
+// identify the shape of a malformed payload without dumping operator
+// identities or card content into the log stream.
+func previewBody(body []byte) string {
+	const cap = 256
+	b := body
+	if len(b) > cap {
+		b = b[:cap]
+	}
+	// strconv.Quote escapes control characters and keeps the log line
+	// single-line even when the payload contains newlines.
+	return strconv.Quote(string(b))
+}

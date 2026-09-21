@@ -32,12 +32,8 @@ func readClosedSkippedCounter(t *testing.T) float64 {
 }
 
 // setupRollupContainer starts a fresh postgres container, applies the
-// stats foundation + usage_facts migrations that the rollup SQL actually
-// reads from, and returns a pool + raw conn for seeding.
-//
-// Rollup's dailyInsertSQL selects from usage_facts (see
-// daily_monthly_rollup.go:197), so 537 must be applied even though the
-// rollup never writes to it.
+// 536 foundation schema (which is the only schema rollup requires),
+// and returns a pool + raw conn for seeding.
 func setupRollupContainer(t *testing.T, ctx context.Context) (*pgxpool.Pool, *pgx.Conn) {
 	t.Helper()
 	pgContainer, err := postgres.Run(ctx,
@@ -79,17 +75,12 @@ func setupRollupContainer(t *testing.T, ctx context.Context) (*pgxpool.Pool, *pg
 	}
 	t.Cleanup(func() { _ = conn.Close(ctx) })
 
-	for _, name := range []string{
-		"../../sql/migrations/startup/536_stats_analytics_foundation.sql",
-		"../../sql/migrations/startup/537_usage_facts.sql",
-	} {
-		body, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		if _, err := conn.Exec(ctx, string(body)); err != nil {
-			t.Fatalf("apply %s: %v", name, err)
-		}
+	body, err := os.ReadFile("../../sql/migrations/startup/536_stats_analytics_foundation.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, string(body)); err != nil {
+		t.Fatalf("apply 536: %v", err)
 	}
 
 	pool, err := pgxpool.New(ctx, connStr)
@@ -122,28 +113,17 @@ func TestRollup_NoClosedRows(t *testing.T) {
 	now := time.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 
-	// Seed the rollup's source-of-truth: usage_facts joined with
-	// stats_event_dedup (see dailyInsertSQL). Refresh deletes and
-	// rebuilds stats_usage_daily from these rows, so any direct
-	// stats_usage_daily insert here would be wiped on the next call.
-	const factEventID = "rollup-fact-1"
+	// Insert one stats_usage_daily row for the current month.
 	if _, err := conn.Exec(ctx, `
-		INSERT INTO stats_event_dedup (event_id, occurred_at)
-		VALUES ($1, $2)
-		ON CONFLICT (event_id) DO NOTHING
-	`, factEventID, today); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO usage_facts
-			(event_id, request_id, revision, occurred_at, tenant_id,
-			 provider_id, canonical_id, raw_model_name, traffic_class, status,
-			 prompt_tokens, completion_tokens, total_tokens, cost_amount,
-			 credits_charged, latency_ms, ttft_ms)
+		INSERT INTO stats_usage_daily
+			(day_utc, tenant_id, provider_id, canonical_id, raw_model_name,
+			 dimension_type, dimension_key, traffic_class,
+			 request_count, success_count, prompt_tokens, completion_tokens,
+			 total_tokens, cost_usd, credits_charged)
 		VALUES
-			($1, 'rollup-req-1', 1, $2, 't1', 1, 10, 'gpt-4',
-			 'business', 'success', 100, 50, 150, 0.01, 150, 1, 1)
-	`, factEventID, today); err != nil {
+			($1, 't1', 1, 10, 'gpt-4', 'provider_model', 'p:1:m:10',
+			 'business', 3, 3, 100, 50, 150, 0.01, 150)
+	`, today); err != nil {
 		t.Fatal(err)
 	}
 
@@ -205,48 +185,32 @@ func TestRollup_ClosedRowsAreSurfaced(t *testing.T) {
 
 	// Seed a closed stats_usage_monthly row for the current month.
 	// This row has the same primary key tuple as the rollup will
-	// produce for the usage_facts fact below, so the WHERE
-	// status<>'closed' clause on the upsert will silently degrade
-	// to DO NOTHING — exactly the bug we are guarding against.
-	//
-	// The rollup's dailyInsertSQL emits six dimension variants per
-	// fact; the 'provider_model' variant's dimension_key is
-	// COALESCE(raw_model_name, ''), so we seed the closed row with
-	// raw_model_name='gpt-4' and dimension_key='gpt-4' to match.
+	// attempt to upsert, so the WHERE status<>'closed' clause will
+	// silently degrade to DO NOTHING — exactly the bug we are
+	// guarding against.
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO stats_usage_monthly
 			(month_start, tenant_id, provider_id, credential_id, canonical_id,
 			 raw_model_name, dimension_type, dimension_key, traffic_class,
 			 request_count, success_count, status, closed_at, updated_at)
 		VALUES
-			($1, 't1', 1, 0, 10, 'gpt-4', 'provider_model', 'gpt-4',
+			($1, 't1', 1, 0, 10, 'gpt-4', 'provider_model', 'p:1:m:10',
 			 'business', 99, 99, 'closed', now(), now())
 	`, monthStart); err != nil {
 		t.Fatal(err)
 	}
 
-	// Seed the rollup's source-of-truth for the same PK tuple. The
-	// rollup's dailyInsertSQL reads from usage_facts joined with
-	// stats_event_dedup, so seeding those (instead of stats_usage_daily)
-	// is what actually drives the monthly upsert attempt.
-	const factEventID = "rollup-closed-fact-1"
+	// Seed a daily row that will trigger the upsert (same PK tuple).
 	if _, err := conn.Exec(ctx, `
-		INSERT INTO stats_event_dedup (event_id, occurred_at)
-		VALUES ($1, $2)
-		ON CONFLICT (event_id) DO NOTHING
-	`, factEventID, today); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := conn.Exec(ctx, `
-		INSERT INTO usage_facts
-			(event_id, request_id, revision, occurred_at, tenant_id,
-			 provider_id, canonical_id, raw_model_name, traffic_class, status,
-			 prompt_tokens, completion_tokens, total_tokens, cost_amount,
-			 credits_charged, latency_ms, ttft_ms)
+		INSERT INTO stats_usage_daily
+			(day_utc, tenant_id, provider_id, canonical_id, raw_model_name,
+			 dimension_type, dimension_key, traffic_class,
+			 request_count, success_count, prompt_tokens, completion_tokens,
+			 total_tokens, cost_usd, credits_charged)
 		VALUES
-			($1, 'rollup-closed-req-1', 1, $2, 't1', 1, 10, 'gpt-4',
-			 'business', 'success', 100, 50, 150, 0.01, 150, 1, 1)
-	`, factEventID, today); err != nil {
+			($1, 't1', 1, 10, 'gpt-4', 'provider_model', 'p:1:m:10',
+			 'business', 3, 3, 100, 50, 150, 0.01, 150)
+	`, today); err != nil {
 		t.Fatal(err)
 	}
 

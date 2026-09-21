@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -130,7 +129,7 @@ func (h *Handler) handleRecoverBackupFile(w http.ResponseWriter, r *http.Request
 	var req struct {
 		DeleteAfter bool `json:"delete_after"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -158,7 +157,7 @@ func (h *Handler) handleRecoverAllBackups(w http.ResponseWriter, r *http.Request
 	var req struct {
 		DeleteAfter bool `json:"delete_after"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

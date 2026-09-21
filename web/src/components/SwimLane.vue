@@ -158,11 +158,13 @@ function handleTileClick(requestId: string) {
 // —— ResizeObserver 监听轨道宽度变化 ——
 let resizeObserver: ResizeObserver | null = null
 let rafPending = false
+let rafHandle: number | null = null
 
 function measureTrack() {
   if (rafPending) return
   rafPending = true
-  requestAnimationFrame(() => {
+  rafHandle = requestAnimationFrame(() => {
+    rafHandle = null
     rafPending = false
     if (trackRef.value) {
       const w = trackRef.value.getBoundingClientRect().width
@@ -187,6 +189,11 @@ onUnmounted(() => {
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
+  }
+  if (rafHandle !== null) {
+    cancelAnimationFrame(rafHandle)
+    rafHandle = null
+    rafPending = false
   }
 })
 
@@ -372,7 +379,7 @@ watch(laneMode, async () => {
 }
 .swim-lane__diagnose--active .swim-lane__diagnose-dot {
   background: var(--danger);
-  box-shadow: 0 0 0 3px rgba(248, 81, 73, 0.18);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 12%, transparent);
   animation: pulse-dot 1.4s ease-in-out infinite;
 }
 

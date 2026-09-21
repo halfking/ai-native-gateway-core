@@ -78,8 +78,11 @@ func (p *PGPublisher) Publish(ctx context.Context, evt analysis.AnalysisEvent) e
 	// 2026-07-16: Fix 22P02 error by using $6::text::jsonb cast pattern.
 	// Passing []byte directly to JSONB column causes "invalid input syntax for type json"
 	// when payload contains escaped quotes. Converting to string and using ::text::jsonb
-	// cast matches the pattern used in apihub/pg_store.go, candidate_failure_logger.go,
-	// and telemetry/client.go (see rule 43 + apihub 22P02 fix precedent).
+	// cast matches the pattern used in apihub/pg_store.go and
+	// telemetry/client.go (see rule 43 + apihub 22P02 fix precedent).
+	// (candidate_failure_logger.go referenced here was removed in the
+	// 2026-09-05 round2 cleanup; the live counterpart is
+	// domains/streaming/executors/candidate_failure_logger.go.)
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO analysis_events
 			(event_id, type, tenant_id, session_id, request_id, payload, occurred_at)

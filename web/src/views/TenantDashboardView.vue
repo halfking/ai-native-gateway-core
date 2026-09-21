@@ -6,9 +6,11 @@
 //   - 模型用量 Top-N + 趋势图表，沿用 TenantDashboardView v2 的可视化
 //   - 所有文案走 i18n
 import { ref, computed, onMounted, onUnmounted, inject, type Ref } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { localeRef } from '../i18n'
+import { fmtDateShort } from '../i18n/useFormat'
 import {
   getMaasUsageSummary,
   getMaasWallet,
@@ -18,14 +20,12 @@ import {
   type RequestLogRow,
 } from '../api'
 import { getCurrentTenantId } from '../store'
-import LiveRequestStream from '../components/LiveRequestStream.vue'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
-import RequestLogDrawer from '../components/RequestLogDrawer.vue'
-import { useLiveStream } from '../composables/useLiveStream'
-import { useSessionSummaryJump } from '../composables/useSessionSummaryJump'
+import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 import { dashboardPreferenceStorageKey } from '../composables/liveStreamPreferences'
 
 const { t } = useI18n()
+const router = useRouter()
 
 const LEGACY_STORAGE_KEY_DAYS = 'tenant_dashboard_days'
 const VALID_DAYS = [1, 7, 30] as const
@@ -94,13 +94,8 @@ const degradedHint = computed(() => {
 })
 const degradedView = computed(() => summary.value?.missing_view || '')
 
-function fmtDate(s: string | undefined) {
-  if (!s) return '—'
-  return new Date(s).toLocaleDateString(localeRef.value, { year: 'numeric', month: 'short', day: 'numeric' })
-}
-
 function subscriptionPeriod(sub: NonNullable<MaasWallet['subscription']>) {
-  return `${fmtDate(sub.period_start)} — ${fmtDate(sub.period_end)}`
+  return `${fmtDateShort(sub.period_start)} — ${fmtDateShort(sub.period_end)}`
 }
 
 const maxModelRequests = computed(() => {
@@ -125,7 +120,7 @@ function fmtNum(n: number | undefined) {
 
 function fmtTime(s: string) {
   if (!s) return '—'
-  return new Date(s).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
+  return formatDateTime(s, { locale: localeRef.value, options: { dateStyle: 'short', timeStyle: 'short' } })
 }
 
 function creditsDisplay(v: number | null | undefined) {
@@ -210,22 +205,15 @@ async function showDateDetail(day: string) {
   }
 }
 
-// 实时请求流和抽屉
-const { requests: liveRequests } = useLiveStream()
-const activeRequestId = ref<string | null>(null)
+// 实时请求流：点击详情新开页
+// 2026-09-01 (P2-4 fix): 不再在父视图直接调用 useLiveStream()，
+// LiveRequestStreamV2 内部已经 acquire/release；父视图再调一次会
+// 让 refCount 多 +1，visibility listener 多注册一份，并在卸载时
+// 多一次 release（实际并未触发 onBeforeUnmount 因为父视图从未 unmount
+// 该 composable 的绑定——liveRequests 一直未使用）。
 function openRequestDetail(id: string) {
-  activeRequestId.value = id
+  openRequestDetailPage(id, undefined, router)
 }
-function closeRequestDrawer() {
-  activeRequestId.value = null
-}
-
-// 2026-08-06: 详情抽屉的「会话总结」按钮 → 跳到请求日志页并预填会话筛选。
-// 2026-08-06 (later): 重构为 useSessionSummaryJump composable，与其它父视图共享一处
-// 实现；onBeforeJump 钩子用于关闭抽屉。
-const { jumpToSessionSummary: openSessionSummary } = useSessionSummaryJump({
-  onBeforeJump: () => closeRequestDrawer(),
-})
 
 // Tab 控制（与 DashboardViewV2 对齐：stream / stats）
 const LEGACY_STORAGE_KEY_TAB = 'tenant_dashboard_active_tab'
@@ -376,7 +364,7 @@ onUnmounted(() => {
         </div>
         <div class="sub-item">
           <span class="sub-label">{{ t('tenants.dashboard.labelExpiresAt') }}</span>
-          <span class="sub-value">{{ fmtDate(activeSubscription.period_end) }}</span>
+          <span class="sub-value">{{ fmtDateShort(activeSubscription.period_end) }}</span>
         </div>
       </div>
       <div v-else class="subscription-empty">
@@ -607,13 +595,6 @@ onUnmounted(() => {
       <RouterLink to="/keys">{{ t('tenants.dashboard.onboardingKeys') }}</RouterLink>
       {{ t('tenants.dashboard.onboardingKeysHint') }}
     </div>
-
-    <!-- 请求详情抽屉 -->
-    <RequestLogDrawer
-      :request-id="activeRequestId"
-      @close="closeRequestDrawer"
-      @generateSessionSummary="openSessionSummary"
-    />
   </div>
 </template>
 
@@ -667,7 +648,7 @@ onUnmounted(() => {
 .tab-btn--active {
   background: var(--accent);
   color: white;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 2px var(--overlay-light);
 }
 .page-header-right {
   display: flex;
@@ -803,7 +784,7 @@ onUnmounted(() => {
 }
 .stat-mini:hover {
   border-color: var(--accent);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 2px 8px var(--overlay-light);
 }
 .stat-mini--highlight {
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
@@ -933,7 +914,7 @@ onUnmounted(() => {
   grid-template-columns: 1fr 1fr;
   gap: 20px;
 }
-@media (max-width: 800px) {
+@media (max-width: 768px) {
   .trend-grid { grid-template-columns: 1fr; }
 }
 .trend-label {
@@ -1032,7 +1013,7 @@ onUnmounted(() => {
 .alert-danger {
   padding: 8px 12px;
   border-radius: 4px;
-  background: rgba(239, 68, 68, 0.1);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
   color: var(--danger);
   margin-bottom: 12px;
 }

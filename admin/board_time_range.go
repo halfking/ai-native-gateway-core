@@ -125,8 +125,16 @@ func boardPresetTimeRange(days int, now time.Time) boardTimeRange {
 }
 
 // boardRequestLogsFromClause returns the cross-partition union view for dashboard queries.
+// 2026-08-31: switch to the _without_customer_id companion view. The full
+// view adds a LATERAL JOIN back to request_logs_hot/request_logs to expose
+// customer_id (added by migration 575), which turns every COUNT/SUM/AVG
+// over the August 2026 columnar partition (314K rows) into an 11s+ Seq Scan
+// + Nested Loop that exhausts the 8s dashboard fallback timeout. The
+// board fallback path (admin/dashboard_board_queries.go:fallbackBoardSummary,
+// admin/dashboard_board_fallback.go:fallbackBoardPies/fillOverviewCountsFromLogs)
+// doesn't read customer_id at all, so we skip the LATERAL JOIN entirely.
 func boardRequestLogsFromClause() (from string, alias string) {
-	return "request_logs_with_current_month AS r", "r"
+	return "request_logs_with_current_month_without_customer_id AS r", "r"
 }
 
 func boardStatsCoverageSlack(tr boardTimeRange) time.Duration {

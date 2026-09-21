@@ -65,7 +65,7 @@ END AS attachment_count
 
 ### Browser-use 实测（245 / `https://llmgateway.internal.example.com/request-logs`）
 
-- 登录 `admin / __REDACTED_ADMIN_PASSWORD__`
+- 登录 `admin / __REDACTED_SSH_PASSWORD__`
 - 跳转到 `/request-logs`
 - 页面显示 `共 833 条` + 50 行表格行 ✓
 - 截图：`/tmp/llmgw-requestlogs-fixed.png`

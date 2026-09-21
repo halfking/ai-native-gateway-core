@@ -26,6 +26,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 func (h *Handler) getProviderSettings(w http.ResponseWriter, r *http.Request, providerID int) {
@@ -128,7 +130,7 @@ func (h *Handler) setProviderSetting(w http.ResponseWriter, r *http.Request, pro
 		Value   json.RawMessage `json:"value"`
 		Enabled *bool           `json:"enabled,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := jsonbody.DecodeRequest(r, &body, jsonbody.MaxRequiredBody, true); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

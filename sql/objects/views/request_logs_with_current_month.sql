@@ -2,15 +2,6 @@
 -- Name: request_logs_with_current_month; Type: VIEW; Schema: public; Owner: -
 --
 
--- NOTE: request_body / response_body / outbound_body were dropped
--- from request_logs_hot and request_logs in migration 573 (LP1).
--- Their authoritative home is now request_logs_bodies_hot /
--- request_logs_bodies (and a future bodies view). This view no
--- longer projects those JSONB blobs. Callers needing full bodies
--- must LEFT JOIN on the bodies view (see request_logs_bodies_with_current_month).
--- 2026-08-24 LP1: 18 reader SQL statements updated to drop COALESCE(rb.X, rl.X)
--- after the column drop.
-
 CREATE VIEW public.request_logs_with_current_month AS
  SELECT request_logs_hot.id,
     request_logs_hot.request_id,
@@ -55,6 +46,8 @@ CREATE VIEW public.request_logs_with_current_month AS
     request_logs_hot.transform_summary,
     request_logs_hot.response_preview,
     request_logs_hot.stream_done_received,
+    request_logs_hot.request_body,
+    request_logs_hot.response_body,
     request_logs_hot.cost_display,
     request_logs_hot.cost_currency,
     request_logs_hot.usage_source,
@@ -81,6 +74,7 @@ CREATE VIEW public.request_logs_with_current_month AS
     request_logs_hot.compression_reason,
     request_logs_hot.compression_strategy,
     request_logs_hot.compression_meta,
+    request_logs_hot.outbound_body,
     request_logs_hot.outbound_msg_count,
     request_logs_hot.outbound_token_est,
     request_logs_hot.outbound_msg_hashes,
@@ -119,8 +113,10 @@ CREATE VIEW public.request_logs_with_current_month AS
     request_logs_hot.t9_response_end_at,
     request_logs_hot.request_type,
     request_logs_hot.is_final_success,
-     request_logs_hot.origin_actor,
-     request_logs_hot.customer_id
+    request_logs_hot.origin_actor,
+    request_logs_hot.customer_id,
+    request_logs_hot.request_class,
+    request_logs_hot.due_at
    FROM public.request_logs_hot
 UNION ALL
  SELECT request_logs.id,
@@ -166,6 +162,8 @@ UNION ALL
     request_logs.transform_summary,
     request_logs.response_preview,
     request_logs.stream_done_received,
+    request_logs.request_body,
+    request_logs.response_body,
     request_logs.cost_display,
     request_logs.cost_currency,
     request_logs.usage_source,
@@ -192,6 +190,7 @@ UNION ALL
     request_logs.compression_reason,
     request_logs.compression_strategy,
     request_logs.compression_meta,
+    request_logs.outbound_body,
     request_logs.outbound_msg_count,
     request_logs.outbound_token_est,
     request_logs.outbound_msg_hashes,
@@ -230,8 +229,10 @@ UNION ALL
     request_logs.t9_response_end_at,
     request_logs.request_type,
     request_logs.is_final_success,
-     request_logs.origin_actor,
-     request_logs.customer_id
+    request_logs.origin_actor,
+    request_logs.customer_id,
+    request_logs.request_class,
+    request_logs.due_at
    FROM public.request_logs;
 
 
@@ -239,4 +240,5 @@ UNION ALL
 -- Name: VIEW request_logs_with_current_month; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON VIEW public.request_logs_with_current_month IS 'Hot + monthly partitions UNION. SSOT synced 2026-08-22: queue timestamps (491), request_type (510), is_final_success (532), origin_actor (561).';
+COMMENT ON VIEW public.request_logs_with_current_month IS 'Hot + monthly partitions UNION. SSOT synced 2026-08-22: queue timestamps (491), request_type (510), is_final_success (532), origin_actor (561), customer_id (507), request_class/due_at (608).';
+

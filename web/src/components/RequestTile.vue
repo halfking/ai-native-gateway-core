@@ -2,6 +2,7 @@
 // RequestTile.vue — 请求色块组件（80x60）
 // 2026-07-13 v5: 现代观测面板风格 — 玻璃质感卡片 + 左侧色带 + 状态圆点
 // 2026-07-14: 探测/idle tile 显示明确的错误原因（不再静默 "[空闲]"）
+// 2026-08-31 P3-3: line2Content 每个分支添加设计意图注释（消除"为什么这样分支"的猜测成本）
 
 import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -12,6 +13,7 @@ import {
   truncateText,
 } from '../types/swimlane'
 import { errorKindLabel, statusBarColor, statusSemanticLabel } from '../composables/liveStreamDisplay'
+import { useReactiveStatusColor } from '../composables/useStatusColor'
 import {
   getRequestActions,
   getRequestChildren,
@@ -20,6 +22,7 @@ import {
   type LiveRequest,
 } from '../composables/liveStreamStore'
 import { credentialDisplayName } from '../composables/useCredentialLabels'
+import { formatDateTime } from '../utils/datetime'
 import ActionTimeline from './ActionTimeline.vue'
 
 const { t, locale } = useI18n()
@@ -55,15 +58,10 @@ const statusLabel = computed(() =>
   statusSemanticLabel(props.tile.status, props.tile.error_kind),
 )
 
-const statusColor = computed(() => {
-  const s = props.tile.status
-  if (s === 'failure') return '#ef4444'
-  if (s === 'success') return '#22c55e'
-  if (s === 'in_progress') return '#3b82f6'
-  if (s === 'cancelled' || s === 'canceled') return '#9ca3af'
-  if (s === 'idle') return '#9ca3af'
-  return '#a1a1aa'
-})
+const statusColor = useReactiveStatusColor(
+  () => props.tile.status,
+  () => props.tile.error_kind,
+)
 
 const showStatusDot = computed(() => props.tile.status !== 'idle')
 
@@ -142,6 +140,13 @@ const latencyLabel = computed(() => {
 const modelFontSize = computed(() => calculateFontSize(props.tile.model, 80))
 
 const line2Content = computed(() => {
+  // 设计意图：tile 第二行承载"是什么请求"或"结局如何"，按场景分层覆盖：
+  //   - idle 状态显示模型（即使无流量也保留卡片可识别）
+  //   - 探测流量显示 origin+attempt（真实请求会被模型名淹没，探测必须可辨识）
+  //   - 按 vendor/provider/credential 分组时模型名是冗余信息（已在 lane header 显示），只保留短模型尾缀
+  //   - 终端状态 success/in_progress/cancelled 显示图例标签（i18n 跟随语言切换）
+  //   - error_kind 提供比 status 更细的失败归因（4xx/5xx/timeout/...），做 12 字符截断防止溢出
+  //   - 兜底 `—` 表达"无信号"，与 idle 字符串刻意区分（idle 是"显式空闲"，`—` 是"还没拿到信号"）
   if (isIdle.value) {
     return props.tile.model || t('dashboard.liveStream.tileIdle')
   }
@@ -152,7 +157,7 @@ const line2Content = computed(() => {
     return `${origin}${attempt}`
   }
 
-  if (props.groupBy === 'vendor' || props.groupBy === 'provider') {
+  if (props.groupBy === 'vendor' || props.groupBy === 'provider' || props.groupBy === 'credential') {
     return truncateText(props.tile.model, 12)
   }
   if (props.tile.status === 'success') return `✓ ${t('dashboard.liveStream.legend.success')}`
@@ -230,12 +235,27 @@ const tooltipText = computed(() => {
     const c = props.tile.completion_tokens ?? 0
     lines.push(tooltipLine(`${tip}.tokens`, t(`${tip}.tokenFormat`, { p, c })))
   }
+  // 2026-09-18: 缓存命中行 — 读/写 token 与命中率。命中率 = cache_read /
+  // (cache_read + prompt)（缓存读占总输入的比例）；分母为 0 或字段缺省时
+  // 不渲染百分比（禁止 0% 冒充"无缓存"）。R44: prompt 缺省同样不算命中率
+  // ——把缺省当 0 会让"只报 cache_read 的上游"冒充 100%。
+  if (props.tile.cache_read_tokens != null || props.tile.cache_write_tokens != null) {
+    const r = props.tile.cache_read_tokens ?? 0
+    const w = props.tile.cache_write_tokens ?? 0
+    const pct = props.tile.prompt_tokens != null && r + props.tile.prompt_tokens > 0
+      ? `${Math.round((r / (r + props.tile.prompt_tokens)) * 100)}%`
+      : '—'
+    lines.push(tooltipLine(`${tip}.cache`, t(`${tip}.cacheFormat`, { r, w, pct })))
+  }
+  // 2026-09-18: 会话 ID 行 — 有会话（request_logs.gw_session_id）时显示，
+  // 一次性调用缺省 = 不渲染（与"缓存行"同一可空语义）。
+  if (props.tile.gw_session_id) {
+    lines.push(tooltipLine(`${tip}.sessionId`, truncateText(props.tile.gw_session_id, 18)))
+  }
   if (props.tile.cost_usd != null) lines.push(tooltipLine(`${tip}.cost`, `$${props.tile.cost_usd.toFixed(4)}`))
   if (props.tile.request_id) lines.push(tooltipLine(`${tip}.requestId`, props.tile.request_id.slice(0, 12)))
   if (props.tile.timestamp) {
-    try {
-      lines.push(tooltipLine(`${tip}.time`, new Date(props.tile.timestamp).toLocaleString()))
-    } catch { /* ignore */ }
+    lines.push(tooltipLine(`${tip}.time`, formatDateTime(props.tile.timestamp)))
   }
   return lines.join('\n')
 })
@@ -846,10 +866,10 @@ function closeTimelinePanel() {
 
 @keyframes status-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 15%, transparent), 0 0 0 0 rgba(59, 130, 246, 0.5);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 15%, transparent), 0 0 0 0 color-mix(in srgb, var(--accent) 16%, transparent);
   }
   50% {
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 15%, transparent), 0 0 0 4px rgba(59, 130, 246, 0.25);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 15%, transparent), 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
   }
 }
 
@@ -971,7 +991,7 @@ function closeTimelinePanel() {
   line-height: 1.1;
   text-align: center;
   font-weight: 600;
-  color: rgba(248, 113, 113, 0.95); /* default = failure red */
+  color: color-mix(in srgb, var(--danger) 12%, transparent); /* default = failure red */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -979,11 +999,11 @@ function closeTimelinePanel() {
   margin-top: 1px;
 }
 .request-tile__reason--idle {
-  color: rgba(156, 163, 175, 0.95);
+  color: color-mix(in srgb, var(--muted) 14%, transparent);
   font-weight: 500;
 }
 .request-tile__reason--probe {
-  color: rgba(56, 189, 248, 0.95);
+  color: color-mix(in srgb, var(--probe-cyan) 22%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

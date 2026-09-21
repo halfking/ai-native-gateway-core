@@ -23,16 +23,39 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// sessionDetailV2DB 是 SessionDetailV2API 实际需要的数据库方法子集。
+//
+// 为什么不用 *pgxpool.Pool：pgxpool.Pool 字段类型是具体的 struct，无法
+// 在单元测试中传入 pgxmock.PgxPoolIface；定义一个最小接口让 pgxmock 直接
+// 满足即可（*pgxpool.Pool 也隐式满足本接口，因为它的方法集覆盖）。
+//
+// 注意：这里只暴露 SessionDetailV2API 实际调用的方法。增加新方法时
+// 必须同步更新接口，否则编译失败 —— 这是有意设计的接口收缩，避免
+// 详情页 API 偷偷用上 Exec/SendBatch 之类的副作用路径。
+type sessionDetailV2DB interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
 // SessionDetailV2API 提供会话详情查询端点
 type SessionDetailV2API struct {
-	pool *pgxpool.Pool
+	pool sessionDetailV2DB
 }
 
 // NewSessionDetailV2API 构造函数
 func NewSessionDetailV2API(pool *pgxpool.Pool) *SessionDetailV2API {
+	return &SessionDetailV2API{pool: pool}
+}
+
+// newSessionDetailV2APIWithDB 允许测试传入 pgxmock 池（pgxmock.PgxPoolIface
+// 已实现 sessionDetailV2DB 接口的全部方法）。
+func newSessionDetailV2APIWithDB(pool sessionDetailV2DB) *SessionDetailV2API {
 	return &SessionDetailV2API{pool: pool}
 }
 
@@ -59,6 +82,11 @@ type SessionV2 struct {
 	Intent              *string    `json:"intent,omitempty"`
 	PrimaryRequestID    *string    `json:"primary_request_id,omitempty"`
 	TurnLogsSummary     any        `json:"turn_logs_summary,omitempty"`
+
+	// SessionAnalysis 是 migration 567 的 session_analysis_metadata 读侧投影
+	// （LEFT JOIN LATERAL 命中时非空）。见 session_meta_view.go 的字段定义与
+	// payload 优先级规则。
+	SessionAnalysis *SessionAnalysisView `json:"session_analysis,omitempty"`
 }
 
 // SessionTurnV2 表示 session_turns + session_bodies 的 JOIN 结果
@@ -126,9 +154,18 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	tenantID := r.URL.Query().Get("tenant")
+	// Resolve tenant from the authenticated scope. Non-platform roles are
+	// pinned to their own tenant; only super/admin-key callers may select one.
+	// This standalone handler is also callable directly in tests and by custom
+	// muxes, so do not let GetTenantID's legacy default hide missing identity.
+	if GetAuthContext(r) == nil {
+		writeExportJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	tenantID := tenantFromQueryOrContext(r)
 	if tenantID == "" {
-		tenantID = "default"
+		writeExportJSONError(w, http.StatusNotFound, "not found")
+		return
 	}
 
 	// Optional: turn_no for highlighting/scrolling
@@ -210,22 +247,37 @@ func (api *SessionDetailV2API) querySession(
 	ctx context.Context,
 	sessionID, tenantID string,
 ) (*SessionV2, error) {
+	// 2026-08-26: LEFT JOIN LATERAL session_analysis_metadata（migration 567）
+	// 暴露 SessionAnalysisView。沿用 session_meta_view.go 的 status='final'
+	// 优先 + updated_at DESC 排序规则，保证 detail 页与列表页读到的同一份
+	// payload 来自同一行。
 	query := `
-		SELECT 
-			id, session_id, tenant_id, created_at, updated_at, closed_at, status,
-			total_turns, total_tokens, total_cost_usd,
-			last_turn_no, last_request_summary, last_response_summary,
-			last_model, last_provider,
-			task_type, client_type, topic, intent,
-			primary_request_id, turn_logs_summary
-		FROM public.sessions
-		WHERE session_id = $1 AND tenant_id = $2
-		ORDER BY partition_date DESC
-		LIMIT 1
+			SELECT
+				id, session_id, tenant_id, created_at, updated_at, closed_at, status,
+				total_turns, total_tokens, total_cost_usd,
+				last_turn_no, last_request_summary, last_response_summary,
+				last_model, last_provider,
+				task_type, client_type, topic, intent,
+				primary_request_id, turn_logs_summary,
+				sam.status, sam.schema_version, sam.input_hash,
+				sam.source_task_id, sam.updated_at, sam.payload
+			FROM public.sessions s
+			` + sessionAnalysisJoinSQL() + `
+			WHERE s.session_id = $1 AND s.tenant_id = $2
+			ORDER BY s.partition_date DESC
+			LIMIT 1
 	`
 
 	var s SessionV2
 	var turnLogsSummaryRaw []byte
+	// session_analysis_metadata 来自 LEFT JOIN LATERAL, JOIN miss 时为 SQL NULL,
+	// 必须用 *string 接收 (参见 turns 列表 / snapshot 同类修复)。
+	var (
+		saStatus, saSchemaVersion, saInputHash *string
+		saSourceTaskID                         *string
+		saUpdatedAt                            *time.Time
+		saPayloadRaw                           []byte
+	)
 	err := api.pool.QueryRow(ctx, query, sessionID, tenantID).Scan(
 		&s.ID, &s.SessionID, &s.TenantID, &s.CreatedAt, &s.UpdatedAt, &s.ClosedAt, &s.Status,
 		&s.TotalTurns, &s.TotalTokens, &s.TotalCostUSD,
@@ -233,6 +285,7 @@ func (api *SessionDetailV2API) querySession(
 		&s.LastModel, &s.LastProvider,
 		&s.TaskType, &s.ClientType, &s.Topic, &s.Intent,
 		&s.PrimaryRequestID, &turnLogsSummaryRaw,
+		&saStatus, &saSchemaVersion, &saInputHash, &saSourceTaskID, &saUpdatedAt, &saPayloadRaw,
 	)
 	if err != nil {
 		if err.Error() == "no rows in result set" {
@@ -247,6 +300,23 @@ func (api *SessionDetailV2API) querySession(
 		if err := json.Unmarshal(turnLogsSummaryRaw, &summary); err == nil {
 			s.TurnLogsSummary = summary
 		}
+	}
+
+	// LEFT JOIN LATERAL 命中 → 填充 SessionAnalysisView。
+	saStatusVal, saSchemaVal, saHashVal := "", "", ""
+	if saStatus != nil {
+		saStatusVal = *saStatus
+	}
+	if saSchemaVersion != nil {
+		saSchemaVal = *saSchemaVersion
+	}
+	if saInputHash != nil {
+		saHashVal = *saInputHash
+	}
+	if saStatusVal != "" {
+		var view SessionAnalysisView
+		scanSessionAnalysis(&view, saStatusVal, saSchemaVal, saHashVal, saSourceTaskID, saUpdatedAt, saPayloadRaw)
+		s.SessionAnalysis = &view
 	}
 
 	return &s, nil
@@ -272,11 +342,11 @@ func (api *SessionDetailV2API) queryTurns(
 			b.request_delta, b.response_delta, b.outbound_body,
 			b.request_attachments, b.response_attachments
 		FROM public.session_turns_with_current_month t
-		LEFT JOIN public.session_bodies b 
+		LEFT JOIN public.session_bodies_unified b
 			ON t.tenant_id = b.tenant_id
 			AND t.session_id = b.session_id
 			AND t.turn_no = b.turn_no
-			AND t.partition_date = b.partition_date
+			AND t.request_id = b.request_id
 		WHERE t.session_id = $1 AND t.tenant_id = $2
 		ORDER BY t.turn_no DESC
 		LIMIT $3 OFFSET $4

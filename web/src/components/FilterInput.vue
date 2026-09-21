@@ -111,7 +111,7 @@ if (typeof window !== 'undefined') {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 12px var(--overlay-light);
   z-index: 50;
 }
 .filter-suggest li {

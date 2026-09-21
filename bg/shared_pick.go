@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -70,14 +71,23 @@ func PickProbeModelForCredential(ctx context.Context, db pickDB, credID int) (Pi
 		return PickProbeResult{}, nil
 	}
 
-	// Priority 1: most-used client_model in request_logs (7d)
+	// Priority 1: most-used client_model in request_logs (7d).
+	// request_logs uses the boolean success column (NOT status_code);
+	// request_status stores the upstream HTTP code as text when present.
+	// 2026-09-11: read the current-month surface — the bare parent only
+	// holds cold rows, so the 7d window was blind to the most recent days
+	// of traffic and picked a stale "most-used" model.
 	var topModel string
 	err = db.QueryRow(ctx, `
 		SELECT client_model
-		FROM request_logs
-		WHERE credential_id = $1
+		FROM request_logs_with_current_month rl
+		WHERE rl.credential_id = $1
 		  AND ts > now() - interval '7 days'
-		  AND status_code = 200
+		  AND success = TRUE
+		  -- R50 dual-arm exclusion, frozen-view variant (R49 自纠 S1：origin_stage 不在
+		  -- 113 列契约，视图读面必须用 view 谓词；INV-3) — a model only probes ever
+		  -- touched must not win "most-used" and steer the probe target.
+		  AND `+fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")+`
 		  AND client_model IS NOT NULL
 		GROUP BY client_model
 		ORDER BY count(*) DESC
@@ -119,14 +129,13 @@ func PickProbeModelForCredential(ctx context.Context, db pickDB, credID int) (Pi
 	if qerr != nil {
 		return PickProbeResult{}, qerr
 	}
+	defer rows.Close()
 	if rows.Next() {
 		var pick string
 		if scanErr := rows.Scan(&pick); scanErr == nil && pick != "" {
-			rows.Close()
 			return PickProbeResult{Model: pick, Source: "auto:domestic_featured"}, nil
 		}
 	}
-	rows.Close()
 
 	// Priority 3: safety-net random pick across all available bindings.
 	// Only reached when no featured model is bound to this credential.

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -38,8 +39,11 @@ type ReputationWorker struct {
 	// location: 计算 runHour 的时区（默认 Local）
 	location *time.Location
 
-	stopCh chan struct{}
-	doneCh chan struct{}
+	stopCh  chan struct{}
+	doneCh  chan struct{}
+	mu      sync.Mutex
+	started bool
+	stopped bool
 }
 
 // ReputationWorkerConfig worker 配置
@@ -78,11 +82,20 @@ func NewReputationWorker(cfg ReputationWorkerConfig) *ReputationWorker {
 
 // Start 启动后台循环
 func (w *ReputationWorker) Start(ctx context.Context) {
-	if w.scorer == nil || w.store == nil {
-		w.logger.Warn("reputation_worker: scorer or store is nil, not starting")
-		close(w.doneCh)
+	w.mu.Lock()
+	if w.started || w.stopped {
+		w.mu.Unlock()
 		return
 	}
+	w.started = true
+	if w.scorer == nil || w.store == nil {
+		w.stopped = true
+		close(w.doneCh)
+		w.mu.Unlock()
+		w.logger.Warn("reputation_worker: scorer or store is nil, not starting")
+		return
+	}
+	w.mu.Unlock()
 	go w.loop(ctx)
 }
 
@@ -121,6 +134,13 @@ func (w *ReputationWorker) Stop() {
 	if w == nil {
 		return
 	}
+	w.mu.Lock()
+	if w.stopped {
+		w.mu.Unlock()
+		return
+	}
+	w.stopped = true
+	w.mu.Unlock()
 	select {
 	case <-w.stopCh:
 		// already closed

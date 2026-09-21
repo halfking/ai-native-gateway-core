@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/catalog"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"     //nolint:depguard // emergency-repair state recovery (2026-08-15)
@@ -32,6 +33,8 @@ import (
 	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability counters
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/recentmodels"
+	"github.com/redis/go-redis/v9"
 )
 
 type routingHandler struct { //nolint:unused
@@ -48,37 +51,44 @@ type routingHandler struct { //nolint:unused
 // safe and gives an order-of-magnitude speedup under repeated
 // page-load / tab-switch traffic.
 type availableModelsCache struct {
-	mu        sync.Mutex
-	value     map[string]any
-	expiresAt time.Time
-	ttl       time.Duration
+	mu      sync.Mutex
+	entries map[string]availableModelsCacheEntry
+	ttl     time.Duration
 	// hits/misses are exposed via /api/system/background-tasks for ops.
 	hits   uint64
 	misses uint64
 }
 
-func (c *availableModelsCache) get(now time.Time) (map[string]any, bool) {
-	if c == nil || c.value == nil {
+type availableModelsCacheEntry struct {
+	value     map[string]any
+	expiresAt time.Time
+}
+
+func (c *availableModelsCache) get(now time.Time, tenantID string) (map[string]any, bool) {
+	if c == nil {
 		return nil, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if now.Before(c.expiresAt) {
+	entry, ok := c.entries[tenantID]
+	if ok && now.Before(entry.expiresAt) {
 		c.hits++
-		return c.value, true
+		return entry.value, true
 	}
 	c.misses++
 	return nil, false
 }
 
-func (c *availableModelsCache) set(now time.Time, value map[string]any) {
+func (c *availableModelsCache) set(now time.Time, tenantID string, value map[string]any) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.value = value
-	c.expiresAt = now.Add(c.ttl)
+	if c.entries == nil {
+		c.entries = make(map[string]availableModelsCacheEntry)
+	}
+	c.entries[tenantID] = availableModelsCacheEntry{value: value, expiresAt: now.Add(c.ttl)}
 }
 
 const availableModelsCacheTTL = 30 * time.Second
@@ -551,10 +561,10 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	// ensureScopeRevision / ensureCanonicalScopeRevision seeds version=1 so
 	// drag-and-drop stays available.
 	var (
-		reorderRevision       string
-		reorderCanonicalID    int64
-		reorderRawModel       string
-		respCanonicalIDValue  *int64
+		reorderRevision      string
+		reorderCanonicalID   int64
+		reorderRawModel      string
+		respCanonicalIDValue *int64
 	)
 	if len(candidates) > 0 {
 		if firstCanonical, ok := singleCanonicalForRevision(candidates); ok {
@@ -718,19 +728,24 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Lookup the binding_id for (credential_id, raw_model_name) — the
-	// resolve page hands callers those two keys, never the surrogate
-	// binding id. Resolve via provider_models.raw_model_name so we don't
-	// rely on the inferred provider-side match.
-	var bindingID int
+	// Lookup the binding_id, provider_id, and current concurrency_limit
+	// for (credential_id, raw_model_name) — the resolve page hands callers
+	// those two keys, never the surrogate binding id. Resolve via
+	// provider_models.raw_model_name so we don't rely on the inferred
+	// provider-side match. Concurrency_limit is needed for hot-reloading
+	// the in-process Limiter semaphore so admin changes apply without a
+	// service restart.
+	var bindingID, providerID int
+	var concurrencyLimit *int
 	if err := h.db.QueryRow(ctx, `
-		SELECT cmb.id
+		SELECT cmb.id, c.provider_id, c.concurrency_limit
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		JOIN credentials c ON c.id = cmb.credential_id
 		WHERE cmb.credential_id = $1
 		  AND pm.raw_model_name = $2
 		LIMIT 1
-	`, credID, rawModel).Scan(&bindingID); err != nil {
+	`, credID, rawModel).Scan(&bindingID, &providerID, &concurrencyLimit); err != nil {
 		writeError(w, http.StatusNotFound, "binding not found for credential/model pair")
 		return
 	}
@@ -757,6 +772,27 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 	// index — provider.candCache has no LISTEN/NOTIFY path. Mirrors the
 	// other credential-mutating admin handlers (credential_keys.go etc.).
 	provider.InvalidateCandidateCacheForCredential(credID)
+
+	// 2026-08-26 hot-reload (operator-confirmed: priority / concurrency
+	// changes must take effect immediately, no TTL delay, no service restart):
+	//
+	//  1. Refresh the in-process Limiter pool so a new concurrency_limit
+	//     (if changed via the credentials row elsewhere) takes effect for
+	//     new in-flight requests.
+	//  2. Clear every sticky entry pointing at this credential so new
+	//     sessions stop inheriting the previous credential via L2 sticky
+	//     and re-enter load balancing.
+	if h.limiter != nil && concurrencyLimit != nil {
+		h.limiter.SetCredentialCapacity(providerID, credID, *concurrencyLimit)
+	}
+	if h.stickyCache != nil {
+		if cleared, err := h.stickyCache.ClearForCredential(credID); err != nil {
+			slog.Warn("sticky hot-reload: clear failed", "credential_id", credID, "error", err)
+		} else if cleared > 0 {
+			slog.Info("sticky hot-reload: cleared bindings on binding PATCH",
+				"credential_id", credID, "cleared", cleared)
+		}
+	}
 
 	// Audit log: keep before/after so the routing_audit_log table holds
 	// enough context for post-mortem diffs (rule 36 alignment).
@@ -1361,6 +1397,22 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 		writeError(w, http.StatusBadRequest, "expected_revision is required")
 		return
 	}
+	// Restore the per-item raw_model contract from bc788bfac (atomic
+	// complete-set reorder): an item may omit raw_model (inherits the
+	// top-level scope) but must not contradict it — that silently writes
+	// priorities into a different model's binding set.
+	for i := range req.Items {
+		itemRaw := strings.TrimSpace(req.Items[i].RawModel)
+		switch {
+		case itemRaw == "":
+			req.Items[i].RawModel = req.RawModel
+		case req.RawModel != "" && !strings.EqualFold(itemRaw, req.RawModel):
+			writeError(w, http.StatusBadRequest, "raw_model mismatch between request and item")
+			return
+		default:
+			req.Items[i].RawModel = itemRaw
+		}
+	}
 	if validationErr := validateRoutingCandidateReorder(req); validationErr != "" {
 		writeError(w, http.StatusBadRequest, validationErr)
 		return
@@ -1507,6 +1559,8 @@ const forceEnableCredentialSQL = `
 		cooling_until = NULL,
 		health_status = 'healthy',
 		consecutive_failures = 0,
+		probe_consecutive_failures = 0,
+		last_probe_at = NULL,
 		state_reason_code = NULL,
 		state_reason_detail = $2,
 		state_updated_at = NOW()
@@ -1609,6 +1663,12 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 			if errors.Is(err, errForceEnableCredNotFound) {
 				writeError(w, http.StatusNotFound, "credential not found")
 			} else {
+				// 提交后部分失败:DB 效果已落地但请求以 5xx 结束,审计照记
+				// (audit_outcome=partial_failed 供消费方过滤)。
+				if committed, _ := beforeAfter["db_committed"].(bool); committed {
+					beforeAfter["audit_outcome"] = "partial_failed"
+					h.logAudit(r, "emergency_repair."+req.Action, beforeAfter)
+				}
 				writeError(w, http.StatusInternalServerError, err.Error())
 			}
 			return
@@ -1883,6 +1943,8 @@ func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, prov
 	if rawModel != "" {
 		models = append(models, rawModel)
 	} else {
+		// 2026-09-06: 整凭据 reset 时模型枚举失败应明确记录到 outcome，
+		// 避免静默跳过 URSM/fpslot 清理。
 		rows, err := h.db.Query(ctx, `
 			SELECT pm.raw_model_name
 			FROM credential_model_bindings cmb
@@ -1892,6 +1954,8 @@ func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, prov
 		if err != nil {
 			slog.Warn("emergency_repair: enumerate binding models failed",
 				"error", err, "cred", credentialID)
+			outcome["enum_models_error"] = err.Error()
+			met.RoutingCredentialResetTotal.WithLabelValues("enum_models", "error").Inc()
 		} else {
 			for rows.Next() {
 				var m string
@@ -1900,6 +1964,12 @@ func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, prov
 				}
 			}
 			rows.Close()
+			if len(models) == 0 {
+				slog.Warn("emergency_repair: credential has no bindings",
+					"cred", credentialID)
+				outcome["enum_models_empty"] = true
+			}
+			met.RoutingCredentialResetTotal.WithLabelValues("enum_models", "ok").Inc()
 		}
 	}
 
@@ -2522,8 +2592,180 @@ type popularModelEntry struct {
 	Count         *int   `json:"count,omitempty"`
 }
 
-func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []string, byCanonical map[string]*availableVersionEntry) []popularModelEntry {
-	popular := make([]popularModelEntry, 0, 20)
+// defaultPopularModelsLookupWindow is how far back we look in request_logs_hot
+// for "popular models" suggestions unless the environment overrides it.
+// request_logs_hot is the hot standalone
+// table (rule 33 / migration 341) — older rows are migrated nightly into
+// the monthly partitioned request_logs table by promote_request_logs_hot_to_partition.
+// Querying request_logs_hot directly avoids the columnar monthly partitions
+// that the previous request_logs_with_current_month UNION dragged in.
+const defaultPopularModelsLookupWindow = 7 * 24 * time.Hour
+
+// popularModelsHotSQL returns up to 10 (model_key, count) rows from
+// request_logs_hot covering the configured lookup window.
+//
+// The cutoff is passed as a plan-time literal ($1) computed in Go so the
+// hot-table scan is bounded by an index range on (ts) rather than the
+// previous `NOW() - INTERVAL '7 days'` predicate that could not prune
+// against the partitioned parent view.
+const popularModelsHotSQL = `
+SELECT model_key, cnt FROM (
+    SELECT
+        COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS model_key,
+        COUNT(*) AS cnt
+    FROM request_logs_hot rl
+    LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
+    LEFT JOIN LATERAL (
+        SELECT canonical_id
+        FROM model_aliases
+        WHERE raw_name = lower(rl.client_model)
+          AND status = 'active'
+        LIMIT 1
+    ) ma ON TRUE
+    LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
+    WHERE rl.ts >= $1
+      AND rl.success = TRUE
+      -- R50: dual-arm probe exclusion (bg.probeTrafficExclusionPredicate
+      -- shape, inlined to avoid an admin→bg import): the probe gateway
+      -- round carries origin_stage='node_probe' and no 'probe' flag, so the
+      -- flag arm alone let it inflate "popular models".
+      AND NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)
+      AND COALESCE(rl.origin_stage, 'business') = 'business'
+      AND ($2 = '' OR rl.tenant_id = $2)
+      AND rl.client_model IS NOT NULL AND rl.client_model != ''
+    GROUP BY model_key
+) u
+ORDER BY cnt DESC
+LIMIT 10`
+
+// livePopularModels queries Redis for "currently accessed models" using the
+// live-stream dimension queues indexed at llmgw:live:dim:index:global.
+// Each lane queue key llmgw:live:dim:model:<normalized> has ZSET members
+// (one per recent request-id in that lane). ZCARD is a cheap O(1) proxy
+// for "currently in flight / recently active". Results are returned sorted
+// by cardinality desc, capped at topLivePopularLimit.
+//
+// This is the fast path that lets the dashboard's "凭据路由模型" picker
+// surface *what is being routed right now* without touching the request_logs
+// tables at all. Best-effort: errors are swallowed and an empty slice
+// is returned so callers fall back to the SQL path.
+func livePopularModels(ctx context.Context, rdb *redis.Client, limit int) []popularModelEntry {
+	if rdb == nil || limit <= 0 {
+		return nil
+	}
+	keys, err := rdb.SMembers(ctx, liveStreamDimIndexKey("", true)).Result()
+	if err != nil || len(keys) == 0 {
+		return nil
+	}
+	const dimModelPrefix = liveStreamDimPrefix + "model:"
+	type modelCount struct {
+		name  string
+		count int64
+	}
+	bucket := make([]modelCount, 0, len(keys))
+	for _, key := range keys {
+		if !strings.HasPrefix(key, dimModelPrefix) {
+			continue
+		}
+		n, err := rdb.ZCard(ctx, key).Result()
+		if err != nil || n <= 0 {
+			continue
+		}
+		bucket = append(bucket, modelCount{
+			name:  strings.TrimPrefix(key, dimModelPrefix),
+			count: n,
+		})
+	}
+	if len(bucket) == 0 {
+		return nil
+	}
+	sort.Slice(bucket, func(i, j int) bool {
+		if bucket[i].count != bucket[j].count {
+			return bucket[i].count > bucket[j].count
+		}
+		return bucket[i].name < bucket[j].name
+	})
+	if len(bucket) > limit {
+		bucket = bucket[:limit]
+	}
+	out := make([]popularModelEntry, 0, len(bucket))
+	for _, b := range bucket {
+		c := int(b.count)
+		out = append(out, popularModelEntry{
+			CanonicalName: b.name,
+			DisplayName:   b.name,
+			Source:        "live",
+			Count:         &c,
+		})
+	}
+	return out
+}
+
+// recentlyUsedModelsKeyPrefix namespaces one Redis ZSET per tenant. Each key
+// records canonical model names hit by a real (non-probe) successful request
+// over the last RecentlyUsedModelsTTL. This is the primary fast path for the
+// "凭据路由模型" dashboard widget — O(log N) writes (ZINCRBY) on the
+// request hot path, O(log N + M) reads (ZREVRANGE) here.
+//
+// Why a dedicated key (vs the live-stream dim queue ZCARD used by
+// livePopularModels):
+//   - TTL exactly matches the 7-day hot-popular window, no extra
+//     "we measured 24h but the UI asks for 7d" drift.
+//   - Writes are gated on is_probe=false + success=true so node
+//     probes, model probes, and self-check tiles cannot pollute the
+//     ranking.
+//   - Score is the real request counter (not lane-queue cardinality
+//     which mixes real requests with idle markers and capped lanes).
+//   - Persistent across gateway restarts via AOF/RDB (lane queue
+//     contents live in process memory only).
+const (
+	RecentlyUsedModelsTTL   = recentmodels.TTL
+	recentlyUsedModelsLimit = 10
+)
+
+// recentlyUsedPopularModels reads the top-N recently-used canonical model
+// names for one tenant. An empty tenant intentionally has no Redis aggregate:
+// super-admin reads remain DB-backed and cannot be served by a global key.
+// Best-effort: returns nil on any Redis error so callers fall back to SQL.
+func recentlyUsedModelsKey(tenantID string) string {
+	return recentmodels.Key(tenantID)
+}
+
+func recentlyUsedPopularModels(ctx context.Context, rdb *redis.Client, tenantID string, limit int) []popularModelEntry {
+	entries := recentmodels.Read(ctx, rdb, tenantID, limit)
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]popularModelEntry, 0, len(entries))
+	for _, entry := range entries {
+		count := entry.Count
+		out = append(out, popularModelEntry{
+			CanonicalName: entry.Model,
+			DisplayName:   entry.Model,
+			Source:        "recent",
+			Count:         &count,
+		})
+	}
+	return out
+}
+
+// RecordRecentlyUsedModel bumps the canonical model's score in the
+// recently-used ZSET and refreshes the key TTL. Safe to call from
+// the request hot path: errors are swallowed and reported through a
+// counter (no log spam per request).
+//
+// Probe / selfcheck / pre-flight requests must pass isProbe=false so
+// health-check traffic does not skew the dashboard ranking. tenantID is
+// required so model popularity never crosses tenant boundaries.
+func RecordRecentlyUsedModel(ctx context.Context, rdb *redis.Client, tenantID, canonical string, isProbe bool) {
+	recentmodels.Record(ctx, rdb, tenantID, canonical, isProbe)
+}
+
+func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []string, byCanonical map[string]*availableVersionEntry, tenantID string, limit int) []popularModelEntry {
+	if limit <= 0 {
+		return nil
+	}
+	popular := make([]popularModelEntry, 0, 32)
 	seen := map[string]bool{}
 
 	add := func(canonical, display, source string, count *int) {
@@ -2557,30 +2799,31 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []strin
 		add(n, n, "policy", nil)
 	}
 
-	usageRows, err := h.db.Query(ctx, `
-		SELECT model_key, cnt FROM (
-			SELECT
-				COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS model_key,
-				COUNT(*) AS cnt
-			FROM request_logs_with_current_month rl
-			LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
-			LEFT JOIN LATERAL (
-				SELECT canonical_id
-				FROM model_aliases
-				-- 2026-07-14: model_aliases.raw_name is stored lowercase; compare directly.
-				WHERE raw_name = lower(rl.client_model)
-				  AND status = 'active'
-				LIMIT 1
-			) ma ON TRUE
-			LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
-			WHERE rl.ts > NOW() - INTERVAL '7 days'
-			  AND rl.success = TRUE
-			  AND rl.client_model IS NOT NULL AND rl.client_model != ''
-			GROUP BY model_key
-		) u
-		ORDER BY cnt DESC
-		LIMIT 10
-	`)
+	// The limit applies only to usage-derived models. Featured models are a
+	// policy list and must all remain visible, even when the list is longer
+	// than the usage suggestion limit.
+	hotCount := 0
+	addHot := func(model popularModelEntry) {
+		if hotCount >= limit {
+			return
+		}
+		before := len(popular)
+		add(model.CanonicalName, model.DisplayName, model.Source, model.Count)
+		if len(popular) > before {
+			hotCount++
+		}
+	}
+
+	if rc, ok := h.redisClient.(*redis.Client); ok {
+		// The live dimension queues mix real requests with probes and idle
+		// markers, so they cannot satisfy the picker's non-probe contract.
+		for _, recent := range recentlyUsedPopularModels(ctx, rc, tenantID, recentlyUsedModelsLimit) {
+			addHot(recent)
+		}
+	}
+
+	cutoff := time.Now().UTC().Add(-popularModelsLookupWindow())
+	usageRows, err := h.db.Query(ctx, popularModelsHotSQL, cutoff, tenantID)
 	if err == nil {
 		defer usageRows.Close()
 		for usageRows.Next() {
@@ -2590,7 +2833,12 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []strin
 				continue
 			}
 			c := cnt
-			add(modelKey, modelKey, "usage", &c)
+			addHot(popularModelEntry{
+				CanonicalName: modelKey,
+				DisplayName:   modelKey,
+				Source:        "usage",
+				Count:         &c,
+			})
 		}
 	}
 	return popular
@@ -2617,7 +2865,8 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 	// policy edit / provider refresh is handled in those paths
 	// (call invalidateAvailableModelsCache below).
 	if r.Method == http.MethodGet {
-		if cached, ok := globalAvailableModelsCache.get(time.Now()); ok {
+		tenantID := EffectiveTenantIDAll(r)
+		if cached, ok := globalAvailableModelsCache.get(time.Now(), tenantID); ok {
 			writeJSON(w, http.StatusOK, cached)
 			return
 		}
@@ -2750,6 +2999,14 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 			}
 			if familyVendor != nil && strings.TrimSpace(*familyVendor) != "" {
 				vendor = strings.TrimSpace(*familyVendor)
+			} else {
+				// 2026-09-07 (675): model_families 缺行（如管理端直接建
+				// family='qwen3.8' 的 canonical，没有对应 seed 行）或 vendor
+				// 为空时，按模型名前缀兜底推断，避免 qwen3.8-27b 落到「其他」
+				// 分组导致特色模型选择器 Alibaba 下找不到。
+				if v := catalog.InferVendor(cn, familyID); v != "" {
+					vendor = v
+				}
 			}
 			canonFamily[canonKey] = familyID
 			if _, exists := familyMeta[familyID]; !exists {
@@ -2796,7 +3053,8 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 	})
 	sort.Strings(unmapped)
 
-	popular := h.queryPopularModels(ctx, featuredModels, byCanonical)
+	tenantID := EffectiveTenantIDAll(r)
+	popular := h.queryPopularModels(ctx, featuredModels, byCanonical, tenantID, 20)
 
 	resp := map[string]any{
 		"families":  familiesOut,
@@ -2805,7 +3063,7 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 		"total_raw": totalRaw,
 	}
 	if r.Method == http.MethodGet {
-		globalAvailableModelsCache.set(time.Now(), resp)
+		globalAvailableModelsCache.set(time.Now(), tenantID, resp)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -2819,8 +3077,7 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 // admin.InvalidateAvailableModelsCache() without importing the cache.
 func InvalidateAvailableModelsCache() {
 	globalAvailableModelsCache.mu.Lock()
-	globalAvailableModelsCache.value = nil
-	globalAvailableModelsCache.expiresAt = time.Time{}
+	globalAvailableModelsCache.entries = nil
 	globalAvailableModelsCache.mu.Unlock()
 }
 
@@ -2828,11 +3085,11 @@ func InvalidateAvailableModelsCache() {
 // (admin/routing_cache_test.go) exercise the hit/miss/invalidate
 // lifecycle without spinning up a real DB.
 func setAvailableModelsCacheForTest(value map[string]any) {
-	globalAvailableModelsCache.set(time.Now(), value)
+	globalAvailableModelsCache.set(time.Now(), "", value)
 }
 
 func getAvailableModelsCacheForTest() (map[string]any, bool) {
-	return globalAvailableModelsCache.get(time.Now())
+	return globalAvailableModelsCache.get(time.Now(), "")
 }
 
 func (h *Handler) handleRoutingAvailableModelsRaw(w http.ResponseWriter, r *http.Request) {
@@ -3507,37 +3764,77 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// Audit 2026-09-14 R28 #13: the admin scoring-weights knob is DISPLAY-ONLY.
+// routing_policy.scoring_weights_json feeds the diagnostic preview paths
+// (/api/routing/resolve, /api/routing/score-details) — the live routing hot
+// path reads executors.DefaultLoadScoreWeights (see
+// domains/streaming/executors/router_scoring.go). Every response below
+// carries the disclosure so API consumers cannot mistake the knob for a
+// live-routing control.
+const scoringWeightsDisplayOnlyNote = "these weights only affect /api/routing/resolve and /api/routing/score-details previews, not live routing"
+
+// scoringWeightsDisplayOnlyPayload flattens the weights map with the
+// display-only disclosure keys. The five numeric weight keys stay at the top
+// level so the existing wire shape (and the admin UI that spreads the GET
+// body into its PATCH draft) keeps working; PATCH tolerates and ignores the
+// two disclosure keys on round-trip.
+func scoringWeightsDisplayOnlyPayload(weights map[string]float64) map[string]any {
+	out := make(map[string]any, len(weights)+2)
+	for k, v := range weights {
+		out[k] = v
+	}
+	out["display_only"] = true
+	out["note"] = scoringWeightsDisplayOnlyNote
+	return out
+}
+
 func (h *Handler) handleRoutingScoringWeights(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	if r.Method == http.MethodGet {
 		weights := h.getScoringWeights(ctx)
-		writeJSON(w, http.StatusOK, weights)
+		// R28 #13: display-only disclosure rides on the GET payload (flat
+		// keys; see scoringWeightsDisplayOnlyPayload).
+		writeJSON(w, http.StatusOK, scoringWeightsDisplayOnlyPayload(weights))
 		return
 	}
 
 	if r.Method == http.MethodPatch {
-		var patch map[string]float64
+		// R28 #13: parse tolerantly (map[string]any) so the disclosure keys
+		// that GET now returns (display_only/note) round-trip harmlessly when
+		// a client echoes the GET body back; only the five known numeric
+		// knobs below are read, everything else is ignored (same
+		// accept-and-ignore behavior the old map[string]float64 parse had for
+		// unknown numeric keys).
+		var patch map[string]any
 		if err := readJSON(r, &patch); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
+		patchFloat := func(key string) (float64, bool) {
+			v, ok := patch[key]
+			if !ok {
+				return 0, false
+			}
+			f, ok := v.(float64)
+			return f, ok
+		}
 
 		current := h.getScoringWeights(ctx)
-		if v, ok := patch["price"]; ok {
+		if v, ok := patchFloat("price"); ok {
 			current["price"] = v
 		}
-		if v, ok := patch["session_load"]; ok {
+		if v, ok := patchFloat("session_load"); ok {
 			current["session_load"] = v
 		}
-		if v, ok := patch["failure_penalty"]; ok {
+		if v, ok := patchFloat("failure_penalty"); ok {
 			current["failure_penalty"] = v
 		}
-		if v, ok := patch["default_price_cny"]; ok {
+		if v, ok := patchFloat("default_price_cny"); ok {
 			current["default_price_cny"] = v
 		}
-		if v, ok := patch["default_price_usd"]; ok {
+		if v, ok := patchFloat("default_price_usd"); ok {
 			current["default_price_usd"] = v
 		}
 
@@ -3555,7 +3852,13 @@ func (h *Handler) handleRoutingScoringWeights(w http.ResponseWriter, r *http.Req
 			auditMap[k] = v
 		}
 		h.logAudit(r, "scoring_weights_update", auditMap)
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		// R28 #13: the PATCH response also carries the display-only
+		// disclosure so the actuator answer is honest at the API level.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":       "ok",
+			"display_only": true,
+			"note":         scoringWeightsDisplayOnlyNote,
+		})
 		return
 	}
 
@@ -3625,7 +3928,7 @@ func (h *Handler) handleRoutingFeaturedModelsDynamic(w http.ResponseWriter, r *h
 	polRow := h.db.QueryRow(ctx, `SELECT featured_models FROM routing_policy WHERE tenant_id = 'default'`)
 	_ = polRow.Scan(&featuredModels)
 
-	popular := h.queryPopularModels(ctx, featuredModels, nil)
+	popular := h.queryPopularModels(ctx, featuredModels, nil, EffectiveTenantIDAll(r), 20)
 
 	type featuredModel struct {
 		Name             string `json:"name"`
@@ -4477,14 +4780,24 @@ func (h *Handler) handleFreePoolBootstrap(w http.ResponseWriter, r *http.Request
 	`)
 	if err == nil {
 		defer rows.Close()
+		var staleIDs []int
 		for rows.Next() {
 			var id int
 			var label string
 			//nolint:errcheck // best-effort
 			rows.Scan(&id, &label)
-			//nolint:errcheck // best-effort exec, non-critical
-			h.db.Exec(ctx, `UPDATE credentials SET status = 'disabled', availability_state = 'unreachable', updated_at = NOW() WHERE id = $1`, id)
+			staleIDs = append(staleIDs, id)
 			cleanupResults = append(cleanupResults, map[string]any{"id": id, "label": label})
+		}
+		// 2026-09-17 audit: one UPDATE per row serialized a full table
+		// access per credential; a single ANY($1) sweep does it in one
+		// statement. Best-effort as before.
+		if len(staleIDs) > 0 {
+			// R46 F8⑥: 非 ready 态必须留 state_reason_code 归属 trail
+			//（对齐 R21/balance_floor 系列口径）；status='disabled' 对本
+			// 清扫对象（已 disabled 行）是冗余赋值，保留为幂等无害。
+			//nolint:errcheck // best-effort exec, non-critical
+			h.db.Exec(ctx, `UPDATE credentials SET status = 'disabled', availability_state = 'unreachable', state_reason_code = 'oauth_bridge_cleanup', updated_at = NOW() WHERE id = ANY($1)`, staleIDs)
 		}
 	}
 
@@ -4760,6 +5073,19 @@ type freeProviderConfig struct {
 	// quota). Only meaningful when the keys belong to ONE account — bulk-
 	// importing keys from different accounts would wrongly pool their quota.
 	extraKeys []string
+	// 2026-08-29 代理出口：空串保持历史默认 'direct'。设为 'proxy' 表示该供应商
+	// 需经代理访问（GFW 环境下的海外供应商）。proxySubscriptionID 可选，
+	// 为 nil 时由 ProxyManager 自动挑选最优可拨号节点。
+	egressProfile       string
+	proxySubscriptionID *int
+}
+
+// egressProfileOrDefault 返回实际生效的出口配置，空串视为历史默认 'direct'。
+func (c freeProviderConfig) egressProfileOrDefault() string {
+	if s := strings.TrimSpace(c.egressProfile); s != "" {
+		return s
+	}
+	return "direct"
 }
 
 func (h *Handler) collectEnvProviderConfigs() []freeProviderConfig {
@@ -5263,6 +5589,21 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 		return fmt.Errorf("force_enable: commit failed: %w", err)
 	}
 	met.RoutingCredentialResetTotal.WithLabelValues("db", "ok").Inc()
+	// 提交分界标记:此后任何失败都意味着持久化效果已落地而请求将以 5xx
+	// 结束。调用方据此在错误分支补写审计(否则特权操作留下持久化效果
+	// 却无审计记录,2026-09-14 审计轮 D-P2-1)。
+	beforeAfter["db_committed"] = true
+
+	// A force-enable is also an operator recovery point for credentials that
+	// were ejected after an upstream auth failure. Drop the in-process primary
+	// plaintext cache so the next request reads the current ciphertext rather
+	// than replaying a stale key. Reset the shared multi-key health state too;
+	// otherwise keys marked failed by the old auth result remain exhausted even
+	// after the credential has been repaired.
+	provider.InvalidateCredentialKeyCache(credentialID)
+	provider.ResetKeyRotatorForCredential(credentialID)
+	beforeAfter["credential_key_cache_invalidated"] = true
+	beforeAfter["credential_key_rotator_reset"] = true
 	beforeAfter["previous_manual_disabled"] = currentDisabled
 	beforeAfter["previous_availability_state"] = availState
 	beforeAfter["new_manual_disabled"] = false
@@ -5286,9 +5627,16 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 	// disabled/fail_streak/cool_until_ms via ClearState. When RawModel is
 	// empty (whole-credential repair) the per-model loop covers every
 	// binding model instead of skipping URSM entirely.
+	// 2026-09-06: 改为必要步骤 — URSM 清理失败时阻断返回，避免 PG 成功但
+	// Redis 失败导致"数据库已恢复但流量仍被拦截"的不一致状态。
 	if h.ursmV2 != nil {
+		if len(resetModels) == 0 {
+			// 整凭据 reset 时模型枚举失败 — 明确拒绝，避免 URSM 被完全跳过
+			met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "no_models").Inc()
+			beforeAfter["post_commit_failure"] = "no binding models found, cannot reset URSM"
+			return fmt.Errorf("force_enable: no binding models found for credential %d, cannot reset URSM", credentialID)
+		}
 		disabled := false
-		applied, cleared := 0, 0
 		for _, m := range resetModels {
 			adminAction := api.AdminAction{
 				Scope:          api.ScopeNode,
@@ -5301,23 +5649,26 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 				IssuedAtMs:     time.Now().UnixMilli(),
 			}
 			if err := h.ursmV2.ApplyAdmin(ctx, adminAction); err != nil {
-				slog.Warn("force_enable: ursm.v2 apply_admin failed", "error", err, "cred", credentialID, "model", m)
 				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "error").Inc()
-			} else {
-				applied++
-				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "ok").Inc()
+				beforeAfter["post_commit_failure"] = "ursm.v2 apply_admin failed for model " + m
+				return fmt.Errorf("force_enable: ursm.v2 apply_admin failed for model %s: %w", m, err)
 			}
+			met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "ok").Inc()
 			if err := h.ursmV2.ClearStateForTenant(ctx, ursmTenantID, credentialID, m); err != nil {
-				slog.Warn("force_enable: ursm.v2 clear_state failed", "error", err, "cred", credentialID, "model", m)
 				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "error").Inc()
-			} else {
-				cleared++
-				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "ok").Inc()
+				beforeAfter["post_commit_failure"] = "ursm.v2 clear_state failed for model " + m
+				return fmt.Errorf("force_enable: ursm.v2 clear_state failed for model %s: %w", m, err)
 			}
+			met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "ok").Inc()
 		}
-		beforeAfter["ursm_v2_admin_applied"] = len(resetModels) > 0 && applied == len(resetModels)
-		beforeAfter["ursm_v2_cleared"] = len(resetModels) > 0 && cleared == len(resetModels)
+		beforeAfter["ursm_v2_admin_applied"] = true
+		beforeAfter["ursm_v2_cleared"] = true
 		beforeAfter["ursm_v2_models_covered"] = len(resetModels)
+	} else {
+		// 2026-09-06: URSM v2 未配置时，显式标记为不适用（避免前端误判为失败）
+		beforeAfter["ursm_v2_admin_applied"] = true
+		beforeAfter["ursm_v2_cleared"] = true
+		beforeAfter["ursm_v2_models_covered"] = 0
 	}
 
 	// Best-effort cache invalidation so the next request picks up the fresh state.

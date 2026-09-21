@@ -5,6 +5,9 @@
 import { ref, computed, watch } from 'vue'
 import { authBearer } from '../store'
 import { credentialDisplayName, useCredentialLabels } from '../composables/useCredentialLabels'
+import { confirmDialog } from '../composables/useConfirmDialog'
+import { useI18n } from 'vue-i18n'
+import { formatDateTime } from '../utils/datetime'
 
 const props = defineProps<{
   visible: boolean
@@ -17,6 +20,8 @@ const emit = defineEmits<{
   close: []
   recovered: []
 }>()
+
+const { t } = useI18n()
 
 interface DiagFailure {
   request_id: string
@@ -105,9 +110,10 @@ async function handleForceRecover() {
   if (!props.credentialId || recovering.value) return
 
   const confirmName = diagnosticData.value?.label || credentialDisplayName(props.credentialId)
-  if (!confirm(`确认强制恢复凭据 ${confirmName}？\n此操作将重置凭据状态、清空所有 binding 的不可用标记、重置探测状态。`)) {
-    return
-  }
+  const confirmed = await confirmDialog(
+    t('providerDetail.creds.forceRecoverModalConfirm', { name: confirmName }),
+  )
+  if (!confirmed) return
 
   recovering.value = true
   error.value = null
@@ -142,14 +148,11 @@ function handleClose() {
   emit('close')
 }
 
+// 审计 R3#10：时间格式化统一走 utils/datetime.ts。
 function formatTimestamp(ts: string): string {
-  const d = new Date(ts)
-  return d.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
+  return formatDateTime(ts, {
+    locale: 'zh-CN',
+    options: { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' },
   })
 }
 
@@ -351,7 +354,7 @@ watch(() => props.visible, (visible) => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.75);
+  background: var(--overlay-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -607,7 +610,7 @@ watch(() => props.visible, (visible) => {
 /* 分析和推荐 */
 .diag-analysis {
   padding: 12px;
-  background: rgba(248, 81, 73, 0.1);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   border-left: 3px solid var(--danger);
   border-radius: 4px;
   font-size: 13px;
@@ -617,7 +620,7 @@ watch(() => props.visible, (visible) => {
 
 .diag-recommendation {
   padding: 12px;
-  background: rgba(88, 166, 255, 0.1);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   border-left: 3px solid var(--accent);
   border-radius: 4px;
   font-size: 13px;

@@ -73,7 +73,7 @@ func (qr *QueuedRequest) reserveAttempt(cred CredentialRef) AttemptRef {
 	ref := AttemptRef{
 		AttemptID:    uuid.NewString(),
 		AttemptNo:    qr.AttemptCount + 1,
-		Model:        qr.ResolvedModel,
+		Model:        qr.resolvedModel(),
 		ProviderID:   int64(cred.ProviderID),
 		Provider:     cred.Vendor,
 		CredentialID: int64(cred.CredentialID),

@@ -448,21 +448,6 @@ func WrapQualityProcessNonStream() func(body []byte, mode string) (outBody []byt
 	}
 }
 
-// WrapQualityProcessStreamLine mirrors WrapQualityProcessNonStream
-// for the streaming path. The closure takes an accumulator slice +
-// seen-ids map and returns the rewritten accumulator state; the
-// executor's StreamChat hook in main.go can call it on every SSE
-// line, but in practice we drive the call from relay/stream.go
-// directly via the context value (SetQualityFixModeOnContext).
-//
-// This wrapper is provided for callers that prefer the explicit
-// function-pointer path over context plumbing.
-func WrapQualityProcessStreamLine() func(line, mode string, accFlags []string, seenIDs map[string]int) (outLine string, outFlags []string, outSeen map[string]int) {
-	return func(line, mode string, accFlags []string, seenIDs map[string]int) (string, []string, map[string]int) {
-		return ProcessStreamLine(line, mode, accFlags, seenIDs)
-	}
-}
-
 // WrapSetQualityFixModeOnContext exposes SetQualityFixModeOnContext
 // as a closure that matches the streaming.QualitySetModeFunc shape
 // (context.Context, string) → context.Context. cmd/gateway/main.go

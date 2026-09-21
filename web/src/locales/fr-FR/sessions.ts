@@ -1403,4 +1403,5 @@ promptInjectionCategories: {
     promptInjectionCategoryLegacy: 'Legacy',
     promptInjectionCategoryUnknown: 'Other',
   },
+  metaTitleClearConfirm: 'Effacer le titre de cette session ?',
 }

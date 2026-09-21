@@ -115,7 +115,8 @@ func (w *RetentionWorker) CleanupOnce(ctx context.Context) {
 }
 
 // CleanupExpired 在单事务内设置事务级 bypass_rls（跨租户删除需要）并删除
-// created_at 早于保留期的行。会话级 GUC 会污染连接池中的共享连接，禁止使用。
+// created_at 早于保留期的 journey rows，以及同一窗口外的 snapshot receipts。
+// 会话级 GUC 会污染连接池中的共享连接，禁止使用。
 func (w *RetentionWorker) CleanupExpired(ctx context.Context) (int64, error) {
 	if w == nil || w.db == nil {
 		return 0, nil
@@ -136,8 +137,18 @@ func (w *RetentionWorker) CleanupExpired(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Migration 618 is a prerequisite for the receipt cleanup. Do not infer a
+	// missing table from error text: any PostgreSQL error aborts this transaction,
+	// so pretending the delete succeeded would also falsely report a commit.
+	receiptTag, err := tx.Exec(ctx, `
+			DELETE FROM journal_snapshot_receipts
+			WHERE updated_at < NOW() - $1::interval
+			  AND (status = 'completed' OR claim_until < NOW())`, w.retention.String())
+	if err != nil {
+		return 0, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
-	return tag.RowsAffected(), nil
+	return tag.RowsAffected() + receiptTag.RowsAffected(), nil
 }

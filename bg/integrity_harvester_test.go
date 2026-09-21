@@ -54,7 +54,7 @@ const (
 				(rule_id, rule_name, severity, title, description, source,
 				 status, metadata, detected_at, created_at, updated_at)
 			VALUES (0, $1, $2, $3, $4, 'integrity_harvester',
-				'new', $5, now(), now(), now())`
+				'new', $5::text::jsonb, now(), now(), now())`
 	advisoryHighSQL = `SELECT pg_advisory_xact_lock(hashtext($1))`
 	highSelectSQL   = `
 		WITH agg AS (
@@ -88,7 +88,7 @@ const (
 				(rule_id, rule_name, severity, title, description, source,
 				 status, metadata, detected_at, created_at, updated_at)
 			VALUES (0, $1, $2, $3, $4, 'integrity_harvester',
-				'new', $5, $6, now(), now())`
+				'new', $5::text::jsonb, $6, now(), now())`
 )
 
 // TestIntegrityHarvester_EmptyCycleIssuesNoInserts pins the contract
@@ -185,8 +185,16 @@ type metaCapture struct {
 }
 
 func (m *metaCapture) Match(v interface{}) bool {
-	raw, ok := v.([]byte)
-	if !ok {
+	// 2026-09-05 (doc §3.2): the metadata argument is bound as string +
+	// $5::text::jsonb (pgx SimpleProtocol would inline []byte as bytea hex),
+	// so accept the string binding form while tolerating []byte.
+	var raw []byte
+	switch t := v.(type) {
+	case string:
+		raw = []byte(t)
+	case []byte:
+		raw = t
+	default:
 		return false
 	}
 	var decoded map[string]any

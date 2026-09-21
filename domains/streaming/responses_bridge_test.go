@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,10 +16,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestStreamAnthropicSSEToResponses_FullFlow exercises the complete
-// Anthropic → Responses API pipeline: initial scaffolding, delta text
-// events, accumulated usage flowing into response.completed, and the
-// closing sequence.
+// TestResponsesScaffoldFinishInterruptedEmitsOnlyIncompleteTerminal pins the
+// terminal contract used by integrity-breach bridge exits.
+func TestResponsesScaffoldFinishInterruptedEmitsOnlyIncompleteTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		mode         GateMode
+		wantTerminal bool
+	}{
+		{name: "committed", mode: GateModeImmediate, wantTerminal: true},
+		{name: "deferred", mode: GateModeBuffered, wantTerminal: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			gate := NewAttemptCommitGate(context.Background(), ProtocolOpenAIResponses,
+				NewSerializedStreamWriter(rec), GateOptions{Mode: tc.mode})
+			scaffold := newResponsesScaffold(rec, rec, "req-integrity-terminal", "test-model")
+
+			scaffold.finishInterrupted(gate, "partial output", "integrity_repeated_content", 3, 2)
+
+			body := rec.Body.String()
+			if tc.wantTerminal {
+				assert.Equal(t, 1, strings.Count(body, "event: response.completed"))
+				assert.Contains(t, body, `"status":"incomplete"`)
+				assert.NotContains(t, body, `"status":"completed"`)
+			} else {
+				assert.NotContains(t, body, "event: response.completed")
+			}
+		})
+	}
+}
+
 func TestStreamAnthropicSSEToResponses_FullFlow(t *testing.T) {
 	upstreamBody := strings.Join([]string{
 		// 1) message_start (input tokens)
@@ -60,7 +88,7 @@ func TestStreamAnthropicSSEToResponses_FullFlow(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-123456789012345678", nil, nil)
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-123456789012345678", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -132,7 +160,7 @@ func TestStreamAnthropicSSEToResponses_MaxTokensMapsToIncomplete(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-trunc", nil, nil)
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-trunc", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -140,6 +168,21 @@ func TestStreamAnthropicSSEToResponses_MaxTokensMapsToIncomplete(t *testing.T) {
 		"max_tokens should map to incomplete status")
 	assert.Contains(t, body, `"text":"partial..."`)
 	assert.Contains(t, body, `"output_tokens":100`)
+}
+
+func TestStreamAnthropicSSEToResponses_ReasoningAndTerminal(t *testing.T) {
+	upstreamBody := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"plan\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, upstreamBody) }))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	rec := httptest.NewRecorder()
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude", "claude", "req-reasoning", nil, nil)
+	require.False(t, out.Interrupted)
+	body := rec.Body.String()
+	assert.Contains(t, body, "event: response.reasoning_text.delta")
+	assert.Contains(t, body, "event: response.reasoning_text.done")
 }
 
 // TestStreamAnthropicSSEToResponses_ToolUse verifies tool_use blocks
@@ -176,7 +219,7 @@ func TestStreamAnthropicSSEToResponses_ToolUse(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-tool", nil, nil)
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-tool", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -233,7 +276,7 @@ func TestStreamAnthropicSSEToResponses_ToolUse_MultipleArgChunks(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-multi", nil, nil)
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-multi", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -313,7 +356,7 @@ func TestStreamAnthropicSSEToResponses_ToolUse_SecondToolCall(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-m2", nil, nil)
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-m2", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -376,7 +419,21 @@ func TestStreamAnthropicSSEToResponses_DropsOpenAIFormatData(t *testing.T) {
 		"event: message_start\n",
 		`data: {"type":"message_start","message":{"id":"msg_y","usage":{"input_tokens":1,"output_tokens":0}}}` + "\n",
 		"\n",
-		// Mislabeled OpenAI chunk on the Anthropic event stream:
+		// Real Anthropic content_block that the bridge will translate and
+		// emit to the Responses client — keeps emittedContent=true so the
+		// empty-response detector does not fire on a fixture whose whole
+		// purpose is testing the OpenAI-shape drop, not empty handling.
+		"event: content_block_start\n",
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n",
+		"\n",
+		"event: content_block_delta\n",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}` + "\n",
+		"\n",
+		"event: content_block_stop\n",
+		`data: {"type":"content_block_stop","index":0}` + "\n",
+		"\n",
+		// Mislabeled OpenAI chunk on the Anthropic event stream — must be
+		// dropped by the bridge's OpenAI-shape detector.
 		"event: message_delta\n",
 		`data: {"id":"chatcmpl-leaked","object":"chat.completion.chunk","choices":[{"delta":{"content":"leaked"}}]}` + "\n",
 		"\n",
@@ -398,7 +455,7 @@ func TestStreamAnthropicSSEToResponses_DropsOpenAIFormatData(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-x", nil, nil)
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-x", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -436,7 +493,7 @@ func TestStreamOpenAIToResponsesSSE_FullFlow(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-openai-123456789012345678", nil, nil)
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-openai-123456789012345678", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -490,7 +547,7 @@ func TestStreamOpenAIToResponsesSSE_NoUsageStillFinishes(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-nou", nil, nil)
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-nou", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -510,14 +567,14 @@ func TestResponsesBridges_OtherSideClosedIsNetworkError(t *testing.T) {
 			name: "anthropic to responses",
 			data: "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
 			run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamAnthropicSSEToResponses(w, resp, "claude-test", "claude-test", "req-anthropic-close", nil, nil)
+				return StreamAnthropicSSEToResponses(context.Background(), w, resp, "claude-test", "claude-test", "req-anthropic-close", nil, nil)
 			},
 		},
 		{
 			name: "openai to responses",
 			data: "data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
 			run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamOpenAIToResponsesSSE(w, resp, "gpt-test", "gpt-test", "req-openai-close", nil, nil)
+				return StreamOpenAIToResponsesSSE(context.Background(), w, resp, "gpt-test", "gpt-test", "req-openai-close", nil, nil)
 			},
 		},
 	}
@@ -554,7 +611,7 @@ func TestStreamOpenAIToResponsesSSE_SplitsDoneJoinedToJSON(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil, nil)
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil, nil)
 
 	require.False(t, out.Interrupted)
 	assert.Contains(t, rec.Body.String(), `"delta":"planning"`)
@@ -583,7 +640,7 @@ func TestStreamOpenAIToResponsesSSE_LengthMapsToIncomplete(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-trunc", nil, nil)
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-trunc", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -665,7 +722,7 @@ func TestResponsesScaffold_RoundTrip(t *testing.T) {
 		msgID:       s.msgID,
 		created:     s.created,
 	}
-	s2.writeFinalEvents("Hello world", "stop", 10, 5, 15)
+	s2.writeFinalEvents("Hello world", "stop", "", 10, 5, 15)
 
 	// Parse the closing response.completed event JSON.
 	body := rec2.Body.String()
@@ -739,7 +796,7 @@ func TestStreamOpenAIToResponsesSSE_ToolCalls_MultipleArgChunks(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-oai-tool", nil, nil)
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-oai-tool", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -789,4 +846,319 @@ func TestStreamOpenAIToResponsesSSE_ToolCalls_MultipleArgChunks(t *testing.T) {
 	}
 	assert.Equal(t, `{"city":"SF"}`, fullDelta.String(),
 		"concatenated deltas should form the full JSON arguments")
+}
+
+// TestStreamOpenAIToResponsesSSE_ArgFirstToolCallHeldUntilName pins the
+// arg-first lazy opening: an upstream that streams argument fragments
+// before the function name must not produce function_call_arguments.delta
+// events before the item's response.output_item.added — the client would
+// hold deltas for an item that was never opened, and the terminal nameless
+// guard omits the call entirely (R-audit 2026-09-14 B-P1).
+func TestStreamOpenAIToResponsesSSE_ArgFirstToolCallHeldUntilName(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		// Arg-first pathology: argument fragment arrives BEFORE the name.
+		`data: {"id":"chatcmpl-argfirst","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"type":"function","function":{"arguments":"{\"city\":"}}]},"finish_reason":null}]}` + "\n\n",
+		// Name (and id) arrive later.
+		`data: {"id":"chatcmpl-argfirst","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_af","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}` + "\n\n",
+		`data: {"id":"chatcmpl-argfirst","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"SF\"}"}}]},"finish_reason":null}]}` + "\n\n",
+		`data: {"id":"chatcmpl-argfirst","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n",
+		`data: [DONE]` + "\n\n",
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	rec := httptest.NewRecorder()
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-arg-first", nil, nil)
+	require.False(t, out.Interrupted)
+
+	body := rec.Body.String()
+
+	// The held fragment must never leak as a delta before the item is open.
+	// Two output_item.added events exist (the synthetic message item at
+	// stream start, the function_call item when the name arrives) — the
+	// tool item's added is the LAST one on the wire.
+	addedIdx := strings.LastIndex(body, "event: response.output_item.added")
+	deltaIdx := strings.Index(body, "response.function_call_arguments.delta")
+	require.NotEqual(t, -1, addedIdx, "terminal/wire must open the function_call item")
+	require.NotEqual(t, -1, deltaIdx, "buffered prefix must be replayed once the name arrives")
+	assert.Less(t, addedIdx, deltaIdx,
+		"output_item.added (function_call) must precede the first arguments delta")
+
+	// Concatenated deltas must reconstruct the full arguments, including
+	// the held arg-first prefix.
+	var fullDelta strings.Builder
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &parsed); err != nil {
+			continue
+		}
+		if parsed["type"] == "response.function_call_arguments.delta" {
+			if d, ok := parsed["delta"].(string); ok {
+				fullDelta.WriteString(d)
+			}
+		}
+	}
+	assert.Equal(t, `{"city":"SF"}`, fullDelta.String(),
+		"replayed prefix + post-name deltas must form the full JSON arguments")
+
+	// Terminal envelope carries the completed named item with full args.
+	assert.Contains(t, body, `"name":"get_weather"`)
+	assert.Contains(t, body, `"arguments":"{\"city\":\"SF\"}"`)
+	assert.Contains(t, body, `"status":"completed"`)
+}
+
+// TestStreamOpenAIToResponsesSSE_NamelessToolOnlyFailsOver pins the
+// degenerate tool-only stream: a stream whose only tool call was held
+// nameless emits nothing client-visible, so the bridge must surface the
+// empty-response outcome (executor fails over) instead of writing a
+// lying status=completed envelope with an empty output array
+// (R-audit 2026-09-14 B-P2-3).
+func TestStreamOpenAIToResponsesSSE_NamelessToolOnlyFailsOver(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chatcmpl-nn","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_nn_r","type":"function","function":{"arguments":"{\"x\":1}"}}]},"finish_reason":null}]}` + "\n\n",
+		`data: {"id":"chatcmpl-nn","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n",
+		`data: [DONE]` + "\n\n",
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	rec := httptest.NewRecorder()
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-nameless-only", nil, nil)
+	assert.True(t, out.Interrupted, "fully-held stream must fail over, not fake success")
+	assert.Equal(t, errorsx.KindEmptyResponse, out.Kind)
+
+	body := rec.Body.String()
+	assert.NotContains(t, body, `"status":"completed"`,
+		"no false-success terminal may reach the wire")
+	assert.NotContains(t, body, `"name":""`, "nameless item must not reach the wire")
+}
+
+// TestResponsesScaffoldWriteFinalEvents_AllNamelessDegradesToIncomplete pins
+// the writeFinalEvents degenerate guard directly: an all-nameless toolStates
+// map with no text/reasoning must produce an incomplete (not completed)
+// terminal envelope (R-audit 2026-09-14 B-P2-3 defense-in-depth).
+func TestResponsesScaffoldWriteFinalEvents_AllNamelessDegradesToIncomplete(t *testing.T) {
+	rec := httptest.NewRecorder()
+	gate := NewAttemptCommitGate(context.Background(), ProtocolOpenAIResponses,
+		NewSerializedStreamWriter(rec), GateOptions{Mode: GateModeImmediate})
+	scaffold := newResponsesScaffold(rec, rec, "req-all-nameless", "test-model")
+	args := strings.Builder{}
+	args.WriteString(`{"x":1}`)
+	scaffold.toolStates[0] = &responsesToolTerminalState{ID: "call_x", Arguments: args}
+
+	scaffold.finishAttempt(gate, "", "tool_calls", 1, 2, 3)
+
+	body := rec.Body.String()
+	assert.Contains(t, body, `"status":"incomplete"`,
+		"all-nameless tool stream must not be reported as a completed success")
+	assert.NotContains(t, body, `"status":"completed"`)
+	assert.NotContains(t, body, `"type":"function_call"`,
+		"nameless call must be omitted from the terminal output")
+}
+
+// TestStreamAnthropicSSEToResponses_EmptyResponseFailOver verifies the
+// audit-24h-20260828-r3 P1-B parity fix in the Phase E (Anthropic→
+// Responses) translator: when upstream sends message_start + message_stop
+// with ZERO content_block_* events and zero output tokens, the stream
+// surfaces KindEmptyResponse so the executor fails over to the next
+// candidate via streamInterruptedError{kind: KindEmptyResponse,
+// resumable: true}, matching the raw passthrough detector at
+// anthropic_passthrough_stream.go:147-178 and the Q3 detector at
+// anthropic_to_openai_stream.go (audit-24h-20260828-r4 P1-C).
+func TestStreamAnthropicSSEToResponses_EmptyResponseFailOver(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		"event: message_start\n",
+		`data: {"type":"message_start","message":{"id":"msg_resp_empty","model":"claude-opus-4-8","role":"assistant","content":[],"stop_reason":null,"usage":{"input_tokens":0,"output_tokens":0}}}` + "\n",
+		"\n",
+		// message_delta with output_tokens=0 — IR parser drops the 0 (see
+		// anthropic_to_openai_stream.go:280), so the local outputTokens
+		// stays at zero, triggering IsAnthropicStreamEmpty.
+		"event: message_delta\n",
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}` + "\n",
+		"\n",
+		"event: message_stop\n",
+		`data: {"type":"message_stop"}` + "\n",
+		"\n",
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		//nolint:errcheck // HTTP write error non-recoverable
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	rec := httptest.NewRecorder()
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-resp-empty", nil, nil)
+
+	if !out.Interrupted {
+		t.Fatal("out.Interrupted should be true for an empty response stream")
+	}
+	if out.Reason != "anthropic_empty_response" {
+		t.Errorf("out.Reason = %q, want anthropic_empty_response", out.Reason)
+	}
+	if out.Kind != errorsx.KindEmptyResponse {
+		t.Errorf("out.Kind = %q, want %q", out.Kind, errorsx.KindEmptyResponse)
+	}
+	if !out.Resumable {
+		t.Error("out.Resumable should be true so the executor tries the next candidate")
+	}
+}
+
+// TestStreamAnthropicSSEToResponses_NonEmptyContent verifies that a
+// stream with actual content_block_delta events is NOT flagged as empty.
+func TestStreamAnthropicSSEToResponses_NonEmptyContent(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		"event: message_start\n",
+		`data: {"type":"message_start","message":{"id":"msg_resp_ok","model":"claude-opus-4-8","role":"assistant","content":[],"stop_reason":null,"usage":{"input_tokens":5,"output_tokens":0}}}` + "\n",
+		"\n",
+		"event: content_block_start\n",
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n",
+		"\n",
+		"event: content_block_delta\n",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}` + "\n",
+		"\n",
+		"event: content_block_stop\n",
+		`data: {"type":"content_block_stop","index":0}` + "\n",
+		"\n",
+		"event: message_delta\n",
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}` + "\n",
+		"\n",
+		"event: message_stop\n",
+		`data: {"type":"message_stop"}` + "\n",
+		"\n",
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		//nolint:errcheck // HTTP write error non-recoverable
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	rec := httptest.NewRecorder()
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-resp-ok", nil, nil)
+
+	if out.Interrupted {
+		t.Errorf("out.Interrupted = true for a non-empty stream, reason=%s", out.Reason)
+	}
+	if out.Kind != "" {
+		t.Errorf("out.Kind should be empty for a successful non-empty stream, got %q", out.Kind)
+	}
+}
+
+// TestStreamAnthropicSSEToResponses_BenignEOFEmitCompleted pins the
+// 2026-09-13 fix: an upstream that closes the stream after finish_reason
+// WITHOUT message_stop (minimax-style relays) is a successful stream — the
+// client must still receive the terminal envelope (output_text.done /
+// output_item.done / response.completed). Previously the benign-EOF branch
+// returned a success outcome without finishAttempt, leaving Responses SDK
+// clients (codex ≥0.80) on an unterminated stream.
+func TestStreamAnthropicSSEToResponses_BenignEOFEmitCompleted(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		"event: message_start\n",
+		`data: {"type":"message_start","message":{"id":"msg_upstream","model":"claude-opus-4-8","role":"assistant","content":[],"stop_reason":null,"usage":{"input_tokens":7,"output_tokens":0}}}` + "\n",
+		"\n",
+		"event: content_block_start\n",
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n",
+		"\n",
+		"event: content_block_delta\n",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello benign eof"}}` + "\n",
+		"\n",
+		"event: content_block_stop\n",
+		`data: {"type":"content_block_stop","index":0}` + "\n",
+		"\n",
+		"event: message_delta\n",
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}` + "\n",
+		"\n",
+		// EOF here — NO message_stop.
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	rec := httptest.NewRecorder()
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-benign-eof-12345678901", nil, nil)
+
+	// The stream is a SUCCESS — not interrupted — and must be terminated.
+	require.False(t, out.Interrupted)
+
+	body := rec.Body.String()
+	assert.Contains(t, body, `"delta":"hello benign eof"`)
+	assert.Contains(t, body, "event: response.output_text.done")
+	assert.Contains(t, body, "event: response.output_item.done")
+	assert.Contains(t, body, "event: response.completed")
+	assert.Contains(t, body, `"text":"hello benign eof"`)
+	assert.Contains(t, body, `"status":"completed"`)
+	assert.Contains(t, body, `"input_tokens":7`)
+	assert.Contains(t, body, `"output_tokens":3`)
+}
+
+// TestStreamOpenAIToResponsesSSE_EmptyStreamIsResumableFailover pins the R21
+// (2026-09-13) Q2 empty-stream parity: the OpenAI→Responses bridge was the
+// last of the six bridges without an empty gate. A clean upstream stream with
+// ZERO semantic output (role/empty choices + usage + [DONE]) previously
+// rendered a legal-but-empty response.completed and returned success, so the
+// executor never failed over and Responses SDK clients saw an empty turn.
+func TestStreamOpenAIToResponsesSSE_EmptyStreamIsResumableFailover(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chatcmpl-e","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}` + "\n\n",
+		`data: {"id":"chatcmpl-e","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+		`data: {"id":"chatcmpl-e","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":0}}` + "\n\n",
+		"data: [DONE]\n\n",
+	}, "")
+
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(upstreamBody)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamOpenAIToResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-resp-empty-stream", nil, nil)
+
+	require.True(t, out.Interrupted)
+	assert.Equal(t, "openai_empty_response", out.Reason)
+	assert.Equal(t, errorsx.KindEmptyResponse, out.Kind)
+	assert.True(t, out.Resumable, "empty upstream must stay transparently retryable")
+
+	body := rec.Body.String()
+	// No terminal envelope may be fabricated for an empty stream.
+	assert.NotContains(t, body, "event: response.completed")
+	assert.NotContains(t, body, "event: response.output_text.delta")
 }

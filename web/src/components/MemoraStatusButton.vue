@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { localeRef } from '../i18n'
+import { fmtDateTimeShort } from '../i18n/useFormat'
 import {
   getMemoraStatus,
   pingMemora,
@@ -92,11 +92,6 @@ async function handleReconnect() {
   }
 }
 
-function fmtDate(v: string | null | undefined) {
-  if (!v) return '—'
-  return new Date(v).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
-}
-
 onMounted(() => {
   void loadStatus()
   pollTimer = setInterval(() => { void loadStatus() }, 30000)
@@ -162,7 +157,7 @@ onUnmounted(() => {
             <dt>最近写入错误</dt>
             <dd>
               <code>{{ status.sink.last_error }}</code>
-              <span v-if="status.sink.last_error_at" class="meta-time">{{ fmtDate(status.sink.last_error_at) }}</span>
+              <span v-if="status.sink.last_error_at" class="meta-time">{{ fmtDateTimeShort(status.sink.last_error_at) }}</span>
             </dd>
           </div>
         </template>

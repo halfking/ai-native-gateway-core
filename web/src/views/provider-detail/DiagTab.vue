@@ -99,9 +99,9 @@ function scoreColor(score: number): string {
           <div style="font-size:12px;color:var(--muted)">{{ pdg('summaryTotalCreds') }}</div>
           <div style="font-size:20px;font-weight:600">{{ cachedResult.summary?.total_credentials ?? 0 }}</div>
           <div style="font-size:11px;color:var(--muted)">
-            <span style="color:#4caf50">{{ pdg('summaryHealthySuffix', { n: cachedResult.summary?.healthy ?? 0 }) }}</span> ·
-            <span style="color:#f0b429">{{ pdg('summaryDegradedSuffix', { n: cachedResult.summary?.degraded ?? 0 }) }}</span> ·
-            <span style="color:#f44336">{{ pdg('summaryUnreachableSuffix', { n: cachedResult.summary?.unreachable ?? 0 }) }}</span>
+            <span style="color:var(--success)">{{ pdg('summaryHealthySuffix', { n: cachedResult.summary?.healthy ?? 0 }) }}</span> ·
+            <span style="color:var(--warning)">{{ pdg('summaryDegradedSuffix', { n: cachedResult.summary?.degraded ?? 0 }) }}</span> ·
+            <span style="color:var(--danger)">{{ pdg('summaryUnreachableSuffix', { n: cachedResult.summary?.unreachable ?? 0 }) }}</span>
           </div>
         </div>
         <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:14px">
@@ -158,6 +158,27 @@ function scoreColor(score: number): string {
               <td style="padding:6px"><span class="badge" :class="cd.circuit_state === 'closed' ? 'badge-green' : 'badge-amber'">{{ cd.circuit_state }}</span></td>
               <td style="padding:6px">
                 <span v-if="cd.models_probe?.error" class="badge badge-red">{{ pdg('probeFailed') }}</span>
+                <!-- 2026-09-03 audit fix: the diagnose backend already returns
+                     models_probe.error_kind / error_preview (added with the
+                     non-JSON attribution work), but this panel previously
+                     rendered a misleading GREEN "200 · 0 models" badge for
+                     the sunyun-china2 failure mode (status 200 + HTML body).
+                     Branch on error_kind first so the operator sees the
+                     non-JSON attribution plus the actionable hint instead. -->
+                <template v-else-if="cd.models_probe?.error_kind">
+                  <span
+                    class="badge badge-red"
+                    :title="cd.models_probe.error_preview || cd.models_probe.error_kind"
+                  >
+                    {{ pdg('probeNonJson', { status: cd.models_probe?.status_code || '—' }) }}
+                  </span>
+                  <div
+                    v-if="cd.models_probe.error_kind === 'non_json_body'"
+                    style="font-size:11px;color:var(--danger);margin-top:2px;max-width:280px"
+                  >
+                    {{ td('providerDetail.creds.upstreamNonJsonHint' as never) }}
+                  </div>
+                </template>
                 <span v-else class="badge" :class="cd.models_probe?.status_code === 200 ? 'badge-green' : 'badge-red'">
                   {{ pdg('probeMetaModels', { status: cd.models_probe?.status_code || '—', count: cd.models_probe?.models_count ?? 0, latency: cd.models_probe?.latency_ms ?? 0 }) }}
                 </span>

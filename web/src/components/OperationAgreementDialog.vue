@@ -8,10 +8,16 @@
 //
 // 2026-07-17: 取代原先散落在各页面 footer / 折叠面板 / 全局弹窗的"用户须知"常驻展示。
 // 2026-07-22: 按钮换用全局 .btn 样式（细边框 / 稍大尺寸 / 箭头 / hover 反显 / disabled 显灰）。
+// 2026-09-13: 壳由 el-dialog 迁 ui/AppModal（closeOnMask/escClose 双禁用保持
+// 门控语义：必须显式同意或点取消；@open 复位改由 watch modelValue）。
 
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import AppModal from './ui/AppModal.vue'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElCheckbox } from 'element-plus'
 export type OperationScope = 'download' | 'activate'
 
 const props = withDefaults(
@@ -62,6 +68,14 @@ function onOpen() {
   agreed.value = false
 }
 
+// 原el-dialog @open 复位语义：每次打开时重置勾选
+watch(
+  () => props.modelValue,
+  (open) => {
+    if (open) onOpen()
+  },
+)
+
 function accept() {
   if (!agreed.value) return
   try {
@@ -83,14 +97,15 @@ function cancelDialog() {
 </script>
 
 <template>
-  <el-dialog
+  <!-- 2026-09-13: el-dialog → AppModal。原 width="min(640px, 92vw)" 对应
+       size=md（640，<768 自动 min(92vw, 640)）；close-on-click-modal /
+       close-on-press-escape 双 false → closeOnMask=false + esc-close=false。 -->
+  <AppModal
     v-model="dialogVisible"
     :title="title"
-    width="min(640px, 92vw)"
-    :close-on-click-modal="false"
-    :close-on-press-escape="false"
-    :show-close="true"
-    @open="onOpen"
+    size="md"
+    :close-on-mask="false"
+    :esc-close="false"
   >
     <p class="agree-intro">{{ t('public.agreement.intro') }}</p>
     <ul class="agree-list">
@@ -111,7 +126,7 @@ function cancelDialog() {
         </button>
       </div>
     </template>
-  </el-dialog>
+  </AppModal>
 </template>
 
 <style scoped>

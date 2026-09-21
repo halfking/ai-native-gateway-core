@@ -270,7 +270,7 @@ go test ./... -short
 
 ```bash
 # 设置密码
-export K8S_SSH_PASSWORD='__REDACTED_SSH_PASSWORD__'
+export K8S_SSH_PASSWORD='<REDACTED_SSH_PASSWORD>'
 
 # 一键部署
 ./scripts/deploy-glm52-enhancement.sh

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/bg"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -886,8 +887,15 @@ func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request
 		}
 		legacyHealth.TotalRealSuccess24h = nullInt(totalRealSuccess24h)
 		legacyHealth.TotalRealFailure24h = nullInt(totalRealFailure24h)
-		if rc, ok := h.redisClient.(*redis.Client); ok && h.availabilityReader != nil {
-			keys, cacheErr := h.availabilityReader.ScanKeys(r.Context(), 0)
+		if rc, ok := h.redisClient.(*redis.Client); ok {
+			// KEYS → SCAN: KEYS 是 O(N) 全键扫描，在共享 Redis 上会阻塞主线程；
+			// SCAN 用 cursor 增量扫描替代。
+			var keys []string
+			iter := rc.Scan(r.Context(), 0, "llmgw:avail:*:*", 1000).Iterator()
+			for iter.Next(r.Context()) {
+				keys = append(keys, iter.Val())
+			}
+			cacheErr := iter.Err()
 			if cacheErr == nil && len(keys) > 0 {
 				legacyHealth.TotalNodes = len(keys)
 				legacyHealth.HealthyNodes = 0
@@ -895,7 +903,12 @@ func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request
 				legacyHealth.SuspiciousNodes = 0
 				legacyHealth.ProbingNodes = 0
 				for _, key := range keys {
-					data, err := rc.HGetAll(r.Context(), key).Result()
+					// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent
+					// WRONGTYPE errors when a non-hash key collides with
+					// the SCAN pattern. Errors (including TypedError and
+					// ErrKeyNotFound) continue to the next key — the
+					// original best-effort aggregation semantics.
+					data, err := redissafe.SafeHGetAll(r.Context(), rc, key)
 					if err != nil {
 						continue
 					}
@@ -1586,21 +1599,6 @@ func (h *Handler) handleProbeTaskCreate(w http.ResponseWriter, r *http.Request) 
 	if req.Source == "" {
 		req.Source = "admin"
 	}
-	if !isProbeTaskCommand(req.Command) {
-		writeError(w, http.StatusBadRequest, "unsupported probe command")
-		return
-	}
-	if !isProbeTaskSource(req.Source) {
-		writeError(w, http.StatusBadRequest, "unsupported probe source")
-		return
-	}
-	if req.Priority == 0 {
-		req.Priority = 60
-	}
-	if req.RunAfterSec < 0 || req.RunAfterSec > 24*60*60 {
-		writeError(w, http.StatusBadRequest, "run_after_seconds must be between 0 and 86400")
-		return
-	}
 	if req.MaxAttempts <= 0 {
 		req.MaxAttempts = 7
 	}
@@ -1633,19 +1631,6 @@ func (h *Handler) handleProbeTaskCreate(w http.ResponseWriter, r *http.Request) 
 		"dedup_key": task.DedupKey,
 		"message":   ternary(inserted, "task enqueued", "a task for this dedup key is already active"),
 	})
-}
-
-func isProbeTaskCommand(command string) bool {
-	return command == "node_probe" || command == "integrity_verify" || command == "selfcheck"
-}
-
-func isProbeTaskSource(source string) bool {
-	switch source {
-	case "request_failure", "periodic", "external_async", "admin", "integrity_probe_planner", "selfcheck":
-		return true
-	default:
-		return false
-	}
 }
 
 // handleProbeTaskCancel is the public "remove self-check task" API (需求 6
@@ -2169,7 +2154,7 @@ func (h *Handler) handleProbeCacheRebuild(w http.ResponseWriter, r *http.Request
 	}
 	var body req
 	if r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err.Error() != "EOF" {
+		if err := readJSONRequired(r, &body); err != nil && err.Error() != "EOF" {
 			slog.Error("probe dashboard invalid json", "error", err)
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
@@ -2261,7 +2246,7 @@ func runOneShotBackfill(ctx context.Context, w *bg.AvailabilityCacheBackfill, lo
 		       COALESCE(consecutive_failures, 0),
 		       COALESCE(total_attempts, 0),
 		       last_attempt_at, next_retry_at, last_status
-		FROM model_probe_state
+		FROM v_node_probe_state_compat
 		WHERE next_retry_at IS NOT NULL
 		  AND next_retry_at <= NOW() + make_interval(secs => $1)
 		ORDER BY next_retry_at DESC

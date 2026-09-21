@@ -52,22 +52,8 @@ const credDepth = computed(() =>
   gap: 8px;
   align-items: center;
 }
-.chip, .pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 9px;
-  border-radius: 999px;
-  font-size: 12px;
-  border: 1px solid var(--kx-border);
-  background: var(--kx-surface);
-  color: var(--kx-text);
-}
-.pill { color: var(--kx-muted); }
-.pill.ok {
-  color: var(--kx-success);
-  border-color: color-mix(in srgb, var(--kx-success) 40%, var(--kx-border));
-  background: var(--kx-success-soft);
-}
+/* .chip / .pill / .chip--ok / .chip--warn / .chip--danger 从全局 styles/pill-chip.css 继承（P1-8）。
+ * 注意：本组件模板使用 .chip.tone-* 类名（而非 .chip--*）。保留 .tone-* 兼容修饰符。 */
 .chip.tone-ok { border-color: color-mix(in srgb, var(--kx-success) 40%, var(--kx-border)); }
 .chip.tone-warn { border-color: color-mix(in srgb, var(--kx-warning) 50%, var(--kx-border)); }
 .chip.tone-danger {

@@ -204,23 +204,49 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 	}
 
 	// 4. Growth trend (last 7 days)
-	// 2026-08-25 LP1 follow-up: migration 573 dropped request_logs.body columns.
-	// The "compressed" predicate now lives on the bodies view side (rb.outbound_body);
-	// we LEFT JOIN request_logs_bodies_with_current_month to keep the daily
-	// compressed count accurate without re-reading the dropped columns.
-	trendQuery := `
+	// 2026-09-14: outbound_body left the main table/view in the Phase-1
+	// body-storage split (it lives in request_logs_bodies_* now). The
+	// bodies view has no tenant_id, so: tenant-scoped callers take the
+	// row-by-row LEFT JOIN (correct but heavy, guarded by the request
+	// timeout); the unscoped path pre-aggregates both sides by day first —
+	// a per-row join over a week of request_logs × bodies blows the admin
+	// time budget (measured 30s timeout on the local 100k-row dataset).
+	var trendQuery string
+	if tenantFilter == "" {
+		trendQuery = `
+		WITH trend AS (
+			SELECT DATE(ts) AS day, COUNT(*) AS requests
+			FROM request_logs_with_current_month
+			WHERE ts > NOW() - INTERVAL '7 days'
+			GROUP BY 1
+		),
+		bodies AS (
+			SELECT DATE(ts) AS day, COUNT(DISTINCT request_id) AS compressed
+			FROM request_logs_bodies_with_current_month
+			WHERE outbound_body IS NOT NULL
+			  AND ts > NOW() - INTERVAL '7 days'
+			GROUP BY 1
+		)
+		SELECT t.day, t.requests, COALESCE(b.compressed, 0) AS compressed
+		FROM trend t
+		LEFT JOIN bodies b ON b.day = t.day
+		ORDER BY t.day DESC
+		LIMIT 7
+	`
+	} else {
+		trendQuery = `
 		SELECT
 			DATE(rl.ts) AS day,
 			COUNT(*) AS requests,
-			COUNT(*) FILTER (WHERE rb.outbound_body IS NOT NULL) AS compressed
+			COUNT(DISTINCT rb.request_id) FILTER (WHERE rb.outbound_body IS NOT NULL) AS compressed
 		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb
-		  ON rb.request_id = rl.request_id
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		WHERE rl.ts > NOW() - INTERVAL '7 days'` + tenantFilter + `
 		GROUP BY DATE(rl.ts)
 		ORDER BY day DESC
 		LIMIT 7
 	`
+	}
 	trendRows, err := h.db.Query(ctx, trendQuery)
 	if err != nil {
 		slog.Warn("data_lifecycle_stats trend failed", "error", err)
@@ -235,7 +261,12 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 			}
 			dg.Date = day.Format("2006-01-02")
 			if dg.Requests > 0 {
+				// bodies 的 ts 是落库时间，Phase-1 回填行与主表 ts 可能不同日，
+				// 单日 compressed 可能超过 requests —— 展示层夹到 100%。
 				dg.CompressionRate = float64(dg.Compressed) / float64(dg.Requests) * 100
+				if dg.CompressionRate > 100 {
+					dg.CompressionRate = 100
+				}
 			}
 			stats.GrowthTrend = append(stats.GrowthTrend, dg)
 		}
@@ -267,7 +298,7 @@ func (h *Handler) handleDataLifecycleCleanupPreview(w http.ResponseWriter, r *ht
 	}
 
 	var req cleanupPreviewRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}

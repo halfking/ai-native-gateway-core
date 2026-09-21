@@ -4,6 +4,7 @@ package streaming
 // /v1/responses (signal extraction + flag gating).
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -16,7 +17,7 @@ func TestExtractSignalsForMessages(t *testing.T) {
 	body = append(body, []byte("```")...) // inject code fence without raw-string clash
 	rb := &messagesRequestBody{
 		Model:    "auto",
-		System:   "You are a helpful assistant",
+		System:   json.RawMessage(`"You are a helpful assistant"`),
 		Messages: []byte(`[{"role":"user","content":"def foo()"}]`),
 	}
 	sigs := extractSignalsForMessages(rb, body)

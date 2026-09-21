@@ -1,0 +1,300 @@
+// Package strategy - runner.go (GW-10 Phase 1)
+//
+// Runner 把 Selector 选出的 strategy 链按顺序应用到 body 上，每段之间套
+// NeverWorse 守卫（如果 strategy 提供 GuardStage()）。策略错误按 fail-open
+// 处理并记录到 stats，只有 context 取消会让 runner 返回错误。
+//
+// 设计取舍：
+//   - 与现有 Compressor.Compress 平行：Compressor.Compress 路径不变（直接走
+//     feature-flag if 链），新增 Compressor.RunStrategies 路径让 main.go 可以
+//     选择迁移。Phase 2 再决定是否合并。
+//   - strategy 包不 import compression 包（避免 import cycle），因此自带
+//     defaultNeverWorse 复刻核心语义。Production 路径通过 SetGuard 注入
+//     compression.NeverWorse 即可拿到 Prometheus 计数。
+//
+// 2026-09-01：抽出 applyOne 共用于 RunWithBody（顺序链）与 RunParallelWithBody
+// （并行 fan-out，详见 runner_parallel.go）。RunWithBody 行为完全不变。
+package strategy
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"reflect"
+	"sync/atomic"
+)
+
+// guardFuncType is the function signature shared by strategy.defaultNeverWorse
+// and compression.NeverWorse. Defined as a named type so we can store it in
+// atomic.Value (which requires consistent types).
+type guardFuncType = func(raw, processed []byte, stage string) (out []byte, regressed bool)
+
+// Runner 持有 Registry + 可选守卫实现。无状态，可在 Compressor 内多次复用。
+type Runner struct {
+	registry *Registry
+	// guardNeverWorse 是 atomic.Value（持有 guardFuncType），支持 init 后
+	// 一次性 SetGuard 注入 compression.NeverWorse 复用 Prometheus 计数。
+	// 用 atomic.Value 而非 RWMutex 是因为 SetGuard 在 init 期调用一次后不再写，
+	// 但 RunWithBody 可能在多 goroutine 读；atomic.Load 一次比 RLock 更轻。
+	guardNeverWorse atomic.Value // holds guardFuncType
+}
+
+// NewRunner 构造 Runner。默认挂载 defaultNeverWorse 作为守卫实现。
+func NewRunner(reg *Registry) *Runner {
+	r := &Runner{registry: reg}
+	r.guardNeverWorse.Store(guardFuncType(defaultNeverWorse))
+	return r
+}
+
+// SetGuard 注入守卫实现（典型调用：Runner.SetGuard(compression.NeverWorse)）。
+// 这样 production 可以复用 compression 包的 Prometheus 计数器，
+// 测试可以替换为 stub 验证 regressed 触发路径。
+//
+// 线程安全：通过 atomic.Value Store 实现并发安全写入。
+// 但语义上仍是 init-time-only：若 SetGuard 在 RunWithBody 并发执行期间被调用，
+// 已开始的 chain 仍会用旧守卫；下一条请求才会看到新守卫。这是 acceptable 的
+// — 实际生产路径在 main.go 启动期 SetGuard 一次。
+func (r *Runner) SetGuard(g func(raw, processed []byte, stage string) ([]byte, bool)) {
+	if r == nil {
+		return
+	}
+	if g == nil {
+		g = defaultNeverWorse
+	}
+	r.guardNeverWorse.Store(guardFuncType(g))
+}
+
+// defaultNeverWorse 复刻 compression.NeverWorse 的核心语义：
+//   - 空 raw / 空 processed → 直接放过
+//   - len(processed) < len(raw) → 接受 processed
+//   - 否则 → 回退 raw 并记录 regressed=true
+//
+// 不计入 Prometheus（那是 compression 包的事）；这里只记录到 slog 便于
+// 排查 strategy 自身 bug 触发的膨胀。
+func defaultNeverWorse(raw, processed []byte, stage string) ([]byte, bool) {
+	if len(raw) == 0 {
+		return processed, false
+	}
+	if len(processed) == 0 {
+		return processed, false
+	}
+	if len(processed) < len(raw) {
+		return processed, false
+	}
+	slog.Warn("strategy.Runner: never_worse guard regression (fallback to raw)",
+		"stage", stage,
+		"raw_bytes", len(raw),
+		"processed_bytes", len(processed),
+		"delta_bytes", len(processed)-len(raw),
+	)
+	return raw, true
+}
+
+// RunStats 单次 Run 的累积统计。
+type RunStats struct {
+	// BytesIn 输入 body 字节数。
+	BytesIn int
+	// BytesOut 输出 body 字节数（可能等于 BytesIn = 未压缩；错误路径上也更新为当前链长）。
+	BytesOut int
+	// AppliedNames 顺序：实际改变了 body 的 strategy 名列表。
+	AppliedNames []string
+	// SkippedNames 顺序：策略不适用 / skipped（[COMPRESSED: 幂等、不命中策略），
+	// 仅作可观测，不算 regression。
+	SkippedNames []string
+	// FailedNames 是 Apply 返回错误而被 fail-open 跳过的策略名。可选策略链
+	// 不能把局部失败升级为请求失败，也不能把部分压缩结果作为错误返回给调用方。
+	FailedNames []string
+	// TruncatedBy 顺序：所有触发 NeverWorse 守卫的 strategy 名（输出 >= 输入，
+	// 被回退到原 body）。通常意味着该 strategy 异常，需要排查。
+	TruncatedBy []string
+	// CandidateCount 2026-09-01：本次选中的 strategy 数。仅 RunParallelWithBody
+	// 会写入；RunWithBody 顺序链保持 0（与 AppliedNames 长度一致即可推断）。
+	CandidateCount int
+	// WinnerName 2026-09-01：RunParallelWithBody 按信息量评分挑出的最终胜出
+	// strategy 名；顺序链时为空（语义上"链尾即胜出"，已在 current 字节中体现）。
+	WinnerName string
+}
+
+// RunWithBody 是实际的执行入口。返回最终 body + stats + error。
+//
+// 参数：
+//   - ctx: 透传给各 Strategy.Apply
+//   - sel: 选择器；nil = 不压缩（返回原 body 零变化）
+//   - body: 待压缩 body
+//
+// 关键不变量：
+//   - 输出 body 字节数 <= 输入 body 字节数（每段 NeverWorse 守卫保证）。
+//   - 任何 Strategy.Apply 抛 error → fail-open 跳过该段并记录 FailedNames；
+//     stats.BytesOut 仍更新到当前链长，便于观测部分压缩效果。
+//   - Strategy.Enabled() == false → 跳过（记入 SkippedNames，不算错误）。
+//   - Strategy.Apply 返回 applied=false → 跳过，记入 SkippedNames。
+func (r *Runner) RunWithBody(ctx context.Context, sel Selector, body []byte) ([]byte, RunStats, error) {
+	stats := RunStats{BytesIn: len(body), BytesOut: len(body)}
+	ctx = nonNilContext(ctx)
+	if r == nil || r.registry == nil {
+		return body, stats, errors.New("strategy.Runner: nil registry")
+	}
+	if sel == nil {
+		return body, stats, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return body, stats, err
+	}
+	// atomic.Load 一致性读取 guardFuncType；init 期 SetGuard 完成后所有 goroutine
+	// 都能看到（atomic.Value 的 Store/Load 提供 happens-before 语义）。
+	guardFn, _ := r.guardNeverWorse.Load().(guardFuncType)
+
+	all := r.registry.Snapshot()
+	chosen, selectErr := safeSelect(ctx, sel, all, body)
+	if selectErr != nil {
+		return body, stats, nil
+	}
+	current := body
+	for _, s := range chosen {
+		if err := ctx.Err(); err != nil {
+			stats.BytesOut = len(body)
+			return body, stats, err
+		}
+		out, applied, _ := applyOne(ctx, s, current, guardFn, &stats)
+		// Optional compression is fail-open: err 已被 applyOne 记入 FailedNames，
+		// 这里不返回 err（与重构前 RunWithBody 语义完全一致）。applied=false
+		// 包括 err != nil / !applied / NeverWorse 触发，全部 swallow。
+		if !applied || len(out) == 0 {
+			continue
+		}
+		current = out
+	}
+	if err := ctx.Err(); err != nil {
+		stats.BytesOut = len(body)
+		return body, stats, err
+	}
+	stats.BytesOut = len(current)
+	if len(current) > len(body) {
+		slog.Warn("strategy.Runner: aggregate regression; reverting entire chain",
+			"input_bytes", len(body), "output_bytes", len(current))
+		stats.TruncatedBy = append(stats.TruncatedBy, "aggregate")
+		stats.BytesOut = len(body)
+		return body, stats, nil
+	}
+	return current, stats, nil
+}
+
+func nonNilContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+func cloneBytes(in []byte) []byte {
+	if in == nil {
+		return nil
+	}
+	out := make([]byte, len(in))
+	copy(out, in)
+	return out
+}
+
+func safeApply(ctx context.Context, s Strategy, in []byte) (out []byte, applied bool, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			out = nil
+			applied = false
+			err = fmt.Errorf("strategy %q panicked: %v", safeName(s), recovered)
+		}
+	}()
+	out, applied, err = s.Apply(ctx, cloneBytes(in))
+	out = cloneBytes(out)
+	if err == nil {
+		err = ctx.Err()
+		if err != nil {
+			out = nil
+			applied = false
+		}
+	}
+	return out, applied, err
+}
+
+func safeGuard(guardFn guardFuncType, raw, processed []byte, stage string) (out []byte, regressed bool, err error) {
+	if guardFn == nil {
+		return cloneBytes(processed), false, nil
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			out = cloneBytes(raw)
+			regressed = true
+			err = fmt.Errorf("strategy guard %q panicked: %v", stage, recovered)
+		}
+	}()
+	out, regressed = guardFn(cloneBytes(raw), cloneBytes(processed), stage)
+	if len(out) == 0 && len(processed) > 0 && !regressed {
+		return cloneBytes(raw), true, fmt.Errorf("strategy guard %q returned empty output", stage)
+	}
+	return cloneBytes(out), regressed, nil
+}
+
+func isNilStrategy(s Strategy) bool {
+	if s == nil {
+		return true
+	}
+	v := reflect.ValueOf(s)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
+func safeName(s Strategy) (name string) {
+	if isNilStrategy(s) {
+		return "<nil>"
+	}
+	defer func() {
+		if recover() != nil || name == "" {
+			name = "<invalid>"
+		}
+	}()
+	return s.Name()
+}
+
+func safeEnabled(s Strategy) (enabled bool) {
+	if isNilStrategy(s) {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			enabled = false
+		}
+	}()
+	return s.Enabled()
+}
+
+func safeGuardStage(s Strategy) (stage string) {
+	if isNilStrategy(s) {
+		return ""
+	}
+	defer func() {
+		if recover() != nil {
+			stage = ""
+		}
+	}()
+	return s.GuardStage()
+}
+
+func safeSelect(ctx context.Context, sel Selector, all []Strategy, body []byte) (chosen []Strategy, err error) {
+	if sel == nil {
+		return nil, nil
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			chosen = nil
+			err = fmt.Errorf("strategy selector panicked: %v", recovered)
+		}
+	}()
+	return sel.Select(ctx, all, cloneBytes(body)), nil
+}

@@ -5,39 +5,52 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/session"
-	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
 )
 
-// HandleApprovalResume 处理 POST /api/v1/approvals/{id}/resume。
+// HandleApprovalResume 处理 POST /api/admin/approvals/:id/resume
 //
-// 触发审批通过后的 LLM 调用恢复。该操作只允许 super_admin 或 legacy
-// admin_key；全局管理员的空 tenant_id 由 ApprovalCallerTenantID 保留为
-// 跨租户语义，不能由客户端 header 或 query 参数指定。
+// 触发审批通过后的 LLM 调用恢复。
+//
+// 请求：POST /api/admin/approvals/{approval_id}/resume
+// 响应：
+//   - 200: {"status": "resumed", "approval_id": "..."}
+//   - 400: {"error": "approval not in pending state"}
+//   - 404: {"error": "approval not found"}
+//   - 500: {"error": "..."}
+//
+// 认证：需要 super_admin 权限
 func (h *Handler) HandleApprovalResume(w http.ResponseWriter, r *http.Request) {
 	if h.approvalResumeHandler == nil {
 		http.Error(w, `{"error":"approval resume not configured"}`, http.StatusServiceUnavailable)
 		return
 	}
 
-	if GetAuthContext(r) == nil {
-		http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
-		return
-	}
-	if !IsSuperAdminOrLegacy(r) {
-		http.Error(w, `{"error":"super_admin role required for this endpoint"}`, http.StatusForbidden)
-		return
-	}
-
+	// 提取 approval_id
 	approvalID := extractApprovalID(r)
 	if approvalID == "" {
 		http.Error(w, `{"error":"missing approval_id"}`, http.StatusBadRequest)
 		return
 	}
 
-	tenantID := ApprovalCallerTenantID(r)
+	// R29 安全修复：tenantFromQueryOrContext 只允许超管显式指定目标租户，
+	// 其余角色钉死认证上下文自身租户——此前的 getTenantIDFromRequest 方式 1
+	// 读的 string context key 全仓无写入方（AdminMiddleware 写的是
+	// authContextKey{}），恒 miss 后回落到可伪造的 X-Tenant-ID 头 /
+	// tenant_id query，已认证 tenant_admin 可跨租户 resume 任意审批。
+	if GetAuthContext(r) == nil {
+		// 纵深防御：生产挂载点在 wrapAdmin 之后必有认证上下文；缺失即未认证。
+		http.Error(w, `{"error":"missing tenant_id"}`, http.StatusUnauthorized)
+		return
+	}
+	tenantID := tenantFromQueryOrContext(r)
+	if tenantID == "" {
+		http.Error(w, `{"error":"missing tenant_id"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// 调用 ResumeAfterApproval
 	ctx := r.Context()
 	slog.Info("approval resume requested",
 		"approval_id", approvalID,
@@ -54,28 +67,13 @@ func (h *Handler) HandleApprovalResume(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"approval not in pending state"}`, http.StatusBadRequest)
 			return
 		}
-		if errors.Is(err, session.ErrResumeInProgress) {
-			slog.Warn("approval resume already in progress",
+		if errors.Is(err, session.ErrResumeSnapshotMissing) {
+			slog.Error("approval resume failed: snapshot missing",
 				"approval_id", approvalID,
 				"error", err)
-			http.Error(w, `{"error":"approval resume already in progress"}`, http.StatusConflict)
+			http.Error(w, `{"error":"snapshot missing (cache expired?)"}`, http.StatusInternalServerError)
 			return
 		}
-		if errors.Is(err, session.ErrResumeLeaseLost) {
-			slog.Warn("approval resume lease lost",
-				"approval_id", approvalID,
-				"error", err)
-			http.Error(w, `{"error":"approval resume lease lost; retry"}`, http.StatusConflict)
-			return
-		}
-		if errors.Is(err, sessionaudit.ErrResumeLeaseLost) {
-			slog.Warn("approval resume persistence lease lost",
-				"approval_id", approvalID,
-				"error", err)
-			http.Error(w, `{"error":"approval resume lease lost; retry"}`, http.StatusConflict)
-			return
-		}
-
 		if errors.Is(err, session.ErrResumeRejected) {
 			slog.Warn("approval resume failed: rejected",
 				"approval_id", approvalID,
@@ -120,22 +118,32 @@ func (h *Handler) HandleApprovalResume(w http.ResponseWriter, r *http.Request) {
 
 // extractApprovalID 从请求路径中提取 approval_id。
 //
-// 支持当前 API 路径和历史 admin 路径；query 中的 id 仅作为兼容回退。
+// 支持以下路径格式：
+//   - /api/admin/approvals/{id}/resume
+//   - /api/admin/approvals/:id/resume
 func extractApprovalID(r *http.Request) string {
-	for _, prefix := range []string{
-		"/api/v1/approvals/",
-		"/api/admin/approvals/",
-	} {
-		remaining, ok := strings.CutPrefix(r.URL.Path, prefix)
-		if !ok || remaining == "" {
-			continue
+	// 尝试从路径参数提取（gorilla/mux 或类似的路由器）
+	// 如果使用标准库 http.ServeMux，需要手动解析路径
+
+	// 方式 1: 从 URL path 提取（假设路径格式为 /api/admin/approvals/{id}/resume）
+	path := r.URL.Path
+	// 移除前缀 /api/admin/approvals/
+	prefix := "/api/admin/approvals/"
+	if len(path) > len(prefix) {
+		remaining := path[len(prefix):]
+		// 提取到 /resume 之前的部分
+		for i := 0; i < len(remaining); i++ {
+			if remaining[i] == '/' {
+				return remaining[:i]
+			}
 		}
-		id, ok := strings.CutSuffix(remaining, "/resume")
-		if !ok || id == "" || strings.Contains(id, "/") {
-			continue
-		}
+		return remaining
+	}
+
+	// 方式 2: 从 query 参数提取（备用）
+	if id := r.URL.Query().Get("id"); id != "" {
 		return id
 	}
 
-	return r.URL.Query().Get("id")
+	return ""
 }

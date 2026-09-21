@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,17 +26,22 @@ func TestResponsesBridges_PostCommitUpstreamErrorFinishesIncomplete(t *testing.T
 			body: "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n" +
 				"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"upstream failed\"}}\n\n",
 			run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamAnthropicSSEToResponses(w, resp, "claude-test", "claude-test", "req-error-anthropic", nil, nil)
+				return StreamAnthropicSSEToResponses(context.Background(), w, resp, "claude-test", "claude-test", "req-error-anthropic", nil, nil)
 			},
 		},
 		{
 			name:       "openai",
-			wantReason: "eof_without_done",
+			// A-#14: in-band {"error":{...}} frames now parse as
+			// ir.ChunkTypeError, so the bridge classifies them as
+			// upstream_error (matching the anthropic case) instead of
+			// falling through to a generic eof_without_done. Failover
+			// gating depends on this classification.
+			wantReason: "upstream_error",
 
 			body: "data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n" +
 				"data: {\"error\":{\"message\":\"upstream failed\"}}\n\n",
 			run: func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-				return StreamOpenAIToResponsesSSE(w, resp, "gpt-test", "gpt-test", "req-error-openai", nil, nil)
+				return StreamOpenAIToResponsesSSE(context.Background(), w, resp, "gpt-test", "gpt-test", "req-error-openai", nil, nil)
 			},
 		},
 	}

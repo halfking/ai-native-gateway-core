@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
@@ -99,6 +101,36 @@ func TestConvertChatRequestToAnthropic_OpenAIToAnthropic(t *testing.T) {
 	assert.Equal(t, "user", first["role"])
 }
 
+func TestConvertChatRequestToAnthropic_PreservesSystemBlocks(t *testing.T) {
+	in := []byte(`{
+		"model":"claude-sonnet-5",
+		"messages":[
+			{"role":"system","content":[{"type":"text","text":"Follow the policy."},{"type":"text","text":"Answer in Chinese."}]},
+			{"role":"user","content":"continue"}
+		]
+	}`)
+
+	out, err := ConvertChatRequestToAnthropic(in)
+	require.NoError(t, err)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(out, &got))
+	assert.Equal(t, "Follow the policy.\nAnswer in Chinese.", got["system"])
+}
+
+func TestConvertChatRequestToAnthropic_RejectsInvalidToolArguments(t *testing.T) {
+	in := []byte(`{
+		"model":"claude-sonnet-5",
+		"messages":[{"role":"assistant","content":null,"tool_calls":[{
+			"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{not-json"}
+		}]}]
+	}`)
+
+	_, err := ConvertChatRequestToAnthropic(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid tool arguments")
+}
+
 // TestConvertAnthropicResponseToChat_NonStream verifies the Q3
 // Anthropic→OpenAI response conversion (text content).
 func TestConvertAnthropicResponseToChat_NonStream(t *testing.T) {
@@ -160,7 +192,9 @@ func TestConvertAnthropicResponseToChat_ToolCalls(t *testing.T) {
 	assert.Equal(t, "tu_1", first_call["id"])
 	fn, _ := first_call["function"].(map[string]any)
 	assert.Equal(t, "get_weather", fn["name"])
-	assert.Equal(t, `{"city":"SF"}`, fn["arguments"])
+	// IR-backed conversion preserves the raw input JSON verbatim (R12 候选4),
+	// spacing included — the retired fallback re-marshalled it compacted.
+	assert.Equal(t, `{"city": "SF"}`, fn["arguments"])
 }
 
 func TestStreamAnthropicSSEToOpenAI_WrappedEOFWithoutMessageStopIsInterrupted(t *testing.T) {
@@ -173,7 +207,8 @@ func TestStreamAnthropicSSEToOpenAI_WrappedEOFWithoutMessageStopIsInterrupted(t 
 	}
 	rec := httptest.NewRecorder()
 
-	out := StreamAnthropicSSEToOpenAI(rec, resp, "claude-test", "claude-test", "req-wrapped-eof", nil, nil)
+	// P1-2 fix (2026-08-28): Add ctx parameter.
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp, "claude-test", "claude-test", "req-wrapped-eof", nil, nil)
 
 	assert.True(t, out.Interrupted)
 	assert.Equal(t, "eof_without_done", out.Reason)
@@ -195,9 +230,8 @@ func TestStreamOpenAIToAnthropicSSE_FirstByteTimeoutClosesBlockingBody(t *testin
 	w := newBlockTimeoutWriteResponseWriter()
 	done := make(chan StreamOutcome, 1)
 	go func() {
-		done <- StreamOpenAIToAnthropicSSE(
-			w, resp, "claude-test", "upstream-test", "req-blocking-body", nil, nil,
-		)
+		// P1-2 fix (2026-08-28): Add ctx parameter.
+		done <- StreamOpenAIToAnthropicSSE(context.Background(), w, resp, "claude-test", "upstream-test", "req-blocking-body", nil, nil)
 	}()
 
 	select {
@@ -230,8 +264,8 @@ func TestStreamAnthropicPassthrough_ClientDisconnectWinsOverLaterUpstreamError(t
 		Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
 	}
 
-	out := StreamAnthropicPassthrough(
-		newDisconnectingStreamWriter(), resp,
+	// P1-2 fix (2026-08-28): Add ctx parameter.
+	out := StreamAnthropicPassthrough(context.Background(), newDisconnectingStreamWriter(), resp,
 		"claude-test", "claude-test", "req-client-close", nil, NewPendingCapturer(4096),
 	)
 
@@ -251,7 +285,7 @@ func TestStreamAnthropicPassthrough_OtherSideClosedIsNetworkError(t *testing.T) 
 	}
 	rec := httptest.NewRecorder()
 
-	out := StreamAnthropicPassthrough(rec, resp, "claude-test", "claude-test", "req-passthrough-close", nil, nil)
+	out := StreamAnthropicPassthrough(context.Background(), rec, resp, "claude-test", "claude-test", "req-passthrough-close", nil, nil)
 
 	assert.True(t, out.Interrupted)
 	assert.Equal(t, "network_error", out.Reason)
@@ -293,7 +327,7 @@ func TestStreamAnthropicPassthrough_BytesForPassThrough(t *testing.T) {
 
 	rec := newBridgeWriter()
 	pc := newBridgePendingCapturer(1024)
-	out := StreamAnthropicPassthrough(rec, resp, "claude-3-5-sonnet", "claude-3-5-sonnet", "req-1", nil, pc)
+	out := StreamAnthropicPassthrough(context.Background(), rec, resp, "claude-3-5-sonnet", "claude-3-5-sonnet", "req-1", nil, pc)
 	assert.Equal(t, body, rec.buf.String())
 	assert.False(t, out.Interrupted)
 }
@@ -302,7 +336,7 @@ func TestStreamAnthropicPassthrough_KeepaliveBeforeFirstSemanticFrameDoesNotComm
 	body := ": upstream ping\n\ndata: {\"type\":\"content_block_delta\"}\n\n"
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
 	writer := newBridgeWriter()
-	out := StreamAnthropicPassthrough(writer, resp, "claude", "claude", "req-boundary", nil, nil)
+	out := StreamAnthropicPassthrough(context.Background(), writer, resp, "claude", "claude", "req-boundary", nil, nil)
 	if out.Interrupted {
 		t.Fatalf("outcome = %+v", out)
 	}
@@ -314,7 +348,7 @@ func TestStreamAnthropicPassthrough_KeepaliveBeforeFirstSemanticFrameDoesNotComm
 func TestStreamAnthropicPassthrough_FlushErrorAfterSemanticFrameIsClientFailure(t *testing.T) {
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader("data: {\"type\":\"content_block_delta\"}\n\n"))}
 	writer := &initialFlushErrorWriter{header: make(http.Header), flushErr: errors.New("client gone")}
-	out := StreamAnthropicPassthrough(writer, resp, "claude", "claude", "req-flush", nil, nil)
+	out := StreamAnthropicPassthrough(context.Background(), writer, resp, "claude", "claude", "req-flush", nil, nil)
 	if !out.Interrupted || out.Reason != "client_write_failed" || out.Kind != errorsx.KindCanceled {
 		t.Fatalf("outcome = %+v, want client_write_failed cancellation", out)
 	}
@@ -325,10 +359,49 @@ func TestStreamAnthropicPassthrough_ForwardsUnterminatedFinalFrame(t *testing.T)
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
 	rec := newBridgeWriter()
 
-	out := StreamAnthropicPassthrough(rec, resp, "claude-3-5-sonnet", "claude-3-5-sonnet", "req-eof", nil, nil)
+	out := StreamAnthropicPassthrough(context.Background(), rec, resp, "claude-3-5-sonnet", "claude-3-5-sonnet", "req-eof", nil, nil)
 
-	assert.False(t, out.Interrupted)
-	assert.Equal(t, body, rec.buf.String())
+	// An unterminated message_stop without any preceding content_block_*
+	// frames is an empty stream — the empty-response detector must surface
+	// it as a retryable failure (KindEmptyResponse) so the executor can
+	// fail over to the next credential. The original fixture expected
+	// Interrupted=false, but the documented audit contract (r4 CRITICAL:
+	// anthropic stream empty-response parity) supersedes that fixture.
+	assert.True(t, out.Interrupted)
+	assert.Equal(t, errorsx.KindEmptyResponse, out.Kind)
+	assert.True(t, out.Resumable)
+}
+
+func TestStreamOpenAIToAnthropicSSE_EmitsEstimatedInputTokensAtMessageStart(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(
+			`data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n" +
+				"data: [DONE]\n\n",
+		)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamOpenAIToAnthropicSSEWithDiagnostics(context.Background(), rec, resp,
+		"claude-test", "gpt-test", "req-estimate", nil, nil, nil, 37)
+	require.False(t, out.Interrupted, "bridge outcome = %+v", out)
+
+	var messageStart map[string]any
+	for _, event := range strings.Split(rec.Body.String(), "\n\n") {
+		if !strings.Contains(event, "event: message_start") {
+			continue
+		}
+		dataLine := strings.TrimPrefix(strings.Split(event, "\n")[1], "data: ")
+		require.NoError(t, json.Unmarshal([]byte(dataLine), &messageStart))
+		break
+	}
+	require.NotNil(t, messageStart)
+	message, ok := messageStart["message"].(map[string]any)
+	require.True(t, ok)
+	usage, ok := message["usage"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(37), usage["input_tokens"])
+	assert.Equal(t, float64(0), usage["output_tokens"])
 }
 
 func TestStreamOpenAIToAnthropicSSE_SplitsDoneJoinedToJSON(t *testing.T) {
@@ -340,7 +413,7 @@ func TestStreamOpenAIToAnthropicSSE_SplitsDoneJoinedToJSON(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	out := StreamOpenAIToAnthropicSSE(rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil, nil)
+	out := StreamOpenAIToAnthropicSSE(context.Background(), rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil, nil)
 
 	require.False(t, out.Interrupted)
 	assert.Contains(t, rec.Body.String(), `"text":"planning"`)
@@ -357,7 +430,7 @@ func TestStreamOpenAIToAnthropicSSE_OtherSideClosedIsNetworkError(t *testing.T) 
 	}
 	rec := httptest.NewRecorder()
 
-	out := StreamOpenAIToAnthropicSSE(rec, resp, "glm-5.2", "glm-5.2", "req-network-close", nil, nil)
+	out := StreamOpenAIToAnthropicSSE(context.Background(), rec, resp, "glm-5.2", "glm-5.2", "req-network-close", nil, nil)
 
 	assert.True(t, out.Interrupted)
 	assert.Equal(t, "network_error", out.Reason)
@@ -366,13 +439,42 @@ func TestStreamOpenAIToAnthropicSSE_OtherSideClosedIsNetworkError(t *testing.T) 
 	assert.NotContains(t, rec.Body.String(), `"text":"hello"`)
 }
 
+func TestStreamAnthropicSSEToOpenAI_SignatureDeltaRetainedAndObserved(t *testing.T) {
+	body := strings.Join([]string{
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_sig\",\"model\":\"claude-opus-4-8\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_opaque_123\"}}\n\n",
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+	}, "")
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body)), Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil)}
+	rec := httptest.NewRecorder()
+	capture := audit.NewStreamCapture()
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-signature", capture, nil)
+	require.False(t, out.Interrupted, "signature_delta must not interrupt the bridge: %+v", out)
+	wire := rec.Body.String()
+	assert.NotContains(t, wire, "sig_opaque_123", "opaque Anthropic signature must not be forged into OpenAI wire")
+	flags := capture.SummaryAsMap()["quality_flags"]
+	assert.Contains(t, flags, "anthropic_signature_delta:f961f12556af3c7b")
+}
+
 func TestStreamAnthropicSSEToOpenAI_ConvertsMessageStartToOpenAIChunk(t *testing.T) {
 	body := strings.Join([]string{
 		"event: message_start\n",
 		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1d3XmXHys2Nmre53dzh0lQuE\",\"model\":\"claude-opus-4-8\",\"role\":\"assistant\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"type\":\"message\",\"usage\":{\"cache_creation_input_tokens\":115427,\"cache_read_input_tokens\":0,\"input_tokens\":14,\"output_tokens\":0}}}\n",
 		"\n",
+		"event: content_block_start\n",
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n",
+		"\n",
+		"event: content_block_delta\n",
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n",
+		"\n",
+		"event: content_block_stop\n",
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n",
+		"\n",
 		"event: message_delta\n",
-		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":0}}\n",
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":0}}}\n",
 		"\n",
 		"event: message_stop\n",
 		"data: {\"type\":\"message_stop\"}\n",
@@ -389,7 +491,7 @@ func TestStreamAnthropicSSEToOpenAI_ConvertsMessageStartToOpenAIChunk(t *testing
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToOpenAI(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-opus", nil, nil)
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-opus", nil, nil)
 	require.False(t, out.Interrupted)
 
 	output := rec.Body.String()
@@ -455,4 +557,180 @@ func (w *bridgeWriter) Flush()                      {}
 // newBridgePendingCapturer returns a live capturer sized for tests.
 func newBridgePendingCapturer(maxBytes int) *pendingCapturer {
 	return NewPendingCapturer(maxBytes)
+}
+
+// TestQ3InitialInputThenInputJSONDeltaContinuation pins the audit R8 P2
+// handling of input_json_delta fragments that follow a content_block_start
+// carrying non-empty tool input. content_block_start.input arrives as a
+// complete JSON value (json.RawMessage extraction), so junk deltas after
+// complete args must NOT corrupt or invalidate the already-streamed
+// fragment; a genuine extension (validator-passes) is appended.
+func TestQ3InitialInputThenInputJSONDeltaContinuation(t *testing.T) {
+	body := strings.Join([]string{
+		"event: message_start\n",
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-test\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n",
+		"\n",
+		"event: content_block_start\n",
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"get_weather\",\"input\":{\"city\":\"Tokyo\"}}}\n",
+		"\n",
+		"event: content_block_delta\n",
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\",\\\"junk\\\":1}\"}}\n",
+		"\n",
+		"event: content_block_stop\n",
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n",
+		"\n",
+		"event: message_delta\n",
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n",
+		"\n",
+		"event: message_stop\n",
+		"data: {\"type\":\"message_stop\"}\n",
+		"\n",
+	}, "")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	rec := httptest.NewRecorder()
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp, "claude-test", "claude-test", "req-q3-args-cont", nil, nil)
+	require.False(t, out.Interrupted)
+
+	output := rec.Body.String()
+	assert.Contains(t, output, `{\"city\":\"Tokyo\"}`, output)
+	assert.NotContains(t, output, "junk", output)
+	assert.Contains(t, output, `"finish_reason":"tool_calls"`)
+}
+
+// TestStreamOpenAIToAnthropicSSE_EmptyStreamIsResumableFailover pins the
+// 2026-09-13 Q2 empty-stream fix: a 200 SSE stream that carries ZERO semantic
+// deltas (role/empty choices + usage + [DONE]) must be classified as an
+// empty-response interruption with Resumable=true so the executor fails over
+// to the next candidate. Previously the bridge wrote message_delta/message_stop
+// and returned success, so relay upstreams with empty streams surfaced to
+// Anthropic clients as "message_start but no content blocks" (claude code 529
+// / keep-alive-only pathology).
+func TestStreamOpenAIToAnthropicSSE_EmptyStreamIsResumableFailover(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}` + "\n",
+		"\n",
+		`data: {"id":"chunk-2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n",
+		"\n",
+		`data: {"id":"chunk-3","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":0}}` + "\n",
+		"\n",
+		"data: [DONE]\n",
+		"\n",
+	}, "")
+
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(upstreamBody)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamOpenAIToAnthropicSSE(context.Background(), rec, resp, "claude-sonnet-5", "claude-sonnet-5", "req-q2-empty-stream", nil, nil)
+
+	require.True(t, out.Interrupted)
+	assert.Equal(t, "anthropic_empty_response", out.Reason)
+	assert.Equal(t, errorsx.KindEmptyResponse, out.Kind)
+	assert.True(t, out.Resumable)
+	assert.Equal(t, 0, out.ChunkCount)
+
+	// No closing tail may be fabricated for an empty stream: the attempt must
+	// stay discardable for transparent failover.
+	body := rec.Body.String()
+	assert.NotContains(t, body, "event: message_delta")
+	assert.NotContains(t, body, "event: message_stop")
+	assert.NotContains(t, body, "text_delta")
+}
+
+// TestStreamAnthropicSSEToOpenAI_LiveBridgeOrphanInputJSONDeltaDropped pins
+// the R21 (2026-09-13) mirror of 90e3bf18a onto the LIVE Q3 bridge: a
+// server_tool_use block streams input_json_delta just like tool_use, but its
+// content_block_start never sets currentToolCallID — the fragments used to
+// pool into a synthesized tool call with an EMPTY function.name at
+// content_block_stop (hard OpenAI SDK error on the client) and set
+// emittedContent, so the stream ended as a "successful" response carrying
+// `{"function":{"name":""}}`. Orphan fragments are now dropped.
+func TestStreamAnthropicSSEToOpenAI_LiveBridgeOrphanInputJSONDeltaDropped(t *testing.T) {
+	anthropicSSE := "event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"test-model\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_start\n" +
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
+		"event: content_block_stop\n" +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		// Unknown block type streaming orphan argument fragments.
+		"event: content_block_start\n" +
+		"data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"server_tool_use\",\"id\":\"srvtoolu_1\",\"name\":\"web_search\"}}\n\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"query\\\":\\\"x\\\"}\"}}\n\n" +
+		"event: content_block_stop\n" +
+		"data: {\"type\":\"content_block_stop\",\"index\":1}\n\n" +
+		"event: message_delta\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n" +
+		"event: message_stop\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
+
+	rec := httptest.NewRecorder()
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(anthropicSSE)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp,
+		"gpt-5", "claude-sonnet-5", "req-q3-orphan-delta", nil, nil)
+
+	assert.False(t, out.Interrupted, "text + end_turn is a successful stream")
+
+	wire := rec.Body.String()
+	// No tool call may be synthesized — the orphan fragments belong to an
+	// unrepresentable block and must not surface as tool_calls at all.
+	assert.NotContains(t, wire, `"tool_calls"`, "orphan input_json_delta must not synthesize a tool call:\n%s", wire)
+	assert.NotContains(t, wire, `"name":""`)
+	// The real semantic content survives.
+	assert.Contains(t, wire, `"ok"`)
+	assert.Contains(t, wire, `chat.completion.chunk`)
+}
+
+// TestStreamAnthropicSSEToOpenAI_BenignEOFFinishReasonCompletes pins the R21
+// (2026-09-13) benign-EOF tolerance on the live Q3 bridge (parity with
+// 5b249f31d on the Responses←Anthropic bridge): minimax-style relays send
+// finish_reason via message_delta and then close WITHOUT message_stop. That
+// shape used to be classified eof_without_done on every EOF and transparently
+// failed over, burning candidates on healthy responses. A finish_reason plus
+// delivered content must now complete successfully.
+func TestStreamAnthropicSSEToOpenAI_BenignEOFFinishReasonCompletes(t *testing.T) {
+	anthropicSSE := "event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"test-model\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_start\n" +
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"minimax tail\"}}\n\n" +
+		"event: content_block_stop\n" +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		// finish_reason arrives, then the upstream closes WITHOUT message_stop.
+		"event: message_delta\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n"
+
+	rec := httptest.NewRecorder()
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(anthropicSSE)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp,
+		"gpt-5", "claude-sonnet-5", "req-q3-benign-eof", nil, nil)
+
+	assert.False(t, out.Interrupted,
+		"finish_reason + delivered content before EOF is a benign completion, not a failover")
+
+	wire := rec.Body.String()
+	assert.Contains(t, wire, `"minimax tail"`)
+	assert.Contains(t, wire, `"finish_reason":"stop"`)
 }

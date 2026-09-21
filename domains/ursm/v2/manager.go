@@ -6,11 +6,14 @@ package v2
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"sort"
 	"strconv"
 	stdsync "sync"
+	"syscall"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -79,6 +82,12 @@ type Manager struct {
 	invalidationStop context.CancelFunc
 	invalidationWG   stdsync.WaitGroup
 	closeOnce        stdsync.Once
+	// invalidationMu (MEDIUM, 2026-08-29) guards invalidationStop +
+	// invalidationWG coordination between startInvalidationSubscriber
+	// and Close. Without it, a concurrent Close + restart could
+	// overwrite an already-cleared stop func with a new one or
+	// double-Add on the WG.
+	invalidationMu stdsync.Mutex
 }
 
 // SetHotConfig wires the live settings_kv source (hotconfig.Config
@@ -371,13 +380,6 @@ func (m *Manager) FilterAndScore(ctx context.Context, seeds []CandidateSeed) ([]
 // caller. Routers use this to keep backend selection and URSM filtering on the
 // same recovery snapshot; a Ready flip cannot split one request between v2 and
 // the legacy state manager.
-//
-// ModeOff short-circuits before the ready check (off is a rollback/diagnostic
-// mode, never a path that returns authoritative v2 views). For every other
-// mode the captured ready flag is the single source of truth: filterAndScore
-// rejects with "ursm.v2: not ready" on ready==false regardless of mirror
-// contents, so the ready-gate bypass that the original naive shape allowed
-// (mirror-only answer on a closed gate) cannot reoccur here.
 func (m *Manager) FilterAndScoreReady(ctx context.Context, seeds []CandidateSeed, ready bool) ([]api.NodeView, error) {
 	if m == nil {
 		return nil, fmt.Errorf("ursm.v2: nil manager")
@@ -387,6 +389,7 @@ func (m *Manager) FilterAndScoreReady(ctx context.Context, seeds []CandidateSeed
 	}
 	views, _, err := m.filterAndScore(ctx, seeds, ready)
 	return views, err
+
 }
 
 // FilterAndScoreReadyWithSource is the S-3 (routing_state_source)
@@ -519,13 +522,13 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 			// protective rejection (wraps store.ErrRedisUnavailable so
 			// callers can errors.Is it exactly like the pipeline path).
 			if err := m.verifyRedisForMirrorServe(ctx); err != nil {
-				return nil, "", fmt.Errorf("ursm.v2: mirror serve rejected, redis unavailable: %w", err)
+				return nil, "", fmt.Errorf("ursm.v2: mirror serve rejected, redis unavailable: %w: %v", store.ErrRedisUnavailable, err)
 			}
 		}
 		// Grace gear skips the verify: entries served here are within the
 		// mirror soft TTL by construction (GetForTenant honours it), so the
 		// degrade window is bounded by LRUMirrorSoftTTL (default 30s).
-		scoreAndSort(views, seeds, m.cfg)
+		scoreAndSort(views, seeds, m.cfg.ScoringWeights)
 		// Every seed resolved from the mirror (no soft-expired entries).
 		return views, statesource.StateSourceNodeMirrorHit, nil
 	}
@@ -559,7 +562,7 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 		}
 	}
 
-	scoreAndSort(views, seeds, m.cfg)
+	scoreAndSort(views, seeds, m.cfg.ScoringWeights)
 	// Decide the aggregate source for this request:
 	//   - hit       : every seed served from mirror, no miss/stale
 	//   - stale     : at least one seed was soft-expired (no "never seen")
@@ -586,18 +589,110 @@ const mirrorServeVerifyTimeout = 100 * time.Millisecond
 
 // verifyRedisForMirrorServe implements the §14.3 target-gear check: before
 // a mirror-only answer may be served, Redis must be demonstrably
-// reachable. The error wraps store.ErrRedisUnavailable so callers can
-// errors.Is it identically to the pipeline-read failure path.
+// reachable. Internal PING timeouts are classified as Redis unavailable;
+// caller cancellation and server-side errors retain their original type.
 func (m *Manager) verifyRedisForMirrorServe(ctx context.Context) error {
-	if m == nil || m.store == nil {
+	if m == nil || m.store == nil || m.store.RawClient() == nil {
 		return store.ErrRedisUnavailable
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, mirrorServeVerifyTimeout)
 	defer cancel()
 	if err := m.store.RawClient().Ping(pingCtx).Err(); err != nil {
-		return fmt.Errorf("%w: mirror liveness ping: %v", store.ErrRedisUnavailable, err)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// A deadline from the short, internally-owned PING budget means Redis
+		// did not answer in time and is unavailable for this decision. Keep
+		// ACL/protocol/configuration errors unclassified so they fail closed.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("%w: mirror liveness ping: %v", store.ErrRedisUnavailable, err)
+		}
+		return fmt.Errorf("mirror liveness ping: %w", err)
 	}
 	return nil
+}
+
+func isRedisTransportUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, store.ErrRedisUnavailable) {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH) {
+		return true
+	}
+	return false
+}
+
+// FilterAndScoreOutageFallback serves a degraded read-only routing decision
+// from the process-local NodeMirror when Redis is unreachable (availability
+// gear, 2026-09-04). It is the router's last resort in ModeAuthoritative:
+// the normal paths either rejected via ErrRedisUnavailable (pipeline read /
+// mirror-serve PING) or observed Ready==false because the gate read itself
+// errored against a dead Redis. Without this gear every request 503s for the
+// duration of a Redis outage, which is the exact availability hole this
+// method closes.
+//
+// Contract:
+//   - Redis must be demonstrably unreachable (PING). A reachable Redis
+//     returns an error instead: a deliberate gate closure must never be
+//     bypassed by this gear, and a recovery race should let the next request
+//     take the normal path.
+//   - Entries are served regardless of the mirror soft TTL but must be
+//     within the boot-configured OutageGrace window
+//     (URSM_V2_OUTAGE_GRACE_SECONDS, default 30m, 0 disables this gear).
+//   - PARTIAL service: seeds without a usable mirror entry are dropped from
+//     the result; the router filters the candidate list against the returned
+//     views. A completely cold mirror errors out (no worse than today).
+//   - Read-only: no state writes happen here; RecordRequest remains
+//     best-effort against Redis and simply logs during the outage.
+func (m *Manager) FilterAndScoreOutageFallback(ctx context.Context, seeds []CandidateSeed) ([]api.NodeView, error) {
+	if m == nil || m.store == nil {
+		return nil, store.ErrRedisUnavailable
+	}
+	grace := m.effectiveConfig().OutageGrace
+	if grace <= 0 {
+		return nil, fmt.Errorf("ursm.v2: outage fallback disabled (URSM_V2_OUTAGE_GRACE_SECONDS<=0): %w", store.ErrRedisUnavailable)
+	}
+	if len(seeds) == 0 {
+		return nil, fmt.Errorf("ursm.v2: outage fallback requires candidates")
+	}
+	for _, s := range seeds {
+		if s.TenantID == "" {
+			return nil, fmt.Errorf("ursm.v2: outage fallback requires tenant_id")
+		}
+	}
+	if err := m.verifyRedisForMirrorServe(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !isRedisTransportUnavailable(err) {
+			return nil, fmt.Errorf("ursm.v2: redis liveness check failed: %w", err)
+		}
+	} else {
+		return nil, fmt.Errorf("ursm.v2: redis reachable, outage fallback not applicable")
+	}
+	if m.nodeMirror == nil {
+		return nil, fmt.Errorf("ursm.v2: outage fallback unavailable without node mirror: %w", store.ErrRedisUnavailable)
+	}
+	views := make([]api.NodeView, 0, len(seeds))
+	kept := make([]CandidateSeed, 0, len(seeds))
+	for _, s := range seeds {
+		mv, ok := m.nodeMirror.GetForTenantWithinOutageWindow(s.TenantID, s.CredentialID, s.RawModel, grace)
+		if !ok {
+			continue
+		}
+		views = append(views, mirrorToAPIView(mv, s))
+		kept = append(kept, s)
+	}
+	if len(views) == 0 {
+		return nil, fmt.Errorf("ursm.v2: outage fallback has no mirror entries within %s: %w", grace, store.ErrRedisUnavailable)
+	}
+	scoreAndSort(views, kept, m.cfg.ScoringWeights)
+	return views, nil
 }
 
 func backfillSeedIdentity(v *api.NodeView, s CandidateSeed) {
@@ -616,8 +711,7 @@ func backfillSeedIdentity(v *api.NodeView, s CandidateSeed) {
 // scoreAndSort applies the price/latency/stability scoring and orders views
 // by ascending Score. Extracted so the LRU fast path and the Redis miss path
 // share identical scoring.
-func scoreAndSort(views []api.NodeView, seeds []CandidateSeed, cfg Config) {
-	weights := cfg.ScoringWeights
+func scoreAndSort(views []api.NodeView, seeds []CandidateSeed, weights ScoringWeights) {
 	// Lower score wins. Price and latency are direct costs; stability is a
 	// failure-rate penalty so a higher success rate ranks better. An empty SR5m
 	// window is neutral (0.5), matching the Redis protocol contract, while
@@ -631,27 +725,9 @@ func scoreAndSort(views []api.NodeView, seeds []CandidateSeed, cfg Config) {
 			lat = s.BaseURLMs
 		}
 		successRate := safeSR5m(v.SR5m, v.Samples5m)
-		emptyPenalty := emptyResponsePenalty(v.EmptyResponseRate5m, v.Samples5m, cfg.EmptyResponseMinSamples, cfg.EmptyResponseRateThreshold)
-		if emptyPenalty > 0 {
-			metrics.RecordURSMSoftEmptyResponsePenalty()
-		}
-		v.Score = weights.Price*price + weights.Latency*float64(lat) + weights.Stability*(1-successRate)*1000 + weights.EmptyPenalty*emptyPenalty*1000
+		v.Score = weights.Price*price + weights.Latency*float64(lat) + weights.Stability*(1-successRate)*1000
 	}
 	sort.SliceStable(views, func(i, j int) bool { return views[i].Score < views[j].Score })
-}
-
-// emptyResponsePenalty returns a normalized soft penalty only once a node has
-// enough five-minute traffic to make an empty-response rate meaningful. A rate
-// at the configured threshold is neutral; 100%% maps to 1. The caller uses the
-// penalty solely for ranking, never for availability or circuit state.
-func emptyResponsePenalty(rate float64, samples, minSamples int, threshold float64) float64 {
-	if samples < minSamples || math.IsNaN(rate) || math.IsInf(rate, 0) || rate <= threshold || threshold >= 1 {
-		return 0
-	}
-	if rate >= 1 {
-		return 1
-	}
-	return (rate - threshold) / (1 - threshold)
 }
 
 func safeSR5m(sr float64, samples int) float64 {
@@ -669,7 +745,7 @@ func safeSR5m(sr float64, samples int) float64 {
 
 // mirrorToAPIView expands a cached NodeView (the score-relevant subset) into
 // an api.NodeView for the scoring loop. Fields not held in the cache (SR1m,
-// Samples*, LatP50/P95) are left zero — they are not read by the scorer,
+// other Samples*, LatP50/P95) are left zero — they are not read by the scorer,
 // only by observers, and a soft-expired entry would have missed the LRU
 // anyway (so we never score off a stale entry).
 //
@@ -680,21 +756,19 @@ func safeSR5m(sr float64, samples int) float64 {
 // stays decided by Available/CoolUntil per the §14.3/FR-4 boundary.
 func mirrorToAPIView(mv cache.NodeView, s CandidateSeed) api.NodeView {
 	return api.NodeView{
-		ProviderID:          s.ProviderID,
-		CredentialID:        mv.CredentialID,
-		RawModel:            mv.RawModel,
-		CanonicalName:       s.Canonical,
-		TenantID:            s.TenantID,
-		Available:           mv.Available,
-		Reason:              mv.Reason,
-		HealthStatus:        mv.HealthStatus,
-		FailStreak:          mv.FailStreak,
-		CoolUntil:           mv.CoolUntil,
-		LatEWMA:             mv.LatEWMA,
-		SR5m:                mv.SR5m,
-		Samples5m:           mv.Samples5m,
-		EmptyResponses5m:    mv.EmptyResponses5m,
-		EmptyResponseRate5m: mv.EmptyResponseRate5m,
+		ProviderID:    s.ProviderID,
+		CredentialID:  mv.CredentialID,
+		RawModel:      mv.RawModel,
+		CanonicalName: s.Canonical,
+		TenantID:      s.TenantID,
+		Available:     mv.Available,
+		Reason:        mv.Reason,
+		HealthStatus:  mv.HealthStatus,
+		FailStreak:    mv.FailStreak,
+		CoolUntil:     mv.CoolUntil,
+		LatEWMA:       mv.LatEWMA,
+		SR5m:          mv.SR5m,
+		Samples5m:     mv.Samples5m,
 	}
 }
 
@@ -786,7 +860,7 @@ func (m *Manager) PlanReadyObserved(ctx context.Context, seeds []CandidateSeed, 
 	for i := range views {
 		backfillSeedIdentity(&views[i], seeds[i])
 	}
-	scoreAndSort(views, seeds, m.cfg)
+	scoreAndSort(views, seeds, m.cfg.ScoringWeights)
 
 	idx := make(map[string]int, len(seeds))
 	for i, seed := range seeds {
@@ -927,35 +1001,66 @@ func (m *Manager) startInvalidationSubscriber(rdb *redis.Client) {
 	if m == nil || m.nodeMirror == nil || rdb == nil {
 		return
 	}
+	// MEDIUM (2026-08-29): guard against double-start. The previous
+	// implementation overwrote m.invalidationStop on every invocation,
+	// which would orphan the first subscriber's cancel func and (with
+	// Add+Done balance errors) eventually panic the WG. We now bail
+	// when a subscriber is already live.
+	m.invalidationMu.Lock()
+	if m.invalidationStop != nil {
+		m.invalidationMu.Unlock()
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.invalidationStop = cancel
 	m.invalidationWG.Add(1)
+	m.invalidationMu.Unlock()
 	go func() {
 		defer m.invalidationWG.Done()
-		pubsub := rdb.Subscribe(context.Background(), store.NodeInvalidationChannel(m.cfg.RedisKeyPrefix))
-		defer pubsub.Close()
-		closed := make(chan struct{})
-		defer close(closed)
-		go func() {
-			select {
-			case <-ctx.Done():
-				_ = pubsub.Close()
-			case <-closed:
-			}
-		}()
-		for {
-			msg, err := pubsub.ReceiveMessage(ctx)
-			if err != nil {
-				if ctx.Err() == nil {
-					m.log.Warn("ursm.v2: node invalidation subscriber stopped", "error", err)
+		// Reconnect with exponential backoff when the subscriber drops for a
+		// non-shutdown reason (Redis restart/failover, connection reset). A
+		// permanent exit here would silently break the LRU mirror invalidation
+		// contract until the next process restart, letting the mirror serve
+		// stale routing state. The loop still exits immediately on ctx cancel.
+		backoff := 100 * time.Millisecond
+		for ctx.Err() == nil {
+			pubsub := rdb.Subscribe(context.Background(), store.NodeInvalidationChannel(m.cfg.RedisKeyPrefix))
+			closed := make(chan struct{})
+			go func() {
+				select {
+				case <-ctx.Done():
+					_ = pubsub.Close()
+				case <-closed:
 				}
+			}()
+			// Receive until a connection error or ctx cancellation.
+			dropErr := error(nil)
+			for {
+				msg, err := pubsub.ReceiveMessage(ctx)
+				if err != nil {
+					dropErr = err
+					break
+				}
+				parsed, ok := store.ParseNodeInvalidation(msg.Payload)
+				if !ok {
+					continue
+				}
+				m.nodeMirror.InvalidateForTenant(parsed.TenantID, parsed.CredentialID, parsed.RawModel)
+			}
+			_ = pubsub.Close()
+			close(closed)
+			if ctx.Err() != nil {
 				return
 			}
-			parsed, ok := store.ParseNodeInvalidation(msg.Payload)
-			if !ok {
-				continue
+			m.log.Warn("ursm.v2: node invalidation subscriber reconnecting", "error", dropErr)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
 			}
-			m.nodeMirror.InvalidateForTenant(parsed.TenantID, parsed.CredentialID, parsed.RawModel)
+			if backoff < time.Second {
+				backoff *= 2
+			}
 		}
 	}()
 }
@@ -964,11 +1069,25 @@ func (m *Manager) startInvalidationSubscriber(rdb *redis.Client) {
 // than once and does not alter Redis state. When the LRU mirror is disabled
 // (LRUMirrorSize==0) the subscriber is never started and Close is a no-op.
 func (m *Manager) Close() {
-	if m == nil || m.invalidationStop == nil {
+	if m == nil {
+		return
+	}
+	m.invalidationMu.Lock()
+	hasSubscriber := m.invalidationStop != nil
+	m.invalidationMu.Unlock()
+	if !hasSubscriber {
 		return
 	}
 	m.closeOnce.Do(func() {
-		m.invalidationStop()
+		// Pull the stop func under the lock so a concurrent
+		// startInvalidationSubscriber cannot race against Close and
+		// orphan the cancel. After Wait returns we clear the field so
+		// the next caller sees the post-close state immediately.
+		m.invalidationMu.Lock()
+		stop := m.invalidationStop
+		m.invalidationStop = nil
+		m.invalidationMu.Unlock()
+		stop()
 		m.invalidationWG.Wait()
 	})
 }
@@ -1002,6 +1121,16 @@ func (m *Manager) SetSeedForTest(ctx context.Context, s CandidateSeed) error {
 		ProviderID: s.ProviderID, CredentialID: s.CredentialID, RawModel: s.RawModel,
 		TenantID: s.TenantID, Available: true,
 	})
+}
+
+// ProbeHealthEvidence returns fresh, identity-scoped Redis evidence for probe
+// preflight. It bypasses the routing LRU/mirror and does not apply routing's
+// expired-cool half-open behavior; unknown state is returned as Known=false.
+func (m *Manager) ProbeHealthEvidence(ctx context.Context, tenant string, credentialID int, models []string) ([]api.ProbeHealthEvidence, error) {
+	if m == nil || m.store == nil {
+		return nil, fmt.Errorf("ursm.v2: nil manager/store")
+	}
+	return m.store.ProbeHealthEvidence(ctx, m.cfg.RedisKeyPrefix, tenant, credentialID, models)
 }
 
 // RecordRequest is the executor sidecar entry point. It is a no-op

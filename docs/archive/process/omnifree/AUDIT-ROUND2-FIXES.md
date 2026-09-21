@@ -137,7 +137,7 @@
 
 **原内容**: 
 ```bash
-export DB_252="postgres://kxuser:kxuser123@172.16.2.210:5432/llm_gateway?sslmode=disable"
+export DB_252="postgres://kxuser:<REDACTED_DB_PASSWORD>@172.16.2.210:5432/llm_gateway?sslmode=disable"
 ```
 
 **处理**:
@@ -207,7 +207,7 @@ export DB_252="postgres://kxuser:kxuser123@172.16.2.210:5432/llm_gateway?sslmode
 - **主机**: 172.16.2.210:5432
 - **数据库**: llm_gateway
 - **用户**: kxuser
-- **旧密码**: kxuser123（已泄露，需轮换）
+- **旧密码**: <REDACTED_DB_PASSWORD>（已泄露，需轮换）
 
 **建议操作**：
 1. 立即在 PostgreSQL 上执行 `ALTER USER kxuser WITH PASSWORD '<新密码>';`

@@ -91,6 +91,18 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 	`, credentialID); err != nil {
 		return err
 	}
+	// 2026-09-13 closeout (P2): real-traffic success also resets the probe
+	// backoff ladder, so a credential the vendor has unblocked recovers its
+	// fast probe cadence immediately instead of waiting out a long
+	// availability_recover_at rung from earlier failed probes.
+	if _, err = tx.Exec(ctx, `
+		UPDATE credentials
+		SET probe_consecutive_failures = 0
+		WHERE id = $1
+		  AND COALESCE(probe_consecutive_failures, 0) > 0
+	`, credentialID); err != nil {
+		return err
+	}
 	// Restore the specific (credential, model) binding. Skip rows that
 	// are admin-pinned. If rawModel is empty, restore every binding on
 	// the credential (legacy path).
@@ -241,6 +253,9 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 			    state_updated_at        = now()
 			WHERE id = $3
 			  AND lifecycle_status = 'active'
+			  -- 2026-09-13: 不夺走 balance_floor guard 摘出的行（reason 守卫
+			  -- 保持所有权，避免 BalanceQuotaProbe 豁免失效）。
+			  AND COALESCE(state_reason_code, '') <> 'balance_floor'
 		`, string(failure.Kind), detail, credentialID)
 		return err
 	case errorsx.KindQuota, errorsx.KindQuotaBalance:
@@ -256,6 +271,9 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 			WHERE id = $3
 			  AND lifecycle_status = 'active'
 			  AND quota_state NOT IN ('permanently_exhausted')
+			  -- 2026-09-13: floor 摘出的行本就是 balance_exhausted，重打
+			  -- reason 会丢所有权（guard 恢复与 probe 豁免都依赖它）。
+			  AND COALESCE(state_reason_code, '') <> 'balance_floor'
 		`, string(failure.Kind), detail, credentialID)
 		return err
 	case errorsx.KindAuthRevoked:
@@ -304,6 +322,12 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 			    state_updated_at        = now()
 			WHERE id = $3
 			  AND lifecycle_status = 'active'
+			  -- 2026-09-13 closeout (P6): never clobber the reason trail of a
+			  -- suspended/auth_failed credential with a transient note — the
+			  -- audit found suspended rows whose only remaining evidence was
+			  -- "passive_probe_review_failed: transient ..." (prod creds 9/21),
+			  -- which reads as "why is this stuck?" and forces manual recovery.
+			  AND availability_state NOT IN ('suspended', 'auth_failed')
 		`, string(failure.Kind), detail, credentialID)
 		return err
 	case errorsx.KindUpstreamOverloaded:
@@ -317,6 +341,7 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 			    state_updated_at    = now()
 			WHERE id = $3
 			  AND lifecycle_status = 'active'
+			  AND availability_state NOT IN ('suspended', 'auth_failed')
 		`, string(failure.Kind), detail, credentialID)
 		return err
 	case errorsx.KindConcurrent, errorsx.KindRateLimit, errorsx.KindStreamTimeout, errorsx.KindNoAvailableChannel:
@@ -345,6 +370,10 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		// KindStreamTimeout (no feedback at all on a live stream) is kept on
 		// the hard-degrade path above because it indicates a genuinely stuck
 		// node that should be cooled.
+		//
+		// 2026-09-13 closeout (P6): same suspended/auth_failed reason guard
+		// as KindTransient — passive observer writes must not overwrite the
+		// suspension evidence of a stuck credential.
 		_, err := w.dbPool.Exec(ctx, `
 			UPDATE credentials
 			SET state_reason_code   = $1,
@@ -352,6 +381,7 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 			    state_updated_at    = now()
 			WHERE id = $3
 			  AND lifecycle_status = 'active'
+			  AND availability_state NOT IN ('suspended', 'auth_failed')
 		`, string(failure.Kind), detail, credentialID)
 		return err
 	case errorsx.KindModelNotFound:
@@ -468,8 +498,19 @@ func (w *Writer) writeModelLevelFailureOnly(
 	return nil
 }
 
+// maxCoolingDuration caps an upstream-supplied Retry-After (probe-recovery
+// closeout P7, 2026-09-13). coolingDuration previously adopted Retry-After
+// verbatim, so a misbehaving upstream could pin a credential/binding out of
+// routing for an unbounded time with no automatic re-check. 24h covers every
+// legitimate quota window (daily/monthly boundaries are re-derived by the
+// quota paths anyway — Retry-After only reaches the cooling kinds).
+const maxCoolingDuration = 24 * time.Hour
+
 func coolingDuration(kind errorsx.ErrorKind, retryAfter time.Duration) time.Duration {
 	if retryAfter > 0 {
+		if retryAfter > maxCoolingDuration {
+			return maxCoolingDuration
+		}
 		return retryAfter
 	}
 	switch kind {

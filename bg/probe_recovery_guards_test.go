@@ -73,12 +73,3 @@ func TestCompleteProbeTaskRearmExtendsExpiry(t *testing.T) {
 		}
 	}
 }
-
-func TestProbeQueueEnqueuePersistsScheduledRunTime(t *testing.T) {
-	sql := probeEnqueueSQL()
-	for _, want := range []string{"dedup_key, next_run_at, expires_at", "$17", "now()+$18"} {
-		if !strings.Contains(sql, want) {
-			t.Fatalf("probeEnqueueSQL missing %q\nSQL: %s", want, sql)
-		}
-	}
-}

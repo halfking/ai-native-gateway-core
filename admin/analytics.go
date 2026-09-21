@@ -14,6 +14,7 @@
 package admin
 
 import (
+	"errors"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -144,16 +146,38 @@ func buildMatrixQuery(rowDim, metric string) (string, error) {
 		SELECT %s AS row_key,
 		       %s AS col_key,
 		       %s AS val
-		FROM request_logs_with_current_month
+		FROM routing_analytics_source
 		WHERE ts >= NOW() - $1::interval
 		  AND %s
 		  AND %s IS NOT NULL
+		  AND %s
 		  AND (
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
 		GROUP BY (%s), (%s)
-	`, rowExpr, colExpr, metricExpr, rowNullFilter, colExpr, rowExpr, colExpr), nil
+	`, rowExpr, colExpr, metricExpr, rowNullFilter, colExpr, businessRequestFilter(""), rowExpr, colExpr), nil
+}
+
+// businessRequestFilterStages lists every origin_stage value that marks a
+// synthetic (non-business) request: the three current workers plus the legacy
+// probe stages kept valid by the additive CHECK constraint. Keep in sync with
+// domains/streaming/context_attrs.go isProbeOriginStage and the
+// routingAnalyticsMVSQL WHERE clause in db/db.go.
+const businessRequestFilterStages = "'self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual'"
+
+// businessRequestFilter returns the shared predicate used by routing
+// analytics to exclude self-check/probe traffic while retaining historical
+// rows whose origin_stage was never populated. alias is optional (for joined
+// queries, e.g. "rl").
+func businessRequestFilter(alias string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	return fmt.Sprintf(`COALESCE(%sorigin_stage, '') NOT IN (%s)
+		  AND COALESCE(%stask_type, '') <> 'probe_triggered'
+		  AND COALESCE(%srequest_id, '') NOT LIKE 'probe-%%'`, prefix, businessRequestFilterStages, prefix, prefix)
 }
 
 // effectiveTaskExpr returns the SQL expression that produces the row
@@ -187,15 +211,16 @@ func buildFlowL12Query() string {
 		SELECT %s AS src,
 		       %s AS dst,
 		       COUNT(*)::float8 AS val
-		FROM request_logs_with_current_month
+		FROM routing_analytics_source
 		WHERE ts >= NOW() - $1::interval
 		  AND %s IS NOT NULL
+		  AND %s
 		  AND (
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
 		GROUP BY (%s), (%s)
-	`, taskExpr, modelExpr, taskExpr, taskExpr, modelExpr)
+	`, taskExpr, modelExpr, taskExpr, businessRequestFilter(""), taskExpr, modelExpr)
 }
 
 // buildFlowL23Query assembles the L2→L3 (model × task → provider)
@@ -214,18 +239,19 @@ func buildFlowL23Query() string {
 		       %s AS src,
 		       COALESCE(p.display_name, 'unknown') AS dst,
 		       COUNT(*)::float8 AS val
-		FROM request_logs_with_current_month rl
+		FROM routing_analytics_source rl
 		LEFT JOIN providers p ON p.id = COALESCE(rl.provider_id, (
 		    SELECT cr.provider_id FROM credentials cr WHERE cr.id = rl.credential_id LIMIT 1
 		))
 		WHERE rl.ts >= NOW() - $1::interval
 		  AND %s IS NOT NULL
+		  AND %s
 		  AND (
 		    rl.is_auto_request = TRUE
 		    OR (rl.is_auto_request IS NOT TRUE AND rl.client_model IS NOT NULL AND rl.client_model <> '')
 		  )
 		GROUP BY (%s), (%s), p.display_name
-	`, taskExpr, modelExpr, taskExpr, taskExpr, modelExpr)
+	`, taskExpr, modelExpr, taskExpr, businessRequestFilter("rl"), taskExpr, modelExpr)
 }
 
 // handleMatrix returns a canonical_model × row_dim heatmap.
@@ -266,19 +292,40 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	query, err := buildMatrixQuery(rowDim, metric)
-	if err != nil {
-		writeJSONErr(w, http.StatusBadRequest, err.Error())
-		return
+	var query string
+	var args []any
+
+	// Try to use materialized view for better performance
+	useMV := useMaterializedView(ctx, h.db, windowLabel)
+	if useMV {
+		query, err = buildMatrixQueryMaterialized(rowDim, metric)
+		if err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		tenantFrag, tenantArgs, _ := tenantLogsClause(r, 1)
+		args = []any{}
+		if tenantFrag != "" {
+			// Inject tenant filter for materialized view
+			query = strings.Replace(query, "WHERE ", "WHERE tenant_id = $1 AND ", 1)
+			args = append(args, tenantArgs...)
+		}
+	} else {
+		// Fallback to base view
+		query, err = buildMatrixQuery(rowDim, metric)
+		if err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
+		tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
+		args = []any{intervalStr}
+		if tenantFrag != "" {
+			query = strings.Replace(query, "GROUP BY", tenantFrag+"\n\t\tGROUP BY", 1)
+			args = append(args, tenantArgs...)
+		}
 	}
 
-	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
-	tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
-	args := []any{intervalStr}
-	if tenantFrag != "" {
-		query = strings.Replace(query, "GROUP BY", tenantFrag+"\n\t\tGROUP BY", 1)
-		args = append(args, tenantArgs...)
-	}
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		writeInternalErr(w, err)
@@ -393,19 +440,33 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		return canon
 	}
 
-	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
+	// Try to use materialized view for better performance
+	useMV := useMaterializedView(ctx, h.db, windowLabel)
+
+	var l12Query string
+	var l12Args []any
 	tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
-	l12Args := []any{intervalStr}
-	if tenantFrag != "" { //nolint:staticcheck // placeholder, deferred injection happens after build*Query call
-		// (intentionally empty — reserved for future use)
+
+	if useMV {
+		// Use materialized view
+		l12Query = buildFlowL12QueryMaterialized()
+		l12Args = []any{}
+		if tenantFrag != "" {
+			// Inject tenant filter for materialized view
+			l12Query = strings.Replace(l12Query, "WHERE ", "WHERE tenant_id = $1 AND ", 1)
+			l12Args = append(l12Args, tenantArgs...)
+		}
+	} else {
+		// Fallback to base view
+		intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
+		l12Args = []any{intervalStr}
+		l12Query = buildFlowL12Query()
+		if tenantFrag != "" {
+			l12Query = strings.Replace(l12Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
+			l12Args = append(l12Args, tenantArgs...)
+		}
 	}
 
-	// Layer 1→2: task_type → outbound_model (aggregated to canonical in Go)
-	l12Query := buildFlowL12Query()
-	if tenantFrag != "" {
-		l12Query = strings.Replace(l12Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
-		l12Args = append(l12Args, tenantArgs...)
-	}
 	l12Rows, err := h.db.Query(ctx, l12Query, l12Args...)
 	if err != nil {
 		writeInternalErr(w, err)
@@ -457,12 +518,29 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	// Includes both auto requests and explicit-model requests; the latter
 	// use client_model as the model anchor and __specified__ as the task.
 	// NOTE: providers table column is display_name, NOT name.
-	l23Query := buildFlowL23Query()
-	l23Args := []any{intervalStr}
-	if tenantFrag != "" {
-		l23Query = strings.Replace(l23Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
-		l23Args = append(l23Args, tenantArgs...)
+	var l23Query string
+	var l23Args []any
+
+	if useMV {
+		// Use materialized view
+		l23Query = buildFlowL23QueryMaterialized()
+		l23Args = []any{}
+		if tenantFrag != "" {
+			// Inject tenant filter for materialized view
+			l23Query = strings.Replace(l23Query, "WHERE ", "WHERE mv.tenant_id = $1 AND ", 1)
+			l23Args = append(l23Args, tenantArgs...)
+		}
+	} else {
+		// Fallback to base view
+		intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
+		l23Query = buildFlowL23Query()
+		l23Args = []any{intervalStr}
+		if tenantFrag != "" {
+			l23Query = strings.Replace(l23Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
+			l23Args = append(l23Args, tenantArgs...)
+		}
 	}
+
 	l23Rows, err := h.db.Query(ctx, l23Query, l23Args...)
 	if err != nil {
 		writeInternalErr(w, err)
@@ -638,7 +716,9 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 	defer cancel()
 
 	var ts time.Time
-	var taskType, prof, clientModel, outbound string
+	// R46 F9: 四个文本字段在真库可空（探测行 task_type NULL、turns 段
+	// client_model NULL）——裸 string 目标遇到 NULL 行直接 scan 崩 500。
+	var taskType, prof, clientModel, outbound sql.NullString
 	var apiKeyID, credentialID *int
 	var confidence *float64
 	var autoDecision *string
@@ -646,23 +726,50 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 	var latency *int
 
 	replayTenantFrag, replayTenantArgs, _ := tenantLogsClause(r, 2)
-	replayArgs := []any{reqID}
+	replayArgs := []any{uuidVariants(reqID)}
 	if replayTenantFrag != "" {
 		replayArgs = append(replayArgs, replayTenantArgs...)
 	}
+	// R46 F3/F9: 读面 hot∪母表（决策回放的主场景就是"刚出的坏决策"，裸母表
+	// 对最近 8h 仍在 hot 侧的请求 404）。不用 turns 优先的
+	// request_logs_with_current_month——它的 turns 段把 auto_profile 投影
+	// 为 NULL，决策回放要读的字段都在 request_logs 侧。
+	// request_id 匹配必须按腿进行：视图把 hot(TEXT)/母表(TEXT) 归并为
+	// text，但 ANY 的参数类型会被两支推成 uuid[]（数组字面量对探测 id 直接
+	// 22P02）——改为内联双腿：hot 腿 text 精确匹配（走 request_id 索引，
+	// 覆盖 hex32/dashed/探测 id 三形态）；母表腿 ::text 比较（request_id
+	// 同为 text 列，双形态匹配纯防御性），加 30d 界防跨全部分区扫描。
+	// （R47 实测注释更正：真库 request_logs(_hot).request_id 均为 text 且
+	// 母表存原始 hex32；真正 uuid 型的是 routing_decision_log.request_id，
+	// L2 腿的 dashed 形态候选对位的是那张表。）
 	err := h.db.QueryRow(ctx, `
 		SELECT ts, task_type, auto_profile, auto_confidence,
 		       client_model, outbound_model, api_key_id, credential_id,
 		       auto_decision, success, latency_ms
-		FROM request_logs
-		WHERE request_id = $1::uuid`+replayTenantFrag+`
+		FROM (
+		    SELECT ts, task_type, auto_profile, auto_confidence,
+		           client_model, outbound_model, api_key_id, credential_id,
+		           auto_decision, success, latency_ms
+		    FROM request_logs_hot
+		    WHERE request_id = ANY($1::text[])
+		    UNION ALL
+		    SELECT ts, task_type, auto_profile, auto_confidence,
+		           client_model, outbound_model, api_key_id, credential_id,
+		           auto_decision, success, latency_ms
+		    FROM request_logs
+		    WHERE ts >= NOW() - INTERVAL '30 days'
+		      AND request_id::text = ANY($1::text[])
+		) rl
+		WHERE true`+replayTenantFrag+`
 		LIMIT 1
 	`, replayArgs...).Scan(
 		&ts, &taskType, &prof, &confidence,
 		&clientModel, &outbound, &apiKeyID, &credentialID,
 		&autoDecision, &success, &latency,
 	)
-	if err == sql.ErrNoRows {
+	// R46 F9: pgx v5 的 ErrNoRows 与 sql.ErrNoRows 不是同一值——裸 `==`
+	// 永不命中，所有 miss 一律 500（预存缺陷，部署冒烟实锤）。改 errors.Is。
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, sql.ErrNoRows) {
 		writeJSONErrCtx(w, r, http.StatusNotFound, "admin_request_not_found")
 		return
 	}
@@ -675,8 +782,8 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 		"request_id":     reqID,
 		"ts":             ts.Format(time.RFC3339),
 		"success":        success,
-		"client_model":   clientModel,
-		"outbound_model": outbound,
+		"client_model":   nullStringOrEmpty(clientModel),
+		"outbound_model": nullStringOrEmpty(outbound),
 	}
 	if apiKeyID != nil {
 		out["api_key_id"] = *apiKeyID
@@ -689,8 +796,8 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 	}
 
 	l1 := map[string]interface{}{
-		"task_type": taskType,
-		"profile":   prof,
+		"task_type": nullStringOrEmpty(taskType),
+		"profile":   nullStringOrEmpty(prof),
 	}
 	if confidence != nil {
 		l1["confidence"] = *confidence
@@ -711,19 +818,36 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 	var resolutionPath, canonicalModel *string
 	var decisionTrace *string
 
-	rdlErr := h.db.QueryRow(ctx, `
-		SELECT ts, chosen_credential_id, chosen_provider_id, tier,
-		       candidates_tried, success, resolution_path, canonical_model,
-		       decision_trace::text
-		FROM routing_decision_log
-		WHERE request_id = $1::uuid`+replayTenantFrag+`
-		ORDER BY ts DESC
-		LIMIT 1
-	`, replayArgs...).Scan(
-		&rdlTS, &chosenCredID, &chosenProvID, &tier,
-		&candidatesTried, &rdlSuccess, &resolutionPath, &canonicalModel,
-		&decisionTrace,
-	)
+	// R46 F9: L2 查询与 L1 参数解耦——replayArgs[0] 现在是 uuidVariants
+	// 数组（L1 双腿匹配用），routing_decision_log.request_id 是 uuid 标量
+	// 列，传数组会把数组字面量当单个 uuid 解析（22P02）。L2 只服务 uuid
+	// 形态的请求 id（探测等非 uuid id 不产生决策日志，跳过查询等价
+	// ErrNoRows）。
+	rdlArgs := []any{""}
+	l2Lookup := false
+	if v := uuidVariants(reqID); len(v) == 2 {
+		l2Lookup = true
+		rdlArgs = []any{v[1]}
+	}
+	if replayTenantFrag != "" {
+		rdlArgs = append(rdlArgs, replayTenantArgs...)
+	}
+	rdlErr := pgx.ErrNoRows
+	if l2Lookup {
+		rdlErr = h.db.QueryRow(ctx, `
+			SELECT ts, chosen_credential_id, chosen_provider_id, tier,
+			       candidates_tried, success, resolution_path, canonical_model,
+			       decision_trace::text
+			FROM routing_decision_log
+			WHERE request_id = $1::uuid`+replayTenantFrag+`
+			ORDER BY ts DESC
+			LIMIT 1
+		`, rdlArgs...).Scan(
+			&rdlTS, &chosenCredID, &chosenProvID, &tier,
+			&candidatesTried, &rdlSuccess, &resolutionPath, &canonicalModel,
+			&decisionTrace,
+		)
+	}
 	if rdlErr == nil {
 		l2 := map[string]interface{}{
 			"ts":      rdlTS.Format(time.RFC3339),
@@ -754,7 +878,7 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 			}
 		}
 		out["l2"] = l2
-	} else if rdlErr != sql.ErrNoRows {
+	} else if !errors.Is(rdlErr, pgx.ErrNoRows) && !errors.Is(rdlErr, sql.ErrNoRows) {
 		writeInternalErr(w, rdlErr)
 		return
 	}
@@ -791,7 +915,12 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	defer cancel()
 	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
 
-	cacheKey := funnelCacheKey(model, windowLabel)
+		scope := EffectiveTenantIDAll(r)
+		if scope == "" {
+			scope = "*"
+		}
+		cacheKey := funnelCacheKey(scope, model, windowLabel)
+
 	if cached, ok := globalFunnelCache.get(cacheKey); ok {
 		writeJSONOk(w, cached)
 		return
@@ -841,8 +970,14 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		  AND (
 		    outbound_model = ANY($2) OR canonical_model = ANY($2)
 		    OR client_model = ANY($2) OR model = ANY($2)
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM routing_analytics_source probe
+		    WHERE probe.request_id = routing_decision_log.request_id::text
+		      AND NOT (`+businessRequestFilter("probe")+`)
 		  )` + rdlTenantWhere + `
-	`
+		`
 	_ = h.db.QueryRow(ctx, rdlQuery, rdlArgs...).Scan(
 		&fr.requests, &fr.traceRows, &fr.totalPlanned, &fr.totalBlocked,
 		&fr.routable, &fr.chosen, &fr.success,
@@ -855,16 +990,17 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		if rdlTenantFrag != "" {
 			approxArgs = append(approxArgs, rdlTenantArgs...)
 		}
-		if err := h.db.QueryRow(ctx, `
-			SELECT
-				COUNT(*)::int,
-				COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
-				COUNT(*) FILTER (WHERE success IS TRUE)::int
-			FROM request_logs
-			WHERE is_auto_request = TRUE
-			  AND ts >= NOW() - $1::interval
-			  AND outbound_model = ANY($2)`+rdlTenantWhere+`
-		`, approxArgs...).Scan(&autoReq, &routed, &ok); err != nil {
+			if err := h.db.QueryRow(ctx, `
+				SELECT
+					COUNT(*)::int,
+					COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
+					COUNT(*) FILTER (WHERE success IS TRUE)::int
+				FROM routing_analytics_source
+				WHERE is_auto_request = TRUE
+				  AND ts >= NOW() - $1::interval
+				  AND COALESCE(NULLIF(outbound_model, ''), client_model) = ANY($2)
+				  AND `+businessRequestFilter("")+rdlTenantWhere+`
+			`, approxArgs...).Scan(&autoReq, &routed, &ok); err != nil {
 			writeInternalErr(w, err)
 			return
 		}
@@ -886,16 +1022,17 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		if rdlTenantFrag != "" {
 			mixedArgs = append(mixedArgs, rdlTenantArgs...)
 		}
-		_ = h.db.QueryRow(ctx, `
-			SELECT
-				COUNT(*)::int,
-				COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
-				COUNT(*) FILTER (WHERE success IS TRUE)::int
-			FROM request_logs
-			WHERE is_auto_request = TRUE
-			  AND ts >= NOW() - $1::interval
-			  AND outbound_model = ANY($2)`+rdlTenantWhere+`
-		`, mixedArgs...).Scan(&autoReq, &routed, &ok)
+			_ = h.db.QueryRow(ctx, `
+				SELECT
+					COUNT(*)::int,
+					COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
+					COUNT(*) FILTER (WHERE success IS TRUE)::int
+				FROM routing_analytics_source
+				WHERE is_auto_request = TRUE
+				  AND ts >= NOW() - $1::interval
+				  AND COALESCE(NULLIF(outbound_model, ''), client_model) = ANY($2)
+				  AND `+businessRequestFilter("")+rdlTenantWhere+`
+			`, mixedArgs...).Scan(&autoReq, &routed, &ok)
 		if fr.requests == 0 {
 			fr.requests = autoReq
 		}
@@ -966,4 +1103,39 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	}
 	globalFunnelCache.set(cacheKey, out)
 	writeJSONOk(w, out)
+}
+
+// uuidVariants 返回同一请求 id 在两条腿上的可能形态，供 = ANY 匹配
+// （R46 F9）。真库两腿 request_id 均为 text（母表存原始 hex32，R47 实测
+// 更正了此前"母表 UUID 列归一 dashed"的注释）；dashed 形态候选对位的
+// 是 routing_decision_log.request_id（uuid 列，L2 腿）。
+// 非 uuid 形态的 id（探测字符串等）原样返回单元素。
+func uuidVariants(id string) []string {
+	stripped := strings.ToLower(strings.ReplaceAll(id, "-", ""))
+	if len(stripped) != 32 {
+		return []string{id}
+	}
+	for i := 0; i < len(stripped); i++ {
+		c := stripped[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return []string{id}
+		}
+	}
+	dashed := stripped[:8] + "-" + stripped[8:12] + "-" + stripped[12:16] + "-" + stripped[16:20] + "-" + stripped[20:]
+	if strings.EqualFold(id, stripped) {
+		return []string{id, dashed}
+	}
+	if strings.EqualFold(id, dashed) {
+		return []string{id, stripped}
+	}
+	return []string{id}
+}
+
+// nullStringOrEmpty 把可空列展开为响应字符串（R46 F9：探测/turns 行的
+// task_type、client_model 等可为 NULL）。
+func nullStringOrEmpty(ns sql.NullString) string {
+	if ns.Valid {
+		return ns.String
+	}
+	return ""
 }

@@ -30,10 +30,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/caveman"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/lite"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/strategy"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/toolfocused"
 	"github.com/kaixuan/llm-gateway-go/domains/tokenest"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -164,6 +167,10 @@ const (
 	// StrategyCaveman (GW-07, omni-ref2): Caveman stage 翻译自 OmniRoute caveman.ts。
 	// 8 语言 306 规则 + 保护块 + validation。
 	StrategyCaveman CompressionStrategy = "caveman"
+	// StrategyToolFocused (GW-09, omni-ref2): Tool-Focused stage 翻译自 OmniRoute
+	// toolResultCompressor.ts。5 种 per-type 工具结果压缩（fileContent/grepSearch/
+	// shellOutput/json/errorMessage），OpenAI tool 消息 + Anthropic tool_result block 双形态。
+	StrategyToolFocused CompressionStrategy = "toolfocused"
 )
 
 // Meta is the compression telemetry payload written to
@@ -224,15 +231,32 @@ type Compressor struct {
 	// 8 语言规则。默认 false（feature flag LLM_GATEWAY_COMPRESSION_CAVEMAN）。
 	// Caveman 纯函数 + validation fallback，经 NeverWorse(GuardStageCaveman) 守卫。
 	CavemanStageEnabled bool
+	// ToolFocusedStageEnabled (GW-09, omni-ref2): 启用 Tool-Focused 压缩 stage。
+	// true 时 Compress/CompressAfter4xx 在 Caveman 之后、mechanical trim 之前跑
+	// 5 种 per-type 工具结果压缩（fileContent/grepSearch/shellOutput/json/errorMessage）。
+	// 默认 false（feature flag LLM_GATEWAY_COMPRESSION_TOOLFOCUSED）。纯函数、fail-open，
+	// [COMPRESSED: 前缀幂等，经 NeverWorse(GuardStageToolFocused) 守卫。
+	ToolFocusedStageEnabled bool
+
+	// SelectorMode and SelectorSpec configure the optional strategy selector.
+	SelectorMode        string
+	SelectorSpec        string
+	AdaptiveTargetRatio float64
+	// StrategyRunnerEnabled is an explicit opt-in for live executor integration.
+	StrategyRunnerEnabled bool
+	// StrategyRunnerMode selects sequential (default) or parallel candidate execution.
+	StrategyRunnerMode string
 }
 
 // NewCompressor builds a Compressor with the current env config.
 // Cheap to construct (no I/O); can be built per-request if needed.
 func NewCompressor() *Compressor {
-	return &Compressor{
+	c := &Compressor{
 		mode: LoadMode(),
 		est:  NewEstimator(),
 	}
+	c.NormalizeSelectorConfig()
+	return c
 }
 
 // Mode returns the active mode (read-only).
@@ -251,7 +275,14 @@ func (c *Compressor) Estimator() *Estimator {
 	return c.est
 }
 
-// ShouldCompressPreRequest is the mode=1 (auto_threshold) pre-request gate.
+// StrategyRunnerMode returns the configured strategy runner mode.
+func (c *Compressor) RunnerMode() string {
+	if c == nil || c.StrategyRunnerMode == "" {
+		return "sequential"
+	}
+	return c.StrategyRunnerMode
+}
+
 // Returns true when the body exceeds the dynamic threshold AND mode is
 // ModeAutoThreshold. Returns false otherwise (including ModeOff and
 // ModeOn4xx - the latter is invoked AFTER the 4xx, not before).
@@ -263,6 +294,246 @@ func (c *Compressor) ShouldCompressPreRequest(body []byte, contextWindow int) bo
 		return false
 	}
 	return c.est.NeedsCompression(body, contextWindow)
+}
+
+// strategyRunner 返回一个常驻 Runner（registry + runner 缓存）。
+// Registry 按当前 feature flags 装配；Runner 注入 compression.NeverWorse
+// 让 RunStrategies 路径的 regression 也走 Prometheus 计数。
+//
+// Phase 1 只读路径（RunStrategies）；不替换 Compressor.Compress 原有 dispatcher 路径。
+// Compressor.RunStrategies → Runner.RunWithBody 走 strategy 包抽象；
+// 现有 main.go + executor 仍调 Compressor.Compress / CompressAfter4xx，行为不变。
+//
+// 线程：Compressor 单例（main.go 启动期 NewCompressor 一次），按需读 feature
+// flags 重建 registry；不依赖 RWMutex 是因为当前 feature flag 是 init-time
+// 设定；如果未来支持热更新，需要在这里加锁 + invalidation。
+func (c *Compressor) strategyRunner() *strategy.Runner {
+	reg := strategy.NewRegistry()
+	// 注册顺序 = dispatcher 执行顺序（lite → caveman → toolfocused）。
+	reg.MustRegister(&strategy.LiteAdapter{On: c != nil && c.LiteStageEnabled})
+	reg.MustRegister(&strategy.CavemanAdapter{On: c != nil && c.CavemanStageEnabled})
+	reg.MustRegister(&strategy.ToolFocusedAdapter{On: c != nil && c.ToolFocusedStageEnabled})
+	runner := strategy.NewRunner(reg)
+	// 注入 compression.NeverWorse：RunStrategies 路径触发的 regression 会递增
+	// compression_regressed_total{stage="lite"|"caveman"|"toolfocused"} 计数，
+	// 与 Compressor.Compress 路径保持单一监控来源。
+	// 用 wrapper 把 GuardStage 适配成 string（strategy 包不 import compression
+	// 以避免循环引用，所以类型不共享）。
+	runner.SetGuard(func(raw, processed []byte, stage string) ([]byte, bool) {
+		return NeverWorse(raw, processed, GuardStage(stage))
+	})
+	return runner
+}
+
+// RunStrategies 是 Phase 1 新增的策略模式入口。
+//
+// 参数：
+//   - ctx: 透传给各 Strategy.Apply
+//   - sel: 选择器；nil = 不压缩（返回原 body）
+//   - body: 待压缩 body
+//
+// 与 Compressor.Compress 关系：
+//   - RunStrategies 不写 telemetry / 不读 mode/estimator — 它只跑策略链。
+//   - 调用方（如 executor / 测试）选择走 Compress 还是 RunStrategies。
+//   - Phase 2 决策：是否把 Compress 内部也改为调 RunStrategies。
+//
+// 性能：每次调用在 init 期创建 Registry 一次；后续可缓存到 Compressor 字段
+// （future Phase 2 优化）。
+func (c *Compressor) RunStrategies(ctx context.Context, sel strategy.Selector, body []byte) ([]byte, strategy.RunStats, error) {
+	if c == nil {
+		return body, strategy.RunStats{}, nil
+	}
+	return c.strategyRunner().RunWithBody(ctx, sel, body)
+}
+
+// LoadSelectorMode resolves an explicit setting before the canonical env name,
+// then falls back to manual. Registry defaults must not mask environment config.
+func LoadSelectorMode() string {
+	if settings.Global != nil {
+		if sp := settings.Global.Spec("compression.selector_mode"); sp != nil {
+			v, source, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+			if err == nil && source != "default" {
+				var mode string
+				if json.Unmarshal(v, &mode) == nil && (mode == "manual" || mode == "adaptive") {
+					return mode
+				}
+			}
+		}
+	}
+	if mode := strings.TrimSpace(os.Getenv("LLM_GATEWAY_COMPRESSION_SELECTOR")); mode == "adaptive" {
+		return "adaptive"
+	}
+	return "manual"
+}
+
+func LoadSelectorSpec() string {
+	if settings.Global != nil {
+		if sp := settings.Global.Spec("compression.selector_spec"); sp != nil {
+			v, source, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+			if err == nil && source != "default" {
+				var spec string
+				if json.Unmarshal(v, &spec) == nil {
+					return spec
+				}
+			}
+		}
+	}
+	return strings.TrimSpace(os.Getenv("LLM_GATEWAY_COMPRESSION_SELECTOR_SPEC"))
+}
+
+func LoadAdaptiveTargetRatio() float64 {
+	const fallback = 0.8
+	if settings.Global != nil {
+		if sp := settings.Global.Spec("compression.adaptive_target_ratio"); sp != nil {
+			v, source, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+			if err == nil && source != "default" {
+				var ratio float64
+				if json.Unmarshal(v, &ratio) == nil && ratio > 0 && ratio <= 1 {
+					return ratio
+				}
+			}
+		}
+	}
+	if ratio, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv("LLM_GATEWAY_COMPRESSION_TARGET_RATIO")), 64); err == nil && ratio > 0 && ratio <= 1 {
+		return ratio
+	}
+	return fallback
+}
+
+// LoadStrategyRunnerMode resolves compression.runner_mode through the
+// canonical settings chain (DB > env > default). The direct environment
+// fallback keeps early-init and tests working before the registry is wired.
+func LoadStrategyRunnerMode() string {
+	const fallback = "sequential"
+	defaultMode := fallback
+	if settings.Global != nil {
+		if sp := settings.Global.Spec("compression.runner_mode"); sp != nil {
+			if value, source, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, ""); err == nil {
+				if mode := parseStrategyRunnerMode(value); mode != "" {
+					if source != "default" {
+						return mode
+					}
+					// Keep the registered default as the final fallback, but do
+					// not let it mask a direct env lookup when a test or early
+					// init registry has not wired the env backend yet.
+					defaultMode = mode
+				}
+			}
+		}
+	}
+	if mode := parseStrategyRunnerMode([]byte(os.Getenv("LLM_GATEWAY_COMPRESSION_RUNNER_MODE"))); mode != "" {
+		return mode
+	}
+	return defaultMode
+}
+
+func parseStrategyRunnerMode(raw []byte) string {
+	var mode string
+	if json.Unmarshal(raw, &mode) != nil {
+		mode = string(raw)
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "sequential" || mode == "parallel" {
+		return mode
+	}
+	return ""
+}
+
+func LoadStrategyRunnerEnabled() bool {
+	if settings.Global != nil {
+		if sp := settings.Global.Spec("compression.strategy_runner_enabled"); sp != nil {
+			v, source, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+			if err == nil && source != "default" {
+				var enabled bool
+				if json.Unmarshal(v, &enabled) == nil {
+					return enabled
+				}
+			}
+		}
+	}
+	enabled, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv("LLM_GATEWAY_COMPRESSION_STRATEGY_RUNNER_ENABLED")))
+	return enabled
+}
+
+func (c *Compressor) NormalizeSelectorConfig() {
+	if c == nil {
+		return
+	}
+	c.SelectorMode = LoadSelectorMode()
+	c.SelectorSpec = LoadSelectorSpec()
+	c.AdaptiveTargetRatio = LoadAdaptiveTargetRatio()
+	c.StrategyRunnerEnabled = LoadStrategyRunnerEnabled()
+	c.StrategyRunnerMode = LoadStrategyRunnerMode()
+}
+
+func (c *Compressor) NewSelector(ctx context.Context, contextWindow int) (strategy.Selector, error) {
+	if c == nil {
+		return strategy.NewManualSelector(strategy.Policy{}), nil
+	}
+	if c.SelectorMode == "adaptive" {
+		budgetFn := func(_ []byte) int {
+			if c.est == nil || contextWindow <= 0 {
+				return 0
+			}
+			return c.est.ThresholdBytes(contextWindow)
+		}
+		return strategy.NewAdaptiveSelector(strategy.AdaptiveConfig{
+			TargetRatio:       c.AdaptiveTargetRatio,
+			NeverOverCompress: true,
+			BudgetFn:          budgetFn,
+		}), nil
+	}
+	policy, err := strategy.ResolvePolicy(c.SelectorSpec)
+	if err != nil {
+		return nil, err
+	}
+	return strategy.NewManualSelector(policy), nil
+}
+
+// RunCompressStrategies resolves the configured selector and executes only
+// stages already explicitly enabled on this compressor.
+func (c *Compressor) RunCompressStrategies(ctx context.Context, body []byte, contextWindow int) ([]byte, strategy.RunStats, error) {
+	if c == nil {
+		return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, nil
+	}
+	selector, err := c.NewSelector(ctx, contextWindow)
+	if err != nil {
+		return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, err
+	}
+	return c.strategyRunner().RunWithBody(ctx, selector, body)
+}
+
+// RunCompressStrategiesParallel 与 RunCompressStrategies 共享 selector 解析，
+// 但走 Runner.RunParallelWithBody：把各 strategy 并行 fan-out，按信息量评分
+// 选最优输出。2026-09-01 审计 AUDIT_CONTEXT_COMPRESSION_AND_STREAMING_20260901
+// §四 4.5 P0："多策略并行压缩 缺失"。调用方按 settings 中 compression.runner_mode
+// 显式启用（sequential 默认不变，parallel 可灰度）。
+func (c *Compressor) RunCompressStrategiesParallel(ctx context.Context, body []byte, contextWindow int) ([]byte, strategy.RunStats, error) {
+	if c == nil {
+		return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, nil
+	}
+	selector, err := c.NewSelector(ctx, contextWindow)
+	if err != nil {
+		return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, err
+	}
+	return c.strategyRunner().RunParallelWithBody(ctx, selector, body)
+}
+
+// ParsePolicySpec 是 strategy.ResolvePolicy 的薄封装，main.go 用。
+// 这里暴露在 Compressor 命名空间方便直接 compressor.ParsePolicySpec(...) 调用，
+// 避免 import strategy 包做 wiring。
+func (c *Compressor) ParsePolicySpec(spec string) (strategy.Policy, error) {
+	return strategy.ResolvePolicy(spec)
+}
+
+// NewManualSelectorFromSpec 是 Compressor 命名空间下的 manual selector factory。
+// 让 main.go 不必直接 import strategy 包即可构建选择器。
+func (c *Compressor) NewManualSelectorFromSpec(spec string) (strategy.Selector, error) {
+	pol, err := strategy.ResolvePolicy(spec)
+	if err != nil {
+		return nil, err
+	}
+	return strategy.NewManualSelector(pol), nil
 }
 
 // Compress runs the compression flow for the given body. It is the
@@ -367,6 +638,22 @@ func (c *Compressor) Compress(body []byte, contextWindow int) (newBody []byte, r
 		}
 	}
 
+	// GW-09: 在 Caveman 之后、mechanical trim 之前跑 Tool-Focused stage（feature-flagged，fail-open）。
+	// 5 种 per-type 工具结果压缩（fileContent/grepSearch/shellOutput/json/errorMessage），
+	// OpenAI tool 消息 + Anthropic tool_result block 双形态，[COMPRESSED: 前缀幂等。
+	// 经 NeverWorse(GuardStageToolFocused) 守卫保证 stage 输出不增字节。
+	if c.ToolFocusedStageEnabled {
+		if tb, tr, ok := toolfocused.Apply(body, toolfocused.DefaultStrategies()); ok {
+			guarded, regressed := NeverWorse(body, tb, GuardStageToolFocused)
+			if !regressed {
+				body = guarded
+				if len(tr.Techniques) > 0 {
+					meta.ReasonDetail = appendStageNote(meta.ReasonDetail, fmt.Sprintf("toolfocused strategies=%v before mechanical", tr.Techniques))
+				}
+			}
+		}
+	}
+
 	trimmed := compressMechanical(body, contextWindow)
 	if len(trimmed) >= len(body) {
 		// Mechanical couldn't make room. Mark as noop; caller should
@@ -440,6 +727,19 @@ func (c *Compressor) CompressAfter4xx(body []byte, contextWindow int) (newBody [
 				body = guarded
 				if len(cr.RulesApplied) > 0 {
 					meta.ReasonDetail = appendStageNote(meta.ReasonDetail, fmt.Sprintf("caveman rules=%v before mechanical (4xx)", cr.RulesApplied))
+				}
+			}
+		}
+	}
+
+	// GW-09: Tool-Focused stage（与 Compress 一致，feature-flagged，fail-open）。
+	if c.ToolFocusedStageEnabled {
+		if tb, tr, ok := toolfocused.Apply(body, toolfocused.DefaultStrategies()); ok {
+			guarded, regressed := NeverWorse(body, tb, GuardStageToolFocused)
+			if !regressed {
+				body = guarded
+				if len(tr.Techniques) > 0 {
+					meta.ReasonDetail = appendStageNote(meta.ReasonDetail, fmt.Sprintf("toolfocused strategies=%v before mechanical (4xx)", tr.Techniques))
 				}
 			}
 		}

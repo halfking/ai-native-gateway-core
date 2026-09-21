@@ -16,6 +16,8 @@ alerting:
 # Load rules
 rule_files:
   - "/etc/prometheus/rules/*.yml"
+  - "/etc/prometheus/alerts/*.yaml"
+  - "/etc/prometheus/alerts/*.yml"
 
 # Scrape configurations
 scrape_configs:
@@ -74,3 +76,45 @@ scrape_configs:
           service: 'llm-gateway'
           component: 'gateway'
     bearer_token_file: '/etc/prometheus/secrets/admin_token'
+
+  # 2026-09-12: two-node production observation (gateways on hosts 245 and 154,
+  # see docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md rounds 25-26).
+  # The production gateways run as native systemd units (NOT this compose
+  # stack): unit names llmgo-245-canary@<port> / llm-gateway-go-canary@<port>.
+  # Blue-green active port ROTATES between 8781 and 8782 on every switch —
+  # a single fixed-port target goes blind exactly at release time. Scrape BOTH
+  # slots of 245; the inactive slot is simply "down" (harmless) and the active
+  # slot's series survives rotation because the `instance` label is pinned to
+  # node+slot, not host:port. TWO separate jobs are required (verified by the
+  # 2026-09-12 preflight, NOT an assumption): the two nodes run DIFFERENT
+  # LLM_GATEWAY_ADMIN_API_KEY values (245→154:8781 with 245's token returned
+  # 401; fingerprints differ), and one job can carry only one
+  # bearer_token_file. 154 currently runs a SINGLE instance
+  # (llm-gateway-go-canary@8781; nothing listens on 8782 — preflight got 000),
+  # so the 154-b target stays commented until a blue-green slot b is actually
+  # deployed there. /metrics needs the node's own admin key in
+  # bearer_token_file (401 otherwise). Enable these jobs on the 245-native
+  # Prometheus stack (the instance that can reach both nodes) per
+  # deploy/prometheus/NATIVE-245-DEPLOY.md — kept commented here so the
+  # compose stack is untouched until then. When enabling them, RETIRE the
+  # legacy `llm-gateway` job above on that stack (same endpoint, unpinned
+  # instance label → duplicate series); alerts.yml selects up by
+  # job=~"llm-gateway.*" so LLMGatewayDown keeps working across the rename.
+  # - job_name: 'llm-gateway-prod-245'
+  #   scrape_interval: 15s
+  #   static_configs:
+  #     - targets: ['127.0.0.1:8781']   # 245 loopback (Prometheus on this host)
+  #       labels: { instance: 'gateway-245-a', service: 'llm-gateway' }
+  #     - targets: ['127.0.0.1:8782']
+  #       labels: { instance: 'gateway-245-b', service: 'llm-gateway' }
+  #   bearer_token_file: '/opt/monitoring/prometheus/secrets/admin_token'
+  # - job_name: 'llm-gateway-prod-154'
+  #   scrape_interval: 15s
+  #   static_configs:
+  #     # 154 public address, verified reachable from 245 (401 = HTTP auth
+  #     # layer answered; replace if ops later expose an internal route)
+  #     - targets: ['47.97.111.154:8781']
+  #       labels: { instance: 'gateway-154-a', service: 'llm-gateway' }
+  #     # - targets: ['47.97.111.154:8782']
+  #     #   labels: { instance: 'gateway-154-b', service: 'llm-gateway' }
+  #   bearer_token_file: '/opt/monitoring/prometheus/secrets/admin_token_154'

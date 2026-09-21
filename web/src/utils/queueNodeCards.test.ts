@@ -50,10 +50,21 @@ describe('nodeCapacity / credentialDisplayName', () => {
     expect(nodeCapacity(null)).toBe(1)
   })
 
-  it('prefers credential label', () => {
-    expect(credentialDisplayName({ credential_label: 'terra-prod' }, 'p', 9)).toBe('terra-prod')
-    expect(credentialDisplayName({ credential_label: '  ' }, 'anthropic', 9)).toBe('anthropic · #9')
-    expect(credentialDisplayName(null, 'anthropic', 9, 'sse-label')).toBe('sse-label')
+  it('renders {vendor}/{credential_label} when a label exists', () => {
+    expect(credentialDisplayName({ credential_label: 'terra-prod' }, 'p', 9)).toBe('p/terra-prod')
+    expect(credentialDisplayName({ credential_label: '  ' }, 'anthropic', 9)).toBe('anthropic/#9')
+    expect(credentialDisplayName(null, 'anthropic', 9, 'sse-label')).toBe('anthropic/sse-label')
+  })
+
+  it('prefers candidate.provider_name over the fallback prefix', () => {
+    expect(credentialDisplayName(
+      { credential_label: 'ops', provider_name: 'azure-eastus' },
+      'anthropic', 12,
+    )).toBe('azure-eastus/ops')
+  })
+
+  it('falls back to "—" for the vendor when both candidate and fallback provider are missing', () => {
+    expect(credentialDisplayName(null, '', 7, 'cached')).toBe('—/cached')
   })
 })
 

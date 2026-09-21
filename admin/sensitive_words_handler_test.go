@@ -45,8 +45,7 @@ func TestSensitiveWordsHandlerMatch(t *testing.T) {
 
 func TestSensitiveWordsHandlerReloadErrorDoesNotLeakPath(t *testing.T) {
 	engine := sensitive.NewSensitiveWordEngine()
-	missingPath := filepath.Join(t.TempDir(), "missing-sensitive_words.json")
-	if err := engine.BuildFromFile(missingPath); err == nil {
+	if err := engine.BuildFromFile("/path/that/does/not/exist/sensitive_words.json"); err == nil {
 		t.Fatal("BuildFromFile should fail")
 	}
 
@@ -58,7 +57,7 @@ func TestSensitiveWordsHandlerReloadErrorDoesNotLeakPath(t *testing.T) {
 	if res.Code != http.StatusInternalServerError {
 		t.Fatalf("reload status = %d, want %d", res.Code, http.StatusInternalServerError)
 	}
-	if strings.Contains(res.Body.String(), missingPath) {
+	if strings.Contains(res.Body.String(), "/path/that/does/not/exist") {
 		t.Fatalf("reload response leaked filesystem path: %s", res.Body.String())
 	}
 }

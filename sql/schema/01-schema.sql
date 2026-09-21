@@ -1577,13 +1577,71 @@ $$;
 
 
 --
+-- Name: ensure_cache_metrics_partition(date); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.ensure_cache_metrics_partition(target_date date DEFAULT CURRENT_DATE) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    month_start    date := date_trunc('month', target_date)::date;
+    month_end      date := (date_trunc('month', target_date) + interval '1 month')::date;
+    partition_name text := 'cache_metrics_' || to_char(month_start, 'YYYY_MM');
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON c.relnamespace = n.oid
+        WHERE c.relname = partition_name
+          AND n.nspname = 'public'
+    ) THEN
+        RETURN partition_name || ' (already exists)';
+    END IF;
+
+    EXECUTE format(
+        'CREATE TABLE public.%I PARTITION OF public.cache_metrics FOR VALUES FROM (%L) TO (%L)',
+        partition_name, month_start, month_end
+    );
+
+    RAISE NOTICE 'ensure_cache_metrics_partition: created %', partition_name;
+    RETURN partition_name;
+END;
+$$;
+
+
+--
 -- Name: ensure_candidate_failure_logs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_candidate_failure_logs_partition(target_ts timestamp with time zone) RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_candidate_failure_logs_partition(target_ts timestamp with time zone) RETURNS text
     LANGUAGE plpgsql
     AS $$
+DECLARE
+    month_start    date;
+    month_end      date;
+    partition_name text;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_ts)::date;
+    month_end := (date_trunc('month', target_ts) + interval '1 month')::date;
+    partition_name := 'candidate_failure_logs_' || to_char(month_start, 'YYYY_MM');
+
+    IF NOT EXISTS (SELECT 1 FROM pg_class
+                   WHERE relname = partition_name
+                     AND relnamespace = 'public'::regnamespace) THEN
+        -- 689: heap (was columnar). Row-level DELETE (the 7d TTL trim path
+        -- in bg/opslog_trimmer.go) and the hot→monthly promote chain both
+        -- need UPDATE/DELETE-capable storage; columnar partitions are
+        -- append-only (established by migration 562).
+        EXECUTE format(
+            'CREATE TABLE %I PARTITION OF candidate_failure_logs
+             FOR VALUES FROM (%L) TO (%L)',
+            partition_name, month_start, month_end
+        );
+        RAISE NOTICE 'ensure_candidate_failure_logs_partition: created % as heap', partition_name;
+    END IF;
+    -- 689: dropped the former ELSE-branch enforce_columnar_partition() call —
+    -- partitions are heap now and must stay heap.
+    RETURN partition_name;
 END;
 $$;
 
@@ -1592,14 +1650,19 @@ $$;
 -- Name: ensure_credential_model_index_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_credential_model_index_partition(target_month timestamp with time zone) RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_credential_model_index_partition(target_month timestamp with time zone) RETURNS void
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    month_start date := date_trunc('month', target_month)::date;
-    month_end   date := (date_trunc('month', target_month) + interval '1 month')::date;
-    partition_name text := 'credential_model_index_' || to_char(month_start, 'YYYY_MM');
+    month_start date;
+    month_end   date;
+    partition_name text;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_month)::date;
+    month_end := (date_trunc('month', target_month) + interval '1 month')::date;
+    partition_name := 'credential_model_index_' || to_char(month_start, 'YYYY_MM');
+
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name
                      AND relnamespace = 'public'::regnamespace) THEN
@@ -1624,6 +1687,101 @@ Idempotent. Added 2026-06-30 in migration 319.';
 
 
 --
+-- Name: ensure_credit_ledger_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.ensure_credit_ledger_partition(target_month timestamp with time zone DEFAULT now()) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    partition_name text;
+    start_date timestamp with time zone;
+    end_date   timestamp with time zone;
+BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+
+    start_date := date_trunc('month', target_month);
+    end_date   := start_date + interval '1 month';
+    partition_name := 'credit_ledger_' || to_char(start_date, 'YYYY_MM');
+
+    IF EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON c.relnamespace = n.oid
+        WHERE c.relname = partition_name
+          AND n.nspname = 'public'
+    ) THEN
+        RETURN partition_name || ' (already exists)';
+    END IF;
+
+    EXECUTE format(
+        'CREATE TABLE public.%I PARTITION OF public.credit_ledger FOR VALUES FROM (%L) TO (%L)',
+        partition_name, start_date, end_date
+    );
+
+    RAISE NOTICE 'ensure_credit_ledger_partition: created %', partition_name;
+    RETURN partition_name;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION ensure_credit_ledger_partition(target_month timestamp with time zone); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.ensure_credit_ledger_partition(target_month timestamp with time zone) IS 'Ensure a monthly credit_ledger partition exists for the given month (heap storage).
+Called by bg.PartitionManager on every tick for current + next month.
+Parent-table indexes auto-propagate. Idempotent.
+Originally in migration 334; recreated in 475 to fix production silent-skip.';
+
+
+--
+-- Name: ensure_dashboard_events_partition(date); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.ensure_dashboard_events_partition(target_date date DEFAULT NULL::date) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_date DATE;
+    v_month_start DATE;
+    v_month_end DATE;
+    v_partition_name TEXT;
+BEGIN
+    v_date := COALESCE(target_date, NOW());
+    v_month_start := DATE_TRUNC('month', v_date);
+    v_month_end := v_month_start + INTERVAL '1 month';
+    v_partition_name := 'dashboard_access_events_' || TO_CHAR(v_month_start, 'YYYY_MM');
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = v_partition_name) THEN
+        EXECUTE format('
+            CREATE TABLE %I PARTITION OF dashboard_access_events
+            FOR VALUES FROM (%L) TO (%L)
+        ', v_partition_name, v_month_start, v_month_end);
+        
+        EXECUTE format('
+            CREATE INDEX idx_%s_tenant ON %I(tenant_id, timestamp DESC)
+        ', v_partition_name, v_partition_name);
+    END IF;
+    
+    RETURN v_partition_name;
+END;
+$$;
+
+
+--
+-- Name: ensure_handoff_logs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.ensure_handoff_logs_partition(p_month timestamp with time zone) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE NOTICE 'noop';
+END;
+$$;
+
+
+--
 -- Name: ensure_model_probe_runs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1642,14 +1800,19 @@ $$;
 -- Name: ensure_next_month_archive_partition(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_next_month_archive_partition() RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_next_month_archive_partition() RETURNS void
     LANGUAGE plpgsql
     AS $$
 		DECLARE
-		    next_month_start date := date_trunc('month', now() + interval '1 month')::date;
-		    next_month_end   date := date_trunc('month', now() + interval '2 months')::date;
-		    partition_name   text := 'request_logs_archive_' || to_char(next_month_start, 'YYYY_MM');
+		    next_month_start date;
+		    next_month_end   date;
+		    partition_name   text;
 		BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    next_month_start := date_trunc('month', now() + interval '1 month')::date;
+    next_month_end := date_trunc('month', now() + interval '2 months')::date;
+    partition_name := 'request_logs_archive_' || to_char(next_month_start, 'YYYY_MM');
+
 		    IF NOT EXISTS (SELECT 1 FROM pg_class
 		                   WHERE relname = partition_name AND relnamespace = 'public'::regnamespace) THEN
 		        EXECUTE format(
@@ -1672,14 +1835,19 @@ COMMENT ON FUNCTION public.ensure_next_month_archive_partition() IS 'Pre-create 
 -- Name: ensure_next_month_cmi_archive_partition(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_next_month_cmi_archive_partition() RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_next_month_cmi_archive_partition() RETURNS void
     LANGUAGE plpgsql
     AS $$
 		DECLARE
-		    next_month_start date := date_trunc('month', now() + interval '1 month')::date;
-		    next_month_end   date := date_trunc('month', now() + interval '2 months')::date;
-		    partition_name   text := 'credential_model_index_archive_' || to_char(next_month_start, 'YYYY_MM');
+		    next_month_start date;
+		    next_month_end   date;
+		    partition_name   text;
 		BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    next_month_start := date_trunc('month', now() + interval '1 month')::date;
+    next_month_end := date_trunc('month', now() + interval '2 months')::date;
+    partition_name := 'credential_model_index_archive_' || to_char(next_month_start, 'YYYY_MM');
+
 		    IF NOT EXISTS (SELECT 1 FROM pg_class
 		                   WHERE relname = partition_name AND relnamespace = 'public'::regnamespace) THEN
 		        EXECUTE format(
@@ -1702,18 +1870,29 @@ COMMENT ON FUNCTION public.ensure_next_month_cmi_archive_partition() IS 'Pre-cre
 -- Name: ensure_next_month_request_wal_partition(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_next_month_request_wal_partition() RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_next_month_request_wal_partition() RETURNS void
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    next_month_start date := date_trunc('month', now() + interval '1 month')::date;
-    next_month_end   date := date_trunc('month', now() + interval '2 months')::date;
-    partition_name   text := 'request_wal_' || to_char(next_month_start, 'YYYY_MM');
+    next_month_start date;
+    next_month_end   date;
+    partition_name   text;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    next_month_start := date_trunc('month', now() + interval '1 month')::date;
+    next_month_end := date_trunc('month', now() + interval '2 months')::date;
+    partition_name := 'request_wal_' || to_char(next_month_start, 'YYYY_MM');
+
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name AND relnamespace = 'public'::regnamespace) THEN
+        -- 2026-08-23 (migration 562): switched from columnar to heap.
+        -- request_wal is a heap parent; columnar partitions blocked the
+        -- hot→monthly promote path. Kept in sync with
+        -- ensure_request_wal_partition(timestamptz) (the active call
+        -- site). This orphan is retained for backwards compatibility
+        -- but now matches the active function's storage policy.
         EXECUTE format(
-            'CREATE TABLE %I PARTITION OF request_wal FOR VALUES FROM (%L) TO (%L) USING columnar',
+            'CREATE TABLE %I PARTITION OF request_wal FOR VALUES FROM (%L) TO (%L)',
             partition_name, next_month_start, next_month_end
         );
     END IF;
@@ -1725,14 +1904,19 @@ $$;
 -- Name: ensure_next_month_routing_archive_partition(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_next_month_routing_archive_partition() RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_next_month_routing_archive_partition() RETURNS void
     LANGUAGE plpgsql
     AS $$
 		DECLARE
-		    next_month_start date := date_trunc('month', now() + interval '1 month')::date;
-		    next_month_end   date := date_trunc('month', now() + interval '2 months')::date;
-		    partition_name   text := 'routing_decision_log_archive_' || to_char(next_month_start, 'YYYY_MM');
+		    next_month_start date;
+		    next_month_end   date;
+		    partition_name   text;
 		BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    next_month_start := date_trunc('month', now() + interval '1 month')::date;
+    next_month_end := date_trunc('month', now() + interval '2 months')::date;
+    partition_name := 'routing_decision_log_archive_' || to_char(next_month_start, 'YYYY_MM');
+
 		    IF NOT EXISTS (SELECT 1 FROM pg_class
 		                   WHERE relname = partition_name AND relnamespace = 'public'::regnamespace) THEN
 		        EXECUTE format(
@@ -1755,23 +1939,35 @@ COMMENT ON FUNCTION public.ensure_next_month_routing_archive_partition() IS 'Pre
 -- Name: ensure_request_logs_bodies_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_request_logs_bodies_partition(target_ts timestamp with time zone DEFAULT now()) RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_request_logs_bodies_partition(target_ts timestamp with time zone DEFAULT now()) RETURNS void
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    month_start    date := date_trunc('month', target_ts)::date;
-    month_end      date := (date_trunc('month', target_ts) + interval '1 month')::date;
-    partition_name text := 'request_logs_bodies_' || to_char(month_start, 'YYYY_MM');
+    month_start    date;
+    month_end      date;
+    partition_name text;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_ts)::date;
+    month_end := (date_trunc('month', target_ts) + interval '1 month')::date;
+    partition_name := 'request_logs_bodies_' || to_char(month_start, 'YYYY_MM');
+
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name
                      AND relnamespace = 'public'::regnamespace) THEN
+        -- 2026-08-23 (migration 562): switched from columnar to heap. The
+        -- body columns (request_body / outbound_body / response_body jsonb)
+        -- are TOAST-heavy (~350 KB avg) and the hot→monthly promote path
+        -- issues INSERT-then-DELETE-when-retried cycles; columnar blocks
+        -- UPDATE/DELETE so the bodies pipeline silently stalled, leaving
+        -- request_logs_bodies_hot unbounded. request_logs_archive remains
+        -- columnar (it's a read-only tiered store, see archive_request_logs).
         EXECUTE format(
             'CREATE TABLE %I PARTITION OF request_logs_bodies
-             FOR VALUES FROM (%L) TO (%L) USING columnar',
+             FOR VALUES FROM (%L) TO (%L)',
             partition_name, month_start, month_end
         );
-        RAISE NOTICE 'ensure_request_logs_bodies_partition: created % as columnar', partition_name;
+        RAISE NOTICE 'ensure_request_logs_bodies_partition: created % as heap', partition_name;
     END IF;
 END;
 $$;
@@ -1781,14 +1977,19 @@ $$;
 -- Name: ensure_request_logs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_request_logs_partition(target_ts timestamp with time zone DEFAULT now()) RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_request_logs_partition(target_ts timestamp with time zone DEFAULT now()) RETURNS void
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    month_start   date := date_trunc('month', target_ts)::date;
-    month_end     date := (date_trunc('month', target_ts) + interval '1 month')::date;
-    part_name     text := 'request_logs_' || to_char(month_start, 'YYYY_MM');
+    month_start   date;
+    month_end     date;
+    part_name     text;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_ts)::date;
+    month_end := (date_trunc('month', target_ts) + interval '1 month')::date;
+    part_name := 'request_logs_' || to_char(month_start, 'YYYY_MM');
+
     IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = part_name) THEN
         EXECUTE format(
             'CREATE TABLE %I PARTITION OF request_logs FOR VALUES FROM (%L) TO (%L)',
@@ -1814,23 +2015,33 @@ $$;
 -- Name: ensure_request_wal_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_request_wal_partition(target_ts timestamp with time zone DEFAULT now()) RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_request_wal_partition(target_ts timestamp with time zone DEFAULT now()) RETURNS void
     LANGUAGE plpgsql
-    AS $$ DECLARE month_start date := date_trunc('month', target_ts)::date; month_end date := (date_trunc('month', target_ts) + interval '1 month')::date; part_name text := 'request_wal_' || to_char(month_start, 'YYYY_MM'); BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = part_name AND relnamespace = 'public'::regnamespace) THEN EXECUTE format('CREATE TABLE %I PARTITION OF request_wal FOR VALUES FROM (%L) TO (%L)', part_name, month_start, month_end); END IF; END; $$;
+    AS $$ DECLARE month_start date; month_end date; part_name text; BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_ts)::date;
+    month_end := (date_trunc('month', target_ts) + interval '1 month')::date;
+    part_name := 'request_wal_' || to_char(month_start, 'YYYY_MM');
+ IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = part_name AND relnamespace = 'public'::regnamespace) THEN EXECUTE format('CREATE TABLE %I PARTITION OF request_wal FOR VALUES FROM (%L) TO (%L)', part_name, month_start, month_end); END IF; END; $$;
 
 
 --
 -- Name: ensure_routing_decision_log_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_routing_decision_log_partition(target_month timestamp with time zone) RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_routing_decision_log_partition(target_month timestamp with time zone) RETURNS void
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    month_start date := date_trunc('month', target_month)::date;
-    month_end   date := (date_trunc('month', target_month) + interval '1 month')::date;
-    partition_name text := 'routing_decision_log_' || to_char(month_start, 'YYYY_MM');
+    month_start date;
+    month_end   date;
+    partition_name text;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_month)::date;
+    month_end := (date_trunc('month', target_month) + interval '1 month')::date;
+    partition_name := 'routing_decision_log_' || to_char(month_start, 'YYYY_MM');
+
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name
                      AND relnamespace = 'public'::regnamespace) THEN
@@ -1852,6 +2063,68 @@ $$;
 COMMENT ON FUNCTION public.ensure_routing_decision_log_partition(target_month timestamp with time zone) IS 'Ensure a monthly partition exists for routing_decision_log at the given month.
 Called by bg.PartitionManager on every tick for current + next month.
 Idempotent. Added 2026-06-30 in migration 319.';
+
+
+--
+-- Name: ensure_session_module_executions_partition(date); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.ensure_session_module_executions_partition(target_date date DEFAULT NULL::date) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_date DATE;
+    v_month_start DATE;
+    v_month_end DATE;
+    v_partition_name TEXT;
+    v_next_partition_name TEXT;
+    v_next_month_start DATE;
+    v_next_month_end DATE;
+BEGIN
+    v_date := COALESCE(target_date, NOW());
+    v_month_start := DATE_TRUNC('month', v_date);
+    v_month_end := v_month_start + INTERVAL '1 month';
+    v_partition_name := 'session_module_executions_' || TO_CHAR(v_month_start, 'YYYY_MM');
+    
+    -- 创建目标月分区
+    IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = v_partition_name) THEN
+        EXECUTE format('
+            CREATE TABLE %I PARTITION OF session_module_executions
+            FOR VALUES FROM (%L) TO (%L)
+        ', v_partition_name, v_month_start, v_month_end);
+        
+        EXECUTE format('
+            CREATE INDEX idx_%s_session ON %I(gw_session_id, module_name)
+        ', v_partition_name, v_partition_name);
+        
+        EXECUTE format('
+            CREATE INDEX idx_%s_tenant ON %I(tenant_id, created_at DESC)
+        ', v_partition_name, v_partition_name);
+    END IF;
+    
+    -- 同时确保下个月分区也存在
+    v_next_month_start := v_month_start + INTERVAL '1 month';
+    v_next_month_end := v_next_month_start + INTERVAL '1 month';
+    v_next_partition_name := 'session_module_executions_' || TO_CHAR(v_next_month_start, 'YYYY_MM');
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = v_next_partition_name) THEN
+        EXECUTE format('
+            CREATE TABLE %I PARTITION OF session_module_executions
+            FOR VALUES FROM (%L) TO (%L)
+        ', v_next_partition_name, v_next_month_start, v_next_month_end);
+        
+        EXECUTE format('
+            CREATE INDEX idx_%s_session ON %I(gw_session_id, module_name)
+        ', v_next_partition_name, v_next_partition_name);
+        
+        EXECUTE format('
+            CREATE INDEX idx_%s_tenant ON %I(tenant_id, created_at DESC)
+        ', v_next_partition_name, v_next_partition_name);
+    END IF;
+    
+    RETURN v_partition_name;
+END;
+$$;
 
 
 --
@@ -1903,17 +2176,108 @@ COMMENT ON FUNCTION public.ensure_sessions_v2_partitions(target_date date) IS 'E
 
 
 --
--- Name: ensure_usage_ledger_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+-- Name: ensure_supplier_errors_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_usage_ledger_partition(target_month timestamp with time zone) RETURNS void
+CREATE FUNCTION public.ensure_supplier_errors_partition(target_ts timestamp with time zone) RETURNS text
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    month_start    date := date_trunc('month', target_month)::date;
-    month_end      date := (date_trunc('month', target_month) + interval '1 month')::date;
-    partition_name text := 'usage_ledger_' || to_char(month_start, 'YYYY_MM');
+    month_start    date;
+    month_end      date;
+    partition_name text;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_ts)::date;
+    month_end := (date_trunc('month', target_ts) + interval '1 month')::date;
+    partition_name := 'supplier_errors_' || to_char(month_start, 'YYYY_MM');
+
+    IF NOT EXISTS (SELECT 1 FROM pg_class
+                   WHERE relname = partition_name
+                     AND relnamespace = 'public'::regnamespace) THEN
+        -- 裸 USING columnar（对齐 V359 模板）：citus_columnar 11.2+ 的
+        -- 压缩/stripe/chunk 参数走 columnar.* GUC（全局默认 zstd/
+        -- 150000/10000），不再接受 WITH(...) reloption。
+        EXECUTE format(
+            'CREATE TABLE %I PARTITION OF supplier_errors
+             FOR VALUES FROM (%L) TO (%L) USING columnar',
+            partition_name, month_start, month_end
+        );
+        RAISE NOTICE 'ensure_supplier_errors_partition: created % as columnar', partition_name;
+    ELSE
+        -- 幂等：确保既有分区保持 columnar（历史分区不可变语义）
+        PERFORM enforce_columnar_partition(partition_name, 'supplier_errors');
+    END IF;
+    RETURN partition_name;
+END;
+$$;
+
+
+--
+-- Name: ensure_tool_usage_stats_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.ensure_tool_usage_stats_partition(target_month timestamp with time zone DEFAULT now()) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    partition_name text;
+    start_date date;
+    end_date   date;
+BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+
+    start_date := date_trunc('month', target_month)::date;
+    end_date   := (start_date + interval '1 month')::date;
+    partition_name := 'tool_usage_stats_' || to_char(start_date, 'YYYY_MM');
+
+    IF EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON c.relnamespace = n.oid
+        WHERE c.relname = partition_name
+          AND n.nspname = 'public'
+    ) THEN
+        RETURN partition_name || ' (already exists)';
+    END IF;
+
+    EXECUTE format(
+        'CREATE TABLE public.%I PARTITION OF public.tool_usage_stats FOR VALUES FROM (%L) TO (%L)',
+        partition_name, start_date, end_date
+    );
+
+    RAISE NOTICE 'ensure_tool_usage_stats_partition: created %', partition_name;
+    RETURN partition_name;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION ensure_tool_usage_stats_partition(target_month timestamp with time zone); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.ensure_tool_usage_stats_partition(target_month timestamp with time zone) IS 'Ensure a monthly tool_usage_stats partition exists for the given month (heap storage).
+Called by bg.PartitionManager on every tick for current + next month.
+Parent-table indexes auto-propagate. Idempotent.
+Originally in migration 335; recreated in 475 to fix production silent-skip.';
+
+
+--
+-- Name: ensure_usage_ledger_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE OR REPLACE FUNCTION public.ensure_usage_ledger_partition(target_month timestamp with time zone) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    month_start    date;
+    month_end      date;
+    partition_name text;
+BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_month)::date;
+    month_end := (date_trunc('month', target_month) + interval '1 month')::date;
+    partition_name := 'usage_ledger_' || to_char(month_start, 'YYYY_MM');
+
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name
                      AND relnamespace = 'public'::regnamespace) THEN
@@ -2852,13 +3216,88 @@ $$;
 -- Name: promote_candidate_failure_logs_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_candidate_failure_logs_hot_to_partition(p_retention interval DEFAULT '24:00:00'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
-    LANGUAGE plpgsql
-    AS $$
+CREATE OR REPLACE FUNCTION public.promote_candidate_failure_logs_hot_to_partition(
+    p_retention interval DEFAULT '8 hours',
+    p_batch_size integer DEFAULT 5000
+)
+RETURNS bigint
+LANGUAGE plpgsql
+AS $function$
+DECLARE
+    moved bigint := 0;
+    month_rec record;
 BEGIN
-  RETURN 0;
+    -- 698: group months under Asia/Shanghai so boundary rows land in the
+    -- same month group the 694-pinned ensure_* target was created for.
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN
+        RAISE EXCEPTION 'p_retention must be positive';
+    END IF;
+    IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN
+        RAISE EXCEPTION 'p_batch_size must be between 1 and 50000';
+    END IF;
+
+    FOR month_rec IN
+        SELECT DISTINCT date_trunc('month', ts) AS month_start
+        FROM public.candidate_failure_logs_hot
+        WHERE ts < statement_timestamp() - p_retention
+        ORDER BY 1
+        LIMIT 12
+    LOOP
+        PERFORM public.ensure_candidate_failure_logs_partition(month_rec.month_start);
+    END LOOP;
+
+    CREATE TEMP TABLE _candidate_failure_logs_promotion_batch ON COMMIT DROP AS
+    SELECT ctid AS source_ctid, id, request_id, ts, tenant_id, credential_id,
+           provider_id, raw_model_name, attempt_index, error_kind, error_message,
+           upstream_status_code, upstream_response_body, upstream_response_preview,
+           latency_ms, retryable, per_attempt_latency_ms,
+           extracted_upstream_status_code, diagnosed_error_kind, context, session_id,
+           aggregation_id
+    FROM public.candidate_failure_logs_hot
+    WHERE ts < statement_timestamp() - p_retention
+    ORDER BY ts, ctid
+    LIMIT p_batch_size
+    FOR UPDATE SKIP LOCKED;
+
+    IF NOT EXISTS (SELECT 1 FROM _candidate_failure_logs_promotion_batch) THEN
+        RETURN 0;
+    END IF;
+
+    WITH moved_rows AS (
+        DELETE FROM public.candidate_failure_logs_hot h
+        USING _candidate_failure_logs_promotion_batch b
+        WHERE h.ctid = b.source_ctid
+        RETURNING h.id, h.request_id, h.ts, h.tenant_id, h.credential_id,
+                  h.provider_id, h.raw_model_name, h.attempt_index,
+                  h.error_kind, h.error_message, h.upstream_status_code,
+                  h.upstream_response_body, h.upstream_response_preview,
+                  h.latency_ms, h.retryable, h.per_attempt_latency_ms,
+                  h.extracted_upstream_status_code, h.diagnosed_error_kind,
+                  h.context, h.session_id, h.aggregation_id
+    ), inserted_rows AS (
+        INSERT INTO public.candidate_failure_logs (
+            id, request_id, ts, tenant_id, credential_id, provider_id,
+            raw_model_name, attempt_index, error_kind, error_message,
+            upstream_status_code, upstream_response_body, upstream_response_preview,
+            latency_ms, retryable, per_attempt_latency_ms,
+            extracted_upstream_status_code, diagnosed_error_kind, context, session_id,
+            aggregation_id
+        )
+        SELECT id, request_id, ts, tenant_id, credential_id, provider_id,
+               raw_model_name, attempt_index, error_kind, error_message,
+               upstream_status_code, upstream_response_body, upstream_response_preview,
+               latency_ms, retryable, per_attempt_latency_ms,
+               extracted_upstream_status_code, diagnosed_error_kind, context, session_id,
+               aggregation_id
+        FROM moved_rows
+        RETURNING 1
+    )
+    SELECT count(*) INTO moved FROM inserted_rows;
+
+    RETURN moved;
 END;
-$$;
+$function$;
 
 
 --
@@ -2906,38 +3345,52 @@ $$;
 -- Name: promote_credential_model_index_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_credential_model_index_hot_to_partition(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-  n bigint := 0;
+CREATE OR REPLACE FUNCTION public.promote_credential_model_index_hot_to_partition(
+  p_retention interval DEFAULT '8 hours'::interval,
+  p_batch_size integer DEFAULT 5000
+)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE moved bigint := 0; month_rec record;
 BEGIN
-  CREATE TEMP TABLE _promote_hot_batch ON COMMIT DROP AS
-  SELECT * FROM credential_model_index_hot
-  WHERE updated_at < now() - p_retention
-  ORDER BY updated_at
-  LIMIT p_batch_size;
-
-  GET DIAGNOSTICS n = ROW_COUNT;
-
-  IF n = 0 THEN
-    RETURN 0;
-  END IF;
-
-  DELETE FROM credential_model_index_hot
-  WHERE (bucket, credential_id, raw_model) IN (
-    SELECT bucket, credential_id, raw_model FROM _promote_hot_batch
-  );
-
-  BEGIN
-    INSERT INTO credential_model_index
-    SELECT * FROM _promote_hot_batch;
-  EXCEPTION WHEN OTHERS THEN
-    RAISE WARNING 'promote_credential_model_index_hot_to_partition: INSERT failed (%), rows preserved in hot table', SQLERRM;
-    n := 0;
-  END;
-
-  RETURN n;
+  -- 698: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 694-pinned ensure_* target was created for.
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
+  IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
+  IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
+  -- Rows route by bucket, so pre-ensure the months the moved rows will land in.
+  FOR month_rec IN
+    SELECT DISTINCT date_trunc('month', bucket) AS month_start
+    FROM public.credential_model_index_hot
+    WHERE updated_at < now() - p_retention
+    ORDER BY 1 LIMIT 12
+  LOOP
+    PERFORM public.ensure_credential_model_index_partition(month_rec.month_start);
+  END LOOP;
+  WITH batch AS (
+    SELECT bucket, credential_id, raw_model FROM public.credential_model_index_hot
+    WHERE updated_at < now() - p_retention
+    ORDER BY updated_at, bucket, credential_id, raw_model LIMIT p_batch_size FOR UPDATE SKIP LOCKED
+  ), moved_rows AS (
+    DELETE FROM public.credential_model_index_hot h USING batch b
+    WHERE h.bucket = b.bucket AND h.credential_id = b.credential_id AND h.raw_model = b.raw_model
+    RETURNING h.bucket, h.credential_id, h.raw_model, h.canonical_id, h.billing_mode,
+      h.unit_price_in_per_1m, h.unit_price_out_per_1m, h.context_window,
+      h.success_rate, h.p95_latency_ms, h.active_sessions, h.concurrency_limit,
+      h.pressure_ratio, h.score_smart, h.score_speed_first, h.score_cost_first, h.updated_at
+  ), inserted AS (
+    INSERT INTO public.credential_model_index (
+      bucket, credential_id, raw_model, canonical_id, billing_mode,
+      unit_price_in_per_1m, unit_price_out_per_1m, context_window,
+      success_rate, p95_latency_ms, active_sessions, concurrency_limit,
+      pressure_ratio, score_smart, score_speed_first, score_cost_first, updated_at)
+    SELECT bucket, credential_id, raw_model, canonical_id, billing_mode,
+      unit_price_in_per_1m, unit_price_out_per_1m, context_window,
+      success_rate, p95_latency_ms, active_sessions, concurrency_limit,
+      pressure_ratio, score_smart, score_speed_first, score_cost_first, updated_at
+    FROM moved_rows
+    RETURNING credential_id
+  ) SELECT count(*) INTO moved FROM inserted;
+  RETURN moved;
 END;
 $$;
 
@@ -2985,37 +3438,157 @@ $$;
 -- Name: promote_credit_ledger_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_credit_ledger_hot_to_partition(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.promote_credit_ledger_hot_to_partition(
+  p_retention interval DEFAULT '8 hours'::interval,
+  p_batch_size integer DEFAULT 5000
+)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE moved bigint := 0; month_rec record;
+BEGIN
+  -- 698: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 694-pinned ensure_* target was created for.
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
+  IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
+  IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
+  FOR month_rec IN
+    SELECT DISTINCT date_trunc('month', created_at) AS month_start
+    FROM public.credit_ledger_hot
+    WHERE created_at < now() - p_retention
+    ORDER BY 1 LIMIT 12
+  LOOP
+    PERFORM public.ensure_credit_ledger_partition(month_rec.month_start);
+  END LOOP;
+  WITH batch AS (
+    SELECT id FROM public.credit_ledger_hot
+    WHERE created_at < now() - p_retention
+    ORDER BY created_at, id LIMIT p_batch_size FOR UPDATE SKIP LOCKED
+  ), moved_rows AS (
+    DELETE FROM public.credit_ledger_hot h USING batch b
+    WHERE h.id = b.id
+    RETURNING h.id, h.tenant_id, h.entry_type, h.amount, h.balance_after,
+      h.ref_type, h.ref_id, h.note, h.created_at, h.pool
+  ), inserted AS (
+    INSERT INTO public.credit_ledger (
+      id, tenant_id, entry_type, amount, balance_after,
+      ref_type, ref_id, note, created_at, pool)
+    SELECT id, tenant_id, entry_type, amount, balance_after,
+      ref_type, ref_id, note, created_at, pool
+    FROM moved_rows
+    RETURNING id
+  ) SELECT count(*) INTO moved FROM inserted;
+  RETURN moved;
+END;
+$$;
+
+
+--
+-- Name: promote_dashboard_access_events_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.promote_dashboard_access_events_hot_to_partition(p_retention interval DEFAULT '08:00:00'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
-  n bigint := 0;
+    v_moved bigint := 0;
+    v_month_value timestamptz;
 BEGIN
-  CREATE TEMP TABLE _promote_hot_batch ON COMMIT DROP AS
-  SELECT * FROM credit_ledger_hot
-  WHERE created_at < now() - p_retention
-  ORDER BY created_at
-  LIMIT p_batch_size;
+    IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN
+        RAISE EXCEPTION 'p_retention must be positive';
+    END IF;
+    IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 100000 THEN
+        RAISE EXCEPTION 'p_batch_size must be between 1 and 100000';
+    END IF;
 
-  GET DIAGNOSTICS n = ROW_COUNT;
+    PERFORM pg_advisory_xact_lock(
+        hashtextextended('public.promote_dashboard_access_events_hot_to_partition', 0)
+    );
 
-  IF n = 0 THEN
-    RETURN 0;
-  END IF;
+    CREATE TEMP TABLE _dae_promotion_batch ON COMMIT DROP AS
+    SELECT event_id, event_type, timestamp, tenant_id, user_id, user_role,
+           session_id, api_path, api_method, api_version, query_params,
+           status_code, response_time_ms, cache_hit, data_size, error_code,
+           error_message, client_ip, user_agent, referer, db_query_time_ms,
+           cache_query_time_ms, created_at
+    FROM public.dashboard_access_events_hot
+    WHERE created_at < statement_timestamp() - p_retention
+    ORDER BY created_at, event_id
+    LIMIT p_batch_size
+    FOR UPDATE SKIP LOCKED;
 
-  DELETE FROM credit_ledger_hot
-  WHERE id IN (SELECT id FROM _promote_hot_batch);
+    IF NOT EXISTS (SELECT 1 FROM _dae_promotion_batch) THEN
+        RETURN 0;
+    END IF;
 
-  BEGIN
-    INSERT INTO credit_ledger
-    SELECT * FROM _promote_hot_batch
-    ON CONFLICT (id, created_at) DO NOTHING;
-  EXCEPTION WHEN OTHERS THEN
-    RAISE WARNING 'promote_credit_ledger_hot_to_partition: INSERT failed (%), rows preserved in hot table', SQLERRM;
-    n := 0;
-  END;
+    FOR v_month_value IN
+        SELECT DISTINCT date_trunc('month', created_at)::timestamptz
+        FROM _dae_promotion_batch
+    LOOP
+        PERFORM public.ensure_dashboard_events_partition(v_month_value::date);
+    END LOOP;
 
-  RETURN n;
+    WITH moved_rows AS (
+        DELETE FROM public.dashboard_access_events_hot h
+        USING _dae_promotion_batch b
+        WHERE h.event_id = b.event_id
+          AND h.created_at = b.created_at
+        RETURNING h.event_id, h.event_type, h.timestamp, h.tenant_id,
+                  h.user_id, h.user_role, h.session_id, h.api_path,
+                  h.api_method, h.api_version, h.query_params, h.status_code,
+                  h.response_time_ms, h.cache_hit, h.data_size, h.error_code,
+                  h.error_message, h.client_ip, h.user_agent, h.referer,
+                  h.db_query_time_ms, h.cache_query_time_ms, h.created_at
+    ), inserted_rows AS (
+        INSERT INTO public.dashboard_access_events (
+            event_id, event_type, timestamp, tenant_id, user_id, user_role,
+            session_id, api_path, api_method, api_version, query_params,
+            status_code, response_time_ms, cache_hit, data_size, error_code,
+            error_message, client_ip, user_agent, referer, db_query_time_ms,
+            cache_query_time_ms, created_at
+        )
+        SELECT event_id, event_type, timestamp, tenant_id, user_id, user_role,
+               session_id, api_path, api_method, api_version, query_params,
+               status_code, response_time_ms, cache_hit, data_size, error_code,
+               error_message, client_ip, user_agent, referer, db_query_time_ms,
+               cache_query_time_ms, created_at
+        FROM moved_rows
+        RETURNING 1
+    )
+    SELECT count(*) INTO v_moved FROM inserted_rows;
+
+    RETURN v_moved;
+END;
+$$;
+
+
+--
+-- Name: promote_handoff_logs_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.promote_handoff_logs_hot_to_partition(p_retention interval DEFAULT '08:00:00'::interval, p_batch_size integer DEFAULT 200) RETURNS bigint
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    n bigint := 0;
+BEGIN
+    CREATE TEMP TABLE _promote_hl_batch ON COMMIT DROP AS
+    SELECT * FROM public.handoff_logs_hot
+    WHERE created_at < now() - p_retention
+    ORDER BY created_at
+    LIMIT p_batch_size;
+
+    GET DIAGNOSTICS n = ROW_COUNT;
+
+    IF n = 0 THEN
+        RETURN 0;
+    END IF;
+
+    INSERT INTO public.handoff_logs
+    SELECT * FROM _promote_hl_batch;
+
+    DELETE FROM public.handoff_logs_hot
+    WHERE id IN (SELECT id FROM _promote_hl_batch);
+
+    RETURN n;
 END;
 $$;
 
@@ -3077,13 +3650,24 @@ $$;
 -- Name: promote_request_logs_bodies_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_request_logs_bodies_hot_to_partition(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
-    LANGUAGE plpgsql
-    AS $$
+CREATE OR REPLACE FUNCTION public.promote_request_logs_bodies_hot_to_partition(
+  p_retention interval DEFAULT '24 hours'::interval,
+  p_batch_size integer DEFAULT 5000
+)
+RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE
   v_processed bigint := 0;
   v_ttl_days int := 7;
+  month_rec record;
 BEGIN
+  -- 698: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 694-pinned ensure_* target was created for.
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
+  IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
+  IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
+
+  -- Phase 1 (unchanged from 528): delete rows older than the configured body
+  -- TTL so a stale backlog cannot block promote on dropped partitions (23514).
   SELECT CASE jsonb_typeof(value)
            WHEN 'number' THEN value::text::int
            WHEN 'string' THEN trim(both '"' from value::text)::int
@@ -3099,14 +3683,14 @@ BEGIN
 
   WITH expired_batch AS (
     SELECT request_id
-      FROM request_logs_bodies_hot
+      FROM public.request_logs_bodies_hot
      WHERE ts < now() - make_interval(days => v_ttl_days)
        AND ts < now() - p_retention
      ORDER BY ts
      LIMIT p_batch_size
   ),
   expired_deleted AS (
-    DELETE FROM request_logs_bodies_hot
+    DELETE FROM public.request_logs_bodies_hot
      WHERE request_id IN (SELECT request_id FROM expired_batch)
     RETURNING request_id
   )
@@ -3116,22 +3700,32 @@ BEGIN
     RETURN v_processed;
   END IF;
 
-  WITH batch AS (
-    SELECT request_id, ts, request_body, outbound_body, response_body
-    FROM request_logs_bodies_hot
+  -- Phase 2: atomic promote (528 was already one statement but had no guards,
+  -- no pre-ensure, no SKIP LOCKED and used RETURNING *).
+  FOR month_rec IN
+    SELECT DISTINCT date_trunc('month', ts) AS month_start
+    FROM public.request_logs_bodies_hot
     WHERE ts < now() - p_retention
-    ORDER BY ts
-    LIMIT p_batch_size
-  ),
-  deleted AS (
-    DELETE FROM request_logs_bodies_hot
-    WHERE request_id IN (SELECT request_id FROM batch)
-    RETURNING *
-  )
-  INSERT INTO public.request_logs_bodies (request_id, ts, request_body, outbound_body, response_body)
-  SELECT request_id, ts, request_body, outbound_body, response_body FROM deleted;
+    ORDER BY 1 LIMIT 12
+  LOOP
+    PERFORM public.ensure_request_logs_bodies_partition(month_rec.month_start);
+  END LOOP;
 
-  GET DIAGNOSTICS v_processed = ROW_COUNT;
+  WITH batch AS (
+    SELECT request_id FROM public.request_logs_bodies_hot
+    WHERE ts < now() - p_retention
+    ORDER BY ts, request_id LIMIT p_batch_size FOR UPDATE SKIP LOCKED
+  ), moved_rows AS (
+    DELETE FROM public.request_logs_bodies_hot h USING batch b
+    WHERE h.request_id = b.request_id
+    RETURNING h.request_id, h.ts, h.request_body, h.outbound_body, h.response_body
+  ), inserted AS (
+    INSERT INTO public.request_logs_bodies (
+      request_id, ts, request_body, outbound_body, response_body)
+    SELECT request_id, ts, request_body, outbound_body, response_body
+    FROM moved_rows
+    RETURNING request_id
+  ) SELECT count(*) INTO v_processed FROM inserted;
   RETURN v_processed;
 END;
 $$;
@@ -3177,17 +3771,22 @@ $$;
 
 
 --
---
 -- Name: promote_request_logs_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE OR REPLACE FUNCTION public.promote_request_logs_hot_to_partition(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.promote_request_logs_hot_to_partition(p_retention interval DEFAULT '8 hours'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
     moved bigint := 0;
     month_rec record;
+    part_rec record;
+    v_demoted bigint := 0;
+    v_part_demoted bigint := 0;
 BEGIN
+    -- 698: group months under Asia/Shanghai so boundary rows land in the
+    -- same month group the 694-pinned ensure_* target was created for.
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
     IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN
         RAISE EXCEPTION 'p_retention must be positive';
     END IF;
@@ -3206,6 +3805,46 @@ BEGIN
     LOOP
         PERFORM public.ensure_request_logs_partition(month_rec.month_start);
     END LOOP;
+
+    -- 2026-09-12 (P2 self-heal): demote hot final-success claims that a
+    -- promote batch would otherwise reject. The claim guard
+    -- (claimSessionFinalSuccess promoted-partition NOT EXISTS) is the
+    -- first line of defense; this is the promote-side backstop so a
+    -- poisoned row can never jam the single-CTE atomic batch again
+    -- (first-come claim wins: the promoted earlier row keeps TRUE, the
+    -- hot newcomer degrades to a superseded FALSE row, history preserved).
+    FOR part_rec IN
+        SELECT c.relname AS partition_name
+          FROM pg_inherits i
+          JOIN pg_class p ON p.oid = i.inhparent
+          JOIN pg_class c ON c.oid = i.inhrelid
+          JOIN pg_am am ON am.oid = c.relam
+         WHERE p.relname = 'request_logs'
+           AND am.amname = 'heap'
+         ORDER BY 1
+    LOOP
+        EXECUTE format(
+            'UPDATE public.request_logs_hot h
+                SET is_final_success = FALSE
+              WHERE h.is_final_success
+                AND h.ts < statement_timestamp() - $1
+                AND COALESCE(h.gw_session_id, '''') <> ''''
+                AND EXISTS (
+                    SELECT 1
+                      FROM ONLY %I x
+                     WHERE x.gw_session_id = h.gw_session_id
+                       AND x.is_final_success
+                )',
+            part_rec.partition_name)
+        USING p_retention;
+        GET DIAGNOSTICS v_part_demoted = ROW_COUNT;
+        v_demoted := v_demoted + v_part_demoted;
+    END LOOP;
+    IF v_demoted > 0 THEN
+        RAISE WARNING
+            'promote_request_logs_hot_to_partition: demoted % hot final-success claim(s) superseded by the promoted winner (migration 695 self-heal)',
+            v_demoted;
+    END IF;
 
     -- 2026-08-25 incident fix: the previous implementation DELETEd the batch
     -- from request_logs_hot BEFORE a separately-protected
@@ -3257,7 +3896,8 @@ BEGIN
                 provider_tokens, origin_stage, origin_actor, routing_attempts, routing_summary, trace_events,
                 canonical_model, t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at, t3_model_enqueued_at, t4_model_dequeued_at,
                 t5_cred_enqueued_at, t6_cred_dequeued_at, t7_forward_start_at, t8_response_start_at, t9_response_end_at, request_type,
-                is_final_success, discard_events, token_band
+                is_final_success, discard_events, token_band,
+                system_fingerprint
     )
     INSERT INTO public.request_logs (
                 id, request_id, ts, tenant_id, application_id, api_key_id,
@@ -3282,7 +3922,8 @@ BEGIN
                 provider_tokens, origin_stage, origin_actor, routing_attempts, routing_summary, trace_events,
                 canonical_model, t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at, t3_model_enqueued_at, t4_model_dequeued_at,
                 t5_cred_enqueued_at, t6_cred_dequeued_at, t7_forward_start_at, t8_response_start_at, t9_response_end_at, request_type,
-                is_final_success, discard_events, token_band
+                is_final_success, discard_events, token_band,
+                system_fingerprint
     )
     SELECT
                 id, request_id, ts, tenant_id, application_id, api_key_id,
@@ -3307,7 +3948,8 @@ BEGIN
                 provider_tokens, origin_stage, origin_actor, routing_attempts, routing_summary, trace_events,
                 canonical_model, t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at, t3_model_enqueued_at, t4_model_dequeued_at,
                 t5_cred_enqueued_at, t6_cred_dequeued_at, t7_forward_start_at, t8_response_start_at, t9_response_end_at, request_type,
-                is_final_success, discard_events, token_band
+                is_final_success, discard_events, token_band,
+                system_fingerprint
     FROM moved_rows;
 
     GET DIAGNOSTICS moved = ROW_COUNT;
@@ -3360,14 +4002,54 @@ $$;
 -- Name: promote_request_wal_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_request_wal_hot_to_partition(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-  n bigint := 0;
+CREATE OR REPLACE FUNCTION public.promote_request_wal_hot_to_partition(
+  p_retention interval DEFAULT '8 hours'::interval,
+  p_batch_size integer DEFAULT 5000
+)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE moved bigint := 0; month_rec record;
 BEGIN
-  RAISE NOTICE 'request_wal_hot_to_partition: no timestamp column, skip promote';
-  RETURN 0;
+  -- 698: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 694-pinned ensure_* target was created for.
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
+  IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
+  IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
+  FOR month_rec IN
+    SELECT DISTINCT date_trunc('month', created_at) AS month_start
+    FROM public.request_wal_hot
+    WHERE created_at < now() - p_retention
+    ORDER BY 1 LIMIT 12
+  LOOP
+    PERFORM public.ensure_request_wal_partition(month_rec.month_start);
+  END LOOP;
+  WITH batch AS (
+    SELECT request_id, created_at FROM public.request_wal_hot
+    WHERE created_at < now() - p_retention
+    ORDER BY created_at, request_id LIMIT p_batch_size FOR UPDATE SKIP LOCKED
+  ), moved_rows AS (
+    DELETE FROM public.request_wal_hot h USING batch b
+    WHERE h.request_id = b.request_id AND h.created_at = b.created_at
+    RETURNING h.request_id, h.tenant_id, h.gw_session_id, h.status, h.stage,
+      h.client_model, h.upstream_provider_id, h.upstream_credential_id,
+      h.completion_tokens, h.prompt_tokens, h.created_at, h.completed_at,
+      h.upstream_request_at, h.upstream_response_at, h.error,
+      h.compression_strategy, h.compression_meta
+  ), inserted AS (
+    INSERT INTO public.request_wal (
+      request_id, tenant_id, gw_session_id, status, stage,
+      client_model, upstream_provider_id, upstream_credential_id,
+      completion_tokens, prompt_tokens, created_at, completed_at,
+      upstream_request_at, upstream_response_at, error,
+      compression_strategy, compression_meta)
+    SELECT request_id, tenant_id, gw_session_id, status, stage,
+      client_model, upstream_provider_id, upstream_credential_id,
+      completion_tokens, prompt_tokens, created_at, completed_at,
+      upstream_request_at, upstream_response_at, error,
+      compression_strategy, compression_meta
+    FROM moved_rows
+    RETURNING request_id
+  ) SELECT count(*) INTO moved FROM inserted;
+  RETURN moved;
 END;
 $$;
 
@@ -3416,36 +4098,205 @@ $$;
 -- Name: promote_routing_decision_log_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_routing_decision_log_hot_to_partition(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
+CREATE OR REPLACE FUNCTION public.promote_routing_decision_log_hot_to_partition(
+  p_retention interval DEFAULT '8 hours'::interval,
+  p_batch_size integer DEFAULT 5000
+)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE moved bigint := 0; month_rec record;
+BEGIN
+  -- 698: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 694-pinned ensure_* target was created for.
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
+  IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
+  IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
+  FOR month_rec IN
+    SELECT DISTINCT date_trunc('month', ts) AS month_start
+    FROM public.routing_decision_log_hot
+    WHERE ts < now() - p_retention
+    ORDER BY 1 LIMIT 12
+  LOOP
+    PERFORM public.ensure_routing_decision_log_partition(month_rec.month_start);
+  END LOOP;
+  WITH batch AS (
+    SELECT request_id, ts FROM public.routing_decision_log_hot
+    WHERE ts < now() - p_retention
+    ORDER BY ts, request_id LIMIT p_batch_size FOR UPDATE SKIP LOCKED
+  ), moved_rows AS (
+    DELETE FROM public.routing_decision_log_hot h USING batch b
+    WHERE h.request_id = b.request_id AND h.ts = b.ts
+    RETURNING h.ts, h.request_id, h.idempotency_key, h.tenant_id, h.api_key_id,
+      h.model, h.chosen_credential_id, h.chosen_provider_id, h.tier,
+      h.candidates_tried, h.latency_ms, h.success, h.error_class,
+      h.prompt_tokens, h.completion_tokens, h.cost_usd, h.request_bytes,
+      h.response_bytes, h.client_model, h.resolved_raw_model, h.sticky_hit,
+      h.client_profile, h.outbound_model, h.request_mode, h.identity_hash,
+      h.transform_rule_id, h.egress_protocol, h.failure_stage,
+      h.failure_detail_code, h.virtual_client_id, h.virtual_ip, h.virtual_mac,
+      h.resolution_path, h.canonical_model, h.resolution_raw_models, h.decision_trace
+  ), inserted AS (
+    INSERT INTO public.routing_decision_log (
+      ts, request_id, idempotency_key, tenant_id, api_key_id,
+      model, chosen_credential_id, chosen_provider_id, tier,
+      candidates_tried, latency_ms, success, error_class,
+      prompt_tokens, completion_tokens, cost_usd, request_bytes,
+      response_bytes, client_model, resolved_raw_model, sticky_hit,
+      client_profile, outbound_model, request_mode, identity_hash,
+      transform_rule_id, egress_protocol, failure_stage,
+      failure_detail_code, virtual_client_id, virtual_ip, virtual_mac,
+      resolution_path, canonical_model, resolution_raw_models, decision_trace)
+    SELECT ts, request_id, idempotency_key, tenant_id, api_key_id,
+      model, chosen_credential_id, chosen_provider_id, tier,
+      candidates_tried, latency_ms, success, error_class,
+      prompt_tokens, completion_tokens, cost_usd, request_bytes,
+      response_bytes, client_model, resolved_raw_model, sticky_hit,
+      client_profile, outbound_model, request_mode, identity_hash,
+      transform_rule_id, egress_protocol, failure_stage,
+      failure_detail_code, virtual_client_id, virtual_ip, virtual_mac,
+      resolution_path, canonical_model, resolution_raw_models, decision_trace
+    FROM moved_rows
+    RETURNING request_id
+  ) SELECT count(*) INTO moved FROM inserted;
+  RETURN moved;
+END;
+$$;
+
+
+--
+-- Name: promote_session_module_executions_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.promote_session_module_executions_hot_to_partition(p_retention interval DEFAULT '08:00:00'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
     LANGUAGE plpgsql
     AS $$
 DECLARE
-  n bigint := 0;
+    v_moved bigint := 0;
+    v_month_value timestamptz;
 BEGIN
-  CREATE TEMP TABLE _promote_hot_batch ON COMMIT DROP AS
-  SELECT * FROM routing_decision_log_hot
-  WHERE ts < now() - p_retention
-  ORDER BY ts
-  LIMIT p_batch_size;
+    IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN
+        RAISE EXCEPTION 'p_retention must be positive';
+    END IF;
+    IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 100000 THEN
+        RAISE EXCEPTION 'p_batch_size must be between 1 and 100000';
+    END IF;
 
-  GET DIAGNOSTICS n = ROW_COUNT;
+    PERFORM pg_advisory_xact_lock(
+        hashtextextended('public.promote_session_module_executions_hot_to_partition', 0)
+    );
 
-  IF n = 0 THEN
-    RETURN 0;
-  END IF;
+    CREATE TEMP TABLE _sme_promotion_batch ON COMMIT DROP AS
+    SELECT execution_id, gw_session_id, tenant_id, module_name, module_version,
+           request_id, batch_key, status, started_at, completed_at, duration_ms,
+           result_summary, result_detail, error_message, cache_key, ttl_seconds,
+           expires_at, created_at, updated_at
+    FROM public.session_module_executions_hot
+    WHERE created_at < statement_timestamp() - p_retention
+    ORDER BY created_at, execution_id
+    LIMIT p_batch_size
+    FOR UPDATE SKIP LOCKED;
 
-  DELETE FROM routing_decision_log_hot
-  WHERE (request_id, ts) IN (SELECT request_id, ts FROM _promote_hot_batch);
+    IF NOT EXISTS (SELECT 1 FROM _sme_promotion_batch) THEN
+        RETURN 0;
+    END IF;
 
-  BEGIN
-    INSERT INTO routing_decision_log
-    SELECT * FROM _promote_hot_batch;
-  EXCEPTION WHEN OTHERS THEN
-    RAISE WARNING 'promote_routing_decision_log_hot_to_partition: INSERT failed (%), rows preserved in hot table', SQLERRM;
-    n := 0;
-  END;
+    FOR v_month_value IN
+        SELECT DISTINCT date_trunc('month', created_at)::timestamptz
+        FROM _sme_promotion_batch
+    LOOP
+        PERFORM public.ensure_session_module_executions_partition(v_month_value::date);
+    END LOOP;
 
-  RETURN n;
+    WITH moved_rows AS (
+        DELETE FROM public.session_module_executions_hot h
+        USING _sme_promotion_batch b
+        WHERE h.execution_id = b.execution_id
+          AND h.created_at = b.created_at
+        RETURNING h.execution_id, h.gw_session_id, h.tenant_id, h.module_name,
+                  h.module_version, h.request_id, h.batch_key, h.status,
+                  h.started_at, h.completed_at, h.duration_ms, h.result_summary,
+                  h.result_detail, h.error_message, h.cache_key, h.ttl_seconds,
+                  h.expires_at, h.created_at, h.updated_at
+    ), inserted_rows AS (
+        INSERT INTO public.session_module_executions (
+            execution_id, gw_session_id, tenant_id, module_name, module_version,
+            request_id, batch_key, status, started_at, completed_at, duration_ms,
+            result_summary, result_detail, error_message, cache_key, ttl_seconds,
+            expires_at, created_at, updated_at
+        )
+        SELECT execution_id, gw_session_id, tenant_id, module_name, module_version,
+               request_id, batch_key, status, started_at, completed_at, duration_ms,
+               result_summary, result_detail, error_message, cache_key, ttl_seconds,
+               expires_at, created_at, updated_at
+        FROM moved_rows
+        RETURNING 1
+    )
+    SELECT count(*) INTO v_moved FROM inserted_rows;
+
+    RETURN v_moved;
+END;
+$$;
+
+
+--
+-- Name: promote_supplier_errors_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE OR REPLACE FUNCTION public.promote_supplier_errors_hot_to_partition(
+  p_retention interval DEFAULT '8 hours'::interval,
+  p_batch_size integer DEFAULT 5000
+)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE moved bigint := 0;
+BEGIN
+  -- 703: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 699-pinned ensure_supplier_errors_partition
+  -- target was created for (V371 deploy-track body, F13 closure).
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
+  IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
+  IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
+  -- Ensure target partitions exist for the cold rows' months; the month
+  -- pre-ensure subquery must use the same predicate as the batch CTE.
+  PERFORM ensure_supplier_errors_partition(m)
+  FROM (
+    SELECT DISTINCT date_trunc('month', occurred_at) AS m
+    FROM supplier_errors_hot
+    WHERE occurred_at < statement_timestamp() - p_retention
+    ORDER BY 1
+    LIMIT 12
+  ) months;
+  -- 2026-09-05 audit D-2#2 atomic single data-modifying CTE: FOR UPDATE
+  -- SKIP LOCKED -> DELETE RETURNING (explicit columns, no schema-drift
+  -- bitwise mismatch) -> INSERT; any failure rolls back the whole batch.
+  WITH batch AS (
+    SELECT id FROM supplier_errors_hot
+    WHERE occurred_at < statement_timestamp() - p_retention
+    ORDER BY occurred_at, id
+    LIMIT p_batch_size
+    FOR UPDATE SKIP LOCKED
+  ), moved_rows AS (
+    DELETE FROM supplier_errors_hot h USING batch b
+    WHERE h.id = b.id
+    RETURNING h.id, h.occurred_at, h.request_id, h.trace_id, h.tenant_id,
+      h.session_id, h.provider_id, h.supplier, h.credential_id,
+      h.model, h.attempt_seq, h.error_type, h.error_code,
+      h.http_status, h.error_message, h.is_retryable, h.stage,
+      h.latency_ms, h.affected_users, h.request_metadata
+  ), inserted AS (
+    INSERT INTO supplier_errors (
+      id, occurred_at, request_id, trace_id, tenant_id,
+      session_id, provider_id, supplier, credential_id,
+      model, attempt_seq, error_type, error_code,
+      http_status, error_message, is_retryable, stage,
+      latency_ms, affected_users, request_metadata)
+    SELECT id, occurred_at, request_id, trace_id, tenant_id,
+      session_id, provider_id, supplier, credential_id,
+      model, attempt_seq, error_type, error_code,
+      http_status, error_message, is_retryable, stage,
+      latency_ms, affected_users, request_metadata
+    FROM moved_rows
+    RETURNING id
+  ) SELECT count(*) INTO moved FROM inserted;
+  RETURN moved;
 END;
 $$;
 
@@ -3494,39 +4345,50 @@ $$;
 -- Name: promote_tool_usage_stats_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_tool_usage_stats_hot_to_partition(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-  n bigint := 0;
+CREATE OR REPLACE FUNCTION public.promote_tool_usage_stats_hot_to_partition(
+  p_retention interval DEFAULT '8 hours'::interval,
+  p_batch_size integer DEFAULT 5000
+)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE moved bigint := 0; month_rec record;
 BEGIN
-  CREATE TEMP TABLE _promote_hot_batch ON COMMIT DROP AS
-  SELECT * FROM tool_usage_stats_hot
-  WHERE usage_date < CURRENT_DATE - p_retention::interval
-  ORDER BY usage_date
-  LIMIT p_batch_size;
-
-  GET DIAGNOSTICS n = ROW_COUNT;
-
-  IF n = 0 THEN
-    RETURN 0;
-  END IF;
-
-  DELETE FROM tool_usage_stats_hot
-  WHERE (tool_id, tenant_id, usage_date) IN (
-    SELECT tool_id, tenant_id, usage_date FROM _promote_hot_batch
-  );
-
-  BEGIN
-    INSERT INTO tool_usage_stats
-    SELECT * FROM _promote_hot_batch
-    ON CONFLICT (tool_id, tenant_id, usage_date) DO NOTHING;
-  EXCEPTION WHEN OTHERS THEN
-    RAISE WARNING 'promote_tool_usage_stats_hot_to_partition: INSERT failed (%), rows preserved in hot table', SQLERRM;
-    n := 0;
-  END;
-
-  RETURN n;
+  -- 698: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 694-pinned ensure_* target was created for.
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
+  IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
+  IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
+  -- Rows route by created_at, so pre-ensure those months; the retention
+  -- predicate itself stays on usage_date exactly as in migration 348.
+  FOR month_rec IN
+    SELECT DISTINCT date_trunc('month', created_at) AS month_start
+    FROM public.tool_usage_stats_hot
+    WHERE usage_date < CURRENT_DATE - p_retention
+    ORDER BY 1 LIMIT 12
+  LOOP
+    PERFORM public.ensure_tool_usage_stats_partition(month_rec.month_start);
+  END LOOP;
+  WITH batch AS (
+    SELECT tool_id, tenant_id, usage_date FROM public.tool_usage_stats_hot
+    WHERE usage_date < CURRENT_DATE - p_retention
+    ORDER BY usage_date, tool_id, tenant_id LIMIT p_batch_size FOR UPDATE SKIP LOCKED
+  ), moved_rows AS (
+    DELETE FROM public.tool_usage_stats_hot h USING batch b
+    WHERE h.tool_id = b.tool_id AND h.tenant_id = b.tenant_id AND h.usage_date = b.usage_date
+    RETURNING h.id, h.tool_id, h.tenant_id, h.usage_date, h.call_count,
+      h.success_count, h.error_count, h.avg_latency_ms, h.last_called_at,
+      h.created_at, h.updated_at
+  ), inserted AS (
+    INSERT INTO public.tool_usage_stats (
+      id, tool_id, tenant_id, usage_date, call_count,
+      success_count, error_count, avg_latency_ms, last_called_at,
+      created_at, updated_at)
+    SELECT id, tool_id, tenant_id, usage_date, call_count,
+      success_count, error_count, avg_latency_ms, last_called_at,
+      created_at, updated_at
+    FROM moved_rows
+    RETURNING id
+  ) SELECT count(*) INTO moved FROM inserted;
+  RETURN moved;
 END;
 $$;
 
@@ -3574,36 +4436,52 @@ $$;
 -- Name: promote_usage_ledger_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.promote_usage_ledger_hot_to_partition(p_retention interval DEFAULT '7 days'::interval, p_batch_size integer DEFAULT 5000) RETURNS bigint
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-  n bigint := 0;
+CREATE OR REPLACE FUNCTION public.promote_usage_ledger_hot_to_partition(
+  p_retention interval DEFAULT '8 hours'::interval,
+  p_batch_size integer DEFAULT 5000
+)
+RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE moved bigint := 0; month_rec record;
 BEGIN
-  CREATE TEMP TABLE _promote_hot_batch ON COMMIT DROP AS
-  SELECT * FROM usage_ledger_hot
-  WHERE ts < now() - p_retention
-  ORDER BY ts
-  LIMIT p_batch_size;
-
-  GET DIAGNOSTICS n = ROW_COUNT;
-
-  IF n = 0 THEN
-    RETURN 0;
-  END IF;
-
-  DELETE FROM usage_ledger_hot
-  WHERE (request_id, ts) IN (SELECT request_id, ts FROM _promote_hot_batch);
-
-  BEGIN
-    INSERT INTO usage_ledger
-    SELECT * FROM _promote_hot_batch;
-  EXCEPTION WHEN OTHERS THEN
-    RAISE WARNING 'promote_usage_ledger_hot_to_partition: INSERT failed (%), rows preserved in hot table', SQLERRM;
-    n := 0;
-  END;
-
-  RETURN n;
+  -- 698: group months under Asia/Shanghai so boundary rows land in the
+  -- same month group the 694-pinned ensure_* target was created for.
+  SET LOCAL TIME ZONE 'Asia/Shanghai';
+  IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
+  IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
+  -- The month pre-ensure loop must use the same predicate as the batch CTE.
+  FOR month_rec IN
+    SELECT DISTINCT date_trunc('month', ts) AS month_start
+    FROM public.usage_ledger_hot
+    WHERE ts < now() - p_retention
+    ORDER BY 1 LIMIT 12
+  LOOP
+    PERFORM public.ensure_usage_ledger_partition(month_rec.month_start);
+  END LOOP;
+  WITH batch AS (
+    SELECT request_id, ts FROM public.usage_ledger_hot
+    WHERE ts < now() - p_retention
+    ORDER BY ts, request_id LIMIT p_batch_size FOR UPDATE SKIP LOCKED
+  ), moved_rows AS (
+    DELETE FROM public.usage_ledger_hot h USING batch b
+    WHERE h.request_id = b.request_id AND h.ts = b.ts
+    RETURNING h.request_id, h.ts, h.tenant_id, h.application_id, h.api_key_id,
+      h.end_user_id, h.credential_id, h.provider_id, h.canonical_id, h.raw_model_name,
+      h.prompt_tokens, h.completion_tokens, h.cache_read_tokens, h.cache_write_tokens,
+      h.total_tokens, h.cost_usd, h.latency_ms, h.success, h.error_kind
+  ), inserted AS (
+    INSERT INTO public.usage_ledger (
+      request_id, ts, tenant_id, application_id, api_key_id,
+      end_user_id, credential_id, provider_id, canonical_id, raw_model_name,
+      prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens,
+      total_tokens, cost_usd, latency_ms, success, error_kind)
+    SELECT request_id, ts, tenant_id, application_id, api_key_id,
+      end_user_id, credential_id, provider_id, canonical_id, raw_model_name,
+      prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens,
+      total_tokens, cost_usd, latency_ms, success, error_kind
+    FROM moved_rows
+    RETURNING request_id
+  ) SELECT count(*) INTO moved FROM inserted;
+  RETURN moved;
 END;
 $$;
 
@@ -4119,7 +4997,107 @@ $$;
 
 CREATE FUNCTION public.update_session_summary() RETURNS trigger
     LANGUAGE plpgsql
-    AS $$ DECLARE v_input_cost DECIMAL(12,6); v_output_cost DECIMAL(12,6); v_total_cost DECIMAL(12,6); v_prompt_tokens BIGINT; v_completion_tokens BIGINT; v_latency_ms INT; v_status VARCHAR(50); v_client_model VARCHAR(100); v_upstream_model VARCHAR(100); v_work_type VARCHAR(50); v_provider VARCHAR(50); BEGIN v_input_cost := COALESCE(NEW.input_cost, 0); v_output_cost := COALESCE(NEW.output_cost, 0); v_total_cost := COALESCE(NEW.total_cost, 0); v_prompt_tokens := COALESCE(NEW.prompt_tokens, 0); v_completion_tokens := COALESCE(NEW.completion_tokens, 0); v_latency_ms := COALESCE(NEW.latency_ms, 0); v_status := NEW.status; v_client_model := NEW.client_model; v_upstream_model := NEW.upstream_model; v_work_type := NEW.work_type; v_provider := NEW.provider; INSERT INTO session_summaries (session_key, tenant_id, first_request_at, last_request_at, request_count, success_count, error_count, total_cost_usd, input_cost_usd, output_cost_usd, total_prompt_tokens, total_completion_tokens, avg_latency_ms, min_latency_ms, max_latency_ms, models_used, work_types, providers, client_models, updated_at) VALUES (NEW.session_key, NEW.tenant_id, NEW.created_at, NEW.created_at, 1, CASE WHEN v_status = 'success' THEN 1 ELSE 0 END, CASE WHEN v_status != 'success' THEN 1 ELSE 0 END, v_total_cost, v_input_cost, v_output_cost, v_prompt_tokens, v_completion_tokens, v_latency_ms, v_latency_ms, v_latency_ms, ARRAY[v_upstream_model]::TEXT[], CASE WHEN v_work_type IS NOT NULL THEN ARRAY[v_work_type]::TEXT[] ELSE '{}'::TEXT[] END, CASE WHEN v_provider IS NOT NULL THEN ARRAY[v_provider]::TEXT[] ELSE '{}'::TEXT[] END, CASE WHEN v_client_model IS NOT NULL THEN ARRAY[v_client_model]::TEXT[] ELSE '{}'::TEXT[] END, NOW()) ON CONFLICT (session_key) DO UPDATE SET last_request_at = GREATEST(session_summaries.last_request_at, NEW.created_at), request_count = session_summaries.request_count + 1, success_count = session_summaries.success_count + CASE WHEN v_status = 'success' THEN 1 ELSE 0 END, error_count = session_summaries.error_count + CASE WHEN v_status != 'success' THEN 1 ELSE 0 END, total_cost_usd = session_summaries.total_cost_usd + v_total_cost, input_cost_usd = session_summaries.input_cost_usd + v_input_cost, output_cost_usd = session_summaries.output_cost_usd + v_output_cost, total_prompt_tokens = session_summaries.total_prompt_tokens + v_prompt_tokens, total_completion_tokens = session_summaries.total_completion_tokens + v_completion_tokens, avg_latency_ms = ((session_summaries.avg_latency_ms * session_summaries.request_count + v_latency_ms) / (session_summaries.request_count + 1))::INT, min_latency_ms = LEAST(session_summaries.min_latency_ms, v_latency_ms), max_latency_ms = GREATEST(session_summaries.max_latency_ms, v_latency_ms), models_used = array_unique_append(session_summaries.models_used, v_upstream_model), work_types = array_unique_append(session_summaries.work_types, v_work_type), providers = array_unique_append(session_summaries.providers, v_provider), client_models = array_unique_append(session_summaries.client_models, v_client_model), updated_at = NOW(); RETURN NEW; END; $$;
+    AS $$
+DECLARE
+    v_input_cost DECIMAL(12,6);
+    v_output_cost DECIMAL(12,6);
+    v_total_cost DECIMAL(12,6);
+    v_prompt_tokens BIGINT;
+    v_completion_tokens BIGINT;
+    v_latency_ms INT;
+    v_status VARCHAR(50);
+    v_client_model VARCHAR(100);
+    v_upstream_model VARCHAR(100);
+    v_work_type VARCHAR(50);
+    v_provider VARCHAR(50);
+BEGIN
+    -- Only process rows with gw_session_id to avoid double-counting
+    -- when rows are promoted from hot to columnar
+    IF NEW.gw_session_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    -- Extract cost and token metrics
+    v_input_cost := COALESCE(NEW.input_cost, 0);
+    v_output_cost := COALESCE(NEW.output_cost, 0);
+    v_total_cost := COALESCE(NEW.total_cost, 0);
+    v_prompt_tokens := COALESCE(NEW.prompt_tokens, 0);
+    v_completion_tokens := COALESCE(NEW.completion_tokens, 0);
+    v_latency_ms := COALESCE(NEW.latency_ms, 0);
+
+    -- Extract categorical fields
+    v_status := NEW.status;
+    v_client_model := NEW.client_model;
+    v_upstream_model := NEW.upstream_model;
+    v_work_type := NEW.work_type;
+    v_provider := NEW.provider;
+
+    -- Insert or update session summary using gw_session_id as the key
+    INSERT INTO session_summaries (
+        session_key,
+        tenant_id,
+        first_request_at,
+        last_request_at,
+        request_count,
+        success_count,
+        error_count,
+        total_cost_usd,
+        input_cost_usd,
+        output_cost_usd,
+        total_prompt_tokens,
+        total_completion_tokens,
+        avg_latency_ms,
+        min_latency_ms,
+        max_latency_ms,
+        models_used,
+        work_types,
+        providers,
+        client_models,
+        updated_at
+    ) VALUES (
+        NEW.gw_session_id,
+        NEW.tenant_id,
+        NEW.ts,
+        NEW.ts,
+        1,
+        CASE WHEN v_status = 'success' THEN 1 ELSE 0 END,
+        CASE WHEN v_status != 'success' THEN 1 ELSE 0 END,
+        v_total_cost,
+        v_input_cost,
+        v_output_cost,
+        v_prompt_tokens,
+        v_completion_tokens,
+        v_latency_ms,
+        v_latency_ms,
+        v_latency_ms,
+        ARRAY[v_upstream_model]::TEXT[],
+        CASE WHEN v_work_type IS NOT NULL THEN ARRAY[v_work_type]::TEXT[] ELSE '{}'::TEXT[] END,
+        CASE WHEN v_provider IS NOT NULL THEN ARRAY[v_provider]::TEXT[] ELSE '{}'::TEXT[] END,
+        CASE WHEN v_client_model IS NOT NULL THEN ARRAY[v_client_model]::TEXT[] ELSE '{}'::TEXT[] END,
+        NOW()
+    )
+    ON CONFLICT (session_key) DO UPDATE SET
+        last_request_at = GREATEST(session_summaries.last_request_at, NEW.ts),
+        request_count = session_summaries.request_count + 1,
+        success_count = session_summaries.success_count + CASE WHEN v_status = 'success' THEN 1 ELSE 0 END,
+        error_count = session_summaries.error_count + CASE WHEN v_status != 'success' THEN 1 ELSE 0 END,
+        total_cost_usd = session_summaries.total_cost_usd + v_total_cost,
+        input_cost_usd = session_summaries.input_cost_usd + v_input_cost,
+        output_cost_usd = session_summaries.output_cost_usd + v_output_cost,
+        total_prompt_tokens = session_summaries.total_prompt_tokens + v_prompt_tokens,
+        total_completion_tokens = session_summaries.total_completion_tokens + v_completion_tokens,
+        avg_latency_ms = ((session_summaries.avg_latency_ms * session_summaries.request_count + v_latency_ms) / (session_summaries.request_count + 1))::INT,
+        min_latency_ms = LEAST(session_summaries.min_latency_ms, v_latency_ms),
+        max_latency_ms = GREATEST(session_summaries.max_latency_ms, v_latency_ms),
+        models_used = array_unique_append(session_summaries.models_used, v_upstream_model),
+        work_types = array_unique_append(session_summaries.work_types, v_work_type),
+        providers = array_unique_append(session_summaries.providers, v_provider),
+        client_models = array_unique_append(session_summaries.client_models, v_client_model),
+        updated_at = NOW();
+
+    RETURN NEW;
+END;
+$$;
 
 
 --
@@ -4298,6 +5276,7 @@ CREATE TABLE public.api_key_auto_profile (
     first_chosen_at timestamp with time zone DEFAULT now(),
     last_used_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT api_key_auto_profile_pkey PRIMARY KEY (api_key_id),
     CONSTRAINT api_key_auto_profile_profile_check CHECK ((profile = ANY (ARRAY['smart'::text, 'speed_first'::text, 'cost_first'::text])))
 );
 
@@ -6019,6 +6998,15 @@ CREATE TABLE public.credentials (
     balance_currency text DEFAULT 'USD'::text,
     balance_last_checked_at timestamp with time zone,
     balance_check_endpoint text,
+    -- migration 701 (2026-09-13): balance floors + subscription-plan quota sensing
+    balance_floor_usd numeric(14,6),
+    quota_floor_tokens bigint,
+    quota_floor_percent numeric(5,2),
+    plan_quota_kind text,
+    plan_quota_windows jsonb,
+    plan_quota_remaining_tokens bigint,
+    plan_quota_used_percent numeric(5,2),
+    plan_quota_checked_at timestamp with time zone,
     pool_group text,
     acquisition_source text,
     acquisition_detail text,
@@ -6027,6 +7015,9 @@ CREATE TABLE public.credentials (
     default_probe_model_source text,
     default_probe_model_picked_at timestamp with time zone,
     concurrency_limit_auto integer,
+    concurrency_mode text,
+    max_queue_depth integer,
+    max_queue_wait_ms integer,
     fp_slot_limit integer NOT NULL,
     probe_enabled boolean DEFAULT true,
     probe_interval_sec integer DEFAULT 300,
@@ -6037,6 +7028,7 @@ CREATE TABLE public.credentials (
     plan_type text,
     plan_type_updated_at timestamp with time zone,
     rpm_limit integer,
+    tpm_limit integer,
     revision bigint DEFAULT 0 NOT NULL,
     auto_disabled_at timestamp with time zone,
     auto_disabled_reason text,
@@ -7465,7 +8457,13 @@ CREATE TABLE public.goal_sessions (
     model_switch_count integer DEFAULT 0 NOT NULL,
     repeat_count integer DEFAULT 0 NOT NULL,
     last_response_hash character varying(64) DEFAULT ''::character varying,
-    current_model character varying(128) DEFAULT ''::character varying
+    current_model character varying(128) DEFAULT ''::character varying,
+    continue_attempt integer DEFAULT 0 NOT NULL,
+    last_completion_judgement character varying(32) DEFAULT ''::character varying,
+    sub_agents_total integer DEFAULT 0 NOT NULL,
+    sub_agents_completed integer DEFAULT 0 NOT NULL,
+    sub_agents_pending integer DEFAULT 0 NOT NULL,
+    last_sub_agents_report_at timestamp with time zone
 );
 
 
@@ -12669,23 +13667,23 @@ CREATE TABLE public.request_logs_hot (
     compression_start_index integer,
     compression_end_index integer,
     client_forwarded_for text,
-    agent_name text,
-    agent_type text,
-    api_key_fingerprint text,
-    customer_id text,
+    agent_name character varying(255),
+    agent_type character varying(50),
+    api_key_fingerprint character varying(16),
+    customer_id bigint,
     upstream_endpoint text,
     session_title text,
     session_summary text,
-    task_id text,
+    task_id character varying(255),
     task_title text,
-    protocol_conversion text,
-    ir_extensions text,
-    sanitizer_mutations text,
+    protocol_conversion boolean,
+    ir_extensions jsonb,
+    sanitizer_mutations jsonb,
     compression_ratio double precision,
     cache_hit boolean,
     cache_tokens_saved integer,
-    content_safety_score double precision,
-    dlp_violations text[],
+    content_safety_score jsonb,
+    dlp_violations jsonb,
     sensitive_keywords text[],
     vendor_metadata jsonb,
     client_protocol character varying(50),
@@ -15037,6 +16035,8 @@ CREATE TABLE public.session_summaries (
     messages_at_trigger integer DEFAULT 0 NOT NULL,
     last_trigger_reason character varying(64),
     last_trigger_at timestamp with time zone,
+    parent_session_key character varying(255) DEFAULT ''::character varying,
+    handoff_reason character varying(64) DEFAULT ''::character varying,
     CONSTRAINT session_summaries_quality_score_check CHECK (((quality_score >= 0) AND (quality_score <= 10)))
 );
 
@@ -15270,6 +16270,7 @@ CREATE TABLE public.session_turns (
     tools jsonb DEFAULT '[]'::jsonb NOT NULL,
     title text,
     summary text,
+    digest jsonb,
     aggregate_applied_at timestamp with time zone,
     t0_arrived_at timestamp with time zone,
     t1_total_enqueued_at timestamp with time zone,
@@ -15366,6 +16367,7 @@ CREATE TABLE public.session_turns_2026_07 (
     tools jsonb DEFAULT '[]'::jsonb NOT NULL,
     title text,
     summary text,
+    digest jsonb,
     aggregate_applied_at timestamp with time zone,
     t0_arrived_at timestamp with time zone,
     t1_total_enqueued_at timestamp with time zone,
@@ -15432,6 +16434,7 @@ CREATE TABLE public.session_turns_2026_08 (
     tools jsonb DEFAULT '[]'::jsonb NOT NULL,
     title text,
     summary text,
+    digest jsonb,
     aggregate_applied_at timestamp with time zone,
     t0_arrived_at timestamp with time zone,
     t1_total_enqueued_at timestamp with time zone,
@@ -21429,11 +22432,27 @@ ALTER TABLE ONLY public.tenant_credit_wallets
 
 
 --
+-- Name: tenant_model_policies tenant_model_policies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tenant_model_policies
+    ADD CONSTRAINT tenant_model_policies_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: tenant_model_policies tenant_model_policies_tenant_id_canonical_name_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tenant_model_policies
     ADD CONSTRAINT tenant_model_policies_tenant_id_canonical_name_key UNIQUE (tenant_id, canonical_name);
+
+
+--
+-- Name: tenant_model_policies_audit tenant_model_policies_audit_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tenant_model_policies_audit
+    ADD CONSTRAINT tenant_model_policies_audit_pkey PRIMARY KEY (id);
 
 
 --
@@ -24682,6 +25701,8 @@ CREATE INDEX idx_session_summaries_quality ON public.session_summaries USING btr
 --
 -- Name: idx_session_summaries_tenant_time; Type: INDEX; Schema: public; Owner: -
 --
+
+CREATE INDEX idx_session_summaries_parent ON public.session_summaries USING btree (tenant_id, parent_session_key) WHERE ((parent_session_key)::text <> ''::text);
 
 CREATE INDEX idx_session_summaries_tenant_time ON public.session_summaries USING btree (tenant_id, last_request_at DESC);
 
@@ -27949,7 +28970,7 @@ CREATE TRIGGER trg_notify_auto_route_cmb_insert_delete AFTER INSERT OR DELETE ON
 -- Name: credential_model_bindings trg_notify_auto_route_cmb_update; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credential_model_bindings FOR EACH ROW WHEN (((old.available IS DISTINCT FROM new.available) OR (old.unavailable_reason IS DISTINCT FROM new.unavailable_reason) OR (old.unavailable_at IS DISTINCT FROM new.unavailable_at) OR (old.routing_tier IS DISTINCT FROM new.routing_tier) OR (old.weight IS DISTINCT FROM new.weight) OR (old.manual_priority IS DISTINCT FROM new.manual_priority) OR (old.active_sessions IS DISTINCT FROM new.active_sessions) OR (old.consecutive_failures IS DISTINCT FROM new.consecutive_failures) OR (old.context_window_override IS DISTINCT FROM new.context_window_override) OR (old.priority IS DISTINCT FROM new.priority)) EXECUTE FUNCTION public.notify_auto_route_refresh();
+CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credential_model_bindings FOR EACH ROW WHEN (((old.available IS DISTINCT FROM new.available) OR (old.unavailable_reason IS DISTINCT FROM new.unavailable_reason) OR (old.unavailable_at IS DISTINCT FROM new.unavailable_at) OR (old.routing_tier IS DISTINCT FROM new.routing_tier) OR (old.weight IS DISTINCT FROM new.weight) OR (old.manual_priority IS DISTINCT FROM new.manual_priority) OR (old.active_sessions IS DISTINCT FROM new.active_sessions) OR (old.consecutive_failures IS DISTINCT FROM new.consecutive_failures) OR (old.context_window_override IS DISTINCT FROM new.context_window_override) OR (old.priority IS DISTINCT FROM new.priority))) EXECUTE FUNCTION public.notify_auto_route_refresh();
 
 
 --
@@ -29291,5 +30312,5 @@ END $$;
 
 COMMIT;
 
--- Migration 526 owns session_turns_hot, its security-invoker view, advisory-lock key, and promotion function.
--- These startup-managed objects are intentionally omitted from the fresh-bootstrap schema.
+-- Migration 526 historically owns session_turns_hot, its security-invoker view, advisory-lock key, and promotion function.
+-- Fresh installer bootstrap supplies their current final-state form through session_turns_hot_bootstrap.sql.

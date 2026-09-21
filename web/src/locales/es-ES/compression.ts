@@ -20,6 +20,10 @@ export default {
     compressed: '已压缩',
     compressionRate: '压缩率',
     estimatedSaved: '预估节省 Token',
+     tokenBands: 'Outbound token bands',
+    tokenBandBelow: 'Below',
+    tokenBandPreliminary: 'Preliminary',
+    tokenBandForced: 'Forced',
   },
   charts: {
     strategyDistribution: '压缩策略分布',

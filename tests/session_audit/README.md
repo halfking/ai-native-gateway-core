@@ -80,7 +80,7 @@ tests/session_audit/
 
 ### 1. 配置数据库连接
 ```bash
-export DB_252_URL="postgresql://user:pass@14.103.112.252:5432/llm_gateway?sslmode=disable"
+export DB_252_URL="postgresql://user:pass@<env:HOST_252_DB_IP>:5432/llm_gateway?sslmode=disable"
 ```
 
 ### 2. 创建临时表

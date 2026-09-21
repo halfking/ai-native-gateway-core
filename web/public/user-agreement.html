@@ -6,12 +6,25 @@
     <title>用户许可协议 · AI Native 组织核心网关</title>
     <style>
       :root {
-        color-scheme: light;
+        color-scheme: light dark;
         --bg: #f4f6f9;
         --text: #152033;
         --muted: #5b6b82;
         --primary: #1e4fd6;
         --border: #dce3ee;
+        --panel-bg: rgba(255,255,255,0.9);
+        --body-text: #344258;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0B0E14;
+          --text: #F8FAFC;
+          --muted: #94A3B8;
+          --primary: #38BDF8;
+          --border: #1E293B;
+          --panel-bg: rgba(15, 23, 42, 0.9);
+          --body-text: #E2E8F0;
+        }
       }
       body {
         margin: 0;
@@ -30,10 +43,10 @@
       h1 { font-size: 2rem; letter-spacing: -0.03em; margin: 0 0 12px; }
       .meta { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
       h2 { font-size: 1.1rem; margin: 28px 0 10px; }
-      p, li { color: #344258; font-size: 14px; }
+      p, li { color: var(--body-text); font-size: 14px; }
       a { color: var(--primary); }
       .panel {
-        background: rgba(255,255,255,0.9);
+        background: var(--panel-bg);
         border: 1px solid var(--border);
         border-radius: 12px;
         padding: 28px;

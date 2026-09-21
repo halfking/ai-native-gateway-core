@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { formatTimeOnly } from '../utils/datetime'
 import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import {
   getFreePoolStatus,
@@ -29,6 +30,11 @@ import {
   type SignupPlatformEntry,
 } from '../api'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
+import { useActionMessage } from '../composables/useActionMessage'
+// 2026-09-13 P3：页头/统计行收敛到 ui 组件（方案 §4.5.2/§4.5.3）
+import PageHeader from '../components/ui/PageHeader.vue'
+import StatsRow from '../components/ui/StatsRow.vue'
+import StatCard from '../components/ui/StatCard.vue'
 
 const { t } = useI18n()
 // credentialDisplayName resolves credential id → human label; the composable
@@ -42,8 +48,8 @@ const poolKeys  = ref<FreePoolKeyEntry[]>([])
 const methodsData = ref<{ methods: FreePoolMethod[]; audit_rules: FreePoolAuditRule[]; scheduler: { interval_sec: number; last_result: Record<string, unknown> } } | null>(null)
 const loading   = ref(false)
 const syncing   = ref(false)
-const error     = ref('')
-const message   = ref('')
+// 审计 R3#10：操作反馈条统一走 useActionMessage。
+const { message, error, notifySuccess, notifyError, clear: clearActionMsg } = useActionMessage()
 const modelQuery = ref('')
 const activeTab = ref<'models' | 'providers' | 'catalog' | 'keys' | 'guide' | 'assistant'>('assistant')
 
@@ -184,7 +190,6 @@ const hubCategories = computed(() => signupHub.value?.categories ?? [])
 
 async function load() {
   loading.value = true
-  error.value = ''
   try {
     const [status, methods, keysRes, hub] = await Promise.all([
       getFreePoolStatus(),
@@ -198,7 +203,7 @@ async function load() {
     signupHub.value = hub
     fetchedAt.value = Date.now()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('freePool.loadFailed')
+    notifyError(e instanceof Error ? e.message : t('freePool.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -206,16 +211,15 @@ async function load() {
 
 async function runBootstrap() {
   syncing.value = true
-  error.value = ''
-  message.value = ''
+  clearActionMsg()
   try {
     const res = await bootstrapFreePool()
     const mirror = (res.mirror as { registered?: number })?.registered ?? 0
     const discover = (res.discover as { registered?: number })?.registered ?? 0
-    message.value = `一键建设完成：镜像 ${mirror} 个 Provider，发现/更新 ${discover} 个`
+    notifySuccess(`一键建设完成：镜像 ${mirror} 个 Provider，发现/更新 ${discover} 个`)
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('freePool.bootstrapFailed')
+    notifyError(e instanceof Error ? e.message : t('freePool.bootstrapFailed'))
   } finally {
     syncing.value = false
   }
@@ -223,14 +227,13 @@ async function runBootstrap() {
 
 async function runBridgeOAuth() {
   syncing.value = true
-  error.value = ''
-  message.value = ''
+  clearActionMsg()
   try {
     const res = await bridgeFreePoolOAuth()
-    message.value = `OAuth 桥接：${res.registered ?? 0} 个 OAuth 凭证已注入池子`
+    notifySuccess(`OAuth 桥接：${res.registered ?? 0} 个 OAuth 凭证已注入池子`)
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('freePool.oauthBridgeFailed')
+    notifyError(e instanceof Error ? e.message : t('freePool.oauthBridgeFailed'))
   } finally {
     syncing.value = false
   }
@@ -238,14 +241,13 @@ async function runBridgeOAuth() {
 
 async function runDiscover() {
   syncing.value = true
-  error.value = ''
-  message.value = ''
+  clearActionMsg()
   try {
     const res = await discoverFreePool()
-    message.value = `自动学习完成：本轮注册/更新 ${res.registered ?? 0} 个 Provider`
+    notifySuccess(`自动学习完成：本轮注册/更新 ${res.registered ?? 0} 个 Provider`)
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('freePool.discoverFailed')
+    notifyError(e instanceof Error ? e.message : t('freePool.discoverFailed'))
   } finally {
     syncing.value = false
   }
@@ -253,14 +255,13 @@ async function runDiscover() {
 
 async function runImportEnv() {
   syncing.value = true
-  error.value = ''
-  message.value = ''
+  clearActionMsg()
   try {
     const res = await importFreePoolEnv()
-    message.value = `环境变量导入：${res.registered ?? 0} 个 Key 已注入池子`
+    notifySuccess(`环境变量导入：${res.registered ?? 0} 个 Key 已注入池子`)
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('freePool.importEnvFailed')
+    notifyError(e instanceof Error ? e.message : t('freePool.importEnvFailed'))
   } finally {
     syncing.value = false
   }
@@ -288,7 +289,7 @@ function fillFromPlatform(p: SignupPlatformEntry) {
   // Scroll to the form and show a hint
   nextTick(() => {
     quickEntryCard.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    message.value = t('freePool.assistant.filledFromPlatform', { name: p.name })
+    notifySuccess(t('freePool.assistant.filledFromPlatform', { name: p.name }))
   })
 }
 
@@ -298,23 +299,24 @@ function openUrl(url: string) {
 
 async function runQuickProbe() {
   if (!quickEntry.value.base_url.trim()) {
-    error.value = t('freePool.baseUrlRequired')
+    notifyError(t('freePool.baseUrlRequired'))
     return
   }
   quickProbing.value = true
-  error.value = ''
-  message.value = ''
+  clearActionMsg()
   try {
     const res = await probeFreePoolCredential({
       base_url: quickEntry.value.base_url.trim(),
       api_key: quickEntry.value.api_key.trim() || undefined,
     })
     probeResult.value = res.probe
-    message.value = res.probe?.ok
-      ? `探活通过 · HTTP ${res.probe.status_code} · 模型 ${res.probe.model_count ?? 0} 个`
-      : `探活未通过：${res.probe?.reason || res.probe?.error || t('freePool.probeFailedReason')}`
+    if (res.probe?.ok) {
+      notifySuccess(`探活通过 · HTTP ${res.probe.status_code} · 模型 ${res.probe.model_count ?? 0} 个`)
+    } else {
+      notifyError(`探活未通过：${res.probe?.reason || res.probe?.error || t('freePool.probeFailedReason')}`)
+    }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '探活失败'
+    notifyError(e instanceof Error ? e.message : '探活失败')
   } finally {
     quickProbing.value = false
   }
@@ -322,12 +324,11 @@ async function runQuickProbe() {
 
 async function runQuickSave(probeFirst = true) {
   if (!quickEntry.value.base_url.trim()) {
-    error.value = t('freePool.baseUrlRequired')
+    notifyError(t('freePool.baseUrlRequired'))
     return
   }
   quickSaving.value = true
-  error.value = ''
-  message.value = ''
+  clearActionMsg()
   try {
     const res = await quickEntryFreePool({
       signup_url: quickEntry.value.signup_url || undefined,
@@ -343,14 +344,14 @@ async function runQuickSave(probeFirst = true) {
     })
     probeResult.value = res.probe ?? null
     if (res.status === 'ok') {
-      message.value = `凭据已入库 · catalog=${res.catalog_code} · credential ${res.credential_id ? credentialDisplayName(res.credential_id) : t('freePool.credentialSavedPlaceholder')}`
+      notifySuccess(`凭据已入库 · catalog=${res.catalog_code} · credential ${res.credential_id ? credentialDisplayName(res.credential_id) : t('freePool.credentialSavedPlaceholder')}`)
       quickEntry.value.api_key = ''
       await load()
     } else {
-      error.value = res.error || `入库失败 (${res.status})`
+      notifyError(res.error || `入库失败 (${res.status})`)
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('freePool.saveFailed')
+    notifyError(e instanceof Error ? e.message : t('freePool.saveFailed'))
   } finally {
     quickSaving.value = false
   }
@@ -358,11 +359,11 @@ async function runQuickSave(probeFirst = true) {
 
 async function generateTempEmail() {
   tempEmailLoading.value = true
-  error.value = ''
+  notifyError('')
   try {
     const res = await createFreePoolTempEmail()
     if (!res.ok || !res.address) {
-      error.value = res.error || t('freePool.tempEmailFailed')
+      notifyError(res.error || t('freePool.tempEmailFailed'))
       return
     }
     tempEmail.value = {
@@ -372,9 +373,9 @@ async function generateTempEmail() {
       web_url: res.web_url || 'https://mail.tm/en/',
     }
     tempInbox.value = []
-    message.value = `临时邮箱已生成：${res.address}`
+    notifySuccess(`临时邮箱已生成：${res.address}`)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('freePool.tempEmailFailed')
+    notifyError(e instanceof Error ? e.message : t('freePool.tempEmailFailed'))
   } finally {
     tempEmailLoading.value = false
   }
@@ -392,12 +393,12 @@ async function pollTempInbox() {
         verificationCode: extractVerificationCode(m.subject)
                         ?? extractVerificationCode(m.intro),
       }))
-      message.value = `收件箱 ${res.total ?? res.messages.length} 封`
+      notifySuccess(`收件箱 ${res.total ?? res.messages.length} 封`)
     } else {
-      error.value = res.error || t('freePool.fetchInboxFailed')
+      notifyError(res.error || t('freePool.fetchInboxFailed'))
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('freePool.fetchInboxFailed')
+    notifyError(e instanceof Error ? e.message : t('freePool.fetchInboxFailed'))
   } finally {
     tempPolling.value = false
   }
@@ -415,20 +416,19 @@ function extractVerificationCode(text?: string): string | null {
 async function copyText(text: string) {
   try {
     await navigator.clipboard.writeText(text)
-    message.value = t('freePool.copySuccess')
+    notifySuccess(t('freePool.copySuccess'))
   } catch {
-    error.value = t('freePool.copyFailed')
+    notifyError(t('freePool.copyFailed'))
   }
 }
 
 async function submitKey() {
   if (!newKey.value.catalog_code || (!newKey.value.api_key && newKey.value.source !== 'no_key')) {
-    error.value = t('freePool.catalogAndApiKeyRequired')
+    notifyError(t('freePool.catalogAndApiKeyRequired'))
     return
   }
   keySubmitting.value = true
-  error.value = ''
-  message.value = ''
+  clearActionMsg()
   try {
     await addFreePoolKey({
       catalog_code: newKey.value.catalog_code,
@@ -437,12 +437,12 @@ async function submitKey() {
       source_detail: newKey.value.source_detail || undefined,
       label: newKey.value.label || undefined,
     })
-    message.value = t('freePool.encryptedWriteSuccess')
+    notifySuccess(t('freePool.encryptedWriteSuccess'))
     showKeyForm.value = false
     newKey.value = { catalog_code: 'openrouter-free', api_key: '', source: 'signup', source_detail: '', label: '' }
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('freePool.writeFailed')
+    notifyError(e instanceof Error ? e.message : t('freePool.writeFailed'))
   } finally {
     keySubmitting.value = false
   }
@@ -450,12 +450,11 @@ async function submitKey() {
 
 async function submitNew() {
   if (!newProvider.value.catalog_code || !newProvider.value.base_url) {
-    error.value = t('freePool.catalogAndBaseUrlRequired')
+    notifyError(t('freePool.catalogAndBaseUrlRequired'))
     return
   }
   submitting.value = true
-  error.value = ''
-  message.value = ''
+  clearActionMsg()
   try {
     const models = newProvider.value.models
       .split(',')
@@ -470,7 +469,7 @@ async function submitNew() {
       api_key: newProvider.value.api_key || undefined,
       models: models.length > 0 ? models : undefined,
     })
-    message.value = `Provider 注册成功 (ID: ${res.provider_id})`
+    notifySuccess(`Provider 注册成功 (ID: ${res.provider_id})`)
     showAddForm.value = false
     newProvider.value = {
       catalog_code: '',
@@ -482,7 +481,7 @@ async function submitNew() {
     }
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('freePool.registerFailed')
+    notifyError(e instanceof Error ? e.message : t('freePool.registerFailed'))
   } finally {
     submitting.value = false
   }
@@ -490,7 +489,7 @@ async function submitNew() {
 
 async function submitBulk() {
   if (!bulkForm.value.catalog_code || !bulkForm.value.base_url) {
-    error.value = t('freePool.catalogAndBaseUrlRequired')
+    notifyError(t('freePool.catalogAndBaseUrlRequired'))
     return
   }
   const apiKeys = bulkForm.value.api_keys
@@ -498,12 +497,11 @@ async function submitBulk() {
     .map(s => s.trim())
     .filter(Boolean)
   if (apiKeys.length === 0) {
-    error.value = '请至少填入一个 API Key（逗号或换行分隔）'
+    notifyError('请至少填入一个 API Key（逗号或换行分隔）')
     return
   }
   bulkSubmitting.value = true
-  error.value = ''
-  message.value = ''
+  clearActionMsg()
   try {
     const models = bulkForm.value.models
       .split(',')
@@ -519,9 +517,9 @@ async function submitBulk() {
       bulk_mode: bulkForm.value.bulk_mode,
     })
     if (res.bulk_mode === 'per_credential' && res.errors === 0) {
-      message.value = `多 Key 池化完成：${res.total_keys} 个 Key 聚合成 1 个 credential（轮转放大配额）`
+      notifySuccess(`多 Key 池化完成：${res.total_keys} 个 Key 聚合成 1 个 credential（轮转放大配额）`)
     } else {
-      message.value = `批量注册：${res.registered}/${res.total_keys} 成功（${res.bulk_mode}）`
+      notifySuccess(`批量注册：${res.registered}/${res.total_keys} 成功（${res.bulk_mode}）`)
     }
     showBulkForm.value = false
     bulkForm.value = {
@@ -531,7 +529,7 @@ async function submitBulk() {
     }
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('freePool.registerFailed')
+    notifyError(e instanceof Error ? e.message : t('freePool.registerFailed'))
   } finally {
     bulkSubmitting.value = false
   }
@@ -551,7 +549,7 @@ function statusLabel(entry: FreePoolEntry): string {
   if (entry.availability_state === 'rate_limited') return t('freePool.rateLimited')
   if (entry.availability_state === 'cooling') return t('freePool.cooling')
   if (entry.availability_state === 'unreachable') return t('freePool.unreachable')
-  if (entry.quota_state === 'exhausted') return t('freePool.quotaExhausted')
+  if (entry.quota_state === 'exhausted' || entry.quota_state === 'balance_exhausted') return t('freePool.quotaExhausted')
   return t('freePool.availableUnit')
 }
 
@@ -690,13 +688,13 @@ onUnmounted(() => {
 
 <template>
   <div>
-    <div class="page-header">
-      <h2>{{ t('freePool.page.title') }}</h2>
+    <PageHeader :title="t('freePool.page.title')">
+      <template #actions>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <span
           class="freshness-badge"
           :class="[freshnessClass, { 'live-pulse': liveBadge }]"
-          :title="fetchedAt ? new Date(fetchedAt).toLocaleTimeString() : ''"
+          :title="fetchedAt ? formatTimeOnly(fetchedAt) : ''"
         >
           <span class="fresh-dot" aria-hidden="true"></span>
           {{ fetchedAt ? freshnessLabel : '未加载' }}
@@ -727,7 +725,8 @@ onUnmounted(() => {
           {{ showBulkForm ? '收起多 Key 批量' : '多 Key 批量池化' }}
         </button>
       </div>
-    </div>
+      </template>
+    </PageHeader>
     <p style="color:var(--muted);margin-bottom:20px">
       管理免费模型资源池。已注册模型路由优先级最高（routing_tier = 9，composite_score = 0）。
       下方「免费模型清单」展示当前池内全部可用模型；「模板目录」展示已知免费 Provider 及其预期模型。
@@ -736,28 +735,12 @@ onUnmounted(() => {
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
     <div v-if="message" class="alert alert-success">{{ message }}</div>
 
-    <div v-if="poolData" class="stat-row" style="margin-bottom:20px">
-      <div class="stat-inline">
-        <span class="stat-label">可路由模型</span>
-        <span class="stat-value stat-ok">{{ poolData.stats.routable_models }}</span>
-        <span class="stat-sub">/ {{ poolData.stats.free_models }} offer</span>
-      </div>
-      <div class="stat-inline">
-        <span class="stat-label">可用 Provider</span>
-        <span class="stat-value stat-ok">{{ poolData.stats.available_providers }}</span>
-        <span class="stat-sub">/ {{ poolData.stats.total_providers }}</span>
-      </div>
-      <div class="stat-inline">
-        <span class="stat-label">模板已接入</span>
-        <span class="stat-value">{{ poolData.stats.catalog_registered }}</span>
-        <span class="stat-sub">/ {{ poolData.stats.catalog_templates }} 模板</span>
-      </div>
-      <div class="stat-inline">
-        <span class="stat-label">模板模型</span>
-        <span class="stat-value">{{ catalogSummary.templateModels }}</span>
-        <span class="stat-sub">目录已知</span>
-      </div>
-    </div>
+    <StatsRow v-if="poolData" style="margin-bottom:20px">
+      <StatCard label="可路由模型" :value="poolData.stats.routable_models" tone="success" :sub="`/ ${poolData.stats.free_models} offer`" />
+      <StatCard label="可用 Provider" :value="poolData.stats.available_providers" tone="success" :sub="`/ ${poolData.stats.total_providers}`" />
+      <StatCard label="模板已接入" :value="poolData.stats.catalog_registered" :sub="`/ ${poolData.stats.catalog_templates} 模板`" />
+      <StatCard label="模板模型" :value="catalogSummary.templateModels" sub="目录已知" />
+    </StatsRow>
 
     <div v-if="showKeyForm" class="card" style="margin-bottom:20px">
       <h3 style="margin-top:0">写入免费池凭据（加密存 DB）</h3>
@@ -1485,29 +1468,6 @@ onUnmounted(() => {
 <style scoped>
 .cell-muted { color: var(--muted); font-size: 11px; margin-top: 3px; }
 
-.stat-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  /* 2026-07-07: nowrap → wrap, 移除 overflow-x: auto
-     4张统计卡在窄屏时自动折行，不再横向滚动 */
-}
-.stat-inline {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex: 1 1 0;
-  min-width: 160px;
-  padding: 10px 14px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  white-space: nowrap;
-}
-.stat-label { font-size: 12px; color: var(--muted); }
-.stat-value { font-size: 20px; font-weight: 700; color: var(--text); }
-.stat-value.stat-ok { color: var(--success); }
-.stat-sub { font-size: 12px; color: var(--muted); }
 
 .form-grid {
   display: grid;
@@ -1767,7 +1727,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: rgba(63,185,80,.08);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
   border: 1px solid var(--success-bd);
   border-radius: 6px;
   margin-top: 8px;
@@ -1911,8 +1871,8 @@ onUnmounted(() => {
 }
 .qbar-ok .qbar-fill { background: var(--success-bd); }
 .qbar-mid .qbar-fill { background: var(--warning-bd); }
-.qbar-high .qbar-fill { background: rgba(248,81,73,.55); }
-.qbar-exhausted .qbar-fill { background: rgba(248,81,73,.7); }
+.qbar-high .qbar-fill { background: var(--danger-bd); }
+.qbar-exhausted .qbar-fill { background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .qbar-unknown .qbar-fill { background: var(--neutral-bd); }
 .qbar-text {
   position: absolute;

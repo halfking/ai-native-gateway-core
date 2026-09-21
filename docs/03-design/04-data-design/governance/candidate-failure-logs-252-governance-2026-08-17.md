@@ -2,7 +2,7 @@
 
 ## 背景
 
-252 PG（172.16.2.210，154 网关共库）的 `candidate_failure_logs` 是单一 `citus_columnar` 表，361MB、84,757 行、72,429 行 `ts IS NULL`（V358 之前 `ALTER COLUMN ts SET DEFAULT now()` 丢失导致 INSERT 落 NULL）。`opslog_trimmer` 的 DELETE 在 columnar 上每轮失败（"UPDATE and CTID scans not supported for ColumnarScan"），TTL 失效，表只增不减。
+252 PG（<env:HOST_252_INTERNAL_IP>，154 网关共库）的 `candidate_failure_logs` 是单一 `citus_columnar` 表，361MB、84,757 行、72,429 行 `ts IS NULL`（V358 之前 `ALTER COLUMN ts SET DEFAULT now()` 丢失导致 INSERT 落 NULL）。`opslog_trimmer` 的 DELETE 在 columnar 上每轮失败（"UPDATE and CTID scans not supported for ColumnarScan"），TTL 失效，表只增不减。
 
 V358（`deploy/sql/migrations/V358__candidate_failure_logs_session_id.sql`）已加 session_id 列、索引、把 ts 默认值恢复，但 **不解决历史 NULL ts 行不可见 + TTL DELETE 失效**两个增长无界问题。
 

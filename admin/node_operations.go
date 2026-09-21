@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -151,7 +152,7 @@ func (h *Handler) handleCredentialSessionPing(w http.ResponseWriter, r *http.Req
 	var req struct {
 		Model string `json:"model"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, 4096, true); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
@@ -213,27 +214,28 @@ func (h *Handler) handleCredentialSessionPing(w http.ResponseWriter, r *http.Req
 }
 
 func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protocol, catalogCode, apiKey, model string) (status, errorCode, message string) {
-	// 2026-08-23: protocol-aware session ping. Previously this hard-coded
-	// OpenAI chat-completions shape regardless of provider.protocol, which
-	// broke the admin UI for anthropic-messages providers (the body would
-	// be sent to /v1/messages in anthropic format but received by a chat
-	// endpoint, or vice versa — body and auth headers would not match).
+	// 2026-09-06: 复用 providercap 动态协议适配，支持 anthropic-messages 等多协议。
+	// 之前硬编码 /chat/completions 导致 Anthropic 供应商 Ping 失败。
 	desc := providercap.Resolve(protocol, catalogCode)
-	endpoint := upstreamurl.Build(baseURL, desc.ChatProbeEndpoint)
+	endpoint := providercap.ProbeEndpointURL(baseURL, desc)
+	if endpoint == "" {
+		return "error", "invalid_protocol", "unsupported protocol or empty base URL"
+	}
 
-	// Build the request body in the protocol-native shape. Anthropic Messages
-	// uses `max_tokens` (mandatory) and a separate `system` field is optional;
-	// we keep the body minimal and compatible with all known upstreams.
+	// 根据协议构造请求体：Anthropic Messages vs OpenAI Chat Completions
 	var payload []byte
 	var err error
-	switch desc.ChatProbeEndpoint {
-	case upstreamurl.EpMessages:
+	if desc.ChatProbeEndpoint == upstreamurl.EpMessages {
+		// Anthropic Messages API format
 		payload, err = json.Marshal(map[string]any{
 			"model":      model,
-			"max_tokens": 20,
-			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+			"max_tokens": 1,
+			"messages": []map[string]any{
+				{"role": "user", "content": "ping"},
+			},
 		})
-	default:
+	} else {
+		// OpenAI Chat Completions format (default)
 		payload, err = json.Marshal(map[string]any{
 			"model":      model,
 			"max_tokens": 1,
@@ -248,7 +250,7 @@ func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protoco
 	if err != nil {
 		return "error", "invalid_endpoint", "provider endpoint is invalid"
 	}
-	setModelsAuthHeaders(req, protocol, apiKey)
+	providercap.ApplyAuthHeaders(req, desc, apiKey)
 	h.applyCatalogHeaderProfile(ctx, req, catalogCode)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
@@ -260,12 +262,16 @@ func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protoco
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices && isProbeResponse(body, desc.ChatProbeEndpoint) {
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices && isChatPingResponse(body) {
 		return "healthy", "", ""
 	}
 	message = strings.TrimSpace(string(body))
 	if len(message) > 500 {
 		message = message[:500]
+	}
+	// 2026-09-06: 当供应商返回空响应体时，使用通用错误提示避免前端显示"会话 Ping 失败：error"
+	if message == "" {
+		message = fmt.Sprintf("provider returned HTTP %d with empty body", resp.StatusCode)
 	}
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
@@ -275,34 +281,29 @@ func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protoco
 	case resp.StatusCode >= http.StatusInternalServerError:
 		return "upstream_error", "upstream_5xx", message
 	case resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices:
-		return "error", "invalid_response", "provider returned an invalid response for the probe"
+		return "error", "invalid_response", "provider returned an invalid chat response"
 	default:
 		return "error", fmt.Sprintf("http_%d", resp.StatusCode), message
 	}
 }
 
-// isProbeResponse reports whether the response body looks like a healthy
-// completion for the given endpoint. For OpenAI Chat Completions the
-// canonical field is `choices`; for Anthropic Messages it is `content`;
-// for OpenAI Responses it is `output`. A 2xx with any of these markers
-// is treated as healthy.
-func isProbeResponse(body []byte, ep upstreamurl.Endpoint) bool {
-	var response struct {
+func isChatPingResponse(body []byte) bool {
+	// OpenAI Chat Completions format
+	var oaiResp struct {
 		Choices json.RawMessage `json:"choices"`
+	}
+	if json.Unmarshal(body, &oaiResp) == nil && len(oaiResp.Choices) > 0 {
+		return true
+	}
+	// Anthropic Messages format (2026-09-06)
+	var anthResp struct {
+		Type    string          `json:"type"`
 		Content json.RawMessage `json:"content"`
-		Output  json.RawMessage `json:"output"`
 	}
-	if json.Unmarshal(body, &response) != nil {
-		return false
+	if json.Unmarshal(body, &anthResp) == nil && anthResp.Type == "message" && len(anthResp.Content) > 0 {
+		return true
 	}
-	switch ep {
-	case upstreamurl.EpMessages:
-		return len(response.Content) > 0
-	case upstreamurl.EpResponses:
-		return len(response.Output) > 0
-	default:
-		return len(response.Choices) > 0
-	}
+	return false
 }
 
 func (h *Handler) nodeProbeTargets(ctx context.Context, providerID int) ([]string, string, error) {
@@ -366,7 +367,7 @@ func (h *Handler) handleNodeToggle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req nodeEnableRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, jsonbody.MaxRequiredBody, true); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
@@ -427,6 +428,22 @@ func (h *Handler) handleNodeToggle(w http.ResponseWriter, r *http.Request) {
 		provider.InvalidateCandidateCacheForCredential(cid)
 	}
 
+	// 2026-09-06: provider 级批量启停也需要同步 URSM v2 manual_hold，
+	// 否则批量禁用/启用后 Redis 侧仍保留旧的运行态标记（尤其是重新启用时，
+	// manual_hold 未清除会继续阻断路由，即使 PG manual_disabled 已改为 false）。
+	// best-effort：单个 credential 的 URSM 同步失败不阻断整体响应，因为该
+	// 端点一次可能涉及数十个 credential；失败详情通过响应字段暴露给操作员，
+	// 操作员可对失败的 credential 单独调用 force_enable/force_disable 补偿。
+	ursmAppliedCount, ursmErrorCount := 0, 0
+	if h.ursmV2 != nil {
+		manualDisabled := !req.Enabled
+		for _, cid := range credIDs {
+			result := h.applyURSMManualDisabled(ctx, cid, manualDisabled, req.Reason, operatorID)
+			ursmAppliedCount += result.models - result.errors
+			ursmErrorCount += result.errors
+		}
+	}
+
 	slog.Info("node enable toggled",
 		"provider_id", providerID,
 		"enabled", req.Enabled,
@@ -451,6 +468,8 @@ func (h *Handler) handleNodeToggle(w http.ResponseWriter, r *http.Request) {
 		"credentials_affected":    tag.RowsAffected(),
 		"candidate_cache_cleared": len(credIDs),
 		"correlation_id":          correlationID,
+		"ursm_v2_models_applied":  ursmAppliedCount,
+		"ursm_v2_models_errored":  ursmErrorCount,
 	})
 }
 

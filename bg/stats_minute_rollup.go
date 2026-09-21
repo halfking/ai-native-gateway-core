@@ -220,6 +220,12 @@ func (w *StatsMinuteRollup) rollupDims(ctx context.Context, since, until time.Ti
 		dimKey  string
 	}{
 		{"client_profile", `COALESCE(NULLIF(r.client_profile, ''), '__unknown__')`},
+		// 2026-09-03: aggregate by agent_name (the canonical client-type
+		// identifier written by telemetry.ExtractAgentName and persisted on
+		// request_logs_hot.agent_name). The dashboard 'clients' pie reads
+		// from this dim; client_profile is retained as a legacy dim for
+		// operators comparing old vs new tagging.
+		{"agent_name", `COALESCE(NULLIF(r.agent_name, ''), '__unknown__')`},
 		{"virtual_ip", `COALESCE(NULLIF(r.virtual_ip, ''), '__unknown__')`},
 		{"identity_hash", `COALESCE(NULLIF(r.identity_hash, ''), '__unknown__')`},
 		{"model", `COALESCE(NULLIF(r.outbound_model, ''), NULLIF(r.client_model, ''), '__unknown__')`},

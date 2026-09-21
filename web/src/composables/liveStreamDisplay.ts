@@ -1,3 +1,5 @@
+import { formatTimeOnly } from '../utils/datetime'
+
 // liveStreamDisplay — UI helpers for the swim lane.
 //
 // Pure data-shaping for the tiles. Lives in its own module so it
@@ -164,25 +166,22 @@ export function errorKindLabel(errorKind: string | undefined | null): string {
 export function errorKindBg(errorKind: string | undefined | null): string {
   if (!errorKind) return 'transparent'
   const k = errorKind.toLowerCase()
-  if (/(timeout|disconnect|network|reset|eof|cancel)/.test(k)) return 'rgba(245, 158, 11, 0.22)'
-  if (/(5xx|server|upstream|provider|overloaded|backend|internal)/.test(k)) return 'rgba(239, 68, 68, 0.22)'
-  if (/(4xx|auth|unauthor|forbidden|quota|rate|billing|payment|invalid)/.test(k)) return 'rgba(251, 191, 36, 0.22)'
-  if (/(not_found|model_not|\brout|no_route|resolve|policy|missing)/.test(k)) return 'rgba(167, 139, 250, 0.22)'
-  return 'rgba(239, 68, 68, 0.22)'
+  if (/(timeout|disconnect|network|reset|eof|cancel)/.test(k)) return 'var(--warning-bd)'
+  if (/(5xx|server|upstream|provider|overloaded|backend|internal)/.test(k)) return 'color-mix(in srgb, var(--danger) 14%, transparent)'
+  if (/(4xx|auth|unauthor|forbidden|quota|rate|billing|payment|invalid)/.test(k)) return 'var(--warning-bd)'
+  if (/(not_found|model_not|\brout|no_route|resolve|policy|missing)/.test(k)) return 'color-mix(in srgb, var(--purple) 22%, transparent)'
+  return 'color-mix(in srgb, var(--danger) 14%, transparent)'
 }
 
 /**
  * Format a date as HH:MM using the active locale.
  */
 export function timeHHMM(ts: string | undefined | null, locale: string = 'en-US'): string {
-  if (!ts) return '--:--'
-  const d = new Date(ts)
-  if (Number.isNaN(d.getTime())) return '--:--'
-  try {
-    return d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: false })
-  } catch {
-    return '--:--'
-  }
+  return formatTimeOnly(ts, {
+    locale,
+    empty: '--:--',
+    options: { hour: '2-digit', minute: '2-digit', hour12: false },
+  })
 }
 
 /**
@@ -225,13 +224,13 @@ export function statusBarColor(
   if (status === 'idle') return 'var(--muted)'
   if (status === 'failure') {
     const k = (errorKind || '').toLowerCase()
-    // 取消 / 断连 → 橙色（专用 #fb923c，区别于 warning 的黄色调）
+    // 取消 / 断连 → 橙色（专用 var(--warning)，区别于 warning 的黄色调）
     if (/\b(cancel|cancelled|canceled|disconnect|network_reset|connection_reset|eof)\b/.test(k)) {
-      return '#fb923c'
+      return 'var(--warning)'
     }
     // 超时 → 黄色
     if (/(?<!upstream_)(?<!backend_)(?<!server_)(?<!provider_)\btimeout\b/.test(k)) {
-      return '#facc15'
+      return 'var(--warning)'
     }
     // 未找到 / 无可用节点 / 不可达 → 灰色
     if (/\b(not_found|no_route|no_route_match|no_available|no_node|all_unavail|unavail|unreachable|missing|policy)\b/.test(k)) {
@@ -244,7 +243,7 @@ export function statusBarColor(
     // 5xx / 其它失败 → 红色
     return 'var(--danger)'
   }
-  if (status === 'cancelled' || status === 'canceled') return '#fb923c'
+  if (status === 'cancelled' || status === 'canceled') return 'var(--warning)'
   return 'var(--muted)'
 }
 

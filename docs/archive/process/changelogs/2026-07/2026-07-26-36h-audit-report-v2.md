@@ -151,7 +151,7 @@ sanitizeInputSchema 函数在 chat_to_anthropic.go:294-343 和 serialize_anthrop
 位置: deploy-154-prod.sh 第 17-18 行
 
 ```
-SSH_PASS="__REDACTED_SSH_PASSWORD__"
+SSH_PASS="<env:SSHPASS>"
 ```
 
 违反规则:

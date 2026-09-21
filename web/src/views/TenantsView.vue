@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { formatDateTime } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
@@ -9,6 +10,9 @@ import TenantCreateDialog from './TenantCreateDialog.vue'
 import FeeCostCell from '../components/FeeCostCell.vue'
 import { isPlatformOpsView } from '../store'
 import { useTenantStatusLabel } from '../composables/useTenantStatusLabel'
+// 2026-09-13 P3：页头收敛到 ui/PageHeader；表格容器收敛到 ui/DataTable（方案 §4.5.2/§4.5.5）
+import PageHeader from '../components/ui/PageHeader.vue'
+import DataTable from '../components/ui/DataTable.vue'
 
 const { t } = useI18n()
 const { tenantStatusLabel } = useTenantStatusLabel()
@@ -42,7 +46,7 @@ function statusLabel(s: string) {
 
 function fmtTime(s: string) {
   if (!s) return '-'
-  return new Date(s).toLocaleString(localeRef.value)
+  return formatDateTime(s, { locale: localeRef.value })
 }
 
 function fmtNum(n?: number) {
@@ -61,10 +65,11 @@ onMounted(load)
 
 <template>
   <div class="tenants-page">
-    <div class="page-header">
-      <h1>{{ t('tenants.list.title') }}</h1>
-      <button class="btn btn-primary" @click="showCreate = true">{{ t('tenants.list.createBtn') }}</button>
-    </div>
+    <PageHeader :title="t('tenants.list.title')">
+      <template #actions>
+        <button class="btn btn-primary" @click="showCreate = true">{{ t('tenants.list.createBtn') }}</button>
+      </template>
+    </PageHeader>
 
     <div v-if="error" class="alert alert-danger" style="margin-bottom:12px">{{ error }}</div>
 
@@ -78,7 +83,8 @@ onMounted(load)
 
     <div v-if="loading" class="loading">{{ t('tenants.list.loading') }}</div>
 
-    <table v-else class="table tenants-table" style="width:100%">
+    <DataTable v-else min-width="760px">
+    <table class="table tenants-table" style="width:100%">
       <thead>
         <tr>
           <th>{{ t('tenants.list.colName') }}</th>
@@ -122,19 +128,13 @@ onMounted(load)
         </tr>
       </tbody>
     </table>
+    </DataTable>
 
     <TenantCreateDialog v-if="showCreate" @close="showCreate = false" @created="load" />
   </div>
 </template>
 
 <style scoped>
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
-.page-header h1 { font-size: 20px; margin: 0; }
 .filters {
   display: flex;
   align-items: center;

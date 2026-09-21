@@ -69,7 +69,7 @@ export type LiveStreamPreferencesPatch = Partial<Pick<LiveStreamPreferences, 'gr
   queue?: { depthOpen?: boolean; expandedModels?: string[]; statusFilter?: Partial<Record<QueueStatusBucket, boolean>> }
 }
 
-const GROUP_BY_VALUES: GroupByDimension[] = ['queue', 'vendor', 'provider', 'model']
+const GROUP_BY_VALUES: GroupByDimension[] = ['queue', 'credential', 'vendor', 'provider', 'model']
 const MODE_VALUES: SwimLaneMode[] = ['small', 'large']
 const REQUEST_TYPE_VALUES: LiveStreamRequestType[] = ['business', 'probe']
 const QUEUE_STATUS_BUCKET_VALUES: QueueStatusBucket[] = ['active', 'degraded', 'manualDisabled', 'exhausted']
@@ -155,9 +155,10 @@ function normalize(raw: unknown): LiveStreamPreferences {
     : {}
 
   const requestTypes = stringList(filters.requestTypes, { allowed: REQUEST_TYPE_VALUES }) as LiveStreamRequestType[]
+  const rawGroupBy = value.groupBy === 'vendor' ? 'provider' : value.groupBy
   return {
     version: 1,
-    groupBy: isOneOf(value.groupBy, GROUP_BY_VALUES) ? value.groupBy : defaults.groupBy,
+    groupBy: isOneOf(rawGroupBy, GROUP_BY_VALUES) ? rawGroupBy : defaults.groupBy,
     mode: isOneOf(value.mode, MODE_VALUES) ? value.mode : defaults.mode,
     selectedLegends: stringList(value.selectedLegends),
     filters: {

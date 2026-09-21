@@ -118,6 +118,27 @@ concurrently — see `runtime.go:144-161` for the priority order in
 `eventLoop` and `request_state.go:114-120` for the universal
 transition.
 
+## 2.1 Buffered attempt settlement invariants
+
+The attempt commit gate is a sub-state machine inside `StateStreaming`:
+
+- A successful buffered attempt must call `GateWriter.Finish()` and then commit any remaining trailing partial bytes before the coordinator records `StateCompleted`.
+- A failed, cancelled, or retryable attempt must discard uncommitted gate bytes; it must never call the success commit path.
+- `SerializedStreamWriter` capture is a projection of complete successful wire writes only. Detached no-op writes, failed writes, and short writes are not durable response bytes.
+- Durable checkpoint hooks are monotonic: a state is checkpointed at most once per gate, and a higher state may checkpoint once after a successful lower-state checkpoint. Hook failure latches the gate closed and does not mark the state checkpointed.
+
+The settlement order is therefore:
+
+```text
+attempt result
+     |
+     +-- success --> Finish pending bytes --> Commit gate --> Completed
+     |
+     +-- retry/failure/cancel --> Discard gate --> Retry or terminal failure
+```
+
+These invariants prevent silent loss of an EOF trailing fragment, replay captures that differ from the client wire, and duplicate non-idempotent checkpoint side effects.
+
 ## 2. Event table
 
 `Source states` lists every non-terminal position from which the event

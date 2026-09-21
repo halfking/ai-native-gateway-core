@@ -61,10 +61,7 @@ var grok45Caps = reasoncap.Caps{
 // ─── Effort → budget mapping (LiteLLM baseline) ──────────────────────────────
 
 func TestEffortToBudget(t *testing.T) {
-	tests := []struct {
-		effort string
-		want   int
-	}{
+	tests := []struct{ effort string; want int }{
 		{"none", 0}, {"minimal", 1024}, {"low", 1024}, {"medium", 2048},
 		{"high", 4096}, {"xhigh", 8192}, {"max", 16384},
 	}
@@ -83,10 +80,7 @@ func TestEffortToBudget(t *testing.T) {
 }
 
 func TestBudgetToEffort(t *testing.T) {
-	tests := []struct {
-		budget int
-		want   string
-	}{
+	tests := []struct{ budget int; want string }{
 		{0, "none"}, {512, "low"}, {1024, "low"}, {2048, "medium"},
 		{3000, "high"}, {4096, "high"}, {8192, "xhigh"}, {16384, "max"}, {99999, "max"},
 	}

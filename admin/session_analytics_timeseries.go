@@ -58,7 +58,7 @@ func appendTimeseriesFilters(r *http.Request, alias string, filters *timeseriesF
 type timeseriesFilters struct {
 	dateFrom    time.Time
 	dateTo      time.Time
-	granularity string // day/week/month
+	granularity string   // day/week/month
 	model       []string
 	provider    []string
 }
@@ -84,11 +84,11 @@ type ActivityResponse struct {
 
 // ActivitySummary 活动趋势汇总
 type ActivitySummary struct {
-	TotalSessions    int     `json:"total_sessions"`
-	TotalRequests    int     `json:"total_requests"`
-	AvgDailySessions float64 `json:"avg_daily_sessions"`
-	PeakDate         string  `json:"peak_date"`
-	PeakSessions     int     `json:"peak_sessions"`
+	TotalSessions     int     `json:"total_sessions"`
+	TotalRequests     int     `json:"total_requests"`
+	AvgDailySessions  float64 `json:"avg_daily_sessions"`
+	PeakDate          string  `json:"peak_date"`
+	PeakSessions      int     `json:"peak_sessions"`
 }
 
 // CostDataPoint 成本趋势数据点
@@ -374,7 +374,7 @@ func (h *Handler) HandleHealthTrend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	tenantID := effectiveScopeTenant(r)

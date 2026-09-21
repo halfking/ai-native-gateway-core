@@ -3,6 +3,7 @@
 export default {
   title: '仪表盘',
   refresh: '刷新',
+  modelsSelectedCount: '已选 {n} 个模型',  // R50 ModelPicker compact 触发器
   tabs: {
     board: '看板',
     liveStream: '实时请求流',
@@ -227,6 +228,9 @@ export default {
         failure: '请求失败',
       },
       tokenFormat: '{p} + {c}',
+      cache: '缓存',
+      cacheFormat: '读{r}/写{w}（命中率{pct}）',
+      sessionId: '会话',
     },
     empty: '暂无实时请求',
     emptyWaiting: '等待实时请求流数据…',
@@ -234,6 +238,7 @@ export default {
     reconnecting: '重新连接中…',
     unsupported: '当前浏览器不支持实时流',
     groupByQueue: '按处理队列',
+    groupByCredential: '按凭据',
     groupByVendor: '按原厂',
     groupByProvider: '按供应商',
     groupByModel: '按模型',
@@ -259,6 +264,7 @@ export default {
     filterAllOptions: '全部',
     filterEmpty: '暂无可选项',
     filterModel: '模型',
+    filterGroup: '筛选',
     filterProvider: '供应商',
     filterVendor: '原厂',
     filterAgent: '客户端',  // 2026-07-27
@@ -291,6 +297,7 @@ export default {
     idleReasonNoTraffic: '无流量（5 分钟无请求）',
     cacheWindow: '缓存/窗口',
     connectionDetailTitle: '点击查看连接详情',
+    dimensionCredential: '凭据',
     dimensionVendor: '原厂',
     dimensionProvider: '供应商',
     dimensionModel: '模型',

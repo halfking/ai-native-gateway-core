@@ -60,9 +60,12 @@ type CandidateFailureAlert struct {
 
 // CandidateFailureMonitor runs the alert + auto-cool loop. nil-safe.
 type CandidateFailureMonitor struct {
-	db     *pgxpool.Pool
-	cancel context.CancelFunc
-	done   chan struct{}
+	db      *pgxpool.Pool
+	cancel  context.CancelFunc
+	done    chan struct{}
+	stateMu sync.Mutex
+	started bool
+	stopped bool
 
 	interval           time.Duration
 	alertThresh        int
@@ -114,16 +117,34 @@ func NewCandidateFailureMonitor(db *pgxpool.Pool) *CandidateFailureMonitor {
 }
 
 func (m *CandidateFailureMonitor) Start(ctx context.Context) {
+	m.stateMu.Lock()
+	if m.started || m.stopped {
+		m.stateMu.Unlock()
+		return
+	}
+	m.started = true
 	ctx, m.cancel = context.WithCancel(ctx)
+	m.stateMu.Unlock()
 	go m.run(ctx)
 	slog.Info("candidate_failure_monitor started")
 }
 
 func (m *CandidateFailureMonitor) Stop() {
-	if m.cancel != nil {
-		m.cancel()
+	m.stateMu.Lock()
+	if m.stopped {
+		m.stateMu.Unlock()
+		return
 	}
-	<-m.done
+	m.stopped = true
+	cancel := m.cancel
+	started := m.started
+	m.stateMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if started {
+		<-m.done
+	}
 }
 
 func (m *CandidateFailureMonitor) run(ctx context.Context) {
@@ -170,8 +191,18 @@ func (m *CandidateFailureMonitor) checkStaleness(ctx context.Context) error {
 	var lastFailure, lastRequest *time.Time
 	if err := m.db.QueryRow(ctx, `
 		SELECT
-			(SELECT max(ts) FROM candidate_failure_logs),
-			(SELECT max(ts) FROM request_logs WHERE ts >= now() - interval '5 minutes')
+			-- 2026-09-12: both surfaces must read the current-month view —
+			-- the writer inserts into candidate_failure_logs_hot, so the bare
+			-- parent only holds promoted (cold) rows; with the partition
+			-- promote failing (P5 duplicate key, since 09-10) its max(ts) ran
+			-- 8h+ stale and the staleness alert fired while the hot table was
+			-- being written minutes earlier.
+			(SELECT max(ts) FROM candidate_failure_logs_with_current_month),
+			-- 2026-09-11: recent-window reads must use the current-month
+			-- surface — the bare request_logs parent only holds cold rows
+			-- (max(ts) a day+ stale on 154), so "gateway has recent activity"
+			-- evaluated false and staleness alerts never fired.
+			(SELECT max(ts) FROM request_logs_with_current_month WHERE ts >= now() - interval '5 minutes')
 	`).Scan(&lastFailure, &lastRequest); err != nil {
 		return err
 	}
@@ -225,12 +256,12 @@ func (m *CandidateFailureMonitor) checkAlerts(ctx context.Context) error {
 			COUNT(*) AS cnt,
 			COUNT(DISTINCT upstream_status_code) AS distinct_codes,
 			(SELECT upstream_response_preview
-			   FROM candidate_failure_logs c2
+			   FROM candidate_failure_logs_with_current_month c2
 			   WHERE c2.credential_id = c.credential_id
 			     AND c2.raw_model_name = c.raw_model_name
 			     AND c2.error_kind = c.error_kind
 			   ORDER BY ts DESC LIMIT 1) AS last_body
-		FROM candidate_failure_logs c
+		FROM candidate_failure_logs_with_current_month c
 		WHERE ts >= $1
 		GROUP BY credential_id, provider_id, raw_model_name, error_kind
 		HAVING COUNT(*) >= $2
@@ -271,20 +302,26 @@ func (m *CandidateFailureMonitor) checkAlerts(ctx context.Context) error {
 // recover_at = now() + coolMinutes. The recovery worker (credential_recovery.go)
 // will restore 'ready' once recover_at passes — unless auto-cool fires again.
 func (m *CandidateFailureMonitor) checkAutoCool(ctx context.Context) error {
-	// Pull recent candidate_failure_logs + attempt count from request_logs
+	// Pull recent candidate_failure_logs + the request-log attempt count
 	// for the same window. Two CTEs joined by credential.
+	// 2026-09-11: the 5-minute attempt window must read the current-month
+	// surface — on the bare parent (cold rows only) win was always empty, so
+	// auto-cool never saw current traffic and never fired.
 	rows, err := m.db.Query(ctx, `
 		WITH win AS (
 		    SELECT credential_id, COUNT(*) FILTER (WHERE lower(COALESCE(request_status, '')) = 'failure') AS fails,
 		                  COUNT(*) AS attempts
-		    FROM request_logs
+		    FROM request_logs_with_current_month
 		    WHERE ts >= now() - interval '5 minutes'
 		      AND credential_id IS NOT NULL
 		    GROUP BY credential_id
 		),
 		cfl AS (
 		    SELECT credential_id, COUNT(*) AS recent_failures
-		    FROM candidate_failure_logs
+		    -- 2026-09-12: current-month surface — the bare parent's 5-minute
+		    -- window was always empty (writer feeds the hot table), so
+		    -- recent_failures was pinned at 0.
+		    FROM candidate_failure_logs_with_current_month
 		    WHERE ts >= now() - interval '5 minutes'
 		    GROUP BY credential_id
 		)
@@ -335,6 +372,12 @@ func (m *CandidateFailureMonitor) applyAutoCool(ctx context.Context, credID int)
 		  AND lifecycle_status = 'active'
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
 		  AND availability_state NOT IN ('cooling')
+		  -- R21 (2026-09-13) audit P2: never steal reason ownership from the
+		  -- balance-floor guard — rewriting a floor-pulled row to
+		  -- auto_cool_high_failure_rate re-enables the probe/write-through
+		  -- un-pull path and re-creates the pull/un-pull ping-pong the
+		  -- ownership invariant exists to prevent.
+		  AND COALESCE(state_reason_code, '') <> 'balance_floor'
 	`, m.coolMinutes, credID)
 	if err != nil {
 		return err

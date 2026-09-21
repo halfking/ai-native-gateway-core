@@ -181,6 +181,35 @@ func TestWritePrewarmedStreamError_BackCompat(t *testing.T) {
 	}
 }
 
+// TestRateLimitExhaustion_WireFormat pins the 2026-09-07 all-candidates-429
+// passthrough envelope (mock system test §5.3): when every upstream returned
+// 429, the client must get rate-limit semantics (code=rate_limit,
+// type=rate_limit_error, kind=rate_limit) instead of the misleading
+// model_not_found, so SDK backoff logic keyed on 429 works against the
+// gateway too. The HTTP status itself (429 vs the old 503) is decided in
+// serveWithExecutor's exhausted branch; the pre-streamed path always
+// delivers 200+SSE, so this pins the frame content.
+func TestRateLimitExhaustion_WireFormat(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writePrewarmedStreamErrorWithKind(rec,
+		"Rate limited by all providers for model 'gpt-4'. All 3 candidates failed.",
+		"rate_limit_error",
+		"rate_limit",
+		"rate_limit",
+	)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"code":"rate_limit"`) {
+		t.Errorf("body = %q, want machine-readable rate_limit code", body)
+	}
+	if !strings.Contains(body, `"type":"rate_limit_error"`) {
+		t.Errorf("body = %q, want rate_limit_error type", body)
+	}
+	if !strings.Contains(body, `"kind":"rate_limit"`) {
+		t.Errorf("body = %q, want the precise rate_limit kind", body)
+	}
+}
+
 // TestRecordPrewarmedExhaustion_BumpsMetrics is the integration check that
 // the lookup function exists with the right labels. The metric itself is
 // observable from /metrics on the running gateway; if anything detaches

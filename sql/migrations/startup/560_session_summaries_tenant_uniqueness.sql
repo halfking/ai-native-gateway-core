@@ -30,6 +30,19 @@ BEGIN
   END IF;
 END $$;
 
-ALTER TABLE public.session_summaries
-  ADD CONSTRAINT session_summaries_session_key_per_tenant
-  UNIQUE (tenant_id, session_key);
+DO $$
+BEGIN
+  IF to_regclass('public.session_summaries') IS NULL THEN
+    RAISE NOTICE 'migration 560: session_summaries is absent; 655 or the base schema must run first';
+  ELSIF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.session_summaries'::regclass
+      AND conname = 'session_summaries_session_key_per_tenant'
+  ) THEN
+    ALTER TABLE public.session_summaries
+      ADD CONSTRAINT session_summaries_session_key_per_tenant
+      UNIQUE (tenant_id, session_key);
+  ELSE
+    RAISE NOTICE 'migration 560: session_summaries_session_key_per_tenant already exists';
+  END IF;
+END $$;

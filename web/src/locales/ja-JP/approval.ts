@@ -149,5 +149,7 @@ export default {
       minutes: '{n} 分',
       hours: '{n} 時間',
     },
-  }
+  },
+  rulesDeleteConfirm: 'このルールを削除しますか？',
+  approversDeleteConfirm: 'この承認者を削除しますか？',
 }

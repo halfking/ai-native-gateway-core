@@ -162,7 +162,7 @@ export async function probeMaintainAvailable(force = false): Promise<boolean> {
   }
   if (!force && probePromise) return probePromise
 
-  probePromise = (async () => {
+  const currentProbe = (async () => {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
     const timer = controller ? window.setTimeout(() => controller.abort(), 2500) : 0
     try {
@@ -172,7 +172,10 @@ export async function probeMaintainAvailable(force = false): Promise<boolean> {
         cache: 'no-store',
         signal: controller?.signal,
       })
-      maintainState = res.ok ? 'available' : 'unavailable'
+      const contentType = res.headers.get('content-type') || ''
+      maintainState = res.ok && contentType.toLowerCase().includes('json')
+        ? 'available'
+        : 'unavailable'
     } catch {
       maintainState = 'unavailable'
     } finally {
@@ -181,6 +184,10 @@ export async function probeMaintainAvailable(force = false): Promise<boolean> {
     notify()
     return maintainState === 'available'
   })()
-
-  return probePromise
+  probePromise = currentProbe
+  try {
+    return await currentProbe
+  } finally {
+    if (probePromise === currentProbe) probePromise = null
+  }
 }

@@ -13,7 +13,7 @@
 | **C** 慢查询 | [`/tmp/audit-redis-slow-queries.md`](../../../../../../tmp/audit-redis-slow-queries.md) | 慢查询主因是大体积 EVAL 脚本 + `SCRIPT FLUSH` 后 EVALSHA 回退风暴（1184/34469 ≈ 3.4%）；MGET 平均 1.48 ms 偏高；KEYS 已基本收敛但应 `rename-command` 兜底；SCAN 累计耗时 1063s，可下沉 client cache |
 | **D** 治理闭环 | 合并 A/C 给出 | 缺失 Prometheus 告警、family-level owner/TTL policy、每日 SCAN 治理脚本 |
 
-> **网络约束声明**：本批审计期间，172.16.2.210:6389 从本地 shell 不可达（connectx timeout）。子代理 B 在本机 `127.0.0.1:6379 db2` 镜像完成 SCAN（64k keys，schema 与生产一致）；子代理 A/C 基于仓库历史审计文档（`REDIS_CACHE_AUDIT_2026-07-23.md`、`lessons-learned-2026-08-04-swimlane-jump-redis-timeout.md`、`REDIS_TTL_OPTIMIZATION_2026-07-23.md`、`session-pipeline-verification-report.md`、`2026-08-19-canary-evidence-and-status.md`）+ 当前代码静态分析 + handoff 现场数据综合得出。**所有改动项落地前需在 252 `pms-redis` 重跑 §6 验证脚本确认生产数据形态**。
+> **网络约束声明**：本批审计期间，<env:HOST_252_INTERNAL_IP>:6389 从本地 shell 不可达（connectx timeout）。子代理 B 在本机 `127.0.0.1:6379 db2` 镜像完成 SCAN（64k keys，schema 与生产一致）；子代理 A/C 基于仓库历史审计文档（`REDIS_CACHE_AUDIT_2026-07-23.md`、`lessons-learned-2026-08-04-swimlane-jump-redis-timeout.md`、`REDIS_TTL_OPTIMIZATION_2026-07-23.md`、`session-pipeline-verification-report.md`、`2026-08-19-canary-evidence-and-status.md`）+ 当前代码静态分析 + handoff 现场数据综合得出。**所有改动项落地前需在 252 `pms-redis` 重跑 §6 验证脚本确认生产数据形态**。
 
 ---
 
@@ -72,7 +72,7 @@
 - **具体动作**：
   1. 走 `scripts/deploy/deploy-154-via-252.sh`（154 公网 SSH 故障通道）
   2. deploy 完成后比对 154 version.json build_seq ≥ 1732
-  3. 154 端 `redis-cli -h 172.16.2.210 -p 6389 -a Veritrans9900 -n 2` 验证 ops/sec 6.7k（与 245 一致）
+  3. 154 端 `redis-cli -h <env:HOST_252_INTERNAL_IP> -p 6389 -a Veritrans9900 -n 2` 验证 ops/sec 6.7k（与 245 一致）
 - **预计影响**：154 端 RSS 同步下降（245 已 1.86GB → 224MB）、Redis ops 同步下降（13k → 6.7k）、ColumnarScan 0A000 错误率归零
 - **业务风险**：低（245 已验证 4min+ 稳定）
 - **验证方式**：`version.json` build_seq ≥ 1732；`redis-cli INFO clients` 看 154 连接数；`pg_stat_statements` 看 ColumnarScan 计数
@@ -103,7 +103,7 @@
 - **预计影响**：db0 停止受 llmgw 治理缓存污染；244/245 端 `redis-cli -n 0 DBSIZE` 不再增长，`-n 2 DBSIZE` 增加
 - **业务风险**：低（db2 是 llmgw 主战场，db0 是 PMS 共享区；切到 db2 是回归正确状态）
 - **验证方式**：
-  - 部署前：`redis-cli -h 172.16.2.210 -p 6389 -a Veritrans9900 -n 0 KEYS "session:v2:*"` 计数（应 < 5 keys，残留）
+  - 部署前：`redis-cli -h <env:HOST_252_INTERNAL_IP> -p 6389 -a Veritrans9900 -n 0 KEYS "session:v2:*"` 计数（应 < 5 keys，残留）
   - 部署后 24h：db0 `session:v2:*` 不再增长；db2 `session:v2:*` 持续增长（治理 cache 写活跃）
 - **需 154 联调**：✅ **必须双发**（否则 154 仍读 db0 找不到新数据，反之亦然）
 
@@ -117,7 +117,7 @@
   
   # 验证
   ps aux | grep "redis-cli --latency-history" | grep -v grep  # 应为空
-  redis-cli -h 172.16.2.210 -p 6389 -a Veritrans9900 INFO clients | grep connected_clients
+  redis-cli -h <env:HOST_252_INTERNAL_IP> -p 6389 -a Veritrans9900 INFO clients | grep connected_clients
   ```
 - **预计影响**：`connected_clients` 减少 4 个；后续 ops 指标更接近真实业务负载
 - **业务风险**：无（这些是 debug 监控进程，非业务路径）
@@ -166,7 +166,7 @@
 - **预计影响**：该 key 内存稳定 ≤ 50 KB；`INFO memory` 立刻可见（487KB → <50KB）
 - **业务风险**：低（live-stream 是 dashboard 展示，允许历史回滚 ≤ 1h）
 - **验证方式**：
-  - 部署后：`redis-cli -h 172.16.2.210 -p 6389 -a Veritrans9900 -n 2 LLEN llmgw:live:actions` ≤ 500
+  - 部署后：`redis-cli -h <env:HOST_252_INTERNAL_IP> -p 6389 -a Veritrans9900 -n 2 LLEN llmgw:live:actions` ≤ 500
   - `TTL llmgw:live:actions` 落在 (0, 3600] 区间
 - **需 154 联调**：❌（代码变更不影响读路径语义；dashboard 回滚窗口缩短需要业务确认 1h 可接受）
 
@@ -178,8 +178,8 @@
      ```bash
      #!/bin/bash
      # 修复 5 个孤儿 session:gw_* 加 TTL
-     for key in $(redis-cli -h 172.16.2.210 -p 6389 -a Veritrans9900 -n 2 KEYS "session:gw_*" | xargs -I {} sh -c 'redis-cli -h 172.16.2.210 -p 6389 -a Veritrans9900 -n 2 TTL {} | grep -q "^-1$" && echo {}'); do
-         redis-cli -h 172.16.2.210 -p 6389 -a Veritrans9900 -n 2 EXPIRE "$key" 1717600  # 19.9d
+     for key in $(redis-cli -h <env:HOST_252_INTERNAL_IP> -p 6389 -a Veritrans9900 -n 2 KEYS "session:gw_*" | xargs -I {} sh -c 'redis-cli -h <env:HOST_252_INTERNAL_IP> -p 6389 -a Veritrans9900 -n 2 TTL {} | grep -q "^-1$" && echo {}'); do
+         redis-cli -h <env:HOST_252_INTERNAL_IP> -p 6389 -a Veritrans9900 -n 2 EXPIRE "$key" 1717600  # 19.9d
          echo "Fixed: $key"
      done
      ```
@@ -240,7 +240,7 @@
        # ... 所有业务 Lua 脚本 SHA
      )
      for sha_file in "${SCRIPTS[@]}"; do
-       cat "$sha_file.lua" | redis-cli -h 172.16.2.210 -p 6389 -a Veritrans9900 -x FUNCTION LOAD REPLACE
+       cat "$sha_file.lua" | redis-cli -h <env:HOST_252_INTERNAL_IP> -p 6389 -a Veritrans9900 -x FUNCTION LOAD REPLACE
      done
      ```
   3. **大脚本拆分**：URSM 测试脚本 > 4KB 的拆分为多个小脚本或下沉到 `FUNCTION`
@@ -425,10 +425,10 @@
 
 ### P2-5 · 客户端 ACL 限制 + protected-mode
 
-- **背景**：子代理 C §5.4 — 客户端 IP 集中在 172.16.2.241/209/127.0.0.1，可用 ACL 锁紧。
+- **背景**：子代理 C §5.4 — 客户端 IP 集中在 <env:HOST_245_INTERNAL_IP>/209/127.0.0.1，可用 ACL 锁紧。
 - **具体动作**（`pms-redis` redis.conf）：
   ```conf
-  bind 172.16.2.241 172.16.2.209 127.0.0.1
+  bind <env:HOST_245_INTERNAL_IP> <env:HOST_154_INTERNAL_IP> 127.0.0.1
   protected-mode yes
   
   # ACL（Redis 6+）
@@ -454,7 +454,7 @@
 - **具体动作**（触发后）：
   1. 252 新建容器 `pms-redis-llmgw`（redis:7-alpine, port 6380）
   2. 数据迁移：`SCAN` + `DUMP` + `RESTORE` 流水线（低峰期）
-  3. 154/245 `.env` 改 `LLM_GATEWAY_REDIS_ADDR=172.16.2.210:6380`
+  3. 154/245 `.env` 改 `LLM_GATEWAY_REDIS_ADDR=<env:HOST_252_INTERNAL_IP>:6380`
   4. 双写过渡期 7d（旧实例保留观察）
   5. 切流量后旧实例冻结 30d 再下线
 - **预计影响**：154/245 故障域与 PMS 解耦；可独立调 maxmemory
@@ -563,7 +563,7 @@
 
 | ICR ID | 修复 | 状态 | 验证 |
 |---|---|---|---|
-| **P0-2** | `session:v2` DB0 → cfg.RedisDB (==2) | ✅ 代码 + 测试 | `NewSessionCacheV2(db, addr, redisDB)` / 4 处测试 caller 已更新 / `ratelimit/ratelimit/ratelimit` 链路 gateway version 1736 启动日志确认 `addr=172.16.2.210:6389 db=2` |
+| **P0-2** | `session:v2` DB0 → cfg.RedisDB (==2) | ✅ 代码 + 测试 | `NewSessionCacheV2(db, addr, redisDB)` / 4 处测试 caller 已更新 / `ratelimit/ratelimit/ratelimit` 链路 gateway version 1736 启动日志确认 `addr=<env:HOST_252_INTERNAL_IP>:6389 db=2` |
 | **P0-4** | `llmgw:live:actions` LTRIM 5000 + Expire 24h 续约 | ✅ 代码 + 测试 | `internal/liveactions/liveactions.go` 加 `pipe.Expire(ctx, RedisKey, redisKeyTTL)` + `redisKeyTTL = 24h` 常量 |
 | **P2-1** | rate limiter fallback `LLM_GATEWAY_REDIS_ADDR` | ✅ 代码 + 测试 | `ratelimit/redis_sliding.go` NewRedisLimiterFromEnv 加 LLM_GATEWAY_REDIS_ADDR/DB/PASSWORD fallback, 启动日志确认 `rate limiter using main gateway Redis (LLM_GATEWAY_REDIS_ADDR fallback)` |
 | **子代理修复** | 压缩/上下文模块 system-reminder 过滤 + body budget trim | ✅ 代码 + 测试（保留子代理未提交改动） | 12 个文件 +229/-35: `domains/hooks/compression/*` + `domains/transformation/ctx_compress.go` |
@@ -604,6 +604,42 @@
 
 **会话二补充时间**：2026-08-25 05:25（接 ICR-A5 编制后约 2 小时）
 **作者**：本次会话（基于子代理 A/B/C/D 报告的具体修复）
+
+---
+
+## 请求持久化与队列可靠性补充（2026-08-26）
+
+本 ICR 的 Redis 容量、TTL、DB 隔离和观测治理仍然有效，但不得把 Redis 的以下组件误认为请求内容的权威保存层：
+
+| Redis 组件 | 正确职责 | 禁止承担的职责 |
+|---|---|---|
+| `dispatch.QueueMirror` | queue depth、inflight、retry_at 观测 | 重启恢复、完整 Payload 保存 |
+| SystemMonitor queue | 探测 task 调度元数据、lease、attempt、processing | 完整 request/response/IR 保存 |
+| `pending` | 短期终态结果 projection | 唯一终态事实或正文归档 |
+| boardcache/body-size/minute stats | 看板聚合和短期统计 | 计费、审计和统计事实源 |
+| URSM NodeView | 路由健康/容量状态 | 对话内容或 session body |
+
+跨重启执行恢复的权威层是 `durable_llm_tasks` 的加密 request snapshot、lease、fencing 和 terminal result；历史正文由 `request_logs_bodies*`、`session_bodies` 和后续 local archive/durable projection 共同承担。完整架构见：
+
+- [请求记录、IR 与 Session V2 持久化重构最终方案](../plan/2026-08-25-request-session-persistence-final-plan.md)
+
+### 新增 P0/P1 实施拆分
+
+| ID | 优先级 | 改造 | 验收 |
+|---|---|---|---|
+| P0-Q1 | P0 | fallback Redis Submit 失败时分配稳定 task ID，避免 `task_id=0` 与 PG fallback unique 冲突 | Redis 不可用时提交多个任务，PG backstop 行数与任务数一致 |
+| P0-Q2 | P0 | fallback 持久化和 drain 使用统一 Lua queue payload/schema，禁止直接 `json.Marshal(Task)` 后 LPUSH | drain 后 claim 可识别 `scheduled_at_ms`、priority、task hash 和 lease |
+| P0-Q3 | P0 | reclaim/complete 使用严格 fencing token，覆盖 reclaim 后新 owner claim 前的迟到 complete | stale complete 必须返回 lease lost，不能覆写 hash/processing/running |
+| P1-Q1 | P1 | Requeue 改为单 Lua 状态迁移：fence、attempt、hash、processing 删除、ready 入队同一 EVAL | 任一 Redis 命令异常或进程中断不会产生 orphan/重复 ready |
+| P1-Q2 | P1 | SystemMonitor heartbeat、DLQ、fallback drain idempotency/replay | 长任务不被误 reclaim；malformed/max-attempt 任务可查询和受控 replay |
+| P1-Q3 | P1 | pending 写入和 sweeper 使用 CAS/version 条件更新 | sweeper 不覆盖已成功终态；hash/index/TTL 不会半提交 |
+
+### 执行约束
+
+1. Redis 只保存调度元数据和投影，不增加完整 body/IR 字段。
+2. Redis/PG 双存无法跨系统原子提交时，默认 at-least-once；必须使用稳定 task/event identity、幂等消费和对账，而不是假设 exactly-once。
+3. 每项先在隔离 Redis/PG 执行 `submit -> claim -> crash/reclaim -> retry -> DLQ/replay` 故障测试，再进入 245；245 data-plane 不能代替完整后台恢复验证。
+4. Redis key 格式变化遵循 URSM `legacy -> dual -> canonical` 冻结策略，先 preflight/checksum/ledger，再切换和 TTL 清理。
 
 ---
 

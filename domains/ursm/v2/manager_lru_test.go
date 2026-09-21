@@ -250,6 +250,30 @@ func TestPlanReadyObservedDoesNotPopulateMirror(t *testing.T) {
 	assert.False(t, cached, "observe-only planning must not backfill production mirror state")
 }
 
+func TestNodeMirrorPreservesSamples5mForScoring(t *testing.T) {
+	mgr, mr, _ := newMirrorManager(t)
+	seedNode(t, mr, 41, "m", 1, true, 100, 0.95)
+	seedNode(t, mr, 42, "m", 1, true, 100, 0.60)
+	mr.HSet("ursm:v2:node:t:41:m", "samples_5m", "20")
+	mr.HSet("ursm:v2:node:t:42:m", "samples_5m", "20")
+
+	seeds := []CandidateSeed{
+		{ProviderID: 1, CredentialID: 41, RawModel: "m", TenantID: "t"},
+		{ProviderID: 2, CredentialID: 42, RawModel: "m", TenantID: "t"},
+	}
+
+	fromRedis, err := mgr.FilterAndScore(context.Background(), seeds)
+	require.NoError(t, err)
+	require.Len(t, fromRedis, 2)
+	assert.Equal(t, 41, fromRedis[0].CredentialID, "higher sampled success rate should win Redis scoring")
+
+	fromMirror, _, err := mgr.FilterAndScoreReadyWithSource(context.Background(), seeds, true)
+	require.NoError(t, err)
+	require.Len(t, fromMirror, 2)
+	assert.Equal(t, 41, fromMirror[0].CredentialID, "LRU scoring must preserve the Redis ordering")
+	assert.Equal(t, fromRedis[0].Score, fromMirror[0].Score)
+	assert.Equal(t, fromRedis[1].Score, fromMirror[1].Score)
+}
 func TestManagerCloseIsIdempotent(t *testing.T) {
 	mgr, _, _ := newMirrorManager(t)
 	mgr.Close()

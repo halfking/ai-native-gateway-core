@@ -112,11 +112,20 @@ func (l *PassiveProbeListener) resetCountersOnSuccess(ctx context.Context) {
 		SET consecutive_count = 0
 		FROM (
 			SELECT DISTINCT credential_id, COALESCE(outbound_model, client_model) AS raw_model_name
-			FROM request_logs
-			WHERE success = TRUE
-			  AND ts > NOW() - INTERVAL '5 minutes'
-			  AND credential_id IS NOT NULL
-			  AND outbound_model IS NOT NULL
+			-- 2026-09-10 minimax-prod-v2 incident: the bare request_logs
+			-- parent only holds cold rows (max(ts) was a full day stale on
+			-- 154), so recent successes were invisible and "consecutive"
+			-- streaks never reset. pollNewErrors already reads the
+			-- current-month surface; every recent-window read must too.
+			-- R50: probe traffic excluded (dual-arm) — the passive listener
+			-- profiles BUSINESS traffic; probe rows would both arm and
+			-- reset streaks for models probes touch.
+			FROM request_logs_with_current_month rl
+			WHERE `+fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")+`
+			  AND rl.success = TRUE
+			  AND rl.ts > NOW() - INTERVAL '5 minutes'
+			  AND rl.credential_id IS NOT NULL
+			  AND rl.outbound_model IS NOT NULL
 		) AS success_pairs
 		WHERE pps.credential_id = success_pairs.credential_id
 		  AND pps.raw_model_name = success_pairs.raw_model_name
@@ -167,7 +176,7 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		    rl.error_kind,
 		    COUNT(*), COUNT(*), 0,
 		    MIN(rl.ts), NOW(),
-		    LEFT(COALESCE(MAX(rb.response_body::text), ''), 200)
+		    LEFT(COALESCE(MAX(COALESCE(rb.response_body::text, '')), ''), 200)
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		LEFT JOIN passive_probe_state pps
@@ -180,6 +189,10 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		  AND rl.error_kind = ANY($1)
 		  AND rl.error_kind IS NOT NULL
 		  AND COALESCE(rl.failure_stage, 'upstream') = 'upstream'
+		  -- R50: dual-arm probe exclusion — a probe's own upstream failure
+		  -- is real, but feeding it back here re-arms probes on probe-only
+		  -- traffic (the same self-reinforcement INV-3 closed for usage).
+		  AND `+fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")+`
 		  AND rl.credential_id IS NOT NULL
 		  AND rl.outbound_model IS NOT NULL
 		  AND pps.credential_id IS NULL
@@ -207,11 +220,17 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		    SELECT credential_id,
 		           COALESCE(outbound_model, client_model) AS raw_model_name,
 		           COUNT(*) AS total
-		    FROM request_logs
-		    WHERE ts > NOW() - INTERVAL '5 minutes'
-		      AND credential_id IS NOT NULL
-		      AND outbound_model IS NOT NULL
-		    GROUP BY credential_id, COALESCE(outbound_model, client_model)
+		    -- 2026-09-10: same cold-parent staleness as resetCountersOnSuccess —
+		    -- recent traffic lives in request_logs_hot, which only the
+		    -- current-month surface exposes.
+		    -- R50: probe traffic excluded so the error_rate denominator is
+		    -- business traffic only (consistent with Step 1 above).
+		    FROM request_logs_with_current_month rl
+		    WHERE rl.ts > NOW() - INTERVAL '5 minutes'
+		      AND `+fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")+`
+		      AND rl.credential_id IS NOT NULL
+		      AND rl.outbound_model IS NOT NULL
+		    GROUP BY rl.credential_id, COALESCE(rl.outbound_model, rl.client_model)
 		) AS win
 		WHERE pps.credential_id = win.credential_id
 		  AND pps.raw_model_name = win.raw_model_name
@@ -341,7 +360,6 @@ func (l *PassiveProbeListener) reviewResolution(ctx context.Context) {
 		}
 		toResolve = append(toResolve, p)
 	}
-	rows.Close()
 
 	if len(toResolve) == 0 {
 		return
@@ -354,11 +372,21 @@ func (l *PassiveProbeListener) reviewResolution(ctx context.Context) {
 		// pair during the reviewing window. If so, the credential recovered.
 		// Use 6 minutes (not 5) to cover async telemetry lag — request_logs
 		// rows may arrive a few seconds after the actual response.
+		// 2026-09-10 minimax-prod-v2 incident: the success check ran against
+		// the cold request_logs parent, so it saw ZERO successes for any
+		// recent window while request_logs_hot held 472 successes for
+		// (cred 21, MiniMax-M3) at 2026-09-10 12:57 — the review then marked
+		// a demonstrably healthy credential unreachable right after the
+		// operator force-enabled it. Read the current-month surface (the
+		// same one pollNewErrors accumulates errors from) and compare model
+		// names case-insensitively: raw_model_name here is the stored
+		// COALESCE(outbound, client) which can differ in case from the
+		// logged columns ('MiniMax-M3' vs 'minimax-m3').
 		var successes int
 		err := l.db.QueryRow(ctx, `
-			SELECT COUNT(*) FROM request_logs
+			SELECT COUNT(*) FROM request_logs_with_current_month
 			WHERE credential_id = $1
-			  AND COALESCE(outbound_model, client_model) = $2
+			  AND LOWER(COALESCE(outbound_model, client_model)) = LOWER($2)
 			  AND success = TRUE
 			  AND ts > NOW() - INTERVAL '6 minutes'
 		`, p.credentialID, p.rawModel).Scan(&successes)

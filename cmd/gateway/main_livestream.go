@@ -105,6 +105,24 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 			slog.Debug("live stream: provider resolution returned empty",
 				"request_id", entry.RequestID, "credential_id", entry.CredentialID,
 				"provider_id", entry.ProviderID, "tenant_id", entry.TenantID)
+			// 2026-08-26 (无 DB 兜底): DB 不可用 / 行缺失时 provider 维度
+			// 原来直接落空 → 整条请求从"按供应商"泳道消失。改为用稳定身份
+			// provider-<id> 兜底显示，保证无 DB 时实时请求流供货商泳道
+			// 仍然正确分组（显示名降级为技术性 ID，可接受）。
+			if hasProv && entry.ProviderID != nil {
+				providerCode = fmt.Sprintf("provider-%d", *entry.ProviderID)
+			} else if hasCred && entry.CredentialID != nil {
+				providerCode = fmt.Sprintf("provider-cred-%d", *entry.CredentialID)
+			}
+		}
+
+		// 2026-08-26: 凭据维度身份。label 允许多次查找（hub 缓存 + 200ms
+		// 超时上下文）；无 DB / 无行 / 无标签时留空，由凭据泳道 key 规则
+		// （liveStreamCredentialKey, label → "凭据 #ID"）兜底，保证无
+		// 数据库部署下凭据泳道依旧可用。
+		credentialID := 0
+		if hasCred && entry.CredentialID != nil {
+			credentialID = *entry.CredentialID
 		}
 
 		// Extract canonical_id for model name resolution and aggregation
@@ -113,7 +131,7 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 			canonicalID = *entry.CanonicalID
 		}
 
-		return hub.LiveRequestFromTelemetry(
+		lr := hub.LiveRequestFromTelemetry(
 			ctx,
 			entry.RequestID,
 			liveStreamEventTime(entry),
@@ -137,9 +155,21 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 			derefStr(entry.ClientProtocol),
 			entry,
 		)
+		// 2026-08-26: 凭据维度身份注入（label 为 best-effort，DB 不可用时
+		// 回退为空 → 前端/泳道 key 用 "凭据 #ID"）。
+		lr.CredentialID = credentialID
+		if credentialID > 0 {
+			lr.CredentialLabel = hub.CredentialLabelFor(ctx, credentialID)
+		}
+		return lr
 	}
 	// Fallback when hub is nil (defensive; unreachable in normal operation
 	// because SetOnRequestLogEmitted is only wired when hub != nil).
+	//
+	// R45（D15+D16 复核注记）: 该分支的字段面**有意**保持最小集（身份/模型/
+	// token/成本/会话核心列），不追求与 hub 路径逐字段对齐——FailureStage/
+	// Agent/Probe/Identity/Parent 等派生列在不可达的防御分支里补齐只会制造
+	// 两份需要同步维护的漂移面。真实字段对齐判据只适用于 hub 路径。
 	//
 	// 2026-07-16: model fallback order matches the canonical fix in
 	// LiveRequestFromTelemetry: client → outbound. Without the hub we
@@ -149,6 +179,16 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 	fallbackModel := clientModel
 	if fallbackModel == "" {
 		fallbackModel = outboundModel
+	}
+	fallbackCredentialID := 0
+	if entry.CredentialID != nil && *entry.CredentialID > 0 {
+		fallbackCredentialID = *entry.CredentialID
+	}
+	// R44: 与 hub 路径（LiveRequestFromTelemetry）同语义补齐会话 ID——
+	// 此前该兜底分支只补了 cache token 两列、漏了 GwSessionID。
+	gwSessionID := ""
+	if entry.GwSessionID != nil {
+		gwSessionID = strings.TrimSpace(*entry.GwSessionID)
 	}
 	return admin.LiveRequest{
 		RequestID:        entry.RequestID,
@@ -163,8 +203,12 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 		PromptTokens:     entry.PromptTokens,
 		CompletionTokens: entry.CompletionTokens,
 		TotalTokens:      totalTokens,
+		CacheReadTokens:  entry.CacheReadTokens,
+		CacheWriteTokens: entry.CacheWriteTokens,
 		CostUSD:          entry.CostUSD,
 		ErrorKind:        entry.ErrorKind,
+		CredentialID:     fallbackCredentialID, // 2026-08-26: 凭据维度（label 不可得时泳道用 "凭据 #ID"）
+		GwSessionID:      gwSessionID,
 	}
 }
 
@@ -258,19 +302,27 @@ func (f *liveStreamEmittedForwarder) enqueue(entry *telemetry.RequestLogEntry) {
 		return
 	}
 	cp := *entry
-	select {
-	case f.entries <- &cp:
-	default:
-		// 2026-08-25: 队列满 → 丢弃并计数。丢 emitted 只意味着该请求晚一点
-		// 出现在泳道(经 persisted 补偿); 丢 persisted 则该 request 的实时卡片
-		// 停在 in_progress, 直到下一条 update 或快照刷新 —— 两者都是显示层
-		// 降级而非数据丢失(request_logs 落库不受影响)。每次丢都打日志会刷爆
-		// 输出, 按 N=50 限频(对齐 admin 包 incidentUpdateDropsLog 模式)。
-		if n := f.dropped.Add(1); n%liveStreamEmittedDropsLog == 1 {
-			slog.Warn("live stream emitted forwarder queue full, dropping live projection",
-				"dropped", n,
-				"request_id", entry.RequestID,
-			)
+	for {
+		select {
+		case f.entries <- &cp:
+			return
+		default:
+		}
+		// 2026-08-26: 队列满 → 按 FIFO 挤出最旧的一条（而非丢弃新到达的
+		// 终态事件）。新事件（尤其 persisted 终态补偿）必须保证入队 —— 旧的
+		// in_progress 投影本来就会被后续终态覆盖，丢它无损；丢 persisted 则
+		// 会让实时卡片永久停在 in_progress（"请求已完成但显示进行中"）。
+		select {
+		case evicted := <-f.entries:
+			if n := f.dropped.Add(1); n%liveStreamEmittedDropsLog == 1 {
+				slog.Warn("live stream emitted forwarder queue full, evicted oldest projection FIFO",
+					"dropped", n,
+					"evicted_request_id", evicted.RequestID,
+					"incoming_request_id", entry.RequestID,
+				)
+			}
+		default:
+			// 并发下刚被其他消费者取走 → 队列已有空位，直接重试发送。
 		}
 	}
 }

@@ -23,10 +23,10 @@ import (
 // reuses streaming's extension whitelist so the two SPAs apply the same
 // NET-010 static-leak protection.
 type MaintainStaticHandler struct {
-	distDir   string
+	distDir  string
 	assetsDir string
 	indexFile string
-	fs        http.Handler
+	fs       http.Handler
 }
 
 // NewMaintainStaticHandler returns nil when distDir is empty or missing,

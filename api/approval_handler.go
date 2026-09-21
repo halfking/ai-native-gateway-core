@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // AuthService defines the interface for authentication and authorization.
@@ -191,7 +192,7 @@ func (h *ApprovalHandler) ApproveApproval(w http.ResponseWriter, r *http.Request
 	}
 
 	var req ApprovalActionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, jsonbody.MaxRequiredBody, true); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -255,7 +256,7 @@ func (h *ApprovalHandler) RejectApproval(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req ApprovalActionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, jsonbody.MaxRequiredBody, true); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

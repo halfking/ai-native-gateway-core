@@ -28,15 +28,16 @@ func TestExecutorsStickyDoubleWriteMultiLevel(t *testing.T) {
 		t.Fatalf("in-memory lookup failed: %+v", cred)
 	}
 
-	// Redis 三级都写入了(显式 level 验证)
+	// Complete session/model requests persist L1 only. L2/L3 must never
+	// contaminate a later session's first load-balancing decision.
 	l1, l2, l3 := buildStickyKeys("t1", &appID, &keyID, "default", "sess1", "m")
-	for level, k := range map[int]string{1: l1, 2: l2, 3: l3} {
-		if k == "" {
-			continue
-		}
-		redisCred, ok := store.GetLevel(context.Background(), level, k)
-		if !ok || redisCred != 9 {
-			t.Errorf("Redis L%d double-write missing for %q: %d ok=%v", level, k, redisCred, ok)
+	redisCred, ok := store.GetLevel(context.Background(), int(StickyLevelSession), l1)
+	if !ok || redisCred != 9 {
+		t.Errorf("Redis L1 double-write missing for %q: %d ok=%v", l1, redisCred, ok)
+	}
+	for level, k := range map[int]string{int(StickyLevelClientModel): l2, int(StickyLevelClient): l3} {
+		if _, ok := store.GetLevel(context.Background(), level, k); ok {
+			t.Errorf("Redis L%d must not be written for a complete session/model request", level)
 		}
 	}
 }
@@ -79,8 +80,8 @@ func TestExecutorsStickyDoubleWriteKeepsLaterLevelsAfterFirstTimeout(t *testing.
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if len(store.writes) != 2 || store.writes[0] != int(StickyLevelClientModel) || store.writes[1] != int(StickyLevelClient) {
-		t.Fatalf("later levels must write after an L1 timeout, got %v", store.writes)
+	if len(store.writes) != 0 {
+		t.Fatalf("complete session/model request must not write L2/L3 after an L1 timeout, got %v", store.writes)
 	}
 }
 
@@ -113,5 +114,28 @@ func TestExecutorsStickyNilStoreDegraded(t *testing.T) {
 	cred := s.GetMultiLevel("t1", &appID, &keyID, "default", "sess1", "m")
 	if !cred.Found || cred.CredentialID != 5 {
 		t.Fatalf("nil-store lookup failed: %+v", cred)
+	}
+}
+
+func TestExecutorsStickyRedisDoesNotUseLegacyL2OrL3ForNewSession(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := ursmcache.NewStickyStore(rdb, 100, time.Hour)
+
+	s := NewStickyCache()
+	s.SetRedisStore(store)
+
+	appID, keyID := 1, 2
+	_, l2, l3 := buildStickyKeys("t1", &appID, &keyID, "default", "old-session", "m")
+	if err := store.SetLevel(context.Background(), int(StickyLevelClientModel), 42, l2, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetLevel(context.Background(), int(StickyLevelClient), 42, l3, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	lookup := s.GetMultiLevel("t1", &appID, &keyID, "default", "new-session", "m")
+	if lookup.Found {
+		t.Fatalf("new session must not inherit legacy L2/L3 Redis binding, got %+v", lookup)
 	}
 }

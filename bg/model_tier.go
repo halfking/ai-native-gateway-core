@@ -13,7 +13,9 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -51,6 +53,7 @@ type ModelTier struct {
 	cur  atomic.Pointer[featuredSet]
 	done chan struct{}
 	once atomic.Bool
+	stop sync.Once
 }
 
 // NewModelTier constructs the tier cache. nil db ⇒ a no-op tier (IsFeaturedModel
@@ -85,9 +88,10 @@ func (m *ModelTier) loop(ctx context.Context) {
 		case <-m.done:
 			return
 		case <-ticker.C:
-			refreshCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			m.refresh(refreshCtx)
 			cancel()
+
 		}
 	}
 }
@@ -98,11 +102,7 @@ func (m *ModelTier) Stop() {
 		return
 	}
 	if m.once.Load() {
-		select {
-		case <-m.done:
-		default:
-			close(m.done)
-		}
+		m.stop.Do(func() { close(m.done) })
 	}
 }
 
@@ -118,6 +118,7 @@ func (m *ModelTier) refresh(ctx context.Context) {
 	if rows, err := m.db.Query(ctx, `
 		SELECT COALESCE(featured_models, ARRAY[]::TEXT[])
 		FROM routing_policy WHERE tenant_id = $1 LIMIT 1`, staticTenant); err == nil {
+		defer rows.Close()
 		for rows.Next() {
 			var arr []string
 			if err := rows.Scan(&arr); err == nil {
@@ -128,7 +129,6 @@ func (m *ModelTier) refresh(ctx context.Context) {
 				}
 			}
 		}
-		rows.Close()
 	} else {
 		slog.Warn("model_tier: load static featured failed", "tenant", staticTenant, "error", err)
 	}
@@ -137,9 +137,13 @@ func (m *ModelTier) refresh(ctx context.Context) {
 	// model-name is COALESCE(outbound_model, client_model). GROUP BY raw_model
 	// dedupes across alias variants (audit issue #11).
 	if topN := settings.GetPlatformInt("probe.featured_usage_top_n", 20); topN > 0 {
-		windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 168)
+		// 2026-09-20 probe-volume policy: default window 72h (3 days) — the
+		// probe scoping window. Also exclude probe traffic: without the flag
+		// probes themselves fed the Top-N, keeping probed-but-unused models
+		// "featured" and deep-pinged forever (self-sustaining loop).
+		windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 72)
 		if windowHours <= 0 {
-			windowHours = 168
+			windowHours = 72
 		}
 		if rows, err := m.db.Query(ctx, `
 			SELECT raw_model FROM (
@@ -148,12 +152,14 @@ func (m *ModelTier) refresh(ctx context.Context) {
 				FROM request_logs_hot rl
 				WHERE rl.success
 				  AND rl.ts > now() - make_interval(hours => $1)
+				  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
 				  AND COALESCE(rl.outbound_model, rl.client_model) IS NOT NULL
 				  AND COALESCE(rl.outbound_model, rl.client_model) <> ''
 				GROUP BY COALESCE(rl.outbound_model, rl.client_model)
 			) t
 			ORDER BY calls DESC
 			LIMIT $2`, windowHours, topN); err == nil {
+			defer rows.Close()
 			for rows.Next() {
 				var model string
 				if err := rows.Scan(&model); err == nil {
@@ -162,7 +168,6 @@ func (m *ModelTier) refresh(ctx context.Context) {
 					}
 				}
 			}
-			rows.Close()
 		} else {
 			slog.Warn("model_tier: load usage top-N failed", "error", err)
 		}

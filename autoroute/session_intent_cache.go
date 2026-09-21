@@ -2,6 +2,7 @@ package autoroute
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"time"
 
@@ -28,6 +29,8 @@ type IntentRedisStore interface {
 // toCacheIntent 将内存态 CachedIntent 转为 Redis 持久化态 ursmcache.Intent。
 // 自定义 string 类型 (TaskType/Profile) 显式 cast 为 string;
 // ClassifiedAt/ExpiresAt 不入库 (Intent 用 LastSeen 自动盖戳)。
+// R48 (2026-09-20): Role/Kind 随行入 Redis（omitempty，旧版本写入的条目
+// 反序列化后为空串 = 未声明，向后兼容）。
 func toCacheIntent(in CachedIntent) ursmcache.Intent {
 	return ursmcache.Intent{
 		TaskType:     string(in.TaskType),
@@ -37,6 +40,8 @@ func toCacheIntent(in CachedIntent) ursmcache.Intent {
 		Profile:      string(in.Profile),
 		Confidence:   in.Confidence,
 		Classifier:   in.Classifier,
+		Role:         string(in.Role),
+		Kind:         string(in.Kind),
 		HitCount:     in.HitCount,
 	}
 }
@@ -52,6 +57,8 @@ func fromCacheIntent(ci ursmcache.Intent) CachedIntent {
 		Profile:      Profile(ci.Profile),
 		Confidence:   ci.Confidence,
 		Classifier:   ci.Classifier,
+		Role:         AgentRole(ci.Role),
+		Kind:         TaskKind(ci.Kind),
 		HitCount:     ci.HitCount,
 	}
 }
@@ -80,6 +87,10 @@ type CachedIntent struct {
 	// from this cached intent. After N hits (default 50), force
 	// reclassification to catch drift (chat → code, or tool adoption).
 	HitCount int
+	// Role/Kind（R48, 2026-09-20）会话角色 + 细粒度任务类型随缓存跨轮
+	// 复用，避免同会话每轮重算；角色变化时 Decide/DecideV2 主动失效。
+	Role AgentRole
+	Kind TaskKind
 }
 
 // SessionIntentCache is a thread-safe in-memory cache of per-session
@@ -126,9 +137,20 @@ func NewRedisSessionIntentCache(_ *redis.Client, ttl time.Duration) *SessionInte
 
 // SetRedisStore 注入 IntentRedisStore(URSM v2 过渡)。
 // Put 双写内存+Redis; Get miss 后回源 Redis 并回填。nil 时退化为纯内存(旧行为)。
+//
+// Typed-nil 归一化（R37, 2026-09-17）：main.go 持 *ursmcache.IntentStore
+// 具体指针注入接口，Redis 不可用时是 typed-nil，下方 `c.redisStore == nil`
+// 判空失效 → redisFallback 在 nil receiver 上调用 IntentStore.Get。
+// 当前被 fpSlotRedis 非 nil 门挡住不可达（main.go 同分支赋值），归一化
+// 防两处来源分叉后复活（同 59eb7fa06 executors/sticky.go 252 crash 类）。
 func (c *SessionIntentCache) SetRedisStore(store IntentRedisStore) {
 	if c == nil {
 		return
+	}
+	if store != nil {
+		if v := reflect.ValueOf(store); v.Kind() == reflect.Pointer && v.IsNil() {
+			store = nil
+		}
 	}
 	c.redisStore = store
 }

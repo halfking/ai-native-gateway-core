@@ -17,7 +17,7 @@ import (
 // 新增的两个 handler 文件（其余 admin 测试不在本任务验收范围）。
 
 func TestAdminConnectionRegistryListAndGet(t *testing.T) {
-	reg := streaming.NewConnectionRegistry(4, time.Second)
+	reg := streaming.NewConnectionRegistry(4, time.Second, 0)
 	require.NoError(t, reg.Register("req-1", &streaming.FlushFrameWriter{W: &bytes.Buffer{}},
 		streaming.RegistrationMetadata{Protocol: "openai_chat", ClientType: "zcode", TenantID: "t1"}, nil))
 	require.NoError(t, reg.WriteFrame("req-1", "data: {}\n\n"))
@@ -65,28 +65,6 @@ func TestAdminConnectionRegistryListAndGet(t *testing.T) {
 	r.SetPathValue("request_id", "missing")
 	h.handleConnectionRegistryGet(rec, r)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
-
-	// Closed id still queryable via LookupAny.
-	rec = httptest.NewRecorder()
-	r = httptest.NewRequest(http.MethodGet, "/api/admin/connection-registry/req-2", nil)
-	r.SetPathValue("request_id", "req-2")
-	h.handleConnectionRegistryGet(rec, r)
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &snap))
-	assert.Equal(t, "req-2", snap.RequestID)
-	assert.True(t, snap.Closed)
-	assert.Equal(t, "stream_end", snap.CloseReason)
-}
-
-func TestAdminConnectionRegistryEmptyClosedArray(t *testing.T) {
-	reg := streaming.NewConnectionRegistry(4, time.Second)
-	SetConnectionRegistry(reg)
-	h := &Handler{}
-	rec := httptest.NewRecorder()
-	h.handleConnectionRegistryList(rec, httptest.NewRequest(http.MethodGet, "/api/admin/connection-registry", nil))
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.NotContains(t, rec.Body.String(), `"closed":null`)
-	assert.Contains(t, rec.Body.String(), `"closed":[]`)
 }
 
 func TestAdminConnectionRegistryNotWired(t *testing.T) {

@@ -8,12 +8,12 @@
 
 ```
 hostname:        iZbp1efbv6824518ejqh8aZ (alibaba-aliyun ECS)
-公网 IP:         47.97.111.154
-私网 IP:         172.16.2.209
-SSH 端口:        25022
-SSH key:         ~/.ssh/id_ed25519 (operator's default)
-DB 接入:         172.16.2.210:5432/llm_gateway (shared PG17 on 252)
-Redis:           172.16.2.210:6389 (252)
+公网 IP:         <env:HOST_154>
+私网 IP:         <env:HOST_154_PRIVATE>
+SSH 端口:        <env:SSH_PORT>
+SSH key:         <env:SSH_KEY_154>
+DB 接入:         <env:COMMON_PG_HOST_252>:<env:COMMON_PG_PORT_252>/llm_gateway
+Redis:           <env:COMMON_REDIS_HOST_252>:<env:COMMON_REDIS_PORT_252>
 services:        llm-gateway-go (systemd, port 8781)
                  nginx (systemd, ports 80/443)
                  casdoor-server (port 8000, 5 days up)
@@ -26,14 +26,14 @@ services:        llm-gateway-go (systemd, port 8781)
 
 ## 2. 启动顺序 (cold start)
 
-1. 252 / 184 先起 (网关 DB / Redis / NPS / cert relay 都在 252)
+1. 252 先起（网关 DB / Redis / NPS / cert relay 都在 252）
 2. 154 自动起来 (`systemd default target`)
 3. `systemctl is-active llm-gateway-go nginx` 都应 `active`
 4. `curl -sS http://127.0.0.1:8781/healthz` 应返回 200 + `2.4.7-...`
-5. 252 nginx 上 `kxpms-on-252.conf` 应当把 `kxpms_llm_backend` 指向 `172.16.2.209:8781` (=154)，**不是** 245。如果发现还是 245，跑：
+5. 252 nginx 上 `kxpms-on-252.conf` 应当把 `kxpms_llm_backend` 指向 `<env:HOST_154_INTERNAL_IP>:8781` (=154)，**不是** 245。如果发现还是 245，跑：
 6. `systemctl show nginx | grep '^Restart='` → 必须 `Restart=always`（vendor unit 默认无，OOM 后不自愈；详见 changelog 2026-08-19）
    ```bash
-   ssh 252 'sed -i "s|server 172.16.2.241:8781 max_fails=2 fail_timeout=5s;|server 172.16.2.209:8781 max_fails=2 fail_timeout=5s;|" /etc/nginx/conf.d/kxpms-on-252.conf'
+   ssh 252 'sed -i "s|server <env:HOST_245_INTERNAL_IP>:8781 max_fails=2 fail_timeout=5s;|server <env:HOST_154_INTERNAL_IP>:8781 max_fails=2 fail_timeout=5s;|" /etc/nginx/conf.d/kxpms-on-252.conf'
    ssh 252 'nginx -t && nginx -s reload'
    ```
 
@@ -118,7 +118,7 @@ ssh 154 '
 - **`/etc/nginx/conf.d/llm-kxpms-cn.conf:27,28`** 仍有两个 `protocol options redefined` 警告 (重复 listen 80 + 443 + IPv4/IPv6)，不影响 serve。
   是 nginx 老问题，可在下次 maintain 时一起改。
 - **`/etc/nginx/conf.d/kxpms-cn-auth.conf:13,14, kxpms-cn-www.conf:13,14`** 警告是其他 service conf，不归 154 管。
-- **252 nginx kxpms-on-252.conf 现在 upstream 指向 172.16.2.209:8781 (154)**。如果 154 down，fallback 是 252 → 252 → 154 自然错误，不会 fallback 到 245 (除非手动改 nginx conf)。
+- **252 nginx kxpms-on-252.conf 现在 upstream 指向 <env:HOST_154_INTERNAL_IP>:8781 (154)**。如果 154 down，fallback 是 252 → 252 → 154 自然错误，不会 fallback 到 245 (除非手动改 nginx conf)。
 
 ## 7. cert 应急 / 失败时
 
@@ -177,7 +177,44 @@ ssh 154 'redis-cli dbsize'
   - DB migration 失败 (schema 漂移)
   - 远端 healthz 30s 没回 (新代码起不来)
 
-### 9.4 "DB 太慢 / connection 池满"
+### 9.4 "deploy 一启动就报 `local lock held`"
+- 报错形如: `ERROR: local lock held at /var/folders/.../T/kx-llm-gateway-deploy-154.lock`，下面打印持有者元数据 (target/source_user/source_host/pid/started_at/commit/version)。
+- `deploy-154.sh --force`（`--force-unlock` 兼容别名）会按顺序恢复 154 目标本地锁、154 远端锁、共享构建锁，然后重新获取全部锁；它不是跳过锁。仅在确认旧部署不应继续运行时使用。
+- 先确认是不是真有另一个 154 deploy 在跑: 看目标锁元数据里的 `pid` 和 `started_at`。
+  - **pid 还活着** → 那个 deploy 还在跑，别解锁，等它自然完成。
+  - **pid 已死 / 是另一个 repo checkout 的陈旧锁** → 用 `--force-unlock`:
+    ```bash
+    bash scripts/deploy-154.sh --force-unlock
+    # 或：bash scripts/deploy-245.sh --force-unlock (245 wrapper 也已支持，详见 245-runbook §9.4)
+    # 单独用：
+    bash scripts/deploy-lib/unlock-local.sh --target 154 --force
+    ```
+  - 默认模式 (无 `--force`) 只是报告，不删；只有加了 `--force` 才会真的 `rm -rf`，并在删之前对仍活着的 holder 发 SIGTERM → SIGKILL。
+- 目标锁按 `${TMPDIR}` 和目标派生：154 使用 `kx-llm-gateway-deploy-154.lock`，245 使用 `kx-llm-gateway-deploy-245.lock`，不同目标互不阻塞。
+- 由于 bump/version、`web/dist` 和本地 stage 共用 checkout，部署还会短暂持有 `${TMPDIR}/kx-llm-gateway-build.lock`；它只保护构建阶段，不能用目标锁的 force-unlock 命令清理。
+
+#### 9.4.1 远端锁残留 (`remote lock held`)
+- 远端锁路径固定为 `/var/lib/llm-gateway-go/deploy.lock` (154/245 同机同路径)。
+- 正常流程：`deploy` / `rollback` 获取后由 `deploy-seamless.sh` 的 EXIT trap 释放。仅当 **SSH 断开 / 主机重启 / 进程被 `kill -9`** 等极端情况下才会残留，导致下一次部署 fail-fast：
+  ```
+  ERROR: remote lock held or initialization failed at /var/lib/llm-gateway-go/deploy.lock on 154
+  ```
+- 先 SSH 进 154 确认是否还有 deploy 进程在跑:
+  ```bash
+  ssh -p 25022 root@<env:HOST_154_IP> 'cat /var/lib/llm-gateway-go/deploy.lock/metadata; ps -p $(awk -F= "/^pid=/{sub(\"pid=\",\"\");print}" /var/lib/llm-gateway-go/deploy.lock/metadata)'
+  ```
+  - **metadata 里的 PID 还活着** → 那个 deploy 还在跑，别解锁，等它自然完成。
+  - **PID 已死 / 主机重启过** → 用 `unlock-remote.sh` 清远端锁 (与本地 `unlock-local.sh` 平行设计):
+    ```bash
+    bash scripts/deploy-lib/unlock-remote.sh 154            # 只报告，不删
+    bash scripts/deploy-lib/unlock-remote.sh 154 --force    # 确认无误后删
+    ```
+  - 默认模式 (无 `--force`) 仅读 metadata 报告持有者，**不删**；加了 `--force` 才 `rm -rf` 远端锁目录。
+  - 与本地 helper 不同：远端 metadata 中的 PID 是发起部署进程的本机 PID，不是 154 上的 PID；`--force` 只清锁、**不杀远端进程**。执行前必须从发起机确认该部署进程已结束。
+  - sanity check：metadata 里的 `target` 必须与传入的 `<target>` 一致 (154 vs 245)，不一致直接拒绝 (防止 SSH 连错主机误删别人的锁)。
+  - 校验入口：`scripts/deploy-lib/test/test-unlock-remote.sh` (14 路 stub e2e，可在无真实 SSH 的情况下回归)。
+
+### 9.5 "DB 太慢 / connection 池满"
 - `docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway -c "SELECT count(*), state FROM pg_stat_activity WHERE datname='llm_gateway' GROUP BY state;"`
 - 若 active 持续 > 50，看 `pg_stat_activity` 中长 query
 - 看 `pg_stat_statements` top 5 slow query, 找 idempotent retry / N+1 pattern

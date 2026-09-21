@@ -8,6 +8,9 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/sessiondigest"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 const (
@@ -44,6 +47,12 @@ type SessionWriterV2 struct {
 	bodiesWriter      *SessionBodiesWriter
 	sessionAggregator sessionUpdater
 	turnLogsWriter    *TurnLogsWriter
+	// memoraWriter（706，可选）：会话首 turn 时写初始环境/上下文快照。
+	// nil 时跳过（旧部署/测试无需该表存在）。
+	memoraWriter *SessionMemoraWriter
+	// detailsWriter（733/734 会话存储解耦 v3，可选）：每 turn 特征层
+	// session_turn_details(_hot) 写入。nil 或表族缺席时跳过。
+	detailsWriter *SessionTurnDetailsWriter
 
 	// aggWg tracks the in-flight aggregate snapshot goroutines so Stop can
 	// wait for them (spec §6.3). Each Write that reaches the aggregate step
@@ -71,11 +80,16 @@ type SessionWriterV2 struct {
 // in tests) instead of NewSessionWriterV2. Idempotent.
 func (w *SessionWriterV2) ensureLifecycle() {
 	w.lifecycleInit.Do(func() {
-		if w.lifecycleCtx == nil {
-			ctx, cancel := context.WithCancel(context.Background())
-			w.lifecycleCtx = ctx
-			w.lifecycleCancel = cancel
+		if w.lifecycleCtx != nil && w.lifecycleCancel != nil {
+			return
 		}
+		parent := w.lifecycleCtx
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithCancel(parent)
+		w.lifecycleCtx = ctx
+		w.lifecycleCancel = cancel
 	})
 }
 
@@ -90,6 +104,19 @@ func NewSessionWriterV2(tw *TurnWriter, bw *SessionBodiesWriter, sa *SessionAggr
 		lifecycleCtx:      ctx,
 		lifecycleCancel:   cancel,
 	}
+}
+
+// SetMemoraWriter wires the optional session_memora snapshot writer (706).
+// Call before the first Write; nil disables the snapshot write.
+func (w *SessionWriterV2) SetMemoraWriter(mw *SessionMemoraWriter) {
+	w.memoraWriter = mw
+}
+
+// SetDetailsWriter wires the optional session_turn_details feature-layer
+// writer (733/734 v3). Call before the first Write; nil (or an unavailable
+// probe) disables the details write — the turn+bodies path is unaffected.
+func (w *SessionWriterV2) SetDetailsWriter(dw *SessionTurnDetailsWriter) {
+	w.detailsWriter = dw
 }
 
 // Stop signals shutdown and waits for all in-flight aggregate goroutines to
@@ -137,6 +164,7 @@ type ProcessedRequest struct {
 	Namespace       string
 	ParentRequestID string
 	TaskType        string
+	ClientType      string // IDE/client type extracted from headers or system prompt
 
 	// Request content
 	RequestBody  []Message // Full request body from client
@@ -162,6 +190,14 @@ type ProcessedRequest struct {
 	ClientModel  string
 	ProviderID   string
 	CredentialID string
+
+	// Quality override for session_turns.quality ('verified' | 'inferred' |
+	// 'partial' | 'rejected'). Empty means deriveTurnQuality classifies the
+	// turn from Success/ErrorKind/ResponseBody. Reserved for callers that
+	// hold richer signals than the writer (e.g. the telemetry quality
+	// processor behind 017_quality_fix_mode.sql); the sessionv2mirror bridge
+	// does not populate it yet.
+	Quality string
 
 	// Usage & cost
 	PromptTokens     int
@@ -194,11 +230,88 @@ type ProcessedRequest struct {
 	T8ResponseStartAt *time.Time
 	T9ResponseEndAt   *time.Time
 
+	// ── 存储优化方案 v2 S1a（migration 706/707）：request_logs 独有数据补采。
+	// 数据源是 telemetry.RequestLogEntry（mirror bridge
+	// entryToProcessedRequest 逐一拷贝）；四组列全部可空、零值即 NULL。
+	// 缺源字段（TraceEvents/SearchText/RequestChecksum/RawModelName 在
+	// RequestLogEntry 上不存在）保留列位、暂为 NULL（方案 §9 视图 NULL
+	// 补位登记）。
+
+	// 访问维度（sessions 存首值做会话归属，turns 存每轮值做计费精确到轮）。
+	APIKeyID           string
+	ApplicationID      string
+	EndUserID          string
+	CustomerID         int64
+	OwnerUser          string
+	ClientIP           string
+	ClientForwardedFor string
+	AgentName          string
+	AgentType          string
+	VirtualClientID    string
+
+	// 730 会话角色归因三列（R50 F15 写入方）：agent_role 取
+	// ResolveAgentRoleFromHeaders 的已解析值（""=未声明，SQL 侧落 'main'
+	// 列默认）；parent_session_id 来自 X-Gw-Parent-Session-Id；parent_task_id
+	// 复用 X-Gw-Task-Id 关联头。三列均会话首值优先（与 706 访问维度同款）。
+	AgentRole       string
+	ParentSessionID string
+	ParentTaskID    string
+
+	// 计费组（credits_charged 是计费事实源，D7 双读校验前提）。
+	CreditsCharged int64
+	CostDisplay    float64
+	CostCurrency   string
+	WorkType       string
+	TokenBand      string
+	UsageSource    string
+
+	// 路由组。
+	IsAutoRequest   bool
+	AutoDecision    string
+	AutoConfidence  float64
+	TaskTypeChosen  string
+	RoutingAttempts json.RawMessage
+	RoutingSummary  string
+	CanonicalID     int64
+	CanonicalModel  string
+	RawModelName    string
+
+	// 诊断组。
+	TraceEvents          json.RawMessage
+	FailureStage         string
+	FailureDetailCode    string
+	UpstreamStatusCode   int
+	UpstreamFinishReason string
+	StreamFirstChunkMs   int
+	StreamChunkCount     int
+	StreamInterrupted    bool
+	StreamDoneSent       bool
+	ClientRequestID      string
+	ClientEndpoint       string
+	ClientTimeout        bool
+	EgressProtocol       string
+
+	// 检索/完整性组。
+	RequestPreview    string
+	ResponsePreview   string
+	TransformSummary  string
+	IdentityHash      string
+	RequestChecksum   string
+	ResponseChecksum  string
+	SystemFingerprint string
+	OriginStage       string
+	OriginActor       string
+
 	// Protocol-specific extensions (from ir.TransportContext)
 	ProviderExtensions map[string]interface{} // Preserves vendor-specific fields
 
 	// Multimodal content tracking
 	MultimodalTypes []string // Types present: ["image", "audio", "video", "document"]
+
+	// Details（733/734 会话存储解耦 v3）：turn 特征层。nil = 无特征可写
+	//（陈旧 bridge / 非 mirror 写方）；键（SessionID/TurnNo）由 Write 在
+	// AppendTurn 返回后补齐。
+	Details *DetailsRecord
 
 	// Processing stages (for turn logs)
 	ProcessingStages []ProcessingStage
@@ -256,6 +369,13 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 			_ = tx.Rollback(lockCtx)
 		}
 	}()
+	// RLS Phase 2 适配 (R41 P1-5): 共享 turn 事务须设 app.current_tenant=req.TenantID
+	// 才能让 EnqueueSessionAggregateOutbox 的 INSERT 命中
+	// session_aggregate_outbox policy 的 tenant 分支；不设则走 GUC fallback
+	// 'default'（或 42501），非 default 租户请求静默丢失聚合快照。
+	if _, err := tx.Exec(lockCtx, "SELECT set_config('app.current_tenant', $1, true)", req.TenantID); err != nil {
+		return fmt.Errorf("set tenant GUC for aggregate outbox: %w", err)
+	}
 	if err := w.turnWriter.LockSessionInTx(lockCtx, tx, req.TenantID, req.SessionID); err != nil {
 		return err
 	}
@@ -288,6 +408,20 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 
 	// 3. Build the turn record and bodies record (computed before the insert so
 	// marshalling errors fail fast while the lock remains held).
+	digestMeta := map[string]any{
+		"prompt_tokens": req.PromptTokens, "completion_tokens": req.CompletionTokens,
+		"cost_usd": req.CostUSD, "latency_ms": int(req.CompletedAt.Sub(req.StartedAt).Milliseconds()),
+		"status_code": req.StatusCode, "success": req.Success, "error_kind": req.ErrorKind,
+		"cache_read_tokens": req.CacheReadTokens, "cache_write_tokens": req.CacheWriteTokens,
+	}
+	digestGovernance := map[string]any{
+		"injection_verdict": req.InjectionVerdict, "output_verdict": req.OutputVerdict,
+		"compression_applied": req.CompressionApplied, "compression_tokens_saved": req.TokensSaved,
+	}
+	digestJSON, err := sessiondigest.Marshal(sessiondigest.Build(requestDelta, req.ResponseBody, digestMeta, digestGovernance, req.Timestamp))
+	if err != nil {
+		return fmt.Errorf("marshal turn digest: %w", err)
+	}
 
 	requestAttachments := extractRequestAttachments(req)
 	responseAttachments := extractResponseAttachments(req)
@@ -350,7 +484,20 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		T9ResponseEndAt:   req.T9ResponseEndAt,
 
 		SourceKind: "live",
-		Quality:    "verified",
+		// Quality is derived from what this turn actually carries, not
+		// hardcoded: the CHECK constraint on session_turns.quality
+		// ('verified'|'inferred'|'partial'|'rejected') is only useful to
+		// operators if it reflects the row's content. Derivation rules
+		// (deriveTurnQuality):
+		//   rejected — terminal failure (Success=false / ErrorKind set)
+		//   partial  — success but zero captured response messages
+		//   verified — success with a non-empty response body
+		// Callers that DID capture richer signals (the telemetry entry
+		// carries QualityFlags/QualityScore from 017_quality_fix_mode.sql)
+		// cannot forward them today because the sessionv2mirror bridge
+		// does not copy them onto ProcessedRequest; when that bridge is
+		// extended, set req.Quality explicitly and it wins over derivation.
+		Quality: deriveTurnQuality(req),
 
 		// Attachment metadata
 		AttachmentCount:      attachmentCount,
@@ -361,8 +508,79 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		// previews from the new messages in this turn so the admin turns-list
 		// UI shows something useful without waiting for the async LLM
 		// summarizer. summarizeMessages already produces a 200-char cap.
-		Title:   summarizeMessages(requestDelta),
-		Summary: summarizeMessages(req.ResponseBody),
+		Title:      summarizeMessages(requestDelta),
+		Summary:    summarizeMessages(req.ResponseBody),
+		DigestJSON: digestJSON,
+
+		// ── 707 补采列搬运（存储优化方案 v2 S1a/S1b）。正文列按
+		// storage.session_turns_bodies_enabled 灰度写入；其余列无条件
+		// 写入（全部可空，mirror bridge 已从 RequestLogEntry 填充）。
+		RequestDeltaJSON:  nil,
+		ResponseDeltaJSON: nil,
+
+		APIKeyID:             req.APIKeyID,
+		ApplicationID:        req.ApplicationID,
+		EndUserID:            req.EndUserID,
+		CustomerID:           req.CustomerID,
+		CreditsCharged:       req.CreditsCharged,
+		CostDisplay:          req.CostDisplay,
+		CostCurrency:         req.CostCurrency,
+		WorkType:             req.WorkType,
+		TokenBand:            req.TokenBand,
+		UsageSource:          req.UsageSource,
+		IsAutoRequest:        req.IsAutoRequest,
+		AutoDecision:         req.AutoDecision,
+		AutoConfidence:       req.AutoConfidence,
+		TaskTypeChosen:       req.TaskTypeChosen,
+		RoutingAttempts:      []byte(req.RoutingAttempts),
+		RoutingSummary:       req.RoutingSummary,
+		CanonicalID:          req.CanonicalID,
+		CanonicalModel:       req.CanonicalModel,
+		RawModelName:         req.RawModelName,
+		TraceEvents:          []byte(req.TraceEvents),
+		FailureStage:         req.FailureStage,
+		FailureDetailCode:    req.FailureDetailCode,
+		UpstreamStatusCode:   req.UpstreamStatusCode,
+		UpstreamFinishReason: req.UpstreamFinishReason,
+		StreamFirstChunkMs:   req.StreamFirstChunkMs,
+		StreamChunkCount:     req.StreamChunkCount,
+		StreamInterrupted:    req.StreamInterrupted,
+		StreamDoneSent:       req.StreamDoneSent,
+		ClientRequestID:      req.ClientRequestID,
+		ClientEndpoint:       req.ClientEndpoint,
+		ClientTimeout:        req.ClientTimeout,
+		EgressProtocol:       req.EgressProtocol,
+		SearchText:           "",
+		RequestPreview:       req.RequestPreview,
+		ResponsePreview:      req.ResponsePreview,
+		TransformSummary:     req.TransformSummary,
+		IdentityHash:         req.IdentityHash,
+		RequestChecksum:      req.RequestChecksum,
+		ResponseChecksum:     req.ResponseChecksum,
+		SystemFingerprint:    req.SystemFingerprint,
+		OriginStage:          req.OriginStage,
+		OriginActor:          req.OriginActor,
+		ClientIP:             req.ClientIP,
+		ClientForwardedFor:   req.ClientForwardedFor,
+		AgentName:            req.AgentName,
+		AgentType:            req.AgentType,
+		VirtualClientID:      req.VirtualClientID,
+	}
+
+	// S1b 灰度开关①：每轮正文同步进 session_turns（宽表路线第一步）。
+	if settings.GetPlatformBool("storage.session_turns_bodies_enabled", false) {
+		if requestDeltaJSON, err := safeJSONMarshal(requestDelta); err == nil {
+			turnRec.RequestDeltaJSON = requestDeltaJSON
+		} else {
+			slog.WarnContext(ctx, "marshal turn request_delta failed; persisting NULL",
+				"session_id", req.SessionID, "request_id", req.RequestID, "error", err)
+		}
+		if responseDeltaJSON, err := safeJSONMarshal(req.ResponseBody); err == nil {
+			turnRec.ResponseDeltaJSON = responseDeltaJSON
+		} else {
+			slog.WarnContext(ctx, "marshal turn response_delta failed; persisting NULL",
+				"session_id", req.SessionID, "request_id", req.RequestID, "error", err)
+		}
 	}
 
 	// 4. Atomic turn + bodies write (spec §6.2). The transaction and lock were
@@ -386,8 +604,93 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		RequestAttachments:  requestAttachments,
 		ResponseAttachments: responseAttachments,
 	}
+	// S1b 灰度开关②：final_full 启用时逐轮停写 outbound_body（每轮的完整
+	// outbound 改由下方 final_full 行承载），避免同一份内容双份落盘
+	//（方案 §6：outbound_body 停写月省 ≈1.8GB）。旧行为完全保留可回切。
+	if settings.GetPlatformBool("storage.session_final_full_enabled", false) {
+		bodiesRec.OutboundBody = nil
+	}
 	if err := w.bodiesWriter.WriteBodiesInTx(lockCtx, tx, bodiesRec); err != nil {
 		return fmt.Errorf("write bodies: %w", err)
+	}
+
+	// 733/734 特征层：与 turn+bodies 同事务（任一失败整体回滚）。键由
+	// AppendTurn 返回的 turnNo 补齐；幂等 upsert 支持晚到回填重放。
+	if req.Details != nil && w.detailsWriter != nil {
+		detailsRec := *req.Details
+		detailsRec.SessionID = req.SessionID
+		detailsRec.TenantID = req.TenantID
+		detailsRec.RequestID = req.RequestID
+		detailsRec.TurnNo = turnNo
+		if detailsRec.Ts.IsZero() {
+			detailsRec.Ts = req.Timestamp
+		}
+		if err := w.detailsWriter.UpsertDetailsInTx(lockCtx, tx, detailsRec); err != nil {
+			return fmt.Errorf("write details: %w", err)
+		}
+	}
+
+	// S1b 灰度开关②（写点）：每会话"最后完整快照"行。方案 D2 原设计为
+	// 会话关闭时拼装写入；本库无自动关闭链路（CloseSession 零调用方，
+	// 2026-09-14 审计），故实现为每轮 upsert 覆盖——同为"最后完整快照"
+	// 终态，migration 708 注释已登记该偏差。turn_no=0 +
+	// request_id='final_full:<session>' + kind='final_full'，经 708 部分唯
+	// 一索引守护每会话每分区至多一行；幂等 upsert 走既有
+	// (tenant_id, request_id, partition_date) 唯一约束。
+	if settings.GetPlatformBool("storage.session_final_full_enabled", false) && len(req.OutboundBody) > 0 {
+		if err := w.bodiesWriter.WriteFinalFullInTx(lockCtx, tx, FinalFullRecord{
+			SessionID:    req.SessionID,
+			TenantID:     req.TenantID,
+			Ts:           req.Timestamp,
+			OutboundBody: req.OutboundBody,
+		}); err != nil {
+			return fmt.Errorf("write final_full: %w", err)
+		}
+	}
+
+	// 706：会话首 turn 持久化时一次写入初始环境/上下文快照（insert-only，
+	// 幂等由 (tenant_id, session_id, partition_date) 唯一约束兜底）。与
+	// turn+bodies 同事务（spec §6.2）；失败即整体回滚重试，无孤儿快照。
+	if w.memoraWriter != nil && turnNo == 1 {
+		if err := w.memoraWriter.WriteMemoraSnapshotInTx(lockCtx, tx, buildMemoraSnapshot(req)); err != nil {
+			return fmt.Errorf("write memora snapshot: %w", err)
+		}
+	}
+
+	// audit-data-closure-C (2026-08-31): enqueue the aggregate snapshot update
+	// in the SAME transaction as the turn + bodies write so its durability
+	// matches the source-of-truth. The reaper (session_aggregate_outbox_reaper)
+	// drains the outbox with FOR UPDATE SKIP LOCKED and exponential backoff,
+	// closing the loop the original 3-attempt in-memory retry could not
+	// guarantee. partition_date uses the request's calendar date (UTC) so the
+	// unique key matches the session_turns partition the row will reconcile.
+	outboxUpdate := SessionUpdate{
+		SessionID:           req.SessionID,
+		TenantID:            req.TenantID,
+		RequestID:           req.RequestID,
+		LastTurnNo:          turnNo,
+		LastRequestSummary:  summarizeMessages(requestDelta),
+		LastResponseSummary: summarizeMessages(req.ResponseBody),
+		LastModel:           req.ClientModel,
+		LastProvider:        req.ProviderID,
+		ClientType:          req.ClientType,
+		ProjectID:           req.ProjectID,
+		APIKeyID:            req.APIKeyID,
+		ApplicationID:       req.ApplicationID,
+		EndUserID:           req.EndUserID,
+		OwnerUser:           req.OwnerUser,
+		ClientIP:            req.ClientIP,
+		AgentName:           req.AgentName,
+		AgentRole:           req.AgentRole,
+		ParentSessionID:     req.ParentSessionID,
+		ParentTaskID:        req.ParentTaskID,
+		TurnIncrement:       1,
+		TokensIncrement:     req.PromptTokens + req.CompletionTokens,
+		CostIncrement:       req.CostUSD,
+		UpdatedAt:           req.Timestamp,
+	}
+	if err := EnqueueSessionAggregateOutbox(lockCtx, tx, outboxUpdate, calendarDate(req.Timestamp)); err != nil {
+		return fmt.Errorf("enqueue session aggregate outbox: %w", err)
 	}
 
 	if err := tx.Commit(lockCtx); err != nil {
@@ -432,8 +735,48 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	// (spec §6.3). The goroutine is tracked by aggWg so Stop can await it,
 	// and bound to lifecycleCtx so a blocked aggregate is cancelled on
 	// shutdown instead of leaking.
+	//
+	// audit-data-closure-C (2026-08-31): a durable copy of this update is
+	// already enqueued in session_aggregate_outbox (see step above) inside
+	// the same transaction as the turn+bodies write. The reaper guarantees
+	// eventual delivery; this in-process call is the fast path so the
+	// snapshot is current within the same request lifecycle whenever the DB
+	// cooperates. On failure the outbox row is the fallback, so this
+	// goroutine no longer needs to be the only line of defense.
 	if w.sessionAggregator != nil {
 		w.ensureLifecycle()
+		// Snapshot every caller-owned field before launching the asynchronous
+		// aggregate update. The telemetry pipeline may reuse or mutate req and
+		// its message slices as soon as Write returns; the goroutine must only
+		// capture this immutable value.
+		update := SessionUpdate{
+			SessionID: req.SessionID,
+			TenantID:  req.TenantID,
+			// 2026-07-28 request-flow Step 3 (spec §6.2): pass RequestID so
+			// the aggregator can claim this turn exactly once and never
+			// double-accumulate token/turn/cost on a replay.
+			RequestID:           req.RequestID,
+			LastTurnNo:          turnNo,
+			LastRequestSummary:  summarizeMessages(requestDelta),
+			LastResponseSummary: summarizeMessages(req.ResponseBody),
+			LastModel:           req.ClientModel,
+			LastProvider:        req.ProviderID,
+			ClientType:          req.ClientType,
+			ProjectID:           req.ProjectID,
+			APIKeyID:            req.APIKeyID,
+			ApplicationID:       req.ApplicationID,
+			EndUserID:           req.EndUserID,
+			OwnerUser:           req.OwnerUser,
+			ClientIP:            req.ClientIP,
+			AgentName:           req.AgentName,
+			AgentRole:           req.AgentRole,
+			ParentSessionID:     req.ParentSessionID,
+			ParentTaskID:        req.ParentTaskID,
+			TurnIncrement:       1,
+			TokensIncrement:     req.PromptTokens + req.CompletionTokens,
+			CostIncrement:       req.CostUSD,
+			UpdatedAt:           req.Timestamp,
+		}
 		w.lifecycleMu.Lock()
 		if w.stopped {
 			w.lifecycleMu.Unlock()
@@ -441,37 +784,20 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		}
 		w.aggWg.Add(1)
 		w.lifecycleMu.Unlock()
-		go func() {
+		go func(update SessionUpdate) {
 			defer w.aggWg.Done()
 			// lifecycleCtx gates the goroutine on shutdown. A small timeout
 			// bounds it so a slow DB can't stall Stop indefinitely even if
 			// the ctx isn't yet cancelled.
 			aggCtx, cancel := context.WithTimeout(w.lifecycleCtx, 30*time.Second)
 			defer cancel()
-			update := SessionUpdate{
-				SessionID: req.SessionID,
-				TenantID:  req.TenantID,
-				// 2026-07-28 request-flow Step 3 (spec §6.2): pass RequestID so
-				// the aggregator can claim this turn exactly once and never
-				// double-accumulate token/turn/cost on a replay.
-				RequestID:           req.RequestID,
-				LastTurnNo:          turnNo,
-				LastRequestSummary:  summarizeMessages(requestDelta),
-				LastResponseSummary: summarizeMessages(req.ResponseBody),
-				LastModel:           req.ClientModel,
-				LastProvider:        req.ProviderID,
-				TurnIncrement:       1,
-				TokensIncrement:     req.PromptTokens + req.CompletionTokens,
-				CostIncrement:       req.CostUSD,
-				UpdatedAt:           req.Timestamp,
-			}
 			if err := w.updateSessionAggregate(aggCtx, update); err != nil {
 				slog.Error("update session snapshot failed after retries",
-					"session_id", req.SessionID,
-					"request_id", req.RequestID,
+					"session_id", update.SessionID,
+					"request_id", update.RequestID,
 					"error", err)
 			}
-		}()
+		}(update)
 	}
 
 	return nil
@@ -545,13 +871,53 @@ func extractRequestDelta(req *ProcessedRequest, submitMode string) []Message {
 		}
 	}
 
-	// Fallback: if delta extraction found nothing, return full body
-	// (This can happen if client sent identical history but we don't detect it)
+	// Fallback: if delta extraction found nothing new, the previous turn's
+	// outbound already covers the entire client history. Returning the full
+	// body here is deliberate: every reader (turn_reader.LoadChain,
+	// outbound_builder.BuildFromDeltas, sessionsummary message_source_v2)
+	// ACCUMULATES request_delta across turns, so persisting an empty delta
+	// would silently drop this turn's user input from the reconstructed
+	// conversation. Full-body fallback re-sends messages the reader may
+	// already have, which the dedup-tolerant assembly paths handle, but never
+	// under-reports. (2026-09 fix: the previous code returned an empty slice
+	// whenever the client re-sent an identical history, e.g. a bare "retry"
+	// with no new user message or an idempotent re-submit.)
 	if len(delta) == 0 {
 		return req.RequestBody
 	}
 
 	return delta
+}
+
+// deriveTurnQuality classifies a turn for the session_turns.quality column
+// (CHECK constraint: 'verified' | 'inferred' | 'partial' | 'rejected',
+// migration 526). Values must reflect the row's content rather than a
+// constant, otherwise the column is dead weight for operators:
+//
+//	rejected — the turn records a terminal failure (Success=false, or an
+//	           ErrorKind survived onto the entry).
+//	partial  — the turn succeeded but we captured no response messages, so
+//	           the bodies row cannot reconstruct what the model said.
+//	verified — the turn succeeded and carries a response body.
+//
+// An explicit req.Quality (when a caller plumbs one through the mirror
+// bridge) always wins, so a future caller with richer signals (telemetry
+// QualityFlags/QualityScore from 017_quality_fix_mode.sql) can override
+// without touching this function.
+func deriveTurnQuality(req *ProcessedRequest) string {
+	if req == nil {
+		return "verified"
+	}
+	if req.Quality != "" {
+		return req.Quality
+	}
+	if !req.Success || req.ErrorKind != "" {
+		return "rejected"
+	}
+	if len(req.ResponseBody) == 0 {
+		return "partial"
+	}
+	return "verified"
 }
 
 // buildMessageSet creates a set of message keys for fast lookup

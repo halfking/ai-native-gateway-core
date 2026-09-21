@@ -123,6 +123,13 @@ export default {
     subtitle: '查看当前实例绑定的 License 状态、到期时间与设备配额',
   },
   upgrade: {
+    contactAdminButton: '联系管理员应用升级',
+
+    notifyAdminBody: '请联系管理员通过 /admin/autoupdate 应用此升级。客户门户无法直接执行升级。',
+    notifyAdminTitle: '需要管理员介入',
+    notifyAdminOk: '我知道了',
+    notifyAdminCopy: '复制版本号',
+
     title: '软件升级',
     subtitle: '检查是否有新版本可用；离线包请前往下载页获取',
   },

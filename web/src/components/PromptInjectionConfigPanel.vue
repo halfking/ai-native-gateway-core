@@ -10,6 +10,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { useActionMessage } from '../composables/useActionMessage'
 import {
   getCategoryMeta,
   getSeverityTagType,
@@ -22,6 +23,9 @@ import {
   type PromptInjectionPolicy,
 } from '../api/promptInjection'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElTag } from 'element-plus'
 // Props:
 //   - moduleEnabled: when false, the panel shows a banner warning that all
 //     settings will be inert. Defaults to true so the panel works standalone
@@ -36,8 +40,9 @@ const router = useRouter()
 // ---------------------------------------------------------------------------
 const loading = ref(true)
 const savingPolicy = ref(false)
-const error = ref('')
-const success = ref('')
+// 审计 R3#10：操作反馈条统一走 useActionMessage（1800ms 保存闪条收敛到
+// successTimeoutMs，timer 清理收进 composable）。
+const { message: success, error, notifySuccess, notifyError, clearError } = useActionMessage({ successTimeoutMs: 1800 })
 
 const policy = ref<PromptInjectionPolicy | null>(null)
 const rules = ref<PromptInjectionRule[]>([])
@@ -52,7 +57,6 @@ const expandedRules = ref<Set<number>>(new Set())
 
 let policySaveTimer: ReturnType<typeof setTimeout> | null = null
 let ruleSeverityTimer: ReturnType<typeof setTimeout> | null = null
-let successClearTimer: ReturnType<typeof setTimeout> | null = null
 const ruleBusy = new Set<number>()
 
 // ---------------------------------------------------------------------------
@@ -60,7 +64,7 @@ const ruleBusy = new Set<number>()
 // ---------------------------------------------------------------------------
 async function load() {
   loading.value = true
-  error.value = ''
+  clearError()
   // Reset state on reload so we don't auto-save the just-loaded policy.
   flushPolicySave(true)
   flushSeverityUpdates(true)
@@ -69,7 +73,7 @@ async function load() {
     policy.value = policyRes
     rules.value = rulesRes.rules
   } catch (e: any) {
-    error.value = e?.message || t('sessions.config.promptInjectionLoadError')
+    notifyError(e?.message || t('sessions.config.promptInjectionLoadError'))
   } finally {
     loading.value = false
   }
@@ -79,7 +83,6 @@ onMounted(load)
 onBeforeUnmount(() => {
   flushPolicySave(true)
   flushSeverityUpdates(true)
-  if (successClearTimer) clearTimeout(successClearTimer)
 })
 
 // ---------------------------------------------------------------------------
@@ -140,12 +143,7 @@ function flushPolicySave(cancelOnly = false) {
 }
 
 function showSavedFlash() {
-  success.value = t('sessions.config.promptInjectionPolicySaveSuccess')
-  if (successClearTimer) clearTimeout(successClearTimer)
-  successClearTimer = setTimeout(() => {
-    success.value = ''
-    successClearTimer = null
-  }, 1800)
+  notifySuccess(t('sessions.config.promptInjectionPolicySaveSuccess'))
 }
 
 function schedulePolicySave() {
@@ -159,7 +157,7 @@ function schedulePolicySave() {
       await updatePolicy(policy.value)
       showSavedFlash()
     } catch (e: any) {
-      error.value = e?.message || t('sessions.config.promptInjectionSaveError')
+      notifyError(e?.message || t('sessions.config.promptInjectionSaveError'))
     } finally {
       savingPolicy.value = false
     }
@@ -683,11 +681,11 @@ const thresholdInvalid = computed(() => {
 .banner { padding: 8px 10px; border-radius: 6px; font-size: 12px; }
 .banner-error { color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border)); background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .banner-success { color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 35%, var(--border)); background: color-mix(in srgb, var(--success) 8%, transparent); }
-.banner-warn { color: #b8821a; border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border)); background: color-mix(in srgb, var(--warning) 8%, transparent); }
+.banner-warn { color: var(--warning-dark); border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border)); background: color-mix(in srgb, var(--warning) 8%, transparent); }
 .threshold-error { color: var(--danger); font-size: 11px; margin: 6px 0 0; }
 .state { color: var(--muted); font-size: 12px; padding: 10px 0; }
 
-@media (max-width: 800px) {
+@media (max-width: 768px) {
   .field-row { grid-template-columns: 1fr; gap: 7px; }
   .switch { justify-self: start; }
   .radio-group { justify-self: start; }

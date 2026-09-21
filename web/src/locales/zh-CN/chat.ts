@@ -1,5 +1,5 @@
 // chat.ts — ChatView 文案。
-// 命名空间：page / sidebar / session / input / modal。
+// 命名空间：page / sidebar / session / input / modal / mode / params。
 export default {
   page: {
     title: '对话',
@@ -58,6 +58,33 @@ export default {
     placeholder: '输入消息…（Enter 发送，Shift+Enter 换行）',
     send: '发送',
     sending: '生成中…',
+    stop: '停止',
+    waitingChat: '正在等待完整回复…',
+  },
+  mode: {
+    label: '响应模式',
+    stream: '流式',
+    chat: 'Chat',
+    badgeStream: '流式',
+    badgeChat: 'Chat',
+  },
+  params: {
+    title: '模型参数',
+    open: '参数',
+    nextTurnHint: '参数变更将在下一轮对话生效。',
+    systemPrompt: '系统提示词',
+    systemPromptPlaceholder: '设定角色、语气与约束…',
+    temperature: 'Temperature',
+    maxTokens: 'Max Tokens',
+    topP: 'Top P',
+    presencePenalty: 'Presence Penalty',
+    frequencyPenalty: 'Frequency Penalty',
+    stop: 'Stop 序列',
+    stopPlaceholder: '用逗号分隔多个 stop',
+    showAdvanced: '显示进阶参数',
+    hideAdvanced: '收起进阶参数',
+    reset: '重置默认',
+    done: '完成',
   },
   modal: {
     summaryTitle: '会话总结',
@@ -66,7 +93,6 @@ export default {
     close: '关闭',
   },
 
-  // 扁平键（供 Vue 组件直接使用）
   loading: '加载中…',
   keyNotSelected: '未选择',
   errorPrefix: '错误：',
@@ -88,4 +114,6 @@ export default {
   sending: '生成中…',
   send: '发送',
   copySummary: '复制总结',
+  suggestStream: '请求超时或等待过久，建议切回流式模式。',
+  aborted: '已停止生成',
 }

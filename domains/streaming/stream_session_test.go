@@ -106,7 +106,7 @@ func TestStreamSessionSerializesHeartbeatAndSemanticFrames(t *testing.T) {
 func TestStreamSessionHeartbeatDoesNotCommitBeforeFirstSemanticFrame(t *testing.T) {
 	rec := newSyncRecorder()
 	session := NewStreamSession(rec, time.Hour, sseKeepaliveComment)
-	gate := NewAttemptCommitGate(ProtocolOpenAIChat, session.writer.SerializedWriter(), GateOptions{Mode: GateModeBuffered})
+	gate := NewAttemptCommitGate(context.Background(), ProtocolOpenAIChat, session.writer.SerializedWriter(), GateOptions{Mode: GateModeBuffered})
 
 	if err := session.Heartbeat(); err != nil {
 		t.Fatalf("heartbeat: %v", err)

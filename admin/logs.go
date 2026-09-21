@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
 )
 
 type requestLogRow struct {
@@ -98,8 +100,10 @@ type requestLogRow struct {
 	// COALESCE(NULLIF(gw_session_id,''),'')). Frontend uses this in
 	// the request-logs list and detail drawer; nil when no title has
 	// been generated or manually set.
-	SessionTitle *string `json:"session_title,omitempty"`
-	CustomerID   *int64  `json:"customer_id,omitempty"`
+	SessionTitle *string    `json:"session_title,omitempty"`
+	CustomerID   *int64     `json:"customer_id,omitempty"`
+	RequestClass *string    `json:"request_class,omitempty"`
+	DueAt        *time.Time `json:"due_at,omitempty"`
 }
 
 type requestLogAggregate struct {
@@ -219,21 +223,22 @@ const requestLogsListCols = `
 	     THEN jsonb_array_length(rl.attachments)
 	     ELSE 0
 	END AS attachment_count,
-	-- 2026-08-06: session title. LEFT JOIN session_titles keyed by
-	-- (task_id, scoped_session_id) where scoped_session_id falls back to ''
-	-- when the request has no gw_session_id, matching the upsert path.
-	st.title AS session_title,
-	rl.customer_id
-`
+		-- 2026-08-06: session title. LEFT JOIN session_titles keyed by
+		-- (task_id, scoped_session_id) where scoped_session_id falls back to ''
+		-- when the request has no gw_session_id, matching the upsert path.
+		st.title AS session_title,
+		rl.customer_id,
+		-- V6-W1.6 R8 (migration 608): request class + scheduled due time.
+		rl.request_class,
+		rl.due_at
+	`
 
-// requestLogsDetailCols extends the list columns with JSONB metadata
-// needed by the detail drawer (outbound_msg_hashes / compression_meta).
-// outbound_body was dropped in migration 573 (LP1); callers needing the
-// outbound payload now fetch via /api/logs/:id/bodies.
-// Used only by getLog (/api/logs/:id).
+// requestLogsDetailCols extends the list columns with the JSONB blobs
+// that remain on request_logs after body payloads moved to
+// request_logs_bodies. Used only by getLog (/api/logs/:id). The full
+// outbound body is fetched separately from the body store.
 const requestLogsDetailCols = requestLogsListCols + `,
-	 rb.outbound_body,
-	rl.outbound_msg_hashes,
+		rl.outbound_msg_hashes,
 	rl.compression_meta,
 	-- 2026-07-01: 完整附件元数据 JSONB 数组 (migration 325)，
 	-- 供详情抽屉的"附件"标签页渲染缩略图/下载链接。
@@ -267,11 +272,8 @@ const requestLogsJoins = `
 	-- list/detail. LATERAL + LIMIT 1 picks exactly one title per row,
 	-- preferring the real-task title over the legacy 'auto' marker.
 	LEFT JOIN LATERAL (
-		SELECT CASE WHEN tstate.tenant_id IS NOT NULL THEN COALESCE(tstate.title, '')
-		            ELSE st.title END AS title
+		SELECT st.title
 		FROM session_titles st
-		LEFT JOIN public.session_title_states tstate
-			ON tstate.tenant_id = rl.tenant_id AND tstate.scoped_session_id = COALESCE(NULLIF(rl.gw_session_id, ''), '')
 		WHERE st.scoped_session_id = COALESCE(NULLIF(rl.gw_session_id, ''), '')
 		  AND st.scoped_session_id <> ''
 		  AND (st.task_id = rl.gw_task_id OR st.task_id = 'auto')
@@ -313,11 +315,6 @@ const requestLogsJoins = `
 	) mo_pick ON TRUE
 `
 
-const requestLogsDetailJoins = `
-	LEFT JOIN request_logs_bodies_with_current_month rb
-		ON rb.request_id = rl.request_id
-` + requestLogsJoins
-
 func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
@@ -330,10 +327,6 @@ func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	if remaining == "top-models" {
 		h.listTopModels(w, r)
-		return
-	}
-	if remaining == "top-problems" {
-		h.handleTopProblems(w, r)
 		return
 	}
 	if remaining == "session-summary" {
@@ -409,6 +402,9 @@ func scanRequestListRow(rows interface {
 		// 2026-08-06: session_titles.title join (see requestLogsJoins).
 		&l.SessionTitle,
 		&l.CustomerID,
+		// V6-W1.6 R8 (migration 610): request class + due time (LAST fixed
+		// columns; the conditional trace_seq append below stays after them).
+		&l.RequestClass, &l.DueAt,
 	}
 	if withTraceSeq {
 		dest = append(dest, &l.TraceSeq)
@@ -426,6 +422,43 @@ func scanRequestListRow(rows interface {
 // (request_body / response_body) that are not part of requestLogRow.
 // See docs/llm-gateway-go/perf/2026-06-24-request-logs-rollout.md.)
 
+// buildModelFilterClause returns the boolean SQL (with $N placeholders) and
+// bound arguments for an exact model-name filter.
+//
+// v is the canonical_name emitted by the model picker. It is matched exactly
+// (case-sensitive `=`), never as a substring: canonical_name is lowercased by
+// migration 396 and the picker echoes it verbatim, so the chosen value equals
+// the stored canonical_name byte-for-byte. Matching with a substring ILIKE
+// ('%v%') would wrongly fold "glm-5.2" together with "glm-5.2-pro" /
+// "glm-5.2-flash" — the operator expects ONLY the selected model's requests.
+//
+// The three OR branches mirror the row's display semantics:
+//  1. row has a canonical_id      → match that canonical's name exactly;
+//  2. client_model has an active alias → match the alias' canonical name
+//     exactly (model_aliases.raw_name is stored lowercase, compare against
+//     lower(client_model));
+//  3. fallback for rows with no canonical mapping → exact client_model.
+func buildModelFilterClause(v string, argIdx int) (clause string, args []any) {
+	clause = fmt.Sprintf(`(
+		EXISTS (
+			SELECT 1 FROM models_canonical mc
+			WHERE mc.id = rl.canonical_id
+			  AND mc.canonical_name = $%d
+		)
+		OR EXISTS (
+			SELECT 1
+			FROM model_aliases ma
+			JOIN models_canonical mc ON mc.id = ma.canonical_id
+			WHERE ma.raw_name = lower(rl.client_model)
+			  AND ma.status = 'active'
+			  AND mc.canonical_name = $%d
+		)
+		OR rl.client_model = $%d
+	)`, argIdx, argIdx+1, argIdx+2)
+	args = []any{v, v, v}
+	return clause, args
+}
+
 func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -440,6 +473,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	start := parseQueryTime(r, "from", now.Add(-24*time.Hour))
 	end := parseQueryTime(r, "to", now)
+	start, end = clampQueryWindow(start, end)
 
 	page := queryInt(r, "page", 1)
 	if page < 1 {
@@ -479,6 +513,15 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	if v := queryIntPtr(r, "provider_id"); v != nil {
 		addFilter("rl.provider_id = $%d", *v)
 	}
+	requestClass := strings.TrimSpace(queryString(r, "request_class"))
+	if requestClass != "" {
+		if requestClass != "immediate" && requestClass != "scheduled" {
+			writeError(w, http.StatusBadRequest, "request_class must be 'immediate' or 'scheduled'")
+			return
+		}
+		addFilter("rl.request_class = $%d", requestClass)
+	}
+
 	if v := queryIntPtr(r, "credential_id"); v != nil {
 		addFilter("rl.credential_id = $%d", *v)
 	}
@@ -514,25 +557,18 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		addFilter("rl.canonical_id = $%d", *v)
 	}
 	if v := strings.TrimSpace(queryString(r, "model")); v != "" {
-		pattern := "%" + v + "%"
-		clauses = append(clauses, fmt.Sprintf(`(
-			EXISTS (
-				SELECT 1 FROM models_canonical mc
-				WHERE mc.id = rl.canonical_id
-				  AND mc.canonical_name ILIKE $%d
-			)
-			OR EXISTS (
-				SELECT 1
-				FROM model_aliases ma
-				JOIN models_canonical mc ON mc.id = ma.canonical_id
-				-- 2026-07-14: model_aliases.raw_name is stored lowercase.
-				WHERE ma.raw_name = lower(rl.client_model)
-				  AND ma.status = 'active'
-				  AND mc.canonical_name ILIKE $%d
-			)
-			OR rl.client_model ILIKE $%d
-		)`, argIdx, argIdx+1, argIdx+2))
-		args = append(args, pattern, pattern, pattern)
+		// 2026-08-29 FIX: exact match, NOT substring ILIKE.
+		//
+		// Before this fix the filter used `ILIKE '%' + v + '%'`, so selecting
+		// "glm-5.2" also returned "glm-5.2-pro" / "glm-5.2-flash" / any
+		// canonical_name or client_model merely *containing* the string. The
+		// UI picker emits models_canonical.canonical_name verbatim, which is
+		// lowercased by migration 396 — so the chosen value equals the stored
+		// canonical_name byte-for-byte and an exact `=` match is safe and is
+		// what the operator expects ("show ONLY this model's requests").
+		clause, margs := buildModelFilterClause(v, argIdx)
+		clauses = append(clauses, clause)
+		args = append(args, margs...)
 		argIdx += 3
 	}
 	if v := strings.TrimSpace(queryString(r, "gw_session_id")); v != "" {
@@ -549,6 +585,13 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		addFilter("rl.usage_source = $%d", v)
+	}
+	if requestClass := strings.TrimSpace(queryString(r, "request_class")); requestClass != "" {
+		if requestClass != "immediate" && requestClass != "scheduled" {
+			writeError(w, http.StatusBadRequest, "request_class must be 'immediate' or 'scheduled'")
+			return
+		}
+		addFilter("rl.request_class = $%d", requestClass)
 	}
 
 	hasTaskFilter := strings.TrimSpace(queryString(r, "gw_task_id")) != ""
@@ -575,8 +618,14 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// Tenant-admin path retains the LEFT JOIN against api_keys so the WHERE
 	// clause on rl.tenant_id is matched by the same row set used for COUNT
 	// and the SUM aggregate below.
-	superCountSQL := "SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE " + where
-	tenantCountSQL := "SELECT COUNT(*) FROM request_logs_with_current_month rl LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
+	// S3 波1（plan §4-S3）：FROM 源可在视图与 session_turns 原生投影间切换
+	//（storage.admin_logs_native_turns_read，默认视图）。两种形态在 rl 别名下
+	// 逐列同形，WHERE/JOIN/扫描零改动。全查询共用一次取值，保证 COUNT/聚合/
+	// 分页列表读到同一行集。
+	logsFrom := logsSourceFromSQL()
+
+	superCountSQL := "SELECT COUNT(*) FROM " + logsFrom + " WHERE " + where
+	tenantCountSQL := "SELECT COUNT(*) FROM " + logsFrom + " LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
 	if IsTenantAdmin(r) {
 		if err := h.db.QueryRow(ctx, tenantCountSQL, args...).Scan(&count); err != nil {
 			slog.Error("admin listLogs count query failed", "scope", "tenant", "error", err)
@@ -618,9 +667,9 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		`
 	var aggFromSQL string
 	if IsTenantAdmin(r) {
-		aggFromSQL = " FROM request_logs_with_current_month rl LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
+		aggFromSQL = " FROM " + logsFrom + " LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
 	} else {
-		aggFromSQL = " FROM request_logs_with_current_month rl WHERE " + where
+		aggFromSQL = " FROM " + logsFrom + " WHERE " + where
 	}
 	if err := h.db.QueryRow(ctx, aggSelect+aggFromSQL, args...).Scan(
 		&promptSum, &completionSum, &cacheReadSum, &cacheWriteSum,
@@ -669,11 +718,11 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		// tenant_admin 路径保留 api_keys JOIN 以匹配同一行集。
 		var byModelFromSQL string
 		if IsTenantAdmin(r) {
-			byModelFromSQL = " FROM request_logs_with_current_month rl" +
+			byModelFromSQL = " FROM " + logsFrom +
 				" LEFT JOIN api_keys ak ON ak.id = rl.api_key_id" +
 				" LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id WHERE " + where
 		} else {
-			byModelFromSQL = " FROM request_logs_with_current_month rl" +
+			byModelFromSQL = " FROM " + logsFrom +
 				" LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id WHERE " + where
 		}
 		modelExpr := `COALESCE(mc.canonical_name, rl.canonical_model, rl.client_model, '未知')`
@@ -730,11 +779,11 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// 外层再对少量行做辅助表 LEFT JOIN + LATERAL。
 	innerSQL := fmt.Sprintf(`
 		SELECT rl.*%s
-		FROM request_logs_with_current_month rl
+		FROM %s
 		WHERE %s
 		ORDER BY %s
 		LIMIT $%d OFFSET $%d
-	`, traceSeqInner, where, orderBy, limitIdx, offsetIdx)
+	`, traceSeqInner, logsFrom, where, orderBy, limitIdx, offsetIdx)
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
 		SELECT %s%s
 		FROM (%s) rl
@@ -791,90 +840,216 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request id")
 		return
 	}
+	omitBody := r.URL.Query().Get("omit_body") == "1" || r.URL.Query().Get("omit_body") == "true"
 
 	// 2026-08-17 BUGFIX: extend outer ctx to 30s for cold-path defense.
+	//
+	// Why 30s: dashboard "实时请求流 → 点击请求" 是高频路径（24h 内 hot 表命中，
+	// 实测 < 100ms），但用户偶尔点"老请求"会触发 Citus columnar scan，
+	// 单 ID 查询可能 30s+（heap idx 无法用，planner 必须 ColumnarScan 全表 +
+	// 反压 JSONB chunk group）。把外层 ctx 设为 30s 是给冷路径留余量，
+	// nginx proxy_read_timeout 默认 1200s 不受影响。
+	//
+	// 为什么不直接用 r.Context()：保留独立 ctx 让两端都能 slog 监控超时事件
+	// （fetchRequestBodies 也会走自己的 hot/cold ctx 而非继承本 ctx）。
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	// 2026-08-25 BUGFIX: ALWAYS run metadata on heap fast path (requestLogsListCols
-	// is body-free, no columnar touch). Body fetched separately by
-	// fetchRequestBodies (cache → hot → columnar). Cold fallback to full view
-	// if not in hot.
-	omitBody := r.URL.Query().Get("omit_body") == "1" || r.URL.Query().Get("omit_body") == "true"
-
 	var detail requestLogDetail
-	row, metaErr := scanRequestListRow(h.db.QueryRow(ctx, fmt.Sprintf(`
+
+	// Detail drawer needs the full payload including outbound_body /
+	// outbound_msg_hashes / compression_meta, so use requestLogsDetailCols
+	// (NOT the slimmed requestLogsListCols used by the list endpoint).
+	// 2026-07-21 Ticket #11: Added LEFT JOIN to request_logs_bodies_with_current_month
+	// to retrieve full request_body and response_body (moved to separate table in #10).
+	// COALESCE ensures backwards compatibility with old data still in request_logs_hot.
+	// 2026-07-06: 使用视图查询，避免遗漏 hot 表数据（migration 341）
+	// 2026-07-23 BUGFIX: request_id 是唯一标识，JOIN 只需匹配 request_id
+	//
+	// 2026-08-17 BUGFIX: dashboard "实时请求流 → 点击请求" 报 "query failed"
+	// (HTTP 500 + db_error "timeout: context deadline exceeded")。
+	// 根因：request_logs_bodies 的 2026_08 月分区是 Citus columnar (2020 MB)，
+	// 不支持 btree 索引，planner 必须 ColumnarScan + 反压 JSONB chunk group，
+	// 单 ID 查询 30s+ timeout，把 getLog 5s context 打爆。dashboard 实时流命中的
+	// 请求体仍在 request_logs_bodies_hot（heap, <1ms），与 columnar 同走一个视图
+	// UNION ALL 被迫全表扫描。
+	//
+	// 修复策略：把 body JOIN 从主查询剥离，拆成两步：
+	//   (1) 主查询只读 request_logs_with_current_month（metadata + 主表内嵌 body）
+	//   (2) 若主表内嵌 body 为空（hot 表已迁移 body 列到 sibling 表），
+	//       单独查 body：先 request_logs_bodies_hot（idx 命中，<1ms），
+	//       找不到再回退到 request_logs_bodies 视图（columnar，慢但可走 20s ctx）。
+	// 这样 dashboard 实时流（24h 内请求）走 hot fast path，不会再 5s timeout。
+	err = h.db.QueryRow(ctx, fmt.Sprintf(`
 		SELECT %s
-		  FROM request_logs_hot rl
+		  FROM %s
 		%s
-		 WHERE rl.request_id = $1
+		 WHERE (rl.request_id = $1 OR rl.client_request_id = $1)
 		   AND ($2 OR rl.tenant_id = $3)
-		 ORDER BY rl.ts DESC
+		 ORDER BY CASE WHEN rl.request_id = $1 THEN 0 ELSE 1 END, rl.ts DESC
 		 LIMIT 1
-	`, requestLogsListCols, requestLogsJoins), requestID, !IsTenantAdmin(r), GetTenantID(r)), false)
-
-	coldPath := false
-	if errors.Is(metaErr, sql.ErrNoRows) {
-		coldPath = true
-		row, metaErr = scanRequestListRow(h.db.QueryRow(ctx, fmt.Sprintf(`
-			SELECT %s
-			  FROM request_logs_with_current_month rl
-			%s
-			 WHERE rl.request_id = $1
-			   AND ($2 OR rl.tenant_id = $3)
-			 ORDER BY rl.ts DESC
-			 LIMIT 1
-		`, requestLogsListCols, requestLogsJoins), requestID, !IsTenantAdmin(r), GetTenantID(r)), false)
-	}
-
-	if metaErr != nil {
-		if errors.Is(metaErr, sql.ErrNoRows) {
+		`, requestLogsDetailCols, logsSourceFromSQL(), requestLogsJoins), requestID, IsSuperAdminOrLegacy(r), GetTenantID(r)).Scan(
+		&detail.Ts,
+		&detail.RequestID,
+		&detail.APIKeyID,
+		&detail.EndUserID,
+		&detail.ClientModel,
+		&detail.OutboundModel,
+		&detail.CredentialID,
+		&detail.CredentialLabel,
+		&detail.ProviderID,
+		&detail.ProviderName,
+		&detail.ProviderCode,
+		&detail.ClientProfile,
+		&detail.RequestMode,
+		&detail.PromptTokens,
+		&detail.CompletionTokens,
+		&detail.CacheReadTokens,
+		&detail.CacheWriteTokens,
+		&detail.TotalTokens,
+		&detail.CostUSD,
+		&detail.CostDisplay,
+		&detail.CostCurrency,
+		&detail.LatencyMs,
+		&detail.Success,
+		&detail.RequestStatus,
+		&detail.ErrorKind,
+		&detail.SearchText,
+		&detail.IdentityHash,
+		&detail.VirtualClientID,
+		&detail.VirtualIP,
+		&detail.VirtualMAC,
+		&detail.AffinityHit,
+		&detail.RequestChecksum,
+		&detail.ResponseChecksum,
+		&detail.TransformRuleID,
+		&detail.EgressProtocol,
+		&detail.FailureStage,
+		&detail.FailureDetailCode,
+		&detail.UpstreamFinishReason,
+		&detail.RequestPreview,
+		&detail.TransformSummary,
+		&detail.ResponsePreview,
+		&detail.StreamFirstChunkMs,
+		&detail.StreamChunkCount,
+		&detail.StreamDoneReceived,
+		&detail.StreamInterrupted,
+		&detail.StreamDoneSent,
+		&detail.UsageSource,
+		&detail.GwSessionID,
+		&detail.GwTaskID,
+		&detail.APIKeyPrefix,
+		&detail.APIKeyOwnerUser,
+		&detail.ApplicationCode,
+		&detail.CanonicalName,
+		&detail.CanonicalModel, // 2026-07-27: 标准模型名 (migration 458)
+		&detail.AgentName,      // 2026-07-27: 客户端类型
+		&detail.AgentType,      // 2026-07-27: 客户端分组
+		&detail.ClientProtocol, // 2026-07-27: 客户端协议
+		&detail.ProviderModel,
+		&detail.CreditsCharged,
+		&detail.OutboundMsgCount,
+		&detail.OutboundTokenEst,
+		&detail.CompressionStrategy,
+		&detail.CompressionReason,
+		&detail.ParentRequestID,
+		// 2026-07-01: attachment_count (migration 325). Same COALESCE expression
+		// as the list query; re-evaluated here so the detail payload also
+		// exposes the count without forcing the client to parse attachments.
+		&detail.AttachmentCount,
+		// 2026-08-06: session_titles.title (see requestLogsListCols).
+		&detail.SessionTitle,
+		// rl.customer_id is in SELECT position 67 (after session_title); see
+		// requestLogsListCols. The list endpoint scans &l.CustomerID; we mirror
+		// it here so detail payload also exposes the customer linkage.
+		&detail.CustomerID,
+		// rl.request_class / rl.due_at follow customer_id (SELECT positions
+		// 68 and 69). Position must mirror requestLogsListCols order — see
+		// 2026-08-28 BUGFIX note above regarding RequestClass/DueAt duplication.
+		&detail.RequestClass, &detail.DueAt,
+		&detail.OutboundMsgHashes,
+		&detail.CompressionMeta,
+		// 2026-07-01: 完整附件元数据 JSONB (migration 325)。
+		&detail.Attachments,
+		&detail.RoutingAttempts,
+		&detail.RoutingSummary,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "request log not found")
 			return
 		}
+		// 2026-08-17 BUGFIX: log elapsed time on metadata scan failure.
+		// Distinct context: metadata query hit columnar scan and exceeded the
+		// 30s outer ctx. We distinguish hot-miss vs columnar-cold via the
+		// elapsed duration in logs so ops can triage which path to fix next.
 		metaElapsed := time.Since(start)
 		slog.WarnContext(ctx, "admin getLog scan failed",
 			"request_id", requestID,
 			"elapsed_ms", metaElapsed.Milliseconds(),
-			"cold_path", coldPath,
-			"error", metaErr.Error())
+			"error", err.Error())
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"error": map[string]any{
 				"detail":     "query failed",
-				"db_error":   metaErr.Error(),
+				"db_error":   err.Error(),
 				"request_id": requestID,
 			},
 		})
 		return
 	}
-
-	detail.requestLogRow = row
 	metaElapsed := time.Since(start)
 	if metaElapsed > 1*time.Second {
 		slog.InfoContext(ctx, "admin getLog metadata slow",
-			"request_id", requestID, "elapsed_ms", metaElapsed.Milliseconds(),
-			"cold_path", coldPath)
+			"request_id", requestID, "elapsed_ms", metaElapsed.Milliseconds())
 	}
 
 	if !omitBody {
+		// Bodies are keyed by the gateway-generated request_id. A lookup by
+		// client_request_id must therefore switch to the canonical ID returned by
+		// the metadata row before reading body storage or caching the result.
+		canonicalRequestID := detail.RequestID
 		var bodyErr error
-		detail.RequestBody, detail.ResponseBody, bodyErr = h.fetchRequestBodies(ctx, requestID)
+		detail.RequestBody, detail.ResponseBody, bodyErr = h.fetchRequestBodies(ctx, canonicalRequestID)
 		if bodyErr != nil {
+			if errors.Is(bodyErr, requestdetail.ErrBodyTooLarge) {
+				writeError(w, http.StatusRequestEntityTooLarge, "request detail body exceeds size limit")
+				return
+			}
+			// sql.ErrNoRows（两端都没找到 body）是预期情况 — 不打 WARN 噪音。
+			// transport 错误（ctx cancel, conn refused, ...）才打 WARN 便于排查。
 			if !errors.Is(bodyErr, sql.ErrNoRows) {
 				slog.WarnContext(ctx, "admin getLog body fetch failed",
-					"request_id", requestID,
+					"request_id", canonicalRequestID,
 					"total_elapsed_ms", time.Since(start).Milliseconds(),
 					"error", bodyErr.Error())
 			}
+			// body 缺失不应让详情接口 500 — metadata 已成功返回，前端可正常展示
+			// 请求/响应以外的所有字段（latency/tokens/cost/model…）。只把 body 置 nil。
 			detail.RequestBody = nil
 			detail.ResponseBody = nil
 		}
-	}
-	if len(detail.OutboundBody) > 0 {
-		detail.OutboundBody = normalizeJSONForAPI(detail.OutboundBody)
+		detail.OutboundBody, bodyErr = h.fetchRequestOutboundBody(ctx, canonicalRequestID)
+		if bodyErr == nil {
+			if err := validatePersistedBodySize(detail.OutboundBody); err != nil {
+				writeError(w, http.StatusRequestEntityTooLarge, "request detail body exceeds size limit")
+				return
+			}
+		}
+		if bodyErr != nil && !errors.Is(bodyErr, sql.ErrNoRows) {
+			slog.WarnContext(ctx, "admin getLog outbound body fetch failed",
+				"request_id", canonicalRequestID,
+				"total_elapsed_ms", time.Since(start).Milliseconds(),
+				"error", bodyErr.Error())
+			detail.OutboundBody = nil
+		}
+		// Outbound body: it's already a JSON RawMessage from JSONB scan; convert to
+		// a structured payload so the UI can render it as a message list.
+		if len(detail.OutboundBody) > 0 {
+			detail.OutboundBody = normalizeJSONForAPI(detail.OutboundBody)
+		}
 	}
 	if len(detail.OutboundMsgHashes) > 0 {
 		detail.OutboundMsgHashes = normalizeJSONForAPI(detail.OutboundMsgHashes)
@@ -911,6 +1086,38 @@ func normalizeJSONForAPI(raw json.RawMessage) json.RawMessage {
 // 返回值约定：cache hit → (body, body, nil)；hot 命中 → (body, body, nil)；
 // cold 命中 → (body, body, nil)；两边都没行 → (nil, nil, sql.ErrNoRows)；
 // transport 错误 → (nil, nil, err)。caller 把 body 置 nil 但 metadata 仍 200。
+func (h *Handler) fetchRequestOutboundBody(ctx context.Context, requestID string) (json.RawMessage, error) {
+	var raw []byte
+	hotCtx, hotCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer hotCancel()
+	err := h.db.QueryRow(hotCtx, `
+		SELECT outbound_body::text
+		  FROM request_logs_bodies_hot
+		 WHERE request_id = $1
+		 LIMIT 1
+	`, requestID).Scan(&raw)
+	if err == nil {
+		return json.RawMessage(raw), nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		slog.WarnContext(ctx, "admin fetchRequestOutboundBody hot scan failed",
+			"request_id", requestID, "error", err.Error())
+	}
+
+	coldCtx, coldCancel := context.WithTimeout(ctx, 20*time.Second)
+	defer coldCancel()
+	err = h.db.QueryRow(coldCtx, `
+		SELECT outbound_body::text
+		  FROM request_logs_bodies_with_current_month
+		 WHERE request_id = $1
+		 LIMIT 1
+	`, requestID).Scan(&raw)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(raw), nil
+}
+
 func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (requestBody, responseBody any, err error) {
 	start := time.Now()
 
@@ -941,6 +1148,9 @@ func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (req
 		 LIMIT 1
 	`, requestID)
 	if scanErr := row.Scan(&rb, &ob); scanErr == nil {
+		if err := validatePersistedBodySize(rb, ob); err != nil {
+			return nil, nil, err
+		}
 		body, resp := decodeStoredBodyForAdmin(rb), decodeStoredBodyForAdmin(ob)
 		h.bodyFetchCache.Put(requestID, body, resp)
 		elapsed := time.Since(start)
@@ -983,6 +1193,9 @@ func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (req
 		// 下一次请求能 retry（rule 22 §4 错误缓存防抖）。
 		return nil, nil, scanErr
 	}
+	if err := validatePersistedBodySize(rb, ob); err != nil {
+		return nil, nil, err
+	}
 	body, resp := decodeStoredBodyForAdmin(rb), decodeStoredBodyForAdmin(ob)
 	h.bodyFetchCache.Put(requestID, body, resp)
 	elapsed := time.Since(start)
@@ -996,15 +1209,24 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	// 2026-08-25: 5s budget was too tight for wide time ranges — models_canonical
-	// LATERAL JOIN over request_logs_with_current_month scans all ATTACHED
-	// partitions including columnar. Extend to 30s to mirror listLogs/getLog.
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	// 2026-08-26: the top-models dashboard widget is a "recent hot models"
+	// view. It used request_logs_with_current_month, which is
+	// `request_logs_hot UNION ALL request_logs` — the parent monthly table
+	// brings every ATTACHED columnar partition into the scan even for a
+	// 72h window. Switch the source to request_logs_hot directly (heap,
+	// ~7 days retention by promote_request_logs_hot_to_partition). For
+	// ranges that exceed the hot-table window the widget sees fewer rows
+	// than before; that is acceptable because top-models is a "what is hot
+	// right now" surface and an older window would force the same columnar
+	// scan we are trying to avoid. Restored 2026-08-27 after the
+	// d2cbaf88b-lineage merge dropped it.
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	now := time.Now().UTC()
 	start := parseQueryTime(r, "from", now.Add(-24*time.Hour))
 	end := parseQueryTime(r, "to", now)
+	start, end = clampQueryWindow(start, end)
 	limit := queryInt(r, "limit", 20)
 	if limit < 1 {
 		limit = 1
@@ -1019,7 +1241,7 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 			COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS canonical_name,
 			COALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model) AS display_name,
 			COUNT(*) AS request_count
-		FROM request_logs_with_current_month rl
+		FROM request_logs_hot rl
 		LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
 		LEFT JOIN LATERAL (
 			SELECT canonical_id
@@ -1032,11 +1254,9 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND rl.client_model IS NOT NULL AND rl.client_model != ''
-		-- 2026-08-25: GROUP BY 必须用完整 COALESCE 表达式，不能用别名 canonical_id。
-		-- request_logs_with_current_month view 自身有 canonical_id 列（FK），与
-		-- SELECT 的别名冲突，触发 PostgreSQL "column reference 'canonical_id' is ambiguous"。
-		-- canonical_name / display_name 同理。Ordinal position (1,2,3) 也可行，
-		-- 但显式表达式对 review / 调式更友好。
+		-- 2026-08-25: GROUP BY must use full COALESCE expressions, not the
+		-- SELECT aliases (rl.canonical_id / canonical_name / display_name
+		-- collide with view columns and trigger "column reference is ambiguous").
 		GROUP BY COALESCE(mc.id, mc2.id),
 		         COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model),
 		         COALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model)
@@ -1044,8 +1264,7 @@ func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
 		LIMIT $3
 	`, start, end, limit)
 	if err != nil {
-		slog.WarnContext(ctx, "listTopModels query failed", "error", err.Error())
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	defer rows.Close()
@@ -1083,10 +1302,22 @@ func parseQueryTime(r *http.Request, key string, def time.Time) time.Time {
 	return def.UTC()
 }
 
-// parseQueryTimeStrict is like parseQueryTime but returns ok=false when a
-// non-empty value fails to parse, so callers can reject malformed timestamps
-// with a 400 instead of silently falling back to the default (which would
-// answer a different time range than the client requested).
+// maxLogQueryWindow caps user-supplied from/to spans on the log list/stats
+// surfaces: from=1970 would otherwise turn the list COUNT/SUM aggregates into
+// full partitioned-table scans (R37). 366 days matches the usage-surface cap.
+const maxLogQueryWindow = 366 * 24 * time.Hour
+
+// clampQueryWindow enforces the cap, keeping `end` anchored and pulling
+// `start` forward when the span exceeds it.
+func clampQueryWindow(start, end time.Time) (time.Time, time.Time) {
+	if end.Sub(start) > maxLogQueryWindow {
+		return end.Add(-maxLogQueryWindow), end
+	}
+	return start, end
+}
+
+// parseQueryTimeStrict parses the same timestamp forms accepted by
+// parseQueryTime, but tells callers when a provided value was invalid.
 func parseQueryTimeStrict(r *http.Request, key string, def time.Time) (time.Time, bool) {
 	raw := strings.TrimSpace(r.URL.Query().Get(key))
 	if raw == "" {
@@ -1097,7 +1328,18 @@ func parseQueryTimeStrict(r *http.Request, key string, def time.Time) (time.Time
 			return ts.UTC(), true
 		}
 	}
-	return def.UTC(), false
+	return time.Time{}, false
+}
+
+func validatePersistedBodySize(parts ...[]byte) error {
+	total := int64(0)
+	for _, part := range parts {
+		total += int64(len(part))
+		if total > requestdetail.MaxBodyFileSize {
+			return fmt.Errorf("%w: %d bytes (limit %d)", requestdetail.ErrBodyTooLarge, total, requestdetail.MaxBodyFileSize)
+		}
+	}
+	return nil
 }
 
 func decodeStoredBodyForAdmin(raw []byte) any {

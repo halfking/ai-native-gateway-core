@@ -120,16 +120,19 @@ HTTP/SSE
 availability / tenant / protocol / model filters
   -> URSM or compatible state backend
   -> tier + billing round + sticky constraints
-  -> P2C or Bandit ordering
+  -> P2C ordering（Bandit 分支已于 2026-09-19 删除）
   -> dispatch candidate execution and failover
 ```
 
-`cost-optimized`、`cache-optimized`、`context-aware`、`headroom` 评分器已经存在，但当前主要用于 shadow comparison；不能描述为默认 active routing mode。详见 [`routing-and-state.md`](routing-and-state.md)。
+`cost-optimized`、`cache-optimized`、`context-aware`、`headroom` 评分器已经存在，当前仍主要用于 shadow comparison；不能将具名 scorer 描述为默认 active routing mode（但边际成本惩罚自 2026-09-19 起默认折入 P2C 综合分，env `LLM_GATEWAY_ROUTING_W_COST` 可关）。详见 [`routing-and-state.md`](routing-and-state.md)。
 
 ### 3.3 重试、流式和安全边界
 
 - Dispatch failover、executor 协议重试、Goal retry、request survival 与可选 stream retry 共同存在。
 - stream retry 只应处理首字节前可安全重试的故障；首字节后要遵循流一致性和客户端可见性规则。
+- OpenAI-compatible 流式响应在首帧、empty-stream gate 缓冲和主循环共用 vendor sanitizer；MiniMax 的 `base_resp.status_code` 必须在字段删除前检测，Zhipu/DeepSeek/Doubao 只执行各自字段过滤，避免跨厂商误分类。实现集中在 `internal/vendorstrip`，旧 streaming API 仅作为兼容 adapter。
+- `catalog_code` 在流式接线中统一 trim/lower；空 catalog 仅按已解析的顶层 vendor 字段自动识别，不按用户文本子串判断。Ernie/Baidu 没有 strip 接线，`search_info.search_results[]` 透传。
+- 非 SSE JSON 只有标准 `error` envelope 或显式顶层 `type`/`code` 才会被当作错误；孤立的顶层 `message` 不会中断正常响应。SSE 单行由 `SSEMaxLineBytes` 按 byte 限制，超限不静默截断。
 - 当前存在多层 retry budget/backoff；统一 request-level retry contract 是 `TARGET`，在此之前必须用集成测试约束最大上游尝试和计费语义。
 
 ---

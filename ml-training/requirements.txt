@@ -1,0 +1,10 @@
+# P2.4 ML训练管道核心依赖
+# 安装: pip install -r requirements.txt
+# Python >= 3.11 (在 3.13/3.14 上验证)
+
+scikit-learn>=1.5
+pandas>=2.2
+pyarrow>=17.0
+numpy>=1.26
+PyYAML>=6.0
+joblib>=1.3

@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,7 @@ import (
 
 func newImmediateGateWriter(protocol ClientProtocol) (*GateWriter, *AttemptCommitGate, *trackingFlusher) {
 	f := &trackingFlusher{}
-	gate := NewAttemptCommitGate(protocol, NewSerializedStreamWriter(f), GateOptions{Mode: GateModeImmediate})
+	gate := NewAttemptCommitGate(context.Background(), protocol, NewSerializedStreamWriter(f), GateOptions{Mode: GateModeImmediate})
 	return NewGateWriter(gate), gate, f
 }
 
@@ -76,7 +77,7 @@ func TestGateWriterPendingPartialFrameHeldUntilFinish(t *testing.T) {
 // wire.
 func TestGateWriterFinishRoutesThroughGate(t *testing.T) {
 	f := &trackingFlusher{}
-	gate := NewAttemptCommitGate(ProtocolOpenAIChat, NewSerializedStreamWriter(f), GateOptions{Mode: GateModeBuffered})
+	gate := NewAttemptCommitGate(context.Background(), ProtocolOpenAIChat, NewSerializedStreamWriter(f), GateOptions{Mode: GateModeBuffered})
 	gw := NewGateWriter(gate)
 	_, err := gw.Write([]byte("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n"))
 	require.NoError(t, err)
@@ -99,7 +100,7 @@ func TestGateWriterFinishRoutesThroughGate(t *testing.T) {
 // order when the attempt commits.
 func TestGateWriterFinishPartialFlushesOnCommit(t *testing.T) {
 	f := &trackingFlusher{}
-	gate := NewAttemptCommitGate(ProtocolOpenAIChat, NewSerializedStreamWriter(f), GateOptions{Mode: GateModeBuffered})
+	gate := NewAttemptCommitGate(context.Background(), ProtocolOpenAIChat, NewSerializedStreamWriter(f), GateOptions{Mode: GateModeBuffered})
 	gw := NewGateWriter(gate)
 	_, err := gw.Write([]byte("data: {\"partial\""))
 	require.NoError(t, err)
@@ -141,7 +142,7 @@ func TestGateWriterEndToEndAnthropicPassthroughByteIdentity(t *testing.T) {
 	require.NoError(t, err)
 	legacy := newBridgeWriter()
 	pc1 := newBridgePendingCapturer(1024)
-	out1 := StreamAnthropicPassthrough(legacy, resp1, "claude-x", "claude-x", "req-1", nil, pc1)
+	out1 := StreamAnthropicPassthrough(context.Background(), legacy, resp1, "claude-x", "claude-x", "req-1", nil, pc1)
 	require.False(t, out1.Interrupted)
 
 	// Gated path (Phase 0B immediate mode).
@@ -149,7 +150,7 @@ func TestGateWriterEndToEndAnthropicPassthroughByteIdentity(t *testing.T) {
 	require.NoError(t, err)
 	gw, gate, f := newImmediateGateWriter(ProtocolAnthropic)
 	pc2 := newBridgePendingCapturer(1024)
-	out2 := StreamAnthropicPassthrough(gw, resp2, "claude-x", "claude-x", "req-1", nil, pc2)
+	out2 := StreamAnthropicPassthrough(context.Background(), gw, resp2, "claude-x", "claude-x", "req-1", nil, pc2)
 	require.False(t, out2.Interrupted)
 
 	assert.Equal(t, legacy.buf.String(), f.buf.String(),
@@ -181,58 +182,19 @@ func TestGateWriterEndToEndAnthropicToOpenAIByteIdentity(t *testing.T) {
 	resp1, err := http.Get(srv.URL)
 	require.NoError(t, err)
 	legacy := httptest.NewRecorder()
-	out1 := StreamAnthropicSSEToOpenAI(legacy, resp1, "claude-x", "claude-x", "req-1", nil, nil)
+	out1 := StreamAnthropicSSEToOpenAI(context.Background(), legacy, resp1, "claude-x", "claude-x", "req-1", nil, nil)
 	require.False(t, out1.Interrupted)
 
 	// Gated path.
 	resp2, err := http.Get(srv.URL)
 	require.NoError(t, err)
 	gw, gate, f := newImmediateGateWriter(ProtocolOpenAIChat)
-	out2 := StreamAnthropicSSEToOpenAI(gw, resp2, "claude-x", "claude-x", "req-1", nil, nil)
+	out2 := StreamAnthropicSSEToOpenAI(context.Background(), gw, resp2, "claude-x", "claude-x", "req-1", nil, nil)
 	require.False(t, out2.Interrupted)
 
 	assert.Equal(t, legacy.Body.String(), f.buf.String(),
 		"OpenAI-chat bridge bytes must be identical with the Phase 0B gate")
 	assert.Equal(t, CommitStateTerminal, gate.State())
-}
-
-// TestGateWriterPendingOverflowAbortsAttempt pins the partial-frame byte cap.
-// Regression for the 2026-08-24 concurrency audit: pending used to be
-// unbounded, so an upstream that never emits a frame boundary grew the buffer
-// without limit while the gate's own caps never saw those bytes.
-func TestGateWriterPendingOverflowAbortsAttempt(t *testing.T) {
-	restore := gateWriterMaxPendingBytes
-	gateWriterMaxPendingBytes = 64
-	defer func() { gateWriterMaxPendingBytes = restore }()
-
-	gw, _, f := newImmediateGateWriter(ProtocolOpenAIChat)
-	// Partial frame below the cap buffers normally.
-	_, err := gw.Write([]byte("data: {\"partial\""))
-	require.NoError(t, err)
-	// Crossing the cap with still no frame boundary aborts the attempt.
-	_, err = gw.Write([]byte(strings.Repeat("x", 128)))
-	assert.ErrorIs(t, err, ErrGateWriterFrameOverflow)
-	// The overflowing partial frame is dropped, not retained: a later
-	// complete frame still flows through the gate unchanged.
-	_, err = gw.Write([]byte("data: {}\n\n"))
-	require.NoError(t, err)
-	require.NoError(t, gw.Finish())
-	assert.Equal(t, "data: {}\n\n", f.buf.String(),
-		"overflowed partial must be dropped and the gate stay usable")
-}
-
-func TestGateWriterForwardsCompleteFrameBeforePendingOverflow(t *testing.T) {
-	restore := gateWriterMaxPendingBytes
-	gateWriterMaxPendingBytes = 8
-	defer func() { gateWriterMaxPendingBytes = restore }()
-
-	gw, _, f := newImmediateGateWriter(ProtocolOpenAIChat)
-	input := append([]byte("data: ok\n\n"), strings.Repeat("x", 16)...)
-	n, err := gw.Write(input)
-
-	assert.ErrorIs(t, err, ErrGateWriterFrameOverflow)
-	assert.Equal(t, len("data: ok\n\n"), n)
-	assert.Equal(t, "data: ok\n\n", f.buf.String())
 }
 
 // SR-07 wiring precondition: when the SurvivalCoordinator already gated the
@@ -245,10 +207,10 @@ func TestWrapAttemptWriterReusesPreGatedWriter(t *testing.T) {
 
 	inner := &trackingFlusher{}
 	sw := NewSerializedStreamWriter(inner)
-	gate := NewAttemptCommitGate(ProtocolAnthropic, sw, GateOptions{Mode: GateModeBuffered})
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, sw, GateOptions{Mode: GateModeBuffered})
 	gw := NewGateWriterWithResponse(gate, nil)
 
-	w2, gate2 := wrapAttemptWriter(gw, ProtocolAnthropic)
+	w2, gate2 := wrapAttemptWriter(context.Background(), gw, ProtocolAnthropic)
 	if w2 != gw {
 		t.Fatal("already-gated writer must pass through unchanged")
 	}

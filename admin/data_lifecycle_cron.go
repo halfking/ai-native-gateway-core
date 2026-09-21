@@ -14,7 +14,7 @@ type HotCronConfig struct {
 	// RunAtHour / RunAtMinute 每天本地时间 HH:MM 触发；默认 02:00
 	RunAtHour   int
 	RunAtMinute int
-	// RetentionHours 迁移超过 N 小时的数据；默认 24（覆盖 hot 表默认保留 1 天）
+	// RetentionHours 迁移超过 N 小时的数据；默认 8（统一 hot 表保留窗口）
 	RetentionHours int
 	// BatchSize 单批迁移行数；默认 500
 	BatchSize int
@@ -39,7 +39,7 @@ func (c *HotCronConfig) defaults() {
 		c.RunAtMinute = 0
 	}
 	if c.RetentionHours <= 0 {
-		c.RetentionHours = 24
+		c.RetentionHours = defaultHotRetentionHours
 	}
 	if c.BatchSize <= 0 {
 		c.BatchSize = 500

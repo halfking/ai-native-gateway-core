@@ -30,6 +30,14 @@ func newTurnReader(db turnReaderDB) *TurnReader { return &TurnReader{db: db} }
 // LoadLatestOutbound returns the exact message body most recently forwarded to
 // the upstream model. Unlike LoadChain, this preserves gateway compression
 // summaries and markers stored in session_bodies.outbound_body.
+//
+// 708 / storage plan v2 S1b: when the final_full gate is on, per-turn rows
+// stop carrying outbound_body and the latest complete outbound lives in the
+// session's kind='final_full' snapshot row (written by
+// SessionBodiesWriter.WriteFinalFullInTx). Read order: final_full first, then
+// fall back to the legacy per-turn outbound (plan D2 "未命中回退旧
+// outbound_body"); when the gate is off the final_full query misses and the
+// legacy path answers — one extra indexed probe only on this cold-start path.
 func (r *TurnReader) LoadLatestOutbound(ctx context.Context, tenantID, sessionID string) ([]Message, error) {
 	if r == nil || r.db == nil {
 		return nil, nil
@@ -37,17 +45,31 @@ func (r *TurnReader) LoadLatestOutbound(ctx context.Context, tenantID, sessionID
 	var raw []byte
 	err := r.db.QueryRow(ctx, `
 		SELECT outbound_body
-		FROM public.session_bodies
+		FROM public.session_bodies_unified
 		WHERE tenant_id = $1 AND session_id = $2
+		  AND kind = 'final_full'
 		  AND outbound_body IS NOT NULL
-		ORDER BY turn_no DESC, ts DESC
+		ORDER BY ts DESC
 		LIMIT 1
 	`, tenantID, sessionID).Scan(&raw)
-	if err == pgx.ErrNoRows {
-		return nil, nil
+	if err != nil && err != pgx.ErrNoRows {
+		return nil, fmt.Errorf("query final_full outbound body: %w", err)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("query latest outbound body: %w", err)
+	if err != nil { // pgx.ErrNoRows: no final_full row — legacy per-turn path
+		err = r.db.QueryRow(ctx, `
+			SELECT outbound_body
+			FROM public.session_bodies_unified
+			WHERE tenant_id = $1 AND session_id = $2
+			  AND outbound_body IS NOT NULL
+			ORDER BY turn_no DESC, ts DESC
+			LIMIT 1
+		`, tenantID, sessionID).Scan(&raw)
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("query latest outbound body: %w", err)
+		}
 	}
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
@@ -61,16 +83,22 @@ func (r *TurnReader) LoadLatestOutbound(ctx context.Context, tenantID, sessionID
 
 // LoadChain 返回最近 N 轮拼接后的消息（用于 L3 冷启动）。
 // 不持久化 panorama；仅按需计算。
+//
+// lastN 语义：
+//   - lastN == 0：返回该 session 的所有轮（与 outbound_builder.go 注释一致）。
+//   - lastN  > 0：返回最后 N 轮。
+//   - lastN  < 0：视为非法输入，返回错误（避免静默退化为"全部"或"默认 10"）。
 func (r *TurnReader) LoadChain(ctx context.Context, tenantID, sessionID string, lastN int) ([]Message, error) {
 	if r == nil || r.db == nil {
 		return nil, nil
 	}
-	if lastN <= 0 {
-		lastN = 10
+	if lastN < 0 {
+		return nil, fmt.Errorf("turn_reader.LoadChain: lastN must be >= 0, got %d", lastN)
 	}
 	query := `
         SELECT b.turn_no, b.request_delta, b.response_delta
-        FROM public.session_bodies b
+		FROM public.session_bodies_unified b
+
         WHERE b.tenant_id = $1 AND b.session_id = $2
         ORDER BY b.turn_no ASC
     `
@@ -94,7 +122,8 @@ func (r *TurnReader) LoadChain(ctx context.Context, tenantID, sessionID string, 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("rows: %w", err)
 	}
-	if len(turns) > lastN {
+	// lastN == 0 means "all turns" per the contract; only slice when lastN > 0.
+	if lastN > 0 && len(turns) > lastN {
 		turns = turns[len(turns)-lastN:]
 	}
 	var chain []Message

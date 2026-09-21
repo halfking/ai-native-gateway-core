@@ -3,7 +3,7 @@
 // SSE 断线态、空态/骨架、SSE 增量驱动。
 import { mount, flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import type { Ref } from 'vue'
+import { nextTick, type Ref } from 'vue'
 import ProbeTriStateQueue from './ProbeTriStateQueue.vue'
 
 const { getCredentialMonitorSummary } = vi.hoisted(() => ({
@@ -23,6 +23,11 @@ beforeEach(async () => {
   // 重置共享凭据标签缓存，避免其它测试串味。
   const { clearCredentialLabels } = await import('../../composables/useCredentialLabels')
   clearCredentialLabels()
+  // 2026-09-05 审计 F2-#3：credentialDisplayName 默认前缀改走 i18n（跟随
+  // 当前 locale）。固定 zh-CN，保证「凭据 #ID」断言不受宿主机
+  // navigator.language 影响。
+  const { i18n } = await import('../../i18n')
+  ;(i18n.global.locale as unknown as { value: string }).value = 'zh-CN'
 })
 
 // ── mock probeStreamStore 单例（SSE 通道） ────────────────────────────
@@ -107,7 +112,8 @@ function mountQueue() {
   return mount(ProbeTriStateQueue, {
     global: {
       // api-selfcheck 的 req() 会读 authBearer（localStorage 兜底为空）。
-      stubs: { 'transition-group': false },
+      // Filter assertions must not count leaving TransitionGroup nodes.
+      stubs: { 'transition-group': true },
     },
   })
 }
@@ -222,6 +228,42 @@ describe('ProbeTriStateQueue — origin 徽标', () => {
 })
 
 describe('ProbeTriStateQueue — completed 大卡', () => {
+  it('按供应商、凭据和模型过滤已完成任务', async () => {
+    vi.stubGlobal('fetch', stubTriFetch({
+      completed: [
+        triTask({ id: 1, credential_id: 11, provider_id: 101, provider_name: '供应商 A', raw_model: 'model-a', status: 'completed', outcome: 'success' }),
+        triTask({ id: 2, credential_id: 12, provider_id: 102, provider_name: '供应商 B', raw_model: 'model-b', status: 'completed', outcome: 'failed' }),
+      ],
+    }))
+    const w = mountQueue()
+    await flushPromises()
+
+    const selects = w.findAll('[data-testid="completed-filters"] select')
+    expect(selects).toHaveLength(3)
+    expect(w.findAll('[data-testid="probe-completed-card"]')).toHaveLength(2)
+    expect(selects[0].findAll('option').map((option) => option.element.value)).toContain('供应商 A')
+
+    await selects[0].setValue('供应商 A')
+    await flushPromises()
+    await nextTick()
+    expect((selects[0].element as HTMLSelectElement).value).toBe('供应商 A')
+    expect(w.findAll('[data-testid="probe-completed-card"]')).toHaveLength(1)
+    expect(w.find('[data-testid="tri-completed"]').text()).toContain('model-a')
+
+    await selects[0].setValue('')
+    await selects[1].setValue('12')
+    await nextTick()
+    expect(w.findAll('[data-testid="probe-completed-card"]')).toHaveLength(1)
+    expect(w.find('[data-testid="tri-completed"]').text()).toContain('model-b')
+
+    await selects[1].setValue('')
+    await selects[2].setValue('model-a')
+    await nextTick()
+    expect(w.findAll('[data-testid="probe-completed-card"]')).toHaveLength(1)
+    expect(w.find('[data-testid="tri-completed"]').text()).toContain('凭据 #11')
+    w.unmount()
+  })
+
   it('点击展开显示结果/延迟/错误码/观察时间', async () => {
     vi.stubGlobal('fetch', stubTriFetch({
       completed: [triTask({

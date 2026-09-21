@@ -19,7 +19,6 @@
 package admin
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -256,7 +255,7 @@ func (h *Handler) storageConfigPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req StorageConfigUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
@@ -400,7 +399,7 @@ func (h *Handler) handleStorageTestPath(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req StorageTestPathRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}

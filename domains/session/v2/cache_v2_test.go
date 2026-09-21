@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,6 +24,31 @@ func TestSessionTurnsReader_LoadState_NilDBIsColdMiss(t *testing.T) {
 	}
 }
 
+func TestSessionTurnsReader_LoadStateUsesLatestCutMarkerMetadata(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	markerMeta := []byte(`{"cut_marker":{"version":1,"created_at":1719300000,"source_msg_count":4,"system_msg_count":1,"cut_index":2,"strategy":"mechanical_trim"}}`)
+	mock.ExpectQuery(`WITH latest AS \(`).
+		WithArgs("tenant", "session").
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no", "ts", "compression_strategy", "compression_meta", "prompt_tokens", "completion_tokens", "injection_verdict", "output_verdict"}).
+			AddRow(2, time.Now(), "", markerMeta, 10, 2, "skip", "skip"))
+
+	state, err := newSessionTurnsReader(mock).LoadState(context.Background(), "tenant", "session")
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if state == nil || state.CompressionMeta.CutMarker["cut_index"] != float64(2) {
+		t.Fatalf("marker metadata was not restored from latest valid marker turn: %+v", state)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestApplyCompressionMeta_RestoresWindowState(t *testing.T) {
 	var meta CompressionMeta
 	raw := []byte(`{"last_compressed_at":"2026-08-13T10:00:00Z","recently_compressed_at":"2026-08-13T10:00:30Z","summary_marker":"[smm_v1:abc]","compressed_prefix_hash":"prefix","token_estimate":42,"msg_count":7,"strategy":"sliding_window_token","tools_hash":"tools"}`)
@@ -32,6 +58,50 @@ func TestApplyCompressionMeta_RestoresWindowState(t *testing.T) {
 	}
 	if meta.LastCompressedAt.IsZero() || meta.RecentlyCompressedAt.IsZero() {
 		t.Fatalf("compression timestamps were not restored: %+v", meta)
+	}
+}
+
+func TestApplyCompressionMeta_RestoresRecoveryMetadata(t *testing.T) {
+	var meta CompressionMeta
+	raw := []byte(`{"summary_marker":"[smm_v1:abc]","cut_marker":{"version":1,"created_at":123,"source_msg_count":10,"system_msg_count":1,"cut_index":4,"strategy":"smart_window_llm","summary_marker":"[smm_v1:abc]"},"pre_sanitize_offset_range":[1,5],"alignment_map":[{"original_index":2,"compressed_index":1,"hash":"abc"}],"sanitize_map_ref":"session:tenant:session:sanitize","sanitize_message_refs":[{"raw_index":2,"sanitized_index":2,"raw_hash":"a","sanitized_hash":"b","changed":true}]}`)
+	applyCompressionMeta(&meta, raw)
+	if meta.CutMarker["cut_index"] != float64(4) || len(meta.PreSanitizeOffsetRange) != 2 {
+		t.Fatalf("cut metadata was not restored: %+v", meta)
+	}
+	if len(meta.AlignmentMap) != 1 || len(meta.SanitizeMessageRefs) != 1 || meta.SanitizeMapRef == "" {
+		t.Fatalf("provenance metadata was not restored: %+v", meta)
+	}
+}
+
+func TestCompressionMetaCache_RecoveryMetadataIsDeepCopied(t *testing.T) {
+	cache := NewCompressionMetaCache(2)
+	state := &SessionStateV2{SessionID: "s", TenantID: "t", CompressionMeta: CompressionMeta{
+		CutMarker:              map[string]interface{}{"cut_index": float64(2)},
+		AlignmentMap:           []map[string]interface{}{{"original_index": float64(1)}},
+		PreSanitizeOffsetRange: []int{1, 3},
+	}}
+	cache.Set(state)
+	state.CompressionMeta.CutMarker["cut_index"] = float64(99)
+	state.CompressionMeta.AlignmentMap[0]["original_index"] = float64(99)
+	state.CompressionMeta.PreSanitizeOffsetRange[0] = 99
+	got := cache.Get("t", "s")
+	if got.CompressionMeta.CutMarker["cut_index"] != float64(2) ||
+		got.CompressionMeta.AlignmentMap[0]["original_index"] != float64(1) ||
+		got.CompressionMeta.PreSanitizeOffsetRange[0] != 1 {
+		t.Fatalf("Set exposed nested metadata: %+v", got.CompressionMeta)
+	}
+	got.CompressionMeta.CutMarker["cut_index"] = float64(88)
+	if again := cache.Get("t", "s"); again.CompressionMeta.CutMarker["cut_index"] != float64(2) {
+		t.Fatalf("Get exposed nested metadata: %+v", again.CompressionMeta)
+	}
+}
+
+func TestCompressionMetaCache_ExpiresEntries(t *testing.T) {
+	cache := newCompressionMetaCache(2, time.Millisecond)
+	cache.Set(&SessionStateV2{TenantID: "tenant", SessionID: "session"})
+	time.Sleep(5 * time.Millisecond)
+	if got := cache.Get("tenant", "session"); got != nil {
+		t.Fatalf("expired L1 entry was returned: %+v", got)
 	}
 }
 

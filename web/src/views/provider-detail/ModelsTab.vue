@@ -19,6 +19,7 @@ import {
   type RoutingBlockedDiagnostic,
 } from '../../api'
 import ModelOfferDetailDrawer from '../../components/model/ModelOfferDetailDrawer.vue'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t: td } = useI18n()
 const pm = (k: string, params?: Record<string, unknown>): string =>
@@ -28,7 +29,7 @@ const { fmtDateTime } = useFormat()
 const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
 onMounted(() => { void loadCredentialLabels() })
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   providerId: number
   /**
    * When set, the drawer for the matching offer opens as soon as offers
@@ -37,7 +38,15 @@ const props = defineProps<{
    * Cleared once consumed.
    */
   focusOffer?: { credential_id: number; raw_model_name: string } | null
-}>()
+  /**
+   * 2026-09-11 audit: drives the offer drawer's :can-edit. The tab is only
+   * rendered for super admins (v-if="canManageProvider" upstream), but the
+   * prop still has to be threaded explicitly — it used to fall through to
+   * the drawer's false default, leaving every field disabled and 保存节点
+   * unclickable on this page (the read-only trap the verification round hit).
+   */
+  canManage?: boolean
+}>(), { canManage: false })
 
 const offers = ref<ModelOffer[]>([])
 const loading = ref(false)
@@ -119,7 +128,7 @@ async function loadRoutingDiagnostics() {
 }
 
 async function handleFixBlocked() {
-  if (!confirm('确定强制恢复该供应商所有被阻断的绑定？这将重置所有凭据状态、模型绑定和探测状态。')) return
+  if (!(await confirmDialog('确定强制恢复该供应商所有被阻断的绑定？这将重置所有凭据状态、模型绑定和探测状态。'))) return
   routingDiagFixing.value = true
   routingDiagErr.value = ''
   try {
@@ -166,7 +175,7 @@ async function pollRefreshStatus() {
 
 async function clearModels() {
   if (clearing.value || refreshing.value) return
-  if (!confirm(pm('clearConfirm'))) return
+  if (!(await confirmDialog(pm('clearConfirm')))) return
   clearing.value = true
   refreshError.value = ''
   try {
@@ -275,7 +284,7 @@ const probeAllHint = ref('')
 // failed rows still block routing.
 async function resetFailedNodeProbes() {
   if (resetNodeProbeLoading.value) return
-  if (!confirm(pm('resetNodeProbeConfirm'))) return
+  if (!(await confirmDialog(pm('resetNodeProbeConfirm')))) return
   resetNodeProbeLoading.value = true
   try {
     const r = await resetNodeProbeState(props.providerId)
@@ -640,6 +649,7 @@ load()
       :provider-id="providerId"
       :offer="selected"
       :sibling-offers="offers"
+      :can-edit="canManage"
       @close="closeDrawer"
       @updated="onOfferUpdated"
       @iq-tested="load"

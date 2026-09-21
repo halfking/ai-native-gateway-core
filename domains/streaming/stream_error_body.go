@@ -1,9 +1,6 @@
 package streaming
 
-import (
-	"encoding/json"
-	"strings"
-)
+import vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 
 // jsonErrorBody is the inner error object inside the standard
 // `{"error": {...}}` envelope used by OpenAI / Anthropic / most
@@ -76,36 +73,7 @@ func (e *jsonErrorEnvelope) resolveError() (kind string, message string) {
 // is the human-readable reason that goes into slog + response_body
 // preview.
 func isJSONErrorBody(body []byte) (bool, string, string) {
-	if len(body) == 0 {
-		return false, "", ""
-	}
-	// Trim trailing whitespace and stray SSE terminator fragments
-	// so a body of `{"error":...}\n\n` still parses.
-	trimmed := strings.TrimRight(string(body), " \t\r\n")
-	if trimmed == "" {
-		return false, "", ""
-	}
-	// Defensive: a stream reader might pass an SSE-prefixed line
-	// to this helper by mistake. Strip the prefix and re-test
-	// the JSON shape so the helper stays robust to that call site
-	// bug. After stripping, we still require the body to start
-	// with '{' so legitimate SSE comments (":heartbeat") and
-	// "event:" lines don't false-positive.
-	if strings.HasPrefix(trimmed, "data:") {
-		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-	}
-	if trimmed == "" || trimmed[0] != '{' {
-		return false, "", ""
-	}
-	var env jsonErrorEnvelope
-	if err := json.Unmarshal([]byte(trimmed), &env); err != nil {
-		return false, "", ""
-	}
-	kind, msg := env.resolveError()
-	if kind == "" && msg == "" {
-		return false, "", ""
-	}
-	return true, kind, msg
+	return vendorstrip.IsJSONErrorBody(body)
 }
 
 func firstNonEmpty(values ...string) string {

@@ -18,8 +18,12 @@ type Intent struct {
 	Profile      string  `json:"profile"`
 	Confidence   float64 `json:"confidence"`
 	Classifier   string  `json:"classifier"`
-	HitCount     int     `json:"hit_count"`
-	LastSeen     int64   `json:"last_seen"`
+	// Role/Kind（R48, 2026-09-20）会话角色 + 细粒度任务类型，随 intent
+	// 跨实例复用。omitempty：旧条目反序列化为空串 = 未声明，向后兼容。
+	Role     string `json:"role,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	HitCount int    `json:"hit_count"`
+	LastSeen int64  `json:"last_seen"`
 }
 
 // IntentStore 是 session intent 的 Redis 权威 + 进程 LRU 镜像。

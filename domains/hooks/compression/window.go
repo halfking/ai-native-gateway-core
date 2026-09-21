@@ -6,7 +6,7 @@
 //
 // Three independent triggers (OR logic):
 //
-//  1. TOKEN trigger  — outbound body exceeds contextWindow × 0.85 threshold.
+//  1. TOKEN trigger  — outbound body exceeds contextWindow × 0.80 threshold.
 //     Same formula as v7 mode=1 (auto_threshold) but applied at the
 //     session level, BEFORE the request is sent (proactive vs reactive).
 //
@@ -65,8 +65,8 @@ const (
 	RecentCompressedGuardSecs = 60
 
 	// DefaultWindowFraction is the fraction of contextWindow used as the
-	// token-count threshold for the TOKEN trigger. Matches v7 §2 (0.85).
-	DefaultWindowFraction = 0.85
+	// token-count threshold for the TOKEN trigger.
+	DefaultWindowFraction = 0.80
 )
 
 // OutboundTokenBand classifies the actual body about to be forwarded to the

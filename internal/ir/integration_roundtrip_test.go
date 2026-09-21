@@ -474,8 +474,8 @@ func TestIntegrationRoundtrip_Gemini_SameProtocol(t *testing.T) {
 		ir2, err := ParseGemini(out)
 		require.NoError(t, err, "parse 2 (round-trip)")
 
-		first := requireGeminiToolResult(t, ir1, "gemini_call_lookup")
-		second := requireGeminiToolResult(t, ir2, "gemini_call_lookup")
+		first := requireGeminiToolResult(t, ir1, "gemini_call_lookup_0")
+		second := requireGeminiToolResult(t, ir2, "gemini_call_lookup_0")
 		assert.JSONEq(t, string(first.GeminiResponse), string(second.GeminiResponse),
 			"structured function response stable across Gemini round-trip")
 	})

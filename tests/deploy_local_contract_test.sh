@@ -1,0 +1,600 @@
+#!/usr/bin/env bash
+# Contract tests for the unified local deployment entry point.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/deploy-local-lib.sh"
+
+TMP=$(mktemp -d -t kx-local-contract.XXXXXX)
+trap 'rm -rf "$TMP"' EXIT
+export LLM_GATEWAY_ROOT="$TMP/install"
+
+fail() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
+pass() { printf 'PASS %s\n' "$*"; }
+
+TEST_HOME="$TMP/home"
+mkdir -p "$TEST_HOME"
+original_home="$HOME"
+export HOME="$TEST_HOME"
+default_root=$(dl_default_root)
+[[ "$default_root" == "$TEST_HOME/kaixuan/llm-gateway-go" ]] || fail 'macOS default root project path'
+for d in bin logs run attachments backups raw-logs; do
+  [[ ! -e "$TEST_HOME/kaixuan/$d" ]] || fail "shared parent contains project directory $d"
+done
+export HOME="$original_home"
+pass 'default root is isolated under the project subdirectory'
+
+dl_prepare_layout 0 0
+for d in attachments bin backups logs raw-logs run; do [[ -d "$TMP/install/$d" ]] || fail "required directory $d"; done
+[[ ! -e "$TMP/install/postgres" ]] || fail 'postgres must not be created without a local dependency'
+[[ ! -e "$TMP/install/redis" ]] || fail 'redis must not be created without a local dependency'
+pass 'required layout is created without optional dependency directories'
+
+dl_prepare_layout 1 1
+[[ ! -e "$TMP/install/postgres" && ! -e "$TMP/install/redis" ]] || fail 'project root must not host postgres/redis; shared service dirs only'
+KAIXUAN_ROOT="$TMP/install/../shared" dl_prepare_shared_service_dirs
+[[ -d "$TMP/install/../shared/postgres" && -d "$TMP/install/../shared/redis" ]] || fail 'shared service directories should be created on demand'
+pass 'optional shared service directories are conditional'
+
+# Redis three-level discovery contract. Each helper is exercised in an isolated
+# subshell so the test can mock the docker/redis-cli/ss binaries on PATH.
+redis_discover() {
+  local dir=$1
+  rm -rf "$dir/bin"
+  mkdir -p "$dir/bin"
+  cat >"$dir/bin/docker" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  info) printf 'ok' ;;
+  compose) ;;
+  ps)
+    if [[ -f "$dir/docker_ps" ]]; then cat "$dir/docker_ps"; fi
+    ;;
+  inspect)
+    target="\$2"
+    if [[ "\$target" == \${DOCKER_PING_NAME:-} ]]; then
+      sed -n 's/.*6379.*/ok/p' "$dir/docker_inspect_\$target" 2>/dev/null || echo ""
+    else
+      echo ""
+    fi
+    ;;
+  exec)
+    target="\$2"
+    if [[ "\$target" == \${DOCKER_PING_NAME:-} ]]; then printf 'PONG\n'; fi
+    ;;
+esac
+EOF
+  chmod +x "$dir/bin/docker"
+cat >"$dir/bin/redis-cli" <<'EOF'
+#!/usr/bin/env bash
+# Accept any redis-cli invocation. Real Redis parsing is not relevant to the
+# discovery contract; we only assert that dl_redis_try_system can reach PONG.
+exit 0
+EOF
+chmod +x "$dir/bin/redis-cli"
+cat >"$dir/bin/ss" <<EOF
+#!/usr/bin/env bash
+dir="\${DL_TEST_DIR:-}"
+[[ "\$1" == "-ltn" ]] && [[ -n "\$dir" ]] && cat "\$dir/ss_listen" 2>/dev/null
+EOF
+chmod +x "$dir/bin/ss"
+HOME="$dir/home" \
+  PATH="$dir/bin:$PATH" \
+  DL_TEST_DIR="$dir" \
+  bash -c "
+    set -u
+    source '$ROOT/scripts/deploy-local-lib.sh'
+    DL_DOCKER=0; DL_COMPOSE=0; DL_PG_CONTAINER=; DL_REDIS_CONTAINER=
+    DL_PG_SOURCE=; DL_REDIS_SOURCE=; DL_DB_MODE=none; DL_REDIS_MODE=none
+    DL_REDIS_MOUNT_TYPE=
+    dl_detect_resources
+    printf 'redis_container=%s\n' \"\${DL_REDIS_CONTAINER:-}\"
+    printf 'redis_addr=%s\n' \"\${LLM_GATEWAY_REDIS_ADDR:-}\"
+  "
+}
+
+redis_discover_tries() {
+  local dir=$1 kind=$2
+  shift 2
+  case "$kind" in
+    named)
+      printf 'nbjl-redis\nredis:7-alpine\n0.0.0.0:6379->6379/tcp\n' > "$dir/docker_ps"
+      DOCKER_PING_NAME='nbjl-redis' redis_discover "$dir"
+      ;;
+    scan)
+      printf 'app-cache\tpython:3.12\nbusybox\tbusybox\nvalid-redis-cache\tredis:7-alpine\t0.0.0.0:16379->6379/tcp\n' > "$dir/docker_ps"
+      DOCKER_PING_NAME='valid-redis-cache' redis_discover "$dir"
+      ;;
+    scan_no_rediscli)
+      printf 'redis-custom\tcustom:1.0\t0.0.0.0:6379->6379/tcp\n' > "$dir/docker_ps"
+      DOCKER_PING_NAME='redis-custom' redis_discover "$dir"
+      ;;
+    system)
+      printf 'LISTEN 0 128 127.0.0.1:16379 0.0.0.0:*\nLISTEN 0 128 127.0.0.1:5432 0.0.0.0:*\n' > "$dir/ss_listen"
+      DOCKER_PING_NAME='valid-redis-cache' redis_discover "$dir"
+      ;;
+  esac
+}
+
+tmpd=$(mktemp -d)
+out=$(redis_discover_tries "$tmpd" named)
+echo "$out" | grep -q 'redis_container=nbjl-redis' || fail "named Redis discovery should pick nbjl-redis (got $out)"
+echo "$out" | grep -q 'redis_addr=' || fail 'named Redis discovery must not set system LLM_GATEWAY_REDIS_ADDR'
+
+out=$(redis_discover_tries "$tmpd" scan)
+echo "$out" | grep -q 'redis_container=valid-redis-cache' || fail "scan Redis discovery should pick valid-redis-cache (got $out)"
+
+out=$(redis_discover_tries "$tmpd" scan_no_rediscli)
+echo "$out" | grep -q 'redis_container=redis-custom' || fail "scan-without-redis-cli should accept by port heuristic (got $out)"
+
+out=$(redis_discover_tries "$tmpd" system)
+echo "$out" | grep -q 'redis_addr=127.0.0.1:16379' || fail "system fallback should pick 16379 (got $out)"
+rm -rf "$tmpd"
+pass 'Redis three-level discovery finds named, scan, no-cli, and host listeners'
+
+mkdir -p "$TMP/source/web"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/source/gateway"
+printf '<html>test</html>\n' > "$TMP/source/web/index.html"
+printf '{"version":"2.4.7-test","git_tag":"2.4.7","git_sha":"deadbeef","build_seq":9,"build_date":"20260903"}\n' > "$TMP/source/version.json"
+printf '2.4.7-test\n' > "$TMP/source/VERSION"
+dl_stage_release "$TMP/install/bin/2.4.7.9" "$TMP/source/gateway" "$TMP/source/web" "$TMP/source/version.json" "$TMP/source/VERSION" '2.4.7.9'
+dl_verify_release "$TMP/install/bin/2.4.7.9" || fail 'fresh release checksum'
+dl_atomic_switch '2.4.7.9'
+[[ "$(readlink "$TMP/install/bin/current")" == '2.4.7.9' ]] || fail 'current release pointer'
+[[ "$(readlink "$TMP/install/bin/gateway")" == 'current/gateway' ]] || fail 'gateway shortcut pointer'
+dl_mark_verified "$TMP/install/bin/2.4.7.9"
+grep -q '"verified": true' "$TMP/install/bin/2.4.7.9/deployment.json" || fail 'verified metadata'
+pass 'release bundle, checksum, atomic pointer, and verification metadata'
+
+# Local deploys allocate a new immutable release by bumping the shared version
+# metadata before the collision check. Use an isolated temporary checkout so the
+# contract test never changes this repository's version files.
+version_project="$TMP/version-project"
+version_install="$TMP/version-install"
+version_tmp="$TMP/version-tmp"
+mkdir -p "$version_project/scripts/deploy-lib" "$version_project/web/public" "$version_project/web/dist" "$version_tmp"
+cp "$ROOT/scripts/deploy-local.sh" "$version_project/scripts/deploy-local.sh"
+cp "$ROOT/scripts/deploy-local-lib.sh" "$version_project/scripts/deploy-local-lib.sh"
+# P1.1: deploy-local.sh sources scripts/_shared-lib.sh, which resolves the
+# shared deploy-library SSOT from AIAN_DEPLOY_LIB (the sandbox redirects HOME,
+# so the $HOME-workspace default would not resolve there).
+cp "$ROOT/scripts/_shared-lib.sh" "$version_project/scripts/_shared-lib.sh"
+AIAN_DEPLOY_LIB_FIXTURE="$(cd "$ROOT/../.." && pwd)/deploy-lib"
+cp "$ROOT/scripts/bump-version.sh" "$version_project/scripts/bump-version.sh"
+# dadf1e66f 起 deploy-local.sh 顶层校验 PROJECT_ROOT/sql/migrations 存在
+# （否则 exit 64）；fixture 必须带上最小骨架，否则碰撞分支根本跑不到。
+mkdir -p "$version_project/sql/migrations"
+printf '# contract fixture placeholder\n' > "$version_project/sql/migrations/.gitkeep"
+printf '{\n  "version": "2.4.7-test",\n  "git_tag": "2.4.7",\n  "git_sha": "deadbeef",\n  "build_seq": 10,\n  "build_date": "20260903",\n  "module": "llm-gateway-go"\n}\n' > "$version_project/version.json"
+printf '2.4.7-test\n' > "$version_project/VERSION"
+cp "$version_project/version.json" "$version_project/web/public/version.json"
+cp "$version_project/version.json" "$version_project/web/dist/version.json"
+git -C "$version_project" init -q
+git -C "$version_project" config user.email contract-test@example.invalid
+git -C "$version_project" config user.name contract-test
+git -C "$version_project" add .
+git -C "$version_project" commit -qm 'contract fixture'
+git -C "$version_project" tag v2.4.7
+collision_bundle="$version_install/bin/2.4.7.11"
+mkdir -p "$collision_bundle"
+printf 'keep-me\n' > "$collision_bundle/sentinel"
+set +e
+HOME="$TMP/version-home" TMPDIR="$version_tmp" LLM_GATEWAY_ROOT="$version_install" \
+  LLM_GATEWAY_SECRET_KEY=contract-test-secret-do-not-use \
+  AIAN_DEPLOY_LIB="$AIAN_DEPLOY_LIB_FIXTURE" \
+  bash "$version_project/scripts/deploy-local.sh" deploy --no-frontend >"$TMP/release-collision.out" 2>&1
+collision_rc=$?
+set -e
+[[ $collision_rc -eq 1 ]] || fail "duplicate release should fail after automatic bump (got $collision_rc)"
+grep -Fq 'release allocated: 2.4.7.11' "$TMP/release-collision.out" || fail 'local deploy should allocate the next build sequence'
+grep -Fq "release already exists: $collision_bundle" "$TMP/release-collision.out" || fail 'duplicate release error should identify the bumped bundle'
+python3 - "$version_project/version.json" "$version_project/web/public/version.json" "$version_project/web/dist/version.json" <<'PY'
+import json, sys
+files = [json.load(open(path)) for path in sys.argv[1:]]
+if any(item.get('build_seq') != 11 for item in files) or len({json.dumps(item, sort_keys=True) for item in files}) != 1:
+    raise SystemExit('version metadata did not stay in lockstep at build_seq 11')
+PY
+[[ "$(<"$version_project/VERSION")" == *-11 ]] || fail 'VERSION did not receive the bumped sequence'
+[[ "$(<"$collision_bundle/sentinel")" == 'keep-me' ]] || fail 'duplicate release check modified the existing bundle'
+[[ ! -e "$version_install/run" ]] || fail 'duplicate release check should run before resource setup'
+[[ ! -e "$version_tmp/kx-llm-gateway-build.lock" ]] || fail 'build lock was not released after the early collision'
+pass 'local deploy automatically bumps build_seq and rejects the bumped collision before side effects'
+
+# Empty-residue self-heal (2026-09-09 事故): same deploy bumped twice with
+# git_sha 未变化 → build_seq 不变 → 上次 deploy 在 dl_stage_release 的
+# mkdir -p 之后被打断（Ctrl+C / 容器构建被 SIGKILL），留下一个空目录。
+# self-heal 分支必须 rmdir 这类目录并允许 deploy 继续；带文件的 collision
+# 仍须 fail-closed（sentinel 测试就是这条防线的护栏）。直接调 lib 函数
+# 而非 source deploy-local.sh（后者会跑完整 deploy 主体）。
+residue_install="$TMP/residue-install"
+residue_tmp="$TMP/residue-tmp"
+mkdir -p "$residue_install/bin/2.5.4.9999"   # 真正的空目录，模拟打断残留
+HOME="$TMP/residue-home" TMPDIR="$residue_tmp" LLM_GATEWAY_ROOT="$residue_install" \
+  bash -c '
+    set -euo pipefail
+    source "'"$ROOT"'/scripts/deploy-local-lib.sh"
+    BIN_DIR="$LLM_GATEWAY_ROOT/bin"
+    # empty residue: must self-heal (rmdir) — deploy can continue
+    dl_ensure_release_available "$BIN_DIR/2.5.4.9999" \
+      || { echo "FAIL: empty residue was not self-healed"; exit 1; }
+    [[ ! -e "$BIN_DIR/2.5.4.9999" ]] || { echo "FAIL: empty residue dir still present"; exit 1; }
+    # missing dir: no-op, return 0
+    dl_ensure_release_available "$BIN_DIR/2.5.4.10000" \
+      || { echo "FAIL: missing-dir branch returned non-zero"; exit 1; }
+    # dir with file: must STILL fail-closed (sentinel contract)
+    mkdir -p "$BIN_DIR/2.5.4.10001"
+    printf "keep-me\n" > "$BIN_DIR/2.5.4.10001/sentinel"
+    set +e
+    dl_ensure_release_available "$BIN_DIR/2.5.4.10001" 2>/dev/null
+    rc=$?
+    set -e
+    [[ "$rc" -ne 0 ]] || { echo "FAIL: dir-with-file should fail-closed (got rc=0)"; exit 1; }
+    [[ -e "$BIN_DIR/2.5.4.10001/sentinel" ]] || { echo "FAIL: sentinel was removed by self-heal"; exit 1; }
+    # dir with hidden file (.DS_Store-style): must STILL fail-closed (only
+    # truly-empty dirs are residue; anything present is operator data)
+    mkdir -p "$BIN_DIR/2.5.4.10002"
+    : > "$BIN_DIR/2.5.4.10002/.DS_Store"
+    set +e
+    dl_ensure_release_available "$BIN_DIR/2.5.4.10002" 2>/dev/null
+    rc=$?
+    set -e
+    [[ "$rc" -ne 0 ]] || { echo "FAIL: dir-with-hidden-file should fail-closed"; exit 1; }
+    [[ -e "$BIN_DIR/2.5.4.10002/.DS_Store" ]] || { echo "FAIL: hidden file was removed"; exit 1; }
+    # active version branch: bundle dir matching dl_active_version is moved aside
+    mkdir -p "$BIN_DIR/2.5.4.10003"
+    printf "active\n" > "$BIN_DIR/2.5.4.10003/SHA256SUMS"
+    mkdir -p "$LLM_GATEWAY_ROOT/run"
+    printf "2.5.4.10003\n" > "$LLM_GATEWAY_ROOT/run/active-version"
+    dl_ensure_release_available "$BIN_DIR/2.5.4.10003" "2.5.4.10003" \
+      || { echo "FAIL: active-version move-aside did not return 0"; exit 1; }
+    [[ ! -e "$BIN_DIR/2.5.4.10003" ]] || { echo "FAIL: active dir not moved aside"; exit 1; }
+    shopt -s nullglob
+    prev_matches=("$BIN_DIR"/2.5.4.10003.prev-*)
+    shopt -u nullglob
+    [[ ${#prev_matches[@]} -ge 1 ]] || { echo "FAIL: no .prev-<epoch> sibling created (matches=${prev_matches[*]})"; exit 1; }
+    [[ -d "${prev_matches[0]}" ]] || { echo "FAIL: .prev-<epoch> sibling is not a directory"; exit 1; }
+    # intact old release branch: SHA256SUMS present → moved aside
+    mkdir -p "$BIN_DIR/2.5.4.10004"
+    printf "old\n" > "$BIN_DIR/2.5.4.10004/SHA256SUMS"
+    dl_ensure_release_available "$BIN_DIR/2.5.4.10004" "2.5.4.9999" \
+      || { echo "FAIL: intact-old-release move-aside did not return 0"; exit 1; }
+    [[ ! -e "$BIN_DIR/2.5.4.10004" ]] || { echo "FAIL: intact-old-release dir not moved aside"; exit 1; }
+  ' || fail 'dl_ensure_release_available self-heal + side-branch contract'
+pass 'empty residue dirs self-heal; non-empty/intact/active dirs handled correctly'
+
+# dl_verify_release 必须对缺失 SHA256SUMS 给出明确错误，而非让 bash 的
+# 'No such file or directory' 重定向错误冒到操作员脸上。
+# 注意：$TMP 在子 bash -c 中需要 export，否则 HOME="$TMP" 这类赋值在
+# 子 shell 里会因 set -u 报错。
+export TMP
+empty_bundle="$TMP/install/bin/dl-verify-empty"
+mkdir -p "$empty_bundle"
+set +e
+out=$(HOME="$TMP" LLM_GATEWAY_ROOT="$TMP/install" bash -c '
+  source "'"$ROOT"'/scripts/deploy-local-lib.sh"
+  dl_verify_release "'"$empty_bundle"'"
+' 2>&1)
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]] || fail 'dl_verify_release must fail when SHA256SUMS is missing'
+[[ "$out" == *"SHA256SUMS is missing"* ]] \
+  || fail "dl_verify_release missing-file message should be self-explanatory (got: $out)"
+[[ "$out" == *"never successfully staged"* ]] \
+  || fail "dl_verify_release message should reference staging (got: $out)"
+# 反向校验：checksum 不匹配时也必须是 self-explanatory，不能只是 return 1
+bad_bundle="$TMP/install/bin/dl-verify-bad"
+mkdir -p "$bad_bundle"
+printf 'placeholder\n' > "$bad_bundle/version.json"
+printf '0000000000000000000000000000000000000000000000000000000000000000  version.json\n' > "$bad_bundle/SHA256SUMS"
+set +e
+out=$(HOME="$TMP" LLM_GATEWAY_ROOT="$TMP/install" bash -c '
+  source "'"$ROOT"'/scripts/deploy-local-lib.sh"
+  dl_verify_release "'"$bad_bundle"'"
+' 2>&1)
+mismatch_rc=$?
+set -e
+[[ "$mismatch_rc" -ne 0 ]] || fail 'dl_verify_release must fail on checksum mismatch'
+[[ "$out" == *"checksum mismatch"* ]] \
+  || fail "dl_verify_release checksum mismatch should be self-explanatory (got: $out)"
+[[ "$out" == *"version.json"* ]] \
+  || fail "dl_verify_release checksum mismatch should name the offending file (got: $out)"
+rm -rf "$empty_bundle" "$bad_bundle"
+pass 'dl_verify_release surfaces explicit errors for missing SHA256SUMS and checksum mismatches'
+
+for f in scripts/deploy-local-lib.sh scripts/deploy-local.sh scripts/deploy-154.sh scripts/deploy-245.sh; do
+  bash -n "$ROOT/$f" || fail "bash syntax: $f"
+done
+pass 'all unified deployment scripts pass bash syntax'
+
+if grep -q 'LLM_GATEWAY_FILES_ROOT\|~/Downloads/kaixuan/llm-gateway' "$ROOT/scripts/deploy-local.sh"; then
+  # only acceptable usage is the explicit guard comment, not a hard-coded path
+  if grep -qE '(INSTALL_ROOT|LLM_GATEWAY_FILES_ROOT|~/Downloads/kaixuan/llm-gateway)\s*=\s*' "$ROOT/scripts/deploy-local.sh"; then
+    fail 'local entry point still uses Downloads/legacy path'
+  fi
+fi
+if grep -q 'SSHPASS' "$ROOT/scripts/deploy-154.sh" "$ROOT/scripts/deploy-245.sh"; then :; else fail 'remote wrappers must clear inherited SSHPASS'; fi
+pass 'legacy Downloads path and credential bypass are not used by new entry points'
+
+# Remote wrappers must ignore stale password-auth environment state. They clear
+# SSHPASS before delegating, while the seamless orchestrator still requires the
+# target-specific injected SSH key for any mutating operation.
+for target in 154 245; do
+  wrapper="$ROOT/scripts/deploy-$target.sh"
+  fake_key="$TMP/id_ed25519"
+  printf 'offline-test-key\n' >"$fake_key"
+  chmod 600 "$fake_key"
+  out=$(env SSHPASS=legacy-password "SSH_KEY_$target=$fake_key" bash "$wrapper" --dry-run) \
+    || fail "deploy-$target must ignore stale SSHPASS"
+  grep -q "\"target\":\"$target\"" <<<"$out" \
+    || fail "deploy-$target dry-run target output with stale SSHPASS"
+done
+pass 'remote wrappers clear stale SSHPASS and preserve key-only dry-run behavior'
+
+# A readable injected key must be sufficient for the non-mutating wrapper
+# preflight, without requiring SSHPASS or a network connection.
+for target in 154 245; do
+  wrapper="$ROOT/scripts/deploy-$target.sh"
+  out=$(env -u SSHPASS "SSH_KEY_$target=$fake_key" bash "$wrapper" --dry-run) \
+    || fail "deploy-$target dry-run with injected key"
+  grep -q "\"target\":\"$target\"" <<<"$out" \
+    || fail "deploy-$target dry-run target output"
+done
+pass 'remote wrappers accept injected SSH keys for dry-run preflight'
+
+# The canonical remote path is key-only; legacy sshpass implementations must
+# not re-enter the audited deploy wrappers.
+for f in scripts/deploy-154.sh scripts/deploy-245.sh scripts/deploy-seamless.sh scripts/deploy-lib/ssh-retry.sh; do
+  ! grep -q 'sshpass' "$ROOT/$f" || fail "canonical remote path contains sshpass: $f"
+done
+pass 'canonical remote deployment path contains no sshpass implementation'
+
+for needle in 'cleanup_legacy_downloads' 'llm-gateway-pg' 'dl_shared_pg_dir' 'CLEANUP_DOWNLOADS' 'downloads-legacy'; do
+  if ! grep -q "$needle" "$ROOT/scripts/deploy-local.sh" "$ROOT/scripts/deploy-local-lib.sh"; then
+    fail "PostgreSQL migration safeguard: $needle"
+  fi
+done
+pass 'PostgreSQL migration uses shared service directories and --cleanup-downloads'
+
+# The old local scripts exported INSTALL_ROOT under ~/Downloads. The unified
+# entry point must ignore that legacy variable and remain idempotent for an
+# existing (including dangling) Redis symlink.
+(
+  set -e
+  export HOME="$TMP/home3"
+  rm -rf "$TMP/home3"
+  mkdir -p "$TMP/home3"
+  export INSTALL_ROOT="$TMP/legacy-downloads"
+  unset LLM_GATEWAY_ROOT
+  got_root=$(dl_root)
+  [[ "$got_root" == "$TMP/home3/kaixuan/llm-gateway-go" ]] || { echo "FAIL: legacy INSTALL_ROOT leaked into new root: $got_root"; exit 1; }
+  export LLM_GATEWAY_ROOT="$TMP/install"
+  export KAIXUAN_ROOT="$TMP/kaixuan-shared"
+  rm -rf "$TMP/install/redis"
+  ln -s "$TMP/missing-redis" "$TMP/install/redis"
+  DL_REDIS_MODE=docker DL_REDIS_SOURCE="$TMP/redis-source" dl_link_existing_data
+  directory_after=$(readlink "$TMP/install/redis")
+  [[ "$(readlink "$TMP/install/redis")" == "$TMP/missing-redis" ]] || { echo "FAIL: existing Redis symlink was replaced"; exit 1; }
+) || fail 'legacy root check failed'
+pass 'legacy root is ignored and existing Redis symlink is idempotent'
+
+bundle_env="$TMP/install/bundle.env"
+LLM_GATEWAY_ROOT="$TMP/install" KAIXUAN_ROOT="$TMP/shared" dl_write_env "$bundle_env" 8781
+grep -q "$TMP/install/logs/gateway-8781.log" "$bundle_env" || fail 'bundle log path is not under install root'
+grep -q "$TMP/shared/postgres" "$bundle_env" || fail 'bundle env must declare LLM_GATEWAY_PG_DATA_DIR'
+grep -q "$TMP/shared/redis" "$bundle_env" || fail 'bundle env must declare LLM_GATEWAY_REDIS_DATA_DIR'
+! grep -q 'Downloads' "$bundle_env" || fail 'bundle env still contains Downloads path'
+pass 'bundle logs are pinned under the installation root and services declared via KAIXUAN_ROOT'
+
+# Shared service directory contract: layout, idempotent Redis symlink,
+# migration log+backup destinations. Run inside a subshell so the real
+# user's HOME is not touched even if the test fails midway.
+TMP="$TMP" HOME="$TMP/home2" KAIXUAN_ROOT="$TMP/home2/kaixuan" \
+  LLM_GATEWAY_ROOT="$TMP/home2/kaixuan/llm-gateway-go" \
+  bash -c '
+    set -e
+    source "$1"
+    SHARED_ROOT="$KAIXUAN_ROOT"
+    rm -rf "$SHARED_ROOT"
+    mkdir -p "$SHARED_ROOT/postgres" "$SHARED_ROOT/redis" "$LLM_GATEWAY_ROOT"
+    dl_prepare_shared_service_dirs
+    [[ -d "$SHARED_ROOT/postgres/logs" ]] || { echo FAIL: pg logs dir missing; exit 1; }
+    [[ -d "$SHARED_ROOT/postgres/backups" ]] || { echo FAIL: pg backups dir missing; exit 1; }
+    [[ -d "$SHARED_ROOT/postgres/run" ]] || { echo FAIL: pg run dir missing; exit 1; }
+    [[ -d "$SHARED_ROOT/redis/logs" ]] || { echo FAIL: redis logs dir missing; exit 1; }
+    [[ -d "$SHARED_ROOT/redis/run" ]] || { echo FAIL: redis run dir missing; exit 1; }
+    ln -s "$TMP/external-redis" "$SHARED_ROOT/redis/data"
+    DL_REDIS_MODE=docker DL_REDIS_SOURCE="$SHARED_ROOT/redis/data" dl_link_existing_data
+    [[ -L "$SHARED_ROOT/redis/data" ]] || { echo FAIL: redis symlink should still exist; exit 1; }
+    DL_REDIS_MODE=docker DL_REDIS_SOURCE="$SHARED_ROOT/redis/data" dl_link_existing_data
+    [[ "$(readlink "$SHARED_ROOT/redis/data")" == "$TMP/external-redis" ]] || { echo FAIL: redis symlink should be untouched; exit 1; }
+  ' _ "$ROOT/scripts/deploy-local-lib.sh" || fail 'shared service directories or Redis link contract failed'
+pass 'shared service directories and Redis link are idempotent'
+
+# --cleanup-downloads must remain opt-in. The default code path never deletes
+# the legacy ~/Downloads/llm-gateway-files tree; explicit flag is required.
+tmpdl=$(mktemp -d)
+mkdir -p "$tmpdl/postgres" "$tmpdl/redis" "$tmpdl/bin"
+mkdir -p "$tmpdl/legacy-home/Downloads/llm-gateway-files/postgres"
+HOME="$tmpdl/legacy-home" KAIXUAN_ROOT="$tmpdl/legacy-home/Downloads" \
+  LLM_GATEWAY_ROOT="$tmpdl/llm-gateway-go" \
+  bash -c '
+    mkdir -p "$LLM_GATEWAY_ROOT"
+    source "$1/scripts/deploy-local-lib.sh"
+    dl_cleanup_legacy_downloads
+  ' _ "$ROOT" >/dev/null
+[[ -d "$tmpdl/legacy-home/Downloads/llm-gateway-files/postgres" ]] || fail 'default cleanup must not delete Downloads postgres'
+HOME="$tmpdl/legacy-home" KAIXUAN_ROOT="$tmpdl/legacy-home/Downloads" \
+  LLM_GATEWAY_ROOT="$tmpdl/llm-gateway-go" DL_CLEANUP_DOWNLOADS=1 \
+  bash -c '
+    mkdir -p "$LLM_GATEWAY_ROOT"
+    source "$1/scripts/deploy-local-lib.sh"
+    dl_cleanup_legacy_downloads
+  ' _ "$ROOT" >/dev/null
+[[ ! -d "$tmpdl/legacy-home/Downloads/llm-gateway-files/postgres" ]] || fail 'explicit --cleanup-downloads must remove legacy postgres copy'
+find "$tmpdl/legacy-home/Downloads/postgres/backups" -maxdepth 1 -name 'downloads-legacy-*.tar.gz' | grep -q . || fail 'cleanup archive must be created'
+rm -rf "$tmpdl"
+pass '--cleanup-downloads is opt-in and archives the legacy tree'
+
+# Active port default contract: 8782 (candidate 8781).
+HOME_TEST="$TMP/home2" LLM_GATEWAY_ROOT="$TMP/home2" KAIXUAN_ROOT= \
+  bash -c '
+    set -u
+    HOME="$HOME_TEST" LLM_GATEWAY_ROOT="$HOME_TEST" KAIXUAN_ROOT= source "$1/scripts/deploy-local-lib.sh"
+    [[ "$(dl_active_port)" == 8782 ]] || { echo "FAIL_default got=$(dl_active_port)"; exit 1; }
+    [[ "$(dl_candidate_port)" == 8781 ]] || { echo "FAIL_candidate got=$(dl_candidate_port)"; exit 1; }
+  ' _ "$ROOT" || fail "default active port must be 8782 with candidate 8781"
+
+# INSTALL_ROOT legacy variable guard: deploy-local must refuse to proceed
+# when an operator accidentally exports a legacy root variable.
+INSTALL_ROOT='/tmp/legacy-root' LLM_GATEWAY_FILES_ROOT='/tmp/legacy-files' \
+  bash scripts/deploy-local.sh deploy --dry-run > /tmp/install-root-out.log 2>&1 \
+  && fail 'deploy-local must refuse when legacy INSTALL_ROOT is set' \
+  || grep -q 'legacy INSTALL_ROOT' /tmp/install-root-out.log \
+    || fail 'legacy variable rejection must explain the cause'
+
+pass 'active port 8782 is default and INSTALL_ROOT guard refuses legacy paths'
+
+# Two projects sharing ~/kaixuan must never share deployment state.
+project_a="$TMP/home/kaixuan/project-a"
+project_b="$TMP/home/kaixuan/project-b"
+LLM_GATEWAY_ROOT="$project_a" dl_prepare_layout 0 0
+LLM_GATEWAY_ROOT="$project_b" dl_prepare_layout 0 0
+LLM_GATEWAY_ROOT="$project_a" dl_write_env "$project_a/run/a.env" 8781
+LLM_GATEWAY_ROOT="$project_b" dl_write_env "$project_b/run/b.env" 8782
+[[ -f "$project_a/run/a.env" && ! -e "$project_a/run/b.env" ]] || fail 'project A contains project B runtime state'
+[[ -f "$project_b/run/b.env" && ! -e "$project_b/run/a.env" ]] || fail 'project B contains project A runtime state'
+[[ ! -e "$TMP/home/kaixuan/bin" && ! -e "$TMP/home/kaixuan/logs" ]] || fail 'shared parent received project deployment files'
+pass 'independent project roots do not share deployment state'
+
+# Migration failures must remain diagnosable and bootstrap must fail closed.
+grep -Fq 'ON_ERROR_STOP=1' "$ROOT/scripts/deploy-local.sh" || fail 'schema bootstrap must stop on SQL errors'
+grep -Fq 'gateway-migrate.log' "$ROOT/scripts/deploy-local.sh" || fail 'gateway migrate output must be persisted'
+grep -Fq 'structured report follows' "$ROOT/scripts/deploy-local.sh" || fail 'migration failure must print structured report'
+grep -Fq 'dl_load_project_env' "$ROOT/scripts/deploy-local.sh" || fail 'local deployment must auto-load project .env.local'
+if grep -Fq 'db_port=${db_port:-5432}' "$ROOT/scripts/deploy-local.sh"; then
+  fail 'deployment must not fake an unpublished PostgreSQL host port'
+fi
+pass 'local migration failures preserve structured diagnostics and fail closed'
+
+# 蓝绿切换契约 + controlled restart 兜底（2026-09-09 audit）：
+# 这两类分支一旦混用，traffic 切换时机与 candidate/active 端口语义
+# 会被无声破坏。grep 守门比跑真 deploy 更稳：未来谁改这两条 if 的语义
+# （譬如挪走 LLM_GATEWAY_UPSTREAM_FILE 的检查、或在 controlled restart
+# 之前 stop 8782），都会被这个测试抓到。
+#   - 蓝绿分支：仅在 LLM_GATEWAY_UPSTREAM_FILE 存在时启用，必须写
+#     upstream config 后跳过 controlled restart（不 stop 8782、不动
+#     8782 上的 active process、candidate_port 与 active-port 解耦）
+#   - controlled restart 分支：兜底路径，明确 stop active + start
+#     bundle at active port + verify + (失败时) rollback to active_bundle
+#     + die
+grep -Fq 'if [[ -n "${LLM_GATEWAY_UPSTREAM_FILE:-}" && -f "$LLM_GATEWAY_UPSTREAM_FILE" ]]; then' \
+  "$ROOT/scripts/deploy-local.sh" \
+  || fail 'blue-green branch must gate on LLM_GATEWAY_UPSTREAM_FILE presence'
+grep -Fq "printf 'server 127.0.0.1:%s;\\n' \"\$candidate_port\" > \"\$LLM_GATEWAY_UPSTREAM_FILE\"" \
+  "$ROOT/scripts/deploy-local.sh" \
+  || fail 'blue-green branch must write the new candidate port to LLM_GATEWAY_UPSTREAM_FILE'
+# controlled restart 兜底分支的存在与顺序：warn → stop active → start
+# at active port → verify → (失败) rollback → die。验证关键动词全部
+# 出现在该分支顺序内。
+blue_green_line=$(grep -n 'if \[\[ -n "${LLM_GATEWAY_UPSTREAM_FILE:-}"' "$ROOT/scripts/deploy-local.sh" | cut -d: -f1)
+[[ -n "$blue_green_line" ]] || fail 'cannot locate blue-green branch line'
+cr_line=$(grep -n "warn 'no local proxy configured" "$ROOT/scripts/deploy-local.sh" | cut -d: -f1)
+[[ -n "$cr_line" ]] || fail 'cannot locate controlled restart warning'
+(( blue_green_line < cr_line )) || fail 'blue-green branch must come before controlled restart fallback'
+stop_active_line=$(awk -v start="$cr_line" 'NR>=start && /stop_instance "\$active_port"/ { print NR; exit }' "$ROOT/scripts/deploy-local.sh")
+[[ -n "$stop_active_line" ]] || fail 'controlled restart must stop_instance $active_port'
+start_active_line=$(awk -v start="$stop_active_line" 'NR>=start && /start_instance "\$bundle" "\$active_port"/ { print NR; exit }' "$ROOT/scripts/deploy-local.sh")
+[[ -n "$start_active_line" ]] || fail 'controlled restart must start_instance $bundle at $active_port'
+(( stop_active_line < start_active_line )) || fail 'controlled restart: stop active_port must precede start active_port'
+verify_active_line=$(awk -v start="$start_active_line" 'NR>=start && /verify_instance "\$active_port"/ { print NR; exit }' "$ROOT/scripts/deploy-local.sh")
+[[ -n "$verify_active_line" ]] || fail 'controlled restart must verify_instance $active_port'
+rollback_line=$(awk -v start="$verify_active_line" 'NR>=start && /die .active cutover failed/ { print NR; exit }' "$ROOT/scripts/deploy-local.sh")
+[[ -n "$rollback_line" ]] || fail 'controlled restart must roll back + die on verify failure'
+# atomic switch 必须在 controlled restart 验证/rollback 之后运行 —— 否则
+# 失败的 cutover 会留下 active 指向新 release 的脏状态，破坏 rollback。
+atomic_line=$(grep -n 'dl_atomic_switch "\$RELEASE_VERSION"' "$ROOT/scripts/deploy-local.sh" | cut -d: -f1)
+[[ -n "$atomic_line" ]] || fail 'cannot locate dl_atomic_switch call'
+(( rollback_line < atomic_line )) || fail 'dl_atomic_switch must run AFTER controlled restart verify/rollback (failure paths must die before any switch)'
+pass 'blue-green vs controlled restart branch ordering locked down by grep contract'
+
+# dl_wait_port_free 是 stop_instance 在 Docker 模式下的最后一步。该守
+# 护一旦挪走/改名，TIME_WAIT 端口分配慢 → EADDRINUSE → 静默 start
+# 失败 → verify 60s 后才暴露的整条 active cutover 失败链就会回来。
+grep -Fq 'dl_wait_port_free' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'stop_instance must call dl_wait_port_free to guard against TIME_WAIT port-release races'
+grep -Fq 'DL_DOCKER )); then dl_wait_port_free' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'dl_wait_port_free must be gated on DL_DOCKER (host-mode pid_file kill does not need port wait)'
+# verify_instance 必须保留每步 stderr 诊断（不能让下次故障回到 "failed
+# with no detail" 的状态）
+grep -Fq '[verify] %s:%s: /healthz did not return 200' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'verify_instance must print which step timed out (healthz)'
+grep -Fq '[verify] %s:%s: /readyz did not return 200' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'verify_instance must print which step timed out (readyz)'
+grep -Fq '[verify] %s:%s: ok (version=%s build_seq=%s)' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'verify_instance must print success body (version, build_seq)'
+pass 'stop_instance port-wait guard + verify_instance diagnostics locked down'
+
+# dl_ensure_release_available 的三类 fail-closed / 一类 self-heal 分支：
+# 这是 2026-09-09 empty residue 自愈的契约，任何改动都会让前一次
+# deploy-local 半途中断后留下空目录无法 retry。grep 守住 4 条：
+#   1. active 版本：mv 到 .prev-<epoch>（不原地 rm -rf）
+#   2. 完整旧发布（SHA256SUMS 存在）：mv 到 .prev-<epoch>
+#   3. 真正空目录：rmdir 自愈（带 residue 提示）
+#   4. 含任意文件（含隐藏）：fail-closed 拒删
+grep -Fq 'is the active deployment; moving it aside' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_ensure_release_available: active-version branch must mv to .prev-<epoch> (no in-place rm -rf)'
+grep -Fq 'already exists (intact, not active); moving it aside' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_ensure_release_available: intact-old-release branch must mv to .prev-<epoch>'
+grep -Fq 'is empty (residue from a previous failed deploy); auto-cleaning' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_ensure_release_available: empty-residue branch must rmdir (self-heal) with warning'
+grep -Fq 'no SHA256SUMS — not a verifiable release' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_ensure_release_available: dir-with-file branch must fail-closed (sentinel contract)'
+pass 'dl_ensure_release_available 4-branch contract (active / intact / empty self-heal / fail-closed) locked down'
+
+# CGO 容器构建的并发安全契约（2026-09-09 用户再次"还是出错！"）：
+# 之前的 cgo_out 用固定名 gateway.build，并发 deploy（本地 deploy-local
+# 跑 + 远端 deploy-seamless 同跑、外部清理工具触碰 .build-local）会
+# 让 cgo_out 在 docker run 完成到 mv 之间被互踩，mv 报"No such file"
+# 但 build_backend 不炸（mv -f 找不到源时只 print 不返回 1），最后
+# stage_release 拿着空 $out 去 install 撞上 dl_verify_release 的
+# "no SHA256SUMS"。grep 守住 3 条：
+#   1. cgo_out 路径必须带 $$ 后缀（每次 build 独占文件名）
+#   2. mv -f 不许出现；改用 install -m 0755（原子 + 显式失败码）
+#   3. dl_stage_release 必须在 install 前 print $binary 是否存在，
+#      把 "No such file" 翻译成 build_backend 失败的明确信号
+grep -Fq 'gateway.build.$$' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'CGO fallback: cgo_out must use $$ suffix (per-PID) to prevent concurrent-deploy races'
+grep -Fq 'seamless-binary.$$' "$ROOT/scripts/deploy-seamless.sh" \
+  || fail 'CGO fallback (seamless): cgo_out must use $$ suffix (per-PID) to prevent concurrent-deploy races'
+# mv -f 之后的 [ $cgo_out 路径 ] 必须消失（被 install 替换）
+if grep -nE 'mv -f "\$cgo_out"' "$ROOT/scripts/deploy-local.sh" "$ROOT/scripts/deploy-seamless.sh" >/dev/null 2>&1; then
+  fail 'CGO fallback must use install -m 0755 (not mv -f) to atomically install the binary; mv -f swallows missing-source errors'
+fi
+grep -Fq 'install -m 0755 "$cgo_out" "$out"' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'CGO fallback: install -m 0755 $cgo_out $out must replace mv -f (atomic + explicit error)'
+grep -Fq 'install -m 0755 "$cgo_out" "$tmpbin"' "$ROOT/scripts/deploy-seamless.sh" \
+  || fail 'CGO fallback (seamless): install -m 0755 $cgo_out $tmpbin must replace mv -f'
+# dl_stage_release 必须把"binary 不存在"翻译成 build_backend 失败的
+# 明确信号（否则 stage 静默吃掉，verify 报 "no SHA256SUMS"，操作员
+# 永远看不到真因）。
+grep -Fq 'binary missing or empty' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_stage_release: must diagnose missing/empty binary with explicit hint (build_backend path)'
+grep -Fq 'Inspect: %s/build-host.log' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_stage_release: missing-binary hint must point operators at build-host.log + build-cgo*.log'
+grep -Fq 'Inspect: %s/build-host.log, %s/build-cgo' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_stage_release: missing-binary hint must reference both build-host.log and build-cgo*.log'
+pass 'CGO fallback atomic concurrent-safe contract ($$ suffix + install-not-mv + missing-binary diagnosis) locked down'
+
+# 2026-09-09 用户报 "localhost:8782/ 无法访问"复盘：build_backend 内部
+# 的 log() 调用全部写 stdout，而 deploy() 用 binary=$(build_backend)
+# 捕获返回值 —— CGO 回退分支里每行 log 输出都被吞进 $binary，stage_release
+# 拿到多行"cached image ... re-pulling / /Users/.../gateway.build"
+# 当成 binary 路径，install 报"binary missing or empty"。修法：log()
+# 必须写 stderr（与 warn/die 一致），让 $() 捕获只能拿到 build_backend
+# 的 printf '%s\n' "$out" 一行。
+log_defn=$(grep -E '^log\(\)' "$ROOT/scripts/deploy-local.sh")
+[[ -n "$log_defn" ]] || fail 'deploy-local.sh must define log()'
+[[ "$log_defn" == *'>&2'* ]] || fail "deploy-local.sh log() must write to stderr (&>2); got: $log_defn"
+# 双重保险：binary=$(build_backend) 这一行必须存在且 log() 已修
+grep -Fq 'binary=$(build_backend)' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'deploy() must capture build_backend output via $()'
+pass 'log() stderr contract locked: $binary=$() capture must not absorb log output as path'

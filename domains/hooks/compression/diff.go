@@ -100,58 +100,31 @@ func BuildOutboundMessages(
 	lastMsgs, err := extractMessages(lastOutboundBody)
 	if err != nil || len(lastMsgs) == 0 {
 		// Can't parse last outbound — treat as new session.
-		hashes := computeHashes(clientMsgs)
-		return &OutboundResult{
-			Body:      clientBody,
-			MsgHashes: hashes,
-			MsgCount:  len(clientMsgs),
-			TokenEst:  estimateBodyTokens(clientBody),
-			IsNewSess: true,
-		}, nil
+		return newSessionResult(clientBody, clientMsgs), nil
+	}
+	// A durable body hash is the session lineage guard. If it is present, the
+	// cached body must match exactly; otherwise another session/lifecycle or a
+	// stale cache entry could be merged with this request.
+	if lastState.LastOutboundHash != "" && sha256Hex(lastOutboundBody) != lastState.LastOutboundHash {
+		return newSessionResult(clientBody, clientMsgs), nil
+	}
+	if lastState.MsgCount > 0 && lastState.MsgCount != len(lastMsgs) {
+		return newSessionResult(clientBody, clientMsgs), nil
 	}
 
-	// ── Build LCS index from last outbound ───────────────────────────────
-	// Index: hash → bool (present in last outbound, non-summary messages only).
-	// Summary marker messages are excluded from the index so they are never
-	// mistaken for client-sent messages.
-	lastHashSet := make(map[string]bool, len(lastMsgs))
-	for _, m := range lastMsgs {
-		if isSummaryMarkerMsg(m) {
-			continue // preserve as-is, skip from diff
-		}
-		h := msgHash(m)
-		if h != "" {
-			lastHashSet[h] = true
-		}
+	// ── Establish one unambiguous ordered lineage anchor ─────────────────
+	// Uncompressed sessions require the complete prior sequence to be the
+	// client's prefix. Compressed sessions retain gateway-only summary markers;
+	// for those, match the non-summary outbound suffix against one unique client
+	// range. Ambiguous duplicate occurrences fail open rather than dropping a
+	// client message by choosing the wrong anchor.
+	anchorEnd, ok := findDeltaAnchor(clientMsgs, lastMsgs)
+	if !ok {
+		return newSessionResult(clientBody, clientMsgs), nil
 	}
 
-	// ── Find the last client message that exists in last outbound ────────
-	lastSharedIdx := -1
-	for i := len(clientMsgs) - 1; i >= 0; i-- {
-		if isSummaryMarkerMsg(clientMsgs[i]) {
-			continue
-		}
-		h := msgHash(clientMsgs[i])
-		if h != "" && lastHashSet[h] {
-			lastSharedIdx = i
-			break
-		}
-	}
-
-	// ── No shared message: session reset (client sent completely different history) ──
-	if lastSharedIdx == -1 {
-		hashes := computeHashes(clientMsgs)
-		return &OutboundResult{
-			Body:      clientBody,
-			MsgHashes: hashes,
-			MsgCount:  len(clientMsgs),
-			TokenEst:  estimateBodyTokens(clientBody),
-			IsNewSess: true,
-		}, nil
-	}
-
-	// ── Delta tail: client messages after lastSharedIdx ─────────────────
-	deltaTail := clientMsgs[lastSharedIdx+1:]
+	// ── Delta tail: client messages after the proven anchor ─────────────
+	deltaTail := clientMsgs[anchorEnd:]
 
 	if len(deltaTail) == 0 {
 		// Client body is a subset or equal to last outbound — return last.
@@ -212,6 +185,60 @@ func BuildOutboundMessages(
 // Internal helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+func newSessionResult(body []byte, messages []rawMsg) *OutboundResult {
+	return &OutboundResult{
+		Body: body, MsgHashes: computeHashes(messages), MsgCount: len(messages),
+		TokenEst: estimateBodyTokens(body), IsNewSess: true,
+	}
+}
+
+func findDeltaAnchor(clientMsgs, lastMsgs []rawMsg) (int, bool) {
+	lastComparable := make([]rawMsg, 0, len(lastMsgs))
+	hasGatewaySummary := false
+	for _, message := range lastMsgs {
+		if isSummaryMarkerMsg(message) {
+			hasGatewaySummary = true
+			continue
+		}
+		lastComparable = append(lastComparable, message)
+	}
+	if len(lastComparable) == 0 {
+		return 0, false
+	}
+
+	if !hasGatewaySummary {
+		if len(clientMsgs) < len(lastComparable) || !sameMessageSequence(clientMsgs[:len(lastComparable)], lastComparable) {
+			return 0, false
+		}
+		return len(lastComparable), true
+	}
+
+	// A compressed outbound contains only a retained suffix from the original
+	// client history. Require the whole retained suffix to occur exactly once.
+	matches := 0
+	end := 0
+	for start := 0; start+len(lastComparable) <= len(clientMsgs); start++ {
+		if sameMessageSequence(clientMsgs[start:start+len(lastComparable)], lastComparable) {
+			matches++
+			end = start + len(lastComparable)
+		}
+	}
+	return end, matches == 1
+}
+
+func sameMessageSequence(a, b []rawMsg) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		left, right := msgHash(a[i]), msgHash(b[i])
+		if left == "" || right == "" || left != right {
+			return false
+		}
+	}
+	return true
+}
+
 // extractMessages parses the "messages" array from an OpenAI or Anthropic body.
 // V2OutboundBuilder returns the persisted message array directly, so accept
 // that shape as well. Keeping the compatibility here makes the builder/cache
@@ -231,25 +258,21 @@ func extractMessages(body []byte) ([]rawMsg, error) {
 	return messages, nil
 }
 
-// msgHash computes sha256(role + \x00 + contentKey + \x00 + toolID).
-// contentKey is the first 512 bytes of the string-normalised content.
-// Returns "" on parse error (caller skips the message in the hash set).
+// msgHash computes a canonical fingerprint of the complete message object.
+// It includes tool calls and the full content, so suffix-only edits and distinct
+// assistant tool calls cannot collapse to the same identity. JSON object key
+// ordering is normalized by re-marshalling the decoded value.
 func msgHash(raw rawMsg) string {
-	var m struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"`
-		// OpenAI tool result identifier
-		ToolCallID string `json:"tool_call_id"`
-	}
-	if err := json.Unmarshal(raw, &m); err != nil {
+	var message interface{}
+	if err := json.Unmarshal(raw, &message); err != nil || message == nil {
 		return ""
 	}
-	contentKey := contentFingerprint(m.Content)
-	if contentKey == "" && m.Role == "" {
+	canonical, err := json.Marshal(message)
+	if err != nil {
 		return ""
 	}
-	h := sha256.Sum256([]byte(m.Role + "\x00" + contentKey + "\x00" + m.ToolCallID))
-	return fmt.Sprintf("%x", h[:16]) // 16 bytes = 32 hex chars is plenty
+	h := sha256.Sum256(canonical)
+	return fmt.Sprintf("%x", h[:16])
 }
 
 // contentFingerprint extracts the first 512 bytes of meaningful content
@@ -266,21 +289,63 @@ func contentFingerprint(raw json.RawMessage) string {
 		}
 		return s
 	}
-	// Array of content parts — concatenate "text" fields.
-	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
+	// Array of content parts — concatenate meaningful fields from all block types.
+	var parts []map[string]any
 	if json.Unmarshal(raw, &parts) != nil {
 		return string(raw[:min512(len(raw))])
 	}
 	var sb strings.Builder
 	for _, p := range parts {
-		if p.Type == "text" {
-			sb.WriteString(p.Text)
-			if sb.Len() >= 512 {
-				break
+		blockType, _ := p["type"].(string)
+
+		switch blockType {
+		case "", "text", "input_text", "output_text":
+			// Text blocks: extract the "text" field
+			if text, ok := p["text"].(string); ok {
+				sb.WriteString(text)
 			}
+		case "thinking":
+			// Anthropic thinking blocks carry payload in "thinking".
+			if text, ok := p["thinking"].(string); ok {
+				sb.WriteString(text)
+			}
+		case "tool_use":
+			// Anthropic tool_use: include id, name, and input
+			if id, ok := p["id"].(string); ok {
+				sb.WriteString(id)
+				sb.WriteString("\x00")
+			}
+			if name, ok := p["name"].(string); ok {
+				sb.WriteString(name)
+				sb.WriteString("\x00")
+			}
+			if input, ok := p["input"]; ok {
+				if inputJSON, err := json.Marshal(input); err == nil {
+					sb.Write(inputJSON)
+				}
+			}
+		case "tool_result":
+			// Anthropic tool_result: include tool_use_id and content
+			if toolUseID, ok := p["tool_use_id"].(string); ok {
+				sb.WriteString(toolUseID)
+				sb.WriteString("\x00")
+			}
+			if content, ok := p["content"]; ok {
+				// content can be string or array
+				if contentStr, ok := content.(string); ok {
+					sb.WriteString(contentStr)
+				} else if contentJSON, err := json.Marshal(content); err == nil {
+					sb.Write(contentJSON)
+				}
+			}
+		}
+
+		// Per-block terminator: without it [{"text":"ab"}] and
+		// [{"text":"a"},{"text":"b"}] collide on the same fingerprint.
+		sb.WriteString("\x00")
+
+		if sb.Len() >= 512 {
+			break
 		}
 	}
 	result := sb.String()
@@ -362,6 +427,16 @@ func preserveAnthropicSystem(lastBody, newBody []byte) []byte {
 	if !ok || len(system) == 0 || string(system) == "null" {
 		return newBody
 	}
+
+	// P1-12 fix (2026-08-28): Validate system field is well-formed JSON before
+	// copying it to the new body. Corrupted cache data could otherwise produce
+	// invalid requests that fail at the provider.
+	var systemValidation interface{}
+	if err := json.Unmarshal(system, &systemValidation); err != nil {
+		// system field is not valid JSON; do not copy it
+		return newBody
+	}
+
 	current["system"] = system
 	out, err := json.Marshal(current)
 	if err != nil {

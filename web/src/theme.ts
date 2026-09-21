@@ -67,6 +67,9 @@ export function detectTheme(): ThemeMode {
 export function applyTheme(theme: ThemeMode) {
   if (typeof document === 'undefined') return
   document.documentElement.setAttribute('data-theme', theme)
+  // Element Plus 暗色变量（theme-chalk/dark/css-vars.css）以 html.dark 为门控，
+  // 必须与 data-theme 同步切换，否则 el-* 组件在暗色下保持亮色皮肤。
+  document.documentElement.classList.toggle('dark', theme === 'dark')
   document.documentElement.style.colorScheme = theme
 }
 

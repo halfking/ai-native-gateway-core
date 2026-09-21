@@ -65,10 +65,10 @@ func TestResolveGovernorBackendTableDriven(t *testing.T) {
 			wantKind: "local",
 		},
 		{
-			name:     "redis_enforce with nil client → LocalBackend (warn + fallback)",
+			name:     "redis_enforce with nil client → strict unavailable backend",
 			mode:     "redis_enforce",
 			client:   nil,
-			wantKind: "local",
+			wantKind: "redis_enforce",
 		},
 		{
 			name:     "bogus value → LocalBackend (error log + fallback)",

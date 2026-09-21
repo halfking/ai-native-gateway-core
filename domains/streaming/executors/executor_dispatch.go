@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -15,7 +15,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
+	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
@@ -45,10 +47,17 @@ type dispatchCtx struct {
 	retryPerCred   int
 	tTotal         time.Time
 	stickyCredID   *int // session-affinity pin (honored on first attempt; excluded once tried)
+	// stickyFailed / stickyFailKind (2026-09-19 会话保持): 本请求内 sticky
+	// 钉住的凭据是否被尝试过且失败，及其最终错误类型。由 dispatchForward
+	// 失败分支记录（pipeline 对同一请求的 attempt 串行，无需加锁），
+	// recordDispatchSuccess 据此决定会话"保持原绑定"还是"迁移到新节点"。
+	stickyFailed   bool
+	stickyFailKind errorsx.ErrorKind
 }
 
-// SetDispatchPipeline wires the V2 dispatch pipeline. When nil OR when the
-// dispatch_v2 gate is off, Execute uses the legacy synchronous loop.
+// SetDispatchPipeline wires the V2 dispatch pipeline. The pipeline is the
+// sole execution path; a nil pipeline is a startup wiring error and causes
+// Execute to fail explicitly rather than falling back to a legacy loop.
 func (e *Executor) SetDispatchPipeline(p *dispatch.Pipeline) { e.dispatchPipeline = p }
 
 // SetDispatchModelRecommender wires the autoroute decision service used after
@@ -83,11 +92,11 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 	// Once the sticky cred is tried-and-failed it is in qr.TriedCredentials
 	// and naturally excluded here, so failover is unaffected.
 	var sticky *int
-	if !qr.HasTriedCredential(0) && len(qr.TriedCredentials) == 0 {
+	if len(qr.TriedCredentials) == 0 {
 		sticky = dctx.stickyCredID
 	}
 	planned := e.Router.PlanCandidatesPinned(
-		ctx, e.dispatchCandidatesForModel(ctx, dctx, qr.ResolvedModel), sticky, dctx.params.PinCredentialID, dctx.params.Policy, nil,
+		ctx, e.dispatchCandidatesForModel(ctx, dctx, qr.ResolvedModelSnapshot()), sticky, dctx.params.PinCredentialID, dctx.params.Policy, nil,
 		dctx.params.TenantID, dctx.params.ClientModel, dctx.params.RequestID,
 	)
 	refs := make([]dispatch.CredentialRef, 0, len(planned))
@@ -115,20 +124,14 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 		}
 		return filtered, nil
 	}
-	// Stage D: capacity-aware soft-rank. Applied BEFORE the liveActions
-	// emit so the credential_selected event reports the post-penalty best
-	// candidate. The pin filter path above short-circuits with a 0-1
-	// element list (single-cred probe must not soft-skip), so this hook
-	// fires only on the multi-candidate route.
 	refs = e.dispatchRouteSoftRank(refs)
-
 	// V3.3-OBS OBS-B1 (2026-08-15): dispatch_v2 路径的 credential_selected
 	// 动作事件（S5，Router.PlanCandidates 输出，best-first 首个 ref）。
 	if len(refs) > 0 {
 		e.liveActions.Emit(ctx, liveactions.ActionEvent{
 			RequestID:    qr.ID,
 			Action:       liveactions.ActionCredentialSelected,
-			Model:        qr.ResolvedModel,
+			Model:        qr.ResolvedModelSnapshot(),
 			CredentialID: refs[0].CredentialID,
 			Detail: map[string]string{
 				"candidates": strconv.Itoa(len(refs)),
@@ -138,13 +141,6 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 	return refs, nil
 }
 
-// dispatchRouteSoftRank applies the Stage D capacity-aware soft penalty
-// when both the on flag and the snapFn are set. Lifted out of
-// dispatchRoute so the hot-path branch is single-line and the test
-// surface stays isolated.
-//
-// No-op when either is unset; a nil snapFn OR on=false both fall
-// through to the unchanged behavior.
 func (e *Executor) dispatchRouteSoftRank(refs []dispatch.CredentialRef) []dispatch.CredentialRef {
 	if !e.capacityAwareSortOn || e.capacityAwareSnapFn == nil {
 		return refs
@@ -196,7 +192,7 @@ func (e *Executor) dispatchForward(ctx context.Context, qr *dispatch.QueuedReque
 		return dispatch.ForwardOutcome{Err: errDispatchBadPayload}
 	}
 	var cand provider.Candidate
-	for _, c := range e.dispatchCandidatesForModel(ctx, dctx, qr.ResolvedModel) {
+	for _, c := range e.dispatchCandidatesForModel(ctx, dctx, qr.ResolvedModelSnapshot()) {
 		if c.CredentialID == ref.CredentialID {
 			cand = c
 			break
@@ -221,11 +217,6 @@ func candidateToRef(c provider.Candidate) dispatch.CredentialRef {
 		CredentialID: c.CredentialID,
 		ProviderID:   c.ProviderID,
 		Vendor:       c.CatalogCode,
-	}
-	if c.Priority {
-		r.PriorityCluster = 0
-	} else {
-		r.PriorityCluster = 1
 	}
 	mode := c.ConcurrencyMode
 	if mode == "" {
@@ -261,7 +252,7 @@ func dispatchExecutionContext(params *ExecParams) (context.Context, context.Canc
 		return context.WithCancel(context.Background())
 	}
 	if params.IsStream && params.StreamSurvivesClientCancel {
-		return context.WithCancel(context.WithoutCancel(params.R.Context()))
+		return context.WithTimeout(context.WithoutCancel(params.R.Context()), detachedStreamMaxLifetime)
 	}
 	return context.WithCancel(params.R.Context())
 }
@@ -286,7 +277,7 @@ func (e *Executor) executeViaDispatch(
 	stickyCredID *int,
 ) (*ExecuteResult, error) {
 	if e.dispatchPipeline == nil {
-		return nil, nil
+		return nil, errDispatchPipelineNotWired
 	}
 	requestedModel := params.Model
 	if requestedModel == "" {
@@ -317,9 +308,15 @@ func (e *Executor) executeViaDispatch(
 	qr.EstimatedTokens = estimatePromptTokens(params)
 	qr.AllowModelChange = params.DispatchAllowModelChange
 	qr.AllowProviderChange = params.DispatchAllowProviderChange
-	qr.OnNodeSwitchSummary = params.OnNodeJump
 	qr.RetryPerCredential = dispatch.MaxNodeFailures - 1
 	qr.ModelAlternatives = append([]string(nil), params.DispatchModelAlternatives...)
+	// v6 G-Ⅱ: 定时请求 due time flows into the pipeline's due heap.
+	qr.DueAt = params.DispatchDueAt
+	// v6 G-Ⅲ: bridge structured dispatch notices to the handler's thinking
+	// writer (params.OnNodeJump → preStream `: thinking:` SSE comment). The
+	// callback must stay non-blocking — handler.go writes through the
+	// serialized stream writer and detaches on failure.
+	qr.OnDispatchNotice = bridgeDispatchNotice(params)
 
 	result, err := e.dispatchPipeline.Submit(dispatchCtx, qr)
 	if err != nil {
@@ -343,6 +340,97 @@ func (e *Executor) executeViaDispatch(
 	return nil, ee
 }
 
+// bridgeDispatchNotice builds the QueuedRequest.OnDispatchNotice transport
+// bridge for one request's ExecParams (v6 G-Ⅲ). Notice transport by request
+// shape:
+//
+//   - non-streaming responses have no `: thinking:` SSE channel. Since
+//     2026-09-07 they surface notices through the FailoverNoticeHeader
+//     response header instead: when params.FailoverNotices is wired, the
+//     notice is collected and the header digest is (re)written in place —
+//     headers are still mutable because notices are pre-first-byte by
+//     construction (ADR-Disp-003) and a non-streaming response commits
+//     only with its final body. A non-streaming request WITHOUT a wired
+//     collector keeps the legacy behaviour: dropped + counted in
+//     metrics.DispatchNoticeDroppedTotal (reason=non_streaming), which is
+//     now a real anomaly signal worth alerting on;
+//   - a streaming request whose preStream keepalive was never initialized
+//     (feature disabled / startPreStreamKeepalive failed) silently swallows
+//     the notice inside the handler's `if preStream != nil` guard.
+//     params.PreStreamPrepared mirrors exactly that condition — all three
+//     protocol entries (handler.go / messages.go / responses.go) set it
+//     together with the preStream writer.
+//
+// The prestream_uninit drop is counted in metrics.DispatchNoticeDroppedTotal.
+// The recording is side-effect free: the bridge runs the exact same calls as
+// the previous inline closure, so streaming transport behaviour is bit-for-bit
+// unchanged.
+func bridgeDispatchNotice(params *ExecParams) func(dispatch.DispatchNotice) {
+	return func(notice dispatch.DispatchNotice) {
+		// Audit 2026-09-08 #3: request_flow coverage for dispatch V2 candidate
+		// switches. The notice already carries the from→to endpoints and the
+		// failover cause — record the line BEFORE the transport branches so it
+		// fires even when the client-facing channel drops the notice
+		// (non-streaming without a collector, prestream_uninit). Same
+		// zero-blocking semantics as every other requestflow.Log call site.
+		// DispatchNotice carries no provider_id, so the field stays 0 here
+		// (credential_id + from/to_credential_id identify the transition).
+		if notice.Kind == dispatch.NoticeKindNodeSwitch || notice.Kind == dispatch.NoticeKindModelSwitch {
+			var requestID string
+			if params != nil {
+				requestID = params.RequestID
+			}
+			requestflow.Log(requestflow.Event{
+				Stage:            "dispatch",
+				RequestID:        requestID,
+				Model:            notice.ToModel,
+				CredentialID:     notice.ToCredentialID,
+				Kind:             string(notice.Kind),
+				Action:           "switch_node",
+				Reason:           notice.ErrorKind,
+				Retryable:        true,
+				Attempt:          notice.Attempt,
+				FromCredentialID: notice.FromCredentialID,
+				ToCredentialID:   notice.ToCredentialID,
+			})
+		}
+		if params != nil && !params.IsStream && params.FailoverNotices != nil {
+			params.FailoverNotices.Add(notice)
+			if params.W != nil {
+				if v := params.FailoverNotices.HeaderValue(); v != "" {
+					params.W.Header().Set(FailoverNoticeHeader, v)
+				}
+			}
+			if params.OnNodeJump != nil {
+				params.OnNodeJump(notice.Message)
+			}
+			return
+		}
+		if params == nil || params.OnNodeJump == nil {
+			metrics.RecordDispatchNoticeDropped(string(notice.Kind), dispatchNoticeDropReason(params))
+			return
+		}
+		if !params.PreStreamPrepared {
+			// Still invoke the callback — the handler closure itself decides
+			// (and drops) when preStream is nil; we only observe the fact so
+			// the drop rate is measurable.
+			metrics.RecordDispatchNoticeDropped(string(notice.Kind), dispatchNoticeDropReason(params))
+		}
+		params.OnNodeJump(notice.Message)
+	}
+}
+
+// dispatchNoticeDropReason maps a dropped notice onto the closed reason enum:
+// a non-streaming request without a wired FailoverNotices collector can never
+// surface notices (no SSE channel, no header digest), while any other drop
+// means a streaming request's preStream channel was not initialized.
+func dispatchNoticeDropReason(params *ExecParams) string {
+	if params == nil || !params.IsStream {
+		return metrics.DispatchNoticeDropReasonNonStreaming
+	}
+	return metrics.DispatchNoticeDropReasonPreStreamUninit
+}
+
 // dispatchErrToExecuteError maps a dispatch.Pipeline error to *ExecuteError
 // with an errorsx kind that drives the handler's HTTP status + goal-retry.
 func dispatchErrToExecuteError(err error) *ExecuteError {
@@ -354,7 +442,21 @@ func dispatchErrToExecuteError(err error) *ExecuteError {
 		return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindConcurrent}
 	case errors.Is(err, context.DeadlineExceeded):
 		return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindTimeout}
+	case errors.Is(err, dispatch.ErrScheduleTooFar):
+		// 定时请求的 due time 超出允许窗口：客户端参数问题，不可重试。
+		return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindClientBug}
 	default:
+		// 2026-09-07 (mock system test §5.3): the exhaustion cause chain
+		// (ExhaustedError.Unwrap) preserves the last concrete upstream error.
+		// When that is a rate limit, surface KindRateLimit instead of the
+		// blanket KindTransient so the handler's exhausted branch can return
+		// HTTP 429 + Retry-After to the client instead of 503 model_not_found
+		// (which stripped the Retry-After contract). Other upstream kinds
+		// deliberately keep the legacy transient mapping — their handler-side
+		// classification is unchanged.
+		if upstreamRateLimitKind(err) {
+			return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindRateLimit}
+		}
 		if ce, ok := err.(*dispatchErr); ok && ce != nil {
 			// Forward-path sentinels (circuit open / fp saturated / keys
 			// exhausted / no candidate): treat as transient exhaustion.
@@ -362,6 +464,14 @@ func dispatchErrToExecuteError(err error) *ExecuteError {
 		}
 		return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindTransient}
 	}
+}
+
+// upstreamRateLimitKind reports whether the dispatch error chain terminates
+// in an upstream rate-limit error (HTTP 429 classified by the upstream
+// client), unwrapping through ExhaustedError.Cause and fmt.Errorf wrappers.
+func upstreamRateLimitKind(err error) bool {
+	var ue *upstreampkg.Error
+	return errors.As(err, &ue) && ue != nil && ue.Kind == errorsx.KindRateLimit
 }
 
 func (e *Executor) dispatchCandidatesForModel(ctx context.Context, d *dispatchCtx, model string) []provider.Candidate {
@@ -443,11 +553,19 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	}
 	paramsCopy.DispatchAttempt = true
 	paramsCopy.DispatchAttemptID = attemptID
-	paramsCopy.FirstSemanticByteCallback = firstSemanticByte
+	visibility := &atomic.Bool{}
+	paramsCopy.ClientSemanticBytesVisible = visibility
+	paramsCopy.FirstSemanticByteCallback = func() {
+		visibility.Store(true)
+		if firstSemanticByte != nil {
+			firstSemanticByte()
+		}
+	}
 	params := &paramsCopy
 	startedAt := time.Now()
 	probeConsumed := false
 	healthEvidence := false
+	failureLogged := false
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			out = dispatch.ForwardOutcome{Err: fmt.Errorf("dispatch forward panic: %v", recovered)}
@@ -456,6 +574,39 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			kind := classifyExecError(out.Err)
 			out.ErrorKind = string(kind)
 			out.HTTPStatus = dispatchHTTPStatus(out.Err)
+			if e.FailureLogger != nil && !failureLogged {
+				extra := buildEnhancedErrorContext(params, kind, out.Err, len(dctx.candidates), params.AttemptNo)
+				if extra == nil {
+					extra = map[string]any{}
+				}
+				extra["failure_stage"], extra["preflight_reason"] = dispatchFailureStage(out.Err)
+				extra["supplier"] = cand.CatalogCode
+				e.FailureLogger.LogFailureWithKind(
+					params.R.Header.Get("X-Request-Id"), tenantFromCtx(params.R), params.SessionID,
+					cand.CredentialID, cand.ProviderID, cand.RawModel, params.AttemptNo,
+					out.Err, kind, nil, nil, extra,
+				)
+				failureLogged = true
+			}
+			// 2026-09-08 audit (re-wiring): the legacy sync candidate loop that
+			// called HealthTracker.OnError was retired in f7eb0eb1b and nothing
+			// re-attached the failure side — the 80% hard-degrade, kind-gradient
+			// thresholds, probe gating and concurrency auto-tune all went dark,
+			// and the admin sliding window only ever accumulated successes
+			// (monitor showed a permanent 100%). The dispatch defer is the one
+			// funnel every candidate failure passes through.
+			// 2026-09-09 audit round 3: pre-upstream admission rejections
+			// (circuit open / key rotation exhausted / concurrency admission —
+			// exactly the sentinels dispatchFailureStage maps to a stage) never
+			// reached the provider, and the checker's skip list does NOT cover
+			// circuit_open/rate_limit — under load they accumulated into the 1h
+			// window and hard-degraded healthy credentials (self-reinforcing
+			// circuit). Only upstream-evidenced failures feed the tracker.
+			if _, preflightReason := dispatchFailureStage(out.Err); preflightReason == "" &&
+				e.HealthTracker != nil && cand.CredentialID > 0 {
+				e.HealthTracker.OnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, kind,
+					params.R.Header.Get("X-Request-Id"))
+			}
 		} else if result, ok := out.Result.(*ExecuteResult); ok && result != nil && result.Response != nil {
 			out.HTTPStatus = result.Response.StatusCode
 		}
@@ -482,6 +633,20 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 				"credential_id", cand.CredentialID,
 				"provider_id", cand.ProviderID,
 			)
+			// 2026-08-30 P1: 记录 fpSlot 饱和降级到 candidate_failure_logs_hot
+			// 审计发现：fpSlot 饱和未被记录，运维无法看到哪些 credential 频繁触发限流降级
+			// 2026-08-31 复审改用 KindFpSlotSaturated（而非 KindRateLimit）：
+			// 此路径是降级继续（请求仍会执行并大概率成功），且是网关侧按指纹的
+			// 准入信号，与上游 429 的供应商质量问题不同桶，避免污染
+			// provider_error_details 的 rate_limit 统计与凭据质量评估。
+			logDispatchPreflightRejection(e.FailureLogger, params, cand, dctx, startedAt,
+				errDispatchFpSlotSaturated, errorsx.KindFpSlotSaturated,
+				map[string]any{
+					"degraded_continue": true,
+					"rejection_type":    "fp_slot_saturated",
+					"candidates_left":   len(dctx.candidates),
+				},
+			)
 		} else {
 			fpLease = lease
 		}
@@ -495,6 +660,23 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	}
 	if circuitOpen && settings.IsEnabled("circuit_degradation") {
 		releaseFpLease(e.FpSlots, fpLease)
+
+		// 2026-08-29 P1: 记录熔断拒绝到 candidate_failure_logs_hot
+		// 审计发现：circuit-open 错误未记录，运维无法看到哪些 credential 处于熔断状态
+		extra := map[string]any{
+			"circuit_open":   true,
+			"rejection_type": "circuit_breaker",
+		}
+		// 获取熔断器状态用于诊断
+		if e.Circuit != nil {
+			if breaker := e.Circuit.Get(cand.ProviderID, cand.CredentialID); breaker != nil {
+				extra["circuit_state"] = breaker.State().String()
+				extra["circuit_consecutive_failures"] = breaker.ConsecutiveFailures()
+			}
+		}
+		logDispatchPreflightRejection(e.FailureLogger, params, cand, dctx, startedAt,
+			errDispatchCircuitOpen, errorsx.KindCircuitOpen, extra)
+
 		return dispatch.ForwardOutcome{Err: errDispatchCircuitOpen}
 	}
 
@@ -515,16 +697,22 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
 			probeConsumed = false
 		}
+
+		// 2026-08-29 P1: 记录并发限流拒绝到 candidate_failure_logs_hot
+		// 审计发现：并发限流拒绝未记录，无法统计因并发限流导致的失败
+		logDispatchPreflightRejection(e.FailureLogger, params, cand, dctx, startedAt,
+			acquireErr, errorsx.KindRateLimit,
+			map[string]any{
+				"rate_limit_rejection": true,
+				"rejection_type":       "concurrency_limiter",
+				"candidates_left":      len(dctx.candidates),
+			})
+
 		return dispatch.ForwardOutcome{Err: acquireErr}
 	}
 
 	var result *ExecuteResult
 	var execErr error
-	// resolvedKeyIdx carries the key-rotator index used for THIS attempt so the
-	// success/error branches below can feed RecordKey{Success,Failure}.
-	// -1 means "single-key / no rotator / unresolved" — those paths skip the
-	// rotator bookkeeping entirely.
-	resolvedKeyIdx := -1
 	func() {
 		releasePeak := e.PeakCollector != nil
 		if releasePeak {
@@ -542,30 +730,34 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		if cand.KeyRotator != nil {
 			idx := cand.KeyRotator.ResolveKey(cand.CredentialID, -1)
 			if idx < 0 {
-				// ResolveKey exhausted the rotator. Distinguish "no key
-				// registered yet" (false alarm) from "ALL keys dead" (real
-				// credential-level fatal). Only the latter is propagated as a
-				// typed upstream error so the credential-level breaker opens;
-				// the former stays a plain dispatch error and falls back to
-				// failover. Mirrors OmniRoute A3 guard semantics.
-				if cand.KeyRotator.AllKeysInvalid(cand.CredentialID) {
-					execErr = &upstreampkg.Error{
-						Kind:       upstreampkg.KindQuota,
-						StatusCode: http.StatusTooManyRequests,
-						Message:    "all credential keys exhausted (terminal)",
-					}
-				} else {
-					execErr = errDispatchKeysExhausted
-				}
+				execErr = errDispatchKeysExhausted
+				// 2026-08-30 P1: 记录 key 轮询耗尽到 candidate_failure_logs_hot
+				// 审计发现：所有 api key 都标记为不可用时，credential 仍会被选入
+				// 候选队列并最终在第一个请求处失败。运营需要看到这类"凭据已耗尽"
+				// 事件来诊断配额/欠费/封号场景。failureLogged=true 抑制 post-block
+				// 的通用 LogFailure（后者会用 KindTransient 替换分类）。
+				logDispatchPreflightRejection(e.FailureLogger, params, cand, dctx, startedAt,
+					errDispatchKeysExhausted, errorsx.KindRateLimit,
+					map[string]any{
+						"rejection_type": "key_rotation_exhausted",
+					})
+				failureLogged = true
 				return
 			} else if idx >= 1 && idx-1 < len(cand.APIKeys) {
 				cand.APIKey = cand.APIKeys[idx-1]
 			}
-			resolvedKeyIdx = idx
 		}
 
 		// ── MM-1/MM-2 outbound attachment transforms ─────────────────
+		// Native Responses candidates must transform their own preserved
+		// Responses envelope; legacy candidates continue using the Chat body.
+		attachmentBody := params.BodyBytes
+		nativeBody := cand.Protocol == "openai-responses" && (cand.SupportsNativeResponses || cand.SupportsNativeResponsesStream) && len(params.ResponsesBodyBytes) > 0
+		if nativeBody {
+			attachmentBody = params.ResponsesBodyBytes
+		}
 		// Ported from the retired legacy sync candidate loop (AUDIT_24H
+
 		// B2b, 2026-08-17). Per-candidate: derive the attempt body from the
 		// ORIGINAL body so a failover from a URL-mode provider to a
 		// data-URI-only provider never inherits rewritten URLs. Until this
@@ -582,21 +774,26 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 				// source blocks to url sources before the bridge conversion
 				// maps them to image_url.
 				newBody, n = e.AttachmentURLRewriter.RewriteAnthropicBody(
-					params.BodyBytes, params.AttachmentMetadata, cand.CatalogCode)
+					attachmentBody, params.AttachmentMetadata, cand.CatalogCode)
 			} else {
 				newBody, n = e.AttachmentURLRewriter.RewriteOpenAIBody(
-					params.BodyBytes, params.AttachmentMetadata, cand.CatalogCode)
+					attachmentBody, params.AttachmentMetadata, cand.CatalogCode)
 			}
 			if n > 0 {
 				cp := *params
-				cp.BodyBytes = newBody
+				if nativeBody {
+					cp.ResponsesBodyBytes = newBody
+				} else {
+					cp.BodyBytes = newBody
+				}
 				execParams = &cp
 			}
+
 		}
 		// MM-2 (doc 19): URL 拉取回退——目标 provider 矩阵判定不支持 url
 		// source 而出站 body 以网关 URL 引用附件时，取回内容重新内联
 		// base64。flag-off（nil）零开销直通。
-		if e.AttachmentURLFetchFallback != nil {
+		if e.AttachmentURLFetchFallback != nil && !nativeBody {
 			if newBody, n := e.AttachmentURLFetchFallback.InlineOpenAIBody(
 				execParams.BodyBytes, cand.CatalogCode); n > 0 {
 				cp := *execParams
@@ -606,42 +803,74 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		}
 
 		healthEvidence = true
+		// Audit-2026-08-29: native Responses stream capability is verified
+		// independently of the non-stream capability. A credential that opts
+		// in to native_responses_stream only must still be usable here; the
+		// executeOpenAI gate (executor_chat.go:374-382) accepts both forms,
+		// so the dispatch gate has to mirror that contract or stream-only
+		// candidates are silently dropped before the gate even fires.
+		if cand.Protocol == "openai-responses" &&
+			!cand.SupportsNativeResponses &&
+			!cand.SupportsNativeResponsesStream {
+			execErr = fmt.Errorf("native Responses upstream capability is not enabled")
+			return
+		}
 		switch cand.Protocol {
 		case "anthropic-messages":
 			result, execErr = e.executeAnthropic(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
+		case "gemini-generate":
+			// 2026-09-09 audit round 3: the catalog advertises
+			// gemini-generate as an outbound protocol, but no executor
+			// branch exists — falling into executeOpenAI built OpenAI chat
+			// requests against Gemini endpoints, producing 4xx attributed to
+			// the credential instead of "unsupported feature" (which enters
+			// the normal failover/classification path without poisoning the
+			// credential's error stats with bogus protocol noise).
+			result, execErr = nil, &upstreampkg.Error{
+				Kind:    errorsx.KindUnsupportedFeature,
+				Message: "gemini-generate dispatch not implemented; candidate skipped",
+			}
 		default:
 			result, execErr = e.executeOpenAI(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
 		}
 	}()
 
 	if execErr == nil {
-		// Feed the key-rotator success path before the side-effect recorder so
-		// the next dispatch attempt's ResolveKey sees fresh state.
-		if cand.KeyRotator != nil && resolvedKeyIdx >= 0 {
-			cand.KeyRotator.RecordKeySuccess(cand.CredentialID, resolvedKeyIdx)
-		}
-		e.recordDispatchSuccess(params, cand, result)
+		e.recordDispatchSuccess(params, cand, result, dctx)
 		return dispatch.ForwardOutcome{Result: result}
 	}
 
-	bytesSent := false
-	if params.IsStream && params.Capture != nil {
+	bytesSent := params.ClientSemanticBytesVisible != nil && params.ClientSemanticBytesVisible.Load()
+	if !bytesSent && params.IsStream && params.Capture != nil {
 		if sent, _ := params.Capture.ChunkCountersSnapshot(); sent > 0 {
 			bytesSent = true
 		}
 	}
 	kind := e.recordDispatchError(params, cand, execErr)
 
-	// Per-key health: feed the rotator the failure kind so terminal kinds
-	// (KindQuotaPermanent / KindQuotaBalance / KindAuthRevoked) mark the key
-	// immediately and non-terminal kinds accumulate toward the threshold.
-	// Only meaningful when this attempt actually used a rotator-managed key.
-	// The resolvedKeyIdx >= 0 gate is the load-bearing condition: it correctly
-	// excludes both single-key creds and the two keys-exhausted branches above
-	// (where idx stays -1 by construction). The errDispatchKeysExhausted
-	// sentinel comparison alone would miss the typed *upstream.Error branch.
-	if cand.KeyRotator != nil && resolvedKeyIdx >= 0 {
-		cand.KeyRotator.RecordKeyFailure(cand.CredentialID, resolvedKeyIdx, kind)
+	// 2026-09-19 会话保持：sticky 钉住的凭据被尝试且失败时记录错误类型，
+	// 供成功路径判定"瞬时失败保持会话 / 严重失败迁移会话"。
+	// pipeline 对同一请求的 attempt 严格串行（failover mover 单owner），
+	// 这里无需加锁。
+	if dctx.stickyCredID != nil && cand.CredentialID == *dctx.stickyCredID {
+		dctx.stickyFailed = true
+		dctx.stickyFailKind = kind
+	}
+
+	// Audit 2026-09-08 #3: request_flow coverage for dispatch V2 stream
+	// interruptions. forwardForDispatch is the funnel every protocol
+	// executor's mid-stream failure passes through; the reason/resumable
+	// fields already extracted for the failure log carry the interruption
+	// position (reason) here too. Client disconnects surface on the same
+	// line with reason client_cancel/client_disconnected and KindCanceled.
+	var sie *streamInterruptedError
+	if errors.As(execErr, &sie) && sie != nil {
+		logDispatchStreamInterrupted(params, cand, kind, sie)
+		// Audit R9 candidate 17: bytesSent=true is by construction the
+		// terminal decision point (dispatcher completes without failover,
+		// see dispatch/forwarder.go ADR-Disp-003 guard) — emit the
+		// post-first-byte `: thinking:` side-band here, once.
+		maybeNotifyMidStreamFailure(params, sie, bytesSent)
 	}
 
 	// candidate_failure_logs (migration 300 + V358 session_id): one row per
@@ -652,14 +881,14 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	// streamInterruptedError carries no *upstream.Error; pass the classified
 	// kind explicitly there — the message-based fallback would flatten e.g.
 	// KindNetwork to transient.
-	if e.FailureLogger != nil {
+	if e.FailureLogger != nil && !failureLogged {
 		perAttemptMs := int(time.Since(startedAt).Milliseconds())
 		extra := buildEnhancedErrorContext(params, kind, execErr, len(dctx.candidates), params.AttemptNo)
 		if extra == nil {
 			extra = map[string]any{}
 		}
-		var sie *streamInterruptedError
-		if errors.As(execErr, &sie) && sie != nil {
+		extra["supplier"] = cand.CatalogCode
+		if sie != nil {
 			extra["stream_reason"] = sie.reason
 			extra["stream_resumable"] = sie.resumable
 			extra["upstream_status_code"] = sie.statusCode
@@ -678,7 +907,9 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 				&perAttemptMs,
 				extra,
 			)
+			failureLogged = true
 		} else {
+
 			e.FailureLogger.LogFailure(
 				params.R.Header.Get("X-Request-Id"),
 				tenantFromCtx(params.R),
@@ -692,7 +923,9 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 				&perAttemptMs,
 				extra,
 			)
+			failureLogged = true
 		}
+
 	}
 
 	return dispatch.ForwardOutcome{
@@ -707,10 +940,15 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 // recordDispatchSuccess applies non-authoritative routing side effects
 // (sticky, route recorder, health tracker, and mnf reset). Focused subset of
 // the legacy loop's success block (executor.go:2566-2696).
-func (e *Executor) recordDispatchSuccess(params *ExecParams, cand provider.Candidate, result *ExecuteResult) {
+//
+// 2026-09-19 会话保持：dctx 携带 sticky 钉扎凭据的本请求失败史——
+// 瞬时错误 failover 成功后不重写 sticky（会话留在原节点，保住 prompt-cache
+// 亲和）；严重错误（IsCredentialFatal）或 sticky 节点本请求未被尝试
+//（被可用性过滤=冷却/熔断）时正常重写到实际服务节点（会话迁移）。
+func (e *Executor) recordDispatchSuccess(params *ExecParams, cand provider.Candidate, result *ExecuteResult, dctx *dispatchCtx) {
 	sideEffectCtx, sideEffectCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 	defer sideEffectCancel()
-	e.recordStickySuccess(params, cand.CredentialID)
+	e.recordStickySuccess(params, cand.CredentialID, dctx)
 	if e.Recorder != nil && e.legacyWritersEnabled() {
 		e.Recorder.RecordSuccess(sideEffectCtx, cand.CredentialID, cand.RawModel)
 	}
@@ -734,6 +972,13 @@ func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candida
 		mnfKind := mnf.resolvedKind()
 		e.recordModelNotFound(sideEffectCtx, mnf.credentialID, mnf.rawModel, mnf.body, mnf.status, mnfKind)
 		e.recordMnfStreak(params, cand.CredentialID)
+	} else if code, ok := transientSuppressErrorCode(kind); ok {
+		// 2026-09-14 audit O2: arm the 5-minute (credential, model) routing
+		// suppression on transient dispatch failures so the 48h fallback
+		// pool stops re-selecting a pair that just failed (its composite is
+		// a constant 50 and sees no Reliability feedback). Free-tier pairs
+		// arm a 60s window instead (2026-09-15 free-capacity plan).
+		e.recordTransientDispatchFailure(sideEffectCtx, cand.CredentialID, cand.RawModel, code, cand.BillingMode)
 	}
 	return kind
 }
@@ -806,21 +1051,128 @@ func extractQueueTimestamps(qr *dispatch.QueuedRequest) (
 	if qr == nil {
 		return
 	}
-	// Detached copies: the request's stage array is rewritten on failover
-	// re-enqueue, so extracted values must never alias request state.
 	return qr.StageTimestamps()
 }
 
 // sentinel errors for the dispatch forward path.
 var (
-	errDispatchNoCandidate     = newDispatchErr("dispatch: candidate not found in planned list")
-	errDispatchMissingAttempt  = newDispatchErr("dispatch: missing active attempt")
-	errDispatchBadResult       = newDispatchErr("dispatch: unexpected result type")
-	errDispatchBadPayload      = newDispatchErr("dispatch: payload is not *dispatchCtx")
-	errDispatchFpSlotSaturated = newDispatchErr("dispatch: fp slot saturated")
-	errDispatchCircuitOpen     = newDispatchErr("dispatch: circuit open")
-	errDispatchKeysExhausted   = newDispatchErr("dispatch: all keys exhausted")
+	errDispatchPipelineNotWired = newDispatchErr("dispatch: pipeline not wired")
+	errDispatchNoCandidate      = newDispatchErr("dispatch: candidate not found in planned list")
+	errDispatchMissingAttempt   = newDispatchErr("dispatch: missing active attempt")
+	errDispatchBadResult        = newDispatchErr("dispatch: unexpected result type")
+	errDispatchBadPayload       = newDispatchErr("dispatch: payload is not *dispatchCtx")
+	errDispatchFpSlotSaturated  = newDispatchErr("dispatch: fp slot saturated")
+	errDispatchCircuitOpen      = newDispatchErr("dispatch: circuit open")
+	errDispatchKeysExhausted    = newDispatchErr("dispatch: all keys exhausted")
 )
+
+// logDispatchPreflightRejection is the shared writer for pre-upstream
+// admission rejections (fp-slot saturation, circuit-open, limiter rejection,
+// key-rotation exhaustion). Consolidates the boilerplate that was previously
+// inlined four times in forwardForDispatch and gives every preflight rejection
+// the same shape on candidate_failure_logs_hot:
+//
+//   - explicit kind so the dashboard can filter "circuit_open" /
+//     "rate_limit" / "fp_slot_saturated" independently of the upstream-error
+//     classifiers (which can't tell why an attempt was rejected before any
+//     HTTP call)
+//   - rejection_type + candidates_left in the JSON context so the operator
+//     can see how many siblings are still eligible
+//   - perAttemptLatencyMs only (no end-to-end latency), matching the legacy
+//     candidate-loop convention
+//
+// nil-safe: writer == nil skips only the hot-table write (mirrors LogFailure's
+// own contract); the request_flow line above it still fires.
+func logDispatchPreflightRejection(
+	writer *CandidateFailureWriter,
+	params *ExecParams,
+	cand provider.Candidate,
+	dctx *dispatchCtx,
+	startedAt time.Time,
+	rejErr error,
+	kind errorsx.ErrorKind,
+	extra map[string]any,
+) {
+	if params == nil || dctx == nil || rejErr == nil {
+		return
+	}
+	if extra == nil {
+		extra = map[string]any{}
+	}
+	if _, ok := extra["candidates_left"]; !ok {
+		extra["candidates_left"] = len(dctx.candidates)
+	}
+	extra["supplier"] = cand.CatalogCode
+	// Audit 2026-09-08 #3: request_flow coverage for dispatch V2 preflight
+	// rejections (fp-slot saturation / circuit-open / limiter / key-rotation).
+	// Fires independently of the failure-log writer so the rejection is
+	// visible on the request_flow channel even when the hot-table writer is
+	// not wired. rejection_type is the low-cardinality reason; the errorsx
+	// kind goes on the kind field.
+	requestflow.Log(requestflow.Event{
+		Stage:        "preflight",
+		RequestID:    params.RequestID,
+		Model:        cand.RawModel,
+		ProviderID:   cand.ProviderID,
+		CredentialID: cand.CredentialID,
+		Kind:         string(kind),
+		Action:       "preflight_reject",
+		Reason:       preflightRejectionReason(extra, rejErr),
+		Retryable:    true,
+		Attempt:      params.AttemptNo,
+	})
+	if writer == nil {
+		return
+	}
+	perAttemptMs := int(time.Since(startedAt).Milliseconds())
+	writer.LogFailureWithKind(
+		params.R.Header.Get("X-Request-Id"),
+		tenantFromCtx(params.R),
+		params.SessionID,
+		cand.CredentialID,
+		cand.ProviderID,
+		cand.RawModel,
+		params.AttemptNo,
+		rejErr,
+		kind,
+		nil,
+		&perAttemptMs,
+		extra,
+	)
+}
+
+// logDispatchStreamInterrupted emits the request_flow stream_interrupted line
+// for one dispatch V2 forward outcome (audit 2026-09-08 #3). Pure observation,
+// zero blocking: requestflow.Log is a fire-and-forget slog write.
+func logDispatchStreamInterrupted(
+	params *ExecParams,
+	cand provider.Candidate,
+	kind errorsx.ErrorKind,
+	sie *streamInterruptedError,
+) {
+	requestflow.Log(requestflow.Event{
+		Stage:        "dispatch",
+		RequestID:    params.RequestID,
+		Model:        cand.RawModel,
+		ProviderID:   cand.ProviderID,
+		CredentialID: cand.CredentialID,
+		Kind:         string(kind),
+		Action:       "stream_interrupted",
+		Reason:       sie.reason,
+		Retryable:    sie.resumable,
+		Attempt:      params.AttemptNo,
+	})
+}
+
+// preflightRejectionReason picks the low-cardinality rejection_type every
+// logDispatchPreflightRejection call site stamps into extra; the raw error
+// message is only the fallback when a future call site forgets the stamp.
+func preflightRejectionReason(extra map[string]any, rejErr error) string {
+	if rt, ok := extra["rejection_type"].(string); ok && rt != "" {
+		return rt
+	}
+	return rejErr.Error()
+}
 
 type dispatchErr struct{ msg string }
 

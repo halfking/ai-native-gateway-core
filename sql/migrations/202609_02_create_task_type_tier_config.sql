@@ -1,0 +1,22 @@
+-- Migration: Create Task Type Tier Configuration Table
+-- Version: V3 Phase 1
+-- Date: 2026-09-02
+--
+-- R43 (2026-09-18) 本文件降级为文档桩，不再是可执行迁移。
+--
+-- 历史与裁决：本文件原是 task_type_tier_config 的两份分叉 DDL 之一（TEXT 型
+-- tenant_id + 表级 `UNIQUE(task_type, COALESCE(tenant_id,''))`）。表级 UNIQUE
+-- 约束在 PostgreSQL 只接受列名，表达式是语法错误——本文件**从未能在任何库
+-- 执行**，也从未登记进任何应用通道（revision-sequence / installer）。
+-- 该表的真实所有者是 **deploy/sql/migrations/V370__create_tier_config_table.sql**
+-- （tenant_id BIGINT + `task_type_tier_config_unique` ON COALESCE(tenant_id, 0)
+-- + updated_at 触发器），154/245/252/本地库的实表均出自 V370。
+--
+-- R43 处置：
+--   1. 表结构以 V370 为准（勿在本文件恢复 DDL，会制造双所有者）；
+--   2. 无 V370 的部署形态由 db.ensureTaskTypeTierConfig 在启动时按 V370 形态
+--      幂等自愈（并补 V370 缺失的 min_confidence 列——taskprofile 写面与
+--      autoroute.TierSelector 读面的共同契约）；
+--   3. taskprofile.ApplySuggestions 的 ON CONFLICT 按 V370 索引推断：
+--      (task_type, COALESCE(tenant_id, 0))。
+-- 相关：docs/planning/TASKPROFILE_MODULE_DESIGN.md §五、docs/audit/2026-09-18-r43-48h-audit-round.md

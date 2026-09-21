@@ -15,11 +15,12 @@ func TestPromptBudgetLimit(t *testing.T) {
 		env  string
 		want int
 	}{
-		{"unset defaults to 1M", "", 1048576},
+		{"unset defaults to 2M", "", 2097152},
 		{"zero is off", "0", 0},
 		{"plain number", "262144", 262144},
-		{"negative defaults to 1M", "-5", 1048576},
-		{"garbage defaults to 1M", "huge", 1048576},
+		{"over 2M defaults to 2M", "3145728", 2097152},
+		{"negative defaults to 2M", "-5", 2097152},
+		{"garbage defaults to 2M", "huge", 2097152},
 	}
 	t.Setenv(key, "") // ensure defined for all cases
 	for _, tc := range cases {
@@ -70,6 +71,27 @@ func TestPromptBudgetExceeded(t *testing.T) {
 	})
 }
 
+func TestPromptBudgetTwoMillionCeiling(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_MAX_PROMPT_TOKENS", "")
+	below := make([]byte, (2*1048576)*4)
+	if _, over := promptBudgetExceeded(below); over {
+		t.Fatal("body at the 2M gateway ceiling must not exceed the default limit")
+	}
+	above := make([]byte, (2*1048576+1)*4)
+	if est, over := promptBudgetExceeded(above); !over || est <= 2*1048576 {
+		t.Fatalf("body above the 2M gateway ceiling was not rejected: est=%d over=%v", est, over)
+	}
+}
+
+func TestPreflightDoesNotUseGatewayCeilingAsProviderWindow(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_MAX_PROMPT_TOKENS", "")
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hello"}]}`)
+	out, applied, est := preflightCompress(body, "openai")
+	if applied || est == 0 || string(out) != string(body) {
+		t.Fatalf("model-agnostic preflight changed body: applied=%v est=%d", applied, est)
+	}
+}
+
 // TestPromptBudgetHandlerRejection pins the /v1/chat/completions 413 path:
 // with the guard on, an oversized prompt is rejected before JSON parse and
 // upstream dispatch, with code=prompt_too_large and a request_logs failure
@@ -112,6 +134,24 @@ func TestPromptBudgetWiredInEntryPoints(t *testing.T) {
 		text := string(src)
 		if !strings.Contains(text, "promptBudgetExceeded(bodyBytes)") {
 			t.Errorf("%s: entry point missing promptBudgetExceeded(bodyBytes) guard", file)
+		}
+	}
+}
+
+// TestBodyTooLargeWireCodeConvention pins the client-facing error code of the
+// 32 MiB body-cap rejection to the underscore form body_too_large — the same
+// spelling used by logCtx.SetError/EmitFailure and the failure classifiers
+// (handler.go "body_too_large" cases). The 2026-09-17 prompt_too_large 413
+// audit found a hyphenated body_too-large variant had leaked into the JSON
+// wire code, so clients keying on error.code saw an inconsistent value.
+func TestBodyTooLargeWireCodeConvention(t *testing.T) {
+	for _, file := range []string{"handler.go", "messages.go", "responses.go"} {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if strings.Contains(string(src), "body_too-large") {
+			t.Errorf("%s: hyphenated wire code body_too-large must be body_too_large", file)
 		}
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -473,9 +474,9 @@ func httpHandler(deps *v2Deps) http.Handler {
 			Stream bool   `json:"stream"`
 			User   string `json:"user,omitempty"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeOpenAIError(w, http.StatusBadRequest,
-				fmt.Sprintf("invalid JSON: %v", err), "invalid_request_error")
+		// 2026-08-26 (P1-23 fix): hard cap + strict single-value via
+		// decodeStrictJSON. Replaces the unbounded json.NewDecoder call.
+		if ok, _ := decodeStrictJSON(w, r, &req, "openai"); !ok {
 			return
 		}
 		if req.Model == "" {
@@ -584,9 +585,9 @@ func httpHandler(deps *v2Deps) http.Handler {
 				Content string `json:"content"`
 			} `json:"messages"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeAnthropicError(w, http.StatusBadRequest,
-				fmt.Sprintf("invalid JSON: %v", err), "invalid_request_error")
+		// 2026-08-26 (P1-23 fix): hard cap + strict single-value via
+		// decodeStrictJSON. Replaces the unbounded json.NewDecoder call.
+		if ok, _ := decodeStrictJSON(w, r, &req, "anthropic"); !ok {
 			return
 		}
 		if req.Model == "" {
@@ -692,9 +693,9 @@ func httpHandler(deps *v2Deps) http.Handler {
 			Input     json.RawMessage `json:"input"`
 			MaxTokens *int            `json:"max_tokens"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeOpenAIError(w, http.StatusBadRequest,
-				fmt.Sprintf("invalid JSON: %v", err), "invalid_request_error")
+		// 2026-08-26 (P1-23 fix): hard cap + strict single-value via
+		// decodeStrictJSON. Replaces the unbounded json.NewDecoder call.
+		if ok, _ := decodeStrictJSON(w, r, &req, "openai"); !ok {
 			return
 		}
 		if req.Model == "" {
@@ -810,9 +811,9 @@ func httpHandler(deps *v2Deps) http.Handler {
 			Prompt    string `json:"prompt"`
 			MaxTokens int    `json:"max_tokens"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeOpenAIError(w, http.StatusBadRequest,
-				fmt.Sprintf("invalid JSON: %v", err), "invalid_request_error")
+		// 2026-08-26 (P1-23 fix): hard cap + strict single-value via
+		// decodeStrictJSON. Replaces the unbounded json.NewDecoder call.
+		if ok, _ := decodeStrictJSON(w, r, &req, "openai"); !ok {
 			return
 		}
 		if req.Model == "" {
@@ -1149,4 +1150,61 @@ func writeAnthropicError(w http.ResponseWriter, status int, msg, errType string)
 			"message": msg,
 		},
 	})
+}
+
+// gatewayV2MaxBodyBytes caps every v2 compat endpoint at 32 MiB. The
+// previous implementation read with json.NewDecoder(r.Body).Decode(&req)
+// against an unbounded body — a single 4 GiB chunked upload could
+// exhaust the server's read buffer. 32 MiB is the same cap used by the
+// production cmd/gateway dispatch path (MaxDispatchBodyBytes).
+//
+// 2026-08-26 (P1-23 fix): wrap r.Body in http.MaxBytesReader and run a
+// second Decode into json.RawMessage to reject multiple top-level JSON
+// values — the audit required strict single-value bodies across the
+// v2 compat surface.
+const gatewayV2MaxBodyBytes = 32 << 20
+
+// decodeStrictJSON enforces (a) a hard body cap, (b) one well-formed
+// top-level JSON value, (c) no trailing data. On success returns
+// (true, nil) and leaves the response untouched for the caller to
+// continue. On failure writes the proper OpenAI / Anthropic error and
+// returns (false, err).
+func decodeStrictJSON(w http.ResponseWriter, r *http.Request, dst any, errorStyle string) (bool, error) {
+	if r.Body == nil {
+		return true, nil
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, gatewayV2MaxBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(dst); err != nil {
+		var mbErr *http.MaxBytesError
+		if errors.As(err, &mbErr) {
+			writeV2Error(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("request body exceeds %d bytes", gatewayV2MaxBodyBytes),
+				"invalid_request_error", errorStyle)
+			return false, err
+		}
+		writeV2Error(w, http.StatusBadRequest,
+			fmt.Sprintf("invalid JSON: %v", err), "invalid_request_error", errorStyle)
+		return false, err
+	}
+	// Reject multiple top-level JSON values — strict single-value
+	// contract.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); err == nil && len(trailing) > 0 {
+		writeV2Error(w, http.StatusBadRequest,
+			"body must contain a single JSON value", "invalid_request_error", errorStyle)
+		return false, fmt.Errorf("v2 decode: trailing data")
+	}
+	return true, nil
+}
+
+// writeV2Error routes to the correct error envelope for the v2 compat
+// surface. errorStyle is "openai" or "anthropic".
+func writeV2Error(w http.ResponseWriter, status int, msg, errType, style string) {
+	switch style {
+	case "anthropic":
+		writeAnthropicError(w, status, msg, errType)
+	default:
+		writeOpenAIError(w, status, msg, errType)
+	}
 }

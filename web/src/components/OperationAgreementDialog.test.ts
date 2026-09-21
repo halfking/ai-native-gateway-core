@@ -3,14 +3,16 @@ import { describe, expect, it, beforeEach } from 'vitest'
 import { createI18n } from 'vue-i18n'
 import OperationAgreementDialog from './OperationAgreementDialog.vue'
 
-// 构造一个不依赖完整 element-plus 的测试环境：stub 掉三个 el-* 组件，
-// 只验证组件自身的逻辑（占位符替换、emit、localStorage 写入、按钮 disabled）。
+// 构造一个不依赖完整 element-plus 的测试环境：stub 掉 el-checkbox，
+// 壳为真实 AppModal（2026-09-13 迁移，Teleport 打桩），验证组件自身的
+// 逻辑（占位符替换、emit、localStorage 写入、按钮 disabled、门控关闭）。
 
 const i18n = createI18n({
   legacy: false,
   locale: 'en',
   messages: {
     en: {
+      common: { button: { close: 'Close' } },
       public: {
         agreement: {
           title: 'User Agreement',
@@ -40,24 +42,10 @@ const localStorageMock = (() => {
 })()
 ;(globalThis as any).localStorage = localStorageMock
 
-// ElDialog stub：暴露 modelValue + title，并在 v-model 写为 false 时触发 update:modelValue
-const ElDialogStub = {
-  compatConfig: { MODE: 3 as const },
-  template: `<div class="dlg"><div class="dlg-title">{{ title }}</div><slot /><slot name="footer" /></div>`,
-  props: { modelValue: Boolean, title: { type: String, default: '' } },
-  emits: ['update:modelValue', 'open'],
-}
-
 const ElCheckboxStub = {
   template: '<input type="checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" />',
   props: { modelValue: Boolean },
   emits: ['update:modelValue'],
-}
-
-const ElButtonStub = {
-  template: '<button :disabled="disabled" @click="$emit(\'click\')"><slot /></button>',
-  props: { disabled: Boolean, type: String },
-  emits: ['click'],
 }
 
 function makeWrapper(props: any) {
@@ -65,30 +53,37 @@ function makeWrapper(props: any) {
     props,
     global: {
       plugins: [i18n],
-      stubs: { ElDialog: ElDialogStub, ElCheckbox: ElCheckboxStub, ElButton: ElButtonStub },
+      stubs: { Teleport: true, ElCheckbox: ElCheckboxStub },
     },
+    attachTo: document.body,
   })
 }
 
 describe('OperationAgreementDialog', () => {
-  beforeEach(() => localStorageMock.clear())
+  beforeEach(() => {
+    localStorageMock.clear()
+    document.body.innerHTML = ''
+  })
 
   it('download: title replaces {title} placeholder with agreement.title', () => {
     const w = makeWrapper({ modelValue: true, scope: 'download', version: '2026-07-15' })
     const html = w.html()
     expect(html).toContain('Please read User Agreement before downloading')
     expect(html).not.toContain('{title}')
+    w.unmount()
   })
 
   it('activate: title replaces {title} placeholder', () => {
     const w = makeWrapper({ modelValue: true, scope: 'activate', version: '2026-07-15' })
     expect(w.html()).toContain('Please read User Agreement before activating')
+    w.unmount()
   })
 
   it('Accept button is disabled until checkbox is checked', () => {
     const w = makeWrapper({ modelValue: true, scope: 'download', version: '2026-07-15' })
     const acceptBtn = w.find('button.btn-primary')
     expect(acceptBtn.attributes('disabled')).toBeDefined()
+    w.unmount()
   })
 
   it('emits agreed + writes localStorage when user accepts', async () => {
@@ -97,16 +92,33 @@ describe('OperationAgreementDialog', () => {
     await w.find('button.btn-primary').trigger('click')
     expect(w.emitted('agreed')).toBeTruthy()
     expect(localStorageMock.getItem('llmgw_op_agreement_download_2026-07-15')).toBeTruthy()
+    w.unmount()
   })
 
-  it('emits update:modelValue=false (cancellation path) when dialog closed without agreement', async () => {
-    // 模拟 el-dialog 内部关闭：直接 emit update:modelValue=false 给 wrapper
+  it('cancel button emits update:modelValue=false + cancelled (closed without agreement)', async () => {
     const w = makeWrapper({ modelValue: true, scope: 'download', version: '2026-07-15' })
-    // 触发 dialogVisible setter (computed setter)
-    await (w.getComponent(ElDialogStub as any).vm as any).$emit('update:modelValue', false)
-    expect(w.emitted('update:modelValue')).toBeTruthy()
+    await w.find('button.btn-ghost').trigger('click')
     const last = w.emitted('update:modelValue')!.at(-1)!
     expect(last[0]).toBe(false)
     expect(w.emitted('cancelled')).toBeTruthy()
+    w.unmount()
+  })
+
+  it('gating: ESC and mask click do NOT close (closeOnMask/escClose disabled)', async () => {
+    const w = makeWrapper({ modelValue: true, scope: 'download', version: '2026-07-15' })
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await w.find('.app-modal').trigger('click')
+    expect(w.emitted('update:modelValue')).toBeUndefined()
+    expect(w.emitted('cancelled')).toBeUndefined()
+    w.unmount()
+  })
+
+  it('reopen resets the checkbox (原 el-dialog @open 复位语义)', async () => {
+    const w = makeWrapper({ modelValue: true, scope: 'download', version: '2026-07-15' })
+    await w.find('input[type="checkbox"]').setValue(true)
+    await w.setProps({ modelValue: false })
+    await w.setProps({ modelValue: true })
+    expect((w.find('input[type="checkbox"]').element as HTMLInputElement).checked).toBe(false)
+    w.unmount()
   })
 })

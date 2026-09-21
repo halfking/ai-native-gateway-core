@@ -140,7 +140,7 @@ continuation (4项):
 
 ```bash
 # 1. 设置环境变量
-export DB_HOST=172.16.2.210
+export DB_HOST=<env:HOST_252_INTERNAL_IP>
 export DB_PORT=5432
 export DB_NAME=llm_gateway
 export DB_USER=postgres

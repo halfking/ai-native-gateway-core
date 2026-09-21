@@ -171,6 +171,20 @@ func TestInferModality(t *testing.T) {
 		{"whitespace", "   ", "text"},
 		{"case insensitive", "GPT-4O", "vision"},
 		{"case insensitive 2", "Claude-3-Opus", "vision"},
+
+		// 2026-08-29 (612): SenseTime / SenseNova — multimodal 兜底
+		{"sensenova-6.7-flash-lite", "sensenova-6.7-flash-lite", "multimodal"},
+		{"sensenova-6.8-flash-lite", "sensenova-6.8-flash-lite", "multimodal"},
+		{"sensenova-u1-fast", "sensenova-u1-fast", "multimodal"},
+		{"sensenova-u1.5-lite", "sensenova-u1.5-lite", "multimodal"},
+		// 兜底：6.x / u1.x 系列 future-proof
+		{"sensenova-6.9-flash-lite", "sensenova-6.9-flash-lite", "multimodal"},
+		{"sensenova-u2-fast", "sensenova-u2-fast", "multimodal"},
+		// 兜底：其它 sensenova-* / sensechat-* 仍是 text
+		{"sensenova-xl", "sensenova-xl", "text"},
+		{"sensenova-future-text", "sensenova-future-text", "text"},
+		{"sensechat-5", "sensechat-5", "text"},
+		{"sensechat-turbo", "sensechat-turbo", "text"},
 	}
 
 	for _, tt := range tests {

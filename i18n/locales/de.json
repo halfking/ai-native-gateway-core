@@ -38,11 +38,11 @@
   "invalid_model": {
     "other": "Das Modell '{{.Model}}' wird von diesem Gateway nicht unterstützt"
   },
-  "model_deprecated": {
-    "other": "Das angeforderte Modell wurde vom Upstream-Anbieter dauerhaft entfernt (End-of-Life)."
-  },
   "unsupported_feature": {
-    "other": "Das ausgewählte Modell unterstützt dieses Anforderungsformat oder diese Modalität nicht."
+    "other": "Das ausgewählte Modell unterstützt dieses Anfrageformat oder diese Modalität nicht."
+  },
+  "model_deprecated": {
+    "other": "Das angeforderte Modell wurde vom Upstream-Anbieter dauerhaft eingestellt (End-of-Life)."
   },
   "meta_tool_error": {
     "other": "Verarbeitung des Meta-Tools fehlgeschlagen"

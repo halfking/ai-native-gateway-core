@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -98,7 +99,44 @@ func TestModelTier_StopWithoutStart(t *testing.T) {
 	}
 }
 
-// TestModelTier_SQLReferencesActualColumns (audit fix #12) is a frozen-golden
+func TestModelTier_StopConcurrent(t *testing.T) {
+	m := NewModelTier(nil, ModelTierConfig{})
+	// Mark the tier as started without requiring a live database. This keeps the
+	// test focused on Stop's close-once lifecycle guarantee.
+	m.once.Store(true)
+
+	const callers = 100
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			m.Stop()
+		}()
+	}
+	wg.Wait()
+
+	select {
+	case <-m.done:
+	default:
+		t.Fatal("concurrent Stop calls did not close done")
+	}
+}
+
+func TestModelTier_LoopRefreshUsesParentContext(t *testing.T) {
+	src := sourceFromFile(t, "model_tier.go")
+	loopStart := strings.Index(src, "func (m *ModelTier) loop(ctx context.Context)")
+	if loopStart < 0 {
+		t.Fatal("ModelTier.loop not found")
+	}
+	loopSrc := src[loopStart:]
+	if end := strings.Index(loopSrc, "\nfunc "); end >= 0 {
+		loopSrc = loopSrc[:end]
+	}
+	assert.Contains(t, loopSrc, "context.WithTimeout(ctx, 10*time.Second)")
+	assert.NotContains(t, loopSrc, "context.WithTimeout(context.Background(), 10*time.Second)")
+}
+
 // guard: the SQL inside ModelTier.refresh must reference the real schema column
 // names. It does not execute the query (that would need a DB) but it asserts
 // the literal strings so a regression like "model" (a nonexistent column) is

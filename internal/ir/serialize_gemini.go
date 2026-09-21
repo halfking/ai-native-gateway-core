@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // SerializeGemini serializes an InternalRequest into a Gemini generateContent request body.
@@ -147,7 +148,7 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 		for j, block := range msg.Content {
 			if block.Thinking != nil && block.Thinking.Signature != "" {
 				ReportProtocolLoss(
-					requestIDFromIR(req),
+					"unknown",
 					fieldPathMessageContent(i, j, "thinking.signature"),
 					ifaceNonEmpty(src, ProtocolAnthropicMessages),
 					ProtocolGeminiGenerate,
@@ -158,7 +159,7 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 			}
 			if block.RedactedThinking != "" {
 				ReportProtocolLoss(
-					requestIDFromIR(req),
+					"unknown",
 					fieldPathMessageContent(i, j, "redacted_thinking"),
 					ifaceNonEmpty(src, ProtocolAnthropicMessages),
 					ProtocolGeminiGenerate,
@@ -171,7 +172,7 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 	}
 	if req.PreviousResponseID != "" {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"previous_response_id",
 			ifaceNonEmpty(src, ProtocolOpenAIChat),
 			ProtocolGeminiGenerate,
@@ -182,7 +183,7 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 	}
 	if len(req.CacheControl) > 0 {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"cache_control",
 			ifaceNonEmpty(src, ProtocolAnthropicMessages),
 			ProtocolGeminiGenerate,
@@ -193,7 +194,7 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 	}
 	if len(req.Documents) > 0 {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"documents",
 			ifaceNonEmpty(src, ProtocolAnthropicMessages),
 			ProtocolGeminiGenerate,
@@ -357,10 +358,14 @@ func buildGeminiContents(messages []Message) []map[string]any {
 					})
 				}
 			case "thinking":
-				// Gemini 2.5+ thinking part (with includeThoughts=true)
+				// Gemini 2.5+ thinking part (with includeThoughts=true).
+				// R34: the wire shape is a boolean marker beside the text —
+				// "thought" carrying the text itself was a gateway-invented
+				// shape real Gemini clients never read.
 				if block.Thinking != nil {
 					parts = append(parts, map[string]any{
-						"thought": block.Thinking.Thinking,
+						"text":    block.Thinking.Thinking,
+						"thought": true,
 					})
 				}
 			}
@@ -580,13 +585,49 @@ func extractTextFromContent(blocks []ContentBlock) string {
 }
 
 // toolUseNameFromID extracts the function name from a synthetic tool_use_id
-// of the form "gemini_call_<name>". Falls back to the full ID.
+// of the form "gemini_call_<name>" or "gemini_call_<name>_<partIdx>".
+// The trailing "_<partIdx>" disambiguator (added in 2026-09-01 to fix P0-1
+// parallel functionCall ID collisions) is stripped so a round-trip
+// parse→serialize→parse yields the same function name.
+// R34 (2026-09-17 audit): also accepts the legacy "gemini_call_<idx>_<name>"
+// shape the response-side parser synthesized before the format was unified —
+// those IDs can still arrive inside in-flight client conversations.
 func toolUseNameFromID(id string) string {
 	const prefix = "gemini_call_"
-	if len(id) > len(prefix) && id[:len(prefix)] == prefix {
-		return id[len(prefix):]
+	if len(id) <= len(prefix) || id[:len(prefix)] != prefix {
+		return id
 	}
-	return id
+	rest := id[len(prefix):]
+	allDigits := func(s string) bool {
+		if s == "" {
+			return false
+		}
+		for _, r := range s {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	endsWithDigitSeg := func(s string) bool {
+		if i := strings.LastIndex(s, "_"); i >= 0 {
+			return allDigits(s[i+1:])
+		}
+		return false
+	}
+	// Legacy leading "<idx>_" (only when the remainder does not itself end
+	// in a "_<digits>" disambiguator — that combination is the current shape
+	// with a numeric function name).
+	if i := strings.Index(rest, "_"); i > 0 && allDigits(rest[:i]) && !endsWithDigitSeg(rest[i+1:]) {
+		rest = rest[i+1:]
+	}
+	// Strip a single trailing "_<digits>" disambiguator if present.
+	if i := strings.LastIndex(rest, "_"); i > 0 {
+		if allDigits(rest[i+1:]) {
+			return rest[:i]
+		}
+	}
+	return rest
 }
 
 // buildGeminiTools converts IR Tools → Gemini functionDeclarations wrapper.
@@ -674,6 +715,16 @@ func buildGeminiGenerationConfig(req *InternalRequest) map[string]any {
 	}
 	if req.N > 0 {
 		gc["candidateCount"] = req.N
+		hasAny = true
+	}
+	// 2026-09-05 audit A-#3: penalty params were parsed into IR but never
+	// serialized back, silently dropping them on the Gemini round trip.
+	if req.PresencePenalty != nil {
+		gc["presencePenalty"] = *req.PresencePenalty
+		hasAny = true
+	}
+	if req.FrequencyPenalty != nil {
+		gc["frequencyPenalty"] = *req.FrequencyPenalty
 		hasAny = true
 	}
 

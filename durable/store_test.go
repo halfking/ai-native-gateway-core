@@ -39,6 +39,22 @@ func anyArgs(n int) []any {
 	return args
 }
 
+// expectTenantGUC 钉住前台租户事务头部的 set_config（rls.go setLocalTenantGUC）。
+func expectTenantGUC(mock pgxmock.PgxPoolIface, tenant string) {
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(tenant).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+}
+
+// expectBypassGUC 钉住 worker 旁路事务头部的双 set_config（rls.go
+// setAllTenantBypassGUC），顺序与实现一致：先 current_role 后 bypass_rls。
+func expectBypassGUC(mock pgxmock.PgxPoolIface) {
+	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec(`SELECT set_config\('app\.bypass_rls', 'true', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+}
+
 func validNewTask() NewTask {
 	return NewTask{
 		TenantID:        "tenant-1",
@@ -66,6 +82,7 @@ func TestStore_CreateAndClaim(t *testing.T) {
 	store, mock := newMockStore(t)
 
 	mock.ExpectBegin()
+	expectTenantGUC(mock, "tenant-1")
 	mock.ExpectExec(`INSERT INTO durable_llm_tasks`).
 		WithArgs(anyArgs(17)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
@@ -109,6 +126,7 @@ func TestStore_CreateAndClaim(t *testing.T) {
 func TestStore_CreateAndClaim_RollsBackOnError(t *testing.T) {
 	store, mock := newMockStore(t)
 	mock.ExpectBegin()
+	expectTenantGUC(mock, "tenant-1")
 	mock.ExpectExec(`INSERT INTO durable_llm_tasks`).
 		WithArgs(anyArgs(17)...).
 		WillReturnError(errors.New("boom"))
@@ -140,6 +158,7 @@ func TestStore_CreateAndClaim_RequiresKeyring(t *testing.T) {
 func TestStore_CreateAndClaim_UniqueViolation(t *testing.T) {
 	store, mock := newMockStore(t)
 	mock.ExpectBegin()
+	expectTenantGUC(mock, "tenant-1")
 	mock.ExpectExec(`INSERT INTO durable_llm_tasks`).
 		WithArgs(anyArgs(17)...).
 		WillReturnError(&pgconn.PgError{Code: "23505", Message: "duplicate key"})

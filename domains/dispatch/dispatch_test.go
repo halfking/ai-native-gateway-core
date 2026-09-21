@@ -1215,6 +1215,216 @@ func TestTier2StopDrainsQueuedRequests(t *testing.T) {
 	}
 }
 
+// TestStopDrainsDispatchInResidue is the dispatchIn analogue of
+// TestStopNoDrainLoss (audit 2026-09-05 C-#2): requests sitting in the
+// dispatchIn BUFFER when stopCh fires must all complete with ErrShutdown.
+// Under the bug, runDispatcher's stopCh branch returned directly, leaving
+// buffered qrs unconsumed — their Submit callers would block on qr.ResultCh
+// until ctx expiry (2h for survival streams).
+//
+// The pipeline is driven manually (no Start) so the residue is staged
+// deterministically: runDispatcher is the only goroutine, dispatchIn holds
+// five requests before stopCh closes.
+func TestStopDrainsDispatchInResidue(t *testing.T) {
+	p := NewPipeline(Deps{
+		RouteFunc:        func(context.Context, *QueuedRequest) ([]CredentialRef, error) { return nil, nil },
+		ModelResolveFunc: func(context.Context, string, []string) (string, []string, error) { return "m", nil, nil },
+		ForwardFunc:      func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome { return ForwardOutcome{} },
+	})
+	p.dispatchIn = make(chan *QueuedRequest, 8)
+
+	const n = 5
+	victims := make([]*QueuedRequest, 0, n)
+	for i := 0; i < n; i++ {
+		qr := NewQueuedRequest(fmt.Sprintf("victim-%d", i), "t", "m", context.Background(), nil)
+		victims = append(victims, qr)
+		p.dispatchIn <- qr
+	}
+
+	p.wg.Add(1)
+	go p.runDispatcher()
+	p.Stop() // closes stopCh; drainer wait is trivial (no model queues exist)
+
+	for _, qr := range victims {
+		if !qr.completed.Load() {
+			t.Fatalf("request %s left uncompleted in dispatchIn on Stop", qr.ID)
+		}
+		select {
+		case out := <-qr.ResultCh:
+			if !errors.Is(out.Err, ErrShutdown) {
+				t.Fatalf("request %s completed with %v, want ErrShutdown", qr.ID, out.Err)
+			}
+		default:
+			t.Fatalf("request %s completed but ResultCh is empty", qr.ID)
+		}
+	}
+}
+
+// TestStopDrainsFailoverChResidue is the failoverCh analogue (audit
+// 2026-09-05 C-#2): items buffered in failoverCh when stopCh fires must all
+// complete with ErrShutdown — overriding their carried failure outcome —
+// instead of being dropped by runFailover's stopCh branch.
+func TestStopDrainsFailoverChResidue(t *testing.T) {
+	p := NewPipeline(Deps{
+		RouteFunc:        func(context.Context, *QueuedRequest) ([]CredentialRef, error) { return nil, nil },
+		ModelResolveFunc: func(context.Context, string, []string) (string, []string, error) { return "m", nil, nil },
+		ForwardFunc:      func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome { return ForwardOutcome{} },
+	})
+	p.failoverCh = make(chan failoverItem, 8)
+
+	const n = 5
+	victims := make([]*QueuedRequest, 0, n)
+	for i := 0; i < n; i++ {
+		qr := NewQueuedRequest(fmt.Sprintf("victim-%d", i), "t", "m", context.Background(), nil)
+		victims = append(victims, qr)
+		p.failoverCh <- failoverItem{qr: qr, out: ForwardOutcome{Err: errors.New("pre-firstbyte boom")}}
+	}
+
+	p.wg.Add(1)
+	go p.runFailover()
+	p.Stop()
+
+	for _, qr := range victims {
+		if !qr.completed.Load() {
+			t.Fatalf("request %s left uncompleted in failoverCh on Stop", qr.ID)
+		}
+		select {
+		case out := <-qr.ResultCh:
+			if !errors.Is(out.Err, ErrShutdown) {
+				t.Fatalf("request %s completed with %v, want ErrShutdown (shutdown must override the carried outcome)", qr.ID, out.Err)
+			}
+		default:
+			t.Fatalf("request %s completed but ResultCh is empty", qr.ID)
+		}
+	}
+}
+
+// TestStopDrainsModelQueueResidue covers requests still BUFFERED in a Tier-1
+// model lane when Stop fires (audit 2026-09-05 C-#2). DispatcherWorkers=0
+// makes dispatchIn unbuffered: the model drainer pops one request and parks
+// on the dispatchIn send, leaving the rest in mq.ch. Stop must complete the
+// parked one (inner select, TestStopNoDrainLoss) AND drain the buffered
+// residue (drainModelQueueOnShutdown) — previously the buffered ones were
+// orphaned because Stop clears p.models and the drainer exited.
+func TestStopDrainsModelQueueResidue(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.DispatcherWorkers = 0 // dispatchIn cap 0, no consumer
+	cfg.MaxQueueDepth = 8
+	hotCfg := &atomic.Value{}
+	hotCfg.Store(&cfg)
+
+	p := NewPipeline(Deps{
+		RouteFunc: func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) {
+			return []CredentialRef{cred(1, ModeConcurrency, 1)}, nil
+		},
+		ModelResolveFunc: func(ctx context.Context, requested string, tried []string) (string, []string, error) {
+			return "m", nil, nil
+		},
+		ForwardFunc: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			return ForwardOutcome{} // unreachable: dispatchIn is never drained
+		},
+		HotCfg: hotCfg,
+	})
+	p.Start()
+
+	const n = 3
+	done := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			_, err := p.Submit(context.Background(), NewQueuedRequest(fmt.Sprintf("r%d", i), "t", "m", context.Background(), nil))
+			done <- err
+		}(i)
+	}
+	// One request is popped + parked on the dispatchIn send; two stay in mq.ch.
+	time.Sleep(50 * time.Millisecond)
+
+	p.Stop()
+
+	for i := 0; i < n; i++ {
+		select {
+		case err := <-done:
+			if !errors.Is(err, ErrShutdown) {
+				t.Fatalf("Submit %d returned %v, want ErrShutdown", i, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("Submit %d never returned: model queue residue dropped on Stop instead of drained", i)
+		}
+	}
+}
+
+// TestStopDispatcherResidueFullPath exercises the dispatcher drain through
+// the full Submit path (audit 2026-09-05 C-#2). The single dispatcher worker
+// is wedged inside model resolution while requests fill the dispatchIn
+// buffer; Stop fires and the wedge is released. Every Submit must return —
+// residue in dispatchIn completes via the shutdown branch instead of being
+// dispatched on a stopped pipeline.
+func TestStopDispatcherResidueFullPath(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.DispatcherWorkers = 1 // dispatchIn cap 4
+	cfg.MaxQueueDepth = 64
+	hotCfg := &atomic.Value{}
+	hotCfg.Store(&cfg)
+
+	resolveGate := make(chan struct{})
+	p := NewPipeline(Deps{
+		RouteFunc: func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) {
+			return []CredentialRef{cred(1, ModeConcurrency, 1)}, nil
+		},
+		ModelResolveFunc: func(ctx context.Context, requested string, tried []string) (string, []string, error) {
+			<-resolveGate // wedge the single dispatcher so dispatchIn fills up
+			return "m", nil, nil
+		},
+		ForwardFunc: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			return ForwardOutcome{}
+		},
+		HotCfg: hotCfg,
+	})
+	p.Start()
+
+	const n = 6
+	done := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			_, err := p.Submit(context.Background(), NewQueuedRequest(fmt.Sprintf("r%d", i), "t", "m", context.Background(), nil))
+			done <- err
+		}(i)
+	}
+	// Let one request wedge the dispatcher and the rest fill dispatchIn / mq.ch.
+	time.Sleep(100 * time.Millisecond)
+
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	// Stop parks in wg.Wait on the wedged dispatcher; release the wedge.
+	select {
+	case <-stopDone:
+		t.Fatal("Stop returned while the dispatcher was still wedged in model resolution")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(resolveGate)
+
+	select {
+	case <-stopDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop never returned after the dispatcher was released")
+	}
+	for i := 0; i < n; i++ {
+		select {
+		case err := <-done:
+			// The in-flight request may terminate with a capacity/model
+			// exhaustion error (it was dispatched before Stop); the buffered
+			// residue must be ErrShutdown. Either way Submit must return.
+			if err == nil {
+				t.Fatalf("Submit %d unexpectedly succeeded during shutdown", i)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Submit %d never returned: dispatchIn residue dropped on Stop instead of drained", i)
+		}
+	}
+}
+
 // TestCredEnqueuedAtSetBeforeSend pins the data-race fix in tryEnqueueCred.
 // qr.CredEnqueuedAt must be written BEFORE the channel send so the
 // forwarder loop's read (acquire → metricCredQueueWait) is ordered by the

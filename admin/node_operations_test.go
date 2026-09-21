@@ -56,6 +56,51 @@ func TestRunCredentialSessionPing(t *testing.T) {
 			t.Fatalf("result = (%q, %q)", status, code)
 		}
 	})
+
+	// 2026-09-06: anthropic-messages 协议测试
+	t.Run("sends anthropic messages format when protocol is anthropic-messages", func(t *testing.T) {
+		var payload map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/messages" {
+				t.Fatalf("wrong path for anthropic: %s", r.URL.Path)
+			}
+			if r.Header.Get("x-api-key") != "test-key" {
+				t.Fatalf("missing x-api-key header")
+			}
+			if r.Header.Get("anthropic-version") == "" {
+				t.Fatalf("missing anthropic-version header")
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			w.Write([]byte(`{"id":"msg_1","type":"message","content":[{"type":"text","text":"pong"}],"model":"claude-sonnet-5","stop_reason":"end_turn"}`))
+		}))
+		defer server.Close()
+
+		h := &Handler{}
+		status, code, message := h.runCredentialSessionPing(
+			context.Background(),
+			server.URL,
+			"anthropic-messages",
+			"",
+			"test-key",
+			"claude-sonnet-5",
+		)
+		if status != "healthy" || code != "" || message != "" {
+			t.Fatalf("result = (%q, %q, %q)", status, code, message)
+		}
+		if payload["model"] != "claude-sonnet-5" || payload["max_tokens"] != float64(1) {
+			t.Fatalf("unexpected payload: %#v", payload)
+		}
+		// anthropic 格式不包含 stream 字段
+		if _, hasStream := payload["stream"]; hasStream {
+			t.Fatalf("anthropic format should not include stream field")
+		}
+		messages, ok := payload["messages"].([]any)
+		if !ok || len(messages) != 1 {
+			t.Fatalf("messages = %#v", payload["messages"])
+		}
+	})
 }
 
 func TestNodeOperationsRateLimiter(t *testing.T) {

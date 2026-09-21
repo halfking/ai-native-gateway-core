@@ -5,7 +5,7 @@
 // ad-hoc per-worker HTTP executors with one place that:
 //
 //   - runs the two-round probe (direct upstream THEN credential-pinned gateway)
-//     and restores routing-visible state only after both rounds succeed;
+//     and restores routing-visible state when the direct upstream round succeeds;
 //   - applies all post-probe side effects (binding/credential/observed state,
 //     circuit success, candidate-cache invalidate, URSM v2, model-IQ trigger,
 //     pg_notify);
@@ -160,6 +160,33 @@ type ProbeService struct {
 	queue *ProbeQueue
 	scope ProbeScope
 
+	// Necessity-gate seams (2026-09-11 自检必要性检查). healthEvidence is the
+	// Redis-backed node-state reader (URSM v2 adapter in production); when
+	// nil the gate is disabled and every probe runs. The *Fn fields are the
+	// injectable counterparts used by focused unit tests — see
+	// probe_necessity.go for the condition semantics.
+	healthEvidence  NodeHealthEvidenceSource
+	siblingModelsFn func(ctx context.Context, credID int, model string) ([]string, error)
+	lastProbeRunFn  func(ctx context.Context, credID int, model string) (*nodeProbeRunSummary, error)
+	removeSkippedFn func(ctx context.Context, task ProbeQueueTask, reason string)
+	// twoSiblingSuccessesFn overrides condition ③'s evidence lookup
+	// (2026-09-20 probe-volume policy, INV-4): bool = "credential already has
+	// two recently probe-verified models and the pair carries no error state".
+	// error fails open (probe runs). Tests stub it; production uses the SQL
+	// path in probe_necessity.go.
+	twoSiblingSuccessesFn func(ctx context.Context, credID int, model string) (bool, error)
+	// skipQueue overrides the queue the skip-removal path runs through —
+	// tests stub it (Remove + publishRemovedTransition) instead of building
+	// a *ProbeQueue on a live pgxpool. Production leaves it nil so removal
+	// goes through queue.
+	skipQueue probeSkipQueue
+	// deleteStateFn overrides the node_probe_state mirror delete in the
+	// skip-removal path (tests only; production uses
+	// worker.deleteNodeProbeState). The returned error drives the bounded
+	// immediate retry + persistent-failure accounting in
+	// deleteNodeProbeStateMirror (see probe_necessity.go).
+	deleteStateFn func(ctx context.Context, credID int, model string) error
+
 	// Test seams keep Run behavior testable without an upstream, gateway, or DB.
 	// Production construction leaves these nil and uses the worker methods below.
 	directRoundFn  func(context.Context, int, string) nodeProbeRoundResult
@@ -168,6 +195,9 @@ type ProbeService struct {
 	// heartbeatFn defaults to ProbeQueue.ExtendLease but can be overridden in
 	// tests to assert the lease-extension cadence without touching the DB.
 	heartbeatFn func(context.Context, ProbeQueueTask, time.Duration) error
+	// automaticEligibilityFn defaults to the queue's current-state check and is
+	// injectable for focused service tests without a live database.
+	automaticEligibilityFn func(context.Context, ProbeQueueTask) (bool, error)
 	// leaseCheckFn defaults to ProbeQueue.OwnsLease but can be overridden in
 	// tests so the audit-insert path is reachable without a live queue DB.
 	leaseCheckFn func(context.Context, ProbeQueueTask) (bool, error)
@@ -214,7 +244,11 @@ type probeOutcome struct {
 	direct       nodeProbeRoundResult
 	gateway      nodeProbeRoundResult
 	success      bool
-	recoverAt    time.Time
+	// attempt feeds the 404 model-not-served escalation (2nd confirmed 404
+	// → long re-check horizon) in applyOutcome; 0 means "unknown, keep the
+	// generic 5-minute cooldown".
+	attempt   int
+	recoverAt time.Time
 }
 
 // Run executes one queued probe task end-to-end and returns the queue result.
@@ -244,6 +278,24 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "probe_out_of_scope"},
 			fmt.Errorf("%w: tenant=%q credential_id=%d model=%q", ErrProbeOutOfScope, task.TenantID, task.CredentialID, task.RawModel)
 	}
+	if task.Automatic {
+		check := s.automaticEligibilityFn
+		if check == nil && s.queue != nil {
+			check = s.queue.automaticTaskEligible
+		}
+		if check == nil {
+			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "automatic_probe_eligibility_unavailable"},
+				fmt.Errorf("%w: eligibility checker unavailable", ErrProbeAutomaticIneligible)
+		}
+		eligible, err := check(ctx, task)
+		if err != nil {
+			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "automatic_probe_eligibility_check_failed"}, err
+		}
+		if !eligible {
+			return ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "automatic_probe_ineligible"},
+				fmt.Errorf("%w: credential_id=%d", ErrProbeAutomaticIneligible, task.CredentialID)
+		}
+	}
 	triggerKind, _ := NormalizeTriggerKind(task.Source)
 	trigger := nodeProbeTrigger{tenantID: task.TenantID, parentID: task.ParentReqID}
 	attempt := task.Attempt
@@ -251,6 +303,38 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		attempt = 1
 	}
 	startedAt := time.Now()
+
+	// Necessity gate (2026-09-11 自检必要性检查): automatic node_probe tasks
+	// get one last look at the current Redis node state + previous probe
+	// cycle BEFORE any probe work starts. When either skip condition holds
+	// the probe is not executed at all and the request is removed from the
+	// queue and the database (removeSkippedProbe), so the worker must not
+	// Complete it — ErrProbeNotNecessary tells it so. Manual (admin)
+	// tasks bypass the gate: operators explicitly asked for evidence, and
+	// the queue's own eligibility convention keeps manual probes available
+	// for diagnosis. Evidence read errors fail open (probe executes).
+	//
+	// The gate runs on the queue worker's loop (Workers=1 by default) with
+	// the claim lease already ticking, so the evidence reads are bounded by
+	// probeNecessityGateTimeout — an over-budget read fails open exactly
+	// like an error instead of stalling the whole probe pipeline.
+	if task.Automatic {
+		gateCtx, gateCancel := context.WithTimeout(ctx, probeNecessityGateTimeout)
+		reasonCode, detail, err := s.probeUnnecessary(gateCtx, task)
+		gateCancel()
+		if err != nil {
+			slog.Debug("probe_necessity: gate unavailable, running probe",
+				"queue_id", task.ID, "credential_id", credID, "model", model, "error", err)
+		} else if reasonCode != "" {
+			probeNecessitySkipTotal.WithLabelValues(reasonCode).Inc()
+			s.removeSkippedProbe(ctx, task, reasonCode+": "+detail)
+			return ProbeQueueResult{
+				Status:       ProbeQueueSuccess,
+				ReasonCode:   reasonCode,
+				ReasonDetail: detail,
+			}, fmt.Errorf("%w: %s (queue_id=%d cred=%d model=%s)", ErrProbeNotNecessary, reasonCode, task.ID, credID, model)
+		}
+	}
 
 	// Lease heartbeat (2026-08-18): refresh lease_until every
 	// ProbeQueueHeartbeatInterval while Run() does its work. Without this, a
@@ -274,8 +358,10 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		return ProbeQueueResult{}, err
 	}
 
-	// Round 1 is evidence only. A direct success must not restore routing-visible
-	// state before the pinned gateway round has verified the same node.
+	// Round 1 is evidence. Per the FR-5 timely-recovery contract (see
+	// applyOutcome), a direct success DOES restore routing-visible state
+	// immediately — the optional pinned gateway round only refines the
+	// evidence, it is not a gate.
 	direct := s.directRound(hbCtx, credID, model)
 	if err := probeRunContextErr(ctx, hbCtx, task); err != nil {
 		if errors.Is(err, ErrProbeLeaseLost) && ctx.Err() == nil {
@@ -291,7 +377,15 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		slog.Warn("probe_service: dropping probe for (cred, model) with no binding row",
 			"credential_id", credID, "model", model)
 		s.worker.emitProbe(hbCtx, credID, 0, model, model, "direct", attempt, trigger, direct)
-		s.worker.deleteNodeProbeState(hbCtx, credID, model)
+		// Stays best-effort: since pumpDueStatesSQL filters binding-less
+		// pairs (2026-09-11 P3, handoff 遗留项 5), no recurring scheduler
+		// revisits a pair whose binding chain is broken, so this branch is
+		// one-shot (manual tasks, or tasks enqueued before the binding
+		// vanished). A failed DELETE can at worst leave one orphan row that
+		// the pump picks up again only once the binding is (re)created —
+		// at which point it probes normally — so the skip path's
+		// retry/counter machinery would not change the outcome here.
+		_ = s.worker.deleteNodeProbeState(hbCtx, credID, model)
 		// Still write the audit row so dashboards don't lose the signal.
 		now := time.Now()
 		if err := s.insertAuditRowWithLeaseCheck(hbCtx, hbCtx, task, credID, model, triggerKind, attempt, 0, direct, direct, false, startedAt, now, int(now.Sub(startedAt).Milliseconds())); err != nil {
@@ -330,7 +424,11 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	// The direct upstream round is the recovery signal for authoritative URSM.
 	// The pinned gateway round depends on that same URSM key and may fail while
 	// the key is absent; using the composite result here would renew the lockout.
-	s.worker.updateURSMv2ProbeState(hbCtx, trigger.tenantID, credID, model, direct.ok, direct.latencyMs)
+	// R42: failures honor the gateway-side predicate (see runOne) — a
+	// misconfigured instance must not poison the shared node key.
+	if direct.ok || s.worker.ursmFailureWritable(direct.errCode, direct.errDetail) {
+		s.worker.updateURSMv2ProbeState(hbCtx, trigger.tenantID, credID, model, direct.ok, direct.latencyMs)
+	}
 	s.worker.emitProbe(hbCtx, credID, direct.providerID, model, direct.outboundModel, "direct", attempt, trigger, direct)
 	s.worker.emitProbe(hbCtx, credID, direct.providerID, model, direct.outboundModel, "gateway", attempt, trigger, gw)
 	now := time.Now()
@@ -340,18 +438,25 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		direct:       direct,
 		gateway:      gw,
 		success:      success,
-		recoverAt:    now.Add(5 * time.Minute),
+		attempt:      attempt,
 	})
 	durationMs := int(now.Sub(startedAt).Milliseconds())
 
-	backoff := ChainBackoffIndex(attempt, NodeProbeBackoffChain)
+	errCode := ""
+	if c := firstErrCode(direct, gw); c != nil {
+		errCode = *c
+	}
+	backoff := ProbeBackoffForErrCode(errCode, attempt)
 	// 2026-08-13: 常用模型失败回退缩短（probe.featured_backoff_multiplier，默认
 	// 50% → 更快重试恢复）；非常用按标准 7 步链。仅影响失败后的下次重试间隔，
 	// 不降低探测深度（仍走 direct+gateway 双轮）。
 	// Audit fix #6: clamp to ≥5s — at pct=1 the first rung (5s) would truncate
 	// to 0s and produce a busy retry loop; the spec Min is 20 (enforced there),
 	// but a defensive floor here guards against future chain rungs <5s.
-	if globalIsFeaturedModel(model, "") {
+	// 2026-09-17: a confirmed model-not-served 404 must NOT be shortened — the
+	// multiplier exists to re-verify transient failures faster, and halving a
+	// catalog-mismatch horizon just re-churns the 404.
+	if globalIsFeaturedModel(model, "") && !isModelNotServedProbeError(errCode) {
 		if pct := settings.GetPlatformInt("probe.featured_backoff_multiplier", 50); pct > 0 && pct < 100 {
 			scaled := time.Duration(float64(backoff) * float64(pct) / 100.0)
 			if scaled < 5*time.Second {
@@ -359,6 +464,13 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 			}
 			backoff = scaled
 		}
+	}
+	// 2026-09-17 (R39): a gateway-side error (decrypt/endpoint build) is this
+	// instance's config problem, not pair unhealthiness — pace the queue path
+	// at the fixed gateway-side delay exactly like the legacy runOne ladder,
+	// overriding both the chained ladder and the featured multiplier.
+	if isGatewaySideProbeError(errCode) {
+		backoff = nodeProbeGatewaySideRetryDelay
 	}
 	nextSec := int(backoff.Seconds())
 	if nextSec <= 0 {
@@ -378,9 +490,7 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	}
 	s.worker.mirrorNodeProbeState(hbCtx, credID, model, attempt, success, direct, gw, now, backoff)
 
-	if success {
-		// Drop node_probe_failed immediately. applyOutcome already invalidated the
-		// candidate cache after committing both-round recovery side effects.
+	if direct.ok {
 		s.worker.notifyAutoRouteRefresh(hbCtx, credID)
 	} else {
 		if s.worker.modelQualityTrigger != nil && attempt >= 2 {
@@ -424,10 +534,6 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 			return ProbeQueueResult{Status: ProbeQueueSuccess, HTTPStatus: direct.httpStatus, LatencyMs: direct.latencyMs}, wrappedErr
 		}
 		nextRetryAt := now.Add(backoff)
-		errCode := ""
-		if c := firstErrCode(direct, gw); c != nil {
-			errCode = *c
-		}
 		return ProbeQueueResult{
 			Status:       ProbeQueueFailed,
 			ReasonCode:   errCode,
@@ -442,10 +548,6 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		return ProbeQueueResult{Status: ProbeQueueSuccess, HTTPStatus: direct.httpStatus, LatencyMs: direct.latencyMs}, nil
 	}
 	nextRetryAt := now.Add(backoff)
-	errCode := ""
-	if c := firstErrCode(direct, gw); c != nil {
-		errCode = *c
-	}
 	return ProbeQueueResult{
 		Status:       ProbeQueueFailed,
 		ReasonCode:   errCode,
@@ -599,8 +701,8 @@ func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
 		s.applyOutcomeFn(ctx, outcome)
 		return
 	}
-	if outcome.success {
-		s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, true, "")
+	if outcome.direct.ok {
+		s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, true, "", 0, "")
 		if s.worker.db != nil {
 			s.worker.updateCredentialHealth(ctx, outcome.credentialID)
 		}
@@ -613,8 +715,32 @@ func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
 		if code := firstErrCode(outcome.direct, outcome.gateway); code != nil && *code != "" {
 			errCode = *code
 		}
-		s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, false, errCode)
-		s.worker.updateObservedState(ctx, outcome.credentialID, outcome.model, false, errCode, outcome.recoverAt)
+		// 2026-09-17: gateway-side errors (decrypt/endpoint build) describe
+		// this instance's config, not the pair's upstream health — never write
+		// them to the shared availability surfaces. updateBindingAvailability
+		// refuses these errCodes internally; guard observed state here too.
+		// R40 豁免：decrypt 形且实例解密熔断未跳闸 = 单凭据密文损坏（跟随
+		// 凭据而非实例），放行到真实不可用写入（R39 §三#3）。
+		if isGatewaySideProbeError(errCode) && !s.worker.credentialSpecificDecryptFailure(outcome.direct.errDetail) {
+			slog.Error("probe_service: gateway-side probe error — not updating availability",
+				"credential_id", outcome.credentialID,
+				"model", outcome.model,
+				"err_code", errCode)
+		} else {
+			// 2026-09-17: the binding write and the observed-state cool window
+			// must agree. A direct-round 404 confirmed twice escalates to the
+			// model-not-served horizon (6h) instead of the generic 5 minutes,
+			// so the pair stops flapping unavailable→cooldown→re-probe→404.
+			// The errCode handed down is the DIRECT round's when present —
+			// only direct evidence can convict the pair.
+			directErrCode := errCode
+			if outcome.direct.errCode != "" && outcome.direct.errCode != "none" {
+				directErrCode = outcome.direct.errCode
+			}
+			s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, false, directErrCode, outcome.attempt, outcome.direct.errDetail)
+			_, horizon := unavailableBindingHorizon(directErrCode, outcome.attempt)
+			s.worker.updateObservedState(ctx, outcome.credentialID, outcome.model, false, directErrCode, time.Now().Add(horizon))
+		}
 	}
 	if s.worker.invalidateCandidateCache != nil {
 		s.worker.invalidateCandidateCache(outcome.credentialID)
@@ -663,15 +789,21 @@ func firstErrDetailString(a, b nodeProbeRoundResult) string {
 // These are thin wrappers so the side-effect/audit SQL lives in one place
 // (node_probe.go) and both the legacy cycle() path and the queue path share it.
 
-func (w *NodeProbeWorker) deleteNodeProbeState(ctx context.Context, credID int, model string) {
+// deleteNodeProbeState drops a node_probe_state row (orphan cleanup and the
+// necessity skip path). Best-effort: the DELETE error is logged here AND
+// returned, so callers that care about the churn a surviving row causes
+// (deleteNodeProbeStateMirror's bounded retry) can react.
+func (w *NodeProbeWorker) deleteNodeProbeState(ctx context.Context, credID int, model string) error {
 	if w.db == nil {
-		return
+		return nil
 	}
 	if _, err := w.db.Exec(ctx, `DELETE FROM node_probe_state WHERE credential_id = $1 AND raw_model_name = $2`,
 		credID, model); err != nil {
 		slog.Warn("probe_service: failed to drop orphan state row",
 			"credential_id", credID, "model", model, "error", err)
+		return err
 	}
+	return nil
 }
 
 func (w *NodeProbeWorker) notifyAutoRouteRefresh(ctx context.Context, credID int) {
@@ -694,13 +826,16 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 		return
 	}
 	if success {
+		// 2026-09-20 probe-volume policy: park 30 days instead of re-arming
+		// +1h — a probe success must not schedule the next probe. A new real
+		// failure re-arms via Submit's healthy-parked branch (+5s).
 		_, _ = w.db.Exec(ctx, `
 			UPDATE node_probe_state SET
 				consecutive_failures = 0,
 				consecutive_successes = consecutive_successes + 1,
 				last_attempt_at = now(),
-				next_retry_at = now() + interval '1 hour',
-				next_retry_seconds = 3600,
+				next_retry_at = now() + interval '30 days',
+				next_retry_seconds = 2592000,
 				paused = FALSE,
 				last_direct_ok = TRUE,
 				last_gateway_ok = TRUE,
@@ -711,11 +846,22 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 			WHERE credential_id = $1 AND raw_model_name = $2`, credID, model)
 		return
 	}
+	// 2026-09-17 (R39): mirror the legacy runOne ladder's gateway-side guard —
+	// an endpoint/request build failure is THIS instance's config problem
+	// (e.g. it cannot decrypt credentials), not pair unhealthiness. Without
+	// the CASE WHEN below, a wrong-key instance rescheduling its own durable
+	// queue tasks advanced consecutive_failures on the SHARED row until
+	// v_node_probe_state_compat projected broken_confirmed (cf>=3) and
+	// brokenPairExcludeSQL excluded the pair from routing cluster-wide.
+	gatewaySide := false
+	if c := firstErrCode(direct, gw); c != nil {
+		gatewaySide = isGatewaySideProbeError(*c)
+	}
 	nextRetryAt := now.Add(backoff)
 	nextSec := int(backoff.Seconds())
 	_, _ = w.db.Exec(ctx, `
 		UPDATE node_probe_state SET
-			consecutive_failures = $3,
+			consecutive_failures = CASE WHEN $10::boolean THEN node_probe_state.consecutive_failures ELSE $3 END,
 			consecutive_successes = 0,
 			last_attempt_at = now(),
 			next_retry_at = $4,
@@ -728,7 +874,7 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 			updated_at = now()
 		WHERE credential_id = $1 AND raw_model_name = $2`,
 		credID, model, attempt, nextRetryAt, nextSec,
-		direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw))
+		direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw), gatewaySide)
 }
 
 // insertNodeProbeRun writes the forensic audit row (mirrors runOne's INSERT).
@@ -738,15 +884,28 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 // silent swallow + a CHECK constraint that rejected unified-queue sources).
 func (w *NodeProbeWorker) insertNodeProbeRun(ctx context.Context, credID int, model, triggerKind string,
 	attempt, nextSec int, direct, gw nodeProbeRoundResult, success bool, startedAt, now time.Time, durationMs int) error {
-	if w.db == nil {
+	// Same auditDB seam as emitSyncAudit: auditDB (interface, mockable) first,
+	// falling back to the pool. In production they are the same pool.
+	// Note: a nil *pgxpool.Pool assigned to the interface is non-nil, so the
+	// pool must be nil-checked before the assignment.
+	auditDB := w.auditDB
+	if auditDB == nil {
+		if w.db == nil {
+			return nil
+		}
+		auditDB = w.db
+	}
+	if auditDB == nil {
 		return nil
 	}
+	// R12 P2: keep the audit column inside the attempt_check domain (1..7).
+	attempt = clampAuditAttempt(attempt)
 	requestHeadersJSON := probeHeadersJSON(direct.requestHeaders)
 	timeoutAtMs := 0
 	if direct.errCode == "network_error" && direct.latencyMs >= 14900 {
 		timeoutAtMs = direct.latencyMs
 	}
-	_, err := w.db.Exec(ctx, `
+	_, err := auditDB.Exec(ctx, `
 		INSERT INTO node_probe_runs (
 			credential_id, raw_model_name, trigger_kind, attempt, next_retry_seconds,
 			direct_ok, direct_http_status, direct_err_code, direct_latency_ms, direct_err_detail,

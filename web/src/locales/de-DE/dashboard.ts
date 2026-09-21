@@ -1,6 +1,7 @@
 export default {
   title: "Dashboard",
   refresh: "Aktualisieren",
+  modelsSelectedCount: '{n} Modelle ausgewählt',  // R50 ModelPicker compact
 tabs: {
     board: 'Board',
     liveStream: 'Live-Anfragestream',
@@ -214,6 +215,9 @@ v2: {
       },
 
       tokenFormat: '{p} + {c}',
+      cache: 'Cache',
+      cacheFormat: 'Lesen {r} / Schreiben {w} (Treffer {pct})',
+      sessionId: 'Sitzung',
     },
     connecting: "Verbindung wird hergestellt…",
     reconnecting: "Verbindung wird wiederhergestellt…",
@@ -221,7 +225,7 @@ v2: {
     empty: "Keine Live-Anfragen",
 
     emptyWaiting: 'Warten auf Live-Anfragestream-Daten…',
-    groupByVendor: 'Nach Anbieter', groupByProvider: 'Nach Provider', groupByModel: 'Nach Modell',
+    groupByCredential: 'Nach Zugangsdaten', groupByVendor: 'Nach Anbieter', groupByProvider: 'Nach Provider', groupByModel: 'Nach Modell',
     modeSmall: 'Klein',
     modeLarge: 'Groß',
     modeSmallTitle: 'Kleiner Modus: vertikale Balken, fasst mehr Anfragen (Standard)',
@@ -234,7 +238,7 @@ v2: {
     businessTitle: 'Nur echte Geschäftsanfragen anzeigen',
     probeTitle: 'Nur Probe-Anfragen anzeigen',
     cacheWindow: 'Cache / Fenster', connectionDetailTitle: 'Klicken für Verbindungsdetails',
-    dimensionVendor: 'Anbieter', dimensionProvider: 'Provider', dimensionModel: 'Modell',
+    dimensionCredential: 'Zugangsdaten', dimensionVendor: 'Anbieter', dimensionProvider: 'Provider', dimensionModel: 'Modell',
     statusOpen: 'Verbunden', statusConnecting: 'Verbinden', statusReconnecting: 'Wiederverbinden',
     statusUnsupported: 'Nicht unterstützt', statusClosed: 'Nicht verbunden',
     sseDetailTitle: 'SSE-Verbindungsdetails', sseStatusLabel: 'Verbindungsstatus', sseUrlLabel: 'SSE-URL',
@@ -281,6 +285,7 @@ v2: {
     filterAllOptions: 'Alle',
     filterEmpty: 'Keine Optionen verfügbar',
     filterModel: 'Modell',
+    filterGroup: 'Filter',
     filterProvider: 'Anbieter',
     filterVendor: 'Vendor',
     filterAgent: 'Client',  // 2026-08-06 Abgleich mit zh-CN

@@ -2,23 +2,30 @@ package autoroute
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // LLMFallbackClassifier is invoked when the HeuristicClassifier returns
 // a confidence below LLMConfidenceThreshold. It asks an LLM (using one of
-// our cheap/free chat credentials) to choose among the 8 task types.
+// our cheap/free chat credentials) to choose among the current task types.
+// The prompt contract is generated from AllTaskTypes and currently includes
+// chat, reasoning, code, agent, creative, long_context, vision,
+// function_call, code_audit, intent_classification, and planning.
 //
 // In v2.0 the LLM is a side-channel call: it does NOT generate the actual
 // response — only the task type. The actual response is then routed to
 // the chosen model via the normal flow.
 //
 // Failure handling:
-//   - LLM call times out (3s) → return error, decider falls back to
-//     heuristic result even at low confidence
+//   - LLM call fails/times out (classifier-level cap follows
+//     LLMGatewayAutoLLMTimeout, default 3s, clamped ≤30s) → return error,
+//     decider falls back to heuristic result even at low confidence
 //   - LLM call returns invalid output → return error, same fallback
 //   - LLM call succeeds → return Classification with Classifier="llm"
 type LLMFallbackClassifier struct {
@@ -34,7 +41,23 @@ type LLMFallbackClassifier struct {
 // typically a thin shim around the chat completions endpoint that uses
 // the cheapest available credential (system-internal API key).
 func NewLLMFallbackClassifier(caller func(ctx context.Context, prompt string) (string, error)) *LLMFallbackClassifier {
-	return &LLMFallbackClassifier{Caller: caller, timeout: 3 * time.Second}
+	c := &LLMFallbackClassifier{Caller: caller, timeout: 3 * time.Second}
+	// 2026-09-15 O4 verification fix: the self-loop classification path
+	// (gateway → its own /v1/chat/completions → upstream) needs more than
+	// the 3s default, but LLMGatewayAutoLLMTimeout only raised the HTTP
+	// client's timeout while this classifier-level cap still cut every
+	// call at 3s. Honor the same env knob here (seconds, clamped to ≤30
+	// so a misconfig cannot stall the request path for long — this runs
+	// before dispatch on low-confidence requests).
+	if v := strings.TrimSpace(os.Getenv("LLMGatewayAutoLLMTimeout")); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			if secs > 30 {
+				secs = 30
+			}
+			c.timeout = time.Duration(secs) * time.Second
+		}
+	}
+	return c
 }
 
 // Name implements Classifier.
@@ -45,26 +68,16 @@ func (c *LLMFallbackClassifier) Name() string { return "llm" }
 //
 // Prompt template:
 //
-//	You are a request classifier. Choose ONE task type from this list
-//	that best matches the user's request:
-//	  - chat          : ordinary conversation
-//	  - reasoning     : math, logic, multi-step analysis
-//	  - code          : code generation, debugging, refactoring
-//	  - agent         : multi-step agentic workflow with many tools
-//	  - creative      : writing, translation, summarisation
-//	  - long_context  : very long document (>50k tokens)
-//	  - vision        : request contains image input
-//	  - function_call : 1-2 tool/function calls
+//	You are a request classifier. Choose ONE task type from the current
+//	allowlist. The prompt provides bounded system/user text plus structural
+//	signals (tools, tool results, images, code, token estimate) so the LLM
+//	can apply the same task context as the heuristic classifier.
 //
 //	Return ONLY the task type string, nothing else.
 //
-//	User prompt:
-//	"""
-//	<last user prompt>
-//	"""
-//
-// We deliberately don't pass the full system prompt to keep the
-// classifier call cheap (<500 tokens in, ~5 tokens out).
+// Both text inputs are capped before interpolation to keep classification
+// inexpensive and prevent a large system prompt from consuming the request
+// budget. The LLM never receives tool-result contents, only their presence.
 func (c *LLMFallbackClassifier) Classify(ctx context.Context, sigs ClassificationSignals) (*Classification, error) {
 	if c.Caller == nil {
 		return nil, fmt.Errorf("llm classifier: caller not configured")
@@ -75,6 +88,13 @@ func (c *LLMFallbackClassifier) Classify(ctx context.Context, sigs Classificatio
 	prompt := buildClassificationPrompt(sigs)
 	raw, err := c.Caller(timeoutCtx, prompt)
 	if err != nil {
+		if errors.Is(err, ErrLLMDisabled) {
+			// Disabled deployments (no LLMGatewayAutoLLMEndpoint) return
+			// DisabledCaller directly, bypassing InstrumentedCaller — without
+			// this record the "disabled" outcome promised by the
+			// llm_gateway_llm_classifier_total HELP is never emitted.
+			RecordLLMMetricCall("disabled", 0)
+		}
 		return nil, fmt.Errorf("llm classify: %w", err)
 	}
 	task, ok := normaliseLLMTaskType(raw)
@@ -92,36 +112,44 @@ func (c *LLMFallbackClassifier) Classify(ctx context.Context, sigs Classificatio
 	}, nil
 }
 
-// buildClassificationPrompt is the template shown above, formatted
-// with the actual signals.
-func buildClassificationPrompt(sigs ClassificationSignals) string {
-	prompt := "You are a request classifier. Choose ONE task type from this list that best matches the user's request:\n" +
-		"  - chat          : ordinary conversation\n" +
-		"  - reasoning     : math, logic, multi-step analysis\n" +
-		"  - code          : code generation, debugging, refactoring\n" +
-		"  - agent         : multi-step agentic workflow with many tools\n" +
-		"  - creative      : writing, translation, summarisation\n" +
-		"  - long_context  : very long document (>50k tokens)\n" +
-		"  - vision        : request contains image input\n" +
-		"  - function_call         : 1-2 tool/function calls\n" +
-		"  - code_audit            : code review, security analysis, quality checks\n" +
-		"  - intent_classification : intent detection, classification tasks\n\n" +
-		"Return ONLY the task type string, nothing else.\n\n"
+// buildClassificationPrompt is the bounded LLM fallback contract. It mirrors
+// the heuristic classifier's task vocabulary and structural signals, while
+// capping user/system text so a fallback cannot consume the request budget.
+const (
+	llmFallbackUserPromptLimit   = 1024
+	llmFallbackSystemPromptLimit = 512
+)
 
-	if sigs.ToolCount > 0 {
-		prompt += fmt.Sprintf("Tool count: %d\n", sigs.ToolCount)
+func buildClassificationPrompt(sigs ClassificationSignals) string {
+	prompt := "You are a request classifier. Choose ONE task type from this allowlist:\n" +
+		"  - chat                  : ordinary conversation or Q&A\n" +
+		"  - reasoning             : math, logic, multi-step analysis\n" +
+		"  - code                  : code generation, debugging, refactoring\n" +
+		"  - agent                 : multi-step workflow with several tools\n" +
+		"  - creative              : writing, translation, summarisation\n" +
+		"  - long_context          : very long document (>50k tokens)\n" +
+		"  - vision                : request contains image input\n" +
+		"  - function_call         : 1-2 tool/function calls\n" +
+		"  - code_audit            : code review, security, quality checks\n" +
+		"  - intent_classification : intent, text, or sentiment classification\n" +
+		"  - planning              : project plan, design, task breakdown, roadmap\n\n" +
+		"Use the bounded system/user text and structural signals below. Tool-result contents are omitted.\n\n"
+
+	prompt += fmt.Sprintf("Signals: tool_count=%d, has_tool_results=%t, has_images=%t, has_code_block=%t, estimated_tokens=%d\n\n",
+		sigs.ToolCount, sigs.HasToolResults, sigs.HasImages, sigs.HasCodeBlock, sigs.EstimatedTokens)
+	if sigs.SystemPrompt != "" {
+		prompt += "System prompt:\n\"\"\"\n" + truncateLLMFallbackPromptText(sigs.SystemPrompt, llmFallbackSystemPromptLimit) + "\n\"\"\"\n\n"
 	}
-	if sigs.EstimatedTokens > 0 {
-		prompt += fmt.Sprintf("Estimated tokens: %d\n", sigs.EstimatedTokens)
-	}
-	if sigs.HasImages {
-		prompt += "Has images: true\n"
-	}
-	if sigs.HasCodeBlock {
-		prompt += "Has code block: true\n"
-	}
-	prompt += "\nUser prompt:\n\"\"\"\n" + sigs.LastUserPrompt + "\n\"\"\"\n"
+	prompt += "User prompt:\n\"\"\"\n" + truncateLLMFallbackPromptText(sigs.LastUserPrompt, llmFallbackUserPromptLimit) + "\n\"\"\"\n\n"
+	prompt += "Return ONLY the task type string, nothing else.\n"
 	return prompt
+}
+
+func truncateLLMFallbackPromptText(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	return text[:limit] + "\n...[truncated]"
 }
 
 // normaliseLLMTaskType maps the LLM's free-text answer to a TaskType.

@@ -175,9 +175,12 @@ test_first_call_failure() {
   local count_file="$tmp/ssh_count"
 
   # ssh that ALWAYS fails.
-  cat >"$fakebin/ssh" <<'SSHEOF'
+  cat >"$fakebin/ssh" <<SSHEOF
 #!/usr/bin/env bash
-echo "$(( $(cat "$1" 2>/dev/null || echo 0) + 1 ))" > "$1"
+COUNT_FILE="$count_file"
+COUNT=\$(cat "\$COUNT_FILE" 2>/dev/null || echo 0)
+COUNT=\$((COUNT + 1))
+echo "\$COUNT" > "\$COUNT_FILE"
 echo "ssh: Could not resolve hostname fake-host: Name or service not known" >&2
 exit 255
 SSHEOF

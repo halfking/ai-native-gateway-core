@@ -2,10 +2,13 @@ package licensing
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 )
@@ -199,6 +202,29 @@ func (h *BootstrapHandler) handleActivate(c echo.Context) error {
 	if h.Activator == nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "activator_unavailable"})
 	}
+	// R36 (2026-09-17 audit): the FREE- machine-binding guard must run BEFORE
+	// Activate. It previously ran after, so a foreign hardware_hash first
+	// occupied the single seat inside DeviceManager.ActivateDevice and only
+	// then got 403 — with no rollback, leaving the real machine to face 409
+	// need_deactivate. (Same seat-occupation DoS shape R30 L-1 fixed on
+	// activate-quick, which checks the fingerprint before activating.)
+	if strings.HasPrefix(input.LicenseKey, "FREE-") {
+		fp, fpErr := GenerateFingerprint()
+		if fpErr != nil || fp == nil {
+			// Fingerprint unavailable is a fail-open today; make it at least
+			// observable (activate-quick already Warns on this path).
+			slog.Warn("bootstrap activate: fingerprint unavailable, skipping FREE- machine-binding guard",
+				"instance_id", instanceID, "error", bootstrapErrString(fpErr))
+		} else if input.HardwareHash != fp.Hash() {
+			slog.Warn("bootstrap activate rejected foreign hardware_hash for local free license",
+				"instance_id", instanceID)
+			return c.JSON(http.StatusForbidden, map[string]any{
+				"activated": false, "center_online": wantOnline, "mode": "local",
+				"error":   "hardware_hash_mismatch",
+				"message": "本地免费激活仅限本机：hardware_hash 与本机指纹不符",
+			})
+		}
+	}
 	resp, err := h.Activator.Activate(c.Request().Context(), &ActivationRequest{
 		LicenseKey: input.LicenseKey, HardwareHash: input.HardwareHash,
 		InstanceID: instanceID, DeviceName: input.DeviceName,
@@ -207,6 +233,25 @@ func (h *BootstrapHandler) handleActivate(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]any{
 			"error": err.Error(), "activated": false, "center_online": wantOnline, "mode": "local",
 		})
+	}
+	// R34 (2026-09-17 audit): Activate reports a full device roster as
+	// (resp{Success:false, NeedDeactivate:true}, nil) — previously the
+	// Success flag was ignored here and a seat conflict came back as
+	// 200 "activated", after which startCenterAgent ran on dead credentials.
+	// 409 + need_deactivate matches the activate-quick contract so the UI
+	// can offer the deactivate flow.
+	if resp != nil && !resp.Success {
+		status := http.StatusInternalServerError
+		out := map[string]any{
+			"activated": false, "center_online": wantOnline, "mode": "local",
+			"error": bootstrapErrString(errors.New(resp.ErrorCode)),
+		}
+		if resp.NeedDeactivate || resp.ErrorCode == CodeDeviceLimitExceeded {
+			status = http.StatusConflict
+			out["need_deactivate"] = true
+			out["message"] = "设备席位已被占用，需先解绑既有设备"
+		}
+		return c.JSON(status, out)
 	}
 	result["activated"] = true
 	result["mode"] = "local"
@@ -239,11 +284,95 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "hardware_hash required"})
 	}
 	if h.centerURL == "" || !h.probeCenter() {
-		return c.JSON(http.StatusServiceUnavailable, map[string]any{
-			"activated": false, "error": "center_unreachable",
-			"message": "中心不可达，请改用离线激活或检查 LLM_GATEWAY_CENTER_URL/OPS_COLLECT_URL",
-		})
+		// 本地免费激活分支：中心不可达时生成本地免费 License
+		slog.Info("center unreachable, activating with local free license",
+			"instance_id", instanceID)
 
+		// R30 审计 L-1（2026-09-16）：该端点无认证，任何网络可达者都能用
+		// 任意自造 hardware_hash 占掉免费 License 唯一的设备席位（MaxDevices=1），
+		// 真实用户首启即被 DoS。免费 License 只服务本机：客户端上报的 hash
+		// 必须与服务端自算指纹一致。指纹不可用时退回原行为（记 Warn，不把
+		// 正常装机路径锁死）。
+		if fp, fpErr := GenerateFingerprint(); fpErr == nil && fp != nil {
+			if input.HardwareHash != fp.Hash() {
+				slog.Warn("bootstrap activate-quick free branch rejected foreign hardware_hash",
+					"instance_id", instanceID)
+				return c.JSON(http.StatusForbidden, map[string]any{
+					"activated": false,
+					"error":     "hardware_hash_mismatch",
+					"message":   "本地免费激活仅限本机：hardware_hash 与本机指纹不符",
+				})
+			}
+		} else {
+			slog.Warn("bootstrap activate-quick free branch: fingerprint unavailable, skipping hash check",
+				"instance_id", instanceID, "error", bootstrapErrString(fpErr))
+		}
+
+		// R30 审计 L-4：与 handleActivate 同款 nil 防护（裸构造
+		// &BootstrapHandler{} 的测试/嵌入场景不再 panic）。
+		if h.Store == nil || h.Activator == nil {
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "activator_unavailable"})
+		}
+
+		freeLic := h.generateFreeLicense(instanceID, input.HardwareHash)
+
+		// 写入 licenses 表（幂等处理）
+		if createErr := h.Store.CreateLicense(c.Request().Context(), freeLic); createErr != nil {
+			// 如果 CreateLicense 失败，尝试获取已存在的 License（幂等性）
+			existing, getErr := h.Store.GetLicense(c.Request().Context(), freeLic.LicenseKey)
+			if getErr != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]any{
+					"activated": false,
+					"error":     createErr.Error(),
+					"message":   "本地免费 License 创建失败",
+				})
+			}
+			freeLic = existing
+		}
+
+		// 激活设备
+		resp, err := h.Activator.Activate(c.Request().Context(), &ActivationRequest{
+			LicenseKey:   freeLic.LicenseKey,
+			HardwareHash: input.HardwareHash,
+			InstanceID:   instanceID,
+			DeviceName:   input.DeviceName,
+		})
+		if err != nil || !resp.Success {
+			errMsg := "unknown error"
+			if err != nil {
+				errMsg = err.Error()
+			}
+			// R30 审计 L-1：席位被占（设备上限）是 409 冲突而非 500，
+			// 并提示需要解绑既有设备，前端可给出自助指引。
+			// R34 (2026-09-17 audit)：DeviceManager 对席位满返回
+			// (resp{Success:false, NeedDeactivate:true}, nil) —— err 恒为
+			// nil，errors.Is 永不命中，409 分支是死代码、实回 500。改判
+			// resp 标志。
+			if errors.Is(err, ErrDeviceLimitExceeded) ||
+				(err == nil && resp != nil && (resp.NeedDeactivate || resp.ErrorCode == CodeDeviceLimitExceeded)) {
+				return c.JSON(http.StatusConflict, map[string]any{
+					"activated":       false,
+					"error":           errMsg,
+					"need_deactivate": true,
+					"message":         "免费 License 设备席位已被占用，需先解绑既有设备",
+				})
+			}
+			return c.JSON(http.StatusInternalServerError, map[string]any{
+				"activated": false,
+				"error":     errMsg,
+				"message":   "设备激活失败",
+			})
+		}
+
+		return c.JSON(http.StatusOK, map[string]any{
+			"activated":     true,
+			"mode":          "free_local",
+			"center_online": false,
+			"registered":    false,
+			"instance_id":   instanceID,
+			"license_key":   maskBootstrapLicenseKey(freeLic.LicenseKey),
+			"message":       "已使用本地免费 License 激活；联网后可升级",
+		})
 	}
 	ok, body, err := bootstrapPostJSON(h.centerURL+"/maintain-api/public/license/issue", map[string]string{
 		"instance_id": instanceID, "hardware_hash": input.HardwareHash, "device_name": input.DeviceName,
@@ -332,4 +461,34 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 		"instance_id": instanceID,
 		"license_key": maskBootstrapLicenseKey(licenseKey), "message": "已同意并完成激活",
 	})
+}
+
+// generateFreeLicense 生成本地免费 License（中心不可达时使用）
+func (h *BootstrapHandler) generateFreeLicense(instanceID, hardwareHash string) *License {
+	now := time.Now()
+
+	// License Key 格式：FREE-{instance_id前12位}
+	licenseKey := fmt.Sprintf("FREE-%s", instanceID)
+	if len(instanceID) > 12 {
+		licenseKey = fmt.Sprintf("FREE-%s", instanceID[:12])
+	}
+
+	return &License{
+		LicenseKey:       licenseKey,
+		CustomerName:     "Free User",
+		CustomerEmail:    fmt.Sprintf("free-%s@local", instanceID[:min(8, len(instanceID))]),
+		MaxDevices:       1, // 免费版限制 1 设备
+		SubscriptionTier: "free",
+		Features:         []string{"basic_ai_coding"}, // 基础功能
+		ExpiresAt:        now.AddDate(10, 0, 0),       // 10 年有效期
+		CreatedAt:        now,
+		HardwareHash:     hardwareHash,
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

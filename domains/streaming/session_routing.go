@@ -3,10 +3,13 @@ package streaming
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -17,6 +20,27 @@ var SessionHeadersPriority = []string{
 	"X-Conversation-Id",
 	"X-Chat-Session-Id",
 	"X-Thread-Id",
+}
+
+// deriveGatewaySessionID maps a non-gateway client session identity onto the
+// canonical gateway namespace instead of discarding it. Clients in the wild
+// (e.g. ZCode's per-session bare-UUID x-session-id) send a STABLE id with no
+// gw_/gt_/gs_ prefix; the previous behaviour treated such ids as unknown and
+// minted a fresh gw_<uuid> per request via the CreateV2 fallback, so one
+// client conversation never grouped under a single request_logs.gw_session_id
+// and session_turns stayed at turn 1 forever. Deriving "gw_" + <client id>
+// keeps the gateway namespace canonical while making the mapping
+// deterministic: the derived id registers via the honored gw_ branch
+// (EnsureV2WithID) and resolves via Get→Touch from the second request on, so
+// turns accumulate per client session. Input must already be sanitized.
+func deriveGatewaySessionID(sessionID string) string {
+	if sessionID == "" ||
+		strings.HasPrefix(sessionID, "gw_") ||
+		strings.HasPrefix(sessionID, "gt_") ||
+		strings.HasPrefix(sessionID, "gs_") {
+		return sessionID
+	}
+	return "gw_" + sessionID
 }
 
 func extractSessionIDFromHeaders(r *http.Request) string {
@@ -114,7 +138,9 @@ func splitSessionFieldList(raw string) []string {
 	return out
 }
 
-func extractSessionIDFromRequest(r *http.Request, body []byte) string { //nolint:unused
+// 2026-09-08: 过期的 //nolint:unused 已删除 — 该函数被 messages.go 与
+// responses.go 的会话解析调用,并非死代码。
+func extractSessionIDFromRequest(r *http.Request, body []byte) string {
 	if sessionID := extractSessionIDFromBody(body); sessionID != "" {
 		return sessionID
 	}
@@ -172,9 +198,12 @@ func sessionValueString(value any) string {
 	return text
 }
 
+// sessionFieldNameReplacer is package-level (goroutine-safe); building it
+// per request showed up in alloc profiles on the streaming hot path.
+var sessionFieldNameReplacer = strings.NewReplacer("-", "", "_", "", ".", "", " ", "")
+
 func normalizeSessionFieldName(value string) string {
-	replacer := strings.NewReplacer("-", "", "_", "", ".", "", " ", "")
-	return strings.ToLower(replacer.Replace(strings.TrimSpace(value)))
+	return strings.ToLower(sessionFieldNameReplacer.Replace(strings.TrimSpace(value)))
 }
 
 func detectAndHandleModelSwitch(
@@ -200,4 +229,59 @@ func detectAndHandleModelSwitch(
 
 func generateSystemSessionID() string {
 	return "gw_" + uuid.New().String()
+}
+
+// normalizeAndRegisterClientSession 2026-09-08: 将 /v1/messages 与
+// /v1/responses 的"客户端已提供 id"分支与 chat 路径(handler.go)对齐 —
+// b02a5c385 的确定性映射 + 幂等注册此前只接了 chat:
+//  1. 非网关稳定身份(裸 UUID x-session-id)确定性映射 gw_<id>;否则异构
+//     命名空间直接落 request_logs.gw_session_id,session_turns 轮次聚合恒 1;
+//  2. Redis 未知的受信 gw_ id(新会话首请求)幂等注册 EnsureV2WithID(异步、
+//     尽力而为、带 panic 防护)— 否则每次后续请求都重复 ErrSessionNotFound,
+//     Touch 与轮次状态永不生效。branch 命名空间(gt_/gs_)不注册,与 chat 一致。
+//
+// 返回规范化后的 sessionID 与解析到的 SessionInfo(可为 nil)。
+func normalizeAndRegisterClientSession(
+	r *http.Request,
+	sessionID string,
+	getter interface {
+		Get(ctx context.Context, id string) (*session.Session, error)
+	},
+	keyInfo *authentication.KeyInfo,
+) (string, *session.Session) {
+	sessionID = deriveGatewaySessionID(sessionID)
+	if getter == nil || keyInfo == nil || r == nil {
+		return sessionID, nil
+	}
+	si, getErr := getter.Get(r.Context(), sessionID)
+	if getErr == nil && si != nil {
+		return sessionID, si
+	}
+	if getErr == session.ErrSessionNotFound &&
+		strings.HasPrefix(sessionID, "gw_") && !isBranchSessionID(sessionID) {
+		if ensurer, ok := getter.(interface {
+			EnsureV2WithID(ctx context.Context, sessionID string, apiKeyID int, tenantID, deviceSeed, taskID string) (*session.Session, bool, error)
+		}); ok {
+			regDeviceSeed := r.Header.Get("X-Device-Seed")
+			if regDeviceSeed == "" {
+				regDeviceSeed = r.Header.Get("X-Machine-Id")
+			}
+			regTaskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
+			go func(sid string, key *authentication.KeyInfo, seed, task string) {
+				defer func() {
+					if rec := recover(); rec != nil {
+						slog.Warn("session register (honored id) panicked",
+							"session_id", sid, "panic", rec)
+					}
+				}()
+				regCtx, regCancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer regCancel()
+				if _, _, err := ensurer.EnsureV2WithID(regCtx, sid, key.ID, key.TenantID, seed, task); err != nil {
+					slog.Warn("session register (honored id) failed",
+						"session_id", sid, "error", err)
+				}
+			}(sessionID, keyInfo, regDeviceSeed, regTaskID)
+		}
+	}
+	return sessionID, nil
 }

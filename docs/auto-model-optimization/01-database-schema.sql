@@ -1,0 +1,54 @@
+-- AUTO 模型优化：事实表与存储边界（设计文档）
+--
+-- 注意：这是文档方案，不修改生产迁移。生产事实表由
+-- sql/migrations/startup/478_auto_route_affinity.sql 建立，
+-- 热/分区存储布局由 656_auto_route_selections_hot.sql 建立。
+
+-- ================================================================
+-- 唯一事实表：auto_route_selections
+-- ================================================================
+-- 每次 model=auto 选择一行，保存 ID、决策快照和可观测指标：
+-- request_id/session_id/task_id/canonical_id、task_type/profile、模型、
+-- confidence/rank/score、success/latency_ms/cost_usd/reward/settled_at 等。
+-- 严禁保存 prompt、messages、response、summary、会话正文、关键词原文、
+-- 可逆内容片段或可由这些字段还原正文的编码。
+-- 结构化特征只允许以明确的非内容字段或不可逆摘要指纹形式存在。
+
+-- ================================================================
+-- 数据布局（已实现，见 migration 656）
+-- ================================================================
+-- 1. 热表：auto_route_selections_hot，独立 heap，实时写入与结算更新，
+--    默认保留 8 小时（lifecycle.hot_retention_hours）。热表与父表业务列
+--    严格一致，不是第二个事实源，只是同一事实的热存储层。
+-- 2. 历史：父表 auto_route_selections 按 partition_date 月分区；
+--    promote_auto_route_selections_hot_to_partition 以单条原子 CTE
+--    （FOR UPDATE SKIP LOCKED + 显式列 + ON CONFLICT DO NOTHING）搬迁冷行。
+-- 3. 统一视图：auto_route_selections_all = 热表 UNION ALL 父表，
+--    附 storage_tier 列；分析/亲和度聚合/管理端查询统一走该视图，
+--    更新必须落到具体表（hot 或父表），不通过视图。
+--
+-- 统一查询示例（逻辑接口）：
+-- SELECT ... FROM auto_route_selections_all
+-- WHERE tenant_id = $1 AND ts >= $2;
+
+-- ================================================================
+-- 允许的字段类别
+-- ================================================================
+-- 身份/关联：request_id、session_id、task_id、tenant_id、canonical_id
+-- 决策快照：task_type、profile、classifier、confidence、rank、score、flags
+-- 结果指标：success、latency_ms、cost_usd、reward、settled_at
+-- 结构化特征（如需扩展）：语言枚举、长度桶、代码/数学/表格等布尔值、
+--   轮数/上下文长度桶、不可逆特征版本与 hash；不得放 JSON 原文。
+
+-- ================================================================
+-- 禁止的平行事实表
+-- ================================================================
+-- 不采用 auto_request_logs、auto_task_classifications、auto_task_features、
+-- auto_model_metrics 等作为新的 AUTO 请求事实源；它们若仅存在于旧草案，
+-- 应视为废弃设计，不应被实现或继续引用。
+
+-- ================================================================
+-- 生命周期
+-- ================================================================
+-- 热数据保留 8 小时；历史按月分区并由保留策略管理。聚合视图/指标可以
+-- 从事实表派生，但不能反向成为事实来源。所有写入继续走现有表和结算流程。

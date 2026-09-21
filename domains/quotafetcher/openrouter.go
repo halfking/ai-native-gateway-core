@@ -3,11 +3,12 @@ package quotafetcher
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/pkg/httputil"
 )
 
 // openrouterFetcher hits OpenRouter's documented usage endpoints to read the
@@ -174,12 +175,11 @@ func (f *openrouterFetcher) getJSON(ctx context.Context, url, apiKey string) ([]
 		slog.Debug("quotafetcher: openrouter get failed", "url", url, "error", err.Error())
 		return nil, 0, false
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	body, bodyErr := httputil.ReadPrefixAndDrain(resp.Body, 64*1024)
+	if bodyErr != nil {
 		return nil, resp.StatusCode, false
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	if err != nil {
+	if resp.StatusCode != http.StatusOK {
 		return nil, resp.StatusCode, false
 	}
 	return body, resp.StatusCode, true

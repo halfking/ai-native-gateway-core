@@ -33,7 +33,14 @@ func autoFallbackModel() string {
 	if m := strings.TrimSpace(os.Getenv("LLM_GATEWAY_AUTO_FALLBACK_MODEL")); m != "" {
 		return m
 	}
-	return "claude-sonnet-4.5"
+	// 2026-09-14 O5 fix: the hardcoded default was "claude-sonnet-4.5" —
+	// a premium model whose credentials are dead in production, so any
+	// decider==nil instance answered every model="auto" request with a
+	// guaranteed 503 no_candidate. The fallback default must be a model
+	// that is actually routable: deepseek-v4-flash is the measured
+	// cost-efficient workhorse (auto-matching audit §一) with live
+	// credentials. Still env-overridable per deployment.
+	return "deepseek-v4-flash"
 }
 
 // autoHeaderName is the response header carrying the decision JSON.
@@ -86,26 +93,47 @@ const maxWireDecisionBytes = 16 * 1024
 // autoRouteDecision is the wire format of X-Gw-Auto-Decision. Stable
 // JSON schema — clients may parse it for observability.
 type autoRouteDecision struct {
-	TaskType                  string               `json:"task_type"`
-	Confidence                float64              `json:"confidence"`
-	Profile                   string               `json:"profile"`
-	Classifier                string               `json:"classifier"`
-	Reason                    string               `json:"reason"`
-	ChosenModel               string               `json:"chosen_model"`
-	ChosenRawModel            string               `json:"chosen_raw_model"`
-	ChosenCredID              int64                `json:"chosen_credential_id"`
-	EnabledFeatures           []string             `json:"enabled_features,omitempty"`
-	FilterReasons             []string             `json:"filter_reasons,omitempty"`
-	CacheReused               bool                 `json:"cache_reused"`
-	FallbackUsed              bool                 `json:"fallback_used"`
-	EmbeddingShadowTask       string               `json:"embedding_shadow_task,omitempty"`
-	EmbeddingShadowSimilarity *float64             `json:"embedding_shadow_similarity,omitempty"`
-	CandidatesTop3            []autoRouteCandidate `json:"candidates_top3"`
+	TaskType                  string              `json:"task_type"`
+	Confidence                float64             `json:"confidence"`
+	Profile                   string              `json:"profile"`
+	Classifier                string              `json:"classifier"`
+	Reason                    string              `json:"reason"`
+	ChosenModel               string              `json:"chosen_model"`
+	ChosenRawModel            string              `json:"chosen_raw_model"`
+	ChosenCredID              int64               `json:"chosen_credential_id"`
+	EnabledFeatures           []string            `json:"enabled_features,omitempty"`
+	FilterReasons             []string            `json:"filter_reasons,omitempty"`
+	CacheReused               bool                `json:"cache_reused"`
+	FallbackUsed              bool                `json:"fallback_used"`
+	ExperimentID              string              `json:"experiment,omitempty"`
+	Treatment                 autoroute.Treatment `json:"treatment,omitempty"`
+	AssignmentVersion         string              `json:"assignment_version,omitempty"`
+	AssignmentKeyHash         string              `json:"assignment_key_hash,omitempty"`
+	EmbeddingShadowTask       string              `json:"embedding_shadow_task,omitempty"`
+	EmbeddingShadowSimilarity *float64            `json:"embedding_shadow_similarity,omitempty"`
+	// R48 (2026-09-20) role 路由审计字段。omitempty + 仅在值非空时映射：
+	// flag-off / 无角色头时序列化字节与本特性加入前完全一致。
+	SessionRole string `json:"session_role,omitempty"`
+	TaskKind    string `json:"task_kind,omitempty"`
+	// RoutingSource 仅在 role_route 命中时映射到 wire（刻意不全量透出：
+	// 其余来源值 V1/V2 早已落库，全量透出会改变 flag-off 字节流）。
+	RoutingSource  string               `json:"routing_source,omitempty"`
+	CandidatesTop3 []autoRouteCandidate `json:"candidates_top3"`
 
 	// Process-local inputs for pre-first-byte dispatch recovery. They are not
 	// serialized into the response header or audit JSON.
 	failoverModels []string
 	signals        autoroute.ClassificationSignals
+
+	// Process-local selection snapshot fields. The wire candidate list is an
+	// intentionally small audit view; these values preserve the exact winner
+	// metrics needed by auto_route_selections without retaining the full
+	// autoroute.Decision in protocol handlers.
+	selectionCandidateRank   int
+	selectionCompositeScore  float64
+	selectionAffinityScore   float64
+	selectionAffinityApplied bool
+	selectionExplore         bool
 }
 
 // autoRouteCandidate is one row of the top-N audit list.
@@ -203,26 +231,31 @@ func extractSignalsForAuto(reqBody *chatRequestBody, rawBody []byte) autoroute.C
 	return sigs
 }
 
-// estimateTokens uses a conservative heuristic: 4 chars per token for
-// latin, 1.5 per CJK rune. Returns 0 for empty input.
+// estimateTokens uses a conservative heuristic: 4 bytes per token for
+// latin/ASCII, 2 tokens per CJK rune (comment contract: 1 CJK char ≈ 1.5-2).
+// Returns 0 for empty input.
+//
+// H-5 (audit round2): the former single accumulator divided CJK counts by 4
+// too, valuing one CJK char at ~0.5 tokens and never tripping the
+// long_context route gate for Chinese requests.
 func estimateTokens(b []byte) int {
 	if len(b) == 0 {
 		return 0
 	}
-	tokens := 0
+	asciiBytes := 0
+	cjkRunes := 0
 	for i := 0; i < len(b); {
 		r, size := decodeRune(b[i:])
 		if r >= 0x4E00 && r <= 0x9FFF {
-			tokens += 2 // 1 CJK char ≈ 1.5-2 tokens
+			cjkRunes++
 		} else {
-			tokens++ // 1 ascii byte ≈ 0.25 token, so 4 bytes ≈ 1 token
-			// But we count per byte, so adjust by counting 4-byte groups
+			asciiBytes += size
 		}
 		i += size
 	}
-	// Adjust: the per-byte count for ASCII underweights, so divide by 4
-	// for ASCII portion. Cheap approximation; accuracy is ~±30%.
-	return tokens / 4
+	// ASCII: ~4 bytes per token. CJK: ~2 tokens per rune (conservative side
+	// of 1.5-2; overestimating is the safe direction for long-context gating).
+	return asciiBytes/4 + cjkRunes*2
 }
 
 // decodeRune decodes one UTF-8 rune from b. Returns (r, n). On invalid
@@ -322,6 +355,13 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 	sigs := extractSignalsForAuto(reqBody, rawBody)
 	// 从 HTTP 头 + 系统提示词语义匹配提取客户端/智能体类型
 	sigs.ClientType = extractClientTypeWithPrompt(r, sigs.SystemPrompt)
+	// R48 (2026-09-20): 会话角色识别——X-Gw-Agent-Role 声明为主，
+	// 网关内部 loopback 的 X-Gw-Source-Actor 推断为辅（该头已被 R35-R1
+	// 中间件按 loopback 令牌剥离，到达此处只可能可信）。
+	sigs.AgentRole = autoroute.ResolveAgentRoleFromHeaders(
+		r.Header.Get(autoroute.AgentRoleHeader),
+		r.Header.Get(autoSourceActorHeader),
+	)
 
 	headerProfile := r.Header.Get(autoProfileHeader)
 	taskHint := autoroute.TaskType(r.Header.Get(autoTaskHintHeader))
@@ -341,6 +381,11 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 	reqCtx := r.Context()
 	if rid := r.Header.Get("X-Request-Id"); rid != "" {
 		reqCtx = autoroute.WithRequestID(reqCtx, rid)
+	}
+	// R37 (R35-R2): carry the caller actor so recordFeedbackAsync can skip
+	// gateway-synthetic rounds (goal-% shadow rounds, internal loopbacks).
+	if actor := r.Header.Get(autoSourceActorHeader); actor != "" {
+		reqCtx = autoroute.WithOriginActor(reqCtx, actor)
 	}
 
 	if workType := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); workType != "" {
@@ -391,58 +436,85 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 	// Record the selection for the feedback loop. IDs and numbers only — no
 	// prompt or conversation content (see telemetry.AutoSelection). Best-effort,
 	// non-blocking: the async writer drops on a full queue rather than stalling.
-	recordAutoSelection(r, sessionID, decision)
+	//
+	// Pass the wire we already built (it carries wire.signals) — re-deriving a
+	// fresh wire here loses the signals, and ExtractStructuredFeatures would
+	// then compute every bucket from empty prompts (language=unknown, xs,
+	// constant content_hash), leaving the training columns useless.
+	recordAutoSelectionFromWire(r, sessionID, wire)
 
 	return rewritten, wire, false
 }
 
-// recordAutoSelection enqueues one auto_route_selections row from a Decision.
-//
-// MEDIUM-6 fix: the Explore flag is recorded here (deterministically, by
-// hashing the same requestID with the same ratio the scoring path used) so
-// the P3 acceptance criterion — applied-group reward vs explore-group reward —
-// has an observable explore arm. Without this, llmgw_autoroute_explore_total is
-// flat-zero and the shadow/rollout split is invisible.
-//
-// canonical_id and tenant_id are not set here — the settle worker backfills
-// them from request_logs_hot (see CRITICAL-2 Fix A). Storing the canonical
-// *name* now keeps the row useful even if the id is never resolved.
-func recordAutoSelection(r *http.Request, sessionID string, decision *autoroute.Decision) {
-	requestID := r.Header.Get("X-Request-Id")
-
-	var composite, affinity float64
-	var affinityApplied, explore bool
-	winnerRank := 1
-	for i, c := range decision.CandidatesTopN {
-		if c.Candidate.CanonicalName == decision.ChosenModel {
-			winnerRank = i + 1
-			composite = c.Breakdown.Composite
-			affinity = c.Breakdown.Affinity
-			affinityApplied = c.Breakdown.AffinityApplied
-			explore = c.Breakdown.Explore
-			break
-		}
+// recordAutoSelectionFromWire is the protocol-neutral selection sink used by
+// non-chat handlers after their final gateway session has been resolved. The
+// wire carries the same IDs, decision snapshot, and process-local winner
+// metrics as the originating Decision, without retaining prompt content.
+func recordAutoSelectionFromWire(r *http.Request, sessionID string, wire *autoRouteDecision) {
+	if r == nil || wire == nil {
+		return
 	}
-	// If the winner is not in CandidatesTopN (pin/promote / cache-reuse path),
-	// composite stays 0 and the row records what actually happened via
-	// candidate_rank>1 and fallback_used.
+	telemetry.WriteAutoSelection(buildAutoSelection(r, sessionID, wire))
+}
 
-	telemetry.WriteAutoSelection(telemetry.AutoSelection{
-		RequestID:       requestID,
-		SessionID:       sessionID,
-		TaskID:          sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id")),
-		TaskType:        string(decision.TaskType),
-		Profile:         string(decision.Profile),
-		Classifier:      decision.Classifier,
-		Confidence:      decision.Confidence,
-		ChosenModel:     decision.ChosenModel,
-		CandidateRank:   winnerRank,
-		CompositeScore:  composite,
-		AffinityScore:   affinity,
-		AffinityApplied: affinityApplied,
-		Explore:         explore,
-		FallbackUsed:    decision.FallbackUsed,
-	})
+// buildAutoSelection translates the resolved wire into a telemetry row. The
+// structured features MUST be derived from wire.signals — the signals the
+// decider actually saw. Deriving them from a fresh/zero-value signals struct
+// yields degenerate training columns (language=unknown, xs buckets, a single
+// content_hash for every request; the 2026-09-07 dataset defect).
+func buildAutoSelection(r *http.Request, sessionID string, wire *autoRouteDecision) telemetry.AutoSelection {
+	// Extract structured features v1 from signals (non-reversible, privacy-safe)
+	features := autoroute.ExtractStructuredFeatures(wire.signals, wire.Profile)
+
+	return telemetry.AutoSelection{
+		RequestID:         r.Header.Get("X-Request-Id"),
+		SessionID:         sessionID,
+		TaskID:            sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id")),
+		TaskType:          wire.TaskType,
+		Profile:           wire.Profile,
+		Classifier:        wire.Classifier,
+		Confidence:        wire.Confidence,
+		ChosenModel:       wire.ChosenModel,
+		CandidateRank:     maxInt(wire.selectionCandidateRank, 1),
+		CompositeScore:    wire.selectionCompositeScore,
+		AffinityScore:     wire.selectionAffinityScore,
+		AffinityApplied:   wire.selectionAffinityApplied,
+		Explore:           wire.selectionExplore,
+		FallbackUsed:      wire.FallbackUsed,
+		ExperimentID:      wire.ExperimentID,
+		Treatment:         string(wire.Treatment),
+		AssignmentVersion: wire.AssignmentVersion,
+		AssignmentKeyHash: wire.AssignmentKeyHash,
+		// Structured features v1 (privacy-safe, non-reversible)
+		DetectedLanguage:       features.DetectedLanguage,
+		PromptLengthBucket:     features.PromptLengthBucket,
+		ContextLengthBucket:    features.ContextLengthBucket,
+		TurnCountBucket:        features.TurnCountBucket,
+		HasCodeIndicator:       features.HasCodeIndicator,
+		HasMathIndicator:       features.HasMathIndicator,
+		HasTableIndicator:      features.HasTableIndicator,
+		HasMultimediaIndicator: features.HasMultimediaIndicator,
+		IntentCategory:         features.IntentCategory,
+		DomainHint:             features.DomainHint,
+		ComplexityBucket:       features.ComplexityBucket,
+		LatencySensitive:       features.LatencySensitive,
+		CostSensitive:          features.CostSensitive,
+		FeatureVersion:         features.FeatureVersion,
+		ContentHash:            features.ContentHash,
+		// R50 (migration 731): role-route attribution — flag-off 时三值皆空
+		//（wire 只在 flag on 时透出 SessionRole/TaskKind，RoutingSource 仅
+		// role_route 命中时非空），旧行为字节不变。
+		SessionRole:   wire.SessionRole,
+		TaskKind:      wire.TaskKind,
+		RoutingSource: wire.RoutingSource,
+	}
+}
+
+func maxInt(value, fallback int) int {
+	if value < 1 {
+		return fallback
+	}
+	return value
 }
 
 // rewriteBodyWithModel produces a copy of the body with the model field
@@ -482,13 +554,24 @@ func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
 		FilterReasons:       d.FilterReasons,
 		CacheReused:         d.CacheReused,
 		FallbackUsed:        d.FallbackUsed,
+		ExperimentID:        d.ExperimentID,
+		Treatment:           d.Treatment,
+		AssignmentVersion:   d.AssignmentVersion,
+		AssignmentKeyHash:   d.AssignmentKeyHash,
 		EmbeddingShadowTask: d.EmbeddingShadowTask,
+		// R48: 仅非空时透出，flag-off wire 字节不变。
+		SessionRole: d.SessionRole,
+		TaskKind:    d.TaskKind,
+	}
+	// R48: routing_source 仅 role_route 命中时出现在 wire（见字段注释）。
+	if d.RoutingSource == "role_route" {
+		wire.RoutingSource = d.RoutingSource
 	}
 	if d.EmbeddingShadowTask != "" {
 		similarity := d.EmbeddingShadowSimilarity
 		wire.EmbeddingShadowSimilarity = &similarity
 	}
-	for _, c := range d.CandidatesTopN {
+	for i, c := range d.CandidatesTopN {
 		wire.CandidatesTop3 = append(wire.CandidatesTop3, autoRouteCandidate{
 			Model:          c.Candidate.CanonicalName,
 			Score:          c.Breakdown.Composite,
@@ -502,6 +585,13 @@ func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
 			Reliability:    c.Breakdown.Reliability,
 			RouteTier:      c.Breakdown.RouteTier,
 		})
+		if c.Candidate.CanonicalName == d.ChosenModel {
+			wire.selectionCandidateRank = i + 1
+			wire.selectionCompositeScore = c.Breakdown.Composite
+			wire.selectionAffinityScore = c.Breakdown.Affinity
+			wire.selectionAffinityApplied = c.Breakdown.AffinityApplied
+			wire.selectionExplore = c.Breakdown.Explore
+		}
 	}
 	return wire
 }
@@ -538,6 +628,33 @@ func writeAutoDecisionHeader(w http.ResponseWriter, wire *autoRouteDecision) {
 		return
 	}
 	w.Header().Set(autoHeaderName, string(b))
+}
+
+// autoDecisionTrace renders a compact decision_trace projection of the
+// auto-route decision wire, for routing_decision_log.decision_trace on
+// auto-route successes (the executor Trace is only built on routing
+// failures, which left the column an empty object in production and made
+// fallback_used/task_type unobservable via SQL — 2026-09-14 audit O2).
+// Returns nil when the wire JSON does not parse; the column then stays NULL.
+func autoDecisionTrace(wireJSON []byte) json.RawMessage {
+	var wire autoRouteDecision
+	if err := json.Unmarshal(wireJSON, &wire); err != nil {
+		return nil
+	}
+	b, err := json.Marshal(map[string]any{
+		"source":               "auto_route",
+		"task_type":            wire.TaskType,
+		"fallback_used":        wire.FallbackUsed,
+		"confidence":           wire.Confidence,
+		"classifier":           wire.Classifier,
+		"chosen_model":         wire.ChosenModel,
+		"chosen_raw_model":     wire.ChosenRawModel,
+		"chosen_credential_id": wire.ChosenCredID,
+	})
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // SetAutoRoute wires the autoroute decider. Call from main.go at startup.

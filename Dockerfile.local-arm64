@@ -5,7 +5,7 @@
 # This avoids pulling a multi-GB builder image and cross-toolchain issues.
 #
 # Prerequisites (run on host before docker build):
-#   CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=vendor -ldflags="-s -w" \
+#   CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -mod=vendor -ldflags="-s -w" \
 #     -o .build-local/llm-gateway-go ./cmd/gateway
 #   cd web && npm ci && npm run build && cd ..
 

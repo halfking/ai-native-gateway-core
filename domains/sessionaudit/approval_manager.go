@@ -34,10 +34,6 @@ var ErrNotFound = errors.New("sessionaudit: approval not found")
 // ErrAlreadyDecided 重复审批请求被拒绝。
 var ErrAlreadyDecided = errors.New("sessionaudit: approval already decided")
 
-// ErrResumeLeaseLost indicates that a resume owner was superseded or its
-// lease expired before it could persist a result.
-var ErrResumeLeaseLost = errors.New("sessionaudit: approval resume lease lost")
-
 // ApprovalDBTX 是 ApprovalManager 所依赖的最小 DB 接口。
 //
 // 同时被 *pgxpool.Pool 和 pgxmock.PgxPoolIface 实现（pgxmock 是
@@ -54,6 +50,14 @@ const (
 	TimeoutActionReject  TimeoutAction = iota // 超时自动拒绝（默认，当前行为）
 	TimeoutActionApprove                      // 超时自动批准
 )
+
+// String 返回动作的配置字面量，用于日志留痕。
+func (a TimeoutAction) String() string {
+	if a == TimeoutActionApprove {
+		return "auto_approve"
+	}
+	return "reject"
+}
 
 // ApprovalManager 审批流程管理器。
 type ApprovalManager struct {
@@ -81,7 +85,7 @@ func (m *ApprovalManager) WithTimeoutAction(action TimeoutAction) *ApprovalManag
 
 // Create 创建审批记录。
 //
-// 在事务内先 `SET LOCAL app.current_tenant = req.TenantID` 触发 RLS，
+// 在事务内先把 app.current_tenant 设为 req.TenantID 触发 RLS，
 // 然后插入。返回新生成的 UUID。
 func (m *ApprovalManager) Create(ctx context.Context, req *ApprovalRequest) (string, error) {
 	if req == nil {
@@ -92,12 +96,6 @@ func (m *ApprovalManager) Create(ctx context.Context, req *ApprovalRequest) (str
 	}
 	if req.SessionID == "" || req.RequestID == "" {
 		return "", errors.New("sessionaudit: session_id and request_id required")
-	}
-	if req.DetectResult == nil || req.Snapshot == nil {
-		return "", errors.New("sessionaudit: detect result and snapshot required")
-	}
-	if req.Snapshot.TenantID != req.TenantID || req.Snapshot.SessionID != req.SessionID || req.Snapshot.RequestID != req.RequestID {
-		return "", errors.New("sessionaudit: snapshot identity mismatch")
 	}
 
 	detectResultJSON, err := json.Marshal(req.DetectResult)
@@ -121,6 +119,9 @@ func (m *ApprovalManager) Create(ctx context.Context, req *ApprovalRequest) (str
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// string() + ::text::jsonb (not []byte): the pool forces pgx
+	// SimpleProtocol, which binds []byte as bytea hex and any jsonb cast
+	// then fails with 22P02 (doc §3.2; internal/dbx/jsonb.go).
 	_, err = tx.Exec(ctx, `
 		INSERT INTO approval_queue (
 			id, session_id, tenant_id, request_id,
@@ -144,7 +145,7 @@ func (m *ApprovalManager) Create(ctx context.Context, req *ApprovalRequest) (str
 // 二次比对行 tenant_id。两层防御都失败才会返回数据。
 //
 // expectedTenantID 空字符串 = super_admin 跨租户访问：
-//   - 事务内 SET LOCAL app.current_role='super_admin' 让 RLS bypass
+//   - 事务内 set_config('app.current_role','super_admin', is_local) 让 RLS bypass
 //   - 应用层不比对 tenant_id
 func (m *ApprovalManager) GetForTenant(ctx context.Context, approvalID, expectedTenantID string) (*ApprovalRecord, error) {
 	return m.getWithTx(ctx, approvalID, expectedTenantID)
@@ -208,189 +209,6 @@ func (m *ApprovalManager) getWithTx(ctx context.Context, approvalID, expectedTen
 		return nil, fmt.Errorf("commit read tx: %w", err)
 	}
 	return &record, nil
-}
-
-// ClaimResume atomically claims an approved approval for one resume worker.
-// A running claim can be taken over only after its lease expires. The claim
-// transaction returns the snapshot needed by the caller, so no unlocked
-// read-to-call window remains.
-func (m *ApprovalManager) ClaimResume(ctx context.Context, approvalID, tenantID, owner string, leaseUntil time.Time) (*ResumeClaim, error) {
-	if approvalID == "" || owner == "" {
-		return nil, errors.New("sessionaudit: approval resume id and owner required")
-	}
-	if !leaseUntil.After(time.Now()) {
-		return nil, errors.New("sessionaudit: approval resume lease must be future")
-	}
-
-	tx, err := beginTenantWriteTx(ctx, m.pool, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-
-	var record ApprovalRecord
-	var detectJSON, snapshotJSON []byte
-	var approvedBy, reason *string
-	var approvedAt *time.Time
-	var resumeState string
-	var currentOwner *string
-	var currentLease *time.Time
-	var fencingToken int64
-	row := tx.QueryRow(ctx, `
-		SELECT id, session_id, tenant_id, request_id,
-		       detect_result, snapshot, status, approved_by, approved_at, reason,
-		       created_at, expires_at, resume_state, resume_owner,
-		       resume_lease_until, resume_fencing_token
-		FROM approval_queue
-		WHERE id = $1
-		FOR UPDATE
-	`, approvalID)
-	if err := row.Scan(
-		&record.ID, &record.SessionID, &record.TenantID, &record.RequestID,
-		&detectJSON, &snapshotJSON, &record.Status, &approvedBy, &approvedAt,
-		&reason, &record.CreatedAt, &record.ExpiresAt, &resumeState,
-		&currentOwner, &currentLease, &fencingToken,
-	); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		return nil, fmt.Errorf("lock approval resume row: %w", err)
-	}
-	if tenantID != "" && record.TenantID != tenantID {
-		return nil, ErrTenantMismatch
-	}
-	if approvedBy != nil {
-		record.ApprovedBy = *approvedBy
-	}
-	if approvedAt != nil {
-		record.ApprovedAt = approvedAt
-	}
-	if reason != nil {
-		record.Reason = *reason
-	}
-	if err := json.Unmarshal(detectJSON, &record.DetectResult); err != nil {
-		return nil, fmt.Errorf("unmarshal resume detect result: %w", err)
-	}
-	if err := json.Unmarshal(snapshotJSON, &record.Snapshot); err != nil {
-		return nil, fmt.Errorf("unmarshal resume snapshot: %w", err)
-	}
-
-	if record.Status != ApprovalApproved {
-		return &ResumeClaim{Record: &record, ResumeState: string(resumeState)}, nil
-	}
-	if resumeState == "completed" {
-		return &ResumeClaim{Record: &record, ResumeState: resumeState, AlreadyDone: true}, nil
-	}
-	if resumeState == "running" && currentLease != nil && currentLease.After(time.Now()) {
-		return &ResumeClaim{Record: &record, Owner: derefString(currentOwner), FencingToken: fencingToken, ResumeState: resumeState, AlreadyRunning: true}, nil
-	}
-
-	newToken := fencingToken + 1
-	tag, err := tx.Exec(ctx, `
-		UPDATE approval_queue
-		SET resume_state = 'running',
-		    resume_owner = $2,
-		    resume_lease_until = $3,
-		    resume_fencing_token = $4,
-		    resume_started_at = COALESCE(resume_started_at, NOW()),
-		    resume_error = NULL
-		WHERE id = $1
-		  AND status = 'approved'
-		  AND (resume_state IN ('idle', 'failed')
-		       OR (resume_state = 'running' AND (resume_lease_until IS NULL OR resume_lease_until < NOW())))
-		  AND ($5 = '' OR tenant_id = $5)
-	`, approvalID, owner, leaseUntil, newToken, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("claim approval resume: %w", err)
-	}
-	if tag.RowsAffected() != 1 {
-		return nil, ErrResumeLeaseLost
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit approval resume claim: %w", err)
-	}
-	return &ResumeClaim{Record: &record, Owner: owner, FencingToken: newToken, ResumeState: "running"}, nil
-}
-
-func derefString(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
-}
-
-// RenewResumeLease extends a live claim and rejects stale owners.
-func (m *ApprovalManager) RenewResumeLease(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64, leaseUntil time.Time) error {
-	return m.updateResumeLease(ctx, approvalID, tenantID, owner, fencingToken, leaseUntil)
-}
-
-func (m *ApprovalManager) updateResumeLease(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64, leaseUntil time.Time) error {
-	if !leaseUntil.After(time.Now()) {
-		return errors.New("sessionaudit: approval resume lease must be future")
-	}
-	tx, err := beginTenantWriteTx(ctx, m.pool, tenantID)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	tag, err := tx.Exec(ctx, `
-		UPDATE approval_queue
-		SET resume_lease_until = $4
-		WHERE id = $1 AND status = 'approved' AND resume_state = 'running'
-		  AND resume_owner = $2 AND resume_fencing_token = $3
-		  AND resume_lease_until >= NOW()
-		  AND ($5 = '' OR tenant_id = $5)
-	`, approvalID, owner, fencingToken, leaseUntil, tenantID)
-	if err != nil {
-		return fmt.Errorf("renew approval resume lease: %w", err)
-	}
-	if tag.RowsAffected() != 1 {
-		return ErrResumeLeaseLost
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit approval resume lease: %w", err)
-	}
-	return nil
-}
-
-// CompleteResume records successful execution only for the current owner.
-func (m *ApprovalManager) CompleteResume(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64) error {
-	return m.finishResume(ctx, approvalID, tenantID, owner, fencingToken, "completed", "")
-}
-
-// FailResume records a retryable failed execution only for the current owner.
-func (m *ApprovalManager) FailResume(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64, resumeErr string) error {
-	return m.finishResume(ctx, approvalID, tenantID, owner, fencingToken, "failed", resumeErr)
-}
-
-func (m *ApprovalManager) finishResume(ctx context.Context, approvalID, tenantID, owner string, fencingToken int64, state, resumeErr string) error {
-	tx, err := beginTenantWriteTx(ctx, m.pool, tenantID)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	tag, err := tx.Exec(ctx, `
-		UPDATE approval_queue
-		SET resume_state = $4,
-		    resume_owner = NULL,
-		    resume_lease_until = NULL,
-		    resume_completed_at = CASE WHEN $4 = 'completed' THEN NOW() ELSE resume_completed_at END,
-		    resume_error = NULLIF($5, '')
-		WHERE id = $1 AND status = 'approved' AND resume_state = 'running'
-		  AND resume_owner = $2 AND resume_fencing_token = $3
-		  AND resume_lease_until >= NOW()
-		  AND ($6 = '' OR tenant_id = $6)
-	`, approvalID, owner, fencingToken, state, resumeErr, tenantID)
-	if err != nil {
-		return fmt.Errorf("finish approval resume: %w", err)
-	}
-	if tag.RowsAffected() != 1 {
-		return ErrResumeLeaseLost
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit approval resume result: %w", err)
-	}
-	return nil
 }
 
 // List 查询审批列表（带租户过滤）。
@@ -494,7 +312,7 @@ func (m *ApprovalManager) List(ctx context.Context, filter *ApprovalFilter) ([]*
 // Approve 批准审批（带租户校验）。
 //
 // callerTenantID 非空时，应用层比对行 tenant_id 与 caller tenant。
-// 同时事务内 SET LOCAL app.current_tenant 触发 RLS。RLS 与应用层
+// 同时事务内设置 app.current_tenant 触发 RLS。RLS 与应用层
 // 任一拦截都不会跨租户更新。
 func (m *ApprovalManager) Approve(ctx context.Context, approvalID, callerTenantID, approvedBy, reason string) error {
 	return m.decide(ctx, approvalID, callerTenantID, approvedBy, reason, ApprovalApproved)
@@ -556,56 +374,112 @@ func (m *ApprovalManager) decide(ctx context.Context, approvalID, callerTenantID
 	return nil
 }
 
+// approvalTimeoutBatchSize caps a single MarkTimeout batch. The sweep runs
+// under the worker's 10s deadline, and the GUC bug (fixed 2026-09-20) kept
+// every sweep failing since R41 — so the first working sweep faces the whole
+// accumulated backlog. A single all-rows UPDATE either trips the deadline
+// (whole tx rolls back, zero progress, retry loop forever) or queues behind
+// a concurrent decide() row lock. Batches commit independently (R49 audit P1).
+const approvalTimeoutBatchSize = 500
+
 // MarkTimeout 标记超时的审批为 timeout / auto-approved 状态。
 //
 // 行为由 m.timeoutAction 控制：
 //   - TimeoutActionReject (默认): 标记为 timeout（自动拒绝）
 //   - TimeoutActionApprove: 自动批准，approved_by 设为 "system:timeout"
 //
-// 仅由可信后台 worker 调用；它在 super_admin 事务中执行，因此可跨租户处理超时行。
+// 仅由后台 worker 调用，因此不上 RLS（worker 在 superadmin 上下文）。
+//
+// RLS Phase 2 适配 (R41 P1-6): approval_queue policy 含
+// `current_role=super_admin OR tenant_id=current_tenant` 分支。注释与原
+// 实现不符——此前裸 pool.Exec 实际未设任何 GUC，autocommit 下无 tenant 上下文
+// 走 NULLIF→'default' fallback，降权后非 default 租户的 pending 永不被超时
+// 终结。修法：包显式事务 + setSuperAdminGUC，与同包 beginSuperAdminTx
+// 风格一致（policy role 分支即满足）。
+//
+// R49 修订（2026-09-20 审计 P1）：FOR UPDATE SKIP LOCKED + LIMIT 分批，每批
+// 独立事务循环提交——存量积压的首个 sweep 增量推进而非全量单语句（10s 预算
+// 内跑不完即整体回滚、一行未清、60s 后面对同一全集死循环）；SKIP LOCKED
+// 避免与并发 decide() 的行锁互拖。
 func (m *ApprovalManager) MarkTimeout(ctx context.Context) (int, error) {
+	total := 0
+	for {
+		n, err := m.markTimeoutBatch(ctx)
+		if err != nil {
+			return total, err
+		}
+		total += n
+		if n < approvalTimeoutBatchSize {
+			return total, nil
+		}
+	}
+}
+
+func (m *ApprovalManager) markTimeoutBatch(ctx context.Context) (int, error) {
 	var sql string
 	switch m.timeoutAction {
 	case TimeoutActionApprove:
 		sql = `
-			UPDATE approval_queue
+			WITH expired AS (
+				SELECT id FROM approval_queue
+				WHERE status = $2 AND expires_at < now()
+				ORDER BY expires_at
+				LIMIT $3
+				FOR UPDATE SKIP LOCKED
+			)
+			UPDATE approval_queue q
 			SET status = $1,
 			    approved_by = 'system:timeout',
 			    approved_at = NOW(),
-			    reason = 'Auto-approved: timeout after ' || extract(epoch from (now() - created_at)) || ' seconds'
-			WHERE status = $2 AND expires_at < now()
+			    reason = 'Auto-approved: timeout after ' || extract(epoch from (now() - q.created_at)) || ' seconds'
+			FROM expired
+			WHERE q.id = expired.id
 		`
 	default:
 		sql = `
-			UPDATE approval_queue
+			WITH expired AS (
+				SELECT id FROM approval_queue
+				WHERE status = $2 AND expires_at < now()
+				ORDER BY expires_at
+				LIMIT $3
+				FOR UPDATE SKIP LOCKED
+			)
+			UPDATE approval_queue q
 			SET status = $1,
-			    reason = 'Auto-rejected: timeout after ' || extract(epoch from (now() - created_at)) || ' seconds'
-			WHERE status = $2 AND expires_at < now()
+			    approved_by = 'system:timeout',
+			    approved_at = NOW(),
+			    reason = 'Auto-rejected: timeout after ' || extract(epoch from (now() - q.created_at)) || ' seconds'
+			FROM expired
+			WHERE q.id = expired.id
 		`
 	}
 	target := ApprovalApproved
 	if m.timeoutAction != TimeoutActionApprove {
 		target = ApprovalTimeout
 	}
-	tx, err := beginTenantWriteTx(ctx, m.pool, "")
+	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
+		return 0, fmt.Errorf("begin mark timeout tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := setSuperAdminGUC(ctx, tx); err != nil {
 		return 0, err
 	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	tag, err := tx.Exec(ctx, sql, target, ApprovalPending)
+	tag, err := tx.Exec(ctx, sql, target, ApprovalPending, approvalTimeoutBatchSize)
 	if err != nil {
 		return 0, fmt.Errorf("mark timeout: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit timeout sweep: %w", err)
+		return 0, fmt.Errorf("commit mark timeout: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
 }
 
-// setTenantGUC 在事务内 SET LOCAL app.current_tenant。
-// 单引号经过转义防止 SQL 注入。
+// setTenantGUC 在事务内把 app.current_tenant 设为租户 ID。
+// set_config(..., is_local := true) 与 SET LOCAL 语义等价，且走参数绑定，
+// 无需手工转义单引号。
 //
-// tenantID 为空字符串（super_admin 调用）→ 跳过 SET LOCAL，让 RLS policy
+// tenantID 为空字符串（super_admin 调用）→ 跳过设置，让 RLS policy
 // 默认按 NULLIF→'default' 过滤；调用方需同时设 app.current_role=
 // 'super_admin' 才能跨租户 bypass（见 setSuperAdminGUC）。
 func setTenantGUC(ctx context.Context, tx pgx.Tx, tenantID string) error {
@@ -613,26 +487,21 @@ func setTenantGUC(ctx context.Context, tx pgx.Tx, tenantID string) error {
 		// super_admin 跨租户调用：不设 tenant GUC
 		return nil
 	}
-	escaped := ""
-	for _, r := range tenantID {
-		if r == '\'' {
-			escaped += "''"
-		} else {
-			escaped += string(r)
-		}
-	}
-	_, err := tx.Exec(ctx, "SET LOCAL app.current_tenant = '"+escaped+"'")
-	if err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", tenantID); err != nil {
 		return fmt.Errorf("set tenant GUC: %w", err)
 	}
 	return nil
 }
 
-// setSuperAdminGUC 在事务内设置 SET LOCAL app.current_role='super_admin'，
+// setSuperAdminGUC 在事务内把 app.current_role 设为 'super_admin'，
 // 让 RLS policy bypass tenant 过滤（见 migrations/120_session_audit.sql）。
+//
+// 不能写成 SET LOCAL app.current_role=...：current_role 是 PostgreSQL 保留
+// 字，不能作为 customized-option 名的组成（252 生产日志实证每次调用都
+// syntax error at or near "current_role"，R41 起全部 super_admin 路径因此
+// 失败）。set_config 不经过 SET 语法解析，没有该限制。
 func setSuperAdminGUC(ctx context.Context, tx pgx.Tx) error {
-	_, err := tx.Exec(ctx, "SET LOCAL app.current_role = 'super_admin'")
-	if err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_role', 'super_admin', true)"); err != nil {
 		return fmt.Errorf("set role GUC: %w", err)
 	}
 	return nil

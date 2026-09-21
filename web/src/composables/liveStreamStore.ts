@@ -11,6 +11,7 @@ import { reactive, computed, ref, type ComputedRef } from 'vue'
 import { authBearer } from '../store'
 import type { RouteIncidentUpdate } from '../types/routeIncident'
 import { usePersistedValue } from './usePersistedValue'
+import { applyIncidentUpdate } from './useRouteIncidents'
 
 export type LiveStatus = 'in_progress' | 'success' | 'failure' | 'rate_limited'
 
@@ -30,6 +31,10 @@ export interface LiveRequest {
   prompt_tokens?: number | null
   completion_tokens?: number | null
   total_tokens?: number | null
+  // 2026-09-18: 缓存 token（request_logs.cache_read/write_tokens 同口径）。
+  // null/缺省 = 未上报，渲染层禁止用 0 冒充。
+  cache_read_tokens?: number | null
+  cache_write_tokens?: number | null
   cost_usd?: number | null
   error_kind?: string | null
   failure_stage?: string | null  // "gateway" | "upstream" — failure origin
@@ -115,12 +120,17 @@ export interface LiveStreamTile {
   model: string
   vendor: string
   provider: string
+  credential_id?: number
+  credential_label?: string
   status: string
   error_kind?: string | null
   latency_ms?: number | null
   cost_usd?: number | null
   prompt_tokens?: number | null
   completion_tokens?: number | null
+  cache_read_tokens?: number | null
+  cache_write_tokens?: number | null
+  gw_session_id?: string
   is_probe?: boolean
   probe_origin?: string
   probe_attempt?: number
@@ -131,7 +141,7 @@ export interface LiveStreamTile {
 export interface LiveStreamLane {
   id: string
   name: string
-  dimension: 'vendor' | 'provider' | 'model'
+  dimension: 'credential' | 'vendor' | 'provider' | 'model'
   requests: LiveStreamTile[]
   stats: LiveStreamStats
   isOthers: boolean
@@ -145,17 +155,17 @@ export interface LiveStreamLegendItem {
 
 export interface LiveStreamSnapshot {
   summary: LiveStreamStats
-  detail_dimensions: Record<'vendor' | 'provider' | 'model', LiveStreamLane[]>
-  dimensions: Record<'vendor' | 'provider' | 'model', LiveStreamLane[]>
-  dimension_legends: Record<'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
+  detail_dimensions?: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLane[]>
+  dimensions: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLane[]>
+  dimension_legends: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
   status_legends: LiveStreamLegendItem[]
   latest_request_ts?: string
 }
 
 export interface LiveStreamDelta {
   summary: LiveStreamStats
-  changed_lanes: Record<'vendor' | 'provider' | 'model', LiveStreamLane[]>
-  dimension_legends: Record<'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
+  changed_lanes: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLane[]>
+  dimension_legends: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
   status_legends: LiveStreamLegendItem[]
 }
 
@@ -268,6 +278,10 @@ export const ACTIONS_PER_REQUEST_CAP = 50
 export const ACTIONS_GLOBAL_CAP = 2000
 export const CHILDREN_PER_PARENT_CAP = 50
 export const CHILDREN_GLOBAL_CAP = 2000
+// Per-lane merge cap (frontend). Backend admin/live_stream_redis_store.go
+// keeps a separate LiveStreamLaneVisibleLimit = 100 for the redis snapshot.
+// Raised from 20 to 50 to match the 24号 §3 wider swim-lane viewport.
+export const LANE_VISIBLE_LIMIT = 50
 
 let actionsTotal = 0
 let childrenTotal = 0
@@ -281,12 +295,14 @@ const visibilityState = reactive({
 
 let needsFullRefresh = false
 
-// Forward declaration - actual implementation is below
-let _requestSnapshotRefresh: () => void = () => {}
+// Visibility change handler (stored so we can remove it properly)
+let visibilityChangeHandler: (() => void) | null = null
 
 // Track page visibility changes
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => {
+function installVisibilityListener() {
+  if (typeof document === 'undefined' || visibilityChangeHandler) return
+  
+  visibilityChangeHandler = () => {
     const wasHidden = !visibilityState.isVisible
     visibilityState.isVisible = !document.hidden
 
@@ -311,7 +327,15 @@ if (typeof document !== 'undefined') {
       visibilityState.lastVisibleAt = Date.now()
       console.log('[LiveStream] Page hidden, marking updates as missed')
     }
-  })
+  }
+  
+  document.addEventListener('visibilitychange', visibilityChangeHandler)
+}
+
+function removeVisibilityListener() {
+  if (typeof document === 'undefined' || !visibilityChangeHandler) return
+  document.removeEventListener('visibilitychange', visibilityChangeHandler)
+  visibilityChangeHandler = null
 }
 
 // Vue auto-unwraps `ref` and `reactive` proxies in templates.
@@ -393,17 +417,18 @@ const sseEndpointPersisted = usePersistedValue<string>(
 )
 
 function buildUrl(endpoint: string): string {
-  let url = endpoint
-  try {
-    const token = authBearer()
-    if (token) {
-      const sep = url.includes('?') ? '&' : '?'
-      url = `${url}${sep}token=${encodeURIComponent(token)}`
-    }
-  } catch {
-    /* SSR or storage disabled — fall back to cookie auth */
-  }
-  return url
+  // 2026-08-26 (P1-7 fix): do NOT append a `?token=` query parameter.
+  // Anything in the URL lives in browser history, server access logs,
+  // and proxy logs — that is a long-lived JWT / api-key exposure.
+  // The backend already accepts the HttpOnly `llmgw_session` cookie
+  // for EventSource auth (admin/auth_cookie_helpers.go), and the
+  // EventSource is opened with `credentials: 'include'` below, so
+  // the browser will attach the cookie automatically. Legacy api-key
+  // users still work because their Authorization: Bearer header is
+  // ignored by EventSource (it cannot set custom headers) — they must
+  // rely on the cookie path, which admin/auth.go already supports via
+  // ExtractBearerOrCookieToken.
+  return endpoint
 }
 
 // 用户层想要使用的最终 URL（可能被管理员通过弹窗覆盖）
@@ -449,9 +474,17 @@ let maxSeenTs = ''
 
 let es: EventSource | null = null
 let refCount = 0
+let connectionGeneration = 0
+let resizeHandler: (() => void) | null = null
 
 let onEvictCb: ((id: string) => void) | null = null
 const terminalListeners = new Set<(req: LiveRequest) => void>()
+// 2026-09-01 (P1 audit fix): onEvictCb was a single-callback slot — every
+// component that called setOnRequestEvicted() silently overwrote the
+// previous one, leaving dangling "should be cleaned up" callbacks on
+// unmounted components. Promote to a Set so multiple consumers can
+// coexist and each useLiveStream() cleanup only removes its own callback.
+const evictListeners = new Set<(id: string) => void>()
 
 function notifyTerminalRequest(req: LiveRequest) {
   if (req.type === 'idle_marker' || !req.request_id) return
@@ -570,14 +603,17 @@ function applyStageToRequest(requestId: string, action: ActionEvent) {
   }
   const snapshot = liveStreamState.snapshot
   if (!snapshot) return
-  for (const dim of ['vendor', 'provider', 'model'] as const) {
+  for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
     for (const lane of snapshot.dimensions[dim] || []) {
       const tile = lane.requests.find((item) => item.request_id === requestId)
       if (tile) Object.assign(tile, patch)
     }
-    for (const lane of snapshot.detail_dimensions[dim] || []) {
-      const tile = lane.requests.find((item) => item.request_id === requestId)
-      if (tile) Object.assign(tile, patch)
+    // Optional backward compatibility: detail_dimensions may not exist in new snapshots
+    if (snapshot.detail_dimensions?.[dim]) {
+      for (const lane of snapshot.detail_dimensions[dim]) {
+        const tile = lane.requests.find((item) => item.request_id === requestId)
+        if (tile) Object.assign(tile, patch)
+      }
     }
   }
 }
@@ -719,6 +755,7 @@ function trimOldest() {
   if (dropped.type !== 'idle_marker' && dropped.request_id) {
     idIndex.delete(dropped.request_id)
     if (onEvictCb) onEvictCb(dropped.request_id)
+    for (const fn of evictListeners) fn(dropped.request_id)
   }
 }
 
@@ -741,6 +778,7 @@ function pushOrQueue(item: LiveRequest) {
         if (d.type !== 'idle_marker' && d.request_id) {
           idIndex.delete(d.request_id)
           if (onEvictCb) onEvictCb(d.request_id)
+          for (const fn of evictListeners) fn(d.request_id)
         }
       }
     }
@@ -798,9 +836,12 @@ function applyInitialData(items: LiveRequest[]) {
   for (const r of kept) {
     if (r.type !== 'idle_marker' && r.request_id) newIds.add(r.request_id)
   }
-  if (onEvictCb) {
+  if (onEvictCb || evictListeners.size > 0) {
     for (const oldId of idIndex) {
-      if (!newIds.has(oldId)) onEvictCb(oldId)
+      if (!newIds.has(oldId)) {
+        if (onEvictCb) onEvictCb(oldId)
+        for (const fn of evictListeners) fn(oldId)
+      }
     }
   }
   idIndex.clear()
@@ -869,7 +910,7 @@ function handleEnvelope(env: LiveStreamEnvelope) {
 
   if (env.delta) {
     mergeDelta(env.delta)
-    for (const dim of ['vendor', 'provider', 'model'] as const) {
+    for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
       const lanes = env.delta.changed_lanes[dim]
       if (!lanes) continue
       for (const lane of lanes) {
@@ -913,9 +954,7 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     return
   }
   if (env.type === 'incident_update' && env.incident) {
-    void import('./useRouteIncidents').then((mod) => {
-      mod.applyIncidentUpdate(env.incident!)
-    })
+    applyIncidentUpdate(env.incident!)
     return
   }
 }
@@ -999,12 +1038,15 @@ function mergeSnapshotFromServer(incoming: LiveStreamSnapshot) {
     // semantics. The UI contract is the opposite: FIFO, oldest on the left
     // and newest on the right. Normalize the first snapshot too; incremental
     // merges already pass through mergeTilesById below.
-    for (const dim of ['vendor', 'provider', 'model'] as const) {
+    for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
       for (const lane of incoming.dimensions[dim] || []) {
         normalizeLaneTiles(lane)
       }
-      for (const lane of incoming.detail_dimensions[dim] || []) {
-        normalizeLaneTiles(lane)
+      // Optional backward compatibility: detail_dimensions may not exist
+      if (incoming.detail_dimensions?.[dim]) {
+        for (const lane of incoming.detail_dimensions[dim]) {
+          normalizeLaneTiles(lane)
+        }
       }
     }
     liveStreamState.snapshot = incoming
@@ -1013,12 +1055,14 @@ function mergeSnapshotFromServer(incoming: LiveStreamSnapshot) {
   const s = liveStreamState.snapshot
   s.summary = incoming.summary
   s.status_legends = incoming.status_legends
-  for (const dim of ['vendor', 'provider', 'model'] as const) {
+  for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
     if (incoming.dimensions[dim]) {
       if (!s.dimensions[dim]) s.dimensions[dim] = []
       mergeLanesById(s.dimensions[dim], incoming.dimensions[dim])
     }
-    if (incoming.detail_dimensions[dim]) {
+    // Optional backward compatibility: detail_dimensions may not exist in new snapshots
+    if (incoming.detail_dimensions?.[dim]) {
+      if (!s.detail_dimensions) s.detail_dimensions = { credential: [], vendor: [], provider: [], model: [] }
       if (!s.detail_dimensions[dim]) s.detail_dimensions[dim] = []
       mergeLanesById(s.detail_dimensions[dim], incoming.detail_dimensions[dim])
     }
@@ -1040,7 +1084,9 @@ function tilesEqual(a: LiveStreamTile[], b: LiveStreamTile[]): boolean {
       x.status !== y.status ||
       x.model !== y.model ||
       x.vendor !== y.vendor ||
-      x.provider !== y.provider
+      x.provider !== y.provider ||
+      x.credential_id !== y.credential_id ||
+      x.credential_label !== y.credential_label
     ) {
       return false
     }
@@ -1100,23 +1146,24 @@ function mergeDelta(delta: LiveStreamDelta) {
   if (!liveStreamState.snapshot) {
     liveStreamState.snapshot = {
       summary: delta.summary,
-      detail_dimensions: { vendor: [], provider: [], model: [] },
-      dimensions: { vendor: [], provider: [], model: [] },
-      dimension_legends: delta.dimension_legends || { vendor: [], provider: [], model: [] },
+      dimensions: { credential: [], vendor: [], provider: [], model: [] },
+      dimension_legends: delta.dimension_legends || { credential: [], vendor: [], provider: [], model: [] },
       status_legends: delta.status_legends,
     }
   }
   const s = liveStreamState.snapshot
   s.summary = delta.summary
   s.status_legends = delta.status_legends
-  for (const dim of ['vendor', 'provider', 'model'] as const) {
+  for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
     if (delta.changed_lanes[dim]) {
       // mergeLanesById updates in place and preserves lane order so
       // backend rank changes do not reshuffle the whole swim-lane row.
       if (!s.dimensions[dim]) s.dimensions[dim] = []
       mergeLanesById(s.dimensions[dim], delta.changed_lanes[dim])
-      if (!s.detail_dimensions[dim]) s.detail_dimensions[dim] = []
-      mergeLanesById(s.detail_dimensions[dim], delta.changed_lanes[dim])
+      // Optional backward compatibility: maintain detail_dimensions if it exists
+      if (s.detail_dimensions?.[dim]) {
+        mergeLanesById(s.detail_dimensions[dim], delta.changed_lanes[dim])
+      }
     }
     if (delta.dimension_legends && delta.dimension_legends[dim]) {
       if (!s.dimension_legends[dim]) s.dimension_legends[dim] = []
@@ -1216,7 +1263,7 @@ function mergeTilesById(
     const timestamp = (a.timestamp || '').localeCompare(b.timestamp || '')
     return timestamp || (a.request_id || '').localeCompare(b.request_id || '')
   })
-  existing.splice(0, existing.length, ...next.slice(-20))
+  existing.splice(0, existing.length, ...next.slice(-LANE_VISIBLE_LIMIT))
 }
 
 // mergeLegendsByKey is the same idea but for the legend strips —
@@ -1240,18 +1287,18 @@ function mergeLegendsByKey(existing: LiveStreamLegendItem[], incoming: LiveStrea
 }
 
 function openConnection() {
-  if (es) return
-  // Recompute MAX_VISIBLE on resize so the replay buffer stays at 2× viewport.
-  recomputeMaxVisible()
-  const onResize = () => recomputeMaxVisible()
-  window.addEventListener('resize', onResize)
-  // Store reference for cleanup
-  ;(openConnection as any)._resizeHandler = onResize
-
+  if (es || refCount <= 0) return
   if (typeof EventSource === 'undefined') {
     liveStreamState.connection = 'unsupported'
     return
   }
+  const generation = ++connectionGeneration
+  // Recompute MAX_VISIBLE on resize so the replay buffer stays at 2× viewport.
+  recomputeMaxVisible()
+  resizeHandler = () => recomputeMaxVisible()
+  window.addEventListener('resize', resizeHandler)
+  // Install visibility listener when opening connection
+  installVisibilityListener()
   // Browser EventSource cannot set Authorization headers, and the
   // project uses HttpOnly cookies that some reverse-proxy / dev
   // setups do not propagate to the EventSource request (e.g. a
@@ -1263,20 +1310,24 @@ function openConnection() {
   // The backend (admin/live_stream_sse.go) accepts this only as a
   // fallback when neither the Bearer header nor the cookie is set,
   // so the security profile is unchanged.
-  let url = buildUrl(getCustomEndpoint() || ENDPOINT)
+  const url = buildUrl(getCustomEndpoint() || ENDPOINT)
+  let connection: EventSource
   try {
-    es = new EventSource(url, { withCredentials: true })
+    connection = new EventSource(url, { withCredentials: true })
+    es = connection
   } catch (err) {
     console.warn('[liveStream] EventSource construct failed', err)
-    liveStreamState.connection = 'closed'
+    closeConnection()
     return
   }
   liveStreamState.connection = 'connecting'
 
-  es.onopen = () => {
+  connection.onopen = () => {
+    if (es !== connection || connectionGeneration !== generation) return
     liveStreamState.connection = 'open'
   }
-  es.onmessage = (ev) => {
+  connection.onmessage = (ev) => {
+    if (es !== connection || connectionGeneration !== generation) return
     try {
       const env = JSON.parse(ev.data) as LiveStreamEnvelope
       
@@ -1298,8 +1349,9 @@ function openConnection() {
       console.warn('[liveStream] bad envelope', err)
     }
   }
-  es.onerror = () => {
-    if (es && es.readyState === 2) {
+  connection.onerror = () => {
+    if (es !== connection || connectionGeneration !== generation) return
+    if (connection.readyState === 2) {
       liveStreamState.connection = 'closed'
     } else {
       liveStreamState.connection = 'reconnecting'
@@ -1308,15 +1360,18 @@ function openConnection() {
 }
 
 function closeConnection() {
-  if (!es) return
-  try { es.close() } catch { /* ignore */ }
+  const connection = es
   es = null
-  // Remove the correct resize listener reference to prevent leak
-  const handler = (openConnection as any)._resizeHandler
-  if (handler) {
-    window.removeEventListener('resize', handler)
-    delete (openConnection as any)._resizeHandler
+  connectionGeneration += 1
+  if (connection) {
+    try { connection.close() } catch { /* ignore */ }
   }
+  if (resizeHandler) {
+    window.removeEventListener('resize', resizeHandler)
+    resizeHandler = null
+  }
+  // Remove visibility listener when closing connection
+  removeVisibilityListener()
   liveStreamState.connection = 'closed'
 }
 
@@ -1361,8 +1416,10 @@ export function requestSnapshotRefresh() {
     })
 }
 
-// Set the forward reference so the visibility listener can call this
-_requestSnapshotRefresh = requestSnapshotRefresh
+// 2026-09-01 (P2 cleanup): removed _requestSnapshotRefresh forward declaration.
+// The visibility handler used to call this back-reference before the function
+// was defined below; the current implementation inlines closeConnection() +
+// openConnection() directly, so the indirection is dead code.
 
 export function pauseStream() {
   liveStreamState.paused = true
@@ -1391,11 +1448,25 @@ export function resetStream() {
   maxSeenTs = ''
 }
 export function reconnectStream() {
+  if (refCount <= 0) return
   closeConnection()
   openConnection()
 }
-export function setOnRequestEvicted(cb: ((id: string) => void) | null) {
+/**
+ * Register a callback fired whenever a live request_id is evicted from the
+ * frontend replay buffer. Multiple consumers may register simultaneously —
+ * each `useLiveStream()` cleanup only removes its own callback.
+ */
+export function setOnRequestEvicted(cb: ((id: string) => void) | null): () => void {
+  if (!cb) return () => {}
+  evictListeners.add(cb)
+  // Preserve the legacy single-callback slot so existing code paths that read
+  // `onEvictCb` still see the most recent registration.
   onEvictCb = cb
+  return () => {
+    evictListeners.delete(cb)
+    if (onEvictCb === cb) onEvictCb = null
+  }
 }
 
 /** Subscribe to completed requests (success/failure) for board stat deltas. */
@@ -1429,6 +1500,25 @@ export const __testing = {
   clearRequestCredentialIndex,
   resetStream,
   refCount: () => refCount,
+  // Test-only: same as acquireLiveStream() but stubs out the network
+  // handshake so unit tests can exercise the refCount ↔ visibility
+  // listener wiring without spinning up EventSource.
+  acquireForTest: (): (() => void) => {
+    refCount += 1
+    if (refCount === 1) {
+      // Intentionally do NOT call openConnection() — the store keeps
+      // refCount-relative bookkeeping independent of the network state,
+      // which is exactly the property we want to assert here.
+      liveStreamState.connection = 'closed'
+    }
+    return () => {
+      refCount -= 1
+      if (refCount <= 0) {
+        refCount = 0
+        removeVisibilityListener()
+      }
+    }
+  },
   es: () => es,
   MAX_VISIBLE,
   maxSeenTs: () => maxSeenTs,

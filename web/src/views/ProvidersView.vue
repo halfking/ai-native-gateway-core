@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { localeRef } from '../i18n'
 import {
   getProviders, createProvider, updateProvider, toggleProvider,
-  addCredential, deleteCredential, getCatalog, getProviderCredentials,
+  addCredential, deleteCredential, deleteProvider, getCatalog, getProviderCredentials,
   updateCredential, checkProvider, checkCredential, diagnoseProvider,
-  getBackgroundTasksStatus, probeURL, probeProviderURL,
+  getBackgroundTasksStatus, probeURL, probeProviderURL, refreshCredentialBalance,
   type Provider, type CatalogEntry, type ProviderCredential, type CredentialStatus,
   type BackgroundTasksStatus, type CredentialCheckResult, type ProbeURLResult,
+  type RefreshBalanceResponse,
 } from '../api'
+import { ApiError } from '../api/_core'
 import {
   useProviderQualitySummary,
   type QualitySortKey,
@@ -22,10 +25,18 @@ import {
   type QualityGrade,
 } from '../types/quality-api'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
+import { isSuperAdmin } from '../store'
+import { confirmDialog } from '../composables/useConfirmDialog'
+import AppModal from '../components/ui/AppModal.vue'
+import AppDrawer from '../components/ui/AppDrawer.vue'
 
 const { t } = useI18n()
-const pm = (k: string, params?: Record<string, unknown>): string =>
+const pm = (k: string, params?: Record<string,unknown>): string =>
   t(`providers.${k}` as never, params as never)
+
+// 2026-09-04: default 租户 tenant_admin 可浏览列表（只读），新增/删除
+// 供应商仍 super_admin 专属（与后端 ProviderConsoleMiddleware 同口径）。
+const canManageProviders = computed(() => isSuperAdmin())
 
 const providers = ref<Provider[]>([])
 const catalog   = ref<CatalogEntry[]>([])
@@ -37,7 +48,7 @@ const {
   enrichProviders,
   sortProvidersByQuality,
 } = useProviderQualitySummary()
-const qualitySortKey = ref<QualitySortKey>('default')
+const qualitySortKey = ref<QualitySortKey>('usage')
 const qualitySortOptions = computed(() => [
   { value: 'default' as const, label: pm('filter.sortDefault') },
   { value: 'usage' as const, label: pm('filter.sortUsage') },
@@ -447,7 +458,7 @@ async function submitCred() {
 }
 
 async function delCred(p: Provider, credId: number) {
-  if (!confirm(pm('credential.errors.deleteConfirm'))) return
+  if (!(await confirmDialog(pm('credential.errors.deleteConfirm')))) return
   try {
     await deleteCredential(p.id, credId)
     await loadCredentials(p.id)
@@ -506,6 +517,54 @@ function statusBadgeClass(status: string): string {
   return 'badge-gray'
 }
 
+// ── Migration 721 (2026-09-18): on-demand balance refresh + provenance ─────
+// The drawer's usage column shows a ⟳ button next to the balance input. The
+// response carries the fresh API reading which is patched into the local row
+// so the drawer re-renders without a full loadCredentials round-trip.
+const refreshingBalance = ref<Record<number, boolean>>({})
+
+async function refreshBalance(p: Provider, c: ProviderCredential) {
+  if (refreshingBalance.value[c.id]) return
+  refreshingBalance.value = { ...refreshingBalance.value, [c.id]: true }
+  try {
+    const r: RefreshBalanceResponse = await refreshCredentialBalance(p.id, c.id)
+    if (r.success && r.balance_usd != null) {
+      c.balance_usd = r.balance_usd
+      c.balance_source = 'api'
+      c.balance_last_checked_at = r.balance_checked_at ?? new Date().toISOString()
+      c.balance_error = null
+    } else {
+      // Probe failed: keep the previous balance (fail-open, mirrors the
+      // floor guard) and surface the error inline under the input.
+      c.balance_error = r.error ?? pm('credential.row.balanceRefreshFailed')
+    }
+  } catch (e: unknown) {
+    // R42: this branch previously only wrote the dead balanceRefreshError
+    // state (never rendered), so a 400 (vendor exposes no balance API)
+    // looked like a successful refresh. Write the row field that the
+    // template renders in red under the input.
+    if (e instanceof ApiError && e.status === 400) {
+      c.balance_error = pm('credential.row.balanceUnsupported')
+    } else {
+      c.balance_error = e instanceof Error ? e.message : pm('credential.row.balanceRefreshFailed')
+    }
+  } finally {
+    refreshingBalance.value = { ...refreshingBalance.value, [c.id]: false }
+  }
+}
+
+function balanceSourceText(c: ProviderCredential): string {
+  if (c.balance_source === 'manual') return pm('credential.row.balanceSourceManual')
+  if (c.balance_source === 'api') return pm('credential.row.balanceSourceApi')
+  return ''
+}
+
+function balanceCurrencySymbol(c: ProviderCredential): string {
+  const cur = (c.balance_currency ?? 'USD').toUpperCase()
+  if (cur === 'USD') return '$'
+  return cur + ' '
+}
+
 function healthBadgeClass(status?: string | null): string {
   if (status === 'healthy') return 'badge-green'
   if (status === 'warning') return 'badge-amber'
@@ -554,7 +613,7 @@ function timeText(v?: string | null): string {
   if (!v) return '—'
   const d = new Date(v)
   if (Number.isNaN(d.getTime())) return '—'
-  return d.toLocaleString(localeRef.value, { hour12: false })
+  return formatDateTime(d, { locale: localeRef.value, options: { hour12: false } })
 }
 
 function money(v: number | string | null | undefined): string {
@@ -595,6 +654,24 @@ async function toggle(p: Provider) {
     p.enabled = !p.enabled
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : pm('credential.errors.toggleFailed')
+  }
+}
+
+// 2026-08-31: 软删除供应商。级联把该供应商下未删除的凭据置为
+// status='deleted'；本地数组中直接剔除该行 + 该供应商下凭据。
+async function delProvider(p: Provider) {
+  if (!(await confirmDialog(pm('providerDelete.confirm')))) return
+  try {
+    await deleteProvider(p.id)
+    // 从当前列表中移除
+    providers.value = providers.value.filter((row) => row.id !== p.id)
+    // 凭据缓存一并清理，避免引用悬空
+    delete credentialsByProvider.value[p.id]
+    delete credentialLoading.value[p.id]
+    delete credentialSaving.value[p.id]
+    delete credentialErrors.value[p.id]
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : pm('providerDelete.failed')
   }
 }
 
@@ -786,7 +863,7 @@ onUnmounted(() => {
   <div>
     <div class="page-header">
       <h2>{{ pm('page.title') }}</h2>
-      <button class="btn btn-primary" @click="openAdd">{{ pm('page.addBtn') }}</button>
+      <button v-if="canManageProviders" class="btn btn-primary" @click="openAdd">{{ pm('page.addBtn') }}</button>
     </div>
 
     <div class="bg-status-bar" v-if="bgStatus">
@@ -909,6 +986,8 @@ onUnmounted(() => {
                  health_status now live on routability. -->
             <th>{{ pm('filter.routabilityChipGroup') }}</th>
             <th>{{ pm('list.table.status') }}</th>
+            <!-- 2026-08-31: 供应商操作列（行级删除入口） -->
+            <th>{{ pm('list.table.actions') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -1015,16 +1094,24 @@ onUnmounted(() => {
                 {{ p.enabled ? pm('list.enabledBadge') : pm('list.disabledBadge') }}
               </span>
             </td>
+            <!-- 2026-08-31: 行级供应商删除入口。@click.stop 阻止冒泡
+                 触发外层 tr 的 router.push 跳转。仅 super_admin。 -->
+            <td v-if="canManageProviders" @click.stop>
+              <button
+                class="btn btn-ghost btn-sm"
+                :title="pm('list.deleteProviderTooltip')"
+                @click="delProvider(p)"
+              >{{ pm('list.deleteProviderBtn') }}</button>
+            </td>
           </tr>
         </tbody>
       </table>
       <div v-if="!loading && visibleProviders.length === 0" class="empty">{{ pm('list.empty') }}</div>
     </div>
 
-    <!-- ── Add Provider Modal ─────────────────────────────────────────────── -->
-    <div class="modal-overlay" v-if="showAdd" @click.self="showAdd = false">
-      <div class="modal" style="max-width:500px" @click.stop>
-        <h3>{{ pm('create.title') }}</h3>
+    <!-- ── Add Provider Modal（2026-09-13 迁移至 ui/AppModal，方案 §4.5.7：
+         ESC/滚动锁定/焦点圈闭/移动端响应式由组件统一提供） ────────────────── -->
+    <AppModal v-model="showAdd" :title="pm('create.title')" size="sm">
         <div v-if="addErr" class="alert alert-danger">{{ addErr }}</div>
 
         <!-- Toggle custom mode -->
@@ -1116,19 +1203,17 @@ onUnmounted(() => {
           <input v-model="addNotes" :placeholder="pm('create.remarkPlaceholder')" />
         </div>
 
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-          <button class="btn btn-ghost" @click="showAdd = false">{{ pm('common.button.cancel') }}</button>
-          <button class="btn btn-primary" @click="submitAdd" :disabled="addSaving">
-            {{ addSaving ? pm('create.submitting') : pm('create.submit') }}
-          </button>
-        </div>
-      </div>
-    </div>
+      <template #footer>
+        <button class="btn btn-ghost" @click="showAdd = false">{{ pm('common.button.cancel') }}</button>
+        <button class="btn btn-primary" @click="submitAdd" :disabled="addSaving">
+          {{ addSaving ? pm('create.submitting') : pm('create.submit') }}
+        </button>
+      </template>
+    </AppModal>
 
     <!-- ── Edit Provider Modal ───────────────────────────────────────────── -->
-    <div class="modal-overlay" v-if="showEdit" @click.self="showEdit = false">
-      <div class="modal" style="max-width:500px" @click.stop>
-        <h3>{{ pm('edit.title', { name: editProvider?.display_name }) }}</h3>
+    <!-- Edit Provider（2026-09-13 P3 迁移 ui/AppModal） -->
+    <AppModal v-model="showEdit" :title="pm('edit.title', { name: editProvider?.display_name })" size="sm">
         <div v-if="editErr" class="alert alert-danger">{{ editErr }}</div>
         <div class="form-group">
           <label>{{ pm('edit.catalogCode') }}</label>
@@ -1190,18 +1275,23 @@ onUnmounted(() => {
           <label>{{ pm('edit.remark') }}</label>
           <input v-model="editNotes" :placeholder="pm('edit.remarkPlaceholder')" />
         </div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-          <button class="btn btn-ghost" @click="showEdit = false">{{ pm('common.button.cancel') }}</button>
-          <button class="btn btn-primary" @click="submitEdit" :disabled="editSaving">
-            {{ editSaving ? t('keys.common.loading') : pm('common.button.save') }}
-          </button>
-        </div>
-      </div>
-    </div>
+      <template #footer>
+        <button class="btn btn-ghost" @click="showEdit = false">{{ pm('common.button.cancel') }}</button>
+        <button class="btn btn-primary" @click="submitEdit" :disabled="editSaving">
+          {{ editSaving ? t('keys.common.loading') : pm('common.button.save') }}
+        </button>
+      </template>
+    </AppModal>
 
     <!-- ── Manage Credentials Modal ───────────────────────────────────────── -->
-    <div class="drawer-backdrop" v-if="showManageCred && manageProvider" @click="closeManageCred">
-      <div class="drawer-panel card drawer-panel-wide" @click.stop>
+    <!-- Manage Credentials（2026-09-13 P3 迁移 ui/AppDrawer，方向 auto：<768 bottom sheet） -->
+    <AppDrawer
+      v-if="manageProvider"
+      :model-value="showManageCred"
+      width="min(900px, 95vw)"
+      :closable="false"
+      @update:model-value="(v: boolean) => { if (!v) closeManageCred() }"
+    >
         <div class="credential-toolbar">
           <div>
             <h3 style="margin:0">{{ pm('credential.drawerTitle', { name: manageProvider.display_name }) }}</h3>
@@ -1281,7 +1371,32 @@ onUnmounted(() => {
                 </td>
                 <td>
                   <div>{{ c.total_requests }}{{ pm('credential.row.usageSeparator') }}{{ money(c.total_cost_usd) }}</div>
-                  <div class="muted">{{ pm('credential.row.balanceLabel') }} <input v-model.number="c.balance_usd" type="number" min="0" step="100" class="compact-input number" style="width:80px;display:inline-block" placeholder="—" /></div>
+                  <!-- migration 721: balance input + on-demand vendor probe.
+                       The ⟳ button hits POST .../refresh-balance (GET-only
+                       against the vendor, zero tokens) and patches the row
+                       in place. -->
+                  <div class="muted" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+                    <span>{{ pm('credential.row.balanceLabel') }}</span>
+                    <span style="position:relative;display:inline-flex;align-items:center">
+                      <span v-if="balanceCurrencySymbol(c) !== '$'" style="position:absolute;left:4px;font-size:10px;color:var(--muted);pointer-events:none">{{ balanceCurrencySymbol(c) }}</span>
+                      <input v-model.number="c.balance_usd" type="number" min="0" step="100" class="compact-input number" style="width:80px;display:inline-block" placeholder="—" />
+                    </span>
+                    <button
+                      class="btn btn-ghost btn-sm"
+                      style="padding:2px 6px"
+                      :disabled="refreshingBalance[c.id]"
+                      :title="pm('credential.row.balanceRefreshTooltip')"
+                      @click.stop="refreshBalance(manageProvider, c)"
+                    >{{ refreshingBalance[c.id] ? '⏳' : '⟳' }}</button>
+                  </div>
+                  <div v-if="c.balance_source" class="muted" :title="c.balance_source === 'manual' ? pm('credential.row.balanceSourceManual') : pm('credential.row.balanceSourceApi')">
+                    <template v-if="c.balance_source === 'manual'">✏️ {{ pm('credential.row.balanceSourceManual') }}</template>
+                    <template v-else>🛰 {{ pm('credential.row.balanceSourceApi') }}</template>
+                    <template v-if="c.balance_last_checked_at"> · {{ fmtTimeAgo(c.balance_last_checked_at) }}</template>
+                  </div>
+                  <div v-if="c.balance_error" class="muted health-error" style="color:var(--danger)">
+                    ⚠️ {{ c.balance_error }}
+                  </div>
                   <div v-if="c.quota_summary?.any_exhausted" class="badge badge-red">{{ pm('credential.row.quotaExhausted') }}</div>
                 </td>
                 <td>
@@ -1309,8 +1424,7 @@ onUnmounted(() => {
           </table>
           <div v-if="!(credentialsByProvider[manageProvider.id] || []).length" class="empty">{{ pm('credential.empty') }}</div>
         </div>
-      </div>
-    </div>
+    </AppDrawer>
 
     <!-- ── Diagnose Modal ───────────────────────────────────────────────── -->
     <div class="drawer-backdrop" style="z-index:110" v-if="diagnoseProviderId !== null" @click="closeDiagnose">
@@ -1422,9 +1536,8 @@ onUnmounted(() => {
     </div>
 
     <!-- ── Add Credential Modal ──────────────────────────────────────────── -->
-    <div class="modal-overlay" style="z-index:110" v-if="showCred" @click.self="showCred = false">
-      <div class="modal" @click.stop>
-        <h3>{{ pm('credential.addDialog.title', { name: credProvider?.display_name }) }}</h3>
+    <!-- Add Credential（2026-09-13 P3 迁移 ui/AppModal，stacked=z110 叠于凭据抽屉上） -->
+    <AppModal v-model="showCred" :title="pm('credential.addDialog.title', { name: credProvider?.display_name })" size="sm" stacked>
         <div v-if="credErr" class="alert alert-danger">{{ credErr }}</div>
         <div class="form-group">
           <label>{{ pm('credential.addDialog.apiKeyLabel') }}</label>
@@ -1439,14 +1552,13 @@ onUnmounted(() => {
           <template v-else-if="credProbeStatus === 'done'">{{ pm('credential.addDialog.probeStatusDone') }}</template>
           <template v-else-if="credProbeStatus === 'failed'">{{ pm('credential.addDialog.probeStatusFailed') }}</template>
         </div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-          <button class="btn btn-ghost" @click="showCred = false">{{ pm('common.button.cancel') }}</button>
-          <button class="btn btn-primary" @click="submitCred" :disabled="credSaving">
-            {{ credSaving ? pm('credential.addDialog.submitting') : (credProbeStatus === 'probing' ? pm('credential.addDialog.probeBtn') : pm('credential.addDialog.submit')) }}
-          </button>
-        </div>
-      </div>
-    </div>
+      <template #footer>
+        <button class="btn btn-ghost" @click="showCred = false">{{ pm('common.button.cancel') }}</button>
+        <button class="btn btn-primary" @click="submitCred" :disabled="credSaving">
+          {{ credSaving ? pm('credential.addDialog.submitting') : (credProbeStatus === 'probing' ? pm('credential.addDialog.probeBtn') : pm('credential.addDialog.submit')) }}
+        </button>
+      </template>
+    </AppModal>
   </div>
 </template>
 
@@ -1557,6 +1669,8 @@ table code {
   gap: 4px;
 }
 .filter-sort-select {
+  /* width:auto 覆盖全局 select width:100%，避免下拉占满整行 */
+  width: auto;
   font-size: 12px;
   padding: 5px 8px;
   border-radius: 6px;
@@ -1628,7 +1742,7 @@ table code {
   overflow-wrap: break-word;
 }
 .badge-amber {
-  background: rgba(210,153,34,.18);
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
   color: var(--warning);
 }
 .diag-section h4 {
@@ -1665,7 +1779,7 @@ table code {
   display: inline-block;
   flex-shrink: 0;
 }
-.dot-green { background: #4caf50; }
+.dot-green { background: var(--success); }
 .dot-red { background: var(--danger); }
 .bg-label {
   font-weight: 500;
@@ -1676,8 +1790,8 @@ table code {
   font-size: 11px;
 }
 .badge-blue {
-  background: rgba(33,150,243,.18);
-  color: #42a5f5;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 .badge-orange {
   background: var(--warning-bg);
@@ -1693,7 +1807,7 @@ table code {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
-@media (max-width: 1000px) {
+@media (max-width: 1024px) {
   .credential-table {
     min-width: 960px;
   }

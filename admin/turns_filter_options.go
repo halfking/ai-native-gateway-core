@@ -1,8 +1,24 @@
-// Package admin — turns 页热门筛选条件端点（2026-08-10 / 2026-08-21 api_keys）。
+// Package admin — turns 页热门筛选条件端点（2026-08-10）。
 //
 // GET /api/admin/turns/sessions/filter-options
 //
-//	返回轮次列表页各筛选框可选值（近 30 天热门），含 api_keys。
+//	返回轮次列表页（TurnsListView.vue）各筛选框的可选值 —— 基于近 30 天实际使用
+//	数据聚合出的"热门条件"，供前端可检索下拉填充。数据不硬编码，新项目/任务/
+//	用户/客户端/标签/模型接入后自动出现。
+//
+//	维度及来源：
+//	  projects     ss.gw_project_id（session_summaries）
+//	  tasks        sd.task_id（session_summaries JOIN session_dim）
+//	  owners       sd.owner_user
+//	  clients      sd.client_id ∪ sd.application_code
+//	  tags         UNNEST(ss.user_tags)
+//	  models       public.session_turns.model
+//	  providers    public.session_turns.provider
+//	  status_codes public.session_turns.status_code
+//
+//	每个维度按最近活跃（MAX(first_request_at / t.ts)）倒序取前 20。
+//	鉴权：admin() 中间件；tenant_admin 仅看到本租户。
+//	返回：{ projects, tasks, owners, clients, tags, models, providers, status_codes }
 package admin
 
 import (
@@ -17,23 +33,19 @@ const (
 	turnsFilterOptionsLimit      = 20
 )
 
-type TurnsAPIKeyOption struct {
-	ID    int64  `json:"id"`
-	Label string `json:"label"`
-}
-
+// TurnsFilterOptionsResponse 是各筛选维度的热门可选值。
 type TurnsFilterOptionsResponse struct {
-	Projects    []string            `json:"projects"`
-	Tasks       []string            `json:"tasks"`
-	Owners      []string            `json:"owners"`
-	Clients     []string            `json:"clients"`
-	Tags        []string            `json:"tags"`
-	Models      []string            `json:"models"`
-	Providers   []string            `json:"providers"`
-	StatusCodes []string            `json:"status_codes"`
-	APIKeys     []TurnsAPIKeyOption `json:"api_keys"`
+	Projects    []string `json:"projects"`
+	Tasks       []string `json:"tasks"`
+	Owners      []string `json:"owners"`
+	Clients     []string `json:"clients"`
+	Tags        []string `json:"tags"`
+	Models      []string `json:"models"`
+	Providers   []string `json:"providers"`
+	StatusCodes []string `json:"status_codes"`
 }
 
+// handleTurnsFilterOptions 处理 GET /api/admin/turns/sessions/filter-options。
 func (h *Handler) handleTurnsFilterOptions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -47,7 +59,12 @@ func (h *Handler) handleTurnsFilterOptions(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 
-	tenantID := resolveTurnsSessionsTenant(r)
+	tenantID := ""
+	if IsTenantAdmin(r) {
+		tenantID = GetTenantID(r)
+	} else {
+		tenantID = tenantFromQueryOrContext(r)
+	}
 
 	tenantWhere := ""
 	tenantArgs := []any{}
@@ -56,35 +73,49 @@ func (h *Handler) handleTurnsFilterOptions(w http.ResponseWriter, r *http.Reques
 		tenantArgs = []any{tenantID}
 	}
 
-	resp := &TurnsFilterOptionsResponse{APIKeys: []TurnsAPIKeyOption{}}
+	resp := &TurnsFilterOptionsResponse{}
+
+	// 基于 session_summaries (+ session_dim) 的维度
 	joinDim := " JOIN session_dim sd ON sd.gw_session_id = ss.session_key AND sd.tenant_id = ss.tenant_id"
-	windowCond := fmt.Sprintf("ss.first_request_at > NOW() - INTERVAL '%d days'", turnsFilterOptionsWindowDays)
-	ssTargets := []*[]string{&resp.Projects, &resp.Tasks, &resp.Owners, &resp.Clients, &resp.Tags}
+	ssTargets := []*[]string{
+		&resp.Projects, &resp.Tasks, &resp.Owners, &resp.Clients, &resp.Tags,
+	}
 	ssQueries := []string{
+		// projects：与会话列表展示/筛选使用同一回退口径
 		h.lastActiveQuery(h.lastActiveSource(
 			"COALESCE(NULLIF(ss.gw_project_id, ''), sd.project_id)", joinDim,
-			windowCond+" AND COALESCE(NULLIF(ss.gw_project_id, ''), sd.project_id) IS NOT NULL AND COALESCE(NULLIF(ss.gw_project_id, ''), sd.project_id) != ''", tenantWhere)),
+			"COALESCE(NULLIF(ss.gw_project_id, ''), sd.project_id) IS NOT NULL AND COALESCE(NULLIF(ss.gw_project_id, ''), sd.project_id) != ''", tenantWhere)),
+		// tasks
 		h.lastActiveQuery(h.lastActiveSource(
-			"sd.task_id", joinDim, windowCond+" AND sd.task_id IS NOT NULL AND sd.task_id != ''", tenantWhere)),
+			"sd.task_id", joinDim, "sd.task_id IS NOT NULL AND sd.task_id != ''", tenantWhere)),
+		// owners
 		h.lastActiveQuery(h.lastActiveSource(
-			"sd.owner_user", joinDim, windowCond+" AND sd.owner_user IS NOT NULL AND sd.owner_user != ''", tenantWhere)),
+			"sd.owner_user", joinDim, "sd.owner_user IS NOT NULL AND sd.owner_user != ''", tenantWhere)),
+		// clients（client_id ∪ application_code）
 		"SELECT v FROM (" +
-			h.lastActiveSource("sd.client_id", joinDim, windowCond+" AND sd.client_id IS NOT NULL AND sd.client_id != ''", tenantWhere) +
+			h.lastActiveSource(
+				"sd.client_id", joinDim, "sd.client_id IS NOT NULL AND sd.client_id != ''", tenantWhere) +
 			" UNION " +
-			h.lastActiveSource("sd.application_code", joinDim, windowCond+" AND sd.application_code IS NOT NULL AND sd.application_code != ''", tenantWhere) +
+			h.lastActiveSource(
+				"sd.application_code", joinDim, "sd.application_code IS NOT NULL AND sd.application_code != ''", tenantWhere) +
 			") t ORDER BY last_at DESC LIMIT " + fmt.Sprint(turnsFilterOptionsLimit),
-		h.lastActiveQuery(h.lastActiveSource("tag", ", LATERAL UNNEST(ss.user_tags) AS tag", windowCond, tenantWhere)),
+		// tags
+		h.lastActiveQuery(h.lastActiveSource(
+			"tag", ", LATERAL UNNEST(ss.user_tags) AS tag", "1=1", tenantWhere)),
 	}
 	if err := h.runFilterOptionQueries(ctx, ssQueries, tenantArgs, ssTargets); err != nil {
 		writeError(w, http.StatusInternalServerError, "query filter options failed")
 		return
 	}
 
+	// 基于 session_turns 的维度
 	turnTenantWhere := ""
 	if tenantID != "" {
 		turnTenantWhere = " AND t.tenant_id = $1"
 	}
-	turnTargets := []*[]string{&resp.Models, &resp.Providers, &resp.StatusCodes}
+	turnTargets := []*[]string{
+		&resp.Models, &resp.Providers, &resp.StatusCodes,
+	}
 	turnQueries := []string{
 		h.lastActiveTurnQuery("t.model", "t.model IS NOT NULL AND t.model != ''", turnTenantWhere),
 		h.lastActiveTurnQuery("t.provider", "t.provider IS NOT NULL AND t.provider != ''", turnTenantWhere),
@@ -95,61 +126,25 @@ func (h *Handler) handleTurnsFilterOptions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	apiKeys, err := h.queryAPIKeyFilterOptions(ctx, tenantID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query filter options failed")
-		return
-	}
-	resp.APIKeys = apiKeys
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) queryAPIKeyFilterOptions(ctx context.Context, tenantID string) ([]TurnsAPIKeyOption, error) {
-	tenantWhere := ""
-	args := []any{}
-	if tenantID != "" {
-		tenantWhere = " AND t.tenant_id = $1"
-		args = []any{tenantID}
-	}
-	q := fmt.Sprintf(`
-		SELECT id, label FROM (
-			SELECT rl.api_key_id AS id,
-				COALESCE(NULLIF(ak.key_alias, ''), ak.key_prefix, 'key#' || rl.api_key_id::text) AS label,
-				MAX(t.ts) AS last_at
-			FROM public.session_turns_with_current_month t
-			JOIN public.request_logs_with_current_month rl ON rl.request_id = t.request_id
-			LEFT JOIN public.api_keys ak ON ak.id = rl.api_key_id
-			WHERE rl.api_key_id IS NOT NULL
-			  AND t.ts > NOW() - INTERVAL '%d days'%s
-			GROUP BY 1, 2
-		) x ORDER BY last_at DESC LIMIT %d`,
-		turnsFilterOptionsWindowDays, tenantWhere, turnsFilterOptionsLimit)
-	rows, err := h.db.Query(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query api_keys filter options: %w", err)
-	}
-	defer rows.Close()
-	out := []TurnsAPIKeyOption{}
-	for rows.Next() {
-		var opt TurnsAPIKeyOption
-		if err := rows.Scan(&opt.ID, &opt.Label); err != nil {
-			return nil, fmt.Errorf("scan api_keys filter options: %w", err)
-		}
-		out = append(out, opt)
-	}
-	return out, rows.Err()
-}
-
+// lastActiveSource 组装基于 session_summaries 的热门值内层子查询：
+//
+//	SELECT <valueSel> AS v, MAX(ss.first_request_at) AS last_at
+//	FROM session_summaries ss<fromSuffix> WHERE <cond><tenantWhere> GROUP BY 1
 func (h *Handler) lastActiveSource(valueSel, fromSuffix, cond, tenantWhere string) string {
 	return fmt.Sprintf(
 		"SELECT %s AS v, MAX(ss.first_request_at) AS last_at FROM session_summaries ss%s WHERE %s%s GROUP BY 1",
 		valueSel, fromSuffix, cond, tenantWhere)
 }
 
+// lastActiveQuery 包成外层：SELECT v FROM (<source>) t ORDER BY last_at DESC LIMIT K。
 func (h *Handler) lastActiveQuery(source string) string {
 	return "SELECT v FROM (" + source + ") t ORDER BY last_at DESC LIMIT " + fmt.Sprint(turnsFilterOptionsLimit)
 }
 
+// lastActiveTurnQuery 组装基于 session_turns 的热门值查询。
 func (h *Handler) lastActiveTurnQuery(valueExpr, filter, tenantWhere string) string {
 	return fmt.Sprintf(
 		"SELECT v FROM (SELECT %s AS v, MAX(t.ts) AS last_at FROM public.session_turns_with_current_month t"+
@@ -158,6 +153,7 @@ func (h *Handler) lastActiveTurnQuery(valueExpr, filter, tenantWhere string) str
 		valueExpr, filter, turnsFilterOptionsWindowDays, tenantWhere, turnsFilterOptionsLimit)
 }
 
+// runFilterOptionQueries 顺序执行一组热门值查询并写入对应目标切片。
 func (h *Handler) runFilterOptionQueries(ctx context.Context, queries []string, args []any, targets []*[]string) error {
 	if len(queries) != len(targets) {
 		return fmt.Errorf("query/target count mismatch: %d vs %d", len(queries), len(targets))

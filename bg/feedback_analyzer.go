@@ -249,10 +249,13 @@ func (a *FeedbackAnalyzer) discoverKeywordCandidates(ctx context.Context) (int, 
 			"confidence":        float64(count) / float64(count+20), // Bayesian-ish
 		})
 
+		// string() + ::text::jsonb (not []byte): the pool forces pgx
+		// SimpleProtocol, which binds []byte as bytea hex and any jsonb cast
+		// then fails with 22P02 (doc §3.2; internal/dbx/jsonb.go).
 		_, err = a.db.Exec(ctx, `
 			INSERT INTO tuning_proposals (category, task_type, proposal, evidence, status)
-			VALUES ('keyword_add', $1, $2, $3, 'pending')
-		`, key.task, proposalJSON, evidenceJSON)
+			VALUES ('keyword_add', $1, $2::text::jsonb, $3::text::jsonb, 'pending')
+		`, key.task, string(proposalJSON), string(evidenceJSON))
 		if err != nil {
 			slog.Warn("failed to insert keyword proposal",
 				"word", key.word, "error", err)
@@ -324,10 +327,12 @@ func (a *FeedbackAnalyzer) discoverWeightAdjustments(ctx context.Context) (int, 
 				"confidence":      0.8,
 			})
 
+			// string() + ::text::jsonb: see the keyword_add insert above
+			// (pgx SimpleProtocol binds []byte as bytea hex → 22P02).
 			_, err := a.db.Exec(ctx, `
 				INSERT INTO tuning_proposals (category, task_type, proposal, evidence, status)
-				VALUES ('weight_adjust', $1, $2, $3, 'pending')
-			`, taskType, proposalJSON, evidenceJSON)
+				VALUES ('weight_adjust', $1, $2::text::jsonb, $3::text::jsonb, 'pending')
+			`, taskType, string(proposalJSON), string(evidenceJSON))
 			if err != nil {
 				slog.Warn("failed to insert weight proposal",
 					"canonical_id", canonicalID, "error", err)

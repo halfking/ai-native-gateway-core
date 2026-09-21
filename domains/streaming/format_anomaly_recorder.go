@@ -96,7 +96,7 @@ func (r *FormatAnomalyRecorder) RecordAnomaly(ctx context.Context, record Anomal
 				request_id, provider_id, provider_code, client_model, outbound_model,
 				anomaly_type, severity, usage_source, expected_tokens, actual_tokens,
 				content_size_bytes, response_structure, response_sample, tenant_id
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::text::jsonb, $13, $14)
 		`
 
 		_, err = exec.Exec(ctx, query,
@@ -111,7 +111,7 @@ func (r *FormatAnomalyRecorder) RecordAnomaly(ctx context.Context, record Anomal
 			record.ExpectedTokens,
 			record.ActualTokens,
 			record.ContentSize,
-			structureJSON,
+			string(structureJSON),
 			record.ResponseSample,
 			record.TenantID,
 		)
@@ -160,14 +160,14 @@ func (r *FormatAnomalyRecorder) RecordDataAnomaly(ctx context.Context, anomalyTy
 	query := `
 		INSERT INTO response_format_anomalies (
 			request_id, anomaly_type, severity, response_structure, response_sample, detected_at
-		) VALUES ($1, $2, $3, $4, $5, NOW())
+		) VALUES ($1, $2, $3, $4::text::jsonb, $5, NOW())
 	`
 	if r.pool == nil {
 		_, err = r.db.Exec(ctx, query,
 			requestID,
 			anomalyType,
 			sev,
-			structureJSON,
+			string(structureJSON),
 			message,
 		)
 	} else {
@@ -176,7 +176,7 @@ func (r *FormatAnomalyRecorder) RecordDataAnomaly(ctx context.Context, anomalyTy
 				requestID,
 				anomalyType,
 				sev,
-				structureJSON,
+				string(structureJSON),
 				message,
 			)
 			return err

@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+// ErrJournalNotFound is returned when a requested journal snapshot does not
+// exist or the caller is not authorized to access it. This sentinel follows
+// the not-found-shaped error pattern used by requestjourney.Detail to avoid
+// cross-tenant existence leaks (ADR 2026-08-28 §Decision point 4).
+var ErrJournalNotFound = errors.New("journal snapshot not found")
+
 // ObservationType identifies one dispatch lifecycle fact. Values intentionally
 // match the persisted RequestJourney vocabulary, but dispatch owns this type.
 type ObservationType string
@@ -252,4 +258,107 @@ func (f ObservationSinkFunc) ObserveDispatch(ctx context.Context, observation Ob
 	if f != nil {
 		f(ctx, observation)
 	}
+}
+
+// maxJournalSnapshotEvents bounds the number of journal entries delivered
+// to a JournalSink consumer (ADR 2026-08-28-requestjourney-journal-snapshot.md
+// §Decision point 3). When a journal exceeds this limit, the oldest entries
+// are dropped and the snapshot's Truncated field is set to true. This defends
+// consumers from unbounded event streams while preserving the most recent
+// execution context (the terminal entry and its immediate predecessors).
+//
+// The bound is intentionally below journalCapacity (128) so a full-capacity
+// journal still truncates to a manageable consumer payload.
+const maxJournalSnapshotEvents = 50
+
+// JournalSnapshot is a detached, immutable view of a QueuedRequest's full
+// attempt journal. It is delivered to the optional JournalSink exactly once
+// at terminal time (Pipeline.complete, CAS-guarded). The terminal entry is
+// already in Entries by the time the snapshot is taken, so consumers see the
+// complete trace.
+//
+// JournalSnapshot is a detached, immutable view of a QueuedRequest's full
+// attempt journal. It is delivered to the optional JournalSink exactly once
+// at terminal time (Pipeline.complete, CAS-guarded). The terminal entry is
+// already in Entries by the time the snapshot is taken, so consumers see the
+// complete trace.
+//
+// Per ADR 2026-08-28-requestjourney-journal-snapshot.md §Decision point 3,
+// snapshots are bounded by a maximum event count. When the journal exceeds
+// this limit, the oldest entries are dropped and Truncated is set to true.
+//
+// §Decision point 4 / §6 extensions (audit-24h-20260829-r5 §5.5 merged):
+//   - SnapshotVersion   — qr.journalSeq at terminal time; consumers may
+//     short-circuit duplicate retries by comparing it to the recorder's
+//     MaxSeq for (tenant, request).
+//   - CallerTenantID / CallerAuthorized — auth context required by sinks
+//     that gate on tenant or operator identity; an unauthorized snapshot
+//     must be rejected, not silently dropped.
+type JournalSnapshot struct {
+	TenantID  string
+	RequestID string
+	Entries   []JournalEntry
+	// Truncated is true when the journal exceeded the max event count and
+	// the oldest entries were dropped. TruncatedCount is the number of
+	// entries dropped.
+	Truncated      bool
+	TruncatedCount int
+	// SnapshotVersion is the monotonic journal seq observed at terminal time.
+	// Snapshot consumers use it as the identity component of their own
+	// (tenant, request, version) receipt; it is not interchangeable with a
+	// RequestJourney event sequence. See ADR §6.
+	SnapshotVersion int64
+	// CallerTenantID / CallerAuthorized carry the trusted caller's tenant
+	// identity at the terminal-time wiring boundary. Sinks must reject
+	// mismatched or unauthorized snapshots rather than silently drop them.
+	// See ADR §4.
+	CallerTenantID   string
+	CallerAuthorized bool
+}
+
+// JournalSink consumes the per-request attempt journal at terminal time.
+// The dispatch lifecycle owns ordering and exactly-once delivery (the same
+// CAS guard as ObservationSink); the sink only translates values into its
+// own persistence contract. nil sinks disable the path (no goroutine spawned,
+// no metric emission). Mirrors ObservationSink — keeps the journal bridge to
+// requestjourney independently wired from the observation bridge.
+type JournalSink interface {
+	// ApplyJournalSnapshot delivers one detached journal snapshot to the sink.
+	ApplyJournalSnapshot(context.Context, JournalSnapshot)
+}
+
+// JournalSinkFunc adapts a function to JournalSink.
+type JournalSinkFunc func(context.Context, JournalSnapshot)
+
+// ApplyJournalSnapshot calls the wrapped snapshot function.
+func (f JournalSinkFunc) ApplyJournalSnapshot(ctx context.Context, snapshot JournalSnapshot) {
+	if f != nil {
+		f(ctx, snapshot)
+	}
+}
+
+// AuthorizedJournalConsumer provides a pull-based query interface for journal
+// snapshots with caller authorization. This interface satisfies ADR 2026-08-28
+// §Decision point 1 ("consumer requests a snapshot ... through the existing
+// requestjourney service boundary") and §Decision point 4 (tenant/authorization
+// context verification with not-found-shaped errors).
+//
+// Unlike the push-based JournalSink (which delivers snapshots from the pipeline's
+// terminal completion), AuthorizedJournalConsumer is designed for external query
+// paths (e.g., admin APIs, diagnostic tools) where the caller's tenant must be
+// verified before snapshot access is granted.
+// JournalSnapshotQuery carries the authenticated caller identity separately
+// from the snapshot target. Privileged is set only by a trusted HTTP adapter
+// after validating the caller role.
+type JournalSnapshotQuery struct {
+	CallerTenantID string
+	TargetTenantID string
+	RequestID      string
+	Privileged     bool
+}
+
+type AuthorizedJournalConsumer interface {
+	// ConsumeSnapshot retrieves one target snapshot after validating the caller
+	// identity in query. Missing and unauthorized results use ErrJournalNotFound.
+	ConsumeSnapshot(ctx context.Context, query JournalSnapshotQuery) (JournalSnapshot, error)
 }

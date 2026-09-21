@@ -1,8 +1,14 @@
 package modelcatalog
 
 import (
+	"context"
+	"errors"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/pashagolub/pgxmock/v4"
 )
 
 func TestPreserveManualDisable(t *testing.T) {
@@ -54,7 +60,6 @@ func TestUpsertSQL_LowercaseContract(t *testing.T) {
 		"canonical_raw_name,",
 		"canonical_id,",
 		"standardized_name,",
-		"source,",
 		"SELECT cred.provider_id, $2, $3,",
 		"canonical_raw_name = COALESCE(EXCLUDED.canonical_raw_name",
 	}
@@ -184,34 +189,285 @@ func TestUpsertSQL_AdminProtectedGuard(t *testing.T) {
 	}
 }
 
-func TestInsertManualSQL_AdminProtected(t *testing.T) {
-	s := insertManualCredentialModelSQL
+// TestUpsertSQL_CanonicalClearedGuard pins the migration-693 admin-unbind
+// contract: the provider_models ON CONFLICT branch must refuse the incoming
+// EXCLUDED.canonical_id when provider_models.canonical_cleared_at is set —
+// otherwise the next discovery refresh silently re-links an offer the
+// operator unbound (the COALESCE alone always writes EXCLUDED through,
+// because discovery passes a non-NULL canonical_id).
+func TestUpsertSQL_CanonicalClearedGuard(t *testing.T) {
+	s := upsertCredentialModelSQL
+
+	pmConflict := strings.Index(s, "ON CONFLICT (provider_id, raw_model_name)")
+	if pmConflict < 0 {
+		t.Fatal("provider_models ON CONFLICT clause not found in upsert SQL")
+	}
+	// Scope to the provider_models branch only: it ends at its RETURNING id.
+	branchEnd := strings.Index(s[pmConflict:], "RETURNING id")
+	if branchEnd < 0 {
+		t.Fatal("could not locate the end of the provider_models ON CONFLICT branch")
+	}
+	branch := s[pmConflict : pmConflict+branchEnd]
+
 	for _, want := range []string{
-		"source,",
-		"'manual'",
-		"admin_protected",
-		"outbound_model_name",
-		"context_window_override",
-		"RETURNING id",
-		"$8",
+		// The marker gate...
+		"canonical_cleared_at IS NOT NULL",
+		// ...must keep the STORED canonical_id (NULL right after an admin
+		// unlink) rather than adopting EXCLUDED...
+		"THEN provider_models.canonical_id",
+		// ...and the legacy COALESCE must survive for unmarked rows.
+		"ELSE COALESCE(EXCLUDED.canonical_id, provider_models.canonical_id)",
 	} {
-		if !strings.Contains(s, want) {
-			t.Errorf("insertManualCredentialModelSQL missing %q", want)
+		if !strings.Contains(branch, want) {
+			t.Errorf("provider_models ON CONFLICT branch is missing %q (admin unbind would be overwritten by the next discovery refresh)", want)
+		}
+	}
+
+	// The canonical_id assignment must be a CASE guarded on the marker — a
+	// bare COALESCE assignment means the guard was dropped.
+	if !strings.Contains(branch, "canonical_id = CASE") {
+		t.Error("canonical_id assignment must be guarded by a CASE on canonical_cleared_at")
+	}
+}
+
+// TestManualInsertSQL_LiftsClearedMarkerOnExplicitRelink pins the other half
+// of the migration-693 contract for the manual-enroll path: an operator
+// manually (re)linking a canonical model must CLEAR the admin-unbind marker
+// (otherwise InsertManualCredentialModel could never undo an unlink), while
+// an enroll without a canonical ID preserves the marker.
+func TestManualInsertSQL_LiftsClearedMarkerOnExplicitRelink(t *testing.T) {
+	s := insertManualCredentialModelSQL
+
+	pmConflict := strings.Index(s, "ON CONFLICT (provider_id, raw_model_name)")
+	if pmConflict < 0 {
+		t.Fatal("provider_models ON CONFLICT clause not found in manual insert SQL")
+	}
+	branchEnd := strings.Index(s[pmConflict:], "RETURNING id")
+	if branchEnd < 0 {
+		t.Fatal("could not locate the end of the provider_models ON CONFLICT branch")
+	}
+	branch := s[pmConflict : pmConflict+branchEnd]
+
+	for _, want := range []string{
+		"canonical_cleared_at = CASE",
+		"WHEN EXCLUDED.canonical_id IS NOT NULL THEN NULL",
+		"ELSE provider_models.canonical_cleared_at",
+	} {
+		if !strings.Contains(branch, want) {
+			t.Errorf("manual insert provider_models ON CONFLICT branch is missing %q (a manual re-link would not lift the admin-unbind marker)", want)
 		}
 	}
 }
 
-func TestInsertManual_EmptyRawName(t *testing.T) {
-	_, err := InsertManualCredentialModel(nil, nil, ManualInsertParams{CredentialID: 1, RawName: "  "})
-	if err == nil || !strings.Contains(err.Error(), "raw_model_name required") {
-		t.Fatalf("got %v", err)
+// TestUpsertCredentialModel_ExecutesParametrizedSQL exercises the wrapper
+// end-to-end against pgxmock: the caller's canonicalID pointer must reach
+// the SQL as the $5 binding. The cleared-row semantics themselves live in
+// the SQL text and are pinned structurally by
+// TestUpsertSQL_CanonicalClearedGuard — pgxmock cannot execute SQL.
+func TestUpsertCredentialModel_ExecutesParametrizedSQL(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	canonicalID := 7
+	mock.ExpectExec("INSERT INTO provider_models").
+		WithArgs(42, "z-ai/glm-5.2", "glm-5.2", "glm-5.2", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	if err := UpsertCredentialModel(context.Background(), mock, 42,
+		"z-ai/glm-5.2", "glm-5.2", "glm-5.2", &canonicalID); err != nil {
+		t.Fatalf("UpsertCredentialModel: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
 
-func TestInsertManual_NilDB(t *testing.T) {
-	_, err := InsertManualCredentialModel(nil, nil, ManualInsertParams{RawName: "gpt-4o"})
-	if err == nil || !strings.Contains(err.Error(), "database not configured") {
-		t.Fatalf("got %v", err)
+// TestAutoFillDefaultProbeModel_SourceLabel pins the constant that the
+// daily DefaultProbePicker repick loop uses to recognise refresh-time
+// auto-fills. If this constant changes, the corresponding
+// DefaultProbePicker WHERE clause must change too — see
+// bg/default_probe_picker.go line 80.
+func TestAutoFillDefaultProbeModel_SourceLabel(t *testing.T) {
+	if DefaultProbeModelSourceRefreshLatest != "auto:refresh_latest" {
+		t.Errorf("DefaultProbeModelSourceRefreshLatest = %q, want %q (label is load-bearing for DefaultProbePicker overwrite rules)",
+			DefaultProbeModelSourceRefreshLatest, "auto:refresh_latest")
 	}
 }
 
+// TestAutoFillDefaultProbeModel_SQLContract pins the 2026-08-31 hzx-2
+// round-4 + round-6 SQL contract. If any future migration drops one of
+// these guarantees the auto-fill hook will silently misbehave — most
+// notably the provider-facing pick value (round-6: standardized_name
+// would 404 probes on NIM-style prefixed vendors), the "newest
+// created_at DESC" ordering (newest model wins), the "skip
+// admin_protected / unavailable cmb / pm" guards, and the
+// "default_probe_model IS NULL/empty AND source <> 'manual'" eligibility
+// predicate. The test is structural (string-match against the embedded
+// SQL inside AutoFillDefaultProbeModel) so it fails loudly when the SQL
+// regresses, even if no integration test happens to cover the path.
+func TestAutoFillDefaultProbeModel_SQLContract(t *testing.T) {
+	src, err := readSourceForTest("AutoFillDefaultProbeModel")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+
+	required := []string{
+		// Round-6: pick the PROVIDER-facing name. default_probe_model is
+		// sent verbatim to the upstream by the probe chat request, so a
+		// standardized_name value 404s on vendors whose raw name carries
+		// a prefix ("z-ai/glm-5.2"). Must match bg/shared_pick.go.
+		"COALESCE(pm.outbound_model_name, pm.raw_model_name)",
+		// And must NOT fall back to standardized_name anywhere in the pick.
+		// Pick target: most-recently-created routable model under this credential.
+		"ORDER BY pm.created_at DESC",
+		// Skip cmb rows the operator explicitly disabled / protected.
+		"COALESCE(cmb.available, FALSE) = TRUE",
+		"COALESCE(cmb.admin_protected, FALSE) = FALSE",
+		// Skip pm rows that are themselves unavailable (e.g. retired model).
+		"COALESCE(pm.available, FALSE) = TRUE",
+		// Only write when the operator never picked a value AND the source
+		// marker is not 'manual' (defensive — even if the model column is
+		// empty, never stomp a manual source marker).
+		"c.default_probe_model IS NULL OR c.default_probe_model = ''",
+		"COALESCE(c.default_probe_model_source, '') <> 'manual'",
+		// Stamp the source label so daily repicks can recognise the row.
+		"DefaultProbeModelSourceRefreshLatest",
+	}
+	for _, r := range required {
+		if !strings.Contains(body, r) {
+			t.Errorf("AutoFillDefaultProbeModel SQL is missing %q", r)
+		}
+	}
+	if strings.Contains(body, "sub.standardized_name") {
+		t.Error("AutoFillDefaultProbeModel must not write standardized_name — the probe sends the stored value verbatim to the upstream (round-6 audit)")
+	}
+	// Sanity: must be UPDATE ... RETURNING so the caller learns what was picked.
+	if !strings.Contains(body, "RETURNING") {
+		t.Error("AutoFillDefaultProbeModel must use UPDATE ... RETURNING so the caller can log the picked model")
+	}
+}
+
+// TestAutoFillDefaultProbeModel_NoRowsIsNotAnError verifies the helper
+// treats pgx.ErrNoRows as "no eligible pick" rather than a DB error.
+// The 0-row outcome covers three real cases:
+//   - default_probe_model already non-empty (operator set it),
+//   - default_probe_model_source = 'manual' (operator pinned it),
+//   - cmb has no routable binding yet (transient state right after
+//     credential creation, before the first refresh completes).
+//
+// All three are normal operating conditions and must not surface as
+// errors to the discovery / admin refresh callers.
+func TestAutoFillDefaultProbeModel_NoRowsIsNotAnError(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	const credID = 42
+	mock.ExpectQuery("UPDATE credentials").
+		WithArgs(credID, DefaultProbeModelSourceRefreshLatest).
+		WillReturnError(pgx.ErrNoRows)
+
+	picked, err := AutoFillDefaultProbeModel(context.Background(), mock, credID)
+	if err != nil {
+		t.Fatalf("AutoFillDefaultProbeModel: unexpected error for pgx.ErrNoRows: %v", err)
+	}
+	if picked != "" {
+		t.Errorf("AutoFillDefaultProbeModel returned %q, want empty string when no eligible pick", picked)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestAutoFillDefaultProbeModel_DBErrorPropagates ensures real DB
+// failures (connection lost, schema drift, etc.) DO surface so callers
+// can log them. Auto-fill is best-effort but a silent failure is worse
+// than a logged one — operators need to know the hook is not firing.
+func TestAutoFillDefaultProbeModel_DBErrorPropagates(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	const credID = 99
+	dbErr := errors.New("connection reset by peer")
+	mock.ExpectQuery("UPDATE credentials").
+		WithArgs(credID, DefaultProbeModelSourceRefreshLatest).
+		WillReturnError(dbErr)
+
+	picked, err := AutoFillDefaultProbeModel(context.Background(), mock, credID)
+	if err == nil {
+		t.Fatal("AutoFillDefaultProbeModel: expected DB error to propagate, got nil")
+	}
+	if !strings.Contains(err.Error(), "connection reset") {
+		t.Errorf("AutoFillDefaultProbeModel error = %v, want one wrapping the original DB error", err)
+	}
+	if picked != "" {
+		t.Errorf("AutoFillDefaultProbeModel returned %q, want empty string on error", picked)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestAutoFillDefaultProbeModel_RejectsNonPositiveCredID guards against
+// the helper writing to row 0 / -1 when called with a stale credID.
+// Defensive — discovery / admin paths always pass a real ID, but
+// future callers might not.
+func TestAutoFillDefaultProbeModel_RejectsNonPositiveCredID(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	// No mock expectations — the helper must short-circuit before
+	// hitting the DB on a non-positive credID.
+	for _, id := range []int{0, -1, -42} {
+		picked, err := AutoFillDefaultProbeModel(context.Background(), mock, id)
+		if err != nil {
+			t.Errorf("AutoFillDefaultProbeModel(%d): unexpected error %v", id, err)
+		}
+		if picked != "" {
+			t.Errorf("AutoFillDefaultProbeModel(%d) returned %q, want empty string", id, picked)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("non-positive credID must not issue any DB queries, got: %v", err)
+	}
+}
+
+// readSourceForTest extracts the source bytes for a function whose body
+// is in the same file. Used by TestAutoFillDefaultProbeModel_SQLContract
+// so the test fails loudly if the SQL shape regresses — we mirror the
+// "test against the source" pattern used by the existing
+// TestUpsertSQL_* tests in this file (see e.g.
+// TestUpsertSQL_AdminProtectedGuard).
+func readSourceForTest(funcName string) ([]byte, error) {
+	const file = "upsert.go"
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(data), "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.Contains(line, "func AutoFillDefaultProbeModel(") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		// Fallback: read the whole file. We don't want the test to depend
+		// on a fragile line-number grep — the SQL contract is what matters.
+		return data, nil
+	}
+	return []byte(strings.Join(lines[start:], "\n")), nil
+}

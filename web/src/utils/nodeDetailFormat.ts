@@ -1,9 +1,10 @@
 /** Shared format helpers for NodeDetailDrawer panels. */
 
+import { formatDateTime } from './datetime'
+
 export function fmtTime(value: string | number | null | undefined): string {
   if (value == null || value === '') return '—'
-  const date = new Date(typeof value === 'number' ? value : value)
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString()
+  return formatDateTime(value)
 }
 
 export function pct(value: number | null | undefined): string {

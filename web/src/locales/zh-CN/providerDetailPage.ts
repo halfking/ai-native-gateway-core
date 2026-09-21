@@ -60,4 +60,9 @@ export default {
   loadFailed: '加载失败',
   operationFailed: '操作失败',
   diagFailed: '诊断失败',
+  // 2026-08-31: 供应商软删除（终态）
+  deleteBtn: '删除供应商',
+  deleteTitle: '软删除该供应商 —— 该供应商及其全部凭据将不再出现在任何列表与路由中，且无法撤销',
+  deleteConfirm: '确认删除供应商 "{name}" ？该供应商下的所有凭据将被一并标记为已删除，所有相关模型路由将立即停止。该操作不可撤销。',
+  deleteFailed: '供应商删除失败',
 }

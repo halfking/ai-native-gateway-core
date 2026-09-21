@@ -7,6 +7,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Plus, Minus, Money, CircleCheck } from '@element-plus/icons-vue'
 import { useDashboard } from '../composables/useDashboard'
+import { formatDateTime } from '../utils/datetime'
 import DashboardStatsRow, { type DashboardStats } from './analytics/DashboardStatsRow.vue'
 import SessionTrendChart from './analytics/SessionTrendChart.vue'
 import HealthGradeChart from './analytics/HealthGradeChart.vue'
@@ -14,6 +15,9 @@ import SessionStatsSignals from './analytics/SessionStatsSignals.vue'
 import SessionStatsRankings from './analytics/SessionStatsRankings.vue'
 import type { TrendDataPoint } from './analytics/SessionTrendChart.vue'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElIcon } from 'element-plus'
 const { t } = useI18n()
 
 const {
@@ -62,7 +66,8 @@ const dashboardStats = computed<DashboardStats>(() => {
 const periodLabel = computed(() => {
   const ov = overview.value
   if (!ov?.period_start || !ov?.period_end) return ''
-  return `${new Date(ov.period_start).toLocaleDateString()} → ${new Date(ov.period_end).toLocaleDateString()}`
+  const dateOptions: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'numeric', day: 'numeric' }
+  return `${formatDateTime(ov.period_start, { options: dateOptions })} → ${formatDateTime(ov.period_end, { options: dateOptions })}`
 })
 
 const trendSummary = computed(() => trend.value?.summary ?? null)
@@ -124,7 +129,7 @@ function onDaysClick(next: number) {
       <div class="panel-toolbar">
         <div class="panel-toolbar__meta">
           <span v-if="lastUpdated" class="meta-text">
-            {{ t('sessions.stats.lastUpdated') }}: {{ lastUpdated.toLocaleString() }}
+            {{ t('sessions.stats.lastUpdated') }}: {{ formatDateTime(lastUpdated) }}
             <span v-if="responseTime"> · {{ responseTime }}ms</span>
           </span>
           <span v-if="periodLabel" class="period-banner">
@@ -258,22 +263,22 @@ function onDaysClick(next: number) {
   border: 1px solid var(--border, var(--surface-secondary)); background: var(--card, var(--on-primary));
 }
 .mini-kpi__icon { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: white; flex-shrink: 0; }
-.mini-kpi__icon--new { background: linear-gradient(135deg, #667eea, #764ba2); }
+.mini-kpi__icon--new { background: linear-gradient(135deg, var(--accent), var(--purple)); }
 .mini-kpi__icon--closed { background: linear-gradient(135deg, var(--muted), var(--muted)); }
-.mini-kpi__icon--cost { background: linear-gradient(135deg, #43e97b, #38f9d7); }
-.mini-kpi__icon--compliance { background: linear-gradient(135deg, var(--pink), #fee140); }
+.mini-kpi__icon--cost { background: linear-gradient(135deg, var(--success), var(--probe-cyan-light)); }
+.mini-kpi__icon--compliance { background: linear-gradient(135deg, var(--pink), var(--warning)); }
 .mini-kpi__label { font-size: 13px; color: var(--muted, var(--text-secondary)); }
 .mini-kpi__value { font-size: 22px; font-weight: 600; }
 .charts-row {
   display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: 16px; margin-bottom: 16px; width: 100%;
 }
-@media (max-width: 960px) { .charts-row { grid-template-columns: 1fr; } }
+@media (max-width: 1024px) { .charts-row { grid-template-columns: 1fr; } }
 .detail-grid {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px; margin-bottom: 16px; width: 100%;
 }
-@media (max-width: 900px) { .detail-grid { grid-template-columns: 1fr; } }
+@media (max-width: 1024px) { .detail-grid { grid-template-columns: 1fr; } }
 .detail-card {
   border: 1px solid var(--border, var(--surface-secondary)); border-radius: 10px;
   background: var(--card, var(--on-primary)); padding: 14px 16px; min-width: 0;

@@ -74,7 +74,8 @@ func newNeedApprovalEnv(t *testing.T) (*domain.PipelineRequest, *httptest.Respon
 func expectApprovalCreate(t *testing.T, mock pgxmock.PgxPoolIface, sessionID, tenantID string) {
 	t.Helper()
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(tenantID).
 		WillReturnResult(pgxmock.NewResult("SET", 0))
 	mock.ExpectExec(`INSERT INTO approval_queue`).
 		WithArgs(
@@ -94,7 +95,8 @@ func expectApprovalCreate(t *testing.T, mock pgxmock.PgxPoolIface, sessionID, te
 
 func expectGetForNotify(mock pgxmock.PgxPoolIface, tenantID string) {
 	mock.ExpectBeginTx(pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(tenantID).
 		WillReturnResult(pgxmock.NewResult("SET", 0))
 	rows := pgxmock.NewRows([]string{
 		"id", "session_id", "tenant_id", "request_id",

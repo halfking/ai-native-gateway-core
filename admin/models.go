@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,9 +12,48 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/kaixuan/llm-gateway-go/catalog"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 )
+
+// Alias create/bulk-import statements. 2026-09-12: both used to arbitrate on
+// the expression (raw_name, COALESCE(quantization,”), COALESCE(surface,”)),
+// but model_aliases has no such unique index — only
+// uq_model_aliases_canonical_raw (canonical_id, raw_name) — so every create
+// failed with 42P10 since 2cef36255 introduced them. Rewritten onto the real
+// pair arbiter, plus an explicit demote of cross-canonical competitors: the
+// original DO UPDATE carried canonical_id = EXCLUDED (repoint the raw_name to
+// the model being edited), which the pair constraint cannot express for a
+// row owned by another canonical — demotion to 'disabled' is the
+// pair-compatible equivalent, matching the taxonomy sync semantics.
+// Unlike the automatic sync paths, the admin upsert reactivates a
+// 'disabled' target unconditionally: the API call itself is the operator's
+// explicit decision.
+const aliasUpsertSQL = `
+	INSERT INTO model_aliases (canonical_id, raw_name, quantization, surface, notes, client_profiles, status, updated_at)
+	VALUES ($1, $2, $3, $4, $5, $6, 'active', NOW())
+	ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
+		quantization = EXCLUDED.quantization,
+		surface = EXCLUDED.surface,
+		notes = EXCLUDED.notes,
+		client_profiles = COALESCE(EXCLUDED.client_profiles, model_aliases.client_profiles),
+		status = 'active',
+		updated_at = NOW()
+	RETURNING id
+`
+
+// aliasDemoteCompetitorsSQL retires every OTHER canonical's active alias for
+// the same raw_name, so the operator's mapping is the only one that routes.
+// Already non-active rows are left untouched (no label churn).
+const aliasDemoteCompetitorsSQL = `
+	UPDATE model_aliases
+	SET status = 'disabled', updated_at = NOW()
+	WHERE raw_name = $1 AND canonical_id <> $2 AND status = 'active'
+`
 
 func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
@@ -289,7 +329,13 @@ func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	displayName := req.CanonicalName
+	canonicalName := strings.TrimSpace(req.CanonicalName)
+	if canonicalName == "" {
+		writeError(w, http.StatusBadRequest, "canonical_name is required")
+		return
+	}
+
+	displayName := canonicalName
 	if req.DisplayName != nil && *req.DisplayName != "" {
 		displayName = *req.DisplayName
 	}
@@ -306,14 +352,52 @@ func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
 		outputPrice = *req.OutputPriceCNY
 	}
 
+	// Dedup gate: the only DB-level uniqueness is exact-string
+	// (canonical_name), so variants that differ only by case or ./_/-/space//
+	// separators would silently coexist as two "standard" models and leak
+	// both spellings to clients. Reject them up front with the winner named.
+	// R50 fix (2026-09-21): collapse runs of separators on both sides —
+	// without it `claude--opus-5` folded to `claude__opus_5` which never
+	// equaled `claude-opus-5` → `claude_opus_5`, so a single request could
+	// mint a duplicate spelling (live hole, not just a race; the same
+	// run-collapse is NormalizeRouteKey's dupDashPattern semantics).
+	// R50 F19 收敛：谓词迁入 modelname.DedupCanonicalNameSQL 单一实现
+	// （fold 链与两处回种守卫同源），本文件不再手写 SQL 谓词。
+	var existing string
+	err := h.db.QueryRow(ctx, modelname.DedupCanonicalNameSQL, canonicalName).Scan(&existing)
+	if err == nil {
+		writeError(w, http.StatusConflict,
+			"duplicate canonical model: "+canonicalName+" already exists as "+existing)
+		return
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "dedup check failed: "+err.Error())
+		return
+	}
+
 	var id int
-	err := h.db.QueryRow(ctx, `
+	err = h.db.QueryRow(ctx, `
 		INSERT INTO models_canonical (canonical_name, display_name, modality, status, input_price_cny, output_price_cny)
 		VALUES ($1, $2, $3, 'active', $4, $5)
 		ON CONFLICT (canonical_name) DO NOTHING
 		RETURNING id
-	`, req.CanonicalName, displayName, modality, inputPrice, outputPrice).Scan(&id)
+	`, canonicalName, displayName, modality, inputPrice, outputPrice).Scan(&id)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			// DB 兜底（F19）：SELECT-then-INSERT 并发窗口的胜者仲裁交给
+			// 唯一约束。当前生效的是 exact-name 唯一（23505 同码）；
+			// 折叠表达式唯一索引（uq_models_canonical_active_folded_name）
+			// 待真库 6 组重复对数据对账后建（R51），届时本分支同样兜住
+			// 折叠拼写竞态。
+			writeError(w, http.StatusConflict, "duplicate canonical model: "+canonicalName)
+			return
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Exact-name race lost between the gate above and the insert.
+			writeError(w, http.StatusConflict, "duplicate canonical model: "+canonicalName)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
 		return
 	}
@@ -849,15 +933,13 @@ func (h *Handler) handleModelAliases(w http.ResponseWriter, r *http.Request, mod
 	}
 
 	var aliasID int
-	err := h.db.QueryRow(ctx, `
-		INSERT INTO model_aliases (canonical_id, raw_name, quantization, surface, notes, status, updated_at)
-		VALUES ($1, $2, $3, $4, $5, 'active', NOW())
-		ON CONFLICT (raw_name, COALESCE(quantization,''), COALESCE(surface,''))
-		DO UPDATE SET canonical_id = EXCLUDED.canonical_id, notes = EXCLUDED.notes, status = 'active', updated_at = NOW()
-		RETURNING id
-	`, modelID, req.RawName, quantization, surface, notes).Scan(&aliasID)
+	err := h.db.QueryRow(ctx, aliasUpsertSQL, modelID, req.RawName, quantization, surface, notes, nil).Scan(&aliasID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create alias failed: "+err.Error())
+		return
+	}
+	if _, err := h.db.Exec(ctx, aliasDemoteCompetitorsSQL, req.RawName, modelID); err != nil {
+		writeError(w, http.StatusInternalServerError, "demote competing aliases failed: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -895,20 +977,12 @@ func (h *Handler) createAliasesBulk(w http.ResponseWriter, r *http.Request, mode
 			continue
 		}
 		var aliasID int
-		err := h.db.QueryRow(ctx, `
-			INSERT INTO model_aliases (canonical_id, raw_name, notes, status, client_profiles, updated_at)
-			VALUES ($1, $2, $3, 'active', $4, NOW())
-			ON CONFLICT (raw_name, COALESCE(quantization,''), COALESCE(surface,''))
-			DO UPDATE SET canonical_id = EXCLUDED.canonical_id,
-			              notes = COALESCE(EXCLUDED.notes, model_aliases.notes),
-			              status = 'active',
-			              client_profiles = COALESCE(EXCLUDED.client_profiles, model_aliases.client_profiles),
-			              updated_at = NOW()
-			RETURNING id
-		`, modelID, name, notes, req.ClientProfiles).Scan(&aliasID)
+		err := h.db.QueryRow(ctx, aliasUpsertSQL, modelID, name, nil, nil, notes, req.ClientProfiles).Scan(&aliasID)
 		if err != nil {
 			continue
 		}
+		//nolint:errcheck // best-effort demote; the upsert already succeeded
+		h.db.Exec(ctx, aliasDemoteCompetitorsSQL, name, modelID)
 		created = append(created, map[string]any{
 			"id":              aliasID,
 			"canonical_id":    modelID,
@@ -974,23 +1048,56 @@ func (h *Handler) patchAlias(w http.ResponseWriter, r *http.Request, canonicalID
 
 func (h *Handler) updateModelTags(w http.ResponseWriter, r *http.Request, id int) {
 	var req struct {
-		Tags json.RawMessage `json:"tags"`
+		Tags []string `json:"tags"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	// Full-replacement endpoint: an absent/null tags field binds a nil
+	// []string and would NULL the column. Require the field explicitly —
+	// a genuine clear is [] (or POST tags/reset).
+	if req.Tags == nil {
+		writeError(w, http.StatusBadRequest, "tags field is required (use [] to clear)")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.Exec(ctx, `UPDATE models_canonical SET tags = $1 WHERE id = $2`, req.Tags, id)
+	// tags is TEXT[] (models_canonical): bind a []string, not the raw JSON
+	// bytes. The previous json.RawMessage binding sent a bytea into a text[]
+	// column, the UPDATE failed on the type mismatch, and the swallowed
+	// error (nolint:errcheck) still returned 200 "updated" — every write
+	// silently no-oped (2026-09-14 auto-matching audit O1′-b discovery).
+	res, err := h.db.Exec(ctx,
+		`UPDATE models_canonical SET tags = $1, tags_updated_at = NOW() WHERE id = $2`,
+		req.Tags, id)
+	if err != nil {
+		slog.Warn("updateModelTags: exec failed", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if res.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "model not found")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
 
 func (h *Handler) resetModelTags(w http.ResponseWriter, r *http.Request, id int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.Exec(ctx, `UPDATE models_canonical SET tags = '[]'::jsonb WHERE id = $1`, id)
+	// Same TEXT[] binding discipline as updateModelTags: the previous
+	// `'[]'::jsonb` literal could not assign into a text[] column either.
+	res, err := h.db.Exec(ctx,
+		`UPDATE models_canonical SET tags = '{}', tags_updated_at = NOW() WHERE id = $1`, id)
+	if err != nil {
+		slog.Warn("resetModelTags: exec failed", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "reset failed")
+		return
+	}
+	if res.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "model not found")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "reset"})
 }

@@ -47,4 +47,9 @@ export default {
     critical: 'critical',
     unknown: 'unknown',
   },
+  probeAllConfirm: 'Probes für alle {n} Credentials des Modells {model} auslösen?',
+  systemStartAllConfirm: 'Alle Probe-Aufgaben starten? Dabei werden die Bindings aller aktiven Credentials gescannt.',
+  systemStopAllConfirm: 'Alle Probe-Aufgaben stoppen? Bereits übernommene (claimed) Aufgaben laufen noch zu Ende.',
+  systemTriggeredToast: '{n} Aufgaben ausgelöst, {failed} fehlgeschlagen',
+  systemStoppedToast: '{n} Aufgaben aus der Warteschlange entfernt',
 }

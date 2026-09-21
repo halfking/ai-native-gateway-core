@@ -15,8 +15,11 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
+
+const gaugeRefreshInterval = 30 * time.Second
 
 // Dispatcher polls outbox_events and delivers them to ASM via HTTP.
 //
@@ -34,6 +37,12 @@ type Dispatcher struct {
 	maxAttempts  int           // Max retry attempts before DLQ (default: 5)
 	deliverer    *HTTPDeliverer
 	logger       *slog.Logger
+
+	// lastGaugeAt throttles updateGaugeMetrics: the two COUNT(*) probes run
+	// on the dispatch goroutine, so polling them every 5s cycle doubles the
+	// outbox_events read load for a monitoring gauge. 30s staleness is fine.
+	gaugeMu     sync.Mutex
+	lastGaugeAt time.Time
 }
 
 // DispatcherConfig holds configuration for Dispatcher.
@@ -245,10 +254,11 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) (dispatchOutcome, error) {
 	}
 
 	if err := json.Unmarshal(payloadBytes, &env.Payload); err != nil {
-		// Poison-pill event (corrupt payload). markFailed will move it
-		// straight to DLQ after max_attempts, so count both "failed" and
-		// the retry attempt — but skip the duration histogram since the
-		// failure never reached ASM.
+		// Poison-pill event (corrupt payload): markDLQ directly, no retry —
+		// a malformed payload can never succeed, so retrying would only
+		// block the queue head. Count "failed" but skip the duration
+		// histogram since the failure never reached ASM.
+		// (R43: 注释曾误称"max_attempts 后进 DLQ"——实际一步直呼 markDLQ。)
 		d.logger.Error("unmarshal payload failed", "event_id", eventID, "error", err)
 		RecordEventFailed("validation")
 		d.markDLQ(ctx, tx, id, attempts+1, fmt.Sprintf("unmarshal error: %v", err))
@@ -319,8 +329,16 @@ func (d *Dispatcher) markFailed(ctx context.Context, ex execer, id int64, newAtt
 		d.markDLQ(ctx, ex, id, newAttempts, errMsg)
 		return
 	}
-	// Exponential backoff: 2^(attempts-1) seconds
-	backoff := time.Duration(1<<uint(newAttempts-1)) * time.Second
+	// Exponential backoff: 2^(attempts-1) seconds, shift clamped (2026-09-09
+	// audit round 3) — maxAttempts is operator-configurable and a value ≥ 33
+	// would overflow time.Duration into a negative backoff, making
+	// next_retry_at "now" and triggering a tight-retry storm. Mirrors the
+	// webhook.go clamp.
+	shift := uint(newAttempts - 1)
+	if shift > 6 {
+		shift = 6 // cap at 64s
+	}
+	backoff := time.Duration(1<<shift) * time.Second
 	nextRetry := time.Now().Add(backoff)
 	const query = `
 		UPDATE outbox_events
@@ -376,8 +394,16 @@ func classifyError(err error) string {
 }
 
 // updateGaugeMetrics queries current pending and DLQ counts and updates Prometheus gauges.
-// Should be called periodically (e.g., after each poll cycle) for accurate monitoring.
+// Called after each poll cycle but throttled to gaugeRefreshInterval for
+// accurate-enough monitoring without scanning outbox_events every 5s.
 func (d *Dispatcher) updateGaugeMetrics(ctx context.Context) {
+	d.gaugeMu.Lock()
+	if time.Since(d.lastGaugeAt) < gaugeRefreshInterval {
+		d.gaugeMu.Unlock()
+		return
+	}
+	d.lastGaugeAt = time.Now()
+	d.gaugeMu.Unlock()
 	var pendingCount, dlqCount int
 
 	// Count pending events

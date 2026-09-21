@@ -54,6 +54,7 @@ func claimedTaskRows() *pgxmock.Rows {
 func TestStore_ClaimRunnable(t *testing.T) {
 	store, mock := newMockStore(t)
 	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectQuery(`FOR UPDATE SKIP LOCKED`).
 		WithArgs(8, pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "status"}).AddRow("task-1", "retry_scheduled"))
@@ -88,6 +89,7 @@ func TestStore_ClaimRunnable(t *testing.T) {
 func TestStore_ClaimRunnable_EmptyBatch(t *testing.T) {
 	store, mock := newMockStore(t)
 	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectQuery(`FOR UPDATE SKIP LOCKED`).
 		WithArgs(8, pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "status"}))
@@ -103,9 +105,12 @@ func TestStore_ClaimRunnable_EmptyBatch(t *testing.T) {
 func TestStore_RenewLease(t *testing.T) {
 	store, mock := newMockStore(t)
 	until := time.Date(2026, 8, 15, 12, 1, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectExec(`UPDATE durable_llm_tasks`).
 		WithArgs("task-1", "worker-1", int64(3), until, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
 
 	if err := store.RenewLease(context.Background(), "task-1", "worker-1", 3, until); err != nil {
 		t.Fatalf("RenewLease: %v", err)
@@ -116,9 +121,12 @@ func TestStore_RenewLease(t *testing.T) {
 // 返回 ErrLeaseLost，旧 worker 停止执行（doc 18 §11.3）。
 func TestStore_RenewLease_LeaseLost(t *testing.T) {
 	store, mock := newMockStore(t)
+	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectExec(`UPDATE durable_llm_tasks`).
 		WithArgs("task-1", "worker-1", int64(3), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectCommit()
 
 	err := store.RenewLease(context.Background(), "task-1", "worker-1", 3, time.Now())
 	if !errors.Is(err, ErrLeaseLost) {
@@ -133,6 +141,7 @@ func TestStore_Reschedule(t *testing.T) {
 	store, mock := newMockStore(t)
 	next := time.Date(2026, 8, 15, 12, 5, 0, 0, time.UTC)
 	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectQuery(`UPDATE durable_llm_tasks`).
 		WithArgs("task-1", "worker-1", int64(3), next, "quota_limited", "waiting_capacity").
 		WillReturnRows(pgxmock.NewRows([]string{"tenant_id", "request_id", "session_id", "fencing_token"}).
@@ -160,6 +169,7 @@ func TestStore_Reschedule(t *testing.T) {
 func TestStore_Reschedule_LeaseLost(t *testing.T) {
 	store, mock := newMockStore(t)
 	mock.ExpectBegin()
+	expectBypassGUC(mock)
 	mock.ExpectQuery(`UPDATE durable_llm_tasks`).
 		WithArgs(anyArgs(6)...).
 		WillReturnRows(pgxmock.NewRows([]string{"tenant_id", "request_id", "session_id", "fencing_token"}))

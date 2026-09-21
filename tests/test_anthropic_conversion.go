@@ -112,7 +112,7 @@ func testMultiTurnConversation() {
 	if len(content2) == 0 {
 		log.Fatal("❌ 第2条消息的content为空，tool_calls未转换")
 	}
-
+	
 	hasToolUse := false
 	for _, block := range content2 {
 		blockMap, _ := block.(map[string]any)
@@ -134,7 +134,7 @@ func testMultiTurnConversation() {
 	if len(content3) == 0 {
 		log.Fatal("❌ tool result消息的content为空")
 	}
-
+	
 	hasToolResult := false
 	for _, block := range content3 {
 		blockMap, _ := block.(map[string]any)
@@ -152,7 +152,7 @@ func testMultiTurnConversation() {
 	if !ok || len(tools) == 0 {
 		log.Fatal("❌ tools字段缺失或为空")
 	}
-
+	
 	tool1, _ := tools[0].(map[string]any)
 	if tool1["name"] != "get_weather" {
 		log.Fatal("❌ tool名称错误")

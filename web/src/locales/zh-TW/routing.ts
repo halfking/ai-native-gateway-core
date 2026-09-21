@@ -248,6 +248,7 @@ export default {
     loading: '載入中…',
     globalTitle: '全域策略',
     weightsTitle: '綜合得分係數',
+    weightsDisplayOnlyHint: '僅影響診斷預覽介面，不作用於線上路由',
     featuredTitle: '特色模型 (Featured)',
     featuredDescription: '選擇標準模型名稱，將在路由總覽中以 ★ 標記，並可啟用「僅特色」篩選。',
     featuredPlaceholder: '選擇特色模型…',

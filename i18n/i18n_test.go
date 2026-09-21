@@ -38,6 +38,56 @@ var upstreamCredentialKeys = []string{
 	MsgUpstreamQuotaGeneric,
 }
 
+// allMessageKeys is the union of every user-facing code the gateway can emit.
+// Kept in sync with the Msg* constants in messages.go so a new key that is
+// referenced at runtime but never added to a locale catalog fails CI instead
+// of silently falling back to English or the raw key.
+var allMessageKeys = []string{
+	MsgMissingKey,
+	MsgInvalidKey,
+	MsgMissingAuth,
+	MsgRateLimitExceeded,
+	MsgBudgetExhausted,
+	MsgInsufficientCredits,
+	MsgSessionForbidden,
+	MsgSessionAssignFailed,
+	MsgBlocked,
+	MsgContentFilter,
+	MsgContentFilterHint,
+	MsgNoCandidate,
+	MsgInvalidModel,
+	MsgUnsupportedFeature,
+	MsgModelDeprecated,
+	MsgMetaToolError,
+	MsgProviderError,
+	MsgUpstreamCredentialInvalid,
+	MsgUpstreamCredentialRevoked,
+	MsgUpstreamQuotaPeriodic,
+	MsgUpstreamQuotaPermanent,
+	MsgUpstreamQuotaBalance,
+	MsgUpstreamQuotaGeneric,
+	MsgInternalError,
+}
+
+// TestLocaleCatalogsCoverAllMessageKeys asserts every shipped locale carries
+// its OWN translation for every runtime-referenced message key.
+//
+// This is the generalized sibling of
+// TestLocaleCatalogsCoverUpstreamCredentialKeys. It reads the embedded catalog
+// directly (see localeCatalogKeys) because T() silently falls back to English
+// for a key a locale lacks, so a T()-based assertion cannot tell "translated"
+// from "missing and served in English".
+func TestLocaleCatalogsCoverAllMessageKeys(t *testing.T) {
+	for _, loc := range Supported() {
+		keys := localeCatalogKeys(t, loc)
+		for _, key := range allMessageKeys {
+			if _, ok := keys[key]; !ok {
+				t.Errorf("locale %s: catalog is missing key %q (T() would silently serve English/raw key)", loc, key)
+			}
+		}
+	}
+}
+
 // localeCatalogKeys reads the embedded catalog for loc and returns its
 // top-level message keys.
 //
@@ -91,73 +141,6 @@ func TestLocalizerLoadsAllLocales_UpstreamCredentialKeys(t *testing.T) {
 	for _, loc := range Supported() {
 		ctx := WithLocale(context.Background(), loc)
 		for _, key := range upstreamCredentialKeys {
-			got := T(ctx, key)
-			if got == "" {
-				t.Errorf("locale %s: %s resolved empty", loc, key)
-			}
-			if got == key {
-				t.Errorf("locale %s: %s fell back to raw key (catalog not loaded)", loc, key)
-			}
-		}
-	}
-}
-
-// allMessageKeys lists every Msg* constant declared in messages.go. Keeping
-// this list exhaustive means a regression like 2026-08-23 (model_deprecated
-// added to en/zh-CN but missing from ja/ar/de/es/fr) is caught even though
-// no test references that key directly. Add new Msg* constants here as they
-// land in messages.go.
-var allMessageKeys = []string{
-	MsgMissingKey,
-	MsgInvalidKey,
-	MsgMissingAuth,
-	MsgRateLimitExceeded,
-	MsgBudgetExhausted,
-	MsgInsufficientCredits,
-	MsgSessionForbidden,
-	MsgSessionAssignFailed,
-	MsgBlocked,
-	MsgContentFilter,
-	MsgContentFilterHint,
-	MsgNoCandidate,
-	MsgInvalidModel,
-	MsgUnsupportedFeature,
-	MsgModelDeprecated,
-	MsgMetaToolError,
-	MsgProviderError,
-	MsgUpstreamCredentialInvalid,
-	MsgUpstreamCredentialRevoked,
-	MsgUpstreamQuotaPeriodic,
-	MsgUpstreamQuotaPermanent,
-	MsgUpstreamQuotaBalance,
-	MsgUpstreamQuotaGeneric,
-	MsgInternalError,
-}
-
-// TestLocaleCatalogsCoverAllMessageKeys asserts every shipped locale
-// carries its own translation for EVERY Msg* constant. This is the
-// generalisation of TestLocaleCatalogsCoverUpstreamCredentialKeys: it
-// guards against any future key being added to messages.go + en.json +
-// zh-CN.json but only partially propagated to the other 6 locales
-// (which would otherwise be silently served in English).
-func TestLocaleCatalogsCoverAllMessageKeys(t *testing.T) {
-	for _, loc := range Supported() {
-		keys := localeCatalogKeys(t, loc)
-		for _, key := range allMessageKeys {
-			if _, ok := keys[key]; !ok {
-				t.Errorf("locale %s: catalog is missing key %q (T() would silently serve English)", loc, key)
-			}
-		}
-	}
-}
-
-// TestLocalizerLoadsAllLocales_AllMessageKeys is the runtime counterpart
-// of TestLocaleCatalogsCoverAllMessageKeys: T() must resolve each key to
-// a non-empty, non-raw-key string in every locale.
-func TestLocalizerLoadsAllLocales_AllMessageKeys(t *testing.T) {
-	for _, loc := range Supported() {
-		ctx := WithLocale(context.Background(), loc)
-		for _, key := range allMessageKeys {
 			got := T(ctx, key)
 			if got == "" {
 				t.Errorf("locale %s: %s resolved empty", loc, key)

@@ -24,12 +24,14 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -47,7 +49,10 @@ func isCredentialLifecycleStatus(value string) bool {
 }
 
 func setCredentialLifecycleStatus(ctx context.Context, db dbExec, providerID, credID int, status string) (bool, error) {
-	tag, err := db.Exec(ctx, `UPDATE credentials SET lifecycle_status = $1 WHERE id = $2 AND provider_id = $3`, status, credID, providerID)
+	// 2026-08-31: status='deleted' 是终态，lifecycle 通道不允许再翻回
+	// active（UI 抽屉的 lifecycle 切换会走这里，不拦会削弱删除语义；
+	// status 过滤本身仍兜底，这里是双保险）。
+	tag, err := db.Exec(ctx, `UPDATE credentials SET lifecycle_status = $1 WHERE id = $2 AND provider_id = $3 AND status <> 'deleted'`, status, credID, providerID)
 	if err != nil {
 		return false, err
 	}
@@ -59,9 +64,11 @@ func (h *Handler) revealCredential(w http.ResponseWriter, r *http.Request, provi
 	defer cancel()
 
 	var ciphertext []byte
+	// 2026-08-31: 已删（deleted）凭据与已停用（disabled）一样不允许
+	// reveal —— 删除是终态，明文密钥不应再可被取出。
 	err := h.db.QueryRow(ctx, `
 		SELECT secret_ciphertext FROM credentials
-		WHERE id = $1 AND provider_id = $2 AND status <> 'disabled'
+		WHERE id = $1 AND provider_id = $2 AND status NOT IN ('disabled', 'deleted')
 	`, credID, providerID).Scan(&ciphertext)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "credential not found")
@@ -81,6 +88,9 @@ func (h *Handler) revealCredential(w http.ResponseWriter, r *http.Request, provi
 	writeJSON(w, http.StatusOK, map[string]any{
 		"credential_id": credID,
 		"api_key":       plaintext,
+	})
+	h.writeAuditLog(r, "credential.secret_revealed", "credential", credID, map[string]any{
+		"provider_id": providerID,
 	})
 }
 
@@ -115,13 +125,20 @@ func (h *Handler) updateCredentialLifecycle(w http.ResponseWriter, r *http.Reque
 func (h *Handler) resetCredentialAvailability(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.Exec(ctx, `
+	tag, err := h.db.Exec(ctx, `
 		UPDATE credentials
 		SET availability_state = 'ready', availability_recover_at = NULL,
 		    state_reason_code = NULL, state_reason_detail = NULL, state_updated_at = now()
-		WHERE id = $1 AND provider_id = $2
+		WHERE id = $1 AND provider_id = $2 AND status <> 'deleted'
 	`, credID, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "reset availability failed")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
 	provider.InvalidateAllCandidateCache()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "reset"})
 }
@@ -129,11 +146,21 @@ func (h *Handler) resetCredentialAvailability(w http.ResponseWriter, r *http.Req
 func (h *Handler) resetCredentialQuota(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.Exec(ctx, `
-		UPDATE credentials SET quota_state = 'ok', quota_recover_at = NULL
-		WHERE id = $1 AND provider_id = $2
+	tag, err := h.db.Exec(ctx, `
+		UPDATE credentials
+		SET quota_state = 'ok', quota_recover_at = NULL,
+		    state_reason_code = NULL, state_reason_detail = NULL,
+		    state_updated_at = now()
+		WHERE id = $1 AND provider_id = $2 AND status <> 'deleted'
 	`, credID, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "reset quota failed")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
 	provider.InvalidateAllCandidateCache()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "reset"})
 }
@@ -187,23 +214,79 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 	var probeError string
 	var probeHTTPStatus int
 	var probeLatencyMs int
+	// 2026-09-02: typed model-error kind + redacted preview so the admin UI
+	// can render a tailored hint instead of leaking the raw "<html>…"
+	// payload into the credential detail drawer (see CredsTab.vue
+	// health_error_kind branch).
+	var modelsErrorKind string
+	var modelsErrorPreview string
 
 	if decErr != nil {
-		healthStatus = "error"
-		healthError = "decrypt failed"
+		// health_status is constrained to unknown/healthy/warning/unreachable;
+		// keep decryption failures in the reachable operator-facing bucket.
+		healthStatus = "unreachable"
+		healthError = "credential decrypt failed"
+
 		msg := healthError
 		apiModelsErr = &msg
 	} else {
 		start := time.Now()
-		models, source, fetchErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
+		models, source, _, fetchErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
 		healthLatencyMs = int(time.Since(start).Milliseconds())
 		effectiveSource = source
 
 		if fetchErr != nil {
 			healthStatus = "unreachable"
-			healthError = fetchErr.Error()
-			msg := fetchErr.Error()
-			apiModelsErr = &msg
+			// 2026-09-02: previously we piped the raw modelresponse.Error
+			// string straight into health_error. When an upstream
+			// (e.g. sunyun-china2) returns an HTML error page on
+			// /v1/models, the string was "parse models response failed:
+			// invalid character '<' looking for beginning of value
+			// (context: body_bytes=1726)" — completely opaque to the
+			// operator and made the drawer look broken. Now we surface a
+			// short tag + a clean preview so the UI can render a
+			// tailored hint. The original error remains available via
+			// slog below for debugging.
+			var mrErr *modelresponse.Error
+			switch {
+			case errors.As(fetchErr, &mrErr) && mrErr.Kind == modelresponse.ErrorKindNonJSONBody:
+				healthError = "upstream_non_json"
+				preview := modelresponse.Preview(mrErr)
+				msg := "上游 /v1/models 返回了非 JSON 响应（疑似 HTML 错误页）"
+				if preview != "" {
+					msg = msg + "; preview=" + preview
+				}
+				apiModelsErr = &msg
+				modelsErrorKind = modelresponse.ErrorKindNonJSONBody
+				modelsErrorPreview = preview
+				slog.Warn("credential health: upstream returned non-JSON on /v1/models",
+					"credential_id", credID,
+					"provider_id", providerID,
+					"body_bytes", len(mrErr.Body),
+					"preview", preview,
+					"underlying", mrErr.Err,
+				)
+			default:
+				if mrErr != nil {
+					modelsErrorKind = mrErr.Kind
+					modelsErrorPreview = modelresponse.Preview(mrErr)
+					healthError = fmt.Sprintf("models endpoint returned %s", mrErr.Kind)
+					if modelsErrorPreview != "" {
+						healthError += ": " + modelsErrorPreview
+					}
+				} else {
+					var httpErr *modelresponse.HTTPBodyError
+					if errors.As(fetchErr, &httpErr) {
+						healthError = httpErr.Error()
+						modelsErrorKind = "http_error"
+						modelsErrorPreview = httpErr.Preview()
+					} else {
+						healthError = fetchErr.Error()
+					}
+				}
+				msg := healthError
+				apiModelsErr = &msg
+			}
 			modelsStatus = -1
 		} else if len(models) == 0 {
 			healthStatus = "unreachable"
@@ -225,7 +308,7 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 			}
 			modelsStatus = 1
 			if probeModelsEligibleForRouting(source, models) {
-				upserted, failed, _ := h.enrollCredentialModels(ctx, cred.id, models)
+				upserted, failed := h.enrollCredentialModels(ctx, cred.id, models)
 				routingModelsUpserted = upserted
 				if upserted > 0 {
 					provider.InvalidateAllCandidateCache()
@@ -254,9 +337,10 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 						healthError = "chat succeeded; models endpoint format was not recognized"
 					}
 				} else {
-					healthStatus = "degraded"
+					healthStatus = "warning"
 					probeError = fmt.Sprintf("chat endpoint returned %d: %s", chatResult.statusCode, chatResult.errorMessage)
 				}
+
 			}
 		}
 	}
@@ -293,6 +377,9 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 		"routing_models_upserted":  routingModelsUpserted,
 		"discovery_strategy":       cred.discoveryStrategy,
 		"models_endpoint_template": cred.modelsEndpointTpl,
+		// 2026-09-02: see modelsErrorKind / modelsErrorPreview above.
+		"models_error_kind":    modelsErrorKind,
+		"models_error_preview": modelsErrorPreview,
 	}, nil
 }
 
@@ -319,6 +406,8 @@ func (h *Handler) batchRecoverCredentials(w http.ResponseWriter, r *http.Request
 		WHERE provider_id = $1
 		  AND availability_state IN ('cooling','unreachable')
 		  AND lifecycle_status = 'active'
+		  -- 2026-08-31: 'deleted' 终态凭据不参与批量恢复
+		  AND status = 'active'
 	`, providerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "credential recovery failed")
@@ -334,6 +423,8 @@ func (h *Handler) batchRecoverCredentials(w http.ResponseWriter, r *http.Request
 		    SELECT id FROM credentials
 		    WHERE provider_id = $1 AND availability_state = 'ready'
 		      AND lifecycle_status = 'active'
+		      -- 2026-08-31: 已删凭据的 offer 不得被批量恢复复活
+		      AND status = 'active'
 		) AND unavailable_reason LIKE 'auto_%%'
 	`, providerID)
 	recoveredOffers := 0

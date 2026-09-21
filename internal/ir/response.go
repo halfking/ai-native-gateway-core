@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // InternalResponse is the unified intermediate representation for upstream
@@ -18,80 +21,95 @@ import (
 // Complexity reduced from O(N²) to O(N): adding a new protocol only requires
 // one Parser + one Serializer.
 type InternalResponse struct {
-	ID             string
-	Model          string
-	Created        int64  // Unix timestamp (OpenAI style); 0 if not available
-	Role           string // "assistant" (Anthropic uses top-level role field)
-	SourceProtocol string // "openai-chat" | "anthropic-messages" — which upstream we parsed
+	ID             string `json:"id"`
+	Model          string `json:"model"`
+	Created        int64  `json:"created"`         // Unix timestamp (OpenAI style); 0 if not available
+	Role           string `json:"role"`            // "assistant" (Anthropic uses top-level role field)
+	SourceProtocol string `json:"source_protocol"` // "openai-chat" | "anthropic-messages" — which upstream we parsed
 
 	// Content is the normalized message content. Both OpenAI messages[] and
 	// Anthropic content[] are normalized into this structure.
-	Content []ResponseContentBlock
+	Content []ResponseContentBlock `json:"content,omitempty"`
 
 	// ToolCalls is the normalized tool call list. OpenAI's message.tool_calls
 	// and Anthropic's content[].tool_use are both normalized here.
-	ToolCalls []ResponseToolCall
+	ToolCalls []ResponseToolCall `json:"tool_calls,omitempty"`
 
 	// ReasoningContent holds extended thinking (Claude) from OpenAI's
 	// reasoning_content or Anthropic's content[].thinking blocks.
-	ReasoningContent string
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 
 	// FinishReason is the unified stop reason.
 	// OpenAI: "stop" | "length" | "content_filter" | "tool_calls"
 	// Anthropic: "end_turn" | "stop_sequence" | "max_tokens" | "tool_use"
 	// We store the OpenAI form; Anthropic values are mapped via mapFinishReason.
-	FinishReason string
+	FinishReason string `json:"finish_reason"`
 
 	// Usage statistics (both protocols have compatible usage fields)
-	Usage ResponseUsage
+	Usage ResponseUsage `json:"usage"`
 
 	// Extensions carries non-standard top-level fields extracted by the
 	// transport layer for lossless round-trip conversion (same semantics as
 	// InternalRequest.Extensions).
-	Extensions map[string]json.RawMessage
+	Extensions map[string]json.RawMessage `json:"extensions,omitempty"`
+
+	// UnknownBlockTypes lists response content block types the parser does
+	// not model (Anthropic "server_tool_use", "web_search_tool_result",
+	// "container_upload", future upstream additions). The types are recorded
+	// so consumers can distinguish "upstream sent nothing" from "upstream
+	// sent content the gateway cannot represent" — 2026-09-12 audit P1:
+	// unknown-only responses used to flatten into an empty parse and get
+	// misclassified as empty_response, demoting the provider and refusing
+	// billing for real upstream work. Deduped, capped at 8.
+	UnknownBlockTypes []string `json:"unknown_block_types,omitempty"`
 }
 
 // ResponseContentBlock represents a single content element in a response.
 // Type values: "text" | "tool_use" | "thinking" | "redacted_thinking"
 type ResponseContentBlock struct {
-	Type string // Discriminant
+	Type string `json:"type"` // Discriminant
 
 	// type=text
-	Text string
+	Text string `json:"text,omitempty"`
 
 	// type=tool_use
-	ID    string
-	Name  string
-	Input json.RawMessage // Already-serialized JSON object
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"` // Already-serialized JSON object
 
 	// type=thinking / redacted_thinking
-	Thinking string
+	Thinking string `json:"thinking,omitempty"`
+
+	// Data carries the encrypted payload of type=redacted_thinking blocks
+	// (Anthropic wire key "data"). A-#17: without it redacted blocks were
+	// dropped on the response parse → serialize round-trip.
+	Data string `json:"data,omitempty"`
 
 	// Signature is the Anthropic chain-of-thought verification token
 	// returned with thinking blocks. Populated only for type=thinking.
 	// PR-2 (2026-06-24): required for opus-4-8 multi-turn round-trip —
 	// without it the next turn is rejected with HTTP 400 and the
 	// model loses the prior tool_use context.
-	Signature string
+	Signature string `json:"signature,omitempty"`
 }
 
 // ResponseToolCall represents a tool call from the assistant.
 type ResponseToolCall struct {
-	ID   string
-	Name string
+	ID   string `json:"id"`
+	Name string `json:"name"`
 	// Arguments is the JSON-stringified tool input. Populated from
 	// OpenAI's `tool_calls[].function.arguments` verbatim so non-JSON
 	// strings (e.g. provider-specific edge cases) round-trip without
 	// reinterpretation. For Anthropic parsed via ParseAnthropicResponse
 	// this is the marshalled `tool_use.input` and InputRaw carries the
 	// same payload for callers that need the raw bytes.
-	Arguments string
+	Arguments string `json:"arguments"`
 	// InputRaw is the raw JSON of the tool input. It is populated by
 	// the parser (Anthropic `tool_use.input`, OpenAI
 	// `function.arguments` parsed as JSON) and preferred by serializers
 	// that want a lossless wire-round-trip. May be empty if the upstream
 	// payload could not be parsed as a JSON object.
-	InputRaw json.RawMessage
+	InputRaw json.RawMessage `json:"input_raw,omitempty"`
 }
 
 // ResponseUsage holds token usage statistics.
@@ -100,29 +118,57 @@ type ResponseToolCall struct {
 // for accurate billing across all providers.
 type ResponseUsage struct {
 	// Basic token counts (always present)
-	PromptTokens     int
-	CompletionTokens int
-	TotalTokens      int
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 
 	// Cache tokens (Anthropic, OpenAI with prompt caching)
 	// nil = not applicable for this provider/request
-	CacheReadTokens  *int // Cache hit tokens (billed at reduced rate)
-	CacheWriteTokens *int // Cache creation tokens (billed at premium rate)
+	CacheReadTokens  *int `json:"cache_read_tokens,omitempty"`  // Cache hit tokens (billed at reduced rate)
+	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"` // Cache creation tokens (billed at premium rate)
 
 	// Reasoning tokens (DeepSeek R1, OpenAI reasoning models)
-	ReasoningTokens *int
+	ReasoningTokens *int `json:"reasoning_tokens,omitempty"`
 
 	// Multimodal token breakdowns (Vision, Audio, Video)
 	// Enables separate billing for different modalities
-	ImageTokens *int // Vision input tokens
-	AudioTokens *int // Audio input/output tokens
-	VideoTokens *int // Video input tokens
+	ImageTokens *int `json:"image_tokens,omitempty"` // Vision input tokens
+	AudioTokens *int `json:"audio_tokens,omitempty"` // Audio input/output tokens
+	VideoTokens *int `json:"video_tokens,omitempty"` // Video input tokens
 
 	// Provider-specific token counts (e.g., Doubao seed_token_usage)
-	ProviderTokens *int
+	ProviderTokens *int `json:"provider_tokens,omitempty"`
 }
 
 // ─── Parse ─────────────────────────────────────────────────────────────────
+
+// maxUnknownBlockTypes bounds UnknownBlockTypes; the list is for
+// classification and logging, not lossless inventory.
+const maxUnknownBlockTypes = 8
+
+// OnlyUnsupportedBlocks reports whether the response carried no content the
+// gateway can represent (no text / tool_use / thinking) but DID carry unknown
+// content block types. Such a response must not be classified as an empty
+// upstream response: the upstream did real billable work, the gateway lacks
+// the conversion for what it returned.
+func (ir *InternalResponse) OnlyUnsupportedBlocks() bool {
+	return len(ir.Content) == 0 && len(ir.ToolCalls) == 0 &&
+		ir.ReasoningContent == "" && len(ir.UnknownBlockTypes) > 0
+}
+
+// recordUnknownBlockType deduplicates and appends one unsupported block/item
+// type name (bounded by maxUnknownBlockTypes). Audit R20 (2026-09-13): this
+// is now shared by ALL response parsers (Anthropic, OpenAI chat, Responses,
+// Gemini) — previously only ParseAnthropicResponse recorded unknowns, so an
+// unknown-only Responses/Gemini payload collapsed into an empty-looking
+// parse and could be misclassified as an empty upstream response.
+func (ir *InternalResponse) recordUnknownBlockType(typ string) {
+	if typ == "" || len(ir.UnknownBlockTypes) >= maxUnknownBlockTypes ||
+		slices.Contains(ir.UnknownBlockTypes, typ) {
+		return
+	}
+	ir.UnknownBlockTypes = append(ir.UnknownBlockTypes, typ)
+}
 
 // ParseAnthropicResponse parses an Anthropic Messages API response body into IR.
 func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
@@ -142,6 +188,7 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 			Input     json.RawMessage `json:"input"`
 			Thinking  string          `json:"thinking"`
 			Signature string          `json:"signature"`
+			Data      string          `json:"data"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 		Usage      struct {
@@ -213,6 +260,13 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 			})
 		case "thinking":
 			if c.Thinking != "" {
+				// R12 候选4: join with a newline — multiple thinking blocks
+				// concatenated without a separator glued texts together
+				// ("thought1thought2"); this also matches the semantics the
+				// retired hand-written fallback converter used.
+				if ir.ReasoningContent != "" {
+					ir.ReasoningContent += "\n"
+				}
 				ir.ReasoningContent += c.Thinking
 			}
 			// PR-2 (2026-06-24): always append the thinking block, even
@@ -225,6 +279,25 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 				Thinking:  c.Thinking,
 				Signature: c.Signature,
 			})
+		case "redacted_thinking":
+			// A-#17 (audit round2): redacted blocks were dropped entirely,
+			// so the next-turn thinking chain could 400. Preserve the
+			// encrypted payload (fall back to the thinking key).
+			payload := c.Data
+			if payload == "" {
+				payload = c.Thinking
+			}
+			ir.Content = append(ir.Content, ResponseContentBlock{
+				Type: "redacted_thinking",
+				Data: payload,
+			})
+		default:
+			// Unknown block type (server_tool_use, web_search_tool_result,
+			// container_upload, ...). Fabricating content from it would be
+			// semantically unsafe (these blocks carry tool payloads, not
+			// text), so record the type and let the empty-response guards
+			// attribute the response as unsupported rather than empty.
+			ir.recordUnknownBlockType(c.Type)
 		}
 	}
 
@@ -328,6 +401,30 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 		choice := src.Choices[0]
 		ir.Role = choice.Message.Role
 		ir.FinishReason = choice.FinishReason
+
+		// 2026-08-28 P1-GLM-2: Zhipu GLM uses finish_reason as an error
+		// channel (network_error/sensitive/model_context_window_exceeded).
+		// Streaming path already detects these (ae1ecaedf); add detection
+		// to non-stream path so HTTP 200 responses with these finish_reason
+		// values are classified as errors rather than silently succeeding.
+		switch choice.FinishReason {
+		case "network_error":
+			return nil, &ParseError{
+				Kind:    errorsx.KindNetwork,
+				Message: "GLM network_error",
+			}
+		case "sensitive":
+			return nil, &ParseError{
+				Kind:    errorsx.KindContentFilter,
+				Message: "GLM content filter: sensitive",
+			}
+		case "model_context_window_exceeded":
+			return nil, &ParseError{
+				Kind:    errorsx.KindContextLength,
+				Message: "GLM context window exceeded",
+			}
+		}
+
 		if choice.Message.ReasoningContent != "" {
 			ir.ReasoningContent = choice.Message.ReasoningContent
 		}
@@ -341,7 +438,7 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 		case []any:
 			for _, item := range c {
 				if m, ok := item.(map[string]any); ok {
-					ir.Content = append(ir.Content, parseOpenAIResponseContentBlock(m))
+					ir.Content = append(ir.Content, parseOpenAIResponseContentBlock(ir, m))
 				}
 			}
 		}
@@ -375,8 +472,13 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 	return ir, nil
 }
 
-// parseOpenAIResponseContentBlock parses a single OpenAI content block into IR format.
-func parseOpenAIResponseContentBlock(m map[string]any) ResponseContentBlock {
+// parseOpenAIResponseContentBlock parses a single OpenAI-compatible content
+// block into IR format. Qwen/DashScope use {"text":"..."} without the
+// OpenAI Responses API's type:"text" discriminator. Unsupported payload
+// types (image_url, input_audio, ...) keep their type name on the block but
+// drop the payload — recordUnknownBlockType makes that loss visible to the
+// empty-response guards.
+func parseOpenAIResponseContentBlock(ir *InternalResponse, m map[string]any) ResponseContentBlock {
 	typ, _ := m["type"].(string)
 	switch typ {
 	case "text":
@@ -386,7 +488,31 @@ func parseOpenAIResponseContentBlock(m map[string]any) ResponseContentBlock {
 		id, _ := m["id"].(string)
 		name, _ := m["name"].(string)
 		inputRaw, _ := json.Marshal(m["input"])
+		// R34 (2026-09-17 audit): content-array tool calls on openai-
+		// compatible upstreams (Qwen/DashScope style) never populate the
+		// message-level tool_calls field, so serializers that emit tools
+		// only from ir.ToolCalls (openai chat, responses) dropped them
+		// entirely. Register on both surfaces; serializers dedup by ID.
+		ir.ToolCalls = append(ir.ToolCalls, ResponseToolCall{
+			ID:        id,
+			Name:      name,
+			Arguments: string(inputRaw),
+			InputRaw:  inputRaw,
+		})
 		return ResponseContentBlock{Type: "tool_use", ID: id, Name: name, Input: inputRaw}
+	case "refusal":
+		// R21 (2026-09-13, closes R16 P2-1): the refusal TEXT used to be
+		// dropped here — a refusal-only response collapsed to an empty-shell
+		// block with no semantics, which downstream guards could mis-count as
+		// an empty-but-successful turn. Preserve the text like a text block.
+		text, _ := m["refusal"].(string)
+		return ResponseContentBlock{Type: "refusal", Text: text}
+	case "":
+		if text, ok := m["text"].(string); ok {
+			return ResponseContentBlock{Type: "text", Text: text}
+		}
+	default:
+		ir.recordUnknownBlockType(typ)
 	}
 	return ResponseContentBlock{Type: typ}
 }
@@ -418,7 +544,19 @@ func SerializeOpenAIResponse(ir *InternalResponse, clientModel string) ([]byte, 
 
 	// Tool calls
 	var toolCalls []map[string]any
+	// audit #11: count the calls the unified empty-name rejection drops so an
+	// all-nameless tool_calls turn can be downgraded below instead of
+	// serializing as a tool-call turn with zero calls.
+	droppedNameless := 0
 	for _, tc := range ir.ToolCalls {
+		// Unified empty-name rejection (2026-09-13): a complete-call wire
+		// format (chat.completions tool_calls entry) requires id and
+		// function.name. Emitting an empty name produces an SDK-side
+		// validation error; the Gemini serializer already had this guard.
+		if tc.Name == "" {
+			droppedNameless++
+			continue
+		}
 		// 2026-07-27: Prefer the preserved raw JSON payload. Fall back to
 		// the legacy string form when the parser couldn't produce valid
 		// JSON (e.g. non-object tool inputs).
@@ -446,6 +584,13 @@ func SerializeOpenAIResponse(ir *InternalResponse, clientModel string) ([]byte, 
 
 	finishReason := ir.FinishReason
 	if finishReason == "" {
+		finishReason = "stop"
+	}
+	// audit #11: a tool_calls finish whose calls were ALL dropped by the
+	// nameless guard would hand the client a tool-call turn with an empty
+	// tool_calls array — a protocol breach. Degrade to a plain "stop" so the
+	// client sees a (degenerate but legal) message turn.
+	if droppedNameless > 0 && len(toolCalls) == 0 && finishReason == "tool_calls" {
 		finishReason = "stop"
 	}
 
@@ -479,12 +624,19 @@ func buildOpenAIResponseContent(ir *InternalResponse) any {
 		switch c.Type {
 		case "text":
 			blocks = append(blocks, map[string]any{"type": "text", "text": c.Text})
+		case "refusal":
+			// R30 (2026-09-16, closes IR-audit P1-1): refusal blocks are
+			// preserved at parse time (R21) but every serializer dropped
+			// them — a refusal-only response collapsed to `content: []`,
+			// an empty-shell success. OpenAI chat has no refusal content
+			// part; emit the refusal text as a plain text part so the
+			// client sees the model's refusal instead of silence.
+			blocks = append(blocks, map[string]any{"type": "text", "text": c.Text})
 		case "tool_use":
-			blocks = append(blocks, map[string]any{
-				"type": "tool_use",
-				"id":   c.ID,
-				"name": c.Name,
-			})
+			// 审计 R8 P2：OpenAI chat 客户端的工具调用唯一规范形态是
+			// tool_calls 数组（下方已发射，带完整 input）。content 数组里
+			// 的 tool_use 块（且无 input 字段）是 Anthropic 形态的残留，
+			// 严格 SDK 校验会拒绝——不再重复发射。
 		}
 	}
 
@@ -496,6 +648,12 @@ func buildOpenAIResponseContent(ir *InternalResponse) any {
 		}
 	}
 	for _, tc := range ir.ToolCalls {
+		// Unified empty-name rejection: same invariant as the OpenAI
+		// serializer — a terminal tool_use block without a name violates
+		// the Anthropic wire format.
+		if tc.Name == "" {
+			continue
+		}
 		if !existingIDs[tc.ID] {
 			blocks = append(blocks, map[string]any{
 				"type": "tool_use",
@@ -565,6 +723,22 @@ func SerializeAnthropicResponse(ir *InternalResponse, clientModel string) ([]byt
 
 	// Build stop_reason (Anthropic form)
 	stopReason := mapFinishReasonToAnthropic(ir.FinishReason)
+	// audit #11: mirror of the OpenAI serializer guard. buildAnthropicResponseContent
+	// drops nameless tool calls (unified empty-name rejection); when that drop
+	// empties an otherwise tool_calls turn, stop_reason=tool_use would make
+	// Anthropic clients wait for tool results that can never arrive. Degrade
+	// to end_turn.
+	droppedNameless, emitted := 0, 0
+	for _, tc := range ir.ToolCalls {
+		if tc.Name == "" {
+			droppedNameless++
+		} else {
+			emitted++
+		}
+	}
+	if droppedNameless > 0 && emitted == 0 && ir.FinishReason == "tool_calls" {
+		stopReason = mapFinishReasonToAnthropic("stop")
+	}
 
 	out := map[string]any{
 		"id":            ir.ID,
@@ -608,6 +782,11 @@ func buildAnthropicResponseContent(ir *InternalResponse) []map[string]any {
 		switch c.Type {
 		case "text":
 			content = append(content, map[string]any{"type": "text", "text": c.Text})
+		case "refusal":
+			// R30 (2026-09-16, closes IR-audit P1-1): same serializer-side
+			// refusal drop as the OpenAI builder — Anthropic Messages has no
+			// refusal block type, so surface the text verbatim.
+			content = append(content, map[string]any{"type": "text", "text": c.Text})
 		case "tool_use":
 			var input any
 			if c.Input != nil {
@@ -631,6 +810,11 @@ func buildAnthropicResponseContent(ir *InternalResponse) []map[string]any {
 				thinking["signature"] = c.Signature
 			}
 			content = append(content, thinking)
+		case "redacted_thinking":
+			content = append(content, map[string]any{
+				"type": "redacted_thinking",
+				"data": c.Data,
+			})
 		}
 	}
 
@@ -642,6 +826,11 @@ func buildAnthropicResponseContent(ir *InternalResponse) []map[string]any {
 		}
 	}
 	for _, tc := range ir.ToolCalls {
+		// Unified empty-name rejection: same invariant as the OpenAI
+		// serializer — this is the full-JSON Anthropic path.
+		if tc.Name == "" {
+			continue
+		}
 		if existingIDs[tc.ID] {
 			continue
 		}
@@ -713,6 +902,23 @@ func SerializeResponsesResponse(ir *InternalResponse, clientModel string) ([]byt
 
 	status := mapFinishReasonToResponsesStatus(ir.FinishReason)
 
+	// audit #11 (Responses-side nameless downgrade): an all-nameless tool_calls
+	// turn drops every function_call item below; a status=completed envelope
+	// with an empty output array would be a false success (the upstream did
+	// emit suppressed content). Degrade to incomplete, mirroring the streaming
+	// degenerate-stream guard in responsesScaffold.writeFinalEvents.
+	droppedNameless, emitted := 0, 0
+	for _, tc := range ir.ToolCalls {
+		if tc.Name == "" {
+			droppedNameless++
+		} else {
+			emitted++
+		}
+	}
+	if droppedNameless > 0 && emitted == 0 && ir.FinishReason == "tool_calls" {
+		status = "incomplete"
+	}
+
 	output := buildResponsesResponseOutput(ir, msgID, status)
 
 	resp := map[string]any{
@@ -728,14 +934,40 @@ func SerializeResponsesResponse(ir *InternalResponse, clientModel string) ([]byt
 			"total_tokens":  ir.Usage.TotalTokens,
 		},
 	}
+	// audit #11: a status=incomplete envelope without incomplete_details is a
+	// protocol gap — Responses SDK clients contract on the reason. Map the
+	// finish reason to the Responses API reason vocabulary; omit the field
+	// when the finish reason carries no explicit incomplete cause.
+	if status == "incomplete" {
+		if reason := MapFinishReasonToResponsesIncompleteReason(ir.FinishReason); reason != "" {
+			resp["incomplete_details"] = map[string]any{"reason": reason}
+		}
+	}
 
 	return json.Marshal(resp)
 }
 
+// MapFinishReasonToResponsesIncompleteReason maps a unified (OpenAI-form)
+// finish reason to the Responses API incomplete_details.reason value
+// (audit #11). It is the inverse of the parse-side mapping in
+// response_protocols.go:mapResponsesStatus, so reason → finish → reason
+// round-trips. Returns "" when the finish reason carries no explicit
+// incomplete cause; callers omit the incomplete_details field then.
+func MapFinishReasonToResponsesIncompleteReason(reason string) string {
+	switch reason {
+	case "length", "max_tokens":
+		return "max_output_tokens"
+	case "content_filter", "refusal":
+		return "content_filter"
+	default:
+		return ""
+	}
+}
+
 // buildResponsesResponseOutput assembles the Responses API `output[]` array
 // from IR. Ordering mirrors what domains/streaming/responses.go previously
-// hand-wrote: reasoning first (if any), then either a single message item
-// or one function_call item per tool call.
+// hand-wrote: reasoning first (if any), then a message item (also emitted
+// alongside tool calls when the model narrates), else one function_call per tool call.
 func buildResponsesResponseOutput(ir *InternalResponse, msgID, status string) []map[string]any {
 	output := make([]map[string]any, 0, 2)
 
@@ -750,16 +982,42 @@ func buildResponsesResponseOutput(ir *InternalResponse, msgID, status string) []
 		})
 	}
 
-	// Aggregate text content from IR.Content blocks (type=text).
+	// Aggregate text content from IR.Content blocks (type=text). Refusal
+	// blocks (R30, closes IR-audit P1-1) join the same text stream so a
+	// refusal-only response still reaches Responses clients as output_text
+	// instead of an empty message.
 	textContent := ""
 	for _, c := range ir.Content {
-		if c.Type == "text" {
+		if c.Type == "text" || c.Type == "refusal" {
 			textContent += c.Text
 		}
 	}
 
 	if len(ir.ToolCalls) > 0 {
+		// 2026-09-08 audit: a response that speaks BEFORE calling tools
+		// ("让我先看一下…") used to lose its prose entirely here — the early
+		// return only emitted function_call items and textContent became a
+		// dead variable. Responses clients contract on the accompanying
+		// message item for the assistant's narration, so emit it first.
+		if textContent != "" {
+			output = append(output, map[string]any{
+				"type":   "message",
+				"id":     msgID,
+				"status": status,
+				"role":   "assistant",
+				"content": []map[string]any{{
+					"type":        "output_text",
+					"text":        textContent,
+					"annotations": []any{},
+				}},
+			})
+		}
 		for index, tc := range ir.ToolCalls {
+			// Unified empty-name rejection: a function_call output item
+			// without a name is not a legal Responses API item.
+			if tc.Name == "" {
+				continue
+			}
 			item := map[string]any{
 				"type":      "function_call",
 				"id":        msgID + "_fc_" + itoa(index),
@@ -950,7 +1208,17 @@ func SerializeGeminiResponse(irResp *InternalResponse, clientModel string) ([]by
 			}
 		case "thinking":
 			if c.Thinking != "" {
-				parts = append(parts, map[string]any{"thought": c.Thinking})
+				// R34: real Gemini thought parts are {"text": ..., "thought":
+				// true}; "thought" carrying the text was never a client shape.
+				parts = append(parts, map[string]any{"text": c.Thinking, "thought": true})
+			}
+		case "refusal":
+			// R34 (closes R30 IR P1 residue): the refusal fix (692205664)
+			// covered the openai/anthropic/responses serializers but missed
+			// this one — a refusal-only response still collapsed to an empty
+			// parts array for Gemini clients.
+			if c.Text != "" {
+				parts = append(parts, map[string]any{"text": c.Text})
 			}
 		}
 	}
@@ -962,7 +1230,7 @@ func SerializeGeminiResponse(irResp *InternalResponse, clientModel string) ([]by
 		}
 	}
 	for _, tc := range irResp.ToolCalls {
-		if tc.ID == "" || tc.Name == "" {
+		if tc.Name == "" {
 			continue
 		}
 		if emittedToolIDs[tc.ID] {

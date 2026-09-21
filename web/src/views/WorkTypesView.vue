@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -16,6 +17,7 @@ import {
 import { probeModel, type ProbeResult } from '../api'
 import { useL1TaskTypes } from '../composables/useL1TaskTypes'
 import ModelPicker from '../components/ModelPicker.vue'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -375,7 +377,7 @@ async function toggleEnabled() {
   if (!detail.value || !detailKey.value) return
   const next = !detail.value.enabled
   const action = next ? t('workTypes.detail.errors.confirmEnable') : t('workTypes.detail.errors.confirmDisable')
-  if (!next && !confirm(t('workTypes.detail.errors.toggleConfirm', { action, name: detail.value.label }))) return
+  if (!next && !(await confirmDialog(t('workTypes.detail.errors.toggleConfirm', { action, name: detail.value.label })))) return
   try {
     if (next) {
       await updateWorkType(detailKey.value, { enabled: true })
@@ -524,7 +526,7 @@ watch(activeTab, (tab) => {
         <span class="chip">{{ t('workTypes.topBar.chipAuto24h') }} <strong>{{ stats?.total_auto ?? audit.total_auto_requests }}</strong></span>
         <span class="chip">{{ t('workTypes.topBar.chipType') }} <strong>{{ workTypes.length || wtStatsEntries.length }}</strong></span>
         <span class="chip">{{ t('workTypes.topBar.chipSuccessRate') }} <strong>{{ fmt(audit.success_rate * 100, 1) }}%</strong></span>
-        <span v-if="syncMeta?.last_synced_at" class="chip">{{ t('workTypes.topBar.chipLastSync') }} <strong>{{ new Date(syncMeta.last_synced_at).toLocaleString() }}</strong></span>
+        <span v-if="syncMeta?.last_synced_at" class="chip">{{ t('workTypes.topBar.chipLastSync') }} <strong>{{ formatDateTime(syncMeta.last_synced_at) }}</strong></span>
       </div>
     </div>
 
@@ -595,7 +597,7 @@ watch(activeTab, (tab) => {
               <thead><tr><th>{{ t('workTypes.overview.decisionsTableTime') }}</th><th>{{ t('workTypes.overview.decisionsTableL1') }}</th><th>{{ t('workTypes.overview.decisionsTableProfile') }}</th><th>{{ t('workTypes.overview.decisionsTableModel') }}</th><th>{{ t('workTypes.overview.decisionsTableStatus') }}</th></tr></thead>
               <tbody>
                 <tr v-for="d in decisions" :key="d.request_id">
-                  <td>{{ new Date(d.ts).toLocaleTimeString() }}</td>
+                  <td>{{ formatTimeOnly(d.ts) }}</td>
                   <td><span class="badge badge-blue">{{ d.task_type || '-' }}</span></td>
                   <td>{{ d.auto_profile || '-' }}</td>
                   <td class="model-name">{{ d.outbound_model || d.auto_decision?.chosen_model || '-' }}</td>
@@ -1015,7 +1017,7 @@ watch(activeTab, (tab) => {
 }
 .layer-tag.l1 { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent-h); }
 .layer-tag.l2 { background: var(--success-bd); color: var(--success); }
-.layer-tag.intent-tag { background: rgba(210,153,34,.22); color: var(--warning); width: 26px; }
+.layer-tag.intent-tag { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); width: 26px; }
 
 .detail-section--intent { display: flex; flex-direction: column; gap: 8px; }
 .intent-hint { margin: 0; font-size: 11px; line-height: 1.4; }
@@ -1402,7 +1404,7 @@ watch(activeTab, (tab) => {
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .compact-alert { margin-top: 8px; padding: 8px; font-size: 11px; }
 
-@media (max-width: 960px) {
+@media (max-width: 1024px) {
   .overview-grid { grid-template-columns: 1fr; }
   .overview-grid .span-2 { grid-column: span 1; }
   .detail-grid { grid-template-columns: 1fr; }

@@ -122,6 +122,13 @@ export default {
     subtitle: 'View bound license status, expiry, and device quotas for this instance',
   },
   upgrade: {
+    contactAdminButton: '聯絡管理員套用升級',
+
+    notifyAdminBody: '請聯絡管理員透過 /admin/autoupdate 套用此升級。客戶入口無法直接執行升級。',
+    notifyAdminTitle: '需要管理員介入',
+    notifyAdminOk: '我知道了',
+    notifyAdminCopy: '複製版本號',
+
     title: 'Software upgrade',
     subtitle: 'Check for updates; download offline packages from the download page',
   },

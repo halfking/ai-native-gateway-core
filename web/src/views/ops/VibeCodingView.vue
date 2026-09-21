@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
+import { fmtDateTime24h } from '../../i18n/useFormat'
 import {
   getVibeCodingProjects,
   createVibeCodingProject,
@@ -16,6 +17,11 @@ import {
 
 import { useEnumLabel } from '../../composables/useEnumLabel'
 
+
+// 2026-09-13 P5：补齐模板使用的 el-* 组件注册（修复运行时 resolve 失败）
+import { ElBadge, ElButton, ElCard, ElDescriptions, ElDescriptionsItem, ElDivider, ElForm, ElFormItem, ElInput, ElTable, ElTableColumn, ElTag } from 'element-plus'
+// 2026-09-13：弹层壳由 el-dialog 收敛到 ui/AppModal（EP 表单/表格体保留）
+import AppModal from '../../components/ui/AppModal.vue'
 const { t } = useI18n()
 const enumLabel = useEnumLabel()
 const vibeStatusLabel = (value?: string | null) => enumLabel('ops.vibecoding.status', value)
@@ -163,10 +169,6 @@ function severityType(severity: string) {
   return map[severity] || 'info'
 }
 
-function formatDate(date: string) {
-  return new Date(date).toLocaleString()
-}
-
 onMounted(load)
 </script>
 
@@ -196,11 +198,11 @@ onMounted(load)
           </template>
         </el-table-column>
         <el-table-column prop="created_at" :label="t('common.createdAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.created_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.created_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="200" fixed="right">
           <template #default="scope">
-            <el-button type="primary" size="small" @click="openSessionDialog(scope?.row)">
+            <el-button type="primary" size="small" @click="openSessionDialog(scope?.row as VibeCodingProject)">
               {{ t('ops.vibecoding.newSession') }}
             </el-button>
             <el-button size="small" @click="selectedProjectId = scope?.row?.id">
@@ -232,10 +234,10 @@ onMounted(load)
           </template>
         </el-table-column>
         <el-table-column prop="created_at" :label="t('ops.vibecoding.startedAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.created_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.created_at) }}</template>
         </el-table-column>
         <el-table-column prop="completed_at" :label="t('ops.vibecoding.endedAt')" width="160">
-          <template #default="scope">{{ scope?.row?.completed_at ? formatDate(scope?.row?.completed_at) : '—' }}</template>
+          <template #default="scope">{{ scope?.row?.completed_at ? fmtDateTime24h(scope?.row?.completed_at) : '—' }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="140" fixed="right">
           <template #default="scope">
@@ -269,20 +271,20 @@ onMounted(load)
         </el-table-column>
         <el-table-column :label="t('ops.vibecoding.issues')" width="80">
           <template #default="scope">
-            <el-badge :value="reviewIssues(scope?.row).length" :type="reviewIssues(scope?.row).length > 0 ? 'danger' : 'success'" />
+            <el-badge :value="reviewIssues(scope?.row as CodeReview).length" :type="reviewIssues(scope?.row as CodeReview).length > 0 ? 'danger' : 'success'" />
           </template>
         </el-table-column>
         <el-table-column :label="t('ops.vibecoding.suggestions')" width="80">
           <template #default="scope">
-            <el-badge :value="reviewSuggestions(scope?.row).length" type="info" />
+            <el-badge :value="reviewSuggestions(scope?.row as CodeReview).length" type="info" />
           </template>
         </el-table-column>
         <el-table-column prop="created_at" :label="t('ops.vibecoding.reviewedAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.created_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.created_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="100" fixed="right">
           <template #default="scope">
-            <el-button size="small" @click="viewReviewDetail(scope?.row)">
+            <el-button size="small" @click="viewReviewDetail(scope?.row as CodeReview)">
               {{ t('common.detail') }}
             </el-button>
           </template>
@@ -291,10 +293,10 @@ onMounted(load)
     </el-card>
 
     <!-- Create Project Dialog -->
-    <el-dialog
+    <AppModal
       v-model="showProjectDialog"
       :title="t('ops.vibecoding.createProjectTitle')"
-      width="500px"
+      size="sm"
     >
       <el-form :model="projectForm" label-width="120px">
         <el-form-item :label="t('ops.vibecoding.projectName')" required>
@@ -313,13 +315,13 @@ onMounted(load)
           {{ t('common.create') }}
         </el-button>
       </template>
-    </el-dialog>
+    </AppModal>
 
     <!-- Create Session Dialog -->
-    <el-dialog
+    <AppModal
       v-model="showSessionDialog"
       :title="t('ops.vibecoding.createSessionTitle')"
-      width="500px"
+      size="sm"
     >
       <el-form :model="sessionForm" label-width="120px">
         <el-form-item :label="t('ops.vibecoding.taskType')" required>
@@ -332,13 +334,13 @@ onMounted(load)
           {{ t('common.create') }}
         </el-button>
       </template>
-    </el-dialog>
+    </AppModal>
 
     <!-- Review Detail Dialog -->
-    <el-dialog
+    <AppModal
       v-model="showReviewDialog"
       :title="t('ops.vibecoding.reviewDetail')"
-      width="800px"
+      size="lg"
     >
       <div v-if="selectedReview">
         <el-descriptions :column="2" border>
@@ -354,7 +356,7 @@ onMounted(load)
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item :label="t('ops.vibecoding.reviewedAt')">
-            {{ formatDate(selectedReview.created_at) }}
+            {{ fmtDateTime24h(selectedReview.created_at) }}
           </el-descriptions-item>
           <el-descriptions-item :label="t('ops.vibecoding.summary')" :span="2">
             {{ selectedReview.review_result?.summary }}
@@ -378,7 +380,7 @@ onMounted(load)
         </el-table>
 
         <h4>{{ t('ops.vibecoding.suggestions') }} ({{ reviewSuggestions(selectedReview).length }})</h4>
-        <el-table :data="reviewSuggestions(selectedReview)" size="small">
+        <el-table :data="(reviewSuggestions(selectedReview) as unknown as Record<string, unknown>[])" size="small">
           <el-table-column type="index" :label="'#'" width="50" />
           <el-table-column prop="" :label="t('ops.vibecoding.message')" min-width="300" show-overflow-tooltip>
             <template #default="scope">{{ scope?.row }}</template>
@@ -388,7 +390,7 @@ onMounted(load)
       <template #footer>
         <el-button @click="showReviewDialog = false">{{ t('common.close') }}</el-button>
       </template>
-    </el-dialog>
+    </AppModal>
   </div>
 </template>
 

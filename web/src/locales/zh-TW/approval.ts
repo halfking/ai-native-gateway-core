@@ -149,5 +149,7 @@ export default {
       minutes: '{n} 分鐘',
       hours: '{n} 小時',
     },
-  }
+  },
+  rulesDeleteConfirm: '確認刪除該規則？',
+  approversDeleteConfirm: '確認刪除該審批人？',
 }

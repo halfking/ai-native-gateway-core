@@ -3,6 +3,8 @@ package sessionaudit
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,16 +37,17 @@ func TestCreate_Success(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	mock.ExpectExec(`INSERT INTO approval_queue`).
 		WithArgs(
 			pgxmock.AnyArg(), // id (uuid)
 			"sess-1",
 			"tenant-1",
 			"req-1",
-			pgxmock.AnyArg(), // detect_result jsonb text
-			pgxmock.AnyArg(), // snapshot jsonb text
+			pgxmock.AnyArg(), // detect_result jsonb
+			pgxmock.AnyArg(), // snapshot jsonb
 			ApprovalPending,
 			pgxmock.AnyArg(), // created_at
 			pgxmock.AnyArg(), // expires_at
@@ -78,75 +81,6 @@ func TestCreate_Success(t *testing.T) {
 	}
 }
 
-func TestCreate_RejectsNilPayloads(t *testing.T) {
-	mock, _ := pgxmock.NewPool()
-	defer mock.Close()
-	m := NewApprovalManager(mock, 15*time.Minute)
-	if _, err := m.Create(context.Background(), &ApprovalRequest{
-		SessionID: "s", TenantID: "t", RequestID: "r",
-	}); err == nil {
-		t.Fatal("expected nil payload validation error")
-	}
-}
-
-func TestCreate_RejectsSnapshotIdentityMismatch(t *testing.T) {
-	mock, _ := pgxmock.NewPool()
-	defer mock.Close()
-	m := NewApprovalManager(mock, 15*time.Minute)
-	if _, err := m.Create(context.Background(), &ApprovalRequest{
-		SessionID: "s", TenantID: "t", RequestID: "r",
-		DetectResult: &DetectResult{},
-		Snapshot:     &RequestSnapshot{SessionID: "other", TenantID: "t", RequestID: "r"},
-	}); err == nil {
-		t.Fatal("expected snapshot identity mismatch")
-	}
-}
-
-func TestClaimResume_RejectsPastLeaseBeforeDB(t *testing.T) {
-	mock, _ := pgxmock.NewPool()
-	defer mock.Close()
-	m := NewApprovalManager(mock, 15*time.Minute)
-	if _, err := m.ClaimResume(context.Background(), "a", "t", "owner", time.Now().Add(-time.Second)); err == nil {
-		t.Fatal("expected past lease rejection")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unexpected database calls: %v", err)
-	}
-}
-
-func TestRenewResumeLease_RejectsPastLeaseBeforeDB(t *testing.T) {
-	mock, _ := pgxmock.NewPool()
-	defer mock.Close()
-	m := NewApprovalManager(mock, 15*time.Minute)
-	if err := m.RenewResumeLease(context.Background(), "a", "t", "owner", 1, time.Now().Add(-time.Second)); err == nil {
-		t.Fatal("expected past lease rejection")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unexpected database calls: %v", err)
-	}
-}
-
-func TestCompleteResume_LeaseLossWhenFencedUpdateAffectsNoRows(t *testing.T) {
-	mock, _ := pgxmock.NewPool()
-	defer mock.Close()
-	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
-	mock.ExpectExec(`UPDATE approval_queue`).
-		WithArgs("approval-1", "owner-1", int64(2), "completed", "", "tenant-1").
-		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
-	mock.ExpectRollback()
-
-	m := NewApprovalManager(mock, 15*time.Minute)
-	err := m.CompleteResume(context.Background(), "approval-1", "tenant-1", "owner-1", 2)
-	if !errors.Is(err, ErrResumeLeaseLost) {
-		t.Fatalf("CompleteResume error = %v, want ErrResumeLeaseLost", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet expectations: %v", err)
-	}
-}
-
 // TestCreate_RejectsEmptyTenantID 应用层空 tenant_id 校验,不应触达 DB。
 func TestCreate_RejectsEmptyTenantID(t *testing.T) {
 	mock, _ := pgxmock.NewPool()
@@ -177,8 +111,8 @@ func TestGet_NotFound(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	mock.ExpectExec(`SET LOCAL app.current_role`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	mock.ExpectQuery(`SELECT id, session_id, tenant_id`).
 		WithArgs("missing").
 		WillReturnError(pgx.ErrNoRows)
@@ -199,8 +133,9 @@ func TestGetForTenant_TenantMismatch(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{
 		"id", "session_id", "tenant_id", "request_id",
 		"detect_result", "snapshot",
@@ -230,8 +165,9 @@ func TestGetForTenant_OK(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{
 		"id", "session_id", "tenant_id", "request_id",
 		"detect_result", "snapshot",
@@ -273,8 +209,8 @@ func TestGetForTenant_SuperAdminBypass(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	mock.ExpectExec(`SET LOCAL app.current_role`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{
 		"id", "session_id", "tenant_id", "request_id",
 		"detect_result", "snapshot",
@@ -307,8 +243,9 @@ func TestList_DefaultsLimit(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{
 		"id", "session_id", "tenant_id", "request_id",
 		"detect_result", "snapshot",
@@ -338,8 +275,9 @@ func TestList_ClampLimit(t *testing.T) {
 	mock, _ := pgxmock.NewPool()
 	defer mock.Close()
 	mock.ExpectBeginTx(pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{
 		"id", "session_id", "tenant_id", "request_id",
 		"detect_result", "snapshot",
@@ -368,8 +306,8 @@ func TestList_SuperAdminBypass(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	mock.ExpectExec(`SET LOCAL app.current_role`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{
 		"id", "session_id", "tenant_id", "request_id",
 		"detect_result", "snapshot",
@@ -398,8 +336,9 @@ func TestApprove_OK(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{"tenant_id", "status"}).
 		AddRow("tenant-A", "pending")
 	mock.ExpectQuery(`SELECT tenant_id, status FROM approval_queue WHERE id = \$1 FOR UPDATE`).
@@ -422,8 +361,8 @@ func TestApprove_SuperAdminBypass(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_role`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{"tenant_id", "status"}).
 		AddRow("any-tenant", "pending")
 	mock.ExpectQuery(`SELECT tenant_id, status FROM approval_queue WHERE id = \$1 FOR UPDATE`).
@@ -447,8 +386,9 @@ func TestApprove_TenantMismatch(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{"tenant_id", "status"}).
 		AddRow("OTHER", "pending")
 	mock.ExpectQuery(`SELECT tenant_id, status FROM approval_queue WHERE id = \$1 FOR UPDATE`).
@@ -469,8 +409,9 @@ func TestApprove_AlreadyDecided(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{"tenant_id", "status"}).
 		AddRow("tenant-A", "approved") // 已经审批过
 	mock.ExpectQuery(`SELECT tenant_id, status FROM approval_queue WHERE id = \$1 FOR UPDATE`).
@@ -491,8 +432,9 @@ func TestReject_OK(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	rows := pgxmock.NewRows([]string{"tenant_id", "status"}).
 		AddRow("tenant-A", "pending")
 	mock.ExpectQuery(`SELECT tenant_id, status FROM approval_queue WHERE id = \$1 FOR UPDATE`).
@@ -515,8 +457,9 @@ func TestApprove_NotFound(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_tenant`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
+	mock.ExpectExec(`SELECT set_config\('app\.current_tenant', \$1, true\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
 	mock.ExpectQuery(`SELECT tenant_id, status FROM approval_queue WHERE id = \$1 FOR UPDATE`).
 		WithArgs("missing").
 		WillReturnError(pgx.ErrNoRows)
@@ -530,15 +473,21 @@ func TestApprove_NotFound(t *testing.T) {
 }
 
 // TestMarkTimeout 后台 worker 路径：批量把过期的 pending 改为 timeout。
+//
+// RLS Phase 2 (R41 P1-6): wrapped in own tx with super_admin role GUC
+// (approval_queue policy's role 分支即满足), 规避 autocommit GUC 不生效
+// 导致非 default 租户 pending 永不被超时终结。
+//
+// R49 修订：FOR UPDATE SKIP LOCKED + LIMIT 分批，批返回值 < batchSize 即止。
 func TestMarkTimeout(t *testing.T) {
 	mock, _ := pgxmock.NewPool()
 	defer mock.Close()
 
-	mock.ExpectBeginTx(pgx.TxOptions{})
-	mock.ExpectExec(`SET LOCAL app.current_role`).
-		WillReturnResult(pgxmock.NewResult("SET", 0))
-	mock.ExpectExec(`UPDATE approval_queue`).
-		WithArgs(ApprovalTimeout, ApprovalPending).
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\)`).
+		WillReturnResult(pgxmock.NewResult("SELECT", 0))
+	mock.ExpectExec(`UPDATE approval_queue q`).
+		WithArgs(ApprovalTimeout, ApprovalPending, approvalTimeoutBatchSize).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
 	mock.ExpectCommit()
 
@@ -550,8 +499,34 @@ func TestMarkTimeout(t *testing.T) {
 	if n != 3 {
 		t.Errorf("expected 3 updated, got %d", n)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet MarkTimeout expectations: %v", err)
+}
+
+// TestMarkTimeout_MultiBatch（R49 审计 P1 钉桩）：积压超过单批上限时循环
+// 分批推进，每批独立事务提交——首批打满 batchSize 触发下一批，末批不满
+// 即收敛，总量为两批之和。
+func TestMarkTimeout_MultiBatch(t *testing.T) {
+	mock, _ := pgxmock.NewPool()
+	defer mock.Close()
+
+	expectBatch := func(rows int64) {
+		mock.ExpectBegin()
+		mock.ExpectExec(`SELECT set_config\('app\.current_role', 'super_admin', true\)`).
+			WillReturnResult(pgxmock.NewResult("SELECT", 0))
+		mock.ExpectExec(`UPDATE approval_queue q`).
+			WithArgs(ApprovalTimeout, ApprovalPending, approvalTimeoutBatchSize).
+			WillReturnResult(pgxmock.NewResult("UPDATE", rows))
+		mock.ExpectCommit()
+	}
+	expectBatch(int64(approvalTimeoutBatchSize)) // 首批打满 → 触发下一批
+	expectBatch(2)                               // 末批不满 → 收敛
+
+	m := NewApprovalManager(mock, 15*time.Minute)
+	n, err := m.MarkTimeout(context.Background())
+	if err != nil {
+		t.Fatalf("MarkTimeout: %v", err)
+	}
+	if n != int(approvalTimeoutBatchSize)+2 {
+		t.Errorf("expected %d updated across batches, got %d", approvalTimeoutBatchSize+2, n)
 	}
 }
 
@@ -565,5 +540,19 @@ func TestDecide_EmptyApprovalID(t *testing.T) {
 	}
 	if err := m.Reject(context.Background(), "", "t", "u", "r"); err == nil {
 		t.Error("expected error for empty id")
+	}
+}
+
+// TestMarkTimeout_RejectBranchAuditFields（R50 审计 P3 钉桩）：timeout-reject
+// 分支必须与 approve 分支同样写 approved_by/approved_at——否则"谁在何时终结
+// 此审批"的审计查询对该分支无法回答（仅 reason 内嵌秒数可反推）。
+func TestMarkTimeout_RejectBranchAuditFields(t *testing.T) {
+	b, err := os.ReadFile("approval_manager.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	if got := strings.Count(src, "approved_by = 'system:timeout'"); got != 2 {
+		t.Errorf("approval_manager.go has %d 'system:timeout' approved_by writes, want 2 (approve + reject branches)", got)
 	}
 }

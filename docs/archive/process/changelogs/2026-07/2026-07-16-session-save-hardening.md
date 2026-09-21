@@ -91,7 +91,7 @@ upsert. New helper `hasC0ControlExceptWS` keeps the fast-path for clean input.
   all pre-existing and not introduced by this change).
 - Browser-use real-world smoke (2026-07-16 04:00 CST):
   - `https://llmgateway.internal.example.com` → 200 (Vue SPA, login modal)
-  - `POST /api/auth/token` with `admin / __REDACTED_ADMIN_PASSWORD__` → 200, JWT issued
+  - `POST /api/auth/token` with `admin / __REDACTED_SSH_PASSWORD__` → 200, JWT issued
   - In-app navigation: `/` (仪表盘), `/request-logs`, `/sessions`, `/users`,
     `/routing-v2`, `/admin/settings`, `/ops/overview` — all render, no console errors
     observed.

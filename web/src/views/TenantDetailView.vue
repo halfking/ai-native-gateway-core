@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import {
@@ -245,7 +246,7 @@ function statusLabel(s: string) {
 
 function fmtTime(s: string) {
   if (!s) return '-'
-  return new Date(s).toLocaleString(localeRef.value)
+  return formatDateTime(s, { locale: localeRef.value })
 }
 
 function fmtNum(n?: number) {
@@ -905,7 +906,7 @@ watch(() => route.params.tenantId, loadTenant)
 .maas-shortcut-icon { font-size: 20px; }
 .maas-shortcut-label { font-size: 12px; font-weight: 500; }
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .billing-toolbar { align-items: stretch; }
   .billing-user-input { min-width: 0; flex: 1 1 100%; }
   .billing-toolbar .btn { width: 100%; }

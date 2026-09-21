@@ -140,7 +140,7 @@ receivers:
 ### 4.1 GPU 节点部署 DCGM Exporter
 
 ```bash
-# 在 GPU 节点上（如 kaixuan-1: 192.168.31.28）
+# 在 GPU 节点上（如 kaixuan-1: <env:KAIXUAN1_IP>）
 docker run -d \
   --name dcgm-exporter \
   --restart unless-stopped \
@@ -158,7 +158,7 @@ scrape_configs:
   - job_name: 'dcgm-gpu'
     scrape_interval: 15s
     static_configs:
-      - targets: ['192.168.31.28:9400']
+      - targets: ['<env:KAIXUAN1_IP>:9400']
         labels:
           cluster: 'kaixuan-1'
           gpu_type: 'rtx4090'
@@ -175,7 +175,7 @@ curl -X POST http://localhost:9090/-/reload
 
 ```bash
 # 检查 DCGM Exporter 可用性
-curl http://192.168.31.28:9400/metrics | grep DCGM_FI_DEV_GPU_UTIL
+curl http://<env:KAIXUAN1_IP>:9400/metrics | grep DCGM_FI_DEV_GPU_UTIL
 
 # 在 Prometheus 查询
 curl -s 'http://localhost:9090/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL' | jq

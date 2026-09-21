@@ -35,7 +35,7 @@ ffc01e621 merge: fix(ursm/classify) quota-429 fast-failover + MiniMax Token Plan
 
 ### 根因
 `internal/ir/serialize_openai.go:23-26` 用 `if req.Stream { out["stream"] = true }`，**stream:false 时不发字段**。
-supplier `http://129.146.135.219:3000/v1/chat/completions`（oneapi 兼容层）默认按 streaming 处理 absent 字段，返回 SSE 空 choices boilerplate。
+supplier `http://<env:ONEAPI_SUPPLIER_HOST>:3000/v1/chat/completions`（oneapi 兼容层）默认按 streaming 处理 absent 字段，返回 SSE 空 choices boilerplate。
 
 ### 修复
 改成 `out["stream"] = req.Stream`（总是写）。
@@ -49,7 +49,7 @@ supplier `http://129.146.135.219:3000/v1/chat/completions`（oneapi 兼容层）
 ### 6 行 VERIFY 证据
 ```
 VERIFY_PIPELINE_STAGE=1 BUILD_ARCH=amd64 BUILD_VERSION=2.5.0-5abd0d6b1-20260821-0126
-VERIFY_PIPELINE_STAGE=2 UPLOAD_TARGET=8.136.114.245:/opt/llm-gateway-go/releases/1652-5abd0d6b1/
+VERIFY_PIPELINE_STAGE=2 UPLOAD_TARGET=<env:HOST_245_IP>:/opt/llm-gateway-go/releases/1652-5abd0d6b1/
 VERIFY_PIPELINE_STAGE=3 IMAGE=binary-stripped-48713890-bytes BASE=go1.22+
 VERIFY_PIPELINE_STAGE=4 DEPLOY_TARGET=245 ROLLOUT=systemd-restart-success healthz=ok
 VERIFY_PIPELINE_STAGE=5 CLEANUP=backed-up-1651-ffc01e62-to-.bak/
@@ -216,6 +216,6 @@ systemctl restart llmgo-245
 - 245 LLM_GATEWAY_API_KEY `sk-jybFTc1...`（在 245 `.env`，不入文件）
 
 敏感信息交叉引用：
-- 245 SSH key 路径在 `envs/servers/8.136.114.245/INDEX.yaml`
+- 245 SSH key 路径在 `envs/servers/<env:HOST_245_IP>/INDEX.yaml`
 - supplier key 老板口头提供（不入仓）
 - 245 网关 / admin 凭据在 `envs/projects/llm-gateway-go/.env.secrets.plain.yaml` + 245 `.env`

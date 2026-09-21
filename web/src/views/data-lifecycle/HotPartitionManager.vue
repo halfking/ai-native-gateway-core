@@ -383,9 +383,11 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { ElMessage, ElMessageBox, ElRadioGroup, ElRadioButton } from 'element-plus'
+import { ElMessage, ElRadioGroup, ElRadioButton } from 'element-plus'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '@/i18n'
+import { formatDateTime } from '@/utils/datetime'
 import { req } from '@/api/_core'
 import {
   promoteHotTable, dropPartition, listLifecycleJobs, getLifecycleJob,
@@ -585,19 +587,15 @@ async function promoteTable(table: HotTable) {
     table.retentionDays === 0
       ? t('dataLifecycle.hotPartition.promoteAll')
       : t('dataLifecycle.hotPartition.days', { n: table.retentionDays })
-  try {
-    await ElMessageBox.confirm(
-      t('dataLifecycle.hotPartition.promoteConfirm', { label: hotTableLabel(table.name), hours: hoursLabel }),
-      t('dataLifecycle.hotPartition.hotTableTitle'),
-      {
-        type: 'warning',
-        confirmButtonText: t('dataLifecycle.hotPartition.startMigrate'),
-        cancelButtonText: t('dataLifecycle.hotPartition.deleteModal.cancel'),
-      }
-    )
-  } catch {
-    return
-  }
+  const confirmed = await confirmDialog(
+    t('dataLifecycle.hotPartition.promoteConfirm', { label: hotTableLabel(table.name), hours: hoursLabel }),
+    {
+      title: t('dataLifecycle.hotPartition.hotTableTitle'),
+      confirmButtonText: t('dataLifecycle.hotPartition.startMigrate'),
+      cancelButtonText: t('dataLifecycle.hotPartition.deleteModal.cancel'),
+    },
+  )
+  if (!confirmed) return
 
   // retentionDays=0 → 立即迁移全部（retention_hours=0）
   // 否则 days × 24 = hours
@@ -790,9 +788,11 @@ function formatDuration(ms: number): string {
   return `${m}m ${rs}s`
 }
 
+// 审计 R3#10：时间格式化统一走 utils/datetime.ts。
 function formatTime(iso: string): string {
-  return new Date(iso).toLocaleString(localeRef.value, {
-    month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  return formatDateTime(iso, {
+    locale: localeRef.value,
+    options: { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' },
   })
 }
 
@@ -1507,7 +1507,7 @@ function formatNumber(num: number): string {
   border-radius: 12px;
   width: 90%;
   max-width: 500px;
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 20px 25px -5px var(--overlay-light);
 }
 
 .modal-header {
