@@ -786,14 +786,14 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 			COALESCE((
 				SELECT MAX(bucket_count) FROM (
 					SELECT COUNT(*) AS bucket_count
-					  FROM request_logs rl2
+					  FROM request_logs_with_current_month rl2
 					 WHERE rl2.api_key_id = $1
 					   AND rl2.ts >= $2 AND rl2.ts < $3
 					 GROUP BY date_trunc('hour', rl2.ts)
 					        + (FLOOR(EXTRACT(minute FROM rl2.ts) / 5) * INTERVAL '5 minutes')
 				) peaks
 			), 0)
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE api_key_id = $1 AND ts >= $2 AND ts < $3
 	`, keyID, startTime, endTime).Scan(&gatewayRejected, &upstreamFailed, &peakRequests5m)
 
@@ -1075,7 +1075,7 @@ func (h *Handler) usageKeyTraffic(w http.ResponseWriter, r *http.Request, keyID 
 				   OR COALESCE(failure_detail_code, '') LIKE 'gw_%'
 			) AS gateway_rejected,
 			COUNT(*) FILTER (WHERE COALESCE(failure_stage, '') = 'upstream') AS upstream_failed
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE api_key_id = $1 AND ts >= $2 AND ts < $3
 		GROUP BY 1
 		ORDER BY 1

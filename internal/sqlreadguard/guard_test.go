@@ -61,8 +61,9 @@ var sqlReadGuardAllowFiles = map[string]string{
 	"cmd/compression-bench/main.go":                      "TOOLING: 离线基准工具",
 
 	// ---- DEBT(R47)：admin 读面盲区债（R46 §五#11 同类，待双腿化） ----
-	"admin/session_list.go":               "DEBT(R47): 近窗聚合裸母表，24h 窗漏最后 8h",
-	"admin/usage.go":                      "DEBT(R47): RPM 峰值桶裸母表",
+	// session_list.go / usage.go / session_online.go 已在 R48 §5 双腿化为
+	// request_logs_with_current_month 视图（view 已在白名单 LEGIT），对应
+	// 白名单条目按 self-cleaning 守卫自动清除（TestSQLReadGuardWhitelistCurrent）。
 	"admin/session_extract.go":            "DEBT(R47): 裸母表",
 	"admin/session_analytics_timeseries.go": "DEBT(R47): 裸母表",
 	"admin/session_analytics_handler.go":  "DEBT(R47): 裸母表",
@@ -72,7 +73,6 @@ var sqlReadGuardAllowFiles = map[string]string{
 	"admin/provider_models.go":            "DEBT(R47): 裸母表",
 	"admin/probe_history.go":              "DEBT(R47): 裸母表",
 	"admin/session_sanitize_matches.go":   "DEBT(R47): 裸母表",
-	"admin/session_online.go":             "DEBT(R47): JOIN 裸母表",
 	"admin/session_export.go":             "DEBT(R47): 裸母表",
 	"cmd/gateway/output_compliance_control.go": "DEBT(R47): 网关运行时读面裸母表",
 	"cmd/gateway/main_v3_wiring.go":            "DEBT(R47): 接线读面裸母表",

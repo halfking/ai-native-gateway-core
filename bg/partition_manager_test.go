@@ -349,3 +349,53 @@ func TestPartitionManagerPromoteIntervalNonPositiveDoesNotPanic(t *testing.T) {
 	pm.SetPromoteInterval(-time.Second)
 	pm.promoteDefaultToPartitions(context.Background())
 }
+
+// TestHotTableTSColumn 钉 R48 §五#3 oldest-row-age gauge 的 ts 列映射。
+// 当 schema 演化新增 hot 表时必须同步更新 hotTableTSColumn switch。
+func TestHotTableTSColumn(t *testing.T) {
+	cases := []struct {
+		label string
+		want  string
+	}{
+		// 默认 ts（大多数 hot 表）
+		{"request_logs_hot", "ts"},
+		{"usage_ledger_hot", "ts"},
+		{"routing_decision_log_hot", "ts"},
+		{"request_wal_hot", "ts"},
+		{"credential_model_index_hot", "ts"},
+		{"request_logs_bodies_hot", "ts"},
+		{"credit_ledger_hot", "ts"},
+		{"tool_usage_stats_hot", "ts"},
+		// sessions 族用 created_at（R48 侦察确认）
+		{"session_turns_hot", "created_at"},
+		{"session_memora_hot", "created_at"},
+		{"session_censors_hot", "created_at"},
+		{"session_tools_hot", "created_at"},
+		{"session_bodies_hot", "created_at"},
+		{"session_module_executions_hot", "created_at"},
+		// 其他用 created_at 的
+		{"candidate_failure_logs_hot", "created_at"},
+		{"auto_route_selections_hot", "created_at"},
+		{"dashboard_access_events_hot", "created_at"},
+		{"session_last_requests", "created_at"},
+		// 未声明但兜底默认 ts（防止 map miss 时出错）
+		{"unknown_future_hot", "ts"},
+	}
+	for _, tc := range cases {
+		got := hotTableTSColumn(tc.label)
+		if got != tc.want {
+			t.Errorf("hotTableTSColumn(%q) = %q, want %q", tc.label, got, tc.want)
+		}
+	}
+}
+
+// TestHotTableTSColumn_TSQLInjectionGuard 钉 R48 §五#3 防 SQL 注入：
+// 即使将来 hotTableTSColumn switch 被扩展，ts 列名必须保持白名单。
+func TestHotTableTSColumn_TSQLInjectionGuard(t *testing.T) {
+	// 直接调函数：返回值是 switch 产物，本身受 map 控制；模拟异常输入
+	// （label 含特殊字符）走 default 分支返回 "ts"，不会产生非法列名。
+	got := hotTableTSColumn("evil'; DROP TABLE x; --")
+	if got != "ts" && got != "created_at" {
+		t.Errorf("untrusted label must not produce arbitrary column name, got %q", got)
+	}
+}

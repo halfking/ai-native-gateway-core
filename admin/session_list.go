@@ -106,7 +106,7 @@ func (api *SessionListAPI) loadSessions(
 	// Count total distinct sessions
 	countQuery := `
 		SELECT COUNT(DISTINCT gw_session_id)
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE gw_session_id IS NOT NULL 
 		  AND gw_session_id != ''
 		  AND tenant_id = $1
@@ -133,7 +133,7 @@ func (api *SessionListAPI) loadSessions(
 			MIN(ts) as time_start,
 			MAX(ts) as time_end,
 			MIN(client_model) as model_used
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE gw_session_id IS NOT NULL 
 		  AND gw_session_id != ''
 		  AND tenant_id = $1
@@ -303,7 +303,7 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sess
 			MIN(ts) as time_start,
 			MAX(ts) as time_end,
 			MIN(client_model) as model_used
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE gw_session_id = $1 AND tenant_id = $2
 	`
 
@@ -360,7 +360,7 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sess
 		SELECT request_id, ts, client_model, outbound_model, success,
 		       prompt_tokens, completion_tokens, total_tokens, latency_ms,
 		       compression_strategy
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE gw_session_id = $1 AND tenant_id = $2
 		ORDER BY ts ASC
 		LIMIT 500

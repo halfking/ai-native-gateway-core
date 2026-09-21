@@ -24,7 +24,7 @@ func TestCalculateLoadScore_BalancedWeights(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	score := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights)
+	score := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights, StrategyInput{})
 
 	// 验证分数在合理范围内
 	assert.GreaterOrEqual(t, score, 0.0)
@@ -418,15 +418,15 @@ func TestCalculateLoadScore_NegativeWeightsClamped(t *testing.T) {
 	ctx := context.Background()
 
 	t.Setenv("LLM_GATEWAY_ROUTING_W_HEADROOM", "0")
-	zero := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights)
+	zero := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights, StrategyInput{})
 
 	t.Setenv("LLM_GATEWAY_ROUTING_W_HEADROOM", "-5")
-	negativeHeadroom := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights)
+	negativeHeadroom := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights, StrategyInput{})
 	assert.InDelta(t, zero, negativeHeadroom, 1e-12,
 		"negative W_HEADROOM must clamp to 0 (same score as W_HEADROOM=0)")
 
 	t.Setenv("LLM_GATEWAY_ROUTING_W_CAPACITY", "-3")
-	negativeCapacity := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights)
+	negativeCapacity := calculateLoadScore(candidate, router, ctx, router.LoadScoreWeights, StrategyInput{})
 	assert.InDelta(t, zero, negativeCapacity, 1e-12,
 		"negative W_CAPACITY must clamp to 0 (same score as W_HEADROOM=0 baseline)")
 }

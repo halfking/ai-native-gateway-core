@@ -68,13 +68,62 @@ const draft = ref<Set<string>>(new Set())
 
 const isMulti = computed(() => props.mode === 'multi')
 
+// R48 §七 + R46 #10 收尾：ModelPicker 的 [value] 守卫。
+// 旧实现直接 trust props.modelValue 联合类型 string|string[]，外部传错
+// （如 multi 模式收到 string、或 single 模式收到 string[]）会触发 silent
+// 吞值（filter 返空、emit 后路由接收空集合）。新增 safeValue 统一收敛：
+//   - single 模式 → string（数组/非字符串 → ''）
+//   - multi 模式  → string[]（非数组/含非字符串 → []）
+// 同时 watch props.modelValue 漂移 → emit 一次 safe value，让父组件归位。
+const safeValue = computed<string | string[]>(() => {
+  if (isMulti.value) {
+    if (Array.isArray(props.modelValue)) {
+      // 过滤掉非字符串元素（防御异常输入）
+      return props.modelValue.filter((m): m is string => typeof m === 'string')
+    }
+    return [] as string[]
+  }
+  // single 模式
+  if (typeof props.modelValue === 'string') {
+    return props.modelValue
+  }
+  if (Array.isArray(props.modelValue) && props.modelValue.length > 0 && typeof props.modelValue[0] === 'string') {
+    // 兜底：父组件意外传了数组但要求 single——取第一个非空字符串
+    return props.modelValue[0]
+  }
+  return ''
+})
+
 const singleValue = computed(() =>
-  typeof props.modelValue === 'string' ? props.modelValue : ''
+  typeof safeValue.value === 'string' ? safeValue.value : ''
 )
 
 const multiValues = computed<string[]>(() =>
-  Array.isArray(props.modelValue) ? props.modelValue : []
+  Array.isArray(safeValue.value) ? safeValue.value : []
 )
+
+// 守卫 watch：props.modelValue 与 safeValue 不一致时立即 emit 一次纠正值，
+// 防止路由上游长期使用错误形态数据。
+watch(() => props.modelValue, (current) => {
+  if (isMulti.value) {
+    if (Array.isArray(current)) {
+      // 检查是否有非字符串元素 → 纠正
+      const cleaned = current.filter((m): m is string => typeof m === 'string')
+      if (cleaned.length !== current.length) {
+        emit('update:modelValue', cleaned)
+        return
+      }
+    } else if (current !== undefined && current !== null) {
+      // multi 模式收到非数组 → 强制归位为空数组
+      emit('update:modelValue', [] as string[])
+    }
+  } else {
+    if (Array.isArray(current)) {
+      // single 模式收到数组 → 归位为第一个或空
+      emit('update:modelValue', current[0] ?? '')
+    }
+  }
+}, { deep: true })
 
 const triggerLabel = computed(() => {
   if (isMulti.value) {
