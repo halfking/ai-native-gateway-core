@@ -1113,6 +1113,23 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 				recordPromoteFailure(s.label)
 				break
 			}
+			// 2026-09-22 252 SQL 日志审计轮：角色级 statement_timeout=30s
+			// （252 生产 llm_gateway rolconfig）会击杀超过 30s 的单批
+			// promote——而本函数的 Go 侧批次预算是 60s。大批次（5000 行跨
+			// 分区搬移实测 26.5s 贴线、>30s 即被 PG 杀整批回滚，下个 tick
+			// 重试同一批形成活锁，252 日志 21 分钟窗口 1 次实锤）。
+			// SET LOCAL 抬到与 Go 预算一致，事务结束自动还原，pooled
+			// 连接不保留。
+			if _, err := tx.Exec(timeoutCtx,
+				"SET LOCAL statement_timeout = '60s'"); err != nil {
+				tx.Rollback(timeoutCtx)
+				cancel()
+				recordPromoteDuration(s.label, time.Since(batchStart).Seconds())
+				slog.Error("partition_manager: promote timeout setup failed",
+					"label", s.label, "error", err)
+				recordPromoteFailure(s.label)
+				break
+			}
 			var n int64
 			err = tx.QueryRow(timeoutCtx,
 				"SELECT "+s.fnName+"($1::interval, $2::int)",
