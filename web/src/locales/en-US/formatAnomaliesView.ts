@@ -109,4 +109,57 @@ export default {
     markFailed: 'Failed to mark',
     needSuperAdmin: 'Super admin permission required',
   },
+
+  // 2026-09-21: 请求错误 tab（reqprobe）
+  tabs: {
+      format: 'Response Format',
+      request: 'Request Errors',
+  },
+  requestTab: {
+      stats: {
+          unresolved: 'Unresolved (page)',
+          autoRecovered: 'Auto-recovered',
+          total: 'Total',
+      },
+      filter: {
+          day: 'Date',
+          trigger: 'Type',
+          triggerPlaceholder: 'Select type…',
+      },
+      trigger: {
+          all: 'All types',
+          param_rejected: 'Param rejected',
+          mode_mismatch: 'Mode mismatch',
+          upstream_error: 'Upstream error',
+      },
+      triggerDesc: {
+          param_rejected: 'Upstream rejected a request param (e.g. reasoning_effort); the gateway stripped it and retried',
+          mode_mismatch: 'Request API shape (responses / chat) does not match the provider',
+          upstream_error: 'Unclassified request-side 4xx pending triage',
+      },
+      batch: {
+          selected: '{n} selected',
+          resolveSelected: 'Resolve selected',
+          resolveFiltered: 'Resolve all unresolved',
+      },
+      table: {
+          day: 'Date',
+          trigger: 'Type',
+          param: 'Param / suggestion',
+          status: 'HTTP',
+          occurrences: 'Count',
+          recoveredCount: 'Self-healed ×{n}',
+      },
+      detail: {
+          title: 'Request Error Detail',
+          clientModel: 'Client model',
+          protocol: 'Outbound protocol',
+          suggestMode: 'Suggested mode',
+          firstSeen: 'First seen',
+          lastSeen: 'Last seen',
+          errorSample: 'Upstream error sample',
+          occurrences: 'Occurrences',
+          recoveredHint: '{n} recovered automatically via param strip / mode fallback',
+      },
+  },
 }

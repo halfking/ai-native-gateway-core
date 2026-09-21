@@ -109,4 +109,57 @@ export default {
     markFailed: 'Markierung fehlgeschlagen',
     needSuperAdmin: 'Super-Admin-Berechtigung erforderlich',
   },
+
+  // 2026-09-21: 请求错误 tab（reqprobe）
+  tabs: {
+      format: 'Antwortformat',
+      request: 'Anfragefehler',
+  },
+  requestTab: {
+      stats: {
+          unresolved: 'Ungelöst (Seite)',
+          autoRecovered: 'Automatisch behoben',
+          total: 'Gesamt',
+      },
+      filter: {
+          day: 'Datum',
+          trigger: 'Typ',
+          triggerPlaceholder: 'Typ wählen…',
+      },
+      trigger: {
+          all: 'Alle Typen',
+          param_rejected: 'Parameter abgelehnt',
+          mode_mismatch: 'Modus-Fehlanpassung',
+          upstream_error: 'Upstream-Fehler',
+      },
+      triggerDesc: {
+          param_rejected: 'Upstream hat einen Anfrageparameter abgelehnt (z.B. reasoning_effort); das Gateway hat ihn entfernt und erneut versucht',
+          mode_mismatch: 'API-Form (responses / chat) passt nicht zum Anbieter',
+          upstream_error: 'Nicht klassifizierbarer anfrageseitiger 4xx, zu triagieren',
+      },
+      batch: {
+          selected: '{n} ausgewählt',
+          resolveSelected: 'Auswahl lösen',
+          resolveFiltered: 'Alle ungelösten lösen',
+      },
+      table: {
+          day: 'Datum',
+          trigger: 'Typ',
+          param: 'Parameter / Vorschlag',
+          status: 'Status',
+          occurrences: 'Anzahl',
+          recoveredCount: '{n}× selbstheilend',
+      },
+      detail: {
+          title: 'Anfragefehler-Detail',
+          clientModel: 'Client-Modell',
+          protocol: 'Ausgehendes Protokoll',
+          suggestMode: 'Vorgeschlagener Modus',
+          firstSeen: 'Erstmals',
+          lastSeen: 'Zuletzt',
+          errorSample: 'Upstream-Fehlerbeispiel',
+          occurrences: 'Vorkommen',
+          recoveredHint: '{n} davon automatisch per Parameterentfernung / Moduswechsel behoben',
+      },
+  },
 }

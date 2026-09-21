@@ -195,6 +195,19 @@ var (
 		},
 		[]string{"table"},
 	)
+	// R48（§五#3 存储演进二批）：oldest-row-age gauge——每张 hot 表内最旧一行
+	// 距今的秒数（EXTRACT(EPOCH FROM (now() - MIN(<ts_col>)))）。0 = 表为空。
+	// 与 backlog_rows 互补：backlog 看"剩多少"，oldest 看"最旧多久"——
+	// 两者一起定位 promote 是否滞后（高 backlog + 大 age = 写入速度跑赢排水）。
+	// 观测窗口足够长（sessions 族 TTL 一周）即可裁决 sessions/session_turns/
+	// session_bodies 是否纳入 stateTableTTLSpecs 的 enabled 开关。
+	hotTableOldestRowAgeSeconds = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llm_gateway_hot_table_oldest_row_age_seconds",
+			Help: "Seconds since the oldest row currently in the hot table. 0 when the table is empty. Persistently large values mean write throughput outpaces promote drain — pair with backlog_rows to confirm.",
+		},
+		[]string{"table"},
+	)
 )
 
 // recordPromoteFailure increments the failure counter for a table.
@@ -213,7 +226,7 @@ func recordPromoteDuration(table string, seconds float64) {
 	hotTablePromoteDurationSeconds.WithLabelValues(table).Observe(seconds)
 }
 
-// recordPromoteSkipped increments the skipped counter for a table.
+// recordPromoteSkipped increments the skipped counter.
 func recordPromoteSkipped(table string) {
 	hotTablePromoteSkippedTotal.WithLabelValues(table).Inc()
 }
@@ -221,6 +234,32 @@ func recordPromoteSkipped(table string) {
 // recordHotTableBacklog sets the post-drain hot table row count (R47).
 func recordHotTableBacklog(table string, rows int64) {
 	hotTableBacklogRows.WithLabelValues(table).Set(float64(rows))
+}
+
+// recordHotTableOldestRowAge sets the oldest-row age in seconds (R48 §五#3).
+// ageSeconds < 0 表示表为空或查询失败（保持 last value + Warn）。
+func recordHotTableOldestRowAge(table string, ageSeconds float64) {
+	hotTableOldestRowAgeSeconds.WithLabelValues(table).Set(ageSeconds)
+}
+
+// hotTableTSColumn returns the timestamp column name for a hot-table label.
+// Defaults to "ts" (canonical for most hot tables in this repo); overrides
+// only for tables whose schema is known to use a different column.
+//
+// R48 §五#3：观测 sessions 族 TTL 裁决前置——需要知道每张表的最旧
+// 行落在哪一列。本映射必须与 sql/migrations 中对应表的 CREATE 保持一致，
+// 添加新 hot 表时必须同步更新此处。
+func hotTableTSColumn(label string) string {
+	switch label {
+	case "session_turns_hot", "session_memora_hot", "session_censors_hot",
+		"session_tools_hot", "session_bodies_hot", "session_module_executions_hot",
+		"auto_route_selections_hot", "candidate_failure_logs_hot",
+		"dashboard_access_events_hot", "harness_hot", "session_last_requests",
+		"session_audit_logs_hot", "probe_feedback_hot":
+		return "created_at"
+	default:
+		return "ts"
+	}
 }
 
 // incPromoteZombieLockStreak (2026-08-31, P2-8) bumps the per-table

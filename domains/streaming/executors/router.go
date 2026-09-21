@@ -166,6 +166,16 @@ type Router struct {
 	// 新增：路由评分权重配置（Phase 1）
 	LoadScoreWeights LoadScoreWeights
 
+	// EnvWeights (R48 §3 A2)：6 个维度权重（sticky/recency/balance/
+	// planQuota/headroom/capacity）在 NewRouter 时一次性从 env 解析并 clamp
+	// 后缓存。calculateLoadScore 热路径直接读 struct 字段，省去每个候选
+	// 每次 planByTier 的 envFloat+clampEnvWeight 调用（n=10 场景下省
+	// 60 次 hash lookup + ParseFloat + 临时字符串分配）。
+	// 与 LoadScoreWeights 字段不同：后者承载 cost/IQ/等 "业务参数"（可
+	// 经 admin/routing/scoring-weights 注入）；EnvWeights 只承载 "环境
+	// 启动常量"，两者职责分离。
+	EnvWeights *LoadScoreEnvWeights
+
 	// TimeoutConfig (Phase 2, 2026-07-23): Dynamic timeout calculation
 	// based on context size, historical latency, and network conditions.
 	// Hot-reloads config from system_settings table every 30 seconds.
@@ -197,10 +207,12 @@ type Router struct {
 }
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
+	ew := DefaultLoadScoreEnvWeights() // R48 §3 A2：6 维度 env 启动期预解析
 	return &Router{
 		Sticky:                 sticky,
 		Limiter:                lim,
 		LoadScoreWeights:       DefaultLoadScoreWeights(), // Phase 1: 使用默认权重
+		EnvWeights:             &ew,                      // R48 §3 A2：缓存到 Router
 		PriorityRoutingEnabled: true,
 	}
 }
@@ -574,6 +586,18 @@ func (r *Router) planCandidates(
 		}
 		r.StickyLoad.Refresh(ids)
 	}
+	// R48 §4 B 方案：取一次 Snapshot(ids) 整批快照，calculateLoadScore
+	// 直接读 stratIn.StickySnapshot 替代每候选 Info()×2 的写锁争用。
+	// 空 available 时 skip；老 StickyLoad 实现缺 Snapshot 方法时也 skip
+	// （type assertion 失败自动 nil，calculateLoadScore 回退 Info()）。
+	var stickySnapshot map[int]StickyLoadInfo
+	if r.StickyLoad != nil && len(available) > 0 {
+		ids := make([]int, 0, len(available))
+		for _, c := range available {
+			ids = append(ids, c.CredentialID)
+		}
+		stickySnapshot = r.StickyLoad.Snapshot(ids)
+	}
 	stratIn := StrategyInput{
 		Policy:           policy,
 		EgressPreference: egressPreference,
@@ -581,6 +605,7 @@ func (r *Router) planCandidates(
 		Canonical:        canonical,
 		RequestID:        requestID,
 		LoadScoreWeights: r.LoadScoreWeights,
+		StickySnapshot:   stickySnapshot,
 	}
 	ordered := r.planByTier(requestCtx, round1, policy, stratIn)
 	if len(round2) > 0 {
@@ -1423,7 +1448,7 @@ func cheapestCost(pool []provider.Candidate) float64 {
 
 func loadScore(c provider.Candidate, r *Router, ctx context.Context) float64 {
 	// Phase 1 改进：使用新的评分方法
-	return calculateLoadScore(c, r, ctx, r.LoadScoreWeights)
+	return calculateLoadScore(c, r, ctx, r.LoadScoreWeights, StrategyInput{})
 }
 
 func randomPair(pool []provider.Candidate) (provider.Candidate, provider.Candidate) {

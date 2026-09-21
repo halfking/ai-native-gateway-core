@@ -40,6 +40,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/clienttype"
 	"github.com/kaixuan/llm-gateway-go/internal/irconv"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
+	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
+	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 	"github.com/kaixuan/llm-gateway-go/pending"
@@ -539,6 +541,17 @@ type Executor struct {
 	// traceRecorder (2026-07-17) 注入请求链路追踪器,记录 upstream_request /
 	// stream_start 事件。nil 时降级为 NoopRecorder 等价。
 	traceRecorder gwtrace.Recorder
+
+	// RequestProbe (2026-09-21) 请求侧异常探测：上游 4xx 时的参数剔除
+	// 重试、native responses→chat 模式回退重试与结果记录（见
+	// reqprobe_integration.go）。nil 时全部行为关闭，仅影响探测特性。
+	RequestProbe *reqprobe.Coordinator
+
+	// ParamLedger (2026-09-22) 参数协商账本：paramguard/reqprobe 的出站
+	// 调整按 request_id 记账，native responses 回程把 reasoning.effort
+	// 回显还原为客户端原值（见 paramledger_integration.go）。nil 时全部
+	// 行为关闭。Full 模式下由 main.go 注入带 Redis 镜像的实例。
+	ParamLedger *paramledger.Ledger
 
 	// liveActions (2026-08-15, V3.3-OBS OBS-B1) 请求生命周期动作事件发射器
 	// （credential_selected / upstream_request / reply / node_switch /

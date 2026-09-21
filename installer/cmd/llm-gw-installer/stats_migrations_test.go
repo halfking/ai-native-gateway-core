@@ -360,8 +360,8 @@ func TestStartupFilesAreAllEmbedded(t *testing.T) {
 
 // psqlConcurrencyRequired lists canonical startup migrations that may NOT be
 // synced into the installer five points: they use CREATE INDEX CONCURRENTLY
-// (727 via \gexec), which PostgreSQL refuses inside a transaction block — and
-// the installer's dbinit runner applies every file through
+// (727/728 via \gexec), which PostgreSQL refuses inside a transaction block —
+// and the installer's dbinit runner applies every file through
 // `psql --single-transaction` (installer/internal/dbinit/runner.go). Copying
 // them in would abort every FRESH INSTALL at that migration (R49 audit,
 // 2026-09-20: the naive five-point sync would have been a P0). These files
@@ -370,13 +370,18 @@ func TestStartupFilesAreAllEmbedded(t *testing.T) {
 // wrapper) against EXISTING databases; fresh installs skip the indexes, which
 // are performance-only — a non-concurrent variant may be added later if a
 // fresh install ever needs them on day one.
+//
+// 728 (2026-09-21, R50 follow-up): same \gexec + CONCURRENTLY shape as 727;
+// sql/migrations/startup/728_sql_audit_request_logs_credential_model_index.sql
+// header comment self-certifies "实现约束与 727 相同".
+//
+// 729 (2026-09-21, 252 部署验证轮): same three-phase \gexec + CONCURRENTLY
+// shape as 727/728 (header comment "实现约束与 727/728 相同"); ships
+// exclusively through the revision-sequence channel like its predecessors.
 var psqlConcurrencyRequired = map[string]string{
-	"727_sql_audit_slow_query_indexes.sql": "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
-	// 728 (d4d54520c, 2026-09-21): same \gexec CONCURRENTLY shape as 727 —
-	// exemption added retroactively by the R50 audit round after the shared
-	// gate caught it (the migration shipped without any installer-side
-	// disposition). Ships via the revision-sequence channel only.
+	"727_sql_audit_slow_query_indexes.sql":                  "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
 	"728_sql_audit_request_logs_credential_model_index.sql": "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
+	"729_sql_audit_session_turns_credential_ts_index.sql":   "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
 }
 
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17

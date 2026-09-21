@@ -99,7 +99,7 @@ func (h *Handler) handleSessionsOnline(w http.ResponseWriter, r *http.Request) {
 		SELECT slr.session_id, slr.last_request_status, COALESCE(slr.last_model,''),
 		       slr.last_provider_id, slr.last_latency_ms, slr.updated_at, rl.tenant_id
 		FROM session_last_requests slr
-		JOIN request_logs rl ON rl.id = slr.last_request_id
+		JOIN request_logs_with_current_month rl ON rl.id = slr.last_request_id
 		WHERE 1 = 1`
 	args := []interface{}{}
 	if !IsSuperAdminOrLegacy(r) {

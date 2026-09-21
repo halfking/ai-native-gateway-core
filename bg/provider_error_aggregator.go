@@ -17,6 +17,16 @@ import (
 
 const providerErrorAggregatorDefaultInterval = 10 * time.Minute
 
+// providerErrorAggregatorStallWarnAfter bounds the silent-loss exposure of
+// hot-only staging. Promote (688-aligned live default) moves hot rows older
+// than 8h into the columnar month partitions; those rows' aggregation_ids are
+// necessarily ≤ the watermark (healthy ticks advance every 10min), so a
+// watermark stalled longer than the retention can strand promoted rows
+// outside this staging's reach. The stall guard below converts that edge
+// from silent undercount into an alertable error; 1h margin under the 8h
+// retention.
+const providerErrorAggregatorStallWarnAfter = 7 * time.Hour
+
 // stageSourceRowsSQL stages the NEW source rows this tick will process into a
 // per-transaction temp table. The watermark parameter bounds the scan so
 // steady-state ticks stage only rows not yet aggregated; those rows identify
@@ -24,6 +34,17 @@ const providerErrorAggregatorDefaultInterval = 10 * time.Minute
 // full. Both staging statements share this select list verbatim so the temp
 // tables have identical column shapes — see the columnar note above the
 // staging Exec calls in aggregateErrors.
+//
+// 2026-09-21 (252 部署验证轮)：pass one 从 unified 视图改读 hot 表。水位
+// 增量行只可能出现在 hot：月分区行全部经 promote 进入（8h retention），
+// 被 promote 时其 aggregation_id 已被健康 tick（10min 节奏）的水位越过；
+// 而视图把水位列合成为 COALESCE(aggregation_id, -id)，planner 无法据此
+// 剪枝，导致每个 tick 都对全部 columnar 月分区做全扫（252 实测：
+// pg_stat_statements 10 天 2,706 次 / 均值 5.67s / 累计 4.26h + 17 次
+// 30s 击杀——击杀本身就让 tick 失败、聚合中断）。行逃逸的唯一通路是
+// 水位停摆超过 retention，由 providerErrorAggregatorStallWarnAfter 守卫
+// 显式告警而非每个 tick 花 5.67s 为它买单。pass two 仍读 unified 视图：
+// 跨 promote 边界的 bucket 必须整桶重读才精确（audit F-4）。
 const stageSourceRowsSQL = `
 CREATE TEMP TABLE provider_error_agg_src
 ON COMMIT DROP AS
@@ -46,13 +67,9 @@ ON COMMIT DROP AS
   c.request_id,
   c.context,
   c.ts,
-  -- The view's synthesized 'source' constant column ("hot"/"historical")
-  -- crashes this plan on citus-columnar partitions with
-  -- "cache lookup failed for attribute source of relation" (SQLSTATE XX000,
-  -- citus 13.3; 2026-09-05 PG log audit). Nothing downstream reads it, so
-  -- stage a NULL placeholder to keep the temp-table column shape identical.
+  -- Same citus-columnar shape guard as provider_error_agg_src above.
   NULL::text AS source
- FROM candidate_failure_logs_unified c
+ FROM candidate_failure_logs_hot c
  WHERE c.aggregation_id > $1`
 
 // stageAffectedBucketRowsSQL re-reads the COMPLETE buckets touched by this
@@ -216,10 +233,26 @@ func (a *ProviderErrorAggregator) aggregateErrors(ctx context.Context) {
 	var preWatermark int64
 	// FOR UPDATE holds the state row until commit so the watermark cannot
 	// move under us between staging and the pipeline below.
-	if err := tx.QueryRow(timeoutCtx, "SELECT COALESCE(last_source_id, 0) FROM provider_error_aggregator_state WHERE id = 1 FOR UPDATE").Scan(&preWatermark); err != nil {
+	var lastAdvance time.Time
+	if err := tx.QueryRow(timeoutCtx, "SELECT COALESCE(last_source_id, 0), updated_at FROM provider_error_aggregator_state WHERE id = 1 FOR UPDATE").Scan(&preWatermark, &lastAdvance); err != nil {
 		// State row may not exist yet on the very first tick after migration
 		// 622/627 install. Treat missing as zero and continue.
 		preWatermark = 0
+	}
+	// Hot-only staging stall guard (2026-09-21 252 部署验证轮)：水位停摆
+	// 超过 promote retention（live 默认 8h）时，停摆期间被 promote 进
+	// columnar 分区的行（其 id 仍大于水位）从 hot 侧不可达，会被永久
+	// 跳过。stall 越过阈值即打 ERROR 让其可告警——不试图在本 tick 补扫
+	// （那就回到了每 tick 全分区扫的老路）；处置（人工/工具回填）由
+	// 告警接管。updated_at 只在水位真正前进时刷新（advanced CTE），
+	// 失败 tick 不会刷新它，故该差值是纯停摆时长。
+	if !lastAdvance.IsZero() {
+		if stall := time.Since(lastAdvance); stall > providerErrorAggregatorStallWarnAfter {
+			slog.Error("provider_error_aggregator: watermark stalled past promote retention; rows promoted during the stall are unreachable from hot-only staging and will be skipped",
+				"stall", stall.String(),
+				"stall_warn_after", providerErrorAggregatorStallWarnAfter.String(),
+				"pre_watermark", preWatermark)
+		}
 	}
 
 	// Migration 622 adds aggregation_id, a dedicated monotonic key because the

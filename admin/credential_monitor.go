@@ -762,12 +762,14 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 	})
 }
 
-// slidingWindowFromRequestLogs builds CallEntry timeline data directly from
-// the request_logs table. Used when the Redis recorder is unavailable. Uses
-// idx_request_logs_credential_ts (credential_id, ts DESC) so the LIMIT scan
-// is an index descent.
-func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Context, credentialID int, model string, minutes, limit int) ([]credentialhealth.CallEntry, error) {
-	rows, err := m.h.db.Query(ctx, `
+// slidingWindowQuery 构造凭据监控抽屉的 request_logs 回退查询。2026-09-21
+// 提取为函数：真库回归测试（sliding_window_realdb_test.go）复用同一文本，
+// 防测试与生产 SQL 漂移——bg/feature_stats_worker.go featureDistributionQuery
+// 同款。视图 request_logs_with_current_month 冻结不可改投影（R37 定案），
+// 729 迁移以 (CASE credential, ts DESC) 表达式索引伺服其 session_turns
+// 分支的长窗分支。
+func slidingWindowQuery() string {
+	return `
 		SELECT COALESCE(request_id, ''), EXTRACT(EPOCH FROM ts)::bigint * 1000,
 		       success, COALESCE(latency_ms, 0), COALESCE(error_kind, '')
 		FROM request_logs_with_current_month
@@ -779,7 +781,15 @@ func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Con
 		  AND ts > NOW() - ($3 || ' minutes')::interval
 		ORDER BY ts DESC
 		LIMIT $4
-	`, credentialID, model, fmt.Sprintf("%d", minutes), limit)
+	`
+}
+
+// slidingWindowFromRequestLogs builds CallEntry timeline data directly from
+// the request_logs table. Used when the Redis recorder is unavailable. Uses
+// idx_request_logs_credential_ts (credential_id, ts DESC) so the LIMIT scan
+// is an index descent.
+func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Context, credentialID int, model string, minutes, limit int) ([]credentialhealth.CallEntry, error) {
+	rows, err := m.h.db.Query(ctx, slidingWindowQuery(), credentialID, model, fmt.Sprintf("%d", minutes), limit)
 	if err != nil {
 		return nil, err
 	}

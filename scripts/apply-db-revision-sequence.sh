@@ -63,6 +63,23 @@ sequence_name="session-summary-and-integrity-2026-09"
 # ensure/promote auto_route_selections functions missing on every boot). Each
 # underlying migration is idempotent, so re-running is safe.
 psql_query "CREATE TABLE IF NOT EXISTS public.gateway_db_revision_sequences (sequence_name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
+# 2026-09-21 252 部署验证轮（纪律⑨，F4 机制债收口）：台账从"按文件名记账"
+# 升级为"文件名+内容指纹记账"。content_sha256 为 NULL 的行是历史遗留记账
+# （指纹通道上线前应用，无法证明当时应用的是哪个内容版本）；此后本脚本的
+# 每次应用都记录当前文件内容 sha256，同名文件内容变更即可被识别并重放
+# （通道契约：每个迁移幂等，重跑安全——见文件头注释）。
+psql_query "ALTER TABLE public.gateway_db_revision_sequences ADD COLUMN IF NOT EXISTS content_sha256 text"
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d' ' -f1
+  else
+    printf 'error: no sha256sum/shasum available for content fingerprinting\n' >&2
+    exit 1
+  fi
+}
 
 # Fixed order: 655 restores the canonical session_summaries columns; 560
 # supplies the tenant uniqueness guard; 572 must replace the bounded token
@@ -506,6 +523,33 @@ files=(
   # 缺席时自动回退 710 形态，双形态兼容。
   "$ROOT_DIR/sql/migrations/startup/733_session_turn_details.sql"
   "$ROOT_DIR/sql/migrations/startup/734_request_logs_view_details_join.sql"
+  # 2026-09-21 252 部署验证轮：729 session_turns credential+ts 表达式索引
+  # （父表 + 存量月分区三段式 + session_turns_hot 独立表）——抽屉轮询查询
+  # 72h 长窗的 session_turns 分支裸 ts 范围扫 + 逐行 CASE 过滤（252 分支
+  # cost 60650/总 71260，实测残余 10.9s）。CREATE INDEX CONCURRENTLY
+  # IF NOT EXISTS 幂等；本日已在 252 与本机存量真库实跑验证。
+  "$ROOT_DIR/sql/migrations/startup/729_sql_audit_session_turns_credential_ts_index.sql"
+)
+
+# 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
+# 迁移文件内容被加固（幂等守卫重建、canonical 清单扩充等）而编号不变时，
+# 仅按文件名记账的台账永远不会重放它——644 的 self_check_runs CHECK 就因此
+# 在 252 上停在 09-03 旧版清单，运行时写新类别全被 23514 拒绝（2026-09-21
+# 复核轮 F4，当时靠手工重放解围）。本清单登记"内容已加固、必须在下次部署
+# 重放"的文件，格式 "basename|当前内容 sha256"：
+#   - 台账行 sha 为 NULL（遗留记账）且文件在清单中 → 按当前内容重放一次，
+#     然后台账记录 sha，此后进入常规指纹管理；
+#   - 台账行 sha 非空且与文件当前 sha 不一致 → 内容在应用后又变更，自动
+#     重放（幂等契约兜底安全性）；
+#   - 台账行 sha 与文件一致 → 正常跳过。
+# 清单条目与文件内容由契约测试（apply-db-revision-sequence_test.sh）核对，
+# 文件再改动而条目未同步时门禁变红——白名单自清洁，与 sqlreadguard 同款。
+legacy_content_replays=(
+  # 2026-09-21 复核轮 F4：§C DO 块重建 self_check_runs CHECK 为 canonical
+  # errorsx 类别清单（09-03 应用的是缺 concurrent 等类别的旧版）。文件自带
+  # definition-aware 守卫（canonical CHECK 已在位时不再重跑 ADD CONSTRAINT），
+  # 重放对已修复库是幂等 no-op，对未修复库补齐加固。
+  '644_tuning_views_selfcheck_and_candidate_failure_cache.sql|5dc5731fb58af65039a26536d7867ffba55c77169d0e5cc4db84aa1e0ea4553c'
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
@@ -636,14 +680,43 @@ fi
 
 for file in "${files[@]}"; do
   [[ -f "$file" ]] || { printf 'error: missing migration %s\n' "$file" >&2; exit 4; }
-  marker="${sequence_name}:$(basename "$file")"
+  base="$(basename "$file")"
+  marker="${sequence_name}:${base}"
+  file_sha="$(sha256_file "$file")"
+  # 本文件在 legacy_content_replays 中登记的期望指纹（格式严格的
+  # "basename|sha" 全等匹配；登记过期由契约测试先红）。
+  replay_expected_sha=""
+  for entry in "${legacy_content_replays[@]}"; do
+    if [[ "$entry" == "${base}|${file_sha}" ]]; then replay_expected_sha="$file_sha"; break; fi
+  done
+  stored_sha="$(psql_query "SELECT content_sha256 FROM public.gateway_db_revision_sequences WHERE sequence_name='${marker}' LIMIT 1")"
+  if [[ -n "$stored_sha" ]]; then
+    if [[ "$stored_sha" == "$file_sha" ]]; then
+      printf 'already applied: %s\n' "${file#"$ROOT_DIR/"}"
+      continue
+    fi
+    # 台账已记指纹且与当前文件不同：文件在应用后被内容加固过。通道契约
+    # （每个迁移幂等）兜底重放安全性，重放使库状态收敛到当前文件内容。
+    printf 'content replay (ledger %.12s -> file %.12s): applying %s\n' "$stored_sha" "$file_sha" "${file#"$ROOT_DIR/"}"
+    psql_file "$file"
+    psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}' WHERE sequence_name='${marker}'"
+    continue
+  fi
   if [[ "$(psql_query "SELECT 1 FROM public.gateway_db_revision_sequences WHERE sequence_name='${marker}' LIMIT 1")" == 1 ]]; then
-    printf 'already applied: %s\n' "${file#"$ROOT_DIR/"}"
+    if [[ -n "$replay_expected_sha" ]]; then
+      # 遗留记账（指纹通道上线前应用）且登记在重放清单：按当前内容重放
+      # 一次，之后进入常规指纹管理。
+      printf 'content replay (legacy, registered): applying %s\n' "${file#"$ROOT_DIR/"}"
+      psql_file "$file"
+      psql_query "UPDATE public.gateway_db_revision_sequences SET content_sha256='${file_sha}' WHERE sequence_name='${marker}'"
+    else
+      printf 'already applied (pre-fingerprint legacy marker): %s\n' "${file#"$ROOT_DIR/"}"
+    fi
     continue
   fi
   printf 'applying %s\n' "${file#"$ROOT_DIR/"}"
   psql_file "$file"
-  psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name) VALUES ('${marker}') ON CONFLICT (sequence_name) DO NOTHING"
+  psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name, content_sha256) VALUES ('${marker}', '${file_sha}') ON CONFLICT (sequence_name) DO NOTHING"
 done
 # Retire the legacy sequence-wide marker so it cannot mask future appends.
 psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"

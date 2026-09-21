@@ -178,7 +178,7 @@ func TestCalculateLoadScore_PlanBillingNeverPunishedByPrice(t *testing.T) {
 	ctx := context.Background()
 	plan := provider.Candidate{CredentialID: 1, BillingMode: "token_plan"}
 	payg := provider.Candidate{CredentialID: 2, BillingMode: "per_token"}
-	if calculateLoadScore(plan, r, ctx, r.LoadScoreWeights) >= calculateLoadScore(payg, r, ctx, r.LoadScoreWeights) {
+	if calculateLoadScore(plan, r, ctx, r.LoadScoreWeights, StrategyInput{}) >= calculateLoadScore(payg, r, ctx, r.LoadScoreWeights, StrategyInput{}) {
 		t.Errorf("plan credential (marginal cost 0) must outrank unpriced PAYG (max cost penalty)")
 	}
 }
@@ -221,7 +221,7 @@ func TestCalculateLoadScore_PlanQuotaPrefersHeadroom(t *testing.T) {
 	used90, used10 := 90.0, 10.0
 	burned := provider.Candidate{CredentialID: 1, BillingMode: "token_plan", PlanQuotaUsedPercent: &used90}
 	fresh := provider.Candidate{CredentialID: 2, BillingMode: "token_plan", PlanQuotaUsedPercent: &used10}
-	if calculateLoadScore(fresh, r, ctx, r.LoadScoreWeights) >= calculateLoadScore(burned, r, ctx, r.LoadScoreWeights) {
+	if calculateLoadScore(fresh, r, ctx, r.LoadScoreWeights, StrategyInput{}) >= calculateLoadScore(burned, r, ctx, r.LoadScoreWeights, StrategyInput{}) {
 		t.Errorf("fresh plan window (10%% used) must outrank burned window (90%% used)")
 	}
 }
