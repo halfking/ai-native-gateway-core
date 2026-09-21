@@ -109,4 +109,57 @@ export default {
     markFailed: 'Échec du marquage',
     needSuperAdmin: 'Permission super-admin requise',
   },
+
+  // 2026-09-21: 请求错误 tab（reqprobe）
+  tabs: {
+      format: 'Format de réponse',
+      request: 'Erreurs de requête',
+  },
+  requestTab: {
+      stats: {
+          unresolved: 'Non résolus (page)',
+          autoRecovered: 'Auto-récupérés',
+          total: 'Total',
+      },
+      filter: {
+          day: 'Date',
+          trigger: 'Type',
+          triggerPlaceholder: 'Choisir un type…',
+      },
+      trigger: {
+          all: 'Tous les types',
+          param_rejected: 'Paramètre rejeté',
+          mode_mismatch: 'Mode incompatible',
+          upstream_error: 'Erreur amont',
+      },
+      triggerDesc: {
+          param_rejected: 'L\'amont a rejeté un paramètre (ex. reasoning_effort) ; la passerelle l\'a retiré et réessayé',
+          mode_mismatch: 'La forme d\'API (responses / chat) ne correspond pas au fournisseur',
+          upstream_error: '4xx côté requête non classé, à trier',
+      },
+      batch: {
+          selected: '{n} sélectionnés',
+          resolveSelected: 'Résoudre la sélection',
+          resolveFiltered: 'Résoudre tout non résolu',
+      },
+      table: {
+          day: 'Date',
+          trigger: 'Type',
+          param: 'Paramètre / suggestion',
+          status: 'Statut',
+          occurrences: 'Occurrences',
+          recoveredCount: 'Auto-résolu ×{n}',
+      },
+      detail: {
+          title: 'Détail erreur de requête',
+          clientModel: 'Modèle client',
+          protocol: 'Protocole sortant',
+          suggestMode: 'Mode suggéré',
+          firstSeen: 'Première occurrence',
+          lastSeen: 'Dernière occurrence',
+          errorSample: 'Exemple d\'erreur amont',
+          occurrences: 'Statistiques',
+          recoveredHint: '{n} récupérés automatiquement via retrait de paramètre / bascule de mode',
+      },
+  },
 }

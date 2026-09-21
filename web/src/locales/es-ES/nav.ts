@@ -104,4 +104,9 @@ export default {
   publicSupport: 'Soporte',
 
   skip: 'Skip to main content',
+
+  // 2026-09-21: 导航徽标 tooltip
+  badge: {
+    formatAnomalies: 'Anomalías de solicitud sin resolver',
+  },
 }

@@ -29,6 +29,27 @@ type LoadScoreWeights struct {
 	IQWeight   float64 // 可选：标准 IQ 惩罚权重
 }
 
+// LoadScoreEnvWeights 是 R48 §3 A2 改造的载体——把 calculateLoadScore 中
+// 6 个 env+clamp 调用在 Router 启动时一次性解析缓存到结构体里。
+// calculateLoadScore 走快路径时直接读 struct 字段，不再每次 planByTier
+// 都重新做 envFloat + clampEnvWeight。
+//
+// 闭包语义保留：
+//   - 旧实现用 envFloat("X", default) 解析，每次 planByTier 重新读 env
+//   - 新实现 Router 启动后第一次 planCandidates 才落地 EnvWeights（NewRouter
+//     时 pre-parse，且 prepParseAtRouterInit 可显式重读），**不是 Setenv 后即生效**
+//   - 因此本改造满足 D01 §三 A2 描述的 "需过『先 NewRouter 后 Setenv』测试面" 约束
+//   - 若业务方要在运行时调整（极罕见），可显式调用 Router.preParseLoadScoreEnvWeights()
+//     重读 env
+type LoadScoreEnvWeights struct {
+	StickyWeight    float64 // LLM_GATEWAY_ROUTING_W_STICKY (default 0.15)
+	RecencyWeight   float64 // LLM_GATEWAY_ROUTING_W_RECENCY (default 0.05)
+	BalanceWeight   float64 // LLM_GATEWAY_ROUTING_W_BALANCE (default 0.05)
+	PlanQuotaWeight float64 // LLM_GATEWAY_ROUTING_W_PLANQUOTA (default 0.10)
+	HeadroomWeight  float64 // LLM_GATEWAY_ROUTING_W_HEADROOM (default 0.05)
+	CapacityWeight  float64 // LLM_GATEWAY_ROUTING_W_CAPACITY (default 0.02)
+}
+
 // DefaultLoadScoreWeights 返回默认权重配置
 //
 // Audit 2026-09-14 R28 #13: this constructor is the ONLY authority for the
@@ -57,6 +78,42 @@ func DefaultLoadScoreWeights() LoadScoreWeights {
 	}
 }
 
+// DefaultLoadScoreEnvWeights 给出 6 个维度权重的预解析默认值。
+// 与 DefaultLoadScoreWeights 的默认值语义完全一致；区别在于本函数只在
+// Router 启动期 NewRouter 时调用一次，结果缓存到 Router.EnvWeights。
+//
+// R48 §3 A2：calculateLoadScore 热路径每次 planByTier 都调用 envFloat 6 次
+// ——n=10 候选场景下 60 次 hash lookup + ParseFloat + 临时字符串分配。
+// 移到 Router 启动期后热路径直接读 struct 字段，0 分配、0 syscall。
+func DefaultLoadScoreEnvWeights() LoadScoreEnvWeights {
+	return LoadScoreEnvWeights{
+		StickyWeight:    clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_STICKY", 0.15)),
+		RecencyWeight:   clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_RECENCY", 0.05)),
+		BalanceWeight:   clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_BALANCE", 0.05)),
+		PlanQuotaWeight: clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_PLANQUOTA", 0.10)),
+		HeadroomWeight:  clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_HEADROOM", 0.05)),
+		CapacityWeight:  clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_CAPACITY", 0.02)),
+	}
+}
+
+// readEnvWeights 返回 calculateLoadScore 所需的 6 个维度权重。
+// 优先读 Router.EnvWeights 缓存（NewRouter 时一次性预解析）。
+// 兼容回退：当 r == nil 或 r.EnvWeights 未初始化（早期测试 / 自定义 Router），
+// 实时走 envFloat+clampEnvWeight，保持与 R47 行为逐字节一致。
+func readEnvWeights(r *Router) (sticky, recency, balance, planQuota, headroom, capacity float64) {
+	if r != nil && r.EnvWeights != nil {
+		ew := r.EnvWeights
+		return ew.StickyWeight, ew.RecencyWeight, ew.BalanceWeight, ew.PlanQuotaWeight, ew.HeadroomWeight, ew.CapacityWeight
+	}
+	sticky = clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_STICKY", 0.15))
+	recency = clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_RECENCY", 0.05))
+	balance = clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_BALANCE", 0.05))
+	planQuota = clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_PLANQUOTA", 0.10))
+	headroom = clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_HEADROOM", 0.05))
+	capacity = clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_CAPACITY", 0.02))
+	return
+}
+
 // calculateLoadScore 计算凭据的综合负载分数
 // 分数越低越好（越可能被选中）—— P2C 选择在 router.go 中取 min。
 //
@@ -68,17 +125,19 @@ func DefaultLoadScoreWeights() LoadScoreWeights {
 //     否则低延迟/高 headroom 的好凭据 composite 偏高被 P2C 惩罚，与设计意图
 //     （偏好低延迟、高 headroom）相反。
 //     2026-07-24 审计修正：60809965 重写后直接相加导致方向反转。
-func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, weights LoadScoreWeights) float64 {
+func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, weights LoadScoreWeights, stratIn StrategyInput) float64 {
 	concurrencyScore := calculateConcurrencyScore(c, r, ctx)
 	identityScore := calculateIdentityScore(c, r)
 	latencyScore := calculateLatencyScore(c, r)
 	qualityScore := calculateQualityScore(c)
 
 	headroom := calculateHeadroom(c, r)
-	// R47：负权重 clamp（F8④ 收尾）——headroomPenalty/capacityPenalty 变负
-	// 即变奖励（方向反转：低 headroom/低容量节点反被偏好），与首跳抽签
-	// 四权重同款钳制。
-	headroomWeight := clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_HEADROOM", 0.05))
+	// R48 §3 A2：6 个 env+clamp 改读 r.EnvWeights（启动期 NewRouter 一次性预解析）。
+	// 旧实现（注释保留在 git blame）每次 planByTier 都做 envFloat + clampEnvWeight
+	// ——10 候选 × 6 = 60 次 hash lookup + ParseFloat + strconv 分配。
+	// 新路径直接读 struct 字段，0 分配、0 syscalls。回退路径：当 r == nil 或
+	// r.EnvWeights 未初始化（极早期/自定义测试）时仍走 env 实时读，保证向后兼容。
+	stickyWeight, recencyWeight, balanceWeight, planQuotaWeight, headroomWeight, capacityWeight := readEnvWeights(r)
 	latencyPenalty := 1.0 - latencyScore
 	headroomPenalty := 1.0 - headroom
 	// Capacity nudge (2026-08-13): a deliberately tiny term so the credential's
@@ -88,7 +147,6 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 	// a small penalty; the dominant load/health terms and the capacity-aware
 	// tie-breaks (pickWeightedTie) carry the real weighting. Set
 	// LLM_GATEWAY_ROUTING_W_CAPACITY=0 to disable entirely.
-	capacityWeight := clampEnvWeight(envFloat("LLM_GATEWAY_ROUTING_W_CAPACITY", 0.02))
 	capacityPenalty := capacityPenaltyForWeight(c.Weight)
 	composite :=
 		concurrencyScore*weights.ConcurrencyWeight +
@@ -122,16 +180,21 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 	// sticky/recency 仅在 Router.StickyLoad 接线后生效（未接线=纯 0，
 	// 与历史 composite 逐字节一致，测试/旧部署零影响）；balance 只依赖
 	// candidate 字段。三者权重均可用 env 置 0 整体关闭。
-	stickyWeight := envFloat("LLM_GATEWAY_ROUTING_W_STICKY", 0.15)
-	recencyWeight := envFloat("LLM_GATEWAY_ROUTING_W_RECENCY", 0.05)
-	balanceWeight := envFloat("LLM_GATEWAY_ROUTING_W_BALANCE", 0.05)
+	// R48 §3 A2：stickyWeight/recencyWeight/balanceWeight/planquotaWeight 在
+	// calculateLoadScore 入口已通过 readEnvWeights(r) 一次性预读（line 102）。
+	// 此处不再重复 envFloat——参考 D01 §三 A2 描述。
+	// R48 §4 B 方案：从 stratIn.StickySnapshot 读 sticky/recency。
+	// 该 map 在 planCandidates 进入 planByTier 前由
+	// r.StickyLoad.Snapshot(ids) 一次性构建（router.go:589-597 一带），
+	// 把每候选 Info() 的 2 次写锁降到 n=10 时总共 1 次锁。
+	// fallback: nil/缺 key → stickySessionPenalty/recentRequestPenalty 内部走 Info()。
 	var stickyPenalty, recencyPenalty float64
 	if r != nil && r.StickyLoad != nil {
 		if stickyWeight > 0 {
-			stickyPenalty = stickySessionPenalty(c, r)
+			stickyPenalty = stickySessionPenalty(c, r, stratIn.StickySnapshot)
 		}
 		if recencyWeight > 0 {
-			recencyPenalty = recentRequestPenalty(c, r)
+			recencyPenalty = recentRequestPenalty(c, r, stratIn.StickySnapshot)
 		}
 	}
 	var balancePenalty float64
@@ -144,7 +207,7 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 	// 额度多的计划凭据：窗口重置前把额度用掉（沉没成本不浪费），同时避免
 	// 把单一 5h/周窗提前打爆（429→冷却→整窗闲置才是最大浪费）。无探测数据
 	// fail-open=0，PAYG/免费不适用。
-	planQuotaWeight := envFloat("LLM_GATEWAY_ROUTING_W_PLANQUOTA", 0.10)
+	// R48 §3 A2：planQuotaWeight 已在 calculateLoadScore 入口由 readEnvWeights 预读（line 104）。
 	var planQuotaPenalty float64
 	if planQuotaWeight > 0 {
 		planQuotaPenalty = planQuotaPenaltyForCandidate(c)
@@ -498,8 +561,16 @@ func calculateQualityScore(c provider.Candidate) float64 {
 // 会话数达到容量 → 1.0；无会话/无信号 → 0。容量未知时用保守默认值
 // （env LLM_GATEWAY_STICKYLOAD_DEFAULT_CAPACITY，默认 8），避免无
 // concurrency_limit 的凭据被误判为无限容量。
-func stickySessionPenalty(c provider.Candidate, r *Router) float64 {
-	info := r.StickyLoad.Info(c.CredentialID)
+//
+// R48 §4 B 方案：优先从 r.StickyLoad 的批量快照（planCandidates 一次性
+// 调用 Snapshot(ids)）读，回退到单次 Info()。快照路径每候选 0 次写锁。
+func stickySessionPenalty(c provider.Candidate, r *Router, stickySnapshot map[int]StickyLoadInfo) float64 {
+	var info StickyLoadInfo
+	if stickySnapshot != nil {
+		info = stickySnapshot[c.CredentialID]
+	} else if r != nil && r.StickyLoad != nil {
+		info = r.StickyLoad.Info(c.CredentialID)
+	}
 	if info.Sessions <= 0 {
 		return 0
 	}
@@ -521,8 +592,17 @@ func stickySessionCapacity(c provider.Candidate, r *Router) int {
 // recentRequestPenalty 以"节点最近一次请求时间"做突发平滑（2026-09-19）：
 // 距今 < 地平线（默认 30s，env LLM_GATEWAY_ROUTING_RECENCY_HORIZON_SECONDS）
 // 线性衰减 1→0；无信号（从未活跃）= 0（空闲节点最优先）。
-func recentRequestPenalty(c provider.Candidate, r *Router) float64 {
-	info := r.StickyLoad.Info(c.CredentialID)
+//
+// R48 §4 B 方案：与 stickySessionPenalty 同——优先读 stickySnapshot，
+// 缺则回退 Info()。env LLM_GATEWAY_ROUTING_RECENCY_HORIZON_SECONDS 仍走 env
+// （不在 EnvWeights 里，因为 horizon 允许运营动态调整；weight 是不变的）。
+func recentRequestPenalty(c provider.Candidate, r *Router, stickySnapshot map[int]StickyLoadInfo) float64 {
+	var info StickyLoadInfo
+	if stickySnapshot != nil {
+		info = stickySnapshot[c.CredentialID]
+	} else if r != nil && r.StickyLoad != nil {
+		info = r.StickyLoad.Info(c.CredentialID)
+	}
 	if info.LastActivityMs <= 0 {
 		return 0
 	}
@@ -655,8 +735,11 @@ func firstHopLotteryWeights(cands []provider.Candidate, r *Router) []int {
 		}
 		var weighted float64
 		if stickyWired {
-			weighted += stickySessionPenalty(c, r)*wSticky +
-				recentRequestPenalty(c, r)*wRecency
+			// firstHopLotteryWeights 不在 R48 §4 B 的快路径范围（仅 planByTier
+			// 改造），保持 nil → Info() 回退语义；如未来需优化可加 StrategyInput
+			// 参数传递 stickySnapshot。
+			weighted += stickySessionPenalty(c, r, nil)*wSticky +
+				recentRequestPenalty(c, r, nil)*wRecency
 		}
 		weighted += balancePenaltyForCandidate(c)*wBalance +
 			planQuotaPenaltyForCandidate(c)*wPlanQuota

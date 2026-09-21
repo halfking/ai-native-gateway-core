@@ -32,9 +32,19 @@ type StickyLoadStore interface {
 // StickyLoadView 是 Router 消费的读写接口：读（Refresh 由 planCandidates
 // 每请求触发一次，内部按 refresh TTL 节流；Info 是 O(1) map 读）＋
 // 写（Observe* 由 recordStickySuccess 在成功路径调用）。
+//
+// R48 §4 B 方案：批量读取接口 Snapshot(ids) 替代 per-credential Info() 调用。
+// 每个 planByTier 对 n 个候选调用 Info() 2 次（sticky+recency 维度）——
+// 当 Info() 内部需要持写锁（snapMu + mu 双锁，sticky_load.go:336/343），
+// n=10 时 20 次锁争用不可忽视。Snapshot(ids) 在锁内一次性构建 map 给
+// calculateLoadScore 复用，n=10 时降为 1 次锁。失败回退：缺 Snapshot 时
+// calculateLoadScore 走 per-call Info()，语义不变。
 type StickyLoadView interface {
 	Refresh(credIDs []int)
 	Info(credentialID int) StickyLoadInfo
+	// Snapshot 返回一组凭据当前 sticky/recency 视图。实现应内部单次锁
+	// 完成，原子快照所有 ids 的视图。缺失的凭据不应在 map 中。
+	Snapshot(credIDs []int) map[int]StickyLoadInfo
 	ObserveSession(credentialID int, sessionKey string)
 	ObserveActivity(credentialID int)
 }
@@ -355,6 +365,62 @@ func (t *StickyLoadTracker) Info(credentialID int) StickyLoadInfo {
 		}
 	}
 	return info
+}
+
+// Snapshot 实现 StickyLoadView 接口的批量读取。
+// R48 §4 B 方案：单次锁+遍历 ids 完成 n 个凭据的快照读取，把
+// Info() 的 n×2 次写锁争用降到 1 次。
+//
+// 语义与 Info() 完全一致（snap 优先级 vs memory 计数；snapshotMaxAge
+// 新鲜度判据；activity > memory.LastActivity 时取较大者），实现直接复用
+// Info() 内联逻辑以避免双份代码漂移。
+func (t *StickyLoadTracker) Snapshot(credIDs []int) map[int]StickyLoadInfo {
+	out := make(map[int]StickyLoadInfo, len(credIDs))
+	if t == nil || len(credIDs) == 0 {
+		return out
+	}
+
+	// 单次锁：snapMu + mu 顺序持锁（与 Info() 锁顺序一致，语义等价）。
+	t.snapMu.Lock()
+	snapAt := t.snapAt
+	snapMaxAge := t.snapshotMaxAge
+	snapshot := t.snapshot // shallow copy pointer
+	t.snapMu.Unlock()
+
+	t.mu.Lock()
+	memorySessions := make(map[int]int, len(credIDs))
+	for _, id := range credIDs {
+		if id <= 0 {
+			continue
+		}
+		memorySessions[id] = t.memoryCountLocked(id)
+	}
+	activity := make(map[int]int64, len(credIDs))
+	for _, id := range credIDs {
+		if id <= 0 {
+			continue
+		}
+		activity[id] = t.activity[id]
+	}
+	t.mu.Unlock()
+
+	now := time.Now()
+	for _, id := range credIDs {
+		if id <= 0 {
+			continue
+		}
+		var info StickyLoadInfo
+		info.Sessions = memorySessions[id]
+		info.LastActivityMs = activity[id]
+		if snap, covered := snapshot[id]; covered && now.Sub(snapAt) < snapMaxAge {
+			info.Sessions = snap.Sessions
+			if snap.LastActivityMs > info.LastActivityMs {
+				info.LastActivityMs = snap.LastActivityMs
+			}
+		}
+		out[id] = info
+	}
+	return out
 }
 
 // memoryCountLocked 计算窗口内的本实例会话数（惰性裁剪过期项）。

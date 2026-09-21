@@ -25,20 +25,20 @@ func TestStickySessionPenaltyCapacityNormalized(t *testing.T) {
 	limit := 4
 	c := provider.Candidate{CredentialID: 1, ConcurrencyLimit: &limit}
 
-	if p := stickySessionPenalty(c, r); p != 0 {
+	if p := stickySessionPenalty(c, r, nil); p != 0 {
 		t.Fatalf("no sessions → 0, got %v", p)
 	}
 
 	tr.ObserveSession(1, "s1")
 	tr.ObserveSession(1, "s2")
-	if p := stickySessionPenalty(c, r); p != 0.5 {
+	if p := stickySessionPenalty(c, r, nil); p != 0.5 {
 		t.Fatalf("2/4 sessions → 0.5, got %v", p)
 	}
 
 	tr.ObserveSession(1, "s3")
 	tr.ObserveSession(1, "s4")
 	tr.ObserveSession(1, "s5")
-	if p := stickySessionPenalty(c, r); p != 1.0 {
+	if p := stickySessionPenalty(c, r, nil); p != 1.0 {
 		t.Fatalf("5/4 sessions → clamped 1.0, got %v", p)
 	}
 }
@@ -51,7 +51,7 @@ func TestStickySessionPenaltyCapacityDefaultFallback(t *testing.T) {
 	c := provider.Candidate{CredentialID: 2}
 
 	tr.ObserveSession(2, "s1")
-	p := stickySessionPenalty(c, r)
+	p := stickySessionPenalty(c, r, nil)
 	if p <= 0 || p >= 1 {
 		t.Fatalf("expected a bounded default-capacity ratio in (0,1), got %v", p)
 	}
@@ -64,26 +64,26 @@ func TestRecentRequestPenaltyDecay(t *testing.T) {
 	r := &Router{StickyLoad: tr}
 	c := provider.Candidate{CredentialID: 9}
 
-	if p := recentRequestPenalty(c, r); p != 0 {
+	if p := recentRequestPenalty(c, r, nil); p != 0 {
 		t.Fatalf("no activity → 0, got %v", p)
 	}
 
 	tr.ObserveActivity(9)
-	if p := recentRequestPenalty(c, r); p < 0.99 {
+	if p := recentRequestPenalty(c, r, nil); p < 0.99 {
 		t.Fatalf("fresh activity → ~1, got %v", p)
 	}
 
 	tr.mu.Lock()
 	tr.activity[9] = time.Now().Add(-15 * time.Second).UnixMilli()
 	tr.mu.Unlock()
-	if p := recentRequestPenalty(c, r); p < 0.45 || p > 0.55 {
+	if p := recentRequestPenalty(c, r, nil); p < 0.45 || p > 0.55 {
 		t.Fatalf("15s of 30s horizon → ~0.5, got %v", p)
 	}
 
 	tr.mu.Lock()
 	tr.activity[9] = time.Now().Add(-60 * time.Second).UnixMilli()
 	tr.mu.Unlock()
-	if p := recentRequestPenalty(c, r); p != 0 {
+	if p := recentRequestPenalty(c, r, nil); p != 0 {
 		t.Fatalf("beyond horizon → 0, got %v", p)
 	}
 }
@@ -124,8 +124,8 @@ func TestLoadScoreStickyLoadWiredZeroObservationIdentical(t *testing.T) {
 	rNil := &Router{LoadScoreWeights: DefaultLoadScoreWeights()}
 	rWire := &Router{LoadScoreWeights: DefaultLoadScoreWeights(), StickyLoad: tr}
 
-	base := calculateLoadScore(c, rNil, context.Background(), rNil.LoadScoreWeights)
-	wired := calculateLoadScore(c, rWire, context.Background(), rWire.LoadScoreWeights)
+	base := calculateLoadScore(c, rNil, context.Background(), rNil.LoadScoreWeights, StrategyInput{})
+	wired := calculateLoadScore(c, rWire, context.Background(), rWire.LoadScoreWeights, StrategyInput{})
 	if base != wired {
 		t.Fatalf("zero-observation tracker must not change composite: base=%v wired=%v", base, wired)
 	}
@@ -145,8 +145,8 @@ func TestLoadScoreStickyLoadPenalizesLoadedNode(t *testing.T) {
 	tr.ObserveSession(2, "s3")
 	tr.ObserveSession(2, "s4")
 
-	scoreIdle := calculateLoadScore(idle, r, context.Background(), r.LoadScoreWeights)
-	scoreLoaded := calculateLoadScore(loaded, r, context.Background(), r.LoadScoreWeights)
+	scoreIdle := calculateLoadScore(idle, r, context.Background(), r.LoadScoreWeights, StrategyInput{})
+	scoreLoaded := calculateLoadScore(loaded, r, context.Background(), r.LoadScoreWeights, StrategyInput{})
 	if scoreLoaded <= scoreIdle {
 		t.Fatalf("loaded node must score higher (worse): idle=%v loaded=%v", scoreIdle, scoreLoaded)
 	}

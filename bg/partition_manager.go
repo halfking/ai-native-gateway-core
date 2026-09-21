@@ -1146,6 +1146,11 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 		// R47（存储演进批，R46 §五#8）：排水结束后记录 hot 剩余行数水位。
 		// 持续高于「批量×周期」= promote 吞吐跟不上写入；查错只 Warn 不阻断。
 		recordHotTableBacklog(s.label, pm.hotTableBacklogRows(ctx, s.label))
+		// R48 §五#3：oldest-row-age 与 backlog 互补——观测 sessions 族 TTL 裁决
+		// 前置门禁。失败时 -1 保持 last gauge value，不发噪。
+		if age := pm.hotTableOldestRowAge(ctx, s.label); age >= 0 {
+			recordHotTableOldestRowAge(s.label, age)
+		}
 		if budgetExhausted {
 			break
 		}
@@ -1174,6 +1179,42 @@ func (pm *PartitionManager) hotTableBacklogRows(ctx context.Context, label strin
 		return -1
 	}
 	return n
+}
+
+// hotTableOldestRowAge (R48 §五#3)：查询指定 hot 表最旧一行的 age（秒）。
+// 表名解析逻辑与 hotTableBacklogRows 一致（自动追加 _hot 后缀）；
+// 时间戳列名通过 hotTableTSColumn(label) 决定（默认 ts，部分表为 created_at）。
+//
+// 返回：
+//   0   = 表为空（MIN 返回 NULL → caller 写 0 进 gauge，符合 "空表=0" 语义）
+//   > 0 = 最旧行距今的秒数
+//   -1  = 查询失败（slog.Warn + 保持 last gauge value）
+func (pm *PartitionManager) hotTableOldestRowAge(ctx context.Context, label string) float64 {
+	table := label
+	if !strings.HasSuffix(table, "_hot") {
+		table += "_hot"
+	}
+	tsCol := hotTableTSColumn(label)
+	// label/tsCol 均来自固定 switch + promoteSpecs，无用户输入；白名单校验
+	// 防止有人修改 switch 后误注入 SQL。
+	allowed := map[string]bool{"ts": true, "created_at": true}
+	if !allowed[tsCol] {
+		slog.Error("partition_manager: hot ts column rejected", "label", label, "ts_col", tsCol)
+		return -1
+	}
+	query := "SELECT EXTRACT(EPOCH FROM (now() - MIN(" + tsCol + ")))::bigint FROM " + table
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var ageSec *float64
+	if err := pm.db.QueryRow(timeoutCtx, query).Scan(&ageSec); err != nil {
+		slog.Warn("partition_manager: hot oldest age query failed",
+			"label", label, "table", table, "ts_col", tsCol, "error", err)
+		return -1
+	}
+	if ageSec == nil {
+		return 0
+	}
+	return *ageSec
 }
 
 // analyzePartitionStats refreshes planner stats on hot heap tables and recent

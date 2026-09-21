@@ -215,6 +215,12 @@ func StreamNativeResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *
 		if event.Name == "" && len(event.Data) == 0 {
 			continue
 		}
+		// paramledger (2026-09-22): 生命周期帧（response.created/
+		// in_progress/completed 等 AttemptMetadata/Terminal 类）回显
+		// reasoning.effort——出站被降级/归一时还原为客户端原始值再写回。
+		if event.Class == FrameClassAttemptMetadata || event.Class == FrameClassTerminal {
+			event.Raw = restoreEchoFrame(event.Raw, requestID)
+		}
 		if _, err := w.Write(event.Raw); err != nil {
 			if capture != nil {
 				capture.MarkInterruptedWithReason("client_write_failed")

@@ -494,14 +494,20 @@ var autoRouteSelectionRoleAttributionMigration731 []byte
 // 733/734），漏做 installer 五点同步致契约门禁红，本处补齐（事务兼容，
 // 走常规 single-transaction 通道）。
 //
+//go:embed embeddata/startup/session_turns_hot_bootstrap.sql
+var sessionTurnsHotBootstrap []byte
+
+// taskprofile 后续轮 (2026-09-21): 733/734 会话存储解耦 v3 五点同步补齐
+// ——session v3 落地（035f9382e / 8e86ddcbc）只跑了 db.Open 与 schema 通道，
+// 五点同步移交本轮收口（733 特征层表族 + 734 canonical 视图 LEFT JOIN
+// 替换 30 个 NULL 占位）。需在 session_turns_hot_bootstrap 之后执行以
+// 保证 session_turn_details_hot 拿到 hot 表存在性。
+//
 //go:embed embeddata/startup/733_session_turn_details.sql
 var sessionTurnDetailsMigration733 []byte
 
 //go:embed embeddata/startup/734_request_logs_view_details_join.sql
 var requestLogsViewDetailsJoinMigration734 []byte
-
-//go:embed embeddata/startup/session_turns_hot_bootstrap.sql
-var sessionTurnsHotBootstrap []byte
 
 // embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
 // 共用，避免两份 map 漂移（曾发生 632 拷入 embeddata 却没接线的静默丢失）。
@@ -650,9 +656,9 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/726_restore_credential_model_index_hot_unique.sql":                      restoreCredentialModelIndexHotUniqueMigration726,
 	"startup/730_session_role_hierarchy.sql":                                         sessionRoleHierarchyMigration730,
 	"startup/731_auto_route_selection_role_attribution.sql":                          autoRouteSelectionRoleAttributionMigration731,
-	"startup/733_session_turn_details.sql":                                           sessionTurnDetailsMigration733,
-	"startup/734_request_logs_view_details_join.sql":                                 requestLogsViewDetailsJoinMigration734,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
+	"startup/733_session_turn_details.sql":                                          sessionTurnDetailsMigration733,
+	"startup/734_request_logs_view_details_join.sql":                                 requestLogsViewDetailsJoinMigration734,
 }
 
 // 临时存放 embed SQL 的目录（运行时写入）

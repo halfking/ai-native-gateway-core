@@ -36,6 +36,7 @@ import (
 	v2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	"github.com/kaixuan/llm-gateway-go/internal/httpx"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore" //nolint:depguard // 2026-08-06 auto summary persistence
 	"github.com/kaixuan/llm-gateway-go/internal/titlestore"   //nolint:depguard // durable title fencing/tombstone state
 	"github.com/kaixuan/llm-gateway-go/pending"
@@ -60,6 +61,10 @@ type Handler struct {
 	secret               string
 	encKey               []byte
 	keyring              *secret.Keyring // AES-256-GCM keyring; nil → Fernet legacy
+	// requestAnomalies (2026-09-21) 请求侧异常（reqprobe）存储门面；
+	// nil → /api/admin/request-anomalies* 返回 503。SetRequestAnomalyStore
+	// 在启动时按 Full(Redis)/lite(内存) 模式注入。
+	requestAnomalies *reqprobe.Coordinator
 	// freeDiscovery (2026-09-09): 免费资源自动发现服务 (084 迁移三表).
 	// SetFreeDiscovery 在启动时注入; nil = 路由返回 503 (no-DB 模式).
 	freeDiscovery *freeDiscoveryDeps
@@ -897,6 +902,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/format-anomaly-summary", h.superAdmin(h.handleFormatAnomalySummary))
 	mux.HandleFunc("/api/admin/format-anomalies", h.superAdmin(h.handleFormatAnomalies))
 	mux.HandleFunc("/api/admin/format-anomalies/", h.superAdmin(h.handleFormatAnomalySubrouter))
+	// reqprobe (2026-09-21): 请求侧异常（参数被拒/模式不匹配）列表、
+	// 徽标计数与批量解决；存储与部署模式无关（Full=Redis / lite=内存）。
+	mux.HandleFunc("/api/admin/request-anomalies", h.superAdmin(h.handleRequestAnomalies))
+	mux.HandleFunc("/api/admin/request-anomalies/", h.superAdmin(h.handleRequestAnomalySubrouter))
 	// 2026-07-28: model integrity detection (model_mismatch,
 	// finish_refusal, finish_truncation, empty_response, repeated_content,
 	// fingerprint_drift). See domains/streaming/integrity/ and

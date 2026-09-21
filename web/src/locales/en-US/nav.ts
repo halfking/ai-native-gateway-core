@@ -97,4 +97,9 @@ export default {
   publicSupport: 'Support',
   // 2026-07-21: a11y skip-link target, used by LifecycleShell.vue.
   skip: 'Skip to main content',
+
+  // 2026-09-21: 导航徽标 tooltip
+  badge: {
+    formatAnomalies: 'Unresolved request-side anomalies',
+  },
 }

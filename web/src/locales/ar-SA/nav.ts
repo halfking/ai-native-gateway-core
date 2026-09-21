@@ -104,4 +104,9 @@ export default {
   publicSupport: 'الدعم الفني',
 
   skip: 'Skip to main content',
+
+  // 2026-09-21: 导航徽标 tooltip
+  badge: {
+    formatAnomalies: 'شذوذ الطلبات غير المحلول',
+  },
 }

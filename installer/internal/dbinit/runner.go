@@ -204,6 +204,15 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"733_session_turn_details.sql",
 			"734_request_logs_view_details_join.sql",
 			"session_turns_hot_bootstrap.sql",
+			// 733/734 (taskprofile 后续轮, 2026-09-21): 会话存储解耦 v3
+			// 五点同步补齐 —— session v3 落地（035f9382e）只跑了 db.Open
+			// 与 schema 通道，安装器同步移交本轮收口。733 建
+			// session_turn_details（hot + 月分区，50000/批回填），734
+			// 把 canonical 视图 session 分支的 30 个 NULL 占位换成 details
+			// LEFT JOIN。必须 733 在前、734 在后，且均在
+			// session_turns_hot_bootstrap 之后（依赖 hot 表存在）。
+			"733_session_turn_details.sql",
+			"734_request_logs_view_details_join.sql",
 		},
 	}
 }

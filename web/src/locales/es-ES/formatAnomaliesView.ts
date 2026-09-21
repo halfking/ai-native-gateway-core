@@ -109,4 +109,57 @@ export default {
     markFailed: 'Error al marcar',
     needSuperAdmin: 'Se requiere permiso de super-admin',
   },
+
+  // 2026-09-21: 请求错误 tab（reqprobe）
+  tabs: {
+      format: 'Formato de respuesta',
+      request: 'Errores de solicitud',
+  },
+  requestTab: {
+      stats: {
+          unresolved: 'Sin resolver (página)',
+          autoRecovered: 'Auto-recuperados',
+          total: 'Total',
+      },
+      filter: {
+          day: 'Fecha',
+          trigger: 'Tipo',
+          triggerPlaceholder: 'Seleccionar tipo…',
+      },
+      trigger: {
+          all: 'Todos los tipos',
+          param_rejected: 'Parámetro rechazado',
+          mode_mismatch: 'Modo incompatible',
+          upstream_error: 'Error del proveedor',
+      },
+      triggerDesc: {
+          param_rejected: 'El proveedor rechazó un parámetro (p. ej. reasoning_effort); la pasarela lo eliminó y reintentó',
+          mode_mismatch: 'La forma de API (responses / chat) no coincide con el proveedor',
+          upstream_error: '4xx del lado de la solicitud sin clasificar, pendiente de triaje',
+      },
+      batch: {
+          selected: '{n} seleccionados',
+          resolveSelected: 'Resolver selección',
+          resolveFiltered: 'Resolver todos los pendientes',
+      },
+      table: {
+          day: 'Fecha',
+          trigger: 'Tipo',
+          param: 'Parámetro / sugerencia',
+          status: 'Estado',
+          occurrences: 'Veces',
+          recoveredCount: 'Auto-sanado ×{n}',
+      },
+      detail: {
+          title: 'Detalle del error de solicitud',
+          clientModel: 'Modelo del cliente',
+          protocol: 'Protocolo de salida',
+          suggestMode: 'Modo sugerido',
+          firstSeen: 'Primera vez',
+          lastSeen: 'Última vez',
+          errorSample: 'Muestra de error del proveedor',
+          occurrences: 'Estadísticas',
+          recoveredHint: '{n} recuperados automáticamente al quitar parámetros o cambiar de modo',
+      },
+  },
 }
