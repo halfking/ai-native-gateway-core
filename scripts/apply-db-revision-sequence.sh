@@ -529,6 +529,12 @@ files=(
   # cost 60650/总 71260，实测残余 10.9s）。CREATE INDEX CONCURRENTLY
   # IF NOT EXISTS 幂等；本日已在 252 与本机存量真库实跑验证。
   "$ROOT_DIR/sql/migrations/startup/729_sql_audit_session_turns_credential_ts_index.sql"
+  # 2026-09-21 R51 审计轮：735 models_canonical active 折叠名表达式唯一索引
+  # （R50 F19 对账收口，表达式与 modelname.DedupCanonicalNameSQL run-collapse
+  # 臂逐字一致）。fail-closed 守卫：active 折叠重复对未清零时拒绝执行并指路
+  # cleanup 脚本（CASCADE 引用族的裁决不进启动迁移）。守卫+IF NOT EXISTS 幂等；
+  # 本轮已在本机存量真库先跑对账脚本后验证通过。
+  "$ROOT_DIR/sql/migrations/startup/735_models_canonical_active_folded_unique.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

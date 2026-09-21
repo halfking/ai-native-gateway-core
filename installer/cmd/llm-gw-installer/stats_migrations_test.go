@@ -184,6 +184,10 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// stayed red until this round synced them. Transaction-safe.
 		"733_session_turn_details.sql":           sessionTurnDetailsMigration733,
 		"734_request_logs_view_details_join.sql": requestLogsViewDetailsJoinMigration734,
+		// 735 (R51, 2026-09-21): models_canonical active folded-name unique
+		// index — five-point sync completed in the same round as the
+		// canonical copy landed. Transaction-safe (guard + IF NOT EXISTS).
+		"735_models_canonical_active_folded_unique.sql": canonicalFoldedUniqueMigration735,
 	}
 
 	for name, embedded := range expected {

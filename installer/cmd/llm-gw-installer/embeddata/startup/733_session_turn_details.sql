@@ -255,6 +255,14 @@ END $$;
 
 -- =============================================
 -- 5. promote：hot → 月分区（镜像 707 契约形态）
+--    R51 (2026-09-21)：INSERT 侧 ON CONFLICT DO NOTHING → DO UPDATE。
+--    回填（同文件第 6 节）与 promote 并发时：若回填在候选选定后、INSERT
+--    前把同一 (tenant_id, request_id, partition_date) 行写入 parent，
+--    DO NOTHING 会「hot 行已 DELETE、parent 插入被跳过」→ 新值静默丢失。
+--    DO UPDATE 以 hot 行新值覆盖（last-writer-wins，无丢行；回填源
+--    request_logs 不删行，方向相反时也只是覆盖不丢失）。函数内
+--    advisory lock 只串行化 promote 实例自身，管不到回填 DO 块——
+--    正是靠 DO UPDATE 兜住跨通道并发。
 -- =============================================
 
 CREATE OR REPLACE FUNCTION public.promote_session_turn_details_hot_to_partition(
@@ -271,6 +279,7 @@ DECLARE
     v_parent_shape TEXT;
     v_hot_shape TEXT;
     v_cols TEXT;
+    v_set TEXT;
 BEGIN
     IF p_retention IS NULL OR p_retention <= INTERVAL '0 seconds' THEN
         RAISE EXCEPTION 'p_retention must be a positive interval';
@@ -302,6 +311,15 @@ BEGIN
      WHERE attrelid = 'public.session_turn_details_hot'::regclass
        AND attnum > 0 AND NOT attisdropped;
 
+    -- DO UPDATE 的 SET 列清单（R51）：排除 id（主键 (partition_date, id)
+    -- 的身份列，不随搬移回写）与 partition_date（冲突目标键，恒等值）。
+    SELECT string_agg(quote_ident(attname) || ' = EXCLUDED.' || quote_ident(attname), ', ' ORDER BY attnum)
+      INTO v_set
+      FROM pg_attribute
+     WHERE attrelid = 'public.session_turn_details_hot'::regclass
+       AND attnum > 0 AND NOT attisdropped
+       AND attname NOT IN ('id', 'partition_date');
+
     PERFORM pg_advisory_xact_lock(
         hashtextextended('public.promote_session_turn_details_hot_to_partition', 0)
     );
@@ -324,6 +342,8 @@ BEGIN
 
         -- 目录派生列清单 + 按位置同序 INSERT（父/hot 本迁移同形创建；契约
         -- 校验保证集合全等，列序敏感由本迁移同形 DDL 保证）。
+        -- R51：DO UPDATE（目标 = request_id 唯一约束）覆盖回填并发写入的
+        -- 行——hot 新值胜出，DELETE 掉的 hot 行不丢（DO NOTHING 会丢）。
         EXECUTE format(
             'WITH candidate AS (
                 SELECT h.id
@@ -346,11 +366,11 @@ BEGIN
             ), inserted AS (
                 INSERT INTO public.session_turn_details (%s)
                 SELECT %s FROM moved
-                ON CONFLICT DO NOTHING
+                ON CONFLICT (tenant_id, request_id, partition_date) DO UPDATE SET %s
                 RETURNING 1
             )
             SELECT count(*) FROM inserted',
-            p_retention, p_batch_size, v_cols, v_cols)
+            p_retention, p_batch_size, v_cols, v_cols, v_set)
         INTO v_batch;
         EXIT WHEN v_batch = 0;
         v_moved := v_moved + v_batch;
