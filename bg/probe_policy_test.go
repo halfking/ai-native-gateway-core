@@ -52,9 +52,17 @@ func TestProbePolicyPredicatesShape(t *testing.T) {
 	}
 	// INV-3: probe traffic exclusion predicate — 双臂（R49 审计修复）：
 	// quality_flags 直探轮合成行 + origin_stage 网关轮落点，缺一不可。
+	// 仅限物理表（hot/parent/分区，428 起有 origin_stage 列）。
 	if got, want := probeTrafficExclusionPredicate,
 		"(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE) AND COALESCE(%s.origin_stage, 'business') = 'business')"; got != want {
 		t.Fatalf("probeTrafficExclusion = %q, want %q", got, want)
+	}
+	// 冻结 113 列视图变体（R49 自纠）：origin_stage 不在视图契约内，视图
+	// 读面只能用 flags+task_type+origin_actor 三臂（全部 113 列在册）。
+	if got, want := probeTrafficExclusionPredicateView,
+		"(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE) AND COALESCE(%s.task_type, '') <> 'probe_triggered'"+
+			" AND COALESCE(%s.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker'))"; got != want {
+		t.Fatalf("probeTrafficExclusionView = %q, want %q", got, want)
 	}
 	if probeUsageWindowInterval != "interval '3 days'" {
 		t.Fatalf("usage window = %q, want 3 days", probeUsageWindowInterval)
@@ -237,5 +245,24 @@ func TestProbeExclusionPredicateCallSitesR50(t *testing.T) {
 	}
 	if strings.Contains(selfcheckSrc, "AND NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)") {
 		t.Errorf("credential_selfcheck.go still has a single-arm usage scan; use probeTrafficExclusionPredicate")
+	}
+}
+
+// TestProbeUsageViewScanUsesFrozenContractPredicate（R49 自纠守卫，2026-09-20）：
+// origin_stage 不在 canonical 视图的冻结 113 列契约内——凡以
+// request_logs_with_current_month 为源的 bg usage 扫描必须用视图变体谓词
+// （flags+task_type+origin_actor），物理表变体对视图必 42703（上一轮
+// a7baa1f5a 曾把物理谓词用到视图上，真库验证时才炸出）。
+func TestProbeUsageViewScanUsesFrozenContractPredicate(t *testing.T) {
+	src, err := readSource("daily_probe_audit.go")
+	if err != nil {
+		t.Fatalf("read daily_probe_audit.go: %v", err)
+	}
+	const wantView = `fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")`
+	if !strings.Contains(src, wantView) {
+		t.Fatalf("daily_probe_audit usage scan must use the frozen-view predicate %q", wantView)
+	}
+	if strings.Contains(src, `fmt.Sprintf(probeTrafficExclusionPredicate,`) {
+		t.Fatalf("daily_probe_audit must not reference the physical-table predicate (origin_stage is not in the view's 113-column contract)")
 	}
 }
