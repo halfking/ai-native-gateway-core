@@ -195,14 +195,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// agent_role/task_kind/routing_source on parent + hot tables so
 			// affinity learning can exclude forced role-route selections.
 			"731_auto_route_selection_role_attribution.sql",
-			// 733/734 (R50, 2026-09-21 five-point catch-up): session storage
-			// decoupling v3 — session_turn_details feature-layer family and
-			// the canonical view details JOIN. Delivered by the v3 session
-			// line as 731/732, renumbered to 733/734 on collision; the
-			// installer sync never followed. Transaction-safe (no
-			// CONCURRENTLY), so the regular single-transaction channel applies.
-			"733_session_turn_details.sql",
-			"734_request_logs_view_details_join.sql",
+			// R51 (2026-09-21)：733/734 曾在本列表出现两次——首轮把这一对
+			// 注册在 session_turns_hot_bootstrap 之前（错位，依赖 hot 表
+			// 存在），后续轮又在 bootstrap 之后补了一对；InitSchema 按序
+			// 逐文件 applySQL 不去重，同一迁移会被重复应用。删除 bootstrap
+			// 前的错位对，保留下方位置合法的一对；TestStartupFilesHaveNoDuplicates
+			// 守门（既有 contains 型测试用 map 记录位置，抓不到列表内重复）。
 			"session_turns_hot_bootstrap.sql",
 			// 733/734 (taskprofile 后续轮, 2026-09-21): 会话存储解耦 v3
 			// 五点同步补齐 —— session v3 落地（035f9382e）只跑了 db.Open
@@ -213,6 +211,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// session_turns_hot_bootstrap 之后（依赖 hot 表存在）。
 			"733_session_turn_details.sql",
 			"734_request_logs_view_details_join.sql",
+			// 735 (R51, 2026-09-21): models_canonical active 折叠名表达式唯一
+			// 索引（R50 F19 对账收口）。fail-closed 前置守卫：active 折叠重复
+			// 对未对账时报错指路 sql/fixes/2026-09-20-canonical-dedup-cleanup.sql
+			// （CASCADE 引用族裁决不进启动迁移静默选 winner）。幂等。
+			"735_models_canonical_active_folded_unique.sql",
 		},
 	}
 }

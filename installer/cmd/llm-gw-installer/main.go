@@ -509,6 +509,9 @@ var sessionTurnDetailsMigration733 []byte
 //go:embed embeddata/startup/734_request_logs_view_details_join.sql
 var requestLogsViewDetailsJoinMigration734 []byte
 
+//go:embed embeddata/startup/735_models_canonical_active_folded_unique.sql
+var canonicalFoldedUniqueMigration735 []byte
+
 // embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
 // 共用，避免两份 map 漂移（曾发生 632 拷入 embeddata 却没接线的静默丢失）。
 // 新增迁移时：embeddata/startup/ 放文件 → 此处加条目 → runner.go StartupFiles
