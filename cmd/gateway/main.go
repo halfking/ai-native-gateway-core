@@ -6060,6 +6060,12 @@ func main() {
 	mux.Handle("/v1/chat/completions", chatRouteHandler)
 	mux.Handle("/v1/completions", chatRouteHandler)
 	mux.Handle("/v1/messages", messagesRouteHandler)
+	// 2026-09-21: Anthropic Messages token-count endpoint. Claude Code probes
+	// it every context-management cycle; without the route the mux answered a
+	// plain-text 404 that strict clients treat as a session-fatal error. The
+	// handler answers with the same heuristic estimate the streaming bridge
+	// writes into message_start.usage.input_tokens.
+	mux.Handle("/v1/messages/count_tokens", streaming.NewCountTokensHandler(chatHandler))
 	mux.Handle("/v1/responses", responsesRouteHandler)
 	mux.HandleFunc("/v1/handoffs/confirm", chatHandler.HandleHandoffConfirmation)
 	if embeddingsHandler != nil {

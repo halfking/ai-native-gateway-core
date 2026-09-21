@@ -39,6 +39,15 @@ const (
 	estimateBlobMinBytes = 4096
 )
 
+// EstimateAnthropicInputTokens is the exported seam for callers outside the
+// executors package — notably /v1/messages/count_tokens, which serves Claude
+// Code's context-management probe and must return the same heuristic the
+// streaming bridge bakes into message_start.usage.input_tokens so both
+// surfaces agree.
+func EstimateAnthropicInputTokens(body []byte) int {
+	return estimateAnthropicInputTokens(body)
+}
+
 // estimateAnthropicInputTokens 基于 Anthropic 形状的请求体估算上游输入 token 数。
 //
 // 覆盖 system、tools 与 messages;解析失败或非 Anthropic 形状(无 messages 且无

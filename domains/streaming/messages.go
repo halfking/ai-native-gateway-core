@@ -1,12 +1,14 @@
 package streaming
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -822,7 +824,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var responseBody []byte
 	if !isStream {
-		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID)
+		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID, executors.EstimateAnthropicInputTokens(bodyBytes))
 	}
 
 	// Phase D (2026-06-22): use InboundBody (original client body) for audit
@@ -1281,10 +1283,24 @@ func convertAnthropicToolChoice(raw json.RawMessage) any {
 	return v
 }
 
-func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string) []byte {
+func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string, inputEstimate int) []byte {
 	if len(body) == 0 {
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error", "Failed to read upstream response")
 		return nil
+	}
+
+	// 2026-09-21 usage-zero 专项观测(env 门控, 默认关闭): 上游 body 进 handler
+	// 时的形态与 usage 有无, 用于定位"上游有 usage、客户端收 0"的丢失点。
+	if os.Getenv("LLM_GATEWAY_DEBUG_MESSAGES_BODY") == "true" {
+		head := body
+		if len(head) > 240 {
+			head = head[:240]
+		}
+		slog.Info("debug: messages non-stream upstream body at handler",
+			"request_id", requestID,
+			"bytes", len(body),
+			"has_usage", bytes.Contains(body, []byte(`"usage"`)),
+			"head", string(head))
 	}
 
 	format, empty := classifyNonStreamUpstreamResponse(body)
@@ -1298,12 +1314,55 @@ func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []b
 		anthropicBody = convertChatResponseToAnthropic(body, clientModel, requestID)
 	}
 
+	// 2026-09-21: usage-zero 兜底。流式路径自审计 R3 #2 起用请求体估算填充
+	// message_start.usage.input_tokens;非流式路径此前没有等价兜底,一旦上游
+	// usage 在管线中丢失,Claude Code 拿到恒 0 的 input_tokens 会系统性低估
+	// 上下文,压缩过晚直至溢出。这里与流式同源同值(executors 估算器),
+	// 仅在最终 usage 全 0 且估算非 0 时补 input_tokens。
+	if inputEstimate > 0 {
+		anthropicBody = patchAnthropicUsageInput(anthropicBody, inputEstimate)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Id", requestID)
 	w.WriteHeader(http.StatusOK)
 	//nolint:errcheck // HTTP write error non-recoverable
 	w.Write(anthropicBody)
 	return anthropicBody
+}
+
+// patchAnthropicUsageInput 把全 0 的 usage.input_tokens 替换为请求体估算值。
+// body 非 Anthropic 消息形状、usage 缺失或 input_tokens 非 0 时原样返回;
+// 重marshal 失败也原样返回(兜底路径永不劣化主路径)。
+func patchAnthropicUsageInput(body []byte, inputEstimate int) []byte {
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return body
+	}
+	usageRaw, ok := resp["usage"]
+	if !ok {
+		return body
+	}
+	var usage map[string]any
+	if err := json.Unmarshal(usageRaw, &usage); err != nil {
+		return body
+	}
+	in, _ := usage["input_tokens"].(float64)
+	out, _ := usage["output_tokens"].(float64)
+	if in != 0 || out != 0 {
+		return body
+	}
+	usage["input_tokens"] = inputEstimate
+	patched, err := json.Marshal(usage)
+	if err != nil {
+		return body
+	}
+	resp["usage"] = patched
+	out2, err := json.Marshal(resp)
+	if err != nil {
+		return body
+	}
+	return out2
 }
 
 func convertChatResponseToAnthropic(body []byte, clientModel, requestID string) []byte {
