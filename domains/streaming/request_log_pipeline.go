@@ -212,6 +212,11 @@ type RequestLogContext struct {
 	meta     requestAttemptMeta
 	logged   atomic.Bool
 	terminal atomic.Bool
+
+	// R52：body-marker 识别结果 memo（resolved 置位后不再重复全 body
+	// JSON 扫描；识别不出同样置位避免每次 refreshMeta 重扫）。
+	bodyMarkerResolved bool
+	bodyMarker         string
 }
 
 func (c *RequestLogContext) SetError(code, msg string) {
@@ -571,18 +576,11 @@ func (c *RequestLogContext) EnsureCaptured() {
 	if c.meta.SystemPrompt == "" && len(c.Body) > 0 {
 		c.meta.SystemPrompt = agenttelemetry.ExtractSystemPromptFromBody(c.Body, c.Request.URL.Path)
 	}
-	// 2026-09-21 audit (P1: client detection parity for domestic coding
-	// agents): when header-based detection produced an unknown / generic
-	// name and the buffered body carries a client-specific marker
-	// (metadata.zcode_version / metadata.client_type / metadata.deepseek_*
-	// / model=deepseek-* / zcode_* tools / read_file tools), override the
-	// AgentName with the body-derived canonical name. This is the third
-	// tier of the detection chain (header → system-prompt → body-marker).
-	if c.meta.AgentName == "" || shouldOverrideWithBodyMarker(c.meta.AgentName) {
-		if marker := agenttelemetry.ExtractClientTypeFromBody(c.Body, c.Request.Header.Get("X-Code-Session-Id")); marker != "" {
-			c.meta.AgentName = marker
-		}
-	}
+	// R52：body-marker 覆盖判定从 EnsureCaptured 移入 refreshMeta——
+	// 首个 EnsureCaptured 调用点（chat 主路径 handler.go:1960）先于
+	// SetKey（:2102）执行 header 链，AgentName 恒为 ""，旧位置上 body
+	// 结论会无条件压过 UA/X-Agent-Name（UA=zcode/2.0 + model=deepseek-*
+	// 的真实客户端被记成 deepseek-code）。见 refreshMeta。
 	c.refreshMeta()
 }
 
@@ -675,6 +673,21 @@ func (c *RequestLogContext) refreshMeta() {
 		return
 	}
 	c.handler.fillAttemptMeta(c.Request, c.KeyInfo, &c.meta)
+	// R52：body-marker 第三层识别在 header 链（fillAttemptMeta）之后跑，
+	// 只有弱名（unknown / 通用 HTTP 客户端库）才被 body 证据覆盖——与
+	// shouldOverrideWithBodyMarker 的语义一致。识别结果 memo 一次（识别
+	// 不出也置位），避免每次 refreshMeta 重复全 body JSON 扫描。
+	if !c.bodyMarkerResolved {
+		c.bodyMarkerResolved = true
+		if len(c.Body) > 0 {
+			c.bodyMarker = agenttelemetry.ExtractClientTypeFromBody(c.Body, c.Request.Header.Get("X-Code-Session-Id"))
+		} else if c.Request != nil && c.Request.Header.Get("X-Code-Session-Id") != "" {
+			c.bodyMarker = "minimax-code"
+		}
+	}
+	if c.bodyMarker != "" && (c.meta.AgentName == "" || shouldOverrideWithBodyMarker(c.meta.AgentName)) {
+		c.meta.AgentName = c.bodyMarker
+	}
 }
 
 func (c *RequestLogContext) SessionTask() (sessionID, taskID string) {

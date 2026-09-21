@@ -37,6 +37,8 @@ const (
 	// synthesizers can correctly frame responses (no `data: ` prefix, no
 	// `[DONE]` sentinel — termination is signalled by a chunk whose
 	// top-level `done` field is true).
+	// RESERVED(ollama-chat 接入): detect.go 不识别该协议、无 parser 产出
+	// （R52 清点）——Ollama 半落地特性，接入 parser 时须同步补空流门矩阵。
 	ProtocolOllamaChat = "ollama-chat"
 )
 

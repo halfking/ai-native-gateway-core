@@ -29,6 +29,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // ─── 领域模型 ─────────────────────────────────────────────────────────────────
@@ -463,6 +465,18 @@ func (r *RedisRecorder) FlushToPG(ctx context.Context, db *pgxpool.Pool, request
 		return nil
 	}
 	key := keyFor(requestID)
+
+	// R52：S4 停写门控。停写（宽表冻结/迁移窗口）期间 trace_events 的
+	// UPDATE 不应执行；此前该写点游离在门外，且停写后父行缺失会命中
+	// ErrTraceParentNotFound → Redis trace 永久保留、每次 flush 重试堆积。
+	// 与"宽表停写"语义一致：丢弃 trace 并清理 Redis key。
+	if !settings.GetPlatformBool("storage.request_logs_write_enabled", true) {
+		if err := r.rdb.Del(ctx, key).Err(); err != nil {
+			slog.Warn("trace.FlushToPG: stop-write enabled but Redis DEL failed",
+				"request_id", requestID, "err", err)
+		}
+		return nil
+	}
 
 	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()

@@ -10,7 +10,11 @@ import (
 //
 // Extensions support (P0 fix, 2026-07-13):
 // Unknown fields (vendor-specific params like reasoning_effort, web_search,
-// bot_setting, etc.) are extracted into IR.Extensions for lossless passthrough.
+// etc.) are extracted into IR.Extensions for lossless passthrough.
+// R52: repetition_penalty / mask_sensitive_info / bot_setting are promoted to
+// first-class IR fields (no longer Extension passthrough); bot_setting falls
+// back to Extensions only when the value fails to unmarshal (raw-byte
+// fidelity via the extensions_restore dialect guard).
 func ParseOpenAI(body []byte) (*InternalRequest, error) {
 	// Phase 1: Parse to map to capture ALL fields (including unknown ones)
 	var rawMap map[string]json.RawMessage
@@ -165,10 +169,17 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 	}
 
 	// 2026-09-21 audit (P2-4): parse bot_setting into typed IR fields.
+	// R52：畸形输入（非数组/元素非对象）不再静默吞——回退 Extensions 保留
+	// 原始字节。键已在 knownFields 剔除名单内，需显式塞回：MiniMax 目标经
+	// extensions_restore 的 Decide（IRHandled+Dialects 守卫）按原始字节
+	// Restore，非 MiniMax 目标 Drop——与 KindDialectOnly 时代的逐字节透传
+	// 保真等价，只是收敛到既有守卫机制。
 	if src.BotSetting != nil && string(src.BotSetting) != "null" {
 		var bots []BotSetting
 		if err := json.Unmarshal(src.BotSetting, &bots); err == nil {
 			ir.BotSetting = bots
+		} else {
+			ir.Extensions["bot_setting"] = src.BotSetting
 		}
 	}
 

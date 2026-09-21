@@ -16,7 +16,9 @@ import (
 // Returns the canonical client-type string (see clienttype.Normalize) or
 // "" when no marker matches. The caller is responsible for feeding the
 // result through clienttype.Normalize and stitching it into the existing
-// detection chain (header → user-agent → body-marker → system-prompt).
+// detection chain — effective order after R52:
+// header/UA + system-prompt (fillAttemptMeta) → body-marker (refreshMeta,
+// overrides weak names only).
 //
 // Recognition rules (first match wins):
 //
@@ -24,11 +26,12 @@ import (
 //	                OR any tools[].function.name starts with "zcode_"
 //	minimax-code   — body.metadata.client_type == "minimax_code"
 //	                OR X-Code-Session-Id header is set on the request
-//	deepseek-code  — body.model starts with "deepseek-"
-//	                OR body.metadata.deepseek_session_id is set
-//	                OR any tools[].function.name ∈ {read_file, write_file,
-//	                                                 execute_command,
-//	                                                 edit_file, search_files}
+//	deepseek-code  — body.metadata.deepseek_session_id is set
+//	                OR model starts with "deepseek-" AND tools carry the
+//	                  DeepSeek Code tool set (R52: neither signal alone is
+//	                  sufficient — model choice ≠ client identity, and
+//	                  {read,write,edit,search}_file/execute_command are
+//	                  generic coding-agent tool names)
 func ExtractClientTypeFromBody(body []byte, xCodeSessionID string) string {
 	if len(body) == 0 {
 		// Header-only path is still useful even with empty body.
@@ -70,18 +73,25 @@ func ExtractClientTypeFromBody(body []byte, xCodeSessionID string) string {
 		}
 	}
 
-	// ── 2. model prefix (DeepSeek uses deepseek-* model identifiers) ──
+	// ── 2+3. model 前缀 × tools 组合信号（R52 收紧）────────────────────
+	// model 以 deepseek-* 开头单独不再判 deepseek-code：模型选择 ≠ 客户端
+	// 身份（conversion-audit.md:86 自警），任何 SDK 客户端调 deepseek-chat /
+	// deepseek-reasoner 都会被误归类。同理 read_file/write_file 等是大量
+	// 编码 agent 的通用工具名，单独也不足判。两者共现才判 deepseek-code；
+	// zcode_* 前缀工具是命名空间级强信号，维持独立判定。
+	deepseekModel := false
 	if modelRaw, ok := root["model"]; ok {
-		if model := strings.ToLower(decodeString(modelRaw)); strings.HasPrefix(model, "deepseek-") {
-			return "deepseek-code"
-		}
+		deepseekModel = strings.HasPrefix(strings.ToLower(decodeString(modelRaw)), "deepseek-")
 	}
-
-	// ── 3. tools[] namespace ─────────────────────────────────────────────
+	toolClient := ""
 	if toolsRaw, ok := root["tools"]; ok {
-		if ct := clientTypeFromTools(toolsRaw); ct != "" {
-			return ct
-		}
+		toolClient = clientTypeFromTools(toolsRaw)
+	}
+	if toolClient == "zcode" {
+		return "zcode"
+	}
+	if deepseekModel && toolClient == "deepseek-code" {
+		return "deepseek-code"
 	}
 
 	// ── 4. header-only fallback (X-Code-Session-Id is MiniMax Code's

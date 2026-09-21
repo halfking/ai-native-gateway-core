@@ -253,9 +253,13 @@ var specs = []FieldSpec{
 	// repetition_penalty：多厂商通用，网关已升级到 KindIRHandled（2026-09-21 P1-1）。
 	// 此前为 KindPortable，靠 Extensions 透传；现已有 IR.RepetitionPenalty 字段，
 	// 可以做语义校验与规范化。
+	// R52：不声明 Dialects —— 该字段是"多厂商通用、宽容上游忽略"形态，
+	// KindPortable 时代即全目标还原/白名单（Dialects 当时仅 advisory）；
+	// IRHandled + 非空 Dialects 现在有真实门控语义（见 IRFieldAllowedForDialect），
+	// 若保留列表会把序列化发射（无条件）与 Extensions 还原（按方言收窄）
+	// 撕裂成两种口径。
 	{Name: "repetition_penalty", Kind: KindIRHandled, IRPath: "RepetitionPenalty",
-		Dialects: []Dialect{DialectQwen, DialectGLM, DialectArk, DialectVLLM, DialectOpenRouter},
-		Note:     "Qwen/GLM/Ark/vLLM/OpenRouter support; others silently ignore"},
+		Note: "Qwen/GLM/Ark/vLLM/OpenRouter officially support it; tolerant upstreams silently ignore"},
 
 	// ═══════════════════════════════════════════════════════════
 	// 厂商私有 —— GLM / 智谱

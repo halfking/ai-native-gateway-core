@@ -358,3 +358,39 @@ func TestRegistryIntegrity(t *testing.T) {
 		t.Error("RegisteredNames 与 specs 数量不一致")
 	}
 }
+
+// R52 回归钉桩：声明了 Dialects 的 IRHandled 字段（mask_sensitive_info /
+// bot_setting，厂商专有）升级 Kind 后必须保留方言守卫——不进入未声明
+// 方言的严格白名单（ApplyRequestWhitelist 消费方），Extensions 路径对
+// 未声明方言维持 Drop（与 KindDialectOnly 时代语义一致）。
+func TestIRHandledWithDialects_WhitelistAndDecide(t *testing.T) {
+	openai := KnownFieldsForDialect(DialectOpenAIChat)
+	minimax := KnownFieldsForDialect(DialectMiniMax)
+	for _, name := range []string{"mask_sensitive_info", "bot_setting"} {
+		if openai[name] {
+			t.Fatalf("%s must not be whitelisted for openai dialect", name)
+		}
+		if !minimax[name] {
+			t.Fatalf("%s must be whitelisted for minimax dialect", name)
+		}
+	}
+
+	val := json.RawMessage(`true`)
+	_, _, actOpenai, _ := Apply("bot_setting", val, DialectAnthropic, DialectOpenAIChat)
+	if actOpenai != ActionDrop {
+		t.Fatalf("bot_setting Extensions→openai target: got %v, want ActionDrop", actOpenai)
+	}
+	_, _, actMM, _ := Apply("bot_setting", val, DialectAnthropic, DialectMiniMax)
+	if actMM != ActionRestore {
+		t.Fatalf("bot_setting Extensions→minimax target: got %v, want ActionRestore", actMM)
+	}
+
+	// 未声明 Dialects 的 IRHandled 通用字段（如 temperature）不受影响。
+	if !KnownFieldsForDialect(DialectAnthropic)["temperature"] {
+		t.Fatalf("temperature (no Dialects declared) must stay whitelisted everywhere")
+	}
+	_, _, actTemp, _ := Apply("temperature", json.RawMessage(`0.7`), DialectAnthropic, DialectOpenAIChat)
+	if actTemp != ActionRestore {
+		t.Fatalf("temperature: got %v, want ActionRestore", actTemp)
+	}
+}

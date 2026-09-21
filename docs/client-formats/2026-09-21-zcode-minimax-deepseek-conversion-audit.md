@@ -77,13 +77,18 @@ case "minimax-code", "deepseek-code":
 #### 2. 新增 User-Agent 模式到 `extractClientType`
 
 ```go
-case strings.Contains(ua, "minimax-code/"), strings.Contains(ua, "minimax-code-"):
+// 实际落地（R52 勘误）：裸 "deepseek-" 前缀因会误匹配 deepseek-chat 等模型名被弃用，
+// 采用三个产品锚定形式。
+case strings.Contains(uaLower, "minimax-code"):
     return "minimax-code"
-case strings.Contains(ua, "deepseek-"), strings.Contains(ua, "deepseek-ide"):
+case strings.Contains(uaLower, "deepseek-code"), strings.Contains(uaLower, "deepseek-ide"),
+    strings.Contains(uaLower, "deepseek-cli"):
     return "deepseek-code"
 ```
 
-⚠️ 注意：User-Agent `deepseek-` 可能误匹配 `deepseek-chat` 模型名。需在客户端识别中**区分客户端来源 vs 上游模型**。
+⚠️ 上述告警已按 R52 落实：UA 侧不用裸 `deepseek-`；body 参数级识别同样收紧——
+`model` 以 `deepseek-` 开头**单独不再判定**，须与 DeepSeek Code 工具集共现
+（模型选择 ≠ 客户端身份）。
 
 #### 3. 新增系统提示词 pattern 到 `agent_patterns`
 
@@ -122,15 +127,16 @@ func ExtractClientTypeFromBody(body []byte) string
 |--------|--------------|
 | `zcode` | `metadata.zcode_version` 字段；tools 含 `zcode_*` 前缀 |
 | `minimax-code` | `metadata.client_type == "minimax_code"`；`X-Code-Session-Id` header |
-| `deepseek-code` | `model` 以 `deepseek-` 开头；`metadata.deepseek_session_id`；tools 含 `read_file`/`execute_command` |
+| `deepseek-code` | `metadata.deepseek_session_id`（独立强信号）；`model` deepseek-* × 工具集共现（R52 收紧：单一信号不足判，防 SDK 客户端误归类） |
 
 #### 5. 三层 fallback 链路
 
 ```
-1. X-Gw-Client-Type header           → 显式指定（最高优先级）
-2. User-Agent 匹配                   → 标准路径
-3. 参数级识别（body 字段）           → 新增
-4. 系统提示词语义匹配                → 兜底
+1. X-Gw-Client-Type / X-Agent-Name header → 显式指定（最高优先级）
+2. User-Agent 匹配                        → 标准路径
+3. 系统提示词语义匹配                     → 兜底（覆盖弱名）
+4. 参数级识别（body 字段）                → 仅覆盖弱名（R52 勘误：
+   实现中 body-marker 在 fillAttemptMeta 之后跑，不会压过具体 UA 结论）
 ```
 
 ## 实施计划
@@ -142,5 +148,5 @@ func ExtractClientTypeFromBody(body []byte) string
 | 3 | `domains/streaming/executors/executor.go` | 同步 User-Agent 模式（包边界） |
 | 4 | `telemetry/request_metadata.go` | 新增系统提示词 pattern |
 | 5 | `telemetry/body_client_marker.go`（新文件） | 参数级识别函数 |
-| 6 | `telemetry/request_metadata.go` | 接入 `ExtractClientNameFromBody` |
+| 6 | `telemetry/request_metadata.go` | 接入 `ExtractClientTypeFromBody`（R52 勘误：`ExtractClientNameFromBody` 符号不存在） |
 | 7 | 各处测试 | 验证 |

@@ -30,6 +30,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/config"
 	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/kaixuan/llm-gateway-go/storage"
 	storagefactory "github.com/kaixuan/llm-gateway-go/storage/factory"
 )
@@ -99,6 +100,20 @@ func initStorageMode(cfg *config.Config, storageCfg *config.StorageConfig) (*sto
 	_ = cfg // 保留：后续波次可能按主配置联动（当前 lite 装配只消费 storageCfg）
 	if storageCfg == nil || storageCfg.NormalizeMode() != config.StorageModeLite {
 		return nil, nil
+	}
+
+	// R52：S4 停写门控（storage.request_logs_write_enabled）此前在 lite
+	// 形态结构性失效——specs 只在 main.go 的 dbConn.Enabled() 分支注册，
+	// lite 进程里 Global.Spec(key)==nil → GetPlatformBool 恒回落 true，
+	// 开关无法表达（docs/storage 会话存储解耦方案写明 lite「同门控」）。
+	// 此处注册 storage 族 specs（nil DB = 仅 env→default 解析链），只收窄
+	// 到 storage 族，不把 Full 侧其余 settings 语义无差别带进 lite。
+	settings.Init(nil)
+	for _, sp := range settings.PlatformSpecs() {
+		if sp.Category == settings.CategoryStorage {
+			// 重复注册（测试双初始化）不致命，忽略 dup 错误。
+			_ = settings.Global.RegisterSpec(sp)
+		}
 	}
 
 	storageCfg.ApplyLiteDefaults()
