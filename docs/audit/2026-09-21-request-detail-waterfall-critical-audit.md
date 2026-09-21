@@ -23,6 +23,7 @@
 | F4 | P0（并行主线入库后全仓门禁捕获） | `discovery/discovery.go` 的 SQL 字面量用 Go `//` 注释，PostgreSQL 无法解析 | `discovery/discovery.go:766-771,941-946`；`internal/sqlguard.TestNoGoCommentsInSQLLiterals` 稳定失败。来源为 `29b4ea64`。 | 将两处改成 SQL `--` 注释；`go test ./internal/sqlguard ./discovery -count=1` PASS。业务 disabled canonical 保护谓词不变。 |
 | F5 | P0（前端门禁） | 八个 locale `annotation.ts` 都有重复 `distribution` 对象键，`vue-tsc` 直接失败 | `web/src/locales/{ar-SA,de-DE,en-US,es-ES,fr-FR,ja-JP,zh-CN,zh-TW}/annotation.ts:147`；均为同值重复键。 | 各删一个重复键；`vue-tsc --noEmit` PASS。 |
 | F6 | P0（前端门禁） | Credential heatmap 新增硬编码状态色，严格 color audit 阻断 | `web/src/views/CredentialHeatmapView.vue:1127-1130`；`pnpm run color:check` 原报告 8 个 baseline 外违规。 | 使用现有 `--tone-*-bg` / `--kx-*` 状态令牌；严格色彩门禁恢复 PASS，不更新 baseline。 |
+| F7 | P0（最终浏览器验收） | 按 requestId 获取 waterfall 的 handler 已实现但未注册，真实页面请求 `/api/admin/dispatch/waterfall/request/:id` 得到 404/401 后触发前端认证回跳 | `cmd/gateway/main_dispatch.go:152-182` 有 handler；`cmd/gateway/main.go:6783-6791` 只注册列表 `/waterfall`、未注册 `/waterfall/request/`。最终 release 上带 Bearer 的探针为 404；cookie-only 前端请求为 401，随后 URL 变为 `/?login=1`。 | 注册 `mux.HandleFunc("/api/admin/dispatch/waterfall/request/", wrapAdmin(handleDispatchWaterfallByRequest))`，新增启动装配钉桩；待重新部署后进行最终 UI 验收。 |
 
 ## §二、关键实现与行为
 
@@ -77,7 +78,7 @@
 
 - 部署前 8782：`ef694cdf/#2161`，证明此前所有“验证 119981c02”的说法无效。
 - 中间部署后 8782：`119981c0/#2159`，`/healthz`、`/readyz`、`/version` 均健康；该 release 在最终审查修复前生成，仅证明本地蓝绿部署、cookie 登录和目标页面可达。
-- 已认证浏览器真实打开过用户指定 URL：`/request-detail/f5a6c9991350b81b5bd0fbe2a3f36e55?mode=request&tab=waterfall`，顶栏显示中间版本 `119981c0/#2159`。DOM 当时只返回 banner/main（目标请求数据未在 snapshot 中展开），**不能**作为最终“内嵌瀑布可见”通过证据。
+- 最终 main release `c5b5b12e/#2159` 已在 8782 health/ready/version 与 credential decrypt smoke 后运行。浏览器通过已认证临时代理访问指定 URL 后，目标详情和日志元数据接口均为 200，但 waterfall by-ID API 在当时 release 由于未注册返回 404（cookie-only 请求表现为 401，前端全局认证丢失逻辑将 URL 改为 `/?login=1`）。该实测直接发现 F7，**不能**作为“内嵌瀑布可见”通过证据；修复后需重发 release 再验收。
 
 ## §五、健康面
 

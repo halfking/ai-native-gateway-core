@@ -32,8 +32,9 @@
    - `docs/audit/2026-09-19-r46-offline-static-scan/`
    - `docs/operations/252-maintenance-window-2026-09-17.md`
 5. 提交分支，合并到 `main`，推送。版本文件应按仓库惯例由最终 release bump 写入，不复用中间 2159 的 `119981c0` 身份。
-6. 在最终 main SHA 上运行标准 `scripts/deploy-local.sh deploy`（不带 `--no-frontend`）；核对 `/healthz`、`/readyz`、`/version`、active bundle 的 `go version -m` 与 bundle `version.json`。
-7. 用已认证浏览器做真正验收：
+6. **先确认 F7 已合入**：`cmd/gateway/main.go` 必须注册 `"/api/admin/dispatch/waterfall/request/"` 到 `wrapAdmin(handleDispatchWaterfallByRequest)`；此前 handler 存在却未注册，最终浏览器实测导致 waterfall fetch 404/401 并回跳 `?login=1`。
+7. 在最终 main SHA 上运行标准 `scripts/deploy-local.sh deploy`（不带 `--no-frontend`）；核对 `/healthz`、`/readyz`、`/version`、active bundle 的 `go version -m` 与 bundle `version.json`。
+8. 用已认证浏览器做真正验收：
    - 指定 URL `/request-detail/f5a6c9991350b81b5bd0fbe2a3f36e55?mode=request&tab=waterfall` 主内容区必须有 `waterfall-request-detail` / 阶段表，不能只是页面外壳或概览；
    - 从可用请求的概览点击“调度瀑布”，确认 requestId 不变、query 为 `mode=request&tab=waterfall`，没有跳到 `/`；
    - `/dispatch/waterfall` 选择真实请求，抽屉与“全屏详情”共享正文（正常 attempts 场景）；历史 DB fallback 的 attempts 降级按 audit 文档说明记录。
