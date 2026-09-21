@@ -379,11 +379,28 @@ async function loadModelScope() {
   modelScopeLoading.value = false
 }
 
+// 2026-09-22 首开修复：挂载早于登录态/网络就绪时，首次 loadModelScope 的
+// featured/top-models 请求可能整体失败（scope 为空且 loading 已复位），
+// 面板此前只剩"切走再切回（重挂载）"这一条恢复路径。3s 后对空 scope 补
+// 一次重试，消除对重挂载的依赖；scope 已有数据则零开销跳过。
+const FIRST_SCOPE_RETRY_MS = 3000
+let firstScopeRetryTimer: ReturnType<typeof setTimeout> | null = null
+
 onMounted(() => {
   void loadModelScope()
   startStatsPoll()
+  firstScopeRetryTimer = setTimeout(() => {
+    firstScopeRetryTimer = null
+    if (modelScopeMeta.value.size === 0 && !modelScopeLoading.value) {
+      void loadModelScope()
+    }
+  }, FIRST_SCOPE_RETRY_MS)
 })
 onUnmounted(() => {
+  if (firstScopeRetryTimer) {
+    clearTimeout(firstScopeRetryTimer)
+    firstScopeRetryTimer = null
+  }
   modelScopeAbort?.abort()
   stopStatsPoll()
 })
@@ -1131,13 +1148,16 @@ function requestTitleTooltip(request: LiveRequest): string {
       <span v-else-if="hasData" class="qp-badge qp-badge--ok">畅通</span>
     </div>
 
-    <!-- 空态 -->
+    <!-- 空态：只声明队列链路未接入。下方模型分组/请求轨迹分区独立渲染，
+         不再被 hasData 整体吞掉（2026-09-22 总览页首开无数据修复：
+         dispatch 未接线时「按处理队列」视图此前整屏只剩这一行空态） -->
     <div v-if="!hasData" class="qp-empty">
       <span class="qp-empty-text">队列数据未接入（dispatch 未启用或未 wired）</span>
     </div>
 
     <!-- 紧凑指标条：调度链路（BE3 缺省隐藏对应项）+ 节点健康度 一行看完 -->
-    <div v-else class="qp-layers">
+    <div class="qp-layers">
+      <template v-if="hasData">
       <div class="qp-stats">
         <span v-if="pipeline" class="qp-stat">
           <span class="qp-stat-label">调度链路</span>
@@ -1202,6 +1222,8 @@ function requestTitleTooltip(request: LiveRequest): string {
           </div>
         </div>
       </div>
+
+      </template>
 
       <!-- Dashboard 只保留特色模型和近 3 天有实际流量的热门模型；实时 SSE
            不提供 raw_models 时保持整个分区隐藏，避免把未知误报为无绑定。 -->

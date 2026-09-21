@@ -11,6 +11,7 @@ import { clearCredentialLabels, loadCredentialLabels } from '../composables/useC
 // 测试需把该单例固定在 zh-CN（组件挂载用的是下面的局部 i18n 实例）。
 import { i18n as appI18n } from '../i18n'
 import { getCredentialMonitorSummary } from '../api/credential-monitor'
+import { getRequestLogTopModels } from '../api/logs'
 
 const { getFeatured, resolveRouting, reorderCandidateBindings, getSlidingWindow, getSlidingWindowBatch, superAdmin, isAuthenticatedMock, mockedStore } = vi.hoisted(() => ({
   getFeatured: vi.fn(),
@@ -1085,5 +1086,62 @@ describe('QueuePerspectivePanel', () => {
 
     expect(wrapper.get('.qp-node-card-title').text()).toBe('p/hzx-prod')
     expect(wrapper.text()).not.toContain('p/#5')
+  })
+
+  // ── 2026-09-22 总览页首开修复 ─────────────────────────────────────────────
+
+  it('renders model groups and the processing trail even when the queue layer is not wired', async () => {
+    // 245 实况：dispatch 未启用时 queue envelope 缺失（hasData=false）。
+    // 修复前整个面板被空态吞掉，「按处理队列」首屏只剩一行提示。
+    liveStreamState.queue = null
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+    liveStreamState.requests = [
+      { ts: '2026-09-22T08:00:00Z', request_id: 'r-q-1', model: 'm-1', provider_code: 'p', status: 'in_progress' },
+    ]
+
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    // 队列层空态仍然可见（口径诚实，不冒充畅通）
+    expect(wrapper.text()).toContain('队列数据未接入')
+    // 但模型分组与请求轨迹分区不再被 hasData 门控
+    expect(wrapper.find('.qp-layer--model-groups').exists()).toBe(true)
+    expect(wrapper.text()).toContain('按模型分组的可用节点')
+    expect(wrapper.text()).toContain('最近请求处理轨迹')
+  })
+
+  it('retries the model-scope load once when the first attempt landed empty (first-open fix)', async () => {
+    // 首开竞态：挂载早于登录态就绪，featured/top-models 首轮整体失败 →
+    // scope 为空。修复前面板只能靠"切走再切回（重挂载）"恢复；现在 3s 后
+    // 自动补一次加载。
+    vi.useFakeTimers()
+    try {
+      getFeatured.mockReset().mockRejectedValueOnce(new Error('auth not ready'))
+      vi.mocked(getRequestLogTopModels).mockReset()
+        .mockRejectedValueOnce(new Error('auth not ready'))
+        .mockResolvedValue({ items: [] })
+      resolveRouting.mockReset().mockResolvedValue({ raw_models: [], candidates: [] })
+      liveStreamState.nodes = [
+        { credential_id: 1, provider_id: 1, provider_code: 'p', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+      ]
+
+      const wrapper = mountPanel()
+      await flushPromises()
+      expect(getFeatured).toHaveBeenCalledTimes(1)
+      // 双双失败 → 面板给出错误态而不是空白
+      expect(wrapper.text()).toContain('模型范围暂不可用')
+
+      // 登录态就绪后重试成功
+      getFeatured.mockResolvedValue({ featured_models: ['m-1'] })
+      await vi.advanceTimersByTimeAsync(3000)
+      await flushPromises()
+      expect(getFeatured).toHaveBeenCalledTimes(2)
+      expect(wrapper.text()).toContain('m-1')
+      expect(wrapper.text()).not.toContain('模型范围暂不可用')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
