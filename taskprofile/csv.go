@@ -194,9 +194,16 @@ func parseCorrectionRecord(rec []string) (CorrectionImportRow, error) {
 	annotator, err3 := trim(6)
 	reason, err4 := trim(7)
 	profile, err5 := trim(5)
-	for i, e := range []error{err0, err1, err2, err3, err4, err5} {
-		if e != nil {
-			return CorrectionImportRow{}, fmt.Errorf("column %d: %w", i, e)
+	// R51 审计 P3：列号报 1-based 展示值（表头第 N 列），此前误用 err 切片
+	// 下标 —— annotator 超限报 "column 3"、reason 报 "column 4"，与实际列
+	// （7/8）错位。1-based 对照：request_id=1 auto=2 human=3 agrees=4
+	// confidence=5 profile=6 annotator=7 reason=8 created_at=9。
+	for _, c := range []struct {
+		col int
+		err error
+	}{{1, err0}, {2, err1}, {3, err2}, {6, err5}, {7, err3}, {8, err4}} {
+		if c.err != nil {
+			return CorrectionImportRow{}, fmt.Errorf("column %d: %w", c.col, c.err)
 		}
 	}
 	row := CorrectionImportRow{
@@ -223,7 +230,7 @@ func parseCorrectionRecord(rec []string) (CorrectionImportRow, error) {
 	}
 	agreeStr, aerr := trim(3)
 	if aerr != nil {
-		return CorrectionImportRow{}, fmt.Errorf("column 3: %w", aerr)
+		return CorrectionImportRow{}, fmt.Errorf("column 4: %w", aerr)
 	}
 	agrees, err := strconv.ParseBool(agreeStr)
 	if err != nil {
@@ -235,20 +242,31 @@ func parseCorrectionRecord(rec []string) (CorrectionImportRow, error) {
 		return CorrectionImportRow{}, fmt.Errorf("agrees=%v contradicts auto=%q human=%q",
 			agrees, row.AutoTaskType, row.HumanTaskType)
 	}
-	if v, terr := trim(4); terr == nil && v != "" {
-		f, err := strconv.ParseFloat(v, 64)
+	// R51 审计 P3：列5(confidence)/列9(created_at) 超 csvFieldMaxLen 时
+	// 此前 terr != nil 会把字段整个静默丢弃（既不报错也不入库），与其余列
+	// 的整行拒绝策略不一致 —— 现统一为整行拒绝并报列号。
+	confStr, terr := trim(4)
+	if terr != nil {
+		return CorrectionImportRow{}, fmt.Errorf("column 5: %w", terr)
+	}
+	if confStr != "" {
+		f, err := strconv.ParseFloat(confStr, 64)
 		if err != nil || f < 0 || f > 1 {
-			return CorrectionImportRow{}, fmt.Errorf("classifier_confidence %q must be a float in [0,1]", v)
+			return CorrectionImportRow{}, fmt.Errorf("classifier_confidence %q must be a float in [0,1]", confStr)
 		}
 		row.Confidence = &f
 	}
 	if profile != "" {
 		row.Profile = &profile
 	}
-	if v, terr := trim(8); terr == nil && v != "" {
-		t, err := time.Parse(correctionCSVTime, v)
+	createdStr, terr := trim(8)
+	if terr != nil {
+		return CorrectionImportRow{}, fmt.Errorf("column 9: %w", terr)
+	}
+	if createdStr != "" {
+		t, err := time.Parse(correctionCSVTime, createdStr)
 		if err != nil {
-			return CorrectionImportRow{}, fmt.Errorf("created_at %q must be RFC3339", v)
+			return CorrectionImportRow{}, fmt.Errorf("created_at %q must be RFC3339", createdStr)
 		}
 		row.CreatedAt = t
 	} else {

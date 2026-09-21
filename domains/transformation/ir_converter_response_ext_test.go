@@ -117,3 +117,30 @@ func TestTransportIRConverter_ResponseExtRestore_SameProtocolKeepsStandardFields
 		}
 	}
 }
+
+// R51 审计 P3:Anthropic 响应的 container(Claude 4.5+ code execution 容器)
+// 此前不在 IR 响应结构里,又被响应标准字段集认作"标准字段"——解析器不认、
+// 扩展兜底也不收,被静默丢弃。现在解析器把 container 原文捕获进
+// InternalResponse.Extensions,序列化后经扩展还原原样带出。
+func TestTransportIRConverter_AnthropicResponseContainerRoundTrip(t *testing.T) {
+	conv := NewTransportIRConverter(&irAdapterForTest{})
+
+	container := `{"id":"cntn_01X8","type":"code_execution_container","expires_at":"2026-09-22T00:00:00Z","skills":[{"type":"anthropic","skill_id":"pdf","version":"latest"}]}`
+	upstream := []byte(`{"id":"msg_01A","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2},"container":` + container + `}`)
+
+	resp, err := conv.ParseAnthropicResponse(upstream)
+	if err != nil {
+		t.Fatalf("ParseAnthropicResponse: %v", err)
+	}
+	out, err := conv.SerializeAnthropicResponse(resp, "claude-sonnet-4-5")
+	if err != nil {
+		t.Fatalf("SerializeAnthropicResponse: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal output: %v; body=%s", err, out)
+	}
+	if got, want := string(m["container"]), string(container); got != want {
+		t.Errorf("container = %s, want verbatim %s", got, want)
+	}
+}

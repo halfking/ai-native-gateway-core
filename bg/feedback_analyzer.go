@@ -99,10 +99,21 @@ func (a *FeedbackAnalyzer) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(time.Until(next)):
-			if err := a.AnalyzeOnce(ctx); err != nil {
-				slog.Warn("feedback analyzer run failed", "error", err)
-			}
+			a.analyzeRecovered(ctx)
 		}
+	}
+}
+
+// analyzeRecovered 守护单轮 analysis（R51 审计 P2：run goroutine 原先无任何
+// recover，单次 panic 即整进程崩溃）——panic 记日志后调度循环继续。
+func (a *FeedbackAnalyzer) analyzeRecovered(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("feedback analyzer: run panic recovered", "recover", rec)
+		}
+	}()
+	if err := a.AnalyzeOnce(ctx); err != nil {
+		slog.Warn("feedback analyzer run failed", "error", err)
 	}
 }
 

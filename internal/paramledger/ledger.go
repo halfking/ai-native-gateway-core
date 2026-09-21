@@ -29,6 +29,7 @@ package paramledger
 
 import (
 	"bytes"
+	"encoding/json"
 	"sync"
 	"time"
 )
@@ -185,12 +186,21 @@ func (l *Ledger) Len() int {
 // SSE data JSON）里回显的 reasoning.effort 从出站值还原为客户端原始值。
 // 仅当帧内的值与某条调整的 Sent 精确相等时才替换——避免误伤模型输出里
 // 恰好同名的文本。无匹配调整或数据不含该字段时原样返回。
+//
+// R51（2026-09-21）：替换范围限定在响应 JSON 顶层（SSE 帧则在
+// response.*）reasoning 参数对象的原始字节内、且只替换第一次出现——
+// 此前对整个 body 做 ReplaceAll，其他结构位置（如 metadata）或输出文本
+// 里恰好同形的 `"effort":"<sent>"` 会被一并误改。结构定位用
+// json.RawMessage 探测，不做重序列化，对象外的字节零改动。
 func (l *Ledger) RestoreResponsesEffort(data []byte, requestID string) []byte {
 	entry := l.Lookup(requestID)
 	if entry == nil || len(data) == 0 || !bytes.Contains(data, []byte(`"effort"`)) {
 		return data
 	}
-	out := data
+	span, off, ok := reasoningObjectSpan(data)
+	if !ok {
+		return data
+	}
 	for _, adj := range entry.Adjustments {
 		if adj.Original == "" || adj.Sent == "" || adj.Sent == adj.Original {
 			continue
@@ -198,14 +208,101 @@ func (l *Ledger) RestoreResponsesEffort(data []byte, requestID string) []byte {
 		switch adj.Field {
 		case "reasoning_effort", "reasoning.effort", "reasoning":
 			// Responses 回显形如 "reasoning":{"effort":"high"}。
-			old := `"effort":"` + adj.Sent + `"`
-			new := `"effort":"` + adj.Original + `"`
-			if bytes.Contains(out, []byte(old)) {
-				out = bytes.ReplaceAll(out, []byte(old), []byte(new))
+			old := []byte(`"effort":"` + adj.Sent + `"`)
+			new := []byte(`"effort":"` + adj.Original + `"`)
+			i := bytes.Index(span, old)
+			if i < 0 {
+				continue
 			}
+			out := make([]byte, 0, len(data)-len(old)+len(new))
+			out = append(out, data[:off+i]...)
+			out = append(out, new...)
+			out = append(out, data[off+i+len(old):]...)
+			return out
 		}
 	}
-	return out
+	return data
+}
+
+// reasoningObjectSpan 定位响应 JSON 中 reasoning 参数对象的原始字节：
+// 返回（对象字节、对象在 data 中的起始偏移、是否找到）。优先顶层
+// "reasoning" 字段；SSE 生命周期帧则取 response.reasoning。解析失败或
+// 字段缺失时 ok=false（调用方原样返回，绝不因还原改坏数据）。
+func reasoningObjectSpan(data []byte) (raw []byte, off int, ok bool) {
+	raw = probeReasoningRaw(data)
+	if len(raw) == 0 {
+		return nil, 0, false
+	}
+	off = locateKeyedValue(data, `"reasoning"`, raw)
+	if off < 0 {
+		return nil, 0, false
+	}
+	return raw, off, true
+}
+
+// probeReasoningRaw 解析出 reasoning 对象的原始字节（json.RawMessage）。
+// data 可能是纯 JSON（非流式响应体），也可能带 SSE 帧前缀（流式钩子
+// restoreEchoFrame 传入 "event: ...\ndata: {...}" 整帧原始字节）——后者
+// 定位 data: 载荷再解析。
+func probeReasoningRaw(data []byte) []byte {
+	probe := func(b []byte) []byte {
+		var p struct {
+			Reasoning json.RawMessage `json:"reasoning"`
+			Response  struct {
+				Reasoning json.RawMessage `json:"reasoning"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal(b, &p); err != nil {
+			return nil
+		}
+		if len(p.Reasoning) > 0 {
+			return p.Reasoning
+		}
+		return p.Response.Reasoning
+	}
+	if raw := probe(data); raw != nil {
+		return raw
+	}
+	i := bytes.Index(data, []byte("data:"))
+	if i < 0 {
+		return nil
+	}
+	j := bytes.Index(data[i:], []byte("{"))
+	if j < 0 {
+		return nil
+	}
+	return probe(data[i+j:])
+}
+
+// locateKeyedValue 在 data 中找 keyJSON（形如 `"reasoning"`）后面以冒号
+// （可含空白）紧跟的 value 字节序列，返回 value 的起始偏移；找不到返回
+// -1。多个同名 key 时返回第一个值匹配的位置。
+func locateKeyedValue(data []byte, key string, value []byte) int {
+	keyBytes := []byte(key)
+	for pos := 0; ; {
+		i := bytes.Index(data[pos:], keyBytes)
+		if i < 0 {
+			return -1
+		}
+		at := pos + i + len(keyBytes)
+		for at < len(data) && isJSONSpace(data[at]) {
+			at++
+		}
+		if at < len(data) && data[at] == ':' {
+			at++
+			for at < len(data) && isJSONSpace(data[at]) {
+				at++
+			}
+			if at+len(value) <= len(data) && bytes.Equal(data[at:at+len(value)], value) {
+				return at
+			}
+		}
+		pos += i + len(keyBytes)
+	}
+}
+
+func isJSONSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }
 
 // HasAdjustments 便捷判断（日志用）。

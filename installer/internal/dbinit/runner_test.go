@@ -64,3 +64,34 @@ func TestStartupFilesIncludeSessionSummaryAndCacheRepairs(t *testing.T) {
 		}
 	}
 }
+
+// TestStartupFilesHaveNoDuplicates（R51, 2026-09-21）：733/734 曾被注册两次
+// （一对错位在 session_turns_hot_bootstrap 之前、一对在其后）。既有测试用
+// map 记录首次出现位置、contains 语义，列表内重复不可见；而 InitSchema 按
+// 序逐文件 applySQL 不去重，同一迁移会被重复应用。本测试钉住「列表无重复
+// 文件名」与 733/734 的位置约束。
+func TestStartupFilesHaveNoDuplicates(t *testing.T) {
+	runner := NewRunner("citus", "user", "db", "/tmp/sql")
+	seen := make(map[string]int, len(runner.StartupFiles))
+	for i, name := range runner.StartupFiles {
+		if prev, dup := seen[name]; dup {
+			t.Errorf("startup migration %s registered twice (positions %d and %d)", name, prev, i)
+			continue
+		}
+		seen[name] = i
+	}
+	// 733/734 依赖 session_turns_hot_bootstrap 建的 hot 表：bootstrap 在前、
+	// 733 在前、734 在后。
+	for _, name := range []string{
+		"session_turns_hot_bootstrap.sql", "733_session_turn_details.sql", "734_request_logs_view_details_join.sql",
+	} {
+		if _, ok := seen[name]; !ok {
+			t.Fatalf("startup migration %s is missing", name)
+		}
+	}
+	if !(seen["session_turns_hot_bootstrap.sql"] < seen["733_session_turn_details.sql"] &&
+		seen["733_session_turn_details.sql"] < seen["734_request_logs_view_details_join.sql"]) {
+		t.Errorf("733/734 must run after session_turns_hot_bootstrap, got positions bootstrap=%d 733=%d 734=%d",
+			seen["session_turns_hot_bootstrap.sql"], seen["733_session_turn_details.sql"], seen["734_request_logs_view_details_join.sql"])
+	}
+}

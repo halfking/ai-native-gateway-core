@@ -763,12 +763,12 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 				)
 				ELSE models_canonical.tags
 			END,
-			// 2026-09-21: a 'disabled' canonical is an explicit operator
-			// kill — the discovery/refresh feed must never resurrect it
-			// (same rule as taxonomy_sync upsertAlias and alias_sync's
-			// WHERE status <> 'disabled' guard). Before this guard, every
-			// provider tick flipped 09-20's disabled qwen3-max-cn /
-			// deepseek-v4-*-ga rows back to 'active' (observed live).
+			-- 2026-09-21: a 'disabled' canonical is an explicit operator
+			-- kill — the discovery/refresh feed must never resurrect it
+			-- (same rule as taxonomy_sync upsertAlias and alias_sync's
+			-- WHERE status <> 'disabled' guard). Before this guard, every
+			-- provider tick flipped 09-20's disabled qwen3-max-cn /
+			-- deepseek-v4-*-ga rows back to 'active' (observed live).
 			status = CASE WHEN models_canonical.status = 'disabled'
 				THEN models_canonical.status
 				ELSE 'active' END,
@@ -811,12 +811,17 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 		if normalizedAlias == "" {
 			continue
 		}
+		// 2026-09-21: a 'disabled' alias pair is an explicit operator kill —
+		// discovery must never resurrect it (same WHERE guard as alias_sync's
+		// rebuildAliasIndex; 'deprecated' pairs still reactivate). Without the
+		// guard every provider tick flipped disabled aliases back to 'active'.
 		_, err := s.db.Exec(ctx, `
 				INSERT INTO model_aliases (canonical_id, raw_name, status)
 				VALUES ($1, $2, 'active')
 				ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
 					status = 'active',
 					updated_at = NOW()
+				WHERE model_aliases.status <> 'disabled'
 			`, canonicalID, normalizedAlias)
 		if err != nil {
 			return fmt.Errorf("upsert model alias %q: %w", normalizedAlias, err)
@@ -938,12 +943,12 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 				)
 				ELSE models_canonical.tags
 			END,
-			// 2026-09-21: a 'disabled' canonical is an explicit operator
-			// kill — the discovery/refresh feed must never resurrect it
-			// (same rule as taxonomy_sync upsertAlias and alias_sync's
-			// WHERE status <> 'disabled' guard). Before this guard, every
-			// provider tick flipped 09-20's disabled qwen3-max-cn /
-			// deepseek-v4-*-ga rows back to 'active' (observed live).
+			-- 2026-09-21: a 'disabled' canonical is an explicit operator
+			-- kill — the discovery/refresh feed must never resurrect it
+			-- (same rule as taxonomy_sync upsertAlias and alias_sync's
+			-- WHERE status <> 'disabled' guard). Before this guard, every
+			-- provider tick flipped 09-20's disabled qwen3-max-cn /
+			-- deepseek-v4-*-ga rows back to 'active' (observed live).
 			status = CASE WHEN models_canonical.status = 'disabled'
 				THEN models_canonical.status
 				ELSE 'active' END,
@@ -969,12 +974,15 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 			continue
 		}
 		seenAliases[normalizedAlias] = struct{}{}
+		// 2026-09-21: 'disabled' alias pairs stay disabled — same WHERE guard
+		// as alias_sync's rebuildAliasIndex ('deprecated' still reactivates).
 		if _, execErr := db.Exec(ctx, `
 			INSERT INTO model_aliases (canonical_id, raw_name, status)
 			VALUES ($1, $2, 'active')
 			ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
 				status = 'active',
 				updated_at = NOW()
+			WHERE model_aliases.status <> 'disabled'
 		`, canonicalID, normalizedAlias); execErr != nil {
 			return 0, "", fmt.Errorf("upsert model_alias %q: %w", normalizedAlias, execErr)
 		}
@@ -999,12 +1007,15 @@ func seedCanonicalAliases(ctx context.Context, db modelcatalog.Querier, rawName 
 			continue
 		}
 		seenAliases[normalizedAlias] = struct{}{}
+		// 2026-09-21: 'disabled' alias pairs stay disabled — same WHERE guard
+		// as alias_sync's rebuildAliasIndex ('deprecated' still reactivates).
 		if _, execErr := db.Exec(ctx, `
 			INSERT INTO model_aliases (canonical_id, raw_name, status)
 			VALUES ($1, $2, 'active')
 			ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
 				status = 'active',
 				updated_at = NOW()
+			WHERE model_aliases.status <> 'disabled'
 		`, canonicalID, normalizedAlias); execErr != nil {
 			return fmt.Errorf("upsert model_alias %q: %w", normalizedAlias, execErr)
 		}

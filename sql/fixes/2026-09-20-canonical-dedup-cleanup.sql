@@ -1,9 +1,29 @@
 -- ============================================================================
--- cleanup-canonical.sql  (2026-09-20)
+-- cleanup-canonical.sql  (2026-09-20; R51 审计加固 2026-09-21)
 -- 模型标准名称(models_canonical)去重与垃圾清理 —— .34 pg17 与 252 通用
 -- 事务化 + 幂等(重跑只影响未处理行)。历史日志表(request_logs/session_turns/
 -- usage_ledger/auto_route_selections/route_decisions/stats_*)一律不动,只重定向
 -- live 引用表。
+--
+-- R51 执行前提（2026-09-21 审计：ursm_node_snapshot_min 约 2083 万行,无
+-- canonical_name 索引,UPDATE 超时曾单点回滚整个脚本）：
+--   1) §0.5 并发索引段必须在任何 BEGIN 之前执行：用
+--      `psql -v ON_ERROR_STOP=1 -f 本文件` 整体跑（禁止 psql -1 / 手工
+--      BEGIN 包裹,否则 CREATE INDEX CONCURRENTLY 报 25001,属预期设计）。
+--   2) 超时参数：建议先 `SET statement_timeout = '15min';`（给单语句设上限,
+--      不要照抄历史 runbook 的 0 裸奔——超时兜底正依赖它触发 WARNING）。
+--      §2.3 的 ursm UPDATE 在 §0.5 索引就绪后仍超时,则按批拆分重做:
+--      反复执行(每次 ≤100 万行)直至 0 行,再重跑本脚本收尾:
+--        UPDATE ursm_node_snapshot_min u SET canonical_name = (...winner...)
+--        WHERE ctid IN (SELECT ctid FROM ursm_node_snapshot_min
+--                       WHERE lower(canonical_name) IN
+--                             (SELECT lower(loser) FROM merge_map) LIMIT 1000000);
+-- 失败恢复：
+--   - §2.3 ursm 臂有 SAVEPOINT 隔离（PL/pgSQL EXCEPTION 子事务,等价于
+--     SAVEPOINT before_ursm_update + 失败时 ROLLBACK TO SAVEPOINT）:失败仅
+--     回滚该表重定向,输出 WARNING 后脚本继续,该表残留 loser 拼写由尾部 V9
+--     留痕。恢复 = 确认 §0.5 索引存在且 valid 后重跑本脚本（幂等）补齐。
+--   - 其余步骤失败仍按原语义回滚整个事务（ON_ERROR_STOP=1）。
 -- ============================================================================
 
 SELECT '== cleanup-canonical 2026-09-20 start ==';
@@ -37,6 +57,34 @@ BEGIN
     END IF;
   END LOOP;
 END $$;
+
+-- ============================================================================
+-- 0.5 R51 审计（2026-09-21）：ursm_node_snapshot_min(lower(canonical_name))
+-- 并发索引。§2.3 按 lower(canonical_name) 过滤该表,表约 2083 万行且此前仅有
+-- snapshot_ts 索引,无本索引时该 UPDATE 全表扫,超时会单点回滚整个脚本事务。
+-- 顺序要求：CREATE INDEX CONCURRENTLY 不能在事务块/DO 块内执行(42809/25001),
+-- 故本段必须位于主事务 BEGIN 之前、以独立自动提交语句执行(\\gexec,仓库同款
+-- 惯例见 sql/migrations/startup/727)；表不存在时结果集为空自然跳过。
+-- 若此前 CONCURRENTLY 中途被打断留下 INVALID 索引,IF NOT EXISTS 会误判已存在
+-- 而跳过( INVALID 索引 planner 不可用) —— 先按 indisvalid 守卫 DROP 再建。
+-- 本段 IF NOT EXISTS 幂等,重跑为 no-op。
+-- ============================================================================
+SELECT format(
+  'DROP INDEX CONCURRENTLY IF EXISTS public.%I',
+  'ursm_node_snapshot_min_canonical_name_lower_idx')
+WHERE EXISTS (
+  SELECT 1 FROM pg_index i
+  JOIN pg_class c ON c.oid = i.indexrelid
+  WHERE c.relname = 'ursm_node_snapshot_min_canonical_name_lower_idx'
+    AND c.relnamespace = 'public'::regnamespace
+    AND NOT i.indisvalid)
+\gexec
+
+SELECT format(
+  'CREATE INDEX CONCURRENTLY IF NOT EXISTS %I ON public.%I USING btree ((lower(canonical_name)))',
+  'ursm_node_snapshot_min_canonical_name_lower_idx', 'ursm_node_snapshot_min')
+WHERE to_regclass('public.ursm_node_snapshot_min') IS NOT NULL
+\gexec
 
 BEGIN;
 
@@ -228,11 +276,30 @@ BEGIN
   IF to_regclass('public.tenant_model_policies') IS NOT NULL THEN
     EXECUTE 'UPDATE tenant_model_policies t SET canonical_name = m.winner FROM merge_map m WHERE lower(t.canonical_name) = lower(m.loser)';
   END IF;
-  IF to_regclass('public.tenant_model_policies_active') IS NOT NULL AND (SELECT relkind FROM pg_class WHERE oid = 'public.tenant_model_policies_active'::regclass) = 'r' THEN
+  -- R51 验证期修复（2026-09-21）：原写法 `to_regclass(...) IS NOT NULL AND
+  -- (SELECT relkind FROM pg_class WHERE oid = '...'::regclass) = 'r'` 的
+  -- ::regclass 强转在表不存在时抛错（PL/pgSQL IF 两侧急切求值），整个 §2.3
+  -- DO 块被拖崩。改为 NULL 安全的单表达式，relkind 语义不变（r 才更新）。
+  IF EXISTS (SELECT 1 FROM pg_class c
+             WHERE c.oid = to_regclass('public.tenant_model_policies_active')
+               AND c.relkind = 'r') THEN
     EXECUTE 'UPDATE tenant_model_policies_active t SET canonical_name = m.winner FROM merge_map m WHERE lower(t.canonical_name) = lower(m.loser)';
   END IF;
+  -- R51 审计（2026-09-21）：本表 2083 万行,是大表 UPDATE 超时的单点故障源
+  -- （此前无索引无 SAVEPOINT,任一失败会回滚整个脚本事务）。用 PL/pgSQL
+  -- BEGIN…EXCEPTION 子事务包裹 —— 语义等价于
+  --   SAVEPOINT before_ursm_update; …失败时 ROLLBACK TO SAVEPOINT before_ursm_update;
+  -- 失败仅回滚本表重定向并降级为 WARNING,§3-§7 照常推进（贴合本脚本既有
+  -- DO 块惯例;裸 SAVEPOINT 在 DO 块内非法,psql 层也无法按 SQLSTATE 条件回滚）。
+  -- 只有本表是百万行级大表需要此隔离,§2.3 其余小表臂失败应硬失败回滚兜底,
+  -- 故不套用;该臂失败后本表残留 loser 拼写,由尾部 V9 留痕（见头部"失败恢复"）。
   IF to_regclass('public.ursm_node_snapshot_min') IS NOT NULL THEN
-    EXECUTE 'UPDATE ursm_node_snapshot_min u SET canonical_name = m.winner FROM merge_map m WHERE lower(u.canonical_name) = lower(m.loser)';
+    BEGIN
+      EXECUTE 'UPDATE ursm_node_snapshot_min u SET canonical_name = m.winner FROM merge_map m WHERE lower(u.canonical_name) = lower(m.loser)';
+      RAISE NOTICE 'ursm_node_snapshot_min redirect: OK';
+    EXCEPTION WHEN OTHERS THEN
+      RAISE WARNING 'ursm_node_snapshot_min redirect FAILED (SQLSTATE %: %) — 已回滚到 SAVEPOINT before_ursm_update(仅本表),脚本继续;恢复:确认 §0.5 索引存在且 valid 后重跑本脚本(幂等)', SQLSTATE, SQLERRM;
+    END;
   END IF;
   -- R49 审计（2026-09-20）：FK ON DELETE CASCADE 三表必须先重定向——
   -- 否则 §7 DELETE loser 时静默级联删掉能力画像/替换策略且无备份。
@@ -412,4 +479,21 @@ BEGIN
             WHERE NOT EXISTS (SELECT 1 FROM models_canonical mc WHERE lower(mc.canonical_name) = lower(r.llm_canonical_name)));
     END IF;
     RAISE NOTICE 'V8 CASCADE 表悬挂引用(应为 0): %', n;
+END $$;
+
+-- R51 审计（2026-09-21）：V9 —— §2.3 ursm 臂失败时仅 WARNING 后继续（SAVEPOINT
+-- 隔离,不阻塞 §3-§7）,此处事后留痕：非 0 = 该表仍残留 loser 拼写,需确认
+-- §0.5 索引存在且 valid 后重跑本脚本补齐（幂等）。merge_map 为 TEMP 表,
+-- 与本核对同会话有效,跨会话需整脚本重跑（§1 会重建）。
+DO $$
+DECLARE n BIGINT;
+BEGIN
+    IF to_regclass('public.ursm_node_snapshot_min') IS NULL THEN
+        RAISE NOTICE 'V9-skipped: ursm_node_snapshot_min not present on this DB';
+        RETURN;
+    END IF;
+    SELECT count(*) INTO n
+    FROM ursm_node_snapshot_min u
+    JOIN merge_map m ON lower(u.canonical_name) = lower(m.loser);
+    RAISE NOTICE 'V9 ursm_node_snapshot_min 残留 loser 拼写(应为 0): %', n;
 END $$;

@@ -68,6 +68,40 @@ func TestParseCorrectionsCSV_Rejections(t *testing.T) {
 	}
 }
 
+// TestParseCorrectionsCSV_ColumnNumbers — R51 审计 P3：超限字段的报错列号
+// 必须是 1-based 表头列号（此前 annotator/reason 误报 column 3/4）。
+func TestParseCorrectionsCSV_ColumnNumbers(t *testing.T) {
+	oversize := strings.Repeat("x", 600) // > csvFieldMaxLen(512)
+	cases := []struct {
+		name      string
+		mutate    func([]string) []string
+		wantInMsg string
+	}{
+		{"annotator col 7", func(r []string) []string { r[6] = oversize; return r }, "column 7"},
+		{"reason col 8", func(r []string) []string { r[7] = oversize; return r }, "column 8"},
+		{"profile col 6", func(r []string) []string { r[5] = oversize; return r }, "column 6"},
+		{"request_id col 1", func(r []string) []string { r[0] = oversize; return r }, "column 1"},
+		{"confidence col 5", func(r []string) []string { r[4] = oversize; return r }, "column 5"},
+		{"created_at col 9", func(r []string) []string { r[8] = oversize; return r }, "column 9"},
+	}
+	for _, tc := range cases {
+		row := strings.Split(validCSVRow("req-1", "coding", "coding", "true"), ",")
+		payload := CorrectionCSVHeader + "\n" + strings.Join(tc.mutate(row), ",") + "\n"
+		rows, errs, err := ParseCorrectionsCSV(strings.NewReader(payload), 100)
+		if err != nil {
+			t.Errorf("%s: structural error: %v", tc.name, err)
+			continue
+		}
+		if len(rows) != 0 || len(errs) != 1 {
+			t.Errorf("%s: want whole-row rejection (rows=%d errs=%d)", tc.name, len(rows), len(errs))
+			continue
+		}
+		if !strings.Contains(errs[0].Message, tc.wantInMsg) {
+			t.Errorf("%s: message %q missing %q", tc.name, errs[0].Message, tc.wantInMsg)
+		}
+	}
+}
+
 func TestParseCorrectionsCSV_PartialImport(t *testing.T) {
 	payload := CorrectionCSVHeader + "\n" +
 		validCSVRow("req-ok", "coding", "coding", "true") + "\n" +

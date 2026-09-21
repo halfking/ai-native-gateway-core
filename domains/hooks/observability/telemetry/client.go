@@ -22,9 +22,21 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
 	"github.com/kaixuan/llm-gateway-go/metrics"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 var errNoTelemetryDB = errors.New("telemetry database not configured")
+
+// requestLogsWriteEnabled 报告 request_logs 宽表家族（request_logs_hot 主行 +
+// request_logs_bodies_hot 正文）当前是否允许写入 —— S4 停写 gate（存储优化
+// 方案 v2，settings 键 storage.request_logs_write_enabled，默认 true = 维持
+// 现状双写；HotReload 即时生效）。关停后本包与 admin ingest 只停宽表行，
+// usage_ledger 计费、api_keys 计数、outbox 会话事件照常；session 六表族
+// （sessionv2mirror）成为唯一事实源，日志读端走 session 家族投影。与 Lite
+// sink（cmd/gateway/lite_telemetry_sink.go）同一键、同一默认。
+func requestLogsWriteEnabled() bool {
+	return settings.GetPlatformBool("storage.request_logs_write_enabled", true)
+}
 
 // pgErrorDiagnostics extracts the server-side error fields that err.Error()
 // omits (Detail/Hint/Table/Column/Constraint). 2026-09-05 PG log audit:
@@ -1115,6 +1127,9 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
+	// S4 停写门控：每事务读一次，快照贯穿整个写入路径。
+	logsWrite := requestLogsWriteEnabled()
+
 	// INSERT directly targets usage_ledger_hot (the canonical write
 	// target per the 2026-07 data-lifecycle architecture). UPDATE-heavy
 	// operations (cost/tokens/latency enrichment after streaming) require
@@ -1158,497 +1173,503 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	if err != nil {
 		return err
 	}
-	// 2026-07-05 migration 341: INSERT directly targets request_logs_hot
-	// (独立热表，0-7 天数据窗口)。所有 INSERT/UPDATE/DELETE 统一写入 _hot 表，
-	// 后台 partition_manager 会定期调用 promote_request_logs_hot_to_partition()
-	// 将冷数据（>7 天）迁移到月度分区。热表采用 heap 存储，支持高频写入；
-	// 月度分区采用 columnar 存储，优化归档查询性能。
-	//
-	// The ON CONFLICT (request_id) clause catches same-row upserts
-	// from race conditions (e.g. async retry landing on the same
-	// request_id). 热表 PRIMARY KEY (request_id) (migration 455) 覆盖冲突目标。
-	// 2026-07-16: JSONB columns use $N::text::jsonb to fix pgx binary protocol 22P02.
-	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_hot (
-			request_id, ts, tenant_id, application_id, api_key_id,
-			end_user_id, client_model, outbound_model,
-			-- 2026-07-27: 标准模型名(全小写),见 458 迁移。NULL = 没匹配到 canonical row。
-			-- Column order intentionally matches the Go arg list below so $N
-			-- placeholders stay strictly sequential (a duplicated/shifted $N
-			-- here previously produced a 90-arg-vs-89-placeholder mismatch
-			-- that rejected every business-row INSERT).
-			canonical_model,
-			credential_id, provider_id, canonical_id,
-			client_profile, request_mode, affinity_hit,
-			prompt_tokens, completion_tokens,
-			cache_read_tokens, cache_write_tokens,
-			-- audit-ir-multimodal (2026-07-13): multimodal and reasoning token fields
-			reasoning_tokens, image_tokens, audio_tokens, video_tokens, provider_tokens,
-			total_tokens,
-			cost_usd, cost_display, cost_currency,
-			latency_ms, success, request_status, error_kind, search_text,
-			identity_hash, response_checksum,
-			transform_rule_id, egress_protocol, failure_stage, failure_detail_code,
-			request_preview, transform_summary, response_preview,
-			stream_first_chunk_ms, stream_chunk_count, stream_done_received,
-			stream_interrupted,
-			usage_source,
-			gw_session_id, gw_task_id,
-			api_key_prefix, api_key_owner_user, application_code,
-			is_auto_request, task_type, auto_profile, auto_decision, auto_confidence,
-			work_type, credits_charged,
-			-- Round 47 compression v7 T2: parent-child chain (4 columns).
-			parent_request_id, compression_reason, compression_strategy, compression_meta,
-			-- 2026-08-19: token-band observability (1 column).
-			token_band,
-			-- v3 (2026-06-19) T23: session-level outbound body (4 columns).
-			outbound_msg_count, outbound_token_est, outbound_msg_hashes,
+	// S4 停写门控（storage.request_logs_write_enabled，与 Lite sink 同门）：关停后本段
+	// 宽表家族（request_logs_hot 主行 UPSERT、protocol/fingerprint 增补、
+	// request_logs_bodies_hot 正文）整体跳过；usage_ledger 已在上方写入，api_keys
+	// 计数与 outbox 会话开启事件在门控外照常提交。
+	if logsWrite {
+		// 2026-07-05 migration 341: INSERT directly targets request_logs_hot
+		// (独立热表，0-7 天数据窗口)。所有 INSERT/UPDATE/DELETE 统一写入 _hot 表，
+		// 后台 partition_manager 会定期调用 promote_request_logs_hot_to_partition()
+		// 将冷数据（>7 天）迁移到月度分区。热表采用 heap 存储，支持高频写入；
+		// 月度分区采用 columnar 存储，优化归档查询性能。
+		//
+		// The ON CONFLICT (request_id) clause catches same-row upserts
+		// from race conditions (e.g. async retry landing on the same
+		// request_id). 热表 PRIMARY KEY (request_id) (migration 455) 覆盖冲突目标。
+		// 2026-07-16: JSONB columns use $N::text::jsonb to fix pgx binary protocol 22P02.
+		_, err = tx.Exec(ctx, `
+			INSERT INTO request_logs_hot (
+				request_id, ts, tenant_id, application_id, api_key_id,
+				end_user_id, client_model, outbound_model,
+				-- 2026-07-27: 标准模型名(全小写),见 458 迁移。NULL = 没匹配到 canonical row。
+				-- Column order intentionally matches the Go arg list below so $N
+				-- placeholders stay strictly sequential (a duplicated/shifted $N
+				-- here previously produced a 90-arg-vs-89-placeholder mismatch
+				-- that rejected every business-row INSERT).
+				canonical_model,
+				credential_id, provider_id, canonical_id,
+				client_profile, request_mode, affinity_hit,
+				prompt_tokens, completion_tokens,
+				cache_read_tokens, cache_write_tokens,
+				-- audit-ir-multimodal (2026-07-13): multimodal and reasoning token fields
+				reasoning_tokens, image_tokens, audio_tokens, video_tokens, provider_tokens,
+				total_tokens,
+				cost_usd, cost_display, cost_currency,
+				latency_ms, success, request_status, error_kind, search_text,
+				identity_hash, response_checksum,
+				transform_rule_id, egress_protocol, failure_stage, failure_detail_code,
+				request_preview, transform_summary, response_preview,
+				stream_first_chunk_ms, stream_chunk_count, stream_done_received,
+				stream_interrupted,
+				usage_source,
+				gw_session_id, gw_task_id,
+				api_key_prefix, api_key_owner_user, application_code,
+				is_auto_request, task_type, auto_profile, auto_decision, auto_confidence,
+				work_type, credits_charged,
+				-- Round 47 compression v7 T2: parent-child chain (4 columns).
+				parent_request_id, compression_reason, compression_strategy, compression_meta,
+				-- 2026-08-19: token-band observability (1 column).
+				token_band,
+				-- v3 (2026-06-19) T23: session-level outbound body (4 columns).
+				outbound_msg_count, outbound_token_est, outbound_msg_hashes,
+				-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+				quality_flags, quality_fix_actions, quality_score,
+				-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
+				-- (db/migrations/018_upstream_finish_reason.sql). The new column is
+				-- the SOLE home for the upstream finish_reason.
+				upstream_finish_reason,
+				-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
+				tool_calls,
+				-- 2026-06-26: client-supplied X-Request-Id (debug only;
+				-- request_logs.request_id is server-generated, see migration 454).
+				client_request_id,
+				-- 2026-06-30: upstream diagnostics (migration 320).
+				upstream_status_code, client_timeout, client_endpoint,
+				stream_chunk_errors, stream_chunks_sent,
+				-- 2026-07-01: 附件元数据 (migration 325). JSONB 数组,
+				-- 存储从请求体提取的 base64/data-URI 附件元数据(路径/类型/大小/hash),
+				-- 附件实体文件已落盘,此处仅记录元信息。
+				attachments,
+				-- 2026-07-14 (migration 341): client-side origin. client_ip / client_forwarded_for
+				-- were added by 2026-07-11-observability-fields.sql; origin_stage / origin_actor
+				-- by migration 341. All four are populated by middleware/origin_mw.go for every
+				-- business row and by the probe workers (self_check / node_probe / system_health).
+				client_ip, client_forwarded_for, origin_stage, origin_actor,
+				-- 2026-07-19 (migration 350): routing attempts tracking.
+				routing_attempts, routing_summary,
+				-- 2026-07-27: 客户端感知扩展 (主表 GROUP BY 统计需要).
+				-- agent_name/agent_type 来自 telemetry.ExtractAgentName + 语义 fallback.
+				-- client_protocol 来自 URL path routing.
+				-- virtual_client_id 来自 identity.BuildIdentityFromRequest.
+				-- 之前这些字段只在侧表 request_context_attrs 写入,主表永远 NULL.
+				agent_name, agent_type, client_protocol, virtual_client_id,
+		-- V3.1 (migration 491): 9-stage dispatch queue timestamps.
+				t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
+				t3_model_enqueued_at, t4_model_dequeued_at,
+				t5_cred_enqueued_at, t6_cred_dequeued_at,
+				t7_forward_start_at, t8_response_start_at, t9_response_end_at,
+			-- 2026-08-19: streaming discard audit events.
+			discard_events,
+			customer_id,
+			-- V6-W1.6 R8 (migration 610): request class + scheduled due time.
+			request_class, due_at
+		) VALUES (
+			$1, now(), $2, $3, $4,
+			$5, $6, $7,
+			$8, $9, $10,
+			$11,
+			$12, $13, $14,
+			$15, $16,
+			$17, $18,
+			-- audit-ir-multimodal (2026-07-13): $19-$23 multimodal tokens
+			$19, $20, $21, $22, $23,
+			$24,
+			$25, $26, $27,
+			$28, $29, $30, $31, $32,
+			$33, $34,
+			$35, $36, $37, $38,
+			$39, $40, $41,
+			$42, $43, $44,
+			$45,
+			$46, $47,
+			$48, $49, $50,
+			$51, $52, $53, $54, $55::text::jsonb, $56,
+			$57, $58,
+			$59, $60, $61, $62::text::jsonb,
+			-- 2026-08-19: token-band observability.
+			$63,
+			-- v3 (2026-06-19) T23: session-level outbound body.
+			$64, $65, $66::text::jsonb,
 			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-			quality_flags, quality_fix_actions, quality_score,
-			-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
-			-- (db/migrations/018_upstream_finish_reason.sql). The new column is
-			-- the SOLE home for the upstream finish_reason.
-			upstream_finish_reason,
+			$67::text[], $68::text::jsonb, $69,
+			-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
+			$70,
 			-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-			tool_calls,
-			-- 2026-06-26: client-supplied X-Request-Id (debug only;
-			-- request_logs.request_id is server-generated, see migration 454).
-			client_request_id,
+			$71::text::jsonb,
+			-- 2026-06-26: client-supplied X-Request-Id.
+			$72,
 			-- 2026-06-30: upstream diagnostics (migration 320).
-			upstream_status_code, client_timeout, client_endpoint,
-			stream_chunk_errors, stream_chunks_sent,
-			-- 2026-07-01: 附件元数据 (migration 325). JSONB 数组,
-			-- 存储从请求体提取的 base64/data-URI 附件元数据(路径/类型/大小/hash),
-			-- 附件实体文件已落盘,此处仅记录元信息。
-			attachments,
-			-- 2026-07-14 (migration 341): client-side origin. client_ip / client_forwarded_for
-			-- were added by 2026-07-11-observability-fields.sql; origin_stage / origin_actor
-			-- by migration 341. All four are populated by middleware/origin_mw.go for every
-			-- business row and by the probe workers (self_check / node_probe / system_health).
-			client_ip, client_forwarded_for, origin_stage, origin_actor,
+			$73, $74, $75,
+			$76, $77,
+			-- 2026-07-01: 附件元数据 (migration 325).
+			$78::text::jsonb,
+			-- 2026-07-14 (migration 341): client-side origin.
+			$79, $80, $81, $82,
 			-- 2026-07-19 (migration 350): routing attempts tracking.
-			routing_attempts, routing_summary,
-			-- 2026-07-27: 客户端感知扩展 (主表 GROUP BY 统计需要).
-			-- agent_name/agent_type 来自 telemetry.ExtractAgentName + 语义 fallback.
-			-- client_protocol 来自 URL path routing.
-			-- virtual_client_id 来自 identity.BuildIdentityFromRequest.
-			-- 之前这些字段只在侧表 request_context_attrs 写入,主表永远 NULL.
-			agent_name, agent_type, client_protocol, virtual_client_id,
-	-- V3.1 (migration 491): 9-stage dispatch queue timestamps.
-			t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
-			t3_model_enqueued_at, t4_model_dequeued_at,
-			t5_cred_enqueued_at, t6_cred_dequeued_at,
-			t7_forward_start_at, t8_response_start_at, t9_response_end_at,
-		-- 2026-08-19: streaming discard audit events.
-		discard_events,
-		customer_id,
-		-- V6-W1.6 R8 (migration 610): request class + scheduled due time.
-		request_class, due_at
-	) VALUES (
-		$1, now(), $2, $3, $4,
-		$5, $6, $7,
-		$8, $9, $10,
-		$11,
-		$12, $13, $14,
-		$15, $16,
-		$17, $18,
-		-- audit-ir-multimodal (2026-07-13): $19-$23 multimodal tokens
-		$19, $20, $21, $22, $23,
-		$24,
-		$25, $26, $27,
-		$28, $29, $30, $31, $32,
-		$33, $34,
-		$35, $36, $37, $38,
-		$39, $40, $41,
-		$42, $43, $44,
-		$45,
-		$46, $47,
-		$48, $49, $50,
-		$51, $52, $53, $54, $55::text::jsonb, $56,
-		$57, $58,
-		$59, $60, $61, $62::text::jsonb,
-		-- 2026-08-19: token-band observability.
-		$63,
-		-- v3 (2026-06-19) T23: session-level outbound body.
-		$64, $65, $66::text::jsonb,
-		-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		$67::text[], $68::text::jsonb, $69,
-		-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
-		$70,
-		-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-		$71::text::jsonb,
-		-- 2026-06-26: client-supplied X-Request-Id.
-		$72,
-		-- 2026-06-30: upstream diagnostics (migration 320).
-		$73, $74, $75,
-		$76, $77,
-		-- 2026-07-01: 附件元数据 (migration 325).
-		$78::text::jsonb,
-		-- 2026-07-14 (migration 341): client-side origin.
-		$79, $80, $81, $82,
-		-- 2026-07-19 (migration 350): routing attempts tracking.
-		$83::text::jsonb, $84,
-		-- 2026-07-27: 客户端感知字段(主表 INSERT 必填).
-		$85, $86, $87, $88,
-		-- V3.1 queue timestamps (migration 491): 9-stage dispatch queue timestamps.
-		$89, $90, $91, $92, $93, $94, $95, $96, $97, $98,
-		-- 2026-08-19: streaming discard audit events.
-		$99::text::jsonb,
-		-- 2026-08-25 (migration 507): customer metadata.
-		$100,
-		-- V6-W1.6 R8 (migration 610): request class + due time. $101 stays
-		-- a bare placeholder (placeholder-alignment guard); the NOT NULL
-		-- default is resolved arg-side by requestClassArg.
-		$101, $102
-	)
+			$83::text::jsonb, $84,
+			-- 2026-07-27: 客户端感知字段(主表 INSERT 必填).
+			$85, $86, $87, $88,
+			-- V3.1 queue timestamps (migration 491): 9-stage dispatch queue timestamps.
+			$89, $90, $91, $92, $93, $94, $95, $96, $97, $98,
+			-- 2026-08-19: streaming discard audit events.
+			$99::text::jsonb,
+			-- 2026-08-25 (migration 507): customer metadata.
+			$100,
+			-- V6-W1.6 R8 (migration 610): request class + due time. $101 stays
+			-- a bare placeholder (placeholder-alignment guard); the NOT NULL
+			-- default is resolved arg-side by requestClassArg.
+			$101, $102
+		)
 
-				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
-				-- Migration 455 (2026-07-23) gave request_logs_hot PRIMARY KEY (request_id),
-				-- so ON CONFLICT must be (request_id). Using (request_id, ts) here triggers
-				-- SQLSTATE 42P10 "no unique or exclusion constraint matching the ON CONFLICT specification".
-				ON CONFLICT (request_id) DO UPDATE SET
-				ts = EXCLUDED.ts,
-			tenant_id = EXCLUDED.tenant_id,
-			application_id = EXCLUDED.application_id,
-			api_key_id = EXCLUDED.api_key_id,
-			end_user_id = EXCLUDED.end_user_id,
-			client_model = EXCLUDED.client_model,
-			outbound_model = EXCLUDED.outbound_model,
-			-- 2026-07-27: 标准名同步刷新(允许 EXCLUDED 覆盖,让 canonical rename 追溯完整)
-			canonical_model = EXCLUDED.canonical_model,
-			credential_id = EXCLUDED.credential_id,
-			provider_id = EXCLUDED.provider_id,
-			canonical_id = EXCLUDED.canonical_id,
-			client_profile = EXCLUDED.client_profile,
-			request_mode = EXCLUDED.request_mode,
-			affinity_hit = COALESCE(EXCLUDED.affinity_hit, request_logs_hot.affinity_hit),
-			prompt_tokens = EXCLUDED.prompt_tokens,
-			completion_tokens = EXCLUDED.completion_tokens,
-			cache_read_tokens = EXCLUDED.cache_read_tokens,
-			cache_write_tokens = EXCLUDED.cache_write_tokens,
-			total_tokens = EXCLUDED.total_tokens,
-			cost_usd = EXCLUDED.cost_usd,
-			cost_display = EXCLUDED.cost_display,
-			cost_currency = EXCLUDED.cost_currency,
-			latency_ms = EXCLUDED.latency_ms,
-			success = EXCLUDED.success,
-			request_status = EXCLUDED.request_status,
-			error_kind = CASE
-				WHEN EXCLUDED.success = TRUE THEN NULL
-				ELSE EXCLUDED.error_kind
+					-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
+					-- Migration 455 (2026-07-23) gave request_logs_hot PRIMARY KEY (request_id),
+					-- so ON CONFLICT must be (request_id). Using (request_id, ts) here triggers
+					-- SQLSTATE 42P10 "no unique or exclusion constraint matching the ON CONFLICT specification".
+					ON CONFLICT (request_id) DO UPDATE SET
+					ts = EXCLUDED.ts,
+				tenant_id = EXCLUDED.tenant_id,
+				application_id = EXCLUDED.application_id,
+				api_key_id = EXCLUDED.api_key_id,
+				end_user_id = EXCLUDED.end_user_id,
+				client_model = EXCLUDED.client_model,
+				outbound_model = EXCLUDED.outbound_model,
+				-- 2026-07-27: 标准名同步刷新(允许 EXCLUDED 覆盖,让 canonical rename 追溯完整)
+				canonical_model = EXCLUDED.canonical_model,
+				credential_id = EXCLUDED.credential_id,
+				provider_id = EXCLUDED.provider_id,
+				canonical_id = EXCLUDED.canonical_id,
+				client_profile = EXCLUDED.client_profile,
+				request_mode = EXCLUDED.request_mode,
+				affinity_hit = COALESCE(EXCLUDED.affinity_hit, request_logs_hot.affinity_hit),
+				prompt_tokens = EXCLUDED.prompt_tokens,
+				completion_tokens = EXCLUDED.completion_tokens,
+				cache_read_tokens = EXCLUDED.cache_read_tokens,
+				cache_write_tokens = EXCLUDED.cache_write_tokens,
+				total_tokens = EXCLUDED.total_tokens,
+				cost_usd = EXCLUDED.cost_usd,
+				cost_display = EXCLUDED.cost_display,
+				cost_currency = EXCLUDED.cost_currency,
+				latency_ms = EXCLUDED.latency_ms,
+				success = EXCLUDED.success,
+				request_status = EXCLUDED.request_status,
+				error_kind = CASE
+					WHEN EXCLUDED.success = TRUE THEN NULL
+					ELSE EXCLUDED.error_kind
+				END,
+				search_text = EXCLUDED.search_text,
+				identity_hash = EXCLUDED.identity_hash,
+				response_checksum = EXCLUDED.response_checksum,
+				transform_rule_id = EXCLUDED.transform_rule_id,
+				egress_protocol = EXCLUDED.egress_protocol,
+				failure_stage = EXCLUDED.failure_stage,
+				failure_detail_code = EXCLUDED.failure_detail_code,
+				request_preview = EXCLUDED.request_preview,
+				transform_summary = EXCLUDED.transform_summary,
+				response_preview = EXCLUDED.response_preview,
+				stream_first_chunk_ms = EXCLUDED.stream_first_chunk_ms,
+				stream_chunk_count = EXCLUDED.stream_chunk_count,
+				stream_done_received = EXCLUDED.stream_done_received,
+				stream_interrupted = EXCLUDED.stream_interrupted,
+				usage_source = EXCLUDED.usage_source,
+				gw_session_id = EXCLUDED.gw_session_id,
+				gw_task_id = EXCLUDED.gw_task_id,
+				api_key_prefix = EXCLUDED.api_key_prefix,
+				api_key_owner_user = EXCLUDED.api_key_owner_user,
+				application_code = EXCLUDED.application_code,
+				is_auto_request = EXCLUDED.is_auto_request,
+				task_type = EXCLUDED.task_type,
+				auto_profile = EXCLUDED.auto_profile,
+				auto_decision = EXCLUDED.auto_decision,
+				auto_confidence = EXCLUDED.auto_confidence,
+				work_type = EXCLUDED.work_type,
+				credits_charged = EXCLUDED.credits_charged,
+				parent_request_id = EXCLUDED.parent_request_id,
+				compression_reason = EXCLUDED.compression_reason,
+				compression_strategy = EXCLUDED.compression_strategy,
+				compression_meta = EXCLUDED.compression_meta,
+				-- 2026-08-24 Phase 1: outbound_body routes to request_logs_bodies_hot
+				-- only. The main table keeps its prior value (typically NULL); an
+				-- UPDATE that bound outbound_body here would re-introduce the
+				-- duplicate TOAST/WAL/storage cost we are eliminating.
+				outbound_msg_count = EXCLUDED.outbound_msg_count,
+				outbound_token_est = EXCLUDED.outbound_token_est,
+				outbound_msg_hashes = EXCLUDED.outbound_msg_hashes,
+			quality_flags = EXCLUDED.quality_flags,
+			quality_fix_actions = EXCLUDED.quality_fix_actions,
+			quality_score = EXCLUDED.quality_score,
+			upstream_finish_reason = EXCLUDED.upstream_finish_reason,
+			tool_calls = EXCLUDED.tool_calls,
+			client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs_hot.client_request_id),
+			-- 2026-06-30: upstream diagnostics (migration 320)
+			upstream_status_code = EXCLUDED.upstream_status_code,
+			client_timeout = EXCLUDED.client_timeout,
+			client_endpoint = EXCLUDED.client_endpoint,
+			stream_chunk_errors = EXCLUDED.stream_chunk_errors,
+			-- 2026-07-05 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
+			-- streamChunksSentArg() coerces nil pointer to 0 so the explicit
+			-- INSERT never trips SQLSTATE 23502 even when the caller does
+			-- not set the field (e.g. /api/telemetry/request-log HTTP path).
+			stream_chunks_sent = COALESCE(EXCLUDED.stream_chunks_sent, 0),
+			-- 2026-07-01 / 2026-08-22: attachments — prefer a real JSON value from
+			-- EXCLUDED. First-write-wins against SQL NULL is correct, but an early
+			-- in_progress INSERT that bound JSON null ('null'::jsonb) must not
+			-- permanently block the completion path's real attachment metadata.
+			attachments = CASE
+				WHEN EXCLUDED.attachments IS NOT NULL
+					AND jsonb_typeof(EXCLUDED.attachments) <> 'null'
+				THEN EXCLUDED.attachments
+				ELSE request_logs_hot.attachments
 			END,
-			search_text = EXCLUDED.search_text,
-			identity_hash = EXCLUDED.identity_hash,
-			response_checksum = EXCLUDED.response_checksum,
-			transform_rule_id = EXCLUDED.transform_rule_id,
-			egress_protocol = EXCLUDED.egress_protocol,
-			failure_stage = EXCLUDED.failure_stage,
-			failure_detail_code = EXCLUDED.failure_detail_code,
-			request_preview = EXCLUDED.request_preview,
-			transform_summary = EXCLUDED.transform_summary,
-			response_preview = EXCLUDED.response_preview,
-			stream_first_chunk_ms = EXCLUDED.stream_first_chunk_ms,
-			stream_chunk_count = EXCLUDED.stream_chunk_count,
-			stream_done_received = EXCLUDED.stream_done_received,
-			stream_interrupted = EXCLUDED.stream_interrupted,
-			usage_source = EXCLUDED.usage_source,
-			gw_session_id = EXCLUDED.gw_session_id,
-			gw_task_id = EXCLUDED.gw_task_id,
-			api_key_prefix = EXCLUDED.api_key_prefix,
-			api_key_owner_user = EXCLUDED.api_key_owner_user,
-			application_code = EXCLUDED.application_code,
-			is_auto_request = EXCLUDED.is_auto_request,
-			task_type = EXCLUDED.task_type,
-			auto_profile = EXCLUDED.auto_profile,
-			auto_decision = EXCLUDED.auto_decision,
-			auto_confidence = EXCLUDED.auto_confidence,
-			work_type = EXCLUDED.work_type,
-			credits_charged = EXCLUDED.credits_charged,
-			parent_request_id = EXCLUDED.parent_request_id,
-			compression_reason = EXCLUDED.compression_reason,
-			compression_strategy = EXCLUDED.compression_strategy,
-			compression_meta = EXCLUDED.compression_meta,
-			-- 2026-08-24 Phase 1: outbound_body routes to request_logs_bodies_hot
-			-- only. The main table keeps its prior value (typically NULL); an
-			-- UPDATE that bound outbound_body here would re-introduce the
-			-- duplicate TOAST/WAL/storage cost we are eliminating.
-			outbound_msg_count = EXCLUDED.outbound_msg_count,
-			outbound_token_est = EXCLUDED.outbound_token_est,
-			outbound_msg_hashes = EXCLUDED.outbound_msg_hashes,
-		quality_flags = EXCLUDED.quality_flags,
-		quality_fix_actions = EXCLUDED.quality_fix_actions,
-		quality_score = EXCLUDED.quality_score,
-		upstream_finish_reason = EXCLUDED.upstream_finish_reason,
-		tool_calls = EXCLUDED.tool_calls,
-		client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs_hot.client_request_id),
-		-- 2026-06-30: upstream diagnostics (migration 320)
-		upstream_status_code = EXCLUDED.upstream_status_code,
-		client_timeout = EXCLUDED.client_timeout,
-		client_endpoint = EXCLUDED.client_endpoint,
-		stream_chunk_errors = EXCLUDED.stream_chunk_errors,
-		-- 2026-07-05 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
-		-- streamChunksSentArg() coerces nil pointer to 0 so the explicit
-		-- INSERT never trips SQLSTATE 23502 even when the caller does
-		-- not set the field (e.g. /api/telemetry/request-log HTTP path).
-		stream_chunks_sent = COALESCE(EXCLUDED.stream_chunks_sent, 0),
-		-- 2026-07-01 / 2026-08-22: attachments — prefer a real JSON value from
-		-- EXCLUDED. First-write-wins against SQL NULL is correct, but an early
-		-- in_progress INSERT that bound JSON null ('null'::jsonb) must not
-		-- permanently block the completion path's real attachment metadata.
-		attachments = CASE
-			WHEN EXCLUDED.attachments IS NOT NULL
-				AND jsonb_typeof(EXCLUDED.attachments) <> 'null'
-			THEN EXCLUDED.attachments
-			ELSE request_logs_hot.attachments
-		END,
-		-- 2026-08-22: routing_attempts / routing_summary were INSERT-only and
-		-- missing from DO UPDATE SET, so EmitRequestLogUpdate success rows
-		-- never persisted tracker output (same class as t0..t9 gap).
-		routing_attempts = CASE
-			WHEN EXCLUDED.routing_attempts IS NOT NULL
-				AND jsonb_typeof(EXCLUDED.routing_attempts) <> 'null'
-			THEN EXCLUDED.routing_attempts
-			ELSE request_logs_hot.routing_attempts
-		END,
-		routing_summary = COALESCE(EXCLUDED.routing_summary, request_logs_hot.routing_summary),
-		-- 2026-07-14 (migration 341): origin metadata. First-write-wins:
-		-- the first writer (usually the origin middleware) keeps its value;
-		-- later replays must not overwrite the real client IP / origin label.
-		client_ip           = COALESCE(request_logs_hot.client_ip, EXCLUDED.client_ip),
-		client_forwarded_for = COALESCE(request_logs_hot.client_forwarded_for, EXCLUDED.client_forwarded_for),
-		origin_stage        = COALESCE(request_logs_hot.origin_stage, EXCLUDED.origin_stage),
-		origin_actor        = COALESCE(request_logs_hot.origin_actor, EXCLUDED.origin_actor),
-		-- 2026-07-27: 客户端感知字段 — first-write-wins (避免后续 retry / 补写覆盖)
-		-- origin_mw / fillAttemptMeta 阶段提取的真实值。
-		agent_name          = COALESCE(request_logs_hot.agent_name, EXCLUDED.agent_name),
-		agent_type          = COALESCE(request_logs_hot.agent_type, EXCLUDED.agent_type),
-		client_protocol     = COALESCE(request_logs_hot.client_protocol, EXCLUDED.client_protocol),
-		virtual_client_id   = COALESCE(request_logs_hot.virtual_client_id, EXCLUDED.virtual_client_id),
-		-- V3.1 queue timestamps: prefer newer non-null values from EXCLUDED.
-		t0_arrived_at        = COALESCE(EXCLUDED.t0_arrived_at, request_logs_hot.t0_arrived_at),
-		t1_total_enqueued_at = COALESCE(EXCLUDED.t1_total_enqueued_at, request_logs_hot.t1_total_enqueued_at),
-		t2_total_dequeued_at = COALESCE(EXCLUDED.t2_total_dequeued_at, request_logs_hot.t2_total_dequeued_at),
-		t3_model_enqueued_at = COALESCE(EXCLUDED.t3_model_enqueued_at, request_logs_hot.t3_model_enqueued_at),
-		t4_model_dequeued_at = COALESCE(EXCLUDED.t4_model_dequeued_at, request_logs_hot.t4_model_dequeued_at),
-		t5_cred_enqueued_at  = COALESCE(EXCLUDED.t5_cred_enqueued_at, request_logs_hot.t5_cred_enqueued_at),
-		t6_cred_dequeued_at  = COALESCE(EXCLUDED.t6_cred_dequeued_at, request_logs_hot.t6_cred_dequeued_at),
-		t7_forward_start_at  = COALESCE(EXCLUDED.t7_forward_start_at, request_logs_hot.t7_forward_start_at),
-		t8_response_start_at = COALESCE(EXCLUDED.t8_response_start_at, request_logs_hot.t8_response_start_at),
-			t9_response_end_at   = COALESCE(EXCLUDED.t9_response_end_at, request_logs_hot.t9_response_end_at),
-			discard_events       = COALESCE(EXCLUDED.discard_events, request_logs_hot.discard_events),
-			-- V6-W1.6 R8 (migration 610): class never regresses to NULL;
-			-- due_at keeps the first non-null value.
-			request_class        = COALESCE(EXCLUDED.request_class, request_logs_hot.request_class),
-			due_at               = COALESCE(EXCLUDED.due_at, request_logs_hot.due_at)
-		-- 2026-07-27 (L-2): terminal-state guard, mirroring the WAL guard in
+			-- 2026-08-22: routing_attempts / routing_summary were INSERT-only and
+			-- missing from DO UPDATE SET, so EmitRequestLogUpdate success rows
+			-- never persisted tracker output (same class as t0..t9 gap).
+			routing_attempts = CASE
+				WHEN EXCLUDED.routing_attempts IS NOT NULL
+					AND jsonb_typeof(EXCLUDED.routing_attempts) <> 'null'
+				THEN EXCLUDED.routing_attempts
+				ELSE request_logs_hot.routing_attempts
+			END,
+			routing_summary = COALESCE(EXCLUDED.routing_summary, request_logs_hot.routing_summary),
+			-- 2026-07-14 (migration 341): origin metadata. First-write-wins:
+			-- the first writer (usually the origin middleware) keeps its value;
+			-- later replays must not overwrite the real client IP / origin label.
+			client_ip           = COALESCE(request_logs_hot.client_ip, EXCLUDED.client_ip),
+			client_forwarded_for = COALESCE(request_logs_hot.client_forwarded_for, EXCLUDED.client_forwarded_for),
+			origin_stage        = COALESCE(request_logs_hot.origin_stage, EXCLUDED.origin_stage),
+			origin_actor        = COALESCE(request_logs_hot.origin_actor, EXCLUDED.origin_actor),
+			-- 2026-07-27: 客户端感知字段 — first-write-wins (避免后续 retry / 补写覆盖)
+			-- origin_mw / fillAttemptMeta 阶段提取的真实值。
+			agent_name          = COALESCE(request_logs_hot.agent_name, EXCLUDED.agent_name),
+			agent_type          = COALESCE(request_logs_hot.agent_type, EXCLUDED.agent_type),
+			client_protocol     = COALESCE(request_logs_hot.client_protocol, EXCLUDED.client_protocol),
+			virtual_client_id   = COALESCE(request_logs_hot.virtual_client_id, EXCLUDED.virtual_client_id),
+			-- V3.1 queue timestamps: prefer newer non-null values from EXCLUDED.
+			t0_arrived_at        = COALESCE(EXCLUDED.t0_arrived_at, request_logs_hot.t0_arrived_at),
+			t1_total_enqueued_at = COALESCE(EXCLUDED.t1_total_enqueued_at, request_logs_hot.t1_total_enqueued_at),
+			t2_total_dequeued_at = COALESCE(EXCLUDED.t2_total_dequeued_at, request_logs_hot.t2_total_dequeued_at),
+			t3_model_enqueued_at = COALESCE(EXCLUDED.t3_model_enqueued_at, request_logs_hot.t3_model_enqueued_at),
+			t4_model_dequeued_at = COALESCE(EXCLUDED.t4_model_dequeued_at, request_logs_hot.t4_model_dequeued_at),
+			t5_cred_enqueued_at  = COALESCE(EXCLUDED.t5_cred_enqueued_at, request_logs_hot.t5_cred_enqueued_at),
+			t6_cred_dequeued_at  = COALESCE(EXCLUDED.t6_cred_dequeued_at, request_logs_hot.t6_cred_dequeued_at),
+			t7_forward_start_at  = COALESCE(EXCLUDED.t7_forward_start_at, request_logs_hot.t7_forward_start_at),
+			t8_response_start_at = COALESCE(EXCLUDED.t8_response_start_at, request_logs_hot.t8_response_start_at),
+				t9_response_end_at   = COALESCE(EXCLUDED.t9_response_end_at, request_logs_hot.t9_response_end_at),
+				discard_events       = COALESCE(EXCLUDED.discard_events, request_logs_hot.discard_events),
+				-- V6-W1.6 R8 (migration 610): class never regresses to NULL;
+				-- due_at keeps the first non-null value.
+				request_class        = COALESCE(EXCLUDED.request_class, request_logs_hot.request_class),
+				due_at               = COALESCE(EXCLUDED.due_at, request_logs_hot.due_at)
+			-- 2026-07-27 (L-2): terminal-state guard, mirroring the WAL guard in
 
-		-- request_logger.go Update(). Without this, the deferred client-
-		-- disconnect safety net could regress a row that already reached a
-		-- terminal state: the handler writes success=TRUE / request_status=
-		-- 'success' via the completion path, then the disconnect probe fires
-		-- EmitRequestLogUpdate with success=FALSE / 'client_disconnect' right
-		-- after the client reads the good response — clobbering the success
-		-- row (split-brain vs the WAL, which already had this guard).
-		--
-		-- Skip the UPDATE entirely when the existing row is already terminal
-		-- (success=TRUE OR request_status IN ('success','failure')) AND the
-		-- incoming update is NOT itself terminal-success (a legitimate later
-		-- enrichment of an already-success row, e.g. token accounting from a
-		-- slower path, is still allowed). The failure→success promotion case
-		-- is intentionally NOT allowed here: a disconnect probe must never
-		-- upgrade a failure, and a success is written by the authoritative
-		-- completion path before any probe fires.
-		WHERE NOT (
-			request_logs_hot.request_status = 'failure'
-			OR (
-				(request_logs_hot.success = TRUE
-				 OR request_logs_hot.request_status = 'success')
-				AND NOT (
-					EXCLUDED.success = TRUE
-					AND EXCLUDED.request_status = 'success'
+			-- request_logger.go Update(). Without this, the deferred client-
+			-- disconnect safety net could regress a row that already reached a
+			-- terminal state: the handler writes success=TRUE / request_status=
+			-- 'success' via the completion path, then the disconnect probe fires
+			-- EmitRequestLogUpdate with success=FALSE / 'client_disconnect' right
+			-- after the client reads the good response — clobbering the success
+			-- row (split-brain vs the WAL, which already had this guard).
+			--
+			-- Skip the UPDATE entirely when the existing row is already terminal
+			-- (success=TRUE OR request_status IN ('success','failure')) AND the
+			-- incoming update is NOT itself terminal-success (a legitimate later
+			-- enrichment of an already-success row, e.g. token accounting from a
+			-- slower path, is still allowed). The failure→success promotion case
+			-- is intentionally NOT allowed here: a disconnect probe must never
+			-- upgrade a failure, and a success is written by the authoritative
+			-- completion path before any probe fires.
+			WHERE NOT (
+				request_logs_hot.request_status = 'failure'
+				OR (
+					(request_logs_hot.success = TRUE
+					 OR request_logs_hot.request_status = 'success')
+					AND NOT (
+						EXCLUDED.success = TRUE
+						AND EXCLUDED.request_status = 'success'
+					)
 				)
 			)
+		`,
+			entry.RequestID,
+			nonEmpty(entry.TenantID, "default"),
+			entry.ApplicationID,
+			entry.APIKeyID,
+			entry.EndUserID,
+			entry.ClientModel,
+			entry.OutboundModel,
+			entry.CanonicalModel,
+			entry.CredentialID,
+			entry.ProviderID,
+			entry.CanonicalID,
+			entry.ClientProfile,
+			entry.RequestMode,
+			entry.AffinityHit,
+			entry.PromptTokens,
+			entry.CompletionTokens,
+			entry.CacheReadTokens,
+			entry.CacheWriteTokens,
+			// audit-ir-multimodal (2026-07-13): multimodal token fields
+			entry.ReasoningTokens,
+			entry.ImageTokens,
+			entry.AudioTokens,
+			entry.VideoTokens,
+			entry.ProviderTokens,
+			totalTokens,
+			entry.CostUSD,
+			entry.CostDisplay,
+			entry.CostCurrency,
+			entry.LatencyMs,
+			entry.Success,
+			entry.RequestStatus,
+			entry.ErrorKind,
+			searchText(entry),
+			entry.IdentityHash,
+			entry.ResponseChecksum,
+			entry.TransformRuleID,
+			entry.EgressProtocol,
+			entry.FailureStage,
+			entry.FailureDetailCode,
+			entry.RequestPreview,
+			entry.TransformSummary,
+			entry.ResponsePreview,
+			entry.StreamFirstChunkMs,
+			entry.StreamChunkCount,
+			entry.StreamDoneReceived,
+			entry.StreamInterrupted,
+			nonEmptyPtr(entry.UsageSource, "llm"),
+			entry.GwSessionID,
+			entry.GwTaskID,
+			entry.APIKeyPrefix,
+			entry.APIKeyOwnerUser,
+			entry.ApplicationCode,
+			entry.IsAutoRequest,
+			entry.TaskType,
+			entry.AutoProfile,
+			strPtrToJSON(entry.AutoDecision),
+			entry.AutoConfidence,
+			entry.WorkType,
+			entry.CreditsCharged,
+			// Round 47 compression v7 T2: parent-child chain payload.
+			entry.ParentRequestID,
+			entry.CompressionReason,
+			entry.CompressionStrategy,
+			jsonOrNull(entry.CompressionMeta),
+			// 2026-08-19: token-band observability.
+			entry.TokenBand,
+			entry.OutboundMsgCount,
+			entry.OutboundTokenEst,
+			jsonOrNull(entry.OutboundMsgHashes),
+			// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+			// quality_flags is always encoded as a PostgreSQL text array;
+			// quality_fix_actions is JSONB.
+			//
+			// 2026-08-20 nil-语义约定（与 UPSERT 路径共用）：
+			//
+			//   entry.QualityFlags == nil     → qualityFlagsArg 返回 "{}" 字面量
+			//   entry.QualityFlags == []string{} → qualityFlagsArg 返回 "{}" 字面量
+			//   两者在 SQL 列上结果相同；区别仅在 SQL 日志 / audit 表里看到的
+			//   文本是否带 array 维度。这是"未提供"与"显式清空"在 INSERT
+			//   路径上唯一的语义差异，由 qualityFlagsArg 集中处理。
+			//
+			//   entry.QualityFixActions == nil     → "{}" （与 DEFAULT 一致）
+			//   entry.QualityFixActions == []byte("{}") → "{}"
+			//   两者在 SQL 列上结果完全相同；qualityActionsArgStr 不区分"未提供"
+			//   与"显式清空"——这是 NOT NULL DEFAULT 的设计选择：调用方若需要
+			//   区分，要么修改 schema 为 NULLABLE，要么改为单独字段承载。
+			qualityFlagsArg(entry.QualityFlags),
+			qualityActionsArgStr(entry.QualityFixActions),
+			entry.QualityScore,
+			// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
+			// (db/migrations/018_upstream_finish_reason.sql). The new column is
+			// the SOLE home for the upstream finish_reason.
+			entry.UpstreamFinishReason,
+			// 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
+			jsonOrNull(entry.ToolCalls),
+			// 2026-06-26: client-supplied X-Request-Id (debug only).
+			entry.ClientRequestID,
+			// 2026-06-30: upstream diagnostics (migration 320).
+			entry.UpstreamStatusCode,
+			entry.ClientTimeout,
+			entry.ClientEndpoint,
+			entry.StreamChunkErrors,
+			// 2026-07-05 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
+			// streamChunksSentArg() coerces nil pointer to 0 so the explicit
+			// INSERT never trips SQLSTATE 23502 even when the caller does
+			// not set the field (e.g. /api/telemetry/request-log HTTP path).
+			streamChunksSentArg(entry.StreamChunksSent),
+			// 2026-07-01: 附件元数据 (migration 325)。为空时写入 NULL。
+			attachmentsArgStr(entry.Attachments),
+			// 2026-07-14 (migration 341): client-side origin.
+			// client_ip / client_forwarded_for are written for every business
+			// row by middleware/origin_mw.go; origin_stage / origin_actor are
+			// written by the new probe workers (credential-selfcheck,
+			// node-probe, system-health). All four accept NULL (the columns
+			// are nullable) so legacy emitters don't break.
+			entry.ClientIP,
+			entry.ClientForwardedFor,
+			entry.OriginStage,
+			entry.OriginActor,
+			// 2026-07-19 (migration 350): routing attempts tracking
+			// 2026-08-22: use nullableJSONArg so an empty in_progress INSERT stores
+			// SQL NULL (not JSON null); completion UPDATE can then COALESCE/CASE-fill.
+			nullableJSONArg(entry.RoutingAttempts),
+			entry.RoutingSummary,
+			// 2026-07-27: 客户端感知字段 ($85-$88,与上面 INSERT 列表对齐)
+			entry.AgentName,
+			entry.AgentType,
+			entry.ClientProtocol,
+			entry.VirtualClientID,
+			// V3.1 (migration 491): $89–$98 queue timestamps
+			entry.T0ArrivedAt,
+			entry.T1TotalEnqueuedAt,
+			entry.T2TotalDequeuedAt,
+			entry.T3ModelEnqueuedAt,
+			entry.T4ModelDequeuedAt,
+			entry.T5CredEnqueuedAt,
+			entry.T6CredDequeuedAt,
+			entry.T7ForwardStartAt,
+			entry.T8ResponseStartAt,
+			entry.T9ResponseEndAt,
+			// 2026-08-19: discard audit events are JSONB and nullable.
+			nullableJSONArg(entry.DiscardEvents),
+			// 2026-08-25 (migration 507): customer metadata ($100 ↔ customer_id,
+			// the LAST column — keep aligned with the INSERT column list above).
+			entry.CustomerID,
+			// V6-W1.6 R8 (migration 610): $101 ↔ request_class (arg-side
+			// 'immediate' default for the NOT NULL column), $102 ↔ due_at.
+			requestClassArg(entry.RequestClass),
+			entry.DueAt,
 		)
-	`,
-		entry.RequestID,
-		nonEmpty(entry.TenantID, "default"),
-		entry.ApplicationID,
-		entry.APIKeyID,
-		entry.EndUserID,
-		entry.ClientModel,
-		entry.OutboundModel,
-		entry.CanonicalModel,
-		entry.CredentialID,
-		entry.ProviderID,
-		entry.CanonicalID,
-		entry.ClientProfile,
-		entry.RequestMode,
-		entry.AffinityHit,
-		entry.PromptTokens,
-		entry.CompletionTokens,
-		entry.CacheReadTokens,
-		entry.CacheWriteTokens,
-		// audit-ir-multimodal (2026-07-13): multimodal token fields
-		entry.ReasoningTokens,
-		entry.ImageTokens,
-		entry.AudioTokens,
-		entry.VideoTokens,
-		entry.ProviderTokens,
-		totalTokens,
-		entry.CostUSD,
-		entry.CostDisplay,
-		entry.CostCurrency,
-		entry.LatencyMs,
-		entry.Success,
-		entry.RequestStatus,
-		entry.ErrorKind,
-		searchText(entry),
-		entry.IdentityHash,
-		entry.ResponseChecksum,
-		entry.TransformRuleID,
-		entry.EgressProtocol,
-		entry.FailureStage,
-		entry.FailureDetailCode,
-		entry.RequestPreview,
-		entry.TransformSummary,
-		entry.ResponsePreview,
-		entry.StreamFirstChunkMs,
-		entry.StreamChunkCount,
-		entry.StreamDoneReceived,
-		entry.StreamInterrupted,
-		nonEmptyPtr(entry.UsageSource, "llm"),
-		entry.GwSessionID,
-		entry.GwTaskID,
-		entry.APIKeyPrefix,
-		entry.APIKeyOwnerUser,
-		entry.ApplicationCode,
-		entry.IsAutoRequest,
-		entry.TaskType,
-		entry.AutoProfile,
-		strPtrToJSON(entry.AutoDecision),
-		entry.AutoConfidence,
-		entry.WorkType,
-		entry.CreditsCharged,
-		// Round 47 compression v7 T2: parent-child chain payload.
-		entry.ParentRequestID,
-		entry.CompressionReason,
-		entry.CompressionStrategy,
-		jsonOrNull(entry.CompressionMeta),
-		// 2026-08-19: token-band observability.
-		entry.TokenBand,
-		entry.OutboundMsgCount,
-		entry.OutboundTokenEst,
-		jsonOrNull(entry.OutboundMsgHashes),
-		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		// quality_flags is always encoded as a PostgreSQL text array;
-		// quality_fix_actions is JSONB.
-		//
-		// 2026-08-20 nil-语义约定（与 UPSERT 路径共用）：
-		//
-		//   entry.QualityFlags == nil     → qualityFlagsArg 返回 "{}" 字面量
-		//   entry.QualityFlags == []string{} → qualityFlagsArg 返回 "{}" 字面量
-		//   两者在 SQL 列上结果相同；区别仅在 SQL 日志 / audit 表里看到的
-		//   文本是否带 array 维度。这是"未提供"与"显式清空"在 INSERT
-		//   路径上唯一的语义差异，由 qualityFlagsArg 集中处理。
-		//
-		//   entry.QualityFixActions == nil     → "{}" （与 DEFAULT 一致）
-		//   entry.QualityFixActions == []byte("{}") → "{}"
-		//   两者在 SQL 列上结果完全相同；qualityActionsArgStr 不区分"未提供"
-		//   与"显式清空"——这是 NOT NULL DEFAULT 的设计选择：调用方若需要
-		//   区分，要么修改 schema 为 NULLABLE，要么改为单独字段承载。
-		qualityFlagsArg(entry.QualityFlags),
-		qualityActionsArgStr(entry.QualityFixActions),
-		entry.QualityScore,
-		// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
-		// (db/migrations/018_upstream_finish_reason.sql). The new column is
-		// the SOLE home for the upstream finish_reason.
-		entry.UpstreamFinishReason,
-		// 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-		jsonOrNull(entry.ToolCalls),
-		// 2026-06-26: client-supplied X-Request-Id (debug only).
-		entry.ClientRequestID,
-		// 2026-06-30: upstream diagnostics (migration 320).
-		entry.UpstreamStatusCode,
-		entry.ClientTimeout,
-		entry.ClientEndpoint,
-		entry.StreamChunkErrors,
-		// 2026-07-05 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
-		// streamChunksSentArg() coerces nil pointer to 0 so the explicit
-		// INSERT never trips SQLSTATE 23502 even when the caller does
-		// not set the field (e.g. /api/telemetry/request-log HTTP path).
-		streamChunksSentArg(entry.StreamChunksSent),
-		// 2026-07-01: 附件元数据 (migration 325)。为空时写入 NULL。
-		attachmentsArgStr(entry.Attachments),
-		// 2026-07-14 (migration 341): client-side origin.
-		// client_ip / client_forwarded_for are written for every business
-		// row by middleware/origin_mw.go; origin_stage / origin_actor are
-		// written by the new probe workers (credential-selfcheck,
-		// node-probe, system-health). All four accept NULL (the columns
-		// are nullable) so legacy emitters don't break.
-		entry.ClientIP,
-		entry.ClientForwardedFor,
-		entry.OriginStage,
-		entry.OriginActor,
-		// 2026-07-19 (migration 350): routing attempts tracking
-		// 2026-08-22: use nullableJSONArg so an empty in_progress INSERT stores
-		// SQL NULL (not JSON null); completion UPDATE can then COALESCE/CASE-fill.
-		nullableJSONArg(entry.RoutingAttempts),
-		entry.RoutingSummary,
-		// 2026-07-27: 客户端感知字段 ($85-$88,与上面 INSERT 列表对齐)
-		entry.AgentName,
-		entry.AgentType,
-		entry.ClientProtocol,
-		entry.VirtualClientID,
-		// V3.1 (migration 491): $89–$98 queue timestamps
-		entry.T0ArrivedAt,
-		entry.T1TotalEnqueuedAt,
-		entry.T2TotalDequeuedAt,
-		entry.T3ModelEnqueuedAt,
-		entry.T4ModelDequeuedAt,
-		entry.T5CredEnqueuedAt,
-		entry.T6CredDequeuedAt,
-		entry.T7ForwardStartAt,
-		entry.T8ResponseStartAt,
-		entry.T9ResponseEndAt,
-		// 2026-08-19: discard audit events are JSONB and nullable.
-		nullableJSONArg(entry.DiscardEvents),
-		// 2026-08-25 (migration 507): customer metadata ($100 ↔ customer_id,
-		// the LAST column — keep aligned with the INSERT column list above).
-		entry.CustomerID,
-		// V6-W1.6 R8 (migration 610): $101 ↔ request_class (arg-side
-		// 'immediate' default for the NOT NULL column), $102 ↔ due_at.
-		requestClassArg(entry.RequestClass),
-		entry.DueAt,
-	)
 
-	if err != nil {
-		return err
-	}
-	if err := upsertProtocolMetadata(ctx, tx, entry); err != nil {
-		return err
-	}
-	if err := persistSystemFingerprint(ctx, tx, entry); err != nil {
-		return err
-	}
+		if err != nil {
+			return err
+		}
+		if err := upsertProtocolMetadata(ctx, tx, entry); err != nil {
+			return err
+		}
+		if err := persistSystemFingerprint(ctx, tx, entry); err != nil {
+			return err
+		}
 
-	// 2026-07-22 Ticket #10: Persist full bodies in request_logs_bodies_hot.
-	// 2026-08-24 Phase 1 body storage optimization: outbound_body now also
-	// routes to request_logs_bodies_hot (dedup) — main table keeps NULL for
-	// all three body columns. The hot table is the sole full-body write path.
-	err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, stringValue(entry.ApplicationCode),
-		strPtrToJSON(entry.RequestBody),
-		strPtrToJSON(entry.ResponseBody),
-		jsonOrNull(entry.OutboundBody),
-	)
-	if err != nil {
-		slog.Error("persist request_logs_bodies_hot failed",
-			"request_id", entry.RequestID,
-			"has_request_body", entry.RequestBody != nil,
-			"has_response_body", entry.ResponseBody != nil,
-			"has_outbound_body", len(entry.OutboundBody) > 0,
-			"error", err,
+		// 2026-07-22 Ticket #10: Persist full bodies in request_logs_bodies_hot.
+		// 2026-08-24 Phase 1 body storage optimization: outbound_body now also
+		// routes to request_logs_bodies_hot (dedup) — main table keeps NULL for
+		// all three body columns. The hot table is the sole full-body write path.
+		err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, stringValue(entry.ApplicationCode),
+			strPtrToJSON(entry.RequestBody),
+			strPtrToJSON(entry.ResponseBody),
+			jsonOrNull(entry.OutboundBody),
 		)
-		return err
+		if err != nil {
+			slog.Error("persist request_logs_bodies_hot failed",
+				"request_id", entry.RequestID,
+				"has_request_body", entry.RequestBody != nil,
+				"has_response_body", entry.ResponseBody != nil,
+				"has_outbound_body", len(entry.OutboundBody) > 0,
+				"error", err,
+			)
+			return err
+		}
 	}
 
 	if entry.APIKeyID != nil && *entry.APIKeyID > 0 && entry.Success {
@@ -1682,7 +1703,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	// same transaction. Best-effort: any failure (incl. a lost concurrent
 	// claim, SQLSTATE 23505 from uq_request_logs_hot_final_success_session)
 	// degrades to a normal success row — never fails the business write.
-	if shouldClaimFinalSuccess(entry) {
+	if logsWrite && shouldClaimFinalSuccess(entry) {
 		claimSessionFinalSuccess(ctx, c, tx, entry.RequestID)
 	}
 
@@ -1865,6 +1886,9 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
+	// S4 停写门控：每事务读一次，快照贯穿整个写入路径。
+	logsWrite := requestLogsWriteEnabled()
+
 	if entry.PromptTokens != nil || entry.CompletionTokens != nil {
 		// UPDATE directly targets usage_ledger_hot — UPDATE-heavy
 		// operations require heap storage with row-level UPDATE support.
@@ -1918,343 +1942,350 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		}
 	}
 
-	updated, err := tx.Exec(ctx, `
-		-- 2026-07-23 migration 455: request_logs_hot PK changed from (request_id, ts)
-		-- to (request_id). With request_id as the unique key, the CTE (which found
-		-- the latest row among duplicates) is no longer needed. Direct UPDATE by
-		-- request_id is now deterministic.
-		UPDATE request_logs_hot
-		   SET client_model = COALESCE($2, client_model),
-		       outbound_model = COALESCE($3, outbound_model),
-		       credential_id = COALESCE($4, credential_id),
-		       provider_id = COALESCE($5, provider_id),
-		       canonical_id = COALESCE($6, canonical_id),
-		       client_profile = COALESCE($7, client_profile),
-		       request_mode = COALESCE($8, request_mode),
-		       affinity_hit = COALESCE($9, request_logs_hot.affinity_hit),
-		       end_user_id = COALESCE($10, end_user_id),
-		       prompt_tokens = COALESCE($11, prompt_tokens),
-		       completion_tokens = COALESCE($12, completion_tokens),
-		       total_tokens = COALESCE($13, total_tokens),
-		       cache_read_tokens = COALESCE($14, cache_read_tokens),
-		       cache_write_tokens = COALESCE($15, cache_write_tokens),
-		       -- audit-ir-multimodal (2026-07-13): multimodal token fields
-		       reasoning_tokens = COALESCE($16, reasoning_tokens),
-		       image_tokens = COALESCE($17, image_tokens),
-		       audio_tokens = COALESCE($18, audio_tokens),
-		       video_tokens = COALESCE($19, video_tokens),
-		       provider_tokens = COALESCE($20, provider_tokens),
-		       cost_usd = COALESCE($21, cost_usd),
-		       cost_display = COALESCE($22, cost_display),
-		       cost_currency = COALESCE($23, cost_currency),
-		       stream_first_chunk_ms = COALESCE($24, stream_first_chunk_ms),
-		       stream_chunk_count = COALESCE($25, stream_chunk_count),
-		       stream_done_received = COALESCE($26, stream_done_received),
-		       stream_interrupted = COALESCE($27, stream_interrupted),
-		       response_checksum = COALESCE($28, response_checksum),
-		       response_preview = COALESCE($29, response_preview),
-		       -- 2026-07-22: request_body and response_body removed from main table UPDATE.
-		       -- These fields are now stored in request_logs_bodies_hot side table.
-		       failure_stage = COALESCE($30, failure_stage),
-		       failure_detail_code = COALESCE($31, failure_detail_code),
-		       transform_rule_id = COALESCE($32, transform_rule_id),
-		       egress_protocol = COALESCE($33, egress_protocol),
-		       request_preview = COALESCE($34, request_preview),
-		       transform_summary = COALESCE($35, transform_summary),
-		       -- CO-2 (2026-08-15): 'corrected' is terminal in the
-		       -- estimated → corrected state machine. A generic UPDATE
-		       -- carrying usage_source='llm' racing the correction
-		       -- backfill must not downgrade the row back to 'llm'.
-		       usage_source = CASE
-		           WHEN usage_source = 'corrected' THEN usage_source
-		           ELSE COALESCE(NULLIF($36, ''), usage_source)
-		       END,
-		       success = COALESCE($37, success),
-		       request_status = COALESCE($38, request_status),
-		       -- 2026-06-20: clear error_kind on success to prevent
-		       -- cross-request pollution (e.g. a previous failure's
-		       -- error_kind leaking into a later successful UPDATE).
-		       error_kind = CASE
-		           WHEN COALESCE($37, success) = TRUE THEN NULL
-		           ELSE COALESCE($39, error_kind)
-		       END,
-		       latency_ms = COALESCE($40, latency_ms),
-		       identity_hash = COALESCE($41, identity_hash),
-		       search_text = COALESCE($42, search_text),
-		       gw_session_id = COALESCE($43, gw_session_id),
-		       gw_task_id = COALESCE($44, gw_task_id),
-		       api_key_prefix = COALESCE($45, api_key_prefix),
-		       api_key_owner_user = COALESCE($46, api_key_owner_user),
-		       application_code = COALESCE($47, application_code),
-		       is_auto_request = COALESCE($48, is_auto_request),
-		       task_type = COALESCE($49, task_type),
-		       auto_profile = COALESCE($50, auto_profile),
-		       auto_decision = COALESCE($51::text::jsonb, auto_decision),
-		       auto_confidence = COALESCE($52, auto_confidence),
-		       work_type = COALESCE($53, work_type),
-		       credits_charged = COALESCE($54, credits_charged),
--- Round 47 compression v7 T2: parent-child chain payload.
-			       parent_request_id = COALESCE($55, parent_request_id),
-			       compression_reason = COALESCE($56, compression_reason),
-			       compression_strategy = COALESCE($57, compression_strategy),
-			       compression_meta = COALESCE($58::text::jsonb, compression_meta),
-			       -- 2026-08-19: token-band observability.
-			       token_band = COALESCE($59, token_band),
-			       -- 2026-08-24 Phase 1: outbound_body is removed from the main
-			       -- table UPDATE. The dedicated request_logs_bodies_hot
-			       -- table is the sole outbound_body owner; outbound_body is
-			       -- written via upsertRequestLogBodies in the same tx. The
-			       -- previously-bound $60 placeholder is gone; downstream
-			       -- placeholders are shifted by -1 (the column still exists
-			       -- on the table but is no longer assigned here).
-			       outbound_msg_count = COALESCE($60, outbound_msg_count),
-			       outbound_token_est = COALESCE($61, outbound_token_est),
-			       outbound_msg_hashes = COALESCE($62::text::jsonb, outbound_msg_hashes),
-			       -- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-			       quality_flags        = COALESCE($63::text[], quality_flags),
-			       quality_fix_actions  = COALESCE($64::text::jsonb, quality_fix_actions),
-			       quality_score        = COALESCE($65, quality_score),
-		   -- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
-		   -- (db/migrations/018_upstream_finish_reason.sql). The new column is
-		   -- the SOLE home for the upstream finish_reason.
-		   upstream_finish_reason = COALESCE($66, upstream_finish_reason),
-		   -- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-		   tool_calls = COALESCE($67::text::jsonb, tool_calls),
-		   -- 2026-06-26: client-supplied X-Request-Id (debug only). COALESCE so
-		   -- a late success UPDATE does not blank a value set on INSERT.
-		   client_request_id = COALESCE($68, client_request_id),
-		   -- 2026-06-30: upstream diagnostics (migration 320).
-		   upstream_status_code = COALESCE($69, upstream_status_code),
-		   client_timeout = COALESCE($70, client_timeout),
-		   client_endpoint = COALESCE($71, client_endpoint),
-		   stream_chunk_errors = COALESCE($72, stream_chunk_errors),
-		   stream_chunks_sent = COALESCE($73, stream_chunks_sent),
-		   -- 2026-07-14 (migration 341): origin metadata. First-write-wins
-		   -- (see INSERT path rationale) — middleware/origin_mw.go sets
-		   -- client_ip / client_forwarded_for on the inbound row and the
-		   -- probe workers set origin_stage / origin_actor on probe rows.
-		   client_ip            = COALESCE($74, client_ip),
-		   client_forwarded_for = COALESCE($75, client_forwarded_for),
-			   origin_stage         = COALESCE($76, origin_stage),
-			   origin_actor         = COALESCE($77, origin_actor),
-			   -- 2026-07-27: client perception fields. First-write-wins keeps
-			   -- values extracted on the inbound row when a later completion,
-			   -- failure, or disconnect update carries only partial metadata.
-			   agent_name           = COALESCE(agent_name, $78),
-			   agent_type           = COALESCE(agent_type, $79),
-			   client_protocol      = COALESCE(client_protocol, $80),
-			   virtual_client_id    = COALESCE(virtual_client_id, $81),
-			   -- V3.1 queue timestamps (migration 491): success path uses
-			   -- EmitRequestLogUpdate; without these columns t0..t9 stayed NULL
-			   -- forever after the in_progress INSERT (2026-08-22 diagnose).
-			   t0_arrived_at        = COALESCE($82, t0_arrived_at),
-			   t1_total_enqueued_at = COALESCE($83, t1_total_enqueued_at),
-			   t2_total_dequeued_at = COALESCE($84, t2_total_dequeued_at),
-			   t3_model_enqueued_at = COALESCE($85, t3_model_enqueued_at),
-			   t4_model_dequeued_at = COALESCE($86, t4_model_dequeued_at),
-			   t5_cred_enqueued_at  = COALESCE($87, t5_cred_enqueued_at),
-			   t6_cred_dequeued_at  = COALESCE($88, t6_cred_dequeued_at),
-			   t7_forward_start_at  = COALESCE($89, t7_forward_start_at),
-			   t8_response_start_at = COALESCE($90, t8_response_start_at),
-			   t9_response_end_at   = COALESCE($91, t9_response_end_at),
-			   discard_events       = COALESCE($92::text::jsonb, discard_events),
-			   -- 2026-08-22: completion UPDATE must carry routing + attachments
-			   -- (+ canonical refresh). Same class as t0..t9 gap — emitTelemetry
-			   -- sets these on reqLog then EmitRequestLogUpdate.
-			   canonical_model      = COALESCE($93, canonical_model),
-			   routing_attempts     = CASE
-			       WHEN $94::text IS NOT NULL AND $94::text <> '' AND $94::text <> 'null'
-			       THEN $94::text::jsonb
-			       ELSE routing_attempts
-			   END,
-			   routing_summary      = COALESCE($95, routing_summary),
-			attachments          = CASE
-			       WHEN $96::text IS NOT NULL AND $96::text <> '' AND $96::text <> 'null'
-			       THEN $96::text::jsonb
-				ELSE attachments
-			END
-			, customer_id = COALESCE($97, customer_id)
-			-- V6-W1.6 R8 (migration 610): request class + due time.
-			, request_class = CASE WHEN $98 IS NULL THEN request_class ELSE $98 END
-			, due_at = CASE WHEN $98 IS NULL THEN due_at ELSE $99 END
-		   WHERE request_id = $1
+	// S4 停写门控（storage.request_logs_write_enabled，与 Lite sink 同门）：关停后本段
+	// 宽表家族（request_logs_hot 主行 UPDATE 与回落 INSERT、bodies 正文、protocol/
+	// fingerprint 增补）整体跳过；usage_ledger 已在上方刷新，api_keys 计数与 outbox
+	// request-completed 会话事件在门控外照常提交。
+	if logsWrite {
+		var updated pgconn.CommandTag
+		updated, err = tx.Exec(ctx, `
+			-- 2026-07-23 migration 455: request_logs_hot PK changed from (request_id, ts)
+			-- to (request_id). With request_id as the unique key, the CTE (which found
+			-- the latest row among duplicates) is no longer needed. Direct UPDATE by
+			-- request_id is now deterministic.
+			UPDATE request_logs_hot
+			   SET client_model = COALESCE($2, client_model),
+			       outbound_model = COALESCE($3, outbound_model),
+			       credential_id = COALESCE($4, credential_id),
+			       provider_id = COALESCE($5, provider_id),
+			       canonical_id = COALESCE($6, canonical_id),
+			       client_profile = COALESCE($7, client_profile),
+			       request_mode = COALESCE($8, request_mode),
+			       affinity_hit = COALESCE($9, request_logs_hot.affinity_hit),
+			       end_user_id = COALESCE($10, end_user_id),
+			       prompt_tokens = COALESCE($11, prompt_tokens),
+			       completion_tokens = COALESCE($12, completion_tokens),
+			       total_tokens = COALESCE($13, total_tokens),
+			       cache_read_tokens = COALESCE($14, cache_read_tokens),
+			       cache_write_tokens = COALESCE($15, cache_write_tokens),
+			       -- audit-ir-multimodal (2026-07-13): multimodal token fields
+			       reasoning_tokens = COALESCE($16, reasoning_tokens),
+			       image_tokens = COALESCE($17, image_tokens),
+			       audio_tokens = COALESCE($18, audio_tokens),
+			       video_tokens = COALESCE($19, video_tokens),
+			       provider_tokens = COALESCE($20, provider_tokens),
+			       cost_usd = COALESCE($21, cost_usd),
+			       cost_display = COALESCE($22, cost_display),
+			       cost_currency = COALESCE($23, cost_currency),
+			       stream_first_chunk_ms = COALESCE($24, stream_first_chunk_ms),
+			       stream_chunk_count = COALESCE($25, stream_chunk_count),
+			       stream_done_received = COALESCE($26, stream_done_received),
+			       stream_interrupted = COALESCE($27, stream_interrupted),
+			       response_checksum = COALESCE($28, response_checksum),
+			       response_preview = COALESCE($29, response_preview),
+			       -- 2026-07-22: request_body and response_body removed from main table UPDATE.
+			       -- These fields are now stored in request_logs_bodies_hot side table.
+			       failure_stage = COALESCE($30, failure_stage),
+			       failure_detail_code = COALESCE($31, failure_detail_code),
+			       transform_rule_id = COALESCE($32, transform_rule_id),
+			       egress_protocol = COALESCE($33, egress_protocol),
+			       request_preview = COALESCE($34, request_preview),
+			       transform_summary = COALESCE($35, transform_summary),
+			       -- CO-2 (2026-08-15): 'corrected' is terminal in the
+			       -- estimated → corrected state machine. A generic UPDATE
+			       -- carrying usage_source='llm' racing the correction
+			       -- backfill must not downgrade the row back to 'llm'.
+			       usage_source = CASE
+			           WHEN usage_source = 'corrected' THEN usage_source
+			           ELSE COALESCE(NULLIF($36, ''), usage_source)
+			       END,
+			       success = COALESCE($37, success),
+			       request_status = COALESCE($38, request_status),
+			       -- 2026-06-20: clear error_kind on success to prevent
+			       -- cross-request pollution (e.g. a previous failure's
+			       -- error_kind leaking into a later successful UPDATE).
+			       error_kind = CASE
+			           WHEN COALESCE($37, success) = TRUE THEN NULL
+			           ELSE COALESCE($39, error_kind)
+			       END,
+			       latency_ms = COALESCE($40, latency_ms),
+			       identity_hash = COALESCE($41, identity_hash),
+			       search_text = COALESCE($42, search_text),
+			       gw_session_id = COALESCE($43, gw_session_id),
+			       gw_task_id = COALESCE($44, gw_task_id),
+			       api_key_prefix = COALESCE($45, api_key_prefix),
+			       api_key_owner_user = COALESCE($46, api_key_owner_user),
+			       application_code = COALESCE($47, application_code),
+			       is_auto_request = COALESCE($48, is_auto_request),
+			       task_type = COALESCE($49, task_type),
+			       auto_profile = COALESCE($50, auto_profile),
+			       auto_decision = COALESCE($51::text::jsonb, auto_decision),
+			       auto_confidence = COALESCE($52, auto_confidence),
+			       work_type = COALESCE($53, work_type),
+			       credits_charged = COALESCE($54, credits_charged),
+	-- Round 47 compression v7 T2: parent-child chain payload.
+				       parent_request_id = COALESCE($55, parent_request_id),
+				       compression_reason = COALESCE($56, compression_reason),
+				       compression_strategy = COALESCE($57, compression_strategy),
+				       compression_meta = COALESCE($58::text::jsonb, compression_meta),
+				       -- 2026-08-19: token-band observability.
+				       token_band = COALESCE($59, token_band),
+				       -- 2026-08-24 Phase 1: outbound_body is removed from the main
+				       -- table UPDATE. The dedicated request_logs_bodies_hot
+				       -- table is the sole outbound_body owner; outbound_body is
+				       -- written via upsertRequestLogBodies in the same tx. The
+				       -- previously-bound $60 placeholder is gone; downstream
+				       -- placeholders are shifted by -1 (the column still exists
+				       -- on the table but is no longer assigned here).
+				       outbound_msg_count = COALESCE($60, outbound_msg_count),
+				       outbound_token_est = COALESCE($61, outbound_token_est),
+				       outbound_msg_hashes = COALESCE($62::text::jsonb, outbound_msg_hashes),
+				       -- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+				       quality_flags        = COALESCE($63::text[], quality_flags),
+				       quality_fix_actions  = COALESCE($64::text::jsonb, quality_fix_actions),
+				       quality_score        = COALESCE($65, quality_score),
+			   -- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
+			   -- (db/migrations/018_upstream_finish_reason.sql). The new column is
+			   -- the SOLE home for the upstream finish_reason.
+			   upstream_finish_reason = COALESCE($66, upstream_finish_reason),
+			   -- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
+			   tool_calls = COALESCE($67::text::jsonb, tool_calls),
+			   -- 2026-06-26: client-supplied X-Request-Id (debug only). COALESCE so
+			   -- a late success UPDATE does not blank a value set on INSERT.
+			   client_request_id = COALESCE($68, client_request_id),
+			   -- 2026-06-30: upstream diagnostics (migration 320).
+			   upstream_status_code = COALESCE($69, upstream_status_code),
+			   client_timeout = COALESCE($70, client_timeout),
+			   client_endpoint = COALESCE($71, client_endpoint),
+			   stream_chunk_errors = COALESCE($72, stream_chunk_errors),
+			   stream_chunks_sent = COALESCE($73, stream_chunks_sent),
+			   -- 2026-07-14 (migration 341): origin metadata. First-write-wins
+			   -- (see INSERT path rationale) — middleware/origin_mw.go sets
+			   -- client_ip / client_forwarded_for on the inbound row and the
+			   -- probe workers set origin_stage / origin_actor on probe rows.
+			   client_ip            = COALESCE($74, client_ip),
+			   client_forwarded_for = COALESCE($75, client_forwarded_for),
+				   origin_stage         = COALESCE($76, origin_stage),
+				   origin_actor         = COALESCE($77, origin_actor),
+				   -- 2026-07-27: client perception fields. First-write-wins keeps
+				   -- values extracted on the inbound row when a later completion,
+				   -- failure, or disconnect update carries only partial metadata.
+				   agent_name           = COALESCE(agent_name, $78),
+				   agent_type           = COALESCE(agent_type, $79),
+				   client_protocol      = COALESCE(client_protocol, $80),
+				   virtual_client_id    = COALESCE(virtual_client_id, $81),
+				   -- V3.1 queue timestamps (migration 491): success path uses
+				   -- EmitRequestLogUpdate; without these columns t0..t9 stayed NULL
+				   -- forever after the in_progress INSERT (2026-08-22 diagnose).
+				   t0_arrived_at        = COALESCE($82, t0_arrived_at),
+				   t1_total_enqueued_at = COALESCE($83, t1_total_enqueued_at),
+				   t2_total_dequeued_at = COALESCE($84, t2_total_dequeued_at),
+				   t3_model_enqueued_at = COALESCE($85, t3_model_enqueued_at),
+				   t4_model_dequeued_at = COALESCE($86, t4_model_dequeued_at),
+				   t5_cred_enqueued_at  = COALESCE($87, t5_cred_enqueued_at),
+				   t6_cred_dequeued_at  = COALESCE($88, t6_cred_dequeued_at),
+				   t7_forward_start_at  = COALESCE($89, t7_forward_start_at),
+				   t8_response_start_at = COALESCE($90, t8_response_start_at),
+				   t9_response_end_at   = COALESCE($91, t9_response_end_at),
+				   discard_events       = COALESCE($92::text::jsonb, discard_events),
+				   -- 2026-08-22: completion UPDATE must carry routing + attachments
+				   -- (+ canonical refresh). Same class as t0..t9 gap — emitTelemetry
+				   -- sets these on reqLog then EmitRequestLogUpdate.
+				   canonical_model      = COALESCE($93, canonical_model),
+				   routing_attempts     = CASE
+				       WHEN $94::text IS NOT NULL AND $94::text <> '' AND $94::text <> 'null'
+				       THEN $94::text::jsonb
+				       ELSE routing_attempts
+				   END,
+				   routing_summary      = COALESCE($95, routing_summary),
+				attachments          = CASE
+				       WHEN $96::text IS NOT NULL AND $96::text <> '' AND $96::text <> 'null'
+				       THEN $96::text::jsonb
+					ELSE attachments
+				END
+				, customer_id = COALESCE($97, customer_id)
+				-- V6-W1.6 R8 (migration 610): request class + due time.
+				, request_class = CASE WHEN $98 IS NULL THEN request_class ELSE $98 END
+				, due_at = CASE WHEN $98 IS NULL THEN due_at ELSE $99 END
+			   WHERE request_id = $1
 
-		     AND NOT (
-				(request_logs_hot.request_status = 'failure' AND NOT (
-					COALESCE($37, FALSE) = TRUE AND $38 = 'success'
-				))
-				OR (
-					(request_logs_hot.success = TRUE
-					 OR request_logs_hot.request_status = 'success')
-					AND NOT (
-						COALESCE($37, FALSE) = TRUE
-						AND $38 = 'success'
+			     AND NOT (
+					(request_logs_hot.request_status = 'failure' AND NOT (
+						COALESCE($37, FALSE) = TRUE AND $38 = 'success'
+					))
+					OR (
+						(request_logs_hot.success = TRUE
+						 OR request_logs_hot.request_status = 'success')
+						AND NOT (
+							COALESCE($37, FALSE) = TRUE
+							AND $38 = 'success'
+						)
 					)
 				)
-			)
-		 RETURNING request_logs_hot.ts
-`,
-		entry.RequestID,
-		entry.ClientModel,
-		entry.OutboundModel,
-		entry.CredentialID,
-		entry.ProviderID,
-		entry.CanonicalID,
-		entry.ClientProfile,
-		entry.RequestMode,
-		entry.AffinityHit,
-		entry.EndUserID,
-		entry.PromptTokens,
-		entry.CompletionTokens,
-		totalTokens,
-		entry.CacheReadTokens,
-		entry.CacheWriteTokens,
-		// audit-ir-multimodal (2026-07-13): multimodal token fields
-		entry.ReasoningTokens,
-		entry.ImageTokens,
-		entry.AudioTokens,
-		entry.VideoTokens,
-		entry.ProviderTokens,
-		entry.CostUSD,
-		entry.CostDisplay,
-		entry.CostCurrency,
-		entry.StreamFirstChunkMs,
-		entry.StreamChunkCount,
-		entry.StreamDoneReceived,
-		entry.StreamInterrupted,
-		entry.ResponseChecksum,
-		entry.ResponsePreview,
-		// 2026-07-22: request_body and response_body removed from main table UPDATE.
-		// These fields are now stored in request_logs_bodies_hot side table.
-		entry.FailureStage,
-		entry.FailureDetailCode,
-		entry.TransformRuleID,
-		entry.EgressProtocol,
-		entry.RequestPreview,
-		entry.TransformSummary,
-		nonEmptyPtr(entry.UsageSource, ""),
-		boolptr(entry.Success),
-		entry.RequestStatus,
-		entry.ErrorKind,
-		entry.LatencyMs,
-		entry.IdentityHash,
-		searchText(entry),
-		entry.GwSessionID,
-		entry.GwTaskID,
-		entry.APIKeyPrefix,
-		entry.APIKeyOwnerUser,
-		entry.ApplicationCode,
-		entry.IsAutoRequest,
-		entry.TaskType,
-		entry.AutoProfile,
-		strPtrToJSON(entry.AutoDecision),
-		entry.AutoConfidence,
-		entry.WorkType,
-		entry.CreditsCharged,
-		// Round 47 compression v7 T2: parent-child chain payload.
-		entry.ParentRequestID,
-		entry.CompressionReason,
-		entry.CompressionStrategy,
-		string(jsonOrNull(entry.CompressionMeta)),
-		// 2026-08-19: token-band observability.
-		entry.TokenBand,
-		// 2026-08-24 Phase 1: outbound_body is removed from the main table UPDATE
-		// bind list. The dedicated request_logs_bodies_hot table is the sole
-		// outbound_body store; outbound_body is written via
-		// upsertRequestLogBodies below (same transaction). This re-aligns the
-		// placeholders: what was previously $60 (outbound_body) is now removed,
-		// and outbound_msg_count / outbound_token_est / outbound_msg_hashes
-		// (below) shift to $60/$61/$62. Subsequent placeholders (quality_flags
-		// → $63 etc.) are also shifted by -1.
-		entry.OutboundMsgCount,
-		entry.OutboundTokenEst,
-		string(jsonOrNull(entry.OutboundMsgHashes)),
-		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		// quality_flags is always encoded as a PostgreSQL text array;
-		// quality_fix_actions is JSONB.
-		qualityFlagsArg(entry.QualityFlags),
-		string(qualityActionsArgStr(entry.QualityFixActions)),
-		entry.QualityScore,
-		// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
-		// (db/migrations/018_upstream_finish_reason.sql). The new column is
-		// the SOLE home for the upstream finish_reason.
-		entry.UpstreamFinishReason,
-		// 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-		string(jsonOrNull(entry.ToolCalls)),
-		// 2026-06-26: client-supplied X-Request-Id (debug only).
-		entry.ClientRequestID,
-		// 2026-06-30: upstream diagnostics (migration 320).
-		entry.UpstreamStatusCode,
-		entry.ClientTimeout,
-		entry.ClientEndpoint,
-		entry.StreamChunkErrors,
-		entry.StreamChunksSent,
-		// 2026-07-14 (migration 341): client-side origin.
-		entry.ClientIP,
-		entry.ClientForwardedFor,
-		entry.OriginStage,
-		entry.OriginActor,
-		entry.AgentName,
-		entry.AgentType,
-		entry.ClientProtocol,
-		entry.VirtualClientID,
-		entry.T0ArrivedAt,
-		entry.T1TotalEnqueuedAt,
-		entry.T2TotalDequeuedAt,
-		entry.T3ModelEnqueuedAt,
-		entry.T4ModelDequeuedAt,
-		entry.T5CredEnqueuedAt,
-		entry.T6CredDequeuedAt,
-		entry.T7ForwardStartAt,
-		entry.T8ResponseStartAt,
-		entry.T9ResponseEndAt,
-		nullableJSONArg(entry.DiscardEvents),
-		entry.CanonicalModel,
-		nullableJSONArg(entry.RoutingAttempts),
-		entry.RoutingSummary,
-		attachmentsArgStr(entry.Attachments),
-		entry.CustomerID,
-		// V6-W1.6 R8 (migration 610): a nil $98 preserves both fields;
-		// otherwise $98/$99 are written as one invariant-preserving pair.
-		entry.RequestClass,
-		entry.DueAt,
-	)
+			 RETURNING request_logs_hot.ts
+	`,
+			entry.RequestID,
+			entry.ClientModel,
+			entry.OutboundModel,
+			entry.CredentialID,
+			entry.ProviderID,
+			entry.CanonicalID,
+			entry.ClientProfile,
+			entry.RequestMode,
+			entry.AffinityHit,
+			entry.EndUserID,
+			entry.PromptTokens,
+			entry.CompletionTokens,
+			totalTokens,
+			entry.CacheReadTokens,
+			entry.CacheWriteTokens,
+			// audit-ir-multimodal (2026-07-13): multimodal token fields
+			entry.ReasoningTokens,
+			entry.ImageTokens,
+			entry.AudioTokens,
+			entry.VideoTokens,
+			entry.ProviderTokens,
+			entry.CostUSD,
+			entry.CostDisplay,
+			entry.CostCurrency,
+			entry.StreamFirstChunkMs,
+			entry.StreamChunkCount,
+			entry.StreamDoneReceived,
+			entry.StreamInterrupted,
+			entry.ResponseChecksum,
+			entry.ResponsePreview,
+			// 2026-07-22: request_body and response_body removed from main table UPDATE.
+			// These fields are now stored in request_logs_bodies_hot side table.
+			entry.FailureStage,
+			entry.FailureDetailCode,
+			entry.TransformRuleID,
+			entry.EgressProtocol,
+			entry.RequestPreview,
+			entry.TransformSummary,
+			nonEmptyPtr(entry.UsageSource, ""),
+			boolptr(entry.Success),
+			entry.RequestStatus,
+			entry.ErrorKind,
+			entry.LatencyMs,
+			entry.IdentityHash,
+			searchText(entry),
+			entry.GwSessionID,
+			entry.GwTaskID,
+			entry.APIKeyPrefix,
+			entry.APIKeyOwnerUser,
+			entry.ApplicationCode,
+			entry.IsAutoRequest,
+			entry.TaskType,
+			entry.AutoProfile,
+			strPtrToJSON(entry.AutoDecision),
+			entry.AutoConfidence,
+			entry.WorkType,
+			entry.CreditsCharged,
+			// Round 47 compression v7 T2: parent-child chain payload.
+			entry.ParentRequestID,
+			entry.CompressionReason,
+			entry.CompressionStrategy,
+			string(jsonOrNull(entry.CompressionMeta)),
+			// 2026-08-19: token-band observability.
+			entry.TokenBand,
+			// 2026-08-24 Phase 1: outbound_body is removed from the main table UPDATE
+			// bind list. The dedicated request_logs_bodies_hot table is the sole
+			// outbound_body store; outbound_body is written via
+			// upsertRequestLogBodies below (same transaction). This re-aligns the
+			// placeholders: what was previously $60 (outbound_body) is now removed,
+			// and outbound_msg_count / outbound_token_est / outbound_msg_hashes
+			// (below) shift to $60/$61/$62. Subsequent placeholders (quality_flags
+			// → $63 etc.) are also shifted by -1.
+			entry.OutboundMsgCount,
+			entry.OutboundTokenEst,
+			string(jsonOrNull(entry.OutboundMsgHashes)),
+			// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+			// quality_flags is always encoded as a PostgreSQL text array;
+			// quality_fix_actions is JSONB.
+			qualityFlagsArg(entry.QualityFlags),
+			string(qualityActionsArgStr(entry.QualityFixActions)),
+			entry.QualityScore,
+			// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
+			// (db/migrations/018_upstream_finish_reason.sql). The new column is
+			// the SOLE home for the upstream finish_reason.
+			entry.UpstreamFinishReason,
+			// 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
+			string(jsonOrNull(entry.ToolCalls)),
+			// 2026-06-26: client-supplied X-Request-Id (debug only).
+			entry.ClientRequestID,
+			// 2026-06-30: upstream diagnostics (migration 320).
+			entry.UpstreamStatusCode,
+			entry.ClientTimeout,
+			entry.ClientEndpoint,
+			entry.StreamChunkErrors,
+			entry.StreamChunksSent,
+			// 2026-07-14 (migration 341): client-side origin.
+			entry.ClientIP,
+			entry.ClientForwardedFor,
+			entry.OriginStage,
+			entry.OriginActor,
+			entry.AgentName,
+			entry.AgentType,
+			entry.ClientProtocol,
+			entry.VirtualClientID,
+			entry.T0ArrivedAt,
+			entry.T1TotalEnqueuedAt,
+			entry.T2TotalDequeuedAt,
+			entry.T3ModelEnqueuedAt,
+			entry.T4ModelDequeuedAt,
+			entry.T5CredEnqueuedAt,
+			entry.T6CredDequeuedAt,
+			entry.T7ForwardStartAt,
+			entry.T8ResponseStartAt,
+			entry.T9ResponseEndAt,
+			nullableJSONArg(entry.DiscardEvents),
+			entry.CanonicalModel,
+			nullableJSONArg(entry.RoutingAttempts),
+			entry.RoutingSummary,
+			attachmentsArgStr(entry.Attachments),
+			entry.CustomerID,
+			// V6-W1.6 R8 (migration 610): a nil $98 preserves both fields;
+			// otherwise $98/$99 are written as one invariant-preserving pair.
+			entry.RequestClass,
+			entry.DueAt,
+		)
 
-	if err != nil {
-		return err
-	}
-	if updated.RowsAffected() == 0 {
-		var exists bool
-		if err := tx.QueryRow(ctx, `
-			SELECT EXISTS (
-				SELECT 1 FROM request_logs_hot WHERE request_id = $1
-			)
-		`, entry.RequestID).Scan(&exists); err != nil {
+		if err != nil {
 			return err
 		}
-		if rbErr := tx.Rollback(ctx); rbErr != nil {
-			slog.Warn("telemetry update rollback failed", "request_id", entry.RequestID, "error", rbErr)
+		if updated.RowsAffected() == 0 {
+			var exists bool
+			if err := tx.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM request_logs_hot WHERE request_id = $1
+				)
+			`, entry.RequestID).Scan(&exists); err != nil {
+				return err
+			}
+			if rbErr := tx.Rollback(ctx); rbErr != nil {
+				slog.Warn("telemetry update rollback failed", "request_id", entry.RequestID, "error", rbErr)
+			}
+			if exists {
+				return nil
+			}
+			fallback := *entry
+			fallback.Op = RequestLogInsert
+			return c.insertRequestLog(&fallback)
 		}
-		if exists {
-			return nil
-		}
-		fallback := *entry
-		fallback.Op = RequestLogInsert
-		return c.insertRequestLog(&fallback)
-	}
 
-	if err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, stringValue(entry.ApplicationCode),
-		strPtrToJSON(entry.RequestBody),
-		strPtrToJSON(entry.ResponseBody),
-		jsonOrNull(entry.OutboundBody),
-	); err != nil {
-		return err
-	}
-	if err := upsertProtocolMetadata(ctx, tx, entry); err != nil {
-		return err
-	}
-	if err := persistSystemFingerprint(ctx, tx, entry); err != nil {
-		return err
+		if err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, stringValue(entry.ApplicationCode),
+			strPtrToJSON(entry.RequestBody),
+			strPtrToJSON(entry.ResponseBody),
+			jsonOrNull(entry.OutboundBody),
+		); err != nil {
+			return err
+		}
+		if err := upsertProtocolMetadata(ctx, tx, entry); err != nil {
+			return err
+		}
+		if err := persistSystemFingerprint(ctx, tx, entry); err != nil {
+			return err
+		}
 	}
 
 	if entry.APIKeyID != nil && *entry.APIKeyID > 0 && entry.Success {
@@ -2287,7 +2318,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	// INSERT path — see insertRequestLog for the degrade semantics. The
 	// RowsAffected==0 fallback above re-enters insertRequestLog, which
 	// claims on its own.
-	if shouldClaimFinalSuccess(entry) {
+	if logsWrite && shouldClaimFinalSuccess(entry) {
 		claimSessionFinalSuccess(ctx, c, tx, entry.RequestID)
 	}
 	if c.outboxWriter != nil && entry.GwSessionID != nil && *entry.GwSessionID != "" && requestLogEntryTerminal(entry) {
