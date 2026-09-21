@@ -1556,14 +1556,18 @@ func (e *Executor) executeOpenAI(
 							ResponseBody: append([]byte(nil), respBody...),
 						})
 					}
-					e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-responses"), respBody)
-					copyNonStreamResponseHeaders(params.W.Header(), resp.Header, len(respBody))
-					params.W.WriteHeader(resp.StatusCode)
 					// paramledger (2026-09-22): Responses 响应对象回显
 					// reasoning.effort——出站被降级/归一时，把回显值还原为
 					// 客户端原始值再写回。
-					respBody = e.restoreClientEcho(params, respBody)
-					_, _ = params.W.Write(e.redactClientResponse(params, respBody))
+					// R51 (2026-09-21): restore/redact 都可能改写 body 长度，
+					// 必须在 copyNonStreamResponseHeaders 计算 Content-Length
+					// 之前完成全部改写；此前先按上游 body 定长再改写，
+					// net/http 按旧定长截断，客户端拿到残缺 JSON。
+					respBody = e.redactClientResponse(params, e.restoreClientEcho(params, respBody))
+					e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-responses"), respBody)
+					copyNonStreamResponseHeaders(params.W.Header(), resp.Header, len(respBody))
+					params.W.WriteHeader(resp.StatusCode)
+					_, _ = params.W.Write(respBody)
 
 				}
 				recordAttemptSuccess(0)
