@@ -54,6 +54,13 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		SafetyIdentifier   string          `json:"safety_identifier,omitempty"`
 		PreviousResponseID string          `json:"previous_response_id,omitempty"`
 		Truncation         string          `json:"truncation,omitempty"`
+
+		// 2026-09-21 audit (P1-1, P2-3, P2-4): promote previously-Extension-only
+		// fields to first-class IR fields so they can be type-checked, normalized,
+		// and emitted deterministically.
+		RepetitionPenalty *float64        `json:"repetition_penalty,omitempty"`
+		MaskSensitiveInfo *bool           `json:"mask_sensitive_info,omitempty"`
+		BotSetting        json.RawMessage `json:"bot_setting,omitempty"`
 	}
 
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -72,6 +79,8 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		"store": true, "service_tier": true, "prediction": true, "verbosity": true,
 		"web_search_options": true, "prompt_cache_key": true, "safety_identifier": true,
 		"previous_response_id": true, "truncation": true,
+		// 2026-09-21 audit: promoted to first-class IR fields.
+		"repetition_penalty": true, "mask_sensitive_info": true, "bot_setting": true,
 	}
 
 	extensions := make(map[string]json.RawMessage)
@@ -105,6 +114,8 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		SafetyIdentifier:   src.SafetyIdentifier,
 		PreviousResponseID: src.PreviousResponseID,
 		Truncation:         src.Truncation,
+		RepetitionPenalty:  src.RepetitionPenalty,
+		MaskSensitiveInfo:  src.MaskSensitiveInfo,
 		Extensions:         extensions, // P0 fix: preserve unknown fields
 	}
 
@@ -150,6 +161,14 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		var wso WebSearchOptions
 		if err := json.Unmarshal(src.WebSearchOptions, &wso); err == nil {
 			ir.WebSearchOptions = &wso
+		}
+	}
+
+	// 2026-09-21 audit (P2-4): parse bot_setting into typed IR fields.
+	if src.BotSetting != nil && string(src.BotSetting) != "null" {
+		var bots []BotSetting
+		if err := json.Unmarshal(src.BotSetting, &bots); err == nil {
+			ir.BotSetting = bots
 		}
 	}
 

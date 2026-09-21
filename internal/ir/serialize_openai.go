@@ -153,6 +153,29 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 		out["truncation"] = req.Truncation
 	}
 
+	// 2026-09-21 audit (P1-1, P2-3, P2-4): emit first-class IR fields.
+	//
+	// These are written unconditionally to the OpenAI-Chat-shaped body; the
+	// dialect-aware guard in extensions_restore (paramreg) will strip them
+	// when the target dialect is not in the Dialects list, so the field will
+	// only reach MiniMax/vLLM-family upstreams.
+	if req.RepetitionPenalty != nil {
+		out["repetition_penalty"] = *req.RepetitionPenalty
+	}
+	if req.MaskSensitiveInfo != nil {
+		out["mask_sensitive_info"] = *req.MaskSensitiveInfo
+	}
+	if len(req.BotSetting) > 0 {
+		bots := make([]map[string]any, 0, len(req.BotSetting))
+		for _, b := range req.BotSetting {
+			bots = append(bots, map[string]any{
+				"bot_name": b.BotName,
+				"content":  b.Content,
+			})
+		}
+		out["bot_setting"] = bots
+	}
+
 	// Messages (system prompt becomes first message)
 	messages := serializeOpenAIMessages(req)
 	// 2026-09-18 P5（MiniMax thinking 事故收尾）: Anthropic/Gemini 入向的
