@@ -571,7 +571,38 @@ func (c *RequestLogContext) EnsureCaptured() {
 	if c.meta.SystemPrompt == "" && len(c.Body) > 0 {
 		c.meta.SystemPrompt = agenttelemetry.ExtractSystemPromptFromBody(c.Body, c.Request.URL.Path)
 	}
+	// 2026-09-21 audit (P1: client detection parity for domestic coding
+	// agents): when header-based detection produced an unknown / generic
+	// name and the buffered body carries a client-specific marker
+	// (metadata.zcode_version / metadata.client_type / metadata.deepseek_*
+	// / model=deepseek-* / zcode_* tools / read_file tools), override the
+	// AgentName with the body-derived canonical name. This is the third
+	// tier of the detection chain (header → system-prompt → body-marker).
+	if c.meta.AgentName == "" || shouldOverrideWithBodyMarker(c.meta.AgentName) {
+		if marker := agenttelemetry.ExtractClientTypeFromBody(c.Body, c.Request.Header.Get("X-Code-Session-Id")); marker != "" {
+			c.meta.AgentName = marker
+		}
+	}
 	c.refreshMeta()
+}
+
+// shouldOverrideWithBodyMarker reports whether the header-derived AgentName
+// is weak enough that a body-marker-based identification should win.
+//
+// Mirrors the policy in request_meta.go:shouldOverrideAgentName — generic
+// HTTP client libraries (go-client / python-client / curl / postman /
+// insomnia) and "unknown" don't tell us anything about the AI agent using
+// them, while a body marker almost always does.
+//
+// 2026-09-21 audit.
+func shouldOverrideWithBodyMarker(headerName string) bool {
+	switch headerName {
+	case "", "unknown",
+		"go-client", "python-client",
+		"curl", "postman", "insomnia":
+		return true
+	}
+	return false
 }
 
 // recordMetadataLoss reports request metadata dropped by a marshal/unmarshal

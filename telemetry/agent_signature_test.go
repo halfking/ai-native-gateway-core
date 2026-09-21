@@ -170,6 +170,11 @@ func TestExtractAgentNameAllThreeSignatures(t *testing.T) {
 		{"ZCode/1.2.3", "zcode"},
 		{"OpenCode/0.5.0", "opencode"},
 		{"opencode-cli/2.0", "opencode"},
+		// 2026-09-21 audit: domestic coding-agent clients.
+		{"MiniMax-Code/1.0.0 (macos; arm64)", "minimax-code"},
+		{"DeepSeek-Code/2.1.0-beta", "deepseek-code"},
+		{"DeepSeek-IDE/2.0.0 (windows; amd64)", "deepseek-code"},
+		{"deepseek-cli/0.3.1 (darwin; arm64)", "deepseek-code"},
 	}
 	for _, tc := range cases {
 		t.Run(strings.ReplaceAll(tc.ua, "/", "_"), func(t *testing.T) {
@@ -177,6 +182,135 @@ func TestExtractAgentNameAllThreeSignatures(t *testing.T) {
 			req.Header.Set("User-Agent", tc.ua)
 			if got := ExtractAgentName(req); got != tc.want {
 				t.Errorf("ExtractAgentName(%q) = %q, want %q", tc.ua, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAgentSignatureMiniMaxCode verifies the MiniMax Code CLI is correctly
+// identified by both the User-Agent header and the canonical system-prompt
+// self-description.
+//
+// 2026-09-21 audit (P1: client detection parity for domestic coding agents).
+func TestAgentSignatureMiniMaxCode(t *testing.T) {
+	ResetAgentPatterns()
+	t.Cleanup(ResetAgentPatterns)
+
+	t.Run("header path", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/v1/messages", nil)
+		req.Header.Set("User-Agent", "MiniMax-Code/1.0.0 (macos; arm64) AppleWebKit/537.36")
+		if got := ExtractAgentName(req); got != "minimax-code" {
+			t.Fatalf("ExtractAgentName = %q, want %q", got, "minimax-code")
+		}
+	})
+
+	t.Run("system prompt path", func(t *testing.T) {
+		prompt := "You are MiniMax Code, Anthropic's official CLI for MiniMax.\nYou are an interactive coding agent."
+		if got := DetectAgentFromSystemPrompt(prompt); got != "minimax-code" {
+			t.Fatalf("DetectAgentFromSystemPrompt = %q, want %q", got, "minimax-code")
+		}
+	})
+
+	t.Run("system prompt: cli variant", func(t *testing.T) {
+		prompt := "Sub-agent for MiniMax-Code CLI workflow automation."
+		if got := DetectAgentFromSystemPrompt(prompt); got != "minimax-code" {
+			t.Fatalf("DetectAgentFromSystemPrompt = %q, want %q", got, "minimax-code")
+		}
+	})
+
+	t.Run("system prompt: by-anthropic variant", func(t *testing.T) {
+		prompt := "You are MiniMax Code by Anthropic. Powered by Claude."
+		if got := DetectAgentFromSystemPrompt(prompt); got != "minimax-code" {
+			t.Fatalf("DetectAgentFromSystemPrompt = %q, want %q", got, "minimax-code")
+		}
+	})
+}
+
+// TestAgentSignatureDeepSeekCode verifies the DeepSeek Code CLI / IDE is
+// correctly identified.
+//
+// 2026-09-21 audit (P1: client detection parity for domestic coding agents).
+func TestAgentSignatureDeepSeekCode(t *testing.T) {
+	ResetAgentPatterns()
+	t.Cleanup(ResetAgentPatterns)
+
+	t.Run("header path: deepseek-code", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+		req.Header.Set("User-Agent", "DeepSeek-Code/1.0.0 (linux; x86_64)")
+		if got := ExtractAgentName(req); got != "deepseek-code" {
+			t.Fatalf("ExtractAgentName = %q, want %q", got, "deepseek-code")
+		}
+	})
+
+	t.Run("header path: deepseek-ide", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+		req.Header.Set("User-Agent", "DeepSeek-IDE/2.0.0")
+		if got := ExtractAgentName(req); got != "deepseek-code" {
+			t.Fatalf("ExtractAgentName = %q, want %q", got, "deepseek-code")
+		}
+	})
+
+	t.Run("header path: deepseek-cli", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+		req.Header.Set("User-Agent", "deepseek-cli/0.3.1")
+		if got := ExtractAgentName(req); got != "deepseek-code" {
+			t.Fatalf("ExtractAgentName = %q, want %q", got, "deepseek-code")
+		}
+	})
+
+	t.Run("system prompt: deepseek-coder legacy", func(t *testing.T) {
+		prompt := "You are DeepSeek-Coder, a code-focused AI assistant."
+		if got := DetectAgentFromSystemPrompt(prompt); got != "deepseek-code" {
+			t.Fatalf("DetectAgentFromSystemPrompt = %q, want %q", got, "deepseek-code")
+		}
+	})
+
+	t.Run("system prompt: deepseek ide", func(t *testing.T) {
+		prompt := "You are DeepSeek IDE coding assistant. Help with software engineering tasks."
+		if got := DetectAgentFromSystemPrompt(prompt); got != "deepseek-code" {
+			t.Fatalf("DetectAgentFromSystemPrompt = %q, want %q", got, "deepseek-code")
+		}
+	})
+
+	t.Run("system prompt: deepseek v3", func(t *testing.T) {
+		prompt := "You are deepseek-v3 coding assistant."
+		if got := DetectAgentFromSystemPrompt(prompt); got != "deepseek-code" {
+			t.Fatalf("DetectAgentFromSystemPrompt = %q, want %q", got, "deepseek-code")
+		}
+	})
+}
+
+// TestAgentSignatureDomesticBeforeClaudeFallback ensures the domestic
+// coding-agent patterns register ahead of the bare Claude fallback. A
+// MiniMax Code system prompt that mentions Claude (it powers MiniMax Code
+// under the hood) must still resolve to "minimax-code", not "claude".
+//
+// 2026-09-21 audit (P1: client detection parity for domestic coding agents).
+func TestAgentSignatureDomesticBeforeClaudeFallback(t *testing.T) {
+	ResetAgentPatterns()
+	t.Cleanup(ResetAgentPatterns)
+
+	cases := []struct {
+		name   string
+		prompt string
+		want   string
+	}{
+		{
+			"MiniMax-Code before Claude",
+			"You are MiniMax Code, Anthropic's official CLI for MiniMax. Powered by Claude inference.",
+			"minimax-code",
+		},
+		{
+			"DeepSeek-Code before Claude",
+			"You are DeepSeek-Code CLI, an interactive coding agent. Internally we call Claude for some tasks.",
+			"deepseek-code",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := DetectAgentFromSystemPrompt(tc.prompt); got != tc.want {
+				t.Fatalf("DetectAgentFromSystemPrompt(%q) = %q, want %q",
+					tc.prompt, got, tc.want)
 			}
 		})
 	}
