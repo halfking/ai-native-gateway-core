@@ -662,6 +662,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 	"startup/733_session_turn_details.sql":                                          sessionTurnDetailsMigration733,
 	"startup/734_request_logs_view_details_join.sql":                                 requestLogsViewDetailsJoinMigration734,
+	"startup/735_models_canonical_active_folded_unique.sql":                          canonicalFoldedUniqueMigration735,
 }
 
 // 临时存放 embed SQL 的目录（运行时写入）
