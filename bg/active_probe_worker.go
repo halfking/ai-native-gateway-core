@@ -247,9 +247,22 @@ func (w *ActiveProbeWorker) runLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			w.processOne(ctx, task)
+			w.processOneRecovered(ctx, task)
 		}
 	}
+}
+
+// processOneRecovered 守护单个探测任务（R51 审计 P2：runLoop goroutine 原先
+// 无任何 recover，单次 panic 即整进程崩溃）——panic 记日志后 worker 继续
+// 消费队列，其余 in-flight worker 不受影响。
+func (w *ActiveProbeWorker) processOneRecovered(ctx context.Context, task probeTask) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("active_probe worker: task panic recovered",
+				"credential_id", task.CredID, "model", task.Model, "recover", rec)
+		}
+	}()
+	w.processOne(ctx, task)
 }
 
 // processOne handles a single (credID, model) probe cycle: it pulls the

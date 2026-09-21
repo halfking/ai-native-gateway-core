@@ -132,8 +132,7 @@ func (w *AssetWatcher) run(ctx context.Context) {
 	defer close(w.done)
 
 	// Initial sync on startup so the Hub is populated immediately.
-	//nolint:errcheck // best-effort; logged inside SyncOnce
-	w.SyncOnce(ctx)
+	w.syncRecovered(ctx)
 
 	tk := time.NewTicker(w.tick)
 	defer tk.Stop()
@@ -144,8 +143,19 @@ func (w *AssetWatcher) run(ctx context.Context) {
 		case <-w.stop:
 			return
 		case <-tk.C:
-			//nolint:errcheck // best-effort; logged inside SyncOnce
-			w.SyncOnce(ctx)
+			w.syncRecovered(ctx)
 		}
 	}
+}
+
+// syncRecovered 守护单轮 SyncOnce（R51 审计 P2：run goroutine 原先无任何
+// recover，单次 panic 即整进程崩溃）——panic 记日志后 tick 循环继续。
+func (w *AssetWatcher) syncRecovered(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("apihub watcher: sync panic recovered", "recover", rec)
+		}
+	}()
+	//nolint:errcheck // best-effort; logged inside SyncOnce
+	w.SyncOnce(ctx)
 }
