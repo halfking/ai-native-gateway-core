@@ -123,10 +123,14 @@ function gotoSection(s: DetailSection) {
   // alone can drop the param when previous queries (e.g. mode=session-turns)
   // overwrite the requestId-derived path and the router resolves to the
   // dashboard root.
+  // 2026-09-19: Only preserve tenant query param to avoid carrying over
+  // stale query params that might interfere with routing.
+  const query: Record<string, string> = { mode: 'request', tab: s }
+  if (route.query.tenant) query.tenant = String(route.query.tenant)
   void router.replace({
     name: 'request-detail',
     params: { requestId: requestId.value },
-    query: { ...route.query, mode: 'request', tab: s },
+    query,
   })
 }
 
