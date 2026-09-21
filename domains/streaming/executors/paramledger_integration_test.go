@@ -6,6 +6,7 @@ package executors
 // 覆盖 native responses 非流式主链路与账本记账。
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -147,5 +148,73 @@ func TestParamLedgerChatEffortClampRecorded(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("clamp adjustment missing: %+v", entry.Adjustments)
+	}
+}
+
+// R51（2026-09-21）回归：非流式回显还原会改写 body（medium→high，-2 字节），
+// Content-Length 必须按最终 body 计算。此前先按上游 body 定长再改写，
+// net/http 按旧定长截断，客户端拿到残缺 JSON。用真实 HTTP 服务
+// （会校验定长）端到端验证。
+func TestParamLedgerNativeResponsesRestoreContentLengthConsistent(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// 上游回显降档后的 "medium"；还原为客户端原始 "high" 后 body
+		// 变短 2 字节。
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","model":"grok-4","status":"completed","reasoning":{"effort":"medium","summary":"auto"},"output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hi"}]}]}`))
+	}))
+	defer upstream.Close()
+
+	var handlerErr error
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		exec, ledger := newParamLedgerExecutor()
+		ledger.Record("req-cl-1", paramledger.Adjustment{
+			Field: "reasoning.effort", Original: "high", Sent: "medium",
+			Action: paramledger.ActionClamp, Reason: "test",
+		})
+		cand := provider.Candidate{
+			CredentialID: 101, ProviderID: 7, BaseURL: upstream.URL,
+			Protocol: "openai-responses", CatalogCode: "xai",
+			SupportsNativeResponses: true,
+			RawModel:                "grok-4", Routable: true, LifecycleStatus: "active",
+			AvailabilityState: "ready", QuotaState: "ok", CircuitState: "closed",
+			APIKey: "sk-test", Weight: 100,
+		}
+		_, handlerErr = exec.executeOpenAI(&ExecParams{
+			W:                  w,
+			R:                  r,
+			BodyBytes:          []byte(`{"model":"grok-4","messages":[],"reasoning_effort":"high"}`),
+			ResponsesBodyBytes: []byte(`{"model":"grok-4","input":[{"role":"user","content":"hi"}],"reasoning":{"effort":"high"}}`),
+			RequestID:          "req-cl-1",
+			ClientModel:        "grok-4", ClientProtocol: "openai-responses",
+		}, cand, 0, time.Now(), nil)
+	}))
+	defer gateway.Close()
+
+	resp, err := gateway.Client().Post(gateway.URL, "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("POST gateway: %v", err)
+	}
+	defer resp.Body.Close()
+	gotBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read gateway body: %v", err)
+	}
+	if handlerErr != nil {
+		t.Fatalf("executeOpenAI: %v", handlerErr)
+	}
+	// 定长与实际字节数一致（按旧定长截断时二者不符）。
+	if resp.ContentLength != int64(len(gotBody)) {
+		t.Fatalf("Content-Length = %d, body bytes = %d", resp.ContentLength, len(gotBody))
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(gotBody, &decoded); err != nil {
+		t.Fatalf("client body is not valid JSON (truncated?): %v\nbody: %s", err, gotBody)
+	}
+	// 回显被还原为客户端原始值，且降档值不残留。
+	if !strings.Contains(string(gotBody), `"effort":"high"`) {
+		t.Fatalf("client body missing restored effort: %s", gotBody)
+	}
+	if strings.Contains(string(gotBody), `"effort":"medium"`) {
+		t.Fatalf("client body still shows clamped effort: %s", gotBody)
 	}
 }
