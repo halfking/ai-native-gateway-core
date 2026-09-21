@@ -133,7 +133,7 @@ DeepSeek-R1（reasoner）响应包含 `reasoning_content`：
 
 网关：
 - 解析为 `IR.InternalResponse.ReasoningContent`
-- 流式：`delta.reasoning_content` 累积到 `IR.StreamChunk.ReasoningDelta`
+- 流式：`delta.reasoning_content` 累积到 `IR.StreamChunk.Delta.ReasoningContent`（R52 勘误：`ReasoningDelta` 符号不存在）
 - 序列化到 OpenAI Chat 客户端：保留顶层 `reasoning_content`
 - 序列化到 Anthropic：作为 `thinking` block 但**无 signature 不能伪造**
 

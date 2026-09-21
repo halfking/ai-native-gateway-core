@@ -58,32 +58,46 @@ func TestExtractClientTypeFromBody_MiniMaxCode(t *testing.T) {
 }
 
 // TestExtractClientTypeFromBody_DeepSeekCode verifies DeepSeek Code
-// parameter-level identification. The most reliable signal is the
-// `model` field starting with `deepseek-` (the model's vendor prefix);
-// alternative signals are the `metadata.deepseek_session_id` field and
-// the snake_case tool names `read_file`, `execute_command`, etc.
+// parameter-level identification.
 //
-// 2026-09-21 audit.
+// R52 收紧：model deepseek-* 前缀与 {read,write,edit,search}_file /
+// execute_command 通用编码工具名单独都不再判定（模型选择 ≠ 客户端身份，
+// 通用工具名大量编码 agent 在用——SDK 客户端调 deepseek-chat 被记成
+// deepseek-code 是误归类）。判定口径：metadata.deepseek_session_id 独立
+// 强信号；model 前缀 × 工具集共现为组合信号；单一信号返回 ""。
+//
+// 2026-09-21 audit; tightened 2026-09-22 (R52).
 func TestExtractClientTypeFromBody_DeepSeekCode(t *testing.T) {
-	cases := []struct {
+	positive := []struct {
 		name string
 		body string
 	}{
-		{"model deepseek-chat", `{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`},
-		{"model deepseek-reasoner", `{"model":"deepseek-reasoner","stream":true}`},
-		{"model deepseek-v3", `{"model":"deepseek-v3-chat"}`},
-		{"model deepseek-v3.2-exp", `{"model":"deepseek-v3.2-exp"}`},
-		{"model deepseek-coder (legacy)", `{"model":"deepseek-coder"}`},
 		{"metadata.deepseek_session_id", `{"metadata":{"deepseek_session_id":"sess_X"}}`},
-		{"tool read_file", `{"tools":[{"type":"function","function":{"name":"read_file"}}]}`},
-		{"tool execute_command", `{"tools":[{"type":"function","function":{"name":"execute_command"}}]}`},
-		{"tool edit_file", `{"tools":[{"type":"function","function":{"name":"edit_file"}}]}`},
-		{"tool search_files", `{"tools":[{"type":"function","function":{"name":"search_files"}}]}`},
+		{"model x tools co-occurrence", `{"model":"deepseek-chat","tools":[{"type":"function","function":{"name":"read_file"}}]}`},
+		{"model deepseek-reasoner x execute_command", `{"model":"deepseek-reasoner","tools":[{"type":"function","function":{"name":"execute_command"}}]}`},
 	}
-	for _, tc := range cases {
+	for _, tc := range positive {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ExtractClientTypeFromBody([]byte(tc.body), ""); got != "deepseek-code" {
 				t.Errorf("got %q, want %q", got, "deepseek-code")
+			}
+		})
+	}
+
+	// 单一信号不足判——防 SDK 客户端误归类（R52）。
+	negative := []struct {
+		name string
+		body string
+	}{
+		{"model deepseek-chat alone (SDK client)", `{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}`},
+		{"model deepseek-v3.2-exp alone", `{"model":"deepseek-v3.2-exp"}`},
+		{"tool read_file alone (generic coding agent)", `{"tools":[{"type":"function","function":{"name":"read_file"}}]}`},
+		{"tool edit_file alone", `{"tools":[{"type":"function","function":{"name":"edit_file"}}]}`},
+	}
+	for _, tc := range negative {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ExtractClientTypeFromBody([]byte(tc.body), ""); got != "" {
+				t.Errorf("got %q, want %q (single signal must not classify)", got, "")
 			}
 		})
 	}

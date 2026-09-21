@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -554,8 +555,6 @@ func TestParseOpenAI_MaskSensitiveInfo(t *testing.T) {
 	}
 }
 
-func maskSensitiveInfoPtr(b bool) *bool { return &b }
-
 // 2026-09-21 audit (P2-4): bot_setting is MiniMax-only and a list of objects.
 func TestParseOpenAI_BotSetting(t *testing.T) {
 	body := []byte(`{
@@ -580,37 +579,20 @@ func TestParseOpenAI_BotSetting(t *testing.T) {
 		t.Errorf("BotSetting[1].Content = %q", ir.BotSetting[1].Content)
 	}
 	// And the field must round-trip through serialize_openai.go.
+	// R52：bot_setting 是 MiniMax 专有字段，序列化发射按目标方言门控，
+	// 路由前空 TargetProvider 的回退方言是 openai-chat，会 fail-closed
+	// 丢弃——roundtrip 断言须钉在 MiniMax 目标上。
+	ir.TargetProvider = "minimax"
 	out, err := SerializeOpenAI(ir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytesContains(out, []byte(`"bot_setting"`)) {
+	if !bytes.Contains(out, []byte(`"bot_setting"`)) {
 		t.Errorf("serialized body missing bot_setting: %s", out)
 	}
-	if !bytesContains(out, []byte(`"bot_name":"MM Smart Expert"`)) {
+	if !bytes.Contains(out, []byte(`"bot_name":"MM Smart Expert"`)) {
 		t.Errorf("serialized body missing bot_name: %s", out)
 	}
-}
-
-// bytesContains is a small substring check helper to keep the test self-contained
-// without dragging in strings.Contains.
-func bytesContains(haystack, needle []byte) bool {
-	if len(needle) == 0 {
-		return true
-	}
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		match := true
-		for j := 0; j < len(needle); j++ {
-			if haystack[i+j] != needle[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true
-		}
-	}
-	return false
 }
 
 // TestParseOpenAI_RepetitionPenalty_RoundTrip checks that the value travels
@@ -625,14 +607,11 @@ func TestParseOpenAI_RepetitionPenalty_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytesContains(out, []byte(`"repetition_penalty":1.05`)) {
+	if !bytes.Contains(out, []byte(`"repetition_penalty":1.05`)) {
 		t.Fatalf("serialized body missing repetition_penalty: %s", out)
 	}
 }
 
-// Use encoding/json in this file to avoid an unused-import regression when
-// refactors trim other tests.
-var _ = json.Marshal
 
 // BenchmarkParseOpenAI benchmarks the OpenAI parser.
 func BenchmarkParseOpenAI(b *testing.B) {

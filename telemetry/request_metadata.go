@@ -77,8 +77,13 @@ func defaultAgentPatterns() []agentPatternEntry {
 			"deepseek-code cli",
 			"deepseek ide coding",
 			"deepseek chat coding mode",
-			"deepseek-coder",
-			"deepseek-v3 coding",
+			// R52：裸词锚定（09-03 zcode/opencode 同款教训）——裸
+			// "deepseek-coder"/"deepseek-v3 coding" 会在任何提及这些模型
+			// 名的会话里误命中（如用户自定义指令"输出风格参考
+			// deepseek-coder"），须锚定自述形态。
+			"you are deepseek-coder",
+			"deepseek-coder cli",
+			"you are deepseek-v3 coding",
 		}},
 		// Bare Claude / Anthropic fallback — only fires when no more-specific
 		// agent above matched. Useful for custom Claude-API clients that embed
@@ -334,6 +339,29 @@ func ExtractAgentName(r *http.Request) string {
 	return ExtractAgentNameFromRequest(r, nil)
 }
 
+// normalizeAgentName 收敛客户端可控的 X-Agent-Name 自由字符串（R52）：
+// 去首尾空白 + 剥控制字符（日志/维度注入卫生）+ 截断到 255 rune
+// （request_logs.agent_name 为 VARCHAR(255)，超长即 22001 使整行 INSERT
+// 失败）。刻意不过 clienttype.Normalize 白名单——自定义 agent 名是合法
+// 用法，白名单会把它们全部塌缩成 unknown；维度基数治理登记为后续专项。
+func normalizeAgentName(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	out := make([]rune, 0, 256)
+	for _, r := range v {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		out = append(out, r)
+		if len(out) == 255 {
+			break
+		}
+	}
+	return string(out)
+}
+
 // ExtractAgentNameFromRequest is the body-aware variant of ExtractAgentName.
 // Detection order:
 //
@@ -352,12 +380,16 @@ func ExtractAgentName(r *http.Request) string {
 // When body is nil or empty, step 3 collapses and the function returns the
 // weak UA-derived name as before.
 //
+// R52：X-Agent-Name 是客户端可控自由字符串，返回前过 clienttype.Normalize
+// 白名单收敛 + 截断——此前原样透传，超 255 字节即 22001 使 request_logs
+// 整行 INSERT 失败，且任意值会撑大 stats_minute_rollup 的 agent 维度基数。
+//
 // 2026-09-21 audit (P1: client detection parity for domestic coding agents).
 func ExtractAgentNameFromRequest(r *http.Request, body []byte) string {
 	// 1. Custom header for explicit agent identification
 	if r != nil {
 		if agentName := r.Header.Get("X-Agent-Name"); agentName != "" {
-			return agentName
+			return normalizeAgentName(agentName)
 		}
 	}
 
@@ -459,6 +491,11 @@ func ExtractAgentType(r *http.Request) string {
 	if strings.Contains(ua, "claude-code") ||
 		strings.Contains(ua, "opencode") ||
 		strings.Contains(ua, "zcode") ||
+		// R52：国内编程客户端注册补齐——缺这里会使 source_channel 落空。
+		strings.Contains(ua, "minimax-code") ||
+		strings.Contains(ua, "deepseek-code") ||
+		strings.Contains(ua, "deepseek-ide") ||
+		strings.Contains(ua, "deepseek-cli") ||
 		strings.Contains(ua, "codex") ||
 		strings.Contains(ua, "cursor") ||
 		strings.Contains(ua, "vscode") ||

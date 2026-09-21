@@ -240,9 +240,11 @@ func IsRegionBanned(region string, banLists ...[]string) bool {
 const defaultBannedRegionsKey = "proxy.default_banned_regions"
 
 // defaultBannedRegionsOverlay 读取平台级默认禁用地区列表（逗号分隔地区码，
-// 已归一化）。每次调用实时读 settings，改键即热生效。
+// 已归一化）。走 CachedPlatformString（≤5s TTL，失败不缓存）：本函数被
+// selectNodeExcluding 在出口选择路径调用，R52 前为无缓存 settings DB 读，
+// DB 抖动时每次选择最长阻塞 5s。
 func defaultBannedRegionsOverlay() []string {
-	raw := settings.GetPlatformString(defaultBannedRegionsKey, "")
+	raw := settings.CachedPlatformString(defaultBannedRegionsKey, "")
 	if strings.TrimSpace(raw) == "" {
 		return nil
 	}

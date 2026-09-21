@@ -1044,7 +1044,7 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 	cycleCtx, cycleCancel := context.WithTimeout(ctx, promoteCycleTimeout)
 	defer cycleCancel()
 	// R51 (2026-09-21)：batches 是全周期共享预算，排位靠后的表（如
-	// session_turn_details_hot，promoteSpecs 第 10 位）在前序大表积压耗尽
+	// session_turn_details_hot，promoteSpecs 第 11 位）在前序大表积压耗尽
 	// 预算后整个周期颗粒无收。改为每表保底至少 1 批：预算耗尽后，尚未跑过
 	// 批的表仍允许再跑一批才让位；外层循环因此遍历全部 spec，不再提前 break。
 	batches := 0

@@ -69,6 +69,11 @@
 - **读 `request_logs_with_current_month` 的分析 SQL 必须用 `COALESCE(request_type,'main')` 口径**：视图的 session_turns_hot/session_turns 段把 request_type 投影为 `NULL::text`（session_turns 表无该列），裸 `='main'` 会漏掉全部业务行只余探测流量（R44 重写踩坑、R45 真库实测 24h 漏 99.3%/7d 漏 65%）。admin 读端 COALESCE 惯例是既定 SSOT。任何新分析 SQL commit 前真库实跑须验证**读面行数量级**而非只验"能跑通"。
 - **自跑通过 ≠ 语义正确**：R44 自验只发现不了该缺陷（无硬失败），独立子代理真库实跑才暴露——迁移三纪律#3 从迁移扩展到一切"我方自验"结论。
 
+### R52 回注（2026-09-22，735 × admin 写路径 + lite 门控装配批）
+- **新唯一索引上线时必须穷举"新失败面"的写路径**：735 active 折叠唯一索引只给 createModel 加了 23505→409，admin updateModel re-enable 分支 //nolint:errcheck 裸吞 → 空壳成功（R52-F4）。迁移引入新约束的同一轮，grep 该表全部 UPDATE/INSERT 调用点逐一裁决错误处理。
+- **门控开关在 lite 形态的装配缺口**：specs 只在 dbConn.Enabled() 分支注册，lite 进程 Global.Spec(key)==nil → GetPlatformBool 恒回落默认——"双模式同门控"必须在 lite 装配路径显式注册 specs（settings.Init(nil) 仅接 env backend，R52-F8）；测试环境手工注册 registry 会掩盖装配缺口，门控行为测试要按真实装配形态写。
+- **F19 每表保底后预算语义**：批数硬顶变软顶（最坏 +specs-1 批），墙钟仍被 promoteCycleTimeout 兜住；时间型饥饿（前序大表耗尽墙钟）为已知残余，观察 llm_gateway_hot_table_backlog_rows / oldest_row_age_seconds 两 gauge。
+
 ### R47 回注（2026-09-20，读面纪律机制化 + 守卫测试）
 - **裸读守卫已上**：`internal/sqlreadguard/guard_test.go`（TestNoBareRequestLogsMotherReads + TestSQLReadGuardWhitelistCurrent）。扫描生产 Go 面（admin/autoroute/bg/cmd/db/discovery/domains/internal/provider/proxy/taskprofile，排除 *_test.go）+ sql/objects 与 scripts/analysis 的 .sql；正则 `\b(FROM|JOIN)\s+(public\.)?request_logs\b`（\b 天然排除 _hot/_with_/_without_ 视图引用）；Go `//` 与 SQL `--`（含原始字符串内注释行）注释提及自动豁免。新增裸读 = 红；豁免三通道：白名单文件级（LEGIT/DEBT(R47)/TOOLING 前缀）、行内 `sqlreadguard:allow`、双腿形态本身不再命中。
 - **白名单自清洁**：文件已无命中（删除或已双腿化）而白名单条目还在 → 红，强制移除。防"守卫通过即债务隐身"。清偿路径：逐文件双腿化 → 删条目 → 守卫确认。

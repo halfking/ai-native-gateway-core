@@ -607,29 +607,56 @@ func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// R52：exec 失败必须浮出——此前整链 //nolint:errcheck 裸吞，735 的
+	// uq_models_canonical_active_folded_name 上线后，把 disabled 行改回
+	// active 撞折叠重名唯一索引返回 23505，HTTP 仍 200 但行未启用
+	// （空壳成功响应）。
+	exec := func(query string, args ...any) error {
+		_, err := h.db.Exec(ctx, query, args...)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return errFoldedConflict
+			}
+		}
+		return err
+	}
+
 	if req.DisplayName != nil {
-		//nolint:errcheck
-		h.db.Exec(ctx, `UPDATE models_canonical SET display_name = $1 WHERE id = $2`, *req.DisplayName, id)
+		if err := exec(`UPDATE models_canonical SET display_name = $1 WHERE id = $2`, *req.DisplayName, id); err != nil {
+			h.writeUpdateModelError(w, err)
+			return
+		}
 	}
 	if req.Status != nil {
-		//nolint:errcheck
-		h.db.Exec(ctx, `UPDATE models_canonical SET status = $1 WHERE id = $2`, *req.Status, id)
+		if err := exec(`UPDATE models_canonical SET status = $1 WHERE id = $2`, *req.Status, id); err != nil {
+			h.writeUpdateModelError(w, err)
+			return
+		}
 	}
 	if req.ReleasedAt != nil {
-		//nolint:errcheck
-		h.db.Exec(ctx, `UPDATE models_canonical SET released_at = $1 WHERE id = $2`, *req.ReleasedAt, id)
+		if err := exec(`UPDATE models_canonical SET released_at = $1 WHERE id = $2`, *req.ReleasedAt, id); err != nil {
+			h.writeUpdateModelError(w, err)
+			return
+		}
 	}
 	if req.Strengths != nil {
-		//nolint:errcheck
-		h.db.Exec(ctx, `UPDATE models_canonical SET strengths = $1 WHERE id = $2`, *req.Strengths, id)
+		if err := exec(`UPDATE models_canonical SET strengths = $1 WHERE id = $2`, *req.Strengths, id); err != nil {
+			h.writeUpdateModelError(w, err)
+			return
+		}
 	}
 	if req.VersionRank != nil {
-		//nolint:errcheck
-		h.db.Exec(ctx, `UPDATE models_canonical SET version_rank = $1 WHERE id = $2`, *req.VersionRank, id)
+		if err := exec(`UPDATE models_canonical SET version_rank = $1 WHERE id = $2`, *req.VersionRank, id); err != nil {
+			h.writeUpdateModelError(w, err)
+			return
+		}
 	}
 	if req.CostTier != nil {
-		//nolint:errcheck
-		h.db.Exec(ctx, `UPDATE models_canonical SET cost_tier = $1 WHERE id = $2`, *req.CostTier, id)
+		if err := exec(`UPDATE models_canonical SET cost_tier = $1 WHERE id = $2`, *req.CostTier, id); err != nil {
+			h.writeUpdateModelError(w, err)
+			return
+		}
 	}
 	// 2026-08-11: reasoning_caps 热更新（reasoncap tier-1）。
 	// 接受与 internal/reasoncap.Caps 相同的 JSONB 结构（不含 Source 字段）。
@@ -638,14 +665,32 @@ func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 	if len(req.ReasoningCaps) > 0 {
 		raw := req.ReasoningCaps
 		if string(raw) == "null" {
-			//nolint:errcheck
-			h.db.Exec(ctx, `UPDATE models_canonical SET reasoning_caps = NULL WHERE id = $1`, id)
+			if err := exec(`UPDATE models_canonical SET reasoning_caps = NULL WHERE id = $1`, id); err != nil {
+				h.writeUpdateModelError(w, err)
+				return
+			}
 		} else {
-			//nolint:errcheck
-			h.db.Exec(ctx, `UPDATE models_canonical SET reasoning_caps = $1 WHERE id = $2`, raw, id)
+			if err := exec(`UPDATE models_canonical SET reasoning_caps = $1 WHERE id = $2`, raw, id); err != nil {
+				h.writeUpdateModelError(w, err)
+				return
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
+}
+
+// errFoldedConflict marks a 23505 on models_canonical — with 735 active this
+// is the folded-name unique index rejecting a re-enable/rename that collides
+// with an already-active canonical twin.
+var errFoldedConflict = errors.New("folded canonical name conflict")
+
+func (h *Handler) writeUpdateModelError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errFoldedConflict) {
+		writeError(w, http.StatusConflict, "duplicate canonical model: active folded-name conflict (see uq_models_canonical_active_folded_name)")
+		return
+	}
+	slog.Error("admin updateModel exec failed", "error", err)
+	writeError(w, http.StatusInternalServerError, "update failed")
 }
 
 func parseModelTags(raw string) []string { //nolint:unused
