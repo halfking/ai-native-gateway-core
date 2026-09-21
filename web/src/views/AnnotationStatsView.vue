@@ -3,6 +3,14 @@ import { ref, onMounted, computed } from 'vue'
 import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { getAnnotationStats, type StatsResponse } from '../api/annotations'
+import {
+  getTaskTypeCorrectionStats,
+  exportCorrectionsBlob,
+  importCorrectionsFile,
+  applyTierConfig,
+  type CorrectionStatsResponse,
+  type TaskProfileSuggestion,
+} from '../api/taskProfile'
 
 const { t } = useI18n()
 
@@ -54,7 +62,106 @@ function accuracyColor(accuracy: number): string {
   return 'var(--danger)'
 }
 
-onMounted(load)
+// ── taskprofile 任务类型修正统计（2026-09-19 审计轮接入）────────────────
+const tpStats = ref<CorrectionStatsResponse | null>(null)
+const tpLoading = ref(false)
+const tpError = ref('')
+const tpNotice = ref('')
+const exporting = ref(false)
+const importing = ref(false)
+const applying = ref(false)
+const fileInput = ref<HTMLInputElement | null>(null)
+
+const tpRows = computed(() => {
+  if (!tpStats.value) return []
+  return Object.values(tpStats.value.stats).map((s) => ({
+    ...s,
+    suggestion: tpStats.value?.suggestions?.[s.task_type] as TaskProfileSuggestion | undefined,
+  })).sort((a, b) => b.correction_rate - a.correction_rate)
+})
+
+async function loadTpStats() {
+  tpLoading.value = true
+  tpError.value = ''
+  try {
+    tpStats.value = await getTaskTypeCorrectionStats(30)
+  } catch (e: unknown) {
+    tpError.value = e instanceof Error ? e.message : t('annotation.stats.loadFailed')
+    tpStats.value = null
+  } finally {
+    tpLoading.value = false
+  }
+}
+
+async function exportCsv() {
+  exporting.value = true
+  tpError.value = ''
+  try {
+    const blob = await exportCorrectionsBlob({ sinceDays: 30 })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `task-type-corrections-${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e: unknown) {
+    tpError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    exporting.value = false
+  }
+}
+
+function pickImportFile() {
+  fileInput.value?.click()
+}
+
+async function onImportFile(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const f = input.files?.[0]
+  if (!f) return
+  importing.value = true
+  tpError.value = ''
+  tpNotice.value = ''
+  try {
+    const r = await importCorrectionsFile(f)
+    tpNotice.value = t('annotation.stats.importDone', {
+      imported: r.summary.imported,
+      skipped: r.summary.skipped,
+      errors: r.summary.row_errors.length,
+    })
+    await loadTpStats()
+  } catch (e: unknown) {
+    tpError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    importing.value = false
+    input.value = ''
+  }
+}
+
+async function applySuggestions() {
+  if (!window.confirm(t('annotation.stats.applyConfirm'))) return
+  applying.value = true
+  tpError.value = ''
+  tpNotice.value = ''
+  try {
+    const r = await applyTierConfig([])
+    tpNotice.value = r.applied.length === 0
+      ? t('annotation.stats.applyNone')
+      : t('annotation.stats.applyDone', {
+          types: r.applied.map((a) => `${a.task_type}→${a.preferred_tier}`).join(', '),
+        })
+    await loadTpStats()
+  } catch (e: unknown) {
+    tpError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    applying.value = false
+  }
+}
+
+onMounted(() => {
+  load()
+  loadTpStats()
+})
 </script>
 
 <template>
@@ -232,10 +339,102 @@ onMounted(load)
         </div>
       </div>
     </div>
+
+    <!-- taskprofile 任务类型修正统计（独立加载态，不依赖 P2.1 统计） -->
+    <div class="stats-section tp-section">
+      <div class="tp-header">
+        <h3>{{ t('annotation.stats.taskCorrections') }}</h3>
+        <div class="tp-actions">
+          <button class="btn btn-sm" :disabled="exporting" @click="exportCsv">
+            {{ exporting ? t('annotation.stats.exporting') : t('annotation.stats.exportCsv') }}
+          </button>
+          <button class="btn btn-sm" :disabled="importing" @click="pickImportFile">
+            {{ importing ? t('annotation.stats.importing') : t('annotation.stats.importCsv') }}
+          </button>
+          <button class="btn btn-sm btn-primary" :disabled="applying" @click="applySuggestions">
+            {{ applying ? t('annotation.stats.applying') : t('annotation.stats.applySuggestions') }}
+          </button>
+          <input
+            ref="fileInput"
+            type="file"
+            accept=".csv,text/csv"
+            style="display: none"
+            @change="onImportFile"
+          />
+        </div>
+      </div>
+
+      <div v-if="tpNotice" class="alert alert-success" role="status">{{ tpNotice }}</div>
+      <div v-if="tpError" class="alert alert-danger" role="alert">{{ tpError }}</div>
+
+      <div v-if="tpLoading" class="loading-container">
+        <p>{{ t('annotation.stats.loading') }}</p>
+      </div>
+
+      <div v-else-if="tpRows.length" class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>{{ t('annotation.stats.tpTaskType') }}</th>
+              <th class="col-number">{{ t('annotation.stats.tpTotal') }}</th>
+              <th class="col-number">{{ t('annotation.stats.tpAgrees') }}</th>
+              <th class="col-number">{{ t('annotation.stats.tpCorrected') }}</th>
+              <th class="col-number">{{ t('annotation.stats.tpRate') }}</th>
+              <th>{{ t('annotation.stats.tpSuggested') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in tpRows" :key="row.task_type">
+              <td><span class="badge badge-blue">{{ row.task_type }}</span></td>
+              <td class="col-number">{{ row.total }}</td>
+              <td class="col-number text-success">{{ row.agrees }}</td>
+              <td class="col-number text-danger">{{ row.corrected }}</td>
+              <td class="col-number">{{ (row.correction_rate * 100).toFixed(1) }}%</td>
+              <td>
+                <span v-if="row.suggestion" class="badge badge-gray">
+                  {{ row.suggestion.tier }} · {{ row.suggestion.tier_source }}
+                </span>
+                <span v-else class="tp-muted">—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p v-else class="tp-muted">{{ t('annotation.stats.noData') }}</p>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.tp-section {
+  margin-top: 1.5rem;
+}
+
+.tp-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.tp-header h3 {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.tp-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.tp-muted {
+  color: var(--text-muted);
+}
+
 .stats-page {
   padding: 1.5rem;
 }

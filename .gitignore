@@ -360,3 +360,10 @@ nbproject/
 
 # 2026-09-17: ssh-mgmt root password (never commit; local only)
 deploy/ssh-mgmt/pw.txt
+
+# ── 2026-09-21: 本地部署/运行时产物不入库 ─────────────────────────
+# deploy-local.sh --root 指向 worktree 时在根写 run/（active-port、
+# active-version、admin-password-hash 备份）；RawDataLogger 写 raw-logs/。
+# 均为机器本地运行态，换机无意义且可能含敏感数据。
+/run/
+/raw-logs/

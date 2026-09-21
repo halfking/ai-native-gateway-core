@@ -52,9 +52,17 @@ func TestProbePolicyPredicatesShape(t *testing.T) {
 	}
 	// INV-3: probe traffic exclusion predicate — 双臂（R49 审计修复）：
 	// quality_flags 直探轮合成行 + origin_stage 网关轮落点，缺一不可。
+	// 仅限物理表（hot/parent/分区，428 起有 origin_stage 列）。
 	if got, want := probeTrafficExclusionPredicate,
 		"(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE) AND COALESCE(%s.origin_stage, 'business') = 'business')"; got != want {
 		t.Fatalf("probeTrafficExclusion = %q, want %q", got, want)
+	}
+	// 冻结 113 列视图变体（R49 自纠）：origin_stage 不在视图契约内，视图
+	// 读面只能用 flags+task_type+origin_actor 三臂（全部 113 列在册）。
+	if got, want := probeTrafficExclusionPredicateView,
+		"(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE) AND COALESCE(%s.task_type, '') <> 'probe_triggered'"+
+			" AND COALESCE(%s.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker'))"; got != want {
+		t.Fatalf("probeTrafficExclusionView = %q, want %q", got, want)
 	}
 	if probeUsageWindowInterval != "interval '3 days'" {
 		t.Fatalf("usage window = %q, want 3 days", probeUsageWindowInterval)
@@ -204,30 +212,39 @@ func readSource(name string) (string, error) {
 // ─── R50：探测排除谓词全调用面闭环 ────────────────────────────────────
 
 // TestProbeExclusionPredicateCallSitesR50 pins the R50 closure of the probe
-// traffic exclusion: every usage/success-scanning site added in the R50 round
-// must go through the shared dual-arm predicate (quality_flags +
-// origin_stage). Direct-probe rows carry the 'probe' flag, but the probe
-// gateway round is stamped origin_stage='node_probe' with NO flag — single
-// arm sites let it count as usage (INV-3 was nominal; R49 F4 + R50 closed
-// the remaining faces).
+// traffic exclusion — PER READ FACE (R49 自审轮勘误)：排除闭合按读面分治，
+// 不变量不是"都用物理双臂谓词"，而是"读面对象有什么列就用什么谓词"：
+//   - 物理表（request_logs_hot，428 起有 origin_stage 且网关探测轮落值）→
+//     probeTrafficExclusionPredicate（flags + origin_stage='business'）；
+//   - canonical 冻结 113 列视图（request_logs_with_current_month，
+//     origin_stage 不在契约）→ probeTrafficExclusionPredicateView
+//     （flags + task_type + origin_actor）。R50 首版把物理谓词铺到
+//     shared_pick/passive_probe_listener 的视图查询上，必 42703——本测试
+//     按读面分治后的真实不变量钉桩。
 func TestProbeExclusionPredicateCallSitesR50(t *testing.T) {
 	cases := []struct {
-		file  string
-		wants int // minimum number of Sprintf call sites expected in the file
+		file     string
+		physical int // minimum physical-predicate (request_logs_hot) sites
+		view     int // minimum view-predicate (frozen 113-col contract) sites
 	}{
-		{"credential_selfcheck.go", 1}, // selfcheckRecentFallback (usage scope)
-		{"model_probe.go", 2},          // featuredCycle + watchdog usage CTE
-		{"shared_pick.go", 1},          // Priority-1 most-used model pick
-		{"passive_probe_listener.go", 3},
+		{"credential_selfcheck.go", 1, 0}, // selfcheckRecentFallback — hot
+		{"model_probe.go", 2, 0},          // featuredCycle + watchdog — hot
+		{"today_success_probe.go", 1, 0},  // recovery recheck — hot
+		{"model_tier.go", 1, 0},           // Top-N usage — hot
+		{"daily_probe_audit.go", 0, 1},    // 72h usage — canonical view
+		{"shared_pick.go", 0, 1},          // most-used pick — canonical view
+		{"passive_probe_listener.go", 0, 3},
 	}
 	for _, tc := range cases {
 		src, err := readSource(tc.file)
 		if err != nil {
 			t.Fatalf("read %s: %v", tc.file, err)
 		}
-		got := strings.Count(src, `fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")`)
-		if got < tc.wants {
-			t.Errorf("%s has %d dual-arm exclusion call sites, want >= %d", tc.file, got, tc.wants)
+		if got := strings.Count(src, `fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")`); got < tc.physical {
+			t.Errorf("%s has %d physical dual-arm exclusion sites, want >= %d", tc.file, got, tc.physical)
+		}
+		if got := strings.Count(src, `fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")`); got < tc.view {
+			t.Errorf("%s has %d frozen-view exclusion sites, want >= %d", tc.file, got, tc.view)
 		}
 	}
 	// The selfcheck usage scan must NOT carry the old single-arm spelling.
@@ -237,5 +254,24 @@ func TestProbeExclusionPredicateCallSitesR50(t *testing.T) {
 	}
 	if strings.Contains(selfcheckSrc, "AND NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)") {
 		t.Errorf("credential_selfcheck.go still has a single-arm usage scan; use probeTrafficExclusionPredicate")
+	}
+}
+
+// TestProbeUsageViewScanUsesFrozenContractPredicate（R49 自纠守卫，2026-09-20）：
+// origin_stage 不在 canonical 视图的冻结 113 列契约内——凡以
+// request_logs_with_current_month 为源的 bg usage 扫描必须用视图变体谓词
+// （flags+task_type+origin_actor），物理表变体对视图必 42703（上一轮
+// a7baa1f5a 曾把物理谓词用到视图上，真库验证时才炸出）。
+func TestProbeUsageViewScanUsesFrozenContractPredicate(t *testing.T) {
+	src, err := readSource("daily_probe_audit.go")
+	if err != nil {
+		t.Fatalf("read daily_probe_audit.go: %v", err)
+	}
+	const wantView = `fmt.Sprintf(probeTrafficExclusionPredicateView, "rl", "rl", "rl")`
+	if !strings.Contains(src, wantView) {
+		t.Fatalf("daily_probe_audit usage scan must use the frozen-view predicate %q", wantView)
+	}
+	if strings.Contains(src, `fmt.Sprintf(probeTrafficExclusionPredicate,`) {
+		t.Fatalf("daily_probe_audit must not reference the physical-table predicate (origin_stage is not in the view's 113-column contract)")
 	}
 }
