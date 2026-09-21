@@ -492,43 +492,54 @@ func TestTransportIRConverter_GLMFields_Preserved(t *testing.T) {
 // --- 测试：DeepSeek reasoning_tokens 字段保留 ---
 
 func TestTransportIRConverter_DeepSeekFields_Preserved(t *testing.T) {
-	inner := &mockIRAdapter{
-		parseOpenAIResponseFunc: func(body []byte) (*ir.InternalResponse, error) {
-			return &ir.InternalResponse{ID: "chatcmpl-1", Model: "deepseek-chat", Extensions: nil}, nil
-		},
-		serializeOpenAIResponseFunc: func(resp *ir.InternalResponse, clientModel string) ([]byte, error) {
-			return []byte(`{"id":"chatcmpl-1","model":"deepseek-chat"}`), nil
-		},
-	}
-	conv := NewTransportIRConverter(inner)
+	// 2026-09-21 R50 重写:旧版本用 mock 序列化器(不写 usage)验证 usage 靠
+	// ExtensionsBag 往返——该机制在真实链路上从未生效过(三个真实序列化器都
+	// 自己写 usage,restorer 只补目标缺失键),且正是"标准响应字段当扩展回填"
+	// 造成跨协议合并体/usage 归零的根因。新契约:usage 是协议标准字段,由
+	// 真实 Parse→Serialize 路径保留;只有真非标字段(厂商私有键)走扩展往返。
+	conv := NewTransportIRConverter(&irAdapterForTest{})
 
-	// DeepSeek 响应包含 reasoning_tokens
-	body := []byte(`{"id":"chatcmpl-1","model":"deepseek-chat","usage":{"reasoning_tokens":150,"total_tokens":200}}`)
+	body := []byte(`{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"deepseek-chat","choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":50,"completion_tokens":150,"total_tokens":200,"completion_tokens_details":{"reasoning_tokens":140}},"prompt_cache_hit_tokens":7}`)
 	resp, err := conv.ParseOpenAIResponse(body)
 	if err != nil {
 		t.Fatalf("ParseOpenAIResponse: %v", err)
 	}
-
-	// 验证 Extensions 包含 reasoning_tokens (嵌套在 usage 中)
 	if len(resp.Extensions) == 0 {
-		t.Fatal("DeepSeek usage fields should be extracted to Extensions")
+		t.Fatal("genuinely non-standard vendor fields should still ride extensions")
 	}
-	// usage 对象会被整体提取（因为包含非标字段 reasoning_tokens）
-	if _, ok := resp.Extensions["usage"]; !ok {
-		t.Errorf("usage object should be in Extensions: %v", resp.Extensions)
+	if _, ok := resp.Extensions["usage"]; ok {
+		t.Errorf("usage is a standard response field and must not ride extensions: %v", resp.Extensions)
+	}
+	if _, ok := resp.Extensions["choices"]; ok {
+		t.Errorf("choices is a standard response field and must not ride extensions")
 	}
 
-	// Serialize 应还原 usage 字段
 	out, err := conv.SerializeOpenAIResponse(resp, "deepseek-chat")
 	if err != nil {
 		t.Fatalf("SerializeOpenAIResponse: %v", err)
 	}
 
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(out, &m); err != nil {
-		t.Fatalf("output invalid JSON: %v", err)
+	var m struct {
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+			CompletionTokensDetails struct {
+				ReasoningTokens int `json:"reasoning_tokens"`
+			} `json:"completion_tokens_details"`
+		} `json:"usage"`
+		PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
 	}
-	if _, ok := m["usage"]; !ok {
-		t.Errorf("usage not restored: %s", out)
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("output invalid JSON: %v; body=%s", err, out)
+	}
+	if m.Usage.PromptTokens != 50 || m.Usage.CompletionTokens != 150 || m.Usage.TotalTokens != 200 {
+		t.Errorf("usage tokens lost on same-protocol round-trip: %+v; body=%s", m.Usage, out)
+	}
+	if m.Usage.CompletionTokensDetails.ReasoningTokens != 140 {
+		t.Errorf("reasoning_tokens detail lost: %+v; body=%s", m.Usage, out)
+	}
+	if m.PromptCacheHitTokens != 7 {
+		t.Errorf("vendor-private top-level field not restored via extensions: %s", out)
 	}
 }

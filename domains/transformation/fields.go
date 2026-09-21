@@ -84,5 +84,31 @@ func isStandardField(field string) bool {
 	return irHandledFields()[strings.ToLower(strings.TrimSpace(field))]
 }
 
+// standardResponseFields 是 IR 响应解析器(ParseOpenAIResponse / ParseAnthropic-
+// Response)与序列化器(Serialize*Response)实际消费/产出的顶层响应字段。
+//
+// 2026-09-21 R50 根修: extractResponseExtensions 此前复用请求字段白名单,导致
+// 源协议的标准响应字段(choices/created/object 等)被当"扩展"回填到跨协议序列化
+// 产物上——OpenAI 上游 → Anthropic 客户端时,最终 body 同时带 choices(还原)与
+// content(IR),下游 classify 先命中 choices 再按 OpenAI 重新转换,usage 里的
+// prompt_tokens 键不存在(被 IR 换成了 input_tokens),归零。响应侧提取必须
+// 按本集合过滤:这些字段两个方向的序列化器都会自己写,根本不需要扩展往返;
+// 留给 Extensions 的只剩厂商私有/自定义字段(如 base_resp 前已被 vendorstrip
+// 清理的那类之外的真正非标键)。
+var standardResponseFields = map[string]bool{
+	// 共有
+	"id": true, "model": true, "usage": true, "created": true,
+	// OpenAI chat completion
+	"object": true, "choices": true, "service_tier": true, "system_fingerprint": true,
+	// Anthropic message
+	"type": true, "role": true, "content": true,
+	"stop_reason": true, "stop_sequence": true, "container": true,
+}
+
+// isStandardResponseField 报告字段名是否是响应体的协议标准字段。
+func isStandardResponseField(field string) bool {
+	return standardResponseFields[field]
+}
+
 // irHandledFields 缓存注册表的 IR 已处理字段集合。
 var irHandledFields = sync.OnceValue(paramreg.IRHandledFields)
