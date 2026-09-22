@@ -596,6 +596,17 @@ func (h *Handler) resetUserPassword(w http.ResponseWriter, r *http.Request, id i
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
+	// R56 audit: an admin-forced reset (e.g. credential-leak response) must
+	// revoke the target user's existing tokens exactly like the B4
+	// self-service change does — otherwise the old JWT stays valid until its
+	// remaining TTL. A failed write must not fail the reset itself (same
+	// trade as the B4 self-change path).
+	if revokeErr := revokeUserTokensForPasswordChange(ctx, h.db, id); revokeErr != nil {
+		slog.Warn("admin password reset succeeded but token revocation failed",
+			"user_id", id,
+			"error", revokeErr,
+		)
+	}
 	h.writeAuditLog(r, "user.reset_password", "user", id, fmt.Sprintf("user_id=%d password_reset_by_admin", id))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "password_reset"})
 }
