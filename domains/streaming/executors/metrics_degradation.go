@@ -18,6 +18,18 @@ var (
 		[]string{"model", "reason"},
 	)
 
+	// fpSlotLeaseForcedReleaseTotal (Wave 3 B14): dispatch leases that hit
+	// the 300s hard cap and were force-released by the watchdog. A non-zero
+	// rate means requests are holding slots far longer than the stream
+	// timeout assumes (wedged upstream / leaked holder) or the cap is set
+	// below the legitimate stream ceiling.
+	fpSlotLeaseForcedReleaseTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "llmgw_fp_slot_lease_forced_release_total",
+			Help: "FP-slot dispatch leases force-released after exceeding the 300s hard cap.",
+		},
+	)
+
 	// 降级模式请求占比（1分钟滑动窗口）
 	fpSlotDegradationRatio = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
