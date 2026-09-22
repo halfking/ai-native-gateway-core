@@ -1,5 +1,6 @@
 import { store, clearApiKey, clearAll, authBearer, getLocale, isAuthenticated } from '../store'
 import type { UserInfo } from '../store'
+import { inlineLoginPath } from '../utils/safeRedirect'
 
 // _core.ts — v6.0 audit T12 (2026-06-22)
 // Low-level fetch plumbing shared by every other api/* module.
@@ -104,6 +105,11 @@ function redirectAfterAuthLoss(destination: string): void {
   }
 }
 
+/** Test helper — 401 bounce is latched for the lifetime of a page. */
+export function resetAuthRedirectForTests(): void {
+  authRedirectStarted = false
+}
+
 export function isAbortError(error: unknown): boolean {
   return !!error && typeof error === 'object' && (error as { name?: unknown }).name === 'AbortError'
 }
@@ -155,11 +161,17 @@ export async function req<T>(method: string, path: string, body?: unknown, optio
   }
   if (r.status === 401) {
     const msg = errorMessage(r.statusText, await r.text())
-    if (isAdminProtectedPath(path) && typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-      redirectAfterAuthLoss('/login')
-    } else if (isSessionExpiredAuthLoss(path) && typeof window !== 'undefined' && !isOnInlineLoginScreen()) {
-      const redirect = window.location.pathname + window.location.search
-      redirectAfterAuthLoss('/?login=1&redirect=' + encodeURIComponent(redirect))
+    // Always bounce to the inline-login home with the original SPA path in
+    // `redirect`. A hard jump to `/login` used to clear the request-detail
+    // URL; the /login route then treats an already-valid cookie as "already
+    // authed" and sends the user to the dashboard overview.
+    if (
+      typeof window !== 'undefined'
+      && (isAdminProtectedPath(path) || isSessionExpiredAuthLoss(path))
+      && !window.location.pathname.startsWith('/login')
+      && !isOnInlineLoginScreen()
+    ) {
+      redirectAfterAuthLoss(inlineLoginPath(window.location.pathname + window.location.search))
     }
     // Public endpoints and the hydration probe only surface their status.
     throw new ApiError(401, msg || 'Unauthorized')

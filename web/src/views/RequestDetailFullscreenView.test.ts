@@ -217,4 +217,17 @@ describe('RequestDetailFullscreenView request-detail navigation', () => {
     expect(router.currentRoute.value.params.requestId).toBe('req-43')
     expect(router.currentRoute.value.query).toEqual({ mode: 'request', tab: 'overview' })
   })
+
+  it('keeps the session turns pane when a later turn is not found', async () => {
+    loader.sessionId.value = 'session-1'
+    loader.metaError.value = '请求详情未找到'
+    const { router, wrapper } = await mountView(
+      '/request-detail/missing-turn?mode=session-turns&tab=overview',
+    )
+
+    expect(router.currentRoute.value.name).toBe('request-detail')
+    expect(wrapper.text()).toContain('请求详情未找到')
+    expect(wrapper.find('[data-testid="session-turns-stub"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="section-host"]').exists()).toBe(false)
+  })
 })
