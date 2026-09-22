@@ -2636,6 +2636,13 @@ func (h *ChatHandler) serveWithExecutor(
 				if lsEntry.DeviceSeed == "" {
 					lsEntry.DeviceSeed = r.Header.Get("X-Machine-Id")
 				}
+				// Third arm matches the create-path and auto-title writers
+				// below (:2553/:2651): the reader-side DeviceSeed gate
+				// (session_assignment.go) treats "" as never-matching, so an
+				// empty seed entry is dead weight for headless clients.
+				if lsEntry.DeviceSeed == "" {
+					lsEntry.DeviceSeed = "default"
+				}
 				if setErr := h.lastSystemSession.Set(ctx, keyInfo.ID, lsEntry); setErr != nil {
 					slog.Warn("LastSystemSessionIndex update failed", "error", setErr, "api_key_id", keyInfo.ID)
 				}

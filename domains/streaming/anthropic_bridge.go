@@ -434,9 +434,11 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	// never fails over.
 	//
 	// Empty = no content_block_* events reached the client. Usage tokens alone
-	// do NOT count as content — matching the documented contract on
-	// anthropic.IsAnthropicStreamEmpty (stream_support.go) and the non-stream
-	// semantics in isEmptyAnthropicMessagesResponse (content array length).
+	// do NOT count as content — matching the non-stream semantics in
+	// isEmptyAnthropicMessagesResponse (content array length). (The former
+	// anthropic.IsAnthropicStreamEmpty helper was retired in the D2/D3
+	// empty-outcome consolidation; internal/emptyoutcome owns the predicate
+	// set now.)
 	// Some Anthropic-compat relays (notably minimax via the Anthropic bridge)
 	// emit `usage` in `message_start` with zero output content; counting those
 	// as non-empty would suppress fail-over and silently 200 an empty
