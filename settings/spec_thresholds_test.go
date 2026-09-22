@@ -17,6 +17,10 @@ func TestThresholdSpecs_RegisteredInPlatformSpecs(t *testing.T) {
 		KeyStickyFailureThreshold:      false,
 		KeyFpSlotTTLSeconds:            false,
 		KeyErrorProbeWorkers:           false,
+		// Wave 2 任务二③ 三级 MNF 冷却档。
+		KeyModelNotFoundInitialCooldownSeconds:   false,
+		KeyModelNotFoundSustainedCooldownSeconds: false,
+		KeyModelDeprecatedCooldownSeconds:        false,
 	}
 	for _, sp := range PlatformSpecs() {
 		if _, ok := want[sp.Key]; ok {
@@ -44,6 +48,9 @@ func TestThresholdSpecs_DefaultsMatchLegacyConstants(t *testing.T) {
 		{KeyStickyFailureThreshold, DefaultStickyFailureThreshold, true, 1, 10},
 		{KeyFpSlotTTLSeconds, DefaultFpSlotTTLSeconds, true, 300, 86400},
 		{KeyErrorProbeWorkers, DefaultErrorProbeWorkers, false, 1, float64(MaxErrorProbeWorkers)},
+		{KeyModelNotFoundInitialCooldownSeconds, DefaultModelNotFoundInitialCooldownSeconds, true, 60, 604800},
+		{KeyModelNotFoundSustainedCooldownSeconds, DefaultModelNotFoundSustainedCooldownSeconds, true, 1800, 2592000},
+		{KeyModelDeprecatedCooldownSeconds, DefaultModelDeprecatedCooldownSeconds, true, 86400, 31536000},
 	}
 	byKey := map[string]*Spec{}
 	for _, sp := range ThresholdSpecs() {
@@ -156,6 +163,18 @@ func TestThresholdAccessors_HotReloadAndClamp(t *testing.T) {
 	setKey(KeyErrorProbeWorkers, `50`)
 	if got := ErrorProbeWorkers(); got != MaxErrorProbeWorkers {
 		t.Errorf("ErrorProbeWorkers() = %d, want clamped %d", got, MaxErrorProbeWorkers)
+	}
+	setKey(KeyModelNotFoundInitialCooldownSeconds, `30`)
+	if got := ModelNotFoundInitialCooldownSeconds(); got != 60 {
+		t.Errorf("ModelNotFoundInitialCooldownSeconds() = %d, want clamped 60", got)
+	}
+	setKey(KeyModelNotFoundSustainedCooldownSeconds, `99999999`)
+	if got := ModelNotFoundSustainedCooldownSeconds(); got != 2592000 {
+		t.Errorf("ModelNotFoundSustainedCooldownSeconds() = %d, want clamped 2592000", got)
+	}
+	setKey(KeyModelDeprecatedCooldownSeconds, `3600`)
+	if got := ModelDeprecatedCooldownSeconds(); got != 86400 {
+		t.Errorf("ModelDeprecatedCooldownSeconds() = %d, want clamped 86400", got)
 	}
 }
 
