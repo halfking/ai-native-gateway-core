@@ -197,6 +197,12 @@ func TestEnsureCanonicalAndAliases_SeedPathAliasUpsertNeverResurrectsDisabled(t 
 	mock.ExpectQuery(`FROM models_canonical`).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "canonical_name"}))
 
+	// 2026-09-23 audit round: migration-735 folded-name pre-resolve runs
+	// between the catalog match and the seed upsert (no rows = no reroute).
+	mock.ExpectQuery(`(?s)SELECT canonical_name FROM models_canonical.*regexp_replace`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"canonical_name"}))
+
 	mock.ExpectQuery(`(?s)INSERT INTO models_canonical.*ON CONFLICT \(canonical_name\) DO UPDATE SET`).
 		WithArgs(rawName, pgxmock.AnyArg(), pgxmock.AnyArg(), "discovery", pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(91))
@@ -250,6 +256,12 @@ func TestEnsureCanonicalAndAliases_SeedUpsertNeverResurrectsDisabled(t *testing.
 	// to the seed INSERT ... ON CONFLICT branch.
 	mock.ExpectQuery(`FROM models_canonical`).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "canonical_name"}))
+
+	// 2026-09-23 audit round: migration-735 folded-name pre-resolve (no rows
+	// = no reroute) between the catalog match and the seed upsert.
+	mock.ExpectQuery(`(?s)SELECT canonical_name FROM models_canonical.*regexp_replace`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"canonical_name"}))
 
 	// The upsert's DO UPDATE must CASE-guard status on the existing row's
 	// disabled state instead of blindly writing 'active'. The seed branch
