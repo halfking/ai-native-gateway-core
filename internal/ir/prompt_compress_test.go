@@ -69,6 +69,44 @@ func TestCompressMessages_CollapseRepeatedText(t *testing.T) {
 	}
 }
 
+// TestCompressMessages_CollapseRepeatedText_MultiRunWithGap is the
+// R56 regression: with two repeated runs separated by normal
+// messages (and a tail after the last run), the untouched messages
+// between/after the runs must survive. The pre-R56 implementation
+// resliced `out[:i]` on the second run, which exposed zero-value
+// Messages from the backing array (silently dropping the gap) and
+// never appended the tail at all.
+func TestCompressMessages_CollapseRepeatedText_MultiRunWithGap(t *testing.T) {
+	text := func(s string) ContentBlock { return ContentBlock{Type: "text", Text: s} }
+	in := []Message{
+		{Role: "user", Content: []ContentBlock{text("head")}},
+		{Role: "user", Content: []ContentBlock{text("dup")}},
+		{Role: "user", Content: []ContentBlock{text("dup")}},
+		{Role: "user", Content: []ContentBlock{text("dup")}},
+		{Role: "assistant", Content: []ContentBlock{text("gap one")}},
+		{Role: "user", Content: []ContentBlock{text("gap two")}},
+		{Role: "assistant", Content: []ContentBlock{text("ack")}},
+		{Role: "assistant", Content: []ContentBlock{text("ack")}},
+		{Role: "assistant", Content: []ContentBlock{text("ack")}},
+		{Role: "user", Content: []ContentBlock{text("tail")}},
+	}
+	out := CompressMessages(in, DefaultCompressConfig())
+	// head + dup-marker + gap one + gap two + ack-marker + tail = 6.
+	want := []string{"head", "[repeated 3 times]", "gap one", "gap two", "[repeated 3 times]", "tail"}
+	if len(out) != len(want) {
+		t.Fatalf("expected %d messages, got %d", len(want), len(out))
+	}
+	for i, w := range want {
+		got := out[i].Content[0].Text
+		if got != w {
+			t.Fatalf("out[%d]=%q want %q", i, got, w)
+		}
+		if out[i].Role == "" {
+			t.Fatalf("out[%d] has empty Role (zero-value message injected)", i)
+		}
+	}
+}
+
 // TestCompressMessages_NoChangeWhenNoTransforms ensures that a
 // zero-config run leaves messages untouched.
 func TestCompressMessages_NoChangeWhenNoTransforms(t *testing.T) {
