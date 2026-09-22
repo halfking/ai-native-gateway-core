@@ -52,3 +52,8 @@
 - 合成轮口径边界留档：settle 的 session_summaries join（request_count/error_count/health_score）不滤合成轮，方向保守（少归因）；收敛须连写侧一起改并同步两个集成测试期望（F2，接受）。
 - writeReward/abandon 不查 RowsAffected：Redis-off 双实例 sweep 指标可虚高（DB 状态不重复，声明接受）。
 - Go 侧 IsSyntheticActor trim / SQL 谓词不 trim 的前置条件=写入口 origin_mw TrimSpace；新写者必须同样 trim，禁止单侧"修复"（shadow_actors.go 已注释钉死）。
+
+### R53 回注（2026-09-22，R51-F15 免费重试计量收口）
+- reqprobe 参数剔除/模式回退 + ctxLen 恢复的免费重试（一次准入最多 4 次上游调用）已改为**按次补记 Governor**而非消耗 retry budget：`ExtraCallRecorder` 可选能力（rpm/tpm 债务式扣减钳 `-limit`，concurrency 槽位全程持有刻意豁免）→ forwarder.acquire 装配 `qr.OnExtraUpstreamCall` → `ExecParams.ExtraUpstreamCall` → 四触发点 `meterExtraUpstreamCall`。指标 `dispatch_extra_upstream_calls_total{mode}`。
+- 裁决留档：免费重试消耗 retry budget 会让 maxRetries=0 的 dispatch 流量直接 failover、reqprobe 学习闭环永不触发——计量归计量、准入归准入。
+- Redis enforce backend governor 未实现该能力（需计费 Lua），opt-in 场景计量缺口维持现状（R53-D2）。

@@ -1270,6 +1270,13 @@ type ExecParams struct {
 	// DispatchAttemptID is stable for one real dispatch ForwardFunc invocation
 	// and is the idempotency key for node-health reduction.
 	DispatchAttemptID string
+	// ExtraUpstreamCall charges the admitting credential governor for an
+	// extra upstream call issued inside the protocol retry loop (reqprobe
+	// param-strip / mode-fallback retries, context-length recovery,
+	// R51-F15). Wired by forwardForDispatch from the dispatch attempt's
+	// QueuedRequest; nil in legacy (non-dispatch) executions. Must be
+	// non-blocking.
+	ExtraUpstreamCall func()
 	// FirstSemanticByteCallback is bound to the current dispatch attempt. Stream
 	// bridges invoke it only for the first real content/tool SSE frame; non-stream
 	// execution invokes it after the complete successful response is available.

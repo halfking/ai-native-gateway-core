@@ -208,6 +208,19 @@ var (
 		},
 		[]string{"table"},
 	)
+
+	// metricWorkerRestarts (R53, R51-F13) — self-healing restarts of bg
+	// workers after a runFn panic (BaseWorker supervise loop). Label
+	// "worker" is the compile-time literal worker name (closed set, ~25
+	// values). A sustained rate > 0 on one worker means that worker hits a
+	// recurring panic and needs a real fix, not just the backoff.
+	metricWorkerRestarts = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llm_gateway_bg_worker_restarts_total",
+			Help: "Self-healing restarts of a bg worker after a runFn panic (BaseWorker supervise loop).",
+		},
+		[]string{"worker"},
+	)
 )
 
 // recordPromoteFailure increments the failure counter for a table.

@@ -310,3 +310,103 @@ func TestExecuteOpenAIReqProbeModeFallbackRecovers(t *testing.T) {
 		t.Fatalf("record = %+v", recs[0])
 	}
 }
+
+// Case 6 (R53 / R51-F15): 参数剔除免费重试必须补记准入 Governor——
+// 一次准入内的第二次上游调用经 ExtraUpstreamCall meter 上报，且免费
+// 语义不变（不消耗 retry budget：成功即 2 次调用）。
+func TestExecuteOpenAIReqProbeParamStripMetersExtraCall(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "reasoning_effort") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(reqProbeRejectionBody))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	store := reqprobe.NewMemoryStore()
+	exec, coord := newReqProbeExecutor(store)
+	defer coord.Close()
+
+	var metered atomic.Int32
+	_, err := exec.executeOpenAI(&ExecParams{
+		W:           httptest.NewRecorder(),
+		R:           httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		BodyBytes:   []byte(`{"model":"grok-4.6","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"x-high"}`),
+		ClientModel: "grok-4.6", ClientProtocol: "openai-completions",
+		ExtraUpstreamCall: func() { metered.Add(1) },
+	}, reqProbeTestCandidate(upstream.URL), 0, time.Now(), nil)
+	if err != nil {
+		t.Fatalf("executeOpenAI: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("upstream calls = %d, want 2 (free retry semantics preserved)", got)
+	}
+	if got := metered.Load(); got != 1 {
+		t.Fatalf("extra-call meter fired %d times, want 1 (the strip retry)", got)
+	}
+}
+
+// Case 7 (R53 / R51-F15): ctxLen 恢复的压缩重发同样必须补记——首轮 400
+// context_length（窗口未配置，从错误体发现 200），机械裁剪后重发成功。
+func TestExecuteOpenAIContextLengthRecoveryMetersExtraCall(t *testing.T) {
+	long := strings.Repeat("a", 200)
+	overlongBody := []byte(`{"model":"grok-4.6","messages":[
+		{"role":"system","content":"sys"},
+		{"role":"user","content":"` + long + `"},
+		{"role":"assistant","content":"` + long + `"},
+		{"role":"user","content":"` + long + `"},
+		{"role":"assistant","content":"` + long + `"},
+		{"role":"user","content":"` + long + `"},
+		{"role":"assistant","content":"` + long + `"},
+		{"role":"user","content":"` + long + `"},
+		{"role":"assistant","content":"` + long + `"},
+		{"role":"user","content":"` + long + `"},
+		{"role":"assistant","content":"` + long + `"}
+	]}`)
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if len(body) > 600 { // 裁剪前的大 body → context length 拒绝
+			calls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"This model's maximum context length is 200 tokens. However, your messages resulted in 700 tokens."}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	store := reqprobe.NewMemoryStore()
+	exec, coord := newReqProbeExecutor(store)
+	defer coord.Close()
+
+	cand := reqProbeTestCandidate(upstream.URL)
+	cand.ContextWindow = nil // 窗口未知 → 依赖错误体发现（见 limit_discovery 测试）
+
+	var metered atomic.Int32
+	_, err := exec.executeOpenAI(&ExecParams{
+		W:           httptest.NewRecorder(),
+		R:           httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		BodyBytes:   overlongBody,
+		ClientModel: "grok-4.6", ClientProtocol: "openai-completions",
+		ExtraUpstreamCall: func() { metered.Add(1) },
+	}, cand, 0, time.Now(), nil)
+	if err != nil {
+		t.Fatalf("executeOpenAI with ctxLen recovery: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("rejected oversized calls = %d, want 1", got)
+	}
+	if got := metered.Load(); got != 1 {
+		t.Fatalf("extra-call meter fired %d times, want 1 (the compressed retry)", got)
+	}
+}

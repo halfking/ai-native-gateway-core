@@ -79,3 +79,9 @@
 - **白名单自清洁**：文件已无命中（删除或已双腿化）而白名单条目还在 → 红，强制移除。防"守卫通过即债务隐身"。清偿路径：逐文件双腿化 → 删条目 → 守卫确认。
 - **admin 读面债基线**（R47 初始 DEBT 白名单 25 Go + 6 SQL）：既有残留裸读并非 D07 一次性盘点所得，而是守卫机械扫描重新生成——人工清单覆盖半径不足（本轮实差：子代理报 13 文件，机械扫出 53 文件）。
 - **assertTaskInTenant 已双腿化**（hot∪母表双 EXISTS）：tenant 边界判定这类**安全闸**读面同样适用 8h 盲窗——闸判定错误直接变成跨租户 404 误伤。
+
+### R53 回注（2026-09-22，727/730 契约测试 + installer 结构性缺席定性）
+- `migration_727_test.go`：F-A 索引绑 retention.go 谓词、F-B 函数索引表达式与 710 视图投影等价绑定（归一化剥别名/`::TEXT`）+ 三段式结构（分区 gexec/hot 独立腿/ONLY+ATTACH）+ 禁 BEGIN/COMMIT（CONCURRENTLY 不能进事务；DO 块内无分号 BEGIN 不误报）+ down 恰 3 索引。
+- `migration_730_test.go`：CHECK 枚举**编译期 import autoroute** 绑定 AllAgentRoles/AllTaskKinds；UNIQUE NULLS NOT DISTINCT 钉扎（252 重放翻倍 48→96）；部分索引 WHERE 门；embeddata byte-identical（730 五点同步已随 R48 完成）。
+- 负例纪律复验：第一轮 727 单点变异被 fallback 正则掩盖漏报，全局变异复验双断言 FAIL——**钉桩自身的 fallback 分支也是被钉语义的一部分**。
+- R53-D1（登记）：727/728/729 全 CONCURRENTLY，installer runner 一律 --single-transaction 结构性装不下 → embeddata 缺席属结构性排除；fresh install 缺三索引（gateway ensure 链亦无兜底）仅性能回归。后续 installer 非事务通道或 ensure 兜底。

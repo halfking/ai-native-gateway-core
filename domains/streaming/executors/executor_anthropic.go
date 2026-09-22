@@ -882,6 +882,9 @@ func (e *Executor) executeAnthropic(
 				// maxRetries==0 the compressed payload is never sent and the
 				// loop falls through to the generic "exhausted 0 retries".
 				ctxLenRecoveryRetry = true
+				// R51-F15: 压缩后的重发是准入内的额外上游调用，补记到准入
+				// Governor（与 executeOpenAI 的 ctxLen 恢复同型）。
+				meterExtraUpstreamCall(params)
 				continue
 			case ctxLenGiveUp:
 				// Return a typed error so the outer Execute loop knows
