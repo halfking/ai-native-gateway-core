@@ -1,1 +1,1 @@
-{"max_tokens":0,"messages":[{"content":"go","role":"user"}],"model":"gpt-x","system":"part1"}
+{"max_tokens":0,"messages":[{"content":"go","role":"user"}],"model":"gpt-x","system":"part1\npart2"}

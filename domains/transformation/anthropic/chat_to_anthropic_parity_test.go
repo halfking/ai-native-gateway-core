@@ -31,17 +31,19 @@ import (
 //     converter drops them.
 //   - reasoning_effort → thinking: IR-only capability; handwritten drops it.
 //
-// IR-side fidelity gaps found by this harness (ledgered 2026-09-22, Wave 5
-// candidates — NOT masked as "expected": each is allowlisted with a pointer):
-//   - GAP-1 system array content: IR keeps only the FIRST text block
-//     (data loss); handwritten joins all blocks with newline (authoritative).
-//   - GAP-2 named tool_choice: IR serializes {"type":"function",
+// IR-side fidelity gaps found by this harness (GAP-1/2/3, CLOSED Wave5
+// 2026-09-22 — the allowlist entries below were removed when each gap
+// closed, so any recurrence now fails loudly):
+//   - GAP-1 system array content: IR kept only the FIRST text block
+//     (data loss); now joins all text blocks with newline like the
+//     handwritten converter (internal/ir/parse_openai.go extractSystemPrompt).
+//   - GAP-2 named tool_choice: IR serialized {"type":"function",
 //     "function":{"name":X}} to the bare string "function" — not a valid
-//     Anthropic form (canonical: {"type":"tool","name":X}); handwritten maps
-//     correctly.
-//   - GAP-3 empty text block: IR preserves assistant content:"" as a text
-//     block next to tool_use — Anthropic rejects empty text blocks;
-//     handwritten suppresses it.
+//     Anthropic form; now emits {"type":"tool","name":X}
+//     (internal/ir/serialize_anthropic.go serializeAnthropicToolChoice).
+//   - GAP-3 empty text block: IR preserved assistant content:"" as a text
+//     block next to tool_use — Anthropic rejects empty text blocks; now
+//     suppressed (serializeAnthropicMessageContent).
 //
 // Convergence ruling: the handwritten side is NOT swapped for an IR wrapper
 // this round. Its caller (anthropic_bridge.go) runs on a path with different
@@ -274,17 +276,21 @@ func parityAllowedDiffs(caseName string) []string {
 		// ("system_ignored" probe: kept with ir_unknown_field anomaly).
 		return []string{"$.max_tokens", "$.system_ignored"}
 	case "system_array_joins":
-		// GAP-1: IR drops non-first system text blocks (ledgered).
-		return []string{"$.max_tokens", "$.system"}
+		// GAP-1 closed (Wave5): system now joins all text blocks; only the
+		// max_tokens converter-default ruling remains.
+		return []string{"$.max_tokens"}
 	case "sampling_and_stop_and_user":
 		// Fully converged: no rulings expected.
 		return nil
 	case "multi_function_tools_and_choice":
-		// GAP-2: IR named tool_choice → invalid bare "function" (ledgered).
-		return []string{"$.max_tokens", "$.tool_choice"}
+		// GAP-2 closed (Wave5): named tool_choice converges to
+		// {"type":"tool","name":X} on both sides; input pins max_tokens so
+		// no default ruling needed.
+		return nil
 	case "assistant_tool_calls_then_tool_result":
-		// GAP-3: IR preserves empty assistant text block (ledgered).
-		return []string{"$.max_tokens", "$.messages[1].content"}
+		// GAP-3 closed (Wave5): empty assistant text block suppressed;
+		// input pins max_tokens so no default ruling needed.
+		return nil
 	case "multimodal_image_data_uri_and_https":
 		return []string{"$.max_tokens"}
 	case "ir_thinking_extension":

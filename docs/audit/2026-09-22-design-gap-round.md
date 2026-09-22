@@ -115,6 +115,20 @@ By-design（接受）：
 ## 八、挂账清单（下一轮入口）
 
 1. **B6/B11/B13**（Wave 3 择机项余量；B9/B10/B12/B14 已于本日落库 b9d18e060/a99274148/8e0b51bc4/f82bb40da）：artifact 上传+catalog+设备上限默认 2、providers official 标记列（需迁移 738）、Responses 上游方向 Parse+completed 回带。
-2. **IR 请求方向三缺口**（D5 实锤，Wave 5 优先）：GAP-1 system 数组丢块 / GAP-2 命名 tool_choice 非法序列化 / GAP-3 空 text 块；闭合后重估 chat_to_anthropic 收敛为 IR 薄包装。
+2. ~~IR 请求方向三缺口~~ → **已闭合（Wave 5，见 §九）**。
 3. **IR SerializeAnthropic max_tokens=0 直发**：管道层默认值责任归属待裁决（by-design 记录在案）。
 4. **下一轮**：挂账清单 + 源文档《llm-gateway修正》未覆盖项的常规 48h 审计轮（docs/audit/playbook/orchestrator-prompt.md）。
+
+---
+
+## 九、Wave 5（2026-09-22 当日加开）：IR 请求方向三缺口闭合
+
+| # | 缺口 | 修法 | 位置 |
+|---|---|---|---|
+| GAP-1 | `ParseOpenAI` system 数组 content 只保留首块（数据丢失） | 全部 text 块按 `\n` join，对齐手写 `chatSystemContent`；非 text 块维持 IR 宽容解析约定（不参与 join，不报错） | `internal/ir/parse_openai.go` extractSystemPrompt |
+| GAP-2 | `SerializeAnthropic` 命名 tool_choice 序列化为裸字符串 `"function"`（非合法 Anthropic 形态） | `serializeAnthropicToolChoice` 补 `"function"` 分支 → `{"type":"tool","name":X}`，与 `serializeOpenAIToolChoice` 反方向 `"tool"`→function 形态映射完全对称 | `internal/ir/serialize_anthropic.go` |
+| GAP-3 | 空 assistant text 块随 tool_use 一并保留（`content:""`→`{"type":"text","text":""}`，Anthropic 拒收） | `serializeAnthropicMessageContent` 跳过空 text 块；单块空文本走简单字符串路径的既有行为不变 | `internal/ir/serialize_anthropic.go` |
+
+- **证据**：parity golden 三例 `.ir.json` 再生（system join / tool_choice 对象形态 / 空 text 块消失，`.handwritten.json` 零变化）；`parityAllowedDiffs` 三条 GAP 白名单同步移除——缺口复发将即刻响红；`go build ./... && go vet ./... && go test ./...` 全量 280 包零失败。
+- **顺带发现（登记不盲改）**：`serializeAnthropicToolChoice` 对 `"auto"/"none"/"any"` 仍输出裸字符串，而手写侧输出对象形态（`{"type":"auto"}` 等）；Anthropic 官方 wire format 为对象。未随 GAP-2 一并改：超出登记缺口范围，且可能影响现有 Anthropic 兼容上游（GLM/MiniMax 系）实测行为，留待下一轮以 8782 实测证据裁决。
+- **收敛重估裁决**（D5 遗留，"待缺口闭合并评估后再议"）：**维持暂缓换 IR 薄包装**。GAP-1/2/3 闭合消除了"IR 携带缺口"这条反对理由，但 bridge 路径（vendorstrip 介入/Q2 gate）与 executor IR 路径 fallback 语义不同的结构性理由仍在；且 parity golden 现已双侧钉桩全绿，为未来换包装提供了现成的验收面。换包装条件 = 两条路径 fallback 语义对齐方案成文之时。

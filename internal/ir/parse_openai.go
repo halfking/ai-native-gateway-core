@@ -652,9 +652,18 @@ func extractSystemPrompt(messages *[]Message) *SystemPrompt {
 	for i, msg := range *messages {
 		if msg.Role == "system" {
 			system := &SystemPrompt{}
-			if len(msg.Content) > 0 && msg.Content[0].Type == "text" {
-				system.Content = msg.Content[0].Text
+			// GAP-1 (Wave5, 2026-09-22): OpenAI 允许 system content 为块数组；
+			// 手写转换器（chat_to_anthropic.go chatSystemContent）把全部 text
+			// 块按 \n join。旧实现只保留首块，其余块静默丢失（数据丢失）。
+			// 非 text 块（IR 侧合法存在）不参与 join，与手写侧报错语义的
+			// 差异维持 IR 的宽容解析约定。
+			var texts []string
+			for _, block := range msg.Content {
+				if block.Type == "text" {
+					texts = append(texts, block.Text)
+				}
 			}
+			system.Content = strings.Join(texts, "\n")
 			// Remove system message from the list
 			// We need to reconstruct without the system message
 			newMessages := make([]Message, 0, len(*messages)-1)
