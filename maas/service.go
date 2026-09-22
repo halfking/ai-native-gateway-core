@@ -120,7 +120,24 @@ func (s *Service) ChargeRequestMultimodal(ctx context.Context, tenantID, request
 	return s.chargeTokens(ctx, tenantID, requestID, canonicalName, usage)
 }
 
+// ChargeRequestMultimodalWithMultiplier is the Wave 3 B1 entry point: the
+// caller resolves the peak/off-peak multiplier once for the request's start
+// time (Service.ResolveCurrentMultiplier), applies it to the charge, and
+// stamps the SAME value into the telemetry rows — charge and audit trail
+// cannot disagree. A multiplier <= 0 is treated as 1.0.
+func (s *Service) ChargeRequestMultimodalWithMultiplier(ctx context.Context, tenantID, requestID, canonicalName string, usage TokenUsage, rateMultiplier float64) (int64, float64, error) {
+	if rateMultiplier <= 0 {
+		rateMultiplier = 1.0
+	}
+	amount, err := s.chargeTokensWithMultiplier(ctx, tenantID, requestID, canonicalName, usage, rateMultiplier)
+	return amount, rateMultiplier, err
+}
+
 func (s *Service) chargeTokens(ctx context.Context, tenantID, requestID, canonicalName string, usage TokenUsage) (int64, error) {
+	return s.chargeTokensWithMultiplier(ctx, tenantID, requestID, canonicalName, usage, 1.0)
+}
+
+func (s *Service) chargeTokensWithMultiplier(ctx context.Context, tenantID, requestID, canonicalName string, usage TokenUsage, rateMultiplier float64) (int64, error) {
 	if !s.Enabled() || tenantID == "" || tenantID == "default" {
 		return 0, nil
 	}
@@ -136,7 +153,7 @@ func (s *Service) chargeTokens(ctx context.Context, tenantID, requestID, canonic
 	if err != nil {
 		return 0, err
 	}
-	amount := CalcCreditsMultimodal(usage, rates)
+	amount := CalcCreditsMultimodalWithMultiplier(usage, rates, rateMultiplier)
 	if amount <= 0 {
 		return 0, nil
 	}

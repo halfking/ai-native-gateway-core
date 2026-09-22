@@ -339,6 +339,13 @@ type RequestLogEntry struct {
 	StrategyUsed   *string  `json:"strategy_used,omitempty"`
 	CreditsCharged *int64   `json:"credits_charged,omitempty"`
 
+	// Wave 3 B1 (2026-09-22): peak/off-peak rate multiplier resolved at the
+	// request start time and applied to the charge. Stamped into
+	// usage_ledger(_hot).rate_multiplier and
+	// request_logs(_hot).credits_rate_multiplier (migration 736) so billing
+	// replay can reconcile the exact factor used. nil/1.0 = no multiplier.
+	RateMultiplier *float64 `json:"rate_multiplier,omitempty"`
+
 	// Round 47 (2026-06-18) compression v7 T2: parent-child chain tracking.
 	// Mirrors the 4 columns added by db/migrations/013_compression_columns.sql
 	// (parent_request_id, compression_reason, compression_strategy,
@@ -1142,13 +1149,15 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			end_user_id, credential_id, provider_id, canonical_id,
 			raw_model_name, prompt_tokens, completion_tokens,
 			cache_read_tokens, cache_write_tokens,
-			total_tokens, cost_usd, latency_ms, success, error_kind
+			total_tokens, cost_usd, latency_ms, success, error_kind,
+			rate_multiplier
 		) VALUES (
 			$1, now(), $2, $3, $4,
 			$5, $6, $7, $8,
 			$9, $10, $11,
 			$12, $13,
-			$14, $15, $16, $17, $18
+			$14, $15, $16, $17, $18,
+			COALESCE($19, 1.0)
 		)
 	`,
 		entry.RequestID,
@@ -1169,6 +1178,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.LatencyMs,
 		entry.Success,
 		entry.ErrorKind,
+		entry.RateMultiplier,
 	)
 	if err != nil {
 		return err
@@ -1263,7 +1273,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			discard_events,
 			customer_id,
 			-- V6-W1.6 R8 (migration 610): request class + scheduled due time.
-			request_class, due_at
+			request_class, due_at,
+			-- Wave 3 B1 (migration 736): peak/off-peak charge multiplier;
+			-- appended last so the 102 existing $N placeholders stay put.
+			credits_rate_multiplier
 		) VALUES (
 			$1, now(), $2, $3, $4,
 			$5, $6, $7,
@@ -1319,7 +1332,9 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- V6-W1.6 R8 (migration 610): request class + due time. $101 stays
 			-- a bare placeholder (placeholder-alignment guard); the NOT NULL
 			-- default is resolved arg-side by requestClassArg.
-			$101, $102
+			$101, $102,
+			-- Wave 3 B1: credits_rate_multiplier (nullable pointer arg).
+			$103
 		)
 
 					-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
@@ -1459,7 +1474,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 				-- V6-W1.6 R8 (migration 610): class never regresses to NULL;
 				-- due_at keeps the first non-null value.
 				request_class        = COALESCE(EXCLUDED.request_class, request_logs_hot.request_class),
-				due_at               = COALESCE(EXCLUDED.due_at, request_logs_hot.due_at)
+				due_at               = COALESCE(EXCLUDED.due_at, request_logs_hot.due_at),
+				-- Wave 3 B1: first-write-wins on the multiplier (charge path
+				-- stamps it once; later enrichments must not clear it).
+				credits_rate_multiplier = COALESCE(request_logs_hot.credits_rate_multiplier, EXCLUDED.credits_rate_multiplier)
 			-- 2026-07-27 (L-2): terminal-state guard, mirroring the WAL guard in
 
 			-- request_logger.go Update(). Without this, the deferred client-
@@ -1639,6 +1657,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			// 'immediate' default for the NOT NULL column), $102 ↔ due_at.
 			requestClassArg(entry.RequestClass),
 			entry.DueAt,
+			// Wave 3 B1 (migration 736): $103 ↔ credits_rate_multiplier.
+			entry.RateMultiplier,
 		)
 
 		if err != nil {
@@ -2113,6 +2133,9 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 				-- V6-W1.6 R8 (migration 610): request class + due time.
 				, request_class = CASE WHEN $98 IS NULL THEN request_class ELSE $98 END
 				, due_at = CASE WHEN $98 IS NULL THEN due_at ELSE $99 END
+				-- Wave 3 B1 (migration 736): peak/off-peak charge multiplier;
+				-- COALESCE keeps the prior value when the update carries none.
+				, credits_rate_multiplier = COALESCE($100, credits_rate_multiplier)
 			   WHERE request_id = $1
 
 			     AND NOT (
@@ -2254,6 +2277,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			// otherwise $98/$99 are written as one invariant-preserving pair.
 			entry.RequestClass,
 			entry.DueAt,
+			// Wave 3 B1 (migration 736): $100 ↔ credits_rate_multiplier.
+			entry.RateMultiplier,
 		)
 
 		if err != nil {

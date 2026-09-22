@@ -6097,10 +6097,22 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				canonical = evt.ClientModel
 			}
 			chargeCtx, chargeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			charged, err := h.maasSvc.ChargeRequest(chargeCtx, keyInfo.TenantID, evt.RequestID, canonical, pt, ct, crt, cwt)
+			// Wave 3 B1: resolve the peak/off-peak multiplier once from the
+			// request start time (eventAt, falling back to now), charge with
+			// it, and stamp the SAME value into the telemetry rows so the
+			// charge and the audit trail cannot disagree.
+			chargeStart := eventAt
+			multiplier := h.maasSvc.ResolveCurrentMultiplier(chargeCtx, chargeStart)
+			charged, stampedMultiplier, err := h.maasSvc.ChargeRequestMultimodalWithMultiplier(chargeCtx, keyInfo.TenantID, evt.RequestID, canonical, maas.TokenUsage{
+				PromptTokens:     pt,
+				CompletionTokens: ct,
+				CacheReadTokens:  crt,
+				CacheWriteTokens: cwt,
+			}, multiplier)
 			chargeCancel()
 			if err == nil && charged > 0 {
 				reqLog.CreditsCharged = &charged
+				reqLog.RateMultiplier = &stampedMultiplier
 			} else if err != nil {
 				slog.Warn("maas charge failed", "request_id", evt.RequestID, "tenant_id", keyInfo.TenantID, "error", err)
 			}
