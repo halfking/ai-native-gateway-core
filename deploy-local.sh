@@ -40,6 +40,14 @@ PORT="$(active_listen_port)"
 HEALTH_URL="${LLM_GATEWAY_HEALTH_URL:-http://127.0.0.1:${PORT}/health}"
 CONTAINER_NAME="llm-gateway-local-${PORT}"
 
+# 2026-09-23 (deploy-e2e validation): 默认开启 PG pre-flight fail-closed。
+# 本地容器启动时偶发 host.docker.internal 网络握手慢于 90s boot-retry 预算
+# （Docker Desktop on macOS 冷启动场景），导致 dbConn=nil → /api/auth/token
+# 返回 "database not configured"。开启后 dl_wait_pg_isready 超时会直接 die，
+# 容器不会被拉进 database:null 死区。如需回退到 warn-only：export
+# DL_PG_PREFLIGHT_REQUIRED=0 后再调本脚本。
+export DL_PG_PREFLIGHT_REQUIRED="${DL_PG_PREFLIGHT_REQUIRED:-1}"
+
 if [[ ! -x "$UNIFIED" ]]; then
   printf '[deploy-local] error: unified entry missing: %s\n' "$UNIFIED" >&2
   exit 1
