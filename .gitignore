@@ -384,3 +384,11 @@ tests/stress/handoff_b_s8s13_test.go
 # 均为机器本地运行态，换机无意义且可能含敏感数据。
 /run/
 /raw-logs/
+
+# ── 2026-09-22: 审计周期内一次性抓取的大体积原始日志不入库 ──────────
+# 252 PG SQL 日志审计/R46 离线静态扫描等场景下，会在 docs/audit/<date>-*/
+# 下就地保存 PG csv pg_text 日志（~15MB）和容器 ctr_snapshot 日志（~50MB）。
+# 这些是审计轮的中间原始抓取，已分析后留在原位；分析输出已落到对应
+# docs/audit/<date>-*.md 报告，不需要把 GB 级文本入仓。
+docs/audit/**/pg_*pg17_logs.txt
+docs/audit/**/ctr_snapshot_*.log
