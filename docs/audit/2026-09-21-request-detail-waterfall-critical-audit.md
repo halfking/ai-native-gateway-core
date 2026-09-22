@@ -11,7 +11,7 @@
 
 本轮将抽屉和请求详情瀑布页收敛为同一 `WaterfallRequestDetailContent` 呈现主体，并将请求详情内部路由统一为显式 `{ mode, tab }` 契约。正常内存瀑布记录优先显示与抽屉相同的 `WaterfallRequest.attempts`；仅在历史 DB by-ID 回退**省略** attempts 字段时，才用既有 journey/log 合并 attempts 补足诊断信息。显式空数组仍显示空态，避免伪造抽屉不存在的尝试记录。
 
-> 截至本文创建时，代码/组件/路由测试与前端门禁已完成；正式全仓 `verify.sh --web` 被既有 migration checksum 台账漂移提前阻断（§三），最终提交 SHA 的重新部署与浏览器验收仍须在本轮收尾中完成，不能提前称为闭环。
+> 最终验证状态：远端 main 已吸收本轮 `ab4af8ec8`（共享正文）与 `9252aa8e5`（by-ID 路由）并追加 `107f1d97d`（历史 404 derived 回退/401 redirect 保留）；最终 active release 为 `8f6af633/#2173`。该版本未在最后一次发布前改变 waterfall 相关文件，并完成实际 API 与 SPA 浏览器验收。正式全仓 `verify.sh --web` 仍被既有 migration checksum 台账漂移提前阻断（§三），不能宣称全仓门禁绿。
 
 ## §一、发现与处置
 
@@ -51,8 +51,8 @@
 
 | 命令/验证 | 结果 |
 |---|---|
-| `pnpm exec vitest run …`（drawer/inline/route/loader 聚焦套件） | PASS；最终 9 文件、46 tests（包含 parity、DB attempts fallback、显式空 attempts、深链/概览点击/切模式/选轮次） |
-| `pnpm run test` | PASS；最终一次完整前端套件 134 文件、954 tests。测试输出仍有既有 i18n mock / router 注入警告，退出码为 0，未被声明为无警告。 |
+| `pnpm exec vitest run …`（drawer/inline/route/loader/401 recovery 聚焦套件） | PASS；当前主线 10 文件、63 tests（包含 parity、DB attempts fallback、显式空 attempts、深链/概览点击/切模式/选轮次、401 redirect 保留） |
+| `pnpm run test` | PASS；最终一次完整前端套件 136 文件、971 tests。测试输出仍有既有 i18n mock / router 注入警告，退出码为 0，未被声明为无警告。 |
 | `pnpm exec vue-tsc --noEmit` | PASS（locale 重复键修复后） |
 | `pnpm run responsive:check` | PASS |
 | `pnpm run element:check` | PASS（247 `.vue` 文件） |
@@ -66,19 +66,23 @@
 | `go test ./internal/sqlguard ./discovery -count=3` | PASS（SQL `//` → `--` 修复后） |
 | `go test ./cmd/gateway -run '^TestLiteRequestLogSink_TurnNoContinuesAcrossRestart$' -count=100` | PASS；但整个 `cmd/gateway -count=10` 组合仍偶发 macOS temp `MkdirAll invalid argument`，见遗留风险。 |
 | `scripts/deploy-local.sh deploy`（中间部署） | PASS；8782 health/ready/version、候选与 active credential decrypt smoke 均 PASS。该 release 为 `119981c0/#2159`，不含本轮后续审查修复，仅作为环境与认证链路证明。 |
+| `scripts/deploy-local.sh deploy`（最终 waterfall 验收发布） | PASS；最终验证 release `1cda6c7f/#2172`：candidate/active `/healthz`、`/readyz`、`/version` 与 credential decrypt smoke 均 PASS。 |
+| 最终 API 对账 | PASS；历史 request `f5a6…` 的 by-ID waterfall 返回业务 404 `waterfall request not found`，但 `/api/admin/request-detail/:id` 与 `/api/logs/:id` 均 200，触发主线的 derived waterfall 回退。即时 memory request `34ca3a…` 的 list 与 by-ID 详情逐字段阶段/结果/总耗时一致，并都有 5 条 attempts。 |
+| 最终 SPA 浏览器验收 | PASS；在最终 active `8f6af633/#2173` 的已认证 SPA 中，用户原始 request 先进入概览，再点击概览主内容区的“调度瀑布”，URL 保持 `request-detail/f5a6…?mode=request&tab=waterfall`，并实际渲染 `request-waterfall-panel`、`waterfall-request-detail` 与 T0–T9 阶段表；未跳转总览。该 request 的原始 waterfall 已出保留窗（by-ID 业务 404），当前正文由 detail/log/journey 合成，显示 Attempts(3)。在 `/dispatch/waterfall` 选中实时 request `89bf243bb90ae670f00715eaf1cdf659` 后，右侧抽屉实际显示同一共享正文、摘要、T0–T9 表和 Attempts(1)。 |
 | 本地 admin 登录 | PASS；`POST /api/auth/token` HTTP 200，获得 HttpOnly `llmgw_session`（未记录凭据/令牌）。 |
 
 ### 未通过 / 未可作为最终绿灯
 
 1. `./verify.sh --web` 在 migration checksum 阶段提前失败：11 个历史 marker mismatch，且 662/663 为 stale registry；本轮未改 `sql/migrations` 或 `docs/db-changelog.md`。这不是本轮 UI/SQL comment 代码导致，但正式全仓门禁目前不能宣称全绿。单独的只读台账审计仍在进行，禁止直接重写 checksum 来刷绿。
-2. 首次 `go test ./... -count=1` 同时出现 `internal/sqlguard`（已修）和 `internal/logging.TestAsyncRawDataLogger_OverflowEmitsAnomaly` 一次失败；后者隔离三次 PASS，仍须在最终全仓复跑中观察。
-3. 最终 commit SHA 的重部署和浏览器验收尚未发生；中间 2159 版本不足以证明最终代码已运行。
+2. `go test ./... -count=1` 的 SQL guard P0 与 logging overflow 竞态已修复并对相关包压力复验；但 `cmd/gateway.TestLiteRequestLogSink_TurnNoContinuesAcrossRestart` 在 package/full-suite 组合压力下仍偶发 macOS temp `MkdirAll invalid argument`，尽管精确测试 `-count=100` PASS。该不稳定性与本轮瀑布改动无直接文件重叠，仍阻止声称全仓 Go 绿。
+3. 最终 active `8f6af633/#2173` 已完成部署、身份核验和浏览器验收。
 
 ## §四、运行态与浏览器证据
 
 - 部署前 8782：`ef694cdf/#2161`，证明此前所有“验证 119981c02”的说法无效。
 - 中间部署后 8782：`119981c0/#2159`，`/healthz`、`/readyz`、`/version` 均健康；该 release 在最终审查修复前生成，仅证明本地蓝绿部署、cookie 登录和目标页面可达。
-- 最终 main release `c5b5b12e/#2159` 已在 8782 health/ready/version 与 credential decrypt smoke 后运行。浏览器通过已认证临时代理访问指定 URL 后，目标详情和日志元数据接口均为 200，但 waterfall by-ID API 在当时 release 由于未注册返回 404（cookie-only 请求表现为 401，前端全局认证丢失逻辑将 URL 改为 `/?login=1`）。该实测直接发现 F7，**不能**作为“内嵌瀑布可见”通过证据；修复后需重发 release 再验收。
+- `c5b5b12e/#2159` 验收首次暴露 F7：目标详情/日志元数据均 200，但 by-ID waterfall handler 未注册，Bearer 请求 404、cookie-only 前端请求表现为 401 后跳到 `/?login=1`。该失败被保留为发现证据。
+- 修复链（共享正文 + by-ID route + 404 derived fallback/401 redirect 保留）进入远端 main 后，最终 active release `8f6af633/#2173` 已完成 health/ready/version、candidate/active credential decrypt smoke 与浏览器验收。原始 URL `request-detail/f5a6…?mode=request&tab=waterfall` 从概览主内容快捷“调度瀑布”点击后保持详情路径并实际渲染共享 waterfall 正文与 T0–T9 表；原 request 的 waterfall 记录已出保留窗（by-ID 业务 404），由 detail/log/journey 数据导出 waterfall，未跳到总览。实时列表选中 `89bf243bb90ae670f00715eaf1cdf659` 的右侧抽屉实际显示请求摘要、T0–T9 表与 Attempts(1)，证明 native 记录路径亦正常。
 
 ## §五、健康面
 
@@ -93,7 +97,7 @@
 2. **全仓 migration checksum 台账漂移**：11 mismatch + 2 stale registry 阻断 `verify.sh --web`。必须先按历史提交/发布台账审计每项，再决定 checksum 或注册表修复。
 3. **全仓 Go 测试稳定性**：首次/复跑全仓 `go test ./...` 在高并发下发生过两种不稳定现象：`cmd/gateway.TestLiteRequestLogSink_TurnNoContinuesAcrossRestart` 的临时目录 `mkdir ... invalid argument`（单包 `-count=10` 通过），以及 `internal/logging` overflow anomaly 未入队。后者已定位为 goroutine 先于 Flush 的竞态并修复；lite sink 仍需在干净宿主/更高并发条件下专门调查，不能据一次单包通过关闭。
 4. **migration checksum 台账治理**：11 个 checksum mismatch 与 662/663 stale marker 经只读历史审计确认是登记后内容变更/重编号的部署溯源问题，不可直接替换 checksum 刷绿。需按 migration 的 applied/pending 状态、目标库 marker 和 controlled replay 建立双 provenance 记录。
-5. **浏览器最终验收未完成**：必须在最终 SHA release 后，以已认证会话实际检查目标 URL 的当前内容区、从概览点击瀑布、以及 `/dispatch/waterfall` 抽屉与全屏详情主体。
+5. **运行态样本时间窗**：waterfall ring 会快速淘汰样本；抽屉与内嵌页面切换期间实时 request 可发生额外 retries，因此 attempts 数/阶段值应以同一采样时刻的 list/by-ID API 对账为准。共享正文结构和原始历史 request 的 derived fallback 已在最终 SPA 中实测。
 
 ## §七、下一轮提示词
 
