@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/recentmodels"
 )
 
 // ─── 共享谓词钉桩（2026-09-20 探测量策略） ─────────────────────────────
@@ -57,11 +59,15 @@ func TestProbePolicyPredicatesShape(t *testing.T) {
 		"(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE) AND COALESCE(%s.origin_stage, 'business') = 'business')"; got != want {
 		t.Fatalf("probeTrafficExclusion = %q, want %q", got, want)
 	}
-	// 冻结 113 列视图变体（R49 自纠）：origin_stage 不在视图契约内，视图
-	// 读面只能用 flags+task_type+origin_actor 三臂（全部 113 列在册）。
+	// 冻结 113 列视图变体（R49 自纠；R52 审计补全 actor）：origin_stage 不在
+	// 视图契约内，视图读面只能用 flags+task_type+origin_actor 三臂（全部
+	// 113 列在册）。gateway actor 全集为四：node-probe-worker（legacy runOne）、
+	// probe-service（队列 gateway 轮）、credential-selfcheck-worker（自检
+	// HTTP）+ active-probe-worker（历史行兼容）——缺一即该轮流量被视图扫描
+	// 当"使用"计入（INV-3 泄漏）。
 	if got, want := probeTrafficExclusionPredicateView,
 		"(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE) AND COALESCE(%s.task_type, '') <> 'probe_triggered'"+
-			" AND COALESCE(%s.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker'))"; got != want {
+			" AND COALESCE(%s.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker', 'probe-service', 'credential-selfcheck-worker'))"; got != want {
 		t.Fatalf("probeTrafficExclusionView = %q, want %q", got, want)
 	}
 	if probeUsageWindowInterval != "interval '3 days'" {
@@ -273,5 +279,68 @@ func TestProbeUsageViewScanUsesFrozenContractPredicate(t *testing.T) {
 	}
 	if strings.Contains(src, `fmt.Sprintf(probeTrafficExclusionPredicate,`) {
 		t.Fatalf("daily_probe_audit must not reference the physical-table predicate (origin_stage is not in the view's 113-column contract)")
+	}
+}
+
+// ─── R52 审计修正轮（2026-09-22） ─────────────────────────────────────
+
+// TestFilterRecentEntriesByUsage pins the selfcheck primary 3-day filter:
+// the shared Redis ranking (TTL=7d) may carry models last used 4-7 days ago —
+// those must not become the selfcheck primary (INV-3 使用范围). Normalization
+// matches recentmodels.Normalize (lowercase, whitespace-stripped); an empty
+// usage set filters everything out (the caller then falls through to the
+// 3-day DB fallback).
+func TestFilterRecentEntriesByUsage(t *testing.T) {
+	recent := []recentmodels.Entry{
+		{Model: "GLM-5.3", Count: 100},
+		{Model: "deepseek v3", Count: 50},
+		{Model: "old-model", Count: 200},
+	}
+	// Normalize 只折叠空白+小写（不去连字符），used 集合必须与 entry 同源
+	// 归一，否则窗口匹配静默丢真——这正是本函数要在生产里防住的坑。
+	used := map[string]struct{}{
+		recentmodels.Normalize("GLM 5.3"):    {},
+		recentmodels.Normalize("DeepSeekV3"): {},
+	}
+	if _, ok := used[recentmodels.Normalize("GLM-5.3")]; ok {
+		t.Fatal("normalize assumption broken: 'GLM 5.3' and 'GLM-5.3' unexpectedly equal")
+	}
+	used[recentmodels.Normalize("GLM-5.3")] = struct{}{}
+	got := filterRecentEntriesByUsage(recent, used)
+	if len(got) != 2 {
+		t.Fatalf("filtered = %+v, want 2 in-window entries", got)
+	}
+	models := map[string]bool{}
+	for _, e := range got {
+		models[e.Model] = true
+	}
+	if !models["GLM-5.3"] || !models["deepseek v3"] {
+		t.Fatalf("filtered = %+v, want GLM-5.3 + deepseek v3 (old-model dropped)", got)
+	}
+	if out := filterRecentEntriesByUsage(recent, map[string]struct{}{}); out != nil {
+		t.Fatalf("empty usage set must filter to nil, got %+v", out)
+	}
+	if out := filterRecentEntriesByUsage(nil, used); out != nil {
+		t.Fatalf("empty ranking must stay nil, got %+v", out)
+	}
+}
+
+// TestSelfcheckPrimaryGatedByThreeDayUsage pins the R52 wiring: pickModels must
+// narrow the shared 7d Redis ranking through recentInUsageWindow before primary
+// selection, and the filter query must carry the physical dual-arm exclusion
+// (probe traffic must not keep a model "in-window").
+func TestSelfcheckPrimaryGatedByThreeDayUsage(t *testing.T) {
+	src, err := readSource("credential_selfcheck.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"w.recentInUsageWindow(queryCtx, credentialID, tenant, recentmodels.Read(queryCtx, w.redis, tenant, 10))",
+		"probeUsageWindowInterval",
+		`fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("credential_selfcheck.go missing 3-day primary gate fragment %q", want)
+		}
 	}
 }
