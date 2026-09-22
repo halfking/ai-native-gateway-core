@@ -483,5 +483,32 @@
       "min_error_envelope_rate": 1.0,
       "note": "section 11.6 fallback MUST emit the wire-error envelope on every response when committed bytes precede EOF. HTTP 200 because bytes are committed; envelope so client SDK can finalize as failure. success_rate=1.0 because HTTP status is 200; the failure lives in the envelope body, not the status line. Replaces the proposed 's12' slot from the R54 handoff (kept as s17 to avoid renumbering s12-s16 which are referenced by capacity_matrix.sh and memprofile/main.go)."
     }
+  },
+  {
+    "id": "s18_sustained_stability_probe",
+    "name": "Sustained mixed-workload stability — long-running concurrent probe, leak and churn detection",
+    "description": "Single-phase stability probe: 5500 non-stream requests (concurrency 50) targeting mock-stress-pool. Designed to characterize gateway under sustained pressure: throughput, by_provider churn across all 4 mocks, total latency. Leak detection via separate curl /admin/memstats before/after probes recorded in REPORT.md.",
+    "plan_ref": "§7 + §11.4 stability under pressure",
+    "setup": [
+      {"provider": "mock-alpha", "state": "healthy"},
+      {"provider": "mock-beta", "state": "healthy"},
+      {"provider": "mock-gamma", "state": "healthy"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-pool",
+      "stream": false,
+      "total": 5500,
+      "concurrency": 50,
+      "prompt": "short",
+      "max_tokens": 16
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 0.99,
+      "min_total_requests": 5500,
+      "require_providers": ["mock-alpha", "mock-beta", "mock-gamma", "mock-delta"],
+      "note": "Stability probe. Asserts (1) overall success ≥99%, (2) all 4 mock providers were exercised. P95 latency and goroutine/heap bounded growth are reported (not asserted) for human review."
+    }
   }
 ]
