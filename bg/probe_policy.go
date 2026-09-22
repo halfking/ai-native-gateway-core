@@ -164,14 +164,18 @@ const probeTrafficExclusionPredicate = "(NOT COALESCE('probe' = ANY(%s.quality_f
 // 含 probe"):
 //   - 'probe' quality flag (v1 branch, direct-round synthetic rows);
 //   - task_type = 'probe_triggered' (ActiveProbeWorker rows);
-//   - origin_actor IN the probe gateway actors (session branch AND v1 branch:
-//     probeGateway sends X-LLM-Origin-Actor: node-probe-worker, ActiveProbe
-//     sends active-probe-worker; verified populated on the real view).
+//   - origin_actor IN the probe gateway actors (session branch AND v1 branch).
+//     R52 审计修正 (2026-09-22): the gateway actor set is FOUR, not two —
+//     node-probe-worker (legacy runOne rounds), probe-service (unified-queue
+//     gateway round, active_probe_executor.go), credential-selfcheck-worker
+//     (selfcheck HTTP through the local gateway), plus active-probe-worker
+//     kept for historical rows. Missing probe-service/selfcheck let those
+//     rounds count as "usage" in every view-based scan (INV-3 leak).
 //
 // Both format verbs take the same view alias (pass it twice).
 const probeTrafficExclusionPredicateView = "(NOT COALESCE('probe' = ANY(%s.quality_flags), FALSE)" +
 	" AND COALESCE(%s.task_type, '') <> 'probe_triggered'" +
-	" AND COALESCE(%s.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker'))"
+	" AND COALESCE(%s.origin_actor, '') NOT IN ('node-probe-worker', 'active-probe-worker', 'probe-service', 'credential-selfcheck-worker'))"
 
 // probeFailureEvidenceWindowSQL is the credential-level failure-evidence
 // window (INV-5): how far back a candidate failure still counts as "this
