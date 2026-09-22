@@ -4109,7 +4109,6 @@ func main() {
 			epThreshold := 2
 			epMaxAttempts := 5
 			epTimeoutMs := 30000
-			epWorkers := 1
 			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_ENABLED"); envStr == "false" || envStr == "0" {
 				epEnabled = false
 			}
@@ -4128,11 +4127,12 @@ func main() {
 					epTimeoutMs = n
 				}
 			}
-			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_WORKERS"); envStr != "" {
-				if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
-					epWorkers = n
-				}
-			}
+			// 2026-09-22 Wave 2: workers moved into the settings registry
+			// (error_probe.workers, default 5 / max 5 per design §5.6).
+			// Priority settings_kv > env (LLM_GATEWAY_ERROR_PROBE_WORKERS,
+			// kept as the spec's EnvName) > default; pool size is fixed at
+			// Start, so the spec is HotReload=false by design.
+			epWorkers := settings.ErrorProbeWorkers()
 			activeProbe = bg.NewActiveProbeWorker(bg.ActiveProbeWorkerConfig{
 				DB:                   dbConn.Pool(),
 				Keyring:              keyring,
