@@ -47,7 +47,6 @@ package ir
 
 import (
 	"strings"
-	"sync"
 )
 
 // CompressConfig controls CompressMessages' behaviour. Zero value
@@ -61,6 +60,11 @@ type CompressConfig struct {
 	// output where they have no semantic meaning (tool_calls: [],
 	// tool_call_id: "", name: "" on plain text messages). Default
 	// true.
+	//
+	// R56 note: at the struct level this is still a documented no-op
+	// (compressMessage ignores it); the flag is kept because the
+	// byte-level transformation twins in
+	// domains/transformation/ctx_compress.go honor it.
 	StripEmptyJSONFields bool
 
 	// DedupConsecutiveToolResults collapses consecutive tool result
@@ -77,10 +81,10 @@ type CompressConfig struct {
 // the dispatcher's inbound long-context path.
 func DefaultCompressConfig() CompressConfig {
 	return CompressConfig{
-		FoldWhitespace:               true,
-		StripEmptyJSONFields:         true,
-		DedupConsecutiveToolResults:  true,
-		CollapseRepeatedText:         true,
+		FoldWhitespace:              true,
+		StripEmptyJSONFields:        true,
+		DedupConsecutiveToolResults: true,
+		CollapseRepeatedText:        true,
 	}
 }
 
@@ -272,8 +276,11 @@ func collapseRepeatedText(in []Message) []Message {
 	if len(in) < 3 {
 		return nil
 	}
-	out := in
+	var out []Message
 	mutated := false
+	// prevEnd is the index just past the last collapsed run; the
+	// messages in in[prevEnd:i] are untouched and must survive.
+	prevEnd := 0
 	i := 0
 	for i < len(in) {
 		if in[i].Role != "user" && in[i].Role != "assistant" {
@@ -294,14 +301,11 @@ func collapseRepeatedText(in []Message) []Message {
 			i++
 			continue
 		}
-		// Build (or extend) the output slice.
 		if !mutated {
 			out = make([]Message, 0, len(in))
-			out = append(out, in[:i]...)
 			mutated = true
-		} else {
-			out = out[:i]
 		}
+		out = append(out, in[prevEnd:i]...)
 		// The first message of the run is re-used — but its Text
 		// is rewritten to the marker. To avoid mutating `in`,
 		// take a copy of the Content slice.
@@ -315,12 +319,13 @@ func collapseRepeatedText(in []Message) []Message {
 		}
 		rep.Content[0].Text = "[repeated " + itoaRepeat(runLen) + " times]"
 		out = append(out, rep)
+		prevEnd = j
 		i = j
 	}
 	if !mutated {
 		return nil
 	}
-	return out
+	return append(out, in[prevEnd:]...)
 }
 
 // firstText returns the Text of the first content block that has
@@ -351,36 +356,7 @@ func itoaRepeat(n int) string {
 	return string(buf[i:])
 }
 
-// ---- Pool reuse for CompressMessages hot path ----
-
-// compressScratch is a small pool of []Message scratch slices used
-// by CompressMessages when the input triggers lazy allocation.
-// Reduces per-call allocation pressure on the long-context hot path.
-var compressScratch = sync.Pool{
-	New: func() any {
-		s := make([]Message, 0, 32)
-		return &s
-	},
-}
-
-func acquireScratch() *[]Message {
-	return compressScratch.Get().(*[]Message)
-}
-
-func releaseScratch(s *[]Message) {
-	if s == nil {
-		return
-	}
-	*s = (*s)[:0]
-	compressScratch.Put(s)
-}
-
-// CompressedStats describes the result of a CompressMessages call.
-// Useful for logging and metrics.
-type CompressedStats struct {
-	InputMessages    int
-	OutputMessages   int
-	DroppedToolDups  int
-	CollapsedRuns    int
-	WhitespaceFolded int
-}
+// (R56 cleanup: an unused sync.Pool scratch-slice pool, its acquire/release
+// helpers, and a never-populated CompressedStats type were removed here —
+// zero references since introduction. StripEmptyJSONFields remains a
+// documented no-op at the struct level; see compressMessage.)
