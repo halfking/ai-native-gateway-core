@@ -32,6 +32,14 @@ const (
 	// ProtocolOpenAIResponses is the OpenAI Responses API
 	// (previous_response_id, status, etc.). 2026-07-28 (Step 4 round 2).
 	ProtocolOpenAIResponses = "openai-responses"
+	// ProtocolOllamaChat is Ollama's native NDJSON chat-completion stream.
+	// 2026-09-21 audit (P2-1): distinct from openai-chat so downstream
+	// synthesizers can correctly frame responses (no `data: ` prefix, no
+	// `[DONE]` sentinel — termination is signalled by a chunk whose
+	// top-level `done` field is true).
+	// RESERVED(ollama-chat 接入): detect.go 不识别该协议、无 parser 产出
+	// （R52 清点）——Ollama 半落地特性，接入 parser 时须同步补空流门矩阵。
+	ProtocolOllamaChat = "ollama-chat"
 )
 
 // InternalRequest is the unified intermediate representation for all inbound
@@ -170,6 +178,23 @@ type InternalRequest struct {
 	// CachedContent 是 Gemini 的 cachedContents/{id} 引用。
 	// 与 SafetySettings 同为此前的静默丢失字段。
 	CachedContent string `json:"cached_content,omitempty"`
+
+	// ─── MiniMax 专有（P2-3/P2-4, 2026-09-21 审计）───
+	//
+	// 此前以 Extensions 形式透传：客户端可发、目标 MiniMax 时能保留，
+	// 但 IR 中无结构化字段，无法做语义校验、无法在中间层规范化。
+
+	// MaskSensitiveInfo 控制 MiniMax 是否对响应内容做脱敏处理。
+	// 仅 MiniMax 方言支持。已从现行 MiniMax OpenAPI spec 移除（保留以兼容老客户端）。
+	MaskSensitiveInfo *bool `json:"mask_sensitive_info,omitempty"`
+
+	// BotSetting 允许客户端在请求中指定多个 bot 角色配置。
+	// MiniMax 私有字段，仅 MiniMax 方言支持。
+	BotSetting []BotSetting `json:"bot_setting,omitempty"`
+
+	// RepetitionPenalty 控制模型避免重复生成的程度（vLLM/GLM/Qwen/Ark/OpenRouter）。
+	// 已从 KindPortable 升级为 KindIRHandled（2026-09-21 P1-1）。
+	RepetitionPenalty *float64 `json:"repetition_penalty,omitempty"`
 
 	// ─── Source protocol (used by Serializer to determine output format) ───
 	SourceProtocol string `json:"source_protocol"` // "openai-chat" | "anthropic-messages"
@@ -607,6 +632,17 @@ type SafetySetting struct {
 	// Method 是 HarmBlockMethod（SEVERITY / PROBABILITY）。
 	// 仅 Vertex AI 支持；Gemini Developer API 不认此字段。
 	Method string `json:"method,omitempty"`
+}
+
+// BotSetting is a single MiniMax bot role configuration. Multiple bots may
+// be specified in a single request; the model uses the first matching one.
+//
+//	{"bot_name": "MM Smart Expert", "content": "You are an expert ..."}
+//
+// MiniMax-only; silently dropped when the target dialect is not MiniMax.
+type BotSetting struct {
+	BotName string `json:"bot_name"`
+	Content string `json:"content"`
 }
 
 // GeminiPart represents a single element in Gemini's `contents[].parts[]` array.

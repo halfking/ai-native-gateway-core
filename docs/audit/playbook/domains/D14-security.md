@@ -66,6 +66,12 @@
 - 并行会话交付迁移只落 embeddata 单点（TestStartupFilesAreAllEmbedded 在 main 上红）：**五点同步是发布纪律不是建议**——canonical 副本 / embeddata / runner.go / main.go embed+map / revision-sequence 登记，缺一即红。
 - 共享状态守卫的粒度缺口（R39 §三#3 收口）：endpoint_build 混流"实例错 key"与"单凭据密文永久损坏"，后者被 guard 一并压制后在绑定面永无不可用信号——细分识别器（decrypt 形 detail + 熔断计数未达阈值）豁免写出真实信号，pre-trip 污染窗口由既有 deescalate sweep 自愈。
 
+### R52 回注（2026-09-22，ingest NOT NULL + 安全开关权限档批）
+- **NOT NULL 列绑 nil-able 指针 = 23502 连累同事务**：INSERT 列清单与占位符数量对齐守卫测不出"位置对、语义错"（COALESCE 套错槽）——对齐守卫须加两条不变量：位置对齐（slot k ↔ $k）+ NOT NULL 列必须 COALESCE（R52-F2，admin/telemetry_ingest_placeholder_alignment_test.go）。telemetry 包 streamChunksSentArg 是既有收口范式，新写点镜像。
+- **CachedPlatform* 读者的失效接线**：改用缓存变体（去热路径锁内 DB 读）必须同轮接通 settingsPut → InvalidatePlatformValue，否则 admin 改键有 ≤5s 盲窗且热更新钉桩测试会红（R52-F3）。
+- **安全开关 DangerLevel 对齐**：地理围栏总闸（proxy.default_banned_regions）曾是 Warning——CategorySecurity 开关至少 Dangerous，普通管理员不得整体关闭。
+- **客户端可控自由串进维度列**：X-Agent-Name 未截断时超 255 字节 22001 使整行 INSERT 失败、任意值撑大 rollup 维度基数——入维度列前 TrimSpace+剥控制字符+截断（normalizeAgentName 范式）。
+
 ### R42 回注（2026-09-18，723 守卫 + 审计面确认）
 - 723 裸 ALTER 42P01（fresh-install/canonical 链）已按 720 模式修复——与 720 同款事故两犯，定式见 D16 R42 回注。
 - census 静态两驾不扫 01-schema/sql/objects/policies（后者旧词汇属预期需豁免策略）、ensure 扫描按文件名钉死——扩面登记 R42 §五#2。

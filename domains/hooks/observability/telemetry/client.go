@@ -1837,6 +1837,12 @@ func (c *Client) CorrectEstimatedUsage(ctx context.Context, entry *RequestLogEnt
 	if c == nil || c.requestLogDatabase() == nil {
 		return 0, errNoTelemetryDB
 	}
+	// R52：S4 停写门控补网。F3 的"六个包裹点"覆盖了 INSERT 与 final-claim
+	// UPDATE，但本函数的 usage 校正 UPDATE 游离在门外——停写（宽表冻结/
+	// 迁移窗口）期间仍可改写存量行，撞"宽表停写"契约。停写期直接跳过。
+	if !requestLogsWriteEnabled() {
+		return 0, nil
+	}
 	if entry == nil || entry.RequestID == "" {
 		return 0, nil
 	}

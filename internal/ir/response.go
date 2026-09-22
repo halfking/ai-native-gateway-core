@@ -1238,6 +1238,26 @@ func SerializeGeminiResponse(irResp *InternalResponse, clientModel string) ([]by
 		}
 	}
 
+	// R52：OpenAI 系上游（DeepSeek-R1 / GLM 等）的 message.reasoning_content
+	// 只存进 ir.ReasoningContent（ParseOpenAIResponse），不产生 thinking
+	// Content 块——Gemini 客户端非流式侧此前静默丢失推理内容，而流式路径
+	// 有 thought part 发射（流式/非流式不对称；R30 refusal 同型
+	// "parse 保留、serialize 丢弃"）。仅当 Content 中无 thinking 块时补发：
+	// anthropic 上游的 thinking 已作为 Content 块被上方循环发射、且同样
+	// 聚合进了 ReasoningContent，再发一次会双写。
+	if irResp.ReasoningContent != "" {
+		hasThinkingBlock := false
+		for _, c := range irResp.Content {
+			if c.Type == "thinking" && c.Thinking != "" {
+				hasThinkingBlock = true
+				break
+			}
+		}
+		if !hasThinkingBlock {
+			parts = append([]map[string]any{{"text": irResp.ReasoningContent, "thought": true}}, parts...)
+		}
+	}
+
 	emittedToolIDs := make(map[string]bool)
 	for _, c := range irResp.Content {
 		if c.Type == "tool_use" {

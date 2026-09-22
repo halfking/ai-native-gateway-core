@@ -109,9 +109,9 @@ var defaultPolicies = map[ErrorKind]CoolingPolicy{
 	KindTransient: {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
 	KindTimeout:   {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
 	KindNetwork:   {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
-	// 2026-07-24: RateLimit 从 15分钟 改为 2分钟
-	// 15分钟对多轮对话场景太长，2分钟足够让上游限流恢复
-	KindRateLimit: {InitialCooling: 120 * time.Second, MaxCooling: 120 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.7},
+	// Wave 1 A4 (2026-09-22): KindRateLimit 策略项已删除——429 不再进入断路
+	// 失败计数（RecordFailure 早退），限流降权由 writer.go 绑定级冷却承担。
+	// 2026-07-24 历史注：RateLimit 曾为 15min，后改 2min，再后整体剔除。
 	// 2026-07-22 fix (BUG #1): KindAuth used to be RecoveryPermanent
 	// (quarantine, manual recovery only). That combined with BUG #2
 	// (writer.go writing availability_recover_at=NULL) meant a single
@@ -167,7 +167,7 @@ var freeTierPolicies = map[ErrorKind]CoolingPolicy{
 	errorsx.KindConcurrent:         {InitialCooling: 5 * time.Second, MaxCooling: 5 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
 	errorsx.KindUpstreamDown:       {InitialCooling: 15 * time.Second, MaxCooling: 5 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
 	errorsx.KindUpstreamOverloaded: {InitialCooling: 15 * time.Second, MaxCooling: 2 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
-	errorsx.KindRateLimit:          {InitialCooling: 30 * time.Second, MaxCooling: 2 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.7},
+	// KindRateLimit 已剔除（Wave 1 A4，同 defaultPolicies 注）。
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +368,22 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 	// etc.) should not trigger circuit breaker state changes. These are client-side
 	// issues, not credential/upstream health problems.
 	if errorsx.IsClientBug(errorsx.ErrorKind(kind)) {
+		return
+	}
+
+	// Wave 1 A4 (2026-09-22 设计红线裁决，设计 §5.6"429 只回传客户端，不计
+	// 供应商错误、不动节点状态" 与"限流即降权"演进的折中定版)：429/限流是
+	// 上游容量信号，不是节点健康故障——断路器只由真实故障驱动，KindRateLimit
+	// 不计入失败/连续失败，不触发 OPEN/QUARANTINE。短期限流惩罚仍由
+	// writer.go 的绑定级冷却（coolingDuration，Retry-After 优先、默认 3min）
+	// 承担：它只影响 v_routable 排序降权，节点对 resolve 依然可见可用。
+	// HALF_OPEN 期间探针撞上 429：限流不构成"被探针验证的失败证据"，
+	// 归还探针槽并保持 HALF_OPEN，避免断路器卡在探针被占的半开态
+	// （对齐 client-bug 早退路径的 ReleaseProbe 语义，见 claimProbe 注释）。
+	if kind == KindRateLimit {
+		if b.State() == StateHalfOpen {
+			b.ReleaseProbe()
+		}
 		return
 	}
 

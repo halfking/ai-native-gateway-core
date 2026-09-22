@@ -250,10 +250,16 @@ var specs = []FieldSpec{
 	{Name: "translation_options", Kind: KindDialectOnly, Dialects: []Dialect{DialectQwen}},
 	{Name: "vl_high_resolution_images", Kind: KindDialectOnly, Dialects: []Dialect{DialectQwen}},
 
-	// repetition_penalty：多厂商通用，但网关当前**完全无处理**（审计 1.6）
-	{Name: "repetition_penalty", Kind: KindPortable,
-		Dialects: []Dialect{DialectQwen, DialectGLM, DialectArk, DialectVLLM, DialectOpenRouter},
-		Note:     "网关此前零处理。Qwen/GLM/Ark/vLLM/OpenRouter 均支持"},
+	// repetition_penalty：多厂商通用，网关已升级到 KindIRHandled（2026-09-21 P1-1）。
+	// 此前为 KindPortable，靠 Extensions 透传；现已有 IR.RepetitionPenalty 字段，
+	// 可以做语义校验与规范化。
+	// R52：不声明 Dialects —— 该字段是"多厂商通用、宽容上游忽略"形态，
+	// KindPortable 时代即全目标还原/白名单（Dialects 当时仅 advisory）；
+	// IRHandled + 非空 Dialects 现在有真实门控语义（见 IRFieldAllowedForDialect），
+	// 若保留列表会把序列化发射（无条件）与 Extensions 还原（按方言收窄）
+	// 撕裂成两种口径。
+	{Name: "repetition_penalty", Kind: KindIRHandled, IRPath: "RepetitionPenalty",
+		Note: "Qwen/GLM/Ark/vLLM/OpenRouter officially support it; tolerant upstreams silently ignore"},
 
 	// ═══════════════════════════════════════════════════════════
 	// 厂商私有 —— GLM / 智谱
@@ -271,13 +277,14 @@ var specs = []FieldSpec{
 	{Name: "reasoning_split", Kind: KindDialectOnly,
 		Dialects: []Dialect{DialectMiniMax},
 		Note:     "true 才拆分 reasoning_content"},
-	{Name: "mask_sensitive_info", Kind: KindDialectOnly,
+	{Name: "mask_sensitive_info", Kind: KindIRHandled, IRPath: "MaskSensitiveInfo",
 		Dialects: []Dialect{DialectMiniMax},
-		Note:     "已从现行 OpenAPI spec 移除；保留登记以兼容老客户端"},
+		Note:     "2026-09-21 升级到 KindIRHandled（IR 已有该字段）。已从现行 OpenAPI spec 移除；保留以兼容老客户端"},
 	{Name: "reply_constraints", Kind: KindDialectOnly,
 		Dialects: []Dialect{DialectMiniMax}, Note: "同上，已移除"},
-	{Name: "bot_setting", Kind: KindDialectOnly,
-		Dialects: []Dialect{DialectMiniMax}, Note: "同上，已移除"},
+	{Name: "bot_setting", Kind: KindIRHandled, IRPath: "BotSetting",
+		Dialects: []Dialect{DialectMiniMax},
+		Note:     "2026-09-21 升级到 KindIRHandled（IR 已有该字段）。已从现行 OpenAPI spec 移除；保留以兼容老客户端"},
 	{Name: "tokens_to_generate", Kind: KindDialectOnly,
 		Dialects: []Dialect{DialectMiniMax}, Note: "同上，已移除"},
 	{Name: "aigc_watermark", Kind: KindDialectOnly,

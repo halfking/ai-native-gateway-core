@@ -393,7 +393,12 @@ func (w *CredentialSelfcheckWorker) pickModels(ctx context.Context, credentialID
 	if err != nil {
 		return pickModelsResult{}, err
 	}
-	primary, strategy := selectSelfcheckPrimary(bindings, featured, recentmodels.Read(queryCtx, w.redis, tenant, 10))
+	// 2026-09-22 审计修正（探测量策略 INV-3）：shared Redis 榜单 TTL=7 天
+	// （recentmodels.TTL，tenant 级），直接选主模型可能选中 4-7 天前用过的
+	// 模型，越出"3 天内使用过"的探测范围。先按本凭据 3 天业务使用集合收窄
+	// （查询失败 fail-open 保留原榜单，与必要性门禁同姿态）。
+	recent := w.recentInUsageWindow(queryCtx, credentialID, tenant, recentmodels.Read(queryCtx, w.redis, tenant, 10))
+	primary, strategy := selectSelfcheckPrimary(bindings, featured, recent)
 	if primary == "" {
 		recent, err := w.selfcheckRecentFallback(queryCtx, credentialID, tenant)
 		if err != nil {
@@ -475,6 +480,72 @@ func (w *CredentialSelfcheckWorker) selfcheckFeatured(ctx context.Context, tenan
 	return featured, nil
 }
 
+// recentInUsageWindow narrows the shared seven-day Redis ranking (tenant-scoped,
+// recentmodels.TTL=7d) to models with real (non-probe) business traffic on THIS
+// credential within the 3-day probe scope window (探测量策略 INV-3). An empty
+// in-window result means the ranking carries nothing policy-probeable; the
+// caller then falls through to the 3-day DB fallback. Query errors fail OPEN
+// (ranking kept as-is) — same posture as the necessity gate: this is an
+// optimization over a verification probe already bounded to one per run.
+func (w *CredentialSelfcheckWorker) recentInUsageWindow(ctx context.Context, credentialID int, tenant string, recent []recentmodels.Entry) []recentmodels.Entry {
+	if len(recent) == 0 {
+		return recent
+	}
+	used, err := w.recentUsageModels(ctx, credentialID, tenant)
+	if err != nil {
+		slog.Debug("credential_selfcheck_worker: 3-day usage filter unavailable, keeping shared ranking",
+			"credential_id", credentialID, "error", err)
+		return recent
+	}
+	return filterRecentEntriesByUsage(recent, used)
+}
+
+// recentUsageModels returns the normalized set of models with successful
+// business (non-probe) traffic on the credential within probeUsageWindowInterval
+// (3 days). Normalization matches recentmodels.Normalize so ZSET members and
+// client_model variants compare equal.
+func (w *CredentialSelfcheckWorker) recentUsageModels(ctx context.Context, credentialID int, tenant string) (map[string]struct{}, error) {
+	rows, err := w.db.Query(ctx, `
+		SELECT DISTINCT rl.client_model
+		FROM request_logs_hot rl
+		WHERE rl.credential_id = $1
+		  AND rl.tenant_id = $2
+		  AND rl.ts >= now() - `+probeUsageWindowInterval+`
+		  AND rl.success = TRUE
+		  AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
+		  AND COALESCE(rl.client_model, '') <> ''`, credentialID, tenant)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			continue
+		}
+		if n := recentmodels.Normalize(m); n != "" {
+			out[n] = struct{}{}
+		}
+	}
+	return out, rows.Err()
+}
+
+// filterRecentEntriesByUsage keeps only ranking entries whose normalized model
+// is in the in-window usage set (pure — unit-testable without a database).
+func filterRecentEntriesByUsage(recent []recentmodels.Entry, used map[string]struct{}) []recentmodels.Entry {
+	if len(recent) == 0 || len(used) == 0 {
+		return nil
+	}
+	out := make([]recentmodels.Entry, 0, len(recent))
+	for _, entry := range recent {
+		if _, ok := used[recentmodels.Normalize(entry.Model)]; ok {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
 func (w *CredentialSelfcheckWorker) selfcheckRecentFallback(ctx context.Context, credentialID int, tenant string) ([]recentmodels.Entry, error) {
 	rows, err := w.db.Query(ctx, `
 		SELECT model, COUNT(*)::int AS count
@@ -495,7 +566,7 @@ func (w *CredentialSelfcheckWorker) selfcheckRecentFallback(ctx context.Context,
 			  -- R50: dual-arm exclusion (quality_flags + origin_stage) — the
 			  -- probe gateway round carries no 'probe' flag, only the flag arm
 			  -- let it count as usage here (same gap R49 F4 closed elsewhere).
-			  ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
+			  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
 			  AND COALESCE(rl.client_model, '') <> ''
 		) ranked
 		GROUP BY model ORDER BY count DESC, model LIMIT 10`, credentialID, tenant)
