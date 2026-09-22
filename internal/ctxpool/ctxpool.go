@@ -51,6 +51,10 @@
 //     directly so the pool can hand the same *PooledCtx pointer
 //     to the next caller without per-call closure allocations
 //     beyond the channel reset.
+// STATUS (R56 audit, 2026-09-23): NOT WIRED to the production dispatcher —
+// zero non-test callers (Handoff-B #4 wiring is still pending). The races
+// hardened below were latent while unwired but would bite the moment the
+// dispatcher starts routing requests through AcquireWithTimeout.
 package ctxpool
 
 import (
@@ -120,19 +124,23 @@ func (c *PooledCtx) Err() error {
 	if c == nil {
 		return nil
 	}
-	if c.wrapper != nil {
-		if werr := c.wrapper.Err(); werr != nil {
+	// Copy the refs under the lock: acquireWithTimeout stores the wrapper
+	// concurrently with the caller's goroutine reading Err/Deadline
+	// (R56 audit race hardening).
+	c.mu.Lock()
+	wrapper, parent, err := c.wrapper, c.parent, c.err
+	c.mu.Unlock()
+	if wrapper != nil {
+		if werr := wrapper.Err(); werr != nil {
 			return werr
 		}
 	}
-	if c.parent != nil {
-		if perr := c.parent.Err(); perr != nil {
+	if parent != nil {
+		if perr := parent.Err(); perr != nil {
 			return perr
 		}
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.err
+	return err
 }
 
 // Deadline returns the wrapper ctx's deadline (zero if neither
@@ -141,13 +149,16 @@ func (c *PooledCtx) Deadline() (time.Time, bool) {
 	if c == nil {
 		return time.Time{}, false
 	}
-	if c.wrapper != nil {
-		if dl, ok := c.wrapper.Deadline(); ok {
+	c.mu.Lock()
+	wrapper, parent := c.wrapper, c.parent
+	c.mu.Unlock()
+	if wrapper != nil {
+		if dl, ok := wrapper.Deadline(); ok {
 			return dl, true
 		}
 	}
-	if c.parent != nil {
-		return c.parent.Deadline()
+	if parent != nil {
+		return parent.Deadline()
 	}
 	return time.Time{}, false
 }
@@ -192,10 +203,12 @@ func (c *PooledCtx) Release() {
 	if c == nil {
 		return
 	}
-	if c.released.Load() {
+	// CAS: two concurrent Releases must not both pass the check and Put the
+	// same pointer into the pool twice (R56 audit race hardening; the
+	// previous check-then-act was fine only for single-goroutine use).
+	if !c.released.CompareAndSwap(false, true) {
 		panic("ctxpool: Release called twice on the same PooledCtx")
 	}
-	c.released.Store(true)
 	c.mu.Lock()
 	if c.done != nil && c.err == nil {
 		// Caller forgot to Cancel — close done ourselves so the
@@ -294,8 +307,11 @@ func (p *Pool) acquireWithTimeout(parent context.Context, timeout time.Duration)
 	stop := context.AfterFunc(wrapper, pc.Cancel)
 	// pc.wrapper is consulted by Deadline / Err to surface the
 	// wrapper's deadline-derived answers without changing the
-	// Value chain.
+	// Value chain. Store under the lock: those readers may run on
+	// another goroutine the moment this function returns.
+	pc.mu.Lock()
 	pc.wrapper = wrapper
+	pc.mu.Unlock()
 	// Wrap the returned cancel func so the caller cancelling
 	// the wrapper also stops the AfterFunc watcher (no leak).
 	// Order matters: cancel pc FIRST so pc.Done closes before
