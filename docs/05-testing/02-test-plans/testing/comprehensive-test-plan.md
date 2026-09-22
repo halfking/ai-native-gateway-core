@@ -732,7 +732,23 @@ curl http://127.0.0.1:6060/debug/pprof/goroutine?debug=1
 | systemd stop/restart | 退出完成时间小于 `TimeoutStopSec`，不得被 SIGKILL |
 | Redis/PG 不可用 | 进入明确降级状态，不得后台无限重试或泄漏 goroutine |
 
-### 11.7 测试报告要求
+### 11.7 本地 mock 压测（不能代替本节门禁）
+
+`tests/stress/` 是 **mock 上游 + 内嵌测试网关**（`tests/stress/gateway`，不是
+`cmd/gateway`）的回归 harness。2026-09-22 收紧断言后 16/16 PASS 只证明：
+
+- 供应商必须是 `mock-*` / `mock-stress-*`，禁止真实供应商；
+- `mock-stress-fast` 只绑 alpha/beta/gamma；`mock-stress-large` 只绑 delta；
+  `mock-stress-pool` 绑四家（s14）；网关 HTTP `Proxy: nil`；
+- stream 成功必须含 `data: [DONE]`；timeout 场景 wall clock ≥ 20s；
+- s7 恢复必须在 by_provider 里重新出现 `mock-alpha`；长 prompt ≥ 20k 字符；
+- s9 是 200@c25 短突发，不是 30 分钟 soak。
+
+**明确不覆盖**：154/245、真实模型、30 分钟 RSS、生产 `credentialhealth`、
+cgroup 内存上限、TPM。§11.3 顺序与 §11.4 发布门禁仍然以真实供应商为准。
+报告口径见 `tests/stress/REPORT.md`。
+
+### 11.8 测试报告要求
 
 每次 154/245 测试必须保存以下脱敏证据：
 
@@ -774,6 +790,6 @@ integration/
 
 ---
 
-**文档版本**: v1.1
-**最后更新**: 2026-08-20 16:30 UTC+8
-**下次审查**: 实现Phase 1后更新
+**文档版本**: v1.2
+**最后更新**: 2026-09-22 02:10 UTC+8
+**下次审查**: 154/245 §11 真实供应商门禁执行后更新。v1.2 仅澄清：本地 `tests/stress/` mock 16/16 不能代替 §11。

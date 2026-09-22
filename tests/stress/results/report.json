@@ -1,0 +1,479 @@
+{
+  "started_at": "2026-09-22T02:01:49.935534+08:00",
+  "finished_at": "2026-09-22T02:03:12.511659+08:00",
+  "gateway": "http://127.0.0.1:18901",
+  "scenarios": [
+    {
+      "id": "s1_baseline_healthy",
+      "name": "Baseline healthy — mock-stress-fast binds alpha/beta/gamma",
+      "plan_ref": "§5 baseline",
+      "started_at": "2026-09-22T02:01:49.935545+08:00",
+      "finished_at": "2026-09-22T02:01:50.682126+08:00",
+      "duration_ms": 540,
+      "total_requests": 200,
+      "success": 200,
+      "client_error": 0,
+      "server_error": 0,
+      "status_codes": {
+        "200": 200
+      },
+      "by_provider": {
+        "mock-alpha": 72,
+        "mock-beta": 63,
+        "mock-gamma": 65
+      },
+      "avg_ttfb_ms": 49.75,
+      "p50_ttfb_ms": 48,
+      "p95_ttfb_ms": 76,
+      "avg_total_ms": 49.75,
+      "p50_total_ms": 48,
+      "p95_total_ms": 76,
+      "success_rate": 1,
+      "prompt_chars": 2,
+      "passed": true,
+      "expectation": "mock-stress-fast (alpha/beta/gamma) all healthy → success ≥ 99%. Delta is unbound on this model."
+    },
+    {
+      "id": "s2_5xx_single_failure",
+      "name": "Single 5xx — alpha returns 500 (failover to beta/gamma)",
+      "plan_ref": "§5.2 scenario 2 (5xx spike)",
+      "started_at": "2026-09-22T02:01:50.682463+08:00",
+      "finished_at": "2026-09-22T02:01:51.452755+08:00",
+      "duration_ms": 564,
+      "total_requests": 200,
+      "success": 200,
+      "client_error": 0,
+      "server_error": 0,
+      "status_codes": {
+        "200": 200
+      },
+      "by_provider": {
+        "mock-beta": 103,
+        "mock-gamma": 97
+      },
+      "avg_ttfb_ms": 50.5,
+      "p50_ttfb_ms": 50,
+      "p95_ttfb_ms": 78,
+      "avg_total_ms": 50.5,
+      "p50_total_ms": 50,
+      "p95_total_ms": 78,
+      "success_rate": 1,
+      "prompt_chars": 2,
+      "passed": true,
+      "expectation": "alpha=500 → ≥90% traffic still succeeds via failover (alpha demoted within first ~10 reqs)."
+    },
+    {
+      "id": "s3_5xx_consecutive_unhealthy",
+      "name": "Consecutive 5xx — alpha demoted to Unhealthy after threshold",
+      "plan_ref": "§2 + §4 (degradation)",
+      "started_at": "2026-09-22T02:01:51.452799+08:00",
+      "finished_at": "2026-09-22T02:01:52.202159+08:00",
+      "duration_ms": 542,
+      "total_requests": 100,
+      "success": 100,
+      "client_error": 0,
+      "server_error": 0,
+      "status_codes": {
+        "200": 100
+      },
+      "by_provider": {
+        "mock-beta": 43,
+        "mock-gamma": 57
+      },
+      "avg_ttfb_ms": 51.94,
+      "p50_ttfb_ms": 53,
+      "p95_ttfb_ms": 78,
+      "avg_total_ms": 51.94,
+      "p50_total_ms": 53,
+      "p95_total_ms": 78,
+      "success_rate": 1,
+      "prompt_chars": 2,
+      "passed": true,
+      "expectation": "After ≥3 consec-fail, gateway demotes alpha; remaining providers carry the load."
+    },
+    {
+      "id": "s4_provider_slowdown",
+      "name": "Slow provider — alpha responses 5–30s; gateway weights shift",
+      "plan_ref": "§3.3 + §5.2 scenario 1",
+      "started_at": "2026-09-22T02:01:52.202184+08:00",
+      "finished_at": "2026-09-22T02:02:29.393482+08:00",
+      "duration_ms": 36483,
+      "total_requests": 80,
+      "success": 80,
+      "client_error": 0,
+      "server_error": 0,
+      "status_codes": {
+        "200": 80
+      },
+      "by_provider": {
+        "mock-alpha": 21,
+        "mock-beta": 34,
+        "mock-gamma": 25
+      },
+      "avg_ttfb_ms": 5437.925,
+      "p50_ttfb_ms": 67,
+      "p95_ttfb_ms": 25033,
+      "avg_total_ms": 5437.925,
+      "p50_total_ms": 67,
+      "p95_total_ms": 25033,
+      "success_rate": 1,
+      "prompt_chars": 2,
+      "passed": true,
+      "expectation": "Slow alpha still returns 200 → at least 80% should succeed even if slower."
+    },
+    {
+      "id": "s5_quota_exhausted",
+      "name": "Quota exhausted — alpha returns 429; weight collapses, others carry traffic",
+      "plan_ref": "§5.2 scenario 3",
+      "started_at": "2026-09-22T02:02:29.39351+08:00",
+      "finished_at": "2026-09-22T02:02:30.160231+08:00",
+      "duration_ms": 562,
+      "total_requests": 120,
+      "success": 120,
+      "client_error": 0,
+      "server_error": 0,
+      "status_codes": {
+        "200": 120
+      },
+      "by_provider": {
+        "mock-beta": 63,
+        "mock-gamma": 57
+      },
+      "avg_ttfb_ms": 52.2,
+      "p50_ttfb_ms": 52,
+      "p95_ttfb_ms": 79,
+      "avg_total_ms": 52.2,
+      "p50_total_ms": 52,
+      "p95_total_ms": 79,
+      "success_rate": 1,
+      "prompt_chars": 2,
+      "passed": true,
+      "expectation": "Quota 429s on alpha; ≥90% success via failover"
+    },
+    {
+      "id": "s6_all_providers_5xx",
+      "name": "All providers 503 — graceful degradation",
+      "plan_ref": "§5.2 scenario 4 (disaster)",
+      "started_at": "2026-09-22T02:02:30.160242+08:00",
+      "finished_at": "2026-09-22T02:02:30.365169+08:00",
+      "duration_ms": 1,
+      "total_requests": 40,
+      "success": 0,
+      "client_error": 0,
+      "server_error": 40,
+      "status_codes": {
+        "503": 40
+      },
+      "by_provider": {},
+      "avg_ttfb_ms": 0.025,
+      "p50_ttfb_ms": 0,
+      "p95_ttfb_ms": 0,
+      "avg_total_ms": 0.025,
+      "p50_total_ms": 0,
+      "p95_total_ms": 0,
+      "success_rate": 0,
+      "prompt_chars": 2,
+      "passed": true,
+      "expectation": "All bound providers bad. Client must not see 200. Exhausted failover returns 503 (not 500/502 leak)."
+    },
+    {
+      "id": "s7_recovery_after_5xx",
+      "name": "Recovery — alpha briefly 500s, then returns to healthy; weight ramps back",
+      "plan_ref": "§2.3 fast recovery + §4.2 upgrade",
+      "started_at": "2026-09-22T02:02:30.365177+08:00",
+      "finished_at": "2026-09-22T02:02:38.708399+08:00",
+      "duration_ms": 7137,
+      "total_requests": 140,
+      "success": 140,
+      "client_error": 0,
+      "server_error": 0,
+      "status_codes": {
+        "200": 140
+      },
+      "by_provider": {
+        "mock-alpha": 18,
+        "mock-beta": 54,
+        "mock-gamma": 68
+      },
+      "avg_ttfb_ms": 51.41428571428571,
+      "p50_ttfb_ms": 50,
+      "p95_ttfb_ms": 79,
+      "avg_total_ms": 51.41428571428571,
+      "p50_total_ms": 50,
+      "p95_total_ms": 79,
+      "success_rate": 1,
+      "prompt_chars": 2,
+      "passed": true,
+      "expectation": "Phase 1 demotes alpha; phase 2 (after 6s probe) MUST send some traffic back to mock-alpha. Success-rate-only used to hide that alpha never returned."
+    },
+    {
+      "id": "s8_burst_stress",
+      "name": "Burst stress — 2000 requests @ concurrency 50",
+      "plan_ref": "§7.1 + §11.5",
+      "started_at": "2026-09-22T02:02:38.708422+08:00",
+      "finished_at": "2026-09-22T02:02:41.039177+08:00",
+      "duration_ms": 2126,
+      "total_requests": 2000,
+      "success": 2000,
+      "client_error": 0,
+      "server_error": 0,
+      "status_codes": {
+        "200": 2000
+      },
+      "by_provider": {
+        "mock-alpha": 650,
+        "mock-beta": 700,
+        "mock-gamma": 650
+      },
+      "avg_ttfb_ms": 51.342,
+      "p50_ttfb_ms": 52,
+      "p95_ttfb_ms": 78,
+      "avg_total_ms": 51.342,
+      "p50_total_ms": 52,
+      "p95_total_ms": 78,
+      "success_rate": 1,
+      "prompt_chars": 2,
+      "passed": true,
+      "expectation": "Burst 2000 @ c50 — success ≥ 99%, no panic."
+    },
+    {
+      "id": "s9_sustained_load",
+      "name": "Sustained load — 200 req @ concurrency 25",
+      "plan_ref": "§7 stress + §11 stability",
+      "started_at": "2026-09-22T02:02:41.039201+08:00",
+      "finished_at": "2026-09-22T02:02:41.703179+08:00",
+      "duration_ms": 459,
+      "total_requests": 200,
+      "success": 200,
+      "client_error": 0,
+      "server_error": 0,
+      "status_codes": {
+        "200": 200
+      },
+      "by_provider": {
+        "mock-alpha": 72,
+        "mock-beta": 70,
+        "mock-gamma": 58
+      },
+      "avg_ttfb_ms": 52.63,
+      "p50_ttfb_ms": 52,
+      "p95_ttfb_ms": 79,
+      "avg_total_ms": 52.63,
+      "p50_total_ms": 52,
+      "p95_total_ms": 79,
+      "success_rate": 1,
+      "prompt_chars": 350,
+      "passed": true,
+      "expectation": "Sustained 200 reqs / 25 concurrency — success ≥ 99%."
+    },
+    {
+      "id": "s10_stream_load",
+      "name": "Stream load — 100 SSE streams @ concurrency 20",
+      "plan_ref": "§11.4 stream completion 100%",
+      "started_at": "2026-09-22T02:02:41.70321+08:00",
+      "finished_at": "2026-09-22T02:02:42.596469+08:00",
+      "duration_ms": 688,
+      "total_requests": 100,
+      "success": 100,
+      "client_error": 0,
+      "server_error": 0,
+      "status_codes": {
+        "200": 100
+      },
+      "by_provider": {
+        "mock-alpha": 54,
+        "mock-beta": 46
+      },
+      "avg_ttfb_ms": 52,
+      "p50_ttfb_ms": 51,
+      "p95_ttfb_ms": 76,
+      "avg_total_ms": 52,
+      "p50_total_ms": 51,
+      "p95_total_ms": 76,
+      "success_rate": 1,
+      "done_count": 100,
+      "done_rate": 1,
+      "prompt_chars": 2,
+      "passed": true,
+      "expectation": "SSE streams succeed ≥99% AND every success must include data: [DONE]."
+    },
+    {
+      "id": "s11_stream_broken_provider",
+      "name": "Stream with broken provider — alpha emits 1 chunk then EOF",
+      "plan_ref": "§5 stress / §11 stream completion",
+      "started_at": "2026-09-22T02:02:42.5965+08:00",
+      "finished_at": "2026-09-22T02:02:43.605571+08:00",
+      "duration_ms": 803,
+      "total_requests": 80,
+      "success": 72,
+      "client_error": 8,
+      "server_error": 0,
+      "status_codes": {
+        "200": 80
+      },
+      "by_provider": {
+        "mock-alpha": 8,
+        "mock-beta": 72
+      },
+      "avg_ttfb_ms": 46.075,
+      "p50_ttfb_ms": 49,
+      "p95_ttfb_ms": 75,
+      "avg_total_ms": 46.075,
+      "p50_total_ms": 49,
+      "p95_total_ms": 75,
+      "success_rate": 0.9,
+      "done_count": 72,
+      "done_rate": 0.9,
+      "prompt_chars": 2,
+      "passed": true,
+      "expectation": "broken_stream is NOT a 200 success. Failover to beta must produce [DONE]. acceptable_any was a lie that let 80/80 HTTP 200 pass."
+    },
+    {
+      "id": "s12_flaky_provider",
+      "name": "Flaky provider — alpha 50/50 success/failure",
+      "plan_ref": "§3 dynamic weighting",
+      "started_at": "2026-09-22T02:02:43.605601+08:00",
+      "finished_at": "2026-09-22T02:02:44.386578+08:00",
+      "duration_ms": 576,
+      "total_requests": 200,
+      "success": 200,
+      "client_error": 0,
+      "server_error": 0,
+      "status_codes": {
+        "200": 200
+      },
+      "by_provider": {
+        "mock-alpha": 11,
+        "mock-beta": 83,
+        "mock-gamma": 106
+      },
+      "avg_ttfb_ms": 53.595,
+      "p50_ttfb_ms": 52,
+      "p95_ttfb_ms": 91,
+      "avg_total_ms": 53.595,
+      "p50_total_ms": 52,
+      "p95_total_ms": 91,
+      "success_rate": 1,
+      "prompt_chars": 2,
+      "passed": true,
+      "expectation": "Flaky alpha (50% fail) — overall ≥85% success via failover."
+    },
+    {
+      "id": "s13_long_prompt_stress",
+      "name": "Long prompt stress — 200 long-context non-stream requests",
+      "plan_ref": "§11.2 long-context input",
+      "started_at": "2026-09-22T02:02:44.386608+08:00",
+      "finished_at": "2026-09-22T02:02:45.136859+08:00",
+      "duration_ms": 547,
+      "total_requests": 200,
+      "success": 200,
+      "client_error": 0,
+      "server_error": 0,
+      "status_codes": {
+        "200": 200
+      },
+      "by_provider": {
+        "mock-delta": 200
+      },
+      "avg_ttfb_ms": 51.575,
+      "p50_ttfb_ms": 53,
+      "p95_ttfb_ms": 78,
+      "avg_total_ms": 51.575,
+      "p50_total_ms": 53,
+      "p95_total_ms": 78,
+      "success_rate": 1,
+      "prompt_chars": 26000,
+      "passed": true,
+      "expectation": "Long-prompt 200 reqs — ≥99% success AND prompt ≥20k chars (not Repeat 200)."
+    },
+    {
+      "id": "s14_provider_503_with_one_healthy",
+      "name": "Three providers 503, one healthy — traffic consolidates",
+      "plan_ref": "§5.2 scenario 4 (graceful degrade with survivor)",
+      "started_at": "2026-09-22T02:02:45.136911+08:00",
+      "finished_at": "2026-09-22T02:02:45.685422+08:00",
+      "duration_ms": 346,
+      "total_requests": 80,
+      "success": 80,
+      "client_error": 0,
+      "server_error": 0,
+      "status_codes": {
+        "200": 80
+      },
+      "by_provider": {
+        "mock-delta": 80
+      },
+      "avg_ttfb_ms": 47.775,
+      "p50_ttfb_ms": 49,
+      "p95_ttfb_ms": 75,
+      "avg_total_ms": 47.775,
+      "p50_total_ms": 49,
+      "p95_total_ms": 75,
+      "success_rate": 1,
+      "prompt_chars": 2,
+      "passed": true,
+      "expectation": "Uses mock-stress-pool (all four). After demotion, only delta may appear in 200 bodies. mock-stress-large cannot prove three-503 failover."
+    },
+    {
+      "id": "s15_dynamic_weighting",
+      "name": "Dynamic weighting — three bound providers share traffic under steady state",
+      "plan_ref": "§3 weight formula + §3.3 weighted routing test",
+      "started_at": "2026-09-22T02:02:45.685443+08:00",
+      "finished_at": "2026-09-22T02:02:46.967145+08:00",
+      "duration_ms": 1077,
+      "total_requests": 600,
+      "success": 600,
+      "client_error": 0,
+      "server_error": 0,
+      "status_codes": {
+        "200": 600
+      },
+      "by_provider": {
+        "mock-alpha": 200,
+        "mock-beta": 193,
+        "mock-gamma": 207
+      },
+      "avg_ttfb_ms": 51.13166666666667,
+      "p50_ttfb_ms": 52,
+      "p95_ttfb_ms": 78,
+      "avg_total_ms": 51.13166666666667,
+      "p50_total_ms": 52,
+      "p95_total_ms": 78,
+      "success_rate": 1,
+      "prompt_chars": 2,
+      "passed": true,
+      "expectation": "Verify the 3 bound providers (alpha/beta/gamma) each receive traffic. mock-stress-fast does not bind delta; ±30% even-split is among 3, not 4."
+    },
+    {
+      "id": "s16_timeout_provider",
+      "name": "Upstream timeout — alpha sleeps \u003e client timeout",
+      "plan_ref": "§7 + §11 timeout handling",
+      "started_at": "2026-09-22T02:02:46.967179+08:00",
+      "finished_at": "2026-09-22T02:03:12.511629+08:00",
+      "duration_ms": 25306,
+      "total_requests": 40,
+      "success": 40,
+      "client_error": 0,
+      "server_error": 0,
+      "status_codes": {
+        "200": 40
+      },
+      "by_provider": {
+        "mock-beta": 23,
+        "mock-gamma": 17
+      },
+      "avg_ttfb_ms": 5053.275,
+      "p50_ttfb_ms": 60,
+      "p95_ttfb_ms": 25073,
+      "avg_total_ms": 5053.275,
+      "p50_total_ms": 60,
+      "p95_total_ms": 25073,
+      "success_rate": 1,
+      "prompt_chars": 2,
+      "passed": true,
+      "expectation": "Timeout on alpha MUST take ≥20s (gateway client 25s). Previous run finished in 220ms with HTTP 200 — timeout mode never slept."
+    }
+  ],
+  "pass": 16,
+  "fail": 0
+}
