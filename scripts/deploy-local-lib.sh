@@ -380,6 +380,10 @@ dl_load_project_env() {
 # double- or single-quoted values verbatim. os.environ is updated as we
 # parse so subsequent lines can reference earlier ones. Failure is non-fatal:
 # the caller falls back to whatever was already in the calling environment.
+# Multi-line quoted values (real PEM blocks) are rejected LOUDLY (R55-D2/R56
+# decision b): line-oriented parsing cannot represent them, docker
+# --env-file cannot carry them, and silent truncation produced a corrupt
+# secret. Single line + literal \n escapes is the .env.local convention.
 _dl_safe_env_source() {
   local file="$1"
   python3 - "$file" <<'PY' || return 0
@@ -414,6 +418,22 @@ with open(sys.argv[1], encoding='utf-8') as fh:
             val = raw_val[1:-1]
         else:
             val = raw_val
+            # R55-D2 (R56 decision b): a value that OPENS with a quote but
+            # does not close on the same line is a multi-line value (real
+            # PEM blocks). This line-oriented parser used to silently
+            # truncate those — first line only, stray opening quote kept —
+            # corrupting e.g. LLM_GATEWAY_LICENSE_PUBLIC_KEY. Multi-line
+            # values cannot survive docker --env-file anyway, so refuse
+            # loudly (stderr + nonzero exit -> dl_load_project_env returns
+            # 0 per the non-fatal contract, minus the corrupt key) instead
+            # of delivering a silently broken secret.
+            if raw_val[:1] in ('"', "'"):
+                sys.stderr.write(
+                    "dl_load_project_env: %s: %s= opens with %s but does not close "
+                    "on the same line; multi-line values are unsupported - use a "
+                    "single line with literal \\n escapes (see R55-D2/R56)\n"
+                    % (sys.argv[1], key, raw_val[0]))
+                sys.exit(2)
         # Bash semantics: unquoted + double-quoted honor ${VAR}/$VAR
         # interpolation; single-quoted forbids ANY expansion (R55-F1b fix).
         if quote_char != "'":
