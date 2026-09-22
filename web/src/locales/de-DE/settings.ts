@@ -8,6 +8,7 @@ export default {
     compression: 'Komprimierung',
     rateLimit: 'Ratenbegrenzung',
     timeout: 'Zeitüberschreitung',
+    retry: 'Wiederholung & Timeout',
     routing: 'Routing',
     session: 'Sitzung',
     security: 'Sicherheit',

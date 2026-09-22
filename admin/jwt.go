@@ -116,11 +116,16 @@ func VerifyLegacy(tokenStr, secretKey string) (*identity.LegacyClaims, error) {
 	if err != nil || c == nil {
 		return nil, err
 	}
+	issuedAt := time.Time{}
+	if c.IssuedAt != nil {
+		issuedAt = c.IssuedAt.Time
+	}
 	return &identity.LegacyClaims{
 		UserID:             c.UserID,
 		TenantID:           c.TenantID,
 		Username:           c.Username,
 		Role:               c.Role,
 		MustChangePassword: c.MustChangePassword,
+		IssuedAt:           issuedAt,
 	}, nil
 }

@@ -376,6 +376,16 @@ type ProbeSyncFunc func(
 // after a successful real business request.
 type NodeProbeHealthyFunc func(ctx context.Context, credentialID int, rawModel string) error
 
+// NodeProbeConfirmFunc is the contract bg.NodeProbeWorker.ProbeConfirm
+// satisfies (Wave 3 B2②, 2026-09-22). Defined here for the same
+// decoupling reason as ProbeSyncFunc. It runs the flash-blip double
+// confirmation: two lightweight direct pings inside the 2~5s design
+// window; true = node confirmed broken (both pings failed) and the
+// deferred degrade must be applied, false = transient blip, node stays
+// healthy. Nil disables flash-blip confirmation and keeps the immediate
+// degrade behaviour.
+type NodeProbeConfirmFunc func(ctx context.Context, credentialID int, rawModel string) bool
+
 // StreamWrapperFunc is injected by the main.go wiring to handle streaming
 // responses. Receives the upstream resp and returns a StreamOutcome to let
 // Execute() decide failover. The fourth argument (capture) is the audit
@@ -666,6 +676,13 @@ type Executor struct {
 	// the executor adapts its existing circuit/state/URSM/probe dependencies.
 	NodeOutcomeReducer *nodehealth.OutcomeReducer
 	NodeHealthAdapter  nodehealth.Adapter
+
+	// flashBlipInFlight (Wave 3 B2②) guards one pending double-confirm per
+	// node key "<credID>|<model>": while a confirm runs, later failures on
+	// the same node skip spawning a second one. Guarded by flashBlipMu,
+	// lazily initialised.
+	flashBlipMu       sync.Mutex
+	flashBlipInFlight map[string]struct{}
 	nodeHealthMu       sync.Mutex
 	// Provider is the credential/candidate resolver. Typed as an interface
 	// (defined in routing) so the compaction fallback tests can inject a
@@ -821,6 +838,13 @@ type Executor struct {
 	// Wired from main.go to bg.MarkNodeProbeHealthy.
 	// Nil is safe — the call is skipped.
 	NodeProbeHealthy NodeProbeHealthyFunc
+
+	// NodeProbeConfirm (Wave 3 B2②) gates the FIRST consecutive
+	// network/timeout failure of a node behind a flash-blip double
+	// confirmation: the degrade-family state writes are deferred while
+	// two lightweight pings verify the error. Wired from main.go to
+	// bg.NodeProbeWorker.ProbeConfirm. Nil keeps the immediate degrade.
+	NodeProbeConfirm NodeProbeConfirmFunc
 
 	// asyncDepth is the recursion guard (Track C C4). The async
 	// goroutine (runAsyncRetry) calls Execute again; we bump this

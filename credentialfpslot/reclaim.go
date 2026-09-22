@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -114,10 +115,20 @@ func defaultReclaimConfig() reclaimConfig {
 // defaults. Operators tune Config.ReclaimIdleSeconds; the other
 // knobs (scanInterval, totalTTL, clientTTL) are operational
 // tuning that lives in reclaimConfig directly.
+//
+// 2026-09-22 Wave 2: with no explicit manager config, idleAfter follows the
+// hot-reloadable slot TTL (disguise.fp_slot_ttl_seconds) instead of the
+// former hard-coded 30 min — per the 2026-06-24 operator spec quoted above
+// ("由系统设置中来设置"), reclaim stays a safety net tied to the slot TTL.
 func (m *Manager) reclaimConfigFromManager() reclaimConfig {
 	cfg := defaultReclaimConfig()
-	if m != nil && m.cfg.ReclaimIdleSeconds > 0 {
+	switch {
+	case m != nil && m.cfg.ReclaimIdleSeconds > 0:
 		cfg.idleAfter = time.Duration(m.cfg.ReclaimIdleSeconds) * time.Second
+	default:
+		if secs := settings.FpSlotTTLSeconds(); secs > 0 {
+			cfg.idleAfter = time.Duration(secs) * time.Second
+		}
 	}
 	return cfg
 }
@@ -235,7 +246,7 @@ func (m *Manager) reclaimIdleSlots(ctx context.Context, cfg reclaimConfig) (int,
 		res, err := reclaimSlotScript.Run(ctx, m.client,
 			[]string{slotKey},
 			int(cfg.idleAfter.Seconds()),
-			slotTTLSeconds,
+			slotTTLSeconds(),
 		).Int()
 		if err != nil {
 			return totalReclaimed, fmt.Errorf("reclaim slot %s: %w", slotKey, err)

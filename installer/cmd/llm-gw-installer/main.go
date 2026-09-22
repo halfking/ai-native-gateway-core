@@ -512,6 +512,12 @@ var requestLogsViewDetailsJoinMigration734 []byte
 //go:embed embeddata/startup/735_models_canonical_active_folded_unique.sql
 var canonicalFoldedUniqueMigration735 []byte
 
+//go:embed embeddata/startup/736_maas_rate_multiplier.sql
+var maasRateMultiplierMigration736 []byte
+
+//go:embed embeddata/startup/737_maas_reconciliation_findings.sql
+var maasReconciliationFindingsMigration737 []byte
+
 // embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
 // 共用，避免两份 map 漂移（曾发生 632 拷入 embeddata 却没接线的静默丢失）。
 // 新增迁移时：embeddata/startup/ 放文件 → 此处加条目 → runner.go StartupFiles
@@ -660,9 +666,11 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/730_session_role_hierarchy.sql":                                         sessionRoleHierarchyMigration730,
 	"startup/731_auto_route_selection_role_attribution.sql":                          autoRouteSelectionRoleAttributionMigration731,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
-	"startup/733_session_turn_details.sql":                                          sessionTurnDetailsMigration733,
+	"startup/733_session_turn_details.sql":                                           sessionTurnDetailsMigration733,
 	"startup/734_request_logs_view_details_join.sql":                                 requestLogsViewDetailsJoinMigration734,
 	"startup/735_models_canonical_active_folded_unique.sql":                          canonicalFoldedUniqueMigration735,
+	"startup/736_maas_rate_multiplier.sql":                                           maasRateMultiplierMigration736,
+	"startup/737_maas_reconciliation_findings.sql":                                   maasReconciliationFindingsMigration737,
 }
 
 // 临时存放 embed SQL 的目录（运行时写入）

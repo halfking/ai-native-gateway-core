@@ -450,7 +450,38 @@
       "min_success_rate": 0.80,
       "min_total_requests": 40,
       "min_duration_ms": 20000,
-      "note": "Timeout on alpha MUST take ≥20s (gateway client 25s). Previous run finished in 220ms with HTTP 200 — timeout mode never slept."
+      "note": "Timeout on alpha MUST take >=20s (gateway client 25s). Previous run finished in 220ms with HTTP 200 -- timeout mode never slept."
+    }
+  },
+  {
+    "id": "s17_committed_eof_all_broken",
+    "name": "All bound providers commit-then-EOF -- section 11.6 wire-error fallback",
+    "description": "Every mock in mock-stress-stream (alpha + beta) and mock-stress-pool (alpha + beta + gamma + delta) emits one chunk then hijacks the connection (broken_stream mode). With NO healthy provider to fail over to, the gateway MUST keep HTTP 200 (committed bytes cannot be undone) and append the structured `data: {\"error\":{\"type\":\"upstream_incomplete\",\"code\":\"eof_without_done\"}}` envelope followed by a synthesized `data: [DONE]`. Before R55-F1b, this scenario was uncovered: s11 only proves the failover path when at least one provider is healthy.",
+    "plan_ref": "R55-F1b / section 11.6 wire-error contract",
+    "setup": [
+      {"provider": "mock-alpha", "state": "broken_stream"},
+      {"provider": "mock-beta", "state": "broken_stream"},
+      {"provider": "mock-gamma", "state": "broken_stream"},
+      {"provider": "mock-delta", "state": "broken_stream"}
+    ],
+    "request": {
+      "model": "mock-stress-pool",
+      "stream": true,
+      "total": 80,
+      "concurrency": 12,
+      "prompt": "short",
+      "max_tokens": 16
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 1.0,
+      "max_success_rate": 1.0,
+      "min_total_requests": 80,
+      "require_status": [200],
+      "forbidden_status": [500, 502, 503],
+      "require_error_envelope": true,
+      "min_error_envelope_rate": 1.0,
+      "note": "section 11.6 fallback MUST emit the wire-error envelope on every response when committed bytes precede EOF. HTTP 200 because bytes are committed; envelope so client SDK can finalize as failure. success_rate=1.0 because HTTP status is 200; the failure lives in the envelope body, not the status line. Replaces the proposed 's12' slot from the R54 handoff (kept as s17 to avoid renumbering s12-s16 which are referenced by capacity_matrix.sh and memprofile/main.go)."
     }
   }
 ]

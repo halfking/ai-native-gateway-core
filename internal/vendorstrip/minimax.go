@@ -106,29 +106,10 @@ func ParseMiniMaxBaseResp(body []byte) (statusCode int, statusMsg string, isErro
 }
 
 // ClassifyMiniMaxStatusCode preserves the established MiniMax-to-gateway map.
+// Wave4-D3 (2026-09-22): the table moved verbatim to
+// errorsx.MiniMaxBaseRespStatusCodeKind (single vendor-channel table).
 func ClassifyMiniMaxStatusCode(code int) errorsx.ErrorKind {
-	switch code {
-	case 0:
-		return ""
-	case 1002:
-		return errorsx.KindRateLimit
-	case 1004:
-		return errorsx.KindAuth
-	case 1008:
-		return errorsx.KindQuota
-	case 1027:
-		return errorsx.KindContentFilter
-	case 1039:
-		return errorsx.KindContextLength
-	case 1001:
-		return errorsx.KindTimeout
-	case 2013:
-		return errorsx.KindClientBug
-	case 1000, 1013:
-		return errorsx.KindUpstreamDown
-	default:
-		return errorsx.KindUpstreamDown
-	}
+	return errorsx.MiniMaxBaseRespStatusCodeKind(code)
 }
 
 // FormatMiniMaxError returns the established user-facing error message.

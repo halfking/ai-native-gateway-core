@@ -725,6 +725,20 @@ func (sc *SessionCompressor) resolveCompressionMode() Mode {
 	return LoadMode()
 }
 
+// extractTargetModelHint pulls the "model" field out of a chat-completions
+// style request body for the B9 same-vendor-first chain reordering. Best
+// effort: any parse failure yields "" and the chain order stays as
+// configured.
+func extractTargetModelHint(body []byte) string {
+	var probe struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(probe.Model)
+}
+
 func (sc *SessionCompressor) tryLLMSummary(ctx context.Context, body []byte, tenantID, protocol, taskType string) ([]byte, bool) {
 	if sc.deps.CompactionDeps == nil {
 		return nil, false
@@ -748,7 +762,11 @@ func (sc *SessionCompressor) tryLLMSummary(ctx context.Context, body []byte, ten
 	conversation = trimTextToTokenBudget(conversation, 900_000)
 
 	dim := summarymodel.DimensionForTaskType(taskType)
-	summarizer := summarymodel.NewSummarizer(newSummaryClientAdapter(sc.deps.CompactionDeps, "", tenantID))
+	summarizer := summarymodel.NewSummarizer(newSummaryClientAdapter(sc.deps.CompactionDeps, "", tenantID)).
+		// Wave 3 B9: prefer same-vendor models first when the compressed
+		// request names its target model — the vendor's own models are the
+		// most likely to succeed for this conversation's language/shape.
+		WithTargetModelHint(extractTargetModelHint(body))
 	summaryText, sumErr := summarizer.Summarize(ctx, dim, conversation)
 	if sumErr == nil && strings.TrimSpace(summaryText) != "" {
 		if rebuilt, ok := rebuildBodyAfterSummary(body, strings.TrimSpace(summaryText), protocol); ok {

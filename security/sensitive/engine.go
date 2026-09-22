@@ -10,6 +10,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // acNode AC 自动机节点
@@ -338,10 +340,14 @@ func (e *SensitiveWordEngine) EvaluateSafety(text string) *SafetyResult {
 
 	action := ActionAllow
 	reason := ""
-	if score >= 0.6 {
+	// Wave 3 B5② (2026-09-22): thresholds were hardcoded 0.6/0.3; now
+	// settings-driven (≤5s cache, admin-writable) with a defensive clamp
+	// keeping warn below block.
+	blockScore, warnScore := settings.CachedSensitiveScores()
+	if score >= blockScore {
 		action = ActionBlock
 		reason = fmt.Sprintf("high risk score %.2f, %d sensitive words detected", score, len(matches))
-	} else if score >= 0.3 {
+	} else if score >= warnScore {
 		action = ActionWarn
 		reason = fmt.Sprintf("medium risk score %.2f, %d sensitive words detected", score, len(matches))
 	} else {

@@ -422,21 +422,22 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 		// Streaming path already detects these (ae1ecaedf); add detection
 		// to non-stream path so HTTP 200 responses with these finish_reason
 		// values are classified as errors rather than silently succeeding.
-		switch choice.FinishReason {
-		case "network_error":
-			return nil, &ParseError{
-				Kind:    errorsx.KindNetwork,
-				Message: "GLM network_error",
+		// Wave4-D3 (2026-09-22): detection moved to the single errorsx
+		// vendor-channel table (misspelling tolerance included); the
+		// canonical GLM values keep their historical diagnostic messages.
+		if kind, ok := errorsx.FinishReasonVendorFailureKind(choice.FinishReason); ok {
+			msg := "GLM finish_reason error channel: " + choice.FinishReason
+			switch choice.FinishReason {
+			case "network_error":
+				msg = "GLM network_error"
+			case "sensitive":
+				msg = "GLM content filter: sensitive"
+			case "model_context_window_exceeded":
+				msg = "GLM context window exceeded"
 			}
-		case "sensitive":
 			return nil, &ParseError{
-				Kind:    errorsx.KindContentFilter,
-				Message: "GLM content filter: sensitive",
-			}
-		case "model_context_window_exceeded":
-			return nil, &ParseError{
-				Kind:    errorsx.KindContextLength,
-				Message: "GLM context window exceeded",
+				Kind:    kind,
+				Message: msg,
 			}
 		}
 

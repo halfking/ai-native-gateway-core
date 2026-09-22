@@ -224,7 +224,7 @@ func TestAcquireWithQuotaRecoversAfterNaturalExpiry(t *testing.T) {
 	}
 
 	// Let the physical slot TTL lapse.
-	server.FastForward(time.Duration(slotTTLSeconds+60) * time.Second)
+	server.FastForward(time.Duration(slotTTLSeconds()+60) * time.Second)
 
 	if _, status := mgr.AcquireWithQuota(ctx, 98, &limit, "bob|cursor", "default", Quota{Mode: QuotaModeEnforce, MaxFPSlots: 1}); status != Acquired {
 		t.Fatalf("post-expiry acquire status = %s, want %s", status, Acquired)

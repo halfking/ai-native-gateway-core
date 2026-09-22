@@ -494,51 +494,39 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			// model_context_window_exceeded mean the stream FAILED rather
 			// than ended normally. Reclassify to an upstream interruption
 			// instead of mapping them to end_turn.
-			switch fr {
-			case "network_error":
-				midStreamHalt = &StreamOutcome{
-					Interrupted: true,
-					Reason:      "network_error",
-					Kind:        errorsx.KindNetwork,
-					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
-					ChunkCount:  chunkCount,
-				}
-				if capture != nil {
-					capture.MarkInterruptedWithReason("network_error")
-				}
-				emitQ2GateError("network_error", "upstream stream error: network_error")
-				return true
-			case "sensitive":
-				midStreamHalt = &StreamOutcome{
-					Interrupted: true,
-					Reason:      "content_filter",
-					Kind:        errorsx.KindContentFilter,
-					Resumable:   false,
-					ChunkCount:  chunkCount,
-				}
-				if capture != nil {
-					capture.MarkInterruptedWithReason("content_filter")
-				}
-				emitQ2GateError("content_filter", "upstream refused to produce this content")
-				return true
-			case "model_context_window_exceeded":
+			// Wave4-D3 (2026-09-22): detection moved to the single errorsx
+			// vendor-channel table (misspelling tolerance included); the
+			// presentation below preserves each canonical value's historical
+			// Reason/emit/Resumable behavior.
+			if kind, isVendorFailure := errorsx.FinishReasonVendorFailureKind(fr); isVendorFailure {
 				// R35 (2026-09-17 audit P1): Resumable followed the chunk
 				// count, not a hardcoded false — with zero client-visible
 				// output the attempt is transparently retryable (survival
 				// failover / compressed re-request); once semantic output was
 				// committed the terminal frame is correct. Matches the
 				// empty-response and error-event branches in anthropic_bridge.
+				resumable := !attemptHasClientSemanticOutput(gate, chunkCount)
+				var reason, emitCode, emitMsg string
+				switch kind {
+				case errorsx.KindNetwork:
+					reason, emitCode, emitMsg = "network_error", "network_error", "upstream stream error: network_error"
+				case errorsx.KindContentFilter:
+					reason, emitCode, emitMsg = "content_filter", "content_filter", "upstream refused to produce this content"
+					resumable = false
+				default: // errorsx.KindContextLength
+					reason, emitCode, emitMsg = "context_length_exceeded", "request_too_large", "upstream context window exceeded"
+				}
 				midStreamHalt = &StreamOutcome{
 					Interrupted: true,
-					Reason:      "context_length_exceeded",
-					Kind:        errorsx.KindContextLength,
-					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+					Reason:      reason,
+					Kind:        kind,
+					Resumable:   resumable,
 					ChunkCount:  chunkCount,
 				}
 				if capture != nil {
-					capture.MarkInterruptedWithReason("context_length_exceeded")
+					capture.MarkInterruptedWithReason(reason)
 				}
-				emitQ2GateError("request_too_large", "upstream context window exceeded")
+				emitQ2GateError(emitCode, emitMsg)
 				return true
 			}
 			finalFinishReason = fr
@@ -971,7 +959,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	// pathology). Return a resumable empty-response outcome instead so the
 	// executor tries the next candidate; in buffered-gate mode the
 	// pre-declared scaffolding never committed and is discarded with the
-	// attempt (transparent failover, mirrors Q3/Q4 IsAnthropicStreamEmpty and
+	// attempt (transparent failover, mirrors Q3/Q4 emptyoutcome.IsEmptyOutcome and
 	// the OpenAI chat early-empty gate).
 	if !outcome.Interrupted && chunkCount == 0 {
 		if capture != nil {

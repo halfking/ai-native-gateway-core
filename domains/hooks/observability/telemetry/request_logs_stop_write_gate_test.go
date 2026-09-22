@@ -70,11 +70,11 @@ func TestInsertRequestLogStopWriteGate(t *testing.T) {
 
 			mock.ExpectBegin()
 			mock.ExpectExec("INSERT INTO usage_ledger_hot").
-				WithArgs(anyArgs(18)...).
+				WithArgs(anyArgs(19)...).
 				WillReturnResult(pgxmock.NewResult("INSERT", 1))
 			if tc.expectWide {
 				mock.ExpectExec("INSERT INTO request_logs_hot").
-					WithArgs(anyArgs(102)...).
+					WithArgs(anyArgs(103)...).
 					WillReturnResult(pgxmock.NewResult("INSERT", 1))
 				mock.ExpectExec("INSERT INTO request_logs_bodies_hot").
 					WithArgs(anyArgs(4)...).
@@ -121,7 +121,7 @@ func TestUpdateRequestLogStopWriteGate(t *testing.T) {
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 			if tc.expectWide {
 				mock.ExpectExec("UPDATE request_logs_hot").
-					WithArgs(anyArgs(99)...).
+					WithArgs(anyArgs(100)...).
 					WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 				mock.ExpectExec("INSERT INTO request_logs_bodies_hot").
 					WithArgs(anyArgs(4)...).

@@ -44,14 +44,14 @@ func TestReplayFallbackFiresOnPersistedHooks(t *testing.T) {
 	// insertRequestLog 事务链（无 bodies → 无 bodies INSERT；APIKeyID nil
 	// → 无 api_keys UPDATE；outboxWriter nil → 无 session opener）。
 	mockDB.ExpectBegin()
-	usageArgs := make([]interface{}, 18)
+	usageArgs := make([]interface{}, 19)
 	for i := range usageArgs {
 		usageArgs[i] = pgxmock.AnyArg()
 	}
 	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
 		WithArgs(usageArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	requestArgs := make([]interface{}, 102) // 608: +request_class/due_at ($101/$102)
+	requestArgs := make([]interface{}, 103) // 608: +request_class/due_at ($101/$102); B1: +rate_multiplier ($103)
 	for i := range requestArgs {
 		requestArgs[i] = pgxmock.AnyArg()
 	}
@@ -126,7 +126,7 @@ func TestReplayFallbackFiresOnPersistedHooks_UpdateOp(t *testing.T) {
 		mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-		updateArgs := make([]interface{}, 99)
+		updateArgs := make([]interface{}, 100)
 		for i := range updateArgs {
 			updateArgs[i] = pgxmock.AnyArg()
 		}

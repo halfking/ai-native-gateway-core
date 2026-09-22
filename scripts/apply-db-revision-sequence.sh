@@ -535,6 +535,15 @@ files=(
   # cleanup 脚本（CASCADE 引用族的裁决不进启动迁移）。守卫+IF NOT EXISTS 幂等；
   # 本轮已在本机存量真库先跑对账脚本后验证通过。
   "$ROOT_DIR/sql/migrations/startup/735_models_canonical_active_folded_unique.sql"
+  # 2026-09-22 Wave 3 B1：736 峰谷倍率 —— usage_ledger[_hot].rate_multiplier
+  # / request_logs[_hot].credits_rate_multiplier 四列（ADD COLUMN IF NOT
+  # EXISTS，分区族自动级联）+ maas_resolve_rate_multiplier() 共享取档函数
+  # （与 maas.ResolveRateMultiplier 同规则，配置 maas.rate_periods）。
+  # 幂等，默认 enabled=false 行为零漂移。
+  "$ROOT_DIR/sql/migrations/startup/736_maas_rate_multiplier.sql"
+  # 2026-09-22 Wave 3 B8：737 内部对账落表 —— maas_reconciliation_findings
+  # （CREATE TABLE IF NOT EXISTS，幂等），bg.LedgerReconciler 差异落表。
+  "$ROOT_DIR/sql/migrations/startup/737_maas_reconciliation_findings.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

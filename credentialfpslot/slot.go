@@ -14,15 +14,11 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/identity" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/ratelimit"        // AUDIT-2: 限流总开关
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
 )
 
 const (
-	// slotTTLSeconds 指纹槽的 TTL（30分钟无请求自动释放）
-	// 最后一次请求后 30 分钟 Redis 自动过期 slot key，
-	// 新客户端可以立即获取该槽位。
-	slotTTLSeconds = 1800 // 30 minutes
-
 	// sessionPinTTLSeconds pin 绑定的 TTL（24小时）
 	// pin 记录该 holder 上次使用哪个槽位，即使 slot 已过期，
 	// holder 回来后仍可快速重获同一槽位。
@@ -34,6 +30,17 @@ const (
 	slotIndexTTLSeconds = sessionPinTTLSeconds
 	slotIndexSentinel   = "__slot_index_initialized__"
 )
+
+// slotTTLSeconds returns the fingerprint-slot auto-release TTL in seconds.
+//
+// 2026-09-22 Wave 2: previously a const 1800 (30 min); now the settings
+// hot-reload key disguise.fp_slot_ttl_seconds (cached ≤5s, admin writes
+// invalidate immediately). Default unchanged, so behavior is identical
+// unless an operator overrides the key. The reclaim sweep's idle threshold
+// follows this value via reclaimConfigFromManager.
+func slotTTLSeconds() int {
+	return settings.FpSlotTTLSeconds()
+}
 
 // Config controls slot pool behaviour.
 type Config struct {
@@ -195,13 +202,6 @@ func (m *Manager) DefaultLimit() int {
 		return 5
 	}
 	return m.cfg.DefaultLimit
-}
-
-// slotTTLSeconds returns the slot TTL. Hard-coded to 30 min; production
-// uses Redis-side TTL so the Go value is only relevant for the
-// in-memory fallback path.
-func (m *Manager) slotTTLSeconds() int { //nolint:unused
-	return slotTTLSeconds
 }
 
 // EffectiveFpSlotLimit maps DB credentials.fp_slot_limit (the fingerprint
@@ -425,7 +425,7 @@ func (m *Manager) releaseFiniteLease(ctx context.Context, lease *Lease) {
 		refreshed, err := releaseSlotScript.Run(ctx, m.client,
 			[]string{key, pinKey},
 			lease.Holder,
-			slotTTLSeconds,
+			slotTTLSeconds(),
 			sessionPinTTLSeconds,
 			lease.SlotIndex,
 		).Bool()
@@ -732,7 +732,7 @@ func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, hol
 		if parseErr == nil && slot >= 0 && slot < limit {
 			acquired, err := acquireSlotScript.Run(ctx, m.client,
 				[]string{tenantSlotRedisKey(tenantID, credentialID, slot), pinKey},
-				holder, slotTTLSeconds, sessionPinTTLSeconds, slot, gate,
+				holder, slotTTLSeconds(), sessionPinTTLSeconds, slot, gate,
 			).Bool()
 			if err != nil {
 				slog.Debug("cred_fp_slot redis pin-reuse failed", "cred", credentialID, "slot", slot, "error", err)
@@ -750,7 +750,7 @@ func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, hol
 	// (2026-06-24): "长时间占用的 slot 在 slot 满时，优先被抢占".
 	res, err := acquireLRUScript.Run(ctx, m.client,
 		[]string{tenantSlotRedisPrefix(tenantID, credentialID)},
-		limit, holder, slotTTLSeconds, sessionPinTTLSeconds, gate, pinKey, credentialID, tenantPinRedisPrefix(tenantID),
+		limit, holder, slotTTLSeconds(), sessionPinTTLSeconds, gate, pinKey, credentialID, tenantPinRedisPrefix(tenantID),
 	).Result()
 	if err != nil {
 		slog.Debug("cred_fp_slot redis LRU acquire failed", "cred", credentialID, "error", err)
@@ -787,7 +787,7 @@ func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, hol
 func (m *Manager) tryRedisLock(ctx context.Context, credentialID, slot int, holder string) bool { //nolint:unused
 	acquired, err := acquireSlotScript.Run(ctx, m.client,
 		[]string{tenantSlotRedisKey("default", credentialID, slot), ""},
-		holder, slotTTLSeconds, 0, slot, m.cfg.resolveActiveGateSeconds(),
+		holder, slotTTLSeconds(), 0, slot, m.cfg.resolveActiveGateSeconds(),
 	).Bool()
 	if err != nil {
 		slog.Debug("cred_fp_slot redis lock failed", "cred", credentialID, "error", err)

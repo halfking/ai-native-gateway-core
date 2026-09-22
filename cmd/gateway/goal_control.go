@@ -319,7 +319,7 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	handoffCfg := handoff.TriggerConfig{
 		Enabled:             getEnvBool("LLM_GATEWAY_HANDOFF_ENABLED", false),
 		TriggerMode:         handoff.TriggerMode(getEnv("LLM_GATEWAY_HANDOFF_TRIGGER_MODE", "auto")),
-		AbsoluteThreshold:   getEnvInt("LLM_GATEWAY_HANDOFF_ABSOLUTE_THRESHOLD", 180000),
+		AbsoluteThreshold:   getEnvInt("LLM_GATEWAY_HANDOFF_ABSOLUTE_THRESHOLD", 300000), // Wave2: 与 handoff_specs 种子同步 300K
 		PercentageThreshold: getEnvFloat("LLM_GATEWAY_HANDOFF_PERCENTAGE_THRESHOLD", 0.8),
 		MessageThreshold:    getEnvInt("LLM_GATEWAY_HANDOFF_MESSAGE_THRESHOLD", 0),
 		IdleMinutes:         getEnvInt("LLM_GATEWAY_HANDOFF_IDLE_MINUTES", 0),

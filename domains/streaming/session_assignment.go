@@ -147,6 +147,31 @@ func (h *ChatHandler) assignGatewaySessionWithFinder(
 		return createSession()
 	}
 
+	// Wave4-D1 (2026-09-22): consult the LastSystemSessionIndex before the
+	// DB finder — the index had been write-only since introduction while
+	// every no-id resume paid a request_logs_hot query. The index is keyed
+	// by api_key_id only (the DB finder scopes by tenant+key+identity_hash),
+	// so a hit additionally requires the entry's device seed to match the
+	// request's — device seed is the primary identity component, and every
+	// rejection here (mismatch, stale, gone session) falls through to the DB
+	// finder, which remains the authority. The reuse window is re-checked
+	// because the index TTL is fixed at 5 minutes while the window is
+	// configurable (may be shorter or longer).
+	if h.lastSystemSession != nil {
+		if entry, ok := h.lastSystemSession.Get(ctx, keyInfo.ID); ok &&
+			entry.DeviceSeed != "" && entry.DeviceSeed == deviceSeed &&
+			time.Since(entry.LastAssignedAt) <= h.sessionReuseWindowOrDefault() {
+			if si, getErr := h.sessionGetter.Get(ctx, entry.SessionID); getErr == nil && si != nil {
+				assignment.SessionID = entry.SessionID
+				assignment.SessionInfo = si
+				assignment.Resumed = true
+				assignment.FromRecent = true
+				assignment.ShouldPersist = true
+				return assignment, nil
+			}
+		}
+	}
+
 	if finder != nil {
 		clientID := identity.BuildIdentityFromRequest(r, keyInfo.TenantID, appID(keyInfo), &keyInfo.ID, clientProfile)
 		recentSessionID, err := finder.FindRecentGatewaySession(ctx, keyInfo.TenantID, clientID.IdentityHash, keyInfo.ID, h.sessionReuseWindowOrDefault())

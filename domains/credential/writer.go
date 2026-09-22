@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/modelbinding"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 var ErrNoDatabase = errors.New("credential state database not configured")
@@ -387,11 +388,19 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 	case errorsx.KindModelNotFound:
 		// 2026-07-03 fix: Bug #10 - model_not_found should write state
 		// (removed from IsClientBug). When upstream deprecates a model,
-		// mark it unavailable with a long cooling period (7 days) so we
-		// don't repeatedly try it, but allow eventual retry in case the
-		// model is restored.
-		recoverAt := time.Now().UTC().Add(7 * 24 * time.Hour)
-		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_model_not_found", recoverAt, detail)
+		// mark it unavailable with a cooling period so we don't repeatedly
+		// try it, but allow eventual retry in case the model is restored.
+		//
+		// 2026-09-22 Wave 2 C4 三级化: a FIRST request-path 404 takes the
+		// 30-minute initial tier (aggregator routing blip / temporarily
+		// removed upstream model must not pin the pair for a week); a
+		// second 404 landing while the binding is already auto_model_not_
+		// found-cooled escalates to the 7-day sustained tier. The
+		// node_probe 5-minute exclusion window makes such a mid-cooling
+		// 404 strong evidence of real unavailability, and the probe ladder
+		// (≤6h cap) stays the authoritative self-heal for a mistaken
+		// escalation. Tiers are settings-hot-reloadable.
+		return w.writeModelNotFoundTiered(ctx, credentialID, rawModel, detail)
 	case errorsx.KindModelDeprecated:
 		// 2026-08-05 fix: upstream has permanently end-of-lifed the model
 		// (HTTP 410 Gone + "end of life" body, or 404/422 "has been
@@ -401,7 +410,7 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		// model_not_found). Per-model scope only — the credential may serve
 		// other models fine, so we must NOT pollute credentials.
 		// availability_state (see writeModelLevelFailureOnly rationale).
-		recoverAt := time.Now().UTC().Add(30 * 24 * time.Hour)
+		recoverAt := time.Now().UTC().Add(time.Duration(settings.ModelDeprecatedCooldownSeconds()) * time.Second)
 		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_model_deprecated", recoverAt, detail)
 	case errorsx.KindContextLength, errorsx.KindUnsupportedFeature,
 		errorsx.KindToolCallIdMismatch, errorsx.KindClientBug,
@@ -495,6 +504,84 @@ func (w *Writer) writeModelLevelFailureOnly(
 	//    credential. The legacy writeModelLevelFailure helper that did this
 	//    was removed in 2026-06-23 (PR-3 T3); this function is now the only
 	//    per-model error write path.
+	return nil
+}
+
+// writeModelNotFoundTiered applies the Wave-2 three-tier MNF semantics
+// (audit C4): initialRecoverAt for bindings that are not currently cooled,
+// sustainedRecoverAt for bindings already cooling with reason
+// auto_model_not_found (a second request-path 404 inside the first
+// cooling window). The available=TRUE guard of writeModelLevelFailureOnly
+// is relaxed for exactly that same-reason cooled arm so the escalation
+// write can land; manual/admin-protected bindings stay untouched in both
+// arms, and no other reason's cooling is extended or overwritten.
+func (w *Writer) writeModelNotFoundTiered(
+	ctx context.Context,
+	credentialID int,
+	rawModel string,
+	detail *string,
+) error {
+	const reason = "auto_model_not_found"
+	now := time.Now().UTC()
+	initialRecoverAt := now.Add(time.Duration(settings.ModelNotFoundInitialCooldownSeconds()) * time.Second)
+	sustainedRecoverAt := now.Add(time.Duration(settings.ModelNotFoundSustainedCooldownSeconds()) * time.Second)
+
+	// 1. Per-binding state on cmb (the production router's source of truth).
+	//    CASE arms: available=FALSE (already MNF-cooled) → sustained tier;
+	//    available=TRUE (fresh 404) → initial tier.
+	if rawModel == "" {
+		if _, err := w.dbPool.Exec(ctx, `
+			UPDATE credential_model_bindings cmb
+			SET available              = FALSE,
+			    unavailable_reason     = $1,
+			    unavailable_at         = now(),
+			    unavailable_recover_at = CASE
+			        WHEN cmb.available = FALSE THEN $2
+			        ELSE $3
+			    END,
+			    updated_at             = now()
+			WHERE cmb.credential_id = $4
+			  AND (
+			        (cmb.available = TRUE
+			         AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+			         AND COALESCE(cmb.admin_protected, FALSE) = FALSE)
+			     OR (cmb.available = FALSE AND cmb.unavailable_reason = $1)
+			  )
+		`, reason, sustainedRecoverAt, initialRecoverAt, credentialID); err != nil {
+			return err
+		}
+	} else {
+		resolvedRawModel, err := modelbinding.ResolveRawBinding(ctx, w.dbPool, credentialID, rawModel)
+		if err != nil {
+			return err
+		}
+		if _, err := w.dbPool.Exec(ctx, `
+			UPDATE credential_model_bindings cmb
+			SET available          = FALSE,
+			    unavailable_reason = $1,
+			    unavailable_at     = now(),
+			    unavailable_recover_at = CASE
+			        WHEN cmb.available = FALSE THEN $2
+			        ELSE $3
+			    END,
+			    updated_at         = now()
+			FROM provider_models pm
+			WHERE pm.id = cmb.provider_model_id
+			  AND cmb.credential_id = $4
+			  AND pm.raw_model_name = $5
+			  AND (
+			        (cmb.available = TRUE
+			         AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+			         AND COALESCE(cmb.admin_protected, FALSE) = FALSE)
+			     OR (cmb.available = FALSE AND cmb.unavailable_reason = $1)
+			  )
+		`, reason, sustainedRecoverAt, initialRecoverAt, credentialID, resolvedRawModel); err != nil {
+			return err
+		}
+	}
+
+	// 2/3. model_offers reflects cmb via the view; credentials.availability_state
+	//      stays untouched (same rationale as writeModelLevelFailureOnly).
 	return nil
 }
 

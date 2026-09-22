@@ -336,6 +336,15 @@ dl_load_project_env() {
     return 0
   fi
   local kv key val
+  # R55-F1b fix: the previous `_dl_safe_env_source ... >/dev/null 2>&1; env -0`
+  # call silently DROPPED Python's NUL-delimited KEY=value records (the only
+  # source of new env vars) and `env -0` runs in a different process, so it
+  # never saw Python's os.environ writes either — the function was a no-op.
+  # Replaced with a direct call into `<(...)` so bash reads the records.
+  # Also moved the long context block OUT of `<(...)`: bash 5.x parses
+  # process-substitution comments too aggressively and would segfault on
+  # `${VAR}` / `(...)` characters inside them when this function was invoked
+  # from a `()` subshell (R55 regression test pattern).
   while IFS= read -r -d '' kv; do
     key="${kv%%=*}"
     case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
@@ -343,17 +352,58 @@ dl_load_project_env() {
     if [[ -z "$val" ]]; then
       export "$key=${kv#*=}"
     fi
-  done < <(
-    # .env.local prints a friendly summary when sourced; suppress it so
-    # deploy diagnostics stay redacted and the env dump stays clean.
-    # set -a is load-bearing: the file uses plain KEY=VALUE dotenv
-    # assignments (no `export`), which land as shell-only variables that
-    # `env -0` never sees. Without it the loader imports zero keys and
-    # deploy() dies on the empty SECRET_KEY gate (incident 2026-09-07,
-    # "LLM_GATEWAY_SECRET_KEY is empty" on an otherwise valid .env.local).
-    # shellcheck disable=SC1090
-    { set -a; source "$file" >/dev/null 2>&1; set +a; env -0; }
-  )
+  done < <(_dl_safe_env_source "$file")
+}
+
+# _dl_safe_env_source — print KEY=value\0 records for _dl_load_project_env.
+# Honors ${VAR} / $VAR interpolation from the current environment (and from
+# values earlier in the same file, e.g. CRM_DATABASE_URL referencing the
+# CRM_DB_USER assignment a few lines up), treats unquoted shell
+# metacharacters (&, |, ;, (, ), <, >, `, $) as literal bytes, and accepts
+# double- or single-quoted values verbatim. os.environ is updated as we
+# parse so subsequent lines can reference earlier ones. Failure is non-fatal:
+# the caller falls back to whatever was already in the calling environment.
+_dl_safe_env_source() {
+  local file="$1"
+  python3 - "$file" <<'PY' || return 0
+import os, re, sys
+
+keys_re = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$')
+export_re = re.compile(r'^export\s+')
+var_ref_re = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)')
+
+def expand(val):
+    def repl(m):
+        name = m.group(1) or m.group(2)
+        return os.environ.get(name, '')
+    return var_ref_re.sub(repl, val)
+
+with open(sys.argv[1], encoding='utf-8') as fh:
+    for raw in fh:
+        line = raw.rstrip('\n').rstrip('\r')
+        s = line.lstrip()
+        if not s or s.startswith('#'):
+            continue
+        m = export_re.match(s)
+        if m:
+            s = s[m.end():]
+        m = keys_re.match(s)
+        if not m:
+            continue
+        key, raw_val = m.group(1), m.group(2)
+        quote_char = ''
+        if len(raw_val) >= 2 and raw_val[0] == raw_val[-1] and raw_val[0] in ('"', "'"):
+            quote_char = raw_val[0]
+            val = raw_val[1:-1]
+        else:
+            val = raw_val
+        # Bash semantics: unquoted + double-quoted honor ${VAR}/$VAR
+        # interpolation; single-quoted forbids ANY expansion (R55-F1b fix).
+        if quote_char != "'":
+            val = expand(val)
+        os.environ[key] = val
+        sys.stdout.buffer.write(f'{key}={val}\x00'.encode('utf-8'))
+PY
 }
 
 dl_write_env() {
