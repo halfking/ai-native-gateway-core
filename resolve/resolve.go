@@ -313,7 +313,11 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 	}
 	variants := modelname.NormalizeRouteKeyAliases(clientModel)
 	if len(variants) == 0 {
-		return passthrough(clientModel), nil
+		// T02 round fix (2026-09-22): report a true miss (nil) so the
+		// caller's miss branch — auto-seed + negative cache — runs. A
+		// non-nil passthrough here would be positive-cached for the full
+		// TTL and skip the miss handling entirely.
+		return nil, nil
 	}
 	normalized := variants[0]
 	// canonical_name is persisted lowercase (exact compare); but
@@ -448,7 +452,14 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 		}
 	}
 
-	return passthrough(clientModel), nil
+	// T02 round fix (2026-09-22): the full-miss tail MUST return a true nil
+	// miss. It previously returned a non-nil passthrough, which made the
+	// caller's `resolved == nil` branch — and therefore BOTH the
+	// auto-seed (Wave 3 B3) and the 2026-08-15 negative cache — dead code on
+	// every deployment with a database. Verified live on the local instance:
+	// a seeded provider_models raw never triggered EnsureCanonicalAndAliases
+	// until this returned nil.
+	return nil, nil
 }
 
 func (r *Resolver) aliasRawNames(ctx context.Context, canonicalID int, profile string) ([]string, error) {
