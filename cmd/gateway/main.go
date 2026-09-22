@@ -820,7 +820,10 @@ func main() {
 	healthHandler.SetRuntimeIdentity(cfg.RuntimeRole, cfg.Listen)
 	// lite storage mode: PostgreSQL is bypassed by design — nil dbPinger must
 	// not pin /healthz ready=false and /readyz 503 forever (audit B1).
-	if storageRt != nil {
+	// Only flip the optional flag when PG is actually disabled; otherwise a
+	// half-initialized dbConn (e.g. ensure still running on a large table)
+	// would let /readyz return 200 while DB queries fail downstream.
+	if dbConn == nil || !dbConn.Enabled() {
 		healthHandler.SetDepsOptional(true)
 	}
 
