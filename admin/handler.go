@@ -87,7 +87,7 @@ type Handler struct {
 	// concurrency_limit on PATCH credential/binding. The Limiter pool's
 	// per-credential semaphore capacity is refreshed by
 	// HandleRoutingCandidateBindingUpdate / updateCredential.
-	limiter     LimiterCapacitySetter
+	limiter LimiterCapacitySetter
 	// liveRouting (Wave 1 A1, 2026-09-22): 生产路由源，/api/routing/resolve
 	// 用它经 Router.PlanCandidatesPinned 产出与真实请求同源的 plan_order。
 	// nil → plan_order 空 + source=unavailable（no-DB / 老装配形态）。
