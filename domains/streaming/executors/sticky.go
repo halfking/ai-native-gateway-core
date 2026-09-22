@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // calculateSessionStickyTTL 根据模型类型计算动态 TTL（Phase 1）
@@ -413,7 +414,8 @@ func (s *StickyCache) RecordFailure(key string, threshold int) bool {
 	}
 	e.lastFailureAt = now
 	if threshold <= 0 {
-		threshold = 2 // AUDIT-1: 默认 2 次（用户语义）
+		// AUDIT-1: 默认 2 次（用户语义）；Wave 2 集中化为 settings 热更键。
+		threshold = settings.StickyFailureThreshold()
 	}
 	if e.consecutiveFailures >= threshold {
 		delete(s.items, key)
@@ -439,7 +441,7 @@ func (s *StickyCache) RecordFailureMultiLevel(
 	l1, l2, l3 := buildStickyKeys(tenantID, appID, apiKeyID, clientProfile, sessionID, model)
 	keys := []string{l1, l2, l3}
 	if threshold <= 0 {
-		threshold = 2
+		threshold = settings.StickyFailureThreshold()
 	}
 
 	s.mu.Lock()

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -70,7 +71,7 @@ func (n *NodeState) IsUsable(now time.Time) bool {
 	// real request is still recorded by the atomic Lua transition and can
 	// immediately disable the node again if it fails.
 	n.recoverIfCooldownExpired(now.Unix())
-	return !n.Disabled && n.ConsecutiveFailureStreak(now) < nodeFailStreakLimit
+	return !n.Disabled && n.ConsecutiveFailureStreak(now) < settings.NodeFailStreakLimit()
 }
 
 // ConsecutiveFailureStreak counts tail failures within the active sliding window.
@@ -242,8 +243,8 @@ func (m *Manager) recordNodeOutcome(ctx context.Context, credentialID int, model
 		errorKind,
 		now,
 		nodeWindowSeconds,
-		nodeFailStreakLimit,
-		nodeDisabledCooldownSec,
+		settings.NodeFailStreakLimit(),
+		settings.NodeDisabledCooldownSeconds(),
 	).Result()
 	if err != nil {
 		return fmt.Errorf("record node outcome: %w", err)
@@ -297,9 +298,11 @@ func (n *NodeState) recoverIfCooldownExpired(nowUnix int64) {
 }
 
 const (
-	nodeWindowSeconds       = 300
-	nodeFailStreakLimit     = 3
-	nodeDisabledCooldownSec = 300
+	nodeWindowSeconds = 300
+	// nodeFailStreakLimit（=3）与 nodeDisabledCooldownSec（=300）已于 2026-09-22
+	// Wave 2 集中化为 settings 热更键 routing.node_fail_streak_limit /
+	// routing.node_disabled_cooldown_seconds（settings.NodeFailStreakLimit /
+	// NodeDisabledCooldownSeconds），默认值不变。
 )
 
 // recordNodeOutcomeScript atomically reads, updates, and writes NodeState.
