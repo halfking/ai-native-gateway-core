@@ -735,7 +735,12 @@ func (h *ModeHook) shouldActivateGoalMode(ctx context.Context, req *response.Int
 }
 
 // detectExplicit checks for explicit goal mode markers.
+// Wave 1 A5 (2026-09-22): 设计 §5.12 的 `X-Gw-Goal-Mode: managed` 请求头是
+// goal 模式的契约入口，与 body {"goal":true} 标记并存（不是替代）。
 func (h *ModeHook) detectExplicit(req *response.InterceptRequest) (bool, string) {
+	if strings.EqualFold(strings.TrimSpace(req.GoalModeHeader), "managed") {
+		return true, "header:managed"
+	}
 	var body map[string]interface{}
 	if err := json.Unmarshal(req.ResponseBody, &body); err == nil {
 		if goal, ok := body["goal"].(bool); ok && goal {
