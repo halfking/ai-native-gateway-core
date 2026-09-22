@@ -144,7 +144,6 @@ export default {
     count: '件数',
     percentage: '割合',
     distribution: '分布',
-    distribution: '分布',
     taskCorrections: 'タスク型修正統計（taskprofile）',
     exportCsv: 'CSV エクスポート',
     exporting: 'エクスポート中...',

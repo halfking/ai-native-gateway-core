@@ -9,6 +9,8 @@ package bg
 import (
 	"context"
 	"testing"
+
+	apihub "github.com/kaixuan/llm-gateway-go/apihub"
 )
 
 func TestCredentialSelfcheck_CycleOnceRecovered_RecoversPanic(t *testing.T) {
@@ -61,4 +63,65 @@ func TestConcurrencyAutoScaleUp_ScaleUpRecovered_RecoversPanic(t *testing.T) {
 		}
 	}()
 	w.scaleUpRecovered(context.Background())
+}
+
+// R52 补齐（D16/D04 复核发现 F13 钉桩只覆盖 4/6）：apihub_watcher 与
+// credential_autoheal 两例对称补上；并为 active_probe 的 R52 修复
+// （panic 时释放 running 去重键）补行为断言。
+
+// panickyAssetSyncSource 在首个方法即 panic，模拟依赖层炸穿。
+type panickyAssetSyncSource struct{}
+
+func (panickyAssetSyncSource) LLMEndpoints(ctx context.Context) ([]apihub.Asset, error) {
+	panic("boom: llm endpoints")
+}
+func (panickyAssetSyncSource) MCPServers(ctx context.Context) ([]apihub.Asset, error) {
+	panic("boom: mcp servers")
+}
+
+func TestAssetWatcher_SyncRecovered_RecoversPanic(t *testing.T) {
+	// SyncOnce 对 hub==nil 早退——须给非 nil hub（panic 在 src 侧先触发，
+	// store 为 nil 不会被解引用）才能走到 panic 路径。
+	w := &AssetWatcher{hub: apihub.New(nil), src: panickyAssetSyncSource{}}
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("syncRecovered 让 panic 逃逸: %v", rec)
+		}
+	}()
+	w.syncRecovered(context.Background())
+}
+
+func TestCredentialAutoHeal_CycleRecovered_RecoversPanic(t *testing.T) {
+	w := &CredentialAutoHealWorker{
+		// submit 在 runCycle 命中待自愈行时被调用——用 panic 依赖模拟炸穿。
+		submit: func(credentialID int, rawModel, tenantID, parentReqID string) {
+			panic("boom: submit self-heal probe")
+		},
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("cycleRecovered 让 panic 逃逸: %v", rec)
+		}
+	}()
+	w.cycleRecovered(context.Background())
+}
+
+func TestActiveProbeWorker_PanicReleasesRunningDedupKey(t *testing.T) {
+	// R52：panic 前 running[key] 残留会使 Submit 的 dedup 把该
+	// (credential, model) 探测对静默丢弃直至重启——recover 分支必须删键。
+	w := NewActiveProbeWorker(ActiveProbeWorkerConfig{Enabled: true})
+	task := probeTask{CredID: 7, Model: "gpt-test"}
+	key := probeKey(task.CredID, task.Model)
+	w.mu.Lock()
+	w.running[key] = &probeState{CredentialID: task.CredID, Model: task.Model}
+	w.mu.Unlock()
+
+	w.processOneRecovered(context.Background(), task)
+
+	w.mu.Lock()
+	_, stillRunning := w.running[key]
+	w.mu.Unlock()
+	if stillRunning {
+		t.Fatalf("panic 后 running 去重键未释放，探测链将永久卡死")
+	}
 }

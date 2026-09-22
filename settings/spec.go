@@ -322,9 +322,15 @@ var Global = NewRegistry()
 const EnvBackendScope Scope = "__env__"
 
 // Init wires the DB and env backends into Global. Idempotent.
+//
+// dbStore 为 nil 时仅注册 env backend（R52：lite 存储形态无 PG，但
+// storage.* 开关仍需 env→default 解析链才能生效，见
+// cmd/gateway/storage_mode_init.go 的注册点）。
 func Init(dbStore Backend) {
-	Global.RegisterBackend(ScopePlatform, dbStore)
-	Global.RegisterBackend(ScopeTenant, dbStore)
+	if dbStore != nil {
+		Global.RegisterBackend(ScopePlatform, dbStore)
+		Global.RegisterBackend(ScopeTenant, dbStore)
+	}
 	Global.RegisterBackend(EnvBackendScope, NewStoreEnv())
 	slog.Info("settings: registry initialised",
 		"platform_specs", len(Global.AllSpecs()))

@@ -204,10 +204,12 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		MaxAutoContinueCount: getEnvInt("LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE", preset.MaxContinueCount),
 		CompletionConfidence: getEnvFloat("LLM_GATEWAY_GOAL_COMPLETION_CONFIDENCE", preset.CompletionConfidence),
 
-		// Client-driven control signals remain opt-in on both sides: the
-		// tenant setting / env default enables production behavior, while
-		// X-Gw-Capabilities authorizes it per request.
-		ClientSignalEnabled:          getEnvBool("LLM_GATEWAY_GOAL_CLIENT_DRIVEN", false),
+		// Client-driven control signals. Wave 1 A5 (2026-09-22): gw-continue
+		// 零上下文方案转默认开启——client 侧自驱续跑是设计的首选路径（影子
+		// 指令不回灌客户端会话）；X-Gw-Capabilities 仍按请求授权，legacy
+		// 客户端（未声明 capability）拿不到信号，行为不变。租户键
+		// goal.client_signal_enabled 可显式关闭；env 默认值由 false 翻转。
+		ClientSignalEnabled:          getEnvBool("LLM_GATEWAY_GOAL_CLIENT_DRIVEN", true),
 		ClientSignalMode:             getEnv("LLM_GATEWAY_GOAL_CLIENT_SIGNAL_MODE", "auto"),
 		HandoffSignalThresholdTokens: getEnvInt("LLM_GATEWAY_GOAL_HANDOFF_SIGNAL_THRESHOLD", 200000),
 		ClientSignalOnToolCalls:      getEnvBool("LLM_GATEWAY_GOAL_CLIENT_SIGNAL_ON_TOOL_CALLS", false),

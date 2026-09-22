@@ -24,6 +24,13 @@ type InterceptRequest struct {
 	IsStreaming    bool
 	FollowUpAction string
 
+	// GoalModeHeader (Wave 1 A5, 2026-09-22): 原样携带请求头 X-Gw-Goal-Mode。
+	// 设计 §5.12 goal 状态机最终版以 `X-Gw-Goal-Mode: managed` 为 goal 模式
+	// 入口；detectExplicit 将其与 body {"goal":true} 并列作为显式激活标记。
+	// GoalRun 持久化仍要求 body 携带完整 goal 对象（fail-closed），header
+	// 单独出现只激活影子续跑、不落 GoalRun。
+	GoalModeHeader string
+
 	// ClientSignalAllowed/HandoffSignalAllowed are request-local capability
 	// gates populated at the HTTP boundary. Hooks use them to decide whether
 	// to return a client-driven signal or retain the legacy InjectFollowUp

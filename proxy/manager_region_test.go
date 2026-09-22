@@ -520,6 +520,10 @@ func TestSelectBestNodeAppliesDefaultBannedRegionsOverlay(t *testing.T) {
 
 	// 2) settings 改为空字符串 → overlay 关闭，节点放行。
 	store["proxy.default_banned_regions"] = []byte(`""`)
+	// R52：overlay 改走 CachedPlatformString（选择路径去锁内 DB 读），
+	// 直改 store 不经 settingsPut，须显式失效缓存（生产路径由
+	// admin settingsPut 接通 InvalidatePlatformValue）。
+	settings.InvalidatePlatformValue(defaultBannedRegionsKey)
 	mgr2 := NewManager(newStore(), nil, nil)
 	mgr2.refreshAllSubscriptionBans(context.Background())
 	got, err := mgr2.SelectBestNode(context.Background(), nil)
@@ -532,6 +536,7 @@ func TestSelectBestNodeAppliesDefaultBannedRegionsOverlay(t *testing.T) {
 
 	// 3) settings 改为多地区列表（大小写/空白混合）→ overlay 重新生效。
 	store["proxy.default_banned_regions"] = []byte(`" hk , US ,"`)
+	settings.InvalidatePlatformValue(defaultBannedRegionsKey)
 	if got := defaultBannedRegionsOverlay(); len(got) != 2 || got[0] != "HK" || got[1] != "US" {
 		t.Fatalf("defaultBannedRegionsOverlay() = %v, want [HK US]", got)
 	}

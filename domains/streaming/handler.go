@@ -5132,6 +5132,7 @@ goalRetryLoopDone:
 			FinishReason:         extractFinishReason(result.ResponseBody),
 			IsStreaming:          isStream,
 			FollowUpAction:       strings.TrimSpace(r.Header.Get("X-Gw-Follow-Up-Action")),
+			GoalModeHeader:       strings.TrimSpace(r.Header.Get("X-Gw-Goal-Mode")),
 			ClientSignalAllowed:  ClientSignalRequested(r),
 			HandoffSignalAllowed: HandoffSignalRequested(r),
 			SubAgentsTotal:       subAgents.Total,

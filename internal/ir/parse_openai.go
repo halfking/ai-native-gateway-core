@@ -10,7 +10,11 @@ import (
 //
 // Extensions support (P0 fix, 2026-07-13):
 // Unknown fields (vendor-specific params like reasoning_effort, web_search,
-// bot_setting, etc.) are extracted into IR.Extensions for lossless passthrough.
+// etc.) are extracted into IR.Extensions for lossless passthrough.
+// R52: repetition_penalty / mask_sensitive_info / bot_setting are promoted to
+// first-class IR fields (no longer Extension passthrough); bot_setting falls
+// back to Extensions only when the value fails to unmarshal (raw-byte
+// fidelity via the extensions_restore dialect guard).
 func ParseOpenAI(body []byte) (*InternalRequest, error) {
 	// Phase 1: Parse to map to capture ALL fields (including unknown ones)
 	var rawMap map[string]json.RawMessage
@@ -54,6 +58,13 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		SafetyIdentifier   string          `json:"safety_identifier,omitempty"`
 		PreviousResponseID string          `json:"previous_response_id,omitempty"`
 		Truncation         string          `json:"truncation,omitempty"`
+
+		// 2026-09-21 audit (P1-1, P2-3, P2-4): promote previously-Extension-only
+		// fields to first-class IR fields so they can be type-checked, normalized,
+		// and emitted deterministically.
+		RepetitionPenalty *float64        `json:"repetition_penalty,omitempty"`
+		MaskSensitiveInfo *bool           `json:"mask_sensitive_info,omitempty"`
+		BotSetting        json.RawMessage `json:"bot_setting,omitempty"`
 	}
 
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -72,6 +83,8 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		"store": true, "service_tier": true, "prediction": true, "verbosity": true,
 		"web_search_options": true, "prompt_cache_key": true, "safety_identifier": true,
 		"previous_response_id": true, "truncation": true,
+		// 2026-09-21 audit: promoted to first-class IR fields.
+		"repetition_penalty": true, "mask_sensitive_info": true, "bot_setting": true,
 	}
 
 	extensions := make(map[string]json.RawMessage)
@@ -105,6 +118,8 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		SafetyIdentifier:   src.SafetyIdentifier,
 		PreviousResponseID: src.PreviousResponseID,
 		Truncation:         src.Truncation,
+		RepetitionPenalty:  src.RepetitionPenalty,
+		MaskSensitiveInfo:  src.MaskSensitiveInfo,
 		Extensions:         extensions, // P0 fix: preserve unknown fields
 	}
 
@@ -150,6 +165,21 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		var wso WebSearchOptions
 		if err := json.Unmarshal(src.WebSearchOptions, &wso); err == nil {
 			ir.WebSearchOptions = &wso
+		}
+	}
+
+	// 2026-09-21 audit (P2-4): parse bot_setting into typed IR fields.
+	// R52：畸形输入（非数组/元素非对象）不再静默吞——回退 Extensions 保留
+	// 原始字节。键已在 knownFields 剔除名单内，需显式塞回：MiniMax 目标经
+	// extensions_restore 的 Decide（IRHandled+Dialects 守卫）按原始字节
+	// Restore，非 MiniMax 目标 Drop——与 KindDialectOnly 时代的逐字节透传
+	// 保真等价，只是收敛到既有守卫机制。
+	if src.BotSetting != nil && string(src.BotSetting) != "null" {
+		var bots []BotSetting
+		if err := json.Unmarshal(src.BotSetting, &bots); err == nil {
+			ir.BotSetting = bots
+		} else {
+			ir.Extensions["bot_setting"] = src.BotSetting
 		}
 	}
 

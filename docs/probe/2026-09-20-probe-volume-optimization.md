@@ -120,3 +120,46 @@
 
 - `go build`：`bg`、`settings` 及全仓编译通过（Windows 本机既有 `syscall.Statfs`/`Flock` 不兼容项与本次无关，Linux 目标不受影响）。
 - `go test ./bg/ ./settings/`：全绿；仅 `TestWalkDirSafe_ToleratesIsolatedErrors` 因 Windows symlink 特权在基线同样失败（环境项）。
+
+## 7. 后续修正补记（R50，2026-09-21，由独立审计轮发现并落地）
+
+- **INV-3 双臂化**：仅排 `quality_flags='probe'` 漏掉网关轮（走正常管道、落 `origin_stage='node_probe'`、无 flag）——物理表谓词改为 flags + `origin_stage='business'` 双臂（`probeTrafficExclusionPredicate`，428 迁移起物理表有列，真库实测 11.6k probe 行落值）。
+- **读面分治**：`origin_stage` 不在 canonical 视图冻结 113 列契约内，物理谓词对视图必 42703。新增视图变体 `probeTrafficExclusionPredicateView`（flags + `task_type<>'probe_triggered'` + `origin_actor NOT IN(...)`），`dailyProbeAuditSQL` 等视图读面专用；守卫测试按读面钉桩（`TestProbeExclusionPredicateCallSitesR50`）。
+- **Submit upsert 抽取**（F20）：ON CONFLICT 语句抽为 `nodeProbeSubmitUpsertSQL()`，行为测试可对真库执行实语句（`probe_semantics_integration_test.go`）。
+- **六个 worker 裸 go panic 收口**（P3）：today_success / daily_audit / selfcheck cycle 等每轮单独 recover，panic 后循环继续。
+- **pickDueCredential 保留探测失败计入错误证据**（记录性取舍）：探测失败是凭据不健康的真实证据，与使用扫描的 INV-3 方向相反，且有 15 分钟选取窗阻尼。
+
+## 8. R52 审计修正轮（2026-09-22，批判性复审）
+
+复审方法：对三项原始需求逐条回归核对全部调度器/扫描器/门禁的现网代码，并重点核查"执行侧兜底"与"使用范围"两个此前只做了名义覆盖的面。发现并修复两个真实缺口：
+
+### 8.1 视图读面 INV-3 泄漏（actor 全集不全）
+
+`probeTrafficExclusionPredicateView` 的 origin_actor 臂只含 `node-probe-worker`/`active-probe-worker`，而真实探测 gateway actor 有四个（源码 `X-LLM-Origin-Actor` 全量核对）：
+
+| actor | 来源 | 旧行为 |
+|-------|------|--------|
+| `node-probe-worker` | legacy runOne 双轮 | 已排除 |
+| `probe-service` | 统一队列 gateway 轮（`active_probe_executor.go`） | **漏排**——被 `dailyProbeAuditSQL`（唯一视图读面）计入 3 天"使用" |
+| `credential-selfcheck-worker` | 自检 HTTP（本地网关 /chat/completions） | **漏排**——同上 |
+| `active-probe-worker` | 历史行 | 保留兼容 |
+
+后果有限但真实：仅影响错误凭据（usage 分支有失败证据门），且每凭据 ≤2 上限兜底，不构成自延续环；但"使用范围"的口径被探测流量污染。修复：actor 列表补全为四；`TestProbePolicyPredicatesShape` 精确串同步更新。
+
+物理表读面（today_success / featuredCycle / selfcheck 回退 / Top-N）不受影响——其 `origin_stage='business'` 臂天然排除 `self_check`/`node_probe` stage 的行。
+
+### 8.2 selfcheck 主模型越出 3 天范围
+
+`CredentialSelfcheckWorker.pickModels` 的主模型来自 `recentmodels.Read`——共享 Redis 榜单 **TTL=7 天**（tenant 级，`Record` 已排 probe）。此前只把 DB 回退窗口收到 3 天，Redis 路径仍可能选中 4-7 天前用过的模型。修复：新增 `recentInUsageWindow`——按本凭据 3 天业务使用集合（物理双臂谓词过滤）收窄榜单后再选主模型；查询失败 fail-open 保留原榜单（与必要性门禁同姿态）；3 天内零使用 → 榜单置空 → 自然落至 DB 3 天回退 → 仍无则只探错误恢复绑定（豁免使用范围，属错误跟踪）。纯函数 `filterRecentEntriesByUsage` 独立单测（含 Normalize 口径防呆断言）。
+
+### 8.3 复审确认无问题项
+
+- 条件③（两连成功早停）`twoSiblingSuccessesFn` 为测试缝，生产走 `conditionTwoSiblingProbeSuccesses` 的 SQL 路径（绑定可用 + nps 空或 healthy-parked + 两模型 24h 内最新探测成功），错误梯子豁免正确。
+- selfcheck 的"主模型 + 到期失败绑定"结构不违反两连成功早停：failed 绑定全部携带错误状态（INV-4 豁免集合）。
+- `Submit` 已消费抽取的 `nodeProbeSubmitUpsertSQL()`（R50 F20），健康停放重武装语义有行为测试。
+- `MarkNodeProbeHealthy` INSERT 未显式写 `paused`，依赖表默认 FALSE——语义正确（业务成功不制造操作员暂停），保持原样。
+
+### 8.4 R52 验证
+
+- `go test ./bg/ ./settings/`（Windows overlay 方案，绕过基线 syscall 项）：目标集全绿；全量仅 `TestWalkDirSafe_ToleratesIsolatedErrors` 基线失败（Windows symlink 特权，非本次引入）。
+- 新增/更新钉桩：视图谓词四 actor、`TestFilterRecentEntriesByUsage`、`TestSelfcheckPrimaryGatedByThreeDayUsage`。

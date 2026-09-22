@@ -153,6 +153,36 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 		out["truncation"] = req.Truncation
 	}
 
+	// 2026-09-21 audit (P1-1, P2-3, P2-4): emit first-class IR fields.
+	//
+	// R52 方言门控：mask_sensitive_info/bot_setting 是 MiniMax 专有字段，
+	// IR 发射路径不经过 extensions_restore 的方言守卫（restoreExtensions 只
+	// 遍历 req.Extensions，而 parse 已把这两个键移出 Extensions），必须在此
+	// 按 resolveTargetDialect 判定——否则会无条件发给所有 openai-chat 上游
+	// （严格校验上游 additionalProperties:false 直接 400 / 参数泄漏）。
+	// 与 registry 声明对齐：声明了 Dialects 的 IRHandled 字段仅对认识的
+	// 方言发射，未知目标方言 fail-open（与 KindDialectOnly 时代
+	// knownBy(DialectUnknown)=true 语义一致）。repetition_penalty 维持
+	// 无条件发射：KindPortable 时代即全目标还原（预存在行为），多厂商
+	// 通用且宽容上游忽略。
+	dstDialect := resolveTargetDialect(req, ProtocolOpenAIChat)
+	if req.RepetitionPenalty != nil {
+		out["repetition_penalty"] = *req.RepetitionPenalty
+	}
+	if req.MaskSensitiveInfo != nil && paramreg.IRFieldAllowedForDialect("mask_sensitive_info", dstDialect) {
+		out["mask_sensitive_info"] = *req.MaskSensitiveInfo
+	}
+	if len(req.BotSetting) > 0 && paramreg.IRFieldAllowedForDialect("bot_setting", dstDialect) {
+		bots := make([]map[string]any, 0, len(req.BotSetting))
+		for _, b := range req.BotSetting {
+			bots = append(bots, map[string]any{
+				"bot_name": b.BotName,
+				"content":  b.Content,
+			})
+		}
+		out["bot_setting"] = bots
+	}
+
 	// Messages (system prompt becomes first message)
 	messages := serializeOpenAIMessages(req)
 	// 2026-09-18 P5（MiniMax thinking 事故收尾）: Anthropic/Gemini 入向的

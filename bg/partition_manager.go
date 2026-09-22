@@ -1044,7 +1044,7 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 	cycleCtx, cycleCancel := context.WithTimeout(ctx, promoteCycleTimeout)
 	defer cycleCancel()
 	// R51 (2026-09-21)：batches 是全周期共享预算，排位靠后的表（如
-	// session_turn_details_hot，promoteSpecs 第 10 位）在前序大表积压耗尽
+	// session_turn_details_hot，promoteSpecs 第 11 位）在前序大表积压耗尽
 	// 预算后整个周期颗粒无收。改为每表保底至少 1 批：预算耗尽后，尚未跑过
 	// 批的表仍允许再跑一批才让位；外层循环因此遍历全部 spec，不再提前 break。
 	batches := 0
@@ -1109,6 +1109,23 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 				cancel()
 				recordPromoteDuration(s.label, time.Since(batchStart).Seconds())
 				slog.Error("partition_manager: promote RLS setup failed",
+					"label", s.label, "error", err)
+				recordPromoteFailure(s.label)
+				break
+			}
+			// 2026-09-22 252 SQL 日志审计轮：角色级 statement_timeout=30s
+			// （252 生产 llm_gateway rolconfig）会击杀超过 30s 的单批
+			// promote——而本函数的 Go 侧批次预算是 60s。大批次（5000 行跨
+			// 分区搬移实测 26.5s 贴线、>30s 即被 PG 杀整批回滚，下个 tick
+			// 重试同一批形成活锁，252 日志 21 分钟窗口 1 次实锤）。
+			// SET LOCAL 抬到与 Go 预算一致，事务结束自动还原，pooled
+			// 连接不保留。
+			if _, err := tx.Exec(timeoutCtx,
+				"SET LOCAL statement_timeout = '60s'"); err != nil {
+				tx.Rollback(timeoutCtx)
+				cancel()
+				recordPromoteDuration(s.label, time.Since(batchStart).Seconds())
+				slog.Error("partition_manager: promote timeout setup failed",
 					"label", s.label, "error", err)
 				recordPromoteFailure(s.label)
 				break

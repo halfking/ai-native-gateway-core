@@ -282,6 +282,10 @@ func (h *Handler) settingsPut(w http.ResponseWriter, r *http.Request, key string
 	}
 	if !tenant {
 		applyRuntimeSetting(key, body.Value)
+		// R52：接通缓存失效（ttl_cache.InvalidatePlatformValue 此前零生产
+		// 调用方）——CachedPlatform* 读者（如 proxy.default_banned_regions
+		// overlay）在 admin 改键后立即生效，不等 ≤5s TTL。
+		settings.InvalidatePlatformValue(key)
 	}
 
 	// Audit.

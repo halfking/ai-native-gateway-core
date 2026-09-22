@@ -55,6 +55,16 @@ var (
 		Help: "Forward attempts by outcome.",
 	}, []string{"credential", "result"}) // result: success|fail_prefirstbyte|fail_postfirstbyte
 
+	// metricExtraUpstreamCalls (R53, R51-F15) — extra upstream calls issued
+	// inside one admission (reqprobe param-strip / mode-fallback retries,
+	// context-length recovery) that were charged back to the credential
+	// governor. mode: rpm|tpm. Concurrency admissions hold their slot for
+	// the whole admission and never appear here.
+	metricExtraUpstreamCalls = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dispatch_extra_upstream_calls_total",
+		Help: "Extra upstream calls inside one admission, charged to the credential governor (R51-F15).",
+	}, []string{"mode"})
+
 	metricOverflow = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dispatch_overflow_total",
 		Help: "Requests that could not be enqueued and were redirected/rejected.",

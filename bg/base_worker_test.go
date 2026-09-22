@@ -101,7 +101,7 @@ func TestBaseWorkerNilReceiverSafe(t *testing.T) {
 	if b.Start(context.Background(), func(ctx context.Context) {}) {
 		t.Fatal("nil Start must return false")
 	}
-	b.Stop()         // 不 panic
+	b.Stop()          // 不 panic
 	b.NotifyStopped() // 不 panic
 	if b.Started() || b.Stopped() {
 		t.Fatal("nil status must be false")
@@ -152,4 +152,99 @@ func TestBaseWorkerStartedRace(t *testing.T) {
 		t.Fatalf("winners = %d, want exactly 1", winners)
 	}
 	b.Stop()
+}
+
+// ── R53 / R51-F13: 自愈重启（supervise 循环）钉桩 ──────────────────────────
+
+// shrinkRestartBackoff 把退避参数收缩到测试尺度，返回恢复函数。
+func shrinkRestartBackoff(t *testing.T, d time.Duration) func() {
+	t.Helper()
+	oldInit, oldMax := workerRestartBackoff, workerRestartMaxBackoff
+	workerRestartBackoff = d
+	workerRestartMaxBackoff = d * 2
+	return func() {
+		workerRestartBackoff, workerRestartMaxBackoff = oldInit, oldMax
+	}
+}
+
+// TestBaseWorkerPanicRestarts 运行一次即 panic 的 runFn 必须被自愈重启：
+// 前两次 panic、第三次正常长跑，最终 runs=3、Restarts()=2、Stop 正常返回。
+func TestBaseWorkerPanicRestarts(t *testing.T) {
+	restore := shrinkRestartBackoff(t, time.Millisecond)
+	defer restore()
+
+	b := NewBaseWorker("panic-restart-test")
+	var runs int32
+	started := b.Start(context.Background(), func(ctx context.Context) {
+		n := atomic.AddInt32(&runs, 1)
+		if n <= 2 {
+			panic("boom")
+		}
+		<-ctx.Done() // 第三次起正常长跑直到 Stop
+	})
+	if !started {
+		t.Fatal("Start must succeed")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && atomic.LoadInt32(&runs) < 3 {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&runs) != 3 {
+		t.Fatalf("runs = %d, want 3 (two panics + healthy run)", runs)
+	}
+	if got := b.Restarts(); got != 2 {
+		t.Fatalf("Restarts() = %d, want 2", got)
+	}
+	b.Stop()
+	b.Stop() // 重复 Stop 安全
+}
+
+// TestBaseWorkerNormalReturnNotRestarted 验证 runFn 正常 return 不触发重启
+// （有意退出语义）。
+func TestBaseWorkerNormalReturnNotRestarted(t *testing.T) {
+	restore := shrinkRestartBackoff(t, time.Millisecond)
+	defer restore()
+
+	b := NewBaseWorker("normal-return-test")
+	var runs int32
+	_ = b.Start(context.Background(), func(ctx context.Context) {
+		atomic.AddInt32(&runs, 1)
+		// 立即正常返回：监督循环必须随之终止，不得重启。
+	})
+	time.Sleep(50 * time.Millisecond)
+	if got := atomic.LoadInt32(&runs); got != 1 {
+		t.Fatalf("runs = %d, want 1 (normal return must not restart)", got)
+	}
+	if got := b.Restarts(); got != 0 {
+		t.Fatalf("Restarts() = %d, want 0", got)
+	}
+	// done 已关闭：Stop 立即返回。
+	done := make(chan struct{})
+	go func() { b.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stop blocked after normal runFn return")
+	}
+}
+
+// TestBaseWorkerStopDuringBackoffUnblocks 验证 panic 退避睡眠期间调用 Stop
+// 能立即解除阻塞（不会等满退避窗口）。
+func TestBaseWorkerStopDuringBackoffUnblocks(t *testing.T) {
+	restore := shrinkRestartBackoff(t, 50*time.Millisecond)
+	defer restore()
+
+	b := NewBaseWorker("stop-during-backoff-test")
+	_ = b.Start(context.Background(), func(ctx context.Context) {
+		panic("always")
+	})
+	time.Sleep(20 * time.Millisecond) // 进入第一次 panic → 退避睡眠
+	start := time.Now()
+	b.Stop()
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Stop took %v during backoff sleep; must unblock via ctx cancel", elapsed)
+	}
+	if !b.Stopped() {
+		t.Fatal("Stopped() must be true")
+	}
 }

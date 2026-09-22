@@ -98,6 +98,49 @@ func TestPersistRequestLogPlaceholderAlignment(t *testing.T) {
 			t.Fatalf("Go arg #%d (%s) never referenced by any placeholder", n, args[n-1])
 		}
 	}
+
+	// R52 (semantic alignment): the count/uniqueness checks above cannot see
+	// a slot-level mixup — COALESCE on the wrong placeholder still uses each
+	// placeholder exactly once. Two invariants close that class:
+	//
+	// (1) positional: exprs is 0-based over the column list; slot 0 binds $1,
+	// slot 1 is ts=now(), slot k (k>=2) binds $k — strictly positional.
+	for k, expr := range exprs {
+		col := cols[k]
+		if k == 1 {
+			if expr != "now()" {
+				t.Fatalf("column #2 (%s) must bind now(), got %q", col, expr)
+			}
+			continue
+		}
+		inner := regexp.MustCompile(`\$(\d+)`).FindStringSubmatch(expr)
+		if inner == nil {
+			t.Fatalf("column %s expr %q has no placeholder", col, expr)
+		}
+		n, _ := strconv.Atoi(inner[1])
+		want := k // slot k>=2 binds $k
+		if want == 0 {
+			want = 1 // slot 0 (request_id) binds $1
+		}
+		if n != want {
+			t.Fatalf("column %s (slot %d) binds $%s, want $%d — positional drift", col, k+1, inner[1], want)
+		}
+	}
+
+	// (2) NOT NULL columns must not bind a nil-able ingest-event pointer
+	// bare: omitted JSON field → nil → 23502 → whole ingest tx (usage_ledger
+	// included) rolls back. The known NOT NULL + pointer-bindable column is
+	// stream_chunks_sent (migration 320); it must be COALESCE-wrapped, same
+	// semantics as telemetry.streamChunksSentArg on the client side.
+	notNullCols := map[string]bool{"stream_chunks_sent": true}
+	for k, col := range cols {
+		if !notNullCols[col] {
+			continue
+		}
+		if !strings.Contains(exprs[k], "COALESCE") {
+			t.Fatalf("NOT NULL column %s binds %q without COALESCE — nil pointer would 23502 the ingest tx", col, exprs[k])
+		}
+	}
 }
 
 // splitTopLevel splits on commas not nested inside parentheses.

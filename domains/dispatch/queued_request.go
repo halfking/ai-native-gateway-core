@@ -127,6 +127,14 @@ type QueuedRequest struct {
 	// non-blocking; dispatch wraps them with recover.
 	OnDispatchNotice func(notice DispatchNotice)
 
+	// OnExtraUpstreamCall meters an extra upstream HTTP call issued inside
+	// the current admission without a fresh Governor Acquire: reqprobe
+	// param-strip / mode-fallback retries and context-length recovery
+	// (R51-F15). Set by the credential forwarder right after admission; nil
+	// for legacy (non-dispatch) executions and governors without the
+	// ExtraCallRecorder capability. Must be non-blocking.
+	OnExtraUpstreamCall func()
+
 	// DueAt schedules future execution (定时请求, v6 G-Ⅱ). Zero = immediate.
 	// A future DueAt parks the request in the pipeline's due heap when the
 	// total drainer pops it; the promoter re-admits it into Tier-0 at the due

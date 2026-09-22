@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -487,6 +488,130 @@ func TestParseOpenAI_NullOptionalFields(t *testing.T) {
 		t.Errorf("Stop = %v, want []", ir.Stop)
 	}
 }
+
+// 2026-09-21 audit (P1-1): repetition_penalty now flows through IR, not just
+// Extensions. The parser must capture it as a first-class field so that
+// downstream normalization (range check, dialect-aware emission) can run
+// without having to crack open Extensions.
+func TestParseOpenAI_RepetitionPenalty(t *testing.T) {
+	body := []byte(`{
+		"model": "vllm-served-qwen",
+		"repetition_penalty": 1.15,
+		"messages": [{"role": "user", "content": "hi"}]
+	}`)
+	ir, err := ParseOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ir.RepetitionPenalty == nil || *ir.RepetitionPenalty != 1.15 {
+		t.Fatalf("RepetitionPenalty = %v, want 1.15", ir.RepetitionPenalty)
+	}
+	// And it must NOT also leak into Extensions (otherwise we double-emit
+	// in serialize_openai.go when the dialect guard does not strip it).
+	if _, ok := ir.Extensions["repetition_penalty"]; ok {
+		t.Errorf("repetition_penalty should not also live in Extensions")
+	}
+}
+
+// 2026-09-21 audit (P2-3): mask_sensitive_info is MiniMax-only. The IR
+// captures it as *bool so the absent case (nil) is distinguishable from
+// explicitly false.
+func TestParseOpenAI_MaskSensitiveInfo(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantNil bool
+		wantVal bool
+	}{
+		{
+			"explicit true",
+			`{"model":"MiniMax-test","messages":[{"role":"user","content":"x"}],"mask_sensitive_info":true}`,
+			false, true,
+		},
+		{
+			"explicit false",
+			`{"model":"MiniMax-test","messages":[{"role":"user","content":"x"}],"mask_sensitive_info":false}`,
+			false, false,
+		},
+		{
+			"absent",
+			`{"model":"MiniMax-test","messages":[{"role":"user","content":"x"}]}`,
+			true, false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ir, err := ParseOpenAI([]byte(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (ir.MaskSensitiveInfo == nil) != tc.wantNil {
+				t.Fatalf("nilness mismatch: got %v, wantNil=%v", ir.MaskSensitiveInfo, tc.wantNil)
+			}
+			if !tc.wantNil && *ir.MaskSensitiveInfo != tc.wantVal {
+				t.Fatalf("MaskSensitiveInfo = %v, want %v", *ir.MaskSensitiveInfo, tc.wantVal)
+			}
+		})
+	}
+}
+
+// 2026-09-21 audit (P2-4): bot_setting is MiniMax-only and a list of objects.
+func TestParseOpenAI_BotSetting(t *testing.T) {
+	body := []byte(`{
+		"model": "MiniMax-test",
+		"bot_setting": [
+			{"bot_name": "MM Smart Expert", "content": "You are an expert."},
+			{"bot_name": "MM Coder", "content": "You write Go."}
+		],
+		"messages": [{"role": "user", "content": "hi"}]
+	}`)
+	ir, err := ParseOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ir.BotSetting) != 2 {
+		t.Fatalf("len(BotSetting) = %d, want 2", len(ir.BotSetting))
+	}
+	if ir.BotSetting[0].BotName != "MM Smart Expert" {
+		t.Errorf("BotSetting[0].BotName = %q", ir.BotSetting[0].BotName)
+	}
+	if ir.BotSetting[1].Content != "You write Go." {
+		t.Errorf("BotSetting[1].Content = %q", ir.BotSetting[1].Content)
+	}
+	// And the field must round-trip through serialize_openai.go.
+	// R52：bot_setting 是 MiniMax 专有字段，序列化发射按目标方言门控，
+	// 路由前空 TargetProvider 的回退方言是 openai-chat，会 fail-closed
+	// 丢弃——roundtrip 断言须钉在 MiniMax 目标上。
+	ir.TargetProvider = "minimax"
+	out, err := SerializeOpenAI(ir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte(`"bot_setting"`)) {
+		t.Errorf("serialized body missing bot_setting: %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"bot_name":"MM Smart Expert"`)) {
+		t.Errorf("serialized body missing bot_name: %s", out)
+	}
+}
+
+// TestParseOpenAI_RepetitionPenalty_RoundTrip checks that the value travels
+// through SerializeOpenAI too, not just the parse stage.
+func TestParseOpenAI_RepetitionPenalty_RoundTrip(t *testing.T) {
+	body := []byte(`{"model":"qwen-test","repetition_penalty":1.05,"messages":[{"role":"user","content":"hi"}]}`)
+	ir, err := ParseOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := SerializeOpenAI(ir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte(`"repetition_penalty":1.05`)) {
+		t.Fatalf("serialized body missing repetition_penalty: %s", out)
+	}
+}
+
 
 // BenchmarkParseOpenAI benchmarks the OpenAI parser.
 func BenchmarkParseOpenAI(b *testing.B) {

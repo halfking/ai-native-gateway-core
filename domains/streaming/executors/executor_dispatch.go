@@ -208,7 +208,17 @@ func (e *Executor) dispatchForward(ctx context.Context, qr *dispatch.QueuedReque
 	// ActionUpstreamRequest is emitted by beginUpstreamAttempt immediately
 	// before the real HTTP call. Dispatch preparation can still fail in the
 	// circuit, limiter, or key rotator and must not look like provider traffic.
-	return e.forwardForDispatch(dctx, cand, attemptRef.AttemptID, qr.FirstSemanticByteCallback(), ctx)
+	return e.forwardForDispatch(dctx, cand, attemptRef.AttemptID, qr.FirstSemanticByteCallback(), qr.OnExtraUpstreamCall, ctx)
+}
+
+// meterExtraUpstreamCall charges the admitting credential governor for an
+// extra upstream call issued inside the protocol retry loop (reqprobe
+// param-strip / mode-fallback retries, context-length recovery, R51-F15).
+// Nil-safe: legacy (non-dispatch) executions carry no meter.
+func meterExtraUpstreamCall(params *ExecParams) {
+	if params != nil && params.ExtraUpstreamCall != nil {
+		params.ExtraUpstreamCall()
+	}
 }
 
 // candidateToRef maps a routing candidate into dispatch's decoupled view.
@@ -546,13 +556,14 @@ func mapCandidatesByModel(candidates []provider.Candidate) map[string][]provider
 // loop (fp slot → circuit → Limiter.AcquireAllNoCredLayer → key rotator →
 // executeOpenAI/executeAnthropic → success/error side effects) but returns
 // control to the dispatch mover on pre-firstbyte failure.
-func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate, attemptID string, firstSemanticByte func(), dispatchContexts ...context.Context) (out dispatch.ForwardOutcome) {
+func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate, attemptID string, firstSemanticByte func(), extraUpstreamCall func(), dispatchContexts ...context.Context) (out dispatch.ForwardOutcome) {
 	paramsCopy := *dctx.params
 	if len(dispatchContexts) > 0 && dispatchContexts[0] != nil {
 		paramsCopy.R = paramsCopy.R.WithContext(dispatchContexts[0])
 	}
 	paramsCopy.DispatchAttempt = true
 	paramsCopy.DispatchAttemptID = attemptID
+	paramsCopy.ExtraUpstreamCall = extraUpstreamCall
 	visibility := &atomic.Bool{}
 	paramsCopy.ClientSemanticBytesVisible = visibility
 	paramsCopy.FirstSemanticByteCallback = func() {

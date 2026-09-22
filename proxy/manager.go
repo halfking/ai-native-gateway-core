@@ -351,6 +351,11 @@ func (m *Manager) selectNodeExcluding(ctx context.Context, subscriptionID *int, 
 		candidates = cloneNodes(candidates)
 	}
 
+	// R52：overlay 读 settings（虽有 ≤5s 缓存仍是潜在 DB 读）不进
+	// selectionMu 临界区——同一把锁护着 loadBalancer 选择，锁内 IO 会让
+	// 所有出口选择串行排队。
+	overlayBans := defaultBannedRegionsOverlay()
+
 	m.selectionMu.Lock()
 	threshold := m.autoDisableThreshold
 	if threshold <= 0 {
@@ -360,7 +365,6 @@ func (m *Manager) selectNodeExcluding(ctx context.Context, subscriptionID *int, 
 	// R51：叠加平台级默认禁用地区 overlay（proxy.default_banned_regions，
 	// 默认 HK），存量订阅未回填 banned_regions 也被规避覆盖。
 	subscriptionBans := m.subscriptionBansSnapshot(subscriptionID)
-	overlayBans := defaultBannedRegionsOverlay()
 	subPriorities := m.subscriptionPrioritiesSnapshot()
 	m.selectionMu.Unlock()
 
@@ -1956,6 +1960,10 @@ func (m *Manager) RegionStatsReport(ctx context.Context) ([]RegionStats, error) 
 	m.selectionMu.Lock()
 	bansSnapshot := m.subscriptionBansSnapshot(nil)
 	m.selectionMu.Unlock()
+	// R52：Banned 统计叠加平台默认禁区 overlay，与选择路径口径对齐——
+	// 此前 admin 地区分布对 HK-only-by-overlay 节点显示未禁（纯展示分叉）。
+	// overlay 在锁外读（内部自带 ≤5s settings 缓存）。
+	overlayBans := defaultBannedRegionsOverlay()
 
 	type bucket struct {
 		stats RegionStats
@@ -1987,7 +1995,7 @@ func (m *Manager) RegionStatsReport(ctx context.Context) ([]RegionStats, error) 
 		case "unhealthy":
 			b.stats.Unhealthy++
 		}
-		if IsRegionBanned(n.Location, bansSnapshot[n.SubscriptionID], n.BannedRegions) {
+		if IsRegionBanned(n.Location, bansSnapshot[n.SubscriptionID], overlayBans, n.BannedRegions) {
 			b.stats.Banned++
 		}
 		if n.LastHealthCheckStatus == "success" && n.ResponseTimeMs > 0 {

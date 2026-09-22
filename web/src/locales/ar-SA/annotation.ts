@@ -144,7 +144,6 @@ export default {
     count: 'العدد',
     percentage: 'النسبة',
     distribution: 'التوزيع',
-    distribution: 'التوزيع',
     taskCorrections: 'إحصاءات تصحيحات أنواع المهام (taskprofile)',
     exportCsv: 'تصدير CSV',
     exporting: 'جارٍ التصدير...',

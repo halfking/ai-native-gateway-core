@@ -68,3 +68,8 @@
 ### R45 回注（2026-09-19，E6 独立复核 + at-least-once 登记）
 - **ReplayFallback 补发 onPersisted 后，hooks 契约从 exactly-once 变 at-least-once**：同一 BackupRecord 经文件（GenericRecovery，无 per-record 去重）+ ring（HTTP replay）双通道回放可双发。G2 主消费者幂等（turns 按 request_id 反连接+ON CONFLICT、跨月视图覆盖完整）；routeincident/boardcache 不幂等（登记 R45 §五#1）。运维纪律：**单通道回放；文件恢复 completed_with_errors 后勿盲目整文件重跑**。commit 歧义变体（已提交但 pgx 报错）代码级不可判（UPDATE 同值仍计 affected），消费者级去重是唯一完整解。
 - admin telemetryIngester（/api/telemetry/request-log）是第三条绕 hooks 的写路径：无 gw_session_id、不做终态 claim，不构成 G2 claim-without-mirror；但 S4 停写 gate 清单必须含该端点禁用项。
+
+### R53 回注（2026-09-22，BaseWorker 自愈重构收口 R51-F13）
+- BaseWorker 升级为监督循环：panic → recover → 指数退避（1s→60s 封顶，溢出钳制）→ 同 ctx 重启；**正常 return 视为有意退出不重启**。指标 `llm_gateway_bg_worker_restarts_total{worker}` 持续增长 = 反复 panic 需真修。
+- done 语义收敛：close 权收归监督循环退出点（幂等 `closeDone`）；`NotifyStopped` 转兼容 no-op——原契约在 panic 路径会先 close done（Stop 提前返回 + 重启后二次 close panic）。新 runFn 不需要调 NotifyStopped。
+- 约 20+ 嵌入 worker 的 panic 停摆面（R51-F13/R52 确认仍在）本轮收口；bg 剩余约 50 处裸 go 仍登记顺延。

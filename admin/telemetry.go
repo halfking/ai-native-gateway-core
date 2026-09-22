@@ -381,7 +381,7 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 				$31,
 				COALESCE($32, 0),
 				$33,
-				$34, $35, $36
+				$34, COALESCE($35, 0), $36
 			)
 			ON CONFLICT (request_id) DO UPDATE SET
 				ts = EXCLUDED.ts
@@ -398,6 +398,10 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 			e.RequestPreview, e.TransformSummary, e.ResponsePreview,
 			e.StreamFirstChunkMs, e.StreamChunkCount, e.StreamDoneReceived,
 			e.StreamInterrupted,
+			// R52：stream_chunks_sent 是 NOT NULL 列（migration 320），JSON
+			// 入口省略该字段时指针为 nil，裸绑即 23502 使整事务（含同事务
+			// 已写的 usage_ledger 计费行）回滚。与 telemetry 包
+			// streamChunksSentArg（client.go）同语义：nil 收敛为 0。
 			e.StreamChunksSent,
 			e.UpstreamFinishReason,
 		)

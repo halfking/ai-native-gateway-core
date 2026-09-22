@@ -50,6 +50,16 @@ type StreamChunk struct {
 	// has no equivalent.
 	StopSequence string `json:"stop_sequence,omitempty"`
 
+	// CumulativeContent is the cumulative assistant content as emitted by
+	// upstream providers that do not split text into per-character deltas
+	// (Ollama native NDJSON chat, some vLLM deployments). Downstream
+	// synthesizers emit the diff against the previously-seen cumulative
+	// value as `delta.content` so the wire shape stays OpenAI SSE-compatible.
+	// 2026-09-21 audit (P2-1).
+	// RESERVED(ollama-chat 接入): 注释所称的 diff 合成器尚不存在、全仓
+	// 零生产者/零消费者（R52 清点）——随 ProtocolOllamaChat 一并接入。
+	CumulativeContent string `json:"-"`
+
 	// Source protocol tracking (used by Serializer to determine output format)
 	SourceProtocol string `json:"source_protocol"` // "openai-chat" | "anthropic-messages"
 

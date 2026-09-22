@@ -87,7 +87,11 @@ type Handler struct {
 	// concurrency_limit on PATCH credential/binding. The Limiter pool's
 	// per-credential semaphore capacity is refreshed by
 	// HandleRoutingCandidateBindingUpdate / updateCredential.
-	limiter     LimiterCapacitySetter
+	limiter LimiterCapacitySetter
+	// liveRouting (Wave 1 A1, 2026-09-22): 生产路由源，/api/routing/resolve
+	// 用它经 Router.PlanCandidatesPinned 产出与真实请求同源的 plan_order。
+	// nil → plan_order 空 + source=unavailable（no-DB / 老装配形态）。
+	liveRouting *LiveRoutingSource
 	probeV2     *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
 	probePicker *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
 	modelProbe  *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)

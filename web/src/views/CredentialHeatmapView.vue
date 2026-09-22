@@ -1124,10 +1124,10 @@ onUnmounted(() => {
   vertical-align: middle;
   white-space: nowrap;
 }
-.node-status-badge.ns-healthy { background: rgba(34, 197, 94, 0.18); color: #16a34a; }
-.node-status-badge.ns-broken { background: rgba(239, 68, 68, 0.18); color: #dc2626; }
-.node-status-badge.ns-warn { background: rgba(234, 179, 8, 0.18); color: #a16207; }
-.node-status-badge.ns-muted { background: rgba(107, 114, 128, 0.16); color: #6b7280; }
+.node-status-badge.ns-healthy { background: var(--tone-ok-bg); color: var(--kx-success); }
+.node-status-badge.ns-broken { background: var(--tone-err-bg); color: var(--kx-danger); }
+.node-status-badge.ns-warn { background: var(--tone-warn-bg); color: var(--kx-warning); }
+.node-status-badge.ns-muted { background: var(--neutral-bg); color: var(--kx-muted); }
 
 /* Cells */
 .heatmap-table td.cell {

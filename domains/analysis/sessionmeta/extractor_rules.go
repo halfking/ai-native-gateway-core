@@ -198,7 +198,8 @@ func startsWithAgent(s string) bool { return strings.HasPrefix(strings.TrimSpace
 
 func agentRole(name string) string {
 	switch name {
-	case "zcode", "opencode", "codex", "claude-code", "roocode", "cline", "aider", "continue", "cursor", "windsurf", "zed", "copilot", "kiro":
+	// R52：minimax-code/deepseek-code 注册补齐——缺这里 role 落 other_agent。
+	case "zcode", "opencode", "codex", "claude-code", "roocode", "cline", "aider", "continue", "cursor", "windsurf", "zed", "copilot", "kiro", "minimax-code", "deepseek-code":
 		return "coding_agent"
 	case "vscode", "jetbrains":
 		return "ide_client"
