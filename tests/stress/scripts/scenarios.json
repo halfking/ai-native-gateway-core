@@ -1,0 +1,453 @@
+[
+  {
+    "id": "s1_baseline_healthy",
+    "name": "Baseline healthy — mock-stress-fast binds alpha/beta/gamma",
+    "description": "Three bound mocks return 200 quickly. mock-stress-fast does NOT bind delta; do not claim 4-provider spread.",
+    "plan_ref": "§5 baseline",
+    "setup": [
+      {"provider": "mock-alpha", "state": "healthy"},
+      {"provider": "mock-beta", "state": "healthy"},
+      {"provider": "mock-gamma", "state": "healthy"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-fast",
+      "stream": false,
+      "total": 200,
+      "concurrency": 20,
+      "prompt": "short",
+      "max_tokens": 32
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 0.99,
+      "min_total_requests": 200,
+      "require_providers": ["mock-alpha", "mock-beta", "mock-gamma"],
+      "forbidden_providers": ["mock-delta"],
+      "note": "mock-stress-fast (alpha/beta/gamma) all healthy → success ≥ 99%. Delta is unbound on this model."
+    }
+  },
+  {
+    "id": "s2_5xx_single_failure",
+    "name": "Single 5xx — alpha returns 500 (failover to beta/gamma)",
+    "description": "mock-alpha permanently returns 500. Expect gateway to redirect to beta/gamma.",
+    "plan_ref": "§5.2 scenario 2 (5xx spike)",
+    "setup": [
+      {"provider": "mock-alpha", "state": "server_error"},
+      {"provider": "mock-beta", "state": "healthy"},
+      {"provider": "mock-gamma", "state": "healthy"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-fast",
+      "stream": false,
+      "total": 200,
+      "concurrency": 20,
+      "prompt": "short",
+      "max_tokens": 32
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 0.90,
+      "min_total_requests": 200,
+      "note": "alpha=500 → ≥90% traffic still succeeds via failover (alpha demoted within first ~10 reqs)."
+    }
+  },
+  {
+    "id": "s3_5xx_consecutive_unhealthy",
+    "name": "Consecutive 5xx — alpha demoted to Unhealthy after threshold",
+    "description": "alpha is hammered with 500s; gateway should record consecutive failures and stop routing to alpha.",
+    "plan_ref": "§2 + §4 (degradation)",
+    "setup": [
+      {"provider": "mock-alpha", "state": "server_error"},
+      {"provider": "mock-beta", "state": "healthy"},
+      {"provider": "mock-gamma", "state": "healthy"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-fast",
+      "stream": false,
+      "total": 100,
+      "concurrency": 10,
+      "prompt": "short",
+      "max_tokens": 32
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 0.90,
+      "min_total_requests": 100,
+      "forbidden_status": [],
+      "note": "After ≥3 consec-fail, gateway demotes alpha; remaining providers carry the load."
+    }
+  },
+  {
+    "id": "s4_provider_slowdown",
+    "name": "Slow provider — alpha responses 5–30s; gateway weights shift",
+    "description": "mock-alpha enters slow mode. Gateway's dynamic weighting should keep traffic flowing on fast paths.",
+    "plan_ref": "§3.3 + §5.2 scenario 1",
+    "setup": [
+      {"provider": "mock-alpha", "state": "slow"},
+      {"provider": "mock-beta", "state": "healthy"},
+      {"provider": "mock-gamma", "state": "healthy"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-fast",
+      "stream": false,
+      "total": 80,
+      "concurrency": 16,
+      "prompt": "short",
+      "max_tokens": 16
+    },
+    "reset": true,
+    "wait": "500ms",
+    "expect": {
+      "min_success_rate": 0.80,
+      "min_total_requests": 80,
+      "note": "Slow alpha still returns 200 → at least 80% should succeed even if slower."
+    }
+  },
+  {
+    "id": "s5_quota_exhausted",
+    "name": "Quota exhausted — alpha returns 429; weight collapses, others carry traffic",
+    "description": "alpha returns 429 quota_exceeded. Gateway should record and shift load away.",
+    "plan_ref": "§5.2 scenario 3",
+    "setup": [
+      {"provider": "mock-alpha", "state": "quota_exceeded", "payload": {"recover_in_seconds": 30}},
+      {"provider": "mock-beta", "state": "healthy"},
+      {"provider": "mock-gamma", "state": "healthy"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-fast",
+      "stream": false,
+      "total": 120,
+      "concurrency": 12,
+      "prompt": "short",
+      "max_tokens": 32
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 0.90,
+      "min_total_requests": 120,
+      "note": "Quota 429s on alpha; ≥90% success via failover"
+    }
+  },
+  {
+    "id": "s6_all_providers_5xx",
+    "name": "All providers 503 — graceful degradation",
+    "description": "Catastrophic scenario: every mock returns 503. Gateway should return 503 to clients (no 500 leakage).",
+    "plan_ref": "§5.2 scenario 4 (disaster)",
+    "setup": [
+      {"provider": "mock-alpha", "state": "no_available"},
+      {"provider": "mock-beta", "state": "server_error"},
+      {"provider": "mock-gamma", "state": "no_available"},
+      {"provider": "mock-delta", "state": "server_error"}
+    ],
+    "request": {
+      "model": "mock-stress-fast",
+      "stream": false,
+      "total": 40,
+      "concurrency": 8,
+      "prompt": "short",
+      "max_tokens": 16
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 0.0,
+      "max_success_rate": 0.0,
+      "min_total_requests": 40,
+      "require_status": [503],
+      "forbidden_status": [200],
+      "note": "All bound providers bad. Client must not see 200. Exhausted failover returns 503 (not 500/502 leak)."
+    }
+  },
+  {
+    "id": "s7_recovery_after_5xx",
+    "name": "Recovery — alpha briefly 500s, then returns to healthy; weight ramps back",
+    "description": "alpha goes 500 for 30s, then recovers. Gateway should re-enable traffic to alpha once failures stop.",
+    "plan_ref": "§2.3 fast recovery + §4.2 upgrade",
+    "setup": [
+      {"provider": "mock-alpha", "state": "server_error"},
+      {"provider": "mock-beta", "state": "healthy"},
+      {"provider": "mock-gamma", "state": "healthy"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-fast",
+      "stream": false,
+      "total": 60,
+      "concurrency": 6,
+      "prompt": "short",
+      "max_tokens": 32
+    },
+    "reset": true,
+    "wait": "1s",
+    "recovery": {
+      "wait": "6s",
+      "setup": [
+        {"provider": "mock-alpha", "state": "healthy"},
+        {"provider": "mock-beta", "state": "healthy"},
+        {"provider": "mock-gamma", "state": "healthy"},
+        {"provider": "mock-delta", "state": "healthy"}
+      ],
+      "request": {
+        "model": "mock-stress-fast",
+        "stream": false,
+        "total": 80,
+        "concurrency": 8,
+        "prompt": "short",
+        "max_tokens": 32
+      }
+    },
+    "expect": {
+      "min_success_rate": 0.90,
+      "min_total_requests": 140,
+      "require_providers": ["mock-alpha"],
+      "note": "Phase 1 demotes alpha; phase 2 (after 6s probe) MUST send some traffic back to mock-alpha. Success-rate-only used to hide that alpha never returned."
+    }
+  },
+  {
+    "id": "s8_burst_stress",
+    "name": "Burst stress — 2000 requests @ concurrency 50",
+    "description": "High-concurrency burst on healthy pool. Validates stability under load.",
+    "plan_ref": "§7.1 + §11.5",
+    "setup": [
+      {"provider": "mock-alpha", "state": "healthy"},
+      {"provider": "mock-beta", "state": "healthy"},
+      {"provider": "mock-gamma", "state": "healthy"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-fast",
+      "stream": false,
+      "total": 2000,
+      "concurrency": 50,
+      "prompt": "short",
+      "max_tokens": 32
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 0.99,
+      "min_total_requests": 2000,
+      "note": "Burst 2000 @ c50 — success ≥ 99%, no panic."
+    }
+  },
+  {
+    "id": "s9_sustained_load",
+    "name": "Sustained load — 200 req @ concurrency 25",
+    "description": "Short steady burst (not a 30s soak). RSS/goroutine soak is NOT measured here.",
+    "plan_ref": "§7 stress + §11 stability",
+    "setup": [
+      {"provider": "mock-alpha", "state": "healthy"},
+      {"provider": "mock-beta", "state": "healthy"},
+      {"provider": "mock-gamma", "state": "healthy"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-fast",
+      "stream": false,
+      "total": 200,
+      "concurrency": 25,
+      "prompt": "medium",
+      "max_tokens": 32
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 0.99,
+      "min_total_requests": 200,
+      "note": "Sustained 200 reqs / 25 concurrency — success ≥ 99%."
+    }
+  },
+  {
+    "id": "s10_stream_load",
+    "name": "Stream load — 100 SSE streams @ concurrency 20",
+    "description": "OpenAI-style SSE streams under load. Validates TTFB and full [DONE] delivery.",
+    "plan_ref": "§11.4 stream completion 100%",
+    "setup": [
+      {"provider": "mock-alpha", "state": "healthy"},
+      {"provider": "mock-beta", "state": "healthy"},
+      {"provider": "mock-gamma", "state": "healthy"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-stream",
+      "stream": true,
+      "total": 100,
+      "concurrency": 20,
+      "prompt": "short",
+      "max_tokens": 16
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 0.99,
+      "min_total_requests": 100,
+      "require_done": true,
+      "min_done_rate": 0.99,
+      "note": "SSE streams succeed ≥99% AND every success must include data: [DONE]."
+    }
+  },
+  {
+    "id": "s11_stream_broken_provider",
+    "name": "Stream with broken provider — alpha emits 1 chunk then EOF",
+    "description": "alpha returns broken stream (1 chunk then EOF). Gateway should not return 200 for broken streams; clients see partial data but transparent failure.",
+    "plan_ref": "§5 stress / §11 stream completion",
+    "setup": [
+      {"provider": "mock-alpha", "state": "broken_stream"},
+      {"provider": "mock-beta", "state": "healthy"},
+      {"provider": "mock-gamma", "state": "healthy"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-stream",
+      "stream": true,
+      "total": 80,
+      "concurrency": 12,
+      "prompt": "short",
+      "max_tokens": 16
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 0.50,
+      "min_total_requests": 80,
+      "min_done_rate": 0.50,
+      "note": "broken_stream is NOT a 200 success. Failover to beta must produce [DONE]. acceptable_any was a lie that let 80/80 HTTP 200 pass."
+    }
+  },
+  {
+    "id": "s12_flaky_provider",
+    "name": "Flaky provider — alpha 50/50 success/failure",
+    "description": "alpha fails 50% of the time. Gateway should still serve via failover.",
+    "plan_ref": "§3 dynamic weighting",
+    "setup": [
+      {"provider": "mock-alpha", "state": "flaky"},
+      {"provider": "mock-beta", "state": "healthy"},
+      {"provider": "mock-gamma", "state": "healthy"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-fast",
+      "stream": false,
+      "total": 200,
+      "concurrency": 20,
+      "prompt": "short",
+      "max_tokens": 32
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 0.85,
+      "min_total_requests": 200,
+      "note": "Flaky alpha (50% fail) — overall ≥85% success via failover."
+    }
+  },
+  {
+    "id": "s13_long_prompt_stress",
+    "name": "Long prompt stress — 200 long-context non-stream requests",
+    "description": "Long prompt load (each ~24k chars) on healthy delta-only pool.",
+    "plan_ref": "§11.2 long-context input",
+    "setup": [
+      {"provider": "mock-alpha", "state": "healthy"},
+      {"provider": "mock-beta", "state": "healthy"},
+      {"provider": "mock-gamma", "state": "healthy"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-large",
+      "stream": false,
+      "total": 200,
+      "concurrency": 20,
+      "prompt": "long",
+      "max_tokens": 64
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 0.99,
+      "min_total_requests": 200,
+      "min_prompt_chars": 20000,
+      "note": "Long-prompt 200 reqs — ≥99% success AND prompt ≥20k chars (not Repeat 200)."
+    }
+  },
+  {
+    "id": "s14_provider_503_with_one_healthy",
+    "name": "Three providers 503, one healthy — traffic consolidates",
+    "description": "Catastrophe mitigated: 3 providers return 503, 1 remains healthy. All traffic should hit the survivor.",
+    "plan_ref": "§5.2 scenario 4 (graceful degrade with survivor)",
+    "setup": [
+      {"provider": "mock-alpha", "state": "no_available"},
+      {"provider": "mock-beta", "state": "no_available"},
+      {"provider": "mock-gamma", "state": "no_available"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-pool",
+      "stream": false,
+      "total": 80,
+      "concurrency": 12,
+      "prompt": "short",
+      "max_tokens": 32
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 0.90,
+      "min_total_requests": 80,
+      "require_providers": ["mock-delta"],
+      "forbidden_providers": ["mock-alpha", "mock-beta", "mock-gamma"],
+      "note": "Uses mock-stress-pool (all four). After demotion, only delta may appear in 200 bodies. mock-stress-large cannot prove three-503 failover."
+    }
+  },
+  {
+    "id": "s15_dynamic_weighting",
+    "name": "Dynamic weighting — three bound providers share traffic under steady state",
+    "description": "mock-stress-fast binds alpha/beta/gamma only. Even split is among those three, not four. Delta is unbound here.",
+    "plan_ref": "§3 weight formula + §3.3 weighted routing test",
+    "setup": [
+      {"provider": "mock-alpha", "state": "healthy"},
+      {"provider": "mock-beta", "state": "healthy"},
+      {"provider": "mock-gamma", "state": "healthy"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-fast",
+      "stream": false,
+      "total": 600,
+      "concurrency": 30,
+      "prompt": "short",
+      "max_tokens": 32
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 0.99,
+      "min_total_requests": 600,
+      "require_providers": ["mock-alpha", "mock-beta", "mock-gamma"],
+      "forbidden_providers": ["mock-delta"],
+      "note": "Verify the 3 bound providers (alpha/beta/gamma) each receive traffic. mock-stress-fast does not bind delta; ±30% even-split is among 3, not 4."
+    }
+  },
+  {
+    "id": "s16_timeout_provider",
+    "name": "Upstream timeout — alpha sleeps > client timeout",
+    "description": "alpha sleeps 130s; gateway client times out at 25s. Other providers carry the load.",
+    "plan_ref": "§7 + §11 timeout handling",
+    "setup": [
+      {"provider": "mock-alpha", "state": "timeout"},
+      {"provider": "mock-beta", "state": "healthy"},
+      {"provider": "mock-gamma", "state": "healthy"},
+      {"provider": "mock-delta", "state": "healthy"}
+    ],
+    "request": {
+      "model": "mock-stress-fast",
+      "stream": false,
+      "total": 40,
+      "concurrency": 8,
+      "prompt": "short",
+      "max_tokens": 16
+    },
+    "reset": true,
+    "expect": {
+      "min_success_rate": 0.80,
+      "min_total_requests": 40,
+      "min_duration_ms": 20000,
+      "note": "Timeout on alpha MUST take ≥20s (gateway client 25s). Previous run finished in 220ms with HTTP 200 — timeout mode never slept."
+    }
+  }
+]

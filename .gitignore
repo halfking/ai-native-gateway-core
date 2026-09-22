@@ -361,6 +361,21 @@ nbproject/
 # 2026-09-17: ssh-mgmt root password (never commit; local only)
 deploy/ssh-mgmt/pw.txt
 
+# Accidental nested workspace copies (do not commit)
+/Users/
+
+# Stress harness runtime (pids/logs); keep results/report.json tracked
+tests/stress/logs/
+tests/stress/**/.DS_Store
+# Pre-audit GOMAXPROCS / OOM-interrupted samples — not production capacity
+tests/stress/results/capacity/
+tests/stress/results/mem-*.json
+tests/stress/results/mem-*.jsonl
+tests/stress/results/memory.jsonl
+tests/stress/results/memory-*.json
+tests/stress/results/memory-*.jsonl
+tests/stress/handoff_b_s8s13_test.go
+
 # ── 2026-09-21: 本地部署/运行时产物不入库 ─────────────────────────
 # deploy-local.sh --root 指向 worktree 时在根写 run/（active-port、
 # active-version、admin-password-hash 备份）；RawDataLogger 写 raw-logs/。
