@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { login, getAuthMe } from '../api'
 import { setApiKey, setJwtToken, setUserInfo } from '../store'
 import { useLoginModal } from '../composables/useLoginModal'
+import { locationFromInternalPath } from '../utils/safeRedirect'
 import { detectTheme, logoSrc } from '../theme'
 import { SITE_LOGO_SIZE, SITE_TITLE } from '../config/brand'
 import AppModal from './ui/AppModal.vue'
@@ -68,10 +69,8 @@ async function handleLogin() {
         } catch { /* ignore */ }
       }
       close()
-      const redirect = typeof router.currentRoute.value.query.redirect === 'string'
-        ? router.currentRoute.value.query.redirect
-        : '/'
-      const target = redirect.startsWith('/') ? redirect : '/'
+      const restored = locationFromInternalPath(router.currentRoute.value.query.redirect)
+      const target = restored ?? { path: '/' }
       if (router.currentRoute.value.path === '/login' || router.currentRoute.value.query.login) {
         await router.replace(target)
       }

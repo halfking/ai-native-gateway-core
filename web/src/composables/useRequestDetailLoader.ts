@@ -12,7 +12,7 @@ import {
   type WaterfallRequest,
 } from '../api/dispatch'
 import { getSessionSnapshot } from '../api/sessions_v2'
-import { getRequestJourney, type RequestJourney, type RequestJourneyEvent } from '../api/request-journeys'
+import { getRequestJourney, type RequestJourney, type RequestJourneyEvent, type RequestJourneyEventType } from '../api/request-journeys'
 
 export type DetailSection =
   | 'overview'
@@ -138,6 +138,76 @@ function journeyAttemptEvents(events: RequestJourneyEvent[] | undefined): Reques
   return [...byAttempt.values()].sort((a, b) => a.attempt_no - b.attempt_no)
 }
 
+function eventTime(events: RequestJourneyEvent[] | undefined, type: RequestJourneyEventType): string | undefined {
+  return events?.find((event) => event.event_type === type)?.occurred_at
+}
+
+function toMs(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0
+}
+
+function isoOrUndefined(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function synthesizeWaterfallFromDetail(input: {
+  requestId: string
+  log: RequestLogDetail | null
+  unified: UnifiedRequestDetail | null
+  journey: RequestJourney | null
+  attempts: RequestDetailAttempt[]
+}): WaterfallRequest | null {
+  const { requestId, log, unified, journey, attempts } = input
+  const events = journey?.events
+  const arrivedAt = eventTime(events, 'request_received') || isoOrUndefined(log?.ts)
+  const modelEnqueuedAt = eventTime(events, 'model_enqueued')
+  const credSelectedAt = eventTime(events, 'credential_selected')
+  const nodeEnqueuedAt = eventTime(events, 'node_enqueued')
+  const nodeSelectedAt = eventTime(events, 'node_selected')
+  const firstAttemptStarted = [...(events ?? [])]
+    .sort((a, b) => a.seq - b.seq)
+    .find((event) => event.event_type === 'attempt_started')
+    ?.occurred_at
+  const firstByteAt = eventTime(events, 'first_byte')
+  const terminalAt = eventTime(events, 'request_succeeded')
+    || eventTime(events, 'request_failed')
+    || eventTime(events, 'request_canceled')
+  const latencyMs = toMs(log?.latency_ms ?? unified?.meta.latency_ms)
+  const totalMs = terminalAt && arrivedAt
+    ? Math.max(0, Date.parse(terminalAt) - Date.parse(arrivedAt))
+    : latencyMs
+  const result = log?.request_status
+    || unified?.meta.request_status
+    || (log?.success === false || unified?.meta.success === false ? 'failure' : 'success')
+  const hasTiming = Boolean(arrivedAt || modelEnqueuedAt || firstAttemptStarted || firstByteAt || terminalAt || totalMs)
+  if (!hasTiming && !attempts.length) return null
+  return {
+    request_id: requestId,
+    tenant_id: unified?.meta.tenant_id || undefined,
+    session_id: log?.gw_session_id || unified?.meta.gw_session_id || undefined,
+    model: log?.outbound_model || log?.client_model || unified?.meta.client_model || undefined,
+    credential_id: log?.credential_id ?? undefined,
+    result: result || 'unknown',
+    arrived_at: arrivedAt,
+    model_enqueued_at: modelEnqueuedAt,
+    cred_enqueued_at: nodeEnqueuedAt || credSelectedAt,
+    cred_dequeued_at: nodeSelectedAt,
+    forward_start_at: firstAttemptStarted,
+    response_start_at: firstByteAt,
+    response_end_at: terminalAt,
+    waiting_in_total_ms: 0,
+    waiting_in_model_ms: 0,
+    waiting_in_node_ms: 0,
+    routing_ms: 0,
+    acquire_ms: 0,
+    upstream_latency_ms: 0,
+    streaming_duration_ms: 0,
+    queue_wait_ms: 0,
+    total_ms: totalMs,
+    attempts,
+  }
+}
+
 export function mergeRequestAttempts(
   journey: Pick<RequestJourney, 'events'> | null | undefined,
   waterfallAttempts: WaterfallAttempt[] | undefined,
@@ -205,9 +275,15 @@ export function useRequestDetailLoader() {
   const waterfallSource = ref('')
   const bodiesLoaded = ref(false)
 
+  const lastKnownSessionId = ref<string | null>(null)
   const sessionId = computed(
     () => log.value?.gw_session_id || unified.value?.meta.gw_session_id || null,
   )
+  const retainedSessionId = computed(() => sessionId.value || lastKnownSessionId.value)
+
+  function rememberSession(sid: string | null | undefined) {
+    lastKnownSessionId.value = sid || null
+  }
   const requestBody = computed(
     () => unified.value?.bodies?.request_body ?? log.value?.request_body ?? null,
   )
@@ -278,6 +354,7 @@ export function useRequestDetailLoader() {
       applyEntry(cached)
       metaLoading.value = false
       metaError.value = ''
+      rememberSession(cached.log?.gw_session_id || cached.unified?.meta.gw_session_id || null)
       if (sessionId.value && !sessionSnap.value) {
         void ensureSessionSnap(sessionId.value, abort?.signal)
       }
@@ -300,11 +377,15 @@ export function useRequestDetailLoader() {
       // as the outer catch / ensureSessionSnap below).
       const [u, meta] = await Promise.all([
         getUnifiedRequestDetail(requestId, { omitBody: true }).catch((e: unknown) => {
-          if (seq === loadSeq.value) metaWarnings.value.push(formatEndpointFailure('admin/request-detail', e))
+          if (seq === loadSeq.value && !(e instanceof ApiError && e.status === 404)) {
+            metaWarnings.value.push(formatEndpointFailure('admin/request-detail', e))
+          }
           return null
         }),
         getRequestLogDetail(requestId, { omitBody: true }).catch((e: unknown) => {
-          if (seq === loadSeq.value) metaWarnings.value.push(formatEndpointFailure('/api/logs/:id', e))
+          if (seq === loadSeq.value && !(e instanceof ApiError && e.status === 404)) {
+            metaWarnings.value.push(formatEndpointFailure('/api/logs/:id', e))
+          }
           return null
         }),
       ])
@@ -319,6 +400,28 @@ export function useRequestDetailLoader() {
           if (seq !== loadSeq.value) return
           journey.value = j
           if (j) cachePut(requestId, { journey: j })
+          if (waterfallSource.value === 'derived' || waterfallSource.value === 'miss' || waterfallError.value) {
+            const synthesized = synthesizeWaterfallFromDetail({
+              requestId,
+              log: log.value,
+              unified: unified.value,
+              journey: j,
+              attempts: mergeRequestAttempts(
+                j,
+                waterfall.value?.attempts,
+                log.value?.routing_attempts?.attempts,
+              ),
+            })
+            if (synthesized) {
+              waterfall.value = synthesized
+              waterfallSource.value = 'derived'
+              waterfallError.value = ''
+              cachePut(requestId, {
+                waterfall: synthesized,
+                waterfallSource: 'derived',
+              })
+            }
+          }
         })
         .catch(() => null)
       if (seq !== loadSeq.value) return
@@ -360,7 +463,8 @@ export function useRequestDetailLoader() {
         // ensureBodies just set — the merge above preserved its bodies.
         bodiesLoaded: prior?.bodiesLoaded ?? false,
       })
-      const sid = landedLog?.gw_session_id || landedU?.meta.gw_session_id
+      const sid = landedLog?.gw_session_id || landedU?.meta.gw_session_id || null
+      rememberSession(sid)
       if (sid) void ensureSessionSnap(sid, abort?.signal)
     } catch (e: unknown) {
       if (seq !== loadSeq.value) return
@@ -460,8 +564,34 @@ export function useRequestDetailLoader() {
       })
     } catch (e: unknown) {
       if (seq !== loadSeq.value) return
+      const synthesized = synthesizeWaterfallFromDetail({
+        requestId,
+        log: log.value,
+        unified: unified.value,
+        journey: journey.value,
+        attempts: mergeRequestAttempts(
+          journey.value,
+          undefined,
+          log.value?.routing_attempts?.attempts,
+        ),
+      })
+      if (synthesized) {
+        waterfall.value = synthesized
+        waterfallSource.value = 'derived'
+        waterfallError.value = ''
+        cachePut(requestId, {
+          waterfall: synthesized,
+          waterfallSource: 'derived',
+        })
+        return
+      }
       waterfall.value = null
-      waterfallError.value = e instanceof Error ? e.message : String(e)
+      if (e instanceof ApiError && e.status === 404) {
+        waterfallSource.value = 'miss'
+        waterfallError.value = ''
+      } else {
+        waterfallError.value = e instanceof Error ? e.message : String(e)
+      }
     } finally {
       if (seq === loadSeq.value) waterfallLoading.value = false
     }
@@ -495,7 +625,7 @@ export function useRequestDetailLoader() {
     log,
     unified,
     sessionSnap,
-    sessionId,
+    sessionId: retainedSessionId,
     activeRequestId,
     requestBody,
     responseBody,

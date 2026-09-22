@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { store, isDefaultTenant } from './store'
 import { showOpsPlatform } from './config/edition'
+import { locationFromInternalPath } from './utils/safeRedirect'
 
 // Critical views loaded immediately (login, home, layout)
 import LoginView from './views/LoginView.vue'
@@ -387,9 +388,12 @@ router.beforeEach(async (to) => {
   if (!to.meta.public && !isAuthed()) {
     return { path: '/', query: { login: '1', redirect: to.fullPath } }
   }
-  // 2. Bounce authed users away from /login
-  if (to.path === '/login' && isAuthed()) {
-    return { path: '/' }
+  // 2. Bounce authed users away from /login, restoring the original page
+  // when a 401 bounce (or login modal) left `redirect` on the URL.
+  if ((to.path === '/login' || (to.path === '/' && (to.query.login === '1' || to.query.login === 'true'))) && isAuthed()) {
+    const restored = locationFromInternalPath(to.query.redirect)
+    if (restored) return restored
+    if (to.path === '/login') return { path: '/' }
   }
   // 3. Super-admin role check
   if (to.meta.requiresSuper && !isSuperAdmin()) {

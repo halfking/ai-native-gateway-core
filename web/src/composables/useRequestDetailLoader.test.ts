@@ -1,8 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { ApiError } from '../api/_core'
 import {
   clearRequestDetailCache,
   mapLogRoutingAttempts,
   mergeRequestAttempts,
+  REQUEST_DETAIL_NOT_FOUND,
   useRequestDetailLoader,
 } from './useRequestDetailLoader'
 
@@ -638,5 +640,51 @@ describe('useRequestDetailLoader', () => {
     await new Promise((r) => setTimeout(r, 0))
     // The stale journey must not bleed into jr-b's view.
     expect(loader.attempts.value).toEqual([])
+  })
+
+  it('synthesizes an inline waterfall from journey/log when by-request lookup 404s', async () => {
+    getUnifiedRequestDetail.mockResolvedValue({
+      source: 'request_logs',
+      persistence: 'persisted',
+      meta: { request_id: 'wf-404', client_model: 'm1', latency_ms: 42 },
+    })
+    getRequestLogDetail.mockResolvedValue({
+      request_id: 'wf-404',
+      ts: '2026-09-22T00:00:00Z',
+      client_model: 'm1',
+      latency_ms: 42,
+      request_status: 'success',
+    })
+    fetchWaterfallByRequestId.mockRejectedValue(new ApiError(404, 'waterfall request not found'))
+
+    const loader = useRequestDetailLoader()
+    await loader.loadMeta('wf-404')
+    await loader.ensureWaterfall('wf-404')
+
+    expect(loader.waterfallError.value).toBe('')
+    expect(loader.waterfallSource.value).toBe('derived')
+    expect(loader.waterfall.value?.request_id).toBe('wf-404')
+    expect(loader.waterfall.value?.total_ms).toBe(42)
+  })
+
+  it('keeps the previous session id when a later turn is not found', async () => {
+    getUnifiedRequestDetail
+      .mockResolvedValueOnce({
+        source: 'request_logs',
+        persistence: 'persisted',
+        meta: { request_id: 'turn-a', gw_session_id: 'sess-keep' },
+      })
+      .mockRejectedValueOnce(new ApiError(404, 'not found'))
+    getRequestLogDetail
+      .mockResolvedValueOnce({ request_id: 'turn-a', gw_session_id: 'sess-keep' })
+      .mockRejectedValueOnce(new ApiError(404, 'not found'))
+
+    const loader = useRequestDetailLoader()
+    await loader.loadMeta('turn-a')
+    expect(loader.sessionId.value).toBe('sess-keep')
+
+    await loader.loadMeta('turn-missing')
+    expect(loader.metaError.value).toBe(REQUEST_DETAIL_NOT_FOUND)
+    expect(loader.sessionId.value).toBe('sess-keep')
   })
 })
