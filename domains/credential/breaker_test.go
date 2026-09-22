@@ -209,35 +209,48 @@ func TestHalfOpenProbeFailure(t *testing.T) {
 	}
 }
 
-func TestRateLimitExponentialBackoff(t *testing.T) {
+// Wave 1 A4 (2026-09-22): 429/限流不再计入断路器失败——熔断只由真实故障驱动。
+// 短期限流排序降权由 writer.go 绑定级冷却（Retry-After 优先，默认 3min）承担。
+func TestRateLimitExcludedFromBreaker(t *testing.T) {
 	b := New(1, 1)
 
-	// Confirmed rate limit → 900s (15 min) cooling
-	b.RecordFailure(KindRateLimit)
-	b.RecordFailure(KindRateLimit)
-	if b.State() != StateOpen {
-		t.Fatalf("expected open, got %s", b.State())
+	// 429 风暴不开断路器、不累计失败
+	for i := 0; i < 10; i++ {
+		b.RecordFailure(KindRateLimit)
+	}
+	if b.State() != StateClosed {
+		t.Fatalf("expected closed under 429 storm, got %s", b.State())
+	}
+	if b.ConsecutiveFailures() != 0 {
+		t.Fatalf("consecutive failures = %d, want 0", b.ConsecutiveFailures())
+	}
+	if !b.Allow() {
+		t.Fatal("closed breaker under 429 storm should allow requests")
 	}
 
-	b.mu.Lock()
-	firstCooling := time.Until(b.coolingExpires)
-	b.mu.Unlock()
-	if firstCooling < 118*time.Second || firstCooling > 122*time.Second {
-		t.Fatalf("expected ~120s cooling, got %v", firstCooling)
+	// HALF_OPEN 探针撞 429：归还探针槽、保持 HALF_OPEN，不确认失败
+	b2 := New(1, 2)
+	b2.mu.Lock()
+	b2.state.Store(int32(StateHalfOpen))
+	b2.nextProbeAt = time.Now()
+	b2.mu.Unlock()
+	if !b2.Allow() {
+		t.Fatal("half-open should admit the probe")
+	}
+	b2.RecordFailure(KindRateLimit)
+	if b2.State() != StateHalfOpen {
+		t.Fatalf("429 probe must not change state, got %s", b2.State())
+	}
+	if !b2.Allow() {
+		t.Fatal("probe slot must be released after 429 so the next request can probe")
 	}
 
-	// Second rate limit → still 120s (at max)
-	b.mu.Lock()
-	b.coolingExpires = time.Now().Add(-1 * time.Second) // expire current cooling
-	b.mu.Unlock()
-	b.Allow()                      // transition to half-open
-	b.RecordFailure(KindRateLimit) // half-open probe failure
-
-	b.mu.Lock()
-	secondCooling := time.Until(b.coolingExpires)
-	b.mu.Unlock()
-	if secondCooling < 118*time.Second || secondCooling > 122*time.Second {
-		t.Fatalf("expected ~120s cooling, got %v", secondCooling)
+	// 对照：真实故障种类仍然开断路器（限流剔除不弱化故障路径，阈值为 2）
+	b3 := New(1, 3)
+	b3.RecordFailure(KindUpstreamDown)
+	b3.RecordFailure(KindUpstreamDown)
+	if b3.State() != StateOpen {
+		t.Fatalf("real failures must still open the breaker, got %s", b3.State())
 	}
 }
 
