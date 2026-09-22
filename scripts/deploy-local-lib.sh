@@ -336,6 +336,15 @@ dl_load_project_env() {
     return 0
   fi
   local kv key val
+  # R55-F1b fix: the previous `_dl_safe_env_source ... >/dev/null 2>&1; env -0`
+  # call silently DROPPED Python's NUL-delimited KEY=value records (the only
+  # source of new env vars) and `env -0` runs in a different process, so it
+  # never saw Python's os.environ writes either — the function was a no-op.
+  # Replaced with a direct call into `<(...)` so bash reads the records.
+  # Also moved the long context block OUT of `<(...)`: bash 5.x parses
+  # process-substitution comments too aggressively and would segfault on
+  # `${VAR}` / `(...)` characters inside them when this function was invoked
+  # from a `()` subshell (R55 regression test pattern).
   while IFS= read -r -d '' kv; do
     key="${kv%%=*}"
     case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
@@ -343,23 +352,7 @@ dl_load_project_env() {
     if [[ -z "$val" ]]; then
       export "$key=${kv#*=}"
     fi
-  done < <(
-    # .env.local prints a friendly summary when sourced; suppress it so
-    # deploy diagnostics stay redacted and the env dump stays clean.
-    # The previous bash-source approach (`set -a; source $file`) silently
-    # mangled any unquoted value containing shell metacharacters: a deploy
-    # with `LLM_GATEWAY_ADMIN_PASSWORD=Veritrans&9527` (unquoted) saw
-    # bash split at `&` (control operator), so the env got `Veritrans`
-    # while `9527` ran in the background, then sync_admin_password_from_env
-    # bcrypt-hashed `Veritrans` into users.password_hash — every later
-    # login with the intended `Veritrans&9527` returned 401 because
-    # admin/auth.go never falls back to env once the users row exists.
-    # This Python parser preserves ${VAR} interpolation (DSN concatenation
-    # still works) while treating unquoted &, |, ;, (, ), <, >, $, ` as
-    # literal bytes. Quoted values are passed through verbatim, matching
-    # bash source semantics for "..." and '...'.
-    { _dl_safe_env_source "$file" >/dev/null 2>&1; env -0; }
-  )
+  done < <(_dl_safe_env_source "$file")
 }
 
 # _dl_safe_env_source — print KEY=value\0 records for _dl_load_project_env.
@@ -398,11 +391,16 @@ with open(sys.argv[1], encoding='utf-8') as fh:
         if not m:
             continue
         key, raw_val = m.group(1), m.group(2)
+        quote_char = ''
         if len(raw_val) >= 2 and raw_val[0] == raw_val[-1] and raw_val[0] in ('"', "'"):
+            quote_char = raw_val[0]
             val = raw_val[1:-1]
         else:
             val = raw_val
-        val = expand(val)
+        # Bash semantics: unquoted + double-quoted honor ${VAR}/$VAR
+        # interpolation; single-quoted forbids ANY expansion (R55-F1b fix).
+        if quote_char != "'":
+            val = expand(val)
         os.environ[key] = val
         sys.stdout.buffer.write(f'{key}={val}\x00'.encode('utf-8'))
 PY
