@@ -470,12 +470,25 @@ func serializeAnthropicMessageContent(msg Message, targetProvider string, modelN
 			"id":   tc.ID,
 			"name": tc.Function.Name,
 		}
-		// Parse arguments JSON. If arguments isn't valid JSON, fall back to
-		// passing the raw string through as the tool_use input.
-		var args any
+		// Parse arguments JSON. 2026-09-22 (Wave 1 A2 设计红线): Anthropic 要求
+		// tool_use.input 必须是 JSON 对象。旧实现把非法 JSON 以原始字符串直塞
+		// input，Anthropic 系上游直接 400，且被误归类为节点故障触发切换/冷却。
+		// 现在凡解析结果不是 JSON 对象（含解析失败、数组、标量、null）一律
+		// 包裹为 {"raw": <原文>} 并记 format-anomaly；合法对象保持原样。
+		var args any = map[string]any{}
 		if tc.Function.Arguments != "" {
-			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-				args = tc.Function.Arguments
+			var parsed any
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsed); err != nil {
+				parsed = nil
+			}
+			if obj, ok := parsed.(map[string]any); ok {
+				args = obj
+			} else {
+				args = map[string]any{"raw": tc.Function.Arguments}
+				ReportProtocolLoss("unknown", "messages[*].tool_use.input", "", ProtocolAnthropicMessages,
+					"loss",
+					"tool arguments are not a JSON object; wrapped as {\"raw\":...} to keep tool_use.input schema-valid",
+					map[string]any{"anomaly": "format", "arg_bytes": len(tc.Function.Arguments)})
 			}
 		}
 		toolUse["input"] = args
