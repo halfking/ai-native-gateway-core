@@ -4211,7 +4211,11 @@ func main() {
 			// 2026-07-13: wire active_probe submitter so consecutive_fails >= threshold
 			// immediately triggers a direct-to-provider probe (instead of waiting
 			// for credProbeV2's 5-min delayed reprobe).
-			if activeProbe != nil {
+			// R56 audit: only in legacy probe mode. In the default new-probe
+			// mode activeProbe.Start is skipped, so its Submit enqueued into a
+			// queue with no consumer (per-key running leak + WARN spam once
+			// full); the new probe stack owns failure-triggered probing there.
+			if activeProbe != nil && !useNewProbeMode() {
 				// 2026-09-22 Wave 3 B5: same resolution chain as the
 				// epThreshold read at construction (settings_kv > env >
 				// default). The previous second env-only parse here would
