@@ -593,13 +593,19 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	if respCanonicalIDValue != nil {
 		respCanonicalID = *respCanonicalIDValue
 	}
+	// Wave 1 A1 (2026-09-22): plan_order 与真实选路同源。旧实现恒为 []，
+	// 运营在 routing 页看到的"测试可用"与生产选路脱节。live-router 不可用
+	// 时（nil 注入/解析失败）source=unavailable，行为不劣于旧版。
+	planOrder, planSource := h.livePlanOrder(ctx, normalizedModel, EffectiveTenantIDAll(r))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"client_model":         model,
 		"canonical_name":       rawModels[0],
 		"canonical_id":         respCanonicalID,
 		"resolution_path":      resolutionPath,
 		"raw_models":           rawModels,
-		"plan_order":           []any{},
+		"plan_order":           planOrder,
+		"plan_order_source":    planSource,
+		"order_debug":          buildOrderDebug(planOrder, planSource, candidates),
 		"candidates":           candidates,
 		"reorder_revision":     reorderRevision,
 		"reorder_canonical_id": reorderCanonicalID,
