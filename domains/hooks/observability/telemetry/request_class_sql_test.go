@@ -57,7 +57,8 @@ func TestInsertRequestLogCarriesRequestClass(t *testing.T) {
 	if cust < 0 || cls < 0 || cls < cust {
 		t.Fatalf("608 args must follow CustomerID: cust=%d class=%d", cust, cls)
 	}
-	// Highest placeholder must be 102 (2 new columns after 507's $100).
+	// Highest placeholder must be 103 (608's $101/$102 plus Wave 3 B1's
+	// $103 credits_rate_multiplier, migration 736).
 	re := regexp.MustCompile(`\$(\d+)`)
 	max := 0
 	for _, m := range re.FindAllStringSubmatch(body, -1) {
@@ -69,8 +70,8 @@ func TestInsertRequestLogCarriesRequestClass(t *testing.T) {
 			max = n
 		}
 	}
-	if max != 102 {
-		t.Fatalf("max placeholder = %d, want 102", max)
+	if max != 103 {
+		t.Fatalf("max placeholder = %d, want 103", max)
 	}
 }
 
