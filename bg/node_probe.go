@@ -114,6 +114,23 @@ const (
 	// produce.
 	nodeProbeSyncFanout = 8
 
+	// nodeProbePerCredSyncConcurrency (Wave 3 B2③, 2026-09-22) caps
+	// concurrent ProbeSync direct probes against ONE credential. The
+	// global fanout above bounds worker-wide pressure but a no_candidate
+	// burst naming many models on the same credential could still point
+	// all 8 slots at a single upstream account; per-credential ≤2 keeps
+	// the burst spread across credentials. Design §6.3 "同凭据探测并发≤2".
+	nodeProbePerCredSyncConcurrency = 2
+
+	// Flash-blip double-confirm pacing (Wave 3 B2②, 2026-09-22). After a
+	// request-path error that would degrade the node, two lightweight
+	// direct pings run inside the 2~5s design window; the degrade is
+	// applied only when BOTH fail (design §6.3 "闪断双确认").
+	nodeProbeConfirmFirstPingDelay = 2 * time.Second
+	nodeProbeConfirmPingGap        = 2 * time.Second
+	// nodeProbeConfirmBudget bounds the whole confirm (pings + gaps).
+	nodeProbeConfirmBudget = 15 * time.Second
+
 	// 2026-09-03 P1.3: bounded retry + persistent failure for
 	// submitViaQueueSource. ProbeQueue.Enqueue can fail with transient DB
 	// pressure; one-shot failures used to be silently logged (Submit) or
@@ -231,6 +248,17 @@ type NodeProbeWorker struct {
 	// the recovered availability.
 	syncWaitersMu sync.Mutex
 	syncWaiters   map[string][]chan struct{}
+
+	// credSyncSem (Wave 3 B2③) holds one buffered channel per credential
+	// seen by ProbeSync, capping same-credential concurrent direct probes
+	// at nodeProbePerCredSyncConcurrency. Entries are never evicted: the
+	// map is bounded by the credential count and an idle entry is one
+	// empty buffered channel.
+	credSyncSem sync.Map // map[int]chan struct{}
+
+	// probeConfirmRound is the Wave 3 B2② test seam over probeDirect for
+	// ProbeConfirm. Production leaves it nil.
+	probeConfirmRound func(ctx context.Context, credID int, model string) nodeProbeRoundResult
 
 	// decryptFailures / decryptTrippedAt implement the instance-level
 	// decrypt circuit (2026-09-17 incident: a dev instance on 252 with a
@@ -1563,6 +1591,14 @@ func (w *NodeProbeWorker) ProbeSync(
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// Wave 3 B2③: per-credential ≤2 on top of the global fanout.
+			// Acquired inside the goroutine (the submit loop must not
+			// stall behind a busy credential while other credentials have
+			// free capacity); same order everywhere (global → per-cred),
+			// so the two-level acquire cannot deadlock.
+			credSem := w.credSemaphore(j.credID)
+			credSem <- struct{}{}
+			defer func() { <-credSem }()
 			// Ensure the in-flight slot for THIS key is released and any
 			// concurrent ProbeSync caller that attached as a reuse waiter
 			// is woken once the probe completes. cycle() would not fire
@@ -1784,6 +1820,56 @@ drainLoop:
 // gateway round remains an audit signal and is still emitted to diagnostics.
 func probeRecovered(direct nodeProbeRoundResult) bool {
 	return direct.ok
+}
+
+// credSemaphore returns the per-credential ProbeSync slot channel
+// (Wave 3 B2③). Safe for concurrent use; entries are created on first use
+// and never evicted (bounded by the credential count).
+func (w *NodeProbeWorker) credSemaphore(credID int) chan struct{} {
+	if v, ok := w.credSyncSem.Load(credID); ok {
+		return v.(chan struct{})
+	}
+	v, _ := w.credSyncSem.LoadOrStore(credID, make(chan struct{}, nodeProbePerCredSyncConcurrency))
+	return v.(chan struct{})
+}
+
+// ProbeConfirm is the Wave 3 B2② flash-blip double confirmation. After a
+// request-path error that would degrade the node, the caller defers the
+// degrade and asks ProbeConfirm for the verdict: two lightweight direct
+// pings run inside the design window (first after 2s, second after another
+// 2s, whole confirm bounded by nodeProbeConfirmBudget). The node counts as
+// confirmed broken — and the caller applies the deferred degrade — only when
+// BOTH pings fail; any success means the error was a transient blip and the
+// node keeps its healthy state.
+//
+// The pings go through probeDirect only: no state writes, no circuit
+// recording, no node_probe_state mutation — the confirm must not stack
+// breaker or probe-backoff effects on top of the request failure it
+// verifies ("只影响状态写入不叠加熔断").
+//
+// A nil worker or a cancelled context fails CLOSED (returns true) so a
+// dead node cannot be kept routable by an unverifiable confirm.
+func (w *NodeProbeWorker) ProbeConfirm(ctx context.Context, credID int, model string) bool {
+	if w == nil {
+		return true
+	}
+	cctx, cancel := context.WithTimeout(ctx, nodeProbeConfirmBudget)
+	defer cancel()
+	round := w.probeConfirmRound
+	if round == nil {
+		round = w.probeDirect
+	}
+	time.Sleep(nodeProbeConfirmFirstPingDelay)
+	if first := round(cctx, credID, model); first.ok {
+		return false
+	}
+	select {
+	case <-cctx.Done():
+		return true
+	case <-time.After(nodeProbeConfirmPingGap):
+	}
+	second := round(cctx, credID, model)
+	return !second.ok
 }
 
 // emitSyncAudit writes a node_probe_runs row for a sync_request probe

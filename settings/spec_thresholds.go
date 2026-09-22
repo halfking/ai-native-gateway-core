@@ -18,6 +18,11 @@ const (
 	KeyStickyFailureThreshold      = "routing.sticky_failure_threshold"
 	KeyFpSlotTTLSeconds            = "disguise.fp_slot_ttl_seconds"
 	KeyErrorProbeWorkers           = "error_probe.workers"
+
+	// KeyProbeStateAgingHours 健康证据老化窗（Wave 3 B2①，2026-09-22）：
+	// healthy_confirmed 绑定在该窗内既无成功请求也无 ok 探测即视为证据
+	// 陈旧，降回 recovering 走共识复核（设计"2h 无证据→可疑→后台 ping"）。
+	KeyProbeStateAgingHours = "probe.state_aging_hours"
 )
 
 // 默认值 = 集中前的各包 const（单一事实来源，Spec 定义与访问器 fallback 共用）。
@@ -44,6 +49,10 @@ const (
 	// DefaultModelDeprecatedCooldownSeconds 权威 deprecation 冷却
 	// （30 天，原 writer.go 值不变）。
 	DefaultModelDeprecatedCooldownSeconds = 30 * 24 * 3600
+
+	// DefaultProbeStateAgingHours 健康证据老化窗默认 2 小时（设计 §6.3
+	// "2h 无证据节点转可疑"；watchdog 30min tick 读取，改值下一 tick 生效）。
+	DefaultProbeStateAgingHours = 2
 )
 
 // Wave 2 任务二③（C4 三级化）新增键。
@@ -176,6 +185,21 @@ func ThresholdSpecs() []*Spec {
 			DangerLevel:     Warning,
 			HotReload:       true,
 		},
+		{
+			Key:             KeyProbeStateAgingHours,
+			EnvName:         EnvNameAuto(KeyProbeStateAgingHours),
+			Type:            TypeInt,
+			Scope:           ScopePlatform,
+			Category:        CategoryErrorProbe,
+			Min:             floatPtr(1),
+			Max:             floatPtr(24),
+			Default:         DefaultProbeStateAgingHours,
+			Description:     "健康证据老化窗（小时）",
+			DescriptionLong: "healthy_confirmed 绑定在该窗内既无成功请求也无 ok 探测即视为证据陈旧：非常用模型看门狗不再顺延其下次探测，而是降回 recovering 走共识复核（设计\"2h 无证据→可疑→后台 ping\"）。watchdog 每 30 分钟 tick 读取，改值下一 tick 生效。",
+			Unit:            "小时",
+			DangerLevel:     Warning,
+			HotReload:       true,
+		},
 	}
 }
 
@@ -183,6 +207,13 @@ func ThresholdSpecs() []*Spec {
 // Cached read: ≤5s reload window on the routing hot path.
 func NodeFailStreakLimit() int {
 	return clampThresholdInt(CachedPlatformInt(KeyNodeFailStreakLimit, DefaultNodeFailStreakLimit), 1, 10)
+}
+
+// ProbeStateAgingHours returns the healthy-evidence aging window in hours
+// (Wave 3 B2①). Read once per 30-min watchdog tick; uncached is fine and
+// hot-reloads on the next tick.
+func ProbeStateAgingHours() int {
+	return clampThresholdInt(GetPlatformInt(KeyProbeStateAgingHours, DefaultProbeStateAgingHours), 1, 24)
 }
 
 // NodeDisabledCooldownSeconds returns the node Disabled cooldown in seconds.
