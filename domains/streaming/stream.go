@@ -1163,6 +1163,12 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 						// terminator.
 						safeWriteSSE(w, "data: [DONE]\n\n")
 						safeFlush(flusher)
+						// This errChunk+[DONE] pair IS the protocol terminal
+						// for the attempt — latch it so the survival
+						// coordinator's renderTerminal does not emit a second
+						// terminal (completed(incomplete) + response.failed)
+						// on buffered-gate breach paths (R56 audit).
+						gate.MarkTerminalRendered()
 						metrics.Global().RecordStreamSynthesizedDone()
 						outcome.Interrupted = true
 						outcome.Reason = "eof_without_done"
@@ -1224,6 +1230,10 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 				if attemptHasClientSemanticOutput(gate, chunkCount) {
 					safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\"}}\n\n")
 					safeFlush(flusher)
+					// Same latch rationale as the §11.6 eof_without_done
+					// branch above: the timeout envelope is a protocol
+					// terminal render (R56 audit).
+					gate.MarkTerminalRendered()
 				}
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_timeout")
