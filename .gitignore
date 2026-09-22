@@ -320,6 +320,14 @@ scripts/capacity-baseline/reports/
 # NAS 同步残片文件
 .!*
 data/
+# 但 tests/48h-audit/DXX-*/data/ 是分类测试目录，必须纳入版本控制
+!tests/48h-audit/*/data/
+!tests/48h-audit/*/data/**
+# reports/ 顶层也忽略；tests/48h-audit/*/reports/ 属于分类报告目录，必须纳入
+!tests/48h-audit/*/reports/
+!tests/48h-audit/*/reports/**
+!tests/48h-audit/reports/
+!tests/48h-audit/reports/**
 
 # ── 2026-09-16: 跨平台 OS / 编辑器产物兜底（Windows + macOS + Linux + 通用编辑器）
 # 补齐已有的 .DS_Store / Thumbs.db / desktop.ini / .idea/ / .vscode/ 之外的
