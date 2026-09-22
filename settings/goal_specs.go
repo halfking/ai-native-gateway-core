@@ -38,7 +38,7 @@ func GoalSpecs() []Spec {
 			EnvName:         "LLM_GATEWAY_GOAL_RETRY_ON_ERROR",
 			Type:            TypeBool,
 			Scope:           ScopeTenant,
-			Category:        CategorySession,
+			Category:        CategoryRetry, // B5③ 聚合组（原 session）
 			Default:         false,
 			Description:     "LLM错误时自动重试",
 			DescriptionLong: "LLM返回错误（5xx、timeout、no_candidates等）时延时后自动重试。由cost_mode预设控制，一般无需单独配置。",
@@ -50,7 +50,7 @@ func GoalSpecs() []Spec {
 			EnvName:         "LLM_GATEWAY_GOAL_RETRY_DELAY_SECONDS",
 			Type:            TypeInt,
 			Scope:           ScopeTenant,
-			Category:        CategorySession,
+			Category:        CategoryRetry, // B5③ 聚合组（原 session）
 			Default:         20,
 			Min:             floatPtr(5),
 			Max:             floatPtr(60),
@@ -65,7 +65,7 @@ func GoalSpecs() []Spec {
 			EnvName:         "LLM_GATEWAY_GOAL_RETRY_TOTAL_TIMEOUT",
 			Type:            TypeInt,
 			Scope:           ScopeTenant,
-			Category:        CategorySession,
+			Category:        CategoryRetry, // B5③ 聚合组（原 session）
 			Default:         50,
 			Min:             floatPtr(10),
 			Max:             floatPtr(300),

@@ -8,6 +8,7 @@ export default {
     compression: '圧縮',
     rateLimit: 'レート制限',
     timeout: 'タイムアウト',
+    retry: 'リトライとタイムアウト',
     routing: 'ルーティング',
     session: 'セッション',
     security: 'セキュリティ',

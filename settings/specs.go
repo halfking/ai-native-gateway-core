@@ -58,6 +58,10 @@ func PlatformSpecs() []*Spec {
 	// 2026-09-22: Wave 2 任务一 —— 路由/探测/指纹槽阈值常量表集中化
 	// （节点 streak / Disabled 冷却 / sticky 阈值 / fp slot TTL / 探测并发）。
 	out = append(out, ThresholdSpecs()...)
+	// 2026-09-22: Wave 3 B5 —— 流式继续/重试词典（zh/en/ja，hotconfig 通道）
+	// 与敏感词评分阈值（security.sensitive_block/warn_score）。
+	out = append(out, NodeFailoverSpecs()...)
+	out = append(out, SensitiveSpecs()...)
 	return out
 }
 
