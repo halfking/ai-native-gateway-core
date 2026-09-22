@@ -1708,7 +1708,6 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 	if len(idle) == 0 {
 		return nil
 	}
-	_ = idleThresholdSeconds
 
 	// 3) Build + persist idle markers, writing only to the relevant lane(s).
 	writePipe := s.rdb.Pipeline()

@@ -225,6 +225,8 @@ func classifyVirtualIPPie(items []boardPieItem) []boardPieItem {
 }
 
 // geoIPSourceStatus reports the current table state for /api diagnostics.
+// R56: still unwired (zero callers) — kept for the planned /api diagnostics
+// endpoint; fold into that work or delete in the next hygiene pass.
 func geoIPSourceStatus() string {
 	geoIPMu.Lock()
 	defer geoIPMu.Unlock()
