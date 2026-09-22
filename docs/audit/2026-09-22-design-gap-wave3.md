@@ -182,7 +182,42 @@ consensus 调用），发现叠加后**精确撤销自己的三处**（未动对
   B9 改动面（B9 只重排 fallback 顺序，不改触发阈值）。
 
 ## Wave 4 交接
-直接使用源文档 §7.4 提示词开启新会话。前置状态更新：
+
+> 本节后的 Wave 4 提示词已按回归补录后的最新状态更新（2026-09-22
+> 收口轮），直接复制开启新会话。挂账状态修正：**B14 已由 f82bb40da
+> 落库**（executor slot lease deadline），挂账余 B6/B11/B13。
+
+### Wave 4 启动提示词（源文档 §7.4 + 本轮状态修订）
+
+```
+继续 llm-gateway-go 设计差距审计修复轮（Wave 4：债务清理+四波总收口）。
+
+工作目录：/Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+依据文档（先读）：/Users/xutaohuang/Downloads/software/public/提示词/llm-gateway-项目审计与下一步优化方案.md（§5 D类 + §6 Wave 4）
+前置确认：git log 核对 Wave 1-3 已合入（分支 audit/wave1-p0-20260921，
+Wave 3 台账 docs/audit/2026-09-22-design-gap-wave3.md，回归已补录 T02/
+T05/T14/T15/T16/T10；本波交付 B3/B4/B5/B1(736)/B7/B9/B10+B2/B8/B12/B14，
+挂账余 B6/B11/B13——B11 需迁移，下一个编号从 738 起）。注意工作树可能
+有并行会话未提交改动（D2/D4 曾在 domains/streaming、internal/ir、
+vendorstrip 推进中），动手前先核对 git status 与目标文件标注。
+
+任务一（D1）last_system_session 死索引接线：现 Redis 索引只写不读（cmd/gateway/main.go:863 装配；domains/streaming/handler.go:2586-2640 仅 Set；复用实际走 DB 查 request_logs_hot：domains/hooks/observability/telemetry/client.go:531-559 FindRecentGatewaySession，domains/streaming/session_assignment.go:146-169 消费）。改为：无会话 id 复用时先读 Redis 索引（domains/session/last_system_session.go:19 key client:%d:last_system_session，TTL 5min），miss 再查 DB；Redis 命中路径加单测；若读路径接入后语义有歧义则删除死写并在代码注释记录裁决。
+任务二（D2）空响应判定统一：四处判据不一（domains/streaming/stream.go:116 与 181-229 runEmptyStreamGate、domains/streaming/anthropic_stream.go:964-987 chunkCount==0、domains/streaming/responses_bridge.go:738/788、domains/streaming/executors/empty_response.go:18）→ 抽单一 IsEmptyOutcome 语义函数（明确 usage-only 流不计为空），四处改调用；保留各自 KindEmptyResponse→TaskActionRetryNow 映射；对四条路径各补一个空流用例钉桩。（注意：并行会话已在此区域有未提交推进，先核对增量。）
+任务三（D3）GLM/厂商错误通道单表收口：三处重复（internal/ir/response.go:405-426、domains/streaming/responses_bridge.go:292-306、vendorstrip 内联拷贝）→ 收口到 errorsx 单表（含 base_resp/finish_reason 通道与拼写容错变体，如上游 "exeated" 类错拼），三处改引用；单测覆盖 MiniMax base_resp、GLM finish_reason、拼写容错。
+任务四（D4）usage 解析器统一：domains/streaming/usage.go:26/57-81/139（ExtractUsageFromChunk 流式变体表）与 domains/streaming/handler.go:7768-7808（extractTokensFromResponseBody 非流式变体表）双套字段名 → 抽公共 usage 字段解析器（单表 prompt/completion/cache_read/cache_write 变体），两处改调用；新增厂商字段只改一处；对 MiniMax/GLM/Doubao 现有变体全量回归。（Wave4-D4 标注已在 handler.go 出现，先核对并行会话增量。）
+任务五（D5）请求方向双实现 parity golden：domains/transformation/anthropic/chat_to_anthropic.go（435 行手写）与 IR 请求方向（internal/ir parse→serialize）建 golden 对拍测试（载荷矩阵：system/多轮/多 tools/tool_result/多模态 parts/thinking/扩展参数），差异逐条裁决（修手写侧或收敛为 IR 薄包装——倾向后者但须评估 IR 熔断回退路径兼容）；golden 文件入库防回归。（已见 b9aa351e8 提交 10 例矩阵入库——接手前核对其覆盖面是否满足本条。）
+
+全轮收口（四波总结）：
+1. 台账汇总：A 类 5 项 + C 类裁决 12 项 + B 类完成项（B1-B10 除挂账）+ D 类 5 项 → 状态/提交哈希/测试证据，落 docs/audit/（Wave3 台账与四波总台账已有基础，做增量对齐而非重写）；
+2. 回归总表：按《llm-gateway-全方面测试方案.md》映射（T01/T02/T05/T06/T10/T12/T14/T15/T16/T20）逐域跑受影响用例（T02/T05/T10/T14/T15/T16 的 Wave3 部分已于 2026-09-22 执行，见 Wave3 台账"映射回归执行记录"节——Wave 4 只补 D 类相关增量），本地 deploy-local.sh 冒烟；
+3. 设计文档核对：确认 v1.1（Wave 2 修订版）与本波代码无新漂移；
+4. 挂账清单：B6（发行链三补）、B11（providers official 列，迁移 738 起）、B13（Responses 上游 Parse）写入下一轮入口；
+5. 提交推送（https_proxy=http://127.0.0.1:7897），等待指令再合并主分支（沿用现行分支纪律）。
+
+约束：五项债务均为行为等价重构，改动前先补钉桩测试锁住现状行为再动手；三门验证全绿才提交；每项独立精确路径提交；上下文接近 500K 先 handoff 再 /new；共享工作树，git add 严禁目录通配，动手前核对目标文件是否被并行会话标注。
+完成后：输出"四波总报告（结论/根因、改动清单、测试命令与结果、遗留风险、挂账）"，本轮设计差距审计修复收官；如需继续，下一轮入口为挂账清单 + 源文档《llm-gateway修正》未覆盖项的常规 48h 审计轮（docs/audit/playbook/orchestrator-prompt.md）。
+```
+
 - Wave 3 完成项以本台账 + git log（0a2dfc3a4..a99274148 及后续）为准；
 - 挂账见上节（B6/B11/B13/B14）；迁移下一个编号 **738**；
 - D 类五项中 D2/D4 已由并行会话在共享工作树推进中（domains/streaming、
