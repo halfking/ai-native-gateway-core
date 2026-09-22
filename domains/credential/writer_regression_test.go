@@ -399,3 +399,44 @@ func TestWriteOnError_KindAuthRevoked_NoRecoverAt(t *testing.T) {
 		t.Errorf("unmet expectations: %v", err)
 	}
 }
+
+// TestWriteOnError_ModelNotFound_TieredCooldown pins the Wave-2 C4 three-tier
+// MNF write (2026-09-22): KindModelNotFound must go through the tiered SQL —
+//
+//  1. CASE WHEN available=FALSE THEN sustained ELSE initial — a first 404
+//     takes the 30-minute initial tier; a second 404 landing inside the
+//     first cooling window escalates to the 7-day sustained tier;
+//  2. the available=TRUE guard is relaxed with the
+//     "(available = FALSE AND unavailable_reason = <reason>)" arm so the
+//     escalation write can land on an already-cooled binding, while
+//     manual/admin-protected bindings stay excluded in both arms.
+//
+// Previously the writer pinned every request-path 404 for 7 days
+// unconditionally (2026-07-03 one-size-fits-all), which over-cooled
+// aggregator routing blips; the tiered shape plus the probe ladder's ≤6h
+// authoritative self-heal bounds a mistaken escalation to ≤6h.
+func TestWriteOnError_ModelNotFound_TieredCooldown(t *testing.T) {
+	mockDB := newSQLOnlyMock()
+	defer mockDB.Close()
+	expectRawBindingResolution(mockDB, 42, "some-model", "some-model")
+
+	// sqlOnlyMatcher treats the expected SQL as a regex over the normalized
+	// statement, so the two load-bearing fragments of the tiered shape are
+	// pinned here: the escalation CASE and the same-reason arm of the
+	// relaxed available guard.
+	tieredPattern := `UPDATE credential_model_bindings cmb SET .* ` +
+		`WHEN cmb.available = FALSE THEN \$ ELSE \$ END.* ` +
+		`OR \(cmb.available = FALSE AND cmb.unavailable_reason = \$\)`
+	mockDB.ExpectExec(tieredPattern).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	w := &Writer{dbPool: mockDB}
+	err := w.WriteOnError(context.Background(), 42, "some-model", Failure{Kind: errorsx.KindModelNotFound})
+	if err != nil {
+		t.Fatalf("WriteOnError: %v", err)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Fatalf("tiered MNF SQL shape not matched: %v", err)
+	}
+}

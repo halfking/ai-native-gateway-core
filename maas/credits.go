@@ -49,8 +49,21 @@ func CalcCredits(
 // rate so text-only models continue to behave identically even after this
 // change.
 func CalcCreditsMultimodal(u TokenUsage, rates ModelRateValues) int64 {
+	return CalcCreditsMultimodalWithMultiplier(u, rates, 1.0)
+}
+
+// CalcCreditsMultimodalWithMultiplier applies the peak/off-peak rate
+// multiplier (Wave 3 B1) to the summed token cost before the single
+// per-1M round-up. Multiplying the total (not each rate individually) is
+// mathematically identical and mirrors credits_sql.go, which folds the
+// same COALESCE(credits_rate_multiplier, 1.0) into its rate terms — the
+// round-up happens exactly once on either side.
+func CalcCreditsMultimodalWithMultiplier(u TokenUsage, rates ModelRateValues, rateMultiplier float64) int64 {
 	if !u.Any() {
 		return 0
+	}
+	if rateMultiplier <= 0 {
+		rateMultiplier = 1.0
 	}
 	imageRate := rates.Image
 	if imageRate <= 0 {
@@ -74,7 +87,7 @@ func CalcCreditsMultimodal(u TokenUsage, rates ModelRateValues) int64 {
 	if numer <= 0 {
 		return 0
 	}
-	return int64(math.Ceil(numer / 1_000_000.0))
+	return int64(math.Ceil(numer * rateMultiplier / 1_000_000.0))
 }
 
 // InsufficientCreditsError is returned when a tenant cannot cover a charge.

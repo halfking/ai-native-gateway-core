@@ -259,14 +259,14 @@ func TestInsertRequestLog_BodiesSummaryModeWritesDigest(t *testing.T) {
 	defer mockDB.Close()
 
 	mockDB.ExpectBegin()
-	usageInsertArgs := make([]interface{}, 18)
+	usageInsertArgs := make([]interface{}, 19)
 	for index := range usageInsertArgs {
 		usageInsertArgs[index] = pgxmock.AnyArg()
 	}
 	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
 		WithArgs(usageInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	requestInsertArgs := make([]interface{}, 102) // 608: +request_class/due_at ($101/$102)
+	requestInsertArgs := make([]interface{}, 103) // 608: +request_class/due_at ($101/$102); B1: +rate_multiplier ($103)
 	for index := range requestInsertArgs {
 		requestInsertArgs[index] = pgxmock.AnyArg()
 	}

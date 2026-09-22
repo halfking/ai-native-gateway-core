@@ -4105,34 +4105,24 @@ func main() {
 		// 自动出现在实时请求流中。
 		if !bgDataPlaneOnly && dbConn != nil && dbConn.Enabled() {
 			slog.Info("CHECKPOINT: before NewActiveProbeWorker")
-			epEnabled := true
-			epThreshold := 2
-			epMaxAttempts := 5
-			epTimeoutMs := 30000
-			epWorkers := 1
-			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_ENABLED"); envStr == "false" || envStr == "0" {
-				epEnabled = false
-			}
-			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_CONSECUTIVE_THRESHOLD"); envStr != "" {
-				if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
-					epThreshold = n
-				}
-			}
-			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_MAX_ATTEMPTS"); envStr != "" {
-				if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
-					epMaxAttempts = n
-				}
-			}
-			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_TIMEOUT_MS"); envStr != "" {
-				if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
-					epTimeoutMs = n
-				}
-			}
-			if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_WORKERS"); envStr != "" {
-				if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
-					epWorkers = n
-				}
-			}
+			// 2026-09-22 Wave 3 B5: the four error_probe.* settings keys were
+			// registered but never consumed (UI-editable no-ops). Wired here
+			// with the same priority chain as the workers key below —
+			// settings_kv > env (each spec's EnvName keeps the historical
+			// LLM_GATEWAY_ERROR_PROBE_* vars working) > default. Values are
+			// captured once at construction (executor HTTP client, worker
+			// pool, manager threshold are all fixed at Start), so the specs
+			// are HotReload=false by design.
+			epEnabled := settings.ErrorProbeEnabled()
+			epThreshold := settings.ErrorProbeConsecutiveThreshold()
+			epMaxAttempts := settings.ErrorProbeMaxAttempts()
+			epTimeoutMs := settings.ErrorProbeTimeoutMs()
+			// 2026-09-22 Wave 2: workers moved into the settings registry
+			// (error_probe.workers, default 5 / max 5 per design §5.6).
+			// Priority settings_kv > env (LLM_GATEWAY_ERROR_PROBE_WORKERS,
+			// kept as the spec's EnvName) > default; pool size is fixed at
+			// Start, so the spec is HotReload=false by design.
+			epWorkers := settings.ErrorProbeWorkers()
 			activeProbe = bg.NewActiveProbeWorker(bg.ActiveProbeWorkerConfig{
 				DB:                   dbConn.Pool(),
 				Keyring:              keyring,
@@ -4222,12 +4212,11 @@ func main() {
 			// immediately triggers a direct-to-provider probe (instead of waiting
 			// for credProbeV2's 5-min delayed reprobe).
 			if activeProbe != nil {
-				activeProbeThresh := 2
-				if envStr := os.Getenv("LLM_GATEWAY_ERROR_PROBE_CONSECUTIVE_THRESHOLD"); envStr != "" {
-					if n, err := strconv.Atoi(envStr); err == nil && n > 0 {
-						activeProbeThresh = n
-					}
-				}
+				// 2026-09-22 Wave 3 B5: same resolution chain as the
+				// epThreshold read at construction (settings_kv > env >
+				// default). The previous second env-only parse here would
+				// have diverged from a settings_kv override.
+				activeProbeThresh := settings.ErrorProbeConsecutiveThreshold()
 				stateManager.SetActiveProbeSubmitter(activeProbe.Submit, activeProbeThresh)
 				slog.Info("credstate: active_probe submitter wired",
 					"consecutive_threshold", activeProbeThresh)
@@ -4289,6 +4278,10 @@ func main() {
 					routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
 						return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
 					}
+					// Wave 3 B2②: flash-blip double confirmation for the
+					// dispatch node-health path (first network/timeout
+					// failure defers its degrade behind two light pings).
+					routingExec.NodeProbeConfirm = nodeProbeWorker.ProbeConfirm
 					slog.Info("sync_no_candidate_probe", "enabled", syncOn, "timeout", routingExec.SyncNoCandidateTimeout)
 				}
 
@@ -4505,6 +4498,9 @@ func main() {
 				routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
 					return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
 				}
+				// Wave 3 B2②: same flash-blip double confirmation as the
+				// primary wiring site above.
+				routingExec.NodeProbeConfirm = nodeProbeWorker.ProbeConfirm
 				slog.Info("sync_no_candidate_probe", "enabled", syncOn, "path", "authoritative_fallback", "timeout", routingExec.SyncNoCandidateTimeout)
 			}
 			nodeProbeWorker.Start(context.Background())
@@ -4682,6 +4678,14 @@ func main() {
 		slog.Info("CHECKPOINT: before partitionManager.Start")
 		partitionManager.Start(context.Background())
 		slog.Info("CHECKPOINT: after partitionManager.Start")
+
+		// Wave 3 B8 (2026-09-22): internal ledger reconciliation —
+		// balance_after chain integrity plus request-log credit charges vs
+		// credit_ledger consume deductions; differences land in
+		// maas_reconciliation_findings with a warning log + metric.
+		ledgerReconciler := bg.NewLedgerReconciler(dbConn.Pool())
+		ledgerReconciler.Start(context.Background())
+		slog.Info("CHECKPOINT: after ledgerReconciler.Start")
 
 		// 2026-08-30 审计修复 P1-7: VACUUM worker for request_logs_bodies
 		// Runs VACUUM FULL weekly (default: Sunday 2am) to reclaim TOAST space.

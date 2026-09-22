@@ -49,11 +49,23 @@ func WithSystemPrompt(systemPrompt string) CompletionOption {
 // Summarizer orchestrates multi-dimensional summaries and model fallback.
 type Summarizer struct {
 	client LLMClient
+	// targetModelHint (Wave 3 B9) is the request's target model, when the
+	// caller knows it: the fallback chain is stably reordered to try the
+	// same-vendor models first.
+	targetModelHint string
 }
 
 // NewSummarizer builds a summarizer around an LLM client.
 func NewSummarizer(client LLMClient) *Summarizer {
 	return &Summarizer{client: client}
+}
+
+// WithTargetModelHint records the request's target model so Summarize can
+// reorder the chain same-vendor-first (B9). Safe to skip: without a hint
+// the configured chain order is used verbatim.
+func (s *Summarizer) WithTargetModelHint(model string) *Summarizer {
+	s.targetModelHint = model
+	return s
 }
 
 // Summarize generates a summary for one dimension, trying every configured
@@ -66,6 +78,7 @@ func (s *Summarizer) Summarize(ctx context.Context, dim appconfig.SummaryDimensi
 	if len(cfg.Models) == 0 {
 		return "", errors.New("summary: no models configured")
 	}
+	cfg.Models = ReorderSameVendorFirst(cfg.Models, s.targetModelHint)
 
 	prompt := BuildPrompt(dim, conversation)
 	for _, model := range cfg.Models {

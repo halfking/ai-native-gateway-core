@@ -17,6 +17,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/emptyoutcome"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/sse"
 	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
@@ -70,65 +71,16 @@ func qualityFixModeFromContext(ctx context.Context) string {
 	return ""
 }
 
-// chunkHasContent returns true when an OpenAI SSE chunk carries real
-// user-facing content. Used by the empty-stream content-gate to decide
-// whether to flush the buffer (real content seen) or fail over (zero
-// content seen before [DONE]).
-//
-// "Real content" = delta.content != "" OR delta.reasoning_content != ""
-// OR delta.tool_calls non-empty. Usage-only and role-only chunks
-// (Type="usage" / first-chunk assistant role announcement) do NOT count.
-//
-// Returns false (no content) on parse errors — a malformed chunk is treated
-// like an empty one so the gate keeps buffering and either hits the chunk/
-// byte cap or [DONE] arrives with zero content → Resumable failover.
+// Wave4-D2 (2026-09-22): chunkHasContent and isEmptySemanticDelta moved to
+// internal/emptyoutcome (ChatChunkHasOutput / ChatSemanticDelta) — the single
+// empty-outcome semantic table shared with the executors copy and the
+// responses bridge. Package-local aliases keep the gate call sites readable.
 func chunkHasContent(payload string) bool {
-	if payload == "" || payload == "[DONE]" {
-		return false
-	}
-	chunk, err := ir.ParseOpenAIStreamChunk("data: " + payload + "\n\n")
-	if err != nil || chunk == nil {
-		return false
-	}
-	if chunk.Type == ir.ChunkTypeDone || chunk.Type == ir.ChunkTypeError {
-		return false
-	}
-	if chunk.Delta == nil {
-		return false
-	}
-	if chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" {
-		return true
-	}
-	if len(chunk.Delta.ToolCalls) > 0 {
-		return true
-	}
-	if chunk.Delta.AudioDelta != nil &&
-		(chunk.Delta.AudioDelta.Data != "" || chunk.Delta.AudioDelta.Transcript != "") {
-		return true
-	}
-	return false
+	return emptyoutcome.ChatChunkHasOutput(payload)
 }
 
-// isEmptySemanticDelta reports whether payload is a valid OpenAI delta frame
-// with at least one choice but no semantic output. It deliberately excludes
-// usage, keepalive, malformed payloads, and empty/missing choices so those
-// protocol-control frames cannot trigger early-empty failover.
 func isEmptySemanticDelta(payload string) bool {
-	if payload == "" || payload == "[DONE]" {
-		return false
-	}
-	var envelope struct {
-		Choices json.RawMessage `json:"choices"`
-	}
-	if err := json.Unmarshal([]byte(payload), &envelope); err != nil || len(envelope.Choices) == 0 {
-		return false
-	}
-	var choices []json.RawMessage
-	if err := json.Unmarshal(envelope.Choices, &choices); err != nil || len(choices) == 0 {
-		return false
-	}
-	chunk, err := ir.ParseOpenAIStreamChunk("data: " + payload + "\n\n")
-	return err == nil && chunk != nil && chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil && !chunkHasContent(payload)
+	return emptyoutcome.ChatSemanticDelta(payload)
 }
 
 func earlyEmptyOutcome(capture *audit.StreamCapture) *StreamOutcome {

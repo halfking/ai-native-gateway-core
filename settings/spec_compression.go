@@ -364,7 +364,7 @@ func CompressionSpecs() []*Spec {
 			Key:             "stream_retry_threshold",
 			Type:            TypeInt,
 			Scope:           ScopePlatform,
-			Category:        CategoryTimeout,
+			Category:        CategoryRetry, // B5③ 聚合组（原 timeout）
 			Min:             floatPtr(0),
 			Max:             floatPtr(100),
 			Default:         5,

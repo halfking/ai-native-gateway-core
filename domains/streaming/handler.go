@@ -6097,10 +6097,22 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				canonical = evt.ClientModel
 			}
 			chargeCtx, chargeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			charged, err := h.maasSvc.ChargeRequest(chargeCtx, keyInfo.TenantID, evt.RequestID, canonical, pt, ct, crt, cwt)
+			// Wave 3 B1: resolve the peak/off-peak multiplier once from the
+			// request start time (eventAt, falling back to now), charge with
+			// it, and stamp the SAME value into the telemetry rows so the
+			// charge and the audit trail cannot disagree.
+			chargeStart := eventAt
+			multiplier := h.maasSvc.ResolveCurrentMultiplier(chargeCtx, chargeStart)
+			charged, stampedMultiplier, err := h.maasSvc.ChargeRequestMultimodalWithMultiplier(chargeCtx, keyInfo.TenantID, evt.RequestID, canonical, maas.TokenUsage{
+				PromptTokens:     pt,
+				CompletionTokens: ct,
+				CacheReadTokens:  crt,
+				CacheWriteTokens: cwt,
+			}, multiplier)
 			chargeCancel()
 			if err == nil && charged > 0 {
 				reqLog.CreditsCharged = &charged
+				reqLog.RateMultiplier = &stampedMultiplier
 			} else if err != nil {
 				slog.Warn("maas charge failed", "request_id", evt.RequestID, "tenant_id", keyInfo.TenantID, "error", err)
 			}
@@ -7766,73 +7778,48 @@ func isTopLevelJSONContext(b []byte, pos int) bool {
 	}
 }
 
+// Wave4-D4 (2026-09-22): field-name variants resolve through the shared
+// usage variant table in usage.go (lookupUsageInt) — same precedence as the
+// streaming extractor, so a new vendor field name lands in exactly one list.
+// The non-stream-specific fallbacks are preserved verbatim: MiniMax-style
+// top-level usage when no "usage" object exists, and the two-directional
+// total_tokens inference.
 func extractTokensFromResponseBody(body []byte) (promptTokens, completionTokens, cacheRead, cacheWrite int) {
 	if len(body) == 0 {
 		return 0, 0, 0, 0
 	}
-	var data map[string]any
+	var data map[string]json.RawMessage
 	if err := json.Unmarshal(body, &data); err != nil {
 		return 0, 0, 0, 0
 	}
 	usageRaw, ok := data["usage"]
 	if !ok {
 		// Fallback: some providers (e.g. minimax) may return usage at top level
-		usageRaw = data
+		usageRaw = json.RawMessage(body)
 	}
-	usage, ok := usageRaw.(map[string]any)
-	if !ok {
+	var usage map[string]json.RawMessage
+	if err := json.Unmarshal(usageRaw, &usage); err != nil {
 		return 0, 0, 0, 0
 	}
-	// prompt_tokens / input_tokens (Anthropic native)
-	if v, ok := usage["prompt_tokens"].(float64); ok {
-		promptTokens = int(v)
-	} else if v, ok := usage["input_tokens"].(float64); ok {
-		promptTokens = int(v)
+	if v, ok := lookupUsageInt(usage, usagePromptPaths); ok {
+		promptTokens = v
 	}
-	// completion_tokens / output_tokens (Anthropic native)
-	if v, ok := usage["completion_tokens"].(float64); ok {
-		completionTokens = int(v)
-	} else if v, ok := usage["output_tokens"].(float64); ok {
-		completionTokens = int(v)
+	if v, ok := lookupUsageInt(usage, usageCompletionPaths); ok {
+		completionTokens = v
 	}
-	// cache_read: try 4 variants
-	if v, ok := usage["cache_read_input_tokens"].(float64); ok {
-		cacheRead = int(v)
-	} else if v, ok := usage["cache_read_tokens"].(float64); ok {
-		cacheRead = int(v)
-	} else if pt := usage["prompt_tokens_details"]; pt != nil {
-		if details, ok := pt.(map[string]any); ok {
-			if v, ok := details["cached_tokens"].(float64); ok && cacheRead == 0 {
-				cacheRead = int(v)
-			}
-		}
-	} else if pt := usage["input_token_details"]; pt != nil {
-		if details, ok := pt.(map[string]any); ok {
-			if v, ok := details["cache_read"].(float64); ok && cacheRead == 0 {
-				cacheRead = int(v)
-			}
-		}
+	if v, ok := lookupUsageInt(usage, usageCacheReadPaths); ok {
+		cacheRead = v
 	}
-	// cache_write: try 3 variants
-	if v, ok := usage["cache_creation_input_tokens"].(float64); ok {
-		cacheWrite = int(v)
-	} else if v, ok := usage["cache_write_tokens"].(float64); ok {
-		cacheWrite = int(v)
-	} else if pt := usage["input_token_details"]; pt != nil {
-		if details, ok := pt.(map[string]any); ok {
-			if v, ok := details["cache_creation"].(float64); ok && cacheWrite == 0 {
-				cacheWrite = int(v)
-			}
-		}
+	if v, ok := lookupUsageInt(usage, usageCacheWritePaths); ok {
+		cacheWrite = v
 	}
 	// total_tokens fallback: if we have total but missing prompt/completion, infer them
 	if promptTokens == 0 || completionTokens == 0 {
-		if total, ok := usage["total_tokens"].(float64); ok && int(total) > 0 {
-			totalInt := int(total)
-			if promptTokens == 0 && completionTokens > 0 && totalInt > completionTokens {
-				promptTokens = totalInt - completionTokens
-			} else if completionTokens == 0 && promptTokens > 0 && totalInt > promptTokens {
-				completionTokens = totalInt - promptTokens
+		if total, ok := intValue(usage, "total_tokens"); ok == nil && total > 0 {
+			if promptTokens == 0 && completionTokens > 0 && total > completionTokens {
+				promptTokens = total - completionTokens
+			} else if completionTokens == 0 && promptTokens > 0 && total > promptTokens {
+				completionTokens = total - promptTokens
 			}
 		}
 	}

@@ -216,6 +216,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 对未对账时报错指路 sql/fixes/2026-09-20-canonical-dedup-cleanup.sql
 			// （CASCADE 引用族裁决不进启动迁移静默选 winner）。幂等。
 			"735_models_canonical_active_folded_unique.sql",
+			// 736 (Wave 3 B1, 2026-09-22): 峰谷倍率 — 计费倍率列
+			// (usage_ledger[_hot].rate_multiplier /
+			// request_logs[_hot].credits_rate_multiplier) +
+			// maas_resolve_rate_multiplier() 共享取档函数。幂等。
+			"736_maas_rate_multiplier.sql",
+			// 737 (Wave 3 B8, 2026-09-22): reconciliation findings 表
+			// （CREATE TABLE IF NOT EXISTS，幂等）。
+			"737_maas_reconciliation_findings.sql",
 		},
 	}
 }

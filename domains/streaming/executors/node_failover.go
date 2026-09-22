@@ -21,8 +21,12 @@ func LoadHotConfig() *hotconfig.Config {
 }
 
 func LoadRetryKeywords(hotCfg *hotconfig.Config) (continueKeywords, retryKeywords []string) {
-	defaultContinue := []string{"继续", "continue", "go", "come on", "请继续", "接着", "keep going", "继续回答", "接着说"}
-	defaultRetry := []string{"重试", "retry", "请重试", "再试一次", "try again", "重新回答", "再来"}
+	// Wave 3 B5① (2026-09-22): zh/en defaults preserved verbatim, ja skeleton
+	// appended. Mirrored by settings.DefaultContinueKeywordsJSON /
+	// DefaultRetryKeywordsJSON (settings cannot import domains) — update
+	// both sides together; the spec test anchors them.
+	defaultContinue := []string{"继续", "continue", "go", "come on", "请继续", "接着", "keep going", "继续回答", "接着说", "go on", "続けて", "続けてください", "このまま続けて", "続きを"}
+	defaultRetry := []string{"重试", "retry", "请重试", "再试一次", "try again", "重新回答", "再来", "再試行", "もう一度", "やり直してください", "retry please"}
 
 	if hotCfg == nil {
 		return defaultContinue, defaultRetry

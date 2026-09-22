@@ -40,6 +40,16 @@ func ProviderConsoleMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKe
 		if ok {
 			claims, err := VerifyToken(tokenStr, secretKey)
 			if err == nil && claims.UserID > 0 {
+				// B4 (2026-09-22): password-change revocation, same gate as
+				// AdminMiddleware.
+				issuedAt := time.Time{}
+				if claims.IssuedAt != nil {
+					issuedAt = claims.IssuedAt.Time
+				}
+				if authRevocationProbe(r.Context(), db, claims.UserID, issuedAt) {
+					writeError(w, http.StatusUnauthorized, "session revoked: password changed")
+					return
+				}
 				switch {
 				case claims.Role == "super_admin":
 					if enforceMustChangePassword(w, r, claims) {
