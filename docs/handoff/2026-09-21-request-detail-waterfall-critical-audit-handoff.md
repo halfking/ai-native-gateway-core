@@ -22,22 +22,26 @@
 - `./verify.sh --web` 在 migration checksum 阶段失败：11 mismatch + 662/663 stale registry，本轮没有修改 migrations/台账，且已另派只读审计；不得直接改 hash 刷绿。
 - 中间部署 `2.5.6-119981c0-20260921-2159` PASS（health/ready/version、credential decrypt smoke、cookie login）。它不含最终未提交修复，不能当最终 release。
 
-## 未完成收尾（严格顺序）
+## 闭环状态（2026-09-22）
 
-1. 等/读取当前 `go test ./... -count=1` 最终结果；若 `internal/logging` 再失败，按具体稳定性调查，不要忽略。
-2. 等 checksum 只读审计结果；将不确定项留在风险中，禁止猜测性同步台账。
-3. 最终复跑完整前端 `pnpm run test && pnpm run responsive:check && pnpm run element:check && pnpm run color:check && pnpm run build`；回退 `web/public/menu-config.json` 的纯时间戳 churn。
-4. 审核本次暂存名单：只加入本轮 frontend/locale/color/discovery 修复、测试、本文档与 audit 文档。**绝不加入**：
-   - `docs/audit/252-pg-log-audit-2026-09-19/pg_252_pg17_logs.txt`（含原始请求内容）
-   - `docs/audit/2026-09-19-r46-offline-static-scan/`
-   - `docs/operations/252-maintenance-window-2026-09-17.md`
-5. 提交分支，合并到 `main`，推送。版本文件应按仓库惯例由最终 release bump 写入，不复用中间 2159 的 `119981c0` 身份。
-6. **先确认 F7 已合入**：`cmd/gateway/main.go` 必须注册 `"/api/admin/dispatch/waterfall/request/"` 到 `wrapAdmin(handleDispatchWaterfallByRequest)`；此前 handler 存在却未注册，最终浏览器实测导致 waterfall fetch 404/401 并回跳 `?login=1`。
-7. 在最终 main SHA 上运行标准 `scripts/deploy-local.sh deploy`（不带 `--no-frontend`）；核对 `/healthz`、`/readyz`、`/version`、active bundle 的 `go version -m` 与 bundle `version.json`。
-8. 用已认证浏览器做真正验收：
-   - 指定 URL `/request-detail/f5a6c9991350b81b5bd0fbe2a3f36e55?mode=request&tab=waterfall` 主内容区必须有 `waterfall-request-detail` / 阶段表，不能只是页面外壳或概览；
-   - 从可用请求的概览点击“调度瀑布”，确认 requestId 不变、query 为 `mode=request&tab=waterfall`，没有跳到 `/`；
-   - `/dispatch/waterfall` 选择真实请求，抽屉与“全屏详情”共享正文（正常 attempts 场景）；历史 DB fallback 的 attempts 降级按 audit 文档说明记录。
+- 远端 main 已包含 `ab4af8ec8`（抽屉/内嵌共享正文）、`9252aa8e5`（by-ID waterfall 路由）和 `107f1d97d`（历史 404 derived 回退、401 redirect 保留）；当前 main 为 `8f6af6338`。
+- 本机 active release 为 `8f6af633/#2173`；`/healthz`、`/readyz`、`/version`、candidate/active credential decrypt smoke 均 PASS。
+- 已认证 SPA 实测（干净标签、最终 active `8f6af633/#2173`）：原始 URL `request-detail/f5a6…?mode=request&tab=waterfall` 从概览主内容快捷“调度瀑布”点击后，保持同一 requestId 与 query，并实际呈现 `waterfall-request-detail` + T0–T9 表；未跳回总览。该历史请求的 by-ID waterfall 已过保留窗，主线 derived fallback 使用 detail/log/journey 生成阶段表与 Attempts(3)。
+- `/dispatch/waterfall` 实测选中 live request `89bf243bb90ae670f00715eaf1cdf659` 后，右侧抽屉显示同一共享正文、T0–T9 表和 Attempts(1)。
+- 本轮相关前端 gate：完整 136 files / 971 tests PASS，typecheck / responsive / element / color / build PASS；目标 Go 包 `cmd/gateway`、`internal/sqlguard`、`discovery`、`internal/logging` PASS。
+
+## 不纳入本轮提交
+
+- `docs/audit/252-pg-log-audit-2026-09-19/pg_252_pg17_logs.txt`（原始请求内容）
+- `docs/audit/2026-09-19-r46-offline-static-scan/`
+- `docs/operations/252-maintenance-window-2026-09-17.md`
+- 共享工作区里的 VERSION/version.json/menu-config/db-changelog 部署或并行会话改动，除非对应创建者明确提交。
+
+## 剩余风险 / 下一轮入口
+
+1. `verify.sh --web` 仍被历史 migration checksum provenance 漂移（11 mismatch + 662/663 stale marker）阻断；只读审计结论是不能直接替换 hash 刷绿，需按 applied/pending 与 controlled replay 做双 provenance 治理。
+2. 全仓 Go 测试组合仍有 `cmd/gateway.TestLiteRequestLogSink_TurnNoContinuesAcrossRestart` 的 macOS 临时目录 `MkdirAll invalid argument` 不稳定性；精确用例 `-count=100` PASS，但不得声称全仓 Go 绿。
+3. waterfall ring 是短窗口观测数据；实时请求在抽屉/内嵌切换间可新增 attempts。需要逐字段比较时，应在同一采样时刻 list 与 by-ID API 对账，而不是跨刷新直接比 DOM 文本。
 
 ## 已认证浏览器事实
 
