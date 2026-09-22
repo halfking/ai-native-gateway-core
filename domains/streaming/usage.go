@@ -23,6 +23,72 @@ type UsageData struct {
 	ProviderTokens   *int
 }
 
+// Wave4-D4 (2026-09-22): the usage field-variant table — the single place
+// mapping vendor wire names to gateway slots. The streaming extractor
+// (ExtractUsageFromChunk) and the non-streaming one
+// (handler.go extractTokensFromResponseBody) both resolve slots through
+// lookupUsageInt, so a new vendor field name lands in exactly one list.
+// Order matters: first match wins, matching the historical per-site
+// precedence (direct Anthropic/OpenAI names before *_details fallbacks).
+type usagePath []string
+
+var (
+	usagePromptPaths     = []usagePath{{"prompt_tokens"}, {"input_tokens"}}
+	usageCompletionPaths = []usagePath{{"completion_tokens"}, {"output_tokens"}}
+	usageCacheReadPaths  = []usagePath{
+		{"cache_read_input_tokens"},
+		{"cache_read_tokens"},
+		{"prompt_tokens_details", "cached_tokens"},
+		{"input_token_details", "cache_read"},
+	}
+	usageCacheWritePaths = []usagePath{
+		{"cache_creation_input_tokens"},
+		{"cache_write_tokens"},
+		{"input_token_details", "cache_creation"},
+	}
+)
+
+// lookupUsageInt resolves the first path in paths that yields a number.
+// A path is either ["key"] (top-level usage field) or
+// ["detail_object", "key"] (nested prompt_tokens_details /
+// input_token_details family). Numbers are read as float64 then truncated
+// so both integer and "12.0"-shaped JSON count.
+func lookupUsageInt(usage map[string]json.RawMessage, paths []usagePath) (int, bool) {
+	for _, path := range paths {
+		switch len(path) {
+		case 1:
+			raw, ok := usage[path[0]]
+			if !ok {
+				continue
+			}
+			var f float64
+			if err := json.Unmarshal(raw, &f); err != nil {
+				continue
+			}
+			return int(f), true
+		case 2:
+			raw, ok := usage[path[0]]
+			if !ok {
+				continue
+			}
+			var detail map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &detail); err != nil {
+				continue
+			}
+			raw, ok = detail[path[1]]
+			if !ok {
+				continue
+			}
+			var f float64
+			if err := json.Unmarshal(raw, &f); err != nil {
+				continue
+			}
+			return int(f), true
+		}
+	}
+	return 0, false
+}
+
 func ExtractUsageFromChunk(payload string) UsageData {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(payload), &obj); err != nil {
@@ -41,46 +107,19 @@ func ExtractUsageFromChunk(payload string) UsageData {
 
 	result := UsageData{}
 
-	// prompt_tokens / input_tokens (Anthropic native)
-	if v, err := intValue(usage, "prompt_tokens"); err == nil {
-		result.PromptTokens = &v
-	} else if v, err := intValue(usage, "input_tokens"); err == nil {
+	// prompt/completion/cache slots resolve through the shared variant
+	// table (Wave4-D4); Anthropic-native names are the fallback tails.
+	if v, ok := lookupUsageInt(usage, usagePromptPaths); ok {
 		result.PromptTokens = &v
 	}
-	// completion_tokens / output_tokens (Anthropic native)
-	if v, err := intValue(usage, "completion_tokens"); err == nil {
-		result.CompletionTokens = &v
-	} else if v, err := intValue(usage, "output_tokens"); err == nil {
+	if v, ok := lookupUsageInt(usage, usageCompletionPaths); ok {
 		result.CompletionTokens = &v
 	}
-
-	// cache_read: try 4 field name variants
-	if v, err := intValue(usage, "cache_read_input_tokens"); err == nil {
+	if v, ok := lookupUsageInt(usage, usageCacheReadPaths); ok {
 		result.CacheReadTokens = &v
-	} else if v, err := intValue(usage, "cache_read_tokens"); err == nil {
-		result.CacheReadTokens = &v
-	} else {
-		if detail, err := objVal(usage, "prompt_tokens_details"); err == nil {
-			if v, err := intValue(detail, "cached_tokens"); err == nil {
-				result.CacheReadTokens = &v
-			}
-		} else if detail, err := objVal(usage, "input_token_details"); err == nil {
-			if v, err := intValue(detail, "cache_read"); err == nil {
-				result.CacheReadTokens = &v
-			}
-		}
 	}
-	// cache_write: try 3 field name variants
-	if v, err := intValue(usage, "cache_creation_input_tokens"); err == nil {
+	if v, ok := lookupUsageInt(usage, usageCacheWritePaths); ok {
 		result.CacheWriteTokens = &v
-	} else if v, err := intValue(usage, "cache_write_tokens"); err == nil {
-		result.CacheWriteTokens = &v
-	} else {
-		if detail, err := objVal(usage, "input_token_details"); err == nil {
-			if v, err := intValue(detail, "cache_creation"); err == nil {
-				result.CacheWriteTokens = &v
-			}
-		}
 	}
 
 	// Reasoning usage is reported by OpenAI-compatible providers under either
