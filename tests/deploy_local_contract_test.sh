@@ -156,9 +156,13 @@ cp "$ROOT/scripts/deploy-local.sh" "$version_project/scripts/deploy-local.sh"
 cp "$ROOT/scripts/deploy-local-lib.sh" "$version_project/scripts/deploy-local-lib.sh"
 # P1.1: deploy-local.sh sources scripts/_shared-lib.sh, which resolves the
 # shared deploy-library SSOT from AIAN_DEPLOY_LIB (the sandbox redirects HOME,
-# so the $HOME-workspace default would not resolve there).
+# so the $HOME-workspace default would not resolve there). Resolve the SSOT
+# through the repo's own scripts/deploy-lib symlink so the fixture points at
+# the same target deploy-local.sh consumes in production; the SSOT lives
+# sibling to the workspace checkout, not inside the parent of $ROOT, so the
+# path must never be derived from checkout depth.
 cp "$ROOT/scripts/_shared-lib.sh" "$version_project/scripts/_shared-lib.sh"
-AIAN_DEPLOY_LIB_FIXTURE="$(cd "$ROOT/../.." && pwd)/deploy-lib"
+AIAN_DEPLOY_LIB_FIXTURE="$(cd "$ROOT/scripts/deploy-lib" && pwd -P)"
 cp "$ROOT/scripts/bump-version.sh" "$version_project/scripts/bump-version.sh"
 # dadf1e66f 起 deploy-local.sh 顶层校验 PROJECT_ROOT/sql/migrations 存在
 # （否则 exit 64）；fixture 必须带上最小骨架，否则碰撞分支根本跑不到。

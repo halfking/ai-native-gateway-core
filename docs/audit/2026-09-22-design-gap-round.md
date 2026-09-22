@@ -110,6 +110,7 @@ By-design（接受）：
   - `/healthz`：`status=ok ready=true`；
   - admin 登录 `POST /api/auth/token`：200 + access_token(289 字节)；错密码负例 401 拒绝（对照有效）。
 - 顺带收口：`dl_load_project_env` 消费死路径修复（38814ddde）——c48651e58 的 `{ parser >/dev/null; env -0; }` 形态丢弃解析输出致 .env.local 零加载；红绿实证（HEAD 版 pw/DSN 双 UNSET）+ envload/bootretry/preflight 三锁定测试全绿；envload 锁定测试只盯 `dl_load_env_file` 未覆盖本函数系漏网根因。
+- 顺带收口（main 合并轮，d0569d202）：deploy_local_contract_test duplicate-release 用例预存在红（期望 rc=1 实得 64）定性+修复——b071bb120（P1.1，09-10）自出生即红，非 R54/R55 回归（b071bb120 worktree 复跑实锤同红）：fixture 把 `AIAN_DEPLOY_LIB` 指向 `$ROOT/../../deploy-lib`（official-deploy 下不存在，真 SSOT 在 workspace/ai-native-tools，与仓库 `scripts/deploy-lib` 软链差一个层级），`_shared-lib.sh` 对"已设置但缺失"fail-closed exit 64，撞车分支根本未执行。修法：fixture 改经仓库自身软链 `pwd -P` 解析，与生产消费路径同源、与 checkout 层级无关；全文件复跑 26 PASS / 0 FAIL / RC=0。
 
 ## 八、挂账清单（下一轮入口）
 
