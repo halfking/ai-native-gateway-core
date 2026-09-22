@@ -1241,6 +1241,67 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// 2026-09-23 252 SQL 日志审计轮（D1 残余根修，07:23/07:26 245 蓝绿两连败
+	// 实证）：下方 ADD COLUMN IF NOT EXISTS 即使全部列已存在，也要对
+	// request_logs 父表 + 全部月分区取 ACCESS EXCLUSIVE 锁才能逐列 no-op。
+	// 晨间负载下锁等待超角色级 statement_timeout=30s 被 57014 击杀，boot 重试
+	// 撞同一堵墙（烧点不可推进）→ retry_budget 烧穿 → postgres disabled →
+	// readyz 永不过 → 部署安全网回滚。information_schema/pg_indexes 短路：
+	// 期望列与索引全部在位 = 零 DDL 零锁。清单必须与下方 ensure 体逐项同步
+	// （新增列/索引时两处一起改）；任一缺失走原路径，新环境语义不变。
+	const catalogShortCircuitSQL = `
+		SELECT
+		  (SELECT count(*) FROM unnest(ARRAY[
+		     'gw_session_id','gw_task_id','request_status','api_key_prefix',
+		     'api_key_owner_user','application_code','parent_request_id',
+		     'compression_reason','compression_strategy','compression_meta',
+		     'outbound_body','outbound_msg_count','outbound_token_est',
+		     'outbound_msg_hashes','quality_flags','quality_fix_actions',
+		     'quality_score','client_request_id','upstream_finish_reason',
+		     'tool_calls','t0_arrived_at','t1_total_enqueued_at',
+		     't2_total_dequeued_at','t3_model_enqueued_at','t4_model_dequeued_at',
+		     't5_cred_enqueued_at','t6_cred_dequeued_at','t7_forward_start_at',
+		     't8_response_start_at','t9_response_end_at','is_final_success'
+		   ]) AS want(name)
+		   WHERE to_regclass('public.request_logs') IS NOT NULL
+		     AND NOT EXISTS (
+		       SELECT 1 FROM information_schema.columns
+		       WHERE table_schema='public' AND table_name='request_logs'
+		         AND column_name = want.name))
+		+
+		  (SELECT count(*) FROM unnest(ARRAY[
+		     't0_arrived_at','t1_total_enqueued_at','t2_total_dequeued_at',
+		     't3_model_enqueued_at','t4_model_dequeued_at','t5_cred_enqueued_at',
+		     't6_cred_dequeued_at','t7_forward_start_at','t8_response_start_at',
+		     't9_response_end_at','is_final_success'
+		   ]) AS want(name)
+		   WHERE to_regclass('public.request_logs_hot') IS NOT NULL
+		     AND NOT EXISTS (
+		       SELECT 1 FROM information_schema.columns
+		       WHERE table_schema='public' AND table_name='request_logs_hot'
+		         AND column_name = want.name))
+		+
+		  (SELECT count(*) FROM unnest(ARRAY[
+		     'idx_request_logs_gw_session_ts','idx_request_logs_gw_task_ts',
+		     'idx_request_logs_status_ts','idx_request_logs_parent_ts',
+		     'idx_request_logs_client_request_id','idx_request_logs_session_outbound',
+		     'idx_request_logs_outbound_msg_count','idx_request_logs_quality_flags',
+		     'idx_request_logs_provider_quality','idx_request_logs_upstream_finish_reason',
+		     'idx_request_logs_tool_calls','idx_request_logs_provider_tool_calls',
+		     'uq_request_logs_hot_final_success_session'
+		   ]) AS want(name)
+		   WHERE NOT EXISTS (
+		     SELECT 1 FROM pg_indexes
+		     WHERE schemaname='public' AND indexname = want.name))
+		`
+	var missing int
+	if err := d.pool.QueryRow(ctx, catalogShortCircuitSQL).Scan(&missing); err == nil && missing == 0 {
+		slog.Info("request_logs schema ensured (catalog short-circuit: all columns and indexes present, zero DDL)")
+		return nil
+	} else if err != nil {
+		// 探测失败不阻断：回落原 ensure 路径（其自含幂等）。
+		slog.Warn("request_logs ensure catalog probe failed; falling back to full ensure", "error", err)
+	}
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE request_logs
 		    ADD COLUMN IF NOT EXISTS gw_session_id TEXT,
