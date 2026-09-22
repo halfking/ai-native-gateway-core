@@ -48,7 +48,9 @@
 | B6 | 发行分发链三补 | ⏳ 挂账 | — | artifact 上传/catalog/设备上限默认 |
 | B7 | 看板 IP 地域归类 | ✅ | c356ade12 | 内网直显/外网段表/优雅降级 |
 | B8 | 内部对账 job | ✅（并行会话收口中，迁移 737） | 见 git log 最新 | usage_ledger↔credit_ledger balance_after 链校验 |
-| B9-B14 | 择机项 | ⏳ 挂账 | — | 同厂优先压缩档/泳道 1min 档/official 标记/goal AUDIT 三轮/Responses 上游 Parse/slot 300s 硬顶 |
+| B9 | 压缩 fallback 同厂优先档 | ✅ | b9d18e060 | 摘要 fallback 链同厂优先重排 |
+| B10 | 泳道空闲 1 分钟档 | ✅ | a99274148 | no_traffic_1min |
+| B11/B13/B14 | 择机项 | ⏳ 挂账 | — | official 标记列/Responses 上游 Parse+completed 回带/slot 300s 硬顶 |
 
 ## 四、D 类：代码债清理（Wave 4，5/5 完成，本会话）
 
@@ -104,7 +106,7 @@ deploy-local.sh 冒烟（8782 /healthz + admin 登录）在四波最终提交后
 
 ## 八、挂账清单（下一轮入口）
 
-1. **B6/B9/B10/B11/B12/B13/B14**（Wave 3 第四段择机项）：artifact 上传+catalog+设备上限默认 2、压缩 fallback 同厂优先档、泳道 1min 空闲块、providers official 标记列、goal AUDIT 三轮+VERIFY、Responses 上游方向 Parse+completed 回带、并发 slot 300s 硬顶。
+1. **B6/B11/B13/B14**（Wave 3 择机项余量；B9/B10/B12 已由并行会话于本日落库 b9d18e060/a99274148/8e0b51bc4）：artifact 上传+catalog+设备上限默认 2、providers official 标记列、Responses 上游方向 Parse+completed 回带、并发 slot 300s 硬顶。
 2. **IR 请求方向三缺口**（D5 实锤，Wave 5 优先）：GAP-1 system 数组丢块 / GAP-2 命名 tool_choice 非法序列化 / GAP-3 空 text 块；闭合后重估 chat_to_anthropic 收敛为 IR 薄包装。
 3. **IR SerializeAnthropic max_tokens=0 直发**：管道层默认值责任归属待裁决（by-design 记录在案）。
 4. **下一轮**：挂账清单 + 源文档《llm-gateway修正》未覆盖项的常规 48h 审计轮（docs/audit/playbook/orchestrator-prompt.md）。
