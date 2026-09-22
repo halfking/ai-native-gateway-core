@@ -229,6 +229,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 680/717/734 重建的冻结体不会自动补列 → bg/stats_minute_rollup
 			// 每分钟 INSERT 抛 "column … does not exist"。补列 + 列数守卫。
 			"738_view_chain_credits_rate_multiplier.sql",
+			// 739 (R56, 2026-09-23): promote 函数补倍率列。698 的两个
+			// promote 显式列清单止于 system_fingerprint / error_kind，
+			// 736 加列后热窗转移把倍率证据落 NULL/DEFAULT 1.0。幂等
+			//（CREATE OR REPLACE FUNCTION）。
+			"739_promote_functions_rate_multiplier.sql",
 		},
 	}
 }

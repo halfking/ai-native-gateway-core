@@ -161,7 +161,10 @@ BEGIN
   END IF;
 END $$;
 
--- 列数对账（v_top 重建后列数应为 114）
+-- 列数对账（v_top 重建后列数应为 114）。
+-- R56: WARNING → EXCEPTION（735 fail-closed 先例）。psql ON_ERROR_STOP
+-- 不拦 WARNING，某分支 regexp 未命中而静默交付残缺视图链，恰恰是 738
+-- 要修的事故形态——必须报错中止而不是放行。
 DO $$
 DECLARE
   cnt integer;
@@ -170,7 +173,7 @@ BEGIN
     FROM information_schema.columns
    WHERE table_schema='public' AND table_name='request_logs_with_current_month';
   IF cnt <> 114 THEN
-    RAISE WARNING '738: request_logs_with_current_month column count = % (expected 114); view chain may be in a partial state — investigate', cnt;
+    RAISE EXCEPTION '738: request_logs_with_current_month column count = % (expected 114); view chain rebuild did not converge — aborting migration (frozen view bodies 680/717/734, see 738 head comment)', cnt;
   ELSE
     RAISE NOTICE '738: request_logs_with_current_month column count = 114 OK';
   END IF;

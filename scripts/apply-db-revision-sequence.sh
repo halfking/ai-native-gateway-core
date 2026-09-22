@@ -544,6 +544,15 @@ files=(
   # 2026-09-22 Wave 3 B8：737 内部对账落表 —— maas_reconciliation_findings
   # （CREATE TABLE IF NOT EXISTS，幂等），bg.LedgerReconciler 差异落表。
   "$ROOT_DIR/sql/migrations/startup/737_maas_reconciliation_findings.sql"
+  # 2026-09-22 764d2514b：738 view 链补 credits_rate_multiplier 列（B1
+  # follow-up：680/717/734 冻结体不自动补列，bg/stats_minute_rollup 每分钟
+  # INSERT 抛 column does not exist）。幂等；R56 补登——该提交当时漏了本
+  # 通道登记（693/699/701/703 同型复发形态）。
+  "$ROOT_DIR/sql/migrations/startup/738_view_chain_credits_rate_multiplier.sql"
+  # 2026-09-23 R56：739 promote 函数补倍率列（698 的两个 promote 显式列
+  # 清单止于 system_fingerprint/error_kind，736 加列后热窗转移把倍率证据
+  # 落 NULL/DEFAULT 1.0）。幂等（CREATE OR REPLACE FUNCTION）。
+  "$ROOT_DIR/sql/migrations/startup/739_promote_functions_rate_multiplier.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
@@ -591,7 +600,9 @@ intentional_function_chains=(
   # 697 appends system_fingerprint to the three explicit column lists on top
   # of 695's body (self-heal demote kept); 698 adds the Asia/Shanghai pin on
   # top of 697's body and must stay the later entry.
-  'promote_request_logs_hot_to_partition|695_request_logs_promote_final_success_self_heal.sql|697_request_logs_promote_system_fingerprint.sql|698_promote_hot_partition_timezone_pin.sql|'
+  # 739 (R56) re-derives the body on top of 698 adding credits_rate_multiplier
+  # to the three explicit column lists; 739 must stay the later entry.
+  'promote_request_logs_hot_to_partition|695_request_logs_promote_final_success_self_heal.sql|697_request_logs_promote_system_fingerprint.sql|698_promote_hot_partition_timezone_pin.sql|739_promote_functions_rate_multiplier.sql|'
   # 699 re-pins ensure_supplier_errors_partition (V371 deployed the original
   # out-of-repo-family body) to Asia/Shanghai; the pin must stay the later entry.
   'ensure_supplier_errors_partition|V371__supplier_errors_hot_and_stats.sql|699_supplier_errors_ensure_timezone_pin.sql|'
@@ -615,7 +626,9 @@ intentional_function_chains=(
   'promote_tool_usage_stats_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
   'promote_credit_ledger_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
   'promote_request_logs_bodies_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
-  'promote_usage_ledger_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
+  # 739 (R56) re-derives the body on top of 698 adding rate_multiplier to the
+  # three explicit column lists; 739 must stay the later entry.
+  'promote_usage_ledger_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|739_promote_functions_rate_multiplier.sql|'
   'promote_request_wal_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
   'promote_credential_model_index_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'
   'promote_routing_decision_log_hot_to_partition|659_legacy_promote_atomic_cte.sql|698_promote_hot_partition_timezone_pin.sql|'

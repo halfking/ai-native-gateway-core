@@ -634,3 +634,18 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 |-----------|------|---------|--------|
 | 735 | `735_models_canonical_active_folded_unique.sql` | `d3552a3fcc97ed4f7f54610c6fac6986f98676bd0ea7f87ec82f5df9f5ff2b30` | applied+verified |
 
+
+## 2026-09-23 — R56 审计轮：736/737/738 落码登记 + 739 新增（待部署 verified）
+
+> 736/737/738 已随 Wave3/续轮落码并经 installer 对账测试，但本台账漏登
+> （R56 审计发现）。739 为 R56 新增：698 的两个 promote 函数显式列清单
+> 不含 736 倍率列，热窗转移会把倍率证据落 NULL/DEFAULT 1.0。
+
+| Migration | File | Status |
+|-----------|------|--------|
+| 736 | `736_maas_rate_multiplier.sql` | code-landed（Wave 3 B1，39b8efbe0） |
+| 737 | `737_maas_reconciliation_findings.sql` | code-landed（Wave 3 B8，638b1d41f） |
+| 738 | `738_view_chain_credits_rate_multiplier.sql` | code-landed（764d2514b；R56 将列数守卫 WARNING→EXCEPTION） |
+| 739 | `739_promote_functions_rate_multiplier.sql` | code-landed（R56，本机 dev 库已事务验证函数体） |
+
+- B11（providers official 标记列）原计划占用 738，已被 view 链修复抢占——B11 落地时从 **740** 起。

@@ -518,6 +518,12 @@ var maasRateMultiplierMigration736 []byte
 //go:embed embeddata/startup/737_maas_reconciliation_findings.sql
 var maasReconciliationFindingsMigration737 []byte
 
+//go:embed embeddata/startup/738_view_chain_credits_rate_multiplier.sql
+var viewChainCreditsRateMultiplierMigration738 []byte
+
+//go:embed embeddata/startup/739_promote_functions_rate_multiplier.sql
+var promoteFunctionsRateMultiplierMigration739 []byte
+
 // embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
 // 共用，避免两份 map 漂移（曾发生 632 拷入 embeddata 却没接线的静默丢失）。
 // 新增迁移时：embeddata/startup/ 放文件 → 此处加条目 → runner.go StartupFiles
@@ -671,6 +677,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/735_models_canonical_active_folded_unique.sql":                          canonicalFoldedUniqueMigration735,
 	"startup/736_maas_rate_multiplier.sql":                                           maasRateMultiplierMigration736,
 	"startup/737_maas_reconciliation_findings.sql":                                   maasReconciliationFindingsMigration737,
+	"startup/738_view_chain_credits_rate_multiplier.sql":                             viewChainCreditsRateMultiplierMigration738,
+	"startup/739_promote_functions_rate_multiplier.sql":                              promoteFunctionsRateMultiplierMigration739,
 }
 
 // 临时存放 embed SQL 的目录（运行时写入）
