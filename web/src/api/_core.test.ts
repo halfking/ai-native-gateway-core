@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { headers, isAbortError, req } from './_core'
+import { headers, isAbortError, req, resetAuthRedirectForTests } from './_core'
 import { clearAll, store } from '../store'
 
 const originalFetch = globalThis.fetch
@@ -7,6 +7,7 @@ const originalLocation = window.location.href
 
 afterEach(() => {
   globalThis.fetch = originalFetch
+  resetAuthRedirectForTests()
   clearAll()
   window.history.replaceState({}, '', originalLocation)
   vi.restoreAllMocks()
@@ -45,6 +46,36 @@ describe('req', () => {
     await expect(req('GET', '/api/auth/me')).rejects.toMatchObject({ status: 401, detail: 'authentication required' })
     expect(store.userInfo?.id).toBe(1)
     expect(window.location.pathname).not.toBe('/login')
+  })
+
+  it('keeps a request-detail waterfall URL when an admin endpoint 401s', async () => {
+    store.userInfo = { id: 1, tenant_id: 'default', username: 'a', display_name: 'a', email: '', role: 'super_admin', enabled: true }
+    const assigned: string[] = []
+    const originalLocation = window.location
+    let href = 'http://localhost/request-detail/abc?mode=request&tab=waterfall'
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: {
+        pathname: '/request-detail/abc',
+        search: '?mode=request&tab=waterfall',
+        get href() { return href },
+        set href(next: string) {
+          href = next
+          assigned.push(next)
+        },
+      },
+    })
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { detail: 'authentication required' } }), { status: 401 }))
+
+    try {
+      await expect(req('GET', '/api/admin/dispatch/waterfall/request/abc')).rejects.toMatchObject({ status: 401 })
+      expect(assigned).toEqual([
+        '/?login=1&redirect=' + encodeURIComponent('/request-detail/abc?mode=request&tab=waterfall'),
+      ])
+      expect(store.userInfo).toBeNull()
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+    }
   })
 
   it('does not clear an existing session when login fails', async () => {
