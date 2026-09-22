@@ -196,6 +196,17 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// table — five-point sync in the same round as the migration
 		// landed. Idempotent (CREATE TABLE IF NOT EXISTS).
 		"737_maas_reconciliation_findings.sql": maasReconciliationFindingsMigration737,
+		// 738 (Wave 3 B1 follow-up, 2026-09-22): view chain gains
+		// credits_rate_multiplier — five-point sync landed with R56
+		// audit (runner.go had it; embed+map+reconciliation were
+		// missing at 764d2514b). Idempotent (CREATE OR REPLACE VIEW
+		// with per-view guards).
+		"738_view_chain_credits_rate_multiplier.sql": viewChainCreditsRateMultiplierMigration738,
+		// 739 (R56, 2026-09-23): promote functions carry
+		// rate_multiplier/credits_rate_multiplier — five-point sync in the
+		// same round as the migration landed. Idempotent (CREATE OR
+		// REPLACE FUNCTION).
+		"739_promote_functions_rate_multiplier.sql": promoteFunctionsRateMultiplierMigration739,
 	}
 
 	for name, embedded := range expected {

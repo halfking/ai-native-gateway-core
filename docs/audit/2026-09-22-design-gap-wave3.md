@@ -223,3 +223,5 @@ vendorstrip 推进中），动手前先核对 git status 与目标文件标注�
 - D 类五项中 D2/D4 已由并行会话在共享工作树推进中（domains/streaming、
   internal/ir、vendorstrip 有未提交改动），Wave 4 会话接手前先核对工作
   树状态，避免重复实现。
+
+> **勘误（R56, 2026-09-23）**：本文多处「下一个编号 738 / B11 迁移 738 起」已被 764d2514b（view 链补列 credits_rate_multiplier）实际占用；739 已被 R56 promote 函数补倍率列使用。**B11 落地从 740 起**；新增迁移前必须 fetch 核对远端编号（docs/db-changelog.md 已同步登记）。
