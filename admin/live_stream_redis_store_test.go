@@ -2887,3 +2887,57 @@ func TestIsDimensionQueueKey(t *testing.T) {
 		}
 	}
 }
+
+// Wave 3 B10 (2026-09-22): 1~5 分钟静默写 no_traffic_1min 档，≥5 分钟
+// 静默保持 no_traffic_5min 档。
+func TestIdleMarkerTiering(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer mr.Close()
+	store := NewLiveStreamRedisStore(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	ctx := context.Background()
+
+	lastActivity := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
+	mr.Set("llmgw:live:activity:global:vendor:openai", fmt.Sprintf("%d", lastActivity.Unix()))
+
+	// 90s silence → the 1-minute tier.
+	emitTs := lastActivity.Add(90 * time.Second)
+	if err := store.ScanAndRecordIdleMarkers(ctx, emitTs, 0); err != nil {
+		t.Fatalf("scan(90s): %v", err)
+	}
+	items, err := store.Replay(ctx, "", true, 50)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	var kind1m string
+	for i := range items {
+		if items[i].Type == "idle_marker" && items[i].ErrorKind != nil {
+			kind1m = *items[i].ErrorKind
+		}
+	}
+	if kind1m != "no_traffic_1min" {
+		t.Fatalf("90s silence: got error_kind %q want no_traffic_1min", kind1m)
+	}
+
+	// 6min silence (same seeded lane, stale activity) → the 5-minute tier.
+	mr.Set("llmgw:live:activity:global:vendor:openai", fmt.Sprintf("%d", lastActivity.Unix()))
+	emitTs2 := lastActivity.Add(6 * time.Minute)
+	if err := store.ScanAndRecordIdleMarkers(ctx, emitTs2, 0); err != nil {
+		t.Fatalf("scan(6min): %v", err)
+	}
+	items2, err := store.Replay(ctx, "", true, 50)
+	if err != nil {
+		t.Fatalf("replay2: %v", err)
+	}
+	var kind5m string
+	for i := range items2 {
+		if items2[i].Type == "idle_marker" && items2[i].ErrorKind != nil {
+			kind5m = *items2[i].ErrorKind
+		}
+	}
+	if kind5m != "no_traffic_5min" {
+		t.Fatalf("6min silence: got error_kind %q want no_traffic_5min", kind5m)
+	}
+}

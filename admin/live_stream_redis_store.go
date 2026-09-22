@@ -238,7 +238,14 @@ const LiveStreamLaneVisibleLimit = 100
 // marker is written into the stream.
 const LiveStreamIdleThreshold = 5 * time.Minute
 
+// LiveStreamIdleThreshold1m (Wave 3 B10, 2026-09-22): a first-tier idle
+// marker so operators see lane silence after ONE minute instead of waiting
+// the full five. ScanAndRecordIdleMarkers is now tiered: ≥1min silence
+// writes no_traffic_1min, ≥5min writes no_traffic_5min.
+const LiveStreamIdleThreshold1m = 1 * time.Minute
+
 const idleMarkerErrorKind = "no_traffic_5min"
+const idleMarkerErrorKind1m = "no_traffic_1min"
 const idleMarkerFailureStage = "idle"
 
 // LiveStreamLaneRetention is the default for in-memory cached snapshot
@@ -1623,6 +1630,12 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 		idleThreshold = LiveStreamIdleThreshold
 	}
 	idleThresholdSeconds := int64(idleThreshold.Seconds())
+	// Wave 3 B10: lanes silent for 1–5 minutes get the lighter
+	// no_traffic_1min marker; the ≥5min silence keeps the 5min kind.
+	minIdleSeconds := int64(LiveStreamIdleThreshold1m.Seconds())
+	if minIdleSeconds > idleThresholdSeconds {
+		minIdleSeconds = idleThresholdSeconds
+	}
 
 	nowUnix := ts.Unix()
 
@@ -1674,7 +1687,8 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 			slog.Debug("activity key has non-numeric timestamp", "key", k, "value", val)
 			continue
 		}
-		if nowUnix-lastActivity < idleThresholdSeconds {
+		silence := nowUnix - lastActivity
+		if silence < minIdleSeconds {
 			continue
 		}
 		info, ok := parseActivityKey(k)
@@ -1694,6 +1708,7 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 	if len(idle) == 0 {
 		return nil
 	}
+	_ = idleThresholdSeconds
 
 	// 3) Build + persist idle markers, writing only to the relevant lane(s).
 	writePipe := s.rdb.Pipeline()
@@ -1716,7 +1731,8 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 		//     idle marker, so the new request goes leftmost and the idle
 		//     tile gets pushed right (the "正常记录把 idle 推到最左侧"
 		//     requirement from the bug report).
-		marker := createIdleMarkerForDimension(p.info.dimension, p.info.dimensionKey, p.info.tenantID, ts)
+		silence := time.Duration(nowUnix-p.lastActivity) * time.Second
+		marker := createIdleMarkerForDimensionWithThreshold(p.info.dimension, p.info.dimensionKey, p.info.tenantID, ts, silence)
 		data, err := marshalLiveRequestRedisPayload(marker)
 		if err != nil {
 			slog.Debug("failed to marshal idle marker", "dimension", p.info.dimension, "dimension_key", p.info.dimensionKey, "tenant_id", p.info.tenantID, "err", err.Error())
@@ -1910,9 +1926,19 @@ func idleMarkerRequestID(tenantID, dimension, key string) string {
 }
 
 func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time) LiveRequest {
+	return createIdleMarkerForDimensionWithThreshold(dimension, key, tenantID, ts, LiveStreamIdleThreshold)
+}
+
+// createIdleMarkerForDimensionWithThreshold picks the marker error_kind by
+// how long the lane has been silent (Wave 3 B10 tiering): ≥5min silence →
+// no_traffic_5min, shorter (but past the 1min floor) → no_traffic_1min.
+func createIdleMarkerForDimensionWithThreshold(dimension, key, tenantID string, ts time.Time, silence time.Duration) LiveRequest {
 	requestID := idleMarkerRequestID(tenantID, dimension, key)
 
 	errKind := idleMarkerErrorKind
+	if silence > 0 && silence < LiveStreamIdleThreshold {
+		errKind = idleMarkerErrorKind1m
+	}
 	failStage := idleMarkerFailureStage
 	// 2026-07-28 fix: Ts now reflects the scan time (ts) on every tick.
 	// Previously it was anchored at lastActivity+threshold ("the moment

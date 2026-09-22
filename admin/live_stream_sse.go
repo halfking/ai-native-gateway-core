@@ -393,7 +393,10 @@ func (c *LiveStreamConfig) defaults() {
 		c.IdleThreshold = LiveStreamIdleThreshold
 	}
 	if c.IdleTickInterval <= 0 {
-		c.IdleTickInterval = 5 * time.Minute
+		// Wave 3 B10 (2026-09-22): 5min → 1min so the no_traffic_1min
+		// tier is actually observed; the scan is index-driven (方案C)
+		// and cheap at this cadence.
+		c.IdleTickInterval = 1 * time.Minute
 	}
 	if c.KeepaliveInterval <= 0 {
 		c.KeepaliveInterval = 25 * time.Second
