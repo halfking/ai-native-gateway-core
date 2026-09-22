@@ -48,6 +48,8 @@ coverage/
 /llm-gateway-*
 /gateway-*
 /build_seq
+# 2026-09-22: 子目录构建产物（installer/cmd/.../go build 输出）不计入仓库
+/installer/cmd/llm-gw-installer/llm-gw-installer
 Dockerfile.local
 # ─────────────────────────────────────────────────────────────
 # 自动补充的标准忽略规则 (2026-06-11 .gitignore 审计)
