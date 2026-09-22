@@ -628,3 +628,9 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 735 | `735_models_canonical_active_folded_unique.sql` | `d3552a3fcc97ed4f7f54610c6fac6986f98676bd0ea7f87ec82f5df9f5ff2b30` | applied+verified |
+## 2026-09-21T22:54:30Z — deploy 245 build_seq 2168 (6827fce8)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 735 | `735_models_canonical_active_folded_unique.sql` | `d3552a3fcc97ed4f7f54610c6fac6986f98676bd0ea7f87ec82f5df9f5ff2b30` | applied+verified |
+
