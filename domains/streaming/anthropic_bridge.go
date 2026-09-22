@@ -27,6 +27,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	anthropictransform "github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/emptyoutcome"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/metrics"
@@ -1415,7 +1416,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			// (executor_anthropic.go) already returns KindEmptyResponse for
 			// the parallel case; the live Q3 translator now mirrors it.
 			//
-			// Per the documented contract on anthropic.IsAnthropicStreamEmpty,
+			// Per the documented contract on emptyoutcome.IsEmptyOutcome,
 			// an upstream that reports usage in message_start but no content
 			// IS empty (not just absence of usage). The r3 transformation
 			// path's stricter `inputTokens==0 && outputTokens==0` requirement
@@ -1431,7 +1432,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			// TestStreamAnthropicSSEToOpenAI_DisconnectsKeepsCapturer) was
 			// wrongly marked as empty_response and the [DONE] chunk was
 			// never written to the capturer.
-			if anthropictransform.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, clientWriter.clientDisconnected) {
+			if emptyoutcome.IsEmptyOutcome(emittedContent, clientWriter.clientDisconnected) {
 				if capture != nil {
 					capture.MarkInterruptedWithReason("anthropic_empty_response")
 				}
