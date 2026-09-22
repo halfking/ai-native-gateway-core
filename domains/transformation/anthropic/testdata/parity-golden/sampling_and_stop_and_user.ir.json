@@ -1,0 +1,1 @@
+{"max_tokens":100,"messages":[{"content":"m","role":"user"}],"metadata":{"user_id":"u-1"},"model":"gpt-x","stop_sequences":["END","STOP"],"stream":true,"temperature":0.5,"top_k":40,"top_p":0.9}

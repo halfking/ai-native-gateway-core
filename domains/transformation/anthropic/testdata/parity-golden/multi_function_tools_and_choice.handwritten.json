@@ -1,0 +1,1 @@
+{"max_tokens":50,"messages":[{"content":"weather?","role":"user"}],"model":"gpt-x","tool_choice":{"name":"get_weather","type":"tool"},"tools":[{"description":"w","input_schema":{"properties":{"city":{"type":"string"}},"type":"object"},"name":"get_weather"},{"description":"t","input_schema":{"type":"object"},"name":"get_time"}]}
