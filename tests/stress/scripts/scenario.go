@@ -80,20 +80,29 @@ type requestSpec struct {
 }
 
 type expectSpec struct {
-	MinSuccessRate     float64  `json:"min_success_rate"`
-	MaxSuccessRate     *float64 `json:"max_success_rate"`
-	MinTotalRequests   int      `json:"min_total_requests"`
-	RequireStatus      []int    `json:"require_status,omitempty"`
-	ForbiddenStatus    []int    `json:"forbidden_status,omitempty"`
-	RequireDone        bool     `json:"require_done,omitempty"`
-	MinDoneRate        float64  `json:"min_done_rate,omitempty"`
-	MinDurationMs      int64    `json:"min_duration_ms,omitempty"`
-	MaxDurationMs      int64    `json:"max_duration_ms,omitempty"`
-	RequireProviders   []string `json:"require_providers,omitempty"`
-	ForbiddenProviders []string `json:"forbidden_providers,omitempty"`
-	MinPromptChars     int      `json:"min_prompt_chars,omitempty"`
-	AcceptableAny      bool     `json:"acceptable_any,omitempty"`
-	Note               string   `json:"note,omitempty"`
+	MinSuccessRate        float64  `json:"min_success_rate"`
+	MaxSuccessRate        *float64 `json:"max_success_rate"`
+	MinTotalRequests      int      `json:"min_total_requests"`
+	RequireStatus         []int    `json:"require_status,omitempty"`
+	ForbiddenStatus       []int    `json:"forbidden_status,omitempty"`
+	RequireDone           bool     `json:"require_done,omitempty"`
+	MinDoneRate           float64  `json:"min_done_rate,omitempty"`
+	MinDurationMs         int64    `json:"min_duration_ms,omitempty"`
+	MaxDurationMs         int64    `json:"max_duration_ms,omitempty"`
+	RequireProviders      []string `json:"require_providers,omitempty"`
+	ForbiddenProviders    []string `json:"forbidden_providers,omitempty"`
+	MinPromptChars        int      `json:"min_prompt_chars,omitempty"`
+	AcceptableAny         bool     `json:"acceptable_any,omitempty"`
+	// R55-F1b: §11.6 wire-error envelope contract — when all bound providers
+	// emit a committed chunk then EOF without [DONE], the gateway keeps
+	// HTTP 200 (committed bytes cannot be undone) but appends a structured
+	// `data: {"error":{"type":"upstream_incomplete","code":"eof_without_done"}}`
+	// envelope + records the request as failed. RequireErrorEnvelope forces
+	// every response body to contain the envelope; MinErrorEnvelopeRate
+	// sets a fractional floor (default 1.0 when RequireErrorEnvelope is on).
+	RequireErrorEnvelope  bool     `json:"require_error_envelope,omitempty"`
+	MinErrorEnvelopeRate  float64  `json:"min_error_envelope_rate,omitempty"`
+	Note                  string   `json:"note,omitempty"`
 }
 
 type report struct {
@@ -106,42 +115,45 @@ type report struct {
 }
 
 type scenarioResult struct {
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	PlanRef       string         `json:"plan_ref"`
-	StartedAt     string         `json:"started_at"`
-	FinishedAt    string         `json:"finished_at"`
-	DurationMs    int64          `json:"duration_ms"`
-	TotalRequests int            `json:"total_requests"`
-	Success       int            `json:"success"`
-	ClientError   int            `json:"client_error"`
-	ServerError   int            `json:"server_error"`
-	StatusCodes   map[string]int `json:"status_codes"`
-	ByProvider    map[string]int `json:"by_provider"`
-	AvgTTFBMs     float64        `json:"avg_ttfb_ms"`
-	P50TTFBMs     float64        `json:"p50_ttfb_ms"`
-	P95TTFBMs     float64        `json:"p95_ttfb_ms"`
-	AvgTotalMs    float64        `json:"avg_total_ms"`
-	P50TotalMs    float64        `json:"p50_total_ms"`
-	P95TotalMs    float64        `json:"p95_total_ms"`
-	SuccessRate   float64        `json:"success_rate"`
-	DoneCount     int            `json:"done_count,omitempty"`
-	DoneRate      float64        `json:"done_rate,omitempty"`
-	PromptChars   int            `json:"prompt_chars,omitempty"`
-	Passed        bool           `json:"passed"`
-	Expectation   string         `json:"expectation"`
-	Note          string         `json:"note,omitempty"`
+	ID                string         `json:"id"`
+	Name              string         `json:"name"`
+	PlanRef           string         `json:"plan_ref"`
+	StartedAt         string         `json:"started_at"`
+	FinishedAt        string         `json:"finished_at"`
+	DurationMs        int64          `json:"duration_ms"`
+	TotalRequests     int            `json:"total_requests"`
+	Success           int            `json:"success"`
+	ClientError       int            `json:"client_error"`
+	ServerError       int            `json:"server_error"`
+	StatusCodes       map[string]int `json:"status_codes"`
+	ByProvider        map[string]int `json:"by_provider"`
+	AvgTTFBMs         float64        `json:"avg_ttfb_ms"`
+	P50TTFBMs         float64        `json:"p50_ttfb_ms"`
+	P95TTFBMs         float64        `json:"p95_ttfb_ms"`
+	AvgTotalMs        float64        `json:"avg_total_ms"`
+	P50TotalMs        float64        `json:"p50_total_ms"`
+	P95TotalMs        float64        `json:"p95_total_ms"`
+	SuccessRate       float64        `json:"success_rate"`
+	DoneCount         int            `json:"done_count,omitempty"`
+	DoneRate          float64        `json:"done_rate,omitempty"`
+	ErrorEnvelopeCount int           `json:"error_envelope_count,omitempty"`
+	ErrorEnvelopeRate float64        `json:"error_envelope_rate,omitempty"`
+	PromptChars       int            `json:"prompt_chars,omitempty"`
+	Passed            bool           `json:"passed"`
+	Expectation       string         `json:"expectation"`
+	Note              string         `json:"note,omitempty"`
 }
 
 type sample struct {
-	status    int
-	ttfbMs    int64
-	totalMs   int64
-	bytes     int
-	stream    bool
-	sawDone   bool
-	errorMsg  string
-	bodyModel string
+	status            int
+	ttfbMs            int64
+	totalMs           int64
+	bytes             int
+	stream            bool
+	sawDone           bool
+	sawErrorEnvelope  bool // R55-F1b: §11.6 wire-error SSE envelope detected
+	errorMsg          string
+	bodyModel         string
 }
 
 // ─────────────────────── main ───────────────────────
@@ -315,12 +327,16 @@ func aggregateSamples(res *scenarioResult, samples []sample) {
 		if prov != "" {
 			res.ByProvider[prov]++
 		}
+		if s.sawErrorEnvelope {
+			res.ErrorEnvelopeCount++
+		}
 		ttfb = append(ttfb, s.ttfbMs)
 		total = append(total, s.totalMs)
 	}
 	if res.TotalRequests > 0 {
 		res.SuccessRate = float64(res.Success) / float64(res.TotalRequests)
 		res.DoneRate = float64(res.DoneCount) / float64(res.TotalRequests)
+		res.ErrorEnvelopeRate = float64(res.ErrorEnvelopeCount) / float64(res.TotalRequests)
 	}
 	res.AvgTTFBMs = avg(ttfb)
 	res.P50TTFBMs = percentile(ttfb, 0.50)
@@ -406,6 +422,15 @@ func sendOne(client *http.Client, gateway string, req requestSpec) sample {
 				s.bytes += n
 				if bytes.Contains(buf[:n], []byte("data: [DONE]")) {
 					s.sawDone = true
+				}
+				// R55-F1b: §11.6 wire-error envelope. The gateway appends
+				// `data: {"error":{"type":"upstream_incomplete",...}}`
+				// after a committed chunk + EOF without [DONE]. Match a
+				// stable substring of the envelope shape; the gateway
+				// emitter (domains/streaming/stream.go:1157) is the SSOT.
+				if bytes.Contains(buf[:n], []byte(`"type":"upstream_incomplete"`)) ||
+					bytes.Contains(buf[:n], []byte(`"code":"eof_without_done"`)) {
+					s.sawErrorEnvelope = true
 				}
 				if s.bodyModel == "" {
 					if idx := bytesIndex(buf[:n], []byte(`"id":"chatcmpl-mock-`)); idx >= 0 {
@@ -511,6 +536,19 @@ func assertExpectation(e expectSpec, r *scenarioResult) bool {
 	}
 	if e.MinDoneRate > 0 && r.DoneRate < e.MinDoneRate {
 		r.Note += " | done_rate " + ftoa(r.DoneRate) + " < " + ftoa(e.MinDoneRate)
+		ok = false
+	}
+	// R55-F1b: §11.6 wire-error envelope contract — when all bound providers
+	// commit-then-EOF, every response body must contain the structured
+	// `data: {"error":{"type":"upstream_incomplete",...}}` envelope. A
+	// missing envelope means the §11.6 fallback regressed and clients see a
+	// silent HTTP 200 with truncated body.
+	if e.RequireErrorEnvelope && r.ErrorEnvelopeRate < 1.0 {
+		r.Note += " | require error_envelope but rate=" + ftoa(r.ErrorEnvelopeRate)
+		ok = false
+	}
+	if e.MinErrorEnvelopeRate > 0 && r.ErrorEnvelopeRate < e.MinErrorEnvelopeRate {
+		r.Note += " | error_envelope_rate " + ftoa(r.ErrorEnvelopeRate) + " < " + ftoa(e.MinErrorEnvelopeRate)
 		ok = false
 	}
 	if e.MinDurationMs > 0 && r.DurationMs < e.MinDurationMs {

@@ -1,0 +1,140 @@
+=== ERROR + STATEMENT 完整上下文 ===
+
+----- ERROR line 57021 -----
+2026-09-19 11:21:30.436 CST [106354] ERROR:  canceling statement due to user request
+2026-09-19 11:21:30.436 CST [106354] STATEMENT:  
+			SELECT EXISTS(
+				SELECT 1
+				FROM request_logs_with_current_month
+				WHERE gw_session_id =  'gw_bf930efb-4d3c-4f2f-97ee-523092de03dc' 
+				  AND tenant_id =  'default' 
+				  AND success = TRUE
+				  AND COALESCE(is_auto_request, FALSE) = FALSE
+				  AND request_id <>  'b7db46b94dd306c99b9c9d609de2fb82' 
+			)
+		
+
+----- ERROR line 67414 -----
+					SELECT  '8bbecb1de8b474c4bca1bde113db7ab9' , rl.ts, NULLIF( '{"enable_thinking":true,"max_completion_tokens":32000,"messages":[{"content":"You are ZCode, an interactive coding agent\nYou are ZCode Explore, a file search and codebase research specialist for ZCode CLI. You excel at thoroughly navigating and exploring codebases.\n\n=== CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===\nThis is a READ-ONLY exploration task. You are STRICTLY PROHIBITED from:\n- Creating new files (no Write, touch, or file creation of any kind)\n- Modifying existing files (no Edit operations)\n- Deleting fil
+			SELECT outbound_body, outbound_msg_count, outbound_token_est,
+			       outbound_msg_hashes, compression_meta
+			FROM request_logs
+			WHERE tenant_id =  'default'  AND gw_session_id =  'gw_2dad6ed1-bee6-4b61-a45a-377eedc500db'  AND outbound_body IS NOT NULL
+			ORDER BY ts DESC
+			LIMIT 1
+		
+.","name":"Read","parameters":{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"file_path":{"description":"The absolute path to the file to read","type":"string"},"limit":{"description":"The number of lines to read. Only provide if the file is too 
+					FROM request_logs_hot rl
+					WHERE rl.request_id =  '8bbecb1de8b474c4bca1bde113db7ab9' 
+					ON CONFLICT (request_id) DO UPDATE
+						SET request_body  = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
+						    response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body),
+						    outbound_body = COALESCE(EXCLUDED.outbound_body, request_logs_bodies_hot.outbound_body)
+				
+
+----- ERROR line 81641 -----
+					SELECT  '8bbecb1de8b474c4bca1bde113db7ab9' , rl.ts, NULLIF( '{"enable_thinking":true,"max_completion_tokens":32000,"messages":[{"content":"You are ZCode, an interactive coding agent\nYou are ZCode Explore, a file search and codebase research specialist for ZCode CLI. You excel at thoroughly navigating and exploring codebases.\n\n=== CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===\nThis is a READ-ONLY exploration task. You are STRICTLY PROHIBITED from:\n- Creating new files (no Write, touch, or file creation of any kind)\n- Modifying existing files (no Edit operations)\n- Deleting fil
+			SELECT value::text FROM settings_kv WHERE key =  'session_audit.approval_timeout' 
+		
+e.\n- Continue the current task unless the coordinator explicitly changed or ended it.\n- Do not use this tool as a substitute for the final task result.","name":"RespondToCoordinator","parameters":{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"message":{"description":"Response or progress update for the coordinator.","maxLength":20000,"minLength":1,"type":"string"},"summary":{"description":"Short summary of the response.","maxLength":200,"minLength":1,"type":"string"}},"required":["summary","message"],"type":"object"}},"type":"function"}]
+			SELECT value::text FROM settings_kv WHERE key =  'session_audit.timeout_action' 
+		
+
+----- ERROR line 81644 -----
+e.\n- Continue the current task unless the coordinator explicitly changed or ended it.\n- Do not use this tool as a substitute for the final task result.","name":"RespondToCoordinator","parameters":{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"message":{"description":"Response or progress update for the coordinator.","maxLength":20000,"minLength":1,"type":"string"},"summary":{"description":"Short summary of the response.","maxLength":200,"minLength":1,"type":"string"}},"required":["summary","message"],"type":"object"}},"type":"function"}]
+			SELECT value::text FROM settings_kv WHERE key =  'session_audit.timeout_action' 
+		
+
+----- ERROR line 86956 -----
+2026-09-19 11:21:34.249 CST [106333] ERROR:  canceling statement due to user request
+2026-09-19 11:21:34.249 CST [106333] STATEMENT:  
+			INSERT INTO public.session_memora_hot (
+				session_id, tenant_id, client_env, initial_context,
+				created_at, partition_date
+			) VALUES (
+				 'gw_2dad6ed1-bee6-4b61-a45a-377eedc500db' ,  'default' ,  '{"agent_name":"go-client","agent_type":"api","api_key_id":"133","client_type":"go-client","namespace":"","project_id":""}' ::text::jsonb,  '{"first_messages_fingerprint":"d48dfc1e45270ea567dcdee23c0f7ceb","message_count":1,"turn_no":1}'
+			)
+			ON CONFLICT (tenant_id, session_id, partition_date) DO NOTHING
+		
+
+----- ERROR line 92977 -----
+				 '[{"role":"system","content":"You are ZCode, an interactive coding agent\nYou are ZCode Explore, a file search and codebase research specialist for ZCode CLI. You excel at thoroughly navigating and exploring codebases.\n\n=== CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===\nThis is a READ-ONLY exploration task. You are STRICTLY PROHIBITED from:\n- Creating new files (no Write, touch, or file creation of any kind)\n- Modifying existing files (no Edit operations)\n- Deleting files (no rm or deletion)\n- Moving or copying files (no mv or cp)\n- Creating temporary files anywhere, includi
+			SELECT value::text FROM settings_kv WHERE key =  'session.id_body_keys' 
+		
+
+----- ERROR line 92983 -----
+ay-go-2/bg/auto_route_settle_worker_integration_test.go`\n- 数据库表：\n  - `auto_route_selections`\n  - `auto_route_selections_hot`\n  - `auto_route_selections_all`\n  - `schema_migrations`\n\u003csystem-reminder\u003e\nThe following skills are available for use with the Skill tool:\n\n- 154-cleaner (file: /Users/xutaohuang/.agents/skills/154-cleaner/SKILL.md)\n- 245-cleaner (file: /Users/xutaohuang/.agents/skills/245-cleaner/SKILL.md)\n- 252-cleaner (file: /Users/xutaohuang/.agents/skills/252-cleaner/SKILL.md)\n- academic-researcher (file: /Users/xutaohuang/.agents/skills/academic-resea
+				 'null' ::text::jsonb,  '[]' ::text::jsonb,
+				 'turn_delta' ,
+				 '2026-09-19 00:00:00Z' 
+			)
+			ON CONFLICT (tenant_id, request_id, partition_date)
+			DO UPDATE SET
+				response_delta = CASE
+					WHEN EXCLUDED.response_delta IS NULL OR EXCLUDED.response_delta = 'null'::jsonb
+					THEN existing.response_delta
+					ELSE EXCLUDED.response_delta
+				END,
+				outbound_body = CASE
+					WHEN EXCLUDED.outbound_body IS NULL OR EXCLUDED.outbound_body = 'null'::jsonb
+					THEN existing.outbound_body
+					ELSE EXCLUDED.outbound_body
+				END,
+				response_attachments = CASE
+					WHEN EXCLUDED.response_attachments IS NULL OR EXCLUDED.response_attachments = 'null'::jsonb
+					THEN existing.response_attachments
+					ELSE EXCLUDED.response_attachments
+				END
+		
+
+----- ERROR line 145739 -----
+2026-09-19 11:21:41.639 CST [105902] ERROR:  canceling statement due to user request
+2026-09-19 11:21:41.639 CST [105902] STATEMENT:  
+	WITH policy AS (
+	    SELECT COALESCE(featured_models, ARRAY[]::TEXT[]) AS featured
+	    FROM routing_policy
+	    WHERE tenant_id = 'default'
+	    ORDER BY id
+	    LIMIT 1
+	),
+	routable AS (
+	    -- Distinct canonical models with >= 1 routable binding. GROUP BY because a
+	    -- model routable via several credentials must still be offered once, and
+	    -- 522 lets each (credential×model) binding carry its own context-window
+	    -- override; the advertised window is the most generous routable binding so
+	    -- the picker does not under-sell a model that one credential widened.
+	    SELECT mc.id AS canonical_id,
+	           mc.canonical_name,
+	           mc.display_name,
+	           mc.family,
+	           MAX(COALESCE(cmb.context_window_override, mc.context_window_override, mc.context_window)) AS context_window
+	    FROM v_routable_credential_models v
+	    JOIN provider_models pm ON pm.id = v.provider_model_id
+	    JOIN credential_model_bindings cmb ON cmb.credential_id = v.credential_id AND cmb.provider_model_id = v.provider_model_id
+	    JOIN models_canonical mc ON mc.id = pm.canonical_id
+	    WHERE v.is_routable = TRUE
+	      AND (v.tenant_id =  'default'  OR v.tenant_id = 'default')
+	      AND COALESCE(mc.status, 'active') = 'active'
+	      AND mc.canonical_name <>  'step-3.7-flash' 
+	    GROUP BY mc.id, mc.canonical_name, mc.display_name, mc.family
+	),
+	task_models AS (
+
+----- ERROR line 182340 -----
+2026-09-19 11:21:49.259 CST [103863] ERROR:  inconsistent types deduced for parameter $4 at character 135
+2026-09-19 11:21:49.259 CST [103863] DETAIL:  integer versus bigint
+2026-09-19 11:21:49.259 CST [103863] STATEMENT:  
+	UPDATE scheduled_tasks SET
+	    last_run_at = $1, last_status = $2, last_error = $3,
+	    run_count = run_count + 1,
+	    next_run_at = $4,
+	    lease_until = 0,
+	    enabled = CASE WHEN $4 = 0 THEN FALSE ELSE enabled END,
+	    updated_at = $1
+	 WHERE id = $5
+	
+
+----- ERROR line 197709 -----
+2026-09-19 11:21:55.737 CST [106403] ERROR:  column "name" does not exist at character 8
+2026-09-19 11:21:55.737 CST [106403] STATEMENT:  SELECT name FROM pg_proc WHERE proname = 'pg_stat_statements_reset';
+

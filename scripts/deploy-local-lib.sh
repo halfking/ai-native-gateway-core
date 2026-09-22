@@ -337,9 +337,11 @@ dl_load_project_env() {
   fi
   local kv key val
   # Consume the parser's KEY=value\0 records directly. The previous form
-  # wrapped it as `{ _dl_safe_env_source "$file" >/dev/null 2>&1; env -0; }`:
-  # the parser's output was discarded and the loop consumed the CURRENT
-  # shell environment instead, so nothing from .env.local was ever loaded
+  # wrapped it as `{ _dl_safe_env_source "$file" >/dev/null 2>&1; env -0; }`
+  # (R55-F1b): the parser's output was discarded and `env -0` runs in a
+  # different process, so it never saw Python's os.environ writes either —
+  # the loop consumed the CURRENT shell environment instead, nothing from
+  # .env.local was ever loaded, and the function silently became a no-op
   # (every key "already in the environment" was empty → export never ran →
   # write_instance_env died on the empty LLM_GATEWAY_SECRET_KEY gate).
   #
@@ -350,10 +352,16 @@ dl_load_project_env() {
   # background, then sync_admin_password_from_env bcrypt-hashed `Veritrans`
   # into users.password_hash — every later login with the intended
   # `Veritrans&9527` returned 401 because admin/auth.go never falls back to
-  # env once the users row exists. The parser preserves ${VAR}
-  # interpolation (DSN concatenation still works) while treating unquoted
-  # &, |, ;, (, ), <, >, $, ` as literal bytes. Quoted values are passed
-  # through verbatim, matching bash source semantics for "..." and '...'.
+  # env once the users row exists. The parser treats unquoted
+  # &, |, ;, (, ), <, >, $, ` as literal bytes and honors ${VAR}
+  # interpolation (DSN concatenation still works) for unquoted and
+  # double-quoted values; single-quoted values pass through verbatim,
+  # matching bash source semantics.
+  #
+  # Keep this comment OUT of any `<(...)` process substitution: bash 5.x
+  # parses comments inside `<(...)` too aggressively and would segfault on
+  # the `${VAR}` / `(...)` characters above when this function is invoked
+  # from a `()` subshell (R55 regression test pattern).
   while IFS= read -r -d '' kv; do
     key="${kv%%=*}"
     case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
@@ -400,11 +408,16 @@ with open(sys.argv[1], encoding='utf-8') as fh:
         if not m:
             continue
         key, raw_val = m.group(1), m.group(2)
+        quote_char = ''
         if len(raw_val) >= 2 and raw_val[0] == raw_val[-1] and raw_val[0] in ('"', "'"):
+            quote_char = raw_val[0]
             val = raw_val[1:-1]
         else:
             val = raw_val
-        val = expand(val)
+        # Bash semantics: unquoted + double-quoted honor ${VAR}/$VAR
+        # interpolation; single-quoted forbids ANY expansion (R55-F1b fix).
+        if quote_char != "'":
+            val = expand(val)
         os.environ[key] = val
         sys.stdout.buffer.write(f'{key}={val}\x00'.encode('utf-8'))
 PY
