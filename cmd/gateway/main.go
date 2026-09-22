@@ -4679,6 +4679,14 @@ func main() {
 		partitionManager.Start(context.Background())
 		slog.Info("CHECKPOINT: after partitionManager.Start")
 
+		// Wave 3 B8 (2026-09-22): internal ledger reconciliation —
+		// balance_after chain integrity plus request-log credit charges vs
+		// credit_ledger consume deductions; differences land in
+		// maas_reconciliation_findings with a warning log + metric.
+		ledgerReconciler := bg.NewLedgerReconciler(dbConn.Pool())
+		ledgerReconciler.Start(context.Background())
+		slog.Info("CHECKPOINT: after ledgerReconciler.Start")
+
 		// 2026-08-30 审计修复 P1-7: VACUUM worker for request_logs_bodies
 		// Runs VACUUM FULL weekly (default: Sunday 2am) to reclaim TOAST space.
 		vacuumWorker := bg.NewVacuumWorker(dbConn.Pool())

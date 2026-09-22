@@ -541,6 +541,9 @@ files=(
   # （与 maas.ResolveRateMultiplier 同规则，配置 maas.rate_periods）。
   # 幂等，默认 enabled=false 行为零漂移。
   "$ROOT_DIR/sql/migrations/startup/736_maas_rate_multiplier.sql"
+  # 2026-09-22 Wave 3 B8：737 内部对账落表 —— maas_reconciliation_findings
+  # （CREATE TABLE IF NOT EXISTS，幂等），bg.LedgerReconciler 差异落表。
+  "$ROOT_DIR/sql/migrations/startup/737_maas_reconciliation_findings.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

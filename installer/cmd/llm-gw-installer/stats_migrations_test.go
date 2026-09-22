@@ -191,7 +191,11 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// 736 (Wave 3 B1, 2026-09-22): peak/off-peak rate multiplier
 		// columns + shared SQL resolver — five-point sync in the same
 		// round as the migration landed. Idempotent.
-		"736_maas_rate_multiplier.sql": maasRateMultiplierMigration736,
+		"736_maas_rate_multiplier.sql":           maasRateMultiplierMigration736,
+		// 737 (Wave 3 B8, 2026-09-22): internal reconciliation findings
+		// table — five-point sync in the same round as the migration
+		// landed. Idempotent (CREATE TABLE IF NOT EXISTS).
+		"737_maas_reconciliation_findings.sql": maasReconciliationFindingsMigration737,
 	}
 
 	for name, embedded := range expected {
