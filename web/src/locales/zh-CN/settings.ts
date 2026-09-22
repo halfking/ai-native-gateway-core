@@ -6,6 +6,7 @@ export default {
     compression: '压缩',
     rateLimit: '限流',
     timeout: '超时',
+    retry: '重试与超时',
     routing: '路由',
     session: '会话',
     security: '安全',

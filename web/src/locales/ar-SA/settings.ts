@@ -8,6 +8,7 @@ export default {
     compression: 'الضغط',
     rateLimit: 'تحديد المعدل',
     timeout: 'المهلة',
+    retry: 'إعادة المحاولة',
     routing: 'التوجيه',
     session: 'الجلسة',
     security: 'الأمان',

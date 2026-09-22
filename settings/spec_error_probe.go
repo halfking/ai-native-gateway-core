@@ -52,7 +52,7 @@ func ErrorProbeSpecs() []*Spec {
 			Key:         "error_probe.timeout_ms",
 			Type:        TypeInt,
 			Scope:       ScopePlatform,
-			Category:    CategoryErrorProbe,
+			Category:    CategoryRetry, // B5③ 聚合组（原 error_probe）
 			Default:     10000,
 			Min:         floatPtr(1000),
 			Max:         floatPtr(60000),

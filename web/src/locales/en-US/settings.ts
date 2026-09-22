@@ -6,6 +6,7 @@ export default {
     compression: 'Compression',
     rateLimit: 'Rate Limit',
     timeout: 'Timeout',
+    retry: 'Retry & Timeout',
     routing: 'Routing',
     session: 'Session',
     security: 'Security',

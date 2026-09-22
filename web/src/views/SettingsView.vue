@@ -31,6 +31,7 @@ const categories = computed(() => [
   { key: 'compression',        label: t('settings.category.compression'),  icon: '🗜'  },
   { key: 'rate_limit',         label: t('settings.category.rateLimit'),  icon: '🚦'  },
   { key: 'timeout',            label: t('settings.category.timeout'),  icon: '⏱'  },
+  { key: 'retry',              label: t('settings.category.retry'),  icon: '🔁'  },
   { key: 'routing',            label: t('settings.category.routing'),  icon: '🔀'  },
   { key: 'session',            label: t('settings.category.session'),  icon: '💬'  },
   { key: 'security',           label: t('settings.category.security'),  icon: '🔐'  },
