@@ -146,6 +146,27 @@ func (s *PGStore) UpdateSessionAudit(ctx context.Context, tenantID, sessionID st
 	return rows == 1, nil
 }
 
+// UpdateSessionAuditRound (Wave 3 B12) persists an audit result for a
+// multi-round audit. It wins the atomic race when no audit result exists yet
+// or the persisted round is strictly older; legacy rows without a round
+// field count as round 1, so a replay of round 1 can never overwrite a
+// round-2+ verdict and a newer round can always advance forward.
+func (s *PGStore) UpdateSessionAuditRound(ctx context.Context, tenantID, sessionID string, auditResult []byte, round int) (bool, error) {
+	if round < 1 {
+		round = 1
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE goal_sessions
+		SET audit_result = $3, last_activity_at = NOW()
+		WHERE tenant_id = $1 AND session_id = $2
+		  AND (audit_result IS NULL OR COALESCE((audit_result->>'round')::int, 1) < $4)`,
+		tenantID, sessionID, auditResult, round)
+	if err != nil {
+		return false, err
+	}
+	rows, _ := res.RowsAffected()
+	return rows == 1, nil
+}
+
 func (s *PGStore) AtomicAutoContinue(ctx context.Context, tenantID, sessionID string, maxAllowed int) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE goal_sessions
 		SET auto_continue_count = auto_continue_count + 1, last_activity_at = NOW()
