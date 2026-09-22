@@ -142,6 +142,36 @@ func (db *DB) ApplyMigrations(ctx context.Context) error {
 	return lastErr
 }
 
+// columnsAllPresent —— 2026-09-23 252 SQL 日志审计轮（D1 残余根修通用件）：
+// credentials/request_logs 等热表上的 ALTER ... ADD COLUMN IF NOT EXISTS，
+// 即使全部列已存在也要取 ACCESS EXCLUSIVE 锁才能逐列 no-op；共享库持续写
+// 流下锁等待超过角色级 statement_timeout=30s 即被 57014 击杀，boot 重试撞
+// 同一堵墙（烧点不可推进）直至 retry_budget 烧穿 → postgres disabled →
+// 部署安全网回滚（245 07:23/07:26/07:35 三连败实证，PG 日志逐字归因）。
+// 守卫语义：全部列在位 → true（调用方跳过 DDL，幂等 stamp 类语句照常执行）；
+// 表不存在 / 任一列缺失 / 探测出错 → false（走原 ensure 路径，自含幂等）。
+func (db *DB) columnsAllPresent(ctx context.Context, table string, cols []string) bool {
+	if db == nil || db.pool == nil || len(cols) == 0 {
+		return false
+	}
+	quoted := make([]string, len(cols))
+	for i, c := range cols {
+		quoted[i] = "'" + c + "'"
+	}
+	q := fmt.Sprintf(
+		`SELECT count(*) FROM unnest(ARRAY[%s]) AS want(name)
+		 WHERE to_regclass('public.%s') IS NOT NULL
+		   AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+		     WHERE table_schema='public' AND table_name='%s'
+		       AND column_name = want.name)`,
+		strings.Join(quoted, ","), table, table)
+	var missing int
+	if err := db.pool.QueryRow(ctx, q).Scan(&missing); err != nil {
+		return false
+	}
+	return missing == 0
+}
+
 func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	// Use the parent ctx (no 3s timeout) for schema migrations. The
 	// pingCtx above is only for the initial Ping() check; reusing it
@@ -1592,6 +1622,23 @@ func (d *DB) ensureCredentialBalanceFloor(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// D1 残余：8 列全部在位时跳过 credentials ALTER（ACCESS EXCLUSIVE 锁
+	// 等待是 boot 烧点，见 columnsAllPresent 注）；701 stamp 幂等照常执行。
+	if d.columnsAllPresent(ctx, "credentials", []string{
+		"balance_floor_usd", "quota_floor_tokens", "quota_floor_percent",
+		"plan_quota_kind", "plan_quota_windows", "plan_quota_remaining_tokens",
+		"plan_quota_used_percent", "plan_quota_checked_at",
+	}) {
+		if _, err := d.pool.Exec(ctx, `
+			INSERT INTO public.schema_migrations (version, description)
+			VALUES ('701', 'credential balance-floor + plan quota sensing columns')
+			ON CONFLICT (version) DO NOTHING;
+		`); err != nil {
+			return err
+		}
+		slog.Info("credential balance-floor schema ensured (migration 701, catalog short-circuit)")
+		return nil
+	}
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE credentials
 		    ADD COLUMN IF NOT EXISTS balance_floor_usd numeric(14,6);
@@ -1638,6 +1685,18 @@ func (d *DB) ensureCredentialBalanceFloor(ctx context.Context) error {
 // 更），末尾按 701/703 定式补记 schema_migrations 账本 stamp（已 stamp 时为 no-op）。
 func (d *DB) ensureCredentialPlanQuotaProbeBackoff(ctx context.Context) error {
 	if d == nil || d.pool == nil {
+		return nil
+	}
+	// D1 残余：同 701——列在位时跳过 credentials ALTER，704 stamp 照常。
+	if d.columnsAllPresent(ctx, "credentials", []string{"plan_quota_probe_failed_at"}) {
+		if _, err := d.pool.Exec(ctx, `
+			INSERT INTO public.schema_migrations (version, description)
+			VALUES ('704', 'plan quota probe failure backoff stamp (credentials.plan_quota_probe_failed_at)')
+			ON CONFLICT (version) DO UPDATE SET description = EXCLUDED.description;
+		`); err != nil {
+			return err
+		}
+		slog.Info("credential plan-quota probe backoff schema ensured (migration 704, catalog short-circuit)")
 		return nil
 	}
 	_, err := d.pool.Exec(ctx, `
