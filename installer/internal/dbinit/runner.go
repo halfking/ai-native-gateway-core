@@ -221,6 +221,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// request_logs[_hot].credits_rate_multiplier) +
 			// maas_resolve_rate_multiplier() 共享取档函数。幂等。
 			"736_maas_rate_multiplier.sql",
+			// 737 (Wave 3 B8, 2026-09-22): reconciliation findings 表
+			// （CREATE TABLE IF NOT EXISTS，幂等）。
+			"737_maas_reconciliation_findings.sql",
 		},
 	}
 }
