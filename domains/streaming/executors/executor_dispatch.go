@@ -1094,13 +1094,17 @@ var (
 // the request itself keeps running, but it no longer occupies a concurrency
 // slot (the design's adjudicated trade: a bounded accounting violation
 // instead of an unbounded hold).
+//
+// R56 audit: the watchdog now goes through Manager.ReleaseHard, which
+// deletes the slot key. The ordinary Release's keepalive refresh (EXPIRE,
+// "DO NOT delete" identity semantics) left the slot counted as occupied and
+// re-armed a fresh full TTL — the forced release did not free anything.
 const fpSlotLeaseHardCap = 300 * time.Second
 
 // armFpSlotLeaseDeadline arms the B14 watchdog for one dispatch lease.
-// time.AfterFunc allocates a single one-shot timer that self-frees; the
-// Released() check keeps a normal (possibly still-queued) release from being
-// counted as a breach, and Release is idempotent so the double-release race
-// is harmless.
+// time.AfterFunc allocates a single one-shot timer; the handle is stored on
+// the lease so a normal release stops it instead of leaving up to hardCap of
+// pending timers per request behind (R56 audit: timer pileup at high QPS).
 func armFpSlotLeaseDeadline(m *credentialfpslot.Manager, lease *credentialfpslot.Lease) {
 	armFpSlotLeaseDeadlineFor(m, lease, fpSlotLeaseHardCap)
 }
@@ -1109,13 +1113,28 @@ func armFpSlotLeaseDeadlineFor(m *credentialfpslot.Manager, lease *credentialfps
 	if m == nil || lease == nil || !m.Enabled() || lease.Unlimited || hardCap <= 0 {
 		return
 	}
-	time.AfterFunc(hardCap, func() {
+	lease.SetWatchdogTimer(time.AfterFunc(hardCap, func() {
 		enforceFpSlotLeaseDeadline(m, lease)
-	})
+	}))
 }
 
 func enforceFpSlotLeaseDeadline(m *credentialfpslot.Manager, lease *credentialfpslot.Lease) {
 	if lease.Released() {
+		return
+	}
+	// ReleaseHard performs the actual slot-key deletion synchronously (this
+	// already runs on the timer goroutine). Its result is the breach
+	// attribution: when the ordinary release won the race between our
+	// Released() check and the Redis call, performed=false and this is NOT a
+	// hard-cap breach (R56 audit: the old pre-increment counted queued
+	// normal releases as breaches whenever the release queue was backed up).
+	performed := false
+	if m != nil && m.Enabled() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		performed = m.ReleaseHard(ctx, lease)
+	}
+	if !performed {
 		return
 	}
 	fpSlotLeaseForcedReleaseTotal.Inc()
@@ -1126,7 +1145,6 @@ func enforceFpSlotLeaseDeadline(m *credentialfpslot.Manager, lease *credentialfp
 		"tenant_id", lease.TenantID,
 		"cap", fpSlotLeaseHardCap,
 	)
-	releaseFpLease(m, lease)
 }
 
 // logDispatchPreflightRejection is the shared writer for pre-upstream

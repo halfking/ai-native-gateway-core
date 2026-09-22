@@ -1904,6 +1904,9 @@ func releaseFpLease(m *credentialfpslot.Manager, lease *credentialfpslot.Lease) 
 	if lease == nil || m == nil || !m.Enabled() {
 		return
 	}
+	// A normal release is happening — cancel the pending B14 hard-cap
+	// watchdog so it does not linger (and misfire) after the slot is freed.
+	lease.StopWatchdogTimer()
 	select {
 	case fpReleaseQueue <- fpReleaseJob{m: m, lease: lease}:
 	default:
