@@ -346,14 +346,66 @@ dl_load_project_env() {
   done < <(
     # .env.local prints a friendly summary when sourced; suppress it so
     # deploy diagnostics stay redacted and the env dump stays clean.
-    # set -a is load-bearing: the file uses plain KEY=VALUE dotenv
-    # assignments (no `export`), which land as shell-only variables that
-    # `env -0` never sees. Without it the loader imports zero keys and
-    # deploy() dies on the empty SECRET_KEY gate (incident 2026-09-07,
-    # "LLM_GATEWAY_SECRET_KEY is empty" on an otherwise valid .env.local).
-    # shellcheck disable=SC1090
-    { set -a; source "$file" >/dev/null 2>&1; set +a; env -0; }
+    # The previous bash-source approach (`set -a; source $file`) silently
+    # mangled any unquoted value containing shell metacharacters: a deploy
+    # with `LLM_GATEWAY_ADMIN_PASSWORD=Veritrans&9527` (unquoted) saw
+    # bash split at `&` (control operator), so the env got `Veritrans`
+    # while `9527` ran in the background, then sync_admin_password_from_env
+    # bcrypt-hashed `Veritrans` into users.password_hash — every later
+    # login with the intended `Veritrans&9527` returned 401 because
+    # admin/auth.go never falls back to env once the users row exists.
+    # This Python parser preserves ${VAR} interpolation (DSN concatenation
+    # still works) while treating unquoted &, |, ;, (, ), <, >, $, ` as
+    # literal bytes. Quoted values are passed through verbatim, matching
+    # bash source semantics for "..." and '...'.
+    { _dl_safe_env_source "$file" >/dev/null 2>&1; env -0; }
   )
+}
+
+# _dl_safe_env_source — print KEY=value\0 records for _dl_load_project_env.
+# Honors ${VAR} / $VAR interpolation from the current environment (and from
+# values earlier in the same file, e.g. CRM_DATABASE_URL referencing the
+# CRM_DB_USER assignment a few lines up), treats unquoted shell
+# metacharacters (&, |, ;, (, ), <, >, `, $) as literal bytes, and accepts
+# double- or single-quoted values verbatim. os.environ is updated as we
+# parse so subsequent lines can reference earlier ones. Failure is non-fatal:
+# the caller falls back to whatever was already in the calling environment.
+_dl_safe_env_source() {
+  local file="$1"
+  python3 - "$file" <<'PY' || return 0
+import os, re, sys
+
+keys_re = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$')
+export_re = re.compile(r'^export\s+')
+var_ref_re = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)')
+
+def expand(val):
+    def repl(m):
+        name = m.group(1) or m.group(2)
+        return os.environ.get(name, '')
+    return var_ref_re.sub(repl, val)
+
+with open(sys.argv[1], encoding='utf-8') as fh:
+    for raw in fh:
+        line = raw.rstrip('\n').rstrip('\r')
+        s = line.lstrip()
+        if not s or s.startswith('#'):
+            continue
+        m = export_re.match(s)
+        if m:
+            s = s[m.end():]
+        m = keys_re.match(s)
+        if not m:
+            continue
+        key, raw_val = m.group(1), m.group(2)
+        if len(raw_val) >= 2 and raw_val[0] == raw_val[-1] and raw_val[0] in ('"', "'"):
+            val = raw_val[1:-1]
+        else:
+            val = raw_val
+        val = expand(val)
+        os.environ[key] = val
+        sys.stdout.buffer.write(f'{key}={val}\x00'.encode('utf-8'))
+PY
 }
 
 dl_write_env() {

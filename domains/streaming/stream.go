@@ -1102,56 +1102,84 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 				if !upstreamDoneReceived {
 					terminalVisible := attemptHasClientSemanticOutput(gate, chunkCount)
 					if terminalVisible {
-						// 2026-09-01 (P0 MiniMax-fix): MiniMax upstream
-						// (api.minimaxi.com) closes the HTTP body after
-						// sending 200 + valid SSE chunks but WITHOUT the
-						// final `data: [DONE]` line. The client already
-						// saw the complete response and we synthesize
-						// `data: [DONE]\n\n` for them, so this is
-						// protocol-level non-compliance, not a real
-						// business failure. Treat as completed so audit
-						// success=true, the circuit-breaker stays quiet,
-						// and credential health is unaffected. A distinct
-						// reason literal preserves operator visibility
-						// (SQL-filter by reason) without re-triggering
-						// the audit isInterruptionCode failure path
-						// (audit.go:90) which lists "eof_without_done".
-						slog.Info("upstream EOF without [DONE] but semantic output already committed; treating as completed (benign upstream non-compliance)",
+						// 2026-09-22 (§11.6 production fix):
+						//
+						// Pre-fix (commit 05c79fbe9, 2026-09-01) treated
+						// "HTTP 200 + committed SSE chunks + EOF without
+						// [DONE]" as benign upstream non-compliance: the
+						// gateway synthesized `data: [DONE]\n\n` for the
+						// client and recorded success=true. §11.6 of
+						// comprehensive-test-plan.md requires the opposite
+						// — "HTTP 200 空响应或 SSE 无 [DONE] | 不向客户端
+						// 返回伪成功，切换或返回结构化错误". A truncated
+						// stream that the gateway papers over with a fake
+						// [DONE] is exactly the pseudo-success §11.6
+						// forbids.
+						//
+						// The committed-but-truncated stream cannot be
+						// transparently failed over (the client owns the
+						// partial response — a second candidate would
+						// duplicate committed bytes, which is why
+						// Resumable=false). Instead we:
+						//   1. Emit a structured SSE error envelope so the
+						//      SDK observes the failure, not a silent 200.
+						//   2. Synthesize the trailing `data: [DONE]\n\n`
+						//      so OpenAI-compatible parsers finalize.
+						//   3. Mark outcome.Interrupted=true so the audit
+						//      pipeline records success=false,
+						//      failure_detail_code="eof_without_done",
+						//      streamErrorKindForDetailCode="eof_without_done".
+						//      The circuit breaker and credential-health
+						//      state then receive the failure attribution
+						//      they need.
+						//   4. Keep the RecordStreamSynthesizedDone
+						//      metric firing for downstream observability —
+						//      the synthesized terminator IS still injected
+						//      on the wire.
+						//
+						// Operators can distinguish committed-but-truncated
+						// from uncommitted EOF failures via SQL filter on
+						// `chunk_count > 0 AND failure_detail_code =
+						// 'eof_without_done'`.
+						slog.Warn("upstream EOF without [DONE] after committed semantic output (§11.6 pseudo-success guard)",
 							"client_model", clientModel,
 							"chunk_count", chunkCount,
+							"resumable", false,
+							"reason", "eof_without_done",
 						)
 						if capture != nil {
-							capture.ObserveChunk(&ir.StreamChunk{
-								Type:           ir.ChunkTypeDone,
-								SourceProtocol: ir.ProtocolOpenAIChat,
-							})
+							capture.MarkInterruptedWithReason("eof_without_done")
 						}
+						// Structured error SSE chunk — same wire shape used
+						// by the stream_timeout branch below and the
+						// json_error_in_stream branch above. The client SDK
+						// can pattern-match it as an OpenAI error envelope.
+						errChunk := "data: {\"error\":{\"type\":\"upstream_incomplete\",\"message\":\"upstream closed the stream without sending [DONE]\",\"code\":\"eof_without_done\"}}\n\n"
+						safeWriteSSE(w, errChunk)
+						// Synthesized [DONE] so the SDK still finalizes its
+						// stream parser (otherwise some clients block
+						// forever waiting for it). The metric keeps firing
+						// because the wire actually contains the synthesized
+						// terminator.
 						safeWriteSSE(w, "data: [DONE]\n\n")
 						safeFlush(flusher)
 						metrics.Global().RecordStreamSynthesizedDone()
-						outcome.Interrupted = false
-						outcome.Reason = "eof_without_done_after_commit"
-						// 2026-09-01 (P0-2 24h-audit round2): benign EOF must
-						// carry an explicit non-failure Kind. A blank Kind
-						// leaking into classifyExecError / ClassifyError falls
-						// through to the default transient bucket, which would
-						// mis-report this completed request as a retryable
-						// failure. KindEmptyResponse is the closest existing
-						// non-failure semantics: HTTP 200, well-formed stream,
-						// upstream protocol non-compliance the gateway already
-						// papered over (synthesized [DONE]). It is NOT in
-						// IsRetryable (no retry: output is committed) and NOT
-						// credential-fatal. Downstream guards that read Kind
-						// only act when Interrupted=true, so this is
-						// observability-only attribution.
-						outcome.Kind = errorsx.KindEmptyResponse
+						outcome.Interrupted = true
+						outcome.Reason = "eof_without_done"
+						outcome.Kind = errorsx.KindUpstreamDown
+						// Committed semantic output → cannot transparently
+						// retry (would duplicate bytes). §11.6 path is
+						// "return structured error" — that's what we did
+						// above via errChunk.
 						outcome.Resumable = false
 						outcome.ChunkCount = chunkCount
 					} else {
 						// No semantic output committed: this IS a real
-						// upstream failure. Preserve the pre-fix
-						// behavior so genuine failures still surface
-						// in error-rate metrics and trip the breaker.
+						// upstream failure. The execution can transparently
+						// fail over to the next credential (Resumable=true
+						// + ChunkCount=0 < StreamRetryThreshold) so the
+						// candidate-loop continue branch (executor.go:1814)
+						// tries the next node.
 						slog.Warn("upstream EOF without [DONE]", "client_model", clientModel)
 						if capture != nil {
 							capture.MarkInterruptedWithReason("eof_without_done")
