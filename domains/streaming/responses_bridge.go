@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic"
+	"github.com/kaixuan/llm-gateway-go/internal/emptyoutcome"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
@@ -293,16 +293,16 @@ func (s *responsesScaffold) finishInterrupted(gate *AttemptCommitGate, fullText,
 // termination on OpenAI-compatible providers (content_filter/refusal and
 // GLM-style network_error/sensitive). These must not surface as a successful
 // "completed" terminal envelope.
+//
+// Wave4-D3 (2026-09-22): backed by the single errorsx vendor-channel table.
+// Compared with the previous local set this ADDS the GLM
+// model_context_window_exceeded and context_length_exceeded values (the
+// non-stream path and the OpenAI→Anthropic bridge already interrupted on
+// them — a context-window-aborted stream must not render a bogus
+// "completed") plus the failure-channel misspelling tolerance.
 func openaiFinishReasonIsError(fr string) bool {
-	switch fr {
-	// R36 (2026-09-17 audit): "refusal" added — the non-streaming Responses
-	// mapping (internal/ir mapFinishReasonToResponsesStatus) already reports
-	// refusal as incomplete/content_filter; the streaming bridge must not
-	// render a refusal-only upstream response as a successful "completed".
-	case "content_filter", "refusal", "network_error", "sensitive", "error":
-		return true
-	}
-	return false
+	_, ok := errorsx.FinishReasonAbnormalKind(fr)
+	return ok
 }
 
 // writeFinalEvents emits response.output_text.done, response.output_item.done,
@@ -735,7 +735,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 					// stream right after the finish_reason chunk instead of
 					// emitting a terminal event).
 					if finishReason != "" {
-						if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, clientWriter.clientDisconnected) {
+						if emptyoutcome.IsEmptyOutcome(emittedContent, clientWriter.clientDisconnected) {
 							if capture != nil {
 								capture.MarkInterruptedWithReason("anthropic_empty_response")
 							}
@@ -785,7 +785,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 					}
 					return outcome
 				}
-				if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, clientWriter.clientDisconnected) {
+				if emptyoutcome.IsEmptyOutcome(emittedContent, clientWriter.clientDisconnected) {
 					if capture != nil {
 						capture.MarkInterruptedWithReason("anthropic_empty_response")
 					}
@@ -799,7 +799,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 				// response.completed. A pending capturer alone is not evidence
 				// of client disconnect; only an observed write failure enables
 				// completed replay.
-				// Audit R20 (2026-09-13): the duplicate IsAnthropicStreamEmpty
+				// Audit R20 (2026-09-13): the duplicate empty-outcome check
 				// check that used to sit here was unreachable copy-left from
 				// the 5b249f31d indent refactor — removed.
 				// FlushHoldback: force-close the survival L1 holdback window so
