@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/identity" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -110,9 +111,33 @@ type Lease struct {
 	Holder       string
 	TenantID     string
 
-	inFlight  bool
+	inFlight bool
 	releaseMu sync.Mutex
 	released  bool
+	// watchdogTimer holds the dispatch-side B14 hard-cap timer so a normal
+	// release can stop it instead of leaving ~hardCap of pending timers
+	// behind per request (R56 audit: timer pileup at high QPS).
+	watchdogTimer atomic.Pointer[time.Timer]
+}
+
+// SetWatchdogTimer arms the lease's hard-cap timer (dispatch B14 watchdog).
+// nil-safe; overwritten atomically.
+func (l *Lease) SetWatchdogTimer(t *time.Timer) {
+	if l == nil {
+		return
+	}
+	l.watchdogTimer.Store(t)
+}
+
+// StopWatchdogTimer stops and clears the hard-cap timer. Safe to call from
+// any goroutine and alongside Release. nil-safe.
+func (l *Lease) StopWatchdogTimer() {
+	if l == nil {
+		return
+	}
+	if t := l.watchdogTimer.Swap(nil); t != nil {
+		t.Stop()
+	}
 }
 
 // Released reports whether this lease has already been released. Read-side
@@ -426,8 +451,85 @@ func (m *Manager) Release(ctx context.Context, lease *Lease) {
 	m.releaseFiniteLease(ctx, lease)
 }
 
-func (m *Manager) releaseFiniteLease(ctx context.Context, lease *Lease) {
+// ReleaseHard frees a slot WITHOUT the keepalive refresh: the slot key is
+// deleted, so the credential's concurrency budget is immediately available
+// to other holders and availableCount stops counting the slot as occupied.
+//
+// This is the B14 hard-cap (watchdog) path. The ordinary Release keeps the
+// key alive for fingerprint-identity reuse ("DO NOT delete" semantics in
+// releaseSlotScript) — appropriate when the request is over. The watchdog
+// fires while the request is still running, and the design's adjudicated
+// trade is "bounded accounting violation": the slot must stop counting
+// against concurrency even though the request continues. Routing the
+// watchdog through the ordinary Release made it a no-op for occupancy (it
+// even re-armed a fresh full TTL) — the R56 audit bug this function fixes.
+//
+// The session pin is intentionally left untouched so the same holder's next
+// request still re-uses its slot index; acquire's pin path migrates when the
+// key is gone.
+//
+// Returns true when this call performed the release (won the released CAS
+// and deleted a slot key it owned); false when the lease was already
+// released, the slot was preempted/expired, or Redis is unreachable. The
+// caller uses the return value to attribute a hard-cap breach exactly once.
+func (m *Manager) ReleaseHard(ctx context.Context, lease *Lease) bool {
+	if lease == nil || lease.Unlimited || m.client == nil {
+		return false
+	}
+	lease.releaseMu.Lock()
+	defer lease.releaseMu.Unlock()
+	if lease.released {
+		return false
+	}
 	tenantID := normalizeTenantID(lease.TenantID)
+	key := tenantSlotRedisKey(tenantID, lease.CredentialID, lease.SlotIndex)
+	performed, err := releaseSlotHardScript.Run(ctx, m.client,
+		[]string{key},
+		lease.Holder,
+	).Bool()
+	if err != nil {
+		// Redis unreachable: fall back to the ordinary release retry path so
+		// the failure is retried and accounted by the existing machinery.
+		slog.Warn("cred_fp_slot hard release redis failed, falling back to ordinary release",
+			"credential_id", lease.CredentialID,
+			"slot", lease.SlotIndex,
+			"error", err,
+		)
+		m.releaseFiniteLease(ctx, lease)
+		return true
+	}
+	if !performed {
+		// Slot already expired or taken over by another holder — nothing to
+		// free. Still mark the lease released so the watchdog never retries.
+		lease.released = true
+		return false
+	}
+	recordReleaseSuccess()
+	if lease.inFlight {
+		recordClientTokenInFlight(lease.TenantID, lease.CredentialID, -1)
+	}
+	lease.released = true
+	return true
+}
+
+// releaseSlotHardScript deletes the slot key when it is still owned by the
+// holder. Unlike releaseSlotScript this actually frees the concurrency
+// budget: availableCountScript counts occupancy via key existence.
+// Returns 1 when the key was deleted, 0 when not owned (already expired or
+// preempted). Integer reply, not a Lua boolean: a boolean false surfaces as
+// a nil reply and redis Nil-checks would misroute it into the error path.
+var releaseSlotHardScript = redis.NewScript(`
+	local slotKey = KEYS[1]
+	local holder = ARGV[1]
+	local current = redis.call('GET', slotKey)
+	if current ~= holder then
+		return 0
+	end
+	redis.call('DEL', slotKey)
+	return 1
+`)
+
+func (m *Manager) releaseFiniteLease(ctx context.Context, lease *Lease) {	tenantID := normalizeTenantID(lease.TenantID)
 	key := tenantSlotRedisKey(tenantID, lease.CredentialID, lease.SlotIndex)
 	pinKey := tenantPinRedisKey(tenantID, lease.Holder, lease.CredentialID)
 
