@@ -690,6 +690,17 @@ func (h *Handler) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "update failed")
 		return
 	}
+	// B4 (2026-09-22): revoke every token issued before now — old JWTs stay
+	// cryptographically valid until expiry, so the epoch record is what
+	// makes the auth middlewares reject them (401) immediately. A failed
+	// write must not fail the password change itself; the exposure window
+	// is then bounded by the remaining token TTL as before.
+	if revokeErr := revokeUserTokensForPasswordChange(ctx, h.db, auth.UserID); revokeErr != nil {
+		slog.Warn("password change succeeded but token revocation failed",
+			"user_id", auth.UserID,
+			"error", revokeErr,
+		)
+	}
 	h.writeAuditLog(r, "user.change_password", "user", auth.UserID, "self")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "password_changed"})
 }
