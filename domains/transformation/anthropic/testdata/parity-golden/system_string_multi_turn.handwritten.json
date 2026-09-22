@@ -1,0 +1,1 @@
+{"max_tokens":77,"messages":[{"content":"q1","role":"user"},{"content":"a1","role":"assistant"},{"content":"q2","role":"user"}],"model":"gpt-x","system":"be brief"}
