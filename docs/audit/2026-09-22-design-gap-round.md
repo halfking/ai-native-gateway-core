@@ -105,7 +105,11 @@ By-design（接受）：
 
 ## 七、部署冒烟
 
-deploy-local.sh 冒烟（8782 /healthz + admin 登录）在四波最终提交后执行，结果见收口报告（另一并行会话同窗内多次部署，冒烟需避开其部署窗口，防 SIGKILL 竞争）。
+- Wave 3 会话同日多轮 deploy-local 冒烟 PASS（见其台账记录）；Wave 4 会话当时因并行部署竞争推迟的收口冒烟，已由收官会话于 2026-09-22 20:1x 补验：
+  - 运行二进制 `2.5.6-f7f8f66d-20260922-2185`（8782 active-version 与字面量一致，f7f8f66d 之后仅 docs 提交，**覆盖 Wave1-4 全部代码提交**）；
+  - `/healthz`：`status=ok ready=true`；
+  - admin 登录 `POST /api/auth/token`：200 + access_token(289 字节)；错密码负例 401 拒绝（对照有效）。
+- 顺带收口：`dl_load_project_env` 消费死路径修复（38814ddde）——c48651e58 的 `{ parser >/dev/null; env -0; }` 形态丢弃解析输出致 .env.local 零加载；红绿实证（HEAD 版 pw/DSN 双 UNSET）+ envload/bootretry/preflight 三锁定测试全绿；envload 锁定测试只盯 `dl_load_env_file` 未覆盖本函数系漏网根因。
 
 ## 八、挂账清单（下一轮入口）
 
