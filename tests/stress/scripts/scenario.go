@@ -1,6 +1,6 @@
 // Package main is the scenario driver for the comprehensive test plan.
 //
-// It executes each scenario in tests/stress/scripts/scenarios.yaml against
+// It executes each scenario in tests/stress/scripts/scenarios.json against
 // the running harness, asserts expected outcomes, and produces a JSON
 // report at tests/stress/results/report.json.
 //

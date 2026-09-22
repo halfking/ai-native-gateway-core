@@ -11,8 +11,9 @@
 //	       ↓
 //	stream/non-stream passthrough; status / error / latency recorded.
 //
-// Health checks: L1 (TCP), L2 (HTTP HEAD), L3 (light inference) run
-// against the registered credentials.
+// Health checks: L1 (TCP) + L2 (GET /healthz). There is no L3/L4
+// inference probe in this test gateway. Do not claim production
+// credentialhealth behavior.
 //
 // Endpoints:
 //
@@ -430,9 +431,11 @@ func (g *Gateway) handleChat(w http.ResponseWriter, r *http.Request) {
 //	committed — response headers/body have already been written to w;
 //	            the caller MUST NOT write anything else.
 //
-// Failover is only possible before the first byte is written. Once
-// headers are flushed, the attempt is committed even if the stream
-// later truncates.
+// Failover is only possible before the first byte is written. This
+// test gateway therefore buffers a mock SSE body until [DONE] or EOF
+// and only then writes to the client. A truncated stream (no [DONE])
+// is not committed, so the caller can try the next credential.
+// Production cmd/gateway is NOT this code path.
 func (g *Gateway) proxyRequest(
 	w http.ResponseWriter, r *http.Request,
 	cs *credState, model string, stream bool,
@@ -497,8 +500,46 @@ func (g *Gateway) proxyRequest(
 		return false, true
 	}
 
-	// Stream: copy headers then pipe. After WriteHeader the attempt
-	// is committed — a truncated stream cannot failover.
+	// Stream: buffer the mock SSE until [DONE] or EOF. Plan §11.6:
+	// HTTP 200 without [DONE] must not be returned to the client.
+	// Buffering is acceptable here because mock streams are short
+	// (a few hundred bytes). This is NOT the production executor.
+	ctx := r.Context()
+	var bodyBuf bytes.Buffer
+	tmp := make([]byte, 16*1024)
+	for {
+		select {
+		case <-ctx.Done():
+			cs.recordError("stream-client-cancel", 0)
+			return true, false
+		default:
+		}
+		n, err := resp.Body.Read(tmp)
+		if n > 0 {
+			bodyBuf.Write(tmp[:n])
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			cs.recordError("stream-read: "+err.Error(), 0)
+			return true, false
+		}
+		if bodyBuf.Len() > 1<<20 {
+			cs.recordError("stream-buffer-overflow", 0)
+			return true, false
+		}
+	}
+	sawDone := bytes.Contains(bodyBuf.Bytes(), []byte("data: [DONE]"))
+	if !sawDone || bodyBuf.Len() == 0 {
+		kind := "stream-missing-done"
+		if bodyBuf.Len() == 0 {
+			kind = "stream-empty"
+		}
+		cs.recordError(kind, 0)
+		return true, false
+	}
+
 	for k, vs := range resp.Header {
 		for _, v := range vs {
 			w.Header().Add(k, v)
@@ -508,51 +549,12 @@ func (g *Gateway) proxyRequest(
 		w.Header().Set("Content-Type", "text/event-stream")
 	}
 	w.WriteHeader(resp.StatusCode)
-	committed = true
-
-	ctx := r.Context()
-	buf := make([]byte, 16*1024)
-	var sawDone bool
-	var wroteBytes int
-	for {
-		select {
-		case <-ctx.Done():
-			if !sawDone {
-				cs.recordError("stream-client-cancel", 0)
-			}
-			return !sawDone, true
-		default:
-		}
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			if bytes.Contains(buf[:n], []byte("data: [DONE]")) {
-				sawDone = true
-			}
-			if _, werr := w.Write(buf[:n]); werr != nil {
-				cs.recordError("stream-client-write: "+werr.Error(), 0)
-				return true, true
-			}
-			wroteBytes += n
-			if f, ok := w.(http.Flusher); ok {
-				f.Flush()
-			}
-		}
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			cs.recordError("stream-read: "+err.Error(), 0)
-			return true, true
-		}
-	}
-	if !sawDone {
-		// Plan §11.6: HTTP 200 SSE without [DONE] is not a success.
-		cs.recordError("stream-missing-done", 0)
+	if _, werr := w.Write(bodyBuf.Bytes()); werr != nil {
+		cs.recordError("stream-client-write: "+werr.Error(), 0)
 		return true, true
 	}
-	if wroteBytes == 0 {
-		cs.recordError("stream-empty", 0)
-		return true, true
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
 	}
 	cs.recordSuccess(latency)
 	return false, true
