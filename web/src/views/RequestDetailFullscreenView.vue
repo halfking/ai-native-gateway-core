@@ -203,9 +203,9 @@ const snapGeneratedAt = computed(() => {
     <div v-if="exportError" class="banner err">导出失败：{{ exportError }}</div>
 
     <div v-if="metaLoading" class="banner">加载元数据…</div>
-    <div v-else-if="metaError && !log && !unified" class="banner err">{{ metaError }}</div>
+    <div v-else-if="metaError" class="banner err">{{ metaError }}</div>
 
-    <template v-else>
+    <template v-if="!metaLoading && (log || unified || (viewMode === 'session-turns' && sessionId) || !metaError)">
       <SessionSummaryBar
         v-if="sessionId && viewMode === 'request'"
         :session-id="sessionId"

@@ -88,13 +88,11 @@ async function loadVersion() {
   try {
     const resp = await fetch('/api/system/version', {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: 'same-origin',
     })
-    if (resp.status === 401) {
-      clearAll()
-      router.push('/')
-      openLogin()
-      return
-    }
+    // /api/system/version is a public display endpoint. A 401 here must not
+    // wipe the session or bounce a request-detail deep link to the overview.
+    if (resp.status === 401) return
     if (resp.ok) {
       versionInfo.value = await resp.json()
     }
