@@ -315,6 +315,47 @@ func GoalSpecs() []Spec {
 			HotReload:       true,
 			DangerLevel:     Safe,
 		},
+		// B12 (2026-09-22) audit 多轮状态机的三个键：audit_hook.go 一直在读，
+		// 但直到 R56 审计才补 spec 登记——未登记键在管理 UI 不可见/改不了
+		//（与 B1 补登记 MaasRatePeriodSpecs 同病灶）。
+		{
+			Key:             "goal.audit_max_rounds",
+			EnvName:         "LLM_GATEWAY_GOAL_AUDIT_MAX_ROUNDS",
+			Type:            TypeInt,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         3,
+			Min:             floatPtr(1),
+			Max:             floatPtr(5),
+			Description:     "审计最大轮数",
+			DescriptionLong: "AUDIT→FIX 循环的最大轮数，达到后即使未通过也落终态（代码默认 3）",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
+		{
+			Key:             "goal.audit_verify_enabled",
+			EnvName:         "LLM_GATEWAY_GOAL_AUDIT_VERIFY_ENABLED",
+			Type:            TypeBool,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         true,
+			Description:     "启用独立 VERIFY 阶段",
+			DescriptionLong: "审计通过后追加一轮独立验证，防止审计自评虚高（B12）",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
+		{
+			Key:             "goal.audit_verify_model",
+			EnvName:         "LLM_GATEWAY_GOAL_AUDIT_VERIFY_MODEL",
+			Type:            TypeString,
+			Scope:           ScopeTenant,
+			Category:        CategorySession,
+			Default:         "auto",
+			Description:     "VERIFY 使用的模型",
+			DescriptionLong: "独立验证阶段的 LLM 模型，auto 表示使用 autoroute 选择（与审计模型同语义）；代码侧未设置时回退审计模型",
+			HotReload:       true,
+			DangerLevel:     Safe,
+		},
 
 		// ── Loop detection & model switching (2026-07-06) ─────────────────
 		// When the continue budget is exhausted OR the model repeats itself,
