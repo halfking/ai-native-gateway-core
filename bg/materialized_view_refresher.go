@@ -212,9 +212,17 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	// cycle (both views share one token — no reason to elect a leader
 	// twice per tick). Redis is preferred: it works for any instance
 	// count and self-heals on crash via TTL expiry with no manual unlock.
-	// When Redis is nil/disabled/unreachable, useAdvisoryLock stays true
-	// and refreshView falls back to its per-view Postgres advisory lock
-	// exactly as before this change.
+	// When Redis is nil/disabled/unreachable, the Postgres advisory lock
+	// below runs exactly as before this change.
+	//
+	// 2026-09-23 252 SQL 日志审计轮（FIX-4）：advisory lock 升级为全局互斥
+	// 后端，Redis leader 不再绕过它（原 useAdvisoryLock=false 删除）。
+	// 根因实证：Redis 选举与 advisory 兜底互不可见——无 Redis 的实例
+	// （252-dev 形态）走 advisory，Redis leader（154/245）裸奔 REFRESH，
+	// 同一视图双发叠跑，252-dev 每 10min tick 饿死在 180s pin 上
+	// （击杀时间轴 05:33/05:43/05:53/06:03 = tick 起点精确 +180s，watcher
+	// 红手抓捕 252-dev 刷新 98s 仍在跑）。现在 advisory lock 是唯一真理：
+	// 任一后端赢了选举，另一个实例 pg_try_advisory_lock 失败即跳过。
 	useAdvisoryLock := true
 	if handle := r.acquireDistLock(ctx); handle != nil {
 		defer handle.Release(context.WithoutCancel(ctx))
@@ -222,7 +230,6 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 			slog.Info("materialized view refresh skipped, redis token held by another instance")
 			return
 		}
-		useAdvisoryLock = false
 		slog.Info("materialized view refresh: redis leader token acquired")
 	}
 

@@ -703,6 +703,13 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 	} else {
 		canonicalName = NormalizeModelName(rawName)
 		family := InferFamily(canonicalName)
+		// 2026-09-23 audit round: migration 735's folded-name unique index
+		// fires 23505 when an active row folds equal to the incoming name but
+		// its raw canonical_name differs — ON CONFLICT (canonical_name) below
+		// cannot cover the expression index. Pre-resolve to the existing row
+		// so the upsert takes the DO UPDATE merge branch instead (252 log
+		// 2026-09-23 05:06: 18 failures in 32s, model sync stalled).
+		adoptFoldedExisting(ctx, s.db, &canonicalName, &family)
 		// Upsert into models_canonical. The INSERT path writes a seed tags
 		// array with `family:<id>` so a freshly discovered model is never
 		// visible in the /models family-chip filter with an empty tag set
@@ -910,6 +917,10 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 	canonicalName = NormalizeModelName(rawName)
 	family := InferFamily(canonicalName)
 	inferredModality := modelname.InferModality(rawName)
+	// 2026-09-23 audit round: same migration-735 folded-name pre-resolve as
+	// upsertModel (see the comment there) — 23505 otherwise stalls refresh
+	// feeds when an active row folds equal but differs in raw name.
+	adoptFoldedExisting(ctx, db, &canonicalName, &family)
 
 	err = db.QueryRow(ctx, `
 		INSERT INTO models_canonical (canonical_name, family, tags, source, status, modality)

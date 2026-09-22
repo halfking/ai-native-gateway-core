@@ -265,13 +265,28 @@ func recordHotTableOldestRowAge(table string, ageSeconds float64) {
 // R51 (2026-09-21)：移除 harness_hot / session_audit_logs_hot /
 // probe_feedback_hot 三条映射——仓库中无这三张表的建表/写入路径（幽灵表），
 // 留在白名单里只会让本映射与实际 CREATE 的"必须一致"契约失真。
+//
+// 2026-09-23 252 PG SQL 日志审计轮：R48 初版映射 10/20 张表与真库不符
+// （session_turns/session_bodies/auto_route/candidate_failure_logs 写成
+// created_at 实为 ts；request_wal/credit_ledger/tool_usage_stats/handoff_logs
+// 走默认 ts 实为 created_at；credential_model_index_hot 实为 bucket；
+// supplier_errors_hot 实为 occurred_at），oldest-age gauge 每 promote 周期
+// 固定产生 10 条 42703（252 快照 74min 实证），gauge 对这些表从未工作。
+// 本映射逐表对照 252 真库 information_schema 重写；真库回归钉在
+// hot_ts_column_realdb_test.go（TEST_DATABASE_URL 门控）。
 func hotTableTSColumn(label string) string {
 	switch label {
-	case "session_turns_hot", "session_memora_hot", "session_censors_hot",
-		"session_tools_hot", "session_bodies_hot", "session_module_executions_hot",
-		"auto_route_selections_hot", "candidate_failure_logs_hot",
+	case "request_wal_hot", "credit_ledger", "tool_usage_stats",
+		"handoff_logs_hot", "session_memora_hot", "session_censors_hot",
+		"session_tools_hot", "session_module_executions_hot",
 		"dashboard_access_events_hot", "session_last_requests":
 		return "created_at"
+	case "credential_model_index_hot":
+		// 时间列是 bucket TIMESTAMPTZ（索引刷新的 5min 桶），无 ts/created_at。
+		return "bucket"
+	case "supplier_errors_hot":
+		// V371 建表，时间列 occurred_at。
+		return "occurred_at"
 	default:
 		return "ts"
 	}

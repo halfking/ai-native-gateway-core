@@ -1219,8 +1219,10 @@ func (pm *PartitionManager) hotTableOldestRowAge(ctx context.Context, label stri
 	}
 	tsCol := hotTableTSColumn(label)
 	// label/tsCol 均来自固定 switch + promoteSpecs，无用户输入；白名单校验
-	// 防止有人修改 switch 后误注入 SQL。
-	allowed := map[string]bool{"ts": true, "created_at": true}
+	// 防止有人修改 switch 后误注入 SQL。（2026-09-23 审计轮：补 bucket /
+	// occurred_at——credential_model_index_hot 与 supplier_errors_hot 的
+	// 时间列不走 ts/created_at。）
+	allowed := map[string]bool{"ts": true, "created_at": true, "bucket": true, "occurred_at": true}
 	if !allowed[tsCol] {
 		slog.Error("partition_manager: hot ts column rejected", "label", label, "ts_col", tsCol)
 		return -1
@@ -1255,10 +1257,30 @@ func (pm *PartitionManager) analyzePartitionStats(ctx context.Context) {
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
+	// 2026-09-23 252 SQL 日志审计轮：analyze 全实例逐表 ANALYZE 实测 >30s，
+	// 被角色级 statement_timeout=30s（252 llm_gateway rolconfig）击杀
+	// （252 快照 74min ×4），GUC 注释里的 5min cooldown 形同虚设——analyze
+	// 每次都半途而废。Go 侧预算 10min，事务内 SET LOCAL 抬到同值对齐，
+	// 事务结束自动还原，pooled 连接不保留（与 promote 的 60s 同型）。
+	tx, err := pm.db.Begin(timeoutCtx)
+	if err != nil {
+		slog.Warn("partition_manager: analyze stats begin failed", "error", err)
+		return
+	}
+	if _, err := tx.Exec(timeoutCtx,
+		"SET LOCAL statement_timeout = '10min'"); err != nil {
+		tx.Rollback(timeoutCtx)
+		slog.Warn("partition_manager: analyze timeout setup failed", "error", err)
+		return
+	}
 	var n int64
-	err := pm.db.QueryRow(timeoutCtx,
+	err = tx.QueryRow(timeoutCtx,
 		"SELECT analyze_llm_gateway_table_stats($1)", 2,
 	).Scan(&n)
+	if cerr := tx.Commit(timeoutCtx); cerr != nil {
+		slog.Warn("partition_manager: analyze commit failed", "error", cerr)
+		return
+	}
 	if err != nil {
 		slog.Warn("partition_manager: analyze stats failed", "error", err)
 		return

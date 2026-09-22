@@ -56,3 +56,22 @@ var DedupCanonicalNameSQL = fmt.Sprintf(`
 		ORDER BY length(canonical_name), canonical_name
 		LIMIT 1
 	`, foldedNameExpr("canonical_name"), foldedNameExpr("$1"))
+
+// FoldedActiveLookupSQL —— 2026-09-23 252 审计轮：discovery/provider_refresh
+// 回种 canonical 前的折叠名预解析（upsertModel / EnsureCanonicalAndAliases
+// 两点共用）。$1 = NormalizeModelName 输出；命中返回既有 active 行的
+// canonical_name（最短名优先 = 最早已确立名），调用方应把本次 upsert 重定向
+// 到该行走 ON CONFLICT DO UPDATE 合并——迁移 735 的
+// uq_models_canonical_active_folded_name 表达式唯一索引无法被
+// ON CONFLICT (canonical_name) 覆盖，raw 名不同但折叠名相同的 INSERT 会以
+// 23505 整批爆掉（252 快照 05:06 32s×18 实证，discovery 模型同步停摆）。
+// 折叠链经 foldedNameExpr 单一来源合成，与 migration_735_test.go 的索引
+// 表达式字节级契约对齐，勿手改。
+var FoldedActiveLookupSQL = fmt.Sprintf(`
+			SELECT canonical_name FROM models_canonical
+			WHERE status = 'active'
+			  AND regexp_replace(%[1]s, '[-_]{2,}', '_', 'g')
+			   = regexp_replace(%[2]s, '[-_]{2,}', '_', 'g')
+			ORDER BY length(canonical_name), canonical_name
+			LIMIT 1
+		`, foldedNameExpr("canonical_name"), foldedNameExpr("$1"))
