@@ -660,6 +660,15 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			)
 		} else {
 			fpLease = lease
+			// Wave 3 B14: hard cap on how long one dispatch may hold a
+			// slot. Previously only the stream timeout bounded the hold;
+			// a wedged upstream that dodged every timeout pinned the slot
+			// until the Redis TTL self-expired (≤30 min), draining the
+			// credential's concurrency budget. The watchdog force-releases
+			// at fpSlotLeaseHardCap and counts the breach; Release is
+			// idempotent and the Released() check keeps a queued normal
+			// release from being miscounted.
+			armFpSlotLeaseDeadline(e.FpSlots, lease)
 		}
 	}
 
@@ -1076,6 +1085,49 @@ var (
 	errDispatchCircuitOpen      = newDispatchErr("dispatch: circuit open")
 	errDispatchKeysExhausted    = newDispatchErr("dispatch: all keys exhausted")
 )
+
+// fpSlotLeaseHardCap (Wave 3 B14, design §3): the ceiling on how long one
+// dispatch may hold an FP-slot lease. Previously the stream timeout was the
+// only bound; a wedged upstream that dodged every timeout pinned the slot
+// until the Redis TTL self-expired (≤30 min), draining the credential's
+// concurrency budget. After the cap the watchdog force-releases the slot —
+// the request itself keeps running, but it no longer occupies a concurrency
+// slot (the design's adjudicated trade: a bounded accounting violation
+// instead of an unbounded hold).
+const fpSlotLeaseHardCap = 300 * time.Second
+
+// armFpSlotLeaseDeadline arms the B14 watchdog for one dispatch lease.
+// time.AfterFunc allocates a single one-shot timer that self-frees; the
+// Released() check keeps a normal (possibly still-queued) release from being
+// counted as a breach, and Release is idempotent so the double-release race
+// is harmless.
+func armFpSlotLeaseDeadline(m *credentialfpslot.Manager, lease *credentialfpslot.Lease) {
+	armFpSlotLeaseDeadlineFor(m, lease, fpSlotLeaseHardCap)
+}
+
+func armFpSlotLeaseDeadlineFor(m *credentialfpslot.Manager, lease *credentialfpslot.Lease, hardCap time.Duration) {
+	if m == nil || lease == nil || !m.Enabled() || lease.Unlimited || hardCap <= 0 {
+		return
+	}
+	time.AfterFunc(hardCap, func() {
+		enforceFpSlotLeaseDeadline(m, lease)
+	})
+}
+
+func enforceFpSlotLeaseDeadline(m *credentialfpslot.Manager, lease *credentialfpslot.Lease) {
+	if lease.Released() {
+		return
+	}
+	fpSlotLeaseForcedReleaseTotal.Inc()
+	slog.Warn("fp slot lease exceeded hard cap, forcing release",
+		"credential_id", lease.CredentialID,
+		"slot_index", lease.SlotIndex,
+		"holder", lease.Holder,
+		"tenant_id", lease.TenantID,
+		"cap", fpSlotLeaseHardCap,
+	)
+	releaseFpLease(m, lease)
+}
 
 // logDispatchPreflightRejection is the shared writer for pre-upstream
 // admission rejections (fp-slot saturation, circuit-open, limiter rejection,

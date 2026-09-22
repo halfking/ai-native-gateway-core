@@ -115,6 +115,19 @@ type Lease struct {
 	released  bool
 }
 
+// Released reports whether this lease has already been released. Read-side
+// for the Wave 3 B14 dispatch watchdog: the deadline timer checks this before
+// force-releasing so a normal (possibly queued) release is never
+// double-counted as a hard-cap breach.
+func (l *Lease) Released() bool {
+	if l == nil {
+		return true
+	}
+	l.releaseMu.Lock()
+	defer l.releaseMu.Unlock()
+	return l.released
+}
+
 // resolveActiveGateSeconds returns the configured active gate, falling
 // back to DefaultActiveGateSeconds for uninitialised / zero values.
 func (c Config) resolveActiveGateSeconds() int {
