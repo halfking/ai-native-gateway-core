@@ -1,7 +1,7 @@
 # LLM Gateway 全方位测试方案
 
-**版本**: v1.0
-**日期**: 2026-07-22
+**版本**: v1.2
+**日期**: 2026-09-22
 **目标**: 确保系统在供应商不稳定情况下的高可用性
 **核心诉求**: 快速检测、智能路由、自适应负载均衡
 
@@ -735,14 +735,15 @@ curl http://127.0.0.1:6060/debug/pprof/goroutine?debug=1
 ### 11.7 本地 mock 压测（不能代替本节门禁）
 
 `tests/stress/` 是 **mock 上游 + 内嵌测试网关**（`tests/stress/gateway`，不是
-`cmd/gateway`）的回归 harness。2026-09-22 收紧断言后 16/16 PASS 只证明：
+`cmd/gateway`）的回归 harness。本地 16/16 PASS 只证明测试网关 + mock，且：
 
 - 供应商必须是 `mock-*` / `mock-stress-*`，禁止真实供应商；
 - `mock-stress-fast` 只绑 alpha/beta/gamma；`mock-stress-large` 只绑 delta；
   `mock-stress-pool` 绑四家（s14）；网关 HTTP `Proxy: nil`；
-- stream 成功必须含 `data: [DONE]`；timeout 场景 wall clock ≥ 20s；
-- s7 恢复必须在 by_provider 里重新出现 `mock-alpha`；长 prompt ≥ 20k 字符；
-- s9 是 200@c25 短突发，不是 30 分钟 soak。
+- stream 成功必须含 `data: [DONE]`；测试网关对 mock SSE **先缓冲再写客户端**，
+  缺 `[DONE]` 不 committed、可 failover（这不是生产 `cmd/gateway` 行为）；
+- timeout 场景 wall clock ≥ 20s；s7 恢复必须重新出现 `mock-alpha`；
+- 长 prompt ≥ 20k 字符；s9 是 200@c25 短突发，不是 30 分钟 soak。
 
 **明确不覆盖**：154/245、真实模型、30 分钟 RSS、生产 `credentialhealth`、
 cgroup 内存上限、TPM。§11.3 顺序与 §11.4 发布门禁仍然以真实供应商为准。

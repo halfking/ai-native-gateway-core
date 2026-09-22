@@ -290,8 +290,8 @@
   {
     "id": "s11_stream_broken_provider",
     "name": "Stream with broken provider — alpha emits 1 chunk then EOF",
-    "description": "alpha returns broken stream (1 chunk then EOF). Gateway should not return 200 for broken streams; clients see partial data but transparent failure.",
-    "plan_ref": "§5 stress / §11 stream completion",
+    "description": "alpha returns broken stream (1 chunk then EOF). Test gateway must buffer until [DONE]; missing [DONE] is not committed, so failover to beta can still deliver a complete SSE. Client must not see HTTP 200 without [DONE].",
+    "plan_ref": "§11.6 HTTP 200 SSE without [DONE] is not a success",
     "setup": [
       {"provider": "mock-alpha", "state": "broken_stream"},
       {"provider": "mock-beta", "state": "healthy"},
@@ -308,10 +308,13 @@
     },
     "reset": true,
     "expect": {
-      "min_success_rate": 0.50,
+      "min_success_rate": 0.90,
       "min_total_requests": 80,
-      "min_done_rate": 0.50,
-      "note": "broken_stream is NOT a 200 success. Failover to beta must produce [DONE]. acceptable_any was a lie that let 80/80 HTTP 200 pass."
+      "require_done": true,
+      "min_done_rate": 0.90,
+      "forbidden_providers": ["mock-alpha"],
+      "require_providers": ["mock-beta"],
+      "note": "Truncated alpha stream must not reach the client as HTTP 200. Failover to beta must produce [DONE]. Previous PASS with 200×80 + done_rate=0.90 still leaked 8 truncated bodies."
     }
   },
   {
