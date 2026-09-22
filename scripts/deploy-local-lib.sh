@@ -336,6 +336,24 @@ dl_load_project_env() {
     return 0
   fi
   local kv key val
+  # Consume the parser's KEY=value\0 records directly. The previous form
+  # wrapped it as `{ _dl_safe_env_source "$file" >/dev/null 2>&1; env -0; }`:
+  # the parser's output was discarded and the loop consumed the CURRENT
+  # shell environment instead, so nothing from .env.local was ever loaded
+  # (every key "already in the environment" was empty → export never ran →
+  # write_instance_env died on the empty LLM_GATEWAY_SECRET_KEY gate).
+  #
+  # The parser itself (Python) replaces the old `set -a; source $file`,
+  # which silently mangled unquoted values containing shell metacharacters:
+  # `LLM_GATEWAY_ADMIN_PASSWORD=Veritrans&9527` was split at `&` (control
+  # operator), so the env got `Veritrans` while `9527` ran in the
+  # background, then sync_admin_password_from_env bcrypt-hashed `Veritrans`
+  # into users.password_hash — every later login with the intended
+  # `Veritrans&9527` returned 401 because admin/auth.go never falls back to
+  # env once the users row exists. The parser preserves ${VAR}
+  # interpolation (DSN concatenation still works) while treating unquoted
+  # &, |, ;, (, ), <, >, $, ` as literal bytes. Quoted values are passed
+  # through verbatim, matching bash source semantics for "..." and '...'.
   while IFS= read -r -d '' kv; do
     key="${kv%%=*}"
     case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
@@ -343,23 +361,7 @@ dl_load_project_env() {
     if [[ -z "$val" ]]; then
       export "$key=${kv#*=}"
     fi
-  done < <(
-    # .env.local prints a friendly summary when sourced; suppress it so
-    # deploy diagnostics stay redacted and the env dump stays clean.
-    # The previous bash-source approach (`set -a; source $file`) silently
-    # mangled any unquoted value containing shell metacharacters: a deploy
-    # with `LLM_GATEWAY_ADMIN_PASSWORD=Veritrans&9527` (unquoted) saw
-    # bash split at `&` (control operator), so the env got `Veritrans`
-    # while `9527` ran in the background, then sync_admin_password_from_env
-    # bcrypt-hashed `Veritrans` into users.password_hash — every later
-    # login with the intended `Veritrans&9527` returned 401 because
-    # admin/auth.go never falls back to env once the users row exists.
-    # This Python parser preserves ${VAR} interpolation (DSN concatenation
-    # still works) while treating unquoted &, |, ;, (, ), <, >, $, ` as
-    # literal bytes. Quoted values are passed through verbatim, matching
-    # bash source semantics for "..." and '...'.
-    { _dl_safe_env_source "$file" >/dev/null 2>&1; env -0; }
-  )
+  done < <(_dl_safe_env_source "$file")
 }
 
 # _dl_safe_env_source — print KEY=value\0 records for _dl_load_project_env.
