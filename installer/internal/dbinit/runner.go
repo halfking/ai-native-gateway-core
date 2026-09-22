@@ -224,6 +224,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 737 (Wave 3 B8, 2026-09-22): reconciliation findings 表
 			// （CREATE TABLE IF NOT EXISTS，幂等）。
 			"737_maas_reconciliation_findings.sql",
+			// 738 (Wave 3 B1 follow-up, 2026-09-22): view 链补
+			// credits_rate_multiplier 列。736 在 request_logs / _hot 加列但
+			// 680/717/734 重建的冻结体不会自动补列 → bg/stats_minute_rollup
+			// 每分钟 INSERT 抛 "column … does not exist"。补列 + 列数守卫。
+			"738_view_chain_credits_rate_multiplier.sql",
 		},
 	}
 }
