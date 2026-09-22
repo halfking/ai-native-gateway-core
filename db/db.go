@@ -6689,6 +6689,58 @@ func (d *DB) ensureAutoRouteSelectionsHotSchema(ctx context.Context) error {
 			"(run sql/migrations/startup/656_auto_route_selections_hot.sql to install)")
 		return nil
 	}
+	// D1 残余（2026-09-23 审计轮）：ensure 体含 CREATE TABLE IF NOT EXISTS /
+	// 8 条 ALTER SET DEFAULT / 约束 DO 块 / DROP VIEW+CREATE VIEW——表与视图
+	// 已就位时这些仍要取锁（DROP VIEW 要视图的 ACCESS EXCLUSIVE，CREATE 表
+	// 要既有表的检查锁），auto_route_selections_hot 是每请求 INSERT 的热表，
+	// 晨间负载下锁等待超 30s 被 rolconfig 击杀（154 seq 2197 boot 两次尝试
+	// 在此 57014，PG 日志逐字实锤）。全量清单守卫：44 列 + 4 索引 + 3 约束
+	// + 视图全部在位 = 零 DDL。清单与 autoRouteSelectionsHotEnsureSQL 同步。
+	const arsGuardSQL = `
+		SELECT
+		  (SELECT count(*) FROM unnest(ARRAY[
+		     'id','request_id','session_id','task_id','tenant_id','ts','task_type',
+		     'profile','classifier','confidence','canonical_id','chosen_model',
+		     'candidate_rank','composite_score','affinity_score','affinity_applied',
+		     'explore','fallback_used','success','latency_ms','cost_usd','reward',
+		     'reward_source','settled_at','partition_date','experiment_id','treatment',
+		     'assignment_version','assignment_key_hash','detected_language',
+		     'prompt_length_bucket','context_length_bucket','turn_count_bucket',
+		     'has_code_indicator','has_math_indicator','has_table_indicator',
+		     'has_multimedia_indicator','intent_category','domain_hint',
+		     'complexity_bucket','latency_sensitive','cost_sensitive',
+		     'feature_version','content_hash'
+		   ]) AS want(name)
+		   WHERE to_regclass('public.auto_route_selections_hot') IS NULL
+		      OR NOT EXISTS (SELECT 1 FROM information_schema.columns
+		        WHERE table_schema='public' AND table_name='auto_route_selections_hot'
+		          AND column_name = want.name))
+		+
+		  (SELECT count(*) FROM unnest(ARRAY[
+		     'uq_ars_hot_request','idx_ars_hot_task_profile_ts',
+		     'idx_ars_hot_session','idx_ars_hot_unsettled'
+		   ]) AS want(name)
+		   WHERE NOT EXISTS (SELECT 1 FROM pg_indexes
+		     WHERE schemaname='public' AND indexname = want.name))
+		+
+		  (SELECT count(*) FROM unnest(ARRAY[
+		     'ars_hot_profile_check','ars_hot_reward_range','ars_hot_reward_source_check'
+		   ]) AS want(name)
+		   WHERE NOT EXISTS (SELECT 1 FROM pg_constraint
+		     WHERE conrelid = 'public.auto_route_selections_hot'::regclass
+		       AND conname = want.name))
+		+
+		  (SELECT count(*) FROM (SELECT 1) AS one
+		   WHERE NOT EXISTS (SELECT 1 FROM pg_views
+		     WHERE schemaname='public' AND viewname='auto_route_selections_all'))
+		`
+	var arsMissing int
+	if err := d.pool.QueryRow(ctx, arsGuardSQL).Scan(&arsMissing); err == nil && arsMissing == 0 {
+		slog.Info("auto_route_selections_hot schema ensured (catalog short-circuit: table, indexes, constraints and view present, zero DDL)")
+		return nil
+	} else if err != nil {
+		slog.Warn("auto_route_selections_hot ensure catalog probe failed; falling back to full ensure", "error", err)
+	}
 	if _, err := d.pool.Exec(ctx, autoRouteSelectionsHotEnsureSQL); err != nil {
 		return fmt.Errorf("ensure auto_route_selections_hot schema: %w", err)
 	}
