@@ -135,10 +135,47 @@ func (r *LedgerReconciler) RunOnce(ctx context.Context) int {
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
+	window := r.effectiveWindow()
 	total := 0
-	total += r.checkBalanceChain(runCtx)
-	total += r.checkUsageCredit(runCtx)
+	total += r.checkBalanceChain(runCtx, window)
+	total += r.checkUsageCredit(runCtx, window)
+	r.pruneOldFindings(runCtx, window)
 	return total
+}
+
+// effectiveWindow clamps the configured lookback to the live *_hot retention
+// window. Both checks scan only request_logs_hot / credit_ledger_hot, so a
+// lookback beyond lifecycle.hot_retention_hours silently covers less than
+// requested — the R56 audit: the 24h default against the 8h hot retention
+// meant the "24h" window actually reached only ~8h back, while the type
+// comment claimed it must stay within hot retention.
+func (r *LedgerReconciler) effectiveWindow() time.Duration {
+	hours := settingsGetPlatformInt("lifecycle.hot_retention_hours", int(DefaultRetentionWindow.Hours()))
+	if hours > 0 {
+		if hotMax := time.Duration(hours) * time.Hour; r.window > hotMax {
+			return hotMax
+		}
+	}
+	return r.window
+}
+
+// pruneOldFindings deletes findings older than twice the effective window —
+// the retention the package comment (and the 737 migration) always promised;
+// the delete itself was missing until R56, so a persistent break re-inserted
+// the same finding every hour without bound.
+func (r *LedgerReconciler) pruneOldFindings(ctx context.Context, window time.Duration) {
+	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tag, err := r.pool.Exec(pctx,
+		`DELETE FROM maas_reconciliation_findings WHERE run_at < now() - $1::interval`,
+		2*window)
+	if err != nil {
+		slog.Warn("ledger reconciliation: findings prune failed", "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Debug("ledger reconciliation: pruned stale findings", "count", n)
+	}
 }
 
 // balanceChainSQL replays the per-tenant balance_after chain server-side
@@ -162,8 +199,8 @@ func balanceChainSQL() string {
 
 // checkBalanceChain replays the per-tenant balance_after chain server-side
 // and lands every break.
-func (r *LedgerReconciler) checkBalanceChain(ctx context.Context) int {
-	rows, err := r.pool.Query(ctx, balanceChainSQL(), r.window, r.maxFindingsPerRun)
+func (r *LedgerReconciler) checkBalanceChain(ctx context.Context, window time.Duration) int {
+	rows, err := r.pool.Query(ctx, balanceChainSQL(), window, r.maxFindingsPerRun)
 	if err != nil {
 		slog.Warn("ledger reconciliation: balance chain scan failed", "error", err)
 		return 0
@@ -235,8 +272,8 @@ func usageCreditSQL() string {
 
 // checkUsageCredit compares per-request credit charges (request_logs_hot)
 // against ledger consume deductions (credit_ledger_hot).
-func (r *LedgerReconciler) checkUsageCredit(ctx context.Context) int {
-	rows, err := r.pool.Query(ctx, usageCreditSQL(), r.window, ledgerSettleLag, r.maxFindingsPerRun)
+func (r *LedgerReconciler) checkUsageCredit(ctx context.Context, window time.Duration) int {
+	rows, err := r.pool.Query(ctx, usageCreditSQL(), window, ledgerSettleLag, r.maxFindingsPerRun)
 	if err != nil {
 		slog.Warn("ledger reconciliation: usage↔credit scan failed", "error", err)
 		return 0
