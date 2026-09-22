@@ -435,6 +435,80 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 		slog.Info("nonfeatured watchdog extended next_retry_at",
 			"rows", n, "mult", mult, "target_hours", targetSecs/3600)
 	}
+	r.demoteAgedHealthyBindings(ctx)
+}
+
+// demoteAgedHealthyBindings implements the Wave 3 B2① state-aging arm of the
+// healthy_confirmed watchdog (design §6.3 "2h 无证据→可疑→后台 ping"):
+// a healthy_confirmed binding with NO successful request AND NO ok probe run
+// inside the aging window (probe.state_aging_hours, default 2h) has stale
+// evidence — the watchdog no longer extends it (the extend above only sees
+// rows it extends; both statements share the state='healthy_confirmed' +
+// liveness filters and are disjoint on the evidence condition), but flips it
+// back to 'recovering' with a due next_retry_at so the consensus machinery
+// re-verifies it through real probes: the recoveringSweeperLoop (new mode)
+// or the consensus cycle (legacy) drains it, 3 ok re-earn healthy_confirmed,
+// failures walk the normal backoff ladder. The design's "suspect" label maps
+// onto recovering+verification here because model_probe_state's consumers
+// (diagnostics/views) already enumerate recovering; introducing a third
+// spelling would strand aged rows outside every existing view.
+//
+// Load bound: every demoted row becomes one consensus verify probe, drained
+// at recoveringSweepBatch (10) per 30min — bounded fleet-wide even in a
+// mass-aging event (e.g. after a quiet weekend).
+func (r *ModelProbeRunner) demoteAgedHealthyBindings(ctx context.Context) {
+	agingHours := settings.ProbeStateAgingHours()
+	tenant := settings.GetPlatformString("probe.featured_tenant", "default")
+	dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	tag, err := r.db.Exec(dctx, `
+			WITH static AS (
+			    SELECT lower(unnest(COALESCE(
+			        (SELECT featured_models FROM routing_policy WHERE tenant_id = $1 LIMIT 1),
+			        ARRAY[]::TEXT[]
+			    ))) AS model
+			)
+			UPDATE model_probe_state mps
+			SET state = 'recovering',
+			    consecutive_successes = 0,
+			    consecutive_failures = 0,
+			    next_retry_at = now(),
+			    last_state_change_at = now()
+			FROM credential_model_bindings cmb
+			JOIN provider_models pm ON pm.id = cmb.provider_model_id
+			JOIN credentials c ON c.id = cmb.credential_id
+			JOIN providers p ON p.id = c.provider_id
+			WHERE mps.credential_id = cmb.credential_id
+			  AND mps.raw_model_name = pm.raw_model_name
+			  AND mps.state = 'healthy_confirmed'
+			  AND COALESCE(c.status, 'active') = 'active'
+			  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+			  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+			  AND COALESCE(p.enabled, FALSE) = TRUE
+			  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+			  AND lower(mps.raw_model_name) NOT IN (SELECT model FROM static)
+			  AND NOT EXISTS (
+			      SELECT 1 FROM request_logs_hot rl
+			      WHERE rl.credential_id = mps.credential_id
+			        AND COALESCE(rl.outbound_model, rl.client_model) = mps.raw_model_name
+			        AND rl.success
+			        AND rl.ts > now() - make_interval(hours => $2))
+			  AND NOT EXISTS (
+			      SELECT 1 FROM model_probe_runs mpr
+			      WHERE mpr.credential_id = mps.credential_id
+			        AND mpr.raw_model_name = mps.raw_model_name
+			        AND mpr.status = 'ok'
+			        AND mpr.created_at > now() - make_interval(hours => $2))
+		`, tenant, agingHours)
+	if err != nil {
+		slog.Warn("healthy-state aging demote failed", "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("healthy-state aging demoted stale healthy_confirmed bindings to recovering",
+			"rows", n, "aging_hours", agingHours)
+	}
 }
 
 func (r *ModelProbeRunner) startManualProbeWorker(ctx context.Context) {

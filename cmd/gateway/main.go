@@ -4278,6 +4278,10 @@ func main() {
 					routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
 						return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
 					}
+					// Wave 3 B2②: flash-blip double confirmation for the
+					// dispatch node-health path (first network/timeout
+					// failure defers its degrade behind two light pings).
+					routingExec.NodeProbeConfirm = nodeProbeWorker.ProbeConfirm
 					slog.Info("sync_no_candidate_probe", "enabled", syncOn, "timeout", routingExec.SyncNoCandidateTimeout)
 				}
 
@@ -4494,6 +4498,9 @@ func main() {
 				routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
 					return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
 				}
+				// Wave 3 B2②: same flash-blip double confirmation as the
+				// primary wiring site above.
+				routingExec.NodeProbeConfirm = nodeProbeWorker.ProbeConfirm
 				slog.Info("sync_no_candidate_probe", "enabled", syncOn, "path", "authoritative_fallback", "timeout", routingExec.SyncNoCandidateTimeout)
 			}
 			nodeProbeWorker.Start(context.Background())

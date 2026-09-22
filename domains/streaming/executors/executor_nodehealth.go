@@ -3,9 +3,13 @@ package executors
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
@@ -144,16 +148,52 @@ type executorNodeHealthAdapter struct {
 	executor *Executor
 }
 
+// nodeFlashBlipConfirmTotal observes the Wave 3 B2② double-confirm verdicts
+// (confirmed = degrade applied after both pings failed; transient = a ping
+// succeeded and the node keeps its healthy state; busy = a confirm was
+// already running for the node).
+var nodeFlashBlipConfirmTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "llmgw_node_flash_blip_confirm_total",
+		Help: "Flash-blip double-confirm verdicts after the first consecutive network/timeout failure of a node.",
+	},
+	[]string{"result"},
+)
+
+// flashBlipEligible reports whether this decision is the FIRST consecutive
+// failure of the node with a flash-blip capable error kind. Only then is the
+// degrade deferred behind the double confirmation; later consecutive
+// failures (the node is already suspect) degrade immediately as before.
+func flashBlipEligible(decision nodehealth.Decision, confirm NodeProbeConfirmFunc) bool {
+	if confirm == nil || decision.Outcome != requestjourney.OutcomeFailure {
+		return false
+	}
+	if decision.ConsecutiveFailures != 1 {
+		return false
+	}
+	switch decision.ErrorKind {
+	case nodehealth.ErrorKindNetwork, nodehealth.ErrorKindTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
 func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, decision nodehealth.Decision) error {
 	e := a.executor
 	if e == nil {
 		return nil
 	}
 	kind := errorKindFromNodeHealth(decision.ErrorKind)
+	deferDegrade := flashBlipEligible(decision, e.NodeProbeConfirm)
 	var errs []error
+	var deferred []nodehealth.Effect
 	for _, effect := range decision.Effects {
 		switch effect.Kind {
 		case nodehealth.EffectRecordCircuitFailure:
+			// Circuit semantics are unchanged by the flash-blip gate: the
+			// original request failure keeps recording; the confirm pings
+			// themselves never touch the breaker ("不叠加熔断").
 			if e.Circuit != nil {
 				// 2026-09-15 (245 free-capacity plan): billing-mode-aware
 				// recording lets free credentials adopt the shortened
@@ -164,53 +204,27 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 			if e.Circuit != nil {
 				e.Circuit.RecordSuccess(int(decision.Node.ProviderID), int(decision.Node.CredentialID))
 			}
-		case nodehealth.EffectPersistNodeStatus:
-			if e.StateObserver != nil && e.legacyWritersEnabled() {
-				if decision.Outcome == requestjourney.OutcomeSuccess {
-					e.StateObserver.UpdateOnSuccess(ctx, int(decision.Node.CredentialID), decision.Node.Model, decision.LatencyMs, decision.RequestID)
-				} else if decision.Outcome == requestjourney.OutcomeFailure {
-					e.StateObserver.UpdateOnFailure(ctx, int(decision.Node.CredentialID), decision.Node.Model, kind, decision.RequestID, decision.Node.TenantID, decision.BillingMode)
-				}
-			}
-		case nodehealth.EffectSetBindingUnavailable:
-			if e.State != nil && e.State.Enabled() {
-				failure := credential.Failure{Kind: kind, Detail: decision.ErrorDetail}
-				if err := e.State.WriteOnError(ctx, int(decision.Node.CredentialID), decision.Node.Model, failure); err != nil {
-					errs = append(errs, err)
-				}
-			}
-		case nodehealth.EffectSetCredentialUnavailable:
-			if e.State != nil && e.State.Enabled() {
-				failure := credential.Failure{Kind: kind, Detail: decision.ErrorDetail}
-				if err := e.State.SetCredentialUnavailable(ctx, int(decision.Node.CredentialID), failure); err != nil {
-					errs = append(errs, err)
-				}
-			}
 		case nodehealth.EffectRestoreBinding:
 			if e.State != nil && e.State.Enabled() {
 				if err := e.State.RestoreOnSuccess(ctx, int(decision.Node.CredentialID), decision.Node.Model); err != nil {
 					errs = append(errs, err)
 				}
 			}
-		case nodehealth.EffectUpdateURSM:
-			if e.URSMv2 != nil {
-				err := e.URSMv2.RecordRequest(ctx, ursmv2api.RequestOutcome{
-					CredentialID: int(decision.Node.CredentialID),
-					RawModel:     decision.Node.Model,
-					TenantID:     decision.Node.TenantID,
-					BillingMode:  decision.BillingMode,
-					Success:      decision.Outcome == requestjourney.OutcomeSuccess,
-					LatencyMs:    decision.LatencyMs,
-					ErrorKind:    string(kind),
-					RequestID:    decision.RequestID,
-					DedupKey:     decision.AttemptID,
-				})
-				if err != nil {
-					errs = append(errs, err)
-				}
+		case nodehealth.EffectPersistNodeStatus:
+			if decision.Outcome == requestjourney.OutcomeSuccess {
+				e.applyNodeHealthPersist(ctx, decision, &errs)
+			} else if deferDegrade {
+				deferred = append(deferred, effect)
+			} else {
+				e.applyNodeHealthPersist(ctx, decision, &errs)
 			}
-		case nodehealth.EffectInvalidateCandidateCache:
-			provider.InvalidateCandidateCacheForCredential(int(decision.Node.CredentialID))
+		case nodehealth.EffectSetBindingUnavailable, nodehealth.EffectSetCredentialUnavailable,
+			nodehealth.EffectUpdateURSM, nodehealth.EffectInvalidateCandidateCache:
+			if deferDegrade {
+				deferred = append(deferred, effect)
+			} else {
+				e.applyNodeHealthDegradeEffect(ctx, decision, effect, &errs)
+			}
 		case nodehealth.EffectScheduleProbe:
 			// UnifiedProbeScheduler 已于 2026-09-01 作为死代码移除；
 			// 探测调度由 ProbeQueue/StateObserver 路径接管。
@@ -222,7 +236,131 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 			}
 		}
 	}
+	if len(deferred) > 0 {
+		e.scheduleFlashBlipConfirm(ctx, decision, deferred)
+	}
 	return errors.Join(errs...)
+}
+
+// applyNodeHealthPersist applies the EffectPersistNodeStatus arm (legacy
+// state observer writers).
+func (e *Executor) applyNodeHealthPersist(ctx context.Context, decision nodehealth.Decision, errs *[]error) {
+	if e.StateObserver == nil || !e.legacyWritersEnabled() {
+		return
+	}
+	if decision.Outcome == requestjourney.OutcomeSuccess {
+		e.StateObserver.UpdateOnSuccess(ctx, int(decision.Node.CredentialID), decision.Node.Model, decision.LatencyMs, decision.RequestID)
+	} else if decision.Outcome == requestjourney.OutcomeFailure {
+		kind := errorKindFromNodeHealth(decision.ErrorKind)
+		e.StateObserver.UpdateOnFailure(ctx, int(decision.Node.CredentialID), decision.Node.Model, kind, decision.RequestID, decision.Node.TenantID, decision.BillingMode)
+	}
+}
+
+// applyNodeHealthDegradeEffect applies one degrade-family effect (binding /
+// credential unavailable, URSM failure record, candidate cache
+// invalidation).
+func (e *Executor) applyNodeHealthDegradeEffect(ctx context.Context, decision nodehealth.Decision, effect nodehealth.Effect, errs *[]error) {
+	kind := errorKindFromNodeHealth(decision.ErrorKind)
+	switch effect.Kind {
+	case nodehealth.EffectSetBindingUnavailable:
+		if e.State != nil && e.State.Enabled() {
+			failure := credential.Failure{Kind: kind, Detail: decision.ErrorDetail}
+			if err := e.State.WriteOnError(ctx, int(decision.Node.CredentialID), decision.Node.Model, failure); err != nil {
+				*errs = append(*errs, err)
+			}
+		}
+	case nodehealth.EffectSetCredentialUnavailable:
+		if e.State != nil && e.State.Enabled() {
+			failure := credential.Failure{Kind: kind, Detail: decision.ErrorDetail}
+			if err := e.State.SetCredentialUnavailable(ctx, int(decision.Node.CredentialID), failure); err != nil {
+				*errs = append(*errs, err)
+			}
+		}
+	case nodehealth.EffectUpdateURSM:
+		if e.URSMv2 != nil {
+			err := e.URSMv2.RecordRequest(ctx, ursmv2api.RequestOutcome{
+				CredentialID: int(decision.Node.CredentialID),
+				RawModel:     decision.Node.Model,
+				TenantID:     decision.Node.TenantID,
+				BillingMode:  decision.BillingMode,
+				Success:      decision.Outcome == requestjourney.OutcomeSuccess,
+				LatencyMs:    decision.LatencyMs,
+				ErrorKind:    string(kind),
+				RequestID:    decision.RequestID,
+				DedupKey:     decision.AttemptID,
+			})
+			if err != nil {
+				*errs = append(*errs, err)
+			}
+		}
+	case nodehealth.EffectInvalidateCandidateCache:
+		provider.InvalidateCandidateCacheForCredential(int(decision.Node.CredentialID))
+	}
+}
+
+// scheduleFlashBlipConfirm runs the deferred degrade behind the double
+// confirmation (Wave 3 B2②). One confirm per node at a time; the goroutine
+// outlives the request (WithoutCancel) and applies the deferred effects only
+// when both pings failed. A concurrent confirm or a spawn race leaves the
+// state untouched — the running confirm's verdict already converges the
+// node's state either way.
+func (e *Executor) scheduleFlashBlipConfirm(requestCtx context.Context, decision nodehealth.Decision, deferred []nodehealth.Effect) {
+	key := fmt.Sprintf("%d|%s", decision.Node.CredentialID, decision.Node.Model)
+	e.flashBlipMu.Lock()
+	if e.flashBlipInFlight == nil {
+		e.flashBlipInFlight = make(map[string]struct{})
+	}
+	if _, busy := e.flashBlipInFlight[key]; busy {
+		e.flashBlipMu.Unlock()
+		nodeFlashBlipConfirmTotal.WithLabelValues("busy").Inc()
+		return
+	}
+	e.flashBlipInFlight[key] = struct{}{}
+	e.flashBlipMu.Unlock()
+
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("flash-blip confirm panic", "recover", rec, "credential_id", decision.Node.CredentialID)
+			}
+			e.flashBlipMu.Lock()
+			delete(e.flashBlipInFlight, key)
+			e.flashBlipMu.Unlock()
+		}()
+		// Wait out the blip window before the first ping; the confirm
+		// itself owns its pacing and budget.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(requestCtx), 45*time.Second)
+		defer cancel()
+		confirmedBroken := e.NodeProbeConfirm(ctx, int(decision.Node.CredentialID), decision.Node.Model)
+		if !confirmedBroken {
+			nodeFlashBlipConfirmTotal.WithLabelValues("transient").Inc()
+			slog.Info("node flash-blip: transient error confirmed, degrade suppressed",
+				"credential_id", decision.Node.CredentialID,
+				"model", decision.Node.Model,
+			)
+			return
+		}
+		nodeFlashBlipConfirmTotal.WithLabelValues("confirmed").Inc()
+		slog.Warn("node flash-blip: both confirm pings failed, applying deferred degrade",
+			"credential_id", decision.Node.CredentialID,
+			"model", decision.Node.Model,
+		)
+		var errs []error
+		for _, effect := range deferred {
+			if effect.Kind == nodehealth.EffectPersistNodeStatus {
+				e.applyNodeHealthPersist(ctx, decision, &errs)
+				continue
+			}
+			e.applyNodeHealthDegradeEffect(ctx, decision, effect, &errs)
+		}
+		if err := errors.Join(errs...); err != nil {
+			slog.Warn("flash-blip deferred degrade partially failed",
+				"credential_id", decision.Node.CredentialID,
+				"model", decision.Node.Model,
+				"error", err,
+			)
+		}
+	}()
 }
 
 func (e *Executor) recordProtocolCircuitSuccess(params *ExecParams, providerID, credentialID int) {
