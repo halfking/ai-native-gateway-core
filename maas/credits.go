@@ -54,10 +54,11 @@ func CalcCreditsMultimodal(u TokenUsage, rates ModelRateValues) int64 {
 
 // CalcCreditsMultimodalWithMultiplier applies the peak/off-peak rate
 // multiplier (Wave 3 B1) to the summed token cost before the single
-// per-1M round-up. Multiplying the total (not each rate individually) is
-// mathematically identical and mirrors credits_sql.go, which folds the
-// same COALESCE(credits_rate_multiplier, 1.0) into its rate terms — the
-// round-up happens exactly once on either side.
+// per-1M round-up. credits_sql.go (the estimate fallback) applies the
+// multiplier at the same point since R56; its per-rate
+// CEIL(base_credits × discount) term is intentionally kept (credit
+// granularity ≥1 per 1M bucket) and can differ from this float-rate
+// computation by ≤1 credit per bucket on non-integer effective rates.
 func CalcCreditsMultimodalWithMultiplier(u TokenUsage, rates ModelRateValues, rateMultiplier float64) int64 {
 	if !u.Any() {
 		return 0
