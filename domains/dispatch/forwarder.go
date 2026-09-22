@@ -411,6 +411,10 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) (Governor, bool) {
 		cf.pipe.complete(qr, ForwardOutcome{Err: errors.New("dispatch: missing reserved attempt")})
 		return nil, false
 	}
+	// R51-F15: meter extra upstream calls issued inside this admission
+	// (reqprobe retries, context-length recovery) back into the admitting
+	// governor. nil when the governor has no ExtraCallRecorder capability.
+	qr.OnExtraUpstreamCall = extraCallMeterFor(gov, qr)
 
 	// V3.3-OBS OBS-B1 (2026-08-15): node_selected 动作事件（S7 前，最终选定
 	// 节点——通过 governor 准入，即将开始转发）。

@@ -342,7 +342,7 @@ func TestForwardForDispatchReducesFailureAndCancellationOnce(t *testing.T) {
 		}
 		dctx := &dispatchCtx{params: params, candidates: []provider.Candidate{candidate}, retryPerCred: 0, tTotal: time.Now()}
 
-		out := exec.forwardForDispatch(dctx, candidate, "failure-attempt", func() {})
+		out := exec.forwardForDispatch(dctx, candidate, "failure-attempt", func() {}, nil)
 		if out.Err == nil || out.ErrorKind == "" || out.HTTPStatus != http.StatusInternalServerError {
 			t.Fatalf("forward outcome = %+v", out)
 		}
@@ -377,7 +377,7 @@ func TestForwardForDispatchReducesFailureAndCancellationOnce(t *testing.T) {
 		}
 		dctx := &dispatchCtx{params: params, candidates: []provider.Candidate{candidate}, retryPerCred: 0, tTotal: time.Now()}
 
-		out := exec.forwardForDispatch(dctx, candidate, "canceled-attempt", func() {})
+		out := exec.forwardForDispatch(dctx, candidate, "canceled-attempt", func() {}, nil)
 		if !errors.Is(out.Err, context.Canceled) {
 			t.Fatalf("forward error = %v, want context canceled", out.Err)
 		}
@@ -452,7 +452,7 @@ func TestForwardForDispatchAcceptsStreamOnlyNativeCapability(t *testing.T) {
 		tTotal:       time.Now(),
 	}
 
-	out := exec.forwardForDispatch(dctx, candidate, "stream-only-attempt", func() {})
+	out := exec.forwardForDispatch(dctx, candidate, "stream-only-attempt", func() {}, nil)
 	if out.Err != nil {
 		t.Fatalf("forward outcome err = %v, want stream-only capability to be honoured", out.Err)
 	}
@@ -512,7 +512,7 @@ func TestForwardForDispatchRejectsNoNativeCapability(t *testing.T) {
 		tTotal:       time.Now(),
 	}
 
-	out := exec.forwardForDispatch(dctx, candidate, "no-cap-attempt", func() {})
+	out := exec.forwardForDispatch(dctx, candidate, "no-cap-attempt", func() {}, nil)
 	if out.Err == nil {
 		t.Fatalf("forward outcome err = nil, want capability rejection")
 	}

@@ -55,7 +55,7 @@ func TestForwardForDispatchPopulatesAttemptAuditEnvelope(t *testing.T) {
 	}
 	dctx := &dispatchCtx{params: params, candidates: []provider.Candidate{candidate}, tTotal: time.Now()}
 
-	outcome := exec.forwardForDispatch(dctx, candidate, "dispatch-audit-attempt", func() {}, t.Context())
+	outcome := exec.forwardForDispatch(dctx, candidate, "dispatch-audit-attempt", func() {}, nil, t.Context())
 	if outcome.Err != nil {
 		t.Fatalf("forward failed: %v", outcome.Err)
 	}
@@ -105,7 +105,7 @@ func TestDispatchForwardUsesPipelineContextAndAttemptNumber(t *testing.T) {
 	defer cancelDispatch()
 	cancelClient()
 
-	outcome := exec.forwardForDispatch(dctx, candidate, "dispatch-context-attempt", func() {}, dispatchCtx)
+	outcome := exec.forwardForDispatch(dctx, candidate, "dispatch-context-attempt", func() {}, nil, dispatchCtx)
 	if outcome.Err != nil {
 		t.Fatalf("detached dispatch forward failed: %v", outcome.Err)
 	}
@@ -166,7 +166,7 @@ func TestForwardForDispatchDegradesWhenFpSlotSaturatesAfterPrefilter(t *testing.
 		fpSlotDegraded: false,
 	}
 
-	outcome := exec.forwardForDispatch(dctx, candidate, "dispatch-fp-attempt", func() {}, t.Context())
+	outcome := exec.forwardForDispatch(dctx, candidate, "dispatch-fp-attempt", func() {}, nil, t.Context())
 	if outcome.Err != nil {
 		t.Fatalf("forward failed after fp-slot race degradation: %v", outcome.Err)
 	}

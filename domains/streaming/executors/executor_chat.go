@@ -1040,6 +1040,9 @@ func (e *Executor) executeOpenAI(
 								probe.active = true
 								probeRetry = true
 								e.ledgerRecordProbe(params, cand, nil, "responses", "chat")
+								// R51-F15: 模式回退是准入内的第二次上游调用，补记
+								// 到准入 Governor 的 RPM/TPM 桶（不阻塞确定性修正）。
+								meterExtraUpstreamCall(params)
 								return nil, &retryableError{err: &upstreampkg.Error{
 									Kind:       errKind,
 									Message:    fmt.Sprintf("upstream %d (reqprobe mode fallback retry)", resp.StatusCode),
@@ -1068,6 +1071,8 @@ func (e *Executor) executeOpenAI(
 								probe.active = true
 								probeRetry = true
 								e.ledgerRecordProbe(params, cand, stripped, "", "")
+								// R51-F15: 参数剔除重试同型补记。
+								meterExtraUpstreamCall(params)
 								return nil, &retryableError{err: &upstreampkg.Error{
 									Kind:       errKind,
 									Message:    fmt.Sprintf("upstream %d (reqprobe param-strip retry: %s)", resp.StatusCode, probe.diag.Param),
@@ -1166,6 +1171,8 @@ func (e *Executor) executeOpenAI(
 							// the bug where recovery succeeded but the compressed payload was
 							// never sent because attempt >= effectiveMaxRetries on the next loop.
 							ctxLenRecoveryRetry = true
+							// R51-F15: 压缩后的重发同样是准入内的额外上游调用，补记。
+							meterExtraUpstreamCall(params)
 							// 2026-07-03 (Bug #N extension): preserve errKind in the
 							// retryableError wrapper so if retries are exhausted, the
 							// outer tryCandidate returns lastErr with the precise Kind.
