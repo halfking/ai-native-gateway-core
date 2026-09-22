@@ -2915,6 +2915,16 @@ func main() {
 		if adminHandler != nil {
 			adminHandler.StartProxyRuntime()
 		}
+		// Wave 1 A1 (2026-09-22): /api/routing/resolve 的 plan_order 与真实
+		// 选路同源——resolve 经同一 Router.PlanCandidatesPinned 产出运行时
+		// 候选序。routingRouter 为 nil（provider 路由未启用）时不注入，
+		// resolve 返回 plan_order_source=unavailable。
+		if adminHandler != nil && routingRouter != nil {
+			adminHandler.SetLiveRoutingSource(&admin.LiveRoutingSource{
+				Router:   routingRouter,
+				Resolver: providerClient,
+			})
+		}
 		// reqprobe (2026-09-21): 管理页（/format-anomalies 请求错误 tab +
 		// 导航徽标）直读同一协调器。reqProbeCoord 在 provider 路由未启用时
 		// 为 nil，路由保留、请求时 503。
