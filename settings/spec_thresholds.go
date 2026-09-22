@@ -34,6 +34,23 @@ const (
 	DefaultErrorProbeWorkers = 5
 	// MaxErrorProbeWorkers 探测并发硬上限。
 	MaxErrorProbeWorkers = 5
+
+	// DefaultModelNotFoundInitialCooldownSeconds MNF 首次冷却（30min 档，
+	// Wave 2 任务二③ 三级化：聚合器临时 404/上游临时下架快速复位）。
+	DefaultModelNotFoundInitialCooldownSeconds = 1800
+	// DefaultModelNotFoundSustainedCooldownSeconds MNF 冷却期内二次 404 升级档
+	// （7 天，原 writer.go 一刀切值，语义收窄为"疑似持续下架"）。
+	DefaultModelNotFoundSustainedCooldownSeconds = 7 * 24 * 3600
+	// DefaultModelDeprecatedCooldownSeconds 权威 deprecation 冷却
+	// （30 天，原 writer.go 值不变）。
+	DefaultModelDeprecatedCooldownSeconds = 30 * 24 * 3600
+)
+
+// Wave 2 任务二③（C4 三级化）新增键。
+const (
+	KeyModelNotFoundInitialCooldownSeconds   = "credential.model_not_found_initial_cooldown_seconds"
+	KeyModelNotFoundSustainedCooldownSeconds = "credential.model_not_found_sustained_cooldown_seconds"
+	KeyModelDeprecatedCooldownSeconds        = "credential.model_deprecated_cooldown_seconds"
 )
 
 // ThresholdSpecs returns the centralized routing/probe/fp-slot threshold specs.
@@ -114,6 +131,51 @@ func ThresholdSpecs() []*Spec {
 			DangerLevel:     Warning,
 			HotReload:       false,
 		},
+		{
+			Key:             KeyModelNotFoundInitialCooldownSeconds,
+			EnvName:         "LLM_GATEWAY_CREDENTIAL_MODEL_NOT_FOUND_INITIAL_COOLDOWN_SECONDS",
+			Type:            TypeInt,
+			Scope:           ScopePlatform,
+			Category:        CategoryCircuitBreaker,
+			Min:             floatPtr(60),
+			Max:             floatPtr(604800),
+			Default:         DefaultModelNotFoundInitialCooldownSeconds,
+			Description:     "MNF 首次冷却（秒）",
+			DescriptionLong: "请求路径 model_not_found（404）首次写绑定时（凭据,模型）的冷却时长。30 分钟档覆盖聚合器临时 404/上游临时下架/路由抖动，到期自动复位；冷却期内二次 404 才升级到持续档（credential.model_not_found_sustained_cooldown_seconds）。2026-09-22 Wave 2 三级化：原 writer 一刀切 7 天。",
+			Unit:            "秒",
+			DangerLevel:     Warning,
+			HotReload:       true,
+		},
+		{
+			Key:             KeyModelNotFoundSustainedCooldownSeconds,
+			EnvName:         "LLM_GATEWAY_CREDENTIAL_MODEL_NOT_FOUND_SUSTAINED_COOLDOWN_SECONDS",
+			Type:            TypeInt,
+			Scope:           ScopePlatform,
+			Category:        CategoryCircuitBreaker,
+			Min:             floatPtr(1800),
+			Max:             floatPtr(2592000),
+			Default:         DefaultModelNotFoundSustainedCooldownSeconds,
+			Description:     "MNF 持续冷却（秒）",
+			DescriptionLong: "绑定已在 MNF 冷却期内再次收到请求路径 404 时的升级冷却时长（疑似持续下架）。默认 7 天；探测梯（≤6h 上限）仍是误升级的权威自愈通道——直连+网关双轮成功即恢复。",
+			Unit:            "秒",
+			DangerLevel:     Warning,
+			HotReload:       true,
+		},
+		{
+			Key:             KeyModelDeprecatedCooldownSeconds,
+			EnvName:         "LLM_GATEWAY_CREDENTIAL_MODEL_DEPRECATED_COOLDOWN_SECONDS",
+			Type:            TypeInt,
+			Scope:           ScopePlatform,
+			Category:        CategoryCircuitBreaker,
+			Min:             floatPtr(86400),
+			Max:             floatPtr(31536000),
+			Default:         DefaultModelDeprecatedCooldownSeconds,
+			Description:     "模型下线（deprecation）冷却（秒）",
+			DescriptionLong: "上游权威下线信号（HTTP 410 Gone/明确 deprecated 报文）写绑定时（凭据,模型）的冷却时长。deprecation 是权威结论（模型不会回来），默认 30 天，与 2026-08-05 语义一致。",
+			Unit:            "秒",
+			DangerLevel:     Warning,
+			HotReload:       true,
+		},
 	}
 }
 
@@ -146,6 +208,25 @@ func FpSlotTTLSeconds() int {
 // size. Startup-only read (goroutine pool is fixed at Start).
 func ErrorProbeWorkers() int {
 	return clampThresholdInt(GetPlatformInt(KeyErrorProbeWorkers, DefaultErrorProbeWorkers), 1, MaxErrorProbeWorkers)
+}
+
+// ModelNotFoundInitialCooldownSeconds returns the first-tier MNF binding
+// cooldown. Uncached read: the writer fires once per request-path 404
+// (low frequency), so hot-reload is immediate without cache complexity.
+func ModelNotFoundInitialCooldownSeconds() int {
+	return clampThresholdInt(GetPlatformInt(KeyModelNotFoundInitialCooldownSeconds, DefaultModelNotFoundInitialCooldownSeconds), 60, 604800)
+}
+
+// ModelNotFoundSustainedCooldownSeconds returns the escalated MNF binding
+// cooldown for a second 404 landing inside the initial cooling window.
+func ModelNotFoundSustainedCooldownSeconds() int {
+	return clampThresholdInt(GetPlatformInt(KeyModelNotFoundSustainedCooldownSeconds, DefaultModelNotFoundSustainedCooldownSeconds), 1800, 2592000)
+}
+
+// ModelDeprecatedCooldownSeconds returns the authoritative-deprecation
+// binding cooldown.
+func ModelDeprecatedCooldownSeconds() int {
+	return clampThresholdInt(GetPlatformInt(KeyModelDeprecatedCooldownSeconds, DefaultModelDeprecatedCooldownSeconds), 86400, 31536000)
 }
 
 // clampThresholdInt defends against out-of-range values arriving through
