@@ -458,8 +458,15 @@ func joinTextPartsAnthropic(parts []string) string {
 func serializeAnthropicMessageContent(msg Message, targetProvider string, modelName string) []map[string]any {
 	result := make([]map[string]any, 0)
 
-	// First, add text and other content blocks
+	// First, add text and other content blocks.
+	// GAP-3 (Wave5, 2026-09-22): Anthropic 拒收空 text 块（400）。旧实现把
+	// content:"" 的 assistant 消息连同 tool_use 一并序列化为
+	// {"type":"text","text":""}，上游直接报错；手写转换器在该形态下抑制
+	// 空 text。凡 text 块 Text 为空一律跳过。
 	for _, block := range msg.Content {
+		if block.Type == "text" && block.Text == "" {
+			continue
+		}
 		result = append(result, serializeAnthropicContentBlock(block, targetProvider, modelName))
 	}
 
@@ -843,7 +850,12 @@ func serializeAnthropicToolChoice(tc *ToolChoice) any {
 		return tc.Type
 	case "required":
 		return "any" // Anthropic uses "any" for required
-	case "tool":
+	case "tool", "function":
+		// GAP-2 (Wave5, 2026-09-22): "tool" 是 Anthropic 方言（ParseAnthropic
+		// 存原样），"function" 是 OpenAI 方言（ParseOpenAI 存原样 type）。
+		// 旧实现无 "function" 分支，落到末尾 return tc.Type 输出裸字符串
+		// "function"——非合法 Anthropic 形态。serializeOpenAIToolChoice 对
+		// 反方向（"tool"→OpenAI function 形态）已有对称映射，此处补齐镜像。
 		return map[string]any{
 			"type": "tool",
 			"name": tc.Name,
