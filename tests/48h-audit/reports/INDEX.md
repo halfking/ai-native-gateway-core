@@ -1,6 +1,6 @@
 # 48h 审计 · 跨域报告聚合
 
-_聚合时间: 2026-09-23 11:40:00 CST_
+_聚合时间: 2026-09-23 14:31:05 CST_
 
 | 域 | 名称 | 状态 | 改动 commits | P0 | P1 | P2 | P3 | 遗留 | 链接 |
 |---|---|---|---:|---:|---:|---:|---:|---:|---|
@@ -20,6 +20,6 @@ _聚合时间: 2026-09-23 11:40:00 CST_
 |D14|security|草稿|00|00|3|2|00|[latest](D14-security/reports/latest.md)|
 |D15|observability-ux|草稿|00|2|2|2|00|[latest](D15-observability-ux/reports/latest.md)|
 |D16|flow-closure|草稿|00|00|00|00|00|[latest](D16-flow-closure/reports/latest.md)|
-|D17|code-hygiene|草稿|00|00|2|4|00|[latest](D17-code-hygiene/reports/latest.md)|
+|D17|code-hygiene|草稿|00|00|3|6|00|[latest](D17-code-hygiene/reports/latest.md)|
 
 _由 tests/48h-audit/scripts/aggregate-reports.sh 自动生成_
