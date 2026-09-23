@@ -18,3 +18,10 @@
 
 ## 卫生面
 mock 身份声明完备（tests/stress 双 main.go 头注释）；48h-audit 三脚本 bash -n 双版本过；TODO 净增 1 处（模板占位）；窗口内无新增技术债标记。
+
+## R57 追加（2026-09-23）
+| 级别 | 项 | 处置 |
+|---|---|---|
+| P2 | minheap_topk 孤儿实锤收口：SelectTopKWeighted 零调用、SelectTopN 仍 O(N²) | ✅ WeightedRouter.SelectTopN 正式接线 SelectTopKWeighted（O(N log K)），平序语义保持，routing 全绿 |
+| P3 | rollupVirtualIP 死代码（零调用，rollupDims 已含 virtual_ip） | ✅ 删除；dimQueries 提升包级变量 + 钉桩测试 |
+| 登记 | chunk_buffer/error_detector_ring/prompt_compress 批次 2/3 | 评估后缓批：接线点非单一收口（SSE 语义 Flush 契约/路由 API 换型），需专门小轮+性能验证；见轮文档 §四 |

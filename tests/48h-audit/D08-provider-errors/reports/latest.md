@@ -15,3 +15,10 @@ A4 429 剔除断路（早退+HALF_OPEN ReleaseProbe+两策略表删项+3min 降�
 
 ## 遗留
 见轮文档 §三.2。
+
+## R57 追加（2026-09-23）
+| 级别 | 项 | 处置 |
+|---|---|---|
+| P2 | ProbeSync 双层信号量顺序 | ✅ 获取序对调 per-cred → 全局（goroutine 内）：突发不占全局槽，单凭据经 ≤2 闸最多支配 2 槽；锁序不变 |
+| P2 | ProbeConfirm 绕过 per-cred ≤2 闸 | ✅ ping 前有界等闸（1.5s，睡眠窗口不占槽）；饥饿 fail-open（不降级）+ slot_starved 计数器；ctx 取消维持 fail-closed；钉桩 ×2 + -race 绿 |
+| P3 | per-cred ≤2 闸未覆盖 probe_queue_worker 执行面 | 维持登记（后台 batch 兜底，设计口径） |
