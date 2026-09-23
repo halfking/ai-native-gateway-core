@@ -3346,6 +3346,24 @@ func (d *DB) ensureTuningSignalsViews(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// D1 残余（2026-09-23 审计轮）：CREATE MATERIALIZED VIEW IF NOT EXISTS
+	// 对既有 matview 也要取检查锁，admin 面频繁读 5m/daily 时锁等待不小
+	// （245 seq 2207 boot 实测本步 27s）。两个 matview + 4 索引全在位时跳过。
+	var tuningMissing int
+	if err := d.pool.QueryRow(ctx, `
+		SELECT count(*) FROM (SELECT 1) AS one
+		WHERE to_regclass('public.tuning_signals_5m') IS NULL
+		   OR to_regclass('public.tuning_signals_daily') IS NULL
+		   OR (SELECT count(*) FROM unnest(ARRAY[
+		         'idx_tuning_signals_5m_pk','idx_tuning_signals_5m_task_ts',
+		         'idx_tuning_signals_daily_pk','idx_tuning_signals_daily_task_ts'
+		       ]) AS want(name)
+		       WHERE NOT EXISTS (SELECT 1 FROM pg_indexes
+		         WHERE schemaname='public' AND indexname = want.name)) > 0
+	`).Scan(&tuningMissing); err == nil && tuningMissing == 0 {
+		slog.Info("tuning_signals views ensured (catalog short-circuit)")
+		return nil
+	}
 	_, err := d.pool.Exec(ctx, `
 		-- 5-minute bucket materialised view.
 		--   bucket = date_trunc('hour', ts) + (minute/5) * '5 minutes'
@@ -4956,6 +4974,20 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 func (d *DB) ensureUnavailableRecoverAtSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
+	}
+	// D1 残余（2026-09-23 审计轮）：credential_model_bindings 是高频 UPDATE
+	// 热表，245 seq 2207 boot 实测本步 27.6s 锁等待——列 + 索引全在位时跳过
+	// （backfill UPDATE 的 IS NULL 谓词在成熟库为空集）。
+	if d.columnsAllPresent(ctx, "credential_model_bindings", []string{"unavailable_recover_at"}) {
+		var missingIdx int
+		if err := d.pool.QueryRow(ctx, `
+			SELECT count(*) FROM (SELECT 1) AS one
+			WHERE NOT EXISTS (SELECT 1 FROM pg_indexes
+			  WHERE schemaname='public' AND indexname='idx_cmb_unavailable_recover_at')
+		`).Scan(&missingIdx); err == nil && missingIdx == 0 {
+			slog.Info("unavailable_recover_at schema ensured (catalog short-circuit)")
+			return nil
+		}
 	}
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE credential_model_bindings ADD COLUMN IF NOT EXISTS unavailable_recover_at TIMESTAMPTZ;
