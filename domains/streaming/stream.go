@@ -1060,6 +1060,23 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 					upstreamDoneReceived = true
 				}
 				diagnosticCollector.observeEmittedLine(l)
+				// r0924 repair (2026-09-24): the gate's onRawLine callback
+				// (1032-1044) parses chunks but does NOT propagate
+				// finish_reason upward. Without this re-parse here, a
+				// MiniMax-style stream whose finish_reason chunk
+				// arrives during gating enters the main loop with
+				// finalFinishReason = "" and falls through to the
+				// §11.6-pseudo-success "eof_without_done" branch even
+				// when the upstream DID complete semantically.
+				// Mirrors the same finish_reason promotion in the
+				// main-loop path at line ~1407.
+				if p != "" && p != "[DONE]" {
+					if chunk, parseErr := ir.ParseOpenAIStreamChunk(l); parseErr == nil {
+						if chunk.FinishReason != "" {
+							finalFinishReason = chunk.FinishReason
+						}
+					}
+				}
 				if writeClientLine(l) {
 					lastSend = time.Now()
 					chunkCount++
