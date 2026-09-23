@@ -26,6 +26,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -194,7 +195,7 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 	// shape differs (output[] with message / function_call / reasoning
 	// items, not chat.completion.choices[]), so dispatch to
 	// IR.SerializeResponsesResponse when ClientProtocol == "openai-responses".
-	if a.ClientProtocol != "anthropic-messages" {
+	if a.ClientProtocol != providercatalog.ProtocolAnthropicMessages {
 		if a.IR != nil {
 			var irScoped IRConverter
 			if scoped, ok := a.IR.(ProviderScoped); ok {
@@ -237,7 +238,7 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 				converted []byte
 				serErr    error
 			)
-			if a.ClientProtocol == "openai-responses" {
+			if a.ClientProtocol == providercatalog.ProtocolOpenAIResponses {
 				converted, serErr = irScoped.SerializeResponsesResponse(irResp, clientModel)
 			} else {
 				converted, serErr = irScoped.SerializeOpenAIResponse(irResp, clientModel)
@@ -252,7 +253,7 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 			}
 			body = converted
 		} else if a.ChatResponseConverter != nil {
-			if a.ClientProtocol == "openai-responses" {
+			if a.ClientProtocol == providercatalog.ProtocolOpenAIResponses {
 				return nil, &upstreampkg.Error{
 					Kind:       errorsx.KindConversion,
 					Message:    "Responses API response conversion requires IR converter",
@@ -400,11 +401,11 @@ func (a *AnthropicExecutor) StreamResponse(ctx context.Context, w http.ResponseW
 	//   1. ResponsesTranslator (Responses client target)
 	//   2. OpenAITranslator (Chat Completions client target)
 	//   3. PassthroughStream (defensive fallback)
-	if a.ClientProtocol == "openai-responses" {
+	if a.ClientProtocol == providercatalog.ProtocolOpenAIResponses {
 		if a.ResponsesTranslator != nil {
 			return a.ResponsesTranslator(ctx, w, resp, "", "", "", nil)
 		}
-	} else if a.ClientProtocol != "anthropic-messages" {
+	} else if a.ClientProtocol != providercatalog.ProtocolAnthropicMessages {
 		if a.OpenAITranslator != nil {
 			return a.OpenAITranslator(ctx, w, resp, "", "", "", nil)
 		}
@@ -475,9 +476,9 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 	// FIX (2026-06-23): Only convert when BOTH client and upstream use different protocols.
 	// Before: converted whenever client != anthropic, even if upstream was also openai.
 	// After: only convert when client=openai AND upstream=anthropic.
-	needsConversion := params.ClientProtocol != "anthropic-messages" &&
+	needsConversion := params.ClientProtocol != providercatalog.ProtocolAnthropicMessages &&
 		params.ClientProtocol != "" &&
-		cand.Protocol == "anthropic-messages"
+		cand.Protocol == providercatalog.ProtocolAnthropicMessages
 
 	if needsConversion && e.IR != nil {
 		// Check format_conversion.enabled (provider-level override)
@@ -629,9 +630,9 @@ func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candida
 	// Q3 conversion: OpenAI /v1/chat/completions → Anthropic /v1/messages.
 	// FIX (2026-06-23): Only convert when upstream protocol is anthropic-messages.
 	// This prevents converting OpenAI→Anthropic when talking to OpenAI-compatible upstreams like MiniMax.
-	needsConversion := params.ClientProtocol != "anthropic-messages" &&
+	needsConversion := params.ClientProtocol != providercatalog.ProtocolAnthropicMessages &&
 		params.ClientProtocol != "" &&
-		cand.Protocol == "anthropic-messages"
+		cand.Protocol == providercatalog.ProtocolAnthropicMessages
 	if needsConversion {
 		// Phase 3.2: Check format_conversion.enabled (provider-level override)
 		if e.ProviderSettings != nil {
@@ -655,7 +656,7 @@ func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candida
 
 	// FIX (2026-06-23): Only apply Anthropic-specific transforms when upstream is anthropic-messages.
 	// MiniMax and other openai-completions upstreams should receive OpenAI format unchanged.
-	if cand.Protocol == "anthropic-messages" {
+	if cand.Protocol == providercatalog.ProtocolAnthropicMessages {
 		// MiniMax anthropic-messages rejects tools carrying OpenAI/custom type
 		// wrappers (error 2013: invalid tool type). Always emit name/input_schema.
 		if e.SanitizeAnthropicTools != nil {
@@ -786,7 +787,7 @@ func (e *Executor) executeAnthropic(
 			return e.AnthropicPassthroughStream(capturedCtx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
-	if e.AnthropicToOpenAIStream != nil && params.ClientProtocol != "anthropic-messages" {
+	if e.AnthropicToOpenAIStream != nil && params.ClientProtocol != providercatalog.ProtocolAnthropicMessages {
 		clientModel := params.ClientModel
 		requestID := diagnosticRequestID(params)
 		// P1-2 fix (2026-08-28): capture ctx for context propagation to gate.
@@ -799,7 +800,7 @@ func (e *Executor) executeAnthropic(
 	// uses the Responses API. This is the streaming counterpart of the
 	// IR-based non-stream response path that runs through
 	// SerializeResponsesResponse (see executor_anthropic.go:WriteNonStreamResponse).
-	if e.AnthropicToResponsesStream != nil && params.ClientProtocol == "openai-responses" {
+	if e.AnthropicToResponsesStream != nil && params.ClientProtocol == providercatalog.ProtocolOpenAIResponses {
 		clientModel := params.ClientModel
 		requestID := diagnosticRequestID(params)
 		// P1-2 fix (2026-08-28): capture ctx for context propagation to gate.
@@ -808,7 +809,7 @@ func (e *Executor) executeAnthropic(
 			return e.AnthropicToResponsesStream(capturedCtx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
-	if e.AnthropicToChatResponse != nil && params.ClientProtocol != "anthropic-messages" {
+	if e.AnthropicToChatResponse != nil && params.ClientProtocol != providercatalog.ProtocolAnthropicMessages {
 		ae.ChatResponseConverter = e.AnthropicToChatResponse
 	}
 	if e.AnthropicPassthroughStream != nil {

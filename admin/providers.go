@@ -16,6 +16,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 )
 
 func extractID(path string) (int, bool) { //nolint:unused
@@ -811,9 +812,26 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 		if req.BaseURL != nil {
 			baseURL = *req.BaseURL
 		}
-		protocol := "openai-completions"
+		// 协议决策（2026-09-23 协议命名审计）：
+		//   1. 显式指定 → 归一化校验（"openai-response" 这类错误拼写被
+		//      纠正为 canonical 枚举，未知值 400 拒绝）；
+		//   2. 未指定 → 按官方 baseURL 域名推断推荐协议（anthropic.com →
+		//      anthropic-messages 等，见 provider/catalog 推荐基线），
+		//      第三方域名回退 OpenAI 兼容。
+		protocol := ""
 		if req.Protocol != nil && *req.Protocol != "" {
-			protocol = *req.Protocol
+			normalized, normErr := providercatalog.NormalizeProviderProtocol(*req.Protocol)
+			if normErr != nil {
+				writeError(w, http.StatusBadRequest, normErr.Error())
+				return
+			}
+			protocol = normalized
+		} else {
+			if recommended, _ := providercatalog.RecommendedProtocolForBaseURL(baseURL); recommended != "" {
+				protocol = recommended
+			} else {
+				protocol = providercatalog.ProtocolOpenAICompletions
+			}
 		}
 
 		var id int

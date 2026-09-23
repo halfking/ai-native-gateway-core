@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 )
 
 // ── Static Catalog (mirrors Python free_pool_signup_hub.py) ────────────────
@@ -1361,7 +1362,7 @@ func (h *Handler) handleFreePoolAddKey(w http.ResponseWriter, r *http.Request) {
 	}
 	// 2026-09-23 vapeur incident: normalize aliases ("openai-response" →
 	// "openai-responses") and reject unknown values before persistence.
-	normalized, normErr := NormalizeProviderProtocol(protocol)
+	normalized, normErr := providercatalog.NormalizeProviderProtocol(protocol)
 	if normErr != nil {
 		writeError(w, http.StatusBadRequest, normErr.Error())
 		return

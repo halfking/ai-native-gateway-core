@@ -33,6 +33,7 @@ import (
 	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability counters
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/recentmodels"
 	"github.com/redis/go-redis/v9"
 )
@@ -4476,7 +4477,7 @@ func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request)
 	// mistyped value like "openai-response" used to persist verbatim and
 	// silently fall into the chat-completions executor branch. Normalize
 	// known aliases and reject unknown values at the write boundary.
-	normalized, normErr := NormalizeProviderProtocol(req.Protocol)
+	normalized, normErr := providercatalog.NormalizeProviderProtocol(req.Protocol)
 	if normErr != nil {
 		writeError(w, http.StatusBadRequest, normErr.Error())
 		return
