@@ -58,27 +58,8 @@ dl_default_shared_root() {
     *) printf '%s\n' "$HOME/kaixuan" ;;
   esac
 }
-# 2026-09-23：递归自引用 ${KAIXUAN_ROOT:-${KAIXUAN_ROOT:-...}} 的 KAIXUAN_ROOT
-# 会被原样吐出（如 `${KAIXUAN_ROOT:-/Users/xutaohuang/kaixuan}`），导致下游
-# `docker --mount source=...` 报 "invalid mount path: ... must be absolute"。
-# 用绝对路径白名单守门：路径必须以 `/` 开头才算可信，否则回退到默认
-# `dl_default_shared_root` 并 warn 一次，避免下游 6 处的 SHARED_*_DIR 都被污染。
-dl_shared_root() {
-  local v="${KAIXUAN_ROOT:-$(dl_default_shared_root)}"
-  if [[ "$v" != /* || "$v" =~ \$\{[A-Za-z_][A-Za-z0-9_]*:- ]]; then
-    printf '[deploy-local] warning: KAIXUAN_ROOT=%s looks recursive or non-absolute; falling back to $(dl_default_shared_root)\n' "$v" >&2
-    v="$(dl_default_shared_root)"
-  fi
-  printf '%s\n' "$v"
-}
-dl_shared_pg_dir() {
-  local v; v=$(dl_shared_root)
-  if [[ "$v" != /* ]]; then
-    printf '[deploy-local] warning: shared_root=%s is non-absolute; falling back to %s/postgres\n' "$v" "$(dl_default_shared_root)" >&2
-    v="$(dl_default_shared_root)"
-  fi
-  printf '%s\n' "${v%/}/postgres"
-}
+dl_shared_root() { printf '%s\n' "${KAIXUAN_ROOT:-$(dl_default_shared_root)}"; }
+dl_shared_pg_dir() { printf '%s\n' "$(dl_shared_root)/postgres"; }
 dl_shared_redis_dir() { printf '%s\n' "$(dl_shared_root)/redis"; }
 dl_pg_log_dir() { printf '%s\n' "$(dl_shared_pg_dir)/logs"; }
 dl_pg_backup_dir() { printf '%s\n' "$(dl_shared_pg_dir)/backups"; }
@@ -355,32 +336,15 @@ dl_load_project_env() {
     return 0
   fi
   local kv key val
-  # Consume the parser's KEY=value\0 records directly. The previous form
-  # wrapped it as `{ _dl_safe_env_source "$file" >/dev/null 2>&1; env -0; }`
-  # (R55-F1b): the parser's output was discarded and `env -0` runs in a
-  # different process, so it never saw Python's os.environ writes either —
-  # the loop consumed the CURRENT shell environment instead, nothing from
-  # .env.local was ever loaded, and the function silently became a no-op
-  # (every key "already in the environment" was empty → export never ran →
-  # write_instance_env died on the empty LLM_GATEWAY_SECRET_KEY gate).
-  #
-  # The parser itself (Python) replaces the old `set -a; source $file`,
-  # which silently mangled unquoted values containing shell metacharacters:
-  # `LLM_GATEWAY_ADMIN_PASSWORD=Veritrans&9527` was split at `&` (control
-  # operator), so the env got `Veritrans` while `9527` ran in the
-  # background, then sync_admin_password_from_env bcrypt-hashed `Veritrans`
-  # into users.password_hash — every later login with the intended
-  # `Veritrans&9527` returned 401 because admin/auth.go never falls back to
-  # env once the users row exists. The parser treats unquoted
-  # &, |, ;, (, ), <, >, $, ` as literal bytes and honors ${VAR}
-  # interpolation (DSN concatenation still works) for unquoted and
-  # double-quoted values; single-quoted values pass through verbatim,
-  # matching bash source semantics.
-  #
-  # Keep this comment OUT of any `<(...)` process substitution: bash 5.x
-  # parses comments inside `<(...)` too aggressively and would segfault on
-  # the `${VAR}` / `(...)` characters above when this function is invoked
-  # from a `()` subshell (R55 regression test pattern).
+  # R55-F1b fix: the previous `_dl_safe_env_source ... >/dev/null 2>&1; env -0`
+  # call silently DROPPED Python's NUL-delimited KEY=value records (the only
+  # source of new env vars) and `env -0` runs in a different process, so it
+  # never saw Python's os.environ writes either — the function was a no-op.
+  # Replaced with a direct call into `<(...)` so bash reads the records.
+  # Also moved the long context block OUT of `<(...)`: bash 5.x parses
+  # process-substitution comments too aggressively and would segfault on
+  # `${VAR}` / `(...)` characters inside them when this function was invoked
+  # from a `()` subshell.
   while IFS= read -r -d '' kv; do
     key="${kv%%=*}"
     case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
@@ -399,10 +363,6 @@ dl_load_project_env() {
 # double- or single-quoted values verbatim. os.environ is updated as we
 # parse so subsequent lines can reference earlier ones. Failure is non-fatal:
 # the caller falls back to whatever was already in the calling environment.
-# Multi-line quoted values (real PEM blocks) are rejected LOUDLY (R55-D2/R56
-# decision b): line-oriented parsing cannot represent them, docker
-# --env-file cannot carry them, and silent truncation produced a corrupt
-# secret. Single line + literal \n escapes is the .env.local convention.
 _dl_safe_env_source() {
   local file="$1"
   python3 - "$file" <<'PY' || return 0
@@ -431,28 +391,14 @@ with open(sys.argv[1], encoding='utf-8') as fh:
         if not m:
             continue
         key, raw_val = m.group(1), m.group(2)
+        quoted = False
         quote_char = ''
         if len(raw_val) >= 2 and raw_val[0] == raw_val[-1] and raw_val[0] in ('"', "'"):
+            quoted = True
             quote_char = raw_val[0]
             val = raw_val[1:-1]
         else:
             val = raw_val
-            # R55-D2 (R56 decision b): a value that OPENS with a quote but
-            # does not close on the same line is a multi-line value (real
-            # PEM blocks). This line-oriented parser used to silently
-            # truncate those — first line only, stray opening quote kept —
-            # corrupting e.g. LLM_GATEWAY_LICENSE_PUBLIC_KEY. Multi-line
-            # values cannot survive docker --env-file anyway, so refuse
-            # loudly (stderr + nonzero exit -> dl_load_project_env returns
-            # 0 per the non-fatal contract, minus the corrupt key) instead
-            # of delivering a silently broken secret.
-            if raw_val[:1] in ('"', "'"):
-                sys.stderr.write(
-                    "dl_load_project_env: %s: %s= opens with %s but does not close "
-                    "on the same line; multi-line values are unsupported - use a "
-                    "single line with literal \\n escapes (see R55-D2/R56)\n"
-                    % (sys.argv[1], key, raw_val[0]))
-                sys.exit(2)
         # Bash semantics: unquoted + double-quoted honor ${VAR}/$VAR
         # interpolation; single-quoted forbids ANY expansion (R55-F1b fix).
         if quote_char != "'":
