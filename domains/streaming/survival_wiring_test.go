@@ -2,10 +2,14 @@ package streaming
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/retryowner"
 )
 
@@ -193,5 +197,39 @@ func TestRenderSurvivalTerminalFailTerminalStaysNonRetryable(t *testing.T) {
 	out := f.buf.String()
 	if !strings.Contains(out, `"retryable":false`) {
 		t.Fatalf("fail_terminal envelope must stay non-retryable: %q", out)
+	}
+}
+
+// 2026-09-23 critique round: both the survival envelope path and the
+// dispatch-path §11.6 wrap must funnel into the handler's single
+// blackhole guard via errorsx.ErrProtocolTerminalRendered (the survival
+// sentinel wraps it; ExecuteError.LastErr is inspected explicitly because
+// ExecuteError has no Unwrap).
+
+// 2026-09-23 critique round: both the survival envelope path and the
+// dispatch-path §11.6 wrap must funnel into the handler's single blackhole
+// guard via errorsx.ErrProtocolTerminalRendered (the survival sentinel wraps
+// it; ExecuteError.LastErr is inspected explicitly because ExecuteError has
+// no Unwrap).
+func TestExecTerminalRenderedMatchesBothWrapStyles(t *testing.T) {
+	dispatchWrap := fmt.Errorf("%w (%w)", errors.New("stream_interrupted: eof_without_done"), errorsx.ErrProtocolTerminalRendered)
+	if !execTerminalRendered(dispatchWrap) {
+		t.Fatal("dispatch-style wrap must match")
+	}
+	ee := &executors.ExecuteError{Exhausted: true, LastErr: dispatchWrap}
+	if !execTerminalRendered(ee) {
+		t.Fatal("ExecuteError.LastErr wrap must match")
+	}
+	if !execTerminalRendered(errSurvivalTerminalRendered) {
+		t.Fatal("survival sentinel must match (it wraps the errorsx sentinel)")
+	}
+	if execTerminalRendered(errors.New("ordinary failure")) {
+		t.Fatal("ordinary errors must not match")
+	}
+	if execTerminalRendered(&executors.ExecuteError{LastErr: errors.New("x")}) {
+		t.Fatal("ExecuteError without the sentinel must not match")
+	}
+	if execTerminalRendered(nil) {
+		t.Fatal("nil must not match")
 	}
 }

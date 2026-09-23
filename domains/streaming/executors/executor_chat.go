@@ -1478,6 +1478,7 @@ func (e *Executor) executeOpenAI(
 						reason: streamOutcome.Reason, credentialID: cand.CredentialID,
 						resumable: isResumable, kind: streamKind,
 						statusCode: resp.StatusCode, rawError: streamOutcome.Reason,
+						terminalRendered: streamOutcome.TerminalRendered,
 					}
 				}
 				recordAttemptSuccess(streamOutcome.ChunkCount)

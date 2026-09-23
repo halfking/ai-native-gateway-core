@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/retryowner"
 )
 
@@ -28,7 +29,10 @@ import (
 // branch (the seam self-suppresses in that case, but a terminal is on the
 // wire either way). Post-loop error handlers must not stack a second
 // terminal after [DONE]; they consult errors.Is and keep bookkeeping only.
-var errSurvivalTerminalRendered = errors.New("survival protocol terminal already rendered on the wire")
+// Wraps errorsx.ErrProtocolTerminalRendered so both the survival sentinel
+// and the dispatch-path wraps (executor_dispatch.go) match a single
+// errors.Is target in the handler's blackhole guard.
+var errSurvivalTerminalRendered = fmt.Errorf("%w (survival)", errorsx.ErrProtocolTerminalRendered)
 
 // SetRequestSurvival arms the survival branch. tenantAllowed is consulted
 // per request (global flag + tenant allowlist live in config; the handler

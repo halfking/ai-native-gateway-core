@@ -494,7 +494,16 @@ func finalizePassthroughInterruption(
 	if !attemptHasClientSemanticOutput(gate, chunkCount) {
 		return
 	}
-	writePassthroughErrorEvent(cw, "upstream_error", message)
+	// 2026-09-23 critique round (user report #14/#15 on the /v1/messages
+	// path with anthropic-protocol upstreams): the passthrough envelope was
+	// the one committed-output interruption frame still lacking code +
+	// retryable, so agent clients defaulted to retryable=false and
+	// hard-failed the turn. The interruption kinds reaching here are
+	// transient by construction (network / stream timeout / upstream_down —
+	// KindCanceled returned above), so retryable follows the kind taxonomy.
+	writePassthroughErrorEventFull(cw, "upstream_error", message, "stream_interrupted",
+		errorsx.EffectiveRetryable(oc.Kind))
+	oc.TerminalRendered = true
 	// A client-visible terminal error makes the attempt non-transparently
 	// retryable even when no capture is attached (capture==nil otherwise
 	// bypasses the snapshot check in mayRetryInterruptedStream).
@@ -508,12 +517,24 @@ func finalizePassthroughInterruption(
 // the gateway's own envelope, replacing the raw upstream error frame so
 // relay-internal diagnostic blobs never reach the client verbatim.
 func writePassthroughErrorEvent(cw *clientStreamWriter, errType, message string) {
+	writePassthroughErrorEventFull(cw, errType, message, "", false)
+}
+
+// writePassthroughErrorEventFull is the passthrough envelope with optional
+// code + retryable fields (2026-09-23). Empty code keeps the historical
+// two-field error object byte-identical for the non-interruption callers.
+func writePassthroughErrorEventFull(cw *clientStreamWriter, errType, message, code string, retryable bool) {
 	if cw == nil {
 		return
 	}
+	errObj := map[string]any{"type": errType, "message": message}
+	if code != "" {
+		errObj["code"] = code
+		errObj["retryable"] = retryable
+	}
 	payload, _ := json.Marshal(map[string]any{
 		"type":  "error",
-		"error": map[string]any{"type": errType, "message": message},
+		"error": errObj,
 	})
 	cw.write(fmt.Sprintf("event: error\ndata: %s\n\n", payload))
 }
@@ -949,6 +970,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			if attemptHasClientSemanticOutput(gate, chunkCount) {
 				emitAnthropicBridgeErrorChunk(w, "stream_chunk_timeout",
 					fmt.Sprintf("no data received for %v", runtimeCfg.streamChunkTimeout), flusher, true)
+				outcome.TerminalRendered = true
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "chunk_timeout"
@@ -1107,6 +1129,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			}
 			if attemptHasClientSemanticOutput(gate, chunkCount) {
 				emitAnthropicBridgeErrorChunk(w, "stream_read_error", err.Error(), flusher, true)
+				outcome.TerminalRendered = true
 			}
 			return outcome
 		}

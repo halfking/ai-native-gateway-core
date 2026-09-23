@@ -456,6 +456,14 @@ type StreamOutcome struct {
 	Reason      string
 	Resumable   bool // Whether the stream can be resumed with a different credential
 	ChunkCount  int  // Number of chunks sent before interruption
+	// TerminalRendered (2026-09-23 critique round) latches that THIS bridge
+	// already wrote a protocol terminal envelope (§11.6 eof_without_done
+	// frame, stream-timeout frame, anthropic interruption events) for a
+	// committed-output interruption. The executor wraps the returned error
+	// with errorsx.ErrProtocolTerminalRendered so the handler's blackhole
+	// guard prevents a second terminal after the first. Keep field-identical
+	// with the executors.StreamOutcome alias.
+	TerminalRendered bool
 
 	// Kind (2026-07-28 §5.6) is the structured errorsx.ErrorKind
 	// the executor assigns to the interruption. When non-empty,
@@ -1167,6 +1175,7 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 						// bytes) is unchanged.
 						errChunk := "data: {\"error\":{\"type\":\"upstream_incomplete\",\"message\":\"upstream closed the stream without sending [DONE]\",\"code\":\"eof_without_done\",\"reason\":\"eof_without_done\",\"retryable\":true}}\n\n"
 						safeWriteSSE(w, errChunk)
+						outcome.TerminalRendered = true
 						// Synthesized [DONE] so the SDK still finalizes its
 						// stream parser (otherwise some clients block
 						// forever waiting for it). The metric keeps firing
@@ -1243,6 +1252,7 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 					// committed output; see the §11.6 eof_without_done note.
 					safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\",\"reason\":\"stream_timeout\",\"retryable\":true}}\n\n")
 					safeFlush(flusher)
+					outcome.TerminalRendered = true
 					// Same latch rationale as the §11.6 eof_without_done
 					// branch above: the timeout envelope is a protocol
 					// terminal render (R56 audit).
