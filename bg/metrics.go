@@ -64,6 +64,16 @@ var (
 		Help: "Number of request goroutines currently blocked on an in-flight background probe (dedup reuse).",
 	})
 
+	// R57 §三.2: ProbeConfirm direct pings now share the per-credential ≤2
+	// gate with ProbeSync. This counter fires when a ping was skipped
+	// because no slot freed up within nodeProbeConfirmSlotWait — the
+	// confirm fails OPEN (no degrade) in that case, so sustained non-zero
+	// rates mean per-cred probe capacity is undersized for confirm traffic.
+	nodeProbeConfirmSlotStarved = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "llmgw_node_probe_confirm_slot_starved_total",
+		Help: "ProbeConfirm pings skipped on per-credential slot starvation (fail-open, no degrade applied).",
+	})
+
 	// 2026-09-03 P1.3: ProbeQueue submission observability.
 	//
 	// The node_probe submission path (bg/node_probe.go::submitViaQueueSource)

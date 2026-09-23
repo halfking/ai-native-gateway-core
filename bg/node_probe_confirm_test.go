@@ -123,3 +123,48 @@ func TestProbeConfirm_PacingConstants(t *testing.T) {
 		t.Fatalf("second ping at %v lands outside the 2~5s design window", nodeProbeConfirmFirstPingDelay+nodeProbeConfirmPingGap)
 	}
 }
+
+// R57 §三.2：ProbeConfirm 的直连 ping 纳入共享 per-cred ≤2 闸；闸被
+// ProbeSync 占满时有界等待后 fail-open（不降级）且一个 ping 都不跑。
+func TestProbeConfirm_SlotStarvationFailsOpen(t *testing.T) {
+	w := NewNodeProbeWorker(nil, nil, nil, "", "", nil)
+	calls := 0
+	w.probeConfirmRound = func(ctx context.Context, credID int, model string) nodeProbeRoundResult {
+		calls++
+		return nodeProbeRoundResult{ok: false}
+	}
+	sem := w.credSemaphore(9)
+	sem <- struct{}{}
+	sem <- struct{}{}
+	defer func() { <-sem; <-sem }()
+
+	start := time.Now()
+	if w.ProbeConfirm(context.Background(), 9, "m") {
+		t.Fatal("slot starvation must fail open (not confirmed broken)")
+	}
+	if calls != 0 {
+		t.Fatalf("no ping may run under slot starvation, ran %d", calls)
+	}
+	if elapsed := time.Since(start); elapsed < nodeProbeConfirmSlotWait {
+		t.Fatalf("confirm must hold the slot window before failing open, elapsed %v", elapsed)
+	}
+}
+
+// R57 §三.2：ProbeConfirm 释放闸后，同凭据的 ProbeSync 直连可以立即拿到
+// 槽——两条路径共享同一 credSemaphore 实例。
+func TestProbeConfirm_ReleasesSharedCredSlot(t *testing.T) {
+	w := NewNodeProbeWorker(nil, nil, nil, "", "", nil)
+	w.probeConfirmRound = func(ctx context.Context, credID int, model string) nodeProbeRoundResult {
+		return nodeProbeRoundResult{ok: true}
+	}
+	if w.ProbeConfirm(context.Background(), 11, "m") {
+		t.Fatal("successful ping must be transient")
+	}
+	sem := w.credSemaphore(11)
+	select {
+	case sem <- struct{}{}:
+		<-sem
+	default:
+		t.Fatal("confirm must release the shared per-cred slot")
+	}
+}

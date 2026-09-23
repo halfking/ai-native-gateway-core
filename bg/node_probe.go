@@ -1587,18 +1587,21 @@ func (w *NodeProbeWorker) ProbeSync(
 	for _, j := range freshJobs {
 		j := j
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
-			defer func() { <-sem }()
 			// Wave 3 B2③: per-credential ≤2 on top of the global fanout.
-			// Acquired inside the goroutine (the submit loop must not
-			// stall behind a busy credential while other credentials have
-			// free capacity); same order everywhere (global → per-cred),
-			// so the two-level acquire cannot deadlock.
+			// R57 §三.2：获取序为 per-cred → 全局（原为全局先取、goroutine
+			// 内后取 per-cred——同凭据 N 个 (cred,model) 突发可在 per-cred
+			// 闸前占满全部 8 个全局槽，把其它凭据的热路径探测饿在
+			// sem<- 上）。改为先取 per-cred 再取全局：落选的突发 goroutine
+			// 停在 credSem<- 上不占全局槽，单凭据最多经 ≤2 闸支配 2 个全
+			// 局槽。无死锁：全局槽持有者已持 per-cred 槽，完成路径不再
+			// 依赖任何其它资源（锁序不变：w.mu → syncWaitersMu）。
 			credSem := w.credSemaphore(j.credID)
 			credSem <- struct{}{}
 			defer func() { <-credSem }()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			// Ensure the in-flight slot for THIS key is released and any
 			// concurrent ProbeSync caller that attached as a reuse waiter
 			// is woken once the probe completes. cycle() would not fire
@@ -1833,6 +1836,29 @@ func (w *NodeProbeWorker) credSemaphore(credID int) chan struct{} {
 	return v.(chan struct{})
 }
 
+// nodeProbeConfirmSlotWait bounds how long ProbeConfirm waits for a
+// per-credential direct-probe slot before each ping.
+const nodeProbeConfirmSlotWait = 1500 * time.Millisecond
+
+// acquireCredSlotForConfirm takes the shared per-credential ≤2 direct-probe
+// gate with a bounded wait. R57 §三.2：ProbeConfirm 原先绕过 per-cred ≤2 闸
+// （同凭据 N 模型同时确认 → 2N 并发直连），现在每次 ping 前有界等闸；闸的
+// 睡眠窗口（首 ping 延迟/ping 间隔）不占槽。等待超时属容量饥饿而非节点状
+// 态证据 → fail-open（false = 未确认损坏，不降级），与「确认才降级」教义
+// 一致；ctx 取消仍按既有教义 fail-closed。返回释放函数与是否获得闸。
+func (w *NodeProbeWorker) acquireCredSlotForConfirm(ctx context.Context, credID int) (func(), bool) {
+	credSem := w.credSemaphore(credID)
+	select {
+	case credSem <- struct{}{}:
+		return func() { <-credSem }, true
+	case <-time.After(nodeProbeConfirmSlotWait):
+		nodeProbeConfirmSlotStarved.Inc()
+		return nil, false
+	case <-ctx.Done():
+		return nil, false
+	}
+}
+
 // ProbeConfirm is the Wave 3 B2② flash-blip double confirmation. After a
 // request-path error that would degrade the node, the caller defers the
 // degrade and asks ProbeConfirm for the verdict: two lightweight direct
@@ -1845,7 +1871,9 @@ func (w *NodeProbeWorker) credSemaphore(credID int) chan struct{} {
 // The pings go through probeDirect only: no state writes, no circuit
 // recording, no node_probe_state mutation — the confirm must not stack
 // breaker or probe-backoff effects on top of the request failure it
-// verifies ("只影响状态写入不叠加熔断").
+// verifies ("只影响状态写入不叠加熔断"). R57 §三.2：每次 ping 受共享的
+// per-credential ≤2 直连闸约束（与 ProbeSync 同一 credSemaphore），等待
+// 窗口不占槽。
 //
 // A nil worker or a cancelled context fails CLOSED (returns true) so a
 // dead node cannot be kept routable by an unverifiable confirm.
@@ -1860,7 +1888,19 @@ func (w *NodeProbeWorker) ProbeConfirm(ctx context.Context, credID int, model st
 		round = w.probeDirect
 	}
 	time.Sleep(nodeProbeConfirmFirstPingDelay)
-	if first := round(cctx, credID, model); first.ok {
+	release, ok := w.acquireCredSlotForConfirm(cctx, credID)
+	if !ok {
+		if cctx.Err() == nil {
+			// 容量饥饿（非 ctx 取消）：无法验证 ≠ 已确认损坏 → fail-open。
+			slog.Warn("node_probe_worker: confirm ping skipped on per-cred slot starvation (fail-open)",
+				"credential_id", credID, "model", model)
+			return false
+		}
+		return true
+	}
+	first := round(cctx, credID, model)
+	release()
+	if first.ok {
 		return false
 	}
 	select {
@@ -1868,7 +1908,17 @@ func (w *NodeProbeWorker) ProbeConfirm(ctx context.Context, credID int, model st
 		return true
 	case <-time.After(nodeProbeConfirmPingGap):
 	}
+	release2, ok := w.acquireCredSlotForConfirm(cctx, credID)
+	if !ok {
+		if cctx.Err() == nil {
+			slog.Warn("node_probe_worker: confirm second ping skipped on per-cred slot starvation (fail-open)",
+				"credential_id", credID, "model", model)
+			return false
+		}
+		return true
+	}
 	second := round(cctx, credID, model)
+	release2()
 	return !second.ok
 }
 
