@@ -2364,6 +2364,13 @@ func (d *DB) ensureRoutingAnalyticsColumns(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// D1 残余（2026-09-23 审计轮）：request_logs / request_logs_hot 上的
+	// ADD COLUMN IF NOT EXISTS，列全在位时跳过（245 seq 2199 boot 在此 57014
+	// 实锤；同 columnsAllPresent 注）。
+	if d.columnsAllPresent(ctx, "request_logs_hot", []string{"task_type", "origin_stage", "origin_actor"}) &&
+		d.columnsAllPresent(ctx, "request_logs", []string{"task_type", "origin_stage", "origin_actor"}) {
+		return nil
+	}
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE IF EXISTS request_logs_hot
 		    ADD COLUMN IF NOT EXISTS task_type TEXT,
