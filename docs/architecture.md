@@ -67,6 +67,7 @@ Handles all user-facing LLM requests with OpenAI/Anthropic/Responses/Gemini comp
 - `/v1/embeddings` - Embeddings (OpenAI-compatible)
 - `/v1/models` - Available models
 - Gemini endpoints (`/v1/models/{model}:generateContent`, etc.)
+- `/v1/hosted-tasks` - Hosted task delegation facade: `POST` create, `GET /{id}` status, `GET /{id}/result`, `POST /{id}/cancel`, `POST /{id}/recall`
 
 ### Control Plane
 
