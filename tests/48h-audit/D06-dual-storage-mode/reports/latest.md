@@ -17,3 +17,9 @@
 
 ## 遗留
 SQL 取档函数是否接线或删除 = 下轮裁决。
+
+## R57 追加（2026-09-23）
+| 级别 | 项 | 处置 |
+|---|---|---|
+| P1 | B7 virtual_ip 假名死分支（R56 §三.1 首项） | ✅ 迁移 740（view 链补投影真源 client_ip，110/111/115 fail-closed；dev 库 down/up 实跑）+ rollup/看板/内存路径切 client_ip 维度；详见轮文档 §一 |
+| P1 | 738 六点缺口：Go 自愈组合体 113 列冻结体缺 credits/client_ip——带外删视图后自愈重建体令 rollup 每分钟空转（738 复发形态） | ✅ canonicalV2DDL 显式中层列 + 115/113 宽度门控；离线+live 契约测试双绿（ensure↔迁移逐字节等价）；frozenContractColumnList appended 名单 738 起实错一并修正 |

@@ -16,3 +16,8 @@ D4 usage 单表四槽首中即胜+流式/非流式同源 lookupUsageInt+MiniMax 
 
 ## 遗留
 D4 total_tokens 流式推断对称化（usage.go:161-170 塌缩条件）= R57 第 3 项（计费相邻面独立小轮）。
+
+## R57 追加（2026-09-23）
+| 级别 | 项 | 处置 |
+|---|---|---|
+| P2 | D4 total_tokens 推断塌缩（usage.go:161 条件 `(P==nil‖C==nil)&&P==nil`≡P==nil 单向） | ✅ 对称化对齐非流式 extractTokensFromResponseBody 双向 + `total>other` 守卫；变体表补 prompt-only 反推/守卫两用例 |

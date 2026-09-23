@@ -13,3 +13,8 @@
 
 ## 核实为健康
 B4 三中间件全覆盖+JWT iat 贯通+5s TTL 跨实例滞后+fail-open 有意+前后端登出一致；A3 clamp 唯二入口+366d 全局帽不绕过；B12 状态机（提前通过/预算耗尽/fix-response 推进/单调原子/legacy 保留）；A5 managed header 并存+gw-continue 每请求授权；B5 warn<block 防御 clamp+CategoryRetry 纯展示+i18n 8/8；落库↔前端字段对齐（倍率双列名/瀑布字段/journey union/derived 段兜底）；看板饼图复用 DrilldownPieChart+menu-config 无漏注册+401 deep-link 保持。
+
+## R57 追加（2026-09-23）
+| 级别 | 项 | 处置 |
+|---|---|---|
+| P1 | 看板 IP 饼图数据源造假：i18n 标签写"客户端 IP"、数据是 identity 假名 10.x | ✅ 随 B7 数据源级修复：API 键 virtual_ips→client_ips，web 类型/绑定/live-merge 测试/8 语言 i18n 键同步；真源经 740 view 链投影（见 D06 追加） |
