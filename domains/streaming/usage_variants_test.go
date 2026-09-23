@@ -57,6 +57,20 @@ func TestExtractUsageFromChunk_VendorVariants(t *testing.T) {
 			want:    UsageData{CompletionTokens: usageVariantIntPtr(20), PromptTokens: usageVariantIntPtr(100)},
 		},
 		{
+			// R57 D4：流式/非流式推断对称化——completion-only usage 从
+			// total 反推 prompt（原塌缩条件只推 prompt 方向，用例与上一条
+			// 等价但作为对称化回归钉桩显式保留）。
+			name:    "total_tokens fallback fills completion (prompt-only usage)",
+			payload: `{"usage":{"total_tokens":120,"prompt_tokens":100}}`,
+			want:    UsageData{PromptTokens: usageVariantIntPtr(100), CompletionTokens: usageVariantIntPtr(20)},
+		},
+		{
+			// total ≤ 已知侧时不推断（与非流式 total > other 守卫一致）。
+			name:    "total_tokens not larger than known side stays untouched",
+			payload: `{"usage":{"total_tokens":80,"prompt_tokens":100}}`,
+			want:    UsageData{PromptTokens: usageVariantIntPtr(100)},
+		},
+		{
 			name:    "no usage object",
 			payload: `{"choices":[]}`,
 			want:    UsageData{},
