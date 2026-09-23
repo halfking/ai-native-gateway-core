@@ -229,3 +229,16 @@ ROUND_RESULT|sessions=10|fail=0|global_g2=2|verdict=FAIL|at=2026-09-22T01:00:58Z
 - 处置：幂等回填灌 2 行 → reaper 消化 → GLOBAL_G2 复验=0（09:04）。
 - **判定：本日（09-22）不计入连续归零**，计数自 2026-09-23 每日轮重新起算，7 天达标 earliest 顺延至 **2026-09-29 每日轮**。
 - **累计结论（第 4 次因同根因打断观察期）**：claim 置位 is_final_success 结构性漏镜像实测 5 行/8 天（09-15×1、09-18×1、09-20×1、09-22×2），频率约 0.6 行/天——7 天连续归零在现状下达成概率极低。观察期自 09-15 起已被打断 4 次（另有 09-15 PG recovery 基础设施根因 1 次），**重放器+回填兜底架构对该根因无效（hook 从未收到终态信号、无登记可重放）已充分实证**。修复 claim 路径（UPDATE 置位后补登记 outbox 或补发 mirror 触发，小改动+单测+部署一轮）是达成 7 天 gate 的唯一可行路径，等待拍板。
+
+### 每日观察 2026-09-23 09:00 (+08)，build=f7f8f66d/2185 —— **PASS，连续归零 Day 1/7（09-22 FAIL 清零后重起）**
+
+构建身份：f7f8f66d/2185 在本仓库历史，含 GAP-2 闭环改动，ready=true，核验通过（外部并行线密集部署，build_seq 已至 2185，撞号风险持续）。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-23T01:00:41Z
+```
+
+- 抽样 10/10 PASS（biz_multi×4、loop_single×3、sys×3，sys 单桶峰值 15077 轮），G1 四项零漂移。
+- claim 置位结构性漏镜像近 24h 未产生缺失；待办（S4 停写前修复 claim 路径，累计 5 行/8 天实证）维持，等待拍板。
+- **连续归零累计 1/7**（09-23 计 Day 1，09-22 FAIL 清零后重起）。7 天达标 earliest 2026-09-29 每日轮。
