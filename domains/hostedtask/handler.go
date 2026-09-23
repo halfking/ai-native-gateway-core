@@ -111,7 +111,7 @@ func (h *Handler) SetACCCancel(fn func(ctx context.Context, commandID string)) {
 //	GET  /v1/hosted-tasks/{id}           状态+事件时间线
 //	GET  /v1/hosted-tasks/{id}/result    结果（running→202+Retry-After）
 //	POST /v1/hosted-tasks/{id}/cancel    取消（P0=请求受理语义）
-//	POST /v1/hosted-tasks/{id}/recall    召回（§3.3 ④ 轻量快照：cancel+包）
+//	POST /v1/hosted-tasks/{id}/recall    P0 显式 501（§4.1/§6.2）
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, ok := h.authenticate(w, r)
 	if !ok {
@@ -166,11 +166,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			h.cancel(w, r, taskID)
 		case "recall":
-			if r.Method != http.MethodPost {
-				h.writeError(w, http.StatusMethodNotAllowed, "", "method not allowed", "hosted_task_error", "METHOD_NOT_ALLOWED")
-				return
-			}
-			h.recall(w, r, taskID)
+			// §4.1：P0 显式不支持（501），P1 实现（§3.3 handoff 包）。
+			h.writeError(w, http.StatusNotImplemented, "", "recall is not supported in P0; planned for P1 (handoff packet)", "hosted_task_error", "RECALL_NOT_IMPLEMENTED")
 		default:
 			h.writeError(w, http.StatusNotFound, "", "not found", "hosted_task_error", "NOT_FOUND")
 		}
@@ -509,99 +506,6 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request, taskID string) 
 		"hosted_task_id": task.ID,
 		"cancel_status":  "requested",
 	})
-}
-
-// ─── POST /v1/hosted-tasks/{id}/recall（§3.3 ④ 轻量快照路径，P1 子集）──────
-
-// StructuredHandoffPacket 是召回时交付给调用方的结构化移交包（§3.3 ④）。
-// 完整 P1 路径还含线层导出（request_logs turns 摘要）、续层指针（pi native
-// session id）与知层（Memora scope_chain）；本骨架只覆盖包本体六字段。
-type StructuredHandoffPacket struct {
-	Goal              string         `json:"goal"`
-	CurrentResult     map[string]any `json:"current_result"`
-	DoneWhen          string         `json:"done_when,omitempty"`
-	Blockers          []string       `json:"blockers"`
-	NextOwner         string         `json:"next_owner"`
-	RequiresInputFrom []string       `json:"requires_input_from"`
-	ArtifactRefs      []any          `json:"artifact_refs"`
-}
-
-// recall 组装移交包并返回 200。轻量路径（不走 §3.3 ACC v3 transfer 状态机，
-// 不动 ACC 权威状态）：非终态任务先做与 cancel 端点同款的本地终态抢占
-// （§3.2，含尽力 ACC cancel(requested) 收尾）；终态任务直接快照，不触发
-// CancelTask。GET /result 的 404/租户语义在此复用。
-func (h *Handler) recall(w http.ResponseWriter, r *http.Request, taskID string) {
-	tenantID := tenantIDFrom(r.Context())
-	task, err := h.store.GetTask(r.Context(), tenantID, taskID)
-	if err != nil {
-		h.readErr(w, err)
-		return
-	}
-	recallStatus := "already_terminal"
-	if !task.Status.Terminal() {
-		cancelled, won, err := h.store.CancelTask(r.Context(), tenantID, taskID)
-		if err != nil {
-			h.readErr(w, err)
-			return
-		}
-		task = cancelled
-		if won {
-			recallStatus = "cancelled"
-			if h.accCancel != nil && task.AccCommandID != "" {
-				cmdID := task.AccCommandID
-				go h.accCancel(context.WithoutCancel(r.Context()), cmdID)
-			}
-		}
-		// won=false：GetTask 与 CancelTask 之间他人已终态化（终态 sticky），
-		// 快照改为他人落定的终态行，recall_status 保持 already_terminal。
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"hosted_task_id": task.ID,
-		"status":         task.Status.APIStatus(),
-		"recall_status":  recallStatus,
-		"handoff_packet": buildHandoffPacket(task),
-	})
-}
-
-// buildHandoffPacket 从任务投影组装 §3.3 ④ 移交包。currentResult 直接取
-// hosted_tasks.result 快照；blockers/requiresInputFrom 按状态机最小推导
-// （needs_review → 人工对账；failed → 尽力带 error 详情）。
-func buildHandoffPacket(t *Task) StructuredHandoffPacket {
-	result := t.Result
-	if result == nil {
-		result = map[string]any{}
-	}
-	packet := StructuredHandoffPacket{
-		Goal:              t.Goal,
-		CurrentResult:     result,
-		DoneWhen:          t.DoneWhen,
-		Blockers:          []string{},
-		NextOwner:         "recall_caller",
-		RequiresInputFrom: []string{},
-		ArtifactRefs:      []any{},
-	}
-	switch t.Status {
-	case StatusNeedsReview:
-		packet.Blockers = append(packet.Blockers,
-			"needs_review: outcome unverifiable; manual reconciliation required")
-		packet.RequiresInputFrom = append(packet.RequiresInputFrom, "human")
-	case StatusFailed:
-		if msg, _ := t.Result["error"].(string); msg != "" {
-			packet.Blockers = append(packet.Blockers, "failed: "+msg)
-		} else {
-			packet.Blockers = append(packet.Blockers, "failed: no error detail recorded")
-		}
-	case StatusCancelled, StatusExpired:
-		packet.Blockers = append(packet.Blockers, string(t.Status)+": task did not run to completion")
-	}
-	// artifact_refs：result 权威优先，回落创建时 context.artifacts。
-	if refs, ok := t.Result["artifact_refs"].([]any); ok && len(refs) > 0 {
-		packet.ArtifactRefs = refs
-	} else if refs, ok := t.Context["artifacts"].([]any); ok && len(refs) > 0 {
-		packet.ArtifactRefs = refs
-	}
-	return packet
 }
 
 // ─── 公共 ─────────────────────────────────────────────────────────────────
