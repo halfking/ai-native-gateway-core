@@ -234,6 +234,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 736 加列后热窗转移把倍率证据落 NULL/DEFAULT 1.0。幂等
 			//（CREATE OR REPLACE FUNCTION）。
 			"739_promote_functions_rate_multiplier.sql",
+			// 740 (R57, 2026-09-23): view 链补投影真实 client_ip（R57 B7
+			// 数据源级修复）。regexp 补列 + 顶层全量重建 + 列数守卫
+			// fail-closed。幂等。
+			"740_view_chain_client_ip.sql",
 		},
 	}
 }

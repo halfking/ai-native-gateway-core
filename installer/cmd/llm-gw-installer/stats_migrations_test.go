@@ -207,6 +207,10 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// same round as the migration landed. Idempotent (CREATE OR
 		// REPLACE FUNCTION).
 		"739_promote_functions_rate_multiplier.sql": promoteFunctionsRateMultiplierMigration739,
+		// 740 (R57, 2026-09-23): view chain projects the real client_ip —
+		// five-point sync in the same round as the migration landed.
+		// Idempotent (regexp append + full top-view rebuild with guards).
+		"740_view_chain_client_ip.sql": viewChainClientIPMigration740,
 	}
 
 	for name, embedded := range expected {
