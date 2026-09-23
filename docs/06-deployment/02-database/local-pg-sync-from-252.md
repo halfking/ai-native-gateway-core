@@ -1,7 +1,7 @@
 # Local PostgreSQL (llm-gateway-pg) — 从 252 同步流程
 
-**版本**: 1.14
-**日期**: 2026-09-19
+**版本**: 1.15
+**日期**: 2026-09-23
 **状态**: 强制执行
 **作用范围**: 本地开发用的 docker PG 容器 (`llm-gateway-pg`)
 
@@ -243,6 +243,67 @@ PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -
 
 另外注意：`pg_dump -t` 每张表要单独写一个 `-t`（`-t "a b c"` 会被当成单个表名而报 "too many command-line arguments"）；用 bash 数组 `"${args[@]}"` 传给 `docker exec ... pg_dump` 在 zsh 下也会塌缩，建议循环逐表 dump 再追加到文件。月度分区（如 `request_logs_bodies_2026_10`）命中 hot 表过滤，仅 252 有、本地无，属**预期差异**，不必回灌。
 
+### Q6: 启动迁移时 `DROP POLICY IF EXISTS <x>_tenant_isolation` 报 `could not access file "$libdir/citus"`？
+
+**答**: 数据目录是用 `kx-citus-pg17:13.3.0`（含 citus + citus_columnar + vector）`initdb` 的，里面注册了扩展 `citus 13.3-1` + 事件触发器 `citus_cascade_to_partition`（`sql_drop` → 调用 `citus_drop_trigger()`）；但如果容器后来被以 `postgres:17-alpine`（裸 PG17，无 citus .so）启动，那么：
+
+- `pg_extension` 表里 citus 还在（catalog 不会因为镜像换掉而消失）
+- 246 个函数 `probin='$libdir/citus'`
+- 事件触发器 `citus_cascade_to_partition` 仍然挂载
+- 但镜像里**没有 `citus.so`**
+
+→ 任何 `DROP POLICY / DROP INDEX / ALTER TABLE … DROP CONSTRAINT` 都会先过 `sql_drop` 事件触发器 → `dlopen('$libdir/citus')` → 报 `could not access file "$libdir/citus": No such file or directory`。2026-09-23 实测：`migration 552_request_journey_durable_outbox.sql` 在 `DROP POLICY IF EXISTS request_journey_observation_outbox_tenant_isolation` 这一行整批回滚。
+
+排查（一次性）：
+
+```bash
+docker inspect llm-gateway-pg --format '{{.Config.Image}}'
+# 期望 kx-citus-pg17:offline-arm64；如果显示 postgres:17-alpine / postgres:<ver>-alpine → 中招
+docker exec llm-gateway-pg ls /usr/lib/postgresql/17/lib/citus.so
+# 期望文件存在；missing → 中招
+docker exec llm-gateway-pg psql -U <user> -d <db> -tAc "SHOW shared_preload_libraries"
+# 期望包含 citus；空 → 中招（即便镜像正确，shared_preload_libraries 也必须显式开启）
+```
+
+修复：运行 `scripts/local-dev/recover-pg-citus-image.sh`（自动检测 → load 离线 tarball → tag → 容器 swap → patch `postgresql.auto.conf` → restart → 验证事件触发器 / 列存路径）。脚本只动镜像与 `shared_preload_libraries`，**不改 user/password**、**不重 initdb**、**不动数据**。数据目录为 `~/kaixuan/postgres`（22G），全程保留。
+
+如果只想手工复现修复步骤（顺序敏感，每一步不可跳）：
+
+```bash
+# 1) 加载离线 tarball（注意：tag 是 registry.kxpms.cn/.../13.3.0-vector-arm64）
+docker load -i ~/work/docker-base-images/database/kx-citus-pg17-13.3.0-vector-arm64.tar.gz
+docker tag registry.kxpms.cn/kx-citus-pg17:13.3.0-vector-arm64 kx-citus-pg17:offline-arm64
+
+# 2) 停掉、删掉错镜像起的容器（数据卷不动）
+docker stop llm-gateway-pg && docker rm llm-gateway-pg
+
+# 3) 用正确镜像重启（同 bind / 同 env / 同 network）
+docker run -d --name llm-gateway-pg --restart unless-stopped \
+  --network shared-infra -p 127.0.0.1:5432:5432 \
+  -v /Users/xutaohuang/kaixuan/postgres:/var/lib/postgresql/data \
+  -e POSTGRES_USER=llm_gateway -e POSTGRES_PASSWORD='<envs/loader.sh 提供>' \
+  -e POSTGRES_DB=llm_gateway \
+  -e POSTGRES_INITDB_ARGS='--encoding=UTF-8 --lc-collate=C.UTF-8 --lc-ctype=C.UTF-8' \
+  -e TZ=Asia/Shanghai -e PGTZ=Asia/Shanghai \
+  -e 'NO_PROXY=localhost,127.0.0.1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,*.local,ghcr.io,14.103.169.56,registry.kxpms.cn' \
+  -e 'no_proxy=localhost,127.0.0.1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,*.local,ghcr.io,14.103.169.56,registry.kxpms.cn' \
+  kx-citus-pg17:offline-arm64
+
+# 4) postgresql.auto.conf 改 shared_preload_libraries（citus 必须 preloaded）
+#    ALTER SYSTEM 在此参数上会自带双引号导致 dlopen 一个非 .so 文件名；
+#    直接改 auto.conf 更稳。
+sed -i.bak \
+  -e "s|^shared_preload_libraries.*|shared_preload_libraries = 'citus,citus_columnar,pg_stat_statements'|" \
+  /Users/xutaohuang/kaixuan/postgres/postgresql.auto.conf
+docker restart llm-gateway-pg
+
+# 5) 验证
+docker exec llm-gateway-pg pg_isready -U llm_gateway -d llm_gateway
+docker exec llm-gateway-pg psql -U llm_gateway -d llm_gateway -tAc \
+  "SELECT extname, extversion FROM pg_extension WHERE extname IN ('citus','citus_columnar') ORDER BY 1"
+# 期望: citus=13.3-1, citus_columnar=13.3-1
+```
+
 ---
 
 ## 六、相关脚本与文档
@@ -253,6 +314,7 @@ PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -
 | `scripts/pg-table-copy.sh` | 底层同步引擎（不管理隧道）：默认不 DROP/不清空目标，`--clean-schema` 与 `--replace-data` 均为显式危险选项；catalog 识别分区，manifest 驱动逐表导出/导入，导出/导入失败即 exit 1 |
 | `scripts/sync-from-252.sh`、`scripts/sync-schema-to-252.sh` | **已退休**；不得执行或在新流程中引用，改用 `scripts/pg-table-copy.sh` |
 | `scripts/local-dev/recreate-llm-gateway-pg.sh` | 重建 docker 容器（保留数据目录）；`POSTGRES_PASSWORD` 仅在全新数据目录首次 initdb 时生效，**不修改已有集群用户**（策略：只新增）|
+| `scripts/local-dev/recover-pg-citus-image.sh` | 当容器被错镜像（如 `postgres:17-alpine`）启动而数据目录仍是 `kx-citus-pg17` 初始化时，自动检测 + load 离线 tarball + 容器 swap + patch `shared_preload_libraries` + 验证；专治 §5 Q6 的 `$libdir/citus` 错误 |
 | `scripts/local-dev/verify-db-consistency.sh` | 252 ↔ local 七维结构校验（表/列/视图/索引/约束/序列/函数）；含 gated `--reconcile` 回灌模式。**每次同步后必须执行**——迁移跟踪表随数据复制，不能反映真实结构 |
 | `scripts/local-dev/verify-db-data-consistency.sh` | 252 ↔ local 普通表数据校验；比较完整表集合、逐表精确行数和顺序无关/重复敏感内容摘要；hot/分区数据按契约跳过 |
 | `scripts/local-dev/apply-routing-mv-fixup.sh` | v1.1 补齐 252 三对象（matview ×2 + columnar helper）；**已被 `pg-table-copy.sh` PHASE 8.5 自动调用**（仅本地 docker 容器、非 dry-run / data-only 时执行），幂等；仍可独立手工调用 |
@@ -281,6 +343,7 @@ PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -
 | 2026-09-07 | 1.12 | **§5 Q2 数据目录表述二次更正**：实测 `docker inspect llm-gateway-pg --format '{{json .Mounts}}'` → 容器当前 bind 源为 `~/kaixuan/postgres`（21G base 已活跃），历史条目里写的 `~/.agents-cache/llm-gateway-pg-data` 已被新 SSOT 取代。`scripts/local-dev/recreate-llm-gateway-pg.sh:40,46` 同步把 `DATA_DIR` 改为 `${LLM_GATEWAY_PG_DATA_DIR:-$HOME/kaixuan/postgres}`（可覆盖），头部注释把旧 Downloads 路径标注为 rollback-only 副本，避免脚本绑定到错误目录导致 22G 真实数据"看似丢失"。§5 Q2 正文同步替换为 `~/kaixuan/postgres`。历史 v1.6 / v1.11 条目保留原貌，不修改历史。 |
 | 2026-09-07 | 1.13 | **本地 llm-gateway-pg 角色防御 + psql 调用修正**：新增 `scripts/local-dev/ensure-llm-gateway-pg-role.sh`，幂等 CREATE ROLE/CREATE DATABASE（缺则补、在则 no-op），由 `scripts/deploy-local.sh ensure_resources()` 末尾在 `DL_PG_CONTAINER=llm-gateway-pg` 路径下调用。修复 5 个本地脚本里 `-U postgres` → `-U "${LLM_GATEWAY_PG_USER:-llm_gateway}"`（`sync-db-to-252.sh`、`sync-db-from-252.sh`、`diagnose-nvidia-minimax.sh`、`fix_503_one_click.sh`、`install/backup.sh`）以及 `deploy/prometheus/.env.example`。**作用域仅限本地 llm-gateway-pg**，252/245 远端的 psql 调用保持原状（其各自数据库按各环境约定管理）。 |
 | 2026-09-19 | 1.14 | **端口绑定放开局域网（跟齐 0080da15e）**：`scripts/local-dev/recreate-llm-gateway-pg.sh` 的 `PORT_BIND` 自 2026-09-18 起默认 `0.0.0.0:5432:5432`（原 `127.0.0.1:5432:5432`），供局域网设备直连本地开发库（开放标准见治理仓 `docs/deployment/LAN-EXPOSURE-STANDARD-2026-09-19.md`）；scram 密码认证不变，可用 `LLM_GATEWAY_PG_PORT_BIND` 覆盖（如收回 loopback 绑定）。回环访问方式（`-h 127.0.0.1`）不受影响。 |
+| 2026-09-23 | 1.15 | **`$libdir/citus` 故障修复 + 防回归脚本**：2026-09-23 上午观察到 `llm-gateway-pg` 实际运行在错的 `postgres:17-alpine` 镜像上，但数据目录是用 `kx-citus-pg17:13.3.0` 初始化的——`pg_extension` 里的 `citus 13.3-1`、246 个 `$libdir/citus` 函数、事件触发器 `citus_cascade_to_partition` 都还在 catalog 里，每次 `DROP POLICY/INDEX/CONSTRAINT` 就崩 `could not access file "$libdir/citus"`。`migration 552_request_journey_durable_outbox.sql` 的 `DROP POLICY IF EXISTS request_journey_observation_outbox_tenant_isolation` 实测失败。修复要点：① 加载离线 tarball `kx-citus-pg17-13.3.0-vector-arm64.tar.gz` 并 tag 为 `kx-citus-pg17:offline-arm64`；② 用对镜像重启容器（保留 22G `~/kaixuan/postgres` 数据卷、同 env、同 network）；③ `postgresql.auto.conf` 直接 patch `shared_preload_libraries = 'citus,citus_columnar,pg_stat_statements'`（citus 必须 postmaster preloaded；`ALTER SYSTEM` 对逗号列表自带双引号是个已知脚枪）→ restart；④ 验证 `ext_citus/citus_columnar 13.3-1`、事件触发器路径、列存表。**新增 §5 Q6 故障排查** + **`scripts/local-dev/recover-pg-citus-image.sh`**（自动检测→加载→swap→patch→验证；支持 `--dry-run` / `--tarball`；不修改 user/password / 不重 initdb）；§六 脚本表同步登记；recreate 脚本策略维持 CREATE-ONLY 不变。 |
 
 ---
 
