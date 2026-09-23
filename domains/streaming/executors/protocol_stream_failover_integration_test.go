@@ -268,7 +268,7 @@ func TestExecuteResponses_OpenAIPreCommitFailoverUsesResponsesBridge(t *testing.
 	defer server.Close()
 
 	exec := newProtocolFailoverExecutor(t)
-	exec.OpenAIToResponsesStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, _ any) executors.StreamOutcome {
+	exec.OpenAIToResponsesStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, _ any, _ bool) executors.StreamOutcome {
 		return streamResult(streaming.StreamOpenAIToResponsesSSE(ctx, w, resp, clientModel, outboundModel, requestID, capture, nil))
 	}
 
@@ -437,7 +437,7 @@ func TestExecuteResponses_PostCommitFailureDoesNotCallSecondProvider(t *testing.
 	defer server.Close()
 
 	exec := newProtocolFailoverExecutor(t)
-	exec.OpenAIToResponsesStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, _ any) executors.StreamOutcome {
+	exec.OpenAIToResponsesStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, _ any, _ bool) executors.StreamOutcome {
 		return streamResult(streaming.StreamOpenAIToResponsesSSE(ctx, w, resp, clientModel, outboundModel, requestID, capture, nil))
 	}
 	capture := &audit.StreamCapture{}

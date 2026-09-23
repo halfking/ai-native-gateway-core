@@ -467,13 +467,22 @@ func getLatestBodies(ctx context.Context, db bodiesDB, tenantID, sessionID strin
 	var requestDeltaJSON, responseDeltaJSON, outboundBodyJSON []byte
 	var requestAttachmentsJSON, responseAttachmentsJSON []byte
 
-	// Use unified view to read from both hot table and partitions
+	// Hot-path optimization (2026-09-23, sessionv2mirror WARN spike):
+	// Same rationale as turn_writer.go getNextTurnNo — the unified view is
+	// UNION ALL session_bodies_hot ∪ parent partition LEFT JOIN; "ORDER BY
+	// turn_no DESC LIMIT 1" cannot use an index over the UNION and would
+	// sequentially scan the entire body table per request. session_bodies_hot
+	// holds the live write path (Write bodies go there), the partition holds
+	// only promoted cold rows never matching the latest turn_no of an active
+	// session, and the per-session advisory lock above makes the read safe.
+	// idx_session_bodies_hot_lookup (session_id, turn_no, tenant_id) serves
+	// this lookup directly. See memory/bg-recent-surface-read-doctrine.
 	err := db.QueryRow(ctx, `
 		SELECT
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
 			request_attachments, response_attachments
-		FROM public.session_bodies_unified
+		FROM public.session_bodies_hot
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no DESC
 		LIMIT 1
@@ -522,9 +531,14 @@ func getLatestBodies(ctx context.Context, db bodiesDB, tenantID, sessionID strin
 	// (plan D2: "差集提取改读 final_full；未命中回退旧 outbound_body").
 	if len(rec.OutboundBody) == 0 {
 		var finalFullJSON []byte
+		// Hot-path optimization (2026-09-23): same rationale as the
+		// primary getLatestBodies path — final_full fallback reads the live
+		// hot table only, avoiding the UNION view scan. The unique
+		// index uq_session_bodies_hot_final_full (tenant_id, session_id,
+		// partition_date) WHERE kind='final_full' serves this lookup.
 		err := db.QueryRow(ctx, `
 			SELECT outbound_body
-			FROM public.session_bodies_unified
+			FROM public.session_bodies_hot
 			WHERE tenant_id = $1 AND session_id = $2
 			  AND kind = 'final_full'
 			  AND outbound_body IS NOT NULL
