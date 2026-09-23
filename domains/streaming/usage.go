@@ -157,14 +157,19 @@ func ExtractUsageFromChunk(payload string) UsageData {
 		}
 	}
 
-	// total_tokens fallback: if we have total but missing prompt/completion, infer them
-	if (result.PromptTokens == nil || result.CompletionTokens == nil) && result.PromptTokens == nil {
+	// total_tokens fallback: if we have total but missing prompt/completion,
+	// infer the missing side. R57 D4：与非流式 extractTokensFromResponseBody
+	// 双向推断对称化——原条件 `(P==nil||C==nil) && P==nil` 塌缩成 P==nil 单
+	// 向，completion-only usage（部分上游流式尾块只报 completion+total）永
+	// 远推不出 prompt，计费相邻面流式/非流式口径不一致。
+	if result.PromptTokens == nil || result.CompletionTokens == nil {
 		if total, err := intValue(usage, "total_tokens"); err == nil && total > 0 {
-			if result.CompletionTokens != nil {
+			if result.PromptTokens == nil && result.CompletionTokens != nil && total > *result.CompletionTokens {
 				pt := total - *result.CompletionTokens
-				if pt >= 0 {
-					result.PromptTokens = &pt
-				}
+				result.PromptTokens = &pt
+			} else if result.CompletionTokens == nil && result.PromptTokens != nil && total > *result.PromptTokens {
+				ct := total - *result.PromptTokens
+				result.CompletionTokens = &ct
 			}
 		}
 	}
