@@ -324,7 +324,20 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 
 		if model != "" {
 			start = time.Now()
-			chatResult, chatErr := doChatProbe(ctx, upstreamurl.ChatCompletionsURL(cred.baseURL), apiKey, model)
+			// 2026-09-23 vapeur incident: phase-2 used to probe
+			// /chat/completions unconditionally, which misreports healthy
+			// credentials on responses-only relays. Pick the probe endpoint
+			// (and body shape) from the provider's egress protocol.
+			var probeURL string
+			var probeFn func(context.Context, string, string, string) (*chatResult, error)
+			if cred.protocol == "openai-responses" {
+				probeURL = upstreamurl.ResponsesURL(cred.baseURL)
+				probeFn = doResponsesProbe
+			} else {
+				probeURL = upstreamurl.ChatCompletionsURL(cred.baseURL)
+				probeFn = doChatProbe
+			}
+			chatResult, chatErr := probeFn(ctx, probeURL, apiKey, model)
 			probeLatencyMs = int(time.Since(start).Milliseconds())
 			if chatErr != nil {
 				probeError = chatErr.Error()

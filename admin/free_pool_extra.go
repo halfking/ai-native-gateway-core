@@ -1359,6 +1359,14 @@ func (h *Handler) handleFreePoolAddKey(w http.ResponseWriter, r *http.Request) {
 	if protocol == "" {
 		protocol = "openai-completions"
 	}
+	// 2026-09-23 vapeur incident: normalize aliases ("openai-response" →
+	// "openai-responses") and reject unknown values before persistence.
+	normalized, normErr := NormalizeProviderProtocol(protocol)
+	if normErr != nil {
+		writeError(w, http.StatusBadRequest, normErr.Error())
+		return
+	}
+	protocol = normalized
 	models := req.Models
 	if len(models) == 0 && platform != nil && platform.ModelsHint != "" {
 		for _, m := range strings.Split(platform.ModelsHint, ",") {
