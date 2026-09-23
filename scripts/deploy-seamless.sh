@@ -1223,8 +1223,18 @@ do_deploy() {
     fi
   fi
   if [[ -n "$probe_failed" ]]; then
-    warn "    candidate probe failure tail (last 30 journal lines):"
-    remote_ssh "journalctl -u '$candidate_service' -n 30 --no-pager 2>&1 | tail -30" 2>&1 | sed 's/^/      /' || true
+    # 2026-09-23（245 seq 2221 工单）：探针失败 ≠ 探针窗口不足。候选可能正
+    # 处于迁移重试烧点（schema migrations failed transiently）、端口 bind
+    # 失败（gateway listen failed）或 boot 挂起——三种情况处置完全不同，
+    # 统一甩一句 "PROBE_TIMEOUT_SECS=600 重跑" 会误导排障方向。这里把
+    # journal 尾（60 行）、systemd 状态、端口监听一并自动拉出，并按 boot
+    # 标记分类给出排查提示。
+    warn "    candidate probe failure tail (last 60 journal lines):"
+    local probe_fail_tail
+    probe_fail_tail=$(remote_ssh "journalctl -u '$candidate_service' -n 60 --no-pager 2>&1 | tail -60" 2>&1) || true
+    printf '%s\n' "$probe_fail_tail" | sed 's/^/      /' || true
+    warn "    candidate process/port state at failure:"
+    remote_ssh "systemctl show '$candidate_service' -p ActiveState -p SubState -p NRestarts --no-pager 2>&1; ss -ltnp 2>/dev/null | grep ':${candidate_port} ' || echo 'port ${candidate_port}: 无监听'" 2>&1 | sed 's/^/      /' || true
     zd_stop_candidate "$SSH_CMD" "$candidate_service"
     remote_ssh "rm -f '$REMOTE_ROOT/slots/$candidate_port' '$REMOTE_ROOT/run/candidate-port'" || true
     # Restore current to the old release so the active (which also follows
@@ -1233,7 +1243,17 @@ do_deploy() {
       remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'" || true
     fi
     err "候选实例未通过 ${probe_failed}: ${probe_detail}，旧实例保持服务"
-    err "  排查: 上方 journal 若显示仍在 ensure（列交集检查在大表上可 >3 分钟），用 PROBE_TIMEOUT_SECS=600 重跑；若 ensure 已走完仍 refused，查 candidate 端口 bind 报错"
+    if printf '%s' "$probe_fail_tail" | grep -q "gateway listen failed"; then
+      err "  排查: journal 见 gateway listen failed —— 候选端口 bind 失败（多为 address already in use），按上方 ss -ltnp 输出查端口占用进程"
+    elif printf '%s' "$probe_fail_tail" | grep -q "schema migrations failed transiently"; then
+      err "  排查: journal 见迁移重试/超时（context deadline exceeded）—— boot 迁移链自身在烧点，调大 PROBE_TIMEOUT_SECS 无效；查 252 PG 锁等待与 db.go ensure 链最近改动"
+    elif printf '%s' "$probe_fail_tail" | grep -q "gateway listening"; then
+      err "  排查: journal 已到 gateway listening 但探针未通过 —— bind 后即退出或就绪过慢，可 PROBE_TIMEOUT_SECS=600 重跑；仍败则查上方 ss -ltnp 与进程退出码"
+    elif printf '%s' "$probe_fail_tail" | grep -qE "(schema ensured|CHECKPOINT)"; then
+      err "  排查: ensure 链在推进但未到 gateway listening —— boot 仍在继续；journal 末条若持续 >3 分钟不动，按 boot 烧点排查（PG 锁等待），否则 PROBE_TIMEOUT_SECS=600 重跑"
+    else
+      err "  排查: 上方 journal 若显示仍在 ensure（列交集检查在大表上可 >3 分钟），用 PROBE_TIMEOUT_SECS=600 重跑；若 ensure 已走完仍 refused，查 candidate 端口 bind 报错"
+    fi
     exit 1
   fi
   if ! zd_switch_upstream "$SSH_CMD" "$upstream_fragment" "$candidate_port"; then

@@ -4905,11 +4905,38 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	_, err := d.pool.Exec(ctx, `
-		ALTER TABLE IF EXISTS request_logs_hot
-		    ADD COLUMN IF NOT EXISTS task_type TEXT,
-		    ADD COLUMN IF NOT EXISTS origin_stage VARCHAR(32);
-
+	// D1 残余（2026-09-23 审计轮）：request_logs_hot 是最热大表，列全在位时
+	// no-op ALTER ... ADD COLUMN IF NOT EXISTS 仍要取 ACCESS EXCLUSIVE 锁才能
+	// 逐列确认；共享 252 PG 持续写流下锁等待烧穿 applyMigrationsOnce 的 3min
+	// 预算（245 seq 2221 boot 实证：attempt1 15:02:36 governor revision 后
+	// 挂 156s → 15:05:12 context deadline exceeded；attempt2 同点位被探针
+	// 击杀）。列在位 → 跳过 ALTER；4 参签名在位 → 跳过 DROP（CREATE OR
+	// REPLACE 始终执行，保持函数体与代码同步，锁窗口毫秒级）；backfill
+	// UPDATE 保留——成熟库空集毫秒级通过，有真实 broken_confirmed 行时是
+	// 必须执行的数据回填，不可短路。
+	if !d.columnsAllPresent(ctx, "request_logs_hot", []string{"task_type", "origin_stage"}) {
+		if _, err := d.pool.Exec(ctx, `
+			ALTER TABLE IF EXISTS request_logs_hot
+			    ADD COLUMN IF NOT EXISTS task_type TEXT,
+			    ADD COLUMN IF NOT EXISTS origin_stage VARCHAR(32);
+		`); err != nil {
+			return err
+		}
+	} else {
+		slog.Info("request_logs_hot task_type/origin_stage columns ensured (catalog short-circuit)")
+	}
+	var fnMissing int
+	if err := d.pool.QueryRow(ctx, `
+		SELECT count(*) FROM (SELECT 1) AS one
+		WHERE NOT EXISTS (SELECT 1 FROM pg_proc p
+		  JOIN pg_namespace n ON n.oid = p.pronamespace
+		  WHERE n.nspname = 'public'
+		    AND p.proname = 'recent_success_rate'
+		    AND p.pronargtypes = '20 25 23 23'::oidvector)
+	`).Scan(&fnMissing); err != nil {
+		fnMissing = 1 // 探测出错走保守路径（含 DROP），自含幂等
+	}
+	if _, err := d.pool.Exec(ctx, `
 		-- (1) Backfill broken_confirmed → binding available=FALSE.
 		UPDATE credential_model_bindings cmb
 		SET available          = FALSE,
@@ -4926,15 +4953,25 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 		        AND mps.raw_model_name = pm.raw_model_name
 		        AND mps.state = 'broken_confirmed'
 		  );
-
-		-- (2) recent_success_rate helper. DROP+CREATE keeps the body in sync
-		--     with the live hot-table source even if a prior deploy left an
-		--     older body. request_logs only receives promoted rows, so using it
-		--     for the default 3-hour window yields samples=0 by design.
-		--     2026-06-23: Add p_window_hours parameter for time-based windowing.
-		DROP FUNCTION IF EXISTS recent_success_rate(bigint, text, int);
-		DROP FUNCTION IF EXISTS recent_success_rate(bigint, text, int, int);
-		CREATE FUNCTION recent_success_rate(p_credential_id BIGINT,
+	`); err != nil {
+		return err
+	}
+	// (2) recent_success_rate helper. Body is re-synced on every boot via
+	//     CREATE OR REPLACE; the legacy 3-arg signature is dropped only while
+	//     the 4-arg one is absent (signature migration window). request_logs
+	//     only receives promoted rows, so using it for the default 3-hour
+	//     window yields samples=0 by design.
+	//     2026-06-23: Add p_window_hours parameter for time-based windowing.
+	if fnMissing > 0 {
+		if _, err := d.pool.Exec(ctx, `
+			DROP FUNCTION IF EXISTS recent_success_rate(bigint, text, int);
+			DROP FUNCTION IF EXISTS recent_success_rate(bigint, text, int, int);
+		`); err != nil {
+			return err
+		}
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION recent_success_rate(p_credential_id BIGINT,
 		                                    p_raw_model     TEXT,
 		                                    p_sample_n      INT DEFAULT 50,
 		                                    p_window_hours  INT DEFAULT 3)
