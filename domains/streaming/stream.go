@@ -836,6 +836,15 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	// flip it true if its buffered output included [DONE].
 	upstreamDoneReceived := false
 
+	// finalFinishReason tracks the last finish_reason seen on an upstream
+	// chunk. 2026-09-23 (benign-EOF parity with the responses/anthropic
+	// bridges): minimax-style relays close the stream right after the
+	// finish_reason chunk instead of emitting [DONE]. A received
+	// finish_reason means the stream COMPLETED semantically — the EOF
+	// branch below must treat the missing [DONE] as benign upstream
+	// non-compliance, not as an eof_without_done failure.
+	finalFinishReason := ""
+
 	if firstLine != "" {
 		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(firstLine))
 		firstRawPayload := extractPayload(firstLine)
@@ -843,6 +852,9 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			diagnosticCollector.observeRaw([]byte(firstRawPayload))
 			if chunk, parseErr := ir.ParseOpenAIStreamChunk(firstLine); parseErr == nil {
 				diagnosticCollector.observeChunk(chunk)
+				if chunk.FinishReason != "" {
+					finalFinishReason = chunk.FinishReason
+				}
 			} else {
 				reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(firstRawPayload), parseErr, nil)
 			}
@@ -1108,8 +1120,37 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			switch readResult.state {
 			case streamReadEOF:
 				if !upstreamDoneReceived {
-					terminalVisible := attemptHasClientSemanticOutput(gate, chunkCount)
-					if terminalVisible {
+					// 2026-09-23 (benign-EOF parity with the responses and
+					// anthropic bridges, both since 2026-09-13): a finish_reason
+					// chunk already received means the stream COMPLETED
+					// semantically — minimax-style relays close the connection
+					// right after it instead of emitting [DONE]. Synthesize the
+					// terminator, record a clean completion, and do NOT fail
+					// the turn (a tool_calls turn that already carried its full
+					// arguments must reach the client's tool executor, not die
+					// here as eof_without_done/retryable=false).
+					if finalFinishReason != "" && chunkCount > 0 {
+						slog.Info("upstream EOF without [DONE] after finish_reason — benign non-compliant close (§11.6 parity)",
+							"client_model", clientModel,
+							"chunk_count", chunkCount,
+							"finish_reason", finalFinishReason,
+						)
+						safeWriteSSE(w, "data: [DONE]\n\n")
+						safeFlush(flusher)
+						metrics.Global().RecordStreamSynthesizedDone()
+						if capture != nil {
+							capture.ObserveChunk(&ir.StreamChunk{
+								Type:           ir.ChunkTypeDone,
+								SourceProtocol: ir.ProtocolOpenAIChat,
+							})
+						}
+						outcome.Interrupted = false
+						outcome.Reason = ""
+						outcome.Kind = ""
+						outcome.Resumable = true
+						outcome.TerminalRendered = true
+						outcome.ChunkCount = chunkCount
+					} else if terminalVisible := attemptHasClientSemanticOutput(gate, chunkCount); terminalVisible {
 						// 2026-09-22 (§11.6 production fix):
 						//
 						// Pre-fix (commit 05c79fbe9, 2026-09-01) treated
@@ -1173,7 +1214,16 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 						// regenerate machinery recovers it. The gateway-side
 						// constraint (cannot transparently resume committed
 						// bytes) is unchanged.
-						errChunk := "data: {\"error\":{\"type\":\"upstream_incomplete\",\"message\":\"upstream closed the stream without sending [DONE]\",\"code\":\"eof_without_done\",\"reason\":\"eof_without_done\",\"retryable\":true}}\n\n"
+						//
+						// 2026-09-23 (shape parity): code/reason/retryable are
+						// duplicated at the TOP LEVEL as well. Live evidence
+						// (request df60575b, build 2235): the client read
+						// error.code but reported reason=unknown/retryable=false
+						// — it reads those two from the frame root, not from
+						// inside the error object. Extra root fields are
+						// ignored by strict OpenAI parsers, so both reader
+						// shapes now get the full signal.
+						errChunk := "data: {\"error\":{\"type\":\"upstream_incomplete\",\"message\":\"upstream closed the stream without sending [DONE]\",\"code\":\"eof_without_done\",\"reason\":\"eof_without_done\",\"retryable\":true},\"code\":\"eof_without_done\",\"reason\":\"eof_without_done\",\"retryable\":true}\n\n"
 						safeWriteSSE(w, errChunk)
 						outcome.TerminalRendered = true
 						// Synthesized [DONE] so the SDK still finalizes its
@@ -1342,6 +1392,9 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			diagnosticCollector.observeRaw([]byte(rawPayload))
 			if chunk, parseErr := ir.ParseOpenAIStreamChunk(line); parseErr == nil {
 				diagnosticCollector.observeChunk(chunk)
+				if chunk.FinishReason != "" {
+					finalFinishReason = chunk.FinishReason
+				}
 			} else {
 				reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(rawPayload), parseErr, nil)
 			}

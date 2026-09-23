@@ -665,13 +665,17 @@ func TestStreamChatWithPendingCapture_Section11_6_PseudoSuccessGuard(t *testing.
 	capture := audit.NewStreamCapture()
 
 	// Realistic committed-then-truncated upstream body: a content
-	// chunk followed by a finish_reason chunk, then EOF with no
-	// [DONE]. The MiniMax pattern observed in production (commit
+	// chunk, then EOF with no [DONE] and NO finish_reason chunk — a
+	// genuine mid-answer truncation. (2026-09-23: the finish_reason=stop
+	// chunk this fixture used to carry was moved to
+	// TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason — a
+	// received finish_reason means the stream completed semantically and
+	// is now benign, parity with the responses/anthropic bridges.)
+	// The MiniMax truncation pattern observed in production (commit
 	// 05c79fbe9 referenced provider=14/credential=21/raw_model=MiniMax-M3).
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(
-			"data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"partial answer\"}}]}\n\n" +
-				"data: {\"id\":\"chunk-2\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+			"data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"partial answer\"}}]}\n\n",
 		)),
 		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
 	}
@@ -742,3 +746,88 @@ func TestStreamChatWithPendingCapture_Section11_6_PseudoSuccessGuard(t *testing.
 	assert.Equal(t, 1, counter.synth,
 		"RecordStreamSynthesizedDone keeps firing because the synthesized terminator IS injected on the wire (observability signal for upstream non-compliance)")
 }
+
+// TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason (added
+// 2026-09-23) is the benign-EOF parity guard for the OpenAI chat bridge,
+// matching the responses and anthropic bridges (2026-09-13).
+//
+// Live evidence (request df60575b / 51da1dd4, build 2235, 2026-09-23
+// 20:11 +08): MiniMax-M3 streamed 86 chunks of a tool_calls turn, sent
+// the finish_reason chunk, then closed the connection WITHOUT [DONE].
+// The gateway's §11.6 guard classified the semantically-complete stream
+// as eof_without_done/retryable=false; the client (whose turn layer
+// treats the interruption as fatal) hard-failed the turn and the tool
+// never executed — the exact "无法正确使用 tools" report.
+//
+// Contract: when a finish_reason chunk was already received, the EOF
+// branch synthesizes [DONE] and records a CLEAN completion:
+//   - outcome.Interrupted=false, Reason="" (audit success=true)
+//   - wire shape: committed content + synthesized [DONE] (NO error
+//     envelope — a strict reader must see a normal completion)
+//   - RecordStreamSynthesizedDone still fires (the terminator IS
+//     synthesized on the wire — operators still see which upstreams
+//     omit [DONE])
+//   - capture is NOT marked interrupted
+//
+// EOF with NO finish_reason remains a §11.6 structured-error failure —
+// pinned by TestStreamChatWithPendingCapture_Section11_6_PseudoSuccessGuard.
+func TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason(t *testing.T) {
+	counter := &countingRecorder{delegate: metrics.NewNoopRecorder()}
+	prev := metrics.Global()
+	metrics.SetGlobal(counter)
+	t.Cleanup(func() { metrics.SetGlobal(prev) })
+
+	capture := audit.NewStreamCapture()
+
+	// The df60575b shape: content/tool_call deltas, then the
+	// finish_reason chunk (semantically complete), then EOF with no
+	// [DONE] — the minimax-style relay close.
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n" +
+				"data: {\"id\":\"chunk-2\",\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+		)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	writer := httptest.NewRecorder()
+
+	outcome := StreamChatWithPendingCapture(context.Background(),
+		writer,
+		resp,
+		"minimax-m3",
+		"MiniMax-M3",
+		NewNormalizer(),
+		capture,
+		false,
+		nil,
+		nil,
+	)
+
+	// Outcome: clean completion — the turn reaches the client's tool
+	// executor instead of dying as a retryable=false failure.
+	assert.False(t, outcome.Interrupted,
+		"a finish_reason already received means the stream completed semantically — EOF without [DONE] must NOT fail the turn (df60575b)")
+	assert.Empty(t, outcome.Reason,
+		"no interruption reason: audit success=true so the tool_calls turn is not recorded as a failure")
+	assert.Empty(t, outcome.Kind)
+	assert.Greater(t, outcome.ChunkCount, 0)
+
+	// Wire shape: content + synthesized [DONE], NO error envelope.
+	body := writer.Body.String()
+	assert.Contains(t, body, `"content":"answer"`,
+		"committed content stays on the wire")
+	assert.NotContains(t, body, `"type":"upstream_incomplete"`,
+		"benign close must NOT carry the error envelope — the client must see a normal completion")
+	assert.True(t, strings.HasSuffix(body, "data: [DONE]\n\n"),
+		"synthesized [DONE] finalizes the client's stream parser")
+
+	// Metric: still fires — the terminator was synthesized.
+	assert.Equal(t, 1, counter.synth,
+		"RecordStreamSynthesizedDone keeps firing so operators still see which upstreams omit [DONE]")
+
+	// Capture: NOT interrupted — audit success=true.
+	summary := capture.SummaryAsMap()
+	assert.False(t, summary["stream_interrupted"].(bool),
+		"capture must NOT be marked interrupted: the turn is semantically complete and must not be recorded as a failure")
+}
+
