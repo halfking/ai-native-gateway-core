@@ -23,8 +23,28 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// ddlRecordingTracer 记录经过 pgx 执行的全部 POLICY/TRIGGER DDL 语句，
+// 供契约 2b 断言第二遍 ensure 零重放。
+type ddlRecordingTracer struct {
+	stmts []string
+}
+
+func (t *ddlRecordingTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	upper := strings.ToUpper(data.SQL)
+	for _, banned := range []string{"CREATE POLICY", "DROP POLICY", "CREATE TRIGGER", "DROP TRIGGER"} {
+		if strings.Contains(upper, banned) {
+			t.stmts = append(t.stmts, data.SQL)
+			break
+		}
+	}
+	return ctx
+}
+
+func (t *ddlRecordingTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func TestDDLSkipGuardsAgainstRealPostgres(t *testing.T) {
 	dsn := os.Getenv("TEST_PG_URL")
@@ -120,30 +140,33 @@ func TestDDLSkipGuardsAgainstRealPostgres(t *testing.T) {
 
 	ensures := []struct {
 		name string
-		fn   func() error
+		fn   func(d *DB) func(context.Context) error
 	}{
-		{"request_journey_observation", func() error { return d.ensureRequestJourneyObservationSchema(ctx) }},
-		{"journal_snapshot_receipt", func() error { return d.ensureJournalSnapshotReceiptSchema(ctx) }},
-		{"users", func() error { return d.EnsureUsersTable(ctx) }},
-		{"vibe_coding", func() error { return d.ensureVibeCodingSchema(ctx) }},
-		{"webcookie_sessions", func() error { return d.ensureWebCookieSessionsSchema(ctx) }},
-		{"route_incident", func() error { return d.ensureRouteIncidentSchema(ctx) }},
-		{"orchestration_runtime_instances", func() error { return d.ensureOrchestrationRuntimeInstancesSchema(ctx) }},
-		{"response_format_anomalies", func() error { return d.ensureResponseFormatAnomaliesSchema(ctx) }},
-		{"model_integrity_events", func() error { return d.ensureModelIntegrityEventsSchema(ctx) }},
-		{"supplemental_rls", func() error { return d.ensureSupplementalRLS(ctx) }},
-		{"analysis_events_rls", func() error { return d.ensureAnalysisEventsRLS(ctx) }},
-		{"tenant_model_policies", func() error { return d.ensureTenantModelPoliciesSchema(ctx) }},
-		{"routing_overrides_audit", func() error { return d.ensureRoutingOverridesAudit(ctx) }},
-		{"credential_keys", func() error { return d.ensureCredentialKeysSchema(ctx) }},
-		{"credential_client_quota", func() error { return d.ensureCredentialClientQuotaSchema(ctx) }},
-		{"credential_governor_revision", func() error { return d.ensureCredentialGovernorRevision(ctx) }},
+		{"request_journey_observation", func(d *DB) func(context.Context) error { return d.ensureRequestJourneyObservationSchema }},
+		{"journal_snapshot_receipt", func(d *DB) func(context.Context) error { return d.ensureJournalSnapshotReceiptSchema }},
+		{"users", func(d *DB) func(context.Context) error { return d.EnsureUsersTable }},
+		{"vibe_coding", func(d *DB) func(context.Context) error { return d.ensureVibeCodingSchema }},
+		{"webcookie_sessions", func(d *DB) func(context.Context) error { return d.ensureWebCookieSessionsSchema }},
+		{"route_incident", func(d *DB) func(context.Context) error { return d.ensureRouteIncidentSchema }},
+		{"orchestration_runtime_instances", func(d *DB) func(context.Context) error { return d.ensureOrchestrationRuntimeInstancesSchema }},
+		{"response_format_anomalies", func(d *DB) func(context.Context) error { return d.ensureResponseFormatAnomaliesSchema }},
+		{"model_integrity_events", func(d *DB) func(context.Context) error { return d.ensureModelIntegrityEventsSchema }},
+		{"supplemental_rls", func(d *DB) func(context.Context) error { return d.ensureSupplementalRLS }},
+		{"analysis_events_rls", func(d *DB) func(context.Context) error { return d.ensureAnalysisEventsRLS }},
+		{"tenant_model_policies", func(d *DB) func(context.Context) error { return d.ensureTenantModelPoliciesSchema }},
+		{"routing_overrides_audit", func(d *DB) func(context.Context) error { return d.ensureRoutingOverridesAudit }},
+		{"credential_keys", func(d *DB) func(context.Context) error { return d.ensureCredentialKeysSchema }},
+		{"credential_client_quota", func(d *DB) func(context.Context) error { return d.ensureCredentialClientQuotaSchema }},
+		{"credential_governor_revision", func(d *DB) func(context.Context) error { return d.ensureCredentialGovernorRevision }},
 	}
-	for _, e := range ensures {
-		if err := e.fn(); err != nil {
-			t.Fatalf("first ensure %s: %v", e.name, err)
+	runEnsures := func(d *DB, stage string) {
+		for _, e := range ensures {
+			if err := e.fn(d)(ctx); err != nil {
+				t.Fatalf("%s ensure %s: %v", stage, e.name, err)
+			}
 		}
 	}
+	runEnsures(d, "first")
 
 	// ── 契约 1：每个守卫组在真库渲染下必须报告"当前"（跳过路径生效）──
 	outboxDDLs := []string{`
@@ -237,11 +260,31 @@ func TestDDLSkipGuardsAgainstRealPostgres(t *testing.T) {
 		return sb.String()
 	}
 	before := snapshot()
-	for _, e := range ensures {
-		if err := e.fn(); err != nil {
-			t.Fatalf("second ensure %s: %v", e.name, err)
-		}
+
+	// ── 契约 2b（R61 S1-P2-1）：第二遍 ensure 全程零 POLICY/TRIGGER DDL ──
+	// 契约 2 的快照比对在"守卫全失效（fail-open 每语句重放）"时依然通过
+	// （DROP+CREATE 同定义还原出逐字节相同的目录态）；本契约用 pgx
+	// QueryTracer 直接断言守卫命中路径真的跳过了执行——这是烧点收口的
+	// 直接目标，不允许只靠 8 组采样间接背书。第二遍 ensure 即本 traced
+	// pass，快照对比包住同一次执行。
+	rec := &ddlRecordingTracer{}
+	tracedCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("ParseConfig for traced pool: %v", err)
 	}
+	tracedCfg.ConnConfig.Database = scratch
+	tracedCfg.ConnConfig.Tracer = rec
+	tracedPool, err := pgxpool.NewWithConfig(ctx, tracedCfg)
+	if err != nil {
+		t.Fatalf("connect traced pool: %v", err)
+	}
+	defer tracedPool.Close()
+	runEnsures(&DB{pool: tracedPool}, "second")
+	if len(rec.stmts) > 0 {
+		t.Errorf("second ensure must execute zero POLICY/TRIGGER DDL (guards must short-circuit); got %d statements:\n%s",
+			len(rec.stmts), strings.Join(rec.stmts, "\n---\n"))
+	}
+
 	if after := snapshot(); after != before {
 		t.Errorf("second ensure changed catalog state:\n--- before ---\n%s\n--- after ---\n%s", before, after)
 	}

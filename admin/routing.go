@@ -3515,18 +3515,61 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 	probeCtx, probeCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer probeCancel()
 
-	probeBody, _ := json.Marshal(map[string]any{
-		"model":      outModel,
-		"messages":   req.Messages,
-		"max_tokens": req.MaxTokens,
-		"stream":     false,
-	})
-	probeURL := upstreamurl.ChatCompletionsURL(baseURL)
-	probeReq, _ := http.NewRequestWithContext(probeCtx, http.MethodPost, probeURL, strings.NewReader(string(probeBody)))
-	probeReq.Header.Set("Content-Type", "application/json")
-	probeReq.Header.Set("Authorization", "Bearer "+apiKey)
+	// R61 S2-F4 续（2026-09-24）：本探针此前恒走 Bearer+/chat/completions，
+	// anthropic-messages 行必 401 误报（vapeur 事故同型）。按归一后的协议
+	// 分发 URL/请求体/认证头；openai 默认路径行为不变（沿用调用方 messages）。
+	normalizedProbeProtocol := protocol
+	if normed, normErr := providercatalog.NormalizeProviderProtocol(protocol); normErr == nil {
+		normalizedProbeProtocol = normed
+	}
 
-	probeResp, probeErr := http.DefaultClient.Do(probeReq)
+	sendProbe := func(probeURL string, body []byte, authStyle string) (*http.Response, error) {
+		probeReq, err := http.NewRequestWithContext(probeCtx, http.MethodPost, probeURL, strings.NewReader(string(body)))
+		if err != nil {
+			return nil, err
+		}
+		probeReq.Header.Set("Content-Type", "application/json")
+		if authStyle == "anthropic" {
+			probeReq.Header.Set("x-api-key", apiKey)
+			probeReq.Header.Set("anthropic-version", "2023-06-01")
+		} else {
+			probeReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+		return http.DefaultClient.Do(probeReq)
+	}
+
+	var probeResp *http.Response
+	var probeErr error
+	switch normalizedProbeProtocol {
+	case "anthropic-messages":
+		probeBody, _ := json.Marshal(map[string]any{
+			"model":      outModel,
+			"messages":   req.Messages,
+			"max_tokens": req.MaxTokens,
+		})
+		probeResp, probeErr = sendProbe(upstreamurl.MessagesURL(baseURL), probeBody, "anthropic")
+	case "openai-responses":
+		inputText := "ping"
+		if len(req.Messages) > 0 {
+			if c, ok := req.Messages[len(req.Messages)-1]["content"].(string); ok && c != "" {
+				inputText = c
+			}
+		}
+		probeBody, _ := json.Marshal(map[string]any{
+			"model":             outModel,
+			"input":             inputText,
+			"max_output_tokens": req.MaxTokens,
+		})
+		probeResp, probeErr = sendProbe(upstreamurl.ResponsesURL(baseURL), probeBody, "bearer")
+	default:
+		probeBody, _ := json.Marshal(map[string]any{
+			"model":      outModel,
+			"messages":   req.Messages,
+			"max_tokens": req.MaxTokens,
+			"stream":     false,
+		})
+		probeResp, probeErr = sendProbe(upstreamurl.ChatCompletionsURL(baseURL), probeBody, "bearer")
+	}
 	var probeOK bool
 	var probeStatus int
 	var probeMsg string

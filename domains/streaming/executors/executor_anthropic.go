@@ -570,13 +570,10 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 		// S2-F3/R60: stamp the gateway request id into the IR metadata carrier
 		// so ir-layer format anomalies ({\"raw\":...} tool_use.input wrap 等)
 		// 上报时带真实 request_id（serialize_anthropic 经 irRequestID 读取）。
-		// 与 request_logs.request_id 同源，异常可与请求日志/泳道对账。载体的
-		// 线上语义见 ir.Metadata 注释：Anthropic 序列化器只透出 user_id，本
-		// stamp 不会进上游请求体。
-		if irReq.Metadata == nil {
-			irReq.Metadata = &ir.Metadata{}
-		}
-		irReq.Metadata.RequestID = params.RequestID
+		// 与 request_logs.request_id 同源，异常可与请求日志/泳道对账。
+		// R61: 与 openai 面共用 stampIRRequestID 助手；序列化器只透出
+		// user_id，本 stamp 不进上游请求体。
+		irReq = stampIRRequestID(irReq, params.RequestID)
 		bodyBytes, err := irScoped.SerializeAnthropic(irReq)
 		if err != nil {
 			// 2026-08-08 P0 Fix: same IR-circuit-open fallback as ParseOpenAI.

@@ -2878,9 +2878,15 @@ func (d *DB) EnsureUsersTable(ctx context.Context) error {
 	// tenant_isolation_users 的 DROP+CREATE 每-boot 排 ACCESS EXCLUSIVE。
 	// RLS 已启用且存储定义与 usersPolicyDDL 规范化等价时跳过（存在性守卫
 	// 不够——策略演进必须能落库，故比较 pg_policies.qual 规范形）。
+	// R61（2026-09-24）：ENABLE RLS 一并移入 miss 分支——rlsPoliciesCurrent
+	// 已含 relrowsecurity 位检查，命中即 RLS+policy 双双到位；ALTER TABLE
+	// 即使 no-op 也排 ACCESS EXCLUSIVE，不再每-boot 无条件执行。
 	if d.rlsPoliciesCurrent(ctx, "users", false, []string{usersPolicyDDL}) {
 		slog.Info("users schema ensured (policy definition short-circuit)")
 		return nil
+	}
+	if _, err := d.pool.Exec(ctx, `ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;`); err != nil {
+		return err
 	}
 	if _, err := d.pool.Exec(ctx, `DROP POLICY IF EXISTS tenant_isolation_users ON public.users;`); err != nil {
 		return err
@@ -2894,7 +2900,8 @@ func (d *DB) EnsureUsersTable(ctx context.Context) error {
 
 // usersSchemaSQL mirrors db/migrations/001_users_table.sql for startup apply.
 // R60 S6-1：tenant_isolation_users 策略拆出为 usersPolicyDDL（守卫与执行
-// 单一来源），本体保留 ENABLE RLS（rlsFlagsCurrent 守卫后照常幂等执行）。
+// 单一来源）。R61：ENABLE RLS 同步移入守卫 miss 分支（ALTER TABLE 排
+// ACCESS EXCLUSIVE，不留在无条件段）。
 const usersSchemaSQL = `
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
@@ -2913,7 +2920,6 @@ CREATE TABLE IF NOT EXISTS users (
 ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
-ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 `
 
 // usersPolicyDDL —— tenant_isolation_users 期望定义（守卫与执行的单一来源）。
@@ -6308,18 +6314,24 @@ func (d *DB) ensureCredentialKeysSchema(ctx context.Context) error {
 		        OR current_setting('app.current_role', true) = 'super_admin'
 		        OR current_setting('app.bypass_rls', true) = 'true'
 		    )`
+	// R61：函数体 CREATE OR REPLACE 保持在守卫之外无条件执行——CREATE OR
+	// REPLACE FUNCTION 不取表级 ACCESS EXCLUSIVE，若随 trigger 守卫命中被
+	// 跳过，手改函数体的漂移将永不自愈（R60 曾移入 else，本轮纠回）。
+	if _, err := d.pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION public.credential_keys_touch_updated_at()
+		RETURNS TRIGGER AS $fn$
+		BEGIN
+		    NEW.updated_at = now();
+		    RETURN NEW;
+		END;
+		$fn$ LANGUAGE plpgsql;
+	`); err != nil {
+		return err
+	}
 	if d.triggersCurrent(ctx, "credential_keys", credKeysTriggerDDLs) {
 		slog.Info("credential_keys triggers ensured (trigger definition short-circuit)")
 	} else {
 		if _, err := d.pool.Exec(ctx, `
-			CREATE OR REPLACE FUNCTION public.credential_keys_touch_updated_at()
-			RETURNS TRIGGER AS $fn$
-			BEGIN
-			    NEW.updated_at = now();
-			    RETURN NEW;
-			END;
-			$fn$ LANGUAGE plpgsql;
-
 			DROP TRIGGER IF EXISTS trg_credential_keys_enforce_parent_tenant ON public.credential_keys;
 			`+credKeysTriggerDDLs[0]+`;
 			DROP TRIGGER IF EXISTS trg_credential_keys_touch_updated_at ON public.credential_keys;

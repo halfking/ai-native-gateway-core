@@ -3,6 +3,7 @@ package hostedtask
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -313,5 +314,76 @@ func TestCallbackDeliveryAgainstPostgres(t *testing.T) {
 	// completed）：既有形状字段 = PG 权威状态，不被召回改写。
 	if legacyPayload["status"] != "completed" {
 		t.Errorf("legacy payload.status = %v, want completed (投递形状保持)", legacyPayload["status"])
+	}
+}
+
+// ── R61（2026-09-24）：GetEvent 瞬时错误必须可重试，ErrNotFound 降级 ──────
+
+type stubCallbackStore struct {
+	task    *Task
+	taskErr error
+	event   *Event
+	evErr   error
+}
+
+func (s *stubCallbackStore) GetTask(context.Context, string, string) (*Task, error) {
+	return s.task, s.taskErr
+}
+
+func (s *stubCallbackStore) GetEvent(context.Context, string, string, int64) (*Event, error) {
+	return s.event, s.evErr
+}
+
+type stubCallbackDeliverer struct {
+	calls int
+}
+
+func (d *stubCallbackDeliverer) Deliver(context.Context, string, string, []byte, string) (hostedcallback.Result, error) {
+	d.calls++
+	return hostedcallback.Result{StatusCode: 200, Delivered: true}, nil
+}
+
+func TestDeliverOneTransientEventErrorIsRetryable(t *testing.T) {
+	kr, err := secret.NewKeyring(map[string][32]byte{"test": [32]byte{}}, "test")
+	if err != nil {
+		t.Fatalf("keyring: %v", err)
+	}
+	urlEnc, err := secret.EncryptAESGCM([]byte("http://cb.example/hook"), kr)
+	if err != nil {
+		t.Fatalf("encrypt url: %v", err)
+	}
+	secEnc, err := secret.EncryptAESGCM([]byte("cb-secret"), kr)
+	if err != nil {
+		t.Fatalf("encrypt secret: %v", err)
+	}
+	job := CallbackJob{
+		TaskID: "ht_test", TenantID: "default", EventID: "hosted_ht_test_ev3",
+		EventSeq: 3, URLEnc: urlEnc, SecretEnc: secEnc,
+	}
+	task := &Task{ID: "ht_test", TenantID: "default", Status: StatusCompleted}
+	ctx := context.Background()
+
+	// ErrNotFound（旧行/事件已不可读）→ ev=nil 降级 legacy 形状，照常投递。
+	delivererOK := &stubCallbackDeliverer{}
+	out := deliverOne(ctx, &stubCallbackStore{task: task, evErr: ErrNotFound}, delivererOK, kr, job)
+	if !out.delivered || out.retryable {
+		t.Errorf("ErrNotFound must degrade to legacy delivery, got %+v", out)
+	}
+	if delivererOK.calls != 1 {
+		t.Errorf("ErrNotFound path must still deliver, calls=%d", delivererOK.calls)
+	}
+
+	// 瞬时 DB 错误 → 可重试失败，绝不投递（吞掉会把 recalled 回调静默
+	// 降级成无包形状并标记已投递，§3.3 包投递契约破坏且永不重试）。
+	delivererSkip := &stubCallbackDeliverer{}
+	out = deliverOne(ctx, &stubCallbackStore{task: task, evErr: errors.New("conn closed")}, delivererSkip, kr, job)
+	if out.delivered {
+		t.Errorf("transient GetEvent error must not deliver, got %+v", out)
+	}
+	if !out.retryable {
+		t.Errorf("transient GetEvent error must be retryable, got %+v", out)
+	}
+	if delivererSkip.calls != 0 {
+		t.Errorf("transient GetEvent error must not reach deliverer, calls=%d", delivererSkip.calls)
 	}
 }

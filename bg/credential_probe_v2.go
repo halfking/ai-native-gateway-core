@@ -22,6 +22,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // observability for fastReprobeDelay (2026-08-26 P1-2)
 	"github.com/kaixuan/llm-gateway-go/provider"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -792,7 +793,10 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 	}
 
 	httpClient := &http.Client{Timeout: 30 * time.Second}
-	desc := providercap.Resolve(s.ProviderProtocol, "")
+	// R61 S2-F4 续（2026-09-24）：读面归一——availability_state 的裁决者
+	// 不允许裸读 providers.protocol 原值，legacy 别名行会走错探针形态
+	// （vapeur 事故类）。probeDescriptorFor 内部先 NormalizeProviderProtocol。
+	desc := probeDescriptorFor(s.ProviderProtocol)
 
 	// Step 1: GET /v1/models (skip for anthropic-messages — no /models endpoint)
 	if desc.SupportsModelsEndpoint {
@@ -1882,7 +1886,13 @@ func (c *CredentialProbeV2) probeOne(ctx context.Context, credID int) {
 // 2026-09-13: HTTP+JSONPath body moved to providercap.FetchBalanceUSD so
 // bg/balance_floor_guard reuses the exact same fetch/parse semantics.
 func (c *CredentialProbeV2) probeBalance(ctx context.Context, s v2Snapshot) (float64, bool) {
-	desc := providercap.Resolve(s.ProviderProtocol, s.CatalogCode)
+	// R61 读面归一（同 probeCredential）：balance 描述符解析前先归一；
+	// catalogCode 只影响 per-vendor balance 配置，保持原样传递。
+	balanceProtocol := s.ProviderProtocol
+	if normed, normErr := providercatalog.NormalizeProviderProtocol(balanceProtocol); normErr == nil {
+		balanceProtocol = normed
+	}
+	desc := providercap.Resolve(balanceProtocol, s.CatalogCode)
 	balURL := providercap.BalanceURL(s.BaseURL, desc)
 	if balURL == "" {
 		return 0, false

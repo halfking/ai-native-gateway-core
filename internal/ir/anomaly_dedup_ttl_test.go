@@ -8,6 +8,7 @@
 package ir
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -20,6 +21,30 @@ func withDedupTTL(t *testing.T, ttl time.Duration, threshold int) {
 	t.Cleanup(func() {
 		anomalyDedupTTL, anomalyDedupSweepThreshold = prevTTL, prevThreshold
 	})
+}
+
+// R61（S3-F3 续）：异常风暴硬上界——TTL 清扫后仍超 hard cap 时整表清空，
+// map 大小有确定上界（代价是去重短期失效，风暴场景可接受）。
+func TestReportAnomaly_DedupHardCapBoundsStorm(t *testing.T) {
+	withDedupTTL(t, time.Hour, 4)
+	prevHardCap := anomalyDedupHardCap
+	anomalyDedupHardCap = 8
+	t.Cleanup(func() { anomalyDedupHardCap = prevHardCap })
+	prev := SetAnomalyReporter(func(AnomalyEvent) {})
+	defer SetAnomalyReporter(prev)
+
+	// 64 个互不重复且不过期的 key：远超 threshold=4 与 hardCap=8。
+	// 无 hard cap 时 map 会涨到 64；有 hard cap 时被压回 <= hardCap+1。
+	for i := 0; i < 64; i++ {
+		ReportAnomaly(AnomalyEvent{
+			RequestID:   fmt.Sprintf("storm-%d-%s", i, time.Now().Format(time.RFC3339Nano)),
+			AnomalyType: AnomalyUnknownField,
+			FieldPath:   "hardcap",
+		})
+	}
+	if len(reporterDed) > anomalyDedupHardCap+1 {
+		t.Fatalf("dedup map size = %d, want <= hardCap %d after storm reset", len(reporterDed), anomalyDedupHardCap)
+	}
 }
 
 func TestReportAnomaly_DedupTTLExpires(t *testing.T) {
