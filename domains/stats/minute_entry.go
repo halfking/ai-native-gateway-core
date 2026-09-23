@@ -135,6 +135,16 @@ func FromTelemetryEntry(entry *telemetry.RequestLogEntry, ts time.Time) (
 	}
 	addDim("client_profile", clientProfile)
 
+	// R57 B7: real resolved client IP (origin middleware trust-list chain).
+	// 背景合成流量（is_auto_request 等内部路径）无 origin 中间件 →
+	// ClientIP nil → 哨兵。与 bg rollupDims 的 HOST(client_ip) 维度同一
+	// 真源，看板 client_ips 饼图据此做内网直显/GeoIP 归类。
+	clientIP := unknownDim
+	if entry.ClientIP != nil && *entry.ClientIP != "" {
+		clientIP = *entry.ClientIP
+	}
+	addDim("client_ip", clientIP)
+
 	identityHash := unknownDim
 	if entry.IdentityHash != nil && *entry.IdentityHash != "" {
 		identityHash = *entry.IdentityHash

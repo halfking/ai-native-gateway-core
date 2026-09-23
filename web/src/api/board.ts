@@ -58,7 +58,7 @@ export interface BoardPayload {
   summary: BoardSummary
   pies: {
     clients: BoardPieItem[]
-    virtual_ips: BoardPieItem[]
+    client_ips: BoardPieItem[]
     identity_hashes: BoardPieItem[]
     models: BoardPieItem[]
     errors: BoardPieItem[]

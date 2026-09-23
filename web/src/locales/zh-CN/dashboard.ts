@@ -52,7 +52,7 @@ export default {
     selfcheckRate: '24h 成功率',
     selfcheckHint: '点击查看详情 →',
     pieClients: '客户端类型',
-    pieVirtualIp: '客户端 IP',
+    pieClientIp: '客户端 IP',
     pieIdentity: '身份指纹',
     pieModels: '模型用量',
     pieErrors: '错误类型',

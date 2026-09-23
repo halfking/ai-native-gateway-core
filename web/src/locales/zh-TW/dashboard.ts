@@ -41,7 +41,7 @@ tabs: {
     selfcheckRate: '24h 成功率',
     selfcheckHint: '點擊查看詳情 →',
     pieClients: '客戶端類型',
-    pieVirtualIp: '客戶端 IP',
+    pieClientIp: '客戶端 IP',
     pieIdentity: '身份指紋',
     pieModels: '模型用量',
     pieErrors: '錯誤類型',

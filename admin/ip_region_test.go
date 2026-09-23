@@ -40,18 +40,18 @@ func TestIsPrivateOrReserved(t *testing.T) {
 	}
 }
 
-func TestClassifyVirtualIP_IntranetAndSentinelsPassThrough(t *testing.T) {
+func TestClassifyClientIP_IntranetAndSentinelsPassThrough(t *testing.T) {
 	resetGeoIPCache(t) // empty segment table (never loads from disk)
 	// No segment table loaded (empty default path) — everything degrades or
 	// passes through.
 	for _, in := range []string{"10.0.0.8", "192.168.10.20", "unknown", "", "-", "not-an-ip", "CN·广东·深圳"} {
-		if got := classifyVirtualIP(in); got != in {
+		if got := classifyClientIP(in); got != in {
 			t.Errorf("pass-through %q: got %q", in, got)
 		}
 	}
 }
 
-func TestClassifyVirtualIP_SegmentTableResolution(t *testing.T) {
+func TestClassifyClientIP_SegmentTableResolution(t *testing.T) {
 	dir := t.TempDir()
 	csvPath := filepath.Join(dir, "segments.csv")
 	content := `# cidr,country,province,city
@@ -65,26 +65,26 @@ func TestClassifyVirtualIP_SegmentTableResolution(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_GEOIP_CSV", csvPath)
 	resetGeoIPCache(t)
 
-	if got := classifyVirtualIP("114.114.115.1"); got != "CN·江苏·南京" {
+	if got := classifyClientIP("114.114.115.1"); got != "CN·江苏·南京" {
 		t.Errorf("public hit: got %q", got)
 	}
-	if got := classifyVirtualIP("8.8.8.8"); got != "US·California·Mountain View" {
+	if got := classifyClientIP("8.8.8.8"); got != "US·California·Mountain View" {
 		t.Errorf("public hit v4: got %q", got)
 	}
-	if got := classifyVirtualIP("2606:4700:4700::1111"); got != "CN" {
+	if got := classifyClientIP("2606:4700:4700::1111"); got != "CN" {
 		t.Errorf("public hit v6: got %q", got)
 	}
 	// Public but outside every segment → degrade to raw IP.
-	if got := classifyVirtualIP("9.9.9.9"); got != "9.9.9.9" {
+	if got := classifyClientIP("9.9.9.9"); got != "9.9.9.9" {
 		t.Errorf("degrade: got %q", got)
 	}
 	// Intranet still passes through with the table active.
-	if got := classifyVirtualIP("192.168.5.5"); got != "192.168.5.5" {
+	if got := classifyClientIP("192.168.5.5"); got != "192.168.5.5" {
 		t.Errorf("intranet passthrough: got %q", got)
 	}
 }
 
-func TestClassifyVirtualIPPie_MergesRegionLabels(t *testing.T) {
+func TestClassifyClientIPPie_MergesRegionLabels(t *testing.T) {
 	dir := t.TempDir()
 	csvPath := filepath.Join(dir, "segments.csv")
 	content := "114.114.0.0/16,CN,江苏,南京\n"
@@ -100,7 +100,7 @@ func TestClassifyVirtualIPPie_MergesRegionLabels(t *testing.T) {
 		{Key: "10.0.0.1", Requests: 3, Tokens: 9},
 		{Key: "9.9.9.9", Requests: 2, Tokens: 4},
 	}
-	got := classifyVirtualIPPie(items)
+	got := classifyClientIPPie(items)
 	byKey := map[string]boardPieItem{}
 	for _, it := range got {
 		byKey[it.Key] = it

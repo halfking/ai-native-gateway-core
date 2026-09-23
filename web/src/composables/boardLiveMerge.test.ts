@@ -10,7 +10,7 @@ const range7d: BoardTimeRange = { preset: '7d', days: 7 }
 function emptyBoard(): BoardPayload {
   return {
     summary: { total_requests: 10, success_rate: 0.9, avg_latency_ms: 100, total_tokens: 1000 },
-    pies: { clients: [], virtual_ips: [], identity_hashes: [], models: [], errors: [], tenants: [], providers: [] },
+    pies: { clients: [], client_ips: [], identity_hashes: [], models: [], errors: [], tenants: [], providers: [] },
     trends: [{ bucket: '2026-07-14T16:00:00.000Z', requests: 10, tokens: 1000, credits: 0, cost_usd: 0.01 }],
     background_tasks: {},
     selfcheck: {},
