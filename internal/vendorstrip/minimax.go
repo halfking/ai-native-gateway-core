@@ -123,6 +123,13 @@ func FormatMiniMaxError(statusCode int, statusMsg string) string {
 // UnwrapMiniMaxTokenWrappers removes MiniMax streaming token wrappers of the
 // form minimax[>[payload]<] that otherwise leak into client-visible text
 // (observed as minimax[>[<tool_call>...]<]minimax[>[]<]... on m3).
+//
+// 2026-09-23: adjacent non-empty payloads are joined with a single space.
+// The wrapper boundaries act as field separators in the leaked tool-call
+// shape (command, then description), and the previous bare concatenation
+// merged distinct fields into one token ("…ls" + "Check…" → "lsCheck"),
+// which both mangled any recovered text and defeated downstream
+// tool-call coercion heuristics that rely on whitespace structure.
 func UnwrapMiniMaxTokenWrappers(text string) string {
 	const open = "minimax[>["
 	const close = "]<]"
@@ -131,20 +138,36 @@ func UnwrapMiniMaxTokenWrappers(text string) string {
 	}
 	var b strings.Builder
 	rest := text
+	appendPayload := func(payload string) {
+		if payload == "" {
+			return
+		}
+		if b.Len() == 0 {
+			b.WriteString(payload)
+			return
+		}
+		prev := b.String()[b.Len()-1]
+		if prev == ' ' || payload[0] == ' ' {
+			b.WriteString(payload)
+			return
+		}
+		b.WriteByte(' ')
+		b.WriteString(payload)
+	}
 	for {
 		i := strings.Index(rest, open)
 		if i < 0 {
-			b.WriteString(rest)
+			appendPayload(rest)
 			break
 		}
-		b.WriteString(rest[:i])
+		appendPayload(rest[:i])
 		rest = rest[i+len(open):]
 		j := strings.Index(rest, close)
 		if j < 0 {
-			b.WriteString(rest)
+			appendPayload(rest)
 			break
 		}
-		b.WriteString(rest[:j])
+		appendPayload(rest[:j])
 		rest = rest[j+len(close):]
 	}
 	return b.String()

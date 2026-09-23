@@ -431,7 +431,10 @@ type AnthropicToResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter
 // API SSE to w. Used by executeOpenAI when ClientProtocol ==
 // "openai-responses" (Phase E, 2026-07-01).
 // P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
-type OpenAIToResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+// 2026-09-23: added toolsRequested so main.go can wrap resp.Body with the
+// XML/minimax tool-call coercer before the conversion runs (leak fix — the
+// bridge previously never coerced, unlike the chat passthrough loop).
+type OpenAIToResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any, toolsRequested bool) StreamOutcome
 
 // NativeResponsesSSEFunc forwards an already-native OpenAI Responses SSE stream
 // without converting it through the Chat Completions bridge.
@@ -467,7 +470,10 @@ type ChatResponseToAnthropicFunc func(body []byte, clientModel, requestID string
 //
 // Wired from main.go (streaming.StreamOpenAIToAnthropicSSE).
 // P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
-type OpenAIToAnthropicSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any, inputTokensEstimate int) StreamOutcome
+// 2026-09-23: added toolsRequested so main.go can wrap resp.Body with the
+// XML/minimax tool-call coercer before the conversion runs (minimax-m3
+// wrapper tokens previously leaked verbatim into anthropic client text).
+type OpenAIToAnthropicSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any, inputTokensEstimate int, toolsRequested bool) StreamOutcome
 
 // SanitizeAnthropicToolsFunc strips OpenAI/custom tool type wrappers from
 // an Anthropic Messages request body before forwarding to upstream.
