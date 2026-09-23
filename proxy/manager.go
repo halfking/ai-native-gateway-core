@@ -131,7 +131,10 @@ func NewManager(store Store, parser Parser, checker HealthChecker) *Manager {
 // parseDurationEnv（bg/candidate_failure_monitor.go）的 ParseDuration 惯例，
 // 差异点：非法值 / 非正值 slog.Warn 后回退默认（不 fatal、不静默），
 // 使误配置可观测（S8-F4，R60）。
+// R61（S4-P3-1）：过小正值有 30s 下界——循环体是同步执行的，1ns/1ms 级
+// 间隔等于对全部上游节点背靠背探活/刷新风暴；过大值只 warn 不截断。
 func envDurationOrDefault(key string, def time.Duration) time.Duration {
+	const minInterval = 30 * time.Second
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
 		return def
@@ -141,6 +144,11 @@ func envDurationOrDefault(key string, def time.Duration) time.Duration {
 		slog.Warn("proxy: invalid duration env, falling back to default",
 			"env", key, "value", v, "default", def.String())
 		return def
+	}
+	if d < minInterval {
+		slog.Warn("proxy: duration env below 30s floor, clamping",
+			"env", key, "value", v, "floor", minInterval.String())
+		return minInterval
 	}
 	return d
 }

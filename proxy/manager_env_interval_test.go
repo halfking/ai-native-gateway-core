@@ -58,6 +58,15 @@ func TestNewManagerIntervalEnvOverrides(t *testing.T) {
 			wantRefresh:     time.Hour,
 			wantHealthCheck: 5 * time.Minute,
 		},
+		{
+			// R61（S4-P3-1）：过小正值钳到 30s 下界——同步循环体下 1ns 级
+			// 间隔等于对全部上游背靠背探活风暴。
+			name:            "tiny positive value is clamped to 30s floor",
+			refreshEnv:      "1ns",
+			probeEnv:        "1ms",
+			wantRefresh:     30 * time.Second,
+			wantHealthCheck: 30 * time.Second,
+		},
 	}
 
 	for _, tc := range tests {

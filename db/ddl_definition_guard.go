@@ -38,6 +38,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 )
@@ -227,12 +228,13 @@ type castNode struct {
 }
 
 // noiseCastTypes —— ruleutils 机械引入/丢弃的文本族转换，比较时两侧剥除。
+// R61：bpchar/char(n) 移出——char(n)→text 有尾随空格语义，并非机械 no-op；
+// 误判等价会让漂移永存。现网 policy 表达式只涉 TEXT/VARCHAR，剥除
+// text/varchar 已覆盖实测渲染差异。
 var noiseCastTypes = map[string]bool{
 	"text":              true,
 	"varchar":           true,
 	"character varying": true,
-	"character":         true,
-	"bpchar":            true,
 }
 
 func (n castNode) typeNameString() string { return strings.Join(n.typeName, " ") }
@@ -1128,20 +1130,32 @@ func parsePolicyDDLs(ddls ...string) ([]policyDef, error) {
 // policiesCurrent 报告 table 上每个期望 policy 是否都存在且定义等价，且
 // absentNames 列出的策略名都不存在（用于 omnifree legacy 名回收检查）。
 // 任何错误（含解析失败）都返回 false —— 调用方执行原 DDL。
-func (d *DB) policiesCurrent(ctx context.Context, table string, policyDDLs []string, absentNames ...string) bool {
-	if d == nil || d.pool == nil || len(policyDDLs) == 0 {
+// R61：miss 记 Warn（含首个失配 policy 名）——渲染漂移退化为每-boot 重放
+// 的唯一信号；复合守卫 rlsPoliciesCurrent 不重复记。
+func (d *DB) policiesCurrent(ctx context.Context, table string, policyDDLs []string, absentNames ...string) (current bool) {
+	var missReason string
+	defer func() {
+		if !current {
+			slog.Warn("ddl guard miss: policy not current, replaying", "table", table, "reason", missReason)
+		}
+	}()
+	if d == nil || d.pool == nil {
+		missReason = "nil pool"
 		return false
 	}
 	defs, err := parsePolicyDDLs(policyDDLs...)
 	if err != nil || len(defs) == 0 {
+		missReason = "parse failed or empty ddl list"
 		return false
 	}
 	for _, def := range defs {
 		if def.Schema != "public" {
+			missReason = "schema " + def.Schema
 			return false
 		}
 		if def.Table != table {
 			// 期望 DDL 与调用方声明的表不一致：视为漂移，fail-open
+			missReason = "table mismatch " + def.Table
 			return false
 		}
 	}
@@ -1156,6 +1170,7 @@ func (d *DB) policiesCurrent(ctx context.Context, table string, policyDDLs []str
 		WHERE schemaname = 'public' AND tablename = $1 AND policyname = ANY($2)
 	`, table, names)
 	if err != nil {
+		missReason = "query: " + err.Error()
 		return false
 	}
 	defer rows.Close()
@@ -1164,21 +1179,29 @@ func (d *DB) policiesCurrent(ctx context.Context, table string, policyDDLs []str
 		var name string
 		var row storedPolicyRow
 		if err := rows.Scan(&name, &row.Cmd, &row.Permissive, &row.Roles, &row.Qual, &row.WithCheck); err != nil {
+			missReason = "scan: " + err.Error()
 			return false
 		}
 		stored[name] = row
 	}
 	if err := rows.Err(); err != nil {
+		missReason = "rows: " + err.Error()
 		return false
 	}
 	for _, def := range defs {
 		row, ok := stored[def.Name]
-		if !ok || !policyMatches(def, row) {
+		if !ok {
+			missReason = "absent " + def.Name
+			return false
+		}
+		if !policyMatches(def, row) {
+			missReason = "definition drift " + def.Name
 			return false
 		}
 	}
 	for _, absent := range absentNames {
 		if _, ok := stored[absent]; ok {
+			missReason = "legacy leftover " + absent
 			return false
 		}
 	}
@@ -1187,13 +1210,27 @@ func (d *DB) policiesCurrent(ctx context.Context, table string, policyDDLs []str
 
 // triggerCurrent 报告 table 上的单个 trigger 是否存在且 pg_get_triggerdef
 // 渲染与期望定义等价。任何错误返回 false（fail-open）。
-func (d *DB) triggerCurrent(ctx context.Context, table string, triggerDDL string) bool {
+// R61：miss 记 Warn（复用 policiesCurrent 同款信号）；triggersCurrent 逐条
+// 调用本函数，miss 信号只在此处记一次。
+func (d *DB) triggerCurrent(ctx context.Context, table string, triggerDDL string) (current bool) {
+	var missReason string
+	defer func() {
+		if !current {
+			slog.Warn("ddl guard miss: trigger not current, replaying", "table", table, "reason", missReason)
+		}
+	}()
+	if d == nil || d.pool == nil {
+		missReason = "nil pool"
+		return false
+	}
 	defs, err := parseTriggerDDLs(triggerDDL)
 	if err != nil || len(defs) != 1 {
+		missReason = "parse failed"
 		return false
 	}
 	def := defs[0]
 	if def.Schema != "public" || def.Table != table {
+		missReason = "shape mismatch " + def.Schema + "." + def.Table
 		return false
 	}
 	var storedDef *string
@@ -1204,16 +1241,23 @@ func (d *DB) triggerCurrent(ctx context.Context, table string, triggerDDL string
 		  AND NOT tgisinternal
 		  AND tgname = $2
 	`, table, def.Name).Scan(&storedDef); err != nil {
+		missReason = "absent " + def.Name
 		return false
 	}
 	if storedDef == nil {
+		missReason = "absent " + def.Name
 		return false
 	}
 	stored, err := parseTriggerDDL(*storedDef)
 	if err != nil {
+		missReason = "stored render unparseable " + def.Name
 		return false
 	}
-	return triggerDefEqual(def, stored)
+	if !triggerDefEqual(def, stored) {
+		missReason = "definition drift " + def.Name
+		return false
+	}
+	return true
 }
 
 // triggersCurrent 批量版本：全部 trigger 等价才返回 true。
@@ -1244,7 +1288,15 @@ func parseTriggerDDLs(ddls ...string) ([]triggerDef, error) {
 
 // rlsFlagsCurrent 报告 public.table 的 relrowsecurity（以及可选的
 // relforcerowsecurity）是否已置位。表不存在 / 查询出错 → false（fail-open）。
-func (d *DB) rlsFlagsCurrent(ctx context.Context, table string, needForce bool) bool {
+// R61：miss 记 Warn——守卫正确性押在解析器与 ruleutils 渲染对齐上，
+// PG 升级改渲染时全部守卫会静默退化为每-boot 重放（烧点复发），必须有信号。
+// 首 boot/全新库全量 miss 属预期，日志措辞含 "replay" 自解释。
+func (d *DB) rlsFlagsCurrent(ctx context.Context, table string, needForce bool) (current bool) {
+	defer func() {
+		if !current {
+			slog.Warn("ddl guard miss: rls flags not current, replaying", "table", table)
+		}
+	}()
 	if d == nil || d.pool == nil {
 		return false
 	}

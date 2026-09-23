@@ -1923,6 +1923,9 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 				"messages", lf,
 			)
 		}
+		// R61 S2-F3 续：serialize_openai 的 report* 经 irRequestID 读载体，
+		// stamp 使 openai 面 format-anomaly 带真实 request_id（对齐 anthropic 面）。
+		irReq = stampIRRequestID(irReq, params.RequestID)
 		bodyBytes, err := irScoped.SerializeOpenAI(irReq)
 		if err != nil {
 			// 2026-08-08 P0 Fix: same IR-circuit-open fallback as ParseAnthropic.
@@ -1990,6 +1993,8 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			// 使 applyThinkingToOpenAIChat 能按本次已知的 TargetProvider
 			// 方言渲染。无携带值时为无操作（原生 OpenAI 入向不受影响）。
 			irReq = ir.RestoreSourceReasoning(irReq, params.R.Context())
+			// R61 S2-F3 续：同上，openai 主路径序列化前 stamp。
+			irReq = stampIRRequestID(irReq, params.RequestID)
 			serializedBody, serializeErr := irScoped.SerializeOpenAI(irReq)
 			if serializeErr != nil {
 				slog.Warn("finalizeOpenAIUpstreamBody: legacy IR serialization failed; preserving pre-validation body",
@@ -2035,6 +2040,8 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 				irReq2.TargetProvider = cand.CatalogCode
 				// R45: 断路器兜底路径同样恢复 context 携带的入向推理意图。
 				irReq2 = ir.RestoreSourceReasoning(irReq2, params.R.Context())
+				// R61 S2-F3 续：断路器兜底路径同样 stamp。
+				irReq2 = stampIRRequestID(irReq2, params.RequestID)
 				if fixedBytes, err3 := ir.SerializeOpenAI(irReq2); err3 == nil {
 					bodyBytes = fixedBytes
 					slog.Warn("finalizeOpenAIUpstreamBody: IR circuit open, validated via breaker-independent fallback",

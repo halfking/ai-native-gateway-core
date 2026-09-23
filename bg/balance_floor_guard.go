@@ -99,6 +99,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -977,6 +978,12 @@ func (g *BalanceFloorGuard) sweepCurrencyFloors(ctx context.Context) error {
 // balance_usd/balance_last_checked_at. GET-only — never consumes tokens.
 // Fail-open: on any error the previous values are kept.
 func (g *BalanceFloorGuard) refreshBalance(ctx context.Context, id int64, ciphertext []byte, baseURL, protocol, catalog string) bool {
+	// R61 S2-F4 续（2026-09-24）：读面归一——legacy 别名协议行的 balance
+	// 描述符解析前先 NormalizeProviderProtocol；catalog 只影响 per-vendor
+	// balance 配置，保持原样传递。
+	if normed, normErr := providercatalog.NormalizeProviderProtocol(protocol); normErr == nil {
+		protocol = normed
+	}
 	desc := providercap.Resolve(protocol, catalog)
 	balURL := providercap.BalanceURL(baseURL, desc)
 	if balURL == "" {

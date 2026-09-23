@@ -211,6 +211,13 @@ var (
 	// reporterMu，临界区保持微小。
 	anomalyDedupSweepThreshold = 4096
 
+	// anomalyDedupHardCap —— R61（S3-F3 续）：异常风暴硬上界。TTL 清扫只
+	// 回收过期 key；若 1h 窗口内唯一 key 数（异常请求速率×3600）远超阈值
+	// （如畸形客户端全量命中），map 会涨到数百 MB 且清扫在临界区内 O(n)。
+	// 超 hard cap 时直接整表清空：代价是去重短期失效（日志量≈请求量，而
+	// 风暴场景本就如此），换来确定的内存上界。
+	anomalyDedupHardCap = 65536
+
 	// activeScopeMu guards activeScope. The active scope, when non-nil,
 	// intercepts every package-level ReportProtocolLoss / ReportUnknownField
 	// call so the dedup map is per-IR instead of process-global. This is
@@ -298,6 +305,10 @@ func ReportAnomaly(ev AnomalyEvent) bool {
 			if now.Sub(ts) >= anomalyDedupTTL {
 				delete(reporterDed, k)
 			}
+		}
+		// R61：TTL 清扫后仍超硬上界（异常风暴）→ 整表清空保内存上界。
+		if len(reporterDed) > anomalyDedupHardCap {
+			reporterDed = map[string]time.Time{}
 		}
 	}
 	r := reporter
