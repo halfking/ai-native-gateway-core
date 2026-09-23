@@ -249,3 +249,30 @@ func TestWrapAttemptWriterReusesPreGatedWriterBehindMonitor(t *testing.T) {
 		t.Fatal("bridge must reuse the coordinator's gate through the monitor wrapper, not create a second one")
 	}
 }
+
+// 2026-09-23 批判式复审（b0c77269d 自审）：unwrap 循环在「链上没有
+// GateWriter」时把 w 留在了最内层裸 writer 上，新建的 gate 会包住裸
+// writer——StreamChat…WithVendor 的非 survival 聊天流（本地/245 主路径）
+// 的连接监控装饰层被静默旁路。锁定：not-found 分支必须把装饰链保留在
+// 新 gate 的写路径上。
+func TestWrapAttemptWriterKeepsDecorationWhenNoGateWriter(t *testing.T) {
+	restore := setAttemptGateForTest(true, GateModeBuffered)
+	defer restore()
+
+	inner := httptest.NewRecorder()
+	ctx, monitor := NewConnectionMonitor(context.Background(), inner)
+	defer monitor.Stop()
+	mw := &monitoredResponseWriter{delegate: inner, monitor: monitor}
+
+	w2, gate2 := wrapAttemptWriter(ctx, mw, ProtocolAnthropic)
+	if gate2 == nil {
+		t.Fatal("wrapAttemptWriter must return a gate when enabled")
+	}
+	gw2, ok := w2.(*GateWriter)
+	if !ok {
+		t.Fatalf("expected a fresh GateWriter, got %T", w2)
+	}
+	if gw2.delegate != http.ResponseWriter(mw) {
+		t.Fatal("new gate must wrap the OUTER decorated writer — unwrapping to the inner writer bypasses the connection monitor")
+	}
+}

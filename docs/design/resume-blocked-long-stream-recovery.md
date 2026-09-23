@@ -162,6 +162,13 @@ L2 miss 时的现状是错误信封。可分两步改善：
 | P3 生效灰度（154 单模型 minimax-m3 → glm-5.2） | 对齐成功才真抑制前缀 | resume_blocked 下降、零重复内容 |
 | P4 全量 + 文档 | hotconfig 默认开 | 24h 观察报告 |
 
+### 六.1 勘误（2026-09-23 晚，154 流式修复轮批判式复审）
+
+1. **P0 的数据源已灭失，按原样不可执行**：245 的 48h journal 已被 `live stream delta push` 日志洪水轮转殆尽；`session_bodies.response_delta` 对现网流量全为 4–93 字节占位（真实内容未落），`request_logs_bodies` 月分区无可用 ts 索引（有界查询超时）。P0 的「12 样本离线回放」改为 **P2 shadow 在线采集 + `request_logs` 的 `failure_detail_code=gateway_survival_resume_blocked` 事件流**替代。
+2. **P2 影子模式的结构性局限（重要）**：shadow 只观察不调度 L2 重放（`l2AlignedReplayPlan` 仅在 `enforceEnabled()` 时进入），而目标人群（committed 断流）在 attempt 1 即以 resume_blocked 终态、无第二次 attempt——shadow 结构性采不到该人群的对齐分，`survival_l2_shadow` 将多为 `result=unavailable`。这不是 shadow 故障。要拿到 §五 的「对齐命中率」，需二选一：①**shadow-replay 变体**（调度重放但全部缓冲丢弃、零转发、wire 不变）——小改动；②**限时 enforce canary**（单模型 minimax-m3，miss 自动回退 resume_blocked 信封，天然无害降级）。2026-09-23 晚 shadow 已在 154 开启（`LLM_GATEWAY_RECOVERY_L2_MODE=shadow`；注意 legacy `L2_ENABLED=true` 单独设置= enforce，勿混用），48h 后按上述口径评估（自动化 `automation-1c111234`）。
+3. **P2/P3 环境更正**：survival 当前仅 154 激活（245 env 无 SURVIVAL 配置、默认关），shadow/灰度只能在 154 采集数据；原「P2 在 245」不再成立。
+4. **实现状态更新**：P1 接线已完成并随 2234/2235 上线（默认 off）；L2 组件事实补充：`maxL2ReplayCommittedBytes=8MiB`（超出即不武装 replay、miss 降级 resume_blocked）、对齐阈值 9000bp、>64KiB head 窗口走全量哈希 all-or-nothing。
+
 ## 七、与当前部署的关系
 
 - 本设计**不含任何已部署迁移的依赖**；P1 代码可随任意下次 deploy-seamless
