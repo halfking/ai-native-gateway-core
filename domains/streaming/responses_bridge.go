@@ -1186,6 +1186,26 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 				return outcome
 			case streamReadEOF:
 				if !upstreamDoneReceived {
+					// R59 audit (S1-F2): benign-EOF parity with the chat bridge
+					// (stream.go, d8a7849fd). A finish_reason chunk already
+					// received means the stream COMPLETED semantically —
+					// minimax-style relays close the connection right after it
+					// instead of emitting [DONE]. Render the proper
+					// response.completed and record a clean completion; do NOT
+					// fail the turn as eof_without_done (a tool_calls round
+					// that already carried its full arguments must reach the
+					// client's tool executor).
+					if finishReason != "" && responsesHasSemanticOutput() {
+						slog.Info("openai_to_responses: upstream EOF without [DONE] after finish_reason — benign non-compliant close (§11.6 parity)",
+							"request_id", requestID,
+							"finish_reason", finishReason,
+						)
+						if err := gate.FlushHoldback(); err != nil {
+							slog.Warn("responses bridge: flush holdback before benign-EOF completed failed", "request_id", requestID, "error", err.Error())
+						}
+						scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+						return StreamOutcome{ChunkCount: chunkCount}
+					}
 					outcome = StreamOutcome{
 						Interrupted: true,
 						Reason:      "eof_without_done",

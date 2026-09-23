@@ -542,6 +542,8 @@ func decodeSSLegacyHost(host string) (string, bool) {
 // Phrases 为相邻词组匹配（大写、任意非字母数字分隔），如 "HONG KONG" 可
 // 命中 "Hong Kong 01"/"Hong.Kong"。R51 注记：HK 此前只有整词 HK/HONGKONG，
 // "Hong Kong 01" 分词成 HONG/KONG 后漏识别，导致规避被节点命名绕过。
+// R59 补 HKG 整词（机场码命名变体，如 "HKG-01"——曾整词不命中 → 空地区 →
+// 禁区判定 fail-open 放行）。
 // 顺序敏感：更具体的规则必须在前（如 "印度尼西亚" 必须早于 "印度"）。
 var locationRules = []struct {
 	Code     string
@@ -550,7 +552,7 @@ var locationRules = []struct {
 	Phrases  []string
 }{
 	{"TW", []string{"台湾", "臺灣", "台北"}, []string{"TW", "TAIWAN"}, nil},
-	{"HK", []string{"香港"}, []string{"HK", "HONGKONG"}, []string{"HONG KONG"}},
+	{"HK", []string{"香港"}, []string{"HK", "HONGKONG", "HKG"}, []string{"HONG KONG"}},
 	{"MO", []string{"澳门", "澳門"}, []string{"MO", "MACAO", "MACAU"}, nil},
 	{"AU", []string{"澳洲", "澳大利亚"}, []string{"AU", "AUSTRALIA"}, nil},
 	{"US", []string{"美国", "美國"}, []string{"US", "USA"}, nil},

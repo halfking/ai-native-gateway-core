@@ -9156,8 +9156,10 @@ func (c *RequestLogContext) sessionID() string {
 // execTerminalRendered reports whether the execution error chain carries the
 // protocol-terminal-on-the-wire sentinel — either the survival wrapper
 // (errSurvivalTerminalRendered wraps errorsx.ErrProtocolTerminalRendered) or
-// the dispatch-path wrap (executor_dispatch.go). ExecuteError has no
-// Unwrap, so its LastErr is inspected explicitly.
+// the dispatch-path wrap (executor_dispatch.go). The explicit ExecuteError
+// branch is defense-in-depth: errors.Is already traverses its
+// Unwrap → LastErr, so this only guards against future Unwrap changes
+// (R59 audit S1-F5 comment correction).
 func execTerminalRendered(err error) bool {
 	if err == nil {
 		return false

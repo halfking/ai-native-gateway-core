@@ -72,10 +72,15 @@ func parseFloat64(s string) float64 {
 
 var dimPieKey = map[string]string{
 	"client_profile": "clients",
-	"virtual_ip":     "virtual_ips",
-	"identity_hash":  "identity_hashes",
-	"model":          "models",
-	"error_kind":     "errors",
-	"tenant":         "tenants",
-	"provider":       "providers",
+	// R59 audit (S7-2): B7 switched the client_ips pie to the real
+	// client_ip dim (minute_entry addDim + rollup HOST(client_ip)), but the
+	// fold path had no mapping for it — Redis-boardcache mode silently
+	// dropped every client_ip delta and the pie froze at its baseline
+	// snapshot. virtual_ip has no producer since B7; its mapping is gone.
+	"client_ip":     "client_ips",
+	"identity_hash": "identity_hashes",
+	"model":         "models",
+	"error_kind":    "errors",
+	"tenant":        "tenants",
+	"provider":      "providers",
 }

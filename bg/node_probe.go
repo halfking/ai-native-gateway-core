@@ -1898,8 +1898,13 @@ func (w *NodeProbeWorker) ProbeConfirm(ctx context.Context, credID int, model st
 		}
 		return true
 	}
-	first := round(cctx, credID, model)
-	release()
+	// R59 audit (S5-F3): release was inlined after round() — a round panic
+	// leaked the slot and the per-cred capacity permanently dropped to ≤1.
+	// defer makes the release panic-safe.
+	first := func() (r nodeProbeRoundResult) {
+		defer release()
+		return round(cctx, credID, model)
+	}()
 	if first.ok {
 		return false
 	}
@@ -1917,8 +1922,10 @@ func (w *NodeProbeWorker) ProbeConfirm(ctx context.Context, credID int, model st
 		}
 		return true
 	}
-	second := round(cctx, credID, model)
-	release2()
+	second := func() (r nodeProbeRoundResult) {
+		defer release2()
+		return round(cctx, credID, model)
+	}()
 	return !second.ok
 }
 

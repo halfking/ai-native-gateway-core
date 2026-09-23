@@ -1034,8 +1034,17 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 		needsReprobe = true
 	}
 	if req.Protocol != nil {
+		// R59 audit (S3-F1): the PATCH path was a normalization bypass —
+		// vapeur-style legacy spellings (e.g. "openai-response") could re-enter
+		// the table through it after createProvider was fixed. Same contract
+		// as create: normalize or 400.
+		normalized, normErr := providercatalog.NormalizeProviderProtocol(*req.Protocol)
+		if normErr != nil {
+			writeError(w, http.StatusBadRequest, normErr.Error())
+			return
+		}
 		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE providers SET protocol = $1, updated_at = now() WHERE id = $2`, *req.Protocol, id)
+		h.db.Exec(ctx, `UPDATE providers SET protocol = $1, updated_at = now() WHERE id = $2`, normalized, id)
 		needsReprobe = true
 	}
 	if req.Kind != nil {
