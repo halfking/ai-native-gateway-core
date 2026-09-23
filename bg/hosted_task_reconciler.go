@@ -1,14 +1,14 @@
 // bg/hosted_task_reconciler.go — 任务托管 reconciler（§3.1 ④⑤/§6.1）。
 //
-// BaseWorker 单 goroutine tick 编排四件事（SSE 流为按 run 派生的子 goroutine）：
+// BaseWorker 单 goroutine tick 编排四件事：
 //
 //  1. dispatch 轮次：delegated/dispatching → ACC dispatch（同键
 //     gw-hosted-<id>-a1 重放，ACC 幂等保证不双发）；失败 → dispatch_degraded
 //     事件，停留 dispatching 等下一轮（§3.1 ②）。
-//  2. 执行投影：active runs = SSE 订阅（Last-Event-ID 持久游标断线恢复）+
-//     定时轮询 GET command 兜底 → 终态判定强制校验 raw.stop_reason（§0-F4
-//     pi 假成功），无法判定 → needs_review（不猜测，§3.1 ④）→ CAS 终态 +
-//     事件 + result + 回调入队（§3.1 ⑤）。
+//  2. 执行投影：active runs = 每 tick 轮询 GET command（状态权威；R65 仲裁
+//     移除 SSE 订阅——见 docs/design §10 D7）→ 终态判定强制校验
+//     raw.stop_reason（§0-F4 pi 假成功），无法判定 → needs_review（不猜测，
+//     §3.1 ④）→ CAS 终态 + 事件 + result + 回调入队（§3.1 ⑤）。
 //  3. deadline reaper：非终态过期 → expired（§4.2）。
 //  4. 回调投递：ClaimDueCallbacks → hostedcallback 签名 POST →
 //     delivered/退避/DLQ（矩阵 E）。
@@ -24,7 +24,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hostedtask"
@@ -37,7 +36,7 @@ type HostedTaskReconcilerConfig struct {
 	Callbacks          hostedtask.CallbackDeps
 	Interval           time.Duration // 主循环 tick（默认 5s）
 	DispatchRetryAfter time.Duration // dispatch 失败重试间隔（默认 30s）
-	StreamLimit        int           // 同时订阅的最大 run 数（默认 50）
+	StreamLimit        int           // 单 tick 投影扫描的 active run 上限（默认 50）
 	Logger             *slog.Logger
 }
 
@@ -52,13 +51,6 @@ type HostedTaskReconciler struct {
 	dispatchRetryAfter time.Duration
 	streamLimit        int
 	logger             *slog.Logger
-
-	mu sync.Mutex
-	// streams 值用 *streamHandle 指针而非裸 CancelFunc：goroutine 退出时的
-	// defer 清理必须做指针身份比较（R29 审计）。裸值时代的无条件 delete 有
-	// 竞争——旧订阅 goroutine 退出晚于新订阅注册时，会把新订阅的 cancel 项
-	// 删掉，同一 runID 随后被再次注册成双订阅（重复 repoll/cursor 写）。
-	streams map[string]*streamHandle
 }
 
 // NewHostedTaskReconciler 构造 reconciler。
@@ -88,7 +80,6 @@ func NewHostedTaskReconciler(cfg HostedTaskReconcilerConfig) *HostedTaskReconcil
 		dispatchRetryAfter: cfg.DispatchRetryAfter,
 		streamLimit:        cfg.StreamLimit,
 		logger:             log,
-		streams:            map[string]*streamHandle{},
 	}
 }
 
@@ -187,12 +178,6 @@ func (r *HostedTaskReconciler) dispatchPass(ctx context.Context, now time.Time) 
 			continue
 		}
 		r.logger.Info("hostedtask dispatched", "task_id", task.ID, "command_id", res.CommandID, "run_id", res.RunID)
-		// 立即订阅 run 事件流（若 ACC 已返回 run_id）。
-		if res.RunID != "" {
-			fresh := task
-			fresh.AccRunID = res.RunID
-			r.ensureStream(ctx, fresh)
-		}
 	}
 }
 
@@ -222,7 +207,7 @@ func buildDispatchPayload(task hostedtask.Task) hostedtask.DispatchPayload {
 	return p
 }
 
-// ─── 2. 执行投影（SSE + 轮询兜底，§3.1 ④）────────────────────────────────
+// ─── 2. 执行投影（轮询状态权威，§3.1 ④）────────────────────────────────────
 
 func (r *HostedTaskReconciler) projectPass(ctx context.Context, now time.Time) {
 	tasks, err := r.store.ListActiveRuns(ctx, r.streamLimit)
@@ -230,28 +215,12 @@ func (r *HostedTaskReconciler) projectPass(ctx context.Context, now time.Time) {
 		r.logger.Error("hostedtask active run scan failed", "error", err)
 		return
 	}
-	seen := map[string]bool{}
 	for _, task := range tasks {
-		seen[task.AccRunID] = true
-		// 轮询兜底：每 tick 对 active command 轮询（P0 以 poll 为状态权威）。
+		// 每 tick 对 active command 轮询（状态权威；终态最迟下一个 tick 被投影）。
 		r.pollOne(ctx, task)
 		if ctx.Err() != nil {
 			return
 		}
-		r.ensureStream(ctx, task)
-	}
-	// 清理已不在 active 集的流（cancel 使订阅 goroutine 退出）。
-	r.mu.Lock()
-	var stale []*streamHandle
-	for runID, h := range r.streams {
-		if !seen[runID] {
-			stale = append(stale, h)
-			delete(r.streams, runID)
-		}
-	}
-	r.mu.Unlock()
-	for _, h := range stale {
-		h.cancel()
 	}
 }
 
@@ -272,8 +241,8 @@ func (r *HostedTaskReconciler) pollOne(ctx context.Context, task hostedtask.Task
 // applyCommand 把 ACC command 状态投影到 hosted_tasks（终态判定 + CAS）。
 func (r *HostedTaskReconciler) applyCommand(ctx context.Context, task hostedtask.Task, cmd hostedtask.ACCCommand) {
 	if task.Status.Terminal() || !cmd.Done() {
-		// 非终态：ACC running/queued 与本地一致，无需写（progress 事件由
-		// SSE 事件触发，避免每 tick 刷事件）。
+		// 非终态：ACC running/queued 与本地一致，无需写（P0 不产 progress
+		// 事件，避免每 tick 刷事件；进度观测走事件时间线之外的轮询读）。
 		return
 	}
 	in, ok := deriveSettlement(cmd)
@@ -403,99 +372,6 @@ func (r *HostedTaskReconciler) settle(ctx context.Context, taskID string, in hos
 	if settled {
 		r.logger.Info("hostedtask settled", "task_id", taskID, "to", string(in.To), "event_seq", seq)
 	}
-}
-
-// ─── SSE 订阅（断线 after 恢复；§3.1 ④/G 组）─────────────────────────────
-
-var errStopStream = errors.New("hostedtask: task settled; stop stream")
-
-// streamHandle 是一条 SSE 订阅的登记句柄，指针身份用于 defer 清理时
-// 区分"自己"与"后继订阅"（见 streams 字段注释）。
-type streamHandle struct {
-	cancel context.CancelFunc
-}
-
-// ensureStream 为 runID 维护至多一条订阅 goroutine（断线退避重连；run 退出
-// active 集时由 projectPass 调 cancel 回收）。
-func (r *HostedTaskReconciler) ensureStream(ctx context.Context, task hostedtask.Task) {
-	if !r.acc.Configured() || task.AccRunID == "" {
-		return
-	}
-	r.mu.Lock()
-	if _, active := r.streams[task.AccRunID]; active {
-		r.mu.Unlock()
-		return
-	}
-	streamCtx, cancel := context.WithCancel(ctx)
-	handle := &streamHandle{cancel: cancel}
-	r.streams[task.AccRunID] = handle
-	r.mu.Unlock()
-
-	go func(runID, taskID, cursor string) {
-		defer func() {
-			r.mu.Lock()
-			// 只清理仍属于自己的登记项：若已有新订阅（同 runID 重入 active
-			// 集）注册，绝不能替它删项——否则第三次 ensureStream 会再开一条
-			// 订阅 goroutine，同 runID 双订阅并发（R29 审计 #G）。
-			if cur, ok := r.streams[runID]; ok && cur == handle {
-				delete(r.streams, runID)
-			}
-			r.mu.Unlock()
-		}()
-		backoff := time.Second
-		for streamCtx.Err() == nil {
-			err := r.acc.StreamEvents(streamCtx, runID, cursor, func(ev hostedtask.ACCEvent) error {
-				if ev.ID != "" {
-					cursor = ev.ID
-					if err := r.store.SaveSSECursor(streamCtx, taskID, ev.ID); err != nil {
-						r.logger.Warn("hostedtask save sse cursor failed", "task_id", taskID, "error", err)
-					}
-				}
-				// P0 不同 ACC 事件分类学：SSE 作为“醒来就查”的触发器 +
-				// 明确终态事件的加速器；状态权威始终是 poll（§3.1 ④ 兜底语义）。
-				if task.TenantID != "" {
-					r.repoll(streamCtx, task.TenantID, taskID)
-				}
-				if ev.CmdTerminalish() {
-					return errStopStream
-				}
-				return nil
-			})
-			if streamCtx.Err() != nil {
-				return
-			}
-			if errors.Is(err, errStopStream) {
-				return
-			}
-			if err != nil {
-				r.logger.Warn("hostedtask sse stream exited; will reconnect with cursor",
-					"run_id", runID, "cursor", cursor, "error", err)
-			}
-			select {
-			case <-streamCtx.Done():
-				return
-			case <-time.After(backoff):
-			}
-			if backoff < 30*time.Second {
-				backoff *= 2
-			}
-			// 重连前刷新任务（可能已终态/换 run）。
-			fresh, err := r.store.GetTask(streamCtx, task.TenantID, taskID)
-			if err != nil || fresh.Status.Terminal() {
-				return
-			}
-			task = *fresh
-		}
-	}(task.AccRunID, task.ID, task.SSECursor)
-}
-
-// repoll 立即轮询一次（SSE 触发器语义）。
-func (r *HostedTaskReconciler) repoll(ctx context.Context, tenantID, taskID string) {
-	task, err := r.store.GetTask(ctx, tenantID, taskID)
-	if err != nil || task.Status.Terminal() {
-		return
-	}
-	r.pollOne(ctx, *task)
 }
 
 // ─── 取消收尾（§3.2：handler 本地终态后补发 ACC cancel）───────────────────

@@ -527,6 +527,9 @@ var promoteFunctionsRateMultiplierMigration739 []byte
 //go:embed embeddata/startup/740_view_chain_client_ip.sql
 var viewChainClientIPMigration740 []byte
 
+//go:embed embeddata/startup/742_hosted_task_recalled_event.sql
+var hostedTaskRecalledEventMigration742 []byte
+
 // embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
 // 共用，避免两份 map 漂移（曾发生 632 拷入 embeddata 却没接线的静默丢失）。
 // 新增迁移时：embeddata/startup/ 放文件 → 此处加条目 → runner.go StartupFiles
@@ -683,6 +686,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/738_view_chain_credits_rate_multiplier.sql":                             viewChainCreditsRateMultiplierMigration738,
 	"startup/739_promote_functions_rate_multiplier.sql":                              promoteFunctionsRateMultiplierMigration739,
 	"startup/740_view_chain_client_ip.sql":                                           viewChainClientIPMigration740,
+	"startup/742_hosted_task_recalled_event.sql":                                     hostedTaskRecalledEventMigration742,
 }
 
 // 临时存放 embed SQL 的目录（运行时写入）

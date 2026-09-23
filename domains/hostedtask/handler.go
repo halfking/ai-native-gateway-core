@@ -43,6 +43,7 @@ type TaskStore interface {
 	GetTask(ctx context.Context, tenantID, id string) (*Task, error)
 	ListEvents(ctx context.Context, tenantID, taskID string, limit int) ([]Event, error)
 	CancelTask(ctx context.Context, tenantID, id string) (*Task, bool, error)
+	RecallTask(ctx context.Context, tenantID, id string) (*RecallOutcome, error)
 }
 
 // Config 是托管任务门面的运行配置（main.go 从 env 装配）。
@@ -111,7 +112,7 @@ func (h *Handler) SetACCCancel(fn func(ctx context.Context, commandID string)) {
 //	GET  /v1/hosted-tasks/{id}           状态+事件时间线
 //	GET  /v1/hosted-tasks/{id}/result    结果（running→202+Retry-After）
 //	POST /v1/hosted-tasks/{id}/cancel    取消（P0=请求受理语义）
-//	POST /v1/hosted-tasks/{id}/recall    P0 显式 501（§4.1/§6.2）
+//	POST /v1/hosted-tasks/{id}/recall    召回（§3.3 ④ 轻量快照：cancel+包）
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, ok := h.authenticate(w, r)
 	if !ok {
@@ -166,8 +167,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			h.cancel(w, r, taskID)
 		case "recall":
-			// §4.1：P0 显式不支持（501），P1 实现（§3.3 handoff 包）。
-			h.writeError(w, http.StatusNotImplemented, "", "recall is not supported in P0; planned for P1 (handoff packet)", "hosted_task_error", "RECALL_NOT_IMPLEMENTED")
+			if r.Method != http.MethodPost {
+				h.writeError(w, http.StatusMethodNotAllowed, "", "method not allowed", "hosted_task_error", "METHOD_NOT_ALLOWED")
+				return
+			}
+			h.recall(w, r, taskID)
 		default:
 			h.writeError(w, http.StatusNotFound, "", "not found", "hosted_task_error", "NOT_FOUND")
 		}
@@ -505,6 +509,33 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request, taskID string) 
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"hosted_task_id": task.ID,
 		"cancel_status":  "requested",
+	})
+}
+
+// ─── POST /v1/hosted-tasks/{id}/recall（§3.3 ④ 轻量快照路径，R65）──────────
+
+// recall 组装移交包并返回 200。抢占/事件/回调由 store.RecallTask 单事务
+// 完成（§3.3：不动 ACC v3 transfer）；非终态任务被抢占为 cancelled 后，
+// 与 cancel 端点同款尽力补发 ACC cancel（requested 语义）。终态任务直接
+// 快照，不触发 ACC cancel。missing/跨租户 → 404。
+func (h *Handler) recall(w http.ResponseWriter, r *http.Request, taskID string) {
+	tenantID := tenantIDFrom(r.Context())
+	out, err := h.store.RecallTask(r.Context(), tenantID, taskID)
+	if err != nil {
+		h.readErr(w, err)
+		return
+	}
+	if out.RecallStatus == RecallCancelled && h.accCancel != nil && out.Task.AccCommandID != "" {
+		cmdID := out.Task.AccCommandID
+		go h.accCancel(context.WithoutCancel(r.Context()), cmdID)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"hosted_task_id": out.Task.ID,
+		"status":         out.Task.Status.APIStatus(),
+		"recall_status":  string(out.RecallStatus),
+		"event_seq":      out.EventSeq,
+		"handoff_packet": out.Packet,
 	})
 }
 

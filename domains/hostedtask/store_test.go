@@ -12,8 +12,9 @@ import (
 )
 
 // 矩阵 B/D/G/H 的库级验证：幂等创建/重放/异体冲突、CAS 终态抢占（0 行语义）、
-// 事件 seq 唯一、SSE 游标单调、回调认领。TEST_PG_URL 未设置时跳过
-// （不得记 PASS —— 验收矩阵 D 纪律）。迁移 711 up/down 在测试前后应用/回滚。
+// 事件 seq 唯一、回调认领、召回（742 recalled 事件 + EventID 幂等键回调重置）。
+// TEST_PG_URL 未设置时跳过（不得记 PASS —— 验收矩阵 D 纪律）。
+// 仅指一次性库：迁移 711+742 up 在测试前应用，down 在测试后回滚。
 func TestStoreAgainstPostgres(t *testing.T) {
 	dsn := os.Getenv("TEST_PG_URL")
 	if dsn == "" {
@@ -35,6 +36,14 @@ func TestStoreAgainstPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	up742SQL, err := os.ReadFile("../../sql/migrations/startup/742_hosted_task_recalled_event.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	down742SQL, err := os.ReadFile("../../sql/migrations/startup/742_hosted_task_recalled_event.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
 	downSQL, err := os.ReadFile("../../sql/migrations/startup/711_hosted_tasks.down.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +51,11 @@ func TestStoreAgainstPostgres(t *testing.T) {
 	if _, err := admin.Exec(ctx, string(upSQL)); err != nil {
 		t.Fatalf("apply 711: %v", err)
 	}
+	if _, err := admin.Exec(ctx, string(up742SQL)); err != nil {
+		t.Fatalf("apply 742: %v", err)
+	}
 	t.Cleanup(func() {
+		_, _ = admin.Exec(context.Background(), string(down742SQL))
 		_, _ = admin.Exec(context.Background(), string(downSQL))
 		_ = admin.Close(context.Background())
 	})
@@ -160,18 +173,6 @@ func TestStoreAgainstPostgres(t *testing.T) {
 		}
 	}
 
-	// ── SSE 游标单调（矩阵 G）────────────────────────────────────────
-	if err := store.SaveSSECursor(ctx, task.ID, "10"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveSSECursor(ctx, task.ID, "9"); err != nil {
-		t.Fatal(err)
-	}
-	got, _ = store.GetTask(ctx, "tenant-A", task.ID)
-	if got.SSECursor != "10" {
-		t.Errorf("cursor regressed to %q, want 10 (monotonic)", got.SSECursor)
-	}
-
 	// ── cancel 终态抢占 + 事件 ──────────────────────────────────────
 	task2, created, err := store.CreateTask(ctx, mkInput("idem-0002"))
 	if err != nil || !created {
@@ -184,5 +185,54 @@ func TestStoreAgainstPostgres(t *testing.T) {
 	gotTask, won2, err := store.CancelTask(ctx, "tenant-A", task2.ID)
 	if err != nil || won2 || gotTask.Status != StatusCancelled {
 		t.Errorf("second cancel: won=%v status=%s err=%v", won2, gotTask.Status, err)
+	}
+
+	// ── 召回（§3.3 ④ 轻量路径：742 recalled 事件 + EventID 幂等回调）──
+	// 3a. 非终态召回：cancelled 抢占 + recalled 事件 + 回调重置。
+	task3, created, err := store.CreateTask(ctx, mkInput("idem-0003"))
+	if err != nil || !created {
+		t.Fatalf("create 3: %v", err)
+	}
+	out, err := store.RecallTask(ctx, "tenant-A", task3.ID)
+	if err != nil {
+		t.Fatalf("recall running: %v", err)
+	}
+	if out.RecallStatus != RecallCancelled || out.Task.Status != StatusCancelled {
+		t.Errorf("recall running: status=%s task=%s", out.RecallStatus, out.Task.Status)
+	}
+	if out.Packet.Goal != "goal-1" || out.Packet.NextOwner != "recall_caller" {
+		t.Errorf("packet wrong: %+v", out.Packet)
+	}
+	// 事件序列：accepted → cancel_requested → cancelled → recalled。
+	evs, err := store.ListEvents(ctx, "tenant-A", task3.ID, 50)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(evs) != 4 || evs[3].Type != EventRecalled || evs[3].Seq != out.EventSeq {
+		t.Fatalf("events wrong: n=%d last=%+v seq=%d", len(evs), evs[len(evs)-1], out.EventSeq)
+	}
+	// 回调台账已按 EventID(taskID, seq) 幂等键重置为 pending（§6.1 复用）。
+	var cbEventID, cbStatus string
+	if err := admin.QueryRow(ctx, `
+		SELECT event_id, status FROM hosted_task_callbacks WHERE task_id = $1
+	`, task3.ID).Scan(&cbEventID, &cbStatus); err != nil {
+		t.Fatalf("load callback row: %v", err)
+	}
+	if want := EventID(task3.ID, out.EventSeq); cbEventID != want || cbStatus != "pending" {
+		t.Errorf("callback = %s/%s, want %s/pending", cbEventID, cbStatus, want)
+	}
+
+	// 3b. 终态再召回：already_terminal，只补 recalled 事件。
+	out2, err := store.RecallTask(ctx, "tenant-A", task3.ID)
+	if err != nil {
+		t.Fatalf("recall terminal: %v", err)
+	}
+	if out2.RecallStatus != RecallAlreadyTerminal || out2.EventSeq != out.EventSeq+1 {
+		t.Errorf("recall terminal: status=%s seq=%d", out2.RecallStatus, out2.EventSeq)
+	}
+
+	// 3c. missing/跨租户 → ErrNotFound。
+	if _, err := store.RecallTask(ctx, "tenant-B", task3.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("cross-tenant recall err=%v, want ErrNotFound", err)
 	}
 }
