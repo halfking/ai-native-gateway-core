@@ -238,6 +238,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 数据源级修复）。regexp 补列 + 顶层全量重建 + 列数守卫
 			// fail-closed。幂等。
 			"740_view_chain_client_ip.sql",
+			// 742 (R65, 2026-09-23): hosted_task_events 类型白名单扩
+			// 'recalled'（召回轻量快照路径 §3.3/§4.3）。741 已被 B11
+			// 申领。幂等（DROP+ADD CONSTRAINT；自注册带 schema_migrations
+			// 存在性守卫）。
+			"742_hosted_task_recalled_event.sql",
 		},
 	}
 }

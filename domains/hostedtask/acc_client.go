@@ -2,9 +2,8 @@
 //
 // 契约（均经设计文档跨仓库源码核实）：
 //   - POST /api/v2/runtime/dispatch + Idempotency-Key → 202 {command_id,…}
-//   - GET  /api/v2/runtime/commands/:command_id（轮询兜底）
+//   - GET  /api/v2/runtime/commands/:command_id（轮询，状态权威——R65 D7）
 //   - POST /api/v2/runtime/commands/:command_id/cancel（2xx=requested）
-//   - GET  /api/v2/orchestration/runs/:run_id/events/stream（SSE，?after=/Last-Event-ID）
 //
 // 鉴权：Bearer service token（须含 sub+tenant_id claim；sk-svc.* 不通用）。
 // env：LLM_GATEWAY_ACC_BASE_URL / LLM_GATEWAY_ACC_SERVICE_TOKEN。
@@ -13,7 +12,6 @@
 package hostedtask
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -82,35 +80,6 @@ func (c ACCCommand) Done() bool {
 // error 会被 facade 标成功，网关终态判定必须强制校验）。
 func (c ACCCommand) StopIsError() bool {
 	return strings.EqualFold(strings.TrimSpace(c.StopReason), "error")
-}
-
-// ACCEvent 是 SSE 流里的一条事件（宽容解析）。
-type ACCEvent struct {
-	ID        string
-	EventType string
-	CommandID string
-	Payload   map[string]any
-}
-
-// CmdTerminalish 是对 ACC 事件终态的宽容启发：payload 的 type/status 字段
-// 命中终态词表时返回 true（P0 状态权威始终是轮询，本判定只用于加速收尾）。
-func (e ACCEvent) CmdTerminalish() bool {
-	for _, src := range []string{e.EventType, accString(orNil(e.Payload), "type", "status", "event", "event_type", "state")} {
-		switch strings.ToLower(src) {
-		case "completed", "complete", "succeeded", "success", "failed", "error",
-			"cancelled", "canceled", "expired", "timed_out", "timeout",
-			"command.completed", "command.failed", "command.cancelled", "command.expired":
-			return true
-		}
-	}
-	return false
-}
-
-func orNil(m map[string]any) map[string]any {
-	if m == nil {
-		return map[string]any{}
-	}
-	return m
 }
 
 // ACCClient 是 Runtime Control 的 HTTP 客户端。
@@ -273,97 +242,6 @@ func (c *ACCClient) Cancel(ctx context.Context, commandID string) error {
 		return decodeErr(resp, "cancel")
 	}
 	return nil
-}
-
-// StreamEvents 订阅 run 事件流（§3.1 ④：durable 回放+live）。after 为持久
-// 游标（空=从头回放）。onEvent 返回 error 时中断流（含 ctx 取消）。
-func (c *ACCClient) StreamEvents(ctx context.Context, runID, after string, onEvent func(ACCEvent) error) error {
-	if !c.Configured() {
-		return fmt.Errorf("acc stream: client not configured")
-	}
-	path := "/api/v2/orchestration/runs/" + url.PathEscape(runID) + "/events/stream"
-	if after != "" {
-		path += "?after=" + url.QueryEscape(after)
-	}
-	// SSE 是长连接：不用带全局超时的 client，超时交给 ctx 与读超时。
-	streamClient := *c.http
-	streamClient.Timeout = 0
-	resp, err := c.doWithClient(ctx, &streamClient, http.MethodGet, path, nil, "", after)
-	if err != nil {
-		return fmt.Errorf("acc stream: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return decodeErr(resp, "stream")
-	}
-	reader := bufio.NewReaderSize(resp.Body, 64*1024)
-	var ev ACCEvent
-	flush := func() error {
-		if ev.ID == "" && ev.EventType == "" && ev.Payload == nil {
-			return nil // 空行/心跳
-		}
-		err := onEvent(ev)
-		ev = ACCEvent{}
-		return err
-	}
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				return flush()
-			}
-			return fmt.Errorf("acc stream read: %w", err)
-		}
-		line = strings.TrimRight(line, "\r\n")
-		switch {
-		case line == "":
-			if err := flush(); err != nil {
-				return err
-			}
-		case strings.HasPrefix(line, "id:"):
-			ev.ID = strings.TrimSpace(strings.TrimPrefix(line, "id:"))
-		case strings.HasPrefix(line, "event:"):
-			ev.EventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-		case strings.HasPrefix(line, "data:"):
-			raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if raw == "" || raw == "[done]" {
-				continue
-			}
-			payload := map[string]any{}
-			if err := json.Unmarshal([]byte(raw), &payload); err == nil {
-				ev.Payload = payload
-			} else {
-				ev.Payload = map[string]any{"raw": raw}
-			}
-		}
-	}
-}
-
-func (c *ACCClient) doWithClient(ctx context.Context, client *http.Client, method, path string, body any, idempotencyKey, after string) (*http.Response, error) {
-	var reader io.Reader
-	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		reader = bytes.NewReader(raw)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "text/event-stream")
-	if idempotencyKey != "" {
-		req.Header.Set("Idempotency-Key", idempotencyKey)
-	}
-	if after != "" {
-		// 恢复语义以 Last-Event-ID 头声明（§2.1：与 ?after= 双通道）。
-		req.Header.Set("Last-Event-ID", after)
-	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	return client.Do(req)
 }
 
 // accString 从宽容解析的 map 里按优先级取第一个非空字符串。

@@ -688,3 +688,13 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 |-----------|------|---------|--------|
 | 740 | `740_view_chain_client_ip.sql` | `e4343e3cc2ae57fb28f76021afdb6d3aef0e3d1c7b723ecb69b7b48d83e205b6` | applied+verified |
 
+
+## 2026-09-23 — migration 742 code-landed (R65 recall 轻量快照路径)
+
+| Migration | File | Status |
+|-----------|------|--------|
+| 742 | `742_hosted_task_recalled_event.sql` | code-landed（R65：711 的 hosted_task_events_type_check 扩 'recalled'，供 POST /v1/hosted-tasks/{id}/recall §3.3 轻量快照路径；fresh up/down/up + installer 门禁随本轮验证） |
+
+- 三处同步：迁移 742 CHECK ↔ `domains/hostedtask/types.go` EventRecalled ↔ 设计文档 §4.3。
+- 741 已被 B11 申领（740 占用记录见上），R65 从 742 起。
+- down 先清除 recalled 事件行再还原 711 白名单；自注册带 schema_migrations 存在性守卫（空白一次性库可直灌）。

@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
 
 // dispatch 契约（§2.1/§3.1 ②）：POST /api/v2/runtime/dispatch + Idempotency-Key
@@ -87,36 +86,6 @@ func TestACCClientCancelAndPoll(t *testing.T) {
 	}
 	if !cmd.Done() || cmd.StopReason != "stop_success" || cmd.StopIsError() {
 		t.Errorf("cmd parse wrong: %+v", cmd)
-	}
-}
-
-// SSE 解析 + ?after/Last-Event-ID 恢复（矩阵 G）。
-func TestACCClientStreamEvents(t *testing.T) {
-	var sawAfter, sawLEI string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawAfter = r.URL.Query().Get("after")
-		sawLEI = r.Header.Get("Last-Event-ID")
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("id: 41\nevent: command.completed\ndata: {\"command_id\":\"cmd-1\",\"status\":\"completed\"}\n\n"))
-	}))
-	defer srv.Close()
-	c := NewACCClient(srv.URL, "t", "r", srv.Client())
-
-	var events []ACCEvent
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	err := c.StreamEvents(ctx, "run-9", "40", func(ev ACCEvent) error {
-		events = append(events, ev)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("stream: %v", err)
-	}
-	if sawAfter != "40" || sawLEI != "40" {
-		t.Errorf("resume params wrong: after=%q lei=%q", sawAfter, sawLEI)
-	}
-	if len(events) != 1 || events[0].ID != "41" || !events[0].CmdTerminalish() {
-		t.Errorf("event parse wrong: %+v", events)
 	}
 }
 

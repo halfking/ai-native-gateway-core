@@ -33,11 +33,12 @@ func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
-// taskColumns 是 Task 行扫描的列清单（单点维护）。
+// taskColumns 是 Task 行扫描的列清单（单点维护）。sse_cursor 列自 R65 起
+// 停用（SSE 订阅移除，轮询为状态权威——设计文档 §10 D7），列保留不迁移。
 const taskColumns = `
 	id, tenant_id, api_key_id, goal, done_when, context, environment,
 	status, acc_command_id, acc_run_id, dispatch_key, dispatch_attempts,
-	gw_session_id, sse_cursor, callback_url_hash,
+	gw_session_id, callback_url_hash,
 	result, result_version, revision, idempotency_key, request_hash,
 	deadline_at, created_at, updated_at, completed_at
 `
@@ -50,7 +51,7 @@ func scanTask(row pgx.Row) (*Task, error) {
 		&t.ID, &t.TenantID, &t.APIKeyID, &t.Goal, &t.DoneWhen,
 		&contextJSON, &envJSON,
 		&t.Status, &t.AccCommandID, &t.AccRunID, &t.DispatchKey, &t.DispatchAttempts,
-		&t.GwSessionID, &t.SSECursor, &t.CallbackURLHash,
+		&t.GwSessionID, &t.CallbackURLHash,
 		&resultJSON, &t.ResultVersion, &t.Revision, &t.IdempotencyKey, &t.RequestHash,
 		&t.DeadlineAt, &t.CreatedAt, &t.UpdatedAt, &completedAt,
 	); err != nil {
@@ -290,6 +291,31 @@ func (s *Store) ListEvents(ctx context.Context, tenantID, taskID string, limit i
 
 // ─── 取消（§3.2：CAS 终态抢占 → 事件 cancel_requested + cancelled）────────
 
+// cancelRowInTx 在已持行锁的事务内做 cancelled 终态抢占 + cancel_requested/
+// cancelled 事件（cancel 端点与 recall 共用；调用方保证 cur 非终态且迁移
+// 合法）。
+func cancelRowInTx(ctx context.Context, tx pgx.Tx, cur *Task) (*Task, error) {
+	task, err := scanTask(tx.QueryRow(ctx, `
+		UPDATE hosted_tasks
+		SET status = 'cancelled', revision = revision + 1,
+		    completed_at = NOW(), updated_at = NOW()
+		WHERE id = $1 AND revision = $2
+		RETURNING `+taskColumns,
+		cur.ID, cur.Revision,
+	))
+	if err != nil {
+		return nil, fmt.Errorf("cancel cas: %w", err)
+	}
+	for _, ev := range []EventType{EventCancelRequested, EventCancelled} {
+		if _, err := appendEvent(ctx, tx, cur.ID, ev, map[string]any{
+			"actor": "tenant", "from_status": string(cur.Status),
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return task, nil
+}
+
 // CancelTask 尝试把任务置为 cancelled（终态 sticky 抢占）。返回
 // (task, won)：won=false 表示任务已终态（调用方回 409）。与 complete 的
 // 竞争由行锁 + 终态检查保证只活一个（矩阵 H）。
@@ -318,28 +344,109 @@ func (s *Store) CancelTask(ctx context.Context, tenantID, id string) (*Task, boo
 	if !CanTransition(cur.Status, StatusCancelled) {
 		return cur, false, nil
 	}
-	task, err := scanTask(tx.QueryRow(ctx, `
-		UPDATE hosted_tasks
-		SET status = 'cancelled', revision = revision + 1,
-		    completed_at = NOW(), updated_at = NOW()
-		WHERE id = $1 AND revision = $2
-		RETURNING `+taskColumns,
-		id, cur.Revision,
-	))
+	task, err := cancelRowInTx(ctx, tx, cur)
 	if err != nil {
-		return nil, false, fmt.Errorf("cancel cas: %w", err)
-	}
-	for _, ev := range []EventType{EventCancelRequested, EventCancelled} {
-		if _, err := appendEvent(ctx, tx, id, ev, map[string]any{
-			"actor": "tenant", "from_status": string(cur.Status),
-		}); err != nil {
-			return nil, false, err
-		}
+		return nil, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, false, fmt.Errorf("commit cancel: %w", err)
 	}
 	return task, true, nil
+}
+
+// ─── 召回（§3.3 轻量快照路径，R65 P1 子集）─────────────────────────────────
+
+// RecallStatus 是 RecallTask 的召回路径标注。
+type RecallStatus string
+
+const (
+	// RecallCancelled 表示本轮完成了非终态 → cancelled 的终态抢占。
+	RecallCancelled RecallStatus = "cancelled"
+	// RecallAlreadyTerminal 表示召回时任务已终态（只快照 + 补事件）。
+	RecallAlreadyTerminal RecallStatus = "already_terminal"
+)
+
+// RecallOutcome 是召回事务的结果。
+type RecallOutcome struct {
+	Task         *Task
+	EventSeq     int64                   // recalled 事件 seq（回调 event_id 用）
+	RecallStatus RecallStatus            // 本轮是否做了终态抢占
+	Packet       StructuredHandoffPacket // 最终任务行构建的移交包（§3.3 ④）
+}
+
+// RecallTask 召回（§3.3 轻量路径，单事务原子）：
+//  1. 非终态 → cancelled 终态抢占（与 cancel 端点同款语义，含
+//     cancel_requested/cancelled 事件；不动 ACC 权威状态，ACC cancel 由
+//     handler 在提交后尽力补发）；
+//  2. 以抢占后的最终任务行构建 StructuredHandoffPacket（§3.3 ④）；
+//  3. 追加 recalled 事件（payload 携带 recall_status + handoff_packet，
+//     前端凭包续跑）；
+//  4. 回调台账置 pending，event_id 复用固定幂等键 EventID(taskID, seq)
+//     （§6.1，与 SettleTask 同款；重投由接收方按 event_id 幂等）。
+//
+// 终态任务不抢占，只补 recalled 事件 + 重置回调（每次召回交付一次最新包）。
+// 幂等性：同任务重复 recall 各自追加一条 recalled 事件（append-only 审计），
+// 返回包内容一致。跨租户/不存在 → ErrNotFound。
+func (s *Store) RecallTask(ctx context.Context, tenantID, id string) (*RecallOutcome, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	setTenant(ctx, tx, tenantID)
+
+	cur, err := scanTask(tx.QueryRow(ctx, `
+		SELECT `+taskColumns+` FROM hosted_tasks WHERE id = $1 AND tenant_id = $2 FOR UPDATE
+	`, id, tenantID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("lock task: %w", err)
+	}
+
+	status := RecallAlreadyTerminal
+	if !cur.Status.Terminal() && CanTransition(cur.Status, StatusCancelled) {
+		if _, err := cancelRowInTx(ctx, tx, cur); err != nil {
+			return nil, err
+		}
+		status = RecallCancelled
+	}
+
+	// 以抢占后的最终行构建移交包（与事件同事务，保证包与台账一致）。
+	task, err := scanTask(tx.QueryRow(ctx, `
+		SELECT `+taskColumns+` FROM hosted_tasks WHERE id = $1
+	`, id))
+	if err != nil {
+		return nil, fmt.Errorf("reload recalled task: %w", err)
+	}
+	packet := buildHandoffPacket(task)
+
+	payload := map[string]any{
+		"recall_status":  string(status),
+		"next_owner":     "recall_caller",
+		"handoff_packet": packet,
+	}
+	seq, err := appendEvent(ctx, tx, id, EventRecalled, payload)
+	if err != nil {
+		return nil, err
+	}
+	// 回调入队：event_id 复用 EventID(taskID, seq) 幂等键（§6.1）。
+	if _, err := tx.Exec(ctx, `
+		UPDATE hosted_task_callbacks
+		SET status = 'pending', event_id = $2, event_seq = $3,
+		    next_attempt_at = NOW(), attempts = 0, last_error = '', updated_at = NOW()
+		WHERE task_id = $1 AND url_enc != ''
+	`, id, EventID(id, seq), seq); err != nil {
+		return nil, fmt.Errorf("enqueue recall callback: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit recall: %w", err)
+	}
+	return &RecallOutcome{Task: task, EventSeq: seq, RecallStatus: status, Packet: packet}, nil
 }
 
 // ─── dispatch 投影（§3.1 ②）───────────────────────────────────────────────
@@ -551,30 +658,7 @@ func (s *Store) RecordProgress(ctx context.Context, id string, payload map[strin
 	return tx.Commit(ctx)
 }
 
-// SaveSSECursor 持久化 SSE 游标（§3.1 ④：Last-Event-ID 断点续传）。
-// 单调推进：仅当新游标大于现值（数值可比时）或现值为空时写入。
-func (s *Store) SaveSSECursor(ctx context.Context, id, cursor string) error {
-	if cursor == "" {
-		return nil
-	}
-	tx, err := s.begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `
-		UPDATE hosted_tasks SET sse_cursor = $2, updated_at = NOW()
-		WHERE id = $1
-		  AND (sse_cursor = ''
-		       OR ($2 ~ '^[0-9]+$' AND sse_cursor ~ '^[0-9]+$' AND $2::bigint > sse_cursor::bigint)
-		       OR (sse_cursor !~ '^[0-9]+$' AND sse_cursor <> $2))
-	`, id, cursor); err != nil {
-		return fmt.Errorf("save sse cursor: %w", err)
-	}
-	return tx.Commit(ctx)
-}
-
-// ListActiveRuns 返回需要 SSE 订阅/轮询兜底的非终态任务（有 acc_run_id）。
+// ListActiveRuns 返回需要轮询投影的非终态任务（有 acc_run_id）。
 func (s *Store) ListActiveRuns(ctx context.Context, limit int) ([]Task, error) {
 	if limit <= 0 {
 		limit = 100
