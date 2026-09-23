@@ -762,7 +762,8 @@ func (it *SanitizeRestoreInterceptor) restoreStreamChunk(ctx context.Context, ch
 }
 
 // restoreStreamOpenAIDelta 处理 OpenAI chat completion delta schema
-// (choices[].delta.content)。返回是否替换了占位符。
+// (choices[].delta.content + choices[].delta.tool_calls[*].function.arguments)。
+// 返回是否替换了占位符。
 func (it *SanitizeRestoreInterceptor) restoreStreamOpenAIDelta(ctx context.Context, raw map[string]any, sm SanitizeMap) bool {
 	choices, ok := raw["choices"].([]any)
 	if !ok {
@@ -778,28 +779,52 @@ func (it *SanitizeRestoreInterceptor) restoreStreamOpenAIDelta(ctx context.Conte
 		if !ok {
 			continue
 		}
-		if !restoreStringField(ctx, it.sanitizer, delta, "content", sm) {
-			continue
+		if restoreStringField(ctx, it.sanitizer, delta, "content", sm) {
+			changed = true
 		}
-		changed = true
+		// 流式 tool_calls.arguments：上游按 token 增量下发
+		// {"tool_calls":[{"index":0,"function":{"arguments":"..."}}]}
+		// 同一 SSE frame 里只有一个工具的一段 arguments 增量；做占位符替换。
+		if restoreToolCallsArgs(ctx, it.sanitizer, delta, "tool_calls", sm) {
+			changed = true
+		}
 	}
 	return changed
 }
 
 // restoreStreamAnthropicDelta 处理 Anthropic Messages delta schema
-// (type="content_block_delta" + delta.text)。返回是否替换了占位符。
+// (type="content_block_delta" + delta.text / delta.input)。返回是否替换了占位符。
 func (it *SanitizeRestoreInterceptor) restoreStreamAnthropicDelta(ctx context.Context, raw map[string]any, sm SanitizeMap) bool {
 	// Anthropic 在 SSE 流中既发送 type="content_block_start" 等控制事件，
-	// 也发送 type="content_block_delta" 携带 delta.text 文本增量。
-	// 只处理 content_block_delta，避免误改控制字段。
-	if t, _ := raw["type"].(string); t != "content_block_delta" {
+	// 也发送 type="content_block_delta" 携带 delta.text 文本增量，
+	// 以及 type=input_json_delta 携带 tool_use.input 的 JSON 片段。
+	// 统一在 content_block_delta 上处理：text 走普通替换，
+	// partial_json 走 JSON 字符串占位符替换（增量通常为 { 或 key 部分）。
+	t, _ := raw["type"].(string)
+	if t != "content_block_delta" {
 		return false
 	}
 	delta, ok := raw["delta"].(map[string]any)
 	if !ok {
 		return false
 	}
-	return restoreStringField(ctx, it.sanitizer, delta, "text", sm)
+	changed := false
+	if restoreStringField(ctx, it.sanitizer, delta, "text", sm) {
+		changed = true
+	}
+	// Anthropic tool_use.input 是 partial JSON：先把增量累计成一个 JSON 字符串
+	// 做占位符替换（占位符必须整段出现才会被识别，所以一般 incremental
+	// 输出含 partial 字段名/数字的场景不会误命中；只要完整 JSON 落地时
+	// 落在一次 Write 里就能命中）。
+	if restoreStringField(ctx, it.sanitizer, delta, "input", sm) {
+		// delta.input 可能是 string（Anthropic 增量）或 map（旧版）；
+		// restoreStringField 只处理 string 路径。
+		changed = true
+	}
+	if restoreStringField(ctx, it.sanitizer, delta, "partial_json", sm) {
+		changed = true
+	}
+	return changed
 }
 
 // restoreStreamResponsesDelta 处理 OpenAI Responses API delta schema
@@ -896,13 +921,18 @@ func (it *SanitizeRestoreInterceptor) validatePlaceholders(ctx context.Context, 
 	return invalidPlaceholders
 }
 
-// restoreResponseBody 还原 OpenAI 响应体 choices[].message.content 中的占位符。
+// restoreResponseBody 还原 OpenAI 响应体 choices[].message.content + tool_calls
+// 中的占位符，确保下游拿到真实敏感值。
 //
 // 还原策略（统一使用 RestoreOutputOrMask）：
 //   - role=assistant：还原为真实敏感值；映射表中没有的占位符用 [REDACTED] 替换
 //     防止上游注入的占位符文本泄漏
 //   - role=user/tool/function 等：还原 + mask（语义同 assistant，但生产路径上
 //     这些 role 的响应消息通常不含 placeholder）
+//   - message.tool_calls[*].function.arguments：JSON 字符串，按 key/value 遍历还原
+//     （网关在调用工具前必须拿到真实敏感值，否则下游工具拿到的就是占位符文本）
+//   - 顶层 tool_calls[*].function.arguments：同上（部分 schema 把 tool_calls
+//     直接挂在 choices 而非 message 上）
 func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, body []byte, sm SanitizeMap) ([]byte, error) {
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
@@ -918,23 +948,22 @@ func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, b
 		if !ok {
 			continue
 		}
-		msg, ok := c["message"].(map[string]any)
-		if !ok {
-			continue
+		// 1) message.content
+		if msg, ok := c["message"].(map[string]any); ok {
+			if content, ok := msg["content"].(string); ok {
+				restored, err := it.sanitizer.RestoreOutputOrMask(ctx, content, sm)
+				if err == nil && restored != content {
+					msg["content"] = restored
+					changed = true
+				}
+			}
+			// 2) message.tool_calls[*].function.arguments
+			if restoreToolCallsArgs(ctx, it.sanitizer, msg, "tool_calls", sm) {
+				changed = true
+			}
 		}
-		content, ok := msg["content"].(string)
-		if !ok {
-			continue
-		}
-
-		// 一律用 RestoreOutputOrMask：已知占位符还原 + 未知占位符 mask，
-		// 防止 {SENSITIVE:type:99} 这种 raw 文本泄漏到客户端。
-		restored, err := it.sanitizer.RestoreOutputOrMask(ctx, content, sm)
-		if err != nil {
-			continue
-		}
-		if restored != content {
-			msg["content"] = restored
+		// 3) 顶层 tool_calls[*].function.arguments（部分 schema 透传）
+		if restoreToolCallsArgs(ctx, it.sanitizer, c, "tool_calls", sm) {
 			changed = true
 		}
 	}
@@ -946,6 +975,96 @@ func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, b
 		return nil, err
 	}
 	return out, nil
+}
+
+// restoreToolCallsArgs 在 obj[key]（数组）中遍历每个 tool_call，
+// 对 function.arguments（JSON 字符串）按 key/value 还原占位符；
+// function.arguments 解析失败或不含占位符时整段保留原样。
+// 返回是否发生了修改。
+func restoreToolCallsArgs(ctx context.Context, s *Sanitizer, obj map[string]any, key string, sm SanitizeMap) bool {
+	arr, ok := obj[key].([]any)
+	if !ok || len(arr) == 0 {
+		return false
+	}
+	changed := false
+	for _, tcAny := range arr {
+		tc, ok := tcAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		fn, ok := tc["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		argsStr, ok := fn["arguments"].(string)
+		if !ok {
+			continue
+		}
+		if !PlaceholderPattern.MatchString(argsStr) {
+			continue
+		}
+		var argsObj map[string]any
+		if err := json.Unmarshal([]byte(argsStr), &argsObj); err != nil {
+			// arguments 不是合法 JSON 对象：当作普通字符串做占位符还原
+			restored, rerr := s.RestoreOutputOrMask(ctx, argsStr, sm)
+			if rerr == nil && restored != argsStr {
+				fn["arguments"] = restored
+				changed = true
+			}
+			continue
+		}
+		if restoreJSONRecursive(ctx, s, argsObj, sm) {
+			raw, mErr := json.Marshal(argsObj)
+			if mErr == nil {
+				fn["arguments"] = string(raw)
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+// restoreJSONRecursive 在 m 或 restoreJSONRecursive 在 m 的字符串字段里做占位符还原
+// （浅遍历一个 JSON 对象：值为字符串时还原；值为对象/数组时递归）。
+// 任何一字段被改动即返回 true。
+func restoreJSONRecursive(ctx context.Context, s *Sanitizer, m map[string]any, sm SanitizeMap) bool {
+	changed := false
+	for k, v := range m {
+		switch vv := v.(type) {
+		case string:
+			if !PlaceholderPattern.MatchString(vv) {
+				continue
+			}
+			restored, err := s.RestoreOutputOrMask(ctx, vv, sm)
+			if err == nil && restored != vv {
+				m[k] = restored
+				changed = true
+			}
+		case map[string]any:
+			if restoreJSONRecursive(ctx, s, vv, sm) {
+				changed = true
+			}
+		case []any:
+			for i, item := range vv {
+				switch it := item.(type) {
+				case string:
+					if !PlaceholderPattern.MatchString(it) {
+						continue
+					}
+					restored, err := s.RestoreOutputOrMask(ctx, it, sm)
+					if err == nil && restored != it {
+						vv[i] = restored
+						changed = true
+					}
+				case map[string]any:
+					if restoreJSONRecursive(ctx, s, it, sm) {
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	return changed
 }
 
 // HashTenant returns the stable 16-char tenant hash used in Redis key scopes.
