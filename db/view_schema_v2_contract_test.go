@@ -217,7 +217,12 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	if _, err := adminPool.Exec(ctx, `DROP DATABASE IF EXISTS `+scratchName); err != nil {
 		t.Fatalf("drop stale scratch db: %v", err)
 	}
-	if _, err := adminPool.Exec(ctx, `CREATE DATABASE `+scratchName); err != nil {
+	// template0 + 显式编码：裸 CREATE DATABASE 继承 postmaster locale，与本机
+	// template1（C.UTF-8）不一致时直接 22023（2026-09-23 dev 实例 locale 漂移
+	// 实证）。template0 不携带 locale 校验对，任何实例态都能建库；测试查询
+	// 不依赖 collation 序。
+	if _, err := adminPool.Exec(ctx,
+		`CREATE DATABASE `+scratchName+` TEMPLATE template0 ENCODING 'UTF8'`); err != nil {
 		t.Fatalf("create scratch db: %v", err)
 	}
 	t.Cleanup(func() {

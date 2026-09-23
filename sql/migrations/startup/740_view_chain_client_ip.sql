@@ -12,27 +12,40 @@
 --                真源——设计 §7「内网直显 IP、外网归类国家·省·市」的
 --                GeoIP 段表臂自此才对真实数据可达。
 --
---                本迁移遵循 738 同款「viewdef 捕获 → 逐 view 独立守卫 →
---                DROP CASCADE → regexp 补列 → 重建 → 列数对账 EXCEPTION」
---                惯用法。三 view 独立幂等：viewdef 已含 client_ip 时跳过
---                该 view（708 历史教训）。
+--                本迁移按 view 分层采用两种惯用法：
 --
---                顶层四臂锚点（738 的 credits_rate_multiplier 列即插在
---                各臂末，pg_get_viewdef 输出实测）：session_turns_hot /
---                session_turns 两臂 NULL::inet 补位（session 侧 client_ip
---                为 text 且未回填，738 NULL 补位同款）；v1 臂内层补
---                v.client_ip、外层补 rl.client_ip。
+--                底/中层 = 738 同款「viewdef 捕获 → 逐 view 独立守卫 →
+--                DROP CASCADE → regexp 补列 → 重建」（hot 臂/parent 臂/
+--                v.credits_rate_multiplier 末列后各补 client_ip）。
+--
+--                顶层 = 734 骨架**全量重建**（115 列契约）：刻意不做 regexp
+--                补列——v1 分支内层的 v.* 星展开内容随中层扩列时变（存储
+--                展开冻结于 CREATE 时刻），regexp 插入的列序与 db.ensure
+--                自愈组合体（canonicalV2DDL）永久不可能逐字对齐，也无法被
+--                down 稳定还原 738 形态。重建体内层显式列出中层列（剔除
+--                credits/client_ip，与 ensure 的 middleWrapperCols 同一条
+--                查询），738/740 两列以 v.<col> 文本引用固定内层末尾（=
+--                738 regexp 的插入位）；会话分支 115 列投影（credits=
+--                NULL::double precision / client_ip=NULL::inet 补位——
+--                session 侧 client_ip 为 text 且未回填，738 NULL 补位
+--                同款）；基座 fp/raw 探测 lateral 与 734 逐字同构。
 --
 --                下游消费方（同轮落地）：bg/stats_minute_rollup 新增
 --                client_ip 维度（virtual_ip 旧维度保留为遗留对照，同
 --                client_profile/agent_name 先例）；admin 看板 client_ips
 --                饼图（原 virtual_ips）走真源 + GeoIP 归类。
 --
--- Dependencies:  738（credits_rate_multiplier 已在链上——v1 臂锚点是其
---                插入行）、733/734（session 特征层拼装体）、736（倍率列）。
--- Idempotent:    是（逐 view 独立判断，跳过即 no-op）。
+-- Dependencies:  738（credits_rate_multiplier 已在链上——重建体的 v.<col>
+--                尾引用依赖中层已带该列）、733/734（session 特征层拼装体，
+--                缺族即 EXCEPTION）、736（倍率列）。
+-- Idempotent:    是（逐 view 独立判断，跳过即 no-op；顶层 CREATE OR
+--                REPLACE 追加列语义，不再 DROP——避免二次级联击杀探测
+--                健康视图族，716 家族由 db.ensureProbeHealthDashboardViews
+--                启动自愈）。
 -- Down:          740_view_chain_client_ip.down.sql（viewdef 捕获 → regexp
---                剥离 client_ip 行 → 重建，同样逐 view 独立幂等）。
+--                剥离「逗号 + client_ip 行」→ 重建，同样逐 view 独立幂等；
+--                剥离单位是尾逗号风格的前列逗号——pg_get_viewdef 归一化
+--                输出为尾逗号，up 的插入文本不会被原样保留）。
 -- ===========================================================================
 
 BEGIN;
