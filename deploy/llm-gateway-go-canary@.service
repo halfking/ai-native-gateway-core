@@ -40,7 +40,7 @@ EnvironmentFile=/etc/llm-gateway-go/env
 # 2026-09-10 窗口演练实抓（与 245 canary 同款）：候选冷启动 EnsureSchema 在
 # 生产 DB 负载下超过默认 20s boot 预算 → postgres disabled → readyz 503。
 # 候选预算提至 75s（高于实测 ~40s schema-ensure，低于 systemd 90s 上限）。
-Environment=LLM_GATEWAY_DB_BOOT_RETRY_SECONDS=75s
+Environment=LLM_GATEWAY_DB_BOOT_RETRY_SECONDS=600s
 
 # Per-instance identity, unified with env 245's llmgo-245-canary@.service:
 # %i is the candidate port and ALTERNATES between 8781 and 8782 on every
@@ -60,7 +60,7 @@ Restart=on-failure
 RestartSec=5s
 # Leave margin above the 75s DB boot retry budget so systemd does not kill
 # the candidate before the application can become ready.
-TimeoutStartSec=90s
+TimeoutStartSec=700s
 TimeoutStopSec=25s
 KillSignal=SIGTERM
 StandardOutput=journal
