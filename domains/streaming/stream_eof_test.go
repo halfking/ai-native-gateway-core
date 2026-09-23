@@ -831,3 +831,82 @@ func TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason(t *testing.T) {
 		"capture must NOT be marked interrupted: the turn is semantically complete and must not be recorded as a failure")
 }
 
+// TestStreamChatSurvivalGateReuse_SingleTerminalOnCommittedBreak — b0c77269d
+// field regression (154 build 2234, 2026-09-23), closed-loop at the exact
+// seam the live bug lived in.
+//
+// Field topology: the SurvivalCoordinator pre-wraps the client writer in a
+// per-attempt GateWriter; StreamChat…WithVendor then wraps that writer in a
+// connection-monitor decorator BEFORE calling wrapAttemptWriter. b0c77269d's
+// predecessor missed the GateWriter behind the decorator, built a second
+// gate, and the §11.6 TerminalRendered latch landed on the throwaway — so
+// the coordinator's renderTerminal guard never fired and the wire carried
+// the §11.6 frame + [DONE] followed by the survival resume_blocked envelope
+// + a second [DONE] (20/20 committed minimax-m3 breaks, 100%).
+//
+// The R58 handler-level e2e cannot see this seam: its mock executor writes
+// straight into the GateWriter and never enters StreamChat…WithVendor.
+// This test drives the REAL stream function over a coordinator-style
+// GateWriter with a truncating upstream and then renders the survival
+// terminal exactly as survival_coordinator.renderTerminal would:
+//
+//	§11.6 latch must land on the coordinator's gate, and the coordinator
+//	terminal render must suppress — one error frame, one [DONE], silence
+//	afterwards.
+func TestStreamChatSurvivalGateReuse_SingleTerminalOnCommittedBreak(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+		)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	rec := httptest.NewRecorder()
+	sw := NewSerializedStreamWriter(rec)
+	gate := NewAttemptCommitGate(context.Background(), ProtocolOpenAIChat, sw, GateOptions{Mode: GateModeBuffered, RequestID: "req-survival-reuse"})
+	gw := NewGateWriterWithResponse(gate, rec)
+
+	outcome := StreamChatWithPendingCapture(context.Background(),
+		gw,
+		resp,
+		"minimax-m3",
+		"MiniMax-M3",
+		NewNormalizer(),
+		nil,
+		false,
+		nil,
+		nil,
+	)
+
+	if !outcome.Interrupted || outcome.Reason != "eof_without_done" {
+		t.Fatalf("outcome = interrupted=%v reason=%q, want committed-break eof_without_done", outcome.Interrupted, outcome.Reason)
+	}
+	// THE regression core: the §11.6 latch must be visible on the
+	// coordinator's gate. Pre-b0c77269d this read false (latch landed on the
+	// throwaway gate behind the monitor decorator).
+	if !gate.TerminalRendered() {
+		t.Fatal("§11.6 TerminalRendered latch must land on the coordinator's gate (GateWriter reuse behind the monitor wrapper)")
+	}
+
+	// renderTerminal semantics (survival_coordinator.go): guard sees the
+	// latch → suppress → the survival resume_blocked envelope must NOT be
+	// stacked onto the wire.
+	coord := &SurvivalCoordinator{Terminal: func(decision TaskDecision, committed bool) {
+		renderSurvivalTerminal(sw, ProtocolOpenAIChat, decision, committed)
+	}}
+	coord.renderTerminal(TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}, gate, true)
+
+	body := rec.Body.String()
+	if n := strings.Count(body, `data: {"error"`); n != 1 {
+		t.Fatalf("error frame count = %d, want exactly 1 (double terminal = the field bug)\nwire tail: %q", n, tailBytes(body, 400))
+	}
+	if n := strings.Count(body, "data: [DONE]"); n != 1 {
+		t.Fatalf("data: [DONE] count = %d, want exactly 1\nwire tail: %q", n, tailBytes(body, 400))
+	}
+	if !strings.Contains(body, `"retryable":true`) {
+		t.Fatal("committed-break envelope must carry retryable:true (2026-09-23 strategy fix)")
+	}
+	doneIdx := strings.LastIndex(body, "data: [DONE]")
+	if strings.Contains(body[doneIdx:], `data: {"`) {
+		t.Fatalf("frame stacked after terminal [DONE]: %q", body[doneIdx:])
+	}
+}

@@ -75,16 +75,21 @@ func wrapAttemptWriter(ctx context.Context, w http.ResponseWriter, protocol Clie
 	// two [DONE] (observed on 154 build 2234, 2026-09-23, 20/20 committed
 	// breaks). Unwrap standard-convention layers and keep the outer writer so
 	// monitoring stays in the write path.
-	for {
+	for hops := 0; ; hops++ {
 		if gw, ok := w.(*GateWriter); ok {
 			return orig, gw.UnderlyingAttemptGate()
 		}
 		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
-		if !ok {
+		if !ok || hops >= 8 {
 			break
 		}
 		w = u.Unwrap()
 	}
+	// Not found: the decoration chain (connection monitor et al.) must keep
+	// wrapping the new gate — b0c77269d initially let the loop leave `w`
+	// pointing at the innermost writer, silently bypassing the monitor for
+	// every non-survival chat stream. Restore before building the gate.
+	w = orig
 	var firstSemanticByte func()
 	if source, ok := w.(interface{ FirstSemanticByteCallback() func() }); ok {
 		firstSemanticByte = source.FirstSemanticByteCallback()
