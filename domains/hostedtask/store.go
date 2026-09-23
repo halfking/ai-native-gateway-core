@@ -742,6 +742,41 @@ func (s *Store) ClaimExpiredTasks(ctx context.Context, now time.Time, limit int)
 	return expired, nil
 }
 
+// GetEvent 按 (task_id, seq) 读取单条事件（回调投递重建 payload 用：
+// CallbackJob.EventSeq 精确定位 recalled 事件的 recall_status/handoff_packet，
+// §3.3）。强制租户作用域，跨租户/不存在 → ErrNotFound。
+func (s *Store) GetEvent(ctx context.Context, tenantID, taskID string, seq int64) (*Event, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	setTenant(ctx, tx, tenantID)
+
+	var e Event
+	var payloadJSON []byte
+	var evType string
+	err = tx.QueryRow(ctx, `
+		SELECT e.task_id, e.seq, e.event_type, e.payload, e.created_at
+		FROM hosted_task_events e
+		JOIN hosted_tasks t ON t.id = e.task_id
+		WHERE e.task_id = $1 AND t.tenant_id = $2 AND e.seq = $3
+	`, taskID, tenantID, seq).Scan(&e.TaskID, &e.Seq, &evType, &payloadJSON, &e.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get hosted_task_event: %w", err)
+	}
+	e.Type = EventType(evType)
+	if len(payloadJSON) > 0 {
+		_ = json.Unmarshal(payloadJSON, &e.Payload)
+	}
+	return &e, nil
+}
+
 // ─── 回调台账（§3.1 ⑤：deliverer 认领/回写）──────────────────────────────
 
 // CallbackJob 是 deliverer 的一次投递任务（URL/secret 为加密信封，解密在

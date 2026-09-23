@@ -72,8 +72,36 @@ func TestSyntheticSessionID_NilEntry(t *testing.T) {
 	}
 }
 
-// D4 主路径：无 GwSessionID 的终态探针条目 → 合成系统会话写链，
-// SessionID 带合成 id、ClientType='system'、dims 不维护。
+// R60 S2-F4 谓词钉桩：探针合成判据 = 无会话头 ∧ 探针标记；两条件缺一即否。
+func TestIsProbeSyntheticSession(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry *telemetry.RequestLogEntry
+		want  bool
+	}{
+		{"nil entry", nil, false},
+		{"no-session probe (origin_stage)", &telemetry.RequestLogEntry{OriginStage: strPtr("node_probe")}, true},
+		{"no-session probe (origin_actor)", &telemetry.RequestLogEntry{OriginActor: strPtr("node-probe-worker")}, true},
+		{"no-session probe (task_type)", &telemetry.RequestLogEntry{TaskType: strPtr("probe_triggered")}, true},
+		// 判据边界（与 syntheticKindOf 的 probe 定义严格一致：字段值须含
+		// "probe"）：self_check / system_health worker 不含该词 ⇒ 归
+		// sys:anon/sys:internal 类，仍走 D4 合成，不在本跳过类内。
+		{"no-session self_check (kind≠probe, kept)", &telemetry.RequestLogEntry{OriginStage: strPtr("self_check")}, false},
+		{"probe markers but real session header", &telemetry.RequestLogEntry{GwSessionID: strPtr("gw_real"), OriginStage: strPtr("node_probe")}, false},
+		{"no-session anon", &telemetry.RequestLogEntry{}, false},
+		{"no-session internal loopback", &telemetry.RequestLogEntry{IsAutoRequest: func() *bool { v := true; return &v }(), RequestType: strPtr("title_gen")}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsProbeSyntheticSession(tc.entry); got != tc.want {
+				t.Fatalf("IsProbeSyntheticSession = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// D4 主路径：无 GwSessionID 的终态非探针条目（anon kind）→ 合成系统会话写
+// 链，SessionID 带合成 id、ClientType='system'、dims 不维护。
 func TestPersistHook_SynthesizesSystemSessionForNoSessionTraffic(t *testing.T) {
 	var got *v2.ProcessedRequest
 	dimsCalled := 0
@@ -86,10 +114,8 @@ func TestPersistHook_SynthesizesSystemSessionForNoSessionTraffic(t *testing.T) {
 	at := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
 	withShadowFlags(t, func() {
 		hook(&telemetry.RequestLogEntry{
-			RequestID:    "req-probe-term",
+			RequestID:    "req-anon-term",
 			Success:      true,
-			OriginStage:  strPtr("node_probe"),
-			TaskType:     strPtr("probe_triggered"),
 			CredentialID: func() *int { v := 7; return &v }(),
 			EventAt:      &at,
 		})
@@ -97,17 +123,73 @@ func TestPersistHook_SynthesizesSystemSessionForNoSessionTraffic(t *testing.T) {
 	if got == nil {
 		t.Fatal("no-session terminal entry did not reach V2 writer (D4 synthesis missing)")
 	}
-	if got.SessionID != "sys:probe:cred7:20260914" {
-		t.Fatalf("synthetic SessionID = %q, want sys:probe:cred7:20260914", got.SessionID)
+	if got.SessionID != "sys:anon:cred7:20260914" {
+		t.Fatalf("synthetic SessionID = %q, want sys:anon:cred7:20260914", got.SessionID)
 	}
 	if got.ClientType != "system" {
 		t.Fatalf("synthetic ClientType = %q, want system", got.ClientType)
 	}
-	if got.TaskType != "probe_triggered" {
-		t.Fatalf("synthetic TaskType = %q, want probe_triggered (plan D4: task_type 沿用现值)", got.TaskType)
-	}
 	if dimsCalled != 0 {
 		t.Fatalf("synthetic session must not touch session_dim, dims called %d times", dimsCalled)
+	}
+}
+
+// R51 教训落地（R60 S2-F4）：无会话头的探针终态条目不进 mirror——写链、
+// session_dim 皆不触。探针事实留在 request_logs/v1 面（154 复审 §四.5：
+// 该类合成会话曾贡献 ~115/min 的 mirror 失败噪声）。
+func TestPersistHook_SkipsProbeSyntheticSession(t *testing.T) {
+	called := 0
+	dimsCalled := 0
+	writer := captureWriterV2{fn: func(*v2.ProcessedRequest) { called++ }}
+	dim := dimWriterFunc(func(context.Context, *telemetry.RequestLogEntry) error {
+		dimsCalled++
+		return nil
+	})
+	hook := PersistHook(writer, dim)
+	withShadowFlags(t, func() {
+		// 本机无会话探针流量的实况形态（原 D4 合成测试夹具）。
+		hook(&telemetry.RequestLogEntry{
+			RequestID:    "req-probe-term",
+			Success:      true,
+			OriginStage:  strPtr("node_probe"),
+			TaskType:     strPtr("probe_triggered"),
+			CredentialID: func() *int { v := 7; return &v }(),
+		})
+		hook(&telemetry.RequestLogEntry{
+			RequestID:   "req-probe-fail",
+			Success:     false,
+			RequestStatus: strPtr(telemetry.RequestStatusFailure),
+			OriginActor: strPtr("node-probe-worker"),
+		})
+	})
+	if called != 0 {
+		t.Fatalf("probe synthetic entries reached V2 writer %d times, want 0", called)
+	}
+	if dimsCalled != 0 {
+		t.Fatalf("probe synthetic entries touched session_dim %d times, want 0", dimsCalled)
+	}
+}
+
+// 跳过判据不误伤：探针标记但挂真实会话头的条目（有 GwSessionID）照常入链。
+func TestPersistHook_ProbeWithRealSessionStillMirrored(t *testing.T) {
+	var got *v2.ProcessedRequest
+	writer := captureWriterV2{fn: func(req *v2.ProcessedRequest) { got = req }}
+	hook := PersistHook(writer)
+	withShadowFlags(t, func() {
+		hook(&telemetry.RequestLogEntry{
+			RequestID:    "req-probe-with-session",
+			Success:      true,
+			GwSessionID:  strPtr("gw_real_session"),
+			OriginStage:  strPtr("node_probe"),
+			TaskType:     strPtr("probe_triggered"),
+			CredentialID: func() *int { v := 7; return &v }(),
+		})
+	})
+	if got == nil {
+		t.Fatal("session-headed probe entry must NOT be skipped (synthetic-only criterion)")
+	}
+	if got.SessionID != "gw_real_session" {
+		t.Fatalf("SessionID = %q, want gw_real_session", got.SessionID)
 	}
 }
 

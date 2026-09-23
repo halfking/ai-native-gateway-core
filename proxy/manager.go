@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -110,8 +111,10 @@ func NewManager(store Store, parser Parser, checker HealthChecker) *Manager {
 		metrics:               metrics,
 		selectionPolicy:       DefaultSelectionPolicy(),
 		active:                make(map[string]*activeSelection),
-		autoRefreshInterval:   time.Hour,
-		healthCheckInterval:   5 * time.Minute,
+		// S8-F4 (R60)：订阅刷新 / 全节点探活间隔原为硬编码（1h / 5m），
+		// 改为 env 可配，默认值不变。非法或非正值 warn 后回退默认，不 fatal。
+		autoRefreshInterval:   envDurationOrDefault("LLM_GATEWAY_PROXY_SUBSCRIPTION_REFRESH", time.Hour),
+		healthCheckInterval:   envDurationOrDefault("LLM_GATEWAY_PROXY_PROBE_INTERVAL", 5*time.Minute),
 		unknownDomainStrategy: "direct",
 		cacheTTL:              5 * time.Minute,
 		autoDisableThreshold:  3,
@@ -121,6 +124,25 @@ func NewManager(store Store, parser Parser, checker HealthChecker) *Manager {
 		cancel:                cancel,
 		stopCh:                make(chan struct{}),
 	}
+}
+
+// envDurationOrDefault 读取 duration 型 env 旋钮，未设置时返回 def。
+// 沿用仓内 envDuration（cmd/gateway/main_pipeline.go）/
+// parseDurationEnv（bg/candidate_failure_monitor.go）的 ParseDuration 惯例，
+// 差异点：非法值 / 非正值 slog.Warn 后回退默认（不 fatal、不静默），
+// 使误配置可观测（S8-F4，R60）。
+func envDurationOrDefault(key string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		slog.Warn("proxy: invalid duration env, falling back to default",
+			"env", key, "value", v, "default", def.String())
+		return def
+	}
+	return d
 }
 
 // Start 启动定时任务。多次调用只会启动一组后台任务。
