@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -99,6 +100,14 @@ func (r *LedgerReconciler) Start(ctx context.Context) {
 	}
 	go func() {
 		defer r.running.Store(false)
+		// R59 audit (S5-F2): a RunOnce panic used to kill the loop silently
+		// (no recover, no log, no restart) — the reconciler would just stop
+		// forever. Mirror the other bg workers: recover, log, keep ticking.
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("ledger_reconciliation: RunOnce panicked", "panic", rec, "stack", string(debug.Stack()))
+			}
+		}()
 		select {
 		case <-ctx.Done():
 			return
@@ -116,7 +125,15 @@ func (r *LedgerReconciler) Start(ctx context.Context) {
 			case <-r.stopCh:
 				return
 			case <-ticker.C:
-				r.RunOnce(ctx)
+				// Panic inside one round must not end the loop.
+				func() {
+					defer func() {
+						if rec := recover(); rec != nil {
+							slog.Error("ledger_reconciliation: tick panicked", "panic", rec, "stack", string(debug.Stack()))
+						}
+					}()
+					r.RunOnce(ctx)
+				}()
 			}
 		}
 	}()

@@ -371,11 +371,19 @@ func (c *RequestLogContext) RecordFix(actions map[string]any) {
 
 // NewRequestLogContext starts a per-request log cache. Call EnsureCaptured early.
 func (h *ChatHandler) NewRequestLogContext(r *http.Request, requestID string, start time.Time) *RequestLogContext {
+	// R59 audit (S6-2): T0 must default to the request arrival time. Before
+	// this, T0ArrivedAt was only stamped on the dispatch-queue path, so
+	// pre-dispatch rejections (auth/budget/rate-limit) and synthetic probe
+	// rows landed with t0_arrived_at NULL — 99.5% of request_logs_hot, which
+	// poisoned every time-window query that filtered on it (154 critical
+	// audit R3). Dispatch-path ApplyQueueTimestamps* still overwrite with
+	// the queue-side stamp when one exists.
 	return &RequestLogContext{
-		handler:   h,
-		RequestID: requestID,
-		StartTime: start,
-		Request:   r,
+		handler:     h,
+		RequestID:   requestID,
+		StartTime:   start,
+		T0ArrivedAt: &start,
+		Request:     r,
 	}
 }
 

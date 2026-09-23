@@ -14,16 +14,20 @@ import (
 //	→ anthropic-messages, openai-completions
 // 以及 ClientProtocol 分支: anthropic-messages, openai-responses
 //	openai-completions / openai-responses / anthropic-messages 都有 executor 分支。
-//	gemini-generate / ollama-native 由 IR converter（domains/transformation）处理，
-//	无独立 executor 文件但能路由。
+//
+// R59 审计（S3-F6）口径修正：gemini-generate 在 executor_dispatch.go:842 是
+// 显式 unsupported（KindUnsupportedFeature → 正常 failover，非静默），不是
+// "能路由"；ollama-native 落 default 分支按 openai-completions chat 线格式
+// 降级（静默降级，最弱格）。两者标记为 false 以反映真实路由能力，防契约
+// 测试虚报覆盖。种子目前无此二协议条目，暂无实害。
 //
 // 如果执行器新增/删除 protocol 支持，同步更新本集合。
 var ExecutorRoutableProtocols = map[string]bool{
 	ProtocolOpenAICompletions: true,
 	ProtocolOpenAIResponses:   true,
 	ProtocolAnthropicMessages: true,
-	ProtocolGeminiGenerate:    true,
-	ProtocolOllamaNative:      true,
+	ProtocolGeminiGenerate:    false,
+	ProtocolOllamaNative:      false,
 }
 
 // TestProtocolsMatchExecutors 断言 catalog 里出现的每个 protocol 都被执行器支持。

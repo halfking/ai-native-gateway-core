@@ -122,7 +122,8 @@ func (r *HostedTaskReconciler) tick(ctx context.Context) {
 	passCtx, cancelPass := context.WithTimeout(ctx, hostedTaskPassBudget)
 	// 1. dispatch 轮次。
 	r.dispatchPass(passCtx, now)
-	// 2. active runs：SSE 订阅 + 轮询兜底。
+	// 2. active runs：轮询为状态权威（R65 已删 SSE 订阅，设计文档 §10 D7——
+	// R59 审计 S2-F7 注释勘误）。
 	r.projectPass(passCtx, now)
 	cancelPass()
 	// 3. deadline reaper。

@@ -5156,15 +5156,33 @@ func (h *Handler) registerFreeProvider(w http.ResponseWriter, r *http.Request, c
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
+	// R59 audit (S3-F2): free-pool auto-registration was a protocol
+	// normalization bypass (bulk register + quick entry all funnel here).
+	// Unknown spellings fall back to the OpenAI-compatible default with a
+	// warn — auto-registration must not hard-fail the pool on one bad
+	// manifest entry, but it must not persist raw values either.
+	normalizedProtocol, normErr := providercatalog.NormalizeProviderProtocol(cfg.protocol)
+	if normErr != nil {
+		slog.Warn("free pool register: unnormalizable provider protocol, falling back to openai-completions",
+			"catalog_code", cfg.catalogCode, "raw_protocol", cfg.protocol, "err", normErr.Error())
+		normalizedProtocol = providercatalog.ProtocolOpenAICompletions
+	}
+	cfg.protocol = normalizedProtocol
+
 	// 1. Upsert provider_catalog
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.Exec(ctx, `
+	if _, err := h.db.Exec(ctx, `
 		INSERT INTO provider_catalog (code, tier, display_name, category, kind, protocol,
 			base_url_template, discovery_strategy, domestic, hidden, notes)
 		VALUES ($1, 9, $2, 'aggregator', 'cloud', $3, $4, 'manifest', true, false, 'auto-registered by free pool')
 		ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name,
 			base_url_template = EXCLUDED.base_url_template
-	`, cfg.catalogCode, cfg.displayName, cfg.protocol, cfg.baseURL)
+	`, cfg.catalogCode, cfg.displayName, cfg.protocol, cfg.baseURL); err != nil {
+		// R59 audit (S3-F2): this exec error used to be swallowed
+		// (nolint:errcheck) — catalog drift was invisible. Non-fatal (the
+		// providers upsert below still registers the working provider) but
+		// must be observable.
+		slog.Warn("free pool register: provider_catalog upsert failed", "catalog_code", cfg.catalogCode, "err", err.Error())
+	}
 
 	// 2. Upsert provider
 	//nolint:errcheck // best-effort exec, non-critical

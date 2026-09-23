@@ -763,7 +763,16 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		errCode := "provider_error"
 		errMsg := execErr.Error()
-		if ee, ok := execErr.(*executors.ExecuteError); ok && ee.Exhausted {
+		// R59 audit (S7-1): survival terminal decisions must keep their
+		// structured failure_detail_code on every protocol face, not just
+		// chat (handler.go). Without this, /v1/responses logs
+		// gateway_survival_<action> as a bland provider_error.
+		if ste, ok := execErr.(*survivalTerminalError); ok {
+			errCode = ste.detailCode()
+			if ste.kinds != "" {
+				w.Header().Set("X-Gateway-Last-Kind", ste.kinds)
+			}
+		} else if ee, ok := execErr.(*executors.ExecuteError); ok && ee.Exhausted {
 			errCode = "model_not_found"
 			errMsg = "all providers unavailable"
 		}

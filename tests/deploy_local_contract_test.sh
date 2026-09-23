@@ -602,3 +602,21 @@ log_defn=$(grep -E '^log\(\)' "$ROOT/scripts/deploy-local.sh")
 grep -Fq 'binary=$(build_backend)' "$ROOT/scripts/deploy-local.sh" \
   || fail 'deploy() must capture build_backend output via $()'
 pass 'log() stderr contract locked: $binary=$() capture must not absorb log output as path'
+
+# R59 审计（S8-F1）：552770c96 的 dl_shared_root/dl_shared_pg_dir 绝对路径
+# 白名单守门被 81e4ab932（T2 轮取远端消冲突）整体回滚且零红灯。守门函数
+# 行为契约 + lib 源码含守门实现双重锁定，防止再被"取远端"静默冲掉。
+saved_root="${KAIXUAN_ROOT-}"
+recursive_root='${KAIXUAN_ROOT:-/Users/xutaohuang/kaixuan}'
+out=$(KAIXUAN_ROOT="$recursive_root" dl_shared_pg_dir 2>&1)
+[[ "$out" == *'/postgres' ]] || fail "recursive KAIXUAN_ROOT must fall back to an absolute /postgres path; got: $out"
+[[ "$out" == *'looks recursive or non-absolute'* ]] || fail "recursive KAIXUAN_ROOT must emit a warn; got: $out"
+[[ "$out" != *'${KAIXUAN_ROOT' ]] || fail "recursive literal must never leak into dl_shared_pg_dir output"
+unset KAIXUAN_ROOT
+[[ "$(dl_shared_root)" == "$(dl_default_shared_root)" ]] || fail 'unset KAIXUAN_ROOT must return the default shared root'
+out=$(KAIXUAN_ROOT=/opt/foo dl_shared_pg_dir 2>/dev/null)
+[[ "$out" == '/opt/foo/postgres' ]] || fail "absolute KAIXUAN_ROOT must pass through verbatim; got: $out"
+[[ -n "${saved_root+set}" ]] && export KAIXUAN_ROOT="$saved_root" || unset KAIXUAN_ROOT
+grep -Fq 'looks recursive or non-absolute' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_shared_root guard implementation missing from deploy-local-lib.sh (S8-F1 rollback watch)'
+pass 'dl_shared_root recursive/non-absolute guard contract locked (S8-F1)'

@@ -947,6 +947,10 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			if attemptHasClientSemanticOutput(gate, chunkCount) {
 				emitAnthropicBridgeErrorChunk(w, "stream_panic",
 					fmt.Sprintf("internal error: %v", r), flusher, false)
+				// R59 audit (S1-F4): the emitted chunk already carries
+				// [DONE] — latch the terminal so survival renderTerminal and
+				// the post-loop handlers never stack a second one.
+				outcome.TerminalRendered = true
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
@@ -1389,6 +1393,8 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 							}
 							if attemptHasClientSemanticOutput(gate, chunkCount) {
 								emitAnthropicBridgeErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher, false)
+								// R59 audit (S1-F4): latch — see stream_panic note.
+								outcome.TerminalRendered = true
 							}
 							outcome.Interrupted = true
 							outcome.Reason = "malformed_tool_args"
@@ -1550,6 +1556,9 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 					}
 				}
 				emitAnthropicBridgeErrorChunk(w, code, "upstream stream error: "+code, flusher, false)
+				// R59 audit (S1-F4): latch — see stream_panic note. Mirrors
+				// the stream_chunk_timeout / stream_read_error branches.
+				outcome.TerminalRendered = true
 			}
 			slog.Warn("anthropic_to_openai: upstream terminal error event",
 				"request_id", requestID,

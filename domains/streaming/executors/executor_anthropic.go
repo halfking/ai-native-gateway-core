@@ -1377,7 +1377,12 @@ func (e *Executor) executeAnthropicOnce(
 				RequestBody: append([]byte(nil), bodyBytes...),
 				// Phase D (2026-06-22): inbound body for audit logging
 				InboundBody: sourceBody,
-			}, &streamInterruptedError{reason: outcome.Reason, credentialID: cand.CredentialID, resumable: isResumable, kind: streamKind}
+				// R59 audit (S1-F1): TerminalRendered must reach the dispatch
+				// funnel on the anthropic executor face too — without it the
+				// ErrProtocolTerminalRendered wrap never fires and the shared
+				// post-loop handlers can stack a second terminal after the
+				// bridge's interruption frame. Mirrors executor_chat.go:1482.
+			}, &streamInterruptedError{reason: outcome.Reason, credentialID: cand.CredentialID, resumable: isResumable, kind: streamKind, terminalRendered: outcome.TerminalRendered}
 		}
 		e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 		return &ExecuteResult{

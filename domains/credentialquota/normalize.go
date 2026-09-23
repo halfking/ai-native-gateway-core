@@ -8,11 +8,13 @@ import (
 
 // allowedClientTypes mirrors the clienttype closed set used by FpSlot and
 // request logging. Unknown values normalise to "unknown" but never create
-// additional entries.
+// additional entries. R59 audit (S8-F3): minimax-code/deepseek-code were
+// added to clienttype.Normalize (ce85e767a) but not mirrored here — those
+// clients degraded to "unknown" in credential quota/FpSlot policy dims.
 var allowedClientTypes = map[string]struct{}{
 	"cursor": {}, "claude-code": {}, "opencode": {}, "zcode": {}, "codex": {},
 	"roocode": {}, "vscode": {}, "copilot": {}, "windsurf": {}, "zed": {},
-	"jetbrains": {}, "unknown": {},
+	"jetbrains": {}, "minimax-code": {}, "deepseek-code": {}, "unknown": {},
 }
 
 func normalizeClientType(value string) string {

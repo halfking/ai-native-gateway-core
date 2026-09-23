@@ -459,7 +459,10 @@ type StreamOutcome struct {
 	// TerminalRendered (2026-09-23 critique round) latches that THIS bridge
 	// already wrote a protocol terminal envelope (§11.6 eof_without_done
 	// frame, stream-timeout frame, anthropic interruption events) for a
-	// committed-output interruption. The executor wraps the returned error
+	// committed-output interruption — or synthesized the [DONE] on the
+	// benign success path (finish_reason-then-EOF, R59 audit S1-F6 note:
+	// inert there since Interrupted=false produces no error chain, kept for
+	// wire-truth symmetry). The executor wraps the returned error
 	// with errorsx.ErrProtocolTerminalRendered so the handler's blackhole
 	// guard prevents a second terminal after the first. Keep field-identical
 	// with the executors.StreamOutcome alias.
@@ -1300,8 +1303,17 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 				if attemptHasClientSemanticOutput(gate, chunkCount) {
 					// 2026-09-23: retryable=true — transient class after
 					// committed output; see the §11.6 eof_without_done note.
-					safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\",\"reason\":\"stream_timeout\",\"retryable\":true}}\n\n")
+					// R59 audit (S1-F3): shape parity with the eof_without_done
+					// envelope — code/reason/retryable duplicated at the root
+					// (clients read them from the frame root), and a
+					// synthesized [DONE] so the SDK finalizes its parser.
+					// TerminalRendered latches the blackhole, so without the
+					// synthesized [DONE] no later write can ever emit it and
+					// strict clients would hang waiting for the terminator.
+					safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\",\"reason\":\"stream_timeout\",\"retryable\":true},\"code\":\"stream_timeout\",\"reason\":\"stream_timeout\",\"retryable\":true}\n\n")
+					safeWriteSSE(w, "data: [DONE]\n\n")
 					safeFlush(flusher)
+					metrics.Global().RecordStreamSynthesizedDone()
 					outcome.TerminalRendered = true
 					// Same latch rationale as the §11.6 eof_without_done
 					// branch above: the timeout envelope is a protocol

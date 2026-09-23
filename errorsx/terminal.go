@@ -9,8 +9,8 @@ import "errors"
 // passthrough/bridge interruption frames) or by the survival coordinator's
 // Terminal seam (whose package-level sentinel wraps this one).
 //
-// Post-loop error handlers consult it via errors.Is (including through
-// ExecuteError.LastErr, which has no Unwrap) so they keep the failure
+// Post-loop error handlers consult it via errors.Is (traversing
+// ExecuteError through its Unwrap → LastErr) so they keep the failure
 // bookkeeping but never stack a SECOND terminal on the wire after the first
 // one — one terminal per request.
 //

@@ -58,8 +58,29 @@ dl_default_shared_root() {
     *) printf '%s\n' "$HOME/kaixuan" ;;
   esac
 }
-dl_shared_root() { printf '%s\n' "${KAIXUAN_ROOT:-$(dl_default_shared_root)}"; }
-dl_shared_pg_dir() { printf '%s\n' "$(dl_shared_root)/postgres"; }
+# 2026-09-23：递归自引用 ${KAIXUAN_ROOT:-${KAIXUAN_ROOT:-...}} 的 KAIXUAN_ROOT
+# 会被原样吐出（如 `${KAIXUAN_ROOT:-/Users/xutaohuang/kaixuan}`），导致下游
+# `docker --mount source=...` 报 "invalid mount path: ... must be absolute"。
+# 用绝对路径白名单守门：路径必须以 `/` 开头才算可信，否则回退到默认
+# `dl_default_shared_root` 并 warn 一次，避免下游 6 处的 SHARED_*_DIR 都被污染。
+# R59 审计（S8-F1）：552770c96 的守门被 81e4ab932（T2 轮取远端消冲突）整体
+# 回滚且零红灯——本轮原样恢复，并补契约测试防再犯。
+dl_shared_root() {
+  local v="${KAIXUAN_ROOT:-$(dl_default_shared_root)}"
+  if [[ "$v" != /* || "$v" =~ \$\{[A-Za-z_][A-Za-z0-9_]*:- ]]; then
+    printf '[deploy-local] warning: KAIXUAN_ROOT=%s looks recursive or non-absolute; falling back to %s\n' "$v" "$(dl_default_shared_root)" >&2
+    v="$(dl_default_shared_root)"
+  fi
+  printf '%s\n' "$v"
+}
+dl_shared_pg_dir() {
+  local v; v=$(dl_shared_root)
+  if [[ "$v" != /* ]]; then
+    printf '[deploy-local] warning: shared_root=%s is non-absolute; falling back to %s/postgres\n' "$v" "$(dl_default_shared_root)" >&2
+    v="$(dl_default_shared_root)"
+  fi
+  printf '%s\n' "${v%/}/postgres"
+}
 dl_shared_redis_dir() { printf '%s\n' "$(dl_shared_root)/redis"; }
 dl_pg_log_dir() { printf '%s\n' "$(dl_shared_pg_dir)/logs"; }
 dl_pg_backup_dir() { printf '%s\n' "$(dl_shared_pg_dir)/backups"; }
