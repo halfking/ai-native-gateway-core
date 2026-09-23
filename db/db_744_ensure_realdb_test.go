@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestEnsureSqlAuditPartialIndexes_RealDB — migration 743 ensure 的真库回归
+// TestEnsureSqlAuditPartialIndexes_RealDB — migration 744 ensure 的真库回归
 // （2026-09-24 252 SQL 日志审计第六轮）。727/728/729 只有 canonical .sql +
 // 当轮手工 psql 实跑，Go 侧 boot 收敛路径没有真库覆盖；本测试把它钉住：
 //

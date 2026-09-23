@@ -1,4 +1,4 @@
--- 743: 252 SQL 日志审计第六轮（2026-09-24）部分索引补课。
+-- 744: 252 SQL 日志审计第六轮（2026-09-24）部分索引补课。
 -- 证据来源：pg-252-pg17 容器日志 45min 快照（05:17-06:02 CST）+
 -- 252 真库 EXPLAIN ANALYZE，详见 docs/audit/2026-09-24-252-sql-log-audit.md。
 --
@@ -92,6 +92,6 @@ BEGIN
   ) AS v(name)
   WHERE to_regclass(format('public.%I', name)) IS NULL;
   IF missing IS NOT NULL THEN
-    RAISE EXCEPTION '743 up: indexes missing after build: %', missing;
+    RAISE EXCEPTION '744 up: indexes missing after build: %', missing;
   END IF;
 END $$;

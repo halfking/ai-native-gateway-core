@@ -281,7 +281,7 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureSessionSummariesArchivalSchema(migCtx); err != nil {
 		return err
 	}
-	// 2026-09-24 migration 743: outbox done 清理与 digest 回填的部分索引。
+	// 2026-09-24 migration 744: outbox done 清理与 digest 回填的部分索引。
 	// 两个后台 job 在缺索引时分别对 645MB outbox / 全分区 session_turns
 	// 做每 10s-10min 一次的 30s 级全扫（252 实锤击杀循环），必须先于
 	// worker 启动补齐。
@@ -778,7 +778,7 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 }
 
 // ensureSqlAuditPartialIndexes mirrors sql/migrations/startup/
-// 743_sql_audit_partial_indexes.sql（2026-09-24 252 SQL 日志审计第六轮）。
+// 744_sql_audit_partial_indexes.sql（2026-09-24 252 SQL 日志审计第六轮）。
 //
 // 两个 30s 击杀循环的索引补课（证据：pg-252-pg17 45min 快照 + 真库
 // EXPLAIN ANALYZE，docs/audit/2026-09-24-252-sql-log-audit.md）：
@@ -924,12 +924,12 @@ func (d *DB) ensureSqlAuditPartialIndexes(ctx context.Context) error {
 
 	if _, err := d.pool.Exec(ctx, `
 		INSERT INTO public.schema_migrations (version, description)
-		VALUES ('743', 'sql audit partial indexes: outbox done trim + session_turns digest backfill')
+		VALUES ('744', 'sql audit partial indexes: outbox done trim + session_turns digest backfill')
 		ON CONFLICT (version) DO NOTHING;
 	`); err != nil {
-		return fmt.Errorf("stamp 743: %w", err)
+		return fmt.Errorf("stamp 744: %w", err)
 	}
-	slog.Info("sql audit partial indexes ensured (743)",
+	slog.Info("sql audit partial indexes ensured (744)",
 		"partitions", len(partitions))
 	return nil
 }
