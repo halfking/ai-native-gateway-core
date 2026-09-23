@@ -4112,27 +4112,43 @@ func (d *DB) ensureNodeProbeTriggerKindSchema(ctx context.Context) error {
 		DO $$
 		BEGIN
 			IF to_regclass('public.node_probe_runs') IS NOT NULL THEN
-				ALTER TABLE public.node_probe_runs
-					DROP CONSTRAINT IF EXISTS node_probe_runs_trigger_kind_check;
-				ALTER TABLE public.node_probe_runs
-					ADD CONSTRAINT node_probe_runs_trigger_kind_check CHECK (
-						trigger_kind IN (
-							'request_failure', 'manual', 'credential_recovery',
-							'sync_request', 'periodic', 'admin',
-							'integrity_probe_planner', 'selfcheck', 'external_async'
-						)
-					);
+				-- 2026-09-23 审计轮守卫：ADD CONSTRAINT CHECK 每次要全表校验
+				-- 且持 ACCESS EXCLUSIVE，node_probe_runs 大表上必超 30s 被
+				-- rolconfig 击杀（245 seq 2201 boot 57014 实锤）——约束已存在
+				-- 则整段跳过，不再每 boot DROP+ADD 重校验。
+				IF NOT EXISTS (
+					SELECT 1 FROM pg_constraint
+					WHERE conname = 'node_probe_runs_trigger_kind_check'
+					  AND conrelid = 'public.node_probe_runs'::regclass
+				) THEN
+					ALTER TABLE public.node_probe_runs
+						DROP CONSTRAINT IF EXISTS node_probe_runs_trigger_kind_check;
+					ALTER TABLE public.node_probe_runs
+						ADD CONSTRAINT node_probe_runs_trigger_kind_check CHECK (
+							trigger_kind IN (
+								'request_failure', 'manual', 'credential_recovery',
+								'sync_request', 'periodic', 'admin',
+								'integrity_probe_planner', 'selfcheck', 'external_async'
+							)
+						);
+				END IF;
 			END IF;
 			IF to_regclass('public.credential_probe_queue') IS NOT NULL THEN
-				ALTER TABLE public.credential_probe_queue
-					DROP CONSTRAINT IF EXISTS credential_probe_queue_source_check;
-				ALTER TABLE public.credential_probe_queue
-					ADD CONSTRAINT credential_probe_queue_source_check CHECK (
-						source IN (
-							'request_failure', 'periodic', 'external_async', 'admin',
-							'integrity_probe_planner', 'selfcheck'
-						)
-					);
+				IF NOT EXISTS (
+					SELECT 1 FROM pg_constraint
+					WHERE conname = 'credential_probe_queue_source_check'
+					  AND conrelid = 'public.credential_probe_queue'::regclass
+				) THEN
+					ALTER TABLE public.credential_probe_queue
+						DROP CONSTRAINT IF EXISTS credential_probe_queue_source_check;
+					ALTER TABLE public.credential_probe_queue
+						ADD CONSTRAINT credential_probe_queue_source_check CHECK (
+							source IN (
+								'request_failure', 'periodic', 'external_async', 'admin',
+								'integrity_probe_planner', 'selfcheck'
+							)
+						);
+				END IF;
 			END IF;
 		END
 		$$;
