@@ -505,10 +505,11 @@ func (r *HostedTaskReconciler) ensureStream(_ context.Context, task hostedtask.T
 			}
 			// 重连前刷新任务（可能已终态/换 run）。
 			fresh, err := r.store.GetTask(streamCtx, task.TenantID, taskID)
-			if err != nil || fresh.Status.Terminal() {
+			next, ok := refreshStreamTask(task, fresh, err)
+			if !ok {
 				return
 			}
-			task = *fresh
+			task = next
 		}
 	}(task.AccRunID, task.ID, task.SSECursor)
 }
@@ -516,10 +517,22 @@ func (r *HostedTaskReconciler) ensureStream(_ context.Context, task hostedtask.T
 // repoll 立即轮询一次（SSE 触发器语义）。
 func (r *HostedTaskReconciler) repoll(ctx context.Context, tenantID, taskID string) {
 	task, err := r.store.GetTask(ctx, tenantID, taskID)
-	if err != nil || task.Status.Terminal() {
+	// nil 防御同 refreshStreamTask（R63）：task==nil 不得解引用。
+	if err != nil || task == nil || task.Status.Terminal() {
 		return
 	}
 	r.pollOne(ctx, *task)
+}
+
+// refreshStreamTask 是 SSE 断线重连前"刷新任务"的纯函数决策（R63 防御钉桩）。
+// 任何无法给出"存活中任务"的形态——查询错误、防御性 nil（store 实现漂移
+// 返回 (nil, nil)；pgx 权威实现不产此形态，但本函数不得假设）、fresh 已
+// 终态——都必须终止订阅而不是解引用 panic。返回 (延续用快照, 是否继续)。
+func refreshStreamTask(cur hostedtask.Task, fresh *hostedtask.Task, err error) (hostedtask.Task, bool) {
+	if err != nil || fresh == nil || fresh.Status.Terminal() {
+		return cur, false
+	}
+	return *fresh, true
 }
 
 // ─── 取消收尾（§3.2：handler 本地终态后补发 ACC cancel）───────────────────
