@@ -22,6 +22,13 @@ import (
 type DB struct {
 	pool *pgxpool.Pool
 
+	// migrationsPinned（2026-09-23 252 SQL 日志审计轮）：true 时 BeforeAcquire
+	// 给每条取出的连接 SET statement_timeout='5min'，抬开角色级 30s 对 boot
+	// 迁移链 DDL 锁等待的击杀；ApplyMigrations 结束后清零并 pool.Reset()
+	// 丢弃被抬过的连接——serving 池不残留任何超时修改（D1 禁止的全池
+	// RuntimeParams 方案的 scoped 替代）。
+	migrationsPinned *atomic.Bool
+
 	// lifecycleMu serializes the lazy stdlib bridge creation with shutdown so
 	// callers never receive a bridge after its owning DB has been closed.
 	lifecycleMu sync.Mutex
@@ -64,6 +71,23 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	// See docs/changelogs/2026-07-15-provider-model-bindings-fix.md for details.
 	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
+	// 2026-09-23 252 SQL 日志审计轮：迁移期 statement_timeout 钉住（D1 残余
+	// 根修）。ApplyMigrations 期间置位 migrationsPinned，BeforeAcquire 给每条
+	// 取出的连接抬 statement_timeout 到 5min——boot 链对 credentials /
+	// request_logs 等热表的 ALTER ... ADD COLUMN IF NOT EXISTS 即使全部列已
+	// 在位也要 ACCESS EXCLUSIVE（逐列 no-op），共享库持续写流下锁等待稳定
+	// 超角色级 30s 被 57014 击杀且烧点不推进（245 seq 2193-2202 十连败实证，
+	// 07:23-08:16）。迁移结束 pool.Reset() 丢弃被抬连接，serving 期每条连接
+	// 回到角色默认 30s（catalog 守卫族 + 本钉双保险，守卫管"能不能不跑"，
+	// 钉管"跑的时候别被杀"）。
+	var migrationsPinned atomic.Bool
+	cfg.BeforeAcquire = func(ctx context.Context, conn *pgx.Conn) bool {
+		if migrationsPinned.Load() {
+			_, _ = conn.Exec(ctx, "SET statement_timeout = '5min'")
+		}
+		return true
+	}
+
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -83,7 +107,7 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		return nil, err
 	}
 	slog.Info("postgres connected", "max_conns", cfg.MaxConns, "min_conns", cfg.MinConns)
-	db := &DB{pool: pool}
+	db := &DB{pool: pool, migrationsPinned: &migrationsPinned}
 	if err := db.ApplyMigrations(ctx); err != nil {
 		return nil, err
 	}
@@ -123,6 +147,17 @@ func poolMaxConnsFromEnv(def int32) int32 {
 // resolve instead of killing the boot.
 func (db *DB) ApplyMigrations(ctx context.Context) error {
 	const maxAttempts = 2
+	// 2026-09-23 审计轮：置位迁移期超时钉（BeforeAcquire 抬 5min），结束/失败
+	// 均清零并 Reset 池——被抬的连接不回流 serving，角色默认 30s 即时恢复。
+	if db.migrationsPinned != nil {
+		db.migrationsPinned.Store(true)
+		defer func() {
+			db.migrationsPinned.Store(false)
+			if db.pool != nil {
+				db.pool.Reset()
+			}
+		}()
+	}
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
