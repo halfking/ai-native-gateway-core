@@ -682,3 +682,9 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
   db.ensureProbeHealthDashboardViews 在每次网关启动 DROP+重建自愈——首次
   启动后需确认两视图回归。
 - B11 从 **741** 起（740 已被本迁移占用）。
+## 2026-09-23T06:40:58Z — deploy 245 build_seq 2221 (49ca6332)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 740 | `740_view_chain_client_ip.sql` | `e4343e3cc2ae57fb28f76021afdb6d3aef0e3d1c7b723ecb69b7b48d83e205b6` | applied+verified |
+

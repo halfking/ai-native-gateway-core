@@ -15,10 +15,9 @@ import (
 
 // fakeStore 实现了 TaskStore，模拟幂等/租户/终态语义（矩阵 B，无 DB）。
 type fakeStore struct {
-	mu          sync.Mutex
-	tasks       map[string]*Task // id → task
-	byIdem      map[string]*Task // tenant|idem → task
-	cancelCalls int              // recall 不得对终态任务触发 CAS 取消（R63）
+	mu     sync.Mutex
+	tasks  map[string]*Task // id → task
+	byIdem map[string]*Task // tenant|idem → task
 }
 
 func newFakeStore() *fakeStore {
@@ -36,8 +35,7 @@ func (f *fakeStore) CreateTask(_ context.Context, in CreateInput) (*Task, bool, 
 	}
 	task := &Task{
 		ID: "ht_" + in.IdempotencyKey, TenantID: in.TenantID, Goal: in.Goal,
-		DoneWhen: in.DoneWhen, // 与真库 store.go CreateTask 同款持久化
-		Status:   StatusDelegated, IdempotencyKey: in.IdempotencyKey,
+		Status: StatusDelegated, IdempotencyKey: in.IdempotencyKey,
 		RequestHash: in.RequestHash, GwSessionID: "gw_ht_x",
 		DeadlineAt: time.Now().Add(time.Hour), Revision: 1,
 	}
@@ -66,7 +64,6 @@ func (f *fakeStore) ListEvents(_ context.Context, tenantID, taskID string, _ int
 func (f *fakeStore) CancelTask(_ context.Context, tenantID, id string) (*Task, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.cancelCalls++
 	t, ok := f.tasks[id]
 	if !ok || t.TenantID != tenantID {
 		return nil, false, ErrNotFound
@@ -168,7 +165,7 @@ func TestHandlerNotFoundUnifiesCrossTenant(t *testing.T) {
 	}
 }
 
-func TestHandlerMethodNotAllowedGuards(t *testing.T) {
+func TestHandlerMethodNotAllowedAndRecall501(t *testing.T) {
 	h := newTestHandler(t, newFakeStore())
 	if c := doReq(h, http.MethodGet, "/v1/hosted-tasks", "", "").Code; c != http.StatusMethodNotAllowed {
 		t.Errorf("GET collection = %d, want 405", c)
@@ -176,9 +173,9 @@ func TestHandlerMethodNotAllowedGuards(t *testing.T) {
 	if c := doReq(h, http.MethodDelete, "/v1/hosted-tasks/ht_x", "", "").Code; c != http.StatusMethodNotAllowed {
 		t.Errorf("DELETE task = %d, want 405", c)
 	}
-	// R63：recall 只接受 POST（P0 501 已升级为 §3.3 轻量快照路径）。
-	if c := doReq(h, http.MethodGet, "/v1/hosted-tasks/ht_x/recall", "", "").Code; c != http.StatusMethodNotAllowed {
-		t.Errorf("GET recall = %d, want 405", c)
+	// §4.1：recall P0 显式 501。
+	if c := doReq(h, http.MethodPost, "/v1/hosted-tasks/ht_x/recall", "", "").Code; c != http.StatusNotImplemented {
+		t.Errorf("recall = %d, want 501", c)
 	}
 }
 
@@ -218,148 +215,6 @@ func TestHandlerCancelTerminalConflict(t *testing.T) {
 	r2 := doReq(h, http.MethodPost, "/v1/hosted-tasks/ht_0123456789abcdef/cancel", "", "")
 	if r2.Code != http.StatusConflict {
 		t.Errorf("second cancel = %d, want 409", r2.Code)
-	}
-}
-
-// ─── recall（§3.3 ④ 轻量快照路径，R63 P1 子集：cancel + 包，不动 ACC）──────
-
-func TestHandlerRecallRunningCancelsAndReturnsPacket(t *testing.T) {
-	store := newFakeStore()
-	h := NewHandler(store, nil, Config{Workspaces: map[string]string{"ws1": "/srv/ws1"}}, nil, nil)
-	fired := make(chan string, 1)
-	h.SetACCCancel(func(_ context.Context, commandID string) { fired <- commandID })
-
-	task, _, err := store.CreateTask(context.Background(), CreateInput{
-		TenantID: "", Goal: "修复构建", DoneWhen: "三门全绿", IdempotencyKey: "0123456789abcdef",
-		RequestHash: "x", Deadline: time.Now().Add(time.Hour),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	store.mu.Lock()
-	task.AccCommandID = "cmd-1"
-	store.mu.Unlock()
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/hosted-tasks/"+task.ID+"/recall", nil)
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("recall running task = %d, want 200 (P0 was 501): %s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	for _, want := range []string{
-		`"recall_status":"cancelled"`,
-		`"goal":"修复构建"`,
-		`"done_when":"三门全绿"`,
-		`"current_result":{}`,
-		`"next_owner":"recall_caller"`,
-		// recall 自身取消的任务须如实携带"未跑完"blocker（调用方续跑的依据）。
-		`"blockers":["cancelled: task did not run to completion"]`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("recall body missing %s: %s", want, body)
-		}
-	}
-	// 轻量路径的 cancel：任务本地终态化（cancelled）。
-	store.mu.Lock()
-	st := task.Status
-	store.mu.Unlock()
-	if st != StatusCancelled {
-		t.Errorf("after recall status = %s, want cancelled", st)
-	}
-	// 收尾钩子与 cancel 端点同款：尽力补发 ACC cancel(requested)。
-	select {
-	case got := <-fired:
-		if got != "cmd-1" {
-			t.Errorf("accCancel command = %s, want cmd-1", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("accCancel hook not fired after recall of running task")
-	}
-}
-
-func TestHandlerRecallTerminalTaskSkipsCancel(t *testing.T) {
-	store := newFakeStore()
-	h := NewHandler(store, nil, Config{Workspaces: map[string]string{"ws1": "/srv/ws1"}}, nil, nil)
-
-	task, _, err := store.CreateTask(context.Background(), CreateInput{
-		TenantID: "", Goal: "已完成的任务", IdempotencyKey: "0123456789abcdef",
-		RequestHash: "x", Deadline: time.Now().Add(time.Hour),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	store.mu.Lock()
-	task.Status = StatusCompleted
-	task.Result = map[string]any{
-		"outcome":       "success",
-		"summary":       "三门全绿",
-		"artifact_refs": []any{"file:///srv/ws1/out.md"},
-	}
-	store.mu.Unlock()
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/hosted-tasks/"+task.ID+"/recall", nil)
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("recall terminal task = %d, want 200: %s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	for _, want := range []string{
-		`"recall_status":"already_terminal"`,
-		`"outcome":"success"`,
-		`"artifact_refs":["file:///srv/ws1/out.md"]`,
-		`"blockers":[]`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("recall body missing %s: %s", want, body)
-		}
-	}
-	store.mu.Lock()
-	calls := store.cancelCalls
-	store.mu.Unlock()
-	if calls != 0 {
-		t.Errorf("recall of terminal task must not attempt CancelTask, got %d calls", calls)
-	}
-}
-
-func TestHandlerRecallNeedsReviewPacketDerivation(t *testing.T) {
-	store := newFakeStore()
-	h := NewHandler(store, nil, Config{Workspaces: map[string]string{"ws1": "/srv/ws1"}}, nil, nil)
-
-	task, _, err := store.CreateTask(context.Background(), CreateInput{
-		TenantID: "", Goal: "g", IdempotencyKey: "0123456789abcdef",
-		RequestHash: "x", Deadline: time.Now().Add(time.Hour),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	store.mu.Lock()
-	task.Status = StatusNeedsReview
-	task.Result = map[string]any{"outcome": "unknown_outcome"}
-	store.mu.Unlock()
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/hosted-tasks/"+task.ID+"/recall", nil)
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("recall needs_review = %d, want 200: %s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	// needs_review → blockers 非空 + requires_input_from=[human]（人工对账）。
-	if !strings.Contains(body, `"blockers":["needs_review`) {
-		t.Errorf("needs_review must surface a blocker: %s", body)
-	}
-	if !strings.Contains(body, `"requires_input_from":["human"]`) {
-		t.Errorf("needs_review must require human input: %s", body)
-	}
-}
-
-func TestHandlerRecallNotFoundAndMethodGuard(t *testing.T) {
-	h := newTestHandler(t, newFakeStore())
-	// 不存在/跨租户 → 统一 404（§4.1）。
-	if c := doReq(h, http.MethodPost, "/v1/hosted-tasks/ht_missing/recall", "", "").Code; c != http.StatusNotFound {
-		t.Errorf("recall missing = %d, want 404", c)
 	}
 }
 
