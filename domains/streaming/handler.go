@@ -1938,10 +1938,14 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 
 			// FlushToPG 可能早于 telemetry worker 写入 request_logs；有限退避重试
 			// 覆盖该竞态，且只有 UPDATE 命中行时 recorder 才会删除 Redis key。
+			// 2026-09-23: 首试延迟 250ms（略大于 telemetry 200ms 批处理窗口）。
+			// 生产实证（2026-09-23 本地）：delay=0 的首试几乎必然撞上竞态
+			// （attempt1 失败 7601 条 vs attempt2 144 条），trace_events 全部
+			// 被 5s 后的 attempt2 兜住——落库无损但白等 5s、日志洪水 7601 条/h。
 			if h.telemetryClient != nil {
 				if pool := h.telemetryClient.DBPool(); pool != nil {
 					go func(rid string) {
-						for attempt, delay := range []time.Duration{0, 5 * time.Second, 5 * time.Second, 5 * time.Second} {
+						for attempt, delay := range []time.Duration{250 * time.Millisecond, 5 * time.Second, 5 * time.Second, 5 * time.Second} {
 							if delay > 0 {
 								time.Sleep(delay)
 							}
