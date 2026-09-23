@@ -649,3 +649,11 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 | 739 | `739_promote_functions_rate_multiplier.sql` | code-landed（R56，本机 dev 库已事务验证函数体） |
 
 - B11（providers official 标记列）原计划占用 738，已被 view 链修复抢占——B11 落地时从 **740** 起。
+## 2026-09-22T23:23:50Z — deploy 245 build_seq 2193 (5f160c37)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 737 | `737_maas_reconciliation_findings.sql` | `e70b130e53110c6b24333997776cdb9f88e7b9f8a316b29a7c0187436815d254` | applied+verified |
+| 738 | `738_view_chain_credits_rate_multiplier.sql` | `8ad1cf9a18f8006cfc35e110be6c3837b662c9202d8021cb4e4299b00d3d2e99` | applied+verified |
+| 739 | `739_promote_functions_rate_multiplier.sql` | `2edf50d6f82e59dac4475c7b1f40117ef02273a0a13809fe0a62d2af7a89aef4` | applied+verified |
+
