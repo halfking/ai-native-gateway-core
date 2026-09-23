@@ -415,38 +415,22 @@ func (wr *WeightedRouter) SelectWeighted() *Candidate {
 
 // SelectTopN returns up to n candidates ordered by descending weight.
 // Useful for shortlist-based routing where downstream code picks the best.
+//
+// R57 Handoff-B #2：正式接线 minheap_topk.SelectTopKWeighted（O(N log K)），
+// 替换原 O(N²) 选择排序——孤儿模块实锤后在此收口（约 200 候选池上选择
+// 排序主导 P95）。平序语义保持：两侧对相等权重都保持原始注册序
+// （选择排序严格 > 不换位；堆侧 SortedDesc 稳定序同理）。
 func (wr *WeightedRouter) SelectTopN(n int) []*Candidate {
 	wr.mu.RLock()
-	defer wr.mu.RUnlock()
-
-	type cw struct {
-		c *Candidate
-		w float64
-	}
-	all := make([]cw, 0, len(wr.order))
+	cands := make([]*Candidate, 0, len(wr.order))
+	weights := make([]float64, 0, len(wr.order))
 	for _, id := range wr.order {
 		wc := wr.candidates[id]
-		all = append(all, cw{c: wc.Candidate, w: wr.computeWeight(wc)})
+		cands = append(cands, wc.Candidate)
+		weights = append(weights, wr.computeWeight(wc))
 	}
-	// Simple selection sort for top-N
-	for i := 0; i < len(all); i++ {
-		maxIdx := i
-		for j := i + 1; j < len(all); j++ {
-			if all[j].w > all[maxIdx].w {
-				maxIdx = j
-			}
-		}
-		all[i], all[maxIdx] = all[maxIdx], all[i]
-	}
-
-	if n <= 0 || n > len(all) {
-		n = len(all)
-	}
-	out := make([]*Candidate, 0, n)
-	for i := 0; i < n; i++ {
-		out = append(out, all[i].c)
-	}
-	return out
+	wr.mu.RUnlock()
+	return SelectTopKWeighted(cands, weights, n)
 }
 
 // Size returns the number of registered candidates.
