@@ -52,8 +52,13 @@ fi
 require "Local deploy records prior active bundle" 'previous_version=\$\(lh_active_version\)' "$LOCAL_HOST"
 require "Local deploy restores prior bundle after start failure" 'candidate failed to start; restoring previous active bundle' "$LOCAL_HOST"
 require "Local deploy requires readyz before verification" 'ready_url="http://127\.0\.0\.1:\$PORT/readyz"' "$LOCAL_HOST"
-require "154 canary leaves margin above DB boot budget" '^TimeoutStartSec=90s$' "$CANARY_154"
-require "245 canary leaves margin above DB boot budget" '^TimeoutStartSec=90s$' "$CANARY_245"
+# 2026-09-23 契约漂移修复（F2 同型第 6 犯）：9cbd60e40 把蓝绿单元模板 boot
+# 预算 75s→600s（TimeoutStartSec 同步 700s）时漏改本断言——候选 boot 迁移链
+# 在共享 252 PG 争用下实测可超 3 分钟，90s 断言早已与模板和现实脱节。
+# 新契约：systemd TimeoutStartSec=700s 必须覆盖 600s 探针窗口（PROBE_TIMEOUT_
+# SECS 默认 600），候选最迟在 systemd 击杀前完成就绪判定。
+require "154 canary systemd budget covers 600s probe window" '^TimeoutStartSec=700s$' "$CANARY_154"
+require "245 canary systemd budget covers 600s probe window" '^TimeoutStartSec=700s$' "$CANARY_245"
 
 if (( failures > 0 )); then
   printf '%s deployment readiness contract(s) failed\n' "$failures" >&2

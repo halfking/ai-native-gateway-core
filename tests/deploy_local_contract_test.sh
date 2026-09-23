@@ -98,19 +98,19 @@ redis_discover_tries() {
   case "$kind" in
     named)
       printf 'nbjl-redis\nredis:7-alpine\n0.0.0.0:6379->6379/tcp\n' > "$dir/docker_ps"
-      DOCKER_PING_NAME='nbjl-redis' redis_discover "$dir"
+      export DOCKER_PING_NAME='nbjl-redis'; redis_discover "$dir"
       ;;
     scan)
       printf 'app-cache\tpython:3.12\nbusybox\tbusybox\nvalid-redis-cache\tredis:7-alpine\t0.0.0.0:16379->6379/tcp\n' > "$dir/docker_ps"
-      DOCKER_PING_NAME='valid-redis-cache' redis_discover "$dir"
+      export DOCKER_PING_NAME='valid-redis-cache'; redis_discover "$dir"
       ;;
     scan_no_rediscli)
       printf 'redis-custom\tcustom:1.0\t0.0.0.0:6379->6379/tcp\n' > "$dir/docker_ps"
-      DOCKER_PING_NAME='redis-custom' redis_discover "$dir"
+      export DOCKER_PING_NAME='redis-custom'; redis_discover "$dir"
       ;;
     system)
       printf 'LISTEN 0 128 127.0.0.1:16379 0.0.0.0:*\nLISTEN 0 128 127.0.0.1:5432 0.0.0.0:*\n' > "$dir/ss_listen"
-      DOCKER_PING_NAME='valid-redis-cache' redis_discover "$dir"
+      export DOCKER_PING_NAME='valid-redis-cache'; redis_discover "$dir"
       ;;
   esac
 }

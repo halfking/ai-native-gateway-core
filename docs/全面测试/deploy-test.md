@@ -57,7 +57,7 @@ git log -1 --oneline    # 期望 29d1b5d31 或更新；与 origin/main 一致
 | 入口 | 实际实现 | 备注 |
 |------|----------|------|
 | `bash deploy-local.sh` | `scripts/deploy-local.sh`（含 `deploy-local-lib.sh`） | 幂等：端口健康即报告已部署不重复跑 |
-| `bash scripts/deploy-245.sh` | `scripts/deploy-seamless.sh deploy 245` | 默认 `PROBE_TIMEOUT_SECS=180` |
+| `bash scripts/deploy-245.sh` | `scripts/deploy-seamless.sh deploy 245` | 默认 `PROBE_TIMEOUT_SECS=600`（2026-09-23 烧点轮 180→600，与单元 TimeoutStartSec=700s 对齐） |
 | `bash scripts/deploy-154.sh` | `scripts/deploy-seamless.sh deploy 154`（默认经 252 跳板） | 默认 `PROBE_TIMEOUT_SECS=120`；`--direct` 直连 |
 
 ---
