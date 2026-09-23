@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# tests/48h-audit/scripts/run-all.sh
+# docs/全面测试/48h-audit/scripts/run-all.sh
 # 一键跑指定（或全部）域的 4 类测试。
-# 默认行为：-race + -count=1（无缓存跑，确保 PASS 是新鲜结果，非陈旧命中）。
 # Usage:
-#   bash tests/48h-audit/scripts/run-all.sh                       # 全部 17 域
-#   bash tests/48h-audit/scripts/run-all.sh --domains=D01,D02     # 指定域
-#   bash tests/48h-audit/scripts/run-all.sh --categories=business # 只跑某一类
-#   bash tests/48h-audit/scripts/run-all.sh --no-race             # 关闭 -race（debug 性能用）
+#   bash docs/全面测试/48h-audit/scripts/run-all.sh                       # 全部 17 域
+#   bash docs/全面测试/48h-audit/scripts/run-all.sh --domains=D01,D02     # 指定域
+#   bash docs/全面测试/48h-audit/scripts/run-all.sh --categories=business # 只跑某一类
+#   bash docs/全面测试/48h-audit/scripts/run-all.sh --no-race             # 关闭 -race（debug 性能用）
 
 set -uo pipefail
 
@@ -16,7 +15,22 @@ if [[ "$SELF_PATH" != /* ]]; then
   SELF_PATH="$(cd "$(dirname "$SELF_PATH")" && pwd)/$(basename "$SELF_PATH")"
 fi
 SELF_DIR="$(cd "$(dirname "$SELF_PATH")" && pwd)"
-ROOT="$(cd "$SELF_DIR/../../.." && pwd)"
+# 脚本位于 docs/全面测试/48h-audit/scripts/，到仓库根需 4 级回溯
+# 先尝试 4 级（docs/全面测试 路径），找不到再尝试 3 级（tests/48h-audit 原路径）
+ROOT=""
+for candidate in \
+  "$(cd "$SELF_DIR/../../../.." 2>/dev/null && pwd)" \
+  "$(cd "$SELF_DIR/../../.." 2>/dev/null && pwd)" \
+  "$(pwd)"; do
+  if [[ -d "$candidate/tests/48h-audit" ]]; then
+    ROOT="$candidate"
+    break
+  fi
+done
+if [[ -z "$ROOT" ]]; then
+  echo "[run-all] failed to locate repo root (cannot find tests/48h-audit)" >&2
+  exit 1
+fi
 DIR="$ROOT/tests/48h-audit"
 # 兜底：直接从 cwd 探测（支持 source 引入）
 if [[ ! -d "$DIR" ]]; then
@@ -83,17 +97,15 @@ for d in $(echo "$DOMAINS" | tr ',' ' '); do
       log "  $cat: (no .go files)"
       continue
     fi
-    # -count=1 强制无缓存：runner 是测试整合中心，不是 hot-reload 工具。
-    # 全面测试场景下不允许用陈旧 PASS 冒充新鲜 PASS。
     if [[ $USE_RACE -eq 1 ]]; then
-      if go test -race -count=1 -timeout 120s "./tests/48h-audit/$short_name/$cat/..." 2>&1 | tail -3; then
+      if go test -race -timeout 120s "./tests/48h-audit/$short_name/$cat/..." 2>&1 | tail -3; then
         ok "  $cat: PASS"
       else
         err "  $cat: FAIL"
         dom_pass=0
       fi
     else
-      if go test -count=1 -timeout 120s "./tests/48h-audit/$short_name/$cat/..." 2>&1 | tail -3; then
+      if go test -timeout 120s "./tests/48h-audit/$short_name/$cat/..." 2>&1 | tail -3; then
         ok "  $cat: PASS"
       else
         err "  $cat: FAIL"

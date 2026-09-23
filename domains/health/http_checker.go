@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -34,6 +35,24 @@ func NewHTTPChecker(timeout time.Duration) *HTTPChecker {
 	return &HTTPChecker{
 		client: &http.Client{
 			Timeout: timeout,
+			// Health probes must be direct: going through HTTP_PROXY hides
+			// provider outages (the proxy returns its own 502 before our
+			// dial ever fails). 2026-09-23 audit: TestHTTPChecker_InvalidURL
+			// intermittently passed in CI and only failed when the proxy was
+			// reachable, because the dial never reached the OS resolver.
+			Transport: &http.Transport{
+				Proxy: nil,
+				DialContext: (&net.Dialer{
+					Timeout:   timeout,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				IdleConnTimeout:       60 * time.Second,
+				ResponseHeaderTimeout: timeout,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: time.Second,
+				MaxIdleConns:          32,
+				MaxIdleConnsPerHost:   8,
+			},
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				// Allow up to 3 redirects
 				if len(via) >= 3 {

@@ -130,9 +130,24 @@ func TestDo_UpstreamCleanCloseWithoutResponse(t *testing.T) {
 
 // TestDo_DNSFailureReservedTLD DNS 故障：.invalid 是 IANA 保留 TLD，
 // 永不解析。钉死 dial 失败分类 KindNetwork（可重试）。
+//
+// 必须绕过 HTTP_PROXY：CI/开发机通常配置了 Clash/VPN 代理（127.0.0.1:7897），
+// 代理先收到请求再 DNS 解析；保留 TLD 在代理侧同样 NXDOMAIN，但代理会以
+// 502 Bad Gateway 响应，让真实 dial 失败被遮蔽。用裸 net.Dialer 显式
+// 走 direct，断言路径可重复。
 func TestDo_DNSFailureReservedTLD(t *testing.T) {
 	client := NewWithRetries(0)
-	resp, uErr := client.Do(newFaultRequest(t, "http://llm-gateway-fault-test.invalid/v1/chat"))
+	directClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy: nil, // 强制直连，不走 HTTP_PROXY/HTTPS_PROXY
+			DialContext: (&net.Dialer{
+				Timeout:   5 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+		},
+		Timeout: 10 * time.Second,
+	}
+	resp, uErr := client.DoWithHTTPClient(newFaultRequest(t, "http://llm-gateway-fault-test.invalid/v1/chat"), directClient)
 
 	require.Nil(t, resp)
 	require.NotNil(t, uErr)
