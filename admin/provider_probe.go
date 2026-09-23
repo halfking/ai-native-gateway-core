@@ -199,3 +199,50 @@ func doChatProbe(ctx context.Context, url, apiKey, model string) (*chatResult, e
 
 	return result, nil
 }
+
+// doResponsesProbe is the OpenAI Responses-API counterpart of doChatProbe:
+// POST <base>/responses with {"model","input"} instead of
+// {"model","messages"}. Used by the credential health check when the
+// provider's protocol is openai-responses — probing a responses-only relay
+// with a chat/completions body would misreport a healthy credential as
+// broken (and vice versa on chat-only relays).
+func doResponsesProbe(ctx context.Context, url, apiKey, model string) (*chatResult, error) {
+	payload := map[string]any{
+		"model":             model,
+		"max_output_tokens": 5,
+		"input":             "hi",
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	//nolint:errcheck // best-effort close
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	result := &chatResult{statusCode: resp.StatusCode}
+
+	if resp.StatusCode == http.StatusOK {
+		var respObj struct {
+			Model string `json:"model"`
+		}
+		if json.Unmarshal(respBody, &respObj) == nil {
+			result.modelInResponse = respObj.Model
+		}
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		result.errorMessage = modelresponse.SanitizeBodySnippet(respBody, 500)
+	}
+
+	return result, nil
+}

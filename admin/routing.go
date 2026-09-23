@@ -4472,6 +4472,16 @@ func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request)
 	if req.Protocol == "" {
 		req.Protocol = "openai-completions"
 	}
+	// 2026-09-23 vapeur incident: providers.protocol has no DB CHECK, so a
+	// mistyped value like "openai-response" used to persist verbatim and
+	// silently fall into the chat-completions executor branch. Normalize
+	// known aliases and reject unknown values at the write boundary.
+	normalized, normErr := NormalizeProviderProtocol(req.Protocol)
+	if normErr != nil {
+		writeError(w, http.StatusBadRequest, normErr.Error())
+		return
+	}
+	req.Protocol = normalized
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
