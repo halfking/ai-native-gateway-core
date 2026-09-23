@@ -896,7 +896,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			// errors.As chain intact for this block below.
 			execErr = fmt.Errorf("%w (%w)", execErr, errorsx.ErrProtocolTerminalRendered)
 		}
-		logDispatchStreamInterrupted(params, cand, kind, sie)
+		logDispatchStreamInterrupted(params, cand, kind, sie, bytesSent)
 		// Audit R9 candidate 17: bytesSent=true is by construction the
 		// terminal decision point (dispatcher completes without failover,
 		// see dispatch/forwarder.go ADR-Disp-003 guard) — emit the
@@ -1236,22 +1236,37 @@ func logDispatchPreflightRejection(
 // logDispatchStreamInterrupted emits the request_flow stream_interrupted line
 // for one dispatch V2 forward outcome (audit 2026-09-08 #3). Pure observation,
 // zero blocking: requestflow.Log is a fire-and-forget slog write.
+//
+// 2026-09-23 (live evidence df60575b): report sie.kind — the executor's
+// first-hand interruption classification (e.g. upstream_down for
+// eof_without_done) — when present, instead of the message-based
+// reclassification used for credential cooling (eofWithoutDoneRe maps the
+// same text to stream_timeout for short-cooling). The two legitimately
+// disagree and the flow channel is the operator's source of truth.
+// committed reflects whether any client-visible chunk actually went out
+// (previously hardcoded false even for committed streams).
 func logDispatchStreamInterrupted(
 	params *ExecParams,
 	cand provider.Candidate,
 	kind errorsx.ErrorKind,
 	sie *streamInterruptedError,
+	committed bool,
 ) {
+	reportedKind := kind
+	if sie != nil && sie.kind != "" {
+		reportedKind = sie.kind
+	}
 	requestflow.Log(requestflow.Event{
 		Stage:        "dispatch",
 		RequestID:    params.RequestID,
 		Model:        cand.RawModel,
 		ProviderID:   cand.ProviderID,
 		CredentialID: cand.CredentialID,
-		Kind:         string(kind),
+		Kind:         string(reportedKind),
 		Action:       "stream_interrupted",
 		Reason:       sie.reason,
 		Retryable:    sie.resumable,
+		Committed:    committed,
 		Attempt:      params.AttemptNo,
 	})
 }
