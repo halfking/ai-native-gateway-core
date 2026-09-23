@@ -614,7 +614,12 @@ build_backend() {
   # 先删除旧产物：go build 失败时绝不能把陈旧 gateway.build 留给后续
   # step_release 打包（2026-09-05 事故：编译失败被赋值语境的 set -e 怪癖
   # 静默吞掉，两个新版本号打包了同一个 4 小时前的旧二进制）。
-  rm -f "$out"
+  # 重定向到 /dev/null：本地 rm 是 mavis-trash shim，它 echo "moved to
+  # trash: '...'" 走 stdout；build_backend 的 stdout 由 binary=$(...)
+  # 捕获作为产物路径返回，mavis-trash 消息混入会让 [[ -s "$binary" ]]
+  # 守卫永远失败（2026-09-23 实测）。进一步用 /bin/rm 直调避免 osascript
+  # Finder 删大二进制时挂死（实测 1m+ 卡在 osascript 上）。
+  /bin/rm -f "$out" >/dev/null 2>&1
   if ! (cd "$PROJECT_ROOT" && CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$out" ./cmd/gateway) 2>"$RUN_DIR/build-host.log"; then
     # 2026-09-07: 上游 0e3fa12f6 线引入了 CGO-only 依赖（mattn/go-sqlite3、
     # yalue/onnxruntime_go，见 Dockerfile 2026-09-05 的 CGO_ENABLED=1 注），
@@ -706,7 +711,7 @@ build_backend() {
       printf '    [cgo-build host log follows]\n' >&2
       sed 's/^/    /' "$cgo_log" >&2 || true
       ls -la "$PROJECT_ROOT/.build-local/" >&2 || true
-      rm -f "$cgo_out"  # cleanup stale $$ file
+      /bin/rm -f "$cgo_out" >/dev/null 2>&1  # cleanup stale $$ file
       die "backend CGO build produced no output at $cgo_out (docker run returned 0 but the file is missing or empty); inspect $cgo_log"
     fi
     # 用 install 而非 mv：原子替换 + 显式 mtime，便于后续检查。
@@ -717,10 +722,10 @@ build_backend() {
     if ! install -m 0755 "$cgo_out" "$out" 2>"$RUN_DIR/build-cgo-mv.log"; then
       printf '    [cgo-install stderr follows]\n' >&2
       sed 's/^/    /' "$RUN_DIR/build-cgo-mv.log" >&2 || true
-      rm -f "$cgo_out"
+      /bin/rm -f "$cgo_out" >/dev/null 2>&1
       die "failed to install $cgo_out -> $out (see $RUN_DIR/build-cgo-mv.log)"
     fi
-    rm -f "$cgo_out"
+    /bin/rm -f "$cgo_out" >/dev/null 2>&1
   fi
   [[ -s "$out" ]] || die "backend build produced no output at $out"
   printf '%s\n' "$out"
