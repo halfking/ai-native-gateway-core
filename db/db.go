@@ -4754,6 +4754,35 @@ func (d *DB) ensureCredentialGovernorRevision(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// D1 残余（2026-09-23 审计轮）：本 ensure 含 credentials 的 ALTER + 4 个
+	// DROP/CREATE TRIGGER，每条都要排 credentials 的 ACCESS EXCLUSIVE 锁队列
+	// （154 seq 2204/2205 boot 实测本步 1m22s）。序列、函数、触发器、revision
+	// 列全部在位时整体跳过——清单与下方 DDL 同步。
+	const governorGuardSQL = `
+		SELECT count(*) FROM (SELECT 1) AS one
+		WHERE to_regclass('public.credentials') IS NULL
+		   OR NOT EXISTS (SELECT 1 FROM information_schema.columns
+		     WHERE table_schema='public' AND table_name='credentials'
+		       AND column_name='revision')
+		   OR NOT EXISTS (SELECT 1 FROM pg_class
+		     WHERE oid = 'public.credentials_governor_revision_seq'::regclass)
+		   OR NOT EXISTS (SELECT 1 FROM pg_proc
+		     WHERE oid = 'public.bump_credentials_governor_revision()'::regprocedure
+		        OR oid = 'public.notify_credentials_governor_revision()'::regprocedure)
+		   OR (SELECT count(*) FROM pg_trigger
+		     WHERE tgrelid = 'public.credentials'::regclass AND NOT tgisinternal
+		       AND tgname IN ('trg_bump_credentials_governor_revision',
+		         'trg_notify_credentials_governor_revision_insert',
+		         'trg_notify_credentials_governor_revision_update',
+		         'trg_notify_auto_route_creds')) < 4
+		`
+	var governorMissing int
+	if err := d.pool.QueryRow(ctx, governorGuardSQL).Scan(&governorMissing); err == nil && governorMissing == 0 {
+		slog.Info("credential governor revision schema ensured (catalog short-circuit)")
+		return nil
+	} else if err != nil {
+		slog.Warn("credential governor revision catalog probe failed; falling back to full ensure", "error", err)
+	}
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE public.credentials
 			ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 0;
