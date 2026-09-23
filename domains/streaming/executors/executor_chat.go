@@ -28,6 +28,7 @@ import (
 	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -371,9 +372,9 @@ func (e *Executor) executeOpenAI(
 		}()
 	}
 
-	nativeNonStream := cand.Protocol == "openai-responses" && cand.SupportsNativeResponses && !params.IsStream
-	nativeStream := cand.Protocol == "openai-responses" && cand.SupportsNativeResponsesStream && params.IsStream
-	if cand.Protocol == "openai-responses" &&
+	nativeNonStream := cand.Protocol == providercatalog.ProtocolOpenAIResponses && cand.SupportsNativeResponses && !params.IsStream
+	nativeStream := cand.Protocol == providercatalog.ProtocolOpenAIResponses && cand.SupportsNativeResponsesStream && params.IsStream
+	if cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
 		((params.IsStream && (!cand.SupportsNativeResponsesStream || e.NativeResponsesStream == nil)) ||
 			(!params.IsStream && !cand.SupportsNativeResponses)) {
 		return nil, &upstreampkg.Error{
@@ -557,7 +558,7 @@ func (e *Executor) executeOpenAI(
 			var reqPool *pool.Pool
 			var upstreamURL string
 			switch {
-			case cand.Protocol == "anthropic-messages":
+			case cand.Protocol == providercatalog.ProtocolAnthropicMessages:
 				upstreamURL = upstreamurl.MessagesURL(cand.BaseURL)
 			case nativeNonStream || nativeStream:
 				upstreamURL = upstreamurl.ResponsesURL(cand.BaseURL)
@@ -1148,7 +1149,7 @@ func (e *Executor) executeOpenAI(
 					// mid-stream rewriting would break the byte contract.
 					if (errorsx.IsContextLength(errKind) ||
 						shouldHeuristicCompact(resp.StatusCode, errKind, len(sourceBody), cand.ContextWindow)) &&
-						cand.Protocol != "anthropic-messages" {
+						cand.Protocol != providercatalog.ProtocolAnthropicMessages {
 						switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, resp.StatusCode, body[:n]) {
 						case ctxLenRetry:
 							if nativeNonStream || nativeStream {
@@ -1313,8 +1314,8 @@ func (e *Executor) executeOpenAI(
 				} else {
 					switch {
 					case e.OpenAIToAnthropicStream != nil &&
-						params.ClientProtocol == "anthropic-messages" &&
-						cand.Protocol != "anthropic-messages":
+						params.ClientProtocol == providercatalog.ProtocolAnthropicMessages &&
+						cand.Protocol != providercatalog.ProtocolAnthropicMessages:
 						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
 						// 审计 R3 #2 (2026-09-09): params.BodyBytes 此时仍是客户端原始
 						// Anthropic 体(上游体在 bodyBytes 中另行转换),以其估算
@@ -1328,8 +1329,8 @@ func (e *Executor) executeOpenAI(
 							params.ToolsRequested,
 						)
 					case e.OpenAIToResponsesStream != nil &&
-						params.ClientProtocol == "openai-responses" &&
-						cand.Protocol != "anthropic-messages":
+						params.ClientProtocol == providercatalog.ProtocolOpenAIResponses &&
+						cand.Protocol != providercatalog.ProtocolAnthropicMessages:
 						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
 						streamOutcome = e.OpenAIToResponsesStream(
 							params.R.Context(), streamSink, resp,
@@ -1656,7 +1657,7 @@ func (e *Executor) executeOpenAI(
 			// Prefer the IR path when the feature flag is on; otherwise
 			// fall back to the legacy hook. 2026-06-29 fix — see
 			// docs/2026-06-29-protocol-conversion-matrix.md.
-			if params.ClientProtocol == "anthropic-messages" && cand.Protocol != "anthropic-messages" {
+			if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages && cand.Protocol != providercatalog.ProtocolAnthropicMessages {
 				if e.IR != nil {
 					var irScoped IRConverter
 					if scoped, ok := e.IR.(ProviderScoped); ok {
@@ -1830,7 +1831,7 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 	// Phase B (2026-06-22): When e.IR is set, use Parse→IR→Serialize instead of
 	// the legacy AnthropicToOpenAI callback. This reduces conversion complexity
 	// from O(N²) to O(N) and unifies all protocol handling through the IR layer.
-	if params.ClientProtocol == "anthropic-messages" && e.IR != nil {
+	if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages && e.IR != nil {
 		// Check format_conversion.enabled (provider-level override)
 		if e.ProviderSettings != nil {
 			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
@@ -2108,7 +2109,7 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 	if e.NormalizeOpenAITools != nil {
 		bodyBytes = e.NormalizeOpenAITools(bodyBytes)
 	}
-	if params.ClientProtocol == "anthropic-messages" {
+	if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages {
 		// Phase 3.2: Check format_conversion.enabled (provider-level override)
 		if e.ProviderSettings != nil {
 			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
@@ -2140,7 +2141,7 @@ func (e *Executor) legacyChatToOpenAIBody(params *ExecParams, cand provider.Cand
 	p := *params
 	p.BodyBytes = sourceBody
 	bodyBytes := prepareRequestBody(&p, cand, e.ParamLedger)
-	if params.ClientProtocol == "anthropic-messages" {
+	if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages {
 		if e.ProviderSettings != nil {
 			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
 				return nil, fmt.Errorf("format conversion disabled for provider %d (anthropic→openai)", cand.ProviderID)
@@ -2279,7 +2280,7 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate, ledgerOpt .
 	// message_delta events and has no stream_options field; injecting it would
 	// either be silently ignored or, worse, rejected by strict providers.
 	// Guard on protocol.
-	if params.IsStream && cand.Protocol != "anthropic-messages" {
+	if params.IsStream && cand.Protocol != providercatalog.ProtocolAnthropicMessages {
 		bodyBytes = injectStreamOptions(bodyBytes)
 	}
 	if params.Transform != nil {
@@ -2301,7 +2302,7 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate, ledgerOpt .
 	// (executor_anthropic.go). See transform/ctx_compress.go for rationale:
 	// upstreams like minimax trim server-side on direct calls, but proxy
 	// clients must trim at the gateway.
-	if cand.Protocol != "anthropic-messages" && cand.ContextWindow != nil {
+	if cand.Protocol != providercatalog.ProtocolAnthropicMessages && cand.ContextWindow != nil {
 		reserve := transformation.OutputTokenReserve(bodyBytes, params.ClientProtocol)
 		bodyBytes = transformation.CompressMessagesIfNeededWithReserve(bodyBytes, *cand.ContextWindow, reserve)
 	}

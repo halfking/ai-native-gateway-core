@@ -19,6 +19,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
@@ -772,7 +773,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		// Native Responses candidates must transform their own preserved
 		// Responses envelope; legacy candidates continue using the Chat body.
 		attachmentBody := params.BodyBytes
-		nativeBody := cand.Protocol == "openai-responses" && (cand.SupportsNativeResponses || cand.SupportsNativeResponsesStream) && len(params.ResponsesBodyBytes) > 0
+		nativeBody := cand.Protocol == providercatalog.ProtocolOpenAIResponses && (cand.SupportsNativeResponses || cand.SupportsNativeResponsesStream) && len(params.ResponsesBodyBytes) > 0
 		if nativeBody {
 			attachmentBody = params.ResponsesBodyBytes
 		}
@@ -788,7 +789,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		if e.AttachmentURLRewriter != nil && len(params.AttachmentMetadata) > 0 {
 			var newBody []byte
 			var n int
-			if params.ClientProtocol == "anthropic-messages" {
+			if params.ClientProtocol == providercatalog.ProtocolAnthropicMessages {
 				// E-P2-3 (doc 20): Anthropic-protocol clients bridged to a
 				// URL-mode OpenAI provider — rewrite the Anthropic base64
 				// source blocks to url sources before the bridge conversion
@@ -829,16 +830,16 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		// executeOpenAI gate (executor_chat.go:374-382) accepts both forms,
 		// so the dispatch gate has to mirror that contract or stream-only
 		// candidates are silently dropped before the gate even fires.
-		if cand.Protocol == "openai-responses" &&
+		if cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
 			!cand.SupportsNativeResponses &&
 			!cand.SupportsNativeResponsesStream {
 			execErr = fmt.Errorf("native Responses upstream capability is not enabled")
 			return
 		}
 		switch cand.Protocol {
-		case "anthropic-messages":
+		case providercatalog.ProtocolAnthropicMessages:
 			result, execErr = e.executeAnthropic(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
-		case "gemini-generate":
+		case providercatalog.ProtocolGeminiGenerate:
 			// 2026-09-09 audit round 3: the catalog advertises
 			// gemini-generate as an outbound protocol, but no executor
 			// branch exists — falling into executeOpenAI built OpenAI chat

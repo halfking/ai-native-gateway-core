@@ -149,11 +149,20 @@ func DialectForCatalogCode(code string) Dialect {
 //
 // 与 internal/ir 的 Protocol* 常量保持一致，但这里用字面量避免
 // paramreg → ir 的反向依赖（ir 需要 import paramreg）。
+// 2026-09-23 协议命名审计补录：
+//   - "openai" 是 providers.protocol 的历史脏值/旧枚举（candidate 加载
+//     层已归一为 openai-completions，这里兜底防止残余路径 miss）；
+//   - "ollama-native"（catalog 枚举）与 "ollama-chat"（IR 保留字）此前
+//     缺映射，DialectForProtocol 会返回 DialectUnknown。
 var protocolToDialect = map[string]Dialect{
 	"openai-chat":        DialectOpenAIChat,
+	"openai-completions": DialectOpenAIChat,
+	"openai":             DialectOpenAIChat,
 	"openai-responses":   DialectResponses,
 	"anthropic-messages": DialectAnthropic,
 	"gemini-generate":    DialectGemini,
+	"ollama-native":      DialectOllama,
+	"ollama-chat":        DialectOllama,
 }
 
 // DialectForProtocol 把协议标识解析为方言。

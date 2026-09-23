@@ -20,6 +20,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/upstream"
 )
@@ -179,7 +180,7 @@ func (h *EmbeddingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var lastErr string
 	attempt := 0
 	for _, candidate := range candidates {
-		if !candidate.IsAvailable() || candidate.APIKey == "" || candidate.Protocol == "anthropic-messages" {
+		if !candidate.IsAvailable() || candidate.APIKey == "" || candidate.Protocol == providercatalog.ProtocolAnthropicMessages {
 			continue
 		}
 		attemptStart := time.Now()

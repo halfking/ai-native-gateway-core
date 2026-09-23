@@ -16,6 +16,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/kaixuan/llm-gateway-go/modelname"
+	"github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
@@ -1109,6 +1110,10 @@ func (c *Client) GetProbeCandidates(ctx context.Context, model, profile, tenantI
 		if _, ok := seen[key]; ok {
 			continue
 		}
+		// 同上：候选加载出口统一归一协议脏值（providers.protocol 无 CHECK）。
+		if normalized, normErr := catalog.NormalizeProviderProtocol(candidate.Protocol); normErr == nil {
+			candidate.Protocol = normalized
+		}
 		seen[key] = struct{}{}
 		candidates = append(candidates, candidate)
 	}
@@ -1846,6 +1851,14 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			return nil, err
 		}
 		cand.OfferRawModel = offerRawModel
+		// 2026-09-23 协议命名审计：providers.protocol 无 CHECK 约束，历史
+		// 行里存在 "openai" 等旧枚举/脏值。候选加载是所有出站分发的唯一
+		// 入口，在这里统一归一到 catalog 枚举（"openai"→openai-completions、
+		// "openai-response"→openai-responses 等）；无法识别的值保持原样，
+		// 由执行器 default 分支按 chat 兼容处理。
+		if normalized, normErr := catalog.NormalizeProviderProtocol(cand.Protocol); normErr == nil {
+			cand.Protocol = normalized
+		}
 		applyCapacityWeightedLB(&cand, concurrencyLimitAuto)
 		c.maybeExitSuspicious(cand.CredentialID, offerRawModel)
 		out = append(out, cand)
