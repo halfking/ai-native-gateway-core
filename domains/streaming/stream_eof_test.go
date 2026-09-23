@@ -831,6 +831,85 @@ func TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason(t *testing.T) {
 		"capture must NOT be marked interrupted: the turn is semantically complete and must not be recorded as a failure")
 }
 
+// TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason_MiniMaxProductionShape
+// is the 2026-09-24 r0924 regression钉桩 reproducing the EXACT chunk
+// sequence that shipped over the wire from api.minimaxi.com for
+// minimax-m3 tool-calling turns:
+//   1. role-only delta (first frame announces the assistant role)
+//   2. finish_reason:"tool_calls" delta with a fully-formed tool_calls[]
+//      carrying the actual function name + JSON arguments
+//   3. usage-only frame with empty choices (mirrors MiniMax's
+//      post-finish_reason accounting emission)
+//   4. EOF — no `data: [DONE]` sentinel (MiniMax relay omits it)
+//
+// Field-evidence raw frames (request c96df1a8a50154667e8f1d40fa64b2bd,
+// 2026-09-23T17:21):
+//   https://raw-logs/...: 3 upstream_response chunks, then EOF.
+//   Audit row recorded success=false, reason="eof_without_done",
+//   kind="upstream_down", chunk_count=6, resumable=false, which means
+//   the §11.6-pseudo-success branch ran instead of the benign-completion
+//   branch. The failing chunk boundary is the open question this test
+//   pins — if THIS test fails, the production path is missing a fix
+//   vs. the df60575b shape used in TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason.
+func TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason_MiniMaxProductionShape(t *testing.T) {
+	counter := &countingRecorder{delegate: metrics.NewNoopRecorder()}
+	prev := metrics.Global()
+	metrics.SetGlobal(counter)
+	t.Cleanup(func() { metrics.SetGlobal(prev) })
+
+	capture := audit.NewStreamCapture()
+
+	// Three upstream chunks + EOF — the exact minimax-m3 wire shape.
+	// Truncated tool_calls argument (file_path) for readability; the IR
+	// parser doesn't care about argument length.
+	body := "" +
+		"data: {\"id\":\"07033db16ab3a2ed677a4223558f03ad\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}],\"created\":1790184114,\"model\":\"MiniMax-M3\",\"object\":\"chat.completion.chunk\"}\n\n" +
+		"data: {\"id\":\"07033db16ab3a2ed677a4223558f03ad\",\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_test\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"file_path\\\":\\\"/etc/hostname\\\"}\"},\"index\":0}]}}],\"created\":1790184114,\"model\":\"MiniMax-M3\",\"object\":\"chat.completion.chunk\"}\n\n" +
+		"data: {\"id\":\"07033db16ab3a2ed677a4223558f03ad\",\"choices\":[],\"created\":1790184113,\"model\":\"MiniMax-M3\",\"object\":\"chat.completion.chunk\",\"usage\":{\"total_tokens\":220,\"prompt_tokens\":178,\"completion_tokens\":42}}\n\n"
+
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(body)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	writer := httptest.NewRecorder()
+
+	outcome := StreamChatWithPendingCapture(context.Background(),
+		writer,
+		resp,
+		"minimax-m3",
+		"MiniMax-M3",
+		NewNormalizer(),
+		capture,
+		false, // toolsRequested=false — the test focuses on the EOF path
+		nil,
+		nil,
+	)
+
+	// Mirror TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason
+	// assertions — the production chunk shape must take the same path.
+	assert.False(t, outcome.Interrupted,
+		"production chunk shape (role → finish_reason+tool_calls → usage → EOF) must be classified as benign completion, NOT §11.6-pseudo-success")
+	assert.Empty(t, outcome.Reason)
+	assert.Empty(t, outcome.Kind)
+	assert.Greater(t, outcome.ChunkCount, 0,
+		"chunkCount > 0: at least one committed frame (the tool_calls payload reached the wire)")
+
+	wire := writer.Body.String()
+	assert.Contains(t, wire, `"name":"Read"`,
+		"committed tool_calls payload stays on the wire — the client must receive the function name + arguments")
+	assert.NotContains(t, wire, `"type":"upstream_incomplete"`,
+		"production-shape benign close must NOT carry the §11.6 error envelope")
+	assert.True(t, strings.HasSuffix(wire, "data: [DONE]\n\n"),
+		"synthesized [DONE] finalizes the client's stream parser")
+
+	assert.Equal(t, 1, counter.synth,
+		"RecordStreamSynthesizedDone fires once so operators see the upstream is omitting [DONE]")
+
+	summary := capture.SummaryAsMap()
+	assert.False(t, summary["stream_interrupted"].(bool),
+		"capture must NOT mark the turn interrupted: the tool_calls turn is semantically complete and reaches the client's tool executor")
+}
+
 // TestStreamChatSurvivalGateReuse_SingleTerminalOnCommittedBreak — b0c77269d
 // field regression (154 build 2234, 2026-09-23), closed-loop at the exact
 // seam the live bug lived in.
