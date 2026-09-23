@@ -1227,12 +1227,14 @@ do_deploy() {
     # 处于迁移重试烧点（schema migrations failed transiently）、端口 bind
     # 失败（gateway listen failed）或 boot 挂起——三种情况处置完全不同，
     # 统一甩一句 "PROBE_TIMEOUT_SECS=600 重跑" 会误导排障方向。这里把
-    # journal 尾（60 行）、systemd 状态、端口监听一并自动拉出，并按 boot
-    # 标记分类给出排查提示。
+    # journal 尾、systemd 状态、端口监听一并自动拉出，并按 boot 标记分类
+    # 给出排查提示。标记 grep 窗口取 400 行（迁移重试告警可能落在很早——
+    # 09-23 第二次部署实证 60 行窗口刚好把它截掉，导致分类降级），展示仍取
+    # 尾 60 行控制输出量。
     warn "    candidate probe failure tail (last 60 journal lines):"
     local probe_fail_tail
-    probe_fail_tail=$(remote_ssh "journalctl -u '$candidate_service' -n 60 --no-pager 2>&1 | tail -60" 2>&1) || true
-    printf '%s\n' "$probe_fail_tail" | sed 's/^/      /' || true
+    probe_fail_tail=$(remote_ssh "journalctl -u '$candidate_service' -n 400 --no-pager 2>&1" 2>&1) || true
+    printf '%s\n' "$probe_fail_tail" | tail -60 | sed 's/^/      /' || true
     warn "    candidate process/port state at failure:"
     remote_ssh "systemctl show '$candidate_service' -p ActiveState -p SubState -p NRestarts --no-pager 2>&1; ss -ltnp 2>/dev/null | grep ':${candidate_port} ' || echo 'port ${candidate_port}: 无监听'" 2>&1 | sed 's/^/      /' || true
     zd_stop_candidate "$SSH_CMD" "$candidate_service"
