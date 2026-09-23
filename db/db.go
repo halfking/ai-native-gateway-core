@@ -281,6 +281,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureSessionSummariesArchivalSchema(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-24 migration 743: outbox done 清理与 digest 回填的部分索引。
+	// 两个后台 job 在缺索引时分别对 645MB outbox / 全分区 session_turns
+	// 做每 10s-10min 一次的 30s 级全扫（252 实锤击杀循环），必须先于
+	// worker 启动补齐。
+	if err := db.ensureSqlAuditPartialIndexes(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-05 migration 656 (audit D-2#4/H-2): auto_route_selections_hot
 	// 网关侧幂等 ensure。只升二进制未重跑 656 的存量库上，AUTO 路由 selection
 	// 写入（telemetry selection_writer 批量 INSERT）整批静默丢弃、settle/affinity
@@ -767,6 +774,163 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 		return fmt.Errorf("ensure session_summaries archival schema: %w", err)
 	}
 	slog.Info("session_summaries archival schema ensured", "backfilled_rows", backfilled)
+	return nil
+}
+
+// ensureSqlAuditPartialIndexes mirrors sql/migrations/startup/
+// 743_sql_audit_partial_indexes.sql（2026-09-24 252 SQL 日志审计第六轮）。
+//
+// 两个 30s 击杀循环的索引补课（证据：pg-252-pg17 45min 快照 + 真库
+// EXPLAIN ANALYZE，docs/audit/2026-09-24-252-sql-log-audit.md）：
+//   - session_aggregate_outbox done 行 TTL 清理（reaper trimDoneRows）对
+//     645MB 真库全表扫，45min ×255 次 med 4.2s、3 次击杀——(completed_at)
+//     WHERE status='done' 部分索引把子查询变成 completed_at 边界扫；
+//   - session_turns digest 回填空扫（digest IS NULL 无索引，视图实际
+//     hot + 全分区父表），backlog=0 仍要扫 68 万行证明空、45min ×6 击杀
+//     —— (ts, id) WHERE digest IS NULL 部分索引让空证明 O(1)。
+//
+// 分区父表走 727/728/729 同款三段式（PG17 分区父表不支持 CONCURRENTLY，
+// 42809）：逐分区 CONCURRENTLY → ONLY 壳 → ATTACH；未来月分区经
+// PARTITION OF 自动继承。CONCURRENTLY 无法在事务内执行，pinned 连接 +
+// 会话级 10min 预算（471/690 同款）；中断残留的 INVALID 索引先 DROP
+// 再建，否则 IF NOT EXISTS 永远跳过。
+func (d *DB) ensureSqlAuditPartialIndexes(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	conn, err := d.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET statement_timeout = '10min'`); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SET statement_timeout = DEFAULT`)
+	}()
+
+	// buildConcurrently checks indisvalid first: a cancelled CONCURRENTLY
+	// build leaves an INVALID index behind and plain IF NOT EXISTS would
+	// skip the rebuild forever.
+	buildConcurrently := func(index, table, ddl string) error {
+		var valid bool
+		err := conn.QueryRow(ctx, `
+			SELECT i.indisvalid
+			FROM pg_index i
+			JOIN pg_class c ON c.oid = i.indexrelid
+			JOIN pg_class t ON t.oid = i.indrelid
+			WHERE c.relname = $1 AND t.relname = $2
+			  AND t.relnamespace = 'public'::regnamespace
+		`, index, table).Scan(&valid)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			// index absent: build it below
+		case err != nil:
+			return fmt.Errorf("inspect %s: %w", index, err)
+		case valid:
+			return nil
+		default:
+			slog.Warn("dropping INVALID index left by an interrupted build", "index", index)
+			if _, err := conn.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS public.`+index); err != nil {
+				return fmt.Errorf("drop invalid %s: %w", index, err)
+			}
+		}
+		if _, err := conn.Exec(ctx, ddl); err != nil {
+			return fmt.Errorf("create %s: %w", index, err)
+		}
+		return nil
+	}
+
+	// A: outbox done-row TTL trim (reaper trimDoneRows 30s tick, 3 replicas).
+	if err := buildConcurrently("idx_session_aggregate_outbox_done_completed_at", "session_aggregate_outbox",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_session_aggregate_outbox_done_completed_at
+			ON public.session_aggregate_outbox (completed_at)
+			WHERE status = 'done'`); err != nil {
+		return err
+	}
+	// B hot side: digest backfill scan arm on session_turns_hot.
+	if err := buildConcurrently("idx_session_turns_hot_digest_null", "session_turns_hot",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_session_turns_hot_digest_null
+			ON public.session_turns_hot (ts, id)
+			WHERE digest IS NULL`); err != nil {
+		return err
+	}
+
+	// B partitioned side: per-partition CONCURRENTLY builds. Partitions are
+	// enumerated live (430's ensure_sessions_v2_partitions adds them over
+	// time); an empty partition builds instantly, 2026_09 (68 万行) is the
+	// only one that does real work on first run.
+	pRows, err := conn.Query(ctx, `
+		SELECT c.relname
+		FROM pg_inherits i
+		JOIN pg_class c ON c.oid = i.inhrelid
+		WHERE i.inhparent = 'public.session_turns'::regclass
+		ORDER BY c.relname
+	`)
+	if err != nil {
+		return fmt.Errorf("list session_turns partitions: %w", err)
+	}
+	partitions, err := pgx.CollectRows(pRows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("scan session_turns partitions: %w", err)
+	}
+	for _, part := range partitions {
+		idx := part + "_digest_null_idx"
+		// part/idx come from our own pg_class catalog (identifier-safe
+		// [a-z0-9_] names, same trust level as execDigestUpdate's table
+		// names), so %s interpolation matches the execDigestUpdate precedent.
+		if err := buildConcurrently(idx, part, fmt.Sprintf(
+			`CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON public.%s (ts, id) WHERE digest IS NULL`,
+			idx, part)); err != nil {
+			return err
+		}
+	}
+
+	// Parent shell: ON ONLY = metadata only, no partition scans, no DML
+	// block beyond the momentary catalog lock. Future PARTITION OF tables
+	// inherit child indexes from this shell automatically.
+	if _, err := conn.Exec(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_session_turns_digest_null
+		  ON ONLY public.session_turns (ts, id) WHERE digest IS NULL
+	`); err != nil {
+		return fmt.Errorf("create idx_session_turns_digest_null shell: %w", err)
+	}
+	// ATTACH the pre-built children (idempotent: skip already-attached).
+	if _, err := conn.Exec(ctx, `
+		DO $$
+		DECLARE part text;
+		BEGIN
+		  FOR part IN
+		    SELECT c.relname
+		    FROM pg_inherits i
+		    JOIN pg_class c ON c.oid = i.inhrelid
+		    WHERE i.inhparent = 'public.session_turns'::regclass
+		  LOOP
+		    IF to_regclass(format('public.%I', part || '_digest_null_idx')) IS NOT NULL
+		       AND NOT EXISTS (
+		         SELECT 1 FROM pg_inherits ci
+		         WHERE ci.inhparent = 'public.idx_session_turns_digest_null'::regclass
+		           AND ci.inhrelid = to_regclass(format('public.%I', part || '_digest_null_idx'))
+		       ) THEN
+		      EXECUTE format('ALTER INDEX public.idx_session_turns_digest_null ATTACH PARTITION public.%I',
+		                     part || '_digest_null_idx');
+		    END IF;
+		  END LOOP;
+		END $$;
+	`); err != nil {
+		return fmt.Errorf("attach session_turns digest_null child indexes: %w", err)
+	}
+
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('743', 'sql audit partial indexes: outbox done trim + session_turns digest backfill')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 743: %w", err)
+	}
+	slog.Info("sql audit partial indexes ensured (743)",
+		"partitions", len(partitions))
 	return nil
 }
 
