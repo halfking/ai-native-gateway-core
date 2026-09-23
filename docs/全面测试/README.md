@@ -54,8 +54,8 @@ curl -sf http://127.0.0.1:18901/admin/memstats > /tmp/mem_after.json
 bash docs/全面测试/stress/scripts/runner.sh stop
 
 # 5. 聚合报告
-bash docs/全面测试/48h-audit/scripts/aggregate-reports.sh \
-  > docs/全面测试/48h-audit/reports/INDEX.md
+bash tests/48h-audit/scripts/aggregate-reports.sh \
+  > tests/48h-audit/reports/INDEX.md
 ```
 
 ---
@@ -176,8 +176,8 @@ curl -sf http://127.0.0.1:18901/admin/memstats > /tmp/mem_after.json
 bash docs/全面测试/stress/scripts/runner.sh stop
 
 # 3. 聚合报告
-bash docs/全面测试/48h-audit/scripts/aggregate-reports.sh \
-  > docs/全面测试/48h-audit/reports/INDEX.md
+bash tests/48h-audit/scripts/aggregate-reports.sh \
+  > tests/48h-audit/reports/INDEX.md
 ```
 
 ---
@@ -196,7 +196,7 @@ bash docs/全面测试/48h-audit/scripts/aggregate-reports.sh \
 
 - 所有非占位域必须至少 1 个 PASS
 - 占位域（plan.md 占位 + reports/latest.md "待留档"）允许 no .go files
-- 报告路径必须在 `docs/全面测试/48h-audit/reports/history/` 或 `docs/全面测试/stress/results/` 下
+- 报告路径必须在 `tests/48h-audit/reports/history/` 或 `tests/stress/results/` 下（R61 清扫勘误：原写 `docs/全面测试/48h-audit/reports/` 与 `docs/全面测试/stress/results/` 目录从未存在，执行层 run-all.sh 恒写 `tests/48h-audit`）
 - **D14 安全域必须含敏感信息 4 类测试（业务/数据/压力/安全）**，并钉住占位符 → 真实值还原
 
 ### 压测（19 场景）
@@ -238,7 +238,7 @@ bash docs/全面测试/48h-audit/scripts/aggregate-reports.sh \
 
 每轮按 `T<N>-<YYYY-MM-DD>` 命名归档到：
 - 域级：`docs/全面测试/48h-audit/DXX-*/reports/history/`
-- 轮级：`docs/全面测试/history/`（待建）
+- 轮级：`docs/全面测试/history/`（T1 轮已建成）
 
 ---
 

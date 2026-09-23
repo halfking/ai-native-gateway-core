@@ -161,14 +161,62 @@ func (e AnomalyEvent) MetadataAsJSON() string {
 	return string(b)
 }
 
+// irRequestID extracts the gateway request id from the IR's metadata carrier
+// for anomaly reporting (S2-F3/R60). Metadata.RequestID is the designated
+// gateway-internal carrier — the executors stamp it from the same per-request
+// id that request_logs.request_id uses (domains/streaming/executors), so
+// reported anomalies are correlatable with the request log row and the
+// dashboard swim lane. Falls back to "unknown" when the carrier is unset
+// (parse-time fixtures, off-request tools) — the dedup key still includes
+// it, but see anomalyDedupTTL for why "unknown" no longer means once per
+// process.
+func irRequestID(req *InternalRequest) string {
+	if req == nil || req.Metadata == nil || req.Metadata.RequestID == "" {
+		return "unknown"
+	}
+	return req.Metadata.RequestID
+}
+
 // ---------------------------------------------------------------------------
 // process-wide reporter + dedup (kept as fallback for non-scoped callers)
+//
+// 观测落点（S2-F3/R60 闭环）：生产不安装 process-wide reporter（SetAnomalyReporter
+// 无生产调用方），故走 DefaultAnomalyReporter → slog.Warn("ir.anomaly", ...)，
+// 最终落到网关结构化 JSON 日志面（internal/logging：stderr + 滚动日志文件，
+// 开启 Bleve fanout 时可在 /admin/logs/search 全文检索 "ir.anomaly"）。
+// per-IR scope 的生产安装面：WithIRScope(nil) 仅包裹 Gemini handler、
+// inline_validation 与 executor_chat 三处；executor_anthropic 的
+// SerializeAnthropic 路径无 scope，事件直接走本文件的 process-wide dedup +
+// 默认 reporter（即上述日志落点）。
 // ---------------------------------------------------------------------------
 
 var (
-	reporterMu  sync.RWMutex
-	reporter    AnomalyReporter = DefaultAnomalyReporter()
-	reporterDed                 = map[string]struct{}{}
+	reporterMu sync.RWMutex
+	reporter   AnomalyReporter = DefaultAnomalyReporter()
+	// reporterDed 记录每个 dedup key 最近一次上报时间（S2-F3/R60：由
+	// map[string]struct{} 改为带时间戳，TTL 过期后同 key 可再报。此前永不过
+	// 期 + requestID 写死 "unknown" 的组合让 {"raw":...} format-anomaly 每进程
+	// 生命周期只发一次，观测面等于失效）。
+	reporterDed = map[string]time.Time{}
+
+	// anomalyDedupTTL 是 process-wide dedup 的过期窗。1h：同一 (request,
+	// field, reason) 组合在窗口内只报一次；key 含 RequestID，正常流量下同
+	// key 天然不重复，TTL 只对 "unknown" 占位（无请求上下文的调用点）与长
+	// 存活进程做上界。测试可改小（var 而非 const）。
+	anomalyDedupTTL = time.Hour
+
+	// anomalyDedupSweepThreshold 触发惰性清理的 map 大小上界。清理在已持
+	// reporterMu 的插入临界区内进行（map 已超阈值时才扫一遍，均摊 O(1)），
+	// 不加后台 goroutine、不加第二把锁——reporter 的并发面只有这一把
+	// reporterMu，临界区保持微小。
+	anomalyDedupSweepThreshold = 4096
+
+	// anomalyDedupHardCap —— R61（S3-F3 续）：异常风暴硬上界。TTL 清扫只
+	// 回收过期 key；若 1h 窗口内唯一 key 数（异常请求速率×3600）远超阈值
+	// （如畸形客户端全量命中），map 会涨到数百 MB 且清扫在临界区内 O(n)。
+	// 超 hard cap 时直接整表清空：代价是去重短期失效（日志量≈请求量，而
+	// 风暴场景本就如此），换来确定的内存上界。
+	anomalyDedupHardCap = 65536
 
 	// activeScopeMu guards activeScope. The active scope, when non-nil,
 	// intercepts every package-level ReportProtocolLoss / ReportUnknownField
@@ -193,7 +241,7 @@ func SetAnomalyReporter(r AnomalyReporter) AnomalyReporter {
 	}
 	// Reset dedup state whenever the reporter changes so tests can re-run
 	// with the same fixture set without seeing the dedup swallow events.
-	reporterDed = map[string]struct{}{}
+	reporterDed = map[string]time.Time{}
 	return prev
 }
 
@@ -202,7 +250,7 @@ func SetAnomalyReporter(r AnomalyReporter) AnomalyReporter {
 func ResetAnomalyReporter() {
 	reporterMu.Lock()
 	defer reporterMu.Unlock()
-	reporterDed = map[string]struct{}{}
+	reporterDed = map[string]time.Time{}
 }
 
 // ReportAnomaly emits an event. It is a no-op when the reporter is nil
@@ -242,12 +290,27 @@ func ReportAnomaly(ev AnomalyEvent) bool {
 
 	key := dedupKey(ev)
 
+	// S2-F3/R60：dedup 带 TTL——窗口内重复 key 抑制，过期后同 key 可再报。
+	// 过期清理是惰性的（插入时超阈值才整表扫一遍），全部发生在已持有的
+	// reporterMu 临界区内，无后台 goroutine、无锁争端面变化。
+	now := time.Now()
 	reporterMu.Lock()
-	if _, seen := reporterDed[key]; seen {
+	if ts, seen := reporterDed[key]; seen && now.Sub(ts) < anomalyDedupTTL {
 		reporterMu.Unlock()
 		return true
 	}
-	reporterDed[key] = struct{}{}
+	reporterDed[key] = now
+	if len(reporterDed) > anomalyDedupSweepThreshold {
+		for k, ts := range reporterDed {
+			if now.Sub(ts) >= anomalyDedupTTL {
+				delete(reporterDed, k)
+			}
+		}
+		// R61：TTL 清扫后仍超硬上界（异常风暴）→ 整表清空保内存上界。
+		if len(reporterDed) > anomalyDedupHardCap {
+			reporterDed = map[string]time.Time{}
+		}
+	}
 	r := reporter
 	reporterMu.Unlock()
 

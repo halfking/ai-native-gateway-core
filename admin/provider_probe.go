@@ -28,6 +28,8 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 )
 
 // probeURLResult is the response shape for both probe-url endpoints.
@@ -198,6 +200,91 @@ func doChatProbe(ctx context.Context, url, apiKey, model string) (*chatResult, e
 	}
 
 	return result, nil
+}
+
+// doMessagesProbe is the Anthropic Messages counterpart of doChatProbe:
+// POST <base>/v1/messages with {"model","messages","max_tokens"} and the
+// x-api-key + anthropic-version auth headers instead of the OpenAI-style
+// Bearer header. Header names and the version pin (2023-06-01) mirror the
+// real anthropic upstream request construction in
+// internal/providercap.ApplyAuthHeaders (AuthStyle "anthropic") — probing an
+// anthropic-messages credential with a Bearer-only chat probe 401s and
+// misreports a healthy credential as warning (2026-09-23 audit S3-F5).
+//
+// Failure semantics stay unchanged on purpose: the caller only inspects
+// statusCode (2xx=healthy, anything else=warning) and never touches
+// availability_state / auto-cool from this path.
+func doMessagesProbe(ctx context.Context, url, apiKey, model string) (*chatResult, error) {
+	payload := map[string]any{
+		"model":      model,
+		"max_tokens": 1,
+		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	//nolint:errcheck // best-effort close
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	result := &chatResult{statusCode: resp.StatusCode}
+
+	if resp.StatusCode == http.StatusOK {
+		var msgResp struct {
+			Model string `json:"model"`
+		}
+		if json.Unmarshal(respBody, &msgResp) == nil {
+			result.modelInResponse = msgResp.Model
+		}
+	} else if resp.StatusCode == http.StatusNotFound &&
+		probeutil.IsEndpointIDRequiredError(string(respBody)) {
+		// Same 404 disambiguation as doChatProbe: endpoint-ID-required relays
+		// (Volcano Ark style) surface a friendly code instead of a misleading
+		// "404 model not found".
+		result.errorCode = probeutil.EndpointIDRequiredErrCode
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		result.errorMessage = modelresponse.SanitizeBodySnippet(respBody, 500)
+	}
+
+	return result, nil
+}
+
+// credentialProbeDispatch picks the probe endpoint and request shape from a
+// credential's egress protocol — the three-way branch behind the credential
+// health check (phase-2). The raw protocol is normalized first
+// (providers.protocol has no CHECK constraint; legacy rows carry alias
+// spellings like "openai-response" / "anthropic"), unknown values fall back
+// to the chat probe, matching the pre-743 behavior for unrecognized protocols.
+//
+// Returns (probeURL, probeFn):
+//   - openai-responses   → POST <base>/responses (Responses-API body)
+//   - anthropic-messages → POST <base>/v1/messages (x-api-key auth)
+//   - anything else      → POST <base>/chat/completions (Bearer, chat body)
+func credentialProbeDispatch(protocol, baseURL string) (string, func(context.Context, string, string, string) (*chatResult, error)) {
+	if normalized, normErr := providercatalog.NormalizeProviderProtocol(protocol); normErr == nil {
+		protocol = normalized
+	}
+	switch protocol {
+	case "openai-responses":
+		return upstreamurl.ResponsesURL(baseURL), doResponsesProbe
+	case "anthropic-messages":
+		return upstreamurl.MessagesURL(baseURL), doMessagesProbe
+	default:
+		return upstreamurl.ChatCompletionsURL(baseURL), doChatProbe
+	}
 }
 
 // doResponsesProbe is the OpenAI Responses-API counterpart of doChatProbe:
