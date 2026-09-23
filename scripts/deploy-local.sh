@@ -306,14 +306,25 @@ detect_existing_containers() {
 migrate_existing_pg_to_shared() {
   [[ "$DL_DB_MODE" == docker && "$DL_PG_CONTAINER" == llm-gateway-pg ]] || return 0
   [[ -n "$DL_PG_SOURCE" && "$DL_PG_SOURCE" == /* ]] || return 0
+  [[ -n "${SHARED_PG_DIR:-}" ]] || {
+    warn "SHARED_PG_DIR is empty; skipping migration (treat as already-shared)"
+    DL_PG_SOURCE="$SHARED_PG_DIR"
+    return 0
+  }
   local shared="$SHARED_PG_DIR" project_copy="$ROOT_DIR/postgres" old_name pg_backup
   old_name="llm-gateway-pg.pre-migrate.$(date -u +%Y%m%dT%H%M%SZ)"
   dl_prepare_shared_service_dirs
-  [[ "$DL_PG_SOURCE" != "$shared" ]] || {
-    log "llm-gateway-pg already bound to shared $shared; no copy required"
+  # 2026-09-23 修复：容错归一化路径（Docker 有时报告带尾部 / 或双斜杠的路径），
+  # 否则 `DL_PG_SOURCE != shared` 误报为真、触发无用迁移并最终 docker run
+  # 解析异常（"invalid mode: /var/lib/postgresql/data"）。
+  local dl_pg_source_norm shared_norm
+  dl_pg_source_norm=$(printf '%s' "$DL_PG_SOURCE" | tr -s '/' | sed 's:/*$::')
+  shared_norm=$(printf '%s' "$shared" | tr -s '/' | sed 's:/*$::')
+  [[ -n "$dl_pg_source_norm" && "$dl_pg_source_norm" != "$shared_norm" ]] || {
+    log "llm-gateway-pg already bound to shared $shared (no copy required; source=$DL_PG_SOURCE)"
     return 0
   }
-  log "migrating llm-gateway-pg data to $shared (source retained)"
+  log "migrating llm-gateway-pg data to $shared (source retained at $DL_PG_SOURCE)"
   docker stop "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
   mkdir -p "$SHARED_PG_BACKUP_DIR"
   pg_backup="$SHARED_PG_BACKUP_DIR/llm-gateway-pg-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
@@ -324,18 +335,44 @@ migrate_existing_pg_to_shared() {
   fi
   local env_file="$SHARED_PG_RUN_DIR/llm-gateway-pg.env"
   docker rename "$DL_PG_CONTAINER" "$old_name" || die "failed to rename $DL_PG_CONTAINER to $old_name"
-  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$old_name" > "$env_file"
+  # 2026-09-23 修复：去重 env_file 中的键（Docker 29.x 对重复键解析更严，曾触发
+  # `--env-file` 路径下 docker run 报 "invalid mode" 误导性错误）。awk 保留首次
+  # 出现顺序、末次出现胜出，与 Docker CLI docs "the last value will be used" 一致。
+  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$old_name" \
+    | awk -F= '
+        NF<2 || /^[[:space:]]*#/ {print; next}
+        { seen[$1]=$0; if (!($1 in order_idx)) order_idx[$1]=++n }
+        END { for (i=1; i<=n; i++) for (k in order_idx) if (order_idx[k]==i) print seen[k] }
+      ' > "$env_file"
   chmod 0600 "$env_file"
   local image network pg_user pg_db pg_pass
   image=$(docker inspect -f '{{.Config.Image}}' "$old_name")
   network=$(docker inspect -f '{{range $n, $cfg := .NetworkSettings.Networks}}{{println $n}}{{end}}' "$old_name" | head -n1)
+  # 2026-09-23 修复：network 取值要剥尾部空白/换行，避免 docker run 把它当多参数解析
+  network="${network//[$' \t\r\n']/}"
+  [[ "$network" =~ ^[A-Za-z0-9_.-]+$ ]] || network=
   pg_user=$(dl_container_env "$old_name" POSTGRES_USER); pg_user=${pg_user:-llm_gateway}
   pg_db=$(dl_container_env "$old_name" POSTGRES_DB); pg_db=${pg_db:-llm_gateway}
   pg_pass=$(dl_container_env "$old_name" POSTGRES_PASSWORD)
-  local -a run_args=(--name "$DL_PG_CONTAINER" --restart unless-stopped --env-file "$env_file" -v "$shared:/var/lib/postgresql/data" -p "127.0.0.1:5432:5432")
+  # 2026-09-23 修复：改用 `--mount type=bind,...` 显式语法，避免 `-v src:dst` 在路径含
+  # 特定字符或 daemon 严格模式下被误解析为 mode 段（曾导致 "invalid mode"）。同时把
+  # env-file 的位置单独列在 `--env-file` 之前以便排错时一眼看出是文件来源。
+  local -a run_args=(
+    --name "$DL_PG_CONTAINER"
+    --restart unless-stopped
+    --env-file "$env_file"
+    --mount "type=bind,source=${shared},target=/var/lib/postgresql/data"
+    -p "127.0.0.1:5432:5432"
+  )
   [[ -n "$network" ]] && run_args+=(--network "$network")
-  if ! docker run -d "${run_args[@]}" "$image" >/dev/null; then
-    warn "new llm-gateway-pg failed to start; restoring original container"
+  log "creating new llm-gateway-pg with shared storage at $shared"
+  # 2026-09-23 修复：保留 docker run 真实 stderr/stdout（去掉 "> /dev/null"），
+  # 避免日后 "invalid mode: /var/lib/postgresql/data" 等误导性错误被再次吞掉。
+  local docker_run_err rc=0
+  if ! docker_run_err=$(docker run -d "${run_args[@]}" "$image" 2>&1); then
+    rc=$?
+    printf '%s\n' "$docker_run_err" | sed 's/^/[deploy-local] docker-run: /' >&2 || true
+    warn "new llm-gateway-pg failed to start (rc=$rc); restoring original container"
     docker rm -f "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
     docker rename "$old_name" "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
     docker start "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
