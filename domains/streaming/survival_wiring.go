@@ -224,22 +224,84 @@ func (h *ChatHandler) runSurvivalCoordinator(
 	if res.Succeed {
 		return res.FinalAttempt.ExecResult, nil
 	}
-	var err error
-	if res.FinalAttempt != nil {
-		err = res.FinalAttempt.FinalError
+	// Cancellation exits (loop-top ctx check / client disconnect) return
+	// from Run WITHOUT rendering a protocol terminal — the client is gone
+	// or the request context died. Keep the historical raw error so the
+	// handler's cancel classification (safety net, EventCancelled) still
+	// applies and nothing is mislabeled as a provider failure.
+	if ctxErr := frozenCtx.Err(); errors.Is(ctxErr, context.Canceled) || errors.Is(ctxErr, context.DeadlineExceeded) {
+		var rawErr error
+		if res.FinalAttempt != nil {
+			rawErr = res.FinalAttempt.FinalError
+		}
+		if rawErr == nil {
+			rawErr = fmt.Errorf("request survival ended: %s (%s)", res.Decision.Action, res.Decision.Reason)
+		}
+		return nil, rawErr
 	}
-	if err == nil {
-		err = fmt.Errorf("request survival ended: %s (%s)", res.Decision.Action, res.Decision.Reason)
+	var cause error
+	if res.FinalAttempt != nil {
+		cause = res.FinalAttempt.FinalError
+	}
+	if cause == nil {
+		cause = fmt.Errorf("request survival ended: %s (%s)", res.Decision.Action, res.Decision.Reason)
 	}
 	if terminalOnWire {
 		// R58 fault injection (245, §11.6 committed-then-EOF): the client
-		// already received the protocol terminal + [DONE]. Mark the error so
-		// the shared post-loop handlers skip further wire writes instead of
-		// stacking a second terminal after [DONE]. Multiple %w keeps the
-		// errorsx.ExecuteError As-chain intact for the typed branches.
-		err = fmt.Errorf("%w (%w)", err, errSurvivalTerminalRendered)
+		// already received the protocol terminal + [DONE]. Keep the sentinel
+		// inside the wrapped chain so the shared post-loop handlers (handler
+		// blackhole guard, errors.Is consumers) skip further wire writes
+		// instead of stacking a second terminal after [DONE]. Multiple %w
+		// keeps the errorsx.ExecuteError As-chain intact for the typed
+		// branches.
+		cause = fmt.Errorf("%w (%w)", cause, errSurvivalTerminalRendered)
 	}
-	return nil, err
+	return nil, &survivalTerminalError{
+		action: res.Decision.Action,
+		reason: res.Decision.Reason,
+		kinds:  lastKinds,
+		cause:  cause,
+	}
+}
+
+// survivalTerminalError marks a request whose survival coordinator reached a
+// terminal decision AND already rendered the protocol terminal envelope on
+// the serialized stream writer (renderSurvivalTerminal — resume_blocked /
+// fail_terminal / fail_closed all emit their own SSE error frame).
+//
+// 2026-09-23 (forensics round, design resume-blocked-long-stream-recovery
+// §四.2 "error_kind 补齐"): pre-fix, the handler's generic provider_error /
+// Exhausted fallthroughs recorded these requests with no survival-specific
+// detail code AND could render a SECOND client error frame ("No available
+// provider..." / "upstream request failed") on top of the already-written
+// survival envelope, degrading the signal agent clients act on. The handler
+// now pattern-matches this type: persist the survival decision verbatim,
+// render nothing more. When the R58 terminalOnWire latch fired, Unwrap also
+// exposes errSurvivalTerminalRendered so errors.Is keeps working.
+type survivalTerminalError struct {
+	action TaskAction
+	reason string
+	// kinds is the comma-joined errorsx kind list of the final attempt's
+	// candidate outcomes (e.g. "upstream_down,network"), carried for
+	// telemetry/logging.
+	kinds string
+	// cause is the final attempt's underlying error (usually an
+	// *executors.ExecuteError, possibly %w-joined with
+	// errSurvivalTerminalRendered); Unwrap keeps errors.Is/As chains intact.
+	cause error
+}
+
+func (e *survivalTerminalError) Error() string {
+	// Message stays byte-identical to the historical fmt.Errorf so
+	// log-grepping tests and dashboards keep matching.
+	return fmt.Sprintf("request survival ended: %s (%s)", e.action, e.reason)
+}
+
+func (e *survivalTerminalError) Unwrap() error { return e.cause }
+
+// detailCode is the request_logs failure_detail_code / error_kind value.
+func (e *survivalTerminalError) detailCode() string {
+	return "gateway_survival_" + e.action.String()
 }
 
 // durableBeforeSemanticCommit adapts the binding into the coordinator's
@@ -266,6 +328,23 @@ func renderSurvivalTerminal(sw *SerializedStreamWriter, protocol ClientProtocol,
 		return
 	}
 	retryable := decision.Action == TaskActionRetryNow || decision.Action == TaskActionWaitRecovery
+	// 2026-09-23 (strategy fix, user-report class #0/#2/#3/#8/#10): a
+	// resume_blocked verdict only ever fires for RETRYABLE failure kinds
+	// (errorsx.DecideNextAction arms it exclusively when CommitState >=
+	// CommitStateContent AND the kind is recoverable — transient / network /
+	// timeout / rate_limit / overloaded). The in-connection transparent retry
+	// stays blocked (the client owns the committed prefix; resuming would
+	// splice duplicate bytes), but that is a GATEWAY-side constraint, not a
+	// verdict on the failure itself. The pre-fix envelope told agent clients
+	// (ZCode et al.) retryable=false, so they hard-failed the whole turn even
+	// though their own "discard partial output and re-send" machinery
+	// recovers it cleanly. Mark the class client-retryable: the failure is
+	// transient by construction and a full-turn regeneration is the designed
+	// L4 fallback (design resume-blocked-long-stream-recovery §四.1
+	// AllowVisibleRestart without the protocol event).
+	if decision.Action == TaskActionResumeBlocked {
+		retryable = true
+	}
 	code := "gateway_survival_" + decision.Action.String()
 	message := "gateway request survival ended: " + decision.Reason
 	reasonJSON, _ := json.Marshal(message)

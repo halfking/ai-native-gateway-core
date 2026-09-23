@@ -1154,7 +1154,18 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 						// by the stream_timeout branch below and the
 						// json_error_in_stream branch above. The client SDK
 						// can pattern-match it as an OpenAI error envelope.
-						errChunk := "data: {\"error\":{\"type\":\"upstream_incomplete\",\"message\":\"upstream closed the stream without sending [DONE]\",\"code\":\"eof_without_done\"}}\n\n"
+						//
+						// 2026-09-23 (strategy fix): retryable=true. This
+						// branch only runs for KindUpstreamDown (upstream
+						// dropped the connection) after committed output — a
+						// transient class by construction. The pre-fix
+						// envelope had no retryable field, so agent clients
+						// defaulted to retryable=false and hard-failed the
+						// turn (user report #17); their own discard-and-
+						// regenerate machinery recovers it. The gateway-side
+						// constraint (cannot transparently resume committed
+						// bytes) is unchanged.
+						errChunk := "data: {\"error\":{\"type\":\"upstream_incomplete\",\"message\":\"upstream closed the stream without sending [DONE]\",\"code\":\"eof_without_done\",\"reason\":\"eof_without_done\",\"retryable\":true}}\n\n"
 						safeWriteSSE(w, errChunk)
 						// Synthesized [DONE] so the SDK still finalizes its
 						// stream parser (otherwise some clients block
@@ -1228,7 +1239,9 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 					"hint", "if timeout occurs frequently with chunks received, consider increasing llmgw_node_timeout_seconds (current default 120s, hotconfigurable via admin/settings)",
 				)
 				if attemptHasClientSemanticOutput(gate, chunkCount) {
-					safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\"}}\n\n")
+					// 2026-09-23: retryable=true — transient class after
+					// committed output; see the §11.6 eof_without_done note.
+					safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\",\"reason\":\"stream_timeout\",\"retryable\":true}}\n\n")
 					safeFlush(flusher)
 					// Same latch rationale as the §11.6 eof_without_done
 					// branch above: the timeout envelope is a protocol

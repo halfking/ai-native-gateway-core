@@ -1,8 +1,10 @@
 package streaming
 
 import (
+	"bytes"
 	"encoding/json"
 	"html"
+	"io"
 	"log/slog"
 	"regexp"
 	"strconv"
@@ -96,6 +98,41 @@ func coerceXMLToolCallsInChatResponse(body []byte, toolsRequested bool) []byte {
 
 const maxStreamXMLToolCallBytes = 64 * 1024
 
+// xmlToolCallTriggerMarkers are the substrings whose presence marks a delta
+// as a suspected XML/minimax tool-call fragment. A delta that merely ENDS
+// with a proper prefix of one of these markers (e.g. "…minimax[>" before the
+// next delta delivers "[<tool_call>") is also buffered: minimax-m3 splits
+// its wrapper tokens across SSE deltas at arbitrary byte offsets.
+var xmlToolCallTriggerMarkers = []string{
+	"minimax[>[",
+	"<tool_call>",
+	"<minimax:tool_call>",
+}
+
+// endsWithMarkerPrefix reports whether text ends with a proper prefix (at
+// least 4 bytes, to avoid pathological single-char matches) of any trigger
+// marker — i.e. a marker may be split across deltas at this boundary.
+func endsWithMarkerPrefix(text string) bool {
+	for _, marker := range xmlToolCallTriggerMarkers {
+		for n := len(marker) - 1; n >= 4; n-- {
+			if strings.HasSuffix(text, marker[:n]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsAnyMarker reports whether text already contains a complete marker.
+func containsAnyMarker(text string) bool {
+	for _, marker := range xmlToolCallTriggerMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // streamXMLToolCallCoercer buffers only a suspected XML tool-call fragment
 // between SSE deltas. The cap keeps malformed upstream output bounded.
 type streamXMLToolCallCoercer struct {
@@ -143,7 +180,7 @@ func (c *streamXMLToolCallCoercer) apply(line string, toolsRequested bool) strin
 			continue
 		}
 		candidate := c.fragment + content
-		if c.fragment == "" && !strings.Contains(content, "<tool_call>") && !strings.Contains(content, "<minimax:tool_call>") && !strings.Contains(content, "minimax[>[") {
+		if c.fragment == "" && !containsAnyMarker(content) && !endsWithMarkerPrefix(content) {
 			continue
 		}
 		if len(candidate) > maxStreamXMLToolCallBytes {
@@ -159,8 +196,19 @@ func (c *streamXMLToolCallCoercer) apply(line string, toolsRequested bool) strin
 		}
 		remaining, toolCalls := parseXMLToolCalls(candidate)
 		if len(toolCalls) == 0 {
-			c.fragment = candidate
-			delta["content"] = ""
+			if containsAnyMarker(candidate) || endsWithMarkerPrefix(candidate) {
+				// A marker is present (waiting for its closing tag) or may
+				// still be split across the next delta: keep buffering.
+				c.fragment = candidate
+				delta["content"] = ""
+				modified = true
+				continue
+			}
+			// The buffered bytes can no longer become a tool call (e.g. a
+			// marker prefix that turned out to be ordinary text): hand them
+			// back as visible content instead of swallowing the response.
+			c.fragment = ""
+			delta["content"] = candidate
 			modified = true
 			continue
 		}
@@ -180,11 +228,26 @@ func (c *streamXMLToolCallCoercer) apply(line string, toolsRequested bool) strin
 	if !modified {
 		return coerceXMLToolCallsInStreamLine(line, toolsRequested)
 	}
-	out, err := json.Marshal(obj)
+	out, err := marshalSSEPayloadNoEscape(obj)
 	if err != nil {
 		return line
 	}
-	return "data: " + string(out) + "\n"
+	return "data: " + out + "\n"
+}
+
+// marshalSSEPayloadNoEscape serializes a rebuilt SSE data payload without
+// Go's default HTML escaping (<, >, & → \u003c…). The upstream chat lines we
+// rewrite carry tool-call XML full of those bytes; re-escaping them changes
+// the wire shape clients diff against and makes byte-level passthrough tests
+// brittle. JSON semantics are identical either way.
+func marshalSSEPayloadNoEscape(obj any) (string, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(obj); err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(b.String(), "\n"), nil
 }
 
 func coerceXMLToolCallsInStreamLine(line string, toolsRequested bool) string {
@@ -366,4 +429,87 @@ func parseXMLWith(text string, callRE, paramRE *regexp.Regexp) (string, []map[st
 	}
 	builder.WriteString(text[cursor:])
 	return strings.TrimSpace(builder.String()), toolCalls
+}
+
+// xmlToolCallCoercingBody wraps an upstream SSE body and runs the streaming
+// XML/minimax tool-call coercer over every complete `data: {...}` line before
+// the bridge's protocol conversion sees it. It exists because the coercer was
+// historically wired only into the OpenAI-chat passthrough loop
+// (StreamChat/applyGateLineTransforms): requests whose CLIENT protocol is
+// anthropic-messages or openai-responses (e.g. agent harnesses on
+// /v1/messages) but whose UPSTREAM is an OpenAI-shaped chat relay (minimax-m3
+// via api.minimaxi.com) took the OpenAIToAnthropicStream /
+// OpenAIToResponsesStream bridges, which never coerced — so minimax-m3's
+// `minimax[>[<tool_call>…]<]minimax` wrapper tokens leaked verbatim into
+// client-visible text (2026-09-23 forensics round, user report #13).
+//
+// Wire: cmd/gateway/main.go wraps resp.Body with NewXMLToolCallCoercingBody
+// before invoking the bridge implementations. Line framing is preserved
+// one-for-one (each input line maps to exactly one output line), so the
+// bridges' bufio/LineReader consumers are unaffected.
+type xmlToolCallCoercingBody struct {
+	body    io.ReadCloser
+	coercer *streamXMLToolCallCoercer
+	tools   bool
+	out     []byte // transformed bytes ready to hand to the reader
+	pending []byte // partial line carried between upstream reads
+	eof     bool
+}
+
+// NewXMLToolCallCoercingBody returns body with the streaming XML tool-call
+// coercer applied. When toolsRequested is false the original body is
+// returned unchanged (the coercer must not touch tool-less requests).
+func NewXMLToolCallCoercingBody(body io.ReadCloser, toolsRequested bool) io.ReadCloser {
+	if body == nil || !toolsRequested {
+		return body
+	}
+	return &xmlToolCallCoercingBody{
+		body:    body,
+		coercer: newStreamXMLToolCallCoercer(),
+		tools:   true,
+	}
+}
+
+func (c *xmlToolCallCoercingBody) Read(p []byte) (int, error) {
+	for len(c.out) == 0 {
+		if c.eof {
+			if len(c.pending) > 0 {
+				// Final unterminated line: transform and serve without
+				// appending a terminator so the consumer still sees EOF next.
+				c.out = []byte(c.coercer.apply(string(c.pending), c.tools))
+				c.pending = nil
+				continue
+			}
+			return 0, io.EOF
+		}
+		buf := make([]byte, 4096)
+		n, err := c.body.Read(buf)
+		if n > 0 {
+			c.pending = append(c.pending, buf[:n]...)
+			for {
+				idx := bytes.IndexByte(c.pending, '\n')
+				if idx < 0 {
+					break
+				}
+				line := string(c.pending[:idx+1]) // keep the terminator
+				c.pending = c.pending[idx+1:]
+				c.out = append(c.out, c.coercer.apply(line, c.tools)...)
+			}
+		}
+		if err != nil {
+			c.eof = true
+			// Surface non-EOF errors only after the buffered/transformed
+			// bytes are drained; EOF is handled on the next loop pass.
+			if err != io.EOF && len(c.out) == 0 && len(c.pending) == 0 {
+				return 0, err
+			}
+		}
+	}
+	n := copy(p, c.out)
+	c.out = c.out[n:]
+	return n, nil
+}
+
+func (c *xmlToolCallCoercingBody) Close() error {
+	return c.body.Close()
 }

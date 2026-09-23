@@ -110,6 +110,8 @@ func TestStreamChatWithPendingCapture_EOFWithoutDoneAfterCommitIsStructuredError
 		"structured SSE error envelope must reach the client so the SDK observes the failure (NOT a silent 200)")
 	assert.Contains(t, body, `"code":"eof_without_done"`,
 		"error code mirrors the audit failure_detail_code so client-side error handlers and server-side logs agree")
+	assert.Contains(t, body, `"retryable":true`,
+		"2026-09-23: committed-output truncation is a transient upstream class; agent clients must re-send the turn instead of hard-failing (user report #17)")
 	assert.True(t, strings.HasSuffix(body, "data: [DONE]\n\n"),
 		"synthesized [DONE] must still reach the client so OpenAI-compatible parsers finalize")
 	assert.Less(t, strings.Index(body, `"type":"upstream_incomplete"`), strings.Index(body, "data: [DONE]"),

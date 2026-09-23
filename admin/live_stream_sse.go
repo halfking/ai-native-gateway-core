@@ -1946,7 +1946,15 @@ func (h *LiveStreamSSEHub) logDeltaDetails(scope string, tenantID string, reques
 		}
 	}
 
-	slog.Info("live stream delta push",
+	// 2026-09-23 (request-forensics audit): this per-push detail line ran at
+	// Info on EVERY broadcast and dominated the gateway log (measured 99.7%
+	// of bytes, ~130KB per line with lane rollups), rotating the 100MB×10
+	// file set in ~9 minutes — stream-failure evidence (survival_attempt_*,
+	// executor: stream interrupted, survival_resume_blocked) was already on
+	// disk but aged out before anyone could read it. Demoted to Debug: the
+	// swim-lane debug value survives behind a debug level while the request
+	// audit trail retains hours of history at the default Info level.
+	slog.Debug("live stream delta push",
 		"scope", scope,
 		"tenant_id", tenantID,
 		"trigger_request", requestID,

@@ -880,9 +880,13 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					capture.MarkInterruptedWithReason("stream_timeout")
 				}
 				if attemptHasClientSemanticOutput(gate, chunkCount) {
+					// 2026-09-23: retryable=true — transient class (stream
+					// timeout) after committed output; the client's
+					// discard-and-regenerate turn retry recovers it. See the
+					// §11.6 note in stream.go for the full rationale.
 					errPayload := map[string]any{
 						"type":  "error",
-						"error": map[string]any{"type": "timeout", "message": "upstream read timeout"},
+						"error": map[string]any{"type": "timeout", "message": "upstream read timeout", "retryable": true},
 					}
 					writeSSEWithCapturer(w, pc, "error", errPayload)
 					flusher.Flush()
@@ -899,9 +903,11 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					capture.MarkInterruptedWithReason(failure.Reason)
 				}
 				if attemptHasClientSemanticOutput(gate, chunkCount) {
+					// 2026-09-23: retryable=true — see the timeout branch note
+					// above; network/read failures are transient by definition.
 					errPayload := map[string]any{
 						"type":  "error",
-						"error": map[string]any{"type": "upstream_error", "message": fmt.Sprintf("stream read error: %v", readResult.err)},
+						"error": map[string]any{"type": "upstream_error", "message": fmt.Sprintf("stream read error: %v", readResult.err), "retryable": true},
 					}
 					writeSSEWithCapturer(w, pc, "error", errPayload)
 					flusher.Flush()

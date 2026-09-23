@@ -925,7 +925,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			}
 			if attemptHasClientSemanticOutput(gate, chunkCount) {
 				emitAnthropicBridgeErrorChunk(w, "stream_panic",
-					fmt.Sprintf("internal error: %v", r), flusher)
+					fmt.Sprintf("internal error: %v", r), flusher, false)
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
@@ -948,7 +948,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			}
 			if attemptHasClientSemanticOutput(gate, chunkCount) {
 				emitAnthropicBridgeErrorChunk(w, "stream_chunk_timeout",
-					fmt.Sprintf("no data received for %v", runtimeCfg.streamChunkTimeout), flusher)
+					fmt.Sprintf("no data received for %v", runtimeCfg.streamChunkTimeout), flusher, true)
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "chunk_timeout"
@@ -1106,7 +1106,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 				capture.MarkInterruptedWithReason(failure.Reason)
 			}
 			if attemptHasClientSemanticOutput(gate, chunkCount) {
-				emitAnthropicBridgeErrorChunk(w, "stream_read_error", err.Error(), flusher)
+				emitAnthropicBridgeErrorChunk(w, "stream_read_error", err.Error(), flusher, true)
 			}
 			return outcome
 		}
@@ -1365,7 +1365,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 								capture.AddQualityFlag("malformed_tool_args_blocked")
 							}
 							if attemptHasClientSemanticOutput(gate, chunkCount) {
-								emitAnthropicBridgeErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher)
+								emitAnthropicBridgeErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher, false)
 							}
 							outcome.Interrupted = true
 							outcome.Reason = "malformed_tool_args"
@@ -1526,7 +1526,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 						code = "api_error"
 					}
 				}
-				emitAnthropicBridgeErrorChunk(w, code, "upstream stream error: "+code, flusher)
+				emitAnthropicBridgeErrorChunk(w, code, "upstream stream error: "+code, flusher, false)
 			}
 			slog.Warn("anthropic_to_openai: upstream terminal error event",
 				"request_id", requestID,
@@ -1605,11 +1605,12 @@ func firstLineOfLogSafe(s string) string {
 	return s
 }
 
-func emitAnthropicBridgeErrorChunk(w http.ResponseWriter, code, message string, flusher http.Flusher) {
+func emitAnthropicBridgeErrorChunk(w http.ResponseWriter, code, message string, flusher http.Flusher, retryable bool) {
 	errBody := map[string]any{
 		"error": map[string]any{
-			"code":    code,
-			"message": message,
+			"code":      code,
+			"message":   message,
+			"retryable": retryable,
 		},
 	}
 	body, _ := json.Marshal(errBody)
