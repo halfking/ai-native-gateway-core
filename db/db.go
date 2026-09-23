@@ -4457,6 +4457,22 @@ func (d *DB) ensureCredentialColumns(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// D1 残余（2026-09-23 审计轮）：credentials 热表 ALTER/UPDATE 家族守卫——
+	// 245 seq 2200 boot 实测本步 15s 锁等待（预算 75s 吃掉 1/5）。列、表、
+	// 索引全在位时跳过（backfill UPDATE 的 IS NULL 谓词在成熟库为空集）。
+	if d.columnsAllPresent(ctx, "credentials", []string{"concurrency_limit_auto"}) {
+		var have int
+		if err := d.pool.QueryRow(ctx, `
+			SELECT count(*) FROM (
+			  SELECT 1 WHERE to_regclass('public.credential_model_call_history') IS NULL
+			  UNION ALL
+			  SELECT 1 FROM unnest(ARRAY['idx_call_history_cred_time','idx_call_history_model_time']) AS want(name)
+			  WHERE NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname=want.name)
+			) t`).Scan(&have); err == nil && have == 0 {
+			slog.Info("credential columns ensured (catalog short-circuit)")
+			return nil
+		}
+	}
 	_, err := d.pool.Exec(ctx, `
 		-- 034: credentials.concurrency_limit_auto
 		ALTER TABLE credentials
@@ -4535,6 +4551,18 @@ func (d *DB) ensureFpSlotLimit(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
+	// D1 残余：credentials.fp_slot_limit + system_identity_pool 全在位时跳过
+	// （245 seq 2200 boot 实测本步 10s 锁等待；同 columnsAllPresent 守卫族）。
+	if d.columnsAllPresent(ctx, "credentials", []string{"fp_slot_limit"}) {
+		var missingTable int
+		if err := d.pool.QueryRow(ctx,
+			`SELECT count(*) FROM (SELECT 1) AS one
+			 WHERE to_regclass('public.system_identity_pool') IS NULL`,
+		).Scan(&missingTable); err == nil && missingTable == 0 {
+			slog.Info("fp_slot_limit schema ensured (catalog short-circuit)")
+			return nil
+		}
+	}
 	_, err := d.pool.Exec(ctx, `
 		-- 036: credentials.fp_slot_limit (fingerprint slot pool size,
 		-- distinct from concurrency_limit which is in-flight requests).
@@ -4611,6 +4639,14 @@ func (d *DB) ensureFpSlotLimit(ctx context.Context) error {
 // docs/会话优化v2/57-多层队列调度架构设计方案.md.
 func (d *DB) ensureConcurrencyMode(ctx context.Context) error {
 	if d == nil || d.pool == nil {
+		return nil
+	}
+	// D1 残余：4 列全在位时跳过（245 seq 2200 boot 实测本步 10s 锁等待；
+	// backfill UPDATE 的 IS NULL 谓词在成熟库为空集，同守卫族）。
+	if d.columnsAllPresent(ctx, "credentials", []string{
+		"concurrency_mode", "tpm_limit", "max_queue_depth", "max_queue_wait_ms",
+	}) {
+		slog.Info("concurrency_mode schema ensured (catalog short-circuit)")
 		return nil
 	}
 	_, err := d.pool.Exec(ctx, `
