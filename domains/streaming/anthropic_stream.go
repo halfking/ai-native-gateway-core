@@ -890,6 +890,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					}
 					writeSSEWithCapturer(w, pc, "error", errPayload)
 					flusher.Flush()
+					outcome.TerminalRendered = true
 				}
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
@@ -911,6 +912,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					}
 					writeSSEWithCapturer(w, pc, "error", errPayload)
 					flusher.Flush()
+					outcome.TerminalRendered = true
 				}
 				failure.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				outcome = failure

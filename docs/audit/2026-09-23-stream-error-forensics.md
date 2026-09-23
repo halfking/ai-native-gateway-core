@@ -49,3 +49,26 @@
 ## 五、并发冲突记录
 
 本会话工作期间另一会话在同一工作树推进 R58/D1（commits 95b22c817/764a95330/70e47c4f4）并触发 stash-pop 冲突（survival_wiring.go）；已按双语义合并：`survivalTerminalError`（本轮）+ `errSurvivalTerminalRendered`/`terminalOnWire`（R58）共存，R58 e2e 与本轮测试均绿。多写者同树操作再次印证需要 checkout 隔离。
+
+## 六、批判式复审轮（2026-09-23 晚，用户指令：核查"只声明未实证"项）
+
+复审方法：对上一轮每一项声明找"生产路径实证"，找不到的补证或修。
+
+### 发现并修复的三个缺陷
+
+- **F-1 anthropic 直通帧缺 code/retryable**：`finalizePassthroughInterruption`→`writePassthroughErrorEvent`（/v1/messages + anthropic 上游，#14/#15 的路径之一）只发 `{type,message}`。修复：`writePassthroughErrorEventFull` 携带 `code=stream_interrupted` + `retryable=EffectiveRetryable(kind)`；新增 2 个单测（含未提交不渲染断言）。
+- **F-2 通用 fallthrough 硬编码 retryable=false**：handler 非 survival 已提交中断（streamInterruptedError）最终走 `writePrewarmedStreamError("upstream request failed","provider_error")` 无 retryable。修复：`ClassifyError` 推导 kind + `EffectiveRetryable`；**复审中发现并堵住自身回归**——`client_cancel` 文本分类为 transient→true，会误导对已取消请求重试双计费，`isClientInterruptError`（前缀精确匹配）强制 false。
+- **F-3 双终态帧（mock E2E 实测发现）**：chat 路径已提交 EOF 时，§11.6 帧后 handler 的 Exhausted 分支又写一帧误导性 `model_not_found` "No available provider…"。修复：`errorsx.ErrProtocolTerminalRendered` 共享哨兵（executors 不能 import streaming，故放 errorsx；survival 哨兵 wrap 它）；`StreamOutcome.TerminalRendered`（两份别名结构体同步加字段）在 §11.6/timeout/anthropic 帧/passthrough finalize 全部渲染点置位；`streamInterruptedError.terminalRendered`→`forwardForDispatch` wrap 哨兵→handler `execTerminalRendered`（含 ExecuteError.LastErr 显式检查，ExecuteError 无 Unwrap）→ 既有 blackhole 守卫拦截第二帧。**E2E 复测：第二个信封消失**，仅剩 §11.6 帧+合成 [DONE]+parser-safe thinking 注释。
+
+### 实证补齐（上一轮只声明未实证的）
+
+- **minimax coercer 生产接线**：mock 上游（自写 SSE server，回放报告 #13 原文 payload，且在 `minimax[>[` 标记中间拆分跨 delta）+ DB 翻转 mock provider 34874/credential 70 绑定 + `/v1/messages` 流式+tools 经**已部署网关**：输出 0 处 `minimax[>[`、产出规范 `tool_use` 块。上一轮 E2E 用的是原生 tool_calls 路径，未证 coercer——本项补上。
+- **§11.6 retryable 帧**：mock 截断（发出内容后不带 [DONE] 硬断开）→ `/v1/chat/completions` 实测返回 `"code":"eof_without_done","reason":"eof_without_done","retryable":true` + 合成 [DONE]。
+- **survival 激活范围（如实更正）**：本地与 245 的 env 均无 SURVIVAL 配置（默认 false）→ 本地部署验证覆盖的是常开路径（coercer/§11.6/prewarmed/通用 fallthrough）。**154 canary 实证 survival 活跃**（日志 survival_attempt_start attempt=82，build 2211，不含修复）——用户报的 resume_blocked 类错误源于此类环境；**修复在 main 上，154 需重新部署才能生效**（本轮未部署 154）。
+- 日志保留期 "~3.5 天"为估算（基于实测 ~12MB/h 低负载增速），随流量线性变化。
+
+### 过程坑（复用价值）
+
+- 直写 DB 翻转绑定后需 `docker restart llm-gateway-local-8782` 清内存候选缓存；截断 mock 会击穿探针→`auto_cool_high_failure_rate` 冷却→no_candidate，mock 必须"标记触发"（body 含 TRUNCATE 才截断，探针正常答）。
+- 测试 key 不设 `rate_limit_rpm=0` 会回落 tier 默认 12 RPM（再次踩中）。
+- 并发会话同树部署竞态：`gateway.build` 变 linux ELF + DL_DOCKER=0 时宿主 exec 报 Exec format error；重试即可。`psql_query` 在 `LLM_GATEWAY_DATABASE_URL` 未导出时 set -u 崩（另一会话未提交脚本改动相关）。

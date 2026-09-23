@@ -885,6 +885,17 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	// line with reason client_cancel/client_disconnected and KindCanceled.
 	var sie *streamInterruptedError
 	if errors.As(execErr, &sie) && sie != nil {
+		if sie.terminalRendered {
+			// 2026-09-23 critique round: the bridge already put a protocol
+			// terminal on the wire (§11.6 eof_without_done / timeout /
+			// anthropic interruption frames). Mark the error so the shared
+			// post-loop handlers blackhole further wire writes instead of
+			// stacking a second terminal (observed live: eof_without_done
+			// frame followed by a misleading "No available provider…"
+			// exhausted envelope). %w keeps the streamInterruptedError
+			// errors.As chain intact for this block below.
+			execErr = fmt.Errorf("%w (%w)", execErr, errorsx.ErrProtocolTerminalRendered)
+		}
 		logDispatchStreamInterrupted(params, cand, kind, sie)
 		// Audit R9 candidate 17: bytesSent=true is by construction the
 		// terminal decision point (dispatcher completes without failover,
@@ -964,7 +975,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 // 2026-09-19 会话保持：dctx 携带 sticky 钉扎凭据的本请求失败史——
 // 瞬时错误 failover 成功后不重写 sticky（会话留在原节点，保住 prompt-cache
 // 亲和）；严重错误（IsCredentialFatal）或 sticky 节点本请求未被尝试
-//（被可用性过滤=冷却/熔断）时正常重写到实际服务节点（会话迁移）。
+// （被可用性过滤=冷却/熔断）时正常重写到实际服务节点（会话迁移）。
 func (e *Executor) recordDispatchSuccess(params *ExecParams, cand provider.Candidate, result *ExecuteResult, dctx *dispatchCtx) {
 	sideEffectCtx, sideEffectCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 	defer sideEffectCancel()

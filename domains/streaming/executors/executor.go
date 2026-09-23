@@ -340,6 +340,10 @@ type StreamOutcome = struct {
 	Reason      string
 	Resumable   bool // Whether the stream can be resumed with a different credential
 	ChunkCount  int  // Number of chunks sent before interruption
+	// TerminalRendered mirrors streaming.StreamOutcome (field-identical for
+	// the type alias to stay assignable): the bridge already wrote a
+	// protocol terminal for this committed-output interruption.
+	TerminalRendered bool
 
 	// Kind (2026-07-28 §5.6) is the structured errorsx.ErrorKind the
 	// executor assigns to the interruption. When non-empty,
@@ -689,7 +693,7 @@ type Executor struct {
 	// lazily initialised.
 	flashBlipMu       sync.Mutex
 	flashBlipInFlight map[string]struct{}
-	nodeHealthMu       sync.Mutex
+	nodeHealthMu      sync.Mutex
 	// Provider is the credential/candidate resolver. Typed as an interface
 	// (defined in routing) so the compaction fallback tests can inject a
 	// stub without standing up a real pgx pool. The concrete
@@ -3311,6 +3315,11 @@ type streamInterruptedError struct {
 	kind         errorsx.ErrorKind // Errorsx kind to record on the circuit (defaults to KindStreamTimeout)
 	statusCode   int
 	rawError     string
+	// terminalRendered: the bridge already wrote a protocol terminal for
+	// this interruption (StreamOutcome.TerminalRendered). forwardForDispatch
+	// wraps errorsx.ErrProtocolTerminalRendered so the handler blackholes
+	// any second terminal.
+	terminalRendered bool
 }
 
 func (e *streamInterruptedError) Error() string {

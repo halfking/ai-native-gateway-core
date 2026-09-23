@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // 2026-09-23 forensics round (user report #13): minimax-m3 leaked its
@@ -151,5 +153,49 @@ func TestOpenAIToAnthropicBridgeWithCoercingBodyConvertsLeakToToolUse(t *testing
 	}
 	if !strings.Contains(body, `"type":"tool_use"`) {
 		t.Fatalf("expected a tool_use content block: %q", body)
+	}
+}
+
+// 2026-09-23 critique round: the anthropic passthrough committed-output
+// interruption frame must carry code + retryable so agent clients on
+// /v1/messages (anthropic upstream) don't default to a hard turn failure.
+func TestPassthroughInterruptionFrameCarriesRetryable(t *testing.T) {
+	rec := httptest.NewRecorder()
+	cw := newClientStreamWriter(rec, rec)
+	f := &trackingFlusher{}
+	sw := NewSerializedStreamWriter(f)
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, sw, GateOptions{Mode: GateModeImmediate})
+	// Advance the gate to committed content the way the passthrough loop
+	// does: write one semantic frame through the immediate-mode gate.
+	if err := gate.WriteFrame("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"); err != nil {
+		t.Fatalf("write frame: %v", err)
+	}
+	oc := &StreamOutcome{Interrupted: true, Reason: "read_error", Kind: errorsx.KindNetwork, ChunkCount: 3}
+	finalizePassthroughInterruption(cw, gate, nil, oc, 3, "upstream stream interrupted: read_error")
+	out := rec.Body.String()
+	if !strings.Contains(out, "event: error") {
+		t.Fatalf("missing error event: %q", out)
+	}
+	if !strings.Contains(out, `"code":"stream_interrupted"`) {
+		t.Fatalf("missing code field: %q", out)
+	}
+	if !strings.Contains(out, `"retryable":true`) {
+		t.Fatalf("transient network interruption must be client-retryable: %q", out)
+	}
+	if oc.Resumable {
+		t.Fatalf("committed-output interruption must stay non-transparently-resumable")
+	}
+}
+
+// Uncommitted passthrough interruptions render nothing (transparent retry).
+func TestPassthroughInterruptionUncommittedRendersNothing(t *testing.T) {
+	rec := httptest.NewRecorder()
+	cw := newClientStreamWriter(rec, rec)
+	sw := NewSerializedStreamWriter(&trackingFlusher{})
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, sw, GateOptions{Mode: GateModeImmediate})
+	oc := &StreamOutcome{Interrupted: true, Reason: "read_error", Kind: errorsx.KindNetwork, ChunkCount: 0}
+	finalizePassthroughInterruption(cw, gate, nil, oc, 0, "x")
+	if rec.Body.Len() != 0 {
+		t.Fatalf("uncommitted interruption must not render: %q", rec.Body.String())
 	}
 }

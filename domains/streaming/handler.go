@@ -4708,11 +4708,14 @@ goalRetryLoopDone:
 			preStream.stop()
 			preStream = nil
 		}
-		if errors.Is(execErr, errSurvivalTerminalRendered) {
-			// Survival already rendered the protocol terminal + [DONE] on
-			// this connection (R58 §11.6 fault injection). Keep the failure
-			// bookkeeping below, but route every late wire write into a
-			// blackhole so no second terminal can stack after [DONE].
+		if execTerminalRendered(execErr) {
+			// A protocol terminal is already on the wire for this connection
+			// — the survival coordinator's envelope (R58 §11.6 fault
+			// injection) or a stream bridge's §11.6/timeout/interruption
+			// frame (2026-09-23 critique round: live-observed double
+			// terminal). Keep the failure bookkeeping below, but route every
+			// late wire write into a blackhole so no second terminal can
+			// stack after the first.
 			w = blackholeResponseWriter{}
 		}
 		// V3.1: capture dispatch queue timestamps from ExecuteError before
@@ -5163,18 +5166,39 @@ goalRetryLoopDone:
 		logCtx.failAndMark("provider_error", enrichedErrMsg, providerID, credentialID)
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 		markLogged()
+		// 2026-09-23 critique round: the generic fallthrough also carries
+		// committed-output stream interruptions (streamInterruptedError from
+		// the bridges — eof_without_done / read_error / stream_timeout after
+		// the client already saw content, on non-survival tenants). Those are
+		// transient classes; derive the kind so both the debug payload and
+		// the prewarmed envelope tell agent clients the turn is re-sendable
+		// instead of the hardcoded retryable=false.
+		fallbackKind := ""
+		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok {
+			fallbackKind = string(execErrTyped.LastKind)
+		} else {
+			fallbackKind = string(errorsx.ClassifyError(execErr, nil))
+		}
+		fallbackRetryable := errorsx.EffectiveRetryable(errorsx.ErrorKind(fallbackKind))
+		if isClientInterruptError(execErr) {
+			// The client is gone (its own abort) — a "retryable" verdict
+			// here would double-bill a request the user cancelled.
+			// ClassifyError maps client_cancel to transient because the
+			// textual reason alone does not carry the cancel semantics.
+			fallbackRetryable = false
+		}
 		debugInfo := map[string]any{
 			"stage":     "execution",
 			"tried":     tried,
-			"retryable": false,
+			"kind":      fallbackKind,
+			"retryable": fallbackRetryable,
 		}
 		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok {
-			debugInfo["kind"] = string(execErrTyped.LastKind)
 			debugInfo["attempts"] = execErrTyped.Attempts
-			debugInfo["retryable"] = errorsx.EffectiveRetryable(execErrTyped.LastKind)
 		}
 		if preStreamPrepared {
-			writePrewarmedStreamError(w, "upstream request failed", "server_error", "provider_error")
+			writePrewarmedStreamErrorFull(w, "upstream request failed", "server_error", "provider_error", fallbackKind,
+				map[string]any{"retryable": fallbackRetryable})
 			return
 		}
 		writeErrorJSONWithDebugProto(proto, w, http.StatusBadGateway, requestID, i18n.T(r.Context(), i18n.MsgProviderError), "server_error", "provider_error", debugInfo)
@@ -9121,4 +9145,37 @@ func (c *RequestLogContext) sessionTenantID() string {
 func (c *RequestLogContext) sessionID() string {
 	sid, _ := c.SessionTask()
 	return sid
+}
+
+// execTerminalRendered reports whether the execution error chain carries the
+// protocol-terminal-on-the-wire sentinel — either the survival wrapper
+// (errSurvivalTerminalRendered wraps errorsx.ErrProtocolTerminalRendered) or
+// the dispatch-path wrap (executor_dispatch.go). ExecuteError has no
+// Unwrap, so its LastErr is inspected explicitly.
+func execTerminalRendered(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errorsx.ErrProtocolTerminalRendered) {
+		return true
+	}
+	if ee, ok := err.(*executors.ExecuteError); ok {
+		return errors.Is(ee.LastErr, errorsx.ErrProtocolTerminalRendered)
+	}
+	return false
+}
+
+// isClientInterruptError reports whether err is a stream interruption caused
+// by the CLIENT going away (disconnect / abort), as opposed to an upstream
+// failure. The executor's unexported streamInterruptedError surfaces here
+// only through its message ("stream_interrupted: <reason>"), so match the
+// canonical cancel reasons on that prefix — never a raw body preview.
+func isClientInterruptError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.HasPrefix(msg, "stream_interrupted: client_cancel") ||
+		strings.HasPrefix(msg, "stream_interrupted: client_disconnected") ||
+		strings.HasPrefix(msg, "stream_interrupted: client_write_failed")
 }
