@@ -258,6 +258,28 @@ func TestReplayOne_SkipsHookExclusionClasses(t *testing.T) {
 	}
 }
 
+// TestReplayOne_SkipsProbeSyntheticSession pins the R60 S2-F4 gate parity:
+// 存量的 probe synthetic 失败行（历史上多为 advisory lock 超时噪声，
+// ~115/min）在重放时按 hook 同款谓词删除——不写 V2、不重试。
+func TestReplayOne_SkipsProbeSyntheticSession(t *testing.T) {
+	db := &recordingDB{}
+	writer := &capturingWriter{}
+	r := newTestReaper(db, writer)
+
+	probe := terminalEntry("req_probe_no_session")
+	probe.GwSessionID = nil // 无会话头 ⇒ 合成路径
+	probe.OriginStage = strPtr("node_probe")
+	r.replayOne(context.Background(), claimRow{id: 11, requestID: probe.RequestID, payload: mustPayload(t, probe)})
+
+	if len(writer.written()) != 0 {
+		t.Fatal("probe synthetic row must not be replayed into V2")
+	}
+	joined := strings.Join(db.statements(), "\n")
+	if !strings.Contains(joined, "DELETE FROM public.session_mirror_outbox") {
+		t.Fatalf("expected skipped row deleted, got %v", db.statements())
+	}
+}
+
 // TestReplayOne_CorruptPayloadMarksDead pins the decode terminal path.
 func TestReplayOne_CorruptPayloadMarksDead(t *testing.T) {
 	db := &recordingDB{}

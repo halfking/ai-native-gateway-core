@@ -567,6 +567,16 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 		// 钳不到位会 400；钳后仍 < 1024（max_tokens 太小放不下）则整体
 		// 丢弃 thinking（保持请求可发）。
 		irReq = ir.ClampRestoredReasoningForAnthropic(irReq)
+		// S2-F3/R60: stamp the gateway request id into the IR metadata carrier
+		// so ir-layer format anomalies ({\"raw\":...} tool_use.input wrap 等)
+		// 上报时带真实 request_id（serialize_anthropic 经 irRequestID 读取）。
+		// 与 request_logs.request_id 同源，异常可与请求日志/泳道对账。载体的
+		// 线上语义见 ir.Metadata 注释：Anthropic 序列化器只透出 user_id，本
+		// stamp 不会进上游请求体。
+		if irReq.Metadata == nil {
+			irReq.Metadata = &ir.Metadata{}
+		}
+		irReq.Metadata.RequestID = params.RequestID
 		bodyBytes, err := irScoped.SerializeAnthropic(irReq)
 		if err != nil {
 			// 2026-08-08 P0 Fix: same IR-circuit-open fallback as ParseOpenAI.

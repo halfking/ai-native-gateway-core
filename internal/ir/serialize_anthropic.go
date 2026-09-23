@@ -48,7 +48,7 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 	}
 
 	// Messages
-	messages := serializeAnthropicMessages(req, req.TargetProvider, req.Model)
+	messages := serializeAnthropicMessages(req, req.TargetProvider, req.Model, irRequestID(req))
 	if len(messages) > 0 {
 		out["messages"] = messages
 	}
@@ -235,6 +235,8 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 		return
 	}
 	src := req.SourceProtocol
+	// S2-F3/R60：上报带上真实请求 id（irRequestID，缺失回落 "unknown"）。
+	reqID := irRequestID(req)
 
 	// OpenAI Chat Completions → Anthropic: any OpenAI-only field that
 	// does not have a 1:1 Anthropic equivalent is a loss. Skip on
@@ -266,7 +268,7 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 				continue
 			}
 			ReportProtocolLoss(
-				"unknown",
+				reqID,
 				f.field,
 				ifaceNonEmpty(src, ProtocolOpenAIChat),
 				ProtocolAnthropicMessages,
@@ -283,7 +285,7 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 	// kept for symmetry with other same-protocol guards).
 	if req.PreviousResponseID != "" && src != ProtocolAnthropicMessages {
 		ReportProtocolLoss(
-			"unknown",
+			reqID,
 			"previous_response_id",
 			ifaceNonEmpty(src, ProtocolOpenAIChat),
 			ProtocolAnthropicMessages,
@@ -296,7 +298,7 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 	// semantically. (When SourceProtocol is Anthropic this is normal usage.)
 	if req.TopK != nil && *req.TopK == 0 && src == ProtocolOpenAIChat {
 		ReportProtocolLoss(
-			"unknown",
+			reqID,
 			"top_k",
 			ProtocolOpenAIChat,
 			ProtocolAnthropicMessages,
@@ -360,11 +362,11 @@ func serializeAnthropicSystem(system *SystemPrompt) any {
 // targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
 // 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
 // modelName is used to detect relay scenarios (e.g., NVIDIA forwarding to MiniMax).
-func serializeAnthropicMessages(req *InternalRequest, targetProvider string, modelName string) []map[string]any {
+func serializeAnthropicMessages(req *InternalRequest, targetProvider string, modelName string, requestID string) []map[string]any {
 	messages := make([]map[string]any, 0, len(req.Messages))
 
 	for _, msg := range req.Messages {
-		messages = append(messages, serializeAnthropicMessage(msg, targetProvider, modelName))
+		messages = append(messages, serializeAnthropicMessage(msg, targetProvider, modelName, requestID))
 	}
 
 	return messages
@@ -373,7 +375,9 @@ func serializeAnthropicMessages(req *InternalRequest, targetProvider string, mod
 // serializeAnthropicMessage converts a single IR Message to Anthropic format.
 // targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
 // 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
-func serializeAnthropicMessage(msg Message, targetProvider string, modelName string) map[string]any {
+// requestID 是上报 format-anomaly 用的网关请求 id（S2-F3/R60：由 SerializeAnthropic
+// 从 req.Metadata.RequestID 取出逐层下传，缺失时为 "unknown"）。
+func serializeAnthropicMessage(msg Message, targetProvider string, modelName string, requestID string) map[string]any {
 	// Tool role messages: convert to user+tool_result format (Anthropic convention)
 	if msg.Role == "tool" {
 		out := map[string]any{
@@ -427,7 +431,7 @@ func serializeAnthropicMessage(msg Message, targetProvider string, modelName str
 		out["content"] = msg.Content[0].Text
 	} else {
 		// Content blocks (may include tool_use blocks)
-		content := serializeAnthropicMessageContent(msg, targetProvider, modelName)
+		content := serializeAnthropicMessageContent(msg, targetProvider, modelName, requestID)
 		out["content"] = content
 	}
 
@@ -455,7 +459,8 @@ func joinTextPartsAnthropic(parts []string) string {
 // serializeAnthropicMessageContent converts IR message content to Anthropic content blocks.
 // targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
 // 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
-func serializeAnthropicMessageContent(msg Message, targetProvider string, modelName string) []map[string]any {
+// requestID 随 format-anomaly 上报（S2-F3/R60 plumb，"unknown" 表示无请求上下文）。
+func serializeAnthropicMessageContent(msg Message, targetProvider string, modelName string, requestID string) []map[string]any {
 	result := make([]map[string]any, 0)
 
 	// First, add text and other content blocks.
@@ -492,7 +497,10 @@ func serializeAnthropicMessageContent(msg Message, targetProvider string, modelN
 				args = obj
 			} else {
 				args = map[string]any{"raw": tc.Function.Arguments}
-				ReportProtocolLoss("unknown", "messages[*].tool_use.input", "", ProtocolAnthropicMessages,
+				// S2-F3/R60: requestID 由调用链下传（见 irRequestID），不再写死
+				// "unknown"——全局 dedup key 含 RequestID，写死会把去重退化成
+				// 每进程一次。
+				ReportProtocolLoss(requestID, "messages[*].tool_use.input", "", ProtocolAnthropicMessages,
 					"loss",
 					"tool arguments are not a JSON object; wrapped as {\"raw\":...} to keep tool_use.input schema-valid",
 					map[string]any{"anomaly": "format", "arg_bytes": len(tc.Function.Arguments)})

@@ -112,12 +112,13 @@ func deliverOne(ctx context.Context, deps CallbackDeps, job CallbackJob) deliver
 	if err != nil {
 		return fail(true, fmt.Errorf("load task for callback: %w", err))
 	}
-	eventType := "hosted_task." + string(task.Status)
-	payload := map[string]any{
-		"status":  task.Status.APIStatus(),
-		"result":  task.Result,
-		"attempt": job.Attempts + 1,
-	}
+	// recalled 事件的回调必须带 recall_status + handoff_packet（§3.3：每次
+	// 召回交付一次最新包；store.RecallTask 的注释契约）。回调台账行以
+	// event_seq 精确指向该事件，按 seq 读回事件 payload——deliverer 据此
+	// 区分召回投递（事件类型 hosted_task.recalled）并交付包本体。
+	// 旧行/事件已不可读（GetEvent 失败）时 ev=nil，保持既有投递形状不崩。
+	ev, _ := deps.Store.GetEvent(ctx, job.TenantID, job.TaskID, job.EventSeq)
+	eventType, payload := buildCallbackDelivery(task, ev, job.Attempts+1)
 	body, err := hostedcallback.BuildEnvelope(job.EventID, eventType, job.TaskID, job.TenantID, payload)
 	if err != nil {
 		return fail(true, fmt.Errorf("build envelope: %w", err))
@@ -130,6 +131,38 @@ func deliverOne(ctx context.Context, deps CallbackDeps, job CallbackJob) deliver
 		statusCode: res.StatusCode,
 		errText:    errString(derr),
 	}
+}
+
+// buildCallbackDelivery 从任务行 + 关联事件行重建回调投递体（纯函数，回归
+// 测试锚点）。ev 为 job.EventSeq 指向的事件；recalled 事件在既有
+// {status,result,attempt} 形状上追加 recall_status + handoff_packet，事件
+// 类型改为 hosted_task.recalled——回调消费者据此区分召回投递并拿到续跑包
+// （§3.3：每次召回交付一次最新包）。ev 为 nil（事件行不可读的旧行）或事件
+// 里没有包时保持既有形状：不追加字段、类型仍为 hosted_task.<status>。
+//
+// 尺寸策略：result 与 handoff_packet 均按 PG 权威数据原样投递、不做投递侧
+// 截断——与既有 result 字段同一策略（result 从 SettleTask 写入起即无投递
+// 侧封顶，全链以 PG 权威为准）；包内 CurrentResult 正是同一份 result 快照
+// （handoff.go buildHandoffPacket），召回 HTTP 响应（handler.go recall）同
+// 样原样返回包，两读方尺寸口径一致。
+func buildCallbackDelivery(task *Task, ev *Event, attempt int) (string, map[string]any) {
+	eventType := "hosted_task." + string(task.Status)
+	payload := map[string]any{
+		"status":  task.Status.APIStatus(),
+		"result":  task.Result,
+		"attempt": attempt,
+	}
+	if ev == nil || ev.Type != EventRecalled {
+		return eventType, payload
+	}
+	eventType = "hosted_task." + string(EventRecalled)
+	if rs, ok := ev.Payload["recall_status"].(string); ok && rs != "" {
+		payload["recall_status"] = rs
+	}
+	if hp, ok := ev.Payload["handoff_packet"]; ok {
+		payload["handoff_packet"] = hp
+	}
+	return eventType, payload
 }
 
 func errString(err error) string {
