@@ -1767,6 +1767,7 @@ func main() {
 			cap *audit.StreamCapture,
 			pcAny any,
 			inputTokensEstimate int,
+			toolsRequested bool,
 		) executors.StreamOutcome {
 			tenantID := extractTenantIDFromUpstreamResp(resp)
 			var pc *streaming.PendingCapturer
@@ -1779,6 +1780,13 @@ func main() {
 				Anomaly:   routingExec.AnomalyReporter,
 				Semantic:  routingExec.SemanticAnalyzer,
 			}
+			// 2026-09-23 (leak fix): agent clients on /v1/messages over an
+			// OpenAI-shaped upstream previously bypassed the XML/minimax
+			// tool-call coercer entirely (it was wired only into the chat
+			// passthrough loop), so minimax-m3 wrapper tokens leaked into
+			// client-visible text. Coerce at the body-reader seam so the
+			// bridge converts a real tool_calls delta instead of text.
+			resp.Body = streaming.NewXMLToolCallCoercingBody(resp.Body, toolsRequested)
 			// 审计 R3 #2 (2026-09-09)：透传 executor 基于请求体的 input_tokens 估算值，
 			// 写入 message_start.usage.input_tokens（此前恒 0）。
 			outcome := streaming.StreamOpenAIToAnthropicSSEWithDiagnostics(ctx, w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics, inputTokensEstimate)
@@ -1823,6 +1831,7 @@ func main() {
 			clientModel, outboundModel, requestID string,
 			cap *audit.StreamCapture,
 			pcAny any,
+			toolsRequested bool,
 		) executors.StreamOutcome {
 			tenantID := extractTenantIDFromUpstreamResp(resp)
 			var pc *streaming.PendingCapturer
@@ -1835,6 +1844,9 @@ func main() {
 				Anomaly:   routingExec.AnomalyReporter,
 				Semantic:  routingExec.SemanticAnalyzer,
 			}
+			// 2026-09-23 (leak fix): see the OpenAIToAnthropicStream wiring
+			// above — coerce XML/minimax tool-call text before conversion.
+			resp.Body = streaming.NewXMLToolCallCoercingBody(resp.Body, toolsRequested)
 			outcome := streaming.StreamOpenAIToResponsesSSEWithDiagnostics(ctx, w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
@@ -6802,10 +6814,10 @@ func main() {
 		slog.Info("A4 Phase 1 context window calibration enabled (/api/admin/models/context-window/{id})")
 
 		// 2026-08-11 (479): V2 多层队列调度实时快照（Tier-3 显示与统计）。
-			mux.HandleFunc("/api/admin/dispatch/queues", wrapAdmin(handleDispatchQueues))
-			mux.HandleFunc("/api/admin/dispatch/waterfall", wrapAdmin(handleDispatchWaterfall))
-			mux.HandleFunc("/api/admin/dispatch/waterfall/request/", wrapAdmin(handleDispatchWaterfallByRequest))
-			// v6 G-Ⅳ (2026-08-27): 分维成员索引（模型/凭据/供应商）查询。
+		mux.HandleFunc("/api/admin/dispatch/queues", wrapAdmin(handleDispatchQueues))
+		mux.HandleFunc("/api/admin/dispatch/waterfall", wrapAdmin(handleDispatchWaterfall))
+		mux.HandleFunc("/api/admin/dispatch/waterfall/request/", wrapAdmin(handleDispatchWaterfallByRequest))
+		// v6 G-Ⅳ (2026-08-27): 分维成员索引（模型/凭据/供应商）查询。
 		mux.HandleFunc("/api/admin/dispatch/dimensions", wrapAdmin(handleDispatchDimensions))
 		// V6-W1.6 R10（2026-08-27 范围修正）：按请求查分维成员归属；执行轨迹
 		// (AttemptJournal) 通过 tenant/request-scoped journal snapshot 端点查询。

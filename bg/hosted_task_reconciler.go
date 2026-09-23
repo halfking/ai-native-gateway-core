@@ -59,6 +59,12 @@ type HostedTaskReconciler struct {
 	// 竞争——旧订阅 goroutine 退出晚于新订阅注册时，会把新订阅的 cancel 项
 	// 删掉，同一 runID 随后被再次注册成双订阅（重复 repoll/cursor 写）。
 	streams map[string]*streamHandle
+
+	// workerCtx 由 Start() 从 run 入口 ctx 派生；ensureStream 必须用它
+	// 而不是 tick() 入口的 passCtx，否则 cancelPass() 每 tick 级联取消所有
+	// SSE 长连接，SSE 流永活不过一个 tick —— 实质上把"长连接"降级成"5 秒
+    // 重连一次"，状态权威回到 poll，SSE 沦为噪声通道（设计 §3.1 ④ 意图失效）。
+	workerCtx context.Context
 }
 
 // NewHostedTaskReconciler 构造 reconciler。
@@ -101,6 +107,12 @@ func (r *HostedTaskReconciler) run(ctx context.Context) {
 	defer r.BaseWorker.NotifyStopped()
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
+
+	// 把 run 入口 ctx 作为 workerCtx 缓存，确保 ensureStream 从这里派生
+	// 流 ctx（独立于 tick() 的 passCtx），防止 R36 引入的 SSE ctx 级联取消
+	// 回归（R62 审计 2026-09-17 后）：passCtx cancelPass() 每 tick 级联杀
+	// 掉所有 SSE 长连接，SSE 流永活不过一个 tick。
+	r.workerCtx = ctx
 
 	if !r.acc.Configured() {
 		r.logger.Warn("hostedtask reconciler: ACC not configured (LLM_GATEWAY_ACC_BASE_URL/TOKEN); " +
@@ -417,16 +429,28 @@ type streamHandle struct {
 
 // ensureStream 为 runID 维护至多一条订阅 goroutine（断线退避重连；run 退出
 // active 集时由 projectPass 调 cancel 回收）。
-func (r *HostedTaskReconciler) ensureStream(ctx context.Context, task hostedtask.Task) {
+//
+// 入参 ctx 在 P0 历史里被用作 streamCtx 的 parent，但 R36 给 tick() 加了
+// passCtx 预算后，传入 ctx 是 passCtx，cancelPass() 每 tick 级联取消所有
+// SSE 流——SSE 长连接被降级为"每 tick 重连一次"。本方法忽略入参 ctx，
+// 强制使用 workerCtx（run() 入口 ctx），确保 SSE 流 lifetime 等于 worker
+// lifetime。
+func (r *HostedTaskReconciler) ensureStream(_ context.Context, task hostedtask.Task) {
 	if !r.acc.Configured() || task.AccRunID == "" {
 		return
+	}
+	parentCtx := r.workerCtx
+	if parentCtx == nil {
+		// 安全退化：run() 尚未启动（Start 之前/异常路径）。ACC 没配置时
+		// 上面已 return；这里仍兜底，避免 nil deref。
+		parentCtx = context.Background()
 	}
 	r.mu.Lock()
 	if _, active := r.streams[task.AccRunID]; active {
 		r.mu.Unlock()
 		return
 	}
-	streamCtx, cancel := context.WithCancel(ctx)
+	streamCtx, cancel := context.WithCancel(parentCtx)
 	handle := &streamHandle{cancel: cancel}
 	r.streams[task.AccRunID] = handle
 	r.mu.Unlock()

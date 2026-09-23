@@ -283,9 +283,23 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 	}
 
 	// 2. Get next turn_no
+	//
+	// Hot-path optimization (2026-09-23, sessionv2mirror WARN spike):
+	// V2 shadow write's "get next turn_no" was scanning the entire
+	// session_turns_with_current_month view (UNION ALL session_turns_hot ∪
+	// parent partition LEFT JOIN) — ~10⁵ historical rows per session — and
+	// timing out under contention, producing 100+ "V2 shadow write failed"
+	// WARNs in /goal before failure.
+	//
+	// The per-session advisory lock above (sessionAdvisoryLockSQL) serializes
+	// writers, so MAX(turn_no) only needs to read the active hot table — the
+	// partition holds only promoted cold rows, never the latest turn_no for an
+	// active session. session_turns_hot has a dedicated (tenant_id, session_id,
+	// turn_no) index (idx_session_turns_hot_tenant_session_turn), so this
+	// becomes an index-only lookup. See memory/bg-recent-surface-read-doctrine.
 	err = tx.QueryRow(ctx, `
 		SELECT COALESCE(MAX(turn_no), 0) + 1
-		FROM public.session_turns_with_current_month
+		FROM public.session_turns_hot
 		WHERE tenant_id = $1 AND session_id = $2
 	`, rec.TenantID, rec.SessionID).Scan(&turnNo)
 	if err != nil {

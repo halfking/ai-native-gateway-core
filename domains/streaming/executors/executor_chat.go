@@ -1325,6 +1325,7 @@ func (e *Executor) executeOpenAI(
 							diagnosticRequestID(params),
 							params.Capture, nil,
 							estimateAnthropicInputTokens(params.BodyBytes),
+							params.ToolsRequested,
 						)
 					case e.OpenAIToResponsesStream != nil &&
 						params.ClientProtocol == "openai-responses" &&
@@ -1335,6 +1336,7 @@ func (e *Executor) executeOpenAI(
 							params.ClientModel, outboundModel,
 							diagnosticRequestID(params),
 							params.Capture, nil,
+							params.ToolsRequested,
 						)
 					case params.StreamWrapper != nil:
 						streamOutcome = params.StreamWrapper(streamSink, resp, e.Normalize, params.Capture)

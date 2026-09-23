@@ -154,7 +154,7 @@ func TestExecuteOpenAI_Q2BridgeOwnsResponseBody(t *testing.T) {
 		NewRouter(NewStickyCache(), credential.NewLimiter()), credential.NewManager(), credential.NewLimiter(),
 		pool.NewPoolManager(nil), nil, func(chunk []byte, isStream bool) []byte { return chunk }, nil, nil,
 	)
-	exec.OpenAIToAnthropicStream = func(_ context.Context, _ http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture, _ any, _ int) StreamOutcome {
+	exec.OpenAIToAnthropicStream = func(_ context.Context, _ http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture, _ any, _ int, _ bool) StreamOutcome {
 		bridgeCalls.Add(1)
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {

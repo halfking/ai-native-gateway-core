@@ -272,18 +272,49 @@ func writePrewarmedStreamError(w http.ResponseWriter, message, errType, code str
 // that did not have a code-vs-kind mismatch before the fix continue to
 // write kind="", so nobody sees a new field they did not expect.
 func writePrewarmedStreamErrorWithKind(w http.ResponseWriter, message, errType, code, kind string) {
+	writePrewarmedStreamErrorFull(w, message, errType, code, kind, nil)
+}
+
+// writePrewarmedStreamErrorFull is the 2026-09-23 strategy extension of the
+// prewarmed stream-error envelope: it can carry `retryable` (and extras) so
+// agent clients that parse the in-stream error decide to re-send the request
+// instead of hard-failing the turn. Used by the Exhausted branches whose
+// underlying kind is transient (network / upstream_down / overloaded /
+// concurrent / no candidates): the gateway has already retried every
+// candidate in-connection, and a client-side retry after a backoff is the
+// designed recovery. Non-transient kinds keep the historical field set —
+// pass retryable=nil to omit the field entirely (byte-identical envelope).
+func writePrewarmedStreamErrorFull(w http.ResponseWriter, message, errType, code, kind string, extras map[string]any) {
 	if errType == "" {
 		errType = "server_error"
 	}
 	if code == "" {
 		code = "provider_error"
 	}
-	body := fmt.Sprintf("data: {\"error\":{\"message\":%q,\"type\":%q,\"code\":%q", message, errType, code)
-	if kind != "" {
-		body += fmt.Sprintf(",\"kind\":%q", kind)
+	errObj := map[string]any{
+		"message": message,
+		"type":    errType,
+		"code":    code,
 	}
-	body += "}}\n\n"
-	safeWriteSSE(w, body)
+	if kind != "" {
+		errObj["kind"] = kind
+	}
+	for k, v := range extras {
+		errObj[k] = v
+	}
+	payload, err := marshalSSEPayloadNoEscape(map[string]any{"error": errObj})
+	if err != nil {
+		// Marshal of plain string/bool values cannot fail in practice; fall
+		// back to the historical three-field shape rather than dropping the
+		// error frame entirely.
+		body := fmt.Sprintf("data: {\"error\":{\"message\":%q,\"type\":%q,\"code\":%q}}\n\n", message, errType, code)
+		safeWriteSSE(w, body)
+		if flusher, ok := w.(http.Flusher); ok {
+			safeFlush(flusher)
+		}
+		return
+	}
+	safeWriteSSE(w, "data: "+string(payload)+"\n\n")
 	if flusher, ok := w.(http.Flusher); ok {
 		safeFlush(flusher)
 	}
@@ -4731,6 +4762,47 @@ goalRetryLoopDone:
 			tried = execErrTyped.Tried
 			failTrace = execErrTyped.Trace
 		}
+		// 2026-09-23 (forensics + double-render guard): a survival-owned
+		// request that reached a terminal decision already rendered its
+		// protocol-specific SSE envelope (gateway_survival_resume_blocked
+		// etc.) on the serialized writer. The generic fallthroughs below
+		// would (a) log it as a bland provider_error / model_not_found with
+		// no survival detail code — the exact observability gap design
+		// resume-blocked-long-stream-recovery §四.2 flagged — and (b) put a
+		// SECOND error frame ("No available provider…" / "upstream request
+		// failed") on the wire after the survival envelope. Record the
+		// decision verbatim and stop: one terminal per request.
+		if ste, ok := execErr.(*survivalTerminalError); ok {
+			var wrappedExec *executors.ExecuteError
+			if ste.cause != nil {
+				wrappedExec, _ = ste.cause.(*executors.ExecuteError)
+			}
+			if wrappedExec != nil {
+				tried = wrappedExec.Tried
+				failTrace = wrappedExec.Trace
+			}
+			errCode := ste.detailCode()
+			logCtx.SetOutboundModel(explicitOutbound)
+			logCtx.failAndMark(errCode, ste.Error(), providerID, credentialID)
+			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
+			markLogged()
+			if ste.kinds != "" {
+				w.Header().Set("X-Gateway-Last-Kind", ste.kinds)
+			}
+			slog.Warn("survival terminal reached; envelope already rendered",
+				"request_id", requestID,
+				"decision", ste.action.String(),
+				"reason", ste.reason,
+				"kinds", ste.kinds,
+				"tried", tried,
+			)
+			if preStream != nil {
+				h.unregisterStreamConnection(requestID, "stream_done")
+				preStream.stop()
+				preStream = nil
+			}
+			return
+		}
 
 		errCode := "provider_error"
 		// 2026-07-27 (E-1): shape the error envelope to the client's protocol.
@@ -4944,7 +5016,10 @@ goalRetryLoopDone:
 						exhaustedCredentialID,
 						clientModel,
 					)
-					writePrewarmedStreamErrorWithKind(w, msg, "rate_limit_error", "rate_limit", string(execErrTyped.LastKind))
+					// 2026-09-23: carry retryable + retry_after on the wire,
+					// matching the non-prewarmed JSON branch.
+					writePrewarmedStreamErrorFull(w, msg, "rate_limit_error", "rate_limit", string(execErrTyped.LastKind),
+						map[string]any{"retryable": true, "retry_after": retryAfter})
 					return
 				}
 				writeErrorJSONWithKindProto(proto, w, http.StatusTooManyRequests, requestID,
@@ -5022,9 +5097,23 @@ goalRetryLoopDone:
 					exhaustedCredentialID,
 					clientModel,
 				)
-				writePrewarmedStreamErrorWithKind(w,
+				// 2026-09-23 (strategy fix, user report #7): transient
+				// exhaustion (all candidates network/down/overloaded/
+				// concurrent, or no candidates left at all) previously went
+				// out without a retryable field, so agent clients defaulted
+				// to retryable=false and hard-failed the turn. Mirror the
+				// non-prewarmed JSON branch (errorsx.EffectiveRetryable) so
+				// the client retries with backoff instead. Tried==0 with no
+				// LastKind is pure no-candidates routing exhaustion — nodes
+				// are cooling and recover on their own, so also retryable.
+				exhaustedRetryable := errorsx.EffectiveRetryable(execErrTyped.LastKind)
+				if execErrTyped.LastKind == "" && execErrTyped.Tried == 0 {
+					exhaustedRetryable = true
+				}
+				writePrewarmedStreamErrorFull(w,
 					fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
-					"server_error", "model_not_found", string(execErrTyped.LastKind))
+					"server_error", "model_not_found", string(execErrTyped.LastKind),
+					map[string]any{"retryable": exhaustedRetryable})
 				return
 			}
 			writeErrorJSONWithKindProto(proto, w, http.StatusServiceUnavailable, requestID,
