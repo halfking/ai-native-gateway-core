@@ -268,7 +268,9 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	start := time.Now()
 	res := &ProbeResult{Target: *t, StartedAt: start}
 
-	desc := providercap.Resolve(t.Protocol, "")
+	// R61 S2-F4 续（2026-09-24）：读面归一——别名协议行走错探针形态的
+	// vapeur 事故类缺口，与 model_probe.probeDescriptorFor 同一入口。
+	desc := probeDescriptorFor(t.Protocol)
 	endpoint, err := e.buildEndpoint(t, desc)
 	if err != nil {
 		res.Status = ProbeStatusFailed
@@ -502,7 +504,7 @@ func derefTarget(t *ProbeTarget) ProbeTarget {
 
 func (e *ActiveProbeExecutor) runModelsList(ctx context.Context, target *ProbeTarget) *ProbeResult {
 	start := time.Now()
-	desc := providercap.Resolve(target.Protocol, "")
+	desc := probeDescriptorFor(target.Protocol)
 	endpoint := upstreamurl.ModelsURL(target.BaseURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {

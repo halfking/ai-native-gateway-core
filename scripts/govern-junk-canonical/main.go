@@ -374,6 +374,12 @@ func applyPlans(ctx context.Context, pool *pgxpool.Pool, plans []RowPlan) (int, 
 				VALUES ($1, $2, 'active')
 				ON CONFLICT (canonical_id, raw_name) DO UPDATE
 					SET status = 'active', updated_at = now()
+				-- S8-F5 (R60)：对齐 R51 F6/F7（2fa1942ad）确立的 alias 复活守卫
+				-- 惯例（discovery ×3 / alias_sync rebuildAliasIndex /
+				-- taxonomy_sync upsertAlias，五处同款 WHERE）；此前本脚本是
+				-- "五处对齐一处漏"的漏点 —— disabled alias 会被治理脚本复活。
+				-- 'deprecated' 不在守卫内：治理重指向仍可把 deprecated 拉回 active。
+				WHERE model_aliases.status <> 'disabled'
 			`, a.ToCanonicalID, a.RawName); err != nil {
 				return applied, fmt.Errorf("upsert alias %q: %w", a.RawName, err)
 			}

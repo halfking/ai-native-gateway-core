@@ -20,6 +20,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/modelcatalog"
 	"github.com/kaixuan/llm-gateway-go/modelname"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -371,6 +372,13 @@ func (s *Service) loadCredentials(ctx context.Context, providerID int) ([]creden
 }
 
 func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([]string, int, error) {
+	// 2026-09-23 vapeur 事故读面归一：providers.protocol 无 CHECK 约束，
+	// 存量行可能带别名拼写（"anthropic"、"claude" 等）。比较前先归一到
+	// catalog 枚举；归一失败保留原值（行为不变）。cred 是值拷贝，这里
+	// 的归一只影响本次发现决策，不回写存储。
+	if normed, normErr := providercatalog.NormalizeProviderProtocol(cred.Protocol); normErr == nil {
+		cred.Protocol = normed
+	}
 	if cred.Protocol == "anthropic-messages" {
 		return nil, 0, nil
 	}

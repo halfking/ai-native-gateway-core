@@ -563,6 +563,13 @@ files=(
   # （711 白名单不含 recalled；741 已被 B11 申领故跳号）。经 sequence 通道
   # 升级的存量库不下发此行则 recall 写事件违反约束。幂等（约束重建）。
   "$ROOT_DIR/sql/migrations/startup/742_hosted_task_recalled_event.sql"
+  # 2026-09-24 R60 S3-F4：743 存量 providers/provider_catalog.protocol 归一
+  # 清洗（vapeur 类脏值，如 openai-response→openai-responses）——映射与
+  # provider/catalog NormalizeProviderProtocol 别名表逐条对齐；未知值保持
+  # 原样（与 Go 侧语义一致）。幂等；R59 已封三个写边界，本迁移清洗存量。
+  # 经 sequence 通道升级的存量库不下发则管理面（健康检查/探针）对脏行
+  # 持续误判（读面归一为防御层，非替代）。
+  "$ROOT_DIR/sql/migrations/startup/743_normalize_provider_protocol.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
