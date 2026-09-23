@@ -289,6 +289,18 @@ func writePrewarmedStreamErrorWithKind(w http.ResponseWriter, message, errType, 
 	}
 }
 
+// blackholeResponseWriter accepts writes without touching the wire. The
+// shared post-execute error path keeps its bookkeeping (request_logs,
+// decision logs, metrics) while its wire writes become no-ops — used when
+// the survival coordinator already rendered a protocol terminal
+// (errSurvivalTerminalRendered) and any further frame would stack a second
+// terminal after [DONE] (R58 fault injection, 245).
+type blackholeResponseWriter struct{}
+
+func (blackholeResponseWriter) Header() http.Header         { return http.Header{} }
+func (blackholeResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (blackholeResponseWriter) WriteHeader(int)             {}
+
 // RequestIdentity contains immutable correlation fields derived at the HTTP boundary.
 type RequestIdentity struct {
 	RequestID       string
@@ -4664,6 +4676,13 @@ goalRetryLoopDone:
 			h.unregisterStreamConnection(requestID, "exec_error")
 			preStream.stop()
 			preStream = nil
+		}
+		if errors.Is(execErr, errSurvivalTerminalRendered) {
+			// Survival already rendered the protocol terminal + [DONE] on
+			// this connection (R58 §11.6 fault injection). Keep the failure
+			// bookkeeping below, but route every late wire write into a
+			// blackhole so no second terminal can stack after [DONE].
+			w = blackholeResponseWriter{}
 		}
 		// V3.1: capture dispatch queue timestamps from ExecuteError before
 		// any failAndMark / EmitFailure so failure request_logs keep T0–T9.

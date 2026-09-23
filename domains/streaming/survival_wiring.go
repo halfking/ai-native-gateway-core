@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,14 @@ import (
 // request survival is enabled for the tenant. Everything here is inert
 // until SetRequestSurvival is called (main.go) — the flag-off path never
 // constructs a coordinator.
+
+// errSurvivalTerminalRendered marks a failed survival outcome whose protocol
+// terminal (error envelope + [DONE]) the coordinator already put on the wire
+// — rendered by the Terminal seam itself, or latched earlier by the executor
+// branch (the seam self-suppresses in that case, but a terminal is on the
+// wire either way). Post-loop error handlers must not stack a second
+// terminal after [DONE]; they consult errors.Is and keep bookkeeping only.
+var errSurvivalTerminalRendered = errors.New("survival protocol terminal already rendered on the wire")
 
 // SetRequestSurvival arms the survival branch. tenantAllowed is consulted
 // per request (global flag + tenant allowlist live in config; the handler
@@ -97,6 +106,12 @@ func (h *ChatHandler) runSurvivalCoordinator(
 	if attemptExec == nil {
 		attemptExec = h.executor
 	}
+	// terminalOnWire latches once the coordinator settles a terminal
+	// decision. The seam is invoked for every settled terminal — including
+	// the self-suppressed case where the executor branch already latched
+	// gate.TerminalRendered — so flag ≠ "this closure wrote frames"; it
+	// means "a protocol terminal is on the wire, one way or the other".
+	terminalOnWire := false
 	coordinator := &SurvivalCoordinator{
 		Exec:               attemptExec,
 		Protocol:           protocol,
@@ -131,6 +146,7 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		// (ClaimRunnable re-claims expired running tasks).
 		BeforeSemanticCommit: durableBeforeSemanticCommit(durable),
 		Terminal: func(decision TaskDecision, committed bool) {
+			terminalOnWire = true
 			renderSurvivalTerminal(sw, protocol, decision, committed)
 		},
 	}
@@ -214,6 +230,14 @@ func (h *ChatHandler) runSurvivalCoordinator(
 	}
 	if err == nil {
 		err = fmt.Errorf("request survival ended: %s (%s)", res.Decision.Action, res.Decision.Reason)
+	}
+	if terminalOnWire {
+		// R58 fault injection (245, §11.6 committed-then-EOF): the client
+		// already received the protocol terminal + [DONE]. Mark the error so
+		// the shared post-loop handlers skip further wire writes instead of
+		// stacking a second terminal after [DONE]. Multiple %w keeps the
+		// errorsx.ExecuteError As-chain intact for the typed branches.
+		err = fmt.Errorf("%w (%w)", err, errSurvivalTerminalRendered)
 	}
 	return nil, err
 }
