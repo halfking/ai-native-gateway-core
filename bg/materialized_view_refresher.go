@@ -316,11 +316,37 @@ func (r *MaterializedViewRefresher) acquireDistLock(ctx context.Context) *distlo
 
 // checkConsistency records drift metrics after a successful refresh and emits
 // a bounded operator alert when the same process observes material drift.
+//
+// 2026-09-24 252 SQL 日志审计轮：漂移核查重扫 7 天 routing_analytics_source，
+// 在 252 当前负载下 med 21s / max 29.4s，被角色级 statement_timeout=30s
+// 击杀（45min 窗口 ×14：mv_data effective_task_type ×8 + audit_summary ×6，
+// 每次刷新后必跟一次）。核查跑在与刷新同等的会话级预算上（mvRefresh-
+// StatementTimeout, 180s）：核查对 180s 仍然超时属于真异常，走既有的
+// query_failed 指标路径暴露；被 30s rolconfig 误杀则只会留下"检查坏了"的
+// 假信号并浪费 30s×N 的数据库时间。
 func (r *MaterializedViewRefresher) checkConsistency(ctx context.Context, viewName string) {
 	if r == nil || r.db == nil {
 		return
 	}
-	result, err := CheckMVConsistency(ctx, r.db, viewName)
+	// Pin one connection: the session-level statement_timeout must survive
+	// both statements of the check (same pattern as refreshView).
+	conn, err := r.db.Acquire(ctx)
+	if err != nil {
+		RecordMVConsistencyError(viewName, "query_failed")
+		slog.Warn("materialized view consistency check: acquire conn failed", "view", viewName, "error", err)
+		return
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx,
+		"SET statement_timeout = '"+mvRefreshStatementTimeout+"'"); err != nil {
+		RecordMVConsistencyError(viewName, "query_failed")
+		slog.Warn("materialized view consistency check: timeout pin failed", "view", viewName, "error", err)
+		return
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), "RESET statement_timeout")
+	}()
+	result, err := CheckMVConsistency(ctx, conn, viewName)
 	if err != nil {
 		RecordMVConsistencyError(viewName, "query_failed")
 		slog.Warn("materialized view consistency check failed", "view", viewName, "error", err)

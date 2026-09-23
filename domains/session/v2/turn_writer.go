@@ -34,10 +34,20 @@ type TurnWriter struct {
 	db turnDB
 }
 
+// sessionAdvisoryLockSQL 也把本事务的 max_parallel_workers_per_gather 压到 0
+// （set_config 第三参 true = SET LOCAL 语义，commit/rollback 自动还原）。
+// 2026-09-24 252 SQL 日志审计轮实测：MAX(turn_no) 走
+// session_turns_with_current_month（hot 反连接臂 + 全分区 Append），planner
+// 每次 Gather 孵化 2 个并行 worker —— EXPLAIN ANALYZE 并行 242-284ms vs
+// 关并行 90ms（2.7×），且每次写轮次的 DSM 段分配/释放在 /dev/shm=64MB 的
+// pg-252-pg17 上是 "could not map dynamic shared memory segment" ×338 +
+// parallel worker FATAL ×654/45min 的主源。按 (tenant, session) 取锁后的
+// 点读点写从不受益于并行，整个持锁事务统一退出并行。
 const sessionAdvisoryLockSQL = `
-	SELECT pg_advisory_xact_lock(
-		public.session_turns_advisory_lock_key($1, $2)
-	)
+	SELECT set_config('max_parallel_workers_per_gather', '0', true),
+	       pg_advisory_xact_lock(
+		       public.session_turns_advisory_lock_key($1, $2)
+	       )
 `
 
 // NewTurnWriter creates a new TurnWriter instance
