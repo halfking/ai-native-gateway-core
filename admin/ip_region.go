@@ -1,10 +1,16 @@
 package admin
 
-// 看板 IP 地域归类（Wave 3 B7，2026-09-22 设计差距审计）。
+// 看板 IP 地域归类（Wave 3 B7，2026-09-22 设计差距审计；R57 B7 数据源级
+// 修复闭环）。
 //
-// 设计差距：request_stats_dim_minute 只有 virtual_ip 维度，看板饼图全是
-// 裸 IP，运营无法一眼看出"内网 vs 外网·地域"的流量分布（设计 §7 看板
-// 要求内网直显 IP、外网归类国家-省-市）。
+// 设计差距与修复：request_stats_dim_minute 原只有 virtual_ip 维度，而
+// virtual_ip 是 identity hash 派生的 10.x 假名（domains/identity，
+// 与 Python 控制面 parity 契约，不改）——恒命中内网直显臂，下面的外网
+// GeoIP 段表分支对唯一数据源不可达。R57 落真源：rollup 与看板切到
+// client_ip 维度（origin 中间件信任表解析的真实客户端 IP，341 起落在
+// request_logs[_hot]，740 起经 view 链投影），内网直显 IP、外网归类
+// 国家·省·市 的设计语义自此对真实数据可达。真源不可得的行（后台合成
+// 流量）落 __unknown__ 哨兵。
 //
 // 取舍（设计原文"GeoIP 库本地化，不引外网依赖"）：不引入 maxminddb 类
 // 重依赖（vendor 体积 + CGO=0 约束），改为本地 CSV 段表
@@ -169,13 +175,16 @@ func isPrivateOrReserved(addr netip.Addr) bool {
 		(addr.Is6() && (addr.As16()[0]&0xfe) == 0xfc) // unique-local fc00::/7
 }
 
-// classifyVirtualIP maps a virtual_ip dim key to its board label:
+// classifyClientIP maps a client_ip dim key to its board label:
 //   - reserved/intranet addresses and the sentinel pseudo-values pass
 //     through unchanged (intranet displays the IP; sentinels stay honest);
 //   - public addresses resolve through the local segment table to
 //     "国家·省·市";
 //   - public addresses with no table hit degrade to the raw IP.
-func classifyVirtualIP(raw string) string {
+//
+// R57 B7 改名自 classifyVirtualIP：输入从假名 virtual_ip 切到真源
+// client_ip 后，旧名只剩误导——10.x 键在真源语境下就是真实内网地址。
+func classifyClientIP(raw string) string {
 	key := strings.TrimSpace(raw)
 	if key == "" || strings.EqualFold(key, "unknown") || key == "-" {
 		return raw
@@ -197,19 +206,19 @@ func classifyVirtualIP(raw string) string {
 	return raw
 }
 
-// classifyVirtualIPPie remaps a virtual_ips pie's keys in place. Counts
+// classifyClientIPPie remaps a client_ips pie's keys in place. Counts
 // are preserved (one dim key maps to exactly one label; two distinct IPs
 // never collide because intranet/hits/degraded all keep or replace the
 // whole key — a region label can itself repeat across IPs, so equal labels
 // are merged by summing).
-func classifyVirtualIPPie(items []boardPieItem) []boardPieItem {
+func classifyClientIPPie(items []boardPieItem) []boardPieItem {
 	if len(items) == 0 {
 		return items
 	}
 	merged := make([]boardPieItem, 0, len(items))
 	index := make(map[string]int, len(items))
 	for _, it := range items {
-		label := classifyVirtualIP(it.Key)
+		label := classifyClientIP(it.Key)
 		if j, ok := index[label]; ok {
 			merged[j].Requests += it.Requests
 			merged[j].Tokens += it.Tokens

@@ -69,8 +69,8 @@ const metricOptions = computed(() => [
     </DrilldownPieChart>
 
     <DrilldownPieChart
-      :title="t('dashboard.board.pieVirtualIp')"
-      :data="board?.pies?.virtual_ips ?? []"
+      :title="t('dashboard.board.pieClientIp')"
+      :data="board?.pies?.client_ips ?? []"
       :metric="pieMetric"
       :loading="loading"
     />

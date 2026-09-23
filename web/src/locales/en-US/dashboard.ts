@@ -55,7 +55,7 @@ export default {
     selfcheckRate: '24h success rate',
     selfcheckHint: 'Click for details →',
     pieClients: 'Client types',
-    pieVirtualIp: 'Client IP',
+    pieClientIp: 'Client IP',
     pieIdentity: 'Identity hash',
     pieModels: 'Model usage',
     pieErrors: 'Error types',

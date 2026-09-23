@@ -41,7 +41,7 @@ tabs: {
     selfcheckRate: '24時間成功率',
     selfcheckHint: 'クリックして詳細 →',
     pieClients: 'クライアント種別',
-    pieVirtualIp: 'クライアント IP',
+    pieClientIp: 'クライアント IP',
     pieIdentity: 'ID フィンガープリント',
     pieModels: 'モデル使用量',
     pieErrors: 'エラー種別',

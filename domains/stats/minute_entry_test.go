@@ -75,3 +75,46 @@ func TestFromTelemetryEntry_failureProducesDrill(t *testing.T) {
 func testNow() time.Time {
 	return time.Date(2026, 7, 14, 12, 34, 56, 0, time.UTC)
 }
+
+// R57 B7 钉桩：内存累积路径必须与 bg rollupDims 同源产出 client_ip 维度
+// （真源客户端 IP；缺失落 __unknown__ 哨兵）。
+func TestFromTelemetryEntry_clientIPDim(t *testing.T) {
+	status := telemetry.RequestStatusSuccess
+	ip := "203.0.113.7"
+	_, dims, _, ok := FromTelemetryEntry(&telemetry.RequestLogEntry{
+		Op:            telemetry.RequestLogUpdate,
+		RequestStatus: &status,
+		TenantID:      "default",
+		ClientIP:      &ip,
+	}, testNow())
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	found := false
+	for _, d := range dims {
+		if d.DimType == "client_ip" {
+			found = true
+			if d.DimKey != "203.0.113.7" {
+				t.Fatalf("client_ip dim key = %q", d.DimKey)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected a client_ip dim row")
+	}
+
+	// 无 origin 中间件的内部路径（合成流量）：ClientIP nil → 哨兵。
+	_, dims2, _, ok2 := FromTelemetryEntry(&telemetry.RequestLogEntry{
+		Op:            telemetry.RequestLogUpdate,
+		RequestStatus: &status,
+		TenantID:      "default",
+	}, testNow())
+	if !ok2 {
+		t.Fatal("expected ok (nil ClientIP)")
+	}
+	for _, d := range dims2 {
+		if d.DimType == "client_ip" && d.DimKey != "__unknown__" {
+			t.Fatalf("nil ClientIP must fall to sentinel, got %q", d.DimKey)
+		}
+	}
+}

@@ -50,7 +50,7 @@ v2: {
     selfcheckRate: '24h success rate',
     selfcheckHint: 'Click for details →',
     pieClients: 'Client types',
-    pieVirtualIp: 'عنوان IP للعميل',
+    pieClientIp: 'عنوان IP للعميل',
     pieIdentity: 'Identity hash',
     pieModels: 'Model usage',
     pieErrors: 'Error types',

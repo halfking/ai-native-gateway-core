@@ -50,7 +50,7 @@ v2: {
     selfcheckRate: '24h success rate',
     selfcheckHint: 'Click for details →',
     pieClients: 'Client types',
-    pieVirtualIp: 'IP client',
+    pieClientIp: 'IP client',
     pieIdentity: 'Identity hash',
     pieModels: 'Model usage',
     pieErrors: 'Error types',

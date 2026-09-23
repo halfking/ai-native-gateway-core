@@ -140,38 +140,30 @@ func (w *StatsMinuteRollup) rollupWindow(ctx context.Context, since, until time.
 	return w.rollupDims(ctx, since, until, creditsExpr)
 }
 
-func (w *StatsMinuteRollup) rollupVirtualIP(ctx context.Context, since, until time.Time) error {
-	creditsExpr := maas.RequestLogCreditsSQL("r", true)
-	_, err := w.db.Exec(ctx, `
-		INSERT INTO request_stats_dim_minute (
-			bucket, tenant_id, dim_type, dim_key,
-			requests, success_count, failure_count,
-			total_tokens, credits_charged, cost_usd
-		)
-		SELECT
-			date_trunc('minute', r.ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
-			COALESCE(NULLIF(r.tenant_id, ''), 'default'),
-			'virtual_ip',
-			COALESCE(NULLIF(r.virtual_ip, ''), '__unknown__'),
-			COUNT(*)::bigint,
-			COUNT(*) FILTER (WHERE r.request_status = 'success')::bigint,
-			COUNT(*) FILTER (WHERE r.request_status = 'failure')::bigint,
-			COALESCE(SUM(COALESCE(r.prompt_tokens,0)+COALESCE(r.completion_tokens,0)), 0)::bigint,
-			COALESCE(SUM(`+creditsExpr+`), 0)::bigint,
-			COALESCE(SUM(r.cost_usd), 0)
-		FROM request_logs_with_current_month r
-		WHERE r.request_status IN ('success', 'failure', 'rate_limited')
-		  AND r.ts > $1 AND r.ts <= $2
-		GROUP BY 1, 2, 4
-		ON CONFLICT (bucket, tenant_id, dim_type, dim_key) DO UPDATE SET
-			requests = EXCLUDED.requests,
-			success_count = EXCLUDED.success_count,
-			failure_count = EXCLUDED.failure_count,
-			total_tokens = EXCLUDED.total_tokens,
-			credits_charged = EXCLUDED.credits_charged,
-			cost_usd = EXCLUDED.cost_usd
-	`, since, until)
-	return err
+// rollupDimQueries drives rollupDims. client_ip（R57 B7）是真源客户端 IP 维度
+// （341 起落在 request_logs[_hot].client_ip，经 740 view 链投影）；virtual_ip
+// 是 identity 派生的假名 10.x，保留为遗留对照维度（同 client_profile/agent_name
+// 先例），看板已切到 client_ip。
+var rollupDimQueries = []struct {
+	dimType string
+	dimKey  string
+}{
+	{"client_profile", `COALESCE(NULLIF(r.client_profile, ''), '__unknown__')`},
+	// 2026-09-03: aggregate by agent_name (the canonical client-type
+	// identifier written by telemetry.ExtractAgentName and persisted on
+	// request_logs_hot.agent_name). The dashboard 'clients' pie reads
+	// from this dim; client_profile is retained as a legacy dim for
+	// operators comparing old vs new tagging.
+	{"agent_name", `COALESCE(NULLIF(r.agent_name, ''), '__unknown__')`},
+	// R57 B7: real resolved client IP. HOST() renders inet as bare text;
+	// NULL (后台合成流量不经 origin 中间件) folds into the sentinel.
+	{"client_ip", `COALESCE(NULLIF(HOST(r.client_ip), ''), '__unknown__')`},
+	{"virtual_ip", `COALESCE(NULLIF(r.virtual_ip, ''), '__unknown__')`},
+	{"identity_hash", `COALESCE(NULLIF(r.identity_hash, ''), '__unknown__')`},
+	{"model", `COALESCE(NULLIF(r.outbound_model, ''), NULLIF(r.client_model, ''), '__unknown__')`},
+	{"tenant", `COALESCE(NULLIF(r.tenant_id, ''), 'default')`},
+	{"provider", `COALESCE(r.provider_id, 0)::text`},
+	{"error_kind", `COALESCE(NULLIF(r.error_kind, ''), '__unknown__')`},
 }
 
 func (w *StatsMinuteRollup) rollupMain(ctx context.Context, since, until time.Time, creditsExpr string) error {
@@ -215,25 +207,7 @@ func (w *StatsMinuteRollup) rollupMain(ctx context.Context, since, until time.Ti
 }
 
 func (w *StatsMinuteRollup) rollupDims(ctx context.Context, since, until time.Time, creditsExpr string) error {
-	dimQueries := []struct {
-		dimType string
-		dimKey  string
-	}{
-		{"client_profile", `COALESCE(NULLIF(r.client_profile, ''), '__unknown__')`},
-		// 2026-09-03: aggregate by agent_name (the canonical client-type
-		// identifier written by telemetry.ExtractAgentName and persisted on
-		// request_logs_hot.agent_name). The dashboard 'clients' pie reads
-		// from this dim; client_profile is retained as a legacy dim for
-		// operators comparing old vs new tagging.
-		{"agent_name", `COALESCE(NULLIF(r.agent_name, ''), '__unknown__')`},
-		{"virtual_ip", `COALESCE(NULLIF(r.virtual_ip, ''), '__unknown__')`},
-		{"identity_hash", `COALESCE(NULLIF(r.identity_hash, ''), '__unknown__')`},
-		{"model", `COALESCE(NULLIF(r.outbound_model, ''), NULLIF(r.client_model, ''), '__unknown__')`},
-		{"tenant", `COALESCE(NULLIF(r.tenant_id, ''), 'default')`},
-		{"provider", `COALESCE(r.provider_id, 0)::text`},
-		{"error_kind", `COALESCE(NULLIF(r.error_kind, ''), '__unknown__')`},
-	}
-	for _, dq := range dimQueries {
+	for _, dq := range rollupDimQueries {
 		_, err := w.db.Exec(ctx, `
 			INSERT INTO request_stats_dim_minute (
 				bucket, tenant_id, dim_type, dim_key,

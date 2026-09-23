@@ -205,7 +205,9 @@ func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, tr boardT
 	// device-fingerprint column).
 	types := map[string]string{
 		"clients":         "agent_name",
-		"virtual_ips":     "virtual_ip",
+		// R57 B7: client_ips 饼图读真源 client_ip 维度（原 virtual_ips 读
+		// identity 假名 10.x，GeoIP 归类对它不可达）。响应键同步改名。
+		"client_ips":      "client_ip",
 		"identity_hashes": "identity_hash",
 		"models":          "model",
 		"errors":          "error_kind",
@@ -221,11 +223,11 @@ func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, tr boardT
 		if dimType == "provider" {
 			items = h.resolveProviderPieLabels(ctx, items)
 		}
-		// Wave 3 B7 (2026-09-22): intranet keeps its raw IP, public IPs
-		// collapse to 国家·省·市 through the local segment table, and
-		// everything else degrades to the raw IP.
-		if dimType == "virtual_ip" {
-			items = classifyVirtualIPPie(items)
+		// Wave 3 B7 (2026-09-22) + R57 source fix: intranet keeps its raw
+		// IP, public IPs collapse to 国家·省·市 through the local segment
+		// table, and everything else degrades to the raw IP.
+		if dimType == "client_ip" {
+			items = classifyClientIPPie(items)
 		}
 		out[key] = items
 	}
