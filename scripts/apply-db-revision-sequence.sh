@@ -553,6 +553,11 @@ files=(
   # 清单止于 system_fingerprint/error_kind，736 加列后热窗转移把倍率证据
   # 落 NULL/DEFAULT 1.0）。幂等（CREATE OR REPLACE FUNCTION）。
   "$ROOT_DIR/sql/migrations/startup/739_promote_functions_rate_multiplier.sql"
+  # 2026-09-23 R57 B7：740 view 链补投影真实 client_ip——virtual_ip 是
+  # identity 派生假名 10.x，GeoIP 归类对它不可达；rollup/看板切真源
+  # client_ip（341 列经 740 投影进链）。regexp 补列 + 顶层全量重建 +
+  # 列数守卫 fail-closed（738 惯用法）。幂等。
+  "$ROOT_DIR/sql/migrations/startup/740_view_chain_client_ip.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

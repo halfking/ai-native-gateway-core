@@ -657,3 +657,29 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 | 738 | `738_view_chain_credits_rate_multiplier.sql` | `8ad1cf9a18f8006cfc35e110be6c3837b662c9202d8021cb4e4299b00d3d2e99` | applied+verified |
 | 739 | `739_promote_functions_rate_multiplier.sql` | `2edf50d6f82e59dac4475c7b1f40117ef02273a0a13809fe0a62d2af7a89aef4` | applied+verified |
 
+
+## 2026-09-23 — R57 审计轮：740 view 链补投影 client_ip（R57 B7 数据源级修复）
+
+> virtual_ip 是 identity hash 派生的 10.x 假名（domains/identity，与 Python
+> 控制面 parity 契约），恒命中看板 GeoIP 归类的内网直显臂——外网段表分支
+> 对唯一数据源不可达（R56 §三.1）。740 把真实客户端 IP（341 起落在
+> request_logs[_hot].client_ip，origin 中间件信任表解析）投影进 view 链，
+> rollup 与看板 client_ips 饼图切真源；virtual_ip 维度保留为遗留对照。
+> 同轮闭合 738 六点缺口：db/request_logs_view_schema.go 自愈组合体补
+> credits_rate_multiplier/client_ip（此前自愈重建体会缺列令 rollup 空转，
+> 738 事故经自愈通道复发形态）；列契约 113/109/110 → **115/110/111**。
+
+| Migration | File | Status |
+|-----------|------|--------|
+| 740 | `740_view_chain_client_ip.sql` | code-landed（R57，本机 dev 库 down/up 双向实跑 + 列数 110/111/115 + ensure↔迁移 viewdef 逐字等价测试） |
+
+- 下游同轮接线：bg/stats_minute_rollup 新增 client_ip 维度（HOST(client_ip)，
+  virtual_ip 保留遗留对照）；admin 看板 virtual_ips 饼图改名 client_ips
+  （API 键 + web 类型/绑定/8 语言 i18n 同步）；domains/stats 内存累积路径
+  同步产出 client_ip 维度。
+- 部署观察项：740 的 regexp 补列 DROP CASCADE 会带走探测健康视图族
+  （v_model_health_dashboard/v_probe_system_health），716 家族由
+  db.ensureProbeHealthDashboardViews 在每次网关启动 DROP+重建自愈——首次
+  启动后需确认两视图回归。
+- B11 从 **741** 起（740 已被本迁移占用）。
+>>>>>>> 7073bba40 (fix(db): 迁移 740 view 链补投影真实 client_ip + 738 六点缺口闭合)

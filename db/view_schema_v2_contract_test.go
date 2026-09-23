@@ -76,16 +76,25 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 	if len(goExprs) == 0 || len(sqlExprs) == 0 {
 		t.Fatalf("empty projection (go=%d sql=%d)", len(goExprs), len(sqlExprs))
 	}
-	if len(goExprs) != len(sqlExprs) {
-		t.Fatalf("projection expression count drifted: go=%d sql=%d (frozen contract = 113)", len(goExprs), len(sqlExprs))
+	// 734 冻结块（113 列）必须是 Go 投影的前缀；其后仅允许注册过的追加
+	// 尾列（738 credits_rate_multiplier + 740 client_ip，R57 B7）——再增列
+	// 必须先落迁移再改本清单。
+	if len(goExprs) != len(sqlExprs)+2 {
+		t.Fatalf("projection expression count drifted: go=%d sql(734)=%d (frozen 113 + 2 registered appends)", len(goExprs), len(sqlExprs))
 	}
-	for i := range goExprs {
+	for i := range sqlExprs {
 		if goExprs[i] != sqlExprs[i] {
 			t.Fatalf("projection expr %d drifted:\n  go  = %s\n  sql = %s", i+1, goExprs[i], sqlExprs[i])
 		}
 	}
-	if len(goExprs) != 113 {
-		t.Fatalf("frozen contract: projection must carry 113 expressions, got %d", len(goExprs))
+	if goExprs[len(sqlExprs)] != "NULL::double precision AS credits_rate_multiplier" {
+		t.Fatalf("append #1 (738 credits) drifted: %q", goExprs[len(sqlExprs)])
+	}
+	if goExprs[len(sqlExprs)+1] != "NULL::inet AS client_ip" {
+		t.Fatalf("append #2 (740 client_ip) drifted: %q", goExprs[len(sqlExprs)+1])
+	}
+	if len(goExprs) != 115 {
+		t.Fatalf("frozen contract: projection must carry 115 expressions, got %d", len(goExprs))
 	}
 
 	// 734 details overlay: the canonical projection must reference the details
@@ -102,28 +111,58 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 		t.Error("legacy (710-fallback) projection must not reference the details alias")
 	}
 
-	// Shape-conditional lateral composition: frozen chain appends 4 lateral
-	// columns, dynamic chain only 2 — both must total base+5 (frozen) /
-	// base+3 (dynamic) = 113 columns on the same base count.
-	if frozen := canonicalV2DDL(false, false, true); !strings.Contains(frozen, "source.system_fingerprint") ||
-		!strings.Contains(frozen, "source.raw_model_name") {
-		t.Error("frozen-chain v2 DDL must laterally append system_fingerprint and raw_model_name")
+	// Shape-conditional lateral composition: frozen chain laterally appends
+	// fp/raw only — credits (738) and client_ip (740) are referenced as
+	// v.<col> at the inner-select tail (the 738 regexp insert position),
+	// never laterally appended and never carried by a v.* star (star
+	// expansion is creation-time-frozen and can never byte-match the
+	// migration product). Lateral append order is the chronological
+	// migration order and is part of the ensure↔migration viewdef-equality
+	// contract.
+	testMiddleCols := "id, request_id, ts, tenant_id"
+	frozenDDL := canonicalV2DDL(testMiddleCols, false, false, false, false, true)
+	if !strings.Contains(frozenDDL, "source.system_fingerprint") ||
+		!strings.Contains(frozenDDL, "source.raw_model_name") ||
+		strings.Contains(frozenDDL, "source.credits_rate_multiplier") ||
+		strings.Contains(frozenDDL, "source.client_ip") {
+		t.Error("frozen-chain v2 DDL must laterally append fp/raw only — never credits/client_ip")
 	}
-	if dynamic := canonicalV2DDL(true, true, true); strings.Contains(dynamic, "source.system_fingerprint") ||
-		strings.Contains(dynamic, "source.raw_model_name") {
+	// Inner-select tail order (post-738/740 wrapper): middleCols, laterals,
+	// then v.credits/v.client_ip; the all-frozen probe composes the 113
+	// contract with no v-refs at all.
+	if !strings.Contains(canonicalV2DDL(testMiddleCols, false, false, true, true, true),
+		testMiddleCols+", source.request_class, source.due_at, source.system_fingerprint, source.raw_model_name, v.credits_rate_multiplier, v.client_ip") {
+		t.Error("inner select must be middleCols + laterals + v.credits/v.client_ip (738 insert position)")
+	}
+	if strings.Contains(canonicalV2DDL(testMiddleCols, false, false, false, false, true), "v.credits_rate_multiplier") {
+		t.Error("pre-736 wrapper must not reference v.credits_rate_multiplier")
+	}
+	if dynamicDDL := canonicalV2DDL(testMiddleCols, true, true, true, true, true); strings.Contains(dynamicDDL, "source.system_fingerprint") ||
+		strings.Contains(dynamicDDL, "source.raw_model_name") {
 		t.Error("dynamic-chain v2 DDL must not re-append columns the base wrapper already carries")
 	}
+	// Composition width: wrapper with credits+client_ip composes the
+	// 115-name contract; missing either falls back to the frozen 113.
+	if full := canonicalV2DDL(testMiddleCols, true, true, true, true, true); !strings.Contains(full, "NULL::inet AS client_ip") ||
+		!strings.Contains(full, "NULL::double precision AS credits_rate_multiplier") {
+		t.Error("post-738/740 base must compose the 115-column body (credits + client_ip session placeholders)")
+	}
+	if stale := canonicalV2DDL(testMiddleCols, true, true, true, false, true); strings.Contains(stale, "AS client_ip") ||
+		strings.Contains(stale, "AS credits_rate_multiplier") {
+		t.Error("pre-740 base must fall back to the frozen 113-column contract")
+	}
 	// hasDetails=false fallback: no details JOIN, no d.* references.
-	if legacyDDL := canonicalV2DDL(false, false, false); strings.Contains(legacyDDL, "session_turn_details") {
+	if legacyDDL := canonicalV2DDL(testMiddleCols, false, false, false, false, false); strings.Contains(legacyDDL, "session_turn_details") {
 		t.Error("hasDetails=false DDL must not join the details family")
 	}
-	if detailsDDL := canonicalV2DDL(false, false, true); !strings.Contains(detailsDDL, "LEFT JOIN public.session_turn_details_hot") ||
+	if detailsDDL := canonicalV2DDL(testMiddleCols, false, false, false, false, true); !strings.Contains(detailsDDL, "LEFT JOIN public.session_turn_details_hot") ||
 		!strings.Contains(detailsDDL, "LEFT JOIN public.session_turn_details ") {
 		t.Error("hasDetails=true DDL must LEFT JOIN both details hot and parent")
 	}
 
-	// Name-order contract: the migration file's $names$ block must equal the
-	// Go canonicalColumnOrderV2 (UNION ALL matches types positionally).
+	// Name-order contract: the migration file's $names$ block (734 frozen
+	// 113) must be a prefix of the Go canonicalColumnOrderV2, followed by the
+	// registered 738/740 appends (UNION ALL matches types positionally).
 	namesStart := strings.Index(src, "names := $names$")
 	namesEnd := strings.Index(src, "$names$;")
 	if namesStart < 0 || namesEnd < 0 || namesEnd <= namesStart {
@@ -134,13 +173,18 @@ func TestViewV2ProjectionContractSync(t *testing.T) {
 	for i := range sqlNames {
 		sqlNames[i] = strings.TrimSpace(sqlNames[i])
 	}
-	if len(sqlNames) != len(canonicalColumnOrderV2) {
-		t.Fatalf("name count drifted: go=%d sql=%d", len(canonicalColumnOrderV2), len(sqlNames))
+	if len(canonicalColumnOrderV2) != len(sqlNames)+2 {
+		t.Fatalf("name count drifted: go=%d sql(734)=%d (frozen 113 + 2 registered appends)", len(canonicalColumnOrderV2), len(sqlNames))
 	}
 	for i := range sqlNames {
 		if sqlNames[i] != canonicalColumnOrderV2[i] {
 			t.Fatalf("column order drifted at position %d: go=%s sql=%s", i+1, canonicalColumnOrderV2[i], sqlNames[i])
 		}
+	}
+	if canonicalColumnOrderV2[len(sqlNames)] != "credits_rate_multiplier" ||
+		canonicalColumnOrderV2[len(sqlNames)+1] != "client_ip" {
+		t.Fatalf("registered name appends drifted: %v / %v",
+			canonicalColumnOrderV2[len(sqlNames)], canonicalColumnOrderV2[len(sqlNames)+1])
 	}
 }
 
@@ -236,17 +280,34 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	_ = pool.QueryRow(ctx, `SELECT current_database()`).Scan(&dbName)
 	t.Logf("scratch db = %q", dbName)
 
-	// 733 must precede the ensure so the details family exists and the
-	// ensure composes the 734 (details-joined) shape.
-	migration733, err := os.ReadFile(filepath.Join("..", "sql", "migrations", "startup",
-		"733_session_turn_details.sql"))
-	if err != nil {
-		t.Fatalf("read migration 733: %v", err)
+	// Replay the production migration chain (733 family prerequisite → 710
+	// v2 body → 734 details join → 738 credits column → 740 client_ip) so
+	// the base wrappers carry the final column contract. The ensure below
+	// then composes from the same base shape the migrations produced — the
+	// viewdef-equality contract must compare like against like (a frozen
+	// pre-738 base would make the ensure compose extra laterals the
+	// regexp-append migrations never emit).
+	applyMigration := func(name string) {
+		t.Helper()
+		sqlBytes, err := os.ReadFile(filepath.Join("..", "sql", "migrations", "startup", name))
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+		if _, err := pool.Exec(ctx, string(sqlBytes)); err != nil {
+			t.Fatalf("apply %s on scratch: %v", name, err)
+		}
 	}
-	if _, err := pool.Exec(ctx, string(migration733)); err != nil {
-		t.Fatalf("apply 733 on scratch: %v", err)
-	}
+	applyMigration("733_session_turn_details.sql")
+	applyMigration("710_request_logs_view_session_family_v2.sql")
+	applyMigration("734_request_logs_view_details_join.sql")
+	applyMigration("738_view_chain_credits_rate_multiplier.sql")
+	applyMigration("740_view_chain_client_ip.sql")
 
+	// Cold-build equivalence: drop the canonical and let the ensure rebuild
+	// it from the post-740 base shape.
+	if _, err := pool.Exec(ctx, `DROP VIEW public.request_logs_with_current_month`); err != nil {
+		t.Fatalf("drop canonical before cold-build ensure: %v", err)
+	}
 	if err := db.ensureRequestLogsCurrentMonthView(ctx); err != nil {
 		t.Fatalf("ensure (v2 cold build): %v", err)
 	}
@@ -260,6 +321,12 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	if !strings.Contains(ensureViewdef, "session_turn_details") {
 		t.Fatal("ensure must produce the 734 details-joined body when 733 tables exist")
 	}
+	if !strings.Contains(ensureViewdef, "client_ip") {
+		t.Fatal("ensure must compose the 740 client_ip column into the rebuilt body")
+	}
+	if !strings.Contains(ensureViewdef, "credits_rate_multiplier") {
+		t.Fatal("ensure must compose the 738 credits_rate_multiplier column into the rebuilt body")
+	}
 	// Idempotency: second pass must not change the definition.
 	if err := db.ensureRequestLogsCurrentMonthView(ctx); err != nil {
 		t.Fatalf("ensure (idempotent second pass): %v", err)
@@ -268,11 +335,36 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		t.Fatal("second ensure pass changed the view definition")
 	}
 
-	// Migration equivalence: drop the canonical, replay the 710 file then the
-	// 734 file (production migration order), and require the exact same view
-	// definition as the ensure.
-	if _, err := pool.Exec(ctx, `DROP VIEW public.request_logs_with_current_month`); err != nil {
+	// Migration equivalence: reset the wrapper chain to the pristine frozen
+	// shape (the state production migrations ran against), drop the
+	// canonical, replay the production migration order (710 → 734 → 738 →
+	// 740), and require the exact same view definition as the ensure. The
+	// reset is load-bearing: replaying 710/734 over the already-shaped
+	// wrappers re-expands v.* with credits/client_ip and 738's textual
+	// insert then duplicates the column (42702).
+	if _, err := pool.Exec(ctx, `DROP VIEW public.request_logs_with_current_month CASCADE`); err != nil {
 		t.Fatalf("drop canonical before migration replay: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DROP VIEW IF EXISTS public.request_logs_with_current_month_without_request_class_due_at CASCADE;
+		DROP VIEW IF EXISTS public.request_logs_with_current_month_without_customer_id CASCADE;
+		CREATE VIEW public.request_logs_with_current_month_without_customer_id AS
+		SELECT `+strings.Join(frozen, ", ")+` FROM public.request_logs_hot
+		UNION ALL
+		SELECT `+strings.Join(frozen, ", ")+` FROM public.request_logs;
+		CREATE VIEW public.request_logs_with_current_month_without_request_class_due_at AS
+		SELECT v.*, m.customer_id
+		FROM public.request_logs_with_current_month_without_customer_id v
+		LEFT JOIN LATERAL (
+			SELECT customer_id FROM public.request_logs_hot h
+			WHERE h.request_id = v.request_id AND h.ts = v.ts
+			UNION ALL
+			SELECT customer_id FROM public.request_logs p
+			WHERE p.request_id = v.request_id AND p.ts = v.ts
+			LIMIT 1
+		) m ON true;
+	`); err != nil {
+		t.Fatalf("reset frozen wrappers before migration replay: %v", err)
 	}
 	migrationSQL, err := os.ReadFile(filepath.Join("..", "sql", "migrations", "startup",
 		"710_request_logs_view_session_family_v2.sql"))
@@ -282,25 +374,21 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	if _, err := pool.Exec(ctx, string(migrationSQL)); err != nil {
 		t.Fatalf("apply 710 migration on scratch: %v", err)
 	}
-	migration734, err := os.ReadFile(filepath.Join("..", "sql", "migrations", "startup",
-		"734_request_logs_view_details_join.sql"))
-	if err != nil {
-		t.Fatalf("read migration 734: %v", err)
-	}
-	if _, err := pool.Exec(ctx, string(migration734)); err != nil {
-		t.Fatalf("apply 734 migration on scratch: %v", err)
-	}
+	applyMigration("734_request_logs_view_details_join.sql")
+	applyMigration("738_view_chain_credits_rate_multiplier.sql")
+	applyMigration("740_view_chain_client_ip.sql")
 	migrationViewdef := viewDefinition(t, ctx, pool)
 	if migrationViewdef != ensureViewdef {
-		t.Fatalf("ensure and migrations 710+734 produce different view definitions:\n--- ensure ---\n%s\n--- migration ---\n%s",
+		t.Fatalf("ensure and migrations 710+734+738+740 produce different view definitions:\n--- ensure ---\n%s\n--- migration ---\n%s",
 			ensureViewdef, migrationViewdef)
 	}
 
-	// Data semantics: dedup + D4 NULL passthrough + details overlay.
+	// Data semantics: dedup + D4 NULL passthrough + details overlay + 740
+	// client_ip passthrough.
 	seed := `
-		INSERT INTO public.request_logs_hot (request_id, gw_session_id, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name, client_model, quality_flags)
-		VALUES ('req-v1-only', 'sess-legacy', 10, 5, 1, 'immediate', 'm-alpha', 'cli-alpha', '{}')
-		     , ('req-dual', 'sess-dual', 20, 8, 2, 'immediate', 'm-beta', 'cli-beta', '{}');
+		INSERT INTO public.request_logs_hot (request_id, gw_session_id, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name, client_model, quality_flags, client_ip)
+		VALUES ('req-v1-only', 'sess-legacy', 10, 5, 1, 'immediate', 'm-alpha', 'cli-alpha', '{}', '203.0.113.7')
+		     , ('req-dual', 'sess-dual', 20, 8, 2, 'immediate', 'm-beta', 'cli-beta', '{}', NULL);
 		INSERT INTO public.request_logs (request_id, gw_session_id, prompt_tokens, completion_tokens, customer_id, request_class, raw_model_name)
 		VALUES ('req-parent-only', NULL, 1, 2, 3, 'immediate', 'm-gamma');
 		INSERT INTO public.session_turns_hot (session_id, tenant_id, request_id, ts, turn_no, model, success, status_code, credits_charged, partition_date)
@@ -326,6 +414,18 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 	}
 	if dualCount != 1 {
 		t.Fatalf("anti-join dedup: request_id=req-dual appears %d times, want exactly 1", dualCount)
+	}
+
+	// 740 client_ip passthrough: the real source column must surface through
+	// the canonical view's v1 branch (B7 data-source fix).
+	var v1ClientIP *string
+	if err := pool.QueryRow(ctx, `
+		SELECT HOST(client_ip) FROM public.request_logs_with_current_month WHERE request_id = 'req-v1-only'
+	`).Scan(&v1ClientIP); err != nil {
+		t.Fatalf("client_ip passthrough probe failed: %v", err)
+	}
+	if v1ClientIP == nil || *v1ClientIP != "203.0.113.7" {
+		t.Fatalf("client_ip passthrough: got %v, want 203.0.113.7", v1ClientIP)
 	}
 
 	var syntheticGW *string
@@ -385,18 +485,31 @@ func TestRequestLogsViewV2EnsureMatchesMigration(t *testing.T) {
 		t.Fatalf("view coverage = %d rows, want 5 (both branches visible)", rows)
 	}
 
-	// Down chain in reverse numeric order (733 header contract: 734 down
-	// runs first, then 733 down). 734 down must rebuild the 710 body — its
+	// Down chain in reverse numeric order (740 down → 738 down → 734 down →
+	// 733 down → 710 down). 734 down must rebuild the 710 body — its
 	// "already v2" probe must NOT mistake the 734 details-joined body for the
 	// 710 shape, or the family drop below hits 2BP01 (view dependency).
-	down734, err := os.ReadFile(filepath.Join("..", "sql", "migrations", "startup",
-		"734_request_logs_view_details_join.down.sql"))
-	if err != nil {
-		t.Fatalf("read 734 down: %v", err)
+	applyDown := func(name string) {
+		t.Helper()
+		sqlBytes, err := os.ReadFile(filepath.Join("..", "sql", "migrations", "startup", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if _, err := pool.Exec(ctx, string(sqlBytes)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
 	}
-	if _, err := pool.Exec(ctx, string(down734)); err != nil {
-		t.Fatalf("apply 734 down: %v", err)
+	applyDown("740_view_chain_client_ip.down.sql")
+	postDown740 := viewDefinition(t, ctx, pool)
+	if strings.Contains(postDown740, "client_ip") || !strings.Contains(postDown740, "credits_rate_multiplier") {
+		t.Fatal("740 down must strip client_ip while keeping the 738 credits column")
 	}
+	applyDown("738_view_chain_credits_rate_multiplier.down.sql")
+	postDown738 := viewDefinition(t, ctx, pool)
+	if strings.Contains(postDown738, "credits_rate_multiplier") {
+		t.Fatal("738 down must strip credits_rate_multiplier (pre-736 shape)")
+	}
+	applyDown("734_request_logs_view_details_join.down.sql")
 	postDown732 := viewDefinition(t, ctx, pool)
 	if !strings.Contains(postDown732, "session_turns") || strings.Contains(postDown732, "session_turn_details") {
 		t.Fatal("734 down must restore the 710 body (v2, no details join)")
@@ -436,9 +549,10 @@ func viewDefinition(t *testing.T, ctx context.Context, pool *pgxpool.Pool) strin
 }
 
 // frozenContractColumnList returns the frozen base contract: the live
-// canonical view's 113 columns minus the five appended names
-// (customer_id/request_class/due_at/system_fingerprint/raw_model_name) = the
-// 108 columns the pre-485 base wrapper carries, in canonical order.
+// canonical view's columns minus the appended names
+// (customer_id/request_class/due_at/system_fingerprint/raw_model_name/
+// credits_rate_multiplier/client_ip) = the 108 columns the pre-485 base
+// wrapper carries, in canonical order.
 func frozenContractColumnList(ctx context.Context, scratch *pgxpool.Pool, liveDSN string) ([]string, error) {
 	liveCfg, err := pgxpool.ParseConfig(liveDSN)
 	if err != nil {
@@ -453,6 +567,7 @@ func frozenContractColumnList(ctx context.Context, scratch *pgxpool.Pool, liveDS
 	appended := map[string]bool{
 		"customer_id": true, "request_class": true, "due_at": true,
 		"system_fingerprint": true, "raw_model_name": true,
+		"credits_rate_multiplier": true, "client_ip": true,
 	}
 	rows, err := live.Query(ctx, `
 		SELECT column_name FROM information_schema.columns
@@ -501,7 +616,7 @@ func cloneTablesFrozenDDL(ctx context.Context, liveDSN string, frozen []string) 
 	for _, name := range frozen {
 		keep[name] = true
 	}
-	for _, name := range []string{"customer_id", "request_class", "due_at", "system_fingerprint", "raw_model_name"} {
+	for _, name := range []string{"customer_id", "request_class", "due_at", "system_fingerprint", "raw_model_name", "credits_rate_multiplier", "client_ip"} {
 		keep[name] = true
 	}
 
