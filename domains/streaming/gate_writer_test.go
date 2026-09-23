@@ -218,3 +218,34 @@ func TestWrapAttemptWriterReusesPreGatedWriter(t *testing.T) {
 		t.Fatal("bridge must reuse the coordinator's gate, not create a second one")
 	}
 }
+
+// 2026-09-23 (154 build 2234 field evidence): StreamChat…WithVendor wraps the
+// (already survival-gated) writer in a connection-monitor decorator BEFORE
+// calling wrapAttemptWriter. The reuse fast-path type assert missed behind
+// that wrapper, the bridge stacked a SECOND gate, and the §11.6
+// TerminalRendered latch landed on the throwaway gate while
+// SurvivalCoordinator.renderTerminal consulted the coordinator's own —
+// result: two terminal frames + two [DONE] on one wire (20/20 committed
+// minimax-m3 breaks). The unwrap loop must see through standard
+// Unwrap()-convention decorators.
+func TestWrapAttemptWriterReusesPreGatedWriterBehindMonitor(t *testing.T) {
+	restore := setAttemptGateForTest(true, GateModeBuffered)
+	defer restore()
+
+	inner := &trackingFlusher{}
+	sw := NewSerializedStreamWriter(inner)
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, sw, GateOptions{Mode: GateModeBuffered})
+	gw := NewGateWriterWithResponse(gate, nil)
+
+	ctx, monitor := NewConnectionMonitor(context.Background(), httptest.NewRecorder())
+	defer monitor.Stop()
+	mw := &monitoredResponseWriter{delegate: gw, monitor: monitor}
+
+	w2, gate2 := wrapAttemptWriter(ctx, mw, ProtocolAnthropic)
+	if w2 != http.ResponseWriter(mw) {
+		t.Fatal("outer writer (with monitor) must be returned so monitoring stays in the write path")
+	}
+	if gate2 != gate {
+		t.Fatal("bridge must reuse the coordinator's gate through the monitor wrapper, not create a second one")
+	}
+}
