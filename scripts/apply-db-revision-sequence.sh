@@ -558,6 +558,11 @@ files=(
   # client_ip（341 列经 740 投影进链）。regexp 补列 + 顶层全量重建 +
   # 列数守卫 fail-closed（738 惯用法）。幂等。
   "$ROOT_DIR/sql/migrations/startup/740_view_chain_client_ip.sql"
+  # 2026-09-23 R65：742 hosted_task_events 类型 CHECK 扩容新增 'recalled'，
+  # 供 POST /v1/hosted-tasks/{id}/recall（§3.3 轻量快照路径）追加召回事件
+  # （711 白名单不含 recalled；741 已被 B11 申领故跳号）。经 sequence 通道
+  # 升级的存量库不下发此行则 recall 写事件违反约束。幂等（约束重建）。
+  "$ROOT_DIR/sql/migrations/startup/742_hosted_task_recalled_event.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
