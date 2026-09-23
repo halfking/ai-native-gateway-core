@@ -1938,14 +1938,16 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 
 			// FlushToPG 可能早于 telemetry worker 写入 request_logs；有限退避重试
 			// 覆盖该竞态，且只有 UPDATE 命中行时 recorder 才会删除 Redis key。
-			// 2026-09-23: 首试延迟 250ms（略大于 telemetry 200ms 批处理窗口）。
-			// 生产实证（2026-09-23 本地）：delay=0 的首试几乎必然撞上竞态
-			// （attempt1 失败 7601 条 vs attempt2 144 条），trace_events 全部
-			// 被 5s 后的 attempt2 兜住——落库无损但白等 5s、日志洪水 7601 条/h。
+			// 2026-09-23: 首试延迟 1.2s。生产两轮实证（本地 2235→2238）：delay=0
+			// 首试几乎必然撞竞态（attempt1 失败 7601 条 vs attempt2 144 条）；
+			// 250ms 仍不够——rate_limited 探针的 INSERT 事务里 api_keys 行锁
+			// 串行化使提交晚于 now() 时钟数百毫秒到秒级（attempt1 仍失败
+			// 66 条/5min，但 attempt2 全部兜住、trace 无损）。1.2s 覆盖常态
+			// 提交延迟，5s/15s 重试链保持兜底。
 			if h.telemetryClient != nil {
 				if pool := h.telemetryClient.DBPool(); pool != nil {
 					go func(rid string) {
-						for attempt, delay := range []time.Duration{250 * time.Millisecond, 5 * time.Second, 5 * time.Second, 5 * time.Second} {
+						for attempt, delay := range []time.Duration{1200 * time.Millisecond, 5 * time.Second, 5 * time.Second, 5 * time.Second} {
 							if delay > 0 {
 								time.Sleep(delay)
 							}
