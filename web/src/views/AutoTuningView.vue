@@ -1,11 +1,13 @@
 <script setup lang="ts">
-// AutoTuningView.vue — 路由调参页（v2 规划 P0③，2026-09-24）。
+// AutoTuningView.vue — 路由调参页（v2 规划 P0③，2026-09-24；P1 增补生成入口）。
 //
 // tuning admin API（/api/admin/auto-route/tuning，superAdmin 权限）的运营
 // 门面：调参提案列表（状态/类别过滤）+ 批准/驳回（批准即热调参，5 分钟内
-// 经 bg/tuning_store_refresher 生效）+ 分类质量窗口报表。
-// 提案由 feedback_analyzer 自动生成（回路 C 的"自动生成提案"半环）；
-// 本页是"人工批准"半环（v2 规划 §4.4：自动的是提案，生效永远是门禁+人工）。
+// 经 bg/tuning_store_refresher 生效）+ 分类质量窗口报表 + 两个按需生成入口
+// （P1：人工修正驱动提案 / 信号分析器即时运行）。
+// 提案由 feedback_analyzer 与 taskprofile/analyzer 自动生成（回路 C 的
+// "自动生成提案"半环）；本页是"人工批准"半环（v2 规划 §4.4：自动的是提案，
+// 生效永远是门禁+人工）。
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
@@ -13,6 +15,8 @@ import {
   approveTuningProposal,
   rejectTuningProposal,
   getTuningAccuracy,
+  generateCorrectionProposals,
+  triggerTuningAnalyze,
   type TuningProposal,
   type TuningProposalStatus,
   type TuningProposalCategory,
@@ -81,6 +85,46 @@ async function loadAccuracy() {
   }
 }
 
+const generating = ref(false)
+const generateDays = ref(30)
+const analyzing = ref(false)
+
+// P1 回路 C：从人工修正生成提案草稿（读取 → 过闸 → 草稿 → 内联回放 → 待审）。
+async function generate() {
+  if (!window.confirm(t('autoTuning.action.generateConfirm', { days: generateDays.value }))) return
+  generating.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const r = await generateCorrectionProposals(generateDays.value)
+    notice.value = r.generated > 0
+      ? t('autoTuning.action.generateDone', { n: r.generated })
+      : t('autoTuning.action.generateNone')
+    await load()
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    generating.value = false
+  }
+}
+
+// 按需运行既有信号分析器（tuning_signals 质量驱动提案）。
+async function analyzeNow() {
+  if (!window.confirm(t('autoTuning.action.analyzeConfirm'))) return
+  analyzing.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const r = await triggerTuningAnalyze()
+    notice.value = t('autoTuning.action.analyzeDone', { at: r.completed_at })
+    await load()
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    analyzing.value = false
+  }
+}
+
 function categoryLabel(c: TuningProposalCategory): string {
   switch (c) {
     case 'keyword_add': return t('autoTuning.filter.keywordAdd')
@@ -117,6 +161,17 @@ function evidenceSummary(p: TuningProposal): string {
   if (e.avg_quality != null) bits.push(`q=${e.avg_quality.toFixed(2)}`)
   if (e.confidence != null) bits.push(`conf=${e.confidence.toFixed(2)}`)
   if (e.window_days != null) bits.push(`${e.window_days}d`)
+  // corrections 驱动草稿（P1）：对/占比/回放计数
+  if (e.auto_task_type && e.human_task_type) bits.push(`${e.auto_task_type}→${e.human_task_type}`)
+  if (e.corrected_total != null) bits.push(`corrected=${e.corrected_total}`)
+  if (e.domain_hint) bits.push(`hint=${e.domain_hint}(${Math.round((e.hint_share ?? 0) * 100)}%)`)
+  if (e.backtest) {
+    const b = e.backtest
+    if (b.would_touch != null) bits.push(`band=${b.would_touch}`)
+    if (b.would_fix_proxy != null) bits.push(`fix≈${b.would_fix_proxy}`)
+    if (b.matched != null) bits.push(`matched=${b.matched}`)
+    if (b.matched_corrected != null) bits.push(`fixed≈${b.matched_corrected}`)
+  }
   return bits.join(' ')
 }
 
@@ -163,9 +218,25 @@ onMounted(() => {
   <div class="stats-page">
     <div class="page-header">
       <h2>{{ t('autoTuning.title') }}</h2>
-      <button class="btn btn-primary btn-sm" :disabled="loading" @click="load">
-        {{ loading ? t('autoTuning.refreshing') : t('autoTuning.refresh') }}
-      </button>
+      <div class="header-actions">
+        <label class="inline-label">
+          {{ t('autoTuning.action.windowDays') }}
+          <select v-model.number="generateDays" class="select-sm">
+            <option :value="7">7</option>
+            <option :value="30">30</option>
+            <option :value="90">90</option>
+          </select>
+        </label>
+        <button class="btn btn-primary btn-sm" :disabled="generating" @click="generate">
+          {{ generating ? t('autoTuning.action.generating') : t('autoTuning.action.generate') }}
+        </button>
+        <button class="btn btn-sm" :disabled="analyzing" @click="analyzeNow">
+          {{ analyzing ? t('autoTuning.action.analyzing') : t('autoTuning.action.analyze') }}
+        </button>
+        <button class="btn btn-sm" :disabled="loading" @click="load">
+          {{ loading ? t('autoTuning.refreshing') : t('autoTuning.refresh') }}
+        </button>
+      </div>
     </div>
 
     <p class="page-desc">{{ t('autoTuning.desc') }}</p>
@@ -294,6 +365,15 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.header-actions .inline-label {
+  margin-left: 0;
+}
 .filter-bar {
   display: flex;
   align-items: center;

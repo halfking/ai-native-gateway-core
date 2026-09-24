@@ -107,9 +107,56 @@ func backtestProposal(ctx context.Context, pool *pgxpool.Pool, id int64, days in
 		return backtestKeywordAdd(ctx, pool, proposal, days)
 	case "weight_adjust":
 		return backtestWeightAdjust(ctx, pool, proposal, days)
+	case "threshold_change":
+		return backtestThresholdChange(ctx, pool, proposal, days)
 	default:
 		return fmt.Errorf("unsupported category for backtest: %s", category)
 	}
+}
+
+// backtestThresholdChange replays a threshold_change proposal: requests whose
+// heuristic confidence falls into the [new, old) band would newly go to the
+// LLM fallback. Reports how many total requests that band touches (fallback
+// cost proxy) and how many of them were later human-corrected (would-fix
+// proxy). Same band semantics as taskprofile.BacktestThresholdBand (v2 闭环
+// P1)；两处 SQL 需同步维护（属主：taskprofile/analyzer.go）。
+func backtestThresholdChange(ctx context.Context, pool *pgxpool.Pool, proposal map[string]any, days int) error {
+	key, _ := proposal["key"].(string)
+	oldRaw, _ := proposal["old"].(float64)
+	newRaw, _ := proposal["new"].(float64)
+	if key == "" || oldRaw <= 0 || newRaw <= 0 {
+		return fmt.Errorf("threshold_change proposal missing key/old/new fields")
+	}
+	if newRaw >= oldRaw {
+		return fmt.Errorf("threshold_change must lower the threshold (new %.2f >= old %.2f)", newRaw, oldRaw)
+	}
+
+	var total, corrected int
+	err := pool.QueryRow(ctx, `
+		SELECT count(*),
+		       count(*) FILTER (WHERE EXISTS (
+		           SELECT 1 FROM task_type_corrections c
+		           WHERE c.request_id = ars.request_id AND c.agrees = false))
+		FROM auto_route_selections ars
+		WHERE ars.ts >= NOW() - make_interval(days => $1)
+		  AND ars.classifier = 'heuristic'
+		  AND ars.confidence >= $2 AND ars.confidence < $3
+	`, days, newRaw, oldRaw).Scan(&total, &corrected)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Threshold backtest over last %d days:\n", days)
+	fmt.Printf("  Proposed change:     %s %.2f → %.2f\n", key, oldRaw, newRaw)
+	fmt.Printf("  Band [%.2f, %.2f) requests: %d ← would newly go to LLM fallback\n", newRaw, oldRaw, total)
+	fmt.Printf("    human-corrected:   %d ← would-fix proxy (fallback likely reclassifies)\n", corrected)
+	if total > 0 {
+		fmt.Printf("    fix ratio:         %.1f%%\n", 100*float64(corrected)/float64(total))
+	}
+	fmt.Println()
+	fmt.Println("Note: the band count is the LLM-fallback cost proxy — a large band with")
+	fmt.Println("      a small corrected share argues against the drop.")
+	return nil
 }
 
 func backtestKeywordAdd(ctx context.Context, pool *pgxpool.Pool, proposal map[string]any, days int) error {

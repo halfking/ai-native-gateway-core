@@ -9,9 +9,11 @@ package admin
 // Endpoints (mounted under /api/admin/auto-route/tuning/*):
 //
 //	GET    /tuning/proposals            — list proposals (filter by status/category)
+//	POST   /tuning/proposals/generate   — corrections-driven draft generation (v2 闭环 P1)
 //	POST   /tuning/proposals/:id/approve — approve + apply a proposal
 //	POST   /tuning/proposals/:id/reject  — reject a proposal (with reason)
 //	GET    /tuning/accuracy              — 7-day accuracy dashboard
+//	POST   /tuning/analyze               — on-demand run of the signals-based analyzer
 //
 // All routes reuse the existing adminWrap middleware (bearer-token auth).
 //
@@ -36,6 +38,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
+	"github.com/kaixuan/llm-gateway-go/taskprofile"
 )
 
 // validStatuses and validCategories are allowlists for the proposals
@@ -73,11 +76,90 @@ func (h *TuningHandlers) SetAnalyzer(a interface {
 	h.analyzer = a
 }
 
-// RegisterTuningRoutes mounts the 4 endpoints onto the admin mux.
+// RegisterTuningRoutes mounts the tuning endpoints onto the admin mux.
 func (h *TuningHandlers) RegisterTuningRoutes(mux *http.ServeMux, adminWrap func(http.HandlerFunc) http.HandlerFunc) {
 	mux.HandleFunc("/api/admin/auto-route/tuning/proposals", adminWrap(h.handleProposals))
+	// 字面路径优先于下面的子树模式（ServeMux 最长匹配），generate 不进
+	// handleProposalAction 的 id 解析。
+	mux.HandleFunc("POST /api/admin/auto-route/tuning/proposals/generate", adminWrap(h.handleProposalsGenerate))
 	mux.HandleFunc("/api/admin/auto-route/tuning/proposals/", adminWrap(h.handleProposalAction))
 	mux.HandleFunc("/api/admin/auto-route/tuning/accuracy", adminWrap(h.handleAccuracy))
+	mux.HandleFunc("POST /api/admin/auto-route/tuning/analyze", adminWrap(h.handleAnalyze))
+}
+
+// handleProposalsGenerate: POST /tuning/proposals/generate?days=30
+//
+// Corrections-driven proposal generation (v2 闭环 P1，回路 C)：runs the
+// taskprofile analyzer over human corrections × structured features, drafts
+// threshold/keyword proposals, quantifies each via inline backtest, and
+// inserts them as status='pending'. Nothing is auto-applied — review happens
+// through the same list/approve flow as signals-based proposals.
+func (h *TuningHandlers) handleProposalsGenerate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
+		return
+	}
+
+	days := taskprofile.AnalyzerWindowDaysDefault
+	if d := r.URL.Query().Get("days"); d != "" {
+		v, err := strconv.Atoi(d)
+		if err != nil || v < taskprofile.AnalyzerWindowDaysMin || v > taskprofile.AnalyzerWindowDaysMax {
+			writeJSONErr(w, http.StatusBadRequest, fmt.Sprintf(
+				"days must be %d-%d",
+				taskprofile.AnalyzerWindowDaysMin, taskprofile.AnalyzerWindowDaysMax))
+			return
+		}
+		days = v
+	}
+
+	operator := "unknown"
+	if ac := GetAuthContext(r); ac != nil && ac.Username != "" {
+		operator = ac.Username
+	}
+
+	drafts, err := taskprofile.GenerateCorrectionProposals(r.Context(), h.parent.db, days, operator)
+	if err != nil {
+		slog.Error("tuning: corrections-driven proposal generation failed", "error", err, "days", days)
+		writeInternalErr(w, err)
+		return
+	}
+	// 审计留痕（非阻塞纯日志，同 taskProfileAuditSink 契约）：提案行本身
+	// 记录 proposal/evidence/status；此处补触发性事件。
+	slog.Info("tuning.audit",
+		"action", "proposals-generate",
+		"outcome", "ok",
+		"actor", operator,
+		"days", days,
+		"generated", len(drafts),
+	)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"generated": len(drafts),
+		"days":      days,
+		"proposals": drafts,
+	})
+}
+
+// handleAnalyze: POST /tuning/analyze — on-demand run of the signals-based
+// feedback analyzer (bg.FeedbackAnalyzer.AnalyzeOnce), fulfilling the
+// frontend triggerTuningAnalyze placeholder contract.
+func (h *TuningHandlers) handleAnalyze(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
+		return
+	}
+	if h.analyzer == nil {
+		writeJSONErrCtx(w, r, http.StatusServiceUnavailable, "analyzer_not_wired")
+		return
+	}
+	if err := h.analyzer.AnalyzeOnce(r.Context()); err != nil {
+		slog.Error("tuning: on-demand analyze failed", "error", err)
+		writeInternalErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"completed_at": time.Now().UTC().Format(time.RFC3339),
+		"triggered_by": "admin",
+	})
 }
 
 // handleProposals: GET /tuning/proposals?status=pending&category=keyword_add&limit=50
@@ -320,8 +402,92 @@ func applyProposalInTx(ctx context.Context, tx pgx.Tx, category string, proposal
 		return applyKeywordAddInTx(ctx, tx, proposal)
 	case "weight_adjust":
 		return applyWeightAdjustInTx(ctx, tx, proposal)
+	case "threshold_change":
+		return applyThresholdChangeInTx(ctx, tx, proposal)
 	default:
 		return fmt.Errorf("unknown proposal category: %s", category)
+	}
+}
+
+// allowedThresholdKeys is the whitelist of threshold tuning keys a
+// threshold_change proposal may target (mirrors autoroute.applyTuningParam's
+// supported keys). Anything else is rejected before it can reach tuning_params.
+var allowedThresholdKeys = map[string]bool{
+	"thresholds.llm_confidence":      true,
+	"thresholds.long_context_tokens": true,
+}
+
+// applyThresholdChangeInTx writes the proposed threshold value into
+// tuning_params (source='feedback'), validating key + range per the same
+// contract autoroute/tuning_store.go enforces at hydrate time — a proposal
+// that would be rejected by the hot-path loader must not be appliable.
+func applyThresholdChangeInTx(ctx context.Context, tx pgx.Tx, proposal map[string]any) error {
+	key, _ := proposal["key"].(string)
+	if !allowedThresholdKeys[key] {
+		return fmt.Errorf("threshold key %q not appliable", key)
+	}
+
+	newRaw, ok := proposal["new"]
+	if !ok {
+		return fmt.Errorf("threshold_change proposal missing new value")
+	}
+
+	var newValue string
+	switch key {
+	case "thresholds.llm_confidence":
+		num, err := toFloat(newRaw)
+		if err != nil {
+			return fmt.Errorf("invalid llm_confidence value: %w", err)
+		}
+		if num <= 0 || num > 1 {
+			return fmt.Errorf("thresholds.llm_confidence %v out of range (0,1]", num)
+		}
+		newValue = strconv.FormatFloat(num, 'f', -1, 64)
+	case "thresholds.long_context_tokens":
+		num, err := toFloat(newRaw)
+		if err != nil {
+			return fmt.Errorf("invalid long_context_tokens value: %w", err)
+		}
+		if num < 1 {
+			return fmt.Errorf("thresholds.long_context_tokens %v must be positive", num)
+		}
+		newValue = strconv.Itoa(int(num))
+	}
+
+	var currentValue string
+	err := tx.QueryRow(ctx,
+		`SELECT value FROM tuning_params WHERE key = $1 FOR UPDATE`, key,
+	).Scan(&currentValue)
+	if err != nil {
+		return fmt.Errorf("read current threshold: %w", err)
+	}
+
+	if _, err = tx.Exec(ctx, `
+		UPDATE tuning_params
+		SET value = $2, source = 'feedback', updated_at = NOW(), applied_at = NOW()
+		WHERE key = $1
+	`, key, newValue); err != nil {
+		return fmt.Errorf("update threshold: %w", err)
+	}
+	return nil
+}
+
+// toFloat coerces a JSON-decoded proposal number (float64 via encoding/json)
+// into a float64, accepting integral values encoded as other numeric kinds.
+func toFloat(v any) (float64, error) {
+	switch n := v.(type) {
+	case float64:
+		return n, nil
+	case float32:
+		return float64(n), nil
+	case int:
+		return float64(n), nil
+	case int64:
+		return float64(n), nil
+	case json.Number:
+		return n.Float64()
+	default:
+		return 0, fmt.Errorf("not a number: %T", v)
 	}
 }
 
