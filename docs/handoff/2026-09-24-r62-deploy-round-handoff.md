@@ -16,8 +16,10 @@
 
 **迁移（共享 252 PG，schema_migrations 实查）**：743=normalize_provider_protocol（R60 协议
 归一）+ 744=sql_audit_partial_indexes（252 轨道）双戳在位；生产数据实证：providers.protocol
-仅剩 openai-completions(53)/anthropic-messages(3)，零 legacy 别名。**下一可用迁移 = 745**
-（R61 文档"下一可用 744"写于重编号前，已过时）。
+仅剩 openai-completions(53)/anthropic-messages(3)，零 legacy 别名。**下一可用迁移 = 746**
+（R63 勘误：本行原文写 745，已过时——745 已被 report_snapshots 占用、800 已被
+provider_endpoint_protocols 占用，下一可用号顺延为 746；上一行"下一可用 744"过时注记
+的口径不变）。
 
 ## 2. 部署后 runbook 机制复验（154-stream-fix-recheck-v2 口径，实测）
 

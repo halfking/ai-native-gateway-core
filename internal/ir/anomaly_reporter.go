@@ -211,6 +211,19 @@ var (
 	// reporterMu，临界区保持微小。
 	anomalyDedupSweepThreshold = 4096
 
+	// anomalyDedupSweepInterval —— r0924b（2026-09-24）低频清扫时间闸：
+	// 距上次 TTL 清扫不足该间隔时，即使 map 已超 threshold 也跳过全表扫
+	// （此前超阈值后每次插入都在临界区内 O(n) 扫描；持续超阈值的进程里
+	// 每条异常插入都要付一次全表扫）。取舍：两次清扫之间 map 可增长到
+	// threshold + (异常速率 × interval)，内存上界仍由下方 hardCap 兜底；
+	// 60s 间隔把全表扫摊薄到每分钟至多一次 O(n)，临界区均摊回到 O(1)。
+	// 测试可改小（var 而非 const）。
+	anomalyDedupSweepInterval = time.Minute
+
+	// lastSweepAt 记录最近一次 TTL 全表清扫（或 hardCap 整表清空）的时点，
+	// 供上面的时间闸判断；仅在 reporterMu 临界区内读写。
+	lastSweepAt time.Time
+
 	// anomalyDedupHardCap —— R61（S3-F3 续）：异常风暴硬上界。TTL 清扫只
 	// 回收过期 key；若 1h 窗口内唯一 key 数（异常请求速率×3600）远超阈值
 	// （如畸形客户端全量命中），map 会涨到数百 MB 且清扫在临界区内 O(n)。
@@ -242,6 +255,7 @@ func SetAnomalyReporter(r AnomalyReporter) AnomalyReporter {
 	// Reset dedup state whenever the reporter changes so tests can re-run
 	// with the same fixture set without seeing the dedup swallow events.
 	reporterDed = map[string]time.Time{}
+	lastSweepAt = time.Time{}
 	return prev
 }
 
@@ -251,6 +265,7 @@ func ResetAnomalyReporter() {
 	reporterMu.Lock()
 	defer reporterMu.Unlock()
 	reporterDed = map[string]time.Time{}
+	lastSweepAt = time.Time{}
 }
 
 // ReportAnomaly emits an event. It is a no-op when the reporter is nil
@@ -301,14 +316,23 @@ func ReportAnomaly(ev AnomalyEvent) bool {
 	}
 	reporterDed[key] = now
 	if len(reporterDed) > anomalyDedupSweepThreshold {
-		for k, ts := range reporterDed {
-			if now.Sub(ts) >= anomalyDedupTTL {
-				delete(reporterDed, k)
+		// r0924b：TTL 全表扫受时间闸约束——距上次清扫不足
+		// anomalyDedupSweepInterval 时直接跳过，避免超阈值态下每次插入都在
+		// 持锁临界区内 O(n) 扫描（lastSweepAt 零值视为"从未扫过"，首次
+		// 超阈值必扫一次）。超阈值窗口内的内存增长由 hardCap 兜底。
+		if now.Sub(lastSweepAt) >= anomalyDedupSweepInterval {
+			for k, ts := range reporterDed {
+				if now.Sub(ts) >= anomalyDedupTTL {
+					delete(reporterDed, k)
+				}
 			}
+			lastSweepAt = now
 		}
 		// R61：TTL 清扫后仍超硬上界（异常风暴）→ 整表清空保内存上界。
+		// 刻意不受时间闸约束：内存上界是硬保证，风暴测试钉桩该路径。
 		if len(reporterDed) > anomalyDedupHardCap {
 			reporterDed = map[string]time.Time{}
+			lastSweepAt = now
 		}
 	}
 	r := reporter

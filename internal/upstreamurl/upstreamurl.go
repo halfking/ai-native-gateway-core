@@ -183,11 +183,21 @@ func PathFor(ep Endpoint) string {
 //	Build("https://api.example.com", EpChatCompletions)
 //	  → "https://api.example.com/v1/chat/completions"
 //	Build("", EpChatCompletions) → ""
+//
+// EXCEPTION (r0924 fix-a task 4): EpOllamaChat is unversioned on the wire —
+// a trailing /v1..v9 is STRIPPED instead of preserved, because real Ollama
+// returns 404 on /v1/api/chat. OpenAI-family endpoints keep the rule above.
 func Build(baseURL string, ep Endpoint) string {
 	if baseURL == "" {
 		return ""
 	}
 	cleaned := stripCompletionSuffix(baseURL)
+	if ep == EpOllamaChat {
+		// Ollama native wire is unversioned: "http://host:11434/v1" must
+		// land on /api/chat, not the 404-ing /v1/api/chat.
+		cleaned = versionTrailing.ReplaceAllString(cleaned, "")
+		return cleaned + pathAfterVersion(ep)
+	}
 	if versionTrailing.MatchString(cleaned) {
 		return cleaned + pathAfterVersion(ep)
 	}
@@ -229,19 +239,16 @@ func EmbeddingsURL(baseURL string) string {
 //
 //	OllamaChatURL("http://localhost:11434") → "http://localhost:11434/api/chat"
 //	OllamaChatURL("http://localhost:11434/api/chat") → "http://localhost:11434/api/chat"
-//	OllamaChatURL("http://localhost:11434/v1") → "http://localhost:11434/v1/api/chat"
+//	OllamaChatURL("http://localhost:11434/v1") → "http://localhost:11434/api/chat"
 //	OllamaChatURL("") → ""
 //
 // RESERVED(r0924 supplier-protocol-optimization §3.6): this is the
 // upstream URL SSOT for the ollama-native executor. Real Ollama servers
 // (default :11434) listen on /api/chat; older operators may paste a
-// `/v1` OpenAI-compatible base URL — Build appends the endpoint under
-// the version segment per the versionTrailing rule.
-//
-// Note: real Ollama returns 404 on `/v1/api/chat`. Operators who paste a
-// `/v1` URL are expected to ALSO configure the dispatcher with a
-// protocol-stripped base (the EndpointSelector's native endpoint row
-// carries the correct base URL).
+// `/v1` OpenAI-compatible base URL — the versionTrailing rule does NOT
+// apply to this endpoint (r0924 fix-a task 4): a trailing /v1..v9 is
+// stripped so the URL lands on /api/chat instead of the 404-ing
+// /v1/api/chat on real Ollama.
 func OllamaChatURL(baseURL string) string {
 	return Build(baseURL, EpOllamaChat)
 }

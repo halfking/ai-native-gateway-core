@@ -200,8 +200,17 @@ func RecommendedProtocolForBaseURL(baseURL string) (string, bool) {
 	// of a non-numeric TLD-ish hostname. We keep the rule narrow on
 	// purpose: operators can override via explicit catalog entry.
 	if port == "11434" {
+		// F8 residual (r0924 fix-a task 8): this must be an EQUALITY match,
+		// not a prefix match — strings.HasPrefix(hostname,
+		// "host.docker.internal") also matched attacker-controlled
+		// look-alikes like "host.docker.internal.evil.com" and falsely
+		// classified them as Ollama. Trailing-dot FQDNs ("localhost.") are
+		// deliberately NOT matched either: strict equality can only
+		// under-classify (fail-safe to the openai-completions default),
+		// never over-classify; operators override via an explicit catalog
+		// entry.
 		if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" ||
-			strings.HasPrefix(hostname, "host.docker.internal") {
+			hostname == "host.docker.internal" {
 			return ProtocolOllamaNative, true
 		}
 	}

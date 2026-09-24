@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -1120,14 +1121,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Mock Probe runner（2026-09-24）：默认不启动；启用时可选挂 PG 历史
-	// 落库（无 DATABASE_URL 则只打指标）。注册 shutdown.Manager 为
-	// NonStream kind，停机顺序"先停 runner → 关 mux"。
-	var probeRunner *mockprobe.Runner
-	if cfg.MockProbeEnabled {
-		probeRunner = startMockProbeRunner(ctx, cfg)
-	}
-
 	srv := &http.Server{
 		Addr: cfg.Listen,
 		// NET-002 fix: 复用 cmd/gateway 的中间件链 —— recovery / requestid /
@@ -1143,6 +1136,25 @@ func main() {
 		MaxHeaderBytes:    1 << 20,
 	}
 
+	// 启动竞态修复（audit P3）：先显式 net.Listen 建立监听，再启动 mock
+	// probe runner——保证探测首轮发出时网关入口已绑定，首轮探测不会因
+	// 入口未就绪而记脏失败。监听建立后、Serve 开始 accept 前到达的连接
+	// 由内核 accept 队列兜住，不丢。
+	ln, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		logger.Error("server failed", "err", err)
+		os.Exit(1)
+	}
+
+	// Mock Probe runner（2026-09-24）：默认不启动；启用时可选挂 PG 历史
+	// 落库（无 DATABASE_URL 则只打指标）。注册 shutdown.Manager 为
+	// NonStream kind，停机顺序"先停 runner → 关 mux"。
+	var probeRunner *mockprobe.Runner
+	var probePool *pgxpool.Pool
+	if cfg.MockProbeEnabled {
+		probeRunner, probePool = startMockProbeRunner(ctx, cfg)
+	}
+
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -1150,15 +1162,25 @@ func main() {
 		logger.Info("shutting down")
 		// 先停 mock probe runner（排空历史写入），再关 HTTP 服务。
 		if probeRunner != nil {
-			stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			probeRunner.Stop(stopCtx)
-			stopCancel()
+			// 停机预算分账（audit P3）：先 cancel runner 的运行 ctx 使在途
+			// 探测（单次自带 probeTimeout 超时）即刻收敛，再为历史排空单独
+			// 给 5s 预算——不再与在途探测共享同一个 10s 总预算互相挤占。
+			cancel()
+			drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			probeRunner.Stop(drainCtx)
+			drainCancel()
+			// pgxpool 释放（audit P3）：历史排空完成后关闭连接池。
+			if probePool != nil {
+				probePool.Close()
+			}
 		}
 		_ = deps.AuditWriter.Close()
-		_ = srv.Shutdown(ctx)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = srv.Shutdown(shutdownCtx)
+		shutdownCancel()
 	}()
 
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server failed", "err", err)
 		os.Exit(1)
 	}
@@ -1166,20 +1188,23 @@ func main() {
 
 // startMockProbeRunner 装配并启动 mock probe 子系统（cfg.MockProbeEnabled
 // 已为 true）。DB 不可达时降级为"只打指标"并继续——探测主诉是链路自检，
-// 历史落库是附属能力，不应因 PG 抖动阻塞启动。
-func startMockProbeRunner(ctx context.Context, cfg *v2Config) *mockprobe.Runner {
+// 历史落库是附属能力，不应因 PG 抖动阻塞启动。返回的 pgxpool（可能为
+// nil）由调用方在停机序列负责 Close（历史排空之后）。
+func startMockProbeRunner(ctx context.Context, cfg *v2Config) (*mockprobe.Runner, *pgxpool.Pool) {
 	var history *mockprobe.HistoryStore
+	var pool *pgxpool.Pool
 	if cfg.DatabaseURL != "" {
 		poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
 		if err != nil {
 			slog.Warn("mock probe: invalid DATABASE_URL, history disabled", "err", err)
 		} else {
 			poolCfg.MaxConns = 2 // 历史写入是单 goroutine 低频路径
-			pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
+			p, err := pgxpool.NewWithConfig(ctx, poolCfg)
 			if err != nil {
 				slog.Warn("mock probe: DB pool unavailable, history disabled", "err", err)
 			} else {
-				history = mockprobe.NewHistoryStore(ctx, pool)
+				pool = p
+				history = mockprobe.NewHistoryStore(ctx, p)
 			}
 		}
 	} else {
@@ -1191,7 +1216,7 @@ func startMockProbeRunner(ctx context.Context, cfg *v2Config) *mockprobe.Runner 
 	if !runner.Start(ctx) {
 		slog.Warn("mock probe runner failed to start (shutdown in progress?)")
 	}
-	return runner
+	return runner, pool
 }
 
 // 编译期检查：确保新包被使用

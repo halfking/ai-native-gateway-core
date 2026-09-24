@@ -3,6 +3,8 @@
 -- 索引逐一显式 DROP。回滚后行为退回 744 前：outbox done 清理回到 645MB
 -- 全表扫（45min ×255 次 med 4.2s）、digest 回填回到全分区空扫（30s+
 -- 击杀循环）。除非确认索引引发问题，不建议回滚。
+-- 运维注记（R63）：勿以 psql --single-transaction 方式执行（DROP INDEX
+-- CONCURRENTLY 不兼容，事务块内直接报错），回滚请逐条手工执行。
 
 DROP INDEX CONCURRENTLY IF EXISTS public.idx_session_aggregate_outbox_done_completed_at;
 DROP INDEX IF EXISTS public.idx_session_turns_digest_null;

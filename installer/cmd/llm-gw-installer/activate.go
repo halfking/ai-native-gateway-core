@@ -104,10 +104,20 @@ func handleOnlineActivation(masterURL, licenseKey string) error {
 		return fmt.Errorf("激活失败: %w", err)
 	}
 
+	// 注册成功：instance_token 必须落 ~/.kx-gateway/instance.token（0600），
+	// 否则 heartbeat 子命令永远读不到凭据（"请先执行 activate"死循环）。
+	if regResp == nil || regResp.InstanceToken == "" {
+		return fmt.Errorf("激活响应缺少 instance_token（master=%s），凭据不完整", masterURL)
+	}
+	if err := activation.WriteHomeInstanceToken(regResp.InstanceToken); err != nil {
+		return fmt.Errorf("写入 instance_token 失败: %w", err)
+	}
+
 	fmt.Printf("✅ 在线激活成功\n")
 	if regResp != nil && !regResp.ExpiresAt.IsZero() {
 		fmt.Printf("   凭据过期时间: %s\n", regResp.ExpiresAt.Format(time.RFC3339))
 	}
+	fmt.Println("   instance_token 已写入 ~/.kx-gateway/instance.token（heartbeat 命令可直接使用）")
 	fmt.Println("   在线模式下 license 由主控 DB 权威管理（license.dat 仅离线模式需要）")
 
 	return nil

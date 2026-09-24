@@ -3,7 +3,6 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"time"
 )
 
@@ -48,9 +47,9 @@ func ParseOllamaResponse(body []byte) (*InternalResponse, error) {
 	}
 
 	var raw struct {
-		Model        string `json:"model"`
-		CreatedAt    string `json:"created_at"`
-		Message      struct {
+		Model     string `json:"model"`
+		CreatedAt string `json:"created_at"`
+		Message   struct {
 			Role     string `json:"role"`
 			Content  string `json:"content"`
 			Thinking string `json:"thinking"`
@@ -66,11 +65,16 @@ func ParseOllamaResponse(body []byte) (*InternalResponse, error) {
 	}
 
 	// Ollama surfaces upstream errors as a top-level "error" string on a
-	// 200 response — we propagate as a StreamError wrapped via fmt.Errorf
-	// so the executor / dispatcher can short-circuit the wire with the
-	// correct envelope (see StreamError definition in stream.go).
+	// 200 response — we propagate as a typed *StreamError (r0924 fix-a
+	// task 3: previously a bare fmt.Errorf whose comment falsely claimed
+	// StreamError) so the executor / dispatcher can route it with
+	// errors.As and short-circuit the wire with the correct envelope
+	// (see StreamError definition in stream.go).
 	if raw.Error != "" {
-		return nil, fmt.Errorf("ollama upstream error: %s", raw.Error)
+		return nil, &StreamError{
+			Type:    "upstream_error",
+			Message: raw.Error,
+		}
 	}
 
 	resp := &InternalResponse{
@@ -159,9 +163,22 @@ func sanitizeIDToken(s string) string {
 			out = append(out, c)
 		}
 	}
-	// strconv import is needed for the timestamp integer branch in some
-	// refactor paths; keep it imported to avoid cycle imports if we add
-	// a numeric-only fallback later.
-	_ = strconv.Itoa
 	return string(out)
+}
+
+// Error makes *StreamError satisfy the error interface so upstream error
+// payloads returned by the parsers (ParseOllamaResponse, and the
+// ChunkTypeError frames built in parse_ollama_stream.go) are routable via
+// errors.As(err, **StreamError) — the executor's fail wire keys on this
+// type (r0924 fix-a task 3).
+//
+// The method intentionally lives in this file instead of stream.go:
+// StreamError is a plain IR struct there, and giving it error semantics is
+// a parser-layer concern introduced by the Ollama error path. Adding the
+// method is purely additive — StreamError was never used as an error before.
+func (e *StreamError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return e.Message
 }

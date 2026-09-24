@@ -106,8 +106,12 @@ func TestReportAnomaly_DedupSweepBoundsMap(t *testing.T) {
 	prev := SetAnomalyReporter(func(AnomalyEvent) {})
 	defer SetAnomalyReporter(prev)
 
-	// 超阈值插入：阈值 4 + 全部 key 立即过期 ⇒ 下一次插入触发整表清扫，
-	// map 被压回（理论上清空 + 当前 key = 1）。
+	// r0924b：超阈值后的连续插入受清扫时间闸约束——首次超阈值触发一次
+	// 全表扫（lastSweepAt 零值视为从未扫过），之后 60s 内的插入不再重复
+	// 全表扫（map 允许暂时超阈值，内存上界由 hardCap 兜底）。
+	//
+	// 超阈值插入：阈值 4 + 全部 key 立即过期 ⇒ 第 5 个 key 触发整表清扫，
+	// 后续插入时间闸跳过、map 重新增长。
 	for i := 0; i < 64; i++ {
 		ReportAnomaly(AnomalyEvent{
 			RequestID:   string(rune('a' + i%26)) + time.Now().UTC().Format("150405.000000000") + "-" + time.Now().Format(time.RFC3339Nano) + string(rune(i)),
@@ -115,10 +119,75 @@ func TestReportAnomaly_DedupSweepBoundsMap(t *testing.T) {
 			FieldPath:   "sweep",
 		})
 	}
+	if lastSweepAt.IsZero() {
+		t.Fatal("first threshold-crossing insert must run the TTL sweep (lastSweepAt must be set)")
+	}
+	sweepAt := lastSweepAt
+
+	// 时间闸内再触发一次清扫：回拨 lastSweepAt 到间隔之前，下一条插入
+	// 必须执行全表扫，把已过期（TTL=1ns）的 key 压回阈值内。
+	reporterMu.Lock()
+	lastSweepAt = time.Now().Add(-2 * anomalyDedupSweepInterval)
+	reporterMu.Unlock()
 	time.Sleep(2 * time.Millisecond) // 让已插入的 key 全部过期
 	ReportAnomaly(AnomalyEvent{RequestID: "sweep-trigger", AnomalyType: AnomalyUnknownField, FieldPath: "sweep"})
+	if !lastSweepAt.After(sweepAt) {
+		t.Fatal("post-interval insert must run the TTL sweep (lastSweepAt must advance)")
+	}
 	if len(reporterDed) > anomalyDedupSweepThreshold {
 		t.Fatalf("dedup map size = %d, want <= %d after sweep", len(reporterDed), anomalyDedupSweepThreshold)
+	}
+}
+
+// TestReportAnomaly_DedupSweepTimeGate —— r0924b（2026-09-24）低频清扫
+// 时间闸钉桩：超阈值后短时间内的连续插入不得每次插入都全表扫
+// （修复前：持 reporterMu 临界区内 O(n) 扫描，持续超阈值态下每条异常
+// 插入都付一次全表扫）；到间隔后才允许下一次清扫。
+func TestReportAnomaly_DedupSweepTimeGate(t *testing.T) {
+	withDedupTTL(t, time.Hour, 2) // TTL=1h：窗口内 key 永不过期，清扫扫不掉任何东西
+	prev := SetAnomalyReporter(func(AnomalyEvent) {})
+	defer SetAnomalyReporter(prev)
+
+	unique := func(i int) AnomalyEvent {
+		return AnomalyEvent{
+			RequestID:   fmt.Sprintf("gate-%d-%d", i, time.Now().UnixNano()),
+			AnomalyType: AnomalyUnknownField,
+			FieldPath:   "gate",
+		}
+	}
+
+	// len=3 首次超阈值（threshold=2）：时间闸放行（lastSweepAt 零值），
+	// 唯一一次全表扫落在这里。
+	ReportAnomaly(unique(0))
+	ReportAnomaly(unique(1))
+	ReportAnomaly(unique(2))
+	if lastSweepAt.IsZero() {
+		t.Fatal("first threshold-crossing insert must run the sweep")
+	}
+	firstSweep := lastSweepAt
+
+	// 时间闸内连续插入：lastSweepAt 不得变化（无重复全表扫），map 允许
+	// 超阈值增长。
+	for i := 3; i < 16; i++ {
+		ReportAnomaly(unique(i))
+		if !lastSweepAt.Equal(firstSweep) {
+			t.Fatalf("insert %d re-ran the sweep within the gate window (lastSweepAt moved)", i)
+		}
+	}
+	if len(reporterDed) <= anomalyDedupSweepThreshold {
+		t.Fatalf("dedup map size = %d, want > threshold %d while the gate suppresses sweeps (nothing expires with TTL=1h)", len(reporterDed), anomalyDedupSweepThreshold)
+	}
+
+	// 回拨 lastSweepAt 到间隔之前：下一条插入触发第二次清扫。
+	reporterMu.Lock()
+	lastSweepAt = time.Now().Add(-2 * anomalyDedupSweepInterval)
+	reporterMu.Unlock()
+	ReportAnomaly(unique(16))
+	if lastSweepAt.Equal(firstSweep) {
+		t.Fatal("post-interval insert must run the sweep again (lastSweepAt must advance)")
+	}
+	if len(reporterDed) != 17 {
+		t.Fatalf("dedup map size = %d, want 17 (TTL=1h so the second sweep deletes nothing, all keys kept)", len(reporterDed))
 	}
 }
 

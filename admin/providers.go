@@ -16,6 +16,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
+	"github.com/kaixuan/llm-gateway-go/internal/providers/mock"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 )
@@ -534,11 +535,28 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// mockProbeHiddenCodes 是 Mock Probe 通道自带的进程内供应商精确集合
+//（internal/providers/mock 的 CodeFast / CodeSlow）。隐藏策略只作用于
+// 这两个 code：历史种子（mock-openai / mock-anthropic 等）与运维自建的
+// mock-x 供应商不受影响，保持可见（audit P3：原 NOT LIKE 'mock-%' 前缀
+// 过滤爆炸半径过大，已收敛为精确集合）。
+var mockProbeHiddenCodes = map[string]struct{}{
+	mock.CodeFast: {},
+	mock.CodeSlow: {},
+}
+
+// mockProbeFilterClause 返回 listProviders 使用的 mock 隐藏 SQL 谓词
+//（与 mockProbeHiddenCodes 同一精确集合，两处须保持一致）。
+func mockProbeFilterClause() string {
+	return fmt.Sprintf("p.code NOT IN ('%s', '%s')", mock.CodeFast, mock.CodeSlow)
+}
+
 // mockProviderHidden 判断供应商行是否因 Mock Probe 隐藏策略被过滤
-//（MockProbeHideInAdmin=true 且 code 为 mock- 前缀；listProviders 的
-// 应用层双保险分支）。每请求读 env，测试可用 t.Setenv 切换。
+//（MockProbeHideInAdmin=true 且 code 属于探测通道自带供应商；listProviders
+// 的应用层双保险分支）。每请求读 env，测试可用 t.Setenv 切换。
 func mockProviderHidden(code string) bool {
-	return config.MockProbeHideInAdmin() && strings.HasPrefix(code, "mock-")
+	_, hit := mockProbeHiddenCodes[code]
+	return config.MockProbeHideInAdmin() && hit
 }
 
 func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
@@ -550,11 +568,12 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	// —— 终态语义，与"停用（enabled=false）"区分（停用仍可恢复）。
 	whereClauses := []string{"p.tenant_id = 'default'", "p.deleted_at IS NULL"}
 	// Mock Probe 通道（2026-09-24，docs/design/2026-09-23-mock-probe-channel
-	// §四 Step 7）：mock- 前缀供应商默认从 Admin 列表隐藏；显式
-	// LLM_GATEWAY_MOCK_PROBE_HIDE_IN_ADMIN=false 放行（调试用）。每请求
-	// 读取，测试可用 t.Setenv 切换。
+	// §四 Step 7）：探测通道自带的 mock-fast / mock-slow 默认从 Admin 列表
+	// 隐藏；显式 LLM_GATEWAY_MOCK_PROBE_HIDE_IN_ADMIN=false 放行（调试用）。
+	// 精确集合过滤（audit P3）：不用 mock- 前缀 NOT LIKE——历史种子与运维
+	// 自建的 mock-x 供应商必须保持可见。每请求读取，测试可用 t.Setenv 切换。
 	if config.MockProbeHideInAdmin() {
-		whereClauses = append(whereClauses, "p.code NOT LIKE 'mock-%'")
+		whereClauses = append(whereClauses, mockProbeFilterClause())
 	}
 	args := []any{}
 	argIdx := 1

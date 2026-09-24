@@ -910,6 +910,157 @@ func TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason_MiniMaxProducti
 		"capture must NOT mark the turn interrupted: the tool_calls turn is semantically complete and reaches the client's tool executor")
 }
 
+// TestStreamChatWithPendingCapture_BenignEOFZeroSemanticContentIsStructuredError
+// (r0924b 2026-09-24) pins the OTHER edge of the benign-EOF promotion: a
+// stream with ZERO client-semantic output (pure usage / role / keepalive
+// frames + a trailing finish_reason) must NOT be promoted to a benign
+// completion just because finish_reason was seen. Per the emptyoutcome
+// semantic table, usage-only = EMPTY with or without finish_reason.
+//
+// Fixture shape (usage-diluted): the empty-stream gate's early-empty counter
+// resets on every choices:[] usage frame, and the buffer cap
+// (emptyGateMaxChunks=8) flushes the zero-content frames write-through once
+// eight accumulate — so the frames DO reach the client (chunkCount > 0) and
+// the EOF branch sees finalFinishReason="stop". Pre-r0924b this pinned the
+// pseudo-success: benign completion, audit success=true. Post-r0924b the
+// benign branch additionally requires sawSemanticOutput, so this stream
+// falls through to the existing §11.6 committed-truncation structured-error
+// path (usage frames commit the attempt gate via their Terminal frame
+// class): Interrupted=true, Reason="eof_without_done", wire carries the
+// upstream_incomplete envelope + synthesized [DONE], Resumable=false
+// (nothing semantic to duplicate, but the committed transport bytes stay
+// owned by this attempt).
+func TestStreamChatWithPendingCapture_BenignEOFZeroSemanticContentIsStructuredError(t *testing.T) {
+	counter := &countingRecorder{delegate: metrics.NewNoopRecorder()}
+	prev := metrics.Global()
+	metrics.SetGlobal(counter)
+	t.Cleanup(func() { metrics.SetGlobal(prev) })
+
+	capture := audit.NewStreamCapture()
+
+	// Eight zero-semantic frames (role-only deltas INTERLEAVED with
+	// choices:[] usage frames — each usage frame resets the empty gate's
+	// early-empty counter, and the buffer cap (emptyGateMaxChunks=8) then
+	// flushes the zero-content frames write-through, so the frames DO reach
+	// the client and the EOF branch sees finalFinishReason="stop") + a
+	// finish_reason-only delta + one more usage frame, then EOF with no
+	// [DONE].
+	role := "data: {\"id\":\"z\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}],\"model\":\"m\",\"object\":\"chat.completion.chunk\"}\n\n"
+	usage := "data: {\"id\":\"z\",\"choices\":[],\"model\":\"m\",\"object\":\"chat.completion.chunk\",\"usage\":{\"total_tokens\":1,\"prompt_tokens\":1,\"completion_tokens\":0}}\n\n"
+	body := role + usage + role + usage + role + usage + role + usage +
+		"data: {\"id\":\"z\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"model\":\"m\",\"object\":\"chat.completion.chunk\"}\n\n" +
+		usage
+
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(body)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	writer := httptest.NewRecorder()
+
+	outcome := StreamChatWithPendingCapture(context.Background(),
+		writer,
+		resp,
+		"minimax-m3",
+		"MiniMax-M3",
+		NewNormalizer(),
+		capture,
+		false,
+		nil,
+		nil,
+	)
+
+	assert.True(t, outcome.Interrupted,
+		"zero-semantic stream + finish_reason + EOF must NOT be a benign completion (usage-only = EMPTY per emptyoutcome, finish_reason or not)")
+	assert.Equal(t, "eof_without_done", outcome.Reason,
+		"falls through to the existing eof_without_done structured-error path")
+	assert.Equal(t, errorsx.KindUpstreamDown, outcome.Kind)
+	assert.False(t, outcome.Resumable)
+	assert.Greater(t, outcome.ChunkCount, 0,
+		"the diluted frames DID reach the wire (buffer-cap flush + write-through) — that is exactly why the pre-fix branch misfired")
+
+	wire := writer.Body.String()
+	assert.Contains(t, wire, `"type":"upstream_incomplete"`,
+		"structured SSE error envelope must reach the client — no pseudo-success on a zero-semantic stream")
+	assert.True(t, strings.HasSuffix(wire, "data: [DONE]\n\n"),
+		"synthesized [DONE] finalizes the client's stream parser")
+	assert.NotContains(t, wire, `"content":"`,
+		"sanity: the fixture carries no semantic content, so none may appear on the wire")
+
+	assert.Equal(t, 1, counter.synth,
+		"RecordStreamSynthesizedDone still fires — the terminator IS synthesized on the wire")
+
+	summary := capture.SummaryAsMap()
+	assert.True(t, summary["stream_interrupted"].(bool),
+		"capture must be marked interrupted so audit writes Success=false (the pre-fix row looked like a success)")
+}
+
+// TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason_ToolsRequested
+// (r0924b 2026-09-24) is the toolsRequested=true twin of
+// TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason_MiniMaxProductionShape:
+// on a tool-bearing turn (tools requested upstream) the XML tool-call
+// coercer is active in the relay. The MiniMax production shape carries a
+// NATIVE delta.tool_calls payload (the coercer passes frames that already
+// have tool_calls through untouched), so the benign verdict must be
+// identical to the toolsRequested=false pinning: finish_reason + real
+// tool_calls output + EOF without [DONE] = benign completion, NOT
+// eof_without_done. Guards against a future coercer change (e.g. buffering
+// or rewriting the tool_calls frame) silently breaking the benign-EOF
+// promotion on tool turns.
+func TestStreamChatWithPendingCapture_BenignEOFAfterFinishReason_ToolsRequested(t *testing.T) {
+	counter := &countingRecorder{delegate: metrics.NewNoopRecorder()}
+	prev := metrics.Global()
+	metrics.SetGlobal(counter)
+	t.Cleanup(func() { metrics.SetGlobal(prev) })
+
+	capture := audit.NewStreamCapture()
+
+	// Same three-chunk MiniMax production shape as the toolsRequested=false
+	// pinning (role → finish_reason+native tool_calls → usage → EOF).
+	body := "" +
+		"data: {\"id\":\"07033db16ab3a2ed677a4223558f03ad\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}],\"created\":1790184114,\"model\":\"MiniMax-M3\",\"object\":\"chat.completion.chunk\"}\n\n" +
+		"data: {\"id\":\"07033db16ab3a2ed677a4223558f03ad\",\"choices\":[{\"finish_reason\":\"tool_calls\",\"index\":0,\"delta\":{\"content\":\"\",\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_test\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"file_path\\\":\\\"/etc/hostname\\\"}\"},\"index\":0}]}}],\"created\":1790184114,\"model\":\"MiniMax-M3\",\"object\":\"chat.completion.chunk\"}\n\n" +
+		"data: {\"id\":\"07033db16ab3a2ed677a4223558f03ad\",\"choices\":[],\"created\":1790184113,\"model\":\"MiniMax-M3\",\"object\":\"chat.completion.chunk\",\"usage\":{\"total_tokens\":220,\"prompt_tokens\":178,\"completion_tokens\":42}}\n\n"
+
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(body)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	writer := httptest.NewRecorder()
+
+	outcome := StreamChatWithPendingCapture(context.Background(),
+		writer,
+		resp,
+		"minimax-m3",
+		"MiniMax-M3",
+		NewNormalizer(),
+		capture,
+		true, // toolsRequested=true — the XML tool-call coercer is active
+		nil,
+		nil,
+	)
+
+	// Identical contract to the toolsRequested=false pinning.
+	assert.False(t, outcome.Interrupted,
+		"toolsRequested=true must not change the benign verdict: finish_reason + native tool_calls + EOF is a semantically complete turn")
+	assert.Empty(t, outcome.Reason)
+	assert.Empty(t, outcome.Kind)
+	assert.Greater(t, outcome.ChunkCount, 0)
+
+	wire := writer.Body.String()
+	assert.Contains(t, wire, `"name":"Read"`,
+		"the coercer must leave the native tool_calls payload intact on the wire")
+	assert.NotContains(t, wire, `"type":"upstream_incomplete"`,
+		"benign close must NOT carry the §11.6 error envelope")
+	assert.True(t, strings.HasSuffix(wire, "data: [DONE]\n\n"),
+		"synthesized [DONE] finalizes the client's stream parser")
+
+	assert.Equal(t, 1, counter.synth)
+
+	summary := capture.SummaryAsMap()
+	assert.False(t, summary["stream_interrupted"].(bool),
+		"capture must NOT mark the turn interrupted")
+}
+
 // TestStreamChatSurvivalGateReuse_SingleTerminalOnCommittedBreak — b0c77269d
 // field regression (154 build 2234, 2026-09-23), closed-loop at the exact
 // seam the live bug lived in.

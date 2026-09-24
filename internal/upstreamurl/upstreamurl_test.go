@@ -47,12 +47,17 @@ func TestBuild(t *testing.T) {
 
 		// Ollama-native endpoint (r0924 supplier-protocol-optimization §3.6).
 		// Ollama native wire is /api/chat — NO /v1 prefix. Real Ollama returns
-		// 404 on /v1/api/chat, but operators occasionally paste a `/v1`
-		// OpenAI-compatible base URL. Both forms must round-trip cleanly.
+		// 404 on /v1/api/chat, so a trailing /vN is STRIPPED for EpOllamaChat
+		// (r0924 fix-a task 4) while OpenAI-family endpoints keep theirs.
 		{"ollama chat native", "http://localhost:11434", EpOllamaChat, "http://localhost:11434/api/chat"},
 		{"ollama chat trailing slash", "http://localhost:11434/", EpOllamaChat, "http://localhost:11434/api/chat"},
-		{"ollama chat with /v1", "http://localhost:11434/v1", EpOllamaChat, "http://localhost:11434/v1/api/chat"},
+		// r0924 fix-a task 4: the old expectation "…/v1/api/chat" was a 404 on
+		// real Ollama (the code comment itself admitted it). versionTrailing is
+		// skipped for EpOllamaChat, so the /v1 suffix is dropped.
+		{"ollama chat with /v1", "http://localhost:11434/v1", EpOllamaChat, "http://localhost:11434/api/chat"},
+		{"ollama chat with /v9", "http://ollama.example.com/v9", EpOllamaChat, "http://ollama.example.com/api/chat"},
 		{"ollama chat idempotent", "http://localhost:11434/api/chat", EpOllamaChat, "http://localhost:11434/api/chat"},
+		{"ollama chat idempotent after v1", "http://localhost:11434/v1/api/chat", EpOllamaChat, "http://localhost:11434/api/chat"},
 
 		// Empty base.
 		{"empty", "", EpChatCompletions, ""},
@@ -81,7 +86,9 @@ func TestConvenienceShorthands(t *testing.T) {
 		{"OllamaChatURL localhost bare", "http://localhost:11434", "http://localhost:11434/api/chat", OllamaChatURL},
 		{"OllamaChatURL trailing slash", "http://localhost:11434/", "http://localhost:11434/api/chat", OllamaChatURL},
 		{"OllamaChatURL already api/chat", "http://localhost:11434/api/chat", "http://localhost:11434/api/chat", OllamaChatURL},
-		{"OllamaChatURL with /v1", "http://localhost:11434/v1", "http://localhost:11434/v1/api/chat", OllamaChatURL},
+		// r0924 fix-a task 4: /v1 is stripped for the Ollama endpoint
+		// (was "…/v1/api/chat", a 404 on real Ollama).
+		{"OllamaChatURL with /v1", "http://localhost:11434/v1", "http://localhost:11434/api/chat", OllamaChatURL},
 		{"OllamaChatURL empty", "", "", OllamaChatURL},
 	}
 	for _, tc := range cases {

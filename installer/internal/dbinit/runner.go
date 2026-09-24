@@ -251,6 +251,16 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// R60 读面归一配套。幂等（canonical 不是别名 key，重复执行
 			// no-op；无法识别的值保持原样）。
 			"743_normalize_provider_protocol.sql",
+			// 745 (R63, 2026-09-24): report_snapshots 日报快照表（设计预埋，
+			// 消费方 worker 尚未实现）。scope×model×day 粒度，UNIQUE 四键
+			// 幂等（CREATE TABLE IF NOT EXISTS）。曾死放 migrations/ 顶层
+			// 无投递通道，本轮修正结构并补五点同步。
+			"745_report_snapshots.sql",
+			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
+			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
+			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，
+			// 本轮移入 startup 并补登记。
+			"800_provider_endpoint_protocols.sql",
 		},
 	}
 }

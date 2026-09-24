@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -177,4 +178,66 @@ func TestRunnerWithoutManager(t *testing.T) {
 		t.Fatal("runner without manager should still probe")
 	}
 	runner.Stop(context.Background())
+}
+
+// TestRunnerLoopPanicDoesNotKillProcess：注入 probeFn panic（audit P2），
+// 证明 ①进程不倒（本测试存活即证）；②loop recover 后继续后续轮次的真实
+// 探测（探测子系统降级不退出）；③Stop 能正常 join（loop goroutine 未死、
+// 未泄漏）。
+func TestRunnerLoopPanicDoesNotKillProcess(t *testing.T) {
+	srv := newMockGateway(t)
+	defer srv.Close()
+
+	runner := NewRunner(NewClient(srv.URL), 60*time.Millisecond, 3, nil, nil)
+	// 首轮第一次探测注入 panic，之后一切恢复正常探测路径。
+	var calls atomic.Int64
+	origProbeFn := runner.probeFn
+	runner.probeFn = func(ctx context.Context, supplier string, stream bool) {
+		if calls.Add(1) == 1 {
+			panic("boom: injected probe panic")
+		}
+		origProbeFn(ctx, supplier, stream)
+	}
+	if !runner.Start(context.Background()) {
+		t.Fatal("runner failed to start")
+	}
+
+	// panic 被兜住后，loop 必须继续：第二轮 4 次探测照常执行（不能用
+	// 全局 prometheus 计数器判据——它们被同包先前测试污染）。首轮 1 次
+	// panic 调用 + 第二轮 4 次 = ≥5。
+	if !waitFor(t, 5*time.Second, func() bool { return calls.Load() >= 5 }) {
+		t.Fatalf("runner did not continue to next round after injected panic, calls=%d", calls.Load())
+	}
+
+	// loop goroutine 存活（panic 后未退出）：Stop 必须能在预算内 join。
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	runner.Stop(ctx) // 超预算不返回则测试超时失败
+}
+
+// TestHistoryStoreWriteLoopPanicDoesNotHangClose：writeLoop panic（此处
+// 以 nil pool 复现）被 recover 后只终结历史落库，Close 的 wg.Wait 不悬挂
+//（audit P1/P2：不带崩进程、不卡停机序列）。
+func TestHistoryStoreWriteLoopPanicDoesNotHangClose(t *testing.T) {
+	s := &HistoryStore{ // pool 为 nil → 首条 insert 必 panic → 走 recover 路径
+		ch:   make(chan HistoryRecord, 8),
+		done: make(chan struct{}),
+	}
+	s.wg.Add(1)
+	go s.writeLoop()
+	s.Insert(HistoryRecord{Channel: "mock-fast:nonstream", Supplier: "mock-fast"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	closed := make(chan struct{})
+	go func() { s.Close(ctx); close(closed) }()
+	select {
+	case <-closed: // Close 及时返回：writeLoop panic 后 join 未悬挂
+	case <-time.After(6 * time.Second):
+		t.Fatal("Close hung after writeLoop panic")
+	}
+	// Close 幂等（closeOnce），二次调用不 panic。
+	s.Close(ctx)
+	// Close 后 Insert 合法（并发契约：静默丢弃，不 panic）。
+	s.Insert(HistoryRecord{Channel: "after-close"})
 }

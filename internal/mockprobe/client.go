@@ -219,14 +219,14 @@ func classifyTransportError(ctx context.Context, err error) string {
 }
 
 // BaseURLFromListen 把网关监听地址（":8782" / "0.0.0.0:8782" /
-// "127.0.0.1:8782"）归一为探测客户端的 loopback 基地址。
+// "10.0.0.5:8782"）归一为探测客户端的 loopback 基地址。host 恒钳为
+// 127.0.0.1（只保留端口）：探测是网关进程的自检流量，只允许走 loopback
+// 网络栈，不得经由物理网卡/外部网络绕行——即便监听绑定在 0.0.0.0 或
+// 某个内网 IP 上。
 func BaseURLFromListen(listen string) string {
-	host, port, err := net.SplitHostPort(listen)
+	_, port, err := net.SplitHostPort(listen)
 	if err != nil {
 		return "http://127.0.0.1"
 	}
-	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
-		host = "127.0.0.1"
-	}
-	return "http://" + net.JoinHostPort(host, port)
+	return "http://" + net.JoinHostPort("127.0.0.1", port)
 }

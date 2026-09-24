@@ -13,6 +13,7 @@ package mockprobe
 import (
 	"context"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -51,6 +52,10 @@ type Runner struct {
 
 	mu      sync.Mutex
 	streaks map[string]int // channel → 连续失败次数
+
+	// probeFn 单轮探测的注入点：默认 (*Runner).probeOne。单测用它注入
+	// panic，验证 loop 的 panic 兜底（进程不倒、下一轮继续）。
+	probeFn func(ctx context.Context, supplier string, stream bool)
 }
 
 // NewRunner 构造调度器。interval 由 config 钳制（≥1s）；threshold ≤0 时
@@ -62,7 +67,7 @@ func NewRunner(client *Client, interval time.Duration, threshold int, history *H
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
-	return &Runner{
+	r := &Runner{
 		client:       client,
 		interval:     interval,
 		threshold:    threshold,
@@ -72,6 +77,8 @@ func NewRunner(client *Client, interval time.Duration, threshold int, history *H
 		stopCh:       make(chan struct{}),
 		streaks:      make(map[string]int),
 	}
+	r.probeFn = r.probeOne
+	return r
 }
 
 // Start 启动探测循环（立即跑第一轮，之后每 interval 一轮）。停机框架已
@@ -94,7 +101,7 @@ func (r *Runner) Start(ctx context.Context) bool {
 
 func (r *Runner) loop(ctx context.Context) {
 	defer r.wg.Done()
-	r.runRound(ctx)
+	r.safeRound(ctx)
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 	for {
@@ -104,9 +111,23 @@ func (r *Runner) loop(ctx context.Context) {
 		case <-r.stopCh:
 			return
 		case <-ticker.C:
-			r.runRound(ctx)
+			r.safeRound(ctx)
 		}
 	}
+}
+
+// safeRound 单轮探测的 panic 兜底（参照 bg/balance_floor_guard.go 的
+// safeCycle / bg/base_worker.go 的 runOnce 惯例）：探测子系统任何 panic
+// 只降级为"跳过本轮"并记 Error 日志，绝不带崩整个网关进程；recover 后
+// loop 存活，下一轮 ticker 照常触发。
+func (r *Runner) safeRound(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("mock probe round panicked (round skipped, runner alive)",
+				"panic", rec, "stack", string(debug.Stack()))
+		}
+	}()
+	r.runRound(ctx)
 }
 
 // runRound 顺序执行 2x2 探测（设计 §一 伪代码顺序：
@@ -119,7 +140,7 @@ func (r *Runner) runRound(ctx context.Context) {
 				return
 			default:
 			}
-			r.probeOne(ctx, supplier, stream)
+			r.probeFn(ctx, supplier, stream)
 		}
 	}
 }
@@ -193,12 +214,27 @@ func nullIfOK(ok bool, errCode string) string {
 }
 
 // Stop 停止探测循环并排空历史写入队列（"先停 runner → 关 mux"）。
-// 幂等；ctx 控制排空等待上限。
+// 幂等；ctx 同时约束 loop 退出等待与历史排空的等待上限。停机预算若需
+// 分账（在途探测 vs 历史排空互不挤占），由调用方负责：先 cancel Start
+// 的运行 ctx（在途探测随即收敛），再以独立预算 ctx 调用本方法排空历史
+//（见 cmd/gateway-v2 的停机序列）。
 func (r *Runner) Stop(ctx context.Context) {
 	r.stopOnce.Do(func() {
 		close(r.stopCh)
 	})
-	r.wg.Wait()
+	// loop 退出有界等待：正常路径 stopCh 关闭后 loop 毫秒级退出（单次
+	// 探测自带 probeTimeout 超时、轮间检查 stopCh）；此处兜底异常悬挂，
+	// 超时后不再阻塞停机序列（在途探测的后续历史写入随排空窗口收敛）。
+	loopDone := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(loopDone)
+	}()
+	select {
+	case <-loopDone:
+	case <-ctx.Done():
+		slog.Warn("mock probe runner stop timed out (in-flight probe still draining)")
+	}
 	if r.history != nil {
 		r.history.Close(ctx)
 	}
@@ -228,13 +264,20 @@ type HistoryRecord struct {
 
 // HistoryStore 把探测记录异步写入 mock_probe_history（migrations/036）。
 // Insert 永不阻塞（队列满即丢弃并计数）；Close 排空队列。
+//
+// 并发契约（audit P3 钉死）：Insert 与 Close 可由任意 goroutine 在任意
+// 时刻并发调用，实现保证两者并发时不可能 panic——机制是不对 ch 执行
+// close(ch)（"closed 标志 + close(ch)" 存在「Insert 读到 closed=false →
+// Close 关闭 ch → Insert select send」的窗口，触发 send-on-closed
+// panic），而是以 done channel 作为关闭闸：Close 只关 done，writeLoop
+// 见 done 后排空残余退出；Insert 见 done 已关即静默丢弃。
 type HistoryStore struct {
-	pool    *pgxpool.Pool
-	ch      chan HistoryRecord
-	wg      sync.WaitGroup
-	closeMu sync.Mutex
-	closed  bool
-	dropped atomic.Int64
+	pool      *pgxpool.Pool
+	ch        chan HistoryRecord
+	done      chan struct{} // 关闭闸：Close 关闭；Insert 见之即丢弃
+	wg        sync.WaitGroup
+	closeOnce sync.Once
+	dropped   atomic.Int64
 }
 
 // NewHistoryStore 创建写入器并 best-effort 兜底当日分区（设计 §六：
@@ -244,6 +287,7 @@ func NewHistoryStore(ctx context.Context, pool *pgxpool.Pool) *HistoryStore {
 	s := &HistoryStore{
 		pool: pool,
 		ch:   make(chan HistoryRecord, historyBufferLen),
+		done: make(chan struct{}),
 	}
 	if _, err := pool.Exec(ctx, "SELECT mock_probe_history_daily_partition()"); err != nil {
 		slog.Warn("mock probe daily partition bootstrap failed (has migrations/036 been applied?)",
@@ -255,12 +299,12 @@ func NewHistoryStore(ctx context.Context, pool *pgxpool.Pool) *HistoryStore {
 }
 
 // Insert 非阻塞投递一条记录；队列满时丢弃并计数（探测实时性优先）。
+// Close 之后调用是合法的（静默丢弃），见结构体注释的并发契约。
 func (s *HistoryStore) Insert(rec HistoryRecord) {
-	s.closeMu.Lock()
-	closed := s.closed
-	s.closeMu.Unlock()
-	if closed {
-		return
+	select {
+	case <-s.done:
+		return // 已 Close：停机后不再落库
+	default:
 	}
 	select {
 	case s.ch <- rec:
@@ -274,31 +318,55 @@ func (s *HistoryStore) Insert(rec HistoryRecord) {
 
 func (s *HistoryStore) writeLoop() {
 	defer s.wg.Done()
-	for rec := range s.ch {
-		ctx, cancel := context.WithTimeout(context.Background(), historyInsertTimeout)
-		_, err := s.pool.Exec(ctx,
-			`INSERT INTO mock_probe_history
-			   (channel, supplier, stream, protocol, latency_ms, status_code,
-			    error_code, request_id, failure_streak)
-			 VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),NULLIF($8,''),$9)`,
-			rec.Channel, rec.Supplier, rec.Stream, rec.Protocol, rec.LatencyMs,
-			rec.StatusCode, rec.ErrorCode, rec.RequestID, rec.FailureStreak)
-		cancel()
-		if err != nil {
-			slog.Warn("mock probe history insert failed",
-				"channel", rec.Channel, "err", err)
+	// panic 兜底（对齐 runner.loop 的防护级别）：写入侧任何 panic（驱动
+	// 异常、nil pool 等）只终结历史落库并记 Error 日志，不带崩进程；
+	// recover 后本 goroutine 退出，Close 的 wg.Wait 因此不会悬挂——
+	// 降级为"历史停写"，探测主链路无感。
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("mock probe history writeLoop panicked (history writes stopped)",
+				"panic", rec, "stack", string(debug.Stack()))
+		}
+	}()
+	for {
+		select {
+		case rec := <-s.ch:
+			s.insert(rec)
+		case <-s.done:
+			// 关闭闸已落：排空队列残余后退出（此后 Insert 不再写入）。
+			for {
+				select {
+				case rec := <-s.ch:
+					s.insert(rec)
+				default:
+					return
+				}
+			}
 		}
 	}
 }
 
-// Close 关闭队列并等待在途记录写完（ctx 上限内）。
-func (s *HistoryStore) Close(ctx context.Context) {
-	s.closeMu.Lock()
-	if !s.closed {
-		s.closed = true
-		close(s.ch)
+// insert 执行单条落库（独立出来便于 writeLoop 在两处复用）。
+func (s *HistoryStore) insert(rec HistoryRecord) {
+	ctx, cancel := context.WithTimeout(context.Background(), historyInsertTimeout)
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO mock_probe_history
+		   (channel, supplier, stream, protocol, latency_ms, status_code,
+		    error_code, request_id, failure_streak)
+		 VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),NULLIF($8,''),$9)`,
+		rec.Channel, rec.Supplier, rec.Stream, rec.Protocol, rec.LatencyMs,
+		rec.StatusCode, rec.ErrorCode, rec.RequestID, rec.FailureStreak)
+	cancel()
+	if err != nil {
+		slog.Warn("mock probe history insert failed",
+			"channel", rec.Channel, "err", err)
 	}
-	s.closeMu.Unlock()
+}
+
+// Close 触发排空并等待在途记录写完（ctx 上限内）。幂等；与 Insert 并发
+// 安全（不发 close(ch)，见结构体注释的并发契约）。
+func (s *HistoryStore) Close(ctx context.Context) {
+	s.closeOnce.Do(func() { close(s.done) })
 	done := make(chan struct{})
 	go func() {
 		s.wg.Wait()

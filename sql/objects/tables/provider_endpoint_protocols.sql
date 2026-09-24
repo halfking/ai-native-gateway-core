@@ -23,7 +23,12 @@
 --   - Exactly one row per provider has is_primary=true (enforced by
 --     the partial unique index below)
 --   - weight is a tiebreaker for two enabled endpoints of the same
---     protocol; lower weight = higher priority
+--     protocol; higher weight = higher priority (traffic-share semantics
+--     aligned with the provider side: provider/client.go capacity-weighted
+--     LB and executors/router.go weighted first-choice promotion both
+--     treat a larger weight as a larger traffic share. r0924 fix-a task 6b
+--     — the previous "lower weight = higher priority" note was the inverse
+--     of the implemented contract and has been corrected)
 --   - vendor_native is the discovery-canonical family string
 --     (anthropic-claude, openai-gpt, google-gemini, ollama, ...)
 --     — free text but validated at write time (TODO r0924 follow-up)

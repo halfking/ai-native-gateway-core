@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ const (
 	mockValidLicenseKey = "LIC-4f7c1d2e8a9b0c3d5e6f7a8b9c0d1e2f"
 	mockTrialLicenseKey = "TRIAL-KEY-XXX"
 	mockInstanceToken   = "test-instance-token"
+	mockRefreshToken    = "test-refresh-token"
 )
 
 // startMockMaster 启动一个 httptest.Server mock 主控端接口。
@@ -65,7 +67,7 @@ func startMockMaster(t *testing.T, registerStatus int, trialStatus ...int) (*htt
 		default:
 			resp := map[string]interface{}{
 				"instance_token":    mockInstanceToken,
-				"refresh_token":     "test-refresh-token",
+				"refresh_token":     mockRefreshToken,
 				"server_public_key": "test-server-pub",
 				"expires_at":        time.Now().Add(7 * 24 * time.Hour).Format(time.RFC3339),
 			}
@@ -683,5 +685,245 @@ func TestRunAutoActivate_SkippedHasNoKey(t *testing.T) {
 	raw := readRawStateFile(t, installDir)
 	if _, present := raw["license_key"]; present {
 		t.Errorf("license_key MUST NOT be present in activation.json when skipped, raw=%v", raw)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────
+// 15. refresh_token 持久化（P2 修复钉桩）：注册成功后 state/refresh.token
+//     存在、0600、内容正确；且 activation.json 不得泄漏 refresh_token 值。
+// ─────────────────────────────────────────────────────────────
+
+func TestRunAutoActivate_PersistsRefreshToken(t *testing.T) {
+	srv, _, _ := startMockMaster(t, http.StatusOK)
+	defer srv.Close()
+
+	installDir := t.TempDir()
+	err := RunAutoActivate(context.Background(), AutoActivateOptions{
+		InstallDir:   installDir,
+		MasterURL:    srv.URL,
+		LicenseKey:   mockValidLicenseKey,
+		InstallerVer: "1.0.0-test",
+		DiscoverIPFn: stubDiscoverIP("10.20.30.40"),
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	refreshPath := filepath.Join(installDir, "state", "refresh.token")
+	data, err := os.ReadFile(refreshPath)
+	if err != nil {
+		t.Fatalf("expected refresh.token persisted after register: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != mockRefreshToken {
+		t.Errorf("expected refresh token %q, got %q", mockRefreshToken, got)
+	}
+	info, err := os.Stat(refreshPath)
+	if err != nil {
+		t.Fatalf("stat refresh.token: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("expected refresh.token perm 0600, got %o", perm)
+	}
+
+	// 安全契约：refresh_token 明文不得进 activation.json（与 instance_token 同口径）
+	raw := readRawStateFile(t, installDir)
+	for k, v := range raw {
+		if s, ok := v.(string); ok && strings.Contains(s, mockRefreshToken) {
+			t.Errorf("field %q leaks refresh token value in activation.json: %v", k, raw)
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────
+// 16. refresh_token 为空：不写 refresh.token 文件，激活状态不受影响。
+// ─────────────────────────────────────────────────────────────
+
+func TestRunAutoActivate_EmptyRefreshToken_NoFile(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/instances/register", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"instance_token": mockInstanceToken,
+			"refresh_token":  "",
+			"expires_at":     time.Now().Add(7 * 24 * time.Hour).Format(time.RFC3339),
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	installDir := t.TempDir()
+	err := RunAutoActivate(context.Background(), AutoActivateOptions{
+		InstallDir:   installDir,
+		MasterURL:    srv.URL,
+		LicenseKey:   mockValidLicenseKey,
+		InstallerVer: "1.0.0-test",
+		DiscoverIPFn: stubDiscoverIP("10.20.30.40"),
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(installDir, "state", "refresh.token")); !os.IsNotExist(err) {
+		t.Errorf("expected no refresh.token when refresh_token is empty, stat err=%v", err)
+	}
+	st := readStateFile(t, installDir)
+	if st.Status != StatusActivated {
+		t.Errorf("expected status=activated, got %s", st.Status)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────
+// 17. writeInstanceToken 原子写（P3 修复钉桩）：正常路径内容/权限正确、
+//     覆盖旧值、state/ 目录无 .tmp 残留；并发写下最终文件必为某个完整
+//     写入值（不出现交错字节流）。
+// ─────────────────────────────────────────────────────────────
+
+func TestWriteInstanceToken_AtomicWrite(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := writeInstanceToken(dir, "tok-1"); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if err := writeInstanceToken(dir, "tok-2"); err != nil {
+		t.Fatalf("overwrite: %v", err)
+	}
+
+	tokenPath := filepath.Join(dir, "state", "instance.token")
+	data, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "tok-2" {
+		t.Errorf("expected tok-2 after overwrite, got %q", got)
+	}
+	info, err := os.Stat(tokenPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("expected 0600, got %o", perm)
+	}
+
+	entries, err := os.ReadDir(filepath.Join(dir, "state"))
+	if err != nil {
+		t.Fatalf("read state dir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp") {
+			t.Errorf("leftover tmp file in state/: %s", e.Name())
+		}
+	}
+
+	// 并发写：rename 原子性保证最终内容是某个完整 token
+	tokens := []string{"alpha-token", "beta-token", "gamma-token", "delta-token"}
+	var wg sync.WaitGroup
+	for _, tok := range tokens {
+		wg.Add(1)
+		go func(tok string) {
+			defer wg.Done()
+			if err := writeInstanceToken(dir, tok); err != nil {
+				t.Errorf("concurrent write %s: %v", tok, err)
+			}
+		}(tok)
+	}
+	wg.Wait()
+
+	data, err = os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatalf("read after concurrent writes: %v", err)
+	}
+	got := strings.TrimSpace(string(data))
+	intact := false
+	for _, tok := range tokens {
+		if got == tok {
+			intact = true
+		}
+	}
+	if !intact {
+		t.Errorf("final token %q is not one of the complete written values (torn write?)", got)
+	}
+
+	// 空 token 必须报错且不落盘
+	if err := writeInstanceToken(dir, ""); err == nil {
+		t.Error("expected error for empty token")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────
+// 18. WriteHomeInstanceToken：activate 子命令用的 home 落盘路径，
+//     内容/权限 0600；空 token 报错。
+// ─────────────────────────────────────────────────────────────
+
+func TestWriteHomeInstanceToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	if err := WriteHomeInstanceToken(""); err == nil {
+		t.Error("expected error for empty token")
+	}
+
+	if err := WriteHomeInstanceToken("home-instance-token"); err != nil {
+		t.Fatalf("WriteHomeInstanceToken: %v", err)
+	}
+	tokenPath := filepath.Join(tmpDir, ".kx-gateway", "instance.token")
+	data, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "home-instance-token" {
+		t.Errorf("expected home-instance-token, got %q", got)
+	}
+	info, err := os.Stat(tokenPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("expected 0600, got %o", perm)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────
+// 19. 本地标识收集失败必须中止激活（P3 修复钉桩）：不再吞错后用
+//     DeriveDeviceCode("") 派生全机同码，而是 status=failed + 明确
+//     error，且不发起 register。
+// ─────────────────────────────────────────────────────────────
+
+func TestRunAutoActivate_InstanceIDError_AbortsActivation(t *testing.T) {
+	srv, regCalls, _ := startMockMaster(t, http.StatusOK)
+	defer srv.Close()
+
+	// HOME 指向不可写目录 → GetOrCreateInstanceID 写 ~/.kx-gateway/instance.id 失败
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: chmod 0000 cannot make the directory unwritable")
+	}
+	unwritable := t.TempDir()
+	if err := os.Chmod(unwritable, 0000); err != nil {
+		t.Skipf("can't chmod 0000: %v", err)
+	}
+	defer os.Chmod(unwritable, 0755)
+	t.Setenv("HOME", unwritable)
+
+	installDir := t.TempDir()
+	err := RunAutoActivate(context.Background(), AutoActivateOptions{
+		InstallDir:   installDir,
+		MasterURL:    srv.URL,
+		LicenseKey:   mockValidLicenseKey,
+		InstallerVer: "1.0.0-test",
+		DiscoverIPFn: stubDiscoverIP("10.20.30.40"),
+	})
+	if err != nil {
+		t.Fatalf("expected no error (fail-open into state), got: %v", err)
+	}
+
+	if atomic.LoadInt32(regCalls) != 0 {
+		t.Errorf("register must not be called when instance id collection fails, got %d", atomic.LoadInt32(regCalls))
+	}
+
+	st := readStateFile(t, installDir)
+	if st.Status != StatusFailed {
+		t.Errorf("expected status=failed, got %s", st.Status)
+	}
+	if !strings.Contains(st.Error, "collect instance id") {
+		t.Errorf("expected error mentioning instance id collection, got %q", st.Error)
 	}
 }

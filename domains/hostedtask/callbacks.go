@@ -123,9 +123,16 @@ func deliverOne(ctx context.Context, store callbackDeliveryStore, deliverer call
 
 	// 投递体以 PG 当前权威状态重建（result/终态在 hosted_tasks 行上），
 	// event_id 固定 = hosted_<id>_ev<seq>，重投由接收方幂等。
-	task, err := store.GetTask(ctx, job.TenantID, job.TaskID)
-	if err != nil {
-		return fail(true, fmt.Errorf("load task for callback: %w", err))
+	// r0924b（2026-09-24）：与 GetEvent 分支同构——仅 ErrNotFound（任务行
+	// 已被硬删/跨租户不可见，重试永不恢复）按不可重试处理，直接 DLQ 终态；
+	// 此前一律 retryable=true，被硬删的任务在 8 次指数退避里空转。瞬时
+	// DB 错误维持可重试。
+	task, taskErr := store.GetTask(ctx, job.TenantID, job.TaskID)
+	if taskErr != nil {
+		if errors.Is(taskErr, ErrNotFound) {
+			return fail(false, fmt.Errorf("load task for callback: %w", taskErr))
+		}
+		return fail(true, fmt.Errorf("load task for callback: %w", taskErr))
 	}
 	// recalled 事件的回调必须带 recall_status + handoff_packet（§3.3：每次
 	// 召回交付一次最新包；store.RecallTask 的注释契约）。回调台账行以

@@ -31,7 +31,27 @@ import (
 // The parser is intentionally tolerant: empty lines and unknown fields are
 // ignored, only `done`/`message.content`/`message.thinking` are surfaced
 // into the IR StreamChunk.
-func ParseOllamaStreamChunk(line []byte) (*StreamChunk, error) {
+//
+// # CONTRACT (cumulative content — audit r0924 fix-a task 1)
+//
+// Ollama NDJSON `message.content` is a CUMULATIVE value (the full assistant
+// text so far), NOT incremental delta bytes like OpenAI/Anthropic SSE.
+// ParseOllamaStreamChunk therefore carries it ONLY in
+// StreamChunk.CumulativeContent and leaves StreamChunk.Delta nil on content
+// frames. Every wire-level StreamDelta.Content in this repo is defined as
+// incremental bytes; consumers MUST diff the cumulative value against the
+// previously seen one before emitting delta.content downstream. Do NOT copy
+// CumulativeContent into Delta.Content here — that re-emits the whole text
+// on every frame (client-visible text duplication).
+//
+// A single NDJSON line may produce MORE THAN ONE chunk: a terminal line that
+// also carries content (one-shot answers like "yes"/"no") yields the content
+// chunk first, then the Done chunk, so the cumulative text and the
+// usage/finish_reason are never collapsed into one ambiguous frame.
+//
+// Returns (nil, nil) for lines that carry neither error, content, thinking,
+// nor done (e.g. Ollama's interim ping frames) — nothing to surface.
+func ParseOllamaStreamChunk(line []byte) ([]*StreamChunk, error) {
 	line = bytes.TrimSpace(line)
 	if len(line) == 0 {
 		return nil, fmt.Errorf("empty line")
@@ -58,59 +78,69 @@ func ParseOllamaStreamChunk(line []byte) (*StreamChunk, error) {
 		return nil, fmt.Errorf("unmarshal ollama ndjson chunk: %w", err)
 	}
 
-	chunk := &StreamChunk{
-		SourceProtocol: ProtocolOllamaChat,
-		Model:          raw.Model,
-	}
-
 	// Error chunk (rare, but Ollama surfaces some upstream errors here).
 	if raw.Error != "" {
-		chunk.Type = ChunkTypeError
-		chunk.Error = &StreamError{
-			Type:    "upstream_error",
-			Message: raw.Error,
-		}
-		return chunk, nil
+		return []*StreamChunk{{
+			SourceProtocol: ProtocolOllamaChat,
+			Model:          raw.Model,
+			Type:           ChunkTypeError,
+			Error: &StreamError{
+				Type:    "upstream_error",
+				Message: raw.Error,
+			},
+		}}, nil
 	}
 
-	// Delta content (cumulative — Ollama does not split the assistant text
-	// into character-by-character chunks the way SSE does; downstream
-	// synthesizers emit `delta.content` as the *new* bytes since the last
-	// chunk by diffing against the previous cumulative value).
+	next := func() *StreamChunk {
+		return &StreamChunk{
+			SourceProtocol: ProtocolOllamaChat,
+			Model:          raw.Model,
+		}
+	}
+
+	var chunks []*StreamChunk
+
+	// Delta content. CONTRACT: Ollama's `message.content` is cumulative (see
+	// the function-level contract comment) — it is surfaced through
+	// CumulativeContent only; Delta stays nil so no consumer can mistake the
+	// full text for incremental bytes and duplicate it on the wire.
 	if raw.Message.Content != "" {
-		chunk.Type = ChunkTypeDelta
-		chunk.CumulativeContent = raw.Message.Content
-		chunk.Delta = &StreamDelta{Content: raw.Message.Content, DeltaType: "text"}
+		c := next()
+		c.Type = ChunkTypeDelta
+		c.CumulativeContent = raw.Message.Content
+		chunks = append(chunks, c)
 	}
 
 	// Reasoning content (Ollama's `message.thinking`, separate from `content`).
 	if raw.Message.Thinking != "" {
-		if chunk.Delta == nil {
-			chunk.Type = ChunkTypeDelta
-			chunk.Delta = &StreamDelta{}
+		c := next()
+		c.Type = ChunkTypeDelta
+		c.Delta = &StreamDelta{
+			ReasoningContent: raw.Message.Thinking,
+			DeltaType:        "reasoning",
 		}
-		chunk.Delta.ReasoningContent = raw.Message.Thinking
-		chunk.Delta.DeltaType = "reasoning"
+		chunks = append(chunks, c)
 	}
 
-	// Terminal chunk carries usage + done_reason.
+	// Terminal chunk carries usage + done_reason. It is its OWN chunk so a
+	// one-line done+content response (small completions, e.g. "yes" / "no")
+	// yields a clean (content delta, done) pair instead of one frame whose
+	// Type overwrites the delta.
 	if raw.Done {
-		// If we already emitted a delta for this same line, the executor's
-		// stream assembler will treat the *next* call as the terminator. We
-		// flag the type as Done here so a one-line done+content response
-		// (small completions, e.g. "yes" / "no") still surfaces the usage.
-		chunk.Type = ChunkTypeDone
-		chunk.FinishReason = mapOllamaDoneReason(raw.DoneReason)
+		c := next()
+		c.Type = ChunkTypeDone
+		c.FinishReason = mapOllamaDoneReason(raw.DoneReason)
 		if raw.PromptEvalCount > 0 || raw.EvalCount > 0 {
-			chunk.Usage = &StreamUsage{
+			c.Usage = &StreamUsage{
 				PromptTokens:     raw.PromptEvalCount,
 				CompletionTokens: raw.EvalCount,
 				TotalTokens:      raw.PromptEvalCount + raw.EvalCount,
 			}
 		}
+		chunks = append(chunks, c)
 	}
 
-	return chunk, nil
+	return chunks, nil
 }
 
 // mapOllamaDoneReason converts Ollama's terminal `done_reason` into the

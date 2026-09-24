@@ -578,6 +578,17 @@ files=(
   # 重编号交付时漏登此条，门禁必需项已由 aa1160746 上账，此处补齐尾巴。
   # 经 sequence 通道升级的存量库不下发则两处全表扫噪音在升级库原样保留。
   "$ROOT_DIR/sql/migrations/startup/744_sql_audit_partial_indexes.sql"
+  # 2026-09-24 对账报表设计切片（R63 收口）：745 report_snapshots 日报快照
+  # 表（scope×model×day 粒度，UNIQUE 四键）。原文件曾死放 migrations/ 顶层
+  # （无任何投递通道，五点同步全缺），本轮修正表结构后投递 startup 通道；
+  # 消费方 worker 尚未实现，属设计预埋（幂等 CREATE TABLE IF NOT EXISTS）。
+  "$ROOT_DIR/sql/migrations/startup/745_report_snapshots.sql"
+  # 2026-09-24 supplier-protocol-optimization §3.2：800 provider_endpoint_
+  # protocols 每 provider 多端点表 + 从 providers 旧行回填（ON CONFLICT
+  # DO NOTHING 幂等）。原 deploy/sql/migrations/V800__*.sql 从未进任何
+  # 存量库投递通道，本轮移入 startup 目录并在此登记（文件移动由并行代理
+  # 完成，登记先行；无 Go boot ensure，本通道是升级库唯一投递路径）。
+  "$ROOT_DIR/sql/migrations/startup/800_provider_endpoint_protocols.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

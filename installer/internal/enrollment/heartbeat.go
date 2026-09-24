@@ -134,6 +134,14 @@ func randomNonce(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// ReadInstanceToken 导出的 instance token 读取入口（供 installer 心跳子命令
+// 等外部调用方复用），回退链与 readInstanceToken 完全一致：
+//  1. ~/.kx-gateway/instance.token
+//  2. ${INSTALL_DIR:-${LLM_GATEWAY_INSTALL_DIR:-.}}/state/instance.token
+func ReadInstanceToken() (string, error) {
+	return readInstanceToken()
+}
+
 // readInstanceToken 读取 instance token。
 // 搜索顺序：
 //  1. ~/.kx-gateway/instance.token （向后兼容）
