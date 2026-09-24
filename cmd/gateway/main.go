@@ -5363,6 +5363,21 @@ func main() {
 			if adminHandler != nil {
 				adminHandler.SetFeedbackAnalyzer(feedbackAnalyzer)
 			}
+
+			// 2026-09-25 (对账报表落地轮): 每日对账报表聚合——昨日
+			// usage_facts → report_snapshots 六 scope 快照，钟点走
+			// settings reports.daily_rollup.hour（默认凌晨 02:00 UTC，
+			// HotReload）。与 FeedbackAnalyzer 同处跳过 data-plane 模式。
+			// R65 披露：本块还隐式继承外层 !IsCredRecoveryDisabled()
+			// 门控——运维设 LLM_GATEWAY_CRED_RECOVERY_DISABLED=true 会
+			// 连带停掉对账日报（gate-swap 系 2026-09-10 有意设计，非
+			// 本 worker 引入）；如需解耦，把报表 worker 挪出该条件块。
+			reportRollupWorker := bg.NewReportRollupWorker(dbConn.Pool())
+			reportRollupWorker.Start(context.Background())
+			defer reportRollupWorker.Stop()
+			if adminHandler != nil {
+				adminHandler.SetReportRollupWorker(reportRollupWorker)
+			}
 		}
 		{
 			// B (continued): request-path telemetry writers — per-instance

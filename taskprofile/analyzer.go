@@ -17,8 +17,12 @@ import (
 //
 // 数据流（全部只读，除最终 INSERT tuning_proposals）：
 //
-//	task_type_corrections(修正) ⨝ auto_route_selections(658 结构化特征)
+//	task_type_corrections(修正) ⨝ auto_route_selections_all(658 结构化特征)
 //	  → 按 (auto→human) 对聚合判别特征（置信度带 / domain_hint / code 指示）
+//
+//	读面口径（R65）：全部走 auto_route_selections_all（含 hot heap），与
+//	annotation 采样 / testbench 同口径——selections 先进 hot 表、promotion
+//	滞后（settled 8h / unsettled 7 天）期间对裸父表不可见。
 //	  → 过闸（对 ≥5 样本且类型修正率 ≥30%，规划 §七.1 防自激阈值）
 //	  → 提案草稿（threshold_change / keyword_add，机器可执行形态与
 //	    bg/feedback_analyzer、005 迁移的 JSONB 契约一致）
@@ -372,14 +376,16 @@ func containsString(list []string, s string) bool {
 // projection) and per-task-type volumes for the window. Read-only.
 //
 // 口径声明（R64 P3）：修正样本与分母 volume 都只统计 classifier='heuristic'
-// 的行，与 BacktestThresholdBand 的回放口径（:462）一致——LLM 兜底改判的
+// 的行，与 BacktestThresholdBand 的回放口径一致——LLM 兜底改判的
 // 请求不归启发式调参管，混入会同时虚增分子与分母。
+// 口径声明（R65）：读面走 auto_route_selections_all（含 hot heap），与
+// annotation 采样/testbench 同口径（promotion 滞后期间裸父表不可见）。
 func CollectCorrectionSignals(ctx context.Context, pool *pgxpool.Pool, windowDays int) ([]CorrectionRow, map[string]int, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT c.auto_task_type, c.human_task_type, s.confidence, s.domain_hint,
 		       COALESCE(s.has_code_indicator, false)
 		FROM task_type_corrections c
-		JOIN auto_route_selections s ON s.request_id = c.request_id
+		JOIN auto_route_selections_all s ON s.request_id = c.request_id
 		WHERE c.agrees = false
 		  AND s.classifier = 'heuristic'
 		  AND c.created_at >= NOW() - make_interval(days => $1)
@@ -416,7 +422,7 @@ func CollectCorrectionSignals(ctx context.Context, pool *pgxpool.Pool, windowDay
 	volumes := map[string]int{}
 	// 口径声明：分母与修正样本同口径，只数 heuristic 行（见函数头注释）。
 	volRows, err := pool.Query(ctx, `
-		SELECT task_type, count(*) FROM auto_route_selections
+		SELECT task_type, count(*) FROM auto_route_selections_all
 		WHERE ts >= NOW() - make_interval(days => $1)
 		  AND classifier = 'heuristic'
 		GROUP BY task_type
@@ -471,7 +477,7 @@ func BacktestThresholdBand(ctx context.Context, pool *pgxpool.Pool, windowDays i
 		       count(*) FILTER (WHERE EXISTS (
 		           SELECT 1 FROM task_type_corrections c
 		           WHERE c.request_id = ars.request_id AND c.agrees = false))
-		FROM auto_route_selections ars
+		FROM auto_route_selections_all ars
 		WHERE ars.ts >= NOW() - make_interval(days => $1)
 		  AND ars.classifier = 'heuristic'
 		  AND ars.confidence >= $2 AND ars.confidence < $3
@@ -486,14 +492,19 @@ func BacktestThresholdBand(ctx context.Context, pool *pgxpool.Pool, windowDays i
 // domain_hint: how many of the auto task type's requests in the window carry
 // that hint, and how many of those were corrected (would-fix proxy).
 // Read-only.
+//
+// 口径（R65）：读 auto_route_selections_all（与 collect/volume/threshold
+// 回放同读面），且只统计 classifier='heuristic' 的行——collect/threshold
+// 回放均限 heuristic，混入 llm/jev 行会使关键词证据计数虚高。
 func BacktestKeywordHint(ctx context.Context, pool *pgxpool.Pool, windowDays int, taskType, hint string) (matched, matchedCorrected int, err error) {
 	err = pool.QueryRow(ctx, `
 		SELECT count(*),
 		       count(*) FILTER (WHERE EXISTS (
 		           SELECT 1 FROM task_type_corrections c
 		           WHERE c.request_id = ars.request_id AND c.agrees = false))
-		FROM auto_route_selections ars
+		FROM auto_route_selections_all ars
 		WHERE ars.ts >= NOW() - make_interval(days => $1)
+		  AND ars.classifier = 'heuristic'
 		  AND ars.task_type = $2 AND lower(ars.domain_hint) = $3
 	`, windowDays, taskType, strings.ToLower(hint)).Scan(&matched, &matchedCorrected)
 	if err != nil {
