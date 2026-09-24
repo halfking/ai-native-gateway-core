@@ -322,7 +322,10 @@ func BuildRangeReport(ctx context.Context, q Querier, start, end time.Time, view
 				addToDay(daysByDate, s)
 			}
 		case ScopeInternalTenant:
-			if filter.TenantID == "" && filter.Model == "" {
+			// R65：tenant 过滤存在时也可进按天序列——SQL WHERE tenant_id
+			// 已收窄行集，无双计；此前仅无过滤时填充，导致
+			// view=internal&tenant_id=X 的 days 恒为空。
+			if filter.Model == "" {
 				addToDay(daysByDate, s)
 			}
 			if filter.Model == "" {
@@ -411,9 +414,12 @@ func BuildRangeReport(ctx context.Context, q Querier, start, end time.Time, view
 			return rep.Tenants[i].Totals.RequestCount > rep.Tenants[j].Totals.RequestCount
 		})
 		for _, k := range personsByKey {
+			// R65：scope_key 已编码租户（internalPersonScopeKey），展示名
+			// 取分隔符后的 person 部分。
+			_, personName := splitInternalPersonScopeKey(k.meta.ScopeKey)
 			rep.Persons = append(rep.Persons, PersonRow{
 				TenantID:       deref(k.meta.TenantID),
-				Person:         k.meta.ScopeKey,
+				Person:         personName,
 				Totals:         k.a.finalize(),
 				ErrorBreakdown: k.a.br,
 			})

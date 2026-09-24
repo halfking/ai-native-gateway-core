@@ -102,7 +102,17 @@ func writeWorkbook(w io.Writer, sheets []sheetSheet) error {
 }
 
 // buildWorkbookBytes 便捷封装：渲染成字节切片。
+// maxWorksheetRows 是 Excel 单 sheet 的硬上限（1,048,576 行）。手写
+// writer 不做隐式截断——超限行号会使 Excel 判定文件损坏，必须在产出前
+// 显式报错（R65；现实触发需单 sheet 超 1M 分组行，属防御性守卫）。
+const maxWorksheetRows = 1048576
+
 func buildWorkbookBytes(sheets []sheetSheet) ([]byte, error) {
+	for _, s := range sheets {
+		if len(s.rows) > maxWorksheetRows {
+			return nil, fmt.Errorf("sheet %q has %d rows, exceeding Excel limit %d; narrow the range or aggregation granularity", s.name, len(s.rows), maxWorksheetRows)
+		}
+	}
 	var buf bytes.Buffer
 	if err := writeWorkbook(&buf, sheets); err != nil {
 		return nil, err

@@ -19,11 +19,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// internalPersonScopeKey 把租户编码进 internal_person 的 scope_key。
+// 四键 UNIQUE (scope, scope_key, report_date, raw_model_name) 不含
+// tenant_id 列——人员粒度若只以 person 作键，跨租户同名人员（含双双
+// 归 'unknown'）的日桶会在 ON CONFLICT 中互相覆盖（R65 P1）。分隔符
+// 用 \x00，与读面 BuildRangeReport 的 personsByKey 分组键同构。
+func internalPersonScopeKey(tenant, person string) string {
+	return tenant + "\x00" + person
+}
+
+// splitInternalPersonScopeKey 读面还原 person 展示名；无分隔符的行
+// （键格式变更前写入的历史快照）原样返回。
+func splitInternalPersonScopeKey(k string) (tenant, person string) {
+	if i := strings.IndexByte(k, 0); i >= 0 {
+		return k[:i], k[i+1:]
+	}
+	return "", k
+}
 
 // Scope 枚举 report_snapshots.scope 的六个合法值。
 type Scope string
@@ -129,10 +148,10 @@ func RollupDay(ctx context.Context, q Querier, day time.Time) (RollupStats, erro
 	}
 
 	byProvider := foldProviderBuckets(providerModelRows)
-	allTrafficTotal := foldBuckets(ScopeDailyTotal, "all", byProvider)
 
-	// ② daily_total 用全流量独立聚合覆盖（含未路由到 provider 的失败行，
-	//    折叠自 provider 行会漏计这部分）。
+	// ② daily_total 用全流量独立聚合（含未路由到 provider 的失败行——
+	//    折叠自 provider 行会漏计这部分，R65 起不再产出折叠变体，
+	//    daily_total 只此一份全流量口径）。
 	// RequestsSeen 只取 daily_total 全流量单行口径（各分组查询互为包含
 	// 关系，逐个累加会重复计数）。
 	totalRow, seen, err := queryTotalDay(ctx, q, start, end)
@@ -155,10 +174,9 @@ func RollupDay(ctx context.Context, q Querier, day time.Time) (RollupStats, erro
 		return stats, fmt.Errorf("aggregate internal model: %w", err)
 	}
 
-	buckets := make([]Bucket, 0, len(providerModelRows)+len(tenantRows)+len(personRows)+len(internalModelRows)+2)
+	buckets := make([]Bucket, 0, len(providerModelRows)+len(tenantRows)+len(personRows)+len(internalModelRows)+1)
 	buckets = append(buckets, providerModelRows...)
 	buckets = append(buckets, byProvider...)
-	buckets = append(buckets, allTrafficTotal)
 	if totalRow != nil {
 		buckets = append(buckets, *totalRow)
 	}
@@ -193,7 +211,7 @@ func loadCentsPerCredit(ctx context.Context, q Querier) (float64, error) {
 // 处理量出账，失败重试中被上游处理过的 token 同样计费。
 const providerModelDaySQL = `
 WITH f AS (
-    SELECT provider_id, raw_model_name, status, error_kind,
+    SELECT provider_id, COALESCE(raw_model_name, '') AS raw_model_name, status, error_kind,
            prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens,
            credits_charged, cost_amount, cost_currency, latency_ms
     FROM usage_facts
@@ -426,7 +444,7 @@ func queryInternalPersonDay(ctx context.Context, q Querier, start, end time.Time
 			&b.CreditsCharged, &b.CostCents, &b.Currency, &breakdown); err != nil {
 			return nil, 0, err
 		}
-		b.ScopeKey = person
+		b.ScopeKey = internalPersonScopeKey(tenant, person)
 		b.TenantID = &tenant
 		if err := decodeBreakdown(breakdown, &b.ErrorKindBreakdown); err != nil {
 			return nil, 0, err
@@ -541,28 +559,6 @@ func foldProviderBuckets(modelRows []Bucket) []Bucket {
 		out = append(out, *p)
 	}
 	return out
-}
-
-// foldBuckets 把子行折叠为单行（daily_total 的 provider 面变体；最终会被
-// 全流量独立聚合覆盖，保留作 provider_id 非空口径的对帐参照）。
-func foldBuckets(scope Scope, scopeKey string, buckets []Bucket) Bucket {
-	total := Bucket{Scope: scope, ScopeKey: scopeKey, PriceSnapshot: map[string]any{}}
-	for i := range buckets {
-		b := &buckets[i]
-		total.RequestCount += b.RequestCount
-		total.SuccessCount += b.SuccessCount
-		total.InputTokens += b.InputTokens
-		total.OutputTokens += b.OutputTokens
-		total.CacheReadTokens += b.CacheReadTokens
-		total.CacheWriteTokens += b.CacheWriteTokens
-		total.CreditsCharged += b.CreditsCharged
-		total.CostCents += b.CostCents
-		if b.Currency != "" {
-			total.Currency = b.Currency
-		}
-		total.ErrorKindBreakdown = mergeBreakdown(total.ErrorKindBreakdown, b.ErrorKindBreakdown)
-	}
-	return total
 }
 
 // upsertBucket 写一行快照，ON CONFLICT 四键幂等回填。jsonb 参数以
