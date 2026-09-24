@@ -51,6 +51,19 @@ const (
 	EpResponses Endpoint = "responses"
 	// EpEmbeddings is POST /v1/embeddings (OpenAI Embeddings API).
 	EpEmbeddings Endpoint = "embeddings"
+	// EpOllamaChat is POST /api/chat (Ollama native NDJSON chat-completion).
+	// RESERVED(r0924 supplier-protocol-optimization §3.6):
+	// the Ollama-native executor uses this Endpoint to construct the
+	// wire-level /api/chat URL; ollama-native is intentionally NOT
+	// versioned (no /v1 prefix) because Ollama's wire convention differs
+	// from OpenAI/Anthropic.
+	EpOllamaChat Endpoint = "ollama_chat"
+	// EpGeminiGenerate is POST /v1beta/models/{m}:generateContent (Gemini
+	// native generateContent API). The full path is constructed by
+	// appending the model id + suffix at serialize-time (the upstream
+	// URL SSOT only owns the prefix). 2026-09-24 placeholder — actual
+	// executor wiring lives in P3 follow-up.
+	EpGeminiGenerate Endpoint = "gemini_generate"
 )
 
 // versionTrailing matches an optional trailing version segment "/v1"
@@ -74,6 +87,13 @@ var completionSuffixes = []string{
 	"/embeddings",
 	"/messages",
 	"/models",
+	// Ollama-native: /api/chat (and /api/generate for completeness) live
+	// outside the /v1 family. Operators occasionally paste a base URL that
+	// already includes /api/chat — we strip it and re-append to keep the
+	// rule idempotent, mirroring how OpenAI /v1/chat/completions is
+	// handled in the same table above.
+	"/api/chat",
+	"/api/generate",
 }
 
 // stripCompletionSuffix trims trailing "/" and strips one well-known
@@ -106,6 +126,15 @@ func pathAfterVersion(ep Endpoint) string {
 		return "/responses"
 	case EpEmbeddings:
 		return "/embeddings"
+	case EpOllamaChat:
+		// Ollama native wire is unversioned; both /v1 and the bare URL
+		// resolve to the same /api/chat endpoint.
+		return "/api/chat"
+	case EpGeminiGenerate:
+		// Gemini generateContent is a per-model sub-resource; the
+		// executor constructs the full path with model id at call site.
+		// The bare prefix is intentionally empty here.
+		return ""
 	}
 	return ""
 }
@@ -126,6 +155,13 @@ func PathFor(ep Endpoint) string {
 		return "/v1/responses"
 	case EpEmbeddings:
 		return "/v1/embeddings"
+	case EpOllamaChat:
+		// Ollama is intentionally NOT /v1-prefixed; the bare /api/chat
+		// is canonical and `/v1/api/chat` is a 404 on real Ollama.
+		return "/api/chat"
+	case EpGeminiGenerate:
+		// Placeholder for the Gemini-native executor (P3 follow-up).
+		return "/v1beta/models"
 	}
 	return ""
 }
@@ -187,6 +223,27 @@ func ResponsesURL(baseURL string) string {
 // EmbeddingsURL is shorthand for Build(baseURL, EpEmbeddings).
 func EmbeddingsURL(baseURL string) string {
 	return Build(baseURL, EpEmbeddings)
+}
+
+// OllamaChatURL is shorthand for Build(baseURL, EpOllamaChat).
+//
+//	OllamaChatURL("http://localhost:11434") → "http://localhost:11434/api/chat"
+//	OllamaChatURL("http://localhost:11434/api/chat") → "http://localhost:11434/api/chat"
+//	OllamaChatURL("http://localhost:11434/v1") → "http://localhost:11434/v1/api/chat"
+//	OllamaChatURL("") → ""
+//
+// RESERVED(r0924 supplier-protocol-optimization §3.6): this is the
+// upstream URL SSOT for the ollama-native executor. Real Ollama servers
+// (default :11434) listen on /api/chat; older operators may paste a
+// `/v1` OpenAI-compatible base URL — Build appends the endpoint under
+// the version segment per the versionTrailing rule.
+//
+// Note: real Ollama returns 404 on `/v1/api/chat`. Operators who paste a
+// `/v1` URL are expected to ALSO configure the dispatcher with a
+// protocol-stripped base (the EndpointSelector's native endpoint row
+// carries the correct base URL).
+func OllamaChatURL(baseURL string) string {
+	return Build(baseURL, EpOllamaChat)
 }
 
 // ModelsURLCandidates returns the candidate models-endpoint URLs to try

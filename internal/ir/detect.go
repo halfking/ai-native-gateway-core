@@ -13,11 +13,22 @@ import (
 //   - ProtocolAnthropicMessages ("anthropic-messages") — Anthropic Messages API
 //   - ProtocolGeminiGenerate    ("gemini-generate")    — Gemini generateContent API
 //   - ProtocolOpenAIResponses   ("openai-responses")   — OpenAI Responses API
+//   - ProtocolOllamaChat       ("ollama-chat")        — Ollama native /api/chat (r0924)
 //
 // audit-gemini-detect (2026-07-13): Adds Gemini detection alongside the
 // existing OpenAI/Anthropic scoring. Gemini-exclusive fields (contents,
 // systemInstruction, generationConfig, safetySettings, tools[].functionDeclarations,
 // toolConfig, cachedContent) act as decisive signals.
+//
+// audit-ollama-native (2026-09-24 r0924 §3.6): Adds Ollama-native detection.
+// Ollama-private top-level fields (`options`, `format` string, `keep_alive`,
+// `raw` boolean) are decisive signals — none of OpenAI/Anthropic/Gemini
+// accept these keys, so the dedicated branch returns ProtocolOllamaChat
+// with high confidence before the body-shape scoring runs. This is what
+// removes the F6 "ollama-native 静默降级 to chat 兼容" finding: the
+// detector now recognizes the protocol even when the inbound HTTP route
+// is /v1/chat/completions (operators frequently point Ollama clients at
+// the OpenAI-compatible path).
 //
 // Detection priority:
 //
@@ -25,10 +36,11 @@ import (
 //     OpenAI/Anthropic use `messages`).
 //  2. If `systemInstruction` is present → Gemini (Anthropic uses `system`).
 //  3. If ≥2 Gemini-exclusive fields appear → Gemini.
-//  4. If a Responses-exclusive field appears → OpenAI Responses.
-//  5. If ≥2 Anthropic-exclusive fields appear → Anthropic.
-//  6. Body-shape scores (messages[] vs system/thinking/etc.) determine the winner.
-//  7. Model name hint resolves truly empty bodies.
+//  4. If an Ollama-exclusive field appears → Ollama (NEW r0924).
+//  5. If a Responses-exclusive field appears → OpenAI Responses.
+//  6. If ≥2 Anthropic-exclusive fields appear → Anthropic.
+//  7. Body-shape scores (messages[] vs system/thinking/etc.) determine the winner.
+//  8. Model name hint resolves truly empty bodies.
 func DetectProtocol(body []byte) (protocol string, confidence float64, err error) {
 	if len(body) == 0 {
 		return "unknown", 0.0, fmt.Errorf("empty body")
@@ -84,6 +96,51 @@ func DetectProtocol(body []byte) (protocol string, confidence float64, err error
 	// Strong Gemini signal: 2+ exclusive fields
 	if geminiExclusive >= 2 {
 		return ProtocolGeminiGenerate, maxF(0.75+float64(geminiExclusive-2)*0.05, 0.75), nil
+	}
+
+	// ── Ollama-exclusive field detection (audit-ollama-native, r0924) ─────
+	//
+	// Ollama-private top-level keys (none of OpenAI/Anthropic/Gemini accept
+	// these on the wire):
+	//   - `options` (object) — sampling params + num_ctx/num_gpu/mirostat
+	//   - `keep_alive` (string|number) — model residency hint
+	//   - `raw` (bool) — prompt unparseability
+	//   - `format` (string) — JSON-output mode. OpenAI uses an object
+	//     `response_format` so the type check (string vs object) is the
+	//     decisive signal; we reject object-valued `format` because that
+	//     shape is unambiguously OpenAI response_format.
+	ollamaExclusive := 0
+	if _, ok := keys["options"]; ok {
+		ollamaExclusive++
+	}
+	if _, ok := keys["keep_alive"]; ok {
+		ollamaExclusive++
+	}
+	if raw, ok := keys["raw"]; ok {
+		if _, isBool := raw.(bool); isBool {
+			ollamaExclusive++
+		}
+	}
+	if format, ok := keys["format"]; ok {
+		if _, isStr := format.(string); isStr {
+			ollamaExclusive++
+		}
+	}
+	if ollamaExclusive >= 1 {
+		// Higher confidence with more Ollama-private keys — keeps the
+		// detector robust against "format":"json" being accidentally
+		// used by an OpenAI client (rare, but documented in some Anthropic
+		// proxies that mimic the Ollama wire shape on a private endpoint).
+		return ProtocolOllamaChat, 0.85 + float64(ollamaExclusive-1)*0.05, nil
+	}
+	// Fallback: an Ollama-native generate request can arrive with only
+	// `options` set and `messages` absent (used for embeddings / classify).
+	// Surface as Ollama with moderate confidence so the executor's
+	// schema gate doesn't reject valid traffic.
+	if _, hasOptions := keys["options"]; hasOptions {
+		if _, hasMessages := keys["messages"]; !hasMessages {
+			return ProtocolOllamaChat, 0.7, nil
+		}
 	}
 
 	// Responses-exclusive fields must be handled before the Anthropic/OpenAI
@@ -327,6 +384,8 @@ func indexString(s, substr string) int {
 //   - /v1beta/models/{m}:generateContent → Gemini generateContent
 //   - /v1/models/{m}:generateContent   → Gemini generateContent
 //   - :streamGenerateContent            → Gemini streaming endpoint
+//   - /api/chat                         → Ollama native chat (NEW r0924)
+//   - /api/generate                     → Ollama native generate (NEW r0924)
 //
 // audit-gemini-detect (2026-07-13): When body-based detection produces a
 // confident verdict (≥ 0.5) it wins; otherwise URL takes precedence. This
@@ -363,6 +422,17 @@ func DetectProtocolByURL(body []byte, urlPath string) (protocol string, confiden
 			containsBody(urlPath, "/v1/models/"):
 			if conf < 0.5 {
 				return ProtocolGeminiGenerate, 0.6, nil
+			}
+		// Ollama native endpoints (r0924). Listed BEFORE the chat-completions
+		// hint fallback because an inbound /api/chat with a low-confidence
+		// body should resolve to Ollama, not OpenAI.
+		case containsBody(urlPath, "/api/chat"):
+			if conf < 0.5 {
+				return ProtocolOllamaChat, 0.7, nil
+			}
+		case containsBody(urlPath, "/api/generate"):
+			if conf < 0.5 {
+				return ProtocolOllamaChat, 0.6, nil
 			}
 		}
 	}

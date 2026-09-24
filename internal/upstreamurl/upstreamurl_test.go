@@ -45,6 +45,15 @@ func TestBuild(t *testing.T) {
 		{"messages endpoint", "https://api.anthropic.com", EpMessages, "https://api.anthropic.com/v1/messages"},
 		{"responses endpoint", "https://api.openai.com", EpResponses, "https://api.openai.com/v1/responses"},
 
+		// Ollama-native endpoint (r0924 supplier-protocol-optimization §3.6).
+		// Ollama native wire is /api/chat — NO /v1 prefix. Real Ollama returns
+		// 404 on /v1/api/chat, but operators occasionally paste a `/v1`
+		// OpenAI-compatible base URL. Both forms must round-trip cleanly.
+		{"ollama chat native", "http://localhost:11434", EpOllamaChat, "http://localhost:11434/api/chat"},
+		{"ollama chat trailing slash", "http://localhost:11434/", EpOllamaChat, "http://localhost:11434/api/chat"},
+		{"ollama chat with /v1", "http://localhost:11434/v1", EpOllamaChat, "http://localhost:11434/v1/api/chat"},
+		{"ollama chat idempotent", "http://localhost:11434/api/chat", EpOllamaChat, "http://localhost:11434/api/chat"},
+
 		// Empty base.
 		{"empty", "", EpChatCompletions, ""},
 	}
@@ -68,6 +77,12 @@ func TestConvenienceShorthands(t *testing.T) {
 		{"ChatCompletionsURL volcano v3", "https://ark.cn-beijing.volces.com/api/v3", "https://ark.cn-beijing.volces.com/api/v3/chat/completions", ChatCompletionsURL},
 		{"MessagesURL anthropic", "https://api.anthropic.com", "https://api.anthropic.com/v1/messages", MessagesURL},
 		{"ResponsesURL openai", "https://api.openai.com", "https://api.openai.com/v1/responses", ResponsesURL},
+		// OllamaChatURL (r0924 supplier-protocol-optimization §3.6):
+		{"OllamaChatURL localhost bare", "http://localhost:11434", "http://localhost:11434/api/chat", OllamaChatURL},
+		{"OllamaChatURL trailing slash", "http://localhost:11434/", "http://localhost:11434/api/chat", OllamaChatURL},
+		{"OllamaChatURL already api/chat", "http://localhost:11434/api/chat", "http://localhost:11434/api/chat", OllamaChatURL},
+		{"OllamaChatURL with /v1", "http://localhost:11434/v1", "http://localhost:11434/v1/api/chat", OllamaChatURL},
+		{"OllamaChatURL empty", "", "", OllamaChatURL},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
