@@ -132,9 +132,12 @@ type credentialSessionPingResponse struct {
 	Model        string `json:"model"`
 	LatencyMs    int64  `json:"latency_ms"`
 	Status       string `json:"status"`
-	TestedAt     string `json:"tested_at"`
-	ErrorCode    string `json:"error_code,omitempty"`
-	Error        string `json:"error,omitempty"`
+	// Probe 显式标记本响应来自 session-ping 探测端点，便于审计与流量治理将
+	// "只发 ping、无真实业务" 的请求从生产统计里剥离。2026-09-23。
+	Probe    bool   `json:"probe"`
+	TestedAt string `json:"tested_at"`
+	ErrorCode string `json:"error_code,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // handleCredentialSessionPing sends one bounded chat request through the exact
