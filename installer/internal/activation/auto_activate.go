@@ -115,8 +115,45 @@ func writeActivationState(installDir string, st *ActivationState) error {
 	return nil
 }
 
+// writeTokenFileAtomic 把 token 字符串原子写入 target（0600）：
+// os.CreateTemp（随机后缀临时文件，避免固定 .tmp 名互踩）+ rename，
+// 与 writeActivationState 的 tmp+rename 语义同款，中断/并发不会留下
+// 半写的正式文件。
+func writeTokenFileAtomic(target, token string) error {
+	dir := filepath.Dir(target)
+	tmp, err := os.CreateTemp(dir, filepath.Base(target)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create tmp: %w", err)
+	}
+	tmpName := tmp.Name()
+	ok := false
+	defer func() {
+		if !ok {
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := tmp.Write([]byte(strings.TrimSpace(token)+"\n")); err != nil {
+		return fmt.Errorf("write tmp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close tmp: %w", err)
+	}
+	// CreateTemp 本身按 0600 创建；rename 后兜底再 chmod 一次（与
+	// writeActivationState 风格一致，防 umask 干扰）
+	if err := os.Chmod(tmpName, 0600); err != nil {
+		return fmt.Errorf("chmod tmp: %w", err)
+	}
+	if err := os.Rename(tmpName, target); err != nil {
+		return fmt.Errorf("rename: %w", err)
+	}
+	ok = true
+	return nil
+}
+
 // writeInstanceToken 写入 {installDir}/state/instance.token（仅 token 字符串）。
-// 权限 0600。这是 instance_token JWT 唯一的落盘位置。
+// 权限 0600，原子写。这是 instance_token JWT 唯一的落盘位置。
 func writeInstanceToken(installDir, token string) error {
 	if installDir == "" {
 		return fmt.Errorf("installDir is empty")
@@ -128,13 +165,24 @@ func writeInstanceToken(installDir, token string) error {
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return fmt.Errorf("mkdir state: %w", err)
 	}
+	return writeTokenFileAtomic(filepath.Join(stateDir, "instance.token"), token)
+}
 
-	target := filepath.Join(stateDir, "instance.token")
-	if err := os.WriteFile(target, []byte(strings.TrimSpace(token)+"\n"), 0600); err != nil {
-		return fmt.Errorf("write token: %w", err)
+// writeRefreshToken 写入 {installDir}/state/refresh.token（仅 token 字符串）。
+// 权限 0600，原子写；与 instance.token 同目录同风格。这是 refresh_token
+// 唯一的落盘位置 —— 绝不写进 activation.json（避免经 launcher /status 外泄）。
+func writeRefreshToken(installDir, token string) error {
+	if installDir == "" {
+		return fmt.Errorf("installDir is empty")
 	}
-	_ = os.Chmod(target, 0600)
-	return nil
+	if token == "" {
+		return fmt.Errorf("token is empty")
+	}
+	stateDir := filepath.Join(installDir, "state")
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		return fmt.Errorf("mkdir state: %w", err)
+	}
+	return writeTokenFileAtomic(filepath.Join(stateDir, "refresh.token"), token)
 }
 
 // ensureKeypairAt 在 keyPath 所在目录生成/复用 ed25519 密钥对：
@@ -179,9 +227,28 @@ func EnsureHomeKeypair() (string, error) {
 	return ensureKeypairAt(filepath.Join(homeDir, ".kx-gateway", "instance.ed25519"))
 }
 
+// WriteHomeInstanceToken 供 activate 子命令（无 installDir 上下文）使用：
+// 把 instance_token 写到 ~/.kx-gateway/instance.token（0600，原子写），
+// 与 heartbeat 子命令 token 读取的首选路径对齐 —— register 成功后若不落盘，
+// heartbeat 将永远报"请先执行 activate"。
+func WriteHomeInstanceToken(token string) error {
+	if token == "" {
+		return fmt.Errorf("token is empty")
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get home dir: %w", err)
+	}
+	configDir := filepath.Join(homeDir, ".kx-gateway")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return fmt.Errorf("mkdir config dir: %w", err)
+	}
+	return writeTokenFileAtomic(filepath.Join(configDir, "instance.token"), token)
+}
+
 // RunAutoActivate 在 install 流程末尾执行：向主控端注册实例并完成激活，
 // 状态写到 {installDir}/state/activation.json，凭据写到
-// {installDir}/state/instance.token。
+// {installDir}/state/instance.token 与 {installDir}/state/refresh.token。
 //
 // 主控端契约（cmd/license-authority/register_handler.go，本仓源码）：
 //   - POST /api/v1/instances/register 的 license_key_hash 字段，对新设备
@@ -197,8 +264,8 @@ func EnsureHomeKeypair() (string, error) {
 //     （避免对全新设备产生必然 404 的注册噪音；同机重装场景由下次携带
 //     license key 的安装完成注册）。
 //   - 网络/4xx 错误 → status=failed，error=...；不返回 error。
-//   - 注册成功 → 写 instance.token；license key 来自试用 → status=trial，
-//     否则 status=activated。
+//   - 注册成功 → 写 instance.token / refresh.token（主控返回非空时）；
+//     license key 来自试用 → status=trial，否则 status=activated。
 func RunAutoActivate(ctx context.Context, opts AutoActivateOptions) error {
 	if opts.InstallDir == "" {
 		return fmt.Errorf("installDir is required")
@@ -229,13 +296,29 @@ func RunAutoActivate(ctx context.Context, opts AutoActivateOptions) error {
 		opts.MasterURL = "https://llm.kxpms.cn"
 	}
 
-	// 1) 收集本地标识
-	instanceID, _ := GetOrCreateInstanceID()
-	if instanceID != "" {
-		st.InstanceID = instanceID
+	// 1) 收集本地标识（失败即中止激活：空 instance_id 会派生出全机同码的
+	//    device_code，且 register 侧也必然拒绝，必须显式报错而非吞掉）
+	instanceID, err := GetOrCreateInstanceID()
+	if err != nil {
+		st.Status = StatusFailed
+		st.Error = fmt.Sprintf("collect instance id: %v", err)
+		if wErr := writeActivationState(opts.InstallDir, st); wErr != nil {
+			return wErr
+		}
+		return nil
 	}
+	st.InstanceID = instanceID
 	st.DeviceCode = DeriveDeviceCode(instanceID)
-	hardwareHash, _ := GetHardwareHash()
+
+	hardwareHash, err := GetHardwareHash()
+	if err != nil {
+		st.Status = StatusFailed
+		st.Error = fmt.Sprintf("collect hardware hash: %v", err)
+		if wErr := writeActivationState(opts.InstallDir, st); wErr != nil {
+			return wErr
+		}
+		return nil
+	}
 	deviceName := GetDeviceName()
 
 	// 2) 出口 IP
@@ -305,11 +388,22 @@ func RunAutoActivate(ctx context.Context, opts AutoActivateOptions) error {
 		return nil
 	}
 
-	// 6) instance.token 只落专用文件（0600），不进 activation.json
-	if regResp != nil && regResp.InstanceToken != "" {
-		if err := writeInstanceToken(opts.InstallDir, regResp.InstanceToken); err != nil {
-			// 记录错误但保留激活成功状态 —— 运维需要看到 token 写入失败
-			st.Error = fmt.Sprintf("write instance token: %v", err)
+	// 6) instance.token / refresh.token 只落专用文件（0600），不进 activation.json
+	if regResp != nil {
+		if regResp.InstanceToken != "" {
+			if err := writeInstanceToken(opts.InstallDir, regResp.InstanceToken); err != nil {
+				// 记录错误但保留激活成功状态 —— 运维需要看到 token 写入失败
+				st.Error = fmt.Sprintf("write instance token: %v", err)
+			}
+		}
+		if regResp.RefreshToken != "" {
+			if err := writeRefreshToken(opts.InstallDir, regResp.RefreshToken); err != nil {
+				// 同上：不覆盖 instance token 的写入失败记录
+				if st.Error != "" {
+					st.Error += "; "
+				}
+				st.Error += fmt.Sprintf("write refresh token: %v", err)
+			}
 		}
 	}
 

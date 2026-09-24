@@ -18,28 +18,46 @@
 
 ## 2. 数据模型
 
-### 2.1 `report_snapshots`（报表快照元数据，迁移 745）
+> 2026-09-24（R63）重写：本节与实际落地的迁移 745 对齐（SSOT =
+> `sql/objects/tables/report_snapshots.sql`，startup 迁移 =
+> `sql/migrations/startup/745_report_snapshots.sql`）。原稿的
+> provider/tenant/user scope 枚举、generated_at/generation_status/sheet_usage
+> JSONB 元数据模型从未落表——实际表为**列式聚合快照**（一行一个聚合桶），
+> 非"快照元数据 + sheet JSON 载荷"。历史原稿见 git log。
+
+### 2.1 `report_snapshots`（报表快照，迁移 745）
 
 | 列 | 类型 | 说明 |
 |---|---|---|
 | id | bigserial PK | |
-| scope | text NOT NULL | `provider` / `tenant` / `user`——按 MVP 阶段固定 provider |
-| scope_key | text NOT NULL | 对 scope 的具体 id：`provider:<id>` 等 |
+| scope | text NOT NULL | `daily_total` / `daily_by_provider` / `daily_by_model` / `internal_tenant` 四值枚举 |
+| scope_key | text NOT NULL | 对 scope 的具体 key：`*_by_*` = provider_id / canonical model / tenant_id；`daily_total` = `'all'` |
 | report_date | date NOT NULL | 报表对应日期（UTC） |
-| generated_at | timestamptz NOT NULL DEFAULT now() | 生成时间 |
-| generation_status | text NOT NULL | `pending` / `completed` / `failed` |
-| error | text | 失败原因 |
-| sheet_usage | jsonb NOT NULL | sheet1（用量）汇总 JSON：{ provider, model, day, request_count, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, cost_amount, cost_currency } |
-| sheet_quality | jsonb NOT NULL | sheet2（模型质量+错误分析）JSON：{ provider, model, day, success_count, failure_count, p50_latency_ms, p95_latency_ms, error_kind_breakdown: {kind: count} } |
-| pricing_version | text | 用于解释成本列所用价格版本 |
+| raw_model_name | text NOT NULL DEFAULT '' | **模型维度**：`daily_by_model` 行 = 原始模型名（usage_facts.raw_model_name 原值）；其余行 = `''`（非模型维度哨兵） |
+| granularity | text NOT NULL DEFAULT 'day' | 预留 week/month |
+| request_count / success_count / error_count | bigint NOT NULL DEFAULT 0 | 请求计数 |
+| input_tokens / output_tokens / cache_read_tokens / cache_write_tokens | bigint NOT NULL DEFAULT 0 | token 计数 |
+| error_kind_breakdown | jsonb NOT NULL DEFAULT '{}' | `{kind: count}` 透视（usage_facts.error_kind） |
+| cache_hit_ratio | numeric(6,4) 可空 | cache_read / (input_tokens + cache_read)；分母 0 → NULL |
+| estimated_cost_cents | bigint NOT NULL DEFAULT 0 | **成本口径统一为分（BIGINT）**——由 usage_facts.cost_amount(numeric) 汇总后取整，避免浮点漂移；供应商成本口径，内部价重算留 follow-up |
+| currency | text NOT NULL DEFAULT 'USD' | 成本币种 |
+| price_snapshot | jsonb NOT NULL DEFAULT '{}' | 快照时点价格冻结，历史报表不随后续调价漂移 |
+| provider_id / canonical_id / tenant_id | bigint 可空 | 按 scope 选填 |
+| created_at / updated_at | timestamptz NOT NULL DEFAULT now() | |
 
-UNIQUE(scope, scope_key, report_date)，便于 ON CONFLICT 幂等回填。
+UNIQUE(scope, scope_key, report_date, raw_model_name)（命名约束
+`report_snapshots_scope_key_date_raw_model_key`），便于 ON CONFLICT 幂等回填。
+**修正记录**：原死文件（migrations/745_report_snapshots.sql，无任何投递通道）
+的 UNIQUE 无模型维度，装不下 §3 的 provider×model×day 粒度，R63 修正为四键。
 
-### 2.2 `report_snapshots_hot` + 5 分区
+### 2.2 热区 + 分区（演进计划，非现状）
 
-按 report_date 月度分区，仿 `request_logs_hot`。含 hot 行（最近 30 天）+ 默认分区。
-- 用 `report_date` 分区（数据按月增长慢，分区主要为了保留清理 hook）
-- 不做索引层覆盖太多：MVP 阶段靠 `idx (scope, report_date DESC)` 一条索引即可
+**现状 = 单表 + 一条索引** `idx_report_snapshots_scope_date (scope, report_date DESC)`
+（原稿"MVP 阶段一条索引即可"按原文维持）。`report_snapshots_hot + report_date
+月分区`（仿 `request_logs` 家族、保留清理对接 `bg/partition_manager.go` 的
+archiveSpec 模式）与 date 前导索引加密**待消费方（报表 worker）落地、数据量
+实测后一并演进**——预埋阶段无读写方，提前分区只增加迁移面。（R63 勘误：
+原稿本节以现行口吻声明 hot + 5 分区已属表结构，实际从未落表。）
 
 ## 3. Worker
 
@@ -48,20 +66,20 @@ UNIQUE(scope, scope_key, report_date)，便于 ON CONFLICT 幂等回填。
 - 之后按 cron（默认 `0 2 * * *` UTC，本地 02:00 跟随 docker 容器时区）触发
 - cron 表达式从平台 setting `reports.daily_rollup.cron` 读取；空 / 不合法时 fallback 到默认
 - 每次只聚合"昨天的 UTC 日"——边界 = `[report_date 00:00 UTC, report_date+1 00:00 UTC)`
-- 写入采用 `INSERT ... ON CONFLICT (scope, scope_key, report_date) DO UPDATE`，可重入
+- 写入采用 `INSERT ... ON CONFLICT (scope, scope_key, report_date, raw_model_name) DO UPDATE`，可重入（R63 对齐四键唯一约束）
 
-数据查询：
+数据查询（`daily_by_model` 粒度 = provider × canonical × raw model × day）：
 ```sql
 -- sheet_usage: 按 provider + canonical_id + raw_model_name 聚合
 SELECT provider_id, canonical_id, raw_model_name,
        occurred_at::date AS day,
        COUNT(*) AS request_count,
-       SUM(prompt_tokens) AS prompt_tokens,
-       SUM(completion_tokens) AS completion_tokens,
+       SUM(prompt_tokens) AS input_tokens,
+       SUM(completion_tokens) AS output_tokens,
        SUM(cache_read_tokens) AS cache_read_tokens,
        SUM(cache_write_tokens) AS cache_write_tokens,
-       SUM(cost_amount) AS cost_amount,
-       MAX(cost_currency) AS cost_currency
+       ROUND(SUM(cost_amount) * 100)::bigint AS estimated_cost_cents,  -- 分口径（R63 统一）
+       MAX(cost_currency) AS currency
 FROM usage_facts
 WHERE occurred_at >= $1 AND occurred_at < $2
 GROUP BY 1,2,3,4;
@@ -122,4 +140,4 @@ excelize 已在 `go.sum`（间接依赖），需在 `go.mod` 提升为直接依�
 - `go test ./domains/reportrollup/...` 必须过（含 xlsx 落盘回读单元测试）
 - `go test ./bg/... -run TestReportRollup` 必须过（worker 路径用 sqlmock 或 testfixtures）
 - 集成测试：迁745 落地后，灌 10 条 usage_facts → 触发 worker → 验证 snapshot 存在 → GET Excel → 校验两个 sheet 行数
-- **迁移号三重查重断言**：实施前 `git log sql/migrations/startup/74{3,4,5}_*.sql` 必须只命中 743/744（既有），命中 0 条 745 文件；`go test ./...` 通过 ≥492（含 installer 自检）；共享 252 PG 账本 `SELECT filename FROM schema_migrations WHERE filename LIKE '74%'` 不含 745（建号前查一次）
+- **迁移号三重查重断言**：实施前 `git log sql/migrations/startup/74{3,4,5}_*.sql` 必须只命中 743/744（既有），命中 0 条 745 文件；`go test ./...` 通过 ≥492（含 installer 自检）；共享 252 PG 账本 `SELECT version FROM schema_migrations WHERE version LIKE '74%'` 不含 745（建号前查一次；R63 勘误：schema_migrations 实际列是 version/description/applied_at，原稿 `filename` 列不存在——该查重为建号前历史断言，745 已于 R63 占用落地）

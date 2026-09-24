@@ -848,6 +848,18 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	// non-compliance, not as an eof_without_done failure.
 	finalFinishReason := ""
 
+	// sawSemanticOutput tracks whether any chunk WRITTEN TO THE CLIENT
+	// carried real assistant semantics (content / reasoning / tool_calls /
+	// audio), judged by the shared emptyoutcome table (chunkHasContent).
+	// r0924b (2026-09-24): finish_reason alone is NOT semantic output — a
+	// stream of pure usage/keepalive/role frames diluted past the
+	// empty-stream gate cap plus a trailing finish_reason must NOT be
+	// promoted to a benign completion (usage-only = EMPTY per the
+	// emptyoutcome semantic table, with or without finish_reason). It only
+	// feeds the benign-EOF branch below; the eof_without_done structured
+	// error paths are unchanged.
+	sawSemanticOutput := false
+
 	if firstLine != "" {
 		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(firstLine))
 		firstRawPayload := extractPayload(firstLine)
@@ -860,6 +872,12 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 				}
 			} else {
 				reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(firstRawPayload), parseErr, nil)
+			}
+			// r0924b: gate-disabled write-through path writes this line
+			// verbatim below — record its semantic-ness here (the gate
+			// flush-loop site covers the gate-enabled path).
+			if !sawSemanticOutput && chunkHasContent(firstRawPayload) {
+				sawSemanticOutput = true
 			}
 		}
 		// 2026-06-20 audit fix: when the upstream returns a
@@ -1076,6 +1094,13 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 							finalFinishReason = chunk.FinishReason
 						}
 					}
+					// r0924b: the flushed line IS the wire line (post
+					// coercion/normalize), so judge semantic-ness on it —
+					// a MiniMax finish_reason chunk that carries the
+					// tool_calls payload counts; usage/role frames do not.
+					if !sawSemanticOutput && chunkHasContent(p) {
+						sawSemanticOutput = true
+					}
 				}
 				if writeClientLine(l) {
 					lastSend = time.Now()
@@ -1149,7 +1174,18 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 					// the turn (a tool_calls turn that already carried its full
 					// arguments must reach the client's tool executor, not die
 					// here as eof_without_done/retryable=false).
-					if finalFinishReason != "" && chunkCount > 0 {
+					//
+					// r0924b (2026-09-24): the benign promotion additionally
+					// requires sawSemanticOutput — real assistant output
+					// (content/reasoning/tool_calls, emptyoutcome table) must
+					// have reached the client. A zero-semantic stream (pure
+					// usage/keepalive/role frames + finish_reason, diluted past
+					// the empty-stream gate cap) has no tool executor waiting
+					// on it; promoting it to success would be exactly the
+					// §11.6 pseudo-success (usage-only = EMPTY regardless of
+					// finish_reason). Those streams fall through to the
+					// existing eof_without_done structured-error paths below.
+					if finalFinishReason != "" && chunkCount > 0 && sawSemanticOutput {
 						slog.Info("upstream EOF without [DONE] after finish_reason — benign non-compliant close (§11.6 parity)",
 							"client_model", clientModel,
 							"chunk_count", chunkCount,
@@ -1426,6 +1462,15 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 				}
 			} else {
 				reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(rawPayload), parseErr, nil)
+			}
+			// r0924b: semantic-ness of the pre-transform payload equals the
+			// written one — the transforms below (quality fix / XML coerce /
+			// model rewrite / normalize) never create semantics from a
+			// content-less chunk nor strip content from a semantic one
+			// (the XML coercer only rewrites content that already carried
+			// the <tool_call> text).
+			if !sawSemanticOutput && chunkHasContent(rawPayload) {
+				sawSemanticOutput = true
 			}
 		}
 

@@ -211,6 +211,17 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// five-point sync in the same round as the migration landed.
 		// Idempotent (regexp append + full top-view rebuild with guards).
 		"740_view_chain_client_ip.sql": viewChainClientIPMigration740,
+		// 745 (R63, 2026-09-24): report_snapshots 快照表（设计预埋，worker
+		// 未实现）—— 曾死放 migrations/ 顶层无投递通道，本轮补五点同步并
+		// 入 parity 守卫。
+		"745_report_snapshots.sql": reportSnapshotsMigration745,
+		// 800 (2026-09-24, r0924 supplier-protocol-optimization §3.2):
+		// provider_endpoint_protocols 每 provider 多端点表 + 回填 —— 原
+		// deploy/sql/migrations/V800 文件从未进任何存量库通道，本轮移入
+		// startup 目录（并行代理执行移动）并补五点同步。幂等（IF NOT
+		// EXISTS + ON CONFLICT DO NOTHING）。注意：800 无 Go boot ensure
+		// （文件头注记 P4 wiring 待接线），升级库靠本 sequence 通道。
+		"800_provider_endpoint_protocols.sql": providerEndpointProtocolsMigration800,
 	}
 
 	for name, embedded := range expected {

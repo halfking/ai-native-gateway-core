@@ -24,6 +24,7 @@
 2. **消息协议端点**：方案头注"本轮只支持 OpenAI Chat Completions"，但 §一 架构图与 §3.4 表都含 `/mock/v1/messages/{fast,slow}`。落地为：4 端点全部注册（满足"注册 4 个 mock 端点"），**探测矩阵只用 chat/completions**（协议锁定的精神保留——协议不是探测变量）。
 3. **gateway-v2 无现成 pgxpool**（demo 入口，"v2 demo 无 DB"）：`startMockProbeRunner` 按需建 2 连接小池，`DATABASE_URL` 缺失/不可达时降级"只打指标"，不阻塞启动。
 4. **阈值告警**：`MockProbeFailureThreshold` 达到即 `slog.Error` 升级（无外部通知通道依赖，与现有子系统告警风格一致）。
+5. **PR4 未执行**：方案中的"删 python mock"动作**本轮未执行**——`scripts/mocks/llm-mock-upstream/*.py`（server.py / server-v2.py / server-v3.py / test_server.py）、`Dockerfile` / `Dockerfile.v2`、nginx 配置（`scripts/mocks/llm-mock.conf`）、`scripts/mocks/docker-compose.yml` 均仍在库，删除动作待 owner 确认后执行（v1 方案验收 `grep scripts/mocks` = 0 **未达成**）。理由：删文件超出本轮探测通道落地的爆炸半径，且外部 mock 仍被本地联调引用，贸然删除会破坏既有工作流。
 
 ## 三、验证记录（2026-09-24，本机）
 

@@ -2,6 +2,7 @@ package ir
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -101,7 +102,9 @@ func TestParseOllamaResponse_EmptyUsage(t *testing.T) {
 }
 
 // TestParseOllamaResponse_UpstreamError surfaces an Ollama `error` field as
-// a normal Go error so they propagate through the executor's error path.
+// a typed *StreamError (r0924 fix-a task 3: previously a bare fmt.Errorf
+// whose comment claimed StreamError) so they propagate through the
+// executor's error path.
 func TestParseOllamaResponse_UpstreamError(t *testing.T) {
 	raw := []byte(`{"error":"model 'nope' not found"}`)
 	_, err := ParseOllamaResponse(raw)
@@ -110,6 +113,31 @@ func TestParseOllamaResponse_UpstreamError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "model 'nope' not found") {
 		t.Errorf("err = %v, want message preserved", err)
+	}
+	if err.Error() != "model 'nope' not found" {
+		t.Errorf("err.Error() = %q, want the raw upstream message", err.Error())
+	}
+}
+
+// TestParseOllamaResponse_UpstreamErrorRoutableViaErrorsAs locks the
+// errors.As routing contract (r0924 fix-a task 3): the executor's fail wire
+// must be able to recover the typed *StreamError from the returned error
+// chain instead of string-matching.
+func TestParseOllamaResponse_UpstreamErrorRoutableViaErrorsAs(t *testing.T) {
+	raw := []byte(`{"error":"model 'nope' not found"}`)
+	_, err := ParseOllamaResponse(raw)
+	if err == nil {
+		t.Fatal("expected error for upstream error envelope")
+	}
+	var se *StreamError
+	if !errors.As(err, &se) {
+		t.Fatalf("errors.As(err, **StreamError) = false, err=%v (%T) — typed routing broken", err, err)
+	}
+	if se.Type != "upstream_error" {
+		t.Errorf("StreamError.Type = %q, want upstream_error", se.Type)
+	}
+	if se.Message != "model 'nope' not found" {
+		t.Errorf("StreamError.Message = %q, want preserved upstream message", se.Message)
 	}
 }
 

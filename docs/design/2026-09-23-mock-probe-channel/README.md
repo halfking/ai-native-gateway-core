@@ -1,5 +1,21 @@
 # mock 探测通道（Self-Probe Channel）— 设计文档索引
 
+> ## ⚠️ 状态更新（2026-09-24）：本文主体是 **v1 旧方案，已被取代**
+>
+> 1. **v1 已被 [03-optimization-plan.md](03-optimization-plan.md)（方案 v2）取代**。安全模型与可见性矩阵一律以 v2 + [05-implementation.md](05-implementation.md)（实施记录）为准；下述 v1 章节（含开头"草案待拍板"状态行、IsSelfProbe 字段、独立 prometheus.Registry、`__self_probe__` deny、127.0.0.1:auto 9-mode、FR-1 热重载等表述）**仅保留历史，勿按其实施**。
+> 2. **落地实况速览（v2 实际形态，与 v1 章节的关键偏差）**：
+>
+>    | 维度 | v1 旧方案（本文下述章节） | v2 实际落地（03-plan §/05-implementation） |
+>    |---|---|---|
+>    | mock 供应商 | embedded.MockUpstream A/B（127.0.0.1:auto 独立监听） | 进程内 HTTP handler（`internal/providers/mock`：mock-fast / mock-slow），不占端口、不注册 providers 表 |
+>    | 通道规模 | 2 providers × 2 models × 2 clients（9-mode 矩阵） | **2×2 = 4 通道**（mock-fast/mock-slow × stream/nonstream）；探测协议锁定 OpenAI Chat Completions，**无 9-mode** |
+>    | 指标 | 独立 prometheus.Registry | **进业务 DefaultRegisterer**，/metrics 零改动暴露——v2 有意决策，非事故 |
+>    | 业务隔离 | router `IsSelfProbe` 字段 + `__self_probe__` API key deny | Bearer `mock-probe-client` 系统白名单旁路（`internal/auth`）+ 关闭态"五不"硬隔离 |
+>    | 热重载 | FR-1 开关热重载 | **无热重载**：`LLM_GATEWAY_MOCK_PROBE_ENABLED` 变更需重启进程 |
+>    | Admin 可见性 | self_probe 标签过滤 | 默认仅隐藏 mock-fast/mock-slow（`MockProbeHideInAdmin`），其它 mock-x 不受影响 |
+>
+> 3. **入口现状（如实声明）**：当前装配点为 **`cmd/gateway-v2`（并行演示入口）**；生产主二进制 **`cmd/gateway` 未装配** mock probe 子系统——生产可达是**待拍板项**，拍板前该能力在生产环境不可达。
+
 > 设计目录：`docs/design/2026-09-23-mock-probe-channel/`
 > 状态：草案，待用户拍板后按 PR1→PR5 顺序落地
 > 范围：网关主二进制 `cmd/gateway` 同进程内嵌；与外部 mock（python / docker-compose）做合并清理
@@ -19,7 +35,9 @@
 | [01-requirements.md](01-requirements.md) | 完整需求（FR/NFR + 9 mock mode 矩阵 + 边界与异常） | ✅ 已写 |
 | [02-code-audit.md](02-code-audit.md) | 现有代码现状审计（涉及 router/registry/admin/scripts/mocks + 5 个重名坑 + python mock 现状） | ✅ 已写 |
 | [03-optimization.md](03-optimization.md) | 架构与优化方案（embedded 子系统 + 4 条关键约束 + §11 防翻车附录） | ✅ 已写 |
+| [03-optimization-plan.md](03-optimization-plan.md) | **方案 v2（取代本文 v1 章节）**：2×2 通道、协议锁定 chat/completions、指标进业务 registry、无热重载；安全模型与可见性矩阵以此为准 | ✅ 已定稿并落地 |
 | [04-action-plan.md](04-action-plan.md) | 5 个 PR 的具体动作清单（开关位 / 注入位 / 验收点 + 跨阶段合并顺序） | ✅ 已写 |
+| [05-implementation.md](05-implementation.md) | **实施记录（v2）**：落地清单、与方案偏差、验证记录、运维手册 | ✅ 已落地（2026-09-24） |
 
 ## 5. PR 合并顺序（来自 [04-action-plan §7](04-action-plan.md)）
 

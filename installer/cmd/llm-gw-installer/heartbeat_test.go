@@ -234,6 +234,26 @@ func TestReadInstanceFilesNotExist(t *testing.T) {
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", oldHome)
 
+	// 隔离 state/ 回退链的环境变量，避免宿主环境干扰
+	oldInstallDir := os.Getenv("INSTALL_DIR")
+	os.Setenv("INSTALL_DIR", "")
+	defer func() {
+		if oldInstallDir == "" {
+			os.Unsetenv("INSTALL_DIR")
+		} else {
+			os.Setenv("INSTALL_DIR", oldInstallDir)
+		}
+	}()
+	oldLLMDir := os.Getenv("LLM_GATEWAY_INSTALL_DIR")
+	os.Setenv("LLM_GATEWAY_INSTALL_DIR", "")
+	defer func() {
+		if oldLLMDir == "" {
+			os.Unsetenv("LLM_GATEWAY_INSTALL_DIR")
+		} else {
+			os.Setenv("LLM_GATEWAY_INSTALL_DIR", oldLLMDir)
+		}
+	}()
+
 	// 读取不存在的文件
 	_, err := readInstanceID()
 	if err == nil {
@@ -243,5 +263,93 @@ func TestReadInstanceFilesNotExist(t *testing.T) {
 	_, err = readInstanceToken()
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+// TestReadInstanceToken_FallbackToInstallState 回归钉桩（P2 修复）：
+// install 自动激活把 token 写在 {installDir}/state/instance.token；
+// 仅该文件存在（home 下无 ~/.kx-gateway/instance.token）时，
+// heartbeat 也必须能读到。
+func TestReadInstanceToken_FallbackToInstallState(t *testing.T) {
+	tmpHome := t.TempDir()
+	installDir := t.TempDir()
+
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("INSTALL_DIR", installDir)
+	t.Setenv("LLM_GATEWAY_INSTALL_DIR", "")
+
+	stateDir := filepath.Join(installDir, "state")
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "instance.token"), []byte("state-token\n"), 0600); err != nil {
+		t.Fatalf("write state instance.token: %v", err)
+	}
+
+	got, err := readInstanceToken()
+	if err != nil {
+		t.Fatalf("readInstanceToken: %v", err)
+	}
+	if got != "state-token" {
+		t.Errorf("expected state-token, got %q", got)
+	}
+}
+
+// TestReadInstanceToken_FallbackToLLMGatewayInstallDir：INSTALL_DIR 未设时
+// 使用 LLM_GATEWAY_INSTALL_DIR。
+func TestReadInstanceToken_FallbackToLLMGatewayInstallDir(t *testing.T) {
+	tmpHome := t.TempDir()
+	installDir := t.TempDir()
+
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("INSTALL_DIR", "")
+	t.Setenv("LLM_GATEWAY_INSTALL_DIR", installDir)
+
+	stateDir := filepath.Join(installDir, "state")
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "instance.token"), []byte("llm-dir-token"), 0600); err != nil {
+		t.Fatalf("write state instance.token: %v", err)
+	}
+
+	got, err := readInstanceToken()
+	if err != nil {
+		t.Fatalf("readInstanceToken: %v", err)
+	}
+	if got != "llm-dir-token" {
+		t.Errorf("expected llm-dir-token, got %q", got)
+	}
+}
+
+// TestReadInstanceToken_HomeWinsOverInstallState：home 路径优先于 state/ 回退。
+func TestReadInstanceToken_HomeWinsOverInstallState(t *testing.T) {
+	tmpHome := t.TempDir()
+	installDir := t.TempDir()
+
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("INSTALL_DIR", installDir)
+
+	kxDir := filepath.Join(tmpHome, ".kx-gateway")
+	if err := os.MkdirAll(kxDir, 0755); err != nil {
+		t.Fatalf("mkdir .kx-gateway: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(kxDir, "instance.token"), []byte("home-token"), 0600); err != nil {
+		t.Fatalf("write home instance.token: %v", err)
+	}
+	stateDir := filepath.Join(installDir, "state")
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "instance.token"), []byte("state-token"), 0600); err != nil {
+		t.Fatalf("write state instance.token: %v", err)
+	}
+
+	got, err := readInstanceToken()
+	if err != nil {
+		t.Fatalf("readInstanceToken: %v", err)
+	}
+	if got != "home-token" {
+		t.Errorf("expected home-token to win, got %q", got)
 	}
 }

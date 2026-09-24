@@ -1,8 +1,34 @@
 -- =============================================================================
--- V800__provider_endpoint_protocols.sql
+-- 800_provider_endpoint_protocols.sql
+-- (moved 2026-09-24, r0924 fix-a task 7, from
+-- deploy/sql/migrations/V800__provider_endpoint_protocols.sql into the
+-- sql/migrations/startup/ delivery channel; DDL body unchanged.)
 -- 2026-09-24 (r0924 supplier-protocol-optimization §3.2): bootstrap the
 -- per-provider endpoint table + backfill from the legacy
 -- (providers.base_url, providers.protocol) pair.
+--
+-- Delivery-channel notes (r0924 fix-a task 7):
+--
+--   1. IDEMPOTENCY: this file is safe to re-run. The DDL uses
+--      CREATE TABLE IF NOT EXISTS / CREATE [UNIQUE] INDEX IF NOT EXISTS,
+--      and the backfill INSERT ... SELECT ends in
+--      ON CONFLICT (provider_id, protocol) DO NOTHING. No statement here
+--      needs a down migration (nothing destructive).
+--
+--   2. "NO PRIMARY ROW" EDGE: the ON CONFLICT DO NOTHING backfill skips a
+--      provider whose (provider_id, protocol) row ALREADY exists as a
+--      non-primary row (e.g. an operator-created endpoint inserted before
+--      this migration ran). Because the partial unique index allows only
+--      one is_primary=true row and the backfilled row was skipped, such a
+--      provider ends up with NO primary endpoint at all. Any consumer of
+--      this table MUST validate "every provider has ≥1 primary row"
+--      (and repair it) BEFORE relying on Stage 4 fallback wiring.
+--
+--   3. ZERO GO CONSUMERS TODAY: as of r0924 fix-a, no Go code reads or
+--      writes public.provider_endpoint_protocols (grep-verified). The P4
+--      wiring work MUST add a boot-time ensure (create + backfill + the
+--      no-primary check above) before switching the dispatcher onto this
+--      table.
 --
 -- Backfill contract:
 --   - One row per existing provider, mirroring (base_url, protocol).

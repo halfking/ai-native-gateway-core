@@ -288,6 +288,12 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureSqlAuditPartialIndexes(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-24 migration 745: report_snapshots 日报快照表（对账报表设计
+	// 切片，设计预埋——消费方 worker 尚未实现）。原文件死放 migrations/
+	// 顶层无投递通道，存量库上表缺失；先于业务读面建表，幂等短路。
+	if err := db.ensureReportSnapshots(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-05 migration 656 (audit D-2#4/H-2): auto_route_selections_hot
 	// 网关侧幂等 ensure。只升二进制未重跑 656 的存量库上，AUTO 路由 selection
 	// 写入（telemetry selection_writer 批量 INSERT）整批静默丢弃、settle/affinity
@@ -931,6 +937,80 @@ func (d *DB) ensureSqlAuditPartialIndexes(ctx context.Context) error {
 	}
 	slog.Info("sql audit partial indexes ensured (744)",
 		"partitions", len(partitions))
+	return nil
+}
+
+// ensureReportSnapshots mirrors sql/migrations/startup/
+// 745_report_snapshots.sql（2026-09-24 对账报表设计切片，SSOT 见
+// sql/objects/tables/report_snapshots.sql）。
+//
+// report_snapshots 是日报快照表（scope×model×day 粒度，UNIQUE 四键支撑
+// ON CONFLICT 幂等回填）。状态：设计预埋——消费方（bg/report_rollup_worker
+// 写面、admin/report_rollup 读面）尚未实现，本 ensure 只保证表结构先于
+// 未来接线就位；原迁移文件死放 migrations/ 顶层、无任何投递通道，存量库
+// 上表缺失，故挂入启动链兜底。
+//
+// 幂等：information_schema 存在性短路（表在位零 DDL——CREATE TABLE 即使
+// no-op 也取表级锁，共享库持续写流下锁等待会撞 statement_timeout，见
+// columnsAllPresent 注释同因）；缺席才执行与迁移一致的 CREATE TABLE/INDEX。
+// 账本戳照常执行（ON CONFLICT DO NOTHING 幂等），与 744 stamp 同款。
+func (d *DB) ensureReportSnapshots(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	var present bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_schema = 'public' AND table_name = 'report_snapshots'
+		)
+	`).Scan(&present); err != nil {
+		return fmt.Errorf("inspect report_snapshots: %w", err)
+	}
+	if !present {
+		if _, err := d.pool.Exec(ctx, `
+			CREATE TABLE IF NOT EXISTS report_snapshots (
+			    id                  BIGSERIAL PRIMARY KEY,
+			    scope               TEXT NOT NULL,
+			    scope_key           TEXT NOT NULL,
+			    report_date         DATE NOT NULL,
+			    raw_model_name      TEXT NOT NULL DEFAULT '',
+			    granularity         TEXT NOT NULL DEFAULT 'day',
+			    request_count       BIGINT NOT NULL DEFAULT 0,
+			    success_count       BIGINT NOT NULL DEFAULT 0,
+			    error_count         BIGINT NOT NULL DEFAULT 0,
+			    input_tokens        BIGINT NOT NULL DEFAULT 0,
+			    output_tokens       BIGINT NOT NULL DEFAULT 0,
+			    cache_read_tokens   BIGINT NOT NULL DEFAULT 0,
+			    cache_write_tokens  BIGINT NOT NULL DEFAULT 0,
+			    error_kind_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb,
+			    cache_hit_ratio     NUMERIC(6,4)
+			        CHECK (cache_hit_ratio IS NULL OR (cache_hit_ratio >= 0 AND cache_hit_ratio <= 1)),
+			    estimated_cost_cents BIGINT NOT NULL DEFAULT 0,
+			    currency            TEXT NOT NULL DEFAULT 'USD',
+			    price_snapshot      JSONB NOT NULL DEFAULT '{}'::jsonb,
+			    provider_id         BIGINT,
+			    canonical_id        BIGINT,
+			    tenant_id           BIGINT,
+			    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+			    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+			    CONSTRAINT report_snapshots_scope_key_date_raw_model_key
+			        UNIQUE (scope, scope_key, report_date, raw_model_name)
+			);
+			CREATE INDEX IF NOT EXISTS idx_report_snapshots_scope_date
+			    ON report_snapshots (scope, report_date DESC);
+		`); err != nil {
+			return fmt.Errorf("ensure report_snapshots: %w", err)
+		}
+	}
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('745', 'report snapshots: daily rollup snapshot table (design pre-placement)')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 745: %w", err)
+	}
+	slog.Info("report_snapshots ensured (745)", "table_present_before", present)
 	return nil
 }
 

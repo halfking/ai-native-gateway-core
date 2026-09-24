@@ -532,6 +532,12 @@ var hostedTaskRecalledEventMigration742 []byte
 //go:embed embeddata/startup/743_normalize_provider_protocol.sql
 var normalizeProviderProtocolMigration743 []byte
 
+//go:embed embeddata/startup/745_report_snapshots.sql
+var reportSnapshotsMigration745 []byte
+
+//go:embed embeddata/startup/800_provider_endpoint_protocols.sql
+var providerEndpointProtocolsMigration800 []byte
+
 // embeddedSQLFiles 是 installer 内嵌 SQL 的唯一清单：copySQLBackup 与 setupSQLDir
 // 共用，避免两份 map 漂移（曾发生 632 拷入 embeddata 却没接线的静默丢失）。
 // 新增迁移时：embeddata/startup/ 放文件 → 此处加条目 → runner.go StartupFiles
@@ -690,6 +696,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/740_view_chain_client_ip.sql":                                           viewChainClientIPMigration740,
 	"startup/742_hosted_task_recalled_event.sql":                                     hostedTaskRecalledEventMigration742,
 	"startup/743_normalize_provider_protocol.sql":                                    normalizeProviderProtocolMigration743,
+	"startup/745_report_snapshots.sql":                                               reportSnapshotsMigration745,
+	"startup/800_provider_endpoint_protocols.sql":                                    providerEndpointProtocolsMigration800,
 }
 
 // 临时存放 embed SQL 的目录（运行时写入）

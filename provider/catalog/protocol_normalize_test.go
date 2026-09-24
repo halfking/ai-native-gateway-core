@@ -152,6 +152,28 @@ func TestRecommendedProtocolForBaseURL_F8HostPreciseRegression(t *testing.T) {
 		// Ollama — operators can override via explicit catalog.
 		{"non-localhost on 11434", "http://my-app.example.com:11434", ProtocolOpenAICompletions, false},
 
+		// F8 residual (r0924 fix-a task 8): the docker-internal check used
+		// strings.HasPrefix, so a look-alike domain that merely STARTS with
+		// "host.docker.internal" was falsely classified as Ollama. The fix
+		// is exact hostname equality.
+		{"docker-internal look-alike", "http://host.docker.internal.evil.com:11434", ProtocolOpenAICompletions, false},
+		{"docker-internal suffix-subdomain", "http://host.docker.internal.attacker.example:11434", ProtocolOpenAICompletions, false},
+
+		// r0924 fix-a task 8 additions:
+		// IPv6 literal in brackets reaches the port heuristic (::1).
+		{"ipv6 literal loopback on 11434", "http://[::1]:11434", ProtocolOllamaNative, true},
+		// Reverse userinfo: "api.ollama.com" appears BEFORE the "@" — the
+		// real host is evil.example, which must not classify as Ollama.
+		{"reverse userinfo ollama look-alike", "http://api.ollama.com@evil.example", ProtocolOpenAICompletions, false},
+		// Uppercase HOST is folded to lowercase before matching.
+		{"uppercase host on 11434", "http://LOCALHOST:11434", ProtocolOllamaNative, true},
+		{"uppercase docker-internal on 11434", "http://HOST.DOCKER.INTERNAL:11434", ProtocolOllamaNative, true},
+		// Trailing-dot FQDN ("api.ollama.com.") deliberately does NOT match:
+		// strict equality can only under-classify (fail-safe to the
+		// openai-completions default), never over-classify.
+		{"trailing-dot fqdn of ollama host", "http://api.ollama.com./v1", ProtocolOpenAICompletions, false},
+		{"trailing-dot localhost on 11434", "http://localhost.:11434", ProtocolOpenAICompletions, false},
+
 		// localhost / loopback variants still trigger the heuristic.
 		{"localhost with scheme", "http://localhost:11434", ProtocolOllamaNative, true},
 		{"loopback IP with scheme", "http://127.0.0.1:11434", ProtocolOllamaNative, true},

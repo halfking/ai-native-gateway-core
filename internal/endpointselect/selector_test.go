@@ -2,6 +2,8 @@ package endpointselect
 
 import (
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
 // Stage 1A — protocol AND family both match => Passthrough=true (per §3.5).
@@ -154,15 +156,134 @@ func TestStage1_PrimaryWinsTie(t *testing.T) {
 }
 
 // TestStage1_WeightBreaksTie: when two primaries (rare, but valid) are
-// configured, weight ascending breaks the tie.
+// configured, weight DESCENDING breaks the tie (r0924 fix-a task 6b:
+// weight is a traffic share on the provider side — higher weight =
+// higher priority, matching provider/client.go applyCapacityWeightedLB
+// and executors/router.go promoteWeightedCandidate).
 func TestStage1_WeightBreaksTie(t *testing.T) {
 	c := makeCandidate([]EndpointLite{
 		{ID: 1, Protocol: "ollama-native", BaseURL: "http://a:11434", VendorNative: "ollama", IsPrimary: true, Enabled: true, Weight: 200},
 		{ID: 2, Protocol: "ollama-native", BaseURL: "http://b:11434", VendorNative: "ollama", IsPrimary: true, Enabled: true, Weight: 100},
 	})
 	d := Select(c, ProtocolOllamaNative, "ollama")
+	if d.EndpointID != 1 {
+		t.Errorf("EndpointID = %d, want 1 (higher weight = higher priority)", d.EndpointID)
+	}
+}
+
+// TestIrNamespaceProtocolsHitStage1 locks the r0924 fix-a task 5 fix:
+// wantProtocol arrives in the IR namespace (openai-chat / ollama-chat,
+// per internal/ir/types.go) while endpoint rows carry catalog-namespace
+// values. Before the ir→catalog normalization at the Select() entry,
+// every ir-namespace request silently fell through to Stage 4.
+func TestIrNamespaceProtocolsHitStage1(t *testing.T) {
+	cases := []struct {
+		name        string
+		irProtocol  Protocol
+		wantCatalog Protocol
+	}{
+		{"ollama-chat maps to ollama-native", "ollama-chat", ProtocolOllamaNative},
+		{"openai-chat maps to openai-completions", "openai-chat", ProtocolOpenAICompletions},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := makeCandidate([]EndpointLite{
+				{ID: 7, Protocol: string(tc.wantCatalog), BaseURL: "http://s:11434", VendorNative: "ollama", IsPrimary: true, Enabled: true},
+			})
+			d := Select(c, tc.irProtocol, "ollama")
+			if d.MatchRule == MatchStage4 {
+				t.Fatalf("MatchRule = stage4 for ir protocol %q — namespace normalization broken", tc.irProtocol)
+			}
+			if d.EndpointID != 7 {
+				t.Errorf("EndpointID = %d, want 7 (stage 1 hit)", d.EndpointID)
+			}
+			if d.Protocol != tc.wantCatalog {
+				t.Errorf("Protocol = %q, want %q (decision must carry the catalog value)", d.Protocol, tc.wantCatalog)
+			}
+		})
+	}
+}
+
+// TestNormalizeWantProtocol_LockstepContract is the table-driven lockstep
+// contract from r0924 fix-a task 5: EVERY ir protocol enum value
+// (internal/ir/types.go) must map onto the matching catalog value AND hit
+// the catalog-namespace endpoint at Stage 1 through Select(). Adding an ir
+// protocol without extending irToCatalogProtocol fails this test — the
+// symptom would be that protocol permanently pinned to Stage 4.
+func TestNormalizeWantProtocol_LockstepContract(t *testing.T) {
+	// All five ir enum values from internal/ir/types.go → catalog values
+	// from provider/catalog/protocol.go.
+	irToCatalog := []struct {
+		ir      string
+		catalog Protocol
+	}{
+		{ir.ProtocolOpenAIChat, ProtocolOpenAICompletions},
+		{ir.ProtocolOpenAIResponses, ProtocolOpenAIResponses},
+		{ir.ProtocolAnthropicMessages, ProtocolAnthropicMessages},
+		{ir.ProtocolGeminiGenerate, ProtocolGeminiGenerate},
+		{ir.ProtocolOllamaChat, ProtocolOllamaNative},
+	}
+	for _, tc := range irToCatalog {
+		// 1) the mapping itself.
+		if got := NormalizeWantProtocol(Protocol(tc.ir)); got != tc.catalog {
+			t.Errorf("NormalizeWantProtocol(%q) = %q, want %q (ir→catalog lockstep broken)", tc.ir, got, tc.catalog)
+		}
+		// 2) the mapped value must actually HIT a catalog endpoint row
+		//    (protocol + family match ⇒ Stage 1A, never Stage 4).
+		c := makeCandidate([]EndpointLite{
+			{ID: 42, Protocol: string(tc.catalog), BaseURL: "http://lockstep:11434", VendorNative: "lockstep-family", IsPrimary: true, Enabled: true},
+		})
+		d := Select(c, Protocol(tc.ir), "lockstep-family")
+		if d.MatchRule != MatchStage1A {
+			t.Errorf("ir protocol %q (mapped %q) → MatchRule = %q, want %q — catalog endpoint not reached", tc.ir, tc.catalog, d.MatchRule, MatchStage1A)
+		}
+		if d.EndpointID != 42 {
+			t.Errorf("ir protocol %q → EndpointID = %d, want 42", tc.ir, d.EndpointID)
+		}
+	}
+	// Catalog five-value enum must round-trip unchanged (idempotency,
+	// including the three strings shared by both namespaces).
+	for _, cat := range []Protocol{
+		ProtocolOpenAICompletions, ProtocolOpenAIResponses, ProtocolAnthropicMessages,
+		ProtocolGeminiGenerate, ProtocolOllamaNative,
+	} {
+		if got := NormalizeWantProtocol(cat); got != cat {
+			t.Errorf("NormalizeWantProtocol(%q) = %q, want identity (catalog pass-through broken)", cat, got)
+		}
+	}
+}
+
+// TestNormalizeWantProtocol_UnknownPassthrough: unknown values must pass
+// through unchanged (legacy behavior preserved during gradual rollout).
+func TestNormalizeWantProtocol_UnknownPassthrough(t *testing.T) {
+	if got := NormalizeWantProtocol("custom-protocol"); got != "custom-protocol" {
+		t.Errorf("NormalizeWantProtocol(custom) = %q, want unchanged", got)
+	}
+}
+
+// TestStage2_FamilyHitSortedPick locks the r0924 fix-a task 6a fix: the
+// Stage 2 family group must be consumed through the shared (primary,
+// weight desc, id) comparator, not raw slice order. Both family-matched
+// rows miss Stage 1 (neither speaks openai-completions); the higher-weight
+// row arrives LAST in the slice and must still win.
+func TestStage2_FamilyHitSortedPick(t *testing.T) {
+	c := makeCandidate([]EndpointLite{
+		{ID: 1, Protocol: "anthropic-messages", BaseURL: "http://low:443", VendorNative: "openai-gpt", Enabled: true, Weight: 10},
+		{ID: 2, Protocol: "ollama-native", BaseURL: "http://high:11434", VendorNative: "openai-gpt", Enabled: true, Weight: 900},
+	})
+	// Client speaks openai-chat (ir namespace → openai-completions): no
+	// endpoint has that protocol, but both rows declare the openai-gpt
+	// family — Stage 2. Within the family group the higher-weight endpoint
+	// must win regardless of slice order.
+	d := Select(c, "openai-chat", "openai-gpt")
+	if d.MatchRule != MatchStage2 {
+		t.Fatalf("MatchRule = %q, want %q", d.MatchRule, MatchStage2)
+	}
 	if d.EndpointID != 2 {
-		t.Errorf("EndpointID = %d, want 2 (lower weight wins)", d.EndpointID)
+		t.Errorf("EndpointID = %d, want 2 (higher weight wins within the family group)", d.EndpointID)
+	}
+	if d.BaseURL != "http://high:11434" {
+		t.Errorf("BaseURL = %q, want http://high:11434", d.BaseURL)
 	}
 }
 

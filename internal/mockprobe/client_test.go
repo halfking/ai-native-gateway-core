@@ -2,8 +2,10 @@ package mockprobe
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,19 +94,30 @@ func TestClientProbeErrors(t *testing.T) {
 	}
 }
 
-// TestBaseURLFromListen：监听地址归一。
+// TestBaseURLFromListen：监听地址归一。host 恒钳为 127.0.0.1（自检流量
+// 只走 loopback 网络栈，不得经物理网络绕行）：绑定 0.0.0.0、内网 IP
+// （10.x 等）、IPv6 一律归一到 127.0.0.1，仅保留端口。
 func TestBaseURLFromListen(t *testing.T) {
 	cases := map[string]string{
 		":8782":            "http://127.0.0.1:8782",
 		"0.0.0.0:8782":     "http://127.0.0.1:8782",
 		"127.0.0.1:9000":   "http://127.0.0.1:9000",
-		"192.168.1.5:8782": "http://192.168.1.5:8782",
+		"192.168.1.5:8782": "http://127.0.0.1:8782",
+		"10.1.2.3:8782":    "http://127.0.0.1:8782",
 		"[::]:8782":        "http://127.0.0.1:8782",
+		"[::1]:8782":       "http://127.0.0.1:8782",
 		"garbage":          "http://127.0.0.1",
 	}
 	for in, want := range cases {
 		if got := BaseURLFromListen(in); got != want {
 			t.Errorf("BaseURLFromListen(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// 验收点：物理网段绑定的监听，探测 URL host 必须仍是 127.0.0.1。
+	for _, in := range []string{"0.0.0.0:8782", "10.200.3.4:8782"} {
+		got := BaseURLFromListen(in)
+		if host, _, err := net.SplitHostPort(strings.TrimPrefix(got, "http://")); err != nil || host != "127.0.0.1" {
+			t.Errorf("BaseURLFromListen(%q) = %q, probe host = %q, want 127.0.0.1", in, got, host)
 		}
 	}
 }

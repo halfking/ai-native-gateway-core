@@ -387,3 +387,69 @@ func TestDeliverOneTransientEventErrorIsRetryable(t *testing.T) {
 		t.Errorf("transient GetEvent error must not reach deliverer, calls=%d", delivererSkip.calls)
 	}
 }
+
+// r0924b（2026-09-24）回归钉桩：GetTask 的 ErrNotFound（任务行已被硬删，
+// 如 742.down 场景）重试永不恢复——必须按不可重试处理直接进 DLQ 终态
+// （RecordCallbackOutcome 的 !Retryable 分支），而不是此前的一律
+// retryable=true 让任务在 8 次指数退避里空转；瞬时 DB 错误维持可重试。
+func TestDeliverOneTaskNotFoundIsNotRetryable(t *testing.T) {
+	kr, err := secret.NewKeyring(map[string][32]byte{"test": [32]byte{}}, "test")
+	if err != nil {
+		t.Fatalf("keyring: %v", err)
+	}
+	urlEnc, err := secret.EncryptAESGCM([]byte("http://cb.example/hook"), kr)
+	if err != nil {
+		t.Fatalf("encrypt url: %v", err)
+	}
+	secEnc, err := secret.EncryptAESGCM([]byte("cb-secret"), kr)
+	if err != nil {
+		t.Fatalf("encrypt secret: %v", err)
+	}
+	job := CallbackJob{
+		TaskID: "ht_gone", TenantID: "default", EventID: "hosted_ht_gone_ev3",
+		EventSeq: 3, URLEnc: urlEnc, SecretEnc: secEnc,
+	}
+	task := &Task{ID: "ht_gone", TenantID: "default", Status: StatusCompleted}
+	ctx := context.Background()
+
+	// GetTask ErrNotFound → 不可重试（DLQ/终态），绝不投递（任务行都不在，
+	// 无从构建投递体）。
+	delivererNotFound := &stubCallbackDeliverer{}
+	out := deliverOne(ctx, &stubCallbackStore{taskErr: ErrNotFound}, delivererNotFound, kr, job)
+	if out.delivered {
+		t.Errorf("GetTask ErrNotFound must not deliver, got %+v", out)
+	}
+	if out.retryable {
+		t.Errorf("GetTask ErrNotFound must be non-retryable (straight to DLQ terminal state), got %+v", out)
+	}
+	if out.errText == "" {
+		t.Errorf("GetTask ErrNotFound must carry the load-task error text for the DLQ row")
+	}
+	if delivererNotFound.calls != 0 {
+		t.Errorf("GetTask ErrNotFound must not reach deliverer, calls=%d", delivererNotFound.calls)
+	}
+
+	// GetTask 瞬时 DB 错误 → 仍可重试（退避后重投），绝不投递。
+	delivererTransient := &stubCallbackDeliverer{}
+	out = deliverOne(ctx, &stubCallbackStore{taskErr: errors.New("conn closed")}, delivererTransient, kr, job)
+	if out.delivered {
+		t.Errorf("transient GetTask error must not deliver, got %+v", out)
+	}
+	if !out.retryable {
+		t.Errorf("transient GetTask error must remain retryable, got %+v", out)
+	}
+	if delivererTransient.calls != 0 {
+		t.Errorf("transient GetTask error must not reach deliverer, calls=%d", delivererTransient.calls)
+	}
+
+	// 对照：任务行正常（ErrNotFound 仅在 event 上）→ 照常投递，确认修复
+	// 没有把 GetTask 判定误伤到健康任务。
+	delivererHealthy := &stubCallbackDeliverer{}
+	out = deliverOne(ctx, &stubCallbackStore{task: task, evErr: ErrNotFound}, delivererHealthy, kr, job)
+	if !out.delivered || out.retryable {
+		t.Errorf("healthy task with legacy (nil) event must still deliver, got %+v", out)
+	}
+	if delivererHealthy.calls != 1 {
+		t.Errorf("healthy task must reach deliverer once, calls=%d", delivererHealthy.calls)
+	}
+}

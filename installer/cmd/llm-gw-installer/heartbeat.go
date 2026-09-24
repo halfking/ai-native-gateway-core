@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/installer/internal/enrollment"
 	"github.com/spf13/cobra"
 )
 
@@ -273,25 +274,15 @@ func heartbeatCmd() *cobra.Command {
 	return cmd
 }
 
-// readInstanceToken 读取 ~/.kx-gateway/instance.token
+// readInstanceToken 读取 instance_token，回退链与 enrollment 包一致：
+//  1. ~/.kx-gateway/instance.token（activate 命令写入的位置）
+//  2. {installDir}/state/instance.token（install 自动激活写入的位置；
+//     installDir 取 INSTALL_DIR / LLM_GATEWAY_INSTALL_DIR 环境变量，
+//     最后兜底当前工作目录）
+//
+// 直接复用 enrollment.ReadInstanceToken 的三路回退实现，避免两处读取逻辑漂移。
 func readInstanceToken() (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("获取 home 目录失败: %w", err)
-	}
-
-	tokenPath := filepath.Join(homeDir, ".kx-gateway", "instance.token")
-	data, err := os.ReadFile(tokenPath)
-	if err != nil {
-		return "", fmt.Errorf("读取 %s 失败: %w", tokenPath, err)
-	}
-
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return "", fmt.Errorf("instance.token 为空")
-	}
-
-	return token, nil
+	return enrollment.ReadInstanceToken()
 }
 
 // readInstanceID 读取 ~/.kx-gateway/instance.id
