@@ -115,7 +115,7 @@ if quote_char != "'":    # bash: 单引号禁止展开
 | 1 | Veritrans&9527 | `LLM_GATEWAY_ADMIN_PASSWORD=Veritrans&9527` → `Veritrans&9527` | unquoted `&` 不分割、不后台化 |
 | 2 | `${VAR}` 插值 | `CRM_DATABASE_URL=postgres://${CRM_DB_USER}@${CRM_DB_HOST}/crm` + caller `export CRM_DB_USER=crm CRM_DB_HOST=db.local` → `postgres://crm@db.local/crm` | DSN 拼接仍工作 |
 | 3 | 单/双引号透传 | `DQ="ampersand & ${DB_USER} interpolated"` + `SQ='dollar ${NOT_EXPANDED} literal'` + caller `export NOT_EXPANDED=should_not_be_used` → SQ 保留 `${NOT_EXPANDED}` 字面 | bash 引号语义完整对齐 |
-| 4 | 多行 PEM block（字面 `\n`） | `PEM_KEY="-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----\n"` → 字面保留 | 单行 + `\n` 转义约定（注释 325-327 钉桩） |
+| 4 | 多行 PEM block（字面 `\n`） | `PEM_KEY="-----BEGIN [REDACTED-KEY]-----\nMIIE...\n-----END [REDACTED-KEY]-----\n"` → 字面保留 | 单行 + `\n` 转义约定（注释 325-327 钉桩） |
 
 外加 missing-file 守卫回归（caller warn + return 0）。
 

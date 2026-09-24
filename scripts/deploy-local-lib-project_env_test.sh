@@ -57,7 +57,7 @@ DLT_SQ='dollar ${DLT_NOT_EXPANDED} literal'
 # 4. Multi-line PEM block via literal \n inside double quotes (single-line
 #    in the file). Real-newline PEM (line-by-line .env) is intentionally
 #    NOT supported by the Python parser; literal \n is the convention.
-DLT_PEM_KEY="-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----\n"
+DLT_PEM_KEY="-----BEGIN [REDACTED-KEY]-----\nMIIE...\n-----END [REDACTED-KEY]-----\n"
 EOF
 
 # ── Test 1: Veritrans&9527 ─────────────────────────────────────────────
@@ -130,7 +130,7 @@ out="$(bash -c '
   dl_load_project_env "'"$env_file"'"
   printf "%s" "$DLT_PEM_KEY"
 ')"
-expected='-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----\n'
+expected='-----BEGIN [REDACTED-KEY]-----\nMIIE...\n-----END [REDACTED-KEY]-----\n'
 if [[ "$out" != "$expected" ]]; then
   printf 'test4 (PEM block literal \\n) mismatch:\n  got:      %q\n  expected: %q\n' "$out" "$expected" >&2
   exit 1

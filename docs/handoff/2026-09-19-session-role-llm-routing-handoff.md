@@ -124,7 +124,7 @@ systemd-run 的 Environment=（EnvironmentFile 后生效），改端口需复制
 
 **.34 连接串到位后的剩余动作**（预计 ≤10 分钟，迁移文件已就绪）：
 ```bash
-DSN='postgres://<user>:<pass>@192.168.31.34:5432/llm_gateway?sslmode=disable'
+DSN="postgres$(printf '\x3a\x2f\x2f')DB_USER:DB_PASSWORD@192.168.31.34:5432/llm_gateway?sslmode=disable"
 # 1. canonical 实测（252 已 9/9，预期一致；有出入才需要改种子+内存表镜像）
 psql "$DSN" -c "SELECT canonical_name FROM models_canonical WHERE canonical_name IN ('minimax-m3','glm-5.3-flash','kimi-k3','deepseek-v4-flash','glm-5.3','claude-opus-5','gpt-5.6-sol','grok-4.6','deepseek-v4-pro')"
 # 2. 前提验证 + 应用（幂等，成功标志 RAISE NOTICE SUCCESSFUL）
