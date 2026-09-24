@@ -59,6 +59,58 @@ GOOS=windows GOARCH=amd64 go build -o dist/llm-gw-installer-windows-amd64.exe ./
 GOOS=windows GOARCH=arm64 go build -o dist/llm-gw-installer-windows-arm64.exe ./cmd/llm-gw-installer/
 ```
 
+## 存储模式（installer lite / full 选择）
+
+llm-gw-installer 支持两种存储模式，安装时选择其一：
+
+| 模式 | 存储后端 | 适用场景 | 安装时拉取的镜像 | 是否初始化 schema |
+|------|----------|----------|------------------|------------------|
+| `full`（默认） | PostgreSQL (kx-citus) + Redis | 标准生产 / 多副本 / 高并发 | kx-llm-gateway-go + kx-citus + kx-redis | 是（等待 PG ready + InitSchema） |
+| `lite` | SQLite + 本地 | 单机 / 开发 / CI / 演示 | 仅 kx-llm-gateway-go | 否（SQLite 自动建表） |
+
+### 选择方式（按优先级）
+
+1. CLI flag：`--mode lite` 或 `--mode full`（最高优先级）
+2. 配置文件（`--config /path/to/install.env`）：
+   ```
+   STORAGE_MODE=lite
+   LLM_GATEWAY_MASTER_URL=https://llm.kxpms.cn
+   INSTALL_SKIP_ACTIVATION=0
+   ```
+3. 交互向导：进入安装步骤时提示 `[1] full  [2] lite`，默认 `1`
+
+非 TTY（CI / `--skip-prompt`）且未提供 `--config` 时，默认 `full`。
+
+### lite 模式的 install 行为差异
+
+| 步骤 | full | lite |
+|------|------|------|
+| 1. 环境检测 | 同 | 同 |
+| 2. 配置（wizard / config） | 同 | 同（新增 storage mode / master URL） |
+| 3. 拉取镜像 | kx-citus + kx-redis + kx-llm-gateway-go | **仅 kx-llm-gateway-go**（跳过 citus/redis） |
+| 4. 写 .env | 同 | 多三个键：`LLM_GATEWAY_STORAGE_MODE=lite` / `LLM_GATEWAY_MASTER_URL` / `INSTALL_SKIP_ACTIVATION` |
+| 5. 目录结构 | 同 | 同（db/data / redis/data 目录仍创建但不使用） |
+| 6. compose.yml | 完整 3 服务 | **剥离 kx-citus + kx-redis**，llm-gateway-go 移除 `depends_on` 与 PG/Redis env |
+| 7. 启动容器 | 3 容器 | 仅 kx-llm-gateway-go |
+| 8. 初始化数据库 | 等待 PG ready + InitSchema（700+ 迁移） | **跳过**（SQLite 由 app 自动建表） |
+| 9. 健康检查 | 5 项全检 | 仅校验容器 + /healthz；PG/Redis/Schema 标记 N/A ✅ |
+
+### 新增 install flags
+
+```
+--mode string           存储模式: full | lite（默认空 → 走 wizard / 默认 full）
+--master-url string     主控端 URL（默认 https://llm.kxpms.cn）
+--skip-activation       bool，跳过 install 末尾的自动激活调用（默认 false）
+```
+
+### 新增 .env 键（写入 `~/.env`）
+
+| Key | 默认 | 含义 |
+|-----|------|----------|
+| `LLM_GATEWAY_STORAGE_MODE` | `full` | 运行时由 `cmd/gateway` 的 `storage_mode_init` 读取；lite 走 SQLite，full 走 PG/Redis |
+| `LLM_GATEWAY_MASTER_URL` | `https://llm.kxpms.cn` | license 激活 + 心跳上报的目标 URL |
+| `INSTALL_SKIP_ACTIVATION` | `0` | 是否跳过 install 末尾的自动激活调用（由子代理 B 接管实际激活逻辑） |
+
 ## 环境变量
 
 | 变量 | 默认值 | 用途 |

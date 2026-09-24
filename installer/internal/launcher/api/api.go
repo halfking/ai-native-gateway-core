@@ -25,24 +25,62 @@ import (
 )
 
 // Status is the summary returned by /launcher/api/status.
+//
+// The 5 legacy fields (ActiveAddr / ActiveVersion / HasPlan / PlanState /
+// PlanID) are preserved for backward compatibility — older clients/UI ignore
+// the new InstanceMeta fields, newer clients populate the instance-meta card
+// from the omitempty'd fields below.
 type Status struct {
 	ActiveAddr    string `json:"active_addr"`
 	ActiveVersion string `json:"active_version"`
 	HasPlan       bool   `json:"has_plan"`
 	PlanState     string `json:"plan_state,omitempty"`
 	PlanID        string `json:"plan_id,omitempty"`
+
+	// InstanceMeta fields — written by the activation/enrollment subsystem
+	// (agent B) to {installDir}/state/activation.json. Read-only here; nil
+	// InstanceMetaProvider means these stay empty and omitempty hides them.
+	InstallMode      string `json:"install_mode,omitempty"`      // "full" | "lite" | ""
+	InstanceID       string `json:"instance_id,omitempty"`
+	DeviceCode       string `json:"device_code,omitempty"`
+	IPAddress        string `json:"ip_address,omitempty"`
+	ActivationStatus string `json:"activation_status,omitempty"` // "activated"|"trial"|"skipped"|"failed"|"unknown"
+	ActivationError  string `json:"activation_error,omitempty"`
+	ActivatedAt      string `json:"activated_at,omitempty"`
+}
+
+// InstanceMeta holds the per-instance identity + activation snapshot. The
+// fields mirror the on-disk activation.json schema written by the
+// activation/enrollment pipeline (agent B). Returning a zero-value struct
+// (all strings "") causes JSON omitempty to suppress every field, so an
+// empty activation.json round-trips without polluting the legacy 5-field
+// status payload.
+type InstanceMeta struct {
+	InstallMode      string
+	InstanceID       string
+	DeviceCode       string
+	IPAddress        string
+	ActivationStatus string
+	ActivationError  string
+	ActivatedAt      string
 }
 
 // Config wires the API to its dependencies. All funcs are optional;
 // nil funcs are treated as no-ops or empty results.
 type Config struct {
-	TokenProvider  func() string                       // returns expected token ("" disables auth)
-	StatusProvider func() Status                       // current active + plan summary
-	PlanProvider   func() *store.Plan                  // current/last plan (nil if none)
-	CheckFunc      func() error                        // manual update check trigger
-	PrepareFunc    func(planID string) (*store.Plan, error) // start prepare on existing NOTIFIED plan
-	ApplyFunc      func(planID string, confirmed bool) error
-	RollbackFunc   func(planID string) error
+	TokenProvider  func() string       // returns expected token ("" disables auth)
+	StatusProvider func() Status       // current active + plan summary
+	PlanProvider   func() *store.Plan  // current/last plan (nil if none)
+	// InstanceMetaProvider provides install_mode / instance_id / device_code
+	// / ip_address / activation_status etc. Read from
+	// {installDir}/state/activation.json (written by agent B). nil means
+	// the launcher has no activation subsystem wired up and the /status
+	// endpoint will not include instance-meta fields.
+	InstanceMetaProvider func() InstanceMeta
+	CheckFunc            func() error                                 // manual update check trigger
+	PrepareFunc          func(planID string) (*store.Plan, error)     // start prepare on existing NOTIFIED plan
+	ApplyFunc            func(planID string, confirmed bool) error
+	RollbackFunc         func(planID string) error
 }
 
 type API struct{ cfg Config }
@@ -88,6 +126,36 @@ func (a *API) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s := Status{}
 		if a.cfg.StatusProvider != nil {
 			s = a.cfg.StatusProvider()
+		}
+		// Layer InstanceMeta on top. Only fills fields that are still
+		// empty in s — gives the legacy StatusProvider priority so it
+		// remains the single source of truth for the 5 legacy fields
+		// while we progressively move identity into activation.json
+		// (agent B). Activation fields live exclusively in meta, so the
+		// merge never overwrites them.
+		if a.cfg.InstanceMetaProvider != nil {
+			m := a.cfg.InstanceMetaProvider()
+			if s.InstallMode == "" {
+				s.InstallMode = m.InstallMode
+			}
+			if s.InstanceID == "" {
+				s.InstanceID = m.InstanceID
+			}
+			if s.DeviceCode == "" {
+				s.DeviceCode = m.DeviceCode
+			}
+			if s.IPAddress == "" {
+				s.IPAddress = m.IPAddress
+			}
+			if s.ActivationStatus == "" {
+				s.ActivationStatus = m.ActivationStatus
+			}
+			if s.ActivationError == "" {
+				s.ActivationError = m.ActivationError
+			}
+			if s.ActivatedAt == "" {
+				s.ActivatedAt = m.ActivatedAt
+			}
 		}
 		writeJSON(w, s)
 

@@ -134,22 +134,68 @@ func randomNonce(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// readInstanceToken 从 ~/.kx-gateway/instance.token 读取 token
+// readInstanceToken 读取 instance token。
+// 搜索顺序：
+//  1. ~/.kx-gateway/instance.token （向后兼容）
+//  2. ${INSTALL_DIR}/state/instance.token 或 ${LLM_GATEWAY_INSTALL_DIR}/state/instance.token
+//     （installer 流程写入的位置）
+//  3. 当前工作目录下的 state/instance.token （最后兜底）
+//
+// 两次都失败才返回 error。
 func readInstanceToken() (string, error) {
+	primaryPath, primaryErr := readTokenFromHome()
+	if primaryErr == nil {
+		return primaryPath, nil
+	}
+
+	fallbackPath, fallbackErr := readTokenFromInstallState()
+	if fallbackErr == nil {
+		return fallbackPath, nil
+	}
+
+	return "", fmt.Errorf("read instance token: home=%v; install-state=%v", primaryErr, fallbackErr)
+}
+
+// readTokenFromHome 从 ~/.kx-gateway/instance.token 读取（向后兼容）。
+func readTokenFromHome() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("get home dir: %w", err)
 	}
 
 	tokenPath := filepath.Join(homeDir, ".kx-gateway", "instance.token")
+	return readNonEmptyTokenFile(tokenPath)
+}
+
+// readTokenFromInstallState 从安装目录 state/instance.token 读取。
+// 优先使用环境变量 INSTALL_DIR，其次 LLM_GATEWAY_INSTALL_DIR，最后 fallback 到当前工作目录。
+func readTokenFromInstallState() (string, error) {
+	root := os.Getenv("INSTALL_DIR")
+	if root == "" {
+		root = os.Getenv("LLM_GATEWAY_INSTALL_DIR")
+	}
+	if root == "" {
+		pwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("get pwd: %w", err)
+		}
+		root = pwd
+	}
+
+	tokenPath := filepath.Join(root, "state", "instance.token")
+	return readNonEmptyTokenFile(tokenPath)
+}
+
+// readNonEmptyTokenFile 读取 token 文件，trim 空白，非空才返回成功。
+func readNonEmptyTokenFile(tokenPath string) (string, error) {
 	data, err := os.ReadFile(tokenPath)
 	if err != nil {
-		return "", fmt.Errorf("read token file: %w", err)
+		return "", fmt.Errorf("read token file %s: %w", tokenPath, err)
 	}
 
 	token := string(bytes.TrimSpace(data))
 	if token == "" {
-		return "", fmt.Errorf("token is empty")
+		return "", fmt.Errorf("token file %s is empty", tokenPath)
 	}
 
 	return token, nil

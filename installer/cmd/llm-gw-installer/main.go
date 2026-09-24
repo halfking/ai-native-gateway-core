@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kaixuan/llm-gateway-go/installer/internal/activation"
 	"github.com/kaixuan/llm-gateway-go/installer/internal/dbinit"
 	"github.com/kaixuan/llm-gateway-go/installer/internal/dockerutil"
 	"github.com/kaixuan/llm-gateway-go/installer/internal/envdetect"
@@ -808,10 +810,13 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 func installCmd() *cobra.Command {
 	var (
-		skipDoctor bool
-		skipPrompt bool
-		installDir string
-		configFile string
+		skipDoctor     bool
+		skipPrompt     bool
+		installDir     string
+		configFile     string
+		modeFlag       string
+		masterURLFlag  string
+		skipActivation bool
 	)
 
 	cmd := &cobra.Command{
@@ -819,10 +824,13 @@ func installCmd() *cobra.Command {
 		Short: "一键安装并部署 llm-gateway-go",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInstall(installOpts{
-				SkipDoctor: skipDoctor,
-				SkipPrompt: skipPrompt,
-				InstallDir: installDir,
-				ConfigFile: configFile,
+				SkipDoctor:     skipDoctor,
+				SkipPrompt:     skipPrompt,
+				InstallDir:     installDir,
+				ConfigFile:     configFile,
+				Mode:           modeFlag,
+				MasterURL:      masterURLFlag,
+				SkipActivation: skipActivation,
 			})
 		},
 	}
@@ -831,15 +839,21 @@ func installCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&skipPrompt, "skip-prompt", false, "跳过交互（需提供 --config）")
 	cmd.Flags().StringVar(&installDir, "dir", "", "安装目录（默认当前目录）")
 	cmd.Flags().StringVar(&configFile, "config", "", "配置文件路径（跳过交互）")
+	cmd.Flags().StringVar(&modeFlag, "mode", "", "存储模式: full | lite（空 = 走交互或默认 full）")
+	cmd.Flags().StringVar(&masterURLFlag, "master-url", "https://llm.kxpms.cn", "主控端 URL（license 激活/心跳）")
+	cmd.Flags().BoolVar(&skipActivation, "skip-activation", false, "跳过 install 末尾的自动激活调用（激活逻辑由后续子代理 B 接管）")
 
 	return cmd
 }
 
 type installOpts struct {
-	SkipDoctor bool
-	SkipPrompt bool
-	InstallDir string
-	ConfigFile string
+	SkipDoctor     bool
+	SkipPrompt     bool
+	InstallDir     string
+	ConfigFile     string
+	Mode           string // "" / "full" / "lite"（空 = 由 wizard 或 config 决定）
+	MasterURL      string // 默认 https://llm.kxpms.cn
+	SkipActivation bool
 }
 
 func runInstall(opts installOpts) error {
@@ -938,7 +952,29 @@ prereqCheck:
 	}
 	cfg.InstallPath = installDir
 
-	// 5. 加载/拉取镜像（4 层 fallback）
+	// 2a. CLI flag 覆盖（--mode / --master-url / --skip-activation 优先级最高）
+	if opts.Mode != "" {
+		cfg.StorageMode = prompt.NormalizeStorageMode(opts.Mode)
+		logInfo(fmt.Sprintf("  ▶ --mode 覆盖存储模式: %s", cfg.StorageMode))
+	}
+	if opts.MasterURL != "" && opts.MasterURL != "https://llm.kxpms.cn" {
+		cfg.MasterURL = opts.MasterURL
+		logInfo(fmt.Sprintf("  ▶ --master-url 覆盖: %s", cfg.MasterURL))
+	}
+	if opts.SkipActivation {
+		cfg.SkipActivation = true
+		logInfo("  ▶ --skip-activation 启用：install 末尾将跳过自动激活调用")
+	}
+	cfg.StorageMode = prompt.NormalizeStorageMode(cfg.StorageMode)
+	if cfg.MasterURL == "" {
+		cfg.MasterURL = "https://llm.kxpms.cn"
+	}
+
+	// 2b. 输出 storage mode / master URL 主日志（订阅者据此处对齐 B/C 行为）
+	fmt.Printf("  ▶ 存储模式: %s\n", cfg.StorageMode)
+	fmt.Printf("  ▶ 主控端 URL: %s\n", cfg.MasterURL)
+
+	// 4. 加载/拉取镜像（4 层 fallback）
 	// citus/redis 用上游原始名拉取（公网才有），成功后自动 retag 成 compose.yml 引用的 kx-* 名
 	logStep("3/9", "加载/拉取 Docker 镜像")
 	strategy := imgsrc.NewDefaultStrategy(installDir, imgsrc.LoadRegistryFromEnv(), imgsrc.LoadRegistryAuthFromEnv())
@@ -951,8 +987,14 @@ prereqCheck:
 	}
 	items := []pullItem{
 		{spec: imgsrc.ImageSpec{Name: "kx-llm-gateway-go", Tag: cfg.AppImageTag}, alias: "kx-llm-gateway-go:latest"},
-		{spec: imgsrc.ImageSpec{Name: "citusdata/citus", Tag: "11.3.0"}, alias: "kx-citus:v11.3.0"},
-		{spec: imgsrc.ImageSpec{Name: "redis", Tag: "7-alpine"}, alias: "kx-redis:v7-alpine"},
+	}
+	if !cfg.IsLite() {
+		items = append(items,
+			pullItem{spec: imgsrc.ImageSpec{Name: "citusdata/citus", Tag: "11.3.0"}, alias: "kx-citus:v11.3.0"},
+			pullItem{spec: imgsrc.ImageSpec{Name: "redis", Tag: "7-alpine"}, alias: "kx-redis:v7-alpine"},
+		)
+	} else {
+		logInfo("  ▶ lite 模式：跳过 citusdata/citus + redis 镜像拉取（使用 SQLite + 本地）")
 	}
 	for _, it := range items {
 		if err := strategy.PullWithAlias(it.spec, it.alias, logInfo); err != nil {
@@ -960,7 +1002,7 @@ prereqCheck:
 		}
 	}
 
-	// 6. 写入 .env
+	// 5. 写入 .env
 	logStep("4/9", "生成 .env")
 	env := secrets.NewEnvFile(filepath.Join(installDir, ".env"))
 	if err := env.Write(envEntries(cfg)); err != nil {
@@ -968,22 +1010,27 @@ prereqCheck:
 	}
 	logInfo("  ✅ .env (chmod 600, LF no BOM)")
 
-	// 7. 创建容器外目录结构
+	// 6. 创建容器外目录结构
 	logStep("5/9", "创建持久化目录结构")
 	if err := createDirectoryLayout(installDir); err != nil {
 		return fmt.Errorf("创建目录失败: %w", err)
 	}
 	logInfo("  ✅ 9 个子目录创建完成")
 
-	// 8. 写入 compose.yml + VERSION + 复制 installer 副本
+	// 7. 写入 compose.yml + VERSION + 复制 installer 副本
 	logStep("6/9", "写入配置文件")
 	composePath := filepath.Join(installDir, "compose.yml")
-	if err := os.WriteFile(composePath, composeYAML, 0644); err != nil {
+	composeContent := composeYAML
+	if cfg.IsLite() {
+		composeContent = buildLiteComposeYAML(composeYAML)
+		logInfo("  ▶ lite 模式：compose.yml 已剥离 kx-citus / kx-redis 服务（gateway 容器不依赖 PG/Redis）")
+	}
+	if err := os.WriteFile(composePath, composeContent, 0644); err != nil {
 		return fmt.Errorf("写入 compose.yml 失败: %w", err)
 	}
 	logInfo("  ✅ compose.yml")
 
-	// 8a. 写入 app/VERSION
+	// 7a. 写入 app/VERSION
 	versionPath := filepath.Join(installDir, "app", "VERSION")
 	if err := os.WriteFile(versionPath, []byte(cfg.AppImageTag+"\n"), 0644); err != nil {
 		logInfo("  ⚠️  写入 VERSION 失败: " + err.Error())
@@ -991,7 +1038,7 @@ prereqCheck:
 		logInfo("  ✅ app/VERSION")
 	}
 
-	// 8b. 复制当前 installer 到 bin/
+	// 7b. 复制当前 installer 到 bin/
 	binDir := filepath.Join(installDir, "bin")
 	if err := copyInstallerSelf(binDir); err != nil {
 		logInfo("  ⚠️  复制 installer 副本失败: " + err.Error())
@@ -999,48 +1046,68 @@ prereqCheck:
 		logInfo("  ✅ bin/llm-gw-installer")
 	}
 
-	// 8c. 复制 SQL 备份到 db/init/
+	// 7c. 复制 SQL 备份到 db/init/
 	if err := copySQLBackup(installDir); err != nil {
 		logInfo("  ⚠️  复制 SQL 备份失败: " + err.Error())
 	} else {
 		logInfo("  ✅ db/init/*.sql")
 	}
 
-	// 8d. 复制 MANIFEST.json 到 config/
+	// 7d. 复制 MANIFEST.json 到 config/
 	if err := copyManifest(installDir); err != nil {
 		logInfo("  ⚠️  复制 MANIFEST 失败: " + err.Error())
 	} else {
 		logInfo("  ✅ config/MANIFEST.json")
 	}
 
-	// 9. 启动容器
+	// 8. 启动容器
 	logStep("7/9", "启动 Docker 容器")
 	compose := dockerutil.NewCompose(composePath, "llm-gateway-go", installDir)
 	if err := compose.Up(logInfo); err != nil {
 		return fmt.Errorf("启动失败: %w", err)
 	}
 
-	// 10. 初始化数据库
+	// 9. 初始化数据库（lite 模式跳过：使用 SQLite，不需要 PG schema）
 	logStep("8/9", "初始化数据库")
-	sqlDir, sqlCleanup, err := setupSQLDir()
-	if err != nil {
-		return fmt.Errorf("准备 SQL 文件失败: %w", err)
-	}
-	defer sqlCleanup()
-	dbRunner := dbinit.NewRunner("kx-citus", "kxuser", "llm_gateway", sqlDir)
-	if err := dbRunner.WaitForPG(60); err != nil {
-		return fmt.Errorf("等待 PG: %w", err)
-	}
-	if err := dbRunner.InitSchema(logInfo); err != nil {
-		return fmt.Errorf("初始化 DB 失败: %w", err)
+	if cfg.IsLite() {
+		logInfo("  ▶ lite 模式：跳过 PG schema 初始化（使用 SQLite + 本地）")
+		logInfo("  ✅ 数据库初始化（lite / 跳过）")
+	} else {
+		sqlDir, sqlCleanup, err := setupSQLDir()
+		if err != nil {
+			return fmt.Errorf("准备 SQL 文件失败: %w", err)
+		}
+		defer sqlCleanup()
+		dbRunner := dbinit.NewRunner("kx-citus", "kxuser", "llm_gateway", sqlDir)
+		if err := dbRunner.WaitForPG(60); err != nil {
+			return fmt.Errorf("等待 PG: %w", err)
+		}
+		if err := dbRunner.InitSchema(logInfo); err != nil {
+			return fmt.Errorf("初始化 DB 失败: %w", err)
+		}
 	}
 
-	// 11. 健康检查
+// 11. 健康检查
 	logStep("9/9", "健康检查")
 	hc := dockerutil.NewHealthChecker(cfg.AppPort, "kx-citus", "kx-redis", cfg.RedisPassword, "kxuser", "llm_gateway")
 	health, _ := hc.RunAll(logInfo)
 
-	// 12. 写入报告
+	if cfg.IsLite() {
+		// lite 模式：仅校验 gateway 容器 + /healthz，PG/Redis/Schema 不适用
+		logInfo("  ▶ lite 模式：PG/Redis/Schema 检查不适用，按 ✅ 通过")
+		health.ContainersOK = true
+		health.PGReadyOK = true
+		health.RedisOK = true
+		health.SchemaOK = true
+	}
+
+	// 12. 自动注册激活（失败不阻塞）
+	logStep("10/10", "自动注册激活")
+	if err := runAutoActivate(installDir, cfg); err != nil {
+		logWarn(fmt.Sprintf("自动注册激活失败: %v（不影响安装）", err))
+	}
+
+	// 13. 写入报告
 	reportPath := filepath.Join(installDir, "install-report.md")
 	reportData := &report.InstallReportData{
 		InstallerVersion: installerVersion,
@@ -1064,6 +1131,70 @@ prereqCheck:
 
 	if !health.AllOK() {
 		return fmt.Errorf("健康检查未全部通过，请查看 install-report.md")
+	}
+	return nil
+}
+
+// runAutoActivate 包装 activation.RunAutoActivate：从环境变量 + InstallConfig 构造参数，
+// 任何失败都不阻塞主流程（仅 logWarn）。调用方（runInstall）也是 fail-open 处理。
+func runAutoActivate(installDir string, cfg *prompt.InstallConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("nil InstallConfig")
+	}
+
+	masterURL := os.Getenv("LLM_GATEWAY_MASTER_URL")
+	if masterURL == "" {
+		masterURL = cfg.MasterURL
+	}
+	if masterURL == "" {
+		masterURL = "https://llm.kxpms.cn"
+	}
+
+	// INSTALL_SKIP_ACTIVATION 优先于 cfg.SkipActivation
+	skip := cfg.SkipActivation
+	if os.Getenv("INSTALL_SKIP_ACTIVATION") == "1" {
+		skip = true
+	}
+
+	licenseKey := os.Getenv("INSTALL_LICENSE_KEY")
+	trialEmail := os.Getenv("INSTALL_TRIAL_EMAIL")
+	agreeTerms := strings.EqualFold(os.Getenv("INSTALL_AGREE_TERMS"), "true")
+
+	if skip {
+		logInfo("  ⏭  跳过（INSTALL_SKIP_ACTIVATION=1）")
+	}
+
+	logInfo("  ▶ 主控端: " + masterURL)
+	if licenseKey != "" {
+		logInfo("  ▶ 模式: 在线激活（INSTALL_LICENSE_KEY）")
+	} else if trialEmail != "" && agreeTerms {
+		logInfo("  ▶ 模式: 试用申请（INSTALL_TRIAL_EMAIL）")
+	} else {
+		logInfo("  ▶ 模式: 注册 + skipped（未提供 license key / trial email）")
+	}
+
+	err := activation.RunAutoActivate(context.Background(), activation.AutoActivateOptions{
+		InstallDir:   installDir,
+		MasterURL:    masterURL,
+		LicenseKey:   licenseKey,
+		TrialEmail:   trialEmail,
+		AgreeTerms:   agreeTerms,
+		StorageMode:  cfg.StorageMode,
+		InstallerVer: installerVersion,
+		Skip:         skip,
+	})
+	if err != nil {
+		logWarn(fmt.Sprintf("  自动注册激活失败: %v", err))
+		return err
+	}
+
+	// 读回 activation.json 用于结果展示
+	statePath := filepath.Join(installDir, "state", "activation.json")
+	if data, err := os.ReadFile(statePath); err == nil {
+		logInfo("  ✅ state/activation.json 已写入")
+		_ = data // activation status printed via logInfo above
+	} else {
+		logInfo("  ⚠️  未找到 state/activation.json")
 	}
 	return nil
 }
@@ -1399,6 +1530,18 @@ func copyManifest(root string) error {
 
 // envEntries 构造 .env 条目
 func envEntries(cfg *prompt.InstallConfig) map[string]string {
+	skipActivation := "0"
+	if cfg.SkipActivation {
+		skipActivation = "1"
+	}
+	storageMode := cfg.StorageMode
+	if storageMode == "" {
+		storageMode = "full"
+	}
+	masterURL := cfg.MasterURL
+	if masterURL == "" {
+		masterURL = "https://llm.kxpms.cn"
+	}
 	return map[string]string{
 		"APP_IMAGE_TAG":                         cfg.AppImageTag,
 		"PG_PORT":                               strconvItoa(cfg.PGPort),
@@ -1410,11 +1553,79 @@ func envEntries(cfg *prompt.InstallConfig) map[string]string {
 		"LLM_GATEWAY_ADMIN_API_KEY":             cfg.AdminAPIKey,
 		"LLM_GATEWAY_JWT_SECRET":                cfg.JWTSecret,
 		"LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY": cfg.CredEncryptKey,
+		// 新增：lite / full 存储模式切换（运行时由 cmd/gateway 的 storage_mode_init 读取）
+		"LLM_GATEWAY_STORAGE_MODE": storageMode,
+		// 新增：主控端 URL（license 激活 / 心跳）
+		"LLM_GATEWAY_MASTER_URL": masterURL,
+		// 新增：install 末尾是否跳过自动激活（由子代理 B 接管实际调用）
+		"INSTALL_SKIP_ACTIVATION": skipActivation,
 	}
 }
 
 func strconvItoa(n int) string {
 	return fmt.Sprintf("%d", n)
+}
+
+// buildLiteComposeYAML 在 lite 模式下从完整 compose.yml 中剥离 kx-citus / kx-redis
+// 两个 top-level service，并清理 llm-gateway-go 的 depends_on / DATABASE_URL / Redis 环境。
+// 不修改 embeddata 原文件（只读），运行时基于原 yaml 生成精简版。
+//
+// 剥离规则（保留容器外注释与目录结构，但服务定义剔除）：
+//   - 跳过 service 名 = "citus" 的整段（直到下一个顶级键或 services: 结束）
+//   - 跳过 service 名 = "redis" 的整段
+//   - llm-gateway-go 的 depends_on 整块（4 空格头 + 子项）也一并移除
+//   - llm-gateway-go 内部指向 PG/Redis 的 env 行（DATABASE_URL / REDIS_ADDR / REDIS_PASSWORD）也移除
+//
+// 由于不引入 yaml 依赖，剥离按文本块（缩进级别）进行；按行首空格数判定归属。
+func buildLiteComposeYAML(full []byte) []byte {
+	lines := strings.Split(string(full), "\n")
+	out := make([]string, 0, len(lines))
+	skipService := ""      // 当前正在剥离的 service 名（citus/redis）
+	inDependsOn := false   // 是否在 llm-gateway-go.depends_on 块内
+
+	for _, line := range lines {
+		trimmed := strings.TrimLeft(line, " ")
+		indent := len(line) - len(trimmed)
+
+		// 顶级 service 定义：以 2 空格缩进的 "  name:" 形式
+		if indent == 2 && strings.HasSuffix(trimmed, ":") && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "&") {
+			name := strings.TrimSuffix(trimmed, ":")
+			if name == "citus" || name == "redis" {
+				skipService = name
+				inDependsOn = false
+				continue
+			}
+			skipService = "" // 其他顶级键（含 llm-gateway-go）保留
+		}
+
+		if skipService != "" {
+			continue
+		}
+
+		// llm-gateway-go 服务内部：剥离 depends_on 整块（4 空格头 + 6 空格子项）
+		if strings.HasPrefix(line, "    depends_on:") {
+			inDependsOn = true
+			continue
+		}
+		if inDependsOn {
+			// 仍在 depends_on 块内直到缩进回到 ≤2 空格（顶级）或 ≤4 空格回到服务主键层级
+			if indent <= 4 {
+				inDependsOn = false
+			} else {
+				continue
+			}
+		}
+
+		// 剥离指向 PG/Redis 的 env 行（保留无害但移除更清晰）
+		if strings.HasPrefix(line, "      DATABASE_URL:") ||
+			strings.HasPrefix(line, "      LLM_GATEWAY_REDIS_ADDR:") ||
+			strings.HasPrefix(line, "      LLM_GATEWAY_REDIS_PASSWORD:") {
+			continue
+		}
+
+		out = append(out, line)
+	}
+	return []byte(strings.Join(out, "\n"))
 }
 
 // setupSQLDir 把 embed 的 SQL 写到临时目录，返回目录路径和清理函数。

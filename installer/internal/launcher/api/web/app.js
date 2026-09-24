@@ -53,6 +53,24 @@ function toast(msg) {
 
 const STATES = ['NOTIFIED', 'PREPARING', 'PREPARED', 'ACTIVATING', 'DRAINING', 'DONE'];
 
+// maskDeviceCode returns "ABC12345…9012" — first 8 + "…" + last 4. This
+// preserves enough of the code for operators to correlate with the master
+// console / enrollment dashboard without exposing the full string in
+// every /status poll. Short codes are returned verbatim (no truncation).
+function maskDeviceCode(code) {
+  if (!code || code.length <= 12) return code || '';
+  return code.slice(0, 8) + '…' + code.slice(-4);
+}
+
+// setMetaOrDash writes value into element, falling back to "—" when the
+// upstream is empty/null/undefined. Centralising the dash sentinel keeps
+// the field list below readable and makes the "missing data" UX uniform.
+function setMetaOrDash(id, value) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = (value == null || value === '') ? '—' : value;
+}
+
 async function refresh() {
   try {
     const s = await api('/status');
@@ -61,6 +79,40 @@ async function refresh() {
     document.getElementById('plan-state').textContent = s.plan_state || '无';
     const dot = document.getElementById('health-dot');
     dot.className = 'dot ' + (s.active_addr ? 'healthy' : 'unknown');
+
+    // ---- instance meta block ----
+    // All six meta fields are omitempty'd on the server, so an older
+    // build that never wired InstanceMetaProvider will simply have every
+    // field undefined here. hasOwnProperty guards keep that case silent
+    // (no console errors) and let the dash sentinel take over.
+    setMetaOrDash('meta-install-mode', s.install_mode);
+    setMetaOrDash('meta-instance-id', s.instance_id);
+    setMetaOrDash('meta-device-code', maskDeviceCode(s.device_code));
+    setMetaOrDash('meta-ip-address', s.ip_address);
+    setMetaOrDash('meta-activated-at', s.activated_at);
+
+    const statusEl = document.getElementById('meta-activation-status');
+    const rawStatus = (s.activation_status == null || s.activation_status === '')
+      ? 'unknown' : s.activation_status;
+    // data-meta drives the CSS color rules (green/blue/red/grey); keep it
+    // in lockstep with the displayed text so a future CSS tweak using
+    // ::before content can stay consistent.
+    if (statusEl) {
+      statusEl.textContent = rawStatus;
+      statusEl.dataset.meta = rawStatus;
+    }
+
+    const errEl = document.getElementById('meta-activation-error');
+    if (errEl) {
+      const errText = s.activation_error || '';
+      if (rawStatus === 'failed' && errText) {
+        errEl.textContent = '⚠ ' + errText;
+        errEl.classList.remove('hidden');
+      } else {
+        errEl.textContent = '';
+        errEl.classList.add('hidden');
+      }
+    }
   } catch (e) { /* token prompt handled in api() */ }
 }
 

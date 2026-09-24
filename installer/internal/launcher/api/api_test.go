@@ -183,3 +183,156 @@ func TestNotFound(t *testing.T) {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 }
+
+// TestStatus_MergesInstanceMeta covers the new InstanceMetaProvider wiring:
+// meta fields must appear in the JSON payload when the provider returns
+// them, and the legacy 5-field StatusProvider still controls its own
+// fields (priority: StatusProvider > InstanceMetaProvider).
+func TestStatus_MergesInstanceMeta(t *testing.T) {
+	api := New(Config{
+		TokenProvider: func() string { return "secret" },
+		StatusProvider: func() Status {
+			return Status{
+				ActiveAddr:    "127.0.0.1:8782",
+				ActiveVersion: "v1.2.3",
+				HasPlan:       false,
+			}
+		},
+		InstanceMetaProvider: func() InstanceMeta {
+			return InstanceMeta{
+				InstallMode:      "full",
+				InstanceID:       "inst-abc",
+				DeviceCode:       "DEV-XK4F-9021",
+				IPAddress:        "10.20.30.40",
+				ActivationStatus: "activated",
+				ActivatedAt:      "2026-09-24T08:30:00Z",
+			}
+		},
+	})
+	rec := do(t, api, "GET", "/launcher/api/status", "", "secret")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var s Status
+	if err := json.Unmarshal(rec.Body.Bytes(), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.ActiveAddr != "127.0.0.1:8782" || s.ActiveVersion != "v1.2.3" {
+		t.Errorf("legacy fields corrupted by merge: %+v", s)
+	}
+	if s.InstallMode != "full" {
+		t.Errorf("InstallMode = %q", s.InstallMode)
+	}
+	if s.InstanceID != "inst-abc" {
+		t.Errorf("InstanceID = %q", s.InstanceID)
+	}
+	if s.DeviceCode != "DEV-XK4F-9021" {
+		t.Errorf("DeviceCode = %q", s.DeviceCode)
+	}
+	if s.IPAddress != "10.20.30.40" {
+		t.Errorf("IPAddress = %q", s.IPAddress)
+	}
+	if s.ActivationStatus != "activated" {
+		t.Errorf("ActivationStatus = %q", s.ActivationStatus)
+	}
+	if s.ActivatedAt != "2026-09-24T08:30:00Z" {
+		t.Errorf("ActivatedAt = %q", s.ActivatedAt)
+	}
+}
+
+// TestStatus_NoInstanceMetaBackwardCompat confirms that an API instance
+// built without InstanceMetaProvider still serves the legacy payload and
+// never includes the meta keys — important for rolling back this release
+// or forking launches that never wired activation.
+func TestStatus_NoInstanceMetaBackwardCompat(t *testing.T) {
+	api := New(Config{
+		TokenProvider: func() string { return "secret" },
+		StatusProvider: func() Status {
+			return Status{
+				ActiveAddr:    "127.0.0.1:8782",
+				ActiveVersion: "v1.2.3",
+			}
+		},
+	})
+	rec := do(t, api, "GET", "/launcher/api/status", "", "secret")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &generic); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{
+		"install_mode", "instance_id", "device_code",
+		"ip_address", "activation_status", "activation_error",
+		"activated_at",
+	} {
+		if _, ok := generic[k]; ok {
+			t.Errorf("legacy payload must NOT include %q when InstanceMetaProvider is unset, got %v", k, generic)
+		}
+	}
+}
+
+// TestStatus_StatusProviderWinsOverMeta documents the merge precedence:
+// if both providers set the same field, StatusProvider's value is the one
+// that reaches the client. Today this never happens in practice
+// (StatusProvider only sets the 5 legacy fields), but locking the
+// contract here prevents future regressions.
+func TestStatus_StatusProviderWinsOverMeta(t *testing.T) {
+	api := New(Config{
+		TokenProvider: func() string { return "secret" },
+		StatusProvider: func() Status {
+			return Status{
+				ActiveAddr:    "from-status-provider",
+				ActiveVersion: "v9.9.9",
+			}
+		},
+		InstanceMetaProvider: func() InstanceMeta {
+			return InstanceMeta{
+				InstallMode:      "full",
+				IPAddress:        "10.0.0.1",
+				ActivationStatus: "activated",
+			}
+		},
+	})
+	rec := do(t, api, "GET", "/launcher/api/status", "", "secret")
+	var s Status
+	if err := json.Unmarshal(rec.Body.Bytes(), &s); err != nil {
+		t.Fatal(err)
+	}
+	// Legacy fields untouched by meta merge:
+	if s.ActiveAddr != "from-status-provider" {
+		t.Errorf("ActiveAddr should come from StatusProvider, got %q", s.ActiveAddr)
+	}
+	// Meta fields populated:
+	if s.IPAddress != "10.0.0.1" {
+		t.Errorf("IPAddress should come from InstanceMetaProvider, got %q", s.IPAddress)
+	}
+}
+
+// TestStatus_ActivationErrorOnlyShownOnFailed encodes the rule that the
+// error field is only meaningful when activation_status=failed. The wire
+// format doesn't enforce it (we surface whatever's in activation.json),
+// but a misconfigured writer that puts error="x" with status="activated"
+// is a documentation bug — flag it loudly via this test (currently the
+// loader passes the value through; the UI hides the row when not failed).
+func TestStatus_ActivationErrorPassthrough(t *testing.T) {
+	api := New(Config{
+		TokenProvider: func() string { return "secret" },
+		StatusProvider: func() Status {
+			return Status{}
+		},
+		InstanceMetaProvider: func() InstanceMeta {
+			return InstanceMeta{
+				ActivationStatus: "failed",
+				ActivationError:  "master returned 503",
+			}
+		},
+	})
+	rec := do(t, api, "GET", "/launcher/api/status", "", "secret")
+	var s Status
+	_ = json.Unmarshal(rec.Body.Bytes(), &s)
+	if s.ActivationStatus != "failed" || s.ActivationError != "master returned 503" {
+		t.Errorf("activation failure must include error: %+v", s)
+	}
+}

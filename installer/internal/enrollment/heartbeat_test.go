@@ -2,6 +2,9 @@ package enrollment
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -155,6 +158,91 @@ func TestSendHeartbeat_ContextCanceled(t *testing.T) {
 	}
 }
 
+// TestReadInstanceToken_Fallback 验证 ~/.kx-gateway/instance.token 缺失时，
+// 应当 fallback 到 ${INSTALL_DIR}/state/instance.token
+func TestReadInstanceToken_Fallback(t *testing.T) {
+	// HOME 指向没有 .kx-gateway 的目录（primary 必然失败）
+	homeDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", homeDir)
+	defer os.Setenv("HOME", oldHome)
+
+	// INSTALL_DIR 指向有 state/instance.token 的目录
+	installDir := t.TempDir()
+	stateDir := installDir + "/state"
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("mkdir state: %v", err)
+	}
+	if err := os.WriteFile(stateDir+"/instance.token", []byte("fallback-token-xyz"), 0600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	oldInstallDir := os.Getenv("INSTALL_DIR")
+	os.Setenv("INSTALL_DIR", installDir)
+	defer os.Setenv("INSTALL_DIR", oldInstallDir)
+
+	got, err := readInstanceToken()
+	if err != nil {
+		t.Fatalf("readInstanceToken failed: %v", err)
+	}
+	if got != "fallback-token-xyz" {
+		t.Errorf("expected fallback-token-xyz, got %s", got)
+	}
+}
+
+// TestReadInstanceToken_PrimaryWins 验证当 primary 路径存在时优先使用
+func TestReadInstanceToken_PrimaryWins(t *testing.T) {
+	// HOME 下写 token-a
+	homeDir := t.TempDir()
+	if err := os.MkdirAll(homeDir+"/.kx-gateway", 0755); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	if err := os.WriteFile(homeDir+"/.kx-gateway/instance.token", []byte("primary-token"), 0600); err != nil {
+		t.Fatalf("write primary: %v", err)
+	}
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", homeDir)
+	defer os.Setenv("HOME", oldHome)
+
+	// INSTALL_DIR 下写 token-b
+	installDir := t.TempDir()
+	stateDir := installDir + "/state"
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("mkdir state: %v", err)
+	}
+	if err := os.WriteFile(stateDir+"/instance.token", []byte("fallback-token"), 0600); err != nil {
+		t.Fatalf("write fallback: %v", err)
+	}
+	oldInstallDir := os.Getenv("INSTALL_DIR")
+	os.Setenv("INSTALL_DIR", installDir)
+	defer os.Setenv("INSTALL_DIR", oldInstallDir)
+
+	got, err := readInstanceToken()
+	if err != nil {
+		t.Fatalf("readInstanceToken failed: %v", err)
+	}
+	if got != "primary-token" {
+		t.Errorf("expected primary wins, got %s", got)
+	}
+}
+
+// TestReadInstanceToken_NotFound 验证两路径都失败时返回 error
+func TestReadInstanceToken_NotFound(t *testing.T) {
+	homeDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", homeDir)
+	defer os.Setenv("HOME", oldHome)
+
+	installDir := t.TempDir()
+	oldInstallDir := os.Getenv("INSTALL_DIR")
+	os.Setenv("INSTALL_DIR", installDir)
+	defer os.Setenv("INSTALL_DIR", oldInstallDir)
+
+	_, err := readInstanceToken()
+	if err == nil {
+		t.Fatal("expected error when both paths missing, got nil")
+	}
+}
+
 // TestHeartbeatPayload_JSONMarshaling 测试 JSON 序列化
 func TestHeartbeatPayload_JSONMarshaling(t *testing.T) {
 	payload := HeartbeatPayload{
@@ -182,5 +270,147 @@ func TestHeartbeatPayload_JSONMarshaling(t *testing.T) {
 	}
 	if decoded.Last5MinTPS != payload.Last5MinTPS {
 		t.Errorf("Last5MinTPS mismatch: got %f, want %f", decoded.Last5MinTPS, payload.Last5MinTPS)
+	}
+}
+
+// TestSignHeartbeatBody 验证 HMAC-SHA256 签名:
+//   - 派生密钥 = SHA256(instance_token)
+//   - message = timestamp + "." + nonce + "." + body
+//   - 相同输入必产生相同输出(确定性)
+//   - 任一输入分量变化都会改变签名(证明派生真实使用了所有分量)
+//   - 空 token 拒绝
+func TestSignHeartbeatBody(t *testing.T) {
+	token := "super-secret-instance-token"
+	timestamp := "1700000000"
+	nonce := "abc123def456"
+	body := []byte(`{"instance_id":"i-001"}`)
+
+	sig1, err := signHeartbeatBody(token, timestamp, nonce, body)
+	if err != nil {
+		t.Fatalf("signHeartbeatBody failed: %v", err)
+	}
+	sig2, err := signHeartbeatBody(token, timestamp, nonce, body)
+	if err != nil {
+		t.Fatalf("signHeartbeatBody second call failed: %v", err)
+	}
+	if sig1 != sig2 {
+		t.Errorf("signHeartbeatBody not deterministic: got %s, then %s", sig1, sig2)
+	}
+	if len(sig1) != 64 {
+		t.Errorf("expected 64-char hex signature, got %d chars: %s", len(sig1), sig1)
+	}
+
+	sigOtherToken, err := signHeartbeatBody("other-token", timestamp, nonce, body)
+	if err != nil {
+		t.Fatalf("signHeartbeatBody with other token failed: %v", err)
+	}
+	if sigOtherToken == sig1 {
+		t.Error("expected signature to change when token changes (key derivation broken?)")
+	}
+
+	sigOtherTS, err := signHeartbeatBody(token, "1700000001", nonce, body)
+	if err != nil {
+		t.Fatalf("signHeartbeatBody with other timestamp failed: %v", err)
+	}
+	if sigOtherTS == sig1 {
+		t.Error("expected signature to change when timestamp changes")
+	}
+
+	sigOtherNonce, err := signHeartbeatBody(token, timestamp, "different-nonce", body)
+	if err != nil {
+		t.Fatalf("signHeartbeatBody with other nonce failed: %v", err)
+	}
+	if sigOtherNonce == sig1 {
+		t.Error("expected signature to change when nonce changes (replay protection broken)")
+	}
+
+	sigOtherBody, err := signHeartbeatBody(token, timestamp, nonce, []byte(`{"instance_id":"i-002"}`))
+	if err != nil {
+		t.Fatalf("signHeartbeatBody with other body failed: %v", err)
+	}
+	if sigOtherBody == sig1 {
+		t.Error("expected signature to change when body changes")
+	}
+
+	keyHash := sha256.Sum256([]byte(token))
+	mac := hmac.New(sha256.New, keyHash[:])
+	mac.Write([]byte(timestamp))
+	mac.Write([]byte("."))
+	mac.Write([]byte(nonce))
+	mac.Write([]byte("."))
+	mac.Write(body)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	if sig1 != expected {
+		t.Errorf("signature mismatch with reference HMAC: got %s, want %s", sig1, expected)
+	}
+
+	if _, err := signHeartbeatBody("", timestamp, nonce, body); err == nil {
+		t.Error("expected error for empty token, got nil")
+	}
+}
+
+// TestRandomNonce 验证 randomNonce:
+//   - 输出长度 = 2n hex 字符
+//   - 多次调用无碰撞(1000 个 16-byte nonce 碰撞概率 < 2^-80)
+//   - 输出是合法 hex
+func TestRandomNonce(t *testing.T) {
+	const n = 16
+	seen := make(map[string]struct{}, 1000)
+	const samples = 1000
+
+	for i := 0; i < samples; i++ {
+		nonce, err := randomNonce(n)
+		if err != nil {
+			t.Fatalf("randomNonce failed at iter %d: %v", i, err)
+		}
+		if len(nonce) != 2*n {
+			t.Errorf("iter %d: expected %d chars, got %d (%s)", i, 2*n, len(nonce), nonce)
+		}
+		if _, err := hex.DecodeString(nonce); err != nil {
+			t.Errorf("iter %d: nonce %q is not valid hex: %v", i, nonce, err)
+		}
+		if _, dup := seen[nonce]; dup {
+			t.Errorf("nonce collision at iter %d: %s", i, nonce)
+		}
+		seen[nonce] = struct{}{}
+	}
+
+	if len(seen) != samples {
+		t.Errorf("expected %d unique nonces, got %d", samples, len(seen))
+	}
+}
+
+// TestReadInstanceToken_EmptyFile 验证 primary 文件存在但内容为空(仅空白)
+// 时，应当回退到 install-state 路径。
+func TestReadInstanceToken_EmptyFile(t *testing.T) {
+	homeDir := t.TempDir()
+	if err := os.MkdirAll(homeDir+"/.kx-gateway", 0755); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	if err := os.WriteFile(homeDir+"/.kx-gateway/instance.token", []byte("   \n\t  "), 0600); err != nil {
+		t.Fatalf("write primary (empty/whitespace): %v", err)
+	}
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", homeDir)
+	defer os.Setenv("HOME", oldHome)
+
+	installDir := t.TempDir()
+	stateDir := installDir + "/state"
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("mkdir state: %v", err)
+	}
+	if err := os.WriteFile(stateDir+"/instance.token", []byte("fallback-after-empty"), 0600); err != nil {
+		t.Fatalf("write fallback: %v", err)
+	}
+	oldInstallDir := os.Getenv("INSTALL_DIR")
+	os.Setenv("INSTALL_DIR", installDir)
+	defer os.Setenv("INSTALL_DIR", oldInstallDir)
+
+	got, err := readInstanceToken()
+	if err != nil {
+		t.Fatalf("readInstanceToken should have fallen back after empty primary, got error: %v", err)
+	}
+	if got != "fallback-after-empty" {
+		t.Errorf("expected fallback-after-empty, got %s", got)
 	}
 }

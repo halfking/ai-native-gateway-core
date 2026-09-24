@@ -15,24 +15,55 @@ import (
 
 // InstallConfig 安装配置（从 wizard 收集）
 type InstallConfig struct {
-	InstallPath       string
-	AppPort           int
-	PGPort            int
-	RedisPort         int
-	AppImageTag       string
-	PGPassword        string
-	RedisPassword     string
-	APIKey            string
-	AdminAPIKey       string
-	JWTSecret         string
-	CredEncryptKey    string
-	ImageSourceStrategy string  // "auto" / "offline-only" / "registry-only"
+	InstallPath         string
+	AppPort             int
+	PGPort              int
+	RedisPort           int
+	AppImageTag         string
+	PGPassword          string
+	RedisPassword       string
+	APIKey              string
+	AdminAPIKey         string
+	JWTSecret           string
+	CredEncryptKey      string
+	ImageSourceStrategy string // "auto" / "offline-only" / "registry-only"
+	// StorageMode: ""（默认 full） / "full" / "lite"
+	//   full = PG + Redis（kxpms 标准生产路径）
+	//   lite = SQLite + 本地（单机/开发/CI）
+	StorageMode string
+	// MasterURL: 主控端 URL（用于 license 激活 / 心跳）
+	MasterURL string
+	// SkipActivation: 是否在 install 末尾跳过自动激活调用
+	SkipActivation bool
+}
+
+// IsLite 是否为 lite 模式（SQLite + 本地）
+func (c *InstallConfig) IsLite() bool {
+	return strings.EqualFold(c.StorageMode, "lite")
+}
+
+// NormalizeStorageMode 规范化存储模式字符串：未知值归一为 full
+func NormalizeStorageMode(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "lite":
+		return "lite"
+	case "", "full":
+		return "full"
+	default:
+		return "full"
+	}
 }
 
 // Summary 输出可读摘要
 func (c *InstallConfig) Summary() string {
+	mode := c.StorageMode
+	if mode == "" {
+		mode = "full"
+	}
 	return fmt.Sprintf(`  安装路径:    %s
   应用端口:    %d
+  存储模式:    %s
+  主控端 URL:  %s
   PG 端口:    %d
   Redis 端口:  %d
   镜像 tag:   %s
@@ -40,7 +71,8 @@ func (c *InstallConfig) Summary() string {
   密码:       (全部自动生成，留空时填入)
   API Key:    (自动生成)
   JWT Secret: (自动生成)`,
-		c.InstallPath, c.AppPort, c.PGPort, c.RedisPort, c.AppImageTag, c.ImageSourceStrategy)
+		c.InstallPath, c.AppPort, mode, c.MasterURL,
+		c.PGPort, c.RedisPort, c.AppImageTag, c.ImageSourceStrategy)
 }
 
 // Wizard 向导上下文
@@ -125,6 +157,9 @@ func LoadFromEnvFile(path, appImageTag, defaultInstallPath string) (*InstallConf
 		JWTSecret:           jwtSecret,
 		CredEncryptKey:      credKey,
 		ImageSourceStrategy: getOrDefault(values, "IMAGE_SOURCE_STRATEGY", "auto"),
+		StorageMode:         NormalizeStorageMode(getOrDefault(values, "STORAGE_MODE", "full")),
+		MasterURL:           getOrDefault(values, "LLM_GATEWAY_MASTER_URL", "https://llm.kxpms.cn"),
+		SkipActivation:      getOrDefaultBool(values, "INSTALL_SKIP_ACTIVATION", false),
 	}
 	return cfg, nil
 }
@@ -168,14 +203,29 @@ func getOrDefaultInt(m map[string]string, key string, def int) int {
 	return def
 }
 
+func getOrDefaultBool(m map[string]string, key string, def bool) bool {
+	if v, ok := m[key]; ok && v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "y", "on":
+			return true
+		case "0", "false", "no", "n", "off":
+			return false
+		}
+	}
+	return def
+}
+
 // Run 运行 11 步向导
 func (w *Wizard) Run(defaultPath string) (*InstallConfig, error) {
 	cfg := &InstallConfig{
-		AppPort:           8781,
-		PGPort:            5432,
-		RedisPort:         6379,
-		AppImageTag:       w.AppImageTag,
+		AppPort:             8781,
+		PGPort:              5432,
+		RedisPort:           6379,
+		AppImageTag:         w.AppImageTag,
 		ImageSourceStrategy: "auto",
+		StorageMode:         "full",
+		MasterURL:           "https://llm.kxpms.cn",
+		SkipActivation:      false,
 	}
 
 	fmt.Println()
@@ -187,35 +237,48 @@ func (w *Wizard) Run(defaultPath string) (*InstallConfig, error) {
 	// 1. 安装路径
 	cfg.InstallPath = w.askString("1. 安装路径", defaultPath)
 
-	// 2. 应用端口
-	cfg.AppPort = w.askInt("2. 应用端口 (HTTP)", 8781, []int{})
+	// 2. 存储模式（lite = SQLite+本地 / full = PG+Redis）
+	if w.IsTTY {
+		cfg.StorageMode = w.askChoice("2. 存储模式（lite=SQLite+本地, full=PG+Redis）",
+			[]string{"full", "lite"}, "full")
+	} else {
+		// 非 TTY：保持默认 full（CI 场景通过 --config 文件注入）
+		cfg.StorageMode = "full"
+		logInfo("  ▶ 非 TTY：存储模式默认 full（如需 lite 请通过 --config 文件传入 STORAGE_MODE=lite）")
+	}
 
-	// 3. PostgreSQL 端口
-	cfg.PGPort = w.askInt("3. PostgreSQL 端口", 5432, []int{})
+	// 3. 主控端 URL（仅 full 模式有意义，lite 也写入以保持配置一致）
+	cfg.MasterURL = w.askString("3. 主控端 URL (license 激活/心跳)", "https://llm.kxpms.cn")
 
-	// 4. Redis 端口
-	cfg.RedisPort = w.askInt("4. Redis 端口", 6379, []int{})
+	// 4. 应用端口
+	cfg.AppPort = w.askInt("4. 应用端口 (HTTP)", 8781, []int{})
 
-	// 5. PostgreSQL 密码
-	cfg.PGPassword = w.askPassword("5. PostgreSQL 密码")
+	// 5. PostgreSQL 端口
+	cfg.PGPort = w.askInt("5. PostgreSQL 端口", 5432, []int{})
 
-	// 6. Redis 密码
-	cfg.RedisPassword = w.askPassword("6. Redis 密码")
+	// 6. Redis 端口
+	cfg.RedisPort = w.askInt("6. Redis 端口", 6379, []int{})
 
-	// 7. API Key
-	cfg.APIKey = w.askPassword("7. LLM Gateway API Key")
+	// 7. PostgreSQL 密码
+	cfg.PGPassword = w.askPassword("7. PostgreSQL 密码")
 
-	// 8. Admin API Key
-	cfg.AdminAPIKey = w.askPassword("8. LLM Gateway Admin API Key")
+	// 8. Redis 密码
+	cfg.RedisPassword = w.askPassword("8. Redis 密码")
 
-	// 9. JWT Secret
-	cfg.JWTSecret = w.askPassword("9. JWT Secret")
+	// 9. API Key
+	cfg.APIKey = w.askPassword("9. LLM Gateway API Key")
 
-	// 10. Credential Encryption Key
-	cfg.CredEncryptKey = w.askPassword("10. 凭据加密 Key (32 字节 hex)")
+	// 10. Admin API Key
+	cfg.AdminAPIKey = w.askPassword("10. LLM Gateway Admin API Key")
 
-	// 11. 镜像源策略
-	cfg.ImageSourceStrategy = w.askChoice("11. 镜像源策略",
+	// 11. JWT Secret
+	cfg.JWTSecret = w.askPassword("11. JWT Secret")
+
+	// 12. Credential Encryption Key
+	cfg.CredEncryptKey = w.askPassword("12. 凭据加密 Key (32 字节 hex)")
+
+	// 13. 镜像源策略
+	cfg.ImageSourceStrategy = w.askChoice("13. 镜像源策略",
 		[]string{"auto", "offline-only", "registry-only"},
 		"auto")
 
@@ -232,6 +295,9 @@ func (w *Wizard) Run(defaultPath string) (*InstallConfig, error) {
 
 	return cfg, nil
 }
+
+// logInfo 非 TTY 时在 wizard 内部给出提示
+func logInfo(msg string) { fmt.Println(msg) }
 
 // askString 询问字符串（有默认值）
 func (w *Wizard) askString(prompt, defaultVal string) string {
