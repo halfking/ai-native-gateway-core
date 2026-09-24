@@ -26,6 +26,13 @@
 -- 原文口径）。原死文件第二条索引 idx_report_snapshots_date(report_date)
 -- 已删：计划内读者只按 (scope, report_date)（API §4）或完整唯一键（§3
 -- worker）过滤，date 前导索引无消费方，随消费方落地再评估。
+--
+-- 幂等声明④（2026-09-25 补，对齐 800_provider_endpoint_protocols.sql 的
+-- IDEMPOTENCY 注记风格）：本文件可安全重复执行（双跑零副作用）——DDL 仅含
+-- CREATE TABLE IF NOT EXISTS 与 CREATE INDEX IF NOT EXISTS 两种语句，二跑
+-- 零结构变更、零数据改写；worker 写入面另有 INSERT ... ON CONFLICT 幂等
+-- 回填（见粒度契约②）。无破坏性语句，down（745_report_snapshots.down.sql）
+-- 仅 DROP TABLE IF EXISTS。
 
 CREATE TABLE IF NOT EXISTS report_snapshots (
     id                  BIGSERIAL PRIMARY KEY,

@@ -1085,10 +1085,21 @@ export function triggerTuningAnalyze() {
 // Corrections-driven proposal generation (v2 闭环 P1, taskprofile/analyzer.go
 // via admin handleProposalsGenerate): drafts threshold/keyword proposals from
 // human corrections, quantifies each inline, inserts as status='pending'.
+// The drafts in the response are PRE-insertion values (taskprofile.ProposalDraft,
+// admin/auto_route_tuning.go handleProposalsGenerate): category/task_type/
+// proposal/evidence only — no id/ts/status/review columns yet. Category is
+// a free string on the wire but the analyzer only emits the three kinds.
+export interface ProposalDraftSummary {
+  category: TuningProposalCategory
+  task_type?: string // omitempty on the wire; "" = global (threshold_change)
+  proposal: Record<string, unknown>
+  evidence: ProposalEvidence
+}
+
 export interface GenerateProposalsResponse {
   generated: number
   days: number
-  proposals: TuningProposal[]
+  proposals: ProposalDraftSummary[]
 }
 
 export function generateCorrectionProposals(days = 30) {

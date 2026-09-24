@@ -137,6 +137,176 @@ func TestGateEvaluation(t *testing.T) {
 	}
 }
 
+// R64（P3）：负值舍入方向。round3 走 math.Round（半值远离零），
+// floor2 走 math.Floor（阈值只降不升）。
+func TestRoundingNegativeValues(t *testing.T) {
+	cases := []struct {
+		name   string
+		in     float64
+		wantR3 float64
+		wantF2 float64
+	}{
+		{"positive round", 0.1235, 0.124, 0.12},
+		{"positive truncate", 0.999, 0.999, 0.99},
+		{"negative half away", -0.1235, -0.124, -0.13},
+		{"negative grrq", -90.129, -90.129, -90.13},
+		{"negative toward zero forbidden", -0.121, -0.121, -0.13},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := round3(tc.in); got != tc.wantR3 {
+				t.Fatalf("round3(%v) = %v, want %v", tc.in, got, tc.wantR3)
+			}
+			if got := floor2(tc.in); got != tc.wantF2 {
+				t.Fatalf("floor2(%v) = %v, want %v", tc.in, got, tc.wantF2)
+			}
+		})
+	}
+	// 关键不变量：floor2(v) <= v 恒成立（旧实现对负值朝零截断会抬高阈值）。
+	for _, v := range []float64{-90.129, -0.001, 0, 0.999, 100} {
+		if floor2(v) > v {
+			t.Fatalf("floor2(%v) = %v raised the value", v, floor2(v))
+		}
+	}
+}
+
+// R64（P2）：基线语义校验——零阈值/过期库存必须被拒（exit 2），合法基线放行。
+func TestValidateBaseline(t *testing.T) {
+	valid := func() *GateBaseline {
+		b := &GateBaseline{}
+		b.SuiteFiles = []string{"a.jsonl", "b.jsonl"}
+		b.TotalCases = 240
+		b.Thresholds.MinAccuracy = 1
+		b.Thresholds.MinMacroF1 = 1
+		b.Thresholds.MinGRRQ = 100
+		return b
+	}
+	suites := []string{"a.jsonl", "b.jsonl"}
+
+	if err := validateBaseline(valid(), suites, 240); err != nil {
+		t.Fatalf("valid baseline rejected: %v", err)
+	}
+	// 同一套件、顺序不同 → 视为一致（-suite 是无序集合）。
+	if err := validateBaseline(valid(), []string{"b.jsonl", "a.jsonl"}, 240); err != nil {
+		t.Fatalf("reordered suite set should pass: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*GateBaseline)
+		total  int
+	}{
+		{"zero min_accuracy", func(b *GateBaseline) { b.Thresholds.MinAccuracy = 0 }, 240},
+		{"zero min_macro_f1", func(b *GateBaseline) { b.Thresholds.MinMacroF1 = 0 }, 240},
+		{"zero min_grrq", func(b *GateBaseline) { b.Thresholds.MinGRRQ = 0 }, 240},
+		{"negative min_grrq", func(b *GateBaseline) { b.Thresholds.MinGRRQ = -1 }, 240},
+		{"total_cases mismatch", func(b *GateBaseline) {}, 241},
+		{"suite_files mismatch", func(b *GateBaseline) { b.SuiteFiles = []string{"a.jsonl", "c.jsonl"} }, 240},
+		{"missing suite_files", func(b *GateBaseline) { b.SuiteFiles = nil }, 240},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := valid()
+			tc.mutate(b)
+			if err := validateBaseline(b, suites, tc.total); err == nil {
+				t.Fatalf("expected rejection for %s", tc.name)
+			}
+		})
+	}
+}
+
+// R64（P3）：CLI 组合矛盾显式拒绝（表驱动）。
+func TestValidateFlags(t *testing.T) {
+	cases := []struct {
+		name     string
+		mode     string
+		explicit []string
+		days     int
+		limit    int
+		wantErr  bool
+	}{
+		{"regression defaults", "regression", nil, 30, 100, false},
+		{"regression gate-default", "regression", []string{"gate-default"}, 30, 100, false},
+		{"regression gate+gate-default conflict", "regression", []string{"gate", "gate-default"}, 30, 100, true},
+		{"generate clean", "generate", nil, 30, 100, false},
+		{"generate days zero floor ok", "generate", nil, 0, 1, false},
+		{"generate with -report", "generate", []string{"report"}, 30, 100, true},
+		{"generate with -gate", "generate", []string{"gate"}, 30, 100, true},
+		{"generate with -gate-default", "generate", []string{"gate-default"}, 30, 100, true},
+		{"generate with -write-baseline", "generate", []string{"write-baseline"}, 30, 100, true},
+		{"generate with -e2e-report", "generate", []string{"e2e-report"}, 30, 100, true},
+		{"generate with -suite", "generate", []string{"suite"}, 30, 100, true},
+		{"generate negative days", "generate", nil, -1, 100, true},
+		{"generate zero limit", "generate", nil, 30, 0, true},
+		{"generate negative limit", "generate", nil, 30, -5, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			explicit := map[string]bool{}
+			for _, f := range tc.explicit {
+				explicit[f] = true
+			}
+			err := validateFlags(tc.mode, explicit, tc.days, tc.limit)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error for mode=%s explicit=%v days=%d limit=%d", tc.mode, tc.explicit, tc.days, tc.limit)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// R64（P3）：-e2e-report 指定但读不到 → 报错（main 里 exit 2），不再静默忽略。
+func TestLoadE2EReport(t *testing.T) {
+	if s, err := loadE2EReport(""); err != nil || s != nil {
+		t.Fatalf("empty path = %v, %v; want nil, nil", s, err)
+	}
+	if _, err := loadE2EReport(filepath.Join(t.TempDir(), "missing.jsonl")); err == nil {
+		t.Fatal("unreadable -e2e-report must return an error")
+	}
+
+	p := filepath.Join(t.TempDir(), "e2e.jsonl")
+	content := "# comment\n" +
+		`{"name":"n1","expected_task":"chat","got_task":"chat","pass":true,"served_model":"m-a"}` + "\n" +
+		"\n" +
+		`{"name":"n2","expected_task":"code","got_task":"chat","pass":false,"served_model":"m-b"}` + "\n" +
+		"not-json\n"
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := loadE2EReport(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if s.Total != 2 || s.Pass != 1 || len(s.Failures) != 1 || s.Failures[0].Name != "n2" {
+		t.Fatalf("summary = %+v", s)
+	}
+	if s.Models["m-a"] != 1 || s.Models["m-b"] != 1 {
+		t.Fatalf("models = %v", s.Models)
+	}
+}
+
+// R64（P3）：1:N join 重名候选去重——同 request_id 多行只保留首行。
+func TestDedupeByRequestID(t *testing.T) {
+	rows := []featureRow{
+		{RequestID: "r1", TaskType: "chat"},
+		{RequestID: "r2", TaskType: "code"},
+		{RequestID: "r1", TaskType: "code"}, // 同 request_id 重放行
+		{RequestID: "r3", TaskType: "chat"},
+	}
+	out := dedupeByRequestID(rows)
+	if len(out) != 3 {
+		t.Fatalf("len = %d, want 3", len(out))
+	}
+	if out[0].RequestID != "r1" || out[0].TaskType != "chat" {
+		t.Fatalf("first row must be kept: %+v", out[0])
+	}
+	if n := len(dedupeByRequestID(nil)); n != 0 {
+		t.Fatalf("empty input should yield empty output, got %d", n)
+	}
+}
+
 func TestCandidateFromRowPrivacy(t *testing.T) {
 	lang, mm, code := "zh", true, false
 	r := featureRow{

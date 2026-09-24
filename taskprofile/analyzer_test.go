@@ -11,8 +11,9 @@ import (
 )
 
 func correctionRowsFixture() []CorrectionRow {
-	// 12 个 auto=chat → human=code 的被改判样本（11 个置信度 <0.70），
-	// 外加 2 个 auto=chat→human=creative。chat 量 30 → 修正率 14/30≈46.7%。
+	// 13 个 auto=chat → human=code 的被改判样本（12 个带置信度，其中 11 个
+	// <0.70；1 个 NULL），外加 2 个 auto=chat→human=creative。chat 量 30 →
+	// 修正率 15/30=50%。
 	mk := func(conf float64, confNull bool, hint string, code bool) CorrectionRow {
 		return CorrectionRow{
 			AutoTaskType: "chat", HumanTaskType: "code",
@@ -64,10 +65,10 @@ func TestQualifyingPairsGate(t *testing.T) {
 	pairs := aggregateCorrections(correctionRowsFixture())
 	got := qualifyingPairs(pairs, volumesFixture())
 	if len(got) != 2 {
-		t.Fatalf("qualifying = %d, want 2 (rate 14/30=46.7%% ≥ 30%%)", len(got))
+		t.Fatalf("qualifying = %d, want 2 (rate 15/30=50%% ≥ 30%%)", len(got))
 	}
 
-	// 修正率不足：chat 量放大到 100 → 14%。
+	// 修正率不足：chat 量放大到 100 → 15%。
 	if got := qualifyingPairs(pairs, map[string]int{"chat": 100}); len(got) != 0 {
 		t.Fatalf("low-rate pairs = %d, want 0", len(got))
 	}
@@ -82,14 +83,15 @@ func TestDraftThresholdProposal(t *testing.T) {
 	qualifying := qualifyingPairs(pairs, volumesFixture())
 
 	// 被改判样本置信度（chat→code 13 个中 11 个 <0.70，1 个 ≥0.85，1 个 NULL）。
-	// 全局池 total = 12（NULL 不进覆盖率分母）：
-	// total = 11(0.50-0.70) + 1(>=0.85) = 12。
+	// 全局池 total = 14（NULL 不进覆盖率分母；两对都过闸，creative 的 2 个
+	// 0.40 也计入）：
+	// total = 11(0.50-0.70) + 1(>=0.85) + 2(creative <0.50) = 14。
 	d := draftThresholdProposal(qualifying, volumesFixture(), 0.70, 30)
 	if d == nil {
 		t.Fatal("expected threshold draft")
 	}
-	// 候选 0.65：覆盖 11/12 = 91.7% ≥ 80% → 最保守的合格候选是 0.65
-	// （0.70 不满足 cand<old，更大候选越界）。
+	// 候选 0.65：覆盖 13/14 ≈ 92.9% ≥ 80% → 最保守的合格候选是 0.65
+	//（0.70-0.85 因 cand ≥ old 被跳过）。
 	if got := d.Proposal["new"].(float64); got != 0.65 {
 		t.Fatalf("new = %v, want 0.65", got)
 	}
@@ -125,7 +127,7 @@ func TestDraftKeywordProposals(t *testing.T) {
 
 	current := map[string][]string{"keywords.code": {"function", "class"}}
 	drafts := draftKeywordProposals(qualifying, current, 30)
-	// chat→code：hint "数据库" 11/12=91.7% ≥60%，token 不在现表 → 1 条。
+	// chat→code：hint "数据库" 11/13≈84.6% ≥60%，token 不在现表 → 1 条。
 	// chat→creative：corrected=2 < MinPairSamples(5) → 排除。
 	if len(drafts) != 1 {
 		t.Fatalf("drafts = %d, want 1 (%+v)", len(drafts), drafts)
@@ -199,5 +201,54 @@ func TestThresholdCoverageUsesRawConfidences(t *testing.T) {
 	}
 	if got := d.Proposal["new"].(float64); got != 0.65 {
 		t.Fatalf("new = %v, want 0.65", got)
+	}
+}
+
+func TestDraftKeywordProposals_ExcludesDomainHintEnumValues(t *testing.T) {
+	// R64 P2：domain_hint 写入侧是 {technical, business, general} 三值枚举
+	// （autoroute/structured_features.go inferDomainHint）。三个枚举值任一
+	// 成为 top hint 都不得产生 keyword_add 草稿——枚举词无判别力，待写入侧
+	// 升级为自由领域 token 后才恢复产出。
+	for _, enumHint := range []string{"technical", "business", "general"} {
+		p := &pairStat{
+			Auto: "chat", Human: "code",
+			confBands: map[string]int{},
+			hints:     map[string]int{enumHint: 6}, // share = 6/6 = 100%，唯一 top
+		}
+		p.Corrected = 6
+		drafts := draftKeywordProposals([]*pairStat{p}, map[string][]string{}, 30)
+		if len(drafts) != 0 {
+			t.Fatalf("enum hint %q must not produce keyword_add drafts, got %d (%+v)",
+				enumHint, len(drafts), drafts)
+		}
+	}
+
+	// 对照组：非枚举 token 在同等闸门下仍然产出，证明排除的是枚举值本身
+	// 而不是误伤了整条链路。
+	p := &pairStat{
+		Auto: "chat", Human: "code",
+		confBands: map[string]int{},
+		hints:     map[string]int{"数据库": 6},
+	}
+	p.Corrected = 6
+	if drafts := draftKeywordProposals([]*pairStat{p}, map[string][]string{}, 30); len(drafts) != 1 {
+		t.Fatalf("control token should produce exactly 1 draft, got %d", len(drafts))
+	}
+}
+
+func TestEscapeLikePattern(t *testing.T) {
+	// R64 P3：LIKE 通配符与转义符必须逐个前置 `\`，普通 token 原样透传。
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"数据库", "数据库"},
+		{"100%", `100\%`},
+		{"a_b", `a\_b`},
+		{`back\slash`, `back\\slash`},
+		{`%_\`, `\%\_\\`},
+	}
+	for _, c := range cases {
+		if got := escapeLikePattern(c.in); got != c.want {
+			t.Errorf("escapeLikePattern(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
