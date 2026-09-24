@@ -18,6 +18,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"time"
@@ -288,6 +289,56 @@ func loadBaseline(path string) (*GateBaseline, error) {
 	return &b, nil
 }
 
-func round3(v float64) float64 { return float64(int64(v*1000+0.5)) / 1000 }
+// validateBaseline enforces the baseline's semantic contract on top of the
+// JSON syntax check (R64 P2): a syntactically-valid file with zeroed
+// thresholds would gate nothing, and a stale case inventory (total_cases /
+// suite_files) would compare apples to oranges. Any violation is a usage
+// error (exit 2), not a gate failure.
+func validateBaseline(b *GateBaseline, suiteFiles []string, totalCases int) error {
+	t := b.Thresholds
+	if t.MinAccuracy <= 0 {
+		return fmt.Errorf("baseline thresholds.min_accuracy = %v, want > 0 (zero threshold gates nothing; refresh with -write-baseline)", t.MinAccuracy)
+	}
+	if t.MinMacroF1 <= 0 {
+		return fmt.Errorf("baseline thresholds.min_macro_f1 = %v, want > 0 (zero threshold gates nothing; refresh with -write-baseline)", t.MinMacroF1)
+	}
+	if t.MinGRRQ <= 0 {
+		return fmt.Errorf("baseline thresholds.min_grrq = %v, want > 0 (zero threshold gates nothing; refresh with -write-baseline)", t.MinGRRQ)
+	}
+	if b.TotalCases != totalCases {
+		return fmt.Errorf("baseline total_cases = %d, current run has %d — suite inventory changed; refresh the baseline with -write-baseline", b.TotalCases, totalCases)
+	}
+	if !equalStringSets(b.SuiteFiles, suiteFiles) {
+		return fmt.Errorf("baseline suite_files = %v, current -suite = %v — refresh the baseline with -write-baseline", b.SuiteFiles, suiteFiles)
+	}
+	return nil
+}
 
-func floor2(v float64) float64 { return float64(int64(v*100)) / 100 }
+// equalStringSets compares two string slices order-insensitively (the -suite
+// flag is a comma-separated list; a different order is the same suite set).
+func equalStringSets(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	sa := append([]string(nil), a...)
+	sb := append([]string(nil), b...)
+	sort.Strings(sa)
+	sort.Strings(sb)
+	for i := range sa {
+		if sa[i] != sb[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// round3 rounds half away from zero via math.Round. The legacy
+// int64(v*1000+0.5) truncated toward zero after the +0.5 bias, which bent
+// negative values (GRRQ goes negative under heavy over-provision) upward.
+func round3(v float64) float64 { return math.Round(v*1000) / 1000 }
+
+// floor2 floors to 2 decimals via math.Floor, so a written threshold can
+// never exceed the metric that produced it — an identical re-run always
+// passes its own baseline. The legacy int64 truncation moved toward zero,
+// which RAISED negative GRRQ thresholds (tightened the gate silently).
+func floor2(v float64) float64 { return math.Floor(v*100) / 100 }

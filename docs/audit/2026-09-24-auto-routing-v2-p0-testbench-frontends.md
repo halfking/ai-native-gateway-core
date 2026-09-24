@@ -1,8 +1,8 @@
 # 2026-09-24 AUTO 路由 v2 闭环 P0（测试地基 + 前端最后一公里）落地与验证轮
 
-- 依据：`docs/planning/AUTO_ROUTING_CLOSED_LOOP_V2_PLAN.md` §六 P0 行（五项：① auto-testbench 统一 harness + GRRQ 定稿 ② 套件 60→≥200 例 ③ TaskProfile/AutoTuning 双页 + 菜单 + i18n ④ vue-tsc 进 build 门禁 ⑤ 标注采样策略 v2）。
+- 依据：`docs/planning/AUTO_ROUTING_CLOSED_LOOP_V2_PLAN.md` §六 P0 行（五项：① auto-testbench 统一 harness + GRRQ 定稿 ② 套件 60→≥200 例（计划原文口径，60=v1 基线；实际本轮开工前总量已为 100=v1 60+v2 40）③ TaskProfile/AutoTuning 双页 + 菜单 + i18n ④ vue-tsc 进 build 门禁 ⑤ 标注采样策略 v2）。
 - 性质：纯加法轮，零热路径改动（`domains/`、`autoroute/` 决策代码零修改；`autoroute/` 仅测试文件追加 v3 套件注册）。
-- 结论：P0 五项全部落地，回归门禁 GATE: PASS（240 例，GRRQ=100.00），前端 typecheck/build/vitest 全绿（除 2 处 HEAD 既有失败，见 §四）。
+- 结论：P0 五项全部落地，回归门禁 GATE: PASS（240 例，GRRQ=100.00），前端 typecheck/build 全绿；vitest 970/971 通过（R64 勘误：唯一失败为 HEAD 既有的 keys_referenced 注释扫描误报，见 §四.2；admin 包另有 3 例 Windows 固有失败，见 §四.1——原文"除 2 处 HEAD 既有失败"与 §2.2"970/971 唯一失败"自相矛盾，统一按 §四 实际口径）。
 
 ## 一、交付物清单
 
@@ -12,7 +12,7 @@
 | ① | 一键脚本（离线回归+门禁；`AUTO_E2E=1` 合并 E2E 层；`--refresh-baseline`） | `scripts/auto-testbench.sh` |
 | ① | GRRQ 定稿：`accuracy×100 − overprovision×30`（简单类=chat；function_call 因 tools 硬升级不算简单类） | `cmd/auto-testbench/metrics.go` |
 | ① | 随仓回归基线（accuracy/macro_f1/grrq 三阈值门禁，低于即 exit 1） | `cmd/auto-testbench/testdata/baseline.json` |
-| ② | 套件 v3：140 例（en_business/mixed_signal/trap_v2 桶），总量 60+40+140=**240 ≥ 200** | `autoroute/testdata/auto_matching_suite_v3.jsonl`（属主仍为 autoroute/testdata） |
+| ② | 套件 v3：140 例，总量 60+40+140=**240 ≥ 200**（R64 勘误①：v3 桶构成为 coding_agent/code_fence/code_keyword/code_audit/trap/planning/intent_classification/function_call/agent/reasoning/creative/chat/vision/long_context/mixed_signal 共 15 桶——原文"en_business/mixed_signal/trap_v2 桶"失实，en_business=12 与 trap_v2=9 属 v2 文件。勘误②：总量口径实为 100→240，"60"仅 v1 基线） | `autoroute/testdata/auto_matching_suite_v3.jsonl`（属主仍为 autoroute/testdata） |
 | ② | "修正即测试"候选通路：corrections（human_task_type 金标签）/ selections（分层弱标签）→ generated 候选 JSONL，prompt 占位符（隐私红线），人工脱敏复核后转正 | `cmd/auto-testbench/generate.go` |
 | ② | 套件测试注册 v3（minSize=135 钉桩） | `autoroute/auto_matching_suite_test.go` |
 | ③ | 任务档案页（档案表+修正统计+分层建议+apply+overlay reload） | `web/src/views/TaskProfileView.vue` + `web/src/router.ts` `/routing-v2/task-profile` |

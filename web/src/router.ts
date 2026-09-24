@@ -200,9 +200,12 @@ export const router = createRouter({
     // P2.1+ Human annotation Web workflow (2026-09-06): accessible by any authenticated user
     { path: '/routing-v2/annotations',        component: AnnotationView },
     { path: '/routing-v2/annotations/stats',  component: AnnotationStatsView },
-    // v2 closed-loop P0③: 档案/调参页。tuning 端点是 superAdmin 面
-    // （admin/auto_route_tuning.go 挂 h.superAdmin），AutoTuningView 需 super。
-    { path: '/routing-v2/task-profile',       component: TaskProfileView },
+    // v2 closed-loop P0③: 档案/调参页。两页的写端点都是超管面：
+    // tuning 端点挂 h.superAdmin（admin/auto_route_tuning.go）；task-profile 的
+    // 变更端点（apply-tier-config / reload，TaskProfileView 有写操作）后端暂挂
+    // 普通 admin 中间件（admin/handler.go RegisterTaskProfileRoutes），前端
+    // 路由先做 super 门控兜底（R64，2026-09-25）。
+    { path: '/routing-v2/task-profile',       component: TaskProfileView, meta: { requiresSuper: true } },
     { path: '/routing-v2/auto-tuning',        component: AutoTuningView, meta: { requiresSuper: true } },
     { path: '/routing-policy',     component: RoutingPolicyView,   meta: { requiresSuper: true } },
     { path: '/free-pool',          component: FreePoolView,        meta: { requiresSuper: true } },

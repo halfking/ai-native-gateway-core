@@ -26,6 +26,23 @@ import (
 // ProtocolOpenAI 标记探测协议（mock_probe_history.protocol 列）。
 const ProtocolOpenAI = "openai"
 
+// 探测请求的来源打标（R64，2026-09-25）。探测客户端此前不带
+// X-LLM-Origin-* 头；现在与 bg 侧 worker 一致自标来源：
+//   - stage 沿用网关 origin_stage 合法集内的 self_check（探测即网关进程
+//     的自检流量，且无需在 middleware/origin_mw.isValidOriginStage 与 DB
+//     CHECK 之外新增 "mock_probe" 值）；
+//   - actor 取探测凭证标识 mock-probe-client（auth.MockProbeClientToken）。
+//
+// 注意：探测请求实际打的是网关自身 mux 的 /mock/v1/* 端点（经
+// internal/auth.MockProbeBypass 旁路 + auth.MockEndpoint 守卫，不走
+// OriginMiddleware、不进 streaming pipeline、不写 request_logs——见 R63
+// 结论），因此本打标当前是防御性/语义自洽性质的：一旦未来探测改走网关
+// 数据面或 mock 路径接入 request_logs，来源归属即已就位。
+const (
+	OriginStageSelfCheck       = "self_check"
+	OriginActorMockProbeClient = "mock-probe-client"
+)
+
 // DefaultProbeTimeout 单次探测的兜底超时（runner 亦按此包裹 ctx）：slow
 // 通道延迟上限 1s，10s 足以覆盖启动/调度抖动而不阻塞下一轮。
 const DefaultProbeTimeout = 10 * time.Second
@@ -107,6 +124,9 @@ func (c *Client) Probe(ctx context.Context, supplier string, stream bool) ProbeR
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	// R64（2026-09-25）：探测请求自标来源（见 OriginStageSelfCheck 注释）。
+	req.Header.Set("X-LLM-Origin-Stage", OriginStageSelfCheck)
+	req.Header.Set("X-LLM-Origin-Actor", OriginActorMockProbeClient)
 
 	resp, err := c.hc.Do(req)
 	if err != nil {

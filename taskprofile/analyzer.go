@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -68,9 +69,16 @@ const (
 // 只降不升：修正驱动意味着分类器置信度过高，升档没有语义。
 var thresholdCandidates = []float64{0.85, 0.80, 0.75, 0.70, 0.65, 0.60, 0.55, 0.50}
 
-// genericHints 不允许成为关键词证据的 domain_hint 值（写入侧的空泛桶）。
+// genericHints 不允许成为关键词证据的 domain_hint 值。
+//
+// R64 P2：domain_hint 写入侧目前是三值枚举 {technical, business, general}
+// （autoroute/structured_features.go inferDomainHint）——任一请求都必然命中
+// 其中之一，枚举词在 658 特征列里零判别力，放行只会让 keyword_add 空转
+// （生成即过闸，提案无信息量）。故把三个枚举值全部排除；待写入侧升级为
+// 自由领域 token 后移除 technical/business/general 即自动恢复产出。
 var genericHints = map[string]bool{
-	"": true, "-": true, "unknown": true, "other": true, "none": true, "general": true,
+	"": true, "-": true, "unknown": true, "other": true, "none": true,
+	"general": true, "technical": true, "business": true,
 }
 
 // keywordChannels: tuning_params 中可写的关键词通道（applyTuningParam 白名单）。
@@ -362,6 +370,10 @@ func containsString(list []string, s string) bool {
 
 // CollectCorrectionSignals reads misjudged samples (privacy-minimal feature
 // projection) and per-task-type volumes for the window. Read-only.
+//
+// 口径声明（R64 P3）：修正样本与分母 volume 都只统计 classifier='heuristic'
+// 的行，与 BacktestThresholdBand 的回放口径（:462）一致——LLM 兜底改判的
+// 请求不归启发式调参管，混入会同时虚增分子与分母。
 func CollectCorrectionSignals(ctx context.Context, pool *pgxpool.Pool, windowDays int) ([]CorrectionRow, map[string]int, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT c.auto_task_type, c.human_task_type, s.confidence, s.domain_hint,
@@ -369,6 +381,7 @@ func CollectCorrectionSignals(ctx context.Context, pool *pgxpool.Pool, windowDay
 		FROM task_type_corrections c
 		JOIN auto_route_selections s ON s.request_id = c.request_id
 		WHERE c.agrees = false
+		  AND s.classifier = 'heuristic'
 		  AND c.created_at >= NOW() - make_interval(days => $1)
 		ORDER BY c.created_at DESC
 		LIMIT $2
@@ -401,9 +414,11 @@ func CollectCorrectionSignals(ctx context.Context, pool *pgxpool.Pool, windowDay
 	}
 
 	volumes := map[string]int{}
+	// 口径声明：分母与修正样本同口径，只数 heuristic 行（见函数头注释）。
 	volRows, err := pool.Query(ctx, `
 		SELECT task_type, count(*) FROM auto_route_selections
 		WHERE ts >= NOW() - make_interval(days => $1)
+		  AND classifier = 'heuristic'
 		GROUP BY task_type
 	`, windowDays)
 	if err != nil {
@@ -532,19 +547,67 @@ func GenerateCorrectionProposals(ctx context.Context, pool *pgxpool.Pool, window
 		drafts = drafts[:MaxProposalsPerRun]
 	}
 
-	inserted := []ProposalDraft{}
+	// 回放量化是只读阶段，保持在锁外（R64 P1：临界区只覆盖「去重检查+
+	// 插入」，collect/backtest 不参与串行化）。
 	for _, d := range drafts {
 		if err := backtestDraft(ctx, pool, windowDays, d); err != nil {
-			return inserted, err
+			return nil, err
 		}
 		d.Evidence["operator"] = operator
-		ok, err := insertDraft(ctx, pool, d)
+	}
+
+	inserted, err := insertDraftsGuarded(ctx, pool, drafts)
+	if err != nil {
+		return nil, err
+	}
+	return inserted, nil
+}
+
+// tuningProposalLockKey 是 tuning proposal generate 去重临界区专用的
+// pg_advisory_xact_lock 键（R64 P1）。Two-constant 形式 (classid, objid)
+// 均为固定编译期常量：classid 取 ASCII 'TUNP'（Tuning-proposal-Normalize
+// 路径首字母），objid=1 预留同类扩展位。任何其他代码不得复用该键值对。
+const (
+	tuningProposalLockClassID = int32(0x54554E50) // 'TUNP'
+	tuningProposalLockObjID   = int32(1)
+)
+
+// insertDraftsGuarded inserts drafts with the pending-duplicate guard, with
+// the whole check-then-insert loop serialized under one advisory transaction
+// lock. R64 P1：tuning_proposals 无 (category, task_type, proposal->>key,
+// status='pending') 业务唯一约束，原先 EXISTS 探针与 INSERT 分离于池上执行，
+// 两个并发 generate（定时 + admin 手动）可各自通过探针再各插一份 pending。
+// 现在单事务内先取 pg_advisory_xact_lock 再逐条 EXISTS→INSERT：锁在事务
+// 结束时自动释放，冲突方串行到锁后重读探针即能看到先行者插入的行。
+// 失败时整体回滚（部分插入不再残留）。
+func insertDraftsGuarded(ctx context.Context, pool *pgxpool.Pool, drafts []*ProposalDraft) ([]ProposalDraft, error) {
+	if len(drafts) == 0 {
+		return nil, nil
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin proposal insert tx: %w", err)
+	}
+	//nolint:errcheck // deferred rollback, best-effort; no-op after Commit
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`,
+		tuningProposalLockClassID, tuningProposalLockObjID); err != nil {
+		return nil, fmt.Errorf("acquire proposal dedup advisory lock: %w", err)
+	}
+
+	inserted := []ProposalDraft{}
+	for _, d := range drafts {
+		ok, err := insertDraft(ctx, tx, d)
 		if err != nil {
-			return inserted, err
+			return nil, err // deferred rollback discards the whole batch
 		}
 		if ok {
 			inserted = append(inserted, *d)
 		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit proposals: %w", err)
 	}
 	return inserted, nil
 }
@@ -581,27 +644,38 @@ func backtestDraft(ctx context.Context, pool *pgxpool.Pool, windowDays int, d *P
 	return nil
 }
 
+// escapeLikePattern escapes SQL LIKE wildcards in a keyword token so the
+// dedup probe matches the literal token only. R64 P3：`%`/`_` 是 LIKE 通配
+// 符、`\` 是转义符，逐个前置 `\`；SQL 侧必须配 `ESCAPE '\'`。必须先转义
+// `\` 本身（strings.NewReplacer 单趟替换，不会二次转义）。
+func escapeLikePattern(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
 // insertDraft inserts one draft with a pending-duplicate guard. Returns
 // false when a pending proposal for the same change already exists (advisory
 // dedup, mirroring bg/feedback_analyzer's semantics — last writer wins is
 // acceptable because proposals are advisory artifacts).
-func insertDraft(ctx context.Context, pool *pgxpool.Pool, d *ProposalDraft) (bool, error) {
+//
+// Must run inside the caller's transaction while the tuningProposalLockKey
+// advisory xact lock is held (see insertDraftsGuarded, R64 P1).
+func insertDraft(ctx context.Context, tx pgx.Tx, d *ProposalDraft) (bool, error) {
 	token := ""
 	if add, ok := d.Proposal["add"].([]string); ok && len(add) > 0 {
 		token = add[0]
 	}
 	key, _ := d.Proposal["key"].(string)
 	var exists bool
-	err := pool.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		SELECT EXISTS(
 		    SELECT 1 FROM tuning_proposals
 		    WHERE status = 'pending'
 		      AND category = $1
 		      AND COALESCE(task_type, '') = $2
 		      AND proposal->>'key' = $3
-		      AND ($4 = '' OR proposal->>'add' LIKE '%' || $4 || '%')
+		      AND ($4 = '' OR proposal->>'add' LIKE '%' || $4 || '%' ESCAPE '\')
 		)
-	`, d.Category, d.TaskType, key, token).Scan(&exists)
+	`, d.Category, d.TaskType, key, escapeLikePattern(token)).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("dedup check: %w", err)
 	}
@@ -613,7 +687,7 @@ func insertDraft(ctx context.Context, pool *pgxpool.Pool, d *ProposalDraft) (boo
 	evidenceJSON, _ := json.Marshal(d.Evidence)
 	// string() + ::text::jsonb（非 []byte）：pool 强制 SimpleProtocol 时
 	// []byte 绑定为 bytea hex，任何 jsonb 转换都会 22P02（doc §3.2）。
-	if _, err := pool.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO tuning_proposals (category, task_type, proposal, evidence, status)
 		VALUES ($1, NULLIF($2, ''), $3::text::jsonb, $4::text::jsonb, 'pending')
 	`, d.Category, d.TaskType, string(proposalJSON), string(evidenceJSON)); err != nil {

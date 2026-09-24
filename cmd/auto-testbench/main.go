@@ -25,7 +25,9 @@
 //	go run ./cmd/auto-testbench -write-baseline cmd/auto-testbench/testdata/baseline.json
 //
 // Exit codes: 0 = pass (or gate pass), 1 = regression gate failed, 2 = usage
-// or internal error.
+// or internal error (contradictory flag combos, invalid -days/-limit, an
+// unreadable -e2e-report, or a semantically invalid baseline all exit 2 —
+// R64: these used to be silent no-ops).
 package main
 
 import (
@@ -62,6 +64,15 @@ func main() {
 	genDays := flag.Int("days", 30, "generate mode: lookback window in days")
 	genLimit := flag.Int("limit", 100, "generate mode: max rows (selections: per task type)")
 	flag.Parse()
+
+	// R64（P3）：显式收集用户给出的 flag，拒绝互斥/无效组合（此前均静默失效，
+	// 照常 exit 0）。usage 错误统一 exit 2。
+	explicit := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	if err := validateFlags(*mode, explicit, *genDays, *genLimit); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	switch *mode {
 	case "generate":
@@ -120,7 +131,11 @@ func main() {
 	tm.finalize()
 	g := grrq(cm.Accuracy, tm.OverProvisionRate)
 
-	e2e := loadE2EReport(*e2eReport)
+	e2e, e2eErr := loadE2EReport(*e2eReport)
+	if e2eErr != nil {
+		fmt.Fprintln(os.Stderr, e2eErr)
+		os.Exit(2)
+	}
 
 	if *report != "" {
 		if err := writeReports(*report, suiteFiles, cm, tm, g, rows, e2e); err != nil {
@@ -149,6 +164,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, "gate:", err)
 			os.Exit(2)
 		}
+		// R64（P2）：JSON 可解析≠语义可用——零阈值门不住任何回归，
+		// total_cases/suite_files 过期则是拿旧库存比新跑。不符一律
+		// exit 2（usage 错误），绝不静默放行。
+		if err := validateBaseline(b, suiteFiles, cm.Total); err != nil {
+			fmt.Fprintln(os.Stderr, "gate:", err)
+			os.Exit(2)
+		}
 		v := evaluateGate(b, cm, g)
 		fmt.Printf("\ngate vs %s\n  %s\n", gatePath, strings.Join(v.Lines, "\n  "))
 		if !v.Passed {
@@ -172,6 +194,36 @@ type caseRow struct {
 	Generated  bool    `json:"generated,omitempty"`
 }
 
+// regressionOnlyFlags are the flags only -mode regression consumes; in
+// generate mode they are silent no-ops, so explicitly setting one is a usage
+// error (R64: they used to be ignored and the run still exited 0).
+var regressionOnlyFlags = []string{"suite", "report", "gate", "gate-default", "write-baseline", "e2e-report"}
+
+// validateFlags rejects contradictory or no-op flag combinations (R64 P3):
+//   - -mode generate with any regression-only flag → error (silent no-op);
+//   - generate-mode -days < 0 or -limit < 1 → error (invalid window/rows);
+//   - -gate together with -gate-default → error (the former silently won).
+func validateFlags(mode string, explicit map[string]bool, days, limit int) error {
+	if mode == "generate" {
+		for _, f := range regressionOnlyFlags {
+			if explicit[f] {
+				return fmt.Errorf("-%s has no effect in -mode generate; drop it or run -mode regression", f)
+			}
+		}
+		if days < 0 {
+			return fmt.Errorf("-days must be >= 0, got %d", days)
+		}
+		if limit < 1 {
+			return fmt.Errorf("-limit must be >= 1, got %d", limit)
+		}
+		return nil
+	}
+	if explicit["gate"] && explicit["gate-default"] {
+		return fmt.Errorf("-gate and -gate-default are mutually exclusive; give exactly one")
+	}
+	return nil
+}
+
 // e2eRow is the subset of cmd/autoroute-e2e-audit's resultRow consumed here.
 type e2eRow struct {
 	Name        string `json:"name"`
@@ -190,14 +242,18 @@ type e2eSummary struct {
 	Models   map[string]int
 }
 
-func loadE2EReport(path string) *e2eSummary {
+// loadE2EReport parses an autoroute-e2e-audit JSONL. An explicitly given but
+// unreadable path is a usage error (R64: it used to be logged as "(ignored)"
+// and the run still exited 0). Malformed lines stay skip-by-line tolerant —
+// the merge contract accepts concatenated multi-suite outputs with
+// comment/blank separators.
+func loadE2EReport(path string) (*e2eSummary, error) {
 	if path == "" {
-		return nil
+		return nil, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "e2e-report: %v (ignored)\n", err)
-		return nil
+		return nil, fmt.Errorf("e2e-report: %w", err)
 	}
 	s := &e2eSummary{Path: path, Models: map[string]int{}}
 	for _, line := range strings.Split(string(data), "\n") {
@@ -219,7 +275,7 @@ func loadE2EReport(path string) *e2eSummary {
 			s.Models[r.ServedModel]++
 		}
 	}
-	return s
+	return s, nil
 }
 
 func printSummary(suiteFiles []string, cm *classificationMetrics, tm *tierMetrics, g float64, e2e *e2eSummary) {

@@ -28,6 +28,14 @@
 // middleware (see cmd/gateway/main.go); if a future route skips auth it
 // MUST not skip this middleware either.
 //
+// R64 (2026-09-25) hardening: the "global-auth-passed" sentinel (static
+// global API key) additionally requires a REGISTERED (stage, actor)
+// pairing — see globalAuthStageActorPairs. The sentinel cannot identify
+// the caller, so a claimed stage is only honoured when the actor header
+// matches the exact value the corresponding worker actually sends; any
+// other combination degrades to the untrusted path (headers stripped,
+// stage=business).
+//
 // Wiring
 // ──────
 //
@@ -94,9 +102,12 @@ const (
 // "global-auth-passed" is the sentinel AuthMiddleware sets when the
 // request carried the static global API key.  Auth_mw cannot read the
 // DB to look up the real owner_user, so it cannot distinguish a
-// genuine business user with that key from a system worker.  Instead
-// we trust the X-LLM-Origin-Actor header when it names a known
-// worker; an unknown / empty actor falls back to "business".
+// genuine business user with that key from a system worker.  R64
+// (2026-09-25): for the sentinel the X-LLM-Origin-Stage header is only
+// honoured when it pairs (per globalAuthStageActorPairs below) with
+// the X-LLM-Origin-Actor that the corresponding worker actually sends;
+// other combinations fall back to the untrusted strip path.  The other
+// (DB-resolved) owners keep their pre-R64 semantics unchanged.
 var trustedOriginOwners = map[string]struct{}{
 	"global-auth-passed":          {}, // sentinel from AuthMiddleware
 	"credential-selfcheck-worker": {},
@@ -105,6 +116,34 @@ var trustedOriginOwners = map[string]struct{}{
 	"legacy-probe-worker":         {}, // tenant=system 5min cadence in 252
 	"model-quality-worker":        {}, // 2026-08-10: MMLU 智商测试经网关请求
 	"self-check-worker":           {}, // 2026-08-10: 修复潜伏的归属错误——legacy SelfCheckWorker 与 model-quality-worker 都复用这个系统 key
+}
+
+// globalAuthStageActorPairs 是 "global-auth-passed" 哨兵调用者可信任的
+// (stage → 允许的 actor 集合) 配对表（R64，2026-09-25）。静态全局 key 无法
+// 区分真实 worker 与持同 key 的任意调用者，因此 claimed stage 只有在与该
+// stage 真实写入方实际发送的 X-LLM-Origin-Actor 配对时才被信任；任何其他
+// 组合（含缺失 actor、未知 stage、伪造 actor）一律降级为非信任 → 剥头 +
+// stage=business（走 resolveOrigin 的 strip 路径）。
+//
+// 配对表证据（全仓 X-LLM-Origin-Stage/Actor 写入点 grep，非测试代码）：
+//
+//	bg/self_check_worker.go:623-624, :732-733  → (self_check, self-check-worker)
+//	bg/credential_selfcheck.go:694-695         → (self_check, credential-selfcheck-worker)
+//	domains/modelquality/invoker.go:281-282    → (self_check, model-quality-worker)
+//	bg/node_probe.go:2619-2620, :3167-3168     → (node_probe, node-probe-worker)
+//	bg/active_probe_executor.go:446-447        → (node_probe, probe-service)
+//
+// 新增写入方必须同步本表，否则其 stage 会被降级为 business。
+var globalAuthStageActorPairs = map[string]map[string]struct{}{
+	"self_check": {
+		"self-check-worker":           {},
+		"credential-selfcheck-worker": {},
+		"model-quality-worker":        {},
+	},
+	"node_probe": {
+		"node-probe-worker": {},
+		"probe-service":     {},
+	},
 }
 
 // -------------------------------------------------------------------
@@ -261,21 +300,41 @@ func (m *OriginMiddleware) resolveOrigin(r *http.Request) (stage, actor string, 
 	if _, ok := trustedOriginOwners[owner]; !ok {
 		return stage, actor, strip
 	}
+
+	// 2b. R64 (2026-09-25): the global-auth-passed sentinel cannot identify
+	// the caller, so a claimed stage is honoured only when it pairs with the
+	// actor value the real worker actually sends (globalAuthStageActorPairs).
+	// No stage claimed (or an explicit "business") grants nothing beyond the
+	// default and is exempt from the pairing gate; every other combination —
+	// unknown stage, spoofed actor, missing actor — degrades to the untrusted
+	// path below (headers stripped by Wrap, stage=business, actor="").
+	claimedStage := strings.TrimSpace(r.Header.Get("X-LLM-Origin-Stage"))
+	claimedActor := strings.TrimSpace(r.Header.Get("X-LLM-Origin-Actor"))
+	if len(claimedActor) > 64 {
+		// Cap to the DB column width before comparing (same cap as step 3).
+		claimedActor = claimedActor[:64]
+	}
+	if owner == "global-auth-passed" && claimedStage != "" && claimedStage != "business" {
+		allowed, ok := globalAuthStageActorPairs[claimedStage]
+		if !ok || claimedActor == "" {
+			return stage, actor, strip // stage, actor, strip
+		}
+		if _, ok := allowed[claimedActor]; !ok {
+			return stage, actor, strip // stage, actor, strip
+		}
+	}
 	strip = false
 
 	// 3. Honour inbound header if non-empty and well-formed.
-	if v := strings.TrimSpace(r.Header.Get("X-LLM-Origin-Stage")); v != "" {
-		if isValidOriginStage(v) {
-			stage = v
+	if claimedStage != "" {
+		if isValidOriginStage(claimedStage) {
+			stage = claimedStage
 		}
 	}
-	if v := strings.TrimSpace(r.Header.Get("X-LLM-Origin-Actor")); v != "" {
-		// Actor is free-form (worker / manual:<id>); cap at 64B to
+	if claimedActor != "" {
+		// Actor is free-form (worker / manual:<id>); capped at 64B in 2b to
 		// match the DB column width.
-		if len(v) > 64 {
-			v = v[:64]
-		}
-		actor = v
+		actor = claimedActor
 	}
 	return stage, actor, strip
 }

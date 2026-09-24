@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-09-24T15:49:03.883Z",
+  "exported_at": "2026-09-24T17:44:30.015Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -125,7 +125,9 @@
           "label": "任务档案",
           "labelKey": "nav.item.taskProfile",
           "icon": "🗂️",
-          "tenantScope": "*",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
           "pluginScope": "*"
         },
         {
