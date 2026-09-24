@@ -698,3 +698,10 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 - 三处同步：迁移 742 CHECK ↔ `domains/hostedtask/types.go` EventRecalled ↔ 设计文档 §4.3。
 - 741 已被 B11 申领（740 占用记录见上），R65 从 742 起。
 - down 先清除 recalled 事件行再还原 711 白名单；自注册带 schema_migrations 存在性守卫（空白一次性库可直灌）。
+## 2026-09-24T01:20:49Z — deploy 245 build_seq 2239 (c3217c9c)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 743 | `743_normalize_provider_protocol.sql` | `e1848f73766c21addfb9c27cc2c166e6bab7ea99c4439e8290bf1782b65d160b` | applied+verified |
+| 744 | `744_sql_audit_partial_indexes.sql` | `931e22dc8b4050558e7b945211155dc579aa1479f14129efde009d8b6930e8fa` | applied+verified |
+
