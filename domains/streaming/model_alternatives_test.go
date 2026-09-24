@@ -325,6 +325,25 @@ func TestAlternativesSQL_UsesRoutableViewNotStaticCatalog(t *testing.T) {
 	}
 }
 
+// TestAlternativesSQL_PopularityReadsHotNotCanonicalView pins the 2026-09-25
+// audit fix: the popularity CTE must aggregate request_logs_hot, not the
+// canonical view request_logs_with_current_month. On 252 the view turned the
+// 7-day count into a 151s query (session_turns + request_logs union arms plus
+// nested anti-join probes) on the chat failure path — every caller cancelled
+// at its client timeout before a single row came back. The hot table answers
+// from idx_request_logs_hot_canonical_model_ts in milliseconds; the ordering
+// signal tolerates the ~8h effective window.
+func TestAlternativesSQL_PopularityReadsHotNotCanonicalView(t *testing.T) {
+	if !strings.Contains(alternativesSQL, "FROM request_logs_hot") {
+		t.Error("popularity CTE no longer reads request_logs_hot; it would hit the " +
+			"canonical view's partition scans and anti-join probes again (84-151s on 252)")
+	}
+	if strings.Contains(alternativesSQL, "FROM request_logs_with_current_month") {
+		t.Error("popularity CTE reads request_logs_with_current_month; that view costs " +
+			 ">80s on 252 and the client cancels long before completion")
+	}
+}
+
 // TestAlternativesSQL_NoGoComments guards the specific defect that took routing
 // down on 2026-08-08: a Go // comment inside a SQL literal. The repo-wide guard
 // in internal/sqlguard covers this too; this local assertion keeps the failure
