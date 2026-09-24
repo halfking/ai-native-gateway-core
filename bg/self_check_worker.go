@@ -620,6 +620,8 @@ func (w *SelfCheckWorker) doRequest(ctx context.Context, model, reqBody string, 
 	}
 	req.Header.Set("Authorization", "Bearer "+w.apiKey)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-LLM-Origin-Stage", "self_check")
+	req.Header.Set("X-LLM-Origin-Actor", "self-check-worker")
 
 	start := time.Now()
 	resp, err := w.client.Do(req)
@@ -727,6 +729,8 @@ func (w *SelfCheckWorker) isolateUpstream(ctx context.Context, model string) (re
 		strings.NewReader(pingBody))
 	req.Header.Set("Authorization", "Bearer "+plainKey)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-LLM-Origin-Stage", "self_check")
+	req.Header.Set("X-LLM-Origin-Actor", "self-check-worker")
 
 	start := time.Now()
 	resp, err := w.client.Do(req)
