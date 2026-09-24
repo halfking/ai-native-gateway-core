@@ -36,9 +36,6 @@ const installerVersion = "1.0.0"
 //go:embed embeddata/compose.yml
 var composeYAML []byte
 
-//go:embed embeddata/env.template
-var envTemplate []byte
-
 //go:embed embeddata/install-report.md.tmpl
 var reportTemplate []byte
 
@@ -1087,7 +1084,7 @@ prereqCheck:
 		}
 	}
 
-// 11. 健康检查
+	// 11. 健康检查
 	logStep("9/9", "健康检查")
 	hc := dockerutil.NewHealthChecker(cfg.AppPort, "kx-citus", "kx-redis", cfg.RedisPassword, "kxuser", "llm_gateway")
 	health, _ := hc.RunAll(logInfo)
@@ -1580,12 +1577,33 @@ func strconvItoa(n int) string {
 func buildLiteComposeYAML(full []byte) []byte {
 	lines := strings.Split(string(full), "\n")
 	out := make([]string, 0, len(lines))
-	skipService := ""      // 当前正在剥离的 service 名（citus/redis）
-	inDependsOn := false   // 是否在 llm-gateway-go.depends_on 块内
+	skipService := ""    // 当前正在剥离的 service 名（citus/redis）
+	inDependsOn := false // 是否在 llm-gateway-go.depends_on 块内
+	headerDone := false  // 头注释块结束（出现首个非注释非空行）
 
 	for _, line := range lines {
 		trimmed := strings.TrimLeft(line, " ")
 		indent := len(line) - len(trimmed)
+
+		// lite 模式修正头注释：移除 PG/Redis 相关描述，避免误导 lite 用户
+		if !headerDone {
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+				switch {
+				case strings.Contains(trimmed, "全栈 docker-compose"):
+					out = append(out, "# llm-gateway-go docker-compose（lite 模式：SQLite + 本地，无 PG/Redis）")
+				case strings.Contains(trimmed, "PostgreSQL 数据"):
+					out = append(out, "#   ├── (lite 模式：无 PG —— 数据落 SQLite 本地文件)")
+				case strings.Contains(trimmed, "redis/data"):
+					continue // 该行整行丢弃
+				default:
+					out = append(out, line)
+				}
+				continue
+			}
+			headerDone = true
+			out = append(out, line)
+			continue
+		}
 
 		// 顶级 service 定义：以 2 空格缩进的 "  name:" 形式
 		if indent == 2 && strings.HasSuffix(trimmed, ":") && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "&") {

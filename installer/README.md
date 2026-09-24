@@ -13,7 +13,7 @@ installer/
 ├── internal/
 │   ├── envdetect/           # OS/arch/docker/网络探测
 │   ├── imgsrc/              # 4 层镜像源 fallback
-│   ├── prompt/              # 11 步交互向导
+│   ├── prompt/              # 13 步交互向导
 │   ├── secrets/             # 随机密码 + .env 写入
 │   ├── dockerutil/          # compose 封装 + 健康检查
 │   ├── dbinit/              # SQL schema 应用
@@ -88,12 +88,12 @@ llm-gw-installer 支持两种存储模式，安装时选择其一：
 | 1. 环境检测 | 同 | 同 |
 | 2. 配置（wizard / config） | 同 | 同（新增 storage mode / master URL） |
 | 3. 拉取镜像 | kx-citus + kx-redis + kx-llm-gateway-go | **仅 kx-llm-gateway-go**（跳过 citus/redis） |
-| 4. 写 .env | 同 | 多三个键：`LLM_GATEWAY_STORAGE_MODE=lite` / `LLM_GATEWAY_MASTER_URL` / `INSTALL_SKIP_ACTIVATION` |
+| 4. 写 .env | 写入全部键（含 `LLM_GATEWAY_STORAGE_MODE=full` / `LLM_GATEWAY_MASTER_URL` / `INSTALL_SKIP_ACTIVATION` 三个新键） | 同 full，仅 `LLM_GATEWAY_STORAGE_MODE=lite` |
 | 5. 目录结构 | 同 | 同（db/data / redis/data 目录仍创建但不使用） |
 | 6. compose.yml | 完整 3 服务 | **剥离 kx-citus + kx-redis**，llm-gateway-go 移除 `depends_on` 与 PG/Redis env |
 | 7. 启动容器 | 3 容器 | 仅 kx-llm-gateway-go |
 | 8. 初始化数据库 | 等待 PG ready + InitSchema（700+ 迁移） | **跳过**（SQLite 由 app 自动建表） |
-| 9. 健康检查 | 5 项全检 | 仅校验容器 + /healthz；PG/Redis/Schema 标记 N/A ✅ |
+| 9. 健康检查 | 5 项全检 | 仅校验容器 + /healthz；PG/Redis/Schema 不适用、强制置通过 ✅（报告中显示为 true） |
 
 ### 新增 install flags
 
@@ -103,13 +103,13 @@ llm-gw-installer 支持两种存储模式，安装时选择其一：
 --skip-activation       bool，跳过 install 末尾的自动激活调用（默认 false）
 ```
 
-### 新增 .env 键（写入 `~/.env`）
+### 新增 .env 键（写入 `{installDir}/.env`）
 
 | Key | 默认 | 含义 |
 |-----|------|----------|
 | `LLM_GATEWAY_STORAGE_MODE` | `full` | 运行时由 `cmd/gateway` 的 `storage_mode_init` 读取；lite 走 SQLite，full 走 PG/Redis |
 | `LLM_GATEWAY_MASTER_URL` | `https://llm.kxpms.cn` | license 激活 + 心跳上报的目标 URL |
-| `INSTALL_SKIP_ACTIVATION` | `0` | 是否跳过 install 末尾的自动激活调用（由子代理 B 接管实际激活逻辑） |
+| `INSTALL_SKIP_ACTIVATION` | `0` | 是否跳过 install 末尾的自动注册激活调用（逻辑见 activation.RunAutoActivate） |
 
 ## 环境变量
 

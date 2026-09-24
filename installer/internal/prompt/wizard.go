@@ -1,4 +1,4 @@
-// Package prompt 提供前置交互向导（11 步配置）
+// Package prompt 提供前置交互向导（13 步配置）
 package prompt
 
 import (
@@ -157,9 +157,12 @@ func LoadFromEnvFile(path, appImageTag, defaultInstallPath string) (*InstallConf
 		JWTSecret:           jwtSecret,
 		CredEncryptKey:      credKey,
 		ImageSourceStrategy: getOrDefault(values, "IMAGE_SOURCE_STRATEGY", "auto"),
-		StorageMode:         NormalizeStorageMode(getOrDefault(values, "STORAGE_MODE", "full")),
-		MasterURL:           getOrDefault(values, "LLM_GATEWAY_MASTER_URL", "https://llm.kxpms.cn"),
-		SkipActivation:      getOrDefaultBool(values, "INSTALL_SKIP_ACTIVATION", false),
+		// 兼容两个键名：STORAGE_MODE（--config 自有键）与 LLM_GATEWAY_STORAGE_MODE
+		// （installer 写出的 .env 键）。否则拿已有 .env 重装时 lite 会被静默重置为 full。
+		StorageMode: NormalizeStorageMode(getOrDefault(values,
+			"STORAGE_MODE", getOrDefault(values, "LLM_GATEWAY_STORAGE_MODE", "full"))),
+		MasterURL:      getOrDefault(values, "LLM_GATEWAY_MASTER_URL", "https://llm.kxpms.cn"),
+		SkipActivation: getOrDefaultBool(values, "INSTALL_SKIP_ACTIVATION", false),
 	}
 	return cfg, nil
 }
@@ -215,7 +218,7 @@ func getOrDefaultBool(m map[string]string, key string, def bool) bool {
 	return def
 }
 
-// Run 运行 11 步向导
+// Run 运行 13 步向导
 func (w *Wizard) Run(defaultPath string) (*InstallConfig, error) {
 	cfg := &InstallConfig{
 		AppPort:             8781,
@@ -230,7 +233,7 @@ func (w *Wizard) Run(defaultPath string) (*InstallConfig, error) {
 
 	fmt.Println()
 	fmt.Println("═══════════════════════════════════════════════════════════")
-	fmt.Println("  配置向导（共 11 步，留空将自动生成强随机值）")
+	fmt.Println("  配置向导（共 13 步，留空将自动生成强随机值）")
 	fmt.Println("═══════════════════════════════════════════════════════════")
 	fmt.Println()
 
