@@ -1,0 +1,41 @@
+// taskProfile.ts — 任务档案页文案（v2 闭环 P0③，2026-09-24）。
+export default {
+    title: 'Task Profiles',
+    desc: 'AUTO task-type profiles: tier defaults, human-correction stats and tier suggestions (taskprofile plugin; apply writes tier config)',
+    refresh: 'Refresh',
+    refreshing: 'Refreshing…',
+    loading: 'Loading…',
+    loadFailed: 'Failed to load',
+  registry: {
+    version: 'Registry version',
+    schema: 'Schema version',
+    types: 'Task types',
+    corrections: 'Corrected types',
+  },
+  table: {
+    taskType: 'Task type',
+    description: 'Description',
+    tier: 'Tier',
+    fallbacks: 'Fallback chain',
+    minConf: 'Min confidence',
+    total: 'Corrections',
+    rate: 'Correction rate',
+    suggestion: 'Suggested tier',
+  },
+  action: {
+    apply: 'Apply suggestions',
+    applyConfirm: 'Write correction-driven tier suggestions into the tier config (task_type_tier_config)?',
+    applyDone: 'Applied: {types}',
+    applyNone: 'No suggestion currently meets the threshold',
+    reload: 'Reload overlay',
+    reloadConfirm: 'Reload the TASKPROFILE_OVERLAY profile file? Resets to embedded defaults when not configured.',
+    reloadDone: 'Registry reloaded: {version}',
+    exportCsv: 'Export corrections CSV',
+    days: 'Window (days)',
+  },
+  status: {
+    applying: 'Applying…',
+    reloading: 'Reloading…',
+    exporting: 'Exporting…',
+  },
+}

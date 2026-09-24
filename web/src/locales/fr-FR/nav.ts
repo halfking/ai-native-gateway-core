@@ -25,6 +25,8 @@ export default {
     credentialMonitor: "Surveillance des identifiants",
     annotations: 'Annotation manuelle',
     annotationStats: "Statistiques d'annotation",
+    taskProfile: 'Profils de tâches',
+    autoTuning: 'Réglage du routage',
     probeHealth: "Santé du sondage",
     systemMonitor: "Surveillance système",
     providers: "Fournisseurs",

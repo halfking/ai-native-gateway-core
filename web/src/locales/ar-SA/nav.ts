@@ -23,6 +23,8 @@ export default {
     credentialMonitor: "مراقبة بيانات الاعتماد",
     annotations: 'التعليق اليدوي',
     annotationStats: 'إحصاءات التعليق',
+    taskProfile: 'ملفات المهام',
+    autoTuning: 'ضبط التوجيه',
     probeHealth: "صحة الاستكشاف",
     systemMonitor: "مراقبة النظام",
     providers: "المزودون",

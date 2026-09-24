@@ -7,7 +7,7 @@
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run",
     "dev": "vite",
-    "build": "node scripts/export-menu-config.mjs && vite build",
+    "build": "node scripts/export-menu-config.mjs && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "i18n:check": "node scripts/i18n-audit.mjs && node scripts/i18n-cjk-count.mjs",
     "i18n:check:strict": "I18N_STRICT=1 vitest run src/i18n/keys_referenced.test.ts && vitest run src/i18n/hardcoded_cjk.baseline.test.ts",

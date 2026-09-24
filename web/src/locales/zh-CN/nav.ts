@@ -27,6 +27,8 @@ export default {
     credentialMonitor: '凭据监控',
     annotations: '人工标注',
     annotationStats: '标注统计',
+    taskProfile: '任务档案',
+    autoTuning: '路由调参',
     probeHealth: '探测健康度',
     systemMonitor: '系统自检',
     providers: '供应商',

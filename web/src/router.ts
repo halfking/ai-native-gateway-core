@@ -73,6 +73,10 @@ const UserProfileView = () => import('./views/UserProfileView.vue')
 const AnnotationView = () => import('./views/AnnotationView.vue')
 const AnnotationStatsView = () => import('./views/AnnotationStatsView.vue')
 
+// v2 routing closed-loop P0③ (2026-09-24): taskprofile 档案 + 路由调参门面
+const TaskProfileView = () => import('./views/TaskProfileView.vue')
+const AutoTuningView = () => import('./views/AutoTuningView.vue')
+
 // T9 — 请求注册表 / Journey 详情 / 连接注册台 / 节点恢复时间线（mock stage）
 const RequestRegistryView = () => import('./views/RequestRegistryView.vue')
 const RequestJourneyDetailView = () => import('./views/RequestJourneyDetailView.vue')
@@ -196,6 +200,10 @@ export const router = createRouter({
     // P2.1+ Human annotation Web workflow (2026-09-06): accessible by any authenticated user
     { path: '/routing-v2/annotations',        component: AnnotationView },
     { path: '/routing-v2/annotations/stats',  component: AnnotationStatsView },
+    // v2 closed-loop P0③: 档案/调参页。tuning 端点是 superAdmin 面
+    // （admin/auto_route_tuning.go 挂 h.superAdmin），AutoTuningView 需 super。
+    { path: '/routing-v2/task-profile',       component: TaskProfileView },
+    { path: '/routing-v2/auto-tuning',        component: AutoTuningView, meta: { requiresSuper: true } },
     { path: '/routing-policy',     component: RoutingPolicyView,   meta: { requiresSuper: true } },
     { path: '/free-pool',          component: FreePoolView,        meta: { requiresSuper: true } },
     { path: '/free-discovery',     component: FreeDiscoveryView,   meta: { requiresSuper: true } },

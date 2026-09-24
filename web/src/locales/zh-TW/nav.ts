@@ -25,6 +25,8 @@ export default {
     credentialMonitor: "憑證監控",
     annotations: '人工標註',
     annotationStats: '標註統計',
+    taskProfile: '任務檔案',
+    autoTuning: '路由調參',
     probeHealth: "探測健康度",
     systemMonitor: "系統監測",
     providers: "供應商",
