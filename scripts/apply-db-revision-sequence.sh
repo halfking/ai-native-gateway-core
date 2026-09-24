@@ -570,6 +570,14 @@ files=(
   # 经 sequence 通道升级的存量库不下发则管理面（健康检查/探针）对脏行
   # 持续误判（读面归一为防御层，非替代）。
   "$ROOT_DIR/sql/migrations/startup/743_normalize_provider_protocol.sql"
+  # 2026-09-24 252 SQL 日志审计第六轮：744 部分索引补课
+  # （A: session_aggregate_outbox done 行 TTL 清理缺 (status='done',
+  # completed_at) 组合，645MB 全表扫 ×255 次/45min 是整库背景噪音主源；
+  # B: session_turns digest 回填 WHERE digest IS NULL 无索引，backlog=0
+  # 仍空扫 68 万行。分区父表三段式，与 727/728/729 同法）。c2f78d1c0
+  # 重编号交付时漏登此条，门禁必需项已由 aa1160746 上账，此处补齐尾巴。
+  # 经 sequence 通道升级的存量库不下发则两处全表扫噪音在升级库原样保留。
+  "$ROOT_DIR/sql/migrations/startup/744_sql_audit_partial_indexes.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
