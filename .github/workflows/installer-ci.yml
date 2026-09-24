@@ -47,6 +47,9 @@ jobs:
 
       - name: go build (cross-compile)
         working-directory: installer
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir -p ../dist-ci
           go build -o ../dist-ci/llm-gw-installer-${{ matrix.goos }}-${{ matrix.goarch }} \
@@ -70,9 +73,9 @@ jobs:
           go-version: '1.27.1'
           cache: true
 
-      - name: Run activation package tests
+      - name: Run installer module tests
         working-directory: installer
-        run: go test -count=1 ./internal/activation/...
+        run: go test -count=1 ./...
 
       - name: Upload test logs on failure
         if: failure()
@@ -80,7 +83,7 @@ jobs:
         with:
           name: installer-activation-test-logs
           path: |
-            installer/internal/activation/*.test.log
-            installer/internal/activation/test-output.log
+            installer/**/*.test.log
+            installer/**/test-output.log
           if-no-files-found: ignore
           retention-days: 7

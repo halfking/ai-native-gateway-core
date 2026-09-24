@@ -109,7 +109,7 @@ func TestSendHeartbeat_Success(t *testing.T) {
 		t.Errorf("Expected 'Bearer test-token-123', got %s", receivedAuthHeader)
 	}
 
-	// 验证 X-Signature header（需要 Ed25519 签名）
+	// 验证 X-Signature header（需要 HMAC-SHA256 签名，密钥 = SHA256(instance_token)）
 	if receivedSigHeader == "" {
 		t.Error("Expected X-Signature header, got empty")
 	}
