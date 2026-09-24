@@ -956,19 +956,15 @@ export function logArchiveList() {
 
 // ── Tuning proposals + accuracy (Phase 5) ──────────────────────────────
 //
-// Three endpoints are mounted by admin/auto_route_tuning.go:
+// Endpoints mounted by admin/auto_route_tuning.go:
 //
 //   GET  /api/admin/auto-route/tuning/proposals?status=&category=&limit=
+//   POST /api/admin/auto-route/tuning/proposals/generate?days=   (v2 闭环 P1:
+//        corrections-driven drafts + inline backtest, inserted as pending)
 //   POST /api/admin/auto-route/tuning/proposals/:id/approve
 //   POST /api/admin/auto-route/tuning/proposals/:id/reject  (body: {reason}?)
 //   GET  /api/admin/auto-route/tuning/accuracy?days=
-//
-// `triggerTuningAnalyze` is currently a frontend-only call: there is no
-// matching backend endpoint yet (auto_route_tuning.go mounts 4 routes,
-// none of which trigger an ad-hoc analyzer run). The function below
-// posts to /tuning/analyze; the existing try/catch in TuningView.vue
-// surfaces the 404 as a user-facing alert. When the backend adds the
-// trigger endpoint the call will start succeeding.
+//   POST /api/admin/auto-route/tuning/analyze   (on-demand signals-analyzer run)
 
 export type TuningProposalCategory = 'keyword_add' | 'weight_adjust' | 'threshold_change'
 export type TuningProposalStatus = 'pending' | 'approved' | 'rejected' | 'applied'
@@ -988,7 +984,7 @@ export interface TuningProposal {
 }
 
 // The analyzer writes a different evidence shape per category
-// (see bg/feedback_analyzer.go lines 244-249 and 319-324). The
+// (see bg/feedback_analyzer.go and taskprofile/analyzer.go). The
 // frontend only renders a few fields in evidenceSummary so we keep
 // the optional+typed model: present fields per category, others
 // undefined.
@@ -1001,6 +997,25 @@ export interface ProposalEvidence {
   avg_quality?: number
   rationale?: string
   confidence?: number
+  // corrections-driven drafts (taskprofile/analyzer.go, v2 闭环 P1)
+  source?: string
+  corrected_total?: number
+  corrected?: number
+  auto_task_type?: string
+  human_task_type?: string
+  domain_hint?: string
+  hint_share?: number
+  has_code_share?: number
+  rate_max?: number
+  conf_bands?: Record<string, number>
+  qualifying_pairs?: Array<{ auto: string; human: string; corrected: number }>
+  // inline backtest quantification (per category)
+  backtest?: {
+    would_fix_proxy?: number
+    would_touch?: number
+    matched?: number
+    matched_corrected?: number
+  }
 }
 
 export interface TuningProposalsResponse {
@@ -1062,11 +1077,24 @@ export interface TriggerTuningAnalyzeResponse {
 }
 
 export function triggerTuningAnalyze() {
-  // TODO(backend): no matching endpoint in admin/auto_route_tuning.go
-  // yet. Post path is a placeholder — when the trigger endpoint lands,
-  // update this path to match. Until then the call will 404 and the
-  // TuningView.vue catch handler will show the error to the user.
+  // Backend endpoint POST /api/admin/auto-route/tuning/analyze landed in
+  // the v2 closed-loop P1 round (admin/auto_route_tuning.go handleAnalyze).
   return req<TriggerTuningAnalyzeResponse>('POST', '/api/admin/auto-route/tuning/analyze')
+}
+
+// Corrections-driven proposal generation (v2 闭环 P1, taskprofile/analyzer.go
+// via admin handleProposalsGenerate): drafts threshold/keyword proposals from
+// human corrections, quantifies each inline, inserts as status='pending'.
+export interface GenerateProposalsResponse {
+  generated: number
+  days: number
+  proposals: TuningProposal[]
+}
+
+export function generateCorrectionProposals(days = 30) {
+  return req<GenerateProposalsResponse>(
+    'POST', `/api/admin/auto-route/tuning/proposals/generate?days=${days}`
+  )
 }
 // ── Data Lifecycle Async Jobs (2026-07-13) ──────────────────────────
 // 长耗时操作统一走 async job registry：POST 后返回 run_id，立即可关浏览器，
