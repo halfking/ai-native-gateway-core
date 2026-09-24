@@ -256,6 +256,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 幂等（CREATE TABLE IF NOT EXISTS）。曾死放 migrations/ 顶层
 			// 无投递通道，本轮修正结构并补五点同步。
 			"745_report_snapshots.sql",
+			// 746 (2026-09-25, 对账报表落地轮): report_snapshots 内部对
+			// 帐维度补齐 —— tenant_id bigint→text（对齐 usage_facts 文本
+			// 租户键，745 建表按 bigint 设计但无写入方，ALTER 安全）+
+			// credits_charged/latency_p50_ms/latency_p95_ms 三列 + scope
+			// 枚举扩员注记（internal_person/internal_model）。可重入
+			//（ALTER TYPE USING text::text 与 ADD COLUMN IF NOT EXISTS）。
+			"746_report_snapshots_internal_dims.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，

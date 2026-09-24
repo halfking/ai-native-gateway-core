@@ -65,6 +65,9 @@ func PlatformSpecs() []*Spec {
 	// 2026-09-22: Wave 3 B1 —— 峰谷倍率时段表（maas.rate_periods，
 	// Go/SQL 双侧同源取档）。
 	out = append(out, MaasRatePeriodSpecs()...)
+	// 2026-09-25: 对账报表每日聚合钟点（reports.daily_rollup.hour，
+	// 默认凌晨 02:00 UTC，HotReload）。
+	out = append(out, ReportRollupSpecs()...)
 	return out
 }
 

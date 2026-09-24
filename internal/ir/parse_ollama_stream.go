@@ -44,6 +44,13 @@ import (
 // CumulativeContent into Delta.Content here — that re-emits the whole text
 // on every frame (client-visible text duplication).
 //
+// R65 契约存疑（P4 接线前必清）：本仓 wire 文档
+// docs/vendor-formats/ollama.md 的流式示例是增量分片（"" → "The" → "..."），
+// 与本 CONTRACT 的累计值假设方向相反；真实 Ollama /api/chat 行为未经活体
+// NDJSON 抓包裁决。若增量属实，按"累计差分"消费将丢正文/产乱码。当前
+// ParseOllamaStreamChunk 零生产调用方（P4 dispatch 未接线），不可达；
+// 接线 P4 前必须先以活体抓包定契约并同步本注释与 wire 文档，二取一改。
+//
 // A single NDJSON line may produce MORE THAN ONE chunk: a terminal line that
 // also carries content (one-shot answers like "yes"/"no") yields the content
 // chunk first, then the Done chunk, so the cumulative text and the

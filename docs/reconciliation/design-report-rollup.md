@@ -1,5 +1,10 @@
 # 对账报表设计（Report Rollup）
 
+> **落地状态（2026-09-25 落地轮）**：本设计已全量实现并超出原 MVP 切片——
+> 周/月/自定义区间（区间汇总从日快照折叠）、租户/人员内部视角、内部计费口径
+> （credits × 快照冻结 cents_per_credit）均已落地。实现映射见文末 §10。
+> 下方 §1–§9 为设计原稿（保留历史叙述，过时处以勘误标注）。
+
 > 范围：**MVP 切片**——日报（每日 02:00 定时、可配） + 两个 sheet（用量 + 模型质量与错误分析） + Excel 导出。
 > 不在本切片：周/月/自定义区间聚合 API、租户/人员独立视角切换、内部价模型（vs 供应商价）。这两块留后续轮。
 
@@ -141,3 +146,24 @@ excelize 已在 `go.sum`（间接依赖），需在 `go.mod` 提升为直接依�
 - `go test ./bg/... -run TestReportRollup` 必须过（worker 路径用 sqlmock 或 testfixtures）
 - 集成测试：迁745 落地后，灌 10 条 usage_facts → 触发 worker → 验证 snapshot 存在 → GET Excel → 校验两个 sheet 行数
 - **迁移号三重查重断言**：实施前 `git log sql/migrations/startup/74{3,4,5}_*.sql` 必须只命中 743/744（既有），命中 0 条 745 文件；`go test ./...` 通过 ≥492（含 installer 自检）；共享 252 PG 账本 `SELECT version FROM schema_migrations WHERE version LIKE '74%'` 不含 745（建号前查一次；R63 勘误：schema_migrations 实际列是 version/description/applied_at，原稿 `filename` 列不存在——该查重为建号前历史断言，745 已于 R63 占用落地）
+
+## 10. 落地映射（2026-09-25 落地轮）
+
+| 设计项 | 实现 | 与原稿的差异（勘误） |
+|---|---|---|
+| 迁移 745 report_snapshots | `sql/migrations/startup/745_report_snapshots.sql` + `db/db.go ensureReportSnapshots`（boot 兜底） | 746 补齐内部对帐维度：`tenant_id` bigint→**text**（对齐 usage_facts 文本租户键，745 按 bigint 设计系笔误）、新增 `credits_charged` / `latency_p50_ms` / `latency_p95_ms`；scope 枚举扩员 `internal_person` / `internal_model`（`sql/migrations/startup/746_report_snapshots_internal_dims.sql`） |
+| worker | `bg/report_rollup_worker.go`：启动补跑昨日 + 每日钟点触发，单轮 panic recover + 30min 超时 | 钟点设置由 cron 字符串改为**单整数小时** `reports.daily_rollup.hour`（0-23，默认 2，HotReload）——仓库无 cron 解析依赖，与 feedback_analyzer 的 RunHour 模式一致（`settings/spec_reports.go`） |
+| 聚合 | `domains/reportrollup/rollup.go`：usage_facts → 六 scope 快照，jsonb 错误透视 CTE + `percentile_cont FILTER` 延迟分位 + ON CONFLICT 四键幂等 | 口径细化：provider 面（daily_*）含全部流量类（探针也烧供应商钱）；internal 面（internal_*）仅 business 流量。`daily_by_model` scope_key = provider_id（原稿"canonical model"装不下多 provider 同名模型），模型名 = usage_facts.raw_model_name（= outbound_model 回落 client_model，即供应商计费名） |
+| 内部价 | usage_facts.credits_charged（内部价+折扣+峰谷倍率的最终计费）+ maas_settings.cents_per_credit 冻结进 price_snapshot | 原稿 §8 判定"内部价表为空白项需新表"——实际无需新表：credits_charged 即内部计费结果，冻结单价即可复算金额 |
+| API | `admin/report_rollup.go`：`GET /api/admin/report-rollup/summary` / `export` / `POST .../run`（superAdmin） | summary 返回总计 + 按供应商/租户/人员/模型/天分组行；区间（日/周/月/自定义）一律从日快照折叠，不回扫原始日志 |
+| Excel | `domains/reportrollup/xlsx.go` 手写最小 OOXML writer（zip+受控 XML，inline string + number 单元格 + 粗体表头），`workbook.go` 双 sheet 布局 | **原稿 §5 勘误：excelize 不在 go.sum**（R63 勘误已指出，本轮确认）。手写 writer 避免引入 2 万行第三方传递依赖；openpyxl 交叉校验通过（含 `Override PartName` 属性规范修复） |
+| 前端 | `web/src/views/admin/ReconciliationReport.vue` + `web/src/api/reportrollup.ts` + 路由 `/admin/reconciliation` | 双视角切换 + 区间选择 + 汇总卡片 + 分组表 + 导出/重跑按钮 |
+| 失败分类 | 快照行 `error_kind_breakdown` jsonb 透视；sheet2 按 error_kind 动态列 | error_kind 来自 errorsx 枚举，worker 不强校验（原稿 §7 维持） |
+
+### 验证记录（2026-09-25）
+
+- `go build ./...` / `go vet` 通过；全量 `go test ./...` 主模块 + installer 模块通过。
+- 五点同步守卫（installer parity / embed / StartupFiles / ≥704 注册）全绿含 746。
+- 建号三重查重：仓内无 746 冲突；本地 llm_gateway 账本与共享 252 账本 74x 段均止于 744，745/746 均未占用。
+- 真库 E2E（scratch 库 `llmgw_report_e2e`，迁移 536/537/745/746 全应用）：灌 6 笔合成 usage_facts（success/failure/rate_limited × business × 双租户双模型 + provider 未落定失败）→ RollupDay → 六 scope 计数/透视/冻结价断言 → 幂等重跑 → BuildRangeReport 双视角 → xlsx 产出；`db` 包 745 重建与 746 升级路径 ensure 真库测试通过。
+- 导出文件经 openpyxl 独立实现加载校验：双 sheet（用量 / 模型质量与错误分析）、数值单元格、粗体表头、中文 sheet 名全部正确。

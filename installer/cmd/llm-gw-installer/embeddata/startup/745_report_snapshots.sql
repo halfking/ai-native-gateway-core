@@ -19,6 +19,14 @@
 --   - 唯一键 (scope, scope_key, report_date, raw_model_name)：worker 写入
 --     走 INSERT ... ON CONFLICT 同键 DO UPDATE，可重入。
 --
+-- R65 勘误⑤（终态以 SSOT 为准）：上②为交付时点草稿，与最终实现有三处
+-- 漂移，勿按本段实现新读者——(a) scope 终为六值（746 增 internal_person/
+-- internal_model）；(b) daily_by_model 的 scope_key = provider_id 文本化
+-- （canonical 粒度未实现，canonical_id 列预留恒 NULL），模型名 =
+-- raw_model_name；(c) internal_person 的 scope_key 编码租户
+--（tenant + '\x00' + person，R65 P1 修复）。终态口径见
+-- sql/objects/tables/report_snapshots.sql 头注与设计文档 §10。
+--
 -- 演进注记③：热区 + 分区（report_snapshots_hot + report_date 月分区，
 -- 对照 request_logs 家族与 bg/partition_manager.go 的 archiveSpec 保留清
 -- 理模式）与索引加密（date 前导索引等）待消费方落地、数据量实测后一并

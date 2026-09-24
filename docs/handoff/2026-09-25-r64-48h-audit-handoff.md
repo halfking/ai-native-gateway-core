@@ -3,7 +3,7 @@
 **日期**: 2026-09-25
 **上轮**: R64（docs/audit/2026-09-25-r64-48h-audit-round.md，窗口 153ad093a..97d8870aa + 死区补审 7489c8e92..153ad093a）
 **基线**: 本轮收口提交之后的 main HEAD
-**下一可用迁移**: 746（745=report_snapshots、800=provider_endpoint_protocols 已占用）
+**下一可用迁移**: 747（745/746=report_snapshots 系、800=provider_endpoint_protocols 已占用；R65 勘误：9635b9b17 占用 746）
 
 ---
 
@@ -25,7 +25,7 @@
    keyword_add 三枚举词休眠（structured_features 升级自由 token 后自动恢复）。
 5. **[P3] 大专项候选**（用户标准清单差距，择一立项）：①sanitizer 跨进程 offset
    原子预占；②nodestatecache 单模块收编；③bg keyword 去重 LIKE 转义（R64 FixA
-   同族发现，feedback_analyzer.go:252）。
+   同族发现，feedback_analyzer.go:260；R65 勘误行号）。
 6. **[P3] installer 凭据专项收尾**：refresh.token 仍为零消费方休眠凭据（写入点
    auto_activate.go:174-186，全仓无读取方）——接 refresh 流时须同步补读取方；
    容器内 refresh daemon 三件套（compose 挂载+文件名对齐+LICENSE_AUTHORITY_URL
@@ -65,4 +65,4 @@
 > 6. 修复轮：文件集互斥的并行修复子代理 → 协调者合并后全量验证（go build 根+installer、go vet、受影响包 go test -count=1、apply-db-revision-sequence 门禁、scratch 真库契约、web i18n-audit+typecheck）。
 > 7. 轮文档 docs/audit/<日期>-r65-48h-audit-round.md + handoff 更新 + 提交推送。
 >
-> 关键上下文：下一可用迁移 746（745/800 已占位）；selector 权重语义=higher 更高优先级（勿再反转）；installer 凭据三件 R63 已落地 R64 复核健康（验它别重做它）；mock-probe 生产接入仍未拍板，若拍板接入审计其装配面（config 闸三处同源、关闭态五不、auth 旁路、origin 打标已就位）；i18n-audit 与 testbench baseline 门禁 R64 已收紧，声明里别再写旧行为。
+> 关键上下文：下一可用迁移 747（745/746/800 已占位，R65 勘误）；selector 权重语义=higher 更高优先级（勿再反转）；installer 凭据三件 R63 已落地 R64 复核健康（验它别重做它）；mock-probe 生产接入仍未拍板，若拍板接入审计其装配面（config 闸三处同源、关闭态五不、auth 旁路、origin 打标已就位）；i18n-audit 与 testbench baseline 门禁 R64 已收紧，声明里别再写旧行为。
