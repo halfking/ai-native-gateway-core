@@ -72,6 +72,16 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 			return
 		}
 
+		// R51 教训落地（R60 S2-F4，154 复审 §四.5）：无会话头的探针产出不进
+		// mirror——它们合成 sys:probe:* 系统会话后集中打 advisory lock，实测
+		// 失败噪声 ~115/min（99.6% 为该类）。判据是探针专有强特征（无会话头
+		// + origin/task_type 探针标记，见 IsProbeSyntheticSession 注释），不
+		// 误伤真实用户会话；探针事实仍留在 request_logs/v1 面。与 replay.go
+		// 的 gate parity 共用本谓词。
+		if IsProbeSyntheticSession(entry) {
+			return
+		}
+
 		// 存储优化方案 v2 §3-D4：无会话头流量合成系统会话（探针统计与计费
 		// 归因随 turns 走单事实管道，plan §9 风险行 2 的前置落点）。
 		synthetic := false

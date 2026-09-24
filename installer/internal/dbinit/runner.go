@@ -243,6 +243,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 申领。幂等（DROP+ADD CONSTRAINT；自注册带 schema_migrations
 			// 存在性守卫）。
 			"742_hosted_task_recalled_event.sql",
+			// 743 (R60, 2026-09-23): providers.protocol 无 CHECK 约束，
+			// 存量行残留 "openai-response"（vapeur 事故确切脏值）、"openai"、
+			// "anthropic" 等别名拼写。按 provider/catalog
+			// NormalizeProviderProtocol 的别名表归一到 catalog 五值枚举
+			//（providers + provider_catalog 防御性对账），与 R59 写边界、
+			// R60 读面归一配套。幂等（canonical 不是别名 key，重复执行
+			// no-op；无法识别的值保持原样）。
+			"743_normalize_provider_protocol.sql",
 		},
 	}
 }

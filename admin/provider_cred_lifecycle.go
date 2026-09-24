@@ -32,7 +32,6 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
-	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -327,16 +326,13 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 			// 2026-09-23 vapeur incident: phase-2 used to probe
 			// /chat/completions unconditionally, which misreports healthy
 			// credentials on responses-only relays. Pick the probe endpoint
-			// (and body shape) from the provider's egress protocol.
-			var probeURL string
-			var probeFn func(context.Context, string, string, string) (*chatResult, error)
-			if cred.protocol == "openai-responses" {
-				probeURL = upstreamurl.ResponsesURL(cred.baseURL)
-				probeFn = doResponsesProbe
-			} else {
-				probeURL = upstreamurl.ChatCompletionsURL(cred.baseURL)
-				probeFn = doChatProbe
-			}
+			// (and body shape) from the provider's egress protocol. R60
+			// S3-F4/F5: the protocol is normalized before the branch
+			// (providers.protocol has no CHECK; legacy "openai-response" /
+			// "anthropic" rows picked the wrong probe) and anthropic-messages
+			// credentials get their own x-api-key /v1/messages probe instead
+			// of the Bearer-only chat probe that always 401'd into warning.
+			probeURL, probeFn := credentialProbeDispatch(cred.protocol, cred.baseURL)
 			chatResult, chatErr := probeFn(ctx, probeURL, apiKey, model)
 			probeLatencyMs = int(time.Since(start).Milliseconds())
 			if chatErr != nil {

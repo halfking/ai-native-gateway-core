@@ -405,10 +405,18 @@ func TestStartupFilesAreAllEmbedded(t *testing.T) {
 // 729 (2026-09-21, 252 部署验证轮): same three-phase \gexec + CONCURRENTLY
 // shape as 727/728 (header comment "实现约束与 727/728 相同"); ships
 // exclusively through the revision-sequence channel like its predecessors.
+//
+// 744 (2026-09-24, 252 SQL 日志审计第六轮): same shape (outbox done-trim
+// partial index + session_turns digest-NULL three-phase partial indexes);
+// unlike 727/728/729 it also carries a Go ensure mirror
+// (db.ensureSqlAuditPartialIndexes) so existing databases converge at boot,
+// but the canonical file still must not enter the single-transaction
+// installer channel.
 var psqlConcurrencyRequired = map[string]string{
 	"727_sql_audit_slow_query_indexes.sql":                  "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
 	"728_sql_audit_request_logs_credential_model_index.sql": "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
 	"729_sql_audit_session_turns_credential_ts_index.sql":   "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
+	"744_sql_audit_partial_indexes.sql":                     "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
 }
 
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17

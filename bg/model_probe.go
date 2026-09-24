@@ -48,6 +48,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -863,16 +864,16 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		  AND COALESCE(cmb.available, TRUE) = TRUE
 		  -- 2026-09-20 INV-5: only credentials with failure evidence get the
 		  -- deep ping; healthy credentials' business traffic is the evidence.
-		  AND ` + credentialFailureEvidenceSQL("c.id", probeFailureEvidenceWindowSQL) + `
+		  AND `+credentialFailureEvidenceSQL("c.id", probeFailureEvidenceWindowSQL)+`
 		  -- 2026-09-20 INV-4: two recently probe-verified models stop the pass.
-		  AND NOT ` + credentialTwoProbeSuccessGateSQL("c.id") + `
+		  AND NOT `+credentialTwoProbeSuccessGateSQL("c.id")+`
 		  -- 2026-09-20 INV-3: the model must have real (non-probe) traffic on
 		  -- THIS credential within the 3-day probe scope window.
 		  AND EXISTS (
 			SELECT 1 FROM request_logs_hot rl
 			WHERE rl.credential_id = cmb.credential_id
-			  AND rl.ts >= now() - ` + probeUsageWindowInterval + `
-			  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
+			  AND rl.ts >= now() - `+probeUsageWindowInterval+`
+			  AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
 			  AND (pm.raw_model_name = rl.client_model
 			       OR pm.raw_model_name = rl.outbound_model
 			       OR pm.outbound_model_name = rl.outbound_model)
@@ -910,7 +911,7 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 			continue
 		}
 		t.APIKey = apiKey
-		desc := providercap.Resolve(t.Protocol, "")
+		desc := probeDescriptorFor(t.Protocol)
 		mode := ProbeModeChatPing
 		if desc.Protocol == "anthropic-messages" {
 			mode = ProbeModeMessages
@@ -1329,7 +1330,7 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 	if t.BaseURL == "" {
 		return "skipped", probeCategorySkipped, 0, "endpoint_unresolved", "empty base_url", int(time.Since(start).Milliseconds())
 	}
-	desc := providercap.Resolve(t.Protocol, "")
+	desc := probeDescriptorFor(t.Protocol)
 	mode := ProbeModeModelsList
 	if desc.Protocol == "anthropic-messages" {
 		// Anthropic prefers its own /v1/messages endpoint for chat probes;
@@ -1597,6 +1598,22 @@ func (r *ModelProbeRunner) TriggerAllSync(ctx context.Context, providerID int) (
 	return results, nil
 }
 
+// probeDescriptorFor is the single protocol-resolution entry for every probe
+// dispatch site. providers.protocol has no CHECK constraint (db providers.sql),
+// so legacy rows can carry alias spellings ("anthropic", "openai-response",
+// "claude", ...) that providercap.Resolve would silently treat as the
+// Bearer-only chat default — the exact shape of the 2026-09-23 vapeur
+// misreport (anthropic credentials health-probed with the wrong auth style).
+// Normalize to the catalog enum first; unknown values keep the raw input so
+// behavior for genuinely unrecognized protocols is unchanged (chat default).
+// Read-face only: the normalized value is never written back to storage.
+func probeDescriptorFor(protocol string) providercap.Descriptor {
+	if normed, normErr := providercatalog.NormalizeProviderProtocol(protocol); normErr == nil {
+		protocol = normed
+	}
+	return providercap.Resolve(protocol, "")
+}
+
 // probeTarget is the (credential, model, base_url, protocol, api_key)
 // tuple we test.
 type probeTarget struct {
@@ -1622,7 +1639,7 @@ func (r *ModelProbeRunner) verifyTargetModality(ctx context.Context, t probeTarg
 	if model == "" {
 		model = t.RawModel
 	}
-	desc := providercap.Resolve(t.Protocol, "")
+	desc := probeDescriptorFor(t.Protocol)
 	endpoint := upstreamurl.Build(t.BaseURL, desc.ChatProbeEndpoint)
 	result := ProbeModality(ctx, endpoint, t.APIKey, model, t.Modality, desc.Protocol == "anthropic-messages")
 	if result.ErrCode == "" && result.Supported {

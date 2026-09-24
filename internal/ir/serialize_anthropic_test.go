@@ -390,7 +390,7 @@ func TestSerializeAnthropic_ToolRoleNestedToolResultID(t *testing.T) {
 				},
 			}
 
-			out := serializeAnthropicMessage(msg, tt.provider, "")
+			out := serializeAnthropicMessage(msg, tt.provider, "", "unknown")
 			content := out["content"].([]map[string]any)
 			result := content[0]
 			if got := result[tt.idField]; got != tt.wantID {
