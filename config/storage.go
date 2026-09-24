@@ -41,6 +41,49 @@ type SQLitePragmasConfig struct {
 	BusyTimeoutMS int    `yaml:"busy_timeout_ms"`
 }
 
+// HotZoneConfig 全模式本地热区层（docs/storage/2026-09-24-hotzone-dual-mode-plan.md）。
+// 适用范围：两模式（lite / full）共享同一配置；Enabled=false 时整层下线，
+// lite 仍保留既有 L1.5 文件缓存目录；full 退回 L1→L2→L3 历史装配。
+//
+// 热区目录布局（与 lite cache_dir 同构，full 额外多一个 requests/ 子树）：
+//
+//	{HotZone.Dir}/cache/           SessionStateV2 JSON（L1.5）
+//	{HotZone.Dir}/session_bodies/  会话 turn body（与 lite session_bodies 同语义）
+//	{HotZone.Dir}/requests/        请求侧镜像（H3 接线）
+//
+// 三子树共享 HotZone.MaxSizeGB 预算；RetentionHours 控制 trimmer 阈值。
+type HotZoneConfig struct {
+	// Enabled 是否启用热区层。YAML 与 env 双通道；runtime 阶段仍可由 settings_kv
+	//（storage.hotzone_enabled）覆盖。
+	Enabled *bool `yaml:"enabled" env:"LLM_GATEWAY_HOTZONE_ENABLED"`
+	// Dir 热区根目录，默认 ./data/hotzone。
+	Dir string `yaml:"dir" env:"LLM_GATEWAY_HOTZONE_DIR"`
+	// RetentionHours 保留时长（小时），默认 7，范围 1–168。
+	RetentionHours int `yaml:"retention_hours" env:"LLM_GATEWAY_HOTZONE_RETENTION_HOURS"`
+	// MaxSizeGB 硬上限（GB），默认 1，范围 1–100。扩容 FileCache.ResizeMax
+	// 立即生效；缩容由下一轮 trimmer 执行。
+	MaxSizeGB int `yaml:"max_size_gb" env:"LLM_GATEWAY_HOTZONE_MAX_SIZE_GB"`
+	// RequestMirror 是否写入请求体镜像（H3 接线，full 模式默认开启；
+	// lite 模式沿用既有 session_bodies 写入路径，不重复镜像）。
+	RequestMirror *bool `yaml:"request_mirror" env:"LLM_GATEWAY_HOTZONE_REQUEST_MIRROR"`
+}
+
+// IsEnabled 报告 HotZone 是否启用；nil 指针与未配置均回落 defaultEnabled。
+func (h *HotZoneConfig) IsEnabled(defaultEnabled bool) bool {
+	if h == nil || h.Enabled == nil {
+		return defaultEnabled
+	}
+	return *h.Enabled
+}
+
+// RequestMirrorEnabled 报告请求体镜像是否启用；nil 回落 defaultEnabled。
+func (h *HotZoneConfig) RequestMirrorEnabled(defaultEnabled bool) bool {
+	if h == nil || h.RequestMirror == nil {
+		return defaultEnabled
+	}
+	return *h.RequestMirror
+}
+
 type StorageConfig struct {
 	// Mode 存储模式："full" 或 "lite"。空值非法（见 Validate）。
 	Mode string `yaml:"storage_mode" env:"LLM_GATEWAY_STORAGE_MODE"`
@@ -48,6 +91,9 @@ type StorageConfig struct {
 	Full *FullStorageConfig `yaml:"full_storage"`
 	// Lite lite 模式的存储明细；mode=lite 时必填。
 	Lite *LiteStorageConfig `yaml:"lite_storage"`
+	// HotZone 全模式本地热区层（2026-09-24 H2 接线）。两模式共用，
+	// 段缺失时 ApplyDefaults 按 mode 补默认；Enabled=false 时整层下线。
+	HotZone *HotZoneConfig `yaml:"hotzone"`
 }
 
 // FullStorageConfig full 模式：外部 PostgreSQL + Redis。
@@ -258,6 +304,54 @@ func (c *StorageConfig) ApplyDefaults() {
 	case StorageModeLite:
 		c.ApplyLiteDefaults()
 	}
+	// HotZone 默认值（2026-09-24 H2 接线）：两模式共用，未配置即开。
+	// 与 settings.hotzone_enabled 默认 true 对齐；一段配置缺失则按
+	// mode-aware 默认值兜底（lite 复用 cache_dir 上层；full 默认 ./data/hotzone）。
+	c.ApplyHotZoneDefaults()
+}
+
+// ApplyHotZoneDefaults 为 HotZoneConfig 补默认值。两模式共用；段缺失时
+// 自动创建。Enabled / RequestMirror 用指针区分「未配置（nil）→ 默认值」
+// 与 YAML/env 显式 false。
+//
+// 默认值表：
+//   - Enabled：true（两模式均默认开启，行为变更点；可通过
+//     LLM_GATEWAY_HOTZONE_ENABLED=false 一键关闭）
+//   - Dir：lite = "./data/hotzone"，full = "./data/hotzone"
+//   - RetentionHours：7（1–168h）
+//   - MaxSizeGB：1（1–100GB；lite 默认覆盖 cache_max_size_gb=10GB）
+//   - RequestMirror：true（full 写 H3 镜像；lite 不消费该字段）
+func (c *StorageConfig) ApplyHotZoneDefaults() {
+	if c == nil {
+		return
+	}
+	if c.HotZone == nil {
+		c.HotZone = &HotZoneConfig{}
+	}
+	h := c.HotZone
+	if h.Dir == "" {
+		h.Dir = "./data/hotzone"
+	}
+	if h.RetentionHours <= 0 {
+		h.RetentionHours = 7
+	}
+	if h.RetentionHours > 168 {
+		h.RetentionHours = 168
+	}
+	if h.MaxSizeGB <= 0 {
+		h.MaxSizeGB = 1
+	}
+	if h.MaxSizeGB > 100 {
+		h.MaxSizeGB = 100
+	}
+	if h.Enabled == nil {
+		e := true
+		h.Enabled = &e
+	}
+	if h.RequestMirror == nil {
+		rm := true
+		h.RequestMirror = &rm
+	}
 }
 
 // PostgresURLAlignment 描述 AlignFullPostgresURL 的对齐结果。
@@ -447,6 +541,41 @@ func applyEnvOverrides(cfg *StorageConfig) {
 			cfg.Lite = &LiteStorageConfig{}
 		}
 		applyPositiveIntEnv("LLM_GATEWAY_CONSISTENCY_MAX_SESSIONS_PER_RUN", &cfg.Lite.Consistency.MaxSessionsPerRun)
+	}
+
+	// HotZone 段（2026-09-24 H2 接线）：两模式共用，env-only 部署也支持。
+	// 段缺失但 env 有值时自动创建对应段。
+	if v := os.Getenv("LLM_GATEWAY_HOTZONE_ENABLED"); v != "" {
+		if cfg.HotZone == nil {
+			cfg.HotZone = &HotZoneConfig{}
+		}
+		applyOptionalBoolEnv(v, &cfg.HotZone.Enabled)
+	}
+	if v := os.Getenv("LLM_GATEWAY_HOTZONE_DIR"); v != "" {
+		if cfg.HotZone == nil {
+			cfg.HotZone = &HotZoneConfig{}
+		}
+		if cfg.HotZone.Dir == "" {
+			cfg.HotZone.Dir = v
+		}
+	}
+	if v := os.Getenv("LLM_GATEWAY_HOTZONE_RETENTION_HOURS"); v != "" {
+		if cfg.HotZone == nil {
+			cfg.HotZone = &HotZoneConfig{}
+		}
+		applyPositiveIntEnv("LLM_GATEWAY_HOTZONE_RETENTION_HOURS", &cfg.HotZone.RetentionHours)
+	}
+	if v := os.Getenv("LLM_GATEWAY_HOTZONE_MAX_SIZE_GB"); v != "" {
+		if cfg.HotZone == nil {
+			cfg.HotZone = &HotZoneConfig{}
+		}
+		applyPositiveIntEnv("LLM_GATEWAY_HOTZONE_MAX_SIZE_GB", &cfg.HotZone.MaxSizeGB)
+	}
+	if v := os.Getenv("LLM_GATEWAY_HOTZONE_REQUEST_MIRROR"); v != "" {
+		if cfg.HotZone == nil {
+			cfg.HotZone = &HotZoneConfig{}
+		}
+		applyOptionalBoolEnv(v, &cfg.HotZone.RequestMirror)
 	}
 }
 

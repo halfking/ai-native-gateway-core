@@ -17,17 +17,21 @@ import (
 // 全部字段为 atomic 计数器，Record* 可在任意请求路径热路径上无锁调用，
 // Snapshot 读取全部走 atomic.Load，保证不出现数据竞争。
 type StorageMetrics struct {
-	l1Hits      atomic.Uint64 // L1（进程内 SessionCacheV2）命中
-	l1Misses    atomic.Uint64 // L1 未命中
-	l15Hits     atomic.Uint64 // L1.5（lite 模式本地文件缓存 FileCache）命中
-	l15Misses   atomic.Uint64 // L1.5 未命中
-	l2Hits      atomic.Uint64 // L2（Redis）命中
-	l2Misses    atomic.Uint64 // L2 未命中
-	l3Queries   atomic.Uint64 // L3（数据库回源）查询次数
-	l3LatencyUS atomic.Uint64 // L3 查询累计延迟（微秒），与 l3Queries 配合求均值
-	writes      atomic.Uint64 // 成功写入次数
-	writeBytes  atomic.Uint64 // 成功写入字节总数
-	writeErrors atomic.Uint64 // 失败写入次数
+	l1Hits          atomic.Uint64 // L1（进程内 SessionCacheV2）命中
+	l1Misses        atomic.Uint64 // L1 未命中
+	l15Hits         atomic.Uint64 // L1.5（lite 模式本地文件缓存 FileCache）命中
+	l15Misses       atomic.Uint64 // L1.5 未命中
+	l2Hits          atomic.Uint64 // L2（Redis）命中
+	l2Misses        atomic.Uint64 // L2 未命中
+	l3Queries       atomic.Uint64 // L3（数据库回源）查询次数
+	l3LatencyUS     atomic.Uint64 // L3 查询累计延迟（微秒），与 l3Queries 配合求均值
+	writes          atomic.Uint64 // 成功写入次数
+	writeBytes      atomic.Uint64 // 成功写入字节总数
+	writeErrors     atomic.Uint64 // 失败写入次数
+	mirrorWrites    atomic.Uint64 // 请求侧镜像（H3）成功写入次数
+	mirrorErrors    atomic.Uint64 // 请求侧镜像失败次数
+	hotzoneEnabled  atomic.Bool   // 热区是否启用（runtime 标记，便于 /metrics/storage 透出）
+	mirrorHotZoneOn atomic.Bool   // 镜像是否仍记录到 hotzone（H4 开关）
 
 	startTime atomic.Int64 // 实例创建时刻（Unix 纳秒），供 uptime_seconds 计算
 }
@@ -90,6 +94,28 @@ func (m *StorageMetrics) RecordWrite(bytes int, err error) {
 	m.writeBytes.Add(uint64(bytes))
 }
 
+// RecordMirrorWrite 记录一次请求侧镜像写入（H3）。
+// failed=true 时仅 mirrorErrors 累加（不计入 mirrorWrites）。nil 镜像器
+// 调用方也会走此路径以保持「请求路径热计数」语义。
+func (m *StorageMetrics) RecordMirrorWrite(failed bool) {
+	if failed {
+		m.mirrorErrors.Add(1)
+		return
+	}
+	m.mirrorWrites.Add(1)
+}
+
+// SetHotZoneEnabled 标记当前进程是否启用了热区层（H2/H4 接线）。
+// 启动期 initStorageMode 调用一次；hotconfig 变更后也可再次调用。
+func (m *StorageMetrics) SetHotZoneEnabled(enabled bool) {
+	m.hotzoneEnabled.Store(enabled)
+}
+
+// SetMirrorHotZoneOn 标记镜像是否仍写入热区（H4 控制开关）。
+func (m *StorageMetrics) SetMirrorHotZoneOn(enabled bool) {
+	m.mirrorHotZoneOn.Store(enabled)
+}
+
 // Snapshot 返回指标快照（JSON 友好）。
 //
 // 读取顺序：先把全部计数器 Load 到局部变量再计算比率，保证单次快照内
@@ -102,6 +128,7 @@ func (m *StorageMetrics) Snapshot() map[string]interface{} {
 	l2Hits, l2Misses := m.l2Hits.Load(), m.l2Misses.Load()
 	l3Queries, l3LatencyUS := m.l3Queries.Load(), m.l3LatencyUS.Load()
 	writes, writeBytes, writeErrors := m.writes.Load(), m.writeBytes.Load(), m.writeErrors.Load()
+	mirrorWrites, mirrorErrors := m.mirrorWrites.Load(), m.mirrorErrors.Load()
 
 	var uptimeSeconds float64
 	if startNs := m.startTime.Load(); startNs > 0 {
@@ -125,6 +152,13 @@ func (m *StorageMetrics) Snapshot() map[string]interface{} {
 			"total_bytes": writeBytes,
 			"errors":      writeErrors,
 		},
+		"mirror": map[string]interface{}{
+			"total":         mirrorWrites,
+			"errors":        mirrorErrors,
+			"hotzone_on":    m.mirrorHotZoneOn.Load(),
+			"hotzone_bytes": writeBytes, // alias：当前实现与 writes 共用字节计数
+		},
+		"hotzone_enabled": m.hotzoneEnabled.Load(),
 	}
 }
 
