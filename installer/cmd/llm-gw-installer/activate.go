@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"os"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/installer/internal/activation"
+	"github.com/kaixuan/llm-gateway-go/installer/internal/enrollment"
 )
 
 const version = "v1.13.0"
@@ -14,13 +16,11 @@ func runActivate(mode, email, licenseKey, licensePath, masterURL string, agree b
 		return fmt.Errorf("必须指定 --mode 参数")
 	}
 
-	client := activation.NewClient(masterURL)
-
 	switch mode {
 	case "trial":
-		return handleTrial(client, email, agree)
+		return handleTrial(activation.NewClient(masterURL), email, agree)
 	case "key":
-		return handleOnlineActivation(client, licenseKey)
+		return handleOnlineActivation(masterURL, licenseKey)
 	case "offline-request":
 		return handleOfflineRequest(licenseKey)
 	case "offline-import":
@@ -54,13 +54,17 @@ func handleTrial(client *activation.Client, email string, agree bool) error {
 	return nil
 }
 
-// handleOnlineActivation 处理在线激活
-func handleOnlineActivation(client *activation.Client, licenseKey string) error {
+// handleOnlineActivation 处理在线激活。
+// 主控端契约（cmd/license-authority/register_handler.go）：register 的新设备
+// 分支把 license_key_hash 当完整 license key 查库，查得即同调用激活设备 ——
+// 即 register 即激活；主控不存在 /api/v1/license/activate 端点。
+// 在线模式下 license 由 DB 权威管理，无需落 license.dat（那是离线导入路径的产物）。
+func handleOnlineActivation(masterURL, licenseKey string) error {
 	if licenseKey == "" {
 		return fmt.Errorf("-license-key 参数不能为空")
 	}
 
-	fmt.Println("▶ 在线激活 ...")
+	fmt.Println("▶ 在线激活（注册即激活）...")
 
 	// 获取或创建 instance_id
 	instanceID, err := activation.GetOrCreateInstanceID()
@@ -79,27 +83,32 @@ func handleOnlineActivation(client *activation.Client, licenseKey string) error 
 	deviceName := activation.GetDeviceName()
 	fmt.Printf("   Device Name: %s\n", deviceName)
 
-	// 调用在线激活 API
-	resp, err := client.ActivateOnline(licenseKey, hardwareHash, instanceID, deviceName, version)
+	// ed25519 keypair（私钥留 ~/.kx-gateway，重复激活公钥稳定）
+	publicKey, err := activation.EnsureHomeKeypair()
+	if err != nil {
+		return fmt.Errorf("生成设备密钥对失败: %w", err)
+	}
+
+	// register：license_key_hash 携带完整 license key
+	client := enrollment.NewClient(masterURL)
+	regResp, err := client.Register(context.Background(), enrollment.RegisterRequest{
+		InstanceID:     instanceID,
+		InstanceType:   "standalone",
+		Hostname:       deviceName,
+		Version:        version,
+		HardwareHash:   hardwareHash,
+		LicenseKeyHash: licenseKey,
+		PublicKey:      publicKey,
+	})
 	if err != nil {
 		return fmt.Errorf("激活失败: %w", err)
 	}
 
 	fmt.Printf("✅ 在线激活成功\n")
-	fmt.Printf("   过期时间: %s\n", resp.ExpiresAt)
-
-	// 写入 license.dat 到 /var/lib/kx-gateway/
-	licenseDir := "/var/lib/kx-gateway"
-	if err := os.MkdirAll(licenseDir, 0755); err != nil {
-		return fmt.Errorf("创建目录失败: %w", err)
+	if regResp != nil && !regResp.ExpiresAt.IsZero() {
+		fmt.Printf("   凭据过期时间: %s\n", regResp.ExpiresAt.Format(time.RFC3339))
 	}
-
-	licensePath := licenseDir + "/license.dat"
-	if err := os.WriteFile(licensePath, []byte(resp.SignedLicense), 0600); err != nil {
-		return fmt.Errorf("写入 license 失败: %w", err)
-	}
-
-	fmt.Printf("   License 已写入: %s\n", licensePath)
+	fmt.Println("   在线模式下 license 由主控 DB 权威管理（license.dat 仅离线模式需要）")
 
 	return nil
 }

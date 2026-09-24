@@ -1,3 +1,3 @@
-# Installer binaries — built locally, never tracked
-llm-gw-installer
-llm-launcher
+# Installer binaries — built locally, never tracked（锚定模块根，避免误伤 cmd/ 同名源码目录）
+/llm-gw-installer
+/llm-launcher
