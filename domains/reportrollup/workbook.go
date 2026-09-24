@@ -22,7 +22,7 @@ const (
 func providerWorkbook(rep *RangeReport) []sheetSheet {
 	return []sheetSheet{
 		{name: SheetUsage, rows: usageRows(rep), widths: usageWidths()},
-		{name: SheetQuality, rows: qualityRows(rep, true), widths: qualityWidths(rep, true)},
+		{name: SheetQuality, rows: qualityRows(rep, true), widths: qualityWidths(rep)},
 	}
 }
 
@@ -30,7 +30,7 @@ func providerWorkbook(rep *RangeReport) []sheetSheet {
 func internalWorkbook(rep *RangeReport) []sheetSheet {
 	return []sheetSheet{
 		{name: SheetUsage, rows: usageRows(rep), widths: usageWidths()},
-		{name: SheetQuality, rows: qualityRows(rep, false), widths: qualityWidths(rep, false)},
+		{name: SheetQuality, rows: qualityRows(rep, false), widths: qualityWidths(rep)},
 	}
 }
 
@@ -169,16 +169,7 @@ func qualityRows(rep *RangeReport, withProvider bool) [][]cell {
 	)
 
 	// 收集区间内出现过的 error_kind，按总次数降序作动态列。
-	kindTotals := map[string]int64{}
-	var allBreakdowns []map[string]int64
-	allBreakdowns = append(allBreakdowns, breakdownsOfModels(rep.Models)...)
-	allBreakdowns = append(allBreakdowns, breakdownsOfProviders(rep.Providers)...)
-	allBreakdowns = append(allBreakdowns, breakdownsOfTenants(rep.Tenants)...)
-	for _, bd := range allBreakdowns {
-		for k, v := range bd {
-			kindTotals[k] += v
-		}
-	}
+	kindTotals := qualityKindTotals(rep)
 	kinds := make([]string, 0, len(kindTotals))
 	for k := range kindTotals {
 		kinds = append(kinds, k)
@@ -243,18 +234,28 @@ func qualityRows(rep *RangeReport, withProvider bool) [][]cell {
 	return rows
 }
 
-func qualityWidths(rep *RangeReport, withProvider bool) []float64 {
-	w := []float64{14, 20, 24, 10, 10, 10, 10, 12, 12, 12, 10}
-	kinds := 0
-	for _, m := range rep.Models {
-		if len(m.ErrorBreakdown) > kinds {
-			kinds = len(m.ErrorBreakdown)
+// qualityKindTotals 汇总三类分组行的 error_kind 透视（表头与列宽共用的
+// 同一数据源——R65 前列宽只数 Models，Tenants/Providers 独有 kind 时表头
+// 比列宽长导致错位）。
+func qualityKindTotals(rep *RangeReport) map[string]int64 {
+	kindTotals := map[string]int64{}
+	var allBreakdowns []map[string]int64
+	allBreakdowns = append(allBreakdowns, breakdownsOfModels(rep.Models)...)
+	allBreakdowns = append(allBreakdowns, breakdownsOfProviders(rep.Providers)...)
+	allBreakdowns = append(allBreakdowns, breakdownsOfTenants(rep.Tenants)...)
+	for _, bd := range allBreakdowns {
+		for k, v := range bd {
+			kindTotals[k] += v
 		}
 	}
-	for i := 0; i < kinds; i++ {
+	return kindTotals
+}
+
+func qualityWidths(rep *RangeReport) []float64 {
+	w := []float64{14, 20, 24, 10, 10, 10, 10, 12, 12, 12, 10}
+	for i := 0; i < len(qualityKindTotals(rep)); i++ {
 		w = append(w, 12)
 	}
-	_ = withProvider
 	return w
 }
 

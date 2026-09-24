@@ -372,6 +372,11 @@ func (h *TuningHandlers) approveProposal(w http.ResponseWriter, r *http.Request,
 
 // rejectProposal transitions a proposal to 'rejected' with an optional note.
 // Body is bounded by maxRejectBodyBytes to prevent memory abuse.
+//
+// R65：与 approveProposal 对称——单事务内 SELECT ... FOR UPDATE 锁行读状态：
+// 查无行回 404（admin_proposal_not_found）、非 pending 回 409
+//（admin_proposal_not_pending），不再无条件 UPDATE 后恒 200（原先对不存在/
+// 已审批的提案也报成功，调用方无法感知操作落空）。
 func (h *TuningHandlers) rejectProposal(w http.ResponseWriter, r *http.Request, id int64) {
 	note := r.URL.Query().Get("reason")
 	if note == "" && r.Body != nil {
@@ -394,12 +399,46 @@ func (h *TuningHandlers) rejectProposal(w http.ResponseWriter, r *http.Request, 
 		note = note[:1024]
 	}
 
-	_, err := h.parent.db.Exec(r.Context(), `
+	ctx := r.Context()
+	// Single transaction: locks the proposal row, checks status, updates —
+	// same shape as approveProposal.
+	tx, err := h.parent.db.Begin(ctx)
+	if err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+	//nolint:errcheck // deferred rollback, best-effort
+	defer tx.Rollback(ctx) // safe no-op if Commit succeeds
+
+	// Lock the proposal row + fetch its current status.
+	var status string
+	err = tx.QueryRow(ctx, `
+		SELECT status FROM tuning_proposals
+		WHERE id = $1
+		FOR UPDATE
+	`, id).Scan(&status)
+	if err == pgx.ErrNoRows {
+		writeJSONErrCtx(w, r, http.StatusNotFound, "admin_proposal_not_found")
+		return
+	}
+	if err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+	if status != "pending" {
+		writeJSONErrCtx(w, r, http.StatusConflict, "admin_proposal_not_pending")
+		return
+	}
+
+	if _, err := tx.Exec(ctx, `
 		UPDATE tuning_proposals
 		SET status = 'rejected', review_note = $2, reviewed_at = NOW(), updated_at = NOW()
-		WHERE id = $1 AND status = 'pending'
-	`, id, note)
-	if err != nil {
+		WHERE id = $1
+	`, id, note); err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
 		writeInternalErr(w, err)
 		return
 	}
@@ -446,6 +485,21 @@ var allowedThresholdKeys = map[string]bool{
 	"thresholds.llm_confidence":      true,
 	"thresholds.long_context_tokens": true,
 }
+
+// R65：与 allowedThresholdKeys 同纪律——提案 key 必须落在 tuning_params
+// 已知键集内，白名单外直接拒绝（409 语义），不得触库。
+var (
+	allowedKeywordKeys = map[string]bool{
+		"keywords.reasoning": true,
+		"keywords.code":      true,
+		"keywords.creative":  true,
+	}
+	allowedWeightKeys = map[string]bool{
+		"weights.smart":       true,
+		"weights.speed_first": true,
+		"weights.cost_first":  true,
+	}
+)
 
 // applyThresholdChangeInTx writes the proposed threshold value into
 // tuning_params (source='feedback'), validating key + range per the same
@@ -562,6 +616,12 @@ func applyKeywordAddInTx(ctx context.Context, tx pgx.Tx, proposal map[string]any
 		return fmt.Errorf("keyword_add proposal missing key or add fields")
 	}
 
+	// R65：与 allowedThresholdKeys 同纪律——提案 key 必须落在 tuning_params
+	// 已知键集内（检查先于任何 DB 访问）。
+	if !allowedKeywordKeys[key] {
+		return conflictErrf("keyword key %q not appliable", key)
+	}
+
 	addStrs := make([]string, 0, len(addRaw))
 	for _, a := range addRaw {
 		if s, ok := a.(string); ok && s != "" {
@@ -586,7 +646,9 @@ func applyKeywordAddInTx(ctx context.Context, tx pgx.Tx, proposal map[string]any
 
 	var existing []string
 	if err := json.Unmarshal(currentValue, &existing); err != nil {
-		existing = []string{}
+		// R65：fail-closed——参数行损坏（非 JSON 字符串数组）时拒绝应用，
+		// 不再回退 existing=[]string{}（那会把既有参数整行覆写丢失）。
+		return conflictErrf("tuning_params %s current value is not a valid JSON string array, refusing apply (fail-closed)", key)
 	}
 
 	// Merge (deduplicate)
@@ -620,6 +682,12 @@ func applyWeightAdjustInTx(ctx context.Context, tx pgx.Tx, proposal map[string]a
 	newVal, _ := proposal["new"].(float64)
 	if key == "" || dimension == "" {
 		return fmt.Errorf("weight_adjust proposal missing key or dimension")
+	}
+
+	// R65：与 allowedThresholdKeys 同纪律——提案 key 必须落在 tuning_params
+	// 已知键集内（dimension 白名单保留不变）。
+	if !allowedWeightKeys[key] {
+		return conflictErrf("weight key %q not appliable", key)
 	}
 
 	// Whitelist dimension names to prevent arbitrary column writes.

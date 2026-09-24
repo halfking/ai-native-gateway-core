@@ -583,6 +583,12 @@ files=(
   # （无任何投递通道，五点同步全缺），本轮修正表结构后投递 startup 通道；
   # 消费方 worker 尚未实现，属设计预埋（幂等 CREATE TABLE IF NOT EXISTS）。
   "$ROOT_DIR/sql/migrations/startup/745_report_snapshots.sql"
+  # 2026-09-25 R65 补登：746 report_snapshots internal dims（tenant_id
+  # bigint→text + credits/latency 三列 + scope 枚举扩员）。9635b9b17 交付
+  # 时走了 dbinit + boot ensure 双臂但漏登本 sequence 通道（744/745 先例
+  # 均三臂齐备）；ALTER TYPE text::text 与 ADD COLUMN IF NOT EXISTS 均
+  # 可重入，boot ensure 已升级过的库重跑本迁移体无副作用。
+  "$ROOT_DIR/sql/migrations/startup/746_report_snapshots_internal_dims.sql"
   # 2026-09-24 supplier-protocol-optimization §3.2：800 provider_endpoint_
   # protocols 每 provider 多端点表 + 从 providers 旧行回填（ON CONFLICT
   # DO NOTHING 幂等）。原 deploy/sql/migrations/V800__*.sql 从未进任何

@@ -37,6 +37,13 @@ func (h *Handler) SetReportRollupWorker(w interface {
 
 // handleReportRollup 路由分发（/api/admin/report-rollup/ 前缀）。
 func (h *Handler) handleReportRollup(w http.ResponseWriter, r *http.Request) {
+	// lite/无 DB 模式下 adminHandler 仍会创建（保 /api/auth/*），本组端点
+	// 全部依赖 PG——按仓库约定在请求时 503，而非 nil pool panic
+	//（对齐 bg/audit_trimmer.go 的显式 nil-pool 守卫先例，R65）。
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not available")
+		return
+	}
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -177,6 +184,12 @@ func (h *Handler) handleReportRollupExport(w http.ResponseWriter, r *http.Reques
 	}
 	rep, err := reportrollup.BuildRangeReport(r.Context(), h.db, start, end, view, filter, h.providerNames(r.Context()))
 	if err != nil {
+		// 与 summary 同款降级：report_snapshots 缺表（未迁移）时导出
+		// 也返回 degraded JSON 而非 500（R65 对齐文件头降级语义）。
+		if strings.Contains(strings.ToLower(err.Error()), "report_snapshots") {
+			writeJSON(w, http.StatusOK, map[string]any{"degraded": true, "error_code": "REPORT_SNAPSHOTS_NOT_MIGRATED"})
+			return
+		}
 		slog.Error("report rollup export query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "report export query failed")
 		return
@@ -222,7 +235,8 @@ func (h *Handler) handleReportRollupRun(w http.ResponseWriter, r *http.Request) 
 	stats, err := h.reportRollupWorker.RollupDate(r.Context(), day)
 	if err != nil {
 		slog.Error("report rollup manual run failed", "date", day, "error", err)
-		writeError(w, http.StatusInternalServerError, "report rollup run failed: "+err.Error())
+		// R65：错误细节（可含 SQL/约束信息）只进日志，不透传响应体。
+		writeError(w, http.StatusInternalServerError, "report rollup run failed")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

@@ -1023,6 +1023,18 @@ func (d *DB) ensureReportSnapshots(ctx context.Context) error {
 			return fmt.Errorf("upgrade report_snapshots to 746: %w", err)
 		}
 	}
+	// R65：boot ensure 不执行迁移体尾部的 COMMENT——无论新建/升级/既有
+	// 健康库，幂等补齐三列注释，使 col_description 与迁移直跑库一致。
+	if _, err := d.pool.Exec(ctx, `
+		COMMENT ON COLUMN report_snapshots.scope IS
+		    'daily_total | daily_by_provider | daily_by_model | internal_tenant | internal_person | internal_model; provider-facing scopes include all traffic classes, internal scopes are business traffic only';
+		COMMENT ON COLUMN report_snapshots.tenant_id IS
+		    'text tenant id (usage_facts.tenant_id); set for internal_tenant / internal_person / internal_model';
+		COMMENT ON COLUMN report_snapshots.credits_charged IS
+		    'internal billing credits summed from usage_facts.credits_charged (internal pricing caliber); money = credits * price_snapshot.cents_per_credit';
+	`); err != nil {
+		return fmt.Errorf("comment report_snapshots columns: %w", err)
+	}
 	if _, err := d.pool.Exec(ctx, `
 		INSERT INTO public.schema_migrations (version, description)
 		VALUES ('745', 'report snapshots: daily rollup snapshot table (design pre-placement)')

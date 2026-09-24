@@ -67,7 +67,8 @@ func TestReportRollup_RealDB_E2E(t *testing.T) {
 	}
 
 	// 合成数据：tenantA/alice 成功 2 笔 + timeout 失败 1 笔（business），
-	// tenantA/alice rate_limited 1 笔，tenantB probe 成功 1 笔（不计内部），
+	// tenantA/alice rate_limited 1 笔，tenantB/alice 成功 1 笔（business——
+	// R65 P1 钉桩：跨租户同人，scope_key 不编码租户则两桶同键互相覆盖），
 	// provider 未落定失败 1 笔（只进 daily_total）。
 	seed := []struct {
 		tenant, person, model string
@@ -82,7 +83,7 @@ func TestReportRollup_RealDB_E2E(t *testing.T) {
 		{"tenantA", "alice", "gpt-x", int64(11), "success", "", 2000, 800, 200, 9.5, 1200},
 		{"tenantA", "alice", "gpt-x", int64(11), "failure", "timeout", 500, 0, 0, 0.5, 30000},
 		{"tenantA", "alice", "gpt-y", int64(12), "rate_limited", "", 0, 0, 0, 0, 0},
-		{"tenantB", "", "gpt-x", int64(11), "success", "", 999, 99, 50, 3.3, 600},
+		{"tenantB", "alice", "gpt-x", int64(11), "success", "", 999, 99, 50, 3.3, 600},
 		{"tenantA", "alice", "gpt-x", nil, "failure", "auth", 0, 0, 0, 0, 0},
 	}
 	for i, s := range seed {
@@ -182,10 +183,24 @@ func TestReportRollup_RealDB_E2E(t *testing.T) {
 	if tb == nil || tb.req != 1 {
 		t.Errorf("internal_tenant/tenantB = %+v, want 1", tb)
 	}
-	// internal_person：alice 5 笔（scope_key = person，tenant_id 列 = tenantA）。
-	alice := find("internal_person", "alice", "")
+	// internal_person（R65 起 scope_key 编码租户：tenant\x00person）：
+	// tenantA/alice 5 笔 + tenantB/alice 1 笔——跨租户同人必须各自成桶。
+	alice := find("internal_person", internalPersonScopeKey("tenantA", "alice"), "")
 	if alice == nil || alice.req != 5 {
-		t.Errorf("internal_person/alice = %+v, want 5", alice)
+		t.Errorf("internal_person/tenantA·alice = %+v, want 5", alice)
+	}
+	aliceB := find("internal_person", internalPersonScopeKey("tenantB", "alice"), "")
+	if aliceB == nil || aliceB.req != 1 {
+		t.Errorf("internal_person/tenantB·alice = %+v, want 1", aliceB)
+	}
+	var personRows int
+	for i := range got {
+		if got[i].scope == "internal_person" {
+			personRows++
+		}
+	}
+	if personRows != 2 {
+		t.Errorf("internal_person rows = %d, want 2 (cross-tenant same person must not collide)", personRows)
 	}
 	// internal_model：tenantA × gpt-x 4 笔（2 成功 2 失败）。
 	im := find("internal_model", "tenantA", "gpt-x")

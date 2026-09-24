@@ -153,9 +153,9 @@ func TestBuildRangeReport_InternalView(t *testing.T) {
 	snaps := []Snapshot{
 		mkSnapPriced(ScopeInternalTenant, "acme", "2026-09-01", "", 10, 9, map[string]int64{"rate_limited": 1}, &tenant, 1000, 0.1),
 		mkSnapPriced(ScopeInternalTenant, "acme", "2026-09-02", "", 6, 6, nil, &tenant, 600, 0.1),
-		// internal_person 行 scope_key = 人员标识（end_user_id / person:hash）。
-		mkSnapPriced(ScopeInternalPerson, "alice", "2026-09-01", "", 7, 7, nil, &tenant, 700, 0.1),
-		mkSnapPriced(ScopeInternalPerson, "person:abcd1234", "2026-09-01", "", 3, 2, map[string]int64{"rate_limited": 1}, &tenant, 300, 0.1),
+		// internal_person 行 scope_key = 租户编码键（R65：tenant\x00person）。
+		mkSnapPriced(ScopeInternalPerson, internalPersonScopeKey("acme", "alice"), "2026-09-01", "", 7, 7, nil, &tenant, 700, 0.1),
+		mkSnapPriced(ScopeInternalPerson, internalPersonScopeKey("acme", "person:abcd1234"), "2026-09-01", "", 3, 2, map[string]int64{"rate_limited": 1}, &tenant, 300, 0.1),
 		mkSnapPriced(ScopeInternalModel, "acme", "2026-09-01", "gpt-x", 10, 9, map[string]int64{"rate_limited": 1}, &tenant, 1000, 0.1),
 	}
 	mustSnapshotRows(t, mock, snaps, 3)
@@ -322,4 +322,62 @@ func mustJSON(t *testing.T, v any) []byte {
 		t.Fatalf("marshal: %v", err)
 	}
 	return raw
+}
+
+// R65 P1 钉桩：internal_person 的 scope_key 必须编码租户——四键 UNIQUE
+// (scope, scope_key, report_date, raw_model_name) 不含 tenant_id 列，裸
+// person 键会让跨租户同人（含双双归 'unknown'）的日桶在 ON CONFLICT 中
+// 互相覆盖。
+func TestInternalPersonScopeKey_CrossTenantDistinct(t *testing.T) {
+	a1 := internalPersonScopeKey("tenantA", "alice")
+	b1 := internalPersonScopeKey("tenantB", "alice")
+	if a1 == b1 {
+		t.Fatalf("cross-tenant same person produced identical scope_key %q", a1)
+	}
+	// 双缺租户不可能（tenant_id 是 usage_facts 业务必带列），但双同人
+	// 'unknown' 仍须分桶。
+	u1 := internalPersonScopeKey("tenantA", "unknown")
+	u2 := internalPersonScopeKey("tenantB", "unknown")
+	if u1 == u2 {
+		t.Fatalf("cross-tenant unknown person collided: %q", u1)
+	}
+	// 读面还原：展示名 = 分隔符后的 person 部分；历史裸键原样返回。
+	if _, person := splitInternalPersonScopeKey(a1); person != "alice" {
+		t.Errorf("split person = %q, want alice", person)
+	}
+	if tenant, whole := splitInternalPersonScopeKey("legacy-bare-key"); tenant != "" || whole != "legacy-bare-key" {
+		t.Errorf("legacy key split = (%q, %q)", tenant, whole)
+	}
+}
+
+// R65 P2 钉桩：internal 视角带 tenant_id 过滤时按天序列不得为空
+// （SQL WHERE 已收窄行集，days/totals/tenants 口径一致填充）。
+func TestBuildRangeReport_InternalTenantFilterKeepsDays(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
+	}
+	defer mock.Close()
+
+	tenant := "acme"
+	snaps := []Snapshot{
+		mkSnapPriced(ScopeInternalTenant, "acme", "2026-09-01", "", 10, 9, nil, &tenant, 1000, 0.1),
+		mkSnapPriced(ScopeInternalTenant, "acme", "2026-09-02", "", 6, 6, nil, &tenant, 600, 0.1),
+		mkSnapPriced(ScopeInternalPerson, internalPersonScopeKey("acme", "alice"), "2026-09-01", "", 7, 7, nil, &tenant, 700, 0.1),
+		mkSnapPriced(ScopeInternalModel, "acme", "2026-09-01", "gpt-x", 10, 9, nil, &tenant, 1000, 0.1),
+	}
+	mustSnapshotRows(t, mock, snaps, 4)
+
+	rep, err := BuildRangeReport(context.Background(), mock,
+		day(t, "2026-09-01"), day(t, "2026-09-02"), ViewInternal,
+		RangeFilter{TenantID: "acme"}, nil)
+	if err != nil {
+		t.Fatalf("BuildRangeReport: %v", err)
+	}
+	if len(rep.Days) != 2 {
+		t.Fatalf("days = %d, want 2 (tenant-filtered internal view must keep daily series)", len(rep.Days))
+	}
+	if rep.Days[0].Totals.RequestCount != 10 || rep.Days[1].Totals.RequestCount != 6 {
+		t.Errorf("days totals = %+v", rep.Days)
+	}
 }
