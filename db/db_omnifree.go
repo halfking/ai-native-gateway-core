@@ -440,61 +440,101 @@ func (d *DB) ensureOmniFreeSchema(ctx context.Context) error {
 		LANGUAGE sql
 		STABLE
 		AS $$ SELECT COALESCE(NULLIF(current_setting('app.current_tenant', true), ''), 'default'); $$;
-
-		DO $$
-		DECLARE
-			table_name text;
-		BEGIN
-			FOREACH table_name IN ARRAY ARRAY[
-				'free_resource_catalog', 'free_quota_tracker',
-				'auto_combo_templates', 'keyless_providers'
-			] LOOP
-				EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', table_name);
-				EXECUTE format('DROP POLICY IF EXISTS tenant_isolation_policy ON %I', table_name);
-				EXECUTE format('DROP POLICY IF EXISTS tenant_isolation_%I ON %I', table_name, table_name);
-				EXECUTE format(
-					'CREATE POLICY tenant_isolation_%I ON %I USING (tenant_id = public.get_current_tenant() OR current_setting(''app.current_role'', true) = ''super_admin'' OR current_setting(''app.bypass_rls'', true) = ''true'') WITH CHECK (tenant_id = public.get_current_tenant() OR current_setting(''app.current_role'', true) = ''super_admin'' OR current_setting(''app.bypass_rls'', true) = ''true'')',
-					table_name, table_name
-				);
-			END LOOP;
-		END $$;
 	`)
 	if err != nil {
-		return fmt.Errorf("ensureOmniFreeSchema: create RLS policies: %w", err)
+		return fmt.Errorf("ensureOmniFreeSchema: create get_current_tenant: %w", err)
+	}
+	// R60 S6-1（2026-09-23）定义感知守卫：4 张 omni 表的策略体相同（模板内
+	// 带 '' 转义），存储定义（pg_policies.qual/with_check）与期望等价、RLS
+	// 已启用、且 legacy 名 tenant_isolation_policy 已不存在时整段跳过 DO 块；
+	// 任一漂移（含 legacy 残留需要回收）回落原路径。
+	omniTables := []string{
+		"free_resource_catalog", "free_quota_tracker",
+		"auto_combo_templates", "keyless_providers",
+	}
+	omniPolicyAllCurrent := true
+	for _, tbl := range omniTables {
+		omniPolicyDDL := fmt.Sprintf(`CREATE POLICY tenant_isolation_%[1]s ON public.%[1]s USING (tenant_id = public.get_current_tenant() OR current_setting('app.current_role', true) = 'super_admin' OR current_setting('app.bypass_rls', true) = 'true') WITH CHECK (tenant_id = public.get_current_tenant() OR current_setting('app.current_role', true) = 'super_admin' OR current_setting('app.bypass_rls', true) = 'true')`, tbl)
+		if !d.rlsPoliciesCurrent(ctx, tbl, false, []string{omniPolicyDDL}, "tenant_isolation_policy") {
+			omniPolicyAllCurrent = false
+			break
+		}
+	}
+	if omniPolicyAllCurrent {
+		slog.Info("ensureOmniFreeSchema: RLS policies ensured (policy definition short-circuit)")
+	} else {
+		_, err = d.pool.Exec(ctx, `
+			DO $$
+			DECLARE
+				table_name text;
+			BEGIN
+				FOREACH table_name IN ARRAY ARRAY[
+					'free_resource_catalog', 'free_quota_tracker',
+					'auto_combo_templates', 'keyless_providers'
+				] LOOP
+					EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', table_name);
+					EXECUTE format('DROP POLICY IF EXISTS tenant_isolation_policy ON %I', table_name);
+					EXECUTE format('DROP POLICY IF EXISTS tenant_isolation_%I ON %I', table_name, table_name);
+					EXECUTE format(
+						'CREATE POLICY tenant_isolation_%I ON %I USING (tenant_id = public.get_current_tenant() OR current_setting(''app.current_role'', true) = ''super_admin'' OR current_setting(''app.bypass_rls'', true) = ''true'') WITH CHECK (tenant_id = public.get_current_tenant() OR current_setting(''app.current_role'', true) = ''super_admin'' OR current_setting(''app.bypass_rls'', true) = ''true'')',
+						table_name, table_name
+					);
+				END LOOP;
+			END $$;
+		`)
+		if err != nil {
+			return fmt.Errorf("ensureOmniFreeSchema: create RLS policies: %w", err)
+		}
 	}
 
 	// ── 6. Create updated_at triggers ─────────────────────────────────────
-	_, err = d.pool.Exec(ctx, `
-		CREATE OR REPLACE FUNCTION update_updated_at_column()
-		RETURNS TRIGGER AS $$
-		BEGIN
-			NEW.updated_at = now();
-			RETURN NEW;
-		END;
-		$$ LANGUAGE plpgsql;
+	// R60 S6-1（2026-09-23）定义感知守卫：4 个 updated_at 触发器存储定义
+	// （pg_get_triggerdef）全部与期望等价时跳过整块；任一漂移回落原路径。
+	omniTriggersAllCurrent := true
+	for _, tbl := range omniTables {
+		omniTriggerDDL := fmt.Sprintf(`CREATE TRIGGER update_%s_updated_at
+			BEFORE UPDATE ON %s
+			FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()`, tbl, tbl)
+		if !d.triggersCurrent(ctx, tbl, []string{omniTriggerDDL}) {
+			omniTriggersAllCurrent = false
+			break
+		}
+	}
+	if omniTriggersAllCurrent {
+		slog.Info("ensureOmniFreeSchema: updated_at triggers ensured (trigger definition short-circuit)")
+	} else {
+		_, err = d.pool.Exec(ctx, `
+			CREATE OR REPLACE FUNCTION update_updated_at_column()
+			RETURNS TRIGGER AS $$
+			BEGIN
+				NEW.updated_at = now();
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql;
 
-		DROP TRIGGER IF EXISTS update_free_resource_catalog_updated_at ON free_resource_catalog;
-		CREATE TRIGGER update_free_resource_catalog_updated_at
-			BEFORE UPDATE ON free_resource_catalog
-			FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+			DROP TRIGGER IF EXISTS update_free_resource_catalog_updated_at ON free_resource_catalog;
+			CREATE TRIGGER update_free_resource_catalog_updated_at
+				BEFORE UPDATE ON free_resource_catalog
+				FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-		DROP TRIGGER IF EXISTS update_free_quota_tracker_updated_at ON free_quota_tracker;
-		CREATE TRIGGER update_free_quota_tracker_updated_at
-			BEFORE UPDATE ON free_quota_tracker
-			FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+			DROP TRIGGER IF EXISTS update_free_quota_tracker_updated_at ON free_quota_tracker;
+			CREATE TRIGGER update_free_quota_tracker_updated_at
+				BEFORE UPDATE ON free_quota_tracker
+				FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-		DROP TRIGGER IF EXISTS update_auto_combo_templates_updated_at ON auto_combo_templates;
-		CREATE TRIGGER update_auto_combo_templates_updated_at
-			BEFORE UPDATE ON auto_combo_templates
-			FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+			DROP TRIGGER IF EXISTS update_auto_combo_templates_updated_at ON auto_combo_templates;
+			CREATE TRIGGER update_auto_combo_templates_updated_at
+				BEFORE UPDATE ON auto_combo_templates
+				FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-		DROP TRIGGER IF EXISTS update_keyless_providers_updated_at ON keyless_providers;
-		CREATE TRIGGER update_keyless_providers_updated_at
-			BEFORE UPDATE ON keyless_providers
-			FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-	`)
-	if err != nil {
-		return fmt.Errorf("ensureOmniFreeSchema: create triggers: %w", err)
+			DROP TRIGGER IF EXISTS update_keyless_providers_updated_at ON keyless_providers;
+			CREATE TRIGGER update_keyless_providers_updated_at
+				BEFORE UPDATE ON keyless_providers
+				FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+		`)
+		if err != nil {
+			return fmt.Errorf("ensureOmniFreeSchema: create triggers: %w", err)
+		}
 	}
 
 	// ── 7. Create summary view + helper functions (与 075-omnifree-schema.sql §6-7 签名一致) ──

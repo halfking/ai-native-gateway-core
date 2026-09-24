@@ -62,3 +62,34 @@ func syntheticScopeOf(entry *telemetry.RequestLogEntry) string {
 	}
 	return "gw"
 }
+
+// IsProbeSyntheticSession reports whether the entry would synthesize a
+// probe-kind system session（R51 教训落地，R60 S2-F4：这类会话不进 mirror）。
+//
+// 判据与来源（必须是探针专有的强特征，不得误伤真实用户会话）：
+//
+//  1. entry.GwSessionID 为空 —— 该条目在 hook 里只会走合成路径（D4）；真实
+//     用户会话始终携带 gw_session_id（会话头或 gw_<hosted_task> 派生），第
+//     一道判据即排除。注意：判据不查 session id 字符串前缀（"sys:probe:*"），
+//     因为那是本函数派生的产物、且客户端可自报同名 GwSessionID——以
+//     "无会话头"这一事实为准。
+//  2. syntheticKindOf(entry) == "probe" —— origin_stage / origin_actor /
+//     task_type 含 "probe"。这三个字段由网关探针 worker 专有写入
+//     （bg/node_probe、credential-selfcheck、system-health；origin_stage ∈
+//     node_probe | self_check | system_health | business，见
+//     telemetry/client.go origin.stage/origin.actor 约定），不来自客户端
+//     请求头，不与业务流量重叠。
+//
+// 两条件合取 ⇒ 只命中"无会话头 + 探针产出"的合成流量（154 复审 §四.5：
+// mirror 失败噪声 ~115/min，99.6% 为该类 probe synthetic 会话 advisory lock
+// 超时）。有会话头的探针请求（如挂在真实会话上的自检）与无会话头的
+// internal/anon 系统流量都不受影响，D4 的计费事实保全面不变。
+func IsProbeSyntheticSession(entry *telemetry.RequestLogEntry) bool {
+	if entry == nil {
+		return false
+	}
+	if entry.GwSessionID != nil && *entry.GwSessionID != "" {
+		return false
+	}
+	return syntheticKindOf(entry) == "probe"
+}

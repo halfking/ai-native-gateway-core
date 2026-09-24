@@ -289,6 +289,14 @@ func (r *MirrorOutboxReaper) replayOne(ctx context.Context, row claimRow) {
 		mirrorReplayTotal.WithLabelValues("skipped").Inc()
 		return
 	}
+	// R60 S2-F4 gate parity：探针合成会话自 hook 起即不入 mirror（R51 教训），
+	// 已登记的存量失败行（多为 advisory lock 超时噪声）在重放时直接删除，
+	// 不再无限重试刷噪声。
+	if IsProbeSyntheticSession(&entry) {
+		r.deleteRow(ctx, row.id, "skipped: probe synthetic session (R51 mirror-skip class)")
+		mirrorReplayTotal.WithLabelValues("skipped").Inc()
+		return
+	}
 	synthetic := entry.GwSessionID == nil || *entry.GwSessionID == ""
 	if !synthetic && telemetry.IsInternalAutoEntry(&entry) {
 		r.deleteRow(ctx, row.id, "skipped: internal loopback (hook exclusion class)")

@@ -8,6 +8,7 @@ package hostedtask
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -38,6 +39,18 @@ type CallbackDeps struct {
 	Logger    *slog.Logger
 }
 
+// callbackDeliveryStore / callbackDeliveryDeliverer —— deliverOne 的窄
+// 读取/投递面（R61 提取）：*Store 与 *hostedcallback.Deliverer 天然满足，
+// 单测注入 stub 模拟 GetEvent 瞬时错误。
+type callbackDeliveryStore interface {
+	GetTask(ctx context.Context, tenantID, taskID string) (*Task, error)
+	GetEvent(ctx context.Context, tenantID, taskID string, seq int64) (*Event, error)
+}
+
+type callbackDeliveryDeliverer interface {
+	Deliver(ctx context.Context, urlStr, hookSecret string, payload []byte, correlationID string) (hostedcallback.Result, error)
+}
+
 // DeliverDueCallbacks 扫描并投递一批到期回调。返回投递成功的条数。
 // 每条结论独立回写；单条失败不阻断其余（矩阵 E）。
 func DeliverDueCallbacks(ctx context.Context, deps CallbackDeps, now time.Time, limit int) (int, error) {
@@ -65,7 +78,7 @@ func DeliverDueCallbacks(ctx context.Context, deps CallbackDeps, now time.Time, 
 			return delivered, ctx.Err()
 		default:
 		}
-		out := deliverOne(ctx, deps, job)
+		out := deliverOne(ctx, deps.Store, deps.Deliverer, deps.Keyring, job)
 		if out.delivered {
 			delivered++
 		}
@@ -92,44 +105,85 @@ type deliveryOutcome struct {
 }
 
 // deliverOne 投递单条：解密 → 重建投递体 → POST。
-func deliverOne(ctx context.Context, deps CallbackDeps, job CallbackJob) deliveryOutcome {
+// store/deliverer 以窄接口注入（R61 提取）：单测可在不起真库的情况下
+// 模拟 GetEvent 瞬时错误（瞬时错误必须可重试，ErrNotFound 降级 legacy 形状）。
+func deliverOne(ctx context.Context, store callbackDeliveryStore, deliverer callbackDeliveryDeliverer, keyring *secret.Keyring, job CallbackJob) deliveryOutcome {
 	fail := func(retryable bool, err error) deliveryOutcome {
 		return deliveryOutcome{retryable: retryable, errText: err.Error()}
 	}
 
-	urlPlain, err := secret.DecryptAESGCM(job.URLEnc, deps.Keyring)
+	urlPlain, err := secret.DecryptAESGCM(job.URLEnc, keyring)
 	if err != nil {
 		return fail(false, fmt.Errorf("decrypt callback url: %w", err)) // 密文/keyring 问题不因重试消失
 	}
-	secretPlain, err := secret.DecryptAESGCM(job.SecretEnc, deps.Keyring)
+	secretPlain, err := secret.DecryptAESGCM(job.SecretEnc, keyring)
 	if err != nil {
 		return fail(false, fmt.Errorf("decrypt callback secret: %w", err))
 	}
 
 	// 投递体以 PG 当前权威状态重建（result/终态在 hosted_tasks 行上），
 	// event_id 固定 = hosted_<id>_ev<seq>，重投由接收方幂等。
-	task, err := deps.Store.GetTask(ctx, job.TenantID, job.TaskID)
+	task, err := store.GetTask(ctx, job.TenantID, job.TaskID)
 	if err != nil {
 		return fail(true, fmt.Errorf("load task for callback: %w", err))
 	}
-	eventType := "hosted_task." + string(task.Status)
-	payload := map[string]any{
-		"status":  task.Status.APIStatus(),
-		"result":  task.Result,
-		"attempt": job.Attempts + 1,
+	// recalled 事件的回调必须带 recall_status + handoff_packet（§3.3：每次
+	// 召回交付一次最新包；store.RecallTask 的注释契约）。回调台账行以
+	// event_seq 精确指向该事件，按 seq 读回事件 payload——deliverer 据此
+	// 区分召回投递（事件类型 hosted_task.recalled）并交付包本体。
+	// R61（2026-09-24）：仅 ErrNotFound（旧行/事件已不可读，如 742.down
+	// 场景）降级 ev=nil 保持既有投递形状；瞬时 DB 错误按可重试失败返回——
+	// 吞掉会把 recalled 回调静默降级成无包 legacy 形状并标记已投递，
+	// §3.3 包投递契约被破坏且永不重试。
+	ev, evErr := store.GetEvent(ctx, job.TenantID, job.TaskID, job.EventSeq)
+	if evErr != nil && !errors.Is(evErr, ErrNotFound) {
+		return fail(true, fmt.Errorf("load event for callback: %w", evErr))
 	}
+	eventType, payload := buildCallbackDelivery(task, ev, job.Attempts+1)
 	body, err := hostedcallback.BuildEnvelope(job.EventID, eventType, job.TaskID, job.TenantID, payload)
 	if err != nil {
 		return fail(true, fmt.Errorf("build envelope: %w", err))
 	}
 
-	res, derr := deps.Deliverer.Deliver(ctx, string(urlPlain), string(secretPlain), body, job.TaskID)
+	res, derr := deliverer.Deliver(ctx, string(urlPlain), string(secretPlain), body, job.TaskID)
 	return deliveryOutcome{
 		delivered:  res.Delivered,
 		retryable:  res.Retryable,
 		statusCode: res.StatusCode,
 		errText:    errString(derr),
 	}
+}
+
+// buildCallbackDelivery 从任务行 + 关联事件行重建回调投递体（纯函数，回归
+// 测试锚点）。ev 为 job.EventSeq 指向的事件；recalled 事件在既有
+// {status,result,attempt} 形状上追加 recall_status + handoff_packet，事件
+// 类型改为 hosted_task.recalled——回调消费者据此区分召回投递并拿到续跑包
+// （§3.3：每次召回交付一次最新包）。ev 为 nil（事件行不可读的旧行）或事件
+// 里没有包时保持既有形状：不追加字段、类型仍为 hosted_task.<status>。
+//
+// 尺寸策略：result 与 handoff_packet 均按 PG 权威数据原样投递、不做投递侧
+// 截断——与既有 result 字段同一策略（result 从 SettleTask 写入起即无投递
+// 侧封顶，全链以 PG 权威为准）；包内 CurrentResult 正是同一份 result 快照
+// （handoff.go buildHandoffPacket），召回 HTTP 响应（handler.go recall）同
+// 样原样返回包，两读方尺寸口径一致。
+func buildCallbackDelivery(task *Task, ev *Event, attempt int) (string, map[string]any) {
+	eventType := "hosted_task." + string(task.Status)
+	payload := map[string]any{
+		"status":  task.Status.APIStatus(),
+		"result":  task.Result,
+		"attempt": attempt,
+	}
+	if ev == nil || ev.Type != EventRecalled {
+		return eventType, payload
+	}
+	eventType = "hosted_task." + string(EventRecalled)
+	if rs, ok := ev.Payload["recall_status"].(string); ok && rs != "" {
+		payload["recall_status"] = rs
+	}
+	if hp, ok := ev.Payload["handoff_packet"]; ok {
+		payload["handoff_packet"] = hp
+	}
+	return eventType, payload
 }
 
 func errString(err error) string {
