@@ -5363,6 +5363,17 @@ func main() {
 			if adminHandler != nil {
 				adminHandler.SetFeedbackAnalyzer(feedbackAnalyzer)
 			}
+
+			// 2026-09-25 (对账报表落地轮): 每日对账报表聚合——昨日
+			// usage_facts → report_snapshots 六 scope 快照，钟点走
+			// settings reports.daily_rollup.hour（默认凌晨 02:00 UTC，
+			// HotReload）。与 FeedbackAnalyzer 同处跳过 data-plane 模式。
+			reportRollupWorker := bg.NewReportRollupWorker(dbConn.Pool())
+			reportRollupWorker.Start(context.Background())
+			defer reportRollupWorker.Stop()
+			if adminHandler != nil {
+				adminHandler.SetReportRollupWorker(reportRollupWorker)
+			}
 		}
 		{
 			// B (continued): request-path telemetry writers — per-instance
