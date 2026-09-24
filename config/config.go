@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -270,6 +271,16 @@ type Config struct {
 	LicensePublicKey  string `yaml:"license_public_key" env:"LLM_GATEWAY_LICENSE_PUBLIC_KEY"`
 	LicenseAESKey     string `yaml:"license_aes_key" env:"LLM_GATEWAY_LICENSE_AES_KEY"`
 
+	// Mock Probe 通道（2026-09-24，docs/design/2026-09-23-mock-probe-channel）。
+	// 进程内 mock 供应商（mock-fast / mock-slow）+ 定时自检客户端，验证网关
+	// 全链路（主 mux → 鉴权旁路 → handler → SSE/非流式）。默认全关；启用后
+	// runner 每 MockProbeInterval 跑一轮 2x2 探测（supplier × stream）。
+	// 历史落 mock_probe_history（migrations/036），绝不写 request_logs。
+	MockProbeEnabled          bool          `yaml:"mock_probe_enabled" env:"LLM_GATEWAY_MOCK_PROBE_ENABLED"`
+	MockProbeHideInAdmin      bool          `yaml:"mock_probe_hide_in_admin" env:"LLM_GATEWAY_MOCK_PROBE_HIDE_IN_ADMIN"`
+	MockProbeInterval         time.Duration `yaml:"mock_probe_interval" env:"LLM_GATEWAY_MOCK_PROBE_INTERVAL_SECONDS"`
+	MockProbeFailureThreshold int           `yaml:"mock_probe_failure_threshold" env:"LLM_GATEWAY_MOCK_PROBE_FAILURE_THRESHOLD"`
+
 	// Config file path (internal, not serialized)
 	configPath                 string `yaml:"-"`
 	modelAliasPrefixConfigured bool   `yaml:"-"`
@@ -517,6 +528,18 @@ func defaultTrustedProxyCIDRs(supplied []string) []string {
 	return []string{"127.0.0.1/32", "::1/128"}
 }
 
+// MockProbeHideInAdmin reports whether mock- 前缀供应商应从 admin 列表隐藏，
+// 不构造完整 Config 即可读取（admin/providers.go 的 listProviders 每请求调用，
+// 测试可用 t.Setenv 切换）。默认 true；LLM_GATEWAY_MOCK_PROBE_HIDE_IN_ADMIN
+// =false/0 显式放行。与 Load() 内默认值单一事实源。
+func MockProbeHideInAdmin() bool {
+	v := os.Getenv("LLM_GATEWAY_MOCK_PROBE_HIDE_IN_ADMIN")
+	if v == "" {
+		return true
+	}
+	return v != "false" && v != "0"
+}
+
 // Load loads configuration from environment variables (and optionally a file).
 func Load() *Config {
 	cfg := &Config{
@@ -621,6 +644,13 @@ func Load() *Config {
 		LogMaxBackups: 10,
 		LogMaxAgeDays: 7,
 		LogCompress:   true,
+		// Mock Probe 通道：默认全关；HideInAdmin 默认 true（Admin 列表
+		// 不显示 mock- 前缀供应商）；interval < 1s 视为误配，回落 30s
+		//（设计 §六 风险表：防探测风暴）。
+		MockProbeEnabled:          false,
+		MockProbeHideInAdmin:      MockProbeHideInAdmin(),
+		MockProbeInterval:         30 * time.Second,
+		MockProbeFailureThreshold: 3,
 	}
 	cfg.HostedTasks = loadHostedTasksConfig()
 
@@ -720,6 +750,23 @@ func Load() *Config {
 	if v := os.Getenv("LLM_GATEWAY_STREAM_RETRY_ENABLED"); v != "" {
 		cfg.StreamRetryEnabled = v == "true" || v == "1"
 	}
+	// Mock Probe 通道 env overrides（与设计 §3.1 一致；bool 语义同上）。
+	if v := os.Getenv("LLM_GATEWAY_MOCK_PROBE_ENABLED"); v != "" {
+		cfg.MockProbeEnabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("LLM_GATEWAY_MOCK_PROBE_HIDE_IN_ADMIN"); v != "" {
+		cfg.MockProbeHideInAdmin = v != "false" && v != "0"
+	}
+	if v := os.Getenv("LLM_GATEWAY_MOCK_PROBE_INTERVAL_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MockProbeInterval = time.Duration(n) * time.Second
+		}
+	}
+	if cfg.MockProbeInterval < time.Second {
+		// 防探测风暴（设计 §六）：interval < 1s（含 0/负数/未配置）回落 30s。
+		cfg.MockProbeInterval = 30 * time.Second
+	}
+	applyPositiveIntEnv("LLM_GATEWAY_MOCK_PROBE_FAILURE_THRESHOLD", &cfg.MockProbeFailureThreshold)
 	// Request survival env overrides.
 	if v := os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED"); v != "" {
 		cfg.RequestSurvivalEnabled = v == "true" || v == "1"
@@ -961,6 +1008,25 @@ func (cfg *Config) mergeFrom(other *Config) {
 	}
 	if other.EmptyStreamEarlyEmptyChunks != 0 && os.Getenv("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS") == "" {
 		cfg.EmptyStreamEarlyEmptyChunks = other.EmptyStreamEarlyEmptyChunks
+	}
+
+	// Mock Probe 通道 file overrides（env wins，同上模式）。布尔零值有意义
+	//（显式 false），走 yamlConfigured 精确判定。
+	if other.yamlConfigured["mock_probe_enabled"] && os.Getenv("LLM_GATEWAY_MOCK_PROBE_ENABLED") == "" {
+		cfg.MockProbeEnabled = other.MockProbeEnabled
+	}
+	if other.yamlConfigured["mock_probe_hide_in_admin"] && os.Getenv("LLM_GATEWAY_MOCK_PROBE_HIDE_IN_ADMIN") == "" {
+		cfg.MockProbeHideInAdmin = other.MockProbeHideInAdmin
+	}
+	if other.MockProbeInterval > 0 && os.Getenv("LLM_GATEWAY_MOCK_PROBE_INTERVAL_SECONDS") == "" {
+		cfg.MockProbeInterval = other.MockProbeInterval
+	}
+	if other.MockProbeFailureThreshold > 0 && os.Getenv("LLM_GATEWAY_MOCK_PROBE_FAILURE_THRESHOLD") == "" {
+		cfg.MockProbeFailureThreshold = other.MockProbeFailureThreshold
+	}
+	if cfg.MockProbeInterval < time.Second {
+		// 与 Load() 相同的防风暴钳制（yaml 路径也可能配出 <1s）。
+		cfg.MockProbeInterval = 30 * time.Second
 	}
 
 	// Request survival file overrides (env wins, same pattern as above).
