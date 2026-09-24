@@ -941,19 +941,24 @@ func (d *DB) ensureSqlAuditPartialIndexes(ctx context.Context) error {
 }
 
 // ensureReportSnapshots mirrors sql/migrations/startup/
-// 745_report_snapshots.sql（2026-09-24 对账报表设计切片，SSOT 见
+// 745_report_snapshots.sql + 746_report_snapshots_internal_dims.sql
+//（2026-09-24 对账报表设计切片；2026-09-25 内部对帐维度补齐，SSOT 见
 // sql/objects/tables/report_snapshots.sql）。
 //
 // report_snapshots 是日报快照表（scope×model×day 粒度，UNIQUE 四键支撑
-// ON CONFLICT 幂等回填）。状态：设计预埋——消费方（bg/report_rollup_worker
-// 写面、admin/report_rollup 读面）尚未实现，本 ensure 只保证表结构先于
-// 未来接线就位；原迁移文件死放 migrations/ 顶层、无任何投递通道，存量库
-// 上表缺失，故挂入启动链兜底。
+// ON CONFLICT 幂等回填）。消费方（bg/report_rollup_worker 写面、
+// admin/report_rollup 读面）已于 2026-09-25 落地；746 补 tenant_id
+// bigint→text（对齐 usage_facts 文本租户键）与 credits_charged /
+// latency_p50_ms / latency_p95_ms 三列。
 //
 // 幂等：information_schema 存在性短路（表在位零 DDL——CREATE TABLE 即使
 // no-op 也取表级锁，共享库持续写流下锁等待会撞 statement_timeout，见
-// columnsAllPresent 注释同因）；缺席才执行与迁移一致的 CREATE TABLE/INDEX。
-// 账本戳照常执行（ON CONFLICT DO NOTHING 幂等），与 744 stamp 同款。
+// columnsAllPresent 注释同因）；缺席才执行与迁移一致的 CREATE TABLE/INDEX
+//（新装直接建 746 后最终形状）。存量库升级走 columnsAllPresent 守卫——
+// 三列齐全则跳过 746 的 ALTER（ALTER TYPE 即使 no-op 也取 ACCESS
+// EXCLUSIVE 锁）；746 的 ALTER COLUMN ... USING tenant_id::text 本身可重
+// 入，零行表上锁窗口可忽略。账本戳照常执行（ON CONFLICT DO NOTHING 幂
+// 等），与 744 stamp 同款。
 func (d *DB) ensureReportSnapshots(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
@@ -991,7 +996,10 @@ func (d *DB) ensureReportSnapshots(ctx context.Context) error {
 			    price_snapshot      JSONB NOT NULL DEFAULT '{}'::jsonb,
 			    provider_id         BIGINT,
 			    canonical_id        BIGINT,
-			    tenant_id           BIGINT,
+			    tenant_id           TEXT,
+			    credits_charged     BIGINT NOT NULL DEFAULT 0,
+			    latency_p50_ms      BIGINT NOT NULL DEFAULT 0,
+			    latency_p95_ms      BIGINT NOT NULL DEFAULT 0,
 			    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
 			    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
 			    CONSTRAINT report_snapshots_scope_key_date_raw_model_key
@@ -1002,6 +1010,18 @@ func (d *DB) ensureReportSnapshots(ctx context.Context) error {
 		`); err != nil {
 			return fmt.Errorf("ensure report_snapshots: %w", err)
 		}
+	} else if !d.columnsAllPresent(ctx, "report_snapshots",
+		[]string{"credits_charged", "latency_p50_ms", "latency_p95_ms"}) {
+		// 存量库（745 已建、746 未跑）：tenant_id bigint→text + 三列补齐，
+		// 与 746 迁移体逐字等价（ALTER TYPE USING text::text 可重入）。
+		if _, err := d.pool.Exec(ctx, `
+			ALTER TABLE report_snapshots ALTER COLUMN tenant_id TYPE text USING tenant_id::text;
+			ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS credits_charged BIGINT NOT NULL DEFAULT 0;
+			ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS latency_p50_ms BIGINT NOT NULL DEFAULT 0;
+			ALTER TABLE report_snapshots ADD COLUMN IF NOT EXISTS latency_p95_ms BIGINT NOT NULL DEFAULT 0;
+		`); err != nil {
+			return fmt.Errorf("upgrade report_snapshots to 746: %w", err)
+		}
 	}
 	if _, err := d.pool.Exec(ctx, `
 		INSERT INTO public.schema_migrations (version, description)
@@ -1010,7 +1030,14 @@ func (d *DB) ensureReportSnapshots(ctx context.Context) error {
 	`); err != nil {
 		return fmt.Errorf("stamp 745: %w", err)
 	}
-	slog.Info("report_snapshots ensured (745)", "table_present_before", present)
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('746', 'report snapshots: internal reconciliation dims (tenant text + credits/latency)')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 746: %w", err)
+	}
+	slog.Info("report_snapshots ensured (745+746)", "table_present_before", present)
 	return nil
 }
 

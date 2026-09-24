@@ -29,6 +29,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
+	"github.com/kaixuan/llm-gateway-go/domains/reportrollup" // 对账报表读面/导出（2026-09-25）
 	"github.com/kaixuan/llm-gateway-go/domains/session"      //nolint:depguard // session state manager
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
@@ -190,6 +191,10 @@ type Handler struct {
 	}
 	feedbackAnalyzer interface {
 		AnalyzeOnce(ctx context.Context) error
+	}
+	// reportRollupWorker 对账报表每日聚合 worker（手动重跑端点用）。
+	reportRollupWorker interface {
+		RollupDate(ctx context.Context, day time.Time) (reportrollup.RollupStats, error)
 	}
 	// memoraClient provides connectivity status for the admin UI.
 	// Structural interface avoids importing the memora package directly.
@@ -1055,6 +1060,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/dashboard/board", admin(h.handleDashboardBoard))
 	mux.HandleFunc("/api/admin/stats", admin(h.handleStats))
 	mux.HandleFunc("/api/admin/stats/", admin(h.handleStats))
+	// 2026-09-25: 对账报表（供应商/内部双视角区间汇总 + xlsx 双 sheet 导出
+	// + 单日手动重跑）。superAdmin——数据含全租户内部计费。
+	mux.HandleFunc("/api/admin/report-rollup/", h.superAdmin(h.handleReportRollup))
 	mux.HandleFunc("/api/admin/dashboard/operational", admin(h.handleDashboardOperational))
 	mux.HandleFunc("/api/admin/dashboard/board/error-drill", admin(h.handleDashboardBoardErrorDrill))
 	mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))

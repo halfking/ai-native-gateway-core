@@ -58,6 +58,7 @@ const ApprovalListView = () => import('./views/ApprovalListView.vue')
 const ApprovalDetailView = () => import('./views/ApprovalDetailView.vue')
 const OutputComplianceView = () => import('./views/OutputComplianceView.vue')
 const UsageCostView = () => import('./views/admin/UsageCost.vue')
+const ReconciliationReportView = () => import('./views/admin/ReconciliationReport.vue')
 // 2026-07-24: V2-P4 admin session detail page (dual-column turns + drawer).
 const SessionDetailView = () => import('./views/admin/SessionDetailPage.vue')
 // 2026-08-09: 跨会话轮次列表页
@@ -268,6 +269,7 @@ export const router = createRouter({
     { path: '/admin/approvals/:id', component: ApprovalDetailView, meta: { requiresSuper: true } },
     { path: '/admin/output-compliance', component: OutputComplianceView, meta: { requiresSuper: true } },
     { path: '/admin/usage',        component: UsageCostView, meta: { requiresSuper: true } }, // 用量成本视图 (T2.4)；R34: 与相邻 admin 路由对齐补权限 meta
+    { path: '/admin/reconciliation', component: ReconciliationReportView, meta: { requiresSuper: true } }, // 对账报表（供应商/内部双视角 + Excel 导出，2026-09-25）
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表
     { path: '/admin/proxy',        component: ProxyView, meta: { requiresSuper: true } }, // 2026-08-29: 代理管理
