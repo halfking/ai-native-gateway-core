@@ -292,9 +292,14 @@ func (s *Store) ListEvents(ctx context.Context, tenantID, taskID string, limit i
 // ─── 取消（§3.2：CAS 终态抢占 → 事件 cancel_requested + cancelled）────────
 
 // cancelRowInTx 在已持行锁的事务内做 cancelled 终态抢占 + cancel_requested/
-// cancelled 事件（cancel 端点与 recall 共用；调用方保证 cur 非终态且迁移
-// 合法）。
-func cancelRowInTx(ctx context.Context, tx pgx.Tx, cur *Task) (*Task, error) {
+// cancelled 事件，并按 cancelled 事件 seq 把回调台账置 pending（R66 补缺：
+// SettleTask 在终态落定时同步入队，RecallTask 在 recalled 事件后入队——
+// 原 CancelTask 只写事件不写回调，导致配置 callback 的任务被取消后回调永不
+// 触发；callbacks.go buildCallbackDelivery 已能按 task.Status=cancelled 重建
+// hosted_task.cancelled 投递体，无需额外形状分支）。返回 cancelled 事件 seq
+// 供调用方观测；RecallTask 会随后以 recalled 事件 seq 覆盖（同一事务内，
+// 同 row UPDATE，§6.1 event_id 幂等键语义保持）。
+func cancelRowInTx(ctx context.Context, tx pgx.Tx, cur *Task) (*Task, int64, error) {
 	task, err := scanTask(tx.QueryRow(ctx, `
 		UPDATE hosted_tasks
 		SET status = 'cancelled', revision = revision + 1,
@@ -304,16 +309,32 @@ func cancelRowInTx(ctx context.Context, tx pgx.Tx, cur *Task) (*Task, error) {
 		cur.ID, cur.Revision,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("cancel cas: %w", err)
+		return nil, 0, fmt.Errorf("cancel cas: %w", err)
 	}
+	var cancelledSeq int64
 	for _, ev := range []EventType{EventCancelRequested, EventCancelled} {
-		if _, err := appendEvent(ctx, tx, cur.ID, ev, map[string]any{
+		seq, err := appendEvent(ctx, tx, cur.ID, ev, map[string]any{
 			"actor": "tenant", "from_status": string(cur.Status),
-		}); err != nil {
-			return nil, err
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+		if ev == EventCancelled {
+			cancelledSeq = seq
 		}
 	}
-	return task, nil
+	// 回调入队：与 SettleTask 同款（§3.1 ⑤），url_enc 为空的任务（如未配
+	// callback）按 WHERE 过滤 0 行自然跳过；RecallTask 在本事务后段还会以
+	// recalled 事件 seq 覆盖此处写入（同 row UPDATE，§6.1 幂等键语义保持）。
+	if _, err := tx.Exec(ctx, `
+		UPDATE hosted_task_callbacks
+		SET status = 'pending', event_id = $2, event_seq = $3,
+		    next_attempt_at = NOW(), attempts = 0, last_error = '', updated_at = NOW()
+		WHERE task_id = $1 AND url_enc != ''
+	`, cur.ID, EventID(cur.ID, cancelledSeq), cancelledSeq); err != nil {
+		return nil, 0, fmt.Errorf("enqueue cancel callback: %w", err)
+	}
+	return task, cancelledSeq, nil
 }
 
 // CancelTask 尝试把任务置为 cancelled（终态 sticky 抢占）。返回
@@ -344,7 +365,7 @@ func (s *Store) CancelTask(ctx context.Context, tenantID, id string) (*Task, boo
 	if !CanTransition(cur.Status, StatusCancelled) {
 		return cur, false, nil
 	}
-	task, err := cancelRowInTx(ctx, tx, cur)
+	task, _, err := cancelRowInTx(ctx, tx, cur)
 	if err != nil {
 		return nil, false, err
 	}
@@ -409,7 +430,7 @@ func (s *Store) RecallTask(ctx context.Context, tenantID, id string) (*RecallOut
 
 	status := RecallAlreadyTerminal
 	if !cur.Status.Terminal() && CanTransition(cur.Status, StatusCancelled) {
-		if _, err := cancelRowInTx(ctx, tx, cur); err != nil {
+		if _, _, err := cancelRowInTx(ctx, tx, cur); err != nil {
 			return nil, err
 		}
 		status = RecallCancelled

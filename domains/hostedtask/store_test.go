@@ -173,7 +173,7 @@ func TestStoreAgainstPostgres(t *testing.T) {
 		}
 	}
 
-	// ── cancel 终态抢占 + 事件 ──────────────────────────────────────
+	// ── cancel 终态抢占 + 事件 + 回调入队（R66 矩阵 H/E：终态后补投递） ──
 	task2, created, err := store.CreateTask(ctx, mkInput("idem-0002"))
 	if err != nil || !created {
 		t.Fatalf("create 2: %v", err)
@@ -181,10 +181,42 @@ func TestStoreAgainstPostgres(t *testing.T) {
 	if _, won, err := store.CancelTask(ctx, "tenant-A", task2.ID); err != nil || !won {
 		t.Fatalf("first cancel: won=%v err=%v", won, err)
 	}
+	// 事件序列：accepted → cancel_requested(seq=2) → cancelled(seq=3)。
+	evs2, err := store.ListEvents(ctx, "tenant-A", task2.ID, 10)
+	if err != nil || len(evs2) != 3 {
+		t.Fatalf("events after cancel: n=%d err=%v", len(evs2), err)
+	}
+	cancelledSeq := evs2[2].Seq
+	if evs2[1].Type != EventCancelRequested || evs2[2].Type != EventCancelled {
+		t.Fatalf("event order wrong: %+v", evs2)
+	}
+	// 回调台账已按 EventID(taskID, cancelledSeq) 幂等键置 pending
+	// （§6.1 与 SettleTask 同款；hosted_task_callbacks.event_id 由 §6.1
+	// 接收方按 event_id 幂等重投——cancel 终态后回调不再静默）。
+	var cancelCbEventID, cancelCbStatus, cancelCbURL string
+	if err := admin.QueryRow(ctx, `
+		SELECT event_id, status, url_enc FROM hosted_task_callbacks WHERE task_id = $1
+	`, task2.ID).Scan(&cancelCbEventID, &cancelCbStatus, &cancelCbURL); err != nil {
+		t.Fatalf("load callback row: %v", err)
+	}
+	if want := EventID(task2.ID, cancelledSeq); cancelCbEventID != want || cancelCbStatus != "pending" || cancelCbURL == "" {
+		t.Errorf("callback = %s/%s/url=%q, want %s/pending/non-empty", cancelCbEventID, cancelCbStatus, cancelCbURL, want)
+	}
 	// 第二次 CancelTask won=false → handler 409（终态 sticky）。
 	gotTask, won2, err := store.CancelTask(ctx, "tenant-A", task2.ID)
 	if err != nil || won2 || gotTask.Status != StatusCancelled {
 		t.Errorf("second cancel: won=%v status=%s err=%v", won2, gotTask.Status, err)
+	}
+	// 二次取消不应再写台账（won=false 时 store 提前返回，未走 cancelRowInTx）；
+	// event_id 仍等于首次入队键=EventID(taskID, cancelledSeq）。
+	var cancelCbEventID2 string
+	if err := admin.QueryRow(ctx, `
+		SELECT event_id FROM hosted_task_callbacks WHERE task_id = $1
+	`, task2.ID).Scan(&cancelCbEventID2); err != nil {
+		t.Fatalf("reload callback row: %v", err)
+	}
+	if cancelCbEventID2 != EventID(task2.ID, cancelledSeq) {
+		t.Errorf("callback event_id after 2nd cancel = %s, want %s", cancelCbEventID2, EventID(task2.ID, cancelledSeq))
 	}
 
 	// ── 召回（§3.3 ④ 轻量路径：742 recalled 事件 + EventID 幂等回调）──
