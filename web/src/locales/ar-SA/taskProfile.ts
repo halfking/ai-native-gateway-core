@@ -1,0 +1,41 @@
+// taskProfile.ts — 任务档案页文案（v2 闭环 P0③，2026-09-24）。
+export default {
+    title: 'ملفات المهام',
+    desc: 'ملفات أنواع مهام AUTO: قيم الطبقة الافتراضية وإحصاءات التصحيح البشري واقتراحات الطبقة (إضافة taskprofile؛ يعمل apply على كتابة إعداد الطبقة)',
+    refresh: 'تحديث',
+    refreshing: 'جارٍ التحديث…',
+    loading: 'جارٍ التحميل…',
+    loadFailed: 'فشل التحميل',
+  registry: {
+    version: 'إصدار السجل',
+    schema: 'إصدار المخطط',
+    types: 'أنواع المهام',
+    corrections: 'الأنواع المصححة',
+  },
+  table: {
+    taskType: 'نوع المهمة',
+    description: 'الوصف',
+    tier: 'الطبقة',
+    fallbacks: 'سلسلة الاحتياط',
+    minConf: 'الثقة الدنيا',
+    total: 'التصحيحات',
+    rate: 'معدل التصحيح',
+    suggestion: 'الطبقة المقترحة',
+  },
+  action: {
+    apply: 'تطبيق الاقتراحات',
+    applyConfirm: 'كتابة اقتراحات الطبقة المدفوعة بالتصحيحات في إعداد الطبقة (task_type_tier_config)؟',
+    applyDone: 'تم التطبيق: {types}',
+    applyNone: 'لا يوجد حاليًا اقتراح يحقق الحد الأدنى',
+    reload: 'إعادة تحميل التراكب',
+    reloadConfirm: 'إعادة تحميل ملف ملفات TASKPROFILE_OVERLAY؟ يعود إلى الإعدادات الافتراضية المدمجة عند عدم تهيئته.',
+    reloadDone: 'تمت إعادة تحميل السجل: {version}',
+    exportCsv: 'تصدير التصحيحات CSV',
+    days: 'النافذة (أيام)',
+  },
+  status: {
+    applying: 'جارٍ التطبيق…',
+    reloading: 'جارٍ إعادة التحميل…',
+    exporting: 'جارٍ التصدير…',
+  },
+}

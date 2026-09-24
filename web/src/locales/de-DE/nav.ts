@@ -25,6 +25,8 @@ export default {
     credentialMonitor: "Anmeldedaten-Überwachung",
     annotations: 'Manuelle Annotation',
     annotationStats: 'Annotation-Statistiken',
+    taskProfile: 'Aufgabenprofile',
+    autoTuning: 'Routing-Tuning',
     probeHealth: "Sondengesundheit",
     systemMonitor: "Systemüberwachung",
     providers: "Anbieter",

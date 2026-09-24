@@ -26,6 +26,8 @@ export default {
     credentialMonitor: 'Credential Monitor',
     annotations: 'Human Annotation',
     annotationStats: 'Annotation Statistics',
+    taskProfile: 'Task Profiles',
+    autoTuning: 'Route Tuning',
     probeHealth: 'Probe Health',
     systemMonitor: 'System Monitoring',
     providers: 'Providers',

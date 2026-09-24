@@ -52,14 +52,17 @@ func estimateSuiteTokens(s string) int {
 }
 
 // autoMatchingSuiteFiles 列出全部套件文件:v1(2026-09-14 首轮)+ v2(2026-09-15
-// 二轮,docs/audit/2026-09-15-auto-matching-round2-plan.md)。新增套件文件追加
-// 到这里即可并入离线回归;cmd/autoroute-e2e-audit 用 -suite 指定同一文件。
+// 二轮,docs/audit/2026-09-15-auto-matching-round2-plan.md)+ v3(2026-09-24 v2
+// 闭环规划 P0② 扩充至 ≥200 例,docs/planning/AUTO_ROUTING_CLOSED_LOOP_V2_PLAN.md)。
+// 新增套件文件追加到这里即可并入离线回归;cmd/autoroute-e2e-audit 用 -suite
+// 指定同一文件;cmd/auto-testbench 默认装载全部三份。
 var autoMatchingSuiteFiles = []struct {
 	path    string
 	minSize int
 }{
 	{"testdata/auto_matching_suite.jsonl", 50},
 	{"testdata/auto_matching_suite_v2.jsonl", 20},
+	{"testdata/auto_matching_suite_v3.jsonl", 135},
 }
 
 func loadAutoMatchingSuite(t *testing.T) []suiteCase {

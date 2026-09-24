@@ -1,6 +1,8 @@
 // en-US/index.ts — aggregate English modules. Add new modules here.
 import common from './common'
 import nav from './nav'
+import taskProfile from './taskProfile'
+import autoTuning from './autoTuning'
 import customer from './customer'
 import login from './login'
 import app from './app'
@@ -76,6 +78,8 @@ import requestDetail from './requestDetail'
 export default {
   common,
   nav,
+  taskProfile,
+  autoTuning,
   login,
   app,
   errors,

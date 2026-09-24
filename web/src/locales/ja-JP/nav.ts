@@ -23,6 +23,8 @@ export default {
     credentialMonitor: "認証情報モニター",
     annotations: 'ヒューマンアノテーション',
     annotationStats: 'アノテーション統計',
+    taskProfile: 'タスクプロファイル',
+    autoTuning: 'ルートチューニング',
     probeHealth: "プローブヘルス",
     systemMonitor: "システム監視",
     providers: "プロバイダー",

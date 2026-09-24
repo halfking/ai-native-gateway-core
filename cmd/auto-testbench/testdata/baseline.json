@@ -1,0 +1,21 @@
+{
+  "generated_at": "2026-09-24T14:45:21Z",
+  "classifier": "heuristic:default",
+  "suite_files": [
+    "autoroute/testdata/auto_matching_suite.jsonl",
+    "autoroute/testdata/auto_matching_suite_v2.jsonl",
+    "autoroute/testdata/auto_matching_suite_v3.jsonl"
+  ],
+  "total_cases": 240,
+  "metrics": {
+    "accuracy": 1,
+    "macro_f1": 1,
+    "grrq": 100,
+    "overprovision_rate": 0
+  },
+  "thresholds": {
+    "min_accuracy": 1,
+    "min_macro_f1": 1,
+    "min_grrq": 100
+  }
+}
