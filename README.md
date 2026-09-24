@@ -169,6 +169,116 @@ The quick-start stack is the **same binary and schema as production** — moving
 
 See [Production Deployment](docs/06-deployment/) for details.
 
+### Installer — One-click Deployer (`installer/`)
+
+The `installer/` subtree ships a **single cross-platform Go binary** (`llm-gw-installer`) that wraps the full deploy flow into a 13-step interactive wizard. It supports Windows / Linux / macOS / 国产 OS / 国产 CPU out of the box.
+
+**Subcommands**
+
+```bash
+llm-gw-installer doctor      # detect OS / docker / network / ports
+llm-gw-installer install     # one-click install + deploy
+llm-gw-installer uninstall   # uninstall (--purge removes data)
+```
+
+**Cross-platform build**
+
+```bash
+GOOS=linux  GOARCH=amd64   go build -o dist/llm-gw-installer-linux-amd64   ./installer/cmd/llm-gw-installer/
+GOOS=linux  GOARCH=arm64   go build -o dist/llm-gw-installer-linux-arm64   ./installer/cmd/llm-gw-installer/
+GOOS=linux  GOARCH=loong64 go build -o dist/llm-gw-installer-linux-loong64 ./installer/cmd/llm-gw-installer/
+GOOS=darwin GOARCH=amd64   go build -o dist/llm-gw-installer-darwin-amd64  ./installer/cmd/llm-gw-installer/
+GOOS=darwin GOARCH=arm64   go build -o dist/llm-gw-installer-darwin-arm64  ./installer/cmd/llm-gw-installer/
+GOOS=windows GOARCH=amd64  go build -o dist/llm-gw-installer-windows-amd64.exe ./installer/cmd/llm-gw-installer/
+GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe ./installer/cmd/llm-gw-installer/
+```
+
+#### Storage Modes (full vs. lite)
+
+The installer ships **two storage modes**; pick one at install time:
+
+| Mode | Storage backend | Use case | Images pulled at install | Initializes schema? |
+|------|------------------|----------|---------------------------|---------------------|
+| **`full`** (default) | PostgreSQL (kx-citus) + Redis | Production / multi-replica / high concurrency | `kx-llm-gateway-go` + `kx-citus` + `kx-redis` | Yes (waits for PG ready + `InitSchema`) |
+| **`lite`** | SQLite + local | Single machine / dev / CI / demo | `kx-llm-gateway-go` only | No (SQLite auto-creates tables) |
+
+**Selection priority**
+
+1. CLI flag: `--mode lite` or `--mode full` (highest priority)
+2. Config file (`--config /path/to/install.env`):
+   ```
+   STORAGE_MODE=lite
+   LLM_GATEWAY_MASTER_URL=https://llm.kxpms.cn
+   INSTALL_SKIP_ACTIVATION=0
+   ```
+3. Interactive wizard: prompt `[1] full  [2] lite`, default `1`
+
+In non-TTY (CI / `--skip-prompt`) without `--config`, the default is `full`.
+
+**`lite` install behavior**
+
+| Step | `full` | `lite` |
+|------|--------|--------|
+| 1. Environment detection | same | same |
+| 2. Configuration (wizard / config) | same | same (now includes storage mode + master URL) |
+| 3. Image pull | `kx-citus` + `kx-redis` + `kx-llm-gateway-go` | **`kx-llm-gateway-go` only** |
+| 4. Write `.env` | all keys | same fields, only `LLM_GATEWAY_STORAGE_MODE=lite` |
+| 5. Directory layout | full | full (db/data and redis/data dirs created but unused) |
+| 6. `compose.yml` | 3 services | **`kx-citus` + `kx-redis` stripped**; gateway loses `depends_on` + PG/Redis env |
+| 7. Start containers | 3 containers | **`kx-llm-gateway-go` only** |
+| 8. DB initialization | Wait for PG ready + `InitSchema` (700+ migrations) | **Skipped** (SQLite auto-creates) |
+| 9. Health check | 5-item full check | container + `/healthz` only; PG/Redis/Schema forced ✅ in report |
+
+**New install flags**
+
+```
+--mode string         # full | lite (empty → wizard / default full)
+--master-url string   # control-plane URL (default https://llm.kxpms.cn)
+--skip-activation     # bool, skip the auto-activation call at end of install
+```
+
+**New `.env` keys** (written to `{installDir}/.env`)
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `LLM_GATEWAY_STORAGE_MODE` | `full` | Read by `cmd/gateway` `storage_mode_init`; `lite` → SQLite, `full` → PG/Redis |
+| `LLM_GATEWAY_MASTER_URL` | `https://llm.kxpms.cn` | License activation + heartbeat target |
+| `INSTALL_SKIP_ACTIVATION` | `0` | Skip the auto-enroll activation call at install tail (see `activation.RunAutoActivate`) |
+
+#### Image Source Fallback Chain
+
+All container images are pulled via a 4-tier fallback chain so installs work whether you are online, behind a corporate proxy, or fully air-gapped:
+
+```
+[1] Offline bundle images/*.tar.gz  (highest priority)
+    ↓ on miss
+[2] registry.kxpms.cn              (internal registry)
+    ↓ on miss
+[3] registry.cn-hangzhou.aliyuncs.com (Aliyun mirror)
+    ↓ on miss
+[4] registry-1.docker.io           (official Docker Hub)
+    ↓ on miss
+❌ clear, actionable error
+```
+
+**Environment overrides**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `KX_REGISTRY` | `registry.kxpms.cn` | Custom internal registry |
+| `KX_REGISTRY_USERNAME` / `_PASSWORD` | empty | Registry credentials |
+| `KX_REGISTRY_INSECURE` | `false` | Allow plain HTTP |
+| `APP_IMAGE_TAG` | read from MANIFEST | Override the application image tag |
+| `GOPROXY` | `https://goproxy.cn,direct` | Go module proxy |
+
+#### Known Limitations
+
+- **HarmonyOS NEXT**: not supported (no Linux container support)
+- **macOS**: user must pre-install OrbStack or Docker Desktop
+- **Windows**: user must pre-install Docker Desktop + WSL2
+
+For the installer's full design, see [installer/README.md](installer/README.md).
+
 ---
 
 ## 📐 Differentiation & Comparison

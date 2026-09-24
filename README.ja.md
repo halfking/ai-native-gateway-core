@@ -176,6 +176,116 @@ AI Native Gateway は**完全な本番スタック**と**シングルマシン�
 
 詳細は[本番デプロイドキュメント](docs/06-deployment/)を参照してください。
 
+### Installer ワンクリックインストーラ（`installer/`）
+
+`installer/` サブツリーは、**単一のクロスプラットフォーム Go バイナリ**（`llm-gw-installer`）を提供し、完全なデプロイフローを 13 ステップのインタラクティブウィザードにまとめます。Windows / Linux / macOS / 国产 OS / 国产 CPU をそのままサポートします。
+
+**サブコマンド**
+
+```bash
+llm-gw-installer doctor      # OS / docker / ネットワーク / ポートを検出
+llm-gw-installer install     # ワンクリックインストール + デプロイ
+llm-gw-installer uninstall   # アンインストール（--purge でデータも削除）
+```
+
+**クロスプラットフォームビルド**
+
+```bash
+GOOS=linux  GOARCH=amd64   go build -o dist/llm-gw-installer-linux-amd64   ./installer/cmd/llm-gw-installer/
+GOOS=linux  GOARCH=arm64   go build -o dist/llm-gw-installer-linux-arm64   ./installer/cmd/llm-gw-installer/
+GOOS=linux  GOARCH=loong64 go build -o dist/llm-gw-installer-linux-loong64 ./installer/cmd/llm-gw-installer/
+GOOS=darwin GOARCH=amd64   go build -o dist/llm-gw-installer-darwin-amd64  ./installer/cmd/llm-gw-installer/
+GOOS=darwin GOARCH=arm64   go build -o dist/llm-gw-installer-darwin-arm64  ./installer/cmd/llm-gw-installer/
+GOOS=windows GOARCH=amd64  go build -o dist/llm-gw-installer-windows-amd64.exe ./installer/cmd/llm-gw-installer/
+GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe ./installer/cmd/llm-gw-installer/
+```
+
+#### ストレージモード（full vs lite）
+
+インストーラには **2 つのストレージモード**があり、インストール時にどちらかを選びます：
+
+| モード | ストレージバックエンド | 用途 | インストール時に取得するイメージ | スキーマ初期化 |
+|------|------------------|----------|---------------------------|---------------------|
+| **`full`**（デフォルト） | PostgreSQL (kx-citus) + Redis | 本番 / マルチレプリカ / 高並行 | `kx-llm-gateway-go` + `kx-citus` + `kx-redis` | あり（PG ready 待機 + `InitSchema`） |
+| **`lite`** | SQLite + ローカル | シングルマシン / 開発 / CI / デモ | `kx-llm-gateway-go` のみ | なし（SQLite が自動作成） |
+
+**選択の優先順位**
+
+1. CLI flag：`--mode lite` または `--mode full`（最優先）
+2. 設定ファイル（`--config /path/to/install.env`）：
+   ```
+   STORAGE_MODE=lite
+   LLM_GATEWAY_MASTER_URL=https://llm.kxpms.cn
+   INSTALL_SKIP_ACTIVATION=0
+   ```
+3. インタラクティブウィザード：`[1] full  [2] lite` を表示しデフォルトは `1`
+
+非 TTY（CI / `--skip-prompt`）で `--config` 未指定の場合、デフォルトは `full`。
+
+**`lite` モードの install 動作の違い**
+
+| ステップ | `full` | `lite` |
+|------|--------|--------|
+| 1. 環境検出 | 同じ | 同じ |
+| 2. 設定（wizard / config） | 同じ | 同じ（storage mode と master URL を追加） |
+| 3. イメージプル | `kx-citus` + `kx-redis` + `kx-llm-gateway-go` | **`kx-llm-gateway-go` のみ** |
+| 4. `.env` 書き込み | 全キー | full と同じ、`LLM_GATEWAY_STORAGE_MODE=lite` のみ |
+| 5. ディレクトリ構成 | 同じ | 同じ（db/data、redis/data ディレクトリも作成するが未使用） |
+| 6. `compose.yml` | 3 サービス完全版 | **`kx-citus` + `kx-redis` を除去**、gateway から `depends_on` と PG/Redis env を削除 |
+| 7. コンテナ起動 | 3 コンテナ | **`kx-llm-gateway-go` のみ** |
+| 8. データベース初期化 | PG ready 待機 + `InitSchema`（700+ マイグレーション） | **スキップ**（SQLite が app により自動作成） |
+| 9. ヘルスチェック | 5 項目フルチェック | コンテナ + `/healthz` のみ検証；PG/Redis/Schema は不要、レポートで強制 ✅ |
+
+**新規 install flags**
+
+```
+--mode string         # full | lite（空 → wizard / デフォルト full）
+--master-url string   # コントロールプレーン URL（デフォルト https://llm.kxpms.cn）
+--skip-activation     # bool、install 末尾の自動アクティベーション呼び出しをスキップ
+```
+
+**新規 `.env` キー**（`{installDir}/.env` に書き込み）
+
+| Key | デフォルト | 意味 |
+|-----|---------|---------|
+| `LLM_GATEWAY_STORAGE_MODE` | `full` | 実行時に `cmd/gateway` の `storage_mode_init` が読む；`lite` → SQLite、`full` → PG/Redis |
+| `LLM_GATEWAY_MASTER_URL` | `https://llm.kxpms.cn` | license アクティベーション + ハートビート送信先 URL |
+| `INSTALL_SKIP_ACTIVATION` | `0` | install 末尾の自動登録アクティベーション呼び出しをスキップするか（ロジックは `activation.RunAutoActivate`） |
+
+#### イメージソース fallback チェーン
+
+すべてのコンテナイメージは 4 段 fallback チェーンでプルされ、コーポレートプロキシ背後でも完全オフラインでも動作します：
+
+```
+[1] オフラインバンドル images/*.tar.gz（最高優先度）
+    ↓ 失敗
+[2] registry.kxpms.cn（内部 registry）
+    ↓ 失敗
+[3] registry.cn-hangzhou.aliyuncs.com（Aliyun ミラー）
+    ↓ 失敗
+[4] registry-1.docker.io（公式 Docker Hub）
+    ↓ すべて失敗
+❌ 明確なエラー
+```
+
+**環境変数オーバーライド**
+
+| 変数 | デフォルト値 | 用途 |
+|---|---|---|
+| `KX_REGISTRY` | `registry.kxpms.cn` | カスタム内部 registry |
+| `KX_REGISTRY_USERNAME` / `_PASSWORD` | 空 | registry の認証情報 |
+| `KX_REGISTRY_INSECURE` | `false` | HTTP 許可 |
+| `APP_IMAGE_TAG` | MANIFEST から読み取り | アプリケーションイメージタグの上書き |
+| `GOPROXY` | `https://goproxy.cn,direct` | Go module プロキシ |
+
+#### 既知の制限
+
+- **HarmonyOS NEXT**：未対応（Linux コンテナ未対応）
+- **macOS**：ユーザーが OrbStack または Docker Desktop を手動インストールする必要あり
+- **Windows**：ユーザーが Docker Desktop + WSL2 を手動インストールする必要あり
+
+インストーラの完全な設計は [installer/README.md](installer/README.md) を参照してください。
+
 ---
 
 ## 📐 差別化ポジショニングと競合比較

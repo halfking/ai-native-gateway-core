@@ -194,6 +194,116 @@ El inicio rápido usa el **mismo binario y el mismo esquema** que producción. P
 
 Véase [Production Deployment](docs/06-deployment/).
 
+### Installer — instalador de un clic (`installer/`)
+
+El subárbol `installer/` entrega **un único binario Go multiplataforma** (`llm-gw-installer`) que encapsula todo el flujo de despliegue en un asistente interactivo de 13 pasos. Soporta Windows / Linux / macOS / 国产 OS / 国产 CPU de fábrica.
+
+**Subcomandos**
+
+```bash
+llm-gw-installer doctor      # detecta SO / docker / red / puertos
+llm-gw-installer install     # instala y despliega con un clic
+llm-gw-installer uninstall   # desinstala (--purge borra también los datos)
+```
+
+**Compilación multiplataforma**
+
+```bash
+GOOS=linux  GOARCH=amd64   go build -o dist/llm-gw-installer-linux-amd64   ./installer/cmd/llm-gw-installer/
+GOOS=linux  GOARCH=arm64   go build -o dist/llm-gw-installer-linux-arm64   ./installer/cmd/llm-gw-installer/
+GOOS=linux  GOARCH=loong64 go build -o dist/llm-gw-installer-linux-loong64 ./installer/cmd/llm-gw-installer/
+GOOS=darwin GOARCH=amd64   go build -o dist/llm-gw-installer-darwin-amd64  ./installer/cmd/llm-gw-installer/
+GOOS=darwin GOARCH=arm64   go build -o dist/llm-gw-installer-darwin-arm64  ./installer/cmd/llm-gw-installer/
+GOOS=windows GOARCH=amd64  go build -o dist/llm-gw-installer-windows-amd64.exe ./installer/cmd/llm-gw-installer/
+GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe ./installer/cmd/llm-gw-installer/
+```
+
+#### Modos de almacenamiento (full vs lite)
+
+El instalador trae **dos modos de almacenamiento** para elegir al instalar:
+
+| Modo | Backend de almacenamiento | Caso de uso | Imágenes descargadas al instalar | ¿Inicializa el esquema? |
+|------|---------------------------|-------------|-----------------------------------|-------------------------|
+| **`full`** (por defecto) | PostgreSQL (kx-citus) + Redis | Producción / multi-réplica / alta concurrencia | `kx-llm-gateway-go` + `kx-citus` + `kx-redis` | Sí (espera PG ready + `InitSchema`) |
+| **`lite`** | SQLite + local | Máquina única / dev / CI / demo | solo `kx-llm-gateway-go` | No (SQLite crea las tablas) |
+
+**Prioridad de selección**
+
+1. Flag CLI: `--mode lite` o `--mode full` (máxima prioridad)
+2. Archivo de configuración (`--config /path/to/install.env`):
+   ```
+   STORAGE_MODE=lite
+   LLM_GATEWAY_MASTER_URL=https://llm.kxpms.cn
+   INSTALL_SKIP_ACTIVATION=0
+   ```
+3. Asistente interactivo: muestra `[1] full  [2] lite`, por defecto `1`
+
+En no-TTY (CI / `--skip-prompt`) sin `--config`, el valor por defecto es `full`.
+
+**Comportamiento del install en modo `lite`**
+
+| Paso | `full` | `lite` |
+|------|--------|--------|
+| 1. Detección del entorno | igual | igual |
+| 2. Configuración (wizard / config) | igual | igual (añade storage mode + master URL) |
+| 3. Pull de imágenes | `kx-citus` + `kx-redis` + `kx-llm-gateway-go` | **solo `kx-llm-gateway-go`** |
+| 4. Escritura de `.env` | todas las claves | igual a full, solo `LLM_GATEWAY_STORAGE_MODE=lite` |
+| 5. Estructura de directorios | completa | completa (db/data y redis/data se crean pero no se usan) |
+| 6. `compose.yml` | 3 servicios | **`kx-citus` + `kx-redis` eliminados**; el gateway pierde `depends_on` y el env de PG/Redis |
+| 7. Arranque de contenedores | 3 contenedores | **solo `kx-llm-gateway-go`** |
+| 8. Inicialización de la BD | esperar PG ready + `InitSchema` (700+ migraciones) | **saltada** (SQLite autocrea) |
+| 9. Comprobación de salud | control completo de 5 puntos | solo contenedor + `/healthz`; PG/Redis/Schema no aplican, ✅ forzado en el informe |
+
+**Nuevos flags de install**
+
+```
+--mode string         # full | lite (vacío → wizard / por defecto full)
+--master-url string   # URL del plano de control (por defecto https://llm.kxpms.cn)
+--skip-activation     # bool, omite la activación automática al final del install
+```
+
+**Nuevas claves `.env`** (escritas en `{installDir}/.env`)
+
+| Clave | Por defecto | Significado |
+|-----|---------|--------|
+| `LLM_GATEWAY_STORAGE_MODE` | `full` | Leída en ejecución por `cmd/gateway` vía `storage_mode_init`; `lite` → SQLite, `full` → PG/Redis |
+| `LLM_GATEWAY_MASTER_URL` | `https://llm.kxpms.cn` | URL de activación de licencia + heartbeat |
+| `INSTALL_SKIP_ACTIVATION` | `0` | Omitir la llamada de auto-registro/activación al final del install (lógica en `activation.RunAutoActivate`) |
+
+#### Cadena de respaldo para imágenes
+
+Todas las imágenes de contenedor se descargan con una cadena de respaldo de 4 niveles para que las instalaciones funcionen online, tras un proxy corporativo o totalmente air-gapped:
+
+```
+[1] Bundle offline images/*.tar.gz  (máxima prioridad)
+    ↓ falla
+[2] registry.kxpms.cn              (registry interno)
+    ↓ falla
+[3] registry.cn-hangzhou.aliyuncs.com (espejo de Aliyun)
+    ↓ falla
+[4] registry-1.docker.io           (Docker Hub oficial)
+    ↓ todo falla
+❌ error claro y accionable
+```
+
+**Sobrescrituras por variables de entorno**
+
+| Variable | Por defecto | Propósito |
+|----------|---------|---------|
+| `KX_REGISTRY` | `registry.kxpms.cn` | Registry interno personalizado |
+| `KX_REGISTRY_USERNAME` / `_PASSWORD` | vacío | Credenciales del registry |
+| `KX_REGISTRY_INSECURE` | `false` | Permitir HTTP |
+| `APP_IMAGE_TAG` | leído del MANIFEST | Sobrescribir el tag de la imagen de la app |
+| `GOPROXY` | `https://goproxy.cn,direct` | Proxy de módulos Go |
+
+#### Limitaciones conocidas
+
+- **HarmonyOS NEXT**: no soportado (sin soporte de contenedores Linux)
+- **macOS**: el usuario debe instalar manualmente OrbStack o Docker Desktop
+- **Windows**: el usuario debe instalar manualmente Docker Desktop + WSL2
+
+Para el diseño completo del instalador, véase [installer/README.md](installer/README.md).
+
 ---
 
 <a id="comparison"></a>

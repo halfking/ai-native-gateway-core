@@ -194,6 +194,116 @@ curl http://localhost:8781/healthz
 
 詳見 [生產部署文件](docs/06-deployment/)。
 
+### Installer 一鍵安裝器（`installer/`）
+
+`installer/` 子樹提供 **單一跨平台 Go 二進位**（`llm-gw-installer`），將完整部署流程封裝為 13 步互動式嚮導。開箱支援 Windows / Linux / macOS / 國產 OS / 國產 CPU。
+
+**子命令**
+
+```bash
+llm-gw-installer doctor      # 偵測 OS / docker / 網路 / 連接埠
+llm-gw-installer install     # 一鍵安裝並部署
+llm-gw-installer uninstall   # 解除安裝（--purge 同時清除資料）
+```
+
+**跨平台編譯**
+
+```bash
+GOOS=linux  GOARCH=amd64   go build -o dist/llm-gw-installer-linux-amd64   ./installer/cmd/llm-gw-installer/
+GOOS=linux  GOARCH=arm64   go build -o dist/llm-gw-installer-linux-arm64   ./installer/cmd/llm-gw-installer/
+GOOS=linux  GOARCH=loong64 go build -o dist/llm-gw-installer-linux-loong64 ./installer/cmd/llm-gw-installer/
+GOOS=darwin GOARCH=amd64   go build -o dist/llm-gw-installer-darwin-amd64  ./installer/cmd/llm-gw-installer/
+GOOS=darwin GOARCH=arm64   go build -o dist/llm-gw-installer-darwin-arm64  ./installer/cmd/llm-gw-installer/
+GOOS=windows GOARCH=amd64  go build -o dist/llm-gw-installer-windows-amd64.exe ./installer/cmd/llm-gw-installer/
+GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe ./installer/cmd/llm-gw-installer/
+```
+
+#### 儲存模式（full vs lite）
+
+安裝器內建 **兩種儲存模式**，安裝時二選一：
+
+| 模式 | 儲存後端 | 適用場景 | 安裝時拉取的映像 | 是否初始化 schema |
+|------|----------|----------|------------------|---------------------|
+| **`full`**（預設） | PostgreSQL (kx-citus) + Redis | 生產 / 多副本 / 高併發 | `kx-llm-gateway-go` + `kx-citus` + `kx-redis` | 是（等待 PG ready + `InitSchema`） |
+| **`lite`** | SQLite + 本機 | 單機 / 開發 / CI / 展示 | 僅 `kx-llm-gateway-go` | 否（SQLite 自動建表） |
+
+**選擇優先順序**
+
+1. CLI flag：`--mode lite` 或 `--mode full`（最高優先）
+2. 設定檔（`--config /path/to/install.env`）：
+   ```
+   STORAGE_MODE=lite
+   LLM_GATEWAY_MASTER_URL=https://llm.kxpms.cn
+   INSTALL_SKIP_ACTIVATION=0
+   ```
+3. 互動式嚮導：提示 `[1] full  [2] lite`，預設 `1`
+
+非 TTY（CI / `--skip-prompt`）且未提供 `--config` 時，預設 `full`。
+
+**`lite` 模式 install 行為差異**
+
+| 步驟 | `full` | `lite` |
+|------|--------|--------|
+| 1. 環境偵測 | 同 | 同 |
+| 2. 設定（wizard / config） | 同 | 同（新增 storage mode / master URL） |
+| 3. 拉取映像 | `kx-citus` + `kx-redis` + `kx-llm-gateway-go` | **僅 `kx-llm-gateway-go`** |
+| 4. 寫 `.env` | 全部鍵 | 同 full，僅 `LLM_GATEWAY_STORAGE_MODE=lite` |
+| 5. 目錄結構 | 同 | 同（db/data、redis/data 目錄仍會建立但不使用） |
+| 6. `compose.yml` | 完整 3 服務 | **剝離 `kx-citus` + `kx-redis`**；gateway 移除 `depends_on` 與 PG/Redis env |
+| 7. 啟動容器 | 3 容器 | **僅 `kx-llm-gateway-go`** |
+| 8. 初始化資料庫 | 等待 PG ready + `InitSchema`（700+ 遷移） | **跳過**（SQLite 由 app 自動建表） |
+| 9. 健康檢查 | 5 項全檢 | 僅驗容器 + `/healthz`；PG/Redis/Schema 不適用，報告中強制顯示 ✅ |
+
+**新增 install flags**
+
+```
+--mode string         # full | lite（空 → 走 wizard / 預設 full）
+--master-url string   # 主控端 URL（預設 https://llm.kxpms.cn）
+--skip-activation     # bool，跳過 install 結尾的自動啟動
+```
+
+**新增 `.env` 鍵**（寫入 `{installDir}/.env`）
+
+| Key | 預設 | 說明 |
+|-----|------|------|
+| `LLM_GATEWAY_STORAGE_MODE` | `full` | 執行時由 `cmd/gateway` 的 `storage_mode_init` 讀取；`lite` 走 SQLite，`full` 走 PG/Redis |
+| `LLM_GATEWAY_MASTER_URL` | `https://llm.kxpms.cn` | license 啟動 + 心跳回報的目標 URL |
+| `INSTALL_SKIP_ACTIVATION` | `0` | 是否跳過 install 結尾的自動註冊啟動呼叫（邏輯見 `activation.RunAutoActivate`） |
+
+#### 映像源 fallback 鏈
+
+所有容器映像透過 4 層 fallback 鏈拉取，無論在線、內網代理或完全離線都能裝：
+
+```
+[1] 離線包 images/*.tar.gz（最高優先）
+    ↓ 失敗
+[2] registry.kxpms.cn（內部 registry）
+    ↓ 失敗
+[3] registry.cn-hangzhou.aliyuncs.com（阿里雲 mirror）
+    ↓ 失敗
+[4] registry-1.docker.io（官方 docker hub）
+    ↓ 全部失敗
+❌ 清晰報錯
+```
+
+**環境變數覆寫**
+
+| 變數 | 預設值 | 用途 |
+|---|---|---|
+| `KX_REGISTRY` | `registry.kxpms.cn` | 自訂內部 registry |
+| `KX_REGISTRY_USERNAME` / `_PASSWORD` | 空 | registry 帳號 / 密碼 |
+| `KX_REGISTRY_INSECURE` | `false` | 允許 HTTP |
+| `APP_IMAGE_TAG` | 從 MANIFEST 讀 | 應用映像 tag 覆寫 |
+| `GOPROXY` | `https://goproxy.cn,direct` | Go module 代理 |
+
+#### 已知限制
+
+- **HarmonyOS NEXT**：不支援（沒有 Linux 容器支援）
+- **macOS**：需使用者手動安裝 OrbStack 或 Docker Desktop
+- **Windows**：需使用者手動安裝 Docker Desktop + WSL2
+
+Installer 完整設計見 [installer/README.md](installer/README.md)。
+
 ---
 
 <a id="comparison"></a>

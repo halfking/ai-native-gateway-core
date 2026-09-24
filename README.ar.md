@@ -194,6 +194,116 @@ curl http://localhost:8781/healthz
 
 انظر [Production Deployment](docs/06-deployment/).
 
+### Installer — أداة التثبيت بنقرة واحدة (`installer/`)
+
+توفر الشجرة الفرعية `installer/` **ثنائي Go واحد متعدد المنصات** (`llm-gw-installer`) يُغلّف كامل مسار النشر في معالج تفاعلي من 13 خطوة. يدعم Windows / Linux / macOS / 国产 OS / 国产 CPU دون أي إعداد إضافي.
+
+**الأوامر الفرعية**
+
+```bash
+llm-gw-installer doctor      # كشف نظام التشغيل / docker / الشبكة / المنافذ
+llm-gw-installer install     # تثبيت ونشر بنقرة واحدة
+llm-gw-installer uninstall   # إزالة التثبيت (--purge تحذف البيانات أيضًا)
+```
+
+**بناء متعدد المنصات**
+
+```bash
+GOOS=linux  GOARCH=amd64   go build -o dist/llm-gw-installer-linux-amd64   ./installer/cmd/llm-gw-installer/
+GOOS=linux  GOARCH=arm64   go build -o dist/llm-gw-installer-linux-arm64   ./installer/cmd/llm-gw-installer/
+GOOS=linux  GOARCH=loong64 go build -o dist/llm-gw-installer-linux-loong64 ./installer/cmd/llm-gw-installer/
+GOOS=darwin GOARCH=amd64   go build -o dist/llm-gw-installer-darwin-amd64  ./installer/cmd/llm-gw-installer/
+GOOS=darwin GOARCH=arm64   go build -o dist/llm-gw-installer-darwin-arm64  ./installer/cmd/llm-gw-installer/
+GOOS=windows GOARCH=amd64  go build -o dist/llm-gw-installer-windows-amd64.exe ./installer/cmd/llm-gw-installer/
+GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe ./installer/cmd/llm-gw-installer/
+```
+
+#### أوضاع التخزين (full مقابل lite)
+
+يوفّر المثبّت **وضعي تخزين** للاختيار بينهما عند التثبيت:
+
+| الوضع | خلفية التخزين | حالات الاستخدام | الصور المسحوبة عند التثبيت | هل يهيّئ المخطط؟ |
+|------|----------------|------------------|------------------------------|---------------------|
+| **`full`** (افتراضي) | PostgreSQL (kx-citus) + Redis | الإنتاج / نسخ متعددة / تزامن عالٍ | `kx-llm-gateway-go` + `kx-citus` + `kx-redis` | نعم (ينتظر PG ready + `InitSchema`) |
+| **`lite`** | SQLite + محلي | جهاز واحد / تطوير / CI / عرض توضيحي | `kx-llm-gateway-go` فقط | لا (SQLite ينشئ الجداول تلقائيًا) |
+
+**أولوية الاختيار**
+
+1. علم CLI: `--mode lite` أو `--mode full` (أعلى أولوية)
+2. ملف الإعدادات (`--config /path/to/install.env`):
+   ```
+   STORAGE_MODE=lite
+   LLM_GATEWAY_MASTER_URL=https://llm.kxpms.cn
+   INSTALL_SKIP_ACTIVATION=0
+   ```
+3. المعالج التفاعلي: يعرض `[1] full  [2] lite`، الافتراضي `1`
+
+في غير-TTY (CI / `--skip-prompt`) دون `--config`، الافتراضي هو `full`.
+
+**سلوك التثبيت في وضع `lite`**
+
+| الخطوة | `full` | `lite` |
+|------|--------|--------|
+| 1. كشف البيئة | نفسه | نفسه |
+| 2. الإعداد (wizard / config) | نفسه | نفسه (يُضاف storage mode وmaster URL) |
+| 3. سحب الصور | `kx-citus` + `kx-redis` + `kx-llm-gateway-go` | **`kx-llm-gateway-go` فقط** |
+| 4. كتابة `.env` | كل المفاتيح | نفس full، فقط `LLM_GATEWAY_STORAGE_MODE=lite` |
+| 5. بنية المجلدات | كاملة | كاملة (تُنشأ db/data وredis/data لكن دون استخدام) |
+| 6. `compose.yml` | 3 خدمات | **حذف `kx-citus` + `kx-redis`**؛ يفقد gateway `depends_on` وبيئة PG/Redis |
+| 7. تشغيل الحاويات | 3 حاويات | **`kx-llm-gateway-go` فقط** |
+| 8. تهيئة قاعدة البيانات | انتظار جاهزية PG + `InitSchema` (700+ ترحيل) | **يُتخطى** (SQLite يُنشئ تلقائيًا) |
+| 9. فحص الصحة | فحص كامل من 5 بنود | حاوية + `/healthz` فقط؛ PG/Redis/Schema لا تنطبق، ✅ مفروض في التقرير |
+
+**أعلام install الجديدة**
+
+```
+--mode string         # full | lite (فارغ → wizard / افتراضي full)
+--master-url string   # عنوان مستوى التحكم (افتراضي https://llm.kxpms.cn)
+--skip-activation     # بوليان، يتخطى استدعاء التفعيل التلقائي بنهاية install
+```
+
+**مفاتيح `.env` الجديدة** (تُكتب إلى `{installDir}/.env`)
+
+| المفتاح | الافتراضي | المعنى |
+|---------|---------|---------|
+| `LLM_GATEWAY_STORAGE_MODE` | `full` | يُقرأ وقت التشغيل عبر `cmd/gateway` في `storage_mode_init`؛ `lite` → SQLite، `full` → PG/Redis |
+| `LLM_GATEWAY_MASTER_URL` | `https://llm.kxpms.cn` | عنوان تفعيل الترخيص + heartbeat |
+| `INSTALL_SKIP_ACTIVATION` | `0` | تخطي استدعاء التسجيل/التفعيل التلقائي بنهاية install (المنطق في `activation.RunAutoActivate`) |
+
+#### سلسلة احتياط لمصدر الصور
+
+تُسحب جميع صور الحاويات عبر سلسلة احتياط من 4 مستويات لكي يعمل التثبيت سواء على الإنترنت أو خلف بروكسي شركاتي أو معزول تمامًا:
+
+```
+[1] الحزمة غير المتصلة images/*.tar.gz (أعلى أولوية)
+    ↓ فشل
+[2] registry.kxpms.cn              (registry داخلي)
+    ↓ فشل
+[3] registry.cn-hangzhou.aliyuncs.com (مرآة Aliyun)
+    ↓ فشل
+[4] registry-1.docker.io           (Docker Hub الرسمي)
+    ↓ فشل الكل
+❌ خطأ واضح وقابل للتنفيذ
+```
+
+**تجاوزات متغيرات البيئة**
+
+| المتغير | الافتراضي | الغرض |
+|---------|---------|-------|
+| `KX_REGISTRY` | `registry.kxpms.cn` | registry داخلي مخصص |
+| `KX_REGISTRY_USERNAME` / `_PASSWORD` | فارغ | بيانات اعتماد registry |
+| `KX_REGISTRY_INSECURE` | `false` | السماح بـ HTTP |
+| `APP_IMAGE_TAG` | يُقرأ من MANIFEST | تجاوز وسم صورة التطبيق |
+| `GOPROXY` | `https://goproxy.cn,direct` | وكيل وحدات Go |
+
+#### القيود المعروفة
+
+- **HarmonyOS NEXT**: غير مدعوم (لا توجد دعم لحاويات Linux)
+- **macOS**: يجب على المستخدم تثبيت OrbStack أو Docker Desktop يدويًا
+- **Windows**: يجب على المستخدم تثبيت Docker Desktop + WSL2 يدويًا
+
+للاطلاع على التصميم الكامل للمثبّت، انظر [installer/README.md](installer/README.md).
+
 ---
 
 <a id="comparison"></a>
