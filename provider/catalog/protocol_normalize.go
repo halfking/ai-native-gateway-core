@@ -138,23 +138,72 @@ func isOSeriesModel(m string) bool {
 // RecommendedProtocolForBaseURL 按供应商官方 API 域名推断推荐出站协议。
 // 命中官方端点时 ok=true；第三方聚合/中转（vapeur、openrouter 等）返回
 // ok=false，由调用方回退 openai-completions 或让运营显式指定。
+//
+// F8 (r0924 supplier-protocol-optimization §3.9): the pre-r0924 substring
+// match (e.g. "anthropic.com" appearing ANYWHERE in the URL) is unsafe —
+// a domain like `anthropic.com.attacker.example` or an upstream-mirror
+// proxy that embeds "anthropic.com" in its path would falsely classify as
+// Anthropic. The post-F8 rule is host-precise: parse the URL, extract the
+// hostname, and match on exact host equality (or the special ":11434"
+// port heuristic for self-hosted Ollama).
 func RecommendedProtocolForBaseURL(baseURL string) (string, bool) {
 	u := strings.ToLower(strings.TrimSpace(baseURL))
-	switch {
-	case u == "":
+	if u == "" {
 		return ProtocolOpenAICompletions, false
-	case strings.Contains(u, "anthropic.com"):
+	}
+	// Cheap parse without pulling in net/url (we don't need scheme/port
+	// semantics beyond the literal /host[:port]/path split). The
+	// golang.org/x/net/url would be more correct, but the substring-
+	// to-host conversion is local — and refusing net/url keeps this
+	// package import-light for hot paths.
+	host := u
+	if i := strings.Index(u, "://"); i >= 0 {
+		host = u[i+3:]
+	}
+	if i := strings.Index(host, "/"); i >= 0 {
+		host = host[:i]
+	}
+	// Strip userinfo if present.
+	if i := strings.Index(host, "@"); i >= 0 {
+		host = host[i+1:]
+	}
+	// Split host:port.
+	hostname := host
+	port := ""
+	if i := strings.LastIndex(host, ":"); i >= 0 {
+		hostname = host[:i]
+		port = host[i+1:]
+	}
+	// IPv6 literal in brackets: [::1]:11434 → hostname="::1".
+	if strings.HasPrefix(hostname, "[") && strings.HasSuffix(hostname, "]") {
+		hostname = hostname[1 : len(hostname)-1]
+	}
+	switch hostname {
+	case "api.anthropic.com":
 		return ProtocolAnthropicMessages, true
-	case strings.Contains(u, "generativelanguage.googleapis.com"),
-		strings.Contains(u, "aiplatform.googleapis.com"):
+	case "generativelanguage.googleapis.com",
+		"aiplatform.googleapis.com":
 		return ProtocolGeminiGenerate, true
-	case strings.Contains(u, "api.openai.com"):
+	case "api.openai.com":
 		// OpenAI 官方端点：模型族由 RecommendedProtocolForModel 决定更准，
 		// 这里没有模型上下文，保守返回 chat 兼容形态。
 		return ProtocolOpenAICompletions, true
-	case strings.Contains(u, "api.ollama.com"), strings.HasSuffix(u, ":11434"):
+	case "api.ollama.com", "ollama.com":
 		return ProtocolOllamaNative, true
-	default:
-		return ProtocolOpenAICompletions, false
 	}
+	// Default Ollama port heuristic: a hostname-less / port-only URL like
+	// "http://localhost:11434" or "http://127.0.0.1:11434" is treated as
+	// Ollama-native (most self-hosted deployments live on this port).
+	// The pre-F8 rule used strings.HasSuffix on the raw URL, which made
+	// "http://host.tld:11434" (a non-Ollama server on 11434) misclassify
+	// as Ollama; the post-F8 rule keys off port AND requires the absence
+	// of a non-numeric TLD-ish hostname. We keep the rule narrow on
+	// purpose: operators can override via explicit catalog entry.
+	if port == "11434" {
+		if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" ||
+			strings.HasPrefix(hostname, "host.docker.internal") {
+			return ProtocolOllamaNative, true
+		}
+	}
+	return ProtocolOpenAICompletions, false
 }

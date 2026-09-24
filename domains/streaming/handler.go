@@ -114,6 +114,31 @@ func newInterceptingStreamWriter(w http.ResponseWriter, chain ResponseIntercepto
 func (w *interceptingStreamWriter) Header() http.Header        { return w.w.Header() }
 func (w *interceptingStreamWriter) WriteHeader(statusCode int) { w.w.WriteHeader(statusCode) }
 
+// Unwrap exposes the underlying http.ResponseWriter so stream bridges can
+// recover a coordinator-owned AttemptCommitGate through the writer chain.
+//
+// 2026-09-24 (this commit): StreamResponsesSSE on the /v1/responses path
+// wraps its writer in interceptingStreamWriter BEFORE calling
+// wrapAttemptWriter. Without Unwrap the bridge builds a SECOND gate
+// instead of reusing the SurvivalCoordinator's, and the §11.6 /
+// stream-timeout TerminalRendered latch then lands on that throwaway gate
+// while SurvivalCoordinator.renderTerminal consults its own — the guard
+// never fires and the wire gets BOTH response.completed(incomplete) AND
+// response.failed for one eof_without_done interruption (observed live on
+// the local 8782 instance with the minimax-m3 path: every committed stream
+// break produced the duplicated terminal pair, surfacing as
+// "provider_unavailable" to the Responses SDK client).
+//
+// Without Unwrap the unwrap loop in wrapAttemptWriter (attempt_gate_wiring.go
+// line 67) breaks out of the hop chain on the interceptor and creates a new
+// gate (attempt_gate_wiring.go line 115). With Unwrap the loop reaches the
+// *GateWriter that wraps the coordinator gate and returns its
+// UnderlyingAttemptGate(), restoring the single-gate invariant that
+// TestWrapAttemptWriterReusesPreGatedWriter was created to enforce.
+//
+// Mirrors monitoredResponseWriter.Unwrap (connection_monitor.go:165).
+func (w *interceptingStreamWriter) Unwrap() http.ResponseWriter { return w.w }
+
 func (w *interceptingStreamWriter) Write(p []byte) (int, error) {
 	if w.writeErr != nil {
 		return 0, w.writeErr

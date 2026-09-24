@@ -384,3 +384,177 @@ func BenchmarkDetectProtocol(b *testing.B) {
 		}
 	}
 }
+
+// ── Ollama-native detection (r0924 supplier-protocol-optimization §3.6 / §2.4) ──
+
+func TestDetectProtocol_OllamaOptionsOnly(t *testing.T) {
+	body := `{"model":"llama3.1","messages":[{"role":"user","content":"hi"}],"options":{"temperature":0.7}}`
+	proto, conf, err := DetectProtocol([]byte(body))
+	if err != nil {
+		t.Fatalf("DetectProtocol: %v", err)
+	}
+	if proto != ProtocolOllamaChat {
+		t.Errorf("protocol = %q, want %q", proto, ProtocolOllamaChat)
+	}
+	if conf < 0.85 {
+		t.Errorf("confidence = %v, want >= 0.85", conf)
+	}
+}
+
+func TestDetectProtocol_OllamaKeepAlive(t *testing.T) {
+	body := `{"model":"llama3.1","messages":[{"role":"user","content":"hi"}],"keep_alive":"5m"}`
+	proto, conf, err := DetectProtocol([]byte(body))
+	if err != nil {
+		t.Fatalf("DetectProtocol: %v", err)
+	}
+	if proto != ProtocolOllamaChat {
+		t.Errorf("protocol = %q, want %q", proto, ProtocolOllamaChat)
+	}
+	if conf < 0.85 {
+		t.Errorf("confidence = %v, want >= 0.85", conf)
+	}
+}
+
+func TestDetectProtocol_OllamaRaw(t *testing.T) {
+	body := `{"model":"llama3.1","messages":[{"role":"user","content":"hi"}],"raw":false}`
+	proto, _, err := DetectProtocol([]byte(body))
+	if err != nil {
+		t.Fatalf("DetectProtocol: %v", err)
+	}
+	if proto != ProtocolOllamaChat {
+		t.Errorf("protocol = %q, want %q", proto, ProtocolOllamaChat)
+	}
+}
+
+func TestDetectProtocol_OllamaFormatString(t *testing.T) {
+	// String `format` (Ollama) — NOT object (OpenAI response_format).
+	body := `{"model":"llama3.1","messages":[{"role":"user","content":"hi"}],"format":"json"}`
+	proto, _, err := DetectProtocol([]byte(body))
+	if err != nil {
+		t.Fatalf("DetectProtocol: %v", err)
+	}
+	if proto != ProtocolOllamaChat {
+		t.Errorf("protocol = %q, want %q", proto, ProtocolOllamaChat)
+	}
+}
+
+func TestDetectProtocol_OllamaAllPrivateFieldsBoostsConfidence(t *testing.T) {
+	// Every Ollama-private key — confidence must climb above the 0.85
+	// baseline. Documents the "more signals → higher confidence" rule.
+	body := `{
+		"model":"llama3.1",
+		"messages":[{"role":"user","content":"hi"}],
+		"options":{"temperature":0.7},
+		"keep_alive":"5m",
+		"raw":false,
+		"format":"json"
+	}`
+	proto, conf, err := DetectProtocol([]byte(body))
+	if err != nil {
+		t.Fatalf("DetectProtocol: %v", err)
+	}
+	if proto != ProtocolOllamaChat {
+		t.Errorf("protocol = %q, want %q", proto, ProtocolOllamaChat)
+	}
+	if conf < 0.95 {
+		t.Errorf("confidence = %v, want >= 0.95", conf)
+	}
+}
+
+func TestDetectProtocol_OllamaOptionsNoMessagesFallback(t *testing.T) {
+	// Embedding-style request: only `options`, no `messages`. The
+	// fallback branch should classify as Ollama at moderate confidence.
+	body := `{"model":"llama3.1","options":{"temperature":0.7}}`
+	proto, conf, err := DetectProtocol([]byte(body))
+	if err != nil {
+		t.Fatalf("DetectProtocol: %v", err)
+	}
+	if proto != ProtocolOllamaChat {
+		t.Errorf("protocol = %q, want %q", proto, ProtocolOllamaChat)
+	}
+	if conf < 0.65 {
+		t.Errorf("confidence = %v, want >= 0.65", conf)
+	}
+}
+
+func TestDetectProtocol_OllamaBeatsOpenAIChatScoring(t *testing.T) {
+	// Body looks OpenAI-shaped BUT carries `options` — the Ollama branch
+	// must short-circuit before the OpenAI scoring fires. This is the
+	// "Ollama native client hitting /v1/chat/completions" case from
+	// F6 audit (静默降级): previously the openAIScore from the
+	// `messages[]` field gave 0.3 and won the body-shape comparison.
+	body := `{"model":"llama3.1","messages":[{"role":"user","content":"hi"}],"options":{"temperature":0.7}}`
+	proto, _, err := DetectProtocol([]byte(body))
+	if err != nil {
+		t.Fatalf("DetectProtocol: %v", err)
+	}
+	if proto != ProtocolOllamaChat {
+		t.Errorf("protocol = %q, want %q (must NOT fall through to OpenAI)", proto, ProtocolOllamaChat)
+	}
+}
+
+func TestDetectProtocolByURL_OllamaChat(t *testing.T) {
+	proto, _, err := DetectProtocolByURL(nil, "/api/chat")
+	if err != nil {
+		t.Fatalf("DetectProtocolByURL: %v", err)
+	}
+	if proto != ProtocolOllamaChat {
+		t.Errorf("protocol = %q, want %q", proto, ProtocolOllamaChat)
+	}
+}
+
+func TestDetectProtocolByURL_OllamaGenerate(t *testing.T) {
+	proto, _, err := DetectProtocolByURL(nil, "/api/generate")
+	if err != nil {
+		t.Fatalf("DetectProtocolByURL: %v", err)
+	}
+	if proto != ProtocolOllamaChat {
+		t.Errorf("protocol = %q, want %q", proto, ProtocolOllamaChat)
+	}
+}
+
+func TestDetectProtocolByURL_OpenAIShapeOverridesOllamaURL(t *testing.T) {
+	// High-confidence body detection wins over URL: an OpenAI body sent
+	// to /api/chat (e.g. operator misroute) is still OpenAI.
+	body := `{"messages":[{"role":"user","content":"hi"}],"frequency_penalty":0.5,"presence_penalty":0.5,"seed":42,"logprobs":true,"response_format":{"type":"json_object"}}`
+	proto, _, err := DetectProtocolByURL([]byte(body), "/api/chat")
+	if err != nil {
+		t.Fatalf("DetectProtocolByURL: %v", err)
+	}
+	if proto != ProtocolOpenAIChat {
+		t.Errorf("protocol = %q, want %q (high-confidence body wins over URL)", proto, ProtocolOpenAIChat)
+	}
+}
+
+func TestDetectProtocol_RawBoolOnlyDoesNotTriggerOllama(t *testing.T) {
+	// An Ollama-style `raw:false` MUST be a boolean to count. If the field
+	// is a string (a misuse), the OpenAI scoring should run normally and
+	// we should NOT classify as Ollama.
+	body := `{"model":"llama3.1","messages":[{"role":"user","content":"hi"}],"raw":"false"}`
+	proto, _, err := DetectProtocol([]byte(body))
+	if err != nil {
+		t.Fatalf("DetectProtocol: %v", err)
+	}
+	// Either OpenAI (default) or unknown — but never Ollama, because
+	// the `raw` value is not a bool.
+	if proto == ProtocolOllamaChat {
+		t.Errorf("protocol = %q, must not be Ollama when raw is non-bool", proto)
+	}
+}
+
+func TestDetectProtocol_FormatObjectIsOpenAIResponseFormat(t *testing.T) {
+	// `format` as an object is OpenAI's `response_format`, NOT Ollama.
+	// The Ollama branch's type check (string) must reject this shape.
+	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"format":{"type":"json_object"}}`
+	proto, _, err := DetectProtocol([]byte(body))
+	if err != nil {
+		t.Fatalf("DetectProtocol: %v", err)
+	}
+	if proto == ProtocolOllamaChat {
+		t.Errorf("protocol = %q, format-as-object must not be Ollama", proto)
+	}
+	// Should land at OpenAI (response_format is a strong signal).
+	if proto != ProtocolOpenAIChat {
+		t.Errorf("protocol = %q, want OpenAI (response_format signal)", proto)
+	}
+}
