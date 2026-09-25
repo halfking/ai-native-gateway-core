@@ -28,6 +28,15 @@ type Descriptor struct {
 	BalanceJSONPath string
 }
 
+// ResponsesProbeMaxOutputTokens is the max_output_tokens carried by
+// Responses-API probes (admin session-ping, provider health check, bg chat
+// ping). The Responses API enforces a floor of 16 — vapeur answered
+// "Invalid 'max_output_tokens': integer below minimum value. Expected >= 16"
+// to a 5-token probe (measured 2026-09-25) — and a reasoning model can burn
+// the entire budget invisibly, so 32 keeps the ping cheap while leaving a
+// compliant provider room to actually emit a minimal message.
+const ResponsesProbeMaxOutputTokens = 32
+
 func Resolve(protocol, catalogCode string) Descriptor {
 	protocol = strings.ToLower(strings.TrimSpace(protocol))
 	catalogCode = strings.ToLower(strings.TrimSpace(catalogCode))
@@ -50,6 +59,14 @@ func Resolve(protocol, catalogCode string) Descriptor {
 		d.ModelListSource = "api"
 		d.ChatProbeEndpoint = upstreamurl.EpMessages
 		d.AuthStyle = "anthropic"
+	case "openai-responses":
+		// 2026-09-25 vapeur/hxt-local gpt-5.6-terra 事故：openai-responses
+		// 供应商的探针必须走其原生 /v1/responses——这类中转往往对 chat
+		// max_tokens=1 直接 400（"Could not finish the message because
+		// max_tokens or model output limit was reached"），且 responses 本来
+		// 就是该协议供应商的默认出站形态（协议归一见
+		// providercatalog.NormalizeProviderProtocol）。
+		d.ChatProbeEndpoint = upstreamurl.EpResponses
 	}
 
 	// P3 (2026-06-19): per-vendor balance probe configuration.

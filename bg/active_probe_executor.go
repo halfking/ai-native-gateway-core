@@ -288,7 +288,7 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 		model = t.RawModel
 	}
 
-	body, err := buildProbePingBody(model, t.Protocol)
+	body, err := buildProbePingBody(model, desc)
 	if err != nil {
 		res.Status = ProbeStatusFailed
 		res.ErrCode = "body_build"
@@ -540,36 +540,52 @@ func (e *ActiveProbeExecutor) runModelsList(ctx context.Context, target *ProbeTa
 	}
 }
 
-// buildEndpoint returns the chat-completions URL for the protocol.
-// Anthropic uses /v1/messages; everything else (OpenAI-compatible) uses
-// /v1/chat/completions.
+// buildEndpoint returns the probe URL for the credential's outbound protocol.
+// 2026-09-25: dispatch keyed off desc.ChatProbeEndpoint (resolved through
+// probeDescriptorFor's normalized protocol) instead of an anthropic string
+// prefix, so openai-responses relays (vapeur/hxt-local gpt-5.6-terra,
+// 2026-09-25 user report) are probed at /v1/responses — their chat endpoint
+// rejects max_tokens=1 with 400 "Could not finish the message ..." and the
+// node was misreported failed.
 func (e *ActiveProbeExecutor) buildEndpoint(t *ProbeTarget, desc providercap.Descriptor) (string, error) {
 	if t.BaseURL == "" {
 		return "", fmt.Errorf("empty base_url")
 	}
-	if strings.HasPrefix(t.Protocol, "anthropic") {
-		return upstreamurl.MessagesURL(t.BaseURL), nil
-	}
-	return upstreamurl.ChatCompletionsURL(t.BaseURL), nil
+	return upstreamurl.Build(t.BaseURL, desc.ChatProbeEndpoint), nil
 }
 
-// buildProbePingBody constructs the minimal chat-completion request body.
-// max_tokens=1 keeps the probe cheap (< 10 output tokens). Temperature=0
-// makes the response deterministic (where supported) so we can do simple
-// "non-empty content" success checks downstream if needed.
-func buildProbePingBody(model, protocol string) (string, error) {
+// buildProbePingBody constructs the minimal ping request body for the
+// credential's protocol. max_tokens=1 keeps the probe cheap (< 10 output
+// tokens). Temperature=0 makes the response deterministic (where supported)
+// so we can do simple "non-empty content" success checks downstream if needed.
+// 2026-09-25: OpenAI Responses providers get {"input","max_output_tokens"}
+// (floor 16 — see providercap.ResponsesProbeMaxOutputTokens) instead of a
+// chat body their upstream rejects.
+func buildProbePingBody(model string, desc providercap.Descriptor) (string, error) {
 	if model == "" {
 		return "", fmt.Errorf("empty model name")
 	}
-	payload := map[string]any{
-		"model":      model,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens": 1,
-	}
-	if strings.HasPrefix(protocol, "anthropic") {
-		payload["max_tokens"] = 1
-	} else {
-		payload["temperature"] = 0
+	var payload map[string]any
+	switch desc.ChatProbeEndpoint {
+	case upstreamurl.EpMessages:
+		payload = map[string]any{
+			"model":      model,
+			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+			"max_tokens": 1,
+		}
+	case upstreamurl.EpResponses:
+		payload = map[string]any{
+			"model":             model,
+			"input":             "ping",
+			"max_output_tokens": providercap.ResponsesProbeMaxOutputTokens,
+		}
+	default:
+		payload = map[string]any{
+			"model":       model,
+			"messages":    []map[string]string{{"role": "user", "content": "ping"}},
+			"max_tokens":  1,
+			"temperature": 0,
+		}
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {

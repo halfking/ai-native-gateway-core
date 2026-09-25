@@ -77,6 +77,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/prometheus/client_golang/prometheus"
@@ -2963,29 +2964,39 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 	return string(pt), outboundModel, baseURL, protocol, providerID, nil
 }
 
+// directProbeEndpoint/directProbeBody 按 nodelist 直连探针的协议分发。
+// 2026-09-25：改用 probeDescriptorFor（归一 + providercap.Resolve）统一入口，
+// openai-responses 凭据（vapeur/hxt-local）走原生 /v1/responses
+// {"input","max_output_tokens"}——其 chat 端点对小 max_tokens 探针 400。
 func directProbeEndpoint(baseURL, protocol string) string {
-	ep := upstreamurl.EpChatCompletions
-	if strings.HasPrefix(protocol, "anthropic") {
-		ep = upstreamurl.EpMessages
-	}
-	return upstreamurl.Build(baseURL, ep)
+	return upstreamurl.Build(baseURL, probeDescriptorFor(protocol).ChatProbeEndpoint)
 }
 
 func directProbeBody(model, protocol string) string {
-	if strings.HasPrefix(protocol, "anthropic") {
+	desc := probeDescriptorFor(protocol)
+	switch desc.ChatProbeEndpoint {
+	case upstreamurl.EpMessages:
 		body, _ := json.Marshal(map[string]any{
 			"model":      model,
 			"max_tokens": 10,
 			"messages":   []map[string]any{{"role": "user", "content": "ping"}},
 		})
 		return string(body)
+	case upstreamurl.EpResponses:
+		body, _ := json.Marshal(map[string]any{
+			"model":             model,
+			"input":             "ping",
+			"max_output_tokens": providercap.ResponsesProbeMaxOutputTokens,
+		})
+		return string(body)
+	default:
+		body, _ := json.Marshal(map[string]any{
+			"model":      model,
+			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+			"max_tokens": 10,
+		})
+		return string(body)
 	}
-	body, _ := json.Marshal(map[string]any{
-		"model":      model,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens": 10,
-	})
-	return string(body)
 }
 
 func (w *NodeProbeWorker) logNodeProbeStateUpdateWarning(phase string, providerID, credID int, model, parentRequestID string, err error) {
