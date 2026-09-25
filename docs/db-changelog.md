@@ -259,7 +259,7 @@ relying on it.
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 649 | `649_routing_analytics_probe_filter.sql` | `a5b9fcb8b49e4c4fdff8e670bdf46152587fe3ce20ad01332f5f8b669cb669de` | applied+verified |
+| 649 | `649_routing_analytics_probe_filter.sql` | `79a4f6268d22a8f48c0b1ee65f8cd5b23c5df15e602147fe3c3a8f64010eb2c3` | applied+verified（2026-09-25 R67 audit-rewrite: routing_analytics_probe_filter 多次修正（auto_profile 列加宽 + MV 源对齐），由 commit d592f3f34/2e1ccfb5f/be4bd0f48 改写，changelog 此前记录的旧 SHA a5b9fcb8… 为改写前内容；改写后实际盘上内容 SHA = 79a4f626…） |
 | 650 | `650_auto_route_selection_treatment_attribution.sql` | `1336af5e613ac12e909e6a2ac66de58cdbc4237fc5657786a2e61dbbe21af976` | applied+verified |
 | 651 | `651_provider_quality_hot_rollup.sql` | `01450ef91e3d912851921c089d7b87cff6ec7cd689983e563c5d8b33dd7134a0` | applied+verified |
 | 652 | `652_system_monitor_fallback_queue.sql` | `aa5a942707a2e22658d3a5bb3dd245de402f9a374f1ee7efe162a85a2434cf30` | applied+verified |
@@ -270,7 +270,7 @@ relying on it.
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 655 | `655_session_summaries_schema_reconcile.sql` | `b3e04d12647f89fc94e7e2901d381bcd2186b45a3b071d4314932552edfbde34` | applied+verified |
+| 655 | `655_session_summaries_schema_reconcile.sql` | `2cad09170c01a05d010b9f6246abf5823cd42eb0ab16ba15ece35deaff9bdfa9` | applied+verified（2026-09-25 R67 audit-rewrite: session_summaries schema 收口（修复 snapshot 500 + 业务请求日志丢失），由 commit d1d2e17f2/2b0384d64 改写，changelog 此前记录的旧 SHA b3e04d12… 为改写前内容；改写后实际盘上内容 SHA = 2cad0917…） |
 | 656 | `656_auto_route_selections_hot.sql` | `d286e42f08e61688fda6a4b56eb8b2f83df4a57cf2117471ee60287789eb054a` | applied+verified |
 
 ## 2026-09-05T06:52:05Z — deploy 154 build_seq 1942 (3c51c2e3)
@@ -340,7 +340,7 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 |-----------|------|---------|--------|
 | 667 | `667_llm_hourly_stats_timestamp_fix.sql` | `63d892c3fe0b9629c49d182f78333b3a05f37513924d47676ed66d6cd4517240` | applied+verified |
 | 668 | `668_llm_hourly_stats_final_fix.sql` | `58d32ca000633e9d2d19d77441f5a30fc2882b577d0892638c5a32cf9a862818` | applied+verified |
-| 670 | `670_routing_optimization.sql` | `4f8d984fbcab9e080a8c1d793436d932d7fc11680d613b5f5dc88abbb669bf84` | applied+verified |
+| 670 | `670_routing_optimization.sql` | `9db43a57ef11c28d4bc1fd8c7593daffeda8fbeb00e4beb3a30018549f7c7da8` | applied+verified（2026-09-25 R67 audit-rewrite: routing_optimization P0 迁移缺陷根治（24h audit + routingopt flag 接线/并发加固），由 commit bbf617d03 改写，changelog 此前记录的旧 SHA 4f8d984f… 为改写前内容；改写后实际盘上内容 SHA = 9db43a57…） |
 
 ## 2026-09-06T17:56:32Z — deploy 154 build_seq 1996 (e39dfeb9)
 
@@ -352,7 +352,7 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 669 | `669_training_human_annotations.sql` | `87fb4454176594cdefb0c81aa51b9fbb14197199c2d68ff61906210a62526636` | applied+verified |
+| 669 | `669_training_human_annotations.sql` | `bebf978e02633f97f5f09f24bb6708a3d4762ab49d68c8f3fc364c801dc45d61` | applied+verified（2026-09-25 R67 audit-rewrite: training_human_annotations P0 迁移缺陷根治（24h audit），由 commit bbf617d03 改写，changelog 此前记录的旧 SHA 87fb4454… 为改写前内容；改写后实际盘上内容 SHA = bebf978e…） |
 | 672 | `672_local_first_title_summary_routing.sql` | `690a80f622dd537dbe762b18dc3889d3fc1ca63ae4d32abe7b725f780a36afe6` | applied+verified |
 | 673 | `673_annotation_stats_empty_table_fix.sql` | `99ab8c9e2da6e27f23763c669e49f39f6b8e3d5cf301594dccc11ba1ce3ab102` | applied+verified |
 | 674 | `674_annotation_request_id_unique.sql` | `3fabafce8e3f9e2aa2119ee67e594ba3aa74e99b53c5f6a0b9dc4512d1f927e6` | applied+verified |
@@ -362,7 +362,7 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 675 | `675_qwen38_family_vendor.sql` | `9a774b81755329bbd979853da4f4b16d0409a27fda8c8c3665362eecddaf3fe0` | applied+verified |
-| 676 | `676_routing_opt_active_fix.sql` | `ef42d448d9cb61cdbd17fec194606b36b971dba026f6a7625963f7e1dd3e0baf` | applied+verified |
+| 676 | `676_routing_opt_active_fix.sql` | `e839d4de86f33a2c45d966e60f87032f0821ba5ad711e92ef12cd010b3ca99d0` | applied+verified（2026-09-25 R67 audit-rewrite: routing_opt_active_fix P0 迁移缺陷根治（24h audit），由 commit bbf617d03/661ac9d08 改写，changelog 此前记录的旧 SHA ef42d448… 为改写前内容；改写后实际盘上内容 SHA = e839d4de…） |
 
 ## 2026-09-07T05:21:00Z — deploy 154 build_seq 2017 (2bffd6ca)
 
@@ -461,7 +461,7 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 695 | `695_request_logs_promote_final_success_self_heal.sql` | `a81814190b118ce91a8eede5f8714d508b5e5afb5f6db99dfc42bd2bc7ff1a4a` | applied+verified |
+| 695 | `695_request_logs_promote_final_success_self_heal.sql` | `4fb30870454d4bc5218218e848a3bf18107f21c14e64375374c4f201f5349729` | applied+verified（2026-09-25 R67 audit-rewrite: request_logs_promote_final_success_self_heal R20 24h audit 多项修正 + 694→695 重命名收口，由 commit 96b6b6a89/5c58bf346/22019c638 改写，changelog 此前记录的旧 SHA a8181419… 为改写前内容；改写后实际盘上内容 SHA = 4fb30870…） |
 
 ## 2026-09-12T05:58:00Z — startup sequence apply (d03f0ada4)
 
@@ -488,7 +488,7 @@ partition 钉扎（694 清单漏了 deploy 轨 V371 出身的它）；700=reques
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 703 | `703_supplier_errors_promote_timezone_pin.sql` | `dd21425c325c564c66d47489741566d4ce9e19d7fc2b3f57a4d88eb40913b44e` | applied+verified |
+| 703 | `703_supplier_errors_promote_timezone_pin.sql` | `3a6ec405c0b05646851802945b01cc62f152e8ed938217798ab38c1e30444874` | applied+verified（2026-09-25 R67 audit-rewrite: supplier_errors_promote_timezone_pin 9-14 R-audit C/F 轮修正（godoc 归位 + months CTE 确定性排序 + 701 双账本自登记 + 通道守卫真执行），由 commit 41b529de5 改写，changelog 此前记录的旧 SHA dd21425c… 为改写前内容；改写后实际盘上内容 SHA = 3a6ec405…） |
 
 ## 2026-09-14 — R28 审计修复：704 plan 探测失败退避戳（pending deploy）
 
@@ -525,9 +525,9 @@ LLM_GATEWAY_BALANCE_FLOOR_ESCAPE_HOURS（默认 24h）释放 floor 摘出行）�
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 711 | `711_hosted_tasks.sql` | `c02cabe55b342be273eb563e437bb4da8ca465b72e69b4f66c03c2adce636877` | pending deploy |
+| 711 | `711_hosted_tasks.sql` | `1625448fbf6472e7f9164d7862b5614ef1a37aa588dde9b215b9ba4847413488` | pending deploy（R67 audit-rewrite: hosted_tasks 状态机收紧（移除未用 completing 状态 + workspace_id 强制），由 commit d852e53c6/50c6e336c 改写，changelog 此前记录的旧 SHA c02cabe5… 为改写前内容；改写后实际盘上内容 SHA = 1625448f…） |
 | 712 | `712_session_mirror_outbox.sql` | `cf968473ad5d19829e2533a0d137e6a56156f7e20a48a92f8210daf6c81cca3e` | pending deploy |
-| 713 | `713_session_turns_cost_precision.sql` | `fb46678f89b8243a9e94203c45085bca19bb469622680ea60b341d7f61752454` | pending deploy（原编 711_session_turns_cost_precision，与并行线 hosted_tasks 撞号，R29 2026-09-15 重编号 713；已按旧 711 应用过的库重放幂等） |
+| 713 | `713_session_turns_cost_precision.sql` | `ba1e5764392cf1689a3b66817812f62a0a656204e2ef3d125ae51c99aff20ec0` | pending deploy（原编 711_session_turns_cost_precision，与并行线 hosted_tasks 撞号，R29 2026-09-15 重编号 713；已按旧 711 应用过的库重放幂等。R67 audit-rewrite: 补 session_turns_hot 侧 cost_usd 精度 ALTER（修复 promote 列契约漂移停摆），由 commit 245482443 改写，changelog 此前记录的旧 SHA fb46678f… 为改写前内容；改写后实际盘上内容 SHA = ba1e5764…） |
 
 补录说明（hosted-task-delegation-design §6.1，2026-09-15）：711 = hosted_tasks
 （委托任务投影，CAS revision + 终态 sticky + (tenant_id, idempotency_key) 幂等）+
