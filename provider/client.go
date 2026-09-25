@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	"github.com/kaixuan/llm-gateway-go/internal/endpointselect"
 	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/provider/catalog"
@@ -203,6 +204,24 @@ type Candidate struct {
 	// hits the hard-exclude threshold. Added 2026-06-22 (defect ③ soft layer).
 	RecentSuccessRate *float64 `json:"recent_success_rate,omitempty"`
 	RecentSamples     int      `json:"recent_samples,omitempty"`
+	// NativeEndpoints is the supplier's full set of protocol endpoints
+	// (provider_endpoint_protocols rows for this candidate's provider).
+	// It feeds the endpointselect.Select() decision that drives the
+	// r0924 supplier-protocol-optimization roadmap (§3.5): Stage 1A
+	// (protocol+family match → passthrough) requires the per-endpoint
+	// (protocol, base_url, vendor_native) quadruple; Stage 2 needs the
+	// full vendor_native family group; Stage 4 falls back to the
+	// primary (BaseURL, Protocol) above.
+	//
+	// Pre-r0924 callers that ignore this field see no behavior change
+	// because endpointselect is only consulted when the FF_ENDPOINT_SELECTOR
+	// flag is on (default off). Legacy dispatcher paths continue using
+	// the primary BaseURL/Protocol pair as before.
+	//
+	// Nil/empty slice = legacy single-endpoint supplier (no
+	// provider_endpoint_protocols rows). Select() handles this as the
+	// Stage 4 fallback.
+	NativeEndpoints []endpointselect.EndpointLite `json:"native_endpoints,omitempty"`
 }
 
 func (c *Candidate) CalcCost(promptTokens, completionTokens int, cacheReadTokens, cacheWriteTokens *int) float64 {
@@ -1600,7 +1619,12 @@ SELECT
 			-- used both for the hard-exclude filter below and (via the
 			-- RecentSuccessRate field) for soft de-prioritization in the router.
 			rsr.rate   AS recent_success_rate,
-			rsr.samples AS recent_samples
+			rsr.samples AS recent_samples,
+			-- r0924 supplier-protocol-optimization §3.4: per-candidate
+			-- JSONB projection of the provider_endpoint_protocols rows
+			-- (see pep_lateral LATERAL below). Empty array preserves the
+			-- legacy single-endpoint fallback.
+			pep_lateral.endpoints AS native_endpoints
 		FROM matched mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
@@ -1645,7 +1669,31 @@ SELECT
 				         pp.effective_from DESC
 				LIMIT 1
 			) pp_fb ON TRUE
-		-- LEFT JOIN model_name_mapping for standardized name lookup fallback
+		-- r0924 supplier-protocol-optimization §3.4: pull the supplier's full
+		-- provider_endpoint_protocols set into each candidate row as a JSONB
+		-- array. Empty array when the supplier has no endpoint subtable rows
+		-- (legacy single-endpoint supplier; selector falls through to Stage 4).
+		-- Anchored on p.id (provider) — the join key is the provider, not the
+		-- credential, because one credential inherits its provider's entire
+		-- endpoint set. Filtered by pep.enabled = TRUE so disabled endpoints
+		-- never enter the decision path. Sorted primary-first / weight-asc
+		-- so the Go-side unmarshal preserves the priority order used by
+		-- endpointselect (sortEndpointsByPriority is stable on Equal keys,
+		-- but having the order on the wire avoids any post-scan shuffle).
+		LEFT JOIN LATERAL (
+			SELECT COALESCE(jsonb_agg(jsonb_build_object(
+				'id',            pep.id,
+				'protocol',      pep.protocol,
+				'base_url',      pep.base_url,
+				'is_primary',    pep.is_primary,
+				'vendor_native', COALESCE(pep.vendor_native, ''),
+				'enabled',       pep.enabled,
+				'weight',        pep.weight,
+				'health_status', pep.health_status
+			) ORDER BY pep.is_primary DESC, pep.weight ASC, pep.id ASC), '[]'::jsonb) AS endpoints
+			FROM provider_endpoint_protocols pep
+			WHERE pep.provider_id = p.id AND pep.enabled = TRUE
+		) pep_lateral ON TRUE
 		-- Last-N success rate over request_logs. LATERAL so each candidate
 		-- row carries its own recent (rate, samples). STABLE function, hits
 		-- idx_request_logs_credential_ts (credential_id, ts DESC) so the
@@ -1760,6 +1808,9 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		// credentialhealth/tuner.go); used below to derive a capacity-weighted
 		// Weight when the operator has not set an explicit manual weight.
 		var concurrencyLimitAuto *int
+		// nativeEndpointsJSON is the aggregated JSONB array. The LATERAL
+		// projection returns [] for providers without endpoint rows.
+		var nativeEndpointsJSON []byte
 		if err := rows.Scan(
 			&cand.CredentialID,
 			&cand.ProviderID,
@@ -1807,10 +1858,19 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.QualityFixMode,
 			&cand.RecentSuccessRate,
 			&cand.RecentSamples,
+			&nativeEndpointsJSON,
 		); err != nil {
 			return nil, err
 		}
 		cand.OfferRawModel = offerRawModel
+		// A missing endpoint mapping is represented by [] and leaves the
+		// candidate on its protocol fallback path. NULL is not expected from
+		// the SQL projection, but a nil scan also safely means no mapping.
+		if len(nativeEndpointsJSON) > 0 {
+			if err := json.Unmarshal(nativeEndpointsJSON, &cand.NativeEndpoints); err != nil {
+				return nil, fmt.Errorf("scan native endpoints for credential %d: %w", cand.CredentialID, err)
+			}
+		}
 		// 2026-09-23 协议命名审计：providers.protocol 无 CHECK 约束，历史
 		// 行里存在 "openai" 等旧枚举/脏值。候选加载是所有出站分发的唯一
 		// 入口，在这里统一归一到 catalog 枚举（"openai"→openai-completions、
