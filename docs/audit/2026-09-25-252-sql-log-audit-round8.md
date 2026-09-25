@@ -64,7 +64,29 @@
 
 ## §六、部署与回验
 
-（部署执行后回填）
+**部署（2026-09-25 上午，245→154→252-dev 顺序）**：main 合并提交 a0e4d9c59（含第七轮 FIX-1/2 + 本轮 D10/D11/D12 + 迁移 747；原号 746 与并行对账报表轮撞号按纪律㉒ 重编，冲突三处解决：installer 双通道双侧保留 + gofmt 形态）。
+
+| 实例 | 版本 | 验证 |
+|---|---|---|
+| 245 | 2245-a0e4d9c5（8781 active） | healthz ok / ready:true / bg-tasks 401 ✓ |
+| 154 | 2246-a0e4d9c5（8782 active） | healthz ok / ready:true / bg-tasks 401 ✓ |
+| 252-dev | 2246-a0e4d9c5（:8780） | healthz ok / service active ✓ |
+
+迁移 747 在 252 schema_migrations ledger 登记（与并行轮 746 并存）。
+
+**回验窗口**：10:04-10:20 CST（部署完成后 16min，PG 日志 8,088 行快照 `/tmp/pg252-round8-verify.log`@252）。
+
+| 项 | 基线（第七轮 55min） | 回验（16min 折算） | 结论 |
+|---|---|---|---|
+| policy/alternatives 取消（FIX-1） | 203 | **0** | ✅ 归零 |
+| index_hot DELETE 慢查 >1s（FIX-2） | ×79 / mean 2.1s | **0 条** | ✅ 归零 |
+| cancel 总量 | 510 | 57/16min ≈ 196 | ✅ **-62%** |
+| catalog 候选慢查（D10） | ×54 / 178.4s | **0 条** | ✅ 归零 |
+| fingerprint 击杀（D11） | ×3 / 193s | **0 条** | ✅ 归零 |
+
+- cancel 57 归因（全文提取，纪律㉓）：claim UPDATE ×35（C2 长流式客户端断开，已知行为，D12 只补镜像不改取消率）、探针 featured ×4（D2''' 登记范畴，<30s 不击杀）、报表/stats 家族余量——**policy/alternatives 形状零残留**。
+- 残余 >1s 慢查 120 条/16min 主要形态：canonical 视图读 ×14+8（并行报表轮 report_rollup 新读面 + stats_usage_daily，非本轮基线项）、analyze_llm_gateway_table_stats ×1（138.8s，D7' 已登记）、外部 JDBC 指纹族（E4 类）。
+- **D12 真实生效实证**：部署后 20min 内 `session_mirror_outbox` 出现 source='claim' pending ×1（一次 granted claim 的同事务补偿登记，reaper 将幂等消化）；三台网关日志零 claim-outbox 失败告警。
 
 ## §七、登记（本轮不修）
 
@@ -95,4 +117,7 @@
 
 ## §十、handoff 更新
 
-（提交后回填）
+- 本轮合入 main：61e2f6c85（三根修）+ cca46df3d（gofmt 批量）+ a0e4d9c59（merge，迁移 747 重编）。部署 2245/2246/2246 全 a0e4d9c5。
+- 记忆库：llm-gateway-go-audit-cycle-progress 追加第八轮；pg-252-sql-log-audit-facts 增补（model_offers/v_routable 双视图同基底、SimpleProtocol planning 成本、fingerprint 列全空实证、claim granted 9/24h、命中率 83% 取证法）。
+- 原始物证：252:/tmp/pg252-round8-verify.log（回验快照）+ 本轮 EXPLAIN 脚本 /tmp/d10-*（本地）。
+- storage-merge 联动：claim 补偿已上线，观察期 GLOBAL_G2 新例应归零（若仍有新例=洞有第三处，需重新归因）。
