@@ -269,7 +269,7 @@ func TestProviderErrorAggregatorRealPG(t *testing.T) {
 	if !crossFirstSeen.Equal(firstSeen) {
 		t.Fatalf("cross-tick first_seen drifted %s -> %s, want unchanged (audit F-4)", firstSeen, crossFirstSeen)
 	}
-	if !crossLastSeen.Equal(bucket.Add(45*time.Second)) {
+	if !crossLastSeen.Equal(bucket.Add(45 * time.Second)) {
 		t.Fatalf("cross-tick last_seen = %s, want %s", crossLastSeen, bucket.Add(45*time.Second))
 	}
 

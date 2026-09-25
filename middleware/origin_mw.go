@@ -28,6 +28,22 @@
 // middleware (see cmd/gateway/main.go); if a future route skips auth it
 // MUST not skip this middleware either.
 //
+// R64 (2026-09-25) hardening: the "global-auth-passed" sentinel (static
+// global API key) additionally requires a REGISTERED (stage, actor)
+// pairing — see globalAuthStageActorPairs. The sentinel cannot identify
+// the caller, so a claimed stage is only honoured when the actor header
+// matches the exact value the corresponding worker actually sends; any
+// other combination degrades to the untrusted path (headers stripped,
+// stage=business).
+//
+// DB system keys (2026-09-25 gap fix): AuthMiddleware passes sk-* keys
+// through without registering an owner — the DB verification runs later,
+// inside the handler, AFTER this middleware. Every DB-key caller was
+// therefore treated as untrusted here, stripping the system workers'
+// origin headers. The Wrap now captures the inbound claim on ctx and
+// ResolveOriginForSystemKey re-runs the trust decision once the verifier
+// resolved owner_user (domains/streaming entry builders apply it).
+//
 // Wiring
 // ──────
 //
@@ -79,11 +95,13 @@ import (
 //	                                headers are trustworthy.
 
 const (
-	originStageKey      = "origin.stage"
-	originActorKey      = "origin.actor"
-	originClientIPKey   = "origin.client_ip"
-	originClientXFFKey  = "origin.xff"
-	authOwnerUserCtxKey = "auth.owner_user"
+	originStageKey        = "origin.stage"
+	originActorKey        = "origin.actor"
+	originClientIPKey     = "origin.client_ip"
+	originClientXFFKey    = "origin.xff"
+	originClaimedStageKey = "origin.claimed_stage"
+	originClaimedActorKey = "origin.claimed_actor"
+	authOwnerUserCtxKey   = "auth.owner_user"
 )
 
 // system-owner-user list. Auth middleware stores the resolved owner
@@ -94,9 +112,12 @@ const (
 // "global-auth-passed" is the sentinel AuthMiddleware sets when the
 // request carried the static global API key.  Auth_mw cannot read the
 // DB to look up the real owner_user, so it cannot distinguish a
-// genuine business user with that key from a system worker.  Instead
-// we trust the X-LLM-Origin-Actor header when it names a known
-// worker; an unknown / empty actor falls back to "business".
+// genuine business user with that key from a system worker.  R64
+// (2026-09-25): for the sentinel the X-LLM-Origin-Stage header is only
+// honoured when it pairs (per globalAuthStageActorPairs below) with
+// the X-LLM-Origin-Actor that the corresponding worker actually sends;
+// other combinations fall back to the untrusted strip path.  The other
+// (DB-resolved) owners keep their pre-R64 semantics unchanged.
 var trustedOriginOwners = map[string]struct{}{
 	"global-auth-passed":          {}, // sentinel from AuthMiddleware
 	"credential-selfcheck-worker": {},
@@ -105,6 +126,34 @@ var trustedOriginOwners = map[string]struct{}{
 	"legacy-probe-worker":         {}, // tenant=system 5min cadence in 252
 	"model-quality-worker":        {}, // 2026-08-10: MMLU 智商测试经网关请求
 	"self-check-worker":           {}, // 2026-08-10: 修复潜伏的归属错误——legacy SelfCheckWorker 与 model-quality-worker 都复用这个系统 key
+}
+
+// globalAuthStageActorPairs 是 "global-auth-passed" 哨兵调用者可信任的
+// (stage → 允许的 actor 集合) 配对表（R64，2026-09-25）。静态全局 key 无法
+// 区分真实 worker 与持同 key 的任意调用者，因此 claimed stage 只有在与该
+// stage 真实写入方实际发送的 X-LLM-Origin-Actor 配对时才被信任；任何其他
+// 组合（含缺失 actor、未知 stage、伪造 actor）一律降级为非信任 → 剥头 +
+// stage=business（走 resolveOrigin 的 strip 路径）。
+//
+// 配对表证据（全仓 X-LLM-Origin-Stage/Actor 写入点 grep，非测试代码）：
+//
+//	bg/self_check_worker.go:623-624, :732-733  → (self_check, self-check-worker)
+//	bg/credential_selfcheck.go:694-695         → (self_check, credential-selfcheck-worker)
+//	domains/modelquality/invoker.go:281-282    → (self_check, model-quality-worker)
+//	bg/node_probe.go:2619-2620, :3167-3168     → (node_probe, node-probe-worker)
+//	bg/active_probe_executor.go:446-447        → (node_probe, probe-service)
+//
+// 新增写入方必须同步本表，否则其 stage 会被降级为 business。
+var globalAuthStageActorPairs = map[string]map[string]struct{}{
+	"self_check": {
+		"self-check-worker":           {},
+		"credential-selfcheck-worker": {},
+		"model-quality-worker":        {},
+	},
+	"node_probe": {
+		"node-probe-worker": {},
+		"probe-service":     {},
+	},
 }
 
 // -------------------------------------------------------------------
@@ -219,6 +268,22 @@ func (m *OriginMiddleware) Wrap(next http.Handler) http.Handler {
 		stage, actor, strip := m.resolveOrigin(r)
 		clientIP, clientChain := m.resolveClientIP(r)
 
+		// 2026-09-25: capture the inbound claim (post 64B cap) BEFORE the
+		// strip-delete below. The data-plane key verifier runs later, inside
+		// the handler — after this middleware has already degraded every
+		// DB-key caller to the untrusted path — so the claimed stage/actor
+		// must survive on ctx for ResolveOriginForSystemKey to re-run the
+		// trust decision with the resolved owner (see its doc).
+		if claimed := strings.TrimSpace(r.Header.Get("X-LLM-Origin-Stage")); claimed != "" {
+			ctx = context.WithValue(ctx, originClaimedStageKey, claimed)
+		}
+		if claimed := strings.TrimSpace(r.Header.Get("X-LLM-Origin-Actor")); claimed != "" {
+			if len(claimed) > 64 {
+				claimed = claimed[:64]
+			}
+			ctx = context.WithValue(ctx, originClaimedActorKey, claimed)
+		}
+
 		// Inbound header sanitisation: never let a non-system caller
 		// smuggle X-LLM-Origin-Stage through to the realtime stream.
 		// X-LLM-Pin-Credential (2026-08-13) forces the router to a specific
@@ -261,21 +326,41 @@ func (m *OriginMiddleware) resolveOrigin(r *http.Request) (stage, actor string, 
 	if _, ok := trustedOriginOwners[owner]; !ok {
 		return stage, actor, strip
 	}
+
+	// 2b. R64 (2026-09-25): the global-auth-passed sentinel cannot identify
+	// the caller, so a claimed stage is honoured only when it pairs with the
+	// actor value the real worker actually sends (globalAuthStageActorPairs).
+	// No stage claimed (or an explicit "business") grants nothing beyond the
+	// default and is exempt from the pairing gate; every other combination —
+	// unknown stage, spoofed actor, missing actor — degrades to the untrusted
+	// path below (headers stripped by Wrap, stage=business, actor="").
+	claimedStage := strings.TrimSpace(r.Header.Get("X-LLM-Origin-Stage"))
+	claimedActor := strings.TrimSpace(r.Header.Get("X-LLM-Origin-Actor"))
+	if len(claimedActor) > 64 {
+		// Cap to the DB column width before comparing (same cap as step 3).
+		claimedActor = claimedActor[:64]
+	}
+	if owner == "global-auth-passed" && claimedStage != "" && claimedStage != "business" {
+		allowed, ok := globalAuthStageActorPairs[claimedStage]
+		if !ok || claimedActor == "" {
+			return stage, actor, strip // stage, actor, strip
+		}
+		if _, ok := allowed[claimedActor]; !ok {
+			return stage, actor, strip // stage, actor, strip
+		}
+	}
 	strip = false
 
 	// 3. Honour inbound header if non-empty and well-formed.
-	if v := strings.TrimSpace(r.Header.Get("X-LLM-Origin-Stage")); v != "" {
-		if isValidOriginStage(v) {
-			stage = v
+	if claimedStage != "" {
+		if isValidOriginStage(claimedStage) {
+			stage = claimedStage
 		}
 	}
-	if v := strings.TrimSpace(r.Header.Get("X-LLM-Origin-Actor")); v != "" {
-		// Actor is free-form (worker / manual:<id>); cap at 64B to
+	if claimedActor != "" {
+		// Actor is free-form (worker / manual:<id>); capped at 64B in 2b to
 		// match the DB column width.
-		if len(v) > 64 {
-			v = v[:64]
-		}
-		actor = v
+		actor = claimedActor
 	}
 	return stage, actor, strip
 }
@@ -291,6 +376,74 @@ func isValidOriginStage(s string) bool {
 		return true
 	}
 	return false
+}
+
+// IsTrustedOriginOwner reports whether ownerUser is on the system-worker
+// trust list. Exported for the entry-build fallback in domains/streaming:
+// DB system keys are verified after this middleware ran, so their trust
+// decision can only be re-evaluated once the verifier resolved owner_user.
+func IsTrustedOriginOwner(ownerUser string) bool {
+	_, ok := trustedOriginOwners[ownerUser]
+	return ok
+}
+
+// systemOwnerFallbackStage maps DB-resolved system owners to the canonical
+// origin_stage they are authorized to claim. This is the server-side
+// derivation for trusted system keys whose requests carry no (or an
+// unparseable) X-LLM-Origin-Stage header — unlike the header claim, it
+// cannot be forged: the owner is resolved from the is_system api_keys row
+// by the data-plane verifier, not from anything the client sent.
+//
+// "legacy-probe-worker" is intentionally unmapped — its historic cadence
+// writer never declared a single stage, so only an explicit valid header
+// claim (honoured via ResolveOriginForSystemKey) can mark its rows.
+var systemOwnerFallbackStage = map[string]string{
+	"self-check-worker":           "self_check",
+	"credential-selfcheck-worker": "self_check",
+	"model-quality-worker":        "self_check",
+	"node-probe-worker":           "node_probe",
+	"system-health-worker":        "system_health",
+}
+
+// ResolveOriginForSystemKey re-runs the origin trust decision for a DB
+// system key AFTER the data-plane verifier resolved its owner_user.
+//
+// Why this exists: AuthMiddleware passes sk-* data-plane keys through
+// WITHOUT registering an owner on ctx (DB verification happens later,
+// inside the handler). OriginMiddleware therefore saw an empty owner for
+// every DB-key caller — including the system workers — stripped their
+// X-LLM-Origin-* headers and stamped stage="business". On a deployment
+// where probe workers hold DB system keys (e.g. the auto-generated
+// sk-selfcheck-* key), every probe row landed as business — or, for
+// early exits (gw_rpm_exceeded / no_candidate) that never reached the
+// initial INSERT, with origin_stage NULL entirely.
+//
+// Resolution order ( mirrors resolveOrigin step 3):
+//  1. the middleware-captured header claim, when the stage is a valid
+//     origin_stage value (actor is free-form);
+//  2. the owner's canonical fallback stage (systemOwnerFallbackStage),
+//     with the owner itself as actor;
+//  3. ok=false — untrusted owner (regular business keys), no claim and
+//     no mapping: callers must leave the entry untouched.
+//
+// The "global-auth-passed" sentinel is deliberately out of scope: the
+// static-key path is fully resolved inside resolveOrigin (incl. the R64
+// stage/actor pairing gate) and never reaches the DB verifier.
+func ResolveOriginForSystemKey(ctx context.Context, ownerUser string) (stage, actor string, ok bool) {
+	if ctx == nil || ownerUser == "" || ownerUser == "global-auth-passed" {
+		return "", "", false
+	}
+	if _, trusted := trustedOriginOwners[ownerUser]; !trusted {
+		return "", "", false
+	}
+	if claimed, _ := ctx.Value(originClaimedStageKey).(string); claimed != "" && isValidOriginStage(claimed) {
+		claimedActor, _ := ctx.Value(originClaimedActorKey).(string)
+		return claimed, claimedActor, true
+	}
+	if fallback, mapped := systemOwnerFallbackStage[ownerUser]; mapped {
+		return fallback, ownerUser, true
+	}
+	return "", "", false
 }
 
 // resolveClientIP extracts the real client IP and the full XFF chain.

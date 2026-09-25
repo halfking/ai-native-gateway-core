@@ -22,8 +22,10 @@ package bg
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -45,11 +47,21 @@ const (
 	lowActualSuccess    = 0.6 // actual success below this triggers weight proposal
 )
 
+// ErrAnalyzeInProgress 是 AnalyzeOnce 的占用哨兵（R64 P2）：已有一轮分析
+// 在跑（定时 goroutine 或另一个 admin 触发）时立即返回，调用方（admin
+// handleAnalyze）据此回 409 而不是排队阻塞整个 5 分钟超时窗。
+var ErrAnalyzeInProgress = errors.New("feedback analysis already in progress")
+
 // FeedbackAnalyzer runs the daily tuning analysis.
 type FeedbackAnalyzer struct {
 	db     *pgxpool.Pool
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// mu serializes AnalyzeOnce（R64 P2）：定时 goroutine 与 admin 手动触发
+	// 可能并发跑同一套全表扫描+去重+插入，产生重复 pending 提案。TryLock
+	// 非阻塞互斥——占用方立即拿 ErrAnalyzeInProgress 返回，不排队。
+	mu sync.Mutex
 
 	// AnalysisWindow is the lookback period. Default: 7 days.
 	AnalysisWindow time.Duration
@@ -119,7 +131,16 @@ func (a *FeedbackAnalyzer) analyzeRecovered(ctx context.Context) {
 
 // AnalyzeOnce runs one analysis cycle. Exposed for admin-triggered
 // on-demand analysis and testing.
+//
+// R64 P2：非阻塞互斥——同一时刻只允许一轮分析在跑；已被占用时立即返回
+// ErrAnalyzeInProgress，不等待（默认超时窗 5 分钟，排队会把并发触发全部
+// 拖成串行长阻塞）。
 func (a *FeedbackAnalyzer) AnalyzeOnce(ctx context.Context) error {
+	if !a.mu.TryLock() {
+		return ErrAnalyzeInProgress
+	}
+	defer a.mu.Unlock()
+
 	timeoutCtx, cancel := context.WithTimeout(ctx, defaultAnalysisTimeout)
 	defer cancel()
 

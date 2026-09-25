@@ -299,7 +299,11 @@ func (s *Store) ListEvents(ctx context.Context, tenantID, taskID string, limit i
 // hosted_task.cancelled 投递体，无需额外形状分支）。返回 cancelled 事件 seq
 // 供调用方观测；RecallTask 会随后以 recalled 事件 seq 覆盖（同一事务内，
 // 同 row UPDATE，§6.1 event_id 幂等键语义保持）。
-func cancelRowInTx(ctx context.Context, tx pgx.Tx, cur *Task) (*Task, int64, error) {
+//
+// actor 是写入 cancel_requested/cancelled 事件 payload 的操作方标注（R64，
+// 2026-09-25，原硬编码 "tenant" 致召回路径审计失真）：CancelTask（租户
+// cancel 端点）传 "tenant"，RecallTask（网关召回路径）传 "system"。
+func cancelRowInTx(ctx context.Context, tx pgx.Tx, cur *Task, actor string) (*Task, int64, error) {
 	task, err := scanTask(tx.QueryRow(ctx, `
 		UPDATE hosted_tasks
 		SET status = 'cancelled', revision = revision + 1,
@@ -314,7 +318,7 @@ func cancelRowInTx(ctx context.Context, tx pgx.Tx, cur *Task) (*Task, int64, err
 	var cancelledSeq int64
 	for _, ev := range []EventType{EventCancelRequested, EventCancelled} {
 		seq, err := appendEvent(ctx, tx, cur.ID, ev, map[string]any{
-			"actor": "tenant", "from_status": string(cur.Status),
+			"actor": actor, "from_status": string(cur.Status),
 		})
 		if err != nil {
 			return nil, 0, err
@@ -365,7 +369,7 @@ func (s *Store) CancelTask(ctx context.Context, tenantID, id string) (*Task, boo
 	if !CanTransition(cur.Status, StatusCancelled) {
 		return cur, false, nil
 	}
-	task, _, err := cancelRowInTx(ctx, tx, cur)
+	task, _, err := cancelRowInTx(ctx, tx, cur, "tenant")
 	if err != nil {
 		return nil, false, err
 	}
@@ -430,7 +434,9 @@ func (s *Store) RecallTask(ctx context.Context, tenantID, id string) (*RecallOut
 
 	status := RecallAlreadyTerminal
 	if !cur.Status.Terminal() && CanTransition(cur.Status, StatusCancelled) {
-		if _, _, err := cancelRowInTx(ctx, tx, cur); err != nil {
+		// R64（2026-09-25）：召回路径的 cancelled 抢占是网关（system）发起
+		// 的状态迁移，事件 actor 标 "system" 而非租户，保审计准确。
+		if _, _, err := cancelRowInTx(ctx, tx, cur, "system"); err != nil {
 			return nil, err
 		}
 		status = RecallCancelled

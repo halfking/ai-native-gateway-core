@@ -1724,7 +1724,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	// claim, SQLSTATE 23505 from uq_request_logs_hot_final_success_session)
 	// degrades to a normal success row — never fails the business write.
 	if logsWrite && shouldClaimFinalSuccess(entry) {
-		claimSessionFinalSuccess(ctx, c, tx, entry.RequestID)
+		claimSessionFinalSuccess(ctx, c, tx, entry)
 	}
 
 	// Publish only the session opener here. The request is provisional until
@@ -2350,7 +2350,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	// RowsAffected==0 fallback above re-enters insertRequestLog, which
 	// claims on its own.
 	if logsWrite && shouldClaimFinalSuccess(entry) {
-		claimSessionFinalSuccess(ctx, c, tx, entry.RequestID)
+		claimSessionFinalSuccess(ctx, c, tx, entry)
 	}
 	if c.outboxWriter != nil && entry.GwSessionID != nil && *entry.GwSessionID != "" && requestLogEntryTerminal(entry) {
 		completed, err := buildRequestCompletedEvent(ctx, tx, entry)
@@ -2395,7 +2395,36 @@ func persistSystemFingerprint(ctx context.Context, tx pgx.Tx, entry *RequestLogE
 		   SET system_fingerprint = $2
 		 WHERE request_id = $1
 	`, entry.RequestID, *entry.SystemFingerprint)
+	if err == nil {
+		markSystemFingerprintObserved()
+	}
 	return err
+}
+
+// systemFingerprintLastObserved tracks (in-process) when an entry carrying a
+// non-empty system_fingerprint was last persisted. The integrity fingerprint
+// drift worker (bg/integrity_fingerprint_drift.go) reads it to skip its full
+// 7-day canonical-view scan while no fingerprint traffic exists at all —
+// 2026-09-25 audit round 8 (D11): on 252 every fingerprint column is empty
+// (upstream never returns X-System-Fingerprint), so the drift query was a
+// pure full-scan no-op that the 30s rolconfig killed under load.
+var systemFingerprintLastObserved atomic.Value // time.Time
+
+// markSystemFingerprintObserved records that fingerprint traffic exists.
+func markSystemFingerprintObserved() {
+	systemFingerprintLastObserved.Store(time.Now())
+}
+
+// SystemFingerprintObservedSince reports how long ago the last
+// fingerprint-carrying entry was persisted in this process, and whether any
+// was ever observed after startup. Zero ok means "never seen since boot" —
+// callers must not treat that as "no fingerprints exist in the DB".
+func SystemFingerprintObservedSince() (d time.Duration, ok bool) {
+	v, loaded := systemFingerprintLastObserved.Load().(time.Time)
+	if !loaded {
+		return 0, false
+	}
+	return time.Since(v), true
 }
 
 // shouldClaimFinalSuccess reports whether entry represents a terminal success
@@ -2499,7 +2528,7 @@ func (c *Client) heapRequestLogsPartitions(ctx context.Context, tx pgx.Tx) []str
 	return cached
 }
 
-func claimSessionFinalSuccess(ctx context.Context, c *Client, tx pgx.Tx, requestID string) {
+func claimSessionFinalSuccess(ctx context.Context, c *Client, tx pgx.Tx, entry *RequestLogEntry) {
 	// 2026-08-25: 列存分区安全. 旧实现直接 `FROM request_logs promoted` 半连接,
 	// 在 columnar 分区上会触发 0A000 (CTID scan over columnar). 改为只在
 	// pg_class.relam='h' 的 request_logs_<year>_<month> 月度分区里查, columnar
@@ -2513,22 +2542,25 @@ func claimSessionFinalSuccess(ctx context.Context, c *Client, tx pgx.Tx, request
 	// is_final_success=TRUE, promote 撞 uq_<partition>_final_success_session
 	// (23505) 整批回滚, 冷迁移停摆 2.5 天. 直传后编译器保证接线不再可丢;
 	// c==nil 仅剩单测/退化场景 (守卫跳过, 依赖 promote 侧 695 自愈 demote).
-	if c == nil {
-		claimSessionFinalSuccessExec(ctx, tx, requestID, nil)
-		return
+	//
+	// 2026-09-25 审计第八轮 (D12): 传 entry 而非 requestID — claim 置位成功
+	// 后要在同一事务内登记 session_mirror_outbox 补偿行 (registerFinalSuccessClaimOutbox).
+	var heaps []string
+	if c != nil {
+		heaps = c.heapRequestLogsPartitions(ctx, tx)
 	}
-	heaps := c.heapRequestLogsPartitions(ctx, tx)
-	claimSessionFinalSuccessExec(ctx, tx, requestID, heaps)
+	claimSessionFinalSuccessExec(ctx, tx, entry, heaps)
 }
 
 // claimSessionFinalSuccessExec is the actual implementation. heapPartitions
 // is the snapshot of pg_class.relam='h' request_logs_* partitions (already
 // quoted/identified); nil/empty means "skip the promoted-partition guard
 // entirely" (single-test path or transient cache failure).
-func claimSessionFinalSuccessExec(ctx context.Context, tx pgx.Tx, requestID string, heapPartitions []string) {
-	if tx == nil || requestID == "" {
+func claimSessionFinalSuccessExec(ctx context.Context, tx pgx.Tx, entry *RequestLogEntry, heapPartitions []string) {
+	if tx == nil || entry == nil || entry.RequestID == "" {
 		return
 	}
+	requestID := entry.RequestID
 	// The savepoint isolates the claim: without it a 23505 would abort the
 	// whole request_logs transaction and drop the business row.
 	if _, err := tx.Exec(ctx, `SAVEPOINT gw_final_success_claim`); err != nil {
@@ -2610,6 +2642,81 @@ func claimSessionFinalSuccessExec(ctx context.Context, tx pgx.Tx, requestID stri
 	// Release is cosmetic (released at COMMIT anyway) and must not fail the tx.
 	//nolint:errcheck // best-effort
 	_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_final_success_claim`)
+	if tag.RowsAffected() > 0 {
+		registerFinalSuccessClaimOutbox(ctx, tx, entry)
+	}
+}
+
+// registerFinalSuccessClaimOutbox enqueues a source='claim' compensation row
+// into session_mirror_outbox whenever a final-success claim was actually
+// granted, in the SAME transaction (2026-09-25 252 audit round 8, D12 —
+// the 4th and final recommendation of the storage-merge observation loop).
+//
+// Why: the v1 claim (is_final_success=TRUE, same-tx UPDATE) and the v2
+// mirror write (session_turns, best-effort hook AFTER commit) are two
+// phases. When the hook phase fails AND its own outbox registration fails
+// (or the process dies in the window), the claimed row permanently has no
+// mirrored turn and no durable trace — the reaper cannot replay what was
+// never registered (GLOBAL_G2 misses of 09-12/09-18/09-19/09-20/09-22, 5
+// rows / 8 days). Registering on every granted claim closes the hole in
+// both directions:
+//   - mirror already succeeded → reaper replays through v2.Write
+//     (request_id-idempotent no-op) and deletes the row;
+//   - mirror missing → the replay IS the repair.
+//
+// Granted-claim volume is tiny (252 measured: 9 rows / 24h against 74k
+// requests), so the extra INSERT + one idempotent replay is noise.
+//
+// Best-effort like the claim itself: any failure logs a warning and leaves
+// the business transaction untouched. RLS on the outbox (FORCE, migration
+// 712) requires the tenant-bypass GUCs; they are set inside a dedicated
+// savepoint and restored after the INSERT so they never leak to the rest
+// of the business transaction (a ROLLBACK TO the savepoint also restores
+// them, per PG's savepoint-GUC semantics).
+func registerFinalSuccessClaimOutbox(ctx context.Context, tx pgx.Tx, entry *RequestLogEntry) {
+	if entry == nil || entry.GwSessionID == nil || *entry.GwSessionID == "" {
+		return
+	}
+	payload, err := json.Marshal(entry)
+	if err != nil {
+		slog.Warn("final-success claim outbox: payload marshal failed (non-fatal)",
+			"request_id", entry.RequestID, "error", err)
+		return
+	}
+	if _, err := tx.Exec(ctx, `SAVEPOINT gw_claim_mirror_outbox`); err != nil {
+		slog.Warn("final-success claim outbox: savepoint failed, skipping registration (non-fatal)",
+			"request_id", entry.RequestID, "error", err)
+		return
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.current_role', 'super_admin', true), set_config('app.bypass_rls', 'true', true)`); err != nil {
+		slog.Warn("final-success claim outbox: RLS GUC lift failed, skipping registration (non-fatal)",
+			"request_id", entry.RequestID, "error", err)
+		_, _ = tx.Exec(ctx, `ROLLBACK TO SAVEPOINT gw_claim_mirror_outbox`)
+		_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_claim_mirror_outbox`)
+		return
+	}
+	tenantID := entry.TenantID
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO public.session_mirror_outbox
+		    (tenant_id, request_id, session_id, source, fail_reason, payload)
+		VALUES ($1, $2, $3, 'claim', 'final_success_claim', $4::jsonb)
+		ON CONFLICT (request_id) DO NOTHING
+	`, tenantID, entry.RequestID, *entry.GwSessionID, string(payload)); err != nil {
+		slog.Warn("final-success claim outbox: registration failed (non-fatal)",
+			"request_id", entry.RequestID, "error", err)
+		_, _ = tx.Exec(ctx, `ROLLBACK TO SAVEPOINT gw_claim_mirror_outbox`)
+		_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_claim_mirror_outbox`)
+		return
+	}
+	// Restore the GUCs so the rest of the business transaction (outbox
+	// events, commit) runs with the pre-registration role context.
+	//nolint:errcheck // best-effort; rollback-to-savepoint restores on failure paths
+	_, _ = tx.Exec(ctx, `SELECT set_config('app.current_role', '', true), set_config('app.bypass_rls', 'false', true)`)
+	//nolint:errcheck // best-effort
+	_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT gw_claim_mirror_outbox`)
 }
 
 // upsertRequestLogBodies writes request/response/outbound bodies to

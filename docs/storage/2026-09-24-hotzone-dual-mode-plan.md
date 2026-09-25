@@ -2,7 +2,7 @@
 
 - 日期: 2026-09-24
 - 状态: 方案定稿,待实施
-- 前置: ADR-0019(docs/adr/2026-09-05-dual-mode-storage-package-layout.md)、双模式存储已全量落地(12 项 lite-consistency/repair 测试全绿)
+- 前置: ADR-0019(docs/adr/2026-09-05-dual-mode-storage-package-layout.md)、双模式存储已全量落地(9 项 lite-consistency/repair 测试全绿;R63 §三.12 勘误:原记 12,实为 consistency_lite_test.go 6 项 + consistency_repair_test.go 3 项)
 - 本文取代: 会话早期讨论中的 "dual-storage-implementation-tasks.md"(该文档基于"从零实现"的错误前提,已废弃)
 
 ---
@@ -135,7 +135,7 @@
 | P2 | H4 设置 spec + HotZoneTrimmer + ResizeMax | 无 | 1 天 |
 | P3 | H2 full 热区装配(mode-aware 缓存接线) | P2 | 1.5 天 |
 | P4 | H3 请求镜像器 + 接线 | P2 | 1.5 天 |
-| P5 | H5 指标/文档 + 全量回归(12 项 lite 套件 + full 热区新增 E2E) | P3,P4 | 1 天 |
+| P5 | H5 指标/文档 + 全量回归(9 项 lite 套件 + full 热区新增 E2E) | P3,P4 | 1 天 |
 
 总计约 6 个工作日。P1/P2 可双线并行。
 
@@ -150,7 +150,7 @@
 
 ## 6. 验收清单
 
-- [ ] lite 模式 12 项既有套件全绿(回归门禁)
+- [ ] lite 模式 9 项既有套件全绿(回归门禁)
 - [ ] full 模式:`data/hotzone/` 目录结构与 lite 同构,7h/1GB 默认值生效
 - [ ] 读路径顺序实测:内存 → 本地文件 → (Redis) → PG,可通过指标区分命中层
 - [ ] `storage.hotzone_max_size_gb` 热重载生效且 trimmer 先删最旧

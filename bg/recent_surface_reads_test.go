@@ -32,7 +32,7 @@ import (
 // since 09-10) its max(ts) ran 8h+ stale while the hot table was served
 // minutes earlier. Covered files:
 //   - candidate_failure_monitor.go: staleness max(ts) + 5-minute alert scan
-//     + auto-cool cfl CTE (stale alert fired / alerts + auto-cool blind)
+//   - auto-cool cfl CTE (stale alert fired / alerts + auto-cool blind)
 //   - daily_probe_audit.go: 3-day candidate branch (under-scan)
 //   - model_probe.go: 5-minute passive-boost pick (always empty)
 func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {

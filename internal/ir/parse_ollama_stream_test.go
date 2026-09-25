@@ -9,10 +9,15 @@ import (
 // into the IR StreamChunk type used by all other dialects, so downstream
 // stream synthesizers don't have to special-case the framing.
 //
-// r0924 fix-a task 1: content frames carry ONLY CumulativeContent. Ollama's
-// message.content is a cumulative value — copying it into Delta.Content would
-// make every synthesizer re-emit the whole text on every frame. Content
-// frames must have Delta == nil.
+// R66 audit round: r0924's prior "cumulative content" hypothesis is
+// reverted — WebFetch of https://github.com/ollama/ollama/blob/main/docs/api.md
+// (2026-09-25) confirms Ollama's `message.content` is INCREMENTAL (each
+// NDJSON frame carries only the delta bytes added since the previous
+// frame, identical to OpenAI/Anthropic SSE; terminal frame has content="").
+// Content frames therefore surface via StreamDelta (DeltaType "text") and
+// CumulativeContent stays empty. ParseOllamaStreamChunk had zero production
+// callers at the time of reversal (P4 not wired), so the contract switch
+// is safe.
 func TestParseOllamaStreamChunk_Delta(t *testing.T) {
 	line := []byte(`{"model":"llama3.1","created_at":"2024-09-21","message":{"role":"assistant","content":"Hel"},"done":false}`)
 	chunks, err := ParseOllamaStreamChunk(line)
@@ -29,13 +34,21 @@ func TestParseOllamaStreamChunk_Delta(t *testing.T) {
 	if chunk.Type != ChunkTypeDelta {
 		t.Errorf("Type = %q, want %q", chunk.Type, ChunkTypeDelta)
 	}
-	// CONTRACT: content is cumulative — Delta must stay nil so the full text
-	// can never leak onto the wire as incremental bytes.
-	if chunk.Delta != nil {
-		t.Errorf("Delta = %+v, want nil (cumulative content must not be duplicated into Delta.Content)", chunk.Delta)
+	// CONTRACT (R66, incremental): content is a per-frame delta fragment.
+	// CumulativeContent MUST stay empty so no consumer treats a single
+	// frame as the full assistant text; StreamDelta.Content carries the
+	// delta and consumers reassemble by concatenation.
+	if chunk.CumulativeContent != "" {
+		t.Errorf("CumulativeContent = %q, want empty (incremental contract — full text is reconstructed by concatenating Delta.Content)", chunk.CumulativeContent)
 	}
-	if chunk.CumulativeContent != "Hel" {
-		t.Errorf("CumulativeContent = %q, want %q", chunk.CumulativeContent, "Hel")
+	if chunk.Delta == nil {
+		t.Fatal("Delta = nil, want populated (incremental content must surface via Delta.Content)")
+	}
+	if chunk.Delta.Content != "Hel" {
+		t.Errorf("Delta.Content = %q, want %q", chunk.Delta.Content, "Hel")
+	}
+	if chunk.Delta.DeltaType != "text" {
+		t.Errorf("Delta.DeltaType = %q, want %q", chunk.Delta.DeltaType, "text")
 	}
 }
 
@@ -82,8 +95,8 @@ func TestParseOllamaStreamChunk_InterimNoopFrame(t *testing.T) {
 
 // TestParseOllamaStreamChunk_DoneWithContent covers the done+content same
 // line case (r0924 fix-a task 2): the parser must emit TWO chunks — the
-// cumulative content delta first, then the terminal Done chunk — instead of
-// letting chunk.Type overwrite the delta with Done.
+// incremental content delta first, then the terminal Done chunk — instead
+// of letting chunk.Type overwrite the delta with Done.
 func TestParseOllamaStreamChunk_DoneWithContent(t *testing.T) {
 	line := []byte(`{"model":"llama3.1","message":{"role":"assistant","content":"Hello!"},"done_reason":"stop","done":true,"prompt_eval_count":10,"eval_count":20}`)
 	chunks, err := ParseOllamaStreamChunk(line)
@@ -98,11 +111,17 @@ func TestParseOllamaStreamChunk_DoneWithContent(t *testing.T) {
 	if delta.Type != ChunkTypeDelta {
 		t.Errorf("chunks[0].Type = %q, want %q", delta.Type, ChunkTypeDelta)
 	}
-	if delta.Delta != nil {
-		t.Errorf("chunks[0].Delta = %+v, want nil (cumulative contract)", delta.Delta)
+	// CONTRACT (R66, incremental): the terminal-line content "Hello!" is a
+	// delta fragment, not a cumulative snapshot. Surface via Delta.Content;
+	// CumulativeContent stays empty.
+	if delta.CumulativeContent != "" {
+		t.Errorf("chunks[0].CumulativeContent = %q, want empty (incremental contract)", delta.CumulativeContent)
 	}
-	if delta.CumulativeContent != "Hello!" {
-		t.Errorf("chunks[0].CumulativeContent = %q, want %q", delta.CumulativeContent, "Hello!")
+	if delta.Delta == nil || delta.Delta.Content != "Hello!" {
+		t.Errorf("chunks[0].Delta = %+v, want Delta.Content=\"Hello!\"", delta.Delta)
+	}
+	if delta.Delta.DeltaType != "text" {
+		t.Errorf("chunks[0].Delta.DeltaType = %q, want %q", delta.Delta.DeltaType, "text")
 	}
 
 	done := chunks[1]
@@ -120,6 +139,36 @@ func TestParseOllamaStreamChunk_DoneWithContent(t *testing.T) {
 	}
 	if done.Usage.PromptTokens != 10 || done.Usage.CompletionTokens != 20 || done.Usage.TotalTokens != 30 {
 		t.Errorf("Usage = %+v, want {10,20,30}", done.Usage)
+	}
+}
+
+// TestParseOllamaStreamChunk_MultiFrameIncremental pins the R66 incremental
+// contract end-to-end. WebFetch of upstream api.md confirms Ollama's wire
+// format carries per-frame delta bytes only — concatenating successive
+// frames' Delta.Content MUST yield the full assistant text. A consumer
+// that mistook any single frame's content for the full text would emit
+// wrong-size text downstream; this test catches that regression class.
+func TestParseOllamaStreamChunk_MultiFrameIncremental(t *testing.T) {
+	frames := []string{
+		`{"model":"llama3.1","message":{"role":"assistant","content":"Hel"},"done":false}`,
+		`{"model":"llama3.1","message":{"role":"assistant","content":"lo "},"done":false}`,
+		`{"model":"llama3.1","message":{"role":"assistant","content":"world!"},"done":false}`,
+		`{"model":"llama3.1","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop"}`,
+	}
+	var assembled string
+	for _, f := range frames {
+		chunks, err := ParseOllamaStreamChunk([]byte(f))
+		if err != nil {
+			t.Fatalf("parse %q: %v", f, err)
+		}
+		for _, c := range chunks {
+			if c.Type == ChunkTypeDelta && c.Delta != nil && c.Delta.DeltaType == "text" {
+				assembled += c.Delta.Content
+			}
+		}
+	}
+	if assembled != "Hello world!" {
+		t.Errorf("assembled Delta.Content = %q, want %q", assembled, "Hello world!")
 	}
 }
 

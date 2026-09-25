@@ -28,6 +28,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 )
@@ -294,9 +295,13 @@ func credentialProbeDispatch(protocol, baseURL string) (string, func(context.Con
 // with a chat/completions body would misreport a healthy credential as
 // broken (and vice versa on chat-only relays).
 func doResponsesProbe(ctx context.Context, url, apiKey, model string) (*chatResult, error) {
+	// 2026-09-25：max_output_tokens 5 → 32（providercap.ResponsesProbeMaxOutput-
+	// Tokens）。Responses API 下限 16，vapeur 对 5 直接 400 "Invalid
+	// 'max_output_tokens': integer below minimum value. Expected >= 16"，
+	// 把健康凭据误报成 warning；32 兼顾下限合规与探针成本。
 	payload := map[string]any{
 		"model":             model,
-		"max_output_tokens": 5,
+		"max_output_tokens": providercap.ResponsesProbeMaxOutputTokens,
 		"input":             "hi",
 	}
 	body, _ := json.Marshal(payload)

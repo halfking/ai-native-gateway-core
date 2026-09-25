@@ -32,9 +32,8 @@ import (
 //   - ParseOllamaResponse (parse_ollama.go) — parse a single non-stream
 //     JSON response into IR.InternalResponse.
 //   - ParseOllamaStreamChunk (parse_ollama_stream.go) — parse one NDJSON
-//     line into one or more IR.StreamChunk; contract: content is
-//     CUMULATIVE and lives on StreamChunk.CumulativeContent, reasoning is
-//     incremental and lives on StreamChunk.Delta.ReasoningContent.
+//     line into one or more IR.StreamChunk; content and reasoning are
+//     incremental and live on StreamChunk.Delta.
 //
 // # Scope (audit-r0924 P4.3)
 //
@@ -360,19 +359,8 @@ func (o *OllamaExecutor) StreamResponse(ctx context.Context, w http.ResponseWrit
 	// also handles Ollama's long thinking traces on local servers.
 	scanner.Buffer(make([]byte, 0, 64*1024), maxOllamaNDJSONLineSize)
 
-	// Cumulative-content tracking (audit-r0924 fix-a task 1).
-	// Ollama's wire-level `message.content` is CUMULATIVE (the full
-	// assistant text so far), NOT a per-character delta like
-	// OpenAI/Anthropic SSE. ParseOllamaStreamChunk therefore reports
-	// it via StreamChunk.CumulativeContent and leaves Delta nil for
-	// content frames. We diff each new cumulative value against the
-	// previous one and emit ONLY the new tail as
-	// delta.content — anything else would duplicate the full text on
-	// every frame, which is the exact bug §11.6 calls out.
-	var prevCumulative string
-
-	// Reasoning content is incremental: ParseOllamaStreamChunk emits
-	// delta frames with the new thinking text. We forward verbatim.
+	// Ollama message.content and message.thinking are both incremental.
+	// Forward each parsed delta exactly once without prefix diffing.
 	// First-byte callback latches when we write the FIRST semantic
 	// byte (content delta, reasoning delta, or tool-call). We DO NOT
 	// fire on Done chunks or empty deltas.
@@ -480,28 +468,11 @@ func (o *OllamaExecutor) StreamResponse(ctx context.Context, w http.ResponseWrit
 				// Fall through to loop exit below.
 
 			case ir.ChunkTypeDelta:
-				// Content delta (cumulative → emit only the new tail)
-				// or reasoning delta (incremental → forward verbatim).
+				// Both content and reasoning are per-frame deltas.
 				wrote := false
-				if chunk.CumulativeContent != "" {
-					// Diff cumulative against the previous value. The
-					// first time we see content, prev is "" and the
-					// entire string is the delta. The §11.6 invariant:
-					// never re-emit bytes already sent.
-					newTail := chunk.CumulativeContent
-					if strings.HasPrefix(newTail, prevCumulative) {
-						newTail = newTail[len(prevCumulative):]
-					} else {
-						// Defensive: if the upstream rolled backward
-						// (model reset, retry), treat the full value
-						// as new. This should never happen with a
-						// well-behaved Ollama, but guarding here is
-						// cheaper than duplicating text on the wire.
-						newTail = chunk.CumulativeContent
-					}
-					prevCumulative = chunk.CumulativeContent
-					if newTail != "" {
-						if err := sseWriter.WriteContentDelta(newTail, chunk.Model, chunk.ID, chunk.Created); err != nil {
+				if chunk.Delta != nil {
+					if chunk.Delta.Content != "" {
+						if err := sseWriter.WriteContentDelta(chunk.Delta.Content, chunk.Model, chunk.ID, chunk.Created); err != nil {
 							outcome.Interrupted = true
 							outcome.Reason = "client_write_failed"
 							outcome.Kind = errorsx.KindNetwork
@@ -511,8 +482,6 @@ func (o *OllamaExecutor) StreamResponse(ctx context.Context, w http.ResponseWrit
 						wrote = true
 						chunkCount++
 					}
-				}
-				if chunk.Delta != nil {
 					if chunk.Delta.ReasoningContent != "" {
 						if err := sseWriter.WriteReasoningDelta(chunk.Delta.ReasoningContent, chunk.Model, chunk.ID, chunk.Created); err != nil {
 							outcome.Interrupted = true
@@ -714,7 +683,7 @@ func serializeOllamaIRToOpenAIChat(resp *ir.InternalResponse, clientModel string
 		"model":   model,
 		"choices": []map[string]any{
 			{
-				"index": 0,
+				"index":   0,
 				"message": message,
 				"finish_reason": func() string {
 					if resp.FinishReason != "" {

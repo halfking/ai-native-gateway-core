@@ -18,6 +18,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"time"
@@ -59,7 +60,8 @@ type classificationMetrics struct {
 	LabelF1    map[string]float64
 	Failures   []caseFailure
 	Generated  int // generated=true 候选行数（不进任何指标）
-	KnownFails int
+	KnownFails int // known_failure=true 行数（不进任何指标，见下）
+	KnownXPass int // known_failure 行中意外判对的（stale marker，需清理）
 }
 
 type caseFailure struct {
@@ -77,6 +79,12 @@ func newClassificationMetrics() *classificationMetrics {
 
 // add records one judged case. Gold labels drive the per-label key set so
 // macro-F1 is computed over the classes the suite actually covers.
+//
+// known_failure 语义与 autoroute/auto_matching_suite_test.go 对齐（2026-09-25
+// 批判复审修正）：known_failure 是"已 triage 的已知缺陷用例"，包内测试容忍其
+// 失败、并把"意外判对"（xpass，stale marker）视为需要清理的套件卫生问题。
+// 本工具同样将其排除在 accuracy/F1/GRRQ 之外——否则未来套件一旦加入 triaged
+// gap 用例，门禁立即假红；xpass 单独计数并在报告可见。
 func (m *classificationMetrics) add(gold, got string, c suiteCase, conf float64, reason string) {
 	if c.Generated {
 		m.Generated++
@@ -84,6 +92,10 @@ func (m *classificationMetrics) add(gold, got string, c suiteCase, conf float64,
 	}
 	if c.KnownFailure {
 		m.KnownFails++
+		if gold == got {
+			m.KnownXPass++
+		}
+		return
 	}
 	m.Total++
 	if gold == got {
@@ -288,6 +300,56 @@ func loadBaseline(path string) (*GateBaseline, error) {
 	return &b, nil
 }
 
-func round3(v float64) float64 { return float64(int64(v*1000+0.5)) / 1000 }
+// validateBaseline enforces the baseline's semantic contract on top of the
+// JSON syntax check (R64 P2): a syntactically-valid file with zeroed
+// thresholds would gate nothing, and a stale case inventory (total_cases /
+// suite_files) would compare apples to oranges. Any violation is a usage
+// error (exit 2), not a gate failure.
+func validateBaseline(b *GateBaseline, suiteFiles []string, totalCases int) error {
+	t := b.Thresholds
+	if t.MinAccuracy <= 0 {
+		return fmt.Errorf("baseline thresholds.min_accuracy = %v, want > 0 (zero threshold gates nothing; refresh with -write-baseline)", t.MinAccuracy)
+	}
+	if t.MinMacroF1 <= 0 {
+		return fmt.Errorf("baseline thresholds.min_macro_f1 = %v, want > 0 (zero threshold gates nothing; refresh with -write-baseline)", t.MinMacroF1)
+	}
+	if t.MinGRRQ <= 0 {
+		return fmt.Errorf("baseline thresholds.min_grrq = %v, want > 0 (zero threshold gates nothing; refresh with -write-baseline)", t.MinGRRQ)
+	}
+	if b.TotalCases != totalCases {
+		return fmt.Errorf("baseline total_cases = %d, current run has %d — suite inventory changed; refresh the baseline with -write-baseline", b.TotalCases, totalCases)
+	}
+	if !equalStringSets(b.SuiteFiles, suiteFiles) {
+		return fmt.Errorf("baseline suite_files = %v, current -suite = %v — refresh the baseline with -write-baseline", b.SuiteFiles, suiteFiles)
+	}
+	return nil
+}
 
-func floor2(v float64) float64 { return float64(int64(v*100)) / 100 }
+// equalStringSets compares two string slices order-insensitively (the -suite
+// flag is a comma-separated list; a different order is the same suite set).
+func equalStringSets(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	sa := append([]string(nil), a...)
+	sb := append([]string(nil), b...)
+	sort.Strings(sa)
+	sort.Strings(sb)
+	for i := range sa {
+		if sa[i] != sb[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// round3 rounds half away from zero via math.Round. The legacy
+// int64(v*1000+0.5) truncated toward zero after the +0.5 bias, which bent
+// negative values (GRRQ goes negative under heavy over-provision) upward.
+func round3(v float64) float64 { return math.Round(v*1000) / 1000 }
+
+// floor2 floors to 2 decimals via math.Floor, so a written threshold can
+// never exceed the metric that produced it — an identical re-run always
+// passes its own baseline. The legacy int64 truncation moved toward zero,
+// which RAISED negative GRRQ thresholds (tightened the gate silently).
+func floor2(v float64) float64 { return math.Floor(v*100) / 100 }

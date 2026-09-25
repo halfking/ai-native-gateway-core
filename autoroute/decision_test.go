@@ -15,7 +15,14 @@ type stubClassifier struct {
 }
 
 func (s *stubClassifier) Classify(_ context.Context, _ ClassificationSignals) (*Classification, error) {
-	return s.out, s.err
+	// Each caller must own its Classification: Decide mutates the result in
+	// place (PostClassify confidence adjustment at decision.go:532), so a
+	// shared fixture pointer is a data race under concurrent Decide tests.
+	if s.out == nil {
+		return nil, s.err
+	}
+	cp := *s.out
+	return &cp, s.err
 }
 func (s *stubClassifier) Name() string { return s.name }
 

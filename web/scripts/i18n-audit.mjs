@@ -1,11 +1,18 @@
 #!/usr/bin/env node
 // i18n-audit.mjs — 2026-07-07 全局 i18n 引用审计 CLI
 //
+// 退出码契约（R64, 2026-09-25）：存在 missing keys 时 exit 1（明细保留在
+// 输出中：默认报告 / --missing-only 列表 / --json 的 missing 数组）；
+// 0 missing → exit 0。--strict 保留为向后兼容别名（行为已是默认）。
+// 该契约无独立 CLI 测试背书，手工验证方式：
+//   node scripts/i18n-audit.mjs; echo $?        # missing=0 时应输出 0
+// 人为注入一个坏引用后再跑应输出 1（见 docs/audit R64 记录）。
+//
 // 用法：
 //   node scripts/i18n-audit.mjs                      # 人类可读报告（默认）
 //   node scripts/i18n-audit.mjs --json               # 输出 JSON 给 CI / 工具消费
 //   node scripts/i18n-audit.mjs --missing-only       # 只打印 missing keys
-//   node scripts/i18n-audit.mjs --strict             # 0 missing 才退出 0；否则退出 1
+//   node scripts/i18n-audit.mjs --strict             # 兼容别名：missing→exit 1（现已默认）
 //   node scripts/i18n-audit.mjs --unused             # 额外打印 source locale 中未被引用的 key
 //   node scripts/i18n-audit.mjs --src=<dir>          # 自定义源码目录（默认 web/src）
 //   node scripts/i18n-audit.mjs --locales=<dir>      # 自定义 locale 目录
@@ -61,7 +68,7 @@ USAGE
 OPTIONS
   --json              输出 JSON 报告（供 CI 消费）
   --missing-only      只打印 missing keys
-  --strict            有任何 missing 退出码 1
+  --strict            兼容别名：missing→exit 1（现已是默认行为）
   --unused            额外打印 source locale 中未引用的 keys
   --src=<dir>         源码目录（默认 web/src）
   --locales=<dir>     locale 目录（默认 web/src/locales）
@@ -136,42 +143,41 @@ async function main() {
   })
   if (r.status !== 0) process.exit(r.status || 1)
 
-  // strict: re-run via JSON to read counts (only if user requested --strict)
-  if (opts.strict || opts.outFile) {
-    const commonArgs = process.argv.slice(2).filter(a => !a.startsWith('--out='))
+  // R64 (2026-09-25): missing keys → exit 1 in EVERY mode (default report,
+  // --missing-only, --json). Re-run via the shim with --strict-summary to
+  // read the count; the details themselves stay in the main pass output
+  // above (report / missing-only listing / JSON `missing` array).
+  const commonArgs = process.argv.slice(2).filter(a => !a.startsWith('--out='))
+  const summaryArgs = [tmpFile, '--strict-summary', ...commonArgs]
+  if (nodeMajor >= 22) {
+    summaryArgs.unshift('--experimental-strip-types', '--no-warnings')
+  }
+  const summary = spawnSync(process.execPath, summaryArgs, { cwd: ROOT })
+  if (opts.outFile) {
     const reportArgs = [tmpFile, '--json', ...commonArgs]
-    const summaryArgs = [tmpFile, '--strict-summary', ...commonArgs]
     if (nodeMajor >= 22) {
       reportArgs.unshift('--experimental-strip-types', '--no-warnings')
-      summaryArgs.unshift('--experimental-strip-types', '--no-warnings')
     }
     const report = spawnSync(process.execPath, reportArgs, {
       cwd: ROOT,
       maxBuffer: 10 * 1024 * 1024,
     })
-    const summary = opts.strict
-      ? spawnSync(process.execPath, summaryArgs, { cwd: ROOT })
-      : null
-    if (opts.outFile) {
-      const dir = dirname(opts.outFile)
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-      writeFileSync(opts.outFile, report.stdout)
-      console.error(`\nwrote report to ${opts.outFile}`)
+    const dir = dirname(opts.outFile)
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    writeFileSync(opts.outFile, report.stdout)
+    console.error(`\nwrote report to ${opts.outFile}`)
+  }
+  try {
+    const data = JSON.parse(summary.stdout.toString())
+    if (data.missingCount > 0) {
+      console.error(`\n❌ ${data.missingCount} missing i18n key(s) — exit 1 (details above; --missing-only for a terse list)`)
+      process.exit(1)
     }
-    if (opts.strict) {
-      try {
-        const data = JSON.parse(summary.stdout.toString())
-        if (data.missingCount > 0) {
-          console.error(`\n❌ --strict: ${data.missingCount} missing keys (exit 1)`)
-          process.exit(1)
-        }
-        // 0 missing 也要留痕，否则 CI 日志无法区分"通过"与"没跑 strict"
-        console.error('\nSTRICT PASS (0 missing)')
-      } catch (e) {
-        console.error('error: failed to parse JSON output for --strict check', e)
-        process.exit(1)
-      }
-    }
+    // 0 missing 也要留痕，否则 CI 日志无法区分"通过"与"没跑检查"
+    console.error('\ni18n audit PASS (0 missing keys)')
+  } catch (e) {
+    console.error('error: failed to parse JSON output for missing-key check', e)
+    process.exit(1)
   }
 }
 

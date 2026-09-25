@@ -307,27 +307,30 @@ func TestStage2_FamilyMatchProtocolMismatch(t *testing.T) {
 	}
 }
 
-// TestStage1_ProtocolStrictMatch: when the client's protocol does not match
-// ANY endpoint, the selector MUST NOT silently pick a same-family endpoint
-// (Stage 2 only kicks in when Stage 1 fails entirely). Documents the
-// "protocol mismatch > family mismatch" priority.
+// TestStage1_ProtocolStrictMatch locks the Stage1/Stage2 division of labor:
+// Stage1 matches ONLY on exact protocol and never falls back to a same-family
+// endpoint on its own; when no endpoint speaks the client's protocol, the
+// family (vendor_native) match in Stage2 takes over — that handoff is by
+// design, not a Stage1 relaxation. Here the client speaks openai-completions
+// and the only endpoint is anthropic-messages with vendor_native=openai-gpt,
+// so Stage1 misses and Stage2 family-matches the endpoint (MatchRule=Stage2);
+// the dispatcher is responsible for IR-bridging the request body between the
+// two protocols. The assertion pins that split: a Stage2 decision here is the
+// expected outcome, proving Stage1 did not silently return a non-matching
+// protocol as a Stage1 hit.
 func TestStage1_ProtocolStrictMatch(t *testing.T) {
 	c := makeCandidate([]EndpointLite{
 		{ID: 1, Protocol: "anthropic-messages", BaseURL: "http://s:anthropic", VendorNative: "openai-gpt", Enabled: true},
 	})
-	// Client speaks openai-completions, but no openai endpoint is
-	// configured — Stage 1 misses, Stage 2 would match openai-gpt but
-	// wantProtocol is openai-completions not anthropic-messages, so the
-	// Stage 2 endpoint is also not selected (it's openai-gpt matched
-	// but its protocol is anthropic-messages, which means we WOULD
-	// pick it per the current Stage 2 rule). This test documents that
-	// Stage 2 only filters out same-protocol matches.
+	// Client speaks openai-completions; the only endpoint is
+	// anthropic-messages with vendor_native=openai-gpt. Stage1 (exact
+	// protocol) misses; Stage2 family match then selects the endpoint by
+	// design — the anthropic-messages protocol on the endpoint is not a
+	// blocker at this stage, and bridging openai-completions →
+	// anthropic-messages is the dispatcher's job (IR; future P5
+	// passthrough scope). Asserting MatchStage2 pins that Stage1 stayed
+	// strict and the fallback happened at the Stage2 layer.
 	d := Select(c, ProtocolOpenAICompletions, "openai-gpt")
-	// The anthropic-messages endpoint with vendor_native=openai-gpt
-	// WILL be selected (Stage 2 family hit). This is by design — the
-	// dispatcher is responsible for IR-bridging the request body from
-	// openai-completions to anthropic-messages (a future P5 pass-through
-	// scope).
 	if d.MatchRule != MatchStage2 {
 		t.Errorf("MatchRule = %q, want %q", d.MatchRule, MatchStage2)
 	}

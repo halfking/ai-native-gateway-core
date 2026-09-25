@@ -56,6 +56,23 @@ func ProbeBackoffForErrCode(errCode string, attempt int) time.Duration {
 	return ProbeBackoffForKind(classifyProbeErrCode(errCode), attempt)
 }
 
+// probeBackoffForDirectOutcome is the root-cause-aware wrapper around
+// ProbeBackoffForErrCode (2026-09-25, "错误的探测要搞清楚是协议问题还是节点的
+// 问题"): a PROTOCOL-shaped failure is a probe-contract mismatch (wrong
+// protocol path / body shape / catalog entry against this provider). Re-probing
+// cannot heal it — only a config fix can — so from the second attempt on it
+// parks at the same long horizon as model-not-served instead of walking the
+// generic ladder. The first attempt keeps the generic ladder: a one-off
+// aggregator blip can 400/422 once and must still re-verify quickly.
+// Node- and gateway-caused failures keep the existing err-code policy
+// (gateway-side is separately overridden to the fixed 15m delay by callers).
+func probeBackoffForDirectOutcome(errCode string, rootCause ProbeRootCause, attempt int) time.Duration {
+	if rootCause == ProbeRootCauseProtocol && attempt >= 2 {
+		return modelNotServedRecheckInterval
+	}
+	return ProbeBackoffForErrCode(errCode, attempt)
+}
+
 func classifyProbeErrCode(code string) errorsx.ErrorKind {
 	c := strings.ToLower(strings.TrimSpace(code))
 	switch c {

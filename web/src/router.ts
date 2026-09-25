@@ -58,6 +58,7 @@ const ApprovalListView = () => import('./views/ApprovalListView.vue')
 const ApprovalDetailView = () => import('./views/ApprovalDetailView.vue')
 const OutputComplianceView = () => import('./views/OutputComplianceView.vue')
 const UsageCostView = () => import('./views/admin/UsageCost.vue')
+const ReconciliationReportView = () => import('./views/admin/ReconciliationReport.vue')
 // 2026-07-24: V2-P4 admin session detail page (dual-column turns + drawer).
 const SessionDetailView = () => import('./views/admin/SessionDetailPage.vue')
 // 2026-08-09: 跨会话轮次列表页
@@ -200,9 +201,12 @@ export const router = createRouter({
     // P2.1+ Human annotation Web workflow (2026-09-06): accessible by any authenticated user
     { path: '/routing-v2/annotations',        component: AnnotationView },
     { path: '/routing-v2/annotations/stats',  component: AnnotationStatsView },
-    // v2 closed-loop P0③: 档案/调参页。tuning 端点是 superAdmin 面
-    // （admin/auto_route_tuning.go 挂 h.superAdmin），AutoTuningView 需 super。
-    { path: '/routing-v2/task-profile',       component: TaskProfileView },
+    // v2 closed-loop P0③: 档案/调参页。两页的写端点都是超管面：
+    // tuning 端点挂 h.superAdmin（admin/auto_route_tuning.go）；task-profile 的
+    // 变更端点（apply-tier-config / reload，TaskProfileView 有写操作）后端暂挂
+    // 普通 admin 中间件（admin/handler.go RegisterTaskProfileRoutes），前端
+    // 路由先做 super 门控兜底（R64，2026-09-25）。
+    { path: '/routing-v2/task-profile',       component: TaskProfileView, meta: { requiresSuper: true } },
     { path: '/routing-v2/auto-tuning',        component: AutoTuningView, meta: { requiresSuper: true } },
     { path: '/routing-policy',     component: RoutingPolicyView,   meta: { requiresSuper: true } },
     { path: '/free-pool',          component: FreePoolView,        meta: { requiresSuper: true } },
@@ -265,6 +269,7 @@ export const router = createRouter({
     { path: '/admin/approvals/:id', component: ApprovalDetailView, meta: { requiresSuper: true } },
     { path: '/admin/output-compliance', component: OutputComplianceView, meta: { requiresSuper: true } },
     { path: '/admin/usage',        component: UsageCostView, meta: { requiresSuper: true } }, // 用量成本视图 (T2.4)；R34: 与相邻 admin 路由对齐补权限 meta
+    { path: '/admin/reconciliation', component: ReconciliationReportView, meta: { requiresSuper: true } }, // 对账报表（供应商/内部双视角 + Excel 导出，2026-09-25）
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表
     { path: '/admin/proxy',        component: ProxyView, meta: { requiresSuper: true } }, // 2026-08-29: 代理管理
