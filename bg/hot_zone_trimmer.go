@@ -27,6 +27,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -39,10 +41,16 @@ const defaultHotZoneTrimInterval = 30 * time.Minute
 //
 // 三个子树共享同一配额；保留期独立可配。dirExists 缺失时静默返回（首次启动
 // 可能还没建目录）。所有外部依赖仅为文件系统，不引入新接口。
+//
+// retention/maxBytes 用 atomic 存取：热重载入口（SetRetention/SetMaxBytes）
+// 由 admin goroutine 调用，与 Start 所在 goroutine 的 TrimOnce 并发读写
+// （2026-09-25 12h 审计轮：原实现为裸字段写，注释宣称的"原子替换"不成立，
+// 接线 feature/wire-hotzone-trimmer 前修复）。interval/lastDeletedFiles/
+// lastFreedBytes 仅构造期与 Start goroutine 内访问，保持普通字段。
 type HotZoneTrimmer struct {
 	dir       string        // 热区根目录（HotZone.Dir）
-	retention time.Duration // 保留时长（HotZone.RetentionHours 换算）
-	maxBytes  int64         // 三子树共享的字节上限（HotZone.MaxSizeGB << 30）
+	retention atomic.Int64  // 保留时长（time.Duration，HotZone.RetentionHours 换算）
+	maxBytes  atomic.Int64  // 三子树共享的字节上限（HotZone.MaxSizeGB << 30）
 	interval  time.Duration // 清理周期，默认 30 分钟
 
 	lastDeletedFiles int
@@ -51,12 +59,13 @@ type HotZoneTrimmer struct {
 
 // NewHotZoneTrimmer 构造热区清理 worker：清理周期固定 30 分钟（Plan §3 H4）。
 func NewHotZoneTrimmer(dir string, retention time.Duration, maxBytes int64) *HotZoneTrimmer {
-	return &HotZoneTrimmer{
-		dir:       dir,
-		retention: retention,
-		maxBytes:  maxBytes,
-		interval:  defaultHotZoneTrimInterval,
+	t := &HotZoneTrimmer{
+		dir:      dir,
+		interval: defaultHotZoneTrimInterval,
 	}
+	t.retention.Store(int64(retention))
+	t.maxBytes.Store(maxBytes)
+	return t
 }
 
 // WithInterval 覆盖默认清理周期（主要供测试使用）。
@@ -70,14 +79,14 @@ func (t *HotZoneTrimmer) WithInterval(d time.Duration) *HotZoneTrimmer {
 // SetRetention 原子替换保留期（热重载入口，Plan §3 H4 「trimmer 的 retention 原子替换」）。
 func (t *HotZoneTrimmer) SetRetention(d time.Duration) {
 	if d > 0 {
-		t.retention = d
+		t.retention.Store(int64(d))
 	}
 }
 
 // SetMaxBytes 原子替换配额上限。立即生效（按新上限做配额回收）。
 func (t *HotZoneTrimmer) SetMaxBytes(b int64) {
 	if b > 0 {
-		t.maxBytes = b
+		t.maxBytes.Store(b)
 	}
 }
 
@@ -86,8 +95,8 @@ func (t *HotZoneTrimmer) SetMaxBytes(b int64) {
 func (t *HotZoneTrimmer) Start(ctx context.Context) {
 	slog.Info("hotzone trimmer 已启动",
 		"dir", t.dir,
-		"retention", t.retention.String(),
-		"max_bytes", t.maxBytes,
+		"retention", time.Duration(t.retention.Load()).String(),
+		"max_bytes", t.maxBytes.Load(),
 		"interval", t.interval.String())
 
 	if err := t.TrimOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -122,7 +131,10 @@ func (t *HotZoneTrimmer) TrimOnce(ctx context.Context) error {
 		return err
 	}
 
-	cutoff := time.Now().Add(-t.retention)
+	// 一轮内快照一次，保证本轮的过期判定与配额口径自洽（中途热重载下一轮生效）。
+	retention := time.Duration(t.retention.Load())
+	maxBytes := t.maxBytes.Load()
+	cutoff := time.Now().Add(-retention)
 	type entry struct {
 		path string
 		size int64
@@ -177,7 +189,7 @@ func (t *HotZoneTrimmer) TrimOnce(ctx context.Context) error {
 	// 阶段 2：配额回收（按 mtime 最旧先删）。afterExpiry 是阶段 1 后的剩余文件，
 	// 已按 mtime 升序排列，直接遍历即可。
 	for _, e := range kept {
-		if onDiskBytes <= t.maxBytes {
+		if onDiskBytes <= maxBytes {
 			break
 		}
 		if rmErr := os.Remove(e.path); rmErr != nil {
@@ -197,41 +209,14 @@ func (t *HotZoneTrimmer) TrimOnce(ctx context.Context) error {
 			"freed_bytes", freed,
 			"freed_mb", float64(freed)/(1024*1024),
 			"after_bytes", onDiskBytes,
-			"max_bytes", t.maxBytes)
+			"max_bytes", maxBytes)
 	}
 	return nil
 }
-
-// dirExistsBG 检查目录是否存在（与 cache_trimmer.go / storage_retention_worker.go
-// 复用同一 helper）。
 
 // isTempFile 判断文件是否属于异步写入器的临时文件（保留中，不参与 trimmer）。
 // AsyncFileWriter 写入约定：`.{base}.tmp-{rand}` 与 `{base}.{rand}.tmp`；
 // 任何含 ".tmp" 段的文件均视为写入中，不被 trimmer 删除。
 func isTempFile(name string) bool {
-	return stringsContains(name, ".tmp")
-}
-
-// stringsContains 字符串包含（极简版，避免引入 strings 包）。
-func stringsContains(s, substr string) bool {
-	if len(substr) == 0 {
-		return true
-	}
-	if len(substr) > len(s) {
-		return false
-	}
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
-// stringsContainsSuffix 极简后缀匹配（保留供其他 trimmer 复用）。
-func stringsContainsSuffix(s, suffix string) bool {
-	if len(s) < len(suffix) {
-		return false
-	}
-	return s[len(s)-len(suffix):] == suffix
+	return strings.Contains(name, ".tmp")
 }

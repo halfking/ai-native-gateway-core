@@ -108,7 +108,8 @@ func TestResolveProbeEndpoint_ResponsesMode(t *testing.T) {
 // 与 TestProbeWithRetry_AnthropicMessagesWireShape 同型：Layer 4 对
 // openai-responses 凭据的完整调用链必须落 /v1/responses + Bearer +
 // Responses 载荷，2xx 归类 ok。
-func TestProbeWithRetry_ResponsesWireShape(t *testing.T) {	var gotPath, gotAuthz string
+func TestProbeWithRetry_ResponsesWireShape(t *testing.T) {
+	var gotPath, gotAuthz string
 	var gotMaxOutput float64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path

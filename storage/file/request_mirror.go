@@ -15,9 +15,10 @@
 //
 // TODO(wiring-pending): 当前仅完成编码层（validMirrorID / WriteRequest* / fire-and-forget
 // 异步管线 + 单元测试覆盖）。未完成：
-//   1) 在 streaming handler 终态落库后调用 Mirror.WriteRequest(... DirOutput)；
-//   2) 在 admin 查询详情路径接入镜像兜底读（当前依赖 PG，L3 文件命中仅作灾备）；
-//   3) 让 cfg.HotZone.Dir 可配置驱动本子树的父目录。
+//  1. 在 streaming handler 终态落库后调用 Mirror.WriteRequest(... DirOutput)；
+//  2. 在 admin 查询详情路径接入镜像兜底读（当前依赖 PG，L3 文件命中仅作灾备）；
+//  3. 让 cfg.HotZone.Dir 可配置驱动本子树的父目录。
+//
 // 预期接入 PR：feature/wire-request-mirror，独立提交以保证本提交可单独回滚。
 package file
 
@@ -28,7 +29,6 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/monitoring"
@@ -48,13 +48,12 @@ const (
 
 // RequestMirror 写请求侧 body 镜像到 {baseDir}/requests/{tenant}/{date}/{id}.{dir}.json.gz。
 //
-// 线程安全（mutex 保护）；底层复用 AsyncFileWriter（fail-open）。
+// 构造后字段全部不可变，无需锁；底层复用 AsyncFileWriter（自身并发安全，fail-open）。
 // 路径段经过 validPathID 校验避免路径遍历。
 type RequestMirror struct {
 	baseDir string
 	writer  *AsyncFileWriter
 	codec   Codec
-	mu      sync.Mutex
 }
 
 // NewRequestMirror 构造请求镜像器；baseDir 为热区根目录（HotZone.Dir），
