@@ -34,4 +34,6 @@ export default {
   model: '模型',
   date: '日期',
   errorBreakdown: '失败原因分布',
+  qualityScore: '质量评分',
+
 }

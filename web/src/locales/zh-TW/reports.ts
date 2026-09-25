@@ -38,4 +38,6 @@ export default {
   errors: '失敗',
   cost: '成本',
   errorBreakdown: '失敗原因分布',
+  qualityScore: "質量評分",
+
 }
