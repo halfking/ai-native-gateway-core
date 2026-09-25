@@ -256,6 +256,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 幂等（CREATE TABLE IF NOT EXISTS）。曾死放 migrations/ 顶层
 			// 无投递通道，本轮修正结构并补五点同步。
 			"745_report_snapshots.sql",
+			// 746 (2026-09-25, 252 SQL 审计第八轮 D12): session_mirror_outbox
+			// source CHECK 扩展 'claim'——final-success claim 同事务补偿
+			// 登记（telemetry registerFinalSuccessClaimOutbox）的枚举值。
+			"746_session_mirror_outbox_source_claim.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，

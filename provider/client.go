@@ -1471,30 +1471,63 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel, tenantID str
 	return c.loadCandidatesByModalityDB(ctx, clientModel, tenantID, "")
 }
 
-func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, tenantID, modality string) ([]Candidate, error) {
-	if c.dbPool == nil {
-		return nil, nil
-	}
-	// 2026-07-14: provider_models.canonical_raw_name, model_aliases.raw_name,
-	// and standardized_name are all persisted lowercase. The matching
-	// columns below are equality-only lookups against this canonical key,
-	// so we lowercase the client request once at the boundary instead of
-	// wrapping each column in lower(col).
-	clientModelLower := modelname.CanonicalizeClientModel(clientModel)
-
-	// 2026-07-03: Bug #7 fix - support tenantID parameter
-	// If tenantID is empty, use 'default' as fallback (backward compatibility)
-	if tenantID == "" {
-		tenantID = "default"
-	}
-
-	var rows pgx.Rows
-	var err error
-	const maxAttempts = 3
-
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		rows, err = c.dbPool.Query(ctx, `
-		SELECT
+// candidateQuerySQL returns the exact candidate-build SQL text (binding
+// params $1=lowercased client model, $2=tenant_id, $3=modality).
+//
+// 2026-09-25 audit round 8 (D10, 252 real-db EXPLAIN first — 纪律⑳):
+// model_offers and v_routable_credential_models are BOTH views over the
+// same credential_model_bindings × provider_models base, so the old shape
+// joined the full 1,831-row binding set against itself before the $1 match
+// predicate pruned it (252 EXPLAIN: view-side join 243ms of a 220-390ms
+// query, rows estimate 46 vs 1,830 actual — a 10x misestimate). The rewrite
+// materializes the model-match half FIRST (WITH matched AS MATERIALIZED,
+// ~20 rows for a hot model) and only then joins credentials/providers,
+// the routable view, pricing and recent_success_rate. 252 measured: exec
+// 220-390ms → 61ms, planning 195-260ms → 85ms. Result equivalence verified
+// on 252 across 8 (model, modality) combos incl. empty-set and vision paths.
+func candidateQuerySQL() string {
+	return `
+		WITH matched AS MATERIALIZED (
+		SELECT mo.*, mc.id AS _mc_id, mc.context_window_override AS _mc_cw_override, mc.context_window AS _mc_cw
+		FROM model_offers mo
+		LEFT JOIN model_name_mapping mnm
+		       ON mnm.raw_model_name = mo.canonical_raw_name
+			LEFT JOIN model_aliases ma
+		       ON ma.raw_name = mo.canonical_raw_name
+		      AND COALESCE(ma.status, 'active') = 'active'
+		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
+		WHERE (
+		      -- (1) exact match on the offer's canonical_raw_name (lowercase)
+		      mo.canonical_raw_name = $1
+		      -- (2) standardized-name match: the offer's standardized_name column
+		      -- holds the prefix-stripped lowercase form (set at upsert time).
+		      OR mo.standardized_name = $1
+		      -- (3) model_name_mapping lookup: centralized raw->standardized mapping
+		      OR mnm.standardized_name = $1
+				-- (4) alias match: client_model points to a canonical that this offer belongs to
+				OR EXISTS (
+				    SELECT 1 FROM model_aliases ma2
+				    WHERE ma2.raw_name = $1
+				      AND COALESCE(ma2.status, 'active') = 'active'
+				      AND (
+				          (mo.canonical_id IS NOT NULL AND ma2.canonical_id = mo.canonical_id)
+				          OR (mo.canonical_id IS NULL AND ma2.canonical_id IS NULL)
+				      )
+				)
+				-- (5) canonical-id match: legacy offers may retain a provider-prefixed
+				-- canonical_raw_name while their canonical_id already points at the
+				-- client-facing catalog name. Keep this in sync with admin resolve.
+				OR lower(mc.canonical_name) = $1
+			)
+		  AND COALESCE(mc.status, 'active') != 'disabled'
+		  			  AND (
+			      $3 = ''
+			      OR $3 = 'text'
+			      OR ($3 IN ('vision', 'audio') AND COALESCE(mc.modality, 'text') IN ($3, 'multimodal'))
+			      OR COALESCE(mc.modality, 'text') = $3
+			  )
+		)
+SELECT
 			c.id::int AS credential_id,
 			p.id::int AS provider_id,
 			p.base_url,
@@ -1552,8 +1585,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			COALESCE(mo.currency, 'USD') AS currency,
 			COALESCE(mo.billing_mode, 'per_token') AS billing_mode,
 			mo.raw_model_name,
-			-- 522: 优先级 凭据×模型级覆盖 > 标准模型级覆盖 > 标准目录默认值。
-			COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
+			COALESCE(mo.context_window_override, mo._mc_cw_override, mo._mc_cw) AS context_window,
 			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 			-- Read from providers so the routing executor can pass the
 			-- per-provider mode through to the relay stream reader and
@@ -1569,7 +1601,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			-- RecentSuccessRate field) for soft de-prioritization in the router.
 			rsr.rate   AS recent_success_rate,
 			rsr.samples AS recent_samples
-		FROM model_offers mo
+		FROM matched mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN v_routable_credential_models v
@@ -1582,16 +1614,12 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			LEFT JOIN credential_model_capabilities cmstream
 			       ON cmstream.credential_model_binding_id = mo.id
 			      AND cmstream.capability = 'native_responses_stream'
-			LEFT JOIN model_aliases ma
-		       ON ma.raw_name = mo.canonical_raw_name
-		      AND COALESCE(ma.status, 'active') = 'active'
-		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
 			LEFT JOIN LATERAL (
 				SELECT
 					NULLIF(pp.plan_json->>'input_per_1m', '')::float8 AS plan_in,
 					NULLIF(pp.plan_json->>'output_per_1m', '')::float8 AS plan_out
 				FROM pricing_plans pp
-				WHERE pp.model_canonical_id = mc.id
+				WHERE pp.model_canonical_id = mo._mc_id
 				  AND pp.effective_to IS NULL
 				  AND (pp.credential_id = c.id OR pp.credential_id IS NULL)
 				  -- R46 F2: 作用域守卫——排除"其他供应商"的 provider 级行。
@@ -1618,8 +1646,6 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 				LIMIT 1
 			) pp_fb ON TRUE
 		-- LEFT JOIN model_name_mapping for standardized name lookup fallback
-		LEFT JOIN model_name_mapping mnm
-		       ON mnm.raw_model_name = mo.canonical_raw_name
 		-- Last-N success rate over request_logs. LATERAL so each candidate
 		-- row carries its own recent (rate, samples). STABLE function, hits
 		-- idx_request_logs_credential_ts (credential_id, ts DESC) so the
@@ -1627,13 +1653,12 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		-- aggregate over the whole partitioned table.
 		CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
 			WHERE (p.tenant_id = $2 OR p.tenant_id = 'default')
-			  AND (
-			      $3 = ''
-			      OR $3 = 'text'
-			      OR ($3 IN ('vision', 'audio') AND COALESCE(mc.modality, 'text') IN ($3, 'multimodal'))
-			      OR COALESCE(mc.modality, 'text') = $3
-			  )
-			  AND COALESCE(mc.status, 'active') != 'disabled'
+
+
+		  -- 2026-09-25 audit round 8 (D10): the sibling-EXISTS hard gate that was
+		  -- disabled here since 2026-08-27 ('AND FALSE' const-folded to TRUE by the
+		  -- planner — never executed) was removed from the text; see git history
+		  -- (MERGE-AUDIT 2026-08-27) if the lone-candidate fail-open gate is needed.
 		  AND COALESCE(c.status, 'active') NOT IN ('disabled')
 		  -- v.is_routable is FALSE for any model with manual disable at any layer
 		  -- (provider.manual_disabled, credentials.manual_disabled, or cmb.unavailable_reason='manual')
@@ -1644,99 +1669,8 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		  -- failures; without this filter the pair stays routable as long as
 		  -- the credential-level availability_state is 'ready', so the router
 		  -- keeps re-selecting it (the cred-11/minimax-m3 loop).
-		  AND `+brokenPairExcludeSQL("mps", "c.id", "mo.raw_model_name")+`
-		  -- 2026-06-22 defect (3) hard gate: exclude pairs whose real recent
-		  -- success rate is below 0.5 once we have at least 20 samples. The
-		  -- min-sample threshold avoids cold-start false positives (a brand-new
-		  -- credential with 1 unlucky failure). Pairs in the 0.5-0.9 band are
-		  -- kept but soft-de-prioritized via RecentSuccessRate in the router.
-		  -- 2026-07-15: restored to 0.5. The 2026-06-23 temporary 0.3 was
-		  -- lowered to absorb the 54% failure spike from a resource leak;
-		  -- the leak is fixed and the rolling 50-request window has long
-		  -- since rotated past it.
-			  AND NOT (
-			      -- Free/token-plan credentials intentionally stay routable after
-			      -- transient failures; the executor and state manager soft-demote
-			      -- them instead of hard-excluding the only route.
-			      COALESCE(mo.billing_mode, 'per_token') <> 'free'
-			      -- MERGE-AUDIT 2026-08-27: preserve the prior hard-gate terms
-			      -- below for review, but disable exclusion so a degraded sibling
-			      -- remains routable and can be soft-demoted by ORDER BY.
-			      AND FALSE
-			      AND COALESCE(rsr.rate, 1.0) < 0.5
-			      -- A single-candidate model needs a recovery chance. Circuit,
-			      -- model-probe and permanent-state guards still apply; the
-			      -- rolling-rate gate is a failover preference only when a
-			      -- sibling offer can actually take traffic.
-			      AND EXISTS (
-			          SELECT 1
-			          FROM model_offers mo_sibling
-			                  JOIN credentials c_sibling ON c_sibling.id = mo_sibling.credential_id
-			                  JOIN providers p_sibling ON p_sibling.id = c_sibling.provider_id
-			                  LEFT JOIN v_routable_credential_models v_sibling
-			                         ON v_sibling.credential_id = mo_sibling.credential_id
-			                        AND (v_sibling.raw_model_name = mo_sibling.raw_model_name
-			                             OR v_sibling.raw_model_name = mo_sibling.standardized_name)
-			          WHERE mo_sibling.credential_id <> mo.credential_id
-			            AND mo_sibling.available = TRUE
-			            AND COALESCE(v_sibling.is_routable, FALSE) = TRUE
-			            AND COALESCE(c_sibling.status, 'active') = 'active'
-			            AND COALESCE(c_sibling.lifecycle_status, 'active') = 'active'
-			            AND COALESCE(c_sibling.manual_disabled, FALSE) = FALSE
-			            /* 2026-08-08 audit note: this c_sibling.quota_state predicate
-			               deliberately does NOT exclude periodic_exhausted, while
-			               GetProbeCandidates (line ~578) DOES exclude it. Intentional:
-			               this subquery asks "does ANY sibling binding exist that COULD
-			               take traffic" (the sibling EXISTS gate for the lone-candidate
-			               fail-open path), not "which sibling should we route to". A
-			               periodic-exhausted sibling is still a potential failover
-			               target because its window resets in minutes/hours;
-			               routing-time selection is filtered separately above. */
-			            AND COALESCE(c_sibling.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
-			            AND COALESCE(p_sibling.enabled, FALSE) = TRUE
-			            AND COALESCE(p_sibling.manual_disabled, FALSE) = FALSE
-			            AND (
-			                mo_sibling.standardized_name = mo.standardized_name
-			                OR mo_sibling.canonical_raw_name = mo.canonical_raw_name
-			            )
-			            /* 2026-08-08 P0 Fix: a sibling that admin has explicitly
-			               disabled via the binding-level unavailable_reason='manual'
-			               (or via credentials.manual_disabled / providers.manual_disabled)
-			               must NOT count as a live failover. Without this guard, the
-			               sibling EXISTS subquery returns TRUE while no real sibling
-			               can take traffic — the lone routable candidate gets hard-
-			               excluded by the recent_success_rate gate below, producing
-			               candidates_count=0 and 503 for every Claude/GPT request. */
-			            AND COALESCE(mo_sibling.unavailable_reason, '') NOT LIKE 'manual%'
-			            AND COALESCE(c_sibling.manual_disabled, FALSE) = FALSE
-			            AND COALESCE(p_sibling.manual_disabled, FALSE) = FALSE
-			            AND `+brokenPairExcludeSQL("mps_sibling", "mo_sibling.credential_id", "mo_sibling.raw_model_name")+`
-			      )
-			  )
+		  AND ` + brokenPairExcludeSQL("mps", "c.id", "mo.raw_model_name") + `
 
-		  AND (
-		      -- (1) exact match on the offer's canonical_raw_name (lowercase)
-		      mo.canonical_raw_name = $1
-		      -- (2) standardized-name match: the offer's standardized_name column
-		      -- holds the prefix-stripped lowercase form (set at upsert time).
-		      OR mo.standardized_name = $1
-		      -- (3) model_name_mapping lookup: centralized raw->standardized mapping
-		      OR mnm.standardized_name = $1
-				-- (4) alias match: client_model points to a canonical that this offer belongs to
-				OR EXISTS (
-				    SELECT 1 FROM model_aliases ma2
-				    WHERE ma2.raw_name = $1
-				      AND COALESCE(ma2.status, 'active') = 'active'
-				      AND (
-				          (mo.canonical_id IS NOT NULL AND ma2.canonical_id = mo.canonical_id)
-				          OR (mo.canonical_id IS NULL AND ma2.canonical_id IS NULL)
-				      )
-				)
-				-- (5) canonical-id match: legacy offers may retain a provider-prefixed
-				-- canonical_raw_name while their canonical_id already points at the
-				-- client-facing catalog name. Keep this in sync with admin resolve.
-				OR lower(mc.canonical_name) = $1
-			)
 
 		ORDER BY
 			-- 2026-09-07 (678): mo.priority 不在视图里;manual_priority>0 等价于"被手动置顶"。
@@ -1756,7 +1690,33 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			-- (often default 0.9) column. This makes healthy credentials sort
 			-- above soft-degraded ones even when the static column is equal.
 			COALESCE(rsr.rate, mo.success_rate, 0.9) DESC
-		`, clientModelLower, tenantID, modality)
+	` // closing backtick shares the line (lone trailing backtick confuses the sql_comment_syntax_test scanner)
+}
+
+func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, tenantID, modality string) ([]Candidate, error) {
+	if c.dbPool == nil {
+		return nil, nil
+	}
+	// 2026-07-14: provider_models.canonical_raw_name, model_aliases.raw_name,
+	// and standardized_name are all persisted lowercase. The matching
+	// columns below are equality-only lookups against this canonical key,
+	// so we lowercase the client request once at the boundary instead of
+	// wrapping each column in lower(col).
+	clientModelLower := modelname.CanonicalizeClientModel(clientModel)
+
+	// 2026-07-03: Bug #7 fix - support tenantID parameter
+	// If tenantID is empty, use 'default' as fallback (backward compatibility)
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	var rows pgx.Rows
+	var err error
+	const maxAttempts = 3
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		rows, err = c.dbPool.Query(ctx, candidateQuerySQL(),
+			clientModelLower, tenantID, modality)
 
 		if err == nil {
 			break

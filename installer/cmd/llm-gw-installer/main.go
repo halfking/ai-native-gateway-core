@@ -535,6 +535,9 @@ var normalizeProviderProtocolMigration743 []byte
 //go:embed embeddata/startup/745_report_snapshots.sql
 var reportSnapshotsMigration745 []byte
 
+//go:embed embeddata/startup/746_session_mirror_outbox_source_claim.sql
+var sessionMirrorOutboxSourceClaimMigration746 []byte
+
 //go:embed embeddata/startup/800_provider_endpoint_protocols.sql
 var providerEndpointProtocolsMigration800 []byte
 
@@ -697,6 +700,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/742_hosted_task_recalled_event.sql":                                     hostedTaskRecalledEventMigration742,
 	"startup/743_normalize_provider_protocol.sql":                                    normalizeProviderProtocolMigration743,
 	"startup/745_report_snapshots.sql":                                               reportSnapshotsMigration745,
+	"startup/746_session_mirror_outbox_source_claim.sql":                             sessionMirrorOutboxSourceClaimMigration746,
 	"startup/800_provider_endpoint_protocols.sql":                                    providerEndpointProtocolsMigration800,
 }
 
