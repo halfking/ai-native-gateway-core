@@ -21,7 +21,9 @@ func TestRoutingExclusionUsesModeAwareHelper(t *testing.T) {
 	}
 	source := string(src)
 	n := strings.Count(source, "brokenPairExcludeSQL(")
-	if n < 3 { // helper 定义 + 主排除 + sibling 排除
+	// 2026-09-25 审计第八轮 (D10): sibling 排除随死代码段（AND FALSE 自
+	// 2026-08-27 起 planner 常量折叠）一并删除——helper 定义 + 主排除。
+	if n < 2 {
 		t.Fatalf("routing broken-model exclusion sites must use brokenPairExcludeSQL, found %d references", n)
 	}
 	if strings.Contains(source, "FROM model_probe_state mps") {

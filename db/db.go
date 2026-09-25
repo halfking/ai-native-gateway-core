@@ -294,6 +294,12 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureReportSnapshots(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-25 migration 746: session_mirror_outbox source CHECK 扩展
+	// 'claim'——final-success claim 补偿登记（D12）需要新枚举值，先于
+	// 任意 claim 写入生效，幂等短路。
+	if err := db.ensureSessionMirrorOutboxSourceClaim(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-05 migration 656 (audit D-2#4/H-2): auto_route_selections_hot
 	// 网关侧幂等 ensure。只升二进制未重跑 656 的存量库上，AUTO 路由 selection
 	// 写入（telemetry selection_writer 批量 INSERT）整批静默丢弃、settle/affinity
@@ -1011,6 +1017,47 @@ func (d *DB) ensureReportSnapshots(ctx context.Context) error {
 		return fmt.Errorf("stamp 745: %w", err)
 	}
 	slog.Info("report_snapshots ensured (745)", "table_present_before", present)
+	return nil
+}
+
+// ensureSessionMirrorOutboxSourceClaim mirrors sql/migrations/startup/
+// 746_session_mirror_outbox_source_claim.sql（2026-09-25 252 SQL 日志审计
+// 第八轮，D12）。final-success claim 置位成功后在同一事务登记
+// source='claim' 的补偿行（telemetry registerFinalSuccessClaimOutbox），
+// CHECK 约束必须先于该写入包含 'claim'。幂等：约束定义已含 'claim' 时
+// 零 DDL（ALTER TABLE 取锁，持续写流下重复执行会撞 statement_timeout）。
+func (d *DB) ensureSessionMirrorOutboxSourceClaim(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	var def string
+	if err := d.pool.QueryRow(ctx, `
+		SELECT pg_get_constraintdef(oid)
+		  FROM pg_constraint
+		 WHERE conrelid = 'public.session_mirror_outbox'::regclass
+		   AND conname = 'session_mirror_outbox_source_check'
+	`).Scan(&def); err == nil && strings.Contains(def, "'claim'") {
+		return nil
+	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("inspect session_mirror_outbox source check: %w", err)
+	}
+	if _, err := d.pool.Exec(ctx, `
+		ALTER TABLE public.session_mirror_outbox
+		    DROP CONSTRAINT IF EXISTS session_mirror_outbox_source_check;
+		ALTER TABLE public.session_mirror_outbox
+		    ADD CONSTRAINT session_mirror_outbox_source_check
+		    CHECK (source IN ('hook', 'backfill', 'claim'));
+	`); err != nil {
+		return fmt.Errorf("apply 746 source check: %w", err)
+	}
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('746', 'session_mirror_outbox source claim compensation (D12)')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 746: %w", err)
+	}
+	slog.Info("session_mirror_outbox source claim ensured (746)")
 	return nil
 }
 
