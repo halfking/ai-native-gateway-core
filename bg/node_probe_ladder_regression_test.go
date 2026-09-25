@@ -48,17 +48,45 @@ func TestNodeProbeLadderDrivenByDirectRoundOnly(t *testing.T) {
 
 	// The success branch must carry the REAL gateway outcome, not a hardcoded
 	// TRUE/NULL pair that hides a composite failure behind a green ladder.
-	if !strings.Contains(runOneBody, "last_gateway_ok = $3") ||
-		!strings.Contains(runOneBody, "last_err_code = $4") ||
-		!strings.Contains(runOneBody, "last_err_detail = $5") {
+	// 2026-09-25 (对健康节点零探测): last_err_code/last_err_detail are written
+	// as SQL NULL literals on the parked row — parking the gateway round's
+	// code kept direct-verified rows out of the healthy-parked shape and made
+	// the stale-state reconciler re-probe a healthy node every tick. The
+	// gateway anomaly stays visible via last_gateway_ok = $3. (R65 audit A:
+	// NULL literals, not untyped nil params — the pool runs simple protocol.)
+	if !strings.Contains(runOneBody, "last_gateway_ok = $3") {
 		t.Fatalf("runOne success branch no longer records the actual gateway outcome " +
-			"(last_gateway_ok/last_err_code/last_err_detail must stay parameterized so a " +
-			"direct-only recovery with a gateway anomaly stays operator-visible)")
+			"(last_gateway_ok must stay parameterized so a direct-only recovery with a " +
+			"gateway anomaly stays operator-visible)")
 	}
 	hardcoded := regexp.MustCompile(`(?i)last_gateway_ok\s*=\s*TRUE`)
 	if hardcoded.MatchString(runOneBody) {
 		t.Fatalf("runOne still hardcodes last_gateway_ok = TRUE in the success branch — " +
 			"a direct-only recovery with a failing gateway round would be invisible")
+	}
+	if !strings.Contains(runOneBody, "last_err_code = NULL") ||
+		!strings.Contains(runOneBody, "last_err_detail = NULL") {
+		t.Fatalf("runOne success branch parks gateway err code/detail into the row " +
+			"(must write last_err_code/last_err_detail as SQL NULL so the row lands in " +
+			"the healthy-parked shape — see nodeProbeHealthyParkedSQL / " +
+			"reconcileStaleNodeProbeStateSQL)")
+	}
+
+	// probe_service.go must obey the same doctrine (2026-09-25): the unified
+	// queue path regressed to the composite verdict and laddered healthy
+	// nodes whenever the gateway round failed.
+	psSrc, err := os.ReadFile("probe_service.go")
+	if err != nil {
+		t.Fatalf("read probe_service.go: %v", err)
+	}
+	if strings.Contains(string(psSrc), "success := direct.ok && gw.ok") {
+		t.Fatalf("ProbeService.Run regressed to the composite direct&&gateway success " +
+			"verdict — a direct-verified healthy node must settle terminal even when " +
+			"the gateway round failed (2026-09-25 对健康节点零探测)")
+	}
+	if strings.Contains(string(psSrc), "last_gateway_ok = TRUE") {
+		t.Fatalf("mirrorNodeProbeState hardcoded last_gateway_ok = TRUE again — " +
+			"the parked row must carry the real gateway outcome (gw.ok)")
 	}
 
 	// probeRecovered (sync path) and emitSyncAudit must stay direct-only too:

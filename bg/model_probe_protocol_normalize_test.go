@@ -27,7 +27,10 @@ func TestProbeDescriptorFor_NormalizesAliases(t *testing.T) {
 		{"claude", "anthropic-messages", "anthropic", false},
 		{"anthropic-message", "anthropic-messages", "anthropic", false},
 		{"anthropic-messages", "anthropic-messages", "anthropic", false},
-		{"openai-response", "openai-responses", "bearer", true}, // vapeur misspelling
+		// 2026-09-25: openai-responses 归一后 ChatProbeEndpoint=EpResponses
+		//（不再停留 chat 默认）——vapeur 对 chat max_tokens=1 探针 400。
+		{"openai-response", "openai-responses", "bearer", false}, // vapeur misspelling
+		{"openai-responses", "openai-responses", "bearer", false},
 		{"openai-chat", "openai-completions", "bearer", true},
 		{"openai", "openai-completions", "bearer", true},
 	}

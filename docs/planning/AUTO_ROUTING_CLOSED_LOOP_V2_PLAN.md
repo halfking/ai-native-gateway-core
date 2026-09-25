@@ -54,7 +54,7 @@ v1（taskprofile）已交付：人工修正表 + 4 个 admin 端点 + 分层建�
 
 | 组件 | 位置 | 说明 |
 |------|------|------|
-| routingopt 插件 | `routingopt/`（30 文件） | PreClassify/PostClassify/RecommendModel/RecordFeedback 四 hook + ONNX re-ranker + A/B + AdaptiveLearner |
+| routingopt 插件 | `routingopt/`（29 文件；R63 §三.12 勘误：原记 30） | PreClassify/PostClassify/RecommendModel/RecordFeedback 四 hook + ONNX re-ranker + A/B + AdaptiveLearner |
 | taskprofile v1 | `taskprofile/` | 档案注册表（overlay 热加载）+ 修正存储（迁移 724）+ 建议引擎（纯函数）+ 4 admin 端点 + 审计 hook（R45） |
 | 标注双流 | `training_human_annotations`(669) / `task_type_corrections`(724) | AnnotationView 提交时联动写两流；CSV 导入导出（R43 后单批次事务化） |
 | 人工反馈回冲 | `routingopt/confidence.go:53` | `blended=(acc×S+human_rate×2×C)/(S+2×C)` 置信度阻尼，已上线 |

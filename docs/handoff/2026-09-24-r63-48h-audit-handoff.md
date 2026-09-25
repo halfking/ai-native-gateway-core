@@ -10,15 +10,22 @@
 ## 一、给 R64 的入口清单（按优先级）
 
 1. **[P2] mock-probe 生产接入拍板**：现装配在 cmd/gateway-v2（演示入口），生产
-   cmd/gateway 未装配。若拍板接入：复用 cmd/gateway-v2/main.go:59-107 的装配四件
-   （config 闸 / 端点注册 / authChain 旁路 / runner），加 settings 热开关评估；若拍板
+   cmd/gateway 未装配。若拍板接入：复用 cmd/gateway-v2/main.go 的装配四件（不钉
+   行号，以符号定位——R64 勘误：原引 main.go:59-107 已漂移为 import 块）：
+   ①config 闸（v2Config 的 MockProbe 字段族，经 config.Load() 单一事实源同步，
+   MockProbeEnabled 为总闸）；②端点注册（mux.Handle 四个 /mock/* 端点，各挂
+   auth.MockEndpoint 守卫，仅 enabled 时注册）；③authChain 旁路（auth.MockProbeBypass：
+   Bearer mock-probe-client + /mock/* 绕过 X-API-Key，关闭态不旁路）；④runner
+   （startMockProbeRunner：可选挂 PG 历史落库 + 注册 shutdown.Manager 定停机顺序）。
+   加 settings 热开关评估；若拍板
    不接入：在 README 状态块标注「生产接入已裁决：不/延期」。
 2. **[P2] P4 selector 接线（r0924 收尾）**：库函数级障碍 R63 已全清（累计文本契约、
    done+content 分块、StreamError 路由、/v1 URL、命名空间归一、权重方向）。接线步骤
    按 docs/handoff/20260924-r0924-supplier-protocol-optimization-audit.md §三 执行，
    注意：①Candidate.NativeEndpoints + LATERAL 查询要有 ORDER BY（族内确定性，R63 F6）；
    ②weight 语义已统一为 higher=higher priority（R63 F6），LATERAL 直接透传勿再反转；
-   ③serialize 多模态 gate（§三.6）与 V800 boot ensure（§三.5）是接线前置。
+   ③serialize 多模态 gate（§三.4；R64 勘误：原引 §三.6 实为 sanitizer 项）与
+   V800 boot ensure（§三.5）是接线前置。
 3. **[P2] PR4 删 python mock**：owner 确认后删 scripts/mocks/llm-mock-upstream/*.py、
    Dockerfile*、llm-mock.conf、docker-compose.yml（保留 tests/local/mocks、
    tests/stress/mocks），验收 grep scripts/mocks = 0。
@@ -33,6 +40,11 @@
    hostedtask store 并发形状（多 worker 化前必修）/ UA SSOT / btrim 漂移）。
 7. 例行部署：R63 收口提交合入后按 R62 模式部署 154/245（迁移 745/800 将随
    sequence 通道与 boot ensure 落共享 PG——745 有 Go ensure，800 仅 sequence 通道）。
+8. **登记不处置说明**：R63 §三.8（WeightedRouter 已废弃，文档化即可）、§三.11
+   （ollama golden 测试无 NDJSON 分块边界/roundtrip）、§三.12（文档计数漂移三处，
+   R63 收口修复轮已修正）、§三.13（enabled 态 /mock/* 无速率限制，接受风险）为
+   登记不处置/接受风险项，**不带入**上列 R64 入口清单——下轮复核仍须按 R63 §三
+   逐项过一遍，勿因未列入上表而漏复核。
 
 ## 二、R64 标准审计轮提示词（可直接拷贝）
 

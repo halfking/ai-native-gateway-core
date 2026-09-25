@@ -190,6 +190,12 @@ func TestStoreAgainstPostgres(t *testing.T) {
 	if evs2[1].Type != EventCancelRequested || evs2[2].Type != EventCancelled {
 		t.Fatalf("event order wrong: %+v", evs2)
 	}
+	// R64（2026-09-25）：租户 cancel 路径的事件 actor 必须标 "tenant"。
+	for i, want := range map[int]string{1: "tenant", 2: "tenant"} {
+		if got, _ := evs2[i].Payload["actor"].(string); got != want {
+			t.Errorf("evs2[%d] actor = %q, want %q", i, got, want)
+		}
+	}
 	// 回调台账已按 EventID(taskID, cancelledSeq) 幂等键置 pending
 	// （§6.1 与 SettleTask 同款；hosted_task_callbacks.event_id 由 §6.1
 	// 接收方按 event_id 幂等重投——cancel 终态后回调不再静默）。
@@ -242,6 +248,13 @@ func TestStoreAgainstPostgres(t *testing.T) {
 	}
 	if len(evs) != 4 || evs[3].Type != EventRecalled || evs[3].Seq != out.EventSeq {
 		t.Fatalf("events wrong: n=%d last=%+v seq=%d", len(evs), evs[len(evs)-1], out.EventSeq)
+	}
+	// R64（2026-09-25）：召回路径的 cancelled 抢占是网关发起，事件 actor
+	// 必须标 "system"（不再与租户 cancel 路径共享硬编码 "tenant"）。
+	for i, want := range map[int]string{1: "system", 2: "system"} {
+		if got, _ := evs[i].Payload["actor"].(string); got != want {
+			t.Errorf("evs[%d] actor = %q, want %q", i, got, want)
+		}
 	}
 	// 回调台账已按 EventID(taskID, seq) 幂等键重置为 pending（§6.1 复用）。
 	var cbEventID, cbStatus string

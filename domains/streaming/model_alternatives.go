@@ -225,8 +225,23 @@ task_models AS (
 usage_7d AS (
     -- request_logs stores the standardized name in canonical_model
     -- (migration 458), not canonical_name.
+    --
+    -- 2026-09-25 audit (252 PG log): the canonical view
+    -- request_logs_with_current_month is a UNION of session_turns and
+    -- request_logs arms with nested anti-join dedup probes. Aggregating a
+    -- 7-day window over it cost 151s on 252 (EXPLAIN ANALYZE; partition
+    -- bitmap heap + ~12.5k per-row probe fetches against wide rows), and
+    -- this query runs on the chat failure path (zero-candidate
+    -- suggestions) — every caller cancelled at the client timeout (59
+    -- cancels / 15min) and the feature never returned. Popularity is a
+    -- tier-3 ordering signal only, so we now count over request_logs_hot
+    -- (the recent-traffic surface, same precedent as the probe queries'
+    -- traffic EXISTS) which rides idx_request_logs_hot_canonical_model_ts
+    -- and returns in single-digit ms. Trade-off: the "popular" tier
+    -- reflects the hot retention window (~8h of traffic) rather than a
+    -- full 7 days.
     SELECT canonical_model, COUNT(*) AS cnt
-    FROM request_logs_with_current_month
+    FROM request_logs_hot
     WHERE ts > now() - interval '7 days'
       AND success = TRUE
       AND canonical_model IS NOT NULL

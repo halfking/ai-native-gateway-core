@@ -138,6 +138,25 @@ func hash8(s string) string {
 	return hex.EncodeToString(h[:])[:8]
 }
 
+// dedupeByRequestID keeps the first row per request_id (R64 P3). The
+// corrections source LEFT JOINs auto_route_selections_all, which can hold
+// several rows per request (unique key request_id+partition_date); candidate
+// names are hash8(request_id), so fan-out rows would collide on the same
+// case name and trip the suite loader's duplicate-name invariant when the
+// candidates file is merged into a regression suite.
+func dedupeByRequestID(rows []featureRow) []featureRow {
+	seen := make(map[string]bool, len(rows))
+	out := make([]featureRow, 0, len(rows))
+	for _, r := range rows {
+		if seen[r.RequestID] {
+			continue
+		}
+		seen[r.RequestID] = true
+		out = append(out, r)
+	}
+	return out
+}
+
 // runGenerate connects read-only and streams candidates to -out (or stdout).
 func runGenerate(ctx context.Context, dsn, source, out string, days, limit int) error {
 	pool, err := pgxpool.New(ctx, dsn)
@@ -158,6 +177,12 @@ func runGenerate(ctx context.Context, dsn, source, out string, days, limit int) 
 	if err != nil {
 		return err
 	}
+	// R64（P3）：corrections 源的 LEFT JOIN 对同 request_id 的多行 selections
+	// 会 1:N 扇出（唯一键是 request_id+partition_date，重放/多日各留一行）。
+	// 候选名 = "gen_"+src+"_"+hash8(request_id)，重复行会生成同名候选，并入
+	// 套件时撞 loadSuiteFiles 的 duplicate-name 不变量。按 request_id 去重，
+	// 保留首行（ORDER BY 时间倒序 → 最新一行）。
+	rows = dedupeByRequestID(rows)
 
 	w := os.Stdout
 	if out != "" {

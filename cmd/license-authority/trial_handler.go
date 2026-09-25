@@ -101,9 +101,14 @@ func (h *TrialHandler) handleTrial(c echo.Context) error {
 		return c.JSON(http.StatusConflict, trialResponse{Message: "a trial license already exists for this email"})
 	}
 
+	licenseKey, keyErr := newTrialLicenseKey()
+	if keyErr != nil {
+		_ = h.limiter.ReleaseEmail(c.Request().Context(), email)
+		return c.JSON(http.StatusInternalServerError, trialResponse{Message: "unable to generate trial license key"})
+	}
 	expiresAt := time.Now().UTC().Add(h.duration)
 	license := &licensing.License{
-		LicenseKey:       newTrialLicenseKey(),
+		LicenseKey:       licenseKey,
 		CustomerName:     email,
 		CustomerEmail:    email,
 		MaxDevices:       h.maxDevices,
@@ -215,10 +220,10 @@ func hashTrialValue(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func newTrialLicenseKey() string {
+func newTrialLicenseKey() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		panic("crypto/rand unavailable")
+		return "", fmt.Errorf("crypto/rand: %w", err)
 	}
-	return "TRIAL-" + hex.EncodeToString(b)
+	return "TRIAL-" + hex.EncodeToString(b), nil
 }

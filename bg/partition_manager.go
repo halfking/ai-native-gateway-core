@@ -981,7 +981,7 @@ func promoteSpecs() []archiveSpec {
 		// {fnName: "promote_model_probe_runs_hot_to_partition", label: "model_probe_runs_hot"},
 		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"},       // Migration 392
 		{fnName: "promote_session_turns_hot_to_partition", label: "session_turns_hot"},                         // Migration 526
-		{fnName: "promote_session_turn_details_hot_to_partition", label: "session_turn_details_hot"},          // Migration 733
+		{fnName: "promote_session_turn_details_hot_to_partition", label: "session_turn_details_hot"},           // Migration 733
 		{fnName: "promote_session_bodies_hot_to_partition", label: "session_bodies_hot"},                       // Migration 614
 		{fnName: "promote_handoff_logs_hot_to_partition", label: "handoff_logs_hot"},                           // Migration 532
 		{fnName: "promote_session_module_executions_hot_to_partition", label: "session_module_executions_hot"}, // Migration 580
@@ -993,7 +993,7 @@ func promoteSpecs() []archiveSpec {
 		// 且错误明细无界增长。resolvePromoteConfig 走 default 8h 分支。
 		{fnName: "promote_supplier_errors_hot_to_partition", label: "supplier_errors_hot"}, // Migration V371 (2026-09-05)
 		// 706（存储优化方案 v2 S1a）：三新表族 hot → 月分区排水。
-		{fnName: "promote_session_memora_hot_to_partition", label: "session_memora_hot"},  // Migration 706
+		{fnName: "promote_session_memora_hot_to_partition", label: "session_memora_hot"},   // Migration 706
 		{fnName: "promote_session_censors_hot_to_partition", label: "session_censors_hot"}, // Migration 706
 		{fnName: "promote_session_tools_hot_to_partition", label: "session_tools_hot"},     // Migration 706
 	}
@@ -1209,9 +1209,10 @@ func (pm *PartitionManager) hotTableBacklogRows(ctx context.Context, label strin
 // 时间戳列名通过 hotTableTSColumn(label) 决定（默认 ts，部分表为 created_at）。
 //
 // 返回：
-//   0   = 表为空（MIN 返回 NULL → caller 写 0 进 gauge，符合 "空表=0" 语义）
-//   > 0 = 最旧行距今的秒数
-//   -1  = 查询失败（slog.Warn + 保持 last gauge value）
+//
+//	0   = 表为空（MIN 返回 NULL → caller 写 0 进 gauge，符合 "空表=0" 语义）
+//	> 0 = 最旧行距今的秒数
+//	-1  = 查询失败（slog.Warn + 保持 last gauge value）
 func (pm *PartitionManager) hotTableOldestRowAge(ctx context.Context, label string) float64 {
 	table := label
 	if !strings.HasSuffix(table, "_hot") {

@@ -136,7 +136,9 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/routing-v2/annotations', label: '人工标注', labelKey: 'nav.item.annotations', icon: '✍️' },
       { path: '/routing-v2/annotations/stats', label: '标注统计', labelKey: 'nav.item.annotationStats', icon: '🧮' },
       // v2 closed-loop P0③ (2026-09-24): taskprofile 档案 + 路由调参门面
-      { path: '/routing-v2/task-profile', label: '任务档案', labelKey: 'nav.item.taskProfile', icon: '🗂️' },
+      // R64 (2026-09-25): task-profile 有写操作（apply-tier-config / reload），
+      // 与 auto-tuning 同为 super_admin 专属（路由 meta.requiresSuper 同步门控）。
+      { path: '/routing-v2/task-profile', label: '任务档案', labelKey: 'nav.item.taskProfile', icon: '🗂️', super: true, hideForTenant: true },
       { path: '/routing-v2/auto-tuning', label: '路由调参', labelKey: 'nav.item.autoTuning', icon: '🎛️', super: true, hideForTenant: true },
       // 2026-09-07: /probe-health folded into 凭据监控「探测健康」tab
       // (/routing-v2/credentials?tab=probe-health); standalone menu entry removed.

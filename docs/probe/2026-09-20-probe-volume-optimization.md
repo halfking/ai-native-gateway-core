@@ -163,3 +163,11 @@
 
 - `go test ./bg/ ./settings/`（Windows overlay 方案，绕过基线 syscall 项）：目标集全绿；全量仅 `TestWalkDirSafe_ToleratesIsolatedErrors` 基线失败（Windows symlink 特权，非本次引入）。
 - 新增/更新钉桩：视图谓词四 actor、`TestFilterRecentEntriesByUsage`、`TestSelfcheckPrimaryGatedByThreeDayUsage`。
+
+---
+
+## §9 后续轮（2026-09-25）：对健康节点零探测 + 根因分类
+
+R65 批判式审计发现本政策的两处漏网（统一队列复合 success 判定 regress hzx-2 教义；legacy 成功行携带 gateway 码破坏 INV-1 healthy-parked 形状）与一处调度面绕过（stale-state 调解器缺 `next_retry_at` 门），已随 direct 轮=节点判定的根修一并收口，并新增 node/protocol/gateway 探测失败根因分类（protocol 形 attempt≥2 起 6h 停放，与 404 同款）。
+
+详见 [2026-09-25-healthy-zero-probe-and-root-cause.md](2026-09-25-healthy-zero-probe-and-root-cause.md)。

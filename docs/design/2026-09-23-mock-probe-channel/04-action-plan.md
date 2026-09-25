@@ -1,5 +1,9 @@
 # mock 探测通道——下一步动作清单
 
+> ## ⚠️ 已废弃（2026-09-24 注记）：本文属 **v1 历史设计，已被取代**
+>
+> 本文为 v1 旧方案章节，已被 [03-optimization-plan.md](03-optimization-plan.md)（方案 v2）取代。v2 重写后，本文仅保留历史设计价值——下述 v1 章节的 5 个 PR 动作清单（PR 编号、开关位、注入位、验收点）与实际落地形态（见 [05-implementation.md](05-implementation.md)）存在偏差，**仅保留历史，勿按其实施**；现行实现一律以 [README.md](README.md) 状态块 + [03-optimization-plan.md](03-optimization-plan.md) 为准。
+
 > 文档：`docs/design/2026-09-23-mock-probe-channel/04-action-plan.md`
 >
 > 输入：`03-optimization`（架构方案）；输出：5 个 PR 的具体动作（开关位、注入位、验收点）。
