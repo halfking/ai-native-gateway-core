@@ -308,6 +308,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureUsageFactsOccurredAtIndex(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-26 migration 750 (R68 24h 审计轮): usage_facts 按日分区函数
+	// + 当日/次日预建。749 只解决索引，partition pruning 仍不可用（无具
+	// 体分区则 PG 只能扫 DEFAULT 全表）。DEFAULT 分区保留作历史 catch-all，
+	// 新一日数据走日分区。先于 rollup/对账 worker 启动生效，幂等短路。
+	if err := db.ensureUsageFactsDailyPartition(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-05 migration 656 (audit D-2#4/H-2): auto_route_selections_hot
 	// 网关侧幂等 ensure。只升二进制未重跑 656 的存量库上，AUTO 路由 selection
 	// 写入（telemetry selection_writer 批量 INSERT）整批静默丢弃、settle/affinity
@@ -1249,6 +1256,46 @@ func (d *DB) stampUsageFactsOccurredAtIndex(ctx context.Context) error {
 		return fmt.Errorf("stamp 749: %w", err)
 	}
 	slog.Info("usage_facts occurred_at index ensured (749)")
+	return nil
+}
+
+// ensureUsageFactsDailyPartition mirrors sql/migrations/startup/
+// 750_usage_facts_daily_partition.sql（2026-09-26 R68 24h 审计轮）。
+// usage_facts 是 PARTITION BY RANGE (occurred_at) 的分区父表（537），
+// 此前仅 DEFAULT 单分区，partition pruning 不可用，rollup/reconciliation
+// 五查询（即使 749 索引就位）仍退化为 DEFAULT 全表扫。750 安装
+// ensure_usage_facts_daily_partition(p_date DATE) 函数并预建当日+次日
+// 具体 RANGE 分区，DEFAULT 保留作历史 catch-all。PartitionManager
+// 24h tick 后续按 ensureSpecs 接管当日/次日预建，本函数仅首启兜底
+// （与 749 ensureUsageFactsOccurredAtIndex 同款；psql --single-transaction
+// 同样不能承载 CREATE TABLE PARTITION OF 因为 schema_migrations 在
+// transaction 内看不到 autocommit DDL）。
+//
+// 安全：DEFAULT 与具体 RANGE 分区共存合法（PG 17 已验证 scratch 真库）；
+// 函数体内 CREATE TABLE IF NOT EXISTS 幂等；同一日历日连调两次无副作用。
+func (d *DB) ensureUsageFactsDailyPartition(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	// 1. 创建当日 + 次日分区（autocommit；partition_manager 24h tick 兜底后续）。
+	if _, err := d.pool.Exec(ctx, `SELECT ensure_usage_facts_daily_partition(current_date)`); err != nil {
+		// 函数未安装：让 750 升级通道先走（pgx 端函数不存在会 42883）。
+		// 不预创建函数本身以避免与 startup migration 文件发散——migration
+		// 是 canonical 真相源，本函数仅调用现有对象。
+		return fmt.Errorf("ensure_usage_facts_daily_partition(current_date): %w", err)
+	}
+	if _, err := d.pool.Exec(ctx, `SELECT ensure_usage_facts_daily_partition(current_date + 1)`); err != nil {
+		return fmt.Errorf("ensure_usage_facts_daily_partition(current_date + 1): %w", err)
+	}
+	// 2. 盖 750 章（stamp 与 canonical migration 内容对齐）。
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('750', 'usage_facts daily partition function + today/tomorrow prebuild (R68 24h audit round; partition pruning enabled for rollup/reconciliation)')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 750: %w", err)
+	}
+	slog.Info("usage_facts daily partition ensured (750)")
 	return nil
 }
 
