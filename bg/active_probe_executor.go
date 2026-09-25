@@ -126,6 +126,14 @@ type ProbeResult struct {
 	// "probe OK, requests fail" oscillation fixed on 2026-07-16.
 	ViaProxy bool
 
+	// RootCause (2026-09-25) is the failed round's root cause verdict —
+	// "node" / "protocol" / "gateway" (see probe_root_cause.go). Empty on
+	// success and on paths that have not adopted the classifier yet (the
+	// legacy ActiveProbeExecutor round). classifyProbeErrorKind turns a
+	// protocol verdict into the distinct probe_direct_protocol_mismatch
+	// error_kind so dashboards answer "协议还是节点" without re-deriving it.
+	RootCause string
+
 	// OriginStage and OriginActor identify the worker that produced the
 	// synthetic request-log row. They are set explicitly because a direct
 	// probe does not pass through OriginMiddleware.
@@ -642,6 +650,13 @@ func classifyProbeErrorKind(r *ProbeResult) string {
 		}
 		return "probe_direct_http_5xx"
 	case ProbeStatusHTTP4xx:
+		// 2026-09-25: a protocol-shaped 4xx gets its own error_kind so the
+		// dashboard separates "our probe contract doesn't match this
+		// provider" from upstream weather. Only rounds classified by the
+		// new stack carry RootCause; empty keeps the status mapping.
+		if r.RootCause == string(ProbeRootCauseProtocol) {
+			return "probe_direct_protocol_mismatch"
+		}
 		if r.HTTPStatus > 0 {
 			return fmt.Sprintf("probe_direct_http_%d", r.HTTPStatus)
 		}
