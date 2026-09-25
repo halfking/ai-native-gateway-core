@@ -180,6 +180,13 @@ func qualityRows(rep *RangeReport, withProvider bool) [][]cell {
 	header = append(header,
 		boldStrCell("请求数"), boldStrCell("成功"), boldStrCell("失败"), boldStrCell("失败率"),
 		boldStrCell("P50延迟(ms)"), boldStrCell("P95延迟(ms)"), boldStrCell("缓存命中率"),
+	)
+	// 2026-09-26 审计轮：provider 视角补「综合评分」列（成功率 × 时效
+	// 因子，与 ProviderRow.QualityScore 同源）——goal #2 评分项。
+	if withProvider {
+		header = append(header, boldStrCell("综合评分"))
+	}
+	header = append(header,
 		boldStrCell("错误合计"),
 	)
 	for _, k := range kinds {
@@ -187,7 +194,8 @@ func qualityRows(rep *RangeReport, withProvider bool) [][]cell {
 	}
 	rows = append(rows, header)
 
-	emit := func(dim, name, model string, t Totals, br map[string]int64) {
+	// score 传 nil = 该视角无评分列（internal），写空单元格保持列对齐。
+	emit := func(dim, name, model string, t Totals, br map[string]int64, score *float64) {
 		row := []cell{strCell(dim), strCell(name), strCell(model)}
 		row = append(row,
 			intCell(t.RequestCount), intCell(t.SuccessCount), intCell(t.ErrorCount), numCell(t.ErrorRate),
@@ -197,6 +205,13 @@ func qualityRows(rep *RangeReport, withProvider bool) [][]cell {
 			row = append(row, numCell(*t.CacheHitRatio))
 		} else {
 			row = append(row, strCell(""))
+		}
+		if withProvider {
+			if score != nil {
+				row = append(row, numCell(*score))
+			} else {
+				row = append(row, strCell(""))
+			}
 		}
 		errTotal := int64(0)
 		for _, v := range br {
@@ -211,24 +226,33 @@ func qualityRows(rep *RangeReport, withProvider bool) [][]cell {
 
 	// 总计行 + 模型行；供应商视角补供应商维度。
 	if withProvider {
-		emit("总计", "全部", "", rep.Totals, rep.ErrorBreakdown)
+		totalScore := ProviderQualityScore(rep.Totals)
+		emit("总计", "全部", "", rep.Totals, rep.ErrorBreakdown, &totalScore)
+		for _, p := range rep.Providers {
+			name := p.ProviderName
+			if name == "" {
+				name = fmt.Sprintf("%d", p.ProviderID)
+			}
+			score := p.QualityScore
+			emit("供应商", name, "", p.Totals, p.ErrorBreakdown, &score)
+		}
 		for _, m := range rep.Models {
 			name := m.ProviderName
 			if name == "" && m.ProviderID != nil {
 				name = fmt.Sprintf("%d", *m.ProviderID)
 			}
-			emit("供应商×模型", name, m.RawModelName, m.Totals, m.ErrorBreakdown)
+			emit("供应商×模型", name, m.RawModelName, m.Totals, m.ErrorBreakdown, nil)
 		}
 	} else {
-		emit("总计", "全部租户（业务流量）", "", rep.Totals, rep.ErrorBreakdown)
+		emit("总计", "全部租户（业务流量）", "", rep.Totals, rep.ErrorBreakdown, nil)
 		for _, t := range rep.Tenants {
-			emit("租户", t.TenantID, "", t.Totals, t.ErrorBreakdown)
+			emit("租户", t.TenantID, "", t.Totals, t.ErrorBreakdown, nil)
 		}
 		for _, m := range rep.Models {
-			emit("模型", "", m.RawModelName, m.Totals, m.ErrorBreakdown)
+			emit("模型", "", m.RawModelName, m.Totals, m.ErrorBreakdown, nil)
 		}
 		for _, p := range rep.Persons {
-			emit("人员", p.Person, "", p.Totals, p.ErrorBreakdown)
+			emit("人员", p.Person, "", p.Totals, p.ErrorBreakdown, nil)
 		}
 	}
 	return rows
@@ -252,7 +276,11 @@ func qualityKindTotals(rep *RangeReport) map[string]int64 {
 }
 
 func qualityWidths(rep *RangeReport) []float64 {
-	w := []float64{14, 20, 24, 10, 10, 10, 10, 12, 12, 12, 10}
+	w := []float64{14, 20, 24, 10, 10, 10, 10, 12, 12, 12}
+	if rep.View == ViewProvider {
+		w = append(w, 12) // 综合评分列（与 qualityRows 的 provider 分支同序）
+	}
+	w = append(w, 10) // 错误合计
 	for i := 0; i < len(qualityKindTotals(rep)); i++ {
 		w = append(w, 12)
 	}

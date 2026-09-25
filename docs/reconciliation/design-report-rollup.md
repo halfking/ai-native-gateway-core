@@ -212,3 +212,55 @@ RoundTrip（往返 + NUL 拒绝 + 历史裸键回退）+ 真库 E2E 跨租户同
 - reports 词条以 R65 的 8 语言版为准（本轮 zh/en 重复版本丢弃），
   index.ts 双方各自新增的 `reports,` 注册去重；
 - vue-tsc --noEmit 与 vite build 退出码 0。
+
+## §11 批判式审计轮（2026-09-26）——菜单入口缺失 + 评分项补齐
+
+审计基线 HEAD `19eb31536`，工作区干净。对 09-25 落地轮做批判式复审，
+逐项核实（五点同步/迁移号唯一/NUL 编码/反引号扫描/build/单测/vue-tsc
+全部复验通过；report.go 读面三处 `\x00` 为内存 map 分组键、不落库，无害），
+确认两个交付缺陷并当轮修复：
+
+### F1｜菜单入口缺失（缺陷）
+
+对账报表页 `/admin/reconciliation` 在 09-25 轮**没有挂任何菜单入口**，
+只能手敲 URL 访问——原始 goal 明确要求「租户用户的菜单下」与「模型与
+路由中」两个入口，属漏交付。修复：`web/src/config/appNav.ts` 补两处——
+
+- 模型与路由组：`供应商对账` → `/admin/reconciliation`（provider 视角，goal #2）；
+- 租户用户组：`结算报表` → `/admin/reconciliation?view=internal`
+  （internal 视角，goal #1）；页面新增 `?view=` 深链支持（此前 query
+  被忽略，属同源缺陷）。
+
+两项均 `super + hideForTenant` 门控——**与现有后端鉴权一致，不虚标**。
+词条 `nav.item.reconciliation` / `nav.item.settlementReport` 入 8 语言
+nav.ts；`public/menu-config.json` 经 export-menu-config.mjs 重导。
+
+### F2｜供应商评分项缺失（缺陷）
+
+goal #2 明确要求「评分项」，但设计文档 §1–§10 零处提及，memory 中
+「评分项已聚合」的声明与实现不符（实现只有成功率/延迟/错误透视，无评分）。
+修复：读面现算 `ProviderQualityScore`（domains/reportrollup/report.go）——
+
+```
+score = 100 × success_rate × min(1, 5000ms / P95)
+```
+
+- 纯函数、一位小数、零请求行 0 分、无成功延迟数据不做时效惩罚；
+- **不落快照**：公式演进可对历史区间重算，不违背 price_snapshot 冻结语义；
+- 暴露面：`ProviderRow.quality_score` JSON 字段 + sheet2「综合评分」列
+  （provider 视角，随带补上此前缺席的供应商级行）+ 前端按供应商表新列
+  + `reports.qualityScore` 词条 8 语言；
+- 守卫：`TestProviderQualityScore`（8 组数学边界）+
+  `TestBuildRangeReport_ProviderQualityScorePopulated`（装配不漏字段）。
+
+### 遗留登记（本轮不修，防过度伸手）
+
+| # | 缺口 | 为何不当轮修 |
+|---|---|---|
+| G1 | 供应商对账缺**凭据（credential/apikey）维度**：usage_facts 有 credential_id/api_key_id 两列，聚合六 scope 均未覆盖 | 需新 scope + 迁移 749（建号三重查重）+ 聚合/读面/导出/前端全链，体量=完整一轮 |
+| G2 | 租户用户无法自助查看**本租户**结算报表：后端 `/api/admin/report-rollup/*` 硬 superAdmin，前端入口只能以 super 门控挂载 | 放开鉴权=跨租户数据面改动，须租户作用域过滤 + 独立审计（R65 P1 即跨租户 bug，不重蹈） |
+| G3 | 质量分 latency 基准 5000ms 为拍板值，未按 provider 分类校准 | 观察真实分布后再调，避免无数据拍参数 |
+
+部署提醒（继承 09-25 审计轮）：根修版仍未上 245/154；部署后必须手动
+`POST /api/admin/report-rollup/run {"date":"2026-09-24"}` 补齐 NUL 版
+中断的残缺快照（internal_person/internal_model 该日为空）。

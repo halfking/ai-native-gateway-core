@@ -38,4 +38,6 @@ export default {
   errors: '失敗',
   cost: 'コスト',
   errorBreakdown: 'エラー内訳',
+  qualityScore: "品質スコア",
+
 }

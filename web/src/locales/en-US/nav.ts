@@ -31,6 +31,8 @@ export default {
     probeHealth: 'Probe Health',
     systemMonitor: 'System Monitoring',
     providers: 'Providers',
+    reconciliation: 'Provider Reconciliation',
+    settlementReport: 'Settlement Report',
     pricing: 'Cost Pricing',
     modelPricing: 'Pricing Management',
     freePool: 'Free Resources',
