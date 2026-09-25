@@ -78,7 +78,26 @@ WHITELIST_PATTERNS=(
   # Phase 3B-4 cleanup pt.2: skip generic user:pass@host examples in docs
   'user:pass@host' 'user:password@host' ':pass@' ':password@'
   'username:password@' 'dbuser:dbpass@'
+  # deploy-local-lib.sh parses DSNs with sed; the regex source lines
+  # contain postgres(ql)?:// shaped literals that are not real credentials.
+  'sed.*postgres(ql)?'
 )
+
+# PUBLIC_DOMAINS: domains that are flagged by INTERNAL_DOMAIN rules but are
+# in fact public production endpoints (e.g. llm.kxpms.cn, registry.kxpms.cn).
+# INTERNAL_DOMAIN findings whose content matches one of these are suppressed.
+PUBLIC_DOMAINS=(
+  'kxpms\.cn'
+  'kxpms\.com'
+)
+
+is_public_domain() {
+  local content="$1"
+  for pd in "${PUBLIC_DOMAINS[@]}"; do
+    [[ "$content" =~ $pd ]] && return 0
+  done
+  return 1
+}
 
 EXCLUDE_DIRS=(".git" "node_modules" "vendor" "build" "dist" "out" "coverage"
   ".playwright-mcp" ".codegraph" ".cache" ".runtime" ".ruff_cache"
@@ -91,7 +110,10 @@ EXCLUDE_FILES=("scan-secrets.sh" "scan-secrets.config" "scan-secrets.replacement
   # up here, that's a contract violation that should be discussed in
   # code review rather than papered over.
   "server.priv" "server.pub"
-  "*.pem" "*.priv" "*.pub")
+  "*.pem" "*.priv" "*.pub"
+  # redaction_test.go contains synthetic credential fixtures (ghp_*, AKIA*,
+  # JWT) used to assert redaction behaviour — never real secrets.
+  "redaction_test.go")
 EXCLUDE_EXTS=("png" "jpg" "jpeg" "gif" "ico" "svg" "woff" "woff2" "ttf" "eot"
   "pdf" "zip" "tar" "gz" "bz2" "xz" "7z"
   "bin" "exe" "dll" "so" "dylib" "class" "jar"
@@ -218,6 +240,7 @@ scan_file() {
         if echo "$content" | grep -qiE -e "${RULES_PATTERN[$i]}" 2>/dev/null; then
           local key="$rel:$ln:${RULES_CATEGORY[$i]}"
           is_baselined "$key" && break
+          if [[ "${RULES_CATEGORY[$i]}" == "INTERNAL_DOMAIN" ]] && is_public_domain "$content"; then break; fi
           record_finding "$rel" "$ln" "${RULES_CATEGORY[$i]}" "${RULES_SEVERITY[$i]}" "${RULES_DESC[$i]}" "$content"
           break
         fi
@@ -445,6 +468,7 @@ scan_working_tree() {
       if [[ "$content" =~ $pat ]]; then
         local key="$rel:$ln_part:${RULES_CATEGORY[$rule_idx]}"
         is_baselined "$key" && break
+        if [[ "${RULES_CATEGORY[$rule_idx]}" == "INTERNAL_DOMAIN" ]] && is_public_domain "$content"; then break; fi
         record_finding "$rel" "$ln_part" "${RULES_CATEGORY[$rule_idx]}" "${RULES_SEVERITY[$rule_idx]}" "${RULES_DESC[$rule_idx]}" "$content"
         break
       fi
