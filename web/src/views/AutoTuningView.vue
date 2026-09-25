@@ -137,17 +137,21 @@ function statusClass(s: TuningProposalStatus): string {
   return `status-${s}`
 }
 
-// proposal JSON 每类形态不同（bg/feedback_analyzer.go）：keyword_add 带
-// keyword/channel,weight_adjust 带 weights 映射。摘要 = 关键字段 + 截断 JSON。
+// proposal JSON 每类形态不同（bg/feedback_analyzer.go、taskprofile/analyzer.go）：
+// keyword_add 带 add 数组/channel,weight_adjust 带 weights 映射,threshold_change
+// 带 key/old/new。摘要 = 关键字段 + 截断 JSON。
 function proposalSummary(p: TuningProposal): string {
   const rec = p.proposal as Record<string, unknown>
   const parts: string[] = []
+  if (Array.isArray(rec.add) && rec.add.length) parts.push(`add=${rec.add.join(',')}`)
   if (typeof rec.keyword === 'string') parts.push(`keyword=${rec.keyword}`)
   if (typeof rec.channel === 'string') parts.push(`channel=${rec.channel}`)
   if (rec.weights && typeof rec.weights === 'object') {
     parts.push(`weights=${JSON.stringify(rec.weights)}`)
   }
   if (typeof rec.key === 'string') parts.push(`key=${rec.key}`)
+  if (rec.old !== undefined) parts.push(`${String(rec.old)}→${String(rec.new)}`)
+  else if (rec.new !== undefined) parts.push(`new=${JSON.stringify(rec.new)}`)
   if (rec.value !== undefined) parts.push(`value=${JSON.stringify(rec.value)}`)
   const raw = JSON.stringify(rec)
   if (parts.length === 0) return raw.length > 120 ? raw.slice(0, 117) + '...' : raw
