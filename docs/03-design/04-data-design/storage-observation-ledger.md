@@ -256,3 +256,17 @@ ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-24T01:01:54Z
 - **高流量压测效应**：sys 探针会话单桶峰值 41691 轮（前日 15077 的 2.8 倍，探针流量持续上涨），biz_multi 样本 616-774 轮——镜像链路在高流量下连续两日保持 G2=0，shadow-write 8 槽+2000ms 预算与 outbox/reaper 链路未见瓶颈。
 - claim 置位结构性漏镜像近 24h 未产生缺失；待办维持。
 - **连续归零累计 2/7**（09-24 计 Day 2）。7 天达标 earliest 2026-09-29 每日轮。
+
+### 每日观察 2026-09-25 09:02 (+08)，build=ef87317c/2242 —— **PASS，连续归零 Day 3/7**
+
+构建身份：ef87317c/2242（与 09-24 同构建，未再部署），含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-25T01:02:16Z
+```
+
+- 抽样 10/10 PASS（biz_multi×4 达 958-1222 轮、loop_single×3、sys×3），G1 四项零漂移。
+- **探针流量继续翻倍**：sys 单桶峰值 cred126 53408 轮（前日 27396 的 1.95 倍），三日连续 G2=0——镜像链路在流量 3 天翻 3.5 倍的斜率下保持零缺失，为 S4 停写后的 turn-only 写链容量提供了实证支撑。
+- claim 置位结构性漏镜像连续第 4 天未产生缺失（历史频率约 0.6 行/天，当前好运区间持续）。
+- **连续归零累计 3/7**（09-25 计 Day 3）。7 天达标 earliest 2026-09-29 每日轮。
