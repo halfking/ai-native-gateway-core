@@ -851,10 +851,12 @@ func probeResultToRound(model string, pr *ProbeResult) nodeProbeRoundResult {
 		r.errDetail = pr.ErrMsg
 		// 2026-09-25: classify when the producer didn't (legacy executor
 		// rounds carry no RootCause yet). errCode+status+body preview are the
-		// same evidence probeDirect classifies from.
+		// same evidence probeDirect classifies from. 2026-09-26: gateway-round
+		// specific classifier — loopback transport failures are this
+		// instance's fault (see classifyGatewayRoundRootCause).
 		r.rootCause = ProbeRootCause(pr.RootCause)
 		if r.rootCause == "" {
-			r.rootCause = classifyProbeRootCause(r.errCode, r.httpStatus, r.responseBody)
+			r.rootCause = classifyGatewayRoundRootCause(r.errCode, r.httpStatus, r.responseBody)
 		}
 	}
 	return r
