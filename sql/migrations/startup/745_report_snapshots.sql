@@ -24,7 +24,8 @@
 -- internal_model）；(b) daily_by_model 的 scope_key = provider_id 文本化
 -- （canonical 粒度未实现，canonical_id 列预留恒 NULL），模型名 =
 -- raw_model_name；(c) internal_person 的 scope_key 编码租户
---（tenant + '\x00' + person，R65 P1 修复）。终态口径见
+--（len(tenant):tenant:person 长度前缀，R65 P1 修复；02da86168 根修弃
+-- 原稿 '\x00' 分隔——PG TEXT 拒绝 NUL 字节）。终态口径见
 -- sql/objects/tables/report_snapshots.sql 头注与设计文档 §10。
 --
 -- 演进注记③：热区 + 分区（report_snapshots_hot + report_date 月分区，
