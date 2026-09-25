@@ -2343,9 +2343,12 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		// gateway round's code on a direct-only recovery) kept the row in
 		// the stale-state reconciler's candidate set (cmb.available=TRUE AND
 		// NOT healthy-parked) and re-probed a provably healthy node every
-		// tick. $4/$5 therefore receive NULL; the gateway anomaly stays
-		// operator-visible via last_gateway_ok = $3 and the node_probe_runs
-		// audit row (gateway_err_code/gateway_err_detail).
+		// tick. last_err_code/last_err_detail are therefore written as SQL
+		// NULL literals (R65 audit A: the pool runs QueryExecModeSimpleProtocol
+		// per db/db.go — inline NULL literals are unambiguous, untyped Go nil
+		// params are not); the gateway anomaly stays operator-visible via
+		// last_gateway_ok = $3 and the node_probe_runs audit row
+		// (gateway_err_code/gateway_err_detail).
 		if !gw.ok {
 			slog.Warn("node_probe_worker: direct round healthy, gateway round failed — node parked, gateway anomaly not laddered",
 				"credential_id", credID, "model", model,
@@ -2362,12 +2365,12 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 					last_run_id = NULL,
 					last_direct_ok = TRUE,
 					last_gateway_ok = $3,
-					last_err_code = $4,
-					last_err_detail = $5,
+					last_err_code = NULL,
+					last_err_detail = NULL,
 					in_flight_until = NULL,
 					updated_at = now()
 				WHERE credential_id = $1 AND raw_model_name = $2
-			`, credID, model, gw.ok, nil, nil); err != nil {
+			`, credID, model, gw.ok); err != nil {
 
 			w.logNodeProbeStateUpdateWarning("success", direct.providerID, credID, model, trigger.parentID, err)
 		}
