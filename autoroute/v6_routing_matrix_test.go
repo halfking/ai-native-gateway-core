@@ -73,7 +73,7 @@ var v6PhantomModels = []string{
 	"gemini-3.5-flash",
 	"gpt-5.4-pro",
 	"gpt-5.5",
-	"minimax-2.7",           // 命名错误，应为 minimax-m2.7（且 m2.7 仅别名无 canonical 行）
+	"minimax-2.7", // 命名错误，应为 minimax-m2.7（且 m2.7 仅别名无 canonical 行）
 	"minimax-m2.7-highspeed",
 	"mimo-v2.5", // 应为 mimo-v2.5-pro
 }

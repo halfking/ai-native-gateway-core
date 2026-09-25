@@ -26,26 +26,26 @@ import (
 
 // TierConfig represents the tier configuration for a task type.
 type TierConfig struct {
-	TaskType       TaskType
-	PreferredTier  string   // "tier-a", "tier-b", or "tier-c"
-	FallbackTiers  []string // Ordered list of fallback tiers
-	MinConfidence  float64  // Minimum confidence to use this tier
-	TenantID       string   // Empty = global default
-	Enabled        bool
+	TaskType      TaskType
+	PreferredTier string   // "tier-a", "tier-b", or "tier-c"
+	FallbackTiers []string // Ordered list of fallback tiers
+	MinConfidence float64  // Minimum confidence to use this tier
+	TenantID      string   // Empty = global default
+	Enabled       bool
 }
 
 // TierSelector determines which tier to use for a given task type and context.
 type TierSelector struct {
 	db *sql.DB
-	
+
 	// configCache caches task type tier configurations from database
-	configCache      map[string]*TierConfig // key: "tasktype:tenantid"
-	configCacheMu    sync.RWMutex
+	configCache       map[string]*TierConfig // key: "tasktype:tenantid"
+	configCacheMu     sync.RWMutex
 	configCacheExpiry time.Time
-	
+
 	// cacheTTL controls how often to refresh from database (default: 5 minutes)
 	cacheTTL time.Duration
-	
+
 	// enableV3 controls whether to use V3 tier selection or fall back to legacy
 	enableV3 bool
 }
@@ -54,23 +54,23 @@ type TierSelector struct {
 type TierSelectionInput struct {
 	TaskType   TaskType
 	Confidence float64
-	
+
 	// Depth-based degradation
 	AgentDepth int // From X-Gw-Agent-Depth header (0=client, 1=first-level sub-agent, 2+=nested)
-	
+
 	// Tenant override
 	TenantID string
-	
+
 	// Header override (highest priority)
 	HeaderTier string // From X-Gw-Model-Tier header
 }
 
 // TierSelectionResult contains the selected tier and reasoning.
 type TierSelectionResult struct {
-	Tier           string   // "tier-a", "tier-b", or "tier-c"
-	FallbackTiers  []string // Ordered fallback tiers
-	Reason         string   // Human-readable explanation
-	ConfigSource   string   // "header", "depth", "tenant", "global", "default"
+	Tier          string   // "tier-a", "tier-b", or "tier-c"
+	FallbackTiers []string // Ordered fallback tiers
+	Reason        string   // Human-readable explanation
+	ConfigSource  string   // "header", "depth", "tenant", "global", "default"
 }
 
 // NewTierSelector creates a new tier selector.
@@ -88,11 +88,11 @@ func NewTierSelector(db *sql.DB, enableV3 bool) *TierSelector {
 // SelectTier determines which tier to use for the given input.
 //
 // Priority order (highest to lowest):
-//   1. Header override (X-Gw-Model-Tier)
-//   2. Depth-based degradation (depth >= 2 → tier-c)
-//   3. Tenant override (tenant_config)
-//   4. Global config (task_type_tier_config where tenant_id IS NULL)
-//   5. In-memory default (TaskTypeTierMapping)
+//  1. Header override (X-Gw-Model-Tier)
+//  2. Depth-based degradation (depth >= 2 → tier-c)
+//  3. Tenant override (tenant_config)
+//  4. Global config (task_type_tier_config where tenant_id IS NULL)
+//  5. In-memory default (TaskTypeTierMapping)
 func (ts *TierSelector) SelectTier(ctx context.Context, input TierSelectionInput) (*TierSelectionResult, error) {
 	if !ts.enableV3 {
 		// Feature flag disabled, return tier-b as safe default
@@ -103,7 +103,7 @@ func (ts *TierSelector) SelectTier(ctx context.Context, input TierSelectionInput
 			ConfigSource:  "default",
 		}, nil
 	}
-	
+
 	// Priority 1: Header override (explicit user/client control)
 	if input.HeaderTier != "" {
 		tier := strings.ToLower(input.HeaderTier)
@@ -116,7 +116,7 @@ func (ts *TierSelector) SelectTier(ctx context.Context, input TierSelectionInput
 			}, nil
 		}
 	}
-	
+
 	// Priority 2: Depth-based degradation (cost optimization for nested sub-agents)
 	// Depth 0-1: Normal tier selection
 	// Depth >= 2: Force tier-c (nested sub-agents get economy models)
@@ -128,19 +128,19 @@ func (ts *TierSelector) SelectTier(ctx context.Context, input TierSelectionInput
 			ConfigSource:  "depth",
 		}, nil
 	}
-	
+
 	// Priority 3-4: Query database config (tenant override, then global)
 	cfg, err := ts.getConfig(ctx, input.TaskType, input.TenantID)
 	if err != nil {
 		// Database query failed, fall back to in-memory default
 		return ts.getDefaultTier(input.TaskType, input.Confidence)
 	}
-	
+
 	if cfg == nil {
 		// No config found in database, use in-memory default
 		return ts.getDefaultTier(input.TaskType, input.Confidence)
 	}
-	
+
 	// Check confidence threshold
 	if input.Confidence < cfg.MinConfidence {
 		// Low confidence, escalate to tier-a for safety
@@ -151,13 +151,13 @@ func (ts *TierSelector) SelectTier(ctx context.Context, input TierSelectionInput
 			ConfigSource:  "confidence_escalation",
 		}, nil
 	}
-	
+
 	// Use configured tier
 	source := "global"
 	if cfg.TenantID != "" {
 		source = "tenant"
 	}
-	
+
 	return &TierSelectionResult{
 		Tier:          cfg.PreferredTier,
 		FallbackTiers: cfg.FallbackTiers,
@@ -172,7 +172,7 @@ func (ts *TierSelector) getConfig(ctx context.Context, taskType TaskType, tenant
 	if ts.db == nil {
 		return nil, fmt.Errorf("database not configured")
 	}
-	
+
 	// Check cache first
 	ts.configCacheMu.RLock()
 	expired := time.Now().After(ts.configCacheExpiry)
@@ -185,7 +185,7 @@ func (ts *TierSelector) getConfig(ctx context.Context, taskType TaskType, tenant
 				return cfg, nil
 			}
 		}
-		
+
 		// Try global config
 		key := string(taskType) + ":"
 		if cfg, ok := ts.configCache[key]; ok {
@@ -194,19 +194,19 @@ func (ts *TierSelector) getConfig(ctx context.Context, taskType TaskType, tenant
 		}
 	}
 	ts.configCacheMu.RUnlock()
-	
+
 	// Cache miss or expired, query database
 	if expired {
 		// Refresh entire cache
 		ts.refreshCache(ctx)
 	}
-	
+
 	// Query specific config
 	cfg, err := ts.queryConfig(ctx, taskType, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return cfg, nil
 }
 
@@ -215,7 +215,7 @@ func (ts *TierSelector) refreshCache(ctx context.Context) error {
 	if ts.db == nil {
 		return fmt.Errorf("database not configured")
 	}
-	
+
 	query := `
 		SELECT task_type, preferred_tier, fallback_tiers, min_confidence, 
 		       COALESCE(tenant_id, '') as tenant_id, enabled
@@ -223,42 +223,42 @@ func (ts *TierSelector) refreshCache(ctx context.Context) error {
 		WHERE enabled = TRUE
 		ORDER BY tenant_id NULLS FIRST
 	`
-	
+
 	rows, err := ts.db.QueryContext(ctx, query)
 	if err != nil {
 		return fmt.Errorf("query task_type_tier_config: %w", err)
 	}
 	defer rows.Close()
-	
+
 	newCache := make(map[string]*TierConfig)
-	
+
 	for rows.Next() {
 		var cfg TierConfig
 		var fallbackTiersStr string
-		
-		err := rows.Scan(&cfg.TaskType, &cfg.PreferredTier, &fallbackTiersStr, 
+
+		err := rows.Scan(&cfg.TaskType, &cfg.PreferredTier, &fallbackTiersStr,
 			&cfg.MinConfidence, &cfg.TenantID, &cfg.Enabled)
 		if err != nil {
 			return fmt.Errorf("scan config row: %w", err)
 		}
-		
+
 		// Parse fallback_tiers array (PostgreSQL text[] format: {tier-a,tier-b})
 		cfg.FallbackTiers = parsePostgresArray(fallbackTiersStr)
-		
+
 		key := string(cfg.TaskType) + ":" + cfg.TenantID
 		newCache[key] = &cfg
 	}
-	
+
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate config rows: %w", err)
 	}
-	
+
 	// Update cache atomically
 	ts.configCacheMu.Lock()
 	ts.configCache = newCache
 	ts.configCacheExpiry = time.Now().Add(ts.cacheTTL)
 	ts.configCacheMu.Unlock()
-	
+
 	return nil
 }
 
@@ -268,7 +268,7 @@ func (ts *TierSelector) queryConfig(ctx context.Context, taskType TaskType, tena
 	if ts.db == nil {
 		return nil, fmt.Errorf("database not configured")
 	}
-	
+
 	// Try tenant-specific first
 	if tenantID != "" {
 		query := `
@@ -278,7 +278,7 @@ func (ts *TierSelector) queryConfig(ctx context.Context, taskType TaskType, tena
 			WHERE task_type = $1 AND tenant_id = $2 AND enabled = TRUE
 			LIMIT 1
 		`
-		
+
 		cfg, err := ts.scanConfig(ctx, query, string(taskType), tenantID)
 		if err == nil {
 			// Cache it
@@ -292,7 +292,7 @@ func (ts *TierSelector) queryConfig(ctx context.Context, taskType TaskType, tena
 			return nil, err
 		}
 	}
-	
+
 	// Fall back to global config
 	query := `
 		SELECT task_type, preferred_tier, fallback_tiers, min_confidence, 
@@ -301,7 +301,7 @@ func (ts *TierSelector) queryConfig(ctx context.Context, taskType TaskType, tena
 		WHERE task_type = $1 AND tenant_id IS NULL AND enabled = TRUE
 		LIMIT 1
 	`
-	
+
 	cfg, err := ts.scanConfig(ctx, query, string(taskType))
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -309,13 +309,13 @@ func (ts *TierSelector) queryConfig(ctx context.Context, taskType TaskType, tena
 		}
 		return nil, err
 	}
-	
+
 	// Cache it
 	key := string(taskType) + ":"
 	ts.configCacheMu.Lock()
 	ts.configCache[key] = cfg
 	ts.configCacheMu.Unlock()
-	
+
 	return cfg, nil
 }
 
@@ -323,7 +323,7 @@ func (ts *TierSelector) queryConfig(ctx context.Context, taskType TaskType, tena
 func (ts *TierSelector) scanConfig(ctx context.Context, query string, args ...interface{}) (*TierConfig, error) {
 	var cfg TierConfig
 	var fallbackTiersStr string
-	
+
 	err := ts.db.QueryRowContext(ctx, query, args...).Scan(
 		&cfg.TaskType, &cfg.PreferredTier, &fallbackTiersStr,
 		&cfg.MinConfidence, &cfg.TenantID, &cfg.Enabled,
@@ -331,9 +331,9 @@ func (ts *TierSelector) scanConfig(ctx context.Context, query string, args ...in
 	if err != nil {
 		return nil, err
 	}
-	
+
 	cfg.FallbackTiers = parsePostgresArray(fallbackTiersStr)
-	
+
 	return &cfg, nil
 }
 
@@ -345,18 +345,18 @@ func (ts *TierSelector) getDefaultTier(taskType TaskType, confidence float64) (*
 		// Unknown task type, default to tier-b (safe middle ground)
 		tier = "tier-b"
 	}
-	
+
 	// Get fallback tiers
 	fallbacks := getDefaultFallbacks(tier)
-	
+
 	// Check confidence threshold
 	minConf := MinConfidenceThresholds[taskType]
 	if minConf == 0 {
 		minConf = 0.70
 	}
-	
+
 	reason := fmt.Sprintf("in-memory default: task_type=%s → tier=%s", taskType, tier)
-	
+
 	if confidence < minConf {
 		// Low confidence, escalate to tier-a
 		return &TierSelectionResult{
@@ -366,7 +366,7 @@ func (ts *TierSelector) getDefaultTier(taskType TaskType, confidence float64) (*
 			ConfigSource:  "confidence_escalation",
 		}, nil
 	}
-	
+
 	return &TierSelectionResult{
 		Tier:          tier,
 		FallbackTiers: fallbacks,
@@ -418,26 +418,26 @@ func parsePostgresArray(s string) []string {
 	if s == "" || s == "{}" {
 		return []string{}
 	}
-	
+
 	// Remove braces
 	s = strings.TrimPrefix(s, "{")
 	s = strings.TrimSuffix(s, "}")
-	
+
 	if s == "" {
 		return []string{}
 	}
-	
+
 	// Split by comma
 	parts := strings.Split(s, ",")
 	result := make([]string, 0, len(parts))
-	
+
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part != "" {
 			result = append(result, part)
 		}
 	}
-	
+
 	return result
 }
 

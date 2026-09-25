@@ -5,8 +5,8 @@
 #   bash scripts/build-release-images.sh v{version} --out {out_dir}
 #
 # Outputs:
-#   {out}/linux-amd64/llm-gateway-go-{version}-amd64.tar
-#   {out}/linux-arm64/llm-gateway-go-{version}-arm64.tar
+#   {out}/linux-amd64/llm-gateway-go-{version}-amd64.tar.gz
+#   {out}/linux-arm64/llm-gateway-go-{version}-arm64.tar.gz
 #   {out}/SHA256SUMS
 #
 # Env:
@@ -61,7 +61,11 @@ for platform in "${platforms[@]}"; do
   platform_dir="$OUT_DIR/${os}-${arch}"
   mkdir -p "$platform_dir"
   image_tag="${IMAGE_REPOSITORY}:${VERSION}-${arch}"
-  tar_path="$platform_dir/llm-gateway-go-${VERSION}-${arch}.tar"
+  # gzip 流式保存（maintain 仓 2026-09-24 打包审计 §6.2 契约）：save 的层 blob
+  # 未压缩，gzip 后约为裸 tar 的 40-55%；管道不落中间裸 tar，磁盘峰值即压缩件。
+  # docker load 对 gzip 透明，install-docker.sh 无需改动。此前的裸 .tar 会被
+  # maintain 侧 required-artifacts 门禁拒绝（missing required ... .tar.gz）。
+  tar_path="$platform_dir/llm-gateway-go-${VERSION}-${arch}.tar.gz"
 
   if [[ "$SKIP_BUILD" == "1" ]]; then
     printf 'SKIP_BUILD=1 placeholder for %s\n' "$image_tag" >"$tar_path"
@@ -74,9 +78,10 @@ for platform in "${platforms[@]}"; do
       --platform "$platform" \
       --build-arg "BASE_REGISTRY=${BASE_REGISTRY}" \
       --tag "$image_tag" \
+      --provenance=false --sbom=false \
       --load \
       .
-    docker save "$image_tag" -o "$tar_path"
+    docker save "$image_tag" | gzip -6 >"$tar_path"
   fi
 
   [[ -s "$tar_path" ]] || { echo "missing Docker tar: $tar_path" >&2; exit 1; }
