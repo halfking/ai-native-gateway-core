@@ -87,6 +87,11 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 		it.LatencyMs = latency
 		it.Digest = persistedDigestOrFallback(digestRaw, reqBody, respBody, meta, gov)
 		it.ChildRequests = []*SessionChildRequest{}
+		// contract_freeze §1.6：本 turn 的归属会话恒为 session_id（V2
+		// 文本 surrogate），与 request_id / attempt_id / gw_session_id /
+		// SessionPK 互不替代。PrimaryKey 沿用查询入参 sessionID。
+		it.IDKind = "session_id"
+		it.PrimaryKey = sessionID
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
@@ -139,6 +144,10 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 				return
 			}
 			c.RequestType = normalizeChildRequestType(typ, actor)
+			// contract_freeze §1.6：child request 自身由 request_id 标识，
+			// 但归属会话恒为 session_id —— 与 gw_session_id 显式区分。
+			c.IDKind = "session_id"
+			c.PrimaryKey = sessionID
 			if parentItem := index[parent]; parentItem != nil && len(parentItem.ChildRequests) < maxChildRequestsPerParent {
 				if totalChildRequests(items) >= maxChildRequestsPerPage {
 					break

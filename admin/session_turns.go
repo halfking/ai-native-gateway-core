@@ -38,6 +38,13 @@ type TurnListItem struct {
 	AttachmentCount  int                    `json:"attachment_count"`
 	ChildRequests    []*SessionChildRequest `json:"child_requests"`
 	Digest           *TurnDigest            `json:"digest,omitempty"`
+
+	// IDKind / PrimaryKey: contract_freeze §1.6 显式标注本 turn 的会话
+	// 主键恒为 session_id（与 request_id / attempt_id / gw_session_id
+	// 互不替代）。PrimaryKey 由调用方（serveSessionTurnsUnified /
+	// unifiedTurnsTreeFallback）在装配时填入，结构体零值态留空。
+	IDKind     string `json:"id_kind,omitempty"`
+	PrimaryKey string `json:"primary_key,omitempty"`
 }
 
 const (
