@@ -48,6 +48,20 @@ web: npm run typecheck → 0 错误（vitest/build 与上轮口径一致，本�
 
 1. **真数据端到端演示仍顺延部署窗口**（P1 验收项）——表拓扑修复（A）后更必要：
    首次真库运行时核对 `_all` 视图 UNION 分支的执行计划。
+
+   > **本轮补记（2026-09-25 轮，实跑于 2026-09-26 02:52–03:05 CST）**：已做成——
+   > 252 真库只读 E2E 完成。UNION 两支核对通过：视图本身与 analyzer Q1–Q4 共 5 个
+   > 执行计划的 Append 节点均同时含 `auto_route_selections_hot` 上支与父表 4 分区
+   > （2026_08/2026_09/2026_10/default）下支；`EXPLAIN ANALYZE ... LIMIT 100`
+   > 实测 Execution 0.36ms、纯 SELECT 无锁。但同轮发现**新的阻断级问题（F1 读面词表
+   > 失配）**：`taskprofile/analyzer.go:392,429,484,509` 四处仍过滤
+   > `classifier='heuristic'`，而 252 全库 22607 行仅含 `heuristic_v2`(22563)/
+   > `llm_v2`(44)（写入侧 `autoroute/decision_v2.go:385` 统一追加 `_v2` 后缀），
+   > `classifier='heuristic'` 命中 0 行——读面在 V2 数据上恒空，本轮演示输出即
+   > 「闸门判零草稿」（`task_type_corrections`/`tuning_params` 亦双双 0 行）。
+   > 全程只读：未 generate、未 apply、未注入流量。证据全文：
+   > `docs/audit/2026-09-25-auto-routing-v2-p1-252-e2e.md`（F1 修复属后续执行轮）。
+
 2. **gate 阈值恰为 1.0 的脆弱性**：known_failure 语义修复后，门禁对"新增失败
    用例"仍零容忍——这是规划"不回退"的字面语义，靠 `--refresh-baseline` 工作流
    兜底；若未来套件常态化带 triaged gap，再考虑显式 headroom。
