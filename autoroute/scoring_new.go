@@ -1,6 +1,7 @@
 package autoroute
 
 import (
+	"math"
 	"strings"
 	"time"
 )
@@ -39,7 +40,7 @@ func scoreVersionRecency(c Candidate, task TaskType) float64 {
 		// 公式：score = 100 * exp(-days / 365)
 		// 0 天 = 100, 180 天 ≈ 90, 365 天 = 50, 730 天 = 25
 		decayFactor := float64(daysSinceRelease) / 365.0
-		score := 100.0 * exp(-decayFactor)
+		score := 100.0 * math.Exp(-decayFactor)
 		if score < 10 {
 			score = 10 // 最低保底 10 分（避免老版本完全被排除）
 		}
@@ -62,7 +63,7 @@ func scoreVersionRecency(c Candidate, task TaskType) float64 {
 	// version_rank >= 3 或 未设置：按 released_at 衰减
 	// 365 天内 = 70-90，1-2 年 = 50-70，2 年+ = 30-50
 	decayFactor := float64(daysSinceRelease) / 730.0 // 2 年衰减周期
-	score := 90.0 * exp(-decayFactor)
+	score := 90.0 * math.Exp(-decayFactor)
 	if score < 20 {
 		score = 20
 	}
@@ -145,26 +146,4 @@ func requiredStrengthsForTask(task TaskType) []string {
 	default:
 		return []string{}
 	}
-}
-
-// exp 是简单的 e^x 近似（泰勒展开前 5 项），避免引入 math 包。
-// 精度：|error| < 0.01 for x ∈ [-2, 2]
-func exp(x float64) float64 {
-	if x < -5 {
-		return 0
-	}
-	if x > 5 {
-		return 148.4 // e^5 ≈ 148.4
-	}
-	// e^x ≈ 1 + x + x²/2 + x³/6 + x⁴/24 + x⁵/120
-	result := 1.0
-	term := 1.0
-	for i := 1; i <= 10; i++ {
-		term *= x / float64(i)
-		result += term
-		if term < 0.00001 && term > -0.00001 {
-			break
-		}
-	}
-	return result
 }

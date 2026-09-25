@@ -355,3 +355,45 @@ func TestSessionCacheV2Full_L3HitNoError(t *testing.T) {
 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+// TestSessionCacheV2Full_L3HitBackfillsL15 full + 注入 L1.5 时 L3 命中也
+// 必须回填 L1.5（H2 契约翻转的另一半：da6b95627 翻转了 Set/读链，但 L3
+// 回填门仍残留 effectiveMode()==Lite 条件，R67 24h 审计轮修正为 l1_5 非
+// 空即回填；生产传 Lite 故无行为变化，本测试为装配点启用准备的安全断言）。
+func TestSessionCacheV2Full_L3HitBackfillsL15(t *testing.T) {
+	fc := newIntegrationFileCache(t)
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	mock.ExpectQuery(`WITH latest AS \(`).
+		WithArgs("tenant-full", "sess-l3-backfill").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"turn_no", "ts", "compression_strategy", "compression_meta",
+			"prompt_tokens", "completion_tokens", "injection_verdict", "output_verdict",
+		}).AddRow(7, time.Now(), "summarize", nil, 70, 7, "pass", "skip"))
+
+	c := &SessionCacheV2{
+		l1:   NewCompressionMetaCache(10),
+		l1_5: fc,
+		l2:   NewRedisGovernanceCache("", 0, 0), // disabled（addr 为空，fail-open）
+		l3:   newSessionTurnsReader(mock),
+		mode: storage.StorageModeFull,
+	}
+
+	got, err := c.Get(context.Background(), "tenant-full", "sess-l3-backfill")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, 7, got.LastTurnNo)
+
+	// L3 命中 → 回填 L1（两模式一致）
+	assert.NotNil(t, c.l1.Get("tenant-full", "sess-l3-backfill"))
+	// L3 命中 → 回填 L1.5（full + 注 fileCache，契约翻转后的完整形态）
+	fcState, err := fc.Get("tenant-full", "sess-l3-backfill")
+	require.NoError(t, err)
+	require.NotNil(t, fcState, "full + 注 fileCache 时 L3 命中应回填 L1.5")
+	assert.Equal(t, 7, fcState.LastTurnNo)
+	assert.Equal(t, "summarize", fcState.CompressionMeta.Strategy)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}

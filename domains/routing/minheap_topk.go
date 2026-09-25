@@ -237,11 +237,11 @@ func ReleaseTopK(h *TopK[any]) {
 // ---- Typed convenience for the common Candidate path ----
 
 // candidateHeapEntry bundles a Candidate with its computed weight so
-// we can avoid recomputing weights inside the WeightedRouter.
+// we can avoid recomputing weights inside the heap selection.
 //
-// The WeightedRouter.SelectTopN path is the only hot consumer right
-// now; the helpers below are exported so other routers can adopt
-// the same shape later without copy-pasting the heap plumbing.
+// The only current consumer is WeightedRouter.SelectTopN, which is
+// itself production-unused (WeightedRouter 是清理候选 C5，生产零持有)；
+// helpers 保持导出，供未来路由器直接采用同型堆管线。
 type candidateHeapEntry struct {
 	c      *Candidate
 	weight float64

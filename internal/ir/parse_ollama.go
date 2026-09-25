@@ -19,7 +19,7 @@ import (
 //	  "message": {
 //	    "role": "assistant",
 //	    "content": "Final answer",
-//	    "thinking": "Let me think..."   // Ollama 0.5+ reasoning, cumulative
+//	    "thinking": "Let me think..."   // Ollama 0.5+ reasoning, single complete value (non-stream)
 //	  },
 //	  "done_reason": "stop",             // present only on terminal
 //	  "done": true,
