@@ -160,7 +160,11 @@ excelize 已在 `go.sum`（间接依赖），需在 `go.mod` 提升为直接依�
 | 前端 | `web/src/views/admin/ReconciliationReport.vue` + `web/src/api/reportrollup.ts` + 路由 `/admin/reconciliation` | 双视角切换 + 区间选择 + 汇总卡片 + 分组表 + 导出/重跑按钮 |
 | 失败分类 | 快照行 `error_kind_breakdown` jsonb 透视；sheet2 按 error_kind 动态列 | error_kind 来自 errorsx 枚举，worker 不强校验（原稿 §7 维持） |
 
-### 审计轮修正（2026-09-25 第二轮，批判式复审）
+### 审计轮修正（2026-09-25 第二轮，批判式复审；含 R65 交互语义冲突实修）
+
+> 并行 R65 审计轮（114beda22）已修复本设计首轮遗留的 P1（internal_person
+> 跨租户 scope_key 碰撞）与若干 P2/P3。本轮与 R65 变基合并时，真库 E2E
+> 揪出 R65 修复自身的一个 P0 级编码缺陷并已根修（见 §4.1）。
 
 自我复审发现并修复三处设计缺陷 + 一处实证 bug：
 
@@ -190,3 +194,21 @@ excelize 已在 `go.sum`（间接依赖），需在 `go.mod` 提升为直接依�
 - 建号三重查重：仓内无 746 冲突；本地 llm_gateway 账本与共享 252 账本 74x 段均止于 744，745/746 均未占用。
 - 真库 E2E（scratch 库 `llmgw_report_e2e`，迁移 536/537/745/746 全应用）：灌 6 笔合成 usage_facts（success/failure/rate_limited × business × 双租户双模型 + provider 未落定失败）→ RollupDay → 六 scope 计数/透视/冻结价断言 → 幂等重跑 → BuildRangeReport 双视角 → xlsx 产出；`db` 包 745 重建与 746 升级路径 ensure 真库测试通过。
 - 导出文件经 openpyxl 独立实现加载校验：双 sheet（用量 / 模型质量与错误分析）、数值单元格、粗体表头、中文 sheet 名全部正确。
+
+#### §4.1 internal_person scope_key 编码缺陷（R65 P1 修复的次生缺陷，本轮根修）
+
+R65 用 `tenant + "\x00" + person` 编码 internal_person 的 scope_key（修跨租户
+碰撞）。**PostgreSQL TEXT 拒绝 NUL 字节**：internal_person 桶的 INSERT 在真库
+上全量失败（`invalid byte sequence for encoding "UTF8": 0x00`，SQLSTATE
+22021）——pgxmock 与纯单测探不到，只有真库 E2E 能暴露。本轮改为长度前缀
+编码 `len(tenant):tenant:person`（无歧义、无非法字节、split 可逆）；NUL 格式
+在真库零存活（写不进去），无历史兼容负担。守卫：TestInternalPersonScopeKey
+RoundTrip（往返 + NUL 拒绝 + 历史裸键回退）+ 真库 E2E 跨租户同人双桶断言。
+
+同轮收口（与 R65 合并后的验证状态）：
+- 追赶机制（MissingRollupDates，7 天回看）+ worker 昨日跳过刻度修正；
+- 单日聚合事务化（pgx.Tx 满足 reportrollup.Querier，真库回滚断言）；
+- /run 解耦请求 context（RollupDateDetached）；
+- reports 词条以 R65 的 8 语言版为准（本轮 zh/en 重复版本丢弃），
+  index.ts 双方各自新增的 `reports,` 注册去重；
+- vue-tsc --noEmit 与 vite build 退出码 0。
