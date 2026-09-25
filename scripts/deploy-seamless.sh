@@ -1168,7 +1168,13 @@ do_deploy() {
   # 即可（与原 180s 行为等价）。第二窗口从"完整 probe_timeout"收紧到 60s：
   # 若第一窗口吃满（120s 都没拿到 200），候选只可能是"即将就绪"或"真坏"
   # 两种情况，60s 足够分辨；最坏总时长从 240s（120+120）压到 180s（120+60）。
-  local probe_timeout="${PROBE_TIMEOUT_SECS:-120}"
+  # 2026-09-26（owner 决策①）: 默认 120 -> 600s，与 deploy-245.sh 的 d5eeb71eb
+  # 对齐。154/245 共享 252 PG，冷启动 ensure 链 90-150s 的同一失败模式在
+  # 245 压垮过两次（09-19、09-23 seq 2221），154 一直暴露在同等风险下；
+  # 120s 时代依赖"出事后 PROBE_TIMEOUT_SECS=600 手工重跑"，现在把等窗口
+  # 变成默认。真坏候选的爆炸半径不变：探针期候选不接流量，第二窗口仍 60s。
+  # host_rollback 路径（下方 fallback）保持 120s：回滚候选是已预热旧版本。
+  local probe_timeout="${PROBE_TIMEOUT_SECS:-600}"
   local probe_retry_timeout="${PROBE_RETRY_TIMEOUT_SECS:-60}"
   local probe_failed=""
   local probe_detail=""
@@ -1500,12 +1506,12 @@ do_rollback() {
       exit 1
     fi
     # 2026-09-20: host_rollback 路径探测 fallback 180 -> 120s。
-    # forward 探测（1137行）已统一到 120s，host_rollback 这里只有当
-    # deploy-154/245 没显式 export PROBE_TIMEOUT_SECS 时才会走 fallback
-    # ——正常 deploy 链路（export PROBE_TIMEOUT_SECS=120）走不到 180s。
-    # 默认值 120 与 forward 路径一致：候选是已被预热的旧版本，ensure 链
-    # 走热路径，60-90s 区间足以覆盖；怀疑 ensure 真正超过 120s 时，
-    # 仍可用 PROBE_TIMEOUT_SECS=180 显式覆盖（行为与原 180s 默认等价）。
+    # 2026-09-26 注记：forward 探测默认已升 600（owner 决策①，对齐 245），
+    # 但 host_rollback 这里**有意保持 120s**：回滚候选是已被预热的旧版本，
+    # ensure 链走热路径，60-90s 区间足以覆盖；回滚本身是故障恢复动作，
+    # 探针窗口拉到 600s 只会把失败恢复拖长十分钟。仅当 deploy-154/245
+    # 没显式 export PROBE_TIMEOUT_SECS 时才走这里的 fallback（正常 deploy
+    # 链路两个 wrapper 现在都 export 600，走不到）。
     if ! remote_probe "http://127.0.0.1:${canonical_port}/healthz" "${PROBE_TIMEOUT_SECS:-120}" >/dev/null; then
       err "canonical rollback healthz 失败，保持现有 canary 流量"
       exit 1
