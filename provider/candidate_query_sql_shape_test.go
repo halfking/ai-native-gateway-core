@@ -44,6 +44,24 @@ func TestCandidateQuerySQL_Shape(t *testing.T) {
 	if !strings.Contains(q, "FROM matched mo") {
 		t.Fatal("outer query must read FROM matched mo")
 	}
+	// P4 endpoint projection belongs to the post-match provider rows. It must
+	// not expand the materialized model-match CTE or duplicate candidates.
+	outer := q[strings.Index(q, "FROM matched mo"):]
+	if !strings.Contains(q, "pep_lateral.endpoints AS native_endpoints") {
+		t.Error("P4 native endpoint projection missing from candidate SELECT")
+	}
+	for _, fragment := range []string{
+		"FROM provider_endpoint_protocols pep",
+		"WHERE pep.provider_id = p.id AND pep.enabled = TRUE",
+		") pep_lateral ON TRUE",
+	} {
+		if !strings.Contains(outer, fragment) {
+			t.Errorf("P4 endpoint projection missing from outer candidate query: %q", fragment)
+		}
+	}
+	if strings.Contains(stripSQLComments(q[:strings.Index(q, "FROM matched mo")]), "provider_endpoint_protocols") {
+		t.Error("endpoint aggregation must not be placed inside the matched CTE")
+	}
 	// The dead sibling gate (AND FALSE since 2026-08-27) must stay deleted:
 	// it const-folded to TRUE so it never executed, but its ~70 lines cost
 	// parse+plan time on every call (SimpleProtocol = no plan cache).

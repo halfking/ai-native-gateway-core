@@ -163,15 +163,22 @@ type Decision struct {
 // candidate owns a slice of these (NativeEndpoints). The dispatcher does
 // not need to materialize a SQL row — any provider row that exposes the
 // protocol/base_url/vendor_native/weight quadruple fits.
+//
+// JSON tags pin the wire shape: provider/client.go's LATERAL JOIN
+// projects provider_endpoint_protocols rows in snake_case (matching the
+// column names). The Go-side adapter unmarshals directly into this slice
+// without an intermediate struct, so the tag values ARE the wire contract.
+// Changing them breaks the SQL projection; if you add a column, update
+// both sides.
 type EndpointLite struct {
-	ID           int64
-	Protocol     string // catalog enum: openai-completions / ollama-native / ...
-	BaseURL      string // upstream base URL (may equal cand.BaseURL for primary)
-	IsPrimary    bool
-	VendorNative string // free-string, validated against discovery family SSOT
-	Enabled      bool   // false = disabled by operator, skip
-	Weight       int    // traffic-share tiebreaker: higher weight = higher priority (provider semantics, r0924 fix-a task 6b)
-	HealthStatus string // informational; "unknown" skips the gate
+	ID           int64  `json:"id"`
+	Protocol     string `json:"protocol"`     // catalog enum: openai-completions / ollama-native / ...
+	BaseURL      string `json:"base_url"`     // upstream base URL (may equal cand.BaseURL for primary)
+	IsPrimary    bool   `json:"is_primary"`
+	VendorNative string `json:"vendor_native"` // free-string, validated against discovery family SSOT
+	Enabled      bool   `json:"enabled"`       // false = disabled by operator, skip
+	Weight       int    `json:"weight"`        // traffic-share tiebreaker: higher weight = higher priority (provider semantics, r0924 fix-a task 6b)
+	HealthStatus string `json:"health_status"` // informational; "unknown" skips the gate
 }
 
 // CandidateLite is the SSOT shape Select() needs. provider.Candidate fits
