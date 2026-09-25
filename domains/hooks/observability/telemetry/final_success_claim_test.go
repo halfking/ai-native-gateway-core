@@ -320,8 +320,16 @@ func TestClaimSessionFinalSuccess_HeapPartitionsGuard(t *testing.T) {
 
 	mock.ExpectExec(`SAVEPOINT gw_final_success_claim`).
 		WillReturnResult(pgxmock.NewResult("SAVEPOINT", 0))
-	// 期望 claim SQL 包含 UNION ALL heap 分区名 (白名单过滤) + 接受 1 个参数 (req id)
-	expectedGuard := `UNION ALL[\s\S]*request_logs_2026_08[\s\S]*request_logs_2026_09[\s\S]*promoted\.gw_session_id`
+	// 期望 claim SQL 包含 UNION ALL heap 分区名 (白名单过滤) + 接受 1 个参数 (req id)。
+	// 2026-09-26 审计第十轮 (D13): 钉死臂形状 —— 臂内必须带
+	// `gw_session_id IS NOT NULL AND gw_session_id <> ''` 谓词 (与 partial 唯一
+	// 索引 uq_<partition>_final_success_session 的谓词对齐, planner 才能证明
+	// 蕴含走 Index Only Scan; 252 实证 EXPLAIN 从 1.27M 行 Seq Scan 翻转),
+	// 且投影不得含 is_final_success (列不在索引里会强制回表破掉 index-only)。
+	expectedGuard := `SELECT gw_session_id FROM ONLY .request_logs_2026_08. WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> ''` +
+		`[\s\S]*` +
+		`SELECT gw_session_id FROM ONLY .request_logs_2026_09. WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> ''` +
+		`[\s\S]*promoted\.gw_session_id`
 	mock.ExpectExec(expectedGuard).
 		WithArgs("req-claim-guard").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
