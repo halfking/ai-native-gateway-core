@@ -300,6 +300,14 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureSessionMirrorOutboxSourceClaim(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-26 migration 749 (R67 24h 审计轮): usage_facts occurred_at
+	// 前导索引——每日 rollup 五查询与 stats 对账全是纯 occurred_at 范围
+	// 条件，此前无任何前导索引只能全表顺序扫，线性退化至被共享 PG 30s
+	// statement_timeout 成批击杀。先于 rollup/对账 worker 启动生效，
+	// 幂等短路。
+	if err := db.ensureUsageFactsOccurredAtIndex(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-05 migration 656 (audit D-2#4/H-2): auto_route_selections_hot
 	// 网关侧幂等 ensure。只升二进制未重跑 656 的存量库上，AUTO 路由 selection
 	// 写入（telemetry selection_writer 批量 INSERT）整批静默丢弃、settle/affinity
@@ -1097,6 +1105,150 @@ func (d *DB) ensureSessionMirrorOutboxSourceClaim(ctx context.Context) error {
 		return fmt.Errorf("stamp 747: %w", err)
 	}
 	slog.Info("session_mirror_outbox source claim ensured (746)")
+	return nil
+}
+
+// ensureUsageFactsOccurredAtIndex mirrors sql/migrations/startup/
+// 749_usage_facts_occurred_at_index.sql（2026-09-26 R67 24h 审计轮）。
+// usage_facts 每日 rollup 五查询 + stats 对账全是纯 occurred_at 范围条件，
+// 而 537 的 4 个二级索引全部非 occurred_at 前导——无索引可用即全表顺序
+// 扫，线性退化至被共享 PG 30s statement_timeout 成批击杀（rollup 缺口 +
+// 对账永久 failed）。分区父表不支持 CREATE INDEX CONCURRENTLY（PG17
+// 42809），走 744 同款三段式：逐分区 CONCURRENTLY → ONLY 壳 → ATTACH；
+// 未来接入按日分区后，新分区经 PARTITION OF 自动继承父索引。CONCURRENTLY
+// 无法在事务内执行，pinned 连接 + 会话级 10min 预算（744 同款）；中断
+// 残留的 INVALID 索引先 DROP 再建，否则 IF NOT EXISTS 永远跳过。本迁移
+// 不经 installer（psql --single-transaction 无法承载 CONCURRENTLY），
+// 本函数即存量库的收敛通道，先于 rollup/对账 worker 启动生效。
+func (d *DB) ensureUsageFactsOccurredAtIndex(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	conn, err := d.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET statement_timeout = '10min'`); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SET statement_timeout = DEFAULT`)
+	}()
+
+	const parentIdx = "idx_usage_facts_occurred_at"
+	var valid bool
+	err = conn.QueryRow(ctx, `
+		SELECT i.indisvalid
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_class t ON t.oid = i.indrelid
+		WHERE c.relname = $1 AND t.relname = 'usage_facts'
+		  AND t.relnamespace = 'public'::regnamespace
+	`, parentIdx).Scan(&valid)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// 父索引不存在：走下方三段式。
+	case err != nil:
+		return fmt.Errorf("inspect %s: %w", parentIdx, err)
+	case valid:
+		return d.stampUsageFactsOccurredAtIndex(ctx)
+	default:
+		slog.Warn("dropping INVALID index left by an interrupted build", "index", parentIdx)
+		if _, err := conn.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS public.`+parentIdx); err != nil {
+			return fmt.Errorf("drop invalid %s: %w", parentIdx, err)
+		}
+	}
+
+	// ① 逐分区 CONCURRENTLY 建（含现存 DEFAULT 分区，通用枚举不硬编码）。
+	rows, err := conn.Query(ctx, `
+		SELECT c.relname
+		FROM pg_class c
+		WHERE c.oid IN (
+			SELECT inhrelid FROM pg_inherits WHERE inhparent = 'public.usage_facts'::regclass
+		)
+		ORDER BY c.relname
+	`)
+	if err != nil {
+		return fmt.Errorf("enumerate usage_facts partitions: %w", err)
+	}
+	var parts []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan usage_facts partition name: %w", err)
+		}
+		parts = append(parts, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate usage_facts partitions: %w", err)
+	}
+	for _, p := range parts {
+		if err := buildUsageFactsPartitionIndex(ctx, conn, p+"_occurred_at_idx", p); err != nil {
+			return err
+		}
+	}
+
+	// ② 父表 ONLY 壳（元数据级瞬时锁，无数据扫描）。
+	if _, err := conn.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_usage_facts_occurred_at ON ONLY public.usage_facts (occurred_at DESC)`); err != nil {
+		return fmt.Errorf("create %s shell: %w", parentIdx, err)
+	}
+	// ③ 逐分区 ATTACH（已挂接的重复 ATTACH 报 42710，容错跳过）。
+	for _, p := range parts {
+		child := p + "_occurred_at_idx"
+		if _, err := conn.Exec(ctx, `ALTER INDEX public.`+parentIdx+` ATTACH PARTITION public.`+child); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "42710" {
+				continue
+			}
+			return fmt.Errorf("attach %s: %w", child, err)
+		}
+	}
+	return d.stampUsageFactsOccurredAtIndex(ctx)
+}
+
+// buildUsageFactsPartitionIndex 单分区 CONCURRENTLY 建 + INVALID 残留清理
+// （744 buildConcurrently 同款；抽取为包级函数以便 749 主循环复用）。
+func buildUsageFactsPartitionIndex(ctx context.Context, conn *pgxpool.Conn, index, table string) error {
+	var valid bool
+	err := conn.QueryRow(ctx, `
+		SELECT i.indisvalid
+		FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_class t ON t.oid = i.indrelid
+		WHERE c.relname = $1 AND t.relname = $2
+		  AND t.relnamespace = 'public'::regnamespace
+	`, index, table).Scan(&valid)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// 索引不存在：下方重建。
+	case err != nil:
+		return fmt.Errorf("inspect %s: %w", index, err)
+	case valid:
+		return nil
+	default:
+		slog.Warn("dropping INVALID index left by an interrupted build", "index", index)
+		if _, err := conn.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS public.`+index); err != nil {
+			return fmt.Errorf("drop invalid %s: %w", index, err)
+		}
+	}
+	if _, err := conn.Exec(ctx, `CREATE INDEX CONCURRENTLY IF NOT EXISTS `+index+` ON public.`+table+` (occurred_at DESC)`); err != nil {
+		return fmt.Errorf("create %s: %w", index, err)
+	}
+	return nil
+}
+
+func (d *DB) stampUsageFactsOccurredAtIndex(ctx context.Context) error {
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('749', 'usage_facts occurred_at leading index (R67 24h audit round; rollup/reconciliation full-scan fix)')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 749: %w", err)
+	}
+	slog.Info("usage_facts occurred_at index ensured (749)")
 	return nil
 }
 
