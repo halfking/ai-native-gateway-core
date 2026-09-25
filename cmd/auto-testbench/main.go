@@ -281,8 +281,8 @@ func loadE2EReport(path string) (*e2eSummary, error) {
 func printSummary(suiteFiles []string, cm *classificationMetrics, tm *tierMetrics, g float64, e2e *e2eSummary) {
 	fmt.Printf("auto-testbench regression\n")
 	fmt.Printf("  suites: %s\n", strings.Join(suiteFiles, ", "))
-	fmt.Printf("  cases: %d (generated-candidates skipped: %d, known_failure: %d)\n",
-		cm.Total, cm.Generated, cm.KnownFails)
+	fmt.Printf("  cases: %d (generated-candidates skipped: %d, known_failure: %d [xpass: %d])\n",
+		cm.Total, cm.Generated, cm.KnownFails, cm.KnownXPass)
 	fmt.Printf("  accuracy: %.4f   macro_f1: %.4f\n", cm.Accuracy, cm.MacroF1)
 	fmt.Printf("  tier distribution: %s\n", formatDist(tm.TierDistribution))
 	fmt.Printf("  over-provision: %d/%d simple cases → tier-a (rate=%.4f)\n",
@@ -328,14 +328,16 @@ type reportJSON struct {
 	Classifier     string   `json:"classifier"`
 	Suites         []string `json:"suites"`
 	Classification struct {
-		Total     int                       `json:"total"`
-		Correct   int                       `json:"correct"`
-		Accuracy  float64                   `json:"accuracy"`
-		MacroF1   float64                   `json:"macro_f1"`
-		LabelF1   map[string]float64        `json:"label_f1"`
-		Confusion map[string]map[string]int `json:"confusion"`
-		Failures  []caseFailure             `json:"failures"`
-		Generated int                       `json:"generated_candidates"`
+		Total         int                       `json:"total"`
+		Correct       int                       `json:"correct"`
+		Accuracy      float64                   `json:"accuracy"`
+		MacroF1       float64                   `json:"macro_f1"`
+		LabelF1       map[string]float64        `json:"label_f1"`
+		Confusion     map[string]map[string]int `json:"confusion"`
+		Failures      []caseFailure             `json:"failures"`
+		Generated     int                       `json:"generated_candidates"`
+		KnownFailures int                       `json:"known_failures"`
+		KnownXPass    int                       `json:"known_failure_xpass"`
 	} `json:"classification"`
 	Tier struct {
 		Distribution      map[string]int `json:"distribution"`
@@ -372,6 +374,8 @@ func writeReports(prefix string, suiteFiles []string, cm *classificationMetrics,
 	rj.Classification.Confusion = cm.Confusion
 	rj.Classification.Failures = cm.Failures
 	rj.Classification.Generated = cm.Generated
+	rj.Classification.KnownFailures = cm.KnownFails
+	rj.Classification.KnownXPass = cm.KnownXPass
 	rj.Tier.Distribution = tm.TierDistribution
 	rj.Tier.SimpleTotal = tm.SimpleTotal
 	rj.Tier.OverProvisioned = tm.OverProvisioned
@@ -391,8 +395,8 @@ func writeReports(prefix string, suiteFiles []string, cm *classificationMetrics,
 	md.WriteString("# auto-testbench 回归报告\n\n")
 	md.WriteString(fmt.Sprintf("- 生成时间: %s\n- 分类器: %s\n- 套件: %s\n",
 		rj.GeneratedAt, rj.Classifier, strings.Join(suiteFiles, ", ")))
-	md.WriteString(fmt.Sprintf("\n## 指标\n\n| 指标 | 值 |\n|---|---|\n| 用例数 | %d（候选跳过 %d, known_failure %d） |\n| 分类正确率 | %.4f |\n| macro-F1 | %.4f |\n| tier 分布 | %s |\n| 过配率 | %.4f (%d/%d 简单类) |\n| **GRRQ** | **%.2f** |\n",
-		cm.Total, cm.Generated, cm.KnownFails, cm.Accuracy, cm.MacroF1,
+	md.WriteString(fmt.Sprintf("\n## 指标\n\n| 指标 | 值 |\n|---|---|\n| 用例数 | %d（候选跳过 %d, known_failure %d [xpass %d]） |\n| 分类正确率 | %.4f |\n| macro-F1 | %.4f |\n| tier 分布 | %s |\n| 过配率 | %.4f (%d/%d 简单类) |\n| **GRRQ** | **%.2f** |\n",
+		cm.Total, cm.Generated, cm.KnownFails, cm.KnownXPass, cm.Accuracy, cm.MacroF1,
 		formatDist(tm.TierDistribution), tm.OverProvisionRate, tm.OverProvisioned, tm.SimpleTotal, g))
 	md.WriteString("\n## 分类层按任务类型\n\n| task_type | F1 | 判对 | 金标签数 |\n|---|---|---|---|\n")
 	labels := make([]string, 0, len(cm.LabelF1))

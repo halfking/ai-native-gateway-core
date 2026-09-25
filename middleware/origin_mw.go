@@ -36,6 +36,14 @@
 // other combination degrades to the untrusted path (headers stripped,
 // stage=business).
 //
+// DB system keys (2026-09-25 gap fix): AuthMiddleware passes sk-* keys
+// through without registering an owner — the DB verification runs later,
+// inside the handler, AFTER this middleware. Every DB-key caller was
+// therefore treated as untrusted here, stripping the system workers'
+// origin headers. The Wrap now captures the inbound claim on ctx and
+// ResolveOriginForSystemKey re-runs the trust decision once the verifier
+// resolved owner_user (domains/streaming entry builders apply it).
+//
 // Wiring
 // ──────
 //
@@ -87,11 +95,13 @@ import (
 //	                                headers are trustworthy.
 
 const (
-	originStageKey      = "origin.stage"
-	originActorKey      = "origin.actor"
-	originClientIPKey   = "origin.client_ip"
-	originClientXFFKey  = "origin.xff"
-	authOwnerUserCtxKey = "auth.owner_user"
+	originStageKey        = "origin.stage"
+	originActorKey        = "origin.actor"
+	originClientIPKey     = "origin.client_ip"
+	originClientXFFKey    = "origin.xff"
+	originClaimedStageKey = "origin.claimed_stage"
+	originClaimedActorKey = "origin.claimed_actor"
+	authOwnerUserCtxKey   = "auth.owner_user"
 )
 
 // system-owner-user list. Auth middleware stores the resolved owner
@@ -258,6 +268,22 @@ func (m *OriginMiddleware) Wrap(next http.Handler) http.Handler {
 		stage, actor, strip := m.resolveOrigin(r)
 		clientIP, clientChain := m.resolveClientIP(r)
 
+		// 2026-09-25: capture the inbound claim (post 64B cap) BEFORE the
+		// strip-delete below. The data-plane key verifier runs later, inside
+		// the handler — after this middleware has already degraded every
+		// DB-key caller to the untrusted path — so the claimed stage/actor
+		// must survive on ctx for ResolveOriginForSystemKey to re-run the
+		// trust decision with the resolved owner (see its doc).
+		if claimed := strings.TrimSpace(r.Header.Get("X-LLM-Origin-Stage")); claimed != "" {
+			ctx = context.WithValue(ctx, originClaimedStageKey, claimed)
+		}
+		if claimed := strings.TrimSpace(r.Header.Get("X-LLM-Origin-Actor")); claimed != "" {
+			if len(claimed) > 64 {
+				claimed = claimed[:64]
+			}
+			ctx = context.WithValue(ctx, originClaimedActorKey, claimed)
+		}
+
 		// Inbound header sanitisation: never let a non-system caller
 		// smuggle X-LLM-Origin-Stage through to the realtime stream.
 		// X-LLM-Pin-Credential (2026-08-13) forces the router to a specific
@@ -350,6 +376,74 @@ func isValidOriginStage(s string) bool {
 		return true
 	}
 	return false
+}
+
+// IsTrustedOriginOwner reports whether ownerUser is on the system-worker
+// trust list. Exported for the entry-build fallback in domains/streaming:
+// DB system keys are verified after this middleware ran, so their trust
+// decision can only be re-evaluated once the verifier resolved owner_user.
+func IsTrustedOriginOwner(ownerUser string) bool {
+	_, ok := trustedOriginOwners[ownerUser]
+	return ok
+}
+
+// systemOwnerFallbackStage maps DB-resolved system owners to the canonical
+// origin_stage they are authorized to claim. This is the server-side
+// derivation for trusted system keys whose requests carry no (or an
+// unparseable) X-LLM-Origin-Stage header — unlike the header claim, it
+// cannot be forged: the owner is resolved from the is_system api_keys row
+// by the data-plane verifier, not from anything the client sent.
+//
+// "legacy-probe-worker" is intentionally unmapped — its historic cadence
+// writer never declared a single stage, so only an explicit valid header
+// claim (honoured via ResolveOriginForSystemKey) can mark its rows.
+var systemOwnerFallbackStage = map[string]string{
+	"self-check-worker":           "self_check",
+	"credential-selfcheck-worker": "self_check",
+	"model-quality-worker":        "self_check",
+	"node-probe-worker":           "node_probe",
+	"system-health-worker":        "system_health",
+}
+
+// ResolveOriginForSystemKey re-runs the origin trust decision for a DB
+// system key AFTER the data-plane verifier resolved its owner_user.
+//
+// Why this exists: AuthMiddleware passes sk-* data-plane keys through
+// WITHOUT registering an owner on ctx (DB verification happens later,
+// inside the handler). OriginMiddleware therefore saw an empty owner for
+// every DB-key caller — including the system workers — stripped their
+// X-LLM-Origin-* headers and stamped stage="business". On a deployment
+// where probe workers hold DB system keys (e.g. the auto-generated
+// sk-selfcheck-* key), every probe row landed as business — or, for
+// early exits (gw_rpm_exceeded / no_candidate) that never reached the
+// initial INSERT, with origin_stage NULL entirely.
+//
+// Resolution order ( mirrors resolveOrigin step 3):
+//  1. the middleware-captured header claim, when the stage is a valid
+//     origin_stage value (actor is free-form);
+//  2. the owner's canonical fallback stage (systemOwnerFallbackStage),
+//     with the owner itself as actor;
+//  3. ok=false — untrusted owner (regular business keys), no claim and
+//     no mapping: callers must leave the entry untouched.
+//
+// The "global-auth-passed" sentinel is deliberately out of scope: the
+// static-key path is fully resolved inside resolveOrigin (incl. the R64
+// stage/actor pairing gate) and never reaches the DB verifier.
+func ResolveOriginForSystemKey(ctx context.Context, ownerUser string) (stage, actor string, ok bool) {
+	if ctx == nil || ownerUser == "" || ownerUser == "global-auth-passed" {
+		return "", "", false
+	}
+	if _, trusted := trustedOriginOwners[ownerUser]; !trusted {
+		return "", "", false
+	}
+	if claimed, _ := ctx.Value(originClaimedStageKey).(string); claimed != "" && isValidOriginStage(claimed) {
+		claimedActor, _ := ctx.Value(originClaimedActorKey).(string)
+		return claimed, claimedActor, true
+	}
+	if fallback, mapped := systemOwnerFallbackStage[ownerUser]; mapped {
+		return fallback, ownerUser, true
+	}
+	return "", "", false
 }
 
 // resolveClientIP extracts the real client IP and the full XFF chain.

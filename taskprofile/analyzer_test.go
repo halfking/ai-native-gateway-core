@@ -98,6 +98,12 @@ func TestDraftThresholdProposal(t *testing.T) {
 	if got := d.Proposal["old"].(float64); got != 0.70 {
 		t.Fatalf("old = %v, want 0.70", got)
 	}
+	// 实际覆盖率（qualifying 含 creative 对：chat→code 12 个带值 + chat→creative
+	// 2×0.40 → 14 个带值，<0.65 的 13 个 → 13/14=92.9%→round2 0.93），
+	// 非常量 0.80——2026-09-25 复审修正。
+	if got := d.Evidence["coverage"].(float64); got != 0.93 {
+		t.Fatalf("coverage = %v, want 0.93 (actual 13/14)", got)
+	}
 	if d.TaskType != "" {
 		t.Fatalf("global proposal must have empty task_type, got %q", d.TaskType)
 	}
