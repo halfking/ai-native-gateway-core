@@ -40,10 +40,10 @@ const defaultHotZoneTrimInterval = 30 * time.Minute
 // 三个子树共享同一配额；保留期独立可配。dirExists 缺失时静默返回（首次启动
 // 可能还没建目录）。所有外部依赖仅为文件系统，不引入新接口。
 type HotZoneTrimmer struct {
-	dir         string        // 热区根目录（HotZone.Dir）
-	retention   time.Duration // 保留时长（HotZone.RetentionHours 换算）
-	maxBytes    int64         // 三子树共享的字节上限（HotZone.MaxSizeGB << 30）
-	interval    time.Duration // 清理周期，默认 30 分钟
+	dir       string        // 热区根目录（HotZone.Dir）
+	retention time.Duration // 保留时长（HotZone.RetentionHours 换算）
+	maxBytes  int64         // 三子树共享的字节上限（HotZone.MaxSizeGB << 30）
+	interval  time.Duration // 清理周期，默认 30 分钟
 
 	lastDeletedFiles int
 	lastFreedBytes   int64

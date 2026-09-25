@@ -37,12 +37,12 @@ func TestFeatureStatsWorkerNoContentLeakage(t *testing.T) {
 	// 1. 插入测试数据（包含敏感内容标记）
 	sensitivePrompt := "SENSITIVE_PROMPT_CONTENT_12345"
 	sensitiveResponse := "SENSITIVE_RESPONSE_CONTENT_67890"
-	
+
 	testData := []struct {
-		language       string
-		lengthBucket   string
-		contentHash    string
-		hasCodeInd     bool
+		language     string
+		lengthBucket string
+		contentHash  string
+		hasCodeInd   bool
 	}{
 		{"zh", "m", "hash001", true},
 		{"en", "s", "hash002", false},
@@ -58,7 +58,7 @@ func TestFeatureStatsWorkerNoContentLeakage(t *testing.T) {
 			VALUES ($1, 'chat', 'balanced', 'heuristic_v1', 0.85, 'gpt-4',
 			        $2, $3, $4, $5)
 		`, time.Now(), td.language, td.lengthBucket, td.contentHash, td.hasCodeInd)
-		
+
 		if err != nil {
 			t.Fatalf("failed to insert test data: %v", err)
 		}
@@ -84,7 +84,7 @@ func TestFeatureStatsWorkerNoContentLeakage(t *testing.T) {
 			var featureName, featureValue string
 			var rowCount int
 			var percentage float64
-			
+
 			if err := rows.Scan(&featureName, &featureValue, &rowCount, &percentage); err != nil {
 				t.Fatalf("failed to scan row: %v", err)
 			}
@@ -116,13 +116,13 @@ func TestFeatureStatsWorkerNoContentLeakage(t *testing.T) {
 	t.Run("dedup_stats_no_leak", func(t *testing.T) {
 		var dedupRate float64
 		var topDupesJSON string
-		
+
 		err := db.QueryRow(ctx, `
 			SELECT dedup_rate, top_duplicate_hashes::text
 			FROM dedup_stats
 			WHERE stat_date = CURRENT_DATE
 		`).Scan(&dedupRate, &topDupesJSON)
-		
+
 		if err != nil {
 			t.Fatalf("failed to query dedup_stats: %v", err)
 		}
@@ -216,7 +216,7 @@ func TestFeatureStatsWorkerComputeDistribution(t *testing.T) {
 			(ts, task_type, profile, classifier, confidence, chosen_model, detected_language)
 			VALUES ($1, 'chat', 'balanced', 'heuristic_v1', 0.85, 'gpt-4', $2)
 		`, time.Now(), lang)
-		
+
 		if err != nil {
 			t.Fatalf("failed to insert test data: %v", err)
 		}
@@ -242,7 +242,10 @@ func TestFeatureStatsWorkerComputeDistribution(t *testing.T) {
 	}
 	defer rows.Close()
 
-	expected := map[string]struct{ count int; pct float64 }{
+	expected := map[string]struct {
+		count int
+		pct   float64
+	}{
 		"zh": {3, 60.0},
 		"en": {1, 20.0},
 		"ja": {1, 20.0},
@@ -252,7 +255,7 @@ func TestFeatureStatsWorkerComputeDistribution(t *testing.T) {
 		var value string
 		var count int
 		var pct float64
-		
+
 		if err := rows.Scan(&value, &count, &pct); err != nil {
 			t.Fatalf("failed to scan row: %v", err)
 		}
@@ -291,7 +294,7 @@ func TestFeatureStatsWorkerDedupRate(t *testing.T) {
 			(ts, task_type, profile, classifier, confidence, chosen_model, content_hash)
 			VALUES ($1, 'chat', 'balanced', 'heuristic_v1', 0.85, 'gpt-4', $2)
 		`, time.Now(), hash)
-		
+
 		if err != nil {
 			t.Fatalf("failed to insert test data: %v", err)
 		}
@@ -307,13 +310,13 @@ func TestFeatureStatsWorkerDedupRate(t *testing.T) {
 	// 验证结果：4条记录，2个唯一哈希 → 去重率 50%
 	var totalRows, uniqueHashes int
 	var dedupRate float64
-	
+
 	err = db.QueryRow(ctx, `
 		SELECT total_rows, unique_hashes, dedup_rate
 		FROM dedup_stats
 		WHERE stat_date = CURRENT_DATE
 	`).Scan(&totalRows, &uniqueHashes, &dedupRate)
-	
+
 	if err != nil {
 		t.Fatalf("failed to query dedup_stats: %v", err)
 	}

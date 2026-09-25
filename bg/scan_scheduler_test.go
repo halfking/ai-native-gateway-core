@@ -26,8 +26,8 @@ func TestScanScheduler_DisabledByEnv(t *testing.T) {
 // TestScanScheduler_EnvInterval verifies interval parsing from env.
 func TestScanScheduler_EnvInterval(t *testing.T) {
 	cases := []struct {
-		env    string
-		want   time.Duration
+		env  string
+		want time.Duration
 	}{
 		{"30m", 30 * time.Minute},
 		{"2h", 2 * time.Hour},
