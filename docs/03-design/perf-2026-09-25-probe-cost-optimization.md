@@ -25,6 +25,19 @@
 > ——该 bug 也是基线 periodic 量的来源之一，初版归因不完整。§1/§2.2/
 > §4/§5/§6 已同步此变化；P0-2 剩余增量 = 网络类短梯长尾化 +
 > request_failure 频控，仍然成立且未被覆盖。
+>
+> **落地记录（2026-09-26，r0926）**：P0-1+P0-3 部署实测生效（build
+> 2252：gw_rpm_exceeded 探测弹回 738/h→0，仅启动 keyInfo 缓存窗 290 条；
+> node_probe_runs ~5,000/h→~1,610/h）。P0-2 已落地（commit 1082ab0b8）：
+> 短梯长尾化 + request_failure 频控 + 队列代际 attempt 重置（r0925
+> handoff 遗留 1，attempt = max(task.Attempt, cf+1)）。同轮发现并根修
+> 59c7f4233 的 defer 断链 P1：probeDirect/probeGateway 匿名返回值使
+> root-cause 分类/标注永不到达调用方——root_cause_total 的 protocol/
+> gateway 占比恒 0 即其症候，§8.3 验收时以修复后分布为准。验收基线更新：
+> P0-2 的边际收益以 2252 实测 ~1,610 runs/h 为对照（基线 §2 的
+> 232,402/48h 中约四分之一由 P0-1/P0-3 治掉）。r0925 遗留 3 的 7 行存量
+> 污染已一次性清洗（凭据 manual_disabled 冻结，"下次相遇收敛"不成立）。
+> 详见 docs/handoff/20260926-probe-p02-longtail-throttle-audit.md。
 
 ---
 
