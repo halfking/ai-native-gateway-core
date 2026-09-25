@@ -1082,6 +1082,10 @@ deploy() {
   # ("token generation failed") and rejects every previously issued token.
   # Fail before the build instead of discovering it after cutover.
   [[ -n "${LLM_GATEWAY_SECRET_KEY:-}" ]] || die 'LLM_GATEWAY_SECRET_KEY is empty — refusing to deploy a gateway that cannot sign admin sessions (check .env.local or the calling environment)'
+  # 2026-09-26（12h 审计轮，handoff §6.1 预防建议落地）：admin 用户名已设
+  # 而密码为空 = 冒烟必败形态，同 SECRET_KEY 一样 build 前快速失败（详见
+  # deploy-local-lib.sh dl_admin_password_preflight 注释）。
+  dl_admin_password_preflight
   bump_local_version
   ensure_release_available
   ensure_resources
