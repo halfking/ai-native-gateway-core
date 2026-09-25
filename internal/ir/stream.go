@@ -1372,8 +1372,22 @@ func (c *StreamChunk) SerializeGemini() string {
 				}
 			}
 
-			if c.FinishReason != "" {
-				candidate["finishReason"] = mapOpenAIFinishReasonToGemini(c.FinishReason)
+			if c.FinishReason != "" || (c.SourceProtocol == ProtocolGeminiGenerate && c.StopReason != "") {
+				// R68 (2026-09-26): audit-r2 A#2 同款 — Gemini→Gemini 直通时
+				// 优先使用 parse 阶段填入的原生 StopReason（RECITATION /
+				// MALFORMED_FUNCTION_CALL 等不被 mapOpenAIFinishReasonToGemini
+				// 折叠成 SAFETY / TOOL_CALLS）。SourceProtocol 守卫保证
+				// Anthropic→Gemini 等跨协议路径不会把 anthropic 原生值（end_turn
+				// 等）泄漏给 Gemini 客户端（Gemini 不识别 end_turn）。
+				finishReason := ""
+				if c.SourceProtocol == ProtocolGeminiGenerate && c.StopReason != "" {
+					finishReason = c.StopReason
+				} else if c.FinishReason != "" {
+					finishReason = mapOpenAIFinishReasonToGemini(c.FinishReason)
+				}
+				if finishReason != "" {
+					candidate["finishReason"] = finishReason
+				}
 			}
 
 			body["candidates"] = []map[string]any{candidate}
