@@ -19,6 +19,15 @@
 --   - 唯一键 (scope, scope_key, report_date, raw_model_name)：worker 写入
 --     走 INSERT ... ON CONFLICT 同键 DO UPDATE，可重入。
 --
+-- R65 勘误⑤（终态以 SSOT 为准）：上②为交付时点草稿，与最终实现有三处
+-- 漂移，勿按本段实现新读者——(a) scope 终为六值（746 增 internal_person/
+-- internal_model）；(b) daily_by_model 的 scope_key = provider_id 文本化
+-- （canonical 粒度未实现，canonical_id 列预留恒 NULL），模型名 =
+-- raw_model_name；(c) internal_person 的 scope_key 编码租户
+--（len(tenant):tenant:person 长度前缀，R65 P1 修复；02da86168 根修弃
+-- 原稿 '\x00' 分隔——PG TEXT 拒绝 NUL 字节）。终态口径见
+-- sql/objects/tables/report_snapshots.sql 头注与设计文档 §10。
+--
 -- 演进注记③：热区 + 分区（report_snapshots_hot + report_date 月分区，
 -- 对照 request_logs 家族与 bg/partition_manager.go 的 archiveSpec 保留清
 -- 理模式）与索引加密（date 前导索引等）待消费方落地、数据量实测后一并
@@ -26,6 +35,13 @@
 -- 原文口径）。原死文件第二条索引 idx_report_snapshots_date(report_date)
 -- 已删：计划内读者只按 (scope, report_date)（API §4）或完整唯一键（§3
 -- worker）过滤，date 前导索引无消费方，随消费方落地再评估。
+--
+-- 幂等声明④（2026-09-25 补，对齐 800_provider_endpoint_protocols.sql 的
+-- IDEMPOTENCY 注记风格）：本文件可安全重复执行（双跑零副作用）——DDL 仅含
+-- CREATE TABLE IF NOT EXISTS 与 CREATE INDEX IF NOT EXISTS 两种语句，二跑
+-- 零结构变更、零数据改写；worker 写入面另有 INSERT ... ON CONFLICT 幂等
+-- 回填（见粒度契约②）。无破坏性语句，down（745_report_snapshots.down.sql）
+-- 仅 DROP TABLE IF EXISTS。
 
 CREATE TABLE IF NOT EXISTS report_snapshots (
     id                  BIGSERIAL PRIMARY KEY,

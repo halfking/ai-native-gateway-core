@@ -705,3 +705,12 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 | 743 | `743_normalize_provider_protocol.sql` | `e1848f73766c21addfb9c27cc2c166e6bab7ea99c4439e8290bf1782b65d160b` | applied+verified |
 | 744 | `744_sql_audit_partial_indexes.sql` | `931e22dc8b4050558e7b945211155dc579aa1479f14129efde009d8b6930e8fa` | applied+verified |
 
+## 2026-09-25T01:57:27Z — deploy 245 build_seq 2245 (a0e4d9c5)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 745 | `745_report_snapshots.sql` | `4e6a1343e5ee038fcb4dbae828e977335121766ed3439e21ace03a0a0641d70a` | applied+verified |
+| 746 | `746_report_snapshots_internal_dims.sql` | `df79fde17bcd39178dd37ca4efa7ec2f0957044fa8ccff53fdfe93e6ae66b2b6` | applied+verified |
+| 747 | `747_session_mirror_outbox_source_claim.sql` | `9c292c72eebe85eaf223762aba4401b39cc0ac88c716c1a719aff3d99792b7b6` | applied+verified |
+| 800 | `800_provider_endpoint_protocols.sql` | `b88fa96d87d10dd5bb3829a000ebbf999d6a4d210516bfe38b8a01ca95c8ba30` | applied+verified |
+

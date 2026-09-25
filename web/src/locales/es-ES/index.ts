@@ -75,6 +75,7 @@ import connectionRegistry from './connectionRegistry'
 import nodeHealthTimeline from './nodeHealthTimeline'
 import proxy from './proxy'
 import requestDetail from './requestDetail'
+import reports from './reports'
 
 export default {
   common,
@@ -151,4 +152,5 @@ export default {
   nodeHealthTimeline,
   proxy,
   requestDetail,
+  reports,
 }

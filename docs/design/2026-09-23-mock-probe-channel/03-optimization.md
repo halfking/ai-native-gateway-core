@@ -1,5 +1,9 @@
 # mock 探测通道——优化方案
 
+> ## ⚠️ 已废弃（2026-09-24 注记）：本文属 **v1 历史设计，已被取代**
+>
+> 本文为 v1 旧方案章节，已被 [03-optimization-plan.md](03-optimization-plan.md)（方案 v2）取代。v2 重写后，本文仅保留历史设计价值——安全模型与可见性矩阵一律以 [README.md](README.md) 状态块 + [03-optimization-plan.md](03-optimization-plan.md) + [05-implementation.md](05-implementation.md)（实施记录）为准，下述 v1 章节表述（含 embedded 子系统、`__self_probe__` 标签隔离、独立 prometheus.Registry、127.0.0.1:auto 等）**仅保留历史，勿按其实施**。
+
 > 文档：`docs/design/2026-09-23-mock-probe-channel/03-optimization.md`
 >
 > 输入：`requirements` §3（FR/NFR）+ `02-code-audit` §3（缺口）。目标：**只新增 `internal/embedded` 与一组开关位**，不引入新语言、不开新 sidecar、不污染业务指标 / 业务路由。

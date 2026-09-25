@@ -566,7 +566,7 @@ func (w *CredentialSelfcheckWorker) selfcheckRecentFallback(ctx context.Context,
 			  -- R50: dual-arm exclusion (quality_flags + origin_stage) — the
 			  -- probe gateway round carries no 'probe' flag, only the flag arm
 			  -- let it count as usage here (same gap R49 F4 closed elsewhere).
-			  AND ` + fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl") + `
+			  AND `+fmt.Sprintf(probeTrafficExclusionPredicate, "rl", "rl")+`
 			  AND COALESCE(rl.client_model, '') <> ''
 		) ranked
 		GROUP BY model ORDER BY count DESC, model LIMIT 10`, credentialID, tenant)

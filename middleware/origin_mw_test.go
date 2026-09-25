@@ -222,3 +222,84 @@ func TestParseTrustedProxyCIDRs(t *testing.T) {
 		t.Fatalf("expected first CIDR to contain 127.0.0.1")
 	}
 }
+
+// 2026-09-25: DB system keys (sk-selfcheck-*, owner_user='self-check-worker')
+// are verified INSIDE the handler — after OriginMiddleware ran — so the
+// middleware always degraded them to the untrusted strip path. The claimed
+// X-LLM-Origin-* pair must nevertheless survive on ctx so
+// ResolveOriginForSystemKey can re-run the trust decision later.
+func TestOriginMiddleware_CapturesClaimForUntrustedDBKeyCaller(t *testing.T) {
+	mw := NewOriginMiddleware()
+	var stage, actor, claimedStage, claimedActor string
+	downstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stage = ContextOriginStage(r.Context())
+		actor = ContextOriginActor(r.Context())
+		claimedStage, _ = r.Context().Value(originClaimedStageKey).(string)
+		claimedActor, _ = r.Context().Value(originClaimedActorKey).(string)
+	})
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-LLM-Origin-Stage", "self_check")
+	r.Header.Set("X-LLM-Origin-Actor", "credential-selfcheck-worker")
+	// no auth.owner_user on ctx — the DB-key passthrough shape
+	mw.Wrap(downstream).ServeHTTP(httptest.NewRecorder(), r)
+
+	if stage != "business" {
+		t.Fatalf("expected degraded stage=business at middleware time, got %q", stage)
+	}
+	if actor != "" {
+		t.Fatalf("expected no actor at middleware time for a stripped claim, got %q", actor)
+	}
+	if r.Header.Get("X-LLM-Origin-Stage") != "" {
+		t.Fatalf("expected inbound header stripped, got %q", r.Header.Get("X-LLM-Origin-Stage"))
+	}
+	if claimedStage != "self_check" || claimedActor != "credential-selfcheck-worker" {
+		t.Fatalf("expected claim captured on ctx, got stage=%q actor=%q", claimedStage, claimedActor)
+	}
+}
+
+func TestResolveOriginForSystemKey(t *testing.T) {
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, originClaimedStageKey, "self_check")
+	ctx = context.WithValue(ctx, originClaimedActorKey, "credential-selfcheck-worker")
+
+	// trusted DB owner + valid claim → claim wins verbatim
+	stage, actor, ok := ResolveOriginForSystemKey(ctx, "self-check-worker")
+	if !ok || stage != "self_check" || actor != "credential-selfcheck-worker" {
+		t.Fatalf("trusted owner + claim: got ok=%v stage=%q actor=%q", ok, stage, actor)
+	}
+
+	// trusted DB owner, no claim → canonical owner mapping (server-side,
+	// cannot be forged by the client)
+	stage, actor, ok = ResolveOriginForSystemKey(context.Background(), "credential-selfcheck-worker")
+	if !ok || stage != "self_check" || actor != "credential-selfcheck-worker" {
+		t.Fatalf("trusted owner fallback: got ok=%v stage=%q actor=%q", ok, stage, actor)
+	}
+
+	// trusted owner with a stage claim that fails the CHECK vocabulary →
+	// falls back to the mapping rather than trusting the unknown value
+	spoofed := context.WithValue(context.Background(), originClaimedStageKey, "manual-spoof")
+	stage, _, ok = ResolveOriginForSystemKey(spoofed, "node-probe-worker")
+	if !ok || stage != "node_probe" {
+		t.Fatalf("spoofed claim: got ok=%v stage=%q, want node_probe fallback", ok, stage)
+	}
+
+	// untrusted business owner → never resolvable
+	if _, _, ok = ResolveOriginForSystemKey(ctx, "some-saas-customer"); ok {
+		t.Fatalf("business owner must not resolve")
+	}
+
+	// static-key sentinel is handled inside resolveOrigin, out of scope here
+	if _, _, ok = ResolveOriginForSystemKey(ctx, "global-auth-passed"); ok {
+		t.Fatalf("global-auth-passed sentinel must not resolve via the DB-key path")
+	}
+
+	// legacy-probe-worker: trusted but intentionally unmapped → only an
+	// explicit valid claim marks it; no claim → ok=false
+	if _, _, ok = ResolveOriginForSystemKey(context.Background(), "legacy-probe-worker"); ok {
+		t.Fatalf("legacy-probe-worker without claim must not resolve a fallback stage")
+	}
+	stage, _, ok = ResolveOriginForSystemKey(ctx, "legacy-probe-worker")
+	if !ok || stage != "self_check" {
+		t.Fatalf("legacy-probe-worker with claim: got ok=%v stage=%q", ok, stage)
+	}
+}

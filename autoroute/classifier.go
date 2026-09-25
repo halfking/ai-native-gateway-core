@@ -663,6 +663,14 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 // Classifier is the interface implemented by both HeuristicClassifier
 // and LLMFallbackClassifier. Decider calls Classify and decides whether
 // to trust the result or escalate to the next classifier.
+//
+// Ownership contract: the returned *Classification belongs exclusively to
+// the caller — Decider's PostClassify step mutates cls.Confidence in place
+// (decision.go), so every implementation MUST return a freshly allocated
+// or defensively copied object per call. Returning a shared/cached pointer
+// is a data race under concurrent Decide (2026-09-25: stub classifier
+// fixture race, fixed in decision_test.go; CachedClassifier.Get/Set clone
+// for the same reason — cloneClassification).
 type Classifier interface {
 	Classify(ctx context.Context, sigs ClassificationSignals) (*Classification, error)
 	// Name returns a short identifier used in Classification.Classifier

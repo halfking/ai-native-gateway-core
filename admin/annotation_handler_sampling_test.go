@@ -97,10 +97,13 @@ func TestBuildSamplesDataSQLShape(t *testing.T) {
 		t.Fatalf("recent must not depend on classifier column: %s", recent)
 	}
 
-	// disagreement：分歧行（非 heuristic 分类器）优先。
+	// disagreement：分歧行（LLM 兜底白名单，R64）优先，非白名单值不再抢先。
 	dis := buildSamplesDataSQL(samplesQueryOpts{strategy: "disagreement"}, "ars.confidence >= $1 AND ars.confidence <= $2", 3)
-	if !strings.Contains(dis, "(ars.classifier <> 'heuristic') DESC, ars.ts DESC") {
-		t.Fatalf("disagreement ordering missing: %s", dis)
+	if !strings.Contains(dis, "(ars.classifier IN ('llm', 'llm_v2')) DESC, ars.ts DESC") {
+		t.Fatalf("disagreement ordering missing LLM whitelist key: %s", dis)
+	}
+	if strings.Contains(dis, "classifier <>") {
+		t.Fatalf("disagreement must not fall back to the old <> 'heuristic' key: %s", dis)
 	}
 	if !strings.Contains(dis, "LIMIT $3 OFFSET $4") {
 		t.Fatalf("disagreement must keep paging: %s", dis)
@@ -114,14 +117,23 @@ func TestBuildSamplesDataSQLShape(t *testing.T) {
 		"WHEN ars.confidence >= 0.85 THEN 4",
 		"WHEN ars.confidence >= 0.70 THEN 3",
 		"WHEN ars.confidence >= 0.50 THEN 2",
+		// R64（P2）：桶内同样按 LLM 白名单排序（钉住新分歧排序键）。
+		"ORDER BY (ars.classifier IN ('llm', 'llm_v2')) DESC, ars.ts DESC",
 		"WHERE sample_rn <= $3",
+		// R64（P3）：外层 LIMIT 收口分层总量到已校验的 size（$4 = limit）。
+		") t",
+		"LIMIT $4",
 	} {
 		if !strings.Contains(strat, frag) {
 			t.Fatalf("stratified SQL missing %q: %s", frag, strat)
 		}
 	}
-	// 外层投影不含 sample_rn（Scan 列数与其余策略一致 = 11 列）。
-	selectPart := strat[strings.Index(strat, "SELECT ranked."):strings.Index(strat, "FROM (")]
+	// 外层投影不含 sample_rn（Scan 列数与其余策略一致 = 11 列）。R64 加了
+	// 最外层 `SELECT * FROM (`，因此 ranked 投影的右界要从投影起点之后
+	// 找第一个 "FROM ("。
+	projStart := strings.Index(strat, "SELECT ranked.")
+	projEnd := projStart + strings.Index(strat[projStart:], "FROM (")
+	selectPart := strat[projStart:projEnd]
 	if strings.Contains(selectPart, "sample_rn") {
 		t.Fatalf("outer projection must not expose sample_rn: %s", selectPart)
 	}

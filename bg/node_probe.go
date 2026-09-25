@@ -77,6 +77,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/prometheus/client_golang/prometheus"
@@ -2335,6 +2336,24 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		// (active_probe submitter consecutive_threshold=2, request-path
 		// Submit, credential_recovery ticker) own change detection: the first
 		// real failure re-arms this row to now()+5s immediately.
+		//
+		// 2026-09-25 (对健康节点零探测): the parked row must land in the
+		// healthy-parked shape — nodeProbeHealthyParkedSQL requires an EMPTY
+		// last_err_code, so parking with firstErrCode(direct, gw) (the
+		// gateway round's code on a direct-only recovery) kept the row in
+		// the stale-state reconciler's candidate set (cmb.available=TRUE AND
+		// NOT healthy-parked) and re-probed a provably healthy node every
+		// tick. last_err_code/last_err_detail are therefore written as SQL
+		// NULL literals (R65 audit A: the pool runs QueryExecModeSimpleProtocol
+		// per db/db.go — inline NULL literals are unambiguous, untyped Go nil
+		// params are not); the gateway anomaly stays operator-visible via
+		// last_gateway_ok = $3 and the node_probe_runs audit row
+		// (gateway_err_code/gateway_err_detail).
+		if !gw.ok {
+			slog.Warn("node_probe_worker: direct round healthy, gateway round failed — node parked, gateway anomaly not laddered",
+				"credential_id", credID, "model", model,
+				"gateway_err_code", gw.errCode, "gateway_root_cause", gw.rootCause)
+		}
 		if _, err := w.db.Exec(ctx, `
 				UPDATE node_probe_state SET
 					consecutive_failures = 0,
@@ -2346,12 +2365,12 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 					last_run_id = NULL,
 					last_direct_ok = TRUE,
 					last_gateway_ok = $3,
-					last_err_code = $4,
-					last_err_detail = $5,
+					last_err_code = NULL,
+					last_err_detail = NULL,
 					in_flight_until = NULL,
 					updated_at = now()
 				WHERE credential_id = $1 AND raw_model_name = $2
-			`, credID, model, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw)); err != nil {
+			`, credID, model, gw.ok); err != nil {
 
 			w.logNodeProbeStateUpdateWarning("success", direct.providerID, credID, model, trigger.parentID, err)
 		}
@@ -2402,10 +2421,15 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		// model-not-served long horizon on confirmed attempts; network/timeout
 		// → short chain; everything else → the 7-step ladder) so the legacy
 		// cycle and the queue don't ladder the same pair at different speeds.
-		backoff := ProbeBackoffForErrCode(direct.errCode, attempt)
+		// 2026-09-25: root-cause aware — a protocol-shaped failure (contract
+		// mismatch, see probe_root_cause.go) never heals by re-probing, so
+		// confirmed protocol failures park at the model-not-served recheck
+		// horizon instead of walking the generic ladder.
+		backoff := probeBackoffForDirectOutcome(direct.errCode, direct.rootCause, attempt)
 		if gatewaySide {
 			backoff = nodeProbeGatewaySideRetryDelay
 		}
+		logProbeRoundRootCause("direct", direct)
 		nextRetryAt := now.Add(backoff)
 		nextSec := int(backoff.Seconds())
 		if _, err := w.db.Exec(ctx, `
@@ -2552,6 +2576,11 @@ type nodeProbeRoundResult struct {
 	requestBody    string
 	responseBody   string // 前512字节
 	viaProxy       bool   // probeDirect是否通过代理
+	// rootCause（2026-09-25）是本轮失败的根因归类（node/protocol/gateway，
+	// 见 probe_root_cause.go）。ok=true 时为空。它回答"是协议问题还是节点的
+	// 问题"：protocol 形失败重试梯永远治不好，只能按 6h 长回看停放等配置
+	// 修正；gateway 形失败不是节点的错，不得进共享可用性面。
+	rootCause ProbeRootCause
 }
 
 func probeHeadersJSON(headers map[string]string) string {
@@ -2580,6 +2609,14 @@ func probeHeadersJSON(headers map[string]string) string {
 // failures for a healthy credential.
 func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model string) nodeProbeRoundResult {
 	r := nodeProbeRoundResult{errCode: "none"}
+	// 失败出口统一收口（2026-09-25）：每个失败 return 前不必各自分类，
+	// defer 兜底一次 root-cause 分类 + err_detail 标注。ok 时不标注。
+	defer func() {
+		if !r.ok {
+			r.rootCause = classifyProbeRootCause(r.errCode, r.httpStatus, r.responseBody)
+			annotateRootCause(&r)
+		}
+	}()
 	plain, outboundModel, baseURL, protocol, providerID, err := w.resolveDirectTarget(ctx, credID, model)
 	if err != nil {
 		r.errCode = "endpoint_build"
@@ -2692,6 +2729,9 @@ func (w *NodeProbeWorker) emitProbe(ctx context.Context, credID, providerID int,
 	//   network_error   -> Network (request_build/transport)
 	//   http_<status>   -> mapped from the upstream status code
 	status := nodeProbeResultToStatus(result)
+	// 2026-09-25: root-cause counter — one increment per failed round, the
+	// single counting choke point (logProbeRoundRootCause only logs).
+	recordProbeRootCause(origin, result)
 	// 2026-07-17: forward the diagnostic detail already collected by
 	// probeDirect/probeGateway so the emitter can surface the real
 	// request/response context in auto_decision + synthetic traces.
@@ -2703,6 +2743,7 @@ func (w *NodeProbeWorker) emitProbe(ctx context.Context, credID, providerID int,
 		ErrCode:      result.errCode,
 		ErrMsg:       result.errDetail,
 		LatencyMs:    result.latencyMs,
+		RootCause:    string(result.rootCause),
 		RespPreview:  result.responseBody,
 		ResponseBody: result.responseBody,
 		RequestURL:   result.requestURL,
@@ -2963,29 +3004,39 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 	return string(pt), outboundModel, baseURL, protocol, providerID, nil
 }
 
+// directProbeEndpoint/directProbeBody 按 nodelist 直连探针的协议分发。
+// 2026-09-25：改用 probeDescriptorFor（归一 + providercap.Resolve）统一入口，
+// openai-responses 凭据（vapeur/hxt-local）走原生 /v1/responses
+// {"input","max_output_tokens"}——其 chat 端点对小 max_tokens 探针 400。
 func directProbeEndpoint(baseURL, protocol string) string {
-	ep := upstreamurl.EpChatCompletions
-	if strings.HasPrefix(protocol, "anthropic") {
-		ep = upstreamurl.EpMessages
-	}
-	return upstreamurl.Build(baseURL, ep)
+	return upstreamurl.Build(baseURL, probeDescriptorFor(protocol).ChatProbeEndpoint)
 }
 
 func directProbeBody(model, protocol string) string {
-	if strings.HasPrefix(protocol, "anthropic") {
+	desc := probeDescriptorFor(protocol)
+	switch desc.ChatProbeEndpoint {
+	case upstreamurl.EpMessages:
 		body, _ := json.Marshal(map[string]any{
 			"model":      model,
 			"max_tokens": 10,
 			"messages":   []map[string]any{{"role": "user", "content": "ping"}},
 		})
 		return string(body)
+	case upstreamurl.EpResponses:
+		body, _ := json.Marshal(map[string]any{
+			"model":             model,
+			"input":             "ping",
+			"max_output_tokens": providercap.ResponsesProbeMaxOutputTokens,
+		})
+		return string(body)
+	default:
+		body, _ := json.Marshal(map[string]any{
+			"model":      model,
+			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+			"max_tokens": 10,
+		})
+		return string(body)
 	}
-	body, _ := json.Marshal(map[string]any{
-		"model":      model,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens": 10,
-	})
-	return string(body)
 }
 
 func (w *NodeProbeWorker) logNodeProbeStateUpdateWarning(phase string, providerID, credID int, model, parentRequestID string, err error) {
@@ -3154,6 +3205,13 @@ func (w *NodeProbeWorker) updateObservedState(ctx context.Context, credID int, m
 // rate-limit, and compression regressions that a direct call cannot.
 func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model string) nodeProbeRoundResult {
 	r := nodeProbeRoundResult{errCode: "none"}
+	// 与 probeDirect 相同的失败出口收口（2026-09-25）。
+	defer func() {
+		if !r.ok {
+			r.rootCause = classifyProbeRootCause(r.errCode, r.httpStatus, r.responseBody)
+			annotateRootCause(&r)
+		}
+	}()
 	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":10}`, model)
 	endpoint := w.baseURL + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))

@@ -272,8 +272,8 @@ func (s *ProbeService) conditionTwoSiblingProbeSuccesses(ctx context.Context, ta
 	var eligible bool
 	err := s.worker.db.QueryRow(ctx, `
 		SELECT COALESCE(cmb.available, TRUE) = TRUE
-		   AND (nps.credential_id IS NULL OR ` + nodeProbeHealthyParkedSQL("nps") + `)
-		   AND ` + credentialTwoProbeSuccessGateSQL("cmb.credential_id") + `
+		   AND (nps.credential_id IS NULL OR `+nodeProbeHealthyParkedSQL("nps")+`)
+		   AND `+credentialTwoProbeSuccessGateSQL("cmb.credential_id")+`
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		LEFT JOIN node_probe_state nps

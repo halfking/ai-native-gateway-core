@@ -323,73 +323,56 @@ func TestOllamaExecutor_WriteNonStreamResponse_MalformedJSON(t *testing.T) {
 // StreamResponse
 // ────────────────────────────────────────────────────────────────────────
 
-// TestOllamaExecutor_StreamResponse_CumulativeDiffedCorrectly is the
-// audit-r0924 §11.6 contract test: Ollama's wire `message.content`
-// is CUMULATIVE (the full text so far, repeated each frame). The
-// executor must diff against the previously seen cumulative value
-// and emit ONLY the new tail as `delta.content`. If it forwardes the
-// raw value, the client sees the full text duplicated every frame.
-func TestOllamaExecutor_StreamResponse_CumulativeDiffedCorrectly(t *testing.T) {
+// TestOllamaExecutor_StreamResponse_IncrementalContent verifies the R66
+// parser contract: every message.content frame is a delta, including a
+// terminal frame with content. Repeated fragments must not be prefix-diffed.
+func TestOllamaExecutor_StreamResponse_IncrementalContent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.WriteHeader(http.StatusOK)
-		flusher := w.(http.Flusher)
-		lines := []string{
-			`{"model":"llama3.1","created_at":"t","message":{"role":"assistant","content":""},"done":false}`,
-			`{"model":"llama3.1","created_at":"t","message":{"role":"assistant","content":"He"},"done":false}`,
-			`{"model":"llama3.1","created_at":"t","message":{"role":"assistant","content":"Hel"},"done":false}`,
-			`{"model":"llama3.1","created_at":"t","message":{"role":"assistant","content":"Hell"},"done":false}`,
-			`{"model":"llama3.1","created_at":"t","message":{"role":"assistant","content":"Hello"},"done":false}`,
-			`{"model":"llama3.1","created_at":"t","message":{"role":"assistant","content":"Hello!"},"done_reason":"stop","done":true,"prompt_eval_count":3,"eval_count":2}`,
-		}
-		for _, ln := range lines {
-			//nolint:errcheck // test response writer
-			w.Write([]byte(ln + "\n"))
-			flusher.Flush()
+		for _, ln := range []string{
+			`{"model":"llama3.1","message":{"role":"assistant","content":"He"},"done":false}`,
+			`{"model":"llama3.1","message":{"role":"assistant","content":"l"},"done":false}`,
+			`{"model":"llama3.1","message":{"role":"assistant","content":"l"},"done":false}`,
+			`{"model":"llama3.1","message":{"role":"assistant","content":"o!"},"done":true}`,
+		} {
+			_, _ = w.Write([]byte(ln + "\n"))
 		}
 	}))
 	defer srv.Close()
-
 	resp, err := http.Get(srv.URL + "/api/chat")
 	if err != nil {
-		t.Fatalf("GET: %v", err)
+		t.Fatal(err)
 	}
-
-	oe := &OllamaExecutor{ClientProtocol: "openai-completions"}
 	rec := httptest.NewRecorder()
-	rec2 := &flushingRecorder{ResponseRecorder: *rec, flushCount: new(int)}
-	outcome := oe.StreamResponse(context.Background(), rec2, resp)
-	if outcome.Interrupted {
-		t.Errorf("stream interrupted unexpectedly: %s", outcome.Reason)
+	outcome := (&OllamaExecutor{}).StreamResponse(context.Background(), rec, resp)
+	if outcome.Interrupted || outcome.ChunkCount != 5 { // four deltas plus done
+		t.Fatalf("outcome = %+v, want four deltas and done", outcome)
 	}
-	if outcome.ChunkCount < 5 {
-		t.Errorf("ChunkCount = %d, want >= 5 (one per character of 'Hello!')", outcome.ChunkCount)
-	}
-
-	body := rec2.Body.String()
-	// The SSE wire must contain a [DONE] sentinel.
-	if !strings.Contains(body, "data: [DONE]") {
-		t.Errorf("stream missing [DONE] sentinel; body: %s", body)
-	}
-	// Count occurrences of "Hello!" — if cumulative diffing works, the
-	// client never sees the full string "Hello!" because each delta
-	// carries only the new tail (the union of all deltas equals
-	// "Hello!" but no single frame contains it). The raw cumulative
-	// values appear ONLY in the upstream NDJSON we discarded; the
-	// OUTGOING SSE must NEVER contain "Hello!" verbatim.
-	count := strings.Count(body, "Hello!")
-	if count != 0 {
-		t.Errorf("body contains %d copies of 'Hello!', want 0 (cumulative diff must split it)\nfull body: %s", count, body)
-	}
-	// The cumulative-diff delta sequence must be present. Upstream
-	// sends "" → "He" → "Hel" → "Hell" → "Hello" → "Hello!" so the
-	// outgoing SSE carries the per-frame new-tail deltas: "He", "l",
-	// "l", "o", "!".
-	wantDeltas := []string{`"content":"He"`, `"content":"l"`, `"content":"o"`, `"content":"!"`}
-	for _, w := range wantDeltas {
-		if !strings.Contains(body, w) {
-			t.Errorf("body missing delta %q\nfull body: %s", w, body)
+	var content strings.Builder
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		if !strings.HasPrefix(line, "data: {") {
+			continue
 		}
+		var frame struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &frame); err != nil {
+			t.Fatal(err)
+		}
+		if len(frame.Choices) > 0 {
+			content.WriteString(frame.Choices[0].Delta.Content)
+		}
+	}
+	if got := content.String(); got != "Hello!" {
+		t.Fatalf("reassembled content = %q, want Hello!; wire: %s", got, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "data: [DONE]") {
+		t.Fatal("missing terminal sentinel")
 	}
 }
 
@@ -658,8 +641,8 @@ func TestOllamaExecutor_CheckSoftMismatch(t *testing.T) {
 		{"llama3.1", "llama3.1", false},
 		{"llama3.1", "LLAMA3.1", false}, // case-insensitive
 		{"llama3.1", "llama3.2", true},
-		{"", "llama3.1", false},        // empty req is a no-op
-		{"llama3.1", "", false},        // empty resp is a no-op
+		{"", "llama3.1", false}, // empty req is a no-op
+		{"llama3.1", "", false}, // empty resp is a no-op
 		{"", "", false},
 	}
 	for _, tc := range cases {
@@ -806,7 +789,7 @@ func TestExecutor_ExecuteOllama_Stream(t *testing.T) {
 		for _, ln := range []string{
 			`{"model":"llama3.1","created_at":"t","message":{"role":"assistant","content":""},"done":false}`,
 			`{"model":"llama3.1","created_at":"t","message":{"role":"assistant","content":"hi"},"done":false}`,
-			`{"model":"llama3.1","created_at":"t","message":{"role":"assistant","content":"hi!"},"done_reason":"stop","done":true,"prompt_eval_count":2,"eval_count":1}`,
+			`{"model":"llama3.1","created_at":"t","message":{"role":"assistant","content":"!"},"done_reason":"stop","done":true,"prompt_eval_count":2,"eval_count":1}`,
 		} {
 			//nolint:errcheck // test response writer
 			w.Write([]byte(ln + "\n"))
@@ -845,8 +828,7 @@ func TestExecutor_ExecuteOllama_Stream(t *testing.T) {
 		t.Fatalf("executeOllama (stream): %v", err)
 	}
 	body := rec.Body.String()
-	// Upstream cumulative content "" → "hi" → "hi!" produces outgoing
-	// deltas of "hi" then "!".
+	// Upstream incremental content "" → "hi" → "!" forwards each delta.
 	if !strings.Contains(body, `"content":"hi"`) {
 		t.Errorf("body missing first delta 'hi'\n%s", body)
 	}

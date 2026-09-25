@@ -12,7 +12,7 @@
 # 用法：
 #   scripts/auto-testbench.sh                  # 离线回归 + 门禁
 #   scripts/auto-testbench.sh --no-gate        # 只跑回归不卡门禁
-#   scripts/auto-testbench.sh --refresh-baseline   # 重写随仓基线（调参/档案变更后）
+#   scripts/auto-testbench.sh --refresh-baseline   # 重写随仓基线（调参/档案变更后；跳过门禁）
 #   AUTO_E2E=1 AUTO_AUDIT_API_KEY=... scripts/auto-testbench.sh   # 离线+E2E
 #
 # E2E 环境变量：
@@ -37,9 +37,20 @@ for arg in "$@"; do
 done
 
 mkdir -p reports
+
+# R64（P2）修复：refresh-baseline 模式必须跳过门禁。基线是"调参前指标"的
+# 快照，调参后旧基线的阈值必然不再匹配新指标——若照旧先跑 -gate-default，
+# 门禁 FAIL（exit 1）会在 set -e 下直接中止脚本，--refresh-baseline 永远
+# 不可达。因此 refresh 模式下本次运行不挂门禁（回归本身仍全量执行），并把
+# -write-baseline 合并进同一次运行，保证写盘基线与刚产出的报告是同一份指
+# 标。非 refresh 模式维持原语义：回归 → 门禁 → FAIL exit 1。
 GATE_FLAGS=""
-if [ "$GATE" = "1" ]; then
+WRITE_BASELINE_FLAGS=""
+if [ "$GATE" = "1" ] && [ "$REFRESH_BASELINE" = "0" ]; then
   GATE_FLAGS="-gate-default"
+fi
+if [ "$REFRESH_BASELINE" = "1" ]; then
+  WRITE_BASELINE_FLAGS="-write-baseline cmd/auto-testbench/testdata/baseline.json"
 fi
 
 E2E_MERGE_FLAG=""
@@ -71,11 +82,9 @@ echo "== offline regression (240 cases, heuristic:default) =="
 go run ./cmd/auto-testbench \
   -mode regression \
   -report reports/auto-testbench \
-  ${GATE_FLAGS} ${E2E_MERGE_FLAG}
-
+  ${GATE_FLAGS} ${E2E_MERGE_FLAG} ${WRITE_BASELINE_FLAGS}
 if [ "$REFRESH_BASELINE" = "1" ]; then
-  echo "== refreshing checked-in baseline =="
-  go run ./cmd/auto-testbench -write-baseline cmd/auto-testbench/testdata/baseline.json
+  echo "baseline refreshed: cmd/auto-testbench/testdata/baseline.json"
 fi
 
 echo "reports: reports/auto-testbench.md (+ .json / .cases.jsonl)"

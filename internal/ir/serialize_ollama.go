@@ -31,7 +31,8 @@ const OllamaExtensionPrefix = "ollama."
 //      top_k, num_predict ← max_tokens, seed, stop, repeat_penalty).
 //   2. JSON-output mode is a top-level `format` string ("json") or schema
 //      object — OpenAI's `response_format` object is REJECTED by Ollama.
-//   3. Reasoning content lives in `message.thinking` (cumulative) — not in
+//   3. Reasoning content lives in `message.thinking` (per-frame delta when
+//      streaming; single complete value when not) — not in
 //      `choices[].delta.reasoning_content`. On the request side this
 //      function does not emit a thinking block; reasoning budget is
 //      configured via `Extensions["ollama.options.num_ctx"]` and friends.

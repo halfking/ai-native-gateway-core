@@ -40,6 +40,11 @@ func TestDoResponsesProbe_SendsResponsesBodyShape(t *testing.T) {
 	if _, ok := gotBody["messages"]; ok {
 		t.Fatalf("request body must not contain chat \"messages\" field: %v", gotBody)
 	}
+	// 2026-09-25: Responses API 下限 16（vapeur 实测 "Expected >= 16"），
+	// 旧值 5 会把健康凭据误报成 warning。
+	if mot, ok := gotBody["max_output_tokens"].(float64); !ok || mot < 16 {
+		t.Fatalf("max_output_tokens = %v, want >= 16", gotBody["max_output_tokens"])
+	}
 	if result.statusCode != http.StatusOK {
 		t.Fatalf("statusCode = %d, want 200", result.statusCode)
 	}

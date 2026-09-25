@@ -182,11 +182,13 @@ func (h *Handler) handleAnnotationSamples(w http.ResponseWriter, r *http.Request
 	// 采样策略 v2（P0⑤，2026-09-24，v2 规划 §4.5）：
 	//   recent（默认，向后兼容） — ts 倒序分页，现状行为不变；
 	//   disagreement             — 分歧采样：LLM 兜底接管过的行（classifier
-	//                             <> 'heuristic'）优先入队。启发式自身的结论
-	//                             未落库，classifier 列的 llm/v3 值即"兜底
-	//                             改判"的可判定证据（规划口径：分歧可判）；
+	//                             命中 llm 白名单，见 llmDisagreementOrderKey）
+	//                             优先入队。启发式自身的结论未落库，classifier
+	//                             列的 llm 值即"兜底改判"的可判定证据（规划
+	//                             口径：分歧可判）；
 	//   stratified               — 分层抽样：task_type × 置信度桶配额，
-	//                             per_strata（默认 5，≤20），避免高频类垄断。
+	//                             per_strata（默认 5，≤20），避免高频类垄断，
+	//                             外层 LIMIT 收口到 size 上限。
 	strategy, perStrata, err := parseSamplingParams(query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -318,6 +320,34 @@ const samplesFromJoin = `
 	FROM auto_route_selections_all ars
 	LEFT JOIN training_human_annotations tha ON tha.request_id = ars.request_id`
 
+// llmDisagreementOrderKey 是 disagreement / stratified 两个策略共用的分歧
+// 排序键：LLM 兜底接管过的行排最前（R64 P2 修复）。旧键
+// `(ars.classifier <> 'heuristic') DESC` 会把 session_cache、jev、
+// v3_heuristic、embedding 等非 LLM 行也顶到最前，语义失真。
+//
+// 白名单 = autoroute 包里 LLM 兜底链路真正写入
+// auto_route_selections.classifier 的值（经 Decision.Classifier 由
+// domains/hooks/observability/telemetry/selection_writer.go:321 落库）：
+//   - 'llm'    — LLMFallbackClassifier（autoroute/classifier_llm.go:110，
+//     经 decision.go:916 的兜底返回链落库）；
+//   - 'llm_v2' — V2 决策路径对 classifier 统一追加 "_v2" 后缀
+//     （autoroute/decision_v2.go:385），其 cls 同样出自含 LLM 兜底的
+//     d.classify 链（decision_v2.go:181）。
+//
+// 显式排除的非白名单值及原因：
+//   - heuristic（autoroute/classifier.go:674）— 启发式规则自身结论，非兜底
+//     改判证据（采样目标恰是启发式没把握的行）；
+//   - v3_heuristic（autoroute/classifier_v3.go:389）— V3 规则分类，非 LLM；
+//   - jev（autoroute/classifier_jev.go:313）— 外部 Jev 分类器，审计口径
+//     不算 LLM 兜底链路；
+//   - embedding（autoroute/embedding_classifier.go:55）— 影子评估流量，
+//     不参与真实决策；
+//   - session_cache / session_cache_v2（autoroute/decision.go:446 /
+//     decision_v2.go:115）— 会话缓存命中，复用首轮结论，当轮未分类；
+//   - default（autoroute/decision.go:513 / decision_v2.go:185）— 客户端
+//     hint / 网关默认兜底，同样未分类。
+const llmDisagreementOrderKey = "(ars.classifier IN ('llm', 'llm_v2')) DESC, ars.ts DESC"
+
 // buildSamplesDataSQL renders the data query for the given strategy. Pure
 // function (unit-tested shape); whereSQL comes from buildSamplesWhere and
 // argIdx is the next free placeholder index.
@@ -331,45 +361,54 @@ func buildSamplesDataSQL(o samplesQueryOpts, whereSQL string, argIdx int) string
 func buildSamplesDataSQLAndArgs(o samplesQueryOpts, whereSQL string, argIdx int, args []any) (string, []any) {
 	if o.strategy == "stratified" {
 		// 分层抽样：每 (task_type, 桶) 取最近 perStrata 行，桶内同样让
-		// 分歧行（llm/v3 兜底）排在前面，标注边际价值最大化。外层显式
-		// 列投影（不含 sample_rn），Scan 列序与其它策略完全一致。
+		// 分歧行（LLM 兜底，见 llmDisagreementOrderKey）排在前面，标注
+		// 边际价值最大化。外层显式列投影（不含 sample_rn），Scan 列序与
+		// 其它策略完全一致。
+		//
+		// R64（P3）：最外层再包 `SELECT * FROM (...) t LIMIT $N`（N=已校验
+		// 的 size 上限）。per_strata ≤ 20 但 task_type × 4 个置信度桶最多
+		// 44 层，旧 SQL 无外层 LIMIT 时单页最多返回 880 行，突破
+		// handleAnnotationSamples 的 size ≤ 200 契约。
 		dataSQL := fmt.Sprintf(`
-			SELECT ranked.request_id, ranked.model_name, ranked.task_type, ranked.profile,
-				ranked.auto_provider, ranked.confidence, ranked.human_label, ranked.is_correct,
-				ranked.reason, ranked.annotator, ranked.annotated_at
-			FROM (
-				SELECT
-					ars.request_id,
-					ars.chosen_model AS model_name,
-					ars.task_type,
-					ars.profile,
-					ars.chosen_model AS auto_provider,
-					ars.confidence,
-					tha.human_label,
-					tha.is_correct,
-					tha.annotation_reason AS reason,
-					tha.annotator,
-					tha.annotated_at,
-					row_number() OVER (
-						PARTITION BY ars.task_type,
-							CASE WHEN ars.confidence >= 0.85 THEN 4
+			SELECT * FROM (
+				SELECT ranked.request_id, ranked.model_name, ranked.task_type, ranked.profile,
+					ranked.auto_provider, ranked.confidence, ranked.human_label, ranked.is_correct,
+					ranked.reason, ranked.annotator, ranked.annotated_at
+				FROM (
+					SELECT
+						ars.request_id,
+						ars.chosen_model AS model_name,
+						ars.task_type,
+						ars.profile,
+						ars.chosen_model AS auto_provider,
+						ars.confidence,
+						tha.human_label,
+						tha.is_correct,
+						tha.annotation_reason AS reason,
+						tha.annotator,
+						tha.annotated_at,
+						row_number() OVER (
+							PARTITION BY ars.task_type,
+								CASE WHEN ars.confidence >= 0.85 THEN 4
 							     WHEN ars.confidence >= 0.70 THEN 3
 							     WHEN ars.confidence >= 0.50 THEN 2
 							     ELSE 1 END
-						ORDER BY (ars.classifier <> 'heuristic') DESC, ars.ts DESC
-					) AS sample_rn
-					%s
-					%s
-				) ranked
-				WHERE sample_rn <= $%d
-				ORDER BY ranked.task_type, ranked.sample_rn
-			`, samplesFromJoin, whereSQL, argIdx)
-		return dataSQL, append(args, o.perStrata)
+							ORDER BY %s
+						) AS sample_rn
+						%s
+						%s
+					) ranked
+					WHERE sample_rn <= $%d
+					ORDER BY ranked.task_type, ranked.sample_rn
+			) t
+			LIMIT $%d
+			`, llmDisagreementOrderKey, samplesFromJoin, whereSQL, argIdx, argIdx+1)
+		return dataSQL, append(args, o.perStrata, o.limit)
 	}
 
 	orderBy := "ars.ts DESC"
 	if o.strategy == "disagreement" {
-		orderBy = "(ars.classifier <> 'heuristic') DESC, ars.ts DESC"
+		orderBy = llmDisagreementOrderKey
 	}
 
 	// Data query — columns per the real auto_route_selections schema
@@ -390,14 +429,16 @@ func buildSamplesDataSQLAndArgs(o samplesQueryOpts, whereSQL string, argIdx int,
 //
 // Strategy dispatch (P0⑤ sampling v2):
 //   - recent:       ORDER BY ts DESC + LIMIT/OFFSET paging (legacy shape).
-//   - disagreement: same filter/paging, but rows whose classifier was taken
-//     over by the LLM fallback (classifier <> 'heuristic') sort first — those
-//     are the requests where the two classifiers disagreed or the heuristic
-//     was unconfident, i.e. the highest-value annotation targets.
+//   - disagreement: same filter/paging, but rows whose classifier value is in
+//     the LLM fallback whitelist (see llmDisagreementOrderKey) sort first —
+//     those are the requests where the LLM took over from the heuristic,
+//     i.e. the highest-value annotation targets.
 //   - stratified:   window-function quota sample, task_type × confidence
 //     bucket (bands 0.85+/0.70+/0.50+/rest aligned to the LLM fallback
 //     threshold 0.70 and the strong-confidence band). Paging offsets don't
-//     apply (one deterministic shot); total reports the selected row count.
+//     apply (one deterministic shot) but the outer LIMIT still caps the
+//     page at the validated size (R64: ≤200); total reports the selected
+//     row count.
 func querySamples(ctx context.Context, pool *pgxpool.Pool, o samplesQueryOpts) ([]AnnotationSample, int, error) {
 	whereClause, args, argIdx := buildSamplesWhere(o)
 	whereSQL := ""

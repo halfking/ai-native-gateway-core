@@ -1,5 +1,10 @@
 # 对账报表设计（Report Rollup）
 
+> **落地状态（2026-09-25 落地轮）**：本设计已全量实现并超出原 MVP 切片——
+> 周/月/自定义区间（区间汇总从日快照折叠）、租户/人员内部视角、内部计费口径
+> （credits × 快照冻结 cents_per_credit）均已落地。实现映射见文末 §10。
+> 下方 §1–§9 为设计原稿（保留历史叙述，过时处以勘误标注）。
+
 > 范围：**MVP 切片**——日报（每日 02:00 定时、可配） + 两个 sheet（用量 + 模型质量与错误分析） + Excel 导出。
 > 不在本切片：周/月/自定义区间聚合 API、租户/人员独立视角切换、内部价模型（vs 供应商价）。这两块留后续轮。
 
@@ -141,3 +146,69 @@ excelize 已在 `go.sum`（间接依赖），需在 `go.mod` 提升为直接依�
 - `go test ./bg/... -run TestReportRollup` 必须过（worker 路径用 sqlmock 或 testfixtures）
 - 集成测试：迁745 落地后，灌 10 条 usage_facts → 触发 worker → 验证 snapshot 存在 → GET Excel → 校验两个 sheet 行数
 - **迁移号三重查重断言**：实施前 `git log sql/migrations/startup/74{3,4,5}_*.sql` 必须只命中 743/744（既有），命中 0 条 745 文件；`go test ./...` 通过 ≥492（含 installer 自检）；共享 252 PG 账本 `SELECT version FROM schema_migrations WHERE version LIKE '74%'` 不含 745（建号前查一次；R63 勘误：schema_migrations 实际列是 version/description/applied_at，原稿 `filename` 列不存在——该查重为建号前历史断言，745 已于 R63 占用落地）
+
+## 10. 落地映射（2026-09-25 落地轮）
+
+| 设计项 | 实现 | 与原稿的差异（勘误） |
+|---|---|---|
+| 迁移 745 report_snapshots | `sql/migrations/startup/745_report_snapshots.sql` + `db/db.go ensureReportSnapshots`（boot 兜底） | 746 补齐内部对帐维度：`tenant_id` bigint→**text**（对齐 usage_facts 文本租户键，745 按 bigint 设计系笔误）、新增 `credits_charged` / `latency_p50_ms` / `latency_p95_ms`；scope 枚举扩员 `internal_person` / `internal_model`（`sql/migrations/startup/746_report_snapshots_internal_dims.sql`） |
+| worker | `bg/report_rollup_worker.go`：启动补跑昨日 + 每日钟点触发，单轮 panic recover + 30min 超时 | 钟点设置由 cron 字符串改为**单整数小时** `reports.daily_rollup.hour`（0-23，默认 2，HotReload）——仓库无 cron 解析依赖，与 feedback_analyzer 的 RunHour 模式一致（`settings/spec_reports.go`） |
+| 聚合 | `domains/reportrollup/rollup.go`：usage_facts → 六 scope 快照，jsonb 错误透视 CTE + `percentile_cont FILTER` 延迟分位 + ON CONFLICT 四键幂等 | 口径细化：provider 面（daily_*）含全部流量类（探针也烧供应商钱）；internal 面（internal_*）仅 business 流量。`daily_by_model` scope_key = provider_id（原稿"canonical model"装不下多 provider 同名模型），模型名 = usage_facts.raw_model_name（= outbound_model 回落 client_model，即供应商计费名） |
+| 内部价 | usage_facts.credits_charged（内部价+折扣+峰谷倍率的最终计费）+ maas_settings.cents_per_credit 冻结进 price_snapshot | 原稿 §8 判定"内部价表为空白项需新表"——实际无需新表：credits_charged 即内部计费结果，冻结单价即可复算金额 |
+| API | `admin/report_rollup.go`：`GET /api/admin/report-rollup/summary` / `export` / `POST .../run`（superAdmin） | summary 返回总计 + 按供应商/租户/人员/模型/天分组行；区间（日/周/月/自定义）一律从日快照折叠，不回扫原始日志 |
+| Excel | `domains/reportrollup/xlsx.go` 手写最小 OOXML writer（zip+受控 XML，inline string + number 单元格 + 粗体表头），`workbook.go` 双 sheet 布局 | **原稿 §5 勘误：excelize 不在 go.sum**（R63 勘误已指出，本轮确认）。手写 writer 避免引入 2 万行第三方传递依赖；openpyxl 交叉校验通过（含 `Override PartName` 属性规范修复） |
+| 前端 | `web/src/views/admin/ReconciliationReport.vue` + `web/src/api/reportrollup.ts` + 路由 `/admin/reconciliation` | 双视角切换 + 区间选择 + 汇总卡片 + 分组表 + 导出/重跑按钮 |
+| 失败分类 | 快照行 `error_kind_breakdown` jsonb 透视；sheet2 按 error_kind 动态列 | error_kind 来自 errorsx 枚举，worker 不强校验（原稿 §7 维持） |
+
+### 审计轮修正（2026-09-25 第二轮，批判式复审；含 R65 交互语义冲突实修）
+
+> 并行 R65 审计轮（114beda22）已修复本设计首轮遗留的 P1（internal_person
+> 跨租户 scope_key 碰撞）与若干 P2/P3。本轮与 R65 变基合并时，真库 E2E
+> 揪出 R65 修复自身的一个 P0 级编码缺陷并已根修（见 §4.1）。
+
+自我复审发现并修复三处设计缺陷 + 一处实证 bug：
+
+1. **错过触发无追赶**（可靠性缺口）：原实现只在每日钟点跑一次昨日 +
+   启动补跑；单轮失败或进程在钟点区间停机后，当日数据要等次日或人工
+   触发。补 `MissingRollupDates`（lookback 7 天内无 daily_total 行的日期
+   ——daily_total 对零流量日也落一行，故「无行」≡「该日从未聚合」），
+   worker 每次触发后做有界追赶；早于窗口的历史走管理端手动 /run。
+2. **聚合无事务**：原实现逐行 upsert，中途失败留新旧混合快照。
+   worker 的 RollupDate 现将单日聚合包进一个事务（pgx.Tx 满足
+   reportrollup.Querier），失败整体回滚，下一轮追赶重新探测该日。
+3. **/run 绑请求 context**：客户端断开会中断聚合。新增
+   `RollupDateDetached`（自带超时的 detached context），handler 改走它。
+4. **昨日跳过比较失配（真库测试日志暴露的实证 bug）**：runRecovered 的
+   yesterday 是「当前时刻−24h」未截断，探测输出是午夜截断日期，
+   `Equal` 永不相等 → 昨日被重复聚合（幂等兜底正确性但白跑）。
+   统一截断到 UTC 午夜，测试加显式断言（backfilled=1 而非 2）。
+
+前端补充：reports 词条入 zh-CN/en-US locale（`t(key, defaultMsg)` 内联
+兜底经 vue-i18n v9.14 实证有效，词条化消除缺键警告）；`vue-tsc --noEmit`
+与 `vite build` 均以退出码 0 验证（首轮仅 grep 过滤，本轮回补退出码证据）。
+
+### 验证记录（2026-09-25）
+
+- `go build ./...` / `go vet` 通过；全量 `go test ./...` 主模块 + installer 模块通过。
+- 五点同步守卫（installer parity / embed / StartupFiles / ≥704 注册）全绿含 746。
+- 建号三重查重：仓内无 746 冲突；本地 llm_gateway 账本与共享 252 账本 74x 段均止于 744，745/746 均未占用。
+- 真库 E2E（scratch 库 `llmgw_report_e2e`，迁移 536/537/745/746 全应用）：灌 6 笔合成 usage_facts（success/failure/rate_limited × business × 双租户双模型 + provider 未落定失败）→ RollupDay → 六 scope 计数/透视/冻结价断言 → 幂等重跑 → BuildRangeReport 双视角 → xlsx 产出；`db` 包 745 重建与 746 升级路径 ensure 真库测试通过。
+- 导出文件经 openpyxl 独立实现加载校验：双 sheet（用量 / 模型质量与错误分析）、数值单元格、粗体表头、中文 sheet 名全部正确。
+
+#### §4.1 internal_person scope_key 编码缺陷（R65 P1 修复的次生缺陷，本轮根修）
+
+R65 用 `tenant + "\x00" + person` 编码 internal_person 的 scope_key（修跨租户
+碰撞）。**PostgreSQL TEXT 拒绝 NUL 字节**：internal_person 桶的 INSERT 在真库
+上全量失败（`invalid byte sequence for encoding "UTF8": 0x00`，SQLSTATE
+22021）——pgxmock 与纯单测探不到，只有真库 E2E 能暴露。本轮改为长度前缀
+编码 `len(tenant):tenant:person`（无歧义、无非法字节、split 可逆）；NUL 格式
+在真库零存活（写不进去），无历史兼容负担。守卫：TestInternalPersonScopeKey
+RoundTrip（往返 + NUL 拒绝 + 历史裸键回退）+ 真库 E2E 跨租户同人双桶断言。
+
+同轮收口（与 R65 合并后的验证状态）：
+- 追赶机制（MissingRollupDates，7 天回看）+ worker 昨日跳过刻度修正；
+- 单日聚合事务化（pgx.Tx 满足 reportrollup.Querier，真库回滚断言）；
+- /run 解耦请求 context（RollupDateDetached）；
+- reports 词条以 R65 的 8 语言版为准（本轮 zh/en 重复版本丢弃），
+  index.ts 双方各自新增的 `reports,` 注册去重；
+- vue-tsc --noEmit 与 vite build 退出码 0。
