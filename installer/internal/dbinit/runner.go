@@ -263,6 +263,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 枚举扩员注记（internal_person/internal_model）。可重入
 			//（ALTER TYPE USING text::text 与 ADD COLUMN IF NOT EXISTS）。
 			"746_report_snapshots_internal_dims.sql",
+			// 747 (2026-09-25, 252 SQL 审计第八轮 D12; 原号 746 与对账报表轮
+			// 撞号重编——纪律㉒): session_mirror_outbox source CHECK 扩展
+			// 'claim'——final-success claim 同事务补偿登记（telemetry
+			// registerFinalSuccessClaimOutbox）的枚举值。
+			"747_session_mirror_outbox_source_claim.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，

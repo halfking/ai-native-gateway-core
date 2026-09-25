@@ -45,7 +45,7 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 		// 删数据的复发面（473 同族）。
 		"ensure_candidate_failure_logs_partition": false, // Migration 689/694
 		// 706（存储优化方案 v2 S1a）：三新表族一次调用覆盖
-		"ensure_session_family_partitions":        false, // Migration 706
+		"ensure_session_family_partitions": false, // Migration 706
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
@@ -86,11 +86,11 @@ func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
 		"promote_auto_route_selections_hot_to_partition":     false, // Migration 656
 		"promote_supplier_errors_hot_to_partition":           false, // Migration V371 (2026-09-05, D-2#1)
 		// 706（存储优化方案 v2 S1a）：三新表族
-		"promote_session_memora_hot_to_partition":            false, // Migration 706
-		"promote_session_censors_hot_to_partition":           false, // Migration 706
-		"promote_session_tools_hot_to_partition":             false, // Migration 706
+		"promote_session_memora_hot_to_partition":  false, // Migration 706
+		"promote_session_censors_hot_to_partition": false, // Migration 706
+		"promote_session_tools_hot_to_partition":   false, // Migration 706
 		// 733（会话存储解耦 v3）：turn 特征层
-		"promote_session_turn_details_hot_to_partition":      false, // Migration 733
+		"promote_session_turn_details_hot_to_partition": false, // Migration 733
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
@@ -375,9 +375,9 @@ func TestHotTableTSColumn(t *testing.T) {
 		{"auto_route_selections_hot", "ts"},
 		// created_at（252 真库核定）
 		{"request_wal_hot", "created_at"},
-		{"credit_ledger", "created_at"},            // credit_ledger_hot
-		{"tool_usage_stats", "created_at"},         // tool_usage_stats_hot
-		{"handoff_logs_hot", "created_at"},         // handoff_logs_hot
+		{"credit_ledger", "created_at"},    // credit_ledger_hot
+		{"tool_usage_stats", "created_at"}, // tool_usage_stats_hot
+		{"handoff_logs_hot", "created_at"}, // handoff_logs_hot
 		{"session_memora_hot", "created_at"},
 		{"session_censors_hot", "created_at"},
 		{"session_tools_hot", "created_at"},

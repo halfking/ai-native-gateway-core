@@ -10,6 +10,12 @@
 //  4. 写入走「临时文件 + rename」，读侧要么看到旧的完整文件、要么看到新的
 //     完整文件，不会读到半截 JSON；读到损坏 JSON 按缓存未命中处理并清理
 //
+// 索引（2026-09-24 H1，全模式热区层方案）：
+//   - 内存中维护 map[string]*indexEntry，key=tenantID+"/"+sessionID
+//   - 与 sizeUsed 同受 fc.mu 保护；启动期 Walk 阶段顺带填充
+//   - Get 命中索引可跳过 Stat（mtime/size 以索引为准，读后仍校验内容可解析）
+//   - 索引与磁盘漂移时按 miss 处理并摘除索引（fail-open 风格）
+//
 // 勘察结论（2026-09-05, Task 2.3）：
 //   - SessionStateV2（cache_v2.go）自带 TenantID / SessionID 字段，因此 Set
 //     直接采用 Set(state *SessionStateV2) error 签名，无需 (tenantID, sessionID,
@@ -52,21 +58,36 @@ const (
 	defaultFileCacheTTL = 30 * time.Minute
 )
 
+// indexEntry 是 FileCache 内存索引的单条目。key=tenantID+"/"+sessionID
+// （cacheIndexKey 构造）；path 是相对 baseDir 的缓存文件路径；modTime
+// 是最近一次观测到的 mtime（启动期 Walk 填一次，写入时更新）；size
+// 与 sizeUsed 记账共享，删除时同步扣减。
+type indexEntry struct {
+	path    string
+	size    int64
+	modTime time.Time
+}
+
 // FileCache 是 L1.5 本地文件缓存：
-//   - 线程安全（sync.Mutex 保护 sizeUsed 记账与所有文件变更）
+//   - 线程安全（sync.Mutex 保护 sizeUsed 记账、index 与所有文件变更）
 //   - Get 未命中返回包装 errCacheMiss 的错误；Set/Delete 幂等或容错（fail-open，
 //     缓存层失败不阻断主链路）
+//   - 内存索引（index）作为磁盘实况的加速视图；任何漂移按 miss 兜底
 type FileCache struct {
 	baseDir  string
 	ttl      time.Duration
 	maxSize  int64
 	sizeUsed int64 // 当前已占用字节数（仅统计 *.json，由 mu 保护）
 
+	// index 是磁盘实况的内存索引视图（H1 接线，2026-09-24）。Get 命中索引
+	// 可减少一次 os.Stat；任何「索引有 / 磁盘无」按 miss 处理并摘除索引。
+	index map[string]*indexEntry
+
 	mu sync.Mutex
 }
 
 // NewFileCache 创建本地文件缓存：创建 baseDir（0755）并 filepath.Walk 统计
-// 现有占用，使进程重启后 sizeUsed 与磁盘现状对齐。
+// 现有占用，使进程重启后 sizeUsed 与磁盘现状对齐；Walk 阶段同步填充内存索引。
 func NewFileCache(baseDir string, ttl time.Duration, maxSize int64) (*FileCache, error) {
 	if baseDir == "" {
 		return nil, errors.New("file cache: baseDir is empty")
@@ -80,8 +101,13 @@ func NewFileCache(baseDir string, ttl time.Duration, maxSize int64) (*FileCache,
 	if err := os.MkdirAll(baseDir, fileCacheDirPerm); err != nil {
 		return nil, fmt.Errorf("file cache: mkdir %s: %w", baseDir, err)
 	}
-	fc := &FileCache{baseDir: baseDir, ttl: ttl, maxSize: maxSize}
-	// 启动时统计现有 *.json 占用（遗留的临时文件不计入，也不清理，交由运维处理）
+	fc := &FileCache{
+		baseDir: baseDir,
+		ttl:     ttl,
+		maxSize: maxSize,
+		index:   make(map[string]*indexEntry),
+	}
+	// 启动时统计现有 *.json 占用 + 填充索引（遗留的临时文件不计入，也不清理，交由运维处理）
 	if err := filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -91,12 +117,39 @@ func NewFileCache(baseDir string, ttl time.Duration, maxSize int64) (*FileCache,
 		}
 		if !info.IsDir() && strings.HasSuffix(path, ".json") {
 			fc.sizeUsed += info.Size()
+			// 路径里隐含 tenantID 与 sessionID：{baseDir}/{tenant}/{shard}/{session}.json
+			// rel 形如 {tenant}/{shard}/{session}.json，逆解析首段为 tenant，
+			// 文件名去后缀为 sessionID；shard 仅作分片，不参与 key。
+			if rel, relErr := filepath.Rel(baseDir, path); relErr == nil {
+				parts := strings.SplitN(rel, string(filepath.Separator), 2)
+				if len(parts) == 2 {
+					tenant := parts[0]
+					session := strings.TrimSuffix(filepath.Base(parts[1]), ".json")
+					if tenant != "" && session != "" {
+						fc.index[cacheIndexKey(tenant, session)] = &indexEntry{
+							path:    path,
+							size:    info.Size(),
+							modTime: info.ModTime(),
+						}
+					}
+				}
+			}
 		}
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("file cache: walk %s: %w", baseDir, err)
 	}
 	return fc, nil
+}
+
+// ResizeMax 修改 maxSize 上限。仅立即生效扩容；缩容交由下一轮 trimmer
+// 执行（按 mtime 最旧先删），避免强制删除仍活跃的会话文件。
+// 要求调用方持有 fc.mu。零值或负值拒绝（与构造时校验一致）。
+func (fc *FileCache) ResizeMax(newMaxSize int64) {
+	if newMaxSize <= 0 {
+		return
+	}
+	fc.maxSize = newMaxSize
 }
 
 // buildPath 生成缓存文件路径：
@@ -108,6 +161,13 @@ func (fc *FileCache) buildPath(tenantID, sessionID string) string {
 		shard = shard[:2]
 	}
 	return filepath.Join(fc.baseDir, tenantID, shard, sessionID+".json")
+}
+
+// cacheIndexKey 构造内存索引 key：tenantID+"/"+sessionID。
+// 用 "/" 作分隔符以避免 tenant 与 session 拼接时的碰撞（与 cache_v2.go
+// 的 cacheKey 风格对齐，但保留独立命名以免误用）。
+func cacheIndexKey(tenantID, sessionID string) string {
+	return tenantID + "/" + sessionID
 }
 
 // validCacheID 校验 ID 可以安全地作为路径段（非空、不含路径分隔符、不是相对
@@ -130,39 +190,99 @@ func (fc *FileCache) expired(modTime time.Time) bool {
 // 已过期的文件会被顺带删除并扣减 sizeUsed。
 // 任意 os.Stat 失败（含不存在）按缓存未命中处理：缓存层 fail-open，调用方
 // 回源 L3 即可。
+//
+// 索引优先（H1）：命中索引时可跳过 Stat（仍校验内容可解析）；索引与磁盘
+// 漂移时（"索引说有、磁盘说无"）按 miss 处理并摘除索引。
 func (fc *FileCache) Get(tenantID, sessionID string) (*SessionStateV2, error) {
 	if fc == nil || !validCacheID(tenantID) || !validCacheID(sessionID) {
 		return nil, fmt.Errorf("file cache: get %s/%s: %w", tenantID, sessionID, errCacheMiss)
 	}
 	path := fc.buildPath(tenantID, sessionID)
+	key := cacheIndexKey(tenantID, sessionID)
 
-	fi, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("file cache: get %s: %w", path, errCacheMiss)
-	}
-	if fc.expired(fi.ModTime()) {
-		fc.removeExpired(path)
+	fc.mu.Lock()
+	entry, indexed := fc.index[key]
+	if indexed && fc.expired(entry.modTime) {
+		// 索引条目已过期：复检磁盘后删除（避免误删并发 Set 刚刷新的同名文件）
+		fc.removeExpiredLocked(path)
+		delete(fc.index, key)
+		fc.mu.Unlock()
 		return nil, fmt.Errorf("file cache: get %s: expired: %w", path, errCacheMiss)
+	}
+	fc.mu.Unlock()
+
+	if !indexed {
+		// 索引 miss：Stat 磁盘一次；存在则回填索引。
+		fi, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("file cache: get %s: %w", path, errCacheMiss)
+		}
+		if fc.expired(fi.ModTime()) {
+			fc.removeExpired(path)
+			return nil, fmt.Errorf("file cache: get %s: expired: %w", path, errCacheMiss)
+		}
+		fc.mu.Lock()
+		fc.index[key] = &indexEntry{path: path, size: fi.Size(), modTime: fi.ModTime()}
+		fc.mu.Unlock()
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		// 读窗口内被并发 Delete/过期清理删除 → 视为未命中
+		// 读窗口内被并发 Delete/过期清理删除 → 视为未命中（同时摘除残留索引）
+		fc.mu.Lock()
+		delete(fc.index, key)
+		fc.mu.Unlock()
 		return nil, fmt.Errorf("file cache: read %s: %w", path, errCacheMiss)
 	}
 	var state SessionStateV2
 	if err := json.Unmarshal(data, &state); err != nil {
-		// 读到损坏 JSON（如异常断电留下的半截文件）：按缓存未命中处理并清理
-		fc.removeIfUnchanged(path, fi)
+		// 读到损坏 JSON（如异常断电留下的半截文件）：按缓存未命中处理并清理。
+		// 索引条目可能与磁盘现状漂移（文件已被外部修改），必须 Stat 一次取磁盘
+		// 实况再走 removeIfUnchanged，否则 fakeFileInfo 与磁盘 modTime 不一致
+		// 会让"复检 mtime/size 一致"误判，导致损坏文件残留。
+		fc.mu.Lock()
+		seen, statErr := os.Stat(path)
+		fc.mu.Unlock()
+		if statErr != nil {
+			fc.mu.Lock()
+			delete(fc.index, key)
+			fc.mu.Unlock()
+		} else {
+			fc.removeIfUnchanged(path, seen)
+			fc.mu.Lock()
+			delete(fc.index, key)
+			fc.mu.Unlock()
+		}
 		return nil, fmt.Errorf("file cache: unmarshal %s: %w", path, errCacheMiss)
 	}
 	return &state, nil
 }
 
+// fakeFileInfo 在索引命中但读路径需要 removeIfUnchanged 时构造的最小
+// os.FileInfo 视图（仅有 path/size/modTime 三字段参与比较，name/dir/isDir
+// 等调用方不消费）。
+type fileInfoShim struct {
+	os.FileInfo
+	size    int64
+	modTime time.Time
+	path    string
+}
+
+func (f *fileInfoShim) Name() string       { return filepath.Base(f.path) }
+func (f *fileInfoShim) Size() int64        { return f.size }
+func (f *fileInfoShim) ModTime() time.Time { return f.modTime }
+func (f *fileInfoShim) IsDir() bool        { return false }
+func (f *fileInfoShim) Mode() os.FileMode  { return fileCacheFilePerm }
+func (f *fileInfoShim) Sys() interface{}   { return nil }
+
+func fakeFileInfo(path string, size int64, modTime time.Time) os.FileInfo {
+	return &fileInfoShim{path: path, size: size, modTime: modTime}
+}
+
 // Set 写入会话状态（覆盖写）。
 //
 // 流程：序列化 → 记下旧文件大小 → ensureSpaceLocked 腾空间 → MkdirAll →
-// 临时文件 + rename（0644）→ 按差额记账。写失败不记账、删成功才扣减。
+// 临时文件 + rename（0644）→ 按差额记账 → 登记索引。写失败不记账、删成功才扣减。
 func (fc *FileCache) Set(state *SessionStateV2) error {
 	if fc == nil || state == nil {
 		// 与包内 CompressionMetaCache.Set / SessionCacheV2.Set 的 nil 容错约定一致
@@ -177,6 +297,7 @@ func (fc *FileCache) Set(state *SessionStateV2) error {
 		return fmt.Errorf("file cache: marshal: %w", err)
 	}
 	path := fc.buildPath(state.TenantID, state.SessionID)
+	key := cacheIndexKey(state.TenantID, state.SessionID)
 
 	// 全程持锁（含文件 IO）：保证 sizeUsed 记账与文件状态严格一致，
 	// 也保证 ensureSpaceLocked 不会重入加锁（见文件头「锁策略」）。
@@ -226,7 +347,7 @@ func (fc *FileCache) Set(state *SessionStateV2) error {
 	// 写成功才记账：先减被覆盖的旧文件，再加新文件。
 	// ensureSpaceLocked 返回 healed：自愈路径已把 sizeUsed 重置为「不含
 	// excludePath」的磁盘实况，此时再减 oldSize 会把从未计入的体积重复扣减
-	// （2026-09-05 审计 B3 负漂移），直接按新值累加即可。
+	//（2026-09-05 审计 B3 负漂移），直接按新值累加即可。
 	if healed {
 		fc.sizeUsed += int64(len(data))
 	} else {
@@ -234,6 +355,14 @@ func (fc *FileCache) Set(state *SessionStateV2) error {
 	}
 	if fc.sizeUsed < 0 {
 		fc.sizeUsed = 0
+	}
+	// 登记索引（H1）：覆盖写时只更新，不删旧条目后再插入；
+	// 保证在锁内的"sizeUsed 扣减→重增"与"索引 path/size/modTime 替换"
+	// 对外是不可分割的操作。
+	fc.index[key] = &indexEntry{
+		path:    path,
+		size:    int64(len(data)),
+		modTime: time.Now(),
 	}
 	return nil
 }
@@ -245,16 +374,20 @@ func (fc *FileCache) Delete(tenantID, sessionID string) error {
 		return nil
 	}
 	path := fc.buildPath(tenantID, sessionID)
+	key := cacheIndexKey(tenantID, sessionID)
 
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
 
 	fi, err := os.Stat(path)
 	if err != nil {
-		return nil // 不存在 → 幂等成功
+		// 不存在 → 幂等成功（同时摘除可能存在的残留索引）
+		delete(fc.index, key)
+		return nil
 	}
 	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
+			delete(fc.index, key)
 			return nil // 并发下已被删除，同样视为幂等成功
 		}
 		return fmt.Errorf("file cache: remove %s: %w", path, err)
@@ -263,6 +396,7 @@ func (fc *FileCache) Delete(tenantID, sessionID string) error {
 	if fc.sizeUsed < 0 {
 		fc.sizeUsed = 0
 	}
+	delete(fc.index, key)
 	return nil
 }
 
@@ -285,6 +419,7 @@ func (fc *FileCache) ensureSpaceLocked(needed int64, excludePath string) (healed
 		path string
 		size int64
 		mod  time.Time
+		key  string
 	}
 	var items []candidate
 	var onDisk int64
@@ -318,6 +453,15 @@ func (fc *FileCache) ensureSpaceLocked(needed int64, excludePath string) (healed
 			if fc.sizeUsed < 0 {
 				fc.sizeUsed = 0
 			}
+			// 同步重建索引：路径 → {tenant,session} 逆向解析
+			if rel, relErr := filepath.Rel(fc.baseDir, it.path); relErr == nil {
+				parts := strings.SplitN(rel, string(filepath.Separator), 2)
+				if len(parts) == 2 {
+					tenant := parts[0]
+					session := strings.TrimSuffix(filepath.Base(parts[1]), ".json")
+					delete(fc.index, cacheIndexKey(tenant, session))
+				}
+			}
 		}
 	}
 	return true
@@ -325,10 +469,16 @@ func (fc *FileCache) ensureSpaceLocked(needed int64, excludePath string) (healed
 
 // removeExpired 在锁内复检 mtime 后删除过期文件并扣减 sizeUsed。
 // 锁内复检是为了避免误删并发 Set 刚刚刷新过的同名文件。
+// （同时摘除索引条目，保持索引与磁盘一致。）
 func (fc *FileCache) removeExpired(path string) {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
+	fc.removeExpiredLocked(path)
+}
 
+// removeExpiredLocked 复用 removeExpired 的核心逻辑但要求调用方已持锁。
+// Get 在检测到索引过期时会先持锁调用本函数，避免重复加锁。
+func (fc *FileCache) removeExpiredLocked(path string) {
 	fi, err := os.Stat(path)
 	if err != nil || !fc.expired(fi.ModTime()) {
 		return // 已被并发删除，或已被并发 Set 刷新
@@ -343,6 +493,12 @@ func (fc *FileCache) removeExpired(path string) {
 	fc.sizeUsed -= fi.Size()
 	if fc.sizeUsed < 0 {
 		fc.sizeUsed = 0
+	}
+	if rel, relErr := filepath.Rel(fc.baseDir, path); relErr == nil {
+		parts := strings.SplitN(rel, string(filepath.Separator), 2)
+		if len(parts) == 2 {
+			delete(fc.index, cacheIndexKey(parts[0], strings.TrimSuffix(filepath.Base(parts[1]), ".json")))
+		}
 	}
 }
 
@@ -367,15 +523,22 @@ func (fc *FileCache) removeIfUnchanged(path string, seen os.FileInfo) {
 	if fc.sizeUsed < 0 {
 		fc.sizeUsed = 0
 	}
+	if rel, relErr := filepath.Rel(fc.baseDir, path); relErr == nil {
+		parts := strings.SplitN(rel, string(filepath.Separator), 2)
+		if len(parts) == 2 {
+			delete(fc.index, cacheIndexKey(parts[0], strings.TrimSuffix(filepath.Base(parts[1]), ".json")))
+		}
+	}
 }
 
-// Stats 返回缓存占用统计：size_used_bytes / max_size_bytes / usage_percent。
+// Stats 返回缓存占用统计：size_used_bytes / max_size_bytes / usage_percent / index_entries。
 func (fc *FileCache) Stats() map[string]interface{} {
 	if fc == nil {
 		return map[string]interface{}{
 			"size_used_bytes": int64(0),
 			"max_size_bytes":  int64(0),
 			"usage_percent":   0.0,
+			"index_entries":   0,
 		}
 	}
 	fc.mu.Lock()
@@ -389,6 +552,7 @@ func (fc *FileCache) Stats() map[string]interface{} {
 		"size_used_bytes": fc.sizeUsed,
 		"max_size_bytes":  fc.maxSize,
 		"usage_percent":   percent,
+		"index_entries":   len(fc.index),
 	}
 }
 

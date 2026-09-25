@@ -22,6 +22,9 @@
 /.kiro/
 /.security-audit/
 
+# 2026-09-25: TRAE IDE tool cache (commit-msg drafts, session scratch)
+/.trae/
+
 # Note: .agents/ is intentionally NOT tracked in this repo.
 # It is a local skill/task workspace (project skills db-sync-252-local,
 # llm-gateway-deploy live here on each machine), not shared code.
@@ -400,3 +403,4 @@ tests/stress/handoff_b_s8s13_test.go
 # docs/audit/<date>-*.md 报告，不需要把 GB 级文本入仓。
 docs/audit/**/pg_*pg17_logs.txt
 docs/audit/**/ctr_snapshot_*.log
+.trae/

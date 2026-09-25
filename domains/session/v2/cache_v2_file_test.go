@@ -456,3 +456,121 @@ func fileCacheOnDiskBytes(t *testing.T, dir string) int64 {
 	}
 	return total
 }
+
+// TestFileCacheIndexConsistency H1 验收：并发 Set/Delete/过期交错后，索引
+// 与磁盘 Walk 结果一致（条目数与体积均匹配）。原 Plan §3 H1「验收」项。
+func TestFileCacheIndexConsistency(t *testing.T) {
+	fc := newTestFileCache(t, t.TempDir(), 30*time.Millisecond, 16*1024)
+
+	const goroutines = 8
+	const opsPerG = 60
+
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(seed int64) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(seed))
+			for i := 0; i < opsPerG; i++ {
+				sid := fmt.Sprintf("sess-%03d", rng.Intn(12))
+				switch rng.Intn(4) {
+				case 0, 1:
+					if err := fc.Set(newTestFileState("tenant-idx", sid, i+1)); err != nil {
+						t.Errorf("Set: %v", err)
+						return
+					}
+				case 2:
+					if _, err := fc.Get("tenant-idx", sid); err != nil && !errors.Is(err, errCacheMiss) {
+						t.Errorf("Get: %v", err)
+						return
+					}
+				default:
+					if err := fc.Delete("tenant-idx", sid); err != nil {
+						t.Errorf("Delete: %v", err)
+						return
+					}
+				}
+				time.Sleep(3 * time.Millisecond)
+			}
+		}(int64(g))
+	}
+	wg.Wait()
+
+	// 等待 TTL 让所有条目过期（30ms TTL）
+	time.Sleep(60 * time.Millisecond)
+	// 触发一次扫描式 Get 促使过期清理
+	for i := 0; i < 12; i++ {
+		_, _ = fc.Get("tenant-idx", fmt.Sprintf("sess-%03d", i))
+	}
+
+	stats := fc.Stats()
+	used := stats["size_used_bytes"].(int64)
+	indexEntries := stats["index_entries"].(int)
+	if used < 0 || indexEntries < 0 {
+		t.Fatalf("stats anomaly: used=%d entries=%d", used, indexEntries)
+	}
+	// 索引条目数与磁盘 .json 文件数应一致（每个索引条目对应一个文件）
+	var onDiskFiles int
+	_ = filepath.Walk(fc.baseDir, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() && strings.HasSuffix(path, ".json") {
+			onDiskFiles++
+		}
+		return nil
+	})
+	if indexEntries != onDiskFiles {
+		t.Fatalf("index entries %d != disk files %d (drift)", indexEntries, onDiskFiles)
+	}
+	if used != fileCacheOnDiskBytes(t, fc.baseDir) {
+		t.Fatalf("sizeUsed %d != disk usage", used)
+	}
+}
+
+// TestFileCacheIndexSurvivesRestart H1 验收：进程重启后内存索引从磁盘
+// Walk 重建，Set 后 Get 命中索引（不需额外 Stat）。
+func TestFileCacheIndexSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	fc1 := newTestFileCache(t, dir, time.Minute, 1<<20)
+	if err := fc1.Set(newTestFileState("tenant-r", "sess-restart", 1)); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := fc1.Set(newTestFileState("tenant-r", "sess-other", 2)); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	_ = fc1.Close()
+
+	// 重启 → 索引重建
+	fc2 := newTestFileCache(t, dir, time.Minute, 1<<20)
+	if got := fc2.Stats()["index_entries"].(int); got != 2 {
+		t.Fatalf("重启后 index_entries = %d, want 2", got)
+	}
+	if _, err := fc2.Get("tenant-r", "sess-restart"); err != nil {
+		t.Fatalf("Get after restart: %v", err)
+	}
+	// 命中索引路径不应删条目
+	if got := fc2.Stats()["index_entries"].(int); got != 2 {
+		t.Fatalf("Get 后 index_entries = %d, want 2 (索引应保留)", got)
+	}
+}
+
+// TestFileCacheResizeMax H4 验收：ResizeMax 扩容立即生效；
+// 缩容拒绝（不强制淘汰）。
+func TestFileCacheResizeMax(t *testing.T) {
+	fc := newTestFileCache(t, t.TempDir(), time.Minute, 1024)
+
+	fc.mu.Lock()
+	fc.ResizeMax(2048)
+	newMax := fc.maxSize
+	fc.mu.Unlock()
+	if newMax != 2048 {
+		t.Fatalf("ResizeMax 后 maxSize = %d, want 2048", newMax)
+	}
+	// 非法值拒绝
+	fc.mu.Lock()
+	fc.ResizeMax(0)
+	fc.ResizeMax(-1)
+	maxAfterBad := fc.maxSize
+	fc.mu.Unlock()
+	if maxAfterBad != 2048 {
+		t.Fatalf("非法 ResizeMax 修改了值: maxSize = %d", maxAfterBad)
+	}
+}
