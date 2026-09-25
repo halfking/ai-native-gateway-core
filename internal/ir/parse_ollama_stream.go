@@ -32,24 +32,28 @@ import (
 // ignored, only `done`/`message.content`/`message.thinking` are surfaced
 // into the IR StreamChunk.
 //
-// # CONTRACT (cumulative content — audit r0924 fix-a task 1)
+// # CONTRACT (incremental content — R66 audit round)
 //
-// Ollama NDJSON `message.content` is a CUMULATIVE value (the full assistant
-// text so far), NOT incremental delta bytes like OpenAI/Anthropic SSE.
-// ParseOllamaStreamChunk therefore carries it ONLY in
-// StreamChunk.CumulativeContent and leaves StreamChunk.Delta nil on content
-// frames. Every wire-level StreamDelta.Content in this repo is defined as
-// incremental bytes; consumers MUST diff the cumulative value against the
-// previously seen one before emitting delta.content downstream. Do NOT copy
-// CumulativeContent into Delta.Content here — that re-emits the whole text
-// on every frame (client-visible text duplication).
+// Ollama NDJSON `message.content` carries INCREMENTAL delta bytes per
+// frame, identical to OpenAI/Anthropic SSE — the full assistant text
+// must be reconstructed by concatenating successive frames' content.
+// WebFetch of https://github.com/ollama/ollama/blob/main/docs/api.md
+// (2026-09-25) confirms the official example carries only delta
+// fragments (e.g. "The"); the terminal frame carries content="".
+// ParseOllamaStreamChunk therefore surfaces content via StreamDelta
+// (DeltaType "text") and leaves CumulativeContent empty on content
+// frames, matching every other dialect in this repo.
 //
-// R65 契约存疑（P4 接线前必清）：本仓 wire 文档
-// docs/vendor-formats/ollama.md 的流式示例是增量分片（"" → "The" → "..."），
-// 与本 CONTRACT 的累计值假设方向相反；真实 Ollama /api/chat 行为未经活体
-// NDJSON 抓包裁决。若增量属实，按"累计差分"消费将丢正文/产乱码。当前
-// ParseOllamaStreamChunk 零生产调用方（P4 dispatch 未接线），不可达；
-// 接线 P4 前必须先以活体抓包定契约并同步本注释与 wire 文档，二取一改。
+// The prior r0924 "cumulative" hypothesis was a misreading of the wire
+// format (the comment block below used to claim Ollama repeats the
+// full assistant text on every frame, which the official docs do not
+// support). Consumers that now diff successive Delta.Content values
+// reassemble the full text losslessly; consumers that previously read
+// CumulativeContent were never shipped (zero callers, P4 not wired) so
+// the contract reversal is safe.
+//
+// Reasoning content (`message.thinking`) was always incremental and is
+// unaffected.
 //
 // A single NDJSON line may produce MORE THAN ONE chunk: a terminal line that
 // also carries content (one-shot answers like "yes"/"no") yields the content
@@ -107,14 +111,18 @@ func ParseOllamaStreamChunk(line []byte) ([]*StreamChunk, error) {
 
 	var chunks []*StreamChunk
 
-	// Delta content. CONTRACT: Ollama's `message.content` is cumulative (see
+	// Delta content. CONTRACT: Ollama's `message.content` is incremental (see
 	// the function-level contract comment) — it is surfaced through
-	// CumulativeContent only; Delta stays nil so no consumer can mistake the
-	// full text for incremental bytes and duplicate it on the wire.
+	// StreamDelta.Content so it composes with every other dialect's delta
+	// path. CumulativeContent stays empty so no consumer mistakes the
+	// delta for a final snapshot.
 	if raw.Message.Content != "" {
 		c := next()
 		c.Type = ChunkTypeDelta
-		c.CumulativeContent = raw.Message.Content
+		c.Delta = &StreamDelta{
+			Content:   raw.Message.Content,
+			DeltaType: "text",
+		}
 		chunks = append(chunks, c)
 	}
 
