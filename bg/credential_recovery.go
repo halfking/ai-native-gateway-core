@@ -1405,6 +1405,14 @@ func reconcileStaleNodeProbeStateSQL() string {
 		WHERE cmb.available = TRUE
 			  AND COALESCE(nps.paused, FALSE) = FALSE
 			  AND NOT ` + nodeProbeHealthyParkedSQL("nps") + `
+			  -- R65 audit G (2026-09-25): the reconciler must honor the
+			  -- node_probe_state scheduling surface exactly like
+			  -- pumpDueStatesSQL does. Without this gate a gateway-side
+			  -- failure row (cmb.available stays TRUE — updateBindingAvailability
+			  -- refuses the write — plus a 15m fixed backoff) sits in this
+			  -- candidate set and Submit re-enqueued it at now()+5s every 30s
+			  -- tick, bypassing the backoff ladder entirely.
+			  AND nps.next_retry_at <= now()
 
 		  AND COALESCE(c.status, 'active') = 'active'
 		  AND COALESCE(c.lifecycle_status, 'active') = 'active'

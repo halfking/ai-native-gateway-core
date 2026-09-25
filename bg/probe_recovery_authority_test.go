@@ -53,4 +53,12 @@ func TestReconcileStaleNodeProbeStateSQLPreservesPausedNodes(t *testing.T) {
 	if strings.Contains(sql, "OR nps.paused = TRUE") {
 		t.Fatalf("reconcile SQL must not auto-resume paused node probes:\n%s", sql)
 	}
+	// R65 audit G (2026-09-25): the reconciler must honor the scheduling
+	// surface — without the next_retry_at gate it re-submitted gateway-side
+	// failure rows (cmb.available stays TRUE + 15m backoff) at now()+5s every
+	// 30s tick, bypassing the backoff ladder.
+	if !strings.Contains(sql, "nps.next_retry_at <= now()") {
+		t.Fatalf("reconcile SQL must gate on the node_probe_state schedule "+
+			"(nps.next_retry_at <= now(), same as pumpDueStatesSQL):\n%s", sql)
+	}
 }
