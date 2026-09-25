@@ -30,6 +30,8 @@ export default {
     probeHealth: "探測健康度",
     systemMonitor: "系統監測",
     providers: "供應商",
+    reconciliation: "供應商對帳",
+    settlementReport: "結算報表",
     pricing: "成本價格",
     modelPricing: "定價管理",
     freePool: "免費資源",

@@ -268,6 +268,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 'claim'——final-success claim 同事务补偿登记（telemetry
 			// registerFinalSuccessClaimOutbox）的枚举值。
 			"747_session_mirror_outbox_source_claim.sql",
+			// 748 (2026-09-25, probe-cost-optimization P0-1): 自检系统密钥
+			// key_tier 'default'(12 RPM)→'system'(300 RPM) 存量修复——
+			// 历史 EnsureSystemAPIKey INSERT 未设 tier，48h 实测 86% 自检
+			// 请求被自家网关 RPM 弹回（gw_rpm_exceeded）形成自增强风暴。
+			// 幂等（WHERE 全限定，二次执行 0 行）；网关启动侧等价自愈
+			// bg.HealSelfCheckSystemKeyTier 双通道兜底。
+			"748_selfcheck_system_key_tier.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，

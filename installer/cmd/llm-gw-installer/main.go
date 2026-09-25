@@ -541,6 +541,9 @@ var reportSnapshotsInternalDimsMigration746 []byte
 //go:embed embeddata/startup/747_session_mirror_outbox_source_claim.sql
 var sessionMirrorOutboxSourceClaimMigration747 []byte
 
+//go:embed embeddata/startup/748_selfcheck_system_key_tier.sql
+var selfcheckSystemKeyTierMigration748 []byte
+
 //go:embed embeddata/startup/800_provider_endpoint_protocols.sql
 var providerEndpointProtocolsMigration800 []byte
 
@@ -705,6 +708,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/745_report_snapshots.sql":                                               reportSnapshotsMigration745,
 	"startup/746_report_snapshots_internal_dims.sql":                                 reportSnapshotsInternalDimsMigration746,
 	"startup/747_session_mirror_outbox_source_claim.sql":                             sessionMirrorOutboxSourceClaimMigration747,
+	"startup/748_selfcheck_system_key_tier.sql":                                      selfcheckSystemKeyTierMigration748,
 	"startup/800_provider_endpoint_protocols.sql":                                    providerEndpointProtocolsMigration800,
 }
 

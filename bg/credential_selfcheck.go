@@ -25,6 +25,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/recentmodels"
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -86,6 +87,14 @@ type CredentialSelfcheckWorker struct {
 	wg          sync.WaitGroup
 	probeSink   ProbeEventSink
 	redis       *redis.Client
+
+	// P0-3 (probe-cost-optimization §5) rate-limit circuit breaker state.
+	// Both fields are only touched from the loop goroutine (cycleOnce →
+	// runOne → doHTTP), so no lock is needed. rateLimited marks the current
+	// cycle; lastCycleRateLimited is the inter-cycle memory — the cycle
+	// after an aborted one probes only the primary model (once).
+	rateLimited          bool
+	lastCycleRateLimited bool
 }
 
 func (w *CredentialSelfcheckWorker) SetProbeSink(sink ProbeEventSink) {
@@ -306,11 +315,24 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 		return fmt.Errorf("insert run: %w", err)
 	}
 	w.publishSelfcheck(credentialID, runID, "in-flight")
+
+	// P0-3 (probe-cost-optimization §5): a cycle that follows a rate-limit
+	// abort probes only the primary model, once. Memory clears on the first
+	// cycle that finishes without a 429.
+	models := pick.models
+	ratelimitAbort := settings.GetPlatformBool("probe.selfcheck.ratelimit_abort", true)
+	if ratelimitAbort && w.lastCycleRateLimited && len(models) > 1 {
+		slog.Warn("credential_selfcheck_worker: previous cycle aborted on rate limit, primary-only this cycle",
+			"credential_id", credentialID, "candidates_suppressed", len(models)-1)
+		models = models[:1]
+	}
+	w.rateLimited = false
+
 	var attempted []string
 	lastErrType, lastErrDetail := "none", ""
 	hadToolCall, success := false, false
 	totalRounds, successRounds, totalTokens, totalLatency := 0, 0, 0, 0
-	for i, model := range pick.models {
+	for i, model := range models {
 		strategy := pick.strategy
 		if i > 0 {
 			strategy = fmt.Sprintf("fallback_%d", i)
@@ -328,7 +350,20 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 		}
 		lastErrType, lastErrDetail = r.ErrType, r.ErrDetail
 		slog.Warn("credential_selfcheck_worker: model failed", "credential_id", credentialID, "model", model, "strategy", strategy, "err_type", r.ErrType)
+		// P0-3 abort: a rate-limit rejection means this credential (or the
+		// self-check key itself) is throttled for the whole cycle — walking
+		// the remaining candidates only amplifies the load and feeds the
+		// failure matrix. Terminate the fallback loop for this cycle.
+		if r.RateLimited && ratelimitAbort {
+			w.rateLimited = true
+			slog.Warn("credential_selfcheck_worker: rate-limited, aborting remaining candidates this cycle",
+				"credential_id", credentialID, "model", model, "err_detail", r.ErrDetail, "candidates_suppressed", len(models)-i-1)
+			break
+		}
 	}
+	// Inter-cycle memory only exists when the abort feature is on — with the
+	// switch off this is bit-for-bit legacy behavior (0 = 现行行为).
+	w.lastCycleRateLimited = w.rateLimited && ratelimitAbort
 	status := "success"
 	if !success {
 		status = "failed"
@@ -666,6 +701,31 @@ type credentialSelfcheckRound struct {
 	HTTPCode    int
 	ErrType     string
 	ErrDetail   string
+	// RateLimited is the P0-3 abort signal: the round failed with a
+	// rate-limit rejection (gateway 429 / gw_rpm_exceeded / key_throttled).
+	// runOne terminates the credential's remaining candidates on sight.
+	RateLimited bool
+}
+
+// isSelfcheckRateLimit reports whether the round's failure is a rate-limit
+// rejection — the P0-3 abort trigger. HTTP 429 covers both the gateway's own
+// limiter (gw_rpm_exceeded / gw_key_throttled early-exits surface as 429 with
+// a rate_limit_error body) and an upstream 429 passed through the pinned
+// credential; the classified kind and detail markers catch deployments that
+// surface the same throttles on a non-429 status.
+func isSelfcheckRateLimit(status int, errType, detail string) bool {
+	if status == http.StatusTooManyRequests {
+		return true
+	}
+	if errType == string(errorsx.KindRateLimit) {
+		return true
+	}
+	for _, marker := range []string{"gw_rpm_exceeded", "gw_key_throttled", "key_throttled", "rate_limit_exceeded"} {
+		if strings.Contains(detail, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *CredentialSelfcheckWorker) doRequest(ctx context.Context, credentialID int, model string) credentialSelfcheckRound {
@@ -718,6 +778,10 @@ func (w *CredentialSelfcheckWorker) doHTTP(ctx context.Context, credentialID int
 	if resp.StatusCode != http.StatusOK {
 		r.ErrType = string(errorsx.ClassifyErrorWithBody(resp.StatusCode, buf[:n]))
 		r.ErrDetail = truncateStrSC(string(buf[:n]), 200)
+		if isSelfcheckRateLimit(resp.StatusCode, r.ErrType, r.ErrDetail) {
+			r.RateLimited = true
+			w.rateLimited = true
+		}
 		return r
 	}
 	var parsed struct {

@@ -381,3 +381,59 @@ func TestBuildRangeReport_InternalTenantFilterKeepsDays(t *testing.T) {
 		t.Errorf("days totals = %+v", rep.Days)
 	}
 }
+
+// TestProviderQualityScore —— 评分项数学（2026-09-26 审计轮 F2）：
+// 成功率 × 时效因子（P95≤5s 不扣分 / 线性折减 / 无数据不惩罚），
+// 一位小数四舍五入，零请求行 0 分。
+func TestProviderQualityScore(t *testing.T) {
+	cases := []struct {
+		name string
+		tot  Totals
+		want float64
+	}{
+		{"zero requests", Totals{RequestCount: 0}, 0},
+		{"all success fast", Totals{RequestCount: 10, SuccessCount: 10, LatencyP95Ms: 500}, 100},
+		{"pct at baseline", Totals{RequestCount: 10, SuccessCount: 10, LatencyP95Ms: 5000}, 100},
+		{"slow halves", Totals{RequestCount: 10, SuccessCount: 10, LatencyP95Ms: 10000}, 50},
+		{"errors cap", Totals{RequestCount: 10, SuccessCount: 5, LatencyP95Ms: 500}, 50},
+		{"errors x slow", Totals{RequestCount: 100, SuccessCount: 80, LatencyP95Ms: 20000}, 20},
+		{"no latency data no penalty", Totals{RequestCount: 10, SuccessCount: 5, LatencyP95Ms: 0}, 50},
+		{"one decimal rounding", Totals{RequestCount: 3, SuccessCount: 2, LatencyP95Ms: 500}, 66.7},
+	}
+	for _, tc := range cases {
+		if got := ProviderQualityScore(tc.tot); got != tc.want {
+			t.Errorf("%s: ProviderQualityScore = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestBuildRangeReport_ProviderQualityScorePopulated —— BuildRangeReport
+// 的 ProviderRow 必须带出 quality_score（读面装配不漏字段）。
+func TestBuildRangeReport_ProviderQualityScorePopulated(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
+	}
+	defer mock.Close()
+
+	pid := int64(7)
+	snaps := []Snapshot{
+		mkSnap(ScopeDailyTotal, "all", "2026-09-01", "", 10, 10, nil, nil, nil),
+		mkSnap(ScopeDailyByProvider, "7", "2026-09-01", "", 10, 10, nil, &pid, nil),
+		mkSnap(ScopeDailyByModel, "7", "2026-09-01", "gpt-x", 10, 10, nil, &pid, nil),
+	}
+	mustSnapshotRows(t, mock, snaps, 3)
+
+	rep, err := BuildRangeReport(context.Background(), mock,
+		day(t, "2026-09-01"), day(t, "2026-09-01"), ViewProvider, RangeFilter{}, nil)
+	if err != nil {
+		t.Fatalf("BuildRangeReport: %v", err)
+	}
+	if len(rep.Providers) != 1 {
+		t.Fatalf("providers = %d, want 1", len(rep.Providers))
+	}
+	p := rep.Providers[0]
+	if p.QualityScore != 100 {
+		t.Errorf("quality_score = %v, want 100 (all success, no latency penalty)", p.QualityScore)
+	}
+}

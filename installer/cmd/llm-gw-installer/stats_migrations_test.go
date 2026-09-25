@@ -191,7 +191,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// 736 (Wave 3 B1, 2026-09-22): peak/off-peak rate multiplier
 		// columns + shared SQL resolver — five-point sync in the same
 		// round as the migration landed. Idempotent.
-		"736_maas_rate_multiplier.sql":           maasRateMultiplierMigration736,
+		"736_maas_rate_multiplier.sql": maasRateMultiplierMigration736,
 		// 737 (Wave 3 B8, 2026-09-22): internal reconciliation findings
 		// table — five-point sync in the same round as the migration
 		// landed. Idempotent (CREATE TABLE IF NOT EXISTS).
@@ -220,6 +220,10 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// 与消费方（bg worker / admin 读面）同轮落地，五点同步 + parity
 		// 守卫。可重入（ALTER TYPE USING text::text + IF NOT EXISTS）。
 		"746_report_snapshots_internal_dims.sql": reportSnapshotsInternalDimsMigration746,
+		// 748 (2026-09-25, probe-cost-optimization P0-1): 自检系统密钥
+		// key_tier 'default'(12 RPM)→'system'(300 RPM) 存量修复 —— 六点
+		// 同步与迁移同轮落地；幂等（WHERE 全限定，二次执行 0 行）。
+		"748_selfcheck_system_key_tier.sql": selfcheckSystemKeyTierMigration748,
 		// 800 (2026-09-24, r0924 supplier-protocol-optimization §3.2):
 		// provider_endpoint_protocols 每 provider 多端点表 + 回填 —— 原
 		// deploy/sql/migrations/V800 文件从未进任何存量库通道，本轮移入

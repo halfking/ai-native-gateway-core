@@ -38,4 +38,6 @@ export default {
   errors: 'Fehler',
   cost: 'Kosten',
   errorBreakdown: 'Fehleraufschlüsselung',
+  qualityScore: "Qualitätsbewertung",
+
 }
