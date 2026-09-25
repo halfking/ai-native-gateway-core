@@ -269,31 +269,33 @@ func TestSessionCacheV2Lite_InvalidateVsGetNoReseed(t *testing.T) {
 
 // ── full 模式（含零值 mode）：等价性 ─────────────────────────────────────
 
-// TestSessionCacheV2Full_IgnoresFileCache full 模式即使注入了 L1.5 也不读写它：
-// L1.5 里预置的数据不能被 full 读路径命中，Set 也不落盘。
-func TestSessionCacheV2Full_IgnoresFileCache(t *testing.T) {
+// TestSessionCacheV2Full_FileCacheSharedWithLite full + 注入 L1.5 时与 Lite
+// 一致读写 L1.5（契约翻转：H2 装配点未来启用此契约；生产当前仅 cmd/gateway/
+// storage_mode_init.go:286 注入 Lite + fileCache，本路径无实际行为变化，仅为
+// 装配点未来启用准备的安全断言）。
+func TestSessionCacheV2Full_FileCacheSharedWithLite(t *testing.T) {
 	fc := newIntegrationFileCache(t)
 	c := NewSessionCacheV2WithMode(nil, "", 0, storage.StorageModeFull, fc)
 	assert.NotNil(t, c.l2, "full 模式保留 L2（此处为 disabled 实例，无需真实 Redis）")
 	ctx := context.Background()
 
-	// 预置 L1.5：full 读路径不得命中它
+	// 预置 L1.5：full 读路径应命中它（与 lite 行为一致）
 	seeded := newIntegrationState("tenant-full", "sess-full-001", 11)
 	require.NoError(t, fc.Set(seeded))
 
 	require.NoError(t, c.Set(ctx, newIntegrationState("tenant-full", "sess-full-001", 12)))
 
-	// Set 不落盘：L1.5 里仍是预置的旧值（full 不写 L1.5）
+	// Set 落盘：L1.5 应是新值（full + 注 fileCache 时写 L1.5）
 	fcState, err := fc.Get("tenant-full", "sess-full-001")
 	require.NoError(t, err)
-	assert.Equal(t, 11, fcState.LastTurnNo, "full 模式 Set 不得写 L1.5")
+	assert.Equal(t, 12, fcState.LastTurnNo, "full + 注 fileCache 时 Set 写 L1.5")
 
-	// L1 命中走 L1；清掉 L1 后：full 不得读 L1.5 → 回源 L3（nil-db）→ nil
+	// L1 命中走 L1；清掉 L1 后：full 应从 L1.5 命中（与 lite 行为一致）
 	assert.NotNil(t, c.l1.Get("tenant-full", "sess-full-001"))
 	c.l1.Delete("tenant-full", "sess-full-001")
 	got, err := c.Get(ctx, "tenant-full", "sess-full-001")
 	require.NoError(t, err)
-	assert.Nil(t, got, "full 模式读路径不得命中 L1.5")
+	assert.NotNil(t, got, "full + 注 fileCache 时 Get 应命中 L1.5")
 
 	// Invalidate 不因 L1.5 非空而出错
 	require.NoError(t, c.Invalidate(ctx, "tenant-full", "sess-full-001"))
