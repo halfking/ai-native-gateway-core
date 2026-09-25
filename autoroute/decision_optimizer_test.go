@@ -417,3 +417,189 @@ func TestDecide_SessionCacheHit_SkipsFeedback(t *testing.T) {
 		t.Fatalf("cache hit must not record feedback, got %d records", n)
 	}
 }
+
+// failingPutStore wraps an in-memory ProfileStore and forces Put to error.
+// Get is left untouched so profile lookups still succeed. The hook is
+// verified via putCalls (mutex-guarded so concurrent tests stay race-free).
+type failingPutStore struct {
+	*MemoryProfileStore
+	mu       sync.Mutex
+	putErr   error
+	putCalls int
+}
+
+func (f *failingPutStore) Put(_ context.Context, _ int, _ Profile, _ time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.putCalls++
+	return f.putErr
+}
+
+func (f *failingPutStore) PutCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.putCalls
+}
+
+// TestDecider_ConcurrentDecide_ThreadSafeRanking spawns N goroutines that
+// hammer Decide() concurrently to ensure the optimizer hooks' counters
+// are race-free and every call returns a populated Decision. Run under
+// `go test -race` to catch data races on shared state.
+func TestDecider_ConcurrentDecide_ThreadSafeRanking(t *testing.T) {
+	cls := &stubClassifier{name: "heuristic", out: &Classification{
+		Primary: TaskCode, Confidence: 0.9, Classifier: "heuristic",
+	}}
+	idx := &stubIndex{cands: []ScoredCandidate{
+		{Candidate: Candidate{CanonicalName: "model-a", CredentialID: 1, RawModel: "model-a"}},
+	}}
+	ranker := &rankingOptimizer{}
+	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
+	d.SetOptimizer(ranker)
+
+	const goroutines = 20
+	const callsPerGoroutine = 50
+	total := goroutines * callsPerGoroutine
+
+	// Snapshot the package-level drop counter before the burst: every
+	// dispatchFeedback either acquires a slot or drops synchronously inside
+	// Decide, so after wg.Wait() the accounting identity
+	// recorded + droppedDelta == total must hold exactly.
+	_, _, _, _, droppedBefore := RoutingOutcomeStats()
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func(gid int) {
+			defer wg.Done()
+			for i := 0; i < callsPerGoroutine; i++ {
+				dec, err := d.Decide(context.Background(), ClassificationSignals{}, gid, "", "", "")
+				if err != nil {
+					t.Errorf("goroutine %d iter %d: Decide failed: %v", gid, i, err)
+					return
+				}
+				if dec == nil {
+					t.Errorf("goroutine %d iter %d: nil Decision", gid, i)
+					return
+				}
+				if dec.ChosenModel != "model-a" {
+					t.Errorf("goroutine %d iter %d: ChosenModel=%q want model-a", gid, i, dec.ChosenModel)
+					return
+				}
+				if dec.TaskType != TaskCode {
+					t.Errorf("goroutine %d iter %d: TaskType=%s want %s", gid, i, dec.TaskType, TaskCode)
+					return
+				}
+				if len(dec.CandidatesTopN) == 0 {
+					t.Errorf("goroutine %d iter %d: CandidatesTopN is empty", gid, i)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	// Feedback writes go through the bounded feedbackWriteSlots semaphore
+	// (maxConcurrentFeedbackWrites=32, drop-on-full by contract — a decision
+	// burst must not convert into write pressure). So a 1000-call burst does
+	// NOT yield 1000 recorded rows: excess dispatches are dropped and counted.
+	// Poll until the accounting settles (acquired-but-inflight goroutines
+	// append within microseconds), then assert the identity: every dispatch
+	// either landed in the stub or was dropped — none lost, none doubled.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ranker.mu.Lock()
+		got := len(ranker.feedbacks)
+		ranker.mu.Unlock()
+		_, _, _, _, dropped := RoutingOutcomeStats()
+		droppedDelta := dropped - droppedBefore
+		if got+int(droppedDelta) >= total || time.Now().After(deadline) {
+			if got < 1 {
+				t.Fatalf("no feedback recorded under concurrency (dropped delta=%d)", droppedDelta)
+			}
+			if got+int(droppedDelta) != total {
+				t.Fatalf("feedback accounting hole: recorded=%d dropped=%d total=%d",
+					got, droppedDelta, total)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestDecider_ContextCanceled_FallsBackToBaseline verifies that a cancelled
+// context does not panic and that Decide still returns a usable baseline
+// (default profile + the index's recommendation order). The canonical
+// Decide defends against nil ctx but does not check ctx.Err() eagerly, so
+// a cancelled context is effectively ignored when the underlying
+// classifier and index are non-blocking stubs.
+func TestDecider_ContextCanceled_FallsBackToBaseline(t *testing.T) {
+	cls := &stubClassifier{name: "heuristic", out: &Classification{
+		Primary: TaskCode, Confidence: 0.9, Classifier: "heuristic",
+	}}
+	idx := &stubIndex{cands: []ScoredCandidate{
+		{Candidate: Candidate{CanonicalName: "model-a", CredentialID: 1, RawModel: "model-a"}},
+		{Candidate: Candidate{CanonicalName: "model-b", CredentialID: 2, RawModel: "model-b"}},
+	}}
+	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	dec, err := d.Decide(ctx, ClassificationSignals{}, 1, "", "", "")
+	if err != nil {
+		t.Fatalf("Decide on cancelled context should fall back, got error: %v", err)
+	}
+	if dec == nil {
+		t.Fatal("expected non-nil Decision on cancelled context")
+	}
+	if dec.Profile != d.DefaultProfile {
+		t.Fatalf("Profile = %q, want baseline %q", dec.Profile, d.DefaultProfile)
+	}
+	if len(dec.CandidatesTopN) != 2 {
+		t.Fatalf("expected 2 baseline candidates, got %d", len(dec.CandidatesTopN))
+	}
+	if dec.CandidatesTopN[0].Candidate.CanonicalName != "model-a" {
+		t.Fatalf("baseline ordering broken: first = %q, want model-a",
+			dec.CandidatesTopN[0].Candidate.CanonicalName)
+	}
+	if dec.ChosenModel != "model-a" {
+		t.Fatalf("baseline winner should be model-a, got %q", dec.ChosenModel)
+	}
+}
+
+// TestDecider_ProfileStorePutError_StillDecides verifies that a header-driven
+// profile override wins even when the store's Put path errors, and that
+// Decide never panics on a store failure. Put is best-effort: the decider
+// swallows the error (logged at WARN) and keeps the resolved profile in
+// the returned Decision.
+func TestDecider_ProfileStorePutError_StillDecides(t *testing.T) {
+	cls := &stubClassifier{name: "heuristic", out: &Classification{
+		Primary: TaskCode, Confidence: 0.9, Classifier: "heuristic",
+	}}
+	idx := &stubIndex{cands: []ScoredCandidate{
+		{Candidate: Candidate{CanonicalName: "model-a", CredentialID: 1, RawModel: "model-a"}},
+	}}
+
+	store := &failingPutStore{
+		MemoryProfileStore: NewMemoryProfileStore(),
+		putErr:             errors.New("disk full"),
+	}
+	d := NewDecider(cls, nil, idx, store)
+
+	dec, err := d.Decide(context.Background(), ClassificationSignals{}, 42, string(ProfileSpeedFirst), "", "")
+	if err != nil {
+		t.Fatalf("Decide with failing Put: %v", err)
+	}
+	if dec == nil {
+		t.Fatal("expected non-nil Decision despite Put failure")
+	}
+	if dec.Profile != ProfileSpeedFirst {
+		t.Fatalf("Profile = %q, want header override %q", dec.Profile, ProfileSpeedFirst)
+	}
+	if dec.ChosenModel != "model-a" {
+		t.Fatalf("ChosenModel = %q, want model-a", dec.ChosenModel)
+	}
+	if got := store.PutCalls(); got != 1 {
+		t.Fatalf("Put calls = %d, want exactly 1", got)
+	}
+}
