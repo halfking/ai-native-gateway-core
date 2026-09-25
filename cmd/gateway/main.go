@@ -3842,6 +3842,17 @@ func main() {
 		// against key models to verify gateway availability (2026-07-12).
 		slog.Info("CHECKPOINT: before self-check worker init")
 
+		// P0-1 startup self-heal (probe-cost-optimization §5): legacy
+		// self-check system keys sit in the 'default' tier (12 RPM) and
+		// self-throttle the probes into a zero-signal storm. Promote them to
+		// 'system' (300 RPM); idempotent, no-op on fresh installs. Migration
+		// 748 is the installer-channel twin of this UPDATE.
+		if healed, err := bg.HealSelfCheckSystemKeyTier(context.Background(), dbConn.Pool()); err != nil {
+			slog.Warn("self-check system key tier heal failed (non-fatal)", "error", err)
+		} else {
+			slog.Info("CHECKPOINT: self-check system key tier heal ran", "updated_keys", healed)
+		}
+
 		// Try env var first, then generate system key
 		selfCheckAPIKey := os.Getenv("LLM_GATEWAY_SELF_CHECK_API_KEY")
 		if selfCheckAPIKey == "" {

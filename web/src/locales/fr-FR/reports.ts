@@ -38,4 +38,6 @@ export default {
   errors: 'Échecs',
   cost: 'Coût',
   errorBreakdown: 'Répartition des erreurs',
+  qualityScore: "Score de qualité",
+
 }

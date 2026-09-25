@@ -7,6 +7,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { Download, Refresh } from '@element-plus/icons-vue'
+import { useRoute } from 'vue-router'
 import {
   downloadReportExport,
   getReportSummary,
@@ -16,11 +17,15 @@ import {
 } from '../../api/reportrollup'
 
 const { t } = useI18n()
+const route = useRoute()
 
 const loading = ref(false)
 const exporting = ref(false)
 const rerunning = ref(false)
-const view = ref<ReportView>('provider')
+// 2026-09-26 审计轮：支持 ?view=internal 深链（「租户用户→结算报表」菜单
+// 入口直开内部视角）。非法值回落 provider，与后端 reportViewFilter 同口径。
+const initialView = route.query.view === 'internal' ? 'internal' : 'provider'
+const view = ref<ReportView>(initialView)
 
 // 默认区间：昨日往前 7 天（今日快照 T+1 凌晨才生成）。
 function fmtDay(d: Date): string {
@@ -197,6 +202,9 @@ onMounted(refresh)
         </el-table-column>
         <el-table-column :label="t('reports.errors', '失败')" width="100" align="right">
           <template #default="{ row }">{{ fmtInt(row.totals.error_count) }}（{{ fmtPct(row.totals.error_rate) }}）</template>
+        </el-table-column>
+        <el-table-column v-if="view === 'provider'" :label="t('reports.qualityScore', '质量评分')" width="100" align="right">
+          <template #default="{ row }">{{ row.quality_score != null ? row.quality_score.toFixed(1) : '-' }}</template>
         </el-table-column>
         <el-table-column :label="t('reports.totalTokens', '总 tokens')" width="130" align="right">
           <template #default="{ row }">{{ fmtInt(row.totals.total_tokens) }}</template>

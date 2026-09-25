@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-09-25T01:59:06.752Z",
+  "exported_at": "2026-09-25T18:59:15.402Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -160,6 +160,16 @@
           "pluginScope": "*"
         },
         {
+          "path": "/admin/reconciliation",
+          "label": "供应商对账",
+          "labelKey": "nav.item.reconciliation",
+          "icon": "🧾",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
           "path": "/pricing",
           "label": "成本价格",
           "labelKey": "nav.item.pricing",
@@ -249,6 +259,16 @@
           "label": "审计日志",
           "labelKey": "nav.item.auditLogs",
           "icon": "📋",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/admin/reconciliation?view=internal",
+          "label": "结算报表",
+          "labelKey": "nav.item.settlementReport",
+          "icon": "📑",
           "super": true,
           "hideForTenant": true,
           "tenantScope": "default",

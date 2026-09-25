@@ -15,11 +15,21 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
+
+// systemKeyDB is the minimal DB surface the self-check system-key management
+// needs. *pgxpool.Pool satisfies it; the narrowing exists so unit tests can
+// drive EnsureSystemAPIKey / HealSelfCheckSystemKeyTier with pgxmock
+// (probe-cost-optimization §8.1) without standing up a real database.
+type systemKeyDB interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
 
 // SelfCheckWorker runs periodic ping + tool-call smoke tests against the
 // gateway to verify model availability and tool-call parsing correctness.
@@ -826,7 +836,7 @@ func truncateStrSC(s string, maxLen int) string {
 // secretKey is the gateway HMAC secret (cfg.SecretKey) and MUST be the same one used by
 // the data-plane verifier (domains/authentication), otherwise the generated key will fail
 // verification with "invalid_key". See self_check_worker.go's audit for the root cause.
-func EnsureSystemAPIKey(ctx context.Context, db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring, secretKey string) (string, error) {
+func EnsureSystemAPIKey(ctx context.Context, db systemKeyDB, encKey []byte, keyring *secret.Keyring, secretKey string) (string, error) {
 	// Try to find an existing system key that belongs to this worker.
 	var ciphertext []byte
 	err := db.QueryRow(ctx, `
@@ -876,16 +886,47 @@ func EnsureSystemAPIKey(ctx context.Context, db *pgxpool.Pool, encKey []byte, ke
 		return "", fmt.Errorf("no encryption key available for system api key")
 	}
 
+	// key_tier='system' (300 RPM) is load-bearing: the column default 'default'
+	// puts the self-check key in the 12 RPM tier, so ~86% of self-check pings
+	// bounce off the gateway's own rate limiter (gw_rpm_exceeded) and each
+	// bounce feeds the failure matrix — the self-reinforcing storm measured in
+	// docs/03-design/perf-2026-09-25-probe-cost-optimization.md §2.3 (P0-1).
 	_, err = db.Exec(ctx, `
 		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix,
-			owner_user, status, is_system, key_ciphertext, remark)
-		VALUES (0, 'default', $1, $2, 'self-check-worker', 'active', TRUE, $3, 'Auto-generated system key for self-check')
+			owner_user, status, is_system, key_tier, key_ciphertext, remark)
+		VALUES (0, 'default', $1, $2, 'self-check-worker', 'active', TRUE, 'system', $3, 'Auto-generated system key for self-check')
 		ON CONFLICT (key_hash) DO NOTHING`,
 		keyHash, keyPrefix, encCiphertext)
 	if err != nil {
 		return "", fmt.Errorf("insert system api key: %w", err)
 	}
 	return newKey, nil
+}
+
+// HealSelfCheckSystemKeyTier is the startup self-heal for P0-1 (probe-cost
+// optimization §5): legacy deployments created the self-check system keys
+// before the INSERT carried key_tier, so those rows fell back to the column
+// default 'default' (12 RPM) and the workers throttled themselves into the
+// zero-signal storm. The heal promotes any such key to the 'system' tier
+// (300 RPM). It is a no-op on fresh deployments (0 rows affected) and the
+// WHERE clause makes it idempotent — migration 748 applies the same UPDATE
+// through the installer channel; this covers deployments whose next
+// installer run is far away.
+func HealSelfCheckSystemKeyTier(ctx context.Context, db systemKeyDB) (int64, error) {
+	tag, err := db.Exec(ctx, `
+		UPDATE api_keys
+		SET key_tier = 'system'
+		WHERE COALESCE(is_system, FALSE) = TRUE
+		  AND owner_user IN ('self-check-worker', 'credential-selfcheck-worker')
+		  AND COALESCE(key_tier, 'default') = 'default'`)
+	if err != nil {
+		return 0, err
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Warn("self_check_worker: healed legacy system key tier default→system (12 RPM→300 RPM), see probe-cost-optimization P0-1",
+			"updated_keys", n)
+	}
+	return tag.RowsAffected(), nil
 }
 
 func randomHexSC(n int) string {

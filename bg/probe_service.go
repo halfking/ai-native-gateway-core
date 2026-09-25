@@ -195,6 +195,12 @@ type ProbeService struct {
 	// heartbeatFn defaults to ProbeQueue.ExtendLease but can be overridden in
 	// tests to assert the lease-extension cadence without touching the DB.
 	heartbeatFn func(context.Context, ProbeQueueTask, time.Duration) error
+	// stateFailuresFn (2026-09-26 P0-2) overrides the
+	// node_probe_state.consecutive_failures read that keeps the failure
+	// ladder position alive across queue task generations (see Run). Tests
+	// stub it; production leaves it nil and Run reads through
+	// worker.loadConsecutiveFailures (fail-open on absent row / read error).
+	stateFailuresFn func(ctx context.Context, credID int, model string) (int, bool)
 	// automaticEligibilityFn defaults to the queue's current-state check and is
 	// injectable for focused service tests without a live database.
 	automaticEligibilityFn func(context.Context, ProbeQueueTask) (bool, error)
@@ -334,6 +340,25 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 				ReasonDetail: detail,
 			}, fmt.Errorf("%w: %s (queue_id=%d cred=%d model=%s)", ErrProbeNotNecessary, reasonCode, task.ID, credID, model)
 		}
+	}
+
+	// 2026-09-26 (P0-2 队列任务代际 attempt 重置): task.Attempt is
+	// generation-local — every time the pump re-enqueues a pair after a task
+	// generation exhausts max_attempts, the counter restarts at 1 and the
+	// ladder collapsed back to the 5s rung (protocol-class pairs even got two
+	// fresh fast probes per generation before re-parking at 6h). The ladder
+	// position is node-state-owned: attempt is the greater of the task's own
+	// count and node_probe_state.consecutive_failures+1 — the same arithmetic
+	// legacy runOne uses — so consecutive generations keep climbing toward the
+	// 6h cap instead of restarting. Absent row / read error fails open to the
+	// task's own count (first generation, or a row dropped by the necessity
+	// gate above).
+	if read := s.stateFailuresFn; read != nil {
+		if cf, ok := read(ctx, credID, model); ok && cf+1 > attempt {
+			attempt = cf + 1
+		}
+	} else if cf, ok := s.worker.loadConsecutiveFailures(ctx, credID, model); ok && cf+1 > attempt {
+		attempt = cf + 1
 	}
 
 	// Lease heartbeat (2026-08-18): refresh lease_until every

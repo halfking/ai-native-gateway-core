@@ -28,6 +28,8 @@ export default {
     probeHealth: "صحة الاستكشاف",
     systemMonitor: "مراقبة النظام",
     providers: "المزودون",
+    reconciliation: "تهوية الحسابات",
+    settlementReport: "تقرير التسوية",
     pricing: "تكلفة التسعير",
     modelPricing: "إدارة التسعير",
     freePool: "الموارد المجانية",

@@ -246,5 +246,47 @@ func ProbeSpecs() []*Spec {
 			DangerLevel:     Safe,
 			HotReload:       true,
 		},
+
+		// ── Network short-ladder long tail (P0-2, 2026-09-26) ─────────
+		{
+			Key:             "probe.network_chain_long_tail",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategoryProbe,
+			Default:         true,
+			Description:     "网络类短梯长尾化",
+			DescriptionLong: "网络/超时/5xx 等瞬时类失败退避在走完短梯 4 步（5s→15s→30s→60s）后继续沿通用梯档位爬升（5m→1h→2h→6h 封顶），消除 60s 档永续滞留的无限重探（2026-09-25 实测 45 对滞留，全部为 connection_error/503/timeout/500）。前 4 步不动：短暂抖动（<1h）的恢复发现速度完整保留；持续宕机对的探测频率从 1 次/分钟衰减到 1 次/6h（与 auth/404 类一致，明示的取舍）。false=现行行为（短梯封顶 60s 永续）。见 docs/03-design/perf-2026-09-25-probe-cost-optimization.md §5 P0-2。",
+			Unit:            "",
+			DangerLevel:     Safe,
+			HotReload:       true,
+		},
+		{
+			Key:             "probe.request_failure_min_gap_seconds",
+			Type:            TypeInt,
+			Scope:           ScopePlatform,
+			Category:        CategoryProbe,
+			Min:             floatPtr(0),
+			Max:             floatPtr(3600),
+			Default:         60,
+			Description:     "request_failure 触发 pair 级频控最小间隔（秒）",
+			DescriptionLong: "业务失败触发（request_failure）入队前的 pair 级频控：该对已有排程中的探测（node_probe_state.next_retry_at 未到且行带错误证据）或距上次探测不足该秒数时，跳过本次触发——一次业务失败已足够触发验证，同分钟内第 N 条失败不应引发第 N 次探测。健康停放行（无错误证据）不受影响：新的真实失败仍立即重武装（INV-2）。0=现行行为（不频控）。",
+			Unit:            "秒",
+			DangerLevel:     Safe,
+			HotReload:       true,
+		},
+
+		// ── Credential self-check rate-limit abort (P0-3) ──────────────
+		{
+			Key:             "probe.selfcheck.ratelimit_abort",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategoryProbe,
+			Default:         true,
+			Description:     "自检 429 周期熔断",
+			DescriptionLong: "凭据自检（credential-selfcheck-worker）收到网关 429 / gw_rpm_exceeded / key_throttled 时终止本凭据剩余候选模型，且下一周期只试主模型 1 次（周期间记忆）。语义：网关层拒绝=本凭据本周期不可用，逐个再试只是放大（docs/03-design/perf-2026-09-25-probe-cost-optimization.md §5 P0-3）。false=现行行为（fallback 逐个试完）。",
+			Unit:            "",
+			DangerLevel:     Safe,
+			HotReload:       true,
+		},
 	}
 }

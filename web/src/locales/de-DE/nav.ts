@@ -30,6 +30,8 @@ export default {
     probeHealth: "Sondengesundheit",
     systemMonitor: "Systemüberwachung",
     providers: "Anbieter",
+    reconciliation: "Anbieterabrechnung",
+    settlementReport: "Abrechnungsbericht",
     pricing: "Kostenpreise",
     modelPricing: "Preisverwaltung",
     freePool: "Kostenloser Pool",
