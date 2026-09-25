@@ -30,7 +30,9 @@ const SettingKeyDailyRollupHour = "reports.daily_rollup.hour"
 // defaultRollupHour 与设置默认值一致（凌晨 02:00 UTC）。
 const defaultRollupHour = 2
 
-// rollupRunTimeout 单轮聚合超时；usage_facts 单日分区扫描量级下富余。
+// rollupRunTimeout 单轮聚合超时；usage_facts 的 occurred_at 前导索引
+// （迁移 749）落地前该超时靠"单日扫描量级小"的假设维持，索引落地后
+// 范围查询走 index scan，30min 预算不再依赖表体积假设。
 const rollupRunTimeout = 30 * time.Minute
 
 // rollupCatchupLookbackDays 追赶回看窗口：每次触发后检查最近 N 天内

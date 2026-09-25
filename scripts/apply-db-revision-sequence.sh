@@ -589,6 +589,15 @@ files=(
   # 均三臂齐备）；ALTER TYPE text::text 与 ADD COLUMN IF NOT EXISTS 均
   # 可重入，boot ensure 已升级过的库重跑本迁移体无副作用。
   "$ROOT_DIR/sql/migrations/startup/746_report_snapshots_internal_dims.sql"
+  # 2026-09-26 R67 24h 审计轮：749 usage_facts occurred_at 前导索引——
+  # 每日 rollup 五查询 + stats 对账全是纯 occurred_at 范围条件，537 的
+  # 4 个二级索引全部非 occurred_at 前导，无索引可用即全表顺序扫，线性
+  # 退化至被共享 PG 30s statement_timeout 成批击杀。分区父表三段式
+  # （逐分区 CONCURRENTLY → ONLY 壳 → ATTACH，744 同法），不经 installer
+  # （psql --single-transaction 容不下 CONCURRENTLY）；存量库由本通道 +
+  # db.ensureUsageFactsOccurredAtIndex 双臂收敛（真库 ensure 回归 +
+  # EXPLAIN 实证走索引）。
+  "$ROOT_DIR/sql/migrations/startup/749_usage_facts_occurred_at_index.sql"
   # 2026-09-24 supplier-protocol-optimization §3.2：800 provider_endpoint_
   # protocols 每 provider 多端点表 + 从 providers 旧行回填（ON CONFLICT
   # DO NOTHING 幂等）。原 deploy/sql/migrations/V800__*.sql 从未进任何
