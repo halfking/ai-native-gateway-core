@@ -350,6 +350,38 @@ func TestInternalPersonScopeKey_CrossTenantDistinct(t *testing.T) {
 	}
 }
 
+// R67 24h 审计轮钉桩：长度前缀解码守卫必须覆盖第三段冒号与负数长度，
+// 否则历史/外来 scope_key（"2:ab" 前缀恰好耗尽 / "-1:xyz" 负数）会
+// 通过守卫后在切片处 panic（读库路径不可恢复）。
+func TestSplitInternalPersonScopeKey_MalformedKeysDoNotPanic(t *testing.T) {
+	cases := []struct {
+		in           string
+		wantTenant   string
+		wantPerson   string
+		wantFallback bool // true = 原样返回（tenant=""，person=整键）
+	}{
+		{"2:ab", "", "2:ab", true},     // 前缀恰好耗尽：旧守卫 k[i+1+n+1:] 越界 panic
+		{"-1:xyz", "", "-1:xyz", true}, // 负数长度：k[i+1:i+1+n] 低>高 panic
+		{"999:ab", "", "999:ab", true}, // 超界长度
+		{"2:ab:", "ab", "", false},     // 空 person 合法
+		{"0::p", "", "p", false},       // 空租户合法
+		{"7:tenantA:alice", "tenantA", "alice", false},
+		{"7:ten:ant:alice", "ten:ant", "alice", false}, // tenant 含冒号由长度消歧
+	}
+	for _, tc := range cases {
+		tenant, person := splitInternalPersonScopeKey(tc.in)
+		if tc.wantFallback {
+			if tenant != "" || person != tc.in {
+				t.Errorf("split(%q) = (%q, %q), want fallback (%q, %q)", tc.in, tenant, person, "", tc.in)
+			}
+			continue
+		}
+		if tenant != tc.wantTenant || person != tc.wantPerson {
+			t.Errorf("split(%q) = (%q, %q), want (%q, %q)", tc.in, tenant, person, tc.wantTenant, tc.wantPerson)
+		}
+	}
+}
+
 // R65 P2 钉桩：internal 视角带 tenant_id 过滤时按天序列不得为空
 // （SQL WHERE 已收窄行集，days/totals/tenants 口径一致填充）。
 func TestBuildRangeReport_InternalTenantFilterKeepsDays(t *testing.T) {

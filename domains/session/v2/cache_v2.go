@@ -24,7 +24,8 @@ import (
 //	L0:   Turn delta storage (incremental messages in session_bodies)
 //	L1:   CompressionMetaCache — 进程内 LRU，只存压缩元数据（无完整 body）
 //	L1.5: FileCache — 本地磁盘上的 SessionStateV2 快照，进程重启后仍可命中；
-//	      仅 lite 模式在读路径上使用（full 模式即使注入了 l1_5 也不读它）
+//	      lite 默认装配；full 由 H2 装配点可选注入，注入即参与读链
+//	      与 L3 回填（da6b95627 契约：注入且非空 = 共享，不再按模式门控）
 //	L2:   RedisGovernanceCache — Redis 治理元数据（verdicts only）；
 //	      仅 full 模式使用，lite 模式跳过（lite = SQLite + File + Memory，无 Redis）
 //	L3:   SessionTurnsReader — 冷启动回源（读 session_turns，不是 request_logs）
@@ -265,7 +266,7 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 	// L1/L1.5 的回填与 Invalidate 的删除共用分片锁（B4）：L3 读到的是读时刻
 	// 的旧数据，若回填与失效交错、失效落在回填之后，旧状态会残留在 L1/L1.5
 	// 直至 LRU/TTL 逐出。锁内无网络 IO（L2 回填留在锁外，不在 B4 范围）。
-	if c.effectiveMode() == storage.StorageModeLite && c.l1_5 != nil {
+	if c.l1_5 != nil {
 		g := c.guardFor(tenantID, sessionID)
 		g.Lock()
 		if c.l1 != nil {
@@ -292,6 +293,7 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 //   - 通用：始终写 L1；l1_5 非空时写 L1.5（两模式共享）；
 //   - lite + l2 == nil：写完 L1 + L1.5 即返回；
 //   - full + l2 != nil：再写 L2（治理元数据）。
+//
 // 写路径在 H2 接线后，full 模式也会写 L1.5；l2 仅在 full + l2 装配时落 Redis。
 //
 // A nil state is a no-op (see CompressionMetaCache.Set) rather than a

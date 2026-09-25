@@ -41,13 +41,17 @@ func internalPersonScopeKey(tenant, person string) string {
 
 // splitInternalPersonScopeKey 读面还原 person 展示名；不符合长度前缀
 // 格式的行（键格式变更前写入的历史快照，若有）原样返回（tenant=""）。
+// 守卫必须校验到第三段冒号（i+1+n+1）：只校验到 tenant 尾（i+1+n）时，
+// "2:ab" 这类恰好在前缀处耗尽的输入会通过守卫再在 k[i+1+n+1:] 越界
+// panic；负数长度（"-1:xyz"）则会落到 k[i+1:i+1+n] 低>高 panic。
+// （R67 24h 审计轮对账子代理实锤，可达面=读库中历史/外来 scope_key。）
 func splitInternalPersonScopeKey(k string) (tenant, person string) {
 	i := strings.IndexByte(k, ':')
 	if i < 0 {
 		return "", k
 	}
 	n, err := strconv.Atoi(k[:i])
-	if err != nil || i+1+n > len(k) {
+	if err != nil || n < 0 || i+1+n+1 > len(k) {
 		return "", k
 	}
 	return k[i+1 : i+1+n], k[i+1+n+1:]
