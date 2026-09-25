@@ -48,27 +48,28 @@ func TestNodeProbeLadderDrivenByDirectRoundOnly(t *testing.T) {
 
 	// The success branch must carry the REAL gateway outcome, not a hardcoded
 	// TRUE/NULL pair that hides a composite failure behind a green ladder.
-	// 2026-09-25 (对健康节点零探测): $4/$5 (last_err_code/last_err_detail)
-	// receive NULL on the parked row — parking the gateway round's code kept
-	// direct-verified rows out of the healthy-parked shape and made the
-	// stale-state reconciler re-probe a healthy node every tick. The gateway
-	// anomaly stays visible via last_gateway_ok = $3.
-	if !strings.Contains(runOneBody, "last_gateway_ok = $3") ||
-		!strings.Contains(runOneBody, "last_err_code = $4") ||
-		!strings.Contains(runOneBody, "last_err_detail = $5") {
+	// 2026-09-25 (对健康节点零探测): last_err_code/last_err_detail are written
+	// as SQL NULL literals on the parked row — parking the gateway round's
+	// code kept direct-verified rows out of the healthy-parked shape and made
+	// the stale-state reconciler re-probe a healthy node every tick. The
+	// gateway anomaly stays visible via last_gateway_ok = $3. (R65 audit A:
+	// NULL literals, not untyped nil params — the pool runs simple protocol.)
+	if !strings.Contains(runOneBody, "last_gateway_ok = $3") {
 		t.Fatalf("runOne success branch no longer records the actual gateway outcome " +
-			"(last_gateway_ok/last_err_code/last_err_detail must stay parameterized so a " +
-			"direct-only recovery with a gateway anomaly stays operator-visible)")
+			"(last_gateway_ok must stay parameterized so a direct-only recovery with a " +
+			"gateway anomaly stays operator-visible)")
 	}
 	hardcoded := regexp.MustCompile(`(?i)last_gateway_ok\s*=\s*TRUE`)
 	if hardcoded.MatchString(runOneBody) {
 		t.Fatalf("runOne still hardcodes last_gateway_ok = TRUE in the success branch — " +
 			"a direct-only recovery with a failing gateway round would be invisible")
 	}
-	if !strings.Contains(runOneBody, "gw.ok, nil, nil") {
+	if !strings.Contains(runOneBody, "last_err_code = NULL") ||
+		!strings.Contains(runOneBody, "last_err_detail = NULL") {
 		t.Fatalf("runOne success branch parks gateway err code/detail into the row " +
-			"(args must be gw.ok, nil, nil so the row lands in the healthy-parked " +
-			"shape — see nodeProbeHealthyParkedSQL / reconcileStaleNodeProbeStateSQL)")
+			"(must write last_err_code/last_err_detail as SQL NULL so the row lands in " +
+			"the healthy-parked shape — see nodeProbeHealthyParkedSQL / " +
+			"reconcileStaleNodeProbeStateSQL)")
 	}
 
 	// probe_service.go must obey the same doctrine (2026-09-25): the unified
