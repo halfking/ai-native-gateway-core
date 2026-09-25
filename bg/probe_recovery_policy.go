@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // NetworkProbeBackoffChain is the short retry ladder for transient, timeout,
@@ -22,6 +23,15 @@ var NetworkProbeBackoffChain = []time.Duration{
 // chain; everything else keeps the historical 7-step ladder, with the
 // policy interval (3m rate-limit / 5m concurrent / 15m no-channel) acting
 // as a floor so a 429 is never re-probed after 5s.
+//
+// 2026-09-26 (P0-2 短梯长尾化): the network-class short chain used to cap at
+// 60s forever — a persistently-down upstream was re-probed once a minute
+// indefinitely (2026-09-25 实测：60s 封顶档滞留 45 对，last_err_code 全部为
+// connection_error/503/timeout/500). With probe.network_chain_long_tail
+// (default on) the ladder continues on the generic chain's long tail after
+// the four short rungs: 5s→15s→30s→60s→5m→1h→2h→6h（封顶）. The first four
+// rungs are untouched, so sub-hour blip recovery discovery keeps its speed;
+// only sustained-outage pairs sink to the 6h cadence auth/404 already use.
 func ProbeBackoffForKind(kind errorsx.ErrorKind, attempt int) time.Duration {
 	policy := errorsx.AutomaticProbePolicyFor(kind)
 	if policy.Fixed && policy.Interval > 0 {
@@ -32,13 +42,25 @@ func ProbeBackoffForKind(kind errorsx.ErrorKind, attempt int) time.Duration {
 		errorsx.KindUpstreamDown, errorsx.KindStreamTimeout,
 		errorsx.KindUpstreamOverloaded, errorsx.KindEmptyResponse,
 		errorsx.KindUpstreamContextLoss:
-		return ChainBackoffIndex(attempt, NetworkProbeBackoffChain)
+		return networkProbeBackoff(attempt)
 	}
 	delay := ChainBackoffIndex(attempt, NodeProbeBackoffChain)
 	if policy.Enabled && policy.Interval > delay {
 		return policy.Interval
 	}
 	return delay
+}
+
+// networkProbeBackoff paces the network/transient class. Long tail on:
+// attempts 1..4 walk the short chain (5s/15s/30s/60s), attempts beyond it
+// continue on the generic chain's tail rungs (5m/1h/2h/6h, capped). Long
+// tail off: the legacy short chain capped at 60s forever.
+func networkProbeBackoff(attempt int) time.Duration {
+	if settings.GetPlatformBool("probe.network_chain_long_tail", true) && attempt > len(NetworkProbeBackoffChain) {
+		tail := NodeProbeBackoffChain[3:] // 5m/1h/2h/6h — generic chain minus its own 5s/30s/60s rungs
+		return ChainBackoffIndex(attempt-len(NetworkProbeBackoffChain), tail)
+	}
+	return ChainBackoffIndex(attempt, NetworkProbeBackoffChain)
 }
 
 // ProbeBackoffForErrCode maps a probe/audit error code onto ProbeBackoffForKind.
