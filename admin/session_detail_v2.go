@@ -59,6 +59,14 @@ func newSessionDetailV2APIWithDB(pool sessionDetailV2DB) *SessionDetailV2API {
 	return &SessionDetailV2API{pool: pool}
 }
 
+// NewSessionDetailV2APIWithDB 是 newSessionDetailV2APIWithDB 的导出别名，
+// 供跨包单测（tests/session_identity_contract/...）注入 pgxmock。
+// 与 NewSessionDetailV2API 的 *pgxpool.Pool 接受范围等价，仅多了一步
+// 接口收缩，便于 pgxmock / 自实现 Store 接入。
+func NewSessionDetailV2APIWithDB(pool sessionDetailV2DB) *SessionDetailV2API {
+	return newSessionDetailV2APIWithDB(pool)
+}
+
 // SessionV2 表示 public.sessions 表的记录
 type SessionV2 struct {
 	ID                  int64      `json:"id"`
@@ -132,6 +140,12 @@ type SessionDetailV2Response struct {
 	Session    *SessionV2      `json:"session"`
 	Turns      []SessionTurnV2 `json:"turns"`
 	TotalTurns int             `json:"total_turns"`
+
+	// IDKind 显式标注本响应对应的身份契约类别（contract_freeze §1）。
+	// V2 会话详情以 session_id（sessions.session_id）为主键 —— request_id /
+	// attempt_id / gw_session_id / SessionPK 各自有独立用途，互不替代。
+	IDKind     string `json:"id_kind"`
+	PrimaryKey string `json:"primary_key"`
 }
 
 func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +163,11 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 
 	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		// 兼容旧客户端：部分调用方仍按 V1 习惯传 gw_session_id（request_logs.gw_session_id）。
+		// 通过 resolveSessionID 反向解析到 sessions.session_id；两侧都为空则按 bad request 处理。
+		sessionID = r.URL.Query().Get("gw_session_id")
+	}
 	if sessionID == "" {
 		writeExportJSONError(w, http.StatusBadRequest, "session_id is required")
 		return
@@ -193,7 +212,19 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	detail, err := api.querySessionDetail(ctx, sessionID, tenantID, limit, offset)
+	// 把客户端传入的标识（session_id 或 gw_session_id）解析为 V2 服务端
+	// session_id；解析失败按 404 处理，不暴露内部错误细节。
+	resolvedSessionID, err := api.resolveSessionID(ctx, sessionID, tenantID)
+	if err != nil {
+		if err == errSessionNotFound {
+			writeExportJSONError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		writeExportJSONError(w, http.StatusInternalServerError, fmt.Sprintf("resolve session id: %v", err))
+		return
+	}
+
+	detail, err := api.querySessionDetail(ctx, resolvedSessionID, tenantID, limit, offset)
 	if err != nil {
 		writeExportJSONError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %v", err))
 		return
@@ -204,6 +235,10 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// contract_freeze §1.6：V2 详情的主键恒为 session_id，绝不暴露 SessionPK。
+	detail.IDKind = "session_id"
+	detail.PrimaryKey = resolvedSessionID
+
 	response := map[string]any{
 		"session":       detail.Session,
 		"turns":         detail.Turns,
@@ -211,6 +246,8 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		"focus_turn_no": focusTurnNo,
 		"limit":         limit,
 		"offset":        offset,
+		"id_kind":       detail.IDKind,
+		"primary_key":   detail.PrimaryKey,
 	}
 
 	writeExportJSON(w, http.StatusOK, response)
@@ -394,3 +431,71 @@ func (api *SessionDetailV2API) queryTurns(
 
 	return turns, rows.Err()
 }
+
+// resolveSessionID 把客户端传入的标识解析为 V2 服务端 session_id。
+//
+// 5 类 ID 互不替代（contract_freeze §1.6）：session_id 是 sessions 表的
+// 文本 surrogate，gw_session_id 是客户端逻辑文本标识 —— 两者字面值可能重合
+// 也可能不同。本 helper 必须**仅**返回 session_id，绝不暴露 SessionPK（数值
+// 主键对客户端不可见）。策略：
+//
+//  1. 若 input 已等于某行 sessions.session_id（同租户） → 直接返回。
+//  2. 否则尝试经 request_logs.gw_session_id → sessions.primary_request_id
+//     的反向映射；只允许唯一解析（命中多行返回 error，禁止把 gw_session_id
+//     隐式覆盖多个会话）。
+//  3. 两步都查不到 → 返回 errSessionNotFound，让上游按 404 处理。
+//
+// RLS：所有查询都带 tenant_id 谓词；不绕过 sessions / request_logs 的现有
+// RLS 策略。sessionDetailV2DB 接口未暴露 Exec/QueryRow with bypass_rls，
+// 因此本 helper 无法也无法绕过租户隔离。
+func (api *SessionDetailV2API) resolveSessionID(
+	ctx context.Context,
+	input, tenantID string,
+) (string, error) {
+	if input == "" {
+		return "", fmt.Errorf("empty session identifier")
+	}
+	if tenantID == "" {
+		return "", fmt.Errorf("empty tenant_id")
+	}
+
+	// 1. 直接命中 sessions.session_id（最常见路径：V2 writer 直接写入
+	//    sessions.session_id := gw_session_id）。
+	var directHit string
+	err := api.pool.QueryRow(ctx, `
+		SELECT session_id FROM public.sessions
+		WHERE session_id = $1 AND tenant_id = $2
+		LIMIT 1
+	`, input, tenantID).Scan(&directHit)
+	if err == nil {
+		return directHit, nil
+	}
+	if err != nil && err.Error() != "no rows in result set" {
+		return "", fmt.Errorf("resolveSessionID direct: %w", err)
+	}
+
+	// 2. 反向映射：request_logs.gw_session_id → sessions.primary_request_id。
+	//    仅在 direct miss 时执行；唯一命中才返回，多命中抛错防止跨会话混用。
+	var resolved string
+	row := api.pool.QueryRow(ctx, `
+		SELECT s.session_id FROM public.sessions s
+		WHERE s.tenant_id = $1
+		  AND s.primary_request_id IN (
+		      SELECT request_id FROM request_logs
+		      WHERE tenant_id = $1 AND gw_session_id = $2
+		      ORDER BY ts ASC
+		      LIMIT 1
+		  )
+		LIMIT 1
+	`, tenantID, input)
+	if err := row.Scan(&resolved); err == nil {
+		return resolved, nil
+	} else if err.Error() != "no rows in result set" {
+		return "", fmt.Errorf("resolveSessionID reverse: %w", err)
+	}
+
+	return "", errSessionNotFound
+}
+
+// errSessionNotFound 由 resolveSessionID 返回，调用方按 404 处理。
+var errSessionNotFound = fmt.Errorf("session not found")

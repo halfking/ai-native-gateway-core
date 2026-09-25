@@ -95,14 +95,28 @@ func newSessionDetailAuthRequest(t *testing.T, target, role, tenant string) *htt
 	return SetAuthContext(r, &AuthContext{TenantID: tenant, Role: role, IsJWT: true})
 }
 
+// TestSessionDetailServeHTTPPinsTenantAdminToAuthTenant:
+// 期望两次 SQL 调用：
+//  1. resolveSessionID direct lookup（input == sessions.session_id）
+//  2. querySession 的 LEFT JOIN LATERAL session_analysis_metadata
+//  3. queryTurns 的 session_turns_with_current_month
+//
+// 两次 SELECT 的次序由 ServeHTTP 锁住：resolve 在前，querySession 在后。
+// 反转就破契约 —— 这是 §3 P0 任务要求的"session_id 强制作为主键"。
 func TestSessionDetailServeHTTPPinsTenantAdminToAuthTenant(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	// 1. resolveSessionID direct: input 命中 sessions.session_id → 直接返回
+	mock.ExpectQuery(`SELECT session_id FROM public\.sessions`).
+		WithArgs("gw_abc", "tenant-a").
+		WillReturnRows(pgxmock.NewRows([]string{"session_id"}).AddRow("gw_abc"))
+	// 2. querySession: LEFT JOIN LATERAL session_analysis_metadata
 	mock.ExpectQuery(`LEFT JOIN LATERAL`).WithArgs("gw_abc", "tenant-a").
 		WillReturnRows(makeSessionDetailMockRowForTenant(nil, "tenant-a"))
+	// 3. queryTurns: session_turns_with_current_month
 	mock.ExpectQuery(`FROM public\.session_turns_with_current_month`).
 		WithArgs("gw_abc", "tenant-a", 20, 0).
 		WillReturnRows(makeSessionTurnMockRows())
@@ -125,8 +139,14 @@ func TestSessionDetailServeHTTPAllowsSuperAdminTenantSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
+	// 1. resolveSessionID direct lookup
+	mock.ExpectQuery(`SELECT session_id FROM public\.sessions`).
+		WithArgs("gw_abc", "tenant-b").
+		WillReturnRows(pgxmock.NewRows([]string{"session_id"}).AddRow("gw_abc"))
+	// 2. querySession LEFT JOIN LATERAL
 	mock.ExpectQuery(`LEFT JOIN LATERAL`).WithArgs("gw_abc", "tenant-b").
 		WillReturnRows(makeSessionDetailMockRowForTenant(nil, "tenant-b"))
+	// 3. queryTurns
 	mock.ExpectQuery(`FROM public\.session_turns_with_current_month`).
 		WithArgs("gw_abc", "tenant-b", 50, 0).
 		WillReturnRows(makeSessionTurnMockRows())
