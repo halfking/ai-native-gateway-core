@@ -188,7 +188,9 @@ func (r *AutoIndexRefresher) RefreshOnce(ctx context.Context) error {
 // the auto_route_refresh LISTEN listener with no mutual exclusion. The
 // DELETE+INSERT pair is not atomic, so two overlapping runs interleave as
 // DELETE(A) → DELETE(B) → INSERT(A) → INSERT(B) and the second INSERT hits
-//   duplicate key value violates unique constraint "idx_credential_model_index_hot_unique"
+//
+//	duplicate key value violates unique constraint "idx_credential_model_index_hot_unique"
+//
 // (observed 2026-09-10 04:18 CST). Re-adding ON CONFLICT DO UPDATE makes each
 // INSERT idempotent against rows a concurrent run already committed. The
 // 2026-07-20 P2-#6 reason ON CONFLICT was originally dropped — "cannot affect

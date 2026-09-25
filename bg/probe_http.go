@@ -9,11 +9,11 @@
 package bg
 
 import (
-	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"io"
 	"net/http"
 	"regexp"
