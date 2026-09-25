@@ -7,6 +7,11 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
+// 2026-09-26 P0-2: the network-class short ladder grew a long tail. Attempts
+// 1..4 keep the 5s/15s/30s/60s fast-discovery rungs; attempt 5+ sinks along
+// 5m→1h→2h→6h (capped) so a persistently-down upstream stops being re-probed
+// once a minute forever (see TestNetworkChain_LongTailSink for the full
+// matrix including the legacy-behavior switch).
 func TestProbeBackoffForKindNetworkStaysShort(t *testing.T) {
 	for _, kind := range []errorsx.ErrorKind{
 		errorsx.KindNetwork, errorsx.KindTimeout, errorsx.KindTransient,
@@ -18,8 +23,8 @@ func TestProbeBackoffForKindNetworkStaysShort(t *testing.T) {
 		if got := ProbeBackoffForKind(kind, 4); got != time.Minute {
 			t.Fatalf("%s attempt 4 = %v, want 60s", kind, got)
 		}
-		if got := ProbeBackoffForKind(kind, 8); got != time.Minute {
-			t.Fatalf("%s attempt 8 = %v, want capped 60s", kind, got)
+		if got := ProbeBackoffForKind(kind, 8); got != 6*time.Hour {
+			t.Fatalf("%s attempt 8 = %v, want long-tail cap 6h", kind, got)
 		}
 	}
 }
@@ -34,8 +39,8 @@ func TestProbeBackoffForKindQuotaUsesFixedPolicy(t *testing.T) {
 }
 
 func TestProbeBackoffForErrCodeClassifiesTransport(t *testing.T) {
-	if got := ProbeBackoffForErrCode("network_error", 8); got != time.Minute {
-		t.Fatalf("network_error = %v, want 60s", got)
+	if got := ProbeBackoffForErrCode("network_error", 8); got != 6*time.Hour {
+		t.Fatalf("network_error = %v, want long-tail cap 6h (P0-2)", got)
 	}
 	if got := ProbeBackoffForErrCode("timeout", 3); got != 30*time.Second {
 		t.Fatalf("timeout attempt 3 = %v, want 30s", got)
