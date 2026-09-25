@@ -200,12 +200,13 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 		monitoring.Default().RecordL1Miss()
 	}
 
-	// L1.5 (local file snapshot, lite mode only). 未命中/过期/损坏统一返回包装
-	// errCacheMiss 的错误，按缓存未命中继续回源；其他错误记日志后同样放行
-	// （缓存层 fail-open，绝不阻断主链路）。
+	// L1.5（本地文件快照）：两模式都可用——lite 默认装配；full 由 H2 装配点
+	// 可选注入。注入且非空时进入读链。未命中/过期/损坏统一返回包装 errCacheMiss
+	// 的错误，按缓存未命中继续回源；其他错误记日志后同样放行（缓存层 fail-open，
+	// 绝不阻断主链路）。
 	// 读 + 回填在同一分片锁内（B4）：防止并发 Invalidate 落在「L1.5 命中」
 	// 与「回填 L1」之间把已删除的旧状态重新播种进 L1。
-	if c.effectiveMode() == storage.StorageModeLite && c.l1_5 != nil {
+	if c.l1_5 != nil {
 		var l15State *SessionStateV2
 		g := c.guardFor(tenantID, sessionID)
 		g.Lock()
@@ -260,7 +261,7 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 		state.GovernanceMeta = *govMeta
 	}
 	// 回填更热的层，让下一个请求不必再冷启动：
-	//   lite + l1_5 → 回填 L1.5；full + l2 → 回填 L2。
+	//   l1_5 非空时回填 L1.5；full 模式额外回填 L2。
 	// L1/L1.5 的回填与 Invalidate 的删除共用分片锁（B4）：L3 读到的是读时刻
 	// 的旧数据，若回填与失效交错、失效落在回填之后，旧状态会残留在 L1/L1.5
 	// 直至 LRU/TTL 逐出。锁内无网络 IO（L2 回填留在锁外，不在 B4 范围）。
@@ -287,8 +288,12 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 	return state, nil
 }
 
-// Set updates the cache at the tiers selected by mode:
-// full → L1 + L2(Redis 治理元数据)；lite → L1 + L1.5(文件快照)。
+// Set updates the cache at the tiers selected by mode + presence:
+//   - 通用：始终写 L1；l1_5 非空时写 L1.5（两模式共享）；
+//   - lite + l2 == nil：写完 L1 + L1.5 即返回；
+//   - full + l2 != nil：再写 L2（治理元数据）。
+// 写路径在 H2 接线后，full 模式也会写 L1.5；l2 仅在 full + l2 装配时落 Redis。
+//
 // A nil state is a no-op (see CompressionMetaCache.Set) rather than a
 // nil-deref on state.TenantID. 缓存层 fail-open：下层写失败只记日志。
 // L1/L1.5 写入与 Invalidate 的删除共用分片锁（B4）。
@@ -296,31 +301,22 @@ func (c *SessionCacheV2) Set(ctx context.Context, state *SessionStateV2) error {
 	if c == nil || state == nil {
 		return nil
 	}
-	if c.effectiveMode() == storage.StorageModeLite {
-		if c.l1_5 != nil {
-			g := c.guardFor(state.TenantID, state.SessionID)
-			g.Lock()
-			if c.l1 != nil {
-				c.l1.Set(state)
-			}
-			err := c.l1_5.Set(state)
-			g.Unlock()
-			if err != nil {
-				slog.WarnContext(ctx, "cache v2 l1.5 set failed", "session_id", state.SessionID, "error", err)
-			}
-		} else if c.l1 != nil {
-			c.l1.Set(state)
-		}
-		return nil
-	}
 	if c.l1 != nil {
 		c.l1.Set(state)
+	}
+	if c.l1_5 != nil {
+		g := c.guardFor(state.TenantID, state.SessionID)
+		g.Lock()
+		err := c.l1_5.Set(state)
+		g.Unlock()
+		if err != nil {
+			slog.WarnContext(ctx, "cache v2 l1.5 set failed", "session_id", state.SessionID, "error", err)
+		}
 	}
 	if c.l2 == nil {
 		return nil
 	}
-	err := c.l2.Set(ctx, state.TenantID, state.SessionID, &state.GovernanceMeta)
-	if err != nil {
+	if err := c.l2.Set(ctx, state.TenantID, state.SessionID, &state.GovernanceMeta); err != nil {
 		slog.WarnContext(ctx, "cache v2 l2 set failed", "session_id", state.SessionID, "error", err)
 	}
 	return nil

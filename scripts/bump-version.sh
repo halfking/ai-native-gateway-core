@@ -23,8 +23,14 @@
 #   git tag → <tag>
 #   short git sha → <8 chars>
 #   date → YYYYMMDD
-#   seq → 取 version.json 的 build_seq (single source of truth) + 1
-#     若 --seq 指定，使用指定值（但要求 ≥ 当前 seq）
+#   seq → max(version.json 的 build_seq, 机器级 floor 计数器) + 1
+#     机器级 floor（2026-09-26，根治并行双 checkout 撞号，09-25 seq 2250 实录）:
+#     本 checkout 的 version.json 只反映本 checkout；两个 checkout 并行部署时
+#     各自 +1 会产出同名 release 目录/镜像 tag，互相覆盖后 cutover 可能切到
+#     对方的二进制。floor 计数器放 $HOME/.llm-gateway-go/build_seq.floor（跨
+#     checkout 共享、锁内读改写，mkdir 原子锁，flock 不可用也一样工作），把
+#     "上次本机任何 checkout 发过的 seq" 兜住。--seq 显式指定仍尊重且推进 floor。
+#     floor 不可用（HOME 无写权限等）时静默退回旧行为，不阻塞部署。
 #
 # 导出变量:
 #   BUILD_VERSION / BUILD_GIT_TAG / BUILD_GIT_SHA /
@@ -113,9 +119,79 @@ HEAD_DATE=$(date -u +%Y%m%d)
 #   - 重复部署同代码：每次 seq +1，各自成为独立 release，可无限重发
 #   - 编译失败中断：version 文件已 bump 的序号自然跳过（计数器只增不减）
 #   - --seq 显式指定仍尊重（修漂移或强制 +N），要求 ≥ 当前 seq 保单调
-NEW_SEQ=$((CURRENT_SEQ + 1))
-if [[ -n "$TARGET_SEQ" && "$TARGET_SEQ" -gt "$NEW_SEQ" ]]; then
-  NEW_SEQ="$TARGET_SEQ"
+#
+# 2026-09-26：seq 基准从"本 checkout 的 version.json"升级为
+# max(version.json, 机器级 floor 计数器)，根治并行双 checkout 撞号
+# （09-25 seq 2250：两个 checkout 同读 2249、同产 2250 同名 release）。
+# 锁用 mkdir 原子语意（POSIX 通用，macOS 无 flock(1)、Git Bash 同样可用），
+# 等待有界 15s，持锁崩溃留下的 hold 目录 60s 后可被后来者安全接管
+# （持锁段只有 read/compute/write 三步毫秒级，60s 远大于任何正常持锁）。
+
+SEQ_FLOOR_DIR="${LLM_GATEWAY_BUILD_SEQ_FLOOR_DIR:-$HOME/.llm-gateway-go}"
+SEQ_FLOOR_FILE="$SEQ_FLOOR_DIR/build_seq.floor"
+SEQ_FLOOR_HOLD="$SEQ_FLOOR_DIR/build_seq.hold"
+
+seq_floor_acquire() {
+  local waited=0 ts now
+  while ! mkdir "$SEQ_FLOOR_HOLD" 2>/dev/null; do
+    ts=$(cat "$SEQ_FLOOR_HOLD/ts" 2>/dev/null || echo 0)
+    now=$(date +%s)
+    if (( now - ts > 60 )); then
+      # 持锁者崩溃残留：接管（见上方 60s 论证）
+      rm -rf "$SEQ_FLOOR_HOLD" 2>/dev/null || true
+      continue
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+    if (( waited > 150 )); then
+      echo "bump-version: floor 锁等待超时，本次退回无 floor 模式（撞号防护失效，不阻塞部署）" >&2
+      return 1
+    fi
+  done
+  date +%s > "$SEQ_FLOOR_HOLD/ts" 2>/dev/null || true
+  return 0
+}
+
+seq_floor_release() {
+  rm -rf "$SEQ_FLOOR_HOLD" 2>/dev/null || true
+}
+
+seq_floor_read() {
+  local v
+  v=$(cat "$SEQ_FLOOR_FILE" 2>/dev/null) || v=0
+  case "$v" in
+    ''|*[!0-9]*) v=0 ;;
+  esac
+  echo "$v"
+}
+
+seq_floor_enabled=0
+if mkdir -p "$SEQ_FLOOR_DIR" 2>/dev/null && [[ -w "$SEQ_FLOOR_DIR" ]]; then
+  seq_floor_enabled=1
+fi
+
+if [[ "$seq_floor_enabled" == 1 ]] && seq_floor_acquire; then
+  FLOOR_SEQ=$(seq_floor_read)
+  BASE_SEQ="$CURRENT_SEQ"
+  if (( FLOOR_SEQ > BASE_SEQ )); then
+    BASE_SEQ="$FLOOR_SEQ"
+  fi
+  NEW_SEQ=$((BASE_SEQ + 1))
+  if [[ -n "$TARGET_SEQ" && "$TARGET_SEQ" -gt "$NEW_SEQ" ]]; then
+    NEW_SEQ="$TARGET_SEQ"
+  fi
+  # floor 先于 version 文件落盘：即使后续写文件崩溃，这个 seq 也已被
+  # 本机消费，不会再被别的 checkout 拿到（计数器只增不减）。
+  if [[ "$DRY_RUN" != "true" ]]; then
+    printf '%s
+' "$NEW_SEQ" > "$SEQ_FLOOR_FILE" 2>/dev/null || true
+  fi
+  seq_floor_release
+else
+  NEW_SEQ=$((CURRENT_SEQ + 1))
+  if [[ -n "$TARGET_SEQ" && "$TARGET_SEQ" -gt "$NEW_SEQ" ]]; then
+    NEW_SEQ="$TARGET_SEQ"
+  fi
 fi
 NEW_VERSION="${GIT_TAG_PATCH}-${HEAD_SHA}-${HEAD_DATE}-${NEW_SEQ}"
 NOW_DATE=$(date -u +%Y-%m-%d)

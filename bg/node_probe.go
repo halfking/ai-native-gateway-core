@@ -3314,10 +3314,11 @@ func (w *NodeProbeWorker) updateObservedState(ctx context.Context, credID int, m
 // probeDirect (P1 fix, 2026-09-26).
 func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model string) (r nodeProbeRoundResult) {
 	r = nodeProbeRoundResult{errCode: "none"}
-	// 与 probeDirect 相同的失败出口收口（2026-09-25）。
+	// 与 probeDirect 相同的失败出口收口（2026-09-25）；2026-09-26 起用 gateway
+	// 轮专用分类——回环 transport 失败是本实例不可达，不是节点故障。
 	defer func() {
 		if !r.ok {
-			r.rootCause = classifyProbeRootCause(r.errCode, r.httpStatus, r.responseBody)
+			r.rootCause = classifyGatewayRoundRootCause(r.errCode, r.httpStatus, r.responseBody)
 			annotateRootCause(&r)
 		}
 	}()

@@ -90,19 +90,15 @@ WHERE last_direct_ok = TRUE AND COALESCE(last_err_code,'') <> '';
 ## 四、遗留（不凑数）
 
 1. **root_cause 真分布待测**——defer 修复部署后需重取分布，并复核 protocol 族（404/410/契约 400）
-   是否如期出现在 cause=protocol 且第二发起 6h 停放。
-2. **P0-2 效果验收未做**——须部署后 48h 窗口跑方案 §8.3 验收 SQL（④periodic ≤20,000/48h、
-   ⑤/⑤b 短梯三档滞留 ≤5 对）。门槛复算注意：基线里 ~26% 的 runs 是 P0-1/P0-3 治掉的，
+   是否如期出现在 cause=protocol 且第二发起 6h 停放。→ **已排程**：一次性自动化任务
+   2026-09-28 03:30 执行 §8.3 全套验收 + 真分布重取（窗口以最终 build 部署时刻起算，见 §六）。
+2. **P0-2 效果验收未做**——同上排程；门槛复算注意：基线里 ~26% 的 runs 是 P0-1/P0-3 治掉的，
    P0-2 的边际收益以 2252 实测 ~1,610/h 为新基线。
-3. **gateway 轮分类学争议**（低优）：gateway 回环 transport 失败（network_error/timeout）按纯函数
-   归 node，语义上更像本实例/网关侧。本轮不动；若 P1-1 落地时 gateway 轮量足够小可一并裁决。
+3. ~~**gateway 轮分类学争议**~~ → **已裁决并落地**（commit 86f9e505f，见 §六）。
 4. **probe.structural_floor_seconds**（方案 §5 可选项）未实现——方案明示默认关闭、边际小。
-5. **首次部署 401 事故与修复**：deploy-local 的 bundle env 丢失 `LLM_GATEWAY_ADMIN_PASSWORD`
-   （.env.local 中该键缺失）→ admin 密码同步跳过 → 解密冒烟 401 → 部署回滚保住旧版。已从
-   run/llm-gateway-local-8782.env 恢复该键进 .env.local 后重跑成功。根因（密码键何时从
-   .env.local 消失）未查。
+5. ~~**首次部署 401 事故根因未查**~~ → **已取证**（见 §六 ⑤）。
 6. **P1-1 / P1-2 / P2 族**（业务证据联动 / provider 聚合 / 预算熔断 / runs 采样）未动，按方案 §9
-   顺序后续推进。
+   顺序：**须待 2026-09-28 验收达标后启动 P1-1**。
 
 ## 五、测试与部署证据
 
@@ -122,3 +118,34 @@ WHERE last_direct_ok = TRUE AND COALESCE(last_err_code,'') <> '';
     30d 停放 75 对；
   - node_probe_runs 速率 ≈ **88 次/h**（2251 同日 ~5,000/h、2252 ~1,610/h）；gw_rpm_exceeded=0。
     注意：8min 离峰窗口，正式验收仍以 48h 窗口 §8.3 SQL 为准。
+
+## 六、同日后续执行轮（03:0x–03:2x，按建议执行）
+
+### 6.1 ⑤ 401 事故根因取证（已结案）
+
+- `.env.local` 文件 **birth time = 2026-09-19 10:15:28**（`stat -f %SB`）——该键在这次文件重建中
+  丢失（重建来源不含 `LLM_GATEWAY_ADMIN_PASSWORD`；此前该密码的 SSOT 是 `bin/2239/env`，
+  操作者 shell `source` 后导出，该目录现已不存在于磁盘/不入 git）。
+- 旁证：`run/admin-password-hash.*.bak` 时间线显示 09-19 10:29 起同步仍在跑——直到 09-25 的
+  部署都由带密码 shell 的操作者会话完成；本会话（工具 shell 无继承导出）是第一个踩空的。
+- 修复已生效并被并行会话验证：恢复键后 02:41/02:57/03:14/03:20 四次部署的 env→users 同步
+  全部成功（bak 文件连续）。
+- **预防建议（未实施）**：deploy-local 在生成 bundle env 时若 `ADMIN_USER` 非空而
+  `ADMIN_PASSWORD` 为空且 users 表存在该用户，应在 build 前显式失败并提示，而不是让冒烟
+  在 2 分钟构建后才 401。改动涉及共享脚本且并行会话正在热用，列为后续小改动。
+
+### 6.2 ③ gateway 轮分类学裁决（已落地，commit 86f9e505f）
+
+36h 实测：gateway 轮 transport 失败 **126/126 均为 `dial tcp 127.0.0.1:878x`**（部署/重启窗
+回环不可达）——本实例的错。裁决：gateway 轮仅 `network_error`/`connection_error`/`dns_error`
+三码改判 `cause=gateway`（`classifyGatewayRoundRootCause`，probeGateway defer +
+probeResultToRound 双接线）；`timeout` 维持 node（回环超时可能等在上游腿，保守默认）。
+仅影响根因标注/指标，不动退避。契约：四码断言 + 封闭端口端到端 probeGateway 归 gateway。
+
+### 6.3 并行会话部署碰撞与恢复（重要环境事件）
+
+03:14 并行会话从**过期基线**部署了 build 2262（git 19eb3153 = P0-1/P0-3，不含 P0-2），短暂
+回退了本轮交付。03:20 已从 main（af557475，含双方工作）重部署 2254 恢复；随后 ③ 裁决落地
+为 **2263（86f9e505，版本序号取高防倒挂）= r0926 全部改动的最终载体**。**48h 验收窗口以
+2264 部署时刻起算**（一次性任务 automation-d7d001aa 已同步更新）。后续任何会话再部署请
+先 `git pull`（main 已含全部轮次），避免再用过期基线覆盖。

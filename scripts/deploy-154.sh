@@ -61,10 +61,13 @@ if [[ $FORCE_UNLOCK -eq 1 ]]; then
 fi
 
 # 透传健康探针超时：候选首跑 ensure 链 + 列交集检查在大表上常超 60s
-# （154 与 245 共享 252 PG，冷启动 ensure 链同量级）。
+# （154 与 245 共享 252 PG，冷启动 ensure 链同量级，90-150s 区间有两次实测）。
 # exec bash 会重启子 shell，不继承调用方未 export 的环境变量，所以显式 export 一次。
-# 2026-09-20（可靠性）: 默认 180 -> 120s，与 deploy-245.sh 同步；怀疑 ensure 超过 120s
-# 时用 PROBE_TIMEOUT_SECS=180 覆盖即退回到原行为。
-export PROBE_TIMEOUT_SECS="${PROBE_TIMEOUT_SECS:-120}"
+# 2026-09-20（可靠性）: 默认 180 -> 120s，与 deploy-245.sh 同步。
+# 2026-09-26（owner 决策①）: 默认 120 -> 600s，对齐 245 的 d5eeb71eb —— 154 冷启动
+# 暴露在压垮过 245 的同一失败模式下（共享 252 PG，ensure 链 90-150s），不再依赖
+# 人工 PROBE_TIMEOUT_SECS env 救场。真坏候选的代价由"探针期不接流量 +
+# 第二窗口 PROBE_RETRY_TIMEOUT_SECS=60s"兜底，与 245 现状一致。
+export PROBE_TIMEOUT_SECS="${PROBE_TIMEOUT_SECS:-600}"
 
 exec bash "$SCRIPT_DIR/deploy-seamless.sh" deploy 154 "${ARGS[@]}"

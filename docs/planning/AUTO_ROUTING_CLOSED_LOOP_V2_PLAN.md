@@ -292,6 +292,8 @@ skill 流程（本地→252 只读标注验证→245/154 按当期窗口）；**
 
 映射仅用于报表口径统一，运行时各自独立判定，不做强绑定。
 
+> **2026-09-25 补记**：本附录已按 P2 轮升格为 G3 裁决定稿（含两处修订：词汇同名陷阱列、provider_models.tier 第三套污染登记），**裁决见 P2 设计稿** `docs/planning/AUTO_ROUTING_V2_P2_TIER_SELECTOR_DESIGN.md` §3。
+
 ## 附录 B：与前驱文档的关系
 
 - `AUTO_ROUTING_OPTIMIZATION_PLAN.md`（v1.1）的 Phase 1/2 已完成（routingopt/标注/ONNX），
