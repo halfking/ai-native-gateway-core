@@ -542,8 +542,6 @@ func TestHeuristicClassifier_ZhCodingPattern_NoFalsePositive(t *testing.T) {
 	}
 }
 
-
-
 // TestClassificationSignalsString verifies that String() method does not leak
 // sensitive prompt content into logs.
 func TestClassificationSignalsString(t *testing.T) {
