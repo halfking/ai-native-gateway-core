@@ -35,7 +35,15 @@ func TestProbeServiceDirectFailureKeepsNodeUnavailableAndBacksOff(t *testing.T) 
 	}
 }
 
-func TestProbeServiceDirectSuccessGatewayFailureDoesNotRecover(t *testing.T) {
+// 2026-09-25 (对健康节点零探测): the direct round is the node verdict. A
+// direct-verified healthy node whose GATEWAY round failed must settle the
+// task terminal (no NextRunAt → the queue cannot re-arm a healthy node into
+// another probe cycle), recover the node via the direct-driven outcome, and
+// carry the gateway anomaly as observability-only metadata. The old
+// composite `direct && gateway` verdict laddered exactly these healthy
+// nodes forever whenever the gateway side of the house was broken
+// (2026-09-10 hzx-2: direct 200 ×5, gateway 401 ×5).
+func TestProbeServiceGatewayFailureDoesNotLadderHealthyNode(t *testing.T) {
 	recorder := &probeOutcomeRecorder{}
 	service := newTestProbeService(
 		nodeProbeRoundResult{ok: true, providerID: 7},
@@ -53,11 +61,17 @@ func TestProbeServiceDirectSuccessGatewayFailureDoesNotRecover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != ProbeQueueFailed || result.ReasonCode != "http_503" || result.NextRunAt == nil {
-		t.Fatalf("result = %+v", result)
+	if result.Status != ProbeQueueSuccess {
+		t.Fatalf("status = %q, want success (node verdict is direct-only)", result.Status)
 	}
-	if recorder.single(t).success {
-		t.Fatal("gateway failure recovered node")
+	if result.NextRunAt != nil {
+		t.Fatalf("next run = %v, want nil (healthy node must not be re-armed)", result.NextRunAt)
+	}
+	if result.ReasonCode != "gateway_round_degraded" || !strings.Contains(result.ReasonDetail, "http_503") {
+		t.Fatalf("observability metadata lost: %+v", result)
+	}
+	if !recorder.single(t).success {
+		t.Fatal("direct-verified node was not recovered")
 	}
 }
 
@@ -105,6 +119,10 @@ func TestProbeServiceFallbackGatewayPinsCredential(t *testing.T) {
 	}
 }
 
+// 2026-09-25: a legacy unpinned gateway round is a gateway CAPABILITY gap,
+// not a node fault. The direct round still settles the probe terminal and
+// recovers the node; the pin gap stays visible via the gateway_pin_unsupported
+// reason code without re-arming the node into another probe.
 func TestProbeServiceLegacyUnpinnedGatewayCannotRecover(t *testing.T) {
 	recorder := &probeOutcomeRecorder{}
 	service := newTestProbeService(
@@ -117,14 +135,17 @@ func TestProbeServiceLegacyUnpinnedGatewayCannotRecover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != ProbeQueueFailed || result.ReasonCode != "gateway_pin_unsupported" {
-		t.Fatalf("result = %+v", result)
+	if result.Status != ProbeQueueSuccess || result.ReasonCode != "gateway_pin_unsupported" {
+		t.Fatalf("result = %+v, want terminal success with gateway_pin_unsupported", result)
+	}
+	if result.NextRunAt != nil {
+		t.Fatalf("next run = %v, want nil (pin gap must not re-arm the node)", result.NextRunAt)
 	}
 	if !strings.Contains(result.ReasonDetail, "cannot prove credential attribution") {
 		t.Fatalf("reason detail = %q", result.ReasonDetail)
 	}
-	if recorder.single(t).success {
-		t.Fatal("legacy unpinned gateway recovered node")
+	if !recorder.single(t).success {
+		t.Fatal("legacy unpinned gateway blocked the direct-verified recovery")
 	}
 }
 
