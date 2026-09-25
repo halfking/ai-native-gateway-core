@@ -152,6 +152,23 @@ func classifyProbeRootCause(errCode string, httpStatus int, responseBody string)
 	return ProbeRootCauseNode
 }
 
+// classifyGatewayRoundRootCause classifies a failed GATEWAY round. The
+// gateway round dials this gateway's own loopback endpoint, so a
+// connection-level transport failure (dial refused / DNS on the loopback
+// host) means the gateway itself was unreachable — a GATEWAY fault, not the
+// node's (2026-09-26 data: 36h 内 gateway 轮 transport 失败 126/126 均为
+// dial tcp 127.0.0.1:878x，集中在部署/重启窗). timeout/stream_timeout stay
+// on the node classification: a loopback timeout usually means the request
+// waited on the full gateway chain including the upstream leg, so the node
+// remains the conservative default.
+func classifyGatewayRoundRootCause(errCode string, httpStatus int, responseBody string) ProbeRootCause {
+	switch errCode {
+	case "network_error", "connection_error", "dns_error":
+		return ProbeRootCauseGateway
+	}
+	return classifyProbeRootCause(errCode, httpStatus, responseBody)
+}
+
 // logProbeRoundRootCause emits the operator-facing "协议还是节点" verdict for
 // one failed round. Counting does NOT happen here — emitProbe is the single
 // counter choke point per round — so callers may log a round once while the

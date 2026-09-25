@@ -299,6 +299,33 @@ func TestProbeRoundRootCauseReachesCaller(t *testing.T) {
 		}
 	})
 
+	t.Run("gateway loopback transport failure classifies gateway (2026-09-26 裁决)", func(t *testing.T) {
+		// 36h 实测：gateway 轮 transport 失败 126/126 均为 dial tcp 127.0.0.1:878x
+		// ——回环不可达是本实例的错，不是节点的。timeout 保持 node（可能等在
+		// 上游腿上，保守默认）。
+		if got := classifyGatewayRoundRootCause("network_error", 0, ""); got != ProbeRootCauseGateway {
+			t.Fatalf("gateway round network_error = %q, want gateway", got)
+		}
+		if got := classifyGatewayRoundRootCause("connection_error", 0, ""); got != ProbeRootCauseGateway {
+			t.Fatalf("gateway round connection_error = %q, want gateway", got)
+		}
+		if got := classifyGatewayRoundRootCause("timeout", 0, ""); got != ProbeRootCauseNode {
+			t.Fatalf("gateway round timeout = %q, want node (upstream-leg ambiguity, conservative default)", got)
+		}
+		if got := classifyGatewayRoundRootCause("http_503", 503, ""); got != ProbeRootCauseNode {
+			t.Fatalf("gateway round http_503 = %q, want node (status carries the upstream verdict)", got)
+		}
+		// 端到端：指向必然拒绝的本地端口 → transport 失败应整体归 gateway。
+		w := &NodeProbeWorker{baseURL: "http://127.0.0.1:1", apiKey: "k", client: http.DefaultClient}
+		res := w.probeGateway(context.Background(), 42, "m")
+		if res.ok {
+			t.Fatal("closed-port stub must fail the round")
+		}
+		if res.rootCause != ProbeRootCauseGateway {
+			t.Fatalf("closed-port gateway round rootCause = %q, want gateway", res.rootCause)
+		}
+	})
+
 	t.Run("probeDirect/probeGateway use named returns (structural)", func(t *testing.T) {
 		src, err := os.ReadFile("node_probe.go")
 		if err != nil {
