@@ -678,7 +678,7 @@ func skipProbeOnRecentTrafficSuccess(ctx context.Context, db *pgxpool.Pool, cred
 		) OR (
 		    c.health_status = 'healthy'
 		    AND COALESCE(c.last_probe_success, FALSE)
-		    AND NOT ` + credentialFailureEvidenceSQL("c.id", probeFailureEvidenceWindowSQL) + `
+		    AND NOT `+credentialFailureEvidenceSQL("c.id", probeFailureEvidenceWindowSQL)+`
 		)
 		FROM credentials c WHERE c.id = $1
 	`, credID).Scan(&ok)

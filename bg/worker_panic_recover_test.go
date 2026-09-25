@@ -3,7 +3,7 @@
 // R51 审计 P2：bg worker 的 xxxRecovered 守护必须吞掉单轮 tick/任务内的
 // panic，让调度循环存活，而不是让 panic 逃逸击穿整进程（对齐 R50 的
 // runRecovered 模式）。以下用例用零值/最小构造让被守护路径确定性 panic
-//（nil *pgxpool.Pool / nil 接口字段解引用），断言 panic 不逃逸出守护函数。
+// （nil *pgxpool.Pool / nil 接口字段解引用），断言 panic 不逃逸出守护函数。
 package bg
 
 import (
