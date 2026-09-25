@@ -226,6 +226,12 @@ func ParseGeminiStreamChunk(line string) (*StreamChunk, error) {
 	}
 	chunk.Delta.DeltaType = geminiDeltaType(chunk.Delta)
 	if cand.FinishReason != "" {
+		// R68 (2026-09-26): audit-r2 A#2 同款 — Gemini→Gemini 直通时保留原生
+		// finishReason（RECITATION / MALFORMED_FUNCTION_CALL 等不会被
+		// mapGeminiFinishReason 折叠成 content_filter / tool_calls），让
+		// SerializeGemini() 在 SourceProtocol 守卫下可无损透传。OpenAI/
+		// Anthropic 客户端继续读 FinishReason（IR 归一化形式）。
+		chunk.StopReason = cand.FinishReason
 		chunk.FinishReason = mapGeminiFinishReason(cand.FinishReason)
 	}
 

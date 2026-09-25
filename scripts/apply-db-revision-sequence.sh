@@ -598,6 +598,13 @@ files=(
   # db.ensureUsageFactsOccurredAtIndex 双臂收敛（真库 ensure 回归 +
   # EXPLAIN 实证走索引）。
   "$ROOT_DIR/sql/migrations/startup/749_usage_facts_occurred_at_index.sql"
+  # 2026-09-26 R68 24h 审计轮：750 usage_facts 按日分区函数 + 当日/次日
+  # 预建——749 仅解决索引，partition pruning 仍不可用（无具体分区则 PG
+  # 只能扫 DEFAULT 全表）；DEFAULT 保留作历史 catch-all，新一日数据走
+  # 日分区。function 安装可走 installer（CREATE TABLE PARTITION OF 不需
+  # 事务），同时由 db.ensureUsageFactsDailyPartition 在 boot 链兜底
+  # （与 749 双通道收敛同款）。
+  "$ROOT_DIR/sql/migrations/startup/750_usage_facts_daily_partition.sql"
   # 2026-09-24 supplier-protocol-optimization §3.2：800 provider_endpoint_
   # protocols 每 provider 多端点表 + 从 providers 旧行回填（ON CONFLICT
   # DO NOTHING 幂等）。原 deploy/sql/migrations/V800__*.sql 从未进任何

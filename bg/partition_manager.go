@@ -132,6 +132,13 @@ type archiveSpec struct {
 	// SELECTing tuple columns from it fails with 42703 "column status does
 	// not exist" (pg log 2026-09-03/04 audit, EXPLAIN-verified).
 	scalarResult bool
+
+	// partitionUnit controls how ensureNextMonthPartitions derives the
+	// argument date for this spec: "" / "month" → AddDate(0, offset, 0)
+	// (the historical convention, monthly partitions); "day" → AddDate(0,
+	// 0, offset) (daily partitions, R68 迁移 750 usage_facts 按日分区接入）。
+	// pgx still receives time.Time; argExpr controls the cast to ::date.
+	partitionUnit string
 }
 
 func NewPartitionManager(db *pgxpool.Pool, interval time.Duration) *PartitionManager {
@@ -301,9 +308,10 @@ func (pm *PartitionManager) runCleanup(ctx context.Context) {
 	}
 }
 
-// ensureNextMonthPartitions creates partitions for current and next month
-// for every table we manage. Idempotent: each underlying
-// ensure_<table>_partition() function checks for existence first.
+// ensureNextMonthPartitions creates partitions for current and next
+// boundary (month by default; day for daily-partition specs) for every
+// table we manage. Idempotent: each underlying ensure_<table>_partition()
+// function checks for existence first.
 //
 // 2026-09-12 (694/699 follow-up): partition bounds are Asia/Shanghai
 // calendar months (687/694 convention), so "current/next month" is derived
@@ -312,18 +320,37 @@ func (pm *PartitionManager) runCleanup(ctx context.Context) {
 // timestamptz→date cast reads the session TimeZone, so a UTC session inside
 // the [00:00, 08:00) +08 window of day 1 would derive the previous
 // Shanghai month and pre-create the wrong partition.
+//
+// 2026-09-26 (R68, migration 750): archiveSpec.partitionUnit="day" 让本
+// 循环按日驱动（usage_facts 按日分区）；同一 Asia/Shanghai 日历钉扎逻辑
+// 自然适用，UTC 会话在 +08 0-8h 同样不会把次日误建为今日。
 func (pm *PartitionManager) ensureNextMonthPartitions(ctx context.Context) {
 	specs := ensureSpecs()
 	for offset := 0; offset <= 1; offset++ {
-		targetMonth := time.Now().In(partitionTZ).AddDate(0, offset, 0)
 		for _, s := range specs {
+			unit := s.partitionUnit
+			if unit == "" {
+				unit = "month"
+			}
+			var targetBoundary time.Time
+			var dateLabel string
+			if unit == "day" {
+				// R68 (2026-09-26): usage_facts 按日分区接入。offset=0 当日，
+				// offset=1 次日；partitionTZ 保证 UTC 会话在 +08 0-8h 不把次
+				// 日误建为今日（与月分区的 687/694 钉扎同源）。
+				targetBoundary = time.Now().In(partitionTZ).AddDate(0, 0, offset)
+				dateLabel = targetBoundary.Format("2006-01-02")
+			} else {
+				targetBoundary = time.Now().In(partitionTZ).AddDate(0, offset, 0)
+				dateLabel = targetBoundary.Format("2006-01")
+			}
 			argExpr := s.argExpr
 			if argExpr == "" {
 				argExpr = "$1"
 			}
-			var arg any = targetMonth
+			var arg any = targetBoundary
 			if argExpr == "$1::date" {
-				arg = targetMonth.Format("2006-01-02")
+				arg = targetBoundary.Format("2006-01-02")
 			}
 			timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			_, err := pm.db.Exec(timeoutCtx,
@@ -332,13 +359,13 @@ func (pm *PartitionManager) ensureNextMonthPartitions(ctx context.Context) {
 			if err != nil {
 				slog.Error("partition_manager: ensure partition failed",
 					"fn", s.fnName, "label", s.label,
-					"month", targetMonth.Format("2006-01"),
+					"unit", unit, "date", dateLabel,
 					"error", err)
 				continue
 			}
 			slog.Info("partition_manager: ensured partition",
 				"fn", s.fnName, "label", s.label,
-				"month", targetMonth.Format("2006-01"))
+				"unit", unit, "date", dateLabel)
 		}
 	}
 }
@@ -927,6 +954,14 @@ func ensureSpecs() []archiveSpec {
 		//   routing_decision_log_archive —— 仅 archive job（每月 1-3 日）写入，
 		//     archive_routing_decision_log() 自建目标分区。
 		// （candidate_failure_logs 已于 2026-09-12 接入，见上方 689/694 注。）
+
+		// R68 (2026-09-26) migration 750：usage_facts 按日分区。DEFAULT 分区
+		// 保留作历史 catch-all，新一日数据走日分区，partition pruning 对
+		// WHERE 范围查询仅扫命中分区。partitionUnit="day" 让
+		// ensureNextMonthPartitions 走 AddDate(0, 0, offset) 派生当日/次日，
+		// 与月分区同源 Asia/Shanghai 日历钉扎（防 UTC 会话在 +08 0-8h 把
+		// 次日误建为今日）。date 签名，与 sessions_v2_partitions 同款。
+		{fnName: "ensure_usage_facts_daily_partition", label: "usage_facts (daily)", argExpr: "$1::date", partitionUnit: "day"},
 	}
 }
 

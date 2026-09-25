@@ -226,6 +226,44 @@ func TestParseGeminiStreamChunk_FinishReasons(t *testing.T) {
 			if chunk.FinishReason != tc.wantIRReason {
 				t.Errorf("FinishReason = %q, want %q", chunk.FinishReason, tc.wantIRReason)
 			}
+			// R68 (2026-09-26): audit-r2 A#2 同款 — parse 必须保留原生
+			// finishReason 在 StopReason 槽，让 SerializeGemini 直通无损。
+			if chunk.StopReason != tc.geminiReason {
+				t.Errorf("StopReason = %q, want %q (native passthrough)", chunk.StopReason, tc.geminiReason)
+			}
+		})
+	}
+}
+
+// TestParseGeminiStreamChunk_StopReasonNativePassthrough 锁 R68 修复：
+// Gemini parse 必须把原生 finishReason 同时填进 StopReason 槽位（RECITATION
+// 等不被 mapGeminiFinishReason 折叠），让 SerializeGemini 在同协议路径
+// 可无损透传。
+func TestParseGeminiStreamChunk_StopReasonNativePassthrough(t *testing.T) {
+	cases := []struct {
+		geminiReason    string
+		wantStopReason  string
+		wantFinishReasn string // IR 归一化
+	}{
+		{"STOP", "STOP", "stop"},
+		{"RECITATION", "RECITATION", "content_filter"},
+		{"MALFORMED_FUNCTION_CALL", "MALFORMED_FUNCTION_CALL", "tool_calls"},
+		{"SAFETY", "SAFETY", "content_filter"},
+		{"MAX_TOKENS", "MAX_TOKENS", "length"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.geminiReason, func(t *testing.T) {
+			line := `data: {"candidates":[{"content":{"parts":[],"role":"model"},"finishReason":"` + tc.geminiReason + `","index":0}]}`
+			chunk, err := ParseGeminiStreamChunk(line)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if chunk.StopReason != tc.wantStopReason {
+				t.Errorf("StopReason = %q, want %q (native passthrough)", chunk.StopReason, tc.wantStopReason)
+			}
+			if chunk.FinishReason != tc.wantFinishReasn {
+				t.Errorf("FinishReason = %q, want %q (IR-normalized)", chunk.FinishReason, tc.wantFinishReasn)
+			}
 		})
 	}
 }
@@ -387,6 +425,78 @@ func TestSerializeGemini_UsageMetadata(t *testing.T) {
 	}
 	if !hasImage {
 		t.Errorf("IMAGE modality missing or wrong: %+v", promptDetails)
+	}
+}
+
+// TestSerializeGemini_DoneSentinel verifies [DONE] output.
+func TestSerializeGemini_StopReasonNativePassthrough(t *testing.T) {
+	// R68 (2026-09-26): Gemini→Gemini 直通时 SerializeGemini 优先使用
+	// parse 阶段填入的 StopReason 原生值（RECITATION 等不被折叠为
+	// content_filter/SAFETY）。SourceProtocol=ProtocolGeminiGenerate 触发
+	// 透传路径。SAFETY/MAX_TOKENS/STOP 等"原生 == 映射" 的终止原因无法
+	// 区分两路径，本测试只覆盖 RECITATION/MALFORMED_FUNCTION_CALL 这两
+	// 个有损归一化项，证明 wire 是原生而非映射值。
+	cases := []struct {
+		name           string
+		stopReason     string
+		finishReason   string
+		wantFinishOnWire string // 原生值
+		forbiddenValue string   // 错误映射值，不应出现在 wire 上
+	}{
+		{"RECITATION_passthrough", "RECITATION", "content_filter", "RECITATION", "SAFETY"},
+		{"MALFORMED_FUNCTION_CALL_passthrough", "MALFORMED_FUNCTION_CALL", "tool_calls", "MALFORMED_FUNCTION_CALL", "STOP"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chunk := &StreamChunk{
+				Type:           ChunkTypeDelta,
+				SourceProtocol: ProtocolGeminiGenerate,
+				StopReason:     tc.stopReason,
+				FinishReason:   tc.finishReason,
+				Delta:          &StreamDelta{Content: "x"},
+			}
+			out := chunk.SerializeGemini()
+			if !strings.Contains(out, `"finishReason":"`+tc.wantFinishOnWire+`"`) {
+				t.Errorf("expected native finishReason %q in output, got %s", tc.wantFinishOnWire, out)
+			}
+			if strings.Contains(out, `"finishReason":"`+tc.forbiddenValue+`"`) {
+				t.Errorf("OpenAI-normalized value %q leaked into Gemini wire (StopReason not preferred): %s", tc.forbiddenValue, out)
+			}
+		})
+	}
+}
+
+func TestSerializeGemini_StopReasonSourceProtocolGuard(t *testing.T) {
+	// R68 (2026-09-26): SourceProtocol≠GeminiGenerate 时（如 Anthropic→Gemini），
+	// 跨协议 StopReason 必须不被透传；否则 anthropic 原生值（end_turn 等）
+	// 会泄漏到 Gemini 客户端（Gemini 不识别 end_turn）。
+	chunk := &StreamChunk{
+		Type:           ChunkTypeDelta,
+		SourceProtocol: ProtocolAnthropicMessages,
+		StopReason:     "end_turn", // anthropic 原生
+		FinishReason:   "stop",     // IR 归一化
+		Delta:          &StreamDelta{Content: "x"},
+	}
+	out := chunk.SerializeGemini()
+	if strings.Contains(out, `"finishReason":"end_turn"`) {
+		t.Errorf("anthropic native stop_reason leaked to Gemini wire: %s", out)
+	}
+	if !strings.Contains(out, `"finishReason":"STOP"`) {
+		t.Errorf("expected IR-normalized finishReason STOP on Gemini wire, got %s", out)
+	}
+}
+
+func TestSerializeGemini_CrossProtocolStillMapsFinishReason(t *testing.T) {
+	// R68 回归：跨协议路径无 StopReason 时继续走 FinishReason 映射（如
+	// OpenAI "stop" → "STOP"），不破坏既有 SerializeGemini_FinishReason。
+	chunk := &StreamChunk{
+		Type:         ChunkTypeDelta,
+		FinishReason: "stop",
+		Delta:        &StreamDelta{Content: "x"},
+	}
+	out := chunk.SerializeGemini()
+	if !strings.Contains(out, `"finishReason":"STOP"`) {
+		t.Errorf("OpenAI stop should map to STOP, got %s", out)
 	}
 }
 
