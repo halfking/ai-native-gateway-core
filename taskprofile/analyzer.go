@@ -223,6 +223,7 @@ func draftThresholdProposal(qualifying []*pairStat, volumes map[string]int, oldT
 	// 已判对样本不受影响——覆盖率只对"被改判样本"统计；新阈值只需把这些
 	// 低置信样本交给 LLM 兜底，因此取 ≥thresholdCoverage 的最大候选。
 	newV := 0.0
+	actualCoverage := 0.0
 	for _, cand := range thresholdCandidates {
 		if cand >= oldThreshold || cand < thresholdFloor {
 			continue
@@ -233,8 +234,9 @@ func draftThresholdProposal(qualifying []*pairStat, volumes map[string]int, oldT
 				covered++
 			}
 		}
-		if float64(covered)/float64(total) >= thresholdCoverage {
+		if cov := float64(covered) / float64(total); cov >= thresholdCoverage {
 			newV = cand
+			actualCoverage = cov
 			break
 		}
 	}
@@ -266,12 +268,12 @@ func draftThresholdProposal(qualifying []*pairStat, volumes map[string]int, oldT
 			"window_days":      windowDays,
 			"corrected_total":  total,
 			"conf_bands":       bands,
-			"coverage":         thresholdCoverage,
+			"coverage":         round2(actualCoverage),
 			"rate_max":         round2(rateMax),
 			"qualifying_pairs": pairSummaries(qualifying),
 			"rationale": fmt.Sprintf(
-				"%d 个被改判样本中 %.0f%% 置信度 < %.2f——降档让该置信带交给 LLM 兜底重分类",
-				total, thresholdCoverage*100, newV),
+				"%d 个被改判样本中 %.1f%% 置信度 < %.2f——降档让该置信带交给 LLM 兜底重分类",
+				total, actualCoverage*100, newV),
 		},
 	}
 }

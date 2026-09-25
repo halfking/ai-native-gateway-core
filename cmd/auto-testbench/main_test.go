@@ -68,6 +68,33 @@ func TestClassificationMetricsFinalize(t *testing.T) {
 	}
 }
 
+// known_failure 语义与 autoroute/auto_matching_suite_test.go 对齐（2026-09-25
+// 批判复审）：triaged gap 失败不进指标（否则门禁假红）；意外判对（xpass）
+// 单独计数供报告清理 stale marker。
+func TestKnownFailureExcludedFromMetrics(t *testing.T) {
+	m := newClassificationMetrics()
+	m.add("chat", "chat", suiteCase{Name: "ok1"}, 0.9, "")
+	m.add("code", "chat", suiteCase{Name: "kf-miss", KnownFailure: true}, 0.4, "")
+	m.add("chat", "chat", suiteCase{Name: "kf-xpass", KnownFailure: true}, 0.9, "")
+	m.finalize()
+
+	if m.Total != 1 || m.Correct != 1 || m.Accuracy != 1 {
+		t.Fatalf("total/correct/accuracy = %d/%d/%v, want 1/1/1 (known_failure excluded)", m.Total, m.Correct, m.Accuracy)
+	}
+	if m.KnownFails != 2 {
+		t.Fatalf("knownFails = %d, want 2", m.KnownFails)
+	}
+	if m.KnownXPass != 1 {
+		t.Fatalf("knownXPass = %d, want 1", m.KnownXPass)
+	}
+	if len(m.Failures) != 0 {
+		t.Fatalf("failures = %v, want none", m.Failures)
+	}
+	if _, ok := m.PerLabel["code"]; ok {
+		t.Fatal("known_failure gold label must not create a per-label entry")
+	}
+}
+
 func TestGRRQFormula(t *testing.T) {
 	if got := grrq(1, 0); got != 100 {
 		t.Fatalf("grrq(1,0) = %v, want 100", got)
