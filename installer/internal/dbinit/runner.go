@@ -275,6 +275,17 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 幂等（WHERE 全限定，二次执行 0 行）；网关启动侧等价自愈
 			// bg.HealSelfCheckSystemKeyTier 双通道兜底。
 			"748_selfcheck_system_key_tier.sql",
+			// 750 (R68, 2026-09-26): usage_facts 按日分区函数（ensure_
+			// usage_facts_daily_partition）+ 当日/次日预建。DEFAULT 分区
+			// 保留作历史 catch-all；新一日数据走日分区，partition pruning
+			// 对 WHERE 范围查询仅扫命中分区。partition_manager 24h tick
+			// 后续按 ensureSpecs 接管当日/次日预建（同源 Asia/Shanghai 日历
+			// 钉扎，与 687/694 月分区同款）。CREATE TABLE PARTITION OF 不
+			// 需事务（IF NOT EXISTS 幂等），可走 installer；同时登记
+			// scripts/apply-db-revision-sequence.sh files=() 让升级通道双
+			// 投递（与 745/746/747/748 同族）。TTL 由 owner 拍板后续迁移
+			// 处理，本迁移仅建日分区函数不删除任何历史 partition。
+			"750_usage_facts_daily_partition.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，
