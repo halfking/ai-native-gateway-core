@@ -46,6 +46,12 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 		"ensure_candidate_failure_logs_partition": false, // Migration 689/694
 		// 706（存储优化方案 v2 S1a）：三新表族一次调用覆盖
 		"ensure_session_family_partitions": false, // Migration 706
+		// R68 (2026-09-26) migration 750: usage_facts 按日分区。DEFAULT 分区
+		// 保留作历史 catch-all，新一日数据走日分区，partition pruning 对
+		// WHERE 范围查询仅扫命中分区。partitionUnit="day" 让
+		// ensureNextMonthPartitions 走 AddDate(0, 0, offset) 派生当日/次日，
+		// 与月分区同源 Asia/Shanghai 日历钉扎。
+		"ensure_usage_facts_daily_partition": false, // Migration 750
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
