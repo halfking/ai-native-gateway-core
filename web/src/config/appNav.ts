@@ -144,6 +144,10 @@ export const NAV_GROUPS: NavGroup[] = [
       // (/routing-v2/credentials?tab=probe-health); standalone menu entry removed.
       { path: '/dashboard?tab=selfcheck', label: '系统自检', labelKey: 'nav.item.systemMonitor', icon: '📈', super: true, hideForTenant: true },
       { path: '/providers', label: '供应商', labelKey: 'nav.item.providers', icon: '🔌', providerConsole: true },
+      // 2026-09-26 审计轮 F1：对账报表落地轮漏挂菜单入口（只能手敲 URL），
+      // 本项 = 供应商结算对帐（goal #2）。页面内含 provider/internal 双视角
+      // 切换；结算报表（internal 视角）入口见「租户用户」组同名项。
+      { path: '/admin/reconciliation', label: '供应商对账', labelKey: 'nav.item.reconciliation', icon: '🧾', super: true, hideForTenant: true },
       { path: '/pricing', label: '成本价格', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true },
       { path: '/model-pricing', label: '定价管理', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true },
       { path: '/free-pool', label: '免费资源', labelKey: 'nav.item.freePool', icon: '🎁', super: true, hideForTenant: true },
@@ -160,6 +164,12 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/keys', label: 'API 密钥', labelKey: 'nav.item.keys', icon: '🔑' },
       { path: '/key-applications', label: '密钥申请', labelKey: 'nav.item.keyApplications', icon: '📬', super: true, hideForTenant: true },
       { path: '/audit-logs', label: '审计日志', labelKey: 'nav.item.auditLogs', icon: '📋', super: true, hideForTenant: true },
+      // 2026-09-26 审计轮 F1：租户结算报表（goal #1）入口，直开 internal
+      // 视角（按租户/人员/模型分组 + 积分/内部价口径）。当前后端
+      // /api/admin/report-rollup/* 仍 superAdmin-only——非超管租户侧自助
+      // 查看自身租户报表需独立鉴权轮（设计文档 §11 G2 登记），故先以
+      // super 门控挂载，不虚标已对租户开放。
+      { path: '/admin/reconciliation?view=internal', label: '结算报表', labelKey: 'nav.item.settlementReport', icon: '📑', super: true, hideForTenant: true },
     ],
   },
   {

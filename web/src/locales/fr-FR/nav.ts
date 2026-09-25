@@ -30,6 +30,8 @@ export default {
     probeHealth: "Santé du sondage",
     systemMonitor: "Surveillance système",
     providers: "Fournisseurs",
+    reconciliation: "Réconciliation fournisseurs",
+    settlementReport: "Rapport de règlement",
     pricing: "Tarification des coûts",
     modelPricing: "Gestion des tarifs",
     freePool: "Pool gratuit",

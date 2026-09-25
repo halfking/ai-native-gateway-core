@@ -28,6 +28,8 @@ export default {
     probeHealth: "プローブヘルス",
     systemMonitor: "システム監視",
     providers: "プロバイダー",
+    reconciliation: "プロバイダー照合",
+    settlementReport: "決算レポート",
     pricing: "コスト価格",
     modelPricing: "価格管理",
     freePool: "無料リソース",
