@@ -21,6 +21,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/modelname"
+	"github.com/kaixuan/llm-gateway-go/middleware"
 	agenttelemetry "github.com/kaixuan/llm-gateway-go/telemetry" //nolint:depguard // aliased: system-prompt extractor for agent fallback (avoids clash with /domains/hooks/observability/telemetry)
 )
 
@@ -1114,6 +1115,22 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		}
 	}
 
+	// 2026-09-25: failure/rate_limited terminal rows lost origin metadata —
+	// this builder never applied the OriginMiddleware context (only the
+	// success path's initial INSERT did), so probe/self-check traffic that
+	// exits early (gw_rpm_exceeded / no_candidate) landed with origin_stage
+	// NULL and client_ip lost. Apply ctx + DB-system-key fallback here, and
+	// propagate the stage onto the log context so the side-table
+	// request_context_attrs row derives is_probe for the 仅探测 filter.
+	var originCtx context.Context
+	if c.Request != nil {
+		originCtx = c.Request.Context()
+	}
+	applyOriginMetadata(reqLog, c.KeyInfo, originCtx)
+	if reqLog.OriginStage != nil && c.OriginStage == "" {
+		c.SetOriginStage(*reqLog.OriginStage)
+	}
+
 	return reqLog
 }
 
@@ -1594,6 +1611,42 @@ func (c *RequestLogContext) SetOriginStage(stage string) {
 		return
 	}
 	c.OriginStage = strings.TrimSpace(stage)
+}
+
+// applyOriginMetadata 把 origin 元数据落到 telemetry 条目上（2026-09-25）。
+//
+// ① ctx 路径：OriginMiddleware 已判定的值（可信 worker 的声明 stage，或
+//    business 缺省）——成功路径的初始 INSERT 此前是唯一应用点
+//    （recordInitialRequestLog），failure/rate_limited 终态行从不应用。
+// ② DB 系统键兜底：auth 中间件对 sk-* 数据面键不注册 owner（DB 校验发生在
+//    handler 内、晚于 OriginMiddleware），后者的信任判定因此永远走剥头
+//    降级路径——持 DB 系统 key（如自检 worker 自动生成的 sk-selfcheck-*）
+//    的探测请求被标成 business；而提前退出（gw_rpm_exceeded /
+//    no_candidate）的行连初始 INSERT 都没有，origin 全空。本地部署 8 小时
+//    内积压 4.1 万条 NULL-stage 的 'user: ping' 行，会话视图无法识别为
+//    探测即此缺陷。此处用已解析的 owner 重跑信任判定，把声明 stage（或
+//    owner 规范映射）补写到条目上；owner 来自 api_keys.is_system 行而非
+//    客户端输入，业务 key 不会命中信任清单，无伪造面。
+func applyOriginMetadata(entry *telemetry.RequestLogEntry, keyInfo *authentication.KeyInfo, ctx context.Context) {
+	if entry == nil {
+		return
+	}
+	if ctx != nil {
+		entry.ApplyOriginFromContext(ctx)
+	}
+	if keyInfo == nil || keyInfo.OwnerUser == nil || *keyInfo.OwnerUser == "" {
+		return
+	}
+	stage, actor, ok := middleware.ResolveOriginForSystemKey(ctx, *keyInfo.OwnerUser)
+	if !ok {
+		return
+	}
+	if entry.OriginStage == nil || *entry.OriginStage == "" || *entry.OriginStage == "business" {
+		entry.OriginStage = strPtr(stage)
+		if actor != "" && (entry.OriginActor == nil || *entry.OriginActor == "") {
+			entry.OriginActor = strPtr(actor)
+		}
+	}
 }
 
 // streamCountersFromContext (2026-07-28 §5.5) returns the

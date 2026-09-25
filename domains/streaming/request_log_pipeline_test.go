@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // request context carries the loaded session
+	"github.com/kaixuan/llm-gateway-go/middleware"
 )
 
 func TestRequestLogContext_SetAutoDecisionCanonicalizesTierFailoverModels(t *testing.T) {
@@ -557,4 +559,93 @@ func TestInsertRateLimitedPlaceholder_SkipsWhenLoggedOrDisabled(t *testing.T) {
 		t.Fatalf("MarkLogged must flip IsLogged=true")
 	}
 	ch.insertRateLimitedPlaceholder(ctx) // already-logged branch, should no-op
+}
+
+// 2026-09-25 regression: probe/self-check workers on DB system keys
+// (sk-selfcheck-*, owner_user='self-check-worker') had their declared
+// X-LLM-Origin-Stage stripped by OriginMiddleware — the DB key verifier
+// runs later, inside the handler — and BuildFailureEntry never applied
+// the origin context at all. Every early exit (gw_rpm_exceeded /
+// no_candidate) therefore landed with origin_stage NULL: ~41k
+// 'user: ping' rows in 8h on the local deployment, invisible to the
+// 仅探测 filter and the probe pill. buildEntry must re-run the trust
+// decision from the resolved owner (applyOriginMetadata) and propagate
+// the stage so the request_context_attrs side table derives is_probe.
+func TestBuildFailureEntry_AppliesOriginForDBSystemKeyWorker(t *testing.T) {
+	// Run the real OriginMiddleware to produce the exact degraded ctx a
+	// DB-key caller sees: headers stripped, stage=business.
+	mw := middleware.NewOriginMiddleware()
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"ping"}],"max_tokens":10}`))
+	r.Header.Set("X-LLM-Origin-Stage", "self_check")
+	r.Header.Set("X-LLM-Origin-Actor", "credential-selfcheck-worker")
+	var degraded *http.Request
+	mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		deg := *req
+		degraded = &deg
+	})).ServeHTTP(httptest.NewRecorder(), r)
+	if degraded == nil {
+		t.Fatal("middleware did not reach downstream")
+	}
+
+	owner := "credential-selfcheck-worker"
+	ki := &authentication.KeyInfo{OwnerUser: &owner}
+
+	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
+	c := ch.NewRequestLogContext(degraded, "origin-regression-1", time.Now())
+	c.SetKey(ki)
+
+	entry := c.BuildFailureEntry("rate_limit_exceeded", "rate limit exceeded", nil, nil)
+	if entry == nil {
+		t.Fatal("BuildFailureEntry returned nil")
+	}
+	if entry.OriginStage == nil || *entry.OriginStage != "self_check" {
+		t.Fatalf("expected origin_stage=self_check on failure entry, got %v", entry.OriginStage)
+	}
+	if entry.OriginActor == nil || *entry.OriginActor != "credential-selfcheck-worker" {
+		t.Fatalf("expected origin_actor=credential-selfcheck-worker, got %v", entry.OriginActor)
+	}
+	if entry.ClientIP == nil || *entry.ClientIP == "" {
+		t.Fatalf("expected client_ip bridged from origin ctx, got %v", entry.ClientIP)
+	}
+	if c.OriginStage != "self_check" {
+		t.Fatalf("expected stage propagated onto log context, got %q", c.OriginStage)
+	}
+
+	attrs := BuildContextAttrsEntry(c, ki, nil, nil)
+	if attrs == nil || !attrs.IsProbe {
+		t.Fatalf("expected side-table entry with is_probe=true, got %#v", attrs)
+	}
+}
+
+// The override must be keyed on the resolved owner, not on the request
+// shape: a regular business DB key stays exactly as OriginMiddleware
+// classified it (business), claimed headers or not.
+func TestBuildFailureEntry_BusinessKeyStaysBusiness(t *testing.T) {
+	mw := middleware.NewOriginMiddleware()
+	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	r.Header.Set("X-LLM-Origin-Stage", "self_check") // spoof attempt
+	var degraded *http.Request
+	mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		deg := *req
+		degraded = &deg
+	})).ServeHTTP(httptest.NewRecorder(), r)
+
+	owner := "some-saas-customer"
+	ki := &authentication.KeyInfo{OwnerUser: &owner}
+
+	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
+	c := ch.NewRequestLogContext(degraded, "origin-regression-2", time.Now())
+	c.SetKey(ki)
+
+	entry := c.BuildFailureEntry("no_candidate", "no candidate", nil, nil)
+	if entry.OriginStage == nil || *entry.OriginStage != "business" {
+		t.Fatalf("expected business stage untouched for business key, got %v", entry.OriginStage)
+	}
+	if c.OriginStage != "business" {
+		t.Fatalf("expected business stage propagated for side-table parity, got %q", c.OriginStage)
+	}
+	attrs := BuildContextAttrsEntry(c, ki, nil, nil)
+	if attrs == nil || attrs.IsProbe {
+		t.Fatalf("expected side-table entry with is_probe=false for business key, got %#v", attrs)
+	}
 }
