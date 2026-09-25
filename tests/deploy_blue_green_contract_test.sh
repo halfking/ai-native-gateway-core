@@ -61,10 +61,16 @@ require 'seamless surfaces per-probe failure' 'remote_probe' "$ROOT/scripts/depl
 # 252 PG while the canary is still walking schema ensure (245 工单现场:
 # "Connection refused" 假超时). The >=60s floor remains the contract.
 # 2026-09-20 (e5879c497): 180 -> 120s (default tightened back) and the
-# second (retry) window bounded at PROBE_RETRY_TIMEOUT_SECS:-60. Both
-# defaults pinned here (R49 audit: the 180s assertion was left stale and
-# kept this gate red at HEAD).
-require 'seamless probe timeout >= 60s (now 120s)' 'PROBE_TIMEOUT_SECS:-120' "$ROOT/scripts/deploy-seamless.sh"
+# second (retry) window bounded at PROBE_RETRY_TIMEOUT_SECS:-60.
+# 2026-09-26 (owner decision ①): forward probe default 120 -> 600s, aligned
+# with deploy-245.sh (d5eeb71eb) — 154/245 share the 252 PG and the
+# cold-start ensure chain (90-150s) burned 245 twice under a tight window.
+# The matching systemd budget is pinned by deploy_readiness_contract_test
+# (TimeoutStartSec=700s on BOTH canary unit templates). The host_rollback
+# fallback intentionally stays 120s: it probes a prewarmed old version and
+# rollback is a failure-recovery path that must not wait ten minutes.
+require 'seamless forward probe default 600s (aligned with 245)' 'PROBE_TIMEOUT_SECS:-600' "$ROOT/scripts/deploy-seamless.sh"
+require 'seamless host_rollback probe fallback stays 120s (prewarmed candidate)' 'PROBE_TIMEOUT_SECS:-120' "$ROOT/scripts/deploy-seamless.sh"
 require 'seamless second probe window bounded at 60s' 'PROBE_RETRY_TIMEOUT_SECS:-60' "$ROOT/scripts/deploy-seamless.sh"
 # 2026-09-19（部署工单）: 蓝绿轮换必须以目标机实测监听为准，候选端口严格
 # 在 8781/8782 契约对内轮换；127.0.0.1 探测只能出现在 remote_ssh 远端命令
