@@ -30,7 +30,7 @@ import (
 
 // SetReportRollupWorker 注入每日聚合 worker（手动重跑端点用）。
 func (h *Handler) SetReportRollupWorker(w interface {
-	RollupDate(ctx context.Context, day time.Time) (reportrollup.RollupStats, error)
+	RollupDateDetached(day time.Time) (reportrollup.RollupStats, error)
 }) {
 	h.reportRollupWorker = w
 }
@@ -232,7 +232,9 @@ func (h *Handler) handleReportRollupRun(w http.ResponseWriter, r *http.Request) 
 		}
 		day = parsed
 	}
-	stats, err := h.reportRollupWorker.RollupDate(r.Context(), day)
+	// 与请求生命周期解耦：客户端断开不中断聚合（聚合走自带超时的
+	// detached context，2026-09-25 审计轮修正）。
+	stats, err := h.reportRollupWorker.RollupDateDetached(day)
 	if err != nil {
 		slog.Error("report rollup manual run failed", "date", day, "error", err)
 		// R65：错误细节（可含 SQL/约束信息）只进日志，不透传响应体。

@@ -160,6 +160,29 @@ excelize 已在 `go.sum`（间接依赖），需在 `go.mod` 提升为直接依�
 | 前端 | `web/src/views/admin/ReconciliationReport.vue` + `web/src/api/reportrollup.ts` + 路由 `/admin/reconciliation` | 双视角切换 + 区间选择 + 汇总卡片 + 分组表 + 导出/重跑按钮 |
 | 失败分类 | 快照行 `error_kind_breakdown` jsonb 透视；sheet2 按 error_kind 动态列 | error_kind 来自 errorsx 枚举，worker 不强校验（原稿 §7 维持） |
 
+### 审计轮修正（2026-09-25 第二轮，批判式复审）
+
+自我复审发现并修复三处设计缺陷 + 一处实证 bug：
+
+1. **错过触发无追赶**（可靠性缺口）：原实现只在每日钟点跑一次昨日 +
+   启动补跑；单轮失败或进程在钟点区间停机后，当日数据要等次日或人工
+   触发。补 `MissingRollupDates`（lookback 7 天内无 daily_total 行的日期
+   ——daily_total 对零流量日也落一行，故「无行」≡「该日从未聚合」），
+   worker 每次触发后做有界追赶；早于窗口的历史走管理端手动 /run。
+2. **聚合无事务**：原实现逐行 upsert，中途失败留新旧混合快照。
+   worker 的 RollupDate 现将单日聚合包进一个事务（pgx.Tx 满足
+   reportrollup.Querier），失败整体回滚，下一轮追赶重新探测该日。
+3. **/run 绑请求 context**：客户端断开会中断聚合。新增
+   `RollupDateDetached`（自带超时的 detached context），handler 改走它。
+4. **昨日跳过比较失配（真库测试日志暴露的实证 bug）**：runRecovered 的
+   yesterday 是「当前时刻−24h」未截断，探测输出是午夜截断日期，
+   `Equal` 永不相等 → 昨日被重复聚合（幂等兜底正确性但白跑）。
+   统一截断到 UTC 午夜，测试加显式断言（backfilled=1 而非 2）。
+
+前端补充：reports 词条入 zh-CN/en-US locale（`t(key, defaultMsg)` 内联
+兜底经 vue-i18n v9.14 实证有效，词条化消除缺键警告）；`vue-tsc --noEmit`
+与 `vite build` 均以退出码 0 验证（首轮仅 grep 过滤，本轮回补退出码证据）。
+
 ### 验证记录（2026-09-25）
 
 - `go build ./...` / `go vet` 通过；全量 `go test ./...` 主模块 + installer 模块通过。
