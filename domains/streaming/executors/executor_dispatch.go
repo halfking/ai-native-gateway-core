@@ -14,6 +14,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/endpointselect"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
@@ -210,6 +211,32 @@ func (e *Executor) dispatchForward(ctx context.Context, qr *dispatch.QueuedReque
 	// before the real HTTP call. Dispatch preparation can still fail in the
 	// circuit, limiter, or key rotator and must not look like provider traffic.
 	return e.forwardForDispatch(dctx, cand, attemptRef.AttemptID, qr.FirstSemanticByteCallback(), qr.OnExtraUpstreamCall, ctx)
+}
+
+// selectDispatchEndpoint resolves a candidate only when the selector flag is
+// enabled. An unavailable native executor must never receive selector traffic.
+func selectDispatchEndpoint(cand provider.Candidate, clientProtocol string, flags *settings.P4FeatureFlags) provider.Candidate {
+	if flags == nil || !flags.EndpointSelectorEnabled {
+		return cand
+	}
+	endpoints := make([]endpointselect.EndpointLite, 0, len(cand.NativeEndpoints))
+	for _, ep := range cand.NativeEndpoints {
+		if ep.Protocol == providercatalog.ProtocolOllamaNative && !flags.OllamaNativeEnabled {
+			continue
+		}
+		endpoints = append(endpoints, ep)
+	}
+	if clientProtocol == "" {
+		clientProtocol = providercatalog.ProtocolOpenAICompletions
+	}
+	decision := endpointselect.Select(endpointselect.CandidateLite{
+		BaseURL: cand.BaseURL, Protocol: cand.Protocol, NativeEndpoints: endpoints,
+	}, endpointselect.Protocol(clientProtocol), "")
+	if decision.Protocol == endpointselect.ProtocolOllamaNative && !flags.OllamaNativeEnabled {
+		return cand
+	}
+	cand.BaseURL, cand.Protocol = decision.BaseURL, string(decision.Protocol)
+	return cand
 }
 
 // meterExtraUpstreamCall charges the admitting credential governor for an
@@ -769,6 +796,20 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			}
 		}
 
+		// ── P4.2: r0924 supplier-protocol-optimization endpoint selector ───
+		// When FF_ENDPOINT_SELECTOR is enabled, consult endpointselect.Select()
+		// to resolve the actual (BaseURL, Protocol) this attempt should use.
+		// The decision may override the candidate's primary endpoint when a
+		// native protocol endpoint exists (Stage 1A passthrough), or keep the
+		// primary unchanged (Stage 4 fallback). The local cand copy is modified
+		// so all downstream URL construction and protocol dispatch paths see the
+		// resolved values without per-site patching.
+		//
+		// When the flag is off, cand.BaseURL and cand.Protocol remain at their
+		// SQL-loaded primary values (legacy routing behavior, zero overhead).
+		p4flags := settings.GetP4Flags()
+		cand = selectDispatchEndpoint(cand, params.ClientProtocol, p4flags)
+
 		// ── MM-1/MM-2 outbound attachment transforms ─────────────────
 		// Native Responses candidates must transform their own preserved
 		// Responses envelope; legacy candidates continue using the Chat body.
@@ -839,6 +880,14 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		switch cand.Protocol {
 		case providercatalog.ProtocolAnthropicMessages:
 			result, execErr = e.executeAnthropic(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
+		case providercatalog.ProtocolOllamaNative:
+			if !p4flags.OllamaNativeEnabled {
+				result, execErr = nil, &upstreampkg.Error{
+					Kind: errorsx.KindUnsupportedFeature, Message: "ollama-native executor disabled (FF_OLLAMA_NATIVE=false)",
+				}
+			} else {
+				result, execErr = e.executeOllama(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
+			}
 		case providercatalog.ProtocolGeminiGenerate:
 			// 2026-09-09 audit round 3: the catalog advertises
 			// gemini-generate as an outbound protocol, but no executor
