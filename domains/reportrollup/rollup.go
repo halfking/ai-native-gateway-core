@@ -687,3 +687,34 @@ func mergeBreakdown(dst, src map[string]int64) map[string]int64 {
 	}
 	return dst
 }
+
+// MissingRollupDates 返回 (now-lookback, now) 开区间内没有 daily_total
+// 快照行的日期（UTC，升序）。daily_total 在 RollupDay 里无条件写一行
+// （零流量日也是一行 COUNT=0），因此「无行」=「该日聚合从未发生」——
+// worker 停机跨过钟点、单轮失败后靠本函数做有界追赶；早于部署日的
+// 历史不在追赶范围（超出 lookback），需要时走管理端手动 /run。
+func MissingRollupDates(ctx context.Context, q Querier, lookbackDays int, now time.Time) ([]time.Time, error) {
+	if lookbackDays <= 0 {
+		lookbackDays = 1
+	}
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	from := today.AddDate(0, 0, -lookbackDays)
+	rows, err := q.Query(ctx, `
+		SELECT generate_series($1::date, $2::date, '1 day')::date AS d
+		EXCEPT
+		SELECT report_date FROM report_snapshots WHERE scope = 'daily_total'
+	`, from, today.AddDate(0, 0, -1))
+	if err != nil {
+		return nil, fmt.Errorf("query missing rollup dates: %w", err)
+	}
+	defer rows.Close()
+	var out []time.Time
+	for rows.Next() {
+		var d time.Time
+		if err := rows.Scan(&d); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
