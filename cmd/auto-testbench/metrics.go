@@ -60,7 +60,8 @@ type classificationMetrics struct {
 	LabelF1    map[string]float64
 	Failures   []caseFailure
 	Generated  int // generated=true 候选行数（不进任何指标）
-	KnownFails int
+	KnownFails int // known_failure=true 行数（不进任何指标，见下）
+	KnownXPass int // known_failure 行中意外判对的（stale marker，需清理）
 }
 
 type caseFailure struct {
@@ -78,6 +79,12 @@ func newClassificationMetrics() *classificationMetrics {
 
 // add records one judged case. Gold labels drive the per-label key set so
 // macro-F1 is computed over the classes the suite actually covers.
+//
+// known_failure 语义与 autoroute/auto_matching_suite_test.go 对齐（2026-09-25
+// 批判复审修正）：known_failure 是"已 triage 的已知缺陷用例"，包内测试容忍其
+// 失败、并把"意外判对"（xpass，stale marker）视为需要清理的套件卫生问题。
+// 本工具同样将其排除在 accuracy/F1/GRRQ 之外——否则未来套件一旦加入 triaged
+// gap 用例，门禁立即假红；xpass 单独计数并在报告可见。
 func (m *classificationMetrics) add(gold, got string, c suiteCase, conf float64, reason string) {
 	if c.Generated {
 		m.Generated++
@@ -85,6 +92,10 @@ func (m *classificationMetrics) add(gold, got string, c suiteCase, conf float64,
 	}
 	if c.KnownFailure {
 		m.KnownFails++
+		if gold == got {
+			m.KnownXPass++
+		}
+		return
 	}
 	m.Total++
 	if gold == got {
