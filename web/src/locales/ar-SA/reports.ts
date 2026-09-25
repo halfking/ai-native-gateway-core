@@ -38,4 +38,6 @@ export default {
   errors: 'الفاشلة',
   cost: 'التكلفة',
   errorBreakdown: 'توزيع أسباب الأخطاء',
+  qualityScore: "درجة الجودة",
+
 }

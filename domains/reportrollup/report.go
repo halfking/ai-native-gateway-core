@@ -14,6 +14,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 )
@@ -59,8 +60,12 @@ type Totals struct {
 
 // ProviderRow 供应商汇总行。
 type ProviderRow struct {
-	ProviderID     int64            `json:"provider_id"`
-	ProviderName   string           `json:"provider_name"`
+	ProviderID   int64  `json:"provider_id"`
+	ProviderName string `json:"provider_name"`
+	// QualityScore 供应商综合评分（0-100，一位小数）：成功率 × 时效因子
+	// （P95 ≤ 5s 不扣分，超时线性惩罚）。读面现算不落快照——公式演进
+	// 可重算历史，不违背快照冻结语义（2026-09-26 审计轮，goal #2 评分项）。
+	QualityScore   float64          `json:"quality_score"`
 	Totals         Totals           `json:"totals"`
 	ErrorBreakdown map[string]int64 `json:"error_breakdown"`
 }
@@ -226,6 +231,24 @@ func internalCents(s Snapshot) float64 {
 	}
 }
 
+// QualityLatencyBaselineMs 评分时效基准：P95 不超过该值不扣分，超出按
+// baseline/p95 线性折减（10s ≈ 半分）。展示口径，非路由决策依据。
+const QualityLatencyBaselineMs = 5000.0
+
+// ProviderQualityScore 供应商综合评分 = 100 × 成功率 × 时效因子
+// （min(1, baseline/p95)）；无成功延迟数据（p95=0）不做时效惩罚，
+// 无请求行返回 0。纯函数，供读面与测试复用。
+func ProviderQualityScore(t Totals) float64 {
+	if t.RequestCount <= 0 {
+		return 0
+	}
+	score := 100 * float64(t.SuccessCount) / float64(t.RequestCount)
+	if t.LatencyP95Ms > 0 {
+		score *= min(1, QualityLatencyBaselineMs/float64(t.LatencyP95Ms))
+	}
+	return math.Round(score*10) / 10
+}
+
 // BuildRangeReport 汇总 [start, end]（UTC 日闭区间）内 view 视角的日快照。
 // 周报/月报 = 同一入口传对应区间。providerNames 供应商 id→名称映射（可
 // nil，名称列留空）。
@@ -379,12 +402,14 @@ func BuildRangeReport(ctx context.Context, q Querier, start, end time.Time, view
 	// ---- 按供应商（provider 视角）----
 	if view == ViewProvider {
 		for pid, a := range provByKey {
-			rep.Providers = append(rep.Providers, ProviderRow{
+			row := ProviderRow{
 				ProviderID:     pid,
 				ProviderName:   providerNames[pid],
 				Totals:         a.finalize(),
 				ErrorBreakdown: a.br,
-			})
+			}
+			row.QualityScore = ProviderQualityScore(row.Totals)
+			rep.Providers = append(rep.Providers, row)
 		}
 		sort.Slice(rep.Providers, func(i, j int) bool {
 			return rep.Providers[i].Totals.RequestCount > rep.Providers[j].Totals.RequestCount

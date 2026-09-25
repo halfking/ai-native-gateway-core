@@ -39,4 +39,6 @@ export default {
   errors: 'Failures',
   cost: 'Cost',
   errorBreakdown: 'Error breakdown',
+  qualityScore: 'Quality score',
+
 }

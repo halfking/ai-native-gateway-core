@@ -32,6 +32,8 @@ export default {
     probeHealth: '探测健康度',
     systemMonitor: '系统自检',
     providers: '供应商',
+    reconciliation: '供应商对账',
+    settlementReport: '结算报表',
     pricing: '成本价格',
     modelPricing: '定价管理',
     freePool: '免费资源',

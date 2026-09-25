@@ -27,6 +27,8 @@ export interface ReportTotals {
 export interface ReportProviderRow {
   provider_id: number
   provider_name: string
+  // 2026-09-26 审计轮：供应商综合评分（0-100，成功率×时效因子，读面现算）。
+  quality_score: number
   totals: ReportTotals
   error_breakdown: Record<string, number>
 }
