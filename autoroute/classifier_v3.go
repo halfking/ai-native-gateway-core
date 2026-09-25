@@ -24,11 +24,11 @@ import (
 type V3Classifier struct {
 	keywords   V3KeywordSet
 	thresholds HeuristicThresholds
-	
+
 	// enableV3 controls whether to use V3 classification or fall back to legacy.
 	// Controlled by feature flag: auto_v3_enhanced_classification
 	enableV3 bool
-	
+
 	// legacyClassifier is used as fallback when enableV3 is false
 	legacyClassifier *HeuristicClassifier
 }
@@ -43,17 +43,17 @@ func NewV3Classifier(keywords V3KeywordSet, thresholds HeuristicThresholds, enab
 	if thresholds.LongContextTokens == 0 {
 		thresholds = DefaultHeuristicThresholds()
 	}
-	
+
 	clf := &V3Classifier{
 		keywords:   keywords,
 		thresholds: thresholds,
 		enableV3:   enableV3,
 	}
-	
+
 	// Create legacy classifier for fallback
 	legacyKW := convertV3ToLegacyKeywords(keywords)
 	clf.legacyClassifier = NewHeuristicClassifier(thresholds, legacyKW)
-	
+
 	return clf
 }
 
@@ -64,7 +64,7 @@ func (c *V3Classifier) Classify(ctx context.Context, sigs ClassificationSignals)
 		// Feature flag disabled, use legacy classifier
 		return c.legacyClassifier.Classify(ctx, sigs)
 	}
-	
+
 	return c.classifyV3(ctx, sigs)
 }
 
@@ -78,14 +78,14 @@ func (c *V3Classifier) Classify(ctx context.Context, sigs ClassificationSignals)
 //  5. Confidence threshold check (trigger LLM fallback if needed)
 func (c *V3Classifier) classifyV3(_ context.Context, sigs ClassificationSignals) (*Classification, error) {
 	scores := make(map[TaskType]float64, len(AllTaskTypesV3))
-	
+
 	// Normalize text for keyword matching
 	text := normaliseForKeyword(sigs.LastUserPrompt, sigs.SystemPrompt)
-	
+
 	// ========================================================================
 	// Phase 1: Hard Overrides (confidence 0.90-0.95)
 	// ========================================================================
-	
+
 	// 1.1 Vision (highest priority, cannot be overridden)
 	if sigs.HasImages {
 		return &Classification{
@@ -97,16 +97,16 @@ func (c *V3Classifier) classifyV3(_ context.Context, sigs ClassificationSignals)
 			Reason:     "request contains image parts (hard override)",
 		}, nil
 	}
-	
+
 	// 1.2 Strong coding signals (code block, IDE fingerprint, plan mode pattern)
 	hasCodeBlock := sigs.HasCodeBlock
 	hasIDEFingerprint := sigs.ClientType != "" && isIDEClient(sigs.ClientType)
 	hasPlanModePattern := containsFold(text, "先制定计划") || containsFold(text, "plan mode") ||
 		containsFold(text, "step by step implement") || containsFold(text, "先列出步骤") ||
 		containsFold(text, "然后实现") || containsFold(text, "then implement")
-	
+
 	strongCodingSignal := hasCodeBlock || hasIDEFingerprint || hasPlanModePattern
-	
+
 	if strongCodingSignal {
 		conf := 0.90
 		reason := "coding strong signal: "
@@ -129,7 +129,7 @@ func (c *V3Classifier) classifyV3(_ context.Context, sigs ClassificationSignals)
 			Reason:     reason + strings.Join(reasons, ", "),
 		}, nil
 	}
-	
+
 	// 1.3 Long context (only if no strong coding signal)
 	if sigs.EstimatedTokens > c.thresholds.LongContextTokens {
 		conf := 0.85
@@ -142,11 +142,11 @@ func (c *V3Classifier) classifyV3(_ context.Context, sigs ClassificationSignals)
 			Reason:     fmtTokens(sigs.EstimatedTokens, c.thresholds.LongContextTokens),
 		}, nil
 	}
-	
+
 	// ========================================================================
 	// Phase 2: Specialized Task Detection (confidence 0.80-0.90)
 	// ========================================================================
-	
+
 	// 2.1 Architecture (system design, API design)
 	archScore := c.scoreTaskType(text, c.keywords.Architecture)
 	if archScore >= 0.60 {
@@ -161,7 +161,7 @@ func (c *V3Classifier) classifyV3(_ context.Context, sigs ClassificationSignals)
 		}, nil
 	}
 	scores[TaskArchitecture] = archScore
-	
+
 	// 2.2 Audit (code review, security audit)
 	auditScore := c.scoreTaskType(text, c.keywords.Audit)
 	if auditScore >= 0.60 {
@@ -176,7 +176,7 @@ func (c *V3Classifier) classifyV3(_ context.Context, sigs ClassificationSignals)
 		}, nil
 	}
 	scores[TaskAudit] = auditScore
-	
+
 	// 2.3 Debugging (bug investigation, stack trace analysis)
 	debugScore := c.scoreTaskType(text, c.keywords.Debugging)
 	// Check for error patterns (strong debugging signals)
@@ -184,11 +184,11 @@ func (c *V3Classifier) classifyV3(_ context.Context, sigs ClassificationSignals)
 		containsFold(text, "stack trace") || containsFold(text, "traceback") ||
 		containsFold(text, "doesn't work") || containsFold(text, "not working") ||
 		containsFold(text, "why") || containsFold(text, "为什么")
-	
+
 	if hasErrorPattern {
 		debugScore = min(1.0, debugScore+0.25) // Boost for error patterns
 	}
-	
+
 	if debugScore >= 0.55 { // Lower threshold for debugging (often urgent)
 		conf := min(0.88, debugScore+0.15)
 		return &Classification{
@@ -201,11 +201,11 @@ func (c *V3Classifier) classifyV3(_ context.Context, sigs ClassificationSignals)
 		}, nil
 	}
 	scores[TaskDebugging] = debugScore
-	
+
 	// ========================================================================
 	// Phase 3: Tool-Based Dispatch
 	// ========================================================================
-	
+
 	// 3.1 Agent (multi-tool workflows)
 	if sigs.ToolCount >= c.thresholds.AgentToolThreshold && sigs.HasToolResults {
 		conf := 0.85
@@ -219,53 +219,53 @@ func (c *V3Classifier) classifyV3(_ context.Context, sigs ClassificationSignals)
 				sigs.ToolCount, c.thresholds.AgentToolThreshold),
 		}, nil
 	}
-	
+
 	// 3.2 Function Call (1-2 tools)
 	if sigs.ToolCount >= 1 && sigs.ToolCount <= c.thresholds.FunctionCallToolMax {
 		scores[TaskFunctionCall] = 0.80
 	}
-	
+
 	// ========================================================================
 	// Phase 4: Keyword-Based Scoring (all remaining categories)
 	// ========================================================================
-	
+
 	// Score all V3 task types
 	scores[TaskCoding] = c.scoreTaskType(text, c.keywords.Coding)
 	if sigs.HasCodeBlock {
 		scores[TaskCoding] = min(1.0, scores[TaskCoding]+0.30)
 	}
-	
+
 	scores[TaskRefactoring] = c.scoreTaskType(text, c.keywords.Refactoring)
 	scores[TaskTesting] = c.scoreTaskType(text, c.keywords.Testing)
 	scores[TaskDevOps] = c.scoreTaskType(text, c.keywords.DevOps)
 	scores[TaskDocumentation] = c.scoreTaskType(text, c.keywords.Documentation)
 	scores[TaskSummary] = c.scoreTaskType(text, c.keywords.Summary)
 	scores[TaskDependency] = c.scoreTaskType(text, c.keywords.Dependency)
-	
+
 	// Default baseline for chat
 	scores[TaskChat] = 0.10
-	
+
 	// ========================================================================
 	// Phase 5: Winner Selection & Confidence Check
 	// ========================================================================
-	
+
 	winner, winnerScore := c.pickWinnerV3(scores)
 	secondary := rankSecondary(scores, winner)
-	
+
 	// Build reason
 	reason := c.buildReasonV3(winner, scores)
-	
+
 	// Check minimum confidence threshold for the task type
 	minConf := MinConfidenceThresholds[winner]
 	if minConf == 0 {
 		minConf = 0.70 // Default threshold
 	}
-	
+
 	// Apply confidence boost for strong signals
 	if winnerScore >= 0.75 {
 		winnerScore = min(0.95, winnerScore+0.08)
 	}
-	
+
 	return &Classification{
 		Primary:    winner,
 		Confidence: winnerScore,
@@ -282,77 +282,78 @@ func (c *V3Classifier) scoreTaskType(text string, keywords []string) float64 {
 	if len(keywords) == 0 {
 		return 0.0
 	}
-	
+
 	hits := countKeywordHits(text, keywords)
 	if hits == 0 {
 		return 0.0
 	}
-	
+
 	// Weight per hit: 0.35 (so 3 hits = 1.0)
 	// This is higher than legacy (0.2) to make decisions more decisive
 	const perHitWeight = 0.35
 	score := min(1.0, float64(hits)*perHitWeight)
-	
+
 	return score
 }
 
 // pickWinnerV3 selects the highest-scoring task type with priority tiebreaker.
 // Priority order for V3:
-//   architecture > audit > debugging > coding > refactoring > testing >
-//   devops > agent > function_call > documentation > summary > dependency >
-//   vision > long_context > chat
+//
+//	architecture > audit > debugging > coding > refactoring > testing >
+//	devops > agent > function_call > documentation > summary > dependency >
+//	vision > long_context > chat
 func (c *V3Classifier) pickWinnerV3(scores map[TaskType]float64) (TaskType, float64) {
 	priority := []TaskType{
 		// Tier-A tasks (highest priority - most valuable)
 		TaskArchitecture,
 		TaskAudit,
 		TaskDebugging,
-		
+
 		// Tier-B tasks (standard development)
 		TaskCoding,
 		TaskRefactoring,
 		TaskTesting,
-		
+
 		// Tier-C tasks (economy, operational)
 		TaskDevOps,
-		
+
 		// Other specialized tasks
 		TaskAgent,
 		TaskFunctionCall,
-		
+
 		// Tier-C documentation/summary
 		TaskDocumentation,
 		TaskSummary,
 		TaskDependency,
-		
+
 		// Fallback categories
 		TaskVision,
 		TaskLongContext,
 		TaskChat,
 	}
-	
+
 	var best TaskType
 	bestScore := -1.0
-	
+
 	for _, t := range priority {
 		if s, ok := scores[t]; ok && s > bestScore {
 			bestScore = s
 			best = t
 		}
 	}
-	
+
 	if best == "" {
 		best = TaskChat
 		bestScore = scores[TaskChat]
 	}
-	
+
 	return best, bestScore
 }
 
 // buildReasonV3 constructs a human-readable explanation for the classification.
 func (c *V3Classifier) buildReasonV3(winner TaskType, scores map[TaskType]float64) string {
 	winnerScore := scores[winner]
-	
+
 	switch winner {
 	case TaskArchitecture:
 		return fmt.Sprintf("architecture keywords (score: %.2f)", winnerScore)
@@ -416,10 +417,10 @@ func convertV3ToLegacyKeywords(v3kw V3KeywordSet) KeywordSet {
 			)...,
 		),
 	}
-	
+
 	// Add audit keywords to reasoning (analysis task)
 	legacy.Reasoning = append(legacy.Reasoning, v3kw.Audit...)
-	
+
 	return legacy
 }
 

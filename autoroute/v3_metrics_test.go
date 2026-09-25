@@ -30,11 +30,11 @@ func TestV3MetricsCollectibleInIsolatedRegistry(t *testing.T) {
 
 	want := map[string]int{
 		"llmgw_autoroute_classification_duration_seconds": 1,
-		"llmgw_autoroute_classification_total":           1,
-		"llmgw_autoroute_classification_cache_total":     2, // hit + miss
-		"llmgw_autoroute_cost_dollars_total":             1,
-		"llmgw_autoroute_cost_saved_dollars_total":       1,
-		"llmgw_autoroute_classification_feedback_total":  1,
+		"llmgw_autoroute_classification_total":            1,
+		"llmgw_autoroute_classification_cache_total":      2, // hit + miss
+		"llmgw_autoroute_cost_dollars_total":              1,
+		"llmgw_autoroute_cost_saved_dollars_total":        1,
+		"llmgw_autoroute_classification_feedback_total":   1,
 	}
 	for name, expected := range want {
 		count, err := testutil.GatherAndCount(reg, name)
@@ -170,11 +170,11 @@ func TestV3MetricNamesUseAutoroutePrefix(t *testing.T) {
 
 	want := map[string]bool{
 		"llmgw_autoroute_classification_duration_seconds": false,
-		"llmgw_autoroute_classification_total":           false,
-		"llmgw_autoroute_classification_cache_total":     false,
-		"llmgw_autoroute_cost_dollars_total":             false,
-		"llmgw_autoroute_cost_saved_dollars_total":       false,
-		"llmgw_autoroute_classification_feedback_total":  false,
+		"llmgw_autoroute_classification_total":            false,
+		"llmgw_autoroute_classification_cache_total":      false,
+		"llmgw_autoroute_cost_dollars_total":              false,
+		"llmgw_autoroute_cost_saved_dollars_total":        false,
+		"llmgw_autoroute_classification_feedback_total":   false,
 	}
 	mfs, err := reg.Gather()
 	if err != nil {
