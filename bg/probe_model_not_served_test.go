@@ -61,8 +61,10 @@ func TestProbeBackoffForErrCodeModelNotServed(t *testing.T) {
 	if first == modelNotServedRecheckInterval || first <= 0 {
 		t.Fatalf("unconfirmed 404 keeps the generic ladder rung, got %s", first)
 	}
-	if got := ProbeBackoffForErrCode("timeout", 9); got > time.Minute {
-		t.Fatalf("timeout stays on the short network chain, got %s", got)
+	// 2026-09-26 P0-2: a plain timeout never parks — it rides the network
+	// ladder, which now long-tails to the 6h cap instead of looping at 60s.
+	if got := ProbeBackoffForErrCode("timeout", 9); got != 6*time.Hour {
+		t.Fatalf("timeout rides the long-tail network chain to 6h, got %s", got)
 	}
 }
 
