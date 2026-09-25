@@ -243,6 +243,13 @@ func applyTuningParam(snap *tuningSnapshot, key string, value json.RawMessage) e
 		if err := json.Unmarshal(value, &v); err != nil {
 			return err
 		}
+		// R64 P3：与 admin applyThresholdChangeInTx 的 apply 口径（≥1）对齐
+		// ——≤0 会让 TaskLongContext 的 token 门永不/恒触发，直接拒绝该行
+		// （Reload 记 warn 后保留默认 50000，fail-safe）。种子值 02-seed.sql
+		// 为 50000，现存行全为正整数，此校验只拦脏数据。
+		if v <= 0 {
+			return fmt.Errorf("thresholds.long_context_tokens %d must be positive", v)
+		}
 		snap.LongContextTokens = v
 	case "weights.smart":
 		w, err := unmarshalWeights(value)

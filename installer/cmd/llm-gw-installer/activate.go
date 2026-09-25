@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/installer/internal/activation"
@@ -161,16 +164,46 @@ func handleOfflineRequest(licenseKey string) error {
 	return nil
 }
 
-// handleOfflineImport 处理离线 license 导入
+// handleOfflineImport 处理离线 license 导入。installDir 由 resolveInstallDir
+// 从环境变量推断（INSTALL_DIR / LLM_GATEWAY_INSTALL_DIR / cwd），与
+// installer/internal/enrollment/heartbeat.go 和 cmd/llm-launcher/main.go
+// 保持一致——wizard 在 $PWD 写入、systemd / 容器在 /var/lib/kx-gateway 写入。
 func handleOfflineImport(licensePath string) error {
+	installDir := resolveInstallDir()
 	fmt.Printf("▶ 导入离线 License (%s) ...\n", licensePath)
 
-	if err := activation.ImportOfflineLicense(licensePath); err != nil {
+	if err := activation.ImportOfflineLicense(licensePath, installDir); err != nil {
 		return fmt.Errorf("导入失败: %w", err)
 	}
 
+	targetPath := filepath.Join(installDir, "license.dat")
 	fmt.Println("✅ 离线 License 导入成功")
-	fmt.Println("   目标路径: /var/lib/kx-gateway/license.dat")
+	fmt.Printf("   目标路径: %s\n", targetPath)
 
 	return nil
+}
+
+// resolveInstallDir 解析离线 license 应写入的目标目录。查找顺序与
+// installer/internal/enrollment/heartbeat.go (line 179-185) 及
+// cmd/llm-launcher/main.go (resolveInstallDir) 完全一致：
+//
+//  1. $INSTALL_DIR              —— wizard 与 shell 导出值
+//  2. $LLM_GATEWAY_INSTALL_DIR  —— systemd / 容器环境别名
+//  3. os.Getwd()                —— 前台 CLI 兜底（不能为空，因为
+//     ImportOfflineLicense 会因为 installDir == "" 直接失败）
+//
+// 末尾用 "." 兜底是为了避免在容器里 cwd 读取失败时返回空字符串触
+// 发 ImportOfflineLicense 的 "installDir is required" 报错——操作员
+// 期望看到的是写入了某个明确路径，而不是一个莫名其妙的配置错误。
+func resolveInstallDir() string {
+	if v := strings.TrimSpace(os.Getenv("INSTALL_DIR")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_INSTALL_DIR")); v != "" {
+		return v
+	}
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		return wd
+	}
+	return "."
 }

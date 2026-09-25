@@ -117,3 +117,23 @@ func TestRollupSQL_InsertCarriesOnConflict(t *testing.T) {
 		t.Errorf("DELETE wrapper must not carry ON CONFLICT")
 	}
 }
+
+// TestRollupSQL_DeleteDoesNotRerunRollup pins the 2026-09-25 252-audit fix:
+// the DELETE used to wrap the full rollup SELECT in an IN(...) subquery, so
+// every refresh executed the heaviest query in the data plane twice (once to
+// select the victims, once to insert) on every gateway instance — 29 runs /
+// 15 min, mean 1.8s each on 252. Every produced row carries bucket = $1, so
+// the delete must be a plain bucket-range delete off the unique index prefix.
+func TestRollupSQL_DeleteDoesNotRerunRollup(t *testing.T) {
+	deleteSQL, _ := credentialModelIndexRollupSQLs()
+	stripped := stripSQLCommentsAndLiterals(deleteSQL)
+	if !strings.Contains(stripped, "WHERE bucket = $1") {
+		t.Errorf("delete SQL must be the bucket-range form (WHERE bucket = $1), got:\n%s", deleteSQL)
+	}
+	for _, banned := range []string{"SELECT bucket, credential_id, raw_model FROM", "_fresh", "UNION ALL"} {
+		if strings.Contains(stripped, banned) {
+			t.Errorf("delete SQL re-runs the rollup SELECT (found %q); that doubles the "+
+				"heaviest query per tick across all instances", banned)
+		}
+	}
+}

@@ -188,7 +188,9 @@ func (r *AutoIndexRefresher) RefreshOnce(ctx context.Context) error {
 // the auto_route_refresh LISTEN listener with no mutual exclusion. The
 // DELETE+INSERT pair is not atomic, so two overlapping runs interleave as
 // DELETE(A) → DELETE(B) → INSERT(A) → INSERT(B) and the second INSERT hits
-//   duplicate key value violates unique constraint "idx_credential_model_index_hot_unique"
+//
+//	duplicate key value violates unique constraint "idx_credential_model_index_hot_unique"
+//
 // (observed 2026-09-10 04:18 CST). Re-adding ON CONFLICT DO UPDATE makes each
 // INSERT idempotent against rows a concurrent run already committed. The
 // 2026-07-20 P2-#6 reason ON CONFLICT was originally dropped — "cannot affect
@@ -196,11 +198,20 @@ func (r *AutoIndexRefresher) RefreshOnce(ctx context.Context) error {
 // DISTINCT ON (bucket, credential_id, raw_model) tail already guarantees a
 // single row per conflict key per statement, so the clause now only ever
 // resolves against rows committed by the *other* run.
+//
+// 2026-09-25 (252 PG log audit): the DELETE used to wrap the full rollup
+// SELECT in an IN(...) subquery, so every tick executed the heaviest query in
+// the data plane TWICE (once to find the rows to delete, once to insert them)
+// across all gateway instances — 29 DELETEs in a 15-min window on 252, mean
+// 1.8s each. Every row the rollup produces carries bucket = $1 (both halves
+// select $1::timestamptz AS bucket), so "delete exactly the fresh set" is
+// equivalent to "delete the whole current bucket and re-insert the fresh set"
+// — and the bucket form additionally drops stale current-bucket rows the
+// fresh set no longer contains. The delete now rides the unique index prefix
+// instead of re-running the rollup.
 func credentialModelIndexRollupSQLs() (deleteSQL, insertSQL string) {
 	deleteSQL = `DELETE FROM credential_model_index_hot
-			WHERE (bucket, credential_id, raw_model) IN (
-				SELECT bucket, credential_id, raw_model FROM (` + rollupCredentialModelIndexSQL + `) _fresh
-			)`
+			WHERE bucket = $1`
 	insertSQL = `INSERT INTO credential_model_index_hot (
 	    bucket, credential_id, raw_model, canonical_id,
 	    billing_mode, unit_price_in_per_1m, unit_price_out_per_1m, context_window,

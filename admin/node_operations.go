@@ -32,6 +32,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -134,8 +135,8 @@ type credentialSessionPingResponse struct {
 	Status       string `json:"status"`
 	// Probe 显式标记本响应来自 session-ping 探测端点，便于审计与流量治理将
 	// "只发 ping、无真实业务" 的请求从生产统计里剥离。2026-09-23。
-	Probe    bool   `json:"probe"`
-	TestedAt string `json:"tested_at"`
+	Probe     bool   `json:"probe"`
+	TestedAt  string `json:"tested_at"`
 	ErrorCode string `json:"error_code,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
@@ -165,7 +166,9 @@ func (h *Handler) handleCredentialSessionPing(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	// 2026-09-25: 5s → 15s（与 bg.probeChatClient 对齐）。openai-responses
+	// 中转（vapeur 实测 ~2s/次）在冷启动首连下 5s 预算不足，误报 timeout。
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	var providerID int
@@ -200,15 +203,7 @@ func (h *Handler) handleCredentialSessionPing(w http.ResponseWriter, r *http.Req
 	startedAt := time.Now()
 	status, errorCode, message := h.runCredentialSessionPing(ctx, baseURL, protocol, catalogCode, apiKey, req.Model)
 	latency := time.Since(startedAt).Milliseconds()
-	response := credentialSessionPingResponse{
-		CredentialID: credentialID,
-		Model:        req.Model,
-		LatencyMs:    latency,
-		Status:       status,
-		TestedAt:     time.Now().UTC().Format(time.RFC3339),
-		ErrorCode:    errorCode,
-		Error:        message,
-	}
+	response := newCredentialSessionPingResponse(credentialID, req.Model, status, errorCode, message, latency)
 	slog.Info("credential session ping", "credential_id", credentialID, "model", req.Model, "status", status, "latency_ms", latency, "operator_id", operatorID, "source", "web_api")
 	if h.auditLogger != nil {
 		h.auditLogger.auditTestNow(providerID, operatorID, status, latency)
@@ -216,16 +211,40 @@ func (h *Handler) handleCredentialSessionPing(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, response)
 }
 
+// newCredentialSessionPingResponse 构造 session-ping 响应体。R64（2026-09-25）
+// 从 handleCredentialSessionPing 内联字面量抽出为纯函数：原字面量漏赋
+// Probe 字段（恒 false，死字段），现在此处单点置 true，并使响应构造可脱离
+// DB 依赖直接单测。
+func newCredentialSessionPingResponse(credentialID int, model, status, errorCode, message string, latencyMs int64) credentialSessionPingResponse {
+	return credentialSessionPingResponse{
+		CredentialID: credentialID,
+		Model:        model,
+		LatencyMs:    latencyMs,
+		Status:       status,
+		// R64（2026-09-25）：显式标记本响应来自 session-ping 探测端点——
+		// 审计与流量治理凭它把"只发 ping、无真实业务"的请求从生产统计剥离。
+		Probe:     true,
+		TestedAt:  time.Now().UTC().Format(time.RFC3339),
+		ErrorCode: errorCode,
+		Error:     message,
+	}
+}
+
 func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protocol, catalogCode, apiKey, model string) (status, errorCode, message string) {
 	// 2026-09-06: 复用 providercap 动态协议适配，支持 anthropic-messages 等多协议。
-	// 之前硬编码 /chat/completions 导致 Anthropic 供应商 Ping 失败。
+	// 2026-09-25: 先归一协议拼写（providers.protocol 无 CHECK 约束，"openai-
+	// response" 等别名会静默落入 chat 默认分支），与 bg.probeDescriptorFor
+	// 同一入口语义。
+	if normed, normErr := providercatalog.NormalizeProviderProtocol(protocol); normErr == nil {
+		protocol = normed
+	}
 	desc := providercap.Resolve(protocol, catalogCode)
 	endpoint := providercap.ProbeEndpointURL(baseURL, desc)
 	if endpoint == "" {
 		return "error", "invalid_protocol", "unsupported protocol or empty base URL"
 	}
 
-	// 根据协议构造请求体：Anthropic Messages vs OpenAI Chat Completions
+	// 根据协议构造请求体：Anthropic Messages / OpenAI Responses / OpenAI Chat
 	var payload []byte
 	var err error
 	if desc.ChatProbeEndpoint == upstreamurl.EpMessages {
@@ -236,6 +255,19 @@ func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protoco
 			"messages": []map[string]any{
 				{"role": "user", "content": "ping"},
 			},
+		})
+	} else if desc.ChatProbeEndpoint == upstreamurl.EpResponses {
+		// OpenAI Responses API format (2026-09-25 vapeur/hxt-local 事故)：
+		// openai-responses 供应商按其原生协议探测。此前恒走 chat +
+		// max_tokens=1，vapeur 对 gpt-5.6-terra 直接 400 "Could not finish
+		// the message because max_tokens or model output limit was reached"。
+		// max_output_tokens=32：Responses API 下限 16（vapeur 实测 400
+		// "Expected >= 16"），见 providercap.ResponsesProbeMaxOutputTokens。
+		payload, err = json.Marshal(map[string]any{
+			"model":             model,
+			"input":             "ping",
+			"max_output_tokens": providercap.ResponsesProbeMaxOutputTokens,
+			"stream":            false,
 		})
 	} else {
 		// OpenAI Chat Completions format (default)
@@ -256,7 +288,9 @@ func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protoco
 	providercap.ApplyAuthHeaders(req, desc, apiKey)
 	h.applyCatalogHeaderProfile(ctx, req, catalogCode)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	// 2026-09-25: 5s → 15s，与 ctx 预算及 bg.probeChatClient 对齐——
+	// responses 中转冷启动首连即超 5s（vapeur 实测误报 timeout）。
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
 			return "timeout", "timeout", "session ping timed out"
@@ -304,6 +338,21 @@ func isChatPingResponse(body []byte) bool {
 		Content json.RawMessage `json:"content"`
 	}
 	if json.Unmarshal(body, &anthResp) == nil && anthResp.Type == "message" && len(anthResp.Content) > 0 {
+		return true
+	}
+	// OpenAI Responses API format (2026-09-25)：status=completed/incomplete
+	// 且带 output 数组即证明上游按 Responses 协议应答（incomplete 仍证明
+	// key/模型/端点全部可用，仅输出预算耗尽）。chat completion 的
+	// object="chat.completion" 不会命中。
+	var responsesResp struct {
+		Object string          `json:"object"`
+		Status string          `json:"status"`
+		Output json.RawMessage `json:"output"`
+	}
+	if json.Unmarshal(body, &responsesResp) == nil &&
+		responsesResp.Object == "response" &&
+		responsesResp.Status != "" &&
+		json.Valid(responsesResp.Output) {
 		return true
 	}
 	return false

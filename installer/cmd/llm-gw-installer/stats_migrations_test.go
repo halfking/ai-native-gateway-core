@@ -215,6 +215,11 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// 未实现）—— 曾死放 migrations/ 顶层无投递通道，本轮补五点同步并
 		// 入 parity 守卫。
 		"745_report_snapshots.sql": reportSnapshotsMigration745,
+		// 746 (2026-09-25, 对账报表落地轮): report_snapshots 内部对帐维度
+		// 补齐（tenant_id→text + credits/latency 列 + scope 扩员注记）——
+		// 与消费方（bg worker / admin 读面）同轮落地，五点同步 + parity
+		// 守卫。可重入（ALTER TYPE USING text::text + IF NOT EXISTS）。
+		"746_report_snapshots_internal_dims.sql": reportSnapshotsInternalDimsMigration746,
 		// 800 (2026-09-24, r0924 supplier-protocol-optimization §3.2):
 		// provider_endpoint_protocols 每 provider 多端点表 + 回填 —— 原
 		// deploy/sql/migrations/V800 文件从未进任何存量库通道，本轮移入

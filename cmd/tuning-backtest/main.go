@@ -119,7 +119,9 @@ func backtestProposal(ctx context.Context, pool *pgxpool.Pool, id int64, days in
 // LLM fallback. Reports how many total requests that band touches (fallback
 // cost proxy) and how many of them were later human-corrected (would-fix
 // proxy). Same band semantics as taskprofile.BacktestThresholdBand (v2 闭环
-// P1)；两处 SQL 需同步维护（属主：taskprofile/analyzer.go）。
+// P1)；两处 SQL 需同步维护（属主：taskprofile/analyzer.go）。R65：读面与
+// analyzer 一致走 auto_route_selections_all（含 hot heap，promotion 滞后
+// 期间裸父表不可见）。
 func backtestThresholdChange(ctx context.Context, pool *pgxpool.Pool, proposal map[string]any, days int) error {
 	key, _ := proposal["key"].(string)
 	oldRaw, _ := proposal["old"].(float64)
@@ -137,7 +139,7 @@ func backtestThresholdChange(ctx context.Context, pool *pgxpool.Pool, proposal m
 		       count(*) FILTER (WHERE EXISTS (
 		           SELECT 1 FROM task_type_corrections c
 		           WHERE c.request_id = ars.request_id AND c.agrees = false))
-		FROM auto_route_selections ars
+		FROM auto_route_selections_all ars
 		WHERE ars.ts >= NOW() - make_interval(days => $1)
 		  AND ars.classifier = 'heuristic'
 		  AND ars.confidence >= $2 AND ars.confidence < $3

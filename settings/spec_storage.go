@@ -156,5 +156,48 @@ func StorageSpecs() []*Spec {
 			DangerLevel:     Warning,
 			HotReload:       true,
 		},
+		// 2026-09-24: 全模式热区层方案（docs/storage/2026-09-24-hotzone-dual-mode-plan.md）。
+		// 三个平台级开关控制 hotzone（data/hotzone/）装配与生命周期；热重载为 H4
+		// 验收项（运行时改 storage.hotzone_max_size_gb=1 后 ≤1 轮询周期内 trimmer
+		// 生效），settings > env > YAML > default 与现有 settings 语义对齐。
+		{
+			Key:             "storage.hotzone_enabled",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategoryStorage,
+			Default:         true,
+			Description:     "启用全模式热区层（data/hotzone/）",
+			DescriptionLong: "开启后两模式（lite / full）的本地热区层装载 SessionStateV2 + 会话 body + 请求 body 三件套镜像；关闭即回退历史装配（lite 仍保留 L1.5；full 仅 L1→L2→L3）。默认开启；可通过 LLM_GATEWAY_HOTZONE_ENABLED=false 一键关闭。",
+			DangerLevel:     Dangerous,
+			HotReload:       true,
+		},
+		{
+			Key:             "storage.hotzone_max_size_gb",
+			Type:            TypeInt,
+			Scope:           ScopePlatform,
+			Category:        CategoryStorage,
+			Min:             floatPtr(1),
+			Max:             floatPtr(100),
+			Default:         1,
+			Description:     "热区磁盘硬上限",
+			DescriptionLong: "data/hotzone/ 目录总体积上限（cache + session_bodies + requests 三子树共享同一预算），超过上限时按 mtime 从旧到新淘汰。默认 1GB。扩容立即生效（FileCache.ResizeMax）；缩容交由下一轮 trimmer 执行。",
+			Unit:            "GB",
+			DangerLevel:     Dangerous,
+			HotReload:       true,
+		},
+		{
+			Key:             "storage.hotzone_retention_hours",
+			Type:            TypeInt,
+			Scope:           ScopePlatform,
+			Category:        CategoryStorage,
+			Min:             floatPtr(1),
+			Max:             floatPtr(168),
+			Default:         7,
+			Description:     "热区保留时长",
+			DescriptionLong: "data/hotzone/ 三子树（cache / session_bodies / requests）超过此时长即视为过期，由 HotZoneTrimmer 按 mtime 删除。默认 7h；范围 1–168h（=7 天）。",
+			Unit:            "小时",
+			DangerLevel:     Dangerous,
+			HotReload:       true,
+		},
 	}
 }

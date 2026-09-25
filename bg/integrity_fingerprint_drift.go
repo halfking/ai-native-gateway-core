@@ -47,6 +47,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
 // IntegrityFingerprintDrift runs the rolling-window baseline check.
@@ -63,6 +65,16 @@ type IntegrityFingerprintDrift struct {
 	started       atomic.Bool
 	scannedCycles atomic.Uint64
 	driftDetected atomic.Uint64
+	skippedTicks  atomic.Uint64
+
+	// probeDone/probeEmpty memoize the one-shot fingerprint existence probe
+	// (2026-09-25 audit round 8, D11). The probe itself is a partition-
+	// pruned scan and can take tens of seconds on a cold, fingerprint-less
+	// database, so it runs at most once per process; the in-process signal
+	// from telemetry.SystemFingerprintObservedSince re-arms the full scan
+	// the moment real fingerprint traffic shows up.
+	probeDone  bool
+	probeEmpty bool
 }
 
 // NewIntegrityFingerprintDrift constructs a worker. Default values
@@ -132,12 +144,83 @@ func (w *IntegrityFingerprintDrift) run(ctx context.Context) {
 }
 
 func (w *IntegrityFingerprintDrift) tick(ctx context.Context) {
+	// 2026-09-25 audit round 8 (D11): skip the full 7-day canonical-view
+	// scan while no fingerprint traffic exists at all. On 252 every
+	// system_fingerprint column is empty (upstream providers never return
+	// X-System-Fingerprint), so the scanDrift query was a pure full-scan
+	// no-op (~490k EXPLAIN cost, 128k-row request_logs_2026_09 seq scan)
+	// that the 30s rolconfig statement timeout killed under load, 3x/55min.
+	//
+	// Skip conditions (either one is sufficient to run the FULL scan):
+	//   - telemetry observed a fingerprint-carrying entry in this process
+	//     (persistSystemFingerprint succeeded at least once) — the
+	//     per-instance argument: every gateway instance sees its own
+	//     requests, and a full scan is only skippable for the instance
+	//     that has seen none AND whose one-shot DB probe found none;
+	//   - the one-shot DB probe (current half-window) found fingerprint
+	//     rows, or has not run yet.
+	// The probe (integrity_fingerprint_probe.go) checks the hot table first
+	// (millisecond seq scan) and only then the bare parent (partition-pruned,
+	// ~12-28s one-shot on 252). It runs at most once per process; a probe
+	// that errors does not memoize (probeDone stays false) so the next tick
+	// retries it.
+	_, inProcSeen := telemetry.SystemFingerprintObservedSince()
+	switch fingerprintScanDecision(inProcSeen, w.probeDone, w.probeEmpty) {
+	case fingerprintScanSkip:
+		w.skippedTicks.Add(1)
+		return
+	case fingerprintScanProbe:
+		probeCtx, probeCancel := context.WithTimeout(ctx, 60*time.Second)
+		hasFP, err := w.probeFingerprintTraffic(probeCtx)
+		probeCancel()
+		w.probeDone = err == nil
+		w.probeEmpty = err == nil && !hasFP
+		if err != nil {
+			slog.Warn("integrity_fingerprint_drift: fingerprint probe failed, running full scan", "error", err)
+		} else if !hasFP {
+			w.skippedTicks.Add(1)
+			slog.Info("integrity_fingerprint_drift: no fingerprint traffic in current window, skipping full scan (re-arms when telemetry observes a fingerprint)",
+				"current_days", w.days/2)
+			return
+		}
+	case fingerprintScanRun:
+		w.probeDone = false // re-arm: real traffic exists, always scan
+		w.probeEmpty = false
+	}
+
 	stepCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	w.scannedCycles.Add(1)
 	if err := w.scanDrift(stepCtx); err != nil {
 		slog.Warn("integrity_fingerprint_drift: scan failed", "error", err)
 	}
+}
+
+type fingerprintScanAction int
+
+const (
+	fingerprintScanRun fingerprintScanAction = iota
+	fingerprintScanProbe
+	fingerprintScanSkip
+)
+
+// fingerprintScanDecision is the pure decision core of the D11 short-circuit
+// (extracted so the state machine is table-testable without a DB):
+//
+//	inProcSeen  telemetry saw fingerprint traffic in this process → always run
+//	probeDone   the one-shot DB probe completed (memoized per process)
+//	probeEmpty  the probe found no fingerprint rows in the current window
+func fingerprintScanDecision(inProcSeen, probeDone, probeEmpty bool) fingerprintScanAction {
+	if inProcSeen {
+		return fingerprintScanRun
+	}
+	if probeDone {
+		if probeEmpty {
+			return fingerprintScanSkip
+		}
+		return fingerprintScanRun
+	}
+	return fingerprintScanProbe
 }
 
 // scanDrift computes baseline vs current dominant fingerprint per

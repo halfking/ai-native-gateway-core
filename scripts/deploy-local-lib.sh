@@ -795,17 +795,7 @@ dl_wait_pg_isready() {
     log 'no DATABASE_URL configured; skipping PG pre-flight'
     return 0
   fi
-  local user pass host port db _SCHEME _OPT _SEP1 _USERP _SEP2 _PWTAIL
-  # sed regex broken into pieces (scheme / opt / user-empty / sep / pw-group /
-  # at / rest) so the static secret-scanner doesn't see a single-line
-  # DSN-shaped literal. The composed regex is identical to the inline
-  # user-extraction line below.
-  _SCHEME='postgres'
-  _OPT='(ql)?'
-  _SEP1='[^'$(printf '\x3a')']+'
-  _USERP=':('
-  _SEP2='[^'$(printf '\x40')']+)'
-  _PWTAIL='@.*'
+  local user pass host port db
   # R37 (2026-09-17, both sessions independently): sed -n returns exit 0 even
   # with no match, so the original `if ! user=$(... ) || ! ...` chain could
   # never fire — an unparseable DSN slid through with empty parts and burned
@@ -815,10 +805,7 @@ dl_wait_pg_isready() {
   # `([^:]+):` required a colon, so `postgresql://u@host:5432/db` slid to the
   # unparseable branch (or worse, matched `u@host` as user with -U).
   user=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://([^@:/]+)(:[^@]*)?@.*|\2|p')
-  # Composed sed regex (see _SCHEME / _OPT / _SEP1 / _USERP / _SEP2 / _PWTAIL
-  # above) — avoids a single-line DSN-shaped literal that would trip the
-  # secret scanner.
-  pass=$(printf '%s' "$dsn" | sed -nE "s|^${_SCHEME}${_OPT}://${_SEP1}${_USERP}${_SEP2}${_PWTAIL}|\2|p")
+  pass=$(printf '%s' "$dsn" | sed -nE 's|^postgres(ql)?://[^:]+:([^@]+)@.*|\2|p')
   host=$(printf '%s' "$dsn" | sed -nE 's|^.*@([^:]+):.*|\1|p')
   port=$(printf '%s' "$dsn" | sed -nE 's|^.*@[^:]+:([0-9]+).*|\1|p')
   db=$(printf '%s' "$dsn" | sed -nE 's|^.*/([^?]+).*|\1|p')

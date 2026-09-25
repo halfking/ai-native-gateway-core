@@ -124,23 +124,23 @@ func TestNodeProbeSubmitUpsert_ReArmSemantics(t *testing.T) {
 	}
 
 	type row struct {
-		paused       bool
-		cf           int
-		lastErr      *string
-		nextRetry    time.Time
-		inFlightNil  bool
+		paused      bool
+		cf          int
+		lastErr     *string
+		nextRetry   time.Time
+		inFlightNil bool
 	}
 	for cred, want := range map[int64]struct {
-		paused       bool
-		cf           int
-		wantErrCode  *string
-		reArmed      bool // next_retry_at 拉回 now+5s 窗口
-		inFlightNil  bool
+		paused      bool
+		cf          int
+		wantErrCode *string
+		reArmed     bool // next_retry_at 拉回 now+5s 窗口
+		inFlightNil bool
 	}{
-		1: {paused: false, cf: 0, wantErrCode: nil, reArmed: true, inFlightNil: true},  // paused → 完全重武装
+		1: {paused: false, cf: 0, wantErrCode: nil, reArmed: true, inFlightNil: true},           // paused → 完全重武装
 		2: {paused: false, cf: 3, wantErrCode: strp("429"), reArmed: false, inFlightNil: false}, // 梯子中段 → 保留（链路推进）
-		3: {paused: false, cf: 2, wantErrCode: strp("500"), reArmed: true, inFlightNil: true},  // 过期梯子行 → 重排期、计数保留
-		4: {paused: false, cf: 0, wantErrCode: nil, reArmed: true, inFlightNil: true},  // 健康停放 → 新失败立即重启（INV-2 分支）
+		3: {paused: false, cf: 2, wantErrCode: strp("500"), reArmed: true, inFlightNil: true},   // 过期梯子行 → 重排期、计数保留
+		4: {paused: false, cf: 0, wantErrCode: nil, reArmed: true, inFlightNil: true},           // 健康停放 → 新失败立即重启（INV-2 分支）
 	} {
 		var r row
 		var errCode *string
@@ -211,8 +211,8 @@ func TestCredentialTwoProbeSuccessGate_DataSemantics(t *testing.T) {
 	}
 
 	cases := []struct {
-		cred  int64
-		excl  bool // true = 凭据被 INV-4 排除（门命中）
+		cred int64
+		excl bool // true = 凭据被 INV-4 排除（门命中）
 	}{
 		{1, true},
 		{2, false},

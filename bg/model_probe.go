@@ -913,7 +913,12 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		t.APIKey = apiKey
 		desc := probeDescriptorFor(t.Protocol)
 		mode := ProbeModeChatPing
-		if desc.Protocol == "anthropic-messages" {
+		// 2026-09-25：按归一后协议选择探针形态——openai-responses 中转
+		// （vapeur）对 chat max_tokens=1 直接 400，Layer 4 必须走原生
+		// /v1/responses；anthropic-messages 走 /v1/messages。
+		if desc.ChatProbeEndpoint == upstreamurl.EpResponses {
+			mode = ProbeModeResponses
+		} else if desc.Protocol == "anthropic-messages" {
 			mode = ProbeModeMessages
 		}
 		result := probeWithRetry(timeout, desc, t, mode)
