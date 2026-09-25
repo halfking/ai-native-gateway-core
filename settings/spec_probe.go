@@ -246,5 +246,19 @@ func ProbeSpecs() []*Spec {
 			DangerLevel:     Safe,
 			HotReload:       true,
 		},
+
+		// ── Credential self-check rate-limit abort (P0-3) ──────────────
+		{
+			Key:             "probe.selfcheck.ratelimit_abort",
+			Type:            TypeBool,
+			Scope:           ScopePlatform,
+			Category:        CategoryProbe,
+			Default:         true,
+			Description:     "自检 429 周期熔断",
+			DescriptionLong: "凭据自检（credential-selfcheck-worker）收到网关 429 / gw_rpm_exceeded / key_throttled 时终止本凭据剩余候选模型，且下一周期只试主模型 1 次（周期间记忆）。语义：网关层拒绝=本凭据本周期不可用，逐个再试只是放大（docs/03-design/perf-2026-09-25-probe-cost-optimization.md §5 P0-3）。false=现行行为（fallback 逐个试完）。",
+			Unit:            "",
+			DangerLevel:     Safe,
+			HotReload:       true,
+		},
 	}
 }
