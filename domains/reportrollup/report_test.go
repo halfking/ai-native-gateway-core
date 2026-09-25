@@ -153,7 +153,7 @@ func TestBuildRangeReport_InternalView(t *testing.T) {
 	snaps := []Snapshot{
 		mkSnapPriced(ScopeInternalTenant, "acme", "2026-09-01", "", 10, 9, map[string]int64{"rate_limited": 1}, &tenant, 1000, 0.1),
 		mkSnapPriced(ScopeInternalTenant, "acme", "2026-09-02", "", 6, 6, nil, &tenant, 600, 0.1),
-		// internal_person 行 scope_key = 租户编码键（R65：tenant\x00person）。
+		// internal_person 行 scope_key = 租户编码键（长度前缀 len:tenant:person）。
 		mkSnapPriced(ScopeInternalPerson, internalPersonScopeKey("acme", "alice"), "2026-09-01", "", 7, 7, nil, &tenant, 700, 0.1),
 		mkSnapPriced(ScopeInternalPerson, internalPersonScopeKey("acme", "person:abcd1234"), "2026-09-01", "", 3, 2, map[string]int64{"rate_limited": 1}, &tenant, 300, 0.1),
 		mkSnapPriced(ScopeInternalModel, "acme", "2026-09-01", "gpt-x", 10, 9, map[string]int64{"rate_limited": 1}, &tenant, 1000, 0.1),

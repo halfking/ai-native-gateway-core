@@ -183,7 +183,7 @@ func TestReportRollup_RealDB_E2E(t *testing.T) {
 	if tb == nil || tb.req != 1 {
 		t.Errorf("internal_tenant/tenantB = %+v, want 1", tb)
 	}
-	// internal_person（R65 起 scope_key 编码租户：tenant\x00person）：
+	// internal_person（scope_key 编码租户，长度前缀格式 len:tenant:person）：
 	// tenantA/alice 5 笔 + tenantB/alice 1 笔——跨租户同人必须各自成桶。
 	alice := find("internal_person", internalPersonScopeKey("tenantA", "alice"), "")
 	if alice == nil || alice.req != 5 {

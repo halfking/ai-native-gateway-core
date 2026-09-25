@@ -2,6 +2,7 @@ package reportrollup
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/pashagolub/pgxmock/v4"
@@ -55,5 +56,33 @@ func TestMissingRollupDates_ZeroLookback(t *testing.T) {
 	}
 	if len(missing) != 0 {
 		t.Errorf("missing = %v, want empty", missing)
+	}
+}
+
+// TestInternalPersonScopeKeyRoundTrip —— 长度前缀编码往返（含 person 含
+// 冒号/分隔符歧义场景）与历史裸键回退（2026-09-25 审计轮：R65 的 NUL
+// 分隔符是 PG 非法编码，真库 INSERT 全量 22021，换长度前缀）。
+func TestInternalPersonScopeKeyRoundTrip(t *testing.T) {
+	cases := []struct{ tenant, person string }{
+		{"tenantA", "alice"},
+		{"default", "unknown"},
+		{"t:1", "per:son"}, // person 含冒号
+		{"", "orphan"},     // 空租户
+		{"tenant", ""},     // 空人员
+	}
+	for _, c := range cases {
+		key := internalPersonScopeKey(c.tenant, c.person)
+		if strings.ContainsRune(key, 0) {
+			t.Errorf("key %q contains NUL — PG TEXT rejects it", key)
+			continue
+		}
+		tBack, pBack := splitInternalPersonScopeKey(key)
+		if tBack != c.tenant || pBack != c.person {
+			t.Errorf("roundtrip (%q,%q) → %q → (%q,%q)", c.tenant, c.person, key, tBack, pBack)
+		}
+	}
+	// 历史裸键（编码格式之前）原样回落。
+	if ten, per := splitInternalPersonScopeKey("alice"); ten != "" || per != "alice" {
+		t.Errorf("legacy bare key roundtrip = (%q,%q), want empty-tenant/alice", ten, per)
 	}
 }
