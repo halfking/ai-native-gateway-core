@@ -2584,8 +2584,17 @@ func claimSessionFinalSuccessExec(ctx context.Context, tx pgx.Tx, entry *Request
 			if !heapPartitionNameRE.MatchString(p) {
 				continue
 			}
+			// 2026-09-26 审计第十轮 (D13): 臂内补 gw_session_id 非空谓词并从
+			// 投影里去掉 is_final_success — partial 唯一索引
+			// uq_<partition>_final_success_session 的谓词是
+			// (is_final_success AND gw_session_id IS NOT NULL AND <> ''),
+			// 原臂只过滤 is_final_success, planner 无法证明谓词蕴含而走
+			// Seq Scan (2026_09 1.27M 行 × 每次 claim 尝试; 252 实证
+			// EXPLAIN 从 Seq Scan 翻转为 Index Only Scan)。语义恒等: 外层
+			// WHERE 已要求 COALESCE(gw_session_id,'') <> '', 半连接相关
+			// 等值下 promoted 臂里 NULL/'' 行本就不可匹配。
 			parts = append(parts,
-				fmt.Sprintf(`SELECT gw_session_id, is_final_success FROM ONLY %s WHERE is_final_success`, quoteIdent(p)))
+				fmt.Sprintf(`SELECT gw_session_id FROM ONLY %s WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> ''`, quoteIdent(p)))
 		}
 		if len(parts) > 0 {
 			promotedGuard = "  AND NOT EXISTS (\n" +
