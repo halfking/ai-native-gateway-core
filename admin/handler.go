@@ -194,7 +194,7 @@ type Handler struct {
 	}
 	// reportRollupWorker 对账报表每日聚合 worker（手动重跑端点用）。
 	reportRollupWorker interface {
-		RollupDate(ctx context.Context, day time.Time) (reportrollup.RollupStats, error)
+		RollupDateDetached(day time.Time) (reportrollup.RollupStats, error)
 	}
 	// memoraClient provides connectivity status for the admin UI.
 	// Structural interface avoids importing the memora package directly.

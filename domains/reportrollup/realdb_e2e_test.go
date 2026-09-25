@@ -183,7 +183,7 @@ func TestReportRollup_RealDB_E2E(t *testing.T) {
 	if tb == nil || tb.req != 1 {
 		t.Errorf("internal_tenant/tenantB = %+v, want 1", tb)
 	}
-	// internal_person（R65 起 scope_key 编码租户：tenant\x00person）：
+	// internal_person（scope_key 编码租户，长度前缀格式 len:tenant:person）：
 	// tenantA/alice 5 笔 + tenantB/alice 1 笔——跨租户同人必须各自成桶。
 	alice := find("internal_person", internalPersonScopeKey("tenantA", "alice"), "")
 	if alice == nil || alice.req != 5 {
@@ -259,6 +259,46 @@ func TestReportRollup_RealDB_E2E(t *testing.T) {
 	}
 	if len(xlsxBytes2) == 0 {
 		t.Errorf("internal workbook empty")
+	}
+
+	// ---- 事务路径（worker RollupDate 的封装形态）：pgx.Tx 满足 Querier，
+	// 单日聚合在真库上以事务提交，中途失败整体回滚 ----
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if _, err := RollupDay(ctx, tx, day.AddDate(0, 0, -1)); err != nil {
+		t.Fatalf("RollupDay on tx: %v", err)
+	}
+	// 回滚验证：回滚后昨日无任何快照行（事务原子性真库证据）。
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback tx: %v", err)
+	}
+	var txRows int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM report_snapshots WHERE report_date = $1`,
+		day.AddDate(0, 0, -1)).Scan(&txRows); err != nil {
+		t.Fatalf("count after rollback: %v", err)
+	}
+	if txRows != 0 {
+		t.Errorf("rows survived rollback: %d", txRows)
+	}
+
+	// ---- 追赶探测（MissingRollupDates）：昨日+前日无 daily_total 行，
+	// 应被探测为缺失；已聚合的 day 不应出现 ----
+	missing, err := MissingRollupDates(ctx, pool, 7, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("MissingRollupDates: %v", err)
+	}
+	missStr := map[string]bool{}
+	for _, d := range missing {
+		missStr[d.Format("2006-01-02")] = true
+	}
+	if !missStr[day.AddDate(0, 0, -1).Format("2006-01-02")] {
+		t.Errorf("yesterday %s should be detected missing", day.AddDate(0, 0, -1).Format("2006-01-02"))
+	}
+	if missStr[day.Format("2006-01-02")] {
+		t.Errorf("aggregated day %s must not be reported missing", day.Format("2006-01-02"))
 	}
 
 	// ---- 清理（不留合成数据）----

@@ -7217,7 +7217,12 @@ func (h *ChatHandler) recordInitialRequestLog(
 	enrichRequestLogFromMeta(reqLog, keyInfo, &autoCtx.meta)
 	// 2026-07-17: bridge OriginMiddleware context into the entry so
 	// node_probe / self_check requests are marked with origin_stage.
-	reqLog.ApplyOriginFromContext(ctx)
+	// 2026-09-25: extended with the DB-system-key fallback — auth passes
+	// sk-* keys through without resolving the owner, so probe workers on
+	// DB keys (e.g. sk-selfcheck-*) were stripped by OriginMiddleware and
+	// their rows stamped "business"; applyOriginMetadata re-runs the trust
+	// decision with the now-resolved owner.
+	applyOriginMetadata(reqLog, keyInfo, ctx)
 	// 2026-07-25: bridge origin_stage from main entry to RequestLogContext
 	// so the side table request_context_attrs also carries origin_stage
 	// and is_probe (derived from it in fillFromRequestLogContext).

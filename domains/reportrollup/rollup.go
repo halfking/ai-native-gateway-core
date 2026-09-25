@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,19 +30,27 @@ import (
 // internalPersonScopeKey 把租户编码进 internal_person 的 scope_key。
 // 四键 UNIQUE (scope, scope_key, report_date, raw_model_name) 不含
 // tenant_id 列——人员粒度若只以 person 作键，跨租户同名人员（含双双
-// 归 'unknown'）的日桶会在 ON CONFLICT 中互相覆盖（R65 P1）。分隔符
-// 用 \x00，与读面 BuildRangeReport 的 personsByKey 分组键同构。
+// 归 'unknown'）的日桶会在 ON CONFLICT 中互相覆盖（R65 P1）。
+//
+// 编码用长度前缀（len(tenant):tenant:person）：R65 原稿的 \x00 分隔符
+// 是 PG 非法编码——TEXT 列拒绝 NUL 字节，INSERT 全量 22021（本仓真库
+// E2E 实证，pgxmock/纯单测探不到）。NUL 格式在真库零存活，无兼容负担。
 func internalPersonScopeKey(tenant, person string) string {
-	return tenant + "\x00" + person
+	return strconv.Itoa(len(tenant)) + ":" + tenant + ":" + person
 }
 
-// splitInternalPersonScopeKey 读面还原 person 展示名；无分隔符的行
-// （键格式变更前写入的历史快照）原样返回。
+// splitInternalPersonScopeKey 读面还原 person 展示名；不符合长度前缀
+// 格式的行（键格式变更前写入的历史快照，若有）原样返回（tenant=""）。
 func splitInternalPersonScopeKey(k string) (tenant, person string) {
-	if i := strings.IndexByte(k, 0); i >= 0 {
-		return k[:i], k[i+1:]
+	i := strings.IndexByte(k, ':')
+	if i < 0 {
+		return "", k
 	}
-	return "", k
+	n, err := strconv.Atoi(k[:i])
+	if err != nil || i+1+n > len(k) {
+		return "", k
+	}
+	return k[i+1 : i+1+n], k[i+1+n+1:]
 }
 
 // Scope 枚举 report_snapshots.scope 的六个合法值。
@@ -686,4 +695,35 @@ func mergeBreakdown(dst, src map[string]int64) map[string]int64 {
 		dst[k] += v
 	}
 	return dst
+}
+
+// MissingRollupDates 返回 (now-lookback, now) 开区间内没有 daily_total
+// 快照行的日期（UTC，升序）。daily_total 在 RollupDay 里无条件写一行
+// （零流量日也是一行 COUNT=0），因此「无行」=「该日聚合从未发生」——
+// worker 停机跨过钟点、单轮失败后靠本函数做有界追赶；早于部署日的
+// 历史不在追赶范围（超出 lookback），需要时走管理端手动 /run。
+func MissingRollupDates(ctx context.Context, q Querier, lookbackDays int, now time.Time) ([]time.Time, error) {
+	if lookbackDays <= 0 {
+		lookbackDays = 1
+	}
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	from := today.AddDate(0, 0, -lookbackDays)
+	rows, err := q.Query(ctx, `
+		SELECT generate_series($1::date, $2::date, '1 day')::date AS d
+		EXCEPT
+		SELECT report_date FROM report_snapshots WHERE scope = 'daily_total'
+	`, from, today.AddDate(0, 0, -1))
+	if err != nil {
+		return nil, fmt.Errorf("query missing rollup dates: %w", err)
+	}
+	defer rows.Close()
+	var out []time.Time
+	for rows.Next() {
+		var d time.Time
+		if err := rows.Scan(&d); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }

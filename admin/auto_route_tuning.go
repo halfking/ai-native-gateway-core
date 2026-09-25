@@ -144,6 +144,9 @@ func (h *TuningHandlers) handleProposalsGenerate(w http.ResponseWriter, r *http.
 // handleAnalyze: POST /tuning/analyze — on-demand run of the signals-based
 // feedback analyzer (bg.FeedbackAnalyzer.AnalyzeOnce), fulfilling the
 // frontend triggerTuningAnalyze placeholder contract.
+//
+// 同步执行、限时 3 分钟（批判复审轮 2026-09-25：防 DB 异常时请求悬挂；
+// 正常聚合查询秒级完成，与 R64 的并发 409 语义正交——超时只切断本轮 ctx）。
 func (h *TuningHandlers) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
@@ -153,7 +156,9 @@ func (h *TuningHandlers) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		writeJSONErrCtx(w, r, http.StatusServiceUnavailable, "analyzer_not_wired")
 		return
 	}
-	if err := h.analyzer.AnalyzeOnce(r.Context()); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	if err := h.analyzer.AnalyzeOnce(ctx); err != nil {
 		if errors.Is(err, bg.ErrAnalyzeInProgress) {
 			// R64 P2：已有一轮分析在跑（定时 goroutine 或另一请求）——立即
 			// 回 409 让前端稍后重试，而不是排队阻塞整个 5 分钟超时窗。
@@ -375,7 +380,7 @@ func (h *TuningHandlers) approveProposal(w http.ResponseWriter, r *http.Request,
 //
 // R65：与 approveProposal 对称——单事务内 SELECT ... FOR UPDATE 锁行读状态：
 // 查无行回 404（admin_proposal_not_found）、非 pending 回 409
-//（admin_proposal_not_pending），不再无条件 UPDATE 后恒 200（原先对不存在/
+// （admin_proposal_not_pending），不再无条件 UPDATE 后恒 200（原先对不存在/
 // 已审批的提案也报成功，调用方无法感知操作落空）。
 func (h *TuningHandlers) rejectProposal(w http.ResponseWriter, r *http.Request, id int64) {
 	note := r.URL.Query().Get("reason")
