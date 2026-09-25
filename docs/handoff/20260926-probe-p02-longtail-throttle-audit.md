@@ -108,8 +108,17 @@ WHERE last_direct_ok = TRUE AND COALESCE(last_err_code,'') <> '';
 
 - `go build ./...` 0 错误；
 - `go test ./bg/ -count=1` ok 25.0s（含新增 6 个测试函数/13 分支与 3 处旧钉桩演进）；
-- `go test ./... -count=1` GOTEST_EXIT=0（最终严格复跑，见 commit 后补记）；
+- `go test ./... -count=1` GOTEST_EXIT=0、0 FAIL（最终严格复跑）；
 - `TestRequestFailureThrottlePredicateSQL` 在一次性库 p02_contract_test（本地 PG 容器）真跑
   通过后即删库；
-- 部署：2252 = 19eb3153 已上线（VERIFY_PASS=1，凭据解密冒烟 WARN=12/16 legacy 行不阻断）；
-  P0-2 build 部署后补记版本戳。
+- 部署：2252 = 19eb3153（P0-1+P0-3）、**2253 = 1082ab0b（P0-2 本轮）** 均 VERIFY_PASS=1
+  （凭据解密冒烟 WARN=12/16 legacy 行不阻断）；
+- **2253 上线 8min 实测（02:57–03:05）**：
+  - 频控生效：`llmgw_node_probe_queue_submission_total{outcome="throttled",source="request_failure"}=24`
+    （同窗口 request_failure 触发 824 次：127 入队 + 673 队列去重 + 24 频控跳过）；
+  - 分类器修复实证：`root_cause_total{cause="gateway",err_code="endpoint_build",round="direct"}=5`
+    ——2252 同形状记 node，2253 记 gateway；
+  - 梯位沉底：node_probe_state 长尾档（5m/1h/2h/6h）410 对、短梯档（5–60s）64 对（新失败在途）、
+    30d 停放 75 对；
+  - node_probe_runs 速率 ≈ **88 次/h**（2251 同日 ~5,000/h、2252 ~1,610/h）；gw_rpm_exceeded=0。
+    注意：8min 离峰窗口，正式验收仍以 48h 窗口 §8.3 SQL 为准。
