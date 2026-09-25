@@ -21,9 +21,11 @@
 --     = 出站模型名（usage_facts.raw_model_name = outbound_model 回落
 --     client_model）；internal_model 行：scope_key = tenant_id、
 --     raw_model_name = 出站模型名；internal_person 行：scope_key =
---     tenant_id + '\x00' + end_user_id（缺失回落 'person:'+person_hash；
---     R65 起租户编码进键——四键 UNIQUE 不含 tenant_id 列，跨租户同名
---     人员裸键会在 ON CONFLICT 中互相覆盖）；其余行
+--     len(tenant_id) + ':' + tenant_id + ':' + person（person = end_user_id，
+--     缺失回落 'person:'+person_hash，双缺 'unknown'；R65 起租户编码进键
+--     ——四键 UNIQUE 不含 tenant_id 列，跨租户同名人员裸键会在 ON
+--     CONFLICT 中互相覆盖。02da86168 根修弃 R65 原稿的 '\x00' 分隔——
+--     PG TEXT 拒绝 NUL 字节，真库 INSERT 全量 22021）；其余行
 --     raw_model_name = ''（非模型维度哨兵）。
 --   - 唯一键支撑 worker 的 INSERT ... ON CONFLICT DO UPDATE 幂等回填。
 
