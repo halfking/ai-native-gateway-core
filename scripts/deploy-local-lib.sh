@@ -429,6 +429,21 @@ with open(sys.argv[1], encoding='utf-8') as fh:
 PY
 }
 
+# 12h 修订审计轮 2026-09-26（docs/handoff/20260926-probe-p02-longtail-throttle-audit.md
+# §6.1 预防建议落地）：.env.local 重建曾丢 LLM_GATEWAY_ADMIN_PASSWORD（09-19，
+# 旧 SSOT bin/2239/env 已不存在），sync_admin_password_from_env 对空密码只
+# warn+skip、users 表留着旧 hash，凭据解密冒烟等到 ~2 分钟构建后才 401。
+# deploy() 在 build 前调用本函数：用户名已设而密码为空时，冒烟与
+# handleLogin 用同一 env，此形态必败，显式失败并给出修法。逃生口
+# DL_ALLOW_EMPTY_ADMIN_PASSWORD=true（空密码管理员奇局）；两值同空维持
+# 旧行为（sync 侧 warn+skip，不新增门槛）。
+dl_admin_password_preflight() {
+  if [[ -n "${LLM_GATEWAY_ADMIN_USER:-}" && -z "${LLM_GATEWAY_ADMIN_PASSWORD:-}" \
+        && "${DL_ALLOW_EMPTY_ADMIN_PASSWORD:-false}" != "true" ]]; then
+    _dl_die 'LLM_GATEWAY_ADMIN_USER is set but LLM_GATEWAY_ADMIN_PASSWORD is empty — the credential decrypt smoke would 401 after the build (fix .env.local / the calling environment, or set DL_ALLOW_EMPTY_ADMIN_PASSWORD=true to bypass)'
+  fi
+}
+
 dl_write_env() {
   # docker --env-file consumes the file as KEY=value pairs without any shell
   # parsing. We avoid both %q-style backslash escapes and outer single
