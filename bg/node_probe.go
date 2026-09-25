@@ -80,6 +80,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/secret"
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -221,6 +222,14 @@ type NodeProbeWorker struct {
 	// the retry budget) can be unit-tested without a live database. Production
 	// wiring leaves it nil and enqueue() falls through to probeQueue.Enqueue.
 	enqueueFn func(ctx context.Context, task ProbeQueueTask) (int64, bool, error)
+
+	// requestFailureThrottleFn (2026-09-26 P0-2) is the test seam over
+	// requestFailureTriggerThrottled's node_probe_state read, same
+	// injectable-fn style as enqueueFn. Production leaves it nil and the
+	// helper runs the real predicate SQL; unit tests stub it to pin the
+	// wiring (skip → no enqueue) without a live database — the SQL semantics
+	// themselves are pinned by the TEST_PG_URL-gated contract test.
+	requestFailureThrottleFn func(ctx context.Context, credID int, model string, minGapSeconds int) bool
 
 	// Candidate cache invalidation keeps a direct probe result visible to the
 	// next routing decision instead of waiting for the provider cache TTL.
@@ -1008,6 +1017,24 @@ func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, pare
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	start := time.Now()
+
+	// 2026-09-26 (P0-2 request_failure pair 级频控): one business failure is
+	// enough to schedule verification — the Nth failure in the same minute
+	// must not enqueue the Nth probe. Skip when the pair already has a probe
+	// scheduled (future next_retry_at on a row with error evidence — the same
+	// mid-ladder shape nodeProbeSubmitUpsertSQL refuses to collapse) or the
+	// last probe ran within probe.request_failure_min_gap_seconds.
+	// Healthy-parked rows carry no error evidence and never trip the gate, so
+	// INV-2's immediate re-arm on a fresh real failure is unchanged. 0
+	// disables the gate entirely (legacy behavior).
+	if source == "request_failure" {
+		if gap := settings.GetPlatformInt("probe.request_failure_min_gap_seconds", 60); gap > 0 && w.requestFailureTriggerThrottled(ctx, credID, model, gap) {
+			nodeProbeQueueSubmissionTotal.WithLabelValues(source, "throttled").Inc()
+			nodeProbeQueueSubmissionDuration.WithLabelValues(source, "throttled").Observe(time.Since(start).Seconds())
+			return false, nil
+		}
+	}
 
 	task := ProbeQueueTask{
 		CredentialID: int64(credID),
@@ -1025,7 +1052,6 @@ func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, pare
 		DedupKey:    buildNodeProbeTaskID(credID, model),
 	}
 
-	start := time.Now()
 	var (
 		inserted        bool
 		lastErr         error
@@ -1119,6 +1145,78 @@ func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, pare
 	)
 	return false, fmt.Errorf("enqueue probe task: exhausted %d attempts: %w",
 		nodeProbeQueueSubmitMaxAttempts, lastErr)
+}
+
+// requestFailureTriggerThrottled implements the P0-2 request_failure
+// pair-level frequency gate (2026-09-26). It reports whether a
+// request_failure trigger for (credID, model) should be skipped because:
+//
+//   - the pair is mid-ladder with a probe already scheduled —
+//     next_retry_at in the future on a row carrying error evidence
+//     (recorded err code or pending failure counter, the same evidence
+//     pumpDueStatesSQL keys on). Healthy-parked rows never match this
+//     arm: a fresh real failure must still re-arm them immediately
+//     (INV-2). Mirror semantics of the legacy nodeProbeSubmitUpsertSQL,
+//     which likewise refuses to collapse a mid-ladder schedule.
+//   - or the last probe ran within minGapSeconds — a probe just executed
+//     for this pair; an immediate re-trigger adds no information.
+//
+// Absent row, read error, or non-positive gap → false (fail open: a
+// trigger must not be lost to a flaky read; the gap knob itself is the
+// kill-switch). The SQL semantics are pinned by the TEST_PG_URL-gated
+// contract test; unit tests stub requestFailureThrottleFn for wiring.
+func (w *NodeProbeWorker) requestFailureTriggerThrottled(ctx context.Context, credID int, model string, minGapSeconds int) bool {
+	if w == nil || minGapSeconds <= 0 {
+		return false
+	}
+	if w.requestFailureThrottleFn != nil {
+		return w.requestFailureThrottleFn(ctx, credID, model, minGapSeconds)
+	}
+	if w.db == nil {
+		return false
+	}
+	qCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var throttled bool
+	err := w.db.QueryRow(qCtx, requestFailureThrottleSQL(), credID, model, minGapSeconds).Scan(&throttled)
+	if err != nil {
+		return false
+	}
+	return throttled
+}
+
+// requestFailureThrottleSQL is the single source of the throttle predicate,
+// shared by the production read above and the TEST_PG_URL-gated contract
+// test that pins its semantics against a real database. Params: $1 credID,
+// $2 model, $3 min gap seconds.
+func requestFailureThrottleSQL() string {
+	return `
+		SELECT (COALESCE(nps.last_err_code, '') <> '' OR COALESCE(nps.consecutive_failures, 0) > 0)
+		   AND (nps.next_retry_at > now()
+		        OR nps.last_attempt_at > now() - make_interval(secs => $3))
+		FROM node_probe_state nps
+		WHERE nps.credential_id = $1 AND nps.raw_model_name = $2`
+}
+
+// loadConsecutiveFailures reads node_probe_state.consecutive_failures for a
+// pair without creating the row (2026-09-26 P0-2, 队列任务代际 attempt 重置).
+// ok=false on absent row or read error — callers fail open to the queue
+// task's own attempt counter.
+func (w *NodeProbeWorker) loadConsecutiveFailures(ctx context.Context, credID int, model string) (int, bool) {
+	if w == nil || w.db == nil {
+		return 0, false
+	}
+	qCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var cf int
+	err := w.db.QueryRow(qCtx, `
+		SELECT consecutive_failures FROM node_probe_state
+		WHERE credential_id = $1 AND raw_model_name = $2`,
+		credID, model).Scan(&cf)
+	if err != nil {
+		return 0, false
+	}
+	return cf, true
 }
 
 // persistSubmitFailure records the final submission error onto
@@ -2607,8 +2705,16 @@ func probeHeadersJSON(headers map[string]string) string {
 // raw_model_name would fail the JOIN (since node_probe_state stores
 // COALESCE(outbound,raw), the outbound name) and report endpoint_build
 // failures for a healthy credential.
-func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model string) nodeProbeRoundResult {
-	r := nodeProbeRoundResult{errCode: "none"}
+//
+// The return is NAMED on purpose (P1 fix, 2026-09-26): the defer below
+// classifies rootCause + annotates errDetail on the return slot. With an
+// unnamed return, every `return r` copies the struct BEFORE the defer runs,
+// so callers received rootCause="" — the live metric then defaulted every
+// failure to cause=node (llmgw_node_probe_root_cause_total had zero
+// protocol/gateway rows on 2251/2252) and probeBackoffForDirectOutcome's
+// protocol 6h parking never fired from this path.
+func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model string) (r nodeProbeRoundResult) {
+	r = nodeProbeRoundResult{errCode: "none"}
 	// 失败出口统一收口（2026-09-25）：每个失败 return 前不必各自分类，
 	// defer 兜底一次 root-cause 分类 + err_detail 标注。ok 时不标注。
 	defer func() {
@@ -3201,10 +3307,13 @@ func (w *NodeProbeWorker) updateObservedState(ctx context.Context, credID int, m
 }
 
 // probeGateway issues a chat-completion ping through the local gateway
-// using the system API key.  This catches routing, auth, transform,
+// using the system API key. This catches routing, auth, transform,
 // rate-limit, and compression regressions that a direct call cannot.
-func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model string) nodeProbeRoundResult {
-	r := nodeProbeRoundResult{errCode: "none"}
+//
+// Named return for the same defer-mutates-the-return-slot reason as
+// probeDirect (P1 fix, 2026-09-26).
+func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model string) (r nodeProbeRoundResult) {
+	r = nodeProbeRoundResult{errCode: "none"}
 	// 与 probeDirect 相同的失败出口收口（2026-09-25）。
 	defer func() {
 		if !r.ok {
