@@ -56,11 +56,18 @@ type SessionTurnV2Shadow struct {
 }
 
 // SessionChildRequest 是挂在主请求下的扩展请求（仅元数据）。
+//
+// contract_freeze §1.6：child request 的身份仍由 request_id 标识，但归属
+// 会话恒为 session_id（与 V1 gw_session_id / SessionPK 互不替代）。V2
+// unified turns 端点（session_turns_unified.go）在装配时填充 IDKind 与
+// PrimaryKey；V1 tree 端点不填充，omitempty 保证 JSON 零变更。
 type SessionChildRequest struct {
 	RequestID   string `json:"request_id"`
 	RequestType string `json:"request_type"` // title | summary | sensitive_word | compression | other
 	Status      string `json:"status"`
 	LatencyMs   *int   `json:"latency"` // 毫秒；NULL 未知
+	IDKind      string `json:"id_kind,omitempty"`
+	PrimaryKey  string `json:"primary_key,omitempty"`
 }
 
 // sessionTurnsTreeDB 是 querySessionTurnsTree 依赖的最小查询接口
