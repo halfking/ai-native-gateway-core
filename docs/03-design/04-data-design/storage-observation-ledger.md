@@ -284,3 +284,16 @@ ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-26T01:02:25Z
 - sys 探针流量回落至 3014/2633/1772 轮（09-24/25 的 3-5 万轮为探针活动尖峰）；高流量尖峰与回落两个阶段 G2 均保持零缺失。
 - claim 置位结构性漏镜像连续第 5 天未产生缺失。
 - **连续归零累计 4/7**（09-26 计 Day 4）。7 天达标 earliest 2026-09-29 每日轮（Day 7）。
+
+### 每日观察 2026-09-26 09:06 (+08)，build=19eb3153/2263 —— **PASS，连续归零 Day 5/7（闲时兜底轮）**
+
+构建身份：19eb3153/2263（与 Day 4 同构建），含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=10|fail=0|global_g2=0|verdict=PASS|at=2026-09-26T01:06:00Z
+```
+
+- 抽样 10/10 PASS，G1 四项零漂移；claim 结构性漏镜像持续未再现。
+- 注记：本日 09:02 cron 已跑过一轮（Day 4 记录）；本轮为闲时兜底重复确认轮（计数以 09:02 轮为准，本轮为冗余验证，不重复计 Day）——**Day 4 与本轮均落 09-26 同一自然日，连续归零仍为 4 个自然日 + 本轮确认**。计数严格口径：09-23/24/25/26 四个自然日 PASS，Day 5 = 09-27 每日轮待跑。
+- **运维注记**：每日 cron automation-15b858fd 已达 maxRuns=12 上限停止（09-26 09:02 为其最后一跑），Day 6（09-28）/Day 7（09-29）需用户在 Automations 页面续建每日任务（cron `0 9 * * *`，maxRuns=3，prompt 复用旧任务并把计数说明改为"当前 4/7"）或手动执行 `bash scripts/audit/storage_observation_round.sh`。
