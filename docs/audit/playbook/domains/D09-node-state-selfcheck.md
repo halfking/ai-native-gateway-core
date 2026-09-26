@@ -63,3 +63,4 @@
 ### R43 回注（2026-09-18，R40 回注措辞更正 + 统计窗口口径）
 - 更正本域 R40 回注一处表述：R42 decrypt 豁免放行的是**绑定面与 observed 面**写真实状态；ladder（consecutive_failures）对 gateway-side 错误**含豁免在内一律冻结**（15m 固定退避，node_probe.go CASE WHEN $10）——对永久损坏凭据是保守方向，R42 已在代码注释钉死为可接受权衡。原文"绑定/observed/ladder 全走 else 分支"的"ladder"为笔误。
 - feature_stats 类 worker 的新增统计 SQL 必须与同文件既有窗口口径对齐（UTC 半开窗 vs DATE(ts) 会话时区可错位 8h）——R43 已把 computeSingleFeatureDistribution 对齐 computeDedupRate。
+- R69 回注（2026-09-27）：**注释引用的预算基线必须用常量名而非字面量**（"30s lease"实为 ProbeQueueLeaseDefault=5m，误导预算推演四天）；**目录探测类 SQL 必须提包级常量+形状钉**（pronargtypes 拼写错误存活 09-23→09-27 的根因是零钉桩+错误分支静默走保守路径）；"单 worker"前提与 Workers=epWorkers（≤5）接线不符时，门禁类注释要写清"并发 worker、per-worker 串行"。

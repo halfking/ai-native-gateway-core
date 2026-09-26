@@ -85,3 +85,4 @@
 - `migration_730_test.go`：CHECK 枚举**编译期 import autoroute** 绑定 AllAgentRoles/AllTaskKinds；UNIQUE NULLS NOT DISTINCT 钉扎（252 重放翻倍 48→96）；部分索引 WHERE 门；embeddata byte-identical（730 五点同步已随 R48 完成）。
 - 负例纪律复验：第一轮 727 单点变异被 fallback 正则掩盖漏报，全局变异复验双断言 FAIL——**钉桩自身的 fallback 分支也是被钉语义的一部分**。
 - R53-D1（登记）：727/728/729 全 CONCURRENTLY，installer runner 一律 --single-transaction 结构性装不下 → embeddata 缺席属结构性排除；fresh install 缺三索引（gateway ensure 链亦无兜底）仅性能回归。后续 installer 非事务通道或 ensure 兜底。
+- R69 回注（2026-09-27）：**迁移文件自带的预建/初始化调用必须与函数级钉扎同文件生效**——751 的 ALTER 钉扎救不了 750 文件自己在 751 之前执行的预建 SELECT（current_date 与 DECLARE 初始器双双随会话时区，UTC 会话预建错位 8h 分区后按名幂等短路永不自愈，相邻日 ATTACH overlap 永锁）；修法=函数定义直接带 `SET timezone` 子句（proconfig 先于初始器、单文件自洽）+ 日期参数显式上海日历派生。钉桩=migration_750_test.go C9（SET 子句存在/上海派生×2/禁 current_date）。
