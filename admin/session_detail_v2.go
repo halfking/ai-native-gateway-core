@@ -18,6 +18,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -69,7 +70,9 @@ func NewSessionDetailV2APIWithDB(pool sessionDetailV2DB) *SessionDetailV2API {
 
 // SessionV2 表示 public.sessions 表的记录
 type SessionV2 struct {
-	ID                  int64      `json:"id"`
+	// ID is the internal SessionPK. It remains available to server-side callers
+	// but must never be serialized as a client-facing identity.
+	ID                  int64      `json:"-"`
 	SessionID           string     `json:"session_id"`
 	TenantID            string     `json:"tenant_id"`
 	CreatedAt           time.Time  `json:"created_at"`
@@ -216,8 +219,12 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// session_id；解析失败按 404 处理，不暴露内部错误细节。
 	resolvedSessionID, err := api.resolveSessionID(ctx, sessionID, tenantID)
 	if err != nil {
-		if err == errSessionNotFound {
+		if errors.Is(err, errSessionNotFound) {
 			writeExportJSONError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		if errors.Is(err, errSessionAmbiguous) {
+			writeExportJSONError(w, http.StatusConflict, "ambiguous session identifier")
 			return
 		}
 		writeExportJSONError(w, http.StatusInternalServerError, fmt.Sprintf("resolve session id: %v", err))
@@ -325,7 +332,7 @@ func (api *SessionDetailV2API) querySession(
 		&saStatus, &saSchemaVersion, &saInputHash, &saSourceTaskID, &saUpdatedAt, &saPayloadRaw,
 	)
 	if err != nil {
-		if err.Error() == "no rows in result set" {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
@@ -440,10 +447,12 @@ func (api *SessionDetailV2API) queryTurns(
 // 主键对客户端不可见）。策略：
 //
 //  1. 若 input 已等于某行 sessions.session_id（同租户） → 直接返回。
-//  2. 否则尝试经 request_logs.gw_session_id → sessions.primary_request_id
-//     的反向映射；只允许唯一解析（命中多行返回 error，禁止把 gw_session_id
-//     隐式覆盖多个会话）。
-//  3. 两步都查不到 → 返回 errSessionNotFound，让上游按 404 处理。
+//  2. 否则经 session_turns → request_logs.gw_session_id 反向映射。turns 是
+//     V2 写入路径的事实源；不能只依赖 primary_request_id，因为 live aggregate
+//     upsert 不会填充该历史回填字段。只允许唯一解析（命中多会话返回 error）。
+//  3. 对没有可用 turn 映射的历史回填记录，再兼容
+//     request_logs.gw_session_id → sessions.primary_request_id。
+//  4. 三步都查不到 → 返回 errSessionNotFound，让上游按 404 处理。
 //
 // RLS：所有查询都带 tenant_id 谓词；不绕过 sessions / request_logs 的现有
 // RLS 策略。sessionDetailV2DB 接口未暴露 Exec/QueryRow with bypass_rls，
@@ -470,18 +479,54 @@ func (api *SessionDetailV2API) resolveSessionID(
 	if err == nil {
 		return directHit, nil
 	}
-	if err != nil && err.Error() != "no rows in result set" {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return "", fmt.Errorf("resolveSessionID direct: %w", err)
 	}
 
-	// 2. 反向映射：request_logs.gw_session_id → sessions.primary_request_id。
-	//    仅在 direct miss 时执行；唯一命中才返回，多命中抛错防止跨会话混用。
+	// 2. 反向映射的主路径：V2 turn 的 request_id 关联 legacy request_logs
+	//    的 gw_session_id。session_turns 是 live shadow-write 的事实源；DISTINCT
+	//    + LIMIT 2 让多个 session_id 命中同一个 gw_session_id 时显式失败。
+	rows, err := api.pool.Query(ctx, `
+		SELECT DISTINCT t.session_id
+		FROM public.session_turns t
+		JOIN public.request_logs r
+		  ON r.request_id = t.request_id
+		 AND r.tenant_id = t.tenant_id
+		WHERE t.tenant_id = $1
+		  AND r.gw_session_id = $2
+		LIMIT 2
+	`, tenantID, input)
+	if err != nil {
+		return "", fmt.Errorf("resolveSessionID via turns: %w", err)
+	}
+	defer rows.Close()
+
+	var candidates []string
+	for rows.Next() {
+		var candidate string
+		if err := rows.Scan(&candidate); err != nil {
+			return "", fmt.Errorf("resolveSessionID scan turn mapping: %w", err)
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("resolveSessionID iterate turn mapping: %w", err)
+	}
+	switch len(candidates) {
+	case 1:
+		return candidates[0], nil
+	case 2:
+		return "", errSessionAmbiguous
+	}
+
+	// 3. 历史回填兜底：旧 backfill 会把首 request 写入 primary_request_id。
+	//    仅在 turn 映射缺席时使用；仍限定同租户。
 	var resolved string
 	row := api.pool.QueryRow(ctx, `
 		SELECT s.session_id FROM public.sessions s
 		WHERE s.tenant_id = $1
 		  AND s.primary_request_id IN (
-		      SELECT request_id FROM request_logs
+		      SELECT request_id FROM public.request_logs
 		      WHERE tenant_id = $1 AND gw_session_id = $2
 		      ORDER BY ts ASC
 		      LIMIT 1
@@ -490,12 +535,15 @@ func (api *SessionDetailV2API) resolveSessionID(
 	`, tenantID, input)
 	if err := row.Scan(&resolved); err == nil {
 		return resolved, nil
-	} else if err.Error() != "no rows in result set" {
-		return "", fmt.Errorf("resolveSessionID reverse: %w", err)
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("resolveSessionID historical fallback: %w", err)
 	}
 
 	return "", errSessionNotFound
 }
 
-// errSessionNotFound 由 resolveSessionID 返回，调用方按 404 处理。
-var errSessionNotFound = fmt.Errorf("session not found")
+// resolveSessionID sentinel errors are mapped to stable client outcomes.
+var (
+	errSessionNotFound  = errors.New("session not found")
+	errSessionAmbiguous = errors.New("ambiguous session identifier")
+)

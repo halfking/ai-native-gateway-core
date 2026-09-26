@@ -205,13 +205,23 @@ func unifiedTurnsTreeFallback(ctx context.Context, db sessionTurnsDB, sessionID,
 		if turn == nil {
 			continue
 		}
+		children := turn.ChildRequests
+		for _, child := range children {
+			if child == nil {
+				continue
+			}
+			child.IDKind = "session_id"
+			child.PrimaryKey = sessionID
+		}
 		items = append(items, TurnListItem{
 			TurnNo:        turn.TurnNumber,
 			RequestID:     turn.RequestID,
 			Model:         turn.Model,
 			StatusCode:    statusCodeForTreeStatus(turn.Status),
 			LatencyMs:     latencyValue(turn.LatencyMs),
-			ChildRequests: turn.ChildRequests,
+			ChildRequests: children,
+			IDKind:        "session_id",
+			PrimaryKey:    sessionID,
 		})
 	}
 	return items, true

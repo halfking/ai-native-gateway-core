@@ -253,12 +253,8 @@ func TestSessionDetailV2_ResolveGwSessionIDToSessionID(t *testing.T) {
 		t.Errorf("SessionPK must not be exposed in API response")
 	}
 	if session, ok := resp["session"].(map[string]any); ok {
-		if _, ok := session["id"]; ok {
-			// SessionV2.id 是 int64 数值主键，但 JSON marshal 仍可能出现。
-			// 进一步断言它是数值类型，避免下次重构悄悄改名。
-			if v, isNum := session["id"].(float64); !isNum || v <= 0 {
-				t.Errorf("session.id leaked into response with non-positive value: %v", session["id"])
-			}
+		if _, leaked := session["id"]; leaked {
+			t.Error("SessionPK must not be exposed as session.id")
 		}
 	}
 }
@@ -270,6 +266,47 @@ func TestSessionDetailV2_ResolveGwSessionIDToSessionID(t *testing.T) {
 // 这条路径在生产里通常走不到（V2 writer 默认把 sessions.session_id 与
 // gw_session_id 保持一致），但必须在 spec 上存在 —— 老的 V1-only 数据
 // 也能被详情端点查到。
+func TestSessionDetailV2_ReverseMapViaSessionTurns(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery(`SELECT session_id FROM public\.sessions`).
+		WithArgs("gw_live", "tenant-a").
+		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery(`FROM public\.session_turns t`).
+		WithArgs("tenant-a", "gw_live").
+		WillReturnRows(pgxmock.NewRows([]string{"session_id"}).AddRow("srv_live_42"))
+	mock.ExpectQuery(`LEFT JOIN LATERAL`).
+		WithArgs("srv_live_42", "tenant-a").
+		WillReturnRows(makeContractSessionDetailRow("srv_live_42", "tenant-a"))
+	mock.ExpectQuery(`FROM public\.session_turns_with_current_month`).
+		WithArgs("srv_live_42", "tenant-a", 50, 0).
+		WillReturnRows(contractEmptySessionTurnRows())
+
+	api := admin.NewSessionDetailV2APIWithDB(mock)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/sessions/detail?gw_session_id=gw_live&tenant=tenant-a", nil)
+	req = admin.SetAuthContext(req, &admin.AuthContext{TenantID: "tenant-a", Role: "tenant_admin", IsJWT: true})
+	rr := httptest.NewRecorder()
+	api.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got := resp["primary_key"]; got != "srv_live_42" {
+		t.Errorf("primary_key=%v, want srv_live_42", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSessionDetailV2_ReverseMapFallbackToPrimaryRequestID(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -281,7 +318,11 @@ func TestSessionDetailV2_ReverseMapFallbackToPrimaryRequestID(t *testing.T) {
 	mock.ExpectQuery(`SELECT session_id FROM public\.sessions`).
 		WithArgs("gw_legacy", "tenant-a").
 		WillReturnError(pgx.ErrNoRows)
-	// resolveSessionID 步骤 2：reverse map
+	// resolveSessionID 步骤 2：live V2 turn 映射未命中，继续历史回填兜底。
+	mock.ExpectQuery(`FROM public\.session_turns t`).
+		WithArgs("tenant-a", "gw_legacy").
+		WillReturnRows(pgxmock.NewRows([]string{"session_id"}))
+	// resolveSessionID 步骤 3：历史 primary_request_id reverse map。
 	mock.ExpectQuery(`FROM public\.sessions s`).
 		WithArgs("tenant-a", "gw_legacy").
 		WillReturnRows(pgxmock.NewRows([]string{"session_id"}).AddRow("srv_legacy_42"))
@@ -320,6 +361,41 @@ func TestSessionDetailV2_ReverseMapFallbackToPrimaryRequestID(t *testing.T) {
 
 // TestSessionDetailV2_NotFoundOnUnresolvableInput 测试 resolveSessionID
 // 步骤 3：direct miss + reverse miss → 404，不暴露内部错误细节。
+// TestSessionDetailV2_AmbiguousGwSessionIDFailsClosed verifies that one legacy
+// gw_session_id can never silently select an arbitrary V2 session.
+func TestSessionDetailV2_AmbiguousGwSessionIDFailsClosed(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery(`SELECT session_id FROM public\.sessions`).
+		WithArgs("gw_shared", "tenant-a").
+		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery(`FROM public\.session_turns t`).
+		WithArgs("tenant-a", "gw_shared").
+		WillReturnRows(pgxmock.NewRows([]string{"session_id"}).
+			AddRow("srv_first").
+			AddRow("srv_second"))
+
+	api := admin.NewSessionDetailV2APIWithDB(mock)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/sessions/detail?gw_session_id=gw_shared&tenant=tenant-a", nil)
+	req = admin.SetAuthContext(req, &admin.AuthContext{TenantID: "tenant-a", Role: "tenant_admin", IsJWT: true})
+	rr := httptest.NewRecorder()
+	api.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("ambiguous gw_session_id must return 409, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "srv_first") || strings.Contains(rr.Body.String(), "srv_second") {
+		t.Fatalf("ambiguous response must not expose selected session candidates: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSessionDetailV2_NotFoundOnUnresolvableInput(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -330,6 +406,9 @@ func TestSessionDetailV2_NotFoundOnUnresolvableInput(t *testing.T) {
 	mock.ExpectQuery(`SELECT session_id FROM public\.sessions`).
 		WithArgs("ghost", "tenant-a").
 		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery(`FROM public\.session_turns t`).
+		WithArgs("tenant-a", "ghost").
+		WillReturnRows(pgxmock.NewRows([]string{"session_id"}))
 	mock.ExpectQuery(`FROM public\.sessions s`).
 		WithArgs("tenant-a", "ghost").
 		WillReturnError(pgx.ErrNoRows)
@@ -361,6 +440,9 @@ func TestSessionDetailV2_CrossTenantLookupRejected(t *testing.T) {
 	mock.ExpectQuery(`SELECT session_id FROM public\.sessions`).
 		WithArgs("srv_other", "tenant-a").
 		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery(`FROM public\.session_turns t`).
+		WithArgs("tenant-a", "srv_other").
+		WillReturnRows(pgxmock.NewRows([]string{"session_id"}))
 	mock.ExpectQuery(`FROM public\.sessions s`).
 		WithArgs("tenant-a", "srv_other").
 		WillReturnError(pgx.ErrNoRows)

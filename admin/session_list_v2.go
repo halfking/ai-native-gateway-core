@@ -144,12 +144,17 @@ func (api *SessionListV2API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 注：端点路径命名是 /sessions/list 但内部数据流仍是 V1 request_logs
 	// 聚合。把 list_v2 真正切到 sessions_v2 表（session_id 主键）属于另一
 	// 条独立任务（5 类 ID 数据源迁移），不在本 P0 范围内。
-	items := make([]map[string]any, 0, len(audits))
-	for _, a := range audits {
-		items = append(items, map[string]any{
-			"id_kind":     "gw_session_id",
-			"primary_key": a.SessionID,
-			"audit":       a,
+	type sessionListItem struct {
+		sessionforensics.SessionAudit
+		IDKind     string `json:"id_kind"`
+		PrimaryKey string `json:"primary_key"`
+	}
+	items := make([]sessionListItem, 0, len(audits))
+	for _, audit := range audits {
+		items = append(items, sessionListItem{
+			SessionAudit: audit,
+			IDKind:       "gw_session_id",
+			PrimaryKey:   audit.SessionID,
 		})
 	}
 
