@@ -1282,17 +1282,35 @@ func (d *DB) ensureUsageFactsDailyPartition(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	// 1. 创建当日 + 次日分区（autocommit；partition_manager 24h tick 兜底后续）。
-	if _, err := d.pool.Exec(ctx, `SELECT ensure_usage_facts_daily_partition(current_date)`); err != nil {
+	// 1. 751（R69 12h 审计轮）：函数级时区钉扎，覆盖 750 函数 DECLARE
+	//    初始化器里 p_date::timestamptz 的会话时区依赖（UTC 会话会产出
+	//    与 Shanghai 日边界错位 8h 的分区窗口）。proconfig 在函数入口
+	//    生效、先于 DECLARE 初始器——694 先例的对偶（body 内 SET LOCAL
+	//    不覆盖初始器，函数级 SET 覆盖）。幂等 ALTER，boot 每次收敛；
+	//    本 ensure 是存量库的收敛通道（installer/upgrade 通道由 751
+	//    迁移文件承担，双通道同语句）。
+	if _, err := d.pool.Exec(ctx, `
+		ALTER FUNCTION public.ensure_usage_facts_daily_partition(DATE)
+		    SET timezone = 'Asia/Shanghai';
+	`); err != nil {
 		// 函数未安装：让 750 升级通道先走（pgx 端函数不存在会 42883）。
 		// 不预创建函数本身以避免与 startup migration 文件发散——migration
 		// 是 canonical 真相源，本函数仅调用现有对象。
-		return fmt.Errorf("ensure_usage_facts_daily_partition(current_date): %w", err)
+		return fmt.Errorf("pin ensure_usage_facts_daily_partition timezone (751): %w", err)
 	}
-	if _, err := d.pool.Exec(ctx, `SELECT ensure_usage_facts_daily_partition(current_date + 1)`); err != nil {
-		return fmt.Errorf("ensure_usage_facts_daily_partition(current_date + 1): %w", err)
+	// 2. 创建当日 + 次日分区（autocommit；partition_manager 24h tick 已
+	//    接管后续预建，bg/partition_manager.go ensureSpecs）。日期派生从
+	//    current_date（随会话时区）改为显式 Shanghai 日历，与 tick 的
+	//    partitionTZ 同源——否则 UTC 会话 boot 时会为"UTC 的今天"建分区。
+	if _, err := d.pool.Exec(ctx,
+		`SELECT ensure_usage_facts_daily_partition((now() AT TIME ZONE 'Asia/Shanghai')::date)`); err != nil {
+		return fmt.Errorf("ensure_usage_facts_daily_partition(shanghai today): %w", err)
 	}
-	// 2. 盖 750 章（stamp 与 canonical migration 内容对齐）。
+	if _, err := d.pool.Exec(ctx,
+		`SELECT ensure_usage_facts_daily_partition(((now() AT TIME ZONE 'Asia/Shanghai')::date) + 1)`); err != nil {
+		return fmt.Errorf("ensure_usage_facts_daily_partition(shanghai tomorrow): %w", err)
+	}
+	// 3. 盖 750 章（stamp 与 canonical migration 内容对齐）。
 	if _, err := d.pool.Exec(ctx, `
 		INSERT INTO public.schema_migrations (version, description)
 		VALUES ('750', 'usage_facts daily partition function + today/tomorrow prebuild (R68 24h audit round; partition pruning enabled for rollup/reconciliation)')
@@ -1300,7 +1318,15 @@ func (d *DB) ensureUsageFactsDailyPartition(ctx context.Context) error {
 	`); err != nil {
 		return fmt.Errorf("stamp 750: %w", err)
 	}
-	slog.Info("usage_facts daily partition ensured (750)")
+	// 4. 盖 751 章（时区钉扎已随步骤 1 生效）。
+	if _, err := d.pool.Exec(ctx, `
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('751', 'usage_facts daily partition timezone pin (R69 12h audit round; boundary casts pinned to Asia/Shanghai at function entry)')
+		ON CONFLICT (version) DO NOTHING;
+	`); err != nil {
+		return fmt.Errorf("stamp 751: %w", err)
+	}
+	slog.Info("usage_facts daily partition ensured (750+751)")
 	return nil
 }
 

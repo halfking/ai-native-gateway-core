@@ -103,7 +103,11 @@ type SessionV2 struct {
 
 // SessionTurnV2 表示 session_turns + session_bodies 的 JOIN 结果
 type SessionTurnV2 struct {
-	ID                     int64     `json:"id"`
+	// ID 是 session_turns.id 数值主键（turn PK）。与 SessionPK（§1.5）
+	// 同理不对客户端可见——轮次对外恒以 turn_no 定位（web TS 类型
+	// TurnDetail/TurnListItem 与脚本消费面均不读该字段，2026-09-26 R69
+	// 12h 审计 N-1 复核）。Scan 仍需要该列，JSON 序列化剔除。
+	ID                     int64     `json:"-"`
 	SessionID              string    `json:"session_id"`
 	TurnNo                 int       `json:"turn_no"`
 	TenantID               string    `json:"tenant_id"`

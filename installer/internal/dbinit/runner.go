@@ -286,6 +286,14 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 投递（与 745/746/747/748 同族）。TTL 由 owner 拍板后续迁移
 			// 处理，本迁移仅建日分区函数不删除任何历史 partition。
 			"750_usage_facts_daily_partition.sql",
+			// 751 (R69, 2026-09-26): ensure_usage_facts_daily_partition
+			// 时区钉扎——ALTER FUNCTION SET timezone 在函数入口生效，
+			// 覆盖 750 DECLARE 初始化器里 p_date::timestamptz 的会话时区
+			// 依赖（UTC 会话会产出与 Shanghai 日边界错位 8h 的分区窗口；
+			// 694 先例的对偶：body 内 SET LOCAL 不覆盖初始器，函数级 SET
+			// 覆盖）。幂等 ALTER，不动函数体与分区；boot 链
+			// db.ensureUsageFactsDailyPartition 同语句双通道收敛。
+			"751_usage_facts_partition_tz_pin.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，
