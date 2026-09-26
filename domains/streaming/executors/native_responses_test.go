@@ -134,11 +134,16 @@ func TestExecuteOpenAI_NativeResponsesCompressesInputItemsForCandidateWindow(t *
 	}
 }
 
-func TestExecuteOpenAI_NativeResponsesStreamRequiresIndependentCapability(t *testing.T) {
+func TestExecuteOpenAI_NativeResponsesStreamFallsBackWithoutCapability(t *testing.T) {
+	// When SupportsNativeResponsesStream is false on a streaming request,
+	// the executor now falls back to Chat Completions instead of returning
+	// a capability-rejection 501. The credential_model_capabilities table is
+	// opt-in and empty by default, so a hard gate would make every
+	// openai-responses provider unusable until an external probe populates it.
 	called := false
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
 	_, err := newOverloadTestExecutor().executeOpenAI(&ExecParams{
@@ -147,8 +152,11 @@ func TestExecuteOpenAI_NativeResponsesStreamRequiresIndependentCapability(t *tes
 		ResponsesBodyBytes: []byte(`{"model":"gpt-responses","input":"hello","stream":true}`),
 		ClientProtocol:     "openai-responses", ClientModel: "gpt-responses",
 	}, nativeResponsesStreamCandidate(upstream.URL, false), 0, time.Now(), nil)
-	if err == nil || called {
-		t.Fatalf("executeOpenAI() = %v, upstream_called=%v; want capability rejection", err, called)
+	if err != nil {
+		t.Fatalf("executeOpenAI() = %v, want chat-completions fallback to succeed", err)
+	}
+	if !called {
+		t.Fatal("upstream was not contacted; capability-off streaming candidate should fall back to chat completions")
 	}
 }
 
@@ -269,11 +277,16 @@ func TestExecuteOpenAI_NativeResponsesEmptyOutputFailsBeforeWrite(t *testing.T) 
 	}
 }
 
-func TestExecuteOpenAI_NativeResponsesCapabilityOffDoesNotCallUpstream(t *testing.T) {
+func TestExecuteOpenAI_NativeResponsesCapabilityOffFallsBackToChatCompletions(t *testing.T) {
+	// When SupportsNativeResponses is false on a non-streaming request,
+	// the executor now falls back to Chat Completions instead of returning
+	// a capability-rejection 501. The credential_model_capabilities table is
+	// opt-in and empty by default, so a hard gate would make every
+	// openai-responses provider unusable until an external probe populates it.
 	called := false
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
 
@@ -284,11 +297,11 @@ func TestExecuteOpenAI_NativeResponsesCapabilityOffDoesNotCallUpstream(t *testin
 		ClientProtocol:     "openai-responses",
 		ClientModel:        "gpt-responses",
 	}, nativeResponsesCandidate(upstream.URL, false), 0, time.Now(), nil)
-	if err == nil {
-		t.Fatal("executeOpenAI() error = nil, want capability error")
+	if err != nil {
+		t.Fatalf("executeOpenAI() error = %v, want chat-completions fallback to succeed", err)
 	}
-	if called {
-		t.Fatal("capability-off native candidate contacted upstream")
+	if !called {
+		t.Fatal("capability-off native candidate should fall back to chat completions and contact upstream")
 	}
 }
 

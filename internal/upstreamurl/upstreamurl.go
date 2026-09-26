@@ -107,6 +107,9 @@ func stripCompletionSuffix(baseURL string) string {
 			break
 		}
 	}
+	// Strip any trailing "/" left after suffix removal (e.g. "//messages"
+	// → "/" → "") so Build() remains idempotent across repeated calls.
+	baseURL = strings.TrimRight(baseURL, "/")
 	return baseURL
 }
 
