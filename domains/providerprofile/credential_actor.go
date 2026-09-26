@@ -126,7 +126,9 @@ func (a *PGCredentialActor) CurrentLifecycle(ctx context.Context, credentialID i
 	return &lc, nil
 }
 
-// RecordEvent 见接口文档。provider_events.id 无默认值，必须显式取序列。
+// RecordEvent 见接口文档。provider_events.id 无默认值，且 provider_events_id_seq
+// 在本地/252 真库均不存在（deploy/sql/migrations/2026-07-26-provider-events-local.sql
+// 未进 installer 通道），取号沿用 reconciliation 的 max(id)+1 惯例。
 func (a *PGCredentialActor) RecordEvent(ctx context.Context, credentialID int64, kind string, payload map[string]interface{}) error {
 	var payloadJSON []byte
 	if payload != nil {
@@ -138,8 +140,8 @@ func (a *PGCredentialActor) RecordEvent(ctx context.Context, credentialID int64,
 	}
 	_, err := a.db.Exec(ctx, `
 		INSERT INTO provider_events (id, credential_id, event_kind, payload_json, ts)
-		VALUES (nextval('provider_events_id_seq'), $1, $2, $3, now())`,
-		credentialID, kind, payloadJSON)
+		VALUES ((SELECT COALESCE(max(id), 0) + 1 FROM provider_events), $1, $2, $3, now())`,
+		credentialID, kind, jsonParamOrNULL(payloadJSON))
 	if err != nil {
 		return fmt.Errorf("insert provider_event: %w", err)
 	}

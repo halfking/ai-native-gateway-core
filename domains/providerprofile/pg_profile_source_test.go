@@ -20,11 +20,15 @@ func TestPGProfileSource_Recent(t *testing.T) {
 	credID := seedCredential(t, pool)
 	provID := int64(99990030)
 
-	// seed 3 daily profiles on distinct dates (descending insertion order doesn't matter)
+	// seed 3 daily profiles on distinct dates (descending insertion order doesn't matter).
+	// Relative to today: Recent() filters profile_date >= CURRENT_DATE - 8d, so
+	// hardcoded calendar dates rot out of the window as the calendar advances
+	// (R11 audit: July fixtures aged out and silently zeroed this real-DB test).
+	today := time.Now().UTC().Truncate(24 * time.Hour)
 	dates := []time.Time{
-		time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC),
-		time.Date(2026, 7, 25, 0, 0, 0, 0, time.UTC),
-		time.Date(2026, 7, 24, 0, 0, 0, 0, time.UTC),
+		today.AddDate(0, 0, -1),
+		today.AddDate(0, 0, -2),
+		today.AddDate(0, 0, -3),
 	}
 	for i, d := range dates {
 		_, err := pool.Exec(ctx, `
