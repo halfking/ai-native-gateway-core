@@ -100,6 +100,25 @@ func TestMigration750UsageFactsDailyPartitionContract(t *testing.T) {
 		t.Error("750 down must not drop daily partitions (data-bearing objects)")
 	}
 
+	// ── C9: function-level TZ pin + Shanghai-calendar precreate (R69) ──
+	// The file's own precreate SELECTs run BEFORE 751 applies its ALTER
+	// pin, so a UTC-session apply used to prebuild two day partitions with
+	// UTC-anchored bounds (8h off the Shanghai calendar); the pg_inherits
+	// short-circuit then never corrects them and later Shanghai ensures
+	// overlap-fail on ATTACH. Pin must live on the function definition
+	// itself (proconfig, effective before the DECLARE initializers) and
+	// the precreate dates must be Shanghai-derived.
+	if !strings.Contains(up, "LANGUAGE PLPGSQL SET TIME ZONE = 'ASIA/SHANGHAI'") &&
+		!strings.Contains(up, "LANGUAGE PLPGSQL SET TIMEZONE = 'ASIA/SHANGHAI'") {
+		t.Error("750 must pin the function's timezone via a SET clause (proconfig) — 751's ALTER cannot cover this file's own precreate calls")
+	}
+	if got := strings.Count(up, "(NOW() AT TIME ZONE 'ASIA/SHANGHAI')::DATE"); got != 2 {
+		t.Errorf("750 must precreate today+tomorrow via Shanghai-calendar derivation (found %d calls, want 2)", got)
+	}
+	if strings.Contains(up, "ENSURE_USAGE_FACTS_DAILY_PARTITION(CURRENT_DATE") {
+		t.Error("750 must not derive precreate dates from current_date (session-timezone dependent)")
+	}
+
 	// ── C8: both delivery channels register 750 ───────────────────────
 	runnerBytes, err := os.ReadFile(filepath.Join("..", "..", "..", "installer", "internal", "dbinit", "runner.go"))
 	if err != nil {
