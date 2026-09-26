@@ -185,4 +185,14 @@ export default {
   // Loading states
   loading: '読み込み中...',
   noSamples: 'アノテーションサンプルがありません',
+
+  // taskprofile エクスポート/インポート (2026-09-18 round 2)
+  taskProfile: {
+    exportBtn: 'CSV エクスポート',
+    importBtn: 'CSV インポート',
+    exportOk: '{name} をエクスポートしました',
+    exportFailed: 'エクスポートに失敗しました',
+    importOk: 'インポート {imported}、スキップ {skipped}、エラー {errors}',
+    importFailed: 'インポートに失敗しました',
+  },
 }

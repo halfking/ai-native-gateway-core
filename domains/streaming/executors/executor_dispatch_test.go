@@ -462,16 +462,17 @@ func TestForwardForDispatchAcceptsStreamOnlyNativeCapability(t *testing.T) {
 	}
 }
 
-func TestForwardForDispatchRejectsNoNativeCapability(t *testing.T) {
+func TestForwardForDispatchFallsBackToChatCompletionsWithoutNativeCapability(t *testing.T) {
 	// Counter-case to TestForwardForDispatchAcceptsStreamOnlyNativeCapability:
 	// a credential without either stream OR non-stream native Responses
-	// capability must still be rejected at the dispatch gate (the executeOpenAI
-	// gate would reject it too, but failing fast at dispatch keeps the audit
-	// signal clean and avoids burning an upstream circuit probe).
+	// capability now falls back to Chat Completions instead of being hard-
+	// rejected at the dispatch gate. The credential_model_capabilities table
+	// is opt-in and empty by default, so a hard gate would make every
+	// openai-responses provider unusable until an external probe populates it.
 	called := false
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
 
@@ -513,11 +514,11 @@ func TestForwardForDispatchRejectsNoNativeCapability(t *testing.T) {
 	}
 
 	out := exec.forwardForDispatch(dctx, candidate, "no-cap-attempt", func() {}, nil)
-	if out.Err == nil {
-		t.Fatalf("forward outcome err = nil, want capability rejection")
+	if out.Err != nil {
+		t.Fatalf("forward outcome err = %v, want chat-completions fallback to succeed", out.Err)
 	}
-	if called {
-		t.Fatal("upstream was contacted; dispatch gate must reject before executeOpenAI")
+	if !called {
+		t.Fatal("upstream was not contacted; capability-off candidate should fall back to chat completions")
 	}
 }
 

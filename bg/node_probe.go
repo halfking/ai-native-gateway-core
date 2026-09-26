@@ -73,6 +73,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
@@ -948,11 +949,91 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 // it. Best-effort on DB error: the source-parameterized helper
 // submitViaQueueSource already retries + persists failures (P1.3), so this
 // wrapper only logs at Warn when the helper ultimately fails.
+//
+// 2026-09-25 P0-2 (§5 改动 2, docs/03-design/perf-2026-09-25-probe-cost-optimization.md):
+// the persistent 429/5xx storm used to enqueue one probe per business failure
+// — 48h rate_limited 36,115 × request_failure 35,385, no pair-level gate. We
+// now check node_probe_state.next_retry_at + error evidence before enqueueing:
+// if the pair is in failure-recovery state with a fresh schedule (within
+// probe.request_failure_min_gap_seconds), skip the request_failure enqueue.
+// One business failure is enough to trigger one probe; same-minute follow-ups
+// must not pile up. min_gap=0 disables the check (legacy behavior); the pump's
+// periodic path is unaffected (it routes through submitViaQueueSource
+// directly, not this wrapper).
 func (w *NodeProbeWorker) submitViaQueue(credID int, model, tenantID, parentReqID string) {
+	skipCtx, skipCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	skipped, skipErr := w.requestFailurePairSkip(skipCtx, credID, model)
+	skipCancel()
+	if skipErr != nil {
+		// Fail-open: a transient DB blip on the skip query must NOT swallow
+		// the request_failure trigger. We log and proceed to the enqueue path;
+		// the existing P1.3 retry budget + submitViaQueueSource error handling
+		// still apply.
+		slog.Warn("node_probe_worker: request_failure pair-skip check failed, proceeding to enqueue",
+			"credential_id", credID, "model", model, "error", skipErr)
+	} else if skipped {
+		slog.Info("node_probe_worker: request_failure skipped — pair already scheduled",
+			"credential_id", credID, "model", model)
+		// Counter so dashboards can see the skip rate without parsing logs.
+		nodeProbeRequestFailureSkipTotal.Inc()
+		return
+	}
 	if _, err := w.submitViaQueueSource(credID, model, tenantID, parentReqID, "request_failure"); err != nil {
 		slog.Warn("node_probe_worker: submit via queue failed",
 			"credential_id", credID, "model", model, "source", "request_failure", "error", err)
 	}
+}
+
+// requestFailurePairSkip implements the §8.1 P0-2 TestRequestFailure_MinGapSkip
+// contract: return true iff the (cred, model) pair is in a failure-recovery
+// state with a fresh schedule (next_retry_at > now() - min_gap). min_gap=0
+// returns false (kill-switch = legacy behavior). Returns the underlying DB
+// error so the caller can decide fail-open vs fail-closed; pgx.ErrNoRows (pair
+// never seen) is a non-error and returns (false, nil) — a fresh pair must be
+// allowed through.
+func (w *NodeProbeWorker) requestFailurePairSkip(ctx context.Context, credID int, model string) (bool, error) {
+	if w == nil || w.db == nil {
+		return false, nil
+	}
+	minGap := time.Duration(settings.ProbeRequestFailureMinGapSeconds()) * time.Second
+	if minGap <= 0 {
+		return false, nil
+	}
+	row := w.db.QueryRow(ctx, `
+		SELECT next_retry_at, consecutive_failures, COALESCE(last_err_code, '')
+		FROM node_probe_state
+		WHERE credential_id = $1 AND raw_model_name = $2
+	`, credID, model)
+	var (
+		nextRetryAt time.Time
+		consecFails int
+		lastErrCode string
+	)
+	if err := row.Scan(&nextRetryAt, &consecFails, &lastErrCode); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return shouldSkipRequestFailureTrigger(nextRetryAt, lastErrCode, consecFails, minGap, time.Now()), nil
+}
+
+// shouldSkipRequestFailureTrigger is the pure predicate behind
+// requestFailurePairSkip. Extracted for §8.1 unit testing without a database.
+//   - minGap <= 0: kill-switch, never skip (legacy behavior).
+//   - lastErrCode empty AND consecFails == 0: healthy-parked row, never skip
+//     (a fresh failure on a known-good pair must always go through).
+//   - nextRetryAt.After(now - minGap): pair is in failure-recovery with a
+//     fresh schedule — skip (one business failure → one probe).
+func shouldSkipRequestFailureTrigger(nextRetryAt time.Time, lastErrCode string, consecFails int, minGap time.Duration, now time.Time) bool {
+	if minGap <= 0 {
+		return false
+	}
+	hasErrorEvidence := lastErrCode != "" || consecFails > 0
+	if !hasErrorEvidence {
+		return false
+	}
+	return nextRetryAt.After(now.Add(-minGap))
 }
 
 // enqueue routes submitViaQueueSource through ProbeQueue.Enqueue, or the

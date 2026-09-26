@@ -192,11 +192,27 @@ func StreamNativeResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *
 	for {
 		event, err := reader.ReadEvent(ctx, currentStreamRuntimeConfig().streamChunkTimeout, resp.Body)
 		if err != nil {
-			if errors.Is(err, io.EOF) && terminal {
+			// After a canonical terminal event (response.completed /
+			// response.incomplete / response.failed) the stream is logically
+			// complete. Some upstream servers close the connection with a
+			// TCP RST rather than a clean FIN after the terminal event,
+			// which surfaces as a non-EOF read error. Treat any error after
+			// terminal as a clean end-of-stream so the client receives the
+			// full response instead of a spurious upstream_down failure.
+			if terminal {
 				if capture != nil {
 					capture.MarkDone()
 				}
 				return StreamOutcome{ChunkCount: chunkCount}
+			}
+			if errors.Is(err, io.EOF) {
+				resumable := !attemptHasClientSemanticOutput(gate, chunkCount)
+				reason := "native_responses_read_error"
+				kind := errorsx.KindUpstreamDown
+				if capture != nil {
+					capture.MarkInterruptedWithReason(reason)
+				}
+				return StreamOutcome{Interrupted: true, Reason: reason, Kind: kind, Resumable: resumable, ChunkCount: chunkCount}
 			}
 			resumable := !attemptHasClientSemanticOutput(gate, chunkCount)
 			reason := "native_responses_read_error"

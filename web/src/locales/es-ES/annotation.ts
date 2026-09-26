@@ -185,4 +185,14 @@ export default {
   // Loading states
   loading: 'Cargando...',
   noSamples: 'No hay muestras de anotación',
+
+  // taskprofile exportar/importar (2026-09-18 round 2)
+  taskProfile: {
+    exportBtn: 'Exportar CSV',
+    importBtn: 'Importar CSV',
+    exportOk: '{name} exportado',
+    exportFailed: 'Error al exportar',
+    importOk: 'Importados {imported}, omitidos {skipped}, errores {errors}',
+    importFailed: 'Error al importar',
+  },
 }

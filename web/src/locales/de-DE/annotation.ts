@@ -185,4 +185,14 @@ export default {
   // Loading states
   loading: 'Wird geladen...',
   noSamples: 'Keine Annotation-Samples',
+
+  // taskprofile Export/Import (2026-09-18 round 2)
+  taskProfile: {
+    exportBtn: 'CSV exportieren',
+    importBtn: 'CSV importieren',
+    exportOk: '{name} exportiert',
+    exportFailed: 'Export fehlgeschlagen',
+    importOk: 'Importiert {imported}, übersprungen {skipped}, Fehler {errors}',
+    importFailed: 'Import fehlgeschlagen',
+  },
 }
