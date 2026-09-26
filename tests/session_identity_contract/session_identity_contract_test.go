@@ -252,13 +252,12 @@ func TestSessionDetailV2_ResolveGwSessionIDToSessionID(t *testing.T) {
 	if _, ok := resp["session_pk"]; ok {
 		t.Errorf("SessionPK must not be exposed in API response")
 	}
+	// contract_freeze §1.5：SessionPK（sessions.id 数值主键）不得出现在响应
+	// 任何层级 —— session 对象内也不允许。12h 审计 F-2：原断言只验证泄漏值
+	// 的形状（正数即放行），等于给泄漏背书；现改为断言缺失。
 	if session, ok := resp["session"].(map[string]any); ok {
 		if _, ok := session["id"]; ok {
-			// SessionV2.id 是 int64 数值主键，但 JSON marshal 仍可能出现。
-			// 进一步断言它是数值类型，避免下次重构悄悄改名。
-			if v, isNum := session["id"].(float64); !isNum || v <= 0 {
-				t.Errorf("session.id leaked into response with non-positive value: %v", session["id"])
-			}
+			t.Errorf("session.id (SessionPK) must not be exposed in API response")
 		}
 	}
 }
@@ -315,6 +314,46 @@ func TestSessionDetailV2_ReverseMapFallbackToPrimaryRequestID(t *testing.T) {
 	// 不是客户端传入的 gw_legacy —— 这是契约的关键不变量。
 	if got := resp["primary_key"]; got != "srv_legacy_42" {
 		t.Errorf("primary_key=%v, want srv_legacy_42 (resolved from gw_legacy)", got)
+	}
+}
+
+// TestSessionDetailV2_AmbiguousGwSessionIDRejected 测试 resolveSessionID
+// 反向映射的歧义守卫（12h 审计 F-1）：同一 gw_session_id 映射到多个不同
+// session_id 时必须显式拒绝（500 并点名歧义），禁止静默取最早会话造成
+// 跨会话数据混用 —— 这是 §1.6 "gw_session_id 不得隐式覆盖多个会话"的
+// 执行点。
+func TestSessionDetailV2_AmbiguousGwSessionIDRejected(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	// resolveSessionID 步骤 1：direct miss
+	mock.ExpectQuery(`SELECT session_id FROM public\.sessions`).
+		WithArgs("gw_dupe", "tenant-a").
+		WillReturnError(pgx.ErrNoRows)
+	// 步骤 2：反向映射 DISTINCT 命中两个不同 session_id —— 必须拒绝。
+	mock.ExpectQuery(`FROM public\.sessions s`).
+		WithArgs("tenant-a", "gw_dupe").
+		WillReturnRows(pgxmock.NewRows([]string{"session_id"}).
+			AddRow("srv_a").AddRow("srv_b"))
+
+	api := admin.NewSessionDetailV2APIWithDB(mock)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/sessions/detail?session_id=gw_dupe&tenant=tenant-a", nil)
+	req = admin.SetAuthContext(req, &admin.AuthContext{TenantID: "tenant-a", Role: "tenant_admin", IsJWT: true})
+	rr := httptest.NewRecorder()
+	api.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (ambiguous resolution must be explicit); body = %s",
+			rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "ambiguous") {
+		t.Errorf("body should name the ambiguity, got: %s", rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 
