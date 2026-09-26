@@ -18,6 +18,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -69,7 +70,10 @@ func NewSessionDetailV2APIWithDB(pool sessionDetailV2DB) *SessionDetailV2API {
 
 // SessionV2 表示 public.sessions 表的记录
 type SessionV2 struct {
-	ID                  int64      `json:"id"`
+	// ID 是 sessions.id 数值主键（SessionPK，contract_freeze §1.5 对客户端
+	// 不可见）。Scan 仍需要该字段，但 JSON 序列化必须跳过 —— 12h 审计 F-2：
+	// 旧 tag "id" 把 SessionPK 带进每个详情响应，与 §1.5 相悖。
+	ID                  int64      `json:"-"`
 	SessionID           string     `json:"session_id"`
 	TenantID            string     `json:"tenant_id"`
 	CreatedAt           time.Time  `json:"created_at"`
@@ -99,7 +103,11 @@ type SessionV2 struct {
 
 // SessionTurnV2 表示 session_turns + session_bodies 的 JOIN 结果
 type SessionTurnV2 struct {
-	ID                     int64     `json:"id"`
+	// ID 是 session_turns.id 数值主键（turn PK）。与 SessionPK（§1.5）
+	// 同理不对客户端可见——轮次对外恒以 turn_no 定位（web TS 类型
+	// TurnDetail/TurnListItem 与脚本消费面均不读该字段，2026-09-26 R69
+	// 12h 审计 N-1 复核）。Scan 仍需要该列，JSON 序列化剔除。
+	ID                     int64     `json:"-"`
 	SessionID              string    `json:"session_id"`
 	TurnNo                 int       `json:"turn_no"`
 	TenantID               string    `json:"tenant_id"`
@@ -470,32 +478,54 @@ func (api *SessionDetailV2API) resolveSessionID(
 	if err == nil {
 		return directHit, nil
 	}
-	if err != nil && err.Error() != "no rows in result set" {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return "", fmt.Errorf("resolveSessionID direct: %w", err)
 	}
 
-	// 2. 反向映射：request_logs.gw_session_id → sessions.primary_request_id。
-	//    仅在 direct miss 时执行；唯一命中才返回，多命中抛错防止跨会话混用。
-	var resolved string
-	row := api.pool.QueryRow(ctx, `
-		SELECT s.session_id FROM public.sessions s
+	// 2. 反向映射：request_logs.gw_session_id → sessions.primary_request_id →
+	//    session_id。仅在 direct miss 时执行。取全部 DISTINCT session_id：
+	//    恰好 1 个才返回；0 个按未找到处理；>1 个说明该 gw_session_id 跨
+	//    多个会话 —— 显式拒绝。12h 审计 F-1：初版注释承诺"多命中返回
+	//    error"但实现是 ORDER BY ts LIMIT 1 静默取最早请求的会话，既违背
+	//    承诺，也可能在 primary_request_id 恰非最早请求时漏配。
+	rows, err := api.pool.Query(ctx, `
+		SELECT DISTINCT s.session_id
+		FROM public.sessions s
 		WHERE s.tenant_id = $1
 		  AND s.primary_request_id IN (
 		      SELECT request_id FROM request_logs
 		      WHERE tenant_id = $1 AND gw_session_id = $2
-		      ORDER BY ts ASC
-		      LIMIT 1
 		  )
-		LIMIT 1
 	`, tenantID, input)
-	if err := row.Scan(&resolved); err == nil {
-		return resolved, nil
-	} else if err.Error() != "no rows in result set" {
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", errSessionNotFound
+		}
 		return "", fmt.Errorf("resolveSessionID reverse: %w", err)
 	}
-
-	return "", errSessionNotFound
+	defer rows.Close()
+	candidates := make([]string, 0, 1)
+	for rows.Next() {
+		var sid string
+		if err := rows.Scan(&sid); err != nil {
+			return "", fmt.Errorf("resolveSessionID reverse scan: %w", err)
+		}
+		candidates = append(candidates, sid)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("resolveSessionID reverse rows: %w", err)
+	}
+	switch len(candidates) {
+	case 1:
+		return candidates[0], nil
+	case 0:
+		return "", errSessionNotFound
+	default:
+		return "", fmt.Errorf(
+			"gw_session_id %q maps to %d sessions (tenant %s); refusing ambiguous resolution",
+			input, len(candidates), tenantID)
+	}
 }
 
 // errSessionNotFound 由 resolveSessionID 返回，调用方按 404 处理。
-var errSessionNotFound = fmt.Errorf("session not found")
+var errSessionNotFound = errors.New("session not found")
