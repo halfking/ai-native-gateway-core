@@ -15,7 +15,11 @@ import (
 // Returns aggregated sessions from request_logs grouped by gw_session_id.
 
 type SessionSummary struct {
-	SessionID    string `json:"session_id"`
+	SessionID string `json:"session_id"`
+	// IDKind 显式标注本条摘要对应的身份契约类别（与 contract_freeze §1 五类 ID 互不重叠）。
+	// V1 (sessions_list) 主键为 gw_session_id；V2 端点改用 session_id。
+	IDKind       string `json:"id_kind"`
+	PrimaryKey   string `json:"primary_key"`
 	TenantID     string `json:"tenant_id"`
 	MsgCount     int    `json:"msg_count"`
 	RequestCount int    `json:"request_count"`
@@ -186,6 +190,8 @@ func (api *SessionListAPI) loadSessions(
 
 		sessions = append(sessions, SessionSummary{
 			SessionID:    sessionID,
+			IDKind:       "gw_session_id",
+			PrimaryKey:   sessionID,
 			TenantID:     tenantID,
 			RequestCount: reqCount,
 			ErrorCount:   errCount,
@@ -343,6 +349,8 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sess
 
 	summary := SessionSummary{
 		SessionID:           sessionID,
+		IDKind:              "gw_session_id",
+		PrimaryKey:          sessionID,
 		TenantID:            tenantID,
 		RequestCount:        reqCount,
 		ErrorCount:          errCount,
