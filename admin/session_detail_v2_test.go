@@ -96,12 +96,12 @@ func newSessionDetailAuthRequest(t *testing.T, target, role, tenant string) *htt
 }
 
 // TestSessionDetailServeHTTPPinsTenantAdminToAuthTenant:
-// 期望两次 SQL 调用：
+// 期望三次 SQL 调用：
 //  1. resolveSessionID direct lookup（input == sessions.session_id）
 //  2. querySession 的 LEFT JOIN LATERAL session_analysis_metadata
 //  3. queryTurns 的 session_turns_with_current_month
 //
-// 两次 SELECT 的次序由 ServeHTTP 锁住：resolve 在前，querySession 在后。
+// 三次 SELECT 的次序由 ServeHTTP 锁住：resolve 在前，querySession 在后。
 // 反转就破契约 —— 这是 §3 P0 任务要求的"session_id 强制作为主键"。
 func TestSessionDetailServeHTTPPinsTenantAdminToAuthTenant(t *testing.T) {
 	mock, err := pgxmock.NewPool()

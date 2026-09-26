@@ -55,7 +55,10 @@ func (a *sessionListV2Adapter) QueryRow(ctx context.Context, sql string, args ..
 	}); ok {
 		return &pgxRowToSFAdapter{row: r.QueryRow(ctx, sql, args...)}
 	}
-	return nil
+	// 12h 审计 F-5：静默返回 nil 会让调用方在 Scan 时空指针 panic 且无
+	// 任何线索；显式指出缺失的方法（sessionListV2DB 契约只强制 Query，
+	// QueryRow 靠本类型断言补齐）。
+	panic("sessionListV2Adapter: underlying sessionListV2DB lacks QueryRow — cannot adapt to sessionforensics.Row")
 }
 
 func (a *sessionListV2Adapter) Query(ctx context.Context, sql string, args ...any) (sessionforensics.RowIterator, error) {
