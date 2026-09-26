@@ -1272,7 +1272,12 @@ func (d *DB) stampUsageFactsOccurredAtIndex(ctx context.Context) error {
 // transaction 内看不到 autocommit DDL）。
 //
 // 安全：DEFAULT 与具体 RANGE 分区共存合法（PG 17 已验证 scratch 真库）；
-// 函数体内 CREATE TABLE IF NOT EXISTS 幂等；同一日历日连调两次无副作用。
+// 函数体为搬移后挂接（move-then-attach，2026-09-26 当日修订审计 P1）：
+// advisory xact 锁串行化并发 ensure，LIKE INCLUDING INDEXES 建独立承接表，
+// AE 锁 DEFAULT 后把界内行 DELETE…RETURNING 搬入新表再 ATTACH——存量
+// 库当日行先落 DEFAULT 的场景不再触发 PG 的 default-partition 约束拒绝
+// （该拒绝会经本函数把 boot 打进 no-DB 模式）。全步骤同事务，失败整体
+// 回滚；同一日历日连调两次经 pg_inherits 短路幂等。
 func (d *DB) ensureUsageFactsDailyPartition(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
