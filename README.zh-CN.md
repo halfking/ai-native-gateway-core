@@ -420,7 +420,7 @@ git push              # → codeup（无附加检查）
 git push github       # → github（自动严格扫描，命中即阻断）
 ```
 
-敏感信息保护：`.githooks/pre-push` 推送 github 时自动运行 `scripts/scan-secrets.sh` 严格模式（49 规则）。详见[双仓库策略文档](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md)。
+敏感信息保护：`.githooks/pre-push` 推送 github 时自动运行 `scripts/scan-secrets.sh` 严格模式（50 规则）。详见[双仓库策略文档](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md)。
 
 ---
 
