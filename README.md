@@ -386,7 +386,7 @@ git push              # → codeup (no extra checks)
 git push github       # → github (strict secret scan, blocked on hit)
 ```
 
-Sensitive-information protection: `.githooks/pre-push` automatically runs `scripts/scan-secrets.sh` in strict mode (49 rules) when pushing to GitHub. See the [mirror policy](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md).
+Sensitive-information protection: `.githooks/pre-push` automatically runs `scripts/scan-secrets.sh` in strict mode (50 rules) when pushing to GitHub. See the [mirror policy](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md).
 
 ---
 
