@@ -5668,7 +5668,7 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 		  JOIN pg_namespace n ON n.oid = p.pronamespace
 		  WHERE n.nspname = 'public'
 		    AND p.proname = 'recent_success_rate'
-		    AND p.pronargtypes = '20 25 23 23'::oidvector)
+		    AND p.proargtypes = '20 25 23 23'::oidvector)
 	`).Scan(&fnMissing); err != nil {
 		fnMissing = 1 // 探测出错走保守路径（含 DROP），自含幂等
 	}
