@@ -59,7 +59,18 @@ const probeNecessitySiblingLimit = 500
 // before the lease heartbeat starts; without a deadline a slow Redis/DB would
 // stall the single-worker probe pipeline and burn the claim lease. An
 // over-budget gate fails open exactly like an evidence error.
-const probeNecessityGateTimeout = 3 * time.Second
+//
+// 2026-09-26: raised from 3s → 10s after PG logs showed the
+// credentialTwoProbeSuccessGateSQL subquery (DISTINCT ON over 24h of
+// node_probe_runs) consistently timing out at ~xx:35-39 each minute (one
+// pump tick = 2 bursts of 4–5 tasks for credential 126, each serial in the
+// 250ms-poll worker). 10s is still far below the 30s lease and the
+// 2× probe-execution budget, so a runaway gate still fails open before
+// burning the lease; it is generous enough that the cold-cache DISTINCT ON
+// can complete under load instead of triggering pgx's client-side cancel
+// (which PG logs as "canceling statement due to user request" — operationally
+// noisy and indistinguishable from a real client-side abort).
+const probeNecessityGateTimeout = 10 * time.Second
 
 // Skip reason codes (ReasonCode in ProbeQueueResult / metric label).
 const (
