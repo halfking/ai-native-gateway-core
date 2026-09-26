@@ -2610,6 +2610,11 @@ func claimSessionFinalSuccessExec(ctx context.Context, tx pgx.Tx, entry *Request
 			"request_id", requestID)
 	}
 
+	// R69 审计：热表臂与 promoted 臂同款补齐 gw_session_id 非空谓词，让
+	// planner 能证明与 uq_request_logs_hot_final_success_session 的 partial
+	// 谓词蕴含。语义恒等：外层 WHERE 已要求 COALESCE(gw_session_id,'')<>''，
+	// 等值相关下 NULL/'' 行本就不可匹配（与 2026-09-26 promoted 臂补齐同一
+	// 论证，252 EXPLAIN 翻转证据见该处注释）。
 	tag, err := tx.Exec(ctx, `
 		UPDATE request_logs_hot
 		   SET is_final_success = TRUE
@@ -2622,6 +2627,7 @@ func claimSessionFinalSuccessExec(ctx context.Context, tx pgx.Tx, entry *Request
 		          FROM request_logs_hot other
 		         WHERE other.gw_session_id = request_logs_hot.gw_session_id
 		           AND other.is_final_success
+		           AND other.gw_session_id IS NOT NULL AND other.gw_session_id <> ''
 		           AND other.request_id <> request_logs_hot.request_id
 		   )`+promotedGuard+`
 	`, requestID)
