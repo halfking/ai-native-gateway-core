@@ -605,6 +605,13 @@ files=(
   # 事务），同时由 db.ensureUsageFactsDailyPartition 在 boot 链兜底
   # （与 749 双通道收敛同款）。
   "$ROOT_DIR/sql/migrations/startup/750_usage_facts_daily_partition.sql"
+  # 2026-09-26 R69 12h 审计轮：751 ensure_usage_facts_daily_partition
+  # 时区钉扎（ALTER FUNCTION SET timezone）——750 的 DECLARE 初始化器
+  # 边界转换 p_date::timestamptz 随会话时区求值，UTC 会话产出与
+  # Shanghai 日边界错位 8h 的分区窗口；函数级 GUC 在函数入口生效、
+  # 覆盖初始器（694 先例的对偶）。幂等 ALTER；boot 链
+  # db.ensureUsageFactsDailyPartition 同语句双通道收敛。
+  "$ROOT_DIR/sql/migrations/startup/751_usage_facts_partition_tz_pin.sql"
   # 2026-09-24 supplier-protocol-optimization §3.2：800 provider_endpoint_
   # protocols 每 provider 多端点表 + 从 providers 旧行回填（ON CONFLICT
   # DO NOTHING 幂等）。原 deploy/sql/migrations/V800__*.sql 从未进任何

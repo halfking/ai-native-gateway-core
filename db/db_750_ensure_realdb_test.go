@@ -114,9 +114,12 @@ func hasDailyPartition(ctx context.Context, pool *pgxpool.Pool, day string) bool
 	var todayDate string
 	switch day {
 	case "today":
-		todayDate = "current_date"
+		// R69（751）：boot ensure 以上海日历派生当日/次日（与 tick 的
+		// partitionTZ 同源）；断言侧同源，避免 UTC 会话在 16:00-24:00Z
+		// 窗口期按 UTC 日期找分区而错日。
+		todayDate = `(now() AT TIME ZONE 'Asia/Shanghai')::date`
 	case "tomorrow":
-		todayDate = "current_date + 1"
+		todayDate = `((now() AT TIME ZONE 'Asia/Shanghai')::date) + 1`
 	default:
 		return false
 	}

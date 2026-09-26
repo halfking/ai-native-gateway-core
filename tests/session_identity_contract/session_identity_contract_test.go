@@ -262,6 +262,31 @@ func TestSessionDetailV2_ResolveGwSessionIDToSessionID(t *testing.T) {
 	}
 }
 
+// TestSessionTurnV2_TurnPKNotSerialized 把 contract_freeze §1.5 的同款
+// 约束钉到 turn 级数值主键（R69 12h 审计 N-1，1614 轮 O-4 裁决落地）：
+// 轮次对外恒以 turn_no 定位，session_turns.id 不得出现在任何 JSON 视图。
+// Scan 侧保留 ID 列（queryTurns 仍 SELECT 它），仅序列化剔除——与
+// SessionV2.ID json:"-"（F-2）同构。
+func TestSessionTurnV2_TurnPKNotSerialized(t *testing.T) {
+	b, err := json.Marshal(admin.SessionTurnV2{
+		ID: 42, SessionID: "sess-a", TurnNo: 3, TenantID: "tenant-a",
+		RequestID: "req-1", InjectionVerdict: "clean", OutputVerdict: "clean",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m["id"]; ok {
+		t.Errorf("session_turns.id (turn PK) must not be serialized, got: %s", b)
+	}
+	if got, ok := m["turn_no"].(float64); !ok || got != 3 {
+		t.Errorf("turn_no must remain the external locator, got: %v", m["turn_no"])
+	}
+}
+
 // TestSessionDetailV2_ReverseMapFallbackToPrimaryRequestID 测试
 // resolveSessionID 步骤 2：direct miss → 反向映射路径
 // request_logs.gw_session_id → sessions.primary_request_id → session_id。
