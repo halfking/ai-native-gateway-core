@@ -196,6 +196,58 @@ func TestSessionListV2_ResponseIDKindAnnotation(t *testing.T) {
 	}
 }
 
+// TestSessionListV2_NoAuthContextRejected（R69）：list_v2 落地时未读鉴权
+// 上下文（9f62818c5），挂生产路由前必须与 detail 端点同构——无身份请求
+// 一律 404，且绝不触达数据库。
+func TestSessionListV2_NoAuthContextRejected(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	api := admin.NewSessionListV2APIWithDB(mock)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/sessions/list?tenant=default", nil)
+	// 无 SetAuthContext —— 模拟绕过 wrapAdmin 的直连请求。
+	rr := httptest.NewRecorder()
+	api.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (no auth context)", rr.Code)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("no DB access expected without auth: %v", err)
+	}
+}
+
+// TestSessionListV2_TenantPinnedToAuthContext（R69）：非 super 角色的
+// ?tenant= 必须被忽略，查询钉在 auth 租户上（跨租户读会话列表防线）。
+func TestSessionListV2_TenantPinnedToAuthContext(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	// 传入 ?tenant=other（他人租户），但查询参数必须是 auth 租户 tenant-a。
+	mock.ExpectQuery(`FROM request_logs`).
+		WithArgs("tenant-a", 50).
+		WillReturnRows(sessionListV2ContractRow("gw_abc"))
+
+	api := admin.NewSessionListV2APIWithDB(mock)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/sessions/list?tenant=other", nil)
+	req = admin.SetAuthContext(req, &admin.AuthContext{TenantID: "tenant-a", Role: "tenant_admin", IsJWT: true})
+	rr := httptest.NewRecorder()
+	api.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("query must be pinned to the auth tenant (tenant-a), not the query param: %v", err)
+	}
+}
+
 // TestSessionDetailV2_ResolveGwSessionIDToSessionID 验证
 // admin.SessionDetailV2API.resolveSessionID 把 gw_session_id 反向解析为
 // session_id 走通（路径：request_logs.gw_session_id → sessions.primary_request_id
