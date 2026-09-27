@@ -117,7 +117,6 @@ export default {
     stageCompressed: 'Compressed',
     stageRedacted: 'Redacted',
     originalOnlyAdmin: 'Original body is visible to super admins only. The current view shows the compressed and redacted contents.',
-    bodyStatusUnavailable: '{count} turn(s) in this session cannot show a compressed/redacted comparison because the original bodies have already been pruned or were never stored.',
     coversRange: 'Covers turns {start}–{end}',
     noSessionId: 'No session ID; showing only this request\'s request / outbound / response fallback.',
     sendLabel: 'Send',
