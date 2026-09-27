@@ -732,3 +732,19 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 753 | `753_session_turn_logs_ttl.sql` | `9c8493f9dc1a4cd65a7828260ddc9baf11ae9f7b9901f145e9854a2f04da35af` | pending deploy（五点同步齐备：embeddata/var+map/StartupFiles/parity 一致，契约测试 migration_753_test.go 钉桩；R71 轮补齐 embed 时漏登本台账行，十五轮 D-3 补登） |
+
+## 2026-09-28 — Subtask 5 收口：指标重命名迁移说明（无 DDL）
+
+**指标下线通知（运维必读）**：`llmgw_session_mirror_outbox_replays_total` **已改名为**
+`session_mirror_outbox_replays_total`（去掉 `llmgw_` 前缀），并新增聚合计数器
+`session_mirror_outbox_dead_total`。
+
+| 旧序列 | 新序列 | 处置 |
+|--------|--------|------|
+| `llmgw_session_mirror_outbox_replays_total` | `session_mirror_outbox_replays_total` | **改名即断流**。仓内已确认无引用（`grep` 覆盖全仓），但仓外的 Grafana 面板 / 告警规则 / 采集配置不在该论证范围内，需运维侧同步改名。 |
+| — | `session_mirror_outbox_dead_total` | 新增，dead-letter 累计事件数（无 `result` 标签），适合做告警主信号；按 `result` 的每轮次直方图仍看 `session_mirror_outbox_replays_total{result="dead"}`。 |
+
+本条**不含任何 DDL**，只是把仓内改名这一破坏性变更登记进台账，避免它像
+Subtask 5 本身那样「只存在于 commit message、没人知道它已经改了指标名」。
+
+Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
