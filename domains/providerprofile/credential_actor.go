@@ -128,7 +128,9 @@ func (a *PGCredentialActor) CurrentLifecycle(ctx context.Context, credentialID i
 
 // RecordEvent 见接口文档。provider_events.id 无默认值，且 provider_events_id_seq
 // 在本地/252 真库均不存在（deploy/sql/migrations/2026-07-26-provider-events-local.sql
-// 未进 installer 通道），取号沿用 reconciliation 的 max(id)+1 惯例。
+// 未进 installer 通道），取号沿用 reconciliation 的 max(id)+1 惯例。13 轮审计：
+// max(id)+1 在无 PK 的真库上并发取号会静默重复——对齐 EmitCostDiffAlert，
+// 取号段持同一把 eventAdvisoryKey 咨询锁串行化（事务级，随 commit 释放）。
 func (a *PGCredentialActor) RecordEvent(ctx context.Context, credentialID int64, kind string, payload map[string]interface{}) error {
 	var payloadJSON []byte
 	if payload != nil {
@@ -138,12 +140,20 @@ func (a *PGCredentialActor) RecordEvent(ctx context.Context, credentialID int64,
 		}
 		payloadJSON = b
 	}
-	_, err := a.db.Exec(ctx, `
+	tx, err := a.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, eventAdvisoryKey); err != nil {
+		return fmt.Errorf("acquire advisory lock: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO provider_events (id, credential_id, event_kind, payload_json, ts)
 		VALUES ((SELECT COALESCE(max(id), 0) + 1 FROM provider_events), $1, $2, $3, now())`,
-		credentialID, kind, jsonParamOrNULL(payloadJSON))
-	if err != nil {
+		credentialID, kind, jsonParamOrNULL(payloadJSON)); err != nil {
 		return fmt.Errorf("insert provider_event: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
