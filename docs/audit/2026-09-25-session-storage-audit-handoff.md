@@ -587,7 +587,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 | 1 | 会话身份契约 API 层显式标注 | feat/session-identity-contract-api (9f62818c5 已并入) + fix/session-ambiguity-409 (本轮收口) | P0 | [DONE] 2026-09-27 16:20 | 0aa86d8bd | 待创建 | 9f62818c5 + 9785c2398 已带 DISTINCT/LIMIT 2 歧义守卫进 main, 但走 500 兜底且响应体回显含 tenant_id 的内部错误串; 本轮以 fix/session-ambiguity-409 收口为 409 + 固定文案 (审计 Minor-2)。**未按原计划 rebase feat/session-identity-contract-api** —— 该分支 4 个 commit 与 main 的 R69/N-1 线已分叉, rebase 会回退 main 的 `SessionTurnV2.ID json:"-"`、空轮次序列化为 `[]`、errors.Is 注释等修复, 故改为定点移植 |
 | 2 | session_turn_logs 可配 TTL + summary 同步 | feat/session-turn-logs-ttl | P1 | [DONE] 2026-09-27（**语义经批判式审计修正后重做**） | 5b558deab（初版，语义有误）→ 14d34867f | 待创建 | 迁移改号 745→**753**（见 §10.2）。**初版 5b558deab 的 TTL 语义是错的，保留此行仅为留档，勿据其判断行为** —— 三条证伪见 §16。§4 第 4 项「AppendTurnInTx 内联写 turn_logs_summary」**已由既有实现满足**（cmd/gateway/turn_logs_aggregator.go，5 分钟聚合 → 写 sessions.turn_logs_summary → 删源行，main.go:1280 接线），**未重复实现**，两路写同一 JSONB 会互相覆盖 |
 | 3 | 详情 V2 body_status + 移除 request_logs_bodies JOIN | feat/session-detail-body-status | P1 | [DONE] 2026-09-28 | 后端 `1a9a59017`（并行会话，已进 main）→ 前端 `96bb3630` | 待创建 | **规格与最终形态均有实质偏离，务必先读**：(1) 后端只发**两态** available\|unavailable，**不发 dropped** —— schema 里没有 session_bodies 保留期开关，也没有任何任务删它的行（唯一 body 清理器只处理 V1 `request_logs_bodies_hot`），此时报 dropped 等于谎称「保留期清了数据」而实际多半是未采集；论证见 admin/body_status.go 顶部 CONTRACT。(2) §5.3 写「snapshot 中读取 body_status 列表」是错的，`/snapshot` 不带 turns，数据源实为 `/api/admin/sessions/detail`。(3) §5.3 只点名 zh-CN/en-US，但 parity gate 要求**全部 8 个 locale** 都有同一批 leaf key，只补两个会让 src/i18n/parity.test.ts 直接转红。(4) §5.3 第 4 项要求「链接到 retention 文档」已删——那个设置并不存在，链过去是空的。详见 §21 |
-| 4 | DB 降级返回 503 + storage_status | feat/storage-status-503 | P1 | TODO | - | - | - |
+| 4 | DB 降级返回 503 + storage_status | feat/session-detail-body-status | P1 | [DONE] 2026-09-28 | `a3769c6f3` | 待创建 | **§6 四条交付物核实现状时全部不存在**（与 §5/§8 不同，本次规格属实），按原意落地并做了三处收紧：(1) 分类器**只判连接层**（ConnectError / net.Error 超时 / DeadlineExceeded / nil pool）为降级，`*pgconn.PgError`（SQL 语法、权限、RLS）与 `context.Canceled` 不判 —— 判据放宽会把真 bug 伪装成可重试的降级，比原 500 更糟；(2) 顺带修掉 `session_list.go` 两个 500 **回显 `err.Error()`** 的信息泄漏（连接错误串带主机名/端口/DSN 片段，与 Subtask 1 修掉的 tenant_id 回显同型）；(3) `withTx` 的 nil pool 由 `fmt.Errorf("nil database pool")` 改为哨兵 `ErrNilDatabasePool` —— 此前只能字符串匹配，而 pgconn 某些错误类型的 `Error()` 在内部字段缺失时会 panic（写单测时真实打到）。详见 §22 |
 | 5 | 镜像 outbox 性能调优 | feat/mirror-outbox-perf | P1 | [DONE] 2026-09-27 17:01 | 1cb487779 | 待创建 | rebase origin/main 后唯一文件改动 (internal/sessionv2mirror/replay.go, 103+/16-); `go build ./internal/sessionv2mirror/...` + `go vet` + `go test -race ./internal/sessionv2mirror/...` + `go build ./...` 全绿; gofmt 历史遗留 `internal/sessionv2mirror/session_dim.go` + `internal/sessionv2mirror/synthetic_session_test.go` (不在本任务范围, 见 §15 观察项) |
 | 6 | bg/cache_trimmer.go + BodiesTrimmer 一致性 | feat/cache-trimmer-and-bodies-consistency | P2 | TODO | - | - | - |
 | 7 | request_logs 主表 archive 流水线 | feat/request-logs-main-archive | P2 | [DONE] 2026-09-27 | 982e3191c | 待创建 | 迁移改号 746→**754**（见 §10.2；750~753 已被占用）。**不并入 archiveSpecs()**：那套机制按「日期参数 + 标量/tuple 返回」设计，而 archive_request_logs_default 收 retention 天数、RETURNS TABLE(partition, rows) 是**每分区一行**的集合返回，硬塞会错传参数并按错列形状扫描（与 2026-09-03/04 的 42703 同源），故单列 pm.archiveOldRequestLogs（runCleanup step 12）。迁移 SQL 为前一会话草稿、本轮复核：pg_inherits 枚举月分区、1000 行小批量 + 主键游标、源分区不 DROP（R68 move-then-attach）均符合 §9 冻结契约 |
@@ -1123,3 +1123,48 @@ partition_date + retention 8h」的判别用例后才抓住。与 §16 C7 / §18
 的实现、要么前提为假**。若不先核现行实现，Subtask 6 会重复实现已有的 CacheTrimmer，
 Subtask 3 会写出一个「声称按保留期清理、实际无任何清理任务」的三态 —— 正是本仓
 多轮审计一直在抓的那类「承诺与实现背离」。
+
+---
+
+## 22. 第四轮续：Subtask 4 落地（2026-09-28）
+
+§6 的四条交付物（`apihub.HealthStorage`、`internal/observability/metrics_storage.go`、
+4 个端点的 503 + `storage_status`、降级单测）在核实时**确认全部不存在** —— 与
+§5、§8 不同，本次规格属实，没有过期成分，按原意落地。三处主动收紧：
+
+1. **分类器只判连接层**。`IsStorageUnavailable` 只把 ConnectError / net.Error 超时 /
+   DeadlineExceeded / nil pool 判成降级。`*pgconn.PgError`（SQL 语法、权限、RLS、
+   约束）与 `context.Canceled` 保持 500 / 正常取消。若按「withTenantTx 失败即降级」
+   实现，会把代码缺陷伪装成可重试的存储抖动 —— 那比原来的 500 更糟。
+2. **顺带修掉信息泄漏**。`session_list.go` 两个 500 响应此前回显 `err.Error()`，
+   连接错误串里带主机名/端口/DSN 片段。降级响应改为固定文案 + `storage_status` +
+   `component` + `retryable`，原始错误只进日志与指标。
+3. **nil pool 改哨兵**。`withTx` 原先返回 `fmt.Errorf("nil database pool")`（无 `%w`），
+   调用方只能字符串匹配。改为 `ErrNilDatabasePool` 后用 `errors.Is`。**写单测时被这条
+   真实打到**：`*pgconn.ConnectError{Config: ...}` 的 `Error()` 会解引用未导出的
+   `err` 字段 → 空指针 panic。
+
+### 一个必须记录的测试缺陷（变异测试第 6 次同型复发）
+
+`TestIsStorageUnavailable_CanceledNotMaskedByDeadlineBranch` 最初只断言
+`IsStorageUnavailable(context.Canceled) == false`。**变异测试 S2（删掉实现里的
+Canceled 守卫）存活** —— 因为纯 `context.Canceled` 既不匹配 DeadlineExceeded 分支、
+也不匹配 ConnectError / net.Error，它是靠「都不命中 → 兜底 return false」通过的。
+那条断言根本没覆盖它声称保护的守卫。
+
+修法：喂一个**同时**满足 `errors.Is(Canceled)` 与 `errors.Is(DeadlineExceeded)` 的
+joined 错误（Go 1.20+ 多重 `%w`，嵌套 ctx / errgroup 合并时真会出现）。有守卫 →
+false（客户端走人）；无守卫 → 命中 Deadline 分支 → true（把客户端取消误报成存储
+降级、凭空造一次假 503 告警）。
+
+这是 §19 记的「断言只看到自己算的东西」的**第 6 次**同型复发，但换了新外壳：
+前几次是「只 grep 到定义看不见调用点」「测试只覆盖单来源没覆盖多来源优先级」，
+这次是**「断言喂的输入恰好绕开了它要保护的那条分支」**。
+共性都是：断言的输入集合没有覆盖到被保护的那条路径。
+
+### 与 Subtask 3 的关系
+
+Subtask 4 与 Subtask 3 共用 `admin/session_detail_v2.go` 与
+`admin/session_turns_unified.go`，本轮是接在 Subtask 3 **落地之后**串行做的
+（§11 依赖图的硬约束）。Subtask 3 的后端半边由并行会话以 `1a9a59017` 先行合入
+main，本轮在其之上叠加 503 路径，两者无冲突。
