@@ -588,7 +588,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 | 2 | session_turn_logs 可配 TTL + summary 同步 | feat/session-turn-logs-ttl | P1 | TODO | - | - | - |
 | 3 | 详情 V2 body_status + 移除 request_logs_bodies JOIN | feat/session-detail-body-status | P1 | TODO | - | - | - |
 | 4 | DB 降级返回 503 + storage_status | feat/storage-status-503 | P1 | TODO | - | - | - |
-| 5 | 镜像 outbox 性能调优 | feat/mirror-outbox-perf | P1 | TODO | - | - | - |
+| 5 | 镜像 outbox 性能调优 | feat/mirror-outbox-perf | P1 | [DONE] 2026-09-27 17:01 | 1cb487779 | 待创建 | rebase origin/main 后唯一文件改动 (internal/sessionv2mirror/replay.go, 103+/16-); `go build ./internal/sessionv2mirror/...` + `go vet` + `go test -race ./internal/sessionv2mirror/...` + `go build ./...` 全绿; gofmt 历史遗留 `internal/sessionv2mirror/session_dim.go` + `internal/sessionv2mirror/synthetic_session_test.go` (不在本任务范围, 见 §15 观察项) |
 | 6 | bg/cache_trimmer.go + BodiesTrimmer 一致性 | feat/cache-trimmer-and-bodies-consistency | P2 | TODO | - | - | - |
 | 7 | request_logs 主表 archive 流水线 | feat/request-logs-main-archive | P2 | TODO | - | - | - |
 
@@ -689,3 +689,14 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 - 所有 feat/* 分支已删除
 - 在主分支 `git log --oneline -10` 末尾追加一条总控合入记录 (可选): `chore(audit): R64 handoff — 7 sub-tasks landed, storage_status + body_status + TTL configurable + archive pipeline`
 - 通知用户: 全部完成, 提供 7 个 PR URL 列表
+
+---
+
+## 15. 观察项 (R71+ 待清理)
+
+- **O-A** `gofmt -l` 在 main 上报两个历史遗留文件 (非本次任何子任务范围):
+  - `internal/sessionv2mirror/session_dim.go` — 引入于 6e4fa32dc (`feat(session): session_dim 随 V2 影子写自动维护`)
+  - `internal/sessionv2mirror/synthetic_session_test.go` — 引入于 a789a05ad (`feat(db,session,storage): 存储优化方案 v2 S2 落地`)
+  - 处置: 单开 `chore(fmt): gofmt session_dim.go + synthetic_session_test.go` (或随下个真正触及该目录的子任务合并), **不要混进 Subtask 5 收口 commit** (会扩散范围, 违反 §10.1 "git diff 行数 ≤ 600" 软约束)
+- **O-B** `feat/session-identity-contract-api` 分支在 origin 上保留 4 个 commit (48f1141fa, 6c5b76cab, e0464968c, ad763a7ef) — 实质内容已被 main 上的 `fix/session-ambiguity-409` (0aa86d8bd) 定点移植取代; 差异为 509+/4191- 的反向 main 推进差. 处置: 在所有 Subtask 落地后, 由 R71 audit 轮一并清理 (本地 + 远端 delete branch)
+- **O-C** main 落后 origin/main 2 个 commit (59712d3c7 + 78ca7d9a3, R70 D11 plan/INDEX 头指针校正); 与 §10 表无关, 下次合并或审计轮前 `git pull --ff-only` 即可
