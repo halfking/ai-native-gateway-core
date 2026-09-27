@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
 // ── Session List & Summary API (v4, 2026-06-21) ───────────────────────
@@ -99,10 +101,15 @@ func (api *SessionListAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 		return txErr
 	})
 	if err != nil {
+		// Subtask 4（§6）：存储不可达是依赖降级，不是 500。响应体不再回显
+		// err.Error()——连接错误串里带主机名/端口/DSN 片段。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentList, err)
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "error",
 			"message": "Failed to load sessions",
-			"error":   err.Error(),
 		})
 		return
 	}
@@ -288,10 +295,14 @@ func (api *SessionListAPI) HandleDetail(w http.ResponseWriter, r *http.Request) 
 		return txErr
 	})
 	if err != nil {
+		// Subtask 4（§6）：同 HandleList，存储不可达走 503 降级路径。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentDetail, err)
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "error",
 			"message": "Failed to load session detail",
-			"error":   err.Error(),
 		})
 		return
 	}
