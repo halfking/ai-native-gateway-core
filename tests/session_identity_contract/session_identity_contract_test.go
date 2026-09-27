@@ -26,6 +26,7 @@ package session_identity_contract
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -396,9 +397,12 @@ func TestSessionDetailV2_ReverseMapFallbackToPrimaryRequestID(t *testing.T) {
 
 // TestSessionDetailV2_AmbiguousGwSessionIDRejected 测试 resolveSessionID
 // 反向映射的歧义守卫（12h 审计 F-1）：同一 gw_session_id 映射到多个不同
-// session_id 时必须显式拒绝（500 并点名歧义），禁止静默取最早会话造成
-// 跨会话数据混用 —— 这是 §1.6 "gw_session_id 不得隐式覆盖多个会话"的
-// 执行点。
+// session_id 时必须显式拒绝（409），禁止静默取最早会话造成跨会话数据混用
+// —— 这是 §1.6 "gw_session_id 不得隐式覆盖多个会话"的执行点。
+//
+// 409 而非 500：歧义是「标识不精确」而非服务端故障，调用方换个更精确的
+// session_id 即可。响应体只回固定文案，不得回显候选 session_id、tenant_id
+// 或内部错误串（handoff §3 审计 Minor-2）。
 func TestSessionDetailV2_AmbiguousGwSessionIDRejected(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -422,12 +426,18 @@ func TestSessionDetailV2_AmbiguousGwSessionIDRejected(t *testing.T) {
 	rr := httptest.NewRecorder()
 	api.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500 (ambiguous resolution must be explicit); body = %s",
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (ambiguous resolution must fail closed); body = %s",
 			rr.Code, rr.Body.String())
 	}
+	// 响应体点名歧义即可，但绝不能泄漏候选 session_id 或租户/内部错误串。
 	if !strings.Contains(rr.Body.String(), "ambiguous") {
 		t.Errorf("body should name the ambiguity, got: %s", rr.Body.String())
+	}
+	for _, leak := range []string{"srv_a", "srv_b", "tenant-a", "gw_dupe", "refusing ambiguous resolution"} {
+		if strings.Contains(rr.Body.String(), leak) {
+			t.Errorf("ambiguous response must not leak %q; body = %s", leak, rr.Body.String())
+		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -458,6 +468,48 @@ func TestSessionDetailV2_NotFoundOnUnresolvableInput(t *testing.T) {
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestSessionDetailV2_ResolveFailureDoesNotLeakInternalError 钉住 500 兜底
+// 分支不外泄内部错误串（handoff §3 审计 Minor-2）。
+//
+// 修复前该分支是 writeExportJSONError(..., fmt.Sprintf("resolve session id: %v", err))，
+// 响应体原样回显包装后的 DB 错误（SQL 片段、约束名、可能的连接细节）。
+// 修复后：500 + 固定文案，详细错误只进 slog。
+func TestSessionDetailV2_ResolveFailureDoesNotLeakInternalError(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	// 步骤 1 direct miss；步骤 2 反向映射抛硬错误（非 ErrNoRows）。
+	secret := "pq: duplicate key value violates unique constraint \"sessions_pkey\" DETAIL: Key (id)=(42)"
+	mock.ExpectQuery(`SELECT session_id FROM public\.sessions`).
+		WithArgs("gw_err", "tenant-a").
+		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery(`FROM public\.sessions s`).
+		WithArgs("tenant-a", "gw_err").
+		WillReturnError(errors.New(secret))
+
+	api := admin.NewSessionDetailV2APIWithDB(mock)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/sessions/detail?session_id=gw_err&tenant=tenant-a", nil)
+	req = admin.SetAuthContext(req, &admin.AuthContext{TenantID: "tenant-a", Role: "tenant_admin", IsJWT: true})
+	rr := httptest.NewRecorder()
+	api.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body = %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, leak := range []string{secret, "sessions_pkey", "duplicate key", "resolveSessionID reverse", "tenant-a"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("500 body must not leak internal error detail %q; body = %s", leak, body)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 
