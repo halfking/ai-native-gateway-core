@@ -76,3 +76,7 @@
 - 723 裸 ALTER 42P01（fresh-install/canonical 链）已按 720 模式修复——与 720 同款事故两犯，定式见 D16 R42 回注。
 - census 静态两驾不扫 01-schema/sql/objects/policies（后者旧词汇属预期需豁免策略）、ensure 扫描按文件名钉死——扩面登记 R42 §五#2。
 - refresh-balance 出网探测面核为健康：super_admin-only 触发、egress 守卫、响应体不落 balance_error（固定文案+截断）；QueryRow 错误已区分 ErrNoRows(404)与基建错误(500+日志)。
+
+### R71 回注（2026-09-27，sqlreadguard 守卫进验证清单）
+- sqlreadguard TestNoBareRequestLogsMotherReads 恒红两轮未跑出（resolveSessionID 反向臂裸母表读）→ 反向臂双腿化（hot∪母表 UNION ALL）+ LEGIT 白名单；**守卫测试 ./internal/sqlreadguard/ 与 installer 包必须进每轮验证清单**——守卫红本身不是发现，守卫红被无视才是。
+- 500 回显面：0aa86d8bd 只收口 resolve 臂；R71 补收 detail querySessionDetail 臂 + list_v2（固定文案+slog），admin 通用面 85 处/22 文件登记债（L4）待批量收口。

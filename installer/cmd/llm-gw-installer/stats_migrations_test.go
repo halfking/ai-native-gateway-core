@@ -231,6 +231,11 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// EXISTS + ON CONFLICT DO NOTHING）。注意：800 无 Go boot ensure
 		// （文件头注记 P4 wiring 待接线），升级库靠本 sequence 通道。
 		"800_provider_endpoint_protocols.sql": providerEndpointProtocolsMigration800,
+		// 753 (2026-09-27, R67 session-storage 审计子任务 2):
+		// session_turn_logs TTL 清理函数（仅 OR REPLACE FUNCTION，无表
+		// DDL/无 CONCURRENTLY，installer 通道安全）——R71 审计补五点同步
+		// （5b558deab 只登记了 sequence 通道，本守卫对 753 必红）。
+		"753_session_turn_logs_ttl.sql": sessionTurnLogsTTLMigration753,
 	}
 
 	for name, embedded := range expected {

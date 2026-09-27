@@ -553,6 +553,9 @@ var usageFactsPartitionTzPinMigration751 []byte
 //go:embed embeddata/startup/752_mock_probe_history.sql
 var mockProbeHistoryMigration752 []byte
 
+//go:embed embeddata/startup/753_session_turn_logs_ttl.sql
+var sessionTurnLogsTTLMigration753 []byte
+
 //go:embed embeddata/startup/800_provider_endpoint_protocols.sql
 var providerEndpointProtocolsMigration800 []byte
 
@@ -721,6 +724,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/750_usage_facts_daily_partition.sql":                                    usageFactsDailyPartitionMigration750,
 	"startup/751_usage_facts_partition_tz_pin.sql":                                   usageFactsPartitionTzPinMigration751,
 	"startup/752_mock_probe_history.sql":                                             mockProbeHistoryMigration752,
+	"startup/753_session_turn_logs_ttl.sql":                                          sessionTurnLogsTTLMigration753,
 	"startup/800_provider_endpoint_protocols.sql":                                    providerEndpointProtocolsMigration800,
 }
 
