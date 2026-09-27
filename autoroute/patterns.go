@@ -191,9 +191,13 @@ func buildDefaultPatterns() []PatternMatch {
 			weight: 0.65,
 			reason: "pattern: chinese coding task (language/framework + action verb)",
 		},
-		// P3: "写个/做个 + 脚本/工具/函数"（口语变体，P1 的补充）
+		// P3: "写个/做个 + 脚本/工具/函数"（口语变体，P1 的补充）。
+// 2026-09-28 实测扩展：把 "帮我写一个 Python 解析 CSV 的脚本" 这类
+// "帮我写/帮我做 + 一个/个 + <语言可选> + 对象" 也承接——前序 P3 只接
+// "写个/写一个简单" 的最短形式，"帮我写一个" 因 "一个" 后还有语言段而漏过。
+// 这条写法与 P1 共用语言词表，避免 creative/planning 误伤。
 		{
-			expr:   `(?:写个|做个|帮我写个|帮我做个|写一个简单)(?:.*?)(?:脚本|工具|函数|方法|程序|demo|示例|prototype|原型|demo)`,
+			expr:   `(?:写个|做个|帮我写个|帮我做个|帮我写一个|帮我做(?:一个)?|写一个简单)(?:\s+(?:python|java|javascript|js|typescript|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|shell|bash))?\s*(?:.*?)(?:脚本|工具|函数|方法|程序|demo|示例|prototype|原型)`,
 			task:   TaskCode,
 			weight: 0.60,
 			reason: "pattern: chinese coding task (colloquial 'write a script/tool')",
