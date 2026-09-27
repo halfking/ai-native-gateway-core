@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/sessionforensics"
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
 // SessionListV2API 用 sessionforensics 实现的会话列表端点。
@@ -107,7 +108,9 @@ func NewSessionListV2APIWithDB(pool sessionListV2DB) *SessionListV2API {
 
 func (api *SessionListV2API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if api.pool == nil && api.store == nil {
-		writeExportJSONError(w, http.StatusServiceUnavailable, "session list v2 API requires database")
+		// Subtask 4（§6）：与其它三个端点统一成 503 + storage_status，
+		// 否则同一个「数据库没起来」在不同端点上表现成三种状态码。
+		WriteStorageDegraded(w, observability.StorageComponentList, ErrNilDatabasePool)
 		return
 	}
 	if r.URL.Path != "/api/admin/sessions/list" {

@@ -30,6 +30,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
 // sessionDetailV2DB 是 SessionDetailV2API 实际需要的数据库方法子集。
@@ -169,7 +171,8 @@ type SessionDetailV2Response struct {
 
 func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if api.pool == nil {
-		writeExportJSONError(w, http.StatusServiceUnavailable, "session detail v2 API requires database")
+		// Subtask 4（§6）：统一 503 + storage_status。
+		WriteStorageDegraded(w, observability.StorageComponentDetail, ErrNilDatabasePool)
 		return
 	}
 	if r.URL.Path != "/api/admin/sessions/detail" {
