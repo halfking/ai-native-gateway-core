@@ -63,10 +63,10 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
                      AND b.session_id = t.session_id
                      AND b.turn_no = t.turn_no
                      AND b.request_id = t.request_id
-                     AND (b.request_delta IS NOT NULL
-                       OR b.response_delta IS NOT NULL
-                       OR b.outbound_body IS NOT NULL)
-               )
+	                     AND ((b.request_delta IS NOT NULL AND b.request_delta <> 'null'::jsonb)
+	                       OR (b.response_delta IS NOT NULL AND b.response_delta <> 'null'::jsonb)
+	                       OR (b.outbound_body IS NOT NULL AND b.outbound_body <> 'null'::jsonb))
+	               )
         FROM public.session_turns_with_current_month t
         WHERE t.tenant_id=$1 AND t.session_id=$2 AND t.turn_no < $3
         ORDER BY t.turn_no DESC LIMIT $4`, tenantID, sessionID, before, limit+1)

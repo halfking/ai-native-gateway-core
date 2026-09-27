@@ -31,6 +31,10 @@ func TestNoInternalErrorEchoIn500Responses(t *testing.T) {
 		t.Fatal(err)
 	}
 	echoRe := regexp.MustCompile(`\.Error\(\)`)
+	// 十六轮审计 E5：R72 守卫只匹配 StatusInternalServerError，literal
+	// `500` 全部漏网——self_check/health_check/attachments 三文件 21 处
+	// 回显就这样绕过了守卫静默存续。状态位识别同时覆盖两种写法。
+	statusRe := regexp.MustCompile(`StatusInternalServerError|\b500\b`)
 	var leaks []string
 	for _, e := range entries {
 		name := e.Name()
@@ -45,8 +49,14 @@ func TestNoInternalErrorEchoIn500Responses(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i, line := range strings.Split(string(raw), "\n") {
-			if strings.Contains(line, "StatusInternalServerError") && echoRe.MatchString(line) {
-				leaks = append(leaks, name+":"+strconv.Itoa(i+1)+" "+strings.TrimSpace(line))
+			trimmed := strings.TrimSpace(line)
+			// 只扫代码行：internal_error.go 的头注本身就在举例说明
+			// writeError(w, 500, "..."+err.Error()) 的反模式。
+			if strings.HasPrefix(trimmed, "//") {
+				continue
+			}
+			if statusRe.MatchString(line) && echoRe.MatchString(line) {
+				leaks = append(leaks, name+":"+strconv.Itoa(i+1)+" "+trimmed)
 			}
 		}
 	}

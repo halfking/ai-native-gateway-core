@@ -152,7 +152,7 @@ func (h *SelfCheckHandler) handleListRuns(w http.ResponseWriter, r *http.Request
 
 	rows, err := h.db.Query(r.Context(), query, args...)
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		writeInternalErrStr(w, "query self-check runs failed", err)
 		return
 	}
 	defer rows.Close()
@@ -243,7 +243,7 @@ func (h *SelfCheckHandler) handleGetRun(w http.ResponseWriter, r *http.Request) 
 		created_at
 		FROM self_check_round_results WHERE run_id=$1 ORDER BY round_index`, id)
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		writeInternalErrStr(w, "query self-check round results failed", err)
 		return
 	}
 	defer rows.Close()
@@ -330,7 +330,7 @@ func (h *SelfCheckHandler) handleGetSettings(w http.ResponseWriter, r *http.Requ
 		if errors.Is(err, pgx.ErrNoRows) {
 			if seedErr := h.ensureSelfCheckSettingsRow(r.Context()); seedErr != nil {
 				slog.Error("self_check: seed default settings failed", "error", seedErr)
-				writeJSON(w, 500, map[string]any{"error": "settings not initialized: " + seedErr.Error()})
+				writeJSON(w, 500, map[string]any{"error": "settings not initialized"})
 				return
 			}
 			// Re-query after seeding.
@@ -346,7 +346,7 @@ func (h *SelfCheckHandler) handleGetSettings(w http.ResponseWriter, r *http.Requ
 		if err != nil {
 			// Still failing — likely the table itself doesn't exist yet.
 			slog.Error("self_check: load settings failed", "error", err)
-			writeJSON(w, 500, map[string]any{"error": "self_check_settings table unavailable: " + err.Error()})
+			writeJSON(w, 500, map[string]any{"error": "self_check_settings table unavailable"})
 			return
 		}
 	}
@@ -451,7 +451,7 @@ func (h *SelfCheckHandler) handleUpdateSettings(w http.ResponseWriter, r *http.R
 	query := "UPDATE self_check_settings SET " + joinStringsSC(sets, ",") + " WHERE id=1"
 	_, err := h.db.Exec(r.Context(), query, args...)
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		writeInternalErrStr(w, "update self-check settings failed", err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
@@ -539,7 +539,8 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 					if errors.Is(err, pgx.ErrNoRows) {
 						// Seed default settings if missing.
 						if seedErr := h.ensureSelfCheckSettingsRow(ctx); seedErr != nil {
-							writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "settings not initialized: " + seedErr.Error()})
+							slog.Error("self_check: trigger failed", "stage", "settings not initialized", "error", seedErr)
+							writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "settings not initialized"})
 							return
 						}
 						// Retry after seeding.
@@ -549,7 +550,8 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 						).Scan(&settings.Enabled, &settings.ModelSource, &settings.MaxModels, &settings.FeaturedModels)
 					}
 					if err != nil {
-						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to load settings: " + err.Error()})
+						slog.Error("self_check: trigger failed", "stage", "failed to load settings", "error", err)
+						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to load settings"})
 						return
 					}
 					if !settings.Enabled {
@@ -580,14 +582,16 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 					  AND COALESCE(p.enabled, TRUE) = TRUE
 					  AND COALESCE(p.manual_disabled, FALSE) = FALSE`)
 				if err != nil {
-					writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to select eligible models: " + err.Error()})
+					slog.Error("self_check: trigger failed", "stage", "failed to select eligible models", "error", err)
+					writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to select eligible models"})
 					return
 				}
 				for rows.Next() {
 					var model string
 					if err := rows.Scan(&model); err != nil {
 						rows.Close()
-						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read eligible models: " + err.Error()})
+						slog.Error("self_check: trigger failed", "stage", "failed to read eligible models", "error", err)
+						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read eligible models"})
 						return
 					}
 					if strings.TrimSpace(model) != "" {
@@ -596,7 +600,8 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 				}
 				if err := rows.Err(); err != nil {
 					rows.Close()
-					writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read eligible models: " + err.Error()})
+					slog.Error("self_check: trigger failed", "stage", "failed to read eligible models", "error", err)
+					writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read eligible models"})
 					return
 				}
 				rows.Close()
@@ -617,7 +622,8 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 				}
 				var featured []string
 				if err := json.Unmarshal(settings.FeaturedModels, &featured); err != nil && len(settings.FeaturedModels) > 0 {
-					writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "invalid featured_model_ids: " + err.Error()})
+					slog.Error("self_check: trigger failed", "stage", "invalid featured_model_ids", "error", err)
+					writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "invalid featured_model_ids"})
 					return
 				}
 				if settings.ModelSource == "featured" || settings.ModelSource == "both" {
@@ -640,21 +646,24 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 						ORDER BY COUNT(DISTINCT cmb.credential_id) DESC, pm.raw_model_name
 						LIMIT $1`, settings.MaxModels)
 					if err != nil {
-						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to select top models: " + err.Error()})
+						slog.Error("self_check: trigger failed", "stage", "failed to select top models", "error", err)
+						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to select top models"})
 						return
 					}
 					for rows.Next() {
 						var model string
 						if err := rows.Scan(&model); err != nil {
 							rows.Close()
-							writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read top models: " + err.Error()})
+							slog.Error("self_check: trigger failed", "stage", "failed to read top models", "error", err)
+							writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read top models"})
 							return
 						}
 						addModel(model)
 					}
 					if err := rows.Err(); err != nil {
 						rows.Close()
-						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read top models: " + err.Error()})
+						slog.Error("self_check: trigger failed", "stage", "failed to read top models", "error", err)
+						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read top models"})
 						return
 					}
 					rows.Close()
@@ -808,7 +817,7 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 		GROUP BY model_name
 		ORDER BY model_name`, since)
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		writeInternalErrStr(w, "query self-check model stats failed", err)
 		return
 	}
 	defer rows.Close()
@@ -943,7 +952,7 @@ func (h *SelfCheckHandler) handleModels(w http.ResponseWriter, r *http.Request) 
 		GROUP BY model_name
 		ORDER BY last_run DESC`)
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		writeInternalErrStr(w, "query self-check models overview failed", err)
 		return
 	}
 	defer rows.Close()

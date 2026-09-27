@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -37,7 +38,7 @@ func (h *HealthCheckHandler) List(w http.ResponseWriter, r *http.Request) {
 			created_at DESC
 		LIMIT $2`, status, limit)
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		writeInternalErrStr(w, "query routing health checks failed", err)
 		return
 	}
 	defer rows.Close()
@@ -109,7 +110,7 @@ func (h *HealthCheckHandler) Dismiss(w http.ResponseWriter, r *http.Request) {
 		SET status = 'dismissed', dismissed_at = now(), dismissed_by = $1, dismissed_reason = $2, updated_at = now()
 		WHERE id = $3 AND status = 'open'`, body.By, body.Reason, body.ID)
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		writeInternalErrStr(w, "dismiss routing health check failed", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -177,7 +178,8 @@ func runHealthCheckFix(ctx context.Context, db pgxExecRower, id int64) (int, map
 	}
 	tag, execErr := db.Exec(ctx, stmt, entityID)
 	if execErr != nil {
-		return 500, map[string]any{"error": execErr.Error()}
+		slog.Error("health-check: auto-fix exec failed", "id", id, "entity_type", entityType, "error", execErr)
+		return 500, map[string]any{"error": "auto-fix execution failed"}
 	}
 	db.Exec(ctx, `
 		UPDATE routing_health_checks SET status = 'manual_fixed', auto_fixed_at = now(), auto_fix_result = 'applied', updated_at = now() WHERE id = $1`, id)

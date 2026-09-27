@@ -304,6 +304,14 @@ func (pm *PartitionManager) runCleanup(ctx context.Context) {
 			pm.cleanupOldSupplierErrorStats(ctx)
 			pm.cleanupOldRoutingFeedbackLog(ctx)
 			pm.cleanupOldRoutingOptimizationMetrics(ctx)
+			// request_logs 主表归档（迁移 754）。2026-09-28 十六轮审计
+			// 根修：此前挂在 pm.run 的 24h 定相 ticker 上再过滤 hour==3，
+			// 而 24h ticker 的相位 = 进程启动时刻——除非网关恰好在
+			// 03:00–03:59 之间启动，归档永远不会执行（754 流水线静默
+			// 失效）。1h ticker 每个自然日内必然恰好有一次 tick 落在
+			// [03:00,04:00) 本地窗口，shouldRunRequestLogsArchive 的
+			// hour 门在这里才真正等价于「每日 03 点一次」。
+			pm.archiveOldRequestLogs(ctx)
 		}
 	}
 }
@@ -466,20 +474,6 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// 参数化既有行为（批判式审计证伪了初稿的说法）。跑在本函数
 	// （pm.interval，main.go 传 24h）而非 1h 的 runCleanup。
 	pm.cleanupSessionTurnLogsByTTL(ctx)
-
-	// 12. 2026-09-27 (R67 session-storage 审计子任务 7, handoff §9):
-	// request_logs 主表 archive 流水线。331 把 archive_request_logs 整族
-	// 移除后，主表月分区一直只保留、不归档；迁移 754 的
-	// archive_request_logs_default(p_retention_days) 把超出保留窗口的月分区
-	// 摘要字段落进 request_logs_archive_YYYY_MM（丢弃 18 个大 JSONB 列）。
-	// 源分区不 DROP（R68 纪律：750 同款 move-then-attach）。
-	//
-	// 为什么不进 archiveSpecs()：那套机制按「日期参数 + 标量/tuple 返回」
-	// 设计（见 archiveSpec 的 scalarResult / argExpr 注释），而本函数收
-	// retention 天数、且 RETURNS TABLE(archived_partition, rows_archived)
-	// 是**每个分区一行**的集合返回。硬塞进去会错传参数并按错误的列形状扫描
-	// （与 2026-09-03/04 那次 42703 同款事故）。故单列一个方法。
-	pm.archiveOldRequestLogs(ctx)
 }
 
 // clampRequestLogsArchiveDays keeps the retention the SQL guard would accept.
@@ -513,10 +507,15 @@ func shouldRunRequestLogsArchive(now time.Time) bool {
 // archiveOldRequestLogs archives request_logs monthly partitions older than the
 // configured retention into request_logs_archive_YYYY_MM.
 //
-// 2026-09-27 (R67 session-storage 审计子任务 7, handoff §9; cadence fixed by the
-// third-round critical audit). Read fresh from settings every tick
-// (lifecycle.request_logs_ttl_days, default 30), so an operator change applies
-// without a gateway restart.
+// 2026-09-27 (R67 session-storage 审计子任务 7, handoff §9). 2026-09-28
+// (十六轮修订审计 P1 根修): the call originally lived on the 24h phase-locked
+// pm.run ticker with an hour==3 gate — a phase-locked 24h ticker only ever
+// fires at the process start hour, so unless the gateway happened to (re)start
+// between 03:00 and 03:59 the sweep never ran at all. It now rides the 1h
+// runCleanup tick (see runCleanup), where the hour gate selects exactly one
+// tick per calendar day regardless of process start phase. Read fresh from
+// settings every tick (lifecycle.request_logs_ttl_days, default 30), so an
+// operator change applies without a gateway restart.
 //
 // ## Why this is daily and not on every tick
 //
@@ -527,12 +526,15 @@ func shouldRunRequestLogsArchive(now time.Time) bool {
 // re-checked. So the per-run cost is O(all rows older than the retention
 // window), and it never shrinks.
 //
-// Running that on the hourly cleanup tick (providerErrorCleanupInterval = 1h)
-// meant a growing full re-scan of historical request_logs, forever, for work
-// that is already done. Hour 3 keeps it to once a day (~24x less) without
-// touching the migration — which matters, because that SQL has never been
-// executed against a real PostgreSQL and adding a new ledger table to it
-// blind would be the larger risk. A proper fix is an archive ledger recording
+// Running it on every hourly cleanup tick (providerErrorCleanupInterval = 1h)
+// would mean a growing full re-scan of historical request_logs, forever, for
+// work that is already done. The hour==3 gate keeps it to once a day (~24x
+// less) without touching the migration — which matters, because that SQL has
+// never been executed against a real PostgreSQL and adding a new ledger table
+// to it blind would be the larger risk. On the 1h ticker the gate passes
+// exactly once per calendar day (any start phase has exactly one tick inside
+// [03:00,04:00)); a failed 03:xx run waits for the next day, same trade-off
+// as the pre-fix wiring. A proper fix is an archive ledger recording
 // (partition, max_id archived) so completed partitions are skipped outright;
 // that is deliberately left as a follow-up, not smuggled in here.
 //

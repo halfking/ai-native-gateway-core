@@ -217,6 +217,14 @@ func (e *Executor) dispatchForward(ctx context.Context, qr *dispatch.QueuedReque
 // enabled. An unavailable native executor must never receive selector traffic.
 func selectDispatchEndpoint(cand provider.Candidate, clientProtocol string, flags *settings.P4FeatureFlags) provider.Candidate {
 	if flags == nil || !flags.EndpointSelectorEnabled {
+		// r0926 P4 审计遗留（十六轮 E6c）：flag-off 的主端点回退此前完全
+		// 不可观测——灰度判读分不清「没开选择器」与「选择器决策回退」。
+		// Debug 级：默认 Info handler 下零成本，不破坏下方「flag-off 路径
+		// 零开销」的既有承诺。
+		slog.Debug("endpoint_selector_decision: flag off, primary endpoint fallback",
+			"model", cand.RawModel, "base_url", cand.BaseURL,
+			"client_protocol", clientProtocol,
+			"match_rule", "flag_off_fallback")
 		return cand
 	}
 	endpoints := make([]endpointselect.EndpointLite, 0, len(cand.NativeEndpoints))

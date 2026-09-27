@@ -454,18 +454,26 @@ func (r *MirrorOutboxReaper) requeue(ctx context.Context, row claimRow, writeErr
 	if backoff > mirrorReplayMaxBackoff {
 		backoff = mirrorReplayMaxBackoff
 	}
-	if _, err := execBypass(ctx, r.db, `
+	tag, err := execBypass(ctx, r.db, `
 		UPDATE public.session_mirror_outbox
 		SET status = 'pending', attempts = $2, last_error = $3,
 		    next_retry_at = NOW() + $4::interval, claimed_at = NULL, updated_at = NOW()
 		WHERE id = $1 AND status = 'claimed'
-	`, row.id, attempts, writeErr.Error(), backoff); err != nil {
+	`, row.id, attempts, writeErr.Error(), backoff)
+	if err != nil {
 		// The row stays 'claimed' past the lease and the orphan recovery
 		// re-queues it — no loss, just a slower retry.
 		slog.Warn("sessionv2mirror: outbox requeue update failed",
 			"request_id", row.requestID, "error", err)
+	} else if tag.RowsAffected() == 0 {
+		// 十六轮审计 E6a：UPDATE 带 status='claimed' 守卫，lease 已被
+		// 孤儿回收并可能被兄弟 worker 重 claim——本次 retry 实际未生效，
+		// 不计 retry 指标，行的下一次重试由新 claim 路径驱动。
+		slog.Warn("sessionv2mirror: outbox requeue superseded (row no longer claimed)",
+			"request_id", row.requestID)
+	} else {
+		mirrorReplayTotal.WithLabelValues("retry").Inc()
 	}
-	mirrorReplayTotal.WithLabelValues("retry").Inc()
 }
 
 func (r *MirrorOutboxReaper) markDead(ctx context.Context, row claimRow, reason string) {
@@ -473,13 +481,24 @@ func (r *MirrorOutboxReaper) markDead(ctx context.Context, row claimRow, reason 
 	// whose lease the orphan recovery already returned to 'pending' (and that
 	// a second worker re-claimed and re-dead-lettered) could resurrect the row
 	// back to 'pending' here, breaking the dead-letter contract.
-	if _, err := execBypass(ctx, r.db, `
+	tag, err := execBypass(ctx, r.db, `
 		UPDATE public.session_mirror_outbox
 		SET status = 'dead', last_error = $2, claimed_at = NULL, updated_at = NOW()
 		WHERE id = $1 AND status = 'claimed'
-	`, row.id, reason); err != nil {
+	`, row.id, reason)
+	if err != nil {
 		slog.Error("sessionv2mirror: outbox dead-mark update failed",
 			"request_id", row.requestID, "reason", reason, "error", err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		// 十六轮审计 E6a：0 行命中 = 行并未落死信（lease 交接给了新的
+		// claim）——不计 dead、不报数据丢失，与 630 reaper 的
+		// RowsAffected 先查口径一致；否则死信计数虚高且误报
+		// "mirror data lost"。
+		slog.Warn("sessionv2mirror: outbox dead-mark superseded (row no longer claimed)",
+			"request_id", row.requestID, "reason", reason)
+		return
 	}
 	// A dead row is permanently lost mirror data — same observability
 	// contract as the 630 reaper's dead-letter counters.

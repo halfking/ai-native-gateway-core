@@ -40,7 +40,9 @@
 --   * 性能: 1000 行/批 主键游标（partition 局部 id 唯一——每月分
 --     区 ts 约束在一个月内），单批 INSERT 在毫秒级、跨分区数万
 --     至数十万行不超 252 共享 PG 的 30s statement_timeout 边界。
---     SET LOCAL statement_timeout 钉 60s 留足缓冲。
+--     （十六轮审计订正：函数内并未 SET LOCAL statement_timeout——
+--     单次调用是单个长事务，总时长由 Go 侧 archiveOldRequestLogs
+--     的 30min ctx 预算兜底，分批提交/ledger 属后续跟进项。）
 --
 --   * 列宽守卫: 不修改 request_logs schema、不动现有视图/RLS，
 --     归档表独立 namespace（新表 + 独立索引），不在 views 引用
@@ -127,7 +129,9 @@ BEGIN
     -- 月分区游走: pg_inherits 枚举 request_logs 下形如
     -- request_logs_YYYY_MM 的月分区，剔除 DEFAULT / bodies 同族
     -- (_bodies_2026_07 等不会被 pg_inherits 列入 request_logs 子集，
-    -- 此处命名正则 ^request_logs_[0-9]{4}_[0-9]{2}$ 即足够严密)。
+    -- 此处命名正则 ^request_logs_[0-9]{4}_[0-9]{2}$ 即足够严密；
+    -- 十六轮审计补钉 relnamespace=public——其他 schema 下的同名
+    -- 父表子分区不会被误收，与下方归档表存在性守卫同款口径)。
     FOR rec IN
         SELECT
             c.relname                                    AS partition_name,
@@ -139,6 +143,7 @@ BEGIN
         JOIN pg_class c ON c.oid = i.inhrelid
         JOIN pg_class p ON p.oid = i.inhparent
         WHERE p.relname = 'request_logs'
+          AND p.relnamespace = 'public'::regnamespace
           AND c.relname ~ '^request_logs_[0-9]{4}_[0-9]{2}$'
         ORDER BY partition_month
     LOOP

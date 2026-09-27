@@ -122,7 +122,12 @@ func serveSessionTurnsListDB(db sessionTurnsDB, secret string, w http.ResponseWr
 		       COALESCE(t.cache_read_tokens,0), COALESCE(t.latency_ms,0), COALESCE(t.success,FALSE),
 			   t.error_kind, t.compression_applied, t.compression_tokens_saved, t.digest,
 			   b.request_delta, b.response_delta,
-			   (b.request_delta IS NOT NULL OR b.response_delta IS NOT NULL OR b.outbound_body IS NOT NULL) AS body_present
+			   -- 十六轮审计 E6d：与详情侧 classifyBodyStatus 对齐——
+			   -- JSON 字面量 null 不算 payload，否则同 turn 列表=available
+			   -- 而详情=unavailable。
+			   ((b.request_delta IS NOT NULL AND b.request_delta <> 'null'::jsonb)
+			     OR (b.response_delta IS NOT NULL AND b.response_delta <> 'null'::jsonb)
+			     OR (b.outbound_body IS NOT NULL AND b.outbound_body <> 'null'::jsonb)) AS body_present
 		FROM public.session_turns_with_current_month t
 		LEFT JOIN public.session_bodies_unified b
 		  ON b.tenant_id=t.tenant_id AND b.session_id=t.session_id

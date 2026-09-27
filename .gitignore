@@ -135,10 +135,12 @@ traffic-replay-bin
 # `go build ./cmd/<name>/` drops the binary in the repo root; keep the compiled
 # cmd tools out of the tree (same rule as traffic-replay-bin above). 2026-09-28:
 # auto-testbench — its harness fix is what makes the selection layer measurable.
-auto-testbench
-autoroute-e2e-audit
-autoclass-bench
-tuning-backtest
+# 十六轮审计 E4：必须根锚定（/ 前缀）——未锚定模式会递归匹配
+# cmd/auto-testbench/ 等源码目录，`git add .` 时静默跳过新源文件；
+# autoclass-bench 的未锚定重复行删除，:302 的 /autoclass-bench 已覆盖。
+/auto-testbench
+/autoroute-e2e-audit
+/tuning-backtest
 
 # Python linter cache
 .ruff_cache/
