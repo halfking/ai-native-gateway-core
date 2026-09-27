@@ -346,3 +346,93 @@ func TestInitStorageModeConsistencyWorkerWiring(t *testing.T) {
 	}
 	rt3.Shutdown()
 }
+
+// TestResolveCacheTrimRetention 覆盖缓存删侧 retention 的解析口径。
+//
+// 核心不变量：返回值恒 >= cacheTTL —— CacheTrimmer 永不删除 FileCache
+// 仍视为有效的条目（否则 cache_ttl_hours 被静默架空，缓存退化为只写不读）。
+func TestResolveCacheTrimRetention(t *testing.T) {
+	cases := []struct {
+		name       string
+		cacheTTL   int
+		retentionH int
+		want       time.Duration
+	}{
+		// 默认配置：两侧同为 24h，原样透传（不改变既有行为）。
+		{"default both 24h", 24, 24, 24 * time.Hour},
+		// 危险方向：retention 小于 ttl —— 必须收敛到 ttl（旧行为会删活跃条目）。
+		{"retention 1h below ttl 24h clamps up", 24, 1, 24 * time.Hour},
+		{"retention 6h below ttl 24h clamps up", 24, 6, 24 * time.Hour},
+		// retention 未配置（<=0）：收敛到 ttl。
+		{"retention unset clamps to ttl", 12, 0, 12 * time.Hour},
+		{"retention negative clamps to ttl", 12, -5, 12 * time.Hour},
+		// 安全方向：retention 大于 ttl —— 保留更大的值（逻辑 TTL 后多留一段）。
+		{"retention 48h above ttl 24h keeps larger", 24, 48, 48 * time.Hour},
+		// ttl 未配置：兜底 24h（与 config.ApplyLiteDefaults 同口径）。
+		{"ttl unset falls back to 24h", 0, 24, 24 * time.Hour},
+		{"ttl unset and retention unset", 0, 0, 24 * time.Hour},
+		{"ttl negative falls back to 24h", -1, 1, 24 * time.Hour},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveCacheTrimRetention(tc.cacheTTL, tc.retentionH)
+			if got != tc.want {
+				t.Errorf("resolveCacheTrimRetention(%d, %d) = %v, want %v",
+					tc.cacheTTL, tc.retentionH, got, tc.want)
+			}
+			// 不变量本体：任何输入组合下都不得小于 ttl。
+			ttl := time.Duration(tc.cacheTTL) * time.Hour
+			if ttl <= 0 {
+				ttl = 24 * time.Hour
+			}
+			if got < ttl {
+				t.Errorf("retention %v < cache TTL %v —— 清理侧会删除读侧仍有效的条目", got, ttl)
+			}
+		})
+	}
+}
+
+// TestCacheTrimmerNeverDeletesLiveEntries 是装配层的端到端不变量断言：
+// 真正构造出来的 FileCache 的 TTL，必须不大于真正装配的清理侧 retention。
+// 用 getter 读回真实 FileCache（而非从配置二次推导），避免断言只验证了
+// 自己的算术。
+func TestCacheTrimmerNeverDeletesLiveEntries(t *testing.T) {
+	// 三组配置分别覆盖：默认、危险方向（retention < ttl）、安全方向（retention > ttl）。
+	for _, tc := range []struct {
+		name       string
+		cacheTTL   int
+		retentionH int
+	}{
+		{"default", 24, 24},
+		{"retention below ttl", 24, 1},
+		{"retention above ttl", 6, 72},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := liteStorageConfigForTest(t)
+			cfg.Lite.CacheTTLHours = tc.cacheTTL
+			cfg.Lite.Retention.CacheHours = tc.retentionH
+
+			rt, err := initStorageMode(nil, cfg)
+			require.NoError(t, err)
+			require.NotNil(t, rt)
+			defer rt.Shutdown()
+
+			if rt.fileCache == nil {
+				t.Fatal("fileCache = nil, want assembled L1.5 cache")
+			}
+			if rt.cacheTrimmer == nil {
+				t.Fatal("cacheTrimmer = nil, want assembled cache trimmer")
+			}
+			// 先把 TTL getter 锚定到配置值：否则 getter 一旦少报（比如返回 0），
+			// 下面的不变量断言会退化成 `retention < 0` 而恒真，变成空断言。
+			if got, want := rt.fileCache.TTL(), time.Duration(tc.cacheTTL)*time.Hour; got != want {
+				t.Errorf("file cache TTL = %v, want configured cache_ttl_hours %v", got, want)
+			}
+			// 断言读真实 worker 与真实 FileCache 的字段，不另存快照比自己。
+			if rt.cacheTrimmer.Retention() < rt.fileCache.TTL() {
+				t.Errorf("cache trim retention %v < file cache TTL %v —— 清理侧会删除读侧仍有效的缓存条目",
+					rt.cacheTrimmer.Retention(), rt.fileCache.TTL())
+			}
+		})
+	}
+}
