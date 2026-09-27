@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -225,8 +226,9 @@ func (r *MirrorOutboxReaper) run(ctx context.Context) {
 	defer close(r.doneCh)
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
-	// First tick fires immediately so rows registered before a restart are
-	// drained without waiting a full interval.
+	// time.NewTicker 首跳在 interval（30s）后而非立即；重启后重启前排出的
+	// 积压至多延迟一个 interval 才开始排空。若要立即消化，可在此处先手动
+	// tick 一次（M-6③ 裁决：30s 延迟可接受，只修注释不改行为）。
 	for {
 		select {
 		case <-ctx.Done():
@@ -277,6 +279,16 @@ func (r *MirrorOutboxReaper) tick(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// M-6①：Go 里任意 goroutine 的未恢复 panic 会击穿整个进程；
+			// replay 链路（claimBatch→replayOne→writer.Write→桥接转换）
+			// 任一环 panic 只记日志不坠机，行保持 claimed 由 lease 孤儿
+			// 回收兜底回 pending。
+			defer func() {
+				if p := recover(); p != nil {
+					slog.Error("sessionv2mirror: outbox replay worker panic",
+						"panic", p, "stack", string(debug.Stack()))
+				}
+			}()
 			r.drainWorker(ctx)
 		}()
 	}
@@ -309,6 +321,15 @@ func (r *MirrorOutboxReaper) drainWorker(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
 			return
+		}
+		// M-6②：ctx 是 Background（永不过期），停机信号只走 stopCh；
+		// 不查它则 Stop() 后 run 的 wg.Wait 会被 drain-until-empty 拖住
+		// （大积压 + 后台 ctx 时优雅停机无界阻塞）。中途退出时已 claim
+		// 的行由 lease 孤儿回收兜底。
+		select {
+		case <-r.stopCh:
+			return
+		default:
 		}
 		rows, err := r.claimBatch(ctx)
 		if err != nil {

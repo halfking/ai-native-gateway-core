@@ -32,8 +32,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
-	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
 )
 
 // nodeTestNowResponse 是 test-now 的返回结构。
@@ -456,7 +456,7 @@ func (h *Handler) handleNodeToggle(w http.ResponseWriter, r *http.Request) {
 		UPDATE credentials SET manual_disabled = $1, updated_at = now()
 		WHERE provider_id = $2`, !req.Enabled, providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("update failed: %v (provider_id=%d)", err, providerID))
+		writeInternalErr(w, "provider update failed", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {

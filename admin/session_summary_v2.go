@@ -109,7 +109,7 @@ func (api *SessionSummaryV2API) ServeHTTP(w http.ResponseWriter, r *http.Request
 			UpToTurn:  req.UpToTurn,
 		}, tenantID)
 		if err != nil {
-			writeExportJSONError(w, http.StatusInternalServerError, fmt.Sprintf("summary failed: %v", err))
+			writeInternalErrStr(w, "summary failed", err)
 			return
 		}
 		writeExportJSON(w, http.StatusOK, summary)
@@ -130,7 +130,7 @@ func (api *SessionSummaryV2API) ServeHTTP(w http.ResponseWriter, r *http.Request
 		UpToTurn:  req.UpToTurn,
 	}, "")
 	if err != nil {
-		writeExportJSONError(w, http.StatusInternalServerError, fmt.Sprintf("summary failed: %v", err))
+		writeInternalErrStr(w, "summary failed", err)
 		return
 	}
 

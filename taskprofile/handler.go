@@ -147,7 +147,8 @@ func (h *Handlers) handleProfile(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := h.store.Stats(ctx, time.Now().Add(-30*24*time.Hour))
 	if err != nil {
-		http.Error(w, "query correction stats: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("taskprofile: query correction stats failed", "err", err)
+	http.Error(w, "query correction stats failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -271,12 +272,14 @@ func (h *Handlers) handleCorrectionStats(w http.ResponseWriter, r *http.Request)
 
 	stats, err := h.store.Stats(r.Context(), since)
 	if err != nil {
-		http.Error(w, "query stats: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("taskprofile: query stats failed", "err", err)
+		http.Error(w, "query stats failed", http.StatusInternalServerError)
 		return
 	}
 	recent, err := h.store.Recent(r.Context(), limit)
 	if err != nil {
-		http.Error(w, "query recent: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("taskprofile: query recent failed", "err", err)
+		http.Error(w, "query recent failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -324,7 +327,8 @@ func (h *Handlers) handleExportCorrections(w http.ResponseWriter, r *http.Reques
 		`attachment; filename="task-type-corrections-`+time.Now().UTC().Format("20060102")+".csv\"")
 	if _, err := h.store.ExportCorrectionsCSV(r.Context(), w, since, limit); err != nil {
 		// Headers may already be written; the truncated body signals failure.
-		http.Error(w, "export: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("taskprofile: export corrections failed", "err", err)
+		http.Error(w, "export failed", http.StatusInternalServerError)
 	}
 }
 
@@ -399,7 +403,8 @@ func (h *Handlers) handleApplyTierConfig(w http.ResponseWriter, r *http.Request)
 		}
 		h.emitAudit(AuditActionApplyTierConfig, "failure",
 			map[string]any{"error": err.Error(), "task_types": req.TaskTypes}, r)
-		http.Error(w, "apply tier config: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("taskprofile: apply tier config failed", "err", err)
+		http.Error(w, "apply tier config failed", http.StatusInternalServerError)
 		return
 	}
 	h.emitAudit(AuditActionApplyTierConfig, "success",
@@ -418,7 +423,8 @@ func (h *Handlers) handleReload(w http.ResponseWriter, r *http.Request) {
 		// 恒为 env 名时取证不知道坏的是哪个文件。
 		h.emitAudit(AuditActionReload, "failure",
 			map[string]any{"error": err.Error(), "overlay_env": OverlayEnvVar, "overlay_path": overlayPath}, r)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("taskprofile: overlay reload failed", "err", err)
+		http.Error(w, "overlay reload failed", http.StatusInternalServerError)
 		return
 	}
 	h.emitAudit(AuditActionReload, "success",

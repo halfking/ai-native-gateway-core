@@ -113,3 +113,46 @@ func stripLineComments(s string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+
+// TestArchiveOldRequestLogs_CalledFromHourlyCleanupLoop pins the *wiring* half
+// of the E1a fix. The test above only sees the gate inside the sweep function;
+// moving the call back to the 24h phased run() loop would still leave both
+// existing tests green while the phase-locked bug (sweep only runs when the
+// process happened to start inside 03:00–03:59) silently returns. R73 A-1.
+func TestArchiveOldRequestLogs_CalledFromHourlyCleanupLoop(t *testing.T) {
+	b, err := os.ReadFile("partition_manager.go")
+	if err != nil {
+		t.Fatalf("read partition_manager.go: %v", err)
+	}
+	src := string(b)
+
+	body := func(name string) string {
+		i := strings.Index(src, "func (pm *PartitionManager) "+name+"(")
+		if i < 0 {
+			return ""
+		}
+		rest := src[i:]
+		if end := strings.Index(rest, "\nfunc "); end > 0 {
+			rest = rest[:end]
+		}
+		return rest
+	}
+
+	cleanup := body("runCleanup")
+	if cleanup == "" {
+		t.Fatal("runCleanup not found")
+	}
+	if !strings.Contains(cleanup, "pm.archiveOldRequestLogs(") {
+		t.Error("archiveOldRequestLogs must be called from runCleanup (the 1h ticker loop) — anywhere else re-creates the phase-locked daily-gate failure (16th audit E1a)")
+	}
+	for _, name := range []string{"run", "archiveOldPartitionsIfNeeded"} {
+		b2 := body(name)
+		if b2 == "" {
+			t.Fatalf("%s not found", name)
+		}
+		if strings.Contains(b2, "pm.archiveOldRequestLogs(") {
+			t.Errorf("%s must NOT call archiveOldRequestLogs — the 24h phased ticker's phase is process start time, so the 03:00–03:59 gate would only fire for processes started inside that hour", name)
+		}
+	}
+}

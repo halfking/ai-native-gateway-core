@@ -96,6 +96,10 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 			&it.CostUSD, &it.Model, &it.Provider, &it.StatusCode, &it.SubmitMode, &it.InjectionVerdict,
 			&it.OutputVerdict, &it.AttachmentCount, &requestID, &cacheRead, &latency, &success, &errorKind,
 			&compression, &saved, &digestRaw, &requestRaw, &responseRaw, &bodyPresent); err != nil {
+			if IsStorageUnavailable(err) {
+				WriteStorageDegraded(w, observability.StorageComponentTurns, err)
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "scan turn failed")
 			return
 		}
@@ -116,6 +120,10 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentTurns, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "iterate turns failed")
 		return
 	}
@@ -152,6 +160,10 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 			ORDER BY parent_request_id ASC, request_id ASC
 			LIMIT `+strconv.Itoa(maxChildRequestsPerPage+1), tenantID, ids)
 		if err != nil {
+			if IsStorageUnavailable(err) {
+				WriteStorageDegraded(w, observability.StorageComponentTurns, err)
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "query child requests failed")
 			return
 		}
@@ -161,6 +173,10 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 			var c SessionChildRequest
 			var typ, actor string
 			if err := crows.Scan(&parent, &c.RequestID, &c.Status, &c.LatencyMs, &typ, &actor); err != nil {
+				if IsStorageUnavailable(err) {
+					WriteStorageDegraded(w, observability.StorageComponentTurns, err)
+					return
+				}
 				writeError(w, http.StatusInternalServerError, "scan child request failed")
 				return
 			}
@@ -177,6 +193,10 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 			}
 		}
 		if err := crows.Err(); err != nil {
+			if IsStorageUnavailable(err) {
+				WriteStorageDegraded(w, observability.StorageComponentTurns, err)
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "iterate child requests failed")
 			return
 		}

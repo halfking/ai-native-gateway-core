@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -1215,9 +1216,10 @@ func (h *Handler) testFeishuBotWebhook(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, strings.NewReader(string(body)))
 	if err != nil {
+		slog.Error("feishu webhook test: build request failed", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"reachable": false,
-			"error":     "build request failed: " + err.Error(),
+			"error":     "build request failed",
 		})
 		return
 	}

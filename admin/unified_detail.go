@@ -375,10 +375,15 @@ func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID str
 	// Subtask 3 — body_status two-state contract. The locator returns this
 	// through requestdetail.Meta so any consumer (admin request-detail facade,
 	// future dashboards) can decide whether to surface a "bodies unavailable"
-	// hint instead of failing the request. When omitBody is true the LEFT JOIN
-	// is dropped and the three columns are NULL, so classifyBodyStatus yields
-	// BodyStatusUnavailable — the correct outcome for a metadata-only fetch.
-	meta.BodyStatus = classifyBodyStatus(requestDelta, responseDelta, outboundBody)
+	// hint instead of failing the request. When omitBody is true the three
+	// body columns are never fetched (NULL placeholders): there is nothing
+	// to classify, so BodyStatus stays unset — per types.go, missing means
+	// "unknown / not computed". A metadata-only fetch must not fabricate
+	// "unavailable" (R73 audit M-3: that was a false signal for any future
+	// Meta.BodyStatus consumer).
+	if !omitBody {
+		meta.BodyStatus = classifyBodyStatus(requestDelta, responseDelta, outboundBody)
+	}
 	bodies := requestdetail.Bodies{
 		RequestBody:  json.RawMessage(requestDelta),
 		ResponseBody: json.RawMessage(responseDelta),

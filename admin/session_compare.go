@@ -155,11 +155,7 @@ func (api *SessionCompareAPI) HandleCompare(w http.ResponseWriter, r *http.Reque
 		return txErr
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Failed to load session compare data",
-			"error":   err.Error(),
-		})
+		writeInternalErrStr(w, "Failed to load session compare data", err)
 		return
 	}
 
@@ -737,11 +733,7 @@ func (api *HandoffAPI) HandleHandoff(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := api.executeHandoff(ctx, req)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Handoff failed",
-			"error":   err.Error(),
-		})
+		writeInternalErrStr(w, "Handoff failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)

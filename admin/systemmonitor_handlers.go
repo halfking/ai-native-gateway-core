@@ -674,14 +674,14 @@ func (h *Handler) handleSystemMonitorMigrationMetrics(w http.ResponseWriter, r *
 
 	metrics, err := collector.CollectCoverage(ctx, windowDays)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to collect metrics: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to collect metrics", err)
 		return
 	}
 
 	// Check if ready for migration
 	ready, msg, err := collector.IsReadyForMigration(ctx)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to check migration readiness: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to check migration readiness", err)
 		return
 	}
 

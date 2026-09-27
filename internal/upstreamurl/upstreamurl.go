@@ -284,7 +284,11 @@ func ModelsURLCandidates(baseURL string) []string {
 		normalized + "/v1/models",
 	}
 	if strings.HasSuffix(normalized, "/v1") {
-		root := strings.TrimRight(normalized, "/v1")
+		// R73 审计 E-2：这里必须是 TrimSuffix（后缀裁剪）而非
+		// TrimRight(normalized, "/v1")——后者是字符集裁剪，主机名尾字符
+		// 落在 {'/','v','1'} 时会被一并吞掉（"https://gw1/v1" 的 root 变
+		// "https://gw"，探针打到错误主机）。
+		root := strings.TrimSuffix(normalized, "/v1")
 		root = strings.TrimRight(root, "/")
 		out = append([]string{root + "/v1/models"}, out...)
 	}

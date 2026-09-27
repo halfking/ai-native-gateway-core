@@ -1,5 +1,15 @@
 -- 754: request_logs 主表 archive 默认函数 (P2 数据归档, 2026-09-26)
 --
+-- R73 审计 E-1 登记（头注，无 DDL 变更）：request_logs_archive_YYYY_MM
+-- 月表为独立 heap 表，**不带 RLS**——当前全仓无任何 Go 读路径（纯写侧
+-- 合规归档），租户隔离由归档行自带的 tenant_id 列 + 未来读方的 Go 层
+-- WHERE 钉扎承担。两个语义依赖钉死于此，后继改动前必读：
+--   1. 源分区读取必须**直查分区名**（本函数 format('...FROM %I')），
+--      不得改走父表 request_logs——父表 FORCE RLS 会让 bg 会话
+--      （get_current_tenant()='default'）静默漏读非 default 租户行；
+--   2. 若未来给月表加 SQL 层 RLS/policy，必须同时设计归档读方角色，
+--      默认 deny-all 会把合规读路径一起堵死。归属：owner 拍板项。
+--
 -- 背景: request_logs 是 PARTITION BY RANGE (ts) 月分区父表（537 之前
 -- 的 005/043 已奠基），330 行前的 archive_request_logs(date) 路径在
 -- 331 (2026-07-04) 与 archive_request_wal 一起被整族移除——archive

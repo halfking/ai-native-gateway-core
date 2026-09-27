@@ -172,10 +172,14 @@ func buildDefaultPatterns() []PatternMatch {
 		// 2026-09-28 现场实测追加："写一个 Python 快速排序" 既不是 P1
 		// （Python 卡在 写一个 和 快速排序 之间，\s* 不匹配非空白）
 		// 也不是 P2（Python 前面不是 "用"）。落入 chat 0.1。在中间放一个
-		// 可选的语言/框架名段，把"写一个 Python 快速排序""写一段 Go 锁"
-		// "做一个 React 表单"等常见说法一并承接。
+		// 可选的语言/框架名段承接该形态。
+		// R73 审计订正：原注声称 "写一段 Go 锁""做一个 React 表单"一并
+		// 承接——逐字符核对不成立（对象表无"锁"、无裸"表单"，仅"表单组
+		// 件"；当时靠 kw.Code 的"实现"关键词兜住测试用例），勿再引用。
+		// 语言段 \s+ 已放宽为 \s*（M-8："写一个Python快速排序"零空格
+		// 变体此前仍漏归 chat）。
 		{
-			expr:   `(?:写|做|实现|实现一个|写一个|写个|做个|编写)(?:一个|个|一段|一个简单的|一个完整)?(?:\s+(?:python|java|javascript|js|typescript|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|shell|bash))?\s*(?:快速排序|冒泡排序|归并排序|拓扑排序|二分查找|红黑树|二叉树|二叉搜索树|b\s*树|b\+|avl|图|哈希表|散列表|链表|栈|队列|堆|trie|布隆过滤器|线程池|连接池|内存池|缓存|lru|限流器|熔断器|负载均衡|中间件|路由|解释器|编译器|虚拟机|区块链|加密|解密|签名|鉴权|认证|授权|登录|注册|表单组件|对话框|编辑器|解析器|序列化|爬虫|脚本|小工具|控件|组件|插件|微服务|网关|代理|函数|类|方法|模块|接口|服务|sql(?:\s*语句)?|正则表达式|yaml|dockerfile|crontab|查询语句)`,
+			expr:   `(?:写|做|实现|实现一个|写一个|写个|做个|编写)(?:一个|个|一段|一个简单的|一个完整)?(?:\s*(?:python|java|javascript|js|typescript|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|shell|bash))?\s*(?:快速排序|冒泡排序|归并排序|拓扑排序|二分查找|红黑树|二叉树|二叉搜索树|b\s*树|b\+|avl|图|哈希表|散列表|链表|栈|队列|堆|trie|布隆过滤器|线程池|连接池|内存池|缓存|lru|限流器|熔断器|负载均衡|中间件|路由|解释器|编译器|虚拟机|区块链|加密|解密|签名|鉴权|认证|授权|登录|注册|表单组件|对话框|编辑器|解析器|序列化|爬虫|脚本|小工具|控件|组件|插件|微服务|网关|代理|函数|类|方法|模块|接口|服务|sql(?:\s*语句)?|正则表达式|yaml|dockerfile|crontab|查询语句)`,
 			task:   TaskCode,
 			weight: 0.65,
 			reason: "pattern: chinese coding task (verb + programming object)",
@@ -193,14 +197,31 @@ func buildDefaultPatterns() []PatternMatch {
 		},
 		// P3: "写个/做个 + 脚本/工具/函数"（口语变体，P1 的补充）。
 		// 2026-09-28 实测扩展：把 "帮我写一个 Python 解析 CSV 的脚本" 这类
-		// "帮我写/帮我做 + 一个/个 + <语言可选> + 对象" 也承接——前序 P3 只接
-		// "写个/写一个简单" 的最短形式，"帮我写一个" 因 "一个" 后还有语言段而漏过。
-		// 这条写法与 P1 共用语言词表，避免 creative/planning 误伤。
+		// "帮我写/帮我做 + 一个/个 + <语言可选> + 对象" 也承接。
+		//
+		// R73 审计 M-4/M-8 重构：原单条 P3 有两个缺陷——
+		//   ① 无界 `.*?` 使可选语言段完全冗余（语言名可被 .*? 吸收），
+		//     "帮我写一个致辞示例""帮我写一个会议总结的方法" 等创意/办公
+		//     写作被 0.60 拉成 code；
+		//   ② 语言段要求 `\s+`，"写一个Python快速排序"（零空格）漏归。
+		// 现拆为两条：P3a 强代码对象（对象本身就是强编程信号，语言可选，
+		// 间距限 {0,16}——既封顶无界 .*? 的误伤面，又保住"自动备份MySQL
+		// 数据库的脚本"这类长修饰正例）；P3b 弱对象（方法/示例/原型，创意
+		// 与办公写作高频词，必须显式带语言/框架名才归 code）。
+		// 残留歧义："帮我写一个短视频脚本"（视频文案脚本 vs 代码脚本）属
+		// 词汇级歧义，RE2 无负向环视无法在正则层消解，交由上层 LLM 兜底
+		// 分类器（fail-open）纠正。
 		{
-			expr:   `(?:写个|做个|帮我写个|帮我做个|帮我写一个|帮我做(?:一个)?|写一个简单)(?:\s+(?:python|java|javascript|js|typescript|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|shell|bash))?\s*(?:.*?)(?:脚本|工具|函数|方法|程序|demo|示例|prototype|原型)`,
+			expr:   `(?:写个|做个|帮我写个|帮我做个|帮我写一个|帮我做(?:一个)?|写一个简单)(?:\s*(?:python|java|javascript|js|typescript|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|shell|bash))?\s*.{0,16}?(?:脚本|工具|函数|程序|demo|prototype)`,
 			task:   TaskCode,
 			weight: 0.60,
 			reason: "pattern: chinese coding task (colloquial 'write a script/tool')",
+		},
+		{
+			expr:   `(?:写个|做个|帮我写个|帮我做个|帮我写一个|帮我做(?:一个)?|写一个简单)\s*(?:python|java|javascript|js|typescript|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|shell|bash)\s*.{0,16}?(?:方法|示例|原型)`,
+			task:   TaskCode,
+			weight: 0.60,
+			reason: "pattern: chinese coding task (language + generic artifact)",
 		},
 		// "分析" 与代码对象连用时是代码分析（2026-09-14 复审 gap_zh_codeanalyze）：
 		// 关键词层"分析"归 reasoning、"代码"归 code，打平时按优先级错归 reasoning。

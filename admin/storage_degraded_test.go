@@ -85,6 +85,38 @@ func TestIsStorageUnavailable(t *testing.T) {
 			&pgconn.PgError{Code: "42P01", Message: `relation "nope" does not exist`},
 			false,
 		},
+
+		// ---- R73 M-5：服务端连接/资源类 SQLSTATE 判为降级 ----
+		{
+			"pg connection_failure (08006) is degraded",
+			&pgconn.PgError{Code: "08006", Message: "connection failure"},
+			true,
+		},
+		{
+			"pg too_many_connections (53300) is degraded",
+			&pgconn.PgError{Code: "53300", Message: "sorry, too many clients already"},
+			true,
+		},
+		{
+			"pg disk_full (53100) is degraded",
+			&pgconn.PgError{Code: "53100", Message: "could not extend file: no space left on device"},
+			true,
+		},
+		{
+			"pg cannot_connect_now (57P03) is degraded",
+			&pgconn.PgError{Code: "57P03", Message: "the database system is starting up"},
+			true,
+		},
+		{
+			"pg query_canceled (57014) stays 500 — may be our own statement budget",
+			&pgconn.PgError{Code: "57014", Message: "canceling statement due to statement timeout"},
+			false,
+		},
+		{
+			"pg unique_violation (23505) stays 500",
+			&pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint"},
+			false,
+		},
 		{
 			"plain error stays 500",
 			errors.New("unexpected EOF"),

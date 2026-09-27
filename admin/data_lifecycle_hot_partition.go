@@ -809,7 +809,7 @@ func (h *Handler) handleDataLifecycleDropPartition(w http.ResponseWriter, r *htt
 	dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", quoteIdentifier(req.PartitionName))
 	if _, err := h.db.Exec(ctx, dropSQL); err != nil {
 		resp.Status = "failed"
-		resp.Message = fmt.Sprintf("drop failed: %v", err)
+		resp.Message = "drop failed"
 		slog.Error("data-lifecycle: drop partition failed", "partition", req.PartitionName, "error", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Header().Set("Content-Type", "application/json")

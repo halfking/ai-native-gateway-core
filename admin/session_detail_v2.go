@@ -249,6 +249,11 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			writeExportJSONError(w, http.StatusConflict, "ambiguous session identifier")
 			return
 		}
+		// R73 审计 A-7：resolve 的存储不可达臂（与 nil-pool 臂同口径）。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentDetail, err)
+			return
+		}
 		slog.Error("resolveSessionID failed", "err", err)
 		writeExportJSONError(w, http.StatusInternalServerError, "resolve session id failed")
 		return
@@ -259,6 +264,12 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		// R71 审计：0aa86d8bd 只收口了 resolve 臂；query 臂此前把 pgx 原始
 		// 错误（含 SQL 片段/约束名/租户参数）原样回显给客户端，且无服务端
 		// 日志锚点。与 resolve 分款同构：固定文案 + slog 落服务端。
+		// R73 审计 A-7：query 臂同样补存储不可达 503（此前只有 nil-pool
+		// 臂降级，同一端点两种 DB 故障两种状态码，不一致）。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentDetail, err)
+			return
+		}
 		slog.Error("querySessionDetail failed", "err", err, "session_id", resolvedSessionID)
 		writeExportJSONError(w, http.StatusInternalServerError, "query session detail failed")
 		return

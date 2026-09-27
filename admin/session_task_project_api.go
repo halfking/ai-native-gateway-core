@@ -113,7 +113,7 @@ func (h *Handler) handleTaskFlow(w http.ResponseWriter, r *http.Request) {
 
 	summary, err := h.queryTaskSummary(ctx, r, taskID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to query task summary: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to query task summary", err)
 		return
 	}
 	if summary.Summary.SessionCount == 0 {
@@ -124,7 +124,7 @@ func (h *Handler) handleTaskFlow(w http.ResponseWriter, r *http.Request) {
 	// 查询任务中的所有会话（按时间排序）
 	sessions, err := h.queryTaskSessions(ctx, r, taskID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to query task sessions: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to query task sessions", err)
 		return
 	}
 
@@ -164,7 +164,7 @@ func (h *Handler) handleProjectCosts(w http.ResponseWriter, r *http.Request) {
 
 	summary, err := h.queryProjectSummary(ctx, r, projectID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to query project summary: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to query project summary", err)
 		return
 	}
 	if summary.SessionCount == 0 {
@@ -175,7 +175,7 @@ func (h *Handler) handleProjectCosts(w http.ResponseWriter, r *http.Request) {
 	// 查询项目中的所有任务
 	tasks, err := h.queryProjectTasks(ctx, r, projectID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to query project tasks: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to query project tasks", err)
 		return
 	}
 

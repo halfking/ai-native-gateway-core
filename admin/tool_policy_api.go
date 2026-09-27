@@ -95,11 +95,7 @@ func (api *PolicyAPI) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		req.TenantID, req.ToolPattern, req.PolicyType, req.Reason, req.CreatedBy,
 	).Scan(&id, &createdAt, &updatedAt)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Failed to create policy",
-			"error":   err.Error(),
-		})
+		writeInternalErrStr(w, "Failed to create policy", err)
 		return
 	}
 
@@ -143,11 +139,7 @@ func (api *PolicyAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := api.db.Query(ctx, query, tenantID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Failed to list policies",
-			"error":   err.Error(),
-		})
+		writeInternalErrStr(w, "Failed to list policies", err)
 		return
 	}
 	defer rows.Close()
@@ -220,11 +212,7 @@ func (api *PolicyAPI) HandleDelete(w http.ResponseWriter, r *http.Request) {
 
 	tag, err := api.db.Exec(ctx, "DELETE FROM tenant_tool_policies WHERE id = $1", id)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Failed to delete policy",
-			"error":   err.Error(),
-		})
+		writeInternalErrStr(w, "Failed to delete policy", err)
 		return
 	}
 
@@ -341,11 +329,7 @@ func (api *UsageStatsAPI) HandleStats(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := api.db.Query(ctx, query, args...)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Failed to query stats",
-			"error":   err.Error(),
-		})
+		writeInternalErrStr(w, "Failed to query stats", err)
 		return
 	}
 	defer rows.Close()
@@ -440,11 +424,7 @@ func (api *UsageStatsAPI) HandleTopTools(w http.ResponseWriter, r *http.Request)
 
 	rows, err := api.db.Query(ctx, query, args...)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status":  "error",
-			"message": "Failed to query top tools",
-			"error":   err.Error(),
-		})
+		writeInternalErrStr(w, "Failed to query top tools", err)
 		return
 	}
 	defer rows.Close()

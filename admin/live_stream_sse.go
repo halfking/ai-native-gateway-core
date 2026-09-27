@@ -1775,7 +1775,8 @@ func (h *LiveStreamSSEHub) checkRedisHealth() *LiveStreamHealth {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	if err := h.store.rdb.Ping(ctx).Err(); err != nil {
-		return &LiveStreamHealth{RedisConnected: false, RedisError: err.Error()}
+		slog.Warn("live stream sse: redis ping failed", "err", err)
+		return &LiveStreamHealth{RedisConnected: false, RedisError: "redis ping failed"}
 	}
 	return &LiveStreamHealth{RedisConnected: true}
 }

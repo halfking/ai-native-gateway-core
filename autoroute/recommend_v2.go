@@ -289,14 +289,22 @@ func (idx *Index) RecommendV2WithHints(
 	// 48h popularity collapse — only sound when the tag dimension is actually
 	// discriminating. A sub-30 winner means "nothing in this pool suits the
 	// task" only if some candidate was capable of scoring above 30 in the first
-	// place. When the library has no vocabulary for the task, every candidate
+	// place. When the pool has no vocabulary for the task, every candidate
 	// scores 0 by construction, and collapsing here would replace a real,
 	// fully-scored, diverse pool with one unscored popularity pick — losing
 	// both the price/quality ranking and the failover ladder that protects the
 	// request when that single model's upstream rate-limits. The neutralisation
 	// above already keeps scored[0] at 50 in that case; this guard makes the
 	// invariant explicit and survives future scoring changes.
-	if len(scored) > 0 && scored[0].Breakdown.MatchScore < 30 && vocabularyPresent {
+	//
+	// R73 审计 M-1 根修：present 判定必须针对**实际参与打分的 candidatePool**，
+	// 而非全量 available。非 FullCandidateSet 时打分发生在 hot-top3 子池——
+	// 词表代表只在子池外时，旧判定仍 true，全 0 子池照样坍缩到 48h 热度单
+	// 模型（多样性 3→1，429 放大器复现条件；long_context 结构性坍缩即此）。
+	// 词表在子池外 ≠ 子池不能服务任务：此时按池内真实分数继续排序（价格/
+	// 质量维度仍然有效）。全量层的 vocabularyPresent 仅保留给上面的中性化
+	// 使用（整库无词表 → 打分无意义 → 中性化）。
+	if len(scored) > 0 && scored[0].Breakdown.MatchScore < 30 && TaskVocabularyRepresented(task, candidatePool) {
 		fallback := idx.get48hFallback(ctx)
 		if fallback != nil {
 			return []ScoredCandidate{{

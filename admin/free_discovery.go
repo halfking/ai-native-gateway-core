@@ -135,7 +135,7 @@ func (h *Handler) handleFreeDiscoveryTemplates(w http.ResponseWriter, r *http.Re
 		req.CreatedBy = fdActor(r)
 		tpl, err := deps.templates.Create(r.Context(), h.fdTenant(r), &req)
 		if err != nil {
-			writeError(w, fdStatusFor(err), err.Error())
+			writeFDErr(w, "free discovery request failed", err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, tpl)
@@ -161,7 +161,7 @@ func (h *Handler) handleFreeDiscoveryTemplateByID(w http.ResponseWriter, r *http
 	case http.MethodGet:
 		tpl, err := deps.templates.Get(r.Context(), h.fdTenant(r), id)
 		if err != nil {
-			writeError(w, fdStatusFor(err), err.Error())
+			writeFDErr(w, "free discovery request failed", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, tpl)
@@ -177,7 +177,7 @@ func (h *Handler) handleFreeDiscoveryTemplateByID(w http.ResponseWriter, r *http
 		}
 		tpl, err := deps.templates.Update(r.Context(), h.fdTenant(r), id, &req)
 		if err != nil {
-			writeError(w, fdStatusFor(err), err.Error())
+			writeFDErr(w, "free discovery request failed", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, tpl)
@@ -187,7 +187,7 @@ func (h *Handler) handleFreeDiscoveryTemplateByID(w http.ResponseWriter, r *http
 			return
 		}
 		if err := deps.templates.Delete(r.Context(), h.fdTenant(r), id); err != nil {
-			writeError(w, fdStatusFor(err), err.Error())
+			writeFDErr(w, "free discovery request failed", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
@@ -356,7 +356,7 @@ func (h *Handler) handleFreeDiscoveryScan(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusOK, task)
 			return
 		}
-		writeError(w, fdStatusFor(err), err.Error())
+		writeFDErr(w, "free discovery request failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, task)
@@ -377,7 +377,7 @@ func (h *Handler) handleFreeDiscoveryTasks(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		// List endpoints have no expected sentinel errors today (failures are DB faults,
 		// so fdStatusFor falls through to 500); routed through fdStatusFor for consistency.
-		writeError(w, fdStatusFor(err), err.Error())
+		writeFDErr(w, "free discovery request failed", err)
 		return
 	}
 	if tasks == nil {
@@ -405,7 +405,7 @@ func (h *Handler) handleFreeDiscoveryTask(w http.ResponseWriter, r *http.Request
 	}
 	task, err := deps.engine.GetTask(r.Context(), h.fdTenant(r), id)
 	if err != nil {
-		writeError(w, fdStatusFor(err), err.Error())
+		writeFDErr(w, "free discovery request failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, task)
@@ -433,7 +433,7 @@ func (h *Handler) handleFreeDiscoveryTaskResults(w http.ResponseWriter, r *http.
 	results, err := deps.engine.ListResults(r.Context(), h.fdTenant(r), id, status)
 	if err != nil {
 		// See handleFreeDiscoveryTasks: no expected sentinels, fdStatusFor falls through to 500.
-		writeError(w, fdStatusFor(err), err.Error())
+		writeFDErr(w, "free discovery request failed", err)
 		return
 	}
 	if results == nil {
@@ -469,7 +469,7 @@ func (h *Handler) handleFreeDiscoveryImport(w http.ResponseWriter, r *http.Reque
 
 	summary, err := deps.importer.Import(r.Context(), req)
 	if err != nil {
-		writeError(w, fdStatusFor(err), err.Error())
+		writeFDErr(w, "free discovery request failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
@@ -488,6 +488,19 @@ func fdActor(r *http.Request) string {
 		}
 	}
 	return "legacy-admin-key"
+}
+
+// writeFDErr responds with the domain-mapped status. Sentinel/validation
+// errors keep their designed user-facing text; anything fdStatusFor maps to
+// a 5xx is a DB fault and goes through the internal-error helper so the
+// driver message never reaches the client (R73 audit: echo batch 2).
+func writeFDErr(w http.ResponseWriter, op string, err error) {
+	st := fdStatusFor(err)
+	if st >= http.StatusInternalServerError {
+		writeInternalErr(w, op, err)
+		return
+	}
+	writeError(w, st, err.Error())
 }
 
 // fdStatusFor maps domain errors to HTTP status codes.
