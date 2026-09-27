@@ -32,6 +32,13 @@ const historyBufferLen = 256
 // historyInsertTimeout 单条历史 INSERT 的超时。
 const historyInsertTimeout = 5 * time.Second
 
+// partitionEnsureInterval 隔多久重跑一次当日/次日分区函数（上海日历
+// 滚动预建，752）。036 时代只在启动 bootstrap 建一次当日分区，长期
+// 运行（数周不重启）跨午夜后新一日行全部落 DEFAULT 分区——数据不丢
+// 但 partition pruning 退化。23h 间隔 + 函数内部幂等（pg_inherits
+// 短路 + advisory lock）把缺分区窗口压到最迟一天。
+const partitionEnsureInterval = 23 * time.Hour
+
 // RunnerID 是注册到 shutdown.Manager 的标识。
 const RunnerID = "mock-probe-runner"
 
@@ -262,7 +269,7 @@ type HistoryRecord struct {
 	FailureStreak int
 }
 
-// HistoryStore 把探测记录异步写入 mock_probe_history（migrations/036）。
+// HistoryStore 把探测记录异步写入 mock_probe_history（migrations/752）。
 // Insert 永不阻塞（队列满即丢弃并计数）；Close 排空队列。
 //
 // 并发契约（audit P3 钉死）：Insert 与 Close 可由任意 goroutine 在任意
@@ -272,17 +279,19 @@ type HistoryRecord struct {
 // panic），而是以 done channel 作为关闭闸：Close 只关 done，writeLoop
 // 见 done 后排空残余退出；Insert 见 done 已关即静默丢弃。
 type HistoryStore struct {
-	pool      *pgxpool.Pool
-	ch        chan HistoryRecord
-	done      chan struct{} // 关闭闸：Close 关闭；Insert 见之即丢弃
-	wg        sync.WaitGroup
-	closeOnce sync.Once
-	dropped   atomic.Int64
+	pool       *pgxpool.Pool
+	ch         chan HistoryRecord
+	done       chan struct{} // 关闭闸：Close 关闭；Insert 见之即丢弃
+	wg         sync.WaitGroup
+	closeOnce  sync.Once
+	dropped    atomic.Int64
+	lastEnsure atomic.Int64 // 最近一次分区 ensure 成功的 unix nano（0 = 待重试）
 }
 
 // NewHistoryStore 创建写入器并 best-effort 兜底当日分区（设计 §六：
-// "历史表分区未及时建 → 启动时调用 daily_partition"）。建表/建函数失败
-// 仅告警——写入侧随后按同样策略逐条失败并记日志，不阻断探测。
+// "历史表分区未及时建 → 启动时调用 daily_partition"；752 起 bootstrap
+// 同时滚动预建次日）。建表/建函数失败仅告警——写入侧随后按同样策略
+// 逐条失败并记日志，不阻断探测。
 func NewHistoryStore(ctx context.Context, pool *pgxpool.Pool) *HistoryStore {
 	s := &HistoryStore{
 		pool: pool,
@@ -290,8 +299,10 @@ func NewHistoryStore(ctx context.Context, pool *pgxpool.Pool) *HistoryStore {
 		done: make(chan struct{}),
 	}
 	if _, err := pool.Exec(ctx, "SELECT mock_probe_history_daily_partition()"); err != nil {
-		slog.Warn("mock probe daily partition bootstrap failed (has migrations/036 been applied?)",
+		slog.Warn("mock probe daily partition bootstrap failed (has migrations/752 been applied?)",
 			"err", err)
+	} else {
+		s.lastEnsure.Store(time.Now().UnixNano())
 	}
 	s.wg.Add(1)
 	go s.writeLoop()
@@ -331,6 +342,7 @@ func (s *HistoryStore) writeLoop() {
 	for {
 		select {
 		case rec := <-s.ch:
+			s.maybeEnsurePartition()
 			s.insert(rec)
 		case <-s.done:
 			// 关闭闸已落：排空队列残余后退出（此后 Insert 不再写入）。
@@ -343,6 +355,29 @@ func (s *HistoryStore) writeLoop() {
 				}
 			}
 		}
+	}
+}
+
+// maybeEnsurePartition 滚动补建当日/次日分区（23h 一次，见
+// partitionEnsureInterval）。CAS 抢占保证同一时刻只有一个写入方发起
+// ensure；失败回退 0 使下一批记录到达时（默认 30s 后）即重试，自愈
+// 快于"等下一个 23h 窗口"，且函数内部幂等使重试无副作用。
+func (s *HistoryStore) maybeEnsurePartition() {
+	now := time.Now()
+	last := s.lastEnsure.Load()
+	if last > 0 && now.Sub(time.Unix(0, last)) < partitionEnsureInterval {
+		return
+	}
+	if !s.lastEnsure.CompareAndSwap(last, now.UnixNano()) {
+		return // 并发 ensure 已被他人接管
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), historyInsertTimeout)
+	_, err := s.pool.Exec(ctx, "SELECT mock_probe_history_daily_partition()")
+	cancel()
+	if err != nil {
+		slog.Warn("mock probe daily partition ensure failed (will retry on next record)",
+			"err", err)
+		s.lastEnsure.Store(0)
 	}
 }
 
