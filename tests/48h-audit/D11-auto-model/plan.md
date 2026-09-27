@@ -14,7 +14,7 @@
 | 回归五件套 | 业务 / 数据 / 压力 / 安全 / 一致性 — 全部 PASS |
 | 决策链 | 14 模型 × 11 路由策略 × 4 计费档位 — 端到端可复现 |
 | 过配率 | 0/30（分类层/路由层/计费层全部命中目标档位，无掉档/越级） |
-| 提交 | 本地 2 commits ahead of `origin/main`（`59107132e` + `ae344d51e`）；HEAD `1c9c753c4` |
+| 提交 | 本地 5 commits ahead of `origin/main`（`59107132e` / `ae344d51e` / `3b53b9be1` / `dee7d3ee5` / `0a857bd68`）；HEAD `0a857bd68` |
 
 **权威收口报告**：[reports/latest.md](file:///Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go/tests/48h-audit/D11-auto-model/reports/latest.md)（290+ 行，覆盖 §1 改动面 / §2 任务定位 / §3 验收门 / §4 回归五件套 / §5 决策链 / §6 过配率 / §7 收口结论）
 
