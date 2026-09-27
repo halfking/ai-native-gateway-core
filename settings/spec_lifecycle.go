@@ -43,7 +43,7 @@ func LifecycleSpecs() []*Spec {
 		// 范围 7-365：下限对齐业务对账最低窗口，上限是一年（合规最长期）。
 		// 消费点：bg.PartitionManager.runCleanup 周期调用；SQL 侧另有 [7,365]
 		// 硬守卫，越界 RAISE EXCEPTION（失败即停，不静默）。
-		{Key: "lifecycle.request_logs_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(7), Max: floatPtr(365), Default: 30, DangerLevel: Warning, HotReload: true, Description: "request_logs 归档 TTL（天）", DescriptionLong: "request_logs 月分区保留天数。超过此时长后由 archive_request_logs_default（迁移 754）把摘要字段落进 request_logs_archive_YYYY_MM。源分区不 DROP（R68 修订：沿用 750 move-then-attach 范式）。默认 30 天（7-365）。", Unit: "天"},
+		{Key: "lifecycle.request_logs_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(7), Max: floatPtr(365), Default: 30, DangerLevel: Warning, HotReload: true, Description: "request_logs 归档 TTL（天）", DescriptionLong: "request_logs 归档阈值（天）。超过此时长的月分区，其摘要字段（11 列，不含大 JSONB）由 archive_request_logs_default（迁移 754）落进 request_logs_archive_YYYY_MM 供对账/合规回溯。**注意：这是摘要抽取，不是数据搬移** —— 源分区一个字节都不会被删除（迁移 754 内无任何 DELETE；R68 禁止 DROP 父表月分区，见 654/337 事故复盘），因此本键**不会让 request_logs 主表变小**，主表仍由运维另行处置。每日 03:00 本地时区扫一次。默认 30 天（7-365）。", Unit: "天"},
 
 		// 2026-09-27 (R67 session-storage 审计子任务 2, handoff §4):
 		// session_turn_logs 保留时长。此前是 24h 硬编码(430 schema 的

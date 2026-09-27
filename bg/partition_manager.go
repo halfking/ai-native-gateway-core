@@ -495,18 +495,52 @@ func clampRequestLogsArchiveDays(raw int) int {
 	return raw
 }
 
+// requestLogsArchiveHourOfDay is the single hour (local) in which the
+// request_logs archive sweep is allowed to run. See archiveOldRequestLogs for
+// why the sweep cannot simply run on every cleanup tick.
+const requestLogsArchiveHourOfDay = 3
+
+// shouldRunRequestLogsArchive gates the archive sweep to once per calendar day.
+//
+// Pure function so the cadence is unit-testable without a clock or a database.
+func shouldRunRequestLogsArchive(now time.Time) bool {
+	return now.Hour() == requestLogsArchiveHourOfDay
+}
+
 // archiveOldRequestLogs archives request_logs monthly partitions older than the
 // configured retention into request_logs_archive_YYYY_MM.
 //
-// 2026-09-27 (R67 session-storage 审计子任务 7, handoff §9). Read fresh from
-// settings every tick (lifecycle.request_logs_ttl_days, default 30), so an
-// operator change applies without a gateway restart.
+// 2026-09-27 (R67 session-storage 审计子任务 7, handoff §9; cadence fixed by the
+// third-round critical audit). Read fresh from settings every tick
+// (lifecycle.request_logs_ttl_days, default 30), so an operator change applies
+// without a gateway restart.
+//
+// ## Why this is daily and not on every tick
+//
+// The SQL has no "already archived" marker. It enumerates every request_logs
+// month whose month_end is past the cutoff and, for each, pages the WHOLE
+// source partition through INSERT ... ON CONFLICT DO NOTHING. Rows archived on
+// a previous run simply conflict — but they are still read, joined, and
+// re-checked. So the per-run cost is O(all rows older than the retention
+// window), and it never shrinks.
+//
+// Running that on the hourly cleanup tick (providerErrorCleanupInterval = 1h)
+// meant a growing full re-scan of historical request_logs, forever, for work
+// that is already done. Hour 3 keeps it to once a day (~24x less) without
+// touching the migration — which matters, because that SQL has never been
+// executed against a real PostgreSQL and adding a new ledger table to it
+// blind would be the larger risk. A proper fix is an archive ledger recording
+// (partition, max_id archived) so completed partitions are skipped outright;
+// that is deliberately left as a follow-up, not smuggled in here.
 //
 // The function returns one row per archived partition, so this uses Query and
 // sums rows_archived — a QueryRow against a set-returning function would read
 // only the first partition and under-report the work done.
 func (pm *PartitionManager) archiveOldRequestLogs(ctx context.Context) {
 	if pm.db == nil {
+		return
+	}
+	if !shouldRunRequestLogsArchive(time.Now()) {
 		return
 	}
 	retentionDays := clampRequestLogsArchiveDays(
