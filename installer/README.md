@@ -92,7 +92,7 @@ llm-gw-installer 支持两种存储模式，安装时选择其一：
 | 5. 目录结构 | 同 | 同（db/data / redis/data 目录仍创建但不使用） |
 | 6. compose.yml | 完整 3 服务 | **剥离 kx-citus + kx-redis**，llm-gateway-go 移除 `depends_on` 与 PG/Redis env |
 | 7. 启动容器 | 3 容器 | 仅 kx-llm-gateway-go |
-| 8. 初始化数据库 | 等待 PG ready + InitSchema（700+ 迁移） | **跳过**（SQLite 由 app 自动建表） |
+| 8. 初始化数据库 | 等待 PG ready + InitSchema（450+ startup 迁移） | **跳过**（SQLite 由 app 自动建表） |
 | 9. 健康检查 | 5 项全检 | 仅校验容器 + /healthz；PG/Redis/Schema 不适用、强制置通过 ✅（报告中显示为 true） |
 
 ### 新增 install flags

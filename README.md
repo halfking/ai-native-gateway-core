@@ -226,7 +226,7 @@ In non-TTY (CI / `--skip-prompt`) without `--config`, the default is `full`.
 | 5. Directory layout | full | full (db/data and redis/data dirs created but unused) |
 | 6. `compose.yml` | 3 services | **`kx-citus` + `kx-redis` stripped**; gateway loses `depends_on` + PG/Redis env |
 | 7. Start containers | 3 containers | **`kx-llm-gateway-go` only** |
-| 8. DB initialization | Wait for PG ready + `InitSchema` (700+ migrations) | **Skipped** (SQLite auto-creates) |
+| 8. DB initialization | Wait for PG ready + `InitSchema` (450+ startup migrations) | **Skipped** (SQLite auto-creates) |
 | 9. Health check | 5-item full check | container + `/healthz` only; PG/Redis/Schema forced ✅ in report |
 
 **New install flags**
@@ -383,10 +383,10 @@ See [ROADMAP.md](ROADMAP.md) for full details.
 
 ```bash
 git push              # → codeup (no extra checks)
-git push github       # → github (strict secret scan, blocked on hit)
+git push github       # → github (secret scan, blocked on BLOCK-level hit)
 ```
 
-Sensitive-information protection: `.githooks/pre-push` automatically runs `scripts/scan-secrets.sh` in strict mode (50 rules) when pushing to GitHub. See the [mirror policy](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md).
+Sensitive-information protection: `.githooks/pre-push` automatically runs `scripts/scan-secrets.sh` (50 rules; default normal mode — BLOCK findings block, WARN findings warn; `STRICT_SCANNER=1` opts into strict) when pushing to GitHub. See the [mirror policy](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md).
 
 ---
 
