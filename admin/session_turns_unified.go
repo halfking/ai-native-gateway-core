@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -24,7 +25,8 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 		return
 	}
 	if db == nil {
-		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		// Subtask 4（§6）：池子为空即存储降级，走统一的 503 + storage_status。
+		WriteStorageDegraded(w, observability.StorageComponentTurns, ErrNilDatabasePool)
 		return
 	}
 	tenantID := tenantFromQueryOrContext(r)
@@ -69,6 +71,12 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
         WHERE t.tenant_id=$1 AND t.session_id=$2 AND t.turn_no < $3
         ORDER BY t.turn_no DESC LIMIT $4`, tenantID, sessionID, before, limit+1)
 	if err != nil {
+		// Subtask 4（§6）：区分「存储不可达」（503 降级）与「查询本身出错」
+		// （500）。此前的固定 500 会让一次数据库抖动被当成代码缺陷。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentTurns, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "query turns failed")
 		return
 	}
