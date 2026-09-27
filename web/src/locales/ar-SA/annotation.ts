@@ -185,4 +185,14 @@ export default {
   // Loading states
   loading: 'جارٍ التحميل...',
   noSamples: 'لا توجد عينات تعليق',
+
+  // taskprofile تصدير/استيراد (2026-09-18 round 2)
+  taskProfile: {
+    exportBtn: 'تصدير CSV',
+    importBtn: 'استيراد CSV',
+    exportOk: 'تم تصدير {name}',
+    exportFailed: 'فشل التصدير',
+    importOk: 'تم استيراد {imported}، تم تخطي {skipped}، أخطاء {errors}',
+    importFailed: 'فشل الاستيراد',
+  },
 }

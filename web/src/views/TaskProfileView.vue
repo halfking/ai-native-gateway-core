@@ -12,7 +12,7 @@ import {
   getTaskTypeCorrectionStats,
   applyTierConfig,
   reloadTaskProfile,
-  exportCorrectionsBlob,
+  exportCorrections,
   type TaskProfileView as TaskProfileViewModel,
   type CorrectionStatsResponse,
 } from '../api/taskProfile'
@@ -113,11 +113,12 @@ async function exportCsv() {
   exporting.value = true
   error.value = ''
   try {
-    const blob = await exportCorrectionsBlob({ sinceDays: sinceDays.value })
+    const { filename, content } = await exportCorrections(sinceDays.value)
+    const blob = new Blob([content], { type: 'text/csv; charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `task-type-corrections-${new Date().toISOString().slice(0, 10)}.csv`
+    a.download = filename
     a.click()
     URL.revokeObjectURL(url)
   } catch (e: unknown) {
