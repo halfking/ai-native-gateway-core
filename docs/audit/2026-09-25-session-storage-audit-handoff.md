@@ -584,7 +584,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 
 | # | 子任务 | 分支 | 类型 | 状态 | Commit | PR URL | 备注 |
 |---|---|---|---|---|---|---|---|
-| 1 | 会话身份契约 API 层显式标注 | feat/session-identity-contract-api | P0 | TODO | - | - | - |
+| 1 | 会话身份契约 API 层显式标注 | feat/session-identity-contract-api | P0 | [DONE] 2026-09-26 11:00 | ad763a7ef055fbba45da594199a7647a94b2f8fd | 待创建 | 已通过 build/vet、身份契约与 admin 全量测试 |
 | 2 | session_turn_logs 可配 TTL + summary 同步 | feat/session-turn-logs-ttl | P1 | TODO | - | - | - |
 | 3 | 详情 V2 body_status + 移除 request_logs_bodies JOIN | feat/session-detail-body-status | P1 | TODO | - | - | - |
 | 4 | DB 降级返回 503 + storage_status | feat/storage-status-503 | P1 | TODO | - | - | - |
