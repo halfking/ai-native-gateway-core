@@ -19,6 +19,7 @@ func TestBuild(t *testing.T) {
 		// /v1 suffix on completion suffix: strip → re-add.
 		{"openai chat completions suffix", "https://api.openai.com/v1/chat/completions", EpChatCompletions, "https://api.openai.com/v1/chat/completions"},
 		{"anthropic messages suffix", "https://api.anthropic.com/v1/messages", EpMessages, "https://api.anthropic.com/v1/messages"},
+		{"anthropic duplicate separator suffix", "https://api.anthropic.com//messages", EpMessages, "https://api.anthropic.com/v1/messages"},
 
 		// Mid-path /v3, /v4 must be preserved (not stripped to /v1).
 		{"zhipu mid /v4", "https://open.bigmodel.cn/api/coding/paas/v4", EpChatCompletions, "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"},

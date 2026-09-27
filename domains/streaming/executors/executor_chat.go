@@ -372,14 +372,35 @@ func (e *Executor) executeOpenAI(
 		}()
 	}
 
-	nativeNonStream := cand.Protocol == providercatalog.ProtocolOpenAIResponses && cand.SupportsNativeResponses && !params.IsStream
-	nativeStream := cand.Protocol == providercatalog.ProtocolOpenAIResponses && cand.SupportsNativeResponsesStream && params.IsStream
+	// Fix-2026-09-25: native Responses is only used when a Responses-format
+	// request body is actually available (ResponsesBodyBytes non-empty). When
+	// the client sends a Chat Completions request to an openai-responses
+	// provider, ResponsesBodyBytes is empty, so we fall through to Chat
+	// Completions (the provider's /v1/chat/completions endpoint) instead of
+	// trying to use an empty body. The provider's native Responses capability
+	// is irrelevant when no Responses body was prepared. The mode-fallback
+	// path populates ResponsesBodyBytes from the chat body before calling
+	// executeOpenAI, so reqprobe-driven Responses→Chat fallback still works.
+	nativeNonStream := cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
+		cand.SupportsNativeResponses && !params.IsStream &&
+		len(params.ResponsesBodyBytes) > 0
+	nativeStream := cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
+		cand.SupportsNativeResponsesStream && params.IsStream &&
+		len(params.ResponsesBodyBytes) > 0
+	// Fix-2026-09-25: only hard-block when the native Responses capability is
+	// explicitly enabled but the required infrastructure is missing. When the
+	// capability is not enabled (credential_model_capabilities absent/false),
+	// fall through to Chat Completions instead of returning 501. This keeps
+	// openai-responses providers usable before the capability table is
+	// populated by probes.
 	if cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
-		((params.IsStream && (!cand.SupportsNativeResponsesStream || e.NativeResponsesStream == nil)) ||
-			(!params.IsStream && !cand.SupportsNativeResponses)) {
+		cand.SupportsNativeResponsesStream &&
+		params.IsStream &&
+		len(params.ResponsesBodyBytes) > 0 &&
+		e.NativeResponsesStream == nil {
 		return nil, &upstreampkg.Error{
 			Kind:       errorsx.KindUnsupportedFeature,
-			Message:    "native Responses transport is not enabled for this request",
+			Message:    "native Responses stream reader is not initialized",
 			StatusCode: http.StatusNotImplemented,
 		}
 	}

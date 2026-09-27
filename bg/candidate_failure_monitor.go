@@ -309,8 +309,21 @@ func (m *CandidateFailureMonitor) checkAutoCool(ctx context.Context) error {
 	// auto-cool never saw current traffic and never fired.
 	rows, err := m.db.Query(ctx, `
 		WITH win AS (
-		    SELECT credential_id, COUNT(*) FILTER (WHERE lower(COALESCE(request_status, '')) = 'failure') AS fails,
-		                  COUNT(*) AS attempts
+		    SELECT credential_id,
+		           COUNT(*) FILTER (
+		               WHERE lower(COALESCE(request_status, '')) = 'failure'
+		                 -- 2026-09-25: exclude node-probe failures from the
+		                 -- auto-cool failure ratio. The probe worker hits every
+		                 -- model on a credential (146 models on a multi-model
+		                 -- provider), and transient probe errors (rate_limit,
+		                 -- 5xx, timeout) were counted as user-request failures,
+		                 -- cooling healthy credentials that had zero real-user
+		                 -- failures. Probe results live in node_probe_state and
+		                 -- drive per-model gating via v_routable_credential_models;
+		                 -- they must not feed the credential-level auto-cool.
+		                 AND COALESCE(error_kind, '') NOT LIKE 'probe_direct_%'
+		           ) AS fails,
+		           COUNT(*) AS attempts
 		    FROM request_logs_with_current_month
 		    WHERE ts >= now() - interval '5 minutes'
 		      AND credential_id IS NOT NULL

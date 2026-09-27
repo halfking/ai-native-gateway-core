@@ -5,8 +5,8 @@ import { useI18n } from 'vue-i18n'
 import { getAnnotationStats, type StatsResponse } from '../api/annotations'
 import {
   getTaskTypeCorrectionStats,
-  exportCorrectionsBlob,
-  importCorrectionsFile,
+  exportCorrections,
+  importCorrections,
   applyTierConfig,
   type CorrectionStatsResponse,
   type TaskProfileSuggestion,
@@ -97,11 +97,12 @@ async function exportCsv() {
   exporting.value = true
   tpError.value = ''
   try {
-    const blob = await exportCorrectionsBlob({ sinceDays: 30 })
+    const { filename, content } = await exportCorrections(30)
+    const blob = new Blob([content], { type: 'text/csv; charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `task-type-corrections-${new Date().toISOString().slice(0, 10)}.csv`
+    a.download = filename
     a.click()
     URL.revokeObjectURL(url)
   } catch (e: unknown) {
@@ -123,11 +124,12 @@ async function onImportFile(ev: Event) {
   tpError.value = ''
   tpNotice.value = ''
   try {
-    const r = await importCorrectionsFile(f)
+    const csvText = await f.text()
+    const summary = await importCorrections(csvText)
     tpNotice.value = t('annotation.stats.importDone', {
-      imported: r.summary.imported,
-      skipped: r.summary.skipped,
-      errors: r.summary.row_errors.length,
+      imported: summary.imported,
+      skipped: summary.skipped,
+      errors: summary.row_errors?.length ?? 0,
     })
     await loadTpStats()
   } catch (e: unknown) {

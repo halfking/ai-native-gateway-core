@@ -130,7 +130,7 @@ logs/
 # Vendored kx-design (use services/shared/kx-design instead)
 kx-design/
 web/public/version.json
-web-vue/tsconfig.tsbuildinfo
+web/tsconfig.tsbuildinfo
 traffic-replay-bin
 
 # Python linter cache
