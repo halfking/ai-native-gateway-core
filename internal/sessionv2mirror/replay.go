@@ -289,7 +289,23 @@ func (r *MirrorOutboxReaper) tick(ctx context.Context) error {
 // drainWorker loops claimBatch → replayOne until no rows remain. FOR UPDATE
 // SKIP LOCKED makes the loop safe under N workers; a short batch signals
 // the table is drained.
+// drainEmptyConfirmations 是「本 worker 连续几次拿到空批次后才认定排空」的
+// 次数。
+//
+// 为什么不能只看「短批次」：claimBatch 用的是 FOR UPDATE SKIP LOCKED，短批次
+// 只说明「本次快照里未被别的事务锁住、且够 LIMIT 的行不足」，不等于表已排空。
+// 并行 drain 时兄弟 worker 的 claim 事务尚未提交、hook 侧 INSERT 与本轮并发，
+// 都会让某个 worker 读到短批次。若据此退出，全部 worker 可能集体提前收工，
+// 剩余行要等下一个 tick（本实现 30s）才被捡起——高写入量下出箱堆积速度可能
+// 反超排空速度，与本 worker 的初衷相反。
+//
+// 改成「连续 N 次空批次」后，单次因锁竞争/并发写入造成的短读不会让 worker
+// 提前退出；真正的排空（表确实空了）只需要多跑 N-1 次空查询，代价可忽略
+// （每 tick 每 worker 多 1~2 次极轻量的 SELECT ... FOR UPDATE SKIP LOCKED）。
+const drainEmptyConfirmations = 2
+
 func (r *MirrorOutboxReaper) drainWorker(ctx context.Context) {
+	emptyStreak := 0
 	for {
 		if ctx.Err() != nil {
 			return
@@ -300,14 +316,17 @@ func (r *MirrorOutboxReaper) drainWorker(ctx context.Context) {
 			return
 		}
 		if len(rows) == 0 {
-			return
+			// 空批次连续出现 drainEmptyConfirmations 次才收工，把「锁竞争 /
+			// 并发写入导致的短读」与「真的排空了」区分开。
+			emptyStreak++
+			if emptyStreak >= drainEmptyConfirmations {
+				return
+			}
+			continue
 		}
+		emptyStreak = 0
 		for _, row := range rows {
 			r.replayOne(ctx, row)
-		}
-		// Short batch ⇒ nothing left to claim; let siblings finish too.
-		if len(rows) < r.batchSize {
-			return
 		}
 	}
 }
