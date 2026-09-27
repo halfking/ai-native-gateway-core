@@ -476,7 +476,7 @@ func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Reques
 			model = EXCLUDED.model
 	`, taskID, scopedKey, cleaned)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "save title: "+err.Error())
+		writeInternalErr(w, "save title", err)
 		return
 	}
 
@@ -566,7 +566,7 @@ func (h *Handler) handleSessionTitleDelete(w http.ResponseWriter, r *http.Reques
 		WHERE task_id = $1 AND scoped_session_id = $2
 	`, taskID, scopedKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "delete title: "+err.Error())
+		writeInternalErr(w, "delete title", err)
 		return
 	}
 	rows := tag.RowsAffected()

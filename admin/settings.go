@@ -49,7 +49,7 @@ func (h *Handler) getFpSlotPolicy(w http.ResponseWriter, r *http.Request) {
 	var maxTotalClients int
 	row := h.db.QueryRow(ctx, `SELECT enabled, max_per_credential, default_ratio, client_ttl_days, max_total_clients FROM v_fp_slot_policy`)
 	if err := row.Scan(&enabled, &maxPerCred, &defaultRatio, &clientTTLDays, &maxTotalClients); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load fp_slot policy: "+err.Error())
+		writeInternalErr(w, "failed to load fp_slot policy", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -211,7 +211,7 @@ func (h *Handler) settingsGet(w http.ResponseWriter, r *http.Request, key string
 	}
 	raw, src, err := settings.Global.EffectiveValue(scope, key, tid)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -277,7 +277,7 @@ func (h *Handler) settingsPut(w http.ResponseWriter, r *http.Request, key string
 		oldVal, err = store.Set(scope, key, v)
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "save failed: "+err.Error())
+		writeInternalErr(w, "save failed", err)
 		return
 	}
 	if !tenant {

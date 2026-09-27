@@ -3,9 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -123,10 +127,21 @@ func (a *TurnLogsAggregator) PendingSessions(ctx context.Context, limit int) ([]
 	return out, nil
 }
 
-// The three flush statements, hoisted to consts so their exact shape is
-// assertable (pgxmock does not execute SQL and cannot observe jsonb merge or
+// The flush statements, hoisted to consts so their exact shape is
+// assertable (pgxmock does not execute SQL and cannot observe merge or
 // row-identity semantics). See turn_logs_aggregator_flush_test.go.
 const (
+	// Row lock on the sessions row serializes concurrent flushes for the
+	// same (tenant, session) — see the concurrency note on
+	// AggregateAndFlush. Reading the current column value in the same
+	// statement is what makes the Go-side read-modify-write safe.
+	flushLockQuery = `
+		SELECT turn_logs_summary
+		FROM public.sessions
+		WHERE tenant_id=$1 AND session_id=$2
+		FOR UPDATE
+	`
+
 	flushSelectQuery = `
 		SELECT id, turn_no, stage, stage_status, latency_ms, started_at, COALESCE(error_message,'')
 		FROM public.session_turn_logs
@@ -134,10 +149,12 @@ const (
 		ORDER BY turn_no ASC, started_at ASC
 	`
 
-	// Merge, never replace — see the long note at the call site (§17 F-9).
-	flushMergeQuery = `
+	// Full replacement is correct here because the value written is the
+	// merge of the locked row's current value with this flush's rows —
+	// the merge happens in Go (mergeSummaries), not in SQL.
+	flushUpdateQuery = `
 		UPDATE public.sessions
-		SET turn_logs_summary = COALESCE(turn_logs_summary, '{}'::jsonb) || $1::jsonb
+		SET turn_logs_summary = $1::jsonb
 		WHERE tenant_id=$2 AND session_id=$3
 	`
 
@@ -149,31 +166,57 @@ const (
 )
 
 // AggregateAndFlush reads non-expired session_turn_logs for the given
-// (tenant, session), groups them by turn_no, writes a JSON summary to
+// (tenant, session), groups them by turn_no, merges the result into
 // public.sessions.turn_logs_summary, and deletes exactly the rows it
-// aggregated.
+// aggregated — all inside one transaction.
 //
-// Concurrency and race notes (2026-09-27 critical audit, §17 F-10):
+// Concurrency and loss notes (2026-09-27 critical audit §17 F-9/F-10;
+// R72 audit round fixes the remaining per-turn replacement hole):
 //
 //   - The delete is keyed on the primary keys captured during the SELECT, not
-//     on a re-derived predicate. The old form was
-//     `DELETE ... WHERE tenant_id=$1 AND session_id=$2 AND expires_at > NOW()`,
-//     which re-evaluates the predicate as a *new* statement. A stage row
-//     written for an in-flight turn in the gap between the SELECT and the
-//     DELETE was therefore deleted without ever being aggregated — silent
-//     loss, no error. Deleting by id makes the flush exactly cover what it
-//     read.
-//   - That old form also made the empty-session branch a no-op: when the
-//     SELECT found nothing with expires_at > NOW(), the identically-filtered
-//     DELETE could not match anything either. With id-based deletion the
-//     branch needs no DELETE at all, so it is gone rather than kept as a
-//     misleading "trim stray rows" step.
-//   - Two flushes for the same (tenant, session) can still interleave. The
-//     summary merge is keyed by turn_N, so an interleaving converges rather
-//     than losing a turn: worst case a turn is written twice with an
-//     equivalent value.
+//     on a re-derived predicate. A predicate-derived DELETE re-evaluated as a
+//     *new* statement would also match rows written between the SELECT and
+//     the DELETE — deleting a stage that was never aggregated. Keying on the
+//     ids we read makes the flush exactly cover its own read set.
+//   - The whole flush runs in one transaction with a `FOR UPDATE` lock on the
+//     sessions row. Two flushes for the same (tenant, session) therefore
+//     serialize, and the second one re-reads the column value the first one
+//     committed — a concurrent read-modify-write cannot drop the other's
+//     payload. (Without the lock, two whole-column SETs race and the loser's
+//     rows are already deleted — permanent loss.)
+//   - The merge itself is a per-turn stages-array UNION with dedup, not a
+//     per-turn key replacement. The SQL `||` operator merges top-level keys
+//     only, so it replaced the whole `turn_N` entry: a tick landing inside
+//     the writer's per-stage INSERT loop (session_writer_v2.go) aggregated
+//     the first half of a turn's rows, the next tick aggregated the rest, and
+//     the second merge overwrote `turn_N` with only the later rows — the
+//     early stages were gone. Union-dedup also makes the flush idempotent
+//     against a crash between UPDATE and DELETE: the same rows re-merge to
+//     the same value.
+//
+// If the sessions row does not exist the flush is a no-op and the stage rows
+// are left in place (the TTL sweep reclaims them); deleting them here would
+// silently drop stages that a later snapshot upsert could still have
+// summarized.
 func (a *TurnLogsAggregator) AggregateAndFlush(ctx context.Context, tenantID, sessionID string) error {
-	rows, err := a.db.Query(ctx, flushSelectQuery, tenantID, sessionID)
+	tx, err := a.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var existingRaw []byte
+	err = tx.QueryRow(ctx, flushLockQuery, tenantID, sessionID).Scan(&existingRaw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Orphan stage rows for a session with no snapshot row: leave them
+		// for the TTL sweep rather than deleting unaggregated data.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("lock sessions row: %w", err)
+	}
+
+	rows, err := tx.Query(ctx, flushSelectQuery, tenantID, sessionID)
 	if err != nil {
 		return fmt.Errorf("query: %w", err)
 	}
@@ -196,60 +239,83 @@ func (a *TurnLogsAggregator) AggregateAndFlush(ctx context.Context, tenantID, se
 		return fmt.Errorf("rows.Err: %w", err)
 	}
 
-	// Nothing to aggregate. The previous implementation ran a DELETE here
-	// under the comment "trim any stray rows that already expired", but its
-	// predicate was expires_at > NOW() — the same filter the SELECT just used
-	// to conclude there was nothing. It could never match. Removed rather
-	// than left in place as a comment that describes the opposite of what the
-	// code does.
+	// Nothing to aggregate: no DELETE — the read set is empty by definition.
 	if len(byTurn) == 0 {
 		return nil
 	}
 
-	summary := make(map[string]LogSummary, len(byTurn))
-	builtAt := time.Now()
-	for turnNo, stages := range byTurn {
-		summary[fmt.Sprintf("turn_%d", turnNo)] = LogSummary{
-			Stages:  stages,
-			TurnNo:  turnNo,
-			BuiltAt: builtAt,
-		}
-	}
+	summary := mergeSummaries(existingRaw, byTurn, time.Now())
 	payload, err := json.Marshal(summary)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
 
-	// Merge, do not overwrite.
-	//
-	// 2026-09-27 (critical audit, §17 F-9): this used to be
-	// `SET turn_logs_summary = $1::jsonb`, a full replacement. Because the
-	// flush then DELETEs the rows it aggregated, a session with continuing
-	// traffic is re-polled on the very next tick, finds only the *new* rows,
-	// and replaces the whole column — destroying every earlier turn's entry.
-	// The final summary for a long-lived active session was whatever the last
-	// 5-minute batch happened to contain, not the session's turn history.
-	//
-	// jsonb `||` is a shallow merge over top-level keys, and the keys are
-	// `turn_N`, which are distinct per batch, so a merge is exactly right.
-	// It also makes a re-flush idempotent: if the process dies between the
-	// UPDATE and the DELETE, the same turn is aggregated again next tick and
-	// overwrites its own key with an equivalent value instead of wiping the
-	// rest. COALESCE is required because `NULL || x` is NULL in SQL.
-	if _, err := a.db.Exec(ctx, flushMergeQuery, string(payload), tenantID, sessionID); err != nil {
+	if _, err := tx.Exec(ctx, flushUpdateQuery, string(payload), tenantID, sessionID); err != nil {
 		return fmt.Errorf("update sessions: %w", err)
 	}
 
-	// Delete exactly the rows aggregated above, by primary key.
-	//
-	// The previous form re-derived the predicate (`… AND expires_at > NOW()`)
-	// as a separate statement, so it could also delete rows inserted after the
-	// SELECT — losing a stage that was never aggregated. Keying on the ids we
-	// read makes the flush cover precisely its own read set.
-	if _, err := a.db.Exec(ctx, flushDeleteQuery, ids); err != nil {
+	if _, err := tx.Exec(ctx, flushDeleteQuery, ids); err != nil {
 		return fmt.Errorf("delete: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
+}
+
+// mergeSummaries unions the freshly-read stage rows into the existing
+// turn_logs_summary value. Per turn key the stages arrays are concatenated
+// and deduplicated (by the full stage identity — stage name, status, latency,
+// timestamp, error), then sorted by start time so the display order is
+// deterministic no matter which flush contributed which rows. Turn keys
+// present only in the existing summary are carried over untouched.
+//
+// An existing value that fails to parse is treated as empty (payload wins) —
+// that can only happen if some other writer stored non-summary JSON, and
+// reverting to the pre-R72 replacement behavior for that one column value is
+// better than failing the flush forever.
+func mergeSummaries(existing []byte, byTurn map[int][]StageLog, builtAt time.Time) map[string]LogSummary {
+	merged := make(map[string]LogSummary, len(byTurn))
+	if len(existing) > 0 {
+		var prev map[string]LogSummary
+		if err := json.Unmarshal(existing, &prev); err == nil && prev != nil {
+			merged = prev
+		}
+	}
+
+	for turnNo, stages := range byTurn {
+		key := fmt.Sprintf("turn_%d", turnNo)
+		combined := append(append([]StageLog{}, merged[key].Stages...), stages...)
+		combined = dedupStages(combined)
+		sort.Slice(combined, func(i, j int) bool {
+			if !combined[i].StartedAt.Equal(combined[j].StartedAt) {
+				return combined[i].StartedAt.Before(combined[j].StartedAt)
+			}
+			return combined[i].Stage < combined[j].Stage
+		})
+		merged[key] = LogSummary{
+			Stages:  combined,
+			TurnNo:  turnNo,
+			BuiltAt: builtAt,
+		}
+	}
+	return merged
+}
+
+// dedupStages removes exact-duplicate stage entries. The identity is the
+// formatted UTC timestamp (not raw time.Time equality): a stage row read back
+// from the stored summary has been through a JSON round-trip, and == on
+// time.Time compares location pointers that do not survive it.
+func dedupStages(stages []StageLog) []StageLog {
+	seen := make(map[string]struct{}, len(stages))
+	out := stages[:0]
+	for _, s := range stages {
+		id := s.Stage + "|" + s.Status + "|" + strconv.Itoa(s.LatencyMs) + "|" +
+			s.StartedAt.UTC().Format(time.RFC3339Nano) + "|" + s.Error
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
 
 // aggregate is the pure helper used by tests. It builds a LogSummary from a

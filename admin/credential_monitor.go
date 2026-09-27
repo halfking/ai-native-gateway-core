@@ -654,7 +654,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 
 	queryStart, summaries, qerr := runMonitorSummary(ctx, m.h.db, params)
 	if qerr != nil {
-		writeError(w, http.StatusInternalServerError, qerr.Error())
+		writeInternalErr(w, "internal error (see server logs)", qerr)
 		return
 	}
 
@@ -724,7 +724,7 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 		source = "request_logs"
 		rlEntries, err := m.slidingWindowFromRequestLogs(ctx, credentialID, model, minutes, limit)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get window: %v", err))
+			writeInternalErr(w, "failed to get window", err)
 			return
 		}
 		entries = rlEntries
@@ -851,7 +851,7 @@ func (m *CredentialMonitorHandlers) handlePromote(w http.ResponseWriter, r *http
 	`, "manual_promote: "+req.Reason, req.CredentialID)
 
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("update failed: %v", err))
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 
@@ -909,7 +909,7 @@ func (m *CredentialMonitorHandlers) handleDemote(w http.ResponseWriter, r *http.
 	`, recoverAt, req.Reason, req.CredentialID)
 
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("update failed: %v", err))
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 
@@ -966,7 +966,7 @@ func (m *CredentialMonitorHandlers) handleSetConcurrencyAuto(w http.ResponseWrit
 	`, req.ConcurrencyLimitAuto, req.CredentialID)
 
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("update failed: %v", err))
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 
@@ -1077,7 +1077,7 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 
 	tx, err := m.h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "begin tx: "+err.Error())
+		writeInternalErr(w, "begin tx", err)
 		return
 	}
 	defer tx.Rollback(context.Background()) //nolint:errcheck // commit 之后 rollback 报错是 Go 标准模式
@@ -1097,7 +1097,7 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			writeError(w, http.StatusNotFound, "binding not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "lookup failed: "+err.Error())
+		writeInternalErr(w, "lookup failed", err)
 		return
 	}
 
@@ -1115,7 +1115,7 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			  AND cmb.credential_id = $1
 			  AND pm.raw_model_name = $2
 		`, req.CredentialID, req.RawModel, offlineReason); err != nil {
-			writeError(w, http.StatusInternalServerError, "offline update failed: "+err.Error())
+			writeInternalErr(w, "offline update failed", err)
 			return
 		}
 		if _, err := tx.Exec(ctx, `
@@ -1132,7 +1132,7 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			    next_retry_at = NOW() + INTERVAL '100 years',
 			    last_status = 'manual_offline'
 		`, req.CredentialID, req.RawModel); err != nil {
-			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())
+			writeInternalErr(w, "probe state reset failed", err)
 			return
 		}
 		// 2026-09-17 数据源统一:展示面已切到 node_probe_state,手动下线必须
@@ -1150,7 +1150,7 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			    last_attempt_at = NOW(),
 			    updated_at = NOW()
 		`, req.CredentialID, req.RawModel); err != nil {
-			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())
+			writeInternalErr(w, "probe state reset failed", err)
 			return
 		}
 		newAvailable = false
@@ -1176,7 +1176,7 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			  AND cmb.credential_id = $1
 			  AND pm.raw_model_name = $2
 		`, req.CredentialID, req.RawModel); err != nil {
-			writeError(w, http.StatusInternalServerError, "online update failed: "+err.Error())
+			writeInternalErr(w, "online update failed", err)
 			return
 		}
 		if _, err := tx.Exec(ctx, `
@@ -1193,7 +1193,7 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			    next_retry_at = NOW(),
 			    last_status = 'manual_online'
 		`, req.CredentialID, req.RawModel); err != nil {
-			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())
+			writeInternalErr(w, "probe state reset failed", err)
 			return
 		}
 		// 2026-09-17 数据源统一:手动上线同步恢复新系统(un-pause + 立即排队重探)。
@@ -1212,7 +1212,7 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			    last_err_detail = NULL,
 			    updated_at = NOW()
 		`, req.CredentialID, req.RawModel); err != nil {
-			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())
+			writeInternalErr(w, "probe state reset failed", err)
 			return
 		}
 		newAvailable = true
@@ -1220,7 +1220,7 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "commit failed: "+err.Error())
+		writeInternalErr(w, "commit failed", err)
 		return
 	}
 
@@ -1431,7 +1431,7 @@ func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r 
 	}
 	events, err := runModelHistory(ctx, m.h.db, credentialID, rawModel, limit, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -1613,7 +1613,7 @@ func (m *CredentialMonitorHandlers) handleCredentialDecisions(w http.ResponseWri
 
 	decisions, err := runCredentialDecisions(ctx, m.h.db, params)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -1674,7 +1674,7 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 		if err == pgx.ErrNoRows {
 			writeError(w, http.StatusNotFound, "credential not found")
 		} else {
-			writeError(w, http.StatusInternalServerError, "check failed: "+err.Error())
+			writeInternalErr(w, "check failed", err)
 		}
 		return
 	}
@@ -1688,7 +1688,7 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 	}
 	updateQ := fmt.Sprintf("UPDATE credentials SET manual_disabled = false WHERE id = $1 %s", tenantCheck)
 	if _, err := m.h.db.Exec(ctx, updateQ, updateArgs...); err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 
@@ -1774,7 +1774,7 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 		if err == pgx.ErrNoRows {
 			writeError(w, http.StatusNotFound, "credential not found")
 		} else {
-			writeError(w, http.StatusInternalServerError, "check failed: "+err.Error())
+			writeInternalErr(w, "check failed", err)
 		}
 		return
 	}
@@ -1788,7 +1788,7 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 	}
 	updateQ := fmt.Sprintf("UPDATE credentials SET manual_disabled = $1 WHERE id = $2 %s", tenantCheck)
 	if _, err := m.h.db.Exec(ctx, updateQ, updateArgs...); err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 

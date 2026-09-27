@@ -151,7 +151,7 @@ func (h *Handler) handleSessionAuditList(w http.ResponseWriter, r *http.Request)
 	}
 	var total int
 	if err := h.db.QueryRow(r.Context(), countQuery, countArgs...).Scan(&total); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("count failed: %v", err))
+		writeInternalErr(w, "count failed", err)
 		return
 	}
 
@@ -178,7 +178,7 @@ func (h *Handler) handleSessionAuditList(w http.ResponseWriter, r *http.Request)
 		return rows.Err()
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -460,7 +460,7 @@ func (h *Handler) handleSessionAuditExport(w http.ResponseWriter, r *http.Reques
 		return qerr
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %v", err))
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	if rows != nil {

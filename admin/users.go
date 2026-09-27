@@ -313,7 +313,7 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 	query += ` ORDER BY id`
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -403,7 +403,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "username already exists")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "create user failed: "+err.Error())
+		writeInternalErr(w, "create user failed", err)
 		return
 	}
 	h.writeAuditLog(r, "user.create", "user", u.ID, fmt.Sprintf("username=%s role=%s tenant=%s", u.Username, u.Role, u.TenantID))
@@ -538,7 +538,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, id int) {
 	defer cancel()
 	tag, err := h.db.Exec(ctx, "DELETE FROM users WHERE id = $1", id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "delete failed: "+err.Error())
+		writeInternalErr(w, "delete failed", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -589,7 +589,7 @@ func (h *Handler) resetUserPassword(w http.ResponseWriter, r *http.Request, id i
 	defer cancel()
 	tag, err := h.db.Exec(ctx, `UPDATE users SET password_hash = $1, must_change_password = TRUE, updated_at = now() WHERE id = $2`, string(hash), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {

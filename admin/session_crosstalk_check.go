@@ -52,7 +52,7 @@ func (h *Handler) handleSessionCrosstalkCheck(w http.ResponseWriter, r *http.Req
 		LIMIT 100
 	`, hours)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()

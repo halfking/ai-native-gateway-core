@@ -174,7 +174,7 @@ func (h *SelfCheckHandler) handleListRuns(w http.ResponseWriter, r *http.Request
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeInternalErrStr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -182,7 +182,7 @@ func (h *SelfCheckHandler) handleListRuns(w http.ResponseWriter, r *http.Request
 	var total int
 	countArgs := append([]any(nil), args[:len(args)-1]...)
 	if err := h.db.QueryRow(r.Context(), `SELECT COUNT(*) FROM self_check_runs`+where, countArgs...).Scan(&total); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeInternalErrStr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -276,7 +276,7 @@ func (h *SelfCheckHandler) handleGetRun(w http.ResponseWriter, r *http.Request) 
 		rounds = append(rounds, rd)
 	}
 	if err := rows.Err(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeInternalErrStr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -963,7 +963,7 @@ func (h *SelfCheckHandler) handleModels(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if err := rows.Err(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeInternalErrStr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"models": models})

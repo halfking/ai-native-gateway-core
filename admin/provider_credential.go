@@ -135,7 +135,7 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 		`, providerID, label, encrypted, concurrencyLimit, fpSlotLimit, planType,
 		concurrencyMode, req.RPMLimit, req.TPMLimit, req.MaxQueueDepth, req.MaxQueueWaitMS).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
+		writeInternalErr(w, "create failed", err)
 		return
 	}
 
@@ -519,7 +519,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	defer cancel()
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "begin update failed: "+err.Error())
+		writeInternalErr(w, "begin update failed", err)
 		return
 	}
 	defer func() {
@@ -541,7 +541,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "credential not found")
 		} else {
-			writeError(w, http.StatusInternalServerError, "load credential failed: "+err.Error())
+			writeInternalErr(w, "load credential failed", err)
 		}
 		return
 	}
@@ -679,7 +679,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	}
 	if len(sets) == 0 {
 		if err := tx.Commit(ctx); err != nil {
-			writeError(w, http.StatusInternalServerError, "commit: "+err.Error())
+			writeInternalErr(w, "commit", err)
 			return
 		}
 		provider.InvalidateAllCandidateCache()
@@ -691,7 +691,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	query := "UPDATE credentials SET " + strings.Join(sets, ", ") + fmt.Sprintf(" WHERE id = $%d AND provider_id = $%d RETURNING revision", len(args)-1, len(args))
 	var revision int64
 	if err := tx.QueryRow(ctx, query, args...).Scan(&revision); err != nil {
-		writeError(w, http.StatusInternalServerError, "update credential failed: "+err.Error())
+		writeInternalErr(w, "update credential failed", err)
 		return
 	}
 	if req.PlanType != nil && (!previousPlan.Valid || previousPlan.String != *req.PlanType) {
@@ -700,7 +700,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 			SET billing_mode = CASE WHEN $1 = 'token' THEN 'per_token' ELSE $1 END,
 			    plan_type_origin = 'auto', updated_at = NOW()
 			WHERE cmb.credential_id = $2 AND cmb.plan_type_origin = 'auto'`, *req.PlanType, credID); err != nil {
-			writeError(w, http.StatusInternalServerError, "cascade credential model bindings failed: "+err.Error())
+			writeInternalErr(w, "cascade credential model bindings failed", err)
 			return
 		}
 	}
@@ -742,7 +742,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "commit: "+err.Error())
+		writeInternalErr(w, "commit", err)
 		return
 	}
 	if fpSlotAudit != nil {
@@ -940,7 +940,7 @@ func (h *Handler) deleteCredential(w http.ResponseWriter, r *http.Request, provi
 		  AND status <> 'deleted'
 	`, credID, providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "delete failed: "+err.Error())
+		writeInternalErr(w, "delete failed", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -1011,7 +1011,7 @@ func (h *Handler) resetCredentialFpSlots(w http.ResponseWriter, r *http.Request,
 	deletedSlots, deletedPins, err := h.fpSlots.ResetSlotsForTenant(ctx, credID, fpSlotLimit, tenantID)
 	if err != nil {
 		slog.Error("reset fp slots failed", "credential_id", credID, "error", err)
-		writeError(w, http.StatusInternalServerError, "reset failed: "+err.Error())
+		writeInternalErr(w, "reset failed", err)
 		return
 	}
 
@@ -1062,7 +1062,7 @@ func (h *Handler) releaseCredentialFpSlot(w http.ResponseWriter, r *http.Request
 	released, err := h.fpSlots.ReleaseSlotForTenant(ctx, credID, body.SlotIndex, tenantID)
 	if err != nil {
 		slog.Error("release fp slot failed", "credential_id", credID, "slot_index", body.SlotIndex, "error", err)
-		writeError(w, http.StatusInternalServerError, "release failed: "+err.Error())
+		writeInternalErr(w, "release failed", err)
 		return
 	}
 

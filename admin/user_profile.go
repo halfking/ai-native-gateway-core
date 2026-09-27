@@ -142,7 +142,7 @@ func (h *Handler) handleUserAnalyticsList(w http.ResponseWriter, r *http.Request
 
 	rows, err := h.db.Query(ctx, listSQL, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -259,7 +259,7 @@ func (h *Handler) handleUserAnalyticsDetail(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "stats query: "+err.Error())
+		writeInternalErr(w, "stats query", err)
 		return
 	}
 

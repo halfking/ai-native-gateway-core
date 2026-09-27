@@ -149,7 +149,7 @@ func (h *Handler) handleNoTopicSessionMessages(w http.ResponseWriter, r *http.Re
 		LIMIT `+limitArg+`
 	`, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	defer rows.Close()
@@ -189,7 +189,7 @@ func (h *Handler) handleNoTopicSessionMessages(w http.ResponseWriter, r *http.Re
 		seq++
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	if messages == nil {
@@ -235,7 +235,7 @@ func (h *Handler) handleNoTopicSessionSummarizeTitle(w http.ResponseWriter, r *h
 
 	logs, err := h.loadNoTopicTaskLogsForTitle(ctx, prefix, hours, hourStart, r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	if len(logs) < 1 {
@@ -384,7 +384,7 @@ func (h *Handler) handleNoTopicSessionExtractToMemora(w http.ResponseWriter, r *
 
 	turns, err := h.loadNoTopicPreviewTurns(ctx, prefix, hours, hourStart, r, 500)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 

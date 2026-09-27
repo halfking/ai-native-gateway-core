@@ -94,7 +94,7 @@ func (h *Handler) handleModelIQNodeLatest(w http.ResponseWriter, r *http.Request
 		`+where+`
 		ORDER BY n.overall_score DESC NULLS LAST, n.credential_id`, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query: %v", err))
+		writeInternalErr(w, "query", err)
 		return
 	}
 	defer rows.Close()
@@ -106,7 +106,7 @@ func (h *Handler) handleModelIQNodeLatest(w http.ResponseWriter, r *http.Request
 			&row.ProviderName, &row.RawModelName, &row.CanonicalName,
 			&row.OverallScore, &row.Grade, &row.AvgScore, &row.MinScore, &row.MaxScore,
 			&row.SampleCount, &testedAt); err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("scan: %v", err))
+			writeInternalErr(w, "scan", err)
 			return
 		}
 		if testedAt != "" {
@@ -163,7 +163,7 @@ func (h *Handler) handleModelIQHistory(w http.ResponseWriter, r *http.Request) {
 		WHERE credential_id = $1 AND lower(raw_model_name) = lower($2)
 		ORDER BY tested_at DESC LIMIT $3`, credID, rawModel, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query: %v", err))
+		writeInternalErr(w, "query", err)
 		return
 	}
 	defer rows.Close()
@@ -172,7 +172,7 @@ func (h *Handler) handleModelIQHistory(w http.ResponseWriter, r *http.Request) {
 		var p iqHistoryPoint
 		if err := rows.Scan(&p.TestedAt, &p.OverallScore, &p.Grade, &p.Accuracy,
 			&p.Stability, &p.LatencyP95, &p.ProbeKind, &p.TriggerKind, &p.Status); err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("scan: %v", err))
+			writeInternalErr(w, "scan", err)
 			return
 		}
 		out = append(out, p)
@@ -223,7 +223,7 @@ func (h *Handler) handleModelIQCatalog(w http.ResponseWriter, r *http.Request) {
 		  AND (mc.standard_iq IS NOT NULL OR agg.node_cnt > 0)
 		ORDER BY COALESCE(mc.standard_iq, agg.node_avg) DESC NULLS LAST`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query: %v", err))
+		writeInternalErr(w, "query", err)
 		return
 	}
 	defer rows.Close()
@@ -233,7 +233,7 @@ func (h *Handler) handleModelIQCatalog(w http.ResponseWriter, r *http.Request) {
 		var stdIQ, nodeAvg, nodeMax, nodeMin *float64
 		if err := rows.Scan(&row.CanonicalID, &row.CanonicalName, &row.DisplayName, &row.Family,
 			&stdIQ, &row.StandardIQSrc, &nodeAvg, &row.NodeCount, &nodeMax, &nodeMin); err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("scan: %v", err))
+			writeInternalErr(w, "scan", err)
 			return
 		}
 		row.StandardIQ = stdIQ
@@ -276,7 +276,7 @@ func (h *Handler) handleModelIQTrigger(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	score, err := h.modelQualityBackend.TestSingleNode(ctx, req.CredentialID, req.RawModelName)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("test failed: %v", err))
+		writeInternalErr(w, "test failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, score)

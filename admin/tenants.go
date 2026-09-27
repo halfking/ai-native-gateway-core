@@ -239,7 +239,7 @@ func (h *Handler) listTenantsAdmin(w http.ResponseWriter, r *http.Request) {
 		ORDER BY t.code
 	`, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -343,7 +343,7 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// DB failure — log + 500 (do not silently bypass limit)
-		writeError(w, http.StatusInternalServerError, "community mode limit check failed: "+err.Error())
+		writeInternalErr(w, "community mode limit check failed", err)
 		return
 	}
 
@@ -357,7 +357,7 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "transaction start failed: "+err.Error())
+		writeInternalErr(w, "transaction start failed", err)
 		return
 	}
 	//nolint:errcheck // deferred rollback, best-effort
@@ -380,7 +380,7 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid status value")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "create tenant failed: "+err.Error())
+		writeInternalErr(w, "create tenant failed", err)
 		return
 	}
 
@@ -402,12 +402,12 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "default admin username already exists: "+adminUsername)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "create default admin failed: "+err.Error())
+		writeInternalErr(w, "create default admin failed", err)
 		return
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "transaction commit failed: "+err.Error())
+		writeInternalErr(w, "transaction commit failed", err)
 		return
 	}
 
@@ -535,7 +535,7 @@ func (h *Handler) updateTenant(w http.ResponseWriter, r *http.Request, code stri
 			writeError(w, http.StatusBadRequest, "invalid status value")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 
@@ -575,7 +575,7 @@ func (h *Handler) listTenantUsers(w http.ResponseWriter, r *http.Request, code s
 		FROM users WHERE tenant_id = $1 ORDER BY id
 	`, code)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -619,7 +619,7 @@ func (h *Handler) listTenantKeys(w http.ResponseWriter, r *http.Request, code st
 		ORDER BY ak.id DESC
 	`, code)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()

@@ -328,7 +328,7 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -469,7 +469,7 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 
 	l12Rows, err := h.db.Query(ctx, l12Query, l12Args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	type link struct {
@@ -543,7 +543,7 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 
 	l23Rows, err := h.db.Query(ctx, l23Query, l23Args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	l23Agg := map[l23Key]float64{}
@@ -605,7 +605,7 @@ func (h *AnalyticsHandlers) handleModelTaskIndex(w http.ResponseWriter, r *http.
 
 	var latestBucket sql.NullTime
 	if err := h.db.QueryRow(ctx, `SELECT MAX(bucket) FROM model_task_index`).Scan(&latestBucket); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if !latestBucket.Valid {
@@ -643,7 +643,7 @@ func (h *AnalyticsHandlers) handleModelTaskIndex(w http.ResponseWriter, r *http.
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -774,7 +774,7 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 		return
 	}
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -879,7 +879,7 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 		}
 		out["l2"] = l2
 	} else if !errors.Is(rdlErr, pgx.ErrNoRows) && !errors.Is(rdlErr, sql.ErrNoRows) {
-		writeInternalErr(w, rdlErr)
+		writeAutoRouteInternalErr(w, rdlErr)
 		return
 	}
 
@@ -1001,7 +1001,7 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 				  AND COALESCE(NULLIF(outbound_model, ''), client_model) = ANY($2)
 				  AND `+businessRequestFilter("")+rdlTenantWhere+`
 			`, approxArgs...).Scan(&autoReq, &routed, &ok); err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 		fr.requests = autoReq

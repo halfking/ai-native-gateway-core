@@ -250,7 +250,7 @@ func (h *Handler) serveCredRotations(w http.ResponseWriter, r *http.Request, ses
 	limit := queryInt(r, "limit", 100)
 	rotations, err := h.sessionManager.GetCredRotations(ctxFn(r), sessionID, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "rotations": rotations, "total": len(rotations)})
@@ -274,7 +274,7 @@ func (h *Handler) serveStopSession(w http.ResponseWriter, r *http.Request, sessi
 		reason = "admin_stop"
 	}
 	if err := h.sessionManager.StopSession(ctxFn(r), sessionID, reason); err != nil {
-		writeError(w, http.StatusInternalServerError, "stop failed: "+err.Error())
+		writeInternalErr(w, "stop failed", err)
 		return
 	}
 	if h.sessionDBWriter != nil {
@@ -300,7 +300,7 @@ func (h *Handler) serveRecoverSession(w http.ResponseWriter, r *http.Request, se
 		return
 	}
 	if err := h.sessionManager.RecoverSession(ctxFn(r), sessionID); err != nil {
-		writeError(w, http.StatusInternalServerError, "recover failed: "+err.Error())
+		writeInternalErr(w, "recover failed", err)
 		return
 	}
 	if auth := GetAuthContext(r); auth != nil {
@@ -319,7 +319,7 @@ func (h *Handler) serveUpdateAnnotation(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if err := h.sessionManager.SetAnnotation(ctxFn(r), sessionID, r.URL.Query().Get("annotation")); err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -340,7 +340,7 @@ func (h *Handler) serveUpdateTags(w http.ResponseWriter, r *http.Request, sessio
 		tags = strings.Split(tagStr, ",")
 	}
 	if err := h.sessionManager.SetTags(ctxFn(r), sessionID, tags); err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})

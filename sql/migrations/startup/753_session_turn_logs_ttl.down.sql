@@ -2,8 +2,9 @@
 -- Migration 753 down: remove session_turn_logs configurable TTL scaffolding.
 --
 -- Down 契约：
---   ① DROP FUNCTION cleanup_session_turn_logs_by_ttl(int) — Go 侧调用点在
---      bg/partition_manager.go（runCleanup step 11）随本迁移族一同回退。
+--   ① DROP FUNCTION cleanup_session_turn_logs_by_ttl(int, int) — Go 侧调用
+--      点在 bg/partition_manager.go（cleanupSessionTurnLogsByTTL，跑在 24h
+--      archiveOldPartitionsIfNeeded tick 上）随本迁移族一同回退。
 --      注意：回退后 session_turn_logs 重新变成「无界增长」——因为
 --      cleanup_expired_session_turn_logs()（430）虽然定义存在却从无调用方，
 --      历史上从未真正清理过。回退不是回到「既有行为」，是回到「既有的
@@ -20,6 +21,9 @@
 
 BEGIN;
 
+-- R72 批量修订后的签名；单参签名 IF EXISTS 兜底（防某个环境跑过修订前的
+-- 版本）。
+DROP FUNCTION IF EXISTS cleanup_session_turn_logs_by_ttl(int, int);
 DROP FUNCTION IF EXISTS cleanup_session_turn_logs_by_ttl(int);
 
 DO $$

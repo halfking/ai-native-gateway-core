@@ -46,20 +46,21 @@ var sqlReadGuardAllowFiles = map[string]string{
 	"bg/auto_route_affinity_worker.go": "LEGIT: NOT EXISTS 探测之母表腿（R46 F4 裁决落地形态）",
 
 	// ---- LEGIT：引擎/DDL/维护/工具 ----
-	"bg/lite_retention_worker.go":                 "LEGIT: SQLite 引擎 DELETE（? 占位，非 PG hot/mother 体系）",
-	"cmd/gateway/dual_read_validator.go":          "LEGIT: 专职双腿一致性校验器",
-	"db/db.go":                                    "LEGIT: routing_analytics_source DDL 体",
-	"db/request_logs_view_schema.go":              "LEGIT: 视图 DDL 体",
-	"admin/data_lifecycle.go":                     "LEGIT: 存储生命周期维护面（全历史体积/清理属设计语义）",
-	"admin/data_lifecycle_attachments.go":         "LEGIT: 存储生命周期维护面",
-	"admin/data_lifecycle_metrics.go":             "LEGIT: 存储生命周期维护面",
-	"bg/credential_recovery.go":                   "LEGIT: 恢复扫描需全历史窗口（404 二次确认 6h 终判的旧证据只在母表）",
-	"cmd/tools/validate_sessions_v2/loader.go":    "TOOLING: 离线校验工具",
-	"cmd/tools/backfill_sessions_v2_v2/main.go":   "TOOLING: 离线回填工具",
-	"cmd/tools/backfill_session_bodies/main.go":   "TOOLING: 离线回填工具",
-	"cmd/tools/backfill_session_bodies/derive.go": "TOOLING: 离线回填工具",
-	"cmd/traffic-replay/main.go":                  "TOOLING: 离线回放工具",
-	"cmd/compression-bench/main.go":               "TOOLING: 离线基准工具",
+	"bg/lite_retention_worker.go":               "LEGIT: SQLite 引擎 DELETE（? 占位，非 PG hot/mother 体系）",
+	"cmd/gateway/dual_read_validator.go":        "LEGIT: 专职双腿一致性校验器",
+	"db/db.go":                                  "LEGIT: routing_analytics_source DDL 体",
+	"db/request_logs_view_schema.go":            "LEGIT: 视图 DDL 体",
+	"admin/data_lifecycle.go":                   "LEGIT: 存储生命周期维护面（全历史体积/清理属设计语义）",
+	"admin/data_lifecycle_attachments.go":       "LEGIT: 存储生命周期维护面",
+	"admin/data_lifecycle_metrics.go":           "LEGIT: 存储生命周期维护面",
+	"bg/credential_recovery.go":                 "LEGIT: 恢复扫描需全历史窗口（404 二次确认 6h 终判的旧证据只在母表）",
+	"cmd/tools/validate_sessions_v2/loader.go":  "TOOLING: 离线校验工具",
+	"cmd/tools/backfill_session_bodies/main.go": "TOOLING: 离线回填工具",
+	"cmd/traffic-replay/main.go":                "TOOLING: 离线回放工具",
+	"cmd/compression-bench/main.go":             "TOOLING: 离线基准工具",
+	// R72 移除三条滞留条目（自清洁盲区修复后由守卫报出，均仅剩注释命中）：
+	// admin/session_export.go（已双腿化为 request_logs_with_current_month 视图）、
+	// cmd/tools/backfill_sessions_v2_v2/main.go、cmd/tools/backfill_session_bodies/derive.go。
 
 	// ---- DEBT(R47)：admin 读面盲区债（R46 §五#11 同类，待双腿化） ----
 	// session_list.go / usage.go / session_online.go 已在 R48 §5 双腿化为
@@ -74,7 +75,6 @@ var sqlReadGuardAllowFiles = map[string]string{
 	"admin/provider_models.go":                           "DEBT(R47): 裸母表",
 	"admin/probe_history.go":                             "DEBT(R47): 裸母表",
 	"admin/session_sanitize_matches.go":                  "DEBT(R47): 裸母表",
-	"admin/session_export.go":                            "DEBT(R47): 裸母表",
 	"cmd/gateway/output_compliance_control.go":           "DEBT(R47): 网关运行时读面裸母表",
 	"cmd/gateway/main_v3_wiring.go":                      "DEBT(R47): 接线读面裸母表",
 	"domains/analysis/optimizer.go":                      "DEBT(R47): 裸母表",
@@ -211,7 +211,15 @@ func TestSQLReadGuardWhitelistCurrent(t *testing.T) {
 				t.Errorf("白名单条目文件不存在（请移除条目）: %s", path)
 				continue
 			}
-			if len(sqlReadGuardMatches(t, full, "//")) == 0 && len(sqlReadGuardMatches(t, full, "--")) == 0 {
+			// R72 修正（D14#2）：按文件自己的注释类型做失配判定。旧写法
+			// 双腿与（// 与 -- 两个遍历都为 0 才报）——Go 文件的纯 // 注释
+			// 命中在 -- 遍历里不被豁免而恒计数 ≥1，导致"只剩注释命中"的
+			// 条目永不报滞留（白名单债务隐身，与守卫目的相反）。
+			comment := "//"
+			if m.comment == "SQL" {
+				comment = "--"
+			}
+			if len(sqlReadGuardMatches(t, full, comment)) == 0 {
 				t.Errorf("白名单条目已无裸读命中（修复完成后请移除条目）: %s", path)
 			}
 		}

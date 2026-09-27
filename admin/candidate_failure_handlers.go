@@ -166,7 +166,7 @@ func (h *candidateFailureHandlers) listCandidateFailures(w http.ResponseWriter, 
 		return rows.Err()
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -237,7 +237,7 @@ func (h *candidateFailureHandlers) getCandidateFailuresByCredential(w http.Respo
 		return rows.Err()
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -304,7 +304,7 @@ func (h *candidateFailureHandlers) getCandidateFailureStats(w http.ResponseWrite
 		return rows.Err()
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

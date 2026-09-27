@@ -70,7 +70,7 @@ func (h *PeakHandlers) handleGetPeaks(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 	defer rows.Close()
@@ -135,7 +135,7 @@ func (h *PeakHandlers) handlePreview(w http.ResponseWriter, r *http.Request) {
 		LIMIT 50
 	`)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 	defer rows.Close()
@@ -219,7 +219,7 @@ func (h *PeakHandlers) handleApply(w http.ResponseWriter, r *http.Request) {
 		UPDATE credentials SET concurrency_limit = $1, updated_at = NOW()
 		WHERE id = $2
 	`, req.NewLimit, req.CredentialID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 	_, _ = h.db.Exec(ctx, `
@@ -251,7 +251,7 @@ func (h *PeakHandlers) handleAuditLog(w http.ResponseWriter, r *http.Request) {
 		LIMIT 100
 	`)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 	defer rows.Close()

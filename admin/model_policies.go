@@ -212,7 +212,7 @@ func (h *Handler) listTenantModelPolicies(w http.ResponseWriter, r *http.Request
 		return rows.Err()
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -264,7 +264,7 @@ func (h *Handler) createTenantModelPolicy(w http.ResponseWriter, r *http.Request
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "transaction start failed: "+err.Error())
+		writeInternalErr(w, "transaction start failed", err)
 		return
 	}
 	//nolint:errcheck // deferred rollback, best-effort
@@ -275,7 +275,7 @@ func (h *Handler) createTenantModelPolicy(w http.ResponseWriter, r *http.Request
 	// Without current_tenant the INSERT/UPDATE is rejected by RLS
 	// (FORCE ROW LEVEL SECURITY + rolbypassrls=false).
 	if err := setPolicyTxGUCs(ctx, tx, tenantCode, createdBy); err != nil {
-		writeError(w, http.StatusInternalServerError, "set tx GUCs failed: "+err.Error())
+		writeInternalErr(w, "set tx GUCs failed", err)
 		return
 	}
 
@@ -295,11 +295,11 @@ func (h *Handler) createTenantModelPolicy(w http.ResponseWriter, r *http.Request
 				"a policy for this tenant + canonical_name already exists (or was soft-deleted; restore or use a new name)")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "insert failed: "+err.Error())
+		writeInternalErr(w, "insert failed", err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "commit failed: "+err.Error())
+		writeInternalErr(w, "commit failed", err)
 		return
 	}
 
@@ -349,7 +349,7 @@ func (h *Handler) patchTenantModelPolicy(w http.ResponseWriter, r *http.Request,
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "transaction start failed: "+err.Error())
+		writeInternalErr(w, "transaction start failed", err)
 		return
 	}
 	//nolint:errcheck // deferred rollback, best-effort
@@ -359,7 +359,7 @@ func (h *Handler) patchTenantModelPolicy(w http.ResponseWriter, r *http.Request,
 	// Without current_tenant the INSERT/UPDATE is rejected by RLS
 	// (FORCE ROW LEVEL SECURITY + rolbypassrls=false).
 	if err := setPolicyTxGUCs(ctx, tx, tenantCode, createdBy); err != nil {
-		writeError(w, http.StatusInternalServerError, "set tx GUCs failed: "+err.Error())
+		writeInternalErr(w, "set tx GUCs failed", err)
 		return
 	}
 
@@ -379,11 +379,11 @@ func (h *Handler) patchTenantModelPolicy(w http.ResponseWriter, r *http.Request,
 			writeError(w, http.StatusNotFound, "policy not found or soft-deleted")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "commit failed: "+err.Error())
+		writeInternalErr(w, "commit failed", err)
 		return
 	}
 
@@ -419,7 +419,7 @@ func (h *Handler) deleteTenantModelPolicy(w http.ResponseWriter, r *http.Request
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "transaction start failed: "+err.Error())
+		writeInternalErr(w, "transaction start failed", err)
 		return
 	}
 	//nolint:errcheck // deferred rollback, best-effort
@@ -429,7 +429,7 @@ func (h *Handler) deleteTenantModelPolicy(w http.ResponseWriter, r *http.Request
 	// Without current_tenant the INSERT/UPDATE is rejected by RLS
 	// (FORCE ROW LEVEL SECURITY + rolbypassrls=false).
 	if err := setPolicyTxGUCs(ctx, tx, tenantCode, createdBy); err != nil {
-		writeError(w, http.StatusInternalServerError, "set tx GUCs failed: "+err.Error())
+		writeInternalErr(w, "set tx GUCs failed", err)
 		return
 	}
 
@@ -439,7 +439,7 @@ func (h *Handler) deleteTenantModelPolicy(w http.ResponseWriter, r *http.Request
 		WHERE id = $2 AND tenant_id = $3 AND deleted_at IS NULL
 	`, createdBy, id, tenantCode)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "delete failed: "+err.Error())
+		writeInternalErr(w, "delete failed", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -447,7 +447,7 @@ func (h *Handler) deleteTenantModelPolicy(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "commit failed: "+err.Error())
+		writeInternalErr(w, "commit failed", err)
 		return
 	}
 
@@ -487,7 +487,7 @@ func (h *Handler) undeleteTenantModelPolicy(w http.ResponseWriter, r *http.Reque
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "transaction start failed: "+err.Error())
+		writeInternalErr(w, "transaction start failed", err)
 		return
 	}
 	//nolint:errcheck // deferred rollback, best-effort
@@ -497,7 +497,7 @@ func (h *Handler) undeleteTenantModelPolicy(w http.ResponseWriter, r *http.Reque
 	// Without current_tenant the INSERT/UPDATE is rejected by RLS
 	// (FORCE ROW LEVEL SECURITY + rolbypassrls=false).
 	if err := setPolicyTxGUCs(ctx, tx, tenantCode, createdBy); err != nil {
-		writeError(w, http.StatusInternalServerError, "set tx GUCs failed: "+err.Error())
+		writeInternalErr(w, "set tx GUCs failed", err)
 		return
 	}
 
@@ -507,7 +507,7 @@ func (h *Handler) undeleteTenantModelPolicy(w http.ResponseWriter, r *http.Reque
 		WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NOT NULL
 	`, id, tenantCode)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "undelete failed: "+err.Error())
+		writeInternalErr(w, "undelete failed", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -515,7 +515,7 @@ func (h *Handler) undeleteTenantModelPolicy(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "commit failed: "+err.Error())
+		writeInternalErr(w, "commit failed", err)
 		return
 	}
 
@@ -581,7 +581,7 @@ func (h *Handler) checkTenantModelPolicy(w http.ResponseWriter, r *http.Request,
 		// cycle.  Returning empty string is acceptable for the
 		// UI which falls back to "Unknown vendor".
 	} else if err != pgx.ErrNoRows {
-		writeError(w, http.StatusInternalServerError, "lookup failed: "+err.Error())
+		writeInternalErr(w, "lookup failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -641,7 +641,7 @@ func (h *Handler) listTenantModelPoliciesAudit(w http.ResponseWriter, r *http.Re
 		return rows.Err()
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "audit query failed: "+err.Error())
+		writeInternalErr(w, "audit query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

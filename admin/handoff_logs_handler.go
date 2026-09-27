@@ -185,14 +185,14 @@ func (h *HandoffLogsHandler) handleList(w http.ResponseWriter, r *http.Request) 
 
 	if tenantFilter == "*" && IsSuperAdminOrLegacy(r) {
 		if err := list(h.db); err != nil {
-			writeError(w, http.StatusInternalServerError, "list failed: "+err.Error())
+			writeInternalErr(w, "list failed", err)
 		}
 		return
 	}
 	if err := withTenantTx(ctx, h.db, EffectiveTenantID(r), func(tx pgx.Tx) error {
 		return list(tx)
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "list failed: "+err.Error())
+		writeInternalErr(w, "list failed", err)
 	}
 }
 
@@ -251,7 +251,7 @@ func (h *HandoffLogsHandler) handleGet(w http.ResponseWriter, r *http.Request, i
 	// super_admin bypass (no RLS) — use the pool directly.
 	if IsSuperAdminOrLegacy(r) {
 		if err := run(h.db, h.db.QueryRow); err != nil {
-			writeError(w, http.StatusInternalServerError, "get failed: "+err.Error())
+			writeInternalErr(w, "get failed", err)
 		}
 		return
 	}
@@ -260,7 +260,7 @@ func (h *HandoffLogsHandler) handleGet(w http.ResponseWriter, r *http.Request, i
 	if err := withTenantTx(ctx, h.db, EffectiveTenantID(r), func(tx pgx.Tx) error {
 		return run(tx, tx.QueryRow)
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "get failed: "+err.Error())
+		writeInternalErr(w, "get failed", err)
 	}
 }
 
@@ -393,14 +393,14 @@ func (h *HandoffLogsHandler) handleStats(w http.ResponseWriter, r *http.Request)
 
 	if tenantFilter == "*" && IsSuperAdminOrLegacy(r) {
 		if err := stats(h.db); err != nil {
-			writeError(w, http.StatusInternalServerError, "stats failed: "+err.Error())
+			writeInternalErr(w, "stats failed", err)
 		}
 		return
 	}
 	if err := withTenantTx(ctx, h.db, EffectiveTenantID(r), func(tx pgx.Tx) error {
 		return stats(tx)
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "stats failed: "+err.Error())
+		writeInternalErr(w, "stats failed", err)
 	}
 }
 
