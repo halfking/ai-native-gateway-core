@@ -245,7 +245,11 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	detail, err := api.querySessionDetail(ctx, resolvedSessionID, tenantID, limit, offset)
 	if err != nil {
-		writeExportJSONError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %v", err))
+		// R71 审计：0aa86d8bd 只收口了 resolve 臂；query 臂此前把 pgx 原始
+		// 错误（含 SQL 片段/约束名/租户参数）原样回显给客户端，且无服务端
+		// 日志锚点。与 resolve 分款同构：固定文案 + slog 落服务端。
+		slog.Error("querySessionDetail failed", "err", err, "session_id", resolvedSessionID)
+		writeExportJSONError(w, http.StatusInternalServerError, "query session detail failed")
 		return
 	}
 
@@ -514,6 +518,12 @@ func (api *SessionDetailV2API) resolveSessionID(
 		FROM public.sessions s
 		WHERE s.tenant_id = $1
 		  AND s.primary_request_id IN (
+		      -- R71 审计：双腿化（hot∪母表，R47 守卫纪律）。活跃会话的
+		      -- request_logs 行在热表、历史行已被 promote 进母表；单腿母表
+		      -- 只能解析 8h 前的 gw_session_id，热窗内反向臂恒 miss。
+		      SELECT request_id FROM request_logs_hot
+		      WHERE tenant_id = $1 AND gw_session_id = $2
+		      UNION ALL
 		      SELECT request_id FROM request_logs
 		      WHERE tenant_id = $1 AND gw_session_id = $2
 		  )

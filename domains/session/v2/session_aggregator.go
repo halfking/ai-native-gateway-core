@@ -281,7 +281,14 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			-- 写入者此前不含该列，活跃会话恒 NULL，反向臂只服务 backfill/
 			-- repair 期数据。聚合按轮到达顺序追加，首个非空 RequestID 即
 			-- 语义上的"第一个请求"，与 430 列注释一致。
-			primary_request_id = COALESCE(NULLIF(EXCLUDED.primary_request_id, ''), public.sessions.primary_request_id)
+			-- R71 审计修正：R69 初版把冲突臂写成
+			-- COALESCE(NULLIF(EXCLUDED…), sessions…)——EXCLUDED 优先即
+			-- last-write-wins，每轮 upsert 把指针推到最新轮，与 430 列注释
+			-- /repair 工具（v1Turns[0]）/本注释三方"第一个请求"契约相反；
+			-- 且指针被无限推向最新热行、永不收敛。翻转为存量优先：首个
+			-- 非空 RequestID 固化后不再被后续轮改写（与 730 归因列注释的
+			-- "不能用 COALESCE(NULLIF(EXCLUDED...))" 形态学一致）。
+			primary_request_id = COALESCE(public.sessions.primary_request_id, NULLIF(EXCLUDED.primary_request_id, ''))
 		WHERE public.sessions.tenant_id = EXCLUDED.tenant_id
 	`,
 		update.SessionID, update.TenantID,

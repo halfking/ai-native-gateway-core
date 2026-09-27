@@ -15,6 +15,7 @@ package admin
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -146,7 +147,10 @@ func (api *SessionListV2API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	audits, err := exp.ListRecentSessions(r.Context(), tenantID, limit)
 	if err != nil {
-		writeExportJSONError(w, http.StatusInternalServerError, err.Error())
+		// R71 审计：err.Error() 是底层 pgx 错误原文（含 SQL/租户参数），
+		// 不回显；固定文案 + slog 服务端锚点（与 detail 端点同构）。
+		slog.Error("session list v2 query failed", "err", err, "tenant_id", tenantID)
+		writeExportJSONError(w, http.StatusInternalServerError, "query sessions failed")
 		return
 	}
 

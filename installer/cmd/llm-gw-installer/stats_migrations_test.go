@@ -432,11 +432,16 @@ func TestStartupFilesAreAllEmbedded(t *testing.T) {
 // (db.ensureSqlAuditPartialIndexes) so existing databases converge at boot,
 // but the canonical file still must not enter the single-transaction
 // installer channel.
+//
+// 749 (2026-09-26, R68 usage_facts 分区轮): occurred_at 索引三段式
+// CREATE INDEX CONCURRENTLY；与 727/728/729 同类，只走 revision-sequence
+// 通道（R71 审计补登记豁免——749 落地时漏更本表，守卫自落地起恒红）。
 var psqlConcurrencyRequired = map[string]string{
 	"727_sql_audit_slow_query_indexes.sql":                  "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
 	"728_sql_audit_request_logs_credential_model_index.sql": "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
 	"729_sql_audit_session_turns_credential_ts_index.sql":   "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
 	"744_sql_audit_partial_indexes.sql":                     "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
+	"749_usage_facts_occurred_at_index.sql":                 "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
 }
 
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17

@@ -35,8 +35,10 @@ func TestUpsertSessionSnapshot_SqlCarriesAttributionColumns(t *testing.T) {
 		regexp.QuoteMeta("parent_session_id = COALESCE(EXCLUDED.parent_session_id, public.sessions.parent_session_id)") + `.*` +
 		regexp.QuoteMeta("parent_task_id = COALESCE(EXCLUDED.parent_task_id, public.sessions.parent_task_id)") + `.*` +
 		// R69：primary_request_id 活跃写入（首值优先），admin gw_session_id
-		// 反向映射臂的数据源闭合。
-		regexp.QuoteMeta("primary_request_id = COALESCE(NULLIF(EXCLUDED.primary_request_id, ''), public.sessions.primary_request_id)")
+		// 反向映射臂的数据源闭合。R71：冲突臂翻转为存量优先——R69 初版
+		// EXCLUDED 优先是 last-write-wins，每轮覆盖指针，与"第一个请求"
+		// 契约（430 列注释/repair 工具）相反。
+		regexp.QuoteMeta("primary_request_id = COALESCE(public.sessions.primary_request_id, NULLIF(EXCLUDED.primary_request_id, ''))")
 	mock.ExpectExec(shape).
 		WithArgs(
 			"sess-attr", "tenant-1",

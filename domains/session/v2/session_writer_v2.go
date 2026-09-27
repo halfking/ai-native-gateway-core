@@ -1043,8 +1043,13 @@ func summarizeMessages(messages []Message) string {
 	// valid UTF-8, so byte-slicing [:200] would panic on insert if the cut
 	// lands inside a multi-byte character. R69: markdown 噪音在截断前剥除，
 	// 让 title/summary/last_request_summary 面向人类阅读而非原始格式。
+	// R71：剥噪后为空且原文非空时回退原文——响应整体是一个（或未闭合的）
+	// 代码围栏时 stripMarkdownNoise 返回空串，摘要信息量反而从"有"变"无"。
 	firstMsg := messages[0]
 	content := stripMarkdownNoise(firstMsg.Content)
+	if content == "" && firstMsg.Content != "" {
+		content = strings.TrimSpace(firstMsg.Content)
+	}
 	runes := []rune(content)
 	if len(runes) > 200 {
 		content = string(runes[:200]) + "..."

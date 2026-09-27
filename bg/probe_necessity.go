@@ -64,7 +64,8 @@ const probeNecessitySiblingLimit = 500
 //
 // 2026-09-26: raised from 3s → 10s after PG logs showed the
 // credentialTwoProbeSuccessGateSQL subquery (DISTINCT ON over 24h of
-// node_probe_runs) consistently timing out at ~xx:35-39 each minute (one
+// node_probe_runs) consistently timing out in the tail seconds of each
+// minute (one
 // pump tick = 2 bursts of 4–5 tasks for credential 126, each serial in the
 // 250ms-poll worker). 10s is still far below the claim lease
 // (ProbeQueueLeaseDefault = 5m — R69 comment fix: the "30s lease" cited here
