@@ -100,6 +100,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/hotconfig"
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
+	"github.com/kaixuan/llm-gateway-go/internal/auth"
 	"github.com/kaixuan/llm-gateway-go/internal/centeragent"
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/dbx"
@@ -109,10 +110,12 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
+	"github.com/kaixuan/llm-gateway-go/internal/mockprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
+	"github.com/kaixuan/llm-gateway-go/internal/providers/mock"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
@@ -5863,6 +5866,24 @@ func main() {
 	mux.Handle("/metrics", middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(middleware.MetricsHandler()))
 	registerStorageMetricsHandler(mux, storageRt, cfg.AdminAPIKey) // Task 5.3: 存储分层指标端点，鉴权与 /metrics 一致
 
+	// Mock Probe 端点（2026-09-24 v2 设计；2026-09-26 生产入口接入，审计
+	// docs/audit/2026-09-27-mock-probe-production-entry-audit.md §修复）。仅 MockProbeEnabled=true
+	// 时注册（关闭时 /mock/* 落 mux 404，语义与未部署该子系统一致——需求
+	// "开关关闭时不可见"）。每个端点挂 auth.MockEndpoint 守卫（POST +
+	// Bearer mock-probe-client + 供应商 scope 白名单）。协议矩阵：OpenAI
+	// Chat Completions（探测主通道，协议锁定）+ Anthropic Messages（管理/
+	// 联调用，探测不经过），4 端点 = 2 供应商 × 2 协议；stream/non-stream
+	// 由请求体决定。鉴权全局门对 /mock/ 前缀放行（middleware/auth_mw.go
+	// bypass 规则），端点守卫是唯一强制点。
+	if cfg.MockProbeEnabled {
+		mux.Handle("/mock/v1/chat/completions/fast", auth.MockEndpoint(mock.CodeFast, mock.ChatCompletionsFast()))
+		mux.Handle("/mock/v1/chat/completions/slow", auth.MockEndpoint(mock.CodeSlow, mock.ChatCompletionsSlow()))
+		mux.Handle("/mock/v1/messages/fast", auth.MockEndpoint(mock.CodeFast, mock.MessagesFast()))
+		mux.Handle("/mock/v1/messages/slow", auth.MockEndpoint(mock.CodeSlow, mock.MessagesSlow()))
+		slog.Info("mock probe endpoints registered",
+			"paths", "/mock/v1/chat/completions/{fast,slow},/mock/v1/messages/{fast,slow}")
+	}
+
 	// 2026-07-20: telemetry fallback ring buffer 暴露面。
 	// 路径: /internal/telemetry/fallback-buffer/{stats,dump,clear,replay}
 	// 鉴权: 与 /healthz/full 一致（LLM_GATEWAY_ADMIN_API_KEY）。
@@ -7179,6 +7200,19 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// ── Mock Probe runner 装配（2026-09-24 v2 设计；2026-09-26 生产入口
+	// 接入）。默认不启动（cfg.MockProbeEnabled=false 时完全静默——需求
+	// "开关关闭时客户端不发任何请求"）；启用时复用主 DB 池落
+	// mock_probe_history（无 DB 部署降级为只打指标）。实际 Start 在下方
+	// 监听绑定之后，保证首轮探测不因入口未就绪记脏失败。probeCtx 独立
+	// 派生：停机序列先 cancel 它使在途探测即刻收敛，再排空历史写入。
+	var probeRunner *mockprobe.Runner
+	probeCtx, probeCancel := context.WithCancel(ctx)
+	defer probeCancel()
+	if cfg.MockProbeEnabled {
+		probeRunner = startMockProbeRunner(probeCtx, cfg, dbConn)
+	}
+
 	// ── Start mDNS advertiser if enabled ──────────────────────────────────
 	var lanAdvertiser *discovery.LANAdvertiser
 	if cfg.LANAdvertise {
@@ -7216,9 +7250,29 @@ func main() {
 		}
 	}
 
+	// 监听绑定改为主 goroutine 同步完成（原 ListenAndServe 在子 goroutine
+	// 内绑定）：Mock Probe runner（设计 §四"部署时同步启动"）必须在入口
+	// 绑定后、Serve 前启动——内核 accept 队列兜住绑定后到达的连接，首轮
+	// 探测不记脏失败。绑定失败沿用在子 goroutine 中的清理路径（异常退出
+	// 日志 + 资源监控停止 + os.Exit(1)）。
+	ln, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		slog.Error("gateway listen failed", "error", err)
+		if resourceMonitor != nil {
+			_ = resourceMonitor.Stop()
+		}
+		if persistentLogger != nil {
+			persistentLogger.LogAbnormalExit("listen_error", err.Error())
+			_ = persistentLogger.Close()
+		}
+		os.Exit(1)
+	}
+	if probeRunner != nil {
+		probeRunner.Start(probeCtx)
+	}
 	go func() {
 		slog.Info("gateway listening", "listen", cfg.Listen)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			slog.Error("gateway listen failed", "error", err)
 			if resourceMonitor != nil {
 				_ = resourceMonitor.Stop()
@@ -7241,6 +7295,19 @@ func main() {
 	if lanAdvertiser != nil {
 		lanAdvertiser.Stop()
 		slog.Info("mDNS advertiser stopped")
+	}
+
+	// Mock Probe runner 先停（设计 §二"先停 runner → 关 mux"）：先 cancel
+	// 运行 ctx 使在途探测（单次自带 probeTimeout 超时）即刻收敛，再以独立
+	// 5s 预算排空历史写入队列——正常毫秒级，5s 是 PG 停摆兜底上限；不与
+	// 下方 23s srv.Shutdown 预算混算（systemd TimeoutStopSec=35s 下两者
+	// 不叠加挤占，drain 典型远小于 1s）。
+	if probeRunner != nil {
+		probeCancel()
+		probeDrainCtx, probeDrainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		probeRunner.Stop(probeDrainCtx)
+		probeDrainCancel()
+		slog.Info("mock probe runner stopped")
 	}
 
 	// 1. Stop accepting new connections — in-flight requests drain naturally
