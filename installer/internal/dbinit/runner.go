@@ -313,6 +313,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// cleanupSessionTurnLogsByTTL 循环分批调用（settings
 			// lifecycle.session_turn_logs_ttl_hours 热加载）。
 			"753_session_turn_logs_ttl.sql",
+			// 754 (2026-09-27, R67 session-storage 审计子任务 7): request_logs
+			// 主表归档函数 archive_request_logs_default(p_retention_days)
+			// ——超窗月分区摘要字段落进 request_logs_archive_YYYY_MM，
+			// [7,365] 越界 RAISE 联锁；无 DELETE、无 DROP（R68 纪律）。
+			// 幂等（OR REPLACE）。R72 审计轮补五点同步（子任务只登记了
+			// sequence 通道，canonical 登记守卫对本号必红）。
+			"754_archive_request_logs_default.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，
