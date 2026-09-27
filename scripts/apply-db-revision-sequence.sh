@@ -626,15 +626,20 @@ files=(
   # 完成，登记先行；无 Go boot ensure，本通道是升级库唯一投递路径）。
   "$ROOT_DIR/sql/migrations/startup/800_provider_endpoint_protocols.sql"
   # 2026-09-27 R67 session-storage 审计子任务 2：753 session_turn_logs
-  # 可配 TTL——cleanup_session_turn_logs_by_ttl(p_ttl_hours) 把 430 schema
-  # 里 24h 硬编码的 expires_at 清理阈值改为按入参可调（默认仍 24h，不破
-  # 既有行为），并补 idx_session_turn_logs_expires_at 兜底清理路径。
+  # 可配 TTL——保留期在写入方（turn_logs_writer.go）按 settings_kv 的
+  # lifecycle.session_turn_logs_ttl_hours 烘焙进 expires_at；清理函数
+  # cleanup_session_turn_logs_by_ttl(p_ttl_hours, p_batch_size) 只做
+  # 「到期即删」（expires_at < NOW()），每调用删一有界批（LIMIT 主键选批），
+  # bg 侧循环消化积压（R72 审计轮修订；p_ttl_hours 是 [1,168] 越界 RAISE
+  # 的 fail-closed 联锁，不参与谓词；不建任何索引——430:275 已有同列索引，
+  # 初稿的重复索引已被批判式审计移除）。430 定义的旧清理函数全仓无调用方，
+  # 本迁移是首次真正接上清扫，不是参数化既有行为。
   # 编号：模板原写 745，但 745/750/751/752 已被 report_snapshots /
   # usage_facts_daily_partition / usage_facts_partition_tz_pin（已 applied
   # 到 245 库）/ mock_probe_history 依次占用，故取当时首个空闲号 753。
   # 无 CONCURRENTLY（普通堆表，走 installer 单事务通道）；Go 侧调用点在
-  # bg.PartitionManager.runCleanup，按 settings_kv 的
-  # lifecycle.session_turn_logs_ttl_hours 读取，支持热重载。
+  # bg.PartitionManager.cleanupSessionTurnLogsByTTL（跑在 24h 的
+  # archiveOldPartitionsIfNeeded tick 上），支持热重载。
   "$ROOT_DIR/sql/migrations/startup/753_session_turn_logs_ttl.sql"
 )
 

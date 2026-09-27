@@ -122,7 +122,7 @@ func (h *TuningHandlers) handleProposalsGenerate(w http.ResponseWriter, r *http.
 	drafts, err := taskprofile.GenerateCorrectionProposals(r.Context(), h.parent.db, days, operator)
 	if err != nil {
 		slog.Error("tuning: corrections-driven proposal generation failed", "error", err, "days", days)
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	// 审计留痕（非阻塞纯日志，同 taskProfileAuditSink 契约）：提案行本身
@@ -167,7 +167,7 @@ func (h *TuningHandlers) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Error("tuning: on-demand analyze failed", "error", err)
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -214,7 +214,7 @@ func (h *TuningHandlers) handleProposals(w http.ResponseWriter, r *http.Request)
 	`
 	rows, err := h.parent.db.Query(r.Context(), query, status, category, limit)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -239,13 +239,13 @@ func (h *TuningHandlers) handleProposals(w http.ResponseWriter, r *http.Request)
 		if err := rows.Scan(&row.ID, &row.Ts, &row.Category, &row.TaskType,
 			&row.Proposal, &row.Evidence, &row.Status,
 			&row.ReviewedBy, &row.ReviewedAt, &row.AppliedAt, &row.ReviewNote); err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 		results = append(results, row)
 	}
 	if err := rows.Err(); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -299,7 +299,7 @@ func (h *TuningHandlers) approveProposal(w http.ResponseWriter, r *http.Request,
 	// Single transaction: locks the proposal row, applies params, updates status.
 	tx, err := h.parent.db.Begin(ctx)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	//nolint:errcheck // deferred rollback, best-effort
@@ -321,7 +321,7 @@ func (h *TuningHandlers) approveProposal(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -347,7 +347,7 @@ func (h *TuningHandlers) approveProposal(w http.ResponseWriter, r *http.Request,
 			writeJSONErr(w, http.StatusConflict, err.Error())
 			return
 		}
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -358,13 +358,13 @@ func (h *TuningHandlers) approveProposal(w http.ResponseWriter, r *http.Request,
 		WHERE id = $1
 	`, id)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
 	// Atomic commit — either everything succeeds or everything rolls back.
 	if err := tx.Commit(ctx); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -409,7 +409,7 @@ func (h *TuningHandlers) rejectProposal(w http.ResponseWriter, r *http.Request, 
 	// same shape as approveProposal.
 	tx, err := h.parent.db.Begin(ctx)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	//nolint:errcheck // deferred rollback, best-effort
@@ -427,7 +427,7 @@ func (h *TuningHandlers) rejectProposal(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if status != "pending" {
@@ -440,11 +440,11 @@ func (h *TuningHandlers) rejectProposal(w http.ResponseWriter, r *http.Request, 
 		SET status = 'rejected', review_note = $2, reviewed_at = NOW(), updated_at = NOW()
 		WHERE id = $1
 	`, id, note); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -781,7 +781,7 @@ func (h *TuningHandlers) handleAccuracy(w http.ResponseWriter, r *http.Request) 
 	`
 	rows, err := h.parent.db.Query(r.Context(), query, days)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -803,13 +803,13 @@ func (h *TuningHandlers) handleAccuracy(w http.ResponseWriter, r *http.Request) 
 		if err := rows.Scan(&row.TaskType, &row.Classifier, &row.Total,
 			&row.AvgQuality, &row.AvgSuccess, &row.AvgLatency, &row.AvgCost,
 			&row.DriftRate); err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 		results = append(results, row)
 	}
 	if err := rows.Err(); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -867,7 +867,7 @@ func (h *TuningHandlers) handleStrategies(w http.ResponseWriter, r *http.Request
 	`
 	rows, err := h.parent.db.Query(r.Context(), summaryQuery, days)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -887,13 +887,13 @@ func (h *TuningHandlers) handleStrategies(w http.ResponseWriter, r *http.Request
 		var row strategyRow
 		if err := rows.Scan(&row.Strategy, &row.Total, &row.AvgQuality,
 			&row.AvgSuccess, &row.AvgLatency, &row.AvgCost, &row.DriftRate); err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 		summary = append(summary, row)
 	}
 	if err := rows.Err(); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -914,7 +914,7 @@ func (h *TuningHandlers) handleStrategies(w http.ResponseWriter, r *http.Request
 	`
 	rows2, err := h.parent.db.Query(r.Context(), breakdownQuery, days)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows2.Close()
@@ -931,13 +931,13 @@ func (h *TuningHandlers) handleStrategies(w http.ResponseWriter, r *http.Request
 		var row breakdownRow
 		if err := rows2.Scan(&row.Strategy, &row.TaskType, &row.Total,
 			&row.AvgQuality, &row.AvgSuccess); err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 		breakdown = append(breakdown, row)
 	}
 	if err := rows2.Err(); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 

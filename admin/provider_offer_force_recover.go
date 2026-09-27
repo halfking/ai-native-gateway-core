@@ -264,7 +264,7 @@ func serveUpdateModelOffer(w http.ResponseWriter, r *http.Request, db offerQueri
 			    updated_at = NOW()
 			WHERE id = $2
 		`, *req.OutboundModelName, offerID); err != nil {
-			writeError(w, http.StatusInternalServerError, "update outbound_model_name failed: "+err.Error())
+			writeInternalErr(w, "update outbound_model_name failed", err)
 			return
 		}
 		slog.Info("model_offers.outbound_model_name updated",
@@ -312,7 +312,7 @@ func serveUpdateModelOffer(w http.ResponseWriter, r *http.Request, db offerQueri
 				    updated_at = now()
 				WHERE id = $2
 			`, *req.ContextWindow, offerID); err != nil {
-				writeError(w, http.StatusInternalServerError, "update context_window failed: "+err.Error())
+				writeInternalErr(w, "update context_window failed", err)
 				return
 			}
 		} else {
@@ -324,7 +324,7 @@ func serveUpdateModelOffer(w http.ResponseWriter, r *http.Request, db offerQueri
 				    updated_at = now()
 				WHERE id = $1
 			`, offerID); err != nil {
-				writeError(w, http.StatusInternalServerError, "clear context_window failed: "+err.Error())
+				writeInternalErr(w, "clear context_window failed", err)
 				return
 			}
 		}
@@ -471,7 +471,7 @@ func serveModelOfferSuggestions(w http.ResponseWriter, r *http.Request, db offer
 	// 2026-09-11 audit: don't silently truncate the catalog on a
 	// mid-iteration connection failure.
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "scan catalog failed: "+err.Error())
+		writeInternalErr(w, "scan catalog failed", err)
 		return
 	}
 
@@ -1035,7 +1035,7 @@ func (h *Handler) pickDefaultProbeModel(w http.ResponseWriter, r *http.Request, 
 
 	result, err := bgPickProbeModel(ctx, h.db, credID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "pick failed: "+err.Error())
+		writeInternalErr(w, "pick failed", err)
 		return
 	}
 

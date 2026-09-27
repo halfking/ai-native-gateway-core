@@ -112,7 +112,7 @@ func (h *AutoRouteHandlers) handleQualityCorrelations(w http.ResponseWriter, r *
 	}
 	rows, err := h.db.Query(r.Context(), breakdownQuery, breakdownArgs...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -122,13 +122,13 @@ func (h *AutoRouteHandlers) handleQualityCorrelations(w http.ResponseWriter, r *
 		var row QualityCorrelationRow
 		if err := rows.Scan(&row.Bucket, &row.Samples, &row.SuccessRate,
 			&row.AvgLatency, &row.AvgQuality, &row.AvgCost); err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 		breakdown = append(breakdown, row)
 	}
 	if err := rows.Err(); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 

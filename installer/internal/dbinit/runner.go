@@ -302,13 +302,16 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 搬移)。幂等（IF NOT EXISTS / OR REPLACE / pg_inherits
 			// 短路），252 存量库重放安全且顺带升级旧版函数。
 			"752_mock_probe_history.sql",
-			// 753 (2026-09-27, R67 session-storage 审计子任务 2):
-			// session_turn_logs 可配 TTL 清理函数 cleanup_session_turn_logs_
-			// by_ttl(p_ttl_hours)——入参 NULL→24、下限 GREATEST(...,1) 防误配
-			// 清空整表；幂等（OR REPLACE + pg_proc 短路），仅函数无 DDL 表
-			// 变更，installer 通道安全。生产/升级节奏由 bg/partition_manager
-			// runCleanup 周期调用（settings lifecycle.session_turn_logs_ttl_
-			// hours 热加载）。
+			// 753 (2026-09-27, R67 session-storage 审计子任务 2; 语义按
+			// 批判式审计修正、R72 审计轮分批): session_turn_logs TTL 清理
+			// 函数 cleanup_session_turn_logs_by_ttl(p_ttl_hours,
+			// p_batch_size)——保留期由写入方按 settings 烘焙进 expires_at，
+			// 函数只做「到期即删」，每调用删一有界批（LIMIT 主键选批）；
+			// p_ttl_hours 越界直接 RAISE（fail-closed 联锁，无 GREATEST/
+			// NULL 兜底）。幂等（OR REPLACE），仅函数无 DDL 表变更，
+			// installer 通道安全。清扫由 bg/partition_manager
+			// cleanupSessionTurnLogsByTTL 循环分批调用（settings
+			// lifecycle.session_turn_logs_ttl_hours 热加载）。
 			"753_session_turn_logs_ttl.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO

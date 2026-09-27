@@ -345,7 +345,7 @@ func (h *Handler) HandleSessionAnalyticsList(w http.ResponseWriter, r *http.Requ
 		return nil
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "session analytics list failed: "+err.Error())
+		writeInternalErr(w, "session analytics list failed", err)
 		return
 	}
 
@@ -411,7 +411,7 @@ func (h *Handler) HandleSessionAnalyticsStats(w http.ResponseWriter, r *http.Req
 		)
 	})
 	if err != nil && err != pgx.ErrNoRows {
-		writeError(w, http.StatusInternalServerError, "stats query failed: "+err.Error())
+		writeInternalErr(w, "stats query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
@@ -527,7 +527,7 @@ func (h *Handler) HandleSessionAnalyticsDetail(w http.ResponseWriter, r *http.Re
 		return nil
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "session analytics detail failed: "+err.Error())
+		writeInternalErr(w, "session analytics detail failed", err)
 		return
 	}
 	if notFound {
@@ -585,7 +585,7 @@ func (h *Handler) HandleSessionAnalyticsExport(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "export failed: "+err.Error())
+		writeInternalErr(w, "export failed", err)
 		return
 	}
 

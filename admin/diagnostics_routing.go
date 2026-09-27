@@ -74,7 +74,7 @@ func (h *Handler) handleRoutingBlockedDiagnostic(w http.ResponseWriter, r *http.
 
 	diag, err := buildRoutingBlockedDiagnostic(ctx, h.db, providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("diagnostic failed: %v", err))
+		writeInternalErr(w, "diagnostic failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, diag)
@@ -274,7 +274,7 @@ func (h *Handler) handleRoutingBlockedFix(w http.ResponseWriter, r *http.Request
 		      OR consecutive_failures > 0
 		  )
 	`, req.ProviderID); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("credential reset failed: %v", err))
+		writeInternalErr(w, "credential reset failed", err)
 		return
 	}
 
@@ -291,7 +291,7 @@ func (h *Handler) handleRoutingBlockedFix(w http.ResponseWriter, r *http.Request
 		  AND c.provider_id = $1
 		  AND (cmb.available IS NOT TRUE OR cmb.unavailable_reason IS NOT NULL)
 	`, req.ProviderID); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("binding reset failed: %v", err))
+		writeInternalErr(w, "binding reset failed", err)
 		return
 	}
 
@@ -308,7 +308,7 @@ func (h *Handler) handleRoutingBlockedFix(w http.ResponseWriter, r *http.Request
 		  AND c.provider_id = $1
 		  AND mps.state IN ('broken_confirmed', 'recovering', 'unknown', 'suspicious', 'failing')
 	`, req.ProviderID); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("probe state reset failed: %v", err))
+		writeInternalErr(w, "probe state reset failed", err)
 		return
 	}
 
@@ -333,7 +333,7 @@ func (h *Handler) handleRoutingBlockedFix(w http.ResponseWriter, r *http.Request
 		  AND c.provider_id = $1
 		  AND nps.last_direct_ok = FALSE
 	`, req.ProviderID); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("node probe state reset failed: %v", err))
+		writeInternalErr(w, "node probe state reset failed", err)
 		return
 	}
 

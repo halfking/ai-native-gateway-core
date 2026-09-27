@@ -73,7 +73,7 @@ func (h *Handler) setIdentityPoolMax(w http.ResponseWriter, r *http.Request) {
 			updated_at = now()
 	`, newMax); err != nil {
 		slog.Error("setIdentityPoolMax persist failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "persist failed: "+err.Error())
+		writeInternalErr(w, "persist failed", err)
 		return
 	}
 

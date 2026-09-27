@@ -138,7 +138,7 @@ func (h *Handler) handleSessionExtractToMemora(w http.ResponseWriter, r *http.Re
 
 	turns, err := h.loadSessionPreviewTurns(ctx, taskID, sc, r, 500)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 

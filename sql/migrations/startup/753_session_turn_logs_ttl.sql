@@ -37,6 +37,17 @@
 --     越界直接 RAISE EXCEPTION（失败即停），避免一个坏配置静默变成
 --     「全表删光」或「永不删」。
 --
+-- R72 审计修订（2026-09-27，在任何真库应用前原位定稿——252 库
+-- schema_migrations 已核实无 752/753 记录）：
+--   - 前版终稿的 DELETE 是无界单语句。本头注自证「session_turn_logs 在
+--     生产上从未被清理过」，而部署 boot 段（archiveOldPartitionsIfNeeded）
+--     即触发首扫：历史积压一次性 DELETE，长事务持行锁 + WAL 尖峰 +
+--     表膨胀；且 bg 侧 5min 语句超时一旦触发整批回滚，下次重试要等 24h
+--     tick——大积压库上清理永不收敛。
+--   - 改为「每调用一有界批」：函数内 DELETE 带 LIMIT p_batch_size（主键
+--     id 选批），返回**本次**删除行数；bg 调用方循环调用直到删空/超时。
+--     每批是独立语句，超时最多损失当前批，已删进度不回滚。
+--
 -- 编号契约：原任务模板指 745，但该号已被占用，逐级上溯到首个空闲号：
 --          745 = report_snapshots / 750 = usage_facts_daily_partition /
 --          751 = usage_facts_partition_tz_pin（已 applied+verified 到 245 库）/
@@ -52,7 +63,10 @@
 
 BEGIN;
 
-CREATE OR REPLACE FUNCTION cleanup_session_turn_logs_by_ttl(p_ttl_hours int)
+CREATE OR REPLACE FUNCTION cleanup_session_turn_logs_by_ttl(
+    p_ttl_hours  int,
+    p_batch_size int DEFAULT 10000
+)
 RETURNS bigint
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -66,34 +80,51 @@ BEGIN
             'cleanup_session_turn_logs_by_ttl: p_ttl_hours=% must be within [1,168] (settings lifecycle.session_turn_logs_ttl_hours)',
             p_ttl_hours;
     END IF;
+    IF p_batch_size IS NULL OR p_batch_size < 1 THEN
+        RAISE EXCEPTION
+            'cleanup_session_turn_logs_by_ttl: p_batch_size=% must be >= 1',
+            p_batch_size;
+    END IF;
 
-    -- 到期即删。expires_at 由 domains/session/v2/turn_logs_writer.go 按
+    -- 到期即删，但**每调用只删一有界批**。expires_at 由
+    -- domains/session/v2/turn_logs_writer.go 按
     -- lifecycle.session_turn_logs_ttl_hours 烘焙，故此谓词即「保留期已到」。
-    -- 命中 430:275 的 idx_session_turn_logs_expires。
+    -- 谓词命中 430:275 的 idx_session_turn_logs_expires，批内按主键 id 删除。
+    -- 首扫积压由调用方循环消化：每批是独立语句，5min 语句超时最多损失
+    -- 当前批，已删进度不回滚（无界单语句 DELETE 会整批回滚且下次重试要
+    -- 等 24h tick——见头注 R72 修订）。
     DELETE FROM public.session_turn_logs
-     WHERE expires_at < NOW();
+     WHERE id IN (
+        SELECT id FROM public.session_turn_logs
+         WHERE expires_at < NOW()
+         LIMIT p_batch_size
+     );
 
     GET DIAGNOSTICS v_deleted = ROW_COUNT;
 
     IF v_deleted > 0 THEN
-        RAISE NOTICE 'Cleaned up % expired session_turn_logs (ttl_hours=%)',
-            v_deleted, p_ttl_hours;
+        RAISE NOTICE 'Cleaned up % expired session_turn_logs (ttl_hours=%, batch_size=%)',
+            v_deleted, p_ttl_hours, p_batch_size;
     END IF;
 
     RETURN v_deleted;
 END;
 $$;
 
-COMMENT ON FUNCTION cleanup_session_turn_logs_by_ttl(int) IS
-    'Delete expired session_turn_logs (expires_at < NOW()) and return the
-     row count. Retention is NOT decided here: expires_at is baked at write
-     time by domains/session/v2/turn_logs_writer.go from
+COMMENT ON FUNCTION cleanup_session_turn_logs_by_ttl(int, int) IS
+    'Delete ONE bounded batch of expired session_turn_logs (expires_at < NOW(),
+     LIMIT p_batch_size) and return the row count deleted by this call.
+     Retention is NOT decided here: expires_at is baked at write time by
+     domains/session/v2/turn_logs_writer.go from
      settings_kv.lifecycle.session_turn_logs_ttl_hours (default 24,
      clamped 1..168). p_ttl_hours is a fail-closed safety interlock only —
      it is validated against [1,168] and raises otherwise; it does not
-     widen or narrow the DELETE. Callers: bg.PartitionManager.runCleanup
-     (step 11). Migration 753, 2026-09-27, R67 session-storage audit
-     subtask 2 (handoff §4), semantics corrected by critical audit.';
+     widen or narrow the DELETE. Backlog is drained by the caller looping
+     until this returns 0 (bg.PartitionManager.cleanupSessionTurnLogsByTTL,
+     which runs on the 24h archiveOldPartitionsIfNeeded tick, not the 1h
+     runCleanup goroutine). Migration 753, 2026-09-27, R67 session-storage
+     audit subtask 2 (handoff §4), semantics corrected by critical audit,
+     batched by the R72 audit round.';
 
 -- Ledger self-registration (710/734/738/740/742 惯例)。带存在性守卫：一次性
 -- 测试库 (TEST_PG_URL 直灌裸 SQL) 没有 installer 基座的 schema_migrations

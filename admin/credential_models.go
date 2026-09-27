@@ -64,7 +64,7 @@ func serveListCredentialModels(w http.ResponseWriter, ctx context.Context, db of
 		ORDER BY mo.raw_model_name
 	`, credentialID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -81,7 +81,7 @@ func serveListCredentialModels(w http.ResponseWriter, ctx context.Context, db of
 	// 2026-09-11 audit: surface mid-iteration failures instead of returning a
 	// silently truncated list (same guard as getProviderModels).
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
+		writeInternalErr(w, "scan failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, offers)
@@ -93,7 +93,7 @@ func (h *Handler) clearCredentialModels(w http.ResponseWriter, r *http.Request, 
 
 	deleted, err := modelcatalog.ClearCredentialBindings(ctx, h.db, credentialID, includeProtected)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "clear failed: "+err.Error())
+		writeInternalErr(w, "clear failed", err)
 		return
 	}
 	var protectedKept int
@@ -131,7 +131,7 @@ func (h *Handler) createCredentialModel(w http.ResponseWriter, r *http.Request, 
 	if canonicalID == nil {
 		id, _, err := discovery.EnsureCanonicalAndAliases(ctx, h.refreshDB(), stdName, "manual")
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "ensure canonical failed: "+err.Error())
+			writeInternalErr(w, "ensure canonical failed", err)
 			return
 		}
 		canonicalID = &id
@@ -144,7 +144,7 @@ func (h *Handler) createCredentialModel(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if err := h.patchCanonicalCaps(ctx, *canonicalID, req); err != nil {
-		writeError(w, http.StatusInternalServerError, "update canonical caps failed: "+err.Error())
+		writeInternalErr(w, "update canonical caps failed", err)
 		return
 	}
 
@@ -171,7 +171,7 @@ func (h *Handler) createCredentialModel(w http.ResponseWriter, r *http.Request, 
 		ContextWindow:     req.ContextWindow,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
+		writeInternalErr(w, "create failed", err)
 		return
 	}
 

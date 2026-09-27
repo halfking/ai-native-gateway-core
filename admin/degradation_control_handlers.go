@@ -74,13 +74,13 @@ func (h *Handler) handleDegradationControl(w http.ResponseWriter, r *http.Reques
 	case "enter":
 		if h.degradation.enter != nil {
 			if err := h.degradation.enter(ctx); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+				writeInternalErr(w, "internal error (see server logs)", err)
 				return
 			}
 		}
 		if h.degradation.ttl != nil {
 			if err := h.degradation.ttl.EnterDegradedMode(ctx); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+				writeInternalErr(w, "internal error (see server logs)", err)
 				return
 			}
 		}
@@ -88,13 +88,13 @@ func (h *Handler) handleDegradationControl(w http.ResponseWriter, r *http.Reques
 	case "exit":
 		if h.degradation.exit != nil {
 			if err := h.degradation.exit(ctx); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+				writeInternalErr(w, "internal error (see server logs)", err)
 				return
 			}
 		}
 		if h.degradation.ttl != nil {
 			if err := h.degradation.ttl.ExitDegradedMode(ctx); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+				writeInternalErr(w, "internal error (see server logs)", err)
 				return
 			}
 		}

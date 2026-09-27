@@ -371,7 +371,7 @@ func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusInternalServerError, "dedup check failed: "+err.Error())
+		writeInternalErr(w, "dedup check failed", err)
 		return
 	}
 
@@ -398,7 +398,7 @@ func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "duplicate canonical model: "+canonicalName)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
+		writeInternalErr(w, "create failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "message": "ok"})
@@ -980,11 +980,11 @@ func (h *Handler) handleModelAliases(w http.ResponseWriter, r *http.Request, mod
 	var aliasID int
 	err := h.db.QueryRow(ctx, aliasUpsertSQL, modelID, req.RawName, quantization, surface, notes, nil).Scan(&aliasID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "create alias failed: "+err.Error())
+		writeInternalErr(w, "create alias failed", err)
 		return
 	}
 	if _, err := h.db.Exec(ctx, aliasDemoteCompetitorsSQL, req.RawName, modelID); err != nil {
-		writeError(w, http.StatusInternalServerError, "demote competing aliases failed: "+err.Error())
+		writeInternalErr(w, "demote competing aliases failed", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{

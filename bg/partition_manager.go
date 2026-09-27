@@ -460,8 +460,11 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 
 	// 11. 2026-09-27 (R67 session-storage 审计子任务 2, handoff §4):
 	// session_turn_logs 保留时长改为可配。此前 430 schema 写死
-	// expires_at = NOW() + 24h,清理阈值同样硬编码,合规回溯窗口与
-	// 详情页查询窗口无法各自调档。默认 24h —— 与原行为逐字节一致。
+	// expires_at = NOW() + 24h，且 430 定义的清理函数全仓无调用方——
+	// 该表在生产从未被清理过（无界增长）。默认 24h 只在「写入侧烘焙
+	// expires_at」这一点上与旧行为一致；清扫本身是首次接上，不是
+	// 参数化既有行为（批判式审计证伪了初稿的说法）。跑在本函数
+	// （pm.interval，main.go 传 24h）而非 1h 的 runCleanup。
 	pm.cleanupSessionTurnLogsByTTL(ctx)
 }
 
@@ -506,6 +509,17 @@ func clampSessionTurnLogsTTLHours(raw int) int {
 //
 // The predicate is `expires_at < NOW()`, which is index-backed by
 // idx_session_turn_logs_expires (migration 430:275).
+// sessionTurnLogsTTLCleanupBatchSize bounds each cleanup call: the SQL
+// function deletes at most this many rows per invocation, so a backlog of
+// millions of rows is drained as a series of short statements instead of one
+// unbounded DELETE holding row locks and emitting a WAL spike for its whole
+// duration (R72 audit round; the migration header documents the revision).
+const sessionTurnLogsTTLCleanupBatchSize = 10000
+
+// sessionTurnLogsTTLCleanupMaxBatches is a runaway guard on the drain loop;
+// with the 5-minute statement budget below it is not expected to bind.
+const sessionTurnLogsTTLCleanupMaxBatches = 600
+
 func (pm *PartitionManager) cleanupSessionTurnLogsByTTL(ctx context.Context) {
 	ttlHours := clampSessionTurnLogsTTLHours(settings.GetPlatformInt("lifecycle.session_turn_logs_ttl_hours", 24))
 
@@ -518,15 +532,25 @@ func (pm *PartitionManager) cleanupSessionTurnLogsByTTL(ctx context.Context) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
+	// Drain in bounded batches. Each call commits its own progress: if the
+	// 5-minute budget expires mid-drain, at most the current batch is lost —
+	// the next 24h tick resumes from what was already deleted.
 	var deleted int64
-	err := pm.db.QueryRow(timeoutCtx,
-		"SELECT cleanup_session_turn_logs_by_ttl($1)",
-		ttlHours,
-	).Scan(&deleted)
-	if err != nil {
-		slog.Error("partition_manager: session_turn_logs TTL cleanup failed",
-			"ttl_hours", ttlHours, "error", err)
-		return
+	for batch := 0; batch < sessionTurnLogsTTLCleanupMaxBatches; batch++ {
+		var n int64
+		err := pm.db.QueryRow(timeoutCtx,
+			"SELECT cleanup_session_turn_logs_by_ttl($1, $2)",
+			ttlHours, int64(sessionTurnLogsTTLCleanupBatchSize),
+		).Scan(&n)
+		if err != nil {
+			slog.Error("partition_manager: session_turn_logs TTL cleanup failed",
+				"ttl_hours", ttlHours, "batch", batch, "deleted_so_far", deleted, "error", err)
+			return
+		}
+		deleted += n
+		if n < int64(sessionTurnLogsTTLCleanupBatchSize) {
+			break // last (partial) batch — the backlog is drained
+		}
 	}
 
 	if deleted > 0 {

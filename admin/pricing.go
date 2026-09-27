@@ -977,7 +977,7 @@ func (h *Handler) setFreeModels(w http.ResponseWriter, r *http.Request, provider
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "begin tx: "+err.Error())
+		writeInternalErr(w, "begin tx", err)
 		return
 	}
 	defer func() {
@@ -1005,7 +1005,7 @@ func (h *Handler) setFreeModels(w http.ResponseWriter, r *http.Request, provider
 			RETURNING (SELECT COUNT(*) FROM credential_model_bindings WHERE credential_id = c.id)
 		`, providerID, req.RawModelNames).Scan(&result.Updated)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+			writeInternalErr(w, "update failed", err)
 			return
 		}
 	} else {
@@ -1024,13 +1024,13 @@ func (h *Handler) setFreeModels(w http.ResponseWriter, r *http.Request, provider
 			RETURNING (SELECT COUNT(*) FROM credential_model_bindings WHERE credential_id = c.id)
 		`, providerID, req.RawModelNames).Scan(&result.Updated)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+			writeInternalErr(w, "update failed", err)
 			return
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "commit: "+err.Error())
+		writeInternalErr(w, "commit", err)
 		return
 	}
 

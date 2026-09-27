@@ -120,7 +120,7 @@ func (h *Handler) handleFeishuRoutingList(w http.ResponseWriter, r *http.Request
 
 	rows, err := h.db.Query(r.Context(), q, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query rules: "+err.Error())
+		writeInternalErr(w, "query rules", err)
 		return
 	}
 	defer rows.Close()
@@ -131,7 +131,7 @@ func (h *Handler) handleFeishuRoutingList(w http.ResponseWriter, r *http.Request
 		var riskJSON []byte
 		if err := rows.Scan(&r.ID, &r.TenantID, &r.OpenID, &r.DisplayName, &r.UserRole,
 			&riskJSON, &r.Priority, &r.Enabled, &r.Note, &r.CreatedBy, &r.CreatedAt, &r.UpdatedAt); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan: "+err.Error())
+			writeInternalErr(w, "scan", err)
 			return
 		}
 		if len(riskJSON) > 0 {
@@ -229,7 +229,7 @@ func (h *Handler) handleFeishuRoutingCreate(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusConflict, "rule for (tenant_id, open_id) already exists")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "insert: "+err.Error())
+		writeInternalErr(w, "insert", err)
 		return
 	}
 	h.auditLog(userFromContext(r), "feishubot.routing.create", "feishu_bot_routing_rules",
@@ -329,7 +329,7 @@ func (h *Handler) handleFeishuRoutingUpdate(w http.ResponseWriter, r *http.Reque
 
 	tag, err := h.db.Exec(r.Context(), q, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "update: "+err.Error())
+		writeInternalErr(w, "update", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -358,7 +358,7 @@ func (h *Handler) handleFeishuRoutingDelete(w http.ResponseWriter, r *http.Reque
 	tag, err := h.db.Exec(r.Context(),
 		"DELETE FROM feishu_bot_routing_rules WHERE id = $1", id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "delete: "+err.Error())
+		writeInternalErr(w, "delete", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -413,7 +413,7 @@ func (h *Handler) handleFeishuSendLogList(w http.ResponseWriter, r *http.Request
 
 	rows, err := h.db.Query(r.Context(), q, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query log: "+err.Error())
+		writeInternalErr(w, "query log", err)
 		return
 	}
 	defer rows.Close()
@@ -424,7 +424,7 @@ func (h *Handler) handleFeishuSendLogList(w http.ResponseWriter, r *http.Request
 		var errCode, lat *int
 		if err := rows.Scan(&e.ID, &e.TenantID, &e.EventType, &e.EventID, &e.RecipientsCount,
 			&e.Success, &errCode, &e.ErrorMessage, &lat, &e.Deduped, &e.RateLimited, &e.CreatedAt); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan: "+err.Error())
+			writeInternalErr(w, "scan", err)
 			return
 		}
 		e.ErrorCode = errCode

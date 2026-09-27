@@ -98,7 +98,7 @@ func (h *AgentsHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	assets, err := h.svc.List(ctx, filter)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -136,7 +136,7 @@ func (h *AgentsHandler) Get(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -172,7 +172,7 @@ func (h *AgentsHandler) Link(w http.ResponseWriter, r *http.Request) {
 		Type:    apihub.RelationType(req.LinkType),
 	}
 	if err := h.svc.Link(ctx, rel); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -230,13 +230,13 @@ func (h *AgentsHandler) Neighbors(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 
 	assets, rels, err := h.svc.Neighbors(ctx, apihub.KindLLMEndpoint, refID, depth)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -310,7 +310,7 @@ func (h *AgentsHandler) Stats(w http.ResponseWriter, r *http.Request) {
 		Limit:    1000,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalTextErr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -375,7 +375,7 @@ func (h *AgentsHandler) Health(w http.ResponseWriter, r *http.Request) {
 		tenantCtx := apihub.WithTenant(ctx, tenantID)
 		stale, err := h.svc.ListStale(tenantCtx, threshold)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalTextErr(w, "internal error (see server logs)", err)
 			return
 		}
 		allStale = stale
@@ -383,7 +383,7 @@ func (h *AgentsHandler) Health(w http.ResponseWriter, r *http.Request) {
 		// super_admin / admin_key / unknown role: aggregate across all tenants.
 		tenants, err := h.svc.ListTenants(ctx)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalTextErr(w, "internal error (see server logs)", err)
 			return
 		}
 		for _, tenant := range tenants {
