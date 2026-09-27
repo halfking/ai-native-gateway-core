@@ -185,4 +185,14 @@ export default {
   // Loading states
   loading: '加载中...',
   noSamples: '暂无标注样本',
+
+  // taskprofile 导出/导入（2026-09-18 round 2）
+  taskProfile: {
+    exportBtn: '导出 CSV',
+    importBtn: '导入 CSV',
+    exportOk: '已导出 {name}',
+    exportFailed: '导出失败',
+    importOk: '导入 {imported} 条，跳过 {skipped} 条，错误 {errors} 条',
+    importFailed: '导入失败',
+  },
 }

@@ -12,7 +12,13 @@ import { useI18n } from 'vue-i18n'
 import { store } from '../store'
 import { localeRef } from '../i18n'
 import { getFirstTurnSamples, createAnnotation, type FirstTurnSample, type FirstTurnParams } from '../api/annotations'
-import { createTaskTypeCorrection } from '../api/taskProfile'
+import { createTaskTypeCorrection, applyTierConfig } from '../api/taskProfile'
+import { downloadTextFile } from '../composables/useChatActions'
+import {
+  exportCorrections,
+  importCorrections,
+  type CorrectionImportSummary,
+} from '../api/taskProfile'
 import { L1_TASK_TYPES, listL1TaskTypes, type L1TaskTypeMeta } from '../api-work-types'
 import { getAvailableModelsRaw } from '../api/models'
 import { getUnifiedRequestDetail, type UnifiedRequestDetail } from '../api/requestDetail'
@@ -201,16 +207,61 @@ async function handleAnnotationSubmit(data: {
         human_task_type: data.task_type,
         annotator: data.annotator,
         reason: data.is_correct ? 'correct' : data.reason,
-      }).catch((corrErr: unknown) => {
+}).catch((corrErr: unknown) => {
         const msg = corrErr instanceof Error ? corrErr.message : String(corrErr ?? '')
         if (/409|already/i.test(msg)) return
         correctionWarning.value = t('annotation.correctionWriteFailed', { msg })
       })
+      // submitCorrection 闭环（2026-09-18 round 2）：每条人工标注都尝试把
+      // 当前 correction 驱动的分层建议显式落盘到 task_type_tier_config。
+      // 失败不阻塞主流程（best-effort），toast 仍展示成功。
+      applyTierConfig([]).catch(() => undefined)
     }
     closeModal()
     load()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : t('annotation.annotationFailed')
+  }
+}
+
+// ── Export / Import 闭环（2026-09-18 round 2） ──
+const exportImportBusy = ref(false)
+const exportImportMessage = ref('')
+
+async function handleExportCSV() {
+  exportImportBusy.value = true
+  exportImportMessage.value = ''
+  try {
+    const { filename, content } = await exportCorrections(30)
+    downloadTextFile(filename, content)
+    exportImportMessage.value = t('annotation.taskProfile.exportOk', { name: filename })
+  } catch (e: unknown) {
+    exportImportMessage.value = e instanceof Error ? e.message : t('annotation.taskProfile.exportFailed')
+  } finally {
+    exportImportBusy.value = false
+  }
+}
+
+async function handleImportCSV(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // reset so the same file can be re-selected
+  if (!file) return
+  exportImportBusy.value = true
+  exportImportMessage.value = ''
+  try {
+    const text = await file.text()
+    const summary: CorrectionImportSummary = await importCorrections(text)
+    exportImportMessage.value = t('annotation.taskProfile.importOk', {
+      imported: summary.imported,
+      skipped: summary.skipped,
+      errors: summary.row_errors?.length ?? 0,
+    })
+    await load() // 重新拉一次，闭环可视化
+  } catch (e: unknown) {
+    exportImportMessage.value = e instanceof Error ? e.message : t('annotation.taskProfile.importFailed')
+  } finally {
+    exportImportBusy.value = false
   }
 }
 
@@ -248,6 +299,19 @@ onMounted(() => {
       <h2>{{ t('annotation.page.title') }}</h2>
       <div class="header-actions">
         <span class="count-chip" aria-live="polite">{{ t('annotation.page.totalChip', { n: total }) }}</span>
+        <button class="btn btn-ghost btn-sm" :disabled="exportImportBusy" @click="handleExportCSV">
+          {{ t('annotation.taskProfile.exportBtn') }}
+        </button>
+        <label class="btn btn-ghost btn-sm" :class="{ disabled: exportImportBusy }">
+          {{ t('annotation.taskProfile.importBtn') }}
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            class="hidden-file-input"
+            :disabled="exportImportBusy"
+            @change="handleImportCSV"
+          />
+        </label>
         <button class="btn btn-primary btn-sm" :disabled="loading" @click="load">
           {{ loading ? t('annotation.page.refreshing') : t('annotation.page.refresh') }}
         </button>
@@ -258,6 +322,7 @@ onMounted(() => {
 
     <div v-if="error" class="alert alert-danger" role="alert">{{ error }}</div>
     <div v-if="correctionWarning" class="alert alert-warning" role="alert">{{ correctionWarning }}</div>
+    <div v-if="exportImportMessage" class="alert alert-info" role="status">{{ exportImportMessage }}</div>
 
     <!-- Filter Bar -->
     <div class="compact-filter-bar compact-filter-bar--stacked">
@@ -640,6 +705,16 @@ onMounted(() => {
 
 .btn-link:hover {
   color: var(--primary-hover);
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.btn.disabled,
+label.btn.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Modal internals */

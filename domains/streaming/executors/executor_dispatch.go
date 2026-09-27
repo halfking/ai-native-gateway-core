@@ -951,11 +951,24 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		// executeOpenAI gate (executor_chat.go:374-382) accepts both forms,
 		// so the dispatch gate has to mirror that contract or stream-only
 		// candidates are silently dropped before the gate even fires.
+		//
+		// Fix-2026-09-25: when the native Responses capability is not
+		// verified (credential_model_capabilities row absent/supported=false),
+		// fall back to Chat Completions instead of hard-blocking. The
+		// capability table is opt-in and currently empty by default, so a
+		// hard gate would make every openai-responses provider unusable
+		// until an external probe populates it. executeOpenAI already
+		// selects ChatCompletionsURL when both capability flags are false.
 		if cand.Protocol == providercatalog.ProtocolOpenAIResponses &&
 			!cand.SupportsNativeResponses &&
 			!cand.SupportsNativeResponsesStream {
-			execErr = fmt.Errorf("native Responses upstream capability is not enabled")
-			return
+			if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+				slog.Debug("native responses capability not enabled, falling back to chat completions",
+					"credential_id", cand.CredentialID,
+					"model", cand.RawModel,
+					"protocol", cand.Protocol,
+				)
+			}
 		}
 		switch classifyDispatchRoute(cand.Protocol, p4flags) {
 		case routeAnthropic:
