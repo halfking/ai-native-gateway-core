@@ -520,10 +520,11 @@ func (api *SessionDetailV2API) resolveSessionID(
 	}
 
 	// 3. 历史回填兜底：旧 backfill 会把首 request 写入 primary_request_id。
-	//    仅在 turn 映射缺席时使用；仍限定同租户。
-	var resolved string
-	row := api.pool.QueryRow(ctx, `
-		SELECT s.session_id FROM public.sessions s
+	//    仅在 turn 映射缺席时使用；仍限定同租户。primary_request_id 在 schema
+	//    上非唯一（普通 btree），所以这里和步骤 2 一样用 DISTINCT + LIMIT 2：
+	//    多个 session 指向同一个首 request 时必须显式判歧义，不能静默取首个。
+	legacyRows, err := api.pool.Query(ctx, `
+		SELECT DISTINCT s.session_id FROM public.sessions s
 		WHERE s.tenant_id = $1
 		  AND s.primary_request_id IN (
 		      SELECT request_id FROM public.request_logs
@@ -531,12 +532,29 @@ func (api *SessionDetailV2API) resolveSessionID(
 		      ORDER BY ts ASC
 		      LIMIT 1
 		  )
-		LIMIT 1
+		LIMIT 2
 	`, tenantID, input)
-	if err := row.Scan(&resolved); err == nil {
-		return resolved, nil
-	} else if !errors.Is(err, pgx.ErrNoRows) {
+	if err != nil {
 		return "", fmt.Errorf("resolveSessionID historical fallback: %w", err)
+	}
+	defer legacyRows.Close()
+
+	var legacyCandidates []string
+	for legacyRows.Next() {
+		var candidate string
+		if err := legacyRows.Scan(&candidate); err != nil {
+			return "", fmt.Errorf("resolveSessionID scan historical mapping: %w", err)
+		}
+		legacyCandidates = append(legacyCandidates, candidate)
+	}
+	if err := legacyRows.Err(); err != nil {
+		return "", fmt.Errorf("resolveSessionID iterate historical mapping: %w", err)
+	}
+	switch len(legacyCandidates) {
+	case 1:
+		return legacyCandidates[0], nil
+	case 2:
+		return "", errSessionAmbiguous
 	}
 
 	return "", errSessionNotFound
