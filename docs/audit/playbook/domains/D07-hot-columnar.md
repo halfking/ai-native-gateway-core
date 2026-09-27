@@ -91,3 +91,9 @@
 - **installer 五点同步守卫必须进每轮验证命令清单**：750/751/752 在 StartupFiles 登记但 embeddata/var/map 三点全缺（全新安装 dbinit 硬中止），TestStartupFilesAreAllEmbedded 恒红两轮未被发现——近期各轮只跑 sql/migrations+db 包。F1 修复（三文件+753 同款补齐）；749 补登 psqlConcurrencyRequired 豁免（CONCURRENTLY 家族 727/728/729/744/749）。
 - R71-D1（登记 L1）：mock_probe_history（752 新分区族）无 TTL/drop 清单，历史日分区无界累积——与 supplier_errors/usage_facts DEFAULT TTL 同病类，owner 拍板保留期。
 - R71-D2（登记 L8）：752 缺 migration_752_test.go 契约钉桩（对偶 C9：SET timezone/上海派生/禁 current_date/move-then-attach 骨架）。
+
+### R72 回注（2026-09-27，753 首扫无界 DELETE + 初稿语义漂移五处 + 752 契约钉桩补齐）
+- **"首次接上清扫"的迁移必须自带分批**：753 的 DELETE 无 LIMIT，而部署 boot 段同步触发首扫（该表生产从未清理过）——大积压=长事务持行锁+WAL 尖峰，5min 语句超时整批回滚且下次重试 24h 后，永不收敛。修法：函数改 `LIMIT p_batch_size`（主键选批，默认 10000）+ Go 调用方 drain 循环（每批独立语句，超时最多损失当前批）。753 在任何真库应用前原位修订（252 台账核实无 752/753）；已应用迁移禁止原位改，走 sequence 指纹重放通道。
+- **批判式审计改写终稿后，初稿语义的注释/文案必须逐处回改**：753 的 spec DescriptionLong、partition_manager 注释、sequence 登记、dbinit runner 登记、migration_753_test 头注 C1-C6 五处仍是初稿事实（2×TTL 谓词/GREATEST/NULL→24/pg_proc 短路/"补 idx"/"runCleanup 第 11 项"）——"钉桩自身的叙述也是被钉语义"（R53）的反面教训，本轮全部按终稿改写。
+- L8 收口：migration_752_test.go 契约钉桩补建（SET timezone proconfig/上海派生/禁 current_date/move-then-attach 骨架/pg_inherits 双检+advisory lock/mockprobe 双调用点）。
+- 753 真库预勘（252，R72-L3）：752/753 均未应用、session_turn_logs 0 行（首扫积压为零）、usage_facts 分区边界 +08 全对齐（036 手工期错位残留为零）。
