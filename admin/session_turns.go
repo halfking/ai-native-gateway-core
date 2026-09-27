@@ -45,6 +45,11 @@ type TurnListItem struct {
 	// unifiedTurnsTreeFallback）在装配时填入，结构体零值态留空。
 	IDKind     string `json:"id_kind,omitempty"`
 	PrimaryKey string `json:"primary_key,omitempty"`
+
+	// BodyStatus mirrors SessionTurnV2.BodyStatus (admin/body_status.go).
+	// This endpoint stays metadata-only and never encodes body bytes, so the
+	// value comes from a SQL EXISTS probe rather than from scanned columns.
+	BodyStatus string `json:"body_status,omitempty"`
 }
 
 const (

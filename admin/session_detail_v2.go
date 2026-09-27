@@ -144,6 +144,14 @@ type SessionTurnV2 struct {
 	OutboundBody        any `json:"outbound_body,omitempty"`
 	RequestAttachments  any `json:"request_attachments,omitempty"`
 	ResponseAttachments any `json:"response_attachments,omitempty"`
+
+	// BodyStatus is derived from the three body columns above — see
+	// admin/body_status.go for the full contract, including why this is a
+	// two-state field and not the three-state available|dropped|unavailable
+	// originally sketched in the handoff §5. Always emitted (no omitempty):
+	// consumers must be able to tell "explicitly unavailable" apart from
+	// "field predates this column".
+	BodyStatus string `json:"body_status"`
 }
 
 // SessionDetailV2Response 是 API 返回的完整响应
@@ -450,6 +458,14 @@ func (api *SessionDetailV2API) queryTurns(
 		t.OutboundBody = decodeStoredJSON("outbound_body", t.RequestID, outboundBodyRaw)
 		t.RequestAttachments = decodeStoredJSON("request_attachments", t.RequestID, requestAttachmentsRaw)
 		t.ResponseAttachments = decodeStoredJSON("response_attachments", t.RequestID, responseAttachmentsRaw)
+
+		// Derived from the raw columns, not the decoded values: decodeStoredJSON
+		// returns nil for BOTH "column absent" and "column undecodable", so
+		// classifying off the decoded form would report a decode failure as
+		// "no body stored". Reading the raw bytes keeps a corrupt-body turn
+		// classified as available (it does have a payload) while the decode
+		// warning above tells the operator the payload is broken.
+		t.BodyStatus = classifyBodyStatus(requestDeltaRaw, responseDeltaRaw, outboundBodyRaw)
 
 		turns = append(turns, t)
 	}

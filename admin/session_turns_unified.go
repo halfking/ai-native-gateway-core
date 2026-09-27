@@ -53,7 +53,18 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
                COALESCE(t.attachment_count,0), t.request_id,
 			   COALESCE(t.cache_read_tokens,0), t.latency_ms, COALESCE(t.success,FALSE),
                t.error_kind, t.compression_applied, t.compression_tokens_saved, t.digest,
-               NULL::jsonb, NULL::jsonb
+               NULL::jsonb, NULL::jsonb,
+               EXISTS (
+                   SELECT 1
+                   FROM public.session_bodies_unified b
+                   WHERE b.tenant_id = t.tenant_id
+                     AND b.session_id = t.session_id
+                     AND b.turn_no = t.turn_no
+                     AND b.request_id = t.request_id
+                     AND (b.request_delta IS NOT NULL
+                       OR b.response_delta IS NOT NULL
+                       OR b.outbound_body IS NOT NULL)
+               )
         FROM public.session_turns_with_current_month t
         WHERE t.tenant_id=$1 AND t.session_id=$2 AND t.turn_no < $3
         ORDER BY t.turn_no DESC LIMIT $4`, tenantID, sessionID, before, limit+1)
@@ -72,10 +83,11 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 		var success, compression bool
 		var saved *int
 		var digestRaw, requestRaw, responseRaw []byte
+		var bodyPresent bool
 		if err := rows.Scan(&it.TurnNo, &it.Ts, &it.Title, &it.Summary, &it.RequestTokens, &it.ResponseTokens,
 			&it.CostUSD, &it.Model, &it.Provider, &it.StatusCode, &it.SubmitMode, &it.InjectionVerdict,
 			&it.OutputVerdict, &it.AttachmentCount, &requestID, &cacheRead, &latency, &success, &errorKind,
-			&compression, &saved, &digestRaw, &requestRaw, &responseRaw); err != nil {
+			&compression, &saved, &digestRaw, &requestRaw, &responseRaw, &bodyPresent); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan turn failed")
 			return
 		}
@@ -92,6 +104,7 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 		// SessionPK 互不替代。PrimaryKey 沿用查询入参 sessionID。
 		it.IDKind = "session_id"
 		it.PrimaryKey = sessionID
+		it.BodyStatus = bodyStatusFromPresent(bodyPresent)
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
