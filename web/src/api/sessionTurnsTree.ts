@@ -43,9 +43,21 @@ export interface SessionTurnTreeItem {
   /** 毫秒；null = 未知（禁止零值冒充） */
   latency: number | null
   child_requests: SessionChildRequest[]
+  /**
+   * 正文留存状态（后端 admin/body_status.go）。'available' | 'unavailable'。
+   *
+   * 本字段必须在此显式声明并由 normalizeSessionTurnTreeItem 透传——该函数
+   * 以白名单方式重建对象，未列出的 wire 字段会被**静默丢弃**。漏加的表现是
+   * 后端已发 body_status、前端横幅却恒不出现，且无任何报错。
+   */
+  body_status?: string
 }
 
-type SessionTurnTreeWireItem = Omit<Partial<SessionTurnTreeItem>, 'turn_number' | 'latency' | 'child_requests'> & {
+// body_status is Omitted from the base before re-declaring it as `unknown`.
+// Leaving it inherited would intersect `string & unknown` = `string`, so the
+// wire type could no longer express the untrusted values the normalizer is
+// specifically meant to reject.
+type SessionTurnTreeWireItem = Omit<Partial<SessionTurnTreeItem>, 'turn_number' | 'latency' | 'child_requests' | 'body_status'> & {
   turn_number?: unknown
   turn_no?: unknown
   status_code?: unknown
@@ -53,6 +65,7 @@ type SessionTurnTreeWireItem = Omit<Partial<SessionTurnTreeItem>, 'turn_number' 
   latency?: unknown
   latency_ms?: unknown
   child_requests?: unknown
+  body_status?: unknown
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -86,6 +99,13 @@ export function normalizeSessionTurnTreeItem(raw: SessionTurnTreeWireItem): Sess
     ? raw.child_requests.map(normalizeChildRequest).filter((item): item is SessionChildRequest => item !== null)
     : []
   const turnNo = finiteNumber(raw.turn_no)
+  // Only pass through the two values the backend contract defines. A literal
+  // 'dropped' is NOT produced by admin/body_status.go — forwarding an unknown
+  // string would let a future backend change leak straight into the UI copy,
+  // which currently only has wording for available / unavailable.
+  const bodyStatus = raw.body_status === 'available' || raw.body_status === 'unavailable'
+    ? raw.body_status
+    : undefined
   return {
     turn_number: turnNumber,
     ...(turnNo === undefined ? {} : { turn_no: turnNo }),
@@ -94,6 +114,7 @@ export function normalizeSessionTurnTreeItem(raw: SessionTurnTreeWireItem): Sess
     ...(typeof raw.model === 'string' ? { model: raw.model } : {}),
     latency: finiteNumber(raw.latency ?? raw.latency_ms) ?? null,
     child_requests: children,
+    ...(bodyStatus === undefined ? {} : { body_status: bodyStatus }),
   }
 }
 
