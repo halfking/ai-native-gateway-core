@@ -32,6 +32,23 @@ type Bodies struct {
 }
 
 // Meta is the lightweight in-memory request identity (no full bodies).
+//
+// BodyStatus (Subtask 3, feat/session-detail-body-status) is the wire-level
+// hint a UI uses to decide whether request/response/outbound bodies are
+// readable from the underlying storage. Two-state contract:
+//
+//	"available"   — at least one of request_delta / response_delta / outbound_body
+//	                carries a real JSON payload (incl. JSON null / [] / {}).
+//	"unavailable" — all three are absent / whitespace / non-JSON.
+//
+// "dropped" is intentionally NOT part of the wire contract yet: the retention
+// period (lifecycle.request_body_retention_hours) and the bodies_trimmer job
+// (Subtask 6) that would let us distinguish "dropped by retention" from
+// "never written" are not landed. See docs/audit/2026-09-25-session-storage-audit-handoff.md §5.
+//
+// omitempty is intentional on this field so older producers that haven't
+// adopted the contract don't suddenly start emitting "" for every row —
+// consumers must treat the missing key as "unknown / not computed".
 type Meta struct {
 	RequestID   string  `json:"request_id"`
 	TenantID    string  `json:"tenant_id,omitempty"`
@@ -42,6 +59,7 @@ type Meta struct {
 	Success     *bool   `json:"success,omitempty"`
 	LatencyMs   *int    `json:"latency_ms,omitempty"`
 	TurnNumber  *int    `json:"turn_number,omitempty"`
+	BodyStatus  string  `json:"body_status,omitempty"`
 }
 
 // Detail is the unified admin detail payload.
