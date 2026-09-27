@@ -1771,7 +1771,10 @@ func insertSessionOpenedEvent(ctx context.Context, tx pgx.Tx, envelope outbox.Ev
 		envelope.AggregateID,
 		envelope.AggregateVersion,
 		envelope.OccurredAt,
-		payloadJSON,
+		// 13 轮审计（R11 FIX-C 同根）：pool 强制 SimpleProtocol，[]byte 内联
+		// 成 bytea hex 字面量，jsonb 列解析必炸——WP4 ASM 双 env 配置后该
+		// 错误随请求日志事务整体上抛。string 化（client.go:2722 同款）。
+		string(payloadJSON),
 	)
 	if err != nil {
 		return fmt.Errorf("insert session opened event for request %s: %w", requestID, err)
@@ -1798,7 +1801,9 @@ func insertRequestCompletedEvent(ctx context.Context, tx pgx.Tx, envelope outbox
 		envelope.AggregateID,
 		envelope.AggregateVersion,
 		envelope.OccurredAt,
-		payloadJSON,
+		// 13 轮审计（R11 FIX-C 同根）：同 insertSessionOpenedEvent，jsonb
+		// 参数必须 string 化，[]byte 在 SimpleProtocol 下必炸。
+		string(payloadJSON),
 	)
 	if err != nil {
 		return fmt.Errorf("insert request completed event: %w", err)
