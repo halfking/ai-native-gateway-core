@@ -57,3 +57,7 @@
 - reqprobe 参数剔除/模式回退 + ctxLen 恢复的免费重试（一次准入最多 4 次上游调用）已改为**按次补记 Governor**而非消耗 retry budget：`ExtraCallRecorder` 可选能力（rpm/tpm 债务式扣减钳 `-limit`，concurrency 槽位全程持有刻意豁免）→ forwarder.acquire 装配 `qr.OnExtraUpstreamCall` → `ExecParams.ExtraUpstreamCall` → 四触发点 `meterExtraUpstreamCall`。指标 `dispatch_extra_upstream_calls_total{mode}`。
 - 裁决留档：免费重试消耗 retry budget 会让 maxRetries=0 的 dispatch 流量直接 failover、reqprobe 学习闭环永不触发——计量归计量、准入归准入。
 - Redis enforce backend governor 未实现该能力（需计费 Lua），opt-in 场景计量缺口维持现状（R53-D2）。
+
+### R72 回注（2026-09-27，turn-logs flush 跨批丢 stage）
+- **jsonb `||` 浅合并只能用于"键集随批次单调新增"的场景**：turn_logs_summary 的 `turn_N` 键承载整轮 stages 数组，键会在多批之间重复出现（写侧 stage 循环中段落 tick / 双实例读集错位），浅合并=整键替换=丢前半 stage——8a34eab76 的"worst case written twice with equivalent value"收敛声明仅在读集相同时成立。修法（R72-F1）：flush 事务化 + sessions 行 `FOR UPDATE`（串行化同 session 的 read-modify-write，防整列写回互相覆盖）+ Go 侧 per-turn stages 数组 union+去重（身份=UTC 格式化时间戳，防 JSON 往返后 time.Time == 失效）+ 整列写回。钉桩=mergeSummaries 行为级六案（跨批 union/陈旧子集不回退/去重幂等/JSON 往返/降级/保序）+ SQL 形状三案（FOR UPDATE/整列写回禁 `||`/id 删行）。
+- 观察项挂账：双实例无 leader 选举（DB 幂等收敛成立，吞吐不扩展）；积压零观测（无 gauge，过载静默 shedding）；GetStageLogs 不过滤 expires_at（过期未聚合行可读 ~24h）。

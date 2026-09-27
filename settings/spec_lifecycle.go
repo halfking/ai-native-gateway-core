@@ -45,21 +45,28 @@ func LifecycleSpecs() []*Spec {
 		// 硬守卫，越界 RAISE EXCEPTION（失败即停，不静默）。
 		{Key: "lifecycle.request_logs_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(7), Max: floatPtr(365), Default: 30, DangerLevel: Warning, HotReload: true, Description: "request_logs 归档 TTL（天）", DescriptionLong: "request_logs 归档阈值（天）。超过此时长的月分区，其摘要字段（11 列，不含大 JSONB）由 archive_request_logs_default（迁移 754）落进 request_logs_archive_YYYY_MM 供对账/合规回溯。**注意：这是摘要抽取，不是数据搬移** —— 源分区一个字节都不会被删除（迁移 754 内无任何 DELETE；R68 禁止 DROP 父表月分区，见 654/337 事故复盘），因此本键**不会让 request_logs 主表变小**，主表仍由运维另行处置。每日 03:00 本地时区扫一次。默认 30 天（7-365）。", Unit: "天"},
 
-		// 2026-09-27 (R67 session-storage 审计子任务 2, handoff §4):
-		// session_turn_logs 保留时长。此前是 24h 硬编码(430 schema 的
-		// expires_at DEFAULT + cleanup 函数的 WHERE 阈值),不同部署场景
-		// (合规回溯窗口 / 详情页查询窗口)无法调档。改为按小时可配。
+		// 2026-09-27 (R67 session-storage 审计子任务 2, handoff §4;
+		// 语义按 2026-09-27 批判式审计修正, R72 审计轮补分批):
+		// session_turn_logs 保留时长。真正的 24h 硬编码在写入方
+		// (turn_logs_writer.go 的 expires_at 烘焙);430 定义的清理函数
+		// 全仓无调用方,该表在生产从未被清理过。本键是保留期的单一
+		// 真相来源:改档只影响**新写入**行的 expires_at,存量行按写入
+		// 时刻烘焙的到期时间清扫。
 		//
 		// 范围 1-168:下限 1h 防呆(误配 0 会瞬时清空整表,spec 风险约束
 		// 明令"不要把 retention 改成 < 1h");上限 168h = 7 天,与
 		// docs/storage/2026-09-20-session-storage-decoupling-plan.md
-		// §5 S5 的 TTL 燃尽曲线对齐。默认 24 —— 与原硬编码行为逐字节
-		// 一致,上线不改变任何既有行为。
+		// §5 S5 的 TTL 燃尽曲线对齐。默认 24 与旧写入行为一致,但清扫
+		// 本身是首次接上(753),不是参数化既有行为。
 		//
-		// 消费点:bg.PartitionManager.runCleanup 读本键调
-		// cleanup_session_turn_logs_by_ttl(p_ttl_hours)(迁移 753),
-		// HotReload 让运维调档无需重启网关。
-		{Key: "lifecycle.session_turn_logs_ttl_hours", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(168), Default: 24, DangerLevel: Warning, HotReload: true, Description: "session_turn_logs 保留小时数", DescriptionLong: "session_turn_logs 保留时长(小时)。保留期在写入时烘焙:domains/session/v2/turn_logs_writer.go 把 expires_at 写为「写入时刻 + 本值」;bg.PartitionManager.runCleanup 周期调用 cleanup_session_turn_logs_by_ttl(迁移 753)按 expires_at < NOW() 到期即删。改动只影响新写入行,已写入行按原到期时间清理。默认 24 小时,范围 1-168(上限 7 天);越界值由 Go 侧钳制到 [1,168],迁移函数对区间外入参直接 RAISE(fail-closed),不会静默清空或永不清扫。", Unit: "小时"},
+		// 消费点:写入侧 turn_logs_writer.go 烘焙 expires_at;清扫侧
+		// bg.PartitionManager.cleanupSessionTurnLogsByTTL(跑在 24h 的
+		// archiveOldPartitionsIfNeeded tick 上,非 1h runCleanup)分批
+		// 调 cleanup_session_turn_logs_by_ttl(ttl, batch)(迁移 753)。
+		// Go 侧 clamp 到 [1,168] 后传参,SQL 侧越界 RAISE EXCEPTION
+		// (fail-closed 联锁,函数内无 GREATEST/NULL 兜底)。HotReload
+		// 让运维调档无需重启网关。
+		{Key: "lifecycle.session_turn_logs_ttl_hours", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(168), Default: 24, DangerLevel: Warning, HotReload: true, Description: "session_turn_logs 保留小时数", DescriptionLong: "session_turn_logs 保留时长(小时)。写入方(turn_logs_writer)按本值把 expires_at 烘焙进每一行;清扫函数 cleanup_session_turn_logs_by_ttl(迁移 753)按「到期即删」(expires_at < NOW())分批删除,不重复叠加本值。改档只影响新写入的行,存量行按写入时烘焙的到期时间清扫。默认 24 小时,范围 1-168(上限 7 天)。越界配置被 Go 侧 clamp 到 [1,168],SQL 侧对越界入参直接 RAISE(失败即停),不会静默钳制。", Unit: "小时"},
 
 		// 2026-09-09 (审计 R3#4): session_summaries 归档行 TTL。
 		// 471 起归档(domains/sessionarchive 把 30d 不活跃的行

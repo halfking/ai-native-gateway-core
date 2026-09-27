@@ -105,7 +105,7 @@ func (h *Handler) handleSystemMonitorSubmit(w http.ResponseWriter, r *http.Reque
 	task := buildSystemMonitorTask(&req)
 	id, err := h.systemMonitor.Submit(r.Context(), task)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "submit failed: "+err.Error())
+		writeInternalErr(w, "submit failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -158,7 +158,7 @@ func (h *Handler) handleSystemMonitorStartAll(w http.ResponseWriter, r *http.Req
 	}
 	bindings, err := h.expandAllActiveBindings(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "expand failed: "+err.Error())
+		writeInternalErr(w, "expand failed", err)
 		return
 	}
 	if len(bindings) > 200 {
@@ -192,7 +192,7 @@ func (h *Handler) handleSystemMonitorStopAll(w http.ResponseWriter, r *http.Requ
 	}
 	stats, err := h.systemMonitor.QueueStats(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "stats: "+err.Error())
+		writeInternalErr(w, "stats", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -220,7 +220,7 @@ func (h *Handler) handleSystemMonitorByCredential(w http.ResponseWriter, r *http
 	}
 	bindings, err := h.expandCredentialBindings(r.Context(), credID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "expand: "+err.Error())
+		writeInternalErr(w, "expand", err)
 		return
 	}
 	results := batchSubmit(r.Context(), h.systemMonitor, bindings, "button_by_credential", "mandatory")
@@ -251,7 +251,7 @@ func (h *Handler) handleSystemMonitorByProvider(w http.ResponseWriter, r *http.R
 	}
 	bindings, err := h.expandProviderBindings(r.Context(), providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "expand: "+err.Error())
+		writeInternalErr(w, "expand", err)
 		return
 	}
 
@@ -288,7 +288,7 @@ func (h *Handler) handleSystemMonitorByModel(w http.ResponseWriter, r *http.Requ
 	}
 	bindings, err := h.expandModelBindings(r.Context(), modelName)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "expand: "+err.Error())
+		writeInternalErr(w, "expand", err)
 		return
 	}
 	results := batchSubmit(r.Context(), h.systemMonitor, bindings, "button_by_model", "mandatory")
@@ -311,7 +311,7 @@ func (h *Handler) handleSystemMonitorStats(w http.ResponseWriter, r *http.Reques
 	if h.systemMonitor != nil {
 		stats, err := h.systemMonitor.QueueStats(r.Context())
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "stats: "+err.Error())
+			writeInternalErr(w, "stats", err)
 			return
 		}
 		queueSize = stats.QueueSize
@@ -390,7 +390,7 @@ func (h *Handler) handleSystemMonitorRecentRuns(w http.ResponseWriter, r *http.R
 		LIMIT $1
 	`, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query: "+err.Error())
+		writeInternalErr(w, "query", err)
 		return
 	}
 	defer rows.Close()
@@ -443,7 +443,7 @@ func (h *Handler) handleSystemMonitorConcurrency(w http.ResponseWriter, r *http.
 		`INSERT INTO self_check_settings (id, monitor_concurrency) VALUES (1, $1)
 		 ON CONFLICT (id) DO UPDATE SET monitor_concurrency = $1`,
 		body.MonitorConcurrency); err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

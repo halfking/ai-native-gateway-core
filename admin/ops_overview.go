@@ -66,7 +66,7 @@ func (h *Handler) handleOpsOverview(w http.ResponseWriter, r *http.Request) {
 
 	payload, err := h.buildOpsOverviewPayload(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	cache.set(payload)

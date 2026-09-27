@@ -792,7 +792,7 @@ func (h *Handler) setKeyEnabled(w http.ResponseWriter, r *http.Request, id int, 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	if _, err := h.db.Exec(ctx, `UPDATE api_keys SET enabled = $1 WHERE id = $2`, enabled, id); err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	h.invalidateKeyCache(id)
@@ -855,7 +855,7 @@ func (h *Handler) updateKeyLimits(w http.ResponseWriter, r *http.Request, id int
 		    rate_limit_tpm = $3
 		WHERE id = $4
 	`, rpmArg, concurrentArg, tpmArg, id); err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 
@@ -1459,7 +1459,7 @@ func (h *Handler) patchKey(w http.ResponseWriter, r *http.Request, id int) {
 	cmd, err := h.db.Exec(ctx, query, args...)
 	if err != nil {
 		slog.Error("patchKey SQL failed", "query", query, "args", args, "error", err)
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	if cmd.RowsAffected() == 0 {

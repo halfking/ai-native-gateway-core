@@ -89,7 +89,7 @@ func (h *Handler) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
 	// Total count for pagination
 	var total int
 	if err := h.db.QueryRow(ctx, "SELECT COUNT(*) FROM routing_audit_log WHERE "+where, args...).Scan(&total); err != nil {
-		writeError(w, http.StatusInternalServerError, "count failed: "+err.Error())
+		writeInternalErr(w, "count failed", err)
 		return
 	}
 
@@ -103,7 +103,7 @@ func (h *Handler) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
 		LIMIT $`+strconv.Itoa(idx)+` OFFSET $`+strconv.Itoa(idx+1),
 		append(args, size, offset)...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()

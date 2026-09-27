@@ -73,7 +73,7 @@ func (h *Handler) handleAttachmentFilesystemStats(w http.ResponseWriter, r *http
 	// 转为绝对路径
 	absDir, err := filepath.Abs(attachmentDir)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "resolve attachment dir: "+err.Error())
+		writeInternalErr(w, "resolve attachment dir", err)
 		return
 	}
 
@@ -101,14 +101,14 @@ func (h *Handler) handleAttachmentFilesystemStats(w http.ResponseWriter, r *http
 		return nil
 	})
 	if err != nil && !os.IsNotExist(err) {
-		writeError(w, http.StatusInternalServerError, "walk attachment dir: "+err.Error())
+		writeInternalErr(w, "walk attachment dir", err)
 		return
 	}
 
 	// 查询磁盘空间 (syscall.Statfs)
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(absDir, &stat); err != nil {
-		writeError(w, http.StatusInternalServerError, "statfs: "+err.Error())
+		writeInternalErr(w, "statfs", err)
 		return
 	}
 
@@ -179,7 +179,7 @@ func (h *Handler) handleAttachmentFilesystemCleanup(w http.ResponseWriter, r *ht
 
 	absDir, err := filepath.Abs(attachmentDir)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "resolve attachment dir: "+err.Error())
+		writeInternalErr(w, "resolve attachment dir", err)
 		return
 	}
 

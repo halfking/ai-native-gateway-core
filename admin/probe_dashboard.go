@@ -1622,7 +1622,7 @@ func (h *Handler) handleProbeTaskCreate(w http.ResponseWriter, r *http.Request) 
 	defer cancel()
 	id, inserted, err := h.probeQueue.Enqueue(ctx, task)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "enqueue failed: "+err.Error())
+		writeInternalErr(w, "enqueue failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1660,7 +1660,7 @@ func (h *Handler) handleProbeTaskCancel(w http.ResponseWriter, r *http.Request) 
 	defer cancel()
 	n, err := h.probeQueue.Cancel(ctx, key)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cancel failed: "+err.Error())
+		writeInternalErr(w, "cancel failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

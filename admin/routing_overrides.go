@@ -119,7 +119,7 @@ func (h *AutoRouteHandlers) listRoutingOverrides(w http.ResponseWriter, r *http.
 		Profile:    profile,
 	})
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -179,7 +179,7 @@ func (h *AutoRouteHandlers) createRoutingOverride(w http.ResponseWriter, r *http
 			writeJSONErr(w, http.StatusConflict,
 				"an override with the same (task_type, profile, model_chosen, mode) already exists")
 		default:
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 		}
 		return
 	}
@@ -213,14 +213,14 @@ func (h *AutoRouteHandlers) deleteRoutingOverride(w http.ResponseWriter, r *http
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
 	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = '"+escapedActor+"'"); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -232,7 +232,7 @@ func (h *AutoRouteHandlers) deleteRoutingOverride(w http.ResponseWriter, r *http
 		  AND (expires_at IS NULL OR expires_at > NOW())
 	`, id)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if res.RowsAffected() == 0 {
@@ -240,7 +240,7 @@ func (h *AutoRouteHandlers) deleteRoutingOverride(w http.ResponseWriter, r *http
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	h.writeAuditLog(r, "override.delete", id, map[string]any{
@@ -278,14 +278,14 @@ func (h *AutoRouteHandlers) extendRoutingOverride(w http.ResponseWriter, r *http
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
 	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = '"+escapedActor+"'"); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -295,7 +295,7 @@ func (h *AutoRouteHandlers) extendRoutingOverride(w http.ResponseWriter, r *http
 		WHERE id = $1
 	`, id, body.ExpiresAt)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if res.RowsAffected() == 0 {
@@ -303,7 +303,7 @@ func (h *AutoRouteHandlers) extendRoutingOverride(w http.ResponseWriter, r *http
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	h.writeAuditLog(r, "override.extend", id, map[string]any{
@@ -393,7 +393,7 @@ func (h *AutoRouteHandlers) handleRoutingOverridesAudit(w http.ResponseWriter, r
 
 	rows, err := h.db.Query(r.Context(), q, args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -404,13 +404,13 @@ func (h *AutoRouteHandlers) handleRoutingOverridesAudit(w http.ResponseWriter, r
 		if err := rows.Scan(&e.ID, &e.TS, &e.Action, &e.OverrideID,
 			&e.TaskType, &e.Profile, &e.Mode, &e.ModelChosen,
 			&e.Reason, &e.ExpiresAt, &e.OldExpiresAt, &e.Actor); err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 		entries = append(entries, e)
 	}
 	if err := rows.Err(); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 

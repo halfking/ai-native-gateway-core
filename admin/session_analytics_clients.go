@@ -132,7 +132,7 @@ func (h *Handler) handleClientAnalyticsList(w http.ResponseWriter, r *http.Reque
 	var total int
 	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM session_client_stats %s", whereClause)
 	if err := h.db.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("count failed: %v", err))
+		writeInternalErr(w, "count failed", err)
 		return
 	}
 
@@ -154,7 +154,7 @@ func (h *Handler) handleClientAnalyticsList(w http.ResponseWriter, r *http.Reque
 
 	rows, err := h.db.Query(ctx, listSQL, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %v", err))
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()

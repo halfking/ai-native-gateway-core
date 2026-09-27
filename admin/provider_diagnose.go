@@ -321,7 +321,7 @@ func (h *Handler) startDiagnose(w http.ResponseWriter, r *http.Request, provider
 
 	taskID, err := insertBackgroundTask(ctx, h.db, "diagnose", &providerID, nil, map[string]any{"provider_id": providerID})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create task: "+err.Error())
+		writeInternalErr(w, "failed to create task", err)
 		return
 	}
 

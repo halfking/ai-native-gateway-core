@@ -159,7 +159,7 @@ func (h *Handler) handleSessionTurnsTree(w http.ResponseWriter, r *http.Request)
 		Cursor:    cursor,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	if result.NotFound {

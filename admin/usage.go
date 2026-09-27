@@ -139,7 +139,7 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "summary query failed: "+err.Error())
+		writeInternalErr(w, "summary query failed", err)
 		return
 	}
 	summary.TotalCreditsCharged = h.queryTotalCreditsCharged(ctx, tid, days)
@@ -290,7 +290,7 @@ func (h *Handler) usageDashboard(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "dashboard query failed: "+err.Error())
+		writeInternalErr(w, "dashboard query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, overview)
@@ -375,7 +375,7 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 			)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "hot-keys query failed: "+err.Error())
+		writeInternalErr(w, "hot-keys query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -484,7 +484,7 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 			)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "by-provider query failed: "+err.Error())
+		writeInternalErr(w, "by-provider query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -586,7 +586,7 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 			)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "by-model query failed: "+err.Error())
+		writeInternalErr(w, "by-model query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -678,7 +678,7 @@ func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "by-key query failed: "+err.Error())
+		writeInternalErr(w, "by-key query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -1081,7 +1081,7 @@ func (h *Handler) usageKeyTraffic(w http.ResponseWriter, r *http.Request, keyID 
 		ORDER BY 1
 	`, keyID, startTime, endTime)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "traffic query failed: "+err.Error())
+		writeInternalErr(w, "traffic query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -1147,7 +1147,7 @@ func (h *Handler) usageByApplication(w http.ResponseWriter, r *http.Request) {
 		ORDER BY total_cost_usd DESC
 	`, days, tid)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "by-application query failed: "+err.Error())
+		writeInternalErr(w, "by-application query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -1273,7 +1273,7 @@ func (h *Handler) usageByTenant(w http.ResponseWriter, r *http.Request) {
 		&u.TotalCostUSD, &u.UniqueKeys, &u.UniqueModels, &u.UniqueApps,
 	)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "tenant usage query failed: "+err.Error())
+		writeInternalErr(w, "tenant usage query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, u)
@@ -1297,7 +1297,7 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
 			GROUP BY ak.tenant_id
 		`, tid)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "tenants query failed: "+err.Error())
+			writeInternalErr(w, "tenants query failed", err)
 			return
 		}
 		defer rows.Close()
@@ -1335,7 +1335,7 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
 		ORDER BY total_cost_usd DESC
 	`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "tenants query failed: "+err.Error())
+		writeInternalErr(w, "tenants query failed", err)
 		return
 	}
 	defer rows.Close()

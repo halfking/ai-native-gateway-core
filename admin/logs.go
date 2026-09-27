@@ -629,13 +629,13 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	if IsTenantAdmin(r) {
 		if err := h.db.QueryRow(ctx, tenantCountSQL, args...).Scan(&count); err != nil {
 			slog.Error("admin listLogs count query failed", "scope", "tenant", "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+			writeInternalErr(w, "query failed", err)
 			return
 		}
 	} else {
 		if err := h.db.QueryRow(ctx, superCountSQL, args...).Scan(&count); err != nil {
 			slog.Error("admin listLogs count query failed", "scope", "super_admin", "error", err)
-			writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+			writeInternalErr(w, "query failed", err)
 			return
 		}
 	}

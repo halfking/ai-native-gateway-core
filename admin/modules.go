@@ -948,7 +948,7 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := store.Set(sp.Scope, found.SettingKey, body.Enabled); err != nil {
-		writeError(w, http.StatusInternalServerError, "save failed: "+err.Error())
+		writeInternalErr(w, "save failed", err)
 		return
 	}
 	if found.SettingKey == ratelimit.RateLimitGateKey {

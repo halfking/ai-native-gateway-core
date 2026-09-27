@@ -3,6 +3,7 @@ package center
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -160,8 +161,15 @@ func (s *PgxStore) RecordHeartbeat(ctx context.Context, instanceID string, paylo
 		INSERT INTO instance_heartbeats (instance_id, timestamp, uptime_secs, num_goroutine, alloc_mb, status, metrics)
 		VALUES ($1, now(), $2, $3, $4, $5, $6)
 	`
+	// R72 审计：metrics 是 jsonb 列，[]byte 直传在 SimpleProtocol 池下内联
+	// 为 bytea hex 字面量（R11 FIX-C 同根，R71 修 UpdateCommandStatus 时漏此
+	// 臂）。当前 center.Client 无生产构造点，接线前修复到位。
+	var metricsParam interface{}
+	if len(metricsJSON) > 0 {
+		metricsParam = string(metricsJSON)
+	}
 	if _, err := tx.Exec(ctx, insertQuery,
-		instanceID, payload.UptimeSecs, payload.NumGoroutine, payload.AllocMB, StatusOnline, metricsJSON,
+		instanceID, payload.UptimeSecs, payload.NumGoroutine, payload.AllocMB, StatusOnline, metricsParam,
 	); err != nil {
 		return err
 	}
@@ -209,14 +217,25 @@ func (s *PgxStore) GetHeartbeatHistory(ctx context.Context, instanceID string, s
 
 // CreateCommand 创建命令
 func (s *PgxStore) CreateCommand(ctx context.Context, cmd *Command) error {
-	argsJSON, _ := json.Marshal(cmd.Args)
+	argsJSON, err := json.Marshal(cmd.Args)
+	if err != nil {
+		return fmt.Errorf("marshal command args: %w", err)
+	}
 	query := `
 		INSERT INTO center_commands (command_id, instance_id, command, args, status, issued_at, issued_by, expires_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id
 	`
+	// R72 审计：args 是 jsonb 列（377_center_ops.sql:45），[]byte 直传在
+	// SimpleProtocol 池下内联为 bytea hex 字面量（R11 FIX-C 同根）——
+	// 本位点有活跃生产构造点（POST /admin/center/instances/:id/command
+	// → IssueCommand → 此处），下发命令必败。string 化修复。
+	var argsParam interface{}
+	if len(argsJSON) > 0 {
+		argsParam = string(argsJSON)
+	}
 	return s.db.QueryRow(ctx, query,
-		cmd.CommandID, cmd.InstanceID, cmd.Command, argsJSON, cmd.Status,
+		cmd.CommandID, cmd.InstanceID, cmd.Command, argsParam, cmd.Status,
 		cmd.IssuedAt, cmd.IssuedBy, cmd.ExpiresAt,
 	).Scan(&cmd.ID)
 }

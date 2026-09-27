@@ -32,7 +32,7 @@ func (h *Handler) handleIPBlocklistList(w http.ResponseWriter, r *http.Request) 
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	items, total, err := h.ipBlocklist.Store.List(r.Context(), scope, limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total})
@@ -70,7 +70,7 @@ func (h *Handler) handleIPBlocklistCreate(w http.ResponseWriter, r *http.Request
 		CreatedBy: actor,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	h.ipBlocklist.AfterMutation(r.Context(), entry.Scope)
@@ -113,7 +113,7 @@ func (h *Handler) patchIPBlocklist(w http.ResponseWriter, r *http.Request, id in
 		Reason: req.Reason, Enabled: req.Enabled, ExpiresAt: req.ExpiresAt,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	h.ipBlocklist.AfterMutation(r.Context(), entry.Scope)
@@ -127,7 +127,7 @@ func (h *Handler) deleteIPBlocklist(w http.ResponseWriter, r *http.Request, id i
 		return
 	}
 	if err := h.ipBlocklist.Store.Delete(r.Context(), id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	h.ipBlocklist.AfterMutation(r.Context(), cur.Scope)
@@ -146,7 +146,7 @@ func (h *Handler) handleIPBlocklistReload(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	if err := h.ipBlocklist.Warmup(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded"})

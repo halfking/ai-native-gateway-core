@@ -99,7 +99,7 @@ func (h *Handler) listCredentialKeys(w http.ResponseWriter, r *http.Request, pro
 		ORDER BY ck.kid_index
 	`, credID, providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -121,7 +121,7 @@ func (h *Handler) listCredentialKeys(w http.ResponseWriter, r *http.Request, pro
 		var createdAt time.Time
 		if err := rows.Scan(&ki.KidIndex, &ki.Label, &ki.Status, &ciphertext,
 			&lastUsed, &lastFailed, &createdAt); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
+			writeInternalErr(w, "scan failed", err)
 			return
 		}
 		// decrypt for masking only — never return plaintext

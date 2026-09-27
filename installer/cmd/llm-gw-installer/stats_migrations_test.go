@@ -236,6 +236,10 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// DDL/无 CONCURRENTLY，installer 通道安全）——R71 审计补五点同步
 		// （5b558deab 只登记了 sequence 通道，本守卫对 753 必红）。
 		"753_session_turn_logs_ttl.sql": sessionTurnLogsTTLMigration753,
+		// 754 (2026-09-27, R67 session-storage 审计子任务 7): request_logs
+		// 主表归档函数——R72 审计轮补五点同步（子任务只登记了 sequence
+		// 通道，canonical 登记守卫对本号必红，R71 F1 同款静默红模式）。
+		"754_archive_request_logs_default.sql": archiveRequestLogsDefaultMigration754,
 	}
 
 	for name, embedded := range expected {

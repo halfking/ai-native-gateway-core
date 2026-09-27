@@ -769,7 +769,7 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 			updated_at      = NOW()
 		WHERE id = $5
 	`, req.ManualPriority, req.RoutingTier, req.Weight, req.Priority, bindingID); err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 
@@ -1441,7 +1441,7 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 	// this actor rather than NULL.
 	actor := requestActor(r)
 	if _, setErr := tx.Exec(ctx, "SELECT set_config('app.actor', $1, true)", actor); setErr != nil {
-		writeError(w, http.StatusInternalServerError, "set app.actor guc failed: "+setErr.Error())
+		writeInternalErr(w, "set app.actor guc failed", setErr)
 		return
 	}
 
@@ -1459,7 +1459,7 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 				writeError(w, http.StatusConflict, "transient ordering conflict, retry")
 				return
 			}
-			writeError(w, http.StatusInternalServerError, "load reorder scope failed: "+err.Error())
+			writeInternalErr(w, "load reorder scope failed", err)
 			return
 		}
 		if len(scope) == 0 {
@@ -1475,7 +1475,7 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 				writeError(w, http.StatusConflict, "transient ordering conflict, retry")
 				return
 			}
-			writeError(w, http.StatusInternalServerError, "load reorder scope failed: "+err.Error())
+			writeInternalErr(w, "load reorder scope failed", err)
 			return
 		}
 		if len(scope) == 0 {
@@ -1499,7 +1499,7 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 		return
 	}
 	if err := applyReorderUpdate(ctx, tx, scope, req.Items); err != nil {
-		writeError(w, http.StatusInternalServerError, "apply reorder failed: "+err.Error())
+		writeInternalErr(w, "apply reorder failed", err)
 		return
 	}
 	// The trigger fired by applyReorderUpdate has already advanced
@@ -1512,7 +1512,7 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 		nextRev, err = loadScopeRevision(ctx, tx, req.RawModel)
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "reload revision failed: "+err.Error())
+		writeInternalErr(w, "reload revision failed", err)
 		return
 	}
 	auditDetail := map[string]any{
@@ -1528,7 +1528,7 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 	}
 	if err := logAuditExec(ctx, tx, actor,
 		"routing_candidate_binding_reorder", auditDetail); err != nil {
-		writeError(w, http.StatusInternalServerError, "audit insert failed: "+err.Error())
+		writeInternalErr(w, "audit insert failed", err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1536,7 +1536,7 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 			writeError(w, http.StatusConflict, "transient ordering conflict, retry")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "commit reorder failed: "+err.Error())
+		writeInternalErr(w, "commit reorder failed", err)
 		return
 	}
 
@@ -1633,7 +1633,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 			if err == pgx.ErrNoRows {
 				writeError(w, http.StatusNotFound, "credential not found")
 			} else {
-				writeError(w, http.StatusInternalServerError, "credential tenant lookup failed: "+err.Error())
+				writeInternalErr(w, "credential tenant lookup failed", err)
 			}
 			return
 		}
@@ -1676,7 +1676,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 					beforeAfter["audit_outcome"] = "partial_failed"
 					h.logAudit(r, "emergency_repair."+req.Action, beforeAfter)
 				}
-				writeError(w, http.StatusInternalServerError, err.Error())
+				writeInternalErr(w, "internal error (see server logs)", err)
 			}
 			return
 		}
@@ -1696,7 +1696,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 			if err == pgx.ErrNoRows {
 				writeError(w, http.StatusNotFound, "credential not found")
 			} else {
-				writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+				writeInternalErr(w, "query failed", err)
 			}
 			return
 		}
@@ -1706,7 +1706,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 				state_updated_at = NOW()
 			WHERE id = $1
 		`, req.CredentialID); err != nil {
-			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+			writeInternalErr(w, "update failed", err)
 			return
 		}
 		beforeAfter["previous_manual_disabled"] = currentDisabled
@@ -1748,7 +1748,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 			if err == pgx.ErrNoRows {
 				writeError(w, http.StatusNotFound, "credential not found")
 			} else {
-				writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+				writeInternalErr(w, "query failed", err)
 			}
 			return
 		}
@@ -1760,7 +1760,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 		// Single transaction: credentials row + cmb row together.
 		tx, err := h.db.Begin(ctx)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "begin tx failed: "+err.Error())
+			writeInternalErr(w, "begin tx failed", err)
 			return
 		}
 		defer tx.Rollback(ctx)
@@ -1772,7 +1772,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 				state_updated_at = NOW()
 			WHERE id = $1
 		`, req.CredentialID); err != nil {
-			writeError(w, http.StatusInternalServerError, "update credentials failed: "+err.Error())
+			writeInternalErr(w, "update credentials failed", err)
 			return
 		}
 		if req.RawModel != "" {
@@ -1788,12 +1788,12 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 				  AND pm.id = cmb.provider_model_id
 				  AND pm.raw_model_name = $2
 			`, req.CredentialID, req.RawModel); err != nil {
-				writeError(w, http.StatusInternalServerError, "update cmb failed: "+err.Error())
+				writeInternalErr(w, "update cmb failed", err)
 				return
 			}
 		}
 		if err := tx.Commit(ctx); err != nil {
-			writeError(w, http.StatusInternalServerError, "commit failed: "+err.Error())
+			writeInternalErr(w, "commit failed", err)
 			return
 		}
 		beforeAfter["previous_circuit_state"] = previousState
@@ -1833,14 +1833,14 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 			if err == pgx.ErrNoRows {
 				writeError(w, http.StatusNotFound, "credential not found")
 			} else {
-				writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+				writeInternalErr(w, "query failed", err)
 			}
 			return
 		}
 
 		tx, err := h.db.Begin(ctx)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "begin tx failed: "+err.Error())
+			writeInternalErr(w, "begin tx failed", err)
 			return
 		}
 		defer tx.Rollback(ctx)
@@ -1851,7 +1851,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 				state_updated_at = NOW()
 			WHERE id = $1
 		`, req.CredentialID); err != nil {
-			writeError(w, http.StatusInternalServerError, "update credentials failed: "+err.Error())
+			writeInternalErr(w, "update credentials failed", err)
 			return
 		}
 		if req.RawModel != "" {
@@ -1867,12 +1867,12 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 				  AND pm.id = cmb.provider_model_id
 				  AND pm.raw_model_name = $2
 			`, req.CredentialID, req.RawModel); err != nil {
-				writeError(w, http.StatusInternalServerError, "update cmb failed: "+err.Error())
+				writeInternalErr(w, "update cmb failed", err)
 				return
 			}
 		}
 		if err := tx.Commit(ctx); err != nil {
-			writeError(w, http.StatusInternalServerError, "commit failed: "+err.Error())
+			writeInternalErr(w, "commit failed", err)
 			return
 		}
 		beforeAfter["previous_consecutive_failures"] = currentFailures
@@ -3634,7 +3634,7 @@ func (h *Handler) handleRoutingManualPriority(w http.ResponseWriter, r *http.Req
 	`, req.ManualPriority, req.CredentialID, req.ModelName)
 	if err != nil {
 		slog.Error("manual-priority update failed", "error", err, "cred_id", req.CredentialID, "model", req.ModelName)
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -3712,7 +3712,7 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 	rows, err := h.db.Query(ctx, sqlQuery, normalizedModel)
 	if err != nil {
 		slog.Error("score-details query failed", "error", err, "model", model)
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()

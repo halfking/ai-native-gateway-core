@@ -61,7 +61,7 @@ func HandleCredentialSuccessRates(db *pgxpool.Pool) http.HandlerFunc {
 		ORDER BY c.id, mo.raw_model_name
 	`, tenantID)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalTextErr(w, "internal error (see server logs)", err)
 			return
 		}
 		defer rows.Close()
@@ -81,7 +81,7 @@ func HandleCredentialSuccessRates(db *pgxpool.Pool) http.HandlerFunc {
 				&oldestTime,
 			)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				writeInternalTextErr(w, "internal error (see server logs)", err)
 				return
 			}
 			if oldestTime != nil {
@@ -167,7 +167,7 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 		// against future wrapper regressions.
 		deleted, err := resetCredentialSuccessRateRows(r.Context(), db, req.CredentialID, req.RawModel)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalTextErr(w, "internal error (see server logs)", err)
 			return
 		}
 
@@ -178,7 +178,7 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 		SELECT * FROM recent_success_rate($1, $2, 50, 3)
 	`, req.CredentialID, req.RawModel).Scan(&newRate, &newSamples)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalTextErr(w, "internal error (see server logs)", err)
 			return
 		}
 
