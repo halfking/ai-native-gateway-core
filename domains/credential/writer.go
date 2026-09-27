@@ -536,8 +536,8 @@ func (w *Writer) writeModelNotFoundTiered(
 			    unavailable_reason     = $1,
 			    unavailable_at         = now(),
 			    unavailable_recover_at = CASE
-			        WHEN cmb.available = FALSE THEN $2
-			        ELSE $3
+			        WHEN cmb.available = FALSE THEN $2::timestamptz
+			        ELSE $3::timestamptz
 			    END,
 			    updated_at             = now()
 			WHERE cmb.credential_id = $4
@@ -561,8 +561,8 @@ func (w *Writer) writeModelNotFoundTiered(
 			    unavailable_reason = $1,
 			    unavailable_at     = now(),
 			    unavailable_recover_at = CASE
-			        WHEN cmb.available = FALSE THEN $2
-			        ELSE $3
+			        WHEN cmb.available = FALSE THEN $2::timestamptz
+			        ELSE $3::timestamptz
 			    END,
 			    updated_at         = now()
 			FROM provider_models pm
