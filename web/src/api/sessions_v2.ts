@@ -74,14 +74,11 @@ export interface TurnListItem {
   /** 后端 buildTurnDigest 模板式生成；缺数据时为 null（前端走 fallback）。 */
   digest?: TurnDigest | null
   /**
-   * 2026-09-28 Subtask 3：原始正文（request_delta / response_delta /
-   * outbound_body）是否真实存储到 session_bodies 的提示。两态契约
-   * （admin/body_status.go，admin/session_turns.go）：
-   *   - 'available'   任一 body 列承载真实 JSON 负载
-   *   - 'unavailable' 三列全部为空 / NULL / 全是 null
-   * 字段缺失等价于 "未计算"，前端 banner 不应把缺字段的 turn 计为 unavailable。
+   * 正文留存状态，后端 admin/body_status.go 产出。
+   * 'available' | 'unavailable'；后端未返回时为 undefined（旧实例/旧数据）。
+   * 语义与两态限制见 admin/body_status.go —— 不发 'dropped'。
    */
-  body_status?: 'available' | 'unavailable'
+  body_status?: string
 }
 
 export interface TurnsResponse {
@@ -146,6 +143,34 @@ export async function getSessionTurn(
 export async function getSessionSnapshot(sessionId: string, options?: RequestOptions) {
   const path = `/api/admin/sessions/${encodeURIComponent(sessionId)}/snapshot`
   return req<Record<string, unknown>>('GET', path, undefined, options)
+}
+
+// Subtask 3 (handoff §5): 详情 V2 端点是 body_status 三态的唯一来源。
+//
+// 注意别去 /snapshot 里找：/snapshot 只返回标题/总结/汇总（见
+// admin/session_turns_v2.go serveSessionTurnSubroute 的 snapshot 分支），
+// 不带 turns；turns 及其 body_status 只在下面这个端点的响应里。
+//
+// 另注意后端只发两态 available | unavailable，**不发 dropped**：当前 schema
+// 没有 session_bodies 保留期开关，也没有任何任务会删它的行，报 dropped 等于
+// 谎称「保留期清了数据」。论证见 admin/body_status.go 顶部 CONTRACT。
+export interface SessionDetailV2TurnBodyStatus {
+  turn_no?: number
+  body_status?: 'available' | 'unavailable' | ''
+}
+
+export interface SessionDetailV2Response extends Record<string, unknown> {
+  turns?: SessionDetailV2TurnBodyStatus[]
+  total_turns?: number
+}
+
+export async function getSessionDetailV2(
+  sessionId: string,
+  options?: RequestOptions
+): Promise<SessionDetailV2Response> {
+  const q = new URLSearchParams({ session_id: sessionId })
+  const path = `/api/admin/sessions/detail?${q.toString()}`
+  return req<SessionDetailV2Response>('GET', path, undefined, options)
 }
 
 export async function triggerInstantSummary(sessionId: string) {

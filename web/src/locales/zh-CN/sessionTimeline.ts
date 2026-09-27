@@ -8,6 +8,7 @@ export default {
   empty: '该会话暂无轮次记录',
   loading: '加载中…',
   loadMore: '加载更多轮次',
+  bodyUnavailable: '已加载的 {n} 轮未采集到正文，可能该会话未开启正文存储。',
   allLoaded: '共 {n} 轮，已全部加载',
   errors: {
     network: '网络错误，请检查连接后重试',

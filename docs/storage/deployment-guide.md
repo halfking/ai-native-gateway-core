@@ -140,7 +140,8 @@ exit 0。
 ### 5. 验证
 
 - 启动日志出现 `storage lite 模式已启用`（slog，含 sqlite_path / bodies_dir / cache_dir /
-  logs_dir / cache_ttl_hours / cache_max_size_gb / async_writers / retention_* 字段快照）。
+  logs_dir / cache_ttl_hours / cache_max_size_gb / async_writers / retention_* 字段快照，
+  以及缓存清理的生效值 `cache_trim_retention`）。
 - 清理任务日志：`cache trimmer 已启动`、`bodies trimmer 已启动` 与
   `lite retention worker 已启动`（启动即先执行一次清理，不用等一个完整周期）。
 - 配置不合法会直接启动失败并给出明确报错（如
@@ -289,7 +290,7 @@ go run ./cmd/gateway
 |------|--------|----------|----------|
 | `session_bodies_days` | `30` | `bodies_dir` 下超过保留期的会话目录 | `bg.BodiesTrimmer`（lite 装配自动启动）：默认每 6 小时一轮，会话目录 mtime 超期即整目录删除（先统计体积再 RemoveAll），并顺带清理变空的分片/租户父目录 |
 | `request_logs_days` | `7` | SQLite `request_logs` 按行、`sessions`/`session_turns` 按会话（含全部轮次） | `bg.LiteRetentionWorker`（R46 F6 起 lite 装配自动启动）：默认每 6 小时一轮；无 opt-out（≤0 视为默认 7 天）。会话清理在单事务内以删除时刻的 `updated_at` 求值，清理缝隙内复活的会话整体豁免（R47） |
-| `cache_hours` | `24` | `cache_dir` 下过期的 L1.5 快照文件 | `bg.CacheTrimmer`（lite 装配自动启动）：默认每 1 小时一轮，按文件 mtime 删除过期缓存文件 |
+| `cache_hours` | `24` | `cache_dir` 下过期的 L1.5 快照文件 | `bg.CacheTrimmer`（lite 装配自动启动）：默认每 1 小时一轮，按文件 mtime 删除过期缓存文件。生效值恒 `>= cache_ttl_hours`（见下文"保留期与磁盘规划"） |
 
 两个 trimmer 的 `Start(ctx)` 均为阻塞式，由 `storage_mode_init.go` 以协程启动；启动即先执行
 一次清理，之后按周期运行；统计快照（删除文件/会话数、释放字节）随日志输出
@@ -300,8 +301,14 @@ go run ./cmd/gateway
 - `session_bodies_days`：bodies 占磁盘大头，按"故障复盘需要回溯多久"取值；本地开发 7 天
   足够，单人部署 30 天。
 - `request_logs_days`：仅元数据（SQLite 行），磁盘占用小，7~30 天均可。
-- `cache_hours`：与 `cache_ttl_hours` 保持同量级即可（默认均 24）；缓存可随时重建，调小
-  只影响重启后首请求的回源次数。
+- `cache_hours`：**不会**让清理早于 `cache_ttl_hours` 生效。删除侧按 mtime 删文件，
+  读侧（`FileCache.Get`）也按 mtime 判过期；若清理 retention 小于 TTL，就会删掉读侧
+  仍视为有效的条目，使该窗口内每次读都退化成 miss 并回源下层，缓存退化为「只写不读」。
+  因此装配层取两者的安全上界：`cache_hours <= cache_ttl_hours` 时按 `cache_ttl_hours`
+  执行，并在启动日志打 `retention.cache_hours 小于 cache_ttl_hours` 告警 + 输出生效值
+  `cache_trim_retention`；`cache_hours > cache_ttl_hours` 时按 `cache_hours` 执行（条目在
+  逻辑 TTL 后多留一段，抬高 TTL 时无需冷启动重填）。想真正缩短缓存寿命，改
+  `cache_ttl_hours` 即可。
 
 ### 磁盘占用估算方法
 
