@@ -590,7 +590,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 | 4 | DB 降级返回 503 + storage_status | feat/storage-status-503 | P1 | TODO | - | - | - |
 | 5 | 镜像 outbox 性能调优 | feat/mirror-outbox-perf | P1 | [DONE] 2026-09-27 17:01 | 1cb487779 | 待创建 | rebase origin/main 后唯一文件改动 (internal/sessionv2mirror/replay.go, 103+/16-); `go build ./internal/sessionv2mirror/...` + `go vet` + `go test -race ./internal/sessionv2mirror/...` + `go build ./...` 全绿; gofmt 历史遗留 `internal/sessionv2mirror/session_dim.go` + `internal/sessionv2mirror/synthetic_session_test.go` (不在本任务范围, 见 §15 观察项) |
 | 6 | bg/cache_trimmer.go + BodiesTrimmer 一致性 | feat/cache-trimmer-and-bodies-consistency | P2 | TODO | - | - | - |
-| 7 | request_logs 主表 archive 流水线 | feat/request-logs-main-archive | P2 | TODO | - | - | - |
+| 7 | request_logs 主表 archive 流水线 | feat/request-logs-main-archive | P2 | [DONE] 2026-09-27 | 982e3191c | 待创建 | 迁移改号 746→**754**（见 §10.2；750~753 已被占用）。**不并入 archiveSpecs()**：那套机制按「日期参数 + 标量/tuple 返回」设计，而 archive_request_logs_default 收 retention 天数、RETURNS TABLE(partition, rows) 是**每分区一行**的集合返回，硬塞会错传参数并按错列形状扫描（与 2026-09-03/04 的 42703 同源），故单列 pm.archiveOldRequestLogs（runCleanup step 12）。迁移 SQL 为前一会话草稿、本轮复核：pg_inherits 枚举月分区、1000 行小批量 + 主键游标、源分区不 DROP（R68 move-then-attach）均符合 §9 冻结契约 |
 
 ### 10.1 通用门禁 (每个子任务都要满足)
 
@@ -926,3 +926,80 @@ F-6 写「非缺陷」时我只验证了「窗口够大」（5 分钟一跳 vs 2
 选择是否公平**。两个条件是独立的：窗口决定「单次会不会丢」，公平性决定「会不会
 一直丢」。前者成立不构成后者的结论。下一轮凡写「非缺陷」，必须同时说明
 「为何不会被绕过/饿死」，否则按「待验证」记。
+
+---
+
+## 18. 第三轮批判式审计 (2026-09-27 22:38)
+
+对象是第二轮刚落地的 Subtask 7（`982e3191c` / `85972cf1c`）。两条发现都不是
+「写错了代码」，而是**承诺与实现不符**——比语法错误更难发现，因为测试全绿。
+
+### 自查先说一件难看的事
+
+我在 Subtask 7 的 commit message 里写了对该迁移的正面评价，而**我实际上只读了
+它 228 行里的约 60 行**。第 120 行之后的批式游标 INSERT 循环是我没读就写下的
+部分。下面两条发现全部位于我没读的那段。
+
+### F-11 (Major) 这是摘要抽取，不是数据搬移；主表不会变小
+
+迁移 754 的函数里**没有任何 DELETE**（剥注释后 `grep -c DELETE` == 0，有契约
+测试钉住）。源分区一个字节都不会被删 —— 迁移头自己写明了原因：R68 禁止 DROP
+partition_by_range 父表的月分区（654 / 337 事故复盘）。
+
+所以：
+
+- `request_logs` 主表**不会因为这个迁移而变小**，它仍在增长；
+- 开启 `lifecycle.request_logs_ttl_days` **不等于**「旧数据离开主表」，只等于
+  「旧分区多一份 11 列摘要副本供对账/合规回溯」。
+
+「archive」这个词、以及 handoff §9 的标题「主表 archive 流水线」，都极易被读成
+前者；**我在 §10 状态行和 commit message 里都没有点破这一点**，等于替它背书。
+已在迁移头、setting 的 DescriptionLong 里显式写明。
+
+这不是可修的缺陷——受 R68 约束，SQL 层面没有安全选项；它是一个**必须说出口的
+期望差**。
+
+### F-12 (Major) SQL 无「已归档」标记，挂在每小时 tick 上 = 永不收敛的全表重扫
+
+函数枚举所有 `month_end` 已过期的月分区，对每个分区把**全部行**再走一遍
+`INSERT ... ON CONFLICT (request_id, ts) DO NOTHING`。已归档的行确实被唯一索引
+冲突吸收、不重复写，但**行仍然被读取、投影、再走一遍插入尝试**。
+
+因此单次成本 = O(所有超过保留窗口的行)，且随时间单调增长、不会自行收敛。
+而我把它接在了 `runCleanup` 上，`providerErrorCleanupInterval = 1h`（第 57 行）。
+
+合起来就是：一张持续增长的主表，每小时被完整重扫一遍历史数据，而产出为零。
+这是我上一轮 wiring 时的直接疏漏——我只验证了「函数被调用了」，没验证
+「调用的代价是多少」。
+
+**修法（有意克制）**：Go 侧限到**每日一次**（`shouldRunRequestLogsArchive`，
+本地时区 03:00 那一小时），代价降低约 24 倍，且**不碰那份从未在真库执行过的
+SQL**。彻底解法是加一张 archive ledger 记录 `(partition, max_id)`，已归档分区
+直接跳过——但那份 SQL 一次都没在真实 PostgreSQL 上跑过，往里盲加一张新表，
+风险比留着高。列为后续。
+
+### 一条我自己的注释把自己的自检数成了 1
+
+我在迁移头写「可用 `grep -c 'DELETE FROM' 本文件 == 0` 自证」，然后这条注释本身
+含有字面量 `DELETE FROM`，自检立刻返回 **1** —— 自己的说明把自己的回归测试打红。
+与前两轮 F-6/第二轮 C7 同类：**会因注释而误报的断言，和永不失败的断言一样是坏
+断言**。已改为剥注释后再数，并在迁移头里把这个坑写下来。
+
+同理，N1 变异（删掉 `shouldRunRequestLogsArchive` 的**调用**）第一版测试全绿 ——
+因为它只测纯函数，看不见 wiring。已补
+`TestArchiveOldRequestLogs_GateIsActuallyInvoked`，并把断言范围限定在函数体内，
+重跑必红。**这是连续第二次在同一处栽（第二轮 C7），已固化进下一轮规则。**
+
+### 一条我自己的误报
+
+我一度判定 `request_logs` 缺 `provider_model` / `cost_usd` / `success` /
+`error_kind` 四列（据 000_base_tables 的表体解析）。**这是误报**——这四列确实存在，
+证据是 573 重建的视图 SELECT 列表里逐列出现。四列均 OK，迁移的列清单有效。
+记在这里是因为「差点凭一个窄窗口的 grep 就断言迁移会 42703 上线即挂」。
+
+### 变异测试（本轮 4 条，逐条实测非空转）
+
+  删每日门槛的**调用**      → FAIL
+  门槛改成每小时都跑        → FAIL（24h 内触发 24 次）
+  给归档函数加一条 DELETE   → FAIL（违反 F-11 不变量）
+  SELECT FROM id 改零值累加  → FAIL（第二轮已有，回归通过）

@@ -1504,6 +1504,34 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel, tenantID str
 // the routable view, pricing and recent_success_rate. 252 measured: exec
 // 220-390ms → 61ms, planning 195-260ms → 85ms. Result equivalence verified
 // on 252 across 8 (model, modality) combos incl. empty-set and vision paths.
+// decodeNativeEndpoints converts the JSONB array projected by the
+// pep_lateral LEFT JOIN LATERAL in candidateQuerySQL() into the typed
+// endpoint slice consumed by endpointselect.Select().
+//
+// r0926 audit finding #4 (coverage gap): the SQL shape test
+// (candidate_query_sql_shape_test.go) only asserts that certain FRAGMENTS
+// appear in the query TEXT. Nothing verified the other half of the contract —
+// that the jsonb_build_object KEYS match the JSON tags on
+// endpointselect.EndpointLite. selector.go states that invariant explicitly
+// ("Changing them breaks the SQL projection; if you add a column, update both
+// sides"), but a rename of a single struct tag would have kept the shape test
+// green while silently producing zero-valued endpoints at runtime, which then
+// fall through Stage 1 and quietly degrade every request to Stage 4. That is
+// the exact "looks wired, isn't" failure this audit is about.
+//
+// Extracted as a pure function (not inline in the 60-column scan) purely so
+// the correspondence is directly testable without standing up pgx.
+func decodeNativeEndpoints(raw []byte, credentialID int) ([]endpointselect.EndpointLite, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var eps []endpointselect.EndpointLite
+	if err := json.Unmarshal(raw, &eps); err != nil {
+		return nil, fmt.Errorf("scan native endpoints for credential %d: %w", credentialID, err)
+	}
+	return eps, nil
+}
+
 func candidateQuerySQL() string {
 	return `
 		WITH matched AS MATERIALIZED (
@@ -1676,10 +1704,19 @@ SELECT
 		-- Anchored on p.id (provider) — the join key is the provider, not the
 		-- credential, because one credential inherits its provider's entire
 		-- endpoint set. Filtered by pep.enabled = TRUE so disabled endpoints
-		-- never enter the decision path. Sorted primary-first / weight-asc
-		-- so the Go-side unmarshal preserves the priority order used by
-		-- endpointselect (sortEndpointsByPriority is stable on Equal keys,
-		-- but having the order on the wire avoids any post-scan shuffle).
+		-- never enter the decision path. Sorted primary-first, then weight
+		-- DESC, then id ASC so the JSONB array order matches
+		-- endpointselect's endpointPriorityLess comparator.
+		--
+		-- r0926 audit: the order here is PRESENTATION ONLY. Both selector
+		-- entry points (pickBest and pickFamilyHit) re-sort with
+		-- sortEndpointsByPriority before choosing, so the wire order cannot
+		-- change the pick. It was previously weight ASC while the selector
+		-- ranks weight DESC (higher weight = higher priority, the provider
+		-- traffic-share semantics) — harmless but actively misleading, since
+		-- the old comment claimed the wire order "avoids any post-scan
+		-- shuffle", implying the selector trusts it. Aligned to DESC so the
+		-- two can no longer drift apart.
 		LEFT JOIN LATERAL (
 			SELECT COALESCE(jsonb_agg(jsonb_build_object(
 				'id',            pep.id,
@@ -1690,7 +1727,7 @@ SELECT
 				'enabled',       pep.enabled,
 				'weight',        pep.weight,
 				'health_status', pep.health_status
-			) ORDER BY pep.is_primary DESC, pep.weight ASC, pep.id ASC), '[]'::jsonb) AS endpoints
+			) ORDER BY pep.is_primary DESC, pep.weight DESC, pep.id ASC), '[]'::jsonb) AS endpoints
 			FROM provider_endpoint_protocols pep
 			WHERE pep.provider_id = p.id AND pep.enabled = TRUE
 		) pep_lateral ON TRUE
@@ -1866,11 +1903,11 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		// A missing endpoint mapping is represented by [] and leaves the
 		// candidate on its protocol fallback path. NULL is not expected from
 		// the SQL projection, but a nil scan also safely means no mapping.
-		if len(nativeEndpointsJSON) > 0 {
-			if err := json.Unmarshal(nativeEndpointsJSON, &cand.NativeEndpoints); err != nil {
-				return nil, fmt.Errorf("scan native endpoints for credential %d: %w", cand.CredentialID, err)
-			}
+		eps, epErr := decodeNativeEndpoints(nativeEndpointsJSON, cand.CredentialID)
+		if epErr != nil {
+			return nil, epErr
 		}
+		cand.NativeEndpoints = eps
 		// 2026-09-23 协议命名审计：providers.protocol 无 CHECK 约束，历史
 		// 行里存在 "openai" 等旧枚举/脏值。候选加载是所有出站分发的唯一
 		// 入口，在这里统一归一到 catalog 枚举（"openai"→openai-completions、
