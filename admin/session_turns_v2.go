@@ -121,7 +121,8 @@ func serveSessionTurnsListDB(db sessionTurnsDB, secret string, w http.ResponseWr
 		       COALESCE(t.attachment_count,0), t.request_id,
 		       COALESCE(t.cache_read_tokens,0), COALESCE(t.latency_ms,0), COALESCE(t.success,FALSE),
 			   t.error_kind, t.compression_applied, t.compression_tokens_saved, t.digest,
-			   b.request_delta, b.response_delta
+			   b.request_delta, b.response_delta,
+			   (b.request_delta IS NOT NULL OR b.response_delta IS NOT NULL OR b.outbound_body IS NOT NULL) AS body_present
 		FROM public.session_turns_with_current_month t
 		LEFT JOIN public.session_bodies_unified b
 		  ON b.tenant_id=t.tenant_id AND b.session_id=t.session_id
@@ -148,15 +149,22 @@ func serveSessionTurnsListDB(db sessionTurnsDB, secret string, w http.ResponseWr
 			compressionTokensSaved      *int
 			persistedDigestRaw          []byte
 			requestRaw, responseRaw     []byte
+			bodyPresent                 bool
 		)
 		if err := rows.Scan(&it.TurnNo, &it.Ts, &it.Title, &it.Summary, &it.RequestTokens,
 			&it.ResponseTokens, &it.CostUSD, &it.Model, &it.Provider, &it.StatusCode,
 			&it.SubmitMode, &it.InjectionVerdict, &it.OutputVerdict, &it.AttachmentCount,
 			&requestID, &cacheReadTokens, &latencyMs, &success, &errorKind,
-			&compressionApplied, &compressionTokensSaved, &persistedDigestRaw, &requestRaw, &responseRaw); err != nil {
+			&compressionApplied, &compressionTokensSaved, &persistedDigestRaw, &requestRaw, &responseRaw, &bodyPresent); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan turn failed")
 			return
 		}
+		// Subtask 3 — body_status two-state contract. The list endpoint stays
+		// metadata-only (raw body bytes are decoded solely to feed the digest
+		// fallback); the wire-visible classification comes from a SQL
+		// EXISTS-style probe, not from scanning payload bytes. See
+		// admin/body_status.go for the contract.
+		it.BodyStatus = bodyStatusFromPresent(bodyPresent)
 		request := decodeStoredJSON("request_delta", requestID, requestRaw)
 		response := decodeStoredJSON("response_delta", requestID, responseRaw)
 		meta := map[string]any{
@@ -374,6 +382,11 @@ func serveSessionTurnDetailDB(db sessionTurnsDB, w http.ResponseWriter, r *http.
 		}
 	}
 	meta["timing_semantics"] = "request_level_last_write"
+	// Subtask 3 — body_status two-state contract. The detail endpoint decodes
+	// all three JSONB body columns, so we classify straight from the scanned
+	// raw bytes via classifyBodyStatus (admin/body_status.go). Consumers see
+	// the result under meta.body_status in the wire response.
+	meta["body_status"] = classifyBodyStatus(requestDeltaRaw, responseDeltaRaw, outboundBodyRaw)
 	governance := map[string]any{
 		"submit_mode":              submitMode,
 		"compression_applied":      compressionApplied,

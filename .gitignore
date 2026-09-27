@@ -132,6 +132,13 @@ kx-design/
 web/public/version.json
 web/tsconfig.tsbuildinfo
 traffic-replay-bin
+# `go build ./cmd/<name>/` drops the binary in the repo root; keep the compiled
+# cmd tools out of the tree (same rule as traffic-replay-bin above). 2026-09-28:
+# auto-testbench — its harness fix is what makes the selection layer measurable.
+auto-testbench
+autoroute-e2e-audit
+autoclass-bench
+tuning-backtest
 
 # Python linter cache
 .ruff_cache/

@@ -168,8 +168,14 @@ func buildDefaultPatterns() []PatternMatch {
 		// 命中如"写一个快速排序""做一个表单组件""实现一个 LRU 缓存""写个线程池"。
 		// 2026-09-15 二轮补充对象:SQL/正则/YAML 等配置与查询语言产物
 		// (biz_sql_active_users:"写一个 SQL 语句"落 chat)。
+		//
+		// 2026-09-28 现场实测追加："写一个 Python 快速排序" 既不是 P1
+		// （Python 卡在 写一个 和 快速排序 之间，\s* 不匹配非空白）
+		// 也不是 P2（Python 前面不是 "用"）。落入 chat 0.1。在中间放一个
+		// 可选的语言/框架名段，把"写一个 Python 快速排序""写一段 Go 锁"
+		// "做一个 React 表单"等常见说法一并承接。
 		{
-			expr:   `(?:写|做|实现|实现一个|写一个|写个|做个|编写)(?:一个|个|一段|一个简单的|一个完整)?\s*(?:快速排序|冒泡排序|归并排序|拓扑排序|二分查找|红黑树|二叉树|二叉搜索树|b\s*树|b\+|avl|图|哈希表|散列表|链表|栈|队列|堆|trie|布隆过滤器|线程池|连接池|内存池|缓存|lru|限流器|熔断器|负载均衡|中间件|路由|解释器|编译器|虚拟机|区块链|加密|解密|签名|鉴权|认证|授权|登录|注册|表单组件|对话框|编辑器|解析器|序列化|爬虫|脚本|小工具|控件|组件|插件|微服务|网关|代理|函数|类|方法|模块|接口|服务|sql(?:\s*语句)?|正则表达式|yaml|dockerfile|crontab|查询语句)`,
+			expr:   `(?:写|做|实现|实现一个|写一个|写个|做个|编写)(?:一个|个|一段|一个简单的|一个完整)?(?:\s+(?:python|java|javascript|js|typescript|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|shell|bash))?\s*(?:快速排序|冒泡排序|归并排序|拓扑排序|二分查找|红黑树|二叉树|二叉搜索树|b\s*树|b\+|avl|图|哈希表|散列表|链表|栈|队列|堆|trie|布隆过滤器|线程池|连接池|内存池|缓存|lru|限流器|熔断器|负载均衡|中间件|路由|解释器|编译器|虚拟机|区块链|加密|解密|签名|鉴权|认证|授权|登录|注册|表单组件|对话框|编辑器|解析器|序列化|爬虫|脚本|小工具|控件|组件|插件|微服务|网关|代理|函数|类|方法|模块|接口|服务|sql(?:\s*语句)?|正则表达式|yaml|dockerfile|crontab|查询语句)`,
 			task:   TaskCode,
 			weight: 0.65,
 			reason: "pattern: chinese coding task (verb + programming object)",
@@ -185,9 +191,13 @@ func buildDefaultPatterns() []PatternMatch {
 			weight: 0.65,
 			reason: "pattern: chinese coding task (language/framework + action verb)",
 		},
-		// P3: "写个/做个 + 脚本/工具/函数"（口语变体，P1 的补充）
+		// P3: "写个/做个 + 脚本/工具/函数"（口语变体，P1 的补充）。
+// 2026-09-28 实测扩展：把 "帮我写一个 Python 解析 CSV 的脚本" 这类
+// "帮我写/帮我做 + 一个/个 + <语言可选> + 对象" 也承接——前序 P3 只接
+// "写个/写一个简单" 的最短形式，"帮我写一个" 因 "一个" 后还有语言段而漏过。
+// 这条写法与 P1 共用语言词表，避免 creative/planning 误伤。
 		{
-			expr:   `(?:写个|做个|帮我写个|帮我做个|写一个简单)(?:.*?)(?:脚本|工具|函数|方法|程序|demo|示例|prototype|原型|demo)`,
+			expr:   `(?:写个|做个|帮我写个|帮我做个|帮我写一个|帮我做(?:一个)?|写一个简单)(?:\s+(?:python|java|javascript|js|typescript|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|shell|bash))?\s*(?:.*?)(?:脚本|工具|函数|方法|程序|demo|示例|prototype|原型)`,
 			task:   TaskCode,
 			weight: 0.60,
 			reason: "pattern: chinese coding task (colloquial 'write a script/tool')",

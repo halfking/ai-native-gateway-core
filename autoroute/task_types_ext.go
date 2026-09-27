@@ -84,6 +84,11 @@ var intentClassificationKeywords = []string{
 	"classify intent", "classify the intent", "detect intent",
 	"classify this", "text classification",
 	"sentiment analysis", "sentiment classification", "positive or negative",
+	// 2026-09-28 现场实测补充：动词+对象分离写法（"classify sentiment" /
+	// "classify tone" / "classify the review as positive/negative"），与
+	// 紧邻短语并集共同覆盖英文情感/类别二分类请求。原有中文"情感分类"
+	// 与此同型（"sentiment classification" 已是紧邻短语）。
+	"classify sentiment", "classify tone", "classify polarity",
 }
 
 // intentClassifyVerbs / intentClassifyTargets 用于组合判断：当动词与目标
