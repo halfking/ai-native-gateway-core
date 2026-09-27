@@ -897,6 +897,29 @@ that already expired」，而谓词恰好与之相反。
 说『既有实现已满足』的老代码」系统性失灵**。第 1 轮我曾断言 TurnLogsAggregator
 「已完全满足 handoff 第 4 项、无需重复实现」，那个判断就是这两条的根源。
 
+### O-D 共享主 worktree 被并行会话切了分支（操作事故，已处置）
+
+本轮开工时主 worktree `/llm-gateway/workspace/.../llm-gateway-go-cursor` 在
+`main`；干活途中并行会话在同一目录 checkout 了
+`feat/session-detail-body-status`（Subtask 3）。我的修改因此落在**它的分支**上，
+`git push origin main` 一度报 "Everything up-to-date"（推的是本地 main 指针，
+停在父提交）—— **差点以为已推送成功**。
+
+处置与遗留：
+- 我的提交 `8a34eab76` 的父提交恰为 `d10d782d9`(= main)，且该分支上没有并行
+  会话的其他提交（工作区当时干净），因此可无损分离。
+- 另开 worktree `/private/tmp/llm-gw-audit2` 承载 `main`，ff 到 `8a34eab76` 并推送，
+  远端已确认 `refs/heads/main = 8a34eab76`。
+- **未触碰并行会话的 worktree**（它可能正在编辑，切分支会打断它）。
+- **遗留动作（需人工确认）**：`feat/session-detail-body-status` 目前仍指向
+  `8a34eab76`，即含本轮 turn-logs 改动。该分支应先 `git reset --hard main`
+  （或 rebase 到 main）再继续 Subtask 3，否则会把无关改动带进 Subtask 3 的 PR。
+
+> 教训：`git push` 报 "Everything up-to-date" **不等于**你刚提交的代码在远端 ——
+> 它可能推的是另一个 ref。落盘后必须用 `git ls-remote origin refs/heads/main`
+> 核对远端真实值，不能只看 push 输出的措辞。开工前也应确认当前分支
+> （`git branch --show-current`），共享 worktree 下这不是自动成立的。
+
 ### 本轮自评教训
 
 F-6 写「非缺陷」时我只验证了「窗口够大」（5 分钟一跳 vs 24h TTL），**没有验证
