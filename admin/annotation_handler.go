@@ -210,7 +210,7 @@ func (h *Handler) handleAnnotationSamples(w http.ResponseWriter, r *http.Request
 		offset:          offset,
 	})
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to query samples: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to query samples", err)
 		return
 	}
 
@@ -613,7 +613,7 @@ func (h *Handler) handleAnnotationFirstTurnSamples(w http.ResponseWriter, r *htt
 		qerr = withAllTenantReadOnlyTx(ctx, pool, run)
 	}
 	if qerr != nil {
-		http.Error(w, fmt.Sprintf("Failed to query first-turn samples: %v", qerr), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to query first-turn samples", qerr)
 		return
 	}
 
@@ -962,7 +962,7 @@ func (h *Handler) handleCreateAnnotation(w http.ResponseWriter, r *http.Request)
 
 	result, err := pool.Exec(ctx, sql, req.RequestID, autoLabel, autoConfidence, req.HumanProvider, req.IsCorrect, req.Reason, req.Annotator, metadataArg)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create annotation: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to create annotation", err)
 		return
 	}
 
@@ -1081,7 +1081,7 @@ func (h *Handler) handleDeleteAnnotation(w http.ResponseWriter, r *http.Request)
 	sql := `DELETE FROM training_human_annotations WHERE request_id = $1`
 	result, err := pool.Exec(ctx, sql, requestID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to delete annotation: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to delete annotation", err)
 		return
 	}
 
@@ -1114,25 +1114,25 @@ func (h *Handler) handleAnnotationStats(w http.ResponseWriter, r *http.Request) 
 
 	overall, err := querier.GetOverallStats(ctx)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get overall stats: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to get overall stats", err)
 		return
 	}
 
 	byProvider, err := querier.GetProviderAccuracy(ctx)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get provider accuracy: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to get provider accuracy", err)
 		return
 	}
 
 	byAnnotator, err := querier.GetAnnotatorStats(ctx)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get annotator stats: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to get annotator stats", err)
 		return
 	}
 
 	byReason, err := querier.GetReasonDistribution(ctx)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get reason distribution: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to get reason distribution", err)
 		return
 	}
 

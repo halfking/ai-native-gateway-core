@@ -108,14 +108,14 @@ func (h *Handler) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 	var total int
 	err := h.db.QueryRow(ctx, countQuery, countArgs...).Scan(&total)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to count sessions: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to count sessions", err)
 		return
 	}
 
 	// 查询会话列表
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to query sessions: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to query sessions", err)
 		return
 	}
 	defer rows.Close()
@@ -149,7 +149,7 @@ func (h *Handler) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 			&lastSummarizedAt,
 		)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to scan session: %v", err), http.StatusInternalServerError)
+			writeInternalTextErr(w, "failed to scan session", err)
 			return
 		}
 
@@ -173,7 +173,7 @@ func (h *Handler) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := rows.Err(); err != nil {
-		http.Error(w, fmt.Sprintf("error iterating sessions: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to iterate sessions", err)
 		return
 	}
 
@@ -262,7 +262,7 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
-		http.Error(w, fmt.Sprintf("failed to query session: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to query session", err)
 		return
 	}
 
@@ -431,7 +431,7 @@ func (h *Handler) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.db.Exec(ctx, query, args...)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to update session: %v", err), http.StatusInternalServerError)
+		writeInternalTextErr(w, "failed to update session", err)
 		return
 	}
 	if result.RowsAffected() == 0 {

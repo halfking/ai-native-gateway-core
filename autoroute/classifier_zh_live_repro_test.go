@@ -96,3 +96,40 @@ func TestHeuristicClassifier_LiveRepro_ClassifySentiment(t *testing.T) {
 		}
 	}
 }
+
+
+func TestHeuristicClassifier_LiveRepro_NoSpaceLanguageAndCreativeFP(t *testing.T) {
+	// R73 审计 M-8 + M-4 回归钉。
+	// 正例：零空格语言名（"写一个Python快速排序"）此前漏归 chat（M-8）。
+	// 负例：无语言段的弱对象（示例）不再被 P3 拉成 code（M-4 拆分，
+	// "致辞示例"是创意写作形态）。
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+
+	for _, p := range []string{
+		"写一个Python快速排序",
+		"帮我写一个Python脚本",
+	} {
+		res, err := c.Classify(context.Background(), ClassificationSignals{LastUserPrompt: p})
+		if err != nil {
+			t.Fatalf("err on %q: %v", p, err)
+		}
+		if res.Primary != TaskCode {
+			t.Errorf("expected TaskCode for %q, got %s conf=%.2f reason=%s",
+				p, res.Primary, res.Confidence, res.Reason)
+		}
+	}
+
+	for _, p := range []string{
+		"帮我写一个致辞示例",
+		"帮我写一个婚礼致辞示例",
+	} {
+		res, err := c.Classify(context.Background(), ClassificationSignals{LastUserPrompt: p})
+		if err != nil {
+			t.Fatalf("err on %q: %v", p, err)
+		}
+		if res.Primary == TaskCode {
+			t.Errorf("expected non-code for creative-form %q, got %s conf=%.2f reason=%s",
+				p, res.Primary, res.Confidence, res.Reason)
+		}
+	}
+}

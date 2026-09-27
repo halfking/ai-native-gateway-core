@@ -97,3 +97,8 @@
 - **批判式审计改写终稿后，初稿语义的注释/文案必须逐处回改**：753 的 spec DescriptionLong、partition_manager 注释、sequence 登记、dbinit runner 登记、migration_753_test 头注 C1-C6 五处仍是初稿事实（2×TTL 谓词/GREATEST/NULL→24/pg_proc 短路/"补 idx"/"runCleanup 第 11 项"）——"钉桩自身的叙述也是被钉语义"（R53）的反面教训，本轮全部按终稿改写。
 - L8 收口：migration_752_test.go 契约钉桩补建（SET timezone proconfig/上海派生/禁 current_date/move-then-attach 骨架/pg_inherits 双检+advisory lock/mockprobe 双调用点）。
 - 753 真库预勘（252，R72-L3）：752/753 均未应用、session_turn_logs 0 行（首扫积压为零）、usage_facts 分区边界 +08 全对齐（036 手工期错位残留为零）。
+
+### R73 回注（2026-09-28，754 归档接线 + 归档月表治理）
+- **纯函数测试钉不住接线**：hour 门在函数体内被调用的断言全绿 ≠ 调用点在正确的 ticker 循环——E1a 事故形态（移回 24h 定相 run()）可静默复发。TestArchiveOldRequestLogs_CalledFromHourlyCleanupLoop 钉死「调用点必须在 runCleanup、不得在 run/archiveOldPartitionsIfNeeded」；新 cleanup 任务接线时套用同款双向源码范围断言。
+- 归档月表（request_logs_archive_YYYY_MM）两语义依赖钉在 754 头注：①源分区必须直查分区名（走父表会被 FORCE RLS 按 bg 会话 default 租户静默漏读）②月表加 RLS 必须同步设计读方角色。加 RLS 前先真库 EXPLAIN 实证直查分区与父表的 policy 适用差异。
+- 752 mock_probe_history 日分区只建不删（保留期无界，≈4.4M 行/年）——752 头注已显式登记；与 750 usage_facts TTL 同批 owner 拍板。

@@ -733,6 +733,12 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 |-----------|------|---------|--------|
 | 753 | `753_session_turn_logs_ttl.sql` | `9c8493f9dc1a4cd65a7828260ddc9baf11ae9f7b9901f145e9854a2f04da35af` | pending deploy（五点同步齐备：embeddata/var+map/StartupFiles/parity 一致，契约测试 migration_753_test.go 钉桩；R71 轮补齐 embed 时漏登本台账行，十五轮 D-3 补登） |
 
+## 2026-09-28 — R73 审计轮补登（754 未部署；canonical/embeddata SHA 一致）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 754 | `754_archive_request_logs_default.sql` | `567a14e52f9e8db0747337549191f1ca060d87c1f8b02e62e29ea7e9a037df8b` | pending deploy（982e3191c 落地、f65d34dd8 五点同步、3909d56e0 补 relnamespace='public' 锚定 + 归档接线移 1h tick；16 轮 E1b；handoff §24 真库 8 条契约实测通过。R73 审计 A-4：本行系漏登补录，与 753 同类） |
+
 ## 2026-09-28 — Subtask 5 收口：指标重命名迁移说明（无 DDL）
 
 **指标下线通知（运维必读）**：`llmgw_session_mirror_outbox_replays_total` **已改名为**

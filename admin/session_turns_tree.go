@@ -46,6 +46,12 @@ type SessionTurnTreeItem struct {
 	LatencyMs     *int                   `json:"latency"` // 毫秒；NULL 未知
 	ChildRequests []*SessionChildRequest `json:"child_requests"`
 	V2Shadow      *SessionTurnV2Shadow   `json:"v2_shadow,omitempty"`
+	// Subtask 3 / R73 — body_status 两态契约（'available' | 'unavailable'，
+	// admin/body_status.go）。元数据级 EXISTS 探针（session_bodies_unified），
+	// 绝不携带正文字节（文件头硬约束）。恒发以与 unified / session detail v2
+	// 家族口径一致；schema 无法区分「从未采集」与「按保留期清理」，历史轮次
+	// 恒报 'unavailable'（time线横幅按已加载轮次计数，语义见前端注释）。
+	BodyStatus string `json:"body_status"`
 }
 
 // SessionTurnV2Shadow is the per-turn, metadata-only dual-read comparison.
@@ -204,19 +210,29 @@ func parseTurnsTreeLimit(r *http.Request) int {
 func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p sessionTurnsTreeParams) (*sessionTurnsTreeResult, error) {
 	// 1) 主请求页（ROW_NUMBER 派生 turn_number，(turn_number, request_id) 游标）
 	mainSQL := `
-		SELECT t.turn_number, t.request_id, t.status, t.model, t.latency_ms
+		SELECT t.turn_number, t.request_id, t.status, t.model, t.latency_ms, t.body_present
 		FROM (
 			SELECT ROW_NUMBER() OVER (ORDER BY ts ASC, request_id ASC) AS turn_number,
 			       request_id,
 			       COALESCE(request_status, '') AS status,
 			       COALESCE(outbound_model, client_model, '') AS model,
-			       latency_ms
-			FROM request_logs_with_current_month
-			WHERE gw_session_id = $1
-			  AND (parent_request_id IS NULL OR parent_request_id = '')`
+			       latency_ms,
+			       EXISTS (
+			           SELECT 1
+			           FROM public.session_bodies_unified b
+			           WHERE b.tenant_id = rl.tenant_id
+			             AND b.session_id = rl.gw_session_id
+			             AND b.request_id = rl.request_id
+			             AND ((b.request_delta IS NOT NULL AND b.request_delta <> 'null'::jsonb)
+			               OR (b.response_delta IS NOT NULL AND b.response_delta <> 'null'::jsonb)
+			               OR (b.outbound_body IS NOT NULL AND b.outbound_body <> 'null'::jsonb))
+			       ) AS body_present
+			FROM request_logs_with_current_month rl
+			WHERE rl.gw_session_id = $1
+			  AND (rl.parent_request_id IS NULL OR rl.parent_request_id = '')`
 	args := []any{p.SessionID}
 	if p.TenantID != "" {
-		mainSQL += fmt.Sprintf("\n\t\t\t  AND tenant_id = $%d", len(args)+1)
+		mainSQL += fmt.Sprintf("\n\t\t\t  AND rl.tenant_id = $%d", len(args)+1)
 		args = append(args, p.TenantID)
 	}
 	mainSQL += fmt.Sprintf(`
@@ -241,10 +257,12 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 	for rows.Next() {
 		var tn int64
 		t := &SessionTurnTreeItem{}
-		if err := rows.Scan(&tn, &t.RequestID, &t.Status, &t.Model, &t.LatencyMs); err != nil {
+		var bodyPresent bool
+		if err := rows.Scan(&tn, &t.RequestID, &t.Status, &t.Model, &t.LatencyMs, &bodyPresent); err != nil {
 			return nil, fmt.Errorf("read session turns failed: %w", err)
 		}
 		t.TurnNumber = int(tn)
+		t.BodyStatus = bodyStatusFromPresent(bodyPresent)
 		t.ChildRequests = []*SessionChildRequest{}
 		turns = append(turns, t)
 		lastKey = sessionTurnsTreeCursor{TurnNumber: tn, RequestID: t.RequestID}

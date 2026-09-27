@@ -186,7 +186,7 @@ func (api *SessionExportAPI) handleExport(w http.ResponseWriter, r *http.Request
 	pack, err := api.buildExport(r.Context(), sessionID, tenantID)
 	if err != nil {
 		slog.Error("session export failed", "session_id", sessionID, "tenant", tenantID, "err", err)
-		writeExportJSONError(w, http.StatusInternalServerError, fmt.Sprintf("export failed: %v", err))
+		writeExportJSONError(w, http.StatusInternalServerError, "export failed")
 		return
 	}
 	if len(pack.Messages) == 0 && pack.Summary == "" {
@@ -346,7 +346,7 @@ func (api *SessionExportAPI) handleImport(w http.ResponseWriter, r *http.Request
 	})
 	if err != nil {
 		slog.Error("session import failed", "err", err)
-		writeExportJSONError(w, http.StatusInternalServerError, fmt.Sprintf("import failed: %v", err))
+		writeExportJSONError(w, http.StatusInternalServerError, "import failed")
 		return
 	}
 

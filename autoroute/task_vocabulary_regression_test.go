@@ -162,3 +162,54 @@ func TestRecommendV2_DiscriminatingLowMatchStillFallsBack(t *testing.T) {
 			got[0].Breakdown.MatchScore)
 	}
 }
+
+
+// R73 审计 M-1 根修回归钉：词表代表只在 hot-top3 子池之外时，坍缩 guard
+// 不得据全量词表判定把全 0 子池坍缩成 48h 热度单模型（多样性 3→1）。
+// 旧实现里本用例必坍缩：vocabularyPresent 按全量 available 判 true，
+// 而打分发生在 untagged 的 hot-top3 子池，winner MatchScore=0 <30。
+func TestRecommendV2_SubpoolVocabularyOnlyOutsideHotTop3KeepsScoredPool(t *testing.T) {
+	now := time.Now()
+	idx := &Index{
+		entries: []Candidate{
+			// hot-top3：无任何 reasoning 词表（真实热榜形态：chat 通用模型霸榜）
+			{CanonicalID: 1, CanonicalName: "hot-a", CredentialID: 11, Tier: "primary", PopularityScore: 100,
+				SuccessRate: 0.95, P95LatencyMs: 900, ProviderCategory: "official",
+				UnitPriceInPer1M: 1, UnitPriceOutPer1M: 2, ReleasedAt: &now},
+			{CanonicalID: 2, CanonicalName: "hot-b", CredentialID: 12, Tier: "primary", PopularityScore: 90,
+				SuccessRate: 0.93, P95LatencyMs: 1000, ProviderCategory: "official",
+				UnitPriceInPer1M: 1, UnitPriceOutPer1M: 2, ReleasedAt: &now},
+			{CanonicalID: 3, CanonicalName: "hot-c", CredentialID: 13, Tier: "primary", PopularityScore: 80,
+				SuccessRate: 0.91, P95LatencyMs: 1100, ProviderCategory: "official",
+				UnitPriceInPer1M: 1, UnitPriceOutPer1M: 2, ReleasedAt: &now},
+			// 词表代表：热度低，恒落在 hot-top3 之外
+			{CanonicalID: 4, CanonicalName: "reasoner", CredentialID: 14, Tier: "primary", PopularityScore: 10,
+				Tags: []string{"cap:reasoning", "modality:text"}, SuccessRate: 0.90, P95LatencyMs: 1200,
+				ProviderCategory: "official", UnitPriceInPer1M: 1, UnitPriceOutPer1M: 2, ReleasedAt: &now},
+		},
+		lastRefresh:      now,
+		hotCanonicals:    []int{1, 2, 3},
+		hotCanonicalsTS:  now,
+		hotCanonicalsTTL: 2 * time.Minute,
+	}
+
+	// 前置：全量池词表在位（正是旧实现坍缩的触发条件）。
+	if !TaskVocabularyRepresented(TaskReasoning, idx.entries) {
+		t.Fatal("precondition: full pool must carry the reasoning vocabulary")
+	}
+
+	got := idx.RecommendV2(context.Background(), TaskReasoning, ClassificationSignals{EstimatedTokens: 500}, ProfileSmart, "", 3)
+	if len(got) == 0 {
+		t.Fatal("reasoning task returned no candidates")
+	}
+	if got[0].Breakdown.MatchScore >= 30 {
+		t.Fatalf("precondition broken: winner match score %.1f is not sub-30, guard not exercised", got[0].Breakdown.MatchScore)
+	}
+	if isFallbackWinner(got) {
+		t.Fatalf("subpool with vocabulary only outside hot-top3 collapsed to the 48h fallback: %q",
+			got[0].Candidate.CanonicalName)
+	}
+	if len(got) < 2 {
+		t.Fatalf("expected the scored subpool to survive (>=2 candidates for failover), got %d", len(got))
+	}
+}

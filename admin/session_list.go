@@ -1,3 +1,8 @@
+// Deprecated（R73 审计 E-7 登记的清理候选，暂不删除）：
+// v1 SessionListAPI（NewSessionListAPI）全仓已无生产构造点，路由由
+// NewSessionListV2API 接管（cmd/gateway/main.go）。文件保留仅为测试
+// fixture（loadSessions/loadSessionDetail 仍被 *_test 引用）与下一清理
+// 轮的对照。删除前跑全量 build+test 确认；同族多轨现状见轮文档 D17 节。
 package admin
 
 import (

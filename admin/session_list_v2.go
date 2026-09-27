@@ -150,6 +150,12 @@ func (api *SessionListV2API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	audits, err := exp.ListRecentSessions(r.Context(), tenantID, limit)
 	if err != nil {
+		// R73 审计 A-7：存储不可达（连接类故障/资源耗尽）走 503 降级，
+		// 与本端点 nil-pool 臂及 list/detail v4 同口径；其余保持 500。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentList, err)
+			return
+		}
 		// R71 审计：err.Error() 是底层 pgx 错误原文（含 SQL/租户参数），
 		// 不回显；固定文案 + slog 服务端锚点（与 detail 端点同构）。
 		slog.Error("session list v2 query failed", "err", err, "tenant_id", tenantID)

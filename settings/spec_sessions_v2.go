@@ -171,13 +171,20 @@ func SessionsV2Specs() []*Spec {
 			HotReload:       true,
 		},
 		{
-			Key:             "sessions_v2.turn_logs_retention_hours",
-			Type:            TypeInt,
-			Scope:           ScopePlatform,
-			Category:        CategorySession,
-			Default:         24,
-			Description:     "环节日志保留时间",
-			DescriptionLong: "session_turn_logs表中环节日志的保留时间(小时)，超时后自动清理。",
+			Key:         "sessions_v2.turn_logs_retention_hours",
+			Type:        TypeInt,
+			Scope:       ScopePlatform,
+			Category:    CategorySession,
+			Default:     24,
+			Description: "环节日志保留时间（已废弃，无效果）",
+			// R73 审计 B-F6：该键自登记起无任何 Get 消费者——turn_logs 的
+			// 活 TTL 键是 lifecycle.session_turn_logs_ttl_hours（写入端
+			// turn_logs_writer 与清扫端 partition_manager 双端消费）。
+			// 原 DescriptionLong「超时后自动清理」为假（F-15 同类：登记
+			// 未消费第 5 例）。改为此废弃声明防误导运维；键本身保留以
+			// 兼容已存过该键的 settings 存储，下一清理轮连同
+			// spec_sessions_v2_test.go 的键清单一起删除。
+			DescriptionLong: "已废弃别名：真实生效键为 lifecycle.session_turn_logs_ttl_hours（Min1/Max168/Default24）。本键修改无任何效果。",
 			Unit:            "小时",
 			DangerLevel:     Safe,
 			HotReload:       true,

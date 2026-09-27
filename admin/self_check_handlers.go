@@ -688,6 +688,10 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 				n, err := h.probeEnqueue(ctx, model)
 				if err != nil {
 					failedModels++
+					// R73 D-10：探针入队是 per-model 诊断面，错误文案本身
+					// 是运维要看的排队失败原因（低敏感），保留；但补服务端
+					// slog 锚点，排障不依赖前端回显。
+					slog.Warn("self-check probe enqueue failed", "model", model, "err", err)
 					results[model] = map[string]any{"error": err.Error(), "enqueued": 0}
 				} else {
 					results[model] = map[string]any{"enqueued": n}
@@ -743,7 +747,10 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := h.worker.TriggerManualRun(body.Model); err != nil {
-		writeJSON(w, 503, map[string]any{"error": "trigger failed", "message": err.Error()})
+		// R73 D-10：503 体不回显 err.Error()（与 500 收口同型泄漏）；
+		// 真实原因走服务端日志。
+		slog.Error("self-check manual trigger failed", "err", err, "model", body.Model)
+		writeJSON(w, 503, map[string]any{"error": "trigger failed"})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "message": "manual trigger queued", "model": body.Model})

@@ -138,6 +138,17 @@ func TestModelsURLCandidates(t *testing.T) {
 			want: nil,
 		},
 		{
+			// R73 E-2：主机名尾字符落在裁剪集 {'/','v','1'} 内时不得被
+			// 字符集裁剪吞掉（TrimRight 时代 root 会变成 https://gw）。
+			name: "host tail char in v1 cutset",
+			in:   "https://gw1/v1",
+			want: []string{
+				"https://gw1/v1/models",
+				"https://gw1/v1/models",
+				"https://gw1/v1/v1/models",
+			},
+		},
+		{
 			name: "trailing slash",
 			in:   "https://api.openai.com/",
 			want: []string{

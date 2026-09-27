@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -38,10 +39,20 @@ const StorageStatusUnavailable = "storage_unavailable"
 //   - 网络层超时（net.Error 且 Timeout()）—— 存储不可达或过载；
 //   - 上下文超时（context.DeadlineExceeded）—— 10s 读超时预算耗尽。
 //
+// 判为降级的 PgError SQLSTATE 白名单（R73 审计 M-5，保守集合）：
+//   - 08xxx 连接异常类（connection_exception：服务端连接层故障，含
+//     08006 connection_failure）；
+//   - 53xxx 资源不足类（insufficient_resources：53300 too_many_connections、
+//     53100 磁盘满、53200 内存不足——共享 PG 实例的典型可用性故障）；
+//   - 57P03 cannot_connect_now（服务端启动/恢复期拒连）。
+//     这些是基础设施可用性故障，与「查询本身有缺陷」语义不同，客户端
+//     稍后重试是有意义的（与 503 retryable 语义一致）。
+//
 // 刻意不判为降级的：
 //   - context.Canceled —— 客户端自己走了，不是存储的问题；
-//   - *pgconn.PgError —— 服务端明确回了 SQL 错误（语法、权限、RLS、约束），
-//     那是 500：请求/查询本身有问题，重试没有意义；
+//   - 其余 *pgconn.PgError —— 服务端明确回了 SQL 错误（语法 42601、
+//     权限 42501、约束 23xxx、RLS、57014 query_canceled/语句超时——
+//     后者可能是自身预算，语义两可，保持 500 不重新分类）；
 //   - 其它一切 —— 保持既有 500 行为，不做无根据的重新分类。
 func IsStorageUnavailable(err error) bool {
 	if err == nil {
@@ -67,6 +78,16 @@ func IsStorageUnavailable(err error) bool {
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
+	}
+	// M-5：服务端回的连接/资源类 SQLSTATE 也是存储可用性故障。
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch {
+		case strings.HasPrefix(pgErr.Code, "08"), // connection_exception
+			strings.HasPrefix(pgErr.Code, "53"), // insufficient_resources
+			pgErr.Code == "57P03":               // cannot_connect_now
+			return true
+		}
 	}
 	return false
 }
