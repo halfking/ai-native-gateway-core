@@ -117,6 +117,7 @@ export default {
     stageCompressed: '压缩转发',
     stageRedacted: '安全/脱敏',
     originalOnlyAdmin: '原始正文仅超级管理员可见。当前展示压缩转发与安全处理后的内容。',
+    bodyStatusUnavailable: '本会话有 {count} 个轮次因原始正文已被清理或不存在，无法展示压缩/脱敏对比。',
     coversRange: '覆盖轮次 {start}–{end}',
     noSessionId: '无会话 ID，仅展示本请求 request / outbound / response 回退内容。',
     sendLabel: '发送',

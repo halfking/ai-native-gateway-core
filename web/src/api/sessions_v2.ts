@@ -73,6 +73,15 @@ export interface TurnListItem {
   attachment_count: number
   /** 后端 buildTurnDigest 模板式生成；缺数据时为 null（前端走 fallback）。 */
   digest?: TurnDigest | null
+  /**
+   * 2026-09-28 Subtask 3：原始正文（request_delta / response_delta /
+   * outbound_body）是否真实存储到 session_bodies 的提示。两态契约
+   * （admin/body_status.go，admin/session_turns.go）：
+   *   - 'available'   任一 body 列承载真实 JSON 负载
+   *   - 'unavailable' 三列全部为空 / NULL / 全是 null
+   * 字段缺失等价于 "未计算"，前端 banner 不应把缺字段的 turn 计为 unavailable。
+   */
+  body_status?: 'available' | 'unavailable'
 }
 
 export interface TurnsResponse {
