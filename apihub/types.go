@@ -48,6 +48,14 @@ const (
 	HealthDegraded HealthState = "degraded"
 	HealthDown     HealthState = "down"
 	HealthUnknown  HealthState = "unknown"
+	// HealthStorage 表示「资产本身没坏，但它依赖的存储读路径不可用」
+	// （数据库不可达、连接池为空、读事务开不起来）。与 HealthDown 的区别很
+	// 重要：down 意味着探针确认资产不响应，storage_degraded 意味着探针还能
+	// 跑但读不到持久化状态 —— 对应的 HTTP 语义是 503 + storage_status，
+	// 而不是 500。
+	//
+	// 供 admin 会话读端点在存储降级时上报（Subtask 4，handoff §6）。
+	HealthStorage HealthState = "storage_degraded"
 )
 
 // Asset is the unified resource record. The primary key is the composite
