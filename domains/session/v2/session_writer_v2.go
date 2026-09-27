@@ -704,9 +704,16 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	// spec §6.2 allows turn logs to fail without failing the write; keeping
 	// them out of the atomic tx means a slow/stale stage log can't hold the
 	// turn+bodies transaction open.
+	//
+	// 2026-09-27 (12h audit round 15, D-1): one WriteStages call, not a
+	// per-row loop. A single statement makes the whole turn's rows visible
+	// atomically, so the 5-minute aggregator tick can never observe (and
+	// flush, delete, then re-emit under the same turn_N key) a half-written
+	// turn — see WriteStages' doc comment.
 	if w.turnLogsWriter != nil && len(req.ProcessingStages) > 0 {
+		recs := make([]TurnLogRecord, 0, len(req.ProcessingStages))
 		for _, stage := range req.ProcessingStages {
-			err := w.turnLogsWriter.WriteStage(ctx, TurnLogRecord{
+			recs = append(recs, TurnLogRecord{
 				SessionID: req.SessionID,
 				TurnNo:    turnNo,
 				TenantID:  req.TenantID,
@@ -720,15 +727,13 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 				StartedAt:   stage.StartedAt,
 				CompletedAt: stage.CompletedAt,
 			})
-
-			if err != nil {
-				// Log but don't fail the write (turn logs are optional)
-				slog.ErrorContext(ctx, "write turn log failed",
-					"session_id", req.SessionID,
-					"turn_no", turnNo,
-					"stage", stage.Stage,
-					"error", err)
-			}
+		}
+		if err := w.turnLogsWriter.WriteStages(ctx, recs); err != nil {
+			// Log but don't fail the write (turn logs are optional)
+			slog.ErrorContext(ctx, "write turn logs failed",
+				"session_id", req.SessionID,
+				"turn_no", turnNo,
+				"error", err)
 		}
 	}
 

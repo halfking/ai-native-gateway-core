@@ -47,7 +47,7 @@ func LifecycleSpecs() []*Spec {
 		// 消费点:bg.PartitionManager.runCleanup 读本键调
 		// cleanup_session_turn_logs_by_ttl(p_ttl_hours)(迁移 753),
 		// HotReload 让运维调档无需重启网关。
-		{Key: "lifecycle.session_turn_logs_ttl_hours", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(168), Default: 24, DangerLevel: Warning, HotReload: true, Description: "session_turn_logs 保留小时数", DescriptionLong: "session_turn_logs 保留时长(小时)。bg.PartitionManager.runCleanup 周期调用 cleanup_session_turn_logs_by_ttl(p_ttl_hours)(迁移 753)删除 expires_at 早于「当前时刻 − 本值」的行。默认 24 小时(与迁移 430 的硬编码行为一致),范围 1-168(上限 7 天)。迁移 753 另在函数内对入参做 GREATEST(...,1) 与 NULL→24 兜底,防误配把表清空。", Unit: "小时"},
+		{Key: "lifecycle.session_turn_logs_ttl_hours", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(168), Default: 24, DangerLevel: Warning, HotReload: true, Description: "session_turn_logs 保留小时数", DescriptionLong: "session_turn_logs 保留时长(小时)。保留期在写入时烘焙:domains/session/v2/turn_logs_writer.go 把 expires_at 写为「写入时刻 + 本值」;bg.PartitionManager.runCleanup 周期调用 cleanup_session_turn_logs_by_ttl(迁移 753)按 expires_at < NOW() 到期即删。改动只影响新写入行,已写入行按原到期时间清理。默认 24 小时,范围 1-168(上限 7 天);越界值由 Go 侧钳制到 [1,168],迁移函数对区间外入参直接 RAISE(fail-closed),不会静默清空或永不清扫。", Unit: "小时"},
 
 		// 2026-09-09 (审计 R3#4): session_summaries 归档行 TTL。
 		// 471 起归档(domains/sessionarchive 把 30d 不活跃的行
