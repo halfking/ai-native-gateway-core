@@ -2,4 +2,4 @@
 
 | 时间 | 轮次 | 状态 | 报告 |
 |---|---|---|---|
-| 2026-09-27 | R70 · auto 路由专项测试 + 三门验收 | 已关闭 ✅ | [latest.md](file:///Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go/tests/48h-audit/D11-auto-model/reports/latest.md)（HEAD `1c9c753c4`） |
+| 2026-09-27 | R70 · auto 路由专项测试 + 三门验收 | 已关闭 ✅ | [latest.md](file:///Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go/tests/48h-audit/D11-auto-model/reports/latest.md)（HEAD `0a857bd68`） |
