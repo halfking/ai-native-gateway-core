@@ -299,9 +299,11 @@ func TestQuerySession_LeftJoinMissLeavesAnalysisNil(t *testing.T) {
 }
 
 func TestQuerySession_NoRowsReturnsNilSessionNilError(t *testing.T) {
-	// 现有实现用 err.Error() == "no rows in result set" 把 pgx.ErrNoRows 翻译成
-	// (nil, nil) —— 调用方 querySessionDetail 进一步把它当 404 处理。本测试
-	// 锁住这个契约，避免后续"修复"成 errors.Is 时悄悄改变 404 的语义。
+	// 契约：ErrNoRows → (nil, nil)，调用方 querySessionDetail 进一步把它
+	// 当 404 处理。R69 起实现用 errors.Is(err, pgx.ErrNoRows) 判定——语义
+	// 与旧字符串比较等价（本测试 mock 返回的就是 pgx.ErrNoRows），且在
+	// 错误被包装（超时/事务层）时仍保持 404 而非误判 500。本测试锁住
+	// (nil, nil) 返回契约本身。
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("pgxmock.NewPool: %v", err)

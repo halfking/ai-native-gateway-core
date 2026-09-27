@@ -5637,6 +5637,21 @@ func (d *DB) ensureCredentialGovernorRevision(ctx context.Context) error {
 //
 // Runs at startup via ensureSchema so every gateway instance converges on the
 // same function definition without a separate migration runner.
+// recentSuccessRateExistsSQL 探测 recent_success_rate(bigint,text,int,int)
+// 的精确 4 参签名。R69：提为包级常量供 TestRecentSuccessRateExistsSQLShape
+// 钉形状——pronargtypes 拼写错误（09-23 引入、09-27 修复）之所以存活，
+// 正因为没有任何测试断言这条 SQL，错误分支静默走"每 boot DROP+CREATE"。
+// proargtypes 的 oidvector 20 25 23 23 = (int8, text, int4, int4)；
+// pronargtypes 在 pg_proc 中不存在（只有计数列 pronargs）。
+const recentSuccessRateExistsSQL = `
+		SELECT count(*) FROM (SELECT 1) AS one
+		WHERE NOT EXISTS (SELECT 1 FROM pg_proc p
+		  JOIN pg_namespace n ON n.oid = p.pronamespace
+		  WHERE n.nspname = 'public'
+		    AND p.proname = 'recent_success_rate'
+		    AND p.proargtypes = '20 25 23 23'::oidvector)
+	`
+
 func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
@@ -5662,14 +5677,7 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 		slog.Info("request_logs_hot task_type/origin_stage columns ensured (catalog short-circuit)")
 	}
 	var fnMissing int
-	if err := d.pool.QueryRow(ctx, `
-		SELECT count(*) FROM (SELECT 1) AS one
-		WHERE NOT EXISTS (SELECT 1 FROM pg_proc p
-		  JOIN pg_namespace n ON n.oid = p.pronamespace
-		  WHERE n.nspname = 'public'
-		    AND p.proname = 'recent_success_rate'
-		    AND p.proargtypes = '20 25 23 23'::oidvector)
-	`).Scan(&fnMissing); err != nil {
+	if err := d.pool.QueryRow(ctx, recentSuccessRateExistsSQL).Scan(&fnMissing); err != nil {
 		fnMissing = 1 // 探测出错走保守路径（含 DROP），自含幂等
 	}
 	if _, err := d.pool.Exec(ctx, `

@@ -33,7 +33,10 @@ func TestUpsertSessionSnapshot_SqlCarriesAttributionColumns(t *testing.T) {
 		regexp.QuoteMeta("NULLIF($21, ''), NULLIF($22, '')") + `.*` +
 		regexp.QuoteMeta("WHEN public.sessions.agent_role = 'main' THEN EXCLUDED.agent_role") + `.*` +
 		regexp.QuoteMeta("parent_session_id = COALESCE(EXCLUDED.parent_session_id, public.sessions.parent_session_id)") + `.*` +
-		regexp.QuoteMeta("parent_task_id = COALESCE(EXCLUDED.parent_task_id, public.sessions.parent_task_id)")
+		regexp.QuoteMeta("parent_task_id = COALESCE(EXCLUDED.parent_task_id, public.sessions.parent_task_id)") + `.*` +
+		// R69：primary_request_id 活跃写入（首值优先），admin gw_session_id
+		// 反向映射臂的数据源闭合。
+		regexp.QuoteMeta("primary_request_id = COALESCE(NULLIF(EXCLUDED.primary_request_id, ''), public.sessions.primary_request_id)")
 	mock.ExpectExec(shape).
 		WithArgs(
 			"sess-attr", "tenant-1",
@@ -47,6 +50,8 @@ func TestUpsertSessionSnapshot_SqlCarriesAttributionColumns(t *testing.T) {
 			// $20..$22：归因三列实参顺序（与 expectAggregateUpsert 一致）
 			"worker", "gw_parent", "task-1",
 			time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
+			// $24：primary_request_id（本 update 无 RequestID → 空串归一 NULL）
+			"",
 		).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 

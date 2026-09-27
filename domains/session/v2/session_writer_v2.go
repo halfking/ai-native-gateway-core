@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -1000,6 +1001,37 @@ func calculateTotalBytes(requestAttachments, responseAttachments []AttachmentRef
 	return total
 }
 
+// stripMarkdownNoise 去除常见 markdown 装饰，供人类阅读的摘要面使用
+// （R69，审计 checklist"抽取会话信息便于人类查看（去除格式）"）：
+// 代码围栏整段剔除、行首标题/列表符剥除、粗体与行内代码反引号去除、
+// 空行折叠为单空格。刻意不做完整 markdown 解析——摘要面只需要"大体
+// 可读"，语义与换行结构不承诺保留。
+func stripMarkdownNoise(s string) string {
+	var b strings.Builder
+	inFence := false
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		t = strings.TrimLeft(t, "#-*•► ")
+		t = strings.ReplaceAll(t, "**", "")
+		t = strings.ReplaceAll(t, "`", "")
+		if t == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(t)
+	}
+	return b.String()
+}
+
 // summarizeMessages creates a brief summary of messages for session snapshot
 func summarizeMessages(messages []Message) string {
 	if len(messages) == 0 {
@@ -1009,9 +1041,10 @@ func summarizeMessages(messages []Message) string {
 	// Take first message content, truncate to 200 runes (not bytes) to avoid
 	// cutting UTF-8 sequences in the middle. PostgreSQL text columns enforce
 	// valid UTF-8, so byte-slicing [:200] would panic on insert if the cut
-	// lands inside a multi-byte character.
+	// lands inside a multi-byte character. R69: markdown 噪音在截断前剥除，
+	// 让 title/summary/last_request_summary 面向人类阅读而非原始格式。
 	firstMsg := messages[0]
-	content := firstMsg.Content
+	content := stripMarkdownNoise(firstMsg.Content)
 	runes := []rune(content)
 	if len(runes) > 200 {
 		content = string(runes[:200]) + "..."

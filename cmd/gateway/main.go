@@ -6875,7 +6875,13 @@ func main() {
 		sessionSummaryAPI := admin.NewSessionSummaryV2API(dbConn.Pool())
 		mux.HandleFunc("/api/admin/sessions/detail", wrapAdmin(sessionDetailAPI.ServeHTTP))
 		mux.HandleFunc("/api/admin/sessions/summary", wrapAdmin(sessionSummaryAPI.ServeHTTP))
-		slog.Info("Phase 3.6.5 sessions v2 API enabled (/api/admin/sessions/detail, /summary)")
+		// R69 audit: list v2（9f62818c5 落地的信封化列表端点）此前无生产
+		// 构造点——/api/admin/sessions/list 被 /sessions/ 子树路由吞成
+		// sessionID="list"（sessionforensics --from 模式因此必 404）。精确
+		// pattern 优先于子树，挂载即闭合该契约；鉴权/租户钉扎在 handler 内。
+		sessionListV2API := admin.NewSessionListV2API(dbConn.Pool())
+		mux.HandleFunc("/api/admin/sessions/list", wrapAdmin(sessionListV2API.ServeHTTP))
+		slog.Info("Phase 3.6.5 sessions v2 API enabled (/api/admin/sessions/detail, /summary, /list)")
 
 		// Phase 3.7 (A3-1): Agent Registry API (Track A APIHub)
 		agentsAPI := admin.NewAgentsHandler(apihubSvc)

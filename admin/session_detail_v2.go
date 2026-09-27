@@ -11,7 +11,9 @@
 //     "total_turns": 5
 //   }
 //
-// 仅 super 用户可用。
+// 鉴权与租户：经 wrapAdmin 挂载（cmd/gateway/main.go）；handler 内
+// GetAuthContext 双保险，非 super 角色被 tenantFromQueryOrContext 钉在本
+// 租户，仅 super/admin-key 可 ?tenant= 跨租户（R69 注释更正：非"仅 super"）。
 
 package admin
 
@@ -20,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -224,7 +227,8 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// session_id；解析失败按 404 处理，不暴露内部错误细节。
 	resolvedSessionID, err := api.resolveSessionID(ctx, sessionID, tenantID)
 	if err != nil {
-		if err == errSessionNotFound {
+		// R69：errors.Is 保持包装错误（超时/事务包装）下的 404 语义。
+		if errors.Is(err, errSessionNotFound) {
 			writeExportJSONError(w, http.StatusNotFound, "session not found")
 			return
 		}
@@ -333,7 +337,9 @@ func (api *SessionDetailV2API) querySession(
 		&saStatus, &saSchemaVersion, &saInputHash, &saSourceTaskID, &saUpdatedAt, &saPayloadRaw,
 	)
 	if err != nil {
-		if err.Error() == "no rows in result set" {
+		// R69：errors.Is 替换字符串比较——错误被包装（超时/事务层）时
+		// 字符串匹配会把 miss 误判成 500，errors.Is 语义等价且更稳。
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
@@ -437,6 +443,11 @@ func (api *SessionDetailV2API) queryTurns(
 		turns = append(turns, t)
 	}
 
+	// R69：零轮次（空会话/offset 越界）序列化为 [] 而非 null——严格解析
+	// 的消费方对 null turns[] 会崩。
+	if turns == nil {
+		turns = []SessionTurnV2{}
+	}
 	return turns, rows.Err()
 }
 
@@ -488,6 +499,9 @@ func (api *SessionDetailV2API) resolveSessionID(
 	//    多个会话 —— 显式拒绝。12h 审计 F-1：初版注释承诺"多命中返回
 	//    error"但实现是 ORDER BY ts LIMIT 1 静默取最早请求的会话，既违背
 	//    承诺，也可能在 primary_request_id 恰非最早请求时漏配。
+	//    R69：LIMIT 2 —— 歧义判定只需"是否 >1"，2 行即短路，避免同租户
+	//    调用方用同一 gw_session_id 铺海量候选行放大扫描（错误信息里的
+	//    计数自此为下界）。
 	rows, err := api.pool.Query(ctx, `
 		SELECT DISTINCT s.session_id
 		FROM public.sessions s
@@ -496,6 +510,7 @@ func (api *SessionDetailV2API) resolveSessionID(
 		      SELECT request_id FROM request_logs
 		      WHERE tenant_id = $1 AND gw_session_id = $2
 		  )
+		LIMIT 2
 	`, tenantID, input)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -521,6 +536,10 @@ func (api *SessionDetailV2API) resolveSessionID(
 	case 0:
 		return "", errSessionNotFound
 	default:
+		// R69：歧义拒绝是数据完整性信号（同 gw_session_id 跨多会话），
+		// 只回客户端错误串运维不可见；落一条 Warn 作告警锚点。
+		slog.Warn("ambiguous session resolution: gw_session_id maps to multiple sessions",
+			"tenant_id", tenantID, "gw_session_id", input, "candidates", len(candidates))
 		return "", fmt.Errorf(
 			"gw_session_id %q maps to %d sessions (tenant %s); refusing ambiguous resolution",
 			input, len(candidates), tenantID)

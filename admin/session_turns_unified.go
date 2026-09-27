@@ -212,6 +212,10 @@ func unifiedTurnsTreeFallback(ctx context.Context, db sessionTurnsDB, sessionID,
 			StatusCode:    statusCodeForTreeStatus(turn.Status),
 			LatencyMs:     latencyValue(turn.LatencyMs),
 			ChildRequests: turn.ChildRequests,
+			// R69：tree_fallback 分支此前不填身份标注，契约"显式标注"
+			// 在老会话（无 V2 shadow）路径落空；入参已有 sessionID，补齐。
+			IDKind:     "session_id",
+			PrimaryKey: sessionID,
 		})
 	}
 	return items, true

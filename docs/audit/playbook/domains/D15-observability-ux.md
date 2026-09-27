@@ -58,3 +58,4 @@
 ### R45 回注（2026-09-19）
 - RequestTile 命中率边界定式：`prompt_tokens` 显式 0 且 cache_read>0 时 100% 是合法值（非"未上报"）；缺省（null）才显示 —。判据 = `prompt_tokens != null && r + prompt_tokens > 0`。
 - 实时流 hub==nil 兜底分支的字段面**有意**保持最小集（不可达防御代码不追求与 hub 路径逐字段对齐，避免双份漂移面）——字段对齐判据只适用于可达路径。
+- R69 回注（2026-09-27）：**新 admin 端点三件套缺一即 P2**——①生产构造点+路由挂载（9f62818c5 的 list_v2 因无构造点被子树路由吞成 sessionID="list"，CLI 契约破裂）；②GetAuthContext nil→404 双保险（自定义 mux 直挂不裸奔）；③tenantFromQueryOrContext 租户钉扎（?tenant= 仅 super 生效）。反向臂类查询的候选集加 LIMIT N+1（歧义判定只需">1"）；数据完整性类 500（歧义拒绝）必须落服务端日志作告警锚点；列表/详情响应的空数组序列化为 [] 而非 null。

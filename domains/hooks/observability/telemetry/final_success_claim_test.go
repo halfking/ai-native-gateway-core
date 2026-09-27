@@ -326,7 +326,11 @@ func TestClaimSessionFinalSuccess_HeapPartitionsGuard(t *testing.T) {
 	// 索引 uq_<partition>_final_success_session 的谓词对齐, planner 才能证明
 	// 蕴含走 Index Only Scan; 252 实证 EXPLAIN 从 1.27M 行 Seq Scan 翻转),
 	// 且投影不得含 is_final_success (列不在索引里会强制回表破掉 index-only)。
-	expectedGuard := `SELECT gw_session_id FROM ONLY .request_logs_2026_08. WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> ''` +
+	// 2026-09-27 审计 R69: 热表臂同款补齐两谓词 (uq_request_logs_hot_final_
+	// success_session 谓词形状相同), 一并钉住。
+	expectedGuard := `UPDATE request_logs_hot[\s\S]*other\.gw_session_id IS NOT NULL AND other\.gw_session_id <> ''` +
+		`[\s\S]*` +
+		`SELECT gw_session_id FROM ONLY .request_logs_2026_08. WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> ''` +
 		`[\s\S]*` +
 		`SELECT gw_session_id FROM ONLY .request_logs_2026_09. WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> ''` +
 		`[\s\S]*promoted\.gw_session_id`

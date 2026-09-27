@@ -50,8 +50,18 @@
 -- 表 5 推算 R68 §四 登记的 TTL 区间 7-90 天），本迁移仅建日分区函数
 -- 不删除任何历史 partition。
 
+-- 2026-09-27 修订（R69 24h 审计轮 P2）：函数定义带 SET timezone 子句
+-- （proconfig，函数入口生效、先于 DECLARE 初始化器）。751 是同一钉扎的
+-- ALTER 形式（幂等收敛存量库）；但 750 文件自身的预建调用（下方两条
+-- SELECT）发生在 751 应用之前——751 的钉扎救不了它们：UTC 会话执行
+-- 本文件时 current_date 与 p_date::timestamptz 双双按 UTC 日历求值，
+-- 预建出边界错位 8h 的日分区，此后 boot/tick 按分区名幂等短路
+-- （上方 pg_inherits 检查只看 relname），错位边界永不自愈；且与后续
+-- 上海日历分区在相邻日重叠，ATTACH 必报 overlap。函数级 SET 让本文件
+-- 无论被哪个会话时区执行，边界换算都钉在上海日历；预建日期参数同步
+-- 改为显式上海日历派生（与 db.go ensure / partition_manager tick 同源）。
 CREATE OR REPLACE FUNCTION ensure_usage_facts_daily_partition(p_date DATE)
-RETURNS void LANGUAGE plpgsql AS $$
+RETURNS void LANGUAGE plpgsql SET timezone = 'Asia/Shanghai' AS $$
 DECLARE
     pname    TEXT := format('usage_facts_%s', to_char(p_date, 'YYYYMMDD'));
     start_ts TIMESTAMPTZ := p_date::timestamptz;
@@ -108,9 +118,11 @@ BEGIN
 END $$;
 
 -- 首次迁移预建当日 + 次日；后续由 PartitionManager 24h tick 接管。
+-- 日期显式按上海日历派生（R69 修订；current_date 随会话时区，UTC 会话
+-- 会预建错日）；边界换算由函数级 SET timezone 钉扎兜底（见上方修订注记）。
 -- 调用期间分区父表已挂 DEFAULT 分区（537）；PG 允许 DEFAULT 与具体
 -- RANGE 分区共存——新一日数据走日分区，越界数据落 DEFAULT，partition
 -- pruning 对 WHERE 范围查询仅扫命中分区。存当日行的存量库由函数内
 -- 搬移步骤兜底（见上方 2026-09-26 修订注记）。
-SELECT ensure_usage_facts_daily_partition(current_date);
-SELECT ensure_usage_facts_daily_partition(current_date + 1);
+SELECT ensure_usage_facts_daily_partition((now() AT TIME ZONE 'Asia/Shanghai')::date);
+SELECT ensure_usage_facts_daily_partition(((now() AT TIME ZONE 'Asia/Shanghai')::date) + 1);
