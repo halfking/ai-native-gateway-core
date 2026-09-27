@@ -26,6 +26,7 @@ package session_identity_contract
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -196,6 +197,58 @@ func TestSessionListV2_ResponseIDKindAnnotation(t *testing.T) {
 	}
 }
 
+// TestSessionListV2_NoAuthContextRejected（R69）：list_v2 落地时未读鉴权
+// 上下文（9f62818c5），挂生产路由前必须与 detail 端点同构——无身份请求
+// 一律 404，且绝不触达数据库。
+func TestSessionListV2_NoAuthContextRejected(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	api := admin.NewSessionListV2APIWithDB(mock)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/sessions/list?tenant=default", nil)
+	// 无 SetAuthContext —— 模拟绕过 wrapAdmin 的直连请求。
+	rr := httptest.NewRecorder()
+	api.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (no auth context)", rr.Code)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("no DB access expected without auth: %v", err)
+	}
+}
+
+// TestSessionListV2_TenantPinnedToAuthContext（R69）：非 super 角色的
+// ?tenant= 必须被忽略，查询钉在 auth 租户上（跨租户读会话列表防线）。
+func TestSessionListV2_TenantPinnedToAuthContext(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	// 传入 ?tenant=other（他人租户），但查询参数必须是 auth 租户 tenant-a。
+	mock.ExpectQuery(`FROM request_logs`).
+		WithArgs("tenant-a", 50).
+		WillReturnRows(sessionListV2ContractRow("gw_abc"))
+
+	api := admin.NewSessionListV2APIWithDB(mock)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/sessions/list?tenant=other", nil)
+	req = admin.SetAuthContext(req, &admin.AuthContext{TenantID: "tenant-a", Role: "tenant_admin", IsJWT: true})
+	rr := httptest.NewRecorder()
+	api.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("query must be pinned to the auth tenant (tenant-a), not the query param: %v", err)
+	}
+}
+
 // TestSessionDetailV2_ResolveGwSessionIDToSessionID 验证
 // admin.SessionDetailV2API.resolveSessionID 把 gw_session_id 反向解析为
 // session_id 走通（路径：request_logs.gw_session_id → sessions.primary_request_id
@@ -344,9 +397,12 @@ func TestSessionDetailV2_ReverseMapFallbackToPrimaryRequestID(t *testing.T) {
 
 // TestSessionDetailV2_AmbiguousGwSessionIDRejected 测试 resolveSessionID
 // 反向映射的歧义守卫（12h 审计 F-1）：同一 gw_session_id 映射到多个不同
-// session_id 时必须显式拒绝（500 并点名歧义），禁止静默取最早会话造成
-// 跨会话数据混用 —— 这是 §1.6 "gw_session_id 不得隐式覆盖多个会话"的
-// 执行点。
+// session_id 时必须显式拒绝（409），禁止静默取最早会话造成跨会话数据混用
+// —— 这是 §1.6 "gw_session_id 不得隐式覆盖多个会话"的执行点。
+//
+// 409 而非 500：歧义是「标识不精确」而非服务端故障，调用方换个更精确的
+// session_id 即可。响应体只回固定文案，不得回显候选 session_id、tenant_id
+// 或内部错误串（handoff §3 审计 Minor-2）。
 func TestSessionDetailV2_AmbiguousGwSessionIDRejected(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -370,12 +426,18 @@ func TestSessionDetailV2_AmbiguousGwSessionIDRejected(t *testing.T) {
 	rr := httptest.NewRecorder()
 	api.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500 (ambiguous resolution must be explicit); body = %s",
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (ambiguous resolution must fail closed); body = %s",
 			rr.Code, rr.Body.String())
 	}
+	// 响应体点名歧义即可，但绝不能泄漏候选 session_id 或租户/内部错误串。
 	if !strings.Contains(rr.Body.String(), "ambiguous") {
 		t.Errorf("body should name the ambiguity, got: %s", rr.Body.String())
+	}
+	for _, leak := range []string{"srv_a", "srv_b", "tenant-a", "gw_dupe", "refusing ambiguous resolution"} {
+		if strings.Contains(rr.Body.String(), leak) {
+			t.Errorf("ambiguous response must not leak %q; body = %s", leak, rr.Body.String())
+		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -406,6 +468,124 @@ func TestSessionDetailV2_NotFoundOnUnresolvableInput(t *testing.T) {
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestSessionDetailV2_ResolveFailureDoesNotLeakInternalError 钉住 500 兜底
+// 分支不外泄内部错误串（handoff §3 审计 Minor-2）。
+//
+// 修复前该分支是 writeExportJSONError(..., fmt.Sprintf("resolve session id: %v", err))，
+// 响应体原样回显包装后的 DB 错误（SQL 片段、约束名、可能的连接细节）。
+// 修复后：500 + 固定文案，详细错误只进 slog。
+func TestSessionDetailV2_ResolveFailureDoesNotLeakInternalError(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	// 步骤 1 direct miss；步骤 2 反向映射抛硬错误（非 ErrNoRows）。
+	secret := "pq: duplicate key value violates unique constraint \"sessions_pkey\" DETAIL: Key (id)=(42)"
+	mock.ExpectQuery(`SELECT session_id FROM public\.sessions`).
+		WithArgs("gw_err", "tenant-a").
+		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery(`FROM public\.sessions s`).
+		WithArgs("tenant-a", "gw_err").
+		WillReturnError(errors.New(secret))
+
+	api := admin.NewSessionDetailV2APIWithDB(mock)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/sessions/detail?session_id=gw_err&tenant=tenant-a", nil)
+	req = admin.SetAuthContext(req, &admin.AuthContext{TenantID: "tenant-a", Role: "tenant_admin", IsJWT: true})
+	rr := httptest.NewRecorder()
+	api.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body = %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, leak := range []string{secret, "sessions_pkey", "duplicate key", "resolveSessionID reverse", "tenant-a"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("500 body must not leak internal error detail %q; body = %s", leak, body)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSessionDetailV2_QueryFailureDoesNotLeakInternalError（R71）：
+// 0aa86d8bd 只收口了 resolveSessionID 臂；resolve 成功后 querySessionDetail
+// 的失败臂仍把 pgx 原始错误（含 SQL 片段/约束名/租户参数）回显进 500
+// 响应体且无服务端日志。修复后与 resolve 分款同构：固定文案 + slog。
+func TestSessionDetailV2_QueryFailureDoesNotLeakInternalError(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	secret := "pq: column \"turns_missing\" does not exist CONTEXT: tenant-a"
+	// 步骤 1：direct hit（session_id 直接命中，反向臂不执行）。
+	mock.ExpectQuery(`SELECT session_id FROM public\.sessions`).
+		WithArgs("sess-ok", "tenant-a").
+		WillReturnRows(pgxmock.NewRows([]string{"session_id"}).AddRow("sess-uuid-1"))
+	// 步骤 2 跳过；querySessionDetail 第一条查询即失败。
+	mock.ExpectQuery(`FROM public\.sessions s`).
+		WithArgs("sess-uuid-1", "tenant-a").
+		WillReturnError(errors.New(secret))
+
+	api := admin.NewSessionDetailV2APIWithDB(mock)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/sessions/detail?session_id=sess-ok&tenant=tenant-a", nil)
+	req = admin.SetAuthContext(req, &admin.AuthContext{TenantID: "tenant-a", Role: "tenant_admin", IsJWT: true})
+	rr := httptest.NewRecorder()
+	api.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body = %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, leak := range []string{secret, "turns_missing", "query failed", "tenant-a"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("500 body must not leak internal error detail %q; body = %s", leak, body)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSessionListV2_QueryFailureDoesNotLeakInternalError（R71）：
+// list_v2 端点（2a8ad6b74 接线）此前 500 体直接回显 err.Error() 原文
+// （底层 pgx 错误含 SQL/租户参数）。修复后固定文案 + slog 服务端锚点。
+func TestSessionListV2_QueryFailureDoesNotLeakInternalError(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	secret := "pq: relation \"request_logs_partition_missing\" does not exist tenant-a"
+	mock.ExpectQuery(`FROM request_logs`).
+		WithArgs("tenant-a", 50).
+		WillReturnError(errors.New(secret))
+
+	api := admin.NewSessionListV2APIWithDB(mock)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/sessions/list?tenant=tenant-a", nil)
+	req = admin.SetAuthContext(req, &admin.AuthContext{TenantID: "tenant-a", Role: "tenant_admin", IsJWT: true})
+	rr := httptest.NewRecorder()
+	api.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body = %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, leak := range []string{secret, "request_logs_partition_missing", "tenant-a"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("500 body must not leak internal error detail %q; body = %s", leak, body)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

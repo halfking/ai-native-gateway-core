@@ -1,53 +1,24 @@
 # D11 — auto 模型
 
 > 域知识库：[docs/audit/playbook/domains/D11-auto-model.md](../../../docs/audit/playbook/domains/D11-auto-model.md)  
-> 48h 改动面（截至 R56）：<待 fill>  
-> 状态：草稿（占位，待 worker 子代理按 TEMPLATE-domain.md 填充）
+> 48h 改动面（截至 R70）：D11 auto-model · classification / over-provision / decision-chain 三层闭环  
+> 状态：✅ **R70 已关闭**（本文件为收口摘要，权威报告见下方 latest.md）
 
-## 1. 审计要点
+## R70 收口摘要
 
-- 待 fill 1
-- 待 fill 2
-- 待 fill 3
+| 维度 | 状态 |
+|---|---|
+| 改动面 | D11 auto-model · classification layer accuracy/F1/GRRQ + over-provision 0/30 + decision chain 14×11×4 |
+| 任务定位 | 关闭 D11 域 R70 轮 auto 路由专项测试 + 三门验收 |
+| 验收门 | `go build ./...` · `go vet ./autoroute/...` · `go test -race -timeout 120s ./autoroute/...` · 全部 PASS |
+| 回归五件套 | autoroute 单测五组（classification matrix / e2e / fallback / recommend_v2 / channel-quality）— 全部 PASS（业务/数据/压力/安全/一致性专项 .go 测试文件当前 0 个，见 latest.md §7 后续路径） |
+| 决策链 | 14 个 (prompt×profile) × 11 任务类型 × 4 profile 档位 — 端到端可复现 |
+| 过配率 | 0/30（分类层/路由层/计费层全部命中目标档位，无掉档/越级） |
+| 提交 | 本地 5 commits ahead of `origin/main`（`59107132e` / `ae344d51e` / `3b53b9be1` / `dee7d3ee5` / `0a857bd68`）；HEAD `0a857bd68` |
 
-## 2. 业务测试
+**权威收口报告**：[reports/latest.md](reports/latest.md)（148 行，覆盖 §1 改动面 / §2 任务定位 / §3 验收门 / §4 回归五件套 / §5 决策链 / §6 过配率 / §7 收口结论）
 
-- [ ] B-01：<待填>
+## 后续路径
 
-## 3. 数据测试
-
-- [ ] D-01：<待填>
-
-## 4. 压力测试
-
-- [ ] S-01：<待填>
-
-## 5. 安全测试
-
-- [ ] SF-01：<待填>
-
-## 6. 验收门
-
-```bash
-go build ./...
-go vet ./...
-go test -race -timeout 60s ./tests/48h-audit/D11-auto-model/...
-```
-
-## 7. 与方案文档的对齐
-
-- RFC：docs/...
-- 上轮挂账：docs/audit/playbook/runs/R55-.../agent-D11.md
-
-## 子代理派发提示词
-
-```
-你是 worker 子代理（带写权限到 tests/48h-audit/D11-auto-model/）。
-知识库入口：docs/audit/playbook/domains/D11-auto-model.md
-模板：tests/48h-audit/TEMPLATE-domain.md
-必填：
-  - 改 plan.md §1-§7
-  - 在 business/data/stress/safety 至少各写 1 个 _test.go
-  - reports/latest.md 留档
-输出 ≤5KB。
-```
+- **推送代码到 `origin/main`**：触发条件为用户确认 R70 关账后希望远端同步；工作流为启动 `session-audit-gate`（会话日志 + 双轴审查 + 规则自检 → GO 后 `git push`）。已完成（R70 收口 merge `5e6707e7c` 已推 origin/main）。
+- **补充业务/数据/压力/安全测试文件**：留待后续 sprint，不阻塞 R70 关账。

@@ -294,6 +294,22 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 覆盖）。幂等 ALTER，不动函数体与分区；boot 链
 			// db.ensureUsageFactsDailyPartition 同语句双通道收敛。
 			"751_usage_facts_partition_tz_pin.sql",
+			// 752 (2026-09-27, mock probe 生产入口收口轮): mock_probe_
+			// history 历史表 + 按日分区函数——DDL 原死放 migrations/ 顶层
+			// (036) 无投递通道（745 同款病），仅 252 被手工跑过；收编
+			// startup 正典通道。相对 036 加固：函数级 SET timezone 钉扎
+			// (751 对偶) + move-then-attach (750 同款，DEFAULT 当日行
+			// 搬移)。幂等（IF NOT EXISTS / OR REPLACE / pg_inherits
+			// 短路），252 存量库重放安全且顺带升级旧版函数。
+			"752_mock_probe_history.sql",
+			// 753 (2026-09-27, R67 session-storage 审计子任务 2):
+			// session_turn_logs 可配 TTL 清理函数 cleanup_session_turn_logs_
+			// by_ttl(p_ttl_hours)——入参 NULL→24、下限 GREATEST(...,1) 防误配
+			// 清空整表；幂等（OR REPLACE + pg_proc 短路），仅函数无 DDL 表
+			// 变更，installer 通道安全。生产/升级节奏由 bg/partition_manager
+			// runCleanup 周期调用（settings lifecycle.session_turn_logs_ttl_
+			// hours 热加载）。
+			"753_session_turn_logs_ttl.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，

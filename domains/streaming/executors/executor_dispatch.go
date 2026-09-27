@@ -235,8 +235,88 @@ func selectDispatchEndpoint(cand provider.Candidate, clientProtocol string, flag
 	if decision.Protocol == endpointselect.ProtocolOllamaNative && !flags.OllamaNativeEnabled {
 		return cand
 	}
+	// r0926 audit finding #2: the decision's MatchRule / EndpointID /
+	// VendorNative / Passthrough were computed and then dropped on the floor.
+	// docs §6.4 / AC8 require them as trace attributes, and without them the
+	// gray release is unobservable — you cannot tell stage1c from stage4, nor
+	// prove the canary only moved traffic you intended. Emitted ONLY when the
+	// selector is on, so the flag-off path keeps its zero-overhead claim.
+	//
+	// Known gap (recorded, not fixed here): Decision.Passthrough is reported
+	// but never consumed — P5 owns the byte-level passthrough executor. Every
+	// stage1a hit still goes through the IR-bridged Ollama executor.
+	slog.Info("endpoint_selector_decision",
+		"match_rule", decision.MatchRule,
+		"client_protocol", clientProtocol,
+		"endpoint_protocol", string(decision.Protocol),
+		"endpoint_id", decision.EndpointID,
+		"vendor_native", decision.VendorNative,
+		"passthrough", decision.Passthrough,
+		"primary_protocol", cand.Protocol,
+		"primary_base_url", cand.BaseURL,
+		"decision_base_url", decision.BaseURL,
+		"native_endpoint_count", len(endpoints),
+	)
 	cand.BaseURL, cand.Protocol = decision.BaseURL, string(decision.Protocol)
 	return cand
+}
+
+// dispatchRoute names which executor the protocol switch should hand the
+// attempt to. It is a pure function of (protocol, flags) so the FF contract
+// is unit-testable without standing up an upstream.
+type dispatchRoute int
+
+const (
+	routeOpenAI            dispatchRoute = iota // default: /v1/chat/completions
+	routeAnthropic                              // /v1/messages
+	routeOllamaNative                           // Ollama /api/chat (NDJSON)
+	routeUnsupportedGemini                      // no executor; explicit 501-style skip
+)
+
+// classifyDispatchRoute maps a candidate protocol onto its executor.
+//
+// r0926 audit finding #1 (critical, flag-gate regression): before P4 the
+// dispatch switch had no ollama-native case, so a candidate whose
+// providers.protocol was "ollama-native" fell through to `default` and was
+// served by executeOpenAI against Ollama's OpenAI-compatible endpoint
+// (POST /v1/chat/completions — documented in docs/vendor-formats/ollama.md
+// "兼容模式"). The P4 wiring replaced that fallthrough with a hard
+// KindUnsupportedFeature while FF_OLLAMA_NATIVE=false.
+//
+// That is a live outage, not a conservative default:
+//
+//   - "ollama" is an accepted alias that NormalizeProviderProtocol maps to
+//     "ollama-native" (provider/catalog/protocol_normalize.go), and the V800
+//     backfill copies providers.protocol verbatim into the endpoint table, so
+//     ollama-native primaries exist in real catalogs.
+//   - The hard fail was reachable with BOTH flags off, i.e. it was not
+//     gated by any rollout lever, and setting FF_OLLAMA_NATIVE=false did not
+//     restore the old path — so the one documented rollback (docs §5.3)
+//     could not undo it.
+//
+// Contract: FF_OLLAMA_NATIVE=false must be byte-equivalent to pre-P4
+// dispatch. So a disabled ollama-native candidate degrades to routeOpenAI
+// (the legacy compat path), NOT to an error. Enabling the flag is what
+// switches the request onto /api/chat. Note this cannot mis-route traffic
+// the selector chose: selectDispatchEndpoint already filters ollama-native
+// endpoints out of the selector input while the flag is off, so the only way
+// to land here is the provider's own primary protocol — exactly the
+// pre-P4 situation.
+func classifyDispatchRoute(protocol string, flags *settings.P4FeatureFlags) dispatchRoute {
+	ollamaNative := flags != nil && flags.OllamaNativeEnabled
+	switch protocol {
+	case providercatalog.ProtocolAnthropicMessages:
+		return routeAnthropic
+	case providercatalog.ProtocolOllamaNative:
+		if ollamaNative {
+			return routeOllamaNative
+		}
+		return routeOpenAI
+	case providercatalog.ProtocolGeminiGenerate:
+		return routeUnsupportedGemini
+	default:
+		return routeOpenAI
+	}
 }
 
 // meterExtraUpstreamCall charges the admitting credential governor for an
@@ -890,18 +970,12 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 				)
 			}
 		}
-		switch cand.Protocol {
-		case providercatalog.ProtocolAnthropicMessages:
+		switch classifyDispatchRoute(cand.Protocol, p4flags) {
+		case routeAnthropic:
 			result, execErr = e.executeAnthropic(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
-		case providercatalog.ProtocolOllamaNative:
-			if !p4flags.OllamaNativeEnabled {
-				result, execErr = nil, &upstreampkg.Error{
-					Kind: errorsx.KindUnsupportedFeature, Message: "ollama-native executor disabled (FF_OLLAMA_NATIVE=false)",
-				}
-			} else {
-				result, execErr = e.executeOllama(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
-			}
-		case providercatalog.ProtocolGeminiGenerate:
+		case routeOllamaNative:
+			result, execErr = e.executeOllama(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
+		case routeUnsupportedGemini:
 			// 2026-09-09 audit round 3: the catalog advertises
 			// gemini-generate as an outbound protocol, but no executor
 			// branch exists — falling into executeOpenAI built OpenAI chat
@@ -914,6 +988,9 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 				Message: "gemini-generate dispatch not implemented; candidate skipped",
 			}
 		default:
+			// Includes the ollama-native candidate while
+			// FF_OLLAMA_NATIVE=false — see classifyDispatchRoute for why
+			// that must degrade to the OpenAI-compat path rather than fail.
 			result, execErr = e.executeOpenAI(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
 		}
 	}()

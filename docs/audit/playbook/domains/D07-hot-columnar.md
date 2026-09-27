@@ -85,3 +85,9 @@
 - `migration_730_test.go`：CHECK 枚举**编译期 import autoroute** 绑定 AllAgentRoles/AllTaskKinds；UNIQUE NULLS NOT DISTINCT 钉扎（252 重放翻倍 48→96）；部分索引 WHERE 门；embeddata byte-identical（730 五点同步已随 R48 完成）。
 - 负例纪律复验：第一轮 727 单点变异被 fallback 正则掩盖漏报，全局变异复验双断言 FAIL——**钉桩自身的 fallback 分支也是被钉语义的一部分**。
 - R53-D1（登记）：727/728/729 全 CONCURRENTLY，installer runner 一律 --single-transaction 结构性装不下 → embeddata 缺席属结构性排除；fresh install 缺三索引（gateway ensure 链亦无兜底）仅性能回归。后续 installer 非事务通道或 ensure 兜底。
+- R69 回注（2026-09-27）：**迁移文件自带的预建/初始化调用必须与函数级钉扎同文件生效**——751 的 ALTER 钉扎救不了 750 文件自己在 751 之前执行的预建 SELECT（current_date 与 DECLARE 初始器双双随会话时区，UTC 会话预建错位 8h 分区后按名幂等短路永不自愈，相邻日 ATTACH overlap 永锁）；修法=函数定义直接带 `SET timezone` 子句（proconfig 先于初始器、单文件自洽）+ 日期参数显式上海日历派生。钉桩=migration_750_test.go C9（SET 子句存在/上海派生×2/禁 current_date）。
+
+### R71 回注（2026-09-27，installer 五点断裂 + 守卫失效双案）
+- **installer 五点同步守卫必须进每轮验证命令清单**：750/751/752 在 StartupFiles 登记但 embeddata/var/map 三点全缺（全新安装 dbinit 硬中止），TestStartupFilesAreAllEmbedded 恒红两轮未被发现——近期各轮只跑 sql/migrations+db 包。F1 修复（三文件+753 同款补齐）；749 补登 psqlConcurrencyRequired 豁免（CONCURRENTLY 家族 727/728/729/744/749）。
+- R71-D1（登记 L1）：mock_probe_history（752 新分区族）无 TTL/drop 清单，历史日分区无界累积——与 supplier_errors/usage_facts DEFAULT TTL 同病类，owner 拍板保留期。
+- R71-D2（登记 L8）：752 缺 migration_752_test.go 契约钉桩（对偶 C9：SET timezone/上海派生/禁 current_date/move-then-attach 骨架）。

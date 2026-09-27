@@ -287,7 +287,7 @@ func (s *PGReconciliationEventSink) EmitCostDiffAlert(ctx context.Context, rec *
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO provider_events (id, credential_id, event_kind, payload_json, ts)
 			VALUES ((SELECT COALESCE(max(id), 0) + 1 FROM provider_events), NULL,
-			        'cost_reconciliation_diff', $1, now())`, payloadJSON); err != nil {
+			        'cost_reconciliation_diff', $1, now())`, jsonParamOrNULL(payloadJSON)); err != nil {
 			return fmt.Errorf("insert alert event: %w", err)
 		}
 	}

@@ -38,7 +38,7 @@ type historyRow struct {
 // TestHistoryStoreRealDB：HistoryStore 异步写入 mock_probe_history 后行可
 // 查回（channel/supplier/stream/latency/status/failure_streak 全列回环；
 // error_code/request_id 的 NULLIF 语义）。前置：目标库已应用
-// migrations/036_mock_probe_history.sql。
+// sql/migrations/startup/752_mock_probe_history.sql（原顶层 036 已收编）。
 func TestHistoryStoreRealDB(t *testing.T) {
 	dsn := realdbDSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -54,7 +54,14 @@ func TestHistoryStoreRealDB(t *testing.T) {
 	err = pool.QueryRow(ctx,
 		`SELECT to_regclass('public.mock_probe_history') IS NOT NULL`).Scan(&tableExists)
 	if err != nil || !tableExists {
-		t.Skipf("mock_probe_history 不存在（未应用 migrations/036？exists=%v err=%v），跳过", tableExists, err)
+		t.Skipf("mock_probe_history 不存在（未应用 migrations/752？exists=%v err=%v），跳过", tableExists, err)
+	}
+
+	// 可重入前导：清掉历史运行残留的本测试标记行（真库测试在共用库上
+	// 重复执行，断言按标记行计数，不清理会累积假失败）。
+	if _, err := pool.Exec(ctx,
+		`DELETE FROM mock_probe_history WHERE request_id IN ('chatcmpl-mock-test') OR (channel='mock-slow:nonstream' AND error_code='http_500' AND latency_ms=999)`); err != nil {
+		t.Fatalf("cleanup: %v", err)
 	}
 
 	store := NewHistoryStore(ctx, pool)
@@ -121,5 +128,72 @@ func TestHistoryStoreRealDB(t *testing.T) {
 		bad.statusCode != 500 || bad.errorCode == nil || *bad.errorCode != "http_500" ||
 		bad.failureStreak != 2 {
 		t.Fatalf("error row mismatch: %+v", bad)
+	}
+}
+
+// TestHistoryStorePartitionEnsureTickRealDB：writeLoop 每日分区 ensure tick
+//（752）——lastEnsure 过期（置 0 模拟跨 23h / bootstrap 失败）后，下一条
+// 记录触发 SELECT mock_probe_history_daily_partition()（幂等：分区已挂接
+// 则 pg_inherits 短路），成功后 lastEnsure 刷新、记录正常落库。
+func TestHistoryStorePartitionEnsureTickRealDB(t *testing.T) {
+	dsn := realdbDSN(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	var fnExists bool
+	err = pool.QueryRow(ctx,
+		`SELECT to_regprocedure('public.mock_probe_history_daily_partition()') IS NOT NULL`).Scan(&fnExists)
+	if err != nil || !fnExists {
+		t.Skipf("mock_probe_history_daily_partition 不存在（未应用 migrations/752？exists=%v err=%v），跳过", fnExists, err)
+	}
+
+	// 可重入前导（同 TestHistoryStoreRealDB）。
+	if _, err := pool.Exec(ctx,
+		`DELETE FROM mock_probe_history WHERE request_id = 'chatcmpl-mock-tick'`); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+
+	store := NewHistoryStore(ctx, pool)
+	store.lastEnsure.Store(0) // 强制过期：下一条记录必须走 ensure 路径
+	store.Insert(HistoryRecord{
+		Channel:    "mock-fast:nonstream",
+		Supplier:   "mock-fast",
+		Stream:     false,
+		Protocol:   "openai",
+		LatencyMs:  5,
+		StatusCode: 200,
+		RequestID:  "chatcmpl-mock-tick",
+	})
+	// 等 writeLoop 消费该记录（tick 在消费路径上；Close 的排空分支只
+	// insert 不 ensure——停机语义如此，故必须在 Close 前观察到刷新）。
+	deadline := time.Now().Add(5 * time.Second)
+	for store.lastEnsure.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer closeCancel()
+	store.Close(closeCtx)
+	if store.Dropped() != 0 {
+		t.Fatalf("records dropped: %d", store.Dropped())
+	}
+	if got := store.lastEnsure.Load(); got == 0 {
+		t.Fatal("ensure tick did not refresh lastEnsure after expired window")
+	}
+
+	qctx, qcancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer qcancel()
+	var n int
+	if err := pool.QueryRow(qctx,
+		`SELECT count(*) FROM mock_probe_history WHERE request_id = 'chatcmpl-mock-tick'`).Scan(&n); err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 tick row, got %d", n)
 	}
 }

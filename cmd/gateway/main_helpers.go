@@ -16,8 +16,10 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/admin"
+	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/internal/mockprobe"
 )
 
 func gatewayEventSecret() string {
@@ -304,4 +306,24 @@ func shouldStartNewProbeWorkers(apiKey string) bool {
 // must not replace this value for loopback probe requests.
 func localGatewayProbeAPIKey(apiKey string) string {
 	return strings.TrimSpace(apiKey)
+}
+
+// startMockProbeRunner 装配生产入口的 Mock Probe 子系统（2026-09-24 v2
+// 设计；2026-09-26 生产入口接入）。cfg.MockProbeEnabled 已为 true；本函数
+// 只装配不启动——Start 由 main 在监听绑定后执行（首轮探测不因入口未
+// 就绪记脏失败，见 main 停机序列注释）。
+//
+// 与 cmd/gateway-v2 版本的差异：复用主 DB 连接池（历史写入是单 goroutine
+// 低频路径，不占独立池），dbConn 为 nil 或未启用（no-DB 部署）时降级为
+// "只打指标"；不注册 shutdown.Manager（生产停机序列显式驱动
+// probeCancel → runner.Stop，nil mgr 下 Runner 两条路径均安全跳过）。
+func startMockProbeRunner(ctx context.Context, cfg *config.Config, dbConn *db.DB) *mockprobe.Runner {
+	var history *mockprobe.HistoryStore
+	if dbConn != nil && dbConn.Enabled() {
+		history = mockprobe.NewHistoryStore(ctx, dbConn.Pool())
+	} else {
+		slog.Warn("mock probe: DB unavailable, history writes disabled (metrics only)")
+	}
+	client := mockprobe.NewClient(mockprobe.BaseURLFromListen(cfg.Listen))
+	return mockprobe.NewRunner(client, cfg.MockProbeInterval, cfg.MockProbeFailureThreshold, history, nil)
 }

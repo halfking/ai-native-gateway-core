@@ -74,6 +74,13 @@ func (h *Handler) serveSessionTurnSubroute(w http.ResponseWriter, r *http.Reques
 }
 
 // serveSessionTurnsList 返回会话轮次列表（按 turn_no 倒序，cursor 分页）。
+//
+// R69 遮蔽标注：exact 路由 /api/admin/sessions/{id}/turns 注册了更具体的
+// handleSessionTurnsListRouted（handler.go），Go ServeMux 最具体优先使子树
+// 的 case "turns"（session_state_handlers.go）成为死路径；且本实现与
+// serveSessionTurnsUnifiedDB 约 70% 重复（同表/同 cursor/同 digest 规则），
+// 且装配 TurnListItem 不填 IDKind/PrimaryKey（9f62818c5 标注覆盖遗漏面，
+// 复活即漏标）。清理候选：删 case "turns" 分支或两实现收敛为一条。
 func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, sessionID string) {
 	serveSessionTurnsListDB(h.db, h.secret, w, r, sessionID)
 }
@@ -656,28 +663,28 @@ func boolPtrValue(p *bool) bool {
 // 数据源为 public.sessions（V2 会话快照，migration 456 添加了
 // title/summary/summary_generated_at 列，migration 430 有 last_model/last_provider）。
 type sessionSnapshotV2 struct {
-	SessionID          string     `json:"session_id"`
-	TenantID           string     `json:"tenant_id"`
-	Title              string     `json:"title"`
-	Summary            string     `json:"summary"`
-	SummaryGeneratedAt *time.Time `json:"summary_generated_at,omitempty"`
-	TotalTurns         int        `json:"total_turns"`
-	TotalTokens        int        `json:"total_tokens"`
-	TotalCostUSD       float64    `json:"total_cost_usd"`
-	LastTurnNo         int        `json:"last_turn_no"`
-	LastModel          *string    `json:"last_model,omitempty"`
-	LastProvider       *string    `json:"last_provider,omitempty"`
-	LastRequestSummary string     `json:"last_request_summary,omitempty"`
-	LastResponseSummary string    `json:"last_response_summary,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
-	ClosedAt           *time.Time `json:"closed_at,omitempty"`
-	Status             string     `json:"status"`
-	TaskType           string     `json:"task_type,omitempty"`
-	ClientType         string     `json:"client_type,omitempty"`
-	Topic              string     `json:"topic,omitempty"`
-	Intent             string     `json:"intent,omitempty"`
-	UserTags           []string   `json:"user_tags,omitempty"`
+	SessionID           string     `json:"session_id"`
+	TenantID            string     `json:"tenant_id"`
+	Title               string     `json:"title"`
+	Summary             string     `json:"summary"`
+	SummaryGeneratedAt  *time.Time `json:"summary_generated_at,omitempty"`
+	TotalTurns          int        `json:"total_turns"`
+	TotalTokens         int        `json:"total_tokens"`
+	TotalCostUSD        float64    `json:"total_cost_usd"`
+	LastTurnNo          int        `json:"last_turn_no"`
+	LastModel           *string    `json:"last_model,omitempty"`
+	LastProvider        *string    `json:"last_provider,omitempty"`
+	LastRequestSummary  string     `json:"last_request_summary,omitempty"`
+	LastResponseSummary string     `json:"last_response_summary,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+	ClosedAt            *time.Time `json:"closed_at,omitempty"`
+	Status              string     `json:"status"`
+	TaskType            string     `json:"task_type,omitempty"`
+	ClientType          string     `json:"client_type,omitempty"`
+	Topic               string     `json:"topic,omitempty"`
+	Intent              string     `json:"intent,omitempty"`
+	UserTags            []string   `json:"user_tags,omitempty"`
 	// SessionAnalysis 是 migration 567 的 session_analysis_metadata 读侧投影
 	// （LEFT JOIN LATERAL 命中时非空）。与 turns_sessions / session_detail_v2
 	// 的 SessionAnalysis 字段保持同一形状，前端 SessionSummaryBar 可直接复用。
@@ -851,6 +858,11 @@ func tenantFromQueryOrContext(r *http.Request) string {
 		return GetTenantID(r)
 	}
 	if t := r.URL.Query().Get("tenant"); t != "" {
+		return t
+	}
+	// R69：V1 同族端点（session_state_handlers 等）的参数名是 tenant_id，
+	// 兼容读取旧名，避免调用方控件命名漂移时静默落回 auth 租户。
+	if t := r.URL.Query().Get("tenant_id"); t != "" {
 		return t
 	}
 	if t := r.Header.Get("X-Tenant-ID"); t != "" {

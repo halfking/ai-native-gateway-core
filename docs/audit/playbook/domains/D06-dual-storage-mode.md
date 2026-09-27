@@ -68,3 +68,6 @@
 - **行级保留期无 opt-out 是既定语义**：ApplyLiteDefaults 把 ≤0 钳为默认 7 天（与 bodies/cache 保留期同款），文档/日志按"0 即 7d"口径，不要写"0 可关闭"。
 - **存储演进批首落地**：cache_metrics 月分区 TTL 进 stateTableTTLSpecs（689 helper 正则 ^<parent>_\d{4}_\d{2}$ 对 cache_metrics_YYYY_MM 直接适用，fallback 90d）；promote 积压水位 llm_gateway_hot_table_backlog_rows{table}（排水循环后逐表 COUNT，物理表名 label/label+_hot 双形态）。sessions 族分区 drop 仍需先看 gauge 水位再裁决（DROP=删用户历史）。
 - **lite 文档三件套**（deployment-guide/troubleshooting/README）与 worker 面必须同 commit 回注——"文档宣称无 worker 但 worker 已上线"是本轮 D06-1 实抓的失真形态。
+
+### R71 回注（2026-09-27，PG-only 观测表的能力边界）
+- 752 mock_probe_history 仅经 PG startup 通道建表；lite/sqlite 形态 HistoryStore 不构造 + 显式 Warn "history writes disabled (metrics only)"（能力边界诚实范式复核通过）；installer 通道补齐后全量模式 fresh install 不再阻断（F1）。

@@ -5,12 +5,17 @@
 //   GET /api/admin/sessions/list?tenant=...&limit=...
 //     返回最近活跃 session 列表（用 sessionforensics.ListRecentSessions 实现）
 //
-// 仅 super 用户可用。
+// 鉴权与租户：经 wrapAdmin 挂载（cmd/gateway/main.go），handler 内另做
+// GetAuthContext 双保险；非 super 角色被 tenantFromQueryOrContext 钉在
+// 自己的租户，仅 super/admin-key 可用 ?tenant= 跨租户查询（与
+// session_detail_v2 同构，R69 12h 审计轮补齐——本端点 9f62818c5 落地时
+// 未读鉴权上下文，直接挂生产路由会造成 tenant_admin 跨租户读会话）。
 
 package admin
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -114,9 +119,17 @@ func (api *SessionListV2API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.URL.Query().Get("tenant")
+	// R69：与 detail 端点同构的鉴权/租户防线。这个 handler 也会被测试与
+	// 自定义 mux 直接调用，不能让 GetTenantID 的 legacy default 掩盖缺失
+	// 的身份；?tenant= 仅 super/admin-key 生效，其余角色钉 auth 租户。
+	if GetAuthContext(r) == nil {
+		writeExportJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	tenantID := tenantFromQueryOrContext(r)
 	if tenantID == "" {
-		tenantID = "default"
+		writeExportJSONError(w, http.StatusNotFound, "not found")
+		return
 	}
 	limit := 50
 	if s := r.URL.Query().Get("limit"); s != "" {
@@ -134,7 +147,10 @@ func (api *SessionListV2API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	audits, err := exp.ListRecentSessions(r.Context(), tenantID, limit)
 	if err != nil {
-		writeExportJSONError(w, http.StatusInternalServerError, err.Error())
+		// R71 审计：err.Error() 是底层 pgx 错误原文（含 SQL/租户参数），
+		// 不回显；固定文案 + slog 服务端锚点（与 detail 端点同构）。
+		slog.Error("session list v2 query failed", "err", err, "tenant_id", tenantID)
+		writeExportJSONError(w, http.StatusInternalServerError, "query sessions failed")
 		return
 	}
 

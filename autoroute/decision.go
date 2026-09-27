@@ -171,8 +171,7 @@ type Decider struct {
 	tuningStore         *TuningStore         // optional dynamic params (v2.1)
 	overrideStore       *OverrideStore       // optional admin ban/pin overrides (P7.6)
 	defaultRoutingStore *DefaultRoutingStore // optional explicit default routing (M2)
-	// workTypeRouteStore  // optional work_type_model_route strict tiers (V2 bridge)
-	workTypeRouteStore *WorkTypeRouteStore // optional work_type_model_route strict tiers (V2 bridge)
+	workTypeRouteStore  *WorkTypeRouteStore  // optional work_type_model_route strict tiers (V2 bridge)
 
 	// roleLLMRouter（R48）optional role × kind LLM 偏好（role_task_llm_mapping
 	// 表 + 内存默认表）。nil = role 路由未装配；灰度开关 AutoRoleRoutingEnabled
