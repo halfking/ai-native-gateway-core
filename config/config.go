@@ -275,7 +275,7 @@ type Config struct {
 	// 进程内 mock 供应商（mock-fast / mock-slow）+ 定时自检客户端，验证网关
 	// 全链路（主 mux → 鉴权旁路 → handler → SSE/非流式）。默认全关；启用后
 	// runner 每 MockProbeInterval 跑一轮 2x2 探测（supplier × stream）。
-	// 历史落 mock_probe_history（migrations/036），绝不写 request_logs。
+	// 历史落 mock_probe_history（migrations/752），绝不写 request_logs。
 	MockProbeEnabled          bool          `yaml:"mock_probe_enabled" env:"LLM_GATEWAY_MOCK_PROBE_ENABLED"`
 	MockProbeHideInAdmin      bool          `yaml:"mock_probe_hide_in_admin" env:"LLM_GATEWAY_MOCK_PROBE_HIDE_IN_ADMIN"`
 	MockProbeInterval         time.Duration `yaml:"mock_probe_interval" env:"LLM_GATEWAY_MOCK_PROBE_INTERVAL_SECONDS"`

@@ -720,3 +720,10 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 |-----------|------|---------|--------|
 | 750 | `750_usage_facts_daily_partition.sql` | `a75a89b22091e5d1af29eb4b2128bd373df07aa8a7aa9a95cf04d3f4ad3c0527` | applied+verified |
 
+
+## 2026-09-27 — mock probe 生产入口收口轮（752 未部署；751 补登）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 751 | `751_usage_facts_partition_tz_pin.sql` | `4f788a566c2c00f2d3fdd4f2af0cc2c0611bdd13fd3f0456bb0eb661a5f4d7c2` | applied+verified（补登：eff61ecd/2273 已部署 245，台账当时漏记） |
+| 752 | `752_mock_probe_history.sql` | `1caf5efdf0223bb3bd1dd246926965d1b39c98bdb20336d05dd665e2295e009e` | pending deploy（本机库双轮幂等实跑 + UTC 钉扎 + move-then-attach 实证，docs/audit/2026-09-27-mock-probe-production-entry-audit.md §三） |

@@ -38,12 +38,21 @@ func NewAuthMiddleware(apiKey string) *AuthMiddleware {
 			// wrapAdmin/superAdmin in cmd/gateway/main.go and
 			// admin/handler.go. Verified 2026-06-30 via grep — see
 			// docs/audit/2026-06-30-weekly-audit-report.md P0-3.
+			//
+			// /mock/* (Mock Probe 通道, 2026-09-24 设计 / 2026-09-26 生产入口
+			// 接入) 同理自守卫：mock 端点未注册时 mux 自然 404（与未部署该
+			// 子系统一致）；注册时每个端点挂 auth.MockEndpoint 守卫（强制
+			// POST + Bearer mock-probe-client + 供应商 scope 白名单），鉴权
+			// 不依赖本全局门。探测客户端凭证是公开的系统标记（非机密、不在
+			// api_keys 表），与 gateway-v2 的 auth.MockProbeBypass 语义对齐
+			// ——仅绕过鉴权层，链上其余中间件（Prometheus/Logging 等）照常
+			// 生效。
 			bypass: BypassRule{
 				// 2026-08-29：加 /readyz + /version。供 scripts/lifecycle/preflight.sh 三段检查使用。
 				// /readyz 返回 DB+Redis 是否就绪（K8s readiness），/version 暴露 build metadata。
 				// 两者均无敏感信息，必须 anon 可达。
 				ExactPaths:   []string{"/healthz", "/healthz/full", "/readyz", "/version", "/metrics", "/"},
-				PathPrefixes: []string{"/api/", "/admin/", "/assets/", "/maintain/", "/plugins/"},
+				PathPrefixes: []string{"/api/", "/admin/", "/assets/", "/maintain/", "/plugins/", "/mock/"},
 			},
 		},
 		expectedKey: apiKey,
