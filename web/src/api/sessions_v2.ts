@@ -73,6 +73,12 @@ export interface TurnListItem {
   attachment_count: number
   /** 后端 buildTurnDigest 模板式生成；缺数据时为 null（前端走 fallback）。 */
   digest?: TurnDigest | null
+  /**
+   * 正文留存状态，后端 admin/body_status.go 产出。
+   * 'available' | 'unavailable'；后端未返回时为 undefined（旧实例/旧数据）。
+   * 语义与两态限制见 admin/body_status.go —— 不发 'dropped'。
+   */
+  body_status?: string
 }
 
 export interface TurnsResponse {
