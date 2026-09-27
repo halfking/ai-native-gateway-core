@@ -288,8 +288,7 @@ func ProbeSpecs() []*Spec {
 			DangerLevel:     Safe,
 			HotReload:       true,
 		},
-
-		}
+	}
 }
 
 // ── P0-2 accessors ───────────────────────────────────────────────────────

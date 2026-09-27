@@ -116,7 +116,10 @@ func (w *Writer) Write(ctx context.Context, env EventEnvelope) error {
 		env.AggregateID,
 		env.AggregateVersion,
 		env.OccurredAt,
-		payloadBytes,
+		// 13 轮审计（R11 FIX-C 同根）：底层 *sql.Tx 来自强制 SimpleProtocol
+		// 的共享 pool（db/db.go:3676），[]byte 同样内联成 bytea hex 字面量，
+		// jsonb 列必炸——string 化。当前无生产接线方，接线前修复到位。
+		string(payloadBytes),
 	)
 	if err != nil {
 		return fmt.Errorf("outbox.Write: insert event_id=%s: %w", env.EventID, err)

@@ -152,6 +152,12 @@ type CostContext struct {
 
 // Score computes the 8-dimension composite score for a candidate.
 //
+// R69 三代并存标注（清理候选盘点，勿删）：本函数是 v1 评分，消费方
+// index.go:244/295 与 recommend_v2.go:239；v2 主链在 scoring_v2.go
+// （ScoreWithChannelQuality），兼容臂在 scoring_simplified.go
+// （ScoreSimplified，UseSimplifiedScoring 默认 false）。三代退役条件：
+// v1 在 recommend_v2 全量切 v2 后退役；simplified 在 flag 移除后退役。
+//
 // All per-dimension scores are 0-100 (higher = better):
 //
 //	PriceScore     : inverse of normalised price (cheaper → higher)

@@ -241,3 +241,29 @@ func TestHistoryStoreWriteLoopPanicDoesNotHangClose(t *testing.T) {
 	// Close 后 Insert 合法（并发契约：静默丢弃，不 panic）。
 	s.Insert(HistoryRecord{Channel: "after-close"})
 }
+
+// TestHistoryStorePartitionTickThrottle：maybeEnsurePartition 的节流短路
+//（752 ensure tick）——lastEnsure 未到 23h 时不得触碰 pool（本测试不提供
+// pool，触碰即 nil panic，短路路径因此被严格钉死）。
+func TestHistoryStorePartitionTickThrottle(t *testing.T) {
+	s := &HistoryStore{
+		ch:   make(chan HistoryRecord, 8),
+		done: make(chan struct{}),
+	}
+	s.lastEnsure.Store(time.Now().UnixNano()) // bootstrap 刚成功
+	s.maybeEnsurePartition() // 必须短路：不 panic、时间戳不被改写
+	if got := s.lastEnsure.Load(); got == 0 {
+		t.Fatal("throttled call must not reset lastEnsure")
+	}
+
+	// 过期（lastEnsure=0，bootstrap 失败语义）时 CAS 抢占后必然触碰
+	// pool——nil pool 会 panic，恰好证明"到期确实发起 ensure"。用 recover
+	// 捕获以断言发起路径被走到。
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expired lastEnsure must attempt ensure (nil pool panic expected)")
+		}
+	}()
+	s.lastEnsure.Store(0)
+	s.maybeEnsurePartition()
+}

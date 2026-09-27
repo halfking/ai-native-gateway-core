@@ -422,10 +422,12 @@ func TestWriteOnError_ModelNotFound_TieredCooldown(t *testing.T) {
 
 	// sqlOnlyMatcher treats the expected SQL as a regex over the normalized
 	// statement, so the two load-bearing fragments of the tiered shape are
-	// pinned here: the escalation CASE and the same-reason arm of the
-	// relaxed available guard.
+	// pinned here: the escalation CASE (params cast ::timestamptz so the
+	// driver's text-formal parameters cannot degrade the CASE type, per
+	// 2026-09-27 PG error "unavailable_recover_at ... expression is of
+	// type text") and the same-reason arm of the relaxed available guard.
 	tieredPattern := `UPDATE credential_model_bindings cmb SET .* ` +
-		`WHEN cmb.available = FALSE THEN \$ ELSE \$ END.* ` +
+		`WHEN cmb.available = FALSE THEN \$::timestamptz ELSE \$::timestamptz END.* ` +
 		`OR \(cmb.available = FALSE AND cmb.unavailable_reason = \$\)`
 	mockDB.ExpectExec(tieredPattern).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).

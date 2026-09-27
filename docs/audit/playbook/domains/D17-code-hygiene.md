@@ -49,3 +49,6 @@
 - 回注/注释引用符号名前先 `git ls-tree`/grep 验证存活（R42 双胞胎 merge 淘汰了 manualBalanceGuardSQL，D08 域文档指引落空一轮）。
 - 零消费方的新 API 家族（CachedPlatformBool/String/Float）用 `RESERVED(待首批消费方):` 头注标注（settings/ttl_cache.go 已标）——写端失效接线先于读者存在时尤其要标，防下轮重复怀疑。
 - 测试专用导出的注释如实化为 test-only（feature_stats GetLatestStats 原注释"用于测试和监控"的"监控"半句无接缝）。
+
+### R71 回注（2026-09-27，注释漂移三案）
+- 注释漂移三案收口：helpers.go 行为契约要点与钉桩测试矛盾（首元素语义写反）、调用站点 V1/V2 描述与事实相反、probe_necessity 占位符 "~xx:35-39" 未写实——新增注释的"契约描述"必须能与同文件测试互相印证。

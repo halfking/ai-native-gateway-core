@@ -1,0 +1,37 @@
+# D11+D17 子代理报告（窗口：9785c2398..HEAD）
+
+审计范围：34 提交；本域触碰面 = autoroute/{decision,helpers,helpers_test,role_llm_router,scoring}.go、domains/analysis/optimizer.go、domains/reportrollup/rollup.go（4108f3f26）、bg/probe_necessity.go、tests/48h-audit/D11-auto-model/{plan.md,reports/INDEX.md,reports/latest.md}。所有发现均为独立亲读 HEAD 代码/git diff 核实，未运行任何构建/测试（任务禁令）。
+
+## 一、发现（候选，待主代理复核）
+
+| # | 级别候选 | 发现 | 证据 file:line | 建议处置 |
+|---|---|---|---|---|
+| 1 | P3 | helpers.go 行为契约要点自相矛盾（新增注释即漂移）：第 13 行写“首元素 == **tierPlan** 在候选池内且被 prefs 命中的首个元素”，但 role 偏好不在 tierPlan 内时也会打头——同文件 18-20 行（“被 tier 滤除后靠豁免复活的偏好（不在 tierPlan 里）由此进入恢复链”）与钉桩测试（prefs=[model-c] 不在 tierPlan，实际头元素=model-c）都证明 13 行表述错误；helpers_test.go:3-5 的表述（“首元素 == prefs 在候选池内命中的首个元素”）才是准确契约 | autoroute/helpers.go:13-14 对照 ：18-20、autoroute/helpers_test.go:3-5 与 ：112-122（TestWithRoleFailoverHead_RoleFallbackSurvivesAfterTier） | 按 helpers_test.go:3-5 口径改写 13-14 行（“首元素 == prefs 中在候选池内的首个元素，该元素可能在也可能不在 tierPlan 内”） |
+| 2 | P3 | helpers.go 头注调用站点描述与事实不符：“便于两个调用站点（**V1** role/pin promote、V2 role/pin promote）共享文档与单测”——HEAD 实际两个调用站点**都在 V2**（decision_v2.go:329 role promote、:348 pin promote）；V1 decision.go 走 promoteFirstPresent（decision.go:626）且 tierFailoverModels 符号仅存在于 decision_v2.go，V1 无 failover 梯子。“V1 decision.go P3 对齐（P1-P5 plan）要复用”是计划时态，但括号把它写成了现状 | autoroute/helpers.go:8-10；autoroute/decision_v2.go:329,348；autoroute/decision.go:626；git grep tierFailoverModels 仅命中 decision_v2.go | 括号改为“两个调用站点（V2 role promote :329、V2 pin promote :348）；V1 待 P3 对齐后接入” |
+| 3 | P3 | probe_necessity 门禁超时注释含未写实占位符 "~xx:35-39"："consistently timing out at ~xx:35-39 each minute" 的 "xx" 从未替换为真实数值，读者无法据此在 PG 日志中对时定位 | bg/probe_necessity.go:67 | 写实为实际秒偏移（如 "~:35-39 into each minute"）或删除精确时刻仅保留“每分钟尾部数秒” |
+| 4 | P3 | plan.md 收口摘要四处与事实/latest.md 矛盾：(a) 称权威报告“290+ 行”，latest.md 实际 148 行；(b) “回归五件套 \| 业务/数据/压力/安全/一致性 — 全部 PASS”与 latest.md §7 自述“在 business/data/stress/safety 至少各写 1 个 _test.go（**当前 0 个 .go**）”直接矛盾，reports/ 下无任何 .go 测试——latest.md §3.3 的“回归五件套”实为 5 组 autoroute 单测，plan.md 误标为五类测试文件；(c) “决策链 \| 14 模型 × 11 路由策略 × 4 计费档位”与 latest.md 的“14 个 (prompt×profile) × 11 任务类型 × 4 profile”是两套语义不同的分解（14 不是模型数）；(d) 验收门口径不一致（plan: vet ./... + 60s + ./tests/48h-audit/...；latest: vet ./autoroute/... + 120s） | tests/48h-audit/D11-auto-model/plan.md:11,13,14,19 对照 reports/latest.md:88-92,139,58,57 | 主代理复核后按 latest.md 事实回改 plan.md 摘要行 |
+| 5 | P3 | plan.md 与 INDEX.md 内嵌 `file://__DEV_HOME__/...` 绝对路径链接（作者 macOS 机器路径），在本仓任何其他工作树（含当前 Windows 工作树）必为死链；两文件均缺尾随换行 | tests/48h-audit/D11-auto-model/plan.md:23、reports/INDEX.md:5 | 改为仓内相对链接；补尾随换行 |
+| 6 | P3 | D11 latest.md §2 归属错误：“cheap model 默认走 **default_routing_store.go** 中的 fallback 桶”——该文件零模型名（grep 0 命中），是 DB 支撑的存储机制；真实来源是 sql/migrations/startup/477_auto_route_v6_defaults.sql 种子数据（经 task_default_routing 表被 DefaultRoutingStore 读回）与测试夹具（自称“与 477 完全一致”）。报告引用的模型名本身全部正确（chat fallback=qwen3-235b、code=deepseek-coder、function_call=deepseek-chat、intent_classification smart=gemini-2.0-flash-exp / speed_first=minimax-m3），仅文件归属张冠李戴 | tests/48h-audit/D11-auto-model/reports/latest.md:40-42 对照 autoroute/default_routing_store.go（无模型字面量）、sql/migrations/startup/477_auto_route_v6_defaults.sql:66-68,74、autoroute/auto_route_e2e_test.go:22-41 | latest.md §2 归属改为“migration 477 种子（task_default_routing）”；文件归属类错误正是 D17 §3.3“文档与代码矛盾以代码为准”模式 |
+| 7 | P3 | D11 latest.md 数字不调和 + 引用 gitignore 产物：§6 称“v3 149 + v2 40 + v1 60 = **249 例**”，§3.2 输出 "cases: **240**"——差的 9 例是 cmd/auto-testbench/suite.go:92 `seen` map 按 key 去重所致，报告未注明（两数各自为真但并列无解释）；尾注引用的 reports/auto-testbench.{md,json,cases.jsonl} 位于仓库根 reports/ 且被 gitignore，fresh clone 不可复现 | reports/latest.md:69,119 vs cmd/auto-testbench/suite.go:92；`git check-ignore reports/auto-testbench.json` → gitignored，tests/48h-audit/D11-auto-model/reports/ 下无这些文件 | §6 注明“249 行 → 240 去重后用例”；尾注标注产物为本地未入库工件 |
+
+## 二、核实为健康的面
+
+- **helpers 抽壳逐行一致性（c1e145193）**：role_llm_router.go 删除的 36 行（7 行注释 + 29 行函数）与 helpers.go 新增函数体逐 token 等价（含 inPool/seen map、add 闭包空串守卫、prefs 先 tierPlan 后的顺序）；全仓仅 helpers.go:21 一处定义、无重复定义；两个调用方（decision_v2.go:329,348）窗口内未改动、符号解析不变；配套 helpers_test.go 152 行 10 用例（含 pin 单元素复现 :348 用法、输入不变异、nil/空 tierPlan）。role_llm_router.go 删除点周边（promoteFirstPresent）无孤立引用。
+- **decision.go 窗口内 3 行改动**：仅删除注释掉的重复 `// workTypeRouteStore` 死注释行并 gofmt 对齐（decision.go:173-174），零行为面——纯卫生改进。
+- **scoring.go 三代并存标注（4108f3f26）逐项属实**：v1 Score 消费方 index.go:244、index.go:295、recommend_v2.go:239（标注引用的行号在 HEAD 精确命中）；v2 主链 ScoreWithChannelQuality（scoring_v2.go:52）；兼容臂 ScoreSimplified（scoring_simplified.go:203）；UseSimplifiedScoring 默认 false（feature_flags.go:136，经 legacyflags 委托 ：177）。退役条件表述与 flag/消费方事实一致，无注释漂移。
+- **rollup.go UTC 日口径注记（4108f3f26）属实**：750 迁移以 Asia/Shanghai 日历建分区（750_usage_facts_daily_partition.sql:64,127-128）、751 时区钉扎（751_usage_facts_partition_tz_pin.sql:25）——“UTC 日窗横跨两个上海日物理分区、pruning 仍扫 2 分区、report_date 勿解读为上海日”与迁移事实吻合。
+- **D11 报告引用的测试/文件 HEAD 全部在位（validation 抽验通过）**：TestPromptClassificationMatrix（classifier_prompt_matrix_test.go:22）、TestAutoMatchingSuiteHeuristic（auto_matching_suite_test.go:110）、TestAutoRouteE2E_PromptToModel / TestAutoRouteE2E_AllTaskTypesResolvable（auto_route_e2e_test.go:72,134）、TestDecide_FallbackBelowThreshold_KeepsHeuristic / TestDecide_FallbackError_KeepsHeuristic（decision_test.go:161,137）、TestRecommendV2_*/TestScoreSimplified_*/TestValidateCachedChoice（9 处，recommend_v2_test.go / channel_quality_test.go）、R45 clamp 钉桩（tuning_store_test.go:190-207）、decision_v2_optimizer_test.go、scripts/auto-testbench.sh、cmd/auto-testbench/testdata/baseline.json、三份套件 jsonl（实测 60/40/149 行）。三份套件文件、入口脚本与门禁接线（-gate-default）齐备。
+- **报告 §2 入口/门禁声明属实**：maybeResolveAuto 存在（domains/streaming/auto_route.go:345，ChatHandler 方法 + nonchat 对应物）；LLMGatewayAutoLLMTimeout 默认 3s clamp ≤30s（classifier_llm.go:27,52）；fallback 槽置信度门在 decider 层（decision.go:894,917 走 effectiveLLMThreshold:370）；propagateIsAutoRequestToEntry 全字段修复在位（handler.go:6502 + handler_test.go:906,944）。
+- **probe_necessity 注释中可核的事实项全部成立**：ProbeQueueLeaseDefault=5m（probe_service.go:58）、Workers=epWorkers ≤5（settings/spec_thresholds.go:38-41 Default=Max=5，cmd/gateway/main.go:4151）、probe HTTP 超时 15s（probe_http.go:72、probe_modality.go:165）——3s→10s 改动本身与“远低于 lease/单次 probe 预算”的论证自洽。
+- **optimizer.go string(evidenceJSON) 根修正确**：evidenceJSON 来自 json.Marshal（optimizer.go:229，[]byte），string 化避免 SimpleProtocol 下 bytea hex 内联进 jsonb 列，与 R11 FIX-C 同根判断成立，注释如实描述根因。
+- **报告快照时点说明**：latest.md/INDEX.md 记 HEAD=1c9c753c4，窗口实际 HEAD=949ec2f70，其后仅落 0aa86d8bd（admin 409）/af9544810/949ec2f70 三个提交，均不触碰 autoroute/，D11 收口结论不因此失效。
+
+## 三、未覆盖项与原因
+
+- **三门与 240 例数值复算**：任务禁令禁止 go build/test，报告“三门全绿、accuracy=1.0、GRRQ=100”仅做了引用符号/文件存在性与签名抽验，未复算指标数值；baseline.json 三项 min 阈值未逐字段打开核对（文件存在与脚本接线已核）。
+- **9 条去重用例明细**：249 行 → 240 例的去重只定位到 suite.go:92 `seen` 机制，未逐条比对是哪 9 条 key 重复（纯本地 gitignore 产物，复现需跑 testbench）。
+- **probe_necessity 注释中的运维轶事**："~xx:35-39 的实际时刻"、"credential 126 每泵 tick 2 bursts of 4–5 tasks"、"250ms-poll worker"需 PG 日志/真机观测佐证，超出只读窗口（发现 #3 只针对占位符未写实本身）。
+- **窗口内非派发文件的 D17 全量扫描**：admin/storage/telemetry/probe 等其余 30+ 提交触碰面未扫——按派发限定在 D11/D17 指定文件清单；未覆盖项中如 0aa86d8bd（admin 409）属其他域。
+- **迁移 752 mock-probe 收口（5193d88f2）**：属 mock-probe 域，未纳入本域清单，仅确认迁移文件正典通道存在（sql/migrations/startup/752_*.sql）。
+
+> 主代理复核结论（R71 收口时回填）：发现#1/#2/#3 → F10 注释修复（含 .env.example 死链，与 D07 代理#3 合并）；#4/#5/#6/#7 → F11 文档勘误（plan.md/INDEX.md/latest.md；INDEX.md 在与 origin/main 合并时解决冲突=相对链接+HEAD 0a857bd68）。健康面维持；D11 三门数值复算与 9 条去重明细登记 L7（需跑 testbench，本地 gitignore 产物不可复核）。

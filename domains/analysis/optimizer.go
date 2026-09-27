@@ -229,6 +229,8 @@ func (a *OptimizationAdviser) save(ctx context.Context, s *sessionStatsForOpt, s
 			 potential_savings_tokens, potential_savings_cost, evidence)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		s.GwSessionID, s.TenantID, sug.Category, sug.Severity, sug.Title, sug.Description,
-		sug.PotentialTokens, sug.PotentialCost, evidenceJSON)
+		// 13 轮审计（R11 FIX-C 同根）：SimpleProtocol 下 []byte 内联成 bytea
+		// hex 字面量，jsonb 列解析必炸，建议持久化整体失败——string 化。
+		sug.PotentialTokens, sug.PotentialCost, string(evidenceJSON))
 	return err
 }

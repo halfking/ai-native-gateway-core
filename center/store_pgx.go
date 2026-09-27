@@ -290,7 +290,14 @@ func (s *PgxStore) UpdateCommandStatus(ctx context.Context, commandID, status st
 		SET status = $2, executed_at = now(), result = $3
 		WHERE command_id = $1
 	`
-	_, err := s.db.Exec(ctx, query, commandID, status, resultJSON)
+	// R71 审计：result 是 jsonb 列，[]byte 直传在 SimpleProtocol 池下内联
+	// 为 bytea hex 字面量（R11 FIX-C 同根）；marshal 失败的 nil 保持 NULL
+	// 语义。接线前修复到位（当前无生产构造点）。
+	var resultParam interface{}
+	if len(resultJSON) > 0 {
+		resultParam = string(resultJSON)
+	}
+	_, err := s.db.Exec(ctx, query, commandID, status, resultParam)
 	return err
 }
 

@@ -488,7 +488,17 @@ func (e *Executor) recordExecutionSuccess(ctx context.Context, execID int64, res
 		WHERE execution_id = $1
 	`
 
-	_, err := e.db.Exec(ctx, query, execID, durationMs, summaryJSON, detailJSON)
+	// R71 审计：result_summary/result_detail 是 jsonb 列。[]byte 直传在
+	// SimpleProtocol 池下内联为 bytea hex 字面量（R11 FIX-C 同根）；
+	// marshal 失败的 nil 保持 NULL 语义。接线前修复到位（当前无生产构造点）。
+	var summaryParam, detailParam interface{}
+	if len(summaryJSON) > 0 {
+		summaryParam = string(summaryJSON)
+	}
+	if len(detailJSON) > 0 {
+		detailParam = string(detailJSON)
+	}
+	_, err := e.db.Exec(ctx, query, execID, durationMs, summaryParam, detailParam)
 	return err
 }
 

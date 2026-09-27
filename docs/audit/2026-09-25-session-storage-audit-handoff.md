@@ -584,13 +584,13 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 
 | # | 子任务 | 分支 | 类型 | 状态 | Commit | PR URL | 备注 |
 |---|---|---|---|---|---|---|---|
-| 1 | 会话身份契约 API 层显式标注 | feat/session-identity-contract-api | P0 | TODO | - | - | - |
-| 2 | session_turn_logs 可配 TTL + summary 同步 | feat/session-turn-logs-ttl | P1 | TODO | - | - | - |
+| 1 | 会话身份契约 API 层显式标注 | feat/session-identity-contract-api (9f62818c5 已并入) + fix/session-ambiguity-409 (本轮收口) | P0 | [DONE] 2026-09-27 16:20 | 0aa86d8bd | 待创建 | 9f62818c5 + 9785c2398 已带 DISTINCT/LIMIT 2 歧义守卫进 main, 但走 500 兜底且响应体回显含 tenant_id 的内部错误串; 本轮以 fix/session-ambiguity-409 收口为 409 + 固定文案 (审计 Minor-2)。**未按原计划 rebase feat/session-identity-contract-api** —— 该分支 4 个 commit 与 main 的 R69/N-1 线已分叉, rebase 会回退 main 的 `SessionTurnV2.ID json:"-"`、空轮次序列化为 `[]`、errors.Is 注释等修复, 故改为定点移植 |
+| 2 | session_turn_logs 可配 TTL + summary 同步 | feat/session-turn-logs-ttl | P1 | [DONE] 2026-09-27（**语义经批判式审计修正后重做**） | 5b558deab（初版，语义有误）→ 14d34867f | 待创建 | 迁移改号 745→**753**（见 §10.2）。**初版 5b558deab 的 TTL 语义是错的，保留此行仅为留档，勿据其判断行为** —— 三条证伪见 §16。§4 第 4 项「AppendTurnInTx 内联写 turn_logs_summary」**已由既有实现满足**（cmd/gateway/turn_logs_aggregator.go，5 分钟聚合 → 写 sessions.turn_logs_summary → 删源行，main.go:1280 接线），**未重复实现**，两路写同一 JSONB 会互相覆盖 |
 | 3 | 详情 V2 body_status + 移除 request_logs_bodies JOIN | feat/session-detail-body-status | P1 | TODO | - | - | - |
 | 4 | DB 降级返回 503 + storage_status | feat/storage-status-503 | P1 | TODO | - | - | - |
-| 5 | 镜像 outbox 性能调优 | feat/mirror-outbox-perf | P1 | TODO | - | - | - |
+| 5 | 镜像 outbox 性能调优 | feat/mirror-outbox-perf | P1 | [DONE] 2026-09-27 17:01 | 1cb487779 | 待创建 | rebase origin/main 后唯一文件改动 (internal/sessionv2mirror/replay.go, 103+/16-); `go build ./internal/sessionv2mirror/...` + `go vet` + `go test -race ./internal/sessionv2mirror/...` + `go build ./...` 全绿; gofmt 历史遗留 `internal/sessionv2mirror/session_dim.go` + `internal/sessionv2mirror/synthetic_session_test.go` (不在本任务范围, 见 §15 观察项) |
 | 6 | bg/cache_trimmer.go + BodiesTrimmer 一致性 | feat/cache-trimmer-and-bodies-consistency | P2 | TODO | - | - | - |
-| 7 | request_logs 主表 archive 流水线 | feat/request-logs-main-archive | P2 | TODO | - | - | - |
+| 7 | request_logs 主表 archive 流水线 | feat/request-logs-main-archive | P2 | [DONE] 2026-09-27 | 982e3191c | 待创建 | 迁移改号 746→**754**（见 §10.2；750~753 已被占用）。**不并入 archiveSpecs()**：那套机制按「日期参数 + 标量/tuple 返回」设计，而 archive_request_logs_default 收 retention 天数、RETURNS TABLE(partition, rows) 是**每分区一行**的集合返回，硬塞会错传参数并按错列形状扫描（与 2026-09-03/04 的 42703 同源），故单列 pm.archiveOldRequestLogs（runCleanup step 12）。迁移 SQL 为前一会话草稿、本轮复核：pg_inherits 枚举月分区、1000 行小批量 + 主键游标、源分区不 DROP（R68 move-then-attach）均符合 §9 冻结契约 |
 
 ### 10.1 通用门禁 (每个子任务都要满足)
 
@@ -603,6 +603,20 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 - [ ] commit message 含 `Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §<subtask-id>`
 - [ ] git push origin 成功
 - [ ] 在本表对应行写入 `[DONE] YYYY-MM-DD HH:MM commit=<sha> pr=<url>`
+
+### 10.2 迁移编号校正 (2026-09-27)
+
+各子任务模板里的迁移号是**编写时的快照, 已全部过期**, 照抄会与 main 上已存在的
+迁移撞号 (`schema_migrations.version` 冲突, 且 751 已 applied+verified 到 245 库):
+
+| 模板写的 | 实际占用者 | 改用 |
+|---|---|---|
+| 745 (Subtask 2) | `745_report_snapshots` (R63) | **753** |
+| 746 (Subtask 7) | `746_report_snapshots_internal_dims` | **754** |
+| — | 750 `usage_facts_daily_partition` / 751 `usage_facts_partition_tz_pin` / 752 `mock_probe_history` | 已被 R68/R70 占用 |
+
+规则: **每个子任务开工前先 `git ls-tree origin/main sql/migrations/startup/ --name-only`
+确认目标号仍空闲**; main 在 R70 期间仍以每轮数个 commit 的速度推进, 编号会继续前移。
 
 ---
 
@@ -675,3 +689,317 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 - 所有 feat/* 分支已删除
 - 在主分支 `git log --oneline -10` 末尾追加一条总控合入记录 (可选): `chore(audit): R64 handoff — 7 sub-tasks landed, storage_status + body_status + TTL configurable + archive pipeline`
 - 通知用户: 全部完成, 提供 7 个 PR URL 列表
+
+---
+
+## 15. 观察项 (R71+ 待清理)
+
+- **O-A** `gofmt -l` 在 main 上报两个历史遗留文件 (非本次任何子任务范围):
+  - `internal/sessionv2mirror/session_dim.go` — 引入于 6e4fa32dc (`feat(session): session_dim 随 V2 影子写自动维护`)
+  - `internal/sessionv2mirror/synthetic_session_test.go` — 引入于 a789a05ad (`feat(db,session,storage): 存储优化方案 v2 S2 落地`)
+  - 处置: 单开 `chore(fmt): gofmt session_dim.go + synthetic_session_test.go` (或随下个真正触及该目录的子任务合并), **不要混进 Subtask 5 收口 commit** (会扩散范围, 违反 §10.1 "git diff 行数 ≤ 600" 软约束)
+- **O-B** `feat/session-identity-contract-api` 分支在 origin 上保留 4 个 commit (48f1141fa, 6c5b76cab, e0464968c, ad763a7ef) — 实质内容已被 main 上的 `fix/session-ambiguity-409` (0aa86d8bd) 定点移植取代; 差异为 509+/4191- 的反向 main 推进差. 处置: 在所有 Subtask 落地后, 由 R71 audit 轮一并清理 (本地 + 远端 delete branch)
+- **O-C** main 落后 origin/main 2 个 commit (59712d3c7 + 78ca7d9a3, R70 D11 plan/INDEX 头指针校正); 与 §10 表无关, 下次合并或审计轮前 `git pull --ff-only` 即可
+---
+
+## 16. Subtask 2 批判式审计结论 (2026-09-27)
+
+对 `5b558deab`（Subtask 2 初版）做独立只读审计后**证伪了任务前提本身**。三条
+均以 file:line 为据，不是风格意见：
+
+### F-1 (Blocker) 谓词差了一整个 TTL，保留期实际翻倍
+
+初版函数写 `WHERE expires_at < NOW() - make_interval(hours => p_ttl_hours)`。
+但 `expires_at` 是**写入时烘焙**的：`domains/session/v2/turn_logs_writer.go` 以
+`time.Now().Add(24*time.Hour)` 显式写入（生产 INSERT 永远带该列，430:270 的列
+DEFAULT 实际是死代码）。所以对 T 时刻写入的行（`expires_at = T+24h`）：
+
+    删除时刻满足  T + 24h < NOW() - p_ttl_hours
+    p_ttl_hours=24  →  NOW() > T + 48h
+
+**默认 24 实际保留 48h**，与「默认 24 = 保持原状」相反。初版 commit message
+写的「与原硬编码行为逐字节一致」是错的。已改为纯到期判定
+`WHERE expires_at < NOW()`。
+
+### F-2 (Blocker) 「24h 硬编码清理」从来不存在
+
+430:336 定义了 `cleanup_expired_session_turn_logs()`（`expires_at < NOW()`），
+513 重写过一次，**但全仓无任何调用方**：Go 无引用、无 pg_cron 注册、无 shell
+调度；只出现在 baseline dump、`scripts/test-migration-430.sh` 与 513 测试里。
+
+即 **session_turn_logs 在生产上从未被清理过，表无界增长**。所以本子任务不是
+「把既有清理参数化」，而是「第一次真正接上清理」——这同时意味着 F-1 的
+「行为变化」其实是「从无界增长变成有界增长」，方向上是修复，但初版的描述与
+理由都写错了。清理入口见 `bg/partition_manager.go` 的 `runCleanup` step 11。
+
+### F-3 (Blocker) 真正的硬编码在 Go 侧，不在 SQL
+
+见 F-1 引用的 `turn_logs_writer.go`。只改 SQL 谓词，设置永远不会生效
+（`expires_at` 早已按 24h 烘焙死）。已改为写入方读
+`lifecycle.session_turn_logs_ttl_hours`（`sessionTurnLogsTTL()`，夹取 1..168）。
+**保留期是写入时决定的**：改设置只影响新写入的行；已写入的行仍按原
+`expires_at` 到期被清。这是本设计的固有性质，不是缺陷，但运维必须知道。
+
+### F-4 (Major) 753 建了重复索引
+
+430:275 已有 `idx_session_turn_logs_expires ON session_turn_logs(expires_at)`，
+初版又建了同列的 `idx_session_turn_logs_expires_at`。在每 turn 写 7 行的热表
+上挂第二个同列索引 = 纯写放大 + 磁盘占用，零查询收益。初稿注释以「与迁移族命名
+对齐」为由保留，属错误权衡。已移除；清理谓词命中 430 原索引。
+
+### F-5 (Major) 第三条死路径：Go 侧 CleanupExpiredLogs（本轮审计遗漏，独立审计发现）
+
+`domains/session/v2/turn_logs_writer.go:252` 的 `CleanupExpiredLogs(ctx)` 做的是
+`DELETE ... WHERE expires_at < NOW()` —— **谓词本来就是对的**。但全仓除自身单测
+外无任何调用方，同样从未在生产执行过。
+
+所以历史上有**两条**死清理路径（SQL 的 `cleanup_expired_session_turn_logs()`、
+Go 的 `CleanupExpiredLogs()`），这才是「表无界增长」的完整解释。已加 Deprecated
+注释指明新归属，但**故意不删**：它是导出方法，仓外可能有调用者，删除的爆炸半径
+超过本子任务该承担的范围。清理留给后续独立 chore。
+
+### F-6 (**已推翻，见 §17**) 与 TurnLogsAggregator 的时序交互 —— 本轮自评过轻
+
+`cmd/gateway/turn_logs_aggregator.go` 的取数条件是 `expires_at > NOW()`，聚合器
+**只看得见未过期的行**；而过期行会被 TTL 扫描删除。因此存在「行先过期（对聚合器
+隐形）、后被清理」的丢数窗口。
+
+**我在这里写的结论是「非缺陷」，这是错的。** 理由见 §17 F-7：轮询查询是
+`GROUP BY tenant_id, session_id LIMIT 100` 且**没有 ORDER BY**，选择不确定；
+长期排不到队的会话，其行会在被聚合之前先到期删除 —— 不是「延迟」，是静默丢数。
+当时的推理只考虑了「聚合器 5 分钟一跳 / TTL 24h，窗口够大」，没有检查**选择
+本身是否公平**。
+
+### 独立审计交叉验证
+
+本轮另起了一个 verifier 子代理做独立只读审计，结论与上述 F-1/F-2/F-3/F-4 一致
+（各自独立用 file:line 复算），并额外发现 F-5。审计还确认：
+- `scripts/test_sessions_v2_api.sh` 不对状态码做任何断言，Subtask 1 的
+  500→409 变更在仓内无消费方；
+- 迁移 753 的 `schema_migrations` 自注册守卫与 742/743 同形（但与 750/751/752
+  不同 —— 那三个不自注册），属既有分歧，非本轮引入。
+
+### 附带修正：断言必须剥注释
+
+753 的头部**故意**逐字记录了初版的错误谓词与重复索引（审计留档）。初版测试用
+`strings.Contains` 扫全文，于是「不得再出现 X」这类断言会被自己的审计说明打中
+（本次实测两处 false positive）。已改为对 `stripSQLComments(...)` 后的代码断言
+（SQL 侧复用 `migration_602_test.go` 已有的 `stripSQLComments`，Go 侧新增
+`stripGoLineComments`）。
+
+> 这正是本 handoff 反复强调「断言必须能变异失败」的另一个实例：一条会因注释
+> 而误报的断言，与一条永远不会失败的断言同样是坏断言。
+
+### 未能在本地验证的部分
+
+迁移 SQL 未对真实 PostgreSQL 执行过（本机无可用 PG 实例）。`RAISE EXCEPTION`
+ 分支、索引选择、事务内 DDL 行为均**未经真库验证**。上线前应在 245/252 的
+ 测试库上跑一次 up/down 往返。
+
+---
+
+## 17. 第二轮批判式审计 (2026-09-27 19:48)
+
+对象是**第一轮修正本身**（`14d34867f` / `d10d782d9`）——刚落地、无人复核的代码。
+结论：F-1…F-5 的修法成立，但**我对自己写的 F-6「非缺陷」判断是错的**，并牵出一个
+此前完全没人看过的数据丢数缺陷。
+
+### F-7 (Blocker) 聚合器轮询无序 → 静默丢 turn 日志（本轮新发现）
+
+`cmd/gateway/main.go` 的聚合器 goroutine 里，轮询查询是：
+
+    SELECT tenant_id, session_id
+    FROM public.session_turn_logs
+    WHERE expires_at > NOW()
+    GROUP BY tenant_id, session_id
+    LIMIT 100          -- 没有 ORDER BY
+
+两个问题，都不报错：
+
+1. **选择不确定。** 没有 ORDER BY，PostgreSQL 可以返回任意 100 个
+   (tenant, session)。有持续流量的会话永远有未过期行、恒在候选集里，可以反复
+   挤掉安静的会话。
+2. **截断是静默丢数，不是延迟。** 候选集只含 `expires_at > NOW()` 的行，而
+   TTL 扫描会删掉过期行。一个始终排不上队的会话，其 stage 日志会在**被聚合之前
+   就到期删除** —— 该 turn 永远不会出现在 `turn_logs_summary` 里，日志里也
+   没有任何错误。F-6 正是被这一点证伪。
+
+**修法**：把查询从 main.go 内联字面量抽成
+`TurnLogsAggregator.PendingSessions(ctx, limit)`（原先完全不可测），并加
+`ORDER BY MIN(started_at) ASC, tenant_id ASC, session_id ASC`。行在被 flush 后即
+删除，候选集因此是一个 FIFO 队列：最老的未处理工作永远排在最前，安静会话不会被
+无限挤掉。`tenant_id/session_id` 是 tie-breaker，让排序是全序而非仅非降序。
+
+**吞吐（是取舍不是缺陷，但改之前要算账）**：每 tick 一页 = 100/5min =
+1200 session/小时；积压只在该数之上出现，而一个 session 有整个 TTL（默认 24h，
+约 28800 session）的余量。每 tick 多翻几页会成倍放大 GROUP BY 成本，应当是
+**实测后**的决定，不该拍脑袋。
+
+### F-8 (**已降级**：有仓内证据表明迁移先于新二进制应用)
+
+`bg.PartitionManager.cleanupSessionTurnLogsByTTL` 调用
+`cleanup_session_turn_logs_by_ttl($1)`，该函数在迁移 753 应用前不存在。失败是
+**非致命的**（`slog.Error` 后 `return`，且它是 runCleanup 的最后一项，不影响前
+10 项清理），但特性在该库上会是惰性的。
+
+**我先写的是「无法在仓内验证部署顺序」，这是过度保守**，独立审计在同一仓内找到了
+证据（由它提供，我复核）：
+
+- `scripts/deploy-lib.legacy/db-changelog.sh` 头部：「**切换前**在 252 PG 上应用
+  sql/migrations/startup/NNN_*.sql，避免 restart 时 EnsureSchema 长时间阻塞」
+- `scripts/deploy-154.sh:6`：「默认：前后端同时构建 + **切换前 DB 迁移** + 原子
+  符号链接切换 + db-changelog」
+
+即标准部署路径是**先迁移、后切换**，753 会在新二进制起来之前落地。降级为观察项：
+若绕过标准部署路径（手工只换二进制），该库会持续报 `42P01 undefined_function`
+直到补跑迁移。
+
+### F-9 (Blocker) turn_logs_summary 被整体覆盖，早期 turn 静默丢失
+
+`UPDATE public.sessions SET turn_logs_summary = $1::jsonb` 是**全量替换**。
+而 flush 结束后会 DELETE 掉刚聚合的行 —— 于是对一个**有持续流量**的会话：
+
+    tick1:  读到 turn_1 → 写 summary={turn_1} → 删除 turn_1 的行
+    tick2:  只剩 turn_2 的行 → 写 summary={turn_2}  ← 覆盖掉 turn_1
+    最终:   summary 只剩最后一批，不是会话的 turn 历史
+
+`admin/session_detail_v2.go:99/317/355` 把这一列直接透出给 API 消费方，所以暴露的
+就是残缺的历史。
+
+**根因**：flush 的 UPDATE 与 DELETE 是一对，但 UPDATE 用「替换」语义，而 DELETE
+又让读集在下一次 tick 变短，两者叠加使得「累积」退化为「最后一批」。
+
+**修法**：`SET turn_logs_summary = COALESCE(turn_logs_summary, '{}'::jsonb) || $1::jsonb`。
+jsonb `||` 是顶层键的浅合并，而键是 `turn_N`、每批互不相同，浅合并正是所需语义。
+`COALESCE` 不可省：SQL 里 `NULL || x` 结果是 NULL。附带收益是**重放幂等** —— 若进程
+在 UPDATE 与 DELETE 之间挂掉，下一 tick 会重新聚合同一 turn 并覆盖自己的键（等值），
+而不是抹掉其余 turn。
+
+### F-10 (Major) flush 的 SELECT→DELETE 竞态：新写入的 stage 被删但从未聚合
+
+原 DELETE 重新推导谓词 `WHERE tenant_id=$1 AND session_id=$2 AND expires_at > NOW()`
+—— 它是**另一条语句**，谓词重新求值。SELECT 与 DELETE 之间为在途 turn 写入的 stage
+行，会在这个窗口内**被删除而从未进入 summary**。窗口窄，但完全静默。
+
+同一谓词还让「空会话」分支成为空操作：SELECT 已用同一条件判定「没有未过期行」，
+那么同样条件的 DELETE 不可能命中任何行 —— 那段代码注释写着「trim any stray rows
+that already expired」，而谓词恰好与之相反。
+
+**修法**：SELECT 捕获 `id`，DELETE 改为 `WHERE id = ANY($1)`，精确覆盖本次读集；
+空分支随之不再需要 DELETE，直接返回。
+
+### 本轮独立审计的贡献（与我的自查互补）
+
+第二轮另起 verifier 子代理做只读审计，逐条独立复算后：确认 F-7 与我的判断一致；
+**F-9（summary 被覆盖）与 F-10（SELECT→DELETE 竞态）由它先发现**，我复核代码后确认
+成立并修掉 —— 这两条我自己第一遍没看出来。也是它找到 F-8 的降级证据。
+连续两轮的事实是：**我的自查能抓住「我刚写的代码哪里算错了」，但对「我顺手点头
+说『既有实现已满足』的老代码」系统性失灵**。第 1 轮我曾断言 TurnLogsAggregator
+「已完全满足 handoff 第 4 项、无需重复实现」，那个判断就是这两条的根源。
+
+### O-D 共享主 worktree 被并行会话切了分支（操作事故，已处置）
+
+本轮开工时主 worktree `/llm-gateway/workspace/.../llm-gateway-go-cursor` 在
+`main`；干活途中并行会话在同一目录 checkout 了
+`feat/session-detail-body-status`（Subtask 3）。我的修改因此落在**它的分支**上，
+`git push origin main` 一度报 "Everything up-to-date"（推的是本地 main 指针，
+停在父提交）—— **差点以为已推送成功**。
+
+处置与遗留：
+- 我的提交 `8a34eab76` 的父提交恰为 `d10d782d9`(= main)，且该分支上没有并行
+  会话的其他提交（工作区当时干净），因此可无损分离。
+- 另开 worktree `/private/tmp/llm-gw-audit2` 承载 `main`，ff 到 `8a34eab76` 并推送，
+  远端已确认 `refs/heads/main = 8a34eab76`。
+- **未触碰并行会话的 worktree**（它可能正在编辑，切分支会打断它）。
+- **遗留动作（需人工确认）**：`feat/session-detail-body-status` 目前仍指向
+  `8a34eab76`，即含本轮 turn-logs 改动。该分支应先 `git reset --hard main`
+  （或 rebase 到 main）再继续 Subtask 3，否则会把无关改动带进 Subtask 3 的 PR。
+
+> 教训：`git push` 报 "Everything up-to-date" **不等于**你刚提交的代码在远端 ——
+> 它可能推的是另一个 ref。落盘后必须用 `git ls-remote origin refs/heads/main`
+> 核对远端真实值，不能只看 push 输出的措辞。开工前也应确认当前分支
+> （`git branch --show-current`），共享 worktree 下这不是自动成立的。
+
+### 本轮自评教训
+
+F-6 写「非缺陷」时我只验证了「窗口够大」（5 分钟一跳 vs 24h TTL），**没有验证
+选择是否公平**。两个条件是独立的：窗口决定「单次会不会丢」，公平性决定「会不会
+一直丢」。前者成立不构成后者的结论。下一轮凡写「非缺陷」，必须同时说明
+「为何不会被绕过/饿死」，否则按「待验证」记。
+
+---
+
+## 18. 第三轮批判式审计 (2026-09-27 22:38)
+
+对象是第二轮刚落地的 Subtask 7（`982e3191c` / `85972cf1c`）。两条发现都不是
+「写错了代码」，而是**承诺与实现不符**——比语法错误更难发现，因为测试全绿。
+
+### 自查先说一件难看的事
+
+我在 Subtask 7 的 commit message 里写了对该迁移的正面评价，而**我实际上只读了
+它 228 行里的约 60 行**。第 120 行之后的批式游标 INSERT 循环是我没读就写下的
+部分。下面两条发现全部位于我没读的那段。
+
+### F-11 (Major) 这是摘要抽取，不是数据搬移；主表不会变小
+
+迁移 754 的函数里**没有任何 DELETE**（剥注释后 `grep -c DELETE` == 0，有契约
+测试钉住）。源分区一个字节都不会被删 —— 迁移头自己写明了原因：R68 禁止 DROP
+partition_by_range 父表的月分区（654 / 337 事故复盘）。
+
+所以：
+
+- `request_logs` 主表**不会因为这个迁移而变小**，它仍在增长；
+- 开启 `lifecycle.request_logs_ttl_days` **不等于**「旧数据离开主表」，只等于
+  「旧分区多一份 11 列摘要副本供对账/合规回溯」。
+
+「archive」这个词、以及 handoff §9 的标题「主表 archive 流水线」，都极易被读成
+前者；**我在 §10 状态行和 commit message 里都没有点破这一点**，等于替它背书。
+已在迁移头、setting 的 DescriptionLong 里显式写明。
+
+这不是可修的缺陷——受 R68 约束，SQL 层面没有安全选项；它是一个**必须说出口的
+期望差**。
+
+### F-12 (Major) SQL 无「已归档」标记，挂在每小时 tick 上 = 永不收敛的全表重扫
+
+函数枚举所有 `month_end` 已过期的月分区，对每个分区把**全部行**再走一遍
+`INSERT ... ON CONFLICT (request_id, ts) DO NOTHING`。已归档的行确实被唯一索引
+冲突吸收、不重复写，但**行仍然被读取、投影、再走一遍插入尝试**。
+
+因此单次成本 = O(所有超过保留窗口的行)，且随时间单调增长、不会自行收敛。
+而我把它接在了 `runCleanup` 上，`providerErrorCleanupInterval = 1h`（第 57 行）。
+
+合起来就是：一张持续增长的主表，每小时被完整重扫一遍历史数据，而产出为零。
+这是我上一轮 wiring 时的直接疏漏——我只验证了「函数被调用了」，没验证
+「调用的代价是多少」。
+
+**修法（有意克制）**：Go 侧限到**每日一次**（`shouldRunRequestLogsArchive`，
+本地时区 03:00 那一小时），代价降低约 24 倍，且**不碰那份从未在真库执行过的
+SQL**。彻底解法是加一张 archive ledger 记录 `(partition, max_id)`，已归档分区
+直接跳过——但那份 SQL 一次都没在真实 PostgreSQL 上跑过，往里盲加一张新表，
+风险比留着高。列为后续。
+
+### 一条我自己的注释把自己的自检数成了 1
+
+我在迁移头写「可用 `grep -c 'DELETE FROM' 本文件 == 0` 自证」，然后这条注释本身
+含有字面量 `DELETE FROM`，自检立刻返回 **1** —— 自己的说明把自己的回归测试打红。
+与前两轮 F-6/第二轮 C7 同类：**会因注释而误报的断言，和永不失败的断言一样是坏
+断言**。已改为剥注释后再数，并在迁移头里把这个坑写下来。
+
+同理，N1 变异（删掉 `shouldRunRequestLogsArchive` 的**调用**）第一版测试全绿 ——
+因为它只测纯函数，看不见 wiring。已补
+`TestArchiveOldRequestLogs_GateIsActuallyInvoked`，并把断言范围限定在函数体内，
+重跑必红。**这是连续第二次在同一处栽（第二轮 C7），已固化进下一轮规则。**
+
+### 一条我自己的误报
+
+我一度判定 `request_logs` 缺 `provider_model` / `cost_usd` / `success` /
+`error_kind` 四列（据 000_base_tables 的表体解析）。**这是误报**——这四列确实存在，
+证据是 573 重建的视图 SELECT 列表里逐列出现。四列均 OK，迁移的列清单有效。
+记在这里是因为「差点凭一个窄窗口的 grep 就断言迁移会 42703 上线即挂」。
+
+### 变异测试（本轮 4 条，逐条实测非空转）
+
+  删每日门槛的**调用**      → FAIL
+  门槛改成每小时都跑        → FAIL（24h 内触发 24 次）
+  给归档函数加一条 DELETE   → FAIL（违反 F-11 不变量）
+  SELECT FROM id 改零值累加  → FAIL（第二轮已有，回归通过）

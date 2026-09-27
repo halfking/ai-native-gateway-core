@@ -4,7 +4,7 @@
 // 用途: 标注工作台提交人工标注时，同步把"人工确认/改判的任务类型"作为
 // 逐请求修正写入 task_type_corrections，形成分类反馈闭环。
 
-import { headers, BASE, ApiError } from './_core'
+import { req, headers, BASE, ApiError } from './_core'
 
 export interface TaskProfileInfo {
   task_type: string
@@ -63,6 +63,8 @@ export interface TaskTypeCorrection {
 export interface CorrectionStatsResponse {
   since: string
   stats: Record<string, TaskProfileCorrectionStat>
+  // 每个被修正任务类型的当前分层建议（handler.go handleCorrectionStats）。
+  suggestions?: Record<string, TaskProfileSuggestion>
   recent: TaskTypeCorrection[]
 }
 
@@ -75,9 +77,13 @@ export interface AppliedTierConfig {
 
 /** 记录一条人工任务类型修正（request_id 冲突返回 409）。 */
 export function createTaskTypeCorrection(data: CreateTaskTypeCorrectionRequest): Promise<TaskTypeCorrection> {
-  return req<TaskTypeCorrection>('POST', '/api/admin/task-profile/corrections', data).then(
-    (r) => (r as { correction: TaskTypeCorrection }).correction
-  )
+  // 后端信封为 {success, correction}（taskprofile/handler.go handleCreateCorrection）；
+  // 显式声明响应形状再取 correction，避免把整封信封当 correction 强转。
+  return req<{ correction: TaskTypeCorrection }>(
+    'POST',
+    '/api/admin/task-profile/corrections',
+    data
+  ).then((r) => r.correction)
 }
 
 /** 任务档案总览（注册表 + 修正统计 + 分层建议合并视图）。 */

@@ -48,10 +48,19 @@ type SessionListResponse struct {
 }
 
 // SessionListAPI handles session list endpoints.
+//
+// R69 清理候选标注（勿新增消费方）：本类型全家族（HandleList/HandleDetail/
+// loadSessions/loadSessionDetail）在生产零构造点——唯一调用方是本包测试；
+// 生产路由 /api/admin/sessions 与 /api/admin/sessions/ 子树走的是
+// Handler.handleListSessions / handleSessionSubrouter（session_state_handlers.go），
+// V2 形态见 session_list_v2.go。删除性重构单独立项，动手前先迁移
+// parseIntParam（credential_monitor_heatmap.go 等仍在用的共享活函数）。
 type SessionListAPI struct {
 	db *pgxpool.Pool
 }
 
+// Deprecated: 生产零构造点（R69 核验），仅测试可达；新代码用 session_list_v2.go
+// 的 SessionListV2API 或 Handler.handleListSessions。
 func NewSessionListAPI(db *pgxpool.Pool) *SessionListAPI {
 	return &SessionListAPI{db: db}
 }

@@ -1,6 +1,8 @@
 package projectattr
 
 import (
+	"context"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -154,5 +156,70 @@ func TestPGStore_OnlyWritesToSessionProjectAttribution(t *testing.T) {
 				t.Errorf("PGStore method %q matches forbidden pattern %q — red-line violation", m.Name, bad)
 			}
 		}
+	}
+}
+
+// R71 审计回归钉：evidence 是 jsonb 列，SaveAttribution 交给 Exec 的参数
+// 必须是 string（或 nil=SQL NULL），绝不能是 []byte —— 全局 SimpleProtocol
+// 池下 pgx 把 []byte 内联为 bytea hex 字面量（'\x7b…'），jsonb 解析必炸
+// （R11 FIX-C 生产实锤同根：凡带 evidence 的归因行全部丢失）。
+type execCaptureQuerier struct {
+	sql  string
+	args []any
+}
+
+func (f *execCaptureQuerier) QueryRow(ctx context.Context, sql string, args ...any) Row {
+	return errRow{}
+}
+func (f *execCaptureQuerier) Query(ctx context.Context, sql string, args ...any) (Rows, error) {
+	return nil, nil
+}
+func (f *execCaptureQuerier) Exec(ctx context.Context, sql string, args ...any) error {
+	f.sql = sql
+	f.args = args
+	return nil
+}
+
+type errRow struct{}
+
+func (errRow) Scan(dest ...any) error { return nil }
+
+func TestSaveAttribution_EvidenceArgIsStringNotByteSlice(t *testing.T) {
+	fake := &execCaptureQuerier{}
+	s := NewPGStore(fake)
+	err := s.SaveAttribution(t.Context(), "tenant-1", "gw-1", Result{
+		Method:   MethodRule,
+		Status:   StatusConfirmed,
+		Evidence: map[string]any{"trigger": "keyword_match", "score": 0.9},
+	})
+	if err != nil {
+		t.Fatalf("SaveAttribution: %v", err)
+	}
+	if len(fake.args) < 9 {
+		t.Fatalf("expected >=9 args, got %d", len(fake.args))
+	}
+	switch v := fake.args[8].(type) {
+	case string:
+		var m map[string]any
+		if err := json.Unmarshal([]byte(v), &m); err != nil {
+			t.Fatalf("evidence arg is not valid JSON: %v (raw=%q)", err, v)
+		}
+		if m["trigger"] != "keyword_match" {
+			t.Fatalf("evidence roundtrip mismatch: %v", m)
+		}
+	default:
+		t.Fatalf("evidence arg must be string, got %T (pgx SimpleProtocol inlines []byte as bytea hex)", v)
+	}
+
+	// Evidence 为空 → 参数必须是 nil（SQL NULL），不能是 ""（同样炸 jsonb）。
+	fake2 := &execCaptureQuerier{}
+	if err := NewPGStore(fake2).SaveAttribution(t.Context(), "tenant-1", "gw-2", Result{
+		Method: MethodRule,
+		Status: StatusConfirmed,
+	}); err != nil {
+		t.Fatalf("SaveAttribution empty evidence: %v", err)
+	}
+	if fake2.args[8] != nil {
+		t.Fatalf("empty evidence must pass nil (SQL NULL), got %T %v", fake2.args[8], fake2.args[8])
 	}
 }

@@ -612,12 +612,40 @@ files=(
   # 覆盖初始器（694 先例的对偶）。幂等 ALTER；boot 链
   # db.ensureUsageFactsDailyPartition 同语句双通道收敛。
   "$ROOT_DIR/sql/migrations/startup/751_usage_facts_partition_tz_pin.sql"
+  # 2026-09-27 mock probe 生产入口收口轮：752 mock_probe_history 历史表 +
+  # 按日分区函数——DDL 原死放 migrations/ 顶层（036）无投递通道（745 同款
+  # 病），仅 252 被手工跑过，收编正典通道。相对 036 加固：函数级 SET
+  # timezone 钉扎（751 对偶）+ move-then-attach（750 同款）。幂等，252
+  # 存量库重放安全。Go 侧 ensure 点在 internal/mockprobe HistoryStore
+  # （启动 bootstrap + writeLoop 每日 tick），无 db.go boot ensure。
+  "$ROOT_DIR/sql/migrations/startup/752_mock_probe_history.sql"
   # 2026-09-24 supplier-protocol-optimization §3.2：800 provider_endpoint_
   # protocols 每 provider 多端点表 + 从 providers 旧行回填（ON CONFLICT
   # DO NOTHING 幂等）。原 deploy/sql/migrations/V800__*.sql 从未进任何
   # 存量库投递通道，本轮移入 startup 目录并在此登记（文件移动由并行代理
   # 完成，登记先行；无 Go boot ensure，本通道是升级库唯一投递路径）。
   "$ROOT_DIR/sql/migrations/startup/800_provider_endpoint_protocols.sql"
+  # 2026-09-27 R67 session-storage 审计子任务 2：753 session_turn_logs
+  # 可配 TTL——cleanup_session_turn_logs_by_ttl(p_ttl_hours) 把 430 schema
+  # 里 24h 硬编码的 expires_at 清理阈值改为按入参可调（默认仍 24h，不破
+  # 既有行为），并补 idx_session_turn_logs_expires_at 兜底清理路径。
+  # 编号：模板原写 745，但 745/750/751/752 已被 report_snapshots /
+  # usage_facts_daily_partition / usage_facts_partition_tz_pin（已 applied
+  # 到 245 库）/ mock_probe_history 依次占用，故取当时首个空闲号 753。
+  # 无 CONCURRENTLY（普通堆表，走 installer 单事务通道）；Go 侧调用点在
+  # bg.PartitionManager.runCleanup，按 settings_kv 的
+  # lifecycle.session_turn_logs_ttl_hours 读取，支持热重载。
+  "$ROOT_DIR/sql/migrations/startup/753_session_turn_logs_ttl.sql"
+  # 2026-09-27 R67 session-storage 审计子任务 7：754 request_logs 主表
+  # archive 流水线——331 移除 archive_request_logs 整族后主表月分区一直
+  # 只保留不归档；本迁移按 lifecycle.request_logs_ttl_days 把超出窗口的
+  # 月分区摘要字段落进 request_logs_archive_YYYY_MM（丢弃 18 个大 JSONB
+  # 列）。源分区不 DROP（R68 move-then-attach 纪律）。逐分区建表用
+  # CREATE TABLE IF NOT EXISTS，函数 CREATE OR REPLACE，天然幂等；小批量
+  # 1000 行 + 主键游标，无 CONCURRENTLY（走 installer 单事务通道）。
+  # 编号：模板原写 746，已被 report_snapshots_internal_dims 占用；750~753
+  # 亦已占用，故取复核时的首个空闲号 754。
+  "$ROOT_DIR/sql/migrations/startup/754_archive_request_logs_default.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
