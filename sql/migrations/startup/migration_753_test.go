@@ -6,25 +6,35 @@ import (
 	"testing"
 )
 
-// Migration 753 (R67 session-storage audit subtask 2, 2026-09-26) replaces
-// the 24h-hardcoded session_turn_logs TTL with a configurable, settings_kv-
-// driven cleanup function and pins an expires_at index alongside the existing
-// 430 idx_session_turn_logs_expires. The contract pins the invariants that
-// keep the change minimal and behavior-preserving:
+// Migration 753 (R67 session-storage audit subtask 2, 2026-09-26; semantics
+// corrected by the 2026-09-27 critical audit; batched by the R72 audit
+// round) replaces the 24h-hardcoded session_turn_logs TTL with a
+// configurable, settings_kv-driven cleanup function. The contract pins the
+// invariants that keep it safe:
 //
-//	C1  The new cleanup function is callable with a TTL parameter and
-//	    defaults to a sane floor when given a degenerate input.
-//	C2  The expires_at index matches the column already used by the
-//	    hardcoded 430 default — there is no regression for the existing
-//	    cleanup path, and the new function reuses the same index.
+//	C1  The cleanup function is callable with (p_ttl_hours, p_batch_size),
+//	    deletes on a plain expiry check (expires_at < NOW() — the TTL is
+//	    already baked into expires_at at write time), validates p_ttl_hours
+//	    against [1,168] with a fail-closed RAISE, and returns the deleted
+//	    row count.
+//	C1b One call deletes ONE bounded batch (LIMIT p_batch_size on the
+//	    primary key). The backlog is drained by the Go caller looping; an
+//	    unbounded single-statement DELETE would hold row locks and emit a
+//	    WAL spike across the whole first sweep, and a statement timeout
+//	    would roll the entire progress back (R72 audit round).
+//	C2  No index is created: 430:275 already has
+//	    idx_session_turn_logs_expires on the same column, and the draft's
+//	    duplicate was pure write amplification.
 //	C3  Default behavior (24h, hot-reloadable setting) is preserved: the
-//	    spec sets default = 24 and the migration's GREATEST(..., 1) floor
-//	    protects against bad settings_kv rows.
-//	C4  Up/down symmetry: the down file drops exactly the function and
-//	    the index the up file creates, and removes the schema_migrations
-//	    ledger row.
-//	C5  Idempotency: CREATE OR REPLACE FUNCTION + CREATE INDEX IF NOT
-//	    EXISTS, no CONCURRENTLY (small heap table — transaction-safe).
+//	    spec sets default = 24 with a [1,168] Min/Max; the Go writer bakes
+//	    expires_at from the setting, so no SQL-side floor exists (out of
+//	    range raises instead — there is no GREATEST(...,1) in the final
+//	    function).
+//	C4  Up/down symmetry: the down file drops exactly the function the up
+//	    file creates (both the batched and any pre-batch signature) and
+//	    removes the schema_migrations ledger row.
+//	C5  Idempotency: CREATE OR REPLACE FUNCTION, no CONCURRENTLY (small
+//	    heap table — transaction-safe), no CREATE TABLE.
 //	C6  Registration: apply-db-revision-sequence.sh carries the 753 row
 //	    in non-decreasing order with 745/750 (R63 收口预埋 + R68 占位)
 //	    on either side, and installer embeddata copy is byte-identical.
@@ -67,9 +77,11 @@ func TestMigration753SessionTurnLogsTTLContract(t *testing.T) {
 	}
 	down := string(downBytes)
 
-	// ── C1: cleanup_session_turn_logs_by_ttl(p_ttl_hours int) RETURNS bigint ─
-	if !strings.Contains(upCompact, "CREATE OR REPLACE FUNCTION CLEANUP_SESSION_TURN_LOGS_BY_TTL(P_TTL_HOURS INT) RETURNS BIGINT") {
-		t.Error("753 must define CREATE OR REPLACE FUNCTION cleanup_session_turn_logs_by_ttl(p_ttl_hours int) RETURNS bigint")
+	// ── C1: cleanup_session_turn_logs_by_ttl(p_ttl_hours int, p_batch_size int) RETURNS bigint ─
+	if !strings.Contains(upCompact, "CREATE OR REPLACE FUNCTION CLEANUP_SESSION_TURN_LOGS_BY_TTL(") ||
+		!strings.Contains(upCompact, "P_TTL_HOURS INT") || !strings.Contains(upCompact, "P_BATCH_SIZE INT DEFAULT 10000") ||
+		!strings.Contains(upCompact, "RETURNS BIGINT") {
+		t.Error("753 must define CREATE OR REPLACE FUNCTION cleanup_session_turn_logs_by_ttl(p_ttl_hours int, p_batch_size int DEFAULT 10000) RETURNS bigint")
 	}
 	// Semantics corrected by the 2026-09-27 critical audit. expires_at is
 	// baked at write time (write time + TTL), so subtracting the TTL again
@@ -92,6 +104,19 @@ func TestMigration753SessionTurnLogsTTLContract(t *testing.T) {
 	}
 	if !strings.Contains(upCode, "RETURN V_DELETED") {
 		t.Error("753 cleanup must RETURN the deleted row count so callers can log/meter it")
+	}
+
+	// ── C1b: one call deletes ONE bounded batch, drained by the caller ──
+	// An unbounded single-statement DELETE made the first sweep on a
+	// backlog-carrying database a long transaction (row locks + WAL spike),
+	// and a statement timeout rolled the entire progress back with the next
+	// retry 24h away — the sweep would never converge. The batch is selected
+	// by primary key and bounded by LIMIT p_batch_size.
+	if !strings.Contains(upCode, "LIMIT P_BATCH_SIZE") {
+		t.Error("753 cleanup DELETE must be bounded (LIMIT p_batch_size) — an unbounded DELETE turns the first sweep into a long transaction that a timeout rolls back whole")
+	}
+	if !strings.Contains(upCode, "WHERE ID IN (") {
+		t.Error("753 cleanup batch must be selected by primary key (WHERE id IN (SELECT id ... LIMIT ...))")
 	}
 
 	// ── C2: no duplicate index on expires_at ───────────────────────────
@@ -201,7 +226,10 @@ func TestMigration753SessionTurnLogsTTLContract(t *testing.T) {
 		lastPos = pos
 	}
 
-	// ── bg.PartitionManager wires the new cleanup function via runCleanup ─
+	// ── bg.PartitionManager wires the new cleanup function, batched ─────
+	// The cleanup runs on the 24h archiveOldPartitionsIfNeeded tick (not the
+	// 1h runCleanup goroutine), and drains the backlog as a loop of bounded
+	// batches rather than one call.
 	pmBytes, err := os.ReadFile("../../../bg/partition_manager.go")
 	if err != nil {
 		t.Fatal(err)
@@ -212,5 +240,8 @@ func TestMigration753SessionTurnLogsTTLContract(t *testing.T) {
 	}
 	if !strings.Contains(pm, "lifecycle.session_turn_logs_ttl_hours") {
 		t.Error("bg.PartitionManager must read the lifecycle.session_turn_logs_ttl_hours setting (hot reload)")
+	}
+	if !strings.Contains(pm, "sessionTurnLogsTTLCleanupBatchSize") {
+		t.Error("bg.PartitionManager must drain the TTL cleanup in bounded batches (loop over sessionTurnLogsTTLCleanupBatchSize) — a single call cannot converge a large backlog under the statement timeout")
 	}
 }

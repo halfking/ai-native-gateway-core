@@ -282,7 +282,7 @@ func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 	sql, queryArgs := buildMemoraSessionsSQL(r, hours, noTopicWindow, limit)
 	rows, err := h.db.Query(ctx, sql, queryArgs...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	defer rows.Close()
@@ -358,7 +358,7 @@ func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 		sessions = append(sessions, entry)
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 
@@ -800,7 +800,7 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 		LIMIT `+limitArg+`
 	`, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	defer rows.Close()
@@ -840,7 +840,7 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 		seq++
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	if messages == nil {

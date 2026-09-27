@@ -171,7 +171,7 @@ func (h *Handler) startCheckCredentialHealth(w http.ResponseWriter, r *http.Requ
 
 	taskID, err := insertBackgroundTask(ctx, h.db, "health_check", &providerID, &credID, map[string]any{"provider_id": providerID, "credential_id": credID, "model": model})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create task: "+err.Error())
+		writeInternalErr(w, "failed to create task", err)
 		return
 	}
 

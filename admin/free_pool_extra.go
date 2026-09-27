@@ -1240,7 +1240,7 @@ func (h *Handler) handleFreePoolListKeys(w http.ResponseWriter, r *http.Request)
 		ORDER BY c.updated_at DESC
 	`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()

@@ -205,7 +205,7 @@ func (h *Handler) HandleActivityTrend(w http.ResponseWriter, r *http.Request) {
 		}
 		return rows.Err()
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 
@@ -275,7 +275,7 @@ func (h *Handler) HandleCostTrend(w http.ResponseWriter, r *http.Request) {
 		}
 		return rows.Err()
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 
@@ -346,7 +346,7 @@ func (h *Handler) HandleLatencyTrend(w http.ResponseWriter, r *http.Request) {
 		}
 		return rows.Err()
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 
@@ -451,7 +451,7 @@ ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		}
 		return rows.Err()
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 

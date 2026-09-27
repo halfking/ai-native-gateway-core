@@ -129,7 +129,7 @@ func (h *Handler) HandleSessionPanorama(w http.ResponseWriter, r *http.Request) 
 		return nil
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "panorama load failed: "+err.Error())
+		writeInternalErr(w, "panorama load failed", err)
 		return
 	}
 	if notFound {
@@ -254,7 +254,7 @@ func (h *Handler) HandleSessionTags(w http.ResponseWriter, r *http.Request) {
 			ON CONFLICT (gw_session_id, tag_key, tag_value) DO NOTHING`,
 			gwSessionID, tid, body.TagKey, body.TagValue, getUsername(r))
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "save tag: "+err.Error())
+			writeInternalErr(w, "save tag", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
@@ -306,7 +306,7 @@ func (h *Handler) handleSessionTagDelete(w http.ResponseWriter, r *http.Request)
 	}
 	_, err = h.db.Exec(ctx, query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "delete failed: "+err.Error())
+		writeInternalErr(w, "delete failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
@@ -361,7 +361,7 @@ func (h *Handler) handleSessionTagUpdate(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusNotFound, "tag not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "load tag: "+err.Error())
+		writeInternalErr(w, "load tag", err)
 		return
 	}
 	newKey := curKey
@@ -380,7 +380,7 @@ func (h *Handler) handleSessionTagUpdate(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusConflict, "tag with this key+value already exists on this session")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeInternalErr(w, "update failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -447,7 +447,7 @@ func (h *Handler) HandleSessionSuggestionApply(w http.ResponseWriter, r *http.Re
 	_, err = h.db.Exec(ctx, query, args...)
 
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "apply failed: "+err.Error())
+		writeInternalErr(w, "apply failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})

@@ -202,7 +202,7 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 	byModelTaskQ, byModelTaskArgs := applyTenantFilterToQuery(r, byModelTaskQuery, []any{days, minSamples})
 	rows, err := h.db.Query(r.Context(), byModelTaskQ, byModelTaskArgs...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -210,13 +210,13 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		var r CorrelationRowMT
 		if err := rows.Scan(&r.Model, &r.TaskType, &r.Samples, &r.Success,
 			&r.AvgLatency, &r.AvgCost); err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 		resp.ByModelTask = append(resp.ByModelTask, r)
 	}
 	if err := rows.Err(); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -257,20 +257,20 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 	verdictQ, verdictArgs := applyTenantFilterToQuery(r, verdictQuery, []any{days, minSamples})
 	rows2, err := h.db.Query(r.Context(), verdictQ, verdictArgs...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows2.Close()
 	for rows2.Next() {
 		var v CorrelationVerdict
 		if err := rows2.Scan(&v.TaskType, &v.Model, &v.Success, &v.AvgLatency, &v.Rank); err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 		resp.Verdict = append(resp.Verdict, v)
 	}
 	if err := rows2.Err(); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -295,7 +295,7 @@ func (h *AutoRouteHandlers) queryCorrelations(
 ) error {
 	rows, err := h.db.Query(r.Context(), query, args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return err
 	}
 	defer rows.Close()
@@ -304,7 +304,7 @@ func (h *AutoRouteHandlers) queryCorrelations(
 		var label *string
 		if err := rows.Scan(&label, &row.Samples, &row.Success,
 			&row.AvgLatency, &row.AvgCost); err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return err
 		}
 		if label != nil {
@@ -313,7 +313,7 @@ func (h *AutoRouteHandlers) queryCorrelations(
 		*dest = append(*dest, row)
 	}
 	if err := rows.Err(); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return err
 	}
 	return nil

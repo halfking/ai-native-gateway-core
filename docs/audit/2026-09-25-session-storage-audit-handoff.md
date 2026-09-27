@@ -1003,3 +1003,59 @@ SQL**。彻底解法是加一张 archive ledger 记录 `(partition, max_id)`，�
   门槛改成每小时都跑        → FAIL（24h 内触发 24 次）
   给归档函数加一条 DELETE   → FAIL（违反 F-11 不变量）
   SELECT FROM id 改零值累加  → FAIL（第二轮已有，回归通过）
+
+---
+
+## 19. 交接状态总表 (2026-09-28 00:15)
+
+三轮批判式审计后的权威状态。**先读本节，再读 §16/§17/§18 的逐条证据。**
+
+### 子任务进度
+
+| # | 状态 | 落点 | 审计结论 |
+|---|---|---|---|
+| 1 | [DONE] | `0aa86d8bd` → main | 歧义 409 + 500 不回显内部错误串。已独立审计（0 Blocker） |
+| 2 | [DONE]（**重做过**） | 初版 `5b558deab` 有误 → 修正 `14d34867f` | §16 F-1…F-5：谓词差一整个 TTL、清理从未被调用、硬编码在 Go 侧、重复索引、第三条死路径 |
+| 3 | **进行中（并行会话）** | `feat/session-detail-body-status`（worktree `/private/tmp/llm-gw-sub3`） | 未审计。本会话不接手：工作区 7 个文件在途，含 `admin/body_status.go` + 其测试 |
+| 4 | TODO | - | 必须在 3 之后串行（共用 `admin/session_detail_v2.go`） |
+| 5 | [DONE]（并行会话） | `1cb487779` | 本会话未复核其代码，仅确认已进 main |
+| 6 | TODO | `feat/cache-trimmer-and-bodies-consistency`（worktree `/private/tmp/llm-gw-cache-trim`，**零提交**） | 仅有分支指针，无任何工作 |
+| 7 | [DONE] | `982e3191c` → 修正 `c7104b141` | §18 F-11（摘要抽取不删源数据）+ F-12（每小时全量重扫） |
+
+### 三轮审计的净产出（供下一轮直接采信，勿重复劳动）
+
+- 修正的**真实缺陷**：2×TTL 保留期、两条从未被调用的清理路径、写入侧硬编码、
+  重复索引、聚合器轮询无序（FIFO）、`turn_logs_summary` 被整体覆盖、
+  flush 的 SELECT→DELETE 竞态、归档扫描每小时全量重扫。
+- **推翻的自我判断**：§16 F-6「非缺陷」错；§17 F-8「无法验证」过度保守；
+  第二轮「四列缺失」是误报。
+- **三次同型自身缺陷**（下一轮必须避免）：
+  1. 断言只 grep 到**函数定义**、看不见**调用点**（§16 C7、§18 N1，连续两次）；
+  2. 注释里的字面量把自己的回归测试打红（§16「剥注释」、§18 `grep -c 'DELETE FROM'`）；
+  3. 上一轮对某文件只读了约 1/4 就写 commit message 评价（§18 自查）。
+
+### 阻塞与待办（按优先级）
+
+1. **【发布阻塞】迁移 753 与 754 从未在真实 PostgreSQL 上执行过。** 本机无 PG。
+   必须在 245/252 测试库跑 up/down 往返；754 还需跑一次真实归档确认动态建表、
+   `pg_inherits` 枚举、游标分页的实际计划。
+2. **【运维必读】`lifecycle.request_logs_ttl_days` 不让主表变小**（§18 F-11），
+   只是摘要抽取；主表仍增长，需另行处置。
+3. **【性能】归档扫描无「已归档」标记**（§18 F-12），已限为每日一次；彻底解法是
+   archive ledger 记 `(partition, max_id)`，**因 SQL 从未真跑而有意未做**。
+4. Subtask 3 完成后才可动 Subtask 4（串行）。
+5. Subtask 6 需从零开始（分支上零提交）。
+6. 7 个 PR URL 仍需人工在 Codeup 浏览器创建（无 CLI 凭据），§10 的 PR 列保持「待创建」。
+7. 清理死代码 `TurnLogsWriter.CleanupExpiredLogs()` 与
+   `cleanup_expired_session_turn_logs()`（已标 Deprecated，故意未删）。
+8. `feat/session-identity-contract-api` 保留 4 个与 main 分叉、rebase 会回退 R69/N-1
+   修复的 commit，全部子任务完成后连同其它 feat/* 一并删除。
+
+### 环境事实
+
+- 本地代理 `127.0.0.1:7897` **已失效**（`HTTP(S)_PROXY` 仍指向它）。所有 push 用
+  `env -u HTTP_PROXY -u HTTPS_PROXY … git push` 直连阿里云 Codeup 绕过。
+- 仓内有**并行会话**持续向 main 提交（r0924/r0926 审计轮）。落盘前须
+  `git fetch && git rebase origin/main`；落盘后必须用
+  `git ls-remote origin refs/heads/main` 核对远端真实值——`git push` 报
+  “Everything up-to-date” 可能推的是另一个 ref（§17 O-D）。

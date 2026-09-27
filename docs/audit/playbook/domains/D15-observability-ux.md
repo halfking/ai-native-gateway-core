@@ -63,3 +63,9 @@
 ### R71 回注（2026-09-27，新端点错误体卫生与 D11 文档一致性）
 - 新端点上线轮必须同步做错误体卫生（固定文案+slog 锚点）：list_v2 接线轮（2a8ad6b74）只补了鉴权防线，500 体裸回显 err.Error() 由 R71 补收；契约测试双泄漏断言（query 臂+list_v2）入册。
 - D11 文档教训：收口摘要的数字/行数/口径必须与权威报告逐项对账（plan.md 四处矛盾 + file:///Users 绝对死链），文档勘误=代码事实优先。
+
+### R72 回注（2026-09-27，L4 admin 500 回显债批量收口）
+- **台账数字必须与代码事实对账再立项**：R71 记载"85 处/22 文件"，R72 实测主口径 395 行/77 文件（+Sprintf 55 + http.Error 26）——批量收口前先多口径 grep 实勘（同线 err.Error()×SIC / Sprintf 变体 / http.Error / 502-503）。
+- 收口机制定型：`admin/internal_error.go` 三 helper（writeInternalErr JSON-detail 形状 / writeInternalErrStr 平面 error 字符串形状 / writeInternalTextErr text/plain 形状）——客户端只见到固定 op 文案，真实错误带 runtime.Caller file:line 锚点进 slog；**响应线形状（JSON 对象/字符串/text）必须与原 helper 对齐**，否则破坏前端消费。旧 writeInternalErr 105 调用点改名为薄包装统一 slog 位点。
+- 回归钉桩：`internal_error_guard_test.go` 静态扫描包内源码禁 500 行含 `*.Error()`（LEGIT 白名单同 sqlreadguard 机制，刻意留空）；dashboardapi writeErrorJSON 单点闸门（5xx details 一律不下发、落 slog）——带 details 参数的共享 helper 优先做单点闸门，比逐点改写便宜且防未来新增漏网。
+- 变换实操坑：GNU sed ERE 不支持 `(?:...)` 非捕获组（"Invalid preceding regular expression"），多表达式脚本须逐条单 sed 执行。

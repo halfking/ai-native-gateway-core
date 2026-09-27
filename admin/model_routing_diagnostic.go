@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -118,7 +117,7 @@ func (h *Handler) handleModelRoutingDiagnostic(w http.ResponseWriter, r *http.Re
 		) npr ON TRUE
 		ORDER BY t.manual_priority, t.credential_id`, model, time.Now().Add(-24*time.Hour))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("model routing diagnostic failed: %v", err))
+		writeInternalErr(w, "model routing diagnostic failed", err)
 		return
 	}
 	defer rows.Close()
@@ -135,7 +134,7 @@ func (h *Handler) handleModelRoutingDiagnostic(w http.ResponseWriter, r *http.Re
 			&node.TimeoutCount, &node.EmptyResponseCount, &node.QuotaFailureCount,
 			&node.DirectOK, &node.GatewayOK, &node.ProbeErrorCode, &latestProbeAt,
 		); err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("model routing diagnostic scan failed: %v", err))
+			writeInternalErr(w, "model routing diagnostic scan failed", err)
 			return
 		}
 		node.ProbeConflict = node.DirectOK != nil && *node.DirectOK && node.GatewayOK != nil && !*node.GatewayOK
@@ -146,7 +145,7 @@ func (h *Handler) handleModelRoutingDiagnostic(w http.ResponseWriter, r *http.Re
 		nodes = append(nodes, node)
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("model routing diagnostic rows failed: %v", err))
+		writeInternalErr(w, "model routing diagnostic rows failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"model": model, "nodes": nodes})

@@ -123,7 +123,7 @@ func (h *Handler) handleApprovalList(w http.ResponseWriter, r *http.Request) {
 
 	records, err := h.approvalMgr.List(r.Context(), filter)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("list approvals failed: %v", err))
+		writeInternalErr(w, "list approvals failed", err)
 		return
 	}
 

@@ -167,7 +167,7 @@ func (h *Handler) handleDashboardBoardErrorDrill(w http.ResponseWriter, r *http.
 
 	items, err := h.queryErrorDrill(ctx, tenantID, days, errorKind, dimension)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

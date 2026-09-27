@@ -172,7 +172,7 @@ func (h *Handler) HandleTopSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		return rows.Err()
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 
@@ -261,7 +261,7 @@ func (h *Handler) HandleFilterOptions(w http.ResponseWriter, r *http.Request) {
 		}
 		return providerRows.Err()
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 

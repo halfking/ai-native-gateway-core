@@ -217,7 +217,7 @@ func (h *Handler) handleDataLifecycleTableSizes(w http.ResponseWriter, r *http.R
 	tables, totalBytes, totalHuman, err := queryTableSizes(ctx, h, limit)
 	if err != nil {
 		slog.Warn("storage: table sizes query failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "查询表大小失败: "+err.Error())
+		writeInternalErr(w, "查询表大小失败", err)
 		return
 	}
 

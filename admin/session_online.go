@@ -120,7 +120,7 @@ func (h *Handler) handleSessionsOnline(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -164,7 +164,7 @@ func (h *Handler) handleSessionsOnline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "rows iteration failed: "+err.Error())
+		writeInternalErr(w, "rows iteration failed", err)
 		return
 	}
 
@@ -353,7 +353,7 @@ func (h *Handler) handleSessionTimeline(w http.ResponseWriter, r *http.Request) 
 		}
 		resolved, err := resolveSessionIDByPK(ctx, h.db, tenantScope, pk)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "resolve session_pk failed: "+err.Error())
+			writeInternalErr(w, "resolve session_pk failed", err)
 			return
 		}
 		if resolved == "" {
@@ -367,7 +367,7 @@ func (h *Handler) handleSessionTimeline(w http.ResponseWriter, r *http.Request) 
 
 	turns, hasMore, err := querySessionTimeline(ctx, h.db, sessionID, tenantScope)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 
@@ -382,7 +382,7 @@ func (h *Handler) handleSessionTimeline(w http.ResponseWriter, r *http.Request) 
 				sessionPK = &pk
 				turns, hasMore, err = querySessionTimeline(ctx, h.db, sessionID, tenantScope)
 				if err != nil {
-					writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+					writeInternalErr(w, "query failed", err)
 					return
 				}
 			}

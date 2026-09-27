@@ -138,7 +138,7 @@ func (h *Handler) HandleModelBreakdown(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 
@@ -188,7 +188,7 @@ func (h *Handler) HandleSessionShape(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 
@@ -241,7 +241,7 @@ func (h *Handler) HandleHealthDistribution(w http.ResponseWriter, r *http.Reques
 		}
 		return nil
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 

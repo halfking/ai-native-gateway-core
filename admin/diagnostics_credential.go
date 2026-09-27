@@ -81,7 +81,7 @@ func (h *Handler) handleCredentialDiagnostic(w http.ResponseWriter, r *http.Requ
 
 	diag, err := buildCredentialDiagnostic(ctx, h.db, credID, minutes)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("diagnostic failed: %v", err))
+		writeInternalErr(w, "diagnostic failed", err)
 		return
 	}
 	if diag == nil {
@@ -234,7 +234,7 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 		WHERE id = $1 AND lifecycle_status = 'active'
 	`, credID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("credential update failed: %v", err))
+		writeInternalErr(w, "credential update failed", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -251,7 +251,7 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 		    updated_at = now()
 		WHERE credential_id = $1
 	`, credID); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("binding update failed: %v", err))
+		writeInternalErr(w, "binding update failed", err)
 		return
 	}
 	// 3. 清 model_probe_state 中 recovering 状态
@@ -264,7 +264,7 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 		    last_state_change_at = now()
 		WHERE credential_id = $1 AND state IN ('recovering', 'unknown', 'suspicious')
 	`, credID); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("probe state update failed: %v", err))
+		writeInternalErr(w, "probe state update failed", err)
 		return
 	}
 	// 3.5 R36 (2026-09-17 audit): the reset must clear BOTH probe systems —
@@ -285,7 +285,7 @@ func (h *Handler) handleForceRecoverSingle(w http.ResponseWriter, r *http.Reques
 		    updated_at        = now()
 		WHERE credential_id = $1 AND last_direct_ok = FALSE
 	`, credID); err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("node probe state update failed: %v", err))
+		writeInternalErr(w, "node probe state update failed", err)
 		return
 	}
 	// 4. invalidate routing caches (触发路由器重载)

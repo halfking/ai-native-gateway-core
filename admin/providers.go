@@ -897,7 +897,7 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusConflict, "provider already exists: "+code)
 				return
 			}
-			writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
+			writeInternalErr(w, "create failed", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"id": id, "message": "ok"})
@@ -989,7 +989,7 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "provider already exists: "+code)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
+		writeInternalErr(w, "create failed", err)
 		return
 	}
 
@@ -1189,7 +1189,7 @@ func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request, id int)
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "begin delete provider failed: "+err.Error())
+		writeInternalErr(w, "begin delete provider failed", err)
 		return
 	}
 	defer func() {
@@ -1210,7 +1210,7 @@ func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request, id int)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "provider not found")
 		} else {
-			writeError(w, http.StatusInternalServerError, "load provider failed: "+err.Error())
+			writeInternalErr(w, "load provider failed", err)
 		}
 		return
 	}
@@ -1235,7 +1235,7 @@ func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request, id int)
 		    updated_at = $1
 		WHERE id = $2 AND tenant_id = 'default' AND deleted_at IS NULL
 	`, now, id); err != nil {
-		writeError(w, http.StatusInternalServerError, "delete provider failed: "+err.Error())
+		writeInternalErr(w, "delete provider failed", err)
 		return
 	}
 
@@ -1255,7 +1255,7 @@ func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request, id int)
 		RETURNING id
 	`, id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "cascade delete credentials failed: "+err.Error())
+		writeInternalErr(w, "cascade delete credentials failed", err)
 		return
 	}
 	var cascadedCredIDs []int
@@ -1263,19 +1263,19 @@ func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request, id int)
 		var cid int
 		if err := cascadedRows.Scan(&cid); err != nil {
 			cascadedRows.Close()
-			writeError(w, http.StatusInternalServerError, "cascade delete scan failed: "+err.Error())
+			writeInternalErr(w, "cascade delete scan failed", err)
 			return
 		}
 		cascadedCredIDs = append(cascadedCredIDs, cid)
 	}
 	cascadedRows.Close()
 	if err := cascadedRows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "cascade delete iterate failed: "+err.Error())
+		writeInternalErr(w, "cascade delete iterate failed", err)
 		return
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "commit delete provider failed: "+err.Error())
+		writeInternalErr(w, "commit delete provider failed", err)
 		return
 	}
 
@@ -1356,7 +1356,7 @@ func (h *Handler) handleSeedFromCatalog(w http.ResponseWriter, r *http.Request) 
 		RETURNING id, code, display_name
 	`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "seed failed: "+err.Error())
+		writeInternalErr(w, "seed failed", err)
 		return
 	}
 	defer rows.Close()

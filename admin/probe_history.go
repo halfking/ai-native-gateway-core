@@ -114,7 +114,7 @@ func (h *Handler) handleProviderProbeHistory(w http.ResponseWriter, r *http.Requ
 		LIMIT $2
 	`, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -168,7 +168,7 @@ func (h *Handler) handleProviderProbeHistoryRecentFailures(w http.ResponseWriter
 		ORDER BY failed_count DESC, last_failed_at DESC
 	`, providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -255,7 +255,7 @@ func (h *Handler) handleProviderProbeHistoryTrigger(w http.ResponseWriter, r *ht
 			writeError(w, http.StatusConflict, "credential is manually disabled")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "trigger failed: "+err.Error())
+		writeInternalErr(w, "trigger failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"triggered": true})
@@ -281,7 +281,7 @@ func (h *Handler) handleProviderProbeHistoryTriggerAll(w http.ResponseWriter, r 
 
 	results, err := h.modelProbe.TriggerAllSync(ctx, providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "probe failed: "+err.Error())
+		writeInternalErr(w, "probe failed", err)
 		return
 	}
 
@@ -373,7 +373,7 @@ func (h *Handler) handleNodeProbeStateReset(w http.ResponseWriter, r *http.Reque
 	}
 	if err != nil {
 		slog.Error("node_probe_state reset failed", "provider_id", providerID, "cred_id", req.CredentialID, "error", err)
-		writeError(w, http.StatusInternalServerError, "reset failed: "+err.Error())
+		writeInternalErr(w, "reset failed", err)
 		return
 	}
 	provider.InvalidateAllCandidateCache()
@@ -396,7 +396,7 @@ func (h *Handler) handleProviderProbeStates(w http.ResponseWriter, r *http.Reque
 	stateFilter := r.URL.Query().Get("state")
 	rows, err := h.modelProbe.ListStates(r.Context(), providerID, stateFilter)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -526,7 +526,7 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 		LIMIT $1
 	`, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, "query failed", err)
 		return
 	}
 	defer rows.Close()

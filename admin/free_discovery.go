@@ -115,7 +115,7 @@ func (h *Handler) handleFreeDiscoveryTemplates(w http.ResponseWriter, r *http.Re
 		enabledOnly := r.URL.Query().Get("enabled") == "true"
 		tpls, err := deps.templates.List(r.Context(), h.fdTenant(r), enabledOnly)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalErr(w, "internal error (see server logs)", err)
 			return
 		}
 		if tpls == nil {

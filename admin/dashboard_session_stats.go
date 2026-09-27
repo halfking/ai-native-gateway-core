@@ -125,7 +125,7 @@ func (h *Handler) handleDashboardSessionOverview(w http.ResponseWriter, r *http.
 			%s %s
 		`, baseFromFallback, baseWhere), totalArgs...).Scan(&resp.TotalSessions, &resp.ActiveSessions)
 		if err2 != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("query total failed: %v", err))
+			writeInternalErr(w, "query total failed", err)
 			return
 		}
 		// 记录警告：session_dim 表缺失，建议执行350迁移

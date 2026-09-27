@@ -130,7 +130,7 @@ func serveGetProviderModels(w http.ResponseWriter, r *http.Request, db offerQuer
 	// complete catalog — 500 beats a silently truncated list the operator
 	// cannot tell is truncated.
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
+		writeInternalErr(w, "scan failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, offers)
@@ -154,7 +154,7 @@ func (h *Handler) clearProviderModels(w http.ResponseWriter, r *http.Request, pr
 
 	deleted, err := modelcatalog.ClearProviderBindings(ctx, h.db, providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "clear failed: "+err.Error())
+		writeInternalErr(w, "clear failed", err)
 		return
 	}
 
@@ -346,7 +346,7 @@ func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, pr
 		offers = append(offers, o)
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
+		writeInternalErr(w, "scan failed", err)
 		return
 	}
 

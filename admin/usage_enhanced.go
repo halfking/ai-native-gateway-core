@@ -161,7 +161,7 @@ func (h *Handler) usageCostTrend(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "cost-trend query failed: "+err.Error())
+		writeInternalErr(w, "cost-trend query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -292,7 +292,7 @@ func (h *Handler) usagePeriodCompare(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "current period query failed: "+err.Error())
+		writeInternalErr(w, "current period query failed", err)
 		return
 	}
 
@@ -308,7 +308,7 @@ func (h *Handler) usagePeriodCompare(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "previous period query failed: "+err.Error())
+		writeInternalErr(w, "previous period query failed", err)
 		return
 	}
 
@@ -552,7 +552,7 @@ func (h *Handler) usageCacheEconomics(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, resp)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "cache-economics query failed: "+err.Error())
+		writeInternalErr(w, "cache-economics query failed", err)
 		return
 	}
 

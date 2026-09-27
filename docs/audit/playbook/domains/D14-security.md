@@ -80,3 +80,8 @@
 ### R71 回注（2026-09-27，sqlreadguard 守卫进验证清单）
 - sqlreadguard TestNoBareRequestLogsMotherReads 恒红两轮未跑出（resolveSessionID 反向臂裸母表读）→ 反向臂双腿化（hot∪母表 UNION ALL）+ LEGIT 白名单；**守卫测试 ./internal/sqlreadguard/ 与 installer 包必须进每轮验证清单**——守卫红本身不是发现，守卫红被无视才是。
 - 500 回显面：0aa86d8bd 只收口 resolve 臂；R71 补收 detail querySessionDetail 臂 + list_v2（固定文案+slog），admin 通用面 85 处/22 文件登记债（L4）待批量收口。
+
+### R72 回注（2026-09-27，自清洁守卫盲区 + 754 五点静默缺四点再证恒查价值）
+- **白名单自清洁守卫的失配判定必须按文件类型单注释遍历**：旧写法 `//遍历==0 && --遍历==0` 双腿与——Go 文件纯 `//` 注释命中在 `--` 遍历恒计数 ≥1，"只剩注释命中"的滞留条目永不报（守卫绿可能部分依赖盲区）。修法=Go 文件走 `//`、SQL 走 `--`；据此移除 3 条滞留条目（session_export 已双腿化视图等）。
+- **五点同步恒查再证价值**：merge 带入的 754（并行子任务产物）只登记 sequence 通道，embeddata/var/map/StartupFiles/parity 四点全缺——TestCanonicalStartupMigrationsAtOrAbove704AreRegistered 当场红并给出完整修法提示；R72 补齐（f65d34dd8）。守卫族三件套必须进每轮验证清单（TestStartupFilesAreAllEmbedded 单独跑不抓"整号缺席"形态）。
+- installer Windows 失败白名单更正：全模块 ×20（cmd 包 instance-token×6 + activation×9 + enrollment×5），干净 worktree 对 HEAD 复跑坐实为基线环境失败——此前各轮"×6"漏计后两包，白名单必须按全模块逐包 diff。

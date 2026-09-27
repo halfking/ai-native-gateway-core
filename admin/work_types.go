@@ -374,7 +374,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		ORDER BY sort_order, key
 	`)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer configRows.Close()
@@ -515,7 +515,7 @@ func (h *WorkTypeHandlers) listWorkTypes(w http.ResponseWriter, r *http.Request)
 
 	rows, err := h.db.Query(ctx, query)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -532,7 +532,7 @@ func (h *WorkTypeHandlers) listWorkTypes(w http.ResponseWriter, r *http.Request)
 	}
 	routeMap, err := h.fetchRoutesForKeys(ctx, keys)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	for i := range out {
@@ -551,13 +551,13 @@ func (h *WorkTypeHandlers) getWorkType(w http.ResponseWriter, r *http.Request, k
 			writeJSONErrCtx(w, r, http.StatusNotFound, "admin_work_type_not_found")
 			return
 		}
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
 	routes, err := h.fetchRoutes(ctx, key)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	wt.ModelRoutes = routes
@@ -604,13 +604,13 @@ func (h *WorkTypeHandlers) createWorkType(w http.ResponseWriter, r *http.Request
 			writeJSONErrCtx(w, r, http.StatusConflict, "admin_key_already_exists")
 			return
 		}
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
 	wt, err := h.fetchWorkType(ctx, req.Key)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, wt)
@@ -705,7 +705,7 @@ func (h *WorkTypeHandlers) updateWorkType(w http.ResponseWriter, r *http.Request
 	query := fmt.Sprintf(`UPDATE work_type_config SET %s WHERE key = $%d`, strings.Join(setClauses, ", "), argN)
 	tag, err := h.db.Exec(ctx, query, args...)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -715,7 +715,7 @@ func (h *WorkTypeHandlers) updateWorkType(w http.ResponseWriter, r *http.Request
 
 	wt, err := h.fetchWorkType(ctx, key)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	writeJSONOk(w, wt)
@@ -729,7 +729,7 @@ func (h *WorkTypeHandlers) deleteWorkType(w http.ResponseWriter, r *http.Request
 		UPDATE work_type_config SET enabled = FALSE, updated_at = NOW() WHERE key = $1
 	`, key)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -790,7 +790,7 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 
 	var exists bool
 	if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_type_config WHERE key = $1)`, key).Scan(&exists); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	if !exists {
@@ -800,14 +800,14 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
 	if _, err := tx.Exec(ctx, `DELETE FROM work_type_model_route WHERE work_type_key = $1`, key); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
@@ -825,19 +825,19 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 				VALUES ($1, $2, $3, $4, $5, $6, $7)
 			`, key, rt.CanonicalName, wt, rt.MinScore, rt.Enabled, tier, rt.TaskQualityScore)
 		if err != nil {
-			writeInternalErr(w, err)
+			writeAutoRouteInternalErr(w, err)
 			return
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 
 	out, err := h.fetchRoutes(ctx, key)
 	if err != nil {
-		writeInternalErr(w, err)
+		writeAutoRouteInternalErr(w, err)
 		return
 	}
 	writeJSONOk(w, map[string]interface{}{"key": key, "model_routes": out})
