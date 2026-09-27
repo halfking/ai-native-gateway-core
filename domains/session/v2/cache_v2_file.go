@@ -184,6 +184,19 @@ func (fc *FileCache) expired(modTime time.Time) bool {
 	return fc.ttl > 0 && time.Since(modTime) >= fc.ttl
 }
 
+// TTL 返回构造时生效的缓存 TTL（nil-safe，返回 0）。
+//
+// 读侧（Get 按 mtime 判过期）与删侧（bg.CacheTrimmer 按 mtime 删文件）必须
+// 共享同一个 TTL 口径，否则删除侧会删掉读侧仍视为有效的条目。装配层
+// （cmd/gateway initStorageMode）用本方法在启动期断言这一不变量，配置校验
+// 与日志都以此为唯一事实来源，不从配置字段二次推导。
+func (fc *FileCache) TTL() time.Duration {
+	if fc == nil {
+		return 0
+	}
+	return fc.ttl
+}
+
 // Get 读取会话状态。
 //
 // 未命中（不存在 / 已过期 / JSON 损坏）一律返回包装 errCacheMiss 的错误；

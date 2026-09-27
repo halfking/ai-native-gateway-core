@@ -589,7 +589,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 | 3 | 详情 V2 body_status + 移除 request_logs_bodies JOIN | feat/session-detail-body-status | P1 | TODO | - | - | - |
 | 4 | DB 降级返回 503 + storage_status | feat/storage-status-503 | P1 | TODO | - | - | - |
 | 5 | 镜像 outbox 性能调优 | feat/mirror-outbox-perf | P1 | [DONE] 2026-09-27 17:01 | 1cb487779 | 待创建 | rebase origin/main 后唯一文件改动 (internal/sessionv2mirror/replay.go, 103+/16-); `go build ./internal/sessionv2mirror/...` + `go vet` + `go test -race ./internal/sessionv2mirror/...` + `go build ./...` 全绿; gofmt 历史遗留 `internal/sessionv2mirror/session_dim.go` + `internal/sessionv2mirror/synthetic_session_test.go` (不在本任务范围, 见 §15 观察项) |
-| 6 | bg/cache_trimmer.go + BodiesTrimmer 一致性 | feat/cache-trimmer-and-bodies-consistency | P2 | TODO | - | - | - |
+| 6 | bg/cache_trimmer.go + BodiesTrimmer 一致性 | feat/cache-trimmer-and-bodies-consistency | P2 | [DONE] 2026-09-28 | (本提交) | 待创建 | **规格过期，改做真实缺陷**：①`bg/cache_trimmer.go` 早在 035df5f74（双模式存储架构 Task 5.1）就已存在并装配，非新建；②「删除前查 session_turns 一致性 + validPathID」已被 `bg.ConsistencyWorker` + `storage.ReconcileTurnArtifacts/RepairTurnArtifacts`（审计 B-#2，2026-09-05 round2）严格取代（report-only 默认、删前 meta 复检 + mtime 宽限双保险、空闲阈值、bounded 轮转分页），补 `validPathID` 反而是永不触发的死路径。故按 §8 原意「让 CacheTrimmer 与 FileCache TTL 对齐」落地真缺陷：读侧 `FileCache.Get` 按 `lite.CacheTTLHours` 判过期、删侧 `bg.CacheTrimmer` 按 `lite.Retention.CacheHours` 删文件，两个独立旋钮无交叉校验，配成 `retention.cache_hours < cache_ttl_hours` 即静默架空 TTL、缓存退化为「只写不读」。修法 `resolveCacheTrimRetention` 取安全上界 + 收敛告警 + `cache_trim_retention` 生效值日志；配 `Retention()`/`TTL()` getter 供启动期断言。3 条变异测试全部实测可失败（含 2 处自身空断言，已修，见 §20） |
 | 7 | request_logs 主表 archive 流水线 | feat/request-logs-main-archive | P2 | [DONE] 2026-09-27 | 982e3191c | 待创建 | 迁移改号 746→**754**（见 §10.2；750~753 已被占用）。**不并入 archiveSpecs()**：那套机制按「日期参数 + 标量/tuple 返回」设计，而 archive_request_logs_default 收 retention 天数、RETURNS TABLE(partition, rows) 是**每分区一行**的集合返回，硬塞会错传参数并按错列形状扫描（与 2026-09-03/04 的 42703 同源），故单列 pm.archiveOldRequestLogs（runCleanup step 12）。迁移 SQL 为前一会话草稿、本轮复核：pg_inherits 枚举月分区、1000 行小批量 + 主键游标、源分区不 DROP（R68 move-then-attach）均符合 §9 冻结契约 |
 
 ### 10.1 通用门禁 (每个子任务都要满足)
@@ -1019,7 +1019,7 @@ SQL**。彻底解法是加一张 archive ledger 记录 `(partition, max_id)`，�
 | 3 | **进行中（并行会话）** | `feat/session-detail-body-status`（worktree `/private/tmp/llm-gw-sub3`） | 未审计。本会话不接手：工作区 7 个文件在途，含 `admin/body_status.go` + 其测试 |
 | 4 | TODO | - | 必须在 3 之后串行（共用 `admin/session_detail_v2.go`） |
 | 5 | [DONE]（并行会话） | `1cb487779` | 本会话未复核其代码，仅确认已进 main |
-| 6 | TODO | `feat/cache-trimmer-and-bodies-consistency`（worktree `/private/tmp/llm-gw-cache-trim`，**零提交**） | 仅有分支指针，无任何工作 |
+| 6 | **零提交**（`feat/cache-trimmer-and-bodies-consistency`，worktree `/private/tmp/llm-gw-cache-trim`） | 原写「新建 cache_trimmer.go + BodiesTrimmer 一致性」两条**均已被更强实现取代**（见 §20 F-13）；规格过期 |
 | 7 | [DONE] | `982e3191c` → 修正 `c7104b141` | §18 F-11（摘要抽取不删源数据）+ F-12（每小时全量重扫） |
 
 ### 三轮审计的净产出（供下一轮直接采信，勿重复劳动）
@@ -1043,12 +1043,28 @@ SQL**。彻底解法是加一张 archive ledger 记录 `(partition, max_id)`，�
    只是摘要抽取；主表仍增长，需另行处置。
 3. **【性能】归档扫描无「已归档」标记**（§18 F-12），已限为每日一次；彻底解法是
    archive ledger 记 `(partition, max_id)`，**因 SQL 从未真跑而有意未做**。
-4. Subtask 3 完成后才可动 Subtask 4（串行）。
-5. Subtask 6 需从零开始（分支上零提交）。
-6. 7 个 PR URL 仍需人工在 Codeup 浏览器创建（无 CLI 凭据），§10 的 PR 列保持「待创建」。
-7. 清理死代码 `TurnLogsWriter.CleanupExpiredLogs()` 与
+4. **【归属冲突，2026-09-28 00:2x 实测】Subtask 3 同时被两个活跃会话写。**
+   `mavis session list` 显示两个 `status: started` 的会话都在动
+   `/private/tmp/llm-gw-sub3`：
+   - `mvs_b6c2c553676947b783a1c7369fb5f102`（"审计完善会话存储优化"）——正在跑
+     `go test ./admin/ -run TestComputeBodyStatus`，**实测 3 个子用例 FAIL**
+     （`25h retention 向上取整到 2 天` 期望 dropped 实得 unavailable；
+     `{}` / `[]` 空 JSONB 被判 available 而非 dropped）。
+   - `mvs_80c00a17c1a74891b55503348ac215d6`（**与主控同一份 handoff 提示词**）——
+     正在读 `session_bodies_unified` 视图确认是否暴露 `partition_date`。
+   两边都在改 `admin/session_detail_v2.go` / `admin/body_status.go` 等同一批文件。
+   **接手前必须先确认这两个会话是否已停**；`ComputeBodyStatus` 的
+   `retentionHours → math.Ceil(h/24)` 换算本身可疑（§5 要求按小时比
+   `NOW() - retention_hours`，按天取整会在 25h/23h 边界出错），但**不要在归属
+   未澄清前动手**。
+5. Subtask 3 完成后才可动 Subtask 4（串行，共用 `admin/session_detail_v2.go`、
+   `admin/session_turns_unified.go`）。
+6. ~~Subtask 6 需从零开始~~ **[DONE] 2026-09-28**，见 §20：原规格两条交付物均已被
+   取代，改为修 F-13（读侧 TTL / 删侧 retention 双旋钮无约束）。
+7. 7 个 PR URL 仍需人工在 Codeup 浏览器创建（无 CLI 凭据），§10 的 PR 列保持「待创建」。
+8. 清理死代码 `TurnLogsWriter.CleanupExpiredLogs()` 与
    `cleanup_expired_session_turn_logs()`（已标 Deprecated，故意未删）。
-8. `feat/session-identity-contract-api` 保留 4 个与 main 分叉、rebase 会回退 R69/N-1
+9. `feat/session-identity-contract-api` 保留 4 个与 main 分叉、rebase 会回退 R69/N-1
    修复的 commit，全部子任务完成后连同其它 feat/* 一并删除。
 
 ### 环境事实
@@ -1059,3 +1075,81 @@ SQL**。彻底解法是加一张 archive ledger 记录 `(partition, max_id)`，�
   `git fetch && git rebase origin/main`；落盘后必须用
   `git ls-remote origin refs/heads/main` 核对远端真实值——`git push` 报
   “Everything up-to-date” 可能推的是另一个 ref（§17 O-D）。
+
+---
+
+## 20. 第四轮：Subtask 6 规格过期，改做真缺陷 (2026-09-28)
+
+### 结论先行：§8 的两条交付物都已被更强实现取代
+
+§8 写的两条都**不成立**（下盘前核对 SSOT 现行值才发现）：
+
+1. **「新建 `bg/cache_trimmer.go`」——文件早就存在**。`035df5f74`（双模式存储架构
+   Task 5.1）已建好 `CacheTrimmer`（`WithInterval` / `Start` / `TrimOnce` 三件套齐全）
+   并在 `cmd/gateway/storage_mode_init.go:163` 装配。按原规格写会是重复实现。
+2. **「BodiesTrimmer 增加一致性校验：删除前查 `session_turns`、加 `validPathID`」
+   —— 已被严格取代**。`bg/consistency_worker.go`（审计 B-#2，2026-09-05 round2）
+   配 `storage.ReconcileTurnArtifacts` / `RepairTurnArtifacts`，比 §8 设想强得多：
+   report-only 默认不动数据、删除路径自带「删除前 meta 复检 + mtime 宽限」TOCTOU
+   双保险、空闲阈值挡在途写入、单轮 500 上限 + OFFSET 轮转覆盖（消除老会话饿死）。
+   且 `validPathID` 那一项**在 BodiesTrimmer 里是永不触发的死路径**：`sess.Name()`
+   来自 `os.ReadDir`，是 base name，不可能为空串 / `.` / `..` / 含分隔符。补它等于
+   再造一条本审计三轮都在清理的死路径（§16 F-2、F-5 同型）。
+
+### F-13（Major，本轮新发现并已修）读侧 TTL 与删侧 retention 是两个无约束的独立旋钮
+
+- 读侧 `FileCache.Get` 判过期：`time.Since(mtime) >= fc.ttl`，`ttl ← lite.CacheTTLHours`。
+- 删侧 `bg.CacheTrimmer` 删文件：`mtime.Before(now - retention)`，
+  `retention ← lite.Retention.CacheHours`。
+- 两者**没有任何交叉校验**，`config.ApplyLiteDefaults` 各自独立兜底为 24。默认配置
+  下两侧同为 24，分歧完全不可见；一旦运维把 `retention.cache_hours` 配得比
+  `cache_ttl_hours` 小，删除侧就在**读侧仍认为有效**的时间窗内删文件：每个读都退化成
+  miss 并回源下层，FileCache 退化为「只写不读」，`cache_ttl_hours` 被静默架空。
+  （仓内现有测试 `cmd/gateway/storage_mode_init_test.go` 恰好用 `2 / 24` 这组**分叉**
+  值，但方向安全、且只断言装配不报错，从未断言过两侧的关系。）
+
+修法（§8 唯一仍然成立的那句「让 CacheTrimmer 与 FileCache TTL 对齐」）：
+
+- `resolveCacheTrimRetention(cacheTTL, retentionCacheHours)` 取**安全上界**：
+  `retention < ttl` 时收敛到 `ttl`；`retention > ttl` 时保留更大值（逻辑 TTL 之后
+  多留一段，抬高 TTL 时免冷启动重填）。
+- 收敛时打 `slog.Warn`（带三个值），启动日志新增生效值 `cache_trim_retention`。
+- **不做硬报错**：存量部署可能已配了更小的 `cache_hours`，拒绝启动的爆炸半径远大于
+  收益；缓存层没有数据正确性风险，最坏退化成「多留一会儿」。
+- 文档跟齐：`docs/storage/deployment-guide.md` 原写「调小只影响重启后首请求的回源
+  次数」——**这句本来就是错的**（配小是每个读都回源，不是只有首请求），已改正；
+  `config/storage.go` 字段注释 + `config.example.yaml` 同步。
+
+### 两条自身缺陷（本轮自查，均由变异测试暴露，非事后补记）
+
+**第 4 次同型缺陷：断言只看到「我算的值」，看不见真实调用点。**
+初版把解析结果另存进 `storageRuntime.cacheTrimRetention` 快照字段，测试断言
+`rt.cacheTrimRetention >= rt.fileCache.TTL()`。变异测试 M1（把
+`NewCacheTrimmer` 的调用点改回 `Retention.CacheHours`，即还原成修复前的真实行为）
+**测试照样通过**——因为快照字段与真实 worker 已经脱钩，断言只验证了自己的算术。
+这与 §16 C7、§18 N1 是同一个形状。修法：改存真实 worker 引用，
+`bg.CacheTrimmer.Retention()` / `v2.FileCache.TTL()` 两个 getter 读真实字段。
+
+**第 2 次同型缺陷：getter 少报导致不变量断言退化成恒真。**
+加 getter 后若 `TTL()` 少报（例如返回 0），`retention < TTL` 恒为假，断言静默变成
+空断言。变异测试 M3（`TTL()` 恒返回 0）**未被抓到**，据此补了一条锚定断言：
+`rt.fileCache.TTL()` 必须等于配置的 `cache_ttl_hours`，让 getter 无处少报。
+
+### 变异测试（3 条，逐条实测非空转）
+
+| 变异 | 期望 | 实测 |
+|---|---|---|
+| M1 调用点改回 `Retention.CacheHours`（修复前行为） | FAIL | 修复断言前**未失败**（自身缺陷 1）；修复后 FAIL ✓ |
+| M2 `resolveCacheTrimRetention` 去掉收敛分支 | FAIL | FAIL（6 个子用例）✓ |
+| M3 `FileCache.TTL()` 恒返回 0 | FAIL | 补锚定断言前**未失败**（自身缺陷 2）；补后 FAIL ✓ |
+
+M1/M3 两处「变异存活」是本轮最有价值的产出：它们证明单测全绿不等于断言有效。
+
+### 门禁
+
+`go build ./...` 全绿；`go vet ./cmd/gateway/... ./bg/... ./domains/session/v2/...
+./config/...` 无输出；`gofmt -l`（仅本次改动文件）无输出；`go test ./cmd/gateway/
+-run 'StorageMode|CacheTrim|Lite'`、`./bg/ -run 'CacheTrimmer|BodiesTrimmer'`、
+`./domains/session/v2/ -run FileCache`、`./config/` 全 PASS；diff 198 行（≤600）。
+顺带修掉 `domains/session/v2/cache_v2_file.go` 的文件末缺换行（该文件此前
+`gofmt -l` 一直有输出，属 §19 记录的基线噪音之一）。
