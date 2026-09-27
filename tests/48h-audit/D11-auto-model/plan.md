@@ -14,7 +14,7 @@
 | 回归五件套 | autoroute 单测五组（classification matrix / e2e / fallback / recommend_v2 / channel-quality）— 全部 PASS（业务/数据/压力/安全/一致性专项 .go 测试文件当前 0 个，见 latest.md §7 后续路径） |
 | 决策链 | 14 个 (prompt×profile) × 11 任务类型 × 4 profile 档位 — 端到端可复现 |
 | 过配率 | 0/30（分类层/路由层/计费层全部命中目标档位，无掉档/越级） |
-| 提交 | 本地 2 commits ahead of `origin/main`（`59107132e` + `ae344d51e`）；HEAD `1c9c753c4` |
+| 提交 | 本地 5 commits ahead of `origin/main`（`59107132e` / `ae344d51e` / `3b53b9be1` / `dee7d3ee5` / `0a857bd68`）；HEAD `0a857bd68` |
 
 **权威收口报告**：[reports/latest.md](reports/latest.md)（148 行，覆盖 §1 改动面 / §2 任务定位 / §3 验收门 / §4 回归五件套 / §5 决策链 / §6 过配率 / §7 收口结论）
 

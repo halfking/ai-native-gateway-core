@@ -585,10 +585,10 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 | # | 子任务 | 分支 | 类型 | 状态 | Commit | PR URL | 备注 |
 |---|---|---|---|---|---|---|---|
 | 1 | 会话身份契约 API 层显式标注 | feat/session-identity-contract-api (9f62818c5 已并入) + fix/session-ambiguity-409 (本轮收口) | P0 | [DONE] 2026-09-27 16:20 | 0aa86d8bd | 待创建 | 9f62818c5 + 9785c2398 已带 DISTINCT/LIMIT 2 歧义守卫进 main, 但走 500 兜底且响应体回显含 tenant_id 的内部错误串; 本轮以 fix/session-ambiguity-409 收口为 409 + 固定文案 (审计 Minor-2)。**未按原计划 rebase feat/session-identity-contract-api** —— 该分支 4 个 commit 与 main 的 R69/N-1 线已分叉, rebase 会回退 main 的 `SessionTurnV2.ID json:"-"`、空轮次序列化为 `[]`、errors.Is 注释等修复, 故改为定点移植 |
-| 2 | session_turn_logs 可配 TTL + summary 同步 | feat/session-turn-logs-ttl | P1 | TODO | - | - | - |
+| 2 | session_turn_logs 可配 TTL + summary 同步 | feat/session-turn-logs-ttl | P1 | [DONE] 2026-09-27（**语义经批判式审计修正后重做**） | 5b558deab（初版，语义有误）→ 14d34867f | 待创建 | 迁移改号 745→**753**（见 §10.2）。**初版 5b558deab 的 TTL 语义是错的，保留此行仅为留档，勿据其判断行为** —— 三条证伪见 §16。§4 第 4 项「AppendTurnInTx 内联写 turn_logs_summary」**已由既有实现满足**（cmd/gateway/turn_logs_aggregator.go，5 分钟聚合 → 写 sessions.turn_logs_summary → 删源行，main.go:1280 接线），**未重复实现**，两路写同一 JSONB 会互相覆盖 |
 | 3 | 详情 V2 body_status + 移除 request_logs_bodies JOIN | feat/session-detail-body-status | P1 | TODO | - | - | - |
 | 4 | DB 降级返回 503 + storage_status | feat/storage-status-503 | P1 | TODO | - | - | - |
-| 5 | 镜像 outbox 性能调优 | feat/mirror-outbox-perf | P1 | TODO | - | - | - |
+| 5 | 镜像 outbox 性能调优 | feat/mirror-outbox-perf | P1 | [DONE] 2026-09-27 17:01 | 1cb487779 | 待创建 | rebase origin/main 后唯一文件改动 (internal/sessionv2mirror/replay.go, 103+/16-); `go build ./internal/sessionv2mirror/...` + `go vet` + `go test -race ./internal/sessionv2mirror/...` + `go build ./...` 全绿; gofmt 历史遗留 `internal/sessionv2mirror/session_dim.go` + `internal/sessionv2mirror/synthetic_session_test.go` (不在本任务范围, 见 §15 观察项) |
 | 6 | bg/cache_trimmer.go + BodiesTrimmer 一致性 | feat/cache-trimmer-and-bodies-consistency | P2 | TODO | - | - | - |
 | 7 | request_logs 主表 archive 流水线 | feat/request-logs-main-archive | P2 | TODO | - | - | - |
 
@@ -689,3 +689,105 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 - 所有 feat/* 分支已删除
 - 在主分支 `git log --oneline -10` 末尾追加一条总控合入记录 (可选): `chore(audit): R64 handoff — 7 sub-tasks landed, storage_status + body_status + TTL configurable + archive pipeline`
 - 通知用户: 全部完成, 提供 7 个 PR URL 列表
+
+---
+
+## 15. 观察项 (R71+ 待清理)
+
+- **O-A** `gofmt -l` 在 main 上报两个历史遗留文件 (非本次任何子任务范围):
+  - `internal/sessionv2mirror/session_dim.go` — 引入于 6e4fa32dc (`feat(session): session_dim 随 V2 影子写自动维护`)
+  - `internal/sessionv2mirror/synthetic_session_test.go` — 引入于 a789a05ad (`feat(db,session,storage): 存储优化方案 v2 S2 落地`)
+  - 处置: 单开 `chore(fmt): gofmt session_dim.go + synthetic_session_test.go` (或随下个真正触及该目录的子任务合并), **不要混进 Subtask 5 收口 commit** (会扩散范围, 违反 §10.1 "git diff 行数 ≤ 600" 软约束)
+- **O-B** `feat/session-identity-contract-api` 分支在 origin 上保留 4 个 commit (48f1141fa, 6c5b76cab, e0464968c, ad763a7ef) — 实质内容已被 main 上的 `fix/session-ambiguity-409` (0aa86d8bd) 定点移植取代; 差异为 509+/4191- 的反向 main 推进差. 处置: 在所有 Subtask 落地后, 由 R71 audit 轮一并清理 (本地 + 远端 delete branch)
+- **O-C** main 落后 origin/main 2 个 commit (59712d3c7 + 78ca7d9a3, R70 D11 plan/INDEX 头指针校正); 与 §10 表无关, 下次合并或审计轮前 `git pull --ff-only` 即可
+---
+
+## 16. Subtask 2 批判式审计结论 (2026-09-27)
+
+对 `5b558deab`（Subtask 2 初版）做独立只读审计后**证伪了任务前提本身**。三条
+均以 file:line 为据，不是风格意见：
+
+### F-1 (Blocker) 谓词差了一整个 TTL，保留期实际翻倍
+
+初版函数写 `WHERE expires_at < NOW() - make_interval(hours => p_ttl_hours)`。
+但 `expires_at` 是**写入时烘焙**的：`domains/session/v2/turn_logs_writer.go` 以
+`time.Now().Add(24*time.Hour)` 显式写入（生产 INSERT 永远带该列，430:270 的列
+DEFAULT 实际是死代码）。所以对 T 时刻写入的行（`expires_at = T+24h`）：
+
+    删除时刻满足  T + 24h < NOW() - p_ttl_hours
+    p_ttl_hours=24  →  NOW() > T + 48h
+
+**默认 24 实际保留 48h**，与「默认 24 = 保持原状」相反。初版 commit message
+写的「与原硬编码行为逐字节一致」是错的。已改为纯到期判定
+`WHERE expires_at < NOW()`。
+
+### F-2 (Blocker) 「24h 硬编码清理」从来不存在
+
+430:336 定义了 `cleanup_expired_session_turn_logs()`（`expires_at < NOW()`），
+513 重写过一次，**但全仓无任何调用方**：Go 无引用、无 pg_cron 注册、无 shell
+调度；只出现在 baseline dump、`scripts/test-migration-430.sh` 与 513 测试里。
+
+即 **session_turn_logs 在生产上从未被清理过，表无界增长**。所以本子任务不是
+「把既有清理参数化」，而是「第一次真正接上清理」——这同时意味着 F-1 的
+「行为变化」其实是「从无界增长变成有界增长」，方向上是修复，但初版的描述与
+理由都写错了。清理入口见 `bg/partition_manager.go` 的 `runCleanup` step 11。
+
+### F-3 (Blocker) 真正的硬编码在 Go 侧，不在 SQL
+
+见 F-1 引用的 `turn_logs_writer.go`。只改 SQL 谓词，设置永远不会生效
+（`expires_at` 早已按 24h 烘焙死）。已改为写入方读
+`lifecycle.session_turn_logs_ttl_hours`（`sessionTurnLogsTTL()`，夹取 1..168）。
+**保留期是写入时决定的**：改设置只影响新写入的行；已写入的行仍按原
+`expires_at` 到期被清。这是本设计的固有性质，不是缺陷，但运维必须知道。
+
+### F-4 (Major) 753 建了重复索引
+
+430:275 已有 `idx_session_turn_logs_expires ON session_turn_logs(expires_at)`，
+初版又建了同列的 `idx_session_turn_logs_expires_at`。在每 turn 写 7 行的热表
+上挂第二个同列索引 = 纯写放大 + 磁盘占用，零查询收益。初稿注释以「与迁移族命名
+对齐」为由保留，属错误权衡。已移除；清理谓词命中 430 原索引。
+
+### F-5 (Major) 第三条死路径：Go 侧 CleanupExpiredLogs（本轮审计遗漏，独立审计发现）
+
+`domains/session/v2/turn_logs_writer.go:252` 的 `CleanupExpiredLogs(ctx)` 做的是
+`DELETE ... WHERE expires_at < NOW()` —— **谓词本来就是对的**。但全仓除自身单测
+外无任何调用方，同样从未在生产执行过。
+
+所以历史上有**两条**死清理路径（SQL 的 `cleanup_expired_session_turn_logs()`、
+Go 的 `CleanupExpiredLogs()`），这才是「表无界增长」的完整解释。已加 Deprecated
+注释指明新归属，但**故意不删**：它是导出方法，仓外可能有调用者，删除的爆炸半径
+超过本子任务该承担的范围。清理留给后续独立 chore。
+
+### F-6 (已评估：非缺陷) 与 TurnLogsAggregator 的时序交互
+
+`cmd/gateway/turn_logs_aggregator.go:53` 的取数条件是 `expires_at > NOW()`，即
+聚合器**只看得见未过期的行**。因此存在「行先过期（对聚合器隐形）、后被清理」的
+理论丢数窗口。实测无风险：聚合器 5 分钟一跳，而保留期下限为 1h（12 跳），
+且把设置调**大**反而给聚合器更多窗口。修正 F-1 之前，expires_at 本来就被烘焙成
+T+24h，聚合器的可见窗口一直是 24h，未被本轮改动收窄。
+
+### 独立审计交叉验证
+
+本轮另起了一个 verifier 子代理做独立只读审计，结论与上述 F-1/F-2/F-3/F-4 一致
+（各自独立用 file:line 复算），并额外发现 F-5。审计还确认：
+- `scripts/test_sessions_v2_api.sh` 不对状态码做任何断言，Subtask 1 的
+  500→409 变更在仓内无消费方；
+- 迁移 753 的 `schema_migrations` 自注册守卫与 742/743 同形（但与 750/751/752
+  不同 —— 那三个不自注册），属既有分歧，非本轮引入。
+
+### 附带修正：断言必须剥注释
+
+753 的头部**故意**逐字记录了初版的错误谓词与重复索引（审计留档）。初版测试用
+`strings.Contains` 扫全文，于是「不得再出现 X」这类断言会被自己的审计说明打中
+（本次实测两处 false positive）。已改为对 `stripSQLComments(...)` 后的代码断言
+（SQL 侧复用 `migration_602_test.go` 已有的 `stripSQLComments`，Go 侧新增
+`stripGoLineComments`）。
+
+> 这正是本 handoff 反复强调「断言必须能变异失败」的另一个实例：一条会因注释
+> 而误报的断言，与一条永远不会失败的断言同样是坏断言。
+
+### 未能在本地验证的部分
+
+迁移 SQL 未对真实 PostgreSQL 执行过（本机无可用 PG 实例）。`RAISE EXCEPTION`
+ 分支、索引选择、事务内 DDL 行为均**未经真库验证**。上线前应在 245/252 的
+ 测试库上跑一次 up/down 往返。
