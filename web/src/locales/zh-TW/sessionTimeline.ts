@@ -8,6 +8,7 @@ export default {
   empty: '此工作階段暫無輪次記錄',
   loading: '載入中…',
   loadMore: '載入更多輪次',
+  bodyUnavailable: '已載入的 {n} 輪未採集到正文，可能該工作階段未開啟正文儲存。',
   allLoaded: '共 {n} 輪次，已全部載入',
   errors: {
     network: '網路錯誤，請檢查連線後重試',

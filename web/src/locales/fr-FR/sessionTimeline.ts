@@ -8,6 +8,7 @@ export default {
   empty: 'Aucun tour dans cette session',
   loading: 'Chargement…',
   loadMore: 'Charger plus de tours',
+  bodyUnavailable: 'Aucun corps de requête/réponse n\'a été capturé pour {n} des tours chargés ; le stockage des corps est peut-être désactivé pour cette session.',
   allLoaded: '{n} tours chargés, terminés',
   errors: {
     network: 'Erreur réseau, vérifiez la connexion et réessayez',
