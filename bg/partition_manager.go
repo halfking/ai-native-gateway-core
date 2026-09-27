@@ -457,6 +457,82 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// Append-only alert events, no partition strategy. Default 30d via
 	// lifecycle.runtime_alert_events_ttl_days.
 	pm.cleanupOldRuntimeAlertEvents(ctx)
+
+	// 11. 2026-09-27 (R67 session-storage 审计子任务 2, handoff §4):
+	// session_turn_logs 保留时长改为可配。此前 430 schema 写死
+	// expires_at = NOW() + 24h,清理阈值同样硬编码,合规回溯窗口与
+	// 详情页查询窗口无法各自调档。默认 24h —— 与原行为逐字节一致。
+	pm.cleanupSessionTurnLogsByTTL(ctx)
+}
+
+// clampSessionTurnLogsTTLHours forces the configured retention into the
+// [1, 168] window that migration 753's spec entry advertises.
+//
+// The lower bound is a data-safety floor, not a style preference: a
+// misconfigured 0 (or a negative value from a bad hand-edit) would
+// otherwise be handed straight to the SQL interlock as a raise-condition.
+// Clamping here means the value we log is the value the function saw.
+//
+// Note the setting does NOT widen or narrow this sweep. Retention is baked
+// into session_turn_logs.expires_at at write time by
+// domains/session/v2/turn_logs_writer.go; this function just deletes rows
+// whose baked expiry has passed.
+func clampSessionTurnLogsTTLHours(raw int) int {
+	if raw < 1 {
+		return 1
+	}
+	if raw > 168 {
+		return 168
+	}
+	return raw
+}
+
+// cleanupSessionTurnLogsByTTL deletes session_turn_logs rows whose baked
+// expires_at has passed.
+//
+// 2026-09-27 (R67 session-storage 审计子任务 2, handoff §4; semantics
+// corrected by critical audit). The audit found the task's premise was
+// wrong in a way worth writing down: migration 430 defines
+// cleanup_expired_session_turn_logs(), but nothing ever calls it — no Go
+// reference, no pg_cron registration, no shell invocation. session_turn_logs
+// therefore grew unbounded in production. This is the first sweep that
+// actually runs, not a parameterisation of an existing one.
+//
+// Retention itself is decided at write time: turn_logs_writer.go bakes
+// expires_at from lifecycle.session_turn_logs_ttl_hours. The setting is
+// re-read every tick, so an operator change applies to newly written rows
+// without a gateway restart; rows already written keep their original
+// expiry and are swept when they reach it.
+//
+// The predicate is `expires_at < NOW()`, which is index-backed by
+// idx_session_turn_logs_expires (migration 430:275).
+func (pm *PartitionManager) cleanupSessionTurnLogsByTTL(ctx context.Context) {
+	ttlHours := clampSessionTurnLogsTTLHours(settings.GetPlatformInt("lifecycle.session_turn_logs_ttl_hours", 24))
+
+	// Match AuditTrimmer.TrimOnce: a nil pool is a no-op rather than a panic,
+	// so the manager stays constructible in tests and in degraded boot order.
+	if pm.db == nil {
+		return
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	var deleted int64
+	err := pm.db.QueryRow(timeoutCtx,
+		"SELECT cleanup_session_turn_logs_by_ttl($1)",
+		ttlHours,
+	).Scan(&deleted)
+	if err != nil {
+		slog.Error("partition_manager: session_turn_logs TTL cleanup failed",
+			"ttl_hours", ttlHours, "error", err)
+		return
+	}
+
+	if deleted > 0 {
+		slog.Info("partition_manager: session_turn_logs TTL cleanup",
+			"ttl_hours", ttlHours, "deleted", deleted)
+	}
 }
 
 // stateTableTTLSpec describes one parent table dropped via the SQL helper
