@@ -56,6 +56,11 @@ type storageRuntime struct {
 	// 测试断言与观测，生命周期由 trimmerCtx/trimmerWG 统一管理。
 	consistencyWorker *bg.ConsistencyWorker
 
+	// cacheTrimmer 是 L1.5 缓存清理 worker。持有引用而非只存 retention 快照：
+	// 启动期不变量断言必须读真实 worker 的字段，否则只验证了自己的算术、
+	// 看不见 NewCacheTrimmer 的调用点（审计同型缺陷：断言只看到定义）。
+	cacheTrimmer *bg.CacheTrimmer
+
 	// 关键路径快照：供启动日志与测试断言。
 	sqlitePath string
 	bodiesDir  string
@@ -83,6 +88,40 @@ func loadStorageConfig(yamlPath string) *config.StorageConfig {
 			"path", yamlPath, "error", err)
 	}
 	return config.LoadStorageConfigFromEnv()
+}
+
+// resolveCacheTrimRetention 决定 L1.5 文件缓存清理侧（bg.CacheTrimmer）的
+// retention，返回值恒 **不小于** cacheTTL。
+//
+// 为什么需要它：读侧 FileCache 的过期判定是 `time.Since(mtime) >= ttl`，
+// ttl 来自 lite.CacheTTLHours；删侧 CacheTrimmer 的删除条件是
+// `mtime.Before(now - retention)`。两者原本各吃一个独立配置旋钮
+// （cache_ttl_hours / retention.cache_hours），无任何交叉校验，于是
+// `retention.cache_hours < cache_ttl_hours` 时，删除侧会删掉读侧仍视为
+// 有效的条目：cache_ttl_hours 被静默架空，该时间窗内每次读都退化成 miss
+// 并回源下层存储，FileCache 退化为「只写不读」。
+//
+// 语义：
+//   - cacheTTL <= 0：兜底为 24h（与 config.ApplyLiteDefaults 的默认值同口径；
+//     正常路径上 ApplyLiteDefaults 已把该字段补为正值，此分支仅防直调）。
+//   - retentionCacheHours <= cacheTTL：采用 cacheTTL。显式配小了也不采纳——
+//     缓存没有数据正确性风险，但静默架空读侧 TTL 是纯粹的配置谎言。调用方
+//     负责对此告警（见 initStorageMode）。
+//   - retentionCacheHours > cacheTTL：保留更大的值。条目在逻辑 TTL 之后仍
+//     多留一段，抬高 cache_ttl_hours 时无需冷启动重填。
+//
+// 不做硬报错：升级路径上存量部署可能已配了更小的 cache_hours，直接拒绝启动
+// 的爆炸半径远大于收益。缓存层可安全降级为「多留一会儿」，故取安全上界。
+func resolveCacheTrimRetention(cacheTTL, retentionCacheHours int) time.Duration {
+	ttl := time.Duration(cacheTTL) * time.Hour
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
+	retention := time.Duration(retentionCacheHours) * time.Hour
+	if retention < ttl {
+		return ttl
+	}
+	return retention
 }
 
 // initStorageMode 按存储模式装配启动期存储运行时。
@@ -157,10 +196,20 @@ func initStorageMode(cfg *config.Config, storageCfg *config.StorageConfig) (*sto
 
 	// 后台清理任务：三个 Start 均为阻塞式，由本处 go 启动；retention 取自
 	// Lite.Retention，清理周期沿用 worker 默认值（cache 1h / bodies 6h /
-	// 行级 retention 6h）。
+	// 行级 retention 6h）。cache 的 retention 例外——必须与 FileCache TTL
+	// 对齐，见 resolveCacheTrimRetention。
 	trimmerCtx, cancel := context.WithCancel(context.Background())
 	rt.trimmerCancel = cancel
-	cacheTrimmer := bg.NewCacheTrimmer(lite.CacheDir, time.Duration(lite.Retention.CacheHours)*time.Hour)
+	cacheTrimRetention := resolveCacheTrimRetention(lite.CacheTTLHours, lite.Retention.CacheHours)
+	if lite.Retention.CacheHours > 0 &&
+		time.Duration(lite.Retention.CacheHours)*time.Hour < time.Duration(lite.CacheTTLHours)*time.Hour {
+		slog.Warn("storage lite: retention.cache_hours 小于 cache_ttl_hours，已按 cache_ttl_hours 对齐缓存清理周期",
+			"retention_cache_hours", lite.Retention.CacheHours,
+			"cache_ttl_hours", lite.CacheTTLHours,
+			"effective_cache_trim_retention", cacheTrimRetention.String())
+	}
+	cacheTrimmer := bg.NewCacheTrimmer(lite.CacheDir, cacheTrimRetention)
+	rt.cacheTrimmer = cacheTrimmer
 	bodiesTrimmer := bg.NewBodiesTrimmer(lite.BodiesDir, time.Duration(lite.Retention.SessionBodiesDays)*24*time.Hour)
 	rt.trimmerWG.Add(2)
 	go func() {
@@ -230,6 +279,7 @@ func initStorageMode(cfg *config.Config, storageCfg *config.StorageConfig) (*sto
 		"retention_session_bodies_days", lite.Retention.SessionBodiesDays,
 		"retention_request_logs_days", lite.Retention.RequestLogsDays,
 		"retention_cache_hours", lite.Retention.CacheHours,
+		"cache_trim_retention", rt.cacheTrimmer.Retention().String(),
 		"consistency_check_enabled", consistencyEnabled,
 		"consistency_interval_hours", lite.Consistency.IntervalHours,
 		"consistency_idle_threshold_min", lite.Consistency.IdleThresholdMin,

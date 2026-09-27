@@ -437,8 +437,10 @@ func TestTurnDigest_FallbackRebuild(t *testing.T) {
 // 8. List endpoint — 列序 + persisted digest 透传
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TestTurnDigest_ListEndpoint 验证 serveSessionTurnsListDB 的 24 列投影、
-// persisted digest 在列表项中透传、分页字段形状。
+// TestTurnDigest_ListEndpoint 验证 serveSessionTurnsListDB 的 25 列投影、
+// persisted digest 在列表项中透传、分页字段形状。Subtask 3 把第 25 列
+// body_present 加入投影（admin/session_turns_v2.go），用于在不取 body
+// 字节的情况下判定 body_status，扫描后由 bodyStatusFromPresent 写入。
 func TestTurnDigest_ListEndpoint(t *testing.T) {
 	mock := newDigestMockPool(t)
 	now := time.Now().UTC()
@@ -453,6 +455,7 @@ func TestTurnDigest_ListEndpoint(t *testing.T) {
 			"request_id", "cache_read_tokens", "latency_ms", "success",
 			"error_kind", "compression_applied", "compression_tokens_saved", "digest",
 			"request_delta", "response_delta",
+			"body_present",
 		}).AddRow(
 			3, now, "", "", 100, 50, 0.01,
 			"test-model", "test-provider", 200,
@@ -461,6 +464,7 @@ func TestTurnDigest_ListEndpoint(t *testing.T) {
 			nil, false, nil, persisted,
 			[]byte(`{"messages":[{"role":"user","content":"ignored"}]}`),
 			[]byte(`{"choices":[{"message":{"role":"assistant","content":"ignored"}}]}`),
+			true,
 		))
 
 	req := newDigestAuthRequest(http.MethodGet, "/api/admin/sessions/gw_abc/turns", "tenant_admin", "tenant-a")
@@ -488,6 +492,10 @@ func TestTurnDigest_ListEndpoint(t *testing.T) {
 	}
 	if it.RequestTokens != 100 || it.ResponseTokens != 50 {
 		t.Errorf("token columns mis-ordered: request=%d response=%d", it.RequestTokens, it.ResponseTokens)
+	}
+	// Subtask 3 — body_present=true above ⇒ BodyStatusAvailable on the wire.
+	if it.BodyStatus != BodyStatusAvailable {
+		t.Errorf("BodyStatus = %q, want %q (body_present=true)", it.BodyStatus, BodyStatusAvailable)
 	}
 	if listBody.HasMore {
 		t.Error("has_more should be false for 1 row < limit")
