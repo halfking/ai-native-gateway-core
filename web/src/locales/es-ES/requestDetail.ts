@@ -192,4 +192,19 @@ export default {
     emDash: '—',
     colon: ': ',
   },
+ // — Subtask 3 (handoff §5): body_status tri-state banners —
+  // Fuente: turns[].body_status de /api/admin/sessions/detail; no de
+  // /snapshot (allí no hay turns) ni de la lista /turns (solo metadatos).
+  bodyStatus: {
+    // Fuente: turns[].body_status de /api/admin/sessions/detail; no de
+    // /snapshot (allí no hay turns). El backend solo emite
+    // available | unavailable, nunca dropped: no existe ajuste de retención
+    // para session_bodies ni tarea que borre sus filas. Ver CONTRACT en
+    // admin/body_status.go.
+    unavailableTitle: 'Algunos turnos no tienen cuerpo de solicitud/respuesta',
+    unavailableBody: 'No se capturó cuerpo para estos turnos (la función está desactivada para ellos o el turno no tenía contenido). Los resúmenes, las métricas y el consumo de tokens no se ven afectados.',
+    affectedTurns: 'Turnos afectados: {list}',
+    dismiss: 'Entendido',
+
+  },
 }
