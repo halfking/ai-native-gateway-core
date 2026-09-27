@@ -114,6 +114,23 @@ func (idx *Index) RecommendV2WithHints(
 		available = append(available, c)
 	}
 
+	// Taxonomy fail-open (2026-09-28 live audit). When the model library
+	// carries none of the capability tags this task requires, every candidate
+	// scores TaskMatchScore == 0 and the tag dimension carries no information.
+	// Left as 0 that is read as a capability verdict rather than as missing
+	// data, which is what pushed code / code_audit / creative /
+	// intent_classification / vision into the 48h popularity collapse below
+	// (124/240 cases of the E2E suite, every one of them resolving to the same
+	// single model). Neutralise to the same "unknown" score chat already uses so
+	// routing keeps deciding on price / channel quality / reliability — real
+	// signals — instead of discarding the pool for a taxonomy gap.
+	vocabularyPresent := TaskVocabularyRepresented(task, available)
+	if len(available) > 0 && !vocabularyPresent {
+		for i := range available {
+			available[i].TaskMatchScore = TaskMatchScoreUnknown
+		}
+	}
+
 	if len(available) == 0 {
 		fallback := idx.get48hFallback(ctx)
 		if fallback != nil {
@@ -269,7 +286,17 @@ func (idx *Index) RecommendV2WithHints(
 		scored = scored[:topN]
 	}
 
-	if len(scored) > 0 && scored[0].Breakdown.MatchScore < 30 {
+	// 48h popularity collapse — only sound when the tag dimension is actually
+	// discriminating. A sub-30 winner means "nothing in this pool suits the
+	// task" only if some candidate was capable of scoring above 30 in the first
+	// place. When the library has no vocabulary for the task, every candidate
+	// scores 0 by construction, and collapsing here would replace a real,
+	// fully-scored, diverse pool with one unscored popularity pick — losing
+	// both the price/quality ranking and the failover ladder that protects the
+	// request when that single model's upstream rate-limits. The neutralisation
+	// above already keeps scored[0] at 50 in that case; this guard makes the
+	// invariant explicit and survives future scoring changes.
+	if len(scored) > 0 && scored[0].Breakdown.MatchScore < 30 && vocabularyPresent {
 		fallback := idx.get48hFallback(ctx)
 		if fallback != nil {
 			return []ScoredCandidate{{
