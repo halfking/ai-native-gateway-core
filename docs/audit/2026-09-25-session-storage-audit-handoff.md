@@ -758,13 +758,17 @@ Go 的 `CleanupExpiredLogs()`），这才是「表无界增长」的完整解释
 注释指明新归属，但**故意不删**：它是导出方法，仓外可能有调用者，删除的爆炸半径
 超过本子任务该承担的范围。清理留给后续独立 chore。
 
-### F-6 (已评估：非缺陷) 与 TurnLogsAggregator 的时序交互
+### F-6 (**已推翻，见 §17**) 与 TurnLogsAggregator 的时序交互 —— 本轮自评过轻
 
-`cmd/gateway/turn_logs_aggregator.go:53` 的取数条件是 `expires_at > NOW()`，即
-聚合器**只看得见未过期的行**。因此存在「行先过期（对聚合器隐形）、后被清理」的
-理论丢数窗口。实测无风险：聚合器 5 分钟一跳，而保留期下限为 1h（12 跳），
-且把设置调**大**反而给聚合器更多窗口。修正 F-1 之前，expires_at 本来就被烘焙成
-T+24h，聚合器的可见窗口一直是 24h，未被本轮改动收窄。
+`cmd/gateway/turn_logs_aggregator.go` 的取数条件是 `expires_at > NOW()`，聚合器
+**只看得见未过期的行**；而过期行会被 TTL 扫描删除。因此存在「行先过期（对聚合器
+隐形）、后被清理」的丢数窗口。
+
+**我在这里写的结论是「非缺陷」，这是错的。** 理由见 §17 F-7：轮询查询是
+`GROUP BY tenant_id, session_id LIMIT 100` 且**没有 ORDER BY**，选择不确定；
+长期排不到队的会话，其行会在被聚合之前先到期删除 —— 不是「延迟」，是静默丢数。
+当时的推理只考虑了「聚合器 5 分钟一跳 / TTL 24h，窗口够大」，没有检查**选择
+本身是否公平**。
 
 ### 独立审计交叉验证
 
@@ -791,3 +795,134 @@ T+24h，聚合器的可见窗口一直是 24h，未被本轮改动收窄。
 迁移 SQL 未对真实 PostgreSQL 执行过（本机无可用 PG 实例）。`RAISE EXCEPTION`
  分支、索引选择、事务内 DDL 行为均**未经真库验证**。上线前应在 245/252 的
  测试库上跑一次 up/down 往返。
+
+---
+
+## 17. 第二轮批判式审计 (2026-09-27 19:48)
+
+对象是**第一轮修正本身**（`14d34867f` / `d10d782d9`）——刚落地、无人复核的代码。
+结论：F-1…F-5 的修法成立，但**我对自己写的 F-6「非缺陷」判断是错的**，并牵出一个
+此前完全没人看过的数据丢数缺陷。
+
+### F-7 (Blocker) 聚合器轮询无序 → 静默丢 turn 日志（本轮新发现）
+
+`cmd/gateway/main.go` 的聚合器 goroutine 里，轮询查询是：
+
+    SELECT tenant_id, session_id
+    FROM public.session_turn_logs
+    WHERE expires_at > NOW()
+    GROUP BY tenant_id, session_id
+    LIMIT 100          -- 没有 ORDER BY
+
+两个问题，都不报错：
+
+1. **选择不确定。** 没有 ORDER BY，PostgreSQL 可以返回任意 100 个
+   (tenant, session)。有持续流量的会话永远有未过期行、恒在候选集里，可以反复
+   挤掉安静的会话。
+2. **截断是静默丢数，不是延迟。** 候选集只含 `expires_at > NOW()` 的行，而
+   TTL 扫描会删掉过期行。一个始终排不上队的会话，其 stage 日志会在**被聚合之前
+   就到期删除** —— 该 turn 永远不会出现在 `turn_logs_summary` 里，日志里也
+   没有任何错误。F-6 正是被这一点证伪。
+
+**修法**：把查询从 main.go 内联字面量抽成
+`TurnLogsAggregator.PendingSessions(ctx, limit)`（原先完全不可测），并加
+`ORDER BY MIN(started_at) ASC, tenant_id ASC, session_id ASC`。行在被 flush 后即
+删除，候选集因此是一个 FIFO 队列：最老的未处理工作永远排在最前，安静会话不会被
+无限挤掉。`tenant_id/session_id` 是 tie-breaker，让排序是全序而非仅非降序。
+
+**吞吐（是取舍不是缺陷，但改之前要算账）**：每 tick 一页 = 100/5min =
+1200 session/小时；积压只在该数之上出现，而一个 session 有整个 TTL（默认 24h，
+约 28800 session）的余量。每 tick 多翻几页会成倍放大 GROUP BY 成本，应当是
+**实测后**的决定，不该拍脑袋。
+
+### F-8 (**已降级**：有仓内证据表明迁移先于新二进制应用)
+
+`bg.PartitionManager.cleanupSessionTurnLogsByTTL` 调用
+`cleanup_session_turn_logs_by_ttl($1)`，该函数在迁移 753 应用前不存在。失败是
+**非致命的**（`slog.Error` 后 `return`，且它是 runCleanup 的最后一项，不影响前
+10 项清理），但特性在该库上会是惰性的。
+
+**我先写的是「无法在仓内验证部署顺序」，这是过度保守**，独立审计在同一仓内找到了
+证据（由它提供，我复核）：
+
+- `scripts/deploy-lib.legacy/db-changelog.sh` 头部：「**切换前**在 252 PG 上应用
+  sql/migrations/startup/NNN_*.sql，避免 restart 时 EnsureSchema 长时间阻塞」
+- `scripts/deploy-154.sh:6`：「默认：前后端同时构建 + **切换前 DB 迁移** + 原子
+  符号链接切换 + db-changelog」
+
+即标准部署路径是**先迁移、后切换**，753 会在新二进制起来之前落地。降级为观察项：
+若绕过标准部署路径（手工只换二进制），该库会持续报 `42P01 undefined_function`
+直到补跑迁移。
+
+### F-9 (Blocker) turn_logs_summary 被整体覆盖，早期 turn 静默丢失
+
+`UPDATE public.sessions SET turn_logs_summary = $1::jsonb` 是**全量替换**。
+而 flush 结束后会 DELETE 掉刚聚合的行 —— 于是对一个**有持续流量**的会话：
+
+    tick1:  读到 turn_1 → 写 summary={turn_1} → 删除 turn_1 的行
+    tick2:  只剩 turn_2 的行 → 写 summary={turn_2}  ← 覆盖掉 turn_1
+    最终:   summary 只剩最后一批，不是会话的 turn 历史
+
+`admin/session_detail_v2.go:99/317/355` 把这一列直接透出给 API 消费方，所以暴露的
+就是残缺的历史。
+
+**根因**：flush 的 UPDATE 与 DELETE 是一对，但 UPDATE 用「替换」语义，而 DELETE
+又让读集在下一次 tick 变短，两者叠加使得「累积」退化为「最后一批」。
+
+**修法**：`SET turn_logs_summary = COALESCE(turn_logs_summary, '{}'::jsonb) || $1::jsonb`。
+jsonb `||` 是顶层键的浅合并，而键是 `turn_N`、每批互不相同，浅合并正是所需语义。
+`COALESCE` 不可省：SQL 里 `NULL || x` 结果是 NULL。附带收益是**重放幂等** —— 若进程
+在 UPDATE 与 DELETE 之间挂掉，下一 tick 会重新聚合同一 turn 并覆盖自己的键（等值），
+而不是抹掉其余 turn。
+
+### F-10 (Major) flush 的 SELECT→DELETE 竞态：新写入的 stage 被删但从未聚合
+
+原 DELETE 重新推导谓词 `WHERE tenant_id=$1 AND session_id=$2 AND expires_at > NOW()`
+—— 它是**另一条语句**，谓词重新求值。SELECT 与 DELETE 之间为在途 turn 写入的 stage
+行，会在这个窗口内**被删除而从未进入 summary**。窗口窄，但完全静默。
+
+同一谓词还让「空会话」分支成为空操作：SELECT 已用同一条件判定「没有未过期行」，
+那么同样条件的 DELETE 不可能命中任何行 —— 那段代码注释写着「trim any stray rows
+that already expired」，而谓词恰好与之相反。
+
+**修法**：SELECT 捕获 `id`，DELETE 改为 `WHERE id = ANY($1)`，精确覆盖本次读集；
+空分支随之不再需要 DELETE，直接返回。
+
+### 本轮独立审计的贡献（与我的自查互补）
+
+第二轮另起 verifier 子代理做只读审计，逐条独立复算后：确认 F-7 与我的判断一致；
+**F-9（summary 被覆盖）与 F-10（SELECT→DELETE 竞态）由它先发现**，我复核代码后确认
+成立并修掉 —— 这两条我自己第一遍没看出来。也是它找到 F-8 的降级证据。
+连续两轮的事实是：**我的自查能抓住「我刚写的代码哪里算错了」，但对「我顺手点头
+说『既有实现已满足』的老代码」系统性失灵**。第 1 轮我曾断言 TurnLogsAggregator
+「已完全满足 handoff 第 4 项、无需重复实现」，那个判断就是这两条的根源。
+
+### O-D 共享主 worktree 被并行会话切了分支（操作事故，已处置）
+
+本轮开工时主 worktree `/llm-gateway/workspace/.../llm-gateway-go-cursor` 在
+`main`；干活途中并行会话在同一目录 checkout 了
+`feat/session-detail-body-status`（Subtask 3）。我的修改因此落在**它的分支**上，
+`git push origin main` 一度报 "Everything up-to-date"（推的是本地 main 指针，
+停在父提交）—— **差点以为已推送成功**。
+
+处置与遗留：
+- 我的提交 `8a34eab76` 的父提交恰为 `d10d782d9`(= main)，且该分支上没有并行
+  会话的其他提交（工作区当时干净），因此可无损分离。
+- 另开 worktree `/private/tmp/llm-gw-audit2` 承载 `main`，ff 到 `8a34eab76` 并推送，
+  远端已确认 `refs/heads/main = 8a34eab76`。
+- **未触碰并行会话的 worktree**（它可能正在编辑，切分支会打断它）。
+- **遗留动作（需人工确认）**：`feat/session-detail-body-status` 目前仍指向
+  `8a34eab76`，即含本轮 turn-logs 改动。该分支应先 `git reset --hard main`
+  （或 rebase 到 main）再继续 Subtask 3，否则会把无关改动带进 Subtask 3 的 PR。
+
+> 教训：`git push` 报 "Everything up-to-date" **不等于**你刚提交的代码在远端 ——
+> 它可能推的是另一个 ref。落盘后必须用 `git ls-remote origin refs/heads/main`
+> 核对远端真实值，不能只看 push 输出的措辞。开工前也应确认当前分支
+> （`git branch --show-current`），共享 worktree 下这不是自动成立的。
+
+### 本轮自评教训
+
+F-6 写「非缺陷」时我只验证了「窗口够大」（5 分钟一跳 vs 24h TTL），**没有验证
+选择是否公平**。两个条件是独立的：窗口决定「单次会不会丢」，公平性决定「会不会
+一直丢」。前者成立不构成后者的结论。下一轮凡写「非缺陷」，必须同时说明
+「为何不会被绕过/饿死」，否则按「待验证」记。
