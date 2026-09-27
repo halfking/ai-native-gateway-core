@@ -8,6 +8,18 @@
 // Refresh strategy:
 //   - routing_analytics_7d / routing_audit_summary_7d:
 //     REFRESH MATERIALIZED VIEW CONCURRENTLY every RefreshInterval.
+//   - Ticks are aligned to wall-clock boundaries (UTC multiples of
+//     RefreshInterval), not to each process's start time. The token and
+//     advisory locks below are mutual-exclusion WITHIN an overlapping
+//     window only — they cannot dedup ticks that arrive minutes apart.
+//     With phase-random tickers, every gateway instance on the shared
+//     database refreshed on its own phase and the locks never fired
+//     (252 production 2026-09-28: three instances → three fixed tick
+//     phases → 3× REFRESH amplification, ~90s of matview maintenance per
+//     10min). Aligned ticks make concurrent instances contend at the same
+//     instant, which is exactly the case the locks DO collapse — one
+//     refresh per window fleet-wide. Clock skew beyond one refresh cycle
+//     degrades to the old behavior (correct, just duplicated).
 //   - Cross-instance coordination is a token-bucket: every RefreshInterval
 //     tick is one "token", and exactly one gateway instance should redeem
 //     it. Two lock backends implement that mutual exclusion:
@@ -185,16 +197,41 @@ func (r *MaterializedViewRefresher) refreshLoop(ctx context.Context) {
 	}
 	r.refreshAll(ctx)
 
-	ticker := time.NewTicker(RefreshInterval)
-	defer ticker.Stop()
+	// 2026-09-28 252 PG 日志审计轮（R12-F1）：对齐墙钟边界，不用
+	// time.NewTicker 的"进程启动相位"。根因实证：252 三台网关各持一个
+	// 相位随机的 10min ticker，而 Redis token / advisory lock 都只是
+	// "重叠窗口内互斥"——只去重并发刷新，不去重错峰 tick。生产日志
+	// 50min 窗口 15 次 routing_analytics_7d REFRESH 呈三个固定相位
+	// （:15/:25/:35…、:19/:29…、:23/:33…）= 三实例各刷各的，每轮
+	// REFRESH 15-22s + 漂移核查，~90s/10min 持续烧在重复物化上。
+	// 对齐后所有实例在同一边界瞬间竞争，既有互斥随之收敛为每窗口
+	// 恰好一次 REFRESH。时钟偏移超过单轮刷新时长时退化为旧行为
+	//（正确性无损，仅重复）。每轮重算等待时间，刷新耗时不会累积漂移。
+	timer := time.NewTimer(nextAlignedWait(time.Now(), RefreshInterval))
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			r.refreshAll(ctx)
+			timer.Reset(nextAlignedWait(time.Now(), RefreshInterval))
 		}
 	}
+}
+
+// nextAlignedWait returns how long to sleep until the next wall-clock
+// multiple of interval, anchored to the Unix epoch in UTC so every gateway
+// instance — regardless of local timezone or process start time — wakes on
+// the same boundary (CST=UTC+8 is a whole multiple of 10min, so the
+// boundary set is identical in local time). Landing exactly on a boundary
+// yields a full interval, never a zero-length wait.
+func nextAlignedWait(now time.Time, interval time.Duration) time.Duration {
+	phase := time.Duration(now.UnixNano()) % interval
+	if phase < 0 {
+		phase += interval
+	}
+	return interval - phase
 }
 
 // refreshAll refreshes all materialized views.
