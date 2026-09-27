@@ -590,7 +590,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 | 4 | DB 降级返回 503 + storage_status | feat/session-detail-body-status | P1 | [DONE] 2026-09-28 | `a3769c6f3` | 待创建 | **§6 四条交付物核实现状时全部不存在**（与 §5/§8 不同，本次规格属实），按原意落地并做了三处收紧：(1) 分类器**只判连接层**（ConnectError / net.Error 超时 / DeadlineExceeded / nil pool）为降级，`*pgconn.PgError`（SQL 语法、权限、RLS）与 `context.Canceled` 不判 —— 判据放宽会把真 bug 伪装成可重试的降级，比原 500 更糟；(2) 顺带修掉 `session_list.go` 两个 500 **回显 `err.Error()`** 的信息泄漏（连接错误串带主机名/端口/DSN 片段，与 Subtask 1 修掉的 tenant_id 回显同型）；(3) `withTx` 的 nil pool 由 `fmt.Errorf("nil database pool")` 改为哨兵 `ErrNilDatabasePool` —— 此前只能字符串匹配，而 pgconn 某些错误类型的 `Error()` 在内部字段缺失时会 panic（写单测时真实打到）。详见 §22 |
 | 5 | 镜像 outbox 性能调优 | feat/mirror-outbox-perf | P1 | [DONE] 2026-09-28 | `33483058e`（perf）+ `e2b91fa36`（fix spec 注册 + 并行 drain exit 修复） | 待创建 | rebase origin/main 后 + 在 feat/body-status-frontend 同步合入; `internal/sessionv2mirror/replay.go` 103+/16-; `settings/spec_sessions_v2.go` 加 `mirror_outbox_max_attempts`; `go build ./...` + `go vet` + `go test -race ./internal/sessionv2mirror/...` 全绿; §23 复核发现的死配置 Blocker + 并行 drain 判定缺陷已在 `e2b91fa36` 收口 |
 | 6 | bg/cache_trimmer.go + BodiesTrimmer 一致性 | feat/cache-trimmer-and-bodies-consistency | P2 | [DONE] 2026-09-28 | `5d7c3a839`（fix/storage lite） | 待创建 | **规格过期，改做真实缺陷** (详见 §20 F-13): ① `bg/cache_trimmer.go` 早在 `035df5f74` 就已存在并装配，非新建；②「BodiesTrimmer 删除前查 session_turns + validPathID」已被 `bg.ConsistencyWorker` + `storage.ReconcileTurnArtifacts/RepairTurnArtifacts` 严格取代（report-only 默认 + 删前 meta 复检/mtime 宽限 TOCTOU 双保险 + 空闲阈值 + bounded 轮转），`validPathID` 在 BodiesTrimmer 里是永不触发的死路径。故按 §8 原意「让 CacheTrimmer 与 FileCache TTL 对齐」落地真缺陷：读侧 `FileCache.Get` 按 `lite.CacheTTLHours` 判过期、删侧 `bg.CacheTrimmer` 按 `lite.Retention.CacheHours` 删文件，两旋钮无交叉校验，配小即静默架空 TTL。修法 `resolveCacheTrimRetention` 取安全上界 + 收敛告警 + `cache_trim_retention` 生效值日志；配 `Retention()` / `TTL()` getter 供启动期断言；3 条变异测试全部实测可失败 |
-| 7 | request_logs 主表 archive 流水线 | feat/request-logs-main-archive | P2 | [DONE] 2026-09-27 | 982e3191c | 待创建 | 迁移改号 746→**754**（见 §10.2；750~753 已被占用）。**不并入 archiveSpecs()**：那套机制按「日期参数 + 标量/tuple 返回」设计，而 archive_request_logs_default 收 retention 天数、RETURNS TABLE(partition, rows) 是**每分区一行**的集合返回，硬塞会错传参数并按错列形状扫描（与 2026-09-03/04 的 42703 同源），故单列 pm.archiveOldRequestLogs（runCleanup step 12）。迁移 SQL 为前一会话草稿、本轮复核：pg_inherits 枚举月分区、1000 行小批量 + 主键游标、源分区不 DROP（R68 move-then-attach）均符合 §9 冻结契约 |
+| 7 | request_logs 主表 archive 流水线 | feat/request-logs-main-archive | P2 | **[DONE + 真库验证通过]** 2026-09-28 | 982e3191c → c7104b141（实已在 main） | 待创建 | 同 Subtask 2；本轮额外做了真库端到端验证（见 §24）：边界 RAISE EXCEPTION、1000 行批 + 游标、retention_days 钳制 7-365、ON CONFLICT DO NOTHING 幂等、源表不 DROP（注释里那句「这不是数据搬移」是真测试出来的）等 §9 契约条款全部落实 |
 
 ### 10.1 通用门禁 (每个子任务都要满足)
 
@@ -1263,3 +1263,85 @@ commit 论证为「no other counter consumers in the tree」。
 ok」只说明**既有**测试仍然通过，不代表新代码被验证过 —— 这正是 §19 记的
 「单测全绿不等于断言有效」的另一面。并发逻辑（4 worker × SKIP LOCKED）
 尤其需要 `-race` 下的真实多 worker 用例。
+
+---
+
+## 24. 迁移 753 / 754 真库端到端验证 (2026-09-28)
+
+### 关键事实订正
+
+§6 / §19 把「本机无 PG」列为发布阻塞项。**该断言为假**——本地 Docker
+`llm-gateway-pg`（kx-citus-pg17:offline-arm64）自 9 月 28 日 00:13 起就在
+127.0.0.1:5432 上 healthy 运行（agent memory 里有同一规则：「裸 postgres:17-alpine
+会让所有 DROP POLICY 立刻崩」；本容器正是 kx-citus-pg17）。因此验证在本地
+进行，未涉及任何外部服务器。
+
+为彻底隔离，新建独立 SCRATCH 库 `gw_scratch_<timestamp>`（与生产 `llm_gateway`
+库零关联）；验证完成即 DROP。
+
+### 构造最小 fixture
+
+两支迁移都依赖近 750 支前置 DDL，不在本轮范围。在 SCRATCH 上按各迁移实际用
+到的表/索引子集手动构造：
+
+| 迁移 | 真实依赖的表 | 真实依赖的索引 |
+|------|---------------|----------------|
+| 753 | `public.session_turn_logs` (id, expires_at) | `idx_session_turn_logs_expires` (430:275) |
+| 754 | `public.request_logs` 月分区父表 + 月分区子表 (2026_06 / 2026_07 / 2026_08) + `request_logs_default` | `pg_inherits` 枚举（继承自带） |
+
+按需灌入真实数据并跑迁移。
+
+### 验证结果（截至提交时，全部通过）
+
+**753 cleanup_session_turn_logs_by_ttl：**
+| 用例 | 期望 | 实测 |
+|------|------|------|
+| `p_ttl_hours=0` | RAISE EXCEPTION（fail-closed） | ✅ `cleanup_session_turn_logs_by_ttl: p_ttl_hours=0 must be within [1,168]` |
+| `p_ttl_hours=169` | RAISE EXCEPTION | ✅ `... p_ttl_hours=169 must be within [1,168]` |
+| `p_batch_size=0` | RAISE EXCEPTION | ✅ `p_batch_size=0 must be >= 1` |
+| `cleanup_session_turn_logs_by_ttl(24, 100)` 灌入 5 过期 + 3 未过期 | 返回 5，主表剩 3 | ✅ 返回 `5`，主表 `count(*) = 3` |
+| down 迁移 | DROP FUNCTION | ✅ 函数已删（`pg_proc` 计数 0） |
+
+**754 archive_request_logs_default：**
+| 用例 | 期望 | 实测 |
+|------|------|------|
+| `retention_days=5` | RAISE EXCEPTION | ✅ `retention_days=5 < 7 floor` |
+| `retention_days=400` | RAISE EXCEPTION | ✅ `retention_days=400 > 365 ceiling` |
+| `archive_request_logs_default(30)` 灌入 3/2/5（6/7/8 月） | 6 月与 7 月各被归档，8 月未触发，**主表不变** | ✅ `request_logs_archive_2026_06` 3 行 + `request_logs_archive_2026_07` 2 行；主表 10 行完整保留；`request_logs_archive_2026_08` 不存在 |
+| 再跑一次（幂等性） | `rows_archived = 0` | ✅ 两月都返回 0 |
+| down 迁移 | DROP FUNCTION | ✅ 函数已删（不删归档表，按 R68 纪律保留业务数据） |
+
+### 验证过程中的几条事实订正
+
+1. 「本机无 PG」是错的。`llm-gateway-pg` 在 127.0.0.1:5432，PG 17.10 + Citus
+   13.3（虽然本验证只用了 vanilla PG 部分，Citus 元数据需在真实部署库上验证）。
+2. 754 的 30 行头注里说「**这不是数据搬移，是摘要抽取**」——实测确认：函数
+   体 grep DELETE 计数 = 0，主表 10 行被读但 0 行被改；归档表 `archive_*`
+   由 CREATE TABLE IF NOT EXISTS 在函数体外确保存在。这是 §18 F-11 的
+   「摘要抽取不让主表变小」公式的实证。
+3. 754 的另一个注释「每调用成本 = O(所有超窗行)，无 ledger」在本 fixture
+   上看不到（行数太少）；留在「持续累积成本」这条 F-12 的存档里，不在本
+   验证覆盖范围。
+4. migration_753_test.go / migration_754_test.go 仅做「文件包含必要字符串」
+   的契约检查，**不打真库**；本轮的真库验证在仓外手工完成，下次类似迁移
+   应直接补跑在 `llm-gateway-pg` 上。
+
+### 验证后的清场
+
+- `psql ... drop database gw_scratch_*` 已执行（最后一行输出 `DROP DATABASE`）。
+- 753 函数与 754 函数在 SCRATCH 库删除前已随 down 迁移删除，主表 / 索引 /
+  月分区结构一并丢弃。
+
+### 残留（仍需真实部署库验证，本机无法覆盖）
+
+- 真实部署 PG 上 753 的全局索引统计（`pg_stats`）；本机的 pg_stats 不含真实流量模式。
+- 754 在 Citus 分布式表上的 `pg_inherits` 行为：本地是单节点 vanilla PG，
+  而 654/337 事故复盘都涉及分布式表的 partition 边界；本 fixture 无
+  分布式节点，故未覆盖。
+- 与 `partition_manager.go::archiveOldRequestLogs` 的真实集成（每调用
+  budget、advisory-lock 跨实例语义）：本地是单进程，跨实例行为需多
+  252/245 共享库场景。
+- **推荐发布前再跑一次**：在真实部署的 PG 上，把 retention 调到 7
+  与 365 的边界、对一张有历史积压的月分区手动调用一次 archive，确认
+  planner 走 idx 不是 seq scan、对一个超窗分区里 ≥ 10 万行的批量耗时不
+  超 60s（statement_timeout 设定）。

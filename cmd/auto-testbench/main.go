@@ -225,21 +225,79 @@ func validateFlags(mode string, explicit map[string]bool, days, limit int) error
 }
 
 // e2eRow is the subset of cmd/autoroute-e2e-audit's resultRow consumed here.
+//
+// Pass is a *bool because the audit emits `null` for it when the case errored
+// upstream (429 / dispatch failure) rather than because the classification was
+// wrong. Decoding that null into a plain bool yields false, which silently
+// reclassified every upstream outage as a classification FAIL — a full-suite
+// rate-limit blip then reports "0% pass" while the classification layer was in
+// fact 240/240. The distinction is the whole reason this layer is worth reading.
+//
+// Decision carries the selection layer (2026-09-28). The offline regression
+// only exercises the classifier, so the only place a selection defect such as
+// "the whole candidate pool collapsed onto the 48h popularity fallback" is
+// observable is the X-Gw-Auto-Decision header the audit already records.
 type e2eRow struct {
 	Name        string `json:"name"`
 	Bucket      string `json:"bucket"`
 	Expected    string `json:"expected_task"`
 	Got         string `json:"got_task"`
-	Pass        bool   `json:"pass"`
+	Pass        *bool  `json:"pass"`
 	ServedModel string `json:"served_model"`
+	Error       string `json:"error"`
+	Decision    *struct {
+		TaskType     string `json:"task_type"`
+		ChosenModel  string `json:"chosen_model"`
+		FallbackUsed bool   `json:"fallback_used"`
+		Candidates   []struct {
+			Model     string  `json:"model"`
+			RouteTier string  `json:"route_tier"`
+			Match     float64 `json:"match_score"`
+		} `json:"candidates_top3"`
+	} `json:"decision"`
 }
 
 type e2eSummary struct {
-	Path     string
-	Total    int
-	Pass     int
-	Failures []e2eRow
-	Models   map[string]int
+	Path     string         `json:"path"`
+	Total    int            `json:"total"`
+	Pass     int            `json:"pass"`
+	Failures []e2eRow       `json:"failures,omitempty"`
+	Errors   int            `json:"upstream_errors"`
+	Models   map[string]int `json:"served_models"`
+
+	// Selection layer. All four are counted over rows that captured a
+	// decision, which includes cases whose dispatch later errored — the
+	// decision header is written before dispatch, so those rows still carry
+	// a usable verdict.
+	Decided           int            `json:"decided"`
+	ClassCorrect      int            `json:"classification_correct"`
+	FallbackCollapsed int            `json:"fallback_collapsed"`
+	SingleCandidate   int            `json:"single_candidate_pools"`
+	CollapseByTask    map[string]int `json:"collapse_by_task,omitempty"`
+	TotalByTask       map[string]int `json:"decided_by_task,omitempty"`
+	CollapseRateVal   float64        `json:"collapse_rate"`
+	ClassAccuracyVal  float64        `json:"classification_accuracy"`
+}
+
+// CollapseRate is the fraction of decided cases whose candidate pool collapsed
+// onto the 48h popularity fallback (fallback_used). A non-zero value means
+// routing-by-task did not actually happen for those cases. 2026-09-28 measured
+// baseline: 124/240 = 0.517 before the fail-open fix, 0/240 after.
+func (s *e2eSummary) CollapseRate() float64 {
+	if s == nil || s.Decided == 0 {
+		return 0
+	}
+	return float64(s.FallbackCollapsed) / float64(s.Decided)
+}
+
+// ClassAccuracy is the classification layer measured over every case that
+// produced a decision, errored or not. This is the number that held at
+// 240/240 across the whole 2026-09-28 audit even while every dispatch 429'd.
+func (s *e2eSummary) ClassAccuracy() float64 {
+	if s == nil || s.Decided == 0 {
+		return 0
+	}
+	return float64(s.ClassCorrect) / float64(s.Decided)
 }
 
 // loadE2EReport parses an autoroute-e2e-audit JSONL. An explicitly given but
@@ -255,7 +313,8 @@ func loadE2EReport(path string) (*e2eSummary, error) {
 	if err != nil {
 		return nil, fmt.Errorf("e2e-report: %w", err)
 	}
-	s := &e2eSummary{Path: path, Models: map[string]int{}}
+	s := &e2eSummary{Path: path, Models: map[string]int{},
+		CollapseByTask: map[string]int{}, TotalByTask: map[string]int{}}
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -266,15 +325,50 @@ func loadE2EReport(path string) (*e2eSummary, error) {
 			continue
 		}
 		s.Total++
-		if r.Pass {
+		// A row lands in Failures at most once. `pass` and the decision's
+		// task_type are two views of the same verdict (the audit derives
+		// got_task from the decision header), so recording both would
+		// double-count every genuine miss.
+		recorded := false
+		switch {
+		case r.Pass != nil && *r.Pass:
 			s.Pass++
-		} else {
+		case r.Pass != nil:
+			// A decided verdict of "wrong" — a genuine classification FAIL.
 			s.Failures = append(s.Failures, r)
+			recorded = true
+		default:
+			// pass == null: the case errored upstream. Not a classification FAIL.
+			s.Errors++
 		}
 		if r.ServedModel != "" {
 			s.Models[r.ServedModel]++
 		}
+		if r.Decision == nil {
+			continue
+		}
+		s.Decided++
+		s.TotalByTask[r.Expected]++
+		if r.Decision.TaskType == r.Expected {
+			s.ClassCorrect++
+		} else if !recorded {
+			// The audit left pass null (upstream error) yet the decision was
+			// still wrong — that is a real miss the error masked.
+			s.Failures = append(s.Failures, r)
+		}
+		if r.Decision.FallbackUsed {
+			s.FallbackCollapsed++
+			s.CollapseByTask[r.Expected]++
+		}
+		if len(r.Decision.Candidates) <= 1 {
+			s.SingleCandidate++
+		}
 	}
+	// Materialise the derived rates once, so the JSON report carries the same
+	// numbers the console prints (the accessors stay nil-safe for the
+	// "e2e layer not run" case, where there is nothing to report).
+	s.CollapseRateVal = s.CollapseRate()
+	s.ClassAccuracyVal = s.ClassAccuracy()
 	return s, nil
 }
 
@@ -300,7 +394,29 @@ func printSummary(suiteFiles []string, cm *classificationMetrics, tm *tierMetric
 		if e2e.Total > 0 {
 			rate = float64(e2e.Pass) / float64(e2e.Total)
 		}
-		fmt.Printf("  e2e layer (%s): %d/%d pass (%.4f)\n", e2e.Path, e2e.Pass, e2e.Total, rate)
+		fmt.Printf("  e2e layer (%s): %d/%d pass (%.4f), %d upstream-error (not a classification verdict)\n",
+			e2e.Path, e2e.Pass, e2e.Total, rate, e2e.Errors)
+		// Selection layer. Reported over every decided case, so a run where
+		// the upstream rate-limited out still yields a real number here
+		// instead of an empty section.
+		if e2e.Decided > 0 {
+			fmt.Printf("  e2e classification (decided): %d/%d (%.4f)\n",
+				e2e.ClassCorrect, e2e.Decided, e2e.ClassAccuracy())
+			fmt.Printf("  e2e selection: collapse %d/%d (rate=%.4f), single-candidate pools %d/%d\n",
+				e2e.FallbackCollapsed, e2e.Decided, e2e.CollapseRate(),
+				e2e.SingleCandidate, e2e.Decided)
+			if e2e.FallbackCollapsed > 0 {
+				fmt.Printf("    collapse by task (routing-by-task did not happen for these):\n")
+				tasks := make([]string, 0, len(e2e.CollapseByTask))
+				for t := range e2e.CollapseByTask {
+					tasks = append(tasks, t)
+				}
+				sort.Strings(tasks)
+				for _, t := range tasks {
+					fmt.Printf("      %-24s %d/%d\n", t, e2e.CollapseByTask[t], e2e.TotalByTask[t])
+				}
+			}
+		}
 		for _, f := range e2e.Failures {
 			fmt.Printf("    e2e FAIL %-40s want=%s got=%s served=%s\n", f.Name, f.Expected, f.Got, f.ServedModel)
 		}

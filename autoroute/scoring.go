@@ -386,7 +386,7 @@ func scoreContextFit(c Candidate, estTokens int) float64 {
 func TaskMatchScore(task TaskType, candidateTags []string) float64 {
 	required := requiredTagsForTask(task)
 	if len(required) == 0 {
-		return 0.5 // chat or unknown → middle (don't gate)
+		return TaskMatchScoreUnknown // chat or unknown → middle (don't gate)
 	}
 	hits := 0
 	for _, r := range required {
@@ -399,6 +399,53 @@ func TaskMatchScore(task TaskType, candidateTags []string) float64 {
 		}
 	}
 	return float64(hits) / float64(len(required))
+}
+
+// TaskMatchScoreUnknown is the "tag dimension carries no information" score:
+// the task requires no tags (chat/unknown), or — see
+// TaskVocabularyRepresented — the model library has no vocabulary for this
+// task at all. It deliberately does NOT return 0: "no tag matched" and "no tag
+// could ever match" are different facts, and conflating them makes an absent
+// taxonomy look like a capability verdict.
+const TaskMatchScoreUnknown = 0.5
+
+// TaskVocabularyRepresented reports whether at least one of the required
+// capability tags for task is actually carried by some candidate in the pool.
+//
+// requiredTagsForTask is written against a capability vocabulary (code,
+// programming, creative, writing, classification, review, security, planning,
+// analysis, math, logic) that the live models_canonical.tags taxonomy does not
+// provide — the library publishes cap:long-context, cap:tool-use,
+// cap:function-call, cap:reasoning, cap:vision, modality:* and family:* /
+// version:*, but no code/coding/creative/writing capability tag at all
+// (2026-09-28 live audit: 950 canonical models, strengths column 0/950
+// populated). For those tasks every candidate scores TaskMatchScore == 0, so
+// the tag dimension is measuring nothing.
+//
+// Callers use this to fail open: an unrepresented vocabulary means "unknown",
+// not "unsuitable", and must not be allowed to masquerade as a match failure.
+func TaskVocabularyRepresented(task TaskType, cands []Candidate) bool {
+	required := requiredTagsForTask(task)
+	if len(required) == 0 {
+		// chat/unknown requires nothing, so its vocabulary is trivially
+		// "present" — the neutral score is already what TaskMatchScore returns.
+		return true
+	}
+	normalized := make([]string, len(required))
+	for i, r := range required {
+		normalized[i] = normalizeTagSeparators(r)
+	}
+	for _, c := range cands {
+		for _, tag := range c.Tags {
+			nt := normalizeTagSeparators(tag)
+			for _, rn := range normalized {
+				if containsFold(nt, rn) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // normalizeTagSeparators canonicalizes capability-tag word separators so the
