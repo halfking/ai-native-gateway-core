@@ -1293,27 +1293,19 @@ func main() {
 					slog.Info("turn_logs aggregator stopped")
 					return
 				case <-ticker.C:
-					rows, err := dbConn.Pool().Query(turnLogsCtx, `
-						SELECT tenant_id, session_id
-						FROM public.session_turn_logs
-						WHERE expires_at > NOW()
-						GROUP BY tenant_id, session_id
-						LIMIT 100
-					`)
+					// Extracted to TurnLogsAggregator.PendingSessions so the
+					// selection order is testable; it used to be an inline
+					// query here with no ORDER BY (critical audit 2026-09-27).
+					pending, err := turnLogsAgg.PendingSessions(turnLogsCtx, 100)
 					if err != nil {
 						slog.Warn("turn_logs aggregator: poll query failed", "err", err)
 						continue
 					}
-					for rows.Next() {
-						var t, s string
-						if scanErr := rows.Scan(&t, &s); scanErr != nil {
-							continue
-						}
-						if aggErr := turnLogsAgg.AggregateAndFlush(turnLogsCtx, t, s); aggErr != nil {
-							slog.Warn("turn_logs aggregator: flush failed", "tenant", t, "session", s, "err", aggErr)
+					for _, k := range pending {
+						if aggErr := turnLogsAgg.AggregateAndFlush(turnLogsCtx, k.TenantID, k.SessionID); aggErr != nil {
+							slog.Warn("turn_logs aggregator: flush failed", "tenant", k.TenantID, "session", k.SessionID, "err", aggErr)
 						}
 					}
-					rows.Close()
 				}
 			}
 		}()
