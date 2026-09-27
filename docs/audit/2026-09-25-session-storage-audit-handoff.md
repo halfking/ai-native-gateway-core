@@ -586,7 +586,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 |---|---|---|---|---|---|---|---|
 | 1 | 会话身份契约 API 层显式标注 | feat/session-identity-contract-api (9f62818c5 已并入) + fix/session-ambiguity-409 (本轮收口) | P0 | [DONE] 2026-09-27 16:20 | 0aa86d8bd | 待创建 | 9f62818c5 + 9785c2398 已带 DISTINCT/LIMIT 2 歧义守卫进 main, 但走 500 兜底且响应体回显含 tenant_id 的内部错误串; 本轮以 fix/session-ambiguity-409 收口为 409 + 固定文案 (审计 Minor-2)。**未按原计划 rebase feat/session-identity-contract-api** —— 该分支 4 个 commit 与 main 的 R69/N-1 线已分叉, rebase 会回退 main 的 `SessionTurnV2.ID json:"-"`、空轮次序列化为 `[]`、errors.Is 注释等修复, 故改为定点移植 |
 | 2 | session_turn_logs 可配 TTL + summary 同步 | feat/session-turn-logs-ttl | P1 | [DONE] 2026-09-27（**语义经批判式审计修正后重做**） | 5b558deab（初版，语义有误）→ 14d34867f | 待创建 | 迁移改号 745→**753**（见 §10.2）。**初版 5b558deab 的 TTL 语义是错的，保留此行仅为留档，勿据其判断行为** —— 三条证伪见 §16。§4 第 4 项「AppendTurnInTx 内联写 turn_logs_summary」**已由既有实现满足**（cmd/gateway/turn_logs_aggregator.go，5 分钟聚合 → 写 sessions.turn_logs_summary → 删源行，main.go:1280 接线），**未重复实现**，两路写同一 JSONB 会互相覆盖 |
-| 3 | 详情 V2 body_status + 移除 request_logs_bodies JOIN | feat/session-detail-body-status | P1 | TODO | - | - | - |
+| 3 | 详情 V2 body_status + 移除 request_logs_bodies JOIN | feat/session-detail-body-status | P1 | [DONE] 2026-09-28 | 后端 `1a9a59017`（并行会话，已进 main）→ 前端 `96bb3630` | 待创建 | **规格与最终形态均有实质偏离，务必先读**：(1) 后端只发**两态** available\|unavailable，**不发 dropped** —— schema 里没有 session_bodies 保留期开关，也没有任何任务删它的行（唯一 body 清理器只处理 V1 `request_logs_bodies_hot`），此时报 dropped 等于谎称「保留期清了数据」而实际多半是未采集；论证见 admin/body_status.go 顶部 CONTRACT。(2) §5.3 写「snapshot 中读取 body_status 列表」是错的，`/snapshot` 不带 turns，数据源实为 `/api/admin/sessions/detail`。(3) §5.3 只点名 zh-CN/en-US，但 parity gate 要求**全部 8 个 locale** 都有同一批 leaf key，只补两个会让 src/i18n/parity.test.ts 直接转红。(4) §5.3 第 4 项要求「链接到 retention 文档」已删——那个设置并不存在，链过去是空的。详见 §21 |
 | 4 | DB 降级返回 503 + storage_status | feat/storage-status-503 | P1 | TODO | - | - | - |
 | 5 | 镜像 outbox 性能调优 | feat/mirror-outbox-perf | P1 | [DONE] 2026-09-27 17:01 | 1cb487779 | 待创建 | rebase origin/main 后唯一文件改动 (internal/sessionv2mirror/replay.go, 103+/16-); `go build ./internal/sessionv2mirror/...` + `go vet` + `go test -race ./internal/sessionv2mirror/...` + `go build ./...` 全绿; gofmt 历史遗留 `internal/sessionv2mirror/session_dim.go` + `internal/sessionv2mirror/synthetic_session_test.go` (不在本任务范围, 见 §15 观察项) |
 | 6 | bg/cache_trimmer.go + BodiesTrimmer 一致性 | feat/cache-trimmer-and-bodies-consistency | P2 | TODO | - | - | - |
@@ -1059,3 +1059,67 @@ SQL**。彻底解法是加一张 archive ledger 记录 `(partition, max_id)`，�
   `git fetch && git rebase origin/main`；落盘后必须用
   `git ls-remote origin refs/heads/main` 核对远端真实值——`git push` 报
   “Everything up-to-date” 可能推的是另一个 ref（§17 O-D）。
+
+---
+
+## 21. Subtask 3 收口：与并行会话合并，规格四处偏离 (2026-09-28)
+
+### 经过
+
+接手时 `/private/tmp/llm-gw-sub3` 有 7 个文件未提交、3 个测试红；`mavis session list`
+显示两个会话（`mvs_b6c2c553` / `mvs_80c00a17`，均吃到 429）停在 `/private/tmp/llm-gw-sub3`
+上。征得用户同意后接手。接手期间**其中一个会话恢复并把自己的实现以 `1a9a59017`
+合进了 main**，于是本轮从「接手修复」变成「与并行会话合并」。
+
+### 我在接手后已验证、但最终**未采用**的三处判断（记录下来供后人别重走）
+
+接手时的在途实现（同一作者）存在真问题，我逐条验证后确认：
+
+1. **按天取整**：`retentionHours → math.Ceil(h/24)`，把 §5 要求的「按小时比
+   `NOW() - retention_hours`」变成按天，边界最多偏 24h。**确认为真缺陷。**
+2. **空容器判成有正文**：`isNonEmptyJSONB` 只看首字节，`{}` / `[]` 判 available。
+   我改成了真正解 JSON 判空。**但后来撤回**——查 `domains/session/v2/bodies_writer.go`
+   后确认三列都是 `[]Message` 切片，`json.Marshal` 只会产出 `null` / `[]` / `[{...}]`，
+   **`{}` 在生产里根本不可达**；而 `[]` 是「这一轮确实没有消息」，判 available 是
+   有意为之（对方的测试用例名就叫 "empty json array is still a payload"）。
+   我的「修复」只会打破一条有依据的既定决策，去修一个不存在的场景 —— 撤回。
+3. **列表端点硬编码 `unavailable`**：unified 列表是 metadata-only，硬编码会让前端
+   对每个 turn 都误报横幅。我先改成「一律不填」。**最终也未保留**——对方用 SQL
+   `EXISTS` 探针让列表真能填出 `available|unavailable`，比我的「留空」更完整。
+
+结论：对方后端的三处决策（不发 dropped / `{}` 不可达故不特殊处理 / EXISTS 探针）
+都比我的更站得住，我全部采纳并撤回自己的对应改动。**留下的只有对方没做的前端一半。**
+
+### 我这边真正修掉的东西
+
+- 前端横幅 + **8 个 locale** 文案（§5.3 只点名 2 个，parity gate 要 8 个）。
+- `SessionDetailPage.test.ts` 3 → 11 个用例。**原文件只 mock 了 `getSessionSnapshot`**，
+  新代码走到未定义导出后被 `catch` 吞掉，等于零覆盖 —— 这个坑与 §19 记的
+  「断言只看到定义、看不见调用点」同型。
+- 3 条变异测试逐条实测可失败（去掉收集分支 4 红 / 不看 body_status 无脑收集 4 红 /
+  切会话不重置 dismiss 1 红）。
+
+### 自身缺陷第 5 次同型复发
+
+写完变异测试后自查发现：**测试表里从没让 `bodyTS` 与 `partitionDate` 同时取到
+*不同* 值**，所以「时间基准优先级」这个分支根本没被覆盖 —— 把 `partitionDate`
+提到 `bodyTS` 之前的变异**存活**。补了一条「当天 06:00 写的 body + 当天午夜的
+partition_date + retention 8h」的判别用例后才抓住。与 §16 C7 / §18 N1 / §20 两处
+是同一形状：**测试表覆盖了取值，却没覆盖「两个来源同时存在时谁优先」**。
+
+### 规格本身的四处错误（本轮实证，§5 需订正）
+
+1. 「queryTurns 根据 … + `partition_date` 早于 retention 判定」——`partition_date`
+   是 PG `date`（日粒度），表达不了 spec 允许的 1~168 **小时**级保留期；且
+   `session_bodies_unified` 的热表分支 `partition_date` 恒为 NULL（promote 阈值 8h，
+   迁移 688），retention=24h 时 8~24h 区间的 body 必然落在热表、必然 NULL。
+2. 「在 `snapshot` 中读取 body_status 列表」——`/snapshot` 不带 turns。
+3. 「增加 zh-CN 与 en-US 文案」——parity gate 要求 8 个 locale 全覆盖。
+4. 「+ 链接到 retention 文档」——该设置不存在（这正是后端不发 dropped 的原因）。
+
+### 教训：交接文档里的规格必须先核 SSOT 再动手
+
+§8（Subtask 6）与 §5（Subtask 3）**两条规格的所有交付物要么已存在、要么已存在更强
+的实现、要么前提为假**。若不先核现行实现，Subtask 6 会重复实现已有的 CacheTrimmer，
+Subtask 3 会写出一个「声称按保留期清理、实际无任何清理任务」的三态 —— 正是本仓
+多轮审计一直在抓的那类「承诺与实现背离」。
