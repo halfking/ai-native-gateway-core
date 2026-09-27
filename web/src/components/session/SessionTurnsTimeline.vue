@@ -18,7 +18,7 @@
  *
  * 设计约束：颜色只用 var(--kx-*)；三态（Skeleton / Empty / Error 区分码）。
  */
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   fetchSessionTurnsTree,
@@ -124,6 +124,19 @@ function typeBadge(t: string): string {
   return TYPE_ABBR[t] ?? '其他'
 }
 
+/**
+ * 本页已加载轮次中正文缺失的数量（后端 admin/body_status.go 判定）。
+ *
+ * 只统计**已加载**的轮次：分页未加载的部分状态未知，混进来会给出「本会话有 N 轮
+ * 无正文」这种超出证据范围的数字。横幅文案因此用「已加载轮次」限定。
+ *
+ * body_status 缺失（undefined）不计入——那是旧实例/旧数据，语义是「未知」而非
+ * 「无正文」，与后端两态契约一致。
+ */
+const missingBodyCount = computed(
+  () => turns.value.filter((turn) => turn.body_status === 'unavailable').length,
+)
+
 function typeTitle(t: string): string {
   return TYPE_ABBR[t] && t !== 'other' ? t : t
 }
@@ -185,6 +198,18 @@ function errorText(e: SessionObsApiError | null): string {
 
     <!-- 轮次时间线 -->
     <div v-else class="stt-timeline">
+      <!--
+        正文缺失提示。后端只发 available | unavailable（不发 dropped：当前 schema
+        无法区分「从未采集」与「按保留期清理」，依据见 admin/body_status.go），
+        故此处不展示任何「已按保留期清理」措辞——那会谎称有保留策略生效。
+      -->
+      <p
+        v-if="missingBodyCount > 0"
+        class="stt-body-missing"
+        data-testid="stt-body-missing"
+      >
+        {{ t('sessionTimeline.bodyUnavailable', { n: missingBodyCount }) }}
+      </p>
       <div
         v-for="turn in turns"
         :key="turn.request_id"
@@ -356,6 +381,15 @@ function errorText(e: SessionObsApiError | null): string {
   text-align: center;
   color: var(--kx-muted);
   font-size: 13px;
+}
+.stt-body-missing {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--kx-muted);
+  background: var(--kx-muted-soft, transparent);
+  border: 1px solid color-mix(in srgb, var(--kx-muted, currentColor) 30%, transparent);
 }
 
 /* 时间线 */
