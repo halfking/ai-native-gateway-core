@@ -8,6 +8,7 @@ export default {
   empty: 'Keine Turns in dieser Sitzung',
   loading: 'Wird geladen…',
   loadMore: 'Mehr Turns laden',
+  bodyUnavailable: 'Für {n} der geladenen Turns wurde kein Anfrage-/Antworttext erfasst; die Textspeicherung ist für diese Sitzung möglicherweise deaktiviert.',
   allLoaded: '{n} Turns geladen, alle vollständig',
   errors: {
     network: 'Netzwerkfehler, bitte Verbindung prüfen und erneut versuchen',

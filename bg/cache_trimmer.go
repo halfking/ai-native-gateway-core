@@ -54,6 +54,20 @@ func (t *CacheTrimmer) WithInterval(d time.Duration) *CacheTrimmer {
 	return t
 }
 
+// Retention 返回构造时生效的 retention（nil-safe，返回 0）。
+//
+// 装配层（cmd/gateway initStorageMode）必须保证本值 >= FileCache 的 TTL：
+// 读侧按 TTL 判过期，删侧按 retention 判删除，两者不同源时缓存会退化为
+// 「只写不读」。本 getter 让该不变量可被启动期断言直接验证 —— 断言必须读
+// 真实 worker 的字段，而不是另存一份快照再拿快照比自己（那样只验证了
+// 快照的算术，看不见 NewCacheTrimmer 的调用点）。
+func (t *CacheTrimmer) Retention() time.Duration {
+	if t == nil {
+		return 0
+	}
+	return t.retention
+}
+
 // Start 阻塞式运行清理循环：启动即执行一次（与包内 trimmer 惯例一致，
 // 避免新部署要等一个完整周期才首次清理），之后按 ticker 周期执行；
 // ctx 取消时优雅退出。设计为由调用方 `go trimmer.Start(ctx)` 启动，

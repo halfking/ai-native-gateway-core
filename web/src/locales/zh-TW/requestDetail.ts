@@ -192,4 +192,18 @@ export default {
     emDash: '—',
     colon: '：',
   },
+ // — Subtask 3 (handoff §5): body_status 三態橫幅 —
+  // 資料來源：/api/admin/sessions/detail 的 turns[].body_status；不是
+  // /snapshot（沒有 turns），也不是 /turns 列表（僅中繼資料）。
+  bodyStatus: {
+    // 資料來源：/api/admin/sessions/detail 的 turns[].body_status；不是
+    // /snapshot（沒有 turns）。後端只發 available | unavailable 兩態、不發
+    // dropped（session_bodies 沒有保留期設定，也沒有任何任務會刪除它的列）。
+    // 參見 admin/body_status.go 的 CONTRACT。
+    unavailableTitle: '部分輪次沒有請求/回應正文',
+    unavailableBody: '這些輪次沒有採集到正文（該功能對它們未開啟，或該輪本來就沒有內容）。摘要、指標與 token 用量不受影響。',
+    affectedTurns: '涉及輪次：{list}',
+    dismiss: '知道了',
+
+  },
 }

@@ -192,4 +192,18 @@ export default {
     emDash: '—',
     colon: ': ',
   },
+ // — Subtask 3 (handoff §5): body_status tri-state banners —
+  // المصدر: turns[].body_status من /api/admin/sessions/detail — وليس
+  // /snapshot (لا توجد turns هناك) ولا قائمة /turns (بيانات وصفية فقط).
+  bodyStatus: {
+    // المصدر: turns[].body_status من /api/admin/sessions/detail — وليس
+    // /snapshot (لا توجد turns هناك). الخلفية ترسل available | unavailable
+    // فقط ولا ترسل dropped: لا يوجد إعداد احتفاظ لـ session_bodies ولا
+    // مهمة تحذف صفوفها. راجع CONTRACT في admin/body_status.go.
+    unavailableTitle: 'بعض الأدوار لا تحتوي على نص الطلب/الاستجابة',
+    unavailableBody: 'لم يتم التقاط نص لهذه الأدوار (الميزة معطّلة لها، أو كانت الأدوار فارغة أصلًا). الملخصات والمقاييس واستهلاك الرموز لا تتأثر.',
+    affectedTurns: 'الأدوار المتأثرة: {list}',
+    dismiss: 'حسنًا',
+
+  },
 }
