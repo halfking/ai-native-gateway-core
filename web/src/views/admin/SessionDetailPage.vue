@@ -8,8 +8,9 @@
  * generated turn digest (user input, assistant output, metrics, events, tools).
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { getSessionSnapshot } from '../../api/sessions_v2'
+import { getSessionSnapshot, listSessionTurns, type TurnListItem } from '../../api/sessions_v2'
 import { ApiError } from '../../api/_core'
 import SessionSummaryBar from '../../components/SessionSummaryBar.vue'
 import SessionTurnsTimeline from '../../components/session/SessionTurnsTimeline.vue'
@@ -20,10 +21,44 @@ import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
 const route = useRoute()
 const router = useRouter()
 const sessionId = computed(() => String(route.params.id || ''))
+const { t } = useI18n()
 
 const snapshotError = ref('')
 const snapshot = ref<Record<string, unknown> | null>(null)
 let snapshotController: AbortController | null = null
+
+// Subtask 3 body_status banner: pull the V2 turns list once per session
+// (metadata-only endpoint, never decodes body bytes) and aggregate the
+// unavailable count. The banner is shown only when at least one turn
+// reports body_status === 'unavailable'; turns without the field
+// (older producers) are NOT counted as unavailable.
+const unavailableCount = ref(0)
+const unavailableLoaded = ref(false)
+let turnsController: AbortController | null = null
+async function loadUnavailableCount() {
+  const id = sessionId.value
+  if (!id) return
+  turnsController?.abort()
+  turnsController = new AbortController()
+  unavailableLoaded.value = false
+  try {
+    const r = await listSessionTurns(id, { limit: 200 }, { signal: turnsController.signal })
+    unavailableCount.value = countUnavailable(r.turns)
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') return
+    // Best-effort: leave count at 0; banner stays hidden.
+    unavailableCount.value = 0
+  } finally {
+    unavailableLoaded.value = true
+  }
+}
+function countUnavailable(turns: TurnListItem[]): number {
+  let n = 0
+  for (const t of turns) {
+    if (t.body_status === 'unavailable') n++
+  }
+  return n
+}
 
 // Digest drawer state — opened from the inline "view digest" button on each
 // turn card. Reset on sessionId change / unmount so the drawer never points
@@ -78,17 +113,22 @@ function openTurn(payload: { requestId: string; turnNumber: number }) {
   openRequestDetailPage(payload.requestId, { mode: 'session-turns' }, router)
 }
 
-onMounted(loadSnapshot)
+onMounted(() => {
+  loadSnapshot()
+  void loadUnavailableCount()
+})
 
 watch(sessionId, () => {
   // Session navigation: drop any open drawer before loading the new snapshot.
   closeDigest()
   loadSnapshot()
+  void loadUnavailableCount()
 })
 
 onBeforeUnmount(() => {
   closeDigest()
   snapshotController?.abort()
+  turnsController?.abort()
 })
 </script>
 
@@ -106,6 +146,21 @@ onBeforeUnmount(() => {
     <div class="list">
       <div v-if="snapshotError" class="error snapshot-error" role="alert">
         会话摘要加载失败：{{ snapshotError }}
+      </div>
+      <!--
+        Subtask 3 body_status banner (admin/body_status.go): surfaces how many
+        turns in this session have lost their original request/response bodies
+        (already pruned by retention, or never captured by the body-writer
+        FF). Hidden when the count is zero so sessions with all-available
+        bodies render exactly like before.
+      -->
+      <div
+        v-if="unavailableLoaded && unavailableCount > 0"
+        class="body-status-banner"
+        role="status"
+        data-testid="session-body-status-banner"
+      >
+        {{ t('requestDetail.compress.bodyStatusUnavailable', { count: unavailableCount }) }}
       </div>
       <SessionTurnsTimeline
         v-if="sessionId"
@@ -146,5 +201,19 @@ onBeforeUnmount(() => {
   padding: 10px 12px;
   border-radius: 6px;
   margin-bottom: 10px;
+}
+/*
+ * Subtask 3 body_status banner: warning tone — informational, not blocking.
+ * Operators are told that some turns lack original bodies; the page itself
+ * still works (compressed/redacted views fall back gracefully).
+ */
+.body-status-banner {
+  color: var(--kx-warning, var(--warning, #8a6d3b));
+  background: var(--kx-warning-soft, var(--warning-bg, #fff7e6));
+  border: 1px solid color-mix(in srgb, var(--kx-warning, var(--warning)) 35%, var(--kx-border));
+  padding: 10px 12px;
+  border-radius: 6px;
+  margin-bottom: 10px;
+  font-size: 13px;
 }
 </style>
