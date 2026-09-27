@@ -146,7 +146,12 @@ type LiteStorageConfig struct {
 	Retention struct {
 		SessionBodiesDays int `yaml:"session_bodies_days"`
 		RequestLogsDays   int `yaml:"request_logs_days"`
-		CacheHours        int `yaml:"cache_hours"`
+		// CacheHours 是 L1.5 文件缓存的清理保留期（小时）。注意它不能
+		// 小于 CacheTTLHours：读侧按 TTL 判过期、删侧按本值删文件，配小了
+		// 会删掉仍被当作有效缓存的条目。装配层（cmd/gateway initStorageMode
+		// 的 resolveCacheTrimRetention）取两者安全上界并对收敛情况告警，
+		// 故本字段只用于「比 TTL 多留一段时间」，缩短缓存寿命请改 CacheTTLHours。
+		CacheHours int `yaml:"cache_hours"`
 	} `yaml:"retention"`
 
 	// Consistency lite 跨介质一致性对账（后台 worker，审计 B-#2 接线）配置。
