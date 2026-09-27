@@ -9,7 +9,8 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getSessionSnapshot } from '../../api/sessions_v2'
+import { useI18n } from 'vue-i18n'
+import { getSessionDetailV2, getSessionSnapshot } from '../../api/sessions_v2'
 import { ApiError } from '../../api/_core'
 import SessionSummaryBar from '../../components/SessionSummaryBar.vue'
 import SessionTurnsTimeline from '../../components/session/SessionTurnsTimeline.vue'
@@ -19,6 +20,7 @@ import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
 
 const route = useRoute()
 const router = useRouter()
+const { t } = useI18n()
 const sessionId = computed(() => String(route.params.id || ''))
 
 const snapshotError = ref('')
@@ -78,11 +80,64 @@ function openTurn(payload: { requestId: string; turnNumber: number }) {
   openRequestDetailPage(payload.requestId, { mode: 'session-turns' }, router)
 }
 
-onMounted(loadSnapshot)
+// ── body_status 横幅 (Subtask 3, handoff §5) ─────────────────────────────
+// 数据源：/api/admin/sessions/detail 的 turns[].body_status。
+// 不要改用 /snapshot（不带 turns）。
+//
+// 后端只发两态 available | unavailable，**不发 dropped**：当前 schema 里
+// 没有 session_bodies 的保留期开关，也没有任何清理任务会删 session_bodies
+// 的行（唯一的 body 清理器只处理 V1 的 request_logs_bodies_hot）。此时若
+// 报 dropped，等于告诉运维「保留期把数据清了」，而实际多半是这一轮根本没
+// 采集到正文。完整论证见 admin/body_status.go 顶部 CONTRACT 注释。
+// 后端将来真的引入保留期后再加第三态，本组件届时同步。
+//
+// 横幅只在有 turn 真的 unavailable 时出现。详情端默认分页 limit=50，若
+// unavailable 的轮次恰好在第 51 轮之后，本页不会提示——这是分页的固有
+// 边界，不是本组件的判断。
+const bodyStatusBanner = ref<{ kind: 'unavailable'; turns: number[] } | null>(null)
+const bodyStatusDismissed = ref(false)
+
+function collectBodyStatus(detail: { turns?: { turn_no?: number; body_status?: string }[] }) {
+  const unavailable: number[] = []
+  for (const turn of detail.turns ?? []) {
+    // 只认后端会发的两态。'dropped' 分支刻意不实现：后端一旦真的引入保留期
+    // 并发出该值，届时再补，不要提前编造文案。
+    if (turn.body_status === 'unavailable' && typeof turn.turn_no === 'number') {
+      unavailable.push(turn.turn_no)
+    }
+  }
+  bodyStatusBanner.value = unavailable.length ? { kind: 'unavailable', turns: unavailable } : null
+}
+
+const bodyStatusList = computed(() =>
+  bodyStatusBanner.value ? bodyStatusBanner.value.turns.join(', ') : ''
+)
+
+async function loadBodyStatus() {
+  const id = sessionId.value
+  if (!id) return
+  bodyStatusBanner.value = null
+  bodyStatusDismissed.value = false
+  try {
+    const detail = await getSessionDetailV2(id)
+    // 用户在请求返回前已经切走会话：丢弃这次结果。
+    if (id !== sessionId.value) return
+    collectBodyStatus(detail)
+  } catch {
+    // 横幅是增强信息，取不到就不显示；不能让它把整个详情页带崩。
+    bodyStatusBanner.value = null
+  }
+}
+
+onMounted(() => {
+  loadSnapshot()
+  void loadBodyStatus()
+})
 
 watch(sessionId, () => {
   // Session navigation: drop any open drawer before loading the new snapshot.
   closeDigest()
+  void loadBodyStatus()
   loadSnapshot()
 })
 
@@ -106,6 +161,26 @@ onBeforeUnmount(() => {
     <div class="list">
       <div v-if="snapshotError" class="error snapshot-error" role="alert">
         会话摘要加载失败：{{ snapshotError }}
+      </div>
+      <!-- Subtask 3 (handoff §5): body_status 横幅。role=status 而非 alert
+           —— 这是常驻说明，不是需要打断操作的错误。 -->
+      <div
+        v-if="bodyStatusBanner && !bodyStatusDismissed"
+        class="body-status-banner body-status-unavailable"
+        role="status"
+      >
+        <div class="body-status-head">
+          <strong>{{ t('requestDetail.bodyStatus.unavailableTitle') }}</strong>
+          <button type="button" class="body-status-dismiss" @click="bodyStatusDismissed = true">
+            {{ t('requestDetail.bodyStatus.dismiss') }}
+          </button>
+        </div>
+        <p class="body-status-body">
+          {{ t('requestDetail.bodyStatus.unavailableBody') }}
+        </p>
+        <p class="body-status-meta">
+          {{ t('requestDetail.bodyStatus.affectedTurns', { list: bodyStatusList }) }}
+        </p>
       </div>
       <SessionTurnsTimeline
         v-if="sessionId"
@@ -146,5 +221,43 @@ onBeforeUnmount(() => {
   padding: 10px 12px;
   border-radius: 6px;
   margin-bottom: 10px;
+}
+/* Subtask 3: body_status 横幅。中性提示色，不是错误态——正文不可用是
+   常态（未采集 / 尚未写入），不该用红色吓人。 */
+.body-status-banner {
+  padding: 10px 12px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  border: 1px solid var(--kx-border, var(--border-color));
+  background: var(--kx-surface, var(--surface-primary));
+}
+.body-status-unavailable {
+  border-color: var(--kx-border, var(--border-color));
+  background: var(--kx-surface-secondary, var(--surface-secondary));
+}
+.body-status-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.body-status-dismiss {
+  border: 1px solid var(--kx-border, var(--border-color));
+  background: transparent;
+  color: inherit;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.body-status-body,
+.body-status-meta {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.body-status-meta {
+  font-size: 12px;
+  opacity: 0.75;
 }
 </style>
