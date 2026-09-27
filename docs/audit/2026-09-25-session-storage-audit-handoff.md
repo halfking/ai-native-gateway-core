@@ -588,7 +588,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 | 2 | session_turn_logs 可配 TTL + summary 同步 | feat/session-turn-logs-ttl | P1 | [DONE] 2026-09-27（**语义经批判式审计修正后重做**） | 5b558deab（初版，语义有误）→ 14d34867f | 待创建 | 迁移改号 745→**753**（见 §10.2）。**初版 5b558deab 的 TTL 语义是错的，保留此行仅为留档，勿据其判断行为** —— 三条证伪见 §16。§4 第 4 项「AppendTurnInTx 内联写 turn_logs_summary」**已由既有实现满足**（cmd/gateway/turn_logs_aggregator.go，5 分钟聚合 → 写 sessions.turn_logs_summary → 删源行，main.go:1280 接线），**未重复实现**，两路写同一 JSONB 会互相覆盖 |
 | 3 | 详情 V2 body_status + 移除 request_logs_bodies JOIN | feat/session-detail-body-status | P1 | [DONE] 2026-09-28 | 后端 `1a9a59017`（并行会话，已进 main）→ 前端 `96bb3630` | 待创建 | **规格与最终形态均有实质偏离，务必先读**：(1) 后端只发**两态** available\|unavailable，**不发 dropped** —— schema 里没有 session_bodies 保留期开关，也没有任何任务删它的行（唯一 body 清理器只处理 V1 `request_logs_bodies_hot`），此时报 dropped 等于谎称「保留期清了数据」而实际多半是未采集；论证见 admin/body_status.go 顶部 CONTRACT。(2) §5.3 写「snapshot 中读取 body_status 列表」是错的，`/snapshot` 不带 turns，数据源实为 `/api/admin/sessions/detail`。(3) §5.3 只点名 zh-CN/en-US，但 parity gate 要求**全部 8 个 locale** 都有同一批 leaf key，只补两个会让 src/i18n/parity.test.ts 直接转红。(4) §5.3 第 4 项要求「链接到 retention 文档」已删——那个设置并不存在，链过去是空的。详见 §21 |
 | 4 | DB 降级返回 503 + storage_status | feat/session-detail-body-status | P1 | [DONE] 2026-09-28 | `a3769c6f3` | 待创建 | **§6 四条交付物核实现状时全部不存在**（与 §5/§8 不同，本次规格属实），按原意落地并做了三处收紧：(1) 分类器**只判连接层**（ConnectError / net.Error 超时 / DeadlineExceeded / nil pool）为降级，`*pgconn.PgError`（SQL 语法、权限、RLS）与 `context.Canceled` 不判 —— 判据放宽会把真 bug 伪装成可重试的降级，比原 500 更糟；(2) 顺带修掉 `session_list.go` 两个 500 **回显 `err.Error()`** 的信息泄漏（连接错误串带主机名/端口/DSN 片段，与 Subtask 1 修掉的 tenant_id 回显同型）；(3) `withTx` 的 nil pool 由 `fmt.Errorf("nil database pool")` 改为哨兵 `ErrNilDatabasePool` —— 此前只能字符串匹配，而 pgconn 某些错误类型的 `Error()` 在内部字段缺失时会 panic（写单测时真实打到）。详见 §22 |
-| 5 | 镜像 outbox 性能调优 | feat/mirror-outbox-perf | P1 | [DONE] 2026-09-27 17:01 | 1cb487779 | 待创建 | rebase origin/main 后唯一文件改动 (internal/sessionv2mirror/replay.go, 103+/16-); `go build ./internal/sessionv2mirror/...` + `go vet` + `go test -race ./internal/sessionv2mirror/...` + `go build ./...` 全绿; gofmt 历史遗留 `internal/sessionv2mirror/session_dim.go` + `internal/sessionv2mirror/synthetic_session_test.go` (不在本任务范围, 见 §15 观察项) |
+| 5 | 镜像 outbox 性能调优 | feat/mirror-outbox-perf | P1 | **未合入 main**（2026-09-28 订正，见 §23） | 1cb487779（分支上） | 待创建 | rebase origin/main 后唯一文件改动 (internal/sessionv2mirror/replay.go, 103+/16-); `go build ./internal/sessionv2mirror/...` + `go vet` + `go test -race ./internal/sessionv2mirror/...` + `go build ./...` 全绿; gofmt 历史遗留 `internal/sessionv2mirror/session_dim.go` + `internal/sessionv2mirror/synthetic_session_test.go` (不在本任务范围, 见 §15 观察项) |
 | 6 | bg/cache_trimmer.go + BodiesTrimmer 一致性 | feat/cache-trimmer-and-bodies-consistency | P2 | TODO | - | - | - |
 | 7 | request_logs 主表 archive 流水线 | feat/request-logs-main-archive | P2 | [DONE] 2026-09-27 | 982e3191c | 待创建 | 迁移改号 746→**754**（见 §10.2；750~753 已被占用）。**不并入 archiveSpecs()**：那套机制按「日期参数 + 标量/tuple 返回」设计，而 archive_request_logs_default 收 retention 天数、RETURNS TABLE(partition, rows) 是**每分区一行**的集合返回，硬塞会错传参数并按错列形状扫描（与 2026-09-03/04 的 42703 同源），故单列 pm.archiveOldRequestLogs（runCleanup step 12）。迁移 SQL 为前一会话草稿、本轮复核：pg_inherits 枚举月分区、1000 行小批量 + 主键游标、源分区不 DROP（R68 move-then-attach）均符合 §9 冻结契约 |
 
@@ -1018,7 +1018,7 @@ SQL**。彻底解法是加一张 archive ledger 记录 `(partition, max_id)`，�
 | 2 | [DONE]（**重做过**） | 初版 `5b558deab` 有误 → 修正 `14d34867f` | §16 F-1…F-5：谓词差一整个 TTL、清理从未被调用、硬编码在 Go 侧、重复索引、第三条死路径 |
 | 3 | **进行中（并行会话）** | `feat/session-detail-body-status`（worktree `/private/tmp/llm-gw-sub3`） | 未审计。本会话不接手：工作区 7 个文件在途，含 `admin/body_status.go` + 其测试 |
 | 4 | TODO | - | 必须在 3 之后串行（共用 `admin/session_detail_v2.go`） |
-| 5 | [DONE]（并行会话） | `1cb487779` | 本会话未复核其代码，仅确认已进 main |
+| 5 | **未合入 main**（2026-09-28 实测订正） | `1cb487779`（仅在 `feat/mirror-outbox-perf`，已 push origin） | 原写「仅确认已进 main」——**该断言为假**：`git merge-base --is-ancestor 1cb487779 origin/main` 返回 NO，main 的 `replay.go` 仍是 `llmgw_session_mirror_outbox_replays_total` + batch=100。复核另发现 1 个 Blocker + 2 个 Major，见 §23 |
 | 6 | TODO | `feat/cache-trimmer-and-bodies-consistency`（worktree `/private/tmp/llm-gw-cache-trim`，**零提交**） | 仅有分支指针，无任何工作 |
 | 7 | [DONE] | `982e3191c` → 修正 `c7104b141` | §18 F-11（摘要抽取不删源数据）+ F-12（每小时全量重扫） |
 
@@ -1168,3 +1168,98 @@ Subtask 4 与 Subtask 3 共用 `admin/session_detail_v2.go` 与
 `admin/session_turns_unified.go`，本轮是接在 Subtask 3 **落地之后**串行做的
 （§11 依赖图的硬约束）。Subtask 3 的后端半边由并行会话以 `1a9a59017` 先行合入
 main，本轮在其之上叠加 503 路径，两者无冲突。
+
+---
+
+## 23. Subtask 5 复核：从未合入 main，且含一个死配置 Blocker (2026-09-28)
+
+前三轮审计都把 Subtask 5 记作「已完成，只差 PR」。本轮复核**推翻了这条状态**。
+
+### F-14 (Blocker) §19 的「仅确认已进 main」是假的
+
+- `git merge-base --is-ancestor 1cb487779 origin/main` → **NO**。
+- main 的 `replay.go` 至今仍是 `llmgw_session_mirror_outbox_replays_total`
+  与 `mirrorReplayDefaultBatch = 100` —— 分支上的改动一样都没进来。
+- 佐证：`git diff origin/main 1cb487779 -- internal/sessionv2mirror/replay.go`
+  仍是 103+/16-，与该 commit 自身的 diffstat 完全一致。
+- 提交本身**没丢**：`feat/mirror-outbox-perf` 已 push 到 origin
+  （ls-remote = 1cb487779），只是从未合并。
+- 代价：该分支落后 main **39 个 commit**（含 630 系列的 outbox 修复、
+  R60 收口等），合并前必须先 rebase 并重新验证。
+
+### F-15 (Blocker) 「热重载 max_attempts」是死配置，commit 的核心卖点不成立
+
+commit message 宣称「Reads `settings.GetPlatformInt("sessions_v2.mirror_outbox_max_attempts", …)`
+per requeue call so an operator can dial the dead-letter budget without restarting」。
+
+但**这个 key 从未在 spec 注册表里登记**：
+
+```
+grep -rn '"sessions_v2\.[a-z_]+"' settings/    → 12 个 key，无 mirror_outbox_max_attempts
+```
+
+而 `settings/helpers.go: getPlatformInt` 的行为是：
+
+```go
+sp := Global.Spec(key)
+if sp == nil { return fallback }     // 未登记 → 恒返回 fallback
+```
+
+所以 `currentMaxAtts()` 永远拿不到运维配置，只会回落到 `r.maxAtts`（再被钳到
+[5,30]）。**热重载完全无效**，改配置不会有任何效果。
+
+这正是 §16 F-2（「24h 硬编码清理从来不存在」）与 F-5（「第三条死路径」）的同款：
+**新加一个设置消费点，却忘了把它登记进 spec**。四轮下来同一个坑第四次复发。
+
+修法（未做，等用户决定分支合并口径）：在 `settings/spec_sessions_v2.go` 登记
+`Key: "sessions_v2.mirror_outbox_max_attempts"`，Type=TypeInt、Scope=ScopePlatform、
+Min=5 / Max=30、Default=10，并在 DescriptionLong 里写明「改动即时生效（每次
+requeue 读取）」。登记前不要对外宣称支持热重载。
+
+### F-16 (Major) 并行 drain 的「短批次即已排空」判定在并发下不成立
+
+`drainWorker` 的退出条件是 `if len(rows) < r.batchSize { return }`，
+代码注释与 commit message 都写「a short batch signals the table is drained」。
+
+`claimBatch` 用的是 `WHERE id IN (SELECT … LIMIT $1 FOR UPDATE SKIP LOCKED)`。
+`SKIP LOCKED` 的语义是**跳过当前被别的事务锁住的行**，因此短批次只说明
+「本次快照里没锁的、够 LIMIT 的行不足」，**不等于表已排空**：
+
+- 兄弟 worker 正在 claim（其 UPDATE 事务尚未提交）→ 本 worker 短读并提前退出；
+- hook 侧的 INSERT 与本轮 drain 并发 → 新行随时可能落在退出之后；
+- 多个事务互相持锁时，**全部** worker 都可能短读并集体退出，剩余行要等
+  下一个 30s tick。
+
+不是永久丢数据（下一 tick 会重来），但把「本轮排空」变成「尽力而为」，
+在高写入量下出箱堆积速度可能超过 30s 一次的排空速度 —— 与该 commit
+「提升排空吞吐」的初衷相反。正确判定应是「连续两次空批次」或由
+worker 池统一计数。
+
+### F-17 (Major) 指标重命名是破坏性变更，commit 只核了「仓内无消费方」
+
+`llmgw_session_mirror_outbox_replays_total` → `session_mirror_outbox_replays_total`，
+commit 论证为「no other counter consumers in the tree」。
+
+仓内确实无引用（已 grep 确认），但**仓外**（Grafana 面板 / 告警规则 /
+运维 runbook / 外部采集配置）不在这个论证的覆盖范围内。去掉 `llmgw_` 前缀
+会直接让既有面板与告警静默断流。至少需要在 db-changelog 或运维文档里
+记一条「旧指标名已下线」的迁移说明。
+
+### 附带：三条低成本事实问题
+
+1. commit 写「Subtask 5 … §6 / §10」，但 §6 是**子任务 4**；子任务 5 在 **§7**。
+2. 「Caps DB pool pressure … so 32-core hosts no longer blow the pool」的论证不成立：
+   上限恒为 4，与 NumCPU 无关；而原实现只有 1 个 worker = 1 条连接，本来就没压力。
+   并行化是**吞吐**变更，不是池压力修复。
+3. batch 100 → 250 叠加 4 worker，每 tick 最多 1000 行在途、每个 worker 独占一条
+   连接直到整批 replay 完毕 —— 恰好放大了 commit 自称要限制的那项资源占用。
+
+### 覆盖率事实
+
+该 commit **只改了 `replay.go` 一个文件，没有任何新增测试**。新增的
+`drainWorker` 并发循环、`mirrorReplayWorkers()` 扇出、`currentMaxAtts` 钳制、
+`session_mirror_outbox_dead_total` 计数器**全部零覆盖**（已 grep 全部 9 个
+`*_test.go` 确认）。commit message 的「Tests: go test ./internal/sessionv2mirror/...
+ok」只说明**既有**测试仍然通过，不代表新代码被验证过 —— 这正是 §19 记的
+「单测全绿不等于断言有效」的另一面。并发逻辑（4 worker × SKIP LOCKED）
+尤其需要 `-race` 下的真实多 worker 用例。
