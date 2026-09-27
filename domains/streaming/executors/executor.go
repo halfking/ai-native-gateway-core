@@ -551,9 +551,11 @@ type Executor struct {
 	// nil (default, flag LLM_GATEWAY_ATTACHMENT_URL_FETCH_FALLBACK off)
 	// keeps the legacy byte-for-byte outbound body.
 	AttachmentURLFetchFallback *attachments.URLFetchFallback
-	// dispatchPipeline (V2, 479): when non-nil AND dispatch_v2 gate is on,
-	// Execute routes through the multi-tier dispatch pipeline instead of the
-	// synchronous candidate loop. See executor_dispatch.go.
+	// dispatchPipeline (V2, 479): the sole Execute path since AUDIT_24H B2b
+	// (2026-08-17) — the synchronous candidate loop and its async 202 fallback
+	// were retired, and the dispatch_v2.enabled kill-switch no longer bypasses
+	// the pipeline. nil here means a wiring bug; main_dispatch.go wires it
+	// unconditionally. See executor_dispatch.go.
 	dispatchPipeline         *dispatch.Pipeline
 	dispatchModelRecommender DispatchModelRecommender
 	capacityAwareSortOn      bool

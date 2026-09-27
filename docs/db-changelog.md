@@ -714,3 +714,9 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 | 747 | `747_session_mirror_outbox_source_claim.sql` | `9c292c72eebe85eaf223762aba4401b39cc0ac88c716c1a719aff3d99792b7b6` | applied+verified |
 | 800 | `800_provider_endpoint_protocols.sql` | `b88fa96d87d10dd5bb3829a000ebbf999d6a4d210516bfe38b8a01ca95c8ba30` | applied+verified |
 
+## 2026-09-26T02:18:52Z — deploy 245 build_seq 2271 (1dfe88c0)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 750 | `750_usage_facts_daily_partition.sql` | `a75a89b22091e5d1af29eb4b2128bd373df07aa8a7aa9a95cf04d3f4ad3c0527` | applied+verified |
+
