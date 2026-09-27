@@ -457,6 +457,74 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// Append-only alert events, no partition strategy. Default 30d via
 	// lifecycle.runtime_alert_events_ttl_days.
 	pm.cleanupOldRuntimeAlertEvents(ctx)
+
+	// 11. 2026-09-27 (R67 session-storage 审计子任务 2, handoff §4):
+	// session_turn_logs 保留时长改为可配。此前 430 schema 写死
+	// expires_at = NOW() + 24h,清理阈值同样硬编码,合规回溯窗口与
+	// 详情页查询窗口无法各自调档。默认 24h —— 与原行为逐字节一致。
+	pm.cleanupSessionTurnLogsByTTL(ctx)
+}
+
+// clampSessionTurnLogsTTLHours forces the configured retention into the
+// [1, 168] window that migration 753's spec entry advertises.
+//
+// The lower bound is a data-safety floor, not a style preference: a
+// misconfigured 0 (or a negative value from a bad hand-edit) would
+// otherwise expire the entire session_turn_logs table in one tick.
+// Mirrored inside the SQL function so direct SQL callers are protected
+// too; this Go-side copy exists so the log line reports what was really
+// used.
+func clampSessionTurnLogsTTLHours(raw int) int {
+	if raw < 1 {
+		return 1
+	}
+	if raw > 168 {
+		return 168
+	}
+	return raw
+}
+
+// cleanupSessionTurnLogsByTTL deletes session_turn_logs rows whose
+// expires_at is older than the configured TTL.
+//
+// 2026-09-27 (R67 session-storage 审计子任务 2, handoff §4): the 24h
+// window was hardcoded in migration 430 (expires_at DEFAULT) and in the
+// cleanup predicate, so operators could not widen the retention for
+// compliance backtracking without a schema change. Migration 753 adds
+// cleanup_session_turn_logs_by_ttl(p_ttl_hours) to make it configurable.
+//
+// Retention is read fresh from settings.Global on every call
+// (lifecycle.session_turn_logs_ttl_hours, default 24), so changes take
+// effect on the next partition_manager tick — no gateway restart.
+// session_turn_logs is a plain heap table indexed on expires_at by
+// migration 753, so the DELETE is index-backed.
+func (pm *PartitionManager) cleanupSessionTurnLogsByTTL(ctx context.Context) {
+	ttlHours := clampSessionTurnLogsTTLHours(settings.GetPlatformInt("lifecycle.session_turn_logs_ttl_hours", 24))
+
+	// Match AuditTrimmer.TrimOnce: a nil pool is a no-op rather than a panic,
+	// so the manager stays constructible in tests and in degraded boot order.
+	if pm.db == nil {
+		return
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	var deleted int64
+	err := pm.db.QueryRow(timeoutCtx,
+		"SELECT cleanup_session_turn_logs_by_ttl($1)",
+		ttlHours,
+	).Scan(&deleted)
+	if err != nil {
+		slog.Error("partition_manager: session_turn_logs TTL cleanup failed",
+			"ttl_hours", ttlHours, "error", err)
+		return
+	}
+
+	if deleted > 0 {
+		slog.Info("partition_manager: session_turn_logs TTL cleanup",
+			"ttl_hours", ttlHours, "deleted", deleted)
+	}
 }
 
 // stateTableTTLSpec describes one parent table dropped via the SQL helper

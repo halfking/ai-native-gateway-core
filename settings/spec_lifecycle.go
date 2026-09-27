@@ -33,6 +33,22 @@ func LifecycleSpecs() []*Spec {
 		// 超过此天数的月度分区会被 drop_old_request_logs_bodies_partitions() 自动 DROP。
 		{Key: "lifecycle.request_logs_bodies_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(365), Default: 7, DangerLevel: Warning, HotReload: true, Description: "request_logs_bodies 保留天数", DescriptionLong: "request_logs_bodies 月度分区保留天数。body 仅用于调试，超过此天数的分区会被自动 DROP。默认 7 天。", Unit: "天"},
 
+		// 2026-09-27 (R67 session-storage 审计子任务 2, handoff §4):
+		// session_turn_logs 保留时长。此前是 24h 硬编码(430 schema 的
+		// expires_at DEFAULT + cleanup 函数的 WHERE 阈值),不同部署场景
+		// (合规回溯窗口 / 详情页查询窗口)无法调档。改为按小时可配。
+		//
+		// 范围 1-168:下限 1h 防呆(误配 0 会瞬时清空整表,spec 风险约束
+		// 明令"不要把 retention 改成 < 1h");上限 168h = 7 天,与
+		// docs/storage/2026-09-20-session-storage-decoupling-plan.md
+		// §5 S5 的 TTL 燃尽曲线对齐。默认 24 —— 与原硬编码行为逐字节
+		// 一致,上线不改变任何既有行为。
+		//
+		// 消费点:bg.PartitionManager.runCleanup 读本键调
+		// cleanup_session_turn_logs_by_ttl(p_ttl_hours)(迁移 753),
+		// HotReload 让运维调档无需重启网关。
+		{Key: "lifecycle.session_turn_logs_ttl_hours", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(168), Default: 24, DangerLevel: Warning, HotReload: true, Description: "session_turn_logs 保留小时数", DescriptionLong: "session_turn_logs 保留时长(小时)。bg.PartitionManager.runCleanup 周期调用 cleanup_session_turn_logs_by_ttl(p_ttl_hours)(迁移 753)删除 expires_at 早于「当前时刻 − 本值」的行。默认 24 小时(与迁移 430 的硬编码行为一致),范围 1-168(上限 7 天)。迁移 753 另在函数内对入参做 GREATEST(...,1) 与 NULL→24 兜底,防误配把表清空。", Unit: "小时"},
+
 		// 2026-09-09 (审计 R3#4): session_summaries 归档行 TTL。
 		// 471 起归档(domains/sessionarchive 把 30d 不活跃的行
 		// SET archived_at = NOW())但归档行从不删除,表无界增长。
