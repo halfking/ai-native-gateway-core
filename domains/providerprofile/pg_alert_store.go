@@ -58,7 +58,7 @@ func (s *PGAlertStore) SaveIfNew(ctx context.Context, a *Alert) error {
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		a.CredentialID, a.ProviderID, a.Type, a.Level, a.TriggerDate,
 		nullScore(a.CurrentScore), nullScore(a.PreviousScore), nullScore(a.ScoreChange),
-		nullableString(a.Dimension), a.Message, jsonBytesOrNULL(detailsJSON), nullableString(a.ActionTaken))
+		nullableString(a.Dimension), a.Message, jsonParamOrNULL(detailsJSON), nullableString(a.ActionTaken))
 	if err != nil {
 		return fmt.Errorf("insert alert: %w", err)
 	}
@@ -96,10 +96,12 @@ func nullableString(s string) interface{} {
 	return s
 }
 
-// jsonBytesOrNULL returns nil for an empty/nil slice so the jsonb column stays NULL.
-func jsonBytesOrNULL(b []byte) interface{} {
+// jsonParamOrNULL renders marshalled JSON as a string so pgx's SimpleProtocol
+// inlines it as a JSON text literal. A raw []byte would be inlined as a bytea
+// hex literal ('\x7b…'), which every jsonb/json column rejects at parse time.
+func jsonParamOrNULL(b []byte) interface{} {
 	if len(b) == 0 {
 		return nil
 	}
-	return b
+	return string(b)
 }

@@ -58,6 +58,10 @@ func ParseGeminiResponse(body []byte) (*InternalResponse, error) {
 	if resp.Role == "model" {
 		resp.Role = "assistant"
 	}
+	// R69: native value before the lossy mapping (RECITATION → content_filter),
+	// mirroring parse_gemini_stream.go's streaming counterpart — lets
+	// SerializeGeminiResponse hand Gemini clients back their own finishReason.
+	resp.StopReason = candidate.FinishReason
 	resp.FinishReason = mapGeminiFinishReason(candidate.FinishReason)
 	for index, part := range candidate.Content.Parts {
 		isThought, legacyThoughtText := geminiThoughtMarker(part.Thought)

@@ -143,6 +143,12 @@ const defaultCentsPerCredit = 0.1
 // RollupDay 聚合 day（UTC 日，[00:00, +24h)）的 usage_facts 写入
 // report_snapshots 六个 scope；可重入（ON CONFLICT 幂等回填）。
 // 迟到数据次日重跑昨日即可修正——worker 启动时先补跑昨日即依赖此语义。
+//
+// R69 口径注记：本函数日桶是 UTC 日，而 usage_facts 的物理日分区边界
+// （750/751）是上海日历日——一个 UTC 日窗横跨两个物理分区，partition
+// pruning 仍生效（扫 2 个分区而非 1 个），数据正确性无损。消费
+// report_snapshots.report_date 的新读面（仪表盘等）请勿把它解读为
+// "上海日"，口径差异 8 小时。
 func RollupDay(ctx context.Context, q Querier, day time.Time) (RollupStats, error) {
 	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
 	end := start.Add(24 * time.Hour)

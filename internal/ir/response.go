@@ -45,6 +45,16 @@ type InternalResponse struct {
 	// We store the OpenAI form; Anthropic values are mapped via mapFinishReason.
 	FinishReason string `json:"finish_reason"`
 
+	// StopReason preserves the upstream-native terminal reason for
+	// same-protocol pass-through (R69, non-streaming counterpart of the R68
+	// streaming fix on parse_gemini_stream.go). mapAnthropicFinishReason /
+	// mapGeminiFinishReason collapse lossy values (Anthropic pause_turn →
+	// stop, Gemini RECITATION → content_filter), so an Anthropic→Anthropic
+	// or Gemini→Gemini round-trip through the IR would otherwise hand the
+	// client a generic "end_turn"/"SAFETY". Serializers use it only when
+	// SourceProtocol matches the client protocol — never leaked cross-protocol.
+	StopReason string `json:"stop_reason,omitempty"`
+
 	// Usage statistics (both protocols have compatible usage fields)
 	Usage ResponseUsage `json:"usage"`
 
@@ -215,6 +225,9 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 		Role:           src.Role,
 		SourceProtocol: ProtocolAnthropicMessages,
 		FinishReason:   mapAnthropicFinishReason(src.StopReason),
+		// R69: keep the native value for same-protocol serialization (the
+		// mapping above is lossy: pause_turn/model_context_window_exceeded → stop).
+		StopReason: src.StopReason,
 		Usage: ResponseUsage{
 			PromptTokens:     src.Usage.InputTokens,
 			CompletionTokens: src.Usage.OutputTokens,
@@ -737,8 +750,16 @@ func SerializeAnthropicResponse(ir *InternalResponse, clientModel string) ([]byt
 	// Build content blocks
 	content := buildAnthropicResponseContent(ir)
 
-	// Build stop_reason (Anthropic form)
+	// Build stop_reason (Anthropic form). R69: same-protocol native
+	// passthrough first — the FinishReason mapping is lossy (pause_turn →
+	// stop → end_turn), so an Anthropic→Anthropic round-trip must hand back
+	// the upstream's own stop_reason. Cross-protocol (SourceProtocol !=
+	// anthropic) the native value is never leaked: Anthropic clients reject
+	// foreign vocabularies, same guard as SerializeGemini's R68 fix.
 	stopReason := mapFinishReasonToAnthropic(ir.FinishReason)
+	if ir.SourceProtocol == ProtocolAnthropicMessages && ir.StopReason != "" {
+		stopReason = ir.StopReason
+	}
 	// audit #11: mirror of the OpenAI serializer guard. buildAnthropicResponseContent
 	// drops nameless tool calls (unified empty-name rejection); when that drop
 	// empties an otherwise tool_calls turn, stop_reason=tool_use would make
@@ -1294,8 +1315,18 @@ func SerializeGeminiResponse(irResp *InternalResponse, clientModel string) ([]by
 		}
 	}
 
-	if irResp.FinishReason != "" {
-		candidate["finishReason"] = mapFinishReasonToGemini(irResp.FinishReason)
+	if irResp.FinishReason != "" || irResp.StopReason != "" {
+		// R69: same-protocol native passthrough (Gemini→Gemini), the
+		// non-streaming counterpart of SerializeGemini's R68 streaming fix.
+		// RECITATION/MALFORMED_FUNCTION_CALL etc. survive the IR round-trip
+		// instead of collapsing to SAFETY/STOP; cross-protocol sources
+		// (SourceProtocol != gemini) keep the mapped form so foreign native
+		// values (end_turn, pause_turn) never leak onto the Gemini wire.
+		if irResp.SourceProtocol == ProtocolGeminiGenerate && irResp.StopReason != "" {
+			candidate["finishReason"] = irResp.StopReason
+		} else {
+			candidate["finishReason"] = mapFinishReasonToGemini(irResp.FinishReason)
+		}
 	}
 
 	out := map[string]any{
