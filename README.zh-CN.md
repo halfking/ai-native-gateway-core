@@ -260,7 +260,7 @@ GOOS=windows GOARCH=arm64  go build -o dist/llm-gw-installer-windows-arm64.exe .
 | 5. 目录结构 | 同 | 同（db/data、redis/data 目录仍创建但不使用） |
 | 6. `compose.yml` | 完整 3 服务 | **剥离 `kx-citus` + `kx-redis`**；gateway 移除 `depends_on` 与 PG/Redis env |
 | 7. 启动容器 | 3 容器 | **仅 `kx-llm-gateway-go`** |
-| 8. 初始化数据库 | 等待 PG ready + `InitSchema`（700+ 迁移） | **跳过**（SQLite 由 app 自动建表） |
+| 8. 初始化数据库 | 等待 PG ready + `InitSchema`（450+ startup 迁移） | **跳过**（SQLite 由 app 自动建表） |
 | 9. 健康检查 | 5 项全检 | 仅校验容器 + `/healthz`；PG/Redis/Schema 不适用、报告中强制显示 ✅ |
 
 **新增 install flags**
@@ -417,10 +417,10 @@ Installer 完整设计见 [installer/README.md](installer/README.md)。
 
 ```bash
 git push              # → codeup（无附加检查）
-git push github       # → github（自动严格扫描，命中即阻断）
+git push github       # → github（自动敏感信息扫描，BLOCK 级命中阻断）
 ```
 
-敏感信息保护：`.githooks/pre-push` 推送 github 时自动运行 `scripts/scan-secrets.sh` 严格模式（50 规则）。详见[双仓库策略文档](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md)。
+敏感信息保护：`.githooks/pre-push` 推送 github 时自动运行 `scripts/scan-secrets.sh`（50 规则；默认 normal 模式——BLOCK 级命中阻断、WARN 级告警放行，`STRICT_SCANNER=1` 开严格全阻断）。详见[双仓库策略文档](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md)。
 
 ---
 
