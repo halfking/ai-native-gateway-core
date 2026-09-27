@@ -612,6 +612,13 @@ files=(
   # 覆盖初始器（694 先例的对偶）。幂等 ALTER；boot 链
   # db.ensureUsageFactsDailyPartition 同语句双通道收敛。
   "$ROOT_DIR/sql/migrations/startup/751_usage_facts_partition_tz_pin.sql"
+  # 2026-09-27 mock probe 生产入口收口轮：752 mock_probe_history 历史表 +
+  # 按日分区函数——DDL 原死放 migrations/ 顶层（036）无投递通道（745 同款
+  # 病），仅 252 被手工跑过，收编正典通道。相对 036 加固：函数级 SET
+  # timezone 钉扎（751 对偶）+ move-then-attach（750 同款）。幂等，252
+  # 存量库重放安全。Go 侧 ensure 点在 internal/mockprobe HistoryStore
+  # （启动 bootstrap + writeLoop 每日 tick），无 db.go boot ensure。
+  "$ROOT_DIR/sql/migrations/startup/752_mock_probe_history.sql"
   # 2026-09-24 supplier-protocol-optimization §3.2：800 provider_endpoint_
   # protocols 每 provider 多端点表 + 从 providers 旧行回填（ON CONFLICT
   # DO NOTHING 幂等）。原 deploy/sql/migrations/V800__*.sql 从未进任何
