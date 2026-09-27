@@ -64,11 +64,13 @@ func TestLiveVapeurResponsesProbe(t *testing.T) {
 	start := time.Now()
 	result, err := probeFn(ctx, probeURL, apiKey, liveVapeurModel)
 	elapsed := time.Since(start)
-	t.Logf("probe elapsed=%s status=%d", elapsed.Round(time.Millisecond), result.statusCode)
 
 	if err != nil {
-		t.Fatalf("probe transport error after %s: %v", elapsed.Round(time.Millisecond), err)
+		// doResponsesProbe 传输层错误时返回 (nil, err)——必须先判 err
+		// 再解引用 result，否则取证日志自身先 nil panic（十六轮审计 E2）。
+		t.Fatalf("probe transport error after %s: %v (no response)", elapsed.Round(time.Millisecond), err)
 	}
+	t.Logf("probe elapsed=%s status=%d", elapsed.Round(time.Millisecond), result.statusCode)
 	if result.statusCode != 200 {
 		t.Fatalf("statusCode = %d, want 200; errorMessage=%q", result.statusCode, result.errorMessage)
 	}
@@ -94,5 +96,12 @@ func TestLiveVapeurChatProbeIsNotUsedForResponses(t *testing.T) {
 
 	start := time.Now()
 	result, err := fallbackFn(ctx, fallbackURL, apiKey, liveVapeurModel)
-	t.Logf("chat probe elapsed=%s status=%d err=%v", time.Since(start).Round(time.Millisecond), result.statusCode, err)
+	elapsed := time.Since(start).Round(time.Millisecond)
+	// 该路径对图像类模型挂死到超时正是要观测的场景——传输错误时
+	// fallbackFn 返回 (nil, err)，直接解引用会在取证前 panic。
+	if result != nil {
+		t.Logf("chat probe elapsed=%s status=%d err=%v", elapsed, result.statusCode, err)
+	} else {
+		t.Logf("chat probe elapsed=%s no response (transport error): %v", elapsed, err)
+	}
 }

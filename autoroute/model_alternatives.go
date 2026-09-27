@@ -72,6 +72,20 @@ func (d *Decider) RecommendModelAlternatives(ctx context.Context, req ModelAlter
 		}
 	}
 	eligible := make(map[string]struct{}, len(recommended))
+	// Taxonomy fail-open（十六轮审计 E3，与 recommend_v2.go:127 的
+	// 69007a3c2 同根因）：线上模型库缺该任务的 capability 词表时
+	// TaskMatchScore 恒 0，下面这个 <=0 过滤会把非 chat 任务的候选
+	// 全部剔除——503 建议列表恒空（fail-closed）。词表在候选池中
+	// 无一代表时跳过该维度，让建议按 IQ/排除表决定，而不是把
+	// 「无数据」误读成「不适合」。
+	taskVocabularyPresent := true
+	if req.Task != TaskChat {
+		pool := make([]Candidate, 0, len(recommended))
+		for _, candidate := range recommended {
+			pool = append(pool, candidate.Candidate)
+		}
+		taskVocabularyPresent = TaskVocabularyRepresented(req.Task, pool)
+	}
 	for _, candidate := range recommended {
 		model := strings.TrimSpace(candidate.Candidate.CanonicalName)
 		if model == "" {
@@ -84,7 +98,8 @@ func (d *Decider) RecommendModelAlternatives(ctx context.Context, req ModelAlter
 		if !candidateFound || candidateIQ < initialIQ {
 			continue
 		}
-		if req.Task != TaskChat && TaskMatchScore(req.Task, candidate.Candidate.Tags) <= 0 {
+		if req.Task != TaskChat && taskVocabularyPresent &&
+			TaskMatchScore(req.Task, candidate.Candidate.Tags) <= 0 {
 			continue
 		}
 		eligible[model] = struct{}{}

@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -107,6 +108,10 @@ func (api *SessionListAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 			WriteStorageDegraded(w, observability.StorageComponentList, err)
 			return
 		}
+		// 十六轮审计 E6b：去回显后错误一度既不给客户端也不进日志
+		// （本文件原本无任何日志调用）——排障时 500 无迹可查。
+		slog.Error("session_list: load sessions failed",
+			"tenant_id", tenantID, "page", page, "size", size, "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "error",
 			"message": "Failed to load sessions",
@@ -300,6 +305,8 @@ func (api *SessionListAPI) HandleDetail(w http.ResponseWriter, r *http.Request) 
 			WriteStorageDegraded(w, observability.StorageComponentDetail, err)
 			return
 		}
+		slog.Error("session_list: load session detail failed",
+			"tenant_id", tenantID, "session_id", sessionID, "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "error",
 			"message": "Failed to load session detail",
