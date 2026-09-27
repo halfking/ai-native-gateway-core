@@ -65,3 +65,6 @@
 
 ### R45 回注（2026-09-19）
 - supplier_errors 聚合读端的 stage 列空串占比 90%+（真库 24h 1206/1333）：`dominant_stage` 类聚合必须 `COALESCE(NULLIF(stage,''),'unknown')`（vendor_credential_error_handlers.go 读端约定），裸 MODE 恒输出空串。分组聚合须带 other_count 使分项与总数的缺口可见（真库 158 错误只有 8 个落在四类分项）。
+
+### R71 回注（2026-09-27，jsonb []byte "全仓扫描无残留"结论被推翻）
+- **"全仓扫描零残留"必须以机械扫描+接线活跃度双维度复核**：R11 FIX-C 后两轮宣称无残留，R71 复扫发现 approval SaveConfig/SaveRule（活跃接线，保存必败）、projectattr evidence（活跃接线，带证据归因行全丢）、moduleexec/center（死代码潜伏）共 4 组位点。修法统一 string 化 + 可空位点保持 NULL 语义（string(nil)='' 同样炸 jsonb）；机制钉=providerprofile TestJSONParamOrNULL + projectattr Querier 参数类型钉。
