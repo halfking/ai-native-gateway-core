@@ -470,10 +470,13 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 //
 // The lower bound is a data-safety floor, not a style preference: a
 // misconfigured 0 (or a negative value from a bad hand-edit) would
-// otherwise expire the entire session_turn_logs table in one tick.
-// Mirrored inside the SQL function so direct SQL callers are protected
-// too; this Go-side copy exists so the log line reports what was really
-// used.
+// otherwise be handed straight to the SQL interlock as a raise-condition.
+// Clamping here means the value we log is the value the function saw.
+//
+// Note the setting does NOT widen or narrow this sweep. Retention is baked
+// into session_turn_logs.expires_at at write time by
+// domains/session/v2/turn_logs_writer.go; this function just deletes rows
+// whose baked expiry has passed.
 func clampSessionTurnLogsTTLHours(raw int) int {
 	if raw < 1 {
 		return 1
@@ -484,20 +487,25 @@ func clampSessionTurnLogsTTLHours(raw int) int {
 	return raw
 }
 
-// cleanupSessionTurnLogsByTTL deletes session_turn_logs rows whose
-// expires_at is older than the configured TTL.
+// cleanupSessionTurnLogsByTTL deletes session_turn_logs rows whose baked
+// expires_at has passed.
 //
-// 2026-09-27 (R67 session-storage 审计子任务 2, handoff §4): the 24h
-// window was hardcoded in migration 430 (expires_at DEFAULT) and in the
-// cleanup predicate, so operators could not widen the retention for
-// compliance backtracking without a schema change. Migration 753 adds
-// cleanup_session_turn_logs_by_ttl(p_ttl_hours) to make it configurable.
+// 2026-09-27 (R67 session-storage 审计子任务 2, handoff §4; semantics
+// corrected by critical audit). The audit found the task's premise was
+// wrong in a way worth writing down: migration 430 defines
+// cleanup_expired_session_turn_logs(), but nothing ever calls it — no Go
+// reference, no pg_cron registration, no shell invocation. session_turn_logs
+// therefore grew unbounded in production. This is the first sweep that
+// actually runs, not a parameterisation of an existing one.
 //
-// Retention is read fresh from settings.Global on every call
-// (lifecycle.session_turn_logs_ttl_hours, default 24), so changes take
-// effect on the next partition_manager tick — no gateway restart.
-// session_turn_logs is a plain heap table indexed on expires_at by
-// migration 753, so the DELETE is index-backed.
+// Retention itself is decided at write time: turn_logs_writer.go bakes
+// expires_at from lifecycle.session_turn_logs_ttl_hours. The setting is
+// re-read every tick, so an operator change applies to newly written rows
+// without a gateway restart; rows already written keep their original
+// expiry and are swept when they reach it.
+//
+// The predicate is `expires_at < NOW()`, which is index-backed by
+// idx_session_turn_logs_expires (migration 430:275).
 func (pm *PartitionManager) cleanupSessionTurnLogsByTTL(ctx context.Context) {
 	ttlHours := clampSessionTurnLogsTTLHours(settings.GetPlatformInt("lifecycle.session_turn_logs_ttl_hours", 24))
 

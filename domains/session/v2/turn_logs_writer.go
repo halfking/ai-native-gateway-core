@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // TurnLogsWriter writes processing stage logs to public.session_turn_logs
@@ -37,6 +39,37 @@ type TurnLogRecord struct {
 
 	StartedAt   time.Time
 	CompletedAt time.Time
+}
+
+// sessionTurnLogsTTL resolves how long a freshly written stage log should
+// live, from the platform setting lifecycle.session_turn_logs_ttl_hours.
+//
+// 2026-09-27 (R67 session-storage audit subtask 2, handoff §4; semantics
+// corrected by critical audit): this used to be a literal
+// `time.Now().Add(24*time.Hour)` at the call site. That literal — not the
+// 430 column DEFAULT, which this INSERT always overrides — was the only
+// live TTL in the system, so making retention configurable had to happen
+// here or not at all.
+//
+// expires_at is the single source of truth for retention: it is baked at
+// write time, and migration 753's cleanup only sweeps `expires_at < NOW()`.
+// Consequence worth knowing: changing the setting affects newly written
+// rows; rows already in the table keep the expiry they were written with
+// and will still be swept at that time.
+//
+// The clamp mirrors the spec entry (Min 1 / Max 168) and the SQL-side
+// interlock in cleanup_session_turn_logs_by_ttl. A 0 would make every row
+// immediately expired, so the floor is a data-safety requirement, not a
+// style choice.
+func sessionTurnLogsTTL() time.Duration {
+	hours := settings.GetPlatformInt("lifecycle.session_turn_logs_ttl_hours", 24)
+	if hours < 1 {
+		hours = 1
+	}
+	if hours > 168 {
+		hours = 168
+	}
+	return time.Duration(hours) * time.Hour
 }
 
 // WriteStage writes a single processing stage log
@@ -70,7 +103,7 @@ func (w *TurnLogsWriter) WriteStage(ctx context.Context, rec TurnLogRecord) erro
 		rec.SessionID, rec.TurnNo, rec.TenantID, rec.RequestID,
 		rec.Stage, rec.StageStatus, string(eventDataJSON), rec.ErrorMsg,
 		rec.StartedAt, rec.CompletedAt, latencyMs,
-		time.Now().Add(24*time.Hour), // TTL: 24 hours
+		time.Now().Add(sessionTurnLogsTTL()), // TTL: lifecycle.session_turn_logs_ttl_hours
 	)
 
 	if err != nil {
@@ -216,6 +249,19 @@ func (w *TurnLogsWriter) AggregateSessionLogs(ctx context.Context, tenantID, ses
 // CleanupExpiredLogs deletes logs older than 24 hours
 //
 // This should be called by a background worker periodically.
+//
+// Deprecated (2026-09-27, critical audit of Subtask 2): nothing calls this
+// — the only reference in the tree is its own test, so it has never run in
+// production. The predicate here was in fact the correct one
+// (`expires_at < NOW()`), which is what made the missing caller worth
+// naming: this dead method plus the dead SQL cleanup_expired_session_turn_logs()
+// (migration 430:336) are why session_turn_logs grew unbounded.
+//
+// The live sweep is now bg.PartitionManager.cleanupSessionTurnLogsByTTL →
+// cleanup_session_turn_logs_by_ttl (migration 753), which uses the same
+// predicate. Kept (not deleted) because it is an exported method: an
+// out-of-tree caller may exist, and removal is a wider blast radius than
+// this subtask should take. Scheduled for removal — see handoff §15/§16.
 func (w *TurnLogsWriter) CleanupExpiredLogs(ctx context.Context) (int64, error) {
 	result, err := w.db.Exec(ctx, `
 		DELETE FROM public.session_turn_logs
