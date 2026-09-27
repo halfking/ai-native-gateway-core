@@ -466,6 +466,123 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// 参数化既有行为（批判式审计证伪了初稿的说法）。跑在本函数
 	// （pm.interval，main.go 传 24h）而非 1h 的 runCleanup。
 	pm.cleanupSessionTurnLogsByTTL(ctx)
+
+	// 12. 2026-09-27 (R67 session-storage 审计子任务 7, handoff §9):
+	// request_logs 主表 archive 流水线。331 把 archive_request_logs 整族
+	// 移除后，主表月分区一直只保留、不归档；迁移 754 的
+	// archive_request_logs_default(p_retention_days) 把超出保留窗口的月分区
+	// 摘要字段落进 request_logs_archive_YYYY_MM（丢弃 18 个大 JSONB 列）。
+	// 源分区不 DROP（R68 纪律：750 同款 move-then-attach）。
+	//
+	// 为什么不进 archiveSpecs()：那套机制按「日期参数 + 标量/tuple 返回」
+	// 设计（见 archiveSpec 的 scalarResult / argExpr 注释），而本函数收
+	// retention 天数、且 RETURNS TABLE(archived_partition, rows_archived)
+	// 是**每个分区一行**的集合返回。硬塞进去会错传参数并按错误的列形状扫描
+	// （与 2026-09-03/04 那次 42703 同款事故）。故单列一个方法。
+	pm.archiveOldRequestLogs(ctx)
+}
+
+// clampRequestLogsArchiveDays keeps the retention the SQL guard would accept.
+//
+// archive_request_logs_default RAISEs outside [7,365]; clamping here means the
+// value we log is the value the function saw, and a bad settings value degrades
+// to a safe default instead of aborting the whole call every tick. The SQL-side
+// guard is still the authority — this is a courtesy, not a security boundary.
+func clampRequestLogsArchiveDays(raw int) int {
+	if raw < 7 {
+		return 7
+	}
+	if raw > 365 {
+		return 365
+	}
+	return raw
+}
+
+// requestLogsArchiveHourOfDay is the single hour (local) in which the
+// request_logs archive sweep is allowed to run. See archiveOldRequestLogs for
+// why the sweep cannot simply run on every cleanup tick.
+const requestLogsArchiveHourOfDay = 3
+
+// shouldRunRequestLogsArchive gates the archive sweep to once per calendar day.
+//
+// Pure function so the cadence is unit-testable without a clock or a database.
+func shouldRunRequestLogsArchive(now time.Time) bool {
+	return now.Hour() == requestLogsArchiveHourOfDay
+}
+
+// archiveOldRequestLogs archives request_logs monthly partitions older than the
+// configured retention into request_logs_archive_YYYY_MM.
+//
+// 2026-09-27 (R67 session-storage 审计子任务 7, handoff §9; cadence fixed by the
+// third-round critical audit). Read fresh from settings every tick
+// (lifecycle.request_logs_ttl_days, default 30), so an operator change applies
+// without a gateway restart.
+//
+// ## Why this is daily and not on every tick
+//
+// The SQL has no "already archived" marker. It enumerates every request_logs
+// month whose month_end is past the cutoff and, for each, pages the WHOLE
+// source partition through INSERT ... ON CONFLICT DO NOTHING. Rows archived on
+// a previous run simply conflict — but they are still read, joined, and
+// re-checked. So the per-run cost is O(all rows older than the retention
+// window), and it never shrinks.
+//
+// Running that on the hourly cleanup tick (providerErrorCleanupInterval = 1h)
+// meant a growing full re-scan of historical request_logs, forever, for work
+// that is already done. Hour 3 keeps it to once a day (~24x less) without
+// touching the migration — which matters, because that SQL has never been
+// executed against a real PostgreSQL and adding a new ledger table to it
+// blind would be the larger risk. A proper fix is an archive ledger recording
+// (partition, max_id archived) so completed partitions are skipped outright;
+// that is deliberately left as a follow-up, not smuggled in here.
+//
+// The function returns one row per archived partition, so this uses Query and
+// sums rows_archived — a QueryRow against a set-returning function would read
+// only the first partition and under-report the work done.
+func (pm *PartitionManager) archiveOldRequestLogs(ctx context.Context) {
+	if pm.db == nil {
+		return
+	}
+	if !shouldRunRequestLogsArchive(time.Now()) {
+		return
+	}
+	retentionDays := clampRequestLogsArchiveDays(
+		settings.GetPlatformInt("lifecycle.request_logs_ttl_days", 30))
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+
+	rows, err := pm.db.Query(timeoutCtx,
+		"SELECT archived_partition, rows_archived FROM archive_request_logs_default($1)",
+		retentionDays)
+	if err != nil {
+		slog.Error("partition_manager: request_logs archive failed",
+			"ttl_days", retentionDays, "error", err)
+		return
+	}
+	defer rows.Close()
+
+	var partitions int
+	var totalRows int64
+	for rows.Next() {
+		var name string
+		var archived int64
+		if err := rows.Scan(&name, &archived); err != nil {
+			slog.Error("partition_manager: request_logs archive scan failed", "error", err)
+			return
+		}
+		partitions++
+		totalRows += archived
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("partition_manager: request_logs archive rows failed", "error", err)
+		return
+	}
+
+	if partitions > 0 {
+		slog.Info("partition_manager: request_logs archived",
+			"ttl_days", retentionDays, "partitions", partitions, "rows", totalRows)
+	}
 }
 
 // clampSessionTurnLogsTTLHours forces the configured retention into the

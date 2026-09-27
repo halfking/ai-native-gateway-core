@@ -726,3 +726,9 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 |-----------|------|---------|--------|
 | 751 | `751_usage_facts_partition_tz_pin.sql` | `4f788a566c2c00f2d3fdd4f2af0cc2c0611bdd13fd3f0456bb0eb661a5f4d7c2` | applied+verified（补登：eff61ecd/2273 已部署 245，台账当时漏记） |
 | 752 | `752_mock_probe_history.sql` | `1caf5efdf0223bb3bd1dd246926965d1b39c98bdb20336d05dd665e2295e009e` | pending deploy（本机库双轮幂等实跑 + UTC 钉扎 + move-then-attach 实证，docs/audit/2026-09-27-mock-probe-production-entry-audit.md §三） |
+
+## 2026-09-27T14:14:35Z — 12h 审计十五轮补登（753 未部署；canonical/embeddata SHA 一致）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 753 | `753_session_turn_logs_ttl.sql` | `9c8493f9dc1a4cd65a7828260ddc9baf11ae9f7b9901f145e9854a2f04da35af` | pending deploy（五点同步齐备：embeddata/var+map/StartupFiles/parity 一致，契约测试 migration_753_test.go 钉桩；R71 轮补齐 embed 时漏登本台账行，十五轮 D-3 补登） |

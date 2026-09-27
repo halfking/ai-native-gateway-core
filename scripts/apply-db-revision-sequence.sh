@@ -641,6 +641,16 @@ files=(
   # bg.PartitionManager.cleanupSessionTurnLogsByTTL（跑在 24h 的
   # archiveOldPartitionsIfNeeded tick 上），支持热重载。
   "$ROOT_DIR/sql/migrations/startup/753_session_turn_logs_ttl.sql"
+  # 2026-09-27 R67 session-storage 审计子任务 7：754 request_logs 主表
+  # archive 流水线——331 移除 archive_request_logs 整族后主表月分区一直
+  # 只保留不归档；本迁移按 lifecycle.request_logs_ttl_days 把超出窗口的
+  # 月分区摘要字段落进 request_logs_archive_YYYY_MM（丢弃 18 个大 JSONB
+  # 列）。源分区不 DROP（R68 move-then-attach 纪律）。逐分区建表用
+  # CREATE TABLE IF NOT EXISTS，函数 CREATE OR REPLACE，天然幂等；小批量
+  # 1000 行 + 主键游标，无 CONCURRENTLY（走 installer 单事务通道）。
+  # 编号：模板原写 746，已被 report_snapshots_internal_dims 占用；750~753
+  # 亦已占用，故取复核时的首个空闲号 754。
+  "$ROOT_DIR/sql/migrations/startup/754_archive_request_logs_default.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的
