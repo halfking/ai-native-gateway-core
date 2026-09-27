@@ -334,3 +334,42 @@ func TestMaterializedViewRefresher_ConcurrentRefreshAllSerialized(t *testing.T) 
 		t.Fatal("TriggerRefresh did not finish after refreshMu release (mutex leak/deadlock?)")
 	}
 }
+
+// TestNextAlignedWait pins the wall-clock alignment contract behind the
+// R12-F1 staggered-tick fix (2026-09-28 252 PG log audit): three gateway
+// instances with phase-random 10min tickers each refreshed on their own
+// phase because the token/advisory locks only dedup OVERLAPPING cycles.
+// The periodic loop now sleeps until a UTC wall-clock boundary so all
+// instances contend at the same instant and the existing locks collapse
+// their ticks into one refresh per window.
+func TestNextAlignedWait(t *testing.T) {
+	interval := 10 * time.Minute
+	base := time.Unix(0, 0).UTC()
+
+	// Exactly on a boundary → a full interval, never a zero-length spin.
+	require.Equal(t, interval, nextAlignedWait(base.Add(30*interval), interval))
+
+	// Mid-interval → remainder until the next boundary.
+	require.Equal(t, 4*time.Minute, nextAlignedWait(base.Add(36*time.Minute), interval))
+
+	// 1ns past a boundary → interval-1ns.
+	require.Equal(t, interval-time.Nanosecond, nextAlignedWait(base.Add(30*interval+time.Nanosecond), interval))
+
+	// Convergence: two instances whose ticks fall inside the SAME window
+	// land on the SAME boundary — the property that makes staggered
+	// instance ticks coincide so the existing locks collapse them.
+	t1 := base.Add(3*interval + 7*time.Minute + 13*time.Second)
+	t2 := base.Add(3*interval + 8*time.Minute + 59*time.Second)
+	w1, w2 := nextAlignedWait(t1, interval), nextAlignedWait(t2, interval)
+	require.Equal(t,
+		t1.Add(w1).Truncate(interval),
+		t2.Add(w2).Truncate(interval),
+		"instances waking from different phases must land on the same wall-clock boundary")
+
+	// The wait never exceeds the interval (loop can't stall).
+	for _, d := range []time.Duration{0, 1, 5*time.Minute + 999*time.Millisecond, interval - time.Nanosecond} {
+		w := nextAlignedWait(base.Add(d), interval)
+		require.Greater(t, w, time.Duration(0))
+		require.LessOrEqual(t, w, interval)
+	}
+}
