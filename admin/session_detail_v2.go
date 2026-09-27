@@ -232,7 +232,14 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			writeExportJSONError(w, http.StatusNotFound, "session not found")
 			return
 		}
-		writeExportJSONError(w, http.StatusInternalServerError, fmt.Sprintf("resolve session id: %v", err))
+		// 歧义不是服务端故障：409 让调用方知道「换个更精确的标识」即可，
+		// 且不回显含 tenant_id 的内部错误串（handoff §3 审计 Minor-2）。
+		if errors.Is(err, errSessionAmbiguous) {
+			writeExportJSONError(w, http.StatusConflict, "ambiguous session identifier")
+			return
+		}
+		slog.Error("resolveSessionID failed", "err", err)
+		writeExportJSONError(w, http.StatusInternalServerError, "resolve session id failed")
 		return
 	}
 
@@ -540,11 +547,18 @@ func (api *SessionDetailV2API) resolveSessionID(
 		// 只回客户端错误串运维不可见；落一条 Warn 作告警锚点。
 		slog.Warn("ambiguous session resolution: gw_session_id maps to multiple sessions",
 			"tenant_id", tenantID, "gw_session_id", input, "candidates", len(candidates))
-		return "", fmt.Errorf(
-			"gw_session_id %q maps to %d sessions (tenant %s); refusing ambiguous resolution",
-			input, len(candidates), tenantID)
+		// 细节（含 tenant_id / gw_session_id / 候选数）只进上面的 Warn 日志，
+		// 客户端只拿到 errSessionAmbiguous 哨兵 —— 与 handoff §3 审计 Minor-2
+		// 「500 响应体不得回显原始错误文本」同一处收口。
+		return "", errSessionAmbiguous
 	}
 }
 
 // errSessionNotFound 由 resolveSessionID 返回，调用方按 404 处理。
 var errSessionNotFound = errors.New("session not found")
+
+// errSessionAmbiguous 由 resolveSessionID 返回：客户端标识反向映射命中多个
+// session_id。调用方按 409 处理 —— 语义是「标识有歧义，请改用更精确的
+// session_id」，而不是服务端故障。此前该路径落到 500 兜底分支，客户端既
+// 收到错误的语义，也拿到含 tenant_id 的错误串。
+var errSessionAmbiguous = errors.New("ambiguous session identifier")

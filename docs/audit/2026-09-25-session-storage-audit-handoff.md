@@ -584,7 +584,7 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 
 | # | 子任务 | 分支 | 类型 | 状态 | Commit | PR URL | 备注 |
 |---|---|---|---|---|---|---|---|
-| 1 | 会话身份契约 API 层显式标注 | feat/session-identity-contract-api | P0 | TODO | - | - | - |
+| 1 | 会话身份契约 API 层显式标注 | feat/session-identity-contract-api (9f62818c5 已并入) + fix/session-ambiguity-409 (本轮收口) | P0 | [DONE] 2026-09-27 16:20 | 待回填 | 待创建 | 9f62818c5 + 9785c2398 已带 DISTINCT/LIMIT 2 歧义守卫进 main, 但走 500 兜底且响应体回显含 tenant_id 的内部错误串; 本轮以 fix/session-ambiguity-409 收口为 409 + 固定文案 (审计 Minor-2)。**未按原计划 rebase feat/session-identity-contract-api** —— 该分支 4 个 commit 与 main 的 R69/N-1 线已分叉, rebase 会回退 main 的 `SessionTurnV2.ID json:"-"`、空轮次序列化为 `[]`、errors.Is 注释等修复, 故改为定点移植 |
 | 2 | session_turn_logs 可配 TTL + summary 同步 | feat/session-turn-logs-ttl | P1 | TODO | - | - | - |
 | 3 | 详情 V2 body_status + 移除 request_logs_bodies JOIN | feat/session-detail-body-status | P1 | TODO | - | - | - |
 | 4 | DB 降级返回 503 + storage_status | feat/storage-status-503 | P1 | TODO | - | - | - |
@@ -603,6 +603,20 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 - [ ] commit message 含 `Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §<subtask-id>`
 - [ ] git push origin 成功
 - [ ] 在本表对应行写入 `[DONE] YYYY-MM-DD HH:MM commit=<sha> pr=<url>`
+
+### 10.2 迁移编号校正 (2026-09-27)
+
+各子任务模板里的迁移号是**编写时的快照, 已全部过期**, 照抄会与 main 上已存在的
+迁移撞号 (`schema_migrations.version` 冲突, 且 751 已 applied+verified 到 245 库):
+
+| 模板写的 | 实际占用者 | 改用 |
+|---|---|---|
+| 745 (Subtask 2) | `745_report_snapshots` (R63) | **753** |
+| 746 (Subtask 7) | `746_report_snapshots_internal_dims` | **754** |
+| — | 750 `usage_facts_daily_partition` / 751 `usage_facts_partition_tz_pin` / 752 `mock_probe_history` | 已被 R68/R70 占用 |
+
+规则: **每个子任务开工前先 `git ls-tree origin/main sql/migrations/startup/ --name-only`
+确认目标号仍空闲**; main 在 R70 期间仍以每轮数个 commit 的速度推进, 编号会继续前移。
 
 ---
 
