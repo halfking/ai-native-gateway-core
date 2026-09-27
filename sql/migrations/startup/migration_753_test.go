@@ -33,6 +33,20 @@ import (
 // report_snapshots in R63 and 750 was rewritten to usage_facts_daily_partition
 // in R68 (both unrelated, both 24h-audit siblings). 753 is the next free slot
 // and avoids any partition-shaped conflict with 750.
+// stripGoLineComments removes `//` line comments from Go source so a
+// negative assertion ("must no longer contain X") does not match the doc
+// comment that explains why X was removed. Mirrors stripSQLComments for
+// the Go side of the contract.
+func stripGoLineComments(src string) string {
+	lines := strings.Split(src, "\n")
+	for i, line := range lines {
+		if idx := strings.Index(line, "//"); idx >= 0 {
+			lines[i] = line[:idx]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 func TestMigration753SessionTurnLogsTTLContract(t *testing.T) {
 	upBytes, err := os.ReadFile("753_session_turn_logs_ttl.sql")
 	if err != nil {
@@ -40,6 +54,12 @@ func TestMigration753SessionTurnLogsTTLContract(t *testing.T) {
 	}
 	up := string(upBytes)
 	upCompact := normalizeSQL(up)
+	// upCode is the same, but with `--` prose removed. The 753 header
+	// deliberately documents the first draft's buggy predicate and the
+	// duplicate index verbatim, so any assertion of the form "must not
+	// contain X" has to run against code only — otherwise the audit
+	// narrative makes its own regression test fail.
+	upCode := normalizeSQL(stripSQLComments(up))
 
 	downBytes, err := os.ReadFile("753_session_turn_logs_ttl.down.sql")
 	if err != nil {
@@ -51,19 +71,56 @@ func TestMigration753SessionTurnLogsTTLContract(t *testing.T) {
 	if !strings.Contains(upCompact, "CREATE OR REPLACE FUNCTION CLEANUP_SESSION_TURN_LOGS_BY_TTL(P_TTL_HOURS INT) RETURNS BIGINT") {
 		t.Error("753 must define CREATE OR REPLACE FUNCTION cleanup_session_turn_logs_by_ttl(p_ttl_hours int) RETURNS bigint")
 	}
-	if !strings.Contains(upCompact, "MAKE_INTERVAL(HOURS => V_TTL_HOURS)") {
-		t.Error("753 cleanup must use make_interval(hours => …) so the TTL truly varies with the parameter (not hardcoded)")
+	// Semantics corrected by the 2026-09-27 critical audit. expires_at is
+	// baked at write time (write time + TTL), so subtracting the TTL again
+	// in the predicate yielded "row age > 2x TTL" — a silent doubling of
+	// retention. The sweep must be a plain expiry check.
+	if !strings.Contains(upCode, "WHERE EXPIRES_AT < NOW()") {
+		t.Error("753 cleanup must delete on a plain expiry check (expires_at < NOW()); subtracting the TTL again doubles retention")
 	}
-	if !strings.Contains(upCompact, "GREATEST(COALESCE(P_TTL_HOURS, 24), 1)") {
-		t.Error("753 cleanup must enforce a sane floor (min 1h) and default to 24h when given NULL — protects against settings_kv regressions")
+	if strings.Contains(upCode, "NOW() - MAKE_INTERVAL") || strings.Contains(upCode, "NOW()-MAKE_INTERVAL") {
+		t.Error("753 cleanup must NOT subtract the TTL from NOW() — expires_at already encodes the TTL, so that is a 2x-retention bug")
 	}
-	if !strings.Contains(upCompact, "RETURN V_DELETED") {
+	// p_ttl_hours no longer drives the predicate; it is a fail-closed
+	// interlock so a bad settings value cannot silently nuke or never
+	// sweep the table.
+	if !strings.Contains(upCode, "RAISE EXCEPTION") {
+		t.Error("753 cleanup must RAISE EXCEPTION on an out-of-range p_ttl_hours (fail-closed interlock)")
+	}
+	if !strings.Contains(upCode, "P_TTL_HOURS < 1 OR P_TTL_HOURS > 168") {
+		t.Error("753 cleanup must validate p_ttl_hours against [1,168] to match the spec Min/Max")
+	}
+	if !strings.Contains(upCode, "RETURN V_DELETED") {
 		t.Error("753 cleanup must RETURN the deleted row count so callers can log/meter it")
 	}
 
-	// ── C2: expires_at index matches the column used by 430 default ─────
-	if !strings.Contains(upCompact, "CREATE INDEX IF NOT EXISTS IDX_SESSION_TURN_LOGS_EXPIRES_AT ON PUBLIC.SESSION_TURN_LOGS (EXPIRES_AT)") {
-		t.Error("753 must create idx_session_turn_logs_expires_at on session_turn_logs(expires_at)")
+	// ── C2: no duplicate index on expires_at ───────────────────────────
+	// 430:275 already creates idx_session_turn_logs_expires on
+	// session_turn_logs(expires_at). A second index on the same column is
+	// pure write amplification on a table that gets ~7 INSERTs per turn.
+	if strings.Contains(upCode, "CREATE INDEX IF NOT EXISTS IDX_SESSION_TURN_LOGS_EXPIRES_AT") {
+		t.Error("753 must NOT create idx_session_turn_logs_expires_at — 430:275 already indexes expires_at; a same-column duplicate is write amplification")
+	}
+	if strings.Contains(normalizeSQL(stripSQLComments(up)), "ON PUBLIC.SESSION_TURN_LOGS (EXPIRES_AT)") {
+		t.Error("753 must not add any index on session_turn_logs(expires_at) — migration 430:275 already has one")
+	}
+
+	// ── C2b: the real hardcode must be gone from the writer ────────────
+	// Retention is only configurable if the writer stops baking a literal
+	// 24h. This is the assertion that makes the subtask meaningful; without
+	// it the setting would look wired while changing nothing.
+	writerBytes, err := os.ReadFile("../../../domains/session/v2/turn_logs_writer.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Strip Go line comments for the same reason as upCode: the writer's
+	// doc comment names the old literal to explain why it was removed.
+	writer := stripGoLineComments(string(writerBytes))
+	if strings.Contains(writer, "time.Now().Add(24*time.Hour)") {
+		t.Error("turn_logs_writer.go must not hardcode time.Now().Add(24*time.Hour) — that literal is the live TTL and bypasses the setting")
+	}
+	if !strings.Contains(writer, "lifecycle.session_turn_logs_ttl_hours") {
+		t.Error("turn_logs_writer.go must read lifecycle.session_turn_logs_ttl_hours when baking expires_at")
 	}
 
 	// ── C3: lifecycle.session_turn_logs_ttl_hours spec (default 24, hot-reload) ─
@@ -93,8 +150,17 @@ func TestMigration753SessionTurnLogsTTLContract(t *testing.T) {
 	if !strings.Contains(down, "DROP FUNCTION IF EXISTS cleanup_session_turn_logs_by_ttl") {
 		t.Error("753 down must drop the cleanup function")
 	}
-	if !strings.Contains(down, "DROP INDEX IF EXISTS") {
-		t.Error("753 down must drop the expires_at index")
+	// The final migration creates no index, so its down must not try to
+	// drop one. (The first draft did create a duplicate index; the critical
+	// audit removed it. A down that still drops it would be harmless but
+	// would signal the wrong contract.)
+	//
+	// Checked against comment-stripped SQL: the down file deliberately
+	// MENTIONS that DROP in prose, as remediation guidance for any
+	// environment that already applied the draft. Grepping the raw file
+	// would false-positive on that sentence.
+	if strings.Contains(stripSQLComments(down), "DROP INDEX") {
+		t.Error("753 down must not drop any index — 753 no longer creates one (430:275 already covers expires_at)")
 	}
 	if strings.Contains(strings.ToUpper(down), "CREATE TABLE") ||
 		strings.Contains(strings.ToUpper(down), "CREATE OR REPLACE FUNCTION") {
