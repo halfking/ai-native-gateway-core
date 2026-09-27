@@ -37,7 +37,7 @@ D11 §2 列出的"任务定位"链路（cheap model 兜底）：
 - **R45 钉桩**：`TestDecide_FallbackBelowThreshold_KeepsHeuristic` / `TestDecide_FallbackError_KeepsHeuristic` 在 decider 层设门 —— classifier 层返回 error 不会被误计熔断失败（避免被误开熔断）
 
 cheap model 选择（供"任务定位"使用）：
-- 默认走 `default_routing_store.go` 中的 fallback 桶（每 task 一个便宜模型）
+- 默认走 `task_default_routing` 表的 fallback 桶（每 task 一个便宜模型；种子数据由 `sql/migrations/startup/477_auto_route_v6_defaults.sql` 落库，经 `autoroute/default_routing_store.go` 读回——R71 勘误：初版把归属写成 default_routing_store.go，该文件零模型字面量）
 - `intent_classification` 默认走 `minimax-m3` / `gemini-2.0-flash-exp`（极便宜/免费家族）
 - `chat` 默认 fallback `qwen3-235b`；`code` 默认 `deepseek-coder`；`function_call` 默认 `deepseek-chat`
 
@@ -116,7 +116,7 @@ GATE: PASS
 
 ## 6. 与方案文档的对齐
 
-- RFC：`docs/planning/AUTO_ROUTING_CLOSED_LOOP_V2_PLAN.md` §4.3（套件扩充至 ≥200 例）—— v3 套件 149 例 + v2 40 + v1 60 = 249 例超出门槛
+- RFC：`docs/planning/AUTO_ROUTING_CLOSED_LOOP_V2_PLAN.md` §4.3（套件扩充至 ≥200 例）—— v3 套件 149 例 + v2 40 + v1 60 = 249 行超出门槛；testbench 按 key 去重（`cmd/auto-testbench/suite.go` 的 seen map）后为 240 个用例（§3.2 的 cases: 240 同源）
 - 上轮 R56 留档：`tests/48h-audit/D11-auto-model/reports/latest.md`（R56 · D11 auto 模型 · 48h 审计结论）
 - v2 实施状态：`autoroute/V2_IMPLEMENTATION_STATUS.md` —— P0 已完成（评分/推荐/决策/feature flags + 1 个测试文件 5 用例），P1 数据层修复（refreshIndexSQL JOIN availability）仍待办
 - Wave2 灰度裁决：`docs/audit/2026-09-22-wave2-autoroute-grayscale-report.md` —— RT-1 IQ 门 / RT-3 热门加权默认 off 且 off 路径字节级钉桩，本轮未触碰
@@ -145,4 +145,4 @@ GATE: PASS
 ---
 
 **版本**: R70 · 2026-09-27 · auto 路由专项  
-**关联**: `tests/48h-audit/D11-auto-model/plan.md` + `scripts/auto-testbench.sh` + `reports/auto-testbench.{md,json,cases.jsonl}`
+**关联**: `tests/48h-audit/D11-auto-model/plan.md` + `scripts/auto-testbench.sh` + `reports/auto-testbench.{md,json,cases.jsonl}`（本地运行产物，已被 .gitignore，fresh clone 不可复现——需重跑 testbench 再生）

@@ -1315,18 +1315,21 @@ func SerializeGeminiResponse(irResp *InternalResponse, clientModel string) ([]by
 		}
 	}
 
-	if irResp.FinishReason != "" || irResp.StopReason != "" {
+	if irResp.SourceProtocol == ProtocolGeminiGenerate && irResp.StopReason != "" {
 		// R69: same-protocol native passthrough (Gemini→Gemini), the
 		// non-streaming counterpart of SerializeGemini's R68 streaming fix.
 		// RECITATION/MALFORMED_FUNCTION_CALL etc. survive the IR round-trip
 		// instead of collapsing to SAFETY/STOP; cross-protocol sources
 		// (SourceProtocol != gemini) keep the mapped form so foreign native
 		// values (end_turn, pause_turn) never leak onto the Gemini wire.
-		if irResp.SourceProtocol == ProtocolGeminiGenerate && irResp.StopReason != "" {
-			candidate["finishReason"] = irResp.StopReason
-		} else {
-			candidate["finishReason"] = mapFinishReasonToGemini(irResp.FinishReason)
-		}
+		candidate["finishReason"] = irResp.StopReason
+	} else if irResp.FinishReason != "" {
+		// R71: cross-protocol with empty FinishReason emits nothing — the
+		// old catch-all mapped mapFinishReasonToGemini("") to a synthetic
+		// "STOP". Parse paths guarantee FinishReason non-empty when
+		// StopReason is set, so this is a defensive-only gap, but emitting a
+		// fabricated terminal reason is worse than omitting the field.
+		candidate["finishReason"] = mapFinishReasonToGemini(irResp.FinishReason)
 	}
 
 	out := map[string]any{

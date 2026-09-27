@@ -41,6 +41,26 @@ func TestSummarizeMessagesStripsMarkdownBeforeTruncation(t *testing.T) {
 	}
 }
 
+// R71 审计：响应整体是一个代码围栏（编码网关最常见的形态之一）或围栏
+// 未闭合（截断响应）时，stripMarkdownNoise 把全部行丢弃返回空串——摘要
+// 信息量从"有"变"无"。修复后剥噪为空且原文非空时回退原文。
+func TestSummarizeMessages_FenceOnlyContentFallsBackToRaw(t *testing.T) {
+	fence := "```go\nfmt.Println(\"hello\")\n```"
+	got := summarizeMessages([]Message{{Role: "assistant", Content: fence}})
+	if got == "" {
+		t.Fatal("fence-only content must fall back to raw content, got empty summary")
+	}
+	if !strings.Contains(got, "fmt.Println") {
+		t.Errorf("fallback summary should keep raw content, got %q", truncateForLog(got))
+	}
+
+	unclosed := "```text\npartial response truncated"
+	got2 := summarizeMessages([]Message{{Role: "assistant", Content: unclosed}})
+	if !strings.Contains(got2, "partial response truncated") {
+		t.Errorf("unclosed fence must fall back to raw content, got %q", truncateForLog(got2))
+	}
+}
+
 func TestSummarizeMessagesEmptyAndCount(t *testing.T) {
 	if got := summarizeMessages(nil); got != "" {
 		t.Errorf("empty messages → %q, want empty", got)

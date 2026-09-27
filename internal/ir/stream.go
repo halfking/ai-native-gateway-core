@@ -1032,12 +1032,17 @@ func (c *StreamChunk) SerializeAnthropic(msgID string, model string) string {
 // output_tokens. Returns ok=false when the chunk has nothing this frame
 // should carry (plain content deltas, keep-alives).
 //
-// stop_reason resolution prefers the native chunk.StopReason (lossless
+// stop_reason resolution prefers the native chunk.StopReason for
+// same-protocol (anthropic-messages sourced) chunks (lossless
 // Anthropic→Anthropic passthrough) and falls back to re-mapping the
-// OpenAI-normalized FinishReason (OpenAI→Anthropic conversion).
+// OpenAI-normalized FinishReason (OpenAI→Anthropic conversion). R71: the
+// SourceProtocol guard mirrors the R68 Gemini chunk guard below — without
+// it, a cross-protocol chunk carrying a foreign native StopReason (gemini
+// RECITATION etc.) would leak onto the Anthropic wire once this path is
+// wired beyond passthrough.
 func buildAnthropicMessageDelta(c *StreamChunk) (map[string]any, bool) {
 	stopReason := ""
-	if c.StopReason != "" {
+	if c.SourceProtocol == ProtocolAnthropicMessages && c.StopReason != "" {
 		stopReason = c.StopReason
 	} else if c.FinishReason != "" {
 		stopReason = mapOpenAIFinishReasonToAnthropic(c.FinishReason)

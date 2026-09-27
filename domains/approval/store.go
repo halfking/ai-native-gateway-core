@@ -475,7 +475,10 @@ func (s *pgApprovalStore) SaveConfig(ctx context.Context, config *ApprovalConfig
 
 	err = s.pool.QueryRow(ctx, sql,
 		config.TenantID, config.Enabled, string(config.Mode),
-		config.TimeoutSeconds, config.AutoRejectOnTimeout, configJSON,
+		config.TimeoutSeconds, config.AutoRejectOnTimeout,
+		// R71 审计：json.Marshal 产物是 []byte，SimpleProtocol 池会内联为
+		// bytea hex 字面量，jsonb 列解析必炸（R11 FIX-C 同根）。string 化。
+		string(configJSON),
 	).Scan(&config.CreatedAt, &config.UpdatedAt)
 
 	if err != nil {
@@ -608,7 +611,9 @@ func (s *pgApprovalStore) SaveRule(ctx context.Context, tenantID string, rule *A
 			updated_at = now()
 	`
 
-	_, err = s.pool.Exec(ctx, sql, tenantID, rule.Name, rule.Enabled, rule.Priority, conditionsJSON, actionJSON)
+	// R71 审计：[]byte 直传 jsonb 列在 SimpleProtocol 下内联为 bytea hex
+	// 字面量（R11 FIX-C 同根），string 化。
+	_, err = s.pool.Exec(ctx, sql, tenantID, rule.Name, rule.Enabled, rule.Priority, string(conditionsJSON), string(actionJSON))
 	return err
 }
 
