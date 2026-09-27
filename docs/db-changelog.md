@@ -720,3 +720,9 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 |-----------|------|---------|--------|
 | 750 | `750_usage_facts_daily_partition.sql` | `a75a89b22091e5d1af29eb4b2128bd373df07aa8a7aa9a95cf04d3f4ad3c0527` | applied+verified |
 
+## 2026-09-27T04:57:54Z — deploy 245 build_seq 2275 (1c9c753c)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 751 | `751_usage_facts_partition_tz_pin.sql` | `4f788a566c2c00f2d3fdd4f2af0cc2c0611bdd13fd3f0456bb0eb661a5f4d7c2` | applied+verified |
+
