@@ -124,6 +124,20 @@ var (
 		[]string{"source", "outcome"},
 	)
 
+	// 2026-09-25 P0-2 (docs/03-design/perf-2026-09-25-probe-cost-optimization.md
+	// §5 改动 2): pair-level skip counter for request_failure triggers.
+	// submitViaQueue consults node_probe_state.next_retry_at before enqueueing;
+	// when the pair is already in failure-recovery with a fresh schedule
+	// (within probe.request_failure_min_gap_seconds), the trigger is skipped to
+	// prevent the persistent 429/5xx storm from enqueuing one probe per
+	// business failure. A sustained non-zero rate paired with
+	// node_probe_queue_submission_total{source="request_failure"} plateaus
+	// means the upstream is rate-limiting and the skip is doing its job.
+	nodeProbeRequestFailureSkipTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "llmgw_node_probe_request_failure_skip_total",
+		Help: "request_failure triggers skipped because the (credential, model) pair is already in failure-recovery with a fresh schedule (probe.request_failure_min_gap_seconds).",
+	})
+
 	// 2026-08-29 P2: Hot table promote metrics for monitoring partition migration health.
 	//
 	// hotTablePromoteFailuresTotal counts promote failures by table label.

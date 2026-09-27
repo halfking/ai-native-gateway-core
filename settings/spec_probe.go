@@ -290,3 +290,23 @@ func ProbeSpecs() []*Spec {
 		},
 	}
 }
+
+// ── P0-2 accessors ───────────────────────────────────────────────────────
+
+// ProbeNetworkChainLongTail returns whether the network-class short backoff
+// ladder long-tails into the generic ladder (5m→1h→2h→6h) after the 4 short
+// steps (5s/15s/30s/60s) instead of capping at 60s forever. ProbeBackoffForKind
+// reads this on every call so the kill-switch is hot-reloadable.
+func ProbeNetworkChainLongTail() bool {
+	return GetPlatformBool("probe.network_chain_long_tail", true)
+}
+
+// ProbeRequestFailureMinGapSeconds returns the minimum gap between successive
+// request_failure-triggered enqueues for the same (credential, model) pair.
+// 0 disables the pair-level skip (legacy behavior, only the in-memory 5min
+// in_flight dedup applies). Background lifecycle callers should keep this on
+// the hot-reload path so operators can dial it during an upstream rate-limit
+// storm without restarting.
+func ProbeRequestFailureMinGapSeconds() int {
+	return GetPlatformInt("probe.request_failure_min_gap_seconds", 60)
+}
