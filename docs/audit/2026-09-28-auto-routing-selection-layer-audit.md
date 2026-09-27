@@ -176,6 +176,45 @@ if len(scored) > 0 && scored[0].Breakdown.MatchScore < 30 && vocabularyPresent {
 
 ## 五、验证结果
 
+### 5.1 同一基线前后对比（同 base commit、同一套件、同一网关）
+
+`autoroute` 包修复前后分别 `scripts/deploy-local.sh` 部署，再各跑一轮 240 例 E2E 套件：
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| 分类正确率 | 240/240 | 240/240（无回退） |
+| **坍缩率 `fallback_used`** | **124/240 = 51.7%** | **0/240 = 0.0%** |
+| 候选数分布 | `{1: 124, 3: 116}` | `{3: 240}` |
+| 实际派发成功（非 429） | 0/240 | 7/240 |
+| 工具判定 PASS | 0 | 7 |
+
+分任务坍缩率（修复前 → 修复后）：
+
+| expected_task | before | after |
+|---|---|---|
+| code | 49/49 | **0/49** |
+| creative | 31/31 | **0/31** |
+| intent_classification | 20/20 | **0/20** |
+| code_audit | 12/12 | **0/12** |
+| vision | 12/12 | **0/12** |
+| chat / reasoning / planning / function_call / agent / long_context | 0 | 0（对照组不变） |
+
+单点复现（部署后实测）：
+
+```
+code    : ncand 1→3, fallback true→false, match 0→50, chosen minimax-m3→glm-5.2
+creative: ncand 1→3, fallback true→false, match 0→50, chosen minimax-m3→glm-5.1
+chat    : ncand 3,  fallback false,      match 50   （对照组，未变）
+reasoning: ncand 3, fallback false,      match 33.3 （对照组，未变）
+```
+
+**关于"实际派发成功 0→7"**：本轮本地 `kx` 上游整体拥塞，240 例绝大多数返回 429。
+这与本次缺陷正交（对照组 116 例修复前同样 429），但坍缩确实放大了它——选型正常时
+有 3 候选可退，坍缩时首选被限流即无处可退。修复后候选多样性恢复，7 例在同样的
+拥塞环境下真正派发成功并被判 PASS，即为该恢复的直接证据。
+
+### 5.2 测试与门禁
+
 | 检查 | 结果 |
 |---|---|
 | `go build ./...` | 通过 |
@@ -183,6 +222,7 @@ if len(scored) > 0 && scored[0].Breakdown.MatchScore < 30 && vocabularyPresent {
 | `go test ./cmd/auto-testbench/` | ok |
 | `go test ./domains/streaming/` | ok（88.1s） |
 | `bash scripts/auto-testbench.sh` | 240 例 accuracy=1.0 / macro_f1=1.0 / GRRQ=100 / **GATE PASS**（分类层未回退） |
+| `scripts/deploy-local.sh` | `VERIFY_PASS=1`，build_seq=2277，providers=587 creds=7 failed=0 |
 
 ---
 
