@@ -140,9 +140,12 @@ var disableIntentEfforts = map[string]bool{
 // under-serving the user's intent. This matches LiteLLM behaviour.
 //
 // Disable-intent spellings (see disableIntentEfforts) are handled BEFORE the
-// nearest-tier search: they resolve to the *cheapest* supported tier (or "" if
-// the model has a dedicated off-switch and no zero tier exists), never to a
-// mid or high tier. A zero tier that is itself spelled `none` returns `none`.
+// nearest-tier search: they resolve to the *cheapest* supported tier, never
+// to a mid or high tier. A zero tier that is itself spelled `none` returns
+// `none`. There is no dedicated off-switch translation here — "" is only
+// returned when the supported set is empty (pre-filtered by callers), so a
+// disable intent on a model without a zero tier lands on its cheapest tier
+// (2026-09-29 二十轮：原文声称可返回 "" 与实现不符，已订正).
 func ClampEffort(effort string, supported []string) string {
 	if len(supported) == 0 {
 		return ""

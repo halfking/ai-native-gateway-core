@@ -131,12 +131,17 @@ func (t *OpslogTrimmer) TrimOnce(ctx context.Context) (cflDeleted, cpmDeleted in
 	// Failures are escalated to slog.Error with a consecutive-failure
 	// streak (cflFailStreak) so a persistently broken delete path is
 	// visible at error level instead of being swallowed as a Warn.
+	//
+	// 2026-09-29 (12h 审计二十轮 P2): 形态从 `id IN + ORDER BY` 改为
+	// `ctid IN` 并去掉 ORDER BY（与 armor_judgments 同轮修复）。实测瓶颈
+	// 是 ORDER BY ts 逼出的全量 Sort（top-N heapsort 吃 67,608 行），去
+	// ORDER BY 后 411ms→19ms（22 倍）；补 (ts) 首列索引无收益。写入
+	// 318/24h ≪ 5,000/天删除能力，单批即够，无需循环。
 	res1, err := t.pool.Exec(ctx, `
 		DELETE FROM candidate_failure_logs
-		WHERE id IN (
-			SELECT id FROM candidate_failure_logs
+		WHERE ctid IN (
+			SELECT ctid FROM candidate_failure_logs
 			WHERE ts < NOW() - $1::interval
-			ORDER BY ts
 			LIMIT 5000
 		)
 	`, cflRetention.String())
