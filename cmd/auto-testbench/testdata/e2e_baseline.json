@@ -1,15 +1,15 @@
 {
-  "generated_at": "2026-09-28T21:40:00Z",
-  "source": "249-case E2E suite (v1 60 + v2 40 + v3 149) against a local gateway running HEAD 2a4cd7a4a, 2026-09-28 live rerun",
-  "max_collapse_rate": 0.08,
+  "generated_at": "2026-09-28T21:55:00Z",
+  "source": "240-case E2E suite (v1 60 + v2 40 + v3 140, per the suite header) against a local gateway running HEAD, measured 2026-09-28 before and after the D11-L5 taxonomy-tag fix",
+  "max_collapse_rate": 0.05,
   "measured": {
     "collapse_rate_before_fail_open_fix": 0.5167,
-    "collapse_rate_archived_after_fix": 0.0,
-    "collapse_rate_2026_09_28_rerun": 0.0522,
-    "decided_cases_archived": 240,
-    "decided_cases_rerun": 249,
-    "collapse_cases_rerun": 13,
-    "collapse_cases_from_code_audit": 13
+    "collapse_rate_before_l5_taxonomy_fix": 0.05,
+    "collapse_rate_after_l5_taxonomy_fix": 0.0,
+    "decided_cases": 240,
+    "collapse_cases_before_l5": 12,
+    "collapse_cases_after_l5": 0,
+    "classification_accuracy_after_l5": 1.0
   },
-  "notes": "collapse_rate = decided cases whose candidate pool fell back (fallback_used). RATCHET, not aspiration: 0.08 sits above the known-open composition measured 2026-09-28 — 13/249 collapse, ALL 13 of them task_type=code_audit, whose candidate pool is structurally size 1 (only minimax-m3/cred 21 carries it; quality=0, reliability=0, tier empty). Every other one of the 11 task types held 3 candidates on all 249 cases. That code_audit gap is PRE-EXISTING and still unfixed: A/B on 3 prompts against the pre-existing deployed build 2296 (SHA 0ae9b5e2) returns an identical cand=1/fallback=True/score=50 decision, so it is neither introduced nor repaired by the L-4 / planning-artifact / M-7 commits. Root cause is capability-annotation coverage (models_canonical.tags publishes cap:long-context/tool-use/function-call/reasoning/vision but no code/review/security tag, so code_audit has no represented vocabulary), the same ~870-model annotation gap already registered in docs/audit/2026-09-28-auto-routing-selection-layer-audit.md §6.2 — fixing it needs operator annotation, not a code change. Do NOT read a PASS here as code_audit being fixed: this threshold fires only on collapse BEYOND the registered code_audit floor. The archived 0.0/240 that this file previously encoded is contradicted by the live rerun and should not be cited as current. Only evaluated when -e2e-report is supplied — the offline classification gate cannot compute it."
+  "notes": "collapse_rate = decided cases whose candidate pool fell back (fallback_used). The 0.05 floor is tolerance, not aspiration: fallback_used also fires when the pool is legitimately empty (all models unavailable), which is a healthy outcome and must not fail a build, so zero is rejected by validateE2EBaseline. Headroom is 12 of 240 cases — the gate passes at exactly 12 and fails at 13. Before the D11-L5 fix the rate was 12/240 = 0.0500, all of it task_type=code_audit, because TaskVocabularyRepresented substring-matched taxonomy tags: the live library's family:codex / family:codegemma / family:starcoder2 / version:codestral-latest all contain the substring 'code', so a model family NAMED codex asserted that the code/review/security capability vocabulary existed. That skipped the absent-vocabulary neutralisation, left MatchScore at 0 on the top candidate, and tripped the 48h popularity collapse guard — collapsing code_audit from 3 candidates to 1 (composite=50, quality=0, tier empty). isCapabilityTag now restricts presence to the cap: namespace (plus bare tags); after the fix the same 240 cases measure 0/240 = 0.0 with classification accuracy unchanged at 240/240. Only evaluated when -e2e-report is supplied — the offline classification gate cannot compute it."
 }
