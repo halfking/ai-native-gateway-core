@@ -389,3 +389,37 @@ R79 在存储函数侧抓到「批游标列无索引 → O(rows²)」。本轮�
   「同样是 columnar 表」不等于「同样受同一限制」。
 - 四族分区结构都健康（DEFAULT 空、边界正确）；但**仍是月分区**（`usage_facts` 已按 R68
   改日分区），月内 ts 范围查询不能裁剪。
+
+### R79 续十 · 保留期删除的索引普查（1 个 P1 + 2 个 P2 + 1 个 P3）
+
+**新判据：只认索引首列。** `candidate_failure_logs` 分区有 6 条索引，`ts` 是其中 4 条的
+**第二列**；`armor_judgments` 的 `created_at` 只作 `(tenant_id, created_at DESC)` 第二列。
+这是「索引首列匹配 ≠ 索引可用」的**镜像**——上一轮的规则只覆盖了「索引没这列」，
+「索引里有这列但不是首列」这一半本轮才补上。
+
+- **P1｜`armor_judgments` 删除吞吐追不上写入吞吐**（不只是缺一列）：
+  804,253 行 / 327 MB，跨度 **86.94 天 < 90 天保留期 ⇒ 当前每轮删 0 行**，
+  但仍要扫全表 + `Sort rows=378,463`（EXPLAIN cost 94,538，每 24h 一次）。
+  写入 **6,318 行/天** > 删除硬上限 **5,000 行/天** ⇒ 净增 1,318 行/天，无界增长。
+  写入方是 `security/armor/logger.go`（每条流式请求一条 observe-only 审计）。
+  删除上限与保留期都是硬编码常量，**没有提速手段**。
+- **P2｜`journal_snapshot_receipts`**：94,657 行 / 57 MB，三条索引首列分别是
+  `claim_until`(partial)、`tenant_id`、identity 复合，**无 `updated_at` 首列**（Seq Scan
+  cost 5,020）；且 `domains/requestjourney/retention.go:143` **无 LIMIT 无分批**。
+- **P2｜`candidate_failure_logs`**：每轮扫 67,826 行只为删 5,000 行（13.6x 放大），
+  81%（67,580 行）早已过期。**只定 P2**——写入 318 行/24h ≪ 删除能力 5,000/天，
+  积压 13.5 天可消化。**与 armor_judgments 同量纲下结论相反，靠的是速率对比不是峰值**。
+- **P3｜`model_iq_runs`**：0 行，365 天保留期未到触发规模，登记而非豁免。
+- **P3｜一条注释已与现实不符（已修）**：`internal/trace/stage_events_retention.go`
+  原写「该表没有 created_at 单列索引…再补 created_at 索引迁移」，实测
+  `idx_stage_events_created_at` 存在且被采用。**全仓唯一写着要补该索引的地方**，
+  owner 照做会做一次已完成的迁移。
+- **证伪｜`request_state_transitions` 的「无 LIMIT 全量 DELETE」不是缺陷**：
+  形状上正该红，实测跨度 **7.01 天**（= 7 天保留期，说明保留期生效）、每 tick 1,103 行、
+  索引在用。记下来免得下一轮重新怀疑。
+
+**门 `TestData_RetentionTrim_PredicateColumnHasLeadingIndex`** 覆盖 37 条保留期 DELETE，
+三分桶（`retentionSmallTables` 9 张无害小表 / `knownRetentionDefects` 4 张已知缺陷 + 棘轮 /
+其余新判红）。**不让已知缺陷一直红**——长期红的门会被人习惯性忽略。
+三条 fail-closed：扫描器失效 `Fatalf`、过期登记判红、报错指名对东西
+（第一版正则把 `DELETE FROM public.x` 的表名报成 `public`，由首跑结果暴露）。

@@ -1067,3 +1067,137 @@ EXECUTE format('DROP TABLE %I', src_part);
 **走 `DETACH + DROP TABLE` 而不是 DELETE**，因此 columnar 安全。
 **「同样是 columnar 表」不等于「同样受同一限制」**——限制作用于操作类型，不是表。
 这条同时说明 `routing_decision_log` 族是被正常清理的，本轮无发现。
+
+## R79 续十 · 保留期删除的索引普查（本轮：1 个 P1 + 2 个 P2 + 1 个 P3 + 1 个 P3 文档 + 1 条证伪）
+
+上一轮普查的是**非 hot 分区族**，本轮把面扩到**保留期 worker 的删除路径**——
+一个此前完全没被机械门覆盖的类别。
+
+### 判据：只认首列
+
+`candidate_failure_logs` 的每个分区有 6 条索引，`ts` 是其中 4 条的**第二列**：
+
+```
+credential_id, ts DESC  |  provider_id, ts DESC
+raw_model_name, ts DESC  |  session_id, ts DESC
+```
+
+裸 `ts < cutoff` 谓词用不上任何一条。这是「索引首列匹配 ≠ 索引可用」那条纪律的
+**镜像**：`armor_judgments` 的 `created_at` 同样只作 `(tenant_id, created_at DESC)`
+的第二列。换句话说，上一轮记的规则只覆盖了「索引有这列但不是首列」的一半，
+另一半——「这列在索引里，但不是首列」——本轮才补上。
+
+### P1 · armor_judgments：删除吞吐追不上写入吞吐（不只是缺一列）
+
+`security/armor/logger.go` 为每条流式请求写一条 observe-only 安全审计。
+`bg/audit_trimmer.go:126-135` 负责清理：90 天保留、24h tick、每轮硬编码 `LIMIT 5000`。
+
+| 实测（2026-09-29） | 值 |
+|---|---|
+| 行数 / 体积 | **804,253** / 327 MB |
+| 时间跨度 | **86.94 天**（最老 2026-07-04 03:07） |
+| 写入速率（last 24h） | **6,318 行/天** |
+| 删除速率（硬上限） | **5,000 行/天** |
+| 净增速率 | **+1,318 行/天** |
+| EXPLAIN cost | **94,538**（`Sort rows=378,463`） |
+
+两处叠加：
+
+1. **删除能力 < 写入能力**（5,000 < 6,318）。90 天后开始有过期行时，表永远追不平。
+2. **当前一行都删不掉**：跨度 86.94 天 < 90 天保留期 ⇒ 每轮扫全表并对 37.8 万行排序，
+   只为了删 0 行（cost 94,538）。按 24h 周期这是每天一次的无谓全表扫描。
+
+定 P1 的理由不是「缺一列」，而是**默认开启 + 每 24h + 表已 327MB + 吞吐倒挂**。
+删除上限 5000 硬编码、不可配置；保留期 90 天也是常量，没有提速手段。
+
+### P2 · journal_snapshot_receipts：无索引，且全仓少见的无分批删除
+
+三条索引首列分别是 `claim_until`(partial)、`tenant_id`、identity 复合，
+**没有一条以 `updated_at` 开头** ⇒ Seq Scan cost 5,020 / 94,657 行 / 57 MB。
+
+加剧项：`domains/requestjourney/retention.go:143` 这条 DELETE
+**没有 LIMIT、没有分批**，是本轮 37 条保留期 DELETE 里少见的全量删除形态。
+
+### P2 · candidate_failure_logs：13.6 倍扫描放大
+
+活跃分区 `candidate_failure_logs_2026_09` 是 heap 105 MB / 83,289 行，EXPLAIN cost 10,646：
+每轮（24h tick、每批 LIMIT 5000）扫 **67,826 行**只为删 5,000 行。
+且表里 **67,580 行（81%）早已过期**，积压需 13.5 天自行消化。
+
+**只定 P2 不定 P1**，因为写入只有 **318 行/24h**，远小于删除能力 5,000/天——
+积压会收敛，不是无界增长。这与 armor_judgments 的 6,318/天是同一量纲下的
+相反结论：定级看的从来是速率对比，不是峰值行数。
+
+### P3 · model_iq_runs：登记而非豁免
+
+0 行 / 40 kB，`tested_at` 是 3 条索引的第二列，365 天保留期尚未到达触发规模。
+登记而不是豁免，是为了等它长起来时这条信息还在，不必重新普查。
+
+### P3 · 一条注释已与现实不符（已修）
+
+`internal/trace/stage_events_retention.go` 文件头原写着：
+
+> 该表没有 created_at 单列索引（现有索引均以 tenant/stage 为前导列），子查询按
+> created_at 过滤会走顺序扫描；**若生产实测扫描成本高，再补 created_at 索引迁移**。
+
+实测 `idx_stage_events_created_at` 存在且被规划器采用（Index Scan，3,286,679 行 / 2035 MB）。
+**这是全仓唯一写着「再补 created_at 索引」的地方**，owner 照做会做一次已完成的迁移。
+已改写该注记并指向本轮的门。
+
+### 证伪：request_state_transitions 的「无 LIMIT 全量 DELETE」不是缺陷
+
+`domains/requestjourney/retention.go:134` 是全仓唯一没有 LIMIT、没有分批的保留期
+DELETE，形如 `DELETE FROM request_state_transitions WHERE created_at < ...`。
+它形状上正是本该红的那一类。实测否掉了：
+
+```
+时间跨度   min=2026-09-22 01:20  max=2026-09-29 01:34  = 7.01 天
+过期行(>7d) 2,648        每小时新增 1,103 行
+索引       idx_state_transitions_created (created_at) → Index Scan
+```
+
+保留窗口**正好等于** 7 天保留期，说明保留期在生效；每 tick 删 1.1k 行，
+30s ctx 预算绰绰有余。写在这里是为了记下「看起来该红但实测不该红」的位置，
+免得下一轮重新怀疑一次。
+
+### 门：TestData_RetentionTrim_PredicateColumnHasLeadingIndex
+
+`tests/48h-audit/D07-hot-columnar/data/retention_trim_index_test.go`
+
+覆盖 37 条保留期 DELETE（16 张表：6 张有首列索引、9 张小表豁免、4 张已知缺陷）。
+分三类，不让它们混在一个桶里：
+
+- `retentionSmallTables`（9 张）—— 小到 Seq Scan 是**正确**选择。每条带实测行数与
+  EXPLAIN 成本。不登记就判红，所以新增小表必须显式说明。
+- `knownRetentionDefects`（4 张）—— 已确认未修。**不让它们一直红**：长期红的门会被人
+  习惯性忽略，久了等于没有门。改为登记 + 棘轮，并在每次运行时逐条打印当前状态。
+- 其余 —— 新判红。
+
+三条 fail-closed 设计：
+
+1. **扫描器失效要红**。只扫到 <10 条 DELETE 时 `t.Fatalf`，而不是当成「没缺陷」。
+   变异检验证实：把目录列表缩到 `{"security"}` 后门红并打印「只扫到 0 条」。
+2. **过期的登记要红**。已补上首列索引的表若仍留在登记表里，门报「已补上索引但仍留在
+   knownRetentionDefects」——过期的登记比没有登记更糟。变异检验证实。
+3. **门的报错必须指名对东西**。第一版正则只抓 `(\w+)`，把 `DELETE FROM public.request_attachments`
+   的表名报成 `public`，是门自己的 bug，由首跑结果暴露；已修 schema 限定名。
+
+变异检验 3 处，全部**指名对了东西**：
+
+| 变异 | 门的反应 |
+|---|---|
+| 撤掉 `armor_judgments` 登记 | 红「保留期删除走全表扫描: armor_judgments（bg/audit_trimmer.go:128）」+ 棘轮 3≠4 |
+| 把 `request_attachments` 塞进登记表 | 红「已补上以 created_at 为首列的索引（domains/attachments/repository.go:294），但仍留在登记表」+ 棘轮 5≠4 |
+| 扫描器目录退化 | 红「只扫到 0 条保留期 DELETE，扫描器很可能已失效」 |
+
+### 一条被证伪的变异
+
+第一次变异我塞的是 `DELETE FROM request_stage_events WHERE created_at < ...`，
+门没红。复核后确认这是**正确行为**——该表确实有 `idx_stage_events_created_at` 首列索引。
+是变异选错了对象，不是门失效。
+
+### 累计待 owner 拍板
+
+本轮新增 4 项（armor_judgments P1 / journal_snapshot_receipts P2 /
+candidate_failure_logs P2 / model_iq_runs P3），全部是索引迁移或 worker 吞吐调整，
+改动面比前几轮的列名/视图问题小。
