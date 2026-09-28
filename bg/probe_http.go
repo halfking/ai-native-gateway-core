@@ -407,6 +407,24 @@ func probeWithRetry(
 				result.errMsg = fmt.Sprintf("model %q not in /v1/models response (%d models found)", t.RawModel, len(result.modelIDs))
 			}
 		}
+		// 2026-09-28 vapeur 轮：responses 探针命中「不支持 Responses API」
+		// 裁决 → chat 降级复探（见 probe_responses_fallback.go）。否则
+		// consensus 会把 claude/qwen 等经 chat 完全可用的模型推向
+		// broken_confirmed → binding available=FALSE（model_probe_broken）。
+		if mode == ProbeModeResponses && providercap.ResponsesUnsupportedError(result.httpStatus, result.errMsg) {
+			modelField := t.OutboundModel
+			if modelField == "" {
+				modelField = t.RawModel
+			}
+			fbStatus, fbBody, fbLatency, fbOK := responsesChatFallbackPing(ctx, probeChatClient, t.APIKey, t.BaseURL, modelField)
+			if fbOK {
+				okResult := classifyHTTPResponse(fbStatus, fbBody, result.latencyMs+fbLatency)
+				okResult.errMsg = responsesUnsupportedDetail(result.httpStatus, fbStatus, fbBody, fbLatency, true)
+				result = okResult
+			} else {
+				result.errMsg += "; " + responsesUnsupportedDetail(result.httpStatus, fbStatus, fbBody, fbLatency, false)
+			}
+		}
 		// Non-retryable conditions: success or auth/404 (definitive errors).
 		if result.category == probeCategoryOK ||
 			result.httpStatus == 401 || result.httpStatus == 403 || result.httpStatus == 404 ||

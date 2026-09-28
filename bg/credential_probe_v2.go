@@ -860,6 +860,12 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 	// Step 2: mini chat completion with "hi" — protocol-aware.
 	// For anthropic-messages providers (e.g. minimax /anthropic) the openai
 	// chat URL 404s, so we hit /v1/messages instead with x-api-key.
+	// 2026-09-28 vapeur 轮：openai-responses 供应商改发 responses 原生
+	// {"input","max_output_tokens"} 形态——此前把 chat 体 POST 到
+	// /responses URL，任何合规 Responses API 都回 400 "Unsupported
+	// parameter: 'messages'"（实测），凭据级健康判定从此被污染。responses
+	// 被上游判「不支持 Responses API」（聚合中转按模型族分级，实测 claude
+	// 400 / qwen 502）时降级一发 chat 探针——该凭据经 chat 仍可用。
 	runChat := func() (bool, string) {
 		if desc.ChatProbeEndpoint == upstreamurl.EpMessages {
 			msgURL := providercap.ProbeEndpointURL(s.BaseURL, desc)
@@ -869,17 +875,36 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 			}
 			return c.miniAnthropic(ctx, httpClient, s.APIKey, s.DefaultProbeModel, msgURL, 20)
 		}
-		chatURL := providercap.ProbeEndpointURL(s.BaseURL, desc)
-		if blocked, reason := providercap.EgressBlocked(chatURL); blocked {
-			providercap.WarnBlocked("probe_v2.chat", chatURL, reason)
+		probeURL := providercap.ProbeEndpointURL(s.BaseURL, desc)
+		if blocked, reason := providercap.EgressBlocked(probeURL); blocked {
+			providercap.WarnBlocked("probe_v2.chat", probeURL, reason)
 			return false, "egress blocked: " + reason
 		}
-		ok, errMsg := c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, chatURL, 1)
+		if desc.ChatProbeEndpoint == upstreamurl.EpResponses {
+			ok, errMsg, respStatus, respBody := c.miniResponses(ctx, httpClient, s.APIKey, s.DefaultProbeModel, probeURL)
+			if ok {
+				return true, ""
+			}
+			if providercap.ResponsesUnsupportedError(respStatus, respBody) {
+				chatURL := upstreamurl.Build(strings.TrimRight(s.BaseURL, "/"), upstreamurl.EpChatCompletions)
+				if blocked, reason := providercap.EgressBlocked(chatURL); blocked {
+					providercap.WarnBlocked("probe_v2.chat", chatURL, reason)
+					return false, "egress blocked: " + reason
+				}
+				chatOK, chatErr := c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, chatURL, responsesFallbackChatMaxTokens)
+				if chatOK {
+					return true, ""
+				}
+				return false, errMsg + "; " + responsesUnsupportedDetail(respStatus, 0, chatErr, 0, false)
+			}
+			return ok, errMsg
+		}
+		ok, errMsg := c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, probeURL, 1)
 		if !ok && strings.Contains(errMsg, "max_tokens") {
 			// Some legacy gateways reject max_tokens < 2; retry with 2.
 			// This is a parameter-compatibility fallback, NOT a transient
 			// retry — runs at most once per attempt, inside the attempt.
-			ok, errMsg = c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, chatURL, 2)
+			ok, errMsg = c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, probeURL, 2)
 		}
 		return ok, errMsg
 	}
@@ -1019,6 +1044,48 @@ func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Clien
 		return false, fmt.Sprintf("%s: %s", probeutil.EndpointIDRequiredErrCode, truncateBody(body))
 	}
 	return false, fmt.Sprintf("chat status %d: %s", resp.StatusCode, truncateBody(body))
+}
+
+// miniResponses sends a single-shot /v1/responses request with the
+// Responses-native {"input","max_output_tokens"} shape (2026-09-28).
+// Used as the probe step 2 for openai-responses providers — posting a chat
+// body to /responses 400s on any compliant endpoint ("Unsupported parameter:
+// 'messages'", measured on vapeur).
+//
+// Returns (ok, errMsg, httpStatus, bodyPreview). ok=true on 2xx.
+func (c *CredentialProbeV2) miniResponses(ctx context.Context, httpClient *http.Client, apiKey, model, responsesURL string) (bool, string, int, string) {
+	body := map[string]any{
+		"model":             model,
+		"input":             "ping",
+		"max_output_tokens": providercap.ResponsesProbeMaxOutputTokens,
+	}
+	bodyJSON, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, "POST", responsesURL, bytes.NewReader(bodyJSON))
+	if err != nil {
+		return false, "build responses request: " + err.Error(), 0, ""
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return false, "responses unreachable: " + err.Error(), 0, ""
+	}
+	//nolint:errcheck // best-effort close
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	preview := truncateBody(respBody)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return true, "", resp.StatusCode, preview
+	}
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return false, fmt.Sprintf("401/403: %s", preview), resp.StatusCode, preview
+	}
+	if resp.StatusCode == 429 {
+		return false, "429 rate limited", resp.StatusCode, preview
+	}
+	return false, fmt.Sprintf("responses status %d: %s", resp.StatusCode, preview), resp.StatusCode, preview
 }
 
 func truncateBody(b []byte) string {
