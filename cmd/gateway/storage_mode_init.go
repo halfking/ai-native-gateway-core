@@ -61,6 +61,11 @@ type storageRuntime struct {
 	// 看不见 NewCacheTrimmer 的调用点（审计同型缺陷：断言只看到定义）。
 	cacheTrimmer *bg.CacheTrimmer
 
+	// hotZoneTrimmer 是热区清理 worker（2026-09-24 方案 H4 P2 接线）：遍历
+	// HotZone.Dir 整树，三子树共享配额与保留期。config / settings 任一开关
+	// 关闭时不装配（nil）。快照持有仅供观测，生命周期归 trimmerCtx/trimmerWG。
+	hotZoneTrimmer *bg.HotZoneTrimmer
+
 	// 关键路径快照：供启动日志与测试断言。
 	sqlitePath string
 	bodiesDir  string
@@ -156,6 +161,10 @@ func initStorageMode(cfg *config.Config, storageCfg *config.StorageConfig) (*sto
 	}
 
 	storageCfg.ApplyLiteDefaults()
+	// H4（2026-09-24 方案）：HotZone 段默认值补齐（nil-safe、幂等）。lite 装配
+	// 路径不走 ApplyDefaults，须显式归一后 hotzone trimmer 才能拿到合法的
+	// Dir / RetentionHours / MaxSizeGB。
+	storageCfg.ApplyHotZoneDefaults()
 	if err := storageCfg.Validate(); err != nil {
 		return nil, fmt.Errorf("storage: lite 配置校验失败: %w", err)
 	}
@@ -266,6 +275,59 @@ func initStorageMode(cfg *config.Config, storageCfg *config.StorageConfig) (*sto
 			slog.Warn("storage lite: session store 不支持空闲会话枚举，一致性对账 worker 未装配",
 				"session_store_type", fmt.Sprintf("%T", f.NewSessionStore()))
 		}
+	}
+
+	// 热区清理 worker（2026-09-24 方案 H4 P2 接线）：每 30 分钟一轮遍历
+	// HotZone.Dir 整树，先按 mtime 删过期、超配额再最旧先删；三子树
+	//（cache / session_bodies / requests）共享同一预算。今日该目录尚无写入方
+	//（full 装配 = H2、请求镜像接线 = H3 均未落地），trimmer 对缺失目录静默
+	// no-op，先行装配使后续波次落地即受管。
+	//
+	// 开关语义（AND）：config（YAML/env HotZone.Enabled）与 settings
+	//（storage.hotzone_enabled）双通道同时为真才装配——settings 只能关停、
+	// 不能强行打开 config 已显式关闭的 Dangerous 级特性。
+	//
+	// 热重载方式（已实证 2026-09-28）：settings.GetPlatformBool/Int 每次调用
+	// 走 Global.EffectiveValue 直查 settings_kv→env→default，无缓存层
+	//（settings/helpers.go 头注，热重载测试钉死禁止加缓存）。故经 WithReload
+	// 在每轮 tick 前直查刷新即可，变更 ≤1 个 trimmer 周期（30 分钟）生效；
+	// 不经 hotconfig——其只轮询 llmgw_% 前缀键，storage.hotzone_* 不在视野。
+	if hzCfg := storageCfg.HotZone; hzCfg != nil && hzCfg.IsEnabled(true) &&
+		settings.GetPlatformBool("storage.hotzone_enabled", true) {
+		// resizeInHotzone：仅当 L1.5 cache 子树位于热区目录内时，settings 才
+		// 同步驱动 FileCache.maxSize（H4 §改动3 统一预算 + ResizeMax 联动）。
+		// lite 默认 cache_dir 独立于热区（H4 §改动4：lite 10GB 默认不动），
+		// 恒不触发；full（H2）的 FileCache 落在 HotZone.Dir/cache 下即自动生效。
+		resizeInHotzone := rt.fileCache != nil && hzCfg.Contains(lite.CacheDir)
+		hotZoneTrimmer := bg.NewHotZoneTrimmer(
+			hzCfg.Dir,
+			time.Duration(settings.GetPlatformInt("storage.hotzone_retention_hours", hzCfg.RetentionHours))*time.Hour,
+			int64(settings.GetPlatformInt("storage.hotzone_max_size_gb", hzCfg.MaxSizeGB))<<30,
+		).WithReload(func() (time.Duration, int64, bool) {
+			retention := time.Duration(settings.GetPlatformInt("storage.hotzone_retention_hours", hzCfg.RetentionHours)) * time.Hour
+			maxBytes := int64(settings.GetPlatformInt("storage.hotzone_max_size_gb", hzCfg.MaxSizeGB)) << 30
+			enabled := settings.GetPlatformBool("storage.hotzone_enabled", true)
+			if enabled && resizeInHotzone {
+				rt.fileCache.ResizeMax(maxBytes) // 内部持锁；扩容即生效，缩容由本轮 trimmer 执行
+			}
+			return retention, maxBytes, enabled
+		})
+		rt.hotZoneTrimmer = hotZoneTrimmer
+		rt.trimmerWG.Add(1)
+		go func() {
+			defer rt.trimmerWG.Done()
+			hotZoneTrimmer.Start(trimmerCtx)
+		}()
+		slog.Info("storage hotzone trimmer 已装配",
+			"dir", hzCfg.Dir,
+			"retention_hours", settings.GetPlatformInt("storage.hotzone_retention_hours", hzCfg.RetentionHours),
+			"max_size_gb", settings.GetPlatformInt("storage.hotzone_max_size_gb", hzCfg.MaxSizeGB),
+			"cache_dir_in_hotzone", resizeInHotzone,
+			"trim_interval", "30m")
+	} else {
+		slog.Info("storage hotzone 关闭，trimmer 未装配",
+			"config_enabled", storageCfg.HotZone.IsEnabled(false),
+			"settings_enabled", settings.GetPlatformBool("storage.hotzone_enabled", true))
 	}
 
 	slog.Info("storage lite 模式已启用",
