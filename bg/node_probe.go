@@ -2760,6 +2760,10 @@ type nodeProbeRoundResult struct {
 	// 问题"：protocol 形失败重试梯永远治不好，只能按 6h 长回看停放等配置
 	// 修正；gateway 形失败不是节点的错，不得进共享可用性面。
 	rootCause ProbeRootCause
+	// chatFallback（2026-09-28）标记 ok 来自 responses-unsupported 的 chat
+	// 降级复探而非原生 responses 成功——该 (credential, model) 经
+	// chat/completions 可用，原生 Responses 未验证。
+	chatFallback bool
 }
 
 func probeHeadersJSON(headers map[string]string) string {
@@ -2898,6 +2902,31 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 		statusText = statusText[:idx]
 	}
 	r.errDetail = fmt.Sprintf("upstream returned HTTP %d %s (cred_id=%d, url=%s, model=%s)", resp.StatusCode, statusText, credID, endpoint, bodyModel)
+
+	// 2026-09-28 vapeur 轮：openai-responses 供应商的多厂商聚合中转对部分
+	// 模型族（claude/qwen/doubao/gemini…）在 /v1/responses 上回
+	// 「该供应商不支持 Responses API」（400）或「X provider does not support
+	// the Responses API」（502），而这些模型的 /v1/chat/completions 全部
+	// 200。按供应商协议一刀切打 responses 会把健康节点探成红 → URSM v2
+	// 视图 available=0 → 路由整体排除该凭据。降级规则：responses 探针命中
+	// 「不支持 Responses API」裁决时，向同一 base_url 补一发 chat 探针；
+	// chat 绿 → 该 (credential, model) 经 chat 可用，本轮按成功回报
+	// （rootCause 分类在 defer 中只在 !ok 时执行，成功路径不受污染）。
+	// chat 也挂 → 维持原 responses 失败结论，附注 fallback 结果。
+	if probeDescriptorFor(protocol).ChatProbeEndpoint == upstreamurl.EpResponses &&
+		providercap.ResponsesUnsupportedError(resp.StatusCode, r.responseBody) {
+		fbStatus, fbBody, fbLatency, fbOK := responsesChatFallbackPing(ctx, w.probeClient, plain, baseURL, bodyModel)
+		if fbOK {
+			r.ok = true
+			r.chatFallback = true
+			r.httpStatus = fbStatus
+			r.errCode = "none"
+			r.errDetail = responsesUnsupportedDetail(resp.StatusCode, fbStatus, fbBody, fbLatency, true)
+			r.responseBody = fbBody
+			return r
+		}
+		r.errDetail += "; " + responsesUnsupportedDetail(resp.StatusCode, fbStatus, fbBody, fbLatency, false)
+	}
 	return r
 }
 

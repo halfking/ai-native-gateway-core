@@ -58,6 +58,41 @@ func TestDiagnoseModeMismatchNativeResponses404(t *testing.T) {
 	}
 }
 
+// TestDiagnoseVapeurCJKResponsesUnsupported（2026-09-28 vapeur 轮）：聚合
+// 中转对 claude 系在 /v1/responses 上回 400「该供应商不支持 Responses
+// API」——语序与英文 "responses api is not" 相反，老 hint 命不中，导致
+// native responses 传输被拒后不触发同请求 chat 回退。
+func TestDiagnoseVapeurCJKResponsesUnsupported(t *testing.T) {
+	in := Input{
+		HTTPStatus:      400,
+		ErrorBody:       []byte(`{"error":{"message":"该供应商不支持 Responses API","type":"invalid_request_error","code":"unsupported_operation"}}`),
+		OutboundBody:    []byte(`{"model":"claude-sonnet-5","input":"hi"}`),
+		ErrorKind:       "client_bug",
+		Protocol:        "openai-responses",
+		NativeResponses: true,
+	}
+	d, ok := Diagnose(in)
+	if !ok || d.Trigger != TriggerModeMismatch || d.SuggestMode != "chat" {
+		t.Fatalf("got %+v ok=%v — CJK responses-unsupported verdict must suggest chat fallback", d, ok)
+	}
+}
+
+// 同型：英文中转变体 "X provider does not support the Responses API"。
+func TestDiagnoseRelayEnglishResponsesUnsupported(t *testing.T) {
+	in := Input{
+		HTTPStatus:      400,
+		ErrorBody:       []byte(`{"error":{"message":"QWEN provider does not support the Responses API (/responses). Please use /v1/chat/completions instead.","type":"server_error","code":"provider_error"}}`),
+		OutboundBody:    []byte(`{"model":"qwen3-max","input":"hi"}`),
+		ErrorKind:       "client_bug",
+		Protocol:        "openai-responses",
+		NativeResponses: true,
+	}
+	d, ok := Diagnose(in)
+	if !ok || d.Trigger != TriggerModeMismatch || d.SuggestMode != "chat" {
+		t.Fatalf("got %+v ok=%v", d, ok)
+	}
+}
+
 func TestDiagnoseResponsesOnlyHint(t *testing.T) {
 	in := Input{
 		HTTPStatus:   400,
