@@ -102,3 +102,8 @@
 - **纯函数测试钉不住接线**：hour 门在函数体内被调用的断言全绿 ≠ 调用点在正确的 ticker 循环——E1a 事故形态（移回 24h 定相 run()）可静默复发。TestArchiveOldRequestLogs_CalledFromHourlyCleanupLoop 钉死「调用点必须在 runCleanup、不得在 run/archiveOldPartitionsIfNeeded」；新 cleanup 任务接线时套用同款双向源码范围断言。
 - 归档月表（request_logs_archive_YYYY_MM）两语义依赖钉在 754 头注：①源分区必须直查分区名（走父表会被 FORCE RLS 按 bg 会话 default 租户静默漏读）②月表加 RLS 必须同步设计读方角色。加 RLS 前先真库 EXPLAIN 实证直查分区与父表的 policy 适用差异。
 - 752 mock_probe_history 日分区只建不删（保留期无界，≈4.4M 行/年）——752 头注已显式登记；与 750 usage_facts TTL 同批 owner 拍板。
+
+### R75 回注（2026-09-28，754 调用方 statement_timeout + 注释失真收口）
+- **集合返回函数 = 单条驱动层语句，函数内批游标不稀释 statement_timeout**：754 的 1000 行批 LOOP 看似"分批"，但整个 `SELECT * FROM archive_request_logs_default($1)` 对服务端是一条语句——角色级 30s（252 rolconfig）会在大积压首跑击杀整调用并整批回滚，次日重试同批=活锁（与 R72 753 首扫同型）。**SET LOCAL 必须在调用方事务内**（Go ctx 预算不覆盖服务端 GUC）；同文件 promote 60s / analyze 10min 是先例锚点。钉桩 TestArchiveOldRequestLogs_StatementTimeoutPinnedInsideTx 用 Begin<SET LOCAL<call<Commit 顺序断言。教训一般化：**凡新接 pg 函数族调用，先问"函数内分批是否被服务端视为单语句"**——PL/pgSQL 循环不切分 statement_timeout。
+- 754 头注「Go 侧 30min ctx 预算兜底」为书面错误断言（十六轮订正引入），已改写指向调用方 SET LOCAL；批终止注释「两条件同时成立才退出」与代码（任一即退）相反已订正。**注释勘误走 embeddata 字节同步 + 三守卫复跑**（754 已应用不重跑台账）。
+- 754 归档首跑实捕待部署（L-1）：修复部署后首个 03:00-03:59 窗口验证 request_logs_archive 首次生成 + archived 日志。

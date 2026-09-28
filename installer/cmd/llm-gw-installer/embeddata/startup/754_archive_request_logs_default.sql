@@ -50,9 +50,13 @@
 --   * 性能: 1000 行/批 主键游标（partition 局部 id 唯一——每月分
 --     区 ts 约束在一个月内），单批 INSERT 在毫秒级、跨分区数万
 --     至数十万行不超 252 共享 PG 的 30s statement_timeout 边界。
---     （十六轮审计订正：函数内并未 SET LOCAL statement_timeout——
---     单次调用是单个长事务，总时长由 Go 侧 archiveOldRequestLogs
---     的 30min ctx 预算兜底，分批提交/ledger 属后续跟进项。）
+--     （十六轮审计订正 + R73 残留收口：函数内不 SET LOCAL——集合
+--     返回函数的整个调用是单个驱动层语句，函数内批游标不稀释
+--     statement_timeout，Go ctx 预算也不覆盖服务端 GUC。真正的
+--     抬升在调用方 bg.archiveOldRequestLogs：显式事务内
+--     SET LOCAL statement_timeout='30min'，与 30min Go 预算对齐
+--     （promote 60s / analyze 10min 同型先例）。已应用库保留旧注释
+--     属装饰性漂移，台账不重跑，可执行语句零变更。）
 --
 --   * 列宽守卫: 不修改 request_logs schema、不动现有视图/RLS，
 --     归档表独立 namespace（新表 + 独立索引），不在 views 引用
@@ -255,7 +259,10 @@ BEGIN
 
             -- 终止条件: 无候选（new_last_id = 0）或已读完该分区
             -- （本批不足 batch_size 行）。前者兜极端空源，后者兜
-            -- 末批。两条件同时成立才退出，避免全冲突批次导致死循环。
+            -- 末批。R73 订正：两条 EXIT 是「任一成立即退出」，且
+            -- 第二条在空源时同样命中（0 - last_id < batch_size），
+            -- 第一条实为冗余保险——任一即退正是防全冲突批次死循环
+            -- 的机制（冲突不减少候选数，id 游标只增，循环必然收敛）。
             EXIT WHEN new_last_id = 0;
             EXIT WHEN (new_last_id - last_id) < batch_size;
 

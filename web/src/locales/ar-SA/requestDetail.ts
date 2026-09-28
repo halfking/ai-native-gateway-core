@@ -192,7 +192,7 @@ export default {
     emDash: '—',
     colon: ': ',
   },
- // — Subtask 3 (handoff §5): body_status tri-state banners —
+ // — Subtask 3 (handoff §5): body_status two-state banners —
   // المصدر: turns[].body_status من /api/admin/sessions/detail — وليس
   // /snapshot (لا توجد turns هناك) ولا قائمة /turns (بيانات وصفية فقط).
   bodyStatus: {
