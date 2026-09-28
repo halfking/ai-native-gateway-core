@@ -304,5 +304,3 @@ func (w *TurnLogsWriter) AggregateSessionLogs(ctx context.Context, tenantID, ses
 
 	return summary, nil
 }
-
-
