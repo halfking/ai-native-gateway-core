@@ -171,6 +171,86 @@ func TestHeuristicClassifier_LiveRepro_FrameworkWordsDoNotStealNonCodeTasks(t *t
 	}
 }
 
+// TestHeuristicClassifier_LiveRepro_PlanningArtifactWithoutPlanVerb covers
+// the gap measured while closing L-4: prompts that name a planning *artifact*
+// but not a canonical planning verb fell all the way to chat 0.10.
+//
+// "帮我写一个 NextJS 项目的技术选型文档" and "写一个 Django 项目的迁移计划"
+// both state the deliverable (技术选型 / 迁移计划) — that is what makes them
+// planning. The verb list deliberately excludes 写/做 as generic verbs
+// (2026-09-14: avoiding creative false positives), so these two needed a
+// separate artifact rule: a domain qualifier plus a planning deliverable,
+// with no verb requirement at all.
+func TestHeuristicClassifier_LiveRepro_PlanningArtifactWithoutPlanVerb(t *testing.T) {
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+
+	for _, tc := range []struct {
+		prompt string
+		why    string
+	}{
+		{"帮我写一个 NextJS 项目的技术选型文档", "技术选型 is a planning deliverable"},
+		{"写一个 Django 项目的迁移计划", "迁移计划 is a planning deliverable"},
+		{"帮我出一个 Redis 缓存的容量计划", "容量计划 is a planning deliverable"},
+		{"写一个 MySQL 到 PG 的数据迁移方案", "数据迁移方案 is a planning deliverable"},
+	} {
+		res, err := c.Classify(context.Background(), ClassificationSignals{LastUserPrompt: tc.prompt})
+		if err != nil {
+			t.Fatalf("err on %q: %v", tc.prompt, err)
+		}
+		if res.Primary != TaskPlanning {
+			t.Errorf("%q => %s conf=%.2f reason=%s, want planning (%s)",
+				tc.prompt, res.Primary, res.Confidence, res.Reason, tc.why)
+		}
+	}
+
+	// A weekly report is document writing, not planning, and certainly not
+	// code. Only the "not code" half is pinned: whether it should eventually
+	// be chat or a document task type is a product decision, and pinning a
+	// label here would freeze an open question.
+	for _, p := range []string{
+		"写一个 Flutter 团队周报",
+		"写一个项目周报模板",
+		"帮我写一个会议纪要",
+	} {
+		res, err := c.Classify(context.Background(), ClassificationSignals{LastUserPrompt: p})
+		if err != nil {
+			t.Fatalf("err on %q: %v", p, err)
+		}
+		if res.Primary == TaskCode {
+			t.Errorf("%q => %s conf=%.2f reason=%s, must not be code",
+				p, res.Primary, res.Confidence, res.Reason)
+		}
+	}
+
+	// The artifact rule's measured false positives. Both are statements about a
+	// plan that already exists; the retroactive guard is what keeps them out.
+	for _, p := range []string{
+		"把这个项目的计划删掉",
+		"帮我看一下技术方案",
+		"回顾一下这个项目的路线图",
+	} {
+		res, err := c.Classify(context.Background(), ClassificationSignals{LastUserPrompt: p})
+		if err != nil {
+			t.Fatalf("err on %q: %v", p, err)
+		}
+		if res.Primary == TaskPlanning {
+			t.Errorf("%q => planning conf=%.2f reason=%s, want not-planning "+
+				"(a statement about an existing plan, not a request to produce one)",
+				p, res.Confidence, res.Reason)
+		}
+	}
+
+	// The strong coding channel still wins over the new artifact rule.
+	res, err := c.Classify(context.Background(),
+		ClassificationSignals{LastUserPrompt: "先制定计划然后实现一个缓存"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Primary != TaskCode {
+		t.Errorf("plan-mode coding => %s conf=%.2f, want TaskCode", res.Primary, res.Confidence)
+	}
+}
+
 func TestHeuristicClassifier_LiveRepro_ClassifySentiment(t *testing.T) {
 	// "classify sentiment: …" — Channel 1.5 hard override for intent
 	// classification. The Chinese "情感分类" has been on the keyword list
