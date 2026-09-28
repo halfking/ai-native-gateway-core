@@ -124,3 +124,39 @@ func TestApplyReported_GLMNormalizesEffortAlias(t *testing.T) {
 		t.Errorf("reasoning_effort = %v, want \"xhigh\" (alias normalized)", got)
 	}
 }
+
+// 2026-09-29 守门：方舟 doubao-pro-thinking 的能力表为
+// {minimal, low, medium, high}（无 none 零档）。本轮修复让
+// `reasoning_effort:"disabled"` 在方舟方言上被收窄成 `minimal`——
+// 这是档位调节器调到最便宜档，**不是**关闭思考。方舟的真正关闭开关
+// 是 `thinking:{"type":"disabled"}`（实测见 §5）。
+//
+// 本测试钉死两件事：
+//  1. 方舟收窄到最便宜档 = `minimal`（不是 GLM 的 `none`、不是
+//     deepseek 的 `low`，按各自能力表各自语义）。
+//  2. **没有任何方舟路径把 `disabled` 直接删掉**——它是个有效档位
+//     请求，不会被网关"贴心地"变成"没有 reasoning_effort 字段"。
+//
+// 若有人后续改 ClampEffort 兜底（譬如"如果是 disabled 就把字段删掉"），
+// 这条会立刻红；同理若有人让方舟走 Anthropic/Qwen 那样的"零档=删字段"
+// 路径，这条也会红。
+func TestArk_EffortIsTierNotKillSwitch(t *testing.T) {
+	out, reports := ApplyReported(
+		[]byte(`{"model":"doubao-pro-thinking","reasoning_effort":"disabled","max_tokens":512}`),
+		paramreg.DialectArk,
+	)
+	var obj map[string]any
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatalf("unmarshal out: %v", err)
+	}
+	// 方舟最便宜档是 `minimal`（reasoning_defaults.go:249）。
+	// 这是档位，不是"关闭"——`thinking:{"type":"disabled"}` 才是关闭。
+	if got, present := obj["reasoning_effort"]; !present || got != "minimal" {
+		t.Errorf("reasoning_effort = %v (present=%v), want \"minimal\" "+
+			"(方舟能力表最便宜档，不是关闭)", got, present)
+	}
+	// 必须有一次 clamp 报告留痕：方舟上这是档位下移，不是删除。
+	if len(reports) == 0 {
+		t.Error("expected a clamp report; 关闭意图在方舟上必须被收窄并留痕")
+	}
+}
