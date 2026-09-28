@@ -53,6 +53,7 @@ import {
   sortRoutingCandidates,
 } from '../utils/queueNodeCards'
 import { credentialDisplayName as credentialLabelById, useCredentialLabels } from '../composables/useCredentialLabels'
+import { modelScopeIdentity, resolveModelScopeOwnership, type ModelScopeResolution } from '../utils/modelScopeOwnership'
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
@@ -303,10 +304,16 @@ async function loadModelScope() {
     const display = (model.canonical_name && model.canonical_name.trim()) || model.display_name
     addScope(display, false, model.request_count, display)
   })
-  const aliases = new Map<string, string>()
   const candidatesByRawModel = new Map<string, RoutingCandidate[]>()
   const revisionsByCanonical = new Map<number, string>()
   const revisionsByRawModel = new Map<string, string>()
+  // 2026-09-29：raw_model → 归属作用域不再在 resolveOne 里就地认领。resolve 的
+  // raw_models/candidates 来自词法变体矩阵（'glm-5.3-flash' 会把包装词 flash 剥掉
+  // 得到 'glm-5.3'），而并发 resolve 的完成顺序不确定 —— 就地"后到者赢、冲突就删"
+  // 会让真模型 glm-5.3 的作用域被冒名者吞掉（筛选 glm-5.3 反而看不到 glm-5.3 组）。
+  // 改为先收集每个作用域的解析结果，全部 resolve 完成后交给 resolveModelScopeOwnership
+  // 按 canonical 身份确定性裁决。
+  const resolutionsByScope = new Map<string, ModelScopeResolution>()
   const resolveOne = async (meta: ModelScopeMeta) => {
     const name = [...meta.aliases][0]
     try {
@@ -316,16 +323,17 @@ async function loadModelScope() {
       // this scope — overwrite any alias-only displayName we collected earlier.
       const canonicalName = resolved.canonical_name?.trim()
       if (canonicalName) meta.displayName = canonicalName
-      const assignAlias = (raw: string) => {
-        const key = modelKey(raw)
-        if (!key) return
-        const existing = aliases.get(key)
-        if (!existing || existing === meta.key) aliases.set(key, meta.key)
-        else aliases.delete(key)
-      }
-      for (const raw of resolved.raw_models) assignAlias(raw)
+      resolutionsByScope.set(meta.key, {
+        scopeKey: meta.key,
+        canonicalId: resolved.canonical_id ?? null,
+        canonicalName: canonicalName || null,
+        rawModels: resolved.raw_models ?? [],
+        candidates: (resolved.candidates ?? []).map(candidate => ({
+          modelName: candidate.model_name,
+          canonicalId: candidate.canonical_id ?? null,
+        })),
+      })
       for (const candidate of resolved.candidates) {
-        assignAlias(candidate.model_name)
         const key = modelKey(candidate.model_name)
         const candidates = candidatesByRawModel.get(key) ?? []
         candidates.push(candidate)
@@ -370,8 +378,26 @@ async function loadModelScope() {
     modelScopeLoading.value = false
     return
   }
+  // 全部作用域解析完成后统一裁决别名归属：同一 canonical 身份的作用域合并成
+  // 一个代表（'glm-5.3-flash' 与 'z-ai/glm-5.3-flash' 不再各出一份同名分组），
+  // 被合并掉的作用域的特色/热门标记并入代表，然后从 scope 中移除。
+  const { representatives, aliasOwner } = resolveModelScopeOwnership([...resolutionsByScope.values()])
+  for (const meta of scopeEntries) {
+    const resolution = resolutionsByScope.get(meta.key)
+    if (!resolution) continue
+    const identity = modelScopeIdentity(meta.key, resolution.canonicalId, resolution.canonicalName)
+    const representative = representatives.get(identity)
+    if (!representative || representative === meta.key) continue
+    const owner = scope.get(representative)
+    if (owner) {
+      owner.featured ||= meta.featured
+      owner.hotRequests = Math.max(owner.hotRequests, meta.hotRequests)
+    }
+    scope.delete(meta.key)
+    resolutionsByScope.delete(meta.key)
+  }
   modelScopeMeta.value = scope
-  modelScopeAliasIndex.value = aliases
+  modelScopeAliasIndex.value = aliasOwner
   modelCandidatesByRawModel.value = candidatesByRawModel
   reorderRevisionsByCanonical.value = revisionsByCanonical
   reorderRevisionsByRawModel.value = revisionsByRawModel
