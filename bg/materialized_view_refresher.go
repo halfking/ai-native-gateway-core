@@ -143,7 +143,9 @@ func NewMaterializedViewRefresher(db *pgxpool.Pool) *MaterializedViewRefresher {
 // cross-instance leader election (2026-09-01 — token-bucket refresh
 // coordination). Optional: when never called, or called with a manager
 // whose Enabled() is false, refreshView transparently falls back to the
-// Postgres advisory lock. Safe to call before or after Start().
+// Postgres advisory lock. Call before Start(): the field is read by the
+// refresh loop goroutine without a lock, so a post-Start call is a data
+// race (current production wiring in main.go only calls it before Start).
 func (r *MaterializedViewRefresher) SetDistLock(mgr distlock.Manager) {
 	r.distLock = mgr
 }
@@ -171,7 +173,8 @@ func (r *MaterializedViewRefresher) Stop() {
 
 // SetAlertCallback sets the callback function for refresh failure alerts.
 // The callback is invoked when consecutive failures reach 2 or more.
-// Safe to call before or after Start().
+// Call before Start(): alertCallback is read by the refresh loop goroutine
+// without a lock, so a post-Start call is a data race.
 func (r *MaterializedViewRefresher) SetAlertCallback(cb func(viewName string, consecutiveFailures int, err error)) {
 	r.alertCallback = cb
 }
