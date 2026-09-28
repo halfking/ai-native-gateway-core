@@ -75,6 +75,102 @@ func TestHeuristicClassifier_LiveRepro_BangWoXieYiGe(t *testing.T) {
 	}
 }
 
+// TestHeuristicClassifier_LiveRepro_FrameworkVocabularyIsShared pins the
+// remaining half of audit item L-4: the commit that introduced the P1
+// language segment claimed "词表与 P2 共用", but P2 grew a framework family
+// (django/flask/spring/gin/echo/flutter/nextjs/nuxt/tailwind/html/css/
+// powershell) that P1 and P3b never received. A request of the shape
+// "写一个 <框架> <编程对象>" therefore fell through every pattern — P1's
+// language slot had no entry, P2 requires 用, and P3a's prefix list has no
+// bare "写一个" — and landed on chat 0.1.
+//
+// The fix is a single shared vocabulary constant rather than another
+// hand-copied list, so the three positions cannot drift apart again.
+func TestHeuristicClassifier_LiveRepro_FrameworkVocabularyIsShared(t *testing.T) {
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+
+	// Framework names that P2 accepted but P1/P3b did not.
+	for _, p := range []string{
+		"写一个 Django 中间件",
+		"写一个 Flask 服务",
+		"实现一个 Spring 接口",
+		"写一个 Gin 路由",
+		"写一个 Echo 中间件",
+		"写一个 Flutter 组件",
+		"写一个 NextJS 组件",
+		"写一个 Nuxt 组件",
+		"写一个 Tailwind 组件",
+		"写一个 HTML 表单组件",
+		"写一个 CSS 组件",
+		"写一个 Powershell 脚本",
+		"帮我写一个 Django 方法", // P3b: language + generic artifact
+		"写一个Django中间件",    // zero-space variant of the same gap
+	} {
+		res, err := c.Classify(context.Background(), ClassificationSignals{LastUserPrompt: p})
+		if err != nil {
+			t.Fatalf("err on %q: %v", p, err)
+		}
+		if res.Primary != TaskCode {
+			t.Errorf("expected TaskCode for %q, got %s conf=%.2f reason=%s",
+				p, res.Primary, res.Confidence, res.Reason)
+		}
+	}
+
+	// Guard the other direction: widening the P1 language slot must not turn
+	// creative or office writing into code. These carry no framework name, so
+	// they stay outside every shared-vocabulary position.
+	for _, p := range []string{
+		"帮我写一个致辞示例",
+		"帮我写一个婚礼致辞示例",
+		"写一个关于春天的散文",
+		"写一个产品发布方案的规划",
+	} {
+		res, err := c.Classify(context.Background(), ClassificationSignals{LastUserPrompt: p})
+		if err != nil {
+			t.Fatalf("err on %q: %v", p, err)
+		}
+		if res.Primary == TaskCode {
+			t.Errorf("expected non-code for %q, got %s conf=%.2f reason=%s",
+				p, res.Primary, res.Confidence, res.Reason)
+		}
+	}
+}
+
+// TestHeuristicClassifier_LiveRepro_FrameworkWordsDoNotStealNonCodeTasks
+// pins the false-positive boundary measured while widening the shared
+// vocabulary, case by case rather than as one aggregate assertion.
+//
+// A framework name in the sentence is not enough to make a request code: these
+// four were the live probes where the stronger channel must win, and each one
+// regresses loudly if the language slot grows again without a re-measurement.
+func TestHeuristicClassifier_LiveRepro_FrameworkWordsDoNotStealNonCodeTasks(t *testing.T) {
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+
+	for _, tc := range []struct {
+		prompt string
+		want   TaskType
+		why    string
+	}{
+		{"写一个 Spring Cloud 微服务架构方案", TaskPlanning,
+			"framework + architecture plan is planning, not a coding ask"},
+		{"用 React 做一个年度规划", TaskPlanning,
+			"P2 already accepted 用 React 做一个; 规划 must still win"},
+		{"写一个 HTML 邮件文案", TaskCreative,
+			"HTML plus marketing copy is creative writing"},
+		{"写一个 Gin 路由的压测报告", TaskCode,
+			"Gin + 路由 is a real coding object, unlike the three above"},
+	} {
+		res, err := c.Classify(context.Background(), ClassificationSignals{LastUserPrompt: tc.prompt})
+		if err != nil {
+			t.Fatalf("err on %q: %v", tc.prompt, err)
+		}
+		if res.Primary != tc.want {
+			t.Errorf("%q => %s conf=%.2f reason=%s, want %s (%s)",
+				tc.prompt, res.Primary, res.Confidence, res.Reason, tc.want, tc.why)
+		}
+	}
+}
+
 func TestHeuristicClassifier_LiveRepro_ClassifySentiment(t *testing.T) {
 	// "classify sentiment: …" — Channel 1.5 hard override for intent
 	// classification. The Chinese "情感分类" has been on the keyword list
