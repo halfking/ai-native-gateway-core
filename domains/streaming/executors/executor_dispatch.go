@@ -219,12 +219,14 @@ func selectDispatchEndpoint(cand provider.Candidate, clientProtocol string, flag
 	if flags == nil || !flags.EndpointSelectorEnabled {
 		// r0926 P4 审计遗留（十六轮 E6c）：flag-off 的主端点回退此前完全
 		// 不可观测——灰度判读分不清「没开选择器」与「选择器决策回退」。
-		// Debug 级：默认 Info handler 下零成本，不破坏下方「flag-off 路径
-		// 零开销」的既有承诺。
-		slog.Debug("endpoint_selector_decision: flag off, primary endpoint fallback",
-			"model", cand.RawModel, "base_url", cand.BaseURL,
-			"client_protocol", clientProtocol,
-			"match_rule", "flag_off_fallback")
+		// Debug 级 + Enabled 前置（十八轮 M-5）：避免 flag-off 热路径上
+		// 每请求无条件装箱 4 个 slog 参数。
+		if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+			slog.Debug("endpoint_selector_decision: flag off, primary endpoint fallback",
+				"model", cand.RawModel, "base_url", cand.BaseURL,
+				"client_protocol", clientProtocol,
+				"match_rule", "flag_off_fallback")
+		}
 		return cand
 	}
 	endpoints := make([]endpointselect.EndpointLite, 0, len(cand.NativeEndpoints))

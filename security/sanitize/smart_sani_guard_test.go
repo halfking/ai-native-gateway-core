@@ -598,6 +598,46 @@ func TestRestoreResponseBody_UnknownPlaceholderMasked(t *testing.T) {
 	assert.Contains(t, content, "[REDACTED]", "未知占位符的 mask 文本")
 }
 
+func TestRestoreResponseBody_UnknownPlaceholderMaskedWhenSessionMapIsEmpty(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"forged {SENSITIVE:phone:9}"}}]}`)
+
+	result, err := it.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID:    "sess-empty-map",
+		ResponseBody: body,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "empty mapping must not bypass placeholder validation")
+	assert.Contains(t, string(result.ModifiedBody), "[REDACTED]")
+	assert.NotContains(t, string(result.ModifiedBody), "{SENSITIVE:")
+}
+
+func TestRestoreResponseBody_UnknownPlaceholderMaskedWhenRedisIsUnavailable(t *testing.T) {
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	mr.Close()
+
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"forged {SENSITIVE:phone:9}"}}]}`)
+	result, err := it.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID:    "sess-redis-unavailable",
+		ResponseBody: body,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "Redis failure must not bypass placeholder validation")
+	assert.Contains(t, string(result.ModifiedBody), "[REDACTED]")
+	assert.NotContains(t, string(result.ModifiedBody), "{SENSITIVE:")
+}
+
 // ── 2026-08-07 回归：offset key 拆 key 修复（Bug#4）──────────────────
 
 // TestSanitizeInputMiddleware_MultiRound_OffsetKeyAccumulation
@@ -929,9 +969,8 @@ func TestSanitizeRestoreInterceptor_StreamChunk_UnknownPlaceholderMasked(t *test
 // TestSanitizeRestoreInterceptor_PlaceholderSplitAcrossCompleteFrames
 // SSE handler 已负责把同一事件内拆开的多次 Write 缓冲成完整帧；本测试
 // 覆盖不同完整事件之间的文本增量边界。LLM 可能把一个占位符拆成多个
-// delta.content 事件，当前 interceptor 是无状态的单事件转换，无法将
-// `{SENSITIVE:phone:1}` 还原，客户端会看到占位符片段。这个测试记录
-// 尚未闭环的语义事件边界，不代表 handler 的 SSE framing 缺陷。
+// delta.content 事件；interceptor 必须暂存有效尾片，再还原后续完整事件，
+// 并且不能把尾片泄漏到客户端。生产 writer 集成另有独立回归测试。
 func TestSanitizeRestoreInterceptor_PlaceholderSplitAcrossCompleteFrames(t *testing.T) {
 	rdb := setupSaniGuardRedis(t)
 	ctx := context.Background()
@@ -943,18 +982,304 @@ func TestSanitizeRestoreInterceptor_PlaceholderSplitAcrossCompleteFrames(t *test
 	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
 	require.NoError(t, err)
 
+	meta := &response.StreamMeta{SessionID: "sess-split", RequestID: "req-split", State: response.NewStreamState()}
 	chunk1 := []byte("data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"phone {SENSITIVE:phone:\"}}]}\n\n")
-	result1, err := it.InterceptStreamChunk(ctx, chunk1, &response.StreamMeta{SessionID: "sess-split"})
+	result1, err := it.InterceptStreamChunk(ctx, chunk1, meta)
 	require.NoError(t, err)
-	assert.Nil(t, result1, "不完整占位符前缀不能在当前事件中还原")
+	require.NotNil(t, result1, "不完整占位符尾片应从当前事件中暂存")
+	assert.Contains(t, string(result1.ModifiedChunk), `"content":"phone "`)
+	assert.NotContains(t, string(result1.ModifiedChunk), "{SENSITIVE:")
 
 	chunk2 := []byte("data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"1} suffix\"}}]}\n\n")
-	result2, err := it.InterceptStreamChunk(ctx, chunk2, &response.StreamMeta{SessionID: "sess-split"})
+	result2, err := it.InterceptStreamChunk(ctx, chunk2, meta)
 	require.NoError(t, err)
-	assert.Nil(t, result2, "占位符后缀不能在当前事件中还原")
+	require.NotNil(t, result2)
+	assert.Contains(t, string(result2.ModifiedChunk), "13800138000 suffix")
+	assert.NotContains(t, string(result2.ModifiedChunk), "{SENSITIVE:")
+}
 
-	assert.Contains(t, string(chunk1), "{SENSITIVE:phone:")
-	assert.Contains(t, string(chunk2), "1}")
+func TestSanitizeRestoreInterceptor_SplitUnknownPlaceholderMasksWithoutMap(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+	meta := &response.StreamMeta{SessionID: "sess-unknown-split", RequestID: "req-unknown-split", State: response.NewStreamState()}
+
+	first := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"before {SENS\"}}]}\n\n")
+	gotFirst, err := it.InterceptStreamChunk(context.Background(), first, meta)
+	require.NoError(t, err)
+	require.NotNil(t, gotFirst)
+	assert.Contains(t, string(gotFirst.ModifiedChunk), `"content":"before "`)
+	assert.NotContains(t, string(gotFirst.ModifiedChunk), "{SENS")
+
+	second := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"ITIVE:forged:7} after\"}}]}\n\n")
+	gotSecond, err := it.InterceptStreamChunk(context.Background(), second, meta)
+	require.NoError(t, err)
+	require.NotNil(t, gotSecond)
+	assert.Contains(t, string(gotSecond.ModifiedChunk), "[REDACTED] after")
+	assert.NotContains(t, string(gotSecond.ModifiedChunk), "{SENSITIVE:")
+}
+
+func TestSanitizeRestoreInterceptor_StreamTailIsRequestAndFieldScoped(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	ctx := context.Background()
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-lanes"),
+		"{SENSITIVE:phone:1}", "13800138000").Err())
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+	meta := &response.StreamMeta{SessionID: "sess-lanes", RequestID: "req-lanes", State: response.NewStreamState()}
+
+	contentPrefix := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"x {SENSITIVE:phone:\"}}]}\n\n")
+	first, err := it.InterceptStreamChunk(ctx, contentPrefix, meta)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	toolData, err := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "function": map[string]any{"arguments": `{"to":"safe"}`}}}}}}})
+	require.NoError(t, err)
+	toolDelta := append(append([]byte("data: "), toolData...), []byte("\n\n")...)
+	tool, err := it.InterceptStreamChunk(ctx, toolDelta, meta)
+	require.NoError(t, err)
+	assert.Nil(t, tool, "different output lane must not consume the content tail")
+
+	contentSuffix := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"1} y\"}}]}\n\n")
+	last, err := it.InterceptStreamChunk(ctx, contentSuffix, meta)
+	require.NoError(t, err)
+	require.NotNil(t, last)
+	assert.Contains(t, string(last.ModifiedChunk), "13800138000 y")
+	assert.NotContains(t, string(last.ModifiedChunk), "{SENSITIVE:")
+
+	otherRequest := &response.StreamMeta{SessionID: "sess-lanes", RequestID: "req-other", State: response.NewStreamState()}
+	otherChunk := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"1} remains separate\"}}]}\n\n")
+	other, err := it.InterceptStreamChunk(ctx, otherChunk, otherRequest)
+	require.NoError(t, err)
+	assert.Nil(t, other, "a separate stream must not inherit another request's tail")
+}
+
+func TestSanitizeRestoreInterceptor_IncompletePlaceholderTailIsDropped(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+	meta := &response.StreamMeta{SessionID: "sess-truncated", RequestID: "req-truncated", State: response.NewStreamState()}
+	chunk := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"safe {SENSITIVE:phone:\"}}]}\n\n")
+	result, err := it.InterceptStreamChunk(context.Background(), chunk, meta)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Contains(t, string(result.ModifiedChunk), `"content":"safe "`)
+	assert.NotContains(t, string(result.ModifiedChunk), "{SENSITIVE:")
+	// If the stream ends here, the uncommitted tail is discarded with its
+	// request-local StreamState; no process-global map retains it.
+}
+
+func TestSanitizeRestoreInterceptor_SplitPlaceholderAcrossProtocolDeltaFields(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	ctx := context.Background()
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-protocol-split"),
+		"{SENSITIVE:phone:1}", "13800138000").Err())
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+	encodeFrame := func(payload map[string]any) []byte {
+		data, marshalErr := json.Marshal(payload)
+		require.NoError(t, marshalErr)
+		return append(append([]byte("data: "), data...), []byte("\n\n")...)
+	}
+	content := func(value string) map[string]any {
+		return map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": value}}}}
+	}
+	openAIToolArgs := func(value string) map[string]any {
+		tool := map[string]any{"index": 4, "function": map[string]any{"arguments": value}}
+		delta := map[string]any{"tool_calls": []any{tool}}
+		return map[string]any{"choices": []any{map[string]any{"delta": delta}}}
+	}
+	openAIFunctionCallArgs := func(value string) map[string]any {
+		return map[string]any{"choices": []any{map[string]any{"index": 2, "delta": map[string]any{"function_call": map[string]any{"arguments": value}}}}}
+	}
+	tests := []struct {
+		name  string
+		first map[string]any
+		last  map[string]any
+	}{
+		{
+			name:  "responses output_text delta",
+			first: map[string]any{"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "item_id": "msg_1", "delta": "say {SENSITIVE:phone:"},
+			last:  map[string]any{"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "item_id": "msg_1", "delta": "1} now"},
+		},
+		{
+			name:  "responses function_call_arguments delta",
+			first: map[string]any{"type": "response.function_call_arguments.delta", "output_index": 1, "item_id": "fc_1", "delta": `{"phone":"{SENSITIVE:phone:`},
+			last:  map[string]any{"type": "response.function_call_arguments.delta", "output_index": 1, "item_id": "fc_1", "delta": `1}"}`},
+		},
+		{
+			name:  "responses refusal delta",
+			first: map[string]any{"type": "response.refusal.delta", "item_id": "msg_refusal", "delta": "noted {SENSITIVE:phone:"},
+			last:  map[string]any{"type": "response.refusal.delta", "item_id": "msg_refusal", "delta": "1} safely"},
+		},
+		{
+			name:  "responses audio transcript delta",
+			first: map[string]any{"type": "response.audio_transcript.delta", "item_id": "msg_audio", "delta": "spoken {SENSITIVE:phone:"},
+			last:  map[string]any{"type": "response.audio_transcript.delta", "item_id": "msg_audio", "delta": "1} safely"},
+		},
+		{
+			name:  "anthropic text delta",
+			first: map[string]any{"type": "content_block_delta", "index": 2, "delta": map[string]any{"type": "text_delta", "text": "say {SENSITIVE:phone:"}},
+			last:  map[string]any{"type": "content_block_delta", "index": 2, "delta": map[string]any{"type": "text_delta", "text": "1} now"}},
+		},
+		{
+			name:  "anthropic partial_json tool delta",
+			first: map[string]any{"type": "content_block_delta", "index": 3, "delta": map[string]any{"type": "input_json_delta", "partial_json": "{\"to\":\"{SENSITIVE:phone:"}},
+			last:  map[string]any{"type": "content_block_delta", "index": 3, "delta": map[string]any{"type": "input_json_delta", "partial_json": "1}\"}"}},
+		},
+		{
+			name:  "openai tool arguments",
+			first: openAIToolArgs("{\"to\":\"{SENSITIVE:phone:"),
+			last:  openAIToolArgs("1}\"}"),
+		},
+		{
+			name:  "openai legacy function_call arguments",
+			first: openAIFunctionCallArgs("{\"to\":\"{SENSITIVE:phone:"),
+			last:  openAIFunctionCallArgs("1}\"}"),
+		},
+		{
+			name:  "openai refusal delta",
+			first: map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"refusal": "refusal {SENSITIVE:phone:"}}}},
+			last:  map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"refusal": "1} safe"}}}},
+		},
+		{
+			name:  "openai content",
+			first: content("say {SENSITIVE:phone:"),
+			last:  content("1} now"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			meta := &response.StreamMeta{SessionID: "sess-protocol-split", RequestID: tt.name, State: response.NewStreamState()}
+			first, err := it.InterceptStreamChunk(ctx, encodeFrame(tt.first), meta)
+			require.NoError(t, err)
+			require.NotNil(t, first)
+			assert.NotContains(t, string(first.ModifiedChunk), "{SENSITIVE:")
+			last, err := it.InterceptStreamChunk(ctx, encodeFrame(tt.last), meta)
+			require.NoError(t, err)
+			require.NotNil(t, last)
+			assert.Contains(t, string(last.ModifiedChunk), "13800138000")
+			assert.NotContains(t, string(last.ModifiedChunk), "{SENSITIVE:")
+		})
+	}
+}
+
+func TestSanitizeRestoreInterceptor_BlocksWhenStreamLaneBoundIsExceeded(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+	choices := make([]any, 0, maxStreamRestoreLanes+1)
+	for i := 0; i < maxStreamRestoreLanes+1; i++ {
+		choices = append(choices, map[string]any{"delta": map[string]any{"content": "{SENSITIVE:phone:"}})
+	}
+	payload, err := json.Marshal(map[string]any{"choices": choices})
+	require.NoError(t, err)
+	frame := append(append([]byte("data: "), payload...), []byte("\n\n")...)
+	meta := &response.StreamMeta{SessionID: "sess-lane-limit", RequestID: "req-lane-limit", State: response.NewStreamState()}
+	result, err := it.InterceptStreamChunk(context.Background(), frame, meta)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.ShouldBlock, "exhausting the per-stream lane bound must fail closed")
+	state, ok := meta.State.GetOrCreate(streamRestoreStateKey, func() any { return &streamRestoreState{} }).(*streamRestoreState)
+	require.True(t, ok)
+	assert.LessOrEqual(t, len(state.tails), maxStreamRestoreLanes)
+}
+
+func TestSanitizeRestoreInterceptor_BoundsUntrustedStreamLaneIdentifiers(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+	meta := &response.StreamMeta{SessionID: "sess-lane-id-bound", RequestID: "req-lane-id-bound", State: response.NewStreamState()}
+	longID := strings.Repeat("x", 128*1024)
+	frame := []byte("data: {\"type\":\"response.output_text.delta\",\"item_id\":" + `"` + longID + `"` + ",\"delta\":\"{SENSITIVE:phone:\"}\n\n")
+	result, err := it.InterceptStreamChunk(context.Background(), frame, meta)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	state, ok := meta.State.GetOrCreate(streamRestoreStateKey, func() any { return &streamRestoreState{} }).(*streamRestoreState)
+	require.True(t, ok)
+	require.Len(t, state.tails, 1)
+	for lane := range state.tails {
+		assert.Less(t, len(lane), 160, "opaque provider ID must not inflate the state-map key")
+	}
+}
+
+func TestSanitizeRestoreInterceptor_MasksInvalidPlaceholderContinuationAndKeepsStreamOpen(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+	meta := &response.StreamMeta{SessionID: "sess-invalid-continuation", RequestID: "req-invalid-continuation", State: response.NewStreamState()}
+	first := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"{SENSITIVE:phone:\"}}]}\n\n")
+	_, err = it.InterceptStreamChunk(context.Background(), first, meta)
+	require.NoError(t, err)
+	invalid := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"13800138000x tail\"}}]}\n\n")
+	result, err := it.InterceptStreamChunk(context.Background(), invalid, meta)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.ShouldBlock, "a malformed placeholder must not terminate the client stream")
+	assert.Contains(t, string(result.ModifiedChunk), "[REDACTED]")
+	assert.NotContains(t, string(result.ModifiedChunk), "{SENSITIVE:")
+	assert.NotContains(t, string(result.ModifiedChunk), "13800138000")
+	continued, err := it.InterceptStreamChunk(context.Background(), contentFrame("following"), meta)
+	require.NoError(t, err)
+	if continued != nil {
+		assert.False(t, continued.ShouldBlock, "later response content must continue after redaction")
+	}
+}
+
+func TestSanitizeRestoreInterceptor_BracePrefixContinuationPreservesStream(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+	meta := &response.StreamMeta{SessionID: "sess-json-prefix", RequestID: "req-json-prefix", State: response.NewStreamState()}
+
+	first, err := it.InterceptStreamChunk(context.Background(), contentFrame("{"), meta)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	assert.Contains(t, string(first.ModifiedChunk), `"content":""`)
+
+	second, err := it.InterceptStreamChunk(context.Background(), contentFrame(`"key":1}`), meta)
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	assert.False(t, second.ShouldBlock, "ordinary JSON content must not abort the client stream")
+	assert.Contains(t, string(second.ModifiedChunk), `"content":"{\"key\":1}"`)
+}
+
+func TestSanitizeRestoreInterceptor_BlocksOpaqueFrameWhilePlaceholderTailIsPending(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+	meta := &response.StreamMeta{SessionID: "sess-opaque-continuation", RequestID: "req-opaque-continuation", State: response.NewStreamState()}
+	first := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"{SENSITIVE:phone:\"}}]}\n\n")
+	_, err = it.InterceptStreamChunk(context.Background(), first, meta)
+	require.NoError(t, err)
+
+	malformed := []byte("data: \"opaque continuation 1}\"\n\n")
+	result, err := it.InterceptStreamChunk(context.Background(), malformed, meta)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.ShouldBlock, "opaque payload cannot safely consume a withheld protocol-lane prefix")
+}
+
+func contentFrame(value string) []byte {
+	data, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": value}}}})
+	return append(append([]byte("data: "), data...), []byte("\n\n")...)
 }
 
 // ── 2026-08-07 回归：response chain append 行为（修复#1 依赖）────────

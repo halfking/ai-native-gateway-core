@@ -8,14 +8,15 @@
 // 才不会回潮。
 //
 // v2（R73）：v1 守卫有三个结构性漏网，均已实证过在逃位点——
-//   1. 只认 `.Error()` 形态：`fmt.Sprintf("...%v", err)` 拼进 500 响应体
-//      的写法不含 `.Error()` 调用（annotation/session_management 等
-//      22 处在逃）；
-//   2. 要求状态位与回显同行：多行 `writeJSON(w, 500, map{..., "error":
-//      err.Error()})` 每行只命中一半（tool_registry/tool_policy 等
-//      10 处在逃）；
-//   3. os.ReadDir(".") 不递归：admin 子目录整体漏扫（logsearch 1 处
-//      在逃；dashboardapi 靠 writer 层兜底，见白名单）。
+//  1. 只认 `.Error()` 形态：`fmt.Sprintf("...%v", err)` 拼进 500 响应体
+//     的写法不含 `.Error()` 调用（annotation/session_management 等
+//     22 处在逃）；
+//  2. 要求状态位与回显同行：多行 `writeJSON(w, 500, map{..., "error":
+//     err.Error()})` 每行只命中一半（tool_registry/tool_policy 等
+//     10 处在逃）；
+//  3. os.ReadDir(".") 不递归：admin 子目录整体漏扫（logsearch 1 处
+//     在逃；dashboardapi 靠 writer 层兜底，见白名单）。
+//
 // 现改为 filepath.WalkDir 递归 + 状态行 ±3 行窗口 + `%v`+err 启发式。
 //
 // 机制与 internal/sqlreadguard 的 LEGIT 白名单同款：确需在 500 邻域内
@@ -78,6 +79,12 @@ func TestNoInternalErrorEchoIn500Responses(t *testing.T) {
 		if walkErr != nil {
 			return walkErr
 		}
+		// R74 审计：WalkDir 产出 OS 原生分隔符——Windows 上是
+		// `dashboardapi\errors.go`，而 legitimateExceptions 的 key 是斜杠
+		// 形态（十七轮 basename→路径化的既定形态），豁免在 Windows 上
+		// 全部失配（macOS 绿 / Windows 红，24 处假泄漏）。统一 ToSlash，
+		// 白名单查找与泄漏报告在两个平台形态一致。
+		path = filepath.ToSlash(path)
 		if d.IsDir() {
 			if d.Name() == "testdata" {
 				return filepath.SkipDir

@@ -49,12 +49,79 @@ const defaultSuites = "autoroute/testdata/auto_matching_suite.jsonl," +
 
 const defaultBaseline = "cmd/auto-testbench/testdata/baseline.json"
 
+// defaultE2EBaseline holds the selection-layer threshold. It is a separate file
+// from the offline classification baseline on purpose: collapse rate is only
+// computable from a live E2E run (the decision header), so putting it in the
+// offline baseline would create a threshold the offline gate can never
+// evaluate — a gate that looks installed and silently does nothing (R76).
+const defaultE2EBaseline = "cmd/auto-testbench/testdata/e2e_baseline.json"
+
+// e2eBaseline is the selection-layer gate contract.
+type e2eBaseline struct {
+	GeneratedAt     string             `json:"generated_at"`
+	Source          string             `json:"source"`
+	MaxCollapseRate float64            `json:"max_collapse_rate"`
+	Measured        map[string]float64 `json:"measured,omitempty"`
+	Notes           string             `json:"notes,omitempty"`
+}
+
+// evaluateE2EGate compares the selection layer of this run against the E2E
+// baseline. ok=false means "not evaluated" (no E2E report in this run) which
+// must never turn into a failure — the offline path has no collapse rate.
+func evaluateE2EGate(b *e2eBaseline, s *e2eSummary) (ok bool, line string, failed bool) {
+	if s == nil || s.Decided == 0 {
+		return false, "e2e layer not run in this invocation — collapse threshold not evaluated", false
+	}
+	got := s.CollapseRate()
+	pass := got <= b.MaxCollapseRate
+	verdict := "PASS"
+	if !pass {
+		verdict = "ABOVE"
+	}
+	line = fmt.Sprintf("collapse_rate    got=%.4f  max=%.4f  (%d/%d decided)  %s",
+		got, b.MaxCollapseRate, s.FallbackCollapsed, s.Decided, verdict)
+	return true, line, !pass
+}
+
+// validateE2EBaseline rejects a baseline that cannot gate anything or that
+// would fail spuriously.
+//
+// Lower bound > 0 on purpose: fallback_used also fires when the candidate pool
+// is legitimately empty (every model unavailable), which is a healthy
+// outcome. A zero threshold would turn that into a build failure, so the
+// floor is a small tolerance, not zero.
+func validateE2EBaseline(b *e2eBaseline) error {
+	switch {
+	case b.MaxCollapseRate <= 0:
+		return fmt.Errorf("e2e baseline max_collapse_rate = %v, want > 0 (zero fails on legitimate empty-pool fallbacks; set a small tolerance)", b.MaxCollapseRate)
+	case b.MaxCollapseRate > 1:
+		return fmt.Errorf("e2e baseline max_collapse_rate = %v, want <= 1", b.MaxCollapseRate)
+	}
+	return nil
+}
+
+func loadE2EBaseline(path string) (*e2eBaseline, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var b e2eBaseline
+	if err := json.Unmarshal(data, &b); err != nil {
+		return nil, fmt.Errorf("parse e2e baseline %s: %w", path, err)
+	}
+	if err := validateE2EBaseline(&b); err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
 func main() {
 	mode := flag.String("mode", "regression", "regression | generate")
 	suites := flag.String("suite", defaultSuites, "comma-separated suite JSONL files")
 	report := flag.String("report", "", "report path prefix; writes <prefix>.json + <prefix>.md (empty = stdout summary only)")
 	gate := flag.String("gate", "", "baseline JSON to enforce (exit 1 below threshold)")
 	gateDefault := flag.Bool("gate-default", false, "use the checked-in default baseline ("+defaultBaseline+")")
+	e2eBaselinePath := flag.String("e2e-baseline", "", "selection-layer baseline JSON; only consulted when -e2e-report is given (default "+defaultE2EBaseline+" when -e2e-report is set)")
 	writeBaseline := flag.String("write-baseline", "", "write this run's metrics as a new baseline JSON")
 	e2eReport := flag.String("e2e-report", "", "optional autoroute-e2e-audit result JSONL to merge (selection layer)")
 
@@ -179,6 +246,32 @@ func main() {
 		}
 		fmt.Println("GATE: PASS")
 	}
+
+	// Selection-layer gate (R76). Consulted only when this run actually merged
+	// an E2E report: the offline path has no decision headers, so no collapse
+	// rate. Absence of an E2E run is a skip, never a silent pass and never a
+	// failure — the classification gate above already decided that run.
+	ebPath := *e2eBaselinePath
+	if ebPath == "" && e2e != nil {
+		ebPath = defaultE2EBaseline
+	}
+	if ebPath != "" && e2e != nil {
+		eb, err := loadE2EBaseline(ebPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "e2e gate:", err)
+			os.Exit(2)
+		}
+		evaluated, line, failed := evaluateE2EGate(eb, e2e)
+		fmt.Printf("\nselection gate vs %s\n  %s\n", ebPath, line)
+		if evaluated && failed {
+			fmt.Println("SELECTION GATE: FAIL")
+			fmt.Println("GATE: FAIL")
+			os.Exit(1)
+		}
+		if evaluated {
+			fmt.Println("SELECTION GATE: PASS")
+		}
+	}
 }
 
 // caseRow is the per-case JSONL record in <prefix>.cases.jsonl.
@@ -197,7 +290,7 @@ type caseRow struct {
 // regressionOnlyFlags are the flags only -mode regression consumes; in
 // generate mode they are silent no-ops, so explicitly setting one is a usage
 // error (R64: they used to be ignored and the run still exited 0).
-var regressionOnlyFlags = []string{"suite", "report", "gate", "gate-default", "write-baseline", "e2e-report"}
+var regressionOnlyFlags = []string{"suite", "report", "gate", "gate-default", "write-baseline", "e2e-report", "e2e-baseline"}
 
 // validateFlags rejects contradictory or no-op flag combinations (R64 P3):
 //   - -mode generate with any regression-only flag → error (silent no-op);
@@ -333,6 +426,11 @@ func loadE2EReport(path string) (*e2eSummary, error) {
 		switch {
 		case r.Pass != nil && *r.Pass:
 			s.Pass++
+			// R73 订正（D11#5）：与下方 pass=false 分支对称置位。当前写端
+			// 契约 pass := got==expected 使「pass=true 且 decision 错」不可达；
+			// 若未来写端漂移，缺这行会让同一行既进 Pass 又经 !recorded 臂
+			// 进 Failures，双计。
+			recorded = true
 		case r.Pass != nil:
 			// A decided verdict of "wrong" — a genuine classification FAIL.
 			s.Failures = append(s.Failures, r)
@@ -531,19 +629,53 @@ func writeReports(prefix string, suiteFiles []string, cm *classificationMetrics,
 		}
 	}
 	if e2e != nil {
-		rate := 0.0
-		if e2e.Total > 0 {
-			rate = float64(e2e.Pass) / float64(e2e.Total)
-		}
-		md.WriteString(fmt.Sprintf("\n## E2E 层（%s）\n\n- %d/%d 通过（%.4f）\n", e2e.Path, e2e.Pass, e2e.Total, rate))
-		if len(e2e.Failures) > 0 {
-			md.WriteString("\n| case | want | got | served |\n|---|---|---|---|\n")
-			for _, f := range e2e.Failures {
-				md.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", f.Name, f.Expected, f.Got, f.ServedModel))
+		md.WriteString(e2eMarkdownSection(e2e))
+	}
+	return os.WriteFile(prefix+".md", []byte(md.String()), 0o644)
+}
+
+// e2eMarkdownSection renders the E2E layer of the human-facing report.
+//
+// The selection-layer numbers belong in here, not only in the console output
+// and the JSON sidecar: reports/auto-testbench.md is the artifact a reviewer
+// actually opens. Before this section carried them, a run where 124/240 cases
+// had collapsed onto the 48h popularity fallback and a completely healthy run
+// produced the same markdown — the two facts were indistinguishable to a human
+// reader, which is the blind spot R75 flagged.
+func e2eMarkdownSection(s *e2eSummary) string {
+	var md strings.Builder
+	rate := 0.0
+	if s.Total > 0 {
+		rate = float64(s.Pass) / float64(s.Total)
+	}
+	md.WriteString(fmt.Sprintf("\n## E2E 层（%s）\n\n- %d/%d 通过（%.4f）\n", s.Path, s.Pass, s.Total, rate))
+	// Upstream errors are a dispatch fact, not a classification verdict; saying
+	// so here keeps a 429-heavy run from reading as a routing regression.
+	md.WriteString(fmt.Sprintf("- 上游报错 %d 例（派发失败，非分类判定）\n", s.Errors))
+	if s.Decided > 0 {
+		md.WriteString(fmt.Sprintf("- 分类层（取到决策的 %d 例）：%d/%d（%.4f）\n",
+			s.Decided, s.ClassCorrect, s.Decided, s.ClassAccuracy()))
+		md.WriteString(fmt.Sprintf("- 选型层（取到决策的 %d 例）：坍缩到 48h 热度兜底 %d（%.4f），单候选池 %d\n",
+			s.Decided, s.FallbackCollapsed, s.CollapseRate(), s.SingleCandidate))
+		if s.FallbackCollapsed > 0 {
+			md.WriteString("\n### 坍缩分任务归因\n\n| task_type | 坍缩/该任务已判定 |\n|---|---|\n")
+			tasks := make([]string, 0, len(s.CollapseByTask))
+			for t := range s.CollapseByTask {
+				tasks = append(tasks, t)
+			}
+			sort.Strings(tasks)
+			for _, t := range tasks {
+				md.WriteString(fmt.Sprintf("| %s | %d/%d |\n", t, s.CollapseByTask[t], s.TotalByTask[t]))
 			}
 		}
 	}
-	return os.WriteFile(prefix+".md", []byte(md.String()), 0o644)
+	if len(s.Failures) > 0 {
+		md.WriteString("\n| case | want | got | served |\n|---|---|---|---|\n")
+		for _, f := range s.Failures {
+			md.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", f.Name, f.Expected, f.Got, f.ServedModel))
+		}
+	}
+	return md.String()
 }
 
 // writeBaselineFile adapts metrics.writeBaseline to the CLI name (kept

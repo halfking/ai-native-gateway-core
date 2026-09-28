@@ -8,6 +8,7 @@ package response
 import (
 	"context"
 	"encoding/json"
+	"sync"
 )
 
 // InterceptRequest contains the context for intercepting a non-streaming response.
@@ -85,6 +86,40 @@ type StreamMeta struct {
 	SubAgentsTotal       int
 	SubAgentsCompleted   int
 	SubAgentsPending     int
+
+	// State is scoped to one intercepting response writer. Interceptors may use
+	// it for bounded per-stream carry state; it is not shared across requests.
+	State *StreamState
+}
+
+// StreamState stores request-local interceptor state. Its lifetime is bounded
+// by the stream writer, avoiding process-global session maps and TTL janitors.
+type StreamState struct {
+	mu     sync.Mutex
+	values map[string]any
+}
+
+// NewStreamState creates empty state for one stream.
+func NewStreamState() *StreamState {
+	return &StreamState{values: make(map[string]any)}
+}
+
+// GetOrCreate returns the named value, creating it exactly once.
+func (s *StreamState) GetOrCreate(key string, create func() any) any {
+	if s == nil || key == "" || create == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.values == nil {
+		s.values = make(map[string]any)
+	}
+	if value, ok := s.values[key]; ok {
+		return value
+	}
+	value := create()
+	s.values[key] = value
+	return value
 }
 
 // ChunkResult contains the outcome of stream chunk interception.

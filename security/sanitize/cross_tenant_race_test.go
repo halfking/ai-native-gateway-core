@@ -239,7 +239,8 @@ func TestSanitizeRestoreInterceptor_CrossTenant_DoesNotLeakMap(t *testing.T) {
 	require.NoError(t, rm.rdb.HSet(ctx, SanitizeRedisKey(HashTenant(tenantA), sessionID),
 		"{SENSITIVE:phone:1}", "13800138000").Err())
 
-	// 用 tenant B 的 interceptor 试图还原 — 必须返回 nil（无 map）
+	// 用 tenant B 的 interceptor 试图还原 — 不得读取 A 的真实值；未知
+	// placeholder 应被 mask，而不是原样透传。
 	s, err := NewSanitizer(NewPatternDetector())
 	require.NoError(t, err)
 	it, err := NewSanitizeRestoreInterceptor(s, rm.rdb, 30*60*1000)
@@ -252,7 +253,10 @@ func TestSanitizeRestoreInterceptor_CrossTenant_DoesNotLeakMap(t *testing.T) {
 		ResponseBody: respBody,
 	})
 	require.NoError(t, err)
-	require.Nil(t, result, "tenant B restore must not see tenant A's map")
+	require.NotNil(t, result, "tenant B must still scrub unknown placeholder tokens")
+	require.NotContains(t, string(result.ModifiedBody), "13800138000", "tenant B must not read tenant A's mapped PII")
+	require.Contains(t, string(result.ModifiedBody), "[REDACTED]")
+	require.NotContains(t, string(result.ModifiedBody), "{SENSITIVE:")
 }
 
 // TestSanitizeMiddleware_NilTenantHash_FallsBackToUnknown 并发验证：缺 tenant header

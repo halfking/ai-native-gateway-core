@@ -8,6 +8,22 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+// taskVocabularyAbsentTotal 是 R73 审计登记④/D11#1 的观测收口：分类学
+// fail-open（中性化）分支每次触发计一次。零观测时「模型库 tags 被误清空」
+// 与「正常路由」在指标面不可区分——每个请求都静默降级为价格/通道质量
+// 排序，唯一发现手段是手工跑 E2E harness。label=task 取值来自分类结果
+// 的有界任务集（~10 个 TaskType），基数受控。中性化后的 wire 侧
+// vocabulary_present 字段是否引入仍属 owner 拍板项（R73 P2-1 登记④）。
+var taskVocabularyAbsentTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "autoroute_task_vocabulary_absent_total",
+		Help: "Taxonomy fail-open events: the scored candidate pool carries none of the tags this task requires, so the tag dimension is neutralised to 0.5 and routing degrades to price/quality ranking. Sustained non-zero rates mean the models_canonical tag vocabulary is empty or mismatched for that task.",
+	},
+	[]string{"task"},
 )
 
 // RecommendV2 is the new candidate recommendation path. It enforces
@@ -126,6 +142,8 @@ func (idx *Index) RecommendV2WithHints(
 	// signals — instead of discarding the pool for a taxonomy gap.
 	vocabularyPresent := TaskVocabularyRepresented(task, available)
 	if len(available) > 0 && !vocabularyPresent {
+		// R73 审计 D11#1：fail-open 触发必须留痕（见 taskVocabularyAbsentTotal）。
+		taskVocabularyAbsentTotal.WithLabelValues(string(task)).Inc()
 		for i := range available {
 			available[i].TaskMatchScore = TaskMatchScoreUnknown
 		}
@@ -167,10 +185,24 @@ func (idx *Index) RecommendV2WithHints(
 		}
 
 		if len(hotTop3) < 3 {
-			for canonID, cands := range byCanonical {
+			// Deterministic backfill order. Go randomises map iteration, and
+			// every downstream step (stable sort on Composite, then the
+			// optimizer hooks that reorder the list) inherits that order: for
+			// two candidates with identical scores the winner was decided by
+			// map iteration order, so the same request could pick a different
+			// model on every call. That surfaced as an intermittent
+			// TestDecideV2_RecommendModelHook_ReordersWinner failure (audit
+			// M-7, ~1 in 8 runs) and made decision traces irreproducible.
+			// Ascending canonical id is a neutral, stable tie-break.
+			rest := make([]int, 0, len(byCanonical))
+			for canonID := range byCanonical {
 				if !hotCanonIDs[canonID] {
-					candidatePool = append(candidatePool, cands...)
+					rest = append(rest, canonID)
 				}
+			}
+			sort.Ints(rest)
+			for _, canonID := range rest {
+				candidatePool = append(candidatePool, byCanonical[canonID]...)
 			}
 		}
 	}

@@ -69,3 +69,8 @@
 - 收口机制定型：`admin/internal_error.go` 三 helper（writeInternalErr JSON-detail 形状 / writeInternalErrStr 平面 error 字符串形状 / writeInternalTextErr text/plain 形状）——客户端只见到固定 op 文案，真实错误带 runtime.Caller file:line 锚点进 slog；**响应线形状（JSON 对象/字符串/text）必须与原 helper 对齐**，否则破坏前端消费。旧 writeInternalErr 105 调用点改名为薄包装统一 slog 位点。
 - 回归钉桩：`internal_error_guard_test.go` 静态扫描包内源码禁 500 行含 `*.Error()`（LEGIT 白名单同 sqlreadguard 机制，刻意留空）；dashboardapi writeErrorJSON 单点闸门（5xx details 一律不下发、落 slog）——带 details 参数的共享 helper 优先做单点闸门，比逐点改写便宜且防未来新增漏网。
 - 变换实操坑：GNU sed ERE 不支持 `(?:...)` 非捕获组（"Invalid preceding regular expression"），多表达式脚本须逐条单 sed 执行。
+
+### R75 回注（2026-09-28，守卫跨平台 + 契约注释三面一致）
+- **源码扫描型守卫的路径必须归一化**：零回显守卫白名单键为斜杠路径，Windows 上 WalkDir 产出反斜杠 → 24 处假泄漏全红（十七轮路径化只在 macOS 验证过）。**凡 filepath.WalkDir + 白名单/断言路径匹配的守卫，回调入口统一 filepath.ToSlash**；跨平台守卫必须在两个 OS 各跑一次才算绿。教训一般化：**恒查门若只在单一 OS 验证，等于半个门**。
+- wire 契约注释必须与实现+测试三面一致：types.go 把 JSON null 写在 available 侧（实现判 unavailable）——JSON null 是写路径"载荷为空"的常态编码（jsonTextOrNull），注释错向会误导下一个读契约的消费者；9 locale "tri-state" 措辞随实际两态键集同步。
+- autoroute fail-open 新增 `autoroute_task_vocabulary_absent_total{task}`（词表缺失静默降级的唯一指标面信号）；apihub.HealthStorage 登记为零消费预留枚举。
