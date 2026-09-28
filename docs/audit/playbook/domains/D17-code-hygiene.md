@@ -215,3 +215,63 @@ D17 域知识「代码卫生」含注释/文档漂移。本轮把同一把尺子
 **本轮工具的教训**：单次全表 grep 在本仓（vendor + 大测试树）要 7 分钟以上，两表
 合计超过 15 分钟，不可用于交互式排查。后续应给脚本加 `--exclude-dir` 与列清单缓存，
 或直接用 ripgrep（本次复核即如此，快一个数量级）。
+
+### R78 续四 · 配置字段死管道扫描：15 个零读取字段，其中 5 个是「双路径分裂」陷阱
+
+把「grep 调用方才证明被使用」用到 `config/config.go`：82 个带 `env`/`yaml` tag 的字段中
+**15 个在 `config/` 之外零引用**。
+
+**这一步的关键是不要停在第一层结论。** 初扫给出「WeChat 集成未实现」「RequestSurvival
+特性未实现」，两个都**判错了**——特性都在，只是没走 config。逐条追到 env 名才看清真实
+形态：
+
+**形态 1 · 双路径分裂：config 声明的前缀与实现读取的前缀不一致（最危险）**
+
+| config 声明（`config.go:262-267, 633-636, 711`） | 实现实际读取 | 结果 |
+|---|---|---|
+| `LLM_GATEWAY_WECHAT_CORP_ID` | **`WECHAT_CORP_ID`**（`main_notification.go:85`） | 设了带前缀的 → 集成静默不启动 |
+| `LLM_GATEWAY_WECHAT_CORP_SECRET` | **`WECHAT_CORP_SECRET`**（`:86`） | 同上 |
+| `LLM_GATEWAY_WECHAT_AGENT_ID` / `_AES_KEY` / `_BASE_URL` | 无任何读取 | 纯死字段 |
+
+Config 结构体的 5 个 `WeChat*` 字段**填了值、进了 struct、在 config 外零读取**；真正
+构建通知配置的是 `main_notification.go` 里那条独立的 `os.Getenv` 路径，读的是**无前缀**
+的 `WECHAT_*`。
+
+**后果**：运维照 `config.go`（或任何由它生成的文档）配 `LLM_GATEWAY_WECHAT_CORP_ID`，
+企业微信通知**静默不启动**——没有任何报错，因为代码只是读不到。反过来
+`WECHAT_CORP_SECRET` 生效却从未在 config 里声明。这是本轮唯一一个「文档与环境事实
+双向不一致」的项。
+
+**形态 2 · 字段从未被读 ⇒ env 与 yaml 两个绑定同时失效**
+
+`DefaultCred` / `DefaultProvider` / `PoolGracePeriod` / `PythonEndpoint` /
+`RequestSurvival{MaxActiveTasksPerTenant,StatusIntervalSeconds,TenantAllowlist}`
+——对应 env 在 `config/` 外**零引用**。字段本身没人读，所以它的 `env:` 与 `yaml:`
+两个绑定**都**不产生任何效果。
+
+`RequestSurvival` 特别说明：特性本身**是活的**（`main.go:290-293` 读
+`cfg.RequestSurvivalEnabled` 并与 `StreamRetryEnabled` 互斥），但上面这 3 个**限流/白名单
+开关是死的**——运维想给某租户开白名单或调探测间隔，设了没有任何反应。
+
+**形态 3 · env 生效、config 字段是死管道（不构成缺陷，但会误导读代码的人）**
+
+`CursorHMACSecret`（`CURSOR_HMAC_SECRET`，13 处直读）、`DeployEnv`（`LLM_GATEWAY_ENV`，
+7 处）、`IdentitySalt`（`domains/identity/identity.go:19` 直读）。
+
+`IdentitySalt` 一条要特别澄清：我一度把它列为「安全相关的零读取字段」，追到
+`domains/identity/identity.go:19` 才发现它**确实生效**——`var identitySalt =
+os.Getenv("LLM_GATEWAY_IDENTITY_SALT")`。**config 字段是死的，env 变量是活的。** 这与
+`egress_profile`（列本身没人读）是完全不同的性质。
+
+**方法论教训 K**：**扫「配置字段」不能只扫字段名，必须追到 env 名的读取点**，因为
+消费方有三条完全不同的路径——① 走 `cfg.X`（字段有引用）；② 绕开 config 直接
+`os.Getenv("NAME")`（**字段零引用但 env 生效**）；③ yaml 配置文件（仅结构体路径）。
+只做第 ① 层会同时产生**假阴性**（把形态 2/3 的 env 误报为失效）与**假阳性**（把形态 3
+误报为特性未实现）。本轮 15 个初筛结果里，有 2 个在第二层就被推翻了。
+
+**与列扫描的对照**：列没有这种「绕开」路径——DB 列只能经 SQL 读取，`SELECT *` 已核为
+不存在，所以列扫描的结论可以直接落地。**配置扫描必须多一层验证。**
+
+**未修**：形态 1 需确定 WeChat 配置的单一真源（改 config 声明对齐实现，或改实现读
+config）；形态 2 需确定 7 个开关是补实现还是删声明；形态 3 建议把直读 env 回填进 config
+以消除双源。三者都属配置契约裁决，审计轮只登记。
