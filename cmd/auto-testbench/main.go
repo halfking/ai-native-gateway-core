@@ -339,15 +339,20 @@ type e2eRow struct {
 	ServedModel string `json:"served_model"`
 	Error       string `json:"error"`
 	Decision    *struct {
-		TaskType     string `json:"task_type"`
-		ChosenModel  string `json:"chosen_model"`
-		FallbackUsed bool   `json:"fallback_used"`
-		Candidates   []struct {
-			Model     string  `json:"model"`
-			RouteTier string  `json:"route_tier"`
-			Match     float64 `json:"match_score"`
-		} `json:"candidates_top3"`
+		TaskType     string         `json:"task_type"`
+		ChosenModel  string         `json:"chosen_model"`
+		FallbackUsed bool           `json:"fallback_used"`
+		Candidates   []e2eCandidate `json:"candidates_top3"`
 	} `json:"decision"`
+}
+
+// e2eCandidate is one entry of the decision header's candidates_top3. Note it
+// is one CREDENTIAL, not one model — the live pools put the same model in the
+// list several times under different credentials. R77 D11-#8.
+type e2eCandidate struct {
+	Model     string  `json:"model"`
+	RouteTier string  `json:"route_tier"`
+	Match     float64 `json:"match_score"`
 }
 
 type e2eSummary struct {
@@ -370,6 +375,24 @@ type e2eSummary struct {
 	TotalByTask       map[string]int `json:"decided_by_task,omitempty"`
 	CollapseRateVal   float64        `json:"collapse_rate"`
 	ClassAccuracyVal  float64        `json:"classification_accuracy"`
+
+	// ModelMonotone counts decided cases whose candidate pool held exactly one
+	// distinct MODEL, regardless of how many candidate entries it had.
+	//
+	// R77 D11-#8: SingleCandidate counts candidate ENTRIES, and the three
+	// entries of candidates_top3 are three credentials of one model, not three
+	// options. On the 2026-09-28 post-L-5 240-case run, 217/240 (90.4%) pools
+	// were model-monotone while SingleCandidate read 0 — the metric reported a
+	// healthy pool over a pool that had no model-level choice at all. Counting
+	// distinct models is the layer that actually describes the failover ladder.
+	//
+	// Credential diversity is not upstream diversity either: the observed
+	// failover chain cred 21 → cred 42 crossed credentials that both sit on
+	// provider 14 / api.minimaxi.com, and every 429-side credential observed
+	// (3/4/25/49) points at token.sensenova.cn across three different provider
+	// rows. Whether routing should *require* model or upstream diversity is a
+	// routing-policy decision and is deliberately NOT made here.
+	ModelMonotone int `json:"model_monotone_pools"`
 }
 
 // CollapseRate is the fraction of decided cases whose candidate pool collapsed
@@ -391,6 +414,18 @@ func (s *e2eSummary) ClassAccuracy() float64 {
 		return 0
 	}
 	return float64(s.ClassCorrect) / float64(s.Decided)
+}
+
+// DistinctModelRate is the share of decided cases whose candidate pool offered
+// no model-level choice — one distinct model, however many credentials backed
+// it. R77 D11-#8. CollapseRate() and this measure different failures: the
+// former catches a pool that fell back to the unscored 48h popularity pick,
+// this one catches a pool that scored normally but had nowhere to go.
+func (s *e2eSummary) DistinctModelRate() float64 {
+	if s == nil || s.Decided == 0 {
+		return 0
+	}
+	return float64(s.ModelMonotone) / float64(s.Decided)
 }
 
 // loadE2EReport parses an autoroute-e2e-audit JSONL. An explicitly given but
@@ -461,6 +496,13 @@ func loadE2EReport(path string) (*e2eSummary, error) {
 		if len(r.Decision.Candidates) <= 1 {
 			s.SingleCandidate++
 		}
+		// R77 D11-#8: count distinct MODELS, not candidate entries. The three
+		// entries of candidates_top3 are three credentials of one model on the
+		// live pools, so SingleCandidate read 0 on a pool that in fact offered
+		// no model-level choice at all.
+		if distinctCandidateModels(r.Decision.Candidates) <= 1 {
+			s.ModelMonotone++
+		}
 	}
 	// Materialise the derived rates once, so the JSON report carries the same
 	// numbers the console prints (the accessors stay nil-safe for the
@@ -468,6 +510,21 @@ func loadE2EReport(path string) (*e2eSummary, error) {
 	s.CollapseRateVal = s.CollapseRate()
 	s.ClassAccuracyVal = s.ClassAccuracy()
 	return s, nil
+}
+
+// distinctCandidateModels counts the distinct model names in a candidate pool.
+// Empty model names are skipped: a blank entry is a malformed row, not a
+// model, and letting it through would inflate the count and hide a
+// model-monotone pool.
+func distinctCandidateModels(cands []e2eCandidate) int {
+	seen := make(map[string]struct{}, len(cands))
+	for _, c := range cands {
+		if c.Model == "" {
+			continue
+		}
+		seen[c.Model] = struct{}{}
+	}
+	return len(seen)
 }
 
 func printSummary(suiteFiles []string, cm *classificationMetrics, tm *tierMetrics, g float64, e2e *e2eSummary) {
@@ -500,9 +557,11 @@ func printSummary(suiteFiles []string, cm *classificationMetrics, tm *tierMetric
 		if e2e.Decided > 0 {
 			fmt.Printf("  e2e classification (decided): %d/%d (%.4f)\n",
 				e2e.ClassCorrect, e2e.Decided, e2e.ClassAccuracy())
-			fmt.Printf("  e2e selection: collapse %d/%d (rate=%.4f), single-candidate pools %d/%d\n",
+			fmt.Printf("  e2e selection: collapse %d/%d (rate=%.4f), single-candidate pools %d/%d (counts entries=credentials)\n",
 				e2e.FallbackCollapsed, e2e.Decided, e2e.CollapseRate(),
 				e2e.SingleCandidate, e2e.Decided)
+			fmt.Printf("  e2e model diversity: model-monotone %d/%d (rate=%.4f) — pool held 1 distinct model\n",
+				e2e.ModelMonotone, e2e.Decided, e2e.DistinctModelRate())
 			if e2e.FallbackCollapsed > 0 {
 				fmt.Printf("    collapse by task (routing-by-task did not happen for these):\n")
 				tasks := make([]string, 0, len(e2e.CollapseByTask))
@@ -655,8 +714,11 @@ func e2eMarkdownSection(s *e2eSummary) string {
 	if s.Decided > 0 {
 		md.WriteString(fmt.Sprintf("- 分类层（取到决策的 %d 例）：%d/%d（%.4f）\n",
 			s.Decided, s.ClassCorrect, s.Decided, s.ClassAccuracy()))
-		md.WriteString(fmt.Sprintf("- 选型层（取到决策的 %d 例）：坍缩到 48h 热度兜底 %d（%.4f），单候选池 %d\n",
+		md.WriteString(fmt.Sprintf("- 选型层（取到决策的 %d 例）：坍缩到 48h 热度兜底 %d（%.4f），单候选池 %d（按候选**条目**数，条目=凭据）\n",
 			s.Decided, s.FallbackCollapsed, s.CollapseRate(), s.SingleCandidate))
+		md.WriteString(fmt.Sprintf("- 模型级多样性（取到决策的 %d 例）：model-monotone %d/%d（%.4f）——候选池只有 1 个不同模型；"+
+			"凭据数不等于可选项数，条目 3 常常是同一模型的 3 个凭据\n",
+			s.Decided, s.ModelMonotone, s.Decided, s.DistinctModelRate()))
 		if s.FallbackCollapsed > 0 {
 			md.WriteString("\n### 坍缩分任务归因\n\n| task_type | 坍缩/该任务已判定 |\n|---|---|\n")
 			tasks := make([]string, 0, len(s.CollapseByTask))
