@@ -81,11 +81,17 @@
 
 **现状锚点**: `cmd/gateway/storage_mode_init.go`(`initStorageMode` 仅 lite 分支创建 runtime;`newSessionCacheV2` 在 r==nil 时走 `v2.NewSessionCacheV2` 历史路径)
 
+**2026-09-28 审计修正**: 读链侧已就绪,本项剩余工作量从 1.5 天缩为约 0.5 天——
+`cache_v2.go` 的 `Get` 已实现"两模式共用 L1.5"(读链 L1→L1.5→L2→L3,分片锁内
+读+回填,L15Hit/L15Miss 指标已埋),代码注释直接点名"full 由 H2 装配点可选注入";
+`NewSessionCacheV2WithMode(full, fileCache)` 已支持保留 L2 + 注入 L1.5(此前方案
+写"需确认 full 分支保留 L2"系未验证声称,现予实证)。**仅欠装配点**。
+
 **改动**:
 1. 新增 `HotZoneConfig`(config/storage.go):`Enabled`(默认 full=true, lite=true 复用现有 L1.5)、`Dir`(默认 `./data/hotzone`)、`RetentionHours`(默认 7)、`MaxSizeGB`(默认 1)、`RequestMirror`(默认 true)。
 2. `initStorageMode` 中,full 且 HotZone.Enabled 时也创建 storageRuntime(新字段 `hotZoneOnly=true` 与 lite runtime 区分:full 不创建 SQLite 工厂、不收口 Redis env、不启动 LiteRetentionWorker/ConsistencyWorker)。
 3. full 分支创建:FileCache(dir=HotZone.Dir/sessions? 否——缓存文件是 SessionStateV2 JSON,与 lite 的 CacheDir 语义一致,用 `HotZone.Dir/cache`)+ FileBodiesStore 复用实例(`HotZone.Dir/session_bodies`,codec 沿用 gzip)。
-4. `newSessionCacheV2` full 分支改走 `v2.NewSessionCacheV2WithMode(db, redisAddr, redisDB, storage.StorageModeFull, r.fileCache)`——需要在 `cache_v2.go` 确认 WithMode 的 full 分支保留 L2 Redis(当前实现按 mode 摘除 L2,full+fileCache 组合是新增路径,读顺序应为 L1→L1.5→L2→L3,写回填 L1+L1.5)。
+4. `newSessionCacheV2` full 分支改走 `v2.NewSessionCacheV2WithMode(db, redisAddr, redisDB, storage.StorageModeFull, r.fileCache)`(cache_v2.go:101 已实证:full+fileCache 保留 L2,Get 读链自动进 L1.5,无需改 cache_v2.go)。
 5. 启动日志新增 hotzone 配置快照;Shutdown 复用现有 trimmer 生命周期。
 
 **不变式**: `LLM_GATEWAY_STORAGE_MODE` 未设置且 HotZone.Enabled 默认值=full 开启——这是**行为变更点**,必须以 settings/env 双保险提供 `LLM_GATEWAY_HOTZONE_ENABLED=false` 一键关闭,且回滚零残留(热区目录只是缓存,可直接删)。
@@ -96,9 +102,16 @@
 
 **现状锚点**: `storage/file/bodies_store.go`(仅 session bodies);request body 当前只进 PG(`request_logs_bodies_hot` 8 小时热表 → 月分区)
 
+**2026-09-28 审计修正**: 接线点实勘为**两处**,原方案"streaming handler 的 bodies
+写入事务提交后"表述不准确——
+- session bodies:`SessionBodiesWriter.WriteBodies / WriteBodiesInTx / WriteFinalFullInTx`
+  (domains/session/v2/bodies_writer.go:259/273/361)的调用方;
+- request bodies:`domains/hooks/observability/telemetry/` 内
+  `INSERT INTO request_logs_bodies_hot` 落库处(body_summary 等路径)。
+
 **改动**:
 1. 新增 `storage/file/request_mirror.go`:轻量镜像器,入参 (requestID, tenantID, direction, body),路径 `{hotzoneDir}/requests/{tenantID}/{date}/{requestID}.{req|resp|out}.json.gz`,复用 AsyncFileWriter 与 codec。
-2. 接线点:流式终态落库处(streaming handler 的 bodies 写入事务提交后,fire-and-forget 投递镜像,失败仅计数不阻断主链路——与 FileBodiesStore 的 fail-open 语义一致)。
+2. 接线点(上述两处,fire-and-forget 投递镜像,失败仅计数不阻断主链路——与 FileBodiesStore 的 fail-open 语义一致)。
 3. 读路径:admin 请求详情查询**不**改——镜像只服务 G2 的"文件命中"与灾备人工取数,不参与 L3 回源(避免文件缺失导致详情 404 的语义分裂)。
 4. 保留期与空间上限由 H4 的 trimmer 统一管(7 小时 / 1GB,含 requests 子树)。
 
@@ -114,7 +127,7 @@
    - `storage.hotzone_max_size_gb`(int,默认 1,范围 1–100)
    - `storage.hotzone_retention_hours`(int,默认 7,范围 1–168)
 2. 空间上限统一收敛到 FileCache.ensureSpaceLocked + 新增 HotZoneTrimmer(每 30 分钟:按 mtime 删过期 → 超限时最旧先删,**先移除旧的**语义与现有一致),遍历范围=整个 `HotZone.Dir`(cache+session_bodies+requests 三个子树共享 1GB 预算)。
-3. 热重载:hotconfig 轮询到变更后调用 `fileCache.ResizeMax(newBytes)`(新方法,只增不减立即生效;缩容交由下一轮 trimmer 执行)与 trimmer 的 retention 原子替换。
+3. 热重载:hotconfig 轮询到变更后调用 `fileCache.ResizeMax(newBytes)`(新方法,只增不减立即生效;缩容交由下一轮 trimmer 执行)与 trimmer 的 retention 原子替换。**2026-09-28 实证**:hotconfig 确有 30s ticker 轮询(hotconfig.go:63)。遗留验证点(实施期确认,不预先假设):`settings.GetPlatformBool/Int` 的读取路径是否自带缓存及其失效机制——若每次透传查询则热重载天然成立,若有缓存需确认与 hotconfig 轮询的关系。
 4. 默认值变更:CacheMaxSizeGB 在 full 热区语境下取 HotZone.MaxSizeGB(1GB),lite 的 10GB 默认不动。
 
 **验收**: 运行时改 `storage.hotzone_max_size_gb=1` 后 ≤1 轮询周期内 trimmer 生效;磁盘占用峰值 ≤ 配置值+单文件误差;`settings_kv` 审计链可回滚。
@@ -133,11 +146,11 @@
 |---|---|---|---|
 | P1 | H1 FileCache 索引(纯增量,两模式共享收益) | 无 | 1 天 |
 | P2 | H4 设置 spec + HotZoneTrimmer + ResizeMax | 无 | 1 天 |
-| P3 | H2 full 热区装配(mode-aware 缓存接线) | P2 | 1.5 天 |
-| P4 | H3 请求镜像器 + 接线 | P2 | 1.5 天 |
-| P5 | H5 指标/文档 + 全量回归(9 项 lite 套件 + full 热区新增 E2E) | P3,P4 | 1 天 |
+| P3 | H2 full 热区装配(仅装配点,读链已就绪) | P2 | 0.5 天 |
+| P4 | H3 请求镜像器 + 双接线点 | P2 | 1.5 天 |
+| P5 | H5 指标分维度 + 文档 + 全量回归(9 项 lite 套件 + full 热区新增 E2E) | P3,P4 | 1 天 |
 
-总计约 6 个工作日。P1/P2 可双线并行。
+总计约 5 个工作日。P1/P2 可双线并行。
 
 ## 5. 风险与回滚
 
@@ -156,3 +169,23 @@
 - [ ] `storage.hotzone_max_size_gb` 热重载生效且 trimmer 先删最旧
 - [ ] 关闭热区开关后 full 模式行为与当前 main 一致
 - [ ] PG 故障演练:热区持续写入,恢复后无数据结构性损坏
+
+---
+
+## 7. 批判式审计记录
+
+### 2026-09-28 本轮(实代码核查,非转述)
+
+| # | 原方案声称 | 核查方式 | 结论 |
+|---|---|---|---|
+| A1 | "需确认 WithMode 的 full 分支保留 L2" | 读 cache_v2.go:93-130 实现与 Get 读链 | **声称过时**。读链已实现"两模式共用 L1.5"(注释直接引用"H2 装配点"),L15Hit/L15Miss 指标已埋;仅欠装配点。H2 工时 1.5→0.5 天 |
+| A2 | H3 接线点="streaming handler 的 bodies 写入事务提交后" | grep 定位实际 INSERT/Write 调用 | **表述不准确**。实为两处:SessionBodiesWriter 三方法(bodies_writer.go:259/273/361)调用方 + telemetry 包 request_logs_bodies_hot 落库处。已修正 |
+| A3 | hotconfig 轮询热重载机制存在 | 读 hotconfig.go:63 | **属实**。30s ticker 实证。settings.GetPlatformXX 读取路径是否带缓存未验证,标注为 H4 实施期验证点 |
+| A4 | "9 项 lite 套件全绿"(R64 勘误后的计数) | `go test ./storage/ -run "TestLiteConsistency|..." -count=1 -v` 实跑 | **实证成立**。6 顶层测试(含 4 子测试)全 PASS,ok 0.833s |
+| A5 | 文档锚点文件在 09-24→09-28 窗口内的漂移 | `git diff --stat HEAD origin/main -- <锚点文件集>` | **无漂移**。远程 6 个新提交(R78 守卫加固等)均不触碰锚点文件集,方案锚点仍有效 |
+| A6 | 文档日期 2026-09-24 | git log 核对提交时间(09-24 22:52) | 无误。期间 R64(891542ff1)已勘误测试计数 12→9,本方案沿用 |
+
+**方法论注记**:本轮 A1 即"只声明未验证"的实锤——原方案把未验证项留给了
+实施阶段("需要确认"),而该确认在文档提交后 4 天内已被并行工作完成。教训:
+方案中的"待确认"项应在提交前清零或显式标注验证方式与责任人;否则文档会
+在多写入者并行推进下迅速失真(本次恰好是朝"工作已变少"方向失真)。
