@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kaixuan/llm-gateway-go/admin/distlock"
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
 const (
@@ -108,6 +109,12 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 
 	logs, err := h.loadTaskLogsForTitle(ctx, taskID, sc, r)
 	if err != nil {
+		// 2026-09-29 (审计二十一轮): 存储不可用走 503 降级契约，不再把
+		// 存储抖动当 500 代码缺陷。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentSummary, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}

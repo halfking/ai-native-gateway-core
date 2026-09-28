@@ -21,6 +21,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
 const noTopicSessionPrefix = "/api/system/no-topic-session/"
@@ -149,6 +150,11 @@ func (h *Handler) handleNoTopicSessionMessages(w http.ResponseWriter, r *http.Re
 		LIMIT `+limitArg+`
 	`, args...)
 	if err != nil {
+		// 2026-09-29 (审计二十一轮): 存储不可用走 503 降级契约（下同）。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentList, err)
+			return
+		}
 		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
@@ -189,6 +195,10 @@ func (h *Handler) handleNoTopicSessionMessages(w http.ResponseWriter, r *http.Re
 		seq++
 	}
 	if err := rows.Err(); err != nil {
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentList, err)
+			return
+		}
 		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
@@ -387,6 +397,10 @@ func (h *Handler) handleNoTopicSessionExtractToMemora(w http.ResponseWriter, r *
 
 	turns, err := h.loadNoTopicPreviewTurns(ctx, prefix, hours, hourStart, r, 500)
 	if err != nil {
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentList, err)
+			return
+		}
 		writeInternalErr(w, "internal error (see server logs)", err)
 		return
 	}
