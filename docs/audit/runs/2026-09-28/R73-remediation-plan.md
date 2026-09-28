@@ -2,7 +2,7 @@
 
 > 日期：2026-09-28（Asia/Shanghai）
 > 范围：冻结的 48h 审计窗口、其后明确标记的提交漂移，以及 96h 方案文档的代码核对。
-> 状态：执行中；F01/F05 已在审计基线修复；F02/F03/F04/F06/F08 修订已提交至 `b1167076e` 并通过定向验证；F09 仍未修。F07 与 R62 凭据风险需外部数据库/迁移方案验证；D01–D17 全域审计未完成。
+> 状态：执行中；F01/F05 已在审计基线修复；F02/F03/F04/F06/F08 已提交并有定向证据；本续审实现 F09 跨 delta carry 与 F10 empty-map/Redis-error masking，当前定向测试通过，待最终全量门禁及提交。F07 与 R62 凭据风险需外部数据库/迁移方案验证；D01–D17 全域审计未完成。
 
 ## 1. 执行原则
 
@@ -82,9 +82,15 @@
 
 - **证据**：生产 writer 只保证每个完整 SSE 事件调用一次 `InterceptStreamChunk`；`SanitizeRestoreInterceptor` 对每个事件单独解析 JSON 并执行正则替换。若模型将 `{SENSITIVE:phone:1}` 切为两个完整 delta 中的前缀/后缀，各事件都不匹配完整占位符，因而原样透传。
 - **影响**：客户端看见内部 placeholder 片段，真实映射值没有按原样恢复；同事件内底层网络/Write 拆帧已经由 F08 覆盖，不能解决跨语义事件边界。
-- **整改**：为 OpenAI/Responses/Anthropic content 与 tool argument delta 设计按 session/request/tenant 隔离的有界尾片缓存；设置 TTL、结束/取消清理和并发语义；只延迟可能构成占位符的最长后缀，保障其余文本流式输出；定义截断时 mask 还是丢弃。
-- **状态**：已确认，未修复。`TestSanitizeRestoreInterceptor_PlaceholderSplitAcrossCompleteFrames` 用两个有效 SSE 事件锁定剩余问题。
-- **验收**：覆盖跨事件占位符、紧邻普通文本、未知伪造占位符、tenant 隔离、乱序/并发 session、流正常结束/取消/截断、TTL 清理；连接真实 intercepting writer 的集成测试。
+- **整改**：已实现 writer/request 生命周期的 `StreamMeta.State` carry，不用全局 map 或 TTL janitor；按 OpenAI choice content/refusal/tool+legacy function-call arguments、Anthropic block index/field、Responses event type/output/content/item id 隔离。每流最多 64 lane、每 lane 256 byte；opaque Responses item id 经 SHA-256 后作为固定长度 lane component。正常文本即刻输出，可能的 marker 尾片暂存。未知完整 marker 遮蔽；已解析到已知字段但 marker continuation 格式失效时遮蔽该字段并继续；不透明 JSON continuation 有待续尾片或 lane 超限时阻断当前及后续帧；stream end 随 writer 生命周期丢弃尾片。
+- **状态**：代码与跨协议定向测试已实现；sanitizer targeted race、production writer integration race 通过。生产 writer 串行调用；若其他调用方并发复用同一 meta，须显式共享初始化后的 `StreamState`。
+- **验收/限制**：覆盖 OpenAI content/tool arguments、Anthropic text/partial_json、Responses delta、未知 marker/空 map、request/lane 隔离、超限、无效/opaque continuation、未完成尾片丢弃；真实 provider 帧型/网络取消和全域 D14 仍未验证。当前 writer 对 `ShouldBlock` 语义为丢弃帧而非显式终止，需评估客户端终态错误/可观测性。
+
+### R73-F10 · P2 · sanitize map 缺失/Redis 故障时未知 placeholder 透传
+
+- **证据**：`InterceptNonStream` 与 `InterceptStreamChunk` 在 `loadMap` 返回空 map 或 error 时旧逻辑直接 return nil，未调用 `RestoreOutputOrMask`；伪造完整 `{SENSITIVE:...}` 因而会原样离开网关。Redis 故障导致已知值无法恢复可以作为降级，但未知内部 marker 不应裸透传。
+- **整改**：空映射时仅当 body/chunk 含 marker 才进入解析；Redis load error 改用空 map 继续 mask。流式空 map 仍走跨事件 marker prefix 处理。
+- **状态/验收**：empty-map 与关闭 miniredis 模拟 Redis connection failure 的非流式定向测试通过；stream empty-map split-unknown 测试通过。真实 Redis 故障时延和重试开销仍需部署观测。
 
 ## 3. 统一回归门禁
 
@@ -92,7 +98,7 @@
 - 修改传输/协议路径后覆盖流式、非流式、取消、超时、provider 错误和客户端序列化；确保 retries 有上限。
 - 修改数据模型/落库/迁移后覆盖序列化往返、重启恢复、幂等、热点表更新删除边界、迁移前后兼容与清理任务。
 - 全量阶段再运行 `go test ./...`、`go test -race ./...`（如耗时/环境允许）、`go build ./...`、`go vet ./...`，并执行可用的本地部署集成测试。
-- 本轮逐文件复核后已提交/推送 `b1167076e` 并核对远端；D01–D17 完整域审计、F07 真实 PG、F09 修复和本地部署作为后续门禁，未因本次提交而关闭。
+- 原 R73 已提交/推送并合流；本续审 F09/F10 仍待最终提交门禁。D01–D17 完整域审计、F07 真实 PG 与本地部署未完成，不因局部修复关闭。
 
 ## 4. 最新漂移：R62 凭据安全续审
 

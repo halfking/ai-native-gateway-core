@@ -40,12 +40,13 @@ go test -race -timeout 120s ./security/sanitize/...               # 全 PASS（�
 
 ## 已知缺口 / 后续
 
-- **跨完整 SSE 事件的 delta**：同一事件内部被多个 `Write` 切开时，生产 `interceptingStreamWriter` 会先组帧再拦截；但占位符若被模型拆到多个完整 delta 事件，当前逐事件无状态 interceptor 无法还原（`TestSanitizeRestoreInterceptor_PlaceholderSplitAcrossCompleteFrames` 已钉住，R73-F09）。需要有界且带 TTL 的跨事件尾片缓存。
+- **跨完整 SSE 事件的 delta（R73-F09）**：已加入生产拦截器测试，验证完整事件之间拆开的 OpenAI content placeholder 先暂存后还原，并通过生产 `interceptingStreamWriter` 路径；另覆盖 OpenAI tool/legacy function arguments/refusal、Anthropic text/partial_json、Responses output-text/function arguments/refusal/audio transcript、未知 marker、空映射、lane/request 隔离、未完成尾片丢弃、超长 opaque ID、lane 上限及无效/不透明 continuation fail-closed。carry state 仅存于单个 writer 生命周期（64 lanes × 256 bytes），不使用 TTL janitor。最新 sanitizer package race 与 writer 集成 race 通过；不能据此宣称真实供应商协议或全链路部署验证通过。
+- **缺失映射 fail-closed（R73-F10）**：空 sanitize map 和 Redis read failure 的非流式测试验证未知完整 marker 替换为 `[REDACTED]`；stream 空映射及 split unknown marker 另有定向测试。已知 PII 在映射丢失时不可逆恢复，必须视作降级而非成功。
 - **SSE writer 缓冲安全**：R73-F08 在 `interceptingStreamWriter` 加入 16 MiB 单帧上限、LF/CRLF framing，以及丢弃未终止尾帧；定向 writer 测试通过。上限以上合法媒体事件尚待真实样本评估。
-- **Anthropic partial_json 增量还原**：单 chunk 可能只含 `{` 或 `"key":"val` 的半截，PlaceholderPattern 不会匹配；需要 chatHandler 累计完整 JSON 后再做一轮还原（follow-up）。
+- **Anthropic partial_json 非占位符 JSON 增量**：R73-F09 只暂存可能属于 `{SENSITIVE:...}` 的尾片以避免 PII marker 泄漏；它不重组成完整参数 JSON，也不改变工具参数的分片语义。其他下游处理若要求完整 JSON，仍需独立确认。
 
 ## 下一步
 
 - 把 D14 4 类测试接入 `bash docs/全面测试/48h-audit/scripts/run-all.sh`（已自动扫描 D14 目录）
-- 为 R73-F09 设计跨完整 delta 事件的有界尾片还原；不要将已存在的同事件 Write 缓冲误认为跨事件解决
+- 完成 R73-F09 sanitizer/streaming 最终 package race 与全仓门禁；核实 malformed/unknown delta 对吞吐与中断的影响，并在兼容 PG/provider 环境可用时补集成证据
 - 把 D14 mock 套件作为后续工具调用相关回归的回归锚

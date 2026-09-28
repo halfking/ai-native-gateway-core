@@ -518,16 +518,31 @@ func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, session
 //	interceptingStreamWriter 接入点），还原后用户看到真实值。
 //
 //	单个 SSE 事件内部的多次 Write 会由 streaming.interceptingStreamWriter
-//	先组装完整后再调用本拦截器；但如果上游把一个 placeholder 拆到多个
-//	独立 SSE 事件，当前接口不会跨事件重组，相关文本会按事件原样透传。
-//
-//	降级：chain 为 nil / Redis 不可用 / chunk JSON 解析失败时均返回 nil，
-//	原样透传 chunk 到客户端。
+//	先组装完整后再调用本拦截器；跨完整事件的 placeholder 前缀由 request-local
+//	StreamMeta.State 按协议 delta lane 暂存，且有 lane/字节上限。
+//	Redis 映射缺失/读取失败时仍遮蔽未知完整 marker，但已知值无法恢复；
+//	无法解析的事件若有待续 marker 尾片则阻断，避免原样泄漏脱离前缀的片段。
 type SanitizeRestoreInterceptor struct {
 	sanitizer *Sanitizer
 	redis     *redis.Client
 	ttl       time.Duration
 	logger    *slog.Logger
+}
+
+const (
+	streamRestoreStateKey   = "sanitize_restore"
+	maxStreamRestoreLanes   = 64
+	maxPlaceholderTailBytes = 256
+)
+
+// streamRestoreState is owned by one response StreamMeta, never by the shared
+// interceptor. Carry is bounded both by lane count and by placeholder length.
+// Once lane capacity is exhausted, the rest of that stream is blocked so a
+// later delta cannot leak a suffix detached from its withheld prefix.
+type streamRestoreState struct {
+	mu      sync.Mutex
+	tails   map[string]string
+	blocked bool
 }
 
 // NewSanitizeRestoreInterceptor 创建还原拦截器。
@@ -560,11 +575,13 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 
 	sm, err := it.loadMap(ctx, req.SessionID, req.TenantID)
 	if err != nil {
-		it.logger.Warn("sanitize_restore: load map failed, skip restore",
+		it.logger.Warn("sanitize_restore: load map failed, mask placeholders",
 			"error", err, "session_id", req.SessionID)
-		return nil, nil
+		// Fail closed for gateway placeholders even when the map is unavailable:
+		// known values cannot be restored, but raw internal tokens must not leak.
+		sm = SanitizeMap{}
 	}
-	if len(sm) == 0 {
+	if len(sm) == 0 && !bytes.Contains(req.ResponseBody, []byte("{SENSITIVE:")) {
 		return nil, nil
 	}
 
@@ -604,8 +621,8 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 // chain 调用方（InterceptorChain.InterceptStreamChunk）会用 ModifiedChunk
 // 替换原 chunk 写入客户端。
 //
-// 降级：chain 为 nil / Redis 不可用 / 不含 sessionID / 无 placeholder 时
-// 返回 nil，原样透传。
+// 映射为空或 Redis 读取失败时仍检查/遮蔽 placeholder；已知值因无映射不能恢复。
+// 不含待续 marker 且无可处理 delta 的 chunk 返回 nil，交由 chain 原样透传。
 func (it *SanitizeRestoreInterceptor) InterceptStreamChunk(ctx context.Context, chunk []byte, meta *response.StreamMeta) (*response.ChunkResult, error) {
 	if it == nil || it.sanitizer == nil || len(chunk) == 0 {
 		return nil, nil
@@ -616,18 +633,40 @@ func (it *SanitizeRestoreInterceptor) InterceptStreamChunk(ctx context.Context, 
 
 	sm, err := it.loadMap(ctx, meta.SessionID, meta.TenantID)
 	if err != nil {
-		it.logger.Warn("sanitize_restore: stream chunk load map failed, passthrough",
+		it.logger.Warn("sanitize_restore: stream chunk load map failed, masking placeholders",
 			"error", err, "session_id", meta.SessionID)
+		sm = SanitizeMap{}
+	}
+	if meta.State == nil {
+		// Production writers initialize State before passing chunks. This
+		// fallback keeps direct interceptor use safe; callers that invoke chunks
+		// concurrently must provide a shared StreamState explicitly.
+		meta.State = response.NewStreamState()
+	}
+	state, _ := meta.State.GetOrCreate(streamRestoreStateKey, func() any {
+		return &streamRestoreState{tails: make(map[string]string)}
+	}).(*streamRestoreState)
+	if state == nil {
 		return nil, nil
 	}
-	if len(sm) == 0 {
-		return nil, nil
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.blocked {
+		return &response.ChunkResult{ShouldBlock: true}, nil
 	}
 
-	modified, changed, err := it.restoreStreamChunk(ctx, chunk, sm)
+	modified, changed, block, err := it.restoreStreamChunk(ctx, chunk, sm, meta, state)
 	if err != nil || !changed {
 		// 解析失败 / 无 placeholder → 原样透传（不要因为格式问题阻断流式）
+		if block {
+			state.blocked = true
+			return &response.ChunkResult{ShouldBlock: true}, nil
+		}
 		return nil, nil
+	}
+	if block {
+		state.blocked = true
+		return &response.ChunkResult{ShouldBlock: true}, nil
 	}
 
 	return &response.ChunkResult{
@@ -667,16 +706,16 @@ func (it *SanitizeRestoreInterceptor) InterceptStreamEnd(ctx context.Context, me
 //
 // 协议适配（2026-08-07）：
 //   - OpenAI chat completion delta：choices[].delta.content
-//   - OpenAI Responses API delta：response.output_text.delta / content_part.delta
+//   - OpenAI Responses API text/tool/refusal/transcript delta events
 //   - Anthropic Messages delta：content_block_delta.delta.text
 //
 // 解析失败 / 不识别 schema → 返回 (nil, false, nil)，由 caller 原样透传。
 // 成功但无 placeholder → 返回 (nil, false, nil)，同样原样透传（避免无谓的
 // JSON 重序列化引入额外 marshal/unmarshal 噪声）。
 //
-// 跨 chunk 占位符：RestoreOutputOrMask 是纯字符串替换，未匹配部分由下一个
-// chunk 继续处理，因此 chunk-by-chunk 处理是安全的。
-func (it *SanitizeRestoreInterceptor) restoreStreamChunk(ctx context.Context, chunk []byte, sm SanitizeMap) ([]byte, bool, error) {
+// 跨 SSE 事件的占位符尾片保存在本请求 StreamMeta.State 中；未完成尾片
+// 不会透传，连接结束时随 stream writer 生命周期释放。
+func (it *SanitizeRestoreInterceptor) restoreStreamChunk(ctx context.Context, chunk []byte, sm SanitizeMap, meta *response.StreamMeta, state *streamRestoreState) ([]byte, bool, bool, error) {
 	// 1. 按行扫描。SSE 帧结构：注释行（:...）/ event: 行 / data: 行 + 末尾 \n\n。
 	//    LLM 流式 chunk 实际只发一条 data 行；遇到多 data 行时退化为「拼接所有
 	//    data 内容」，但 framing（event:/注释/末尾 \n\n）单独保留。
@@ -723,7 +762,7 @@ func (it *SanitizeRestoreInterceptor) restoreStreamChunk(ctx context.Context, ch
 		rest = rest[lineEnd+1:]
 	}
 	if len(jsonPayload) == 0 {
-		return nil, false, nil
+		return nil, false, false, nil
 	}
 	// 此时 rest 是「data: 行换行符之后剩余的内容」。SSE 帧分隔符
 	// （\n\n 或 \n<空行>\n）就在这里。直接保留为尾缀，无需进一步解析。
@@ -733,21 +772,41 @@ func (it *SanitizeRestoreInterceptor) restoreStreamChunk(ctx context.Context, ch
 	//    阻断整条流；典型场景：chunk 携带的是控制字段而非 content 增量）。
 	var raw map[string]any
 	if err := json.Unmarshal(jsonPayload, &raw); err != nil {
-		return nil, false, nil
+		if len(state.tails) > 0 {
+			// We withheld a placeholder prefix from a previous event. An opaque
+			// data payload cannot be assigned to a protocol lane, so passing it
+			// through could expose the detached remainder of that marker.
+			return nil, false, true, nil
+		}
+		return nil, false, false, nil
 	}
 
 	// 3. 在三种 delta schema 中做占位符替换
 	changed := false
-	changed = it.restoreStreamOpenAIDelta(ctx, raw, sm) || changed
-	changed = it.restoreStreamAnthropicDelta(ctx, raw, sm) || changed
-	changed = it.restoreStreamResponsesDelta(ctx, raw, sm) || changed
+	blocked := false
+	var fieldChanged bool
+	fieldChanged, blocked = it.restoreStreamOpenAIDelta(ctx, raw, sm, state)
+	changed = fieldChanged || changed
+	if blocked {
+		return nil, false, true, nil
+	}
+	fieldChanged, blocked = it.restoreStreamAnthropicDelta(ctx, raw, sm, state)
+	changed = fieldChanged || changed
+	if blocked {
+		return nil, false, true, nil
+	}
+	fieldChanged, blocked = it.restoreStreamResponsesDelta(ctx, raw, sm, state)
+	changed = fieldChanged || changed
+	if blocked {
+		return nil, false, true, nil
+	}
 	if !changed {
-		return nil, false, nil
+		return nil, false, false, nil
 	}
 
 	out, err := json.Marshal(raw)
 	if err != nil {
-		return nil, false, nil
+		return nil, false, false, nil
 	}
 
 	// 4. 重组 framing：注释行 + event: 行 + data: + 重新序列化的 JSON + 尾缀
@@ -758,43 +817,72 @@ func (it *SanitizeRestoreInterceptor) restoreStreamChunk(ctx context.Context, ch
 	if len(trailing) > 0 {
 		buf.Write(trailing)
 	}
-	return buf.Bytes(), true, nil
+	return buf.Bytes(), true, false, nil
 }
 
 // restoreStreamOpenAIDelta 处理 OpenAI chat completion delta schema
 // (choices[].delta.content + choices[].delta.tool_calls[*].function.arguments)。
 // 返回是否替换了占位符。
-func (it *SanitizeRestoreInterceptor) restoreStreamOpenAIDelta(ctx context.Context, raw map[string]any, sm SanitizeMap) bool {
+func (it *SanitizeRestoreInterceptor) restoreStreamOpenAIDelta(ctx context.Context, raw map[string]any, sm SanitizeMap, state *streamRestoreState) (bool, bool) {
 	choices, ok := raw["choices"].([]any)
 	if !ok {
-		return false
+		return false, false
 	}
 	changed := false
-	for _, cAny := range choices {
+	for choiceIndex, cAny := range choices {
 		c, ok := cAny.(map[string]any)
 		if !ok {
 			continue
 		}
+		choiceLane := streamLaneValue(c, "index", choiceIndex)
 		delta, ok := c["delta"].(map[string]any)
 		if !ok {
 			continue
 		}
-		if restoreStringField(ctx, it.sanitizer, delta, "content", sm) {
+		if didChange, blocked := it.restoreStreamStringField(ctx, delta, "content", sm, state, "openai.choice."+choiceLane+".content"); blocked {
+			return changed, true
+		} else if didChange {
 			changed = true
+		}
+		if didChange, blocked := it.restoreStreamStringField(ctx, delta, "refusal", sm, state, "openai.choice."+choiceLane+".refusal"); blocked {
+			return changed, true
+		} else if didChange {
+			changed = true
+		}
+		if functionCall, ok := delta["function_call"].(map[string]any); ok {
+			if didChange, blocked := it.restoreStreamStringField(ctx, functionCall, "arguments", sm, state, "openai.choice."+choiceLane+".function_call.arguments"); blocked {
+				return changed, true
+			} else if didChange {
+				changed = true
+			}
 		}
 		// 流式 tool_calls.arguments：上游按 token 增量下发
 		// {"tool_calls":[{"index":0,"function":{"arguments":"..."}}]}
 		// 同一 SSE frame 里只有一个工具的一段 arguments 增量；做占位符替换。
-		if restoreToolCallsArgs(ctx, it.sanitizer, delta, "tool_calls", sm) {
-			changed = true
+		toolCalls, _ := delta["tool_calls"].([]any)
+		for toolPos, toolAny := range toolCalls {
+			tool, ok := toolAny.(map[string]any)
+			if !ok {
+				continue
+			}
+			fn, ok := tool["function"].(map[string]any)
+			if !ok {
+				continue
+			}
+			lane := "openai.choice." + choiceLane + ".tool." + streamLaneValue(tool, "index", toolPos) + ".arguments"
+			if didChange, blocked := it.restoreStreamStringField(ctx, fn, "arguments", sm, state, lane); blocked {
+				return changed, true
+			} else if didChange {
+				changed = true
+			}
 		}
 	}
-	return changed
+	return changed, false
 }
 
 // restoreStreamAnthropicDelta 处理 Anthropic Messages delta schema
 // (type="content_block_delta" + delta.text / delta.input)。返回是否替换了占位符。
-func (it *SanitizeRestoreInterceptor) restoreStreamAnthropicDelta(ctx context.Context, raw map[string]any, sm SanitizeMap) bool {
+func (it *SanitizeRestoreInterceptor) restoreStreamAnthropicDelta(ctx context.Context, raw map[string]any, sm SanitizeMap, state *streamRestoreState) (bool, bool) {
 	// Anthropic 在 SSE 流中既发送 type="content_block_start" 等控制事件，
 	// 也发送 type="content_block_delta" 携带 delta.text 文本增量，
 	// 以及 type=input_json_delta 携带 tool_use.input 的 JSON 片段。
@@ -802,38 +890,178 @@ func (it *SanitizeRestoreInterceptor) restoreStreamAnthropicDelta(ctx context.Co
 	// partial_json 走 JSON 字符串占位符替换（增量通常为 { 或 key 部分）。
 	t, _ := raw["type"].(string)
 	if t != "content_block_delta" {
-		return false
+		return false, false
 	}
 	delta, ok := raw["delta"].(map[string]any)
 	if !ok {
-		return false
+		return false, false
 	}
+	index := streamLaneValue(raw, "index", 0)
 	changed := false
-	if restoreStringField(ctx, it.sanitizer, delta, "text", sm) {
+	if didChange, blocked := it.restoreStreamStringField(ctx, delta, "text", sm, state, "anthropic."+index+".text"); blocked {
+		return changed, true
+	} else if didChange {
 		changed = true
 	}
 	// Anthropic tool_use.input 是 partial JSON：先把增量累计成一个 JSON 字符串
 	// 做占位符替换（占位符必须整段出现才会被识别，所以一般 incremental
 	// 输出含 partial 字段名/数字的场景不会误命中；只要完整 JSON 落地时
 	// 落在一次 Write 里就能命中）。
-	if restoreStringField(ctx, it.sanitizer, delta, "input", sm) {
+	if didChange, blocked := it.restoreStreamStringField(ctx, delta, "input", sm, state, "anthropic."+index+".input"); blocked {
+		return changed, true
+	} else if didChange {
 		// delta.input 可能是 string（Anthropic 增量）或 map（旧版）；
 		// restoreStringField 只处理 string 路径。
 		changed = true
 	}
-	if restoreStringField(ctx, it.sanitizer, delta, "partial_json", sm) {
+	if didChange, blocked := it.restoreStreamStringField(ctx, delta, "partial_json", sm, state, "anthropic."+index+".partial_json"); blocked {
+		return changed, true
+	} else if didChange {
 		changed = true
 	}
-	return changed
+	return changed, false
 }
 
 // restoreStreamResponsesDelta 处理 OpenAI Responses API delta schema
 // (type="response.output_text.delta" + delta)。返回是否替换了占位符。
-func (it *SanitizeRestoreInterceptor) restoreStreamResponsesDelta(ctx context.Context, raw map[string]any, sm SanitizeMap) bool {
-	if t, _ := raw["type"].(string); t != "response.output_text.delta" {
+func (it *SanitizeRestoreInterceptor) restoreStreamResponsesDelta(ctx context.Context, raw map[string]any, sm SanitizeMap, state *streamRestoreState) (bool, bool) {
+	t, _ := raw["type"].(string)
+	field := ""
+	switch t {
+	case "response.output_text.delta", "response.function_call_arguments.delta", "response.refusal.delta", "response.audio_transcript.delta":
+		field = "delta"
+	default:
+		return false, false
+	}
+	lane := "responses." + t + "." + streamLaneValue(raw, "output_index", 0) + "." + streamLaneValue(raw, "content_index", 0) + "." + streamLaneID(raw, "item_id")
+	return it.restoreStreamStringField(ctx, raw, field, sm, state, lane)
+}
+
+func streamLaneValue(object map[string]any, key string, fallback int) string {
+	if value, ok := object[key].(float64); ok && value >= 0 && value <= 1<<31-1 && value == float64(int64(value)) {
+		return fmt.Sprint(int64(value))
+	}
+	return fmt.Sprint(fallback)
+}
+
+func streamLaneID(object map[string]any, key string) string {
+	if value, ok := object[key].(string); ok && value != "" {
+		// Opaque provider IDs are untrusted. Store a fixed-size key component,
+		// not the original value, in request-local carry state.
+		digest := sha256.Sum256([]byte(value))
+		return hex.EncodeToString(digest[:])
+	}
+	return ""
+}
+
+// restoreStreamStringField holds only a syntactically valid placeholder prefix
+// at the end of a delta. The held bytes are scoped to the response writer via
+// StreamMeta.State and are never emitted raw. If the next delta completes the
+// token, replacement/masking happens before any part reaches the client.
+func (it *SanitizeRestoreInterceptor) restoreStreamStringField(ctx context.Context, object map[string]any, field string, sm SanitizeMap, state *streamRestoreState, lane string) (bool, bool) {
+	value, ok := object[field].(string)
+	if !ok {
+		return false, false
+	}
+	previous := state.tails[lane]
+	combined := previous + value
+	delete(state.tails, lane)
+
+	safe := combined
+	tail := ""
+	start, partial := incompletePlaceholderStart(combined)
+	if partial {
+		candidate := combined[start:]
+		if len(candidate) > maxPlaceholderTailBytes {
+			safe = combined[:start] + "[REDACTED]"
+		} else {
+			safe = combined[:start]
+			tail = candidate
+		}
+	}
+
+	restored, err := it.sanitizer.RestoreOutputOrMask(ctx, safe, sm)
+	if err != nil {
+		return false, false
+	}
+	if previous != "" && tail == "" && restored == combined {
+		// The continuation made the buffered prefix syntactically invalid. A
+		// plain brace prefix is common in streamed JSON/code, so release it with
+		// the continuation to preserve the response. Once the reserved marker
+		// prefix has started, redact this delta instead of either exposing a
+		// malformed internal token or aborting the whole client stream.
+		if strings.HasPrefix(previous, "{SENSITIVE:") {
+			object[field] = "[REDACTED]"
+			return true, false
+		}
+		object[field] = combined
+		return true, false
+	}
+	if tail != "" {
+		if _, exists := state.tails[lane]; !exists && len(state.tails) >= maxStreamRestoreLanes {
+			// Do not let later chunks resume without the prefix they depend on.
+			return false, true
+		}
+		state.tails[lane] = tail
+	}
+	if previous == "" && tail == "" && restored == value {
+		return false, false
+	}
+	object[field] = restored
+	return true, false
+}
+
+// incompletePlaceholderStart finds a valid prefix of the placeholder grammar
+// at the end of text. Invalid brace text is ordinary model output and passes
+// through; a full placeholder is handled by RestoreOutputOrMask.
+func incompletePlaceholderStart(text string) (int, bool) {
+	start := strings.LastIndexByte(text, '{')
+	if start < 0 {
+		return 0, false
+	}
+	candidate := text[start:]
+	if !validPlaceholderPrefix(candidate) {
+		return 0, false
+	}
+	return start, true
+}
+
+func validPlaceholderPrefix(candidate string) bool {
+	const marker = "{SENSITIVE:"
+	if len(candidate) <= len(marker) {
+		return strings.HasPrefix(marker, candidate)
+	}
+	if !strings.HasPrefix(candidate, marker) || strings.Contains(candidate, "}") {
 		return false
 	}
-	return restoreStringField(ctx, it.sanitizer, raw, "delta", sm)
+	rest := candidate[len(marker):]
+	colon := strings.IndexByte(rest, ':')
+	if colon < 0 {
+		if rest == "" {
+			return true
+		}
+		for _, r := range rest {
+			if !(r >= 'a' && r <= 'z') && r != '_' {
+				return false
+			}
+		}
+		return true
+	}
+	if colon == 0 {
+		return false
+	}
+	for _, r := range rest[:colon] {
+		if !(r >= 'a' && r <= 'z') && r != '_' {
+			return false
+		}
+	}
+	index := rest[colon+1:]
+	for _, r := range index {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // restoreStringField 把 m[field]（必须为 string）做占位符替换后写回。

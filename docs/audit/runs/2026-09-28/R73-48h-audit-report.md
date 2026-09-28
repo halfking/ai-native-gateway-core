@@ -1,9 +1,9 @@
 # R73 · 48h 全面审计执行报告
 
 > 日期：2026-09-28（Asia/Shanghai）
-> 状态：进行中；D01–D17 仅更新了本轮关注点，完整域审计未完成；F02/F03/F04/F06/F08 已实现并有定向验证；F09 只有复现缺陷的回归测试，尚未修复；本轮二审又修正 F02 reservation、F04 遥测和 F06 Embeddings 标记缺口；F07 仅完成源码/静态契约核验，数据库验证仍未完成。
+> 状态：进行中；D01–D17 完整域审计未完成；F02/F03/F04/F06/F08 已实现并有定向验证；F09 已实现 request-local 跨完整 SSE delta carry 并通过定向 race/writer 集成测试；F10 已修复空映射/Redis 故障时未知占位符透传，并有定向测试。F07 仅完成源码/静态契约核验，数据库验证仍未完成。
 > 主审范围：2026-09-25 23:01:34 至 2026-09-27 23:01:34，`78d91b94..c7104b141`。
-> 审计起始基线：`main` / `origin/main`，HEAD `95e243b819984804bb8ee567a6289219af1abd8f`。本轮修订已提交为 `b1167076e7492a2470ddd5a25f9c5a2bb5c6c666` 并推送，远端核验一致；另有两项未暂存并行工作区修改未纳入提交。
+> 审计起始基线：`main` / `origin/main`，HEAD `95e243b819984804bb8ee567a6289219af1abd8f`。既有 R73 修订及证据更正已合入当前 `main`；本续审最终提交基线为 `9946d75b5adf7eba7a03c15fee83123d5592e844`。该基线上的 `ReconciliationReport.vue` 并行修复不属于本轮变更。F09/F10 与本报告更新待提交。
 
 ## 1. 范围与基线
 
@@ -15,12 +15,12 @@
 | 当前继续漂移 `2d119529f..95e243b81` | 6 | 73 | 核验 R73/R12 修订、存储观察及 R62 激活安全 handoff |
 | 合并观察区间 | 127 | 435 | 作为执行覆盖面，不替代冻结主窗口 |
 
-审计起始时 `main` 与 `origin/main` 同为 `95e243b81`；完成本轮后提交 `b1167076e` 已推送，`main` 与 `origin/main` 同为该提交。另有 auto-testbench baseline 与 docs/全面测试 README 两项未暂存修改，未作清理或纳入本提交。
+审计冻结边界仍为原 48h 窗口，不因后续提交而移动。起始 HEAD `95e243b81`，当前续审 HEAD / `origin/main` 为 `b60b12874`。未归属的 Web 依赖/UI 修改及空 `docs/audit/todo-state.json` 本轮不纳入提交并保留原样。
 
 ## 2. 工具与构建证据
 
-- Codegraph 3.7.0 native 图谱在审计起始 HEAD `95e243b81` 全量构建成功：6061 个文件、147288 个节点、261668 条边；统计报告 1 个文件级环、11 个函数级环。图谱用于定位，所有发现必须复核源码与调用方。
-- 增量构建遇到 SQLite `database disk image is malformed`。本轮将损坏缓存移到 `/tmp/llm-gateway-go-3-codegraph-malformed-20260928-continue` 留存后，用 `codegraph build --engine native --no-incremental .` 全量重建成功。CLI 不支持 `codegraph update` 子命令，以本地 `codegraph --help` 列出的 build 命令执行。
+- Codegraph 3.7.0 native 图谱在审计起始 HEAD `95e243b81` 全量构建成功：6061 个文件、147288 个节点、261668 条边；本续审最终全量刷新解析 6064 文件、147452 节点、262534 条边。图谱用于定位，所有发现必须复核源码与调用方。
+- 增量构建多次遇到 SQLite `database disk image is malformed`。损坏缓存已分别留存在 `/tmp/llm-gateway-go-3-codegraph-malformed-20260928-continue`、`/tmp/llm-gateway-go-3-codegraph-malformed-r73-rerun` 和 `/tmp/llm-gateway-go-3-codegraph-malformed-r73-final`；最终全量重建成功。CLI 不支持 `codegraph update` 子命令。
 - 当前工作区 `go build ./...` 与 `go vet ./...` 均退出码 0；`git diff --check` 通过。vendor 对 VLA 扩展的警告未构成本轮失败。
 - `go test ./admin -run 'TestLiveVapeurResponsesProbe|TestLiveVapeurChatProbeIsNotUsedForResponses' -count=1 -v`：退出码 0。两项测试均因未设置 `VAPEUR_API_KEY` 按设计 skip；测试代码可编译，但此次没有访问 Vapeur，也未验证线上状态或时延。
 
@@ -44,32 +44,36 @@
 | R73-F06 | D09 selfcheck rate limiting / P2 | 修复并追加复核 | 任意 429 原先合并成一种 worker-wide 状态；二审发现 Embeddings 已 throttled key 分支漏设 gateway 标记 | 全部本地 key-admission 429 标 `shared_key`，provider 错误响应路径过滤保留 header；selfcheck 仅对可信标记建立一轮冷却 |
 | R73-F07 | D07 migration 754 / P2 | 源码结论已确认，数据库待验证 | SQL 注释明确函数内未执行 `SET LOCAL statement_timeout`；Go 侧最长 30m context 调用整组分区扫描，数据库 timeout/容量未知 | 未连接兼容 PG；本轮不以 Go context timeout 代替数据库验证 |
 | R73-F08 | D14 stream safety / P2 | 定向测试通过 | SSE 拦截 writer 原无帧大小上限，`finish()` 还会把不完整尾帧原样写给客户端 | 损坏/恶意上游可导致无界内存增长；尾帧跳过脱敏链 | 本地设 16 MiB 帧上限、支持 LF/CRLF；超限失败关闭，不完整尾帧丢弃并记录安全元数据 |
-| R73-F09 | D14 stream sanitization / P2 | 已确认，待设计修复 | 同一个 SSE 事件内的多次 `Write` 已正确缓冲；完整事件之间拆开的 placeholder 仍被无状态 interceptor 分片透传 | 用户看到 `{SENSITIVE:...}` 片段且映射值不能恢复 | 需有界、TTL 清理的跨事件 content/tool delta carryover；当前回归测试记录缺口，生产端到端尚未验证 |
+| R73-F09 | D14 stream sanitization / P2 | 已实现；定向 race 与 writer 集成通过 | 完整 SSE delta 之间拆开的 marker 原会透传；现按 writer 的 StreamMeta 状态暂存协议 lane 尾片 | 旧行为暴露内部 token 片段且不能还原 | 64 lanes/流、256 bytes/lane；OpenAI content/refusal/tool+legacy function arguments、Anthropic block delta、Responses output-text/function arguments/refusal/audio-transcript；stream 生命周期释放，不需 TTL janitor；未知 marker mask；已解析 lane 的无效 continuation 遮蔽字段并继续；不透明 continuation/超限阻断当前流后续帧；流结束丢弃未完成尾片 | sanitizer 定向 `-race` 与生产 writer 集成测试退出码 0；真实供应商未测 |
+| R73-F10 | D14 sanitize restore / P2 | 已修复；空映射与 Redis 故障用例通过 | `loadMap` 空表/报错原先直接 passthrough，未知 `{SENSITIVE:...}` 可泄漏；现在无映射时仍执行 mask | 未知内部 token 可能暴露（不是原始 PII） | 空表快速路径检查 marker；stream 空 map 每帧仍解析；loadMap 报错转空映射并遮蔽 | 空映射、miniredis 关闭模拟 Redis failure 定向测试通过；完整 race package 尚待复跑 |
 
 ## 5. 待完成验证与交付
 
 1. 复核近 96h 供应商协议、mock probe、hotzone、Jev、probe 成本、auto-route、session storage 与 R72 方案/报告，登记代码偏差。
-2. D01–D17 完整全链路审计仍未完成；本轮只记录与 F02–F09 相关的范围。D05 SF-01（无原始错误 body 日志捕获）和 D12 候选选择完整调用链复核仍明确未完成；其他域也不能因计划改写或勾选视作已审计。后续每条发现必须提供 `file:line`、触发输入、调用路径、期望/实际结果、影响、测试证据。
-3. F04 与 F08 已实施并定向验证；仍需完成 F07 的兼容 PG/statement timeout/数据量验证、F09 的跨 SSE 事件脱敏设计，以及 R62-H1/H2/M1/M2 的独立安全方案与风险裁定。
-4. 运行受影响测试、`-race`、兼容性与可用本地集成测试；未具备凭据/PG 环境时逐项标未验证，不接触生产库。
-5. 本轮 R73 修订与域计划已提交并推送至 `main`（`b1167076e`）；D01–D17 全域审计、F07 真 PG、F09 修复、完整本地部署和部分外部边界验证仍需后续完成。
+2. D01–D17 完整全链路审计仍未完成；本轮只记录 F02–F10 相关范围。D05 SF-01 与 D12 候选选择完整调用链复核仍明确未完成；其他域也不能因计划改写或勾选视作已审计。
+3. F09/F10 已实现并有定向证据，仍需最终全量提交门禁；F07 的兼容 PG/statement timeout/数据量验证，以及 R62-H1/H2/M1/M2 独立方案未完成。
+4. 运行受影响测试、`-race`、兼容性与可用本地集成测试；本续审只读检查发现本机共享 PG/网关正在运行，local-deploy-test 路径包含共享服务重建及可选远端 schema 同步，因此未执行部署或迁移。现存 `8782/healthz` 返回 200，但版本 SHA 为旧的 `8caf33f4`，不能作为本轮构建验收。
+5. 本续审代码和文档尚未提交；提交时只纳入本任务确认归属的 Go 与审计文档，保留未归属 Web 改动。D01–D17 全域审计、F07 真 PG、完整本地部署和部分外部边界验证仍需后续完成。
 
 ## 6. 本轮继续执行证据
 
 | 命令 | 结果 |
 |---|---|
-| `codegraph build --engine native --no-incremental .` | 退出码 0；6061 文件 / 147288 节点 / 261668 边 | 损坏图数据库已移至 `/tmp/llm-gateway-go-3-codegraph-malformed-20260928-continue/` |
+| `codegraph build --engine native --no-incremental .` | 起始图：6061 文件 / 147288 节点 / 261668 边；最终续审刷新：6064 文件 / 147452 节点 / 262534 边，退出码 0 | 损坏图数据库分别留存在 `/tmp/llm-gateway-go-3-codegraph-malformed-20260928-continue/`、`...-r73-rerun/`、`...-r73-final/` |
 | `go test -race ./cmd/gateway -run 'TestLiteRequestLogSink_(ConcurrentReplayJournalsOnce|JournalClaimSerializesSameRequestID|FailedJournalRetryReusesTurnNumber|TurnReservationsStayBoundedAndRetainNewReservation)' -count=1` | 退出码 0 | 覆盖同 ID 并发、等待唤醒、失败重试复用 turnNo、容量上限与过期 ID 重用 |
 | `go test ./domains/streaming/executors -run 'TestExecute(OpenAI|Anthropic).*DetachedUpstreamContext|TestExecuteOllama_StreamReaderUsesDetachedUpstreamContext|TestOllamaStream(CanceledReadErrorIsClientCancellation|ClientWriteFailureIsCanceled)|TestCopyNonStreamResponseHeaders_ReplacesWireHeaders' -count=1` | 退出码 0 | 覆盖 OpenAI chat/Responses、Anthropic adapters、Ollama 读写取消与保留 header 过滤 |
 | `go test ./bg -run 'Test(SelfcheckRateLimitAbort|SelfcheckProvider429DoesNotSeedGatewayCooldown|SelfcheckRound429Classification)' -count=1` | 退出码 0 | gateway 标记与 provider 429 分开测试；真实 gateway 到 provider 端到端待集成验证 |
 | `go test -race ./domains/streaming -run 'TestEmbeddingsHandlerMarksThrottledAPIKeyAsGateway429' -count=1` | 退出码 0 | API key 已 throttled 的 Embeddings 429 带可信 gateway scope |
 | `go test -race ./domains/streaming/executors -run 'TestExecutor_ExecuteOllama_ContextLengthRecoveryRetriesOnceWithSmallerBody' -count=1` | 退出码 0 | Ollama 最多一次内部重试、请求体缩小、成功返回并带压缩 reason/strategy/meta |
 | `go test -race ./domains/streaming -run 'TestInterceptingStreamWriter' -count=1` | 退出码 0 | F08 的 LF/CRLF、超大帧 fail-closed、尾帧丢弃测试通过 |
-| `go test -race ./security/sanitize -run 'TestSanitizeRestoreInterceptor_PlaceholderSplitAcrossCompleteFrames' -count=1` | 退出码 0 | F09 的完整 SSE delta 跨事件测试运行通过；测试明确确认功能缺口仍存在 |
+| `go test -race -timeout 120s ./security/sanitize/... -count=1` | 退出码 0 | F09/F10 及其余 sanitizer tests/race 通过，含 map 空/Redis down、跨协议 delta、PII masking、lane 与 request 隔离 |
+| `go test -race ./domains/streaming ./security/sanitize -run 'Test(InterceptingStreamWriterRestoresPlaceholderSplitAcrossCompleteEvents|InterceptingStreamWriter|SanitizeRestoreInterceptor_(PlaceholderSplitAcrossCompleteFrames|SplitPlaceholderAcrossProtocolDeltaFields|BoundsUntrustedStreamLaneIdentifiers|BlocksWhenStreamLaneBoundIsExceeded|BlocksOpaqueFrameWhilePlaceholderTailIsPending|MasksInvalidPlaceholderContinuationAndKeepsStreamOpen)|RestoreResponseBody_UnknownPlaceholderMaskedWhenRedisIsUnavailable)' -count=1` | 退出码 0 | 生产 writer 上跨完整 SSE 事件恢复；帧上限/结束边界与 sanitizer malformed/lane tests 通过 |
+| `go test ./security/sanitize -run 'TestRestoreResponseBody_UnknownPlaceholderMaskedWhen(RedisIsUnavailable|SessionMapIsEmpty)' -count=1 -v` | 退出码 0 | 空 Redis map 与关闭 miniredis 模拟连接失败；未知 marker 被遮蔽；已知值映射不可恢复 |
+| `go test -race -timeout 120s ./tests/48h-audit/D14-security/... -count=1` | 退出码 0 | D14 business/data/safety/stress 历史 mock 子包通过；这不是完整生产端到端审计 |
 | `go build ./...` | 退出码 0 | 全仓构建通过 |
 | `go vet ./...` | 退出码 0 | 全仓静态检查通过 |
 | `git diff --check` | 退出码 0 | 空白与冲突标记检查通过（最终提交前还要再跑） |
-| `go test ./... -count=1` | 非 0 | `discovery/TestDiscoverGateways` 因 IPv6 mDNS `no route to host` 失败；`upstream/TestDo_DNSFailureReservedTLD` 在本机 DNS 环境实际分类 `transient`、测试期望 `network`；`plugin-runtime/TestExecCommand_StartsRealProcess` 与 `TestExecCommand_GracefulStopSIGTERM` 当次也失败（无 PID 文件/信号处理器未就绪）。之后单独串行重跑这两个用例通过，但不能改写首次全仓结果；同期存在其他测试进程，资源争用原因未证实。 |
+| `go test ./... -count=1`（本续审重跑） | 非 0 | `discovery/TestDiscoverGateways` 因 IPv6 mDNS `no route to host` 失败；`upstream/TestDo_DNSFailureReservedTLD` 本机 DNS 实际归类 `transient`、测试期望 `network`。此前另一次全仓 run 的 plugin-runtime 子进程用例失败，随后串行定向重跑通过；原因未证实。 |
 | `go test ./bg -run 'Test(RequestLogsArchiveScheduleIndependentOfDailyTickPhase|PartitionManagerSchedulesRequestLogsArchiveIndependently|Migration754_NeverDeletesFromSource|ClampRequestLogsArchiveDays|ArchiveOldRequestLogs|ShouldRunRequestLogsArchive)' -count=1` | 退出码 0 | HEAD 已把每日门限接入 1h cleanup ticker；未连 PG |
 | `go test ./domains/streaming -run 'Test.*RateLimit|Test.*rateLimit' -count=1` | 退出码 0（先前记录） | 本轮追加标记接线后将随全包验证复跑 |
 | `go test -race ./... -count=1` | 大多数包通过；`discovery/TestDiscoverGateways` 因本机 IPv6 mDNS `no route to host` 失败；`domains/dispatch/TestConcurrentSubmitStopRace` 报既有数据竞争；`upstream/TestDo_DNSFailureReservedTLD` 分类期望 `network` 实际 `transient`；`upstream/TestDo_SlowBodyCancellationPropagates` 在本机 transport 下 headers 未及时建立 | 均未指向本轮 F03/F04/F06 改动；需在隔离网络/DNS fault-injection/dispatch 专项环境复核 |

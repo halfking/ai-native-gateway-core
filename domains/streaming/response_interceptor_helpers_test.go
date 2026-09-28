@@ -9,8 +9,12 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
+	"github.com/kaixuan/llm-gateway-go/security/sanitize"
+	"github.com/redis/go-redis/v9"
 )
 
 // streamChunkTestInterceptor verifies that the handler writer sends complete
@@ -82,6 +86,51 @@ func TestInterceptingStreamWriterBuffersAndInterceptsSSEFrame(t *testing.T) {
 	}
 	if got := recorder.Body.String(); got != "data: {\"content\":\"restored\"}\n\n" {
 		t.Fatalf("output = %q, want restored SSE frame", got)
+	}
+}
+
+func TestInterceptingStreamWriterRestoresPlaceholderSplitAcrossCompleteEvents(t *testing.T) {
+	mini, err := miniredis.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mini.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mini.Addr()})
+	defer rdb.Close()
+	ctx := context.Background()
+	if err := rdb.HSet(ctx, sanitize.SanitizeRedisKey("sess-writer-split"),
+		"{SENSITIVE:phone:1}", "13800138000").Err(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := sanitize.NewSanitizer(sanitize.NewPatternDetector())
+	if err != nil {
+		t.Fatal(err)
+	}
+	interceptor, err := sanitize.NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	writer := newInterceptingStreamWriter(recorder, response.NewInterceptorChain(interceptor), ctx,
+		response.StreamMeta{SessionID: "sess-writer-split", RequestID: "req-writer-split"})
+
+	frames := [][]byte{
+		[]byte("data: {\"choices\":[{\"delta\":{\"content\":\"call {SENSITIVE:phone:\"}}]}\n\n"),
+		[]byte("data: {\"choices\":[{\"delta\":{\"content\":\"1} now\"}}]}\n\n"),
+	}
+	for i, frame := range frames {
+		if n, err := writer.Write(frame); err != nil || n != len(frame) {
+			t.Fatalf("frame %d Write = (%d, %v), want (%d, nil)", i, n, err, len(frame))
+		}
+	}
+	writer.finish()
+
+	got := recorder.Body.String()
+	if strings.Contains(got, "{SENSITIVE:") {
+		t.Fatalf("placeholder fragment leaked through production intercepting writer: %q", got)
+	}
+	if !strings.Contains(got, `"content":"call "`) || !strings.Contains(got, "13800138000 now") {
+		t.Fatalf("stream output did not preserve safe text and restore the completed token: %q", got)
 	}
 }
 
