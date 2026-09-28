@@ -80,6 +80,45 @@ func TestHotZoneTrimmerExpiry(t *testing.T) {
 	}
 }
 
+// TestHotZoneTrimmerNonPositiveLimitsKeepFiles 钉死 fail-safe 语义（2026-09-29
+// 审计二十一轮）：retention<=0 / maxBytes<=0（构造期或 settings_kv 直写 0）
+// 时跳过对应清理阶段，而不是 cutoff≥now / 配额恒超 把三棵受管子树删光。
+func TestHotZoneTrimmerNonPositiveLimitsKeepFiles(t *testing.T) {
+	old := time.Now().Add(-2 * time.Hour)
+
+	// retention=0 且 maxBytes=0：两相全跳过，过期文件也保留。
+	dir := newHotZoneDir(t)
+	oldPath := filepath.Join(dir, "cache", "old.json")
+	touchFile(t, oldPath, make([]byte, 9), old)
+	tr := NewHotZoneTrimmer(dir, 0, 0)
+	if err := tr.TrimOnce(context.Background()); err != nil {
+		t.Fatalf("TrimOnce: %v", err)
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Errorf("retention=0/maxBytes=0 应全量保留，实际 %v", err)
+	}
+	if got := tr.lastDeletedFiles; got != 0 {
+		t.Errorf("lastDeletedFiles = %d, want 0", got)
+	}
+
+	// maxBytes=0 但 retention 正常：过期相工作，配额相不误删未过期文件。
+	dir2 := newHotZoneDir(t)
+	expired := filepath.Join(dir2, "cache", "old.json")
+	fresh := filepath.Join(dir2, "requests", "fresh.json")
+	touchFile(t, expired, make([]byte, 9), old)
+	touchFile(t, fresh, make([]byte, 1<<20), time.Now())
+	tr2 := NewHotZoneTrimmer(dir2, time.Hour, 0)
+	if err := tr2.TrimOnce(context.Background()); err != nil {
+		t.Fatalf("TrimOnce: %v", err)
+	}
+	if _, err := os.Stat(expired); !os.IsNotExist(err) {
+		t.Errorf("过期文件应被 retention 相删除: %v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("maxBytes=0 不应触发配额相误删: %v", err)
+	}
+}
+
 func TestHotZoneTrimmerExpiryUpdatesQuota(t *testing.T) {
 	dir := newHotZoneDir(t)
 	oldPath := filepath.Join(dir, "cache", "old.json")
