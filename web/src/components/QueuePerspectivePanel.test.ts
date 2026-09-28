@@ -483,6 +483,70 @@ describe('QueuePerspectivePanel', () => {
     expect(wrapper.text()).not.toContain('glm-5.3-flash')
   })
 
+  it('shows nothing for a filtered model that is outside the featured/hot universe instead of borrowing another model group', async () => {
+    // 2026-09-29 二轮审计发现的同型残留：集合里只有 glm-4.7-flash，节点却上报
+    // raw 'glm-4.7'（canonical 51）。旧实现会把它挂到 glm-4.7-flash 名下，于是
+    // 筛选 glm-4.7 看到的是标题为 glm-4.7-flash 的组。正确行为是：该模型不在
+    // 特色/热门范围内 ⇒ 不显示，而不是冒名。
+    getFeatured.mockResolvedValue({ featured_models: ['glm-4.7-flash'] })
+    resolveRouting.mockImplementation(async (model: string) => {
+      if (model === 'glm-4.7-flash') {
+        return {
+          canonical_id: 52,
+          canonical_name: 'glm-4.7-flash',
+          raw_models: ['glm-4.7-flash', 'glm-4.7'],
+          candidates: [
+            { credential_id: 8, model_name: 'glm-4.7-flash', canonical_id: 52, manual_priority: 1, routing_tier: 1, priority: false },
+            { credential_id: 7, model_name: 'glm-4.7', canonical_id: 51, manual_priority: 2, routing_tier: 1, priority: false },
+          ],
+        }
+      }
+      return { canonical_id: null, canonical_name: null, raw_models: [], candidates: [] }
+    })
+    liveStreamState.nodes = [
+      { credential_id: 8, provider_id: 1, provider_code: 'nvidia', manual_disabled: false, circuit_state: 'closed', availability_state: 'ready', quota_state: 'ok', health_status: 'healthy', raw_models: ['glm-4.7-flash', 'glm-4.7'] },
+    ]
+
+    const wrapper = mount(QueuePerspectivePanel, {
+      props: { modelFilter: new Set(['glm-4.7']) },
+      global: { plugins: [i18n] },
+    })
+    await flushPromises()
+    expect(wrapper.findAll('.qp-model-group')).toHaveLength(0)
+    expect(wrapper.text()).not.toContain('glm-4.7-flash')
+
+    // 不筛选时：glm-4.7 的节点不得混进 glm-4.7-flash 分组
+    const unfiltered = mountPanel()
+    await flushPromises()
+    const names = unfiltered.findAll('.qp-model-group-name').map(n => n.text())
+    expect(names).toEqual(['glm-4.7-flash'])
+    expect(unfiltered.find('.qp-model-group').get('.qp-pill').text()).toBe('1 节点')
+  })
+
+  it('still shows its own group when its resolve call fails (exact-name fallback), never under a wrapper model', async () => {
+    getFeatured.mockResolvedValue({ featured_models: ['glm-5.3', 'glm-5.3-flash'] })
+    resolveRouting.mockImplementation(async (model: string) => {
+      if (model === 'glm-5.3') throw new Error('resolve 503')
+      return {
+        canonical_id: null,
+        canonical_name: 'glm-5.3-flash',
+        raw_models: ['glm-5.3-flash', 'glm-5.3'],
+        candidates: [
+          { credential_id: 8, model_name: 'glm-5.3-flash', canonical_id: 2716170, manual_priority: 1, routing_tier: 1, priority: false },
+          { credential_id: 22, model_name: 'glm-5.3', canonical_id: 2422803, manual_priority: 2, routing_tier: 1, priority: false },
+        ],
+      }
+    })
+    liveStreamState.nodes = [
+      { credential_id: 22, provider_id: 1, provider_code: 'zhipu', manual_disabled: false, circuit_state: 'closed', availability_state: 'ready', quota_state: 'ok', health_status: 'healthy', raw_models: ['glm-5.3'] },
+    ]
+    const wrapper = mountPanel()
+    await flushPromises()
+    // 精确名 fallback：raw 'glm-5.3' 仍归到同名作用域，而不是被 flash 吞掉
+    const names = wrapper.findAll('.qp-model-group-name').map(n => n.text())
+    expect(names).toEqual(['glm-5.3'])
+  })
+
   it('hides the model-grouped section entirely when no node reports raw_models', () => {
     liveStreamState.nodes = [
       { credential_id: 1, provider_id: 2, manual_disabled: false, circuit_state: 'closed' },
