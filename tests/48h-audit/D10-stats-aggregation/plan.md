@@ -31,7 +31,11 @@
 ```bash
 go build ./...
 go vet ./...
-go test -race -timeout 60s ./tests/48h-audit/D10-stats-aggregation/...
+# R78：原门 `./tests/48h-audit/D10-stats-aggregation/...` 匹配 0 个 Go 包——空包模式只打印
+# `matched no packages` 警告并退出 0，门在结构上不可能失败。本域的证据本
+# 来就在下面的包里（旧门只是没接到它），故门改指真实证据所在包。
+统计聚合：证据在 ./cmd/gateway 的 lite journal/sink 持久化回归。
+go test -race -timeout 120s ./cmd/gateway -run 'TestLiteRequestLogSink_' -count=1
 ```
 
 ## 7. 与方案文档的对齐

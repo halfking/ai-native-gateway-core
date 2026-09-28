@@ -31,7 +31,11 @@
 ```bash
 go build ./...
 go vet ./...
-go test -race -timeout 60s ./tests/48h-audit/D17-code-hygiene/...
+# R78：原门 `./tests/48h-audit/D17-code-hygiene/...` 匹配 0 个 Go 包——空包模式只打印
+# `matched no packages` 警告并退出 0，门在结构上不可能失败。本域的证据本
+# 来就在下面的包里（旧门只是没接到它），故门改指真实证据所在包。
+代码卫生的可执行面：域内钉桩测试 + 归档 cadence 形状守卫（migration 754 登记引用）。B-01/SF-01 的 `git diff --check` 与凭据值静态核对属人工检查项，门只覆盖可自动化的部分。
+go test -race -timeout 120s ./bg -run 'TestShouldRunRequestLogsArchive_|TestArchiveOldRequestLogs_' -count=1
 ```
 
 ## 7. 与方案文档的对齐
