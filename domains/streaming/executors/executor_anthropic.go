@@ -27,6 +27,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	providercatalog "github.com/kaixuan/llm-gateway-go/provider/catalog"
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -780,7 +781,6 @@ func (e *Executor) executeAnthropic(
 		clientModel := params.ClientModel
 		requestID := diagnosticRequestID(params)
 		// P1-2 fix (2026-08-28): capture ctx for context propagation to gate.
-		capturedCtx := params.R.Context()
 		// Track C C5 (2026-06-21): the capturer is built by the main.go
 		// wrapper that owns the AnthropicPassthroughStream closure (it
 		// has access to pendingStore + the upstream resp to check the
@@ -791,16 +791,15 @@ func (e *Executor) executeAnthropic(
 		// we currently pass nil here; the real wiring is in main.go.
 		// P1-2 fix (2026-08-28): lambda accepts ctx parameter.
 		ae.PassthroughStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return e.AnthropicPassthroughStream(capturedCtx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
+			return e.AnthropicPassthroughStream(ctx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
 	if e.AnthropicToOpenAIStream != nil && params.ClientProtocol != providercatalog.ProtocolAnthropicMessages {
 		clientModel := params.ClientModel
 		requestID := diagnosticRequestID(params)
 		// P1-2 fix (2026-08-28): capture ctx for context propagation to gate.
-		capturedCtx := params.R.Context()
 		ae.OpenAITranslator = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
-			return e.AnthropicToOpenAIStream(capturedCtx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
+			return e.AnthropicToOpenAIStream(ctx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
 	// Phase E (2026-07-01): wire ResponsesTranslator when the client
@@ -811,9 +810,8 @@ func (e *Executor) executeAnthropic(
 		clientModel := params.ClientModel
 		requestID := diagnosticRequestID(params)
 		// P1-2 fix (2026-08-28): capture ctx for context propagation to gate.
-		capturedCtx := params.R.Context()
 		ae.ResponsesTranslator = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
-			return e.AnthropicToResponsesStream(capturedCtx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
+			return e.AnthropicToResponsesStream(ctx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
 	if e.AnthropicToChatResponse != nil && params.ClientProtocol != providercatalog.ProtocolAnthropicMessages {
@@ -823,12 +821,11 @@ func (e *Executor) executeAnthropic(
 		clientModel := params.ClientModel
 		requestID := diagnosticRequestID(params)
 		// P1-2 fix (2026-08-28): capture ctx for context propagation to gate.
-		capturedCtx := params.R.Context()
 		// Second assignment is defensive (the if-block at line 411
 		// already assigned this); the capturer plumbing is identical.
 		// P1-2 fix (2026-08-28): lambda accepts ctx parameter.
 		ae.PassthroughStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return e.AnthropicPassthroughStream(capturedCtx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
+			return e.AnthropicPassthroughStream(ctx, w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
 
@@ -1285,7 +1282,7 @@ func (e *Executor) executeAnthropicOnce(
 				// the body exceeded the cap).
 				params.W.Header().Set("Content-Length", strconv.Itoa(len(fullBody)))
 				for k, vs := range resp.Header {
-					if k == "Content-Length" || k == "Content-Encoding" {
+					if k == "Content-Length" || k == "Content-Encoding" || ratelimit.IsGatewayRateLimitScopeHeader(k) {
 						continue // we set Content-Length; skip the (possibly gzipped) encoding header
 					}
 					for _, v := range vs {
@@ -1335,7 +1332,7 @@ func (e *Executor) executeAnthropicOnce(
 		// 并发修复 2026-07-27：见 responseSink 注释 —— 异步重试路径 W 为
 		// nil，改写到丢弃 writer，upstream stream 仍被完整消费。
 		// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
-		outcome := ae.StreamResponse(params.R.Context(), responseSink(params), resp)
+		outcome := ae.StreamResponse(streamReaderContext(params, resp), responseSink(params), resp)
 		if outcome.Interrupted && (outcome.Reason == "client_cancel" || outcome.Kind == errorsx.KindCanceled) {
 			return &ExecuteResult{
 				Response:    resp,

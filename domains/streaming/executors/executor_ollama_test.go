@@ -897,6 +897,64 @@ func TestExecutor_ExecuteOllama_UpstreamError(t *testing.T) {
 	}
 }
 
+func TestExecutor_ExecuteOllama_ContextLengthRecoveryRetriesOnceWithSmallerBody(t *testing.T) {
+	var requests [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requests = append(requests, append([]byte(nil), body...))
+		if len(requests) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"This model's maximum context length is 2000 tokens. Your messages resulted in 7000 tokens."}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"llama3.1","message":{"role":"assistant","content":"recovered"},"done":true,"prompt_eval_count":2,"eval_count":1}`))
+	}))
+	defer srv.Close()
+
+	var messages strings.Builder
+	messages.WriteString(`{"model":"llama3.1","messages":[`)
+	for i := 0; i < 30; i++ {
+		if i > 0 {
+			messages.WriteByte(',')
+		}
+		messages.WriteString(fmt.Sprintf(`{"role":"user","content":%q}`, strings.Repeat("important context ", 120)))
+	}
+	messages.WriteString(`]}`)
+	wireBody := []byte(messages.String())
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(wireBody))
+	rec := httptest.NewRecorder()
+	params := &ExecParams{
+		W: rec, R: req, BodyBytes: wireBody, ClientModel: "llama3.1",
+		OutboundModel: "llama3.1", ClientProtocol: "openai-completions", RequestID: "ollama-recovery",
+	}
+	cand := provider.Candidate{ProviderID: 42, CredentialID: 7, BaseURL: srv.URL, Protocol: "ollama-native", CatalogCode: "ollama", RawModel: "llama3.1"}
+
+	result, err := newTestExecutor().executeOllama(params, cand, 0, time.Now(), nil)
+	if err != nil || result == nil {
+		t.Fatalf("executeOllama recovery = result %v, err %v", result, err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("upstream requests = %d, want exactly one recovery retry", len(requests))
+	}
+	if len(requests[1]) >= len(requests[0]) {
+		t.Fatalf("recovery body did not shrink: first=%d second=%d", len(requests[0]), len(requests[1]))
+	}
+	if !strings.Contains(rec.Body.String(), "recovered") {
+		t.Fatalf("client response missing recovered content: %s", rec.Body.String())
+	}
+	if result.CompressionReason == nil || *result.CompressionReason == "" {
+		t.Fatalf("CompressionReason = %v, want recorded recovery reason", result.CompressionReason)
+	}
+	if result.CompressionStrategy == nil || *result.CompressionStrategy == "" {
+		t.Fatalf("CompressionStrategy = %v, want a recorded recovery strategy", result.CompressionStrategy)
+	}
+	if len(result.CompressionMeta) == 0 || !bytes.Contains(result.CompressionMeta, []byte(`"bytes_after"`)) {
+		t.Fatalf("CompressionMeta = %s, want byte-count metadata", result.CompressionMeta)
+	}
+}
+
 // ────────────────────────────────────────────────────────────────────────
 // Test helpers: flushing recorders (let Flush() do something)
 // ────────────────────────────────────────────────────────────────────────

@@ -1,30 +1,30 @@
 # D15 — 可观测性 + UX
 
-> 域知识库：[docs/audit/playbook/domains/D15-observability-ux.md](../../../docs/audit/playbook/domains/D15-observability-ux.md)  
-> 48h 改动面（截至 R56）：<待 fill>  
-> 状态：草稿（占位，待 worker 子代理按 TEMPLATE-domain.md 填充）
+> 域知识库：[docs/audit/playbook/domains/D15-observability-ux.md](../../../docs/audit/playbook/domains/D15-observability-ux.md)
+> R73 改动面：lite telemetry、压缩/stream lifecycle 事件、错误与限流展示口径。
+> 状态：R73 定向证据；真实 dashboard/多语言浏览器验收未执行。
 
 ## 1. 审计要点
 
-- 待 fill 1
-- 待 fill 2
-- 待 fill 3
+- 核对 status、dashboard、credential/session 视图是否使用统一 request identity、compression strategy 和 error kind。
+- F02/F03/F04/F06 已补齐关键 capture/错误阶段语义；未宣称前端端到端完成。
+- 未覆盖：真实 API/UI、i18n 浏览器和完整 telemetry pipeline。
 
 ## 2. 业务测试
 
-- [ ] B-01：<待填>
+- [x] B-01：lite persistence 与 stream lifecycle 定向回归
 
 ## 3. 数据测试
 
-- [ ] D-01：<待填>
+- [ ] D-01：dashboard/PG 聚合读面（未验证）
 
 ## 4. 压力测试
 
-- [ ] S-01：<待填>
+- [ ] S-01：浏览器/长流 UX 压测（未执行）
 
 ## 5. 安全测试
 
-- [ ] SF-01：<待填>
+- [x] SF-01：错误/限流 scope 不泄漏保留内部 header
 
 ## 6. 验收门
 
@@ -37,7 +37,7 @@ go test -race -timeout 60s ./tests/48h-audit/D15-observability-ux/...
 ## 7. 与方案文档的对齐
 
 - RFC：docs/...
-- 上轮挂账：docs/audit/playbook/runs/R55-.../agent-D15.md
+- R73：`docs/audit/runs/2026-09-28/R73-remediation-plan.md`
 
 ## 子代理派发提示词
 

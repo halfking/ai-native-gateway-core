@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/loopback"
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/recentmodels"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
@@ -89,12 +90,11 @@ type CredentialSelfcheckWorker struct {
 	redis       *redis.Client
 
 	// P0-3 (probe-cost-optimization §5) rate-limit circuit breaker state.
-	// Both fields are only touched from the loop goroutine (cycleOnce →
-	// runOne → doHTTP), so no lock is needed. rateLimited marks the current
-	// cycle; lastCycleRateLimited is the inter-cycle memory — the cycle
-	// after an aborted one probes only the primary model (once).
-	rateLimited          bool
-	lastCycleRateLimited bool
+	// These fields are touched only by the worker loop goroutine. Provider
+	// rate limits stop fallbacks for the current credential; only a response
+	// marked by this gateway can seed the one-cycle shared-key cooldown.
+	gatewayRateLimitedInRun     bool
+	lastCycleGatewayRateLimited bool
 }
 
 func (w *CredentialSelfcheckWorker) SetProbeSink(sink ProbeEventSink) {
@@ -321,12 +321,12 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 	// cycle that finishes without a 429.
 	models := pick.models
 	ratelimitAbort := settings.GetPlatformBool("probe.selfcheck.ratelimit_abort", true)
-	if ratelimitAbort && w.lastCycleRateLimited && len(models) > 1 {
-		slog.Warn("credential_selfcheck_worker: previous cycle aborted on rate limit, primary-only this cycle",
+	if ratelimitAbort && w.lastCycleGatewayRateLimited && len(models) > 1 {
+		slog.Warn("credential_selfcheck_worker: previous cycle hit gateway shared-key limit, primary-only this cycle",
 			"credential_id", credentialID, "candidates_suppressed", len(models)-1)
 		models = models[:1]
 	}
-	w.rateLimited = false
+	w.gatewayRateLimitedInRun = false
 
 	var attempted []string
 	lastErrType, lastErrDetail := "none", ""
@@ -355,15 +355,14 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 		// the remaining candidates only amplifies the load and feeds the
 		// failure matrix. Terminate the fallback loop for this cycle.
 		if r.RateLimited && ratelimitAbort {
-			w.rateLimited = true
 			slog.Warn("credential_selfcheck_worker: rate-limited, aborting remaining candidates this cycle",
 				"credential_id", credentialID, "model", model, "err_detail", r.ErrDetail, "candidates_suppressed", len(models)-i-1)
 			break
 		}
 	}
-	// Inter-cycle memory only exists when the abort feature is on — with the
-	// switch off this is bit-for-bit legacy behavior (0 = 现行行为).
-	w.lastCycleRateLimited = w.rateLimited && ratelimitAbort
+	// Inter-cycle memory is reserved for this gateway's shared-key admission
+	// response. Provider/unknown 429s are scoped to the current credential run.
+	w.lastCycleGatewayRateLimited = w.gatewayRateLimitedInRun && ratelimitAbort
 	status := "success"
 	if !success {
 		status = "failed"
@@ -705,6 +704,9 @@ type credentialSelfcheckRound struct {
 	// rate-limit rejection (gateway 429 / gw_rpm_exceeded / key_throttled).
 	// runOne terminates the credential's remaining candidates on sight.
 	RateLimited bool
+	// GatewayRateLimited distinguishes the gateway's own shared-key admission
+	// from a provider 429. Only the former may seed inter-cycle worker state.
+	GatewayRateLimited bool
 }
 
 // isSelfcheckRateLimit reports whether the round's failure is a rate-limit
@@ -773,6 +775,7 @@ func (w *CredentialSelfcheckWorker) doHTTP(ctx context.Context, credentialID int
 	}
 	defer resp.Body.Close()
 	r.HTTPCode = resp.StatusCode
+	r.GatewayRateLimited = resp.Header.Get(ratelimit.GatewayRateLimitScopeHeader) == ratelimit.GatewayRateLimitScopeSharedKey
 	buf := make([]byte, 8192)
 	n, _ := resp.Body.Read(buf)
 	if resp.StatusCode != http.StatusOK {
@@ -780,7 +783,7 @@ func (w *CredentialSelfcheckWorker) doHTTP(ctx context.Context, credentialID int
 		r.ErrDetail = truncateStrSC(string(buf[:n]), 200)
 		if isSelfcheckRateLimit(resp.StatusCode, r.ErrType, r.ErrDetail) {
 			r.RateLimited = true
-			w.rateLimited = true
+			w.gatewayRateLimitedInRun = w.gatewayRateLimitedInRun || r.GatewayRateLimited
 		}
 		return r
 	}

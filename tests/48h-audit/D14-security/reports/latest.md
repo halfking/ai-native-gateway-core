@@ -40,11 +40,12 @@ go test -race -timeout 120s ./security/sanitize/...               # 全 PASS（�
 
 ## 已知缺口 / 后续
 
-- **跨 chunk SSE 帧**：占位符被拆到两个独立 SSE 事件时不会被还原（`TestSanitizeRestoreInterceptor_StreamChunk_FrameSplitAcrossChunks` 已钉住）。修复路径在 `streaming.handler` 层加 SSE 帧缓冲，与本轮无关。
+- **跨完整 SSE 事件的 delta**：同一事件内部被多个 `Write` 切开时，生产 `interceptingStreamWriter` 会先组帧再拦截；但占位符若被模型拆到多个完整 delta 事件，当前逐事件无状态 interceptor 无法还原（`TestSanitizeRestoreInterceptor_PlaceholderSplitAcrossCompleteFrames` 已钉住，R73-F09）。需要有界且带 TTL 的跨事件尾片缓存。
+- **SSE writer 缓冲安全**：R73-F08 在 `interceptingStreamWriter` 加入 16 MiB 单帧上限、LF/CRLF framing，以及丢弃未终止尾帧；定向 writer 测试通过。上限以上合法媒体事件尚待真实样本评估。
 - **Anthropic partial_json 增量还原**：单 chunk 可能只含 `{` 或 `"key":"val` 的半截，PlaceholderPattern 不会匹配；需要 chatHandler 累计完整 JSON 后再做一轮还原（follow-up）。
 
 ## 下一步
 
 - 把 D14 4 类测试接入 `bash docs/全面测试/48h-audit/scripts/run-all.sh`（已自动扫描 D14 目录）
-- 在 R58/R59 48h 审计轮对 `streaming.handler` 跨 chunk SSE 缓冲做改造，把占位符拆分场景闭合
+- 为 R73-F09 设计跨完整 delta 事件的有界尾片还原；不要将已存在的同事件 Write 缓冲误认为跨事件解决
 - 把 D14 mock 套件作为后续工具调用相关回归的回归锚

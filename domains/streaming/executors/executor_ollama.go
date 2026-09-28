@@ -15,10 +15,12 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -95,6 +97,34 @@ type OllamaExecutor struct {
 	// for the executor's standalone tests; production wires IR via
 	// main.go the same way AnthropicExecutor does).
 	IR IRConverter
+}
+
+type ollamaRecoveryContextKey struct{}
+type ollamaOriginalBodyContextKey struct{}
+
+func withOllamaRecoveryAttempt(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ollamaRecoveryContextKey{}, true)
+}
+
+func ollamaRecoveryAttempted(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(ollamaRecoveryContextKey{}).(bool)
+	return v
+}
+
+func withOllamaOriginalBody(ctx context.Context, body []byte) context.Context {
+	return context.WithValue(ctx, ollamaOriginalBodyContextKey{}, append([]byte(nil), body...))
+}
+
+func ollamaOriginalBody(ctx context.Context, fallback []byte) []byte {
+	if ctx != nil {
+		if body, ok := ctx.Value(ollamaOriginalBodyContextKey{}).([]byte); ok && len(body) > 0 {
+			return append([]byte(nil), body...)
+		}
+	}
+	return append([]byte(nil), fallback...)
 }
 
 // Compile-time guarantee that OllamaExecutor satisfies ProtocolHandler.
@@ -459,7 +489,7 @@ func (o *OllamaExecutor) StreamResponse(ctx context.Context, w http.ResponseWrit
 				if err := sseWriter.WriteDone(); err != nil {
 					outcome.Interrupted = true
 					outcome.Reason = "client_write_failed"
-					outcome.Kind = errorsx.KindNetwork
+					outcome.Kind = errorsx.KindCanceled
 					outcome.ChunkCount = chunkCount
 					return outcome
 				}
@@ -475,7 +505,7 @@ func (o *OllamaExecutor) StreamResponse(ctx context.Context, w http.ResponseWrit
 						if err := sseWriter.WriteContentDelta(chunk.Delta.Content, chunk.Model, chunk.ID, chunk.Created); err != nil {
 							outcome.Interrupted = true
 							outcome.Reason = "client_write_failed"
-							outcome.Kind = errorsx.KindNetwork
+							outcome.Kind = errorsx.KindCanceled
 							outcome.ChunkCount = chunkCount
 							return outcome
 						}
@@ -486,7 +516,7 @@ func (o *OllamaExecutor) StreamResponse(ctx context.Context, w http.ResponseWrit
 						if err := sseWriter.WriteReasoningDelta(chunk.Delta.ReasoningContent, chunk.Model, chunk.ID, chunk.Created); err != nil {
 							outcome.Interrupted = true
 							outcome.Reason = "client_write_failed"
-							outcome.Kind = errorsx.KindNetwork
+							outcome.Kind = errorsx.KindCanceled
 							outcome.ChunkCount = chunkCount
 							return outcome
 						}
@@ -497,7 +527,7 @@ func (o *OllamaExecutor) StreamResponse(ctx context.Context, w http.ResponseWrit
 						if err := sseWriter.WriteToolCalls(chunk.Delta.ToolCalls, chunk.Model, chunk.ID, chunk.Created); err != nil {
 							outcome.Interrupted = true
 							outcome.Reason = "client_write_failed"
-							outcome.Kind = errorsx.KindNetwork
+							outcome.Kind = errorsx.KindCanceled
 							outcome.ChunkCount = chunkCount
 							return outcome
 						}
@@ -532,6 +562,13 @@ func (o *OllamaExecutor) StreamResponse(ctx context.Context, w http.ResponseWrit
 	// done ever arrived". The §11.6 eof_without_done frame is the
 	// canonical way to surface the latter to OpenAI clients.
 	if err := scanner.Err(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			outcome.Interrupted = true
+			outcome.Reason = "client_cancel"
+			outcome.Kind = errorsx.KindCanceled
+			outcome.ChunkCount = chunkCount
+			return outcome
+		}
 		// Network-level read error after at least one chunk: treat as
 		// interrupted mid-stream so the dispatcher can decide whether
 		// the error is recoverable.
@@ -903,9 +940,8 @@ func (s *ollamaSSEWriter) WriteEOFWithoutDone() error {
 //     same ClassifyErrorWithBody path the other executors use, so the
 //     outer Execute loop can retry / failover without this method
 //     re-implementing the retry budget.
-//   - No context-length recovery, no reqprobe mode-fallback: P4.3
-//     focuses on the wire-level contract; recovery is layered on top
-//     in a follow-up.
+//   - Context-length recovery is bounded to one internal compressed retry;
+//     the original client body remains available for telemetry.
 //
 // beginUpstreamAttempt is the per-attempt lifecycle hook the executor
 // owns: it consumes one attempt slot from the executor's attempt
@@ -924,6 +960,35 @@ func (e *Executor) executeOllama(
 	fpLease *credentialfpslot.Lease,
 ) (*ExecuteResult, error) {
 	sourceBody := append([]byte(nil), params.BodyBytes...)
+	var preTrimMeta []byte
+	applyPreTrimTelemetry := func(result *ExecuteResult) *ExecuteResult {
+		if result != nil && len(preTrimMeta) > 0 {
+			reason, strategy := "pre_request_context_window", "mechanical_trim"
+			if result.CompressionReason == nil {
+				result.CompressionReason = &reason
+			}
+			if result.CompressionStrategy == nil {
+				result.CompressionStrategy = &strategy
+			}
+			result.CompressionMeta = mergeCompressionMeta(result.CompressionMeta, preTrimMeta)
+		}
+		return result
+	}
+	originalBody := ollamaOriginalBody(params.R.Context(), sourceBody)
+
+	// Ollama uses the same OpenAI Chat-shaped inbound body as the other
+	// compatibility executors. Apply the candidate-aware mechanical guard
+	// before serialization so a large conversation does not reach Ollama
+	// unnecessarily. The recovery path below remains authoritative when the
+	// provider's actual tokenizer rejects the estimate.
+	if cand.ContextWindow != nil && *cand.ContextWindow > 0 {
+		reserve := transformation.OutputTokenReserve(sourceBody, params.ClientProtocol)
+		compressed := transformation.CompressMessagesIfNeededWithReserve(sourceBody, *cand.ContextWindow, reserve)
+		if len(compressed) < len(sourceBody) {
+			preTrimMeta = buildPreRequestTrimMeta(len(sourceBody), len(compressed), cand.ContextWindow)
+			sourceBody = compressed
+		}
+	}
 
 	// Re-serialize the IR-shaped client body into the Ollama native
 	// wire shape. This is the P4.3 core: every Ollama-private top-
@@ -1068,6 +1133,37 @@ func (e *Executor) executeOllama(
 		}
 		e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "ollama-native"), captured)
 		errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, captured)
+		// Ollama returns context overflow as a normal 4xx JSON error. Reuse
+		// the shared recovery coordinator, but mark the recursive attempt so
+		// a provider that rejects the compressed body cannot trigger a loop.
+		// The retry is deliberately free of the outer credential retry budget:
+		// it is an internal rewrite of this same request, not failover.
+		if errorsx.IsContextLength(errKind) && !ollamaRecoveryAttempted(params.R.Context()) {
+			recoveredBody := append([]byte(nil), sourceBody...)
+			recovery := contextLengthRecoveryState{}
+			if e.handleContextLengthRecovery(params.R.Context(), params, cand, &recoveredBody, &recovery, resp.StatusCode, captured) == ctxLenRetry && len(recoveredBody) < len(sourceBody) {
+				retryParams := *params
+				retryParams.BodyBytes = recoveredBody
+				retryCtx := withOllamaRecoveryAttempt(params.R.Context())
+				retryParams.R = params.R.WithContext(withOllamaOriginalBody(retryCtx, originalBody))
+				meterExtraUpstreamCall(params)
+				result, retryErr := e.executeOllama(&retryParams, cand, 0, tTotal, fpLease)
+				if retryErr == nil && result != nil {
+					reason := recovery.lastReason
+					if reason == "" {
+						reason = "context_length"
+					}
+					strategy := recovery.lastStrategy
+					if strategy == "" {
+						strategy = "mechanical_trim"
+					}
+					result.CompressionReason = &reason
+					result.CompressionStrategy = &strategy
+					result.CompressionMeta = mergeCompressionMeta(recovery.lastMeta, preTrimMeta)
+				}
+				return applyPreTrimTelemetry(result), retryErr
+			}
+		}
 		if errKind == errorsx.KindModelNotFound || errKind == errorsx.KindModelDeprecated {
 			slog.Info("model_not_found skip offer",
 				"credential_id", cand.CredentialID,
@@ -1099,7 +1195,7 @@ func (e *Executor) executeOllama(
 			if params.W != nil {
 				params.W.Header().Set("Content-Length", strconv.Itoa(len(captured)))
 				for k, vs := range resp.Header {
-					if k == "Content-Length" || k == "Content-Encoding" {
+					if k == "Content-Length" || k == "Content-Encoding" || ratelimit.IsGatewayRateLimitScopeHeader(k) {
 						continue
 					}
 					for _, v := range vs {
@@ -1122,21 +1218,21 @@ func (e *Executor) executeOllama(
 			params.OnStreamReady()
 			params.OnStreamReady = nil
 		}
-		outcome := oe.StreamResponse(params.R.Context(), responseSink(params), resp)
+		outcome := oe.StreamResponse(streamReaderContext(params, resp), responseSink(params), resp)
 		if outcome.Interrupted && isClientStreamInterruption(outcome.Kind, outcome.Reason) {
 			slog.Info("executor: client disconnected during ollama stream",
 				"credential_id", cand.CredentialID,
 				"provider_id", cand.ProviderID,
 				"chunk_count", outcome.ChunkCount,
 			)
-			return &ExecuteResult{
+			return applyPreTrimTelemetry(&ExecuteResult{
 				Response:       resp,
 				Candidate:      cand,
 				LatencyMs:      latencyMs,
 				RequestBody:    append([]byte(nil), bodyBytes...),
-				InboundBody:    sourceBody,
+				InboundBody:    originalBody,
 				RoutingTracker: params.RoutingTracker,
-			}, &streamInterruptedError{
+			}), &streamInterruptedError{
 				reason:       outcome.Reason,
 				credentialID: cand.CredentialID,
 				resumable:    false,
@@ -1167,14 +1263,14 @@ func (e *Executor) executeOllama(
 			if !isResumable {
 				e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind, cand.BillingMode)
 			}
-			return &ExecuteResult{
+			return applyPreTrimTelemetry(&ExecuteResult{
 				Response:       resp,
 				Candidate:      cand,
 				LatencyMs:      latencyMs,
 				RequestBody:    append([]byte(nil), bodyBytes...),
-				InboundBody:    sourceBody,
+				InboundBody:    originalBody,
 				RoutingTracker: params.RoutingTracker,
-			}, &streamInterruptedError{
+			}), &streamInterruptedError{
 				reason:           outcome.Reason,
 				credentialID:     cand.CredentialID,
 				resumable:        isResumable,
@@ -1183,14 +1279,14 @@ func (e *Executor) executeOllama(
 			}
 		}
 		e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
-		return &ExecuteResult{
+		return applyPreTrimTelemetry(&ExecuteResult{
 			Response:       resp,
 			Candidate:      cand,
 			LatencyMs:      latencyMs,
 			RequestBody:    append([]byte(nil), bodyBytes...),
-			InboundBody:    sourceBody,
+			InboundBody:    originalBody,
 			RoutingTracker: params.RoutingTracker,
-		}, nil
+		}), nil
 	}
 
 	// Non-stream success path. WriteNonStreamResponse closes resp.Body.
@@ -1217,26 +1313,26 @@ func (e *Executor) executeOllama(
 				return nil, ue
 			}
 		}
-		return &ExecuteResult{
+		return applyPreTrimTelemetry(&ExecuteResult{
 			Response:       resp,
 			Candidate:      cand,
 			LatencyMs:      latencyMs,
 			RequestBody:    append([]byte(nil), bodyBytes...),
-			InboundBody:    sourceBody,
+			InboundBody:    originalBody,
 			ResponseBody:   body,
 			RoutingTracker: params.RoutingTracker,
-		}, nil
+		}), nil
 	}
 	e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
-	return &ExecuteResult{
+	return applyPreTrimTelemetry(&ExecuteResult{
 		Response:       resp,
 		Candidate:      cand,
 		LatencyMs:      latencyMs,
 		RequestBody:    append([]byte(nil), bodyBytes...),
-		InboundBody:    sourceBody,
+		InboundBody:    originalBody,
 		ResponseBody:   body,
 		RoutingTracker: params.RoutingTracker,
-	}, nil
+	}), nil
 }
 
 // finalizeOllamaUpstreamBody validates and converts the inbound
