@@ -1381,6 +1381,70 @@ Sort Method: top-N heapsort  Memory: 581kB
 |---|---|---|---|---|
 | `armor_judgments` | P1 | 改 `ctid` 形态 + 去 `ORDER BY`，再提高批量 | **124 倍**（870.7→7.0ms） | **不需要** |
 | `candidate_failure_logs` | P2 | 同上 | **22 倍**（411→19.5ms） | **不需要** |
-| `journal_snapshot_receipts` | P2 | 补 `(updated_at)` + 改分批 | 未实测（无 LIMIT ⇒ 无剪枝，Seq Scan 是真实成本） | 需要 |
+| `journal_snapshot_receipts` | **P3（实测降级）** | 暂不改 | 98ms vs 30ms，**绝对成本 2.4 秒/天** | 需要 |
 | `session_aggregate_outbox` | 无缺陷 | — | 形态改动实测无收益 | — |
 | `model_iq_runs` | P3 | 待触发后处理 | 0 行 | 需要 |
+
+
+## R79 续十三 · 最后一条待实测：journal_snapshot_receipts 的 P2 被降级
+
+续十二之后只剩这一条修法没实测。它形态上最可疑——**无 LIMIT、无分批**，
+按理说没有提前终止可剪枝，Seq Scan 应该是真实成本。
+
+### 测的时候先撞上一个新事实
+
+建对照索引时报 `ERROR: column "id" does not exist`：
+
+```
+tenant_id | request_id | snapshot_version | payload_hash | status
+claim_owner | claim_until | created_at | updated_at | projection_base_seq
+```
+
+`journal_snapshot_receipts` **没有 `id` 列，也没有主键**，唯一键是
+`(tenant_id, request_id, snapshot_version)`。所以续十二的 `id IN` 形态
+**对它根本不适用**，必须 ctid 形态 + `updated_at` 索引配合；
+真写成 `id IN` 会直接 42703。留此注记是防止将来有人「顺手优化」成 id 形态。
+
+### 实测（92,862 行，匹配仅 ~556 行，重复 4 次取中位）
+
+| 方案 | 实测 |
+|---|---|
+| **现状**（无 LIMIT、无索引） | **98ms**（94.1 / 94.5 / 101.6 / 127.2） |
+| 补 `(updated_at)` 索引，仍无 LIMIT | **285ms** ← **无收益** |
+| `ctid IN` + `LIMIT 500` | **30ms**（3.2 倍） |
+
+`LIMIT 500` 小于匹配数 556，所以子查询确实提前终止了（`actual rows=500`）——
+这是续十二里唯一一次 ctid 形态的 Limit 真正起作用。
+
+### P2 → P3：降级理由是绝对成本，不是相对倍数
+
+3.2 倍看着不错，但换算成时间：
+
+```
+本表       98ms × 24 次/天 = 2.4 秒/天   （tick = 1h）
+armor      870ms × 1 次/天 = 0.87 秒/天  （tick = 24h）
+```
+
+**单位时间成本几乎相同**（0.040 vs 0.036 ms/s），但本表的绝对值小两个量级，
+改动的收益是「每天省 1.6 秒」。按「定级看实测、不看倍数」的标准，**降 P3**。
+
+这是本轮第三次纠正定级（前两次：session_bodies P2→P3、armor 补索引作废）。
+三次的共性都是**同一个错误：把相对倍数或估算数字当成了实际代价**。
+
+### 形态风险仍然存在，但不是现实成本
+
+无 LIMIT 无分批在**积压**时是真风险：一次事务里可能删掉远超预期的行数，
+撞上 `CleanupExpired` 的 30s ctx 超时后整笔回滚，而失败只 `slog.Warn`
+——保留期会静默失效。
+
+但实测跨度 **7.0 天 = 7 天保留期**，说明写入与删除是平衡的、**积压不存在**。
+所以这是潜在风险不是现实成本，登记为 P3 留待观察。
+
+### 一个被顺手确认的事实
+
+`domains/requestjourney/retention_test.go:172` 的断言只检查
+`strings.Contains(stmt, "DELETE FROM journal_snapshot_receipts")` 与
+`strings.Contains(stmt, "updated_at")` ——**纯文本断言，不校验列存在性**。
+本轮 `go_sql_constant_prepare_test.go`（PREPARE 真库）覆盖了这条 SQL 且未报 42703，
+说明该语句当前合法。**文本断言守不住列漂移，PREPARE 才守得住**——这是
+续五那道门存在的理由，本轮又一次得到印证。
