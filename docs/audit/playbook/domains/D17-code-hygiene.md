@@ -159,3 +159,59 @@ D17 域知识「代码卫生」含注释/文档漂移。本轮把同一把尺子
 
 **最终变异检验 12/12 全部被抓住**（把 12 个域门里的包路径整体改指到不存在的目录），
 外加伪造新空门域、已修域滞留白名单两项。
+
+### R78 续三 · 死契约列扫描扩到 credentials：10 个列零消费方，按「是否主动误导」定级
+
+`tests/48h-audit/scripts/dead-column-scan.sh` 扩到 `credentials`（23 列），并用 ripgrep
+对前 15 列做独立复核（脚本单次全表扫较慢，ripgrep 更快且结论一致）。
+
+**必须区分两类死契约，否则会把噪声和缺陷混为一谈**：
+
+**A 类 · 主动误导（有非默认值 + 无消费方 = 行为与标记不符）**
+
+| 列 | 表 | 非默认值 | 后果 |
+|---|---|---|---|
+| `egress_profile` | providers | **14 行 = `'proxy'`** | 标记走代理、实际直连（D12 已登记） |
+| `probe_failure_threshold` | credentials | 83 行 = 3、3 行 = 2 | 逐凭据的探针失败阈值**不被尊重**——自检熔断按全局固定阈值跑，运维调这个值没有任何效果 |
+| `network_quality_score` | providers | 59 行 = 1.0、1 行 = 0.0 | 每供应商的网络质量分无人参与选型 |
+
+**B 类 · 契约死但当前惰性（值全是默认/空 = 今天没有行为差异）**
+
+| 列 | 表 | 现值 | 备注 |
+|---|---|---|---|
+| `discount_rate` | providers | 60 行全 1.0 | **成本路径**：一设折扣账单就不变 |
+| `pricing_distrust` | credentials | 86 行全 `false` | schema 基线里的 `NOT NULL DEFAULT false` 列（`deploy/sql/schemas/baseline/01-schema.sql:6834`），全仓零引用 |
+| `user_overrides_json` | providers | 60 行全 `[]` | 逐供应商覆盖配置不生效 |
+| `plan_consumed_json` | credentials | 86 行全 `{}` | — |
+| `free_quota_limit` / `free_quota_window_type` | credentials | 0 行 | 仅 `db/db_omnifree.go` 建列，从未读 |
+| `relay_overhead_ms` | credentials | 0 行 | 连 admin 侧都无引用 |
+| `catalog_version_at_create` / `proxy_subscription_id` | providers | 0 行 | 未启用的占位列 |
+
+**B 类不是「无害」**——它们是**等着被踩的坑**：默认值恰好让后果不可见，一旦运维在管理台
+改了值就会静默失效。`pricing_distrust` 尤其值得记：它是 schema 基线里的 `NOT NULL`
+列、按设计就该影响定价，却**全仓零引用**，且没有任何换名实现（`grep -i distrust` 只
+命中 `router.go` 一句无关注释）。
+
+**误判排除**（与 providers 那轮同一套）：
+
+- **CamelCase 复验**：snake 与 Camel 两种形式都查，`PricingDistrust` / `RelayOverheadMs` /
+  `ProbeFailureThreshold` / `PlanConsumedJSON` 均 0 命中。
+- **换名实现排查**：`pricing_distrust` 特别查了 `distrust|untrusted.?price|price.?adjust|
+  effective.?price` 等同义命名，无等价实现。
+- **schema 层确认**：`pricing_distrust` 不在任何 `db/*.go` DDL 里，只在
+  `sql/schema/01-schema.sql`、`sql/objects/tables/credentials.sql`、
+  `deploy/sql/schemas/baseline/01-schema.sql` 三处 schema 基线中——说明它由 SQL 迁移
+  引入并进入了**对照基线**，属于「按设计就该有」而非遗留垃圾。
+
+**工具本身的可用性核验**：本机 `/usr/bin/env bash` 为 5.3.9，脚本用的 `${seg^}` 驼峰
+转换正常。（中途我有一条临时 `bash -c` 命令走了 `/bin/bash` 3.2 而报 `bad substitution`
+——那是临时命令的问题，**已提交的脚本本身可用**。若需在 bash 3.2 环境运行，应把
+`to_camel` 换成 sed 实现。）
+
+**教训 J**：**「死契约」必须按「是否已有非默认值」分诊**。全量报「10 个列无消费方」
+会淹没真正要修的那 3 个；但只报 A 类又会让人以为 B 类无需处理——B 类是定时炸弹。
+报告必须同时给出**非空行数**和**取值分布**，让读者能自己分诊。
+
+**本轮工具的教训**：单次全表 grep 在本仓（vendor + 大测试树）要 7 分钟以上，两表
+合计超过 15 分钟，不可用于交互式排查。后续应给脚本加 `--exclude-dir` 与列清单缓存，
+或直接用 ripgrep（本次复核即如此，快一个数量级）。
