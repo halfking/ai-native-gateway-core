@@ -205,6 +205,12 @@ func StreamNativeResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *
 				}
 				return StreamOutcome{ChunkCount: chunkCount}
 			}
+			if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+				if capture != nil {
+					capture.MarkInterruptedWithReason("client_cancel")
+				}
+				return StreamOutcome{Interrupted: true, Reason: "client_cancel", Kind: errorsx.KindCanceled, Resumable: false, ChunkCount: chunkCount}
+			}
 			if errors.Is(err, io.EOF) {
 				resumable := !attemptHasClientSemanticOutput(gate, chunkCount)
 				reason := "native_responses_read_error"
