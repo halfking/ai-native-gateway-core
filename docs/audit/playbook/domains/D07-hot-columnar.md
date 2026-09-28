@@ -511,3 +511,27 @@ R79 在存储函数侧抓到「批游标列无索引 → O(rows²)」。本轮�
 
 **顺带印证**：`retention_test.go:172` 只做 `strings.Contains` 文本断言、不校验列存在性；
 真正守住这条 SQL 的是续五的 PREPARE 真库门。
+
+### R79 续十四 · tool_usage_stats：代码里写着 ≠ 会执行（P1 降 P2）
+
+核可达性时发现：**`AggregateDaily` / `SaveStats` / `ListToolNamesWithActivity` 各 0 个生产调用方**。
+那 12 个错列**从未被 PostgreSQL 执行过**——不是线上故障，是一段从未跑过的代码，P1 属虚报。
+
+`grep AggregateDaily` 出的全是 `AggregateDailyProfiles`——providerprofile 的**另一个同名方法**，
+名字相似极易误判成有调用方。
+
+错列范围也比先前记录的大：INSERT 用 15 个列名，真库只有 11 列，**12/15 不存在**
+（`p50/p95/p99_duration_ms`、`unique_users/unique_sessions/top_users` 三个分位数与三个去重维度
+在真库**根本没有**）。`ToolUsageStats` 结构体有 17 个字段依赖这 6 个维度，所以修法不是改名，
+是路线选择：**加 8 列迁移 vs 改代码降级**（后者丢掉 6 个统计维度）——属 owner 决策。
+
+**缺陷仍是真的且更阴险**：`AggregateDaily` 每条失败只 `slog.Error` 计数、**返回 nil**。
+一旦有人补定时任务，每条 INSERT 都 42703 而调用方看到 `err == nil`，**以为聚合成功**。
+
+**两条证据必须分开**：`AggregateDaily` 零调用方 ✅（代码事实，与流量无关）；
+`tool_usage_stats`/`session_tools` 都是 0 行 ❌（本机是无流量开发库，空表属正常）。
+**「表是空的」在开发库上不是发现。**
+
+**本轮第四次定级纠正**（session_bodies P2→P3 把峰值当分布 / armor 补索引作废 把 cost 当执行时间 /
+journal_snapshot_receipts P2→P3 把相对倍数当绝对成本 / **本条 把形态相似当可达**）。
+**代码里写着某段 SQL，只说明它被写下来了，不说明它会执行——可达性优先于形态。**
