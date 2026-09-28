@@ -2,7 +2,7 @@
 
 > 域知识库：[docs/audit/playbook/domains/D03-three-tier-cache.md](../../../docs/audit/playbook/domains/D03-three-tier-cache.md)
 > R73 改动面：lite telemetry 并发幂等、流式 request/response capture、压缩 provenance。
-> 状态：R73 续审记录；PG/Redis 跨进程一致性未验证。
+> 状态：R73 续审记录；R78 验收门已改指真实证据所在包（原门匹配 0 包，永不可能失败）；PG/Redis 跨进程一致性未验证。
 
 ## 1. 审计要点
 
@@ -12,7 +12,7 @@
 
 ## 2. 业务测试
 
-- [x] B-01：`go test -race ./cmd/gateway -run 'TestLiteRequestLogSink_' -count=1`
+- [x] B-01：`go test -race ./cmd/gateway -run 'TestLiteRequestLogSink_' -count=1`（证据在 ./cmd/gateway，R78 已把验收门接到该处）
 
 ## 3. 数据测试
 
@@ -20,7 +20,7 @@
 
 ## 4. 压力测试
 
-- [x] S-01：lite sink 定向 race 已通过
+- [x] S-01：lite sink 定向 race 已通过；另 §3 清单第 1 条（三层 provenance 完整 + occurrence 回溯 + 映射缺口不静默）由 `./domains/hooks/compression` 的 9 条 alignment 测试覆盖，R78 起纳入验收门
 
 ## 5. 安全测试
 
@@ -31,7 +31,12 @@
 ```bash
 go build ./...
 go vet ./...
-go test -race -timeout 60s ./tests/48h-audit/D03-three-tier-cache/...
+# R78：原门 `./tests/48h-audit/D03-three-tier-cache/...` 匹配 0 个包——Go 的空包
+# 模式只打印 `matched no packages` 警告并退出 0，门在结构上不可能失败。本域的
+# provenance 证据本来就在 compression 包里（alignment.go 的 buildAlignmentMap +
+# alignment_test.go 9 条），旧门只是没接到它。门已改指真实证据所在包。
+go test -race -timeout 120s ./domains/hooks/compression/... -count=1
+go test -race -timeout 120s ./cmd/gateway -run 'TestLiteRequestLogSink_' -count=1
 ```
 
 ## 7. 与方案文档的对齐
