@@ -543,3 +543,36 @@ if !strings.Contains(v2SessionBodiesBaseQuery, "LEFT JOIN public.session_turns_w
 `session_bodies` 那条查询此刻正因 `origin_actor` 报错而永不执行——
 **只修好挡路的那个缺陷，就会把这条昂贵路径唤醒**。
 **修 A 之前要看 A 背后压着什么**，否则「修好了」的现场可能比修之前更糟。
+
+### R79 续八 · 死配置比死代码危险：297 个平台设置的接线普查（31 个未接线）
+
+**死代码不承诺任何东西，运维不会去指望它。死配置会承诺**：有 Key、有类型、有默认值、
+有界面名称与说明、`HotReload: true`、还有 `DangerLevel: Warning`。运维改它、看到保存成功、
+在界面上看到新值——然后什么也不会发生，且**没有任何报错**。
+
+**297 个平台设置 Key = 266 有消费方 + 31 无消费方（10.4%）。**
+最整齐的一组是 `lifecycle.*_ttl_days` 的 5 个键：被迁移 391 播种进设置表，
+与 5 张表严格一一对应，而 `drop_old_state_partitions()` 覆盖的恰好是**另外 5 张表**，
+一张都不在这 5 张里——**TTL 声明恰好是为「最终没有实现清理机制的那批表」写的，然后从未被读取**。
+三张已膨胀的表合计约 1.48 GB / 330 万行（`usage_ledger` 1001MB、
+`request_wal` 375MB、`credential_model_call_history` 102MB），另两张还空着。
+
+另两组成簇：`self_check.*` 5 个键全未接线（D09 子系统 spec 先行）；
+**`sessions_v2.*` 5 个「点号」键全未接线，而活的键是 `sessions_v2_compression_read`
+「下划线」形式——声明时用了与活键不同的命名形状**，于是那 5 个从未被读到。
+
+**检测器自己错了三次，三次都是门的错**：①把 `.md` 文档当消费方（死设置数从 31 缩到 4）；
+②用未转义的 `grep <key>` 当判据——**Key 里的 `.` 是正则元字符**，
+`handoff.threshold` 匹配上了 `handoff_threshold`，把真死设置判成活的；
+③把迁移里的**种子 INSERT** 当消费方——`INSERT … VALUES (key, …)` 是**写入默认值**不是读取。
+第 ② 条尤其值得记：我用 grep 去「纠正」精确子串扫描，而**被纠正的那个才是对的**。
+
+**可迁移纪律：普查结果先拿已知案例校准，再信它。** 这与本会话在 DB 侧的三次「判错对象」同源——
+判据的对象不是你以为的那个对象时，输出会**整齐地错，而且错得很自信**。
+
+门：`tests/48h-audit/D17-code-hygiene/hygiene/settings_wiring_test.go`
+的 `TestData_SettingsSpec_EveryKeyHasAConsumer`（精确子串、种子行不算消费方、
+三条自收缩断言、四桶账目加总不变式）。变异 3 处红转绿。
+**门自己暴露的 bug**：账目校验最初在逐键报错之前且漏了 `shrunk` 一栏，
+于是过期登记只报一句 `accounting does not add up` 而不指名是哪个键——
+**门在失败的同时把自己的诊断藏起来了**。
