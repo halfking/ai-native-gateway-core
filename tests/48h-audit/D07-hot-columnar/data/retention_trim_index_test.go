@@ -123,28 +123,47 @@ var retentionSmallTables = map[string]struct {
 //
 // 登记必须带实测数据。定级前量的都是分布而不是峰值。
 var knownRetentionDefects = map[string]string{
-	// P1：不是"缺一列"，是删除吞吐追不上写入吞吐。armor_judgments 存流式请求的
-	// observe-only 安全审计（security/armor/logger.go，每条请求一条）。
-	// 90 天保留、24h tick、每轮硬编码 LIMIT 5000：
-	//   写入  6,318 行/24h（实测 last24h）
-	//   删除  5,000 行/天（硬上限，不可配置）
-	// ⇒ 净增 1,318 行/天，90 天后表永远追不平。且当前跨度 86.94 天 < 90 天保留期，
-	// 意味着现在**每轮扫全表 + Sort 37.8 万行只为删 0 行**（cost 94,538）。
-	// created_at 只作 idx_armor_judgments_tenant_time 的第二列，无首列匹配。
-	"armor_judgments": "P1 armor_judgments：804,253 行 / 327MB；4 条索引 created_at 只作第二列；EXPLAIN cost 94,538（Sort rows=378,463）；删 5,000/天 < 写 6,318/天 ⇒ 无界增长。修法：补 (created_at) 索引 + 提高批量或提高 tick 频率",
+	// 注意：这条门报的是「created_at 不是索引首列」，但**实测该缺失在本表上不构成
+	// 性能问题**——本表被登记的真正理由是删除吞吐倒挂，门只是顺带扫到了它。
+	//
+	// 生产规模（804,253 行）TEMP TABLE 对照实测，3 次取中位数：
+	//   0% 过期（现状）无索引 LIMIT 5000     763 ms   ← 自身波动 756/763/796ms
+	//   0% 过期      补索引   LIMIT 5000     732 ms   ← 落在无索引波动区间内
+	//   0% 过期      无索引   LIMIT 500000   871 ms
+	//   97% 过期     无索引   LIMIT 5000     966 ms
+	//   97% 过期     补索引   LIMIT 5000     915 ms
+	//   97% 过期     无索引   LIMIT 100000  1728 ms
+	//
+	// 补索引收益 ≈ 0：LIMIT 让 Seq Scan 提前终止（97% 过期的行里扫 5,000 个就停），
+	// 而 cost 估算假设扫完全部匹配行——**cost 差 3.8 倍不等于执行时间差 3.8 倍**。
+	// 这张表每条流式请求写一条，补索引是净写入维护成本。
+	//
+	// 真缺陷是吞吐倒挂：90 天保留、24h tick、每轮硬编码 LIMIT 5000，
+	// 写入 6,318 行/天 > 删除 5,000 行/天 ⇒ 净增 1,318 行/天。
+	// 修法 = 提高批量上限（实测 20~100 倍批量，代价仅 ×1.8~×1.14），**不是补索引**。
+	"armor_judgments": "P1 armor_judgments：真缺陷是删除吞吐倒挂（写 6,318/天 > 删 5,000/天，硬编码 LIMIT 5000），" +
+		"不是缺索引——实测补 (created_at) 索引收益≈0（763ms→732ms，噪声内）且增加写入维护成本。" +
+		"修法：把每轮 LIMIT 5000 提到 10 万级（实测 LIMIT 100000 代价仅 966ms→1728ms）",
 
 	// P2：三条索引首列分别是 claim_until(partial)、tenant_id、identity 复合，
 	// 没有一条以 updated_at 开头 ⇒ Seq Scan cost 5,020 / 57MB。
-	// 加剧项：这条 DELETE 还没有 LIMIT、没有分批，是全仓少见的全量删除。
-	"journal_snapshot_receipts": "P2 journal_snapshot_receipts：94,657 行 / 57MB，无 updated_at 首列索引（Seq Scan cost 5,020），且 DELETE 无 LIMIT 无分批。修法：补 (updated_at) 索引 + 改成分批",
+	// 加剧项：这条 DELETE 没有 LIMIT、没有分批。
+	// 与 armor_judgments 不同：**没有 LIMIT 就没有提前终止可剪枝**，Seq Scan 是真实
+	// 成本（不是估算虚高），但表只 94,657 行，绝对值仍小。
+	"journal_snapshot_receipts": "P2 journal_snapshot_receipts：94,657 行 / 57MB，无 updated_at 首列（Seq Scan cost 5,020），" +
+		"且 DELETE 无 LIMIT 无分批——无 LIMIT 即无剪枝，Seq Scan 是真实成本。" +
+		"修法：补 (updated_at) 索引 + 改成分批",
 
 	// P2：分区表，每个分区 6 条索引，ts 是其中 4 条的第二列
 	// （credential_id/provider_id/raw_model_name/session_id, ts DESC）。
-	// 活跃分区 2026_09 是 heap 105MB / 83,289 行，EXPLAIN cost 10,646：
-	// 每轮扫 67,826 行只为删 5,000 行（13.6x 放大），且 81%（67,580 行）早已过期。
-	// 之所以只定 P2：写入仅 318 行/24h，远小于删除能力 5,000/天，积压 13.5 天可自行消化，
-	// 不是无界增长。定级看的是速率对比，不是峰值行数。
-	"candidate_failure_logs": "P2 candidate_failure_logs：83,289 行 / 105MB 活跃分区，ts 仅作 4 条复合索引的第二列；EXPLAIN cost 10,646（每轮扫 67,826 删 5,000）；写入 318/24h < 删除 5,000/天，积压可消化故非 P1。修法：给活跃分区补 (ts) 索引",
+	// 活跃分区 2026_09 是 heap 105MB / 83,289 行，EXPLAIN cost 10,646，81%（67,580 行）已过期。
+	// 同 armor_judgments：**cost 10,646 与「13.6x 扫描放大」都是估算，未实测执行时间**
+	//（LIMIT 会提前终止），不能当已证实的成本上报。
+	// 仍定 P2 的理由是**速率**而非扫描成本：写入仅 318 行/24h ≪ 删除能力 5,000/天，
+	// 积压 13.5 天自行收敛。
+	"candidate_failure_logs": "P2 candidate_failure_logs：83,289 行 / 105MB 活跃分区，ts 仅作 4 条复合索引的第二列；" +
+		"写入 318/24h ≪ 删除 5,000/天，积压 13.5 天可消化故非 P1。" +
+		"注：cost 10,646 与「13.6x 放大」是估算，未实测执行时间（LIMIT 提前终止）",
 
 	// P3：0 行，365 天保留期，尚未到达触发规模。tested_at 是 3 条索引的第二列。
 	// 登记而不是豁免，是为了等它长起来时这条信息还在，而不是重新普查一遍。
