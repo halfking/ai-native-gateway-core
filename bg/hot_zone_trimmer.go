@@ -12,13 +12,10 @@ package bg
 // 生命周期：与 cache_trimmer 同款，由调用方 `go trimmer.Start(ctx)` 启动，
 // 内部不再起新协程；ctx 取消后优雅退出。
 //
-// TODO(wiring-pending): 当前仅完成 Worker 本体（Start + retention + quota 淘汰 +
-// 单元测试覆盖）。未完成：
-//   1) 在 main / daemon.go 构造 cfg.HotZone 时一并 NewHotZoneTrimmer 并 go Start()；
-//   2) 让 cfg.HotZone.RetentionHours / MaxSizeGB 实际驱动本 Worker 的字段；
-//   3) 把 defaultHotZoneTrimInterval 暴露到 cfg.HotZone.TrimInterval 可调。
-// 预期接入 PR：feature/wire-hotzone-trimmer，独立提交以保证本提交可单独回滚。
-// 本 Worker 已通过本地 disk 压力测试。
+// 接线（2026-09-28 H4 P2）：cmd/gateway initStorageMode 在 lite 装配时构造并
+// go Start，经 WithReload 注入 settings 直查闭包（GetPlatform* 无缓存，读即
+// 最新已提交值），每轮 tick 前刷新 retention / maxBytes / enabled——变更在
+// ≤1 个 trimmer 周期（30 分钟）内生效。
 
 import (
 	"context"
@@ -53,6 +50,12 @@ type HotZoneTrimmer struct {
 	maxBytes  atomic.Int64  // 三子树共享的字节上限（HotZone.MaxSizeGB << 30）
 	interval  time.Duration // 清理周期，默认 30 分钟
 
+	// reloadFn 是热重载钩子（WithReload 注入，接线层闭包直查 settings）。
+	// Start 在每轮 TrimOnce 前调用一次；返回值语义：retention/maxBytes 非正
+	// = 维持现值，enabled=false = 本轮跳过清理。仅 Start goroutine 调用，
+	// 无并发访问。TrimOnce 直调（单测）不经过本钩子。
+	reloadFn func() (retention time.Duration, maxBytes int64, enabled bool)
+
 	lastDeletedFiles int
 	lastFreedBytes   int64
 }
@@ -76,6 +79,32 @@ func (t *HotZoneTrimmer) WithInterval(d time.Duration) *HotZoneTrimmer {
 	return t
 }
 
+// WithReload 注入热重载钩子（H4 接线：接线层闭包直查 settings.GetPlatform*，
+// 无缓存读即最新已提交值）。Start 在每轮 TrimOnce 前应用一次；retention/
+// maxBytes 非正返回值维持现值，enabled=false 跳过本轮清理（目录内容不动，
+// 下一轮 tick 再判定——运行期关开关即停清，不删已有文件）。
+func (t *HotZoneTrimmer) WithReload(fn func() (retention time.Duration, maxBytes int64, enabled bool)) *HotZoneTrimmer {
+	if fn != nil {
+		t.reloadFn = fn
+	}
+	return t
+}
+
+// applyReload 执行一次热重载钩子并报告本轮是否应执行清理。nil 钩子恒 true。
+func (t *HotZoneTrimmer) applyReload() bool {
+	if t.reloadFn == nil {
+		return true
+	}
+	retention, maxBytes, enabled := t.reloadFn()
+	if retention > 0 {
+		t.retention.Store(int64(retention))
+	}
+	if maxBytes > 0 {
+		t.maxBytes.Store(maxBytes)
+	}
+	return enabled
+}
+
 // SetRetention 原子替换保留期（热重载入口，Plan §3 H4 「trimmer 的 retention 原子替换」）。
 func (t *HotZoneTrimmer) SetRetention(d time.Duration) {
 	if d > 0 {
@@ -91,7 +120,9 @@ func (t *HotZoneTrimmer) SetMaxBytes(b int64) {
 }
 
 // Start 阻塞式运行清理循环：启动立即执行一次（排空历史积压的过期文件），
-// 之后按 ticker 周期执行；ctx 取消时优雅退出。
+// 之后按 ticker 周期执行；每轮 TrimOnce 前先应用热重载钩子（WithReload，
+// settings 直查 → 原子换 retention/maxBytes，enabled=false 跳过本轮）；
+// ctx 取消时优雅退出。
 func (t *HotZoneTrimmer) Start(ctx context.Context) {
 	slog.Info("hotzone trimmer 已启动",
 		"dir", t.dir,
@@ -99,8 +130,10 @@ func (t *HotZoneTrimmer) Start(ctx context.Context) {
 		"max_bytes", t.maxBytes.Load(),
 		"interval", t.interval.String())
 
-	if err := t.TrimOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		slog.Warn("hotzone_trimmer: 首次清理失败", "error", err)
+	if t.applyReload() {
+		if err := t.TrimOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("hotzone_trimmer: 首次清理失败", "error", err)
+		}
 	}
 
 	tk := time.NewTicker(t.interval)
@@ -111,6 +144,10 @@ func (t *HotZoneTrimmer) Start(ctx context.Context) {
 			slog.Info("hotzone_trimmer: 已停止")
 			return
 		case <-tk.C:
+			if !t.applyReload() {
+				slog.Debug("hotzone_trimmer: 热重载 enabled=false，本轮跳过")
+				continue
+			}
 			if err := t.TrimOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				slog.Warn("hotzone_trimmer: 清理失败", "error", err)
 			}
