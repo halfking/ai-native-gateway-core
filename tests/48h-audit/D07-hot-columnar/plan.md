@@ -409,6 +409,45 @@ conflict, transient deadlock… the next persisted row will catch up」），
 
 详见 reports/latest.md「R79 续八」。
 
+## 17. R79 续九：四个非 hot 族普查（1 个 P2 + 1 个 P3 + 1 条证伪）
+
+| 族 | 体积 | 行数 | ts 打头索引 |
+|---|---|---|---|
+| `usage_ledger` | 1001 MB | 2,038,536 | ✅ |
+| `sessions` | 476 MB | 760,808 | ❌ |
+| `request_wal` | 375 MB | 975,156 | ❌ |
+| `routing_decision_log` | 275 MB | 921,463 | ✅ |
+
+四族分区结构都健康（DEFAULT 空、边界正确、数据在当月分区），但**仍是月分区**
+（`usage_facts` 已按 R68 改日分区）——月内 ts 范围查询不能裁剪。
+
+**P2｜`request_wal` 完全没有保留期机制**（三条独立证据）：
+1. 唯一该清理的 `archive_request_wal` 是死函数（R79 续二 已登记，331 未应用）；
+2. `drop_old_state_partitions` 函数体**根本没提 request_wal**；Go 侧零 DELETE/DROP/TRUNCATE；
+3. **`lifecycle.request_wal_ttl_days` 全仓只命中它自己的声明，零消费方**——
+   一个可热更新、界面可见、描述明确、默认 1 天的平台设置，**改了没效果且不报错**。
+
+代价实测：`request_wal_2026_09` = 975,156 行 / 375 MB / 26 天；日峰值 151,875，
+近期 8K–12K。**若 1 天 TTL 生效应只留约 1 万行 / 4 MB，实际是声明意图的约 80–100 倍。**
+且旧月分区也不被 drop（`_2026_06/07/08` 至今仍在）。
+
+**修法被 columnar 挡住（最实用的一条）**：直觉修法是补 DELETE，但
+`EXPLAIN DELETE FROM request_wal` 直接 `ERROR: UPDATE and CTID scans not supported for
+ColumnarScan`——因为 `request_wal_2026_08` 是 citus columnar（am 359239）而 09 是 heap。
+逐分区验证：09 可执行（Seq Scan），08 报错。
+**修复必须先处理 columnar 分区**（转回 heap，或改走 `DETACH + DROP TABLE`）。
+
+**P3｜`sessions` 保留期删除全分区 Seq Scan**：`bg/lite_retention_worker.go:131`
+`DELETE FROM sessions WHERE updated_at < ?` → 5 个分区全 Seq Scan（09 估 865,385 行）。
+`idx_sessions_status (status, updated_at DESC)` 用不上——首列 status 未被谓词约束。
+
+**一条被证伪**：我怀疑每月 1 日调度的 `archive_routing_decision_log` 会因 columnar 失败。
+**证伪**——它末尾是 `ALTER TABLE … DETACH PARTITION` + `DROP TABLE`，**不走 DELETE**，
+因此 columnar 安全，且该族被正常清理。
+**限制作用于操作类型，不是表**：「同样是 columnar 表」不等于「同样受同一限制」。
+
+详见 reports/latest.md「R79 续九」。
+
 ## 子代理派发提示词
 
 ```

@@ -365,3 +365,27 @@ R79 在存储函数侧抓到「批游标列无索引 → O(rows²)」。本轮�
   退避后只记 warning。**重试机制对永久性 SQL 错误零收益，只把热路径的失败成本放大 5 倍。**
 - **可迁移判定**：定级不能停在「缺一列」。**要问的是「这条路径默认开启吗、落在什么频率上、
   失败会被放大吗」**——三问都命中才是 P1。与 R79 续五给 `origin_actor` 定 P1 同源。
+
+### R79 续九回注（2026-09-29，四个非 hot 族普查）
+
+- **P2｜`request_wal` 完全没有保留期机制**，三条独立证据：
+  ① 唯一该清理的 `archive_request_wal` 是死函数（R79 续二 已登记，331 未应用）；
+  ② `drop_old_state_partitions` 函数体**根本没提 request_wal**，Go 侧零 DELETE/DROP/TRUNCATE；
+  ③ **`lifecycle.request_wal_ttl_days` 全仓只命中它自己的声明，零消费方**——
+  一个可热更新、界面可见、描述明确、默认 1 天的平台设置，**改了没效果且不报错**。
+  代价实测 975,156 行 / 375 MB / 26 天；**1 天 TTL 生效时应只留约 1 万行 / 4 MB，
+  实际是声明意图的约 80–100 倍**；且旧月分区也不被 drop，分区数本身在涨。
+- **修法被 columnar 挡住（最实用的一条）**：直觉修法是补 DELETE，但
+  `EXPLAIN DELETE FROM request_wal` 直接报
+  `ERROR: UPDATE and CTID scans not supported for ColumnarScan`——
+  `request_wal_2026_08` 是 citus columnar（am 359239），`_2026_09` 是 heap。
+  **修复必须先处理 columnar 分区**（转回 heap，或改走 `DETACH + DROP TABLE`）。
+- **P3｜`sessions` 保留期删除全分区 Seq Scan**：`bg/lite_retention_worker.go:131`
+  `DELETE FROM sessions WHERE updated_at < ?` → 5 个分区全 Seq Scan（09 估 865,385 行）。
+  `idx_sessions_status (status, updated_at DESC)` 用不上——首列 `status` 未被谓词约束。
+- **一条被证伪**：我怀疑每月 1 日调度的 `archive_routing_decision_log` 会因 columnar 失败。
+  **证伪**——它末尾是 `ALTER TABLE … DETACH PARTITION` + `DROP TABLE`，**不走 DELETE**，
+  columnar 安全，该族被正常清理。**限制作用于操作类型，不是表**：
+  「同样是 columnar 表」不等于「同样受同一限制」。
+- 四族分区结构都健康（DEFAULT 空、边界正确）；但**仍是月分区**（`usage_facts` 已按 R68
+  改日分区），月内 ts 范围查询不能裁剪。
