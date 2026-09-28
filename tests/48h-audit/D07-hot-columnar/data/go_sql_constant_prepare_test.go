@@ -281,12 +281,12 @@ var justifiedPrepareFailures = map[string]string{
 	// the next persisted row will catch up」——但 `42703 undefined_column` 是**永久性**错误，
 	// 每次重试与每条后续请求都必然同样失败。这套重试对它零收益，只是把热路径上的
 	// 失败查询放大 5 倍。
-	"domains/routeincident/action_infra.go:390::sql::98af2ee0": "P1：diagnostic_runs 无 route_key（基线/真库/迁移三方一致）；observer 热路径每条请求日志命中",
-	"domains/routeincident/action_infra.go:479::sql::d83eead3": "P1：同上 persistRunInTx，observer 热路径",
-	"domains/routeincident/action_infra.go:507::sql::93e0ec6f": "P1：同上 loadRunByIDInTx",
-	"domains/routeincident/action_infra.go:529::sql::93e0ec6f": "P1：同上 loadRunByID",
-	"domains/routeincident/action_infra.go:608::sql::6f536007": "P1：routing_audit_log 无 reason 列；admin 审计列表失败",
-	"domains/routeincident/action_infra.go:666::sql::66e1c23e": "P1：同上；admin NewRouteIncidentsHandler 无条件接线",
+	"domains/routeincident/action_infra.go:390::sql::98af2ee0": "已修复待应用：迁移 758 给 routing_audit_log 补 reason 列。修法已在真库事务内验证（该表 21→22 列，源码 INSERT 的 PREPARE 无 ERROR 后 ROLLBACK）。真机应用 758 后本条会变成「未登记的失败」⇒ 门红并提示删登记",
+	"domains/routeincident/action_infra.go:479::sql::d83eead3": "已修复待应用：迁移 758 给 diagnostic_runs 补 route_key/parameters/result 三列（13→16）；persistRunInTx 是 observer 热路径",
+	"domains/routeincident/action_infra.go:507::sql::93e0ec6f": "已修复待应用：迁移 758 补 diagnostic_runs 三列；loadRunByIDInTx 读侧同步修复",
+	"domains/routeincident/action_infra.go:529::sql::93e0ec6f": "已修复待应用：同上；loadRunByID 读侧",
+	"domains/routeincident/action_infra.go:608::sql::6f536007": "已修复待应用：迁移 758 补 routing_audit_log.reason（varchar(256)）；admin 审计列表恢复",
+	"domains/routeincident/action_infra.go:666::sql::66e1c23e": "已修复待应用：同上；admin NewRouteIncidentsHandler 无条件接线",
 	"domains/routeincident/evidence.go:149::sql::27a821dc":     "P1：同上 diagnostic_runs.route_key（RecordEvidenceExportAudit）",
 
 	// ── P1-3｜tool_usage_stats 列名漂移：Go 用 tool_name/date，schema 是 tool_id/usage_date ──
@@ -569,4 +569,59 @@ var (
 func stripSQLComments(src string) string {
 	src = sqlBlockCommentRe.ReplaceAllString(src, " ")
 	return sqlLineCommentRe.ReplaceAllString(src, " ")
+}
+
+// TestData_RouteIncidentFix_MigrationIsShippedAndNotSilentlyDisabled 守住迁移 758
+// 的**修复本身**。与 757 那道门同构，各守一条。
+//
+// routeincident 是**每条落库请求日志**都走的热路径（main.go:3554），两处 INSERT
+// 引用 4 个真库没有的列（diagnostic_runs 缺 route_key/parameters/result、
+// routing_audit_log 缺 reason），而重试循环按瞬时冲突设计，42703 会被重试满 5 次。
+// 修复被后续提交悄悄废掉的代价很高，所以不只登记、还要断言。
+func TestData_RouteIncidentFix_MigrationIsShippedAndNotSilentlyDisabled(t *testing.T) {
+	const mig = "sql/migrations/startup/758_routeincident_missing_columns.sql"
+	up := stripSQLComments(string(mustReadRepo(t, mig)))
+
+	// ① 四个目标列都必须出现在迁移里。少一个就是那一条 INSERT 继续 42703。
+	for _, col := range []string{"route_key", "parameters", "result"} {
+		if !strings.Contains(up, "ADD COLUMN IF NOT EXISTS "+col) {
+			t.Errorf("%s 缺 diagnostic_runs.%s 的 ADD COLUMN —— 该 INSERT 仍会 42703。", mig, col)
+		}
+	}
+	if !strings.Contains(up, "ADD COLUMN IF NOT EXISTS reason") {
+		t.Errorf("%s 缺 routing_audit_log.reason 的 ADD COLUMN —— 该 INSERT 仍会 42703。", mig)
+	}
+
+	// ② DDL 必须在顶层：包进 DO…EXECUTE $ddl$…$ddl$ 会静默无效（续十六实测）。
+	if strings.Contains(up, "EXECUTE $ddl$") {
+		t.Errorf("%s 把 DDL 包进了 DO 块的 EXECUTE —— 实测在 PL/pgSQL 里它**静默无效**："+
+			"不报错、列没加、前后自校验还照常通过。请改回顶层 ALTER。", mig)
+	}
+	if n := strings.Count(up, "ALTER TABLE public."); n < 2 {
+		t.Errorf("%s 里顶层 ALTER TABLE 只有 %d 处（期望 ≥2：diagnostic_runs 与 routing_audit_log 各一）", mig, n)
+	}
+
+	// ③ 后置断言必须在，且必须**读系统目录**确认列真的加上了。
+	//    只写 RAISE NOTICE 不算自校验——那是续十六抓到的「静默无效」能通过的原因。
+	if !strings.Contains(up, "post-check ok") {
+		t.Errorf("%s 缺少后置断言（post-check）", mig)
+	}
+	if !strings.Contains(up, "information_schema.columns") {
+		t.Errorf("%s 的后置断言没有读 information_schema.columns —— 判「迁移生效了」必须看系统目录里的实际形状", mig)
+	}
+
+	// ④ 类型必须对：route_key 落成 text 的话 []byte 绑定会失败，那正是它要修的病。
+	if !strings.Contains(up, "route_key  jsonb") {
+		t.Errorf("%s 里 route_key 不是 jsonb —— 实测 pgx v5 能把 json.Marshal 的 []byte 直接绑到 jsonb 列，"+
+			"不需要显式 ::jsonb；但落成 text 就绑不上了。", mig)
+	}
+}
+
+func mustReadRepo(t *testing.T, rel string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), rel))
+	if err != nil {
+		t.Fatalf("读 %s 失败: %v —— 该迁移已丢失", rel, err)
+	}
+	return b
 }

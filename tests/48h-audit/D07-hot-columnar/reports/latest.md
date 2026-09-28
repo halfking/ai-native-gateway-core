@@ -1691,3 +1691,89 @@ ERROR: column drift after rewrite: expected 55, got 54 — ROLLBACK
   **不要在生产执行**——那等于把 P1 原样装回去）
 - PREPARE 门两条登记改为「已修复待应用」+ 新增守修复的门
 - 本地开发库**未应用**迁移（保持只读契约）；真库上验完即回滚
+
+## R79 续十七 · 修掉第二个 P1：routeincident 四处缺列（迁移 758）
+
+与续十六同一流程：先核实三方一致 → 真库事务内验修法 → 落自校验迁移 → 门 + 变异。
+
+### 缺陷比先前记的更广：不只 2 列，是 4 列
+
+`diagnostic_runs` 真库 13 列，代码 INSERT 用 12 列，缺的不止 `route_key`：
+
+| 代码里的列 | 真库 |
+|---|---|
+| `route_key` | **不存在** |
+| `parameters` | **不存在** |
+| `result` | **不存在** |
+| （真库另有 4 列代码没用到）| `heartbeat_at` / `trigger_source` / `error` / `summary_json` |
+
+加上 `routing_audit_log` 缺 `reason`（真库 21 列，有 `failure_reason` 但语义不同），
+本轮共 **4 列**。此前只记了 `route_key` 与 `reason` 两处。
+
+三方一致核实：基线 `01-schema.sql` 的 `diagnostic_runs` = 13 列无 `route_key`；
+真库 `pg_attribute` 同样 13 列；迁移链 `grep ADD COLUMN` 只命中**别的表**的列
+（`compression_reason` / `handoff_reason` / `last_trigger_reason` / `reasoning_tokens`），
+**从未给这两张表加过**。
+
+### 可达性（这才是 P1 的依据）
+
+`main.go:3554` `AddOnRequestLogPersisted(incidentObserver.AsHook())` → `Transition`
+→ `writeAudit` → `persistRunInTx`，**每条落库的请求日志都走**。
+加重因素：`MaxRetries: 4` 使重试循环 attempt 0..4 跑满 5 次，而 **42703 是永久性错误**
+（列不会因重试而出现），重试纯属浪费，耗尽后只 `slog.Warn` 不升级。
+
+### 修法：纯加列，代码零改动 —— 这一点是实测出来的
+
+`route_key`/`parameters`/`result` 在 `actions.go:100-104` 是 `map[string]any`，
+代码传 `json.Marshal` 的 `[]byte`。风险点是 pgx v5 默认把 `[]byte` 当 `bytea`，
+而 SQL 里**没有** `::jsonb` 转换，靠 PG 从目标列反推参数类型。
+
+这不能靠推断。用 pgx v5 在 **TEMP TABLE** 上复刻真实 INSERT 形态实测：
+
+```sql
+INSERT INTO probe_diag (id, …, route_key, parameters, …, result, …)
+VALUES ($1,…,$6,$7,…,$10, now(), now())   -- 无 ::jsonb，Go 传 []byte
+→ INSERT 成功，回读 route_key = {"model": "glm-5.3", "credential": "c-1"}
+```
+
+**结论：只加迁移、不改代码。** 全程只用 TEMP TABLE，未触碰任何真库表。
+
+`reason` 用 `character varying(256)`：`MaxReasonLen = 256` 且 `sanitizeReason` 按
+**rune** 截断，而 PostgreSQL 的 `varchar(n)` 同样按**字符**计（UTF-8 下中文不溢出）——
+两边语义一致。顺带避开了 `sanitizeReason` 里 byte 长度判断混用 rune 截断的隐患。
+
+### 真库事务内完整验证（回滚后零持久变更）
+
+```
+迁移后  diagnostic_runs 13 → 16      routing_audit_log 21 → 22
+PREPARE 源码两条 INSERT              均无 ERROR
+ROLLBACK
+独立复核  13 | 21 | route_key 计数 0
+```
+
+> **顺带纠一个我自己记错的数字**：此前多份文档写「真库 routing_audit_log 22 列」，
+> 实测是 **21 列**（22 是加完 `reason` 之后的数）。回滚复核把它暴露出来了，已在
+> 可达性门的登记里更正。这是本会话第 5 次自我纠正（4 次定级 + 1 次数字）。
+
+### 门与变异
+
+`TestData_RouteIncidentFix_MigrationIsShippedAndNotSilentlyDisabled`（与 757 那道同构）
+四类断言：四个目标列都在 / DDL 在顶层且顶层 `ALTER TABLE` ≥2 处 / 后置断言存在**且读
+`information_schema.columns`** / `route_key` 是 `jsonb` 而非 `text`。
+
+变异 4 处，全部指名：
+
+| 变异 | 门的反应 |
+|---|---|
+| 删掉 `result` 列 | 红「缺 diagnostic_runs.result 的 ADD COLUMN —— 该 INSERT 仍会 42703」 |
+| ALTER 包进 DO 块 EXECUTE | 红「DDL 包进了 DO 块的 EXECUTE —— 静默无效…请改回顶层 ALTER」 |
+| `route_key` 落成 `text` | 红「route_key 不是 jsonb —— 实测 pgx 能把 []byte 直接绑到 jsonb 列；落成 text 就绑不上了」 |
+| 删掉后置断言 | 红「缺少后置断言（post-check）」 |
+
+**第四个变异值得单说**：后置断言那一行是
+「后置断言必须**读系统目录**确认列真的加上了，只写 `RAISE NOTICE` 不算自校验」。
+理由直接来自续十六的发现——一个只 `RAISE NOTICE` 的自校验，正是让「静默无效的 DDL」
+畅通无阻的原因。
+
+另：PREPARE 门里 routeincident 的 6 条登记全部改为「已修复待应用」，
+真机应用 758 后它们会变成「未登记的失败」⇒ 门自动转红并提示删登记。

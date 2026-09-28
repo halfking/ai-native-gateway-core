@@ -589,3 +589,30 @@ UNION 两半各一处 `origin_actor` / 顶层 DDL 存在且未被包进 `EXECUTE
 **门自己又踩一次同一个坑**：第一版用 `strings.Contains(up,"EXECUTE $ddl$")`，
 而迁移文件头「踩坑记录」里**提到**该坏写法 ⇒ 误报。改为先剥 SQL 注释再检查。
 （两天内第二次「文本匹配不区分代码与注释」：可达性门拿注释当调用点，这次拿注释当坏写法。）
+
+### R79 续十七 · 修掉第二个 P1：routeincident 四处缺列（迁移 758）
+
+缺的不只先前记的 2 列，是 **4 列**：`diagnostic_runs` 缺 `route_key`/`parameters`/`result`
+（代码 INSERT 用 12 列，真库 13 列；真库另有 `heartbeat_at`/`trigger_source`/`error`/`summary_json`
+代码没用到），`routing_audit_log` 缺 `reason`。三方一致：基线 / 真库 / 迁移链
+（`grep ADD COLUMN` 只命中别的表的 `compression_reason`/`handoff_reason` 等）。
+
+可达性：`main.go:3554` → `Transition` → `writeAudit` → `persistRunInTx`，
+**每条落库请求日志都走**；`MaxRetries: 4` 使 42703 被重试满 5 次，而 42703 是
+**永久性错误**、重试纯属浪费，耗尽只 `slog.Warn`。
+
+**修法是纯加列、代码零改动，这一点靠实测而非推断**：三列是 `map[string]any`，
+代码传 `json.Marshal` 的 `[]byte`，而 SQL 无 `::jsonb`、靠 PG 从目标列反推参数类型。
+用 pgx v5 在 TEMP TABLE 上复刻真实 INSERT 形态实测成功（回读 `{"model":"glm-5.3",…}`）⇒ 不必改代码。
+`reason` 用 `varchar(256)`：代码 `MaxReasonLen=256` 且按 **rune** 截断，
+PG 的 `varchar(n)` 同样按**字符**计，语义一致。
+
+真库事务内验证：13→16 / 21→22，两条 INSERT 的 PREPARE 均无 ERROR，回滚后 13/21。
+**顺带纠一个我自己记错的数字**：此前文档写「routing_audit_log 22 列」，实测 **21 列**
+（22 是加完 reason 之后）。本会话第 5 次自我纠正（4 次定级 + 1 次数字）。
+
+门 `TestData_RouteIncidentFix_MigrationIsShippedAndNotSilentlyDisabled` 四类断言，
+变异 4 处全指名：删列 → 红「仍会 42703」/ 包进 DO 块 → 红「静默无效，请改回顶层」/
+`route_key` 落成 text → 红「[]byte 绑不上了」/ 删后置断言 → 红「缺少 post-check」。
+**第四个断言的依据直接来自续十六**：只 `RAISE NOTICE` 的自校验正是让静默无效 DDL
+畅通无阻的原因，所以要求它**读 `information_schema.columns`**。
