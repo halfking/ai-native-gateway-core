@@ -168,14 +168,25 @@ var knownRetentionDefects = map[string]string{
 		"**修法 = 把 `id IN (SELECT id ...)` 改成 `ctid IN (SELECT ctid ...)` 并去掉 ORDER BY：" +
 		"实测 870.7ms → 7.0ms（124 倍），零迁移、本仓已有两处同形态先例**；随后再提高批量上限",
 
-	// P2：三条索引首列分别是 claim_until(partial)、tenant_id、identity 复合，
-	// 没有一条以 updated_at 开头 ⇒ Seq Scan cost 5,020 / 57MB。
-	// 加剧项：这条 DELETE 没有 LIMIT、没有分批。
-	// 与 armor_judgments 不同：**没有 LIMIT 就没有提前终止可剪枝**，Seq Scan 是真实
-	// 成本（不是估算虚高），但表只 94,657 行，绝对值仍小。
-	"journal_snapshot_receipts": "P2 journal_snapshot_receipts：94,657 行 / 57MB，无 updated_at 首列（Seq Scan cost 5,020），" +
-		"且 DELETE 无 LIMIT 无分批——无 LIMIT 即无剪枝，Seq Scan 是真实成本。" +
-		"修法：补 (updated_at) 索引 + 改成分批",
+	// P3（原 P2，本轮实测后降级）：三条索引首列分别是 claim_until(partial)、
+	// tenant_id、identity 复合，**没有一条以 updated_at 开头**。形态上最可疑的一条
+	// ——它**无 LIMIT 无分批**，看起来正该吃全表 Seq Scan。实测否掉了（92,862 行，
+	// 匹配仅 ~556 行，重复 4 次取中位）：
+	//   现状（无 LIMIT，无索引）        98 ms（中位 94/95/102/127）
+	//   补 (updated_at) 索引           285 ms —— **无收益**
+	//   ctid IN + LIMIT 500             30 ms（3.2×，但绝对值只省 1.6 秒/天）
+	//
+	// **降级理由是绝对成本，不是相对倍数**：tick=1h ⇒ 98ms/小时 ≈ 2.4 秒/天。
+	// 顺带一个单位时间对照：145ms/小时 ≈ 0.040 ms/s，而 armor_judgments 是
+	// 870ms/24h ≈ 0.036 ms/s —— **两者单位时间成本几乎相同**，但本表的绝对值小两个量级。
+	//
+	// **该表没有 id 列也没有主键**（唯一键是 (tenant_id, request_id, snapshot_version)），
+	// 所以 `id IN` 形态对它根本不适用——续十二的 ctid 修法要配合 `updated_at` 一起用。
+	// 写成 id 形态会直接 42703。留此注记是为了防止将来有人「顺手优化」成 id 形态。
+	"journal_snapshot_receipts": "P3 journal_snapshot_receipts（实测降级）：92,862 行，匹配仅 556 行；" +
+		"补 (updated_at) 索引实测无收益（98ms→285ms），ctid+LIMIT 500 为 30ms。" +
+		"**降级理由是绝对成本 2.4 秒/天，不是相对倍数。** 该表无 id 列无主键，id IN 形态不适用" +
+		"（写了会 42703）。形态不理想（无 LIMIT 无分批）只在积压时才是风险",
 
 	// P2：分区表，每个分区 6 条索引，ts 是其中 4 条的第二列
 	// （credential_id/provider_id/raw_model_name/session_id, ts DESC）。
