@@ -441,6 +441,20 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		candidates = append(candidates, c)
 	}
 
+	// 2026-09-29 (stream 上游污染治理): the wrapper-token alias matrix fed
+	// to SQL pulls base-model raw_model_name rows into the wrapper-suffixed
+	// model's response (实测 glm-5.3-flash resolve 返回 canonical_id=2422803
+	// glm-5.3 的凭据 — 两个不同商品). Resolve the input model's OWN canonical_id
+	// via a STRICT matrix (no wrapper strip; see routing_resolve_filter.go)
+	// and drop candidates whose canonical_id disagrees. NULL canonical_id is
+	// kept (legacy bindings not yet linked). Falls through unchanged if the
+	// canonical lookup fails — fail-open, operators still see every candidate.
+	var expectedCid int64
+	if cid, ok := resolveInputCanonicalID(ctx, h.db, model); ok {
+		expectedCid = cid
+		candidates = filterResolveCandidatesByCid(candidates, expectedCid)
+	}
+
 	// 2026-07-24: URSM v2 运行时状态注入。SQL 只查拓扑/配置，运行时字段
 	// (Available / CoolUntil / FailStreak / SR5m / LatP95Ms) 由 URSM v2 store
 	// 持有。如果 h.ursmV2 不可用或 ModeOff / not ready / pipeline error，
@@ -512,8 +526,15 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Query().Get("persist_probe") == "1" {
+		// 2026-09-29 stream 上游污染治理：persist_probe 必须用与上面
+		// candidates 同款的过滤，避免把 foreign canonical 的 planned_candidates
+		// 写入 routing_decision_log_hot（污染"glm-5.3-flash 的探测审计"）。
+		probeExpected := expectedCid // zero = 没查到，按"不写 foreign"语义过滤
 		probes := make([]resolveProbeCandidate, 0, len(candidates))
 		for _, c := range candidates {
+			if probeExpected > 0 && c.CanonicalID != nil && *c.CanonicalID != probeExpected {
+				continue
+			}
 			probes = append(probes, resolveProbeCandidate{
 				ProviderID:   c.ProviderID,
 				CredentialID: c.CredentialID,
