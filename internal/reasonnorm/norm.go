@@ -114,11 +114,35 @@ func EffortToBudget(effort string) (int, bool) {
 
 // ─── clamp effort to model's supported set ───────────────────────────────────
 
+// disableIntentEfforts are client spellings that mean "turn reasoning OFF",
+// not "pick a reasoning tier". They are cross-vendor vocabulary: OpenAI's
+// Responses API, several OpenAI-compatible gateways, and hand-rolled agent
+// harnesses all use `disabled` / `off` to mean the same thing.
+//
+// Before this set existed they fell through to effortIndex's `medium`
+// fallback (index 3) and ClampEffort rounded them to the *nearest supported
+// tier* — which is `medium`, i.e. a mid-strength thinking budget. Asking to
+// disable reasoning silently produced reasoning, and the round-trip through
+// paramguard's report made it look like the value had been "narrowed to the
+// model's capability" (it had) rather than "inverted" (it had). Models that do
+// not offer a true zero tier (e.g. deepseek-v4's {low,high,max}) would then be
+// forced to the *cheapest* available thinking tier — still thinking, but
+// billed as a deliberate choice by the client.
+var disableIntentEfforts = map[string]bool{
+	"disabled": true, "disable": true, "off": true, "false": true,
+	"none": true, "no": true, "0": true,
+}
+
 // ClampEffort maps an effort value to the nearest value supported by the model.
 // If the model supports no effort enum (empty Efforts), it returns "".
 // If effort is already in the supported set, it is returned unchanged.
 // On a tie (equidistant up/down), prefers rounding UP (higher effort) to avoid
 // under-serving the user's intent. This matches LiteLLM behaviour.
+//
+// Disable-intent spellings (see disableIntentEfforts) are handled BEFORE the
+// nearest-tier search: they resolve to the *cheapest* supported tier (or "" if
+// the model has a dedicated off-switch and no zero tier exists), never to a
+// mid or high tier. A zero tier that is itself spelled `none` returns `none`.
 func ClampEffort(effort string, supported []string) string {
 	if len(supported) == 0 {
 		return ""
@@ -127,6 +151,9 @@ func ClampEffort(effort string, supported []string) string {
 		if s == effort {
 			return effort
 		}
+	}
+	if disableIntentEfforts[strings.ToLower(strings.TrimSpace(effort))] {
+		return cheapestEffort(supported)
 	}
 	// Map both sides to a canonical numeric tier so we can find the closest.
 	requested := effortIndex(effort)
@@ -140,6 +167,21 @@ func ClampEffort(effort string, supported []string) string {
 			// Prefer closer; on ties prefer higher effort (round up).
 			best = s
 			bestIdx = idx
+		}
+	}
+	return best
+}
+
+// cheapestEffort returns the supported value with the lowest canonical tier.
+// Used to resolve disable-intent spellings. Ties cannot occur (canonical
+// indices are unique per spelling), but the comparison is strict so a
+// hypothetical duplicate keeps the earlier entry — deterministic either way.
+func cheapestEffort(supported []string) string {
+	best := supported[0]
+	bestIdx := effortIndex(best)
+	for _, s := range supported[1:] {
+		if idx := effortIndex(s); idx < bestIdx {
+			best, bestIdx = s, idx
 		}
 	}
 	return best
