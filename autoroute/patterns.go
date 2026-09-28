@@ -53,6 +53,25 @@ var compiledPatterns []PatternMatch
 // IsPlanningRequest 做"计划后实现"防误判护栏（2026-09-14 复审）。
 var planModeCodingRe = regexp.MustCompile(`(?i)(?:先|请).{0,10}(?:制定|给出|列出).{0,10}(?:计划|方案|步骤).{0,20}(?:再|然后|之后).{0,10}(?:实现|编码|写代码)`)
 
+// codeLangVocabulary is the single language/framework alternation shared by
+// every Chinese coding pattern that has a "language/framework" slot (P1, P2,
+// P3a, P3b).
+//
+// It is a constant rather than four hand-copied lists because those lists had
+// already drifted once: the commit that introduced the P1 language segment
+// claimed "词表与 P2 共用", but P2 later grew a framework family (django,
+// flask, spring, gin, echo, flutter, nextjs, nuxt, tailwind, html, css,
+// powershell) that P1 and P3b never received. Requests of the shape
+// "写一个 <框架> <编程对象>" then matched no pattern at all and fell to chat
+// 0.10 — measured 12 of 14 such prompts, including the zero-space form
+// "写一个Django中间件" (audit item L-4).
+//
+// Order is the P1 order followed by P2's additions; longest-first within the
+// javascript/typescript/c++/golang families so an earlier short alternative
+// cannot shadow a longer name.
+const codeLangVocabulary = `python|java|javascript|typescript|js|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|` +
+	`django|flask|spring|gin|echo|flutter|nextjs|nuxt|tailwind|html|css|powershell|shell|bash`
+
 // looksLikePlanModeCoding reports whether the text is a "make a plan then
 // implement" coding ask, which must stay TaskCode even when a planning
 // verb+target combo also matches.
@@ -179,7 +198,7 @@ func buildDefaultPatterns() []PatternMatch {
 		// 语言段 \s+ 已放宽为 \s*（M-8："写一个Python快速排序"零空格
 		// 变体此前仍漏归 chat）。
 		{
-			expr:   `(?:写|做|实现|实现一个|写一个|写个|做个|编写)(?:一个|个|一段|一个简单的|一个完整)?(?:\s*(?:python|java|javascript|js|typescript|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|shell|bash))?\s*(?:快速排序|冒泡排序|归并排序|拓扑排序|二分查找|红黑树|二叉树|二叉搜索树|b\s*树|b\+|avl|图|哈希表|散列表|链表|栈|队列|堆|trie|布隆过滤器|线程池|连接池|内存池|缓存|lru|限流器|熔断器|负载均衡|中间件|路由|解释器|编译器|虚拟机|区块链|加密|解密|签名|鉴权|认证|授权|登录|注册|表单组件|对话框|编辑器|解析器|序列化|爬虫|脚本|小工具|控件|组件|插件|微服务|网关|代理|函数|类|方法|模块|接口|服务|sql(?:\s*语句)?|正则表达式|yaml|dockerfile|crontab|查询语句)`,
+			expr:   fmt.Sprintf(`(?:写|做|实现|实现一个|写一个|写个|做个|编写)(?:一个|个|一段|一个简单的|一个完整)?(?:\s*(?:%s))?\s*(?:快速排序|冒泡排序|归并排序|拓扑排序|二分查找|红黑树|二叉树|二叉搜索树|b\s*树|b\+|avl|图|哈希表|散列表|链表|栈|队列|堆|trie|布隆过滤器|线程池|连接池|内存池|缓存|lru|限流器|熔断器|负载均衡|中间件|路由|解释器|编译器|虚拟机|区块链|加密|解密|签名|鉴权|认证|授权|登录|注册|表单组件|对话框|编辑器|解析器|序列化|爬虫|脚本|小工具|控件|组件|插件|微服务|网关|代理|函数|类|方法|模块|接口|服务|sql(?:\s*语句)?|正则表达式|yaml|dockerfile|crontab|查询语句)`, codeLangVocabulary),
 			task:   TaskCode,
 			weight: 0.65,
 			reason: "pattern: chinese coding task (verb + programming object)",
@@ -190,7 +209,7 @@ func buildDefaultPatterns() []PatternMatch {
 		// 2026-09-15 二轮补充疑问/处理动词(trap_python_csv_howto:
 		// "用 Python 怎么读取…"落 chat)。
 		{
-			expr:   `用\s*(?:python|java|javascript|js|typescript|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|django|flask|spring|gin|echo|flutter|nextjs|nuxt|tailwind|html|css|shell|bash|powershell)\s*(?:写|做|实现|编写|开发|生成|查询|连接|调用|构建|搭建|写一个|做一个|实现一个|读取|解析|处理|部署|调试|迁移|怎么|如何)`,
+			expr:   fmt.Sprintf(`用\s*(?:%s)\s*(?:写|做|实现|编写|开发|生成|查询|连接|调用|构建|搭建|写一个|做一个|实现一个|读取|解析|处理|部署|调试|迁移|怎么|如何)`, codeLangVocabulary),
 			task:   TaskCode,
 			weight: 0.65,
 			reason: "pattern: chinese coding task (language/framework + action verb)",
@@ -212,13 +231,13 @@ func buildDefaultPatterns() []PatternMatch {
 		// 词汇级歧义，RE2 无负向环视无法在正则层消解，交由上层 LLM 兜底
 		// 分类器（fail-open）纠正。
 		{
-			expr:   `(?:写个|做个|帮我写个|帮我做个|帮我写一个|帮我做(?:一个)?|写一个简单)(?:\s*(?:python|java|javascript|js|typescript|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|shell|bash))?\s*.{0,16}?(?:脚本|工具|函数|程序|demo|prototype)`,
+			expr:   fmt.Sprintf(`(?:写个|做个|帮我写个|帮我做个|帮我写一个|帮我做(?:一个)?|写一个简单)(?:\s*(?:%s))?\s*.{0,16}?(?:脚本|工具|函数|程序|demo|prototype)`, codeLangVocabulary),
 			task:   TaskCode,
 			weight: 0.60,
 			reason: "pattern: chinese coding task (colloquial 'write a script/tool')",
 		},
 		{
-			expr:   `(?:写个|做个|帮我写个|帮我做个|帮我写一个|帮我做(?:一个)?|写一个简单)\s*(?:python|java|javascript|js|typescript|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|shell|bash)\s*.{0,16}?(?:方法|示例|原型)`,
+			expr:   fmt.Sprintf(`(?:写个|做个|帮我写个|帮我做个|帮我写一个|帮我做(?:一个)?|写一个简单)\s*(?:%s)\s*.{0,16}?(?:方法|示例|原型)`, codeLangVocabulary),
 			task:   TaskCode,
 			weight: 0.60,
 			reason: "pattern: chinese coding task (language + generic artifact)",
