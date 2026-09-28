@@ -52,6 +52,28 @@ func TestResponsesUnsupportedError(t *testing.T) {
 			want:   false,
 		},
 		{
+			// 十九轮：not-support 语序的参数拒绝此前漏拦（"not support" 分支
+			// 无参数名词排除），会多打一发 chat 探针并写下误导性能力缺口注记。
+			name:   "compliant param rejection: does-not-support phrasing",
+			status: 400,
+			body:   `{"error":{"message":"The Responses API does not support the 'messages' parameter.","type":"invalid_request_error"}}`,
+			want:   false,
+		},
+		{
+			name:   "compliant param rejection: CJK 不支持该参数",
+			status: 400,
+			body:   `{"error":{"message":"Responses API 不支持该参数，请改用 input"}}`,
+			want:   false,
+		},
+		{
+			// 终判兜底：真裁决即使带 parameter 字样，只要带 chat/completions
+			// 重定向仍按能力缺口处理（真实中转裁决几乎都带重定向）。
+			name:   "genuine verdict wins via redirect despite param word",
+			status: 502,
+			body:   `{"error":{"message":"QWEN provider does not support the Responses API. Parameter passthrough differs; please use /v1/chat/completions instead."}}`,
+			want:   true,
+		},
+		{
 			name:   "compliant param rejection: max_output_tokens floor",
 			status: 400,
 			body:   `{"error":{"message":"Invalid 'max_output_tokens': integer below minimum value. Expected >= 16.","type":"invalid_request_error"}}`,
