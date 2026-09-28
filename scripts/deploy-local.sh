@@ -1113,6 +1113,11 @@ deploy() {
   # 而密码为空 = 冒烟必败形态，同 SECRET_KEY 一样 build 前快速失败（详见
   # deploy-local-lib.sh dl_admin_password_preflight 注释）。
   dl_admin_password_preflight
+  # 2026-09-29 R79 follow-up (audit 2026-09-28 §7.1): .env.local SK/CEK 同值
+  # 漂移曾在 2300 部署复烧 80 分钟全站 503——文件被 .gitignore 忽略，仓库
+  # 零留痕；dl_key_drift_preflight 在 bump_local_version 之前把"两键同值 /
+  # 任一过短"做成 fatal（详见 deploy-local-lib.sh dl_key_drift_preflight 注释）。
+  dl_key_drift_preflight
   bump_local_version
   ensure_release_available
   ensure_resources
