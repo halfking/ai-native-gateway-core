@@ -320,6 +320,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 幂等（OR REPLACE）。R72 审计轮补五点同步（子任务只登记了
 			// sequence 通道，canonical 登记守卫对本号必红）。
 			"754_archive_request_logs_default.sql",
+			// 756 (2026-09-29, D07 S-01 真库 EXPLAIN): request_logs(id) 索引。
+			// 754 的批游标 `WHERE id > :last ORDER BY id LIMIT 1000` 在该表上
+			// 没有任何可用索引（无主键，唯一索引仅 (request_id, ts)），每批次
+			// 退化为全分区并行顺序扫描 —— 实测 2.1M 行月分区 >24min 未跑完。
+			"756_request_logs_id_index.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，

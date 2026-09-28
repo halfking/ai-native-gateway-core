@@ -559,6 +559,9 @@ var sessionTurnLogsTTLMigration753 []byte
 //go:embed embeddata/startup/754_archive_request_logs_default.sql
 var archiveRequestLogsDefaultMigration754 []byte
 
+//go:embed embeddata/startup/756_request_logs_id_index.sql
+var requestLogsIDIndexMigration756 []byte
+
 //go:embed embeddata/startup/800_provider_endpoint_protocols.sql
 var providerEndpointProtocolsMigration800 []byte
 
@@ -729,6 +732,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/752_mock_probe_history.sql":                                             mockProbeHistoryMigration752,
 	"startup/753_session_turn_logs_ttl.sql":                                          sessionTurnLogsTTLMigration753,
 	"startup/754_archive_request_logs_default.sql":                                   archiveRequestLogsDefaultMigration754,
+	"startup/756_request_logs_id_index.sql":                                          requestLogsIDIndexMigration756,
 	"startup/800_provider_endpoint_protocols.sql":                                    providerEndpointProtocolsMigration800,
 }
 
