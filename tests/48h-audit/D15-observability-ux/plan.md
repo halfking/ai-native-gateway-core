@@ -31,7 +31,11 @@
 ```bash
 go build ./...
 go vet ./...
-go test -race -timeout 60s ./tests/48h-audit/D15-observability-ux/...
+# R78：原门 `./tests/48h-audit/D15-observability-ux/...` 匹配 0 个 Go 包——空包模式只打印
+# `matched no packages` 警告并退出 0，门在结构上不可能失败。本域的证据本
+# 来就在下面的包里（旧门只是没接到它），故门改指真实证据所在包。
+观测与 UX 的服务端侧：证据在 ./telemetry 与 ./metrics 的遥测回归（UI 侧仍需 D-01/S-01 真环境，本门不覆盖）。
+go test -race -timeout 120s ./telemetry/... ./metrics/... -count=1
 ```
 
 ## 7. 与方案文档的对齐

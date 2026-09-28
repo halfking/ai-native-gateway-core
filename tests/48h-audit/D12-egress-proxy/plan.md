@@ -31,7 +31,11 @@
 ```bash
 go build ./...
 go vet ./...
-go test -race -timeout 60s ./tests/48h-audit/D12-egress-proxy/...
+# R78：原门 `./tests/48h-audit/D12-egress-proxy/...` 匹配 0 个 Go 包——空包模式只打印
+# `matched no packages` 警告并退出 0，门在结构上不可能失败。本域的证据本
+# 来就在下面的包里（旧门只是没接到它），故门改指真实证据所在包。
+出口代理：证据在 ./proxy 的健康探测与负载均衡回归（域知识 §2 代码入口 proxy/）。
+go test -race -timeout 120s ./proxy/... -count=1
 ```
 
 ## 7. 与方案文档的对齐
