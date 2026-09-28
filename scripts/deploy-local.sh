@@ -846,7 +846,19 @@ start_instance() {
   dl_wait_pg_isready || true
   if (( DL_DOCKER )); then
     local image="${LLM_GATEWAY_RUNTIME_IMAGE:-alpine:3.22}" image_file="$RUN_DIR/runtime.Dockerfile"
-    docker image inspect "$image" >/dev/null 2>&1 || die "Docker runtime image $image is not available (set LLM_GATEWAY_RUNTIME_IMAGE)"
+    # 2026-09-28：首次部署 / docker image prune 后本地无 alpine:3.22 时
+    # 单纯 inspect 失败 → die 会让操作员误以为环境被破坏。补一层
+    # docker pull 自动修复：仅当 inspect 失败且 pull 成功才继续；
+    # pull 失败仍保留原始 die（明确告诉操作员网络/DNS/镜像不可达）。
+    # 已镜像同步过的机器仍走 inspect fast-path（pull 只在缺镜像时触发）。
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+      printf '[deploy-local] runtime image %s not cached locally; attempting docker pull...\n' "$image" >&2
+      if docker pull "$image" >/dev/null 2>&1; then
+        printf '[deploy-local] runtime image %s pulled successfully.\n' "$image" >&2
+      else
+        die "Docker runtime image $image is not available (set LLM_GATEWAY_RUNTIME_IMAGE or check network/registry access)"
+      fi
+    fi
     cat > "$image_file" <<'EOF'
 ARG BASE_IMAGE=alpine:3.22
 FROM ${BASE_IMAGE}
