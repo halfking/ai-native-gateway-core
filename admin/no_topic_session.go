@@ -263,7 +263,10 @@ func (h *Handler) handleNoTopicSessionSummarizeTitle(w http.ResponseWriter, r *h
 
 	llmRes, err := h.callAdminLLMChat(ctx, r, apiKey, adminLLMTaskSessionTitle, virtualTaskID, userContent)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "标题生成失败: "+err.Error())
+		// 十七轮审计：502 回显上游 LLM 错误串（可能含端点细节），与 500
+		// 收口政策对齐——真实错误进 slog，客户端给固定文案。
+		slog.Error("no_topic session: title generation failed", "virtual_task_id", virtualTaskID, "err", err)
+		writeError(w, http.StatusBadGateway, "标题生成失败，请稍后重试")
 		return
 	}
 	title := normalizeSessionTitle(llmRes.Content)

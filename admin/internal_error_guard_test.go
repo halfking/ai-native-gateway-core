@@ -35,17 +35,20 @@ import (
 // legitimateExceptions maps file names (no path) to a reason. Entries here
 // are reviewed debt, not license: each needs a concrete justification for
 // shipping error text on a 500.
+// key 必须是相对 admin/ 的斜杠路径（WalkDir 的 path 形态），不能是裸文件名：
+// 十七轮审计发现 basename 匹配会让 admin 顶层的同名文件（如既存的
+// admin/session_health.go）被 dashboardapi 条目连带豁免，静默制造扫描盲区。
 var legitimateExceptions = map[string]string{
 	// dashboardapi 的 writeErrorJSON（types.go）对 status>=500 一律剥离
 	// details、真实错误落服务端 slog——调用点传 err.Error() 是给服务端
 	// 日志用的，wire 上已被 writer 兜底。这是既定架构而非漏网。
-	"session_overview.go": "dashboardapi writeErrorJSON strips details on 5xx (types.go backstop)",
-	"session_health.go":   "dashboardapi writeErrorJSON strips details on 5xx (types.go backstop)",
-	"session_trend.go":    "dashboardapi writeErrorJSON strips details on 5xx (types.go backstop)",
-	"module_stats.go":     "dashboardapi writeErrorJSON strips details on 5xx (types.go backstop)",
-	"session_active.go":   "dashboardapi writeErrorJSON strips details on 5xx (types.go backstop)",
-	"performance.go":      "dashboardapi writeErrorJSON strips details on 5xx (types.go backstop)",
-	"errors.go":           "dashboardapi writeErrorJSON strips details on 5xx (types.go backstop)",
+	"dashboardapi/session_overview.go": "dashboardapi writeErrorJSON strips details on 5xx (types.go backstop)",
+	"dashboardapi/session_health.go":   "dashboardapi writeErrorJSON strips details on 5xx (types.go backstop)",
+	"dashboardapi/session_trend.go":    "dashboardapi writeErrorJSON strips details on 5xx (types.go backstop)",
+	"dashboardapi/module_stats.go":     "dashboardapi writeErrorJSON strips details on 5xx (types.go backstop)",
+	"dashboardapi/session_active.go":   "dashboardapi writeErrorJSON strips details on 5xx (types.go backstop)",
+	"dashboardapi/performance.go":      "dashboardapi writeErrorJSON strips details on 5xx (types.go backstop)",
+	"dashboardapi/errors.go":           "dashboardapi writeErrorJSON strips details on 5xx (types.go backstop)",
 }
 
 func TestNoInternalErrorEchoIn500Responses(t *testing.T) {
@@ -64,6 +67,11 @@ func TestNoInternalErrorEchoIn500Responses(t *testing.T) {
 	// 十六轮审计 E5：R72 守卫只匹配 StatusInternalServerError，literal
 	// `500` 全部漏网。状态位识别同时覆盖两种写法。
 	statusRe := regexp.MustCompile(`StatusInternalServerError|\b500\b`)
+	// 十七轮审计：`\b500\b` 会把 `500*time.Millisecond` 这类时长字面量
+	// 当成状态行锚点（live_stream_sse.go 实锤——200 诊断载荷被迫脱敏）。
+	// 锚点行命中 duration 形态（`500 * time.X` / `time.X * 500`）时整行
+	// 不作为状态行参与窗口扫描。
+	durationAnchorRe := regexp.MustCompile(`\b500\s*\*\s*time\.|time\.\w+\s*\*\s*500\b`)
 
 	var leaks []string
 	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, walkErr error) error {
@@ -80,7 +88,7 @@ func TestNoInternalErrorEchoIn500Responses(t *testing.T) {
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			return nil
 		}
-		if _, ok := legitimateExceptions[name]; ok {
+		if _, ok := legitimateExceptions[path]; ok {
 			return nil
 		}
 		raw, err := os.ReadFile(path)
@@ -90,7 +98,7 @@ func TestNoInternalErrorEchoIn500Responses(t *testing.T) {
 		lines := strings.Split(string(raw), "\n")
 		isComment := func(s string) bool { return strings.HasPrefix(strings.TrimSpace(s), "//") }
 		for i, line := range lines {
-			if !statusRe.MatchString(line) {
+			if !statusRe.MatchString(line) || durationAnchorRe.MatchString(line) {
 				continue
 			}
 			lo, hi := max(0, i-3), min(len(lines)-1, i+3)

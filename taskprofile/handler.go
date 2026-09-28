@@ -148,7 +148,7 @@ func (h *Handlers) handleProfile(w http.ResponseWriter, r *http.Request) {
 	stats, err := h.store.Stats(ctx, time.Now().Add(-30*24*time.Hour))
 	if err != nil {
 		slog.Error("taskprofile: query correction stats failed", "err", err)
-	http.Error(w, "query correction stats failed", http.StatusInternalServerError)
+		http.Error(w, "query correction stats failed", http.StatusInternalServerError)
 		return
 	}
 

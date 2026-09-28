@@ -114,7 +114,6 @@ func stripLineComments(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-
 // TestArchiveOldRequestLogs_CalledFromHourlyCleanupLoop pins the *wiring* half
 // of the E1a fix. The test above only sees the gate inside the sweep function;
 // moving the call back to the 24h phased run() loop would still leave both

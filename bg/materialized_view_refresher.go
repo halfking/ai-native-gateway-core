@@ -265,9 +265,18 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 		defer handle.Release(context.WithoutCancel(ctx))
 		if !handle.IsLeader() {
 			slog.Info("materialized view refresh skipped, redis token held by another instance")
+			// 十七轮审计接线：coordination 指标族此前是零调用死代码，
+			// R12-F1（墙钟对齐）的"每窗口收敛单刷新"回验只能靠 slog 肉眼
+			// 对账。follower 跳过时两视图各记一次 skipped_follower。
+			recordMVCoordination("redis_follower")
+			recordMVRefreshSkipped("routing_analytics_7d", "skipped_follower")
+			recordMVRefreshSkipped("routing_audit_summary_7d", "skipped_follower")
 			return
 		}
 		slog.Info("materialized view refresh: redis leader token acquired")
+		recordMVCoordination("redis_leader")
+	} else {
+		recordMVCoordination("advisory_only")
 	}
 
 	var hasError bool
@@ -275,28 +284,32 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	var failedView string
 
 	start := time.Now()
-	if err := r.refreshView(ctx, "routing_analytics_7d", useAdvisoryLock); err != nil {
+	if skipped, err := r.refreshView(ctx, "routing_analytics_7d", useAdvisoryLock); err != nil {
 		hasError = true
 		lastErr = err
 		failedView = "routing_analytics_7d"
+		recordMVRefreshFailure("routing_analytics_7d")
 		slog.Error("failed to refresh routing_analytics_7d",
 			"error", err,
 			"elapsed", time.Since(start))
-	} else {
+	} else if !skipped {
+		recordMVRefreshSuccess("routing_analytics_7d", time.Since(start).Seconds())
 		slog.Info("refreshed routing_analytics_7d",
 			"elapsed", time.Since(start))
 		r.checkConsistency(ctx, MVDriftViewRoutingAnalytics7d)
 	}
 
 	auditStart := time.Now()
-	if err := r.refreshView(ctx, "routing_audit_summary_7d", useAdvisoryLock); err != nil {
+	if skipped, err := r.refreshView(ctx, "routing_audit_summary_7d", useAdvisoryLock); err != nil {
 		hasError = true
 		lastErr = err
 		failedView = "routing_audit_summary_7d"
+		recordMVRefreshFailure("routing_audit_summary_7d")
 		slog.Error("failed to refresh routing_audit_summary_7d",
 			"error", err,
 			"elapsed", time.Since(auditStart))
-	} else {
+	} else if !skipped {
+		recordMVRefreshSuccess("routing_audit_summary_7d", time.Since(auditStart).Seconds())
 		slog.Info("refreshed routing_audit_summary_7d",
 			"elapsed", time.Since(auditStart))
 		r.checkConsistency(ctx, MVDriftViewRoutingAuditSummary7d)
@@ -411,12 +424,16 @@ func (r *MaterializedViewRefresher) checkConsistency(ctx context.Context, viewNa
 // A missing view (e.g. migration 632 not applied on this database) is a
 // skip, not an error — callers fall back to base-view queries anyway.
 //
+// The boolean return reports "skipped" (missing view / lock held by
+// another instance) so the caller can distinguish it from success in
+// metrics — 十七轮审计接线，skip 语义此前与 success 在观测上不可分。
+//
 // useAdvisoryLock controls the Postgres pg_try_advisory_lock guard
 // (2026-09-01): the caller sets it to false when refreshAll already holds
 // the Redis leader token for this cycle, since a second lock layer would
 // only add latency. It stays true whenever Redis coordination is
 // unavailable, preserving the original single-database dedup behaviour.
-func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName string, useAdvisoryLock bool) error {
+func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName string, useAdvisoryLock bool) (bool, error) {
 	var exists bool
 	err := r.db.QueryRow(ctx, `
 		SELECT EXISTS (
@@ -426,12 +443,13 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 		)
 	`, viewName).Scan(&exists)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !exists {
+		recordMVRefreshSkipped(viewName, "skipped_missing_view")
 		slog.Warn("materialized view does not exist, skipping refresh",
 			"view", viewName)
-		return nil
+		return true, nil
 	}
 
 	// Pin one connection for the whole timeout/refresh(/lock/unlock) sequence:
@@ -439,7 +457,7 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 	// session-scoped, and pool.Exec may hop connections.
 	conn, err := r.db.Acquire(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer conn.Release()
 
@@ -449,7 +467,7 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 	// connection to the pool.
 	if _, err := conn.Exec(ctx,
 		"SET statement_timeout = '"+mvRefreshStatementTimeout+"'"); err != nil {
-		return err
+		return false, err
 	}
 	defer func() {
 		_, _ = conn.Exec(context.WithoutCancel(ctx), "RESET statement_timeout")
@@ -457,18 +475,19 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 
 	if !useAdvisoryLock {
 		_, err = conn.Exec(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+viewName)
-		return err
+		return false, err
 	}
 
 	var locked bool
 	if err := conn.QueryRow(ctx,
 		`SELECT pg_try_advisory_lock($1)`, mvRefreshLockKey).Scan(&locked); err != nil {
-		return err
+		return false, err
 	}
 	if !locked {
+		recordMVRefreshSkipped(viewName, "skipped_no_lock")
 		slog.Info("materialized view refresh skipped, another instance holds the lock",
 			"view", viewName)
-		return nil
+		return true, nil
 	}
 	defer func() {
 		// Unlock even when ctx is done, or the lock sticks to the pooled
@@ -478,7 +497,7 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 	}()
 
 	_, err = conn.Exec(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+viewName)
-	return err
+	return false, err
 }
 
 // TriggerRefresh manually triggers an immediate refresh cycle (admin tools,
