@@ -616,3 +616,22 @@ PG 的 `varchar(n)` 同样按**字符**计，语义一致。
 `route_key` 落成 text → 红「[]byte 绑不上了」/ 删后置断言 → 红「缺少 post-check」。
 **第四个断言的依据直接来自续十六**：只 `RAISE NOTICE` 的自校验正是让静默无效 DDL
 畅通无阻的原因，所以要求它**读 `information_schema.columns`**。
+
+### R79 续十八 · 收口：757 未破坏 113/115 列冻结契约
+
+续十六改的是 `session_turns_with_current_month`（54→55），冻结契约管的是
+`request_logs_with_current_month`（**同名相近，容易误当成同一件事**），故实跑验证。
+
+**① 自愈链会不会撤销加列**：`db/request_logs_view_schema.go` 的自愈重建链目标是
+`request_logs_with_current_month` 及其两个包装视图，**不含 turns 视图**；全仓 Go 侧
+`CREATE … VIEW … session_turns` **零命中**。⇒ 757 只由迁移链决定，不被应用侧回滚。
+
+**② 列序列数没被动**：真库事务内迁移前后各取一次 115 列视图完整清单，
+**两次逐字节完全相同**；同时 turns 视图 54→55；ROLLBACK 后复原。
+
+**③ 意外旁证**：115 列视图**自己就有 `origin_actor`**（`is_final_success` 之后）。
+`db/db.go:2990`「只保证 request_logs 有该列」属实，**turns 视图是唯一漏的那个**
+⇒ 修复不是「引入新列」而是「补上同族视图早已有的投影」，与既有契约同形。
+
+顺带：冻结契约在 `request_logs_view_schema.go:174-179` 有**运行时守卫**
+（列数不在 {113,115} 就 keeping v1 body），不只活在测试里。
