@@ -422,6 +422,43 @@ R66 把「auto TierSelector 接线启动评估」列为优先入口。本节是�
 不是代码能替 owner 定的）。owner 需要的决策已从「要不要接线」变成
 「V3 分类器什么时候进生产」。
 
+### 6.5 D11-#8 候选池「多样性」指标数错了对象（R77）
+
+L-5 之后「单候选池 0/240」读起来像选型层已经健康。**它数的是候选条目数，而
+`candidates_top3` 的三个条目是三个凭据，不是三个模型。** 同一个盲点在指标语义上复发
+（D11-#7 是出口盲点，这次是口径盲点）。
+
+**实测（L-5 修复后 240 例归档，`-r77-l5fixed.jsonl`）**：
+
+| 指标 | 值 | 它实际数的是什么 |
+|---|---|---|
+| `single_candidate_pools` | 0/240 | 候选**条目**数（= 凭据数） |
+| `model_monotone_pools`（新增） | **217/240 = 90.4%** | 候选池里的**不同模型**数 |
+| 候选池内不同模型数 | 1 模型 217 例 / 2 模型 23 例 | — |
+
+即：**90.4% 的请求，候选池只有 1 个不同模型**，可退的只是同一模型的不同凭据。
+
+**凭据级多样性也不等于上游多样性**（两条独立取证）：
+
+- 观测到的 failover 链 `request 63b1ecc1` 是 `cred 21 → cred 42`，两条凭据同属
+  provider 14 MiniMax、同一 `api.minimaxi.com`——换了 key，没换上游。
+- 429 侧命中的 `cred 3 / 4 / 25 / 49` 全部指向 `token.sensenova.cn`：其中 3、4、25 属
+  provider 24（商汤），49 属 provider 33089（sensenova-jack），**三条不同 provider 记录
+  却是同一个 host**。
+
+**而数据侧本来够分散**：`credential_model_index` 里 `deepseek-v4-flash` 有 12 个 provider /
+**10 个不同上游** / 17 个凭据，`glm-5.2` 是 11 / 9 / 14。即 429 打到 96/126 次上游尝试的
+现象，与「可用上游只有 1 个」无关——是选型把同一模型的多个凭据排在了前面。
+
+**本轮只补可观测性，不改路由决策**：`e2eSummary` 增 `ModelMonotone` + `DistinctModelRate()`，
+三出口（console / JSON / md）同步带出，md 里明确标注「单候选池按条目数、条目=凭据」。
+3 条新回归 `cmd/auto-testbench/model_diversity_test.go`；变异检验摘掉
+`distinctCandidateModels` 计数 → 2 条红，恢复后全绿。
+
+**留给 owner 的裁决**：候选池**是否应当强制模型级或上游级多样性**（例如 top3 至少跨 2 个
+上游、或对同一 upstream 的凭据数设上限）。这是**路由策略**决定，会改变真实流量分配与
+成本，不在审计轮里替 owner 定。当前基线：90.4% model-monotone，观测到的 failover 未跨上游。
+
 **§6.2 第 1 条的订正**：能力词表补齐（`cap:code` / `cap:creative` 等）**仍然是**让 code /
 code_audit / creative 真正按能力选型的唯一解法——L-5 只保证「没有能力词表时别假装有」，
 不会凭空造出选型能力。但它的紧迫性已从「数据活挡着路由」降为「选型质量提升」：修复后
