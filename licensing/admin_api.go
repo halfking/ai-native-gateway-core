@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -102,7 +103,7 @@ func (h *AdminHandler) CreateLicense(c echo.Context) error {
 			continue
 		}
 		// 其他错误或重试耗尽
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "create license failed", err)
 	}
 
 	return c.JSON(http.StatusCreated, lic)
@@ -119,7 +120,7 @@ func (h *AdminHandler) ListLicenses(c echo.Context) error {
 
 	licenses, total, err := h.store.ListAllLicenses(c.Request().Context(), offset, limit, query, statusFilter)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "list licenses failed", err)
 	}
 
 	if licenses == nil {
@@ -142,7 +143,10 @@ func (h *AdminHandler) GetLicense(c echo.Context) error {
 
 	lic, err := h.store.GetLicenseByID(c.Request().Context(), id)
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+		// R74：与 Revoke/Update 臂的固定文案对齐；DB 故障不把 err.Error()
+		// 拼进 404 响应，仅留服务端 Warn 锚点。
+		slog.Warn("licensing: license lookup failed", "id", id, "err", err)
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "license not found"})
 	}
 
 	return c.JSON(http.StatusOK, lic)
@@ -160,7 +164,7 @@ func (h *AdminHandler) RevokeLicense(c echo.Context) error {
 	}
 
 	if err := h.store.RevokeLicense(c.Request().Context(), lic.LicenseKey); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "revoke license failed", err)
 	}
 
 	h.validator.InvalidateCache(lic.LicenseKey)
@@ -215,7 +219,7 @@ func (h *AdminHandler) UpdateLicense(c echo.Context) error {
 	}
 
 	if err := h.store.UpdateLicense(c.Request().Context(), existing); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "update license failed", err)
 	}
 
 	h.validator.InvalidateCache(existing.LicenseKey)
@@ -235,7 +239,7 @@ func (h *AdminHandler) ListDevices(c echo.Context) error {
 
 	devices, err := h.store.ListAllDevices(c.Request().Context(), lic.LicenseKey)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "list devices failed", err)
 	}
 
 	if devices == nil {
@@ -271,7 +275,7 @@ func (h *AdminHandler) DeactivateDevice(c echo.Context) error {
 	}
 
 	if err := h.activator.Deactivate(c.Request().Context(), deactivateReq); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "deactivate device failed", err)
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"message": "device deactivated"})
@@ -280,7 +284,7 @@ func (h *AdminHandler) DeactivateDevice(c echo.Context) error {
 func (h *AdminHandler) ListOfflineRequests(c echo.Context) error {
 	requests, err := h.store.ListOfflineRequests(c.Request().Context())
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "list offline requests failed", err)
 	}
 	if requests == nil {
 		requests = []OfflineRequest{}
@@ -293,7 +297,7 @@ func (h *AdminHandler) ApproveOfflineRequest(c echo.Context) error {
 
 	result, err := h.offlineManager.ApproveOfflineRequest(c.Request().Context(), requestID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "approve offline request failed", err)
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -313,7 +317,7 @@ func (h *AdminHandler) RejectOfflineRequest(c echo.Context) error {
 	}
 
 	if err := h.store.RejectOfflineRequest(c.Request().Context(), requestID, req.Reason); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "reject offline request failed", err)
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{
