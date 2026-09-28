@@ -458,3 +458,29 @@ R79 在存储函数侧抓到「批游标列无索引 → O(rows²)」。本轮�
 **提高批量上限**（`bg/audit_trimmer.go` 常量），不是加迁移。
 `journal_snapshot_receipts` 的修法不受影响——它那条 DELETE **无 LIMIT**，
 没有提前终止可剪枝，补索引 + 分批仍成立。
+
+### R79 续十二 · DELETE 形态才是瓶颈（零迁移，124 倍）
+
+续十一否掉「补索引」之后，真正瓶颈浮出水面——**在 DELETE 形态上**。生产规模
+（804,253 行）TEMP TABLE 对照：
+
+| 方案 | 实测 |
+|---|---|
+| A 现状 `id IN (SELECT id … ORDER BY … LIMIT 5000)` | **870.7ms** |
+| B `id IN` 去掉 `ORDER BY` | 695.6ms |
+| C **`ctid IN (SELECT ctid … LIMIT 5000)`** | **7.0ms**（124 倍） |
+| D C + 补 `(created_at)` 索引 | 6.8ms（无用） |
+
+`id IN` 让 DELETE 主体**全表扫**做 Hash Join（`Seq Scan actual rows=804306`）；
+`ctid IN` 用 **Tid Scan** 按物理地址定位，外层不扫。**本仓已有两处同形态先例**
+（`bg/session_summaries_trimmer.go:122`、`domains/attachments/repository.go:294），
+改法不需要任何迁移。`candidate_failure_logs` 同型：411ms → 19.5ms（22 倍），
+瓶颈是 `ORDER BY` 逼出的 top-N heapsort 全量 Sort，不是索引。
+
+**一条反例（不能整类推广）**：`session_aggregate_outbox`（1,157,822 行）
+改形态**无差别**（6,216ms → 6,278ms）——它的 `completed_at` 本来就是索引首列，
+内层已走索引，6.2 秒是 5,000 次随机回表到 1.5GB 宽表的 I/O。
+**ctid 形态的收益只来自消除外层全表 Hash Join；外层本来就不贵的表改了等于没改。**
+
+**测量纪律**：中途出现过「大表比小表快 7 倍」的自相矛盾结果——因为前一个表已被前几轮
+实验扫描、全在 shared_buffers 里。**单看耗时不可靠，扫描行数（`actual rows`）才可靠**。

@@ -1277,3 +1277,110 @@ cost 假设 Seq Scan 扫完**全部匹配行**；实测里 `LIMIT` 会让扫描*
 - 续十给 `armor_judgments` 的修法「补 `(created_at)` 索引」已作废。
 - `journal_snapshot_receipts` 的修法**不受影响**：它那条 DELETE **没有 LIMIT**，
   没有提前终止可剪枝，Seq Scan 是真实成本。补索引 + 改分批仍然成立。
+
+## R79 续十二 · DELETE 形态才是瓶颈：ctid 形态 124 倍，且零迁移
+
+续十一证明了「补索引」这条修法在 `armor_judgments` 上收益 ≈ 0。既然索引不是瓶颈，
+那瓶颈是什么？这一节把它找出来。
+
+### 实测：改 DELETE 形态，870.7ms → 7.0ms
+
+生产规模（804,253 行）TEMP TABLE 对照，同一批数据：
+
+| 方案 | 实测 |
+|---|---|
+| A **现状** `id IN (SELECT id … ORDER BY created_at LIMIT 5000)` | **870.7ms** |
+| B `id IN`，去掉 `ORDER BY` | 695.6ms |
+| C **`ctid IN (SELECT ctid … LIMIT 5000)`** | **7.0ms** ← **124 倍** |
+| D C + 补 `(created_at)` 索引 | 6.8ms（与 C 无差别，索引仍然无用） |
+
+机制在 EXPLAIN 里看得一清二楚：
+
+```
+A/C 对照 —— Delete on armor_judgments
+  ->  Hash Join  (actual rows=5000)          ← A：外层被拖进全表扫
+       ->  Seq Scan on e3 (actual rows=804306)   ← 804,306 行全表扫
+  ->  Nested Loop
+       ->  Tid Scan on armor_judgments        ← C：直接按物理地址定位
+          TID Cond: ("ANY_subquery".ctid = ctid)
+```
+
+`DELETE … WHERE id IN (SELECT id FROM t WHERE …)` 会让 DELETE 主体去**全表扫 t**
+做 Hash Join；而 `ctid IN (…)` 让规划器用 **Tid Scan** 按子查询输出的物理地址直接定位行，
+外层根本不用扫。
+
+**这不需要任何迁移**——本仓已有两个生产用例就是这个写法：
+`bg/session_summaries_trimmer.go:122`、`domains/attachments/repository.go:294`。
+
+### candidate_failure_logs：瓶颈是 ORDER BY 逼出的全量 Sort
+
+同一轮把 P2 那张也测了（83,289 行，81% 过期）：
+
+| 方案 | 实测 |
+|---|---|
+| 补 `(ts)` 索引 + **保留** `ORDER BY ts` | 411.1ms |
+| 补 `(ts)` 索引 + **去掉** `ORDER BY` | 19.5ms（22×） |
+| **无索引** + **去掉** `ORDER BY` | **14.6ms**（25×，比补索引还快） |
+
+```
+Sort Method: top-N heapsort  Memory: 581kB
+  ->  Seq Scan (actual rows=67608)     ← Sort 吃掉了全部 67,608 个过期行
+```
+
+`ORDER BY ts` + `LIMIT` 会强制**全量 Sort**（top-N heapsort），Limit 的提前终止
+被 Sort 吃掉。去掉 `ORDER BY` 后 Limit 直接压在 Seq Scan 上，扫 5,000 行就停。
+**补索引在两种形态下都没用**——瓶颈是 Sort，不是 Scan。
+
+### 一条反例：ctid 形态不能整类推广
+
+同一轮测了第三张表 `session_aggregate_outbox`（1,157,822 行 / 1.5GB）：
+
+| 方案 | 实测 |
+|---|---|
+| `id IN` + `ORDER BY` | 6,216ms |
+| **`ctid IN` + 去掉 `ORDER BY`** | **6,278ms** ← **无差别** |
+| `ctid IN` + 补索引 | 5,935ms |
+
+计划形状解释了为什么这张表改形态没用：
+
+```
+->  Index Scan using idx_session_aggregate_outbox_done_completed_at
+      Index Cond: (completed_at < (now() - '7 days'::interval))
+->  Tid Scan on session_aggregate_outbox
+```
+
+它的 `completed_at` **本来就是索引首列**（所以续十的门判它绿），内层已经在走索引；
+6.2 秒的成本是 **5,000 次随机回表**到 1.5GB 宽表的 I/O，与 DELETE 形态无关。
+`armor_judgments` 赢在它内层本来是 Seq Scan，改形态一次消掉了外层全表扫。
+
+> **判据**：ctid 形态的收益来自**消除外层全表 Hash Join**。外层本来就不贵
+> （内层已走索引）的表，改形态等于没改。**逐表实测，不能整类推广。**
+> 顺带确认：`session_aggregate_outbox` 无缺陷，它在续十里判绿是对的。
+
+### 缓存污染过一次测量，记下来
+
+中途出现过一次自相矛盾的结果：804,306 行的 `armor_judgments` 纯 SELECT 只要 4.4ms，
+而 83,289 行的 `candidate_failure_logs` 要 30.3ms——**大表比小表快 7 倍**。
+原因是前一个表的数据已被前几轮实验反复扫描、全在 shared_buffers 里。
+
+**因此单看耗时不可靠，扫描行数（`actual rows`）才可靠**：
+有无 `ORDER BY` 的差别在扫描行数上是 67,608 vs 5,000（13.5 倍），
+在冷热缓存不同的两次测量里则可能完全看不出来。
+
+### 门与登记的连带更新
+
+`TestData_RetentionTrim_PredicateColumnHasLeadingIndex` 的文件头新增一节
+**「这道门不覆盖的东西：DELETE 形态」**，写明 sao 这个反例，并明确：
+**本门判绿 ≠ 这条 DELETE 写得对**——形态与吞吐属于 worker 侧改造，
+两者不可互相替代。登记里 armor 与 candidate_failure_logs 的修法字段
+也已从「补索引」改写为实测结论。
+
+### 修法方案（现在每一条都有实测背书）
+
+| 表 | 定级 | 修法 | 实测收益 | 迁移 |
+|---|---|---|---|---|
+| `armor_judgments` | P1 | 改 `ctid` 形态 + 去 `ORDER BY`，再提高批量 | **124 倍**（870.7→7.0ms） | **不需要** |
+| `candidate_failure_logs` | P2 | 同上 | **22 倍**（411→19.5ms） | **不需要** |
+| `journal_snapshot_receipts` | P2 | 补 `(updated_at)` + 改分批 | 未实测（无 LIMIT ⇒ 无剪枝，Seq Scan 是真实成本） | 需要 |
+| `session_aggregate_outbox` | 无缺陷 | — | 形态改动实测无收益 | — |
+| `model_iq_runs` | P3 | 待触发后处理 | 0 行 | 需要 |
