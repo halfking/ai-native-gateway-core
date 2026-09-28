@@ -378,6 +378,25 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 		res.ErrCode = http.StatusText(resp.StatusCode)
 	}
 	res.ErrMsg = truncatePreview(string(bodyBytes), 500)
+
+	// 2026-09-28 vapeur 轮：responses 探针命中「不支持 Responses API」裁决
+	// → chat 降级复探（见 probe_responses_fallback.go）。ActiveProbeWorker
+	// 会把本结果回灌 CredentialStateManager.UpdateFromProbe，不降级会把
+	// 经 chat 完全可用的节点压红。
+	if desc.ChatProbeEndpoint == upstreamurl.EpResponses &&
+		providercap.ResponsesUnsupportedError(res.HTTPStatus, res.ErrMsg) {
+		fbStatus, fbBody, fbLatency, fbOK := responsesChatFallbackPing(ctx, e.httpClient, t.APIKey, t.BaseURL, model)
+		res.ErrMsg += "; " + responsesUnsupportedDetail(res.HTTPStatus, fbStatus, fbBody, fbLatency, fbOK)
+		if fbOK {
+			res.Status = ProbeStatusSuccess
+			res.ErrCode = ""
+			res.HTTPStatus = fbStatus
+			res.TotalTokens = responseTokenCount([]byte(fbBody))
+			res.LatencyMs += fbLatency
+			res.RespPreview = truncatePreview(fbBody, 500)
+			res.ResponseBody = res.RespPreview
+		}
+	}
 	return res
 }
 
