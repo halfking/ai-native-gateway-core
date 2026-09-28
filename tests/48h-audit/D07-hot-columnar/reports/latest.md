@@ -535,3 +535,107 @@ AND (SELECT count(*) FROM pg_inherits i4 WHERE i4.inhparent = p.oid) > 1   -- �
 - **仍未做**：`admin/logs.go` 这类 UNION ALL 视图上的 `ORDER BY + LIMIT` 无法下推
   （计划恒为 `Limit → Sort → Append`，页大小不能约束工作量），目前只靠 R37 的 366 天
   窗口上限兜底；非 hot 分区族的逐族查询面普查。
+
+---
+
+# R79 续四 · P1：分页查询的 LIMIT 其实没有约束工作量（本轮未修，已登记）
+
+R79 在存储函数侧抓到过一个形状——`ORDER BY <cols> LIMIT <n>` 的批游标若列无索引，
+成本 O(rows²)。本轮在**查询面**抓到同型的另一个误解：
+
+```sql
+SELECT ... FROM <view> WHERE <ts 范围> ORDER BY ts DESC LIMIT <page_size>
+```
+
+读起来像「只要一页」。实测**页大小一点也没约束工作量**。
+
+## 1. 受控对照（同一天窗口、同一条 ORDER BY ts DESC LIMIT 10，只改 FROM 来源）
+
+| FROM 来源 | 执行时间 | 计划形状 |
+|---|---|---|
+| 直查 `request_logs` | 0.288 ms | Index Scan，**LIMIT 下推** |
+| 内层嵌套视图（含 LATERAL，**不含**两个反连接） | 0.120 ms | `Merge Append` + `Limit loops=10`，**下推** |
+| 完整视图 `request_logs_with_current_month` | **12,390 ms** | `Append (actual rows=404794)`，**下推失效** |
+
+第二行与第三行之间**只差两个相关反连接**（视图体末尾）：
+
+```sql
+WHERE NOT (EXISTS (SELECT 1 FROM session_turns_hot th WHERE th.request_id = rl.request_id))
+  AND NOT (EXISTS (SELECT 1 FROM session_turns      tp WHERE tp.request_id = rl.request_id))
+```
+
+这不是猜测：`EXPLAIN (ANALYZE)` 显示无反连接时规划器对 UNION ALL 的每个分支做 top-N
+再归并（`Limit (actual rows=1 loops=10)`）；加了两个反连接后，
+它必须先知道每行能否通过反连接才能决定去留，于是无法预截断，
+只能把 404,794 行全部物化、两轮索引探测、再排序。
+
+## 2. 「页大小不约束工作量」的直接证据
+
+```
+LIMIT 10  → Append (actual rows=404794)
+LIMIT 1000→ Append (actual rows=404794)     ← 完全相同
+```
+
+缓冲区读 **9,216,949 block**（hit 8,991,503 + read 225,446 ≈ 70 GB 逻辑读）换回 **10 行**。
+
+**所以这不是深翻页问题**：第 1 页和第 500 页一样贵，因为贵的部分在 LIMIT 之前就付完了。
+
+## 3. 命中面
+
+- 接口 `admin/logs.go` 的 ctx 预算是 30s（`:470`）；默认窗口是 `now-24h → now`（`:474-475`），
+  即**一天窗口就已经 12.4s**
+- `pageSize` 上限 500（`:486-488`），但 `page` **无上限**（`:478-481` 只夹下界）
+- 窗口由 R37 的 366 天上限兜着（`maxLogQueryWindow`），所以不会无限放大
+
+## 4. 定级 P1，但不由本轮修
+
+爆炸半径：视图被 `admin/logs.go`、`bg/stats_minute_rollup.go`、
+`domains/routeincident/store.go`、`db/probe_views_unified.go`、`maas/usage.go` 共用，
+且有自愈重建链（`db/request_logs_view_schema.go`）+ 迁移 575/577/680/696/700/717 +
+一整套视图列数冻结契约测试（113/115 列）。
+**改视图是迁移 + schema 契约决策，审计轮只定位与登记。**
+
+## 5. 门的设计，以及它自己红过的三次
+
+新增 `TestData_PaginatedViewSource_CorrelatedAntiJoinIsRegistered`：
+目录侧找视图体含相关子查询的视图，仓内侧找 `ORDER BY+LIMIT` 的分页引用，两侧求交。
+命中必须有书面理由。**不判红「视图里有相关子查询」本身**——那不是缺陷。
+
+写门过程中它自己红了三次，**每次都是门有缺陷**，且都是同一个家族：
+
+1. **按字符串字面量判分页** → `admin/logs.go` 用 `fmt.Sprintf` 拼装，
+   FROM 源（`logsSourceFromSQL()` 返回的 `"request_logs_with_current_month rl"`）
+   与 `ORDER BY ... LIMIT` 分处不同字面量，组装后才相遇。
+   于是门对**全树最被分页的那个查询**报「仓内已无分页引用」。改文件级粒度。
+2. **只认纯标识符** → SQL 源都带别名（`"... AS r"`、`"... rl"`），
+   `[a-z0-9_]+` 匹配不到，真实用法几乎全漏。改为抽字面量内的标识符 token，
+   再与目录里的视图名求交——**用目录当词表**。
+3. **门把自己的源码当成了消费方** → 门文件里每个 allowlist 视图名都是字符串字面量，
+   注释里还有 `ORDER BY ... LIMIT`。于是删掉一条登记会让交集归零，
+   触发真空守卫而不是真正的断言。
+   **这是最坏的门的失效形态：它因为一个与被审代码毫无关系的理由保持绿色。**
+   修法：门必须排除自己的目录（`tests/48h-audit`）。
+
+三条修正之后，基线 PASS（4 条登记），撤掉 P1 那条登记会**指名红**
+（`request_logs_with_current_month：视图体含相关子查询…且仓内有 ORDER BY+LIMIT 的分页引用`），
+而不是再误触发真空守卫。
+
+## 6. 三条新登记的分诊结果（逐个核实，不是「先登记再说」）
+
+| 视图 | 分诊 | 依据 |
+|---|---|---|
+| `v_routable_credential_models` | **假阳性** | 全仓无生产查询读它；命中的三处是测试断言、`fmt.Errorf` 文案、测试清单 |
+| `v_task_model_ranking` | **真阳性候选（未测）** | `admin/auto_route.go:1084` 确认 `FROM v_task_model_ranking … ORDER BY affinity DESC, sample_count DESC LIMIT $4` |
+| `session_turns_with_current_month` | **混合** | `dual_read_validator.go:167`、`loader.go:258` 两处读它但无 LIMIT；`message_source_v2.go:82` 是 CTE 里的 LEFT JOIN，外层 `fetchTurns` 施加 `LIMIT 20`，构成间接分页读 |
+
+**假阳性也写进登记并注明理由**，而不是让它红着或悄悄删掉——
+仓内扫描是文件级粒度，天然有假阳性，处理办法是让分诊结果留在代码里可查。
+
+## 7. 可迁移的教训
+
+- **「LIMIT」出现在代码里不等于它约束了工作量。** 只有 EXPLAIN 显示下推（或 top-N）
+  才算；`LIMIT 10` 与 `LIMIT 1000` 的 Append 行数相同，就是它没约束的证据。
+- **受控对照要只差一个变量。** 本轮能定位到「那两个反连接」，
+  靠的是让第二次与第三次查询**只差反连接**这一项；
+  否则「视图很慢」只能停在抱怨层。
+- **门必须排除自己的源码**（见 5.3）。

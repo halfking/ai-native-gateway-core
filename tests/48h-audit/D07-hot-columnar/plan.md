@@ -179,6 +179,56 @@ S-01 只修了 `request_logs` 一族。本轮把「批游标列必须有首列�
 
 详见 reports/latest.md「R79 续三」。
 
+## 12. R79 续四：P1 —— 分页查询的 LIMIT 其实没有约束工作量（已登记，未修）
+
+R79 在存储函数侧抓到「批游标列无索引 → O(rows²)」。本轮在**查询面**抓到同型误解：
+
+```sql
+SELECT ... FROM <view> WHERE <ts 范围> ORDER BY ts DESC LIMIT <page_size>
+```
+
+**受控对照**（同一天窗口、同一条 `ORDER BY ts DESC LIMIT 10`，只改 FROM 来源）：
+
+| FROM 来源 | 执行时间 | 计划形状 |
+|---|---|---|
+| 直查 `request_logs` | 0.288 ms | Index Scan，LIMIT 下推 |
+| 内层嵌套视图（含 LATERAL，**不含**两个反连接） | 0.120 ms | `Merge Append` + `Limit loops=10`，下推 |
+| 完整视图 `request_logs_with_current_month` | **12,390 ms** | `Append(actual rows=404794)`，**下推失效** |
+
+第二、三行**只差两个相关反连接**（视图体末尾对 `session_turns_hot` / `session_turns`
+按 `request_id` 的 `NOT EXISTS`）。加上去之后规划器必须先判定每行能否通过反连接，
+无法对 UNION ALL 各分支预截断，只能把 404,794 行全部物化、两轮索引探测、再排序。
+
+**直接证据**：`LIMIT 10` 与 `LIMIT 1000` 的 Append 行数**完全相同**（均 404794）；
+缓冲区读 **9,216,949 block**（≈70 GB 逻辑读）换回 10 行。
+**所以不是深翻页问题**——第 1 页和第 500 页一样贵。
+
+命中面：`admin/logs.go` ctx 预算 30s（`:470`），默认窗口就是一天（`:474-475`），
+即**一天窗口已经 12.4s**；`page` 无上限（`:478-481` 只夹下界），
+窗口靠 R37 的 366 天上限兜着。
+
+**定 P1 但不由本轮修**：视图被 `admin/logs.go`、`bg/stats_minute_rollup.go`、
+`domains/routeincident/store.go`、`db/probe_views_unified.go`、`maas/usage.go` 共用，
+且有自愈重建链 + 迁移 575/577/680/696/700/717 + 视图 113/115 列冻结契约测试。
+**改视图是迁移 + schema 契约决策。**
+
+**门自己红过三次，每次都是门有缺陷**：
+① 按字符串字面量判分页——`admin/logs.go` 用 `fmt.Sprintf` 拼装，FROM 源与 ORDER BY
+分处不同字面量，导致对全树最被分页的查询报「已无分页引用」；
+② 只认纯标识符——SQL 源都带别名（`"... AS r"`），真实用法几乎全漏，
+改为抽字面量内标识符 token 再与目录视图名求交（**用目录当词表**）；
+③ **门把自己的源码当成了消费方**——门文件里每个 allowlist 视图名都是字符串字面量、
+注释里还有 ORDER BY+LIMIT，删掉一条登记会让交集归零而误触发真空守卫。
+**这是最坏的门的失效形态：它因为一个与被审代码无关的理由保持绿色。**
+修法：门必须排除自己的目录。
+
+三条修正后基线 PASS（4 条登记），撤掉 P1 登记会**指名红**而非误触发真空守卫。
+另分诊出 `v_task_model_ranking`（真阳性候选，未测）、`session_turns_with_current_month`
+（混合：一处经 CTE 间接 LIMIT 20）、`v_routable_credential_models`（假阳性，仅测试/错误文案）。
+**假阳性也写进登记并注明理由**，让分诊结果留在代码里可查。
+
+详见 reports/latest.md「R79 续四」。
+
 ## 子代理派发提示词
 
 ```
