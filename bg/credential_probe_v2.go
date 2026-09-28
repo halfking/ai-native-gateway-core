@@ -889,13 +889,16 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 				chatURL := upstreamurl.Build(strings.TrimRight(s.BaseURL, "/"), upstreamurl.EpChatCompletions)
 				if blocked, reason := providercap.EgressBlocked(chatURL); blocked {
 					providercap.WarnBlocked("probe_v2.chat", chatURL, reason)
-					return false, "egress blocked: " + reason
+					// 保留原 responses 失败上下文：降级被跳过只作附注，不覆盖归因。
+					return false, errMsg + "; chat fallback skipped (egress blocked: " + reason + ")"
 				}
 				chatOK, chatErr := c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, chatURL, responsesFallbackChatMaxTokens)
 				if chatOK {
 					return true, ""
 				}
-				return false, errMsg + "; " + responsesUnsupportedDetail(respStatus, 0, chatErr, 0, false)
+				// miniChat 不回 HTTP 状态/时延，不伪造 "(HTTP 0, 0ms)"——
+				// 真实状态码已在 chatErr 文本里（"chat status %d"）。
+				return false, errMsg + "; responses probe rejected as unsupported; chat fallback also failed: " + firstLine(chatErr)
 			}
 			return ok, errMsg
 		}

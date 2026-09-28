@@ -76,20 +76,25 @@ func ResponsesUnsupportedError(httpStatus int, text string) bool {
 	if !strings.Contains(b, "responses api") {
 		return false
 	}
-	if strings.Contains(b, "not support") || strings.Contains(b, "不支持") {
+	// Parameter-shaped rejections ("Unsupported parameter: 'messages'", "The
+	// Responses API does not support the 'messages' parameter", CJK "不支持该
+	// 参数") are probe-shape bugs, not capability gaps — a green fallback chat
+	// ping would silently mask the shape bug. The guard applies to the
+	// "not support"/"不支持" branch too (2026-09-28 十九轮审计收口：此前只拦
+	// 裸 "unsupported"，"does not support the 'messages' parameter" 会被误判
+	// 为能力缺口，多打一发 chat 探针并写下误导性注记)。The chat-completions
+	// redirect below stays as the final override: genuine relay verdicts
+	// overwhelmingly carry it, with or without the word "parameter".
+	paramShaped := strings.Contains(b, "parameter") || strings.Contains(b, "参数") ||
+		strings.Contains(b, "argument") ||
+		strings.Contains(b, "unsupported value") ||
+		strings.Contains(b, "unsupported field") ||
+		strings.Contains(b, "unsupported request")
+	if !paramShaped &&
+		(strings.Contains(b, "not support") || strings.Contains(b, "不支持")) {
 		return true
 	}
-	// Bare "unsupported" is ambiguous: it most often names a rejected
-	// parameter ("Unsupported parameter: 'messages'. In the Responses API,
-	// this parameter has moved to 'input'.") — a probe-shape bug, not a
-	// capability gap. Only treat it as the capability verdict when it is not
-	// attached to a parameter-ish noun.
-	if strings.Contains(b, "unsupported") &&
-		!strings.Contains(b, "unsupported parameter") &&
-		!strings.Contains(b, "unsupported argument") &&
-		!strings.Contains(b, "unsupported value") &&
-		!strings.Contains(b, "unsupported field") &&
-		!strings.Contains(b, "unsupported request") {
+	if strings.Contains(b, "unsupported") && !paramShaped {
 		return true
 	}
 	return strings.Contains(b, "/v1/chat/completions") || strings.Contains(b, "chat/completions")
