@@ -73,13 +73,18 @@ func responsesChatFallbackPing(ctx context.Context, client *http.Client, apiKey,
 // responsesUnsupportedDetail assembles the human-readable annotation shared
 // by the three probe stacks, so node_probe_runs / model_probe_runs /
 // request_logs all tell the same story for one incident.
+//
+// 2026-09-29 (审计二十一轮): chatBody 是上游原始响应体片段，会进入
+// model_probe_runs.error_message / node_probe_runs 等 admin 可见面（可能
+// 回显凭据）——在此单一收口处过 truncateProbeBody + SanitizeErrorText，
+// 与 probe_http.go 既有 errMsg 纪律（:347 truncateProbeBody）对齐。
 func responsesUnsupportedDetail(origStatus int, chatStatus int, chatBody string, chatLatencyMs int, chatOK bool) string {
 	verb := "failed"
 	if chatOK {
 		verb = "OK"
 	}
 	return fmt.Sprintf("responses probe rejected (HTTP %d: Responses API unsupported for this model); chat fallback probe %s (HTTP %d, %dms): %s",
-		origStatus, verb, chatStatus, chatLatencyMs, firstLine(chatBody))
+		origStatus, verb, chatStatus, chatLatencyMs, truncateProbeBody(firstLine(chatBody), 300))
 }
 
 func firstLine(s string) string {

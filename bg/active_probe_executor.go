@@ -386,15 +386,20 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	if desc.ChatProbeEndpoint == upstreamurl.EpResponses &&
 		providercap.ResponsesUnsupportedError(res.HTTPStatus, res.ErrMsg) {
 		fbStatus, fbBody, fbLatency, fbOK := responsesChatFallbackPing(ctx, e.httpClient, t.APIKey, t.BaseURL, model)
-		res.ErrMsg += "; " + responsesUnsupportedDetail(res.HTTPStatus, fbStatus, fbBody, fbLatency, fbOK)
 		if fbOK {
+			// 2026-09-29 (审计二十一轮): 对齐 node_probe（errDetail=注记整体
+			// 覆盖）/probe_http（okResult.errMsg=注记覆盖）——降级成功后
+			// ErrMsg 用降级注记整体替换，不残留原 responses 失败文本。
 			res.Status = ProbeStatusSuccess
 			res.ErrCode = ""
+			res.ErrMsg = responsesUnsupportedDetail(res.HTTPStatus, fbStatus, fbBody, fbLatency, true)
 			res.HTTPStatus = fbStatus
 			res.TotalTokens = responseTokenCount([]byte(fbBody))
 			res.LatencyMs += fbLatency
 			res.RespPreview = truncatePreview(fbBody, 500)
 			res.ResponseBody = res.RespPreview
+		} else {
+			res.ErrMsg += "; " + responsesUnsupportedDetail(res.HTTPStatus, fbStatus, fbBody, fbLatency, false)
 		}
 	}
 	return res
