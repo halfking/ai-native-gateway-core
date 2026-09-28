@@ -34,19 +34,7 @@ import (
 // It is deliberately not a permanent list. TestVacuousGateAllowlistIsMinimal
 // fails if an entry no longer needs to be here, so closing a gap removes the
 // entry rather than leaving a tombstone.
-var knownVacuousGates = map[string]string{
-	"D04-queue-concurrency":    "3 checked items, no domain package; evidence not located in R78",
-	"D06-dual-storage-mode":    "3 checked items, no domain package; evidence not located in R78",
-	"D07-hot-columnar":         "3 checked items, no domain package; evidence not located in R78",
-	"D08-provider-errors":      "3 checked items, no domain package; evidence not located in R78",
-	"D09-node-state-selfcheck": "3 checked items, no domain package; evidence not located in R78",
-	"D10-stats-aggregation":    "3 checked items, no domain package; evidence not located in R78",
-	"D12-egress-proxy":         "SF-01 checked with no domain package; evidence not located in R78",
-	"D13-free-token-pool":      "3 checked items, no domain package; evidence not located in R78",
-	"D15-observability-ux":     "2 checked items, no domain package; evidence not located in R78",
-	"D16-flow-closure":         "2 checked items, no domain package; evidence not located in R78",
-	"D17-code-hygiene":         "3 checked items, no domain package; evidence not located in R78",
-}
+var knownVacuousGates = map[string]string{}
 
 // auditRoot is tests/48h-audit, the parent of this package.
 const auditRoot = "../"
@@ -172,15 +160,28 @@ func gateSection(body string) string {
 // cannot degenerate to a bare "./" prefix — an earlier non-greedy version
 // matched only "./" and made this function return junk, which silently made
 // the guard skip every domain and pass while testing nothing.
-func packagePatterns(body string) []string {
+func packagePatterns(gate string) []string {
 	seen := make(map[string]struct{})
 	var out []string
-	for _, m := range packagePatternRe.FindAllString(body, -1) {
-		if _, dup := seen[m]; dup {
+	for _, line := range strings.Split(gate, "\n") {
+		// Only lines that actually invoke a go tool count. A gate block often
+		// contains prose explaining where the evidence lives ("证据在 ./proxy
+		// 的健康探测回归"), and a path there proves nothing — `go test` never
+		// runs it. Accepting prose paths is the same category of bug as
+		// scanning the whole document: the gate can stop naming anything
+		// runnable while the guard still reports it sound. It bit this guard
+		// for real — D12/D15/D16 all carry a prose path that kept a mutated,
+		// non-runnable gate green.
+		if !strings.HasPrefix(strings.TrimSpace(line), "go ") {
 			continue
 		}
-		seen[m] = struct{}{}
-		out = append(out, m)
+		for _, m := range packagePatternRe.FindAllString(line, -1) {
+			if _, dup := seen[m]; dup {
+				continue
+			}
+			seen[m] = struct{}{}
+			out = append(out, m)
+		}
 	}
 	return out
 }

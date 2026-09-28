@@ -31,7 +31,11 @@
 ```bash
 go build ./...
 go vet ./...
-go test -race -timeout 60s ./tests/48h-audit/D06-dual-storage-mode/...
+# R78：原门 `./tests/48h-audit/D06-dual-storage-mode/...` 匹配 0 个 Go 包——空包模式只打印
+# `matched no packages` 警告并退出 0，门在结构上不可能失败。本域的证据本
+# 来就在下面的包里（旧门只是没接到它），故门改指真实证据所在包。
+lite/full 双模式存储：证据在 ./cmd/gateway 的 lite telemetry sink 回归（并发 replay 幂等）。
+go test -race -timeout 120s ./cmd/gateway -run 'TestLiteRequestLogSink_' -count=1
 ```
 
 ## 7. 与方案文档的对齐
