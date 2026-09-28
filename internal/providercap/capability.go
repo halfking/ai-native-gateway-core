@@ -37,6 +37,64 @@ type Descriptor struct {
 // compliant provider room to actually emit a minimal message.
 const ResponsesProbeMaxOutputTokens = 32
 
+// responsesUnsupportedStatuses are the HTTP statuses under which a
+// /v1/responses rejection can carry the relay's "this model/vendor does not
+// support the Responses API" verdict. Observed in the wild (2026-09-28
+// vapeur round): 400 (claude family, "该供应商不支持 Responses API" +
+// code=unsupported_operation) and 502 (QWEN/DOUBAO vendor errors relayed by
+// the aggregator, "X provider does not support the Responses API
+// (/responses). Please use /v1/chat/completions instead."). The remaining
+// statuses are the nearby contract-mismatch shapes (wrong path/method/media
+// type/not implemented) that carry the same verdict on other relays.
+var responsesUnsupportedStatuses = map[int]bool{
+	400: true, 404: true, 405: true, 415: true, 422: true, 501: true, 502: true,
+}
+
+// ResponsesUnsupportedError reports whether a failed /v1/responses response
+// is the upstream's "Responses API not supported here" verdict — a per-model
+// protocol capability gap on multi-vendor relays (vapeur), NOT node death and
+// NOT model death. text is the response body (or any extracted message text);
+// matching is a case-insensitive substring pass:
+//
+//   - the text must mention the Responses API itself, AND
+//   - carry a negation ("does not support" / "unsupported" / CJK 不支持), OR
+//   - explicitly redirect to /v1/chat/completions.
+//
+// A compliant Responses API rejecting parameters ("Invalid
+// 'max_output_tokens'", "Unsupported parameter: 'messages'") mentions the API
+// name but carries no negation of the API itself, so it is NOT matched —
+// those are probe-shape bugs, not capability gaps. Callers use this to fall
+// back to a chat-completions probe instead of poisoning availability.
+func ResponsesUnsupportedError(httpStatus int, text string) bool {
+	if !responsesUnsupportedStatuses[httpStatus] {
+		return false
+	}
+	b := strings.ToLower(strings.TrimSpace(text))
+	if b == "" {
+		return false
+	}
+	if !strings.Contains(b, "responses api") {
+		return false
+	}
+	if strings.Contains(b, "not support") || strings.Contains(b, "不支持") {
+		return true
+	}
+	// Bare "unsupported" is ambiguous: it most often names a rejected
+	// parameter ("Unsupported parameter: 'messages'. In the Responses API,
+	// this parameter has moved to 'input'.") — a probe-shape bug, not a
+	// capability gap. Only treat it as the capability verdict when it is not
+	// attached to a parameter-ish noun.
+	if strings.Contains(b, "unsupported") &&
+		!strings.Contains(b, "unsupported parameter") &&
+		!strings.Contains(b, "unsupported argument") &&
+		!strings.Contains(b, "unsupported value") &&
+		!strings.Contains(b, "unsupported field") &&
+		!strings.Contains(b, "unsupported request") {
+		return true
+	}
+	return strings.Contains(b, "/v1/chat/completions") || strings.Contains(b, "chat/completions")
+}
+
 func Resolve(protocol, catalogCode string) Descriptor {
 	protocol = strings.ToLower(strings.TrimSpace(protocol))
 	catalogCode = strings.ToLower(strings.TrimSpace(catalogCode))

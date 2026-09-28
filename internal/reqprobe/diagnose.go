@@ -71,6 +71,13 @@ var modeMismatchHints = []string{
 	"endpoint is not supported",
 	"does not support /v1/responses",
 	"responses api is not",
+	// 2026-09-28 vapeur 轮：聚合中转的「不支持 Responses API」裁决——
+	// claude 系 400「该供应商不支持 Responses API」+ code=unsupported_operation，
+	// qwen/doubao 系 502 "X provider does not support the Responses API"。
+	// CJK 文案的语序是「不支持」在前，英文 "responses api is not" 命不中。
+	"不支持 responses api",
+	"does not support the responses api",
+	"responses api 不支持",
 }
 
 // responsesOnlyHints：上游明确要求 Responses API 的信号（当前 chat 形态
