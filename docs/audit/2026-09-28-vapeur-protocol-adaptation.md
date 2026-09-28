@@ -136,3 +136,34 @@ N19-2 降级失败注记不伪造 "(HTTP 0, 0ms)"、N19-3 egress 阻断保留原
 - 本地 PG 22:40-22:44 crash recovery（"not properly shut down"，redo 9s 完成，
   网关 degraded→recovered 自动恢复）：发生在本任务活动窗口（12:2x-17:3x）之外，
   与已知宿主 OOM 崩 PG 模式一致（环境债，非本修复引入）。
+
+## 七、第二轮批判复审追加（2026-09-28 23:1x）——部署管线连环坑与治本
+
+第一轮复审后复测数据面发现 **5/5 全 503 复发**，顺藤查出三个部署管线问题
+（均非 vapeur 修复代码缺陷，但直接造成用户可见的"经常不通"回归）：
+
+1. **密钥漂移复发（根因）**：并行会话 23:00 部署 2300 时从 .env.local 取到
+   错误密钥——该文件第 34/35 行 SK=CEK=同值 44 位（非正确 64 位 SK），
+   容器解密全挂 → enrichWithAPIKeys 把全部候选标记不可用 → dispatch 层
+   ErrNoRoute → 503。22:37 起日志实锤（decrypt circuit OPEN）。
+   **治本**：.env.local 两行已修为 2296 验证过的正确值（SK 64 位、CEK 44 位，
+   两种 padding 形态等价，经验裁决 decrypt cred 126 → sk-UiDq… 前缀一致）。
+   此后任何会话直接 deploy 不再需要手工 export 密钥。
+2. **web 构建门假死**：0d5230bfb（前端依赖安全升级，vitest→^5）后
+   node_modules 未同步（仍 1.6.1），vue-tsc 对两个测试文件的 vitest-5 风格
+   mock 报类型错 → npm run build exit 2 → 部署在 build_frontend 夭折
+   （表象：版本号连跳 2301-2306 无部署、构建锁 die）。npm install 同步
+   后 vue-tsc 零改动通过。教训：**依赖升级提交必须伴随 lockfile 安装验证**。
+3. **PG 22:40 crash recovery**：见第六节登记，与部署问题无因果（时间在前）。
+
+**修复动作**：.env.local 密钥治本 + npm install 同步 → 部署 2.5.6.2308
+（含十九轮 c3428bdec + 本轮全部内容），解密冒烟 failed=0（双端口）。
+**最终矩阵（2308，5 模型 × chat/responses 双入口）= 9/10 通过**；唯一失败
+gpt-6-sol chat 入口 90s 超时，归因 apigpt(apiclaude.cc) 上游挂起 89.7s
+（err=canceled，同上游随后 13.8s 成功）——独立供应商问题，本会话两次复现，
+移交名单外另登记。
+
+**假声明自查结论**：第一轮文档中「部署 2296 后问题解决」的表述在并行部署
+覆盖 2300 后失效过约 80 分钟（23:00-23:1x）；本节记录了完整因果链。
+"部署即修复"的声明必须绑定"且无后续并行部署回滚密钥"才成立——治本点
+落在 .env.local 而非部署动作本身。
