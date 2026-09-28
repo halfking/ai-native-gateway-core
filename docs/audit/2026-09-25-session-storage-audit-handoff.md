@@ -698,8 +698,11 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
   - `internal/sessionv2mirror/session_dim.go` — 引入于 6e4fa32dc (`feat(session): session_dim 随 V2 影子写自动维护`)
   - `internal/sessionv2mirror/synthetic_session_test.go` — 引入于 a789a05ad (`feat(db,session,storage): 存储优化方案 v2 S2 落地`)
   - 处置: 单开 `chore(fmt): gofmt session_dim.go + synthetic_session_test.go` (或随下个真正触及该目录的子任务合并), **不要混进 Subtask 5 收口 commit** (会扩散范围, 违反 §10.1 "git diff 行数 ≤ 600" 软约束)
+  - **2026-09-28 R76 收口**：按建议处置落地。`chore(fmt): gofmt session_dim.go + synthetic_session_test.go` commit `943b7ac0f`，单独立项不混任何子任务；4+/3-，2 文件；已合入 main（origin/main = 8eac8c12b）。
 - **O-B** `feat/session-identity-contract-api` 分支在 origin 上保留 4 个 commit (48f1141fa, 6c5b76cab, e0464968c, ad763a7ef) — 实质内容已被 main 上的 `fix/session-ambiguity-409` (0aa86d8bd) 定点移植取代; 差异为 509+/4191- 的反向 main 推进差. 处置: 在所有 Subtask 落地后, 由 R71 audit 轮一并清理 (本地 + 远端 delete branch)
+  - **2026-09-28 R76 收口**：用户授权本地+远端删除。本地 `git worktree remove` + `git branch -D`；远端 `git ls-remote` 复核 origin 该分支已不存在（前几轮已自动删），无需 push delete。4 commit 实质内容确认已在 main（0aa86d8bd 已在 origin/main）。
 - **O-C** main 落后 origin/main 2 个 commit (59712d3c7 + 78ca7d9a3, R70 D11 plan/INDEX 头指针校正); 与 §10 表无关, 下次合并或审计轮前 `git pull --ff-only` 即可
+  - **2026-09-28 R76 复核**：origin/main 已多次推进（现 HEAD = 8eac8c12b）；本会话全部落盘前均 `git fetch && git rebase origin/main` + `git push --force-with-lease`（worktree 侧）+ 主 worktree ff 推进，无落后。
 ---
 
 ## 16. Subtask 2 批判式审计结论 (2026-09-27)
@@ -1048,8 +1051,23 @@ SQL**。彻底解法是加一张 archive ledger 记录 `(partition, max_id)`，�
 6. 7 个 PR URL 仍需人工在 Codeup 浏览器创建（无 CLI 凭据），§10 的 PR 列保持「待创建」。
 7. 清理死代码 `TurnLogsWriter.CleanupExpiredLogs()` 与
    `cleanup_expired_session_turn_logs()`（已标 Deprecated，故意未删）。
+   **2026-09-28 R76 收口**：用户授权走完整删除路径。
+   - Go：`chore(deadcode)` `2fe1579c4` 删 `CleanupExpiredLogs` 方法 + 单测（90 行-）
+   - SQL：`chore(deadcode)` `8eac8c12b` 新增 755 up/down + 同步清 4 份
+     pg_dump baseline + 删 `sql/objects/functions/cleanup_expired_session_turn_logs.sql` +
+     430.{sql,down.sql} 中函数定义/注释占位 + scripts/test-migration-430.sh 去
+     函数列表项 + test_513.test.sql 去可调用断言（77+/152-，10 文件）。
+   - 未动已 applied 的历史迁移 513（其 schema 迁移期 CREATE 保留以保迁移族语义）。
+   - 已合入 main；`feat/session-identity-contract-api` 同轮删除（见 §15 O-B）。
 8. `feat/session-identity-contract-api` 保留 4 个与 main 分叉、rebase 会回退 R69/N-1
    修复的 commit，全部子任务完成后连同其它 feat/* 一并删除。
+   **2026-09-28 R76 收口**：用户授权本地+远端删除。
+   - 本地：`git worktree remove __DEV_HOME__/workspace/ai-native-tools/llm-gateway/llm-gateway-featsub1`
+     + `git branch -D feat/session-identity-contract-api`。
+   - 远端：`git ls-remote` 复核 origin 该分支已不存在（前几轮 R71+ 已自动删除），无需 push delete。
+   - 实质内容确认已在 main：替代 commit `0aa86d8bd`（fix/session-ambiguity-409）已在 origin/main；
+     原分支 4 commit 与 main diff 4638+/23371-，主要工作已被 R69/N-1 后续 commit 覆盖。
+   - 见 §15 O-B 收口说明。
 
 ### 环境事实
 
