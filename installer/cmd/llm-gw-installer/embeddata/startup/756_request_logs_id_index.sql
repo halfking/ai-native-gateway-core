@@ -1,0 +1,70 @@
+-- ============================================================================
+-- Migration 756: request_logs(id) 索引 —— 754 归档批游标的实际支撑
+--
+-- D07 S-01 实测发现（2026-09-29，本机 PostgreSQL 17.10，真实 EXPLAIN）：
+--
+--   754 的 archive_request_logs_default() 用「主键游标」分批：
+--
+--       candidates AS (
+--           SELECT ... FROM <源月分区>
+--           WHERE id > :last_id
+--           ORDER BY id
+--           LIMIT 1000
+--       )
+--
+--   754 头注把它写成「1000 行/批 **主键游标**（partition 局部 id 唯一）」。
+--   **request_logs 上根本没有主键，也没有任何以 id 为首列的索引。**
+--   唯一索引只有 (request_id, ts)；另有若干部分索引以 gw_session_id /
+--   tenant_id / client_model 等开头，没有一个能服务 `ORDER BY id`。
+--
+--   于是这个「游标」退化成：**每个批次一次全分区扫描 + top-N 排序**。
+--   EXPLAIN (ANALYZE, BUFFERS) 实测，2,125,857 行 / 6070 MB 月分区，取 1000 行：
+--
+--       Limit
+--         ->  Gather Merge
+--               ->  Sort  (Sort Key: id, Sort Method: top-N heapsort)
+--                     ->  Parallel Seq Scan on request_logs_2026_08
+--                           (actual rows=708619 loops=3)
+--         Buffers: shared hit=256 read=531262
+--
+--   为取 1000 行读了 531,262 个缓冲块（≈4.2 GB）。成本因此是
+--   O(批次数 × 分区行数) = **O(行数² / 1000)**：2.1M 行 = 2126 批 × 4.2GB
+--   ≈ **8.9 TB 缓冲读**。行数翻倍，成本四倍。
+--
+--   端到端实测（本机，32 GB / 多核，无其他活动会话，无污染）：
+--     单个月分区 2,125,857 行冷归档跑 **>24 min 未结束**，后端持续 ~88% CPU、
+--     wait_event 为空 —— 纯 CPU-bound 的顺序扫描+排序，不是 I/O 瓶颈。
+--     而调用方 bg.archiveOldRequestLogs 的预算是
+--     `SET LOCAL statement_timeout='30min'` + 30min Go context（R73 修复）。
+--     **生产规模月分区落在预算边缘甚至之外**；一旦被超时击杀，整笔事务回滚，
+--     次日 03:00 重跑同一批 → 与 R72 对 753 首扫的诊断同型的活锁。
+--
+-- 本迁移做什么
+--   只补 754 头注**早就假定存在、schema 却从未兑现**的那一个索引：
+--   在分区父表上建 (id)，PostgreSQL 会把它下发到全部既有分区，
+--   此后 CREATE/ATTACH 的新分区自动继承（PG 11+ 语义）。
+--
+-- 为什么不是「改游标键」
+--   另一条修法是把游标换成已有的 (request_id, ts) 唯一索引（行比较游标）。
+--   两者都成立，本迁移选前者，理由是**与 754 已写下的设计意图一致**——
+--   头注本来就声明自己在用「主键游标」，缺的是 schema 而不是查询。
+--   选后者要改 plpgsql 的游标变量与两处终止条件，回归面更大。
+--   若后续 owner 判定不接受给 request_logs（系统写入量最高的表）加索引，
+--   down 文件可直接撤销本迁移，再按行比较游标改造 754。
+--
+-- 写放大评估（为何这个索引可以放心加）
+--   request_logs 实测写入速率约 2.1M 行/月 ≈ 0.8 行/秒。单个 btree 的维护
+--   成本在这个量级上可忽略（该表已有 48 个索引，绝大多数是低基数/部分索引）。
+--   空间成本约 2.1M × ~16B ≈ 35 MB/月分区。
+--
+-- 运维注意（锁）
+--   分区父表上 CREATE INDEX（非常规 CONCURRENTLY）会对每个分区取 SHARE 锁，
+--   **阻塞写入、不阻塞读取**。最大分区 ~4.9 GB，建索引预计数十秒量级，
+--   建议在低峰窗口执行；本迁移放在 installer startup 通道（非 boot ensure），
+--   以免与网关首次启动的写入高峰重叠。
+--
+-- 幂等
+--   CREATE INDEX IF NOT EXISTS，可安全重跑。
+-- ============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_request_logs_id ON public.request_logs (id);
