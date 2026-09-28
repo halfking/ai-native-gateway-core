@@ -55,6 +55,11 @@ const (
 	// 而不是 500。
 	//
 	// 供 admin 会话读端点在存储降级时上报（Subtask 4，handoff §6）。
+	//
+	// R73 审计登记：当前**零消费点**——503 路径（admin/storage_degraded.go）
+	// 只写 HTTP 响应体的 storage_status 与 metrics_storage 打点，从未把
+	// session_bodies 等资产的 HealthState 映射为 storage_degraded。保留为
+	// 预留枚举：接入前任何读者都应把它当作「尚未接线」而非「已上报」。
 	HealthStorage HealthState = "storage_degraded"
 )
 

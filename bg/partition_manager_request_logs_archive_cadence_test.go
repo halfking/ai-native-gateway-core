@@ -103,6 +103,76 @@ func TestArchiveOldRequestLogs_GateIsActuallyInvoked(t *testing.T) {
 	}
 }
 
+// TestArchiveOldRequestLogs_StatementTimeoutPinnedInsideTx pins the R73-audit
+// residual fix: the set-returning archive function is ONE driver-level
+// statement — the 1000-row cursor batches inside it do not dilute
+// statement_timeout. On 252 the role-level 30s default would kill a large
+// first-run backlog mid-function and roll the whole call back (daily retry,
+// livelock — same diagnosis as R72 F2 for 753). The caller must therefore
+// BEGIN, SET LOCAL statement_timeout='30min' (aligned with its own 30-minute
+// context budget, promote/analyze precedent), and Commit — in that order,
+// inside the function body. Text-scoped like the gate test above so deleting
+// the pin turns this red.
+func TestArchiveOldRequestLogs_StatementTimeoutPinnedInsideTx(t *testing.T) {
+	b, err := os.ReadFile("partition_manager.go")
+	if err != nil {
+		t.Fatalf("read partition_manager.go: %v", err)
+	}
+	i := strings.Index(string(b), "func (pm *PartitionManager) archiveOldRequestLogs(")
+	if i < 0 {
+		t.Fatal("archiveOldRequestLogs not found")
+	}
+	rest := string(b)[i:]
+	end := strings.Index(rest, "\nfunc ")
+	if end > 0 {
+		rest = rest[:end]
+	}
+	begin := strings.Index(rest, "pm.db.Begin(")
+	setLocal := strings.Index(rest, "SET LOCAL statement_timeout = '30min'")
+	call := strings.Index(rest, "archive_request_logs_default($1)")
+	commit := strings.Index(rest, "tx.Commit(")
+	if begin < 0 {
+		t.Error("archiveOldRequestLogs must open an explicit tx (pm.db.Begin) — a bare pm.db.Query leaves the whole set-returning call under the role-level statement_timeout")
+	}
+	if setLocal < 0 {
+		t.Error("archiveOldRequestLogs must SET LOCAL statement_timeout='30min' before the sweep — 252's role-level 30s kills a large first backlog and rolls it all back")
+	}
+	if call < 0 {
+		t.Fatal("archiveOldRequestLogs must still call archive_request_logs_default")
+	}
+	if !(begin < setLocal && setLocal < call && call < commit) {
+		t.Errorf("ordering broken: Begin(%d) must precede SET LOCAL(%d) must precede the archive call(%d) must precede Commit(%d)",
+			begin, setLocal, call, commit)
+	}
+}
+
+// TestTurnLogsBacklogGaugeWiredIntoHourlyCleanupLoop pins the R73-audit N2
+// fix: the turn-logs backlog gauges (llm_gateway_session_turn_logs_backlog_*)
+// must actually be refreshed — a registered-but-never-called gauge reads 0
+// forever, which is indistinguishable from "healthy" and precisely the
+// "assertion that can only see the definition, not the wiring" failure class
+// the gate test above documents. Scope to the runCleanup body: the refresh
+// must ride the 1h tick (the same loop the archive sweep rides), not the
+// 24h phase-locked ticker.
+func TestTurnLogsBacklogGaugeWiredIntoHourlyCleanupLoop(t *testing.T) {
+	b, err := os.ReadFile("partition_manager.go")
+	if err != nil {
+		t.Fatalf("read partition_manager.go: %v", err)
+	}
+	i := strings.Index(string(b), "func (pm *PartitionManager) runCleanup(")
+	if i < 0 {
+		t.Fatal("runCleanup not found")
+	}
+	rest := string(b)[i:]
+	end := strings.Index(rest, "\nfunc ")
+	if end > 0 {
+		rest = rest[:end]
+	}
+	if !strings.Contains(rest, "pm.refreshTurnLogsBacklogGauge(ctx)") {
+		t.Error("runCleanup must call pm.refreshTurnLogsBacklogGauge(ctx) — otherwise the backlog gauges are registered but never refreshed and read 0 forever")
+	}
+}
+
 // stripLineComments removes `--` comments so assertions target executable SQL.
 func stripLineComments(s string) string {
 	lines := strings.Split(s, "\n")

@@ -333,6 +333,11 @@ func loadE2EReport(path string) (*e2eSummary, error) {
 		switch {
 		case r.Pass != nil && *r.Pass:
 			s.Pass++
+			// R73 订正（D11#5）：与下方 pass=false 分支对称置位。当前写端
+			// 契约 pass := got==expected 使「pass=true 且 decision 错」不可达；
+			// 若未来写端漂移，缺这行会让同一行既进 Pass 又经 !recorded 臂
+			// 进 Failures，双计。
+			recorded = true
 		case r.Pass != nil:
 			// A decided verdict of "wrong" — a genuine classification FAIL.
 			s.Failures = append(s.Failures, r)

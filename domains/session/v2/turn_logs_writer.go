@@ -165,15 +165,20 @@ func buildTurnLogsInsert(recs []TurnLogRecord, expiresAt time.Time) (string, []i
 // GetStageLogs retrieves all stage logs for a specific turn
 func (w *TurnLogsWriter) GetStageLogs(ctx context.Context, tenantID, sessionID string, turnNo int) ([]TurnLogRecord, error) {
 	query := `
-		SELECT 
+		SELECT
 			session_id, turn_no, tenant_id, request_id,
-			stage, stage_status, event_data, 
+			stage, stage_status, event_data,
 			COALESCE(error_message, ''),
 			started_at, completed_at, latency_ms
 		FROM public.session_turn_logs
 		WHERE tenant_id = $1 AND session_id = $2 AND turn_no = $3
+		  AND expires_at > NOW()
 		ORDER BY started_at ASC
 	`
+	// R73 审计 N4 收口：补 expires_at 过滤。本方法当前全仓无生产调用方
+	// （admin 面读的是聚合后的 turn_logs_summary），属休眠 API——在接入
+	// 前默认安全化：聚合器同样只消费未过期行，读路径与消费口径一致，
+	// 避免未来接线时把「过期未聚合、即将被清扫」的行当成活数据读出。
 
 	rows, err := w.db.Query(ctx, query, tenantID, sessionID, turnNo)
 	if err != nil {
@@ -211,15 +216,20 @@ func (w *TurnLogsWriter) GetStageLogs(ctx context.Context, tenantID, sessionID s
 // GetAllSessionLogs retrieves all logs for a session (all turns)
 func (w *TurnLogsWriter) GetAllSessionLogs(ctx context.Context, tenantID, sessionID string) ([]TurnLogRecord, error) {
 	query := `
-		SELECT 
+		SELECT
 			session_id, turn_no, tenant_id, request_id,
 			stage, stage_status, event_data,
 			COALESCE(error_message, ''),
 			started_at, completed_at, latency_ms
 		FROM public.session_turn_logs
 		WHERE tenant_id = $1 AND session_id = $2
+		  AND expires_at > NOW()
 		ORDER BY turn_no ASC, started_at ASC
 	`
+	// 同 GetStageLogs（R73 审计 N4）：补过期过滤。注意 AggregateSessionLogs
+	// 复用本查询——「关闭会话即聚合」的调用形态下，写入时刻烘焙的 expires_at
+	// 尚未到期，过滤不影响正常聚合；只有行已过期（聚合迟到超过 TTL）时才会
+	// 被排除，而那部分行本就注定被 753 清扫，聚合它们只会得到马上失真的摘要。
 
 	rows, err := w.db.Query(ctx, query, tenantID, sessionID)
 	if err != nil {

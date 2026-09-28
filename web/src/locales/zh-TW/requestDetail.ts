@@ -192,7 +192,7 @@ export default {
     emDash: '—',
     colon: '：',
   },
- // — Subtask 3 (handoff §5): body_status 三態橫幅 —
+ // — Subtask 3 (handoff §5): body_status 兩態橫幅 —
   // 資料來源：/api/admin/sessions/detail 的 turns[].body_status；不是
   // /snapshot（沒有 turns），也不是 /turns 列表（僅中繼資料）。
   bodyStatus: {

@@ -54,3 +54,8 @@
 ### R45 回注（2026-09-19，Jev 面独立复核全过 + clamp）
 - R44 三修复（decider 层置信度门/gauge 真实连击/明文+双配置 Warn）独立复核全部成立；门的位置定式再确认：**classifier 层返 error 会被误计熔断失败，置信度门必须落 decider 层**。
 - `thresholds.llm_confidence` tuning 现已 clamp (0,1]（超范围拒绝）：此前无校验时 >0.85 的 tuning 会每次白付 fallback 外呼（LLM 槽恒 0.85 必被门拒）。tuning 键新增时沿用"设值即校验"定式。
+
+### R75 回注（2026-09-28，fail-open 观测 + 坍缩真场景钉桩）
+- fail-open 中性化分支新增 `autoroute_task_vocabulary_absent_total{task}`——此前词表被误清空在指标面与正常路由不可区分；部署后核对出数。
+- 「词表在场 + winner<30 → 坍缩」真场景首次有钉桩（TestRecommendV2_VocabularyPresentUnderThresholdCollapses：long_context 5 元单命中 20<30 + hotCanonicals 缓存注入）；原 DiscriminatingLowMatchStillFallsBack 名称与断言相反已改名。ANY 语义下坍缩分支仅 long_context 类 5 元 required 可达，其余任务单命中即 ≥30——扩展 required 列表时须同步补坍缩用例。
+- 登记：P1/P3 语言段与 P2 词表不同构（django 族 11 名）；无空格变体（写一个python快速排序）待实测钉桩。

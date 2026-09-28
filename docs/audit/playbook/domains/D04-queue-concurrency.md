@@ -67,3 +67,8 @@
 - **worker goroutine 必须 defer recover**：Go 任意 goroutine 未恢复 panic 击穿整个进程；630 reaper 同缺（本轮未修，登记）。recover 后行保持 claimed 由孤儿回收回 pending，语义无损。
 - NewTicker 首 tick 在 interval 后非立即——"First tick fires immediately" 类注释属拍脑袋，写生命周期注释前对照 time 包语义。
 - 钉桩：go test -race ./internal/sessionv2mirror/ 纳入每轮验证清单。
+
+### R75 回注（2026-09-28，N2 积压 gauge 落地 + 休眠 API 过滤）
+- **N2 收口**：`llm_gateway_session_turn_logs_backlog_{rows,pending_sessions,oldest_age_seconds}` 三件套（R47/R48 配对惯例）挂 runCleanup 1h tick；查询走 idx_session_turn_logs_expires，失败仅 Warn 保旧值。覆盖索引 (expires_at,tenant_id,session_id,started_at) 视 gauge 观察到的积压规模再走 sequence 通道裁决。
+- **休眠 API 默认安全化**：GetStageLogs/GetAllSessionLogs（全仓零生产调用方）补 `expires_at > NOW()`——聚合器只消费未过期行，读路径与其对齐，防未来接线读出"过期未聚合、即将被清扫"的行。
+- WriteStages 批量化后 turn 级 all-or-nothing（单坏 payload 拖垮同批 stage 日志）接受留档；tick() 级 4-worker 并发无行为级测试（scriptedDB+-race）挂账。
