@@ -56,6 +56,29 @@
 // 30s ctx 超时绰绰有余，索引也在用。写此注释是为了记下"看起来该红但实测
 // 不该红"的位置，免得下一轮重新怀疑一次。
 //
+// ## 这道门不覆盖的东西：DELETE 形态（比索引更贵，且收益逐表不同）
+//
+// 本门只判「谓词列是不是索引首列」。但续十一的实测显示**真正的成本常常在
+// DELETE 形态上，而不在索引上**，所以本门绿 ≠ 这条 DELETE 写得对。
+//
+// 同一批实测，两个表给出**相反**的结论：
+//
+//	armor_judgments（804,253 行，单条件 created_at，无 created_at 首列索引）
+//	  id IN + ORDER BY + LIMIT 5000   870.7ms
+//	  ctid IN + 去掉 ORDER BY            7.0ms   ← 124 倍
+//
+//	session_aggregate_outbox（1,157,822 行，双条件 status+completed_at，
+//	                             completed_at **就是**首列索引 ⇒ 本门判它绿）
+//	  id IN + ORDER BY + LIMIT 5000  6,216ms
+//	  ctid IN + 去掉 ORDER BY        6,278ms   ← **无差别**
+//
+// sao 的内层本来就走索引，外层回表是瓶颈（1.5GB 宽表上 5,000 次随机 Tid Scan），
+// 改形态救不了；armor 的内层是 Seq Scan，改形态一次消掉外层全表 Hash Join。
+// **「ctid 形态 124 倍」不能整类推广，必须逐表实测。**
+//
+// 判据的分工：本门管「有没有可用索引」，形态与吞吐属于 worker 侧改造，
+// 两者不可互相替代。拿本门判绿当「这条 DELETE 没问题」是误用。
+//
 // 跑测（无库自动 skip；只需能读 pg_catalog 的角色）：
 //
 //	D07_S01_PG_URL=postgres://reader@127.0.0.1:5432/llm_gateway?sslmode=disable \
@@ -124,26 +147,26 @@ var retentionSmallTables = map[string]struct {
 // 登记必须带实测数据。定级前量的都是分布而不是峰值。
 var knownRetentionDefects = map[string]string{
 	// 注意：这条门报的是「created_at 不是索引首列」，但**实测该缺失在本表上不构成
-	// 性能问题**——本表被登记的真正理由是删除吞吐倒挂，门只是顺带扫到了它。
+	// 成本**——本表真正的成本在 **DELETE 形态**，不在索引。
 	//
-	// 生产规模（804,253 行）TEMP TABLE 对照实测，3 次取中位数：
-	//   0% 过期（现状）无索引 LIMIT 5000     763 ms   ← 自身波动 756/763/796ms
-	//   0% 过期      补索引   LIMIT 5000     732 ms   ← 落在无索引波动区间内
-	//   0% 过期      无索引   LIMIT 500000   871 ms
-	//   97% 过期     无索引   LIMIT 5000     966 ms
-	//   97% 过期     补索引   LIMIT 5000     915 ms
-	//   97% 过期     无索引   LIMIT 100000  1728 ms
+	// 生产规模（804,253 行）TEMP TABLE 对照实测：
+	//   A 现状 id IN + ORDER BY + LIMIT 5000   870.7ms   ← 生产查询形态
+	//   B id IN 去掉 ORDER BY                    695.6ms
+	//   C **ctid IN + 去掉 ORDER BY**              **7.0ms**   ← 124 倍
+	//   D ctid IN + 补 (created_at) 索引            6.8ms（与 C 无差别，补索引无用）
 	//
-	// 补索引收益 ≈ 0：LIMIT 让 Seq Scan 提前终止（97% 过期的行里扫 5,000 个就停），
-	// 而 cost 估算假设扫完全部匹配行——**cost 差 3.8 倍不等于执行时间差 3.8 倍**。
-	// 这张表每条流式请求写一条，补索引是净写入维护成本。
+	// `DELETE ... WHERE id IN (SELECT id ...)` 迫使 DELETE 主体**全表扫**做 Hash Join
+	// （EXPLAIN: `Seq Scan ... actual rows=804306`）；`ctid IN (...)` 让规划器用
+	// **Tid Scan** 按子查询输出的物理地址直接定位行，无需扫外层。
+	// 本仓已有两个生产用例是这个形态：bg/session_summaries_trimmer.go:122、
+	// domains/attachments/repository.go:294 —— 改法不需要任何迁移。
 	//
-	// 真缺陷是吞吐倒挂：90 天保留、24h tick、每轮硬编码 LIMIT 5000，
-	// 写入 6,318 行/天 > 删除 5,000 行/天 ⇒ 净增 1,318 行/天。
-	// 修法 = 提高批量上限（实测 20~100 倍批量，代价仅 ×1.8~×1.14），**不是补索引**。
+	// 真缺陷仍是删除吞吐倒挂（写 6,318/天 > 删 5,000/天，LIMIT 5000 硬编码）。
+	// 改形态把每轮成本降到 1/124 之后，提高批量上限才安全（两者一起做）。
 	"armor_judgments": "P1 armor_judgments：真缺陷是删除吞吐倒挂（写 6,318/天 > 删 5,000/天，硬编码 LIMIT 5000），" +
-		"不是缺索引——实测补 (created_at) 索引收益≈0（763ms→732ms，噪声内）且增加写入维护成本。" +
-		"修法：把每轮 LIMIT 5000 提到 10 万级（实测 LIMIT 100000 代价仅 966ms→1728ms）",
+		"不是缺索引——补 (created_at) 索引收益≈0（763ms→732ms，噪声内）且增加写入维护成本。" +
+		"**修法 = 把 `id IN (SELECT id ...)` 改成 `ctid IN (SELECT ctid ...)` 并去掉 ORDER BY：" +
+		"实测 870.7ms → 7.0ms（124 倍），零迁移、本仓已有两处同形态先例**；随后再提高批量上限",
 
 	// P2：三条索引首列分别是 claim_until(partial)、tenant_id、identity 复合，
 	// 没有一条以 updated_at 开头 ⇒ Seq Scan cost 5,020 / 57MB。
@@ -162,6 +185,8 @@ var knownRetentionDefects = map[string]string{
 	// 仍定 P2 的理由是**速率**而非扫描成本：写入仅 318 行/24h ≪ 删除能力 5,000/天，
 	// 积压 13.5 天自行收敛。
 	"candidate_failure_logs": "P2 candidate_failure_logs：83,289 行 / 105MB 活跃分区，ts 仅作 4 条复合索引的第二列；" +
+		"**实测：瓶颈是 `ORDER BY ts` 逼出的全量 Sort（top-N heapsort 吃 67,608 行），不是索引——" +
+		"补 (ts) 索引 411ms→367ms 无用，去掉 ORDER BY 后 19ms（**22 倍**）。修法同 armor_judgments：改 ctid 形态 + 去 ORDER BY**；" +
 		"写入 318/24h ≪ 删除 5,000/天，积压 13.5 天可消化故非 P1。" +
 		"注：cost 10,646 与「13.6x 放大」是估算，未实测执行时间（LIMIT 提前终止）",
 
