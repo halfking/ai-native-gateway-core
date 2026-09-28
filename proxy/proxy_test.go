@@ -128,6 +128,7 @@ proxies:
 
 // TestParseClashYAML 覆盖真实订阅格式（Clash/Mihomo YAML）。
 func TestParseClashYAML(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_PROXY_SUBSCRIPTION_ALLOW_PRIVATE", "true")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		//nolint:errcheck // test fixture write
 		w.Write([]byte(clashFixture))

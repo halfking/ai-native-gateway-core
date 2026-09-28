@@ -511,3 +511,127 @@ R79 在存储函数侧抓到「批游标列无索引 → O(rows²)」。本轮�
 
 **顺带印证**：`retention_test.go:172` 只做 `strings.Contains` 文本断言、不校验列存在性；
 真正守住这条 SQL 的是续五的 PREPARE 真库门。
+
+### R79 续十四 · tool_usage_stats：代码里写着 ≠ 会执行（P1 降 P2）
+
+核可达性时发现：**`AggregateDaily` / `SaveStats` / `ListToolNamesWithActivity` 各 0 个生产调用方**。
+那 12 个错列**从未被 PostgreSQL 执行过**——不是线上故障，是一段从未跑过的代码，P1 属虚报。
+
+`grep AggregateDaily` 出的全是 `AggregateDailyProfiles`——providerprofile 的**另一个同名方法**，
+名字相似极易误判成有调用方。
+
+错列范围也比先前记录的大：INSERT 用 15 个列名，真库只有 11 列，**12/15 不存在**
+（`p50/p95/p99_duration_ms`、`unique_users/unique_sessions/top_users` 三个分位数与三个去重维度
+在真库**根本没有**）。`ToolUsageStats` 结构体有 17 个字段依赖这 6 个维度，所以修法不是改名，
+是路线选择：**加 8 列迁移 vs 改代码降级**（后者丢掉 6 个统计维度）——属 owner 决策。
+
+**缺陷仍是真的且更阴险**：`AggregateDaily` 每条失败只 `slog.Error` 计数、**返回 nil**。
+一旦有人补定时任务，每条 INSERT 都 42703 而调用方看到 `err == nil`，**以为聚合成功**。
+
+**两条证据必须分开**：`AggregateDaily` 零调用方 ✅（代码事实，与流量无关）；
+`tool_usage_stats`/`session_tools` 都是 0 行 ❌（本机是无流量开发库，空表属正常）。
+**「表是空的」在开发库上不是发现。**
+
+**本轮第四次定级纠正**（session_bodies P2→P3 把峰值当分布 / armor 补索引作废 把 cost 当执行时间 /
+journal_snapshot_receipts P2→P3 把相对倍数当绝对成本 / **本条 把形态相似当可达**）。
+**代码里写着某段 SQL，只说明它被写下来了，不说明它会执行——可达性优先于形态。**
+
+### R79 续十五 · 可达性登记门
+
+`TestData_SchemaMismatch_ReachabilityIsStillAccurate`（不连库，只读源码）把
+「schema 不匹配」类发现变成**可机械复核的登记**：每条带一个 AST 层面的
+`pkg.Symbol` 锚点 + 实测调用点数。当前 4 条 = 活接线 2 + 潜伏 2。
+**它守的是「潜伏缺陷被接线的那一刻」**——那正是续十四那两个陷阱被引爆的时点。
+
+**门自己暴露三个问题**（首跑 + 变异检验抓出，非 review）：
+① **假绿**——`for _, sym := range needles` 取 value（登记名）而非 key（symbol），
+所有匹配恒为 0，两条 ORPHAN「碰巧对了」；**门在自己身上制造了它最该防的那类假绿**。
+② **假阳性**——文本匹配把注释当调用点（仓内大量注释提到函数名）。
+③ **假阴性**——用正则剥注释更糟：`//`/`/*` 会在字符串字面量里出现
+（`"https://..."`、SQL 注释），正则一路吞到行尾把真代码删掉。
+**修法：判调用就在 AST 层面判**（`go/parser` + `SelectorExpr`），注释和字符串不进 AST。
+
+**锚点必须指向「接线」而不是「构造」**：第二次变异没红——我用构造函数
+`routeincident.NewObserver` 当锚点，摘掉 `AsHook()` 注册后 `main.go:3545` 仍在。
+**构造了不等于挂上了**；改用注册点 `incidentObserver.AsHook` 后两种变异都精确转红。
+
+顺带：AST 的 fail-closed 抓到 7 个并发会话遗留的 `<<<<<<<` 冲突文件，
+门把「工作区冲突态」与「代码解析失败」分成两条红因——前者不是缺陷，但覆盖率缺口必须可见。
+**工具陷阱**：`grep | head -N` 的截断会制造假零命中（我据此误判 `AsHook()` 零调用）。
+**判「零命中」前先确认没有截断。**
+
+### R79 续十六 · 修掉一个 P1：origin_actor 投影（真库事务内验证）
+
+`session_turns_with_current_month` 漏投影 `origin_actor`（基表 `session_turns` /
+`session_turns_hot` 都有，attnum 99）。两条生产 SQL 引用它、两条设置路径都踩
+（`main_pipeline.go:1184` V2 源 + `:1416` digest 源，digest/fallback 两条都引用）。
+
+**运行时证据**：`session_analysis_metadata` 147,358 行**全是 `status='provisional'`，
+`final` 0 行**，而 close hook 只写 final。表不空但「只有坏路径才写的状态是零行」——
+比空表强。失败被 `session_metadata_close_hook.go:47-53` 吞成 Warn + return nil
+⇒ 每次会话关闭都失败且静默。读侧退回 provisional，属**优雅降级**。
+
+修法（迁移 757）在真库 `BEGIN … ROLLBACK` 内完整跑过：53→55 列、两条 PREPARE 均无
+ERROR、回滚后 54 列且 `origin_actor=0`（**零持久变更**，不违反只读契约）。
+
+**迁移写法两个要点**：
+1. **别硬编码旧列数**——我用正则数得 53，真库权威值 **54**（`SELECT hot.id,` 行首不是
+   空白被漏掉）。改为执行前动态取 `old_cols`。
+2. **DDL 必须顶层执行**——`CREATE OR REPLACE VIEW` 包在
+   `DO $$ … EXECUTE $ddl$…$ddl$; $$` 里**静默无效**：不报错、视图不变、
+   **前后自校验全部照常通过**（顶层 55 列 vs EXECUTE 内 54 列，同一事务实测）。
+   **一个「有前后自校验的迁移」可以完全什么都没做而不被发现。**
+   （`DROP VIEW CASCADE` + `CREATE VIEW` 在 DO 块内有效，但 CASCADE 会级联删依赖视图。）
+
+门 `TestData_OriginActorFix_MigrationIsShippedAndNotSilentlyDisabled` 守住修复本身：
+UNION 两半各一处 `origin_actor` / 顶层 DDL 存在且未被包进 `EXECUTE $ddl$` / 后置断言存在。
+变异 2 处全部指名（改回 DO 包装 → 红「请改回顶层执行」；漏一半投影 → 红「出现 0 次，期望 1」）。
+**门自己又踩一次同一个坑**：第一版用 `strings.Contains(up,"EXECUTE $ddl$")`，
+而迁移文件头「踩坑记录」里**提到**该坏写法 ⇒ 误报。改为先剥 SQL 注释再检查。
+（两天内第二次「文本匹配不区分代码与注释」：可达性门拿注释当调用点，这次拿注释当坏写法。）
+
+### R79 续十七 · 修掉第二个 P1：routeincident 四处缺列（迁移 758）
+
+缺的不只先前记的 2 列，是 **4 列**：`diagnostic_runs` 缺 `route_key`/`parameters`/`result`
+（代码 INSERT 用 12 列，真库 13 列；真库另有 `heartbeat_at`/`trigger_source`/`error`/`summary_json`
+代码没用到），`routing_audit_log` 缺 `reason`。三方一致：基线 / 真库 / 迁移链
+（`grep ADD COLUMN` 只命中别的表的 `compression_reason`/`handoff_reason` 等）。
+
+可达性：`main.go:3554` → `Transition` → `writeAudit` → `persistRunInTx`，
+**每条落库请求日志都走**；`MaxRetries: 4` 使 42703 被重试满 5 次，而 42703 是
+**永久性错误**、重试纯属浪费，耗尽只 `slog.Warn`。
+
+**修法是纯加列、代码零改动，这一点靠实测而非推断**：三列是 `map[string]any`，
+代码传 `json.Marshal` 的 `[]byte`，而 SQL 无 `::jsonb`、靠 PG 从目标列反推参数类型。
+用 pgx v5 在 TEMP TABLE 上复刻真实 INSERT 形态实测成功（回读 `{"model":"glm-5.3",…}`）⇒ 不必改代码。
+`reason` 用 `varchar(256)`：代码 `MaxReasonLen=256` 且按 **rune** 截断，
+PG 的 `varchar(n)` 同样按**字符**计，语义一致。
+
+真库事务内验证：13→16 / 21→22，两条 INSERT 的 PREPARE 均无 ERROR，回滚后 13/21。
+**顺带纠一个我自己记错的数字**：此前文档写「routing_audit_log 22 列」，实测 **21 列**
+（22 是加完 reason 之后）。本会话第 5 次自我纠正（4 次定级 + 1 次数字）。
+
+门 `TestData_RouteIncidentFix_MigrationIsShippedAndNotSilentlyDisabled` 四类断言，
+变异 4 处全指名：删列 → 红「仍会 42703」/ 包进 DO 块 → 红「静默无效，请改回顶层」/
+`route_key` 落成 text → 红「[]byte 绑不上了」/ 删后置断言 → 红「缺少 post-check」。
+**第四个断言的依据直接来自续十六**：只 `RAISE NOTICE` 的自校验正是让静默无效 DDL
+畅通无阻的原因，所以要求它**读 `information_schema.columns`**。
+
+### R79 续十八 · 收口：757 未破坏 113/115 列冻结契约
+
+续十六改的是 `session_turns_with_current_month`（54→55），冻结契约管的是
+`request_logs_with_current_month`（**同名相近，容易误当成同一件事**），故实跑验证。
+
+**① 自愈链会不会撤销加列**：`db/request_logs_view_schema.go` 的自愈重建链目标是
+`request_logs_with_current_month` 及其两个包装视图，**不含 turns 视图**；全仓 Go 侧
+`CREATE … VIEW … session_turns` **零命中**。⇒ 757 只由迁移链决定，不被应用侧回滚。
+
+**② 列序列数没被动**：真库事务内迁移前后各取一次 115 列视图完整清单，
+**两次逐字节完全相同**；同时 turns 视图 54→55；ROLLBACK 后复原。
+
+**③ 意外旁证**：115 列视图**自己就有 `origin_actor`**（`is_final_success` 之后）。
+`db/db.go:2990`「只保证 request_logs 有该列」属实，**turns 视图是唯一漏的那个**
+⇒ 修复不是「引入新列」而是「补上同族视图早已有的投影」，与既有契约同形。
+
+顺带：冻结契约在 `request_logs_view_schema.go:174-179` 有**运行时守卫**
+（列数不在 {113,115} 就 keeping v1 body），不只活在测试里。

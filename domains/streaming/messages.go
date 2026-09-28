@@ -73,6 +73,20 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w, r, journeyWriter := beginRequestJourney(w, r, h.chatHandler)
 	defer finishRequestJourney(r, journeyWriter)
 	r = markExplicitStreamSession(r)
+	if h.chatHandler.sanitizeInputMiddleware != nil {
+		var authorized bool
+		r, authorized = h.chatHandler.prepareSanitizeRequest(r)
+		if !authorized {
+			h.serveHTTPInner(w, r)
+			return
+		}
+		h.chatHandler.sanitizeInputMiddleware(http.HandlerFunc(h.serveHTTPInner)).ServeHTTP(w, r)
+		return
+	}
+	h.serveHTTPInner(w, r)
+}
+
+func (h *MessagesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 	//nolint:errcheck // best-effort close
 	defer r.Body.Close()
 
@@ -198,7 +212,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeAnthropicError(w, http.StatusUnauthorized, "authentication_error", "Missing API key")
 			return
 		}
-		ki, verifyErr := h.chatHandler.keyVerifier.Verify(r.Context(), rawKey)
+		ki, verifyErr := verifyRequestKey(r, h.chatHandler.keyVerifier, rawKey)
 		if verifyErr != nil {
 			if _, ok := verifyErr.(*authentication.InvalidKeyError); ok {
 				attemptErrCode = "invalid_key"
@@ -244,6 +258,9 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(bodyBytes) > 0 {
 		attemptRequestBody = bodyBytes
+	}
+	if prov := buildOutboundProvenance(r, nil); len(prov) > 0 {
+		logCtx.OutboundProvenance = prov
 	}
 	if h.chatHandler.attachmentExtractor != nil {
 		extractResult := h.chatHandler.attachmentExtractor.ExtractFromAnthropicBody(requestID, bodyBytes)

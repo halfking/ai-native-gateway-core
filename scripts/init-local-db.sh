@@ -87,6 +87,9 @@ log "步骤 2/3: 应用 startup 迁移 ($(ls "$SQL_DIR/migrations/startup"/[0-9]
 startup_fail=0
 for f in "$SQL_DIR/migrations/startup"/[0-9]*.sql; do
     [[ -f "$f" ]] || continue
+    [[ "$f" == *.down.sql ]] && continue
+    # 755 drops a function only after checking external jobs on the target DB.
+    [[ "$(basename "$f")" == "755_drop_dead_cleanup_expired_session_turn_logs.sql" ]] && continue
     run_sql_file "$f" "startup/$(basename "$f")" || startup_fail=$((startup_fail + 1))
 done
 ok "Startup 迁移应用完成（失败 $startup_fail 个，幂等警告已忽略）"

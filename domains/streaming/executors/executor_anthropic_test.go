@@ -49,6 +49,36 @@ func TestAnthropicExecutor_BuildRequest_Passthrough(t *testing.T) {
 	}
 }
 
+// Native protocol handlers transform and write non-stream responses after the
+// executor returns. The Anthropic executor must still return the transformed
+// body without committing an earlier copy to the client writer.
+func TestAnthropicExecutor_NonStreamSuppressedWriteReturnsBody(t *testing.T) {
+	upstreamBody := []byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hello"}],"model":"upstream","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	recorder := httptest.NewRecorder()
+	params := &ExecParams{W: recorder, SuppressSuccessWrite: true}
+	resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(upstreamBody))}
+	returned, err := (&AnthropicExecutor{}).WriteNonStreamResponse(responseSink(params), resp, "client-model", "off", nil)
+	if err != nil {
+		t.Fatalf("WriteNonStreamResponse: %v", err)
+	}
+	if len(returned) == 0 {
+		t.Fatal("executor must return the body for the protocol handler")
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("executor wrote %d bytes before the protocol handler", recorder.Body.Len())
+	}
+
+	// Chat requests without suppression retain executor-owned writing.
+	chatRecorder := httptest.NewRecorder()
+	chatSink := responseSink(&ExecParams{W: chatRecorder})
+	if _, err := chatSink.Write([]byte("ok")); err != nil {
+		t.Fatalf("chat sink write: %v", err)
+	}
+	if chatRecorder.Body.String() != "ok" {
+		t.Fatalf("chat response was not written: %q", chatRecorder.Body.String())
+	}
+}
+
 func TestAnthropicExecutor_StreamResponse_Passthrough(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

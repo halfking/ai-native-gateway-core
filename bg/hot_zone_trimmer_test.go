@@ -80,6 +80,99 @@ func TestHotZoneTrimmerExpiry(t *testing.T) {
 	}
 }
 
+func TestHotZoneTrimmerExpiryUpdatesQuota(t *testing.T) {
+	dir := newHotZoneDir(t)
+	oldPath := filepath.Join(dir, "cache", "old.json")
+	freshPath := filepath.Join(dir, "requests", "fresh.json")
+	touchFile(t, oldPath, make([]byte, 9), time.Now().Add(-2*time.Hour))
+	touchFile(t, freshPath, make([]byte, 9), time.Now())
+
+	tr := NewHotZoneTrimmer(dir, time.Hour, 10)
+	if err := tr.TrimOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Errorf("expired file should be removed: %v", err)
+	}
+	if _, err := os.Stat(freshPath); err != nil {
+		t.Errorf("fresh file fits quota after expiry and should remain: %v", err)
+	}
+	if tr.lastDeletedFiles != 1 || tr.lastFreedBytes != 9 {
+		t.Errorf("deleted=%d freed=%d, want 1 and 9", tr.lastDeletedFiles, tr.lastFreedBytes)
+	}
+}
+
+func TestHotZoneTrimmerOnlyManagedSubtrees(t *testing.T) {
+	dir := newHotZoneDir(t)
+	old := time.Now().Add(-2 * time.Hour)
+	managed := filepath.Join(dir, "cache", "old.json")
+	rootFile := filepath.Join(dir, "root.json")
+	otherFile := filepath.Join(dir, "other", "old.json")
+	for _, path := range []string{managed, rootFile, otherFile} {
+		touchFile(t, path, []byte("old"), old)
+	}
+
+	tr := NewHotZoneTrimmer(dir, time.Hour, 1<<30)
+	if err := tr.TrimOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(managed); !os.IsNotExist(err) {
+		t.Errorf("managed cache file should be removed: %v", err)
+	}
+	for _, path := range []string{rootFile, otherFile} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("unmanaged file %s should remain: %v", path, err)
+		}
+	}
+}
+
+func TestHotZoneTrimmerSkipsSymlinkedSubtree(t *testing.T) {
+	dir := newHotZoneDir(t)
+	external := t.TempDir()
+	outsideFile := filepath.Join(external, "old.json")
+	touchFile(t, outsideFile, []byte("authority"), time.Now().Add(-2*time.Hour))
+	cache := filepath.Join(dir, "cache")
+	if err := os.Remove(cache); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, cache); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	tr := NewHotZoneTrimmer(dir, time.Hour, 1<<30)
+	if err := tr.TrimOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(cache); err != nil {
+		t.Errorf("symlink should not be removed: %v", err)
+	}
+	if _, err := os.Stat(outsideFile); err != nil {
+		t.Errorf("file outside hotzone should remain: %v", err)
+	}
+}
+
+func TestHotZoneTrimmerSkipsNestedSymlink(t *testing.T) {
+	dir := newHotZoneDir(t)
+	external := t.TempDir()
+	outsideFile := filepath.Join(external, "old.json")
+	touchFile(t, outsideFile, []byte("authority"), time.Now().Add(-2*time.Hour))
+	link := filepath.Join(dir, "cache", "external")
+	if err := os.Symlink(external, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	tr := NewHotZoneTrimmer(dir, time.Hour, 1<<30)
+	if err := tr.TrimOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Errorf("nested symlink should remain: %v", err)
+	}
+	if _, err := os.Stat(outsideFile); err != nil {
+		t.Errorf("file outside hotzone should remain: %v", err)
+	}
+}
+
 func TestHotZoneTrimmerQuotaEvictionOldestFirst(t *testing.T) {
 	dir := newHotZoneDir(t)
 

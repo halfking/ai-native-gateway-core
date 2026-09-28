@@ -66,6 +66,124 @@ func TestStorageValidateLite(t *testing.T) {
 	}
 }
 
+func TestStorageValidateHotZoneProtectsLiteAuthority(t *testing.T) {
+	data := t.TempDir()
+	bodies := filepath.Join(data, "bodies")
+	logs := filepath.Join(data, "logs")
+	for _, dir := range []string{bodies, logs} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	makeConfig := func(hotZoneDir string) *StorageConfig {
+		return &StorageConfig{
+			Mode: "lite",
+			Lite: &LiteStorageConfig{
+				SQLitePath: filepath.Join(data, "gateway.db"),
+				BodiesDir:  bodies,
+				LogsDir:    logs,
+			},
+			HotZone: &HotZoneConfig{Dir: hotZoneDir},
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		dir  string
+	}{
+		{"root_contains_sqlite_and_dirs", data},
+		{"inside_bodies", filepath.Join(bodies, "hotzone")},
+		{"contains_logs", filepath.Join(data, "hotzone-with-logs")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := makeConfig(tc.dir)
+			if tc.name == "contains_logs" {
+				cfg.Lite.LogsDir = filepath.Join(tc.dir, "requests")
+			}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "hotzone") {
+				t.Fatalf("Validate() = %v, want hotzone overlap error", err)
+			}
+		})
+	}
+	if err := makeConfig(filepath.Join(data, "hotzone")).Validate(); err != nil {
+		t.Fatalf("safe sibling hotzone should validate: %v", err)
+	}
+}
+
+func TestStorageValidateHotZoneRejectsSymlinkEscape(t *testing.T) {
+	data := t.TempDir()
+	authority := filepath.Join(data, "bodies")
+	if err := os.Mkdir(authority, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(data, "hotzone-alias")
+	if err := os.Symlink(authority, alias); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	makeConfig := func(hotzoneDir string) *StorageConfig {
+		return &StorageConfig{
+			Mode: "lite",
+			Lite: &LiteStorageConfig{
+				SQLitePath: filepath.Join(data, "gateway.db"),
+				BodiesDir:  authority,
+				LogsDir:    filepath.Join(data, "logs"),
+			},
+			HotZone: &HotZoneConfig{Dir: hotzoneDir},
+		}
+	}
+	if err := makeConfig(alias).Validate(); err == nil {
+		t.Fatal("symlinked hotzone root to authoritative storage must be rejected")
+	}
+	if err := makeConfig(alias + string(filepath.Separator)).Validate(); err == nil {
+		t.Fatal("trailing separator must not hide a symlinked hotzone root")
+	}
+	if err := makeConfig(filepath.Join(alias, "new-hotzone")).Validate(); err == nil {
+		t.Fatal("symlinked ancestor redirecting hotzone into authoritative storage must be rejected")
+	}
+	nested := filepath.Join(authority, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	aliasNested := filepath.Join(data, "nested-alias")
+	if err := os.Symlink(nested, aliasNested); err != nil {
+		t.Fatal(err)
+	}
+	if err := makeConfig(aliasNested + string(filepath.Separator) + ".." + string(filepath.Separator) + "hotzone").Validate(); err == nil {
+		t.Fatal("symlink followed by .. must resolve before overlap check")
+	}
+
+	hotzone := filepath.Join(data, "hotzone")
+	if err := os.Mkdir(hotzone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(authority, filepath.Join(hotzone, "cache")); err != nil {
+		t.Fatal(err)
+	}
+	if err := makeConfig(hotzone).Validate(); err == nil {
+		t.Fatal("symlinked managed cache subtree must be rejected")
+	}
+
+	// Resolve alias/.. through the symlink before checking managed children.
+	elsewhere := filepath.Join(data, "elsewhere")
+	if err := os.MkdirAll(filepath.Join(elsewhere, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	actualHotzone := filepath.Join(elsewhere, "hotzone")
+	if err := os.Mkdir(actualHotzone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(authority, filepath.Join(actualHotzone, "cache")); err != nil {
+		t.Fatal(err)
+	}
+	elsewhereAlias := filepath.Join(data, "elsewhere-alias")
+	if err := os.Symlink(filepath.Join(elsewhere, "nested"), elsewhereAlias); err != nil {
+		t.Fatal(err)
+	}
+	if err := makeConfig(elsewhereAlias + string(filepath.Separator) + ".." + string(filepath.Separator) + "hotzone").Validate(); err == nil {
+		t.Fatal("symlink/.. must not hide a managed subtree symlink")
+	}
+}
+
 // TestStorageValidateMode 覆盖非法与空 mode 的明确报错。
 func TestStorageValidateMode(t *testing.T) {
 	invalid := &StorageConfig{Mode: "mongo"}

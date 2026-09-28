@@ -1838,6 +1838,12 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer finishRequestJourney(r, journeyWriter)
 	r = markExplicitStreamSession(r)
 	if h.sanitizeInputMiddleware != nil {
+		var authorized bool
+		r, authorized = h.prepareSanitizeRequest(r)
+		if !authorized {
+			h.serveHTTPInner(w, r)
+			return
+		}
 		h.sanitizeInputMiddleware(http.HandlerFunc(h.serveHTTPInner)).ServeHTTP(w, r)
 		return
 	}
@@ -2253,7 +2259,7 @@ func (h *ChatHandler) serveWithExecutor(
 			writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgMissingKey, nil)
 			return
 		}
-		ki, verifyErr := h.keyVerifier.Verify(r.Context(), rawKey)
+		ki, verifyErr := verifyRequestKey(r, h.keyVerifier, rawKey)
 		// ── 2026-07-17: trace.Authenticate ──────────────────────────────────
 		// 无论成功/失败都记录, 让运维在 trace 视图里看到完整鉴权链路。
 		if ki != nil {
@@ -8216,6 +8222,11 @@ func streamErrorKindForDetailCode(outcome *StreamOutcome, detailCode string) str
 		case errorsx.KindConcurrent, errorsx.KindRateLimit:
 			return "concurrent_overload"
 		case errorsx.KindEmptyResponse:
+			// 2026-09-29 (12h 审计二十轮 P2): 执行器已分类 Kind 的空响应
+			// 此前绕过指标计数（提前 return 不经过下方 detailCode switch）。
+			// anthropic/responses 桥的空响应都带 KindEmptyResponse，指标
+			// 在此一并接线；两条路径互斥，不会重复计数。
+			metrics.RecordEmptyResponseAttempt(detailCode)
 			return "empty_response"
 		case errorsx.KindCanceled, errorsx.KindClientBug:
 			return "client_cancel"
@@ -8242,7 +8253,16 @@ func streamErrorKindForDetailCode(outcome *StreamOutcome, detailCode string) str
 		return "client_cancel"
 	case "concurrent_overload", "concurrent":
 		return "concurrent_overload"
-	case "empty_stream_no_content", "early_empty_detection":
+	case "empty_stream_no_content", "early_empty_detection", "anthropic_empty_response":
+		// 2026-09-29: 接线 metrics/empty_response_metrics.go 的
+		// RecordEmptyResponseAttempt。该指标自 R45 落地以来在仓内
+		// 零调用点（见 docs/audit/2026-09-28-reasoning-effort-clamp-audit.md §5），
+		// 接线位置选归一处而不是源头（stream.go / responses_bridge.go 的
+		// MarkInterruptedWithReason 入口），最小化修改面。Reason 字段
+		// 透传给 metrics 层做归一化（done_no_content / early_empty / other）。
+		// 2026-09-29 (二十轮): anthropic_empty_response 补入——anthropic/
+		// responses 桥的空响应 Reason 串此前落兜底 stream_error 且不计数。
+		metrics.RecordEmptyResponseAttempt(detailCode)
 		return "empty_response"
 	case "eof_without_done":
 		return "eof_without_done"

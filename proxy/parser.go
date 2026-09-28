@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -47,8 +48,11 @@ const (
 // 解析后仅作为库存记录保存（Node.Dialable() == false），
 // 需要本地 mihomo/xray 网桥暴露成 http/socks5 入口后再录入才能真正使用。
 type MultiFormatParser struct {
-	client    *http.Client
-	userAgent string
+	client       *http.Client
+	userAgent    string
+	allowPrivate bool
+	resolver     subscriptionIPResolver
+	dialContext  func(context.Context, string, string) (net.Conn, error)
 }
 
 // NewMultiFormatParser 创建解析器，使用默认 HTTP 客户端（约 20s 超时）。
@@ -64,14 +68,17 @@ func NewMultiFormatParserWithClient(client *http.Client) *MultiFormatParser {
 		// fetches too — the airport endpoints are frequently blocked from
 		// CN egress, and an unpooled default client silently bypassed the
 		// very proxy this subsystem manages.
-		client = &http.Client{
-			Timeout:   defaultParserTimeout,
-			Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
-		}
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = http.ProxyFromEnvironment
+		client = &http.Client{Timeout: defaultParserTimeout, Transport: transport}
 	}
 	return &MultiFormatParser{
 		client:    client,
 		userAgent: defaultParserUserAgent,
+		// Local/private subscriptions are an explicit operator opt-in. This
+		// preserves an escape hatch for a trusted internal airport endpoint.
+		allowPrivate: strings.EqualFold(strings.TrimSpace(os.Getenv("LLM_GATEWAY_PROXY_SUBSCRIPTION_ALLOW_PRIVATE")), "true"),
+		resolver:     net.DefaultResolver,
 	}
 }
 
@@ -104,8 +111,12 @@ func (p *MultiFormatParser) fetch(ctx context.Context, subscribeURL string) ([]b
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "http", "https":
+		u.Scheme = strings.ToLower(u.Scheme)
 	default:
 		return nil, fmt.Errorf("proxy: unsupported subscribe url scheme %q (want http or https)", u.Scheme)
+	}
+	if u.Hostname() == "" {
+		return nil, errors.New("proxy: subscribe url has no host")
 	}
 
 	if ctx == nil {
@@ -118,7 +129,13 @@ func (p *MultiFormatParser) fetch(ctx context.Context, subscribeURL string) ([]b
 	req.Header.Set("User-Agent", p.userAgent)
 	req.Header.Set("Accept", "*/*")
 
-	resp, err := p.client.Do(req)
+	guardedTransport, err := newSubscriptionGuardTransport(p.client.Transport, p.allowPrivate, p.resolver, p.dialContext)
+	if err != nil {
+		return nil, err
+	}
+	client := *p.client
+	client.Transport = guardedTransport
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("proxy: fetch subscription: %w", err)
 	}

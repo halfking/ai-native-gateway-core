@@ -6,8 +6,9 @@ package executors
 //   1. 参数剔除：reqprobe.Diagnose 判定 param_rejected 后，剔除错误点名的
 //      参数（未点名则剔除全部"不常见参数"）重试一次；
 //   2. 模式回退：native /v1/responses 传输被端点级拒绝（404/405 或文案
-//      明示）时，回退到 chat/completions 传输重试一次（仅流式或非
-//      responses 客户端可安全回退；非流式 responses 客户端只记录）。
+//      明示）时，回退到 chat/completions 传输重试一次。非流式 responses
+//      客户端须由 handler 接管成功响应写入并完成 Chat→Responses 转换。
+//      400/502 等明确的 Responses API 不支持裁决也走这条路径。
 //
 // 每类探测每请求最多一次（reqProbeRuntime 的 tried 标志），重试不消耗
 // 重试预算（probeRetry 抵消 attempt++）且跳过退避延迟。探测结果（含
