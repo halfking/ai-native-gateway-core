@@ -440,6 +440,27 @@ func TestStreamCapture_NetworkErrorPublishesFailureDetailCode(t *testing.T) {
 	}
 }
 
+// TestStreamCapture_EmptyResponseFamilyPublishesFailureDetailCode 钉死空响应族
+// 必须进 failure_detail_code 白名单（2026-09-29 审计二十一轮）：四座桥都以
+// MarkInterruptedWithReason 上报「上游 200 零内容」，白名单缺席时
+// streamErrorKindForDetailCode 落兜底 stream_error 且空响应指标恒零。
+func TestStreamCapture_EmptyResponseFamilyPublishesFailureDetailCode(t *testing.T) {
+	for _, code := range []string{
+		"anthropic_empty_response",
+		"openai_empty_response",
+		"empty_stream_no_content",
+		"early_empty_detection",
+	} {
+		sc := NewStreamCapture()
+		sc.MarkInterruptedWithReason(code)
+
+		m := sc.SummaryAsMap()
+		if got := m["failure_detail_code"]; got != code {
+			t.Errorf("failure_detail_code = %v, want %s", got, code)
+		}
+	}
+}
+
 func TestStreamCapture_MarkInterruptedWithReason(t *testing.T) {
 	sc := NewStreamCapture()
 	sc.ObservePayload("data", "", false)
