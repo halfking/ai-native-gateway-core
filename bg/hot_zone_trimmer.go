@@ -188,7 +188,18 @@ func (t *HotZoneTrimmer) TrimOnce(ctx context.Context) error {
 	// 一轮内快照一次，保证本轮的过期判定与配额口径自洽（中途热重载下一轮生效）。
 	retention := time.Duration(t.retention.Load())
 	maxBytes := t.maxBytes.Load()
-	cutoff := time.Now().Add(-retention)
+	// 2026-09-29 (审计二十一轮): retention/maxBytes 非正 = 配置未就绪或被
+	// settings_kv 直写为 0（GetPlatformInt 不做 spec Min/Max 钳制）。此时
+	// 跳过对应阶段而不是清空子树：retention<=0 会让 cutoff≥now 使阶段 1
+	// 删光全部文件；maxBytes<=0 会让阶段 2 的 onDiskBytes<=maxBytes 恒假，
+	// 同样删光。applyReload 热重载路径已有 >0 守卫，这里守住构造路径与
+	// settings 直写路径（fail-safe：不清理优于误清理）。
+	retentionEnabled := retention > 0
+	quotaEnabled := maxBytes > 0
+	var cutoff time.Time
+	if retentionEnabled {
+		cutoff = time.Now().Add(-retention)
+	}
 	type entry struct {
 		root *os.Root
 		rel  string
@@ -261,34 +272,41 @@ func (t *HotZoneTrimmer) TrimOnce(ctx context.Context) error {
 	// 阶段 1：过期清理（mtime < cutoff）。按 mtime 升序遍历保证最旧先删。
 	sort.Slice(files, func(i, j int) bool { return files[i].mod.Before(files[j].mod) })
 	kept := files[:0]
-	for _, e := range files {
-		if e.mod.Before(cutoff) {
+	if retentionEnabled {
+		for _, e := range files {
+			if e.mod.Before(cutoff) {
+				if rmErr := e.root.Remove(e.rel); rmErr != nil {
+					slog.Warn("hotzone_trimmer: 删除过期文件失败", "path", e.path, "error", rmErr)
+					kept = append(kept, e)
+					continue
+				}
+				deleted++
+				freed += e.size
+				onDiskBytes -= e.size
+				continue
+			}
+			kept = append(kept, e)
+		}
+	} else {
+		kept = files
+	}
+
+	// 阶段 2：配额回收（按 mtime 最旧先删）。afterExpiry 是阶段 1 后的剩余文件，
+	// 已按 mtime 升序排列，直接遍历即可。maxBytes<=0 时整相跳过（见上方
+	// quotaEnabled 注记）。
+	if quotaEnabled {
+		for _, e := range kept {
+			if onDiskBytes <= maxBytes {
+				break
+			}
 			if rmErr := e.root.Remove(e.rel); rmErr != nil {
-				slog.Warn("hotzone_trimmer: 删除过期文件失败", "path", e.path, "error", rmErr)
-				kept = append(kept, e)
+				slog.Warn("hotzone_trimmer: 配额回收删除失败", "path", e.path, "error", rmErr)
 				continue
 			}
 			deleted++
 			freed += e.size
 			onDiskBytes -= e.size
-			continue
 		}
-		kept = append(kept, e)
-	}
-
-	// 阶段 2：配额回收（按 mtime 最旧先删）。afterExpiry 是阶段 1 后的剩余文件，
-	// 已按 mtime 升序排列，直接遍历即可。
-	for _, e := range kept {
-		if onDiskBytes <= maxBytes {
-			break
-		}
-		if rmErr := e.root.Remove(e.rel); rmErr != nil {
-			slog.Warn("hotzone_trimmer: 配额回收删除失败", "path", e.path, "error", rmErr)
-			continue
-		}
-		deleted++
-		freed += e.size
-		onDiskBytes -= e.size
 	}
 
 	t.lastDeletedFiles = deleted
