@@ -444,6 +444,67 @@ dl_admin_password_preflight() {
   fi
 }
 
+# 2026-09-29 R79 follow-up (audit 2026-09-28 §7.1 / §8.5 #2): .env.local lines
+# 34-35 are gitignored and the repo had no machine-checked gate on the SK/CEK
+# pair. Concurrent session 23:00 deployed 2300 with SK==CEK=identical 44-byte
+# value (a CEK pasted into the SK slot); the gateway could not decrypt any
+# stored credential, dispatch returned ErrNoRoute, the whole site 503'd for
+# ~80 minutes. The two existing single-key guards were both satisfied:
+#
+#   * deploy() line 1111 `[[ -n SK ]] || die` — SK was non-empty
+#   * gate_credential_encryption_key() line 995 — CEK was non-empty
+#
+# Neither asks "are they the same value?" or "are they long enough to be
+# keys?"; the same-shape fix in deploy-local.sh would have to repeat after
+# every future incident. This function adds the missing pair-level guard and
+# runs once per deploy, BEFORE bump_local_version burns a build_seq.
+#
+# Invariants enforced:
+#   1. SK != CEK when both are present (collision = definite bug; HS256
+#      signing key and AES-256 credential encryption key must never share a
+#      value, even though both are 32-byte secrets).
+#   2. Each key >= 32 bytes — the minimum for either HS256 or AES-256. Short
+#      values (placeholders, leftover fragments of an old deployment) cannot
+#      be valid signing/encryption material.
+#
+# Both invariants are fail-closed by default; DL_ALLOW_KEY_DRIFT=true is the
+# one explicit bypass and is logged so an audit trail exists. Either side
+# empty is intentionally left to the existing single-key guards so clean CI
+# environments (no .env.local at all) still pass through dl_load_project_env
+# unchanged.
+dl_key_drift_preflight() {
+  local sk="${LLM_GATEWAY_SECRET_KEY:-}"
+  local cek="${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}"
+
+  # At least one side empty: leave it to the single-key guards
+  # (deploy() line 1111 for SK, gate_credential_encryption_key for CEK).
+  # Both empty is the clean-CI case and is never actionable.
+  if [[ -z "$sk" || -z "$cek" ]]; then
+    return 0
+  fi
+
+  local sk_len=${#sk} cek_len=${#cek}
+  local problem=''
+  if [[ "$sk" == "$cek" ]]; then
+    problem="LLM_GATEWAY_SECRET_KEY and LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY are identical (${sk_len} bytes each); using the same value for the JWT signing key and the AES-256 credential encryption key produces a sitewide 503 with zero usable diagnostics (incident 2026-09-28 §7.1, deploy 2300). Check .env.local lines 34-35"
+  elif (( sk_len < 32 )); then
+    problem="LLM_GATEWAY_SECRET_KEY is only ${sk_len} bytes; the minimum for HS256 is 32 bytes (audit canonical length: 64 chars). Check .env.local line 34"
+  elif (( cek_len < 32 )); then
+    problem="LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY is only ${cek_len} bytes; the minimum for AES-256 is 32 bytes (audit canonical length: 44 chars). Check .env.local line 35"
+  fi
+
+  if [[ -z "$problem" ]]; then
+    return 0
+  fi
+
+  if [[ "${DL_ALLOW_KEY_DRIFT:-false}" == "true" ]]; then
+    printf '[deploy-lib] warning: DL_ALLOW_KEY_DRIFT=true bypassed key-drift check: %s\n' "$problem" >&2
+    return 0
+  fi
+
+  _dl_die "$problem. Set DL_ALLOW_KEY_DRIFT=1 to bypass"
+}
+
 dl_write_env() {
   # docker --env-file consumes the file as KEY=value pairs without any shell
   # parsing. We avoid both %q-style backslash escapes and outer single
