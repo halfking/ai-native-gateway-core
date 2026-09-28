@@ -557,6 +557,13 @@ if !strings.Contains(v2SessionBodiesBaseQuery, "LEFT JOIN public.session_turns_w
 三张已膨胀的表合计约 1.48 GB / 330 万行（`usage_ledger` 1001MB、
 `request_wal` 375MB、`credential_model_call_history` 102MB），另两张还空着。
 
+> 2026-09-29 勘误（N20-7）：`credential_model_call_history` **不是无界增长**
+> ——迁移 391 已为它实施 TimescaleDB retention policy（7 天→默认 30 天，
+> `settings/spec_lifecycle.go` 的 `lifecycle.credential_model_call_history_ttl_days`
+> 描述与之一致），表体积受控；该键「未接线」指的是**设置表这条读取通道**
+> 没有 Go 消费方（策略在 DB 侧按迁移 391 播种的默认值生效），并非数据无界。
+> 「无界增长」结论仅对 `usage_ledger` / `request_wal` 成立（N20-3 在案）。
+
 另两组成簇：`self_check.*` 5 个键全未接线（D09 子系统 spec 先行）；
 **`sessions_v2.*` 5 个「点号」键全未接线，而活的键是 `sessions_v2_compression_read`
 「下划线」形式——声明时用了与活键不同的命名形状**，于是那 5 个从未被读到。
