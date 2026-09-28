@@ -8,6 +8,9 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +18,41 @@ import (
 	"github.com/kaixuan/llm-gateway-go/storage"
 	storagefactory "github.com/kaixuan/llm-gateway-go/storage/factory"
 )
+
+type blockingBodiesStore struct {
+	storage.BodiesStore
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingBodiesStore) Write(ctx context.Context, body *storage.SessionBody) error {
+	b.once.Do(func() {
+		close(b.entered)
+		<-b.release
+	})
+	return b.BodiesStore.Write(ctx, body)
+}
+
+type failFirstBodiesStore struct {
+	storage.BodiesStore
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *failFirstBodiesStore) Write(ctx context.Context, body *storage.SessionBody) error {
+	fail := false
+	b.once.Do(func() {
+		fail = true
+		close(b.entered)
+		<-b.release
+	})
+	if fail {
+		return errors.New("synthetic body-store failure")
+	}
+	return b.BodiesStore.Write(ctx, body)
+}
 
 // newLiteSinkForTest 装配一份 lite runtime 并返回其 telemetry sink。
 func newLiteSinkForTest(t *testing.T) (*storageRuntime, *liteRequestLogSink) {
@@ -146,6 +184,156 @@ func TestLiteRequestLogSink_IdempotentUpsert(t *testing.T) {
 	}
 	if len(turns) != 1 {
 		t.Errorf("GetTurnsMeta = %d turns, want 1 (replay must not double-journal)", len(turns))
+	}
+}
+
+// TestLiteRequestLogSink_ConcurrentReplayJournalsOnce forces one journal
+// operation to overlap a replay of the same RequestID. The replay must wait
+// for the first write to finish and then observe the completed idempotency key.
+func TestLiteRequestLogSink_ConcurrentReplayJournalsOnce(t *testing.T) {
+	rt, sink := newLiteSinkForTest(t)
+	defer rt.Shutdown()
+
+	base := sink.bodies
+	blocked := &blockingBodiesStore{
+		BodiesStore: base,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	sink.bodies = blocked
+	ctx := context.Background()
+	entry := liteTerminalEntry("req-concurrent", "sess-concurrent")
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- sink.PersistRequestLog(ctx, entry) }()
+	<-blocked.entered
+
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- sink.PersistRequestLog(ctx, liteTerminalEntry("req-concurrent", "sess-concurrent"))
+	}()
+
+	select {
+	case err := <-secondDone:
+		t.Fatalf("concurrent replay returned before first journal completed: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(blocked.release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first PersistRequestLog: %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("replay PersistRequestLog: %v", err)
+	}
+
+	turns, err := sink.turns.GetTurnsMeta(ctx, "tenant-a", "sess-concurrent")
+	if err != nil {
+		t.Fatalf("GetTurnsMeta: %v", err)
+	}
+	if len(turns) != 1 || turns[0].TurnNo != 1 {
+		t.Fatalf("GetTurnsMeta = %+v, want exactly turn 1", turns)
+	}
+}
+
+func TestLiteRequestLogSink_JournalClaimSerializesSameRequestID(t *testing.T) {
+	rt, sink := newLiteSinkForTest(t)
+	defer rt.Shutdown()
+	claimed, err := sink.beginJournal(context.Background(), "req-claim")
+	if err != nil || !claimed {
+		t.Fatalf("first beginJournal() = (%v, %v), want (true, nil)", claimed, err)
+	}
+
+	secondDone := make(chan struct {
+		claimed bool
+		err     error
+	}, 1)
+	go func() {
+		claimed, err := sink.beginJournal(context.Background(), "req-claim")
+		secondDone <- struct {
+			claimed bool
+			err     error
+		}{claimed: claimed, err: err}
+	}()
+	select {
+	case got := <-secondDone:
+		t.Fatalf("second beginJournal() returned before release: %+v", got)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	sink.completeJournal("req-claim")
+	select {
+	case got := <-secondDone:
+		if got.err != nil || got.claimed {
+			t.Fatalf("second beginJournal() = (%v, %v), want (false, nil)", got.claimed, got.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second beginJournal() did not wake after completion")
+	}
+}
+
+func TestLiteRequestLogSink_FailedJournalRetryReusesTurnNumber(t *testing.T) {
+	rt, sink := newLiteSinkForTest(t)
+	defer rt.Shutdown()
+
+	base := sink.bodies
+	flaky := &failFirstBodiesStore{BodiesStore: base, entered: make(chan struct{}), release: make(chan struct{})}
+	sink.bodies = flaky
+	ctx := context.Background()
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- sink.PersistRequestLog(ctx, liteTerminalEntry("req-retry", "sess-retry")) }()
+	<-flaky.entered
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- sink.PersistRequestLog(ctx, liteTerminalEntry("req-retry", "sess-retry")) }()
+	close(flaky.release)
+	if err := <-firstDone; err == nil {
+		t.Fatal("first PersistRequestLog succeeded, want synthetic body-store failure")
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("retry PersistRequestLog: %v", err)
+	}
+
+	turns, err := sink.turns.GetTurnsMeta(ctx, "tenant-a", "sess-retry")
+	if err != nil {
+		t.Fatalf("GetTurnsMeta: %v", err)
+	}
+	if len(turns) != 1 || turns[0].TurnNo != 1 {
+		t.Fatalf("GetTurnsMeta = %+v, want exactly retried turn 1", turns)
+	}
+	body, err := sink.bodies.Read(ctx, "tenant-a", "sess-retry", 1)
+	if err != nil || body == nil || len(body.Response) == 0 {
+		t.Fatalf("retry body at turn 1 = (%+v, %v), want persisted response", body, err)
+	}
+}
+
+func TestLiteRequestLogSink_TurnReservationsStayBoundedAndRetainNewReservation(t *testing.T) {
+	rt, sink := newLiteSinkForTest(t)
+	defer rt.Shutdown()
+
+	now := time.Now()
+	sink.journalTurnReservations = make(map[string]journalTurnReservation, maxJournaledEntries+1)
+	for i := 0; i < maxJournaledEntries; i++ {
+		id := fmt.Sprintf("reserved-%05d", i)
+		sink.journalTurnReservations[id] = journalTurnReservation{
+			tenantID: "tenant-a", sessionID: "session-a", turnNo: i + 1,
+			expiresAt: now.Add(time.Duration(i+1) * time.Minute),
+		}
+	}
+	// An expired reservation may be retried with the same ID. There must not
+	// be a stale auxiliary queue entry capable of evicting the new reservation.
+	sink.journalTurnReservations["retry-id"] = journalTurnReservation{
+		tenantID: "tenant-a", sessionID: "session-a", turnNo: 999,
+		expiresAt: now.Add(-time.Minute),
+	}
+
+	turnNo, err := sink.journalTurnNo(context.Background(), "retry-id", "tenant-a", "session-a")
+	if err != nil {
+		t.Fatalf("journalTurnNo: %v", err)
+	}
+	reserved, ok := sink.journalTurnReservations["retry-id"]
+	if !ok || reserved.turnNo != turnNo {
+		t.Fatalf("new reservation = %+v, present=%v; allocated turn=%d", reserved, ok, turnNo)
+	}
+	if got := len(sink.journalTurnReservations); got > maxJournaledEntries {
+		t.Fatalf("reservation count = %d, exceeds bound %d", got, maxJournaledEntries)
 	}
 }
 

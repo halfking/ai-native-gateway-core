@@ -222,8 +222,13 @@ func (a *OptimizationAdviser) loadStats(ctx context.Context, tenantID, gwSession
 
 // save 持久化一条建议。
 func (a *OptimizationAdviser) save(ctx context.Context, s *sessionStatsForOpt, sug suggestion) error {
-	evidenceJSON, _ := json.Marshal(sug.Evidence)
-	_, err := a.db.Exec(ctx, `
+	// R74：marshal 错误不再吞——失败时静默落 "null" 字符串会让 evidence
+	// 列长期无声降质（Advise 侧只有 save 返回错误才有 Warn 锚点）。
+	evidenceJSON, err := json.Marshal(sug.Evidence)
+	if err != nil {
+		return fmt.Errorf("marshal evidence: %w", err)
+	}
+	_, err = a.db.Exec(ctx, `
 		INSERT INTO session_optimization_suggestions
 			(gw_session_id, tenant_id, category, severity, title, description,
 			 potential_savings_tokens, potential_savings_cost, evidence)

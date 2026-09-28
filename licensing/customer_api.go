@@ -217,7 +217,7 @@ func (api *CustomerAPI) handleStatus(c echo.Context) error {
 
 	lic, err := api.store.GetLicenseByHardwareHash(ctx, hwHash)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "license lookup failed", err)
 	}
 
 	mode := "licensed"
@@ -272,7 +272,7 @@ func (api *CustomerAPI) handleInfo(c echo.Context) error {
 
 	lic, err := api.store.GetLicenseByHardwareHash(ctx, hwHash)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "license lookup failed", err)
 	}
 
 	if lic == nil {
@@ -285,7 +285,7 @@ func (api *CustomerAPI) handleInfo(c echo.Context) error {
 
 	activeDevices, err := api.store.GetActiveDevices(ctx, lic.LicenseKey)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "device lookup failed", err)
 	}
 
 	var lastHB *time.Time
@@ -369,7 +369,7 @@ func (api *CustomerAPI) handleActivate(c echo.Context) error {
 
 	resp, err := api.activator.Activate(ctx, activationReq)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "activation failed", err)
 	}
 
 	if !resp.Success {
@@ -562,7 +562,7 @@ func (api *CustomerAPI) handleOfflineRequest(c echo.Context) error {
 		if err.Error() == "license not found" {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "license_key not found"})
 		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "license lookup failed", err)
 	}
 	if time.Now().After(lic.ExpiresAt) {
 		return c.JSON(http.StatusGone, map[string]string{"error": "license has expired"})
@@ -587,7 +587,7 @@ func (api *CustomerAPI) handleOfflineRequest(c echo.Context) error {
 
 	signedReq, err := api.offlineManager.CreateOfflineRequest(ctx, offlineReq)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "create offline request failed", err)
 	}
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
@@ -608,14 +608,14 @@ func (api *CustomerAPI) handleHeartbeat(c echo.Context) error {
 
 	lic, err := api.store.GetLicenseByHardwareHash(ctx, hwHash)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "license lookup failed", err)
 	}
 	if lic == nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "no license bound to this hardware"})
 	}
 
 	if err := api.activator.Heartbeat(ctx, lic.LicenseKey, hwHash); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "heartbeat failed", err)
 	}
 
 	now := time.Now()

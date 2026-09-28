@@ -28,11 +28,11 @@ func (h *ModuleAdminHandler) RegisterRoutes(g *echo.Group) {
 func (h *ModuleAdminHandler) ListProductModules(c echo.Context) error {
 	modules, err := h.store.ListProductModules(c.Request().Context())
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "list modules failed", err)
 	}
 	features, err := h.store.ListProductModuleFeatures(c.Request().Context())
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "list module features failed", err)
 	}
 
 	// Group features by module_key
@@ -64,11 +64,11 @@ func (h *ModuleAdminHandler) ListProductModules(c echo.Context) error {
 func (h *ModuleAdminHandler) ListTiers(c echo.Context) error {
 	tiers, err := h.store.ListSubscriptionTiers(c.Request().Context())
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "list tiers failed", err)
 	}
 	maps, err := h.store.ListTierModuleMaps(c.Request().Context())
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "list tier module maps failed", err)
 	}
 
 	// Group module keys by tier
@@ -105,7 +105,7 @@ func (h *ModuleAdminHandler) ListLicenseModules(c echo.Context) error {
 
 	mods, err := h.store.ListLicenseModulesByID(c.Request().Context(), id)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "list license modules failed", err)
 	}
 	if mods == nil {
 		mods = []LicenseModule{}
@@ -147,7 +147,7 @@ func (h *ModuleAdminHandler) UpsertLicenseModule(c echo.Context) error {
 	}
 
 	if err := h.store.UpsertLicenseModule(c.Request().Context(), lm); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "upsert license module failed", err)
 	}
 
 	return c.JSON(http.StatusOK, lm)
@@ -164,7 +164,7 @@ func (h *ModuleAdminHandler) DeleteLicenseModule(c echo.Context) error {
 	}
 
 	if err := h.store.DeleteLicenseModule(c.Request().Context(), id, moduleKey); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "delete license module failed", err)
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"message": "module override removed"})

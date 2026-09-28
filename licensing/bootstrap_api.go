@@ -321,9 +321,12 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 			// 如果 CreateLicense 失败，尝试获取已存在的 License（幂等性）
 			existing, getErr := h.Store.GetLicense(c.Request().Context(), freeLic.LicenseKey)
 			if getErr != nil {
+				// R74：无认证端点（noAuthCustomerMiddleware，挂主 mux 全网可达），
+				// err.Error() 不回显——固定文案 + 服务端锚点。
+				slog.Error("bootstrap: local free license create failed", "caller", "bootstrap_api.go", "err", createErr)
 				return c.JSON(http.StatusInternalServerError, map[string]any{
 					"activated": false,
-					"error":     createErr.Error(),
+					"error":     "local free license creation failed",
 					"message":   "本地免费 License 创建失败",
 				})
 			}
@@ -348,6 +351,8 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 			// (resp{Success:false, NeedDeactivate:true}, nil) —— err 恒为
 			// nil，errors.Is 永不命中，409 分支是死代码、实回 500。改判
 			// resp 标志。
+			// R74：err.Error() 不回显（无认证端点）；409 分支的 errMsg 是
+			// 席位占用业务流程的前端契约，保留。
 			if errors.Is(err, ErrDeviceLimitExceeded) ||
 				(err == nil && resp != nil && (resp.NeedDeactivate || resp.ErrorCode == CodeDeviceLimitExceeded)) {
 				return c.JSON(http.StatusConflict, map[string]any{
@@ -357,9 +362,10 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 					"message":         "免费 License 设备席位已被占用，需先解绑既有设备",
 				})
 			}
+			slog.Error("bootstrap: local device activation failed", "caller", "bootstrap_api.go", "err", err)
 			return c.JSON(http.StatusInternalServerError, map[string]any{
 				"activated": false,
-				"error":     errMsg,
+				"error":     "device activation failed",
 				"message":   "设备激活失败",
 			})
 		}
@@ -445,7 +451,7 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 		if err != nil {
 			slog.Error("activateQuick: Activator.Activate failed", "error", err, "license_key", licenseKey)
 			return c.JSON(http.StatusInternalServerError, map[string]any{
-				"activated": false, "error": err.Error(), "message": "本地激活失败：写入数据库时出错",
+				"activated": false, "error": "local activation failed", "message": "本地激活失败：写入数据库时出错",
 			})
 		}
 		if resp != nil && !resp.Success {

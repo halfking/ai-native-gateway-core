@@ -48,7 +48,7 @@ func (h *AdminHandler) CreateRule(c echo.Context) error {
 	}
 
 	if err := h.store.CreateRule(c.Request().Context(), &rule); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "create rule failed", err)
 	}
 
 	if rule.Enabled {
@@ -67,7 +67,7 @@ func (h *AdminHandler) ListRules(c echo.Context) error {
 
 	rules, total, err := h.store.ListAllRules(c.Request().Context(), offset, limit)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "list rules failed", err)
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -104,7 +104,7 @@ func (h *AdminHandler) UpdateRule(c echo.Context) error {
 	}
 
 	if err := h.store.UpdateRule(c.Request().Context(), &rule); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "update rule failed", err)
 	}
 
 	_ = h.detector.ReloadRules(c.Request().Context())
@@ -116,7 +116,7 @@ func (h *AdminHandler) DeleteRule(c echo.Context) error {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
 
 	if err := h.store.DeleteRule(c.Request().Context(), id); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "delete rule failed", err)
 	}
 
 	_ = h.detector.ReloadRules(c.Request().Context())
@@ -134,7 +134,7 @@ func (h *AdminHandler) ListEvents(c echo.Context) error {
 
 	events, total, err := h.store.ListEvents(c.Request().Context(), EventStatus(statusStr), offset, limit)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "list events failed", err)
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -167,7 +167,7 @@ func (h *AdminHandler) AcknowledgeEvent(c echo.Context) error {
 	}
 
 	if err := h.store.UpdateEventStatus(c.Request().Context(), id, EventStatusAck, req.Actor); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "acknowledge event failed", err)
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"message": "event acknowledged"})
@@ -184,7 +184,7 @@ func (h *AdminHandler) ResolveEvent(c echo.Context) error {
 	}
 
 	if err := h.store.UpdateEventStatus(c.Request().Context(), id, EventStatusResolved, req.Actor); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "resolve event failed", err)
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"message": "event resolved"})
@@ -193,7 +193,7 @@ func (h *AdminHandler) ResolveEvent(c echo.Context) error {
 func (h *AdminHandler) GetDashboardStats(c echo.Context) error {
 	stats, err := h.store.GetDashboardStats(c.Request().Context())
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "load dashboard stats failed", err)
 	}
 
 	return c.JSON(http.StatusOK, stats)
@@ -201,7 +201,7 @@ func (h *AdminHandler) GetDashboardStats(c echo.Context) error {
 
 func (h *AdminHandler) ReloadRules(c echo.Context) error {
 	if err := h.detector.ReloadRules(c.Request().Context()); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return writeInternalErr(c, "reload rules failed", err)
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"message": "rules reloaded"})
