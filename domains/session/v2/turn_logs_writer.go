@@ -305,31 +305,4 @@ func (w *TurnLogsWriter) AggregateSessionLogs(ctx context.Context, tenantID, ses
 	return summary, nil
 }
 
-// CleanupExpiredLogs deletes logs older than 24 hours
-//
-// This should be called by a background worker periodically.
-//
-// Deprecated (2026-09-27, critical audit of Subtask 2): nothing calls this
-// — the only reference in the tree is its own test, so it has never run in
-// production. The predicate here was in fact the correct one
-// (`expires_at < NOW()`), which is what made the missing caller worth
-// naming: this dead method plus the dead SQL cleanup_expired_session_turn_logs()
-// (migration 430:336) are why session_turn_logs grew unbounded.
-//
-// The live sweep is now bg.PartitionManager.cleanupSessionTurnLogsByTTL →
-// cleanup_session_turn_logs_by_ttl (migration 753), which uses the same
-// predicate. Kept (not deleted) because it is an exported method: an
-// out-of-tree caller may exist, and removal is a wider blast radius than
-// this subtask should take. Scheduled for removal — see handoff §15/§16.
-func (w *TurnLogsWriter) CleanupExpiredLogs(ctx context.Context) (int64, error) {
-	result, err := w.db.Exec(ctx, `
-		DELETE FROM public.session_turn_logs
-		WHERE expires_at < NOW()
-	`)
 
-	if err != nil {
-		return 0, fmt.Errorf("cleanup expired logs: %w", err)
-	}
-
-	return result.RowsAffected(), nil
-}
