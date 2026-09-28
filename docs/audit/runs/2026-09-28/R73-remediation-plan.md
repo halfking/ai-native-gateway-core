@@ -62,12 +62,12 @@
 - **状态**：本地实现并通过定向测试。二次复核发现 Embeddings `keyInfo.Status == throttled` 分支漏设标记，现已补齐并新增 handler 回归；Chat/Responses/Messages/Embeddings 的 gateway 自身拒绝均设置保留响应 header；通用非流式响应拷贝及 Anthropic/Ollama 错误 passthrough 会滤除 provider 同名 header；selfcheck 只对可信 `shared_key` 标记建立一轮 cooldown。
 - **验收**：`TestSelfcheckRateLimitAbort` 覆盖 gateway marker；`TestSelfcheckProvider429DoesNotSeedGatewayCooldown` 覆盖未标记 provider 429；通用 response-header copier 测试确保 provider 不能伪造标记。真实完整部署路由端到端仍待集成环境。
 
-### R73-F07 · P2 · migration 754 的 statement timeout 声明/执行边界待数据库核验
+### R73-F07 · P2 · migration 754 的 statement timeout 声明/执行边界
 
 - **证据**：迁移头注已订正并明确函数体没有 `SET LOCAL statement_timeout`；Go 侧以一个最长 30min context 调用整个集合函数，函数遍历过期分区与其批次。实际数据库角色/会话 timeout 和生产行数不可从 SQLite/mock 推断。
 - **整改**：先确认迁移 SQL、PG role/database statement_timeout、真实分区行数与函数耗时。若没有按批次的 DB 侧边界，设计可恢复、每批独立提交/可续跑的实现；避免在未验证 PG/Citus 环境下盲改迁移。
-- **状态**：SQL/调用路径核对已确认 timeout 风险边界；真实兼容 PG 验证待做；不可将 Go context deadline 当成数据库内 `statement_timeout`。
-- **验收**：真实兼容数据库在限定数据量下执行并观测单批耗时、锁、超时恢复、重复运行幂等与源数据保留。
+- **状态**：R76 已在隔离 PostgreSQL 17 对两个旧月分区的 150,000 行合成数据验证首次归档、幂等重跑、源数据保留，并验证 role 默认 1ms 可取消裸调用；按生产调用方顺序在事务内 SET LOCAL 30min 后成功，COMMIT 后 role 默认值恢复。真实 Citus/生产角色/规模及耗时仍待验证；Go context 单独不覆盖数据库 GUC。详见 [R76 续审记录](R76-continuation-report.md)。
+- **验收**：在安全隔离的兼容 Citus/PG 数据库使用代表性数据量，记录总耗时、锁等待、超时恢复、重复运行与源数据保留；确认实际 app role grants 与 role timeout。
 
 ### R73-F08 · P2 · SSE 拦截 writer 无界缓冲且不完整尾帧绕过拦截
 
@@ -91,6 +91,8 @@
 - **证据**：`InterceptNonStream` 与 `InterceptStreamChunk` 在 `loadMap` 返回空 map 或 error 时旧逻辑直接 return nil，未调用 `RestoreOutputOrMask`；伪造完整 `{SENSITIVE:...}` 因而会原样离开网关。Redis 故障导致已知值无法恢复可以作为降级，但未知内部 marker 不应裸透传。
 - **整改**：空映射时仅当 body/chunk 含 marker 才进入解析；Redis load error 改用空 map 继续 mask。流式空 map 仍走跨事件 marker prefix 处理。
 - **状态/验收**：empty-map 与关闭 miniredis 模拟 Redis connection failure 的非流式定向测试通过；stream empty-map split-unknown 测试通过。真实 Redis 故障时延和重试开销仍需部署观测。
+
+R76 另登记 `ShouldBlock` 收到后 writer 静默丢弃帧、未构成 marker 的 stream tail 未作 client-side 终判等 D14 闭环问题；详细调用路径和修复门禁见 [R76 续审记录](R76-continuation-report.md)。
 
 ## 3. 统一回归门禁
 
