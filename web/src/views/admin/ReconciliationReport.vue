@@ -5,7 +5,22 @@
 // 数据来自每日凌晨自动聚合的 report_snapshots，区间查询不回扫原始日志。
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+// 2026-09-28 修复：本仓 main.ts 不做 ElementPlus 全局注册（也无 unplugin 自动
+// 导入），模板里的 el-* 必须在 <script setup> 显式 import，否则生产构建里
+// resolveComponent 静默失败、组件退化为未知标签 —— el-table 列插槽被
+// normalizeChildren 以无参调用，`{ row }` 解构 undefined 直接把页面打白
+// （element:check 审计此前已标红本文件 7 项）。与 ClientAnalyticsView 等
+// 正常页面的写法对齐。
+import {
+  ElAlert,
+  ElButton,
+  ElDatePicker,
+  ElMessage,
+  ElRadioButton,
+  ElRadioGroup,
+  ElTable,
+  ElTableColumn,
+} from 'element-plus'
 import { Download, Refresh } from '@element-plus/icons-vue'
 import { useRoute } from 'vue-router'
 import {
@@ -13,6 +28,8 @@ import {
   getReportSummary,
   runReportRollup,
   type RangeReport,
+  type ReportProviderRow,
+  type ReportTenantRow,
   type ReportView,
 } from '../../api/reportrollup'
 
@@ -42,6 +59,16 @@ const report = ref<RangeReport | null>(null)
 const errorText = ref('')
 
 const hasData = computed(() => !!report.value && report.value.snapshot_dates.length > 0)
+
+// 分组表行：provider/internal 两种行形按视角二选一。列插槽按 view 的 v-if
+// 分支只访问对应行形的字段，运行时安全；这里收窄成单一联合别名供 ElTable
+// 泛型推断（provider 字段在 internal 视角不渲染，交叉为可选即可通过类型检查）。
+type GroupRow = ReportProviderRow & Partial<ReportTenantRow>
+const groupRows = computed<GroupRow[]>(() => {
+  const src: ReportProviderRow[] | ReportTenantRow[] | undefined =
+    view.value === 'provider' ? report.value?.providers : report.value?.tenants
+  return (src ?? []) as GroupRow[]
+})
 
 async function refresh() {
   if (!range.value || range.value.length !== 2) return
@@ -189,7 +216,7 @@ onMounted(refresh)
 
       <!-- 分组表：供应商 或 租户 -->
       <h3 class="section">{{ view === 'provider' ? t('reports.byProvider', '按供应商') : t('reports.byTenant', '按租户') }}</h3>
-      <el-table :data="view === 'provider' ? report.providers : report.tenants" size="small" border stripe>
+      <el-table :data="groupRows" size="small" border stripe>
         <el-table-column v-if="view === 'provider'" prop="provider_name" :label="t('reports.provider', '供应商')" min-width="140">
           <template #default="{ row }">{{ row.provider_name || row.provider_id }}</template>
         </el-table-column>
