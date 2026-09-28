@@ -107,3 +107,48 @@
 - **集合返回函数 = 单条驱动层语句，函数内批游标不稀释 statement_timeout**：754 的 1000 行批 LOOP 看似"分批"，但整个 `SELECT * FROM archive_request_logs_default($1)` 对服务端是一条语句——角色级 30s（252 rolconfig）会在大积压首跑击杀整调用并整批回滚，次日重试同批=活锁（与 R72 753 首扫同型）。**SET LOCAL 必须在调用方事务内**（Go ctx 预算不覆盖服务端 GUC）；同文件 promote 60s / analyze 10min 是先例锚点。钉桩 TestArchiveOldRequestLogs_StatementTimeoutPinnedInsideTx 用 Begin<SET LOCAL<call<Commit 顺序断言。教训一般化：**凡新接 pg 函数族调用，先问"函数内分批是否被服务端视为单语句"**——PL/pgSQL 循环不切分 statement_timeout。
 - 754 头注「Go 侧 30min ctx 预算兜底」为书面错误断言（十六轮订正引入），已改写指向调用方 SET LOCAL；批终止注释「两条件同时成立才退出」与代码（任一即退）相反已订正。**注释勘误走 embeddata 字节同步 + 三守卫复跑**（754 已应用不重跑台账）。
 - 754 归档首跑实捕待部署（L-1）：修复部署后首个 03:00-03:59 窗口验证 request_logs_archive 首次生成 + archived 日志。
+
+### R79 回注（2026-09-29，S-01 真库 EXPLAIN/大分区实测 —— 推翻三轮「已接线可用」结论）
+
+S-01 原标注「环境未提供」，实测时本机 PG 17.10 已健康运行 34 小时，标注过期。
+改为实做后在 `request_logs` 单族上找到**两个各自足以让归档完全不可用的缺陷**：
+
+- **P1-a 42703 首跑即死**：754 的 `candidates` CTE 投影 `session_id` / `status_code`，
+  而真表是 `gw_session_id` / `upstream_status_code`（基线 137 列 + 真库 4 个分区双源核对）。
+  函数体是 `format()+EXECUTE` 动态 SQL ⇒ CREATE 不校验 ⇒ 安装、台账、升级通道全绿；
+  D-01「形状核对」与 SF-01「静态守卫」都是对文本断言 ⇒ 六轮审计全绿。
+  **该函数自落地起从未成功执行过一次**，`request_logs_archive_*` 从未有过一行。
+  已修（只改源投影 2 个列名；归档表自身列名不动），canonical + delivery 双副本字节同步。
+
+- **P1-b 游标列无索引 → N²**：754 的批游标 `WHERE id > :last ORDER BY id LIMIT 1000`
+  被头注称作「主键游标」，但 `request_logs` **无主键、也无任何以 id 为首列的索引**
+  （48 个索引逐个核过；唯一索引只有 `(request_id, ts)`）。每批次退化为全分区并行
+  顺序扫描：EXPLAIN 实测取 1000 行读 **531,262** 缓冲块（≈4.2 GB），
+  2126 批 ≈ 8.9 TB 缓冲读，成本 O(rows²/1000)。
+  **端到端实测：30:00.028 被 statement_timeout 击杀、整笔 ROLLBACK、0 行归档。**
+  已修：新增迁移 **756** 在分区父表上建 `request_logs(id)`，下发到全部分区。
+  修复后同分区冷归档 **25.963s / 2,125,857 行**，热重跑 **8.179s / 0 新增**，
+  单批计划 Index Scan 230 buffers / 1.294ms（缓冲块降 2312×）。
+
+- **两处必须一起上线的耦合**：只修 42703 不修游标，链路会从「毫秒级失败」退化成
+  「每晚 30 CPU 分钟、被击杀、整笔回滚、次日重来」的**永久活锁**——R72 对 753 首扫的
+  诊断在生产规模上的复刻，而 R73 把预算从 30s 抬到 30min 只是把墙推远了。
+
+- **新增 7 道门（全部过变异检验）**：data 侧 3 道（基线 DDL × 754 投影跨源列名交叉校验、
+  投影错位、双副本字节一致）；stress 侧 4 道（scratch 库真跑 754、**计划形状**、
+  幂等、留存联锁）。计划形状门**自带对照**：建 756 前必须 Seq Scan、建 756 后必须
+  Index Scan——没有对照的「断言计划里有 Index」正是本会话反复吃亏的空洞门形态。
+
+- **顺带订正 754 头注的一处自欺**：原文「本 SQL 从未在真实 PostgreSQL 上执行过，
+  不宜在此盲改」——实测后证明不是「不宜盲改」，是**根本没跑过**，而这个判断本身就
+  出自没跑过的人。凡以「没跑过所以先不改」为理由保留的缺陷，都在欠一次实跑。
+
+- **登记未修（owner 裁决）**：① 归档月表 `request_logs_archive_YYYY_MM` 是独立 heap 表，
+  未 ATTACH 到父表 `request_logs_archive`；该父表 `PARTITION BY RANGE (ts)` 但**分区数 0**
+  ——唯一会 ATTACH 的旧函数 `archive_request_logs(date)` 已被 331 移除，而 **331 本身未进
+  installer startup 通道**（embeddata/startup 下无 331），基线又把父表建了回来。
+  后果：未来读方写 `SELECT ... FROM request_logs_archive` 静默得 0 行而非报错。
+  ② 归档无 ledger，每晚重扫全窗（热重跑实测 8.18s / 2.1M 行，单调增长不自收敛）。
+
+- **未纳入本轮**：245/252 真机未连；其余分区族（candidate_failure_logs / usage_facts /
+  mock_probe_history 等）的同类「游标列是否有索引」问题未逐族检查——方法可直接套用。
