@@ -156,7 +156,6 @@ verify_tables() {
     echo -e "${YELLOW}验证管理函数...${NC}"
     functions=(
         "ensure_sessions_v2_partitions"
-        "cleanup_expired_session_turn_logs"
     )
     
     for func in "${functions[@]}"; do
