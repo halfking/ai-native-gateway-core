@@ -707,3 +707,35 @@ func TestAlignFullPostgresURLNoop(t *testing.T) {
 		t.Errorf("nil Full: alignment = %v, want PostgresURLUnchanged", got)
 	}
 }
+
+// TestHotZoneConfigContains H4 接线辅助：判断子树是否落入热区统一预算。
+func TestHotZoneConfigContains(t *testing.T) {
+	hz := &HotZoneConfig{Dir: "./data/hotzone"}
+
+	cases := []struct {
+		dir  string
+		want bool
+	}{
+		{"./data/hotzone", true},                   // 相等（热区根本身）
+		{"./data/hotzone/cache", true},             // 直接子树
+		{"data/hotzone/requests/2026-09-28", true}, // Clean 归一后包含
+		{"./data/hotzone-x", false},                // 前缀碰撞：路径段边界必须挡住
+		{"./data/hotzone/../cache", false},         // Clean 后逃出热区
+		{"./data/cache", false},                    // 独立目录（lite 默认 cache_dir）
+		{"", false},                                // 空目标
+	}
+	for _, tc := range cases {
+		if got := hz.Contains(tc.dir); got != tc.want {
+			t.Errorf("Contains(%q) = %v, want %v", tc.dir, got, tc.want)
+		}
+	}
+
+	// 防御路径：nil 指针 / Dir 为空恒 false
+	var nilHz *HotZoneConfig
+	if nilHz.Contains("./data/hotzone/cache") {
+		t.Error("nil HotZoneConfig should not contain anything")
+	}
+	if (&HotZoneConfig{}).Contains("./data/hotzone/cache") {
+		t.Error("empty Dir should not contain anything")
+	}
+}
