@@ -229,6 +229,46 @@ SELECT ... FROM <view> WHERE <ts 范围> ORDER BY ts DESC LIMIT <page_size>
 
 详见 reports/latest.md「R79 续四」。
 
+## 13. R79 续五：P1 —— 有测试断言其文本的 SQL，从未被执行过一次
+
+上一轮两条「未测」候选，本轮去测，测出一段**执行即报错**的查询：
+`domains/sessionsummary/message_source_v2.go` 的 `v2SessionBodiesBaseQuery`
+引用 `t.origin_actor`，而 `session_turns_with_current_month` 的 65 列定值投影里
+**没有这一列**（基表 `session_turns` 上有，attnum 99；`db/db.go:2990` 只保证
+`request_logs*` 表；全仓无任何 SQL 把它投进 turns 视图）。
+
+**唯一相关的测试只断言文本包含某个 JOIN**，查询能否执行无人看。
+源码常量原文实跑：`ERROR: column t.origin_actor does not exist`。
+
+**两条设置路径都中招 → P1**：
+`main_pipeline.go:1416` 在 `sessions_v2_compression_read`（默认 true）下
+`SetMessageSource(NewPerTurnDigestSource(pool))`，而
+`NewPerTurnDigestSource = gated{digest: perTurnDigestSource, fallback: v2SessionBodiesSource}`
+——开关开走 digest（同样缺该列）、开关关（默认）走 fallback（同样缺该列）。
+唯一可用配置是 `sessions_v2_compression_read=false` 退回 V1。
+
+**第二例 P1 候选**：`domains/routeincident` 8 处查 `diagnostic_runs.route_key` /
+`routing_audit_log.reason`；基线 `01-schema.sql:7955` 与真库**双缺**，
+全仓无任何迁移添加；`route_key` 只存在于 390 的 `routing_audit_log`（另一张表），疑串表。
+
+**新门 `TestData_GoSQLConstants_PrepareAgainstRealDB`**：抽取仓内 160 条无占位符的
+完整 DML 常量逐条 PREPARE（只规划不执行，守住主库只读约束）。
+错误按 SQLSTATE 分层：`42703` 判红，`42P01/42704/3F000/42501` 只记录，其他 fail-closed。
+结果：133 成功 / 9 已定性 / 9 backlog / 9 本机无法验证。
+
+**门自己红了四次，全是「判错对象」家族**：
+① 抽取器只判「含 SELECT」，把 SQL 片段与 DDL 常量也收进来（48 条假语法错）；
+② 没排除 SQLite 目录——换方言问错服务器；
+③ **登记键 `file::name` 不唯一**：`action_infra.go` 有 6 个同名 `sql` 常量，
+自收缩检查命中其一后 `delete()` 抹掉登记，**把另外 5 个失败项的理由一起带走**，
+它们随即红在一个与自身 SQL 无关的原因上；
+④ 同上。修法：键加行号 + 内容哈希，且只报告、绝不在遍历中改注册表。
+
+**backlog 用棘轮而非永久红**：9 条未分诊项登记不判红（长期红的门会被人习惯性忽略），
+配三条断言：新增未登记项→红、登记项开始能规划→红、`len(backlog)` 与常量不符→红。
+
+详见 reports/latest.md「R79 续五」。
+
 ## 子代理派发提示词
 
 ```

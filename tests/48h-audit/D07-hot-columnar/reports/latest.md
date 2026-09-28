@@ -639,3 +639,125 @@ LIMIT 1000→ Append (actual rows=404794)     ← 完全相同
   靠的是让第二次与第三次查询**只差反连接**这一项；
   否则「视图很慢」只能停在抱怨层。
 - **门必须排除自己的源码**（见 5.3）。
+
+---
+
+# R79 续五 · P1：一段 SQL 常驻代码里、有测试断言它的文本，却从未被执行过一次
+
+上一轮留下的两条「未测」候选，本轮去测，测出一段**执行即报错**的查询。
+
+## 1. 起点：一句读不通的 EXPLAIN
+
+去量 `session_turns_with_current_month` 的下推行为，按 `fetchTurns` 的形状手写查询，
+PG 直接回：
+
+```
+ERROR:  column t.origin_actor does not exist
+LINE 10:  AND COALESCE(t.origin_actor, '') NOT LIKE 'goal-%'
+```
+
+## 2. 查清它为什么不存在
+
+| 位置 | `origin_actor` |
+|---|---|
+| 基表 `session_turns` | **有**（attnum 99） |
+| `db/db.go:2990` 的自愈 | 只保证 `request_logs_hot` / `request_logs` |
+| `session_turns_hot_bootstrap.sql`（视图定义） | **0 次出现** |
+| 迁移 713 重建段 | **0 次出现** |
+| 全仓所有同时提到该视图与 origin_actor 的 .sql | **一个都没有** |
+
+**即：视图的 65 列定值投影漏了这一列，而基表有。**
+
+## 3. 唯一相关的测试是绿的，因为它只比字符串
+
+```go
+// domains/sessionsummary/message_source_v2_test.go:155
+if !strings.Contains(v2SessionBodiesBaseQuery, "LEFT JOIN public.session_turns_with_current_month t") { … }
+```
+
+断言的是**文本包含某个 JOIN**。查询本身能不能执行，没有任何一层门在看。
+这是 R79 主段那条结论的又一次同型复现：**「形状核对」这一类门禁在结构上抓不到执行期缺陷。**
+
+## 4. 影响面：两条设置路径都中招 —— 这是定 P1 的理由
+
+```
+main_pipeline.go:1416   if settings.GetPlatformBool("sessions_v2_compression_read", true)   // 默认 true
+                          summaryService.SetMessageSource(sessionsummary.NewPerTurnDigestSource(pool))
+
+NewPerTurnDigestSource = gatedPerTurnDigestSource{
+    digest:   &perTurnDigestSource{pool},        // → sessionTurnDigestQuery    ✗ t.origin_actor
+    fallback: &v2SessionBodiesSource{pool},      // → v2SessionBodiesBaseQuery ✗ t.origin_actor
+}
+```
+
+- 开关 `sessions_summary_per_turn_digest` **开** → 走 digest → 同样缺 `t.origin_actor`
+- 开关关（**默认**）→ 逐字节委托 fallback → 缺 `t.origin_actor`
+
+**两条路都撞同一个列。** 唯一可用配置是把 `sessions_v2_compression_read` 置 false 退回 V1。
+消费面是会话摘要的输入读取（`GenerateSummary` / `GenerateRollingSummary`），
+而 `message_source_digest_test.go` 自己写明「source errors must reach the caller regardless of gate state」。
+
+**定 P1。** 源码常量原文实跑（非手抄）确认：`ERROR: column t.origin_actor does not exist`；
+去掉该谓词后同形查询正常返回 53,851 行。
+
+## 5. 第二例：诊断跑批查询一张不存在的列
+
+普查顺带抓到 `domains/routeincident` 共 **8 处** `42703`：
+
+| 常量 | 缺失 |
+|---|---|
+| `action_infra.go:390 / :479 / :507 / :529`、`evidence.go:149` | `route_key` |
+| `action_infra.go:608 / :666` | `routing_audit_log.reason` |
+
+核对：**基线 `01-schema.sql:7955` 的 `diagnostic_runs` 没有 `route_key`**，真库也没有，
+**全仓没有任何 SQL 给它添加**。`route_key` 只存在于迁移 390 的 `routing_audit_log`——
+**是另一张表**，疑为串表。定 **P1 候选**（本轮未逐个核对全部 8 处的消费面）。
+
+## 6. 新门：把仓内 SQL 常量对真库 PREPARE 一遍
+
+`TestData_GoSQLConstants_PrepareAgainstRealDB`：
+抽取仓内**无 fmt 占位符的完整 DML 语句常量**（160 条），逐条 `PREPARE`。
+PREPARE 只解析+规划**不执行**，所以对本域「主库全程只读」的硬约束无冲突。
+
+**错误必须按 SQLSTATE 分层，不能一律判红**：
+
+| 码 | 含义 | 处置 |
+|---|---|---|
+| `42703` undefined_column | 列真的不存在（已翻遍仓内迁移确认） | **判红** |
+| `42P01` / `42704` / `3F000` | 本机库比代码旧（`outbox_events` 等） | 只记录 |
+| `42501` | 只读角色权限受限 | 只记录 |
+| 其他 | 未预料的形状 | **判红**（fail-closed） |
+
+结果：133 条规划成功 / 9 条已定性登记 / 9 条未分诊 backlog / 9 条本机无法验证。
+
+## 7. 这道门自己又红了四次，全是同一个家族
+
+| # | 门的缺陷 | 现象 |
+|---|---|---|
+| 1 | 抽取器只判「含 SELECT」 | 48 条 `42601` 语法错——其实大部分是 **SQL 片段**（`requestLogsJoins` 是 JOIN 块、`sessionSummarySelectCols` 是列清单）与 DDL 常量，PREPARE 本来就不收 |
+| 2 | 没排除 SQLite | `storage/sqlite/*` 的常量被拿去 PREPARE 到 PostgreSQL，**换了个方言问错服务器** |
+| 3 | 登记键用 `file::name` | `action_infra.go` 有 **6 个同名 `sql` 常量**，自收缩检查命中其中一个后 `delete()` 了登记，**把另外 5 个失败项的理由一起抹掉**，它们随即红在一个与自身 SQL 无关的原因上 |
+| 4 | 同上 | 修法：键加行号 + 内容哈希；且**只报告、绝不遍历中改注册表** |
+
+**第 3 条最值得记**：一道门为了维护自己的白名单，把白名单本身改坏了。
+判据是「同一条目的所有实例必须共用一个键」，而事实是**键不唯一**。
+
+## 8. backlog 用棘轮管，不用永久红
+
+9 条未分诊项**登记而不判红**，理由是已经验证过的失效形态：**长期红的门会让人习惯性忽略它**。
+但登记不等于放过，配三条断言：
+
+- 新增一条无法规划的 SQL（未登记）→ **红**
+- 任一登记项开始能正常 PREPARE → **红**（问题已修，白名单该收缩）
+- `len(backlog) != expectedUntriagedBacklog` → **红**（有人动了 backlog 却不改常量）
+
+**换句话说：这道门今天绿，是因为已知的 9 条被记账了；它不会因为记账而变瞎。**
+
+## 9. 结论与待办
+
+- **P1 ×2**：`origin_actor` 视图漏投影（会话摘要输入读取，两条设置路径都失败）、
+  `diagnostic_runs.route_key` / `routing_audit_log.reason` 缺列（8 处查询，P1 候选）
+- **未分诊 backlog 9 条**（带棘轮），需逐条查基线定性
+- **本机无法验证 9 条**：`internal/outbox/*` 依赖 `outbox_events` 表，本机库比代码旧
+- **未修理由**：视图投影属迁移 + schema 契约决策（`session_turns_with_current_month`
+  有 526/636/640/713 多条重建路径 + 列数契约测试）；补列属迁移决策。审计轮只定位与登记。
