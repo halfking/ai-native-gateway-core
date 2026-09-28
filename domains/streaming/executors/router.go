@@ -212,7 +212,7 @@ func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
 		Sticky:                 sticky,
 		Limiter:                lim,
 		LoadScoreWeights:       DefaultLoadScoreWeights(), // Phase 1: 使用默认权重
-		EnvWeights:             &ew,                      // R48 §3 A2：缓存到 Router
+		EnvWeights:             &ew,                       // R48 §3 A2：缓存到 Router
 		PriorityRoutingEnabled: true,
 	}
 }
@@ -403,6 +403,26 @@ func (r *Router) planCandidates(
 				}
 				candidates = filteredByViews(views)
 				if len(candidates) == 0 {
+					// 2026-09-28 vapeur 轮：authoritative 视图全拒且此处原为静默
+					// return nil，executor 只剩 "availability_check_failed:N" 的
+					// 推断值（UnavailableReason 为空时该字符串是兜底推断），
+					// vapeur 探红事故从请求日志完全无法归因。补一条带视图样本
+					// 的 WARN：下一轮 no-candidates 突发可从单行日志区分
+					// "FilterAndScore 没回视图（无覆盖）"还是"视图显式红"。
+					var viewSample []string
+					for i, v := range views {
+						if i >= 5 {
+							break
+						}
+						viewSample = append(viewSample, fmt.Sprintf("prov=%d cred=%d model=%s avail=%v", v.ProviderID, v.CredentialID, v.RawModel, v.Available))
+					}
+					slog.Warn("router: URSM v2 authoritative view filtered out every candidate",
+						"request_id", requestID,
+						"model", canonical,
+						"input_candidates", len(seeds),
+						"views_returned", len(views),
+						"view_sample", viewSample,
+					)
 					return nil
 				}
 			}
@@ -1775,7 +1795,7 @@ func SortByCompositeScore(candidates []provider.Candidate, weights ScoringWeight
 // 2026-07-04: 单候选者降级逻辑
 //
 // 2026-07-14: 增加 StateManager 感知。可用性过滤不修改候选结构体，被内存态
-//（state:timeout / state:rate_limit 等）过滤掉的候选
+// （state:timeout / state:rate_limit 等）过滤掉的候选
 // UnavailableReason() 仍是空串。若不在此处补查 StateManager，单点候选被瞬态内存态
 // 拒绝时降级永远不触发，直接 0 节点 503（生产事故 ba9fc64f 即此路径）。
 // 查询的 reason 与 PlanCandidates 统计分支（router.go reasonCounts）同源：
