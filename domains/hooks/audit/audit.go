@@ -109,7 +109,20 @@ func isInterruptionCode(s string) bool {
 		"eof_mid_tool_call",
 		// 2026-08-02: mid-stream integrity abort (looping model cut
 		// short by the incremental repeated-content rule).
-		"integrity_repeated_content":
+		"integrity_repeated_content",
+		// 2026-09-29 (24h 审计二十一轮): 空响应族。四座桥都以
+		// MarkInterruptedWithReason 上报「上游 200 零内容」
+		// （responses_bridge.go 的 anthropic_/openai_empty_response、
+		// stream.go 的 empty_stream_no_content/early_empty_detection），
+		// 但此前不在白名单——failure_detail_code 恒缺席，
+		// streamErrorKindForDetailCode 落兜底 stream_error，
+		// llm_gateway_empty_response_attempts_total（R45 落地、二十轮
+		// 才接线）在生产恒零。入白名单后该族进 empty_response
+		// ErrorKind + 空响应指标，且凭据详情按真实失败展示。
+		"anthropic_empty_response",
+		"openai_empty_response",
+		"empty_stream_no_content",
+		"early_empty_detection":
 		return true
 	}
 	return false
