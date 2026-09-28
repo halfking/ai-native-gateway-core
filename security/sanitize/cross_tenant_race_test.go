@@ -5,7 +5,7 @@
 // 覆盖：
 //   - 同一 sessionID 不同 tenant 并发请求：每个 tenant 只看到自己的占位符映射表；
 //   - 同一 (tenant, session) N 个 goroutine 并发请求：所有 placeholder index 唯一且连续；
-//   - allocateOffsets 原子性：并发 N 次分配，每类的 index 累加精确等于 N×M；
+//   - 跨请求 offset 分配：并发 N 次分配，每类的 index 累加精确等于 N×M；
 //   - Restore 拦截器跨租户不会读到对方的 map。
 package sanitize
 
@@ -60,7 +60,7 @@ func (rm *raceMiddleware) fireRequest(t *testing.T, tenantID, sessionID, body st
 		req.Header.Set("X-Gw-Session-Id", sessionID)
 	}
 	if tenantID != "" {
-		req.Header.Set("X-Gw-Tenant-Id", tenantID)
+		req = req.WithContext(WithAuthenticatedTenant(req.Context(), tenantID))
 	}
 	var captured string
 	handler := rm.mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +143,7 @@ func TestSanitizeMiddleware_CrossTenantIsolation_Concurrent(t *testing.T) {
 // 失败模式（修复前）：read-modify-write race 导致两个 goroutine 都读到 phone=5，
 // 都生成 phone:6 占位符 → 同一 phone:6 出现两次，sanitizeMap 互相覆盖，
 // LLM 看到的占位符与最终还原时的 map 不一致。
-// 修复后：Lua/HINCRBY 单脚本原子分配，phone offset 从 0 累加到 N（= goroutines 次数）。
+// 修复后：Redis lease 保护读取/分配，Lua 校验 lease 并原子提交 map+offset。
 func TestSanitizeMiddleware_AllocateOffsets_NoIndexLeak(t *testing.T) {
 	rm := newRaceMiddleware(t)
 	defer rm.cleanup()
@@ -194,7 +194,7 @@ func TestSanitizeMiddleware_AllocateOffsets_NoIndexLeak(t *testing.T) {
 }
 
 // TestSanitizeMiddleware_AllocateOffsets_MultiType 验证多类型并发：每个 goroutine
-// 的请求同时产生 phone 和 email，Lua 必须为两类独立原子预占。
+// 的请求同时产生 phone 和 email，提交必须为两类保持独立高水位。
 func TestSanitizeMiddleware_AllocateOffsets_MultiType(t *testing.T) {
 	rm := newRaceMiddleware(t)
 	defer rm.cleanup()
@@ -259,7 +259,7 @@ func TestSanitizeRestoreInterceptor_CrossTenant_DoesNotLeakMap(t *testing.T) {
 	require.NotContains(t, string(result.ModifiedBody), "{SENSITIVE:")
 }
 
-// TestSanitizeMiddleware_NilTenantHash_FallsBackToUnknown 并发验证：缺 tenant header
+// TestSanitizeMiddleware_NilTenantHash_FallsBackToUnknown 并发验证：缺可信 tenant context
 // 的请求都落到 _unknown sentinel 桶（共用一个 hash），但不同 (sid) 仍隔离。
 func TestSanitizeMiddleware_NilTenantHash_FallsBackToUnknown(t *testing.T) {
 	rm := newRaceMiddleware(t)
@@ -274,7 +274,7 @@ func TestSanitizeMiddleware_NilTenantHash_FallsBackToUnknown(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			body := `{"model":"m","messages":[{"role":"user","content":"phone 13800138000"}]}`
-			// 不设 X-Gw-Tenant-Id → 落到 sentinel
+			// 不设可信 tenant context → 落到 sentinel
 			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("X-Gw-Session-Id", sessionID)

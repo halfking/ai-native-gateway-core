@@ -82,8 +82,12 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 	}
 
 	// 企业微信渠道
-	if wechatCorpID := os.Getenv("WECHAT_CORP_ID"); wechatCorpID != "" {
-		wechatCorpSecret := os.Getenv("WECHAT_CORP_SECRET")
+	// 2026-09-29 (12h 审计二十轮 P1): 修复双路径分裂。config/config.go:262
+	// 声明并文档化了 LLM_GATEWAY_WECHAT_* 前缀形态，但这里此前只读无前缀
+	// 旧形态，照文档配 env 会静默失效（见 docs/audit/2026-09-28 死管道扫描）。
+	// 现在优先读文档面前缀，回退无前缀旧形态以兼容既有部署。
+	wechatCorpID, wechatCorpSecret := wechatCredsFromEnv()
+	if wechatCorpID != "" {
 		wechatCfg := notification.WeChatConfig{
 			CorpID:     wechatCorpID,
 			CorpSecret: wechatCorpSecret,
@@ -110,6 +114,21 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 	}
 
 	return notifier, larkCh, nil
+}
+
+// wechatCredsFromEnv 解析企业微信渠道凭据，优先 config/config.go:262 声明
+// 并文档化的 LLM_GATEWAY_WECHAT_* 前缀形态，回退无前缀旧形态（兼容既有
+// 部署）。2026-09-29 二十轮审计前只有旧形态被读，文档面配置静默失效。
+func wechatCredsFromEnv() (corpID, corpSecret string) {
+	corpID = os.Getenv("LLM_GATEWAY_WECHAT_CORP_ID")
+	if corpID == "" {
+		corpID = os.Getenv("WECHAT_CORP_ID")
+	}
+	corpSecret = os.Getenv("LLM_GATEWAY_WECHAT_CORP_SECRET")
+	if corpSecret == "" {
+		corpSecret = os.Getenv("WECHAT_CORP_SECRET")
+	}
+	return corpID, corpSecret
 }
 
 // dingTalkConfigFromSettings 从 dingtalk_bot.* 模块设置构造钉钉渠道配置。

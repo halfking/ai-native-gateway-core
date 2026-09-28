@@ -1448,3 +1448,373 @@ armor      870ms × 1 次/天 = 0.87 秒/天  （tick = 24h）
 本轮 `go_sql_constant_prepare_test.go`（PREPARE 真库）覆盖了这条 SQL 且未报 42703，
 说明该语句当前合法。**文本断言守不住列漂移，PREPARE 才守得住**——这是
 续五那道门存在的理由，本轮又一次得到印证。
+
+## R79 续十四 · tool_usage_stats：代码里写着 ≠ 会执行（P1 降 P2）
+
+前 6 个 P1 里剩下的是列名/缺列类。`tool_usage_stats` 这条是改动面最小的
+（纯列名问题），本打算直接出方案。动手前先核一遍可达性，结果定级翻了。
+
+### 我之前记的「两个列名漂移」是错的
+
+`domains/toolexecution/postgres_store.go` 的 INSERT 用 15 个列名，真库只有 11 列，
+**12/15 个列名不存在**：
+
+| 代码里的列 | 真库实际 |
+|---|---|
+| `tool_name` / `date` | `tool_id` / `usage_date` |
+| `total_calls` / `success_calls` / `failed_calls` | `call_count` / `success_count` / `error_count` |
+| `avg_duration_ms` | `avg_latency_ms` |
+| `p50_duration_ms` / `p95_duration_ms` / `p99_duration_ms` | **不存在** |
+| `unique_users` / `unique_sessions` / `top_users` | **不存在** |
+
+`ToolUsageStats` 结构体（`types.go:107-131`）有 17 个字段，**依赖 6 个不存在的统计维度**。
+所以修法不是改名，是路线选择：**加 8 列迁移** vs **改代码降级到现有 11 列**——
+后者会丢掉 3 个分位数和 3 个去重维度。属 owner 决策。
+
+### 真正的发现：整条统计写入路径零调用方
+
+| 方法 | 生产调用点 |
+|---|---|
+| `StatsAggregator.AggregateDaily` | **0** |
+| `Store.SaveStats`（含全部错列的 INSERT） | **0**（仅被 `AggregateDaily` 调） |
+| `Store.ListToolNamesWithActivity` | **0**（仅被 `AggregateDaily` 调） |
+
+`grep` 出的 `AggregateDailyProfiles` 是 providerprofile 的**另一个同名方法**，
+不是 `toolexecution.StatsAggregator.AggregateDaily`——名字相似极易误判成有调用方。
+
+**所以那 12 个错列从来没有被 PostgreSQL 执行过。** 它不是「线上故障」，
+是一段**从未跑过的代码**。P1 是虚报，降 **P2**。
+
+### 但缺陷是真的，而且更阴险
+
+`AggregateDaily` 里每个工具的失败只 `slog.Error` 计数，函数**返回 nil**
+（`stats_aggregator.go:60-84`）。也就是说：**一旦有人补一个每日 02:00 的定时任务**，
+每条 INSERT 都会 42703，而调用方看到的是 `err == nil`，**以为聚合成功了**。
+
+Hook 本身是活的（`main.go:3265` 注册，`Tracker` 写 `public.session_tools_hot`，
+R30 审计修过）。所以形态是：**执行明细在写，聚合统计不写**。
+
+### 两条证据必须分开（本轮的方法论要点）
+
+| 证据 | 能不能用 |
+|---|---|
+| `AggregateDaily` 零调用方 | ✅ **代码事实，与流量无关**，是定级依据 |
+| `tool_usage_stats` / `session_tools` 都是 0 行 | ❌ **本机是无流量的开发库**，空表属正常，不能当缺陷证据 |
+
+我差点用第二条去论证第一条。**「表是空的」在开发库上不是发现。**
+
+### 本轮第四次定级纠正，四次共性
+
+| # | 纠正 | 我犯的错 |
+|---|---|---|
+| 1 | session_bodies P2→P3 | 把**峰值**当分布 |
+| 2 | armor「补索引」作废 | 把 **cost 估算**当执行时间 |
+| 3 | journal_snapshot_receipts P2→P3 | 把**相对倍数**当绝对成本 |
+| 4 | **tool_usage_stats P1→P2** | 把**形态相似**当可达 |
+
+第 4 条是最容易犯的：**代码里写着某段 SQL，只说明它被写下来了，不说明它会执行。**
+判「某缺陷是否已造成影响」时，**可达性（谁调它）优先于形态（它看起来像在跑）**。
+
+## R79 续十五 · 可达性登记门：潜伏缺陷被接线的那一刻
+
+续十四证明了「形态相似 ≠ 可达」，但那是一张**静态贴纸**——今天核实过了，明天有人
+把 `reasoncap.NewPGSource` 接上线，审计文档不会响。这道门就是那个响声。
+
+`TestData_SchemaMismatch_ReachabilityIsStillAccurate`（不需要连库，只读源码）：
+登记 4 条 schema 不匹配发现，每条带一个**可机械复核的锚点**（AST 层面的
+`pkg.Symbol`），断言其实测调用点数与登记一致。三种红法：
+
+| 情形 | 门说什么 |
+|---|---|
+| 登记 ORPHAN，今天有调用 | 「那段与真库不匹配的 SQL 现在会执行了，**这是本门存在的理由**」 |
+| 登记 LIVE，今天零调用 | 「别让它悄悄退化成潜伏陷阱，请改判为无调用方并重估定级」 |
+| 条数与棘轮不符 | 指名差几条 |
+
+当前 4 条：**活接线 2、潜伏 2**。
+- 潜伏：`toolexecution.tool_usage_stats`（12/15 错列）、`reasoncap.model_aliases.alias`
+- 活接线：routeincident 两处缺列（`main.go:3554`）、`session_turns` 视图漏投影
+  `origin_actor`（`main_pipeline.go:1416` + `:1185`）
+
+### 门自己暴露的三个问题（都由首跑与变异检验抓出，不是 review）
+
+**1. 假绿：map 取错了 key。**
+```go
+for _, sym := range needles { ... }   // 拿到的是 value（登记名字），不是 key（symbol）
+```
+于是 `res` 的 key 全是登记名，而后面查的是 `out[f.symbol]`（真 symbol），
+**所有匹配恒为 0**——两条 ORPHAN 登记「碰巧对了」。**门在自己身上制造了假绿**，
+而它绿着的原因恰好是最危险的那一类：潜伏项被判成潜伏。
+
+**2. 假阳性：文本匹配把注释当调用点。**
+`credentialquota/postgres.go` 的注释 `// NewPGSource wraps a *pgxpool.Pool...`
+会让 `reasoncap.NewPGSource` 之外的同形文本命中。
+
+**3. 假阴性：用正则剥注释反而更糟。**
+`//` 与 `/*` 会在字符串字面量里出现（`"https://..."`、SQL 注释），正则会从那里
+一路吞到行尾或下一个 `*/`，**把真实代码一起删掉**。剥离注释后
+`routeincident.NewObserver` 从 1 变 0 就是这么来的。
+
+**修法：判「有没有调用」就在 AST 层面判**，用 `go/parser` 找 `SelectorExpr`。
+注释和字符串根本不进 AST，两个问题一起消失。
+
+### 变异检验：锚点必须指向「接线」而不是「构造」
+
+第二次变异**没红**，又抓到一个真问题。我用 `routeincident.NewObserver`（构造函数）
+当锚点，于是摘掉 `AddOnRequestLogPersisted(incidentObserver.AsHook())` 那一行后，
+`main.go:3545` 的构造调用仍在，门全绿。
+
+**构造了不等于挂上了。** 可达性指的是「缺陷路径真的接进了请求链路」，
+不是「有人 new 了这个对象」。锚点改成 `incidentObserver.AsHook`（注册点）后：
+
+| 变异 | 门的反应 |
+|---|---|
+| 给 `reasoncap.NewPGSource` 加一处调用 | 红「登记为无生产调用方，但今天找到 1 处调用：internal/paramguard/guard.go」+「这是本门存在的理由」 |
+| 摘掉 `incidentObserver.AsHook` 注册 | 红「它可能已被摘掉或改名——别让它悄悄退化成潜伏陷阱」 |
+
+### 顺带：fail-closed 抓到了并发会话的冲突中间态
+
+AST 解析在健康树之外立刻抓到 7 个 `<<<<<<<` 冲突文件（并发会话遗留）。
+门把「工作区冲突态」与「代码解析失败」分成两条红因——前者是瞬时状态不是缺陷，
+但覆盖率缺口必须可见（会报出具体文件，冲突解决后自动覆盖）。
+
+> 这也是本轮第二次工具性陷阱的教训：**`grep | head -N` 的截断会制造假零命中**。
+> 我一度用 `head -6` grep `AsHook()`，结论「零调用方」——`main.go:3554` 正好被截掉。
+> **判「零命中」之前先确认没有截断。**
+
+## R79 续十六 · 修掉一个 P1：origin_actor 投影（真库事务内完整验证）
+
+前 6 轮都在「登记与定级」，这一轮**真的修掉一个**。修法先验证、后落迁移。
+
+### 缺陷与影响（重新刻画）
+
+`session_turns_with_current_month` 的 SELECT 列表漏了 `origin_actor`，
+而基表 `session_turns` 与 `session_turns_hot` 都有（attnum 99）。
+两条生产 SQL 引用它，两条设置路径都踩：
+
+```
+main_pipeline.go:1184  NewV2SessionBodiesSource  → SessionMetadataCloseHook
+main_pipeline.go:1416  NewPerTurnDigestSource（sessions_v2_compression_read 默认 true）
+  └ 内部 digest / fallback 两条都引用 t.origin_actor
+```
+
+**运行时证据（不是「空表」那类弱证据）**：`session_analysis_metadata` 有
+**147,358 行，全部是 `status='provisional'`，`final` 是 0 行**。而 close hook 的
+注释明写「UPSERTs status=**final**」。表不是空的，但**只有那条坏路径才会写的状态是零行**
+——这比空表更强，它排除了「表根本没被用」的解释。
+
+失败被吞：`session_metadata_close_hook.go:47-53` 出错只 `logger.Warn` 并 `return nil`。
+所以是「**每次会话关闭都失败，且完全静默**」。
+
+读侧是 `ORDER BY (sam.status='final') DESC, sam.updated_at DESC LIMIT 1`，
+取不到 final 就退回 provisional ⇒ **优雅降级**，不是功能不可用。定级 P1 时
+如实记成「终态永不落库」。
+
+顺带一个反直觉的数据：`origin_actor` 的实际取值是
+`node-probe-worker`(755,213) / `probe-service`(187,985) / `auto-summary-generator`(128)，
+**`goal-%` 影子轮 0 行**。所以排除谓词当前**一行都过滤不掉**——
+P1 的形态是「查询整体失败」，不是「过滤逻辑错」。
+
+### 修法验证：真库事务内跑完整流程，再回滚
+
+`CREATE OR REPLACE VIEW` 必须给完整定义。验证在真库上用 `BEGIN … ROLLBACK` 做
+（DDL 是事务性的，回滚后零持久变更，不违反本域只读约束）：
+
+```
+pre-check  ok: 54 columns, no origin_actor yet
+CREATE VIEW
+post-check ok: 55 columns incl. origin_actor
+SELECT cols = 55
+PREPARE p_v2   → 无 ERROR
+PREPARE p_dg   → 无 ERROR
+ROLLBACK
+复核：54 列、origin_actor = 0     ← 零持久变更
+```
+
+同一份 DDL 事先也在 temp schema 里单独验证过（两边都能过）。
+**双向证实**：修法可行 + 当前确实坏（未修的线上视图 PREPARE 直接 42703）。
+
+### 迁移 757：自校验 + 顶层执行
+
+`sql/migrations/startup/757_session_turns_origin_actor_projection.sql`（+ `.down.sql`）
+采用**顶层 CREATE OR REPLACE + 前后两个 DO 断言**。两处原因：
+
+1. **不能硬编码旧列数**。我第一次用正则数 view 定义得 53，真库权威值是 **54**
+   （`SELECT hot.id,` 行首不是空白，被正则漏掉）。改为执行前动态取 `old_cols`。
+2. **DDL 必须顶层执行**，见下。
+
+### 一个足以毁掉整个迁移的静默陷阱
+
+自校验第一次跑就红了：
+
+```
+ERROR: column drift after rewrite: expected 55, got 54 — ROLLBACK
+```
+
+排查结果：**`CREATE OR REPLACE VIEW` 包在 `DO $$ ... EXECUTE $ddl$...$ddl$; $$` 里，
+在 PL/pgSQL 中静默无效**——不报错、视图不变、**前后自校验全部照常通过**。
+
+对照实测（PG 17.10，同一事务）：
+
+| 写法 | 结果 |
+|---|---|
+| 顶层 `CREATE OR REPLACE VIEW` | **55 列** ✓ |
+| DO 块内 `EXECUTE $ddl$…$ddl$` | **54 列，不报错** ✗ |
+| DO 块内 `DROP VIEW CASCADE` + `CREATE VIEW` | 55 列（但 CASCADE 会级联删依赖视图，不可用） |
+
+**一个「有前后自校验的迁移」可以完全什么都没做而不被任何人发现。**
+如果我没在真库事务里真跑一遍，这份迁移会带着完美的断言和零的效果进主干。
+
+### 门：TestData_OriginActorFix_MigrationIsShippedAndNotSilentlyDisabled
+
+与 PREPARE 门配对：PREPARE 门把这两条记为「已修复待应用」以保持绿
+（真库应用 757 后它会变成「未登记的失败」⇒ 门红并提示删登记），
+本门保证**那份修复没有在后续提交里被悄悄废掉**。
+
+三条断言：UNION 两半各恰好一处 `origin_actor` / 顶层 CREATE OR REPLACE 存在且
+**未被包进 `EXECUTE $ddl$`** / 后置断言（post-check）存在。
+
+变异 2 处，全部指名：
+
+| 变异 | 门的反应 |
+|---|---|
+| DDL 改回 DO 块包装 | 红「顶层执行后列数 53→55，包在 EXECUTE 里则保持 54 不变且不报错——静默无效…请改回顶层执行」 |
+| 删掉 UNION 一半的投影 | 红「`session_turns.origin_actor` 出现 0 次（期望 1）。UNION ALL 的两半各需一列」 |
+
+**门自己又踩了一次同一个坑**：第一版用 `strings.Contains(up, "EXECUTE $ddl$")`，
+而迁移文件头的「踩坑记录」里**提到**了这个坏写法 ⇒ 门误报。改为先剥离 SQL 注释再检查。
+（这是「文本匹配不区分代码与注释」在两天内的第二次：可达性门拿注释当调用点，
+这次拿注释当坏写法。**注释里的提及不是代码。**）
+
+### 交付
+
+- `757_session_turns_origin_actor_projection.sql` + `.down.sql`（down 明确标注
+  **不要在生产执行**——那等于把 P1 原样装回去）
+- PREPARE 门两条登记改为「已修复待应用」+ 新增守修复的门
+- 本地开发库**未应用**迁移（保持只读契约）；真库上验完即回滚
+
+## R79 续十七 · 修掉第二个 P1：routeincident 四处缺列（迁移 758）
+
+与续十六同一流程：先核实三方一致 → 真库事务内验修法 → 落自校验迁移 → 门 + 变异。
+
+### 缺陷比先前记的更广：不只 2 列，是 4 列
+
+`diagnostic_runs` 真库 13 列，代码 INSERT 用 12 列，缺的不止 `route_key`：
+
+| 代码里的列 | 真库 |
+|---|---|
+| `route_key` | **不存在** |
+| `parameters` | **不存在** |
+| `result` | **不存在** |
+| （真库另有 4 列代码没用到）| `heartbeat_at` / `trigger_source` / `error` / `summary_json` |
+
+加上 `routing_audit_log` 缺 `reason`（真库 21 列，有 `failure_reason` 但语义不同），
+本轮共 **4 列**。此前只记了 `route_key` 与 `reason` 两处。
+
+三方一致核实：基线 `01-schema.sql` 的 `diagnostic_runs` = 13 列无 `route_key`；
+真库 `pg_attribute` 同样 13 列；迁移链 `grep ADD COLUMN` 只命中**别的表**的列
+（`compression_reason` / `handoff_reason` / `last_trigger_reason` / `reasoning_tokens`），
+**从未给这两张表加过**。
+
+### 可达性（这才是 P1 的依据）
+
+`main.go:3554` `AddOnRequestLogPersisted(incidentObserver.AsHook())` → `Transition`
+→ `writeAudit` → `persistRunInTx`，**每条落库的请求日志都走**。
+加重因素：`MaxRetries: 4` 使重试循环 attempt 0..4 跑满 5 次，而 **42703 是永久性错误**
+（列不会因重试而出现），重试纯属浪费，耗尽后只 `slog.Warn` 不升级。
+
+### 修法：纯加列，代码零改动 —— 这一点是实测出来的
+
+`route_key`/`parameters`/`result` 在 `actions.go:100-104` 是 `map[string]any`，
+代码传 `json.Marshal` 的 `[]byte`。风险点是 pgx v5 默认把 `[]byte` 当 `bytea`，
+而 SQL 里**没有** `::jsonb` 转换，靠 PG 从目标列反推参数类型。
+
+这不能靠推断。用 pgx v5 在 **TEMP TABLE** 上复刻真实 INSERT 形态实测：
+
+```sql
+INSERT INTO probe_diag (id, …, route_key, parameters, …, result, …)
+VALUES ($1,…,$6,$7,…,$10, now(), now())   -- 无 ::jsonb，Go 传 []byte
+→ INSERT 成功，回读 route_key = {"model": "glm-5.3", "credential": "c-1"}
+```
+
+**结论：只加迁移、不改代码。** 全程只用 TEMP TABLE，未触碰任何真库表。
+
+`reason` 用 `character varying(256)`：`MaxReasonLen = 256` 且 `sanitizeReason` 按
+**rune** 截断，而 PostgreSQL 的 `varchar(n)` 同样按**字符**计（UTF-8 下中文不溢出）——
+两边语义一致。顺带避开了 `sanitizeReason` 里 byte 长度判断混用 rune 截断的隐患。
+
+### 真库事务内完整验证（回滚后零持久变更）
+
+```
+迁移后  diagnostic_runs 13 → 16      routing_audit_log 21 → 22
+PREPARE 源码两条 INSERT              均无 ERROR
+ROLLBACK
+独立复核  13 | 21 | route_key 计数 0
+```
+
+> **顺带纠一个我自己记错的数字**：此前多份文档写「真库 routing_audit_log 22 列」，
+> 实测是 **21 列**（22 是加完 `reason` 之后的数）。回滚复核把它暴露出来了，已在
+> 可达性门的登记里更正。这是本会话第 5 次自我纠正（4 次定级 + 1 次数字）。
+
+### 门与变异
+
+`TestData_RouteIncidentFix_MigrationIsShippedAndNotSilentlyDisabled`（与 757 那道同构）
+四类断言：四个目标列都在 / DDL 在顶层且顶层 `ALTER TABLE` ≥2 处 / 后置断言存在**且读
+`information_schema.columns`** / `route_key` 是 `jsonb` 而非 `text`。
+
+变异 4 处，全部指名：
+
+| 变异 | 门的反应 |
+|---|---|
+| 删掉 `result` 列 | 红「缺 diagnostic_runs.result 的 ADD COLUMN —— 该 INSERT 仍会 42703」 |
+| ALTER 包进 DO 块 EXECUTE | 红「DDL 包进了 DO 块的 EXECUTE —— 静默无效…请改回顶层 ALTER」 |
+| `route_key` 落成 `text` | 红「route_key 不是 jsonb —— 实测 pgx 能把 []byte 直接绑到 jsonb 列；落成 text 就绑不上了」 |
+| 删掉后置断言 | 红「缺少后置断言（post-check）」 |
+
+**第四个变异值得单说**：后置断言那一行是
+「后置断言必须**读系统目录**确认列真的加上了，只写 `RAISE NOTICE` 不算自校验」。
+理由直接来自续十六的发现——一个只 `RAISE NOTICE` 的自校验，正是让「静默无效的 DDL」
+畅通无阻的原因。
+
+另：PREPARE 门里 routeincident 的 6 条登记全部改为「已修复待应用」，
+真机应用 758 后它们会变成「未登记的失败」⇒ 门自动转红并提示删登记。
+
+## R79 续十八 · 收口验证：757 没有破坏 113/115 列冻结契约
+
+续十六改的视图是 `session_turns_with_current_month`（54→55 列），而 113/115 冻结契约
+约束的是**另一个**视图 `request_logs_with_current_month`。二者同名相近，容易被当成
+同一件事，所以实跑一次而不是靠推理。
+
+### 三层检查
+
+**① 自愈重建链会不会撤销我的加列？** `db/request_logs_view_schema.go` 有一条
+「自愈重建链」，如果它也重建 turns 视图，迁移 757 就会被启动时悄悄回滚。
+
+实查：该文件里的重建目标是 `request_logs_with_current_month` 及其两个包装视图
+（`_without_request_class_due_at` / `_without_customer_id`），**不含
+`session_turns_with_current_month`**。又 grep 全仓 Go 侧的
+`CREATE … VIEW … session_turns` —— **零命中，没有任何 Go 侧重建链**。
+⇒ 迁移 757 只由迁移链决定，不会被应用侧撤销。
+
+**② 列序与列数真的没被动？** 真库事务内，迁移前后各取一次
+`request_logs_with_current_month` 的完整列清单：
+
+```
+迁移前  115 列   id,request_id,ts,…,is_final_success,origin_actor,customer_id,…,client_ip
+迁移后  115 列   id,request_id,ts,…,is_final_success,origin_actor,customer_id,…,client_ip
+        ↑ 两次清单逐字节完全相同
+同时    session_turns_with_current_month  54 → 55
+ROLLBACK
+```
+
+**③ 一个意外但有用的旁证**：115 列视图**自己就有 `origin_actor`**（位于
+`is_final_success` 之后）。也就是说同一张基表系列的另一条路径早就正确投影了它，
+`db/db.go:2990` 的「只保证 request_logs 有该列」属实——**turns 视图是唯一漏掉的那个**。
+
+这让修复方向多了一层佐证：不是「给它加一个新列」，而是「补上一个同族视图早已
+存在的投影」，与既有契约一致而不是引入新形状。
+
+### 顺带确认冻结契约的守卫在哪
+
+`db/request_logs_view_schema.go:174-179` 里有一条列数守卫：列数不在 `{113,115}`
+就 `keeping v1 body`（不升级到 v2 体）。所以这个契约**有运行时守卫**，
+不只活在测试里——这解释了为什么它值得被认真对待，而不是随手改个数字。

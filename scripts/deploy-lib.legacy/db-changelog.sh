@@ -236,6 +236,9 @@ _deploy_pending_startup_migrations() {
     [[ -f "$f" ]] || continue
     base=$(basename "$f")
     [[ "$base" == *.down.sql ]] && continue
+    # 755 requires an operator check for external pg_cron/jobs before DROP.
+    # Keep the automatic pending-file scanner from bypassing that gate.
+    [[ "$base" == "755_drop_dead_cleanup_expired_session_turn_logs.sql" ]] && continue
     [[ "$base" == *.skip ]] && continue
     [[ "$base" == *.bak.skip ]] && continue
     ver=$(echo "$base" | grep -oE '^[0-9]+' || true)

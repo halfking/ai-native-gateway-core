@@ -651,6 +651,14 @@ files=(
   # 编号：模板原写 746，已被 report_snapshots_internal_dims 占用；750~753
   # 亦已占用，故取复核时的首个空闲号 754。
   "$ROOT_DIR/sql/migrations/startup/754_archive_request_logs_default.sql"
+  # 756 makes 754's id cursor index-backed on upgraded databases. Build at
+  # a controlled migration window because the non-concurrent index takes a
+  # write-blocking lock on existing request_logs partitions.
+  "$ROOT_DIR/sql/migrations/startup/756_request_logs_id_index.sql"
+  # 757/758 repair production read/write contracts. Both are idempotent and
+  # also registered in the installer for fresh databases.
+  "$ROOT_DIR/sql/migrations/startup/757_session_turns_origin_actor_projection.sql"
+  "$ROOT_DIR/sql/migrations/startup/758_routeincident_missing_columns.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

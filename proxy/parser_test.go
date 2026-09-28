@@ -11,6 +11,7 @@ import (
 )
 
 func TestMultiFormatParserFetchRedactsHTTPErrorBody(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_PROXY_SUBSCRIPTION_ALLOW_PRIVATE", "true")
 	secret := "subscription-password-123"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("User-Agent"); got != defaultParserUserAgent {

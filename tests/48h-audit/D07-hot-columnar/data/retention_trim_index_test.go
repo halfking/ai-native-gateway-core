@@ -161,12 +161,15 @@ var knownRetentionDefects = map[string]string{
 	// 本仓已有两个生产用例是这个形态：bg/session_summaries_trimmer.go:122、
 	// domains/attachments/repository.go:294 —— 改法不需要任何迁移。
 	//
-	// 真缺陷仍是删除吞吐倒挂（写 6,318/天 > 删 5,000/天，LIMIT 5000 硬编码）。
-	// 改形态把每轮成本降到 1/124 之后，提高批量上限才安全（两者一起做）。
-	"armor_judgments": "P1 armor_judgments：真缺陷是删除吞吐倒挂（写 6,318/天 > 删 5,000/天，硬编码 LIMIT 5000），" +
-		"不是缺索引——补 (created_at) 索引收益≈0（763ms→732ms，噪声内）且增加写入维护成本。" +
-		"**修法 = 把 `id IN (SELECT id ...)` 改成 `ctid IN (SELECT ctid ...)` 并去掉 ORDER BY：" +
-		"实测 870.7ms → 7.0ms（124 倍），零迁移、本仓已有两处同形态先例**；随后再提高批量上限",
+	// **2026-09-29 二十轮已修**：bg/audit_trimmer.go armor 段已改 ctid 形态 +
+	// 去 ORDER BY + 按批循环（20 批 × 5000/天，写 6,318/天的吞吐倒挂闭合）。
+	// 本条登记**继续保留**：created_at 仍不是任何索引的首列（ctid 形态下内层
+	// Seq Scan 仍在，只是 7ms/批可忽略），门仍会扫到本表。若将来有人改回
+	// id 形态或加 ORDER BY，本登记的实测数据就是回滚依据。
+	"armor_judgments": "已修注记 armor_judgments：DELETE 形态已改 ctid + 去序 + 批循环（2026-09-29 二十轮，" +
+		"bg/audit_trimmer.go），吞吐倒挂（写 6,318/天 > 删 5,000/天）已闭合。" +
+		"登记保留原因：created_at 仍非任何索引首列——对 ctid 形态无成本影响（Tid Scan 7ms/批），" +
+		"但门按首列判据仍会扫到。改回 id IN / ORDER BY 形态前先读本注记顶部的 124 倍实测。",
 
 	// P3（原 P2，本轮实测后降级）：三条索引首列分别是 claim_until(partial)、
 	// tenant_id、identity 复合，**没有一条以 updated_at 开头**。形态上最可疑的一条
@@ -195,11 +198,14 @@ var knownRetentionDefects = map[string]string{
 	//（LIMIT 会提前终止），不能当已证实的成本上报。
 	// 仍定 P2 的理由是**速率**而非扫描成本：写入仅 318 行/24h ≪ 删除能力 5,000/天，
 	// 积压 13.5 天自行收敛。
-	"candidate_failure_logs": "P2 candidate_failure_logs：83,289 行 / 105MB 活跃分区，ts 仅作 4 条复合索引的第二列；" +
-		"**实测：瓶颈是 `ORDER BY ts` 逼出的全量 Sort（top-N heapsort 吃 67,608 行），不是索引——" +
-		"补 (ts) 索引 411ms→367ms 无用，去掉 ORDER BY 后 19ms（**22 倍**）。修法同 armor_judgments：改 ctid 形态 + 去 ORDER BY**；" +
-		"写入 318/24h ≪ 删除 5,000/天，积压 13.5 天可消化故非 P1。" +
-		"注：cost 10,646 与「13.6x 放大」是估算，未实测执行时间（LIMIT 提前终止）",
+	//
+	// **2026-09-29 二十轮已修形态**：bg/opslog_trimmer.go cfl 段已改 ctid + 去 ORDER BY
+	//（411ms→19ms，22 倍）。登记保留原因同 armor_judgments：ts 仍非首列，门按首列
+	// 判据仍会扫到；本条降级为「已修注记」防止下轮误当未修缺陷重复排查。
+	"candidate_failure_logs": "已修注记 candidate_failure_logs：DELETE 形态已改 ctid + 去序（2026-09-29 二十轮，" +
+		"bg/opslog_trimmer.go，411ms→19ms）。写入 318/24h ≪ 删除能力，无吞吐风险。" +
+		"登记保留原因：ts 仅作 4 条复合索引第二列，门按首列判据仍会扫到（对 ctid 形态无成本影响）。" +
+		"cost 10,646 与「13.6x 放大」是估算，未实测执行时间（LIMIT 提前终止）",
 
 	// P3：0 行，365 天保留期，尚未到达触发规模。tested_at 是 3 条索引的第二列。
 	// 登记而不是豁免，是为了等它长起来时这条信息还在，而不是重新普查一遍。

@@ -76,8 +76,8 @@ sequence=$(awk '/^files=\(/{inside=1} inside{print} inside && /^\)/{exit}' "$SCR
 # sequence comments), so they stay excluded here by design.
 for required in 655 560 572 606 563 564 644 645 650 651 652 653 654 656 659 660 661 662 663 664 V371 \
                 666 667 668 669 670 671 672 673 674 675 676 677 678 679 680 681 682 683 684 685 \
-                686 693 694 695 696 697 698 699 700 701 703 744 745 746 800; do
-  printf '%s\n' "$sequence" | grep -q "${required}_" || {
+                686 693 694 695 696 697 698 699 700 701 703 744 745 746 756 757 758 800; do
+  grep -q "${required}_" <<<"$sequence" || {
     printf 'missing sequence entry: %s\n' "$required" >&2
     exit 1
   }
@@ -94,7 +94,7 @@ top_startup=$(ls "$ROOT_DIR"/sql/migrations/startup/*.sql 2>/dev/null \
   | grep -v '\.down\.sql$' \
   | sed -E 's#.*/([0-9]{3})_.*#\1#' | sort -n | tail -1)
 if [[ -n "$top_startup" ]]; then
-  printf '%s\n' "$sequence" | grep -q "${top_startup}_" || {
+  grep -q "${top_startup}_" <<<"$sequence" || {
     printf 'startup migration %s exists but is missing from the channel files=(...) array\n' "$top_startup" >&2
     exit 1
   }
@@ -118,7 +118,16 @@ ensure_allowlist=$(cat <<'EOF'
 EOF
 )
 canonical_files=$(find "$ROOT_DIR/sql/migrations/startup" -maxdepth 1 -type f -name '[0-9][0-9][0-9]_*.sql' \
-  ! -name '*.down.sql' -exec basename {} \; | sort)
+  ! -name '*.down.sql' ! -name '755_drop_dead_cleanup_expired_session_turn_logs.sql' -exec basename {} \; | sort)
+# 755 contains its own BEGIN/COMMIT and drops a legacy function. It is
+# intentionally excluded from both the installer's single transaction and
+# this automatic upgrade sequence; an operator must first check external
+# pg_cron/jobs as its migration header requires. Keep this exception exact.
+test -f "$ROOT_DIR/sql/migrations/startup/755_drop_dead_cleanup_expired_session_turn_logs.sql"
+grep -Fq '755_drop_dead_cleanup_expired_session_turn_logs.sql' "$ROOT_DIR/scripts/migrate-db-kaixuan1.sh"
+grep -Fq '755_drop_dead_cleanup_expired_session_turn_logs.sql' "$ROOT_DIR/scripts/deploy-lib.legacy/db-changelog.sh"
+grep -Fq '755_drop_dead_cleanup_expired_session_turn_logs.sql' "$ROOT_DIR/scripts/init-local-db.sh"
+grep -Fq '755_drop_dead_cleanup_expired_session_turn_logs.sql' "$ROOT_DIR/scripts/local-deploy-test.sh"
 canonical_delivery_path_check "$canonical_files" "$startup_files" "$sequence_files" "$ensure_allowlist"
 
 # Sequence-only migrations are valid fresh-install exceptions, but they must
@@ -127,7 +136,7 @@ canonical_delivery_path_check "$canonical_files" "$startup_files" "$sequence_fil
 for required in \
   '705_request_logs_reattach_detached_partitions.sql' \
   '710_request_logs_view_session_family_v2.sql'; do
-  printf '%s\n' "$sequence_files" | grep -Fxq "$required" || {
+  grep -Fxq "$required" <<<"$sequence_files" || {
     printf 'required sequence-only migration missing from revision sequence: %s\n' "$required" >&2
     exit 1
   }
@@ -139,7 +148,7 @@ for required in \
   '704_plan_quota_probe_backoff.sql' \
   '709_work_type_route_coverage.sql' \
   '715_route_incidents_pending_state.sql'; do
-  printf '%s\n' "$ensure_allowlist" | grep -Fxq "$required" || {
+  grep -Fxq "$required" <<<"$ensure_allowlist" || {
     printf 'required Go-ensure migration missing from allowlist: %s\n' "$required" >&2
     exit 1
   }
@@ -218,7 +227,7 @@ for entry in "${legacy_content_replays[@]}"; do
     printf 'malformed legacy_content_replays entry (expected "basename|sha256"): %s\n' "$entry" >&2
     exit 1
   fi
-  printf '%s\n' "$sequence" | grep -qF "/${base}\"" || {
+  grep -qF "/${base}\"" <<<"$sequence" || {
     printf 'legacy_content_replays target %s is not registered in the sequence files array\n' "$base" >&2
     exit 1
   }

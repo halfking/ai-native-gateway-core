@@ -25,6 +25,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
 func newReqProbeExecutor(store reqprobe.Store) (*Executor, *reqprobe.Coordinator) {
@@ -252,6 +253,121 @@ func TestExecuteOpenAIReqProbeModeMismatchRecordsWithoutFallback(t *testing.T) {
 		if !strings.Contains(string(blob), key) {
 			t.Fatalf("record json missing %s: %s", key, blob)
 		}
+	}
+}
+
+// A probe may mark an openai-responses credential healthy after its chat leg
+// succeeds. The real Responses entry must make the same fallback when the
+// native endpoint repeats that exact unsupported-API verdict. The protocol
+// handler owns the final non-stream Responses conversion and client write.
+func TestExecuteOpenAIResponsesUnsupportedRecoversNonStream(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusBadGateway} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			var responsesHits, chatHits atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/responses":
+					responsesHits.Add(1)
+					w.WriteHeader(status)
+					_, _ = w.Write([]byte(`{"error":{"message":"该供应商不支持 Responses API"}}`))
+				case "/v1/chat/completions":
+					chatHits.Add(1)
+					_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+				default:
+					t.Errorf("unexpected upstream path %q", r.URL.Path)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+
+			store := reqprobe.NewMemoryStore()
+			exec, coord := newReqProbeExecutor(store)
+			t.Cleanup(coord.Close)
+			exec.Upstream = upstreampkg.NewWithRetries(0)
+			t.Cleanup(exec.Upstream.Stop)
+			cand := reqProbeTestCandidate(upstream.URL)
+			cand.Protocol = "openai-responses"
+			cand.SupportsNativeResponses = true
+			recorder := httptest.NewRecorder()
+			result, err := exec.executeOpenAI(&ExecParams{
+				W:                    recorder,
+				R:                    httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
+				BodyBytes:            []byte(`{"model":"grok-4.6","messages":[{"role":"user","content":"hi"}]}`),
+				ResponsesBodyBytes:   []byte(`{"model":"grok-4.6","input":"hi"}`),
+				ClientModel:          "grok-4.6",
+				ClientProtocol:       "openai-responses",
+				SuppressSuccessWrite: true,
+				DispatchAttempt:      status == http.StatusBadGateway,
+			}, cand, 0, time.Now(), nil)
+			if err != nil || result == nil {
+				t.Fatalf("executeOpenAI = (%v, %v), want recovered result", result, err)
+			}
+			if responsesHits.Load() != 1 || chatHits.Load() != 1 {
+				t.Fatalf("responses/chat hits = %d/%d, want 1/1", responsesHits.Load(), chatHits.Load())
+			}
+			if recorder.Body.Len() != 0 {
+				t.Fatalf("executor wrote before Responses handler conversion: %q", recorder.Body.String())
+			}
+			if !strings.Contains(string(result.ResponseBody), `"object":"chat.completion"`) {
+				t.Fatalf("fallback body is not chat response: %s", result.ResponseBody)
+			}
+			recs := waitForReqProbeRecord(t, store, 1)
+			if recs[0].Trigger != reqprobe.TriggerModeMismatch || recs[0].RecoveredCount != 1 {
+				t.Fatalf("fallback diagnosis was not recorded as recovered: %+v", recs[0])
+			}
+		})
+	}
+}
+
+func TestExecuteOpenAIResponsesFallbackRequiresSafeWriteAndCapabilityVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		errorBody     string
+		suppressWrite bool
+	}{
+		{
+			name:      "no_handler_write",
+			errorBody: `{"error":{"message":"This provider does not support the Responses API"}}`,
+		},
+		{
+			name:          "parameter_rejection",
+			errorBody:     `{"error":{"message":"The Responses API does not support the 'messages' parameter"}}`,
+			suppressWrite: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var responsesHits, chatHits atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/chat/completions" {
+					chatHits.Add(1)
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				responsesHits.Add(1)
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(tc.errorBody))
+			}))
+			t.Cleanup(upstream.Close)
+			exec, coord := newReqProbeExecutor(reqprobe.NewMemoryStore())
+			t.Cleanup(coord.Close)
+			exec.Upstream = upstreampkg.NewWithRetries(0)
+			t.Cleanup(exec.Upstream.Stop)
+			cand := reqProbeTestCandidate(upstream.URL)
+			cand.Protocol = "openai-responses"
+			cand.SupportsNativeResponses = true
+			_, err := exec.executeOpenAI(&ExecParams{
+				W:                    httptest.NewRecorder(),
+				R:                    httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
+				BodyBytes:            []byte(`{"model":"grok-4.6","messages":[{"role":"user","content":"hi"}]}`),
+				ResponsesBodyBytes:   []byte(`{"model":"grok-4.6","input":"hi"}`),
+				ClientModel:          "grok-4.6",
+				ClientProtocol:       "openai-responses",
+				SuppressSuccessWrite: tc.suppressWrite,
+				DispatchAttempt:      true,
+			}, cand, 0, time.Now(), nil)
+			if err == nil || responsesHits.Load() != 1 || chatHits.Load() != 0 {
+				t.Fatalf("unsafe or parameter-shaped verdict fell back: err=%v, responses/chat=%d/%d", err, responsesHits.Load(), chatHits.Load())
+			}
+		})
 	}
 }
 

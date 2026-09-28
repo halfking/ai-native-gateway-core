@@ -379,9 +379,9 @@ func TestSanitizeInputMiddleware_NoMessagesField_BodyIntact(t *testing.T) {
 	assert.JSONEq(t, original, string(got), "无 messages 字段时必须原样透传")
 }
 
-// TestSanitizeInputMiddleware_MalformedJSON_BodyIntact 请求体非法 JSON 时，
-// 中间件降级放行，但必须把原始字节交给下游，让下游给出准确的错误。
-func TestSanitizeInputMiddleware_MalformedJSON_BodyIntact(t *testing.T) {
+// TestSanitizeInputMiddleware_MalformedJSONRejected 请求体非法 JSON 时，
+// 中间件不能确认哪些文本需要脱敏，因此不得继续转发。
+func TestSanitizeInputMiddleware_MalformedJSONRejected(t *testing.T) {
 	rdb := setupSaniGuardRedis(t)
 	s, err := NewSanitizer(NewPatternDetector())
 	require.NoError(t, err)
@@ -398,10 +398,11 @@ func TestSanitizeInputMiddleware_MalformedJSON_BodyIntact(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(original))
 	req.Header.Set("X-Gw-Session-Id", "sess-malformed")
-	handler.ServeHTTP(httptest.NewRecorder(), req)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
 
-	assert.Equal(t, original, string(got),
-		"非法 JSON 也必须原样透传，由下游判定错误")
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Empty(t, got, "非法 JSON 不得进入下游")
 }
 
 // TestSanitizeInputMiddleware_LargeBody_Intact 大 body（生产事故是 1.64 MiB）

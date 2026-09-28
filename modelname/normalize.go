@@ -199,6 +199,61 @@ func NormalizeRouteKeyAliases(model string) []string {
 	return out
 }
 
+// NormalizeRouteKeyAliasesNoStrip is the resolve-time canonical_id lookup
+// counterpart of NormalizeRouteKeyAliases.
+//
+// Same variant matrix as NormalizeRouteKeyAliases EXCEPT the wrapper-token
+// stripping step (removableWrapperTokens: flash / turbo / air / highspeed /
+// preview / thinking / reasoning / vision / audio) is intentionally skipped.
+//
+// Why (2026-09-29 audit): NormalizeRouteKeyAliases's wrapper-stripped forms
+// ("glm-5.3-flash" → "glm-5.3") are legitimate alias-expansion escape hatches
+// — they let a request like "glm-5.3-flash" still hit any model whose binding
+// is registered under the bare "glm-5.3" name, AND vice versa. But that
+// crossing is by definition NOT a canonical equivalence — glm-5.3 and
+// glm-5.3-flash are different products with different canonical_ids (实测
+// 2422803 vs 2716170). Using the wrapper-stripped variants to *also* resolve
+// the input model's own canonical_id causes "resolve('glm-5.3-flash')" to
+// report canonical_id from the base model and pull the base model's凭据 into
+// the response. That pollution has been a persistent source of UI confusion
+// on dashboard?tab=stream and of audit noise on persist_probe=1.
+//
+// The fix: keep NormalizeRouteKeyAliases as-is (alias expansion must continue
+// to work for cross-form matching of the bind's raw_model_name); add this
+// sibling for the narrower question "what is the canonical_id of the model
+// the user typed?". Use it only in admin/routing.go:handleRoutingResolve to
+// (a) look up the input's own canonical_id and (b) filter candidates by it.
+//
+// GenerateAliasVariants still consumes the wrapper-stripped forms for
+// per-binding alias generation — that path is unchanged.
+func NormalizeRouteKeyAliasesNoStrip(model string) []string {
+	base := NormalizeRouteKey(model)
+	if base == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	add := func(v string) {
+		v = strings.TrimSpace(strings.ToLower(v))
+		if v == "" || seen[v] {
+			return
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	add(base)
+	for _, v := range versionPunctuationCartesian(base) {
+		add(v)
+	}
+	for _, v := range versionPunctuationCartesian(strings.ReplaceAll(base, "_", "-")) {
+		add(v)
+	}
+	if strings.TrimSpace(model) != base {
+		add(strings.TrimSpace(model))
+	}
+	return out
+}
+
 // StandardizeName is an alias for NormalizeRouteKey. The split between
 // these functions existed to apply family-specific dot/dash rewrites
 // (GLM / MiniMax / Claude); that logic has been removed — see package doc.

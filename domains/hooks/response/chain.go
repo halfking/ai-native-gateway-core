@@ -55,51 +55,37 @@ func (c *InterceptorChain) InterceptNonStream(ctx context.Context, req *Intercep
 		}
 
 		if finalResult == nil {
-			finalResult = result
-		} else {
-			if result.ShouldBlock {
-				finalResult.ShouldBlock = true
+			finalResult = &InterceptResult{}
+		}
+		if result.ShouldBlock {
+			finalResult.ShouldBlock = true
+		}
+		if len(result.ModifiedBody) > 0 {
+			finalResult.ModifiedBody = result.ModifiedBody
+			// Copy the whole request so newly added capability fields survive
+			// between interceptors. The first modifier must reach the next one.
+			nextReq := *currentReq
+			nextReq.ResponseBody = result.ModifiedBody
+			currentReq = &nextReq
+		}
+		if len(result.InjectFollowUp) > 0 {
+			finalResult.InjectFollowUp = result.InjectFollowUp
+		}
+		if result.Action != "" {
+			finalResult.Action = result.Action
+		}
+		if len(result.Metadata) > 0 {
+			if finalResult.Metadata == nil {
+				finalResult.Metadata = make(map[string]interface{})
 			}
-			if len(result.ModifiedBody) > 0 {
-				finalResult.ModifiedBody = result.ModifiedBody
-				currentReq = &InterceptRequest{
-					SessionID:            currentReq.SessionID,
-					RequestID:            currentReq.RequestID,
-					TenantID:             currentReq.TenantID,
-					ClientModel:          currentReq.ClientModel,
-					ResponseBody:         result.ModifiedBody,
-					TokensUsed:           currentReq.TokensUsed,
-					ContextWindow:        currentReq.ContextWindow,
-					MessageCount:         currentReq.MessageCount,
-					FinishReason:         currentReq.FinishReason,
-					IsStreaming:          currentReq.IsStreaming,
-					FollowUpAction:       currentReq.FollowUpAction,
-					ClientSignalAllowed:  currentReq.ClientSignalAllowed,
-					HandoffSignalAllowed: currentReq.HandoffSignalAllowed,
-					SubAgentsTotal:       currentReq.SubAgentsTotal,
-					SubAgentsCompleted:   currentReq.SubAgentsCompleted,
-					SubAgentsPending:     currentReq.SubAgentsPending,
-				}
+			for k, v := range result.Metadata {
+				finalResult.Metadata[k] = v
 			}
-			if len(result.InjectFollowUp) > 0 {
-				finalResult.InjectFollowUp = result.InjectFollowUp
-			}
-			if result.Action != "" {
-				finalResult.Action = result.Action
-			}
-			if len(result.Metadata) > 0 {
-				if finalResult.Metadata == nil {
-					finalResult.Metadata = make(map[string]interface{})
-				}
-				for k, v := range result.Metadata {
-					finalResult.Metadata[k] = v
-				}
-			}
-			if result.ClientSignalKind != "" {
-				finalResult.ClientSignalKind = result.ClientSignalKind
-				finalResult.ClientSignalPayload = append([]byte(nil), result.ClientSignalPayload...)
-				finalResult.ClientSignalAttempts = result.ClientSignalAttempts
-			}
+		}
+		if result.ClientSignalKind != "" {
+			finalResult.ClientSignalKind = result.ClientSignalKind
+			finalResult.ClientSignalPayload = append([]byte(nil), result.ClientSignalPayload...)
+			finalResult.ClientSignalAttempts = result.ClientSignalAttempts
 		}
 
 		if result.ShouldBlock {
@@ -135,18 +121,17 @@ func (c *InterceptorChain) InterceptStreamChunk(ctx context.Context, chunk []byt
 		}
 
 		if finalResult == nil {
-			finalResult = result
-		} else {
-			if result.ShouldBlock {
-				finalResult.ShouldBlock = true
-			}
-			if len(result.ModifiedChunk) > 0 {
-				finalResult.ModifiedChunk = result.ModifiedChunk
-				currentChunk = result.ModifiedChunk
-			}
-			if len(result.InjectAfter) > 0 {
-				finalResult.InjectAfter = result.InjectAfter
-			}
+			finalResult = &ChunkResult{}
+		}
+		if result.ShouldBlock {
+			finalResult.ShouldBlock = true
+		}
+		if len(result.ModifiedChunk) > 0 {
+			finalResult.ModifiedChunk = result.ModifiedChunk
+			currentChunk = result.ModifiedChunk
+		}
+		if len(result.InjectAfter) > 0 {
+			finalResult.InjectAfter = result.InjectAfter
 		}
 
 		if result.ShouldBlock {

@@ -441,6 +441,20 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		candidates = append(candidates, c)
 	}
 
+	// 2026-09-29 (stream 上游污染治理): the wrapper-token alias matrix fed
+	// to SQL pulls base-model raw_model_name rows into the wrapper-suffixed
+	// model's response (实测 glm-5.3-flash resolve 返回 canonical_id=2422803
+	// glm-5.3 的凭据 — 两个不同商品). Resolve the input model's OWN canonical_id
+	// via a STRICT matrix (no wrapper strip; see routing_resolve_filter.go)
+	// and drop candidates whose canonical_id disagrees. NULL canonical_id is
+	// kept (legacy bindings not yet linked). Falls through unchanged if the
+	// canonical lookup fails — fail-open, operators still see every candidate.
+	var expectedCid int64
+	if cid, ok := resolveInputCanonicalID(ctx, h.db, model); ok {
+		expectedCid = cid
+		candidates = filterResolveCandidatesByCid(candidates, expectedCid)
+	}
+
 	// 2026-07-24: URSM v2 运行时状态注入。SQL 只查拓扑/配置，运行时字段
 	// (Available / CoolUntil / FailStreak / SR5m / LatP95Ms) 由 URSM v2 store
 	// 持有。如果 h.ursmV2 不可用或 ModeOff / not ready / pipeline error，
@@ -512,8 +526,18 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Query().Get("persist_probe") == "1" {
+		// 2026-09-29 stream 上游污染治理：persist_probe 必须用与上面
+		// candidates 同款的过滤，避免把 foreign canonical 的 planned_candidates
+		// 写入 routing_decision_log_hot（污染"glm-5.3-flash 的探测审计"）。
+		// 二十轮审计注记：candidates 在 :455 已被同款过滤过，本层是防御性
+		// 双保险；zero（expectedCid=0，查库失败/输入未挂链）时 fail-open
+		// 不过滤，与 resolve 末端过滤同一语义。
+		probeExpected := expectedCid
 		probes := make([]resolveProbeCandidate, 0, len(candidates))
 		for _, c := range candidates {
+			if probeExpected > 0 && c.CanonicalID != nil && *c.CanonicalID != probeExpected {
+				continue
+			}
 			probes = append(probes, resolveProbeCandidate{
 				ProviderID:   c.ProviderID,
 				CredentialID: c.CredentialID,
@@ -4529,79 +4553,20 @@ func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-
-	// Upsert provider (align with Python free_pool_manager)
-	_, err := h.db.Exec(ctx, `
-		INSERT INTO providers (tenant_id, code, display_name, catalog_code, is_custom,
-			kind, category, protocol, base_url, egress_profile, domestic, enabled)
-		VALUES ('default', $1, $2, $1, false,
-			'cloud', 'aggregator', $3, $4, 'direct', true, true)
-		ON CONFLICT (tenant_id, code) DO UPDATE SET
-			display_name = EXCLUDED.display_name,
-			base_url = EXCLUDED.base_url,
-			enabled = true
-	`, req.CatalogCode, req.DisplayName, req.Protocol, req.BaseURL)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "insert provider failed")
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
-
-	var providerID int
-	//nolint:errcheck // scan error non-critical
-	h.db.QueryRow(ctx, `
-		SELECT id FROM providers WHERE catalog_code = $1 AND tenant_id = 'default'
-	`, req.CatalogCode).Scan(&providerID)
-
-	credLabel := req.CatalogCode + "-free-key"
-	if req.APIKey != "" {
-		encrypted, encErr := h.encryptCred([]byte(req.APIKey))
-		if encErr != nil {
-			writeError(w, http.StatusInternalServerError, "encryption failed")
-			return
-		}
-		var existingID int
-		findErr := h.db.QueryRow(ctx, `
-			SELECT id FROM credentials WHERE provider_id = $1 AND label = $2
-		`, providerID, credLabel).Scan(&existingID)
-		if findErr != nil {
-			//nolint:errcheck // best-effort exec, non-critical
-			h.db.Exec(ctx, `
-				INSERT INTO credentials (provider_id, tenant_id, label, secret_ciphertext,
-					trust_level, status, lifecycle_status, availability_state, quota_state,
-					pool_group)
-				VALUES ($1, 'default', $2, $3, 'degraded', 'active',
-					'active', 'ready', 'ok', 'free')
-			`, providerID, credLabel, encrypted)
-		} else {
-			//nolint:errcheck // best-effort exec, non-critical
-			h.db.Exec(ctx, `
-				UPDATE credentials SET
-					secret_ciphertext = $3,
-					status = 'active',
-					pool_group = 'free',
-					updated_at = NOW()
-				WHERE provider_id = $1 AND label = $2
-			`, providerID, credLabel, encrypted)
-		}
+	providerID, credentialID, _, err := h.persistFreePoolRegistration(ctx, h.db, freeProviderConfig{
+		catalogCode: req.CatalogCode, displayName: req.DisplayName,
+		baseURL: req.BaseURL, protocol: req.Protocol, apiKey: req.APIKey,
+		models: req.Models, acquisitionMode: "manual",
+	})
+	if err != nil {
+		slog.Warn("free pool manual registration failed", "catalog_code", req.CatalogCode, "error", err)
+		writeError(w, http.StatusInternalServerError, "free pool registration failed")
+		return
 	}
-
-	// Insert model offers
-	var freeCredID int
-	for _, model := range req.Models {
-		if err := h.db.QueryRow(ctx, `SELECT id FROM credentials WHERE provider_id = $1 AND pool_group = 'free' LIMIT 1`, providerID).Scan(&freeCredID); err != nil {
-			continue
-		}
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `
-			INSERT INTO model_offers (credential_id, raw_model_name, available,
-				routing_tier, billing_mode, currency, unit_price_in_per_1m, unit_price_out_per_1m,
-				pricing_source, pricing_updated_at, admin_protected)
-			VALUES ($1, $2, true, 9, 'free', 'CNY', 0, 0, 'free_pool', NOW(), TRUE)
-		`, freeCredID, model)
-	}
-	// Manually-registered offers are admin-protected so batch/auto refresh
-	// never updates them.
-	h.pinAdminProtectedOffers(ctx, freeCredID, req.Models)
 
 	h.logAudit(r, "free_pool_register", map[string]any{
 		"catalog_code": req.CatalogCode,
@@ -4610,8 +4575,9 @@ func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request)
 	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":      "registered",
-		"provider_id": providerID,
+		"status":        "registered",
+		"provider_id":   providerID,
+		"credential_id": credentialID,
 	})
 }
 
@@ -5140,6 +5106,12 @@ type freeProviderConfig struct {
 	proxySubscriptionID *int
 }
 
+// freePoolBeginner keeps the registration transaction testable without a live
+// database. Both pgxpool.Pool and pgxmock's pool implement this method.
+type freePoolBeginner interface {
+	Begin(context.Context) (pgx.Tx, error)
+}
+
 // egressProfileOrDefault 返回实际生效的出口配置，空串视为历史默认 'direct'。
 func (c freeProviderConfig) egressProfileOrDefault() string {
 	if s := strings.TrimSpace(c.egressProfile); s != "" {
@@ -5195,7 +5167,7 @@ func (h *Handler) collectEnvProviderConfigs() []freeProviderConfig {
 	return configs
 }
 
-func (h *Handler) registerFreeProvider(w http.ResponseWriter, r *http.Request, cfg freeProviderConfig) map[string]any {
+func (h *Handler) registerFreeProvider(_ http.ResponseWriter, r *http.Request, cfg freeProviderConfig) map[string]any {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -5211,98 +5183,14 @@ func (h *Handler) registerFreeProvider(w http.ResponseWriter, r *http.Request, c
 		normalizedProtocol = providercatalog.ProtocolOpenAICompletions
 	}
 	cfg.protocol = normalizedProtocol
-
-	// 1. Upsert provider_catalog
-	if _, err := h.db.Exec(ctx, `
-		INSERT INTO provider_catalog (code, tier, display_name, category, kind, protocol,
-			base_url_template, discovery_strategy, domestic, hidden, notes)
-		VALUES ($1, 9, $2, 'aggregator', 'cloud', $3, $4, 'manifest', true, false, 'auto-registered by free pool')
-		ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name,
-			base_url_template = EXCLUDED.base_url_template
-	`, cfg.catalogCode, cfg.displayName, cfg.protocol, cfg.baseURL); err != nil {
-		// R59 audit (S3-F2): this exec error used to be swallowed
-		// (nolint:errcheck) — catalog drift was invisible. Non-fatal (the
-		// providers upsert below still registers the working provider) but
-		// must be observable.
-		slog.Warn("free pool register: provider_catalog upsert failed", "catalog_code", cfg.catalogCode, "err", err.Error())
+	if h.db == nil {
+		return map[string]any{"catalog_code": cfg.catalogCode, "status": "error", "message": "database unavailable"}
 	}
-
-	// 2. Upsert provider
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.Exec(ctx, `
-		INSERT INTO providers (tenant_id, code, display_name, catalog_code, is_custom,
-			kind, category, protocol, base_url, egress_profile, domestic, enabled)
-		VALUES ('default', $1, $2, $1, false,
-			'cloud', 'aggregator', $3, $4, 'direct', true, true)
-		ON CONFLICT (tenant_id, code) DO UPDATE SET display_name = EXCLUDED.display_name,
-			base_url = EXCLUDED.base_url, enabled = true
-	`, cfg.catalogCode, cfg.displayName, cfg.protocol, cfg.baseURL)
-
-	// 3. Get provider_id
-	var providerID int
-	err := h.db.QueryRow(ctx, `SELECT id FROM providers WHERE tenant_id = 'default' AND catalog_code = $1`, cfg.catalogCode).Scan(&providerID)
+	providerID, credID, modelCount, err := h.persistFreePoolRegistration(ctx, h.db, cfg)
 	if err != nil {
-		return map[string]any{"catalog_code": cfg.catalogCode, "status": "error", "message": "provider not found"}
+		slog.Warn("free pool registration failed", "catalog_code", cfg.catalogCode, "error", err)
+		return map[string]any{"catalog_code": cfg.catalogCode, "status": "error", "message": "free pool registration failed"}
 	}
-
-	// 4. Encrypt API key
-	encrypted, encErr := h.encryptCred([]byte(cfg.apiKey))
-	if encErr != nil {
-		return map[string]any{"catalog_code": cfg.catalogCode, "status": "error", "message": "encryption failed"}
-	}
-
-	// 5. Upsert credential
-	credLabel := cfg.credentialLabel
-	if credLabel == "" {
-		credLabel = cfg.catalogCode + "-free-key"
-	}
-
-	var credID int
-	findErr := h.db.QueryRow(ctx, `SELECT id FROM credentials WHERE provider_id = $1 AND label = $2`, providerID, credLabel).Scan(&credID)
-	tagsJSON := `["free-pool","source:` + cfg.acquisitionMode + `","catalog:` + cfg.catalogCode + `"]`
-	if findErr != nil {
-		// Insert new
-		err = h.db.QueryRow(ctx, `
-			INSERT INTO credentials (provider_id, tenant_id, label, secret_ciphertext,
-				trust_level, status, lifecycle_status, availability_state, quota_state,
-				pool_group, acquisition_source, acquisition_detail, tags)
-			VALUES ($1, 'default', $2, $3, 'degraded', 'active',
-				'active', 'ready', 'ok', 'free', $4, $5, CAST($6 AS jsonb))
-			RETURNING id
-		`, providerID, credLabel, encrypted, cfg.acquisitionMode, cfg.acquisitionDetail, tagsJSON).Scan(&credID)
-		if err != nil {
-			return map[string]any{"catalog_code": cfg.catalogCode, "status": "error", "message": "credential insert failed"}
-		}
-	} else {
-		// Update existing
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `
-			UPDATE credentials SET secret_ciphertext = $1, status = 'active',
-				pool_group = 'free', acquisition_source = $2, acquisition_detail = $3,
-				tags = CAST($4 AS jsonb), updated_at = NOW()
-			WHERE id = $5
-		`, encrypted, cfg.acquisitionMode, cfg.acquisitionDetail, tagsJSON, credID)
-	}
-
-	// 6. Insert model offers
-	for _, model := range cfg.models {
-		var canonID *int
-		var cid int
-		if err := h.db.QueryRow(ctx, `SELECT id FROM models_canonical WHERE canonical_name ILIKE $1 LIMIT 1`, model).Scan(&cid); err == nil {
-			canonID = &cid
-		}
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `
-			INSERT INTO model_offers (credential_id, canonical_id, raw_model_name,
-				available, routing_tier, billing_mode, currency,
-				unit_price_in_per_1m, unit_price_out_per_1m, pricing_source, pricing_updated_at,
-				admin_protected)
-			VALUES ($1, $2, $3, true, 9, 'free', 'CNY', 0, 0, 'pool_manager', NOW(), TRUE)
-		`, credID, canonID, model)
-	}
-	// Manually-registered offers are admin-protected so batch/auto refresh
-	// never updates them.
-	h.pinAdminProtectedOffers(ctx, credID, cfg.models)
 
 	h.logAudit(r, "free_pool_register", map[string]any{
 		"catalog_code": cfg.catalogCode,
@@ -5316,8 +5204,168 @@ func (h *Handler) registerFreeProvider(w http.ResponseWriter, r *http.Request, c
 		"status":        "registered",
 		"provider_id":   providerID,
 		"credential_id": credID,
-		"models":        len(cfg.models),
+		"models":        modelCount,
 	}
+}
+
+// persistFreePoolRegistration commits the catalogue, provider, credential and
+// offers as one unit. It returns IDs from the two unique-key upserts, rather
+// than looking up a potentially unrelated provider by catalog_code.
+func (h *Handler) persistFreePoolRegistration(ctx context.Context, db freePoolBeginner, cfg freeProviderConfig) (int, int, int, error) {
+	if strings.TrimSpace(cfg.catalogCode) == "" || strings.TrimSpace(cfg.baseURL) == "" {
+		return 0, 0, 0, errors.New("catalog code and base URL required")
+	}
+	if cfg.displayName == "" {
+		cfg.displayName = cfg.catalogCode
+	}
+	if cfg.credentialLabel == "" {
+		cfg.credentialLabel = cfg.catalogCode + "-free-key"
+	}
+
+	var ciphertext any
+	if cfg.apiKey != "" {
+		encrypted, err := h.encryptCred([]byte(cfg.apiKey))
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("encrypt primary key: %w", err)
+		}
+		ciphertext = []byte(encrypted)
+	}
+	extraKeys := make([][]byte, 0, len(cfg.extraKeys))
+	for _, key := range cfg.extraKeys {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		encrypted, err := h.encryptCred([]byte(key))
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("encrypt extra key: %w", err)
+		}
+		extraKeys = append(extraKeys, []byte(encrypted))
+	}
+	models := make([]string, 0, len(cfg.models))
+	seenModels := make(map[string]struct{}, len(cfg.models))
+	for _, raw := range cfg.models {
+		model := strings.TrimSpace(raw)
+		if model == "" {
+			continue
+		}
+		if _, seen := seenModels[model]; seen {
+			continue
+		}
+		seenModels[model] = struct{}{}
+		models = append(models, model)
+	}
+	tags, err := json.Marshal([]string{"free-pool", "source:" + cfg.acquisitionMode, "catalog:" + cfg.catalogCode})
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("marshal credential tags: %w", err)
+	}
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("begin registration: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO provider_catalog (code, tier, display_name, category, kind, protocol,
+			base_url_template, discovery_strategy, domestic, hidden, notes)
+		VALUES ($1, 'restricted', $2, 'aggregator', 'cloud', $3, $4, 'manifest', true, false, 'registered by free pool')
+		ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name,
+			protocol = EXCLUDED.protocol, base_url_template = EXCLUDED.base_url_template
+	`, cfg.catalogCode, cfg.displayName, cfg.protocol, cfg.baseURL); err != nil {
+		return 0, 0, 0, fmt.Errorf("upsert provider catalog: %w", err)
+	}
+
+	var providerID int
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO providers (tenant_id, code, display_name, catalog_code, is_custom,
+			kind, category, protocol, base_url, egress_profile, domestic, enabled)
+		VALUES ('default', $1, $2, $1, false,
+			'cloud', 'aggregator', $3, $4, COALESCE(NULLIF($5, ''), 'direct'), true, true)
+		ON CONFLICT (tenant_id, code) DO UPDATE SET
+			display_name = EXCLUDED.display_name, catalog_code = EXCLUDED.catalog_code,
+			protocol = EXCLUDED.protocol,
+			base_url = EXCLUDED.base_url, enabled = true,
+			egress_profile = CASE WHEN $5 = '' THEN providers.egress_profile ELSE EXCLUDED.egress_profile END
+		RETURNING id
+	`, cfg.catalogCode, cfg.displayName, cfg.protocol, cfg.baseURL,
+		strings.TrimSpace(cfg.egressProfile)).Scan(&providerID); err != nil {
+		return 0, 0, 0, fmt.Errorf("upsert provider: %w", err)
+	}
+
+	var credentialID int
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO credentials (provider_id, tenant_id, label, secret_ciphertext,
+			trust_level, status, lifecycle_status, availability_state, quota_state,
+			pool_group, acquisition_source, acquisition_detail, tags, rpm_limit)
+		VALUES ($1, 'default', $2, $3, 'degraded', 'active',
+			'active', 'ready', 'ok', 'free', $4, $5, $6::text::jsonb, NULLIF($7::int, 0))
+		ON CONFLICT (provider_id, tenant_id, label) DO UPDATE SET
+			secret_ciphertext = COALESCE(EXCLUDED.secret_ciphertext, credentials.secret_ciphertext),
+			status = 'active', pool_group = 'free',
+			acquisition_source = EXCLUDED.acquisition_source,
+			acquisition_detail = EXCLUDED.acquisition_detail,
+			tags = EXCLUDED.tags,
+			rpm_limit = COALESCE(EXCLUDED.rpm_limit, credentials.rpm_limit),
+			updated_at = NOW()
+		RETURNING id
+	`, providerID, cfg.credentialLabel, ciphertext, cfg.acquisitionMode,
+		cfg.acquisitionDetail, string(tags), cfg.rpmLimit).Scan(&credentialID); err != nil {
+		return 0, 0, 0, fmt.Errorf("upsert credential: %w", err)
+	}
+
+	for i, key := range extraKeys {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO credential_keys (credential_id, kid_index, secret_ciphertext, status, tenant_id)
+			VALUES ($1, $2, $3, 'active', 'default')
+			ON CONFLICT (credential_id, kid_index) DO UPDATE SET
+				secret_ciphertext = EXCLUDED.secret_ciphertext, status = 'active'
+		`, credentialID, i+1, key); err != nil {
+			return 0, 0, 0, fmt.Errorf("upsert extra key %d: %w", i+1, err)
+		}
+	}
+
+	for _, model := range models {
+		var canonicalID *int
+		var id int
+		err := tx.QueryRow(ctx, `SELECT id FROM models_canonical WHERE canonical_name ILIKE $1 LIMIT 1`, model).Scan(&id)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return 0, 0, 0, fmt.Errorf("lookup model %q: %w", model, err)
+		}
+		if err == nil {
+			canonicalID = &id
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO model_offers (credential_id, canonical_id, raw_model_name,
+				available, routing_tier, billing_mode, currency,
+				unit_price_in_per_1m, unit_price_out_per_1m, pricing_source, pricing_updated_at,
+				admin_protected)
+			VALUES ($1, $2, $3, true, 9, 'free', 'CNY', 0, 0, 'free_pool', NOW(), TRUE)
+		`, credentialID, canonicalID, model); err != nil {
+			return 0, 0, 0, fmt.Errorf("upsert offer %q: %w", model, err)
+		}
+	}
+	if len(models) > 0 {
+		// The model_offers view's conflict trigger does not update the existing
+		// binding's admin_protected flag, so pin it explicitly in this txn.
+		if _, err := tx.Exec(ctx, `
+			UPDATE credential_model_bindings cmb SET admin_protected = TRUE
+			FROM provider_models pm
+			WHERE cmb.provider_model_id = pm.id AND cmb.credential_id = $1
+			  AND pm.raw_model_name = ANY($2)
+		`, credentialID, models); err != nil {
+			return 0, 0, 0, fmt.Errorf("pin offers: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, 0, fmt.Errorf("commit registration: %w", err)
+	}
+	committed = true
+	return providerID, credentialID, len(models), nil
 }
 
 func (h *Handler) mirrorExistingKeys(ctx context.Context) []map[string]any {

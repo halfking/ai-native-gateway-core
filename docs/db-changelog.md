@@ -737,7 +737,7 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 754 | `754_archive_request_logs_default.sql` | `567a14e52f9e8db0747337549191f1ca060d87c1f8b02e62e29ea7e9a037df8b` | pending deploy（982e3191c 落地、f65d34dd8 五点同步、3909d56e0 补 relnamespace='public' 锚定 + 归档接线移 1h tick；16 轮 E1b；handoff §24 真库 8 条契约实测通过。R73 审计 A-4：本行系漏登补录，与 753 同类） |
+| 754 | `754_archive_request_logs_default.sql` | `14f26779acf08bc652848fe27d26aa6202b44f7f8453f11dc49c9adc349bc326` | pending deploy（982e3191c 落地、f65d34dd8 五点同步、3909d56e0 补 relnamespace='public' 锚定 + 归档接线移 1h tick；16 轮 E1b；handoff §24 真库 8 条契约实测通过。R73 审计 A-4：本行系漏登补录，与 753 同类。2026-09-29 fdd1230a6 真库实测修复列名后文件内容变更，SHA 567a14e5→14f26779；二十轮审计补正台账——原 SHA 对应修复前版本） |
 
 ## 2026-09-28 — Subtask 5 收口：指标重命名迁移说明（无 DDL）
 
@@ -754,3 +754,12 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 Subtask 5 本身那样「只存在于 commit message、没人知道它已经改了指标名」。
 
 Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
+## 2026-09-28T19:07:41Z — deploy 245 build_seq 2319 (d33b6e2f)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 755 | `755_drop_dead_cleanup_expired_session_turn_logs.sql` | `45cdeb4c2109166181a60bca82760d6e697842963702c65e38402004d7f29ac1` | applied+verified |
+| 756 | `756_request_logs_id_index.sql` | `b0297ac4f44b9b997dd241f5e1e2c345e75b889f43844e63b50376005485db65` | applied+verified |
+| 757 | `757_session_turns_origin_actor_projection.sql` | `b2ddded4ec9c18a31f16be8ae5063b2b651c8a6cf42081d8225b9bdc41b91808` | applied+verified |
+| 758 | `758_routeincident_missing_columns.sql` | `f68ad115a07a97871b61e4ec47e179795156f70846b404a8a0e7e40768cfde3d` | applied+verified |
+

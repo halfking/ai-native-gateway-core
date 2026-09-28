@@ -26,6 +26,9 @@ func TestStreamErrorKindForDetailCode(t *testing.T) {
 		{"concurrent", "", "concurrent", "concurrent_overload"},
 		{"empty_stream_no_content", "", "empty_stream_no_content", "empty_response"},
 		{"early_empty_detection", "", "early_empty_detection", "empty_response"},
+		// 2026-09-29 (二十轮): anthropic/responses 桥的空响应 Reason 串，
+		// 修复前落兜底 stream_error 且不计数（见 handler.go 归一处注记）。
+		{"anthropic_empty_response", "", "anthropic_empty_response", "empty_response"},
 		// 2026-07-29: Decomposed from stream_read_error.
 		{"eof_without_done", "", "eof_without_done", "eof_without_done"},
 		{"read_error", "", "read_error", "stream_read_error"},
