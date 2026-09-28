@@ -122,4 +122,72 @@ describe('modelScopeOwnership', () => {
     expect(modelScopeIdentity('m', null, '')).toBe('key:m')
     expect(modelScopeIdentity('m', 7, 'other')).toBe('canonical:7')
   })
+
+  // ── 2026-09-29 二轮审计：响应级 canonical_id 不能单独当证据 ──────────────
+  //
+  // 线上实测 doubao-seed-2-0-code-preview 与 glm-5.3-flash 的 resolve 响应
+  // canonical_id 都是 null（候选跨 canonical），但它们**自己名字**的候选带着
+  // 真实 canonical（353857 / 2716170）。若只信响应级 id，这两个真模型会被判成
+  // "无证据"而整个消失（实测 doubao-seed-2-0-code-preview 确实消失过一次）。
+
+  it('validates a scope by the canonical of its own-name binding when the response canonical_id is null', () => {
+    const { aliasOwner } = resolveModelScopeOwnership([
+      {
+        scopeKey: 'glm-5.3-flash',
+        canonicalId: null, // 候选跨 canonical → 响应级为 null
+        canonicalName: 'glm-5.3-flash',
+        rawModels: ['glm-5.3-flash', 'glm-5-3-flash', 'glm-5.3', 'glm-5-3'],
+        candidates: [
+          { modelName: 'glm-5.3-flash', canonicalId: 2716170 }, // 自己名字的绑定
+          { modelName: 'glm-5-3-flash-260828', canonicalId: 2716170 },
+          { modelName: 'free/glm-5.3-flash', canonicalId: 2716170 },
+          { modelName: 'glm-5.3', canonicalId: 2422803 }, // 词法变体拖进来的
+        ],
+      },
+      {
+        scopeKey: 'glm-5.3',
+        canonicalId: 2422803,
+        canonicalName: 'glm-5.3',
+        rawModels: ['glm-5.3'],
+        candidates: [{ modelName: 'glm-5.3', canonicalId: 2422803 }],
+      },
+    ])
+    expect(aliasOwner.get('glm-5.3')).toBe('glm-5.3')
+    expect(aliasOwner.get('glm-5-3-flash-260828')).toBe('glm-5.3-flash')
+  })
+
+  it('keeps a model whose only binding is a date-suffixed raw (no bare-name binding)', () => {
+    const { aliasOwner } = resolveModelScopeOwnership([
+      {
+        scopeKey: 'doubao-seed-2-0-code-preview',
+        canonicalId: null,
+        canonicalName: 'doubao-seed-2-0-code-preview',
+        rawModels: ['doubao-seed-2-0-code-preview'],
+        candidates: [{ modelName: 'doubao-seed-2-0-code-preview-260215', canonicalId: 353857 }],
+      },
+    ])
+    expect(aliasOwner.get('doubao-seed-2-0-code-preview-260215')).toBe('doubao-seed-2-0-code-preview')
+  })
+
+  it('leaves a raw unowned when no claiming scope can be validated (never files it under another model)', () => {
+    // 线上实测形态：集合（featured+热门）里只有 glm-4.7-flash，glm-4.7 本身不在，
+    // 但节点 raw_models 里有 glm-4.7（旧实现会把它挂到 glm-4.7-flash 名下）。
+    const { aliasOwner } = resolveModelScopeOwnership([
+      {
+        scopeKey: 'glm-4.7-flash',
+        canonicalId: 52,
+        canonicalName: 'glm-4.7-flash',
+        rawModels: ['glm-4.7-flash', 'glm-4.7', 'glm-4-7-251222'],
+        candidates: [
+          { modelName: 'glm-4.7-flash', canonicalId: 52 },
+          { modelName: 'glm-4.7', canonicalId: 51 },
+          { modelName: 'glm-4-7-251222', canonicalId: 51 },
+        ],
+      },
+    ])
+    expect(aliasOwner.get('glm-4.7-flash')).toBe('glm-4.7-flash')
+    // 属于集合外模型 51 的 raw 不归属给 52 的作用域
+    expect(aliasOwner.has('glm-4.7')).toBe(false)
+    expect(aliasOwner.has('glm-4-7-251222')).toBe(false)
+  })
 })
