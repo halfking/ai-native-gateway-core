@@ -1777,3 +1777,44 @@ ROLLBACK
 
 另：PREPARE 门里 routeincident 的 6 条登记全部改为「已修复待应用」，
 真机应用 758 后它们会变成「未登记的失败」⇒ 门自动转红并提示删登记。
+
+## R79 续十八 · 收口验证：757 没有破坏 113/115 列冻结契约
+
+续十六改的视图是 `session_turns_with_current_month`（54→55 列），而 113/115 冻结契约
+约束的是**另一个**视图 `request_logs_with_current_month`。二者同名相近，容易被当成
+同一件事，所以实跑一次而不是靠推理。
+
+### 三层检查
+
+**① 自愈重建链会不会撤销我的加列？** `db/request_logs_view_schema.go` 有一条
+「自愈重建链」，如果它也重建 turns 视图，迁移 757 就会被启动时悄悄回滚。
+
+实查：该文件里的重建目标是 `request_logs_with_current_month` 及其两个包装视图
+（`_without_request_class_due_at` / `_without_customer_id`），**不含
+`session_turns_with_current_month`**。又 grep 全仓 Go 侧的
+`CREATE … VIEW … session_turns` —— **零命中，没有任何 Go 侧重建链**。
+⇒ 迁移 757 只由迁移链决定，不会被应用侧撤销。
+
+**② 列序与列数真的没被动？** 真库事务内，迁移前后各取一次
+`request_logs_with_current_month` 的完整列清单：
+
+```
+迁移前  115 列   id,request_id,ts,…,is_final_success,origin_actor,customer_id,…,client_ip
+迁移后  115 列   id,request_id,ts,…,is_final_success,origin_actor,customer_id,…,client_ip
+        ↑ 两次清单逐字节完全相同
+同时    session_turns_with_current_month  54 → 55
+ROLLBACK
+```
+
+**③ 一个意外但有用的旁证**：115 列视图**自己就有 `origin_actor`**（位于
+`is_final_success` 之后）。也就是说同一张基表系列的另一条路径早就正确投影了它，
+`db/db.go:2990` 的「只保证 request_logs 有该列」属实——**turns 视图是唯一漏掉的那个**。
+
+这让修复方向多了一层佐证：不是「给它加一个新列」，而是「补上一个同族视图早已
+存在的投影」，与既有契约一致而不是引入新形状。
+
+### 顺带确认冻结契约的守卫在哪
+
+`db/request_logs_view_schema.go:174-179` 里有一条列数守卫：列数不在 `{113,115}`
+就 `keeping v1 body`（不升级到 v2 体）。所以这个契约**有运行时守卫**，
+不只活在测试里——这解释了为什么它值得被认真对待，而不是随手改个数字。
