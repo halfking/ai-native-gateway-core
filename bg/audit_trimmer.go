@@ -124,19 +124,38 @@ func (t *AuditTrimmer) TrimOnce(ctx context.Context) (overridesDeleted, auditDel
 
 	// armor_judgments (v2.3 security observe-only audit). Uses
 	// created_at (not ts) per the table schema in migration.
-	res3, err := t.pool.Exec(ctx, `
-		DELETE FROM armor_judgments
-		WHERE id IN (
-			SELECT id FROM armor_judgments
-			WHERE created_at < NOW() - $1::interval
-			ORDER BY created_at
-			LIMIT 5000
-		)
-	`, t.retention.String())
-	if err != nil {
-		slog.Warn("audit_trimmer: armor_judgments delete failed", "error", err)
-	} else {
-		armorDeleted = res3.RowsAffected()
+	//
+	// 2026-09-29 (12h 审计二十轮 P1): DELETE 形态从 `id IN (SELECT id ...)`
+	// 改为 `ctid IN (SELECT ctid ...)` 并去掉 ORDER BY，且按批循环到取空。
+	// 旧形态迫使 DELETE 主体全表 Hash Join（80 万行生产实测 870.7ms/批），
+	// ctid 形态走 Tid Scan（7.0ms/批，124 倍，实测记录见
+	// tests/48h-audit/D07-hot-columnar/data/retention_trim_index_test.go 的
+	// knownRetentionDefects 注记）。真缺陷是删除吞吐倒挂：写入 6,318/天 >
+	// 单批 5,000/天的硬上限，净积压 ~1,300 行/天。形态改后单批成本可忽略，
+	// 循环批次把日删除能力提到 20×5000，同时保留小批锁面。每批是独立
+	// 语句独立快照，ctid 只在语句内使用，不存在跨语句漂移。
+	const armorBatchSize = 5000
+	const armorMaxBatchesPerTick = 20
+	for batch := 0; batch < armorMaxBatchesPerTick; batch++ {
+		res3, berr := t.pool.Exec(ctx, `
+			DELETE FROM armor_judgments
+			WHERE ctid IN (
+				SELECT ctid FROM armor_judgments
+				WHERE created_at < NOW() - $1::interval
+				LIMIT 5000
+			)
+		`, t.retention.String())
+		if berr != nil {
+			err = berr
+			slog.Warn("audit_trimmer: armor_judgments delete failed",
+				"error", berr, "batch", batch, "deleted_so_far", armorDeleted)
+			break
+		}
+		n := res3.RowsAffected()
+		armorDeleted += n
+		if n < armorBatchSize {
+			break // 本批未取满 = 过期行已清空
+		}
 	}
 
 	slog.Info("audit_trimmer: trim complete",

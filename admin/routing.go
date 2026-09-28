@@ -529,7 +529,10 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		// 2026-09-29 stream 上游污染治理：persist_probe 必须用与上面
 		// candidates 同款的过滤，避免把 foreign canonical 的 planned_candidates
 		// 写入 routing_decision_log_hot（污染"glm-5.3-flash 的探测审计"）。
-		probeExpected := expectedCid // zero = 没查到，按"不写 foreign"语义过滤
+		// 二十轮审计注记：candidates 在 :455 已被同款过滤过，本层是防御性
+		// 双保险；zero（expectedCid=0，查库失败/输入未挂链）时 fail-open
+		// 不过滤，与 resolve 末端过滤同一语义。
+		probeExpected := expectedCid
 		probes := make([]resolveProbeCandidate, 0, len(candidates))
 		for _, c := range candidates {
 			if probeExpected > 0 && c.CanonicalID != nil && *c.CanonicalID != probeExpected {

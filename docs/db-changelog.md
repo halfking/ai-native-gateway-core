@@ -737,7 +737,7 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 754 | `754_archive_request_logs_default.sql` | `567a14e52f9e8db0747337549191f1ca060d87c1f8b02e62e29ea7e9a037df8b` | pending deploy（982e3191c 落地、f65d34dd8 五点同步、3909d56e0 补 relnamespace='public' 锚定 + 归档接线移 1h tick；16 轮 E1b；handoff §24 真库 8 条契约实测通过。R73 审计 A-4：本行系漏登补录，与 753 同类） |
+| 754 | `754_archive_request_logs_default.sql` | `14f26779acf08bc652848fe27d26aa6202b44f7f8453f11dc49c9adc349bc326` | pending deploy（982e3191c 落地、f65d34dd8 五点同步、3909d56e0 补 relnamespace='public' 锚定 + 归档接线移 1h tick；16 轮 E1b；handoff §24 真库 8 条契约实测通过。R73 审计 A-4：本行系漏登补录，与 753 同类。2026-09-29 fdd1230a6 真库实测修复列名后文件内容变更，SHA 567a14e5→14f26779；二十轮审计补正台账——原 SHA 对应修复前版本） |
 
 ## 2026-09-28 — Subtask 5 收口：指标重命名迁移说明（无 DDL）
 
