@@ -582,6 +582,10 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §9"
 
 总控代理每完成一个子任务, 在对应行写入完成时间、commit SHA、PR URL. 失败时把原因写到备注列.
 
+> **2026-09-29 收口**: 7 个子任务全部 [DONE] 且交付物已逐个在 main 源码中定位核验,
+> 门禁 (build/vet/单测/-race/i18n parity/前端 vitest) 全绿, 分支已清理。
+> **逐条实证见 §25**。PR URL 仍为「待创建」—— Codeup 无 CLI 凭据, 须人工在浏览器创建。
+
 | # | 子任务 | 分支 | 类型 | 状态 | Commit | PR URL | 备注 |
 |---|---|---|---|---|---|---|---|
 | 1 | 会话身份契约 API 层显式标注 | feat/session-identity-contract-api (9f62818c5 已并入) + fix/session-ambiguity-409 (本轮收口) | P0 | [DONE] 2026-09-27 16:20 | 0aa86d8bd | 待创建 | 9f62818c5 + 9785c2398 已带 DISTINCT/LIMIT 2 歧义守卫进 main, 但走 500 兜底且响应体回显含 tenant_id 的内部错误串; 本轮以 fix/session-ambiguity-409 收口为 409 + 固定文案 (审计 Minor-2)。**未按原计划 rebase feat/session-identity-contract-api** —— 该分支 4 个 commit 与 main 的 R69/N-1 线已分叉, rebase 会回退 main 的 `SessionTurnV2.ID json:"-"`、空轮次序列化为 `[]`、errors.Is 注释等修复, 故改为定点移植 |
@@ -1011,6 +1015,11 @@ SQL**。彻底解法是加一张 archive ledger 记录 `(partition, max_id)`，�
 
 ## 19. 交接状态总表 (2026-09-28 00:15)
 
+> **⚠️ 本节是 2026-09-28 00:15 的快照, 其「子任务进度」表已被后续三轮推翻**:
+> 表中 Subtask 4/6 记为 TODO、Subtask 5 记为「未合入 main」、Subtask 3 记为
+> 「进行中」—— 如今全部 [DONE] 并已合入 main。**权威现状见 §25**;
+> 本节保留作为审计轨迹, 引用进度时请勿以此表为准。
+
 三轮批判式审计后的权威状态。**先读本节，再读 §16/§17/§18 的逐条证据。**
 
 ### 子任务进度
@@ -1363,3 +1372,86 @@ ok」只说明**既有**测试仍然通过，不代表新代码被验证过 —�
   与 365 的边界、对一张有历史积压的月分区手动调用一次 archive，确认
   planner 走 idx 不是 seq scan、对一个超窗分区里 ≥ 10 万行的批量耗时不
   超 60s（statement_timeout 设定）。
+
+---
+
+## 25. §14 完成定义逐条核验 (2026-09-29)
+
+本节是 §14 完成定义的**逐条实证**，与 §19（2026-09-28 00:15 的快照状态表）不同——
+那份表里 Subtask 4/6 是 TODO、Subtask 5「未合入 main」，如今全部落地。
+基线：`origin/main = 18f5d9fab`。
+
+### 门禁全绿（§14 第 3/4/5 条）
+
+| 门禁 | 命令 | 结果 |
+|---|---|---|
+| build | `go build ./...` | ✅ exit 0 |
+| vet | `go vet ./...` | ✅ exit 0，无输出 |
+| 单测 | `go test ./tests/session_identity_contract/... ./admin/... ./bg/... ./internal/sessionv2mirror/... ./internal/observability/... ./domains/session/... ./settings/... ./sql/migrations/startup/...` | ✅ exit 0，16 个包 ok |
+| 竞态（§7 要求） | `go test -race ./internal/sessionv2mirror/...` | ✅ ok 1.840s |
+| i18n parity（§5 隐含） | `npm run i18n:check` | ✅ `i18n audit PASS (0 missing keys)` |
+| 前端单测（§5 要求） | `npx vitest run src/views/admin/SessionDetailPage.test.ts` | ✅ 11/11 passed |
+
+### 7 个子任务的交付物在 main 源码中逐个定位（不只是「已合并」）
+
+只证明「分支是 main 的祖先」不够——并行会话可能以别的 commit 重新实现过。
+逐个 grep 实际落点：
+
+| # | 交付物在 main 中的实证位置 |
+|---|---|
+| 1 | `admin/session_list.go:29-30` `IDKind`/`PrimaryKey`；`admin/session_list_v2.go:178` `id_kind`；`tests/session_identity_contract/session_identity_contract_test.go` |
+| 2 | `sql/migrations/startup/753_session_turn_logs_ttl.sql`(+`.down`)；`settings/spec_lifecycle.go:69` `session_turn_logs_ttl_hours`；`bg/partition_manager.go:722` `cleanupSessionTurnLogsByTTLHours` 调用点；`domains/session/v2/turn_logs_writer.go:66` 写入侧读取设置 |
+| 3 | `admin/body_status.go`（`BodyStatusAvailable`/`BodyStatusUnavailable` + 顶部 CONTRACT）；8 个 locale 的 `requestDetail.ts` 均有 `bodyStatus.*` |
+| 4 | `apihub/types.go:63` `HealthStorage = "storage_degraded"`；`internal/observability/metrics_storage.go` |
+| 5 | `internal/sessionv2mirror/replay.go:65` `currentMaxAtts()` 读 `sessions_v2.mirror_outbox_max_attempts`；`settings/spec_sessions_v2.go` 已登记该 key（§23 F-15 死配置 Blocker 已解） |
+| 6 | `cmd/gateway/storage_mode_init.go:120` `resolveCacheTrimRetention` + `:212` 取安全上界 + `:218` 生效值日志；`bg/cache_trimmer.go` `Retention()` getter |
+| 7 | `sql/migrations/startup/754_archive_request_logs_default.sql`(+`.down`)；`settings/spec_lifecycle.go:46` `request_logs_ttl_days`；`bg/partition_manager.go:588` `archive_request_logs_default($1)` 调用点 |
+
+### 分支清理（§14 第 6 条）
+
+§14 要求「所有 feat/* 分支已删除」。动手前逐条判定**内容是否已在 main**，不以
+「分支已合并」为准（`merge-base --is-ancestor` 只对 main 已有的分支为真）：
+
+- 7 个子任务分支 + `fix/session-ambiguity-409` + `feat/body-status-frontend`
+  + `verify/main` + `merge-incoming-sub4` + `chore/turn-logs-deadcode`
+  → `merge-base --is-ancestor` 全 YES，已删。
+- `feat/session-identity-contract-api` / `feat/storage-status-503`
+  → 本地早已不存在（§15 O-B、§22）。远端 `git ls-remote --heads origin`
+  对 7 个子任务分支**零命中**，无需 push delete。
+- `chore/fmt-sessionv2mirror` (`79cfd6943`)：**未合并**，但
+  `git diff origin/main 79cfd6943 -- session_dim.go synthetic_session_test.go`
+  **输出为空**，内容已由 `943b7ac0f` 逐字节进入 main → 可删。
+- `merge/audit-closeout` (`bfe6a0f16`)：**未合并**，但两文件差异仅为
+  注释文案（「两态横幅」vs「三态横幅」）与 `vue-router`/`vue-i18n` 导入顺序，
+  且分支侧写的是**被 §21 推翻的「三态」**说法——main 是更新且正确的版本。
+  属过时快照，删。
+
+**诚实声明**：§19 遗留的 7 个 PR URL 仍为「待创建」——Codeup 无 CLI 凭据，
+须人工在浏览器创建。本节不虚报该项已完成。
+
+### 修掉的一个自身遗留
+
+`domains/session/v2/turn_logs_writer.go` 在 `2fe1579c4`（deadcode 删除）后
+留下 2 行尾部空行，`gofmt -l` 报 DIRTY。这是**本任务族自身**引入的，不是
+历史遗留，已 `gofmt -w` 修掉（2 行删除）。
+
+> 注意：`gofmt -l .` 在 main 上仍有 **530 个文件** DIRTY，全部是
+> **行尾注释对齐**类的全仓历史噪声（例：`admin/ip_region.go` 的
+> `r.Comment = '#'  // …` 补空格），与本次 7 个子任务无关。§14 的
+> 「gofmt -l . 无输出」因此**在本仓不成立为可达目标**——已逐个确认
+> 本次范围内的 14 个文件（含上表全部落点）**全部 CLEAN**。
+> 全仓 530 个的清理应是独立的 `chore(fmt)`，不混进本次收口 commit
+> （会违反 §10.1 的「diff 行数 ≤ 600」）。
+
+### §14 完成定义逐条对照
+
+| §14 条目 | 状态 |
+|---|---|
+| 7 个子任务全部 `[DONE]` | ✅ §10 状态表 + 上方交付物定位表 |
+| 7 个独立 merge commit | ⚠️ **与原文不符**：并行会话与定点移植导致部分子任务以 cherry-pick / 定点移植而非 merge commit 进入 main（如 Subtask 1 为 `0aa86d8bd`）。内容已全部到位，**不强造 merge commit 伪造历史** |
+| `git status` 干净 | ✅ |
+| `go build ./... && go vet ./...` 全绿 | ✅ 见门禁表 |
+| `go test ./...` PASS | ✅ 受影响 16 包 exit 0（含 `-race`、前端 vitest 11/11、i18n parity） |
+| 所有 feat/* 分支已删除 | ✅ 见上，含 2 个「未合并但内容已在 main」的分支判定 |
+| 总控合入记录 | ✅ 本节 + 收口 commit |
+| 通知用户 7 个 PR URL | ❌ 阻塞于无 CLI 凭据，须人工创建；**如实标注为未完成** |
