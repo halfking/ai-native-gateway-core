@@ -304,6 +304,30 @@ backlog 清空（`expectedUntriagedBacklog = 0`），机制保留。
 
 详见 reports/latest.md「R79 续六」。
 
+## 15. R79 续七：「P1 候选」量成 P1 —— 8 处缺列的可达性核实
+
+缺列是事实，但**会不会真断**上一轮没量。本轮量完，结论 **P1**。
+
+**缺列事实三方一致**：基线 `01-schema.sql:7955` 无 `route_key`；真库 `pg_attribute` 无；
+全仓仅有的两处 `ALTER TABLE diagnostic_runs`（445 / 391）都只加 `created_at/updated_at`。
+`route_key` 全仓只出现于 **390 的 `routing_audit_log`**（另一张表，疑串表）。
+
+**可达性链**（这是定 P1 的依据，不是缺列本身）：
+`cmd/gateway/main.go:3539/3545` `NewStore` + `NewObserver` →
+`telemetryClient.AddOnRequestLogPersisted(observer.AsHook())`（**每条落库请求日志**）→
+`Observer.Transition` → `writeAudit` → `persistRunInTx` → `INSERT … route_key` → 42703。
+admin 侧 `NewRouteIncidentsHandler` 无条件接线，`DiagnosticRunsList` / `AuditLogListByRun` 同样失败。
+
+**一条加重因素**：`observer.go` 的重试循环注释按瞬时冲突设计（「Transient: lock
+conflict, transient deadlock… the next persisted row will catch up」），
+但 `42703` 是**永久性**错误，每次重试与每条后续请求都必然同样失败。
+`maxRetries: 4` ⇒ **每条请求日志触发 5 次注定失败的查询**，退避后只记 warning。
+**重试机制对永久性 SQL 错误零收益，只是把热路径的失败成本放大 5 倍。**
+
+登记表已从「P1 候选」升为「P1」并写入完整可达性链；变异（撤登记→指名红）仍通过。
+
+详见 reports/latest.md「R79 续七」。
+
 ## 子代理派发提示词
 
 ```

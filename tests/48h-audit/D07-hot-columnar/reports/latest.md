@@ -831,3 +831,65 @@ notes, created_at, updated_at, client_profiles —— **没有 `alias`**。
 - **新增 P1-3**（`tool_usage_stats` 列名漂移，有活接线）、**P1-4**（`model_aliases.alias`）
 - 语料 155 条：**131 规划成功 / 14 已定性登记 / 10 本机无法验证**（9 条 `outbox_events` 本机无表 + 1 条 42P08）
 - 未修理由不变：补列、改视图、迁移列名都属迁移 + schema 契约决策
+
+---
+
+# R79 续七 · 把「P1 候选」量成 P1：8 处缺列的可达性核实
+
+上一轮把 `domains/routeincident` 的 8 处缺列记为「P1 候选」——缺列是事实，
+但**会不会真断**当时没量。这一轮量可达性，结论是 **P1**。
+
+## 1. 缺列事实：三方一致
+
+| 来源 | `diagnostic_runs` 是否含 `route_key` |
+|---|---|
+| 基线 `01-schema.sql:7955` | 否 |
+| 真库 `pg_attribute` 实测 | 否 |
+| 全仓仅有的两处 `ALTER TABLE diagnostic_runs`（445 / 391） | 都只 `ADD COLUMN created_at/updated_at` |
+
+`route_key` 在全仓只出现于 **390 的 `routing_audit_log`**——另一张表，疑串表。
+
+## 2. 可达性：它在**每条请求日志**的路径上
+
+```
+cmd/gateway/main.go:3539   incidentStore := routeincident.NewStore(dbConn.Pool())
+cmd/gateway/main.go:3545   incidentObserver := routeincident.NewObserver(...)
+                           telemetryClient.AddOnRequestLogPersisted(incidentObserver.AsHook())
+                                                            ↑ 每一条落库的请求日志
+        ↓
+Observer.Transition(ctx, in)          observer.go:297
+        ↓
+Store.writeAudit → Store.persistRunInTx   action_infra.go:375 / :458
+        ↓
+INSERT … diagnostic_runs (…, route_key, …)   ← 42703
+```
+
+8 处缺列各自所在的方法：
+
+| 常量 | 所在方法 | 路径 |
+|---|---|---|
+| `action_infra.go:390` | `writeAudit` | **observer 热路径** |
+| `:479` | `persistRunInTx` | **observer 热路径** |
+| `:507` / `:529` | `loadRunByIDInTx` / `loadRunByID` | 读路径 |
+| `:608` / `:666` | `AuditLogListByRun` / `DiagnosticRunsList` | **admin HTTP**（`NewRouteIncidentsHandler` 无条件接线） |
+| `evidence.go:149` | `RecordEvidenceExportAudit` | 证据导出 |
+
+## 3. 一条加重因素：重试机制在这里零收益
+
+`observer.go` 的重试循环注释写着：
+
+> Transient: lock conflict, transient deadlock. Backoff and retry. We never abort a
+> transition; the next persisted row will catch up…
+
+但 `42703 undefined_column` 是**永久性**错误——每次重试、每条后续请求都必然同样失败。
+`maxRetries: 4` 意味着**每条请求日志触发 5 次注定失败的查询**，退避后
+`o.failed++` 并只记一条 warning。这套重试是为瞬时冲突设计的，
+对一个永久性 SQL 错误，它只是把热路径上的失败成本放大 5 倍。
+
+## 4. 定级：P1（不是 P1 候选）
+
+理由与 R79 续五给 `origin_actor` 定 P1 同源：**不是「缺一列」，而是「缺一列且默认开启、
+落在每条请求的热路径上、失败被重试放大」**。两处都属迁移 + schema 契约决策
+（补列、改列名、串表修正），审计轮不代做。
+
+登记表已从「P1 候选」升为「P1」并写入完整可达性链；变异检验（撤登记→指名红）仍通过。
