@@ -2,7 +2,7 @@
 
 > 日期：2026-09-28（Asia/Shanghai）
 > 状态：本续审只覆盖 D14 流式脱敏的补充复核与 Web 依赖安全。D01–D17 和近 96h 方案文档尚未完成全量审计。
-> 起始代码基线：`main` / `origin/main` `9946d75b5adf7eba7a03c15fee83123d5592e844`。该提交为 Web 对账报表页显式导入组件的修复。续审期间 F09/F10 代码以 `9fe387ac8` 提交并推送，相关审计证据更新至 `d96bc4f5e`；Web 依赖修订以 `0d5230bfb` 提交，并在最终 tip `816a16fcdfe787e38de804675e350705da37c5b` 推送后 fetch 核验通过。
+> 起始代码基线：`main` / `origin/main` `9946d75b5adf7eba7a03c15fee83123d5592e844`。该提交为 Web 对账报表页显式导入组件的修复。续审期间 F09/F10 代码以 `9fe387ac8` 提交并推送，相关审计证据更新至 `d96bc4f5e`；Web 依赖修订以 `0d5230bfb` 提交，R75 文档证据提交 `816a16fcd` 和 `80aab64f2` 也已分别 push/fetch 核验。
 
 ## 1. 范围与处理
 
@@ -39,7 +39,7 @@
 | `go test ./domains/hooks/response ./domains/streaming ./security/sanitize -count=1` | 退出码 0 | 受影响包普通测试 |
 | `go build ./...` / `go vet ./...` | 均退出码 0 | 全仓 Go build/vet |
 | `git diff --cached --check` | 退出码 0 | Web 与最终文档提交前均检查 |
-| `git push origin main` + `git fetch origin` | 退出码 0；本地和远端均为 `816a16fcdfe787e38de804675e350705da37c5b` | R75 Web 修复与证据已发布 |
+| `git push origin main` + `git fetch origin` | 退出码 0；R75 Web 修复及文档证据提交 `0d5230bfb`、`816a16fcd`、`80aab64f2` 均已确认在 `origin/main` | 两次发布后都执行了 fetch 核验 |
 
 安全审查 skill 指定的 `~/.agents/skills/security-review/scripts/run-all-checks.sh` 当前不存在，`govulncheck` 也未安装；因此没有声称该聚合脚本或 Go 漏洞数据库检查已通过。依赖风险由上述 npm/pnpm 官方 registry 审计覆盖。
 
