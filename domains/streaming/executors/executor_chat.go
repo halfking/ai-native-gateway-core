@@ -22,6 +22,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/paramledger"
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/reqprobe"
 	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -486,6 +487,56 @@ func (e *Executor) executeOpenAI(
 	probe := reqProbeRuntime{}
 	probeRetry := false
 	probeNoDelay := false
+	// A successful Chat probe after an explicit "Responses API unsupported"
+	// verdict is also a valid execution path. Apply the same decision to live
+	// requests before the ordinary 5xx retry/failover branch handles relay 502s.
+	// The non-stream Responses handler can convert the Chat result only when it
+	// owns the final write (SuppressSuccessWrite).
+	tryUnsupportedResponsesFallback := func(status int, errorBody []byte, kind errorsx.ErrorKind, headers http.Header) (bool, error) {
+		if !(nativeNonStream || nativeStream) || probe.modeTried || len(clientSourceBody) == 0 ||
+			!(params.IsStream || params.ClientProtocol != providercatalog.ProtocolOpenAIResponses || params.SuppressSuccessWrite) ||
+			!providercap.ResponsesUnsupportedError(status, string(errorBody)) {
+			return false, nil
+		}
+		fallbackBody, fbErr := e.finalizeOpenAIUpstreamBody(params, cand, clientSourceBody)
+		if fbErr != nil {
+			slog.Warn("responses unsupported: could not prepare chat fallback", "request_id", params.RequestID, "error", fbErr)
+			return false, nil
+		}
+		slog.Warn("native responses unsupported, falling back to chat/completions",
+			"request_id", params.RequestID,
+			"provider_id", cand.ProviderID,
+			"credential_id", cand.CredentialID,
+			"raw_model", cand.RawModel,
+			"status", status,
+		)
+		if e.RequestProbe != nil {
+			probe.input = reqprobe.Input{
+				HTTPStatus: status, ErrorBody: append([]byte(nil), errorBody[:min(len(errorBody), 1024)]...),
+				OutboundBody: bodyBytes, ErrorKind: string(kind), Protocol: cand.Protocol, NativeResponses: true,
+			}
+			probe.diag = reqprobe.Diagnosis{
+				Trigger: reqprobe.TriggerModeMismatch, SuggestMode: "chat", Reason: "responses_api_unsupported",
+			}
+			probe.meta = reqprobe.TerminalMeta{
+				RequestID: params.RequestID, ProviderID: cand.ProviderID,
+				ProviderCode: cand.CatalogCode, ClientModel: params.ClientModel, OutboundModel: cand.RawModel,
+			}
+			probe.active = true
+		}
+		sourceBody = clientSourceBody
+		bodyBytes = fallbackBody
+		nativeNonStream, nativeStream = false, false
+		probe.modeTried = true
+		probeRetry = true
+		e.ledgerRecordProbe(params, cand, nil, "responses", "chat")
+		meterExtraUpstreamCall(params)
+		return true, &retryableError{err: &upstreampkg.Error{
+			Kind: kind, Message: fmt.Sprintf("upstream %d (responses unsupported; chat fallback retry)", status),
+			Body: append([]byte(nil), errorBody...), StatusCode: status,
+			RetryAfter: upstreampkg.RetryAfterFromHeaders(headers),
+		}}
+	}
 
 	// BUG-2 fix (2026-06-19): compute timeout once outside the retry loop.
 	// Previously the timeout was computed inside the anonymous closure, which
@@ -509,7 +560,7 @@ func (e *Executor) executeOpenAI(
 	// iteration should NOT increment attempt, allowing the compressed body to
 	// be retried immediately without consuming the retry budget.
 	ctxLenRecoveryRetry := false
-	for attempt := 0; attempt <= effectiveMaxRetries+mnfBonus; attempt++ {
+	for attempt := 0; attempt <= effectiveMaxRetries+mnfBonus || probeRetry; attempt++ {
 		// Candidate-attempt boundary is intentionally logged once per attempt,
 		// rather than once per streamed frame, so a retry/failover can be
 		// reconstructed without logging request content or secrets.
@@ -878,6 +929,14 @@ func (e *Executor) executeOpenAI(
 			}
 
 			if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
+				if resp != nil {
+					if switched, fallbackErr := tryUnsupportedResponsesFallback(resp.StatusCode, uErr.Body, uErr.Kind, resp.Header); switched {
+						if resp.Body != nil {
+							_ = resp.Body.Close()
+						}
+						return nil, fallbackErr
+					}
+				}
 				errKind := uErr.Kind
 				// 2026-08-08: a 5xx whose body says "overloaded / try again
 				// later" is a load signal, not a dead upstream. upstream.Do
@@ -942,6 +1001,9 @@ func (e *Executor) executeOpenAI(
 				e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "openai-completions"), body[:n])
 				_, _ = io.Copy(io.Discard, resp.Body)
 				errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
+				if switched, fallbackErr := tryUnsupportedResponsesFallback(resp.StatusCode, body[:n], errKind, resp.Header); switched {
+					return nil, fallbackErr
+				}
 
 				if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body[:n]); bodyKind == errorsx.KindModelNotFound || bodyKind == errorsx.KindModelDeprecated {
 					// Internal retry for model_not_found (2026-06-20):
@@ -1038,14 +1100,12 @@ func (e *Executor) executeOpenAI(
 							OutboundModel: cand.RawModel,
 						}
 						// 模式回退：当前在 native responses 传输、未试过、
-						// 且响应侧有 chat→客户端协议转换通道（流式任何客户端
-						// 协议都有；非流式仅非 responses 客户端）。非流式
-						// responses 客户端回退会拿到 chat 形态响应体，不可
-						// 安全回退，只记录。
+						// 且响应侧有 chat→客户端协议转换通道。非流式
+						// Responses 客户端只有在 handler 负责最终写入时才安全。
 						if diag.Trigger == reqprobe.TriggerModeMismatch &&
 							diag.SuggestMode == "chat" &&
 							(nativeNonStream || nativeStream) && !probe.modeTried &&
-							(params.IsStream || params.ClientProtocol != "openai-responses") {
+							(params.IsStream || params.ClientProtocol != "openai-responses" || params.SuppressSuccessWrite) {
 							if fallbackBody, fbErr := e.finalizeOpenAIUpstreamBody(params, cand, clientSourceBody); fbErr == nil {
 								slog.Warn("reqprobe: native responses transport rejected, falling back to chat/completions",
 									"request_id", params.RequestID,

@@ -223,7 +223,134 @@ func (c *StorageConfig) Validate() error {
 		}
 		return fmt.Errorf(`invalid storage_mode %q: must be "full" or "lite"`, c.Mode)
 	}
+	if err := c.validateHotZonePaths(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateHotZonePaths prevents the short hotzone retention from touching
+// authoritative lite storage. Canonical paths include existing symlinked
+// ancestors, so aliases cannot bypass the overlap check. The three managed
+// child directories must themselves be real directories when they exist.
+func (c *StorageConfig) validateHotZonePaths() error {
+	if c.HotZone == nil || !c.HotZone.IsEnabled(true) {
+		return nil
+	}
+	if strings.TrimSpace(c.HotZone.Dir) == "" {
+		return fmt.Errorf("hotzone.dir must not be empty when enabled")
+	}
+	root := c.HotZone.Dir
+	rawRoot := filepath.FromSlash(root)
+	rootForStat := strings.TrimRight(rawRoot, string(filepath.Separator))
+	if rootForStat == "" {
+		rootForStat = rawRoot
+	}
+	if info, err := os.Lstat(rootForStat); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("hotzone.dir %q must be a directory, not a symlink", root)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("hotzone.dir %q: %w", root, err)
+	}
+	canonicalRoot, err := canonicalStoragePath(root)
+	if err != nil {
+		return fmt.Errorf("hotzone.dir %q: %w", root, err)
+	}
+	if c.NormalizeMode() == StorageModeLite && c.Lite != nil {
+		for _, item := range []struct{ name, path string }{
+			{"lite_storage.sqlite_path", c.Lite.SQLitePath},
+			{"lite_storage.bodies_dir", c.Lite.BodiesDir},
+			{"lite_storage.logs_dir", c.Lite.LogsDir},
+		} {
+			if strings.TrimSpace(item.path) == "" {
+				continue
+			}
+			authority, err := canonicalStoragePath(item.path)
+			if err != nil {
+				return fmt.Errorf("%s %q: %w", item.name, item.path, err)
+			}
+			if storagePathsOverlap(canonicalRoot, authority) {
+				return fmt.Errorf("hotzone.dir %q overlaps authoritative %s %q", root, item.name, item.path)
+			}
+		}
+	}
+	for _, name := range []string{"cache", "session_bodies", "requests"} {
+		// Do not filepath.Join here: it would clean link/../ before the OS
+		// resolves the link, potentially checking a different directory.
+		child := rawRoot + string(filepath.Separator) + name
+		info, err := os.Lstat(child)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("hotzone managed directory %q: %w", child, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("hotzone managed directory %q must be a directory, not a symlink", child)
+		}
+	}
+	return nil
+}
+
+// canonicalStoragePath resolves components in order, before processing "..".
+// filepath.Abs/Clean cannot be used first: cleaning link/../x would erase the
+// link even though the filesystem resolves it before "..". Missing suffixes
+// are retained; dangling symlinks fail closed.
+func canonicalStoragePath(path string) (string, error) {
+	path = filepath.FromSlash(path)
+	var current string
+	if filepath.IsAbs(path) {
+		volume := filepath.VolumeName(path)
+		current = volume + string(filepath.Separator)
+		path = strings.TrimPrefix(path, volume)
+	} else {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		current, err = filepath.EvalSymlinks(cwd)
+		if err != nil {
+			return "", err
+		}
+	}
+	for _, component := range strings.Split(path, string(filepath.Separator)) {
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			current = filepath.Dir(current)
+			continue
+		}
+		next := filepath.Join(current, component)
+		info, err := os.Lstat(next)
+		if os.IsNotExist(err) {
+			current = next
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			current, err = filepath.EvalSymlinks(next)
+			if err != nil {
+				return "", err
+			}
+		} else {
+			current = next
+		}
+	}
+	return filepath.Clean(current), nil
+}
+
+func storagePathsOverlap(a, b string) bool {
+	return storagePathWithin(a, b) || storagePathWithin(b, a)
+}
+
+func storagePathWithin(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	return err == nil && !filepath.IsAbs(rel) && rel != ".." &&
+		!strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // ApplyLiteDefaults 为 lite 模式补齐默认值：任何空字符串/零值字段都采用

@@ -1296,7 +1296,7 @@ func (e *Executor) executeOllama(
 			Message: "ollama upstream returned an empty response",
 		}}
 	}
-	body, werr := oe.WriteNonStreamResponse(params.W, resp, params.ClientModel, cand.QualityFixMode, nil)
+	body, werr := oe.WriteNonStreamResponse(responseSink(params), resp, params.ClientModel, cand.QualityFixMode, nil)
 	if werr != nil {
 		// Even on write error, return the body so the dispatcher's
 		// request-log preview sees what we tried to send. Use

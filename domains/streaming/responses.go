@@ -106,6 +106,20 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w, r, journeyWriter := beginRequestJourney(w, r, h.chatHandler)
 	defer finishRequestJourney(r, journeyWriter)
 	r = markExplicitStreamSession(r)
+	if h.chatHandler.sanitizeInputMiddleware != nil {
+		var authorized bool
+		r, authorized = h.chatHandler.prepareSanitizeRequest(r)
+		if !authorized {
+			h.serveHTTPInner(w, r)
+			return
+		}
+		h.chatHandler.sanitizeInputMiddleware(http.HandlerFunc(h.serveHTTPInner)).ServeHTTP(w, r)
+		return
+	}
+	h.serveHTTPInner(w, r)
+}
+
+func (h *ResponsesHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = r.Body.Close() }()
 
 	var (
@@ -209,7 +223,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeResponsesError(w, http.StatusUnauthorized, "Missing API key", "authentication_error", "missing_key")
 			return
 		}
-		ki, verifyErr := h.chatHandler.keyVerifier.Verify(r.Context(), rawKey)
+		ki, verifyErr := verifyRequestKey(r, h.chatHandler.keyVerifier, rawKey)
 		if verifyErr != nil {
 			if _, ok := verifyErr.(*authentication.InvalidKeyError); ok {
 				attemptErrCode = "invalid_key"
@@ -254,6 +268,9 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(bodyBytes) > 0 {
 		attemptRequestBody = bodyBytes
+	}
+	if prov := buildOutboundProvenance(r, nil); len(prov) > 0 {
+		logCtx.OutboundProvenance = prov
 	}
 	if len(bodyBytes) > maxBodySize {
 		attemptErrCode = "body_too_large"

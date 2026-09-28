@@ -80,15 +80,21 @@ export function modelScopeIdentity(
 export function pickScopeRepresentatives(
   resolutions: readonly ModelScopeResolution[],
 ): Map<string, string> {
-  const canonicalNameByIdentity = new Map<string, string>()
+  // A canonical ID may be resolved through several aliases, each reporting a
+  // different canonical_name. Keep every reported name so the last response
+  // cannot change which scope is chosen as representative.
+  const canonicalNamesByIdentity = new Map<string, Set<string>>()
   for (const r of resolutions) {
     const identity = modelScopeIdentity(r.scopeKey, r.canonicalId, r.canonicalName)
     const name = norm(r.canonicalName)
-    if (name) canonicalNameByIdentity.set(identity, name)
+    if (!name) continue
+    const names = canonicalNamesByIdentity.get(identity) ?? new Set<string>()
+    names.add(name)
+    canonicalNamesByIdentity.set(identity, names)
   }
   const representatives = new Map<string, string>()
   const rank = (scopeKey: string, identity: string): [number, number, string] => {
-    const matchesName = norm(scopeKey) === canonicalNameByIdentity.get(identity) ? 0 : 1
+    const matchesName = canonicalNamesByIdentity.get(identity)?.has(norm(scopeKey)) ? 0 : 1
     return [matchesName, scopeKey.length, scopeKey]
   }
   for (const r of resolutions) {

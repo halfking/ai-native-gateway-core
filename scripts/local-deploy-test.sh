@@ -449,6 +449,8 @@ run_migrations() {
       "021_tool_registry_and_metatools.sql" "029_seed_tool_registry.sql"
       "031_provider_settings.sql" "033_credential_model_call_history.sql"
       "036_fp_slot_limit.sql"
+      # 755 requires an operator check for external pg_cron/jobs before DROP.
+      "755_drop_dead_cleanup_expired_session_turn_logs.sql"
     )
     for mig in $(find "$MIGRATIONS_DIR" -maxdepth 1 -name "*.sql" ! -name "*.down.sql" -type f | sort); do
       local name; name=$(basename "$mig")

@@ -64,6 +64,12 @@ phase "扫描待跑 migration"
 PENDING=()
 for f in "$MIGRATION_DIR"/*.sql; do
   [[ "$(basename "$f")" == *.down.sql ]] && continue
+  # 755 drops a legacy function only after an operator checks external
+  # pg_cron/jobs. Directory scanning must not bypass that gate.
+  if [[ "$(basename "$f")" == "755_drop_dead_cleanup_expired_session_turn_logs.sql" ]]; then
+    info "skip operator-gated 755; apply it manually after checking external jobs"
+    continue
+  fi
   # 从文件名提取版本号 (开头 3 位数字)
   ver=$(basename "$f" | grep -oE '^[0-9]{3}' || echo "")
   if [[ -z "$ver" ]]; then continue; fi

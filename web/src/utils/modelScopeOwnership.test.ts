@@ -100,6 +100,19 @@ describe('modelScopeOwnership', () => {
     expect(representatives.get(canonicalIdentity)).toBe('glm-5.3')
   })
 
+  const SAME_ID_DIFFERENT_NAMES: ModelScopeResolution[] = [
+    { scopeKey: 'glm-5.3', canonicalId: 42, canonicalName: 'glm-5.3' },
+    { scopeKey: 'glm-5-3', canonicalId: 42, canonicalName: 'glm-5-3' },
+  ]
+
+  it.each([
+    ['dot alias first', SAME_ID_DIFFERENT_NAMES],
+    ['dash alias first', [...SAME_ID_DIFFERENT_NAMES].reverse()],
+  ] as const)('chooses the same representative for one canonical ID with different names: %s', (_order, resolutions) => {
+    const { representatives } = resolveModelScopeOwnership(resolutions)
+    expect(representatives.get('canonical:42')).toBe('glm-5-3')
+  })
+
   it('falls back to the scope literally named after the raw when no canonical is known', () => {
     const { aliasOwner } = resolveModelScopeOwnership([
       { scopeKey: 'mystery-model', rawModels: [], candidates: [{ modelName: 'mystery-model' }] },
