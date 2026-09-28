@@ -2,13 +2,13 @@
 
 > 域知识库：[docs/audit/playbook/domains/D17-code-hygiene.md](../../../docs/audit/playbook/domains/D17-code-hygiene.md)
 > R73 改动面：stream reader context、lite telemetry 并发实现、rate-limit scope、Ollama recovery 与 audit 文档漂移。
-> 状态：进行中；提交前必须完成 diff/引用/全仓 race 与部署复核。
+> 状态：R73 改动已提交并推送；D01–D17 全域覆盖、旧 MASTER_REPORT 引用复核、全仓 race 与本地部署仍未完成。
 
 ## 1. 审计要点
 
 - 逐文件区分前序 lite telemetry 与本轮 F03/F04/F06 归属；不删除近似实现，先核消费者和行为差异。
-- 已做 `go build ./...`、`go vet ./...`、定向测试；workspace 仍 uncommitted。
-- 未覆盖：旧 MASTER_REPORT 引用全量清理、全仓 race、部署产物与最终 Git 交付。
+- 已做最终 `go build ./...`、`go vet ./...`、定向测试；R73 代码和文档见提交 `b1167076e`；另有两项未暂存工作区修改不属于此提交。
+- 未覆盖：旧 MASTER_REPORT 引用全量清理、全仓 race 失败复核、部署产物与 D01–D17 完整审计。
 
 ## 2. 业务测试
 
