@@ -356,8 +356,6 @@ func TestTurnLogsWriter_AggregateWithError(t *testing.T) {
 	assert.Equal(t, "Service unavailable", turns[1][1]["error"])
 }
 
-
-
 // TestTurnLogsWriter_EmptyEventData tests writing stage with empty event data
 func TestTurnLogsWriter_EmptyEventData(t *testing.T) {
 	if testing.Short() {
