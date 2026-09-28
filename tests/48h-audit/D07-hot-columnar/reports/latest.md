@@ -415,3 +415,123 @@ ctid 是**系统列，无法建索引**。所以「缺首列索引」这条规�
   justification、2 个 ctid 系统列登记。全部自收缩。
 - **仍未做**：`request_wal` / `credit_ledger` / `tool_usage_stats` 等分区的**非游标**查询面
   （比如按 ts 范围做对账/报表的接口）未做计划形状普查；本轮只覆盖「批游标」这一形态。
+
+---
+
+# R79 续三 · 非游标查询面与 DEFAULT 分区普查（一个 P2 + 三条被证伪的假设）
+
+前三批的靶子都是「批游标」这一种形态。本轮换靶子：查**查询面**上另外两种风险——
+分区裁剪是否真的在生效，以及 DEFAULT 分区是否在静默吞掉数据。
+
+## 1. 三条被证伪的假设（这轮的一半价值在「不是」上）
+
+### 1.1 `ON ONLY` 让分区漏索引 —— 证伪
+
+`pg_indexes` 里 `session_turns` 的索引全部带 `ON ONLY`：
+`CREATE INDEX idx_session_turns_request ON ONLY public.session_turns USING btree (request_id)`。
+而 PG 的 `ON ONLY` **不递归到已存在的分区**——若属实，则 6.2GB 的
+`session_turns_2026_09` 上没有 `request_id` 索引，视图里逐行跑的
+`NOT EXISTS (... FROM session_turns tp WHERE tp.request_id = rl.request_id)`
+就会退化成每行一次全分区顺序扫。
+
+实测：5 个分区逐个查 `pg_index`，**每个都有** `*_request_id_idx ON (request_id)`。
+分区侧另有自己的索引命名体系。假设不成立。
+
+### 1.2 计划里的 `Seq Scan on request_logs_2026_07/08` 是生产缺陷 —— 证伪
+
+`EXPLAIN` 显示 LATERAL 对 07/08 分区走 Seq Scan、对 09 走 Index Scan。第一反应是
+「07/08 缺索引」。实测：`request_logs_2026_07` = 576 kB / 0 行，
+`request_logs_2026_08` = 440 kB / 0 行。**本机这两个分区本来就是空的**，
+规划器选顺序扫是对的。这是本地空表造成的假象，生产有数据时规划器会用上索引。
+
+**两次都是同一个错误模式：看到计划里不理想的形状，先去查被扫描对象的真实体量，
+再去查索引的真实分布——而不是直接归因。**
+
+### 1.3 「DEFAULT 分区装了 1168 MB，所以分区裁剪全废了」—— 证伪
+
+这是本轮最初写下的结论，而且写进了文件的注释里。EXPLAIN 三次复跑把它否掉：
+
+| 查询窗口 | 计划 |
+|---|---|
+| `09-28 → 09-29` | `Index Only Scan using usage_facts_20260928_occurred_at_idx`，**无 Append，DEFAULT 不在计划里** |
+| 同上但 `SET enable_partition_pruning=off` | `Append` 下游 4 个日分区全部出现 |
+| `2026-07-01 → 07-02`（无兄弟分区覆盖） | 扫 `usage_facts_default` |
+| `2027-01-01 → 01-02`（无兄弟分区覆盖） | 扫 `usage_facts_default` |
+| `09-20 → 09-29`（部分覆盖） | `Append`，DEFAULT 返回 448,186 行 |
+
+即 PG 17.10 在窗口被显式兄弟分区**完整覆盖**时会裁掉 DEFAULT。
+**我没有去读规划器源码确认它的判定路径，因此这里只登记实测行为，不登记机制解释。**
+
+剩下的真实结论比初判窄得多：覆盖那 36 天的查询确实要扫 DEFAULT
+（单日 2026-09-25 实测 12.4 ms，Index Only Scan，可接受）；
+2026-09-26 之后的窗口不受影响。**P3，不是性能缺陷。**
+
+## 2. 真正的新发现：P2 —— `stats_event_inbox` 名义分区、实际零分区
+
+`stats_event_inbox` 声明 `PARTITION BY RANGE (occurred_at)`，却**只有 DEFAULT 一个子分区**：
+
+- 全表 **1,419,612 行 / 1298 MB** 全在 `stats_event_inbox_default`
+- 行区间 2026-08-19 01:02 → 2026-09-29 00:21，**跨 41 个自然日**
+- `bg/partition_manager.go` 的 `ensureSpecs()` 里**没有任何条目**引用它，`bg/` 整包对它零引用
+- 全仓**零处** `DELETE FROM stats_event_inbox` / `TRUNCATE`：消费者只 `markProcessed`
+  （`inbox_consumer.go:378`），`replaySQL` 还刻意把已处理行回退成 retryable
+  —— 即这是一本**只增不减的重放账本**
+
+**定级 P2 而非 P1**：声明查询本身有部分索引兜底
+（`..._occurred_at_created_at_idx ON (occurred_at, created_at) WHERE processed_at IS NULL`），
+今天不慢。真实代价是**无界增长**：实测 ~10–26K 行/天（09-23~09-26 尖峰 110K–150K），
+一年量级 4M–10M 行 / 4–9 GB，全部堆在一张无分区表里。
+
+待 owner 决策：(a) 接入 `ensureSpecs()` 按日分区 + 保留期清理；
+(b) 若确实不需要分区，则去掉 `PARTITION BY` 声明，别让下一个人以为有裁剪。
+
+## 3. 这道门抓到了我自己手工普查漏掉的那一张
+
+写门之前我手工跑过一遍 census，结论是「只有 `usage_facts` 一张」，
+因为那条 SQL 带了个过滤：
+
+```sql
+AND (SELECT count(*) FROM pg_inherits i4 WHERE i4.inhparent = p.oid) > 1   -- 只保留子分区多于一个的父表
+```
+
+而 `stats_event_inbox` **恰好只有一个子分区**（DEFAULT 自己），于是被整条抹掉——
+**恰恰因为它退化，它才不会被那个条件选中**，全表最严重的一张正好被过滤掉了。
+
+写成门之后（同一段查询、只是没有那个过滤条件），立刻报出 2 张。
+
+**教训：普查脚本里的过滤条件会同时充当「筛选」和「掩盖」。
+「我想要的那些对象」和「我筛选之后还剩的对象」不是一回事。**
+
+## 4. 门的设计：为什么不判红「DEFAULT 必须为空」
+
+那是最容易写的一句断言，也是错的。DEFAULT 分区的设计目的就是接住兜不住的行，
+让写入永不失败；`bg/partition_manager.go:1256` 对 usage_facts 的
+「DEFAULT 保留作历史 catch-all」是**有文档的设计决策**，拿它判红是在惩罚一个正确的设计。
+
+真正要抓的是**静默堆积**：分区创建滞后、或某张表从没接过分区，
+于是写入一路落进 DEFAULT 而没人察觉——写入不报错、裁剪悄悄失效、某天才发现。
+
+所以判据不是「有没有数据」，而是**「有数据但没人登记过」**：
+- 实质堆积且未登记 → 红，指名并要求写明「这是有意设计还是分区创建滞后」
+- 已登记 → 绿，但在输出里复述登记理由，保持可见
+- 已登记但实际不再堆积 → **红**（白名单自收缩）
+- 登记了本库不存在的表 → **红**（幽灵条目不能躲在「本机没这张表」后面）
+
+## 5. 变异检验（3 处，红转绿）
+
+| 变异 | 期望 | 实测 |
+|---|---|---|
+| 撤掉 `stats_event_inbox` 登记 | 红并指名 | ✅ `stats_event_inbox: DEFAULT ... 约 1381881 行 / 1298 MB，压过 0 个显式兄弟分区` |
+| 白名单塞 `sessions`（DEFAULT 为空） | 红「条目已失效」 | ✅ 红 |
+| 白名单塞 `totally_absent_table` | 红「没有对应的分区父表」 | ✅ 红 |
+
+## 6. 结论
+
+- **1 个 P2**（`stats_event_inbox` 名义分区 + 无界增长）、**1 个 P3**（usage_facts 文档注释
+  `partition_manager.go:1258` 那句「partition pruning 对 WHERE 范围查询仅扫命中分区」
+  对 2026-09-26 之前的数据不成立）。
+- **三条假设被证伪**，其中「DEFAULT 破坏裁剪」那条已经写进注释里又被自己推翻——
+  留在文件里作为「先实测再归因」的样本。
+- **仍未做**：`admin/logs.go` 这类 UNION ALL 视图上的 `ORDER BY + LIMIT` 无法下推
+  （计划恒为 `Limit → Sort → Append`，页大小不能约束工作量），目前只靠 R37 的 366 天
+  窗口上限兜底；非 hot 分区族的逐族查询面普查。
