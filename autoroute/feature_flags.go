@@ -59,19 +59,25 @@ type FeatureFlags struct {
 	// Default off; independent of the other AutoOn* flags.
 	// Off → those endpoints ignore model="auto" (no rewrite, upstream sees "auto").
 	//
-	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
+	// Deprecated: 属遗留 flag（autoroute/internal/legacyflags），唯一来源是
+	// env AUTO_ON_MESSAGES。2026-09-29 (审计二十一轮) 勘误：URSM_V2_MODE
+	// 管的是 URSM v2 路由状态管理器（domains/ursm/v2/config.go），与本 flag
+	// 无任何代码路径关联——不存在「用 URSM_V2_MODE 替代」的开关；协议面
+	// auto 现状只能用 AUTO_ON_* 控制（消费点 auto_route_nonchat.go）。
 	AutoOnMessages bool
 	// AutoOnResponses gates model=auto on non-chat endpoints (22 章 §22.2).
 	// Default off; independent of the other AutoOn* flags.
 	// Off → those endpoints ignore model="auto" (no rewrite, upstream sees "auto").
 	//
-	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
+	// Deprecated: 同 AutoOnMessages（env AUTO_ON_RESPONSES；URSM_V2_MODE
+	// 与本 flag 无关，见上方勘误）。
 	AutoOnResponses bool
 	// AutoOnEmbeddings gates model=auto on non-chat endpoints (22 章 §22.2).
 	// Default off; independent of the other AutoOn* flags.
 	// Off → those endpoints ignore model="auto" (no rewrite, upstream sees "auto").
 	//
-	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
+	// Deprecated: 同 AutoOnMessages（env AUTO_ON_EMBEDDINGS；URSM_V2_MODE
+	// 与本 flag 无关，见上方勘误）。
 	AutoOnEmbeddings bool
 	// AutoEmbeddingRoute enables the M3 embedding shadow path. Default off.
 	//

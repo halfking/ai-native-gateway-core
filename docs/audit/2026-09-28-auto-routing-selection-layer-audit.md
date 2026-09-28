@@ -160,6 +160,11 @@ if len(scored) > 0 && scored[0].Breakdown.MatchScore < 30 && vocabularyPresent {
 中性化保留了价格/通道质量/可靠性的真实排序能力，也保留了候选多样性（429 时仍可换模型）；
 反向选择（按"该维度无效"整体跳过）会让 price/quality 权重被静默放大，改变已有 composite 语义，风险更大。
 
+> 2026-09-29 勘误（R73 M-1 修订）：上线态代码的坍缩守卫判定范围已从全量层
+> `available` 改为**实际打分子池**——`recommend_v2.go` 的调用是
+> `TaskVocabularyRepresented(task, candidatePool)`（candidatePool 为打分
+> 前筛后的子池）。上方代码块保留为初版形态存档，勿照此回滚。
+
 ### 4.3 回归钉桩（`autoroute/task_vocabulary_regression_test.go`，5 个用例）
 
 | 用例 | 钉住的事实 |
