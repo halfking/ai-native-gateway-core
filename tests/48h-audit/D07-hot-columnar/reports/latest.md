@@ -893,3 +893,79 @@ INSERT … diagnostic_runs (…, route_key, …)   ← 42703
 （补列、改列名、串表修正），审计轮不代做。
 
 登记表已从「P1 候选」升为「P1」并写入完整可达性链；变异检验（撤登记→指名红）仍通过。
+
+---
+
+# R79 续八 · 非 hot 分区族普查（第一族：session_bodies）—— 一条差点写成 P2 的 P3
+
+前面几轮都在查 `request_logs` 一族。本轮换族，查全库**最大**的表 `session_bodies`
+（8.68 GB / 5 个分区），查询面走 `session_bodies_unified` 视图。
+
+## 1. 缺 `(session_id, ts)` 索引，53,851 行换 20 行
+
+会话摘要输入查询（`fetchTurns` 去掉 P1-1 那条坏谓词后的形态）：
+
+```sql
+SELECT … FROM session_bodies_unified b
+  LEFT JOIN session_turns_with_current_month t ON t.tenant_id=b.tenant_id AND t.request_id=b.request_id
+WHERE b.session_id = $1 ORDER BY b.ts ASC LIMIT 20
+```
+
+该族 `session_id` 打头的索引只有：
+
+```
+idx_session_bodies_hot_lookup        (session_id, turn_no, tenant_id)
+idx_session_bodies_session           (session_id, turn_no DESC)   -- ON ONLY
+session_bodies_2026_09_session_id_turn_no_idx (session_id, turn_no DESC)
+```
+
+**没有 `(session_id, ts)`**。`turn_no` 与 `ts` 的相关性 PG 无法证明，于是
+`WHERE session_id=$1 ORDER BY ts LIMIT 20` 只能：
+
+```
+Bitmap Index Scan on session_bodies_2026_09_session_id_turn_no_idx (actual rows=53851)
+  → Bitmap Heap Scan on session_bodies_2026_09 (actual rows=53851)
+     → Sort（temp read=347 written=760，**落盘外排**）
+        → Limit 20
+```
+
+实测（`sys:probe:cred126:20260924`，53,851 body）：
+**Execution Time 835.853 ms，Buffers hit=653,557 read=13,616（≈5.2 GB 逻辑读）+ 临时文件溢出。**
+
+## 2. 分布一量，定级从 P2 掉到 P3
+
+```
+SELECT percentile_cont(…) FROM (SELECT session_id, count(*) FROM session_bodies GROUP BY 1)
+→ 817,986 个会话：avg 2.1 / p50 1 / p90 1 / p99 2 / max 53,851
+```
+
+按来源拆开：
+
+| 会话类别 | 会话数 | avg body | max body | >100 body 的会话数 |
+|---|---|---|---|---|
+| 真实会话 | 817,579 | **1.22** | 1,607 | 222 |
+| `sys:probe:*`（探针生成） | 445 | **1,693** | 53,851 | 350 |
+
+**若我停在「53,851 行 / 836 ms / 5.2 GB」就会写出一条 P2——而它对 99.98% 的会话完全不成立。**
+真实会话 p99 是 **2 个 body**，读 2 行拿 20 条毫无压力；成本集中在**探针子系统**
+（445 个会话、均值 1,693 行），而探针会话是否真的走摘要路径本轮没查。
+
+**定 P3（潜在）**：这是一条**潜伏**成本，不是当下在付的成本。触发条件是
+(a) 探针会话真的进入摘要/close-hook 路径，或 (b) 真实会话长到几百个 body
+（已有 222 个 >100）。修法便宜：补 `(session_id, ts)` 索引即可。
+
+## 3. 顺带记录一个与 P1-1 耦合的事实
+
+`SessionMetadataCloseHook.OnSessionClosed` 每次会话关闭都调
+`loader.GetSessionMessages` → 这条查询。**它现在因为 `origin_actor` 而直接报错**。
+也就是说：**只修 P1-1（给视图补投影）会把这条查询面立刻激活**，
+届时探针类会话每次 close 都要付那 836 ms。
+**修 P1-1 时应一并评估是否补 `(session_id, ts)` 索引**，否则等于把一条休眠的
+昂贵路径唤醒。
+
+## 4. 本轮的可迁移教训
+
+**定级之前先量分布，不是量峰值。** 我在这一族上已经准备了「P2：8.68 GB 的表读
+53,851 行只返回 20 条」这段结论，是分布数据把它拦下来的。
+一条结论的说服力往往来自它的**中位数**，而触发审计的是**最大值**——
+两者不一致时，只有中位数能告诉你这是不是常态。
