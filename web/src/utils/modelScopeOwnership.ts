@@ -123,16 +123,27 @@ export function resolveModelScopeOwnership(
   // canonical id that owner speaks for, used as the primary ownership signal.
   const ownerOf = new Map<string, string>()
   const canonicalIdOfOwner = new Map<string, number>()
+  // 每个 owner（代表作用域）的标准名，供后缀亲和判据使用。
+  const selfNameByOwner = new Map<string, string>()
   for (const r of resolutions) {
     const identity = modelScopeIdentity(r.scopeKey, r.canonicalId, r.canonicalName)
     const owner = representatives.get(identity) ?? r.scopeKey
     ownerOf.set(r.scopeKey, owner)
+    const selfName = norm(r.canonicalName) || norm(r.scopeKey)
+    if (!selfNameByOwner.has(owner)) selfNameByOwner.set(owner, selfName)
     const id = positiveCanonicalId(r.canonicalId)
     if (id != null && canonicalIdOfOwner.get(owner) == null) canonicalIdOfOwner.set(owner, id)
   }
 
   const claims = new Map<string, string[]>()
   const canonicalIdsByRaw = new Map<string, Set<number>>()
+  // 2026-09-29 二轮审计修正：响应级 canonical_id 不能单独当归属证据。
+  // resolve 的 canonical_id 在候选跨 canonical 时为 null（实测
+  // doubao-seed-2-0-code-preview 响应报 null，但其自身绑定的 canonical 是
+  // 353857；glm-5.3-flash 同理，响应 null、自身 canonical 2716170）。用它做
+  // 强判据会把真实模型判成"无证据"。绑定层的证据是：该作用域**自己名字
+  // 对应**的候选携带的 canonical_id —— 它不受词法变体污染。
+  const selfCanonicalIdsByOwner = new Map<string, Set<number>>()
   const claim = (raw: string | null | undefined, owner: string) => {
     const key = norm(raw)
     if (!key) return
@@ -148,29 +159,60 @@ export function resolveModelScopeOwnership(
     ids.add(id)
     canonicalIdsByRaw.set(key, ids)
   }
+  const recordSelfCanonicalId = (owner: string, canonicalId: number | null | undefined) => {
+    const id = positiveCanonicalId(canonicalId)
+    if (id == null) return
+    const ids = selfCanonicalIdsByOwner.get(owner) ?? new Set<number>()
+    ids.add(id)
+    selfCanonicalIdsByOwner.set(owner, ids)
+  }
 
   for (const r of resolutions) {
     const owner = ownerOf.get(r.scopeKey) ?? r.scopeKey
+    // 该作用域"自己"的标准名：canonical_name 优先，缺失时用 scope key。
+    const selfName = norm(r.canonicalName) || norm(r.scopeKey)
     for (const raw of r.rawModels ?? []) claim(raw, owner)
     for (const candidate of r.candidates ?? []) {
       claim(candidate.modelName, owner)
       recordCanonicalId(candidate.modelName, candidate.canonicalId)
+      if (norm(candidate.modelName) === selfName) recordSelfCanonicalId(owner, candidate.canonicalId)
     }
+  }
+
+  const ownerValidates = (owner: string, rawCanonicalIds: Set<number>): boolean => {
+    const responseId = canonicalIdOfOwner.get(owner)
+    if (responseId != null && rawCanonicalIds.has(responseId)) return true
+    const selfIds = selfCanonicalIdsByOwner.get(owner)
+    if (selfIds) {
+      for (const id of selfIds) if (rawCanonicalIds.has(id)) return true
+    }
+    return false
   }
 
   const aliasOwner = new Map<string, string>()
   for (const [raw, owners] of claims) {
     const rawCanonicalIds = canonicalIdsByRaw.get(raw)
-    // (b1) owner whose canonical matches what the raw's own bindings report.
-    let pool = rawCanonicalIds && rawCanonicalIds.size > 0
-      ? owners.filter(owner => {
-        const id = canonicalIdOfOwner.get(owner)
-        return id != null && rawCanonicalIds.has(id)
+    const hasEvidence = Boolean(rawCanonicalIds && rawCanonicalIds.size > 0)
+    let pool = hasEvidence ? owners.filter(owner => ownerValidates(owner, rawCanonicalIds!)) : []
+    // 有 canonical 证据却谁都对不上 = 这个 raw 属于一个本作用域集合之外的模型
+    // （实测：集合里只有 glm-4.7-flash，glm-4.7 本身不在集合内）。此时默认
+    // **不归属** —— 宁可该模型不显示，也不能把它的节点挂到别的模型名下，
+    // 那正是本缺陷本身。
+    if (pool.length === 0 && hasEvidence) {
+      // 例外：某模型只以"日期/版本后缀"形式注册了绑定，没有裸名绑定
+      // （实测 doubao-seed-2-0-code-preview 唯一绑定是 -260215 形式，响应级
+      // 与自身名字候选都拿不到 canonical）。此时用与后端 dash 桥同源的名字
+      // 亲和判据：作用域名是 raw 名的 `-` 边界前缀。只在强证据全部落空时生效，
+      // 且要求该作用域确实声称过这个 raw，不凭空建立关联。
+      const prefixPool = owners.filter(owner => {
+        const name = norm(selfNameByOwner.get(owner) ?? owner)
+        return name.length > 0 && raw.startsWith(`${name}-`)
       })
-      : []
-    // (b2) any scope that actually resolved to a canonical beats pure lexical hits.
+      if (prefixPool.length === 0) continue
+      pool = prefixPool
+    }
+    // 无 canonical 证据可比对：退回"有 canonical 的作用域"，再退回稳定排序。
     if (pool.length === 0) pool = owners.filter(owner => canonicalIdOfOwner.has(owner))
-    // (b3) deterministic fallback — a scope literally named after the raw wins.
     if (pool.length === 0) pool = [...owners]
     pool.sort((a, b) => compareRank([norm(a) === raw ? 0 : 1, a.length, a], [norm(b) === raw ? 0 : 1, b.length, b]))
     aliasOwner.set(raw, pool[0])
