@@ -297,8 +297,8 @@ reasoning: ncand 3, fallback false,      match 33.3 （对照组，未变）
 2. **门禁仍只覆盖分类层**（已于 R77 收口，见 §6.3）。坍缩率目前**只报告不卡门**：`baseline.json`
    是离线产物，而坍缩率必须有 E2E 决策头才能算，离线门禁拿不到。给它加门禁需要一个 E2E 基线文件
    （本轮实测值 0/240 可作起点），属于下一步独立决策。
-3. **P2 TierSelector 仍是 G1 的真正堵点**。本轮修的是选型退化（属 P0 范畴），"人工 apply 的
-   分层建议运行时消费为零"这一原始缺口未动，仍按设计稿待执行。
+3. **P2 TierSelector 仍是 G1 的堵点，但本轮启动评估结论是：现在接线零收益且爆炸半径大，
+   它的前置不是「接线工作」而是「V3 分类器落地」**。详见 §6.4。
 
 ---
 
@@ -377,6 +377,50 @@ review/security 这两个 required 词就永远无法被独立验证是否为真
 （首轮跑 50/60 报错时曾误判「错误行没有决策头」，实为查错了 JSON 键：`decision` 是嵌套字段，
 错误行同样有。）另有一个**独立的集中度风险**，本轮未修：96/126 次上游尝试打到单一 provider，
 该 provider 一限流就同时打穿所有任务类型的退路。
+
+### 6.4 P2 TierSelector 接线启动评估（R77，R66 点名的优先入口）
+
+R66 把「auto TierSelector 接线启动评估」列为优先入口。本节是那份评估的结论，**不接线**，
+只回答「在什么条件下接线才有意义」。钉桩见 `autoroute/tier_selector_wiring_prereq_test.go`
+（4 条特征化护栏，变异检验确认有牙）。
+
+**核心事实：全仓存在两套互不相交的 TaskType 词表。**
+
+| | 词表 | 状态 |
+|---|---|---|
+| **V2** | `chat` `reasoning` `code` `agent` `creative` `long_context` `vision` `function_call` `code_audit` `intent_classification` `planning` | **生产分类器实际发出**（`NewHeuristicClassifierWithTuning`，`cmd/gateway/main.go:5036`）；240 例 E2E 实测发出的正是这 11 类 |
+| **V3** | `architecture` `audit` `debugging` `coding` `refactoring` `testing` `devops` `documentation` `summary` `dependency` | `AllTaskTypesV3`（`task_types_v3.go:143`），**恰等于 `task_type_tier_config` 的 10 条种子行** |
+
+而 `NewV3Classifier` 与 `NewTierSelector` **都零生产构造点**——`NewV3Classifier` 自身注释
+还写着「V3 分类器保留供实验对照, 下轮清理候选」（`classifier_v3.go:40`）。
+
+**所以把 TierSelector 接进生产热路径，今天拿不到任何按任务类型的真实配置。** 两条路都试算过：
+
+- `enableV3=false`：`SelectTier` 第一行就返回 `tier-b`（`tier_selector.go:97-105`），
+  对**所有**请求一视同仁。这是一道「一刀切硬过滤」，会把 tier-a / tier-c 候选全滤掉；
+  离线套件实测 tier 分布 `tier-a=85 / tier-b=105 / tier-c=50`，爆炸半径远超「小步灰度」。
+- `enableV3=true`：分类器仍发 V2 类型 → 配置查询全部 miss → 落 `getDefaultTier` →
+  `TaskTypeTierMapping`（`task_types_v3.go:344`）无任何 V2 键 → 仍默认 `tier-b`。
+
+两条路都是**零收益 + 大爆炸半径**。
+
+**正确顺序**：V3 分类器先落地（P3，影子观察 ≥7 天是硬前置，规划 §4.6 plan:222-224 明文
+「替换本身是独立裁决」）→ 之后 tier 配置词表才与运行时词表对齐 → TierSelector 才有真实
+配置可消费。**TierSelector 不是一项独立的接线工作，它是 V3 分类器灰度的下游消费者。**
+这与设计稿 `AUTO_ROUTING_V2_P2_TIER_SELECTOR_DESIGN.md` 的「影子 → 灰度 → 生效」不冲突，
+但把它的**启动前置**从「排期」改成了「V3 分类器是否已在生产」。
+
+**顺带核实的既有基础（R43 的 ensure 确实在工作，非空壳）**：真库
+`task_type_tier_config` 存在且是 V370 形态（BIGINT `tenant_id`、
+`min_confidence numeric(3,2) DEFAULT 0.70`、`UNIQUE (task_type, COALESCE(tenant_id,0))`），
+10 条种子齐全。设计稿点名的 `cmd/gateway/main.go` 行号整体漂移 6–22 行
+（`NewDecider` 5035→5041、`SetRoleLLMRouter` 5244→5250），语义未变。
+两个 flag `AutoTierSelectorEnabled` / `AutoTierSelectorShadowOnly` 仍**未在 `config/` 定义**，
+与设计稿 §89「待新增」一致。
+
+**本轮不做**：不接线、不新增 flag、不改种子词表（V2↔V3 词表映射是**产品/路由策略裁决**，
+不是代码能替 owner 定的）。owner 需要的决策已从「要不要接线」变成
+「V3 分类器什么时候进生产」。
 
 **§6.2 第 1 条的订正**：能力词表补齐（`cap:code` / `cap:creative` 等）**仍然是**让 code /
 code_audit / creative 真正按能力选型的唯一解法——L-5 只保证「没有能力词表时别假装有」，
