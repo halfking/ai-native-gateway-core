@@ -156,10 +156,10 @@ func TestPersistHook_SkipsProbeSyntheticSession(t *testing.T) {
 			CredentialID: func() *int { v := 7; return &v }(),
 		})
 		hook(&telemetry.RequestLogEntry{
-			RequestID:   "req-probe-fail",
-			Success:     false,
+			RequestID:     "req-probe-fail",
+			Success:       false,
 			RequestStatus: strPtr(telemetry.RequestStatusFailure),
-			OriginActor: strPtr("node-probe-worker"),
+			OriginActor:   strPtr("node-probe-worker"),
 		})
 	})
 	if called != 0 {
