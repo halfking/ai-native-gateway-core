@@ -1838,6 +1838,12 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer finishRequestJourney(r, journeyWriter)
 	r = markExplicitStreamSession(r)
 	if h.sanitizeInputMiddleware != nil {
+		var authorized bool
+		r, authorized = h.prepareSanitizeRequest(r)
+		if !authorized {
+			h.serveHTTPInner(w, r)
+			return
+		}
 		h.sanitizeInputMiddleware(http.HandlerFunc(h.serveHTTPInner)).ServeHTTP(w, r)
 		return
 	}
@@ -2253,7 +2259,7 @@ func (h *ChatHandler) serveWithExecutor(
 			writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgMissingKey, nil)
 			return
 		}
-		ki, verifyErr := h.keyVerifier.Verify(r.Context(), rawKey)
+		ki, verifyErr := verifyRequestKey(r, h.keyVerifier, rawKey)
 		// ── 2026-07-17: trace.Authenticate ──────────────────────────────────
 		// 无论成功/失败都记录, 让运维在 trace 视图里看到完整鉴权链路。
 		if ki != nil {

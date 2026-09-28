@@ -4,7 +4,7 @@ package bg
 // 三子树（cache / session_bodies / requests）的过期与配额清理 Worker。
 //
 // 与 cache_trimmer.go（仅清 L1.5 cache 目录）的区别：
-//   - 遍历 HotZone.Dir 整树，三个子树共享同一配额与保留期；
+//   - 只遍历 HotZone.Dir 下三个受管子树，共享同一配额与保留期；
 //   - 先按 mtime 删除过期文件，再按总盘占超限时最旧先删（与现有 FileCache
 //     「先移除旧的」语义一致）；
 //   - 默认周期 30 分钟（Plan §3 H4 "每 30 分钟"），覆盖文件级保留与容量回收。
@@ -20,6 +20,7 @@ package bg
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -156,13 +157,29 @@ func (t *HotZoneTrimmer) Start(ctx context.Context) {
 }
 
 // TrimOnce 执行一轮清理：
-//  1. 遍历 dir 下所有文件，按 mtime 删除早于 cutoff 的过期条目；
+//  1. 遍历 cache / session_bodies / requests，按 mtime 删除过期条目；
 //  2. 删完后若总盘占仍超 maxBytes，按 mtime 从旧到新继续删（配额回收）。
 //
 // 单条目删除失败只记日志不中断整体；目录不存在时静默返回。
 func (t *HotZoneTrimmer) TrimOnce(ctx context.Context) error {
-	if !dirExistsBG(t.dir) {
+	rootInfo, err := os.Lstat(t.dir)
+	if os.IsNotExist(err) {
 		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("hotzone_trimmer: root must be a directory, not a symlink")
+	}
+	root, err := os.OpenRoot(t.dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	openedInfo, err := root.Lstat(".")
+	if err != nil || !os.SameFile(rootInfo, openedInfo) {
+		return errors.New("hotzone_trimmer: root changed while opening")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -173,6 +190,8 @@ func (t *HotZoneTrimmer) TrimOnce(ctx context.Context) error {
 	maxBytes := t.maxBytes.Load()
 	cutoff := time.Now().Add(-retention)
 	type entry struct {
+		root *os.Root
+		rel  string
 		path string
 		size int64
 		mod  time.Time
@@ -183,27 +202,60 @@ func (t *HotZoneTrimmer) TrimOnce(ctx context.Context) error {
 		deleted     int
 		freed       int64
 	)
-	err := filepath.Walk(t.dir, func(path string, info os.FileInfo, err error) error {
+	for _, name := range []string{"cache", "session_bodies", "requests"} {
+		// Preserve symlink/.. spelling in diagnostics; filepath.Join would
+		// normalize it before the filesystem resolves the symlink.
+		subtree := t.dir + string(filepath.Separator) + name
+		info, statErr := root.Lstat(name)
+		if os.IsNotExist(statErr) {
+			continue
+		}
+		if statErr != nil {
+			return statErr
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			slog.Warn("hotzone_trimmer: 跳过非目录或符号链接子树", "path", subtree)
+			continue
+		}
+		child, openErr := root.OpenRoot(name)
+		if openErr != nil {
+			return openErr
+		}
+		defer child.Close()
+		openedInfo, statErr := child.Lstat(".")
+		if statErr != nil || !os.SameFile(info, openedInfo) {
+			return errors.New("hotzone_trimmer: managed subtree changed while opening")
+		}
+		err := fs.WalkDir(child.FS(), ".", func(rel string, item fs.DirEntry, err error) error {
+			if err != nil {
+				slog.Warn("hotzone_trimmer: walk 跳过条目", "path", subtree+string(filepath.Separator)+rel, "error", err)
+				return nil
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			if item.IsDir() || item.Type()&os.ModeSymlink != 0 {
+				return nil
+			}
+			info, infoErr := item.Info()
+			if infoErr != nil {
+				slog.Warn("hotzone_trimmer: stat 跳过条目", "path", subtree+string(filepath.Separator)+rel, "error", infoErr)
+				return nil
+			}
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+			// 临时文件不参与 trimmer（与 AsyncFileWriter 的 .tmp / .tmp- 写入约定一致）。
+			if isTempFile(rel) {
+				return nil
+			}
+			files = append(files, entry{root: child, rel: rel, path: subtree + string(filepath.Separator) + rel, size: info.Size(), mod: info.ModTime()})
+			onDiskBytes += info.Size()
+			return nil
+		})
 		if err != nil {
-			slog.Warn("hotzone_trimmer: walk 跳过条目", "path", path, "error", err)
-			return nil
+			return err
 		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		if info.IsDir() {
-			return nil
-		}
-		// 临时文件不参与 trimmer（与 AsyncFileWriter 的 .tmp / .tmp- 写入约定一致）。
-		if isTempFile(path) {
-			return nil
-		}
-		files = append(files, entry{path: path, size: info.Size(), mod: info.ModTime()})
-		onDiskBytes += info.Size()
-		return nil
-	})
-	if err != nil {
-		return err
 	}
 
 	// 阶段 1：过期清理（mtime < cutoff）。按 mtime 升序遍历保证最旧先删。
@@ -211,13 +263,14 @@ func (t *HotZoneTrimmer) TrimOnce(ctx context.Context) error {
 	kept := files[:0]
 	for _, e := range files {
 		if e.mod.Before(cutoff) {
-			if rmErr := os.Remove(e.path); rmErr != nil {
+			if rmErr := e.root.Remove(e.rel); rmErr != nil {
 				slog.Warn("hotzone_trimmer: 删除过期文件失败", "path", e.path, "error", rmErr)
 				kept = append(kept, e)
 				continue
 			}
 			deleted++
 			freed += e.size
+			onDiskBytes -= e.size
 			continue
 		}
 		kept = append(kept, e)
@@ -229,7 +282,7 @@ func (t *HotZoneTrimmer) TrimOnce(ctx context.Context) error {
 		if onDiskBytes <= maxBytes {
 			break
 		}
-		if rmErr := os.Remove(e.path); rmErr != nil {
+		if rmErr := e.root.Remove(e.rel); rmErr != nil {
 			slog.Warn("hotzone_trimmer: 配额回收删除失败", "path", e.path, "error", rmErr)
 			continue
 		}

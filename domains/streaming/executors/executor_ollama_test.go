@@ -775,6 +775,30 @@ func TestExecutor_ExecuteOllama_NonStream(t *testing.T) {
 	}
 }
 
+func TestExecutor_ExecuteOllama_NonStreamSuppressedWriteReturnsBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"llama3.1","message":{"role":"assistant","content":"ok"},"done":true}`))
+	}))
+	defer srv.Close()
+
+	wireBody := []byte(`{"model":"llama3.1","messages":[{"role":"user","content":"ping"}]}`)
+	rec := httptest.NewRecorder()
+	params := &ExecParams{
+		W: rec, R: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(wireBody)),
+		BodyBytes: wireBody, ClientModel: "client-llama", OutboundModel: "llama3.1",
+		ClientProtocol: "openai-completions", SuppressSuccessWrite: true,
+	}
+	cand := newOllamaClientProvider(srv.URL)
+	result, err := newTestExecutor().executeOllama(params, cand, 0, time.Now(), nil)
+	if err != nil || result == nil || len(result.ResponseBody) == 0 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("executor wrote despite handler ownership: %q", rec.Body.String())
+	}
+}
+
 // TestExecutor_ExecuteOllama_Stream exercises the streaming path:
 // the executor must drive an NDJSON Ollama upstream into a real
 // OpenAI-shaped SSE response on the client recorder.

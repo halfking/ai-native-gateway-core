@@ -242,7 +242,9 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"754_archive_request_logs_default.sql": archiveRequestLogsDefaultMigration754,
 		// 756 (2026-09-29, D07 S-01 真库 EXPLAIN): request_logs(id) 索引——
 		// 754 的「主键游标」在无 id 索引的表上退化为每批次全分区扫描。
-		"756_request_logs_id_index.sql": requestLogsIDIndexMigration756,
+		"756_request_logs_id_index.sql":                 requestLogsIDIndexMigration756,
+		"757_session_turns_origin_actor_projection.sql": sessionTurnsOriginActorProjectionMigration757,
+		"758_routeincident_missing_columns.sql":         routeincidentMissingColumnsMigration758,
 	}
 
 	for name, embedded := range expected {
@@ -456,6 +458,15 @@ var psqlConcurrencyRequired = map[string]string{
 	"749_usage_facts_occurred_at_index.sql":                 "CREATE INDEX CONCURRENTLY (\\gexec) cannot run inside the installer's psql --single-transaction",
 }
 
+// 755 removes a legacy function in upgraded databases. Its SQL contains an
+// explicit transaction, so running it under the installer's single transaction
+// would commit the surrounding install early. Applying it on an upgrade also
+// requires an operator check for external jobs (see its migration header).
+// Fresh installs have no legacy function to remove.
+var operatorGatedCleanup = map[string]string{
+	"755_drop_dead_cleanup_expired_session_turn_logs.sql": "legacy cleanup with explicit BEGIN/COMMIT and external-job check",
+}
+
 // TestCanonicalStartupMigrationsAtOrAbove704AreRegistered (R34, 2026-09-17
 // audit) closes the drift direction no test covered: a canonical migration
 // that never reached the installer (704/705/709/710 drifted out — R30
@@ -498,6 +509,10 @@ func TestCanonicalStartupMigrationsAtOrAbove704AreRegistered(t *testing.T) {
 			// Deliberate channel split, not drift — but keep it visible so the
 			// exemption is re-evaluated whenever the file set changes.
 			t.Logf("canonical startup migration %q intentionally not in installer: %s", name, reason)
+			continue
+		}
+		if reason, exempt := operatorGatedCleanup[name]; exempt {
+			t.Logf("canonical startup migration %q intentionally operator-gated: %s", name, reason)
 			continue
 		}
 		if _, ok := registered[name]; !ok {

@@ -32,6 +32,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // withP02Settings swaps settings.Global for a registry carrying the probe
@@ -184,6 +185,80 @@ func TestRequestFailure_MinGapSkip(t *testing.T) {
 			t.Fatalf("periodic enqueue count = %d, want 1", *enqueueCalls)
 		}
 	})
+}
+
+// Submit is the production request_failure entry. It must consult the pair
+// throttle once, count a skipped trigger, and honor gap=0 before enqueueing.
+func TestRequestFailure_SubmitViaQueueEntry(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		gap          int
+		throttled    bool
+		wantChecks   int
+		wantEnqueues int
+		wantSkips    float64
+	}{
+		{"throttled", 60, true, 1, 0, 1},
+		{"allowed", 60, false, 1, 1, 0},
+		{"gap zero", 0, true, 0, 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withP02Settings(t, true, tc.gap)
+			checks, enqueues := 0, 0
+			w := &NodeProbeWorker{
+				probeQueue: &ProbeQueue{},
+				requestFailureThrottleFn: func(_ context.Context, _ int, _ string, gap int) bool {
+					checks++
+					if gap != tc.gap {
+						t.Fatalf("throttle gap = %d, want %d", gap, tc.gap)
+					}
+					return tc.throttled
+				},
+				enqueueFn: func(_ context.Context, _ ProbeQueueTask) (int64, bool, error) {
+					enqueues++
+					return 1, true, nil
+				},
+			}
+			before := testutil.ToFloat64(nodeProbeRequestFailureSkipTotal)
+			w.submitViaQueue(42, "m", "default", "request-id")
+			if checks != tc.wantChecks || enqueues != tc.wantEnqueues {
+				t.Fatalf("checks/enqueues = %d/%d, want %d/%d", checks, enqueues, tc.wantChecks, tc.wantEnqueues)
+			}
+			if delta := testutil.ToFloat64(nodeProbeRequestFailureSkipTotal) - before; delta != tc.wantSkips {
+				t.Fatalf("skip counter delta = %v, want %v", delta, tc.wantSkips)
+			}
+		})
+	}
+}
+
+func TestRequestFailure_SubmitViaQueueDBReadFailureOpens(t *testing.T) {
+	withP02Settings(t, true, 60)
+	config, err := pgxpool.ParseConfig("postgres://postgres@localhost/postgres?connect_timeout=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A directory without a PostgreSQL socket produces a local read error;
+	// no external database or network service is contacted.
+	config.ConnConfig.Host = t.TempDir()
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	enqueues := 0
+	w := &NodeProbeWorker{
+		db:         pool,
+		probeQueue: &ProbeQueue{},
+		enqueueFn: func(context.Context, ProbeQueueTask) (int64, bool, error) {
+			enqueues++
+			return 1, true, nil
+		},
+	}
+	w.submitViaQueue(42, "m", "default", "")
+	if enqueues != 1 {
+		t.Fatalf("DB read failure enqueued %d times, want 1 (fail open)", enqueues)
+	}
 }
 
 // TestProbeServiceAttemptPersistsAcrossGenerations pins the P0-2 fix for the
@@ -392,6 +467,8 @@ func TestRequestFailureThrottlePredicateSQL(t *testing.T) {
 			"健康停放（无错误证据）→ 不跳过：新失败必须立即重武装（INV-2）"},
 		{"due-but-just-probed", 3, `'http_503', now() - interval '10 seconds', now() - interval '1 minute'`, true,
 			"已到期但距上次探测 < gap → 跳过（min-gap 臂）"},
+		{"due-within-gap-after-stale-probe", 3, `'http_503', now() - interval '10 minutes', now() - interval '30 seconds'`, false,
+			"重试已到期、上次探测已过 gap → 放行，即使重试到期时间仍在 gap 窗口内"},
 		{"due-and-stale", 3, `'http_503', now() - interval '10 minutes', now() - interval '1 minute'`, false,
 			"已到期且距上次探测 > gap → 放行触发"},
 	}
@@ -426,6 +503,7 @@ func TestRequestFailureThrottlePredicateSQL(t *testing.T) {
 	check("mid-ladder-scheduled", true)
 	check("healthy-parked", false)
 	check("due-but-just-probed", true)
+	check("due-within-gap-after-stale-probe", false)
 	check("due-and-stale", false)
 	check("counter-only-evidence", true) // cf>0 也算错误证据（pumpDueStatesSQL 同口径）
 
@@ -434,5 +512,18 @@ func TestRequestFailureThrottlePredicateSQL(t *testing.T) {
 	w := &NodeProbeWorker{db: pool}
 	if w.requestFailureTriggerThrottled(ctx, 420926, "absent-row", 60) {
 		t.Fatal("absent row must fail open (no throttle), got throttled")
+	}
+	// The production entry must use this same predicate. The retired outer
+	// next_retry_at > now()-gap gate incorrectly skipped this due pair.
+	w.probeQueue = &ProbeQueue{}
+	enqueues := 0
+	w.enqueueFn = func(context.Context, ProbeQueueTask) (int64, bool, error) {
+		enqueues++
+		return 1, true, nil
+	}
+	withP02Settings(t, true, 60)
+	w.submitViaQueue(420926, "due-within-gap-after-stale-probe", "default", "")
+	if enqueues != 1 {
+		t.Fatalf("due pair enqueued %d times, want 1", enqueues)
 	}
 }

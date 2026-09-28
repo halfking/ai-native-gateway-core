@@ -1552,12 +1552,13 @@ func (d *discardResponseWriter) Flush()                      {}
 
 // responseSink returns the writer downstream write paths should use.
 // It is params.W for a normal request-scoped call, or a discard writer
-// when W is nil (async retry goroutine). Never returns nil, so callers
+// when W is nil (async retry goroutine) or the protocol handler owns the
+// non-stream success write. Never returns nil, so callers
 // can pass the result straight into the stream/response writers without
 // a nil check.
 func responseSink(params *ExecParams) http.ResponseWriter {
 	var writer http.ResponseWriter = &discardResponseWriter{}
-	if params != nil && params.W != nil {
+	if params != nil && params.W != nil && !(params.SuppressSuccessWrite && !params.IsStream) {
 		writer = params.W
 	}
 	if params != nil && params.IsStream && params.FirstSemanticByteCallback != nil {
@@ -2201,7 +2202,9 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 				)
 			}
 		}
-		if isRetry {
+		// Native protocol handlers own the non-stream success write and
+		// conversion. A cached chat-shaped body cannot bypass that boundary.
+		if isRetry && !params.SuppressSuccessWrite {
 			entry, requestID, found, _ := e.PendingStore.GetLatest(params.R.Context(), params.SessionID)
 			if found && entry != nil && entry.Body != "" && entry.Status == pending.StatusCompleted {
 				slog.Info("executor: retry keyword, replaying cached completed response",

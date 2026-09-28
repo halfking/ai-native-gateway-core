@@ -29,6 +29,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,13 @@ import (
 
 // RestoreInterceptorName 是还原拦截器在链中的名字（日志/观测）
 const RestoreInterceptorName = "sanitize_restore"
+
+// Keep the sanitizer's pre-handler read cap aligned with streaming.maxBodySize.
+// The sanitizer runs first and must not allocate an unbounded request body.
+const maxSanitizeBodySize = 128 << 20
+const defaultOffsetLeaseTTL = 15 * time.Second
+
+var errSanitizeBodyTooLarge = errors.New("sanitize request body too large")
 
 // SanitizeInputMiddleware 在真实 chatHandler 之前对请求体做可逆脱敏。
 //
@@ -68,6 +76,9 @@ type SanitizeInputMiddleware struct {
 	// Redis keys remain tenant scoped for cross-process isolation; the mutex
 	// closes the in-process read-modify-write race for concurrent requests.
 	stateMu sync.Mutex
+	// offsetLeaseTTL bounds crash recovery; an owner renews while sanitizing.
+	// Tests can shorten it to exercise slow detector and lease-loss paths.
+	offsetLeaseTTL time.Duration
 	// censorSink（706，可选）：把占位符→原始值映射双写 DB
 	// （public.session_censors），Redis 降级为热缓存。nil 时仅 Redis。
 	censorSink CensorSink
@@ -89,10 +100,11 @@ func NewSanitizeInputMiddleware(s *Sanitizer, redis *redis.Client, ttl time.Dura
 		ttl = 30 * time.Minute
 	}
 	return &SanitizeInputMiddleware{
-		sanitizer: s,
-		redis:     redis,
-		ttl:       ttl,
-		logger:    slog.Default().With("component", "sanitize_middleware"),
+		sanitizer:      s,
+		redis:          redis,
+		ttl:            ttl,
+		offsetLeaseTTL: defaultOffsetLeaseTTL,
+		logger:         slog.Default().With("component", "sanitize_middleware"),
 		// 与 chatHandler（domains/streaming/session_routing.go 的
 		// SessionHeadersPriority）保持一致的 5 个候选 header 顺序。
 		// 不读 body 里的 session_id：中间件先于 chatHandler 解析 session，
@@ -133,8 +145,8 @@ func envelopeSessionID(body []byte) string {
 	return strings.TrimSpace(envelope.SessionID)
 }
 
-// Wrap 返回一个 http.Handler 包装器。
-// 在真实 handler 之前执行脱敏；脱敏失败时降级放行（不阻断请求）。
+// Wrap 返回一个 http.Handler 包装器。在真实 handler 之前完成脱敏。
+// 读取、检测或映射持久化失败时停止请求，避免原始敏感文本流向上游。
 func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if m == nil || m.sanitizer == nil {
@@ -147,18 +159,20 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 
 		sessionID := m.getSessionID(r)
-		rawTenantID := strings.TrimSpace(r.Header.Get("X-Gw-Tenant-Id"))
-		tenantID := rawTenantID
+		tenantID := strings.TrimSpace(authenticatedTenant(r.Context()))
 		if tenantID == "" {
 			tenantID = "_unknown"
 		}
-		// readBody 恢复 r.Body，因此下面每条 passthrough 路径都安全：
-		// 无脱敏、脱敏失败、读取失败都会把原始 body 交给下游。
+		// readBody 恢复 r.Body；只有确认不需要脱敏时才让原始 body 进入下游。
 		body, err := readBody(r)
 		if err != nil {
-			m.logger.Warn("sanitize_middleware: read body failed, passthrough",
+			m.logger.Warn("sanitize_middleware: read body failed",
 				"error", err, "session_id", sessionID)
-			next.ServeHTTP(w, r)
+			status := http.StatusBadRequest
+			if errors.Is(err, errSanitizeBodyTooLarge) {
+				status = http.StatusRequestEntityTooLarge
+			}
+			writeSanitizeFailure(w, r, status)
 			return
 		}
 		if bodySessionID := envelopeSessionID(body); bodySessionID != "" {
@@ -167,12 +181,16 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 
 		// 解析并脱敏
 		m.stateMu.Lock()
-		sanitizedBody, sm, messageRefs, err := m.sanitizeRequestBody(r.Context(), body, sessionID, tenantID)
+		sanitizedBody, sm, messageRefs, err := m.sanitizeRequestBody(r.Context(), body, sessionID, tenantID, r.URL.Path)
 		m.stateMu.Unlock()
 		if err != nil {
-			m.logger.Warn("sanitize_middleware: sanitize failed, passthrough",
+			m.logger.Warn("sanitize_middleware: sanitize failed",
 				"error", err, "session_id", sessionID)
-			next.ServeHTTP(w, r)
+			status := http.StatusServiceUnavailable
+			if errors.Is(err, errInvalidSanitizeInput) {
+				status = http.StatusBadRequest
+			}
+			writeSanitizeFailure(w, r, status)
 			return
 		}
 
@@ -198,130 +216,47 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 	})
 }
 
-// sanitizeRequestBody 解析 OpenAI 请求体并脱敏 messages。
+// sanitizeRequestBody 按客户端协议脱敏可见文本，并保留非文本多模态字段。
 // 返回 (脱敏后的请求体, SanitizeMap)。无敏感信息时返回 (nil, 空map)。
-func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body []byte, sessionID string, tenantIDs ...string) ([]byte, SanitizeMap, []compression.SanitizedMessageRef, error) {
-	// 解析请求体为通用结构
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, nil, nil, err
-	}
-
-	messagesRaw, ok := raw["messages"]
-	if !ok {
-		return nil, nil, nil, nil // 无 messages 字段，跳过
-	}
-	messages, ok := messagesRaw.([]any)
-	if !ok {
-		return nil, nil, nil, nil
-	}
-
+func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body []byte, sessionID string, tenantID, path string) ([]byte, SanitizeMap, []compression.SanitizedMessageRef, error) {
 	// 会话级偏移量（记录每类已用最大编号，保证跨轮次不撞号）
-	tenantID := firstSanitizeTenant(tenantIDs)
-	// R35 (2026-09-17 audit P0-2): the load→assign→save sequence is a
-	// cross-process critical section. stateMu guards one process only; two
-	// replicas reading the same offsets baseline handed out identical
-	// placeholder indices for different values, and the absolute HSET then
-	// made it last-writer-wins — the restore interceptor could return
-	// instance A's sensitive value for instance B's placeholder. Serialize
-	// the section with a short Redis lock (best-effort: degraded to unlocked
-	// when Redis errors out or contention exceeds the retry budget).
-	releaseOffsets := m.acquireOffsetsLock(ctx, sessionID, tenantID)
-	defer releaseOffsets()
-	offset := m.loadOffsets(ctx, sessionID, tenantID)
+	// The Redis lock spans load, allocation, and an atomic, lease-checked
+	// map+offset commit. A lost lease or Redis failure must stop dispatch:
+	// otherwise a second process can reuse a placeholder for another value.
+	lease, err := m.acquireOffsetsLock(ctx, sessionID, tenantID)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("acquire sanitize offsets: %w", err)
+	}
+	defer m.releaseOffsetsLock(ctx, lease)
+	offset, err := m.loadOffsets(ctx, sessionID, tenantID)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("load sanitize offsets: %w", err)
+	}
 	// loadOffsets legitimately returns nil on a cache miss or when Redis is
 	// disabled. Keep a local map so allocating placeholder indexes below is
 	// safe in both modes.
 	if offset == nil {
 		offset = make(map[SensitiveType]int)
 	}
-	changed := false
-	sm := make(SanitizeMap)
-	usedCount := make(map[string]int) // 每类本轮新用计数（用于更新 offset）
-	// Keep one ref per message, not only for messages containing PII. This is
-	// the positional contract consumed by compression: unchanged messages are
-	// still needed to prove that raw and sanitized coordinates stayed aligned.
-	messageRefs := make([]compression.SanitizedMessageRef, 0, len(messages))
-
-	for i, msgAny := range messages {
-		originalMessage, marshalErr := json.Marshal(msgAny)
-		if marshalErr != nil {
-			return nil, nil, nil, marshalErr
-		}
-		ref := compression.SanitizedMessageRef{
-			RawIndex: i, SanitizedIndex: i,
-			RawHash:       compression.MessageFingerprint(originalMessage),
-			SanitizedHash: compression.MessageFingerprint(originalMessage),
-		}
-
-		msg, ok := msgAny.(map[string]any)
-		if !ok {
-			messageRefs = append(messageRefs, ref)
-			continue
-		}
-		content, hasStringContent := msg["content"].(string)
-		role, _ := msg["role"].(string)
-		// 只脱敏 user 和 system 消息（assistant 消息是上游生成，不应改动）
-		if !hasStringContent || (role != "user" && role != "system") {
-			messageRefs = append(messageRefs, ref)
-			continue
-		}
-
-		result, err := m.sanitizer.sanitizeInput(ctx, content, offset)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		if len(result.SanitizeMap) == 0 {
-			messageRefs = append(messageRefs, ref)
-			continue
-		}
-
-		msg["content"] = result.SanitizedText
-		messages[i] = msg
-		sanitizedMessage, marshalErr := json.Marshal(msg)
-		if marshalErr != nil {
-			return nil, nil, nil, marshalErr
-		}
-		ref.SanitizedHash = compression.MessageFingerprint(sanitizedMessage)
-		ref.Changed = true
-		ref.PlaceholderCount = len(result.SanitizeMap)
-		messageRefs = append(messageRefs, ref)
-		changed = true
-
-		// 合并映射表 + 更新每类计数
-		for ph, val := range result.SanitizeMap {
-			sm[ph] = val
-			if p, ok := ParsePlaceholder(ph); ok {
-				typ := string(p.Type)
-				if p.Index > usedCount[typ] {
-					usedCount[typ] = p.Index
-				}
-				if offset[p.Type] < p.Index {
-					offset[p.Type] = p.Index
-				}
-			}
-		}
+	worker := requestInputSanitizer{
+		ctx: ctx, sanitizer: m.sanitizer, offset: offset,
+		mapping: make(SanitizeMap), usedCount: make(map[string]int),
 	}
-
-	if !changed {
+	newBody, messageRefs, err := worker.sanitizeEnvelope(body, path)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if len(worker.mapping) == 0 {
 		return nil, nil, nil, nil
 	}
 
 	// 持久化映射表到 Redis（同时把每类本轮最大编号刷回 offset key）
 	if m.redis != nil && sessionID != "" {
-		if err := m.saveMapAndOffsets(ctx, sessionID, sm, usedCount, tenantID); err != nil {
-			m.logger.Warn("sanitize_middleware: save map failed (restore degraded to single-turn)",
-				"error", err, "session_id", sessionID)
+		if err := m.saveMapAndOffsets(ctx, lease, sessionID, worker.mapping, worker.usedCount, tenantID); err != nil {
+			return nil, nil, nil, fmt.Errorf("persist sanitize mapping: %w", err)
 		}
 	}
-
-	// 重新序列化
-	newBody, err := json.Marshal(raw)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	return newBody, sm, messageRefs, nil
+	return newBody, worker.mapping, messageRefs, nil
 }
 
 // releaseOffsetsLockScript deletes the lock only when the value still matches
@@ -333,49 +268,92 @@ end
 return 0
 `)
 
-// acquireOffsetsLock takes the per-session offsets lock (SET NX PX 5s, three
-// 50ms retries). Returns a no-op release when Redis is unavailable or the
-// lock cannot be taken within the budget — the request then runs unlocked,
-// which is exactly the pre-R35 behaviour, instead of blocking the hot path.
-func (m *SanitizeInputMiddleware) acquireOffsetsLock(ctx context.Context, sessionID, tenantID string) func() {
+var renewOffsetsLockScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+	return redis.call("PEXPIRE", KEYS[1], ARGV[2])
+end
+return 0
+`)
+
+type sanitizeOffsetLease struct {
+	key, token string
+	stop, done chan struct{}
+}
+
+// acquireOffsetsLock takes the per-session lock. Redis-backed sessions never
+// proceed unlocked; the commit script verifies this lease before writing.
+func (m *SanitizeInputMiddleware) acquireOffsetsLock(ctx context.Context, sessionID, tenantID string) (sanitizeOffsetLease, error) {
 	if m.redis == nil || sessionID == "" {
-		return func() {}
+		return sanitizeOffsetLease{}, nil
 	}
 	key := sanitizeOffsetKey(tenantID, sessionID) + ":lock"
 	var token [8]byte
 	if _, err := rand.Read(token[:]); err != nil {
-		// Degraded to unlocked mode without a token; make the lost-mutex
-		// window visible (R36 audit: this path previously logged nothing).
-		m.logger.Warn("sanitize_middleware: offsets lock token generation failed, proceeding unlocked",
-			"session_id", sessionID, "error", err)
-		return func() {}
+		return sanitizeOffsetLease{}, err
 	}
 	tok := hex.EncodeToString(token[:])
+	leaseTTL := m.offsetLeaseTTL
+	if leaseTTL <= 0 {
+		leaseTTL = defaultOffsetLeaseTTL
+	}
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return func() {}
+				return sanitizeOffsetLease{}, ctx.Err()
 			case <-time.After(50 * time.Millisecond):
 			}
 		}
-		ok, err := m.redis.SetNX(ctx, key, tok, 5*time.Second).Result()
+		ok, err := m.redis.SetNX(ctx, key, tok, leaseTTL).Result()
 		if err != nil {
-			// Warn, not Debug: degradation reopens the cross-process
-			// offset race and must be observable in production logs.
-			m.logger.Warn("sanitize_middleware: offsets lock unavailable, proceeding unlocked",
-				"session_id", sessionID, "error", err)
-			return func() {}
+			return sanitizeOffsetLease{}, err
 		}
 		if ok {
-			return func() {
-				_ = releaseOffsetsLockScript.Run(context.WithoutCancel(ctx), m.redis, []string{key}, tok).Err()
+			lease := sanitizeOffsetLease{key: key, token: tok, stop: make(chan struct{}), done: make(chan struct{})}
+			go m.renewOffsetsLease(ctx, lease, leaseTTL)
+			return lease, nil
+		}
+	}
+	return sanitizeOffsetLease{}, errors.New("sanitize offsets lock busy")
+}
+
+func (m *SanitizeInputMiddleware) renewOffsetsLease(ctx context.Context, lease sanitizeOffsetLease, ttl time.Duration) {
+	defer close(lease.done)
+	interval := ttl / 3
+	if interval < 10*time.Millisecond {
+		interval = 10 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-lease.stop:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			renewCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			ok, err := renewOffsetsLockScript.Run(renewCtx, m.redis, []string{lease.key}, lease.token, ttl.Milliseconds()).Int()
+			cancel()
+			if err != nil || ok != 1 {
+				m.logger.Warn("sanitize_middleware: offsets lease renewal stopped", "error", err, "key", lease.key)
+				return
 			}
 		}
 	}
-	m.logger.Warn("sanitize_middleware: offsets lock contention timeout, proceeding unlocked",
-		"session_id", sessionID)
-	return func() {}
+}
+
+func (m *SanitizeInputMiddleware) releaseOffsetsLock(ctx context.Context, lease sanitizeOffsetLease) {
+	if lease.key == "" {
+		return
+	}
+	close(lease.stop)
+	<-lease.done
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := releaseOffsetsLockScript.Run(releaseCtx, m.redis, []string{lease.key}, lease.token).Err(); err != nil {
+		m.logger.Warn("sanitize_middleware: release offsets lock failed", "error", err)
+	}
 }
 
 // loadOffsets 从 Redis 加载每类已用最大编号作为偏移量。
@@ -383,47 +361,45 @@ func (m *SanitizeInputMiddleware) acquireOffsetsLock(ctx context.Context, sessio
 // 偏移量单独存于 session:{sid}:sanitize:offsets（Redis Hash，
 // field=类型字符串, value=本类型已用最大编号）。每次请求只读一个
 // 紧凑 hash，不再扫描整个 sanitize map。
-func (m *SanitizeInputMiddleware) loadOffsets(ctx context.Context, sessionID string, tenantIDs ...string) map[SensitiveType]int {
+func (m *SanitizeInputMiddleware) loadOffsets(ctx context.Context, sessionID string, tenantIDs ...string) (map[SensitiveType]int, error) {
 	if m.redis == nil || sessionID == "" {
-		return nil
+		return nil, nil
 	}
-	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE errors
-	// when the offsets hash key collides with a non-hash type. ErrKeyNotFound
-	// (key absent) is collapsed into the existing nil-map return below;
-	// TypedError (WRONGTYPE) and other errors also fall through to nil
-	// because this method's contract is "no offsets is fine, we start at 1".
 	tenantID := firstSanitizeTenant(tenantIDs)
 	vals, err := redissafe.SafeHGetAll(ctx, m.redis, sanitizeOffsetKey(tenantID, sessionID))
 	if err != nil {
-		return nil
+		if !errors.Is(err, redissafe.ErrKeyNotFound) {
+			return nil, err
+		}
+		return m.recoverOffsetsFromMapFields(ctx, sessionID, tenantID)
 	}
 	if len(vals) == 0 {
 		return m.recoverOffsetsFromMapFields(ctx, sessionID, tenantID)
 	}
 	maxIdx := make(map[SensitiveType]int, len(vals))
 	for tStr, v := range vals {
-		var idx int
-		if _, scanErr := fmt.Sscanf(v, "%d", &idx); scanErr != nil || idx <= 0 {
-			continue
+		idx, parseErr := strconv.Atoi(v)
+		if parseErr != nil || idx <= 0 {
+			return nil, fmt.Errorf("invalid sanitize offset %q=%q", tStr, v)
 		}
 		maxIdx[SensitiveType(tStr)] = idx
 	}
-	if len(maxIdx) > 0 {
-		return maxIdx
-	}
-	return m.recoverOffsetsFromMapFields(ctx, sessionID, firstSanitizeTenant(tenantIDs))
+	return maxIdx, nil
 }
 
 // recoverOffsetsFromMapFields prevents placeholder reuse when the compact
 // offsets hash expired before the primary sanitize map. It inspects only Redis
 // field names (placeholders), never the mapped plaintext values.
-func (m *SanitizeInputMiddleware) recoverOffsetsFromMapFields(ctx context.Context, sessionID, tenantID string) map[SensitiveType]int {
+func (m *SanitizeInputMiddleware) recoverOffsetsFromMapFields(ctx context.Context, sessionID, tenantID string) (map[SensitiveType]int, error) {
 	if m.redis == nil || sessionID == "" {
-		return nil
+		return nil, nil
 	}
 	fields, err := m.redis.HKeys(ctx, sanitizeMapKey(tenantID, sessionID)).Result()
-	if err != nil || len(fields) == 0 {
-		return nil
+	if err != nil {
+		return nil, err
+	}
+	if len(fields) == 0 {
+		return nil, nil
 	}
 	maxIdx := make(map[SensitiveType]int)
 	for _, field := range fields {
@@ -433,69 +409,97 @@ func (m *SanitizeInputMiddleware) recoverOffsetsFromMapFields(ctx context.Contex
 		}
 		maxIdx[placeholder.Type] = placeholder.Index
 	}
-	return maxIdx
+	return maxIdx, nil
 }
 
-// saveMapAndOffsets 把映射表写入 Redis，并刷新每类最大编号到 offset key。
-func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, sessionID string, sm SanitizeMap, usedCount map[string]int, tenantIDs ...string) error {
+// commitSanitizeMapScript checks lease ownership and writes the map and
+// offsets together. Expired workers cannot overwrite another worker's map.
+var commitSanitizeMapScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+  return redis.error_reply('sanitize offsets lease lost')
+end
+local function hash_or_absent(key)
+  local kind = redis.call('TYPE', key).ok
+  return kind == 'none' or kind == 'hash'
+end
+if not hash_or_absent(KEYS[2]) or not hash_or_absent(KEYS[3]) then
+  return redis.error_reply('sanitize map or offsets wrong type')
+end
+local legacy = ARGV[5] == '1'
+if legacy and (not hash_or_absent(KEYS[4]) or not hash_or_absent(KEYS[5])) then
+  return redis.error_reply('legacy sanitize map or offsets wrong type')
+end
+local map_count = tonumber(ARGV[3])
+local offset_count = tonumber(ARGV[4])
+local pos = 6
+for i = 1, map_count do
+  if redis.call('HEXISTS', KEYS[2], ARGV[pos]) == 1 then
+    return redis.error_reply('sanitize placeholder already exists')
+  end
+  if legacy and redis.call('HEXISTS', KEYS[4], ARGV[pos]) == 1 then
+    return redis.error_reply('legacy sanitize placeholder already exists')
+  end
+  pos = pos + 2
+end
+pos = 6
+for i = 1, map_count do
+  redis.call('HSET', KEYS[2], ARGV[pos], ARGV[pos + 1])
+  if legacy then redis.call('HSET', KEYS[4], ARGV[pos], ARGV[pos + 1]) end
+  pos = pos + 2
+end
+for i = 1, offset_count do
+  redis.call('HSET', KEYS[3], ARGV[pos], ARGV[pos + 1])
+  if legacy then redis.call('HSET', KEYS[5], ARGV[pos], ARGV[pos + 1]) end
+  pos = pos + 2
+end
+local ttl_ms = tonumber(ARGV[2])
+redis.call('PEXPIRE', KEYS[2], ttl_ms)
+if offset_count > 0 then redis.call('PEXPIRE', KEYS[3], ttl_ms) end
+if legacy then
+  redis.call('PEXPIRE', KEYS[4], ttl_ms)
+  if offset_count > 0 then redis.call('PEXPIRE', KEYS[5], ttl_ms) end
+end
+return 1
+`)
+
+// saveMapAndOffsets writes placeholder values and each type's high-water mark.
+func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, lease sanitizeOffsetLease, sessionID string, sm SanitizeMap, usedCount map[string]int, tenantIDs ...string) error {
 	tenantID := firstSanitizeTenant(tenantIDs)
+	if lease.key == "" || lease.token == "" {
+		return errors.New("sanitize offsets lease required")
+	}
 	mapKey := sanitizeMapKey(tenantID, sessionID)
-
-	// 写占位符→原始值
-	if len(sm) > 0 {
-		fields := make(map[string]any, len(sm))
-		for ph, val := range sm {
-			fields[ph] = val
-		}
-		if err := m.redis.HSet(ctx, mapKey, fields).Err(); err != nil {
-			return err
-		}
-		// 706 双写 DB（best-effort：失败仅告警，不影响 Redis 主链路；
-		// 恢复语义不变——DB 行供审计回溯，不参与还原热路径）。
-		if m.censorSink != nil {
-			entries := make([]CensorEntry, 0, len(sm))
-			for ph, val := range sm {
-				e := CensorEntry{Placeholder: ph, Original: val}
-				if p, ok := ParsePlaceholder(ph); ok {
-					e.SensitiveType = string(p.Type)
-				}
-				entries = append(entries, e)
-			}
-			m.censorSink.SaveCensorMappings(ctx, tenantID, sessionID, entries)
-		}
-		if tenantID == "_unknown" {
-			if err := m.redis.HSet(ctx, SanitizeRedisKey(sessionID), fields).Err(); err != nil {
-				return err
-			}
-		}
+	ttlMS := m.ttl.Milliseconds()
+	if ttlMS < 1 {
+		ttlMS = 1
 	}
-
-	// 刷新每类最大编号到 offset key（仅写入用过的类型，未用类型保留）
-	if len(usedCount) > 0 {
-		offsetFields := make(map[string]any, len(usedCount))
-		for tStr, idx := range usedCount {
-			offsetFields[tStr] = idx
-		}
-		offsetKey := sanitizeOffsetKey(tenantID, sessionID)
-		if err := m.redis.HSet(ctx, offsetKey, offsetFields).Err(); err != nil {
-			return err
-		}
-		_ = m.redis.Expire(ctx, offsetKey, m.ttl).Err()
-		if tenantID == "_unknown" {
-			legacyOffsetKey := SanitizeOffsetRedisKey(sessionID)
-			if err := m.redis.HSet(ctx, legacyOffsetKey, offsetFields).Err(); err != nil {
-				return err
-			}
-			_ = m.redis.Expire(ctx, legacyOffsetKey, m.ttl).Err()
-		}
+	legacyFlag := "0"
+	if tenantID == "_unknown" {
+		legacyFlag = "1"
 	}
-
-	// 刷新主 hash 的 TTL
-	if err := m.redis.Expire(ctx, mapKey, m.ttl).Err(); err != nil {
+	args := make([]any, 0, 5+2*len(sm)+2*len(usedCount))
+	args = append(args, lease.token, ttlMS, len(sm), len(usedCount), legacyFlag)
+	for ph, val := range sm {
+		args = append(args, ph, val)
+	}
+	for kind, idx := range usedCount {
+		args = append(args, kind, idx)
+	}
+	keys := []string{lease.key, mapKey, sanitizeOffsetKey(tenantID, sessionID), SanitizeRedisKey(sessionID), SanitizeOffsetRedisKey(sessionID)}
+	if err := commitSanitizeMapScript.Run(ctx, m.redis, keys, args...).Err(); err != nil {
 		return err
 	}
-	if tenantID == "_unknown" {
-		return m.redis.Expire(ctx, SanitizeRedisKey(sessionID), m.ttl).Err()
+	// DB double-write is audit-only and remains best effort after Redis commit.
+	if m.censorSink != nil {
+		entries := make([]CensorEntry, 0, len(sm))
+		for ph, val := range sm {
+			e := CensorEntry{Placeholder: ph, Original: val}
+			if p, ok := ParsePlaceholder(ph); ok {
+				e.SensitiveType = string(p.Type)
+			}
+			entries = append(entries, e)
+		}
+		m.censorSink.SaveCensorMappings(ctx, tenantID, sessionID, entries)
 	}
 	return nil
 }
@@ -1386,23 +1390,25 @@ func SanitizeMapFromContext(ctx context.Context) (SanitizeMap, bool) {
 
 type sanitizeMapCtxKey struct{}
 
-// readBody 读取请求体并把它恢复回 r.Body，使后续 handler 仍能完整读取。
-//
-// 2026-08-07 事故修复：此前只读取、不恢复，导致下游 chatHandler 读到空 body
-// 并以 json_parse_error 400 拒绝请求。恢复动作必须在读取后立即完成 —
-// 包含读取失败的情况（已消费的字节数不可退回，但把已读部分接回去比留一个
-// 耗尽的 Body 更接近原状，且下游会给出准确的 body_read_error）。
+// readBody reads at most the streaming handler's 128 MiB cap plus one byte.
+// It restores accepted bytes for the downstream handler. Read failures and
+// oversized bodies are rejected by the middleware, never dispatched.
 func readBody(r *http.Request) ([]byte, error) {
+	return readBodyLimit(r, maxSanitizeBodySize)
+}
+
+func readBodyLimit(r *http.Request, limit int) ([]byte, error) {
 	if r == nil || r.Body == nil {
 		return nil, nil
 	}
-	buf := new(bytes.Buffer)
-	_, err := buf.ReadFrom(r.Body)
-	b := buf.Bytes()
-	// 把已读字节接回 r.Body，避免下游拿到耗尽的 Body。
-	// 不调用 r.Body.Close()：Go server 端 *http.Request 的 Body.Close 是
-	// no-op（eofReader 链），关闭原 reader 不会归还连接；保持与 armor
-	// middleware.withReplayedBody 一致即可。
+	if r.ContentLength > int64(limit) {
+		return nil, errSanitizeBodyTooLarge
+	}
+	b, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
+	if len(b) > limit {
+		return nil, errSanitizeBodyTooLarge
+	}
+	// Keep the prior replay contract for successful reads and partial reads.
 	r.Body = io.NopCloser(bytes.NewReader(b))
 	if err != nil {
 		return nil, err
