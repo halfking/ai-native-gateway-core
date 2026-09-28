@@ -735,7 +735,22 @@ build_frontend() {
   (( SKIP_FRONTEND )) && return 0
   need_cmd node
   if [[ -f "$PROJECT_ROOT/web/package.json" ]]; then
-    if [[ -x "$PROJECT_ROOT/web/node_modules/.bin/vite" ]]; then (cd "$PROJECT_ROOT/web" && npm run build) >/dev/null; else warn 'web/node_modules is missing; retaining existing web/dist'; fi
+    if [[ -x "$PROJECT_ROOT/web/node_modules/.bin/vite" ]]; then
+      # 2026-09-28 R79：前端构建失败曾以 `(cd … && npm run build) >/dev/null`
+      # 配 set -e 的组合让部署**静默夭折**——vue-tsc 的每一条诊断都被 /dev/null
+      # 吞掉，非零退出直接 unwind 到 EXIT trap，日志最后一行还停在 build 之前
+      # 的 dl_cleanup_legacy_downloads 上，操作者无从判断死在哪一步。实测连续
+      # 3 次部署各烧掉一个 build_seq（2298→2299→2300）却一个 release 都没产出，
+      # 只能手工重跑 npm run build 才定位到是 vue-tsc 报 test 文件类型错。
+      # 改为：全量输出落 $RUN_DIR/build-frontend.log；失败时回显末 40 行并 die，
+      # 让部署失败「响亮」且自带可打开的证据文件。
+      local web_log="$RUN_DIR/build-frontend.log"
+      if ! (cd "$PROJECT_ROOT/web" && npm run build) >"$web_log" 2>&1; then
+        printf '    [frontend] build failed; last 40 lines of %s:\n' "$web_log" >&2
+        tail -40 "$web_log" >&2 || true
+        die "frontend build failed (see $web_log) — refusing to deploy a release whose web/dist is stale"
+      fi
+    else warn 'web/node_modules is missing; retaining existing web/dist'; fi
   fi
 }
 
