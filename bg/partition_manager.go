@@ -534,14 +534,35 @@ func shouldRunRequestLogsArchive(now time.Time) bool {
 // Running it on every hourly cleanup tick (providerErrorCleanupInterval = 1h)
 // would mean a growing full re-scan of historical request_logs, forever, for
 // work that is already done. The hour==3 gate keeps it to once a day (~24x
-// less) without touching the migration — which matters, because that SQL has
-// never been executed against a real PostgreSQL and adding a new ledger table
-// to it blind would be the larger risk. On the 1h ticker the gate passes
-// exactly once per calendar day (any start phase has exactly one tick inside
-// [03:00,04:00)); a failed 03:xx run waits for the next day, same trade-off
-// as the pre-fix wiring. A proper fix is an archive ledger recording
-// (partition, max_id archived) so completed partitions are skipped outright;
-// that is deliberately left as a follow-up, not smuggled in here.
+// less) without touching the migration.
+//
+// 2026-09-29 (R80, D07 plan §8.1): the earlier note here said an archive ledger
+// was deliberately skipped because "that SQL has never been executed against a
+// real PostgreSQL". **That premise expired** — D07 S-01 ran it for real (25.96s
+// / 2,125,857 rows) and migration 756 added the (id) index the batch cursor
+// needs, so the "wait until it has run" argument no longer holds. The question
+// was therefore re-answered with a fresh measurement instead of inherited:
+//
+//	hot re-run,  6 expired partitions / 1.8M rows : 5.78-7.87s, rows_archived=0
+//	hot re-run, 12 expired partitions / 3.6M rows : 10.44s,  rows_archived=0
+//
+// Doubling the expired data roughly doubled the time — the re-scan is LINEAR
+// (Index Scan per batch, 230 buffers / 1.294ms per S-01), not the O(rows^2)
+// livelock shape. Extrapolating the measured 2.1M rows/month ingest rate: ~98s
+// at 1 year of history, ~493s at 5 years — all far inside the 30min budget
+// below, and paid once a day. Reaching 30min would take ~15 years.
+//
+// On the 1h ticker the gate passes exactly once per calendar day (any start
+// phase has exactly one tick inside [03:00,04:00)); a failed 03:xx run waits
+// for the next day, same trade-off as the pre-fix wiring.
+//
+// **Decision: no ledger migration.** A ledger buys a few seconds of daily CPU
+// at the cost of a new table, an upsert per archived partition, cross-instance
+// consistency reasoning, and a new fail-closed gate — and it opens a fresh
+// inconsistency surface (ledger says archived, source partition gets rewritten).
+// Revisit if ANY of: (a) ingest exceeds 10x the measured 2.1M rows/month,
+// (b) the cadence moves from daily to hourly, (c) a hot re-run is ever measured
+// approaching the 30min budget. Until then this daily gate is the mitigation.
 //
 // The function returns one row per archived partition, so this uses Query and
 // sums rows_archived — a QueryRow against a set-returning function would read
