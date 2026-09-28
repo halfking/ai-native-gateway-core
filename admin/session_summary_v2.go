@@ -25,23 +25,35 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
 // SessionSummaryV2API 提供会话总结端点
 type SessionSummaryV2API struct {
 	pool *pgxpool.Pool
+	// llmCall（2026-09-29 审计二十一轮）由装配方注入：走网关自身 admin LLM
+	// 任务管线生成 title/summary（Handler.SessionSummaryLLMCaller）。此前
+	// 端点内是写死 http://localhost:8080 + gpt-4o-mini 的占位桩（无鉴权、
+	// 生产不可达），失败静默落入字节截断的伪摘要。nil 时 generateSummary
+	// 退化为 rune 安全截断摘要并 Warn——桩已删除，不再有假的 "llm 生成"。
+	llmCall func(ctx context.Context, r *http.Request, conversationText string) (title, summary string, err error)
 }
 
 // NewSessionSummaryV2API 构造函数
 func NewSessionSummaryV2API(pool *pgxpool.Pool) *SessionSummaryV2API {
 	return &SessionSummaryV2API{pool: pool}
+}
+
+// SetLLMCaller 注入真实 LLM 生成闭包（main.go / serveSessionInstantSummary 装配）。
+func (api *SessionSummaryV2API) SetLLMCaller(fn func(ctx context.Context, r *http.Request, conversationText string) (string, string, error)) {
+	api.llmCall = fn
 }
 
 // SessionSummaryRequest 是总结请求的结构
@@ -56,6 +68,10 @@ type SessionSummaryResponse struct {
 	Title         string `json:"title"`
 	Summary       string `json:"summary"`
 	TurnsAnalyzed int    `json:"turns_analyzed"`
+	// summary_source（2026-09-29 审计二十一轮）: "llm"=真实模型生成；
+	// "fallback"=LLM 不可用时的 rune 安全截断摘要。让前端/运维能区分
+	// 真总结与降级产物（反馈闭环）。
+	SummarySource string `json:"summary_source,omitempty"`
 }
 
 func (api *SessionSummaryV2API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -107,9 +123,9 @@ func (api *SessionSummaryV2API) ServeHTTP(w http.ResponseWriter, r *http.Request
 			SessionID: req.SessionID,
 			Tenant:    tenantID,
 			UpToTurn:  req.UpToTurn,
-		}, tenantID)
+		}, tenantID, r)
 		if err != nil {
-			writeInternalErrStr(w, "summary failed", err)
+			api.writeSummaryError(w, err)
 			return
 		}
 		writeExportJSON(w, http.StatusOK, summary)
@@ -128,19 +144,31 @@ func (api *SessionSummaryV2API) ServeHTTP(w http.ResponseWriter, r *http.Request
 		SessionID: req.SessionID,
 		Tenant:    tenantID,
 		UpToTurn:  req.UpToTurn,
-	}, "")
+	}, "", r)
 	if err != nil {
-		writeInternalErrStr(w, "summary failed", err)
+		api.writeSummaryError(w, err)
 		return
 	}
 
 	writeExportJSON(w, http.StatusOK, summary)
 }
 
+// writeSummaryError 统一 summary 端点的错误出口：存储层不可用 → 503 降级
+// 契约（storage_degraded.go，2026-09-29 审计二十一轮接齐）；其余维持
+// writeInternalErrStr 的 500（不回显内部错误串）。
+func (api *SessionSummaryV2API) writeSummaryError(w http.ResponseWriter, err error) {
+	if IsStorageUnavailable(err) {
+		WriteStorageDegraded(w, observability.StorageComponentSummary, err)
+		return
+	}
+	writeInternalErrStr(w, "summary failed", err)
+}
+
 func (api *SessionSummaryV2API) generateSummary(
 	ctx context.Context,
 	req *SessionSummaryRequest,
 	authTenant string,
+	r *http.Request,
 ) (*SessionSummaryResponse, error) {
 	tenantID := req.Tenant
 	if authTenant != "" {
@@ -175,17 +203,34 @@ func (api *SessionSummaryV2API) generateSummary(
 	// 2. Build conversation text for LLM
 	conversationText := buildConversationText(turns)
 
-	// 3. Call LLM to generate summary
-	title, summary, err := callLLMForSummary(ctx, conversationText)
-	if err != nil {
-		return nil, fmt.Errorf("LLM call failed: %w", err)
-	}
+	// 3. 生成 title/summary（2026-09-29 审计二十一轮起走装配方注入的真实
+	// 链路——网关自身 admin LLM 任务管线；此前是写死 localhost:8080/
+	// gpt-4o-mini 的占位桩，生产必败静默落入伪摘要）。
+	title, summary, source := api.summarize(ctx, r, conversationText)
 
 	return &SessionSummaryResponse{
 		Title:         title,
 		Summary:       summary,
 		TurnsAnalyzed: len(turns),
+		SummarySource: source,
 	}, nil
+}
+
+// summarize 生成 title/summary：llmCall 可用走真实 LLM；不可用或失败时
+// 退化为 rune 安全截断摘要（LLM 故障不打挂整个端点），并在响应体用
+// summary_source 诚实标注来源；失败原因进服务端日志。
+func (api *SessionSummaryV2API) summarize(ctx context.Context, r *http.Request, conversationText string) (title, summary, source string) {
+	if api.llmCall != nil && r != nil {
+		t, s, err := api.llmCall(ctx, r, conversationText)
+		if err == nil && strings.TrimSpace(s) != "" {
+			return t, s, "llm"
+		}
+		slog.WarnContext(ctx, "session summary: LLM 生成失败，退化为截断摘要", "err", err)
+	} else {
+		slog.WarnContext(ctx, "session summary: LLM caller 未接线，退化为截断摘要")
+	}
+	fTitle, fSummary, _ := generateFallbackSummary(conversationText)
+	return fTitle, fSummary, "fallback"
 }
 
 // queryRequestLogsFallback derives turn-shaped conversation text from the
@@ -446,121 +491,62 @@ func extractMessageContent(delta any) (string, bool) {
 	return text, true
 }
 
-// callLLMForSummary 调用LLM生成会话标题和总结
-func callLLMForSummary(ctx context.Context, conversationText string) (title string, summary string, err error) {
-	// TODO: 这里应该调用实际的LLM API
-	// 为了演示，我们先使用一个简化版本
-
-	// 构建LLM请求
-	systemPrompt := `你是一个专业的会话分析助手。请分析以下对话内容，生成：
-1. 一个简洁的标题（10-20字）
-2. 一个详细的总结（100-200字），包括：
-   - 用户的主要需求
-   - 讨论的关键话题
-   - 达成的结论或结果
-
-请以JSON格式返回：
-{
-  "title": "标题",
-  "summary": "总结内容"
-}`
-
-	userPrompt := fmt.Sprintf("请分析以下对话：\n\n%s", conversationText)
-
-	// 调用OpenAI API (or internal LLM gateway)
-	requestBody := map[string]any{
-		"model": "gpt-4o-mini",
-		"messages": []map[string]any{
-			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": userPrompt},
-		},
-		"temperature": 0.7,
-		"max_tokens":  500,
+// SessionSummaryLLMCaller 返回走网关自身 admin LLM 任务管线生成会话摘要的
+// 闭包（session_summary work_type + auto 模型 + 显式 fallback 重试，见
+// admin_llm_task.go），与 session title（session_title.go 同款）共用同一
+// 真实链路：端点取本网关地址、密钥走 pickFirstAvailableAPIKey、提示词经
+// <session_transcript> 包裹防注入。
+//
+// 2026-09-29 (审计二十一轮)：此前该端点是写死 http://localhost:8080 +
+// gpt-4o-mini 的占位桩（无 Authorization、生产不可达），失败静默落入
+// summary[:200] 字节截断的伪摘要——同仓 title 早已是真链路，一真一假。
+func (h *Handler) SessionSummaryLLMCaller() func(ctx context.Context, r *http.Request, conversationText string) (string, string, error) {
+	return func(ctx context.Context, r *http.Request, conversationText string) (string, string, error) {
+		_, apiKey, err := h.pickFirstAvailableAPIKey(ctx, r)
+		if err != nil {
+			return "", "", fmt.Errorf("pick api key: %w", err)
+		}
+		res, err := h.callAdminLLMChat(ctx, r, apiKey, adminLLMTaskSessionSummary, "", conversationText)
+		if err != nil {
+			return "", "", err
+		}
+		return parseSummaryLLMContent(res.Content)
 	}
+}
 
-	requestJSON, err := json.Marshal(requestBody)
-	if err != nil {
-		return "", "", err
-	}
+// parseSummaryLLMContent 解析摘要模型输出：优先 JSON {"title","summary"}
+// （剥代码围栏），否则退回「首行=标题」文本启发式。
+func parseSummaryLLMContent(content string) (string, string, error) {
+	content = strings.TrimSpace(content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
 
-	// TODO: Replace with actual LLM endpoint
-	// For now, use a placeholder response
-	llmEndpoint := "http://localhost:8080/v1/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, "POST", llmEndpoint, bytes.NewReader(requestJSON))
-	if err != nil {
-		return "", "", err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	// TODO: Add API key if needed
-	// req.Header.Set("Authorization", "Bearer "+apiKey)
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		// Fallback: generate a simple summary without LLM
-		return generateFallbackSummary(conversationText)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		// Fallback
-		return generateFallbackSummary(conversationText)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return generateFallbackSummary(conversationText)
-	}
-
-	// Parse LLM response
-	var llmResp struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-
-	if err := json.Unmarshal(body, &llmResp); err != nil {
-		return generateFallbackSummary(conversationText)
-	}
-
-	if len(llmResp.Choices) == 0 {
-		return generateFallbackSummary(conversationText)
-	}
-
-	// Parse JSON response from LLM
-	var summaryResp struct {
+	var parsed struct {
 		Title   string `json:"title"`
 		Summary string `json:"summary"`
 	}
-
-	content := llmResp.Choices[0].Message.Content
-	if err := json.Unmarshal([]byte(content), &summaryResp); err != nil {
-		// Try to extract from plain text
-		return extractTitleAndSummaryFromText(content)
+	if err := json.Unmarshal([]byte(content), &parsed); err == nil && strings.TrimSpace(parsed.Summary) != "" {
+		title := normalizeSessionTitle(parsed.Title)
+		if title == "" {
+			title = "会话总结"
+		}
+		return title, strings.TrimSpace(parsed.Summary), nil
 	}
-
-	return summaryResp.Title, summaryResp.Summary, nil
+	return extractTitleAndSummaryFromText(content)
 }
 
 // generateFallbackSummary 生成一个简单的回退总结
 func generateFallbackSummary(conversationText string) (string, string, error) {
-	// Count turns
-	turnCount := 0
-	for i := 0; i < len(conversationText); i++ {
-		if i+10 < len(conversationText) && conversationText[i:i+10] == "=== Turn " {
-			turnCount++
-		}
-	}
-
+	turnCount := strings.Count(conversationText, "=== Turn ")
 	title := fmt.Sprintf("会话总结 (%d轮)", turnCount)
 
-	// Extract first 200 chars as summary
+	// 2026-09-29 (审计二十一轮): 按 rune 截断。此前 summary[:200] 按字节切，
+	// CJK 会截成非法 UTF-8 前缀直接进响应体与 sessions.summary 列。
 	summary := conversationText
-	if len(summary) > 200 {
-		summary = summary[:200] + "..."
+	if runes := []rune(summary); len(runes) > 200 {
+		summary = string(runes[:200]) + "…"
 	}
 
 	return title, summary, nil

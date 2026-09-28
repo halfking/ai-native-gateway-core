@@ -824,11 +824,13 @@ func (h *Handler) serveSessionInstantSummary(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	tenantID := tenantFromQueryOrContext(r)
-	api := &SessionSummaryV2API{pool: h.db}
+	// 2026-09-29 (审计二十一轮): 注入真实 LLM 摘要链路 + r 透传（此前端点
+	// 内是写死 localhost 的占位桩，生产必败静默落入伪摘要）。
+	api := &SessionSummaryV2API{pool: h.db, llmCall: h.SessionSummaryLLMCaller()}
 	summary, err := api.generateSummary(r.Context(), &SessionSummaryRequest{
 		SessionID: sessionID,
 		Tenant:    tenantID,
-	}, tenantID)
+	}, tenantID, r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "serveSessionSummaryGenerate failed",
 			"session_id", sessionID, "tenant_id", tenantID, "error", err.Error())

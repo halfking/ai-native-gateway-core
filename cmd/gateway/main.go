@@ -6886,6 +6886,13 @@ func main() {
 		// Provides session detail query from gateway.session_* tables and LLM-powered session summary
 		sessionDetailAPI := admin.NewSessionDetailV2API(dbConn.Pool())
 		sessionSummaryAPI := admin.NewSessionSummaryV2API(dbConn.Pool())
+		// 2026-09-29 (审计二十一轮): 注入真实 LLM 摘要链路（Handler.
+		// SessionSummaryLLMCaller，与 session title 同一 admin LLM 任务管线）。
+		// 此前端点内是写死 localhost:8080/gpt-4o-mini 的占位桩，生产必败
+		// 静默落入字节截断伪摘要。
+		if adminHandler != nil {
+			sessionSummaryAPI.SetLLMCaller(adminHandler.SessionSummaryLLMCaller())
+		}
 		mux.HandleFunc("/api/admin/sessions/detail", wrapAdmin(sessionDetailAPI.ServeHTTP))
 		mux.HandleFunc("/api/admin/sessions/summary", wrapAdmin(sessionSummaryAPI.ServeHTTP))
 		// R69 audit: list v2（9f62818c5 落地的信封化列表端点）此前无生产

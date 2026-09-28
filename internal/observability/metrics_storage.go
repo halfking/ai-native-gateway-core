@@ -19,12 +19,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// StorageDegradedComponent 是 component 标签的取值集合（低基数、固定三档）。
+// StorageDegradedComponent 是 component 标签的取值集合（低基数、固定档）。
 // 新增读端点时在此登记，避免各处硬编码字符串导致标签基数失控。
 const (
 	StorageComponentList   = "list"
 	StorageComponentDetail = "detail"
 	StorageComponentTurns  = "turns"
+	// StorageComponentSummary（2026-09-29 审计二十一轮）: 会话摘要/标题
+	// 家族端点（/api/admin/sessions/summary、instant-summary、session_title）。
+	StorageComponentSummary = "summary"
 )
 
 var (
