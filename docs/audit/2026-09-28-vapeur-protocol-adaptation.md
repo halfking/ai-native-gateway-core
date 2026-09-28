@@ -87,3 +87,52 @@ bg/probe_responses_fallback_test.go（5 个行为测试）、reqprobe_test.go（
   （SupportsNativeResponses(Stream)，目前仅 grok-4.6 有记录）。
 - **vapeur 的现实**：responses 端点仅 GPT 系可用，Claude/qwen/doubao/gemini 必须
   chat——「默认 responses + 按模型降级 chat」即最优策略，已实现。
+
+## 六、批判式复审（2026-09-28 22:5x，第二轮——修正本文件首版的过度声明）
+
+首版文档与提交信息里有三处声明强于证据，现修正：
+
+1. **「credential_probe_v2 step2 污染凭据级健康判定」——过度声明，降级为
+   「错配存在，健康受损未证实」**。chat 体 POST /responses 必 400 是实测事实；
+   但修复前（当日 12:2x）credential 126 的 health_status 就是 healthy、
+   health_error 为空——旧代码如何通过（step2 被跳过？错误分类非致命？）未深究。
+   修复后 21:21 复检仍 healthy。结论：形态修复正确且无回归，但「污染」影响
+   面首版没有证据支撑。
+2. **「绑定恢复」措辞不准**。credential_model_bindings 在整个事故期间从未被
+   压红（available 恒 t）；被压红的是 node_probe_state（探针态）与 URSM v2
+   Redis 节点视图（available=0）——路由排除发生在视图层。首版混用「绑定」
+   一词误导。
+3. **reqprobe CJK 补丁是防御性路径，生产当前不触发**。数据面同请求回退仅在
+   native responses 传输（capability 表 SupportsNativeResponses(Stream) 有行）
+   时才会遇到「responses 被拒」文案；5 个目标模型 capability 表无行 → 走 chat
+   URL → 不触发该路径。该补丁的价值在未来 capability 启用时。证据级别：单测。
+
+**证据分级表（实事求是）**：
+
+| 修复点 | 证据级别 |
+|---|---|
+| probeDirect responses→chat 降级 | **生产实证**：node_probe_runs 17:22-17:23 claude-opus-5-5/haiku-4-5 记录 "chat fallback probe OK (HTTP 200)"；22:45 复查 URSM 视图 claude 全系/qwen 系/gpt-6-astra 全部 available=1（首版时仅部分翻绿，「队列会消化」当时是推测，现已实证） |
+| probeWithRetry（model_probe Layer4）降级 | 单测（httptest）；生产触发依赖 featured 模型集合，未单独验证 |
+| active_probe_executor 降级 | 单测；生产由同判定器+同原语支撑（链路一致性由十九轮复核背书） |
+| credential_probe_v2 miniResponses | 单测 + 间接一致（21:21 healthy 与新代码一致，不排他） |
+| reqprobe CJK hints | 单测；生产不触发（见上） |
+| URSM 全拒 WARN | 未触发场景验证（纯日志，低风险） |
+| 数据面 5 模型×2 入口 | 生产实测全 200（含 gpt-6-astra 经 vapeur chat 上游） |
+
+**十九轮并行审计复核**（commit c3428bdec，docs/12小时内修订审计-20260928-2220.md）：
+四链路修复深审「全属实」；并落地三项本文件作者遗漏的收口——N19-1 检测器
+参数名词排除（"does not support the 'messages' parameter" 语序误判）、
+N19-2 降级失败注记不伪造 "(HTTP 0, 0ms)"、N19-3 egress 阻断保留原失败上下文。
+本轮复审认可全部三项；检测器末尾 chat/completions 宽松重定向为**有意权衡**
+（注释在案：真实中转裁决几乎都携带它；残余误判面=多打一发 chat 探针+注记，
+不污染可用性方向），不改为强匹配。
+
+**新发现登记（本轮批判复审产出，均非阻断）**：
+- `credential_health_checks` 表 0 行（全库）——该审计写入路径死代码，探针结果
+  只落 credentials.health_* 列，无逐次明细。移交存储/审计轨道。
+- grok-4.6（cred 126）URSM 视图 available=0 但 node_probe_state 无行：21:53
+  由流量失败路径写入的孤儿视图（非目标模型，responses 上游本身 200）；无探针
+  行则爬梯不会复探，依赖流量自愈或人工触发。移交探针轨道。
+- 本地 PG 22:40-22:44 crash recovery（"not properly shut down"，redo 9s 完成，
+  网关 degraded→recovered 自动恢复）：发生在本任务活动窗口（12:2x-17:3x）之外，
+  与已知宿主 OOM 崩 PG 模式一致（环境债，非本修复引入）。
