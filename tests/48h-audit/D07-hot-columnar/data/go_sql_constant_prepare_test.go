@@ -262,22 +262,36 @@ var justifiedPrepareFailures = map[string]string{
 	"domains/sessionsummary/message_source_v2.go:75::v2SessionBodiesBaseQuery::b19fb1b9":   "P1：turns 视图漏投影 origin_actor；per-turn-digest 开关的 fallback 路径，会话摘要输入读取必失败",
 	"domains/sessionsummary/message_source_digest.go:89::sessionTurnDigestQuery::f6b0acc8": "P1：同上，per-turn-digest 开关的 digest 路径；开关开/关两条路都撞这一个列",
 
-	// ── P1 候选：diagnostic_runs.route_key / routing_audit_log.reason ─────────
-	// 基线 installer/cmd/llm-gw-installer/embeddata/01-schema.sql:7955 的
-	// diagnostic_runs 没有 route_key 列，真库也没有；全仓无任何 SQL 给它添加。
-	// route_key 只存在于 390_routing_persistence_hardening.sql 的 routing_audit_log
-	// ——是**另一张表**，疑为串表。domains/routeincident 共 8 处查询它们。
-	"domains/routeincident/action_infra.go:390::sql::98af2ee0": "P1 候选：diagnostic_runs 无 route_key（基线与真库双缺，仓内无迁移添加）",
-	"domains/routeincident/action_infra.go:479::sql::d83eead3": "P1 候选：同上 diagnostic_runs.route_key",
-	"domains/routeincident/action_infra.go:507::sql::93e0ec6f": "P1 候选：同上 diagnostic_runs.route_key",
-	"domains/routeincident/action_infra.go:529::sql::93e0ec6f": "P1 候选：同上 diagnostic_runs.route_key",
-	"domains/routeincident/action_infra.go:608::sql::6f536007": "P1 候选：routing_audit_log 无 reason 列",
-	"domains/routeincident/action_infra.go:666::sql::66e1c23e": "P1 候选：同上 routing_audit_log.reason",
-	"domains/routeincident/evidence.go:149::sql::27a821dc":     "P1 候选：同上 diagnostic_runs.route_key",
+	// ── P1-2｜diagnostic_runs.route_key / routing_audit_log.reason 缺列 ──────
+	// 证据闭合（三方一致）：基线 01-schema.sql:7955 的 diagnostic_runs 列清单无 route_key；
+	// 真库 pg_attribute 实测同样没有；全仓仅有的两处 ALTER TABLE diagnostic_runs
+	// （445 与 391）都只 ADD COLUMN created_at/updated_at，**没有任何迁移添加 route_key**。
+	// route_key 仅存在于 390_routing_persistence_hardening.sql 的 routing_audit_log
+	// ——**另一张表**，疑串表。
+	//
+	// 可达性（定 P1 而非 P1 候选的依据）：
+	//   cmd/gateway/main.go:3539 routeincident.NewStore + :3545 NewObserver
+	//   → telemetryClient.AddOnRequestLogPersisted(observer.AsHook())   **每条落库的请求日志**
+	//   → Observer.Transition → writeAudit → persistRunInTx  （查 diagnostic_runs.route_key）
+	//   → 失败后重试 maxRetries=4（共 5 次）后 o.failed++ 并只记 warning
+	// admin 侧 NewRouteIncidentsHandler 无条件接线，DiagnosticRunsList /
+	// AuditLogListByRun 同样失败。
+	//
+	// **加重的一条**：重试循环的注释写「Transient: lock conflict, transient deadlock…
+	// the next persisted row will catch up」——但 `42703 undefined_column` 是**永久性**错误，
+	// 每次重试与每条后续请求都必然同样失败。这套重试对它零收益，只是把热路径上的
+	// 失败查询放大 5 倍。
+	"domains/routeincident/action_infra.go:390::sql::98af2ee0": "P1：diagnostic_runs 无 route_key（基线/真库/迁移三方一致）；observer 热路径每条请求日志命中",
+	"domains/routeincident/action_infra.go:479::sql::d83eead3": "P1：同上 persistRunInTx，observer 热路径",
+	"domains/routeincident/action_infra.go:507::sql::93e0ec6f": "P1：同上 loadRunByIDInTx",
+	"domains/routeincident/action_infra.go:529::sql::93e0ec6f": "P1：同上 loadRunByID",
+	"domains/routeincident/action_infra.go:608::sql::6f536007": "P1：routing_audit_log 无 reason 列；admin 审计列表失败",
+	"domains/routeincident/action_infra.go:666::sql::66e1c23e": "P1：同上；admin NewRouteIncidentsHandler 无条件接线",
+	"domains/routeincident/evidence.go:149::sql::27a821dc":     "P1：同上 diagnostic_runs.route_key（RecordEvidenceExportAudit）",
 
 	// ── P1-3｜tool_usage_stats 列名漂移：Go 用 tool_name/date，schema 是 tool_id/usage_date ──
-	// 基线 01-schema.sql 与真库**两个独立 SSOT 一致**（id, tool_id, tenant_id, usage_date,
-	// call_count, …，既无 tool_name 也无 date），全仓无任何迁移改名。
+	// 基线 01-schema.sql 与真库 pg_attribute **两个独立 SSOT 逐列一致**（id, tool_id,
+	// tenant_id, usage_date, call_count, …，既无 tool_name 也无 date），全仓无任何改名迁移。
 	// 而 domains/toolexecution/postgres_store.go 直接
 	// INSERT INTO tool_usage_stats_hot (… tool_name, date, …) ON CONFLICT (tool_name, date)。
 	// 活接线：cmd/gateway/tool_execution_integration.go:40 `te.NewPostgresStore(db, logger)`。
@@ -293,8 +307,8 @@ var justifiedPrepareFailures = map[string]string{
 
 	// ── 设计内的模板占位符（假阳性）────────────────────────────────────────
 	// `__mo_modality__` 不是列名，是等待替换的模板标记：该常量在启动时先探测
-	// information_schema.columns 里有没有 model_offers.provider_modality，再据探测
-	// 结果把占位符换成 moModalityWithColumn（真列）或兼容常量。
+	// information_schema.columns 里有没有 model_offers.provider_modality，再据探测结果
+	// 把占位符换成 moModalityWithColumn（真列）或兼容常量。
 	// 见 admin/credential_models_dto.go 的 :76、:120、:138。
 	// 按原样 PREPARE 当然失败——**它本来就不是一个会被原样执行的语句**。
 	"admin/credential_models_dto.go:32::offerListSQLColumns::361f5ffa": "假阳性：`__mo_modality__` 是启动探测后替换的模板标记，不是列名（见 :76/:120/:138）",
