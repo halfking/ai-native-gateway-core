@@ -8243,6 +8243,13 @@ func streamErrorKindForDetailCode(outcome *StreamOutcome, detailCode string) str
 	case "concurrent_overload", "concurrent":
 		return "concurrent_overload"
 	case "empty_stream_no_content", "early_empty_detection":
+		// 2026-09-29: 接线 metrics/empty_response_metrics.go 的
+		// RecordEmptyResponseAttempt。该指标自 R45 落地以来在仓内
+		// 零调用点（见 docs/audit/2026-09-28-reasoning-effort-clamp-audit.md §5），
+		// 接线位置选归一处而不是源头（stream.go / responses_bridge.go 的
+		// MarkInterruptedWithReason 入口），最小化修改面。Reason 字段
+		// 透传给 metrics 层做归一化（done_no_content / early_empty / other）。
+		metrics.RecordEmptyResponseAttempt(detailCode)
 		return "empty_response"
 	case "eof_without_done":
 		return "eof_without_done"
