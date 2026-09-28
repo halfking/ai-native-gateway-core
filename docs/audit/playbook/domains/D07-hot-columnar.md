@@ -178,3 +178,31 @@ S-01 原标注「环境未提供」，实测时本机 PG 17.10 已健康运行 3
 - **变异检验**：白名单塞假条目 → 自收缩检查红；Gate A 索引查找改 `WHERE false` → 报出
   全部 16 个活函数，证明不是象征性抽查。
 - **未做**：非 hot 的其他分区族是否存在同型游标，本轮只普查了 `promote_*`。
+
+### R79 续二回注（2026-09-29，批游标普查从 promote_* 专项升到全库）
+
+- **范围**：`promote_*` 是专项普查，本轮扫**整个 `pg_proc`**，非 promote 族只剩 **4 个**批游标，
+  **无新增 P1**。四个分三种性质，**混在一起就会误判**：
+  - `archive_request_logs_default(id)` — 活函数，`FROM %I` 动态源表。R79 已修（迁移 756 建 `(id)` 索引）。
+  - `archive_request_wal(created_at)` — **死函数**。`request_wal` 确实无 `created_at` 首列索引，
+    但**正确修法是删函数不是补索引**：迁移 331 已声明要删它，只是 331 不在 installer startup 通道、
+    本机 `schema_migrations` 只到 V359，它至今仍活在真库里。补索引等于优化一个没人调的函数。
+    P3 深化，**登记不删**（删 schema 对象是迁移决策）。
+  - `ensure_request_logs_partition(ctid)` / `repair_request_logs_detached_partitions(ctid)` —
+    **非缺陷**。ctid 是系统列，`CREATE INDEX` 建不了；物理序 + `EXIT WHEN drained = 0` 的收敛保证
+    本就是合法策略。
+- **规则用错对象就是误报，必须单列豁免**：ctid 归入「不可索引」第三类，**只登记不判红并在输出里
+  写明理由**。不写理由就等于把它悄悄算进「已覆盖」——与「把部分索引算成有索引」是同一类自欺。
+- **泛化门与专项门范围必须互斥**：泛化门第一版没排除 `promote_*`，用它更粗的可达性判据
+  （仓库全量 `.go` grep）把专项门已精确管理的 **6 项债原样重报一遍**——同样的 6 项、不同措辞，
+  后果是这道门**永久红，红在别人管理的债上**。改为显式排除 + 注释写明「谁负责什么」。
+  共用解析辅助函数（`unqualify` / `sourceTableForBatch` / `resolveCursor`）**只保留一份实现**，
+  两份各自演化必然分叉。
+- **fail-closed 第四次生效**：泛化门首版对 `archive_request_logs_default` 报「无法解析源表」，
+  因为它的批次是 `FROM %I`，源表运行时才由 `pg_inherits` 决定。新增「动态源表」类，
+  **要求写明 justification**（这张表实际是什么、为什么它的游标有索引支撑）否则判红。
+  这正是 fail-closed 的价值：**唯一真正出过事的那个函数恰在它最该查的地方**。
+- **变异检验 2 处红转绿**：撤掉动态源表 justification → 红并指名；撤掉 ctid 豁免 → 红，
+  且正确区分 `ensure_request_logs_partition`（引用中）判缺陷 vs `repair_...`（未引用）仅记录。
+- **仍未做**：非游标形态的查询面（按 ts 范围做对账/报表的接口）未做计划形状普查；
+  本轮只覆盖「批游标」这一形态。

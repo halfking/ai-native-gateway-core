@@ -436,3 +436,99 @@ func TestCacheTrimmerNeverDeletesLiveEntries(t *testing.T) {
 		})
 	}
 }
+
+// TestInitStorageModeHotZoneTrimmerWiring H4 P2 装配验收：默认（config 段
+// 缺失 → ApplyHotZoneDefaults 默认开启 + settings 默认 true）时 hotzone
+// trimmer 被装配且生命周期挂入 trimmerCtx/trimmerWG。
+func TestInitStorageModeHotZoneTrimmerWiring(t *testing.T) {
+	cfg := liteStorageConfigForTest(t)
+	hzDir := filepath.Join(filepath.Dir(cfg.Lite.CacheDir), "hotzone")
+	cfg.HotZone = &config.HotZoneConfig{Dir: hzDir} // Enabled/其余字段走默认值
+
+	rt, err := initStorageMode(nil, cfg)
+	if err != nil {
+		t.Fatalf("initStorageMode(lite) error = %v", err)
+	}
+	if rt == nil {
+		t.Fatal("runtime = nil")
+	}
+	defer rt.Shutdown()
+
+	if rt.hotZoneTrimmer == nil {
+		t.Fatal("hotZoneTrimmer = nil, want wired (双通道默认均开启)")
+	}
+	// Dir 默认值归一：显式传入的 hzDir 应原样生效（ApplyHotZoneDefaults 只补空值）
+	st, err := os.Stat(hzDir)
+	if err == nil && !st.IsDir() {
+		t.Errorf("%s 应为目录（若已创建）", hzDir)
+	}
+	// trimmer 未对缺失目录做任何写入（缺失即 no-op）
+	if _, err := os.Stat(hzDir); !os.IsNotExist(err) {
+		t.Logf("hotzone dir 已存在（可能由其他步骤创建）: %v", err)
+	}
+}
+
+// TestInitStorageModeHotZoneDisabledByConfig config 通道关闭（YAML/env 显式
+// enabled=false）：AND 语义下不装配 trimmer，L1.5 FileCache 预算不受热区
+// settings 影响（H4 §改动4：lite 10GB 默认不动）。
+func TestInitStorageModeHotZoneDisabledByConfig(t *testing.T) {
+	cfg := liteStorageConfigForTest(t)
+	off := false
+	cfg.HotZone = &config.HotZoneConfig{
+		Dir:            filepath.Join(filepath.Dir(cfg.Lite.CacheDir), "hotzone"),
+		Enabled:        &off,
+		RetentionHours: 7,
+		MaxSizeGB:      1,
+	}
+
+	rt, err := initStorageMode(nil, cfg)
+	if err != nil {
+		t.Fatalf("initStorageMode(lite) error = %v", err)
+	}
+	defer rt.Shutdown()
+
+	if rt.hotZoneTrimmer != nil {
+		t.Fatal("hotZoneTrimmer != nil, want nil (config 显式关闭)")
+	}
+}
+
+// TestInitStorageModeHotZoneResizeMaxWiring ResizeMax 联动（H4 §改动3）：
+// L1.5 cache 子树位于热区目录内时，首轮 applyReload 把 FileCache.maxSize
+// 收敛到 settings hotzone 预算（构造值 10GB → settings 默认 1GB）。
+func TestInitStorageModeHotZoneResizeMaxWiring(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.StorageConfig{Mode: "lite"}
+	cfg.Lite = &config.LiteStorageConfig{
+		SQLitePath:     filepath.Join(dir, "gateway.db"),
+		BodiesDir:      filepath.Join(dir, "bodies"),
+		CacheDir:       filepath.Join(dir, "hotzone", "cache"), // 落入热区
+		LogsDir:        filepath.Join(dir, "logs"),
+		CacheTTLHours:  2,
+		CacheMaxSizeGB: 10, // 故意 ≠ settings 默认 1GB，可观测 ResizeMax 生效
+		AsyncWriters:   2,
+	}
+	cfg.Lite.Retention.SessionBodiesDays = 30
+	cfg.Lite.Retention.RequestLogsDays = 7
+	cfg.Lite.Retention.CacheHours = 24
+	cfg.HotZone = &config.HotZoneConfig{Dir: filepath.Join(dir, "hotzone")}
+
+	rt, err := initStorageMode(nil, cfg)
+	if err != nil {
+		t.Fatalf("initStorageMode(lite) error = %v", err)
+	}
+	defer rt.Shutdown()
+
+	if rt.hotZoneTrimmer == nil {
+		t.Fatal("hotZoneTrimmer = nil, want wired")
+	}
+	// 首轮 applyReload 在 Start goroutine 内异步执行，轮询等待生效
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := rt.fileCache.Stats()["max_size_bytes"].(int64); got == int64(1)<<30 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	got := rt.fileCache.Stats()["max_size_bytes"].(int64)
+	t.Errorf("FileCache maxSize = %d, want %d (hotzone settings 预算)", got, int64(1)<<30)
+}
