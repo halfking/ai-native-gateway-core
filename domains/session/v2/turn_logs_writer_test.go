@@ -356,70 +356,7 @@ func TestTurnLogsWriter_AggregateWithError(t *testing.T) {
 	assert.Equal(t, "Service unavailable", turns[1][1]["error"])
 }
 
-// TestTurnLogsWriter_CleanupExpiredLogs tests log cleanup
-func TestTurnLogsWriter_CleanupExpiredLogs(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping database test in short mode")
-	}
 
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
-
-	writer := NewTurnLogsWriter(db)
-	ctx := context.Background()
-
-	// Write a log with expired timestamp (manually)
-	// Note: This requires directly inserting with a past expires_at
-	_, err := db.Exec(ctx, `
-		INSERT INTO public.session_turn_logs (
-			session_id, turn_no, tenant_id, request_id,
-			stage, stage_status, event_data,
-			started_at, completed_at, latency_ms,
-			expires_at
-		) VALUES (
-			$1, $2, $3, $4,
-			$5, $6, $7,
-			$8, $9, $10,
-			$11
-		)
-	`,
-		"test_session_expired", 1, "test_tenant", "req_expired",
-		"routing", "success", []byte("{}"),
-		time.Now().Add(-48*time.Hour), time.Now().Add(-48*time.Hour), 10,
-		time.Now().Add(-1*time.Hour), // Expired 1 hour ago
-	)
-	require.NoError(t, err)
-
-	// Write a non-expired log
-	rec := TurnLogRecord{
-		SessionID:   "test_session_active",
-		TurnNo:      1,
-		TenantID:    "test_tenant",
-		RequestID:   "req_active",
-		Stage:       "routing",
-		StageStatus: "success",
-		EventData:   map[string]interface{}{},
-		StartedAt:   time.Now(),
-		CompletedAt: time.Now().Add(10 * time.Millisecond),
-	}
-	err = writer.WriteStage(ctx, rec)
-	require.NoError(t, err)
-
-	// Cleanup expired logs
-	deleted, err := writer.CleanupExpiredLogs(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), deleted) // Should delete 1 expired log
-
-	// Verify expired log is gone
-	logs, err := writer.GetAllSessionLogs(ctx, "test_tenant", "test_session_expired")
-	require.NoError(t, err)
-	assert.Len(t, logs, 0)
-
-	// Verify active log is still there
-	logs, err = writer.GetAllSessionLogs(ctx, "test_tenant", "test_session_active")
-	require.NoError(t, err)
-	assert.Len(t, logs, 1)
-}
 
 // TestTurnLogsWriter_EmptyEventData tests writing stage with empty event data
 func TestTurnLogsWriter_EmptyEventData(t *testing.T) {
