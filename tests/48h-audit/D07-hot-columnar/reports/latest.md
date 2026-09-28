@@ -192,3 +192,105 @@ installer 的 delivery 副本，canonical（契约测试读的那份）仍是坏
 - 其他分区族（candidate_failure_logs / usage_facts / mock_probe_history 等）的
   同类「游标列是否有索引」问题未逐族检查——**本轮只查了 request_logs 一族**，
   但方法可直接套用，见 L2。
+
+---
+
+# R79 续 · promote_* 全族普查：把 S-01 的方法推到底
+
+S-01 只修了 `request_logs` 一族。同一缺陷类（**批游标列没有首列索引 ⇒ 每批次全表
+排序 ⇒ O(rows²/batch)**）在 hot→partition 的 `promote_*` 家族里是否复发，本节逐族核。
+
+## 1. 方法
+
+不解析迁移文件（死代码太多），直接对**真库**取 `pg_proc` 里全部 `promote_*` 函数体，
+抽出批游标的首列与源表，再核该表是否真有以该列**开头**的索引（首列，不是「包含该列」；
+且**排除部分索引**——见 §4）。
+
+真库实测 **29 个 `promote_*` 函数 / 27 个批游标 / 18 个注册在 `promoteSpecs()`**。
+
+## 2. Gate A：活函数的批游标首列索引
+
+**18 个活函数里 16 个有首列索引，2 个没有**：
+
+| 表 | 游标 | 现状 | 定级 |
+|---|---|---|---|
+| `candidate_failure_logs_hot` | `ts` | **无任何以 ts 开头的索引**（6 个索引全是 credential_id/provider_id/raw_model_name/request_id/session_id/aggregation_id 开头）。EXPLAIN：`Seq Scan + Sort`，取 28 行读 113 块 | **P2 潜在** |
+| `auto_route_selections_hot` | `ts` | 仅有**部分**索引 `idx_ars_hot_unsettled(ts) WHERE settled_at IS NULL` 与 `idx_ars_hot_session(session_id,ts) WHERE session_id IS NOT NULL`；promote 谓词 `ts < statement_timestamp() - p_retention` 推不出这两个谓词，故用不上。EXPLAIN 仍带 `Sort` | **P2 潜在** |
+
+### 为什么是 P2 而不是 P1
+
+按当前摄入速率，这两张表永远走不到「多批次」：
+
+| 表 | 现存量 | 时间跨度 | 摄入速率 | 8h 窗口预估 | 批次大小 |
+|---|---|---|---|---|---|
+| `candidate_failure_logs_hot` | 211 行 / 5.2 MB | 8h47m | ≈24 行/h | ≈190 行 | 5000 |
+| `auto_route_selections_hot` | 862 行 / 872 kB | 2h24m | ≈359 行/h | ≈2,900 行 | 5000 |
+
+两者都**不到一个批次**，所以 O(rows²/5000) 的那部分代价今天根本没被支付。
+成本是**潜在的**、不是**已计费的**。写「P1」会是虚报。
+
+### 一条被证伪的假设（记录下来，因为差点就写进报告）
+
+初看 `candidate_failure_logs_hot` 里有 8h47m 的行，超过 8h 保留窗还没被 promote 走，
+一度判「8h hot 不变式已破」。追下去发现：
+`lifecycle.hot_retention_hours = 8`，promote 上一轮执行于 23:04:50，截止线 15:04:50，
+而当时最老行是 15:05:32 —— **尚未到期**。promote 日志证实该表 23:04:50 正常排了 36 行。
+按小时周期运行，8h 窗口的实际滞留上界是 8h + 1h，观测到的 8h47m 完全在界内。
+**不变式没破，是我在验证之前就开始归因。**
+
+## 3. Gate B：死函数引用不存在的表（普查副产物）
+
+真库 29 个 `promote_*` 函数中，**11 个短名 `promote_*_batch` 在 Go 侧零调用方**，
+其中 3 个引用的表**根本不存在**：
+
+| 死函数 | 缺失表 | 父表 DEFAULT 分区状态 |
+|---|---|---|
+| `promote_credit_ledger_default_batch` | `credit_ledger_default` | `credit_ledger` 有 4 个月分区，**无 DEFAULT** |
+| `promote_request_logs_bodies_default_batch` | `request_logs_bodies_default` | 有 2 个月分区，**无 DEFAULT** |
+| `promote_tool_usage_stats_default_batch` | `tool_usage_stats_default` | **无 DEFAULT** |
+
+**定级 P3 文档债**：无调用方 ⇒ 不会执行；父表无 DEFAULT 分区 ⇒ 根本没有可排空的数据。
+风险是「上了膛的枪」——它看起来像个能用的排空函数，谁顺手接进 spec，第一次执行就 42P01。
+**登记而不删**：删 schema 对象是迁移决策，本轮不替 owner 做。
+
+## 4. 这道门自己踩的三个坑（比结论更重要）
+
+写门的过程里，它先红过三次，每次都是**门自己有缺陷**而不是被测对象有问题：
+
+1. **静默覆盖率 7/26**：正则里用了字面空格，而 `prosrc` 保留原始换行与缩进，
+   只有 7 个单行函数体能匹配上。**如果当时写成「解析不出来就跳过」，这道门会立刻变成
+   覆盖 27% 的真空门**——正是本会话反复吃亏的形态。改成 **fail-closed**
+   （活函数解析不出游标即红）后，它当场把这个坑顶了出来。
+2. **误报源表三连**：
+   - 取首个 `FROM` → 命中 `NOT EXISTS` 里的 `session_turns archived`；
+   - 改取最后一个 `FROM` → 命中更早语句里的 `pg_partitioned_table`（父表校验）；
+   - 按首个 `ORDER BY` 定位 → 命中列清单推导里的 `ORDER BY attnum`。
+   正确规则是**三条一起**：按「带 batch LIMIT 的那次 ORDER BY」定位 →
+   切到该 plpgsql 语句内（最后一个 `;` 之后）→ 取语句内**首个** FROM。
+3. **把部分索引算成「有索引」**：`idx_ars_hot_unsettled(ts) WHERE settled_at IS NULL`
+   的首列确实是 `ts`，于是门报告 `auto_route_selections_hot` 已覆盖——
+   而 EXPLAIN 明明显示规划器没用它、Sort 仍在。**首列匹配 ≠ 能用**。
+   部分索引只在查询谓词蕴含其谓词时可用，这必须由 EXPLAIN 背书，不能由首列位置推断。
+
+`livePromoteFunctions` 也踩过一次：先按整个文件扫 `fnName:`，把 `ensure_*`/`archive_*`/
+`drop_*`（来自另外三个 spec 列表）也算成活函数，凭空要求 19 个不存在的函数。改为按花括号
+匹配只取 `promoteSpecs()` 函数体，并剔除注释行（`promote_model_probe_runs_hot_to_partition`
+在上游是被注释掉的）。
+
+## 5. 变异检验（三处，全部由红转绿）
+
+| 变异 | 期望 | 实测 |
+|---|---|---|
+| Gate A 白名单塞一个不存在的表 | 红（自收缩检查） | ✅ 红并指名 `totally_made_up_table` |
+| 让 Gate A 看不见索引（`WHERE false`） | 红且报出全部活函数 | ✅ 红，报 **16 个**活函数缺索引 |
+| Gate B 白名单塞一个不存在的函数 | 红（自收缩检查） | ✅ 红并指名 |
+
+第二条特别重要：它证明这道门真在逐个检查 16-18 个游标，而不是象征性点几个。
+
+## 6. 结论与后续
+
+- **没有新增 P1。** S-01 修完的 `request_logs` 仍然是全族里唯一真正危险的那个，
+  且已修复。其余 16 个活函数首列索引齐全。
+- 2 项 P2 潜在债 + 3 项 P3 文档债，均已带测量数据登记在门禁白名单里，白名单自收缩。
+- **未做**：其余分区族（`session_*`、`usage_*` 等非 hot 表）里是否存在同型游标，
+  本轮只普查了 `promote_*`。方法可直接套用。
