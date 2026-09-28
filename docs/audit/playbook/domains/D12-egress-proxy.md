@@ -86,3 +86,47 @@
 「请求路径接线」这一环缺失，而那正是唯一决定它是否工作的一环。**验收要追到「输入 →
 消费方 → 输出」的完整链路，中间任何一环缺失都不能算通过**；`grep 包名` 只证明存在，
 `grep 调用方` 才证明被使用。
+
+### R78 续 · 死契约列扫描：providers 表 4 个列零消费方（含金额路径的 discount_rate）
+
+把「grep 调用方才证明被使用」这条教训自动化，做成可复跑脚本
+`tests/48h-audit/scripts/dead-column-scan.sh`（snake_case 与 CamelCase 双查，排除
+admin 管理面 / db DDL / vendor / 测试），扫 `providers` 全 24 列。
+
+**DEAD-CONTRACT（有 DDL、有写入、60/60 行有值，但 admin/db 之外零消费方）**：
+
+| 列 | 非空行 | 性质 | 影响 |
+|---|---|---|---|
+| `egress_profile` | 60（其中 14 行 = `'proxy'`） | D12 已登记的未接线契约 | 14 个 provider 标记走代理，实际直连 |
+| `network_quality_score` | 60 | 每个供应商都带网络质量分，无人读 | 选型/排序完全不感知网络质量 |
+| `user_overrides_json` | 60 | 逐供应商的用户覆盖配置，无人读 | 对供应商的定制化修改**不生效** |
+| `discount_rate` | 60（但取值全为默认 1.0） | 成本路径 | **当前无错算**（全默认），但契约已死 |
+
+`discount_rate` 一条要特别说清：它由 `provider/catalog/seed.go` 从 catalog 的
+`discount_rate_default` 播种，但成本引擎（`domains/` / `bg/`）对 discount 零引用——
+**若运维给某供应商设了折扣，账单不会变化**。现值全为 1.0，所以今天没有错账，
+但这是一个「等着被踩」的坑。
+
+**排除误判的核验**（结论前都做了）：
+
+- **CamelCase 复验**：Go 侧通常用结构体字段名消费，只 grep snake_case 会误报。
+  四个列的 `DiscountRate` / `NetworkQualityScore` / `UserOverrides` /
+  `ProxySubscriptionID` 两种形式均为 0 命中。
+- **`SELECT *` 整行加载**：`providers` 的全部加载点（`storage/sqlite/provider_store.go`、
+  `discovery/alias_sync.go`、`bg/model_config_validator.go` 等）都是显式列清单，全仓无
+  `SELECT *`，故不存在「整行进结构体但未使用」的漏判。
+- **数据实况**：逐列查了非空行数，把「死契约且有数据」（60 行）与「死契约但全空」
+  （`catalog_version_at_create` / `proxy_subscription_id`，均 0 行）分开——后者只是
+  尚未启用的占位列，不构成误导。
+
+**为什么这三个值得单独登记**：`network_quality_score` 与 `user_overrides_json` 是
+**60/60 行都有值**的列。它们不像 `egress_profile` 那样有 14 行显式错标那么刺眼，
+而是安静地「看起来在用」——运维在管理台看到网络质量分和覆盖配置都已填写，会合理地
+以为它们在生效。这类缺陷比显式错标更难被发现。
+
+**未修**：四项均属产品/路由策略范畴（是否启用网络质量参与排序、覆盖配置的语义、
+折扣是否进成本模型、代理接线），审计轮只登记不替 owner 定。
+
+**教训 I 补充**：**扫描要从「最像已接线」的地方开始**。egress_profile 有实现包有测试，
+一眼看过去是最可信的那个；network_quality_score 反而更隐蔽。工具化的价值在于
+**不依赖直觉排序**——把全表扫一遍，让数据决定先看哪一列。
