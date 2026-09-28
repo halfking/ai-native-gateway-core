@@ -1,30 +1,30 @@
 # D03 — 三层缓存 provenance
 
-> 域知识库：[docs/audit/playbook/domains/D03-three-tier-cache.md](../../../docs/audit/playbook/domains/D03-three-tier-cache.md)  
-> 48h 改动面（截至 R56）：<待 fill>  
-> 状态：草稿（占位，待 worker 子代理按 TEMPLATE-domain.md 填充）
+> 域知识库：[docs/audit/playbook/domains/D03-three-tier-cache.md](../../../docs/audit/playbook/domains/D03-three-tier-cache.md)
+> R73 改动面：lite telemetry 并发幂等、流式 request/response capture、压缩 provenance。
+> 状态：R73 续审记录；PG/Redis 跨进程一致性未验证。
 
 ## 1. 审计要点
 
-- 待 fill 1
-- 待 fill 2
-- 待 fill 3
+- 检查 original/sanitized/compressed identity、occurrence 与 provenance；重点代码：`domains/hooks/compression/`、`cmd/gateway/lite_telemetry_sink.go`。
+- 已有定向证据：lite sink 并发 replay/idempotent upsert race 通过；F03 reader context 回归通过。
+- 未覆盖：跨进程原子 offset、真实 Redis/PG 回填与故障恢复。
 
 ## 2. 业务测试
 
-- [ ] B-01：<待填>
+- [x] B-01：`go test -race ./cmd/gateway -run 'TestLiteRequestLogSink_' -count=1`
 
 ## 3. 数据测试
 
-- [ ] D-01：<待填>
+- [ ] D-01：兼容 PG/Redis 上验证跨进程回填（环境未提供）
 
 ## 4. 压力测试
 
-- [ ] S-01：<待填>
+- [x] S-01：lite sink 定向 race 已通过
 
 ## 5. 安全测试
 
-- [ ] SF-01：<待填>
+- [ ] SF-01：本轮未做日志捕获验证；原文 provenance 仅由代码路径核对，不能据此宣称原文绝不进入日志
 
 ## 6. 验收门
 
@@ -37,7 +37,7 @@ go test -race -timeout 60s ./tests/48h-audit/D03-three-tier-cache/...
 ## 7. 与方案文档的对齐
 
 - RFC：docs/...
-- 上轮挂账：docs/audit/playbook/runs/R55-.../agent-D03.md
+- R73：`docs/audit/runs/2026-09-28/R73-48h-audit-report.md` §F02/F03；跨进程与真库保持未验证
 
 ## 子代理派发提示词
 

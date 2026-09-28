@@ -22,6 +22,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/i18n"
 	"github.com/kaixuan/llm-gateway-go/modelname"
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 )
 
@@ -379,6 +380,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.chatHandler.insertRateLimitedPlaceholder(logCtx)
 			logCtx.EmitRateLimited(attemptErrCode, attemptErrMsg, nil, nil)
 			*attemptLogged = true
+			ratelimit.MarkGatewaySharedKeyRateLimit(w)
 			writeResponsesError(w, http.StatusTooManyRequests, "Rate limit exceeded", "rate_limit_exceeded", "rate_limit_exceeded")
 			return
 		}

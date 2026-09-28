@@ -1331,7 +1331,7 @@ func (e *Executor) executeOpenAI(
 				//触碰已失效的客户端连接。
 				streamSink := responseSink(params)
 				if nativeStream {
-					streamOutcome = e.NativeResponsesStream(params.R.Context(), streamSink, resp, diagnosticRequestID(params), params.Capture, params.ClientSemanticBytesVisible)
+					streamOutcome = e.NativeResponsesStream(streamReaderContext(params, resp), streamSink, resp, diagnosticRequestID(params), params.Capture, params.ClientSemanticBytesVisible)
 				} else {
 					switch {
 					case e.OpenAIToAnthropicStream != nil &&
@@ -1342,7 +1342,7 @@ func (e *Executor) executeOpenAI(
 						// Anthropic 体(上游体在 bodyBytes 中另行转换),以其估算
 						// message_start.usage.input_tokens,替代恒 0。
 						streamOutcome = e.OpenAIToAnthropicStream(
-							params.R.Context(), streamSink, resp,
+							streamReaderContext(params, resp), streamSink, resp,
 							params.ClientModel, outboundModel,
 							diagnosticRequestID(params),
 							params.Capture, nil,
@@ -1354,7 +1354,7 @@ func (e *Executor) executeOpenAI(
 						cand.Protocol != providercatalog.ProtocolAnthropicMessages:
 						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
 						streamOutcome = e.OpenAIToResponsesStream(
-							params.R.Context(), streamSink, resp,
+							streamReaderContext(params, resp), streamSink, resp,
 							params.ClientModel, outboundModel,
 							diagnosticRequestID(params),
 							params.Capture, nil,
@@ -1364,7 +1364,7 @@ func (e *Executor) executeOpenAI(
 						streamOutcome = params.StreamWrapper(streamSink, resp, e.Normalize, params.Capture)
 					case e.StreamChat != nil:
 						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
-						streamOutcome = e.StreamChat(params.R.Context(), streamSink, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
+						streamOutcome = e.StreamChat(streamReaderContext(params, resp), streamSink, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
 					}
 				}
 				if params.OnStreamCompleted != nil {
@@ -2367,6 +2367,19 @@ func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (c
 		return context.WithCancel(params.R.Context())
 	}
 	return context.WithTimeout(params.R.Context(), timeout)
+}
+
+// streamReaderContext uses the context attached to the actual upstream
+// response. Durable streams intentionally detach that context from client
+// cancellation, so protocol readers must not fall back to params.R here.
+func streamReaderContext(params *ExecParams, resp *http.Response) context.Context {
+	if resp != nil && resp.Request != nil {
+		return resp.Request.Context()
+	}
+	if params != nil && params.R != nil {
+		return params.R.Context()
+	}
+	return context.Background()
 }
 
 // parseMiniMaxBaseResp extracts MiniMax's HTTP 200-wrapped error signal

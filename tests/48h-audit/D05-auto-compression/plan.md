@@ -1,43 +1,43 @@
 # D05 — 自动压缩
 
-> 域知识库：[docs/audit/playbook/domains/D05-auto-compression.md](../../../docs/audit/playbook/domains/D05-auto-compression.md)  
-> 48h 改动面（截至 R56）：<待 fill>  
-> 状态：草稿（占位，待 worker 子代理按 TEMPLATE-domain.md 填充）
+> 域知识库：[docs/audit/playbook/domains/D05-auto-compression.md](../../../docs/audit/playbook/domains/D05-auto-compression.md)
+> R73 改动面：Ollama candidate-aware pre-compression 与一次 provider overflow recovery。
+> 状态：R73 F04 已实施；真实 Ollama/provider tokenizer 未验证。
 
 ## 1. 审计要点
 
-- 待 fill 1
-- 待 fill 2
-- 待 fill 3
+- 预压缩必须保留原始入站 body；provider context-length 4xx 只允许一次内部压缩重试；取消和二次失败不得循环。
+- 共享 `handleContextLengthRecovery` 负责机械/智能回退，Ollama 用 context marker 防递归。
+- 未覆盖：真实供应商 tokenizer、LLM summary/Redis session cache。
 
 ## 2. 业务测试
 
-- [ ] B-01：<待填>
+- [x] B-01：Ollama httptest 首次 4xx、第二次 body 变小并成功
 
 ## 3. 数据测试
 
-- [ ] D-01：<待填>
+- [x] D-01：Ollama recovery 回归断言 `CompressionReason/Strategy/Meta`；命令见 R73 报告 §6
 
 ## 4. 压力测试
 
-- [ ] S-01：<待填>
+- [x] S-01：单次重试上限测试；全仓 race 待执行
 
 ## 5. 安全测试
 
-- [ ] SF-01：<待填>
+- [ ] SF-01：未做错误日志捕获验证；httptest 仅断言响应和压缩遥测，不宣称日志安全测试通过
 
 ## 6. 验收门
 
 ```bash
 go build ./...
 go vet ./...
-go test -race -timeout 60s ./tests/48h-audit/D05-auto-compression/...
+go test -race -timeout 60s ./domains/streaming/executors -run 'TestExecutor_ExecuteOllama_ContextLengthRecoveryRetriesOnceWithSmallerBody'
 ```
 
 ## 7. 与方案文档的对齐
 
 - RFC：docs/...
-- 上轮挂账：docs/audit/playbook/runs/R55-.../agent-D05.md
+- R73：`domains/streaming/executors/executor_ollama.go`；`executor_ollama_test.go`
 
 ## 子代理派发提示词
 

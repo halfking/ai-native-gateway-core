@@ -1,30 +1,30 @@
 # D07 — 热+分区存储
 
-> 域知识库：[docs/audit/playbook/domains/D07-hot-columnar.md](../../../docs/audit/playbook/domains/D07-hot-columnar.md)  
-> 48h 改动面（截至 R56）：<待 fill>  
-> 状态：草稿（占位，待 worker 子代理按 TEMPLATE-domain.md 填充）
+> 域知识库：[docs/audit/playbook/domains/D07-hot-columnar.md](../../../docs/audit/playbook/domains/D07-hot-columnar.md)
+> R73 改动面：request_logs archive cadence 与 migration 754 调用边界。
+> 状态：R73 F05 已定向通过；F07 已完成源码/静态契约核验，兼容 PG 未连接。
 
 ## 1. 审计要点
 
-- 待 fill 1
-- 待 fill 2
-- 待 fill 3
+- 核对 hot 保留、月分区扫描、归档表 RLS/租户字段、幂等与定时器相位。
+- `archiveOldRequestLogs` 使用 30m Go context；migration 754 为单长事务、分批 INSERT、无 executable DELETE/COMMIT。
+- 未覆盖：真实 role timeout、历史数据量与执行计划。
 
 ## 2. 业务测试
 
-- [ ] B-01：<待填>
+- [x] B-01：archive cadence 多启动相位定向测试通过
 
 ## 3. 数据测试
 
-- [ ] D-01：<待填>
+- [x] D-01：migration 754 function/installer/embed/caller 形状核对
 
 ## 4. 压力测试
 
-- [ ] S-01：<待填>
+- [ ] S-01：兼容 PG EXPLAIN/大分区实测（环境未提供）
 
 ## 5. 安全测试
 
-- [ ] SF-01：<待填>
+- [x] SF-01：源分区直查、独立归档表、无删除的静态守卫通过
 
 ## 6. 验收门
 
@@ -37,7 +37,7 @@ go test -race -timeout 60s ./tests/48h-audit/D07-hot-columnar/...
 ## 7. 与方案文档的对齐
 
 - RFC：docs/...
-- 上轮挂账：docs/audit/playbook/runs/R55-.../agent-D07.md
+- R73：`bg/partition_manager.go`；`installer/cmd/llm-gw-installer/embeddata/startup/754_archive_request_logs_default.sql`
 
 ## 子代理派发提示词
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -123,7 +124,10 @@ func (v *DualReadValidator) handleDualRead(w http.ResponseWriter, r *http.Reques
 
 	detail, err := v.CompareDetail(r.Context(), tenant, sessionID, limit)
 	if err != nil {
-		http.Error(w, "dual-read compare failed: "+err.Error(), http.StatusInternalServerError)
+		// R74：err.Error() 不拼进 500 响应（admin 端点，对齐 admin 包
+		// internal_error.go 模式）——固定文案 + 服务端锚点。
+		slog.Error("dual-read compare failed", "session_id", sessionID, "err", err)
+		http.Error(w, "dual-read compare failed", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

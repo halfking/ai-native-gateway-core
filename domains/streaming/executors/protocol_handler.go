@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 )
 
 // QualitySignals is the per-request outcome of the
@@ -29,6 +30,9 @@ type QualitySignals struct {
 // net/http server's automatic Content-Length inference.
 func copyNonStreamResponseHeaders(dst, src http.Header, bodyLength int) {
 	for k, vs := range src {
+		if ratelimit.IsGatewayRateLimitScopeHeader(k) {
+			continue
+		}
 		if strings.EqualFold(k, "Content-Length") ||
 			strings.EqualFold(k, "Content-Encoding") ||
 			strings.EqualFold(k, "Connection") ||

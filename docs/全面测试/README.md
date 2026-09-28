@@ -102,7 +102,8 @@ bash tests/48h-audit/scripts/aggregate-reports.sh \
 
 ### 跨 chunk / 跨请求
 
-- 跨 chunk（同一 SSE 事件被拆到两次 Write）：当前 `restoreStreamChunk` 按 chunk 独立解析；已知限制（`TestSanitizeRestoreInterceptor_StreamChunk_FrameSplitAcrossChunks` 钉住）—— 占位符如果跨 chunk 边界会被原样透传一次。修复路径是 `streaming.handler` 层加 SSE 帧缓冲。
+- 同一 SSE 事件被多次底层 `Write` 拆开：生产 `interceptingStreamWriter` 会先按完整帧缓冲后再调用 sanitizer；每帧上限 16 MiB，超限失败关闭，未终止尾帧在结束时丢弃（R73-F08）。
+- 一个占位符被拆到多个完整 SSE delta 事件：当前 `restoreStreamChunk` 按事件独立解析，不能还原，placeholder 片段会透传（`TestSanitizeRestoreInterceptor_PlaceholderSplitAcrossCompleteFrames` 钉住，R73-F09）；需要另行设计带 TTL/上界的跨事件增量缓存。
 - 跨请求（多轮会话）：Redis offset hash 记录每类已用最大编号，下一轮接着递增；sm 也在 Redis 中保留 TTL=30min，刷新靠每次响应还原 Expire。
 
 ### mock 测试新增要求（针对工具调用还原）
