@@ -1,10 +1,10 @@
 package admin
 
 import (
-	"log/slog"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
@@ -320,7 +320,10 @@ func buildSummaryCorpus(logs []sessionLogForSummary) string {
 	}
 	corpus := strings.TrimSpace(b.String())
 	if len(corpus) > sessionSummaryMaxCorpusLen {
-		corpus = corpus[:sessionSummaryMaxCorpusLen]
+		// 2026-09-29 (审计二十一轮): 按 rune 截断——corpus 常含 CJK，
+		// 字节切会截出非法 UTF-8 前缀进 LLM 语料（与 generateFallbackSummary
+		// 同款修正）。
+		corpus = string([]rune(corpus)[:sessionSummaryMaxCorpusLen])
 	}
 	return corpus
 }
