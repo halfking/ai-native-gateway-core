@@ -1,30 +1,30 @@
 # D13 — 免费 token 池
 
-> 域知识库：[docs/audit/playbook/domains/D13-free-token-pool.md](../../../docs/audit/playbook/domains/D13-free-token-pool.md)  
-> 48h 改动面（截至 R56）：<待 fill>  
-> 状态：草稿（占位，待 worker 子代理按 TEMPLATE-domain.md 填充）
+> 域知识库：[docs/audit/playbook/domains/D13-free-token-pool.md](../../../docs/audit/playbook/domains/D13-free-token-pool.md)
+> R73 改动面：credential self-check、429 可信作用域和 provider candidate 隔离。
+> 状态：静态 + 定向验证；免费 token 来源与配额服务未验证。
 
 ## 1. 审计要点
 
-- 待 fill 1
-- 待 fill 2
-- 待 fill 3
+- 核对来源合规、自动发现/注册、密钥安全、可用性探测、配额过期和供应商隔离。
+- R73 F06 证明 provider credential 429 不建立 worker-wide 跨周期记忆；shared key 仅在可信 scope 下记忆。
+- 未覆盖：真实 token 池、配额服务和供应商凭据。
 
 ## 2. 业务测试
 
-- [ ] B-01：<待填>
+- [x] B-01：self-check 429 定向回归
 
 ## 3. 数据测试
 
-- [ ] D-01：<待填>
+- [ ] D-01：token 来源/配额数据库（未提供）
 
 ## 4. 压力测试
 
-- [ ] S-01：<待填>
+- [x] S-01：限流 race 定向通过
 
 ## 5. 安全测试
 
-- [ ] SF-01：<待填>
+- [x] SF-01：secret self-check 日志仅记录 digest/长度，不读出值
 
 ## 6. 验收门
 
@@ -37,7 +37,7 @@ go test -race -timeout 60s ./tests/48h-audit/D13-free-token-pool/...
 ## 7. 与方案文档的对齐
 
 - RFC：docs/...
-- 上轮挂账：docs/audit/playbook/runs/R55-.../agent-D13.md
+- R73：`bg/credential_selfcheck.go`；`ratelimit/scope.go`
 
 ## 子代理派发提示词
 
