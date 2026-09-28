@@ -67,6 +67,12 @@ import (
 
 const maxBodySize = 128 << 20 // 128MB - increased for large context models like claude-opus-4-8 (1M context)
 
+// A response interceptor currently needs a complete SSE event to inspect its
+// JSON payload. Bound per-stream buffering so a malformed provider response
+// without an event delimiter cannot retain unbounded memory. Large media
+// events above this limit fail closed rather than bypassing the interceptor.
+const maxInterceptingSSEFrameBytes = 16 << 20
+
 type preStreamKeepalive struct {
 	session *StreamSession
 }
@@ -91,8 +97,9 @@ func (w *retryCommitWriter) Flush() {
 
 // interceptingStreamWriter applies the response interceptor chain to complete
 // SSE events before they reach the client. Upstream bridges may split an SSE
-// event across multiple Write calls, so the writer buffers until the event
-// delimiter (\n\n) is present.
+// event across multiple Write calls, so the writer buffers until an event
+// delimiter is present. Per-event buffering is bounded to avoid unbounded
+// memory use on malformed or hostile upstream streams.
 type interceptingStreamWriter struct {
 	w        http.ResponseWriter
 	flusher  http.Flusher
@@ -143,12 +150,52 @@ func (w *interceptingStreamWriter) Write(p []byte) (int, error) {
 	if w.writeErr != nil {
 		return 0, w.writeErr
 	}
-	w.pending = append(w.pending, p...)
-	w.drain()
-	if w.writeErr != nil {
-		return 0, w.writeErr
+	consumed := 0
+	for len(p) > 0 {
+		// Check delimiters crossing the Write boundary before searching p by
+		// itself. The pending suffix may already contain the first part of LF
+		// or CRLF framing.
+		if delimiterBytes, ok := sseDelimiterPrefixAtBoundary(w.pending, p); ok {
+			if len(w.pending)+len(delimiterBytes) > maxInterceptingSSEFrameBytes {
+				return consumed, w.rejectOversizedFrame(len(w.pending) + len(delimiterBytes))
+			}
+			w.pending = append(w.pending, delimiterBytes...)
+			p = p[len(delimiterBytes):]
+			consumed += len(delimiterBytes)
+			frame := w.pending
+			w.pending = nil
+			w.writeFrame(frame)
+			if w.writeErr != nil {
+				return consumed, w.writeErr
+			}
+			continue
+		}
+
+		if end, ok := findSSEFrameEnd(p); ok {
+			framePart := p[:end]
+			if len(w.pending)+len(framePart) > maxInterceptingSSEFrameBytes {
+				return consumed, w.rejectOversizedFrame(len(w.pending) + len(framePart))
+			}
+			w.pending = append(w.pending, framePart...)
+			p = p[end:]
+			consumed += end
+			frame := w.pending
+			w.pending = nil
+			w.writeFrame(frame)
+			if w.writeErr != nil {
+				return consumed, w.writeErr
+			}
+			continue
+		}
+
+		if len(w.pending)+len(p) > maxInterceptingSSEFrameBytes {
+			return consumed, w.rejectOversizedFrame(len(w.pending) + len(p))
+		}
+		w.pending = append(w.pending, p...)
+		consumed += len(p)
+		break
 	}
-	return len(p), nil
+	return consumed, nil
 }
 
 func (w *interceptingStreamWriter) Flush() {
@@ -156,7 +203,9 @@ func (w *interceptingStreamWriter) Flush() {
 }
 
 func (w *interceptingStreamWriter) FlushError() error {
-	w.drain()
+	if w.writeErr != nil {
+		return w.writeErr
+	}
 	if w.flusher == nil {
 		return nil
 	}
@@ -168,24 +217,77 @@ func (w *interceptingStreamWriter) FlushError() error {
 }
 
 func (w *interceptingStreamWriter) finish() {
-	w.drain()
-	if len(w.pending) > 0 && w.writeErr == nil {
-		_, w.writeErr = w.w.Write(w.pending)
+	if w.writeErr != nil {
+		w.pending = nil
+		return
+	}
+	if len(w.pending) > 0 {
+		// Never write an unterminated event directly to the client: doing so
+		// would bypass sanitization and every other response interceptor.
+		slog.Warn("sse_interceptor_dropped_incomplete_frame",
+			"request_id", w.meta.RequestID,
+			"session_id", w.meta.SessionID,
+			"buffered_bytes", len(w.pending))
 		w.pending = nil
 	}
 }
 
-func (w *interceptingStreamWriter) drain() {
-	for w.writeErr == nil {
-		idx := bytes.Index(w.pending, []byte("\n\n"))
-		if idx < 0 {
-			return
-		}
-		frameEnd := idx + 2
-		frame := append([]byte(nil), w.pending[:frameEnd]...)
-		w.pending = w.pending[frameEnd:]
-		w.writeFrame(frame)
+func (w *interceptingStreamWriter) rejectOversizedFrame(size int) error {
+	w.pending = nil
+	w.writeErr = fmt.Errorf("intercepting SSE frame exceeds %d byte limit", maxInterceptingSSEFrameBytes)
+	slog.Warn("sse_interceptor_frame_too_large",
+		"request_id", w.meta.RequestID,
+		"session_id", w.meta.SessionID,
+		"observed_bytes", size,
+		"limit_bytes", maxInterceptingSSEFrameBytes)
+	return w.writeErr
+}
+
+// findSSEFrameEnd returns the byte count through the first SSE event
+// delimiter. Both LF and CRLF line endings are valid SSE framing.
+func findSSEFrameEnd(p []byte) (int, bool) {
+	lf := bytes.Index(p, []byte("\n\n"))
+	crlf := bytes.Index(p, []byte("\r\n\r\n"))
+	if lf < 0 && crlf < 0 {
+		return 0, false
 	}
+	if crlf >= 0 && (lf < 0 || crlf+4 < lf+2) {
+		return crlf + 4, true
+	}
+	return lf + 2, true
+}
+
+// sseDelimiterPrefixAtBoundary reports the shortest bytes from p that finish
+// an LF or CRLF delimiter whose prefix is already at the end of pending.
+func sseDelimiterPrefixAtBoundary(pending, p []byte) ([]byte, bool) {
+	if len(pending) == 0 || len(p) == 0 {
+		return nil, false
+	}
+	separators := [][]byte{[]byte("\n\n"), []byte("\r\n\r\n")}
+	best := 0
+	for _, separator := range separators {
+		maxPrefix := len(separator) - 1
+		if maxPrefix > len(pending) {
+			maxPrefix = len(pending)
+		}
+		for prefixLen := maxPrefix; prefixLen > 0; prefixLen-- {
+			if !bytes.Equal(pending[len(pending)-prefixLen:], separator[:prefixLen]) {
+				continue
+			}
+			needed := len(separator) - prefixLen
+			if needed > len(p) || !bytes.Equal(p[:needed], separator[prefixLen:]) {
+				continue
+			}
+			if best == 0 || needed < best {
+				best = needed
+			}
+			break
+		}
+	}
+	if best == 0 {
+		return nil, false
+	}
+	return p[:best], true
 }
 
 func (w *interceptingStreamWriter) writeFrame(frame []byte) {
@@ -2204,6 +2306,7 @@ func (h *ChatHandler) serveWithExecutor(
 	// ── Status checks (throttled key → hard rate-limit) ────────────────
 	if keyInfo != nil && keyInfo.Status == "throttled" {
 		captureAndEmitRateLimited("key_throttled", "api key throttled due to anomalous usage", nil, nil)
+		ratelimit.MarkGatewaySharedKeyRateLimit(w)
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID,
 			"Your API key has been throttled due to anomalous usage. Contact admin.",
 			"rate_limit_error", "key_throttled")
@@ -2980,6 +3083,7 @@ func (h *ChatHandler) serveWithExecutor(
 		if rlOutcome.Blocked {
 			recordGatewayRateLimitRejection(rlOutcome)
 			captureAndEmitRateLimited("rate_limit_exceeded", "rate limit exceeded", nil, nil)
+			ratelimit.MarkGatewaySharedKeyRateLimit(w)
 			writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "rate_limit_error", i18n.MsgRateLimitExceeded, nil)
 			return
 		}

@@ -2,7 +2,7 @@
 
 > 域知识库：[docs/audit/playbook/domains/D01-ir-lifecycle.md](../../../docs/audit/playbook/domains/D01-ir-lifecycle.md)  
 > 48h 改动面（截至 R56）：§见末尾 §改动面  
-> 状态：草稿
+> 状态：R73 续审已复核（历史报告有效；本轮新增 Ollama/流式上下文改动未改变 IR 生命周期契约）
 
 ## 1. 审计要点（来自 playbook 域文档）
 

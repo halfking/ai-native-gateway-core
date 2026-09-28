@@ -153,6 +153,7 @@ func newRateLimitedSelfcheckStub(t *testing.T) (*httptest.Server, *int64) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&hits, 1)
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-LLM-Gateway-RateLimit-Scope", "shared_key")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"Rate limit exceeded"}}`))
 	}))
@@ -210,9 +211,10 @@ func expectRunBookkeeping(mock pgxmock.PgxPoolIface, credID int, wantStatus stri
 // TestSelfcheckRateLimitAbort covers P0-3 §8.1:
 //  1. primary 429 → the fallback loop terminates and the remaining candidates
 //     are never requested (server sees exactly one request);
-//  2. the inter-cycle memory kicks in — the cycle after an abort probes only
-//     the primary model, and clears once a cycle finishes without a 429;
-//  3. probe.selfcheck.ratelimit_abort=false restores the legacy walk-everything
+//  2. a gateway-marked shared-key 429 seeds one-cycle memory — provider 429s
+//     only abort the current credential's fallback walk;
+//  3. the inter-cycle memory clears once a cycle finishes without a gateway 429;
+//  4. probe.selfcheck.ratelimit_abort=false restores the legacy walk-everything
 //     behavior (0 = 现行行为).
 func TestSelfcheckRateLimitAbort(t *testing.T) {
 	const credID = 7
@@ -234,8 +236,8 @@ func TestSelfcheckRateLimitAbort(t *testing.T) {
 		if got := atomic.LoadInt64(hits); got != 1 {
 			t.Errorf("gateway saw %d requests, want 1 (model-b/model-c must not be requested after the 429)", got)
 		}
-		if !w.lastCycleRateLimited {
-			t.Error("lastCycleRateLimited = false, want true (cycle must be remembered as aborted)")
+		if !w.lastCycleGatewayRateLimited {
+			t.Error("lastCycleGatewayRateLimited = false, want true (gateway shared-key limit must be remembered)")
 		}
 		if err := mock.ExpectationsWereMet(); err != nil {
 			t.Errorf("unmet expectations: %v", err)
@@ -260,7 +262,7 @@ func TestSelfcheckRateLimitAbort(t *testing.T) {
 		expectRunBookkeeping(mock, credID, "success")
 
 		w := &CredentialSelfcheckWorker{db: mock, baseURL: srv.URL, client: srv.Client()}
-		w.lastCycleRateLimited = true // previous cycle aborted
+		w.lastCycleGatewayRateLimited = true // previous gateway shared-key limit
 		if err := w.runOne(context.Background(), credID); err != nil {
 			t.Fatalf("runOne: %v", err)
 		}
@@ -269,8 +271,8 @@ func TestSelfcheckRateLimitAbort(t *testing.T) {
 		if got := atomic.LoadInt64(&hits); got != 2 {
 			t.Errorf("gateway saw %d requests, want 2 (primary-only cycle memory)", got)
 		}
-		if w.lastCycleRateLimited {
-			t.Error("lastCycleRateLimited still true after a clean cycle — memory must clear on success")
+		if w.lastCycleGatewayRateLimited {
+			t.Error("lastCycleGatewayRateLimited still true after a clean cycle — memory must clear on success")
 		}
 		if err := mock.ExpectationsWereMet(); err != nil {
 			t.Errorf("unmet expectations: %v", err)
@@ -298,13 +300,31 @@ func TestSelfcheckRateLimitAbort(t *testing.T) {
 		if got := atomic.LoadInt64(hits); got != 3 {
 			t.Errorf("gateway saw %d requests, want 3 (switch off = walk all candidates)", got)
 		}
-		if w.lastCycleRateLimited {
-			t.Error("lastCycleRateLimited must stay false when the abort switch is off")
+		if w.lastCycleGatewayRateLimited {
+			t.Error("lastCycleGatewayRateLimited must stay false when the abort switch is off")
 		}
 		if err := mock.ExpectationsWereMet(); err != nil {
 			t.Errorf("unmet expectations: %v", err)
 		}
 	})
+}
+
+func TestSelfcheckProvider429DoesNotSeedGatewayCooldown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"type":"rate_limit_error","code":"provider_rate_limit"}}`))
+	}))
+	defer srv.Close()
+
+	w := &CredentialSelfcheckWorker{baseURL: srv.URL, client: srv.Client()}
+	r := w.doHTTP(context.Background(), 7, "model-a", `{}`, false)
+	if !r.RateLimited {
+		t.Fatal("provider 429 must abort this credential's fallback walk")
+	}
+	if r.GatewayRateLimited || w.gatewayRateLimitedInRun || w.lastCycleGatewayRateLimited {
+		t.Fatalf("provider 429 seeded gateway shared-key cooldown: round=%+v worker=%+v", r, w)
+	}
 }
 
 // TestSelfcheckRound429Classification pins the detection contract: the stub's
