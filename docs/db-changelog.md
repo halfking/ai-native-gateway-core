@@ -754,3 +754,12 @@ settings spec，默认 90 天，settings_kv 行在管理员首次显式设置时
 Subtask 5 本身那样「只存在于 commit message、没人知道它已经改了指标名」。
 
 Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
+## 2026-09-28T19:07:41Z — deploy 245 build_seq 2319 (d33b6e2f)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 755 | `755_drop_dead_cleanup_expired_session_turn_logs.sql` | `45cdeb4c2109166181a60bca82760d6e697842963702c65e38402004d7f29ac1` | applied+verified |
+| 756 | `756_request_logs_id_index.sql` | `b0297ac4f44b9b997dd241f5e1e2c345e75b889f43844e63b50376005485db65` | applied+verified |
+| 757 | `757_session_turns_origin_actor_projection.sql` | `b2ddded4ec9c18a31f16be8ae5063b2b651c8a6cf42081d8225b9bdc41b91808` | applied+verified |
+| 758 | `758_routeincident_missing_columns.sql` | `f68ad115a07a97871b61e4ec47e179795156f70846b404a8a0e7e40768cfde3d` | applied+verified |
+
