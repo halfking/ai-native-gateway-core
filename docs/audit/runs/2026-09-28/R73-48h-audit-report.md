@@ -3,7 +3,7 @@
 > 日期：2026-09-28（Asia/Shanghai）
 > 状态：进行中；D01–D17 完整域审计未完成；F02/F03/F04/F06/F08 已实现并有定向验证；F09 已实现 request-local 跨完整 SSE delta carry 并通过定向 race/writer 集成测试；F10 已修复空映射/Redis 故障时未知占位符透传，并有定向测试。F07 仅完成源码/静态契约核验，数据库验证仍未完成。
 > 主审范围：2026-09-25 23:01:34 至 2026-09-27 23:01:34，`78d91b94..c7104b141`。
-> 审计起始基线：`main` / `origin/main`，HEAD `95e243b819984804bb8ee567a6289219af1abd8f`。既有 R73 修订及证据更正已合入当前 `main`；本续审最终提交基线为 `9946d75b5adf7eba7a03c15fee83123d5592e844`。该基线上的 `ReconciliationReport.vue` 并行修复不属于本轮变更。F09/F10 与本报告更新待提交。
+> 审计起始基线：`main` / `origin/main`，HEAD `95e243b819984804bb8ee567a6289219af1abd8f`。既有 R73 修订及证据更正已合入当前 `main`；本续审最终提交基线为 `9946d75b5adf7eba7a03c15fee83123d5592e844`。该基线上的 `ReconciliationReport.vue` 并行修复不属于本轮变更。本续审 F09/F10 代码修复提交为 `9fe387ac8`；本报告收录最终验证及剩余限制。
 
 ## 1. 范围与基线
 
@@ -44,16 +44,16 @@
 | R73-F06 | D09 selfcheck rate limiting / P2 | 修复并追加复核 | 任意 429 原先合并成一种 worker-wide 状态；二审发现 Embeddings 已 throttled key 分支漏设 gateway 标记 | 全部本地 key-admission 429 标 `shared_key`，provider 错误响应路径过滤保留 header；selfcheck 仅对可信标记建立一轮冷却 |
 | R73-F07 | D07 migration 754 / P2 | 源码结论已确认，数据库待验证 | SQL 注释明确函数内未执行 `SET LOCAL statement_timeout`；Go 侧最长 30m context 调用整组分区扫描，数据库 timeout/容量未知 | 未连接兼容 PG；本轮不以 Go context timeout 代替数据库验证 |
 | R73-F08 | D14 stream safety / P2 | 定向测试通过 | SSE 拦截 writer 原无帧大小上限，`finish()` 还会把不完整尾帧原样写给客户端 | 损坏/恶意上游可导致无界内存增长；尾帧跳过脱敏链 | 本地设 16 MiB 帧上限、支持 LF/CRLF；超限失败关闭，不完整尾帧丢弃并记录安全元数据 |
-| R73-F09 | D14 stream sanitization / P2 | 已实现；定向 race 与 writer 集成通过 | 完整 SSE delta 之间拆开的 marker 原会透传；现按 writer 的 StreamMeta 状态暂存协议 lane 尾片 | 旧行为暴露内部 token 片段且不能还原 | 64 lanes/流、256 bytes/lane；OpenAI content/refusal/tool+legacy function arguments、Anthropic block delta、Responses output-text/function arguments/refusal/audio-transcript；stream 生命周期释放，不需 TTL janitor；未知 marker mask；已解析 lane 的无效 continuation 遮蔽字段并继续；不透明 continuation/超限阻断当前流后续帧；流结束丢弃未完成尾片 | sanitizer 定向 `-race` 与生产 writer 集成测试退出码 0；真实供应商未测 |
-| R73-F10 | D14 sanitize restore / P2 | 已修复；空映射与 Redis 故障用例通过 | `loadMap` 空表/报错原先直接 passthrough，未知 `{SENSITIVE:...}` 可泄漏；现在无映射时仍执行 mask | 未知内部 token 可能暴露（不是原始 PII） | 空表快速路径检查 marker；stream 空 map 每帧仍解析；loadMap 报错转空映射并遮蔽 | 空映射、miniredis 关闭模拟 Redis failure 定向测试通过；完整 race package 尚待复跑 |
+| R73-F09 | D14 stream sanitization / P2 | 已实现；定向 race 与 writer 集成通过 | 完整 SSE delta 之间拆开的 marker 原会透传；现按 writer 的 StreamMeta 状态暂存协议 lane 尾片 | 旧行为暴露内部 token 片段且不能还原 | 64 lanes/流、256 bytes/lane；OpenAI content/refusal/tool+legacy function arguments、Anthropic block delta、Responses output-text/function arguments/refusal/audio-transcript；stream 生命周期释放，不需 TTL janitor；未知 marker mask；已解析 lane 的无效 continuation 遮蔽字段并继续；不透明 continuation/超限阻断当前流后续帧；流结束丢弃未完成尾片 | sanitizer 定向 `-race` 与生产 writer 集成测试退出码 0；真实供应商未测 | `9fe387ac8` | 本机没有真实供应商/部署协议验证 |
+| R73-F10 | D14 sanitize restore / P2 | 已修复；空映射与 Redis 故障用例通过 | `loadMap` 空表/报错原先直接 passthrough，未知 `{SENSITIVE:...}` 可泄漏；现在无映射时仍执行 mask | 未知内部 token 可能暴露（不是原始 PII） | 空表快速路径检查 marker；stream 空 map 每帧仍解析；loadMap 报错转空映射并遮蔽 | 空映射、关闭 miniredis 模拟 Redis failure 定向测试及 sanitizer package race 通过 | `9fe387ac8` | 已知 PII 映射丢失时无法恢复；真实 Redis 部署未测 |
 
 ## 5. 待完成验证与交付
 
 1. 复核近 96h 供应商协议、mock probe、hotzone、Jev、probe 成本、auto-route、session storage 与 R72 方案/报告，登记代码偏差。
 2. D01–D17 完整全链路审计仍未完成；本轮只记录 F02–F10 相关范围。D05 SF-01 与 D12 候选选择完整调用链复核仍明确未完成；其他域也不能因计划改写或勾选视作已审计。
-3. F09/F10 已实现并有定向证据，仍需最终全量提交门禁；F07 的兼容 PG/statement timeout/数据量验证，以及 R62-H1/H2/M1/M2 独立方案未完成。
+3. F09/F10 已实现、定向验证且代码已提交；F07 的兼容 PG/statement timeout/数据量验证，以及 R62-H1/H2/M1/M2 独立方案未完成。
 4. 运行受影响测试、`-race`、兼容性与可用本地集成测试；本续审只读检查发现本机共享 PG/网关正在运行，local-deploy-test 路径包含共享服务重建及可选远端 schema 同步，因此未执行部署或迁移。现存 `8782/healthz` 返回 200，但版本 SHA 为旧的 `8caf33f4`，不能作为本轮构建验收。
-5. 本续审代码和文档尚未提交；提交时只纳入本任务确认归属的 Go 与审计文档，保留未归属 Web 改动。D01–D17 全域审计、F07 真 PG、完整本地部署和部分外部边界验证仍需后续完成。
+5. 本续审代码修复提交 `9fe387ac8` 已在 `main`；仅本任务确认归属的 Go/审计文件纳入，Web 改动和空 todo-state 保持未纳入。D01–D17 全域审计、F07 真 PG、完整本地部署和部分外部边界验证仍需后续完成。
 
 ## 6. 本轮继续执行证据
 
