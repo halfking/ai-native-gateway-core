@@ -20,6 +20,11 @@
 #   AUTO_AUDIT_API_KEY=<key>   网关 API key（必填，同 autoroute-e2e-audit）
 #   E2E_GATEWAY=<url>          网关地址（默认 http://127.0.0.1:8782）
 #
+# 门禁分层（R76）：离线门禁只判分类层（accuracy/macro_f1/grrq，见
+# testdata/baseline.json）；坍缩率必须有 E2E 决策头才能算，故独立放在
+# testdata/e2e_baseline.json —— 仅当本轮真的合并了 E2E 报告时才判阈，
+# 无 E2E 报告时是 skip（不算通过、也不算失败），不伪造离线判据。
+#
 # 套件候选生成（"修正即测试"，独立于回归，需只读 DSN）：
 #   go run ./cmd/auto-testbench -mode generate -source corrections \
 #     -dsn "$DATABASE_URL" -out /tmp/candidates.jsonl
