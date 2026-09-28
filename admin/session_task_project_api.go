@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
 // TaskFlowAPI 提供任务脉络相关功能
@@ -113,6 +115,11 @@ func (h *Handler) handleTaskFlow(w http.ResponseWriter, r *http.Request) {
 
 	summary, err := h.queryTaskSummary(ctx, r, taskID)
 	if err != nil {
+		// 2026-09-29 (审计二十一轮): 存储不可用走 503 降级契约（下同）。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentList, err)
+			return
+		}
 		writeInternalTextErr(w, "failed to query task summary", err)
 		return
 	}
@@ -124,6 +131,10 @@ func (h *Handler) handleTaskFlow(w http.ResponseWriter, r *http.Request) {
 	// 查询任务中的所有会话（按时间排序）
 	sessions, err := h.queryTaskSessions(ctx, r, taskID)
 	if err != nil {
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentList, err)
+			return
+		}
 		writeInternalTextErr(w, "failed to query task sessions", err)
 		return
 	}
@@ -131,6 +142,13 @@ func (h *Handler) handleTaskFlow(w http.ResponseWriter, r *http.Request) {
 	// 查询每日成本
 	dailyCosts, err := h.queryTaskDailyCosts(ctx, r, taskID)
 	if err != nil {
+		// 2026-09-29 (审计二十一轮): 存储不可用不再静默置空（那会呈现
+		// 「成本为 0」的假事实）——升格为与其他查询一致的降级出口；
+		// 真正的非关键错误维持原「继续返回」。
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentList, err)
+			return
+		}
 		// 非关键错误，继续返回
 		dailyCosts = []DailyCostItem{}
 	}
@@ -164,6 +182,10 @@ func (h *Handler) handleProjectCosts(w http.ResponseWriter, r *http.Request) {
 
 	summary, err := h.queryProjectSummary(ctx, r, projectID)
 	if err != nil {
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentList, err)
+			return
+		}
 		writeInternalTextErr(w, "failed to query project summary", err)
 		return
 	}
@@ -175,6 +197,10 @@ func (h *Handler) handleProjectCosts(w http.ResponseWriter, r *http.Request) {
 	// 查询项目中的所有任务
 	tasks, err := h.queryProjectTasks(ctx, r, projectID)
 	if err != nil {
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentList, err)
+			return
+		}
 		writeInternalTextErr(w, "failed to query project tasks", err)
 		return
 	}
@@ -182,6 +208,10 @@ func (h *Handler) handleProjectCosts(w http.ResponseWriter, r *http.Request) {
 	// 查询每日成本
 	dailyCosts, err := h.queryProjectDailyCosts(ctx, r, projectID)
 	if err != nil {
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentList, err)
+			return
+		}
 		dailyCosts = []DailyCostItem{}
 	}
 
