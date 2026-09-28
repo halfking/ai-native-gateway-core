@@ -262,3 +262,54 @@ func TestE2ESummarySerialisesSelectionMetrics(t *testing.T) {
 		}
 	}
 }
+
+// The markdown report is the artifact a human actually reads, so it must carry
+// the selection layer too. Before this was pinned, a run with 124/240 collapsed
+// cases and a healthy run rendered identical markdown — the R75 blind spot.
+func TestE2EMarkdownSection_SurfacesSelectionLayer(t *testing.T) {
+	s, err := loadE2EReport(writeE2E(t,
+		row("kept", "code", "code", nil, false, 3),
+		row("collapsed-code", "code", "code", nil, true, 1),
+		row("collapsed-creative", "creative", "creative", nil, true, 1),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := e2eMarkdownSection(s)
+	for _, want := range []string{
+		"上游报错 3 例",               // dispatch failures are not verdicts
+		"选型层（取到决策的 3 例）",         // denominator is decided cases
+		"坍缩到 48h 热度兜底 2（0.6667）", // collapse rate, not just a count
+		"单候选池 2",
+		"分类层（取到决策的 3 例）：3/3（1.0000）",
+		"### 坍缩分任务归因",
+		"| code | 1/2 |", // one of two decided code cases collapsed
+		"| creative | 1/1 |",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("markdown E2E section missing %q\ngot:\n%s", want, md)
+		}
+	}
+}
+
+// A healthy run must render a real zero, and must not claim a collapse
+// attribution table it has no data for.
+func TestE2EMarkdownSection_HealthyRunHasNoAttributionTable(t *testing.T) {
+	s, err := loadE2EReport(writeE2E(t,
+		row("a", "code", "code", boolp(true), false, 3),
+		row("b", "vision", "vision", boolp(true), false, 3),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := e2eMarkdownSection(s)
+	if !strings.Contains(md, "坍缩到 48h 热度兜底 0（0.0000）") {
+		t.Errorf("healthy run must report a real zero collapse rate\ngot:\n%s", md)
+	}
+	if strings.Contains(md, "### 坍缩分任务归因") {
+		t.Errorf("healthy run must not emit an empty attribution table\ngot:\n%s", md)
+	}
+	if strings.Contains(md, "上游报错") && !strings.Contains(md, "上游报错 0 例") {
+		t.Errorf("upstream error line must be present and zero\ngot:\n%s", md)
+	}
+}

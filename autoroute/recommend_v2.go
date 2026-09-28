@@ -185,10 +185,24 @@ func (idx *Index) RecommendV2WithHints(
 		}
 
 		if len(hotTop3) < 3 {
-			for canonID, cands := range byCanonical {
+			// Deterministic backfill order. Go randomises map iteration, and
+			// every downstream step (stable sort on Composite, then the
+			// optimizer hooks that reorder the list) inherits that order: for
+			// two candidates with identical scores the winner was decided by
+			// map iteration order, so the same request could pick a different
+			// model on every call. That surfaced as an intermittent
+			// TestDecideV2_RecommendModelHook_ReordersWinner failure (audit
+			// M-7, ~1 in 8 runs) and made decision traces irreproducible.
+			// Ascending canonical id is a neutral, stable tie-break.
+			rest := make([]int, 0, len(byCanonical))
+			for canonID := range byCanonical {
 				if !hotCanonIDs[canonID] {
-					candidatePool = append(candidatePool, cands...)
+					rest = append(rest, canonID)
 				}
+			}
+			sort.Ints(rest)
+			for _, canonID := range rest {
+				candidatePool = append(candidatePool, byCanonical[canonID]...)
 			}
 		}
 	}

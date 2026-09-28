@@ -262,6 +262,14 @@ reasoning: ncand 3, fallback false,      match 33.3 （对照组，未变）
 新增回归测试 `cmd/auto-testbench/e2e_selection_test.go`（7 例），覆盖 null-pass 语义、
 坍缩可见性、健康运行、无决策行排除、错误掩盖真 miss、JSON 落盘、空输入与 R64 用法错误契约。
 
+**后续收口（R75 子代理发现 #7）**：上述两个缺陷修的是 console 与 JSON 出口，但
+`reports/auto-testbench.md` 仍只有 pass/failures——人读的主产物看不到选型层，
+「124/240 坍缩」与「健康运行」的 markdown 完全相同，盲点只是从机器可见挪到了人
+不可见。E2E 节现已补齐：上游报错数（说明其非分类判定）、以**取到决策的用例**为
+分母的选型层坍缩率与单候选池、decided 口径分类准确率、坍缩分任务归因表；渲染逻辑
+抽为 `e2eMarkdownSection` 并加两条回归（坍缩 run 断言数值与归因表、健康 run 断言
+真实 0 值且不吐空表）。教训入册：**新增报表指标时 console / JSON / md 三个出口必须一起改**。
+
 ### 6.2 仍待处理
 
 1. **词表补齐是更彻底的解法**。本修复让"词表缺失"不再有害，但 code/creative 类任务

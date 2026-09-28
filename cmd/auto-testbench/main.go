@@ -536,19 +536,53 @@ func writeReports(prefix string, suiteFiles []string, cm *classificationMetrics,
 		}
 	}
 	if e2e != nil {
-		rate := 0.0
-		if e2e.Total > 0 {
-			rate = float64(e2e.Pass) / float64(e2e.Total)
-		}
-		md.WriteString(fmt.Sprintf("\n## E2E 层（%s）\n\n- %d/%d 通过（%.4f）\n", e2e.Path, e2e.Pass, e2e.Total, rate))
-		if len(e2e.Failures) > 0 {
-			md.WriteString("\n| case | want | got | served |\n|---|---|---|---|\n")
-			for _, f := range e2e.Failures {
-				md.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", f.Name, f.Expected, f.Got, f.ServedModel))
+		md.WriteString(e2eMarkdownSection(e2e))
+	}
+	return os.WriteFile(prefix+".md", []byte(md.String()), 0o644)
+}
+
+// e2eMarkdownSection renders the E2E layer of the human-facing report.
+//
+// The selection-layer numbers belong in here, not only in the console output
+// and the JSON sidecar: reports/auto-testbench.md is the artifact a reviewer
+// actually opens. Before this section carried them, a run where 124/240 cases
+// had collapsed onto the 48h popularity fallback and a completely healthy run
+// produced the same markdown — the two facts were indistinguishable to a human
+// reader, which is the blind spot R75 flagged.
+func e2eMarkdownSection(s *e2eSummary) string {
+	var md strings.Builder
+	rate := 0.0
+	if s.Total > 0 {
+		rate = float64(s.Pass) / float64(s.Total)
+	}
+	md.WriteString(fmt.Sprintf("\n## E2E 层（%s）\n\n- %d/%d 通过（%.4f）\n", s.Path, s.Pass, s.Total, rate))
+	// Upstream errors are a dispatch fact, not a classification verdict; saying
+	// so here keeps a 429-heavy run from reading as a routing regression.
+	md.WriteString(fmt.Sprintf("- 上游报错 %d 例（派发失败，非分类判定）\n", s.Errors))
+	if s.Decided > 0 {
+		md.WriteString(fmt.Sprintf("- 分类层（取到决策的 %d 例）：%d/%d（%.4f）\n",
+			s.Decided, s.ClassCorrect, s.Decided, s.ClassAccuracy()))
+		md.WriteString(fmt.Sprintf("- 选型层（取到决策的 %d 例）：坍缩到 48h 热度兜底 %d（%.4f），单候选池 %d\n",
+			s.Decided, s.FallbackCollapsed, s.CollapseRate(), s.SingleCandidate))
+		if s.FallbackCollapsed > 0 {
+			md.WriteString("\n### 坍缩分任务归因\n\n| task_type | 坍缩/该任务已判定 |\n|---|---|\n")
+			tasks := make([]string, 0, len(s.CollapseByTask))
+			for t := range s.CollapseByTask {
+				tasks = append(tasks, t)
+			}
+			sort.Strings(tasks)
+			for _, t := range tasks {
+				md.WriteString(fmt.Sprintf("| %s | %d/%d |\n", t, s.CollapseByTask[t], s.TotalByTask[t]))
 			}
 		}
 	}
-	return os.WriteFile(prefix+".md", []byte(md.String()), 0o644)
+	if len(s.Failures) > 0 {
+		md.WriteString("\n| case | want | got | served |\n|---|---|---|---|\n")
+		for _, f := range s.Failures {
+			md.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", f.Name, f.Expected, f.Got, f.ServedModel))
+		}
+	}
+	return md.String()
 }
 
 // writeBaselineFile adapts metrics.writeBaseline to the CLI name (kept
