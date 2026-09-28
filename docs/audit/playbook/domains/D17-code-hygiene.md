@@ -159,3 +159,119 @@ D17 域知识「代码卫生」含注释/文档漂移。本轮把同一把尺子
 
 **最终变异检验 12/12 全部被抓住**（把 12 个域门里的包路径整体改指到不存在的目录），
 外加伪造新空门域、已修域滞留白名单两项。
+
+### R78 续三 · 死契约列扫描扩到 credentials：10 个列零消费方，按「是否主动误导」定级
+
+`tests/48h-audit/scripts/dead-column-scan.sh` 扩到 `credentials`（23 列），并用 ripgrep
+对前 15 列做独立复核（脚本单次全表扫较慢，ripgrep 更快且结论一致）。
+
+**必须区分两类死契约，否则会把噪声和缺陷混为一谈**：
+
+**A 类 · 主动误导（有非默认值 + 无消费方 = 行为与标记不符）**
+
+| 列 | 表 | 非默认值 | 后果 |
+|---|---|---|---|
+| `egress_profile` | providers | **14 行 = `'proxy'`** | 标记走代理、实际直连（D12 已登记） |
+| `probe_failure_threshold` | credentials | 83 行 = 3、3 行 = 2 | 逐凭据的探针失败阈值**不被尊重**——自检熔断按全局固定阈值跑，运维调这个值没有任何效果 |
+| `network_quality_score` | providers | 59 行 = 1.0、1 行 = 0.0 | 每供应商的网络质量分无人参与选型 |
+
+**B 类 · 契约死但当前惰性（值全是默认/空 = 今天没有行为差异）**
+
+| 列 | 表 | 现值 | 备注 |
+|---|---|---|---|
+| `discount_rate` | providers | 60 行全 1.0 | **成本路径**：一设折扣账单就不变 |
+| `pricing_distrust` | credentials | 86 行全 `false` | schema 基线里的 `NOT NULL DEFAULT false` 列（`deploy/sql/schemas/baseline/01-schema.sql:6834`），全仓零引用 |
+| `user_overrides_json` | providers | 60 行全 `[]` | 逐供应商覆盖配置不生效 |
+| `plan_consumed_json` | credentials | 86 行全 `{}` | — |
+| `free_quota_limit` / `free_quota_window_type` | credentials | 0 行 | 仅 `db/db_omnifree.go` 建列，从未读 |
+| `relay_overhead_ms` | credentials | 0 行 | 连 admin 侧都无引用 |
+| `catalog_version_at_create` / `proxy_subscription_id` | providers | 0 行 | 未启用的占位列 |
+
+**B 类不是「无害」**——它们是**等着被踩的坑**：默认值恰好让后果不可见，一旦运维在管理台
+改了值就会静默失效。`pricing_distrust` 尤其值得记：它是 schema 基线里的 `NOT NULL`
+列、按设计就该影响定价，却**全仓零引用**，且没有任何换名实现（`grep -i distrust` 只
+命中 `router.go` 一句无关注释）。
+
+**误判排除**（与 providers 那轮同一套）：
+
+- **CamelCase 复验**：snake 与 Camel 两种形式都查，`PricingDistrust` / `RelayOverheadMs` /
+  `ProbeFailureThreshold` / `PlanConsumedJSON` 均 0 命中。
+- **换名实现排查**：`pricing_distrust` 特别查了 `distrust|untrusted.?price|price.?adjust|
+  effective.?price` 等同义命名，无等价实现。
+- **schema 层确认**：`pricing_distrust` 不在任何 `db/*.go` DDL 里，只在
+  `sql/schema/01-schema.sql`、`sql/objects/tables/credentials.sql`、
+  `deploy/sql/schemas/baseline/01-schema.sql` 三处 schema 基线中——说明它由 SQL 迁移
+  引入并进入了**对照基线**，属于「按设计就该有」而非遗留垃圾。
+
+**工具本身的可用性核验**：本机 `/usr/bin/env bash` 为 5.3.9，脚本用的 `${seg^}` 驼峰
+转换正常。（中途我有一条临时 `bash -c` 命令走了 `/bin/bash` 3.2 而报 `bad substitution`
+——那是临时命令的问题，**已提交的脚本本身可用**。若需在 bash 3.2 环境运行，应把
+`to_camel` 换成 sed 实现。）
+
+**教训 J**：**「死契约」必须按「是否已有非默认值」分诊**。全量报「10 个列无消费方」
+会淹没真正要修的那 3 个；但只报 A 类又会让人以为 B 类无需处理——B 类是定时炸弹。
+报告必须同时给出**非空行数**和**取值分布**，让读者能自己分诊。
+
+**本轮工具的教训**：单次全表 grep 在本仓（vendor + 大测试树）要 7 分钟以上，两表
+合计超过 15 分钟，不可用于交互式排查。后续应给脚本加 `--exclude-dir` 与列清单缓存，
+或直接用 ripgrep（本次复核即如此，快一个数量级）。
+
+### R78 续四 · 配置字段死管道扫描：15 个零读取字段，其中 5 个是「双路径分裂」陷阱
+
+把「grep 调用方才证明被使用」用到 `config/config.go`：82 个带 `env`/`yaml` tag 的字段中
+**15 个在 `config/` 之外零引用**。
+
+**这一步的关键是不要停在第一层结论。** 初扫给出「WeChat 集成未实现」「RequestSurvival
+特性未实现」，两个都**判错了**——特性都在，只是没走 config。逐条追到 env 名才看清真实
+形态：
+
+**形态 1 · 双路径分裂：config 声明的前缀与实现读取的前缀不一致（最危险）**
+
+| config 声明（`config.go:262-267, 633-636, 711`） | 实现实际读取 | 结果 |
+|---|---|---|
+| `LLM_GATEWAY_WECHAT_CORP_ID` | **`WECHAT_CORP_ID`**（`main_notification.go:85`） | 设了带前缀的 → 集成静默不启动 |
+| `LLM_GATEWAY_WECHAT_CORP_SECRET` | **`WECHAT_CORP_SECRET`**（`:86`） | 同上 |
+| `LLM_GATEWAY_WECHAT_AGENT_ID` / `_AES_KEY` / `_BASE_URL` | 无任何读取 | 纯死字段 |
+
+Config 结构体的 5 个 `WeChat*` 字段**填了值、进了 struct、在 config 外零读取**；真正
+构建通知配置的是 `main_notification.go` 里那条独立的 `os.Getenv` 路径，读的是**无前缀**
+的 `WECHAT_*`。
+
+**后果**：运维照 `config.go`（或任何由它生成的文档）配 `LLM_GATEWAY_WECHAT_CORP_ID`，
+企业微信通知**静默不启动**——没有任何报错，因为代码只是读不到。反过来
+`WECHAT_CORP_SECRET` 生效却从未在 config 里声明。这是本轮唯一一个「文档与环境事实
+双向不一致」的项。
+
+**形态 2 · 字段从未被读 ⇒ env 与 yaml 两个绑定同时失效**
+
+`DefaultCred` / `DefaultProvider` / `PoolGracePeriod` / `PythonEndpoint` /
+`RequestSurvival{MaxActiveTasksPerTenant,StatusIntervalSeconds,TenantAllowlist}`
+——对应 env 在 `config/` 外**零引用**。字段本身没人读，所以它的 `env:` 与 `yaml:`
+两个绑定**都**不产生任何效果。
+
+`RequestSurvival` 特别说明：特性本身**是活的**（`main.go:290-293` 读
+`cfg.RequestSurvivalEnabled` 并与 `StreamRetryEnabled` 互斥），但上面这 3 个**限流/白名单
+开关是死的**——运维想给某租户开白名单或调探测间隔，设了没有任何反应。
+
+**形态 3 · env 生效、config 字段是死管道（不构成缺陷，但会误导读代码的人）**
+
+`CursorHMACSecret`（`CURSOR_HMAC_SECRET`，13 处直读）、`DeployEnv`（`LLM_GATEWAY_ENV`，
+7 处）、`IdentitySalt`（`domains/identity/identity.go:19` 直读）。
+
+`IdentitySalt` 一条要特别澄清：我一度把它列为「安全相关的零读取字段」，追到
+`domains/identity/identity.go:19` 才发现它**确实生效**——`var identitySalt =
+os.Getenv("LLM_GATEWAY_IDENTITY_SALT")`。**config 字段是死的，env 变量是活的。** 这与
+`egress_profile`（列本身没人读）是完全不同的性质。
+
+**方法论教训 K**：**扫「配置字段」不能只扫字段名，必须追到 env 名的读取点**，因为
+消费方有三条完全不同的路径——① 走 `cfg.X`（字段有引用）；② 绕开 config 直接
+`os.Getenv("NAME")`（**字段零引用但 env 生效**）；③ yaml 配置文件（仅结构体路径）。
+只做第 ① 层会同时产生**假阴性**（把形态 2/3 的 env 误报为失效）与**假阳性**（把形态 3
+误报为特性未实现）。本轮 15 个初筛结果里，有 2 个在第二层就被推翻了。
+
+**与列扫描的对照**：列没有这种「绕开」路径——DB 列只能经 SQL 读取，`SELECT *` 已核为
+不存在，所以列扫描的结论可以直接落地。**配置扫描必须多一层验证。**
+
+**未修**：形态 1 需确定 WeChat 配置的单一真源（改 config 声明对齐实现，或改实现读
+config）；形态 2 需确定 7 个开关是补实现还是删声明；形态 3 建议把直读 env 回填进 config
+以消除双源。三者都属配置契约裁决，审计轮只登记。
