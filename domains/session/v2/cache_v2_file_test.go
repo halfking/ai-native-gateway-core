@@ -553,24 +553,20 @@ func TestFileCacheIndexSurvivesRestart(t *testing.T) {
 }
 
 // TestFileCacheResizeMax H4 验收：ResizeMax 扩容立即生效；
-// 缩容拒绝（不强制淘汰）。
+// 缩容拒绝（不强制淘汰）。ResizeMax 内部自持 fc.mu（H4 热重载接线由
+// settings goroutine 调用，无法预持私有锁），测试直接调用，
+// maxSize 经公开 Stats()（同锁读取）观察。
 func TestFileCacheResizeMax(t *testing.T) {
 	fc := newTestFileCache(t, t.TempDir(), time.Minute, 1024)
 
-	fc.mu.Lock()
 	fc.ResizeMax(2048)
-	newMax := fc.maxSize
-	fc.mu.Unlock()
-	if newMax != 2048 {
-		t.Fatalf("ResizeMax 后 maxSize = %d, want 2048", newMax)
+	if got := fc.Stats()["max_size_bytes"].(int64); got != 2048 {
+		t.Fatalf("ResizeMax 后 maxSize = %d, want 2048", got)
 	}
 	// 非法值拒绝
-	fc.mu.Lock()
 	fc.ResizeMax(0)
 	fc.ResizeMax(-1)
-	maxAfterBad := fc.maxSize
-	fc.mu.Unlock()
-	if maxAfterBad != 2048 {
-		t.Fatalf("非法 ResizeMax 修改了值: maxSize = %d", maxAfterBad)
+	if got := fc.Stats()["max_size_bytes"].(int64); got != 2048 {
+		t.Fatalf("非法 ResizeMax 修改了值: maxSize = %d", got)
 	}
 }
