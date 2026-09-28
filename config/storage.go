@@ -16,6 +16,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -82,6 +83,25 @@ func (h *HotZoneConfig) RequestMirrorEnabled(defaultEnabled bool) bool {
 		return defaultEnabled
 	}
 	return *h.RequestMirror
+}
+
+// Contains 报告 dir 是否位于热区目录之内（含相等），用于装配层判断某个
+// 既有子树（如 lite.CacheDir）是否落入热区统一预算——是则 settings
+// storage.hotzone_max_size_gb 热重载同时驱动该子树的 FileCache.ResizeMax，
+// 否则该子树沿用自身配额旋钮（H4 §改动4：lite 的 10GB 默认不动）。
+// 双侧 filepath.Clean 后按路径段边界比较，避免 "data/hotzone-x" 误判为
+// "data/hotzone" 的前缀碰撞；相对/绝对混排视为不包含（调用方两侧路径
+// 应同源，均出自同一配置）。nil 指针 / 任一侧为空恒 false。
+func (h *HotZoneConfig) Contains(dir string) bool {
+	if h == nil || h.Dir == "" || dir == "" {
+		return false
+	}
+	root := filepath.Clean(h.Dir)
+	target := filepath.Clean(dir)
+	if root == target {
+		return true
+	}
+	return strings.HasPrefix(target, root+string(filepath.Separator))
 }
 
 type StorageConfig struct {
