@@ -969,3 +969,101 @@ SELECT percentile_cont(…) FROM (SELECT session_id, count(*) FROM session_bodie
 53,851 行只返回 20 条」这段结论，是分布数据把它拦下来的。
 一条结论的说服力往往来自它的**中位数**，而触发审计的是**最大值**——
 两者不一致时，只有中位数能告诉你这是不是常态。
+
+---
+
+# R79 续九 · 四个非 hot 族普查：1 个 P2（无界增长 + 死配置）、1 个 P3、1 条被证伪
+
+| 族 | 分区键 | 分区数 | 体积 | 行数 | ts 打头索引 |
+|---|---|---|---|---|---|
+| `usage_ledger` | RANGE(ts) | 5 | 1001 MB | 2,038,536 | ✅ `idx_usage_ledger_part_ts` |
+| `sessions` | RANGE(partition_date) | 5 | 476 MB | 760,808 | ❌ |
+| `request_wal` | RANGE(created_at) | 6 | 375 MB | 975,156 | ❌ |
+| `routing_decision_log` | RANGE(ts) | 5 | 275 MB | 921,463 | ✅ `idx_routing_decision_log_part_ts` |
+
+四族分区结构都健康：DEFAULT 分区皆空，数据都在当月分区，边界正确。
+**与 `usage_facts`（R68 已改日分区）不同，这四族仍是月分区**——不是缺陷，
+但意味着月内任何 ts 范围查询都不能裁剪。
+
+## 1. P2｜`request_wal` 完全没有保留期机制
+
+三条独立证据指向同一结论：
+
+**(a) 唯一该做清理的 SQL 函数是死的。** `archive_request_wal` 仍在真库（R79 续二 已登记），
+但**全仓零 Go 调用方**；它是迁移 331 声明要删的对象，而 331 不在 installer startup 通道、
+本机 `schema_migrations` 只到 V359。
+
+**(b) 另两条可能的路径都不覆盖它。** `drop_old_state_partitions` 的函数体里
+**根本没提 request_wal**；Go 侧全仓**没有任何 DELETE / DROP / TRUNCATE request_wal**。
+
+**(c) 声明的 TTL 是个死配置。**
+
+```go
+// settings/spec_lifecycle.go:83 —— 全仓仅此一处出现
+{Key: "lifecycle.request_wal_ttl_days", Type: TypeInt, Scope: ScopePlatform,
+ Category: TypeLifecycle, Min: 1, Max: 30, Default: 1,
+ DangerLevel: Warning, HotReload: true, Description: "request_wal 保留天数",
+ DescriptionLong: "request_wal 月度分区保留天数。默认 1 天。"}
+```
+
+`grep -rn "request_wal_ttl_days"` 在全仓**只命中它自己的声明**——零消费方。
+这不是「没接完」，是**一个可热更新、界面上可见、描述明确的平台设置，运维改它没有任何效果
+且不报错**。这是本轮最该单独记的一条。
+
+**代价**（实测）：`request_wal_2026_09` = **975,156 行 / 375 MB / 2026-09-03 → 09-28（26 天）**。
+按日分布：09-24 151,875、09-25 131,584、09-26 142,387（尖峰），近期 8,000–12,000。
+**若 1 天 TTL 生效，应只留约 1 万行 / 4 MB；实际是声明意图的约 80–100 倍，且每天还在涨。**
+按 ~30K 行/天外推，一年 ≈ 11M 行 / ~4 GB；而 `drop_old_state_partitions` 不覆盖它，
+**旧的月分区也不会被 drop**（`_2026_06/07/08` 至今仍在），分区数本身也在增长。
+
+## 2. 修法被 columnar 挡住（这条最实用）
+
+直觉修法是「把 DELETE 补回去」。**但它现在连计划都做不出来**：
+
+```
+EXPLAIN DELETE FROM request_wal WHERE created_at < …;
+ERROR:  UPDATE and CTID scans not supported for ColumnarScan
+```
+
+原因是 `request_wal_2026_08` 的 access method 是 **359239 = citus columnar**，
+而 `request_wal_2026_09` 等是 heap（2）。逐分区验证：
+
+```
+EXPLAIN DELETE FROM request_wal_2026_09 …  →  Seq Scan（可执行）
+EXPLAIN DELETE FROM request_wal_2026_08 …  →  ERROR: CTID scans not supported
+```
+
+**所以修复必须先处理 columnar 分区**（转回 heap，或改走 `DETACH + DROP TABLE`）。
+这正是 `routing_decision_log` 那族采用的模式——见下。
+
+## 3. P3｜`sessions` 保留期删除全分区 Seq Scan
+
+```sql
+-- bg/lite_retention_worker.go:131
+DELETE FROM sessions WHERE updated_at < ?
+```
+
+```
+Delete on sessions → Append
+  → Seq Scan on sessions_2026_09  Filter: (updated_at < …)   (est. 865,385 rows)
+  → 其余 4 个分区同样 Seq Scan
+```
+
+`idx_sessions_status (status, updated_at DESC)` **用不上**——首列 `status` 未被谓词约束。
+476 MB 的表每次保留期跑一遍全扫。定 P3（有无实际影响取决于该 worker 的调度周期与表增长）。
+
+## 4. 一条被证伪的怀疑
+
+我怀疑**每月 1 日调度的** `archive_routing_decision_log`（`archiveSpecs()` day:1）
+会因为 `routing_decision_log_2026_09` 是 columnar 而失败——毕竟同族的 DELETE 已经报错。
+
+**证伪**：它的函数体末尾是
+
+```sql
+EXECUTE format('ALTER TABLE routing_decision_log DETACH PARTITION %I', src_part);
+EXECUTE format('DROP TABLE %I', src_part);
+```
+
+**走 `DETACH + DROP TABLE` 而不是 DELETE**，因此 columnar 安全。
+**「同样是 columnar 表」不等于「同样受同一限制」**——限制作用于操作类型，不是表。
+这条同时说明 `routing_decision_log` 族是被正常清理的，本轮无发现。
