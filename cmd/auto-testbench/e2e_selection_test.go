@@ -266,6 +266,109 @@ func TestE2ESummarySerialisesSelectionMetrics(t *testing.T) {
 // The markdown report is the artifact a human actually reads, so it must carry
 // the selection layer too. Before this was pinned, a run with 124/240 collapsed
 // cases and a healthy run rendered identical markdown — the R75 blind spot.
+// The selection layer must be able to FAIL a build, not only be reported.
+// Before this gate existed, a run that collapsed 124/240 onto the 48h
+// popularity fallback still reported "GATE: PASS", because the gate only knew
+// about accuracy / macro_f1 / grrq and the baseline was saturated at 1/1/100.
+func TestEvaluateE2EGate_CollapseRateFailsTheGate(t *testing.T) {
+	b := &e2eBaseline{MaxCollapseRate: 0.05}
+
+	// 3 of 5 decided cases collapsed = 0.6, far above the threshold.
+	collapsed, err := loadE2EReport(writeE2E(t,
+		row("kept-1", "code", "code", nil, false, 3),
+		row("kept-2", "chat", "chat", nil, false, 3),
+		row("collapsed-1", "code", "code", nil, true, 1),
+		row("collapsed-2", "creative", "creative", nil, true, 1),
+		row("collapsed-3", "vision", "vision", nil, true, 1),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	evaluated, line, failed := evaluateE2EGate(b, collapsed)
+	if !evaluated {
+		t.Fatal("gate must evaluate when an E2E report with decided cases is present")
+	}
+	if !failed {
+		t.Errorf("collapse rate 0.6 above max 0.05 must fail the gate; line=%q", line)
+	}
+
+	// The healthy run must pass, and must say so.
+	healthy, err := loadE2EReport(writeE2E(t,
+		row("a", "code", "code", boolp(true), false, 3),
+		row("b", "vision", "vision", boolp(true), false, 3),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	evaluated, line, failed = evaluateE2EGate(b, healthy)
+	if !evaluated || failed {
+		t.Errorf("healthy run must pass the selection gate; evaluated=%v failed=%v line=%q",
+			evaluated, failed, line)
+	}
+}
+
+// No E2E report means the collapse rate is unknown, not zero. Treating that as
+// a pass would recreate the very blind spot this gate closes.
+func TestEvaluateE2EGate_NoE2ERunIsSkippedNotPassed(t *testing.T) {
+	b := &e2eBaseline{MaxCollapseRate: 0.05}
+	evaluated, line, failed := evaluateE2EGate(b, nil)
+	if evaluated {
+		t.Error("no E2E report must not be reported as evaluated")
+	}
+	if failed {
+		t.Error("no E2E report must not fail the run")
+	}
+	if !strings.Contains(line, "not evaluated") {
+		t.Errorf("skip must be stated explicitly, got %q", line)
+	}
+
+	// An E2E report where nothing produced a decision is the same situation.
+	empty, err := loadE2EReport(writeE2E(t, "# comment", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evaluated, _, failed := evaluateE2EGate(b, empty); evaluated || failed {
+		t.Error("an E2E report with zero decided cases must be skipped, not gated")
+	}
+}
+
+// A zero threshold would fail on legitimate empty-pool fallbacks, and a
+// threshold above 1 gates nothing — both are usage errors, not gate failures.
+func TestValidateE2EBaseline_RejectsUngatableThresholds(t *testing.T) {
+	if err := validateE2EBaseline(&e2eBaseline{MaxCollapseRate: 0}); err == nil {
+		t.Error("max_collapse_rate = 0 must be rejected (fails on legitimate fallbacks)")
+	}
+	if err := validateE2EBaseline(&e2eBaseline{MaxCollapseRate: -0.1}); err == nil {
+		t.Error("negative max_collapse_rate must be rejected")
+	}
+	if err := validateE2EBaseline(&e2eBaseline{MaxCollapseRate: 1.5}); err == nil {
+		t.Error("max_collapse_rate > 1 must be rejected")
+	}
+	if err := validateE2EBaseline(&e2eBaseline{MaxCollapseRate: 0.05}); err != nil {
+		t.Errorf("0.05 must be accepted: %v", err)
+	}
+}
+
+// The checked-in baseline must stay loadable and semantically valid; a broken
+// file would turn every E2E run into a usage error. The default constant is
+// repo-relative (scripts/auto-testbench.sh runs from the repo root) while this
+// test runs from the package directory, so both forms are checked.
+func TestE2EBaselineFileIsValid(t *testing.T) {
+	if want := "cmd/auto-testbench/testdata/e2e_baseline.json"; defaultE2EBaseline != want {
+		t.Errorf("defaultE2EBaseline = %q, want %q (scripts/auto-testbench.sh resolves it from the repo root)", defaultE2EBaseline, want)
+	}
+	b, err := loadE2EBaseline(filepath.Join("testdata", "e2e_baseline.json"))
+	if err != nil {
+		t.Fatalf("checked-in e2e baseline is unusable: %v", err)
+	}
+	if b.MaxCollapseRate <= 0 || b.MaxCollapseRate > 1 {
+		t.Errorf("checked-in max_collapse_rate = %v, want (0,1]", b.MaxCollapseRate)
+	}
+	if b.Source == "" || b.Notes == "" {
+		t.Error("checked-in e2e baseline must record its source and rationale")
+	}
+}
+
 func TestE2EMarkdownSection_SurfacesSelectionLayer(t *testing.T) {
 	s, err := loadE2EReport(writeE2E(t,
 		row("kept", "code", "code", nil, false, 3),

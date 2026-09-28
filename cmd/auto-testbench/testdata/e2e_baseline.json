@@ -1,0 +1,11 @@
+{
+  "generated_at": "2026-09-28T00:00:00Z",
+  "source": "240-case E2E suite (v1+v2+v3) against a local gateway, 2026-09-28 live audit",
+  "max_collapse_rate": 0.05,
+  "measured": {
+    "collapse_rate_before_fail_open_fix": 0.5167,
+    "collapse_rate_after_fail_open_fix": 0.0,
+    "decided_cases": 240
+  },
+  "notes": "collapse_rate = decided cases whose candidate pool fell back to the 48h popularity pick (fallback_used). The 0.05 floor is tolerance, not aspiration: fallback_used also fires when the pool is legitimately empty (all models unavailable), which is a healthy outcome and must not fail a build. Measured post-fix value is 0.0/240; the pre-fix 0.5167 is the 2026-09-28 defect this gate exists to catch. Only evaluated when -e2e-report is supplied — the offline classification gate cannot compute it."
+}
