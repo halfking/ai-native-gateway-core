@@ -2,7 +2,7 @@
 
 > 日期：2026-09-28（Asia/Shanghai）
 > 状态：本续审只覆盖 D14 流式脱敏的补充复核与 Web 依赖安全。D01–D17 和近 96h 方案文档尚未完成全量审计。
-> 起始代码基线：`main` / `origin/main` `9946d75b5adf7eba7a03c15fee83123d5592e844`。该提交为 Web 对账报表页显式导入组件的修复。续审期间 F09/F10 代码以 `9fe387ac8` 提交并推送，相关审计证据更新至 `d96bc4f5e`；Web 依赖修订已在本地提交 `0d5230bfb`，尚待推送核验。
+> 起始代码基线：`main` / `origin/main` `9946d75b5adf7eba7a03c15fee83123d5592e844`。该提交为 Web 对账报表页显式导入组件的修复。续审期间 F09/F10 代码以 `9fe387ac8` 提交并推送，相关审计证据更新至 `d96bc4f5e`；Web 依赖修订以 `0d5230bfb` 提交，并在最终 tip `816a16fcdfe787e38de804675e350705da37c5b` 推送后 fetch 核验通过。
 
 ## 1. 范围与处理
 
@@ -21,7 +21,7 @@
 
 | ID | 域/级别 | 结论 | 证据与影响 | 修复和验证 |
 |---|---|---|---|---|
-| R75-WEB-01 | Web 供应链 / P1 | 已修复并本地提交 `0d5230bfb`，待推送 | 修复前前端依赖树包含 critical/high advisory，且生产树有 4 项已知漏洞；pnpm 与 npm 因 lockfile 视图差异报告数量不同 | 升级直接依赖与约束传递依赖；双 lockfile 重建；修复 Vitest mock 类型；官方 registry 下 `pnpm audit`、`pnpm audit --prod`、`npm audit --json` 均为 0 项 |
+| R75-WEB-01 | Web 供应链 / P1 | 已修复并推送 (`0d5230bfb`) | 修复前前端依赖树包含 critical/high advisory，且生产树有 4 项已知漏洞；pnpm 与 npm 因 lockfile 视图差异报告数量不同 | 升级直接依赖与约束传递依赖；双 lockfile 重建；修复 Vitest mock 类型；官方 registry 下 `pnpm audit`、`pnpm audit --prod`、`npm audit --json` 均为 0 项 |
 | R75-D14-01（R73-F09 续审） | D14 流式脱敏 / P2 | 已实现并推送 (`9fe387ac8`) | 完整 SSE delta 可拆开一个 placeholder；旧逻辑会把碎片透传。request-local `StreamMeta.State` 按协议 lane 暂存尾片，最大 64 lanes、每 lane 256 bytes | `go test -race ./domains/streaming ./security/sanitize -count=1` 通过；普通 `{` 跨事件续片合并恢复，格式错误 marker 局部遮蔽并继续；覆盖 production writer、协议 delta、request/lane 隔离、未知 placeholder、上限和 Redis 错误 |
 | R75-D14-02（R73-F10 续审） | D14 脱敏降级 / P2 | 已实现并推送 (`9fe387ac8`) | 空 map 或 Redis 读取失败原会短路并透传未知完整 `{SENSITIVE:...}`；这是内部 marker 可见性缺陷，不等同于原始 PII 已泄露 | 读取失败时按空 map 调用 mask；空 map 路径仍检测 marker。包含 miniredis 不可达模拟和完整受影响包 race |
 
@@ -38,7 +38,8 @@
 | `go test -race ./domains/streaming ./security/sanitize -count=1` | 退出码 0 | 覆盖本地 writer/interceptor 集成与 Redis/miniredis 测试；未使用真实 Redis/供应商 |
 | `go test ./domains/hooks/response ./domains/streaming ./security/sanitize -count=1` | 退出码 0 | 受影响包普通测试 |
 | `go build ./...` / `go vet ./...` | 均退出码 0 | 全仓 Go build/vet |
-| `git diff --cached --check` | 退出码 0 | Web 修复提交 `0d5230bfb` 前检查 |
+| `git diff --cached --check` | 退出码 0 | Web 与最终文档提交前均检查 |
+| `git push origin main` + `git fetch origin` | 退出码 0；本地和远端均为 `816a16fcdfe787e38de804675e350705da37c5b` | R75 Web 修复与证据已发布 |
 
 安全审查 skill 指定的 `~/.agents/skills/security-review/scripts/run-all-checks.sh` 当前不存在，`govulncheck` 也未安装；因此没有声称该聚合脚本或 Go 漏洞数据库检查已通过。依赖风险由上述 npm/pnpm 官方 registry 审计覆盖。
 
@@ -46,7 +47,7 @@
 
 ## 4. 尚未覆盖与风险
 
-- F09/F10 已提交并推送；Web 依赖和 R75 文档已本地提交为 `0d5230bfb`，待 push/fetch 核验。未归属的 `web/public/menu-config.json` 生成时间改动与 `docs/audit/todo-state.json` 不应混入提交。
+- F09/F10 与 Web 依赖修复、R75 文档已提交并推送；最终已核对 `main` / `origin/main` 同为 `816a16fcdfe787e38de804675e350705da37c5b`。未归属的 `web/public/menu-config.json` 生成时间改动与 `docs/audit/todo-state.json` 保留在工作区，没有混入提交。
 - `ShouldBlock` 当前由 writer 丢弃帧；达到 64 lane 或遇到有待续 marker 的不透明 SSE payload 后，客户端终态错误和可观测事件仍需评估。
 - F07 migration 754 没有兼容 PostgreSQL 实测；无生产 Redis、真实 provider 凭据与完整 deploy-local 集成证据。
 - D01–D17 全域核验、96h 方案文档逐份对照、R62-H1/H2/M1/M2 凭据迁移与安全验证尚未完成。

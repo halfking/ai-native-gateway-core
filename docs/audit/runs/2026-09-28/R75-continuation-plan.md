@@ -19,7 +19,7 @@
 - Web 依赖：`web/package.json`、`web/pnpm-lock.yaml`、`web/package-lock.json`、`web/src/composables/useLiveStreamUrl.test.ts`、`web/src/composables/useSessionSummaryJump.test.ts`。
 - 将 Web 依赖审计状态更新写入 `docs/全面审计.md` 与本报告；F09/F10 已随 `9fe387ac8` 提交并在 `d96bc4f5e` 的文档证据中闭环。Web 变更提交后核对远端 commit SHA 和审计链接。
 
-Web 依赖与 R75 报告已提交到本地 `main`，提交 `0d5230bfb`；剩余发布步骤是 push 后 fetch 并确认 `origin/main` 包含该提交。
+Web 依赖与 R75 报告已随 `0d5230bfb` 推送；最终文档证据提交为 `816a16fcd`，push 后 fetch 已核验 `main` / `origin/main` 一致。
 
 保留未归属的 `web/public/menu-config.json` 生成时间差异与 `docs/audit/todo-state.json`，除非确认其归属和内容。暂不包含 UI 对账页修复，该代码已由远端 `9946d75b5` 提交。
 
