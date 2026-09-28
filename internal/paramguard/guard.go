@@ -488,6 +488,26 @@ func clampEffortNested(r map[string]json.RawMessage, rawEffort json.RawMessage, 
 	return true
 }
 
+// reasonDialectMatchesParamDialect decides whether an effort clamp derived
+// from the model-name capability table may be applied to a body that is going
+// out on `dialect`.
+//
+// It is deliberately conservative: a false result means "do not touch", so an
+// unlisted reasoncap dialect is left alone rather than risk writing a field
+// the target provider does not accept.
+//
+// 2026-09-28 (audit): the list previously covered only OpenAI / Grok /
+// Mistral / KimiEffort, so `default: return false` silently disabled the whole
+// reasoning_effort rule for DeepSeek, GLM and Ark — three families that DO
+// expose a reasoning_effort field on their OpenAI-wire and DO have populated
+// Efforts in the capability table. Clients sending `reasoning_effort:"disabled"`
+// to glm-5.2 had it forwarded verbatim to the upstream instead of being
+// narrowed, which paramreg's own registry note requires ("须按目标能力收窄").
+// Those three are added here. Families whose wire uses a different switch
+// (Anthropic thinking{budget}, Gemini thinkingConfig, Qwen enable_thinking,
+// MiniMax thinking{type}, Ollama think) stay unlisted on purpose — they carry
+// no reasoning_effort field, and reasonDialectMatchesParamDialect is only
+// consulted for the effort path.
 func reasonDialectMatchesParamDialect(reasonDialect reasoncap.Dialect, dialect paramreg.Dialect) bool {
 	switch reasonDialect {
 	case reasoncap.DialectOpenAI:
@@ -500,6 +520,12 @@ func reasonDialectMatchesParamDialect(reasonDialect reasoncap.Dialect, dialect p
 		return dialect == paramreg.DialectMistral
 	case reasoncap.DialectKimiEffort:
 		return dialect == paramreg.DialectKimi
+	case reasoncap.DialectGLM:
+		return dialect == paramreg.DialectGLM
+	case reasoncap.DialectDeepSeek:
+		return dialect == paramreg.DialectDeepSeek
+	case reasoncap.DialectArk:
+		return dialect == paramreg.DialectArk
 	default:
 		return false
 	}
