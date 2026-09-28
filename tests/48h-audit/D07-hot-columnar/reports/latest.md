@@ -1448,3 +1448,69 @@ armor      870ms × 1 次/天 = 0.87 秒/天  （tick = 24h）
 本轮 `go_sql_constant_prepare_test.go`（PREPARE 真库）覆盖了这条 SQL 且未报 42703，
 说明该语句当前合法。**文本断言守不住列漂移，PREPARE 才守得住**——这是
 续五那道门存在的理由，本轮又一次得到印证。
+
+## R79 续十四 · tool_usage_stats：代码里写着 ≠ 会执行（P1 降 P2）
+
+前 6 个 P1 里剩下的是列名/缺列类。`tool_usage_stats` 这条是改动面最小的
+（纯列名问题），本打算直接出方案。动手前先核一遍可达性，结果定级翻了。
+
+### 我之前记的「两个列名漂移」是错的
+
+`domains/toolexecution/postgres_store.go` 的 INSERT 用 15 个列名，真库只有 11 列，
+**12/15 个列名不存在**：
+
+| 代码里的列 | 真库实际 |
+|---|---|
+| `tool_name` / `date` | `tool_id` / `usage_date` |
+| `total_calls` / `success_calls` / `failed_calls` | `call_count` / `success_count` / `error_count` |
+| `avg_duration_ms` | `avg_latency_ms` |
+| `p50_duration_ms` / `p95_duration_ms` / `p99_duration_ms` | **不存在** |
+| `unique_users` / `unique_sessions` / `top_users` | **不存在** |
+
+`ToolUsageStats` 结构体（`types.go:107-131`）有 17 个字段，**依赖 6 个不存在的统计维度**。
+所以修法不是改名，是路线选择：**加 8 列迁移** vs **改代码降级到现有 11 列**——
+后者会丢掉 3 个分位数和 3 个去重维度。属 owner 决策。
+
+### 真正的发现：整条统计写入路径零调用方
+
+| 方法 | 生产调用点 |
+|---|---|
+| `StatsAggregator.AggregateDaily` | **0** |
+| `Store.SaveStats`（含全部错列的 INSERT） | **0**（仅被 `AggregateDaily` 调） |
+| `Store.ListToolNamesWithActivity` | **0**（仅被 `AggregateDaily` 调） |
+
+`grep` 出的 `AggregateDailyProfiles` 是 providerprofile 的**另一个同名方法**，
+不是 `toolexecution.StatsAggregator.AggregateDaily`——名字相似极易误判成有调用方。
+
+**所以那 12 个错列从来没有被 PostgreSQL 执行过。** 它不是「线上故障」，
+是一段**从未跑过的代码**。P1 是虚报，降 **P2**。
+
+### 但缺陷是真的，而且更阴险
+
+`AggregateDaily` 里每个工具的失败只 `slog.Error` 计数，函数**返回 nil**
+（`stats_aggregator.go:60-84`）。也就是说：**一旦有人补一个每日 02:00 的定时任务**，
+每条 INSERT 都会 42703，而调用方看到的是 `err == nil`，**以为聚合成功了**。
+
+Hook 本身是活的（`main.go:3265` 注册，`Tracker` 写 `public.session_tools_hot`，
+R30 审计修过）。所以形态是：**执行明细在写，聚合统计不写**。
+
+### 两条证据必须分开（本轮的方法论要点）
+
+| 证据 | 能不能用 |
+|---|---|
+| `AggregateDaily` 零调用方 | ✅ **代码事实，与流量无关**，是定级依据 |
+| `tool_usage_stats` / `session_tools` 都是 0 行 | ❌ **本机是无流量的开发库**，空表属正常，不能当缺陷证据 |
+
+我差点用第二条去论证第一条。**「表是空的」在开发库上不是发现。**
+
+### 本轮第四次定级纠正，四次共性
+
+| # | 纠正 | 我犯的错 |
+|---|---|---|
+| 1 | session_bodies P2→P3 | 把**峰值**当分布 |
+| 2 | armor「补索引」作废 | 把 **cost 估算**当执行时间 |
+| 3 | journal_snapshot_receipts P2→P3 | 把**相对倍数**当绝对成本 |
+| 4 | **tool_usage_stats P1→P2** | 把**形态相似**当可达 |
+
+第 4 条是最容易犯的：**代码里写着某段 SQL，只说明它被写下来了，不说明它会执行。**
+判「某缺陷是否已造成影响」时，**可达性（谁调它）优先于形态（它看起来像在跑）**。
