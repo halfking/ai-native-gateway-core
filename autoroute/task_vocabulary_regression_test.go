@@ -124,10 +124,13 @@ func TestRecommendV2_AbsentVocabularyKeepsScoredPool(t *testing.T) {
 	}
 }
 
-// The collapse must still fire when it is genuinely warranted: the library
-// *does* speak this task's language, but nothing in the pool reaches the
-// threshold. That is the "nothing suitable" case the guard exists to preserve.
-func TestRecommendV2_DiscriminatingLowMatchStillFallsBack(t *testing.T) {
+// R73 订正（D11#4）：原函数名 TestRecommendV2_DiscriminatingLowMatchStillFallsBack
+// 与断言相反——body 实际钉的是「部分词表命中落在 30 分边界之上，不坍缩」
+// （1/3 = 33.3 ≥ 30）。按 body 语义改名；「词表在场但 winner < 30 必须坍缩」
+// 的真场景由下方 TestRecommendV2_VocabularyPresentUnderThresholdCollapses
+// 补钉（long_context 5 元 required 单命中 1/5 = 20 < 30，热榜缓存注入使
+// 48h fallback 可达）。
+func TestRecommendV2_PartialVocabularyAtBoundaryDoesNotCollapse(t *testing.T) {
 	now := time.Now()
 	// TaskCodeAudit requires code/review/security. The pool carries none of
 	// them, so this task's vocabulary is absent too — use a task whose
@@ -160,6 +163,50 @@ func TestRecommendV2_DiscriminatingLowMatchStillFallsBack(t *testing.T) {
 	if isFallbackWinner(got) {
 		t.Errorf("match score %.1f is at/above the 30 threshold — collapse was not expected",
 			got[0].Breakdown.MatchScore)
+	}
+}
+
+// TestRecommendV2_VocabularyPresentUnderThresholdCollapses 是 R73 订正
+// （D11#4）补上的真坍缩场景：词表**在场**（guard 判定成立）但 winner 分数
+// 低于 30——此时「池子里没有适合该任务的模型」是可信判断，坍缩到 48h 热度
+// 单模型正是 guard 存在的目的。构造：long_context 的 required 是 5 元标签
+// 表（long_context/128k/200k/512k/1m），池内候选只带其中 1 个 → 1/5 = 20
+// < 30；注入 hotCanonicals 缓存使 get48hFallback 可达（单测无 DB，缓存命中
+// 即可绕过查询路径）。
+func TestRecommendV2_VocabularyPresentUnderThresholdCollapses(t *testing.T) {
+	now := time.Now()
+	idx := &Index{
+		entries: []Candidate{
+			{CanonicalID: 1, CanonicalName: "hot-weak", CredentialID: 21, Tier: "primary", PopularityScore: 90,
+				Tags: []string{"cap:long_context", "modality:text"}, SuccessRate: 0.90, P95LatencyMs: 1500,
+				ProviderCategory: "official", ReleasedAt: &now},
+			{CanonicalID: 2, CanonicalName: "also-weak", CredentialID: 22, Tier: "primary", PopularityScore: 80,
+				Tags: []string{"cap:long_context", "modality:text"}, SuccessRate: 0.88, P95LatencyMs: 1600,
+				ProviderCategory: "official", ReleasedAt: &now},
+		},
+		lastRefresh: now,
+		// 48h fallback 注入：热榜第一是 CanonicalID 1（无 DB，走缓存命中路径）。
+		hotCanonicals:    []int{1},
+		hotCanonicalsTS:  now,
+		hotCanonicalsTTL: 2 * time.Minute,
+	}
+
+	// sanity 1：词表在场（guard 的前置条件成立——这正是与「词表缺失中性化」
+	// 场景的分界线）。
+	if !TaskVocabularyRepresented(TaskLongContext, idx.entries) {
+		t.Fatal("precondition: cap:long_context must be recognised as present")
+	}
+	// sanity 2：单命中的确低于阈值（1/5 = 20），否则本测试没钉到坍缩分支。
+	if score := TaskMatchScore(TaskLongContext, idx.entries[0].Tags); score >= 30 {
+		t.Fatalf("precondition broken: single-hit long_context score = %.1f, want < 30", score)
+	}
+
+	got := idx.RecommendV2(context.Background(), TaskLongContext, ClassificationSignals{EstimatedTokens: 500}, ProfileSmart, "", 3)
+	if !isFallbackWinner(got) {
+		t.Fatalf("vocabulary present + winner < 30 must collapse to the 48h fallback (single result, IsFallback), got %d results, winner=%+v", len(got), got)
+	}
+	if got[0].Candidate.CanonicalID != 1 {
+		t.Errorf("fallback winner should be the hot-top canonical 1, got %d", got[0].Candidate.CanonicalID)
 	}
 }
 

@@ -233,6 +233,26 @@ var (
 		[]string{"table"},
 	)
 
+	// R73 审计 N2 收口（R72 §三遗留）：session_turn_logs 聚合积压三件套。
+	// pending 行 = expires_at > NOW()（聚合器只消费未过期行，过期未聚合即
+	// 永久丢失——这组 gauge 就是「丢失风险」的前瞻水位）。命名沿用 R47/R48
+	// hot 表配对惯例：rows 看"剩多少"、pending_sessions 看影响多少会话、
+	// oldest_age 看"最旧多久"（高 rows + 大 age = 聚合器跟不上写入或停摆；
+	// 全零 = 聚合链路健康）。刷新挂在 runCleanup 的 1h tick（见
+	// refreshTurnLogsBacklogGauge）。
+	sessionTurnLogsBacklogRows = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "llm_gateway_session_turn_logs_backlog_rows",
+		Help: "session_turn_logs rows awaiting aggregation (expires_at > NOW()). Growth means the turn-logs aggregator is falling behind or down; expired-but-unaggregated rows are lost at expiry.",
+	})
+	sessionTurnLogsBacklogPendingSessions = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "llm_gateway_session_turn_logs_backlog_pending_sessions",
+		Help: "Distinct (tenant_id, session_id) pairs with unaggregated session_turn_logs rows. Blast-radius companion to backlog_rows.",
+	})
+	sessionTurnLogsBacklogOldestAgeSeconds = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "llm_gateway_session_turn_logs_backlog_oldest_age_seconds",
+		Help: "Seconds since the oldest unaggregated session_turn_logs row (expires_at > NOW()). 0 when no backlog. Large values with rows>0 mean the aggregator is stalled and the oldest rows are nearest to silent expiry.",
+	})
+
 	// metricWorkerRestarts (R53, R51-F13) — self-healing restarts of bg
 	// workers after a runFn panic (BaseWorker supervise loop). Label
 	// "worker" is the compile-time literal worker name (closed set, ~25

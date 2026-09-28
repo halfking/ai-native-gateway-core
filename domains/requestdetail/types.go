@@ -38,8 +38,16 @@ type Bodies struct {
 // readable from the underlying storage. Two-state contract:
 //
 //	"available"   — at least one of request_delta / response_delta / outbound_body
-//	                carries a real JSON payload (incl. JSON null / [] / {}).
-//	"unavailable" — all three are absent / whitespace / non-JSON.
+//	                carries a real payload: anything other than SQL NULL, the
+//	                JSON null literal, or pure whitespace. Empty containers
+//	                ([] / {}) DO count as payload.
+//	"unavailable" — all three are SQL NULL / JSON null / whitespace.
+//
+// （R73 订正：初稿把「incl. JSON null」写在 available 侧，与实现
+// admin/body_status.go columnHasPayload——JSON null 判无载荷——及迁移后
+// 统一的 SQL 探针 `<> 'null'::jsonb` 三面相反；JSON null 恰是写路径对
+// 「载荷为空」的常态编码（bodies_writer jsonTextOrNull），把它算 available
+// 会让「响应从未到达」的轮次在列表上误报有正文。以实现+双侧测试为准。）
 //
 // "dropped" is intentionally NOT part of the wire contract yet: the retention
 // period (lifecycle.request_body_retention_hours) and the bodies_trimmer job

@@ -262,6 +262,14 @@ reasoning: ncand 3, fallback false,      match 33.3 （对照组，未变）
 新增回归测试 `cmd/auto-testbench/e2e_selection_test.go`（7 例），覆盖 null-pass 语义、
 坍缩可见性、健康运行、无决策行排除、错误掩盖真 miss、JSON 落盘、空输入与 R64 用法错误契约。
 
+**后续收口（R75 子代理发现 #7）**：上述两个缺陷修的是 console 与 JSON 出口，但
+`reports/auto-testbench.md` 仍只有 pass/failures——人读的主产物看不到选型层，
+「124/240 坍缩」与「健康运行」的 markdown 完全相同，盲点只是从机器可见挪到了人
+不可见。E2E 节现已补齐：上游报错数（说明其非分类判定）、以**取到决策的用例**为
+分母的选型层坍缩率与单候选池、decided 口径分类准确率、坍缩分任务归因表；渲染逻辑
+抽为 `e2eMarkdownSection` 并加两条回归（坍缩 run 断言数值与归因表、健康 run 断言
+真实 0 值且不吐空表）。教训入册：**新增报表指标时 console / JSON / md 三个出口必须一起改**。
+
 ### 6.2 仍待处理
 
 1. **词表补齐是更彻底的解法**。本修复让"词表缺失"不再有害，但 code/creative 类任务
@@ -281,18 +289,150 @@ reasoning: ncand 3, fallback false,      match 33.3 （对照组，未变）
    模型标注能力——这是**需要模型知识的数据运营任务**，靠猜会让真实流量被路由到错误的模型，
    因此本轮不做。`models_canonical.strengths`（设计为"比 tags 更精准"的运营标注列）950 行
    全空，是补齐的现成落点。
-2. **门禁仍只覆盖分类层**。坍缩率目前**只报告不卡门**：`baseline.json` 是离线产物，而坍缩率
-   必须有 E2E 决策头才能算，离线门禁拿不到。给它加门禁需要一个 E2E 基线文件（本轮实测值
-   0/240 可作起点），属于下一步独立决策。
-3. **P2 TierSelector 仍是 G1 的真正堵点**。本轮修的是选型退化（属 P0 范畴），"人工 apply 的
-   分层建议运行时消费为零"这一原始缺口未动，仍按设计稿待执行。
+   **R77 订正**：本条曾被误当作 code_audit 坍缩的根因。实测证明坍缩的真因是判定口径——
+   `TaskVocabularyRepresented` 把 `family:codex` 这类**分类标签**当成 `cap:code` **能力词表
+   在场**的证据，那是代码缺陷，已在 §6.3 用 `isCapabilityTag` 根修（坍缩 12/240 → 0/240）。
+   本条仍然成立且仍要做，但性质变了：它是**选型质量**提升（让 code/creative 真正按能力选型），
+   不再是「路由坍缩挡在前面」的阻塞项。
+2. **门禁仍只覆盖分类层**（已于 R77 收口，见 §6.3）。坍缩率目前**只报告不卡门**：`baseline.json`
+   是离线产物，而坍缩率必须有 E2E 决策头才能算，离线门禁拿不到。给它加门禁需要一个 E2E 基线文件
+   （本轮实测值 0/240 可作起点），属于下一步独立决策。
+3. **P2 TierSelector 仍是 G1 的堵点，但本轮启动评估结论是：现在接线零收益且爆炸半径大，
+   它的前置不是「接线工作」而是「V3 分类器落地」**。详见 §6.4。
+
+---
+
+### 6.3 R77 实跑复核 + L-5 根修（2026-09-28 晚）：240 例 HEAD 实测，code_audit 坍缩归零
+
+§6.1/§6.2 里写的「修复后 0/240 坍缩」当时是对的，但下面第一轮实测在**同一套 240 例上测出
+5.00% 坍缩**，且全部集中在 `code_audit`——本节给出归因与根修，现状已回到 0/240。
+
+**跑法**：本地 8782 是 build 2296 / SHA `0ae9b5e2`，落后 HEAD 18 个 commit，**不含** L-4 /
+planning-artifact / M-7 三笔修复，直接拿它跑 E2E 等于旧码自证。故以 HEAD 源码起旁挂实例：
+同一 DSN / 同一 Redis（`LLM_GATEWAY_BG_MODE=data-plane` 关写侧后台任务，避免与 8782 双跑
+reaper），监听 `127.0.0.1:8783`。
+
+**实例确实含修复的证明**（同 key、同 prompt、两端口对照）：
+
+| prompt | 8782（旧 build） | 8783（HEAD） |
+|---|---|---|
+| `写一个Django中间件` | `task=chat conf=0.10` | `task=code conf=0.65` |
+
+**同基线前后对比（同一套 240 例 = v1 60 + v2 40 + v3 140，决策头覆盖率均 100%）**：
+
+| 指标 | L-5 修复前（HEAD `ab2b7b9d0`） | L-5 修复后 | 判定 |
+|---|---|---|---|
+| 分类正确率（decided） | 240/240 = 1.0000 | 240/240 = 1.0000 | 不变（分类层未受影响） |
+| 坍缩率 `fallback_used` | **12/240 = 5.00%** | **0/240 = 0.00%** | **根修** |
+| 单候选池 | 12/240 | 0/240 | **根修** |
+| 坍缩分任务 | `code_audit` 12/12 | 无 | **根修** |
+| 上游 429 | 216/240（不算分类判决） | 232/240 | 环境噪声，见下 |
+
+**根因不是数据活，是判定口径串了（此前误判为「~870 模型待标注」的数据/运营活）**：
+
+`requiredTagsForTask(code_audit)` 写的是**能力**词表 `[code, review, security]`，
+但 `TaskVocabularyRepresented` 只做子串匹配去问「池里有没有这个词」。线上真实存在的这些
+**分类标签**全部命中子串 `code`：
+
+```sql
+family:codegemma   family:codex   family:starcoder2
+version:codestral-latest          version:gpt-4o-audio-preview
+```
+
+模型族名叫 `codex`、版本名叫 `codestral`，并不能证明库里存在 code/review/security 的
+**能力分类法**。于是 `vocabularyPresent` 被判 true → `recommend_v2.go:144` 的「词表缺失中性化」
+被跳过 → 打分留在真实值 → 而 top 候选 minimax-m3 不带任何 code 标签 → `MatchScore 0 < 30`
+→ `recommend_v2.go:339` 的 48h 热度坍缩守卫命中 → 候选多样性 3 → 1（`composite=50,
+quality=0, reliability=0, tier 空`）。这正是 §2.2 记录的「坍缩放大限流」的复现条件。
+
+关键区分：**这是代码缺陷，不是数据缺口**。此前把它归到 §6.2 第 1 条「~870 个 canonical 待
+标注」是错的——不管给多少模型补 `cap:*` 标签，只要库里存在一个叫 codex 的族，
+review/security 这两个 required 词就永远无法被独立验证是否为真词表，判定会持续被族名挟持。
+
+**修法**（`autoroute/scoring.go`）：新增 `isCapabilityTag`，能力词表的「在场」判定只认
+`cap:` 命名空间（以及无命名空间的裸标签，`Candidate.Tags` 历来支持 `["reasoning","code"]`
+这种写法）；`family:` / `version:` / `modality:` 等命名空间是「这是哪个模型」而非「它能做什么」
+的分类元数据，不再能冒充能力证据。**刻意不动 `TaskMatchScore`**：它做排序不做在场判定，
+其子串宽松（`code` 匹配 `code_completion`）是有文档、有测试依赖的既有行为。
+
+**验证**：
+- 3 条新回归（`autoroute/task_taxonomy_tag_regression_test.go`）：分类标签不得让能力词表
+  在场；真正的 `cap:*` 必须仍被判在场（反向护栏，防止把 R73 的「词表缺失中性化」与
+  「在场但 winner<30 仍须坍缩」两条契约一起打死）；端到端 code_audit 池不得坍缩且 MatchScore
+  必须中性化。修复前 3 条全红。
+- 变异检验：摘掉 `isCapabilityTag` 过滤（还原旧的全标签子串匹配）→ 3 条全红；恢复后全绿。
+- 真机复跑：同一 12 例 code_audit，`cand=1 / fallback=True / scores=[50]` →
+  `cand=3 / fallback=False / scores=[79.2, 76.2, 76.2]`，分类 12/12 正确。
+- 门禁：`max_collapse_rate` 保持 **0.05**（余量 12/240，第 13 例才红）。变异检验：修复后
+  数据 → PASS(0)；修复前 12/240 @0.05 → PASS(0)（恰好边界）；@0.04 → FAIL(1)。
+
+**口径订正**：首轮归档曾按 249 例报数（13/249 = 5.22%），那是错的——v3 套件有 9 行 `#` 注释
+被误当用例并入，且最后 9 例被重复计入两次。套件头注写明总量是 60+40+140 = **240 例**，去重
+后唯一 case 数正好 240。正确值是 12/240 = **5.00%**。两处归档文件均已订正为 240 行
+（`-r77.jsonl` 为修复前、`-r77-l5fixed.jsonl` 为修复后）。
+
+**关于上游 429**：232/240 是上游 429（`token.sensenova.cn` credential 25 独占 96/126 次上游
+尝试），**与选型层正交**——带决策头的行即使 HTTP 429 也能拿到 task_type 与候选池，分类判决
+不依赖上游成功。降速（每 10 例休 20–25s）实测无效，说明是 provider 侧持续限流而非打得太快。
+（首轮跑 50/60 报错时曾误判「错误行没有决策头」，实为查错了 JSON 键：`decision` 是嵌套字段，
+错误行同样有。）另有一个**独立的集中度风险**，本轮未修：96/126 次上游尝试打到单一 provider，
+该 provider 一限流就同时打穿所有任务类型的退路。
+
+### 6.4 P2 TierSelector 接线启动评估（R77，R66 点名的优先入口）
+
+R66 把「auto TierSelector 接线启动评估」列为优先入口。本节是那份评估的结论，**不接线**，
+只回答「在什么条件下接线才有意义」。钉桩见 `autoroute/tier_selector_wiring_prereq_test.go`
+（4 条特征化护栏，变异检验确认有牙）。
+
+**核心事实：全仓存在两套互不相交的 TaskType 词表。**
+
+| | 词表 | 状态 |
+|---|---|---|
+| **V2** | `chat` `reasoning` `code` `agent` `creative` `long_context` `vision` `function_call` `code_audit` `intent_classification` `planning` | **生产分类器实际发出**（`NewHeuristicClassifierWithTuning`，`cmd/gateway/main.go:5036`）；240 例 E2E 实测发出的正是这 11 类 |
+| **V3** | `architecture` `audit` `debugging` `coding` `refactoring` `testing` `devops` `documentation` `summary` `dependency` | `AllTaskTypesV3`（`task_types_v3.go:143`），**恰等于 `task_type_tier_config` 的 10 条种子行** |
+
+而 `NewV3Classifier` 与 `NewTierSelector` **都零生产构造点**——`NewV3Classifier` 自身注释
+还写着「V3 分类器保留供实验对照, 下轮清理候选」（`classifier_v3.go:40`）。
+
+**所以把 TierSelector 接进生产热路径，今天拿不到任何按任务类型的真实配置。** 两条路都试算过：
+
+- `enableV3=false`：`SelectTier` 第一行就返回 `tier-b`（`tier_selector.go:97-105`），
+  对**所有**请求一视同仁。这是一道「一刀切硬过滤」，会把 tier-a / tier-c 候选全滤掉；
+  离线套件实测 tier 分布 `tier-a=85 / tier-b=105 / tier-c=50`，爆炸半径远超「小步灰度」。
+- `enableV3=true`：分类器仍发 V2 类型 → 配置查询全部 miss → 落 `getDefaultTier` →
+  `TaskTypeTierMapping`（`task_types_v3.go:344`）无任何 V2 键 → 仍默认 `tier-b`。
+
+两条路都是**零收益 + 大爆炸半径**。
+
+**正确顺序**：V3 分类器先落地（P3，影子观察 ≥7 天是硬前置，规划 §4.6 plan:222-224 明文
+「替换本身是独立裁决」）→ 之后 tier 配置词表才与运行时词表对齐 → TierSelector 才有真实
+配置可消费。**TierSelector 不是一项独立的接线工作，它是 V3 分类器灰度的下游消费者。**
+这与设计稿 `AUTO_ROUTING_V2_P2_TIER_SELECTOR_DESIGN.md` 的「影子 → 灰度 → 生效」不冲突，
+但把它的**启动前置**从「排期」改成了「V3 分类器是否已在生产」。
+
+**顺带核实的既有基础（R43 的 ensure 确实在工作，非空壳）**：真库
+`task_type_tier_config` 存在且是 V370 形态（BIGINT `tenant_id`、
+`min_confidence numeric(3,2) DEFAULT 0.70`、`UNIQUE (task_type, COALESCE(tenant_id,0))`），
+10 条种子齐全。设计稿点名的 `cmd/gateway/main.go` 行号整体漂移 6–22 行
+（`NewDecider` 5035→5041、`SetRoleLLMRouter` 5244→5250），语义未变。
+两个 flag `AutoTierSelectorEnabled` / `AutoTierSelectorShadowOnly` 仍**未在 `config/` 定义**，
+与设计稿 §89「待新增」一致。
+
+**本轮不做**：不接线、不新增 flag、不改种子词表（V2↔V3 词表映射是**产品/路由策略裁决**，
+不是代码能替 owner 定的）。owner 需要的决策已从「要不要接线」变成
+「V3 分类器什么时候进生产」。
+
+**§6.2 第 1 条的订正**：能力词表补齐（`cap:code` / `cap:creative` 等）**仍然是**让 code /
+code_audit / creative 真正按能力选型的唯一解法——L-5 只保证「没有能力词表时别假装有」，
+不会凭空造出选型能力。但它的紧迫性已从「数据活挡着路由」降为「选型质量提升」：修复后
+code_audit 走的是价格 / 通道质量 / 可靠性三个真实维度，与 §6.1 中性化的设计意图一致。
+
 
 ---
 
 ## 七、复现方式
 
 ```bash
-# 离线（分类层门禁）
 bash scripts/auto-testbench.sh
 
 # 端到端（选型层）

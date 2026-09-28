@@ -2,7 +2,7 @@
 
 > 域知识库：[docs/audit/playbook/domains/D14-security.md](../../../docs/audit/playbook/domains/D14-security.md)
 > 48h 改动面（截至 R58）：`security/sanitize/smart_sani_guard.go`（restoreResponseBody / restoreStreamOpenAIDelta / restoreStreamAnthropicDelta 增加 tool_calls/tool_use 还原）+ `tests/48h-audit/D14-security/{business,data,stress,safety}/*`（新增 mock 套件）
-> 状态：R73 续审已复核；历史 T2 mock 套件有效，本轮新增 scope/header 与错误 body 边界已静态核对
+> 状态：R73 续审进行中；历史 T2 mock 套件有效；本轮新增 scope/header、错误 body 与跨完整 SSE delta carry 测试；D14 全域验收仍未完成
 
 ## 1. 审计要点
 
@@ -11,7 +11,7 @@
 - 工具调用还原：网关把上游响应里的 `tool_calls.arguments` 还原后，交给插件/工具执行；这一步必须拿到真实敏感值，否则下游逻辑会按占位符文本误判（`{SENSITIVE:phone:1}` 当作字符串，无法拨号、查号、支付）。
 - 未知占位符 mask：LLM 在响应中伪造 `{SENSITIVE:type:99}`（sm 中没有）时，必须 mask 为 `[REDACTED]`，不能透传——这是上游注入面（v1 见 `TestRestoreResponseBody_UnknownPlaceholderMasked`；本域补 tool_calls 同款）。
 - 跨轮次不撞号：sm 持久化到 Redis + offset hash，每类 type 自增；新轮 `SanitizeInputMiddleware` 必须读 offset，避免连续两轮都是 `phone:1` 但 sm 后写覆盖前写（生产 bug 锚见 R35 跨租户实测）。
-- SSE 帧边界：同一个事件被多个底层 `Write` 拆开已由 `interceptingStreamWriter` 组装后再拦截；R73-F08 为缓冲增加 16 MiB 上限，并在结束时丢弃不完整尾帧。仍未解决的是一个完整 placeholder 被模型拆到多个完整 delta 事件，`SanitizeRestoreInterceptor` 无状态地逐事件替换，见 `TestSanitizeRestoreInterceptor_PlaceholderSplitAcrossCompleteFrames` / R73-F09。
+- SSE 帧边界：同一个事件被多个底层 `Write` 拆开由 `interceptingStreamWriter` 组装后再拦截；R73-F08 为缓冲增加 16 MiB 上限，并在结束时丢弃不完整尾帧。R73-F09 已改为 writer/request 生命周期 carry state：OpenAI content/refusal/tool arguments、Anthropic block delta fields、Responses output-text/function-arguments/refusal/audio-transcript lane 分别暂存有效 placeholder 前缀，限 64 lanes × 256 bytes；opaque item ID 哈希后作 lane key；未知完整 marker 遮蔽，已知 lane 的无效续片改为遮蔽字段并继续，不透明续片及超限 fail-closed。需复跑定向 race、完整 writer 集成并评估协议兼容；不是 D14 全域完成。
 - 资源/锁安全：`SanitizeInputMiddleware.stateMu` + `acquireOffsetsLock` 串行化 read-modify-write，防止跨进程 race（R35 历史教训）；handler SSE 缓冲须有单事件大小上限并避免结束时 raw passthrough。
 - 不可达降级：Redis 不可达时映射表持久化失败 → 还原降级为单轮；日志 warn 但不阻断。
 

@@ -449,12 +449,24 @@ func TestRunAutoActivate_TrialSuccess(t *testing.T) {
 	if st.Status != StatusTrial {
 		t.Errorf("expected status=trial, got %s", st.Status)
 	}
-	if st.LicenseKey != mockTrialLicenseKey {
-		t.Errorf("expected license_key=%s, got %s", mockTrialLicenseKey, st.LicenseKey)
-	}
 	if st.ExpiresAt == "" {
 		t.Error("expected expires_at from trial response")
 	}
+
+	// 安全契约（M-1）：试用 license key 绝不进 activation.json —— 主控
+	// register 同调用里已激活，本地不再持有可激活凭据。两条互补断言：
+	//   1) 字段在 raw JSON 中缺席（不依赖 omitempty 写空字符串的隐式行为）
+	//   2) 任何字符串字段都不包含 trial key 明文（防重构把字段搬进别的 key）
+	raw := readRawStateFile(t, installDir)
+	if _, present := raw["license_key"]; present {
+		t.Errorf("license_key MUST NOT be present in activation.json on trial success, raw=%v", raw)
+	}
+	for k, v := range raw {
+		if s, ok := v.(string); ok && strings.Contains(s, mockTrialLicenseKey) {
+			t.Errorf("field %q leaks trial license key value in activation.json: %v", k, raw)
+		}
+	}
+
 	tok := readInstanceTokenFile(t, installDir)
 	if tok != mockInstanceToken {
 		t.Errorf("expected token file persisted on trial path, got %s", tok)
@@ -527,8 +539,15 @@ func TestRunAutoActivate_LicenseKeyWinsOverTrial(t *testing.T) {
 	if got := lastBody["license_key_hash"]; got != mockValidLicenseKey {
 		t.Errorf("register must carry the explicit license key, got %q", got)
 	}
-	if st.LicenseKey != "" && st.LicenseKey != mockValidLicenseKey {
-		t.Errorf("unexpected license_key in state: %s", st.LicenseKey)
+	// M-1：与 trial 路径同口径，license-key 直通路径下 license_key 也不进 activation.json。
+	raw := readRawStateFile(t, installDir)
+	if _, present := raw["license_key"]; present {
+		t.Errorf("license_key MUST NOT be present in activation.json on license-key path, raw=%v", raw)
+	}
+	for k, v := range raw {
+		if s, ok := v.(string); ok && strings.Contains(s, mockValidLicenseKey) {
+			t.Errorf("field %q leaks license key value in activation.json: %v", k, raw)
+		}
 	}
 	_ = regCalls
 }

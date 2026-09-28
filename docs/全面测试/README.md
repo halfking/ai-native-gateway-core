@@ -103,7 +103,8 @@ bash tests/48h-audit/scripts/aggregate-reports.sh \
 ### 跨 chunk / 跨请求
 
 - 同一 SSE 事件被多次底层 `Write` 拆开：生产 `interceptingStreamWriter` 会先按完整帧缓冲后再调用 sanitizer；每帧上限 16 MiB，超限失败关闭，未终止尾帧在结束时丢弃（R73-F08）。
-- 一个占位符被拆到多个完整 SSE delta 事件：当前 `restoreStreamChunk` 按事件独立解析，不能还原，placeholder 片段会透传（`TestSanitizeRestoreInterceptor_PlaceholderSplitAcrossCompleteFrames` 钉住，R73-F09）；需要另行设计带 TTL/上界的跨事件增量缓存。
+- 一个占位符被拆到多个完整 SSE delta 事件：`SanitizeRestoreInterceptor` 在 `StreamMeta.State` 保存 writer/request 生命周期内的尾片，不使用进程级 TTL map；按 OpenAI content/refusal/tool-call arguments、Anthropic block text/input/partial_json、Responses output-text/function-arguments/refusal/audio-transcript 维度隔离。每流最多 64 条 lane、每条最多暂存 256 字节；opaque item ID 哈希后作 lane key。无映射时完整未知 marker 遮蔽；已解析 lane 的无效 marker continuation 遮蔽字段后继续；不透明 continuation 或容量超限会阻断后续流事件；流结束时未完成尾片随 writer 丢弃（R73-F09）。阻断可能中断客户端流；真实 provider 事件和完整部署路径仍需验证。
+- 非流式/流式恢复遇到空 sanitize map 或 Redis 读取错误时不会直接透传未知完整 marker；未知 token 变为 `[REDACTED]`。已知敏感值因映射缺失仍无法恢复，这是可见性降级不是恢复成功（R73-F10）。
 - 跨请求（多轮会话）：Redis offset hash 记录每类已用最大编号，下一轮接着递增；sm 也在 Redis 中保留 TTL=30min，刷新靠每次响应还原 Expire。
 
 ### mock 测试新增要求（针对工具调用还原）

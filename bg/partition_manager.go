@@ -312,6 +312,11 @@ func (pm *PartitionManager) runCleanup(ctx context.Context) {
 			// [03:00,04:00) 本地窗口，shouldRunRequestLogsArchive 的
 			// hour 门在这里才真正等价于「每日 03 点一次」。
 			pm.archiveOldRequestLogs(ctx)
+			// R73 审计 N2 收口：turn-logs 聚合积压三件套 gauge（rows /
+			// pending_sessions / oldest_age），随 1h tick 刷新。查询走
+			// idx_session_turn_logs_expires 索引；健康表近空时近零开销，
+			// 积压态下每小时一次索引扫描即为该 gauge 的设计目的。
+			pm.refreshTurnLogsBacklogGauge(ctx)
 		}
 	}
 }
@@ -541,6 +546,11 @@ func shouldRunRequestLogsArchive(now time.Time) bool {
 // The function returns one row per archived partition, so this uses Query and
 // sums rows_archived — a QueryRow against a set-returning function would read
 // only the first partition and under-report the work done.
+//
+// R73 审计残留收口（2026-09-28）：调用包在显式事务里并先 SET LOCAL
+// statement_timeout='30min'（与 30min Go 预算对齐）。集合返回函数是单条
+// 驱动层语句，函数内的批游标不稀释 statement_timeout；252 角色级 30s 会
+// 击杀大积压首跑并整批回滚（活锁，同 R72 F2 对 753 的诊断）。
 func (pm *PartitionManager) archiveOldRequestLogs(ctx context.Context) {
 	if pm.db == nil {
 		return
@@ -554,30 +564,64 @@ func (pm *PartitionManager) archiveOldRequestLogs(ctx context.Context) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 
-	rows, err := pm.db.Query(timeoutCtx,
+	// R73 审计残留收口：整个集合返回函数是一次驱动层语句——函数内部的
+	// 1000 行批游标并不能把 statement_timeout 切成小段。252 生产角色级
+	// statement_timeout=30s（llm_gateway rolconfig）会在首批积压 >30s 时
+	// 击杀整个调用并连批带回滚，次日重试同一批形成活锁（与 R72 F2 对 753
+	// 首扫的诊断同型）。事务内 SET LOCAL 抬到与 Go 侧 30min 预算一致，
+	// 事务结束自动还原，pooled 连接不保留（与 promote 60s / analyze 10min
+	// 同型，252 SQL 日志审计轮先例）。
+	tx, err := pm.db.Begin(timeoutCtx)
+	if err != nil {
+		slog.Error("partition_manager: request_logs archive begin failed",
+			"ttl_days", retentionDays, "error", err)
+		return
+	}
+	if _, err := tx.Exec(timeoutCtx,
+		"SET LOCAL statement_timeout = '30min'"); err != nil {
+		tx.Rollback(timeoutCtx)
+		slog.Error("partition_manager: request_logs archive timeout setup failed",
+			"ttl_days", retentionDays, "error", err)
+		return
+	}
+	rows, err := tx.Query(timeoutCtx,
 		"SELECT archived_partition, rows_archived FROM archive_request_logs_default($1)",
 		retentionDays)
 	if err != nil {
+		tx.Rollback(timeoutCtx)
 		slog.Error("partition_manager: request_logs archive failed",
 			"ttl_days", retentionDays, "error", err)
 		return
 	}
-	defer rows.Close()
 
 	var partitions int
 	var totalRows int64
+	var scanFailed bool
 	for rows.Next() {
 		var name string
 		var archived int64
 		if err := rows.Scan(&name, &archived); err != nil {
+			// pgx 里 rows 未关闭前连接不能复用：先记住失败、跳出循环、
+			// Close 之后再统一 Rollback，绝不在 rows 存活时触碰 tx。
 			slog.Error("partition_manager: request_logs archive scan failed", "error", err)
-			return
+			scanFailed = true
+			break
 		}
 		partitions++
 		totalRows += archived
 	}
-	if err := rows.Err(); err != nil {
-		slog.Error("partition_manager: request_logs archive rows failed", "error", err)
+	rows.Close() // pgx v5 Close 无返回值；先归还连接再触碰 tx
+	rowsErr := rows.Err()
+	if scanFailed || rowsErr != nil {
+		tx.Rollback(timeoutCtx)
+		if rowsErr != nil {
+			slog.Error("partition_manager: request_logs archive rows failed",
+				"rows_error", rowsErr)
+		}
+		return
+	}
+	if err := tx.Commit(timeoutCtx); err != nil {
+		slog.Error("partition_manager: request_logs archive commit failed", "error", err)
 		return
 	}
 
@@ -585,6 +629,41 @@ func (pm *PartitionManager) archiveOldRequestLogs(ctx context.Context) {
 		slog.Info("partition_manager: request_logs archived",
 			"ttl_days", retentionDays, "partitions", partitions, "rows", totalRows)
 	}
+}
+
+// refreshTurnLogsBacklogGauge publishes the turn-logs aggregation backlog
+// 水位（R73 审计 N2 收口，R72 §三遗留）：pending 行数、涉及会话数、最老
+// pending 行龄。pending = expires_at > NOW()——聚合器只消费未过期行，
+// 过期未聚合即永久丢失，这组 gauge 就是丢失风险的前瞻信号（对照 R47/R48
+// hot 表 backlog_rows + oldest_row_age 配对惯例）。
+//
+// 挂在 runCleanup 的 1h tick：健康表近空时走 idx_session_turn_logs_expires
+// 近零开销；积压态下每小时一次索引扫描正是观测目的。查询自身失败（含被
+// 角色级 statement_timeout 击杀）只 Warn 并保留上次数值，下个 tick 重试
+// ——观测失败不得反过来干扰清扫与归档主流程。
+func (pm *PartitionManager) refreshTurnLogsBacklogGauge(ctx context.Context) {
+	if pm.db == nil {
+		return
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var rows, sessions int64
+	var oldestAge float64
+	err := pm.db.QueryRow(timeoutCtx, `
+		SELECT count(*),
+		       count(DISTINCT (tenant_id, session_id)),
+		       COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(started_at))), 0)
+		  FROM public.session_turn_logs
+		 WHERE expires_at > NOW()
+	`).Scan(&rows, &sessions, &oldestAge)
+	if err != nil {
+		slog.Warn("partition_manager: turn-logs backlog gauge refresh failed", "error", err)
+		return
+	}
+	sessionTurnLogsBacklogRows.Set(float64(rows))
+	sessionTurnLogsBacklogPendingSessions.Set(float64(sessions))
+	sessionTurnLogsBacklogOldestAgeSeconds.Set(oldestAge)
 }
 
 // clampSessionTurnLogsTTLHours forces the configured retention into the
