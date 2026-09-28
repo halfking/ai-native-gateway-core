@@ -240,6 +240,9 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		// 主表归档函数——R72 审计轮补五点同步（子任务只登记了 sequence
 		// 通道，canonical 登记守卫对本号必红，R71 F1 同款静默红模式）。
 		"754_archive_request_logs_default.sql": archiveRequestLogsDefaultMigration754,
+		// 756 (2026-09-29, D07 S-01 真库 EXPLAIN): request_logs(id) 索引——
+		// 754 的「主键游标」在无 id 索引的表上退化为每批次全分区扫描。
+		"756_request_logs_id_index.sql": requestLogsIDIndexMigration756,
 	}
 
 	for name, embedded := range expected {

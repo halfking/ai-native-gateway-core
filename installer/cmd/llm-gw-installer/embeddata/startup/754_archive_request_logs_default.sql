@@ -20,8 +20,8 @@
 -- 设计基线:
 --   * 表语义: request_logs 主表的月分区保留 p_retention_days 天的
 --     「全字段」语义，旧的月分区中只把摘要字段（ts、tenant_id、
---     request_id、session_id、provider_model、prompt_tokens、
---     completion_tokens、cost_usd、status_code、success、error_kind）
+--     request_id、gw_session_id、provider_model、prompt_tokens、
+--     completion_tokens、cost_usd、upstream_status_code、success、error_kind）
 --     落进 request_logs_archive_YYYY_MM。丢弃大 JSONB（request_body、
 --     response_body、outbound_body、headers、trace_events、
 --     routing_attempts、tool_calls、attachments、dlp_violations、
@@ -29,6 +29,9 @@
 --     outbound_msg_hashes、sanitizer_mutations、vendor_metadata、
 --     ir_extensions 等 18 列）以让归档体积 ≈ 主表的 5% 级，
 --     长期挂载在月分区供对账/合规回溯。
+--     **归档表的列名与源列名不同**：归档侧叫 session_id / status_code，
+--     源侧的真名是 gw_session_id / upstream_status_code（见下「首跑即死」
+--     段）。这两组名字不要互相替换——归档表自己的列名是有下游读方契约的。
 --
 --   * 风格: 沿 750 (usage_facts_daily_partition) move-then-attach
 --     范式——INSERT 归档行优先于任何 source-side 副作用（archive
@@ -98,7 +101,46 @@
 -- O(所有超过保留窗口的行)，且随时间单调增长，不会自行收敛。
 -- 故 bg 侧把它限制在**每日一次**（bg/archiveOldRequestLogs 的注释有详述）。
 -- 彻底解法是加一张 archive ledger 记录 (partition, max_id)，已归档分区直接
--- 跳过；本 SQL 从未在真实 PostgreSQL 上执行过，不宜在此盲改，留作后续。
+-- 跳过。该 ledger **本轮仍未实施**——2026-09-29 S-01 实测确认归档链路本身
+-- 此前从未跑通过一次（见下「首跑即死」段），在它跑通并量出真实成本之前谈
+-- ledger 优化是空中楼阁；量出数字后连同实测结论一并登记在 D07 报告里。
+--
+-- ============================================================================
+-- **2026-09-29 S-01 首跑即死（已在本文件内修正）：本函数此前从未成功执行过一次。**
+-- ============================================================================
+-- D07 S-01「兼容 PG EXPLAIN / 大分区实测」在本机 PostgreSQL 17.10 上真跑了
+-- 首跑，结果是 SQLSTATE 42703：
+--
+--     ERROR:  column "session_id" does not exist
+--     HINT:  Perhaps you meant to reference the column
+--            "request_logs_2026_08.gw_session_id".
+--
+-- 根因：candidates CTE 投影的 11 个摘要列里有 **2 个在 request_logs 上根本
+-- 不存在**——真表（基线 01-schema.sql 与线上 4 个真实分区逐列核对一致，137 列）
+-- 叫 `gw_session_id`（会话）与 `upstream_status_code`（整数 HTTP 状态），
+-- 迁移里写的是 `session_id` 与 `status_code`。这两个名字看起来是照着
+-- session_* 族表（session_turns 等确实有 session_id）的列清单抄的。
+--
+-- 为什么所有既有门禁都没拦住——三条独立原因叠加，缺一不可：
+--   1. 函数体是 format('%I') + EXECUTE 的**动态 SQL**，列名要到运行时才解析；
+--      CREATE FUNCTION 阶段不做任何列存在性校验（CREATE 通过）。
+--   2. D-01 只核「function/installer/embed/caller 形状」，SF-01 只核「源分区
+--      直查 / 独立归档表 / 无 DELETE」的静态字面量，都是对文本的断言。
+--   3. 整条归档链路**从未被任何测试驱动过一次真执行**——包括线上。
+-- 后果：bg.archiveOldRequestLogs 每天 03:xx 命中第一个过期分区即抛错回滚，
+-- 只留一条 "request_logs archive failed" 日志，request_logs_archive_* 表
+-- 从未有过一行。审计报告里「归档已接线」「每日一次闸门通过」全部属实，
+-- 但接线的那根线从第一天起就插在空插座上。
+--
+-- 本次修正只改**源投影的 2 个列名**（gw_session_id / upstream_status_code），
+-- 归档表自身的列名 session_id / status_code 保持不变（有下游读方契约）。
+-- 防复发：tests/48h-audit/D07-hot-columnar/data/archive_source_columns_test.go
+-- 从基线 DDL 解析 request_logs 真实列集合，与本文件投影列交叉校验——
+-- 不需要数据库就能红，这是本条缺陷唯一真正的守门人。
+--
+-- **已应用 754 的环境需要重跑本文件**（CREATE OR REPLACE FUNCTION 幂等）：
+--     scripts/apply-db-revision-sequence.sh files=(754_archive_request_logs_default.sql)
+-- 迁移台账会跳过已应用的 754，不重跑就拿不到修正。
 --
 -- 落地路径勘误：本文件头早先写的是「archiveSpecs 增加 day=5 条目」，**未实施**
 -- —— archiveSpecs 按「日期参数 + 标量/tuple 返回」设计，而本函数收 retention
@@ -224,9 +266,9 @@ BEGIN
             EXECUTE format(
                 'WITH
                  candidates AS (
-                     SELECT id, request_id, ts, tenant_id, session_id,
+                     SELECT id, request_id, ts, tenant_id, gw_session_id,
                             provider_model, prompt_tokens, completion_tokens,
-                            cost_usd, status_code, success, error_kind
+                            cost_usd, upstream_status_code, success, error_kind
                      FROM %I
                      WHERE id > %L
                      ORDER BY id
@@ -241,9 +283,9 @@ BEGIN
                          prompt_tokens, completion_tokens, cost_usd,
                          status_code, success, error_kind
                      )
-                     SELECT request_id, ts, tenant_id, session_id,
+                     SELECT request_id, ts, tenant_id, gw_session_id,
                             provider_model, prompt_tokens, completion_tokens,
-                            cost_usd, status_code, success, error_kind
+                            cost_usd, upstream_status_code, success, error_kind
                      FROM candidates
                      ON CONFLICT (request_id, ts) DO NOTHING
                      RETURNING 1 AS r
