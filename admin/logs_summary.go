@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"log/slog"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -146,7 +147,8 @@ func (h *Handler) handleSessionSummary(w http.ResponseWriter, r *http.Request) {
 
 	summary, keyPoints, resolvedModel, err := h.callSessionSummaryLLM(ctx, r, apiKey, req.GwSessionID, corpus)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "总结生成失败: "+err.Error())
+		slog.Error("session summary: generation failed", "gw_session_id", req.GwSessionID, "err", err)
+		writeError(w, http.StatusBadGateway, "总结生成失败，请稍后重试")
 		return
 	}
 	if resolvedModel != "" {
@@ -510,7 +512,8 @@ func (h *Handler) handleSessionSummaryToMemora(w http.ResponseWriter, r *http.Re
 		var resolvedModel string
 		summary, keyPoints, resolvedModel, err = h.callSessionSummaryLLM(ctx, r, apiKey, req.GwSessionID, corpus)
 		if err != nil {
-			writeError(w, http.StatusBadGateway, "总结生成失败: "+err.Error())
+			slog.Error("session summary: generation failed", "gw_session_id", req.GwSessionID, "err", err)
+			writeError(w, http.StatusBadGateway, "总结生成失败，请稍后重试")
 			return
 		}
 		if resolvedModel != "" {

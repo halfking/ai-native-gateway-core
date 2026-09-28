@@ -103,7 +103,6 @@ func TestRecommendModelAlternativesPrefersTaskCandidateListOrder(t *testing.T) {
 	}
 }
 
-
 // R73 审计 E3 回归钉：整池无任务词表时（untagged 线上库），
 // TaskMatchScore<=0 过滤必须跳过，建议列表不得 fail-closed 成
 // ErrNoCandidates（非 chat 任务 503 建议位恒空的复发形态）。

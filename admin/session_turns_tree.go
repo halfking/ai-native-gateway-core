@@ -35,6 +35,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 )
 
 // SessionTurnTreeItem 是一轮（主请求 + 内联子请求树）。
@@ -151,7 +153,10 @@ func (h *Handler) handleSessionTurnsTree(w http.ResponseWriter, r *http.Request)
 	}
 
 	if h.db == nil {
-		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		// 十七轮审计（M-2 同族收尾）：tree 是 turns 列表的默认路由，此前
+		// nil-pool 裸 writeError(503)、查询错误一律 500，与 v2 家族的
+		// WriteStorageDegraded 口径不一致——同一 DB 故障 tree=500 / v2=503。
+		WriteStorageDegraded(w, observability.StorageComponentTurns, ErrNilDatabasePool)
 		return
 	}
 
@@ -165,6 +170,10 @@ func (h *Handler) handleSessionTurnsTree(w http.ResponseWriter, r *http.Request)
 		Cursor:    cursor,
 	})
 	if err != nil {
+		if IsStorageUnavailable(err) {
+			WriteStorageDegraded(w, observability.StorageComponentTurns, err)
+			return
+		}
 		writeInternalErr(w, "query failed", err)
 		return
 	}

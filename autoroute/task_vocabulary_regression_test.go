@@ -163,7 +163,6 @@ func TestRecommendV2_DiscriminatingLowMatchStillFallsBack(t *testing.T) {
 	}
 }
 
-
 // R73 审计 M-1 根修回归钉：词表代表只在 hot-top3 子池之外时，坍缩 guard
 // 不得据全量词表判定把全 0 子池坍缩成 48h 热度单模型（多样性 3→1）。
 // 旧实现里本用例必坍缩：vocabularyPresent 按全量 available 判 true，

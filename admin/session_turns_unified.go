@@ -130,7 +130,12 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 	// V2 shadow writes may not exist for older sessions. Read-time fallback keeps
 	// the unified route useful without exposing the legacy tree cursor contract.
 	if len(items) == 0 && r.URL.Query().Get("cursor") == "" {
-		if fallback, ok := unifiedTurnsTreeFallback(r.Context(), db, sessionID, tenantID, limit); ok {
+		fallback, ok, unavail := unifiedTurnsTreeFallback(r.Context(), db, sessionID, tenantID, limit)
+		if unavail != nil {
+			WriteStorageDegraded(w, observability.StorageComponentTurns, unavail)
+			return
+		}
+		if ok {
 			writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "turns": fallback, "count": len(fallback), "has_more": false, "next_cursor": "", "source": "tree_fallback"})
 			return
 		}
@@ -232,14 +237,24 @@ func statusCodeForTreeStatus(status string) int {
 	}
 }
 
-func unifiedTurnsTreeFallback(ctx context.Context, db sessionTurnsDB, sessionID, tenantID string, limit int) ([]TurnListItem, bool) {
+// 第三个返回值非 nil 表示 fallback 查询失败且判定为存储不可用（十七轮审计：
+// 此前所有错误一律吞成 ok=false，V2 表空 + tree 读故障时客户端拿到 200 空列表，
+// 真实故障被静默掩盖）。非存储类错误仍按原语义吞掉——老会话 fallback 失败
+// 不应把本可成功的 v2 响应变成 5xx。
+func unifiedTurnsTreeFallback(ctx context.Context, db sessionTurnsDB, sessionID, tenantID string, limit int) ([]TurnListItem, bool, error) {
 	result, err := querySessionTurnsTree(ctx, db, sessionTurnsTreeParams{
 		SessionID: sessionID,
 		TenantID:  tenantID,
 		Limit:     limit,
 	})
-	if err != nil || result.NotFound || result.Forbidden {
-		return nil, false
+	if err != nil {
+		if IsStorageUnavailable(err) {
+			return nil, false, err
+		}
+		return nil, false, nil
+	}
+	if result.NotFound || result.Forbidden {
+		return nil, false, nil
 	}
 	items := make([]TurnListItem, 0, len(result.Turns))
 	for _, turn := range result.Turns {
@@ -259,7 +274,7 @@ func unifiedTurnsTreeFallback(ctx context.Context, db sessionTurnsDB, sessionID,
 			PrimaryKey: sessionID,
 		})
 	}
-	return items, true
+	return items, true, nil
 }
 func sessionTurnsListRouting() string {
 	if settings.Global == nil {

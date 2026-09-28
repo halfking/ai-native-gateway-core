@@ -136,7 +136,8 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 
 	llmRes, err := h.callAdminLLMChat(ctx, r, apiKey, adminLLMTaskSessionTitle, taskID, userContent)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "标题生成失败: "+err.Error())
+		slog.Error("session title: generation failed", "task_id", taskID, "err", err)
+		writeError(w, http.StatusBadGateway, "标题生成失败，请稍后重试")
 		return
 	}
 	title := llmRes.Content
