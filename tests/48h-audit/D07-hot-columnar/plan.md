@@ -269,6 +269,41 @@ SELECT ... FROM <view> WHERE <ts 范围> ORDER BY ts DESC LIMIT <page_size>
 
 详见 reports/latest.md「R79 续五」。
 
+## 14. R79 续六：backlog 清空（9 条逐条定性），又挖出 2 个 P1
+
+上一轮 9 条无法规划的 SQL，本轮逐条查证：
+
+| 条目 | 定性 |
+|---|---|
+| `offerListSQLColumns`（`__mo_modality__`） | **假阳性**：模板占位符，启动探测 `model_offers.provider_modality` 后替换（`:76`/`:120`/`:138`） |
+| `internalPersonDaySQL` | 抽取器判错对象：Go 字符串拼接体，正则只抓到第一段反引号 |
+| `selectExecutionCols` / `pgSourceColumns` | 抽取器判错对象：无 FROM 的列清单片段 |
+| `modelcatalog::insertManualCredentialModelSQL` | **PREPARE 推断限制**（`42P08`，$8 只在 CTE 内被引用） |
+| `internal/reasoncap::q` | **真缺陷 → P1-4**：`model_aliases` 无 `alias` 列，应为 `raw_name` |
+| `toolexecution::q / qHot / q` | **真缺陷 → P1-3** |
+
+**P1-3｜`tool_usage_stats` 列名漂移**：基线 `01-schema.sql` 与真库 `pg_attribute`
+**两个独立 SSOT 逐列一致**（`tool_id`/`usage_date`，无 `tool_name`/`date`），
+全仓无任何改名迁移；而 Go 直接 `INSERT INTO tool_usage_stats_hot (… tool_name, date …)
+ON CONFLICT (tool_name, date)`。活接线 `cmd/gateway/tool_execution_integration.go:40`。
+
+**P1-4｜`model_aliases.alias`**：基线该表只有 `raw_name`；`internal/reasoncap/pgsource.go:59`
+写的是 `ma.alias = $1`。
+
+**一次自我纠正**：此前我曾把 P1-4 误读成 modelcatalog 的问题——用 `paste` 把「键」行与
+下一行错误消息配对时**错位了一行**。正确做法是让门逐条打印 `键：…` 与消息。
+
+**分类器新增 `42P08` 一档**（PREPARE 无参数类型的推断限制，非语句缺陷）。
+
+**自收缩检查补上缺失的一侧**：原检查只覆盖「登记项现在能规划」，不覆盖
+「抽取器不再采集它」——补过滤后 4 条登记项悄无声息离开语料而门一直绿。
+现断言：**每条登记键都必须对应本轮语料里的一个候选**。
+
+backlog 清空（`expectedUntriagedBacklog = 0`），机制保留。
+语料 155 条：131 规划成功 / 14 已定性 / 10 本机无法验证。
+
+详见 reports/latest.md「R79 续六」。
+
 ## 子代理派发提示词
 
 ```
