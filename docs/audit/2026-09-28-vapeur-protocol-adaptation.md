@@ -167,3 +167,78 @@ gpt-6-sol chat 入口 90s 超时，归因 apigpt(apiclaude.cc) 上游挂起 89.7
 覆盖 2300 后失效过约 80 分钟（23:00-23:1x）；本节记录了完整因果链。
 "部署即修复"的声明必须绑定"且无后续并行部署回滚密钥"才成立——治本点
 落在 .env.local 而非部署动作本身。
+
+## 八、第三轮批判复审（2026-09-29 00:4x–01:0x）——独立复核 + 一处真代码修复
+
+本轮不复述前两轮结论，只做三件事：独立复核第七节的三条声明、纠正本会话
+先前的错误结论、落一处至今仍在的真代码缺陷。
+
+### 8.1 对第七节三条声明的独立复核
+
+| 声明 | 复核结果 | 证据 |
+|---|---|---|
+| 「.env.local 密钥治本，此后任何会话直接 deploy 不再需要手工 export」 | **机器上成立，仓库层零留痕** | `.env.local` 现为 SK len=64 / CEK len=44 / SK≠CEK；但它被 `.gitignore:313 .env.*` 忽略，`git log -- .env.local` 无任何提交 |
+| 「npm install 同步后 vue-tsc 零改动通过」 | **成立** | 本轮实测 `BUILD_EXIT=0`，且 installed vitest=5.0.2 与 declared `^5.0.2` 一致（此前 node_modules 停在 1.6.1） |
+| 「解密冒烟 failed=0」 | **对抽样 provider 成立，对全库不成立** | 2308 运行期日志仍有 34 行 decrypt 失败（`envelope_kid=mock-01`，属 mock 凭据，不可解属预期） |
+
+**须记录的口径纠正**：22b655463 / 8aced3e93 两个提交标题含「治本修复」「构建门」，
+但 `git show --stat` 显示**各只改 1 个 markdown、零代码**。密钥修复落在
+gitignored 文件里，仓库没有任何机制阻止同类漂移复发。
+
+### 8.2 本会话先前结论的自我纠正（重要）
+
+- **错误**：先前断言「vue-tsc 的 TS 类型错是代码缺陷，需改 `web/src/composables/*.test.ts`」。
+  **事实**：代码从未有错。真实根因是 0d5230bfb 把 vitest 升到 ^5 后 node_modules
+  未同步（仍 1.6.1），旧 vitest 的 mock 类型与新声明不匹配。本轮 `npm install`
+  同步后**零代码改动**构建即绿。若按先前建议去改那两个 test 文件，属于改错对象。
+- **过期**：先前断言「vapEUR live 探针被 `cannot decrypt: unknown format` 阻塞」。
+  该结论建立在错误密钥之上，密钥修正后已失效。实测见 8.3。
+
+### 8.3 vapEUR live 探针打通（此前被误判为阻塞）
+
+在 2308 上经网关自身 `POST /api/admin/providers/36/test-now` 走真实代码路径
+（用库内加密凭据，明文不落盘、不打印）：
+
+    {"provider_id":36,"latency_ms":2071,"status":"healthy","tested_at":"2026-09-28T17:02:11Z"}
+
+凭据 126 同步刷新为 `healthy / 512ms / 2026-09-29 00:05:58`。
+凭据 13 仍 `unreachable`，其 `403 Organization is disabled` 是 Vapeur 侧账户状态，
+非本仓库代码问题。
+
+### 8.4 至今仍在的真代码缺陷（本轮修复）
+
+`scripts/deploy-local.sh` 的 `build_frontend()` 调用点为
+
+    (cd "$PROJECT_ROOT/web" && npm run build) >/dev/null
+
+在 `set -euo pipefail` 下构成**静默夭折**：`/dev/null` 吞掉 vue-tsc 全部诊断，
+非零退出直接 unwind 到 EXIT trap，日志最后一行停在 build 之前的
+`dl_cleanup_legacy_downloads`，操作者无从判断死在哪一步。第七节观察到的
+「版本号连跳 2301-2306 无部署」正是此缺陷的外部症状。
+
+修复：全量输出落 `$RUN_DIR/build-frontend.log`；失败时回显末 40 行并 `die`，
+错误信息指名日志文件。`--no-frontend` 短路语义不变。
+
+新增门 `scripts/deploy-local-frontend_test.sh`：从**已发布脚本**中抽取
+`build_frontend` 函数体（不重写副本）驱动假 `npm` 失败，断言三件事——失败必须
+致命、编译器诊断必须可见、必须留下非空日志文件；并保留 `--no-frontend` 的
+no-op 对照。
+
+> 门自身的可信度：首版 fixture 把 `.bin/vite` 建成不可执行的空文件，导致命中
+> `node_modules is missing` 的 warn 分支、`npm` 根本没被调用，门会以「通过」
+> 形态测了一个它没测的性质。已改为可执行 stub 后重验：修复前红
+> （`surfaced no compiler diagnostic`），修复后绿。
+
+### 8.5 本轮未修、明确留作风险的项
+
+1. **构建失败仍会烧掉一个 build_seq**。`bump_local_version` 在
+   `build_frontend` 之前执行，而 `web/public/version.json` 由 bump 写入、
+   前端构建需要它，因此**无法简单前移**。结构性约束，非疏漏。
+2. **密钥漂移无仓库级护栏**。`.env.local` 不受版本控制，SK/CEK 同值漂移可复发。
+   可行方向是加一条「deploy 前校验 SK 与 CEK 长度/互异」的 preflight，属下一轮范围。
+3. **共享 PG 崩溃未定性**。今日仅 1 次（22:40:56 发起 shutdown → 22:44:05
+   `not properly shut down` → redo 9.35s 完成），发生在本会话部署完成（22:37:57）
+   之后 3 分钟，**无证据归因于部署**；「宿主 OOM」说法在 PG 日志中**无直接证据**，
+   仅为旁证推断，不应写成结论。
+4. **并发会话持续改写同一工作区**。本轮期间运行版本被 2308→2313 覆盖、HEAD 被
+   推进 35 个提交。取证与结论必须绑定具体 build_seq 与 git_sha，否则引用即失效。
