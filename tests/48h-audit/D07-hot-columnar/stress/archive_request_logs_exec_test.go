@@ -103,17 +103,25 @@ func executableSQL(t testing.TB, rel string) string {
 	return b.String()
 }
 
-// liveDSN resolves a maintenance DSN. The gates create and drop their own
-// scratch database through it, so it must point at any database on a server
-// where the role may CREATE DATABASE.
+// liveDSN resolves a MAINTENANCE DSN for this package. These gates CREATE and
+// DROP their own scratch databases, so the DSN must point at a server where the
+// role may CREATE DATABASE, and its database path segment must be literally
+// /postgres so the substitution below lands in the freshly created database.
+//
+// It deliberately does NOT read the read-only catalog DSN used by ../data
+// (D07_S01_PG_URL): one variable serving both roles means pointing the data gate
+// at a real database silently breaks these gates, and pointing these gates at a
+// real database would mean writing to it. Separate the two.
 func liveDSN(t testing.TB) string {
 	t.Helper()
-	for _, k := range []string{"D07_S01_PG_URL", "TEST_PG_URL", "LLM_GATEWAY_PG_URL", "TEST_DATABASE_URL"} {
+	for _, k := range []string{"D07_S01_ADMIN_URL", "TEST_PG_URL", "LLM_GATEWAY_PG_URL", "TEST_DATABASE_URL"} {
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			return v
 		}
 	}
-	t.Skip("no live PostgreSQL DSN (D07_S01_PG_URL / TEST_PG_URL / LLM_GATEWAY_PG_URL / TEST_DATABASE_URL)")
+	t.Skip("no maintenance PostgreSQL DSN (D07_S01_ADMIN_URL / TEST_PG_URL / LLM_GATEWAY_PG_URL / " +
+		"TEST_DATABASE_URL). These gates need a role with CREATEDB and a DSN whose database path is /postgres; " +
+		"D07_S01_PG_URL is intentionally NOT consulted here — that one is the read-only catalog DSN for ../data")
 	return ""
 }
 
@@ -163,8 +171,12 @@ func withScratchDB(t *testing.T, timeout time.Duration, fn func(ctx context.Cont
 	var landedIn string
 	if err := conn.QueryRow(ctx, "SELECT current_database()").Scan(&landedIn); err != nil || landedIn != scratch {
 		conn.Close(ctx)
-		t.Fatalf("scratch DSN substitution failed (query err=%v, landed on %q, want %q): use a DSN "+
-			"whose database path segment is literally /postgres", err, landedIn, scratch)
+		t.Fatalf("scratch DSN substitution failed (query err=%v, landed on %q, want %q).\n"+
+			"These gates build and drop their own database, so the DSN must name a *maintenance* database: "+
+			"set D07_S01_ADMIN_URL to a postgres:// URL whose path is literally /postgres. "+
+			"(D07_S01_PG_URL is the read-only catalog DSN used by ../data and is deliberately not read here — "+
+			"pointing this gate at a real database is how a read-only gate would silently become a writer.)",
+			err, landedIn, scratch)
 	}
 	defer conn.Close(ctx)
 

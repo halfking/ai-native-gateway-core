@@ -41,11 +41,23 @@ go vet ./...
 # ① 归档接线（R73 五条）：每日一次闸门、分钟不敏感、闸门真被调用、
 #    statement_timeout 钉在事务内、由小时清理循环驱动。
 go test -race -timeout 120s ./bg -run 'TestShouldRunRequestLogsArchive_|TestArchiveOldRequestLogs_' -count=1
-# ② 归档 SQL 真跑 + 计划形状（2026-09-29 新增，见 §8）。无库自动 skip；
-#    有库即建一次性 scratch 库跑仓库自己的 754/756 与基线 DDL。
-D07_S01_PG_URL=postgres://user:pass@127.0.0.1:5432/postgres?sslmode=disable \
-  go test -timeout 300s ./tests/48h-audit/D07-hot-columnar/... -count=1
+# ②a 只读目录门（列名交叉校验 / 双副本字节一致 / promote_* 批游标首列索引 /
+#     死函数引用不存在的表）。只读，DSN 指向被审计库本身。数据门不需要该 DSN
+#     也能跑（前三道），后两道需要。
+D07_S01_PG_URL=postgres://reader@127.0.0.1:5432/llm_gateway?sslmode=disable \
+  go test -timeout 120s ./tests/48h-audit/D07-hot-columnar/data/... -count=1
+# ②b 归档 SQL 真跑 + 计划形状（2026-09-29 新增，见 §8）。会 CREATE/DROP 一次性
+#     scratch 库，故**必须**用维护 DSN（路径为 /postgres、角色有 CREATEDB），
+#     且刻意不读 ②a 的 D07_S01_PG_URL——一个变量服务两种角色，会让只读门在
+#     误配时悄悄变成写门。无库自动 skip。
+D07_S01_ADMIN_URL=postgres://admin:pass@127.0.0.1:5432/postgres?sslmode=disable \
+  go test -timeout 300s ./tests/48h-audit/D07-hot-columnar/stress/... -count=1
 ```
+
+**为什么拆成两个 DSN**：②a 是只读目录审计，②b 要建/删自己的库。用同一个变量时，
+把只读 DSN 配给 ②b 会让 ②b 尝试在真库上 CREATE DATABASE；把 ②b 的 DSN 配给 ②a
+则让一个只读门挂在一条预期会写的连接上。两者都不是能靠「配的人小心」解决的问题，
+所以在代码里互不读取。
 
 ## 7. 与方案文档的对齐
 
@@ -85,6 +97,31 @@ RANGE (ts)` 但**分区数为 0**（唯一会 ATTACH 的旧函数 `archive_reque
 已被迁移 331 移除，且 331 本身未进 installer startup 通道）。后果：任何未来读方写
 `SELECT ... FROM request_logs_archive` 会静默得到 0 行而不是报错。现状「无任何读方」
 属实，但这是个静默陷阱。
+
+## 9. R79 续：promote_* 全族普查（S-01 方法的推广）
+
+S-01 只修了 `request_logs` 一族。本轮把「批游标列必须有首列索引」这条推到 hot→partition
+的 `promote_*` 全族（真库 29 个函数 / 27 个批游标 / 18 个活函数），结果：
+
+- **Gate A（活函数缺索引）**：18 个活函数里 16 个索引齐全，2 个没有 ——
+  `candidate_failure_logs_hot(ts)`（无任何 ts 首列索引）与 `auto_route_selections_hot(ts)`
+  （仅有 promote 谓词推不出的部分索引）。**定级 P2 潜在，不是 P1**：按实测摄入速率
+  （24 行/h 与 359 行/h），8h 窗口只有 ~190 / ~2,900 行，**都不到一个 5000 行的批次**，
+  二次方代价今天根本没被支付。
+- **Gate B（死函数引用不存在的表）**：3 个 `promote_*_default_batch` 零调用方，
+  且其父表根本没有 DEFAULT 分区。**定级 P3 文档债**（上了膛的枪：接线即 42P01）。
+  登记而不删——删 schema 对象是迁移决策。
+
+**一条被证伪的假设**：初见 `candidate_failure_logs_hot` 有 8h47m 的行未超窗被 promote，
+判「8h 不变式已破」；追日志后确认上一轮 promote 跑于 23:04:50、截止线 15:04:50，
+当时最老行 15:05:32 **尚未到期**，按小时周期的正常滞留上界是 8h+1h。
+**不变式没破，是我在验证前就开始归因。**
+
+两道门均**过变异检验**：白名单塞假条目 → 自收缩检查红；Gate A 索引查找改成 `WHERE false`
+→ 报出全部 16 个活函数（证明不是象征性抽查）。两道门都 **fail-closed**：
+活函数解析不出批游标即红，而不是跳过——这条设计在写门当天就顶出了抽取器只覆盖 7/26 的坑。
+
+详见 reports/latest.md「R79 续」。
 
 ## 子代理派发提示词
 
