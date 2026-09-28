@@ -150,6 +150,35 @@ S-01 只修了 `request_logs` 一族。本轮把「批游标列必须有首列�
 
 详见 reports/latest.md「R79 续二」。
 
+## 11. R79 续三：非游标查询面 + DEFAULT 分区普查（1 个 P2 + 三条证伪）
+
+前几批的靶子都是「批游标」。本轮换靶子，查查询面上的另外两种风险。
+
+**新 P2｜`stats_event_inbox` 名义分区、实际零分区**：声明 `PARTITION BY RANGE (occurred_at)`
+却只有 DEFAULT 一个子分区，**1,419,612 行 / 1298 MB** 全在里面（2026-08-19 → 09-29，41 天）。
+`bg/partition_manager.go` 的 `ensureSpecs()` 无任何条目引用它；全仓**零处**
+`DELETE/TRUNCATE stats_event_inbox`——消费者只 `markProcessed`，`replaySQL` 还刻意保留
+已处理行，是一本只增不减的重放账本。定 P2 不定 P1：声明查询有部分索引兜底，今天不慢；
+真实代价是无界增长（实测 10–26K 行/天，尖峰 150K）。
+
+**三条被证伪的假设**（这轮一半价值在「不是」上）：
+1. `session_turns` 的索引全带 `ON ONLY`，若 PG 不递归则 6.2GB 热分区缺 `request_id` 索引
+   → 实测 5 个分区逐个查 `pg_index`，**每个都有** `*_request_id_idx`。证伪。
+2. 计划里 `Seq Scan on request_logs_2026_07/08` 疑似缺索引 → 实测这两个分区
+   **本来就是 0 行**，顺序扫是对的。本地空表假象。证伪。
+3. 「DEFAULT 装了 1168 MB，分区裁剪全废」→ EXPLAIN 三次复跑否掉：窗口被显式兄弟分区
+   **完整覆盖**时 PG 17.10 会裁掉 DEFAULT（关掉 `enable_partition_pruning` 即复现为 Append）。
+   剩下的真实结论窄得多，**P3 文档债**：`partition_manager.go:1258` 那句
+   「partition pruning 对 WHERE 范围查询仅扫命中分区」对 2026-09-26 之前的数据不成立。
+
+**这道门抓到了我自己手工普查漏掉的那一张**：手工 census 带了
+`AND (子分区数) > 1` 的过滤，而 `stats_event_inbox` 恰好只有一个子分区（DEFAULT 自己），
+于是被整条抹掉——**恰恰因为它退化，它才不会被那个条件选中**。
+写成门后同一条查询没有该过滤，立刻报出 2 张。
+教训：**普查脚本里的过滤条件会同时充当「筛选」和「掩盖」。**
+
+详见 reports/latest.md「R79 续三」。
+
 ## 子代理派发提示词
 
 ```
