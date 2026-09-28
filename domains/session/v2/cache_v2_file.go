@@ -142,13 +142,18 @@ func NewFileCache(baseDir string, ttl time.Duration, maxSize int64) (*FileCache,
 	return fc, nil
 }
 
-// ResizeMax 修改 maxSize 上限。仅立即生效扩容；缩容交由下一轮 trimmer
-// 执行（按 mtime 最旧先删），避免强制删除仍活跃的会话文件。
-// 要求调用方持有 fc.mu。零值或负值拒绝（与构造时校验一致）。
+// ResizeMax 修改 maxSize 上限（热重载入口，H4 接线：settings 变更 → 本方法）。
+// 仅立即生效扩容；缩容交由下一轮 trimmer 执行（按 mtime 最旧先删），避免
+// 强制删除仍活跃的会话文件。零值或负值拒绝（与构造时校验一致）。
+// 内部持 fc.mu 写 maxSize：热重载由 settings/admin goroutine 调用，与 Set
+// 锁内的 `sizeUsed+needed <= maxSize` 判定并发，必须同锁互斥（mu 是私有
+// 字段，外部调用方无法按要求持锁，锁必须在方法内部获取）。nil-safe。
 func (fc *FileCache) ResizeMax(newMaxSize int64) {
-	if newMaxSize <= 0 {
+	if fc == nil || newMaxSize <= 0 {
 		return
 	}
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
 	fc.maxSize = newMaxSize
 }
 

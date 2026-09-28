@@ -14,6 +14,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -179,5 +180,131 @@ func TestHotZoneTrimmerHotReload(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "session_bodies", "z.json")); err != nil {
 		t.Errorf("z.json should remain: %v", err)
+	}
+}
+
+// TestHotZoneTrimmerApplyReloadValues 验证 applyReload 的取值语义：
+// 非正 retention/maxBytes = 维持现值；enabled 透传。
+func TestHotZoneTrimmerApplyReloadValues(t *testing.T) {
+	tr := NewHotZoneTrimmer(t.TempDir(), time.Hour, 1024)
+
+	tr.WithReload(func() (time.Duration, int64, bool) { return 2 * time.Hour, 2048, false })
+	if tr.applyReload() {
+		t.Fatal("applyReload should report enabled=false")
+	}
+	if got := time.Duration(tr.retention.Load()); got != 2*time.Hour {
+		t.Errorf("retention = %v, want 2h", got)
+	}
+	if got := tr.maxBytes.Load(); got != 2048 {
+		t.Errorf("maxBytes = %d, want 2048", got)
+	}
+
+	// 非正值维持现值（接线层语义：settings 读到非法/零值时不覆盖）
+	tr.WithReload(func() (time.Duration, int64, bool) { return 0, -1, true })
+	if !tr.applyReload() {
+		t.Fatal("applyReload should report enabled=true")
+	}
+	if got := time.Duration(tr.retention.Load()); got != 2*time.Hour {
+		t.Errorf("retention = %v, want unchanged 2h", got)
+	}
+	if got := tr.maxBytes.Load(); got != 2048 {
+		t.Errorf("maxBytes = %d, want unchanged 2048", got)
+	}
+}
+
+// TestHotZoneTrimmerReloadHookShrinksRetention H4 热重载接线验收：WithReload
+// 钩子在 Start 的每轮 TrimOnce 前生效——retention 从 24h 收紧到 30min 后，
+// 原本保留的文件在下一个 tick 被淘汰（≤1 轮询周期生效）。
+func TestHotZoneTrimmerReloadHookShrinksRetention(t *testing.T) {
+	dir := newHotZoneDir(t)
+	path := filepath.Join(dir, "cache", "x.json")
+	touchFile(t, path, []byte("aaaa"), time.Now().Add(-time.Hour)) // 对 30min 已过期
+
+	retention := 24 * time.Hour
+	tr := NewHotZoneTrimmer(dir, retention, 1<<30)
+	var calls atomic.Int64
+	tr.WithReload(func() (time.Duration, int64, bool) {
+		calls.Add(1)
+		return 30 * time.Minute, 0, true
+	}).WithInterval(10 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tr.Start(ctx)
+	}()
+
+	// 首轮 applyReload 在 Start 内同步执行：retention 已收紧 → x.json 应被删
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("x.json should be evicted after reload tightened retention")
+	}
+	if calls.Load() == 0 {
+		t.Errorf("reload hook was never called")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not exit after ctx cancel")
+	}
+}
+
+// TestHotZoneTrimmerReloadDisabledSkipsRound 热重载 enabled=false：本轮（含
+// 首轮）跳过清理，目录内容原样保留；恢复 true 后恢复清理。
+func TestHotZoneTrimmerReloadDisabledSkipsRound(t *testing.T) {
+	dir := newHotZoneDir(t)
+	path := filepath.Join(dir, "cache", "x.json")
+	touchFile(t, path, []byte("aaaa"), time.Now().Add(-time.Hour)) // 过期，但应被跳过保护
+
+	// 禁用窗口内跑过多个 tick，过期文件必须原样保留；原子开关供闭包跨
+	// goroutine 读取（-race 干净）
+	var enabledFlag atomic.Bool
+	enabledFlag.Store(false)
+	tr := NewHotZoneTrimmer(dir, time.Hour, 1<<30)
+	tr.WithReload(func() (time.Duration, int64, bool) { return 0, 0, enabledFlag.Load() }).
+		WithInterval(10 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tr.Start(ctx)
+	}()
+
+	// 禁用窗口内跑过多个 tick，过期文件必须原样保留
+	time.Sleep(80 * time.Millisecond)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("disabled round must not delete files: %v", err)
+	}
+
+	// 恢复启用 → 下一个 tick 删除
+	enabledFlag.Store(true)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("x.json should be evicted after re-enable")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not exit after ctx cancel")
 	}
 }
