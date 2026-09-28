@@ -761,3 +761,211 @@ PREPARE 只解析+规划**不执行**，所以对本域「主库全程只读」�
 - **本机无法验证 9 条**：`internal/outbox/*` 依赖 `outbox_events` 表，本机库比代码旧
 - **未修理由**：视图投影属迁移 + schema 契约决策（`session_turns_with_current_month`
   有 526/636/640/713 多条重建路径 + 列数契约测试）；补列属迁移决策。审计轮只定位与登记。
+
+---
+
+# R79 续六 · 把 9 条 backlog 逐条定性完毕（清空 backlog，又挖出 2 个 P1）
+
+上一轮把 9 条无法规划的 SQL 记进了 backlog。本轮逐条查证，backlog 清空，
+其中 **4 条是真缺陷**，其中 2 条是全新的 P1。
+
+## 1. 9 条的最终定性
+
+| 条目 | 原错误 | 定性 | 依据 |
+|---|---|---|---|
+| `admin/credential_models_dto.go::offerListSQLColumns` | `column "__mo_modality__" does not exist` | **假阳性（设计内）** | `__mo_modality__` 是**模板占位符**：启动时探测 `information_schema.columns` 里有没有 `model_offers.provider_modality`，据结果替换成 `moModalityWithColumn`（真列）或兼容常量（该文件 `:76`/`:120`/`:138`）。它本来就不是会被原样执行的语句 |
+| `domains/reportrollup/rollup.go::internalPersonDaySQL` | `unterminated quoted string` | **抽取器判错对象** | 该常量用 Go 字符串拼接（`' + personUnknown + '`），正则只抓到第一段反引号内容 |
+| `domains/toolexecution/postgres_store.go::selectExecutionCols` | `tool_name` | **抽取器判错对象** | 无 `FROM` 的列清单片段，FROM 由调用方拼 |
+| `pending/pg_source.go::pgSourceColumns` | `id` | **抽取器判错对象** | 同上 |
+| `modelcatalog/upsert.go::insertManualCredentialModelSQL` | `could not determine data type of parameter $8` | **PREPARE 的推断限制** | `$8` 只在 CTE 内被引用；PREPARE 不带参数类型故推断不出，运行时驱动会传类型。非语句缺陷 |
+| `internal/reasoncap/pgsource.go::q` | `column ma.alias does not exist` | **真缺陷 → P1-4** | 见下 |
+| `domains/toolexecution/postgres_store.go::q / qHot / q` | `tool_name` | **真缺陷 → P1-3** | 见下 |
+
+## 2. P1-3｜`tool_usage_stats` 列名漂移：Go 用 `tool_name`/`date`，schema 是 `tool_id`/`usage_date`
+
+**两个独立 SSOT 一致**，这不是本机漂移：
+
+| 来源 | `tool_usage_stats_hot` 的列 |
+|---|---|
+| 基线 `installer/cmd/llm-gw-installer/embeddata/01-schema.sql` | id, **tool_id**, tenant_id, **usage_date**, call_count, success_count, error_count, avg_latency_ms, last_called_at, created_at, updated_at |
+| 真库实测（`pg_attribute`） | **逐列完全相同** |
+
+全仓**没有任何迁移**改名。而 `domains/toolexecution/postgres_store.go` 直接：
+
+```sql
+INSERT INTO tool_usage_stats_hot (… tool_name, date, …)
+ON CONFLICT (tool_name, date) DO UPDATE SET …
+```
+
+活接线确认：`cmd/gateway/tool_execution_integration.go:40` `te.NewPostgresStore(db, logger)`。
+→ **工具调用的用量统计写入路径不可执行。**
+
+## 3. P1-4｜`model_aliases.alias` —— 应为 `raw_name`
+
+基线 `model_aliases` 列：id, canonical_id, **raw_name**, quantization, surface, status,
+notes, created_at, updated_at, client_profiles —— **没有 `alias`**。
+`admin/logs.go:1249` 另有注释佐证「model_aliases.raw_name is persisted lowercase」。
+而 `internal/reasoncap/pgsource.go:59` 写的是 `WHERE ma.canonical_id = mc.id AND ma.alias = $1`
+→ **reasoncap 覆盖查询不可执行**。
+
+**我此前把这条误读成 modelcatalog 的问题**——用 `paste` 把「键」行与下一行错误消息配对时错位了一行。
+正确做法是让门自己逐条打印 `键：…` 与消息，我后来用一次性探针重取才拿到准确配对。
+
+## 4. 分类器新增一档：`42P08`
+
+`could not determine data type of parameter $N` 是 **PREPARE 没有参数类型**导致的推断限制，
+运行时驱动会传类型。归入「本机无法验证」，不判红。
+
+## 5. 自收缩检查补上了缺失的那一侧
+
+原有检查只在「登记的常量现在能正常 PREPARE」时报——覆盖了「bug 被修好」，
+但**不覆盖「抽取器不再采集它」**。补 FROM/拼接过滤之后，4 条 backlog 登记项
+悄无声息地离开了语料，而门一直绿着：一份能持有不可达键的登记表，
+等于把自己的 backlog 藏起来了。
+
+补的断言：**每条登记键都必须对应本轮语料里的一个候选**，否则红。
+
+## 6. 结论
+
+- **backlog 清空**（`expectedUntriagedBacklog = 0`），机制保留
+- **新增 P1-3**（`tool_usage_stats` 列名漂移，有活接线）、**P1-4**（`model_aliases.alias`）
+- 语料 155 条：**131 规划成功 / 14 已定性登记 / 10 本机无法验证**（9 条 `outbox_events` 本机无表 + 1 条 42P08）
+- 未修理由不变：补列、改视图、迁移列名都属迁移 + schema 契约决策
+
+---
+
+# R79 续七 · 把「P1 候选」量成 P1：8 处缺列的可达性核实
+
+上一轮把 `domains/routeincident` 的 8 处缺列记为「P1 候选」——缺列是事实，
+但**会不会真断**当时没量。这一轮量可达性，结论是 **P1**。
+
+## 1. 缺列事实：三方一致
+
+| 来源 | `diagnostic_runs` 是否含 `route_key` |
+|---|---|
+| 基线 `01-schema.sql:7955` | 否 |
+| 真库 `pg_attribute` 实测 | 否 |
+| 全仓仅有的两处 `ALTER TABLE diagnostic_runs`（445 / 391） | 都只 `ADD COLUMN created_at/updated_at` |
+
+`route_key` 在全仓只出现于 **390 的 `routing_audit_log`**——另一张表，疑串表。
+
+## 2. 可达性：它在**每条请求日志**的路径上
+
+```
+cmd/gateway/main.go:3539   incidentStore := routeincident.NewStore(dbConn.Pool())
+cmd/gateway/main.go:3545   incidentObserver := routeincident.NewObserver(...)
+                           telemetryClient.AddOnRequestLogPersisted(incidentObserver.AsHook())
+                                                            ↑ 每一条落库的请求日志
+        ↓
+Observer.Transition(ctx, in)          observer.go:297
+        ↓
+Store.writeAudit → Store.persistRunInTx   action_infra.go:375 / :458
+        ↓
+INSERT … diagnostic_runs (…, route_key, …)   ← 42703
+```
+
+8 处缺列各自所在的方法：
+
+| 常量 | 所在方法 | 路径 |
+|---|---|---|
+| `action_infra.go:390` | `writeAudit` | **observer 热路径** |
+| `:479` | `persistRunInTx` | **observer 热路径** |
+| `:507` / `:529` | `loadRunByIDInTx` / `loadRunByID` | 读路径 |
+| `:608` / `:666` | `AuditLogListByRun` / `DiagnosticRunsList` | **admin HTTP**（`NewRouteIncidentsHandler` 无条件接线） |
+| `evidence.go:149` | `RecordEvidenceExportAudit` | 证据导出 |
+
+## 3. 一条加重因素：重试机制在这里零收益
+
+`observer.go` 的重试循环注释写着：
+
+> Transient: lock conflict, transient deadlock. Backoff and retry. We never abort a
+> transition; the next persisted row will catch up…
+
+但 `42703 undefined_column` 是**永久性**错误——每次重试、每条后续请求都必然同样失败。
+`maxRetries: 4` 意味着**每条请求日志触发 5 次注定失败的查询**，退避后
+`o.failed++` 并只记一条 warning。这套重试是为瞬时冲突设计的，
+对一个永久性 SQL 错误，它只是把热路径上的失败成本放大 5 倍。
+
+## 4. 定级：P1（不是 P1 候选）
+
+理由与 R79 续五给 `origin_actor` 定 P1 同源：**不是「缺一列」，而是「缺一列且默认开启、
+落在每条请求的热路径上、失败被重试放大」**。两处都属迁移 + schema 契约决策
+（补列、改列名、串表修正），审计轮不代做。
+
+登记表已从「P1 候选」升为「P1」并写入完整可达性链；变异检验（撤登记→指名红）仍通过。
+
+---
+
+# R79 续八 · 非 hot 分区族普查（第一族：session_bodies）—— 一条差点写成 P2 的 P3
+
+前面几轮都在查 `request_logs` 一族。本轮换族，查全库**最大**的表 `session_bodies`
+（8.68 GB / 5 个分区），查询面走 `session_bodies_unified` 视图。
+
+## 1. 缺 `(session_id, ts)` 索引，53,851 行换 20 行
+
+会话摘要输入查询（`fetchTurns` 去掉 P1-1 那条坏谓词后的形态）：
+
+```sql
+SELECT … FROM session_bodies_unified b
+  LEFT JOIN session_turns_with_current_month t ON t.tenant_id=b.tenant_id AND t.request_id=b.request_id
+WHERE b.session_id = $1 ORDER BY b.ts ASC LIMIT 20
+```
+
+该族 `session_id` 打头的索引只有：
+
+```
+idx_session_bodies_hot_lookup        (session_id, turn_no, tenant_id)
+idx_session_bodies_session           (session_id, turn_no DESC)   -- ON ONLY
+session_bodies_2026_09_session_id_turn_no_idx (session_id, turn_no DESC)
+```
+
+**没有 `(session_id, ts)`**。`turn_no` 与 `ts` 的相关性 PG 无法证明，于是
+`WHERE session_id=$1 ORDER BY ts LIMIT 20` 只能：
+
+```
+Bitmap Index Scan on session_bodies_2026_09_session_id_turn_no_idx (actual rows=53851)
+  → Bitmap Heap Scan on session_bodies_2026_09 (actual rows=53851)
+     → Sort（temp read=347 written=760，**落盘外排**）
+        → Limit 20
+```
+
+实测（`sys:probe:cred126:20260924`，53,851 body）：
+**Execution Time 835.853 ms，Buffers hit=653,557 read=13,616（≈5.2 GB 逻辑读）+ 临时文件溢出。**
+
+## 2. 分布一量，定级从 P2 掉到 P3
+
+```
+SELECT percentile_cont(…) FROM (SELECT session_id, count(*) FROM session_bodies GROUP BY 1)
+→ 817,986 个会话：avg 2.1 / p50 1 / p90 1 / p99 2 / max 53,851
+```
+
+按来源拆开：
+
+| 会话类别 | 会话数 | avg body | max body | >100 body 的会话数 |
+|---|---|---|---|---|
+| 真实会话 | 817,579 | **1.22** | 1,607 | 222 |
+| `sys:probe:*`（探针生成） | 445 | **1,693** | 53,851 | 350 |
+
+**若我停在「53,851 行 / 836 ms / 5.2 GB」就会写出一条 P2——而它对 99.98% 的会话完全不成立。**
+真实会话 p99 是 **2 个 body**，读 2 行拿 20 条毫无压力；成本集中在**探针子系统**
+（445 个会话、均值 1,693 行），而探针会话是否真的走摘要路径本轮没查。
+
+**定 P3（潜在）**：这是一条**潜伏**成本，不是当下在付的成本。触发条件是
+(a) 探针会话真的进入摘要/close-hook 路径，或 (b) 真实会话长到几百个 body
+（已有 222 个 >100）。修法便宜：补 `(session_id, ts)` 索引即可。
+
+## 3. 顺带记录一个与 P1-1 耦合的事实
+
+`SessionMetadataCloseHook.OnSessionClosed` 每次会话关闭都调
+`loader.GetSessionMessages` → 这条查询。**它现在因为 `origin_actor` 而直接报错**。
+也就是说：**只修 P1-1（给视图补投影）会把这条查询面立刻激活**，
+届时探针类会话每次 close 都要付那 836 ms。
+**修 P1-1 时应一并评估是否补 `(session_id, ts)` 索引**，否则等于把一条休眠的
+昂贵路径唤醒。
+
+## 4. 本轮的可迁移教训
+
+**定级之前先量分布，不是量峰值。** 我在这一族上已经准备了「P2：8.68 GB 的表读
+53,851 行只返回 20 条」这段结论，是分布数据把它拦下来的。
+一条结论的说服力往往来自它的**中位数**，而触发审计的是**最大值**——
+两者不一致时，只有中位数能告诉你这是不是常态。
