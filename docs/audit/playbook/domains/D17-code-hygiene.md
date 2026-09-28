@@ -52,3 +52,8 @@
 
 ### R71 回注（2026-09-27，注释漂移三案）
 - 注释漂移三案收口：helpers.go 行为契约要点与钉桩测试矛盾（首元素语义写反）、调用站点 V1/V2 描述与事实相反、probe_necessity 占位符 "~xx:35-39" 未写实——新增注释的"契约描述"必须能与同文件测试互相印证。
+
+### R74 回注（2026-09-28）
+- **cmd/gateway plugin 族 500 传播链未甄别**（pluginLifecycleError msg / plugin_installer_init.go:53 / main_v2_pipeline.go:397 是否达 HTTP 响应面）——最后一块 500 回显存量，收口前必须逐链追到 handler 出口，勿按 grep 计数盲改。
+- gofmt 存量漂移新增两处：licensing/crypto.go、licensing/activation_codes_test.go（并入 R69 §四 gofmt 全仓债独立批次）。
+- message↔diff 门新形态：`5fe87cadc` 式"打包标记提交"——宣称 feat 三层修复实改 1 行，内容散落紧邻合并分支。对账时看内容是否真实存在于窗口内（区别于 R66 凭空虚构），但失配本身必须轮文档点名。

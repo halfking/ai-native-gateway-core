@@ -85,3 +85,9 @@
 - **白名单自清洁守卫的失配判定必须按文件类型单注释遍历**：旧写法 `//遍历==0 && --遍历==0` 双腿与——Go 文件纯 `//` 注释命中在 `--` 遍历恒计数 ≥1，"只剩注释命中"的滞留条目永不报（守卫绿可能部分依赖盲区）。修法=Go 文件走 `//`、SQL 走 `--`；据此移除 3 条滞留条目（session_export 已双腿化视图等）。
 - **五点同步恒查再证价值**：merge 带入的 754（并行子任务产物）只登记 sequence 通道，embeddata/var/map/StartupFiles/parity 四点全缺——TestCanonicalStartupMigrationsAtOrAbove704AreRegistered 当场红并给出完整修法提示；R72 补齐（f65d34dd8）。守卫族三件套必须进每轮验证清单（TestStartupFilesAreAllEmbedded 单独跑不抓"整号缺席"形态）。
 - installer Windows 失败白名单更正：全模块 ×20（cmd 包 instance-token×6 + activation×9 + enrollment×5），干净 worktree 对 HEAD 复跑坐实为基线环境失败——此前各轮"×6"漏计后两包，白名单必须按全模块逐包 diff。
+
+### R74 回注（2026-09-28，500 回显收口铺开到 echo 包）
+- **500 回显收口模式已从 admin 包铺开到独立 echo 包**（fault/licensing 各建 internal_error.go：writeInternalErr = 固定 op 文案 + slogCaller 锚点，pgx/DSN 细节不达客户端）。新包写 admin API 时直接带该 helper，勿裸 `c.JSON(500, {"error": err.Error()})`。
+- **收口范围裁决**：500 一律收；**401 业务原因与 400 验证错误回显是客户端契约保留**（凭据排障/表单纠错需要）；409 业务流程字段（如 bootstrap 席位 need_deactivate 的 errMsg）保留。
+- **无认证端点回显 = 高优先收口对象**：licensing bootstrap（/api/system/bootstrap/*）经 customerEcho 挂主 mux 全网可达 + noAuthCustomerMiddleware——err.Error() 回显给任意网络可达者（R30 L-1 指纹绑定同族暴露面）。判定"是否 loopback-only"必须查路由挂载链而非文件名。
+- CLI 子命令 stdout JSON（gateway migrate → launcher 管道）不是 HTTP 回显面，err.Error() 排障必需豁免。
