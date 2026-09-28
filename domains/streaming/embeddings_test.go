@@ -10,7 +10,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -20,6 +22,25 @@ type embeddingResolverStub struct {
 	profile    string
 	tenantID   string
 	modality   string
+}
+
+func (h *EmbeddingsHandler) setKeyVerifierForTest(verifier embeddingKeyVerifier) {
+	h.keyVerifier = verifier
+}
+
+func TestEmbeddingsHandlerMarksThrottledAPIKeyAsGateway429(t *testing.T) {
+	handler := NewEmbeddingsHandler(&embeddingResolverStub{}, upstream.New())
+	handler.setKeyVerifierForTest(&stubKeyVerifier{info: &authentication.KeyInfo{ID: 7, Status: "throttled"}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", stringsReader(`{"model":"m","input":"x"}`))
+	req.Header.Set("Authorization", "Bearer user-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(ratelimit.GatewayRateLimitScopeHeader); got != ratelimit.GatewayRateLimitScopeSharedKey {
+		t.Fatalf("rate limit scope = %q, want %q", got, ratelimit.GatewayRateLimitScopeSharedKey)
+	}
 }
 
 func (s *embeddingResolverStub) GetCandidatesByModality(_ context.Context, model, profile, tenantID, modality string) ([]provider.Candidate, *provider.Policy, error) {

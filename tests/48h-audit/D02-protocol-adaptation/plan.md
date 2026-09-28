@@ -2,7 +2,7 @@
 
 > 域知识库：[docs/audit/playbook/domains/D02-protocol-adaptation.md](../../../docs/audit/playbook/domains/D02-protocol-adaptation.md)  
 > 48h 改动面（截至 R56）：Wave5 system array join / 命名 tool_choice 合法形态 / 空 text 块抑制（commit 8b498918f）  
-> 状态：草稿
+> 状态：R73 续审已复核；F03 已通过 OpenAI Chat、Anthropic、Responses、native Responses、Ollama 定向回归
 
 ## 1. 审计要点（来自 playbook 域文档）
 
