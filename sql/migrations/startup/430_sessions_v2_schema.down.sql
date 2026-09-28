@@ -17,7 +17,8 @@ BEGIN;
 -- 1. 删除清理函数
 -- =============================================
 
-DROP FUNCTION IF EXISTS cleanup_expired_session_turn_logs();
+-- (cleanup_expired_session_turn_logs() dropped in migration 755; do not
+--  re-add here to keep idempotency across the two down migrations.)
 DROP FUNCTION IF EXISTS ensure_sessions_v2_partitions(DATE);
 
 -- =============================================
