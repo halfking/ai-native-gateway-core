@@ -259,8 +259,8 @@ var justifiedPrepareFailures = map[string]string{
 	//   sessions_v2_compression_read 置 false 退回 V1 request_logs 源。
 	// 消费面：会话摘要（GenerateSummary / GenerateRollingSummary）的输入读取。
 	// digest 测试也写明「source errors must reach the caller regardless of gate state」。
-	"domains/sessionsummary/message_source_v2.go:75::v2SessionBodiesBaseQuery::b19fb1b9":   "P1：turns 视图漏投影 origin_actor；per-turn-digest 开关的 fallback 路径，会话摘要输入读取必失败",
-	"domains/sessionsummary/message_source_digest.go:89::sessionTurnDigestQuery::f6b0acc8": "P1：同上，per-turn-digest 开关的 digest 路径；开关开/关两条路都撞这一个列",
+	"domains/sessionsummary/message_source_v2.go:75::v2SessionBodiesBaseQuery::b19fb1b9":   "已修复待应用：迁移 757 给 session_turns_with_current_month 补 origin_actor 投影。修法已在真库事务内完整验证（53→55 列，两条 PREPARE 均通过后 ROLLBACK）。真库应用 757 后本条会变成「未登记的失败」⇒ 门红并提示删掉此登记",
+	"domains/sessionsummary/message_source_digest.go:89::sessionTurnDigestQuery::f6b0acc8": "已修复待应用：同上，迁移 757。开关开/关两条路撞的是同一个缺失投影，一次补齐",
 
 	// ── P1-2｜diagnostic_runs.route_key / routing_audit_log.reason 缺列 ──────
 	// 证据闭合（三方一致）：基线 01-schema.sql:7955 的 diagnostic_runs 列清单无 route_key；
@@ -512,4 +512,61 @@ func pgErrCode(err error) (code, msg string) {
 		return pgErr.Code, pgErr.Message
 	}
 	return "", err.Error()
+}
+
+// TestData_OriginActorFix_MigrationIsShippedAndNotSilentlyDisabled 守住
+// session_turns 视图 origin_actor 投影的**修复本身**。
+//
+// 这道门与 PREPARE 门是一对：PREPARE 门在真库还没应用迁移时把这两条记为
+// 「已修复待应用」以保持绿色；本门保证那份修复**没有在后续提交里被悄悄废掉**。
+//
+// 特别守住一条真实踩过的坑：**把 CREATE OR REPLACE VIEW 包进
+// DO $$ ... EXECUTE $ddl$...$ddl$; $$ 会静默无效**——不报错、视图不变、
+// 前后断言全部照常通过。PG 17.10 事务内实测：顶层执行列数 53→55，
+// 包在 EXECUTE 里执行后仍是 54。一个「有自校验的迁移」可以完全什么都没做。
+func TestData_OriginActorFix_MigrationIsShippedAndNotSilentlyDisabled(t *testing.T) {
+	const mig = "sql/migrations/startup/757_session_turns_origin_actor_projection.sql"
+	body, err := os.ReadFile(filepath.Join(repoRoot(t), mig))
+	if err != nil {
+		t.Fatalf("迁移 %s 不可读: %v —— origin_actor 修复已丢失", mig, err)
+	}
+	// 剥掉 SQL 注释再检查：本文件头「踩坑记录」里**提到**了 EXECUTE $ddl$ 这个
+	// 坏写法，若不剥离就会被判成「迁移里用了坏写法」——门第二次踩同一个坑
+	//（第一次是可达性门拿注释当调用点）。注释里的提及不是代码。
+	up := stripSQLComments(string(body))
+
+	// ① UNION ALL 的两半都必须加。只加一边会让列数不匹配而直接失败，
+	//    但当前版本若有人「简化」掉一半，迁移会在生产才炸。
+	if n := strings.Count(up, "hot.origin_actor"); n != 1 {
+		t.Errorf("%s 里 hot.origin_actor 出现 %d 次（期望 1）。UNION ALL 的两半各需一列。", mig, n)
+	}
+	if n := strings.Count(up, "session_turns.origin_actor"); n != 1 {
+		t.Errorf("%s 里 session_turns.origin_actor 出现 %d 次（期望 1）。UNION ALL 的两半各需一列。", mig, n)
+	}
+
+	// ② 顶层 CREATE OR REPLACE VIEW 必须存在，且不得被 DO 块包起来。
+	if !strings.Contains(up, "\nCREATE OR REPLACE VIEW public.session_turns_with_current_month") {
+		t.Errorf("%s 里找不到顶层的 CREATE OR REPLACE VIEW——它必须位于文件顶层。", mig)
+	}
+	if strings.Contains(up, "EXECUTE $ddl$") {
+		t.Errorf("%s 把 CREATE OR REPLACE VIEW 包进了 DO 块的 EXECUTE。\n"+
+			"    实测（PG 17.10 事务内）：同一份 DDL 顶层执行后列数 53→55，包在 EXECUTE 里则**保持 54 不变且不报错**——"+
+			"静默无效，前后自校验还会照常通过。请改回顶层执行。", mig)
+	}
+
+	// ③ 后置断言必须在：没有它，一次列数漂移会静默改写视图契约。
+	if !strings.Contains(up, "post-check ok") {
+		t.Errorf("%s 缺少后置断言（post-check）—— 列数漂移必须中止而不是静默通过。", mig)
+	}
+}
+
+var (
+	sqlLineCommentRe  = regexp.MustCompile(`(?m)--[^\n]*`)
+	sqlBlockCommentRe = regexp.MustCompile(`(?s)/\*.*?\*/`)
+)
+
+// stripSQLComments 去掉 SQL 的 -- 行注释与 /* */ 块注释。
+func stripSQLComments(src string) string {
+	src = sqlBlockCommentRe.ReplaceAllString(src, " ")
+	return sqlLineCommentRe.ReplaceAllString(src, " ")
 }

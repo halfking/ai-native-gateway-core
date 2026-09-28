@@ -559,3 +559,33 @@ journal_snapshot_receipts P2→P3 把相对倍数当绝对成本 / **本条 把�
 门把「工作区冲突态」与「代码解析失败」分成两条红因——前者不是缺陷，但覆盖率缺口必须可见。
 **工具陷阱**：`grep | head -N` 的截断会制造假零命中（我据此误判 `AsHook()` 零调用）。
 **判「零命中」前先确认没有截断。**
+
+### R79 续十六 · 修掉一个 P1：origin_actor 投影（真库事务内验证）
+
+`session_turns_with_current_month` 漏投影 `origin_actor`（基表 `session_turns` /
+`session_turns_hot` 都有，attnum 99）。两条生产 SQL 引用它、两条设置路径都踩
+（`main_pipeline.go:1184` V2 源 + `:1416` digest 源，digest/fallback 两条都引用）。
+
+**运行时证据**：`session_analysis_metadata` 147,358 行**全是 `status='provisional'`，
+`final` 0 行**，而 close hook 只写 final。表不空但「只有坏路径才写的状态是零行」——
+比空表强。失败被 `session_metadata_close_hook.go:47-53` 吞成 Warn + return nil
+⇒ 每次会话关闭都失败且静默。读侧退回 provisional，属**优雅降级**。
+
+修法（迁移 757）在真库 `BEGIN … ROLLBACK` 内完整跑过：53→55 列、两条 PREPARE 均无
+ERROR、回滚后 54 列且 `origin_actor=0`（**零持久变更**，不违反只读契约）。
+
+**迁移写法两个要点**：
+1. **别硬编码旧列数**——我用正则数得 53，真库权威值 **54**（`SELECT hot.id,` 行首不是
+   空白被漏掉）。改为执行前动态取 `old_cols`。
+2. **DDL 必须顶层执行**——`CREATE OR REPLACE VIEW` 包在
+   `DO $$ … EXECUTE $ddl$…$ddl$; $$` 里**静默无效**：不报错、视图不变、
+   **前后自校验全部照常通过**（顶层 55 列 vs EXECUTE 内 54 列，同一事务实测）。
+   **一个「有前后自校验的迁移」可以完全什么都没做而不被发现。**
+   （`DROP VIEW CASCADE` + `CREATE VIEW` 在 DO 块内有效，但 CASCADE 会级联删依赖视图。）
+
+门 `TestData_OriginActorFix_MigrationIsShippedAndNotSilentlyDisabled` 守住修复本身：
+UNION 两半各一处 `origin_actor` / 顶层 DDL 存在且未被包进 `EXECUTE $ddl$` / 后置断言存在。
+变异 2 处全部指名（改回 DO 包装 → 红「请改回顶层执行」；漏一半投影 → 红「出现 0 次，期望 1」）。
+**门自己又踩一次同一个坑**：第一版用 `strings.Contains(up,"EXECUTE $ddl$")`，
+而迁移文件头「踩坑记录」里**提到**该坏写法 ⇒ 误报。改为先剥 SQL 注释再检查。
+（两天内第二次「文本匹配不区分代码与注释」：可达性门拿注释当调用点，这次拿注释当坏写法。）

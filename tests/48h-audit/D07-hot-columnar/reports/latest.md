@@ -1580,3 +1580,114 @@ AST 解析在健康树之外立刻抓到 7 个 `<<<<<<<` 冲突文件（并发�
 > 这也是本轮第二次工具性陷阱的教训：**`grep | head -N` 的截断会制造假零命中**。
 > 我一度用 `head -6` grep `AsHook()`，结论「零调用方」——`main.go:3554` 正好被截掉。
 > **判「零命中」之前先确认没有截断。**
+
+## R79 续十六 · 修掉一个 P1：origin_actor 投影（真库事务内完整验证）
+
+前 6 轮都在「登记与定级」，这一轮**真的修掉一个**。修法先验证、后落迁移。
+
+### 缺陷与影响（重新刻画）
+
+`session_turns_with_current_month` 的 SELECT 列表漏了 `origin_actor`，
+而基表 `session_turns` 与 `session_turns_hot` 都有（attnum 99）。
+两条生产 SQL 引用它，两条设置路径都踩：
+
+```
+main_pipeline.go:1184  NewV2SessionBodiesSource  → SessionMetadataCloseHook
+main_pipeline.go:1416  NewPerTurnDigestSource（sessions_v2_compression_read 默认 true）
+  └ 内部 digest / fallback 两条都引用 t.origin_actor
+```
+
+**运行时证据（不是「空表」那类弱证据）**：`session_analysis_metadata` 有
+**147,358 行，全部是 `status='provisional'`，`final` 是 0 行**。而 close hook 的
+注释明写「UPSERTs status=**final**」。表不是空的，但**只有那条坏路径才会写的状态是零行**
+——这比空表更强，它排除了「表根本没被用」的解释。
+
+失败被吞：`session_metadata_close_hook.go:47-53` 出错只 `logger.Warn` 并 `return nil`。
+所以是「**每次会话关闭都失败，且完全静默**」。
+
+读侧是 `ORDER BY (sam.status='final') DESC, sam.updated_at DESC LIMIT 1`，
+取不到 final 就退回 provisional ⇒ **优雅降级**，不是功能不可用。定级 P1 时
+如实记成「终态永不落库」。
+
+顺带一个反直觉的数据：`origin_actor` 的实际取值是
+`node-probe-worker`(755,213) / `probe-service`(187,985) / `auto-summary-generator`(128)，
+**`goal-%` 影子轮 0 行**。所以排除谓词当前**一行都过滤不掉**——
+P1 的形态是「查询整体失败」，不是「过滤逻辑错」。
+
+### 修法验证：真库事务内跑完整流程，再回滚
+
+`CREATE OR REPLACE VIEW` 必须给完整定义。验证在真库上用 `BEGIN … ROLLBACK` 做
+（DDL 是事务性的，回滚后零持久变更，不违反本域只读约束）：
+
+```
+pre-check  ok: 54 columns, no origin_actor yet
+CREATE VIEW
+post-check ok: 55 columns incl. origin_actor
+SELECT cols = 55
+PREPARE p_v2   → 无 ERROR
+PREPARE p_dg   → 无 ERROR
+ROLLBACK
+复核：54 列、origin_actor = 0     ← 零持久变更
+```
+
+同一份 DDL 事先也在 temp schema 里单独验证过（两边都能过）。
+**双向证实**：修法可行 + 当前确实坏（未修的线上视图 PREPARE 直接 42703）。
+
+### 迁移 757：自校验 + 顶层执行
+
+`sql/migrations/startup/757_session_turns_origin_actor_projection.sql`（+ `.down.sql`）
+采用**顶层 CREATE OR REPLACE + 前后两个 DO 断言**。两处原因：
+
+1. **不能硬编码旧列数**。我第一次用正则数 view 定义得 53，真库权威值是 **54**
+   （`SELECT hot.id,` 行首不是空白，被正则漏掉）。改为执行前动态取 `old_cols`。
+2. **DDL 必须顶层执行**，见下。
+
+### 一个足以毁掉整个迁移的静默陷阱
+
+自校验第一次跑就红了：
+
+```
+ERROR: column drift after rewrite: expected 55, got 54 — ROLLBACK
+```
+
+排查结果：**`CREATE OR REPLACE VIEW` 包在 `DO $$ ... EXECUTE $ddl$...$ddl$; $$` 里，
+在 PL/pgSQL 中静默无效**——不报错、视图不变、**前后自校验全部照常通过**。
+
+对照实测（PG 17.10，同一事务）：
+
+| 写法 | 结果 |
+|---|---|
+| 顶层 `CREATE OR REPLACE VIEW` | **55 列** ✓ |
+| DO 块内 `EXECUTE $ddl$…$ddl$` | **54 列，不报错** ✗ |
+| DO 块内 `DROP VIEW CASCADE` + `CREATE VIEW` | 55 列（但 CASCADE 会级联删依赖视图，不可用） |
+
+**一个「有前后自校验的迁移」可以完全什么都没做而不被任何人发现。**
+如果我没在真库事务里真跑一遍，这份迁移会带着完美的断言和零的效果进主干。
+
+### 门：TestData_OriginActorFix_MigrationIsShippedAndNotSilentlyDisabled
+
+与 PREPARE 门配对：PREPARE 门把这两条记为「已修复待应用」以保持绿
+（真库应用 757 后它会变成「未登记的失败」⇒ 门红并提示删登记），
+本门保证**那份修复没有在后续提交里被悄悄废掉**。
+
+三条断言：UNION 两半各恰好一处 `origin_actor` / 顶层 CREATE OR REPLACE 存在且
+**未被包进 `EXECUTE $ddl$`** / 后置断言（post-check）存在。
+
+变异 2 处，全部指名：
+
+| 变异 | 门的反应 |
+|---|---|
+| DDL 改回 DO 块包装 | 红「顶层执行后列数 53→55，包在 EXECUTE 里则保持 54 不变且不报错——静默无效…请改回顶层执行」 |
+| 删掉 UNION 一半的投影 | 红「`session_turns.origin_actor` 出现 0 次（期望 1）。UNION ALL 的两半各需一列」 |
+
+**门自己又踩了一次同一个坑**：第一版用 `strings.Contains(up, "EXECUTE $ddl$")`，
+而迁移文件头的「踩坑记录」里**提到**了这个坏写法 ⇒ 门误报。改为先剥离 SQL 注释再检查。
+（这是「文本匹配不区分代码与注释」在两天内的第二次：可达性门拿注释当调用点，
+这次拿注释当坏写法。**注释里的提及不是代码。**）
+
+### 交付
+
+- `757_session_turns_origin_actor_projection.sql` + `.down.sql`（down 明确标注
+  **不要在生产执行**——那等于把 P1 原样装回去）
+- PREPARE 门两条登记改为「已修复待应用」+ 新增守修复的门
+- 本地开发库**未应用**迁移（保持只读契约）；真库上验完即回滚
