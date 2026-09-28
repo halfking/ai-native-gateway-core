@@ -57,3 +57,45 @@
 - **cmd/gateway plugin 族 500 传播链未甄别**（pluginLifecycleError msg / plugin_installer_init.go:53 / main_v2_pipeline.go:397 是否达 HTTP 响应面）——最后一块 500 回显存量，收口前必须逐链追到 handler 出口，勿按 grep 计数盲改。
 - gofmt 存量漂移新增两处：licensing/crypto.go、licensing/activation_codes_test.go（并入 R69 §四 gofmt 全仓债独立批次）。
 - message↔diff 门新形态：`5fe87cadc` 式"打包标记提交"——宣称 feat 三层修复实改 1 行，内容散落紧邻合并分支。对账时看内容是否真实存在于窗口内（区别于 R66 凭空虚构），但失配本身必须轮文档点名。
+
+### R78 回注 · 审计工具自身的卫生：14/17 域的验收门是真空门
+
+D17 域知识「代码卫生」含注释/文档漂移。本轮把同一把尺子量到**审计工具自己**上，结果
+是 D17 自己的定义被违反：
+
+**事实（HEAD `7174f3ab5` 实测）**。每个域的 `plan.md` §6 验收门都写成
+`go test -race -timeout Ns ./tests/48h-audit/D<NN>-<name>/...`。Go 的包模式匹配不到
+任何包时**不是错误**——`go test` 打印 `matched no packages` 警告、**退出码 0**。于是：
+
+| 状态 | 域 | 数量 |
+|---|---|---|
+| 门能实跑（含真实测试包） | D01 / D02 / D14 | 3 |
+| 门匹配 0 包，**永不可能失败** | D03–D10 / D12 / D13 / D15–D17 | 14 |
+
+其中 **12 个域的 `plan.md` 里有 `[x]` 勾选项**却域内无任何测试包。
+
+**关键区分：勾选项不一定在撒谎，撒谎的是门。** D03 的 B-01 写
+`go test -race ./cmd/gateway -run 'TestLiteRequestLogSink_'`——那个测试**真的存在并通过**，
+只是不在域目录里。D05 的 B-01 指向 `./domains/streaming/executors`，同样真实。**证据是真的，
+但验收门没有接到证据上**，于是「门绿」不承载任何信息。
+
+**危害高于「没有门」**：不跑的人（包括后续轮次）会把绿色的门读成证据。R43 起的五轮
+挂账与 R73 的「无证据勾选」撤销，都是这个模式的下游后果。
+
+**已加守卫**（`tests/48h-audit/gates/vacuous_gate_test.go`，3 条）：
+- `TestNoNewVacuousAcceptanceGate`：`plan.md` 自指验收门的域，若 `./tests/48h-audit/<域>/...`
+  背后没有 Go 包（**递归含子目录**，`...` 本就含子目录——D01/D02/D14 的测试在
+  `business/` `safety/` `stress/` 里，只看顶层会误判）且不在白名单 → 失败。
+- `TestVacuousGateAllowlistIsMinimal`：白名单里已有包的域 → 失败，防止过期豁免变成墓碑。
+- `TestVacuousGateDebtIsReported`：每次运行打印 13 条未清债务。沉默的白名单正是下一轮
+  重复错误的方式。
+
+**变异检验**：伪造空门域 `D99-fake-empty` → 守卫红并点名；把已收口的 D01 塞进白名单 →
+`TestVacuousGateAllowlistIsMinimal` 红并点名。两次恢复后全绿。
+
+**白名单为什么存在**：不加白名单仓库立刻红、守卫永远合不进去，而**长期红的门没人看**
+（与 R77 选型层阈值棘轮同一推理）。债务显式打印 + 白名单自收缩，比「一次性要求 14 个域
+全补齐」更能真正落地。
+
+**仍未完成（真活）**：13 个域补真实测试包，或把门改指到证据真实所在的包。守卫只保证
+**不再变多**，不代替逐域审计。
