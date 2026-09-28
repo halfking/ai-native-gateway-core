@@ -111,6 +111,9 @@ type interceptingStreamWriter struct {
 }
 
 func newInterceptingStreamWriter(w http.ResponseWriter, chain ResponseInterceptor, ctx context.Context, meta response.StreamMeta) *interceptingStreamWriter {
+	if meta.State == nil {
+		meta.State = response.NewStreamState()
+	}
 	writer := &interceptingStreamWriter{w: w, chain: chain, ctx: ctx, meta: meta}
 	if f, ok := w.(http.Flusher); ok {
 		writer.flusher = f
