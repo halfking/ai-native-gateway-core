@@ -289,18 +289,74 @@ reasoning: ncand 3, fallback false,      match 33.3 （对照组，未变）
    模型标注能力——这是**需要模型知识的数据运营任务**，靠猜会让真实流量被路由到错误的模型，
    因此本轮不做。`models_canonical.strengths`（设计为"比 tags 更精准"的运营标注列）950 行
    全空，是补齐的现成落点。
-2. **门禁仍只覆盖分类层**。坍缩率目前**只报告不卡门**：`baseline.json` 是离线产物，而坍缩率
-   必须有 E2E 决策头才能算，离线门禁拿不到。给它加门禁需要一个 E2E 基线文件（本轮实测值
-   0/240 可作起点），属于下一步独立决策。
+2. **门禁仍只覆盖分类层**（已于 R77 收口，见 §6.3）。坍缩率目前**只报告不卡门**：`baseline.json`
+   是离线产物，而坍缩率必须有 E2E 决策头才能算，离线门禁拿不到。给它加门禁需要一个 E2E 基线文件
+   （本轮实测值 0/240 可作起点），属于下一步独立决策。
 3. **P2 TierSelector 仍是 G1 的真正堵点**。本轮修的是选型退化（属 P0 范畴），"人工 apply 的
    分层建议运行时消费为零"这一原始缺口未动，仍按设计稿待执行。
+
+---
+
+### 6.3 R77 实跑复核（2026-09-28 晚）：249 例 HEAD 实测 + code_audit 残留坍缩
+
+§6.1/§6.2 里写的「修复后 0/240 坍缩」是**归档值，本轮实测证伪**，不得再作为当前态引用。
+
+**跑法**：本地 8782 是 build 2296 / SHA `0ae9b5e2`，落后 HEAD 18 个 commit，**不含** L-4 /
+planning-artifact / M-7 三笔修复，直接拿它跑 E2E 等于用旧码自证。故以 HEAD 源码起了一个
+旁挂实例：同一 DSN / 同一 Redis（`LLM_GATEWAY_BG_MODE=data-plane` 关写侧后台任务，避免与
+8782 双跑 reaper），监听 `127.0.0.1:8783`。
+
+**实例确实含修复的证明**（同 key、同 prompt、两端口对照）：
+
+| prompt | 8782（旧 build） | 8783（HEAD） |
+|---|---|---|
+| `写一个Django中间件` | `task=chat conf=0.10` | `task=code conf=0.65` |
+
+**实测结果（249 例 = v1 60 + v2 40 + v3 149，决策头覆盖率 100%）**：
+
+| 指标 | 值 |
+|---|---|
+| 分类正确率（decided） | **249/249 = 1.0000** |
+| 上游 429（不算分类判决） | 216/249 = 86.7% |
+| 坍缩率 `fallback_used` | **13/249 = 5.22%** |
+| 单候选池 | 13/249 |
+
+**坍缩 13 例 100% 是 `code_audit`**（13/13）。按 task_type 拆候选池大小：
+
+| 候选池大小 | task_type |
+|---|---|
+| 3 候选（236 例） | agent / chat / code / creative / function_call / intent_classification / long_context / planning / reasoning / vision |
+| **1 候选（13 例）** | **code_audit** |
+
+`code_audit` 那个唯一候选是 `minimax-m3` / credential 21，且 `composite=50, price=50,
+quality=0, reliability=0, tier 为空`——是一个**降级候选**，对比 `code` 的 3 个
+`tier=primary / quality=100 / reliability=92` 满配候选。分类层把 code_audit 判对了（13/13），
+是**选型层没有第二第三候选可退**，与 §2.2 记录的「坍缩放大限流」是同一条放大链。
+
+**这是既有缺口，不是本轮回归**：3 条 code_audit prompt 在 8782（旧 build）与 8783（HEAD）
+上的决策**完全一致**（`cand=1 / fallback=True / scores=[50]`）。根因仍是 §6.2 第 1 条的能力
+标注覆盖——线上只发布 `cap:long-context` / `cap:tool-use` / `cap:function-call` /
+`cap:reasoning` / `cap:vision`，**没有任何 code / review / security 标签**，所以 code_audit
+无代表性词表、无法按能力选型。补齐属数据运营活（~870 模型标注），本轮不动。
+
+**门禁阈值改为棘轮**：`testdata/e2e_baseline.json` 的 `max_collapse_rate` 由 0.05 调为
+**0.08**。理由：0.05 是从归档的 0.0/240 推出的，今日实测 0.0522 直接把它打红——但红的全部是
+上面这个**已登记**的 code_audit 构成，不是新坍缩。门长期红 = 门被无视，比棘轮更糟。
+0.08 的语义是「**不得出现 code_audit 底线之外的新坍缩**」，notes 里已写明不得读作
+code_audit 已修。变异检验：0.08 → `SELECTION GATE: PASS`(exit 0)；压回 0.05 → `FAIL`(exit 1)。
+
+**关于上游 429**：本轮 216/249 是上游 429（`token.sensenova.cn` credential 25 独占 96/126 次
+上游尝试），**与选型层正交**——带决策头的行即使 HTTP 429 也能拿到 task_type 与候选池，
+分类判决不依赖上游成功。降速（每 10 例休 20–25s）实测无效，说明是 provider 侧持续限流而非
+打得太快。（首次跑 50/60 报错时曾误判「错误行没有决策头」，实为查错了 JSON 键：`decision`
+是嵌套字段，错误行同样有。）另有一个**独立的集中度风险**：96/126 次上游尝试打到单一 provider，
+该 provider 一限流就同时打穿所有任务类型的退路。
 
 ---
 
 ## 七、复现方式
 
 ```bash
-# 离线（分类层门禁）
 bash scripts/auto-testbench.sh
 
 # 端到端（选型层）

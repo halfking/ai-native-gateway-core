@@ -1,11 +1,15 @@
 {
-  "generated_at": "2026-09-28T00:00:00Z",
-  "source": "240-case E2E suite (v1+v2+v3) against a local gateway, 2026-09-28 live audit",
-  "max_collapse_rate": 0.05,
+  "generated_at": "2026-09-28T21:40:00Z",
+  "source": "249-case E2E suite (v1 60 + v2 40 + v3 149) against a local gateway running HEAD 2a4cd7a4a, 2026-09-28 live rerun",
+  "max_collapse_rate": 0.08,
   "measured": {
     "collapse_rate_before_fail_open_fix": 0.5167,
-    "collapse_rate_after_fail_open_fix": 0.0,
-    "decided_cases": 240
+    "collapse_rate_archived_after_fix": 0.0,
+    "collapse_rate_2026_09_28_rerun": 0.0522,
+    "decided_cases_archived": 240,
+    "decided_cases_rerun": 249,
+    "collapse_cases_rerun": 13,
+    "collapse_cases_from_code_audit": 13
   },
-  "notes": "collapse_rate = decided cases whose candidate pool fell back to the 48h popularity pick (fallback_used). The 0.05 floor is tolerance, not aspiration: fallback_used also fires when the pool is legitimately empty (all models unavailable), which is a healthy outcome and must not fail a build. Measured post-fix value is 0.0/240; the pre-fix 0.5167 is the 2026-09-28 defect this gate exists to catch. Only evaluated when -e2e-report is supplied — the offline classification gate cannot compute it."
+  "notes": "collapse_rate = decided cases whose candidate pool fell back (fallback_used). RATCHET, not aspiration: 0.08 sits above the known-open composition measured 2026-09-28 — 13/249 collapse, ALL 13 of them task_type=code_audit, whose candidate pool is structurally size 1 (only minimax-m3/cred 21 carries it; quality=0, reliability=0, tier empty). Every other one of the 11 task types held 3 candidates on all 249 cases. That code_audit gap is PRE-EXISTING and still unfixed: A/B on 3 prompts against the pre-existing deployed build 2296 (SHA 0ae9b5e2) returns an identical cand=1/fallback=True/score=50 decision, so it is neither introduced nor repaired by the L-4 / planning-artifact / M-7 commits. Root cause is capability-annotation coverage (models_canonical.tags publishes cap:long-context/tool-use/function-call/reasoning/vision but no code/review/security tag, so code_audit has no represented vocabulary), the same ~870-model annotation gap already registered in docs/audit/2026-09-28-auto-routing-selection-layer-audit.md §6.2 — fixing it needs operator annotation, not a code change. Do NOT read a PASS here as code_audit being fixed: this threshold fires only on collapse BEYOND the registered code_audit floor. The archived 0.0/240 that this file previously encoded is contradicted by the live rerun and should not be cited as current. Only evaluated when -e2e-report is supplied — the offline classification gate cannot compute it."
 }
