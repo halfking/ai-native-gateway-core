@@ -86,7 +86,7 @@ var schemaMismatchFindings = map[string]struct {
 		wantHits: 1,
 		evidence: "cmd/gateway/main.go:3554 telemetryClient.AddOnRequestLogPersisted(incidentObserver.AsHook())，" +
 			"每条落库请求日志都触发；Transition → writeAudit → persistRunInTx 一次写两张表。" +
-			"真库 routing_audit_log 的 22 列里有 failure_reason 但没有 reason。" +
+			"真库 routing_audit_log 实测 **21 列**（我先前误记 22，由迁移 758 的回滚复核暴露）里有 failure_reason 但没有 reason——两张表都缺。" +
 			"失败模式：MaxRetries=4 ⇒ 42703（永久性错误）也会重试满 5 次，耗尽后只 slog.Warn 不升级",
 	},
 	"sessionsummary.session_turns 视图漏投影 origin_actor": {
