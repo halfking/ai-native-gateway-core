@@ -93,6 +93,16 @@ var statementStart = regexp.MustCompile(`(?is)^\s*(--[^\n]*\n|\s)*(SELECT|INSERT
 
 // ddlOrTransactionControl rejects bodies that are statements PREPARE is the
 // wrong tool for, even though they are complete SQL.
+// selectsOrWith / fromClause back the "no FROM means it is a fragment" rule
+// above. Matching FROM loosely (FROM\s, FROM(", FROM\n) is enough here: the
+// goal is only to notice that SOME relation is named.
+var selectsOrWith = regexp.MustCompile(`(?is)^\s*(--[^\n]*\n|\s)*(SELECT|WITH)\b`)
+var fromClause = regexp.MustCompile(`(?i)\bFROM\b`)
+
+// concatAfter matches the ` +` that follows a closing backtick when a Go const
+// is built by concatenating several raw strings.
+var concatAfter = regexp.MustCompile(`^\s*\+`)
+
 var ddlOrTransactionControl = regexp.MustCompile(`(?is)^\s*(--[^\n]*\n|\s)*(CREATE|ALTER|DROP|GRANT|REVOKE|SET|BEGIN|COMMIT|VACUUM|ANALYZE|COPY|REINDEX|CLUSTER|REFRESH|DO|CALL)\b`)
 
 type sqlCandidate struct {
@@ -170,6 +180,16 @@ func collectSQLCandidates(t *testing.T) []sqlCandidate {
 		for _, m := range goBackquotedSQLConst.FindAllStringSubmatchIndex(src, -1) {
 			name, body := src[m[2]:m[3]], src[m[4]:m[5]]
 			line := 1 + strings.Count(src[:m[0]], "\n")
+			// Go concatenates raw strings with ` + var + `. The regex can only
+			// capture the first backquoted piece, so such a body is a truncated
+			// fragment: `domains/reportrollup/rollup.go::internalPersonDaySQL`
+			// embeds `' + personUnknown + '` and PREPAREd as-is reports
+			// "unterminated quoted string". Detect the trailing ` +` after the
+			// closing backtick and skip rather than reporting a syntax error for
+			// something that is not a statement.
+			if concatAfter.MatchString(src[m[5]:]) {
+				continue
+			}
 			// A complete DML statement is the only thing PREPARE can take.
 			// Fragments (JOIN blocks, column lists) and DDL are excluded —
 			// see statementStart's doc comment for why "contains" was wrong.
@@ -177,6 +197,15 @@ func collectSQLCandidates(t *testing.T) []sqlCandidate {
 				continue
 			}
 			if ddlOrTransactionControl.MatchString(body) {
+				continue
+			}
+			// A SELECT/WITH body with no FROM references no relation, so nothing
+			// in it can be checked against the catalog: those are column-list
+			// fragments (`toolexecution/postgres_store.go::selectExecutionCols`
+			// is `SELECT execution_id, ..., created_at` with the FROM appended
+			// by the caller) and `__mo_modality__`-style placeholders. Including
+			// them reports a missing column for a statement nobody runs.
+			if (selectsOrWith.MatchString(body)) && !fromClause.MatchString(body) {
 				continue
 			}
 			if hasFmtPlaceholder.MatchString(body) {
@@ -245,9 +274,33 @@ var justifiedPrepareFailures = map[string]string{
 	"domains/routeincident/action_infra.go:608::sql::6f536007": "P1 候选：routing_audit_log 无 reason 列",
 	"domains/routeincident/action_infra.go:666::sql::66e1c23e": "P1 候选：同上 routing_audit_log.reason",
 	"domains/routeincident/evidence.go:149::sql::27a821dc":     "P1 候选：同上 diagnostic_runs.route_key",
+
+	// ── P1-3｜tool_usage_stats 列名漂移：Go 用 tool_name/date，schema 是 tool_id/usage_date ──
+	// 基线 01-schema.sql 与真库**两个独立 SSOT 一致**（id, tool_id, tenant_id, usage_date,
+	// call_count, …，既无 tool_name 也无 date），全仓无任何迁移改名。
+	// 而 domains/toolexecution/postgres_store.go 直接
+	// INSERT INTO tool_usage_stats_hot (… tool_name, date, …) ON CONFLICT (tool_name, date)。
+	// 活接线：cmd/gateway/tool_execution_integration.go:40 `te.NewPostgresStore(db, logger)`。
+	"domains/toolexecution/postgres_store.go:307::q::37f54877":    "P1：tool_usage_stats* 无 tool_name/date（schema 为 tool_id/usage_date，两个 SSOT 一致）；cmd/gateway 有活接线",
+	"domains/toolexecution/postgres_store.go:354::qHot::e9a8513a": "P1：同上 tool_usage_stats_hot 列名漂移",
+	"domains/toolexecution/postgres_store.go:382::q::8ad940b4":    "P1：同上 tool_usage_stats* 列名漂移",
+
+	// ── P1-4｜model_aliases.alias 列名错误：应为 raw_name ──
+	// 基线 model_aliases 列：id, canonical_id, **raw_name**, quantization, surface,
+	// status, notes, created_at, updated_at, client_profiles —— 没有 alias。
+	// admin/logs.go:1249 另有注释佐证「model_aliases.raw_name is persisted lowercase」。
+	"internal/reasoncap/pgsource.go:59::q::6d71f06d": "P1：model_aliases 无 alias 列（应为 raw_name），reasoncap 覆盖查询不可执行",
+
+	// ── 设计内的模板占位符（假阳性）────────────────────────────────────────
+	// `__mo_modality__` 不是列名，是等待替换的模板标记：该常量在启动时先探测
+	// information_schema.columns 里有没有 model_offers.provider_modality，再据探测
+	// 结果把占位符换成 moModalityWithColumn（真列）或兼容常量。
+	// 见 admin/credential_models_dto.go 的 :76、:120、:138。
+	// 按原样 PREPARE 当然失败——**它本来就不是一个会被原样执行的语句**。
+	"admin/credential_models_dto.go:32::offerListSQLColumns::361f5ffa": "假阳性：`__mo_modality__` 是启动探测后替换的模板标记，不是列名（见 :76/:120/:138）",
 }
 
-// ── 未分诊 backlog（R79 续五 遗留，9 条）──────────────────────────────────
+// ── 未分诊 backlog（R79 续五 遗留；补了 FROM/拼接过滤后由 9 条收缩为 6 条）──────────────────────────────────
 //
 // 这 9 条**确认能采集到、确认不是「判错对象」的误报**（SQLite 目录与 SQL 片段/DDL
 // 已在抽取阶段排除），但本轮没有逐条定性：缺列可能是「仓内漏了迁移」，也可能是
@@ -262,20 +315,23 @@ var justifiedPrepareFailures = map[string]string{
 //   - backlog 条数不等于 expectedUntriagedBacklog → 红（有人动了 backlog 而没同步改常量）。
 //
 // 换句话说：这道门今天绿，是因为已知的 9 条被记账了；它不会因为记账而变瞎。
-const expectedUntriagedBacklog = 9
+const expectedUntriagedBacklog = 0
 
-var untriagedPrepareBacklog = map[string]string{
-	// 缺列：tool_name（tool_usage_stats_hot 无此列）、execution_id、id、alias
-	"admin/credential_models_dto.go:32::offerListSQLColumns::361f5ffa":           "【未分诊】缺 __mo_modality__；疑为列清单片段混入语句形态",
-	"domains/toolexecution/postgres_store.go:122::selectExecutionCols::4f48c680": "【未分诊】缺 tool_name；疑列清单片段混入语句形态",
-	"domains/toolexecution/postgres_store.go:307::q::37f54877":                   "【未分诊】缺 tool_name（tool_usage_stats_hot）",
-	"domains/toolexecution/postgres_store.go:354::qHot::e9a8513a":                "【未分诊】缺 tool_name",
-	"domains/toolexecution/postgres_store.go:382::q::8ad940b4":                   "【未分诊】缺 tool_name（tool_usage_stats_hot）",
-	"internal/reasoncap/pgsource.go:59::q::6d71f06d":                             "【未分诊】缺 execution_id",
-	"modelcatalog/upsert.go:195::insertManualCredentialModelSQL::b194b800":       "【未分诊】ma.alias 不存在（别名/列引用问题，非缺列）",
-	"pending/pg_source.go:48::pgSourceColumns::9d659d4a":                         "【未分诊】缺 id；疑列清单片段混入语句形态",
-	"domains/reportrollup/rollup.go:412::internalPersonDaySQL::5189b082":         "【未分诊】unterminated quoted string；疑含运行时拼接的引号",
-}
+// untriagedPrepareBacklog 已清空：R79 续五的 9 条已逐条定性完毕。
+//
+//   - 3 条是抽取器判错对象（已修抽取器，随之从语料消失）：selectExecutionCols /
+//     pgSourceColumns 是无 FROM 的列清单片段；internalPersonDaySQL 是 Go 字符串
+//     拼接体，闭引号后紧跟 ` + var +`，正则只抓到第一段反引号内容。
+//   - 1 条是设计内的模板占位符：admin/credential_models_dto.go::offerListSQLColumns
+//     里的 `__mo_modality__` 由启动探测 model_offers.provider_modality 后替换成
+//     moModalityWithColumn / 兼容常量（该文件 :76、:120、:138）。
+//   - 1 条是 PREPARE 的推断限制：modelcatalog 的 $8 只在 CTE 内被引用，
+//     无参数类型时 PG 无法推断（42P08），运行时驱动会传类型，非语句缺陷。
+//   - 4 条是**真缺陷**，已升级进上方的定性登记表。
+//
+// 机制保留：将来再有无法定性的新条目，用这个表记账，并由
+// expectedUntriagedBacklog 棘轮守住。
+var untriagedPrepareBacklog = map[string]string{}
 
 // TestData_GoSQLConstants_PrepareAgainstRealDB plans every untemplated SQL
 // constant found in the repository against the real database.
@@ -312,6 +368,26 @@ func TestData_GoSQLConstants_PrepareAgainstRealDB(t *testing.T) {
 		planned        int
 		prepareCounter int
 	)
+
+	// Every registry key must still correspond to a collected candidate.
+	//
+	// The self-shrinking check below only fires when a registered constant
+	// PREPAREs cleanly — which covers "the bug got fixed", but NOT "the
+	// extractor stopped collecting it". After the FROM/concat filters were
+	// added, four backlog entries became unreachable while the gate stayed
+	// green, silently carrying justifications for statements the corpus no
+	// longer contains. A registry that can hold unreachable keys is a registry
+	// that hides its own backlog.
+	collected := make(map[string]bool, len(cands))
+	for _, c := range cands {
+		collected[c.key()] = true
+	}
+	for key := range justifiedPrepareFailures {
+		if !collected[key] {
+			t.Errorf("登记项 %q 已不在本轮语料里——要么它已修好/不再被抽取（请删除），"+
+				"要么抽取器漏了它（那是缺陷，请修抽取器）", key)
+		}
+	}
 
 	for _, c := range cands {
 		key := c.key()
@@ -381,6 +457,14 @@ func classifyPrepareError(c sqlCandidate, err error) prepareFailure {
 		"42501": // insufficient_privilege — the audit role is deliberately read-only
 		f.verdict = "unverifiable"
 		f.reasonIs = "本机库比代码旧或权限受限，与代码对错无关"
+	case "42P08":
+		// indeterminate_datatype: PREPARE carries no parameter types, so a
+		// parameter used only inside a CTE cannot be inferred. The driver sends
+		// typed values at runtime, so this is a limitation of the probe, not a
+		// defect in the statement (modelcatalog's upsert: `could not determine
+		// data type of parameter $8`).
+		f.verdict = "unverifiable"
+		f.reasonIs = "PREPARE 无参数类型的推断限制（42P08），运行时驱动会传类型，非语句缺陷"
 	case "42703": // undefined_column — genuinely missing, environment-independent
 		f.verdict = "red"
 		f.reasonIs = "列不存在：仓内无任何迁移创建/投影它，判红"

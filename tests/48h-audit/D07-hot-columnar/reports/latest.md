@@ -761,3 +761,73 @@ PREPARE 只解析+规划**不执行**，所以对本域「主库全程只读」�
 - **本机无法验证 9 条**：`internal/outbox/*` 依赖 `outbox_events` 表，本机库比代码旧
 - **未修理由**：视图投影属迁移 + schema 契约决策（`session_turns_with_current_month`
   有 526/636/640/713 多条重建路径 + 列数契约测试）；补列属迁移决策。审计轮只定位与登记。
+
+---
+
+# R79 续六 · 把 9 条 backlog 逐条定性完毕（清空 backlog，又挖出 2 个 P1）
+
+上一轮把 9 条无法规划的 SQL 记进了 backlog。本轮逐条查证，backlog 清空，
+其中 **4 条是真缺陷**，其中 2 条是全新的 P1。
+
+## 1. 9 条的最终定性
+
+| 条目 | 原错误 | 定性 | 依据 |
+|---|---|---|---|
+| `admin/credential_models_dto.go::offerListSQLColumns` | `column "__mo_modality__" does not exist` | **假阳性（设计内）** | `__mo_modality__` 是**模板占位符**：启动时探测 `information_schema.columns` 里有没有 `model_offers.provider_modality`，据结果替换成 `moModalityWithColumn`（真列）或兼容常量（该文件 `:76`/`:120`/`:138`）。它本来就不是会被原样执行的语句 |
+| `domains/reportrollup/rollup.go::internalPersonDaySQL` | `unterminated quoted string` | **抽取器判错对象** | 该常量用 Go 字符串拼接（`' + personUnknown + '`），正则只抓到第一段反引号内容 |
+| `domains/toolexecution/postgres_store.go::selectExecutionCols` | `tool_name` | **抽取器判错对象** | 无 `FROM` 的列清单片段，FROM 由调用方拼 |
+| `pending/pg_source.go::pgSourceColumns` | `id` | **抽取器判错对象** | 同上 |
+| `modelcatalog/upsert.go::insertManualCredentialModelSQL` | `could not determine data type of parameter $8` | **PREPARE 的推断限制** | `$8` 只在 CTE 内被引用；PREPARE 不带参数类型故推断不出，运行时驱动会传类型。非语句缺陷 |
+| `internal/reasoncap/pgsource.go::q` | `column ma.alias does not exist` | **真缺陷 → P1-4** | 见下 |
+| `domains/toolexecution/postgres_store.go::q / qHot / q` | `tool_name` | **真缺陷 → P1-3** | 见下 |
+
+## 2. P1-3｜`tool_usage_stats` 列名漂移：Go 用 `tool_name`/`date`，schema 是 `tool_id`/`usage_date`
+
+**两个独立 SSOT 一致**，这不是本机漂移：
+
+| 来源 | `tool_usage_stats_hot` 的列 |
+|---|---|
+| 基线 `installer/cmd/llm-gw-installer/embeddata/01-schema.sql` | id, **tool_id**, tenant_id, **usage_date**, call_count, success_count, error_count, avg_latency_ms, last_called_at, created_at, updated_at |
+| 真库实测（`pg_attribute`） | **逐列完全相同** |
+
+全仓**没有任何迁移**改名。而 `domains/toolexecution/postgres_store.go` 直接：
+
+```sql
+INSERT INTO tool_usage_stats_hot (… tool_name, date, …)
+ON CONFLICT (tool_name, date) DO UPDATE SET …
+```
+
+活接线确认：`cmd/gateway/tool_execution_integration.go:40` `te.NewPostgresStore(db, logger)`。
+→ **工具调用的用量统计写入路径不可执行。**
+
+## 3. P1-4｜`model_aliases.alias` —— 应为 `raw_name`
+
+基线 `model_aliases` 列：id, canonical_id, **raw_name**, quantization, surface, status,
+notes, created_at, updated_at, client_profiles —— **没有 `alias`**。
+`admin/logs.go:1249` 另有注释佐证「model_aliases.raw_name is persisted lowercase」。
+而 `internal/reasoncap/pgsource.go:59` 写的是 `WHERE ma.canonical_id = mc.id AND ma.alias = $1`
+→ **reasoncap 覆盖查询不可执行**。
+
+**我此前把这条误读成 modelcatalog 的问题**——用 `paste` 把「键」行与下一行错误消息配对时错位了一行。
+正确做法是让门自己逐条打印 `键：…` 与消息，我后来用一次性探针重取才拿到准确配对。
+
+## 4. 分类器新增一档：`42P08`
+
+`could not determine data type of parameter $N` 是 **PREPARE 没有参数类型**导致的推断限制，
+运行时驱动会传类型。归入「本机无法验证」，不判红。
+
+## 5. 自收缩检查补上了缺失的那一侧
+
+原有检查只在「登记的常量现在能正常 PREPARE」时报——覆盖了「bug 被修好」，
+但**不覆盖「抽取器不再采集它」**。补 FROM/拼接过滤之后，4 条 backlog 登记项
+悄无声息地离开了语料，而门一直绿着：一份能持有不可达键的登记表，
+等于把自己的 backlog 藏起来了。
+
+补的断言：**每条登记键都必须对应本轮语料里的一个候选**，否则红。
+
+## 6. 结论
+
+- **backlog 清空**（`expectedUntriagedBacklog = 0`），机制保留
+- **新增 P1-3**（`tool_usage_stats` 列名漂移，有活接线）、**P1-4**（`model_aliases.alias`）
+- 语料 155 条：**131 规划成功 / 14 已定性登记 / 10 本机无法验证**（9 条 `outbox_events` 本机无表 + 1 条 42P08）
+- 未修理由不变：补列、改视图、迁移列名都属迁移 + schema 契约决策

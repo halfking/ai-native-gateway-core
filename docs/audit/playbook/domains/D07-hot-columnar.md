@@ -322,3 +322,28 @@ R79 在存储函数侧抓到「批游标列无索引 → O(rows²)」。本轮�
   配三条断言：新增未登记的无法规划 SQL → 红；任一登记项开始能正常 PREPARE → 红（该收缩了）；
   `len(backlog) != expectedUntriagedBacklog` → 红（有人动了 backlog 却不改常量）。
   **这道门今天绿，是因为已知的 9 条被记账了；它不会因为记账而变瞎。**
+
+### R79 续六回注（2026-09-29，backlog 清空，又挖出 2 个 P1）
+
+上一轮 9 条无法规划的 SQL 逐条查证完毕，backlog 清空（机制保留）。
+
+- **P1-3｜`tool_usage_stats` 列名漂移**：基线 `01-schema.sql` 与真库 `pg_attribute`
+  **两个独立 SSOT 逐列一致**（`tool_id`/`usage_date`，**无** `tool_name`/`date`），
+  全仓无任何改名迁移；而 `domains/toolexecution/postgres_store.go` 直接
+  `INSERT INTO tool_usage_stats_hot (… tool_name, date, …) ON CONFLICT (tool_name, date)`。
+  活接线 `cmd/gateway/tool_execution_integration.go:40` → **工具调用用量统计写入不可执行**。
+- **P1-4｜`model_aliases.alias` 应为 `raw_name`**：基线该表只有 `raw_name`
+  （`admin/logs.go:1249` 另有注释佐证），而 `internal/reasoncap/pgsource.go:59` 写 `ma.alias = $1`。
+- **一条自我纠正**：我此前把 P1-4 误读成 modelcatalog 的问题——用 `paste` 把「键」行与
+  下一行错误消息配对时**错位了一行**。**教训：错误信息与标识符必须由同一处成对输出，
+  靠 shell 的 `paste` 拼两段不同来源的输出就是给自己制造假证据。**
+- **其余 5 条的定性**：1 条是设计内模板占位符（`__mo_modality__` 启动探测后替换）；
+  2 条是无 FROM 的列清单片段；1 条是 Go 字符串拼接体（正则只抓到第一段反引号）——
+  这 4 条都是**抽取器判错对象**；1 条是 PREPARE 的推断限制（`42P08`，`$8` 只在 CTE 内被引用，
+  运行时驱动会传类型）。
+- **分类器新增 `42P08` 一档**：归「本机无法验证」，不判红。
+- **自收缩检查补上缺失的一侧**：原检查只覆盖「登记项现在能正常 PREPARE」（bug 被修好），
+  **不覆盖「抽取器不再采集它」**——补 FROM/拼接过滤后 4 条登记项悄无声息离开语料而门一直绿。
+  **一份能持有不可达键的登记表，等于把自己的 backlog 藏起来。**
+  现断言：**每条登记键都必须对应本轮语料里的一个候选**。
+- 语料 155 条：**131 规划成功 / 14 已定性登记 / 10 本机无法验证**（9 条 `outbox_events` 本机无表 + 1 条 42P08）。
