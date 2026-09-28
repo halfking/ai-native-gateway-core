@@ -114,6 +114,21 @@ func TestStreamNativeResponsesSSEPreSemanticEOFIsResumable(t *testing.T) {
 	}
 }
 
+func TestStreamNativeResponsesSSECanceledContextIsClientCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("event: response.created\ndata: {\"type\":\"response.created\"}\n\n")),
+		Header:     make(http.Header),
+	}
+
+	outcome := StreamNativeResponsesSSE(ctx, httptest.NewRecorder(), resp, "req-canceled", audit.NewStreamCapture(), nil)
+	if !outcome.Interrupted || outcome.Kind != errorsx.KindCanceled || outcome.Reason != "client_cancel" || outcome.Resumable {
+		t.Fatalf("outcome = %#v, want non-resumable client cancellation", outcome)
+	}
+}
+
 // panickingReader returns a synthetic error on the first Read so we can
 // exercise the goroutine panic-recover guard without taking down the whole
 // test process. The reader raises panic() inside Read; without the recover()

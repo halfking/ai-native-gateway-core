@@ -10,6 +10,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	dto "github.com/prometheus/client_model/go"
@@ -111,12 +112,23 @@ func TestNonChatHandlers_RecordQueueBudgetRejection(t *testing.T) {
 	keyInfo := &authentication.KeyInfo{ID: 778, TenantID: "tenant-rate-limit", RateLimitRPM: &limit}
 
 	tests := []struct {
-		name       string
-		path       string
-		body       string
-		wantStatus int
-		wrap       func(*ChatHandler) http.Handler
+		name           string
+		path           string
+		body           string
+		wantStatus     int
+		wrap           func(*ChatHandler) http.Handler
+		enableExecutor bool
 	}{
+		{
+			name:       "chat completions",
+			path:       "/v1/chat/completions",
+			body:       `{"model":"kimi-k3","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
+			wantStatus: http.StatusTooManyRequests,
+			wrap:       func(h *ChatHandler) http.Handler { return h },
+			// chat 路径的限流检查在 serveWithExecutor 内，executor/provider
+			// 为 nil 时 serveHTTPInner 会在限流前以 503 提前返回。
+			enableExecutor: true,
+		},
 		{
 			name:       "responses",
 			path:       "/v1/responses",
@@ -136,6 +148,12 @@ func TestNonChatHandlers_RecordQueueBudgetRejection(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			h := NewChatHandler(nil, nil, nil, nil, nil, nil)
+			if tc.enableExecutor {
+				// 复用 survival e2e 的空 Executor + noNodesResolver 组合，
+				// 让请求越过 serveHTTPInner 的 executor 闸门进入限流检查。
+				h.executor = &executors.Executor{}
+				h.provider = noNodesResolver{}
+			}
 			h.setRequestKeyVerifierForTest(&stubKeyVerifier{info: keyInfo})
 			h.rateLimiter = budgetExceededLimiter{estimatedWaitSec: 42}
 			var entries []*telemetry.RequestLogEntry
@@ -156,6 +174,9 @@ func TestNonChatHandlers_RecordQueueBudgetRejection(t *testing.T) {
 			if len(entries) != 1 {
 				t.Fatalf("request log entries = %d, want 1", len(entries))
 			}
+			if got := res.Header().Get(ratelimit.GatewayRateLimitScopeHeader); got != ratelimit.GatewayRateLimitScopeSharedKey {
+				t.Errorf("gateway scope header = %q, want %q", got, ratelimit.GatewayRateLimitScopeSharedKey)
+			}
 			entry := entries[0]
 			if entry.RequestStatus == nil || *entry.RequestStatus != telemetry.RequestStatusRateLimited {
 				t.Fatalf("request status = %v, want %q", entry.RequestStatus, telemetry.RequestStatusRateLimited)
@@ -164,6 +185,25 @@ func TestNonChatHandlers_RecordQueueBudgetRejection(t *testing.T) {
 				t.Fatalf("error kind = %v, want rate_limit_exceeded", entry.ErrorKind)
 			}
 		})
+	}
+}
+
+func TestChatHandlerMarksThrottledSharedKeyResponse(t *testing.T) {
+	h := NewChatHandler(nil, nil, nil, nil, nil, nil)
+	// 同 TestNonChatHandlers_RecordQueueBudgetRejection/chat completions：
+	// 限流检查位于 serveWithExecutor 内，需要 executor+provider 越闸。
+	h.executor = &executors.Executor{}
+	h.provider = noNodesResolver{}
+	h.setRequestKeyVerifierForTest(&stubKeyVerifier{info: &authentication.KeyInfo{ID: 779, Status: "throttled"}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer sk-test")
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, req)
+	if res.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", res.Code, res.Body.String())
+	}
+	if got := res.Header().Get(ratelimit.GatewayRateLimitScopeHeader); got != ratelimit.GatewayRateLimitScopeSharedKey {
+		t.Fatalf("gateway scope header = %q, want %q", got, ratelimit.GatewayRateLimitScopeSharedKey)
 	}
 }
 

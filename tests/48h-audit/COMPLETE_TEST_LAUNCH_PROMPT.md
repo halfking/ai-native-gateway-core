@@ -20,7 +20,7 @@
 
 ## 第 1 步：装载知识库（必做，顺序执行）
 1. Read tests/48h-audit/README.md（整合目录结构 + 与 docs/audit/playbook/ 关系图）
-2. Read tests/48h-audit/MASTER_REPORT.md（R56 入口总览）
+2. Read docs/全面审计.md（审计范围、验收标准与当前进度）
 3. Read tests/48h-audit/00-PLAN.md（如需审计视角）
 4. Read tests/48h-audit/TEMPLATE-domain.md（域目录结构 + 测试规范）
 
@@ -166,7 +166,7 @@ stress 跑 2 遍（warm cache 验证）。
 ```text
 承接 T<N-1>：
   - 起点 = tests/48h-audit/reports/history/T<N-1>-<日期>.md §遗留
-  - 知识库入口 = tests/48h-audit/README.md + tests/48h-audit/MASTER_REPORT.md
+  - 知识库入口 = docs/全面审计.md + tests/48h-audit/README.md
   - 主计划 = tests/48h-audit/00-PLAN.md
   - 本提示词 = tests/48h-audit/COMPLETE_TEST_LAUNCH_PROMPT.md
 ```
@@ -174,4 +174,4 @@ stress 跑 2 遍（warm cache 验证）。
 ---
 
 **版本**: v1 · 2026-09-23 00:05 CST · R56 入口  
-**配套**: `00-PLAN.md` (审计视角) + 本文件 (测试视角) + `TEMPLATE-domain.md` (域模板) + `MASTER_REPORT.md` (总览)
+**配套**: `00-PLAN.md` (审计视角) + 本文件 (测试视角) + `TEMPLATE-domain.md` (域模板) + `docs/全面审计.md` (总览)

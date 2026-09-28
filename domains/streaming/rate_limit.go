@@ -184,6 +184,12 @@ func rateLimitOutcomeKind(o rateLimitOutcome) string {
 //   - X-RateLimit-Reset      : Unix epoch seconds when the window resets
 //   - Retry-After            : seconds the client should wait before retrying
 func writeRateLimitHeaders(w http.ResponseWriter, o rateLimitOutcome) {
+	if o.Blocked {
+		// For credential self-checks this is the worker's shared gateway API
+		// key, not a provider credential. Mark local admission rejections so
+		// the worker can apply a shared cooldown without guessing from HTTP 429.
+		w.Header().Set(ratelimit.GatewayRateLimitScopeHeader, ratelimit.GatewayRateLimitScopeSharedKey)
+	}
 	if o.Limit > 0 {
 		w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", o.Limit))
 		if o.Remaining >= 0 {

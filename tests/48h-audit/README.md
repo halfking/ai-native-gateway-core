@@ -4,7 +4,7 @@
 > **用法**：每个域一个独立子目录 `DXX-name/`，内含审计计划 + 业务/数据/压力/安全四类测试 + 脚本 + 累积报告。
 > **跨链接**：审计域知识库仍在 `docs/audit/playbook/domains/`；本目录是它们的**测试具象化层**，互相引用。
 > **开始审计**：拷贝 [`00-PLAN.md`](00-PLAN.md) 全文作为新会话主代理提示词；或按域派子代理，参考对应域 `plan.md`。
-> **入口报告**：[`MASTER_REPORT.md`](MASTER_REPORT.md) — R56 总览、当前状态、下一步
+> **总控标准与进度**：[全面审计](../../docs/全面审计.md)；**域报告索引**：[reports/INDEX.md](reports/INDEX.md)
 
 ---
 
@@ -81,7 +81,7 @@ tests/48h-audit/
 | `tests/48h-audit/00-PLAN.md` | 主代理 v2（审计 + 测试整合入口） |
 | `tests/48h-audit/COMPLETE_TEST_LAUNCH_PROMPT.md` | **完整测试启动提示词（可复用 · 4 变体：A 快速 / B stress / C 门禁 / D 单域）** |
 | `tests/48h-audit/TEMPLATE-domain.md` | 域目录 + 测试 + 报告三套模板 |
-| `tests/48h-audit/MASTER_REPORT.md` | R56 入口总览 |
+| [`docs/全面审计.md`](../../docs/全面审计.md) | 全面审计标准与当前进度总控 |
 | `tests/48h-audit/DXX-*/plan.md` | **本轮测试具象化**：从域文档抽取可执行项 |
 | `tests/48h-audit/DXX-*/{business,data,stress,safety}/` | **测试代码** |
 | `tests/48h-audit/DXX-*/reports/` | **累积报告** |
