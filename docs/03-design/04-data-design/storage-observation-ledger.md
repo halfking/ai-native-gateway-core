@@ -310,3 +310,16 @@ ROUND_RESULT|sessions=7|fail=0|global_g2=0|verdict=PASS|at=2026-09-27T01:02:09Z
 - 抽样 7/7 PASS（biz_multi×4 达 219-1320 轮、loop_single×3；sys 桶今日未抽到样本，全局扫描为主指标不受影响），G1 四项零漂移。
 - claim 置位结构性漏镜像连续第 7 天未产生缺失（自 09-20 回填后保持干净，已超出其历史平均复发间隔）。
 - **连续归零累计 5/7**（09-27 计 Day 5）。Day 6=09-28、Day 7=09-29——后两日均 PASS 即达标"S4 停写 gate 观察期"。
+
+### 每日观察 2026-09-28 09:01 (+08)，build=774ad643/2283 —— **PASS，连续归零 Day 6/7**
+
+构建身份：774ad643/2283 在本仓库历史，含 GAP-2 闭环改动，ready=true，核验通过。
+
+```
+GLOBAL_G2|v1_final_missing_turns_24h=0|verdict=PASS
+ROUND_RESULT|sessions=7|fail=0|global_g2=0|verdict=PASS|at=2026-09-28T01:01:07Z
+```
+
+- 抽样 7/7 PASS（biz_multi×4、loop_single×3），G1 四项零漂移。
+- claim 置位结构性漏镜像连续第 8 天未产生缺失。
+- **连续归零累计 6/7**（09-28 计 Day 6）。**明日（09-29）每日轮 PASS 即满 7 天**，届时台账标注"S4 停写 gate 观察期达标，可评估触发停写"。
