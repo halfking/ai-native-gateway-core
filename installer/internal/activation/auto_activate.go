@@ -47,6 +47,8 @@ type AutoActivateOptions struct {
 // ActivationState 写入 state/activation.json 的结构。
 // 注意：instance_token（主控签发的 JWT 心跳凭据）绝不写入本文件 —— 它只落
 // state/instance.token（0600），避免经 launcher /status 接口外泄。
+// 同样：试用 license key（trialResp.LicenseKey）也绝不落盘 —— 主控已在
+// register 同调用里完成激活，注册成功后本地无需再持有可激活凭据。
 type ActivationState struct {
 	InstanceID  string           `json:"instance_id"`
 	DeviceCode  string           `json:"device_code"`
@@ -56,7 +58,6 @@ type ActivationState struct {
 	ActivatedAt string           `json:"activated_at"`
 	ExpiresAt   string           `json:"expires_at,omitempty"`
 	Error       string           `json:"error,omitempty"`
-	LicenseKey  string           `json:"license_key,omitempty"`
 }
 
 // DeriveDeviceCode 从稳定的 instance_id 派生可展示的设备码。
@@ -358,9 +359,6 @@ func RunAutoActivate(ctx context.Context, opts AutoActivateOptions) error {
 		}
 		licenseKey = trialResp.LicenseKey
 		st.ExpiresAt = trialResp.ExpiresAt
-		if trialResp.LicenseKey != "" {
-			st.LicenseKey = trialResp.LicenseKey
-		}
 		isTrial = true
 	}
 
