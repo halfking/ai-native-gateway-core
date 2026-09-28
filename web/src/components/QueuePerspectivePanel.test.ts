@@ -395,6 +395,94 @@ describe('QueuePerspectivePanel', () => {
 
   // ── OBS-UI：按模型分组的可用节点（2026-08-17） ────────────────────────────
 
+  // 2026-09-29 线上复现（llmgateway.internal.example.com/dashboard?tab=stream）：筛选 glm-5.3 且确有
+  // glm-5.3 请求，但「按模型分组的可用节点」里没有 glm-5.3 分组，却冒出一个未
+  // 选中的其它模型分组。根因是 resolve 的 raw_models 含词法变体
+  // （'glm-5.3-flash' 剥掉包装词 flash 得到 'glm-5.3'），而旧实现按并发 resolve
+  // 的完成顺序就地认领别名（冲突就删），真模型作用域被冒名者吞掉。
+  // 下面的 resolve 载荷逐字段照抄当时的真实响应。
+  function stubGlm53ResolveFamily() {
+    getFeatured.mockResolvedValue({ featured_models: ['glm-5.3', 'glm-5.3-flash'] })
+    resolveRouting.mockImplementation(async (model: string) => {
+      if (model === 'glm-5.3') {
+        return {
+          canonical_id: 2422803,
+          canonical_name: 'glm-5.3',
+          raw_models: ['glm-5.3', 'glm-5-3', 'z-ai/glm-5.3'],
+          candidates: [
+            { credential_id: 22, model_name: 'glm-5.3', canonical_id: 2422803, manual_priority: 1, routing_tier: 1, priority: false },
+            { credential_id: 61, model_name: 'glm/5.3', canonical_id: 2422803, manual_priority: 2, routing_tier: 1, priority: false },
+            { credential_id: 7, model_name: 'z-ai/glm-5.3', canonical_id: 2422803, manual_priority: 3, routing_tier: 1, priority: false },
+          ],
+        }
+      }
+      if (model === 'glm-5.3-flash') {
+        return {
+          canonical_id: null,
+          canonical_name: 'glm-5.3-flash',
+          // 'glm-5.3' / 'glm-5-3' 是包装词剥离的词法变体，不是同一模型。
+          raw_models: ['glm-5.3-flash', 'glm-5-3-flash', 'glm-5.3', 'glm-5-3'],
+          candidates: [
+            { credential_id: 8, model_name: 'glm-5.3-flash', canonical_id: null, manual_priority: 1, routing_tier: 1, priority: false },
+            { credential_id: 46, model_name: 'GLM-5.3-Flash', canonical_id: null, manual_priority: 2, routing_tier: 1, priority: false },
+            { credential_id: 22, model_name: 'glm-5.3', canonical_id: 2422803, manual_priority: 3, routing_tier: 1, priority: false },
+          ],
+        }
+      }
+      return { canonical_id: null, canonical_name: null, raw_models: [], candidates: [] }
+    })
+  }
+
+  function stubGlm53Nodes() {
+    const healthy = {
+      manual_disabled: false,
+      circuit_state: 'closed',
+      availability_state: 'ready',
+      quota_state: 'ok',
+      health_status: 'healthy',
+    }
+    liveStreamState.nodes = [
+      { credential_id: 22, provider_id: 1, provider_code: 'zhipu', ...healthy, raw_models: ['glm-5.3', 'glm-5.3-flash'] },
+      { credential_id: 57, provider_id: 2, provider_code: 'apicloude', ...healthy, raw_models: ['glm-5.3'] },
+      { credential_id: 46, provider_id: 3, provider_code: 'xianyu', ...healthy, raw_models: ['GLM-5.3', 'GLM-5.3-Flash'] },
+    ]
+  }
+
+  it('keeps a base-model group even when a wrapper-token scope claims it lexically', async () => {
+    stubGlm53ResolveFamily()
+    stubGlm53Nodes()
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const names = wrapper.findAll('.qp-model-group-name').map(n => n.text())
+    expect(names).toContain('glm-5.3')
+    expect(names).toContain('glm-5.3-flash')
+    // 凭据 #22 / #46 的 raw_models 里同时有 glm-5.3 与 glm-5.3-flash，它们确实
+    // 同时候两个模型的节点，两个分组都包含它们；关键是 glm-5.3 分组不再为空，
+    // 且只服务基础模型的 #57 没有混进 flash 分组。
+    const glm53Group = wrapper.findAll('.qp-model-group')
+      .find(g => g.get('.qp-model-group-name').text() === 'glm-5.3')
+    expect(glm53Group?.get('.qp-pill').text()).toBe('3 节点')
+    const flashGroup = wrapper.findAll('.qp-model-group')
+      .find(g => g.get('.qp-model-group-name').text() === 'glm-5.3-flash')
+    expect(flashGroup?.get('.qp-pill').text()).toBe('2 节点')
+  })
+
+  it('shows the selected model under the model filter instead of an impersonating group', async () => {
+    stubGlm53ResolveFamily()
+    stubGlm53Nodes()
+    const wrapper = mount(QueuePerspectivePanel, {
+      props: { modelFilter: new Set(['glm-5.3']) },
+      global: { plugins: [i18n] },
+    })
+    await flushPromises()
+
+    const groups = wrapper.findAll('.qp-model-group')
+    expect(groups).toHaveLength(1)
+    expect(groups[0].get('.qp-model-group-name').text()).toBe('glm-5.3')
+    expect(wrapper.text()).not.toContain('glm-5.3-flash')
+  })
+
   it('hides the model-grouped section entirely when no node reports raw_models', () => {
     liveStreamState.nodes = [
       { credential_id: 1, provider_id: 2, manual_disabled: false, circuit_state: 'closed' },

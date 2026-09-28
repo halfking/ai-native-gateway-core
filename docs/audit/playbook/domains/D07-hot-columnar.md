@@ -206,3 +206,332 @@ S-01 原标注「环境未提供」，实测时本机 PG 17.10 已健康运行 3
   且正确区分 `ensure_request_logs_partition`（引用中）判缺陷 vs `repair_...`（未引用）仅记录。
 - **仍未做**：非游标形态的查询面（按 ts 范围做对账/报表的接口）未做计划形状普查；
   本轮只覆盖「批游标」这一形态。
+
+### R79 续三回注（2026-09-29，非游标查询面 + DEFAULT 分区普查）
+
+靶子从「批游标」换成查询面，查分区裁剪是否真的生效。
+
+- **P2｜`stats_event_inbox` 名义分区、实际零分区**：声明 `PARTITION BY RANGE (occurred_at)`
+  却只有 DEFAULT 一个子分区，**1,419,612 行 / 1298 MB** 全在里面（跨 41 天）。
+  `bg/partition_manager.go` 的 `ensureSpecs()` 无任何条目引用它（`bg/` 整包零引用）；
+  全仓**零处** DELETE/TRUNCATE——消费者只 `markProcessed`，`replaySQL` 刻意保留已处理行，
+  是一本只增不减的重放账本。**定 P2 不定 P1**：声明查询有部分索引兜底
+  （`WHERE processed_at IS NULL`），今天不慢；真实代价是无界增长（10–26K 行/天，尖峰 150K）。
+  待 owner 决策：(a) 接入 `ensureSpecs()` + 保留期清理；(b) 若不需要分区就去掉 `PARTITION BY`，
+  别让下一个人以为有裁剪。
+- **P3｜一处过度声明的注释**：`bg/partition_manager.go:1258` 写「partition pruning 对 WHERE
+  范围查询仅扫命中分区」，对 2026-09-26 之前的 36 天数据**不成立**（那 1,255,179 行全在 DEFAULT）。
+- **三条被证伪的假设**（每条都曾差点写进结论）：
+  1. `session_turns` 的索引全带 `ON ONLY` → 若 PG 不递归则 6.2GB 热分区缺 `request_id` 索引，
+     视图里逐行 `NOT EXISTS` 会退化成每行一次全分区顺序扫。**实测 5 个分区逐个查 `pg_index`，
+     每个都有 `*_request_id_idx`。** 证伪。
+  2. 计划里 `Seq Scan on request_logs_2026_07/08` 疑似缺索引 → **实测这两个分区是 0 行**，
+     顺序扫是对的。本地空表假象，生产有数据时规划器会用索引。证伪。
+  3. 「DEFAULT 装了 1168 MB，分区裁剪全废了」→ EXPLAIN 三次复跑否掉：窗口被显式兄弟分区
+     **完整覆盖**时 PG 17.10 会裁掉 DEFAULT（`SET enable_partition_pruning=off` 可复现为 Append）。
+     **未读规划器源码确认判定路径，故只登记实测行为、不登记机制解释。**
+  一般化：**看到计划里不理想的形状，先查被扫描对象的真实体量和索引的真实分布，再归因。**
+- **普查脚本的过滤条件会同时充当「筛选」和「掩盖」**：手工 census 带了
+  `AND (子分区数) > 1`，而 `stats_event_inbox` 恰好只有一个子分区（DEFAULT 自己），
+  被整条抹掉——**恰恰因为它退化，才不会被那个条件选中**。写成门后同一条查询没有该过滤，
+  立刻报出 2 张。**「我想要的那些对象」与「我筛选之后还剩的对象」不是一回事。**
+- **门的判据不是「DEFAULT 必须为空」**：那会红在一个**有文档的正确设计**上
+  （`partition_manager.go:1256`「DEFAULT 保留作历史 catch-all」）。
+  真正要抓的是**静默堆积**——分区创建滞后或从未接入，写入一路落进 DEFAULT 而无人察觉。
+  故判据是**「有数据但没人登记过」**，并配三条自收缩断言（未登记即红 / 登记失效即红 /
+  幽灵条目即红）。变异 3 处红转绿。
+
+### R79 续四回注（2026-09-29，P1：分页的 LIMIT 没有约束工作量）
+
+R79 在存储函数侧抓到「批游标列无索引 → O(rows²)」。本轮在**查询面**抓到同型误解：
+`... FROM <view> WHERE <ts 范围> ORDER BY ts DESC LIMIT <page_size>` 读起来像「只要一页」，
+实测页大小一点也没约束工作量。
+
+- **受控对照**（同一天窗口、同一条 `ORDER BY ts DESC LIMIT 10`，**只改 FROM 来源**）：
+  直查 `request_logs` **0.288ms**（Index Scan，下推）｜内层嵌套视图（含 LATERAL，
+  **不含**两个反连接）**0.120ms**（`Merge Append` + `Limit loops=10`，下推）｜
+  完整视图 `request_logs_with_current_month` **12390ms**
+  （`Append actual rows=404794`，下推失效）。
+  第二、三行**只差两个相关反连接**——视图体末尾对 `session_turns_hot` / `session_turns`
+  按 `request_id` 的 `NOT EXISTS`。加上去之后规划器必须先判定每行能否通过反连接，
+  无法对 UNION ALL 各分支预截断，只能全部物化、两轮索引探测、再排序。
+- **直接证据**：`LIMIT 10` 与 `LIMIT 1000` 的 Append 行数**完全相同**（均 404794）；
+  缓冲区读 **9,216,949 block**（≈70GB 逻辑读）换回 **10 行**。
+  **所以不是深翻页问题**——第 1 页和第 500 页一样贵，贵的部分在 LIMIT 之前就付完了。
+- **命中面**：`admin/logs.go` ctx 预算 30s（`:470`），默认窗口就是**一天**（`:474-475`），
+  即一天窗口已经 12.4s；`page` 无上限（`:478-481` 只夹下界），
+  窗口靠 R37 的 366 天上限兜着。
+- **P1 但不由本轮修**：视图被 `admin/logs.go`、`bg/stats_minute_rollup.go`、
+  `domains/routeincident/store.go`、`db/probe_views_unified.go`、`maas/usage.go` 共用，
+  另有自愈重建链 + 迁移 575/577/680/696/700/717 + 视图 113/115 列冻结契约测试。
+  **改视图是迁移 + schema 契约决策。**
+- **门自己红过三次，每次都是门有缺陷，且同属一个家族**：
+  ① 按字符串字面量判分页——`admin/logs.go` 用 `fmt.Sprintf` 拼装，FROM 源与 ORDER BY
+  分处不同字面量，于是对**全树最被分页的那个查询**报「已无分页引用」；
+  ② 只认纯标识符——SQL 源都带别名（`"... AS r"`），真实用法几乎全漏，
+  改为抽字面量内标识符 token 再与**目录里的视图名**求交（用目录当词表）；
+  ③ **门把自己的源码当成了消费方**——门文件里每个 allowlist 视图名都是字符串字面量、
+  注释里还有 ORDER BY+LIMIT，删掉一条登记会让交集归零而**误触发真空守卫**。
+  **这是最坏的门的失效形态：它因为一个与被审代码毫无关系的理由保持绿色。**
+  修法：**门必须排除自己的目录**。
+- **可迁移判定**：**「LIMIT」出现在代码里不等于它约束了工作量。**
+  只有 EXPLAIN 显示下推（或 top-N）才算；`LIMIT 10` 与 `LIMIT 1000` 的 Append 行数相同
+  就是它没约束的证据。受控对照要**只差一个变量**——本轮能定位到「那两个反连接」，
+  靠的就是让两次查询只差反连接这一项，否则「视图很慢」只能停在抱怨层。
+- **假阳性也写进登记并注明理由**（本门仓内扫描是文件级粒度，天然有假阳性）：
+  `v_routable_credential_models` 经核实无生产查询读取；
+  `v_task_model_ranking` 确为真阳性（`admin/auto_route.go:1084` 的 `ORDER BY … LIMIT $4`）但未实测；
+  `session_turns_with_current_month` 混合（两处读无 LIMIT，一处经 CTE 间接 `LIMIT 20`）。
+
+### R79 续五回注（2026-09-29，P1：有测试断言其文本的 SQL，从未被执行过一次）
+
+- **P1｜`session_turns_with_current_month` 漏投影 `origin_actor`**：
+  `domains/sessionsummary/message_source_v2.go` 的 `v2SessionBodiesBaseQuery`
+  引用 `t.origin_actor`，而该视图的 65 列定值投影里没有这一列
+  （基表 `session_turns` 上**有**，attnum 99；`db/db.go:2990` 只保证 `request_logs*` 表；
+  全仓无任何 SQL 把它投进 turns 视图）。源码常量**原文实跑**：
+  `ERROR: column t.origin_actor does not exist`；去掉该谓词则正常返回 53,851 行。
+  **唯一相关的测试只断言文本包含某个 JOIN**——查询能否执行无人看。
+  **两条设置路径都中招，这是定 P1 的理由**：`main_pipeline.go:1416` 在
+  `sessions_v2_compression_read`（默认 true）下
+  `SetMessageSource(NewPerTurnDigestSource(pool))`，而
+  `NewPerTurnDigestSource = gated{digest: perTurnDigestSource, fallback: v2SessionBodiesSource}`
+  ——开关开走 digest（同样缺该列）、开关关（**默认**）走 fallback（同样缺该列）。
+  唯一可用配置是 `sessions_v2_compression_read=false` 退回 V1。
+  消费面：会话摘要输入读取（`GenerateSummary` / `GenerateRollingSummary`）。
+- **P1 候选｜`diagnostic_runs.route_key` / `routing_audit_log.reason` 缺列**：
+  `domains/routeincident` 共 8 处查询；**基线 `01-schema.sql:7955` 与真库双缺**，
+  全仓无任何迁移添加。`route_key` 只存在于 390 的 `routing_audit_log`——**另一张表**，疑串表。
+- **新门：把仓内 SQL 常量对真库 PREPARE 一遍**（`TestData_GoSQLConstants_PrepareAgainstRealDB`）。
+  抽取 160 条无 fmt 占位符的完整 DML 常量逐条 `PREPARE`——**只规划不执行**，
+  故与「主库全程只读」的硬约束无冲突；`column … does not exist` 正是规划期错误。
+  **错误必须按 SQLSTATE 分层，不能一律判红**：`42703`（列真的不存在，已翻遍仓内迁移确认）判红；
+  `42P01/42704/3F000/42501`（本机库比代码旧、只读角色权限受限）只记录；其他 fail-otherwise。
+  结果：133 成功 / 9 已定性 / 9 backlog / 9 本机无法验证（`outbox_events` 本机无表）。
+- **门自己红了四次，全是「判错对象」家族**：
+  ① 抽取器只判「含 SELECT」，把 **SQL 片段**（`requestLogsJoins` 是 JOIN 块、
+  `sessionSummarySelectCols` 是列清单）与 DDL 常量也收进来 → 48 条假语法错；
+  ② 没排除 **SQLite** 目录——换方言问错服务器；
+  ③ **登记键 `file::name` 不唯一**：`action_infra.go` 有 **6 个同名 `sql` 常量**，
+  自收缩检查命中其中一个后 `delete()` 抹掉登记，**把另外 5 个失败项的理由一起带走**，
+  它们随即红在一个与自身 SQL 毫无关系的理由上。**一道门为了维护自己的白名单，
+  把白名单改坏了。**
+  ④ 同上。修法：键加**行号 + 内容哈希**；且**只报告、绝不在遍历中改注册表**。
+- **backlog 用棘轮管，不用永久红**：9 条未分诊项登记而不判红——
+  **一道长期红的门会让人习惯性忽略它**，此后它连自己抓到了什么都不再有人看。
+  配三条断言：新增未登记的无法规划 SQL → 红；任一登记项开始能正常 PREPARE → 红（该收缩了）；
+  `len(backlog) != expectedUntriagedBacklog` → 红（有人动了 backlog 却不改常量）。
+  **这道门今天绿，是因为已知的 9 条被记账了；它不会因为记账而变瞎。**
+
+### R79 续六回注（2026-09-29，backlog 清空，又挖出 2 个 P1）
+
+上一轮 9 条无法规划的 SQL 逐条查证完毕，backlog 清空（机制保留）。
+
+- **P1-3｜`tool_usage_stats` 列名漂移**：基线 `01-schema.sql` 与真库 `pg_attribute`
+  **两个独立 SSOT 逐列一致**（`tool_id`/`usage_date`，**无** `tool_name`/`date`），
+  全仓无任何改名迁移；而 `domains/toolexecution/postgres_store.go` 直接
+  `INSERT INTO tool_usage_stats_hot (… tool_name, date, …) ON CONFLICT (tool_name, date)`。
+  活接线 `cmd/gateway/tool_execution_integration.go:40` → **工具调用用量统计写入不可执行**。
+- **P1-4｜`model_aliases.alias` 应为 `raw_name`**：基线该表只有 `raw_name`
+  （`admin/logs.go:1249` 另有注释佐证），而 `internal/reasoncap/pgsource.go:59` 写 `ma.alias = $1`。
+- **一条自我纠正**：我此前把 P1-4 误读成 modelcatalog 的问题——用 `paste` 把「键」行与
+  下一行错误消息配对时**错位了一行**。**教训：错误信息与标识符必须由同一处成对输出，
+  靠 shell 的 `paste` 拼两段不同来源的输出就是给自己制造假证据。**
+- **其余 5 条的定性**：1 条是设计内模板占位符（`__mo_modality__` 启动探测后替换）；
+  2 条是无 FROM 的列清单片段；1 条是 Go 字符串拼接体（正则只抓到第一段反引号）——
+  这 4 条都是**抽取器判错对象**；1 条是 PREPARE 的推断限制（`42P08`，`$8` 只在 CTE 内被引用，
+  运行时驱动会传类型）。
+- **分类器新增 `42P08` 一档**：归「本机无法验证」，不判红。
+- **自收缩检查补上缺失的一侧**：原检查只覆盖「登记项现在能正常 PREPARE」（bug 被修好），
+  **不覆盖「抽取器不再采集它」**——补 FROM/拼接过滤后 4 条登记项悄无声息离开语料而门一直绿。
+  **一份能持有不可达键的登记表，等于把自己的 backlog 藏起来。**
+  现断言：**每条登记键都必须对应本轮语料里的一个候选**。
+- 语料 155 条：**131 规划成功 / 14 已定性登记 / 10 本机无法验证**（9 条 `outbox_events` 本机无表 + 1 条 42P08）。
+
+### R79 续七回注（2026-09-29，「P1 候选」量成 P1）
+
+「缺列」是事实，「会不会真断」是另一回事——本轮量完可达性，8 处缺列由 **P1 候选升 P1**。
+
+- **缺列三方一致**：基线 `01-schema.sql:7955` 无 `route_key`；真库 `pg_attribute` 无；
+  全仓仅有的两处 `ALTER TABLE diagnostic_runs`（445 / 391）都只加 `created_at/updated_at`。
+  `route_key` 全仓只出现于 **390 的 `routing_audit_log`**（另一张表，疑串表）。
+- **可达性链**：`cmd/gateway/main.go:3539/3545` `NewStore` + `NewObserver` →
+  `telemetryClient.AddOnRequestLogPersisted(observer.AsHook())`（**每条落库请求日志**）→
+  `Observer.Transition` → `writeAudit` → `persistRunInTx` → `INSERT … route_key` → 42703。
+  admin 侧 `NewRouteIncidentsHandler` 无条件接线，`DiagnosticRunsList` / `AuditLogListByRun` 同样失败。
+- **加重因素**：`observer.go` 的重试循环按瞬时冲突设计（注释：「Transient: lock conflict,
+  transient deadlock… the next persisted row will catch up」），但 `42703` 是**永久性**错误，
+  每次重试与每条后续请求都必然同样失败。`maxRetries: 4` ⇒ **每条请求日志触发 5 次注定失败的查询**，
+  退避后只记 warning。**重试机制对永久性 SQL 错误零收益，只把热路径的失败成本放大 5 倍。**
+- **可迁移判定**：定级不能停在「缺一列」。**要问的是「这条路径默认开启吗、落在什么频率上、
+  失败会被放大吗」**——三问都命中才是 P1。与 R79 续五给 `origin_actor` 定 P1 同源。
+
+### R79 续九回注（2026-09-29，四个非 hot 族普查）
+
+- **P2｜`request_wal` 完全没有保留期机制**，三条独立证据：
+  ① 唯一该清理的 `archive_request_wal` 是死函数（R79 续二 已登记，331 未应用）；
+  ② `drop_old_state_partitions` 函数体**根本没提 request_wal**，Go 侧零 DELETE/DROP/TRUNCATE；
+  ③ **`lifecycle.request_wal_ttl_days` 全仓只命中它自己的声明，零消费方**——
+  一个可热更新、界面可见、描述明确、默认 1 天的平台设置，**改了没效果且不报错**。
+  代价实测 975,156 行 / 375 MB / 26 天；**1 天 TTL 生效时应只留约 1 万行 / 4 MB，
+  实际是声明意图的约 80–100 倍**；且旧月分区也不被 drop，分区数本身在涨。
+- **修法被 columnar 挡住（最实用的一条）**：直觉修法是补 DELETE，但
+  `EXPLAIN DELETE FROM request_wal` 直接报
+  `ERROR: UPDATE and CTID scans not supported for ColumnarScan`——
+  `request_wal_2026_08` 是 citus columnar（am 359239），`_2026_09` 是 heap。
+  **修复必须先处理 columnar 分区**（转回 heap，或改走 `DETACH + DROP TABLE`）。
+- **P3｜`sessions` 保留期删除全分区 Seq Scan**：`bg/lite_retention_worker.go:131`
+  `DELETE FROM sessions WHERE updated_at < ?` → 5 个分区全 Seq Scan（09 估 865,385 行）。
+  `idx_sessions_status (status, updated_at DESC)` 用不上——首列 `status` 未被谓词约束。
+- **一条被证伪**：我怀疑每月 1 日调度的 `archive_routing_decision_log` 会因 columnar 失败。
+  **证伪**——它末尾是 `ALTER TABLE … DETACH PARTITION` + `DROP TABLE`，**不走 DELETE**，
+  columnar 安全，该族被正常清理。**限制作用于操作类型，不是表**：
+  「同样是 columnar 表」不等于「同样受同一限制」。
+- 四族分区结构都健康（DEFAULT 空、边界正确）；但**仍是月分区**（`usage_facts` 已按 R68
+  改日分区），月内 ts 范围查询不能裁剪。
+
+### R79 续十 · 保留期删除的索引普查（1 个 P1 + 2 个 P2 + 1 个 P3）
+
+**新判据：只认索引首列。** `candidate_failure_logs` 分区有 6 条索引，`ts` 是其中 4 条的
+**第二列**；`armor_judgments` 的 `created_at` 只作 `(tenant_id, created_at DESC)` 第二列。
+这是「索引首列匹配 ≠ 索引可用」的**镜像**——上一轮的规则只覆盖了「索引没这列」，
+「索引里有这列但不是首列」这一半本轮才补上。
+
+- **P1｜`armor_judgments` 删除吞吐追不上写入吞吐**（不只是缺一列）：
+  804,253 行 / 327 MB，跨度 **86.94 天 < 90 天保留期 ⇒ 当前每轮删 0 行**，
+  但仍要扫全表 + `Sort rows=378,463`（EXPLAIN cost 94,538，每 24h 一次）。
+  写入 **6,318 行/天** > 删除硬上限 **5,000 行/天** ⇒ 净增 1,318 行/天，无界增长。
+  写入方是 `security/armor/logger.go`（每条流式请求一条 observe-only 审计）。
+  删除上限与保留期都是硬编码常量，**没有提速手段**。
+  ⚠️ **修法不是补索引**——续十一生产规模对照实测（详见 reports/latest.md 续十一）：
+  补 `(created_at)` 索引 763ms → 732ms，**落在无索引自身波动区间内（756–796ms）**，
+  收益 ≈ 0 且给「每条请求写一条」的表加写入维护成本；**cost 差 3.8 倍而执行时间差 ≈ 0**
+  （LIMIT 让 Seq Scan 提前终止，cost 假设扫完全部匹配行）。
+  **正确修法 = 提高批量上限**：实测批量 ×20（5,000→100,000）耗时 966ms → 1,728ms（×1.8），
+  吞吐却提升 20 倍，直接解除倒挂。
+- **P2｜`journal_snapshot_receipts`**：94,657 行 / 57 MB，三条索引首列分别是
+  `claim_until`(partial)、`tenant_id`、identity 复合，**无 `updated_at` 首列**（Seq Scan
+  cost 5,020）；且 `domains/requestjourney/retention.go:143` **无 LIMIT 无分批**。
+- **P2｜`candidate_failure_logs`**：81%（67,580 行）早已过期，积压 13.5 天。
+  **只定 P2**——写入 318 行/24h ≪ 删除能力 5,000/天，积压可消化。
+  **与 armor_judgments 结论相反，靠的是速率对比不是峰值**。
+  ⚠️ 续十曾把「每轮扫 67,826 行只为删 5,000 行（13.6x 放大）」当成已证实成本，
+  **那是 cost 估算、未实测执行时间**，同规模实测显示 LIMIT 会提前终止；已在原文加注更正。
+- **P3｜`model_iq_runs`**：0 行，365 天保留期未到触发规模，登记而非豁免。
+- **P3｜一条注释已与现实不符（已修）**：`internal/trace/stage_events_retention.go`
+  原写「该表没有 created_at 单列索引…再补 created_at 索引迁移」，实测
+  `idx_stage_events_created_at` 存在且被采用。**全仓唯一写着要补该索引的地方**，
+  owner 照做会做一次已完成的迁移。
+- **证伪｜`request_state_transitions` 的「无 LIMIT 全量 DELETE」不是缺陷**：
+  形状上正该红，实测跨度 **7.01 天**（= 7 天保留期，说明保留期生效）、每 tick 1,103 行、
+  索引在用。记下来免得下一轮重新怀疑。
+
+**门 `TestData_RetentionTrim_PredicateColumnHasLeadingIndex`** 覆盖 37 条保留期 DELETE，
+三分桶（`retentionSmallTables` 9 张无害小表 / `knownRetentionDefects` 4 张已知缺陷 + 棘轮 /
+其余新判红）。**不让已知缺陷一直红**——长期红的门会被人习惯性忽略。
+三条 fail-closed：扫描器失效 `Fatalf`、过期登记判红、报错指名对东西
+（第一版正则把 `DELETE FROM public.x` 的表名报成 `public`，由首跑结果暴露）。
+
+### R79 续十一 · 「cost ≠ 执行时间」：补索引的建议被自己的对照实验否掉
+
+续十给 `armor_judgments` 提的修法是补 `(created_at)` 索引。拿回生产规模
+（804,253 行）TEMP TABLE 真删真计时后，**该修法收益 ≈ 0 且是净损失**：
+
+| 场景 | 方案 | 实测(ms) |
+|---|---|---|
+| 0% 过期（生产现状） | 无索引 LIMIT 5000 | **763**（波动 756/763/796） |
+| 0% 过期 | 补索引 LIMIT 5000 | **732**（落在波动区间内） |
+| 0% 过期 | 无索引 LIMIT 500000 | **871** |
+| 97% 过期 | 无索引 LIMIT 5000 | **966** |
+| 97% 过期 | 补索引 LIMIT 5000 | **915** |
+| 97% 过期 | 无索引 LIMIT 100000 | **1,728** |
+
+**EXPLAIN cost 差 3.8 倍（27,644 → 7,294），执行时间差 ≈ 0。**
+原因：cost 假设 Seq Scan 扫完全部匹配行，而 `LIMIT` 让它**提前终止**——
+97% 行过期时扫到第 5,000 个就停（20 万行样本上耗时随 LIMIT 线性：
+5,000→237ms / 40,000→355ms / 200,000→1,070ms）。
+
+**这是「索引首列匹配 ≠ 索引可用」的第四种形态：cost 估算 ≠ 执行时间。**
+只看 EXPLAIN 的 cost 就写修法，等于没测过。
+
+`armor_judgments` 仍是 **P1**，但理由是**吞吐倒挂、不是缺索引**，修法是
+**提高批量上限**（`bg/audit_trimmer.go` 常量），不是加迁移。
+`journal_snapshot_receipts` 的修法不受影响——它那条 DELETE **无 LIMIT**，
+没有提前终止可剪枝，补索引 + 分批仍成立。
+
+### R79 续十二 · DELETE 形态才是瓶颈（零迁移，124 倍）
+
+续十一否掉「补索引」之后，真正瓶颈浮出水面——**在 DELETE 形态上**。生产规模
+（804,253 行）TEMP TABLE 对照：
+
+| 方案 | 实测 |
+|---|---|
+| A 现状 `id IN (SELECT id … ORDER BY … LIMIT 5000)` | **870.7ms** |
+| B `id IN` 去掉 `ORDER BY` | 695.6ms |
+| C **`ctid IN (SELECT ctid … LIMIT 5000)`** | **7.0ms**（124 倍） |
+| D C + 补 `(created_at)` 索引 | 6.8ms（无用） |
+
+`id IN` 让 DELETE 主体**全表扫**做 Hash Join（`Seq Scan actual rows=804306`）；
+`ctid IN` 用 **Tid Scan** 按物理地址定位，外层不扫。**本仓已有两处同形态先例**
+（`bg/session_summaries_trimmer.go:122`、`domains/attachments/repository.go:294），
+改法不需要任何迁移。`candidate_failure_logs` 同型：411ms → 19.5ms（22 倍），
+瓶颈是 `ORDER BY` 逼出的 top-N heapsort 全量 Sort，不是索引。
+
+**一条反例（不能整类推广）**：`session_aggregate_outbox`（1,157,822 行）
+改形态**无差别**（6,216ms → 6,278ms）——它的 `completed_at` 本来就是索引首列，
+内层已走索引，6.2 秒是 5,000 次随机回表到 1.5GB 宽表的 I/O。
+**ctid 形态的收益只来自消除外层全表 Hash Join；外层本来就不贵的表改了等于没改。**
+
+**测量纪律**：中途出现过「大表比小表快 7 倍」的自相矛盾结果——因为前一个表已被前几轮
+实验扫描、全在 shared_buffers 里。**单看耗时不可靠，扫描行数（`actual rows`）才可靠**。
+
+### R79 续十三 · 最后一条待实测：journal_snapshot_receipts 的 P2 被降级
+
+测的时候先撞上事实：该表**没有 `id` 列也没有主键**（唯一键
+`(tenant_id, request_id, snapshot_version)`）——`id IN` 形态对它不适用，
+写出来会 42703。续十二的修法要 ctid 形态 + `updated_at` 索引配合。
+
+实测（92,862 行，匹配仅 ~556 行，重复 4 次取中位）：
+
+| 方案 | 实测 |
+|---|---|
+| **现状**（无 LIMIT、无索引） | **98ms**（94.1/94.5/101.6/127.2） |
+| 补 `(updated_at)` 索引 | **285ms** ← 无收益 |
+| `ctid IN` + `LIMIT 500` | **30ms**（3.2×） |
+
+**P2 → P3，降级理由是绝对成本不是相对倍数**：本表 98ms×24 次/天 = 2.4 秒/天，
+而 `armor_judgments` 是 870ms×1 次/天 = 0.87 秒/天——**单位时间成本几乎相同**
+（0.040 vs 0.036 ms/s），但绝对值小两个量级，收益是「每天省 1.6 秒」。
+
+**本轮第三次纠正定级**（session_bodies P2→P3、armor 补索引作废、本条 P2→P3），
+三次共性是同一个错误：**把相对倍数或 cost 估算当成了实际代价**。
+
+形态风险（无 LIMIT 无分批在积压时可能超量删、撞 30s ctx 回滚且只 Warn）仍登记为
+潜在风险，但实测跨度 7.0 天 = 7 天保留期说明积压不存在，故不占现实成本。
+
+**顺带印证**：`retention_test.go:172` 只做 `strings.Contains` 文本断言、不校验列存在性；
+真正守住这条 SQL 的是续五的 PREPARE 真库门。
+
+### R79 续十四 · tool_usage_stats：代码里写着 ≠ 会执行（P1 降 P2）
+
+核可达性时发现：**`AggregateDaily` / `SaveStats` / `ListToolNamesWithActivity` 各 0 个生产调用方**。
+那 12 个错列**从未被 PostgreSQL 执行过**——不是线上故障，是一段从未跑过的代码，P1 属虚报。
+
+`grep AggregateDaily` 出的全是 `AggregateDailyProfiles`——providerprofile 的**另一个同名方法**，
+名字相似极易误判成有调用方。
+
+错列范围也比先前记录的大：INSERT 用 15 个列名，真库只有 11 列，**12/15 不存在**
+（`p50/p95/p99_duration_ms`、`unique_users/unique_sessions/top_users` 三个分位数与三个去重维度
+在真库**根本没有**）。`ToolUsageStats` 结构体有 17 个字段依赖这 6 个维度，所以修法不是改名，
+是路线选择：**加 8 列迁移 vs 改代码降级**（后者丢掉 6 个统计维度）——属 owner 决策。
+
+**缺陷仍是真的且更阴险**：`AggregateDaily` 每条失败只 `slog.Error` 计数、**返回 nil**。
+一旦有人补定时任务，每条 INSERT 都 42703 而调用方看到 `err == nil`，**以为聚合成功**。
+
+**两条证据必须分开**：`AggregateDaily` 零调用方 ✅（代码事实，与流量无关）；
+`tool_usage_stats`/`session_tools` 都是 0 行 ❌（本机是无流量开发库，空表属正常）。
+**「表是空的」在开发库上不是发现。**
+
+**本轮第四次定级纠正**（session_bodies P2→P3 把峰值当分布 / armor 补索引作废 把 cost 当执行时间 /
+journal_snapshot_receipts P2→P3 把相对倍数当绝对成本 / **本条 把形态相似当可达**）。
+**代码里写着某段 SQL，只说明它被写下来了，不说明它会执行——可达性优先于形态。**
