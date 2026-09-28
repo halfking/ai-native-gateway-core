@@ -1514,3 +1514,69 @@ R30 审计修过）。所以形态是：**执行明细在写，聚合统计不�
 
 第 4 条是最容易犯的：**代码里写着某段 SQL，只说明它被写下来了，不说明它会执行。**
 判「某缺陷是否已造成影响」时，**可达性（谁调它）优先于形态（它看起来像在跑）**。
+
+## R79 续十五 · 可达性登记门：潜伏缺陷被接线的那一刻
+
+续十四证明了「形态相似 ≠ 可达」，但那是一张**静态贴纸**——今天核实过了，明天有人
+把 `reasoncap.NewPGSource` 接上线，审计文档不会响。这道门就是那个响声。
+
+`TestData_SchemaMismatch_ReachabilityIsStillAccurate`（不需要连库，只读源码）：
+登记 4 条 schema 不匹配发现，每条带一个**可机械复核的锚点**（AST 层面的
+`pkg.Symbol`），断言其实测调用点数与登记一致。三种红法：
+
+| 情形 | 门说什么 |
+|---|---|
+| 登记 ORPHAN，今天有调用 | 「那段与真库不匹配的 SQL 现在会执行了，**这是本门存在的理由**」 |
+| 登记 LIVE，今天零调用 | 「别让它悄悄退化成潜伏陷阱，请改判为无调用方并重估定级」 |
+| 条数与棘轮不符 | 指名差几条 |
+
+当前 4 条：**活接线 2、潜伏 2**。
+- 潜伏：`toolexecution.tool_usage_stats`（12/15 错列）、`reasoncap.model_aliases.alias`
+- 活接线：routeincident 两处缺列（`main.go:3554`）、`session_turns` 视图漏投影
+  `origin_actor`（`main_pipeline.go:1416` + `:1185`）
+
+### 门自己暴露的三个问题（都由首跑与变异检验抓出，不是 review）
+
+**1. 假绿：map 取错了 key。**
+```go
+for _, sym := range needles { ... }   // 拿到的是 value（登记名字），不是 key（symbol）
+```
+于是 `res` 的 key 全是登记名，而后面查的是 `out[f.symbol]`（真 symbol），
+**所有匹配恒为 0**——两条 ORPHAN 登记「碰巧对了」。**门在自己身上制造了假绿**，
+而它绿着的原因恰好是最危险的那一类：潜伏项被判成潜伏。
+
+**2. 假阳性：文本匹配把注释当调用点。**
+`credentialquota/postgres.go` 的注释 `// NewPGSource wraps a *pgxpool.Pool...`
+会让 `reasoncap.NewPGSource` 之外的同形文本命中。
+
+**3. 假阴性：用正则剥注释反而更糟。**
+`//` 与 `/*` 会在字符串字面量里出现（`"https://..."`、SQL 注释），正则会从那里
+一路吞到行尾或下一个 `*/`，**把真实代码一起删掉**。剥离注释后
+`routeincident.NewObserver` 从 1 变 0 就是这么来的。
+
+**修法：判「有没有调用」就在 AST 层面判**，用 `go/parser` 找 `SelectorExpr`。
+注释和字符串根本不进 AST，两个问题一起消失。
+
+### 变异检验：锚点必须指向「接线」而不是「构造」
+
+第二次变异**没红**，又抓到一个真问题。我用 `routeincident.NewObserver`（构造函数）
+当锚点，于是摘掉 `AddOnRequestLogPersisted(incidentObserver.AsHook())` 那一行后，
+`main.go:3545` 的构造调用仍在，门全绿。
+
+**构造了不等于挂上了。** 可达性指的是「缺陷路径真的接进了请求链路」，
+不是「有人 new 了这个对象」。锚点改成 `incidentObserver.AsHook`（注册点）后：
+
+| 变异 | 门的反应 |
+|---|---|
+| 给 `reasoncap.NewPGSource` 加一处调用 | 红「登记为无生产调用方，但今天找到 1 处调用：internal/paramguard/guard.go」+「这是本门存在的理由」 |
+| 摘掉 `incidentObserver.AsHook` 注册 | 红「它可能已被摘掉或改名——别让它悄悄退化成潜伏陷阱」 |
+
+### 顺带：fail-closed 抓到了并发会话的冲突中间态
+
+AST 解析在健康树之外立刻抓到 7 个 `<<<<<<<` 冲突文件（并发会话遗留）。
+门把「工作区冲突态」与「代码解析失败」分成两条红因——前者是瞬时状态不是缺陷，
+但覆盖率缺口必须可见（会报出具体文件，冲突解决后自动覆盖）。
+
+> 这也是本轮第二次工具性陷阱的教训：**`grep | head -N` 的截断会制造假零命中**。
+> 我一度用 `head -6` grep `AsHook()`，结论「零调用方」——`main.go:3554` 正好被截掉。
+> **判「零命中」之前先确认没有截断。**
