@@ -282,3 +282,43 @@ R79 在存储函数侧抓到「批游标列无索引 → O(rows²)」。本轮�
   `v_routable_credential_models` 经核实无生产查询读取；
   `v_task_model_ranking` 确为真阳性（`admin/auto_route.go:1084` 的 `ORDER BY … LIMIT $4`）但未实测；
   `session_turns_with_current_month` 混合（两处读无 LIMIT，一处经 CTE 间接 `LIMIT 20`）。
+
+### R79 续五回注（2026-09-29，P1：有测试断言其文本的 SQL，从未被执行过一次）
+
+- **P1｜`session_turns_with_current_month` 漏投影 `origin_actor`**：
+  `domains/sessionsummary/message_source_v2.go` 的 `v2SessionBodiesBaseQuery`
+  引用 `t.origin_actor`，而该视图的 65 列定值投影里没有这一列
+  （基表 `session_turns` 上**有**，attnum 99；`db/db.go:2990` 只保证 `request_logs*` 表；
+  全仓无任何 SQL 把它投进 turns 视图）。源码常量**原文实跑**：
+  `ERROR: column t.origin_actor does not exist`；去掉该谓词则正常返回 53,851 行。
+  **唯一相关的测试只断言文本包含某个 JOIN**——查询能否执行无人看。
+  **两条设置路径都中招，这是定 P1 的理由**：`main_pipeline.go:1416` 在
+  `sessions_v2_compression_read`（默认 true）下
+  `SetMessageSource(NewPerTurnDigestSource(pool))`，而
+  `NewPerTurnDigestSource = gated{digest: perTurnDigestSource, fallback: v2SessionBodiesSource}`
+  ——开关开走 digest（同样缺该列）、开关关（**默认**）走 fallback（同样缺该列）。
+  唯一可用配置是 `sessions_v2_compression_read=false` 退回 V1。
+  消费面：会话摘要输入读取（`GenerateSummary` / `GenerateRollingSummary`）。
+- **P1 候选｜`diagnostic_runs.route_key` / `routing_audit_log.reason` 缺列**：
+  `domains/routeincident` 共 8 处查询；**基线 `01-schema.sql:7955` 与真库双缺**，
+  全仓无任何迁移添加。`route_key` 只存在于 390 的 `routing_audit_log`——**另一张表**，疑串表。
+- **新门：把仓内 SQL 常量对真库 PREPARE 一遍**（`TestData_GoSQLConstants_PrepareAgainstRealDB`）。
+  抽取 160 条无 fmt 占位符的完整 DML 常量逐条 `PREPARE`——**只规划不执行**，
+  故与「主库全程只读」的硬约束无冲突；`column … does not exist` 正是规划期错误。
+  **错误必须按 SQLSTATE 分层，不能一律判红**：`42703`（列真的不存在，已翻遍仓内迁移确认）判红；
+  `42P01/42704/3F000/42501`（本机库比代码旧、只读角色权限受限）只记录；其他 fail-otherwise。
+  结果：133 成功 / 9 已定性 / 9 backlog / 9 本机无法验证（`outbox_events` 本机无表）。
+- **门自己红了四次，全是「判错对象」家族**：
+  ① 抽取器只判「含 SELECT」，把 **SQL 片段**（`requestLogsJoins` 是 JOIN 块、
+  `sessionSummarySelectCols` 是列清单）与 DDL 常量也收进来 → 48 条假语法错；
+  ② 没排除 **SQLite** 目录——换方言问错服务器；
+  ③ **登记键 `file::name` 不唯一**：`action_infra.go` 有 **6 个同名 `sql` 常量**，
+  自收缩检查命中其中一个后 `delete()` 抹掉登记，**把另外 5 个失败项的理由一起带走**，
+  它们随即红在一个与自身 SQL 毫无关系的理由上。**一道门为了维护自己的白名单，
+  把白名单改坏了。**
+  ④ 同上。修法：键加**行号 + 内容哈希**；且**只报告、绝不在遍历中改注册表**。
+- **backlog 用棘轮管，不用永久红**：9 条未分诊项登记而不判红——
+  **一道长期红的门会让人习惯性忽略它**，此后它连自己抓到了什么都不再有人看。
+  配三条断言：新增未登记的无法规划 SQL → 红；任一登记项开始能正常 PREPARE → 红（该收缩了）；
+  `len(backlog) != expectedUntriagedBacklog` → 红（有人动了 backlog 却不改常量）。
+  **这道门今天绿，是因为已知的 9 条被记账了；它不会因为记账而变瞎。**
