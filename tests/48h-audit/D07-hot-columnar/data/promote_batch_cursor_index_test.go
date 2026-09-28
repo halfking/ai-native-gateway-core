@@ -100,14 +100,6 @@ var knownMissingTableFunctions = map[string]string{
 		"0 Go callers. Same shape as the credit_ledger case.",
 }
 
-// unqualify strips a table alias from a column reference: `h.ts` -> `ts`.
-func unqualify(col string) string {
-	if i := strings.LastIndex(col, "."); i >= 0 {
-		return col[i+1:]
-	}
-	return col
-}
-
 var reCache sync.Map
 
 func mustCompile(pattern string) *regexp.Regexp {
@@ -131,34 +123,6 @@ func substringFirstAt(src, pattern string) (string, int) {
 		return "", -1
 	}
 	return src[loc[2]:loc[3]], loc[0]
-}
-
-// sourceTableForBatch resolves the batch statement's source table.
-//
-// ordIdx must be the offset of the batch's own ORDER BY — the one followed by
-// LIMIT p_batch_size/batch_size, not merely the first ORDER BY in the body
-// (promote_session_turns_hot derives its column list with `ORDER BY attnum`
-// long before the batch).
-//
-// The table is the FIRST FROM of the plpgsql statement containing that ORDER BY.
-// Both halves of that rule fixed real misreports this gate produced while being
-// written: the body validates the parent with `FROM pg_partitioned_table` in an
-// EARLIER statement, and the batch's own FROM comes right after its SELECT list
-// while subquery FROMs (`NOT EXISTS (... FROM session_turns archived ...)`)
-// come later, inside the WHERE.
-func sourceTableForBatch(src string, ordIdx int) string {
-	if ordIdx < 0 {
-		return ""
-	}
-	prefix := src[:ordIdx]
-	if semi := strings.LastIndex(prefix, ";"); semi >= 0 {
-		prefix = prefix[semi+1:]
-	}
-	all := mustCompile(`FROM\s+(?:public\.)?([a-z_][a-z0-9_]*)`).FindAllStringSubmatchIndex(prefix, -1)
-	if len(all) == 0 {
-		return ""
-	}
-	return prefix[all[0][2]:all[0][3]]
 }
 
 // livePromoteFunctions reads bg/partition_manager.go and returns the fnName
@@ -257,7 +221,7 @@ func connectAuditDB(t *testing.T) (*pgx.Conn, context.Context) {
 // prosrc keeps the original newlines and indentation, so every inter-token gap
 // is \s+ — matching on a literal space silently matched only the 7 functions
 // whose bodies happen to be single-line.
-func parsePromoteCursors(ctx context.Context, t *testing.T, conn *pgx.Conn, live map[string]bool) []promoteCursor {
+func parsePromoteCursors(ctx context.Context, t *testing.T, conn *pgx.Conn, live map[string]bool) []dbFunc {
 	t.Helper()
 
 	rows, err := conn.Query(ctx, `
@@ -290,7 +254,7 @@ func parsePromoteCursors(ctx context.Context, t *testing.T, conn *pgx.Conn, live
 			"pointed at the wrong database; refusing to pass vacuously")
 	}
 
-	var out []promoteCursor
+	var out []dbFunc
 	var unparsed []string
 	for _, r := range all {
 		ordRaw, ordIdx := substringFirstAt(r.src,
@@ -308,11 +272,13 @@ func parsePromoteCursors(ctx context.Context, t *testing.T, conn *pgx.Conn, live
 			unparsed = append(unparsed, r.name+"(table)")
 			continue
 		}
-		out = append(out, promoteCursor{
-			fn:    r.name,
-			table: tbl,
-			first: unqualify(strings.TrimSpace(strings.Split(ordRaw, ",")[0])),
-			live:  live[r.name],
+		cur := unqualify(strings.TrimSpace(strings.Split(ordRaw, ",")[0]))
+		out = append(out, dbFunc{
+			name:    r.name,
+			cursor:  cur,
+			table:   tbl,
+			system:  systemColumns[cur],
+			refered: live[r.name],
 		})
 	}
 
@@ -337,42 +303,6 @@ func hasBatchLimit(src string) bool {
 	return mustCompile(`LIMIT\s+(p_batch_size|batch_size)`).MatchString(src)
 }
 
-// resolveCursor fills firstAttnum and leadingIdx.
-func resolveCursor(ctx context.Context, conn *pgx.Conn, c *promoteCursor) {
-	var attnum int
-	err := conn.QueryRow(ctx, `SELECT a.attnum FROM pg_class t JOIN pg_attribute a ON a.attrelid = t.oid
-		WHERE t.relname = $1 AND a.attname = $2 AND a.attnum > 0 AND NOT a.attisdropped`,
-		c.table, c.first).Scan(&attnum)
-	if err != nil {
-		// Column or table absent: the cursor is unusable in a worse way. Leave
-		// attnum at 0 so the caller reports it rather than crashing the sweep.
-		return
-	}
-	c.firstAttnum = attnum
-
-	// PARTIAL indexes are deliberately excluded. A partial index only serves a
-	// query whose WHERE implies its predicate; the promote batch predicate is
-	// `ts < cutoff`, which implies nothing about e.g. `WHERE settled_at IS NULL`.
-	// Counting them made this gate call auto_route_selections_hot "indexed" while
-	// EXPLAIN showed the planner ignoring idx_ars_hot_unsettled and still sorting.
-	// When a partial index genuinely serves the batch query, that is an
-	// EXPLAIN-backed claim and belongs in the allowlist justification.
-	idx, err := conn.Query(ctx, `SELECT i.relname FROM pg_index ix JOIN pg_class i ON i.oid = ix.indexrelid
-		JOIN pg_class t ON t.oid = ix.indrelid
-		WHERE t.relname = $1 AND ix.indkey[0] = $2 AND ix.indpred IS NULL ORDER BY i.relname`,
-		c.table, attnum)
-	if err != nil {
-		return
-	}
-	defer idx.Close()
-	for idx.Next() {
-		var n string
-		if err := idx.Scan(&n); err == nil {
-			c.leadingIdx = append(c.leadingIdx, n)
-		}
-	}
-}
-
 // TestData_PromoteBatchCursor_HasLeadingIndex is Gate A.
 func TestData_PromoteBatchCursor_HasLeadingIndex(t *testing.T) {
 	conn, ctx := connectAuditDB(t)
@@ -381,21 +311,21 @@ func TestData_PromoteBatchCursor_HasLeadingIndex(t *testing.T) {
 
 	var liveCount int
 	for i := range cursors {
-		if cursors[i].live {
+		if cursors[i].refered {
 			liveCount++
 		}
 	}
 	t.Logf("parsed %d promote_* batch cursors from pg_proc; %d are registered in promoteSpecs",
 		len(cursors), liveCount)
 
-	var unindexed []promoteCursor
+	var unindexed []dbFunc
 	for i := range cursors {
 		c := &cursors[i]
-		if !c.live {
+		if !c.refered {
 			continue
 		}
 		resolveCursor(ctx, conn, c)
-		if len(c.leadingIdx) == 0 {
+		if len(c.leading) == 0 {
 			unindexed = append(unindexed, *c)
 		}
 	}
@@ -403,10 +333,10 @@ func TestData_PromoteBatchCursor_HasLeadingIndex(t *testing.T) {
 	var real []string
 	for _, c := range unindexed {
 		if _, ok := knownUnindexedCursors[c.table]; ok {
-			t.Logf("accepted debt: %s (cursor=%s) — %s", c.table, c.first, knownUnindexedCursors[c.table])
+			t.Logf("accepted debt: %s (cursor=%s) — %s", c.table, c.cursor, knownUnindexedCursors[c.table])
 			continue
 		}
-		real = append(real, c.fn+" (table="+c.table+", cursor="+c.first+")")
+		real = append(real, c.name+" (table="+c.table+", cursor="+c.cursor+")")
 	}
 
 	// Self-shrinking allowlist: a fixed table must not keep its waiver.

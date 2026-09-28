@@ -123,6 +123,33 @@ S-01 只修了 `request_logs` 一族。本轮把「批游标列必须有首列�
 
 详见 reports/latest.md「R79 续」。
 
+## 10. R79 续二：全库批游标普查（把专项门升成全库门）
+
+`promote_*` 是专项普查，本轮改为扫**整个 `pg_proc`**：结果非 promote 族只有 **4 个**批游标函数，
+**无新增 P1**。四个分别是：
+
+| 函数 | 游标列 | 性质 | 结论 |
+|---|---|---|---|
+| `archive_request_logs_default` | `id` | 活，`FROM %I` 动态源表 | R79 已修（迁移 756 建 `(id)` 索引） |
+| `archive_request_wal` | `created_at` | **死函数** | `request_wal` 无 created_at 首列索引，但**正确修法是删函数** |
+| `ensure_request_logs_partition` | `ctid` | 活 | 系统列不可索引 + `EXIT WHEN drained = 0` 是合法策略，**非缺陷** |
+| `repair_request_logs_detached_partitions` | `ctid` | 仅测试引用 | 同上 |
+
+**`archive_request_wal` 为什么是「死函数」而不是「缺索引」**：迁移 331 已声明要删它，
+但 331 不在 installer startup 通道，本机 `schema_migrations` 只到 V359，**它至今仍活在真库里**。
+补 `(created_at)` 索引等于给一个没人调的函数优化执行计划；正确动作是执行 331 的意图。
+登记为 P3 深化，**不替 owner 删 schema 对象**。
+
+**ctid 那一类值得单列**：ctid 是系统列，`CREATE INDEX` 建不了。「缺首列索引」这条规则对它
+判红是**规则用错了对象**。门因此把它归入第三类「不可索引」，**只登记不判红并写明理由**——
+不写明就等于把它悄悄算进「已覆盖」，那和把部分索引算成有索引是同一类自欺。
+
+**泛化门与专项门的范围必须互斥**：第一版泛化门没排除 `promote_*`，结果它用更粗的可达性判据
+把专项门已精确管理的 6 项债原样重报一遍，**这道门会永久红在别人管理的债上**。改为显式
+排除并在注释写明「谁负责什么」。共用解析辅助函数只保留一份实现（两份各自演化必然分叉）。
+
+详见 reports/latest.md「R79 续二」。
+
 ## 子代理派发提示词
 
 ```

@@ -294,3 +294,124 @@ S-01 只修了 `request_logs` 一族。同一缺陷类（**批游标列没有首
 - 2 项 P2 潜在债 + 3 项 P3 文档债，均已带测量数据登记在门禁白名单里，白名单自收缩。
 - **未做**：其余分区族（`session_*`、`usage_*` 等非 hot 表）里是否存在同型游标，
   本轮只普查了 `promote_*`。方法可直接套用。
+
+---
+
+# R79 续二 · 全库批游标普查（不限 promote_*）
+
+上一节把「批游标必须有首列索引」推到了 hot→partition 的 `promote_*` 全族。
+本节再推一步：**public schema 里任何带批游标的函数**。
+
+## 1. 范围
+
+真库 `pg_proc` 全量扫描（`prokind='f'`），形态为 `ORDER BY <列> LIMIT <字面量|%L|批次参数>`，
+排除 `ORDER BY 1 LIMIT 12` 那类「近 12 个月」枚举（不是游标）：
+
+| 族 | 数量 | 处置 |
+|---|---|---|
+| `promote_*` | 27 | 上一节已普查，专项门管理 |
+| **非 promote** | **4** | 本节处理 |
+
+4 个非 promote 逐个结论：
+
+| 函数 | 游标 | 源表 | 结论 |
+|---|---|---|---|
+| `archive_request_logs_default` | `id` | `%I`（动态） | **R79 上半已修**（754 补列名 + 756 补 id 索引） |
+| `archive_request_wal` | `created_at` | `%I`（动态） | **死函数**，见 §2 |
+| `ensure_request_logs_partition` | `ctid` | `request_logs_default` | 系统列游标，非缺陷，见 §3 |
+| `repair_request_logs_detached_partitions` | `ctid` | `request_logs_default` | 同上，且仅测试引用 |
+
+**无新增 P1。**
+
+## 2. 新登记：archive_request_wal 至今仍存在于真库（331 通道缺席）
+
+迁移 331（2026-07-04）在正文里明写：
+
+```
+-- Step 2: Drop archive functions
+--   Drop archive_request_logs(); Drop archive_request_wal();
+```
+
+`bg/partition_manager.go:1269` 也照此注释「Migration 331 removed request_logs_archive
+and request_wal_archive」。但实测：
+
+- **331 不在** `installer/cmd/llm-gw-installer/embeddata/startup/`（R71 已核实，五点同步从未补）；
+- 本机真库 `schema_migrations` 只到 **V359**，331 从未在此库应用；
+- `archive_request_wal` 因此**仍然存在于真库**，全仓 .go 侧零调用方。
+
+这把上一节登记的 P3（父表 `request_logs_archive` 未被 331 删除、分区数 0）
+**从「表」扩到了「函数」：331 整条通道缺席，它声明要删的对象一个都没删。**
+
+顺带核了它的游标支撑：`request_wal` 分区父表**无任何 created_at 首列索引**
+（只有 `gw_session_id`/`request_id`/`status`/`tenant_id` 开头的复合索引）。
+即**若复活 `archive_request_wal`，就会复现 S-01 的 N² 形态**。但正确修法是
+**执行 331 的意图把它删掉**，而不是给一张没人查的表补索引。
+
+## 3. ctid 游标为什么不是缺陷（规则用错了对象就是误报）
+
+`ensure_request_logs_partition` 的排空循环：
+
+```sql
+LOOP
+  WITH batch AS (
+    SELECT ctid FROM public.request_logs_default
+    WHERE ts >= month_start AND ts < month_end
+    ORDER BY ctid LIMIT 50000 FOR UPDATE SKIP LOCKED
+  ), moved AS (DELETE FROM public.request_logs_default d WHERE d.ctid IN (SELECT ctid FROM batch) RETURNING d.*)
+  INSERT INTO public.request_logs SELECT * FROM moved;
+  GET DIAGNOSTICS drained = ROW_COUNT;
+  EXIT WHEN drained = 0;
+END LOOP;
+```
+
+ctid 是**系统列，无法建索引**。所以「缺首列索引」这条规则对它不适用，
+判红是规则用错了对象。物理序 + 显式 `EXIT WHEN drained = 0` 的收敛保证本来就是合法策略。
+
+门据此把系统列归入第三类「不可索引」，**只登记不判红，并在输出里写明理由**——
+而不是悄悄把它算进「已覆盖」（那和把部分索引算成有索引是同一类自欺）。
+
+量级：它排空的是 DEFAULT 分区里落在「缺口月份」的行，本机 `request_logs_default`
+**0 行 / 440 kB**，即今天这个循环跑一轮就退出。
+
+## 4. 泛化门与专项门的范围必须互斥
+
+这道泛化门第一版**没有排除 `promote_*`**，结果：它用更粗的可达性判据
+（仓库全量 `.go` 字符串 grep）把专项门已经用 `promoteSpecs()` 精确管理的 **6 项债**
+原样重报一遍——同样的 6 项、不同措辞。后果是这道门**永久红**，红在别人管理的债上。
+
+**规则：泛化门必须显式把专项门覆盖的范围排除掉，并在注释里写明「谁负责什么」。**
+一套门里两道各自扫描而范围重叠，不会增加覆盖，只会制造噪声和永久红。
+
+同理，专项门与这道门共用解析辅助函数时只保留一份实现（`unqualify` /
+`sourceTableForBatch` / `resolveCursor`）——两份各自演化下去必然分叉。
+
+## 5. fail-closed 第四次生效
+
+这道门的第一版对 `archive_request_logs_default` 报「无法解析源表」——
+因为它的批次是 `FROM %I`（`format()` 占位符），**源表在运行时才由 pg_inherits 决定**，
+函数体里根本没有具体表名。
+
+处理：新增「动态源表」类，**要求为它写明 justification**（这张表实际是什么、
+为什么它的游标有索引支撑），否则判红。加了 `archive_request_wal` 的第二条后转绿。
+
+这条正是 fail-closed 的价值：它是**唯一那道真正出过事的函数**（S-01 的 42703 + 30 分钟回滚）。
+若当时按惯例「解析不出就跳过」，这道门会在最该查的地方留白。
+
+## 6. 变异检验（两处，红转绿）
+
+| 变异 | 期望 | 实测 |
+|---|---|---|
+| 撤掉 `archive_request_logs_default` 的动态源表 justification | 红 | ✅ 红并指名 |
+| 撤掉 `ctid` 的系统列豁免 | 红，且区分引用中/未引用 | ✅ `ensure_request_logs_partition`（引用中）判缺陷；`repair_request_logs_detached_partitions`（未引用）仅记录 |
+
+第二条顺带证明了可达性判据在起作用：同一个形态，两个函数，一个判红一个只记。
+
+## 7. 结论
+
+- **全库无新增 P1。** 唯一真正危险的那个（`archive_request_logs_default` 的 id 游标）
+  已在 R79 上半修复并由静态+真跑两道门守住。
+- 新登记 1 条 P3 深化：`archive_request_wal` 因 331 通道缺席而未死。
+- 债台账：2 项 P2 潜在（promote 族，带测量）、3 项 P3（promote 族死函数）、2 条动态源表
+  justification、2 个 ctid 系统列登记。全部自收缩。
+- **仍未做**：`request_wal` / `credit_ledger` / `tool_usage_stats` 等分区的**非游标**查询面
+  （比如按 ts 范围做对账/报表的接口）未做计划形状普查；本轮只覆盖「批游标」这一形态。
