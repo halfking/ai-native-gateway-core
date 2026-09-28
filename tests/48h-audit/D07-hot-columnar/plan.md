@@ -328,6 +328,33 @@ conflict, transient deadlock… the next persisted row will catch up」），
 
 详见 reports/latest.md「R79 续七」。
 
+## 16. R79 续八：非 hot 分区族普查（session_bodies）—— 一条差点写成 P2 的 P3
+
+前面几轮都查 `request_logs` 一族。本轮查全库最大的表 `session_bodies`（8.68 GB / 5 分区），
+查询面走 `session_bodies_unified`。
+
+**缺 `(session_id, ts)` 索引**：该族 `session_id` 打头的索引只有
+`(session_id, turn_no [DESC])` 三条。`WHERE session_id=$1 ORDER BY ts LIMIT 20`
+因此只能 `Bitmap Heap Scan` 出该会话的**全部** body 再外排（实测落盘溢出），
+53,851 body 的会话：**835.853 ms / Buffers hit=653,557 read=13,616（≈5.2 GB）+ temp 溢出**。
+
+**但分布一量，定级从 P2 掉到 P3**：
+- 817,986 个会话，avg **2.1** / p50 1 / p90 1 / **p99 2** / max 53,851
+- 拆来源：真实会话 817,579 个、avg **1.22**、>100 body 的仅 222 个；
+  `sys:probe:*` 探针会话 445 个、avg **1,693**、>100 body 的 350 个
+
+真实会话 p99 是 2 个 body，读 2 行拿 20 条毫无压力。成本集中在探针子系统，
+而探针会话是否真的走摘要路径本轮没查。**定 P3（潜在）**，修法是补 `(session_id, ts)`。
+
+**与 P1-1 的耦合**：`SessionMetadataCloseHook.OnSessionClosed` 每次会话关闭都调
+这条查询，它现在因 `origin_actor` 直接报错。**只修 P1-1 会把这条休眠的昂贵路径
+立刻激活**（探针类会话每次 close 付 836 ms）——修 P1-1 时应一并评估补索引。
+
+**可迁移判定**：**定级之前先量分布，不是量峰值。** 触发审计的是最大值，
+但只有中位数能告诉你这是不是常态。
+
+详见 reports/latest.md「R79 续八」。
+
 ## 子代理派发提示词
 
 ```
