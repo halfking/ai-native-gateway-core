@@ -659,6 +659,15 @@ files=(
   # also registered in the installer for fresh databases.
   "$ROOT_DIR/sql/migrations/startup/757_session_turns_origin_actor_projection.sql"
   "$ROOT_DIR/sql/migrations/startup/758_routeincident_missing_columns.sql"
+  # 760/761/762 (2026-09-29/30 审计 R27/R28/R33，此前只在 installer 新库通道
+  # 登记、漏掉本升级序列——R63 "迁移双轨制死区"教训的补登)：760 给
+  # analysis_events / stats_event_inbox 补 TTL 部分索引；761 回填 stats inbox
+  # processing_status（R28 HC-10 收口）；762 项目维度回填链（resolve/sync
+  # 函数 + session_dim 双触发器 + 回填扫描部分索引，R33 P-3）。三者均幂等，
+  # 且已在 installer embeddata 完成五点同步。
+  "$ROOT_DIR/sql/migrations/startup/760_analysis_events_inbox_ttl_indexes.sql"
+  "$ROOT_DIR/sql/migrations/startup/761_stats_inbox_sync_status_backfill.sql"
+  "$ROOT_DIR/sql/migrations/startup/762_session_project_backfill_chain.sql"
 )
 
 # 2026-09-21 内容指纹重放通道（纪律⑨，F4 机制债收口）：当某个"已应用"的

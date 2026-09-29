@@ -40,6 +40,50 @@ export default {
   cost: 'Cost',
   errorBreakdown: 'Error breakdown',
   qualityScore: 'Quality score',
+  // ── 2026-09-29 multi-dimensional filter round ──────────────────────────
+  // Filter bar
+  filters: 'Filters',
+  all: 'All',
+  activeFilters: 'active',
+  clearFilters: 'Clear filters',
+  // New dimensions
+  credential: 'Credential',
+  apiKey: 'API key',
+  byCredential: 'By credential',
+  byApiKey: 'By API key',
+  // Granularity
+  summaryOnly: 'Summary',
+  dailyDetail: 'Daily detail',
+  // Tables
+  columns: 'Columns',
+  rows: 'rows',
+  inputTokens: 'Input tokens',
+  cacheTokens: 'Cache tokens',
+  outputTokens: 'Output tokens',
+  cacheRate: 'Cache rate',
+  errorRate: 'Error rate',
+  topError: 'Top error',
+  noErrors: 'No failures',
+  tokens: 'Token split',
+  unassigned: 'Unassigned',
+  qualityHint: 'Success rate × latency factor (lower P95 scores higher)',
+  // Collapsible model list
+  modelStats: 'Model statistics',
+  modelStatsHint: 'Click to expand; pick a model name to filter by it',
+  actions: 'Actions',
+  filterBy: 'Filter',
+  // Charts
+  chartTrend: 'Request volume and error rate trend',
+  chartByModel: 'Daily volume per model',
+  chartErrors: 'Top 10 error types',
+  chartOther: 'Other',
+  chartFolded: 'Showing the top',
+  chartFoldedRest: 'models by request count; the rest are folded into "Other"',
+  noData: 'No data',
+  // Snapshot caliber disclosure
+  legacyCoverage: 'Days covered only by legacy snapshots:',
+  legacyCoverageRest:
+    ' — those days contribute to totals and the daily series only; credential/user/API-key dimensions appear after backfill (use "Rerun End Day" day by day)',
 
   // ── 2026-09-30 stats UI round ────────────────────────
   quickYesterday: 'Yesterday',
@@ -75,7 +119,6 @@ export default {
   byMoney: 'By spend',
   sharePct: 'Share',
   reasonTitle: 'Failure reasons (top of range)',
-  noErrors: 'No failed requests in this range',
   reasonTotalPrefix: 'Total',
   reasonTotalSuffix: 'failures',
   reasonFilterHint: 'model table filtered by this reason',
