@@ -119,8 +119,8 @@ func (w *SessionWriterV2) SetMemoraWriter(mw *SessionMemoraWriter) {
 
 // BodyMirrorFunc 是热区请求侧镜像的投递 seam（2026-09-24 方案 H3）。由存储
 // 装配层注入，底层为 storage/file.RequestMirror 的 fire-and-forget 异步写
-//（失败仅计数，绝不阻断主链路）。direction 取 "req"/"resp"/"out" 字面量
-//（与 storage/file 的 DirRequest/DirResponse/DirOutput 值一致）；payload 是
+// （失败仅计数，绝不阻断主链路）。direction 取 "req"/"resp"/"out" 字面量
+// （与 storage/file 的 DirRequest/DirResponse/DirOutput 值一致）；payload 是
 // 与 session_bodies_hot 落库同源换算（safeJSONMarshal）的 JSON 原文；at 是
 // 镜像日期分区取样时刻（对位 rec.Ts / req.Timestamp）。
 //
