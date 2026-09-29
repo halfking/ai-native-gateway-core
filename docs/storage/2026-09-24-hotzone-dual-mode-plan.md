@@ -196,7 +196,7 @@
 
 | 阶段 | 状态 | 提交 |
 |---|---|---|
-| P1(H1 FileCache 索引) | ✅ 完成 | `ced9eb9b1`(索引+测试)、`72436bac8`(补基准,验收项原缺失) |
+| P1(H1 FileCache 索引) | ✅ 完成 | `ced9eb9b1`(索引+测试)、`50847b6b8`(补基准,验收项原缺失) |
 | P2(H4 spec+Trimmer+ResizeMax+热重载接线) | ✅ 完成 | `9b9061276`/`87dbead05`/`31e468a66` + 后继加固 `964c0060a`(非正配置 fail-safe)、`d141c8036`(子树白名单/symlink/TOCTOU)、`4ba3a3be3`(ResizeMax 缩容描述订正) |
 | P3(H2 full 装配) | ⬜ 未开工(读链已就绪:da6b95627 契约翻转,仅欠装配点) | — |
 | P4(H3 镜像接线) | ⬜ 未开工(编码层 ced9eb9b1 就绪,TODO(wiring-pending)) | — |
