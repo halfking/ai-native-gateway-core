@@ -571,6 +571,9 @@ var routeincidentMissingColumnsMigration758 []byte
 //go:embed embeddata/startup/760_analysis_events_inbox_ttl_indexes.sql
 var analysisEventsInboxTTLIndexesMigration760 []byte
 
+//go:embed embeddata/startup/761_stats_inbox_sync_status_backfill.sql
+var statsInboxSyncStatusBackfillMigration761 []byte
+
 //go:embed embeddata/startup/800_provider_endpoint_protocols.sql
 var providerEndpointProtocolsMigration800 []byte
 
@@ -745,6 +748,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/757_session_turns_origin_actor_projection.sql":                          sessionTurnsOriginActorProjectionMigration757,
 	"startup/758_routeincident_missing_columns.sql":                                  routeincidentMissingColumnsMigration758,
 	"startup/760_analysis_events_inbox_ttl_indexes.sql":                              analysisEventsInboxTTLIndexesMigration760,
+	"startup/761_stats_inbox_sync_status_backfill.sql":                               statsInboxSyncStatusBackfillMigration761,
 	"startup/800_provider_endpoint_protocols.sql":                                    providerEndpointProtocolsMigration800,
 }
 

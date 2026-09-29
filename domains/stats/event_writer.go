@@ -208,9 +208,16 @@ func (w *EventWriter) persist(ctx context.Context, events []Event) error {
 			if err := insertUsageFactTx(ctx, tx, e); err != nil {
 				return err
 			}
+			// R28-HC-10 (2026-09-30): the sync-projection UPDATE also flips
+			// processing_status. It previously left the row 'pending' with
+			// processed_at set — 1.19M such rows accumulated on the local
+			// shard, keeping the claimable partial index bloated and setting
+			// up a million-row replay storm the moment the async consumer
+			// flag is enabled.
 			if _, err := tx.Exec(ctx, `
 					UPDATE stats_event_inbox
-					SET processed_at = now(), processing_owner = 'telemetry-writer',
+					SET processing_status = 'processed', processed_at = now(),
+					    processing_owner = 'telemetry-writer',
 					    process_attempts = process_attempts + 1, last_error = NULL
 					WHERE event_id = $1 AND occurred_at = $2`, e.EventID, e.OccurredAt); err != nil {
 				return err

@@ -132,26 +132,44 @@ func NewWithRetries(maxRetries int) *Client {
 	if maxRetries < 0 {
 		maxRetries = 0
 	}
+	var transport http.RoundTripper = &http.Transport{
+		Proxy:                 proxy.ProxyFunc(),
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: responseHeaderTimeout(),
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		DialContext: (&net.Dialer{
+			Timeout:   connectTimeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:        128,
+		MaxIdleConnsPerHost: 32,
+	}
+	if proxy.StrictMode() {
+		transport = &strictProxyTransport{base: transport, resolver: proxy}
+	}
 	return &Client{
-		hc: &http.Client{
-			Transport: &http.Transport{
-				Proxy:                 proxy.ProxyFunc(),
-				IdleConnTimeout:       90 * time.Second,
-				ResponseHeaderTimeout: responseHeaderTimeout(),
-				TLSHandshakeTimeout:   10 * time.Second,
-				ExpectContinueTimeout: time.Second,
-				DialContext: (&net.Dialer{
-					Timeout:   connectTimeout,
-					KeepAlive: 30 * time.Second,
-				}).DialContext,
-				MaxIdleConns:        128,
-				MaxIdleConnsPerHost: 32,
-			},
-		},
+		hc:         &http.Client{Transport: transport},
 		maxRetries: maxRetries,
 		baseDelay:  retryBaseDelay,
 		proxy:      proxy,
 	}
+}
+
+// strictProxyTransport enforces R28-P-2: in strict egress mode a request to
+// a non-domestic host fails loudly when no healthy proxy exists, instead of
+// the historical silent direct-dial fallback that violated the must-proxy
+// contract for overseas providers. Domestic hosts always pass through.
+type strictProxyTransport struct {
+	base     http.RoundTripper
+	resolver *ProxyResolver
+}
+
+func (t *strictProxyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.resolver.StrictBlocked(req.URL.Hostname()) {
+		return nil, fmt.Errorf("upstream %s requires an egress proxy but none is available (strict egress mode)", req.URL.Hostname())
+	}
+	return t.base.RoundTrip(req)
 }
 
 func responseHeaderTimeout() time.Duration {
