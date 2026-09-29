@@ -2354,6 +2354,14 @@ func main() {
 			}
 		}
 	}
+	// H3 请求侧镜像（2026-09-24 方案）：full 热区装配时把 RequestMirror 的
+	// fire-and-forget 投递闭包注入 telemetry——persistRequestLog 顶部与 PG 往返
+	// 之前镜像三件套，PG 不可用时镜像仍写入。lite / 热区关闭 / request_mirror
+	// 关闭时 bodyMirrorFn() 为 nil，telemetry 保持纯落库行为。
+	if mirrorFn := storageRt.bodyMirrorFn(); mirrorFn != nil {
+		telemetryClient.SetBodyMirror(mirrorFn)
+		slog.Info("storage hotzone: telemetry request body mirror wired (fire-and-forget, fail-open)")
+	}
 	if dbConn != nil && dbConn.Enabled() {
 		telemetryClient.SetDB(dbConn.Pool())
 
@@ -2583,6 +2591,15 @@ func main() {
 	if telemetryClient != nil && dbConn != nil && dbConn.Enabled() {
 		sessionV2Writer = initSessionV2Writer(dbConn.Pool())
 		if sessionV2Writer != nil {
+			// H3 请求侧镜像（2026-09-24 方案）：full 热区装配时给
+			// SessionWriterV2 注入镜像 seam——turn bodies 写入成功后
+			// fire-and-forget 投递三件套（per-turn + final_full）。lite /
+			// 热区关闭 / request_mirror 关闭时 bodyMirrorFn() 为 nil，
+			// SessionWriterV2 零开销 no-op。
+			if mirrorFn := storageRt.bodyMirrorFn(); mirrorFn != nil {
+				sessionV2Writer.SetBodyMirror(mirrorFn)
+				slog.Info("storage hotzone: session v2 body mirror wired (fire-and-forget, fail-open)")
+			}
 			// session_dim 维度（任务/项目/属主/客户端）随同一 hook 维护：
 			// 旧 350/358 触发器链路在部分环境缺失，这里以 Go 侧 best-effort
 			// UPSERT 兜底，/admin/turns 的项目→任务层级依赖该表。
