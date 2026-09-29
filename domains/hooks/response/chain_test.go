@@ -71,3 +71,32 @@ func TestInterceptorChainPropagatesFirstStreamModification(t *testing.T) {
 		t.Fatalf("result = %+v, err = %v", result, err)
 	}
 }
+
+// R24-C (round 26): a withholding result that also carries its own
+// replacement must leave the chain result's ModifiedChunk/InjectAfter
+// empty — the suppressed frame's content may not escape through the result
+// even though the writer drops it anyway. The historical always-true guard
+// (`!finalResult.SuppressChunk || result.SuppressChunk`) re-populated the
+// fields right after the suppress branch cleared them.
+func TestInterceptorChainSuppressResultCarriesNoReplacementOrInjection(t *testing.T) {
+	chain := NewInterceptorChain(
+		chainTestInterceptor{chunk: func([]byte) *ChunkResult {
+			return &ChunkResult{
+				SuppressChunk: true,
+				ModifiedChunk: []byte("withheld-replacement"),
+				InjectAfter:   []byte("withheld-injection"),
+			}
+		}},
+	)
+	result, err := chain.InterceptStreamChunk(context.Background(), []byte("raw-frame"), &StreamMeta{})
+	if err != nil {
+		t.Fatalf("InterceptStreamChunk: %v", err)
+	}
+	if result == nil || !result.SuppressChunk {
+		t.Fatalf("result = %+v, want suppression", result)
+	}
+	if len(result.ModifiedChunk) > 0 || len(result.InjectAfter) > 0 {
+		t.Fatalf("suppressed result leaked withheld content: modified=%q inject=%q",
+			result.ModifiedChunk, result.InjectAfter)
+	}
+}

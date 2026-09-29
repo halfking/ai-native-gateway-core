@@ -135,16 +135,19 @@ func (c *InterceptorChain) InterceptStreamChunk(ctx context.Context, chunk []byt
 			finalResult.ModifiedChunk = nil
 			finalResult.InjectAfter = nil
 		}
-		if len(result.ModifiedChunk) > 0 {
-			if !finalResult.SuppressChunk || result.SuppressChunk {
-				finalResult.ModifiedChunk = result.ModifiedChunk
-				currentChunk = result.ModifiedChunk
-			}
+		// R24-C (2026-09-29 round 26): the historical guard here was
+		// `!finalResult.SuppressChunk || result.SuppressChunk`, which is
+		// always true — a withholding result carrying its own replacement
+		// re-populated the fields the suppress branch had just cleared, and
+		// the withheld frame's content stayed visible to any consumer of
+		// the chain result. Once suppression is set, replacements and
+		// injections must stay empty.
+		if len(result.ModifiedChunk) > 0 && !finalResult.SuppressChunk {
+			finalResult.ModifiedChunk = result.ModifiedChunk
+			currentChunk = result.ModifiedChunk
 		}
-		if len(result.InjectAfter) > 0 {
-			if !finalResult.SuppressChunk || result.SuppressChunk {
-				finalResult.InjectAfter = result.InjectAfter
-			}
+		if len(result.InjectAfter) > 0 && !finalResult.SuppressChunk {
+			finalResult.InjectAfter = result.InjectAfter
 		}
 
 		if result.ShouldBlock || result.SuppressChunk {
