@@ -1304,6 +1304,12 @@ func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, body []
 		if opt.request.ResponseBody == nil {
 			opt.request.ResponseBody = respBody
 		}
+		// R25-U3 (2026-09-30 round 27, ruling): on interceptor ERROR the
+		// original body passes through (fail-open). This mirrors the chat
+		// path and processBody's documented rationale — a transient infra
+		// failure (policy DB down) must not kill all traffic. The stream
+		// path stays fail-closed because mid-stream bytes already left and
+		// cannot be recalled; the asymmetry is deliberate.
 		if modified, blocked, err := interceptNativeResponseBody(h.chatHandler.responseInterceptor, &opt, respBody); err == nil && !blocked && modified != nil {
 			respBody = modified
 		} else if blocked {

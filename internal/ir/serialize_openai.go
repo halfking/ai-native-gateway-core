@@ -76,7 +76,12 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 
 	// audit-provider-multimodal (2026-07-13): Personalized provider fields
 	if req.Reasoning != nil && req.Reasoning.Effort != "" {
-		out["reasoning_effort"] = req.Reasoning.Effort
+		// R25-U4: an explicit disabled Type outranks Effort (same priority
+		// as the Anthropic/Gemini serializers) — emitting reasoning_effort
+		// alongside would silently re-enable what the caller disabled.
+		if req.Reasoning.Type != "disabled" {
+			out["reasoning_effort"] = req.Reasoning.Effort
+		}
 	}
 	if len(req.Modalities) > 0 {
 		out["modalities"] = req.Modalities
@@ -338,13 +343,22 @@ func openAIReasoningIntent(req *InternalRequest) (reasonnorm.Intent, bool) {
 		return reasonnorm.Intent{}, false
 	}
 	r := req.Reasoning
-	if r == nil || r.Effort != "" {
-		// Effort-shaped reasoning is OpenAI-native and already serialized as
-		// reasoning_effort; budget-shaped (Gemini thinkingConfig) is not.
+	if r == nil {
 		return reasonnorm.Intent{}, false
 	}
 	if r.Type == "disabled" {
+		// R25-U4 (2026-09-30 round 27): Type outranks Effort (the priority
+		// Anthropic/Gemini serializers already use), and the check must run
+		// BEFORE the Effort short-circuit below — otherwise a concurrent
+		// {Type:"disabled", Effort:"high"} silently upgrades a disabled
+		// intent into an active reasoning_effort. No current parser emits
+		// the pair; this removes the trap for future producers.
 		return reasonnorm.Intent{Mode: reasonnorm.ModeDisabled}, true
+	}
+	if r.Effort != "" {
+		// Effort-shaped reasoning is OpenAI-native and already serialized as
+		// reasoning_effort; budget-shaped (Gemini thinkingConfig) is not.
+		return reasonnorm.Intent{}, false
 	}
 	budget := 0
 	if r.BudgetTokens != nil {
