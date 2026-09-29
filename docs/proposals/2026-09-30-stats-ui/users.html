@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>效果图 C · 用户列表统计 + 用户详情 — llm-gateway</title>
+<link rel="stylesheet" href="assets/mockup.css">
+</head>
+<body>
+<button class="btn theme-fab" onclick="mockToggleTheme()">🌓 切换主题</button>
+
+<div class="page">
+  <div class="page-header">
+    <h1>用户管理</h1>
+    <span class="sub">全租户账号 · 平台运营视角</span>
+    <span class="header-spacer"></span>
+    <button class="btn">⬇ 导出</button>
+    <button class="btn btn-primary">+ 新建用户</button>
+  </div>
+
+  <div class="mock-banner">📐 本页为静态效果图（数据为演示值）。新增：顶部统计条 + 每行用量列（近 30 天请求 / Token / 积分，占比条）+ 点击行打开右侧详情抽屉（KPI / 趋势 / Top 模型 / Top 应用 / 最近请求）。</div>
+
+  <!-- ═══ 顶部统计条 ═══ -->
+  <div class="mini-stats">
+    <div class="mini-stat"><div class="v">128</div><div class="l">总用户</div></div>
+    <div class="mini-stat"><div class="v" style="color:var(--kx-success)">47</div><div class="l">活跃（30 天内有请求）</div></div>
+    <div class="mini-stat"><div class="v">12</div><div class="l">管理员</div></div>
+    <div class="mini-stat"><div class="v" style="color:var(--kx-danger)">6</div><div class="l">已禁用</div></div>
+    <div class="mini-stat"><div class="v">213,482</div><div class="l">近 30 天请求</div></div>
+    <div class="mini-stat"><div class="v">12.4M</div><div class="l">近 30 天积分消耗</div></div>
+  </div>
+
+  <!-- ═══ 筛选 ═══ -->
+  <div class="toolbar">
+    <select class="sel"><option>全部租户</option><option>default</option><option>kxtech</option><option>acctest</option></select>
+    <select class="sel"><option>全部角色</option><option>super_admin</option><option>tenant_admin</option></select>
+    <select class="sel"><option>全部状态</option><option>启用</option><option>禁用</option></select>
+    <select class="sel"><option>活跃用户（30 天）</option><option>按近 30 天请求排序</option><option>按积分消耗排序</option></select>
+    <input class="inp" style="width:200px" placeholder="搜索用户名 / 邮箱…">
+    <span class="text-muted" style="font-size:12px">用量列为近 30 天（快照 + 当日实时），平台运营可见成本口径</span>
+  </div>
+
+  <!-- ═══ 用户表 ═══ -->
+  <div class="card" style="padding:6px 12px 2px">
+    <table class="tbl">
+      <thead><tr>
+        <th>用户</th><th>租户</th><th>角色</th><th>状态</th>
+        <th class="num">近 30 天请求</th><th class="num">近 30 天 Token</th><th class="num">近 30 天积分</th>
+        <th>最后登录</th><th>最后活跃</th><th>操作</th>
+      </tr></thead>
+      <tbody id="userRows"></tbody>
+    </table>
+  </div>
+
+  <p class="mt-4 text-muted" style="font-size:12px">
+    <a class="nav-link" href="index.html">← 返回效果图目录</a>
+  </p>
+</div>
+
+<!-- ═══ 用户详情抽屉（点击行展开，效果图直接呈现展开态） ═══ -->
+<div class="drawer-overlay"></div>
+<div class="drawer">
+  <div class="drawer-header">
+    <div class="avatar">张</div>
+    <div style="flex:1">
+      <div style="display:flex;align-items:center;gap:8px">
+        <strong style="font-size:17px">zhangsan</strong>
+        <span class="badge badge-blue">tenant_admin</span>
+        <span class="badge badge-green">启用</span>
+      </div>
+      <div class="text-muted mt-2" style="font-size:12.5px">张三 · default 租户 · <span class="mono">zhangsan@kx.example</span></div>
+    </div>
+    <button class="btn btn-ghost btn-sm" style="font-size:16px">✕</button>
+  </div>
+
+  <div class="toolbar" style="margin-bottom:12px">
+    <div class="chips"><button class="chip">近 7 天</button><button class="chip active">近 30 天</button><button class="chip">近 90 天</button></div>
+    <span class="header-spacer"></span>
+    <button class="btn btn-sm">禁用</button>
+    <button class="btn btn-sm">重置密码</button>
+  </div>
+
+  <!-- 抽屉 KPI -->
+  <div class="kpi-grid" style="grid-template-columns:repeat(2,1fr);gap:10px">
+    <div class="kpi" style="padding:12px"><div class="kpi-body">
+      <div class="kpi-label">请求数</div><div class="kpi-value" style="font-size:20px">12,483</div>
+      <div class="kpi-sub">日均 416</div></div></div>
+    <div class="kpi" style="padding:12px"><div class="kpi-body">
+      <div class="kpi-label">Token</div><div class="kpi-value" style="font-size:20px">892.4M</div>
+      <div class="kpi-sub">缓存命中 71.2%</div></div></div>
+    <div class="kpi" style="padding:12px"><div class="kpi-body">
+      <div class="kpi-label">积分消耗</div><div class="kpi-value" style="font-size:20px">45,203</div>
+      <div class="kpi-sub">内部金额 ¥325.46</div></div></div>
+    <div class="kpi" style="padding:12px"><div class="kpi-body">
+      <div class="kpi-label">失败率 / P95</div><div class="kpi-value" style="font-size:20px">3.2%<span class="unit">/ 12.4s</span></div>
+      <div class="kpi-sub">失败 401 次</div></div></div>
+  </div>
+
+  <!-- 趋势 -->
+  <div class="card mt-3" style="padding:12px 14px">
+    <div class="card-title" style="margin-bottom:8px"><h3 style="font-size:13px">请求与 Token 趋势</h3><span class="spacer"></span>
+      <div class="chart-legend">
+        <span class="item"><span class="dot" style="background:var(--chart-1)"></span>请求</span>
+        <span class="item"><span class="dot" style="background:var(--chart-4)"></span>Token（右轴）</span>
+      </div></div>
+    <div class="chart-box" style="height:150px" id="userTrend"></div>
+  </div>
+
+  <!-- Top 模型 / 应用 -->
+  <div class="grid-2 mt-3" style="margin-bottom:0">
+    <div class="card" style="padding:12px 14px">
+      <div class="card-title" style="margin-bottom:6px"><h3 style="font-size:13px">Top 模型</h3></div>
+      <table class="tbl" style="font-size:12.5px">
+        <thead><tr><th>模型</th><th class="num">请求</th><th class="num">Token</th><th class="num">积分</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">claude-opus-5</td><td class="num">5,203</td><td class="num">412M</td><td class="num">18,204</td></tr>
+          <tr><td class="mono">gpt-5.6-terra</td><td class="num">3,988</td><td class="num">271M</td><td class="num">11,830</td></tr>
+          <tr><td class="mono">claude-haiku-5</td><td class="num">2,101</td><td class="num">88M</td><td class="num">6,204</td></tr>
+          <tr><td class="mono">grok-4.7</td><td class="num">1,191</td><td class="num">121M</td><td class="num">5,965</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card" style="padding:12px 14px">
+      <div class="card-title" style="margin-bottom:6px"><h3 style="font-size:13px">Top 应用 / 密钥</h3></div>
+      <table class="tbl" style="font-size:12.5px">
+        <thead><tr><th>应用</th><th class="num">请求</th><th class="num">Token</th><th class="num">积分</th></tr></thead>
+        <tbody>
+          <tr><td><span class="badge badge-blue">codex-cli</span></td><td class="num">4,102</td><td class="num">298M</td><td class="num">15,032</td></tr>
+          <tr><td><span class="badge badge-blue">claude-code</span></td><td class="num">3,388</td><td class="num">241M</td><td class="num">11,872</td></tr>
+          <tr><td><span class="badge badge-blue">web-chat</span></td><td class="num">2,907</td><td class="num">102M</td><td class="num">3,884</td></tr>
+          <tr><td><span class="badge badge-blue">cursor</span></td><td class="num">1,086</td><td class="num">51M</td><td class="num">2,415</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 最近请求 -->
+  <div class="card mt-3" style="padding:12px 14px">
+    <div class="card-title" style="margin-bottom:6px"><h3 style="font-size:13px">最近请求</h3><span class="spacer"></span>
+      <a class="nav-link" style="font-size:12px" href="#">在日志中查看全部 →</a></div>
+    <table class="tbl" style="font-size:12.5px">
+      <thead><tr><th>时间</th><th>模型</th><th class="num">首字 / 总耗时</th><th class="num">积分</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">09-30 02:07:30</td><td class="mono">claude-opus-5</td><td class="num">15.06s / 33.10s</td><td class="num">412</td><td><span class="badge badge-red">429</span></td></tr>
+        <tr><td class="mono">09-30 02:06:58</td><td class="mono">claude-opus-5</td><td class="num">12.84s / 28.41s</td><td class="num">388</td><td><span class="badge badge-green">200</span></td></tr>
+        <tr><td class="mono">09-30 01:58:12</td><td class="mono">gpt-5.6-terra</td><td class="num">8.22s / 21.07s</td><td class="num">295</td><td><span class="badge badge-green">200</span></td></tr>
+        <tr><td class="mono">09-30 01:55:40</td><td class="mono">gpt-5.6-terra</td><td class="num">—</td><td class="num">0</td><td><span class="badge badge-yellow">timeout</span></td></tr>
+        <tr><td class="mono">09-30 01:49:03</td><td class="mono">claude-haiku-5</td><td class="num">1.87s / 6.44s</td><td class="num">54</td><td><span class="badge badge-green">200</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 基本信息 -->
+  <div class="card mt-3" style="padding:12px 14px">
+    <div class="card-title" style="margin-bottom:6px"><h3 style="font-size:13px">基本信息</h3></div>
+    <div class="kv">
+      <span class="k">显示名</span><span>张三</span>
+      <span class="k">邮箱</span><span class="mono">zhangsan@kx.example</span>
+      <span class="k">租户</span><span class="mono">default</span>
+      <span class="k">创建时间</span><span class="mono">2026-04-02 10:14</span>
+      <span class="k">最后登录</span><span class="mono">2026-09-29 18:32</span>
+      <span class="k">API 密钥</span><span>3 把（全部启用）· <a class="nav-link" href="#">查看密钥 →</a></span>
+    </div>
+  </div>
+</div>
+
+<script src="assets/mockup.js"></script>
+<script>
+var USERS = [
+  { name:'zhangsan',   disp:'张三',   tenant:'default', role:'tenant_admin', roleBadge:'badge-purple', enabled:true,  req:12483, tok:'892.4M', credits:45203, lastLogin:'09-29 18:32', active:'5 分钟前' },
+  { name:'wangwu',     disp:'王五',   tenant:'kxtech',  role:'tenant_admin', roleBadge:'badge-purple', enabled:true,  req: 9878, tok:'461.2M', credits:41057, lastLogin:'09-29 21:14', active:'1 小时前' },
+  { name:'qianqi',     disp:'钱七',   tenant:'default', role:'user',         roleBadge:'badge-blue',   enabled:true,  req: 5694, tok:'253.9M', credits: 6881, lastLogin:'09-29 09:47', active:'26 分钟前' },
+  { name:'lisi',       disp:'李四',   tenant:'default', role:'user',         roleBadge:'badge-blue',   enabled:true,  req: 4521, tok:'201.7M', credits: 5120, lastLogin:'09-28 11:05', active:'2 小时前' },
+  { name:'test-cache', disp:'验收',   tenant:'acctest', role:'user',         roleBadge:'badge-blue',   enabled:true,  req: 4955, tok:'154.7M', credits: 3733, lastLogin:'09-29 16:40', active:'3 小时前' },
+  { name:'zhaoliu',    disp:'赵六',   tenant:'kxtech',  role:'user',         roleBadge:'badge-blue',   enabled:false, req: 2303, tok:'94.8M',  credits: 2011, lastLogin:'09-12 10:22', active:'17 天前', stale:true },
+  { name:'audit_test1',disp:'审计一号',tenant:'default',role:'user',         roleBadge:'badge-blue',   enabled:true,  req:   128, tok:'3.2M',   credits:  145, lastLogin:'09-27 08:19', active:'3 天前' },
+  { name:'p1',         disp:'临时账号',tenant:'default', role:'user',         roleBadge:'badge-blue',   enabled:true,  req:     0, tok:'—',      credits:    0, lastLogin:'08-30 14:11', active:'从未活跃', stale:true }
+];
+function fmtInt(n){ return n.toLocaleString('en-US'); }
+var maxReq = Math.max.apply(null, USERS.map(function(u){ return u.req; }));
+document.getElementById('userRows').innerHTML = USERS.map(function(u){
+  var w = (u.req/maxReq*100).toFixed(1);
+  return '<tr class="clickable">'
+    + '<td><div class="bar-cell"><div class="name"><strong>'+u.name+'</strong> <span class="cell-sub">'+u.disp+'</span></div>'
+    + '<div class="track"><div class="fill '+(u.stale?'':'tone-green')+'" style="width:'+w+'%;opacity:'+(u.stale?.35:1)+'"></div></div></div></td>'
+    + '<td><code class="mono" style="font-size:12px">'+u.tenant+'</code></td>'
+    + '<td><span class="badge '+u.roleBadge+'">'+u.role+'</span></td>'
+    + '<td><span class="badge '+(u.enabled?'badge-green':'badge-red')+'">'+(u.enabled?'启用':'禁用')+'</span></td>'
+    + '<td class="num">'+(u.req?fmtInt(u.req):'<span class="text-muted">—</span>')+'</td>'
+    + '<td class="num">'+u.tok+'</td>'
+    + '<td class="num">'+(u.req?fmtInt(u.credits):'<span class="text-muted">—</span>')+'</td>'
+    + '<td class="mono" style="font-size:12px">'+u.lastLogin+'</td>'
+    + '<td style="font-size:12px;color:'+(u.stale?'var(--kx-muted)':'var(--kx-success)')+'">'+u.active+'</td>'
+    + '<td><button class="btn btn-ghost btn-sm">详情</button> <button class="btn btn-ghost btn-sm">重置密码</button></td>'
+    + '</tr>';
+}).join('');
+
+function cssVarC(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+var L = ['09-01','09-04','09-07','09-10','09-13','09-16','09-19','09-22','09-25','09-28'];
+var U_REQ = [286,331,305,358,392,341,388,452,401,479];
+var U_TOK = [18,22,19,24,27,22,26,31,27,33];
+mockAutoRedraw(function(){
+  mockLines('userTrend', { labels: L, series: [
+    { name:'请求', data: U_REQ, color: cssVarC('--chart-1'), area: true },
+    { name:'Token', data: U_TOK, color: cssVarC('--chart-4') }
+  ]});
+});
+</script>
+</body>
+</html>

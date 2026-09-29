@@ -1090,6 +1090,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/session-analytics/users", admin(h.handleUserAnalyticsList))
 	mux.HandleFunc("/api/admin/session-analytics/users/", admin(h.handleUserAnalyticsDetail))
 
+	// 2026-09-30 统计 UI 优化轮：/users 页面用户级用量统计
+	// （api_key_owner_user 维度；不依赖缺失的 session_owners 视图，
+	//   详见 admin/user_usage_stats.go 头注）。注意精确路径必须在
+	// /api/admin/users/ 前缀路由之前注册。
+	mux.HandleFunc("/api/admin/users/usage-summary", admin(h.handleUserUsageSummary))
+	mux.HandleFunc("/api/admin/users/", admin(h.handleUserStatsDispatcher))
+
 	// 2026-07-02: 存储配置管理（附件目录/保留策略/水位/自动清理）
 	mux.HandleFunc("/api/admin/storage/config", h.superAdmin(h.handleStorageConfig))
 	mux.HandleFunc("/api/admin/storage/config/test-path", h.superAdmin(h.handleStorageTestPath))
