@@ -22,15 +22,17 @@ ok()   { printf 'PASS %s\n' "$1"; ((PASS++)); }
 bad()  { printf 'FAIL %s\n' "$1" >&2; ((FAIL++)); }
 
 # ── 1. bump-version 每次调用 +1 ──────────────────────────────────
-# --dry-run 不写文件；断言 target seq == current seq + 1（SAME_CODE 保序
-# 逻辑删除后，同 sha+同日期也必须 +1）。
+# --dry-run 不写文件；断言 target 严格前进（SAME_CODE 保序逻辑删除后，
+# 同 sha+同日期也必须 +1）。注意:机器级 floor 计数器(bump-version.sh
+# "根治并行双 checkout 撞号")会让 target 相对 version.json 出现 +N 跳变
+# ——另一 checkout 已消耗过 seq 时这是设计内行为,故只钉"必须前进"。
 bump_out="$(bash "$REPO_ROOT/scripts/bump-version.sh" --dry-run 2>&1)"
 cur="$(printf '%s\n' "$bump_out" | sed -n 's/.*current: seq=\([0-9]*\).*/\1/p')"
 new="$(printf '%s\n' "$bump_out" | sed -n 's/.*target:  seq=\([0-9]*\).*/\1/p')"
-if [[ "$cur" =~ ^[0-9]+$ && "$new" =~ ^[0-9]+$ && $((new - cur)) -eq 1 ]]; then
-  ok "bump-version: 每次调用 seq +1 (cur=$cur new=$new)"
+if [[ "$cur" =~ ^[0-9]+$ && "$new" =~ ^[0-9]+$ && $new -gt $cur ]]; then
+  ok "bump-version: seq 严格前进 (cur=$cur new=$new, +$((new-cur)) 为 floor 设计内跳变)"
 else
-  bad "bump-version: 期望 seq +1，得到 cur='$cur' new='$new'"
+  bad "bump-version: 期望 seq 严格前进，得到 cur='$cur' new='$new'"
 fi
 if printf '%s\n' "$bump_out" | grep -q 'seq 保持不变'; then
   bad "bump-version: SAME_CODE 保序提示仍在输出中"
