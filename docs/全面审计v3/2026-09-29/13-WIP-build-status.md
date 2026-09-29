@@ -27,6 +27,17 @@ domains/hooks/outputcompliance/stream_compliance.go:313:42: too many arguments i
         want (string, string)
 ```
 
+### 1.1 文件 mtime 线索（2026-09-29 15:52 实测）
+
+| 文件 | mtime | 状态 |
+|---|---|---|
+| `internal/ir/reasoning_dialect.go` | 06:24:14 | WIP untracked |
+| `domains/hooks/outputcompliance/stream_compliance.go` | 15:21:35 | WIP untracked（**本会话期间被外部修改**） |
+| `domains/hooks/response/types.go` | 15:46:20 | 已 tracked，commit 后再被改动 |
+| `internal/reasonnorm/norm.go` | 15:46:20 | 已 tracked，commit 后再被改动 |
+
+**关键观察**：`stream_compliance.go` 在本会话 15:07:04 开始后被外部进程改动为不兼容 API 的形态（15:21:35）。`types.go` 和 `norm.go` 在 15:46:20 同时改动——可能是原作者在 commit 后继续微调，把 `CallerOwner` / `SuppressChunk` / `IsDisableEffort` 从这些文件里拿掉但没同步 `stream_compliance.go` / `reasoning_dialect.go`。**原作者**应先核 `types.go` 与 `norm.go` 当前实际状态，再决定是补回缺失字段还是改 WIP 引用。
+
 ## 2. 与本会话 commit 的关系
 
 本会话 4 个 commit（`e9c733521` / `37d5b5a71` / `1d6a6822b` / `cce0e640b`）：
