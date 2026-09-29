@@ -234,4 +234,11 @@ var (
 		Help:    "T0→T9: end-to-end dispatch lifetime from arrival to response end.",
 		Buckets: stageBucketsLong,
 	}, []string{"result"})
+	// metricModelLaneAdmissionRejectedTotal (R28-Q-2) — lane-cap admission
+	// rejections, labeled by model (cardinality already bounded by the cap).
+	metricModelLaneAdmissionRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dispatch_model_lane_admission_rejected_total",
+		Help: "Admissions rejected because the per-model lane map hit MaxModelLanes.",
+	}, []string{"model"})
+
 )

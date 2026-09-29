@@ -21,5 +21,6 @@
 - [修订审计二十八轮](2026-09-29/17-修订审计二十八轮.md)：HC-10 根因收口（sync 投影漏翻 status，迁移 761 回填 119.5 万行）+ 三路大盘审计（队列/auto✅、代理数据面断连 P1、双存储/对帐 10 项）+ R28-P-2 strict 出口模式。
 - [修订审计二十九轮](2026-09-29/18-修订审计二十九轮.md)：R28-P-1 数据面 egress 路由代落（ProviderID context → EgressProvider TTL 缓存 → 订阅节点池，proxy 标记 fail-closed；P-3 白名单策略化；F-2 出口一致性）+ R28-Q-1 dispatch 热配置接线（HotCfg 种子 + 30s Reload）。
 - [修订审计三十轮](2026-09-29/19-修订审计三十轮.md)：R28-B-1 对帐聚合源切 usage_ledger（真库测试）+ B-2 凭据/api-key 级快照 scope 与视角 + egress e2e 攻坚（chat 注解死代码真缺陷修复 + fail-closed 实证 + runbook）+ 1M handoff 开关补审（机制全量存在，默认 300K 更激进）。
+- [修订审计三十一轮](2026-09-29/20-修订审计三十一轮.md)：S-3 lite fail-fast（真机双验）/ S-1-S-2 能力边界声明+/api/lite/sessions 读面（S-1 部分判定更正：cost 列已在，缺口=价表）/ Q-2 lane 上限+空闲回收（RCU 三重防孤儿发送）/ egress runbook 跟进：owner 标记 14 provider 但 dialable=0 致 fail-closed，回滚恢复+前置条件更新。
 
 本目录是逐轮更新的工作记录；未打勾的验收项不得据此宣称系统全域通过。历史 R73–R76 审计与 D01–D17 检查表仍保留在 `docs/audit`，本轮从具体源码重新核实后再引用。

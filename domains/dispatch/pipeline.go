@@ -1249,6 +1249,17 @@ func (p *Pipeline) drainTotalQueueResidue() {
 // Submit's non-blocking external admission path: totalQueue is the bounded
 // waiting room, so a full model lane applies backpressure instead of dropping.
 func (p *Pipeline) enqueueModelFromTotal(name string, qr *QueuedRequest) bool {
+	// R28-Q-2: retry once on a fresh lane if the looked-up lane was idle-
+	// reclaimed mid-send (mq.closed).
+	for laneAttempt := 0; laneAttempt < 2; laneAttempt++ {
+		if ok := p.enqueueModelFromTotalLane(name, qr); ok || laneAttempt == 1 {
+			return ok
+		}
+	}
+	return false
+}
+
+func (p *Pipeline) enqueueModelFromTotalLane(name string, qr *QueuedRequest) bool {
 	mq := p.getOrCreateModelQueue(name)
 	if mq == nil {
 		return false
@@ -1266,7 +1277,9 @@ func (p *Pipeline) enqueueModelFromTotal(name string, qr *QueuedRequest) bool {
 			// check+send is atomic against drainModelQueueOnShutdown — a sender
 			// that already holds mq.ch must either have completed its send
 			// (the drain then collects the request) or never get in at all.
-			if p.shutdown.Load() {
+			// R28-Q-2: mq.closed = the lane was idle-reclaimed after this
+			// lookup; refuse so the outer retry takes a fresh lane.
+			if p.shutdown.Load() || mq.closed {
 				mq.mu.Unlock()
 				p.releaseLaneAdmission(&qr.clusterModel)
 				return false
@@ -1414,10 +1427,24 @@ func (p *Pipeline) onScheduledDue(qr *QueuedRequest, dueAt time.Time) {
 // drainer goroutine) on first use. Returns false if the model queue is full
 // (overflow) or the pipeline is shutting down (admission refused).
 func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
-	mq := p.getOrCreateModelQueue(name)
-	if mq == nil {
-		return false
+	// R28-Q-2: the lane may be reclaimed (idle) between lookup and send —
+	// retry once on a fresh lane before failing admission.
+	for laneAttempt := 0; laneAttempt < 2; laneAttempt++ {
+		mq := p.getOrCreateModelQueue(name)
+		if mq == nil {
+			return false
+		}
+		if ok := p.enqueueModelLane(mq, name, qr); ok || laneAttempt == 1 {
+			return ok
+		}
 	}
+	return false
+}
+
+// enqueueModelLane sends qr into one specific (already looked-up) lane.
+// false with a nil error means the lane was reclaimed mid-send (retry with a
+// fresh lane); callers distinguish via mq.closed.
+func (p *Pipeline) enqueueModelLane(mq *modelQueue, name string, qr *QueuedRequest) bool {
 	// V6-W1.7: cluster lane slot before the local channel; released again
 	// when the local lane refuses (caller follows the existing full path).
 	if !p.reserveLane(ctxOf(qr), LaneModel, name, p.config().MaxQueueDepth, &qr.clusterModel) {
@@ -1431,7 +1458,7 @@ func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 	// rationale as enqueueModelFromTotal — check+send must be atomic against
 	// drainModelQueueOnShutdown so a raced enqueue can never land in a lane
 	// whose drainer already exited).
-	if p.shutdown.Load() {
+	if p.shutdown.Load() || mq.closed {
 		mq.mu.Unlock()
 		qr.journeyMu.Unlock()
 		p.releaseLaneAdmission(&qr.clusterModel)
@@ -1479,7 +1506,13 @@ func (p *Pipeline) getOrCreateModelQueue(name string) *modelQueue {
 	p.modelMu.Lock()
 	defer p.modelMu.Unlock()
 	if mq, ok := p.models[name]; ok {
-		return mq
+		if !mq.closed {
+			return mq
+		}
+		// R28-Q-2: a closed lane is still registered while its drainer is
+		// deregistering (reclaim window). Hand out a fresh lane and replace
+		// the entry; the old drainer's delete is guarded by cur == mq so it
+		// will not remove the replacement.
 	}
 	// After Stop, do not spawn new drainers (Stop's wg.Wait may already be
 	// running; a late wg.Add would race it) and do NOT hand back a throwaway
@@ -1488,6 +1521,17 @@ func (p *Pipeline) getOrCreateModelQueue(name string) *modelQueue {
 	// (concurrency audit 2026-08-13 D5). Return nil — enqueueModel then fails
 	// admission and the caller completes the qr with ErrShutdown.
 	if p.shutdown.Load() {
+		return nil
+	}
+	// R28-Q-2: hard cap on distinct model lanes. A key holder sending
+	// high-cardinality fake model names previously grew this map (and one
+	// drainer goroutine + channel each) without bound. Idle lanes are
+	// reclaimed by the drainer (see runModelDrainer); the cap is the
+	// backstop and rejects admission loudly.
+	if max := p.config().MaxModelLanes; max > 0 && len(p.models) >= max {
+		metricModelLaneAdmissionRejectedTotal.WithLabelValues(name).Inc()
+		slog.Warn("dispatch: model lane limit reached — admission rejected",
+			"model", name, "lanes", len(p.models), "cap", max)
 		return nil
 	}
 	mq := &modelQueue{name: name, ch: make(chan *QueuedRequest, p.config().MaxQueueDepth)}
@@ -1518,9 +1562,27 @@ func (p *Pipeline) getOrCreateModelQueue(name string) *modelQueue {
 func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 	defer p.wg.Done()
 	defer p.drainerWg.Done() // audit 2026-09-05 C-#2 (runs first; wg.Done last as before)
+	// R28-Q-2: idle reclaim. An empty lane retires its drainer after
+	// ModelLaneIdleSeconds and deregisters from p.models; the next request
+	// for the model lazily creates a fresh lane. Safety against the straggler
+	// enqueue that already holds this mq reference: closed is set under
+	// mq.mu, and enqueue re-validates inside its own mq.mu section and
+	// retries on a fresh lane, so a request can never land in an undrained
+	// channel.
+	idleTTL := time.Duration(p.config().ModelLaneIdleSeconds) * time.Second
+	var idleCh <-chan time.Time
+	var idleTimer *time.Timer
+	if idleTTL > 0 {
+		idleTimer = time.NewTimer(idleTTL)
+		defer idleTimer.Stop()
+		idleCh = idleTimer.C
+	}
 	for {
 		select {
 		case qr := <-mq.ch:
+			if idleTimer != nil {
+				idleTimer.Reset(idleTTL)
+			}
 			mq.mu.Lock()
 			depth := mq.depth.Add(-1)
 			metricModelQueueDepth.WithLabelValues().Dec()
@@ -1553,6 +1615,27 @@ func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 				p.drainModelQueueOnShutdown(mq)
 				return
 			}
+		case <-idleCh:
+			// R28-Q-2: lane empty and no in-flight items → retire the
+			// drainer and deregister the lane. Anything racing in after this
+			// either finds no map entry (fresh lane created) or hits
+			// mq.closed and retries, so a request can never land in an
+			// undrained channel.
+			mq.mu.Lock()
+			if mq.depth.Load() != 0 || len(mq.ch) != 0 || p.shutdown.Load() {
+				mq.mu.Unlock()
+				idleTimer.Reset(idleTTL)
+				continue
+			}
+			mq.closed = true
+			mq.mu.Unlock()
+			p.modelMu.Lock()
+			if cur, ok := p.models[mq.name]; !ok || cur == mq {
+				delete(p.models, mq.name)
+			}
+			p.modelMu.Unlock()
+			slog.Debug("dispatch: model lane reclaimed after idle", "model", mq.name)
+			return
 		case <-p.stopCh:
 			p.drainModelQueueOnShutdown(mq)
 			return
