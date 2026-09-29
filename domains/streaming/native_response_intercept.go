@@ -99,6 +99,80 @@ func validDeferredClientBody(protocol string, body []byte) bool {
 	}
 }
 
+// copySafeUpstreamHeaders copies response headers to the client-facing
+// writer, skipping hop-by-hop headers and length/encoding fields that the
+// deferred commit recomputes for the (possibly rewritten) body.
+func copySafeUpstreamHeaders(dst, src http.Header) {
+	for key, values := range src {
+		if ratelimit.IsGatewayRateLimitScopeHeader(key) ||
+			strings.EqualFold(key, "Content-Length") || strings.EqualFold(key, "Content-Encoding") ||
+			strings.EqualFold(key, "Connection") || strings.EqualFold(key, "Transfer-Encoding") {
+			continue
+		}
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
+// deferredNonStreamWriter captures the executor's client-facing success
+// write (status, headers, body) so output compliance can block or rewrite
+// the body before the first byte reaches the client. The chat non-stream
+// path previously ran InterceptNonStream only after the executor had
+// already written the response, which left ShouldBlock with no effect on
+// the wire (audit round 25, R25-A).
+type deferredNonStreamWriter struct {
+	header      http.Header
+	status      int
+	body        []byte
+	wroteStatus bool
+}
+
+func newDeferredNonStreamWriter() *deferredNonStreamWriter {
+	return &deferredNonStreamWriter{header: make(http.Header)}
+}
+
+func (d *deferredNonStreamWriter) Header() http.Header { return d.header }
+
+func (d *deferredNonStreamWriter) WriteHeader(status int) {
+	if d.wroteStatus {
+		return
+	}
+	d.wroteStatus = true
+	d.status = status
+}
+
+func (d *deferredNonStreamWriter) Write(p []byte) (int, error) {
+	if !d.wroteStatus {
+		d.wroteStatus = true
+		d.status = http.StatusOK
+	}
+	d.body = append(d.body, p...)
+	return len(p), nil
+}
+
+// Flush is a no-op: nothing reaches the client until commit.
+func (d *deferredNonStreamWriter) Flush() {}
+
+// commit replays the captured response on w, substituting the
+// policy-approved body when non-empty, else the captured body.
+func (d *deferredNonStreamWriter) commit(w http.ResponseWriter, body []byte) {
+	if len(body) == 0 {
+		body = d.body
+	}
+	copySafeUpstreamHeaders(w.Header(), d.header)
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	status := http.StatusOK
+	if d.wroteStatus {
+		status = d.status
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
 // commitDeferredChatResponse preserves safe upstream response headers while
 // recomputing the length for the fully transformed, policy-approved body.
 func commitDeferredChatResponse(w http.ResponseWriter, upstream *http.Response, requestID string, body []byte) error {
@@ -107,16 +181,7 @@ func commitDeferredChatResponse(w http.ResponseWriter, upstream *http.Response, 
 		if upstream.StatusCode >= 200 && upstream.StatusCode < 300 {
 			status = upstream.StatusCode
 		}
-		for key, values := range upstream.Header {
-			if ratelimit.IsGatewayRateLimitScopeHeader(key) ||
-				strings.EqualFold(key, "Content-Length") || strings.EqualFold(key, "Content-Encoding") ||
-				strings.EqualFold(key, "Connection") || strings.EqualFold(key, "Transfer-Encoding") {
-				continue
-			}
-			for _, value := range values {
-				w.Header().Add(key, value)
-			}
-		}
+		copySafeUpstreamHeaders(w.Header(), upstream.Header)
 	}
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/json")

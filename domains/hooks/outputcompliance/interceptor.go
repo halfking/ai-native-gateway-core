@@ -101,6 +101,9 @@ func (it *OutputComplianceInterceptor) InterceptNonStream(ctx context.Context, r
 	if !enabled() {
 		return nil, nil
 	}
+	// R25-E: request-scoped policy cache so a multi-field body loads the
+	// tenant policy once (the stream path already wraps its check context).
+	ctx = outputcompliance.WithRequestPolicyCache(ctx)
 	return it.processBody(ctx, req)
 }
 
@@ -120,16 +123,20 @@ func (it *OutputComplianceInterceptor) InterceptStreamEnd(ctx context.Context, m
 		return nil, nil
 	}
 	req := &response.InterceptRequest{
-		SessionID:     meta.SessionID,
-		RequestID:     meta.RequestID,
-		TenantID:      meta.TenantID,
-		ClientModel:   meta.ClientModel,
-		ResponseBody:  meta.ResponseBody,
-		TokensUsed:    meta.TokensUsed,
-		ContextWindow: meta.ContextWindow,
-		MessageCount:  meta.MessageCount,
-		FinishReason:  meta.FinishReason,
+		SessionID:      meta.SessionID,
+		RequestID:      meta.RequestID,
+		TenantID:       meta.TenantID,
+		CallerOwner:    meta.CallerOwner,
+		ClientProtocol: meta.ClientProtocol,
+		ClientModel:    meta.ClientModel,
+		ResponseBody:   meta.ResponseBody,
+		TokensUsed:     meta.TokensUsed,
+		ContextWindow:  meta.ContextWindow,
+		MessageCount:   meta.MessageCount,
+		FinishReason:   meta.FinishReason,
 	}
+	// R25-E: request-scoped policy cache, same as InterceptNonStream.
+	ctx = outputcompliance.WithRequestPolicyCache(ctx)
 	res, err := it.processBody(ctx, req)
 	if err != nil || res == nil {
 		return nil, err

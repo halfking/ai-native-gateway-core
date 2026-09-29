@@ -364,7 +364,10 @@ func (w *interceptingStreamWriter) writeFrame(frame []byte) {
 		if err == nil && result != nil {
 			if result.ShouldBlock {
 				w.blocked = true
-				w.writeErr = fmt.Errorf("output stream blocked by response interceptor")
+				// R25-F: wrap the protocol-terminal sentinel so the handler's
+				// execErr fallback recognizes the policy terminal frame we
+				// already rendered and does not emit a second terminal.
+				w.writeErr = fmt.Errorf("output stream blocked by response interceptor: %w", errorsx.ErrProtocolTerminalRendered)
 				return
 			}
 			// Suppression withholds the current frame from the wire. A
@@ -4517,6 +4520,17 @@ func (h *ChatHandler) serveWithExecutor(
 	// ── SR-W2 request survival (doc 18 §5.1) ──────────────────────────────
 	// Streaming requests with survival enabled for this tenant skip the
 	// goal-retry loop entirely: the SurvivalCoordinator owns every retry
+	// R25-C/R25-D: the authenticated key owner and the client protocol lane
+	// must reach the interceptor chain; empty CallerOwner makes the owner
+	// compare always fail (over-redaction) and empty ClientProtocol degrades
+	// protocol-shaped terminal frames to the OpenAI default.
+	_, callerOwner, _ := keyMetaFromKeyInfo(keyInfo)
+	clientProtocolLane := "openai-chat"
+	// R25-A: with output compliance active on a non-streaming request, the
+	// executor writes into a capture buffer instead of the client, so the
+	// interceptor can block or rewrite before the first byte leaves. A fresh
+	// buffer per attempt keeps retried writes from concatenating.
+	var deferredWriter *deferredNonStreamWriter
 	// in-connection behind a per-attempt buffered commit gate (ExecuteAttempt
 	// suppresses the executor's internal retry ladder). Flag-off requests
 	// never enter this branch — the loop below is byte-for-byte the legacy path.
@@ -4528,10 +4542,12 @@ func (h *ChatHandler) serveWithExecutor(
 		base := w
 		if h.responseInterceptor != nil {
 			base = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
-				SessionID:   gwSessionID,
-				RequestID:   requestID,
-				TenantID:    tenantID,
-				ClientModel: clientModel,
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: clientProtocolLane,
+				ClientModel:    clientModel,
 			})
 			defer base.(*interceptingStreamWriter).finish()
 		}
@@ -4591,12 +4607,18 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		if isStream && h.responseInterceptor != nil {
 			interceptedWriter = newInterceptingStreamWriter(streamWriter, h.responseInterceptor, r.Context(), response.StreamMeta{
-				SessionID:   gwSessionID,
-				RequestID:   requestID,
-				TenantID:    tenantID,
-				ClientModel: clientModel,
+				SessionID:      gwSessionID,
+				RequestID:      requestID,
+				TenantID:       tenantID,
+				CallerOwner:    callerOwner,
+				ClientProtocol: clientProtocolLane,
+				ClientModel:    clientModel,
 			})
 			streamWriter = interceptedWriter
+		}
+		if !isStream && h.responseInterceptor != nil {
+			deferredWriter = newDeferredNonStreamWriter()
+			streamWriter = deferredWriter
 		}
 		// SP-02: state machine — executor has accepted the request and is now
 		// sending it upstream (no first byte yet).
@@ -4764,6 +4786,11 @@ goalRetryLoopDone:
 			h.unregisterStreamConnection(requestID, "cached_replay")
 			preStream.stop()
 			preStream = nil
+		}
+		// The replayed body went into the capture buffer (params.W); release
+		// it to the client before returning (R25-A).
+		if deferredWriter != nil {
+			deferredWriter.commit(w, nil)
 		}
 		return
 	}
@@ -5477,11 +5504,13 @@ goalRetryLoopDone:
 		}
 
 		interceptReq := &ResponseInterceptRequest{
-			SessionID:    gwSessionID,
-			RequestID:    requestID,
-			TenantID:     tenantID,
-			ClientModel:  clientModel,
-			ResponseBody: result.ResponseBody,
+			SessionID:      gwSessionID,
+			RequestID:      requestID,
+			TenantID:       tenantID,
+			CallerOwner:    callerOwner,
+			ClientProtocol: clientProtocolLane,
+			ClientModel:    clientModel,
+			ResponseBody:   result.ResponseBody,
 			TokensUsed:   extractTotalTokens(result.ResponseBody, streamCapture),
 			ContextWindow: func() int {
 				if len(candidates) > 0 && candidates[0].ContextWindow != nil {
@@ -5558,7 +5587,11 @@ goalRetryLoopDone:
 			} else if interceptResult != nil {
 				if interceptResult.ShouldBlock {
 					slog.Info("response_interceptor_blocked", "session_id", gwSessionID, "action", interceptResult.Action)
-					// Response was blocked, don't continue
+					// R25-A: with the deferred capture writer the client has
+					// not seen the response yet — reject with an explicit
+					// policy block instead of silently returning nothing.
+					writeErrorJSON(w, http.StatusForbidden, requestID,
+						"Response blocked by output policy", "api_error", "output_policy_blocked")
 					return
 				}
 				if interceptResult.ClientSignalKind != "" && !clientSignalKindAllowed(r, interceptResult.ClientSignalKind) {
@@ -5578,14 +5611,10 @@ goalRetryLoopDone:
 				}
 				// Apply ModifiedBody (e.g. output-compliance redaction).
 				//
-				// NOTE (2026-07-09): for the historical non-stream path the bytes
-				// are already written to the client inside executor.Execute, so
-				// this rewrite takes effect for downstream telemetry, the request
-				// log, the session-cache, and any buffered/pending-store path —
-				// NOT a retroactive client rewrite. Stream-end redaction is
-				// applied at write-time via the transform pipeline; this metadata
-				// path ensures the persisted/observed body matches what policy
-				// intended (so pii_stripped tagging + session_tags stay accurate).
+				// R25-A (2026-09-29): with the interceptor active the
+				// executor's bytes sit in the deferred capture buffer, so this
+				// rewrite — and a ShouldBlock rejection — now reach the actual
+				// client body, not only telemetry/request-log/session-cache.
 				if len(interceptResult.ModifiedBody) > 0 && result != nil {
 					result.ResponseBody = interceptResult.ModifiedBody
 					if interceptResult.Metadata != nil {
@@ -5593,6 +5622,13 @@ goalRetryLoopDone:
 							"session_id", gwSessionID, "action", interceptResult.Action)
 					}
 				}
+			}
+			// R25-A: release the captured executor write to the client now
+			// that policy approved it (ModifiedBody, if any, already
+			// replaced result.ResponseBody above). Interceptor failure keeps
+			// the legacy fail-open behavior and commits the original bytes.
+			if deferredWriter != nil {
+				deferredWriter.commit(w, result.ResponseBody)
 			}
 		}
 	}
