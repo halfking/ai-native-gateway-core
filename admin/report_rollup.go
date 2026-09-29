@@ -32,8 +32,56 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"
 )
+
+// readNoJIT 在一个**事务**里跑对帐读面，并事务级关掉 PG 的 JIT。
+//
+// 为什么必须关：grain 聚合是「约 20 个聚合表达式 × 10 个分组集 × 2 个
+// 分支」，表达式数量极大而实际运行极短，正是 PG JIT 启发式判断失手的
+// 形状——规划器把 jsonb 展开估成 85 万行（实测只有 1327 行），总成本被
+// 推到 521945，越过 jit_optimize_above_cost（500000）默认阈值，PG 于是
+// 花约 600ms 去编译一条实际 21ms 就能跑完的查询。
+//
+// 真库 A/B（2026-09-30，llm_gateway，7 天 / daily_grain）：
+//
+//	jit=on  629ms      jit=off 21ms
+//
+// 换到有真实统计信息的 365 天 / 678k 行合成库复测，jit=off 在**每个**
+// 区间都不慢于 jit=on：
+//
+//	区间   jit=on    jit=off
+//	  7天    66ms      19ms
+//	 30天   719ms     105ms
+//	 90天   962ms     366ms
+//	365天  1845ms    1710ms
+//
+// 作用域：只在这个事务里。只读事务，结束即回滚，连接归还池后 GUC 自动
+// 还原——**不做**连接级 SET，避免把计费聚合等真正吃 JIT 的重查询一起关掉。
+// 同时顺带拿到一个一致性快照：总计与各维度分组来自同一快照，不会出现
+// 两次查询之间 worker 写入导致的 Σ分组 ≠ 总计。
+// pgBeginner 是 readNoJIT 需要的最小能力（*pgxpool.Pool 与 *pgx.Conn 都满足）。
+// 取接口而非 *pgxpool.Pool，是为了让门能在**一条固定的连接**上验证
+// 「事务结束后 GUC 有没有被还原」——用连接池验证时池子可能恰好递回另一条
+// 连接，作用域写宽了也观察不到。
+type pgBeginner interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
+func readNoJIT(ctx context.Context, pool pgBeginner, fn func(reportrollup.Querier) error) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin report read: %w", err)
+	}
+	// 只读路径：用 Rollback 收尾即可，语义与 Commit 等价且不写 WAL。
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SET LOCAL jit = off"); err != nil {
+		return fmt.Errorf("disable jit: %w", err)
+	}
+	return fn(tx)
+}
 
 // SetReportRollupWorker 注入每日聚合 worker（手动重跑端点用）。
 func (h *Handler) SetReportRollupWorker(w interface {
@@ -245,9 +293,13 @@ func (h *Handler) handleReportRollupSummary(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	rep, err := reportrollup.BuildGrainReport(r.Context(), h.db, start, end, view, filter,
-		h.dimensionNames(r.Context()), reportDailyDetail(r))
-	if err != nil {
+	var rep *reportrollup.GrainReport
+	if err := readNoJIT(r.Context(), h.db, func(q reportrollup.Querier) error {
+		var berr error
+		rep, berr = reportrollup.BuildGrainReport(r.Context(), q, start, end, view, filter,
+			h.dimensionNames(r.Context()), reportDailyDetail(r))
+		return berr
+	}); err != nil {
 		if reportDegraded(err) {
 			writeJSON(w, http.StatusOK, map[string]any{"degraded": true, "error_code": "REPORT_SNAPSHOTS_NOT_MIGRATED"})
 			return
@@ -279,8 +331,12 @@ func (h *Handler) handleReportRollupDimensions(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	dims, err := reportrollup.LoadDimensionOptions(r.Context(), h.db, view, start, end)
-	if err != nil {
+	var dims *reportrollup.DimensionOptions
+	if err := readNoJIT(r.Context(), h.db, func(q reportrollup.Querier) error {
+		var berr error
+		dims, berr = reportrollup.LoadDimensionOptions(r.Context(), q, view, start, end)
+		return berr
+	}); err != nil {
 		if reportDegraded(err) {
 			writeJSON(w, http.StatusOK, map[string]any{"degraded": true, "error_code": "REPORT_SNAPSHOTS_NOT_MIGRATED"})
 			return
@@ -336,9 +392,13 @@ func (h *Handler) handleReportRollupExport(w http.ResponseWriter, r *http.Reques
 	}
 	// 导出永远取明细口径：汇总数据是明细的前端折叠，明细可再聚合而汇总
 	// 不能展开——多导一层的成本远小于对账人拿到汇总却没法下钻的代价。
-	rep, err := reportrollup.BuildGrainReport(r.Context(), h.db, start, end, view, filter,
-		h.dimensionNames(r.Context()), true)
-	if err != nil {
+	var rep *reportrollup.GrainReport
+	if err := readNoJIT(r.Context(), h.db, func(q reportrollup.Querier) error {
+		var berr error
+		rep, berr = reportrollup.BuildGrainReport(r.Context(), q, start, end, view, filter,
+			h.dimensionNames(r.Context()), true)
+		return berr
+	}); err != nil {
 		// 与 summary 同款降级：report_snapshots 缺表（未迁移）时导出
 		// 也返回 degraded JSON 而非 500（R65 对齐文件头降级语义）。
 		if reportDegraded(err) {

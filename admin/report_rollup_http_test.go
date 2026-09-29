@@ -37,6 +37,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"
 )
 
 func reportRollupTSPath(t *testing.T) string {
@@ -311,6 +313,59 @@ func TestReportRollup_HTTPContract(t *testing.T) {
 			if rec.Code != http.StatusBadRequest {
 				t.Errorf("非法参数 %q 应 400，实际 %d", qs, rec.Code)
 			}
+		}
+	})
+
+	t.Run("读面查询在关掉 JIT 的事务里跑（否则 7 天区间要 630ms）", func(t *testing.T) {
+		// 这道门守的是一个**性能契约**，不是行为契约，所以断言方式必须是
+		// 「真的去看会话里 jit 是什么」，而不是「跑一次看耗时快不快」——
+		// 耗时受机器与缓存影响，CI 上会假红。
+		//
+		// 背景：grain 聚合表达式数量极大而实际运行极短，规划器又因为 jsonb
+		// 展开的行数高估把总成本顶到 521945，越过 jit_optimize_above_cost
+		// 默认阈值，PG 花约 600ms 编译一条 21ms 的查询（真库 2026-09-30 实测
+		// 629ms vs 21ms）。
+		//
+		// 用真库跑一次 summary，然后在**同一个 handler 的连接语义**下验证：
+		// 事务内 jit 必须是 off，事务外（连接归还池后）必须恢复成库默认值。
+		// 后半句同样重要——若改成连接级 SET，池里的连接会被永久改写，
+		// 把计费聚合等真正吃 JIT 的重查询一起关掉。
+		// 用**同一条连接**验证两件事，否则这道门会靠运气通过：连接池可能恰好
+		// 递回另一条连接，于是「连接级 SET 把 GUC 写死」观察不到。
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("acquire: %v", err)
+		}
+		defer conn.Release()
+		raw := conn.Conn()
+
+		var inTx string
+		if err := readNoJIT(ctx, raw, func(q reportrollup.Querier) error {
+			return q.QueryRow(ctx, "SHOW jit").Scan(&inTx)
+		}); err != nil {
+			t.Fatalf("readNoJIT: %v", err)
+		}
+		if inTx != "off" {
+			t.Errorf("事务内 jit = %q，want off（不关就是 7 天区间 629ms vs 21ms 的差距）", inTx)
+		}
+		// 同一条连接、事务之外：GUC 必须已经还原。
+		var afterTx string
+		if err := raw.QueryRow(ctx, "SHOW jit").Scan(&afterTx); err != nil {
+			t.Fatalf("SHOW jit after tx: %v", err)
+		}
+		if afterTx == "off" {
+			t.Error("同一条连接在事务结束后 jit 仍是 off —— GUC 被写到了连接级，" +
+				"池里这条连接后续所有查询（含计费重聚合）都会被永久关掉 JIT")
+		}
+		// 兜底：库默认值必须不是 off，否则这条门在「库本来就关了 JIT」的机器上
+		// 恒绿、测不到任何东西。
+		var dbDefault string
+		if err := pool.QueryRow(ctx,
+			"SELECT setting FROM pg_settings WHERE name='jit'").Scan(&dbDefault); err != nil {
+			t.Fatalf("read pg_settings.jit: %v", err)
+		}
+		if dbDefault == "off" {
+			t.Error("本库 jit 默认值就是 off：这条门在本机测不到「handler 关掉了 JIT」，请换一个默认 on 的库")
 		}
 	})
 
