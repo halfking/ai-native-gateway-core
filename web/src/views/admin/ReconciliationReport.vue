@@ -381,7 +381,7 @@ onMounted(reload)
 
 <template>
   <div class="report-page">
-    <!-- ── 工具栏 ─────────────────────────────────────────────────────── -->
+    <!--  -->
     <div class="toolbar">
       <el-radio-group v-model="view">
         <el-radio-button value="provider">{{ t('reports.providerView', '供应商对帐') }}</el-radio-button>
@@ -412,7 +412,7 @@ onMounted(reload)
       <span v-if="coverageText" class="coverage">{{ coverageText }}</span>
     </div>
 
-    <!-- ── 筛选栏 ─────────────────────────────────────────────────────── -->
+    <!--  -->
     <el-card shadow="never" class="filter-card">
       <div class="filter-head">
         <el-button :icon="Filter" @click="filtersOpen = !filtersOpen">
@@ -498,7 +498,7 @@ onMounted(reload)
     />
 
     <template v-if="report">
-      <!-- ── 总计卡片 ─────────────────────────────────────────────────── -->
+      <!--  -->
       <div class="cards">
         <div class="card">
           <div class="card-label">{{ t('reports.requests', '请求数') }}</div>
@@ -539,7 +539,7 @@ onMounted(reload)
         </div>
       </div>
 
-      <!-- ── 图表 ─────────────────────────────────────────────────────── -->
+      <!--  -->
       <ReconciliationCharts
         :days="report.days"
         :daily-models="report.daily_models ?? []"
@@ -547,7 +547,7 @@ onMounted(reload)
         :covered-dates="report.snapshot_dates ?? []"
       />
 
-      <!-- ── 主表（分组维度可切 + 指标列显隐） ─────────────────────────── -->
+      <!-- + -->
       <el-card shadow="never">
         <template #header>
           <div class="table-head">
@@ -633,7 +633,7 @@ onMounted(reload)
         </el-table>
       </el-card>
 
-      <!-- ── 按天（汇总模式下仍单列，因为它和分组表是两个问题） ─────────── -->
+      <!--  -->
       <el-card v-if="!detail" shadow="never" class="block-card">
         <template #header>{{ t('reports.byDay', '按天') }}</template>
         <el-table :data="dayTableRows" size="small" border stripe max-height="420" v-loading="loading">
@@ -663,7 +663,7 @@ onMounted(reload)
         </el-table>
       </el-card>
 
-      <!-- ── 模型统计（折叠面板：辅助筛选，不进导出） ─────────────────── -->
+      <!--  -->
       <el-card shadow="never" class="block-card">
         <template #header>
           {{ t('reports.modelStats', '模型统计清单') }}

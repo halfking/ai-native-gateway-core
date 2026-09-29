@@ -23,7 +23,7 @@ vi.mock('echarts', () => ({
   init: (el: HTMLElement) => {
     initTargets.push(el)
     return {
-      setOption: (opt: unknown) => {
+      setOption: (opt: Record<string, unknown>) => {
         setOptionCalls.push(opt)
       },
       dispose: vi.fn(),
@@ -33,9 +33,13 @@ vi.mock('echarts', () => ({
   },
 }))
 
+// 直接复用组件自己导出的 prop 类型，而不是手写一份形状：手写会在组件加字段时
+// 悄悄变成「断言的类型 ≠ 组件实际的类型」，门就变成了摆设（vue-tsc 会红）。
+import type { ChartDay, ChartDayModel } from './ReconciliationCharts.vue'
+
 const fixture = (realSummary as unknown as { report: unknown }).report as {
-  days: { date: string; totals: { request_count: number; error_rate: number } }[]
-  daily_models: { date: string; raw_model_name: string; totals: { request_count: number } }[]
+  days: ChartDay[]
+  daily_models: ChartDayModel[]
   error_breakdown: Record<string, number>
   snapshot_dates: string[]
 }
