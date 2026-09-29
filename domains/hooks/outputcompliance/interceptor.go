@@ -26,10 +26,11 @@ import (
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
-// OwnerContextFunc 返回一次请求的 (callerOwner, dataOwner)。
-// callerOwner 来自 KeyInfo.OwnerUser；dataOwner 来自会话/请求行的 owner_user。
-// 返回空串表示无该侧身份（按保守规则脱敏）。
-type OwnerContextFunc func(sessionID, tenantID string) (callerOwner, dataOwner string)
+// OwnerContextFunc 返回一次请求的 data owner（来自会话/请求行的 owner_user）。
+// callerOwner 由请求元数据携带（KeyInfo.OwnerUser → meta.CallerOwner），
+// data owner 需要回查 session_dim 或 PG；返回空串表示无该侧身份（按保守
+// 规则脱敏）。ctx 用于上游 owner 查询的 timeout / cancellation 传递（V3-A01）。
+type OwnerContextFunc func(ctx context.Context, sessionID, tenantID string) (dataOwner string)
 
 // OutputComplianceInterceptor 实现 response.ResponseInterceptor。
 type OutputComplianceInterceptor struct {
@@ -155,9 +156,10 @@ func (it *OutputComplianceInterceptor) processBody(ctx context.Context, req *res
 	}
 
 	mode := redactionMode()
-	callerOwner, dataOwner := "", ""
+	callerOwner := req.CallerOwner // V3-A01 authenticated key owner, populated by handler
+	dataOwner := ""
 	if it.ownerFn != nil {
-		callerOwner, dataOwner = it.ownerFn(req.SessionID, req.TenantID)
+		dataOwner = it.ownerFn(ctx, req.SessionID, req.TenantID)
 	}
 	shouldRedact := outputcompliance.ShouldRedact(mode, callerOwner, dataOwner)
 
