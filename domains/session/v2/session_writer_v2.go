@@ -54,6 +54,10 @@ type SessionWriterV2 struct {
 	// detailsWriter（733/734 会话存储解耦 v3，可选）：每 turn 特征层
 	// session_turn_details(_hot) 写入。nil 或表族缺席时跳过。
 	detailsWriter *SessionTurnDetailsWriter
+	// bodyMirror（2026-09-24 方案 H3，可选）：热区请求侧镜像投递回调，在
+	// turn bodies / final_full 写入成功后 fire-and-forget 触发。nil 时零开销
+	// 跳过（未装配热区 / lite 模式 / 离线 backfill 工具均不注入）。
+	bodyMirror BodyMirrorFunc
 
 	// aggWg tracks the in-flight aggregate snapshot goroutines so Stop can
 	// wait for them (spec §6.3). Each Write that reaches the aggregate step
@@ -111,6 +115,62 @@ func NewSessionWriterV2(tw *TurnWriter, bw *SessionBodiesWriter, sa *SessionAggr
 // Call before the first Write; nil disables the snapshot write.
 func (w *SessionWriterV2) SetMemoraWriter(mw *SessionMemoraWriter) {
 	w.memoraWriter = mw
+}
+
+// BodyMirrorFunc 是热区请求侧镜像的投递 seam（2026-09-24 方案 H3）。由存储
+// 装配层注入，底层为 storage/file.RequestMirror 的 fire-and-forget 异步写
+// （失败仅计数，绝不阻断主链路）。direction 取 "req"/"resp"/"out" 字面量
+// （与 storage/file 的 DirRequest/DirResponse/DirOutput 值一致）；payload 是
+// 与 session_bodies_hot 落库同源换算（safeJSONMarshal）的 JSON 原文；at 是
+// 镜像日期分区取样时刻（对位 rec.Ts / req.Timestamp）。
+//
+// 实现契约：不等待、不返回错误、不因镜像失败改变 turn+bodies 主链路结果。
+type BodyMirrorFunc func(tenantID, requestID, direction string, payload json.RawMessage, at time.Time)
+
+// SetBodyMirror wires the optional hotzone request-body mirror (H3).
+// Call before the first Write; nil disables mirroring — the turn+bodies path
+// is unaffected. 与 SetMemoraWriter 同契约：仅启动装配期调用，不与在途请求并发。
+func (w *SessionWriterV2) SetBodyMirror(fn BodyMirrorFunc) {
+	w.bodyMirror = fn
+}
+
+// mirrorTurnBodies 把 turn bodies 三件套投递给热区镜像（H3，fire-and-forget）。
+// 换算与 WriteBodiesInTx 同源（safeJSONMarshal / jsonTextOrNull 的空值语义：
+// len==0 → PG 存 json null）；镜像侧跳过空与字面 "null" 载荷，不产生 null
+// 噪声文件。镜像失败只由底层计数（BodyMirrorFunc 契约），不影响本链路。
+// mirror outbox 重放（sessionv2mirror GAP-2）经同一 Write 路径再次触发镜像：
+// 同 (tenant, requestID, direction) 路径覆盖写、内容一致，幂等无害。
+func (w *SessionWriterV2) mirrorTurnBodies(rec BodiesRecord) {
+	if w.bodyMirror == nil {
+		return
+	}
+	if req, err := safeJSONMarshal(rec.RequestDelta); err == nil && mirrorableTurnPayload(req) {
+		w.bodyMirror(rec.TenantID, rec.RequestID, "req", req, rec.Ts)
+	}
+	if resp, err := safeJSONMarshal(rec.ResponseDelta); err == nil && mirrorableTurnPayload(resp) {
+		w.bodyMirror(rec.TenantID, rec.RequestID, "resp", resp, rec.Ts)
+	}
+	if out, err := safeJSONMarshal(rec.OutboundBody); err == nil && mirrorableTurnPayload(out) {
+		w.bodyMirror(rec.TenantID, rec.RequestID, "out", out, rec.Ts)
+	}
+}
+
+// mirrorFinalFull 投递 final_full 终态快照镜像（H3）：requestID 与 PG 行口径
+// 一致（'final_full:<session>'，WriteFinalFullInTx 同款），仅 "out" 一个方向。
+func (w *SessionWriterV2) mirrorFinalFull(req *ProcessedRequest) {
+	if w.bodyMirror == nil || len(req.OutboundBody) == 0 {
+		return
+	}
+	if out, err := safeJSONMarshal(req.OutboundBody); err == nil && mirrorableTurnPayload(out) {
+		w.bodyMirror(req.TenantID, "final_full:"+req.SessionID, "out", out, req.Timestamp)
+	}
+}
+
+// mirrorableTurnPayload 报告序列化后的载荷是否值得镜像：空与字面 "null"
+// （safeJSONMarshal(nil) 的产物）跳过——PG 侧对应 json null，镜像成文件
+// 只会是对账噪声。
+func mirrorableTurnPayload(data []byte) bool {
+	return len(data) > 0 && string(data) != "null"
 }
 
 // SetDetailsWriter wires the optional session_turn_details feature-layer
@@ -614,6 +674,11 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	if err := w.bodiesWriter.WriteBodiesInTx(lockCtx, tx, bodiesRec); err != nil {
 		return fmt.Errorf("write bodies: %w", err)
 	}
+	// H3 镜像（fire-and-forget）：turn bodies 写入成功后投递热区镜像；镜像
+	// 与主链路完全解耦（失败仅计数）。final_full 灰度开启时 per-turn outbound
+	// 已被置 nil（:611 停写门），此处自然跳过 "out" 方向，终态由下方
+	// final_full 镜像行承载——与 PG 侧双路径落库口径一致。
+	w.mirrorTurnBodies(bodiesRec)
 
 	// 733/734 特征层：与 turn+bodies 同事务（任一失败整体回滚）。键由
 	// AppendTurn 返回的 turnNo 补齐；幂等 upsert 支持晚到回填重放。
@@ -647,6 +712,9 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		}); err != nil {
 			return fmt.Errorf("write final_full: %w", err)
 		}
+		// H3 镜像：final_full 行的 request_id 口径与 PG 一致
+		//（'final_full:<session>'，WriteFinalFullInTx 同款）。
+		w.mirrorFinalFull(req)
 	}
 
 	// 706：会话首 turn 持久化时一次写入初始环境/上下文快照（insert-only，

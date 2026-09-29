@@ -13,7 +13,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"strconv"
 	"fmt"
 	"math"
 	"sort"
@@ -84,6 +83,10 @@ type ModelRow struct {
 	RawModelName   string           `json:"raw_model_name"`
 	Totals         Totals           `json:"totals"`
 	ErrorBreakdown map[string]int64 `json:"error_breakdown"`
+	// QualityScore 见 ProviderRow.QualityScore：公式与维度无关，任何分组
+	// 都能算（2026-09-29 多维轮补齐——目标把质量评分列为通用列，不该只有
+	// 供应商维度有值）。
+	QualityScore float64 `json:"quality_score,omitempty"`
 }
 
 // TenantRow 租户汇总行。
@@ -91,22 +94,7 @@ type TenantRow struct {
 	TenantID       string           `json:"tenant_id"`
 	Totals         Totals           `json:"totals"`
 	ErrorBreakdown map[string]int64 `json:"error_breakdown"`
-}
-
-// CredentialRow 凭据级汇总行（R28-B-2，provider 面）。CredentialID 是
-// credentials.id；展示名由 admin 联表补全。
-type CredentialRow struct {
-	CredentialID   int64            `json:"credential_id"`
-	Totals         Totals           `json:"totals"`
-	ErrorBreakdown map[string]int64 `json:"error_breakdown"`
-}
-
-// KeyRow api-key 级汇总行（R28-B-2，internal 面）。APIKeyID 是
-// api_keys.id。
-type KeyRow struct {
-	APIKeyID       int64            `json:"api_key_id"`
-	Totals         Totals           `json:"totals"`
-	ErrorBreakdown map[string]int64 `json:"error_breakdown"`
+	QualityScore   float64          `json:"quality_score,omitempty"`
 }
 
 // PersonRow 人员汇总行（person = end_user_id，缺失回落 person:hash）。
@@ -115,12 +103,16 @@ type PersonRow struct {
 	Person         string           `json:"person"`
 	Totals         Totals           `json:"totals"`
 	ErrorBreakdown map[string]int64 `json:"error_breakdown"`
+	QualityScore   float64          `json:"quality_score,omitempty"`
 }
 
 // DayRow 单日汇总行。
 type DayRow struct {
-	Date   string `json:"date"`
-	Totals Totals `json:"totals"`
+	Date string `json:"date"`
+	// ErrorBreakdown 仅 grain 读面填充（旧读面的按天行不携带，导出时
+	// 「主要错误」列留空）；旧消费方忽略该字段即可。
+	ErrorBreakdown map[string]int64 `json:"error_breakdown,omitempty"`
+	Totals         Totals           `json:"totals"`
 }
 
 // RangeReport 区间汇总结果。
@@ -135,9 +127,6 @@ type RangeReport struct {
 	Models         []ModelRow       `json:"models"`
 	Tenants        []TenantRow      `json:"tenants,omitempty"`
 	Persons        []PersonRow      `json:"persons,omitempty"`
-	// R28-B-2：凭据级 / api-key 级行（credential / key 视角）。
-	Credentials []CredentialRow `json:"credentials,omitempty"`
-	APIKeys     []KeyRow        `json:"api_keys,omitempty"`
 	// SnapshotDates 已落快照的日期集合（缺失日期 = worker 未跑或当日
 	// 无流量，供前端标注覆盖率）。
 	SnapshotDates []string `json:"snapshot_dates"`
@@ -318,9 +307,6 @@ func BuildRangeReport(ctx context.Context, q Querier, start, end time.Time, view
 	tenantByKey := map[string]*acc{}
 	// ---- 人员分组（internal 视角）----
 	personsByKey := map[string]*keyed{}
-	// ---- R28-B-2：凭据 / api-key 分组（credential / key 视角）----
-	credByID := map[int64]*acc{}
-	keyByID := map[int64]*acc{}
 
 	dates := map[string]bool{}
 	for _, s := range snaps {
@@ -381,17 +367,6 @@ func BuildRangeReport(ctx context.Context, q Querier, start, end time.Time, view
 			}
 			if filter.Model == "" {
 				groupAccStr(tenantByKey, s.ScopeKey).add(s)
-			}
-		case ScopeDailyByCredential:
-			// 不进按天序列：无过滤时 DailyTotal 单行已覆盖（此处再累加
-			// 即双计）；带过滤时 credential 行（provider/tenant/model 列
-			// 均空）被 SQL 过滤整族排除，无按天可填。
-			if id, perr := strconv.ParseInt(s.ScopeKey, 10, 64); perr == nil {
-				groupAcc(credByID, id).add(s)
-			}
-		case ScopeInternalKey:
-			if id, perr := strconv.ParseInt(s.ScopeKey, 10, 64); perr == nil {
-				groupAcc(keyByID, id).add(s)
 			}
 		case ScopeInternalPerson:
 			key := deref(s.TenantID) + "\x00" + s.ScopeKey
@@ -493,28 +468,6 @@ func BuildRangeReport(ctx context.Context, q Querier, start, end time.Time, view
 		})
 	}
 
-	// ---- 按凭据 / 按 api-key（R28-B-2 细化视角）----
-	if view == ViewCredential {
-		for id, a := range credByID {
-			rep.Credentials = append(rep.Credentials, CredentialRow{
-				CredentialID: id, Totals: a.finalize(), ErrorBreakdown: a.br,
-			})
-		}
-		sort.Slice(rep.Credentials, func(i, j int) bool {
-			return rep.Credentials[i].Totals.RequestCount > rep.Credentials[j].Totals.RequestCount
-		})
-	}
-	if view == ViewKey {
-		for id, a := range keyByID {
-			rep.APIKeys = append(rep.APIKeys, KeyRow{
-				APIKeyID: id, Totals: a.finalize(), ErrorBreakdown: a.br,
-			})
-		}
-		sort.Slice(rep.APIKeys, func(i, j int) bool {
-			return rep.APIKeys[i].Totals.RequestCount > rep.APIKeys[j].Totals.RequestCount
-		})
-	}
-
 	for date := range dates {
 		rep.SnapshotDates = append(rep.SnapshotDates, date)
 	}
@@ -571,10 +524,13 @@ func viewScopes(view View) ([]Scope, error) {
 		return []Scope{ScopeDailyTotal, ScopeDailyByProvider, ScopeDailyByModel}, nil
 	case ViewInternal:
 		return []Scope{ScopeInternalTenant, ScopeInternalPerson, ScopeInternalModel}, nil
-	case ViewCredential:
-		return []Scope{ScopeDailyTotal, ScopeDailyByCredential}, nil
-	case ViewKey:
-		return []Scope{ScopeDailyTotal, ScopeInternalKey}, nil
+	case ViewCredential, ViewKey:
+		// 这两个视角由 grain 读面承担（grainreport.go：凭据/api-key 是
+		// 最细粒度行上的两个分组集，行内还带租户/人员/模型）。旧读面
+		// 聚合到 daily_by_provider / internal_tenant 就停了，做不出
+		// 凭据级或 api-key 级行——这里必须显式报错而不是悄悄回落到
+		// 供应商口径，否则调用方会拿到形状不同的数据当成凭据行。
+		return nil, fmt.Errorf("view %q requires the grain read face (BuildGrainReport)", view)
 	default:
 		return nil, fmt.Errorf("unknown view %q", view)
 	}

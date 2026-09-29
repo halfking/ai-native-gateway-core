@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -98,10 +99,18 @@ func (p *EgressProvider) policy(ctx context.Context, providerID int) (EgressPoli
 		if err := p.db.QueryRow(ctx,
 			`SELECT egress_profile, proxy_subscription_id FROM providers WHERE id = $1`, providerID).
 			Scan(&profile, &subscriptionID); err != nil {
-			// Unknown provider id or transient DB error: keep direct
-			// (fail-open) — egress marking is opt-in per provider, so the
-			// safe default for unmarked rows is the legacy path.
-			policy = EgressPolicy{Profile: "direct"}
+			// Unknown provider id or transient DB error: keep direct for
+			// THIS request only (fail-open) — egress marking is opt-in per
+			// provider, so the safe default for unmarked rows is the legacy
+			// path. R35-A1 (2026-09-30 round 35 audit): the error outcome is
+			// deliberately NOT cached — caching it would pin a proxy-marked
+			// provider to direct for a full TTL on a transient DB blip,
+			// silently defeating the must-proxy contract the marked row
+			// exists to enforce (R31-4 production incident proved the
+			// fail-closed path is load-bearing). The next request re-queries.
+			slog.Warn("egress: policy lookup failed; direct for this request (not cached)",
+				"provider_id", providerID, "error", err)
+			return policy, nil
 		} else if profile == "proxy" {
 			// subscriptionID may be nil: the manager then selects the best
 			// node across all subscriptions.

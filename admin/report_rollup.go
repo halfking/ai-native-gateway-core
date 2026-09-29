@@ -1,15 +1,22 @@
 package admin
 
 // report_rollup.go —— 对账报表管理端读面 + Excel 导出 + 手动重跑
-//（2026-09-25 对账报表落地轮，设计 docs/reconciliation/design-report-rollup.md §4）。
+//（2026-09-25 对账报表落地轮；2026-09-29 多维筛选轮重写读面）。
 //
 // 端点（全部 superAdmin——对帐数据含全租户内部计费，不随租户角色放行）：
 //
-//	GET  /api/admin/report-rollup/summary?start&end&view[&provider_id&tenant_id&model]
-//	     区间汇总 JSON：总计 + 按供应商/租户/人员/模型/天 分组行。
-//	     周/月报表 = 前端传对应区间；数据只来自 report_snapshots 日快照，
-//	     不回扫 usage_facts。
-//	GET  /api/admin/report-rollup/export?同上           → xlsx 双 sheet 下载
+//	GET  /api/admin/report-rollup/summary
+//	     ?start&end&view[&detail]
+//	     [&provider_id&credential_id&api_key_id&tenant_id&person&model]
+//	     区间多维 JSON：总计 + 按天 + 按天×模型（图表）+ 六个维度各自的
+//	     汇总；detail=daily 追加「按天 × 维度」明细行。
+//	     数据只来自 report_snapshots 的最细粒度（grain）快照，不回扫
+//	     usage_facts；六个维度可任意组合过滤，总计恒等于各分组之和。
+//	GET  /api/admin/report-rollup/dimensions?start&end&view
+//	     筛选栏候选（各维度在区间内实际出现过的取值 + 请求数），不受当前
+//	     筛选影响——否则选中一个供应商后其它供应商会从下拉里消失。
+//	GET  /api/admin/report-rollup/export?同上 → xlsx 四 sheet
+//	     （汇总 / 按天 / 按天×模型 / 按天明细长表），永远取明细口径。
 //	POST /api/admin/report-rollup/run {"date":"YYYY-MM-DD"} → 手动重跑单日聚合
 //
 // 快照缺失语义：区间内当日无快照行 = worker 未跑或当日无流量，summary 以
@@ -25,8 +32,56 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/kaixuan/llm-gateway-go/domains/reportrollup"
 )
+
+// readNoJIT 在一个**事务**里跑对帐读面，并事务级关掉 PG 的 JIT。
+//
+// 为什么必须关：grain 聚合是「约 20 个聚合表达式 × 10 个分组集 × 2 个
+// 分支」，表达式数量极大而实际运行极短，正是 PG JIT 启发式判断失手的
+// 形状——规划器把 jsonb 展开估成 85 万行（实测只有 1327 行），总成本被
+// 推到 521945，越过 jit_optimize_above_cost（500000）默认阈值，PG 于是
+// 花约 600ms 去编译一条实际 21ms 就能跑完的查询。
+//
+// 真库 A/B（2026-09-30，llm_gateway，7 天 / daily_grain）：
+//
+//	jit=on  629ms      jit=off 21ms
+//
+// 换到有真实统计信息的 365 天 / 678k 行合成库复测，jit=off 在**每个**
+// 区间都不慢于 jit=on：
+//
+//	区间   jit=on    jit=off
+//	  7天    66ms      19ms
+//	 30天   719ms     105ms
+//	 90天   962ms     366ms
+//	365天  1845ms    1710ms
+//
+// 作用域：只在这个事务里。只读事务，结束即回滚，连接归还池后 GUC 自动
+// 还原——**不做**连接级 SET，避免把计费聚合等真正吃 JIT 的重查询一起关掉。
+// 同时顺带拿到一个一致性快照：总计与各维度分组来自同一快照，不会出现
+// 两次查询之间 worker 写入导致的 Σ分组 ≠ 总计。
+// pgBeginner 是 readNoJIT 需要的最小能力（*pgxpool.Pool 与 *pgx.Conn 都满足）。
+// 取接口而非 *pgxpool.Pool，是为了让门能在**一条固定的连接**上验证
+// 「事务结束后 GUC 有没有被还原」——用连接池验证时池子可能恰好递回另一条
+// 连接，作用域写宽了也观察不到。
+type pgBeginner interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
+func readNoJIT(ctx context.Context, pool pgBeginner, fn func(reportrollup.Querier) error) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin report read: %w", err)
+	}
+	// 只读路径：用 Rollback 收尾即可，语义与 Commit 等价且不写 WAL。
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SET LOCAL jit = off"); err != nil {
+		return fmt.Errorf("disable jit: %w", err)
+	}
+	return fn(tx)
+}
 
 // SetReportRollupWorker 注入每日聚合 worker（手动重跑端点用）。
 func (h *Handler) SetReportRollupWorker(w interface {
@@ -53,6 +108,8 @@ func (h *Handler) handleReportRollup(w http.ResponseWriter, r *http.Request) {
 		h.handleReportRollupSummary(w, r)
 	case strings.HasSuffix(r.URL.Path, "/export"):
 		h.handleReportRollupExport(w, r)
+	case strings.HasSuffix(r.URL.Path, "/dimensions"):
+		h.handleReportRollupDimensions(w, r)
 	case strings.HasSuffix(r.URL.Path, "/run"):
 		h.handleReportRollupRun(w, r)
 	default:
@@ -90,35 +147,112 @@ func reportRange(r *http.Request) (time.Time, time.Time, error) {
 }
 
 // reportViewFilter 解析 view 与可选维度过滤。
-func reportViewFilter(r *http.Request) (reportrollup.View, reportrollup.RangeFilter, error) {
+//
+// 六个维度（供应商 / 凭据 / 模型 / 租户 / 用户 / apikey）**两个视角通用**，
+// 不再按视角交叉拒绝。旧实现按视角拒绝（provider_id 只在 provider 视角、
+// tenant_id 只在 internal 视角）是边缘 scope 的能力限制遗留，不是业务语义——
+// 对帐人同样会问「内部流量里哪些 apikey 打到了失败率高的模型」，现在 grain
+// 最细粒度快照让这个问题有了正确答案。
+func reportViewFilter(r *http.Request) (reportrollup.View, reportrollup.GrainFilter, error) {
 	view := reportrollup.View(strings.ToLower(strings.TrimSpace(r.URL.Query().Get("view"))))
 	if view == "" {
 		view = reportrollup.ViewProvider
 	}
 	if !view.Valid() {
-		return "", reportrollup.RangeFilter{}, fmt.Errorf("view must be provider, internal, credential or key")
+		return "", reportrollup.GrainFilter{}, fmt.Errorf("view must be provider, internal, credential or key")
 	}
-	var filter reportrollup.RangeFilter
-	if raw := strings.TrimSpace(r.URL.Query().Get("provider_id")); raw != "" {
-		pid, err := strconv.ParseInt(raw, 10, 64)
+	q := r.URL.Query()
+	var filter reportrollup.GrainFilter
+	for _, f := range []struct {
+		param string
+		dst   **int64
+	}{
+		{"provider_id", &filter.ProviderID},
+		{"credential_id", &filter.CredentialID},
+		{"api_key_id", &filter.APIKeyID},
+	} {
+		raw := strings.TrimSpace(q.Get(f.param))
+		if raw == "" {
+			continue
+		}
+		v, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil {
-			return "", filter, fmt.Errorf("invalid provider_id: %w", err)
+			return "", filter, fmt.Errorf("invalid %s: %w", f.param, err)
 		}
-		if view != reportrollup.ViewProvider {
-			return "", filter, fmt.Errorf("provider_id filter is only valid with view=provider")
-		}
-		filter.ProviderID = &pid
+		*f.dst = &v
 	}
-	if raw := strings.TrimSpace(r.URL.Query().Get("tenant_id")); raw != "" {
-		if view != reportrollup.ViewInternal {
-			return "", filter, fmt.Errorf("tenant_id filter is only valid with view=internal")
-		}
-		filter.TenantID = raw
-	}
-	if raw := strings.TrimSpace(r.URL.Query().Get("model")); raw != "" {
-		filter.Model = raw
-	}
+	// 文本维度：原样透传（不做大小写折叠——租户键 / 用户名 / 模型名都是
+	// 标识符而非自然语言，大小写折叠会把两个不同取值合并成一个）。
+	filter.TenantID = strings.TrimSpace(q.Get("tenant_id"))
+	filter.Person = strings.TrimSpace(q.Get("person"))
+	filter.Model = strings.TrimSpace(q.Get("model"))
 	return view, filter, nil
+}
+
+// reportDailyDetail 解析明细开关：明细模式额外返回「按天 × 维度」行
+// （明细表格 + 明细导出的数据面）。缺省 false = 只要汇总。
+func reportDailyDetail(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("detail"))) {
+	case "1", "true", "yes", "daily":
+		return true
+	}
+	return false
+}
+
+// reportExportDetail 解析**导出**的口径，与 reportDailyDetail 的缺省相反。
+//
+// 页面缺省是汇总（detail=false），导出缺省是全量（detail=true）：导出是交给
+// 对账人手里的交接件，缺省给全量更安全；而页面默认落在汇总视图上，用户主动
+// 点开「按天明细」才把 detail=daily 发过来，两边各自自洽。
+func reportExportDetail(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("detail"))) {
+	case "0", "false", "no", "summary":
+		return false
+	}
+	return true
+}
+
+// dimensionNames 一次性拉齐三个 id 维度的展示名映射（缺表/失败均退化为
+// 显示 id，不阻断报表）。
+//
+// api_keys 的展示名来自 key_alias（人工起的别名），为空时回落到 key_prefix。
+// **不能写 name**：public.api_keys 没有 name 列，information_schema 里能查到
+// 的那个 name 属于 orchestrator 下的另一张同名表——查错 schema 会以为列存在，
+// 真库一跑就 42703。原写法 `SELECT id, name FROM api_keys` 恒报错，又因为
+// idLabelMap 吞错误而**静默**退化成空 map，页面上 apikey 一列永远显示裸 id
+// 且没有任何报错线索。
+func (h *Handler) dimensionNames(ctx context.Context) reportrollup.Names {
+	return reportrollup.Names{
+		Providers:   h.providerNames(ctx),
+		Credentials: h.idLabelMap(ctx, `SELECT id, label FROM credentials`),
+		APIKeys: h.idLabelMap(ctx,
+			`SELECT id, COALESCE(NULLIF(key_alias, ''), key_prefix) FROM api_keys`),
+	}
+}
+
+// idLabelMap 执行一条 id→名称查询。查询失败会**记日志**再返回空 map
+// （非致命，页面退化成显示 id）——但必须留痕：静默吞掉一条写错的 SQL 会让
+// 整列名称恒空且没有任何线索，排查时只能靠翻代码。
+func (h *Handler) idLabelMap(ctx context.Context, sqlText string) map[int64]string {
+	out := map[int64]string{}
+	rows, err := h.db.Query(ctx, sqlText)
+	if err != nil {
+		slog.Error("report rollup: load id→name map failed, falling back to raw ids",
+			"error", err)
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var name *string
+		if err := rows.Scan(&id, &name); err != nil {
+			continue
+		}
+		if name != nil && *name != "" {
+			out[id] = *name
+		}
+	}
+	return out
 }
 
 // providerNames 拉供应商 id→display_name 映射（providers 缺表不致命）。
@@ -139,6 +273,11 @@ func (h *Handler) providerNames(ctx context.Context) map[int64]string {
 	return names
 }
 
+// reportDegraded 判断错误是否属于「report_snapshots 缺表（未迁移）」降级。
+func reportDegraded(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "report_snapshots")
+}
+
 func (h *Handler) handleReportRollupSummary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -154,9 +293,14 @@ func (h *Handler) handleReportRollupSummary(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	rep, err := reportrollup.BuildRangeReport(r.Context(), h.db, start, end, view, filter, h.providerNames(r.Context()))
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "report_snapshots") {
+	var rep *reportrollup.GrainReport
+	if err := readNoJIT(r.Context(), h.db, func(q reportrollup.Querier) error {
+		var berr error
+		rep, berr = reportrollup.BuildGrainReport(r.Context(), q, start, end, view, filter,
+			h.dimensionNames(r.Context()), reportDailyDetail(r))
+		return berr
+	}); err != nil {
+		if reportDegraded(err) {
 			writeJSON(w, http.StatusOK, map[string]any{"degraded": true, "error_code": "REPORT_SNAPSHOTS_NOT_MIGRATED"})
 			return
 		}
@@ -165,6 +309,62 @@ func (h *Handler) handleReportRollupSummary(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"report": rep})
+}
+
+// handleReportRollupDimensions 返回筛选栏的候选项：区间内各维度实际出现过的
+// 取值 + 各自的请求数（前端按请求数降序，默认折叠小项）。
+//
+// 候选**不受当前筛选条件影响**（只看日期区间与视角），否则选中一个供应商后
+// 其它供应商就从候选里消失，用户没法横向切换——这是筛选栏最常见的自锁坑。
+func (h *Handler) handleReportRollupDimensions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	start, end, err := reportRange(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	view, _, err := reportViewFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var dims *reportrollup.DimensionOptions
+	if err := readNoJIT(r.Context(), h.db, func(q reportrollup.Querier) error {
+		var berr error
+		dims, berr = reportrollup.LoadDimensionOptions(r.Context(), q, view, start, end)
+		return berr
+	}); err != nil {
+		if reportDegraded(err) {
+			writeJSON(w, http.StatusOK, map[string]any{"degraded": true, "error_code": "REPORT_SNAPSHOTS_NOT_MIGRATED"})
+			return
+		}
+		slog.Error("report rollup dimensions failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "report dimensions failed")
+		return
+	}
+	// 就地补展示名（不新增往返）。
+	names := h.dimensionNames(r.Context())
+	// 候选键是文本（同一维度里 provider/credential/apikey 都是数值 id，
+	// 但模型/租户/用户是字符串，统一成 string 交给前端）；名称映射按
+	// ParseInt 回查，查不到就留空由前端显示 key。
+	fill := func(list []reportrollup.DimensionOption, names map[int64]string) {
+		for i := range list {
+			id, err := strconv.ParseInt(list[i].Key, 10, 64)
+			if err != nil {
+				continue
+			}
+			if n, ok := names[id]; ok {
+				list[i].Name = n
+			}
+		}
+	}
+	fill(dims.Providers, names.Providers)
+	fill(dims.Credentials, names.Credentials)
+	fill(dims.APIKeys, names.APIKeys)
+	writeJSON(w, http.StatusOK, map[string]any{"dimensions": dims})
 }
 
 func (h *Handler) handleReportRollupExport(w http.ResponseWriter, r *http.Request) {
@@ -182,11 +382,26 @@ func (h *Handler) handleReportRollupExport(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	rep, err := reportrollup.BuildRangeReport(r.Context(), h.db, start, end, view, filter, h.providerNames(r.Context()))
+	// ?group= 决定「按天×X」那张 sheet 按哪个维度拆。缺省 model（保持旧行为）。
+	// 传错值直接 400 而不是静默回退到模型——交接出去的口径对不上是查不出来的
+	// 那种错，只有在这里喊出来。
+	group, err := reportrollup.ParseGrainGroup(r.URL.Query().Get("group"))
 	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// 导出永远取明细口径：汇总数据是明细的前端折叠，明细可再聚合而汇总
+	// 不能展开——多导一层的成本远小于对账人拿到汇总却没法下钻的代价。
+	var rep *reportrollup.GrainReport
+	if err := readNoJIT(r.Context(), h.db, func(q reportrollup.Querier) error {
+		var berr error
+		rep, berr = reportrollup.BuildGrainReport(r.Context(), q, start, end, view, filter,
+			h.dimensionNames(r.Context()), true)
+		return berr
+	}); err != nil {
 		// 与 summary 同款降级：report_snapshots 缺表（未迁移）时导出
 		// 也返回 degraded JSON 而非 500（R65 对齐文件头降级语义）。
-		if strings.Contains(strings.ToLower(err.Error()), "report_snapshots") {
+		if reportDegraded(err) {
 			writeJSON(w, http.StatusOK, map[string]any{"degraded": true, "error_code": "REPORT_SNAPSHOTS_NOT_MIGRATED"})
 			return
 		}
@@ -194,7 +409,13 @@ func (h *Handler) handleReportRollupExport(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "report export query failed")
 		return
 	}
-	xlsxBytes, err := reportrollup.BuildWorkbookBytes(rep)
+	// 导出口径：显式 detail=summary/false 时只出「汇总」一张表。**缺省 true**
+	// ——早先导出恒为全量 4 张，让只带 ?group= 的老调用方保持原样，不因这次
+	// 改动而变窄。之所以要显式解析：页面上的「汇总 ⇄ 按天明细」开关此前对导出
+	// 完全无效（前端只在打开时才发 detail=daily，关掉就不发这个参数，后端
+	// 分不清「要汇总」和「没指定」）。
+	detail := reportExportDetail(r)
+	xlsxBytes, err := reportrollup.BuildGrainWorkbookBytes(rep, group, detail)
 	if err != nil {
 		slog.Error("report rollup xlsx build failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "report xlsx build failed")
