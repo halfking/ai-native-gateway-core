@@ -348,6 +348,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			// 回填扫描索引。只建链不搬数据；存量 33 万行由
 			// bg/project_backfill_worker.go 分批回填（共用 sync 函数）。
 			"762_session_project_backfill_chain.sql",
+			// 763 (2026-09-30, R14 批判式复审 D16): provider_events 契约对齐
+			// （序列 + id 默认值 + fail-closed PK + (credential_id, ts) 索引）。
+			// installer 的 01-schema.sql 至今把该表建成裸表（id 可空、无默认、
+			// 无 PK、无序列），全新安装每次都复现同一漂移——不登记则 fresh install
+			// 拿不到契约态。文件已按 --single-transaction 纪律去掉显式事务。
+			"763_provider_events_contract.sql",
 			// 800 (2026-09-24, supplier-protocol-optimization §3.2): 每
 			// provider 多端点表 + 从 providers 旧行回填（ON CONFLICT DO
 			// NOTHING 幂等）。原 deploy V800 文件从未进任何存量库通道，

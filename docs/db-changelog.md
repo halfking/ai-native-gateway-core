@@ -764,3 +764,9 @@ Refs: docs/audit/2026-09-25-session-storage-audit-handoff.md §23 F-17
 | 758 | `758_routeincident_missing_columns.sql` | `f68ad115a07a97871b61e4ec47e179795156f70846b404a8a0e7e40768cfde3d` | applied+verified |
 | 759 | `759_report_snapshots_grain_dims.sql` | `716bfc85aad899bb126b7a9b564040978541d75e6bdd9a76229a11a3751cb930` | applied+verified（本地真库；生产待部署后回填。索引注释改为 366 天 / 68 万行热缓存 A/B 实测：带索引 vs 不带索引，汇总 22ms vs 43ms、21ms vs 37ms，明细 39ms vs 49ms、52ms vs 60ms） |
 
+
+## 2026-09-30 — migration 763 installer 五点同步补齐（合并修复轮）
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 763 | `763_provider_events_contract.sql` | `f38fda799b00391fddbeafaffcd208e53a6e79ed0905288c10e014f47bf060b9` | pending deploy（252/本机已手工应用并幂等复跑；154/245 待随下次部署走 sequence 通道。c8c102698 只落了 canonical 文件 + sequence 登记，installer 五点同步前四点全缺，`TestCanonicalStartupMigrationsAtOrAbove704AreRegistered` 自该提交起持续变红——installer 的 `embeddata/01-schema.sql:11759` 把 provider_events 建成裸表（id 可空/无默认/无 PK/无序列），fresh install 每次复现同一漂移。本轮补 embeddata 副本 + go:embed var + embeddedSQLFiles map + StartupFiles + parity 五点，并按 `psql --single-transaction` 纪律（runner.go:416）去掉文件内显式 BEGIN/COMMIT，原子性改由调用方包裹） |
