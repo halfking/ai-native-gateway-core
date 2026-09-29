@@ -3051,8 +3051,24 @@ func (h *ChatHandler) serveWithExecutor(
 	// ── v2.0 auto-route ────────────────────────────────────────────────
 	// If the client requested model="auto", classify the task and pick
 	// the best credential. Rewrites body model + sets X-Gw-Auto-Decision.
+	//
+	// 2026-09-29: X-Gw-Test-Mode header (see auto_route.go) overrides the
+	// auto-routing flow, but only for callers that prove authorisation with
+	// the X-Gw-Test-Mode-Token shared secret (testModeAllowed):
+	//   - mock / auto-only: run maybeResolveAuto for the decision wire, then
+	//     short-circuit with a synthetic OpenAI-format response. No
+	//     upstream call is made. The auto decision is still observable via
+	//     X-Gw-Auto-Decision and the response body.
+	//   - other-only: skip maybeResolveAuto entirely. The explicit body
+	//     model (NOT "auto" — caller must supply one) is honoured; the
+	//     rest of the pipeline runs, including a real upstream call.
+	//   - live / full / absent: legacy behaviour, unchanged.
+	testMode, testModeSet := ParseTestMode(r, testModeAllowed(r))
+	if testModeSet {
+		logCtx.SetTestMode(testMode.String())
+	}
 	preAutoModel := clientModel
-	if clientModel == autoRequestMagic {
+	if clientModel == autoRequestMagic && !testMode.SkipsAutoRoute() {
 		apiKeyID := 0
 		if keyInfo != nil {
 			apiKeyID = keyInfo.ID
@@ -3087,6 +3103,37 @@ func (h *ChatHandler) serveWithExecutor(
 		// 2026-07-14: keep the client-facing model name lowercase.
 		clientModel = modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
 		logCtx.SetClientModel(clientModel)
+	}
+
+	// ── 2026-09-29 X-Gw-Test-Mode mock short-circuit ───────────────────
+	// For mock / auto-only modes, the auto decision above is the entire
+	// observable behaviour we want to verify. Skip dispatch, candidate
+	// resolution, and the upstream call; emit a synthetic OpenAI-format
+	// chat completion that echoes the chosen model back so a test runner
+	// can assert "the gateway did resolve model=auto and produced this
+	// decision" without burning upstream tokens. The synthetic body is
+	// byte-for-byte valid OpenAI shape (chat.completion) so consumers
+	// that parse the body keep working.
+	//
+	// Two invariants this branch must preserve:
+	//
+	//  1. The handler's safety net requires exactly one request_logs row
+	//     per request. Returning via markLogged() alone would mark the row
+	//     written while writing NOTHING, so mock traffic would be invisible
+	//     in the dashboard AND in the audit trail. recordMockRequestLog
+	//     writes a real terminal row (status=success, error_kind='<mode>_mock')
+	//     before the response goes out.
+	//  2. A streaming client must receive SSE framing; see
+	//     writeMockChatResponse's stream branch (covered by
+	//     TestWriteMockChatResponse_Stream_EmitsSSEWithDoneSentinel).
+	if testMode.IsMockMode() && preAutoModel == autoRequestMagic {
+		h.emitAction(r.Context(), requestID, liveactions.ActionRouteResolved, map[string]string{
+			"test_mode": testMode.String(),
+			"mock":      "true",
+		})
+		h.recordMockRequestLog(logCtx, testMode, clientModel, keyInfo)
+		writeMockChatResponse(w, testMode, requestID, clientModel, reqBody.Stream)
+		return
 	}
 
 	// ── Tenant model policy — post-auto check (Round 48) ─────────────
@@ -7965,6 +8012,76 @@ func (h *ChatHandler) insertRateLimitedPlaceholder(logCtx *RequestLogContext) {
 		}
 	}
 	h.telemetryClient.EmitRequestLogInsert(minimal)
+}
+
+// recordMockRequestLog writes the terminal request_logs row for a request
+// that was short-circuited by X-Gw-Test-Mode mock / auto-only
+// (2026-09-29 audit).
+//
+// Why this exists: the mock branch returns from serveWithExecutor long
+// before recordInitialRequestLog runs, so the handler's safety net — which
+// only backfills a row when ErrCode is set — would leave the request with
+// NO row at all. The first cut of the mock branch called markLogged()
+// instead, which is strictly worse: it declares the row written while
+// writing nothing, so mock traffic disappeared from the dashboard and from
+// every audit that joins on request_id.
+//
+// The row is a SUCCESS with zero token usage, tagged through ErrorKind
+// with the test mode ("mock_mock" / "auto-only_mock") so operators can
+// filter internal test traffic out of production dashboards with
+// `WHERE error_kind LIKE '%_mock'` without needing a schema migration.
+// Writing a real row — not skipping one — is what keeps "exactly one
+// request_logs row per request" true across every exit path.
+func (h *ChatHandler) recordMockRequestLog(
+	logCtx *RequestLogContext,
+	mode TestMode,
+	chosenModel string,
+	keyInfo *authentication.KeyInfo,
+) {
+	if logCtx == nil {
+		return
+	}
+	logCtx.SetClientModel(chosenModel)
+	// ErrorKind carries the mode; message stays empty so the row is not
+	// mistaken for a failure by dashboards that key off a non-empty error.
+	mockKind := string(mode) + "_mock"
+	logCtx.SetError(mockKind, "")
+	logCtx.MarkLogged()
+
+	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
+		return
+	}
+	entry := &telemetry.RequestLogEntry{
+		RequestID:     logCtx.RequestID,
+		TenantID:      "default",
+		ClientModel:   strPtr(chosenModel),
+		RequestStatus: strPtr(telemetry.RequestStatusSuccess),
+		Success:       true,
+		ErrorKind:     strPtr(mockKind),
+		// Zero token usage: no upstream was called. Consumers that treat a
+		// non-nil 0 as "upstream reported zero" must be checked before
+		// trusting cost rollups to exclude mock rows.
+		PromptTokens:     intPtr(0),
+		CompletionTokens: intPtr(0),
+	}
+	if sessionID, _ := logCtx.SessionTask(); sessionID != "" {
+		entry.GwSessionID = strPtr(sessionID)
+	}
+	if len(logCtx.AutoDecision) > 0 {
+		v := string(logCtx.AutoDecision)
+		entry.AutoDecision = &v
+		entry.IsAutoRequest = boolPtr(true)
+	}
+	if keyInfo != nil {
+		entry.TenantID = keyInfo.TenantID
+		kid := keyInfo.ID
+		entry.APIKeyID = &kid
+		if aid := appID(keyInfo); aid != nil {
+			a := *aid
+			entry.ApplicationID = &a
+		}
+	}
+	h.telemetryClient.EmitRequestLog(entry)
 }
 
 // resolveEndUser picks the best end-user identifier available for this
