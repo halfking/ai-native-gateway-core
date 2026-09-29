@@ -771,8 +771,17 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	// P1-2 fix (2026-08-28): Pass ctx to wrapAttemptWriter for context propagation.
+	// P1-2 fix (2026-08-28): Pass context to gate for checkpoint propagation.
 	w, gate := wrapAttemptWriter(ctx, w, ProtocolOpenAIChat)
+	// R-vapeur3 (2026-09-30): drain the frame-assembly residue at attempt end
+	// — an upstream that closes without the SSE blank-line terminator strands
+	// the final frame while the request is recorded as a clean outcome.
+	// See GateWriter.DrainPending.
+	defer func() {
+		if gw, ok := w.(*GateWriter); ok {
+			_ = gw.DrainPending()
+		}
+	}()
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
