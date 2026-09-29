@@ -307,18 +307,33 @@ const dayRows = computed<GroupCell[]>(() => {
     const hit = groupRows.value.find((g) => g.key === key)
     return hit?.name ?? key
   }
-  const src: { date: string; key: string; totals: RangeReport['totals']; error_breakdown?: Record<string, number> }[] =
+  const src: {
+    date: string
+    key: string
+    totals: RangeReport['totals']
+    error_breakdown?: Record<string, number>
+    quality_score?: number
+  }[] =
     groupDim.value === 'provider' ? (r.daily_providers ?? [])
     : groupDim.value === 'credential' ? (r.daily_credentials ?? [])
     : groupDim.value === 'tenant' ? (r.daily_tenants ?? [])
     : groupDim.value === 'person' ? (r.daily_persons ?? [])
     : groupDim.value === 'apikey' ? (r.daily_api_keys ?? [])
-    : (r.daily_models ?? []).map((m) => ({ date: m.date, key: m.raw_model_name, totals: m.totals, error_breakdown: m.error_breakdown }))
+    : (r.daily_models ?? []).map((m) => ({
+        date: m.date,
+        key: m.raw_model_name,
+        totals: m.totals,
+        error_breakdown: m.error_breakdown,
+        quality_score: m.quality_score,
+      }))
   return src.map((d) => ({
     key: `${d.date}\u0000${d.key}`,
     name: groupDim.value === 'model' ? d.key : `${d.date} · ${nameOf(d.key)}`,
     totals: d.totals,
     error_breakdown: d.error_breakdown ?? {},
+    // 明细行也要带评分：漏了这一句，「质量评分」列在按天明细模式下整列为空，
+    // 而该列正是需求里点名列出的指标之一。
+    score: d.quality_score,
   }))
 })
 

@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -411,6 +412,61 @@ func TestGrainReport_RealDB_E2E(t *testing.T) {
 		}
 		if rep3.Totals.RequestCount != 50+5 {
 			t.Fatalf("person 过滤 totals = %d, want 55", rep3.Totals.RequestCount)
+		}
+	})
+
+	t.Run("明细行也带质量评分（按天明细模式下该列不能整列为空）", func(t *testing.T) {
+		// 需求把「质量评分」列在点名的指标里。汇总行一直有分，但日行没���——
+		// 切到「按天明细」时那一列 36 行全是空。评分所需三个量（请求数/成功数/
+		// p95）日行本来就带着，缺的只是没算。
+		rep, err := BuildGrainReport(ctx, pool, start, end, ViewProvider, GrainFilter{}, names, true)
+		if err != nil {
+			t.Fatalf("BuildGrainReport: %v", err)
+		}
+		if len(rep.DailyProviders) == 0 {
+			t.Fatal("夹具应产出日行；为空说明这条门在空数据上恒绿，测不出东西")
+		}
+		for _, r := range rep.DailyProviders {
+			// 不能只断言「非零」：0 既是「没算」也是「真的 0 分」，分不开。
+			// 直接对着同一个公式重算一遍，两边不一致才是缺陷。
+			want := ProviderQualityScore(r.Totals)
+			if r.QualityScore != want {
+				t.Errorf("%s/%s 质量评分 = %v，按同一公式应为 %v", r.Date, r.Key, r.QualityScore, want)
+			}
+			// 0 分本身**不是**缺陷：夹具里有一条 200 请求 / 0 成功 的行，
+			// 成功率 0% → 评分 0 是公式的正确结果。真正要防的是「没算」
+			// （键缺失 / 没赋值），那由上面那条与公式重算的比对抓住。
+			_ = r
+		}
+		for _, r := range rep.DailyModels {
+			if want := ProviderQualityScore(r.Totals); r.QualityScore != want {
+				t.Errorf("daily_models %s/%s 质量评分 = %v，应为 %v", r.Date, r.RawModelName, r.QualityScore, want)
+			}
+		}
+	})
+
+	t.Run("未落定哨兵在日行里不能是空串（否则明细表名称列整片空白）", func(t *testing.T) {
+		// 真库症状：internal 视角 36 条日行里有 7 条 key=""，前端 nameOf 拿它
+		// 去查汇总行（key 是 "-1"）永远查不到 → 回落成空 → 按天明细里近两成
+		// 的行第一列是空白。汇总行有「未落定」，日行没有。
+		rep, err := BuildGrainReport(ctx, pool, start, end, ViewProvider, GrainFilter{}, names, true)
+		if err != nil {
+			t.Fatalf("BuildGrainReport: %v", err)
+		}
+		wantKey := strconv.FormatInt(UnassignedID, 10)
+		seen := false
+		for _, r := range rep.DailyProviders {
+			if r.Key == "" {
+				t.Errorf("%s 日行的 key 是空串，前端会显示成空白名称；哨兵行应为 %q", r.Date, wantKey)
+				continue
+			}
+			if r.Key == wantKey {
+				seen = true
+			}
+		}
+		// 夹具里必须有哨兵行，否则这条门在「没有未落定数据」的空场景上恒绿。
+		if !seen {
+			t.Errorf("夹具应含未落定哨兵日行（key=%q），否则这条门测不到东西", wantKey)
 		}
 	})
 

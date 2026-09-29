@@ -81,6 +81,9 @@ type DailyModelRow struct {
 	ProviderName   string           `json:"provider_name,omitempty"`
 	Totals         Totals           `json:"totals"`
 	ErrorBreakdown map[string]int64 `json:"error_breakdown,omitempty"`
+	// 明细模式下主表会显示质量评分；缺这一项时那一列在按天明细里整列是空的。
+	// 公式与汇总行同一个（ProviderQualityScore），不在前端另写一份以免两边漂移。
+	QualityScore float64 `json:"quality_score,omitempty"`
 }
 
 // DailyGroupRow 按天 × 单维度行（明细导出的数据面）。
@@ -90,6 +93,8 @@ type DailyGroupRow struct {
 	Name           string           `json:"name,omitempty"`
 	Totals         Totals           `json:"totals"`
 	ErrorBreakdown map[string]int64 `json:"error_breakdown,omitempty"`
+	// 同 DailyModelRow.QualityScore：明细模式下质量评分列不能是空的。
+	QualityScore float64 `json:"quality_score,omitempty"`
 }
 
 // Coverage 快照口径覆盖披露。
@@ -795,8 +800,9 @@ func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 		a := dayModels[key]
 		meta := metaDayModel[key]
 		date, model := splitKey(key)
+		tot := a.finalize()
 		row := DailyModelRow{Date: date, RawModelName: model, ProviderID: meta.providerID,
-			Totals: a.finalize(), ErrorBreakdown: a.breakdown()}
+			Totals: tot, ErrorBreakdown: a.breakdown(), QualityScore: ProviderQualityScore(tot)}
 		if meta.providerID != nil {
 			row.ProviderName = names.Providers[*meta.providerID]
 		}
@@ -918,11 +924,11 @@ func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 	if daily {
 		rep.DailyProviders = dailyGroups(dayProviders, names.Providers, func(key string) (string, string) {
 			d, k := splitKey(key)
-			return d, names.Providers[parseInt64(k)]
+			return d, dailyDimName(names.Providers, k)
 		})
 		rep.DailyCredentials = dailyGroups(dayCredentials, names.Credentials, func(key string) (string, string) {
 			d, k := splitKey(key)
-			return d, names.Credentials[parseInt64(k)]
+			return d, dailyDimName(names.Credentials, k)
 		})
 		rep.DailyTenants = dailyGroups(dayTenants, nil, func(key string) (string, string) {
 			d, k := splitKey(key)
@@ -934,7 +940,7 @@ func BuildGrainReport(ctx context.Context, q Querier, start, end time.Time, view
 		})
 		rep.DailyAPIKeys = dailyGroups(dayAPIKeys, names.APIKeys, func(key string) (string, string) {
 			d, k := splitKey(key)
-			return d, names.APIKeys[parseInt64(k)]
+			return d, dailyDimName(names.APIKeys, k)
 		})
 	}
 
@@ -977,12 +983,32 @@ func legacySink(total *grainAccumulator, days map[string]*grainAccumulator, lega
 	}
 }
 
+// dailyDimName 解析 id 维度（供应商/凭据/apikey）在**日行**里的取值。
+//
+// 为什么不是直接取 names[id]：未落定哨兵（UnassignedID）在名字表里查不到，
+// 取出来是空串。前端 dayRows 拿这个值去 nameOf 里查汇总行，汇总行的 key 是
+// "-1"，空串永远查不到 → 回落成空 → **按天明细里近两成的行名称列是空的**
+// （真库实测 36 行里 7 行）。所以哨兵这里返回 "-1"，让前端能命中汇总那条
+// 哨兵行、由 idText 显示「未落定」。
+func dailyDimName(names map[int64]string, k string) string {
+	id := parseInt64(k)
+	if name := names[id]; name != "" {
+		return name
+	}
+	if id == UnassignedID {
+		return strconv.FormatInt(UnassignedID, 10)
+	}
+	return ""
+}
+
 func dailyGroups(m map[string]*grainAccumulator, _ map[int64]string, name func(string) (string, string)) []DailyGroupRow {
 	keys := sortedKeysStr(m)
 	out := make([]DailyGroupRow, 0, len(keys))
 	for _, k := range keys {
 		date, key := name(k)
-		out = append(out, DailyGroupRow{Date: date, Key: key, Totals: m[k].finalize(), ErrorBreakdown: m[k].breakdown()})
+		tot := m[k].finalize()
+		out = append(out, DailyGroupRow{Date: date, Key: key, Totals: tot,
+			ErrorBreakdown: m[k].breakdown(), QualityScore: ProviderQualityScore(tot)})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Date != out[j].Date {
