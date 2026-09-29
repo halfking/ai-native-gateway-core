@@ -577,6 +577,9 @@ var analysisEventsInboxTTLIndexesMigration760 []byte
 //go:embed embeddata/startup/761_stats_inbox_sync_status_backfill.sql
 var statsInboxSyncStatusBackfillMigration761 []byte
 
+//go:embed embeddata/startup/762_session_project_backfill_chain.sql
+var sessionProjectBackfillChainMigration762 []byte
+
 //go:embed embeddata/startup/800_provider_endpoint_protocols.sql
 var providerEndpointProtocolsMigration800 []byte
 
@@ -753,6 +756,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/759_report_snapshots_grain_dims.sql":                                    reportSnapshotsGrainDimsMigration759,
 	"startup/760_analysis_events_inbox_ttl_indexes.sql":                              analysisEventsInboxTTLIndexesMigration760,
 	"startup/761_stats_inbox_sync_status_backfill.sql":                               statsInboxSyncStatusBackfillMigration761,
+	"startup/762_session_project_backfill_chain.sql":                                 sessionProjectBackfillChainMigration762,
 	"startup/800_provider_endpoint_protocols.sql":                                    providerEndpointProtocolsMigration800,
 }
 
