@@ -1,5 +1,5 @@
-// reports.ts — Reconciliation report page (provider/internal dual view, R65 i18n sync).
-// Keys mirror views/admin/ReconciliationReport.vue.
+// reports.ts — Reconciliation report page (provider/internal dual view, R65 i18n sync;
+// extended 2026-09-30 stats UI round). Keys mirror views/admin/ReconciliationReport.vue.
 export default {
   // View switch
   providerView: 'Provider Reconciliation',
@@ -41,4 +41,44 @@ export default {
   errorBreakdown: 'Error breakdown',
   qualityScore: 'Quality score',
 
+  // ── 2026-09-30 stats UI round ────────────────────────
+  quickYesterday: 'Yesterday',
+  quick7d: 'Last 7 days',
+  quick30d: 'Last 30 days',
+  quickMonth: 'This month',
+  allProviders: 'All providers',
+  allTenants: 'All tenants',
+  allModels: 'All models',
+  clearFilter: 'Clear filters',
+  kpiTenants: 'Settled tenants',
+  kpiLatency: 'Avg latency',
+  kpiDaily: 'Daily requests',
+  kpiPersons: 'Active persons',
+  kpiPerPersonReq: 'Requests per person',
+  kpiCreditsPerReq: 'Credits / request',
+  qualitySub: 'providers · success rate × timeliness',
+  coveragePrefix: 'covering',
+  reqCostTrend: 'Requests & cost trend',
+  reqCreditsTrend: 'Requests & credits trend',
+  tokenTrend: 'Token composition & cache hit',
+  legendSuccess: 'Success',
+  legendFail: 'Failures',
+  legendCost: 'Cost (USD)',
+  legendCredits: 'Credits',
+  legendIn: 'Input',
+  legendOut: 'Output',
+  legendCacheRead: 'Cache read',
+  legendCacheWrite: 'Cache write',
+  legendHitRate: 'Hit rate',
+  distHint: 'Click a row to drill down · bars show share of current metric',
+  byToken: 'By tokens',
+  byMoney: 'By spend',
+  sharePct: 'Share',
+  reasonTitle: 'Failure reasons (top of range)',
+  noErrors: 'No failed requests in this range',
+  reasonTotalPrefix: 'Total',
+  reasonTotalSuffix: 'failures',
+  reasonFilterHint: 'model table filtered by this reason',
+  collapse: 'Collapse',
+  expand: 'Expand',
 }

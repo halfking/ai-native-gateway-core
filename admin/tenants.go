@@ -69,6 +69,18 @@ type tenantAppBreakdown struct {
 	Cost     float64 `json:"cost_usd"`
 }
 
+// tenantDailyStat — 租户统计按天时序行（2026-09-30 统计 UI 优化轮）。
+// 无流量日由 SQL generate_series 左连接补零，前端趋势图拿到连续序列。
+type tenantDailyStat struct {
+	Date     string  `json:"date"` // YYYY-MM-DD
+	Requests int64   `json:"requests"`
+	Success  int64   `json:"success"`
+	Errors   int64   `json:"errors"`
+	Tokens   int64   `json:"tokens"`
+	Credits  int64   `json:"credits"`
+	Cost     float64 `json:"cost_usd"`
+}
+
 const tenantValidStatuses = "active|trial|suspended|expired|disabled"
 
 // isValidTenantStatus checks if status is one of 5 allowed values.
@@ -692,6 +704,7 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		UniqueApps    int                    `json:"unique_apps"`
 		ByModel       []tenantModelBreakdown `json:"by_model"`
 		ByApplication []tenantAppBreakdown   `json:"by_application"`
+		Daily         []tenantDailyStat      `json:"daily"`
 	}
 
 	var s tenantStats
@@ -773,6 +786,44 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	}
 	if s.ByApplication == nil {
 		s.ByApplication = []tenantAppBreakdown{}
+	}
+
+	// Daily time series (2026-09-30 统计 UI 优化轮)：generate_series 左连接
+	// 补零，保证前端趋势图拿到 days 条连续日期。表选择与上方 credits 查询
+	// 同口径（≤7 天走 _hot，>7 天走父表聚合 ATTACHED 月度分区）。
+	dailyRows, err := h.db.Query(ctx, `
+		WITH days AS (
+			SELECT generate_series(CURRENT_DATE - ($2::int - 1), CURRENT_DATE, INTERVAL '1 day')::date AS d
+		), agg AS (
+			SELECT date_trunc('day', ts)::date AS d,
+			       COUNT(*)::bigint AS requests,
+			       COUNT(*) FILTER (WHERE COALESCE(success, true))::bigint AS success,
+			       COUNT(*) FILTER (WHERE NOT COALESCE(success, true))::bigint AS errors,
+			       COALESCE(SUM(COALESCE(total_tokens, 0)), 0)::bigint AS tokens,
+			       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint AS credits,
+			       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8 AS cost
+			FROM `+logsTable+`
+			WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
+			GROUP BY 1
+		)
+		SELECT to_char(days.d, 'YYYY-MM-DD'),
+		       COALESCE(agg.requests, 0), COALESCE(agg.success, 0), COALESCE(agg.errors, 0),
+		       COALESCE(agg.tokens, 0), COALESCE(agg.credits, 0), COALESCE(agg.cost, 0)
+		FROM days LEFT JOIN agg ON agg.d = days.d
+		ORDER BY days.d
+	`, code, days)
+	if err == nil {
+		for dailyRows.Next() {
+			var d tenantDailyStat
+			if scanErr := dailyRows.Scan(&d.Date, &d.Requests, &d.Success, &d.Errors, &d.Tokens, &d.Credits, &d.Cost); scanErr != nil {
+				break
+			}
+			s.Daily = append(s.Daily, d)
+		}
+		dailyRows.Close()
+	}
+	if s.Daily == nil {
+		s.Daily = []tenantDailyStat{}
 	}
 
 	writeJSON(w, http.StatusOK, s)
