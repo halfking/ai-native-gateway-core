@@ -212,15 +212,9 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 // aliases — only Gemini 2.5 Flash family supports it). The IR's disable
 // intent is reported as an ir_protocol_loss with reason="unsupported" so
 // the request still goes upstream without the unsupported sentinel.
-func reportSerializeGeminiUnsupportedThinking(req *InternalRequest) {
+func reportSerializeGeminiUnsupportedThinking(req *InternalRequest, fieldPath string) {
 	if req == nil {
 		return
-	}
-	fieldPath := "reasoning"
-	if req.SourceProtocol == ProtocolGeminiGenerate {
-		fieldPath = "reasoning" // native path
-	} else {
-		fieldPath = "reasoning_effort"
 	}
 	ReportProtocolLoss(
 		irRequestID(req),
@@ -771,16 +765,53 @@ func buildGeminiGenerationConfig(req *InternalRequest) map[string]any {
 		}
 	}
 
-	// Map ReasoningConfig → Gemini thinkingConfig.
-	//
-	// 2026-08-11: Extended to support effort-only configs (fills the gap where
-	// an effort-only ReasoningConfig from an OpenAI client targeting Gemini
-	// was previously silently dropped because BudgetTokens was nil).
-	//
-	// Precedence (mirrors reasoningDisabled in reasoning_dialect.go and the
-	// Anthropic branch): Type > BudgetTokens > Effort spelling. Explicit zero
-	// budget disables; explicit positive budget beats effort "none"/"disabled".
-	if req.Reasoning != nil {
+	// Native thinking precedence (mirror of serialize_anthropic's
+	// `req.Thinking == nil` gate): an Anthropic client's top-level thinking
+	// config must govern a cross-protocol route to Gemini. Previously
+	// req.Thinking was ignored here entirely, so a concurrent Reasoning
+	// overrode the native intent (PoC: Thinking budget=2048 + Effort=high
+	// emitted 4096). Reasoning is only consulted when Thinking is absent.
+	if req.Thinking != nil {
+		switch req.Thinking.Type {
+		case "disabled":
+			if geminiSupportsDisabledThinking(req.Model) {
+				gc["thinkingConfig"] = map[string]any{"thinkingBudget": 0}
+				hasAny = true
+			} else {
+				reportSerializeGeminiUnsupportedThinking(req, "thinking.type")
+			}
+		case "adaptive":
+			// Model decides: dynamic budget with thoughts surfaced.
+			gc["thinkingConfig"] = map[string]any{"thinkingBudget": -1, "includeThoughts": true}
+			hasAny = true
+		default:
+			// "enabled" and unrecognized types: "think, roughly this much";
+			// without a positive budget fall back to the Gemini dynamic
+			// default (-1) rather than dropping the intent.
+			budget := -1
+			if req.Thinking.BudgetTokens > 0 {
+				budget = req.Thinking.BudgetTokens
+			}
+			gc["thinkingConfig"] = map[string]any{"thinkingBudget": budget, "includeThoughts": true}
+			hasAny = true
+		}
+	} else if req.Reasoning != nil {
+
+		// Map ReasoningConfig → Gemini thinkingConfig.
+		//
+		// 2026-08-11: Extended to support effort-only configs (fills the gap where
+		// an effort-only ReasoningConfig from an OpenAI client targeting Gemini
+		// was previously silently dropped because BudgetTokens was nil).
+		//
+		// Precedence (mirrors reasoningDisabled in reasoning_dialect.go and the
+		// Anthropic branch): Type > BudgetTokens > Effort spelling. Explicit zero
+		// budget disables; explicit positive budget beats effort "none"/"disabled".
+		// Type is only a directive in the known vocabulary (enabled/disabled/
+		// adaptive) — Responses reasoning.summary values collide into this field
+		// (parseResponsesReasoning) and must fall through to Budget/Effort or
+		// emit nothing (N21-2 residue, fixed 2026-09-30).
+		typeIsDirective := req.Reasoning.Type == "enabled" ||
+			req.Reasoning.Type == "disabled" || req.Reasoning.Type == "adaptive"
 		thinkingType := "enabled"
 		thinkingBudget := -1 // Gemini default: -1 = dynamic budget
 		emitBlock := false
@@ -788,7 +819,7 @@ func buildGeminiGenerationConfig(req *InternalRequest) map[string]any {
 		includeThoughts := true
 
 		switch {
-		case req.Reasoning.Type != "":
+		case typeIsDirective:
 			thinkingType = req.Reasoning.Type
 			if thinkingType == "disabled" {
 				thinkingBudget = 0
@@ -831,7 +862,11 @@ func buildGeminiGenerationConfig(req *InternalRequest) map[string]any {
 			// No explicit signal, or disable was unsupported on this model;
 			// the latter records a loss via reportSerializeGeminiLosses below.
 			if disableUnsupported {
-				reportSerializeGeminiUnsupportedThinking(req)
+				fieldPath := "reasoning_effort"
+				if req.SourceProtocol == ProtocolGeminiGenerate {
+					fieldPath = "reasoning"
+				}
+				reportSerializeGeminiUnsupportedThinking(req, fieldPath)
 			}
 			// Skip the emission block below; hasAny remains unchanged.
 		} else if thinkingType == "disabled" {
