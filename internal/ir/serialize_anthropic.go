@@ -130,11 +130,17 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		switch {
 		case req.Reasoning.Type != "":
 			thinkingType = req.Reasoning.Type
-			// TestAnthropicExplicitEnabledBeatsDisabledEffort: explicit
-			// enabled still gets a default budget when no explicit one.
-			if thinkingType != "disabled" && req.Reasoning.BudgetTokens == nil {
-				thinkingBudget = 8192
+			// Explicit Type wins, but must not drop an explicit positive
+			// budget (R23-A): parse_gemini builds {Type:"enabled",
+			// BudgetTokens} for any positive thinkingBudget, and Anthropic
+			// requires budget_tokens whenever thinking is enabled.
+			if thinkingType != "disabled" {
 				hasBudget = true
+				if req.Reasoning.BudgetTokens != nil && *req.Reasoning.BudgetTokens > 0 {
+					thinkingBudget = *req.Reasoning.BudgetTokens
+				} else {
+					thinkingBudget = 8192 // safe default (xhigh); enabled without budget is an API error
+				}
 			}
 		case req.Reasoning.BudgetTokens != nil:
 			if *req.Reasoning.BudgetTokens == 0 {
@@ -167,13 +173,11 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		if thinkingType != "" {
 			thinking := map[string]any{}
 			thinking["type"] = thinkingType
+			// Disabled thinking cannot carry a budget_tokens field
+			// (TestReasoningDisabledConflictPrecedence/type_disabled_beats_budget);
+			// hasBudget is never set for disabled in the switch above.
 			if hasBudget && thinkingType != "disabled" {
 				thinking["budget_tokens"] = thinkingBudget
-			}
-			if thinkingType == "disabled" && hasBudget {
-				// Disabled thinking cannot carry a budget_tokens field
-				// (mirrors TestReasoningDisabledConflictPrecedence/type_disabled_beats_budget).
-				delete(thinking, "budget_tokens")
 			}
 			if len(thinking) > 0 {
 				out["thinking"] = thinking
